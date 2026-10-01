@@ -63,7 +63,7 @@ The compiler:
 
 ```json
 {
-  "schemaVersion": "1",
+  "schemaVersion": "2",
   "generatorArg": "Proto.Derive",
   "packageName": "MyApp",
   "sourceFile": "order.l",
@@ -104,27 +104,51 @@ The compiler:
         "name": "derive",
         "args": ["Eq", "Show"]
       }
+    ],
+    "cases": [],
+    "invariants": [
+      {"source": "id > 0", "message": "An order id is positive", "line": 7, "column": 3}
     ]
-  }
+  },
+  "declarations": []
 }
 ```
 
 ### Request Fields
 
-- **schemaVersion** (`"1"`): Protocol version for forward compatibility
+- **schemaVersion** (`"2"`): Protocol version. The compiler sends `"2"`; `parseRequest`
+  accepts `"1"` and `"2"` (schema 2 only adds keys)
 - **generatorArg** (string): The argument to `@generate`, e.g., `"Proto.Derive"`
 - **packageName** (string): Package currently being compiled, e.g., `"MyApp"`
 - **sourceFile** (string): Source file path for diagnostics, e.g., `"order.l"`
 - **typeDescriptor** (TypeDescriptor): Full type information (see below)
+- **declarations** (DeclarationDescriptor[], schema 2): the enum, distinct and alias
+  declarations in the same file that the annotated type's source names
 
 ### TypeDescriptor Structure
 
-- **kind** (ItemKind): One of `"Record"`, `"ExposedRecord"`, `"Union"`, `"Interface"`
+- **kind** (ItemKind): One of `"Record"`, `"ExposedRecord"`, `"Union"`, `"Interface"`,
+  `"Opaque"`, `"Enum"` (the last two in schema 2)
 - **name** (string): Unqualified type name, e.g., `"Order"`
 - **packageName** (string): Fully qualified package, e.g., `"MyApp.Models"`
 - **typeParams** (string[]): Generic type parameters, e.g., `["T", "E"]`
 - **fields** (FieldDescriptor[]): Field list (empty for unions/interfaces)
-- **annotations** (AnnotationDescriptor[]): Annotations on the type
+- **annotations** (AnnotationDescriptor[]): Annotations on the type, each argument as
+  its source text (`@label("Name")` has the argument `"\"Name\""`)
+- **cases** (CaseDescriptor[], schema 2): a union's or enum's cases, each
+  `{name, annotations, fields}`
+- **invariants** (InvariantDescriptor[], schema 2): each `invariant:` as
+  `{source, message, line, column}`; `message` is its `@message("...")` or `null`
+
+### DeclarationDescriptor Structure (schema 2)
+
+- **name** (string): the declared type's name
+- **kind**: `"Enum"`, `"Distinct"` or `"Alias"`; an unknown kind is skipped by
+  `parseRequest`
+- **underlying** (string or null): a distinct type's or alias's right-hand side
+- **range** (object or null): a range type's `{min, max, maxInclusive}`, each bound as
+  source text or `null` when open
+- **cases** (CaseDescriptor[]): an enum's cases
 
 ### FieldDescriptor Structure
 
@@ -132,6 +156,7 @@ The compiler:
 - **fieldType** (FieldType): Resolved type information
 - **isPublic** (boolean): Public vs. private visibility
 - **annotations** (AnnotationDescriptor[]): Per-field annotations
+- **default** (string, optional, schema 2): the field default's source text
 
 ### FieldType Structure
 
@@ -306,7 +331,7 @@ pub record Message {
 **Compiler sends:**
 ```json
 {
-  "schemaVersion": "1",
+  "schemaVersion": "2",
   "generatorArg": "proto-generator",
   "packageName": "myapp",
   "sourceFile": "message.l",
@@ -341,7 +366,8 @@ val resp = generate(req)
 
 **Compiler incorporates:**
 - Inserts generated functions into compilation unit
-- Adds `import Std.Json` if not present
+- Adds `import Std.Json` to the `package` line if not present, so the file's own
+  lines keep their numbers
 - Reports zero diagnostics
 - Compilation proceeds with both `protoSerialize` and `protoDeserialize` available
 
@@ -358,7 +384,7 @@ Run tests with: `lyric test --manifest lyric-generator-sdk/lyric.toml`
 
 ## Stability and Versioning
 
-- **Schema version 1** is the current protocol
+- **Schema version 2** is the current protocol (D151); it is a superset of schema 1
 - Backward compatibility is NOT guaranteed across major versions
 - Generators should validate `schemaVersion` before processing
 - Compiler version mismatch with generator may cause errors

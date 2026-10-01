@@ -312,7 +312,7 @@ func whereClauseLines(wc: in Option[WhereClause]): List[String] {
 pub func recordMemberLines(m: in RecordMember, ctx: inout FmtCtx): List[String] {
   match m {
     case RMField(field) -> fieldMemberLines(field)
-    case RMInvariant(inv) -> singleLineDoc("invariant: " + exprInline(0, inv.expr))
+    case RMInvariant(inv) -> singleLineDoc("invariant: " + exprInline(0, inv.expr) + invariantMessageSuffix(inv))
     case RMFunc(fn) -> funcDoc(visibilityPrefixStr(fn.visibility), fn, ctx)
   }
 }
@@ -698,7 +698,7 @@ func entryDoc(ed: in EntryDecl, ctx: inout FmtCtx): List[String] {
 pub func protectedMemberDoc(pm: in ProtectedMember, ctx: inout FmtCtx): List[String] {
   match pm {
     case PMField(pf) -> protectedFieldStr(pf)
-    case PMInvariant(ic) -> singleLineDoc("invariant: " + exprInline(0, ic.expr))
+    case PMInvariant(ic) -> singleLineDoc("invariant: " + exprInline(0, ic.expr) + invariantMessageSuffix(ic))
     case PMEntry(ed) -> entryDoc(ed, ctx)
     case PMFunc(fn) -> funcDoc(visibilityPrefixStr(fn.visibility), fn, ctx)
   }
@@ -809,7 +809,7 @@ func opaqueDoc(visStr: in String, item: in Item, od: in OpaqueTypeDecl, ctx: ino
             z = z + 1
           }
         }
-        case OMInvariant(ic) -> mLines.add("invariant: " + exprInline(0, ic.expr))
+        case OMInvariant(ic) -> mLines.add("invariant: " + exprInline(0, ic.expr) + invariantMessageSuffix(ic))
       }
       i = i + 1
     }
@@ -1665,4 +1665,12 @@ pub func importDoc(imp: in ImportDecl): List[String] {
   val kw = if imp.isPubUse { "pub use" } else { "import" }
   val externKw = if imp.isExtern { " extern" } else { "" }
   singleLineDoc(kw + externKw + " " + pathStr(imp.path) + selStr + aliasStr)
+}
+
+// ` @message("...")` when the invariant carries one.
+func invariantMessageSuffix(inv: in InvariantClause): String {
+  match inv.message {
+    case Some(m) -> " @message(\"" + escapeStr(m) + "\")"
+    case None -> ""
+  }
 }

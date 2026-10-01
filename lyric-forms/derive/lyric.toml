@@ -1,0 +1,35 @@
+# Forms.Derive — the form generator of docs/65 §11 (D151).
+#
+# A consumer depends on it as a local generator and annotates a record or
+# opaque type:
+#
+#   [dependencies]
+#   "Lyric.Forms"  = { path = "../lyric-forms" }
+#   "Forms.Derive" = { path = "../lyric-forms/derive" }
+#
+#   @generate(Forms.Derive)
+#   pub record Customer { ... }
+#
+# The generated code imports `Forms` and `Forms.Parse`, so the consumer
+# also depends on `Lyric.Forms`.
+
+[package]
+name        = "Forms.Derive"
+version     = "0.1.0"
+kind        = "source-generator"
+authors     = ["Lyric Contributors"]
+license     = "MIT"
+description = "Source generator deriving form drafts, schemas and validation from a domain type (docs/65 §11)."
+
+[project]
+name            = "Forms.Derive"
+output_assembly = "Forms.Derive.dll"
+
+[project.packages]
+"Forms.Derive" = "src/derive.l"
+
+[project.tests]
+"Forms.DeriveTests" = "tests/derive_tests.l"
+
+[dependencies]
+"Lyric.GeneratorSdk" = { path = "../../lyric-generator-sdk" }

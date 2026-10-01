@@ -1416,7 +1416,8 @@ func rewriteRecordDecl(aliases: in List[String], rd: in RecordDecl): RecordDecl 
         case RMInvariant(inv) -> RMInvariant(
           inv = InvariantClause(
             expr = rewriteExpr(filterAliasesForExpr(aliases, inv.expr), inv.expr),
-            span = inv.span
+            span = inv.span,
+            message = inv.message
           )
         )
         case RMFunc(fn) -> RMFunc(fn = rewriteFunctionDecl(aliases, fn))
@@ -1702,7 +1703,7 @@ func rewriteOpaqueMember(aliases: in List[String], m: in OpaqueMember): OpaqueMe
     case OMField(field) -> return OMField(field = rewriteFieldDecl(aliases, field))
     // #6321 SUGGESTION follow-up — see filterAliasesForExpr's comment.
     case OMInvariant(inv) -> return OMInvariant(
-      inv = InvariantClause(expr = rewriteExpr(filterAliasesForExpr(aliases, inv.expr), inv.expr), span = inv.span)
+      inv = InvariantClause(expr = rewriteExpr(filterAliasesForExpr(aliases, inv.expr), inv.expr), span = inv.span, message = inv.message)
     )
   }
   return m
@@ -1765,7 +1766,7 @@ func rewriteProtectedMember(aliases: in List[String], m: in ProtectedMember): Pr
     case PMField(field) -> return PMField(field = rewriteProtectedField(aliases, field))
     // #6321 SUGGESTION follow-up — see filterAliasesForExpr's comment.
     case PMInvariant(inv) -> return PMInvariant(
-      inv = InvariantClause(expr = rewriteExpr(filterAliasesForExpr(aliases, inv.expr), inv.expr), span = inv.span)
+      inv = InvariantClause(expr = rewriteExpr(filterAliasesForExpr(aliases, inv.expr), inv.expr), span = inv.span, message = inv.message)
     )
     case PMEntry(entryDecl) -> return PMEntry(entryDecl = rewriteEntryDecl(aliases, entryDecl))
     case PMFunc(fn) -> return PMFunc(fn = rewriteFunctionDecl(aliases, fn))

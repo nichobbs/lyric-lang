@@ -10,6 +10,7 @@ import Std.Collections
 import Ui.Core.{View}
 import Ui.Widgets
 import Customers.Domain.{Customer, tierLabel}
+import Customers.Routes.{EditCustomer, routeUrl}
 import Customers.List.Logic.{Model, Msg, Status, Loading, Loaded, LoadFailed, RetryClicked}
 
 pub func view(m: in Model): View[Msg] {
@@ -33,7 +34,7 @@ func listing(customers: in List[Customer]): View[Msg] {
   val rows: List[View[Msg]] = newList()
   for c in customers {
     val cells: List[View[Msg]] = newList()
-    cells.add(Widgets.link(c.name, "/customers/" + c.id.toString()))
+    cells.add(Widgets.link(c.name, routeUrl(EditCustomer(id = c.id))))
     cells.add(Widgets.text(c.email))
     cells.add(Widgets.text(tierLabel(c.tier)))
     rows.add(Widgets.keyed(c.id.toString(), Widgets.tableRow(cells, None)))

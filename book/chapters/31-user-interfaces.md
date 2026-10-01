@@ -223,6 +223,49 @@ from by key, so a click on a row that moved before the click arrived still
 reaches that row, and a click on a row that has since gone is dropped
 rather than delivered to its neighbour.
 
+### Typed routes
+
+Pages are a union, so a link names a page rather than a URL.
+`Ui.Routes` derives the URL functions from `@path` annotations:
+
+```toml
+"Ui.Routes" = { path = "../lyric-ui/routes" }
+```
+
+```lyric
+@generate(Ui.Routes)
+pub union Route {
+  @path("/customers") case CustomerList
+  @path("/customers/{id:Long}") case EditCustomer(id: CustomerId)
+}
+```
+
+This generates `parseRoute(url): Option[Route]` and `routeUrl(r): String`:
+
+- **Placeholders:** each `{field}` segment binds a case field.
+- **Types from another file:** `{id:Long}` reads the segment as a `Long`
+  and converts it with `CustomerId.tryFrom`, so `/customers/0` matches no
+  route when `CustomerId` starts at 1. A field whose type is declared in
+  the same file needs no `:Long`.
+- **Matching:** cases are tried in declaration order, and the query and
+  fragment are ignored.
+
+A view links with `Widgets.link(c.name, routeUrl(EditCustomer(id = c.id)))`.
+The application maps each route to a screen with an exhaustive `match`, so
+adding a page without a screen does not compile:
+
+```lyric
+func screenFor(repo: in CustomerRepository, r: in Route): Instance {
+  return match r {
+    case CustomerList -> listScreen(repo)
+    case EditCustomer(id) -> editScreen(repo, id)
+  }
+}
+```
+
+The `ui` layer preset lets logic, effects and views import `Ui.Routing`,
+the pure package the generated code uses.
+
 ### Composing screens
 
 A child component has its own message type. `mapView` lifts its view into
@@ -286,6 +329,72 @@ val fields = Ui.Forms.formFields(
   { name: String, value: String -> edited(name, value) }
 )
 ```
+
+### Deriving a form
+
+The schema, draft and validation above follow mechanically from the domain
+type, so `Forms.Derive` writes them. It is a source generator (chapter 30):
+declare it next to `Lyric.Forms` and annotate the type:
+
+```toml
+[dependencies]
+"Lyric.Forms"  = { path = "../lyric-forms" }
+"Forms.Derive" = { path = "../lyric-forms/derive" }
+```
+
+```lyric
+pub type CreditLimit = Long range 0 ..= 1_000_000
+
+pub enum Tier {
+  case Standard
+  case Preferred
+  @label("Key account") case Key
+}
+
+@generate(Forms.Derive)
+pub record Customer {
+  @readonly id: CustomerId
+  @maxLength(100) name: String
+  @email email: String
+  creditLimit: CreditLimit
+  tier: Tier
+  @multiline @maxLength(2000) notes: Option[String]
+  invariant: keyAccountLimitOk(tier, creditLimit) @message("Key accounts need a credit limit of at least 10000")
+}
+```
+
+This generates:
+
+- `CustomerDraft` and the `CustomerField` enum;
+- `customerSchema()`, which labels each field (by default `creditLimit`
+  becomes "Credit limit");
+- `emptyCustomerDraft()`, `toCustomerDraft(c)`, `customerDraftValue(d, f)`,
+  `setCustomerField(d, f, text)` and `customerFieldNamed(name)`;
+- `validateCustomer(d, id)`.
+
+How fields map to inputs:
+
+- **Range type:** a number input with its bounds.
+- **Enum:** a select of its cases.
+- **`Option`:** an optional field, where empty text means `None`.
+- **`@readonly`:** the field is left out of the form and passed to
+  `validateCustomer` instead.
+
+`validateCustomer` parses every field and reports every error at once. It
+then checks each invariant and turns a failure into a `CrossField` error
+carrying its `@message`, and only then builds the `Customer`, so
+construction cannot fail.
+
+A field type the generator cannot edit is an `FD002` error. For such a type
+(a date, or a type declared in another file), supply the two functions it
+needs:
+
+```lyric
+@form_parse(parseDate) @form_format(formatDate) due: Date
+```
+
+Here `parseDate(text): Result[Date, String]` reports its `Err` text under
+the field, and `formatDate(d): String` fills the draft.
 
 ### Lists of rows
 

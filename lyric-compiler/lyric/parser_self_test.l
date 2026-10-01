@@ -2505,3 +2505,43 @@ test "spellsUnsigned recognises only an explicitly unsigned spelling (#7861)" {
   assertFalse(spellsUnsignedSrc("toUInt()"), "free function call")
   assertFalse(spellsUnsignedSrc("x.toUInt() + 1"), "arithmetic on an unsigned spelling")
 }
+
+// docs/65 §11.4 (D138 Q-UI-004): an invariant may carry a same-line
+// @message("..."), the wording a form generator reports when it fails.
+func firstRecordInvariants(pr: in ParseResult): List[InvariantClause] {
+  val invs: List[InvariantClause] = newList()
+  for item in pr.file.items {
+    match item.kind {
+      case IRecord(d) -> {
+        for m in d.members {
+          match m {
+            case RMInvariant(inv) -> invs.add(inv)
+            case _ -> ()
+          }
+        }
+      }
+      case _ -> ()
+    }
+  }
+  invs
+}
+
+test "an invariant's same-line @message is recorded" {
+  val pr = parse(
+    "package P\nrecord R {\n  name: String\n  invariant: name.length > 0 @message(\"Name is required\")\n  @label(\"Age\") age: Int\n  invariant: age >= 0\n}\n"
+  )
+  assertEqualInt(diagCount(pr), 0, "parses cleanly")
+  val invs = firstRecordInvariants(pr)
+  assertEqualInt(invs.count, 2, "two invariants")
+  assertEqual(unwrapOr(invs[0].message, ""), "Name is required", "the message")
+  assertTrue(invs[1].message.isNone, "no message on the second; the next line's @label belongs to the field")
+}
+
+test "anything but one @message string after an invariant is P0345" {
+  val other = parse("package P\nrecord R {\n  x: Int\n  invariant: x > 0 @label(\"X\")\n}\n")
+  assertTrue(hasDiagCode(other, "P0345"), "another annotation")
+  val twice = parse("package P\nrecord R {\n  x: Int\n  invariant: x > 0 @message(\"a\") @message(\"b\")\n}\n")
+  assertTrue(hasDiagCode(twice, "P0345"), "two messages")
+  val notString = parse("package P\nrecord R {\n  x: Int\n  invariant: x > 0 @message(3)\n}\n")
+  assertTrue(hasDiagCode(notString, "P0345"), "a non-string message")
+}

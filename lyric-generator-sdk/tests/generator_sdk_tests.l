@@ -297,7 +297,7 @@ test "serializeRequest: minimal request" {
   )
   val req = GeneratorRequest(generatorArg = "Gen", typeDescriptor = td, packageName = "Pkg", sourceFile = "f.l")
   val json = serializeRequest(req)
-  assertTrue(json.contains("\"schemaVersion\":\"1\""), "schema version")
+  assertTrue(json.contains("\"schemaVersion\":\"2\""), "schema version")
   assertTrue(json.contains("\"generatorArg\":\"Gen\""), "generator arg")
   assertTrue(json.contains("\"name\":\"Type\""), "type name")
   assertTrue(json.contains("\"packageName\":\"Pkg\""), "package name")
@@ -414,11 +414,11 @@ test "parseRequest: round-trips type parameters and fields" {
 
 test "parseRequest: rejects an unsupported schema version and a missing type name" {
   assertTrue(
-    match parseRequest("{\"schemaVersion\":\"2\"}") {
-      case Err(msg) -> msg.contains("unsupported schemaVersion 2")
+    match parseRequest("{\"schemaVersion\":\"3\"}") {
+      case Err(msg) -> msg.contains("unsupported schemaVersion 3")
       case Ok(_) -> false
     },
-    "schema version 2 rejected"
+    "schema version 3 rejected"
   )
   assertTrue(
     match parseRequest("{\"schemaVersion\":\"1\",\"typeDescriptor\":{\"kind\":\"Record\"}}") {
@@ -928,4 +928,200 @@ func constructTypeDescriptorWithEmptyName(): Unit {
 
 test "TypeDescriptor: invariant panics on an empty name" {
   assertPanics("TypeDescriptor(name = \"\")", constructTypeDescriptorWithEmptyName)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Schema 2: cases, invariants, field defaults, opaque types and enums
+// ─────────────────────────────────────────────────────────────────────────────
+test "parseRequest: a schema 2 union round-trips its cases and their annotations" {
+  val idField = FieldDescriptor(
+    name = "id",
+    fieldType = FieldType(kind = Named, name = "CustomerId", typeArgs = []),
+    isPublic = true,
+    annotations = []
+  )
+  val td = TypeDescriptor(
+    kind = Union,
+    name = "Route",
+    packageName = "App",
+    typeParams = [],
+    fields = [],
+    annotations = [],
+    cases = [
+      CaseDescriptor(
+        name = "CustomerList",
+        annotations = [AnnotationDescriptor(name = "path", args = ["\"/customers\""])],
+        fields = []
+      ),
+      CaseDescriptor(
+        name = "EditCustomer",
+        annotations = [AnnotationDescriptor(name = "path", args = ["\"/customers/{id}\""])],
+        fields = [idField]
+      )
+    ]
+  )
+  val req = GeneratorRequest(generatorArg = "Ui.Routes", typeDescriptor = td, packageName = "App", sourceFile = "r.l")
+  match parseRequest(serializeRequest(req)) {
+    case Err(msg) -> assertTrue(false, "parseRequest failed: " + msg)
+    case Ok(back) -> {
+      val cases = back.typeDescriptor.cases
+      assertEqualInt(cases.length, 2, "two cases")
+      assertEqual(cases[1].name, "EditCustomer", "case name")
+      assertEqual(cases[1].annotations[0].name, "path", "case annotation name")
+      assertEqual(cases[1].annotations[0].args[0], "\"/customers/{id}\"", "case annotation argument source")
+      assertEqual(cases[1].fields[0].fieldType.name, "CustomerId", "case field type")
+    }
+  }
+}
+
+test "parseRequest: a schema 2 opaque type round-trips invariants and defaults" {
+  val notes = FieldDescriptor(
+    name = "notes",
+    fieldType = FieldType(kind = OptionType, name = "String?", typeArgs = ["String"]),
+    isPublic = false,
+    annotations = [],
+    defaultSource = Some(value = "None")
+  )
+  val td = TypeDescriptor(
+    kind = Opaque,
+    name = "Customer",
+    packageName = "Domain",
+    typeParams = [],
+    fields = [notes],
+    annotations = [],
+    invariants = [
+      InvariantDescriptor(
+        source = "name.length > 0",
+        message = Some(value = "Name is required"),
+        line = 7,
+        column = 3
+      )
+    ]
+  )
+  val req = GeneratorRequest(
+    generatorArg = "Forms.Derive",
+    typeDescriptor = td,
+    packageName = "Domain",
+    sourceFile = "c.l"
+  )
+  match parseRequest(serializeRequest(req)) {
+    case Err(msg) -> assertTrue(false, "parseRequest failed: " + msg)
+    case Ok(back) -> {
+      val t = back.typeDescriptor
+      assertTrue(match t.kind { case Opaque -> true; case _ -> false }, "opaque kind")
+      assertFalse(t.fields[0].isPublic, "field visibility")
+      assertEqual(unwrapOr(t.fields[0].defaultSource, ""), "None", "field default")
+      assertEqual(t.invariants[0].source, "name.length > 0", "invariant source")
+      assertEqual(unwrapOr(t.invariants[0].message, ""), "Name is required", "invariant message")
+      assertEqualInt(t.invariants[0].line, 7, "invariant line")
+    }
+  }
+}
+
+test "parseRequest: a schema 1 request still decodes, with no cases or invariants" {
+  val json = "{\"schemaVersion\":\"1\",\"generatorArg\":\"G.X\",\"packageName\":\"P\",\"sourceFile\":\"p.l\"," +
+    "\"typeDescriptor\":{\"kind\":\"Record\",\"name\":\"R\",\"packageName\":\"P\",\"typeParams\":[]," +
+    "\"fields\":[{\"name\":\"x\",\"fieldType\":{\"kind\":\"Primitive\",\"name\":\"Int\",\"typeArgs\":[]},\"isPublic\":true,\"annotations\":[]}]," +
+    "\"annotations\":[]}}"
+  match parseRequest(json) {
+    case Err(msg) -> assertTrue(false, "a schema 1 request decodes: " + msg)
+    case Ok(back) -> {
+      assertEqualInt(back.typeDescriptor.fields.length, 1, "one field")
+      assertEqualInt(back.typeDescriptor.cases.length, 0, "no cases")
+      assertEqualInt(back.typeDescriptor.invariants.length, 0, "no invariants")
+    }
+  }
+}
+
+test "parseRequest: an unknown kind is an error, not a silent record" {
+  val json = "{\"schemaVersion\":\"2\",\"typeDescriptor\":{\"kind\":\"Widget\",\"name\":\"W\"}}"
+  assertTrue(
+    match parseRequest(json) {
+      case Err(msg) -> msg.contains("unknown typeDescriptor.kind Widget")
+      case Ok(_) -> false
+    },
+    "unknown kind rejected"
+  )
+}
+
+test "parseRequest: same-file declarations round-trip, and declarationNamed finds one" {
+  val td = TypeDescriptor(
+    kind = Record,
+    name = "Customer",
+    packageName = "Domain",
+    typeParams = [],
+    fields = [],
+    annotations = []
+  )
+  val tier = DeclarationDescriptor(
+    name = "Tier",
+    kind = DeclaredEnum,
+    underlying = None,
+    range = None,
+    cases = [
+      CaseDescriptor(name = "Standard", annotations = [], fields = []),
+      CaseDescriptor(
+        name = "Key",
+        annotations = [AnnotationDescriptor(name = "label", args = ["\"Key account\""])],
+        fields = []
+      )
+    ]
+  )
+  val limit = DeclarationDescriptor(
+    name = "Limit",
+    kind = DeclaredDistinct,
+    underlying = Some(value = "Long"),
+    range = Some(
+      value = RangeDescriptor(
+        min = Some(value = "0"),
+        max = Some(value = "1_000"),
+        maxInclusive = false
+      )
+    ),
+    cases = []
+  )
+  val req = GeneratorRequest(
+    generatorArg = "Forms.Derive",
+    typeDescriptor = td,
+    packageName = "Domain",
+    sourceFile = "c.l",
+    declarations = [tier, limit]
+  )
+  match parseRequest(serializeRequest(req)) {
+    case Err(msg) -> assertTrue(false, "parseRequest failed: " + msg)
+    case Ok(back) -> {
+      assertEqualInt(back.declarations.length, 2, "two declarations")
+      match declarationNamed(back, "Tier") {
+        case Some(d) -> {
+          assertTrue(match d.kind { case DeclaredEnum -> true; case _ -> false }, "an enum")
+          assertEqual(d.cases[1].annotations[0].args[0], "\"Key account\"", "case annotation")
+        }
+        case None -> assertTrue(false, "Tier is found")
+      }
+      match declarationNamed(back, "Limit") {
+        case Some(d) -> match d.range {
+          case Some(r) -> {
+            assertEqual(unwrapOr(r.max, ""), "1_000", "upper bound source")
+            assertFalse(r.maxInclusive, "half-open")
+            assertEqual(unwrapOr(d.underlying, ""), "Long", "underlying type")
+          }
+          case None -> assertTrue(false, "Limit has a range")
+        }
+        case None -> assertTrue(false, "Limit is found")
+      }
+      assertTrue(match declarationNamed(back, "Other") { case None -> true; case Some(_) -> false }, "absent name")
+    }
+  }
+}
+
+test "parseRequest: a declaration of an unknown kind is skipped" {
+  val json = "{\"schemaVersion\":\"2\",\"typeDescriptor\":{\"kind\":\"Record\",\"name\":\"R\"}," +
+    "\"declarations\":[{\"name\":\"X\",\"kind\":\"Gizmo\"},{\"name\":\"A\",\"kind\":\"Alias\",\"underlying\":\"Int\",\"range\":null,\"cases\":[]}]}"
+  match parseRequest(json) {
+    case Err(msg) -> assertTrue(false, "decodes: " + msg)
+    case Ok(back) -> {
+      assertEqualInt(back.declarations.length, 1, "the unknown kind is skipped")
+      assertEqual(back.declarations[0].name, "A", "the alias is kept")
+    }
+  }
 }

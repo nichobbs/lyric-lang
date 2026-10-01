@@ -3,10 +3,10 @@
 A model-view-update UI library for Lyric: one application model for desktop
 and web (`docs/65-ui-library-sketch.md`, D137).
 
-Status: **experimental, phases U1 and U2.** The pure core, the session
-driver and the server-driven web host are implemented and tested; the
-`[layers]` checker, form and route generators, desktop and WASM hosts are
-planned (docs/65 §14).
+Status: **experimental, phases U1 to U4.** The pure core, the session
+driver, the server-driven web host, the `[layers]` checker (D149) and the
+form and route generators (D151) are implemented and tested; desktop and
+WASM hosts are planned (docs/65 §14).
 
 ## The application model
 
@@ -32,6 +32,7 @@ packages, with its tests.
 | `Ui.Core` | logic, view | `View`, `Handler`, `Step`, `UiEffect`, `mapView` |
 | `Ui.Widgets` | view | typed builders for the semantic widget set |
 | `Ui.Forms` | view | renders a `Forms.FormSchema` as fields |
+| `Ui.Routing` | logic, effects, view | URL path splitting and percent encoding for typed routes |
 | `Ui.Testing` | tests | queries over `View` values: `click`, `typeInto`, `fieldErrors`, `hasText` |
 | `Ui.Diff` | runtime | view diffing, patches, and the reference patch applier |
 | `Ui.Protocol` | runtime | the JSON wire format between session and host |
@@ -39,6 +40,28 @@ packages, with its tests.
 | `Ui.Host` | runtime | the host-independent session driver (`instance`, `Outbox`) |
 | `Ui.Host.Web` | app | server-driven web host over `lyric-web` + `lyric-ws` |
 | `Ui.Host.Assets` | runtime | the embedded TypeScript runtime and theme (generated) |
+
+## Typed routes
+
+`Ui.Routes` (`routes/`, D151) is a source generator that derives
+`parseRoute(url)` and `routeUrl(r)` from a union whose cases carry `@path`:
+
+```lyric
+@generate(Ui.Routes)
+pub union Route {
+  @path("/customers") case CustomerList
+  @path("/customers/{id:Long}") case EditCustomer(id: CustomerId)
+}
+```
+
+- **Segments:** each `{field}` segment binds a case field; `{field:Long}`
+  (or `:Int`, `:String`) names the segment's type for a distinct type
+  declared in another file.
+- **Matching:** cases are tried in order, and the query and fragment are
+  ignored.
+- **Diagnostics:** `RT001`–`RT006`.
+
+Declare `"Ui.Routes" = { path = "../lyric-ui/routes" }` beside `Lyric.Ui`.
 
 ## Widgets
 
@@ -115,4 +138,5 @@ node embed.mjs --check  # verify host_assets.l is up to date
 
 ```sh
 lyric test --manifest lyric-ui/lyric.toml
+lyric test --manifest lyric-ui/routes/lyric.toml   # the route generator
 ```

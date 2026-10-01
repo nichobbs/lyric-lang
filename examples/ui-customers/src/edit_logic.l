@@ -12,6 +12,7 @@ import Forms.{FieldError}
 import Ui.Core.{Step, UiEffect, Navigate, Confirm, Notify, ToastLevel, stay, step1, stepAll}
 import Customers.Domain.{Customer, CustomerId, CustomerDraft, CustomerField, emptyCustomerDraft, toCustomerDraft, setCustomerField, validateCustomer}
 import Std.Collections
+import Customers.Routes.{Route, routeUrl}
 
 pub union Status {
   case Loading
@@ -45,7 +46,9 @@ pub union Effect {
   case Ui(effect: UiEffect[Msg])
 }
 
-pub val listUrl: String = "/customers"
+pub func listUrl(): String {
+  return routeUrl(Route.CustomerList)
+}
 
 pub func init(id: in CustomerId): Step[Model, Effect] {
   val m = Model(
@@ -83,12 +86,12 @@ pub func update(m: in Model, msg: in Msg): Step[Model, Effect] {
       )
       val es: List[Effect] = newList()
       es.add(Ui(effect = Notify(message = "Customer saved", level = ToastLevel.Success)))
-      es.add(Ui(effect = Navigate(url = listUrl)))
+      es.add(Ui(effect = Navigate(url = listUrl())))
       stepAll(saved, es)
     }
     case Saved(Err(e)) -> stay(m.copy(status = Status.Editing, saveError = Some(value = e)))
-    case CancelClicked -> if m.dirty then step1(m, Ui(effect = Confirm(question = "Discard your changes?", onYes = DiscardConfirmed))) else step1(m, Ui(effect = Navigate(url = listUrl)))
-    case DiscardConfirmed -> step1(m.copy(dirty = false), Ui(effect = Navigate(url = listUrl)))
+    case CancelClicked -> if m.dirty then step1(m, Ui(effect = Confirm(question = "Discard your changes?", onYes = DiscardConfirmed))) else step1(m, Ui(effect = Navigate(url = listUrl())))
+    case DiscardConfirmed -> step1(m.copy(dirty = false), Ui(effect = Navigate(url = listUrl())))
   }
 }
 

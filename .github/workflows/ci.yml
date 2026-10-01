@@ -6608,9 +6608,9 @@ jobs:
           - id: ws
             deps: "auth"
           - id: forms
-            deps: ""
+            deps: "generator-sdk"
           - id: ui
-            deps: "forms jsonrpc auth resilience web ws"
+            deps: "generator-sdk forms jsonrpc auth resilience web ws"
           - id: testing
             deps: "cache mail storage feature-flags mq session"
     # NOTE (#6165 follow-up): the original per-library gate
@@ -6884,6 +6884,8 @@ jobs:
         if: matrix.id == 'forms'
         run: |
           "$LYRIC_CLI_PATH" test --manifest lyric-forms/lyric.toml
+          # The Forms.Derive source generator's own unit tests (D151).
+          "$LYRIC_CLI_PATH" test --manifest lyric-forms/derive/lyric.toml
 
       # lyric-ui (docs/65, D137): the TypeScript host runtime is type-checked,
       # its mirror-tree patch semantics tested under node, and the embedded
@@ -6902,6 +6904,8 @@ jobs:
           )
           "$LYRIC_CLI_PATH" build --manifest lyric-ui/lyric.toml
           "$LYRIC_CLI_PATH" test --manifest lyric-ui/lyric.toml
+          # The Ui.Routes source generator's own unit tests (D151).
+          "$LYRIC_CLI_PATH" test --manifest lyric-ui/routes/lyric.toml
           "$LYRIC_CLI_PATH" test --manifest examples/ui-customers/lyric.toml
           # The example driven in headless Chromium (#7836).
           bash scripts/ci/ui-browser-e2e.sh --target dotnet

@@ -295,3 +295,106 @@ test "scan directives keeps an annotation on a non-type, with its position" {
   assertEqualInt(dirs[0].line, 3, "line")
   assertEqualInt(dirs[0].column, 3, "column")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Request schema 2 (D151): descriptors built from the parsed declaration.
+// ─────────────────────────────────────────────────────────────────────────────
+test "a union's descriptor carries its cases, their fields and annotations" {
+  val src = "package App\n\n@generate(Ui.Routes)\npub union Route {\n  @path(\"/customers\") case CustomerList\n" +
+    "  @path(\"/customers/{id}\") case EditCustomer(id: CustomerId)\n}\n"
+  val dirs = scanDirectives(src, "App")
+  assertEqualInt(dirs.count, 1, "one directive")
+  val d = dirs[0].descriptorJson
+  assertTrue(d.contains("\"kind\":\"Union\""), "union kind: " + d)
+  assertTrue(
+    d.contains(
+      "{\"name\":\"CustomerList\",\"annotations\":[{\"name\":\"path\",\"args\":[\"\\\"/customers\\\"\"]}],\"fields\":[]}"
+    ),
+    "first case: " + d
+  )
+  assertTrue(d.contains("\"name\":\"EditCustomer\""), "second case")
+  assertTrue(
+    d.contains("{\"name\":\"id\",\"fieldType\":{\"kind\":\"Named\",\"name\":\"CustomerId\""),
+    "case field: " + d
+  )
+}
+
+test "an opaque type's descriptor carries field annotations, defaults and invariants" {
+  val src = "package Domain\n\n@generate(Forms.Derive)\npub opaque type Customer @projectable {\n" +
+    "  @readonly id: Int\n  @label(\"Notes\") @multiline notes: String? = None\n" +
+    "  invariant: id > 0 @message(\"Id must be positive\")\n}\n"
+  val dirs = scanDirectives(src, "Domain")
+  assertEqualInt(dirs.count, 1, "one directive")
+  assertEqual(dirs[0].typeKind, "opaque type", "kind label")
+  val d = dirs[0].descriptorJson
+  assertTrue(d.contains("\"kind\":\"Opaque\""), "opaque kind")
+  assertTrue(d.contains("{\"name\":\"projectable\",\"args\":[]}"), "the type's trailing annotation: " + d)
+  assertTrue(
+    d.contains("{\"name\":\"label\",\"args\":[\"\\\"Notes\\\"\"]},{\"name\":\"multiline\",\"args\":[]}"),
+    "field annotations: " + d
+  )
+  assertTrue(
+    d.contains("\"kind\":\"OptionType\",\"name\":\"String?\",\"typeArgs\":[\"String\"]"),
+    "T? is an option: " + d
+  )
+  assertTrue(d.contains("\"isPublic\":false"), "an opaque field is not public")
+  assertTrue(d.contains("\"default\":\"None\""), "field default")
+  assertTrue(
+    d.contains("{\"source\":\"id > 0\",\"message\":\"Id must be positive\",\"line\":7,\"column\":3}"),
+    "invariant: " + d
+  )
+}
+
+test "the request declares schema 2" {
+  val dirs = scanDirectives("package P\n@generate(A.B)\nrecord R { x: Int }\n", "P")
+  assertTrue(dirs[0].descriptorJson.contains("\"name\":\"R\""), "descriptor")
+}
+
+test "the request carries the same-file enum and range declarations the type names" {
+  val src = "package Domain\n\npub enum Tier {\n  case Standard\n  @label(\"Key account\") case Key\n}\n\n" +
+    "pub type Limit = Long range 0 ..= 1_000\n\npub type Code = Int range 1 ..< 10\n\npub enum Unused {\n  case A\n}\n\n" +
+    "@generate(Forms.Derive)\npub record Customer {\n  tier: Tier\n  limit: Limit?\n  code: Code\n}\n"
+  val dirs = scanDirectives(src, "Domain")
+  assertEqualInt(dirs.count, 1, "one directive")
+  val d = dirs[0].declarationsJson
+  assertTrue(
+    d.contains(
+      "{\"name\":\"Tier\",\"kind\":\"Enum\",\"underlying\":null,\"range\":null,\"cases\":[{\"name\":\"Standard\",\"annotations\":[],\"fields\":[]},{\"name\":\"Key\",\"annotations\":[{\"name\":\"label\",\"args\":[\"\\\"Key account\\\"\"]}],\"fields\":[]}]}"
+    ),
+    "the enum and its case annotations: " + d
+  )
+  assertTrue(
+    d.contains(
+      "{\"name\":\"Limit\",\"kind\":\"Distinct\",\"underlying\":\"Long\",\"range\":{\"min\":\"0\",\"max\":\"1_000\",\"maxInclusive\":true},\"cases\":[]}"
+    ),
+    "a closed range: " + d
+  )
+  assertTrue(d.contains("\"range\":{\"min\":\"1\",\"max\":\"10\",\"maxInclusive\":false}"), "a half-open range: " + d)
+  assertFalse(d.contains("Unused"), "a declaration the type does not name is left out")
+}
+
+test "generated imports join the package line, so the consumer's lines keep their numbers" {
+  val src = "package App // the app\n\nfunc f(): Int { 1 }\n"
+  val imports: List[String] = newList()
+  imports.add("import Forms as GenForms")
+  imports.add("import Forms.Parse as GenFormsParse")
+  val spliced = spliceGeneratedImports(src, 11, imports)
+  assertEqual(
+    spliced,
+    "package App; import Forms as GenForms; import Forms.Parse as GenFormsParse // the app\n\nfunc f(): Int { 1 }\n",
+    "spliced onto line 1"
+  )
+}
+
+test "a generic field type's source text includes its closing bracket" {
+  val dirs = scanDirectives(
+    "package P\n@generate(A.B)\nrecord R {\n  notes: Option[String]\n  m: Map[String, List[Int]]\n}\n",
+    "P"
+  )
+  val d = dirs[0].descriptorJson
+  assertTrue(
+    d.contains("\"kind\":\"OptionType\",\"name\":\"Option[String]\",\"typeArgs\":[\"String\"]"),
+    "Option: " + d
+  )
+  assertTrue(d.contains("\"name\":\"Map[String, List[Int]]\""), "nested generic: " + d)
+}

@@ -2,7 +2,10 @@
 
 **Status:** Specced in D075. The consumer side (local generator dependencies built
 and run by the compiler, X-series diagnostics) is implemented in D150; the
-diagnostics were renamed from G to X there, keeping their numbers.
+diagnostics were renamed from G to X there, keeping their numbers. Request schema 2
+(annotations, cases, invariants, same-file declarations; §3.4) is implemented in D151,
+with two first-party generators built on it: `Forms.Derive` and `Ui.Routes`
+(docs/65 §11.6, §6.1).
 
 This document defines the custom source generator API, the `@generate` annotation
 form that replaces `@derive`, the `Lyric.GeneratorSdk` contract, and the
@@ -148,6 +151,23 @@ record FieldDescriptor {
     fieldType: FieldType
     isPublic: Bool
     annotations: slice[AnnotationDescriptor]
+    defaultSource: Option[String] = None   // the default's source text (schema 2)
+}
+
+// One case of a union or enum (schema 2); a positional union field has an
+// empty name.
+record CaseDescriptor {
+    name: String
+    annotations: slice[AnnotationDescriptor]
+    fields: slice[FieldDescriptor]
+}
+
+// One `invariant:` as source text, with its `@message` (schema 2).
+record InvariantDescriptor {
+    source: String
+    message: Option[String]
+    line: Int
+    column: Int
 }
 
 // The kind of the annotated item.
@@ -156,6 +176,8 @@ enum ItemKind {
     case ExposedRecord
     case Union
     case Interface
+    case Opaque
+    case Enum
 }
 
 record TypeDescriptor {
@@ -163,8 +185,32 @@ record TypeDescriptor {
     name: String                    // unqualified name, e.g. "Order"
     packageName: String             // fully qualified package, e.g. "MyApp.Models"
     typeParams: slice[String]       // ["T", "E"] for generic types
-    fields: slice[FieldDescriptor]  // empty for unions and interfaces
+    fields: slice[FieldDescriptor]  // empty for unions, enums and interfaces
     annotations: slice[AnnotationDescriptor]
+    cases: slice[CaseDescriptor] = []            // schema 2
+    invariants: slice[InvariantDescriptor] = []  // schema 2
+}
+
+// A same-file enum, distinct type or alias the annotated type names
+// (schema 2).
+enum DeclarationKind {
+    case DeclaredEnum
+    case DeclaredDistinct
+    case DeclaredAlias
+}
+
+record RangeDescriptor {
+    min: Option[String]   // source text; None when open
+    max: Option[String]
+    maxInclusive: Bool
+}
+
+record DeclarationDescriptor {
+    name: String
+    kind: DeclarationKind
+    underlying: Option[String]
+    range: Option[RangeDescriptor]
+    cases: slice[CaseDescriptor]
 }
 
 // The full request handed to the generator entry point.
@@ -173,7 +219,11 @@ record GeneratorRequest {
     typeDescriptor: TypeDescriptor
     packageName: String           // package currently being compiled
     sourceFile: String            // source file path (for diagnostic spans)
+    declarations: slice[DeclarationDescriptor] = []   // schema 2
 }
+
+// The declaration of `name` the request carries, if any.
+pub func declarationNamed(req: GeneratorRequest, name: String): Option[DeclarationDescriptor]
 
 // Severity of a generator diagnostic.
 enum GeneratorDiagnosticSeverity {
@@ -201,6 +251,26 @@ record GeneratorResponse {
 resulting items into the file before type checking. A parse error in `lyricSource`
 produces diagnostic X0004 at the `@generate` annotation, naming the generator and the
 line within the generated code.
+
+### 3.4 Request schema versions
+
+The request carries `schemaVersion`. Schema 2 (D151) is a superset of
+schema 1:
+
+- annotations on the type, its fields and its cases, with each argument's
+  source text;
+- type parameters and field defaults;
+- union and enum cases;
+- invariants as source text, with their `@message`;
+- the `Opaque` and `Enum` kinds;
+- `declarations`.
+
+The compiler always sends schema 2, and the SDK's `parseRequest` accepts 1
+or 2. `declarations` lists the enum, distinct and alias declarations in the
+same file that the annotated type's source names. With it a generator can
+read an enum field's cases or a range type's bounds; the preprocessor runs
+on one file before type checking, so nothing outside the file is
+described.
 
 ---
 
@@ -246,8 +316,10 @@ No new F# shim is needed. The steps are:
    than 60 s is X0009.
 4. Report every diagnostic the generator returned under X0005, with its own
    code: an `Error` fails the build, a `Warning` or `Info` is printed.
-5. Check the returned `lyricSource` parses (X0004), then append it to the source text and add `additionalImports`
-   to the import list; pass the augmented source to the compiler as normal.
+5. Check the returned `lyricSource` parses (X0004), then append it to the source
+   text and append `additionalImports` to the `package` declaration
+   (`package P; import A`), so the consumer's own lines keep their numbers;
+   pass the augmented source to the compiler as normal.
 
 The compiler processes the augmented file like any other Lyric source and never
 observes the `@generate(Pkg.Name)` annotation directly.

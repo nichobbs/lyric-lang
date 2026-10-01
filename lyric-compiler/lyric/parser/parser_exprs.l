@@ -198,7 +198,10 @@ pub func parseConstraintRef(st: inout ParseState): ConstraintRef {
   val head = parseModulePath(st)
   if isPunct(peekToken(st), LBracket) {
     val args = parseTypeArgs(st)
-    val lastSpan = if args.count == 0 {
+    val closed = st.pos > 0 and isPunct(st.tokens[st.pos - 1].token, RBracket)
+    val lastSpan = if closed {
+      st.tokens[st.pos - 1].span
+    } else if args.count == 0 {
       head.span
     } else {
       match args[args.count - 1] {
@@ -303,7 +306,39 @@ pub func parseInvariantClause(st: inout ParseState): InvariantClause {
   st.quantifierAllowed = true
   val expr = parseExpr(st)
   st.quantifierAllowed = prevQuant
-  InvariantClause(expr = expr, span = joinSpans(startTok.span, expr.span))
+  // A same-line `@message("...")` names the invariant's user-facing message;
+  // no other annotation may follow an invariant.
+  var message: Option[String] = None
+  var endSpan = expr.span
+  for ann in parseSameLineTrailingAnnotations(st) {
+    val annName = modulePathJoin(ann.name.segments)
+    var text: Option[String] = None
+    if ann.args.count == 1 {
+      match ann.args[0] {
+        case ALiteral(v, _) -> match v { case AVString(s, _) -> { text = Some(value = s) }; case _ -> () }
+        case _ -> ()
+      }
+    }
+    if annName != "message" {
+      emitErr(st, "P0345", "only @message(\"...\") may follow an invariant, not @" + annName, ann.span)
+    } else if message.isSome {
+      emitErr(st, "P0345", "an invariant takes one @message", ann.span)
+    } else {
+      match text {
+        case Some(_) -> {
+          message = text
+        }
+        case None -> emitErr(
+          st,
+          "P0345",
+          "@message on an invariant takes one string, as in @message(\"Name is required\")",
+          ann.span
+        )
+      }
+    }
+    endSpan = ann.span
+  }
+  InvariantClause(expr = expr, span = joinSpans(startTok.span, endSpan), message = message)
 }
 
 pub func parseLoopInvariants(st: inout ParseState): List[InvariantClause] {
@@ -518,7 +553,13 @@ func parseAtomNonParenType(st: inout ParseState): TypeExpr {
         val path = parseModulePath(st)
         if isPunct(peekToken(st), LBracket) {
           val args = parseTypeArgs(st)
-          val lastSpan = if args.count == 0 {
+          // The span ends at the closing `]` (so the type's source text,
+          // which generators receive, is the whole application), or at the
+          // last argument when the `]` is missing.
+          val closed = st.pos > 0 and isPunct(st.tokens[st.pos - 1].token, RBracket)
+          val lastSpan = if closed {
+            st.tokens[st.pos - 1].span
+          } else if args.count == 0 {
             path.span
           } else {
             match args[args.count - 1] {

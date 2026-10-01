@@ -75,8 +75,8 @@ declare -A ECO_DEPS=(
   [lambda]="auth resilience ws web"
   [web]="auth resilience ws"
   [ws]="auth"
-  [forms]=""
-  [ui]="forms jsonrpc auth resilience web ws"
+  [forms]="generator-sdk"
+  [ui]="generator-sdk forms jsonrpc auth resilience web ws"
   [testing]="cache mail storage feature-flags mq session"
 )
 

@@ -311,6 +311,10 @@ pub union PatternKind {
 pub record InvariantClause {
   expr: Expr
   span: Span
+  // The text of a same-line `@message("...")` after the expression: the
+  // user-facing wording a form generator reports when the invariant fails
+  // (docs/65 §11.4, D138 Q-UI-004).
+  message: Option[String] = None
 }
 
 pub union ContractClause {

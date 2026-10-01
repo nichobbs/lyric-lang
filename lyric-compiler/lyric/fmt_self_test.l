@@ -2522,3 +2522,10 @@ test "labelled loops round trip" {
   assertTrue(Str.contains(once, "break inner"), "keeps the `break` target")
   assertEqual(once, format(parse(once)), "labelled loops: idempotent")
 }
+
+// An invariant's @message (docs/65 §11.4) is kept where it was written.
+test "an invariant's @message round trips" {
+  val src = "package P\nrecord R {\n  name: String\n  invariant: name.length > 0 @message(\"Name is required\")\n}\n"
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "invariant: name.length > 0 @message(\"Name is required\")"), "format keeps the message: " + acc)
+}

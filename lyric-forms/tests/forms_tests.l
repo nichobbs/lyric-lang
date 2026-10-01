@@ -186,3 +186,58 @@ test "validateRows reports every row's errors at its row path" {
     case Err(_) -> assertTrue(false, "expected Ok")
   }
 }
+
+test "requiredTextUpTo and optionalTextUpTo check presence and length" {
+  match Parse.requiredTextUpTo(Forms.fieldPath("name"), " Acme ", 4) {
+    case Ok(v) -> assertEqual(v, "Acme", "trimmed and within the limit")
+    case Err(_) -> assertTrue(false, "expected Ok")
+  }
+  match Parse.requiredTextUpTo(Forms.fieldPath("name"), "Acme Ltd", 4) {
+    case Ok(_) -> assertTrue(false, "expected TooLong")
+    case Err(e) -> assertEqual(Forms.messageOf(e, "Name"), "Name must be at most 4 characters", "too long")
+  }
+  match Parse.optionalTextUpTo(Forms.fieldPath("notes"), "   ", 4) {
+    case Ok(None) -> assertTrue(true, "blank is None")
+    case _ -> assertTrue(false, "expected Ok(None)")
+  }
+  match Parse.optionalTextUpTo(Forms.fieldPath("notes"), "hello", 4) {
+    case Ok(_) -> assertTrue(false, "expected TooLong")
+    case Err(e) -> assertEqual(Forms.messageOf(e, "Notes"), "Notes must be at most 4 characters", "optional too long")
+  }
+}
+
+test "wholeNumber, optionalWholeNumber, optionalEmail and flag" {
+  assertEqual(Forms.messageOf(err1(Parse.wholeNumber(Forms.fieldPath("n"), "")), "N"), "N is required", "empty")
+  assertEqual(
+    Forms.messageOf(err1(Parse.wholeNumber(Forms.fieldPath("n"), "1.5")), "N"),
+    "N must be a whole number",
+    "not whole"
+  )
+  match Parse.wholeNumber(Forms.fieldPath("n"), " -12 ") {
+    case Ok(v) -> assertTrue(v == -12, "parsed -12")
+    case Err(_) -> assertTrue(false, "expected Ok")
+  }
+  match Parse.optionalWholeNumber(Forms.fieldPath("n"), "") {
+    case Ok(None) -> assertTrue(true, "blank is None")
+    case _ -> assertTrue(false, "expected Ok(None)")
+  }
+  match Parse.optionalEmail(Forms.fieldPath("email"), " ") {
+    case Ok(None) -> assertTrue(true, "blank is None")
+    case _ -> assertTrue(false, "expected Ok(None)")
+  }
+  match Parse.optionalEmail(Forms.fieldPath("email"), "nope") {
+    case Err(_) -> assertTrue(true, "a malformed address is still rejected")
+    case Ok(_) -> assertTrue(false, "expected Invalid")
+  }
+  assertTrue(Parse.flag("true"), "checked")
+  assertFalse(Parse.flag("false"), "unchecked")
+  assertFalse(Parse.flag(""), "empty is unchecked")
+}
+
+test "noteError appends only errors" {
+  val errs: List[Forms.FieldError] = newList()
+  Parse.noteError(errs, Parse.requiredText(Forms.fieldPath("a"), "x"))
+  Parse.noteError(errs, Parse.requiredText(Forms.fieldPath("b"), ""))
+  assertEqualInt(errs.count, 1, "one error")
+  assertTrue(Forms.hasErrorFor(errs, Forms.fieldPath("b")), "for b")
+}

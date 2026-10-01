@@ -154,7 +154,8 @@ pub func parseRequest(json: in String): Result[GeneratorRequest, String]
 
 `parseRequest` is the inverse of `serializeRequest`, and is what
 `runGenerator` uses to decode the request it reads from stdin. It returns
-`Err` for an unsupported `schemaVersion` or a missing
+`Err` for an unsupported `schemaVersion` (it accepts `"1"` and `"2"`; the
+compiler sends `"2"`, D151) or a missing
 `typeDescriptor.name`; `runGenerator` prints that message prefixed with
 `GeneratorSdk:` and exits with code 1. Call it directly to decode a request
 in a test without a subprocess round trip.
@@ -165,12 +166,14 @@ in a test without a subprocess round trip.
 
 ```lyric
 record TypeDescriptor {
-  kind: ItemKind                      // Record, ExposedRecord, Union, Interface
+  kind: ItemKind                      // Record, ExposedRecord, Union, Interface, Opaque, Enum
   name: String                        // unqualified name, e.g. "Order"
   packageName: String                 // fully qualified, e.g. "MyApp.Models"
   typeParams: slice[String]           // ["T", "E"] for generic types
-  fields: slice[FieldDescriptor]      // empty for unions and interfaces
+  fields: slice[FieldDescriptor]      // empty for unions, enums and interfaces
   annotations: slice[AnnotationDescriptor]
+  cases: slice[CaseDescriptor] = []            // a union's or enum's cases
+  invariants: slice[InvariantDescriptor] = []  // each invariant as source text
   invariant: name.length > 0
 }
 ```
@@ -190,6 +193,46 @@ union ItemKind {
   case ExposedRecord // exposed record (host-visible)
   case Union         // union (discriminated type)
   case Interface     // interface (trait)
+  case Opaque        // opaque type
+  case Enum          // enum
+}
+```
+
+### `CaseDescriptor` and `InvariantDescriptor`
+
+```lyric
+record CaseDescriptor {
+  name: String
+  annotations: slice[AnnotationDescriptor]
+  fields: slice[FieldDescriptor]     // a positional union field has an empty name
+}
+
+record InvariantDescriptor {
+  source: String                     // the invariant's expression, as written
+  message: Option[String]            // its @message("..."), if any
+  line: Int
+  column: Int
+}
+```
+
+A generator can copy `source` into code where each field is bound to a
+local of the same name; `Forms.Derive` does this to check invariants before
+construction (docs/65 §11.4).
+
+### Same-file declarations
+
+`GeneratorRequest.declarations` lists the enum, distinct and alias
+declarations in the annotated type's file that its source names, so a
+generator can read an enum field's cases or a range type's bounds.
+`declarationNamed(req, name)` finds one:
+
+```lyric
+record DeclarationDescriptor {
+  name: String
+  kind: DeclarationKind              // DeclaredEnum, DeclaredDistinct, DeclaredAlias
+  underlying: Option[String]         // a distinct type's or alias's right-hand side
+  range: Option[RangeDescriptor]     // {min, max, maxInclusive}, bounds as source text
+  cases: slice[CaseDescriptor]       // an enum's cases
 }
 ```
 
@@ -201,6 +244,7 @@ record FieldDescriptor {
   fieldType: FieldType
   isPublic: Bool
   annotations: slice[AnnotationDescriptor]
+  defaultSource: Option[String] = None
 }
 ```
 
@@ -210,6 +254,7 @@ record FieldDescriptor {
 | `fieldType` | Type information (see below) |
 | `isPublic` | `true` if declared `pub` |
 | `annotations` | Annotations on this field |
+| `defaultSource` | The field default's source text, if it has one |
 
 ### `FieldType`
 
@@ -242,6 +287,9 @@ record AnnotationDescriptor {
   args: slice[String]    // rendered args, e.g. ["since=\"1.0\"", "Json"]
 }
 ```
+
+Each argument is its source text: `@label("Name")` has the single argument
+`"\"Name\""`, a string literal a generator can paste into generated code.
 
 ## Diagnostic severity
 

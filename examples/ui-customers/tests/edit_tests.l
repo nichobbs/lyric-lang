@@ -11,7 +11,7 @@ import Ui.Core.{View, Step, UiEffect, Navigate, Confirm, Notify}
 import Ui.Testing as UiTest
 import Ui.Session
 import Ui.Session.{Program, NavigateTo, ShowToast}
-import Customers.Domain.{Customer, CustomerId, CreditLimit, CustomerField, Tier, keyAccountMessage}
+import Customers.Domain.{Customer, CustomerId, CreditLimit, CustomerField, Tier}
 import Customers.Edit.Logic
 import Customers.Edit.Logic.{Model, Msg, Effect, Loaded, FieldEdited, SaveClicked, Saved, CancelClicked, DiscardConfirmed, LoadCustomer, SaveCustomer, Ui, Status}
 import Customers.Edit.View
@@ -81,15 +81,15 @@ test "errors clear as the user fixes them after a failed save" {
 }
 
 test "the key-account rule is a form-level message, not a crash" {
-  val m = edit(loaded(), CustomerField.TierField, "key")
+  val m = edit(loaded(), CustomerField.TierField, "Key")
   val s = Logic.update(m, SaveClicked)
   assertEqualInt(s.effects.count, 0, "no save")
   assertEqualInt(Forms.formErrors(s.model.errors).count, 1, "one form error")
-  assertTrue(UiTest.hasText(View.view(s.model), keyAccountMessage), "banner shown")
+  assertTrue(UiTest.hasText(View.view(s.model), "Key accounts need a credit limit of at least 10000"), "banner shown")
 }
 
 test "a valid save emits SaveCustomer with the parsed customer" {
-  val m = edit(edit(loaded(), CustomerField.CreditLimitField, " 12000 "), CustomerField.TierField, "key")
+  val m = edit(edit(loaded(), CustomerField.CreditLimitField, " 12000 "), CustomerField.TierField, "Key")
   val s = Logic.update(m, SaveClicked)
   assertEqualInt(s.effects.count, 1, "one effect")
   match s.effects[0] {

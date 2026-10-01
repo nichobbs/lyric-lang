@@ -83,16 +83,50 @@ feedback in the browser); the validate function remains authoritative.
 | `TooLong` | `Name must be at most 100 characters` |
 | `CrossField` | the message as given |
 
-## Future
+## Deriving a form
 
-`@generate(Forms.Derive)` (docs/65 §11.2, phase U4) will derive the draft
-record, field enum, schema, `toDraft`, `setField` and `validate` from a
-domain type, including range subtypes and invariants.
-`examples/ui-customers/src/domain.l` holds the hand-written equivalent,
-which is the generator's golden output.
+`Forms.Derive` (`derive/`, D151) is a source generator that writes the
+draft record, field enum, schema, `emptyTDraft`/`toTDraft`, value/set
+accessors and `validateT` for a record or opaque type. Declare it beside
+this library and annotate the type:
+
+```toml
+[dependencies]
+"Lyric.Forms"  = { path = "../lyric-forms" }
+"Forms.Derive" = { path = "../lyric-forms/derive" }
+```
+
+```lyric
+@generate(Forms.Derive)
+pub record Customer {
+  @readonly id: CustomerId
+  @maxLength(100) name: String
+  @email email: String
+  creditLimit: CreditLimit          // a same-file range type: number input with bounds
+  tier: Tier                        // a same-file enum: select
+  @multiline @maxLength(2000) notes: Option[String]
+  invariant: keyAccountLimitOk(tier, creditLimit) @message("Key accounts need a credit limit of at least 10000")
+}
+```
+
+**Field types:**
+
+- `String`, `Bool`, `Int`, `Long`, and `Option` of each;
+- same-file enum, distinct and range types;
+- any other type, with `@form_parse(f)` and `@form_format(g)`.
+
+**Annotations:** `@readonly`, `@label("...")`, `@multiline`, `@email` and
+`@maxLength(n)`. An enum case takes `@label` for its choice label.
+
+**`validateT`:** it reports every field error at once, then checks each
+invariant and reports a failure as `CrossField(@message)` before
+constructing. Diagnostics are `FD001`–`FD006`. Nested records, `List`
+fields and dates are not derived yet (#7907). `examples/ui-customers`
+derives its form this way.
 
 ## Tests
 
 ```sh
 lyric test --manifest lyric-forms/lyric.toml
+lyric test --manifest lyric-forms/derive/lyric.toml   # the generator
 ```

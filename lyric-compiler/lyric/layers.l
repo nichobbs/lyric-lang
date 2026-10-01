@@ -102,8 +102,10 @@ func uiRule(name: in String, layers: in List[String], allow: in List[String], al
 
 /// The `ui` preset (docs/65 §5.2).  Every layer is closed to the `Ui.*`
 /// packages except the ones it names: logic and effects see only
-/// `Ui.Core`'s data types, and only views build widgets.  A view may also
-/// import another view, which an embedded component needs (§6.2).
+/// `Ui.Core`'s data types and `Ui.Routing`'s URL helpers (which a
+/// `@generate(Ui.Routes)` route union calls, D151), and only views build
+/// widgets.  A view may also import another view, which an embedded
+/// component needs (§6.2).
 pub func presetRules(preset: in String): List[LayerRule] {
   val rules: List[LayerRule] = newList()
   if preset != "ui" {
@@ -111,12 +113,17 @@ pub func presetRules(preset: in String): List[LayerRule] {
   }
   rules.add(uiRule("domain", names2("domain", "pure"), newList(), true))
   rules.add(uiRule("ports", names2("domain", "pure"), newList(), true))
-  rules.add(uiRule("logic", names3("domain", "logic", "pure"), names1("Ui.Core"), false))
+  rules.add(uiRule("logic", names3("domain", "logic", "pure"), names2("Ui.Core", "Ui.Routing"), false))
   val effects = names4("domain", "logic", "ports", "pure")
   effects.add("io")
-  rules.add(uiRule("effects", effects, names1("Ui.Core"), true))
+  rules.add(uiRule("effects", effects, names2("Ui.Core", "Ui.Routing"), true))
   rules.add(
-    uiRule("view", names4("domain", "logic", "view", "pure"), names3("Ui.Core", "Ui.Widgets", "Ui.Forms"), false)
+    uiRule(
+      "view",
+      names4("domain", "logic", "view", "pure"),
+      names4("Ui.Core", "Ui.Widgets", "Ui.Forms", "Ui.Routing"),
+      false
+    )
   )
   rules
 }
