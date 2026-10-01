@@ -481,6 +481,24 @@ environment variable being present or stable.
 
 ---
 
+### `Std.FfiHost` — `lyric-stdlib/std/_kernel/ffi_host.l`
+
+```
+@axiom("malloc(3) and free(3) conform to their C standard contracts")
+```
+
+**C surface**: `malloc` and `free` from the platform C library, bound with
+`@library("c")` (D158): P/Invoke on .NET, a Foreign Function & Memory
+downcall on the JVM, a direct call on native. Backs `Std.Ffi.allocate` /
+`release` and the C strings built on them (D161). `Std.Ffi.allocate`
+checks for a null result itself, so the axiom relies only on `malloc`
+returning null or a block of at least the requested size, and on `free`
+accepting a pointer `malloc` returned (or null) exactly once.
+
+**Review**: Stable.
+
+---
+
 ## 10. Serialization
 
 ### `Std.JsonHost` — `lyric-stdlib/std/_kernel/json_host.l`
@@ -882,7 +900,8 @@ All are provisional pending weaver integration.
 | `Std.Jvm`                | `jvm.l`                      | 0      | 1           |
 | `Std.JvmExceptionHost`   | `jvm_exception.l`            | 0      | 1           |
 | `Std.Task`               | `task.l`                     | 1      | 0           |
-| **Total**                |                              | **29** | **2**       |
+| `Std.FfiHost`            | `ffi_host.l`                 | 1      | 0           |
+| **Total**                |                              | **30** | **2**       |
 
 ### JVM kernel (`lyric-stdlib/std/_kernel_jvm/`)
 
@@ -921,9 +940,12 @@ recorded in the §19 baseline.
 
 ### Combined total
 
-.NET (29 stable + 2 provisional = 31) + JVM (24 stable + 0 provisional =
-24) = **55** `@axiom` annotations covering the entire extern boundary
-across both targets.  `Std.StringHost` (both targets) joined the boundary
+.NET (30 stable + 2 provisional = 32) + JVM (24 stable + 0 provisional =
+24) = **56** `@axiom` annotations covering the entire extern boundary
+across both targets.  `Std.FfiHost` (D161) binds the C library's `malloc`
+and `free` through `@library("c")`; it has no `_kernel_jvm/` or
+`_kernel_native/` twin because the one file lowers on every target (D158),
+so it is counted once, in the .NET table.  `Std.StringHost` (both targets) joined the boundary
 with `Std.String.StringBuilder` and `indexOfFrom` (#7257, #7258).  `Std.TlsHost` (both targets) joined the boundary
 with the `Std.Tls` PEM certificate/key loading module (docs/61 phase 1,
 epic #5874).  The JVM `Std.HttpHost` axiom was re-scoped from the
@@ -979,6 +1001,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `dotnet` | `Std.EnvironmentHost` | `environment_host.l` | System.Environment operations conform to their documented .NET contracts |
 | `dotnet` | `Std.EnvironmentHost` | `environment_host.l` | System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory conforms to its documented .NET contract |
 | `dotnet` | `Std.EnvironmentHost` | `environment_host.l` | System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier conforms to its documented .NET contract |
+| `dotnet` | `Std.FfiHost` | `ffi_host.l` | malloc(3) and free(3) conform to their C standard contracts |
 | `dotnet` | `Std.FileHost` | `file_host.l` | System.IO.File / Directory operations conform to their documented .NET contracts |
 | `dotnet` | `Std.FormatHost` | `format_host.l` | System.Globalization.CultureInfo and System.String/Int/Double formatting operations conform to their documented .NET contracts |
 | `dotnet` | `Std.HashHost` | `hash_host.l` | System.Security.Cryptography.SHA1.HashData + System.Security.Cryptography.SHA256.HashData + System.Security.Cryptography.SHA512.HashData + System.Convert.ToHexString conform to documented .NET semantics and are pure functions of their input; SHA512.HashData(Stream) over System.IO.File.OpenRead digests the file's current contents |

@@ -1199,6 +1199,9 @@ func nativeIntrinsicCallType(
     case EPath(path) -> if path.segments.count == 1 { path.segments[0] } else { "" }
     case _ -> ""
   }
+  if name == "nativeLoadByte" or name == "nativeStoreByte" {
+    return nativeByteAccessType(sc, tbl, sigs, diag, name, args, span)
+  }
   if name != "nativeNullPtr" and name != "nativeAddrOf" and name != "NativeWeak" {
     return None
   }
@@ -1223,6 +1226,49 @@ func nativeIntrinsicCallType(
     return nativeIntrinsicType(tbl, "NativePtr", argTypes[0])
   }
   nativeIntrinsicType(tbl, "NativeWeak", argTypes[0])
+}
+
+// `nativeLoadByte(p, offset): Byte` and `nativeStoreByte(p, offset, value)`
+// read and write the byte at `p + offset` in C memory, on every target
+// (D161): `p` is a `NativePtr[Byte]`, `offset` an `Int` or `Long`, `value`
+// a `Byte`.  Placement is the mode checker's N0100, as for `nativeNullPtr`.
+func nativeByteAccessType(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  name: in String,
+  args: in List[CallArg],
+  span: in Span,
+): Option[Type] {
+  val arity = if name == "nativeLoadByte" { 2 } else { 3 }
+  val argTypes: List[Type] = newList()
+  for a in args {
+    argTypes.add(inferExpr(sc, tbl, sigs, diag, callArgExpr(a)))
+  }
+  if args.count != arity {
+    diag.add(errorDiagnostic("T0042", "expected " + toString(arity) + " argument(s), got " + toString(args.count), span))
+    return Some(value = TyError)
+  }
+  val ptrTy = match nativeIntrinsicType(tbl, "NativePtr", TyPrim(pt = PtByte)) {
+    case Some(t) -> t
+    case None -> return None
+  }
+  if not argSatisfiesParam(tbl, ptrTy, argTypes[0]) {
+    diag.add(
+      errorDiagnostic("T0043", name + ": the pointer argument must be a NativePtr[Byte]", callArgExpr(args[0]).span)
+    )
+  }
+  if not argSatisfiesParam(tbl, TyPrim(pt = PtLong), argTypes[1]) {
+    diag.add(errorDiagnostic("T0043", name + ": the offset must be an Int or a Long", callArgExpr(args[1]).span))
+  }
+  if name == "nativeStoreByte" {
+    if not argSatisfiesParam(tbl, TyPrim(pt = PtByte), argTypes[2]) {
+      diag.add(errorDiagnostic("T0043", name + ": the value must be a Byte", callArgExpr(args[2]).span))
+    }
+    return Some(value = TyPrim(pt = PtUnit))
+  }
+  Some(value = TyPrim(pt = PtByte))
 }
 
 // `w.upgrade()` on a `w: NativeWeak[T]`: `Option[T]`, `Some` while the

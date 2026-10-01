@@ -601,10 +601,21 @@ stage1() {
   # what stage 2 and stage-selfhosted-stdlib.sh build, eliminating the
   # smoke/full divergence.  The not-yet-bundleable HTTP/async packages (#4030)
   # are excluded from the manifest and emitted per-package separately.
+  #
+  # A package marked `# seed: current` in the manifest uses a language
+  # feature newer than the released seed, so the seed's bundle leaves it
+  # out.  The compiler does not import such a package; the bundle the
+  # stage-1 compiler builds (stage 2, scripts/stage-selfhosted-stdlib.sh)
+  # carries it.  The filtered manifest sits beside the real one because
+  # package paths are relative to the manifest.
   info "  compiling stdlib bundle"
-  invoke_stage0 build --manifest "$STDLIB_DIR/lyric.full.toml" \
-    -o "$STAGE1_DIR/Lyric.Stdlib.dll" --target dotnet --no-restore 2>&1 || \
-    die "stdlib bundle build failed"
+  local seed_manifest="$STDLIB_DIR/.lyric.seed.toml"
+  grep -v '# seed: current$' "$STDLIB_DIR/lyric.full.toml" > "$seed_manifest"
+  local seed_rc=0
+  invoke_stage0 build --manifest "$seed_manifest" \
+    -o "$STAGE1_DIR/Lyric.Stdlib.dll" --target dotnet --no-restore 2>&1 || seed_rc=$?
+  rm -f "$seed_manifest"
+  [[ "$seed_rc" -eq 0 ]] || die "stdlib bundle build failed"
 
   if [[ "$SKIP_CLI_BUNDLE" != "1" ]]; then
     stage1_cli_bundle

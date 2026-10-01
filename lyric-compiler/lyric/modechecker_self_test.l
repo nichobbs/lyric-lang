@@ -561,6 +561,19 @@ test "n0100 nativenullptr inside unsafe_ffi admitted" {
   assertTrue(not (hasDiagCode(result, "N0100")), "nativenullptr-positive: no N0100")
 }
 
+test "n0100 byte intrinsics outside unsafe_ffi rejected (D161)" {
+  val src = "package P\nextern func cMalloc(n: Long): NativePtr[Byte] = \"malloc\"\nfunc f(): Int {\n  nativeStoreByte(cMalloc(1), 0, 1u8)\n  nativeLoadByte(cMalloc(1), 0).toInt()\n}\n"
+  val result = parseCheck(src)
+  assertTrue(hasDiagCode(result, "N0100"), "outside @unsafe_ffi: N0100")
+  assertEqualInt(diagCount(result), 2, "one N0100 each for the store and the load")
+}
+
+test "n0100 byte intrinsics inside unsafe_ffi admitted (D161)" {
+  val src = "package P\nextern func cMalloc(n: Long): NativePtr[Byte] = \"malloc\"\n@unsafe_ffi\nfunc f(): Int {\n  nativeStoreByte(cMalloc(1), 0, 1u8)\n  nativeLoadByte(cMalloc(1), 0).toInt()\n}\n"
+  val result = parseCheck(src)
+  assertTrue(not (hasDiagCode(result, "N0100")), "inside @unsafe_ffi: no N0100")
+}
+
 test "n0100 nativeaddrof of a capture inside a lambda rejected" {
   // An enclosing function's var reaches a lambda as a by-value capture
   // (a closure heap field), not a stack slot (#4734).

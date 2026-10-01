@@ -4,7 +4,8 @@
 U2 (server-driven web host and TypeScript runtime), U3 (enforced
 `[layers]`, D149) and U4 (`Forms.Derive` and `Ui.Routes`, D151) are
 implemented, as is U6 (prerendered first paint, D152; `Lazy` subtrees,
-D153; the data grid, D154); see
+D153; the data grid, D154) and U5 on MSIL and JVM (the desktop webview
+host, D162); see
 §14 for the phase plan and §15 for what the first implementation surfaced
 and how each finding was resolved. The open questions Q-UI-001 to Q-UI-011
 are resolved (§16): Q-UI-011 by the compiler fixes of §15, the others by
@@ -573,17 +574,47 @@ several proxies append to it) and `ws` otherwise;
 `HostConfig.publicWsUrl` overrides it for a proxy that routes the socket
 to a different host or path.
 Typing is debounced by the host (`input` events coalesce per frame).
+`HostConfig.accessToken`, when set, admits only clients that present it:
+the first page request carries it as the `_access` query parameter, which
+the host trades for an `HttpOnly`, `SameSite=Lax` cookie and a redirect to
+the same URL without it; later pages and the session socket need the cookie
+and get `403` without it (D162). The desktop host (§10.2) always sets it.
 
 ### 10.2 Desktop webview (second host)
 
-The same protocol over an in-process channel to a system webview (WebView2,
-WKWebView, WebKitGTK) through the C `webview` library. The native backend's
-FFI and callback trampolines (N4) cover the binding; MSIL uses the same C
-library. The JVM desktop host binds the same C library, through the Java
-foreign function API (JDK 22+) or JNI while the JVM baseline is JDK 21;
-JavaFX `WebView` was rejected as a separate dependency with a lagging engine
-(D138, Q-UI-008). `lyric-ui` itself builds and passes its tests on JVM
-(#7378, D139); the web host serves browsers from either runtime.
+`Ui.Host.Desktop` shows an application in a window of the system webview
+(WebKitGTK on Linux, WebKit on macOS, WebView2 on Windows) through the C
+`webview` library (D162). The window shows the web host of §10.1, served on
+the loopback interface: the same shell, runtime and protocol, so a screen
+behaves the same in a browser and in a window.
+
+```lyric
+func main(): Unit {
+  Desktop.run(Desktop.defaultConfig("Customers"), route)
+}
+```
+
+- The page server listens on `127.0.0.1`, on a free port by default, and
+  admits only the window: each run makes a random access token that only
+  the window is given, traded on the first request for an `HttpOnly`,
+  `SameSite=Lax` cookie (`HostConfig.accessToken`, §10.1).
+- The window opens at once on a local loader page that switches to the
+  application when the server answers.
+- Closing the window, or calling `Desktop.close()` from anywhere (a
+  "Quit" effect), ends the program.
+- The C calls are only create, title, size, HTML, run, terminate and
+  destroy: no callback crosses the C boundary, so .NET (P/Invoke) and the
+  JVM (Foreign Function & Memory) bind it through `@library` (D158), and
+  C strings come from `Std.Ffi` (D161). JavaFX `WebView` was rejected as a
+  separate dependency with a lagging engine (D138, Q-UI-008).
+- The `webview` library (0.12.0) is installed by the user;
+  `scripts/ci/install-webview.sh` builds the pinned release on Linux.
+- An in-process channel (`webview_bind`/`webview_eval`) would save the
+  loopback hop; it needs C callbacks on the managed targets and is not
+  required for correctness.
+- Native: the host is the web host, so it follows `lyric-web` and `lyric-ws`
+  to the native target (and native generic protected types, #7864), tracked
+  in #7990. A renderer that draws natively is docs/67 G10 (#7949).
 
 ### 10.3 The TypeScript runtime
 
@@ -892,7 +923,7 @@ custom properties (design tokens) with light and dark sets.
 | U2 | Server-driven web host (`Ui.Host`) + TS runtime; example runs in a browser | Implemented (MSIL, JVM); host and runtime covered by `lyric test` and `node --test`, and the example by a Playwright browser test on both targets (#7836) |
 | U3 | `[layers]` compiler feature, stdlib `@pure`/`@io` classification, `Y000x` diagnostics | Implemented (D149, every target); `examples/ui-customers` builds under the `ui` preset |
 | U4 | `@generate(Forms.Derive)` and `@generate(Ui.Routes)` | Implemented (D151); request schema 2; the example derives its form and routes on both targets |
-| U5 | Desktop webview host (native + MSIL) | Planned; its C-library prerequisite shipped (D158) |
+| U5 | Desktop webview host | Implemented on MSIL and JVM (D162, over D158/D161): a webview window on the loopback web host, tested in a real window under Xvfb on both targets; native follows `lyric-web`/`lyric-ws` to native (§10.2) |
 | U6 | Data grid, `Lazy`, SSR first paint | Implemented on both targets: SSR first paint (D152), `Lazy` (D153), the data grid (D154) |
 | U7 | Client WASM host | Depends on `docs/35` |
 
@@ -1101,11 +1132,9 @@ are designs recorded for the phase that needs them.
 - **Q-UI-007** *Resolved (implemented):* session ids, detach on disconnect,
   resume within `reconnectGraceMs`, `maxSessions` with eviction of detached
   sessions, input-version pruning, per-session lock (§8, §9.5, §10.1).
-- **Q-UI-008** *Resolved (design, U5):* the JVM desktop host binds the C
-  `webview` library, not JavaFX (§10.2). D158 provides the binding
-  mechanism on both managed targets: `@library("webview") extern func`
-  lowers to P/Invoke on .NET and a Foreign Function & Memory downcall on
-  the JVM (JDK 22).
+- **Q-UI-008** *Resolved (implemented, D162):* the JVM desktop host binds
+  the C `webview` library, not JavaFX (§10.2), through `@library` (D158),
+  as the .NET host does.
 - **Q-UI-009** *Resolved (implemented):* `FieldPath` and `DraftRows` with
   stable row ids (§11.7).
 - **Q-UI-010** *Resolved (design):* generate the runtime's widget schema,

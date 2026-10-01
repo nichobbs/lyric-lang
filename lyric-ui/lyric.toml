@@ -29,6 +29,8 @@ output_assembly = "Ui.dll"
 "Ui.Host"        = "src/host.l"
 "Ui.Host.Assets" = "src/host_assets.l"
 "Ui.Host.Web"    = "src/host_web.l"
+"Ui.Kernel.Webview" = "src/_kernel/webview.l"
+"Ui.Host.Desktop"   = "src/host_desktop.l"
 
 [project.tests]
 "Ui.CoreTests"     = "tests/core_tests.l"
@@ -40,3 +42,4 @@ output_assembly = "Ui.dll"
 "Ui.HtmlTests"     = "tests/html_tests.l"
 "Ui.LazyTests"     = "tests/lazy_tests.l"
 "Ui.GridTests"     = "tests/grid_tests.l"
+"Ui.DesktopTests"  = "tests/desktop_tests.l"

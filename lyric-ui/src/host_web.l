@@ -27,6 +27,18 @@
 //! new browser gets a "server busy" page instead.  Expired sessions are
 //! removed whenever a session is created or resumed.
 //!
+//! A host whose port other people or programs can reach but should not use
+//! sets `accessToken` (the desktop host, `Ui.Host.Desktop`, always does).  A
+//! page request must then carry the token, once, as the `_access` query
+//! parameter, which the host trades for an `HttpOnly`, `SameSite=Lax`
+//! cookie and a redirect to the same URL without it; later requests and
+//! the session socket must present the cookie.  `Lax`, not `Strict`: the
+//! first request comes from a page of another origin (the desktop host's
+//! loader), and a browser withholds a `Strict` cookie from the redirect
+//! that ends such a navigation.  Anything else gets `403`
+//! (a socket is closed as soon as it opens).  The runtime assets are not
+//! guarded: they are the same for every application.
+//!
 //! First paint does not wait for the socket (D152, docs/65 §13.4).  With
 //! `prerender` on, a page request starts the session for its URL there and
 //! then: the shell carries the first view as HTML (`Ui.Html`) and the new
@@ -43,6 +55,7 @@ import Std.Collections
 import Std.Console
 import Std.String
 import Std.Encoding as Enc
+import Std.Hash as Hash
 import Std.SecureRandom as SecureRandom
 import Std.Time as Time
 import Web
@@ -60,7 +73,8 @@ import Ui.Routing
 /// empty it is derived from the request (see `sessionSocketUrl`).
 /// `reconnectGraceMs` is how long a disconnected session can be resumed;
 /// `maxSessions` bounds the sessions held in memory.  `prerender` renders
-/// each page's first view into the shell (D152).
+/// each page's first view into the shell (D152).  `accessToken`, when not
+/// empty, admits only clients that present it (module header).
 pub record HostConfig {
   title: String
   host: String
@@ -70,11 +84,12 @@ pub record HostConfig {
   reconnectGraceMs: Long
   maxSessions: Int
   prerender: Bool = true
+  accessToken: String = ""
 }
 
 /// Serve on all interfaces on port 8080, with the session socket at
 /// `/_ui`; resume a disconnected session for two minutes; hold at most
-/// 10000 sessions; prerender each page's first view.
+/// 10000 sessions; prerender each page's first view; admit every client.
 pub func defaultConfig(title: in String): HostConfig {
   return HostConfig(
     title = title,
@@ -113,7 +128,8 @@ pub func router(cfg: in HostConfig, route: in (String) -> Option[Instance]): Res
     sessions = SessionRegistry(),
     registry = regs,
     graceMs = cfg.reconnectGraceMs,
-    maxSessions = cfg.maxSessions
+    maxSessions = cfg.maxSessions,
+    accessToken = cfg.accessToken
   )
   // Page and socket share one origin, so the default same-origin handshake
   // check admits the page and refuses every other site (#7243).
@@ -149,7 +165,8 @@ pub func router(cfg: in HostConfig, route: in (String) -> Option[Instance]): Res
     wsPath = cfg.wsPath,
     publicWsUrl = cfg.publicWsUrl,
     socket = socket,
-    prerender = cfg.prerender
+    prerender = cfg.prerender,
+    accessToken = cfg.accessToken
   )
   r = Web.addGet(r, "/", shell)
   r = Web.addGet(r, "/{*path}", shell)
@@ -175,10 +192,17 @@ record Shell {
   publicWsUrl: String
   socket: UiSocket
   prerender: Bool
+  accessToken: String
 }
 
 impl Handler for Shell {
   func handle(req: in Request): Response {
+    if self.accessToken.length > 0 {
+      match refusePage(req, self.accessToken) {
+        case Some(refusal) -> return refusal
+        case None -> ()
+      }
+    }
     val hostHeader = match Web.header(req, "host") { case Some(h) -> h; case None -> "localhost" }
     val wsUrl = sessionSocketUrl(self.publicWsUrl, Web.header(req, "x-forwarded-proto"), hostHeader, self.wsPath)
     if not self.prerender {
@@ -193,6 +217,79 @@ impl Handler for Shell {
       "no-store"
     )
   }
+}
+
+/// The name of the cookie that carries the access token.
+pub val accessCookieName: String = "lyric_ui_access"
+
+/// The query parameter that carries the access token on the first request.
+pub val accessQueryName: String = "_access"
+
+// `None` when `req` presents `token` in the access cookie.  Otherwise the
+// response to send instead of the page: a redirect that sets the cookie
+// when the query carries the token, `403` when nothing does.
+func refusePage(req: in Request, token: in String): Option[Response] {
+  if presentsAccessCookie(Web.header(req, "cookie"), token) {
+    return None
+  }
+  match mapGet(req.queryParams, accessQueryName) {
+    case Some(given) -> if tokensEqual(given, token) {
+      val rest: Map[String, String] = newMap()
+      for k in mapKeys(req.queryParams) {
+        if k != accessQueryName {
+          match mapGet(req.queryParams, k) {
+            case Some(v) -> rest.add(k, v)
+            case None -> ()
+          }
+        }
+      }
+      val redirect = Web.withResponseHeader(Web.text(303, ""), "Location", pageUrl(localPath(req.path), rest))
+      return Some(
+        value = Web.withResponseHeader(
+          redirect,
+          "Set-Cookie",
+          accessCookieName + "=" + token + "; Path=/; HttpOnly; SameSite=Lax"
+        )
+      )
+    }
+    case None -> ()
+  }
+  return Some(value = Web.text(403, "Forbidden"))
+}
+
+/// `path` when it is a path on this host, otherwise `/`.  A redirect's
+/// `Location` is built from the request path, and one starting `//` or `/\`
+/// is a protocol-relative URL a browser resolves against another host.
+pub func localPath(path: in String): String {
+  if startsWith(path, "/") and not startsWith(path, "//") and not startsWith(path, "/\\") {
+    return path
+  }
+  return "/"
+}
+
+/// Whether a `Cookie` header value carries `token` in the access cookie.
+pub func presentsAccessCookie(cookieHeader: in Option[String], token: in String): Bool {
+  match cookieHeader {
+    case Some(h) -> {
+      for part in split(h, ";") {
+        val pair = trim(part)
+        match indexOf(pair, "=") {
+          case Some(eq) -> if substring(pair, 0, eq) == accessCookieName and tokensEqual(substring(pair, eq + 1, pair.length - eq - 1), token) {
+            return true
+          }
+          case None -> ()
+        }
+      }
+      return false
+    }
+    case None -> return false
+  }
+}
+
+// Compares in time that does not depend on where the strings differ, so the
+// token cannot be found a character at a time.
+func tokensEqual(a: in String, b: in String): Bool {
+  return Hash.constantTimeEquals(Enc.encodeUtf8(a), Enc.encodeUtf8(b))
 }
 
 /// A prerendered first view and the session it belongs to; both empty when
@@ -368,10 +465,20 @@ record UiSocket {
   registry: RegistryCell
   graceMs: Long
   maxSessions: Int
+  accessToken: String
 }
 
 impl WsHandler for UiSocket {
   func onOpen(ctx: in WsContext): Result[Unit, WsError] {
+    if self.accessToken.length > 0 and not presentsAccessCookie(mapGet(ctx.headers, "cookie"), self.accessToken) {
+      return Err(
+        error = WsError(
+          message = "the session socket was opened without the access token",
+          code = "ACCESS_DENIED",
+          connectionId = ctx.connectionId
+        )
+      )
+    }
     return Ok(value = ())
   }
 

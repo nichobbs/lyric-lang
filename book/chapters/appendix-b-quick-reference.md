@@ -768,6 +768,7 @@ Y0006 unknown layer/preset, Y0007 mutable module-level state, Y0008 protected
 | `Std.Char` | Unicode character utilities | `isLetter`, `isDigit`, `isWhiteSpace`, `isUpper`, `isLower`, `toUpper`, `toLower`, `toInt`, `fromInt` (BMP scalar values only), `tryFromInt`, `digitValue`, `hexDigitValue` |
 | `Std.Format` | Number and string formatting | `toHexString`, `toHexStringUpper`, `formatFixed`, `zeroPad`, `hexPad`, `padLeft`, `padRight` |
 | `Std.Encoding` | Byte-level encoding | `encodeBase64`, `tryDecodeBase64`, `encodeHex`, `tryDecodeHex`, `encodeUtf8`, `tryDecodeUtf8` |
+| `Std.Ffi` | C memory and C strings for `@library` bindings (all `@unsafe_ffi`, D161) | `allocate`, `release`, `toCString`, `tryFromCString` |
 | `Std.Uuid` | UUID generation and parsing | `Uuid`, `newUuid`, `nilUuid`, `uuidToString`, `parseUuidOpt` |
 | `Std.Stream` | I/O stream interfaces | `ByteReader`, `ByteWriter`, `TextReader`, `TextWriter`, `Closable` |
 | `Std.Time` | Instants and durations | `Instant`, `Duration`, `now`, `toIsoString`, ISO-8601 parsing, `tryFromEpochMillis`/`tryFromEpochSeconds` |
@@ -963,6 +964,7 @@ lyric build --target native <file.l>   # writes a self-contained POSIX executabl
                                        # defer (normal-exit paths: fall-off, return,
                                        # break, continue); raw FFI
                                        # (NativePtr[T], nativeAddrOf, nativeNullPtr,
+                                       # nativeLoadByte/nativeStoreByte,
                                        # closure-as-C-callback trampolines) only in @unsafe_ffi
                                        # functions / _kernel_native packages (N0100).
                                        # Not yet lowered (build fails naming the construct):

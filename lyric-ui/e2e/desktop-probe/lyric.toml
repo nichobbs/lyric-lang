@@ -1,0 +1,30 @@
+# lyric-ui/e2e/desktop-probe — the desktop host end to end (docs/65 §10.2).
+#
+# Opens a real window (run under a display, or `xvfb-run` in CI) whose one
+# screen holds a data grid with no rows loaded.  When the window's runtime
+# has connected its session socket and rendered the grid, it reports the
+# grid's viewport; the screen's effect for that prints a marker line and
+# closes the window, which ends the program with exit status 0.  Driven by
+# scripts/ci/ui-desktop-e2e.sh.
+
+[package]
+name        = "Lyric.Ui.DesktopProbe"
+version     = "0.1.0"
+description = "End-to-end probe for the lyric-ui desktop host."
+authors     = ["Lyric authors"]
+license     = "MIT"
+
+[project]
+name            = "Lyric.Ui.DesktopProbe"
+output          = "single"
+output_assembly = "DesktopProbe.dll"
+
+[project.packages]
+"DesktopProbe" = "src/main.l"
+
+[dependencies]
+"Lyric.Forms" = { path = "../../../lyric-forms" }
+"Lyric.Ui"    = { path = "../.." }
+"Lyric.Web"   = { path = "../../../lyric-web" }
+"Lyric.Ws"    = { path = "../../../lyric-ws" }
+"Lyric.Auth"  = { path = "../../../lyric-auth" }

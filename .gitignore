@@ -117,3 +117,5 @@ lyric-rt/build/
 *.runtimeconfig.json
 worktrees/
 .worktrees/
+# scripts/bootstrap.sh's filtered seed manifest (removed after each run).
+lyric-stdlib/.lyric.seed.toml

@@ -3821,6 +3821,9 @@ func lowerCallEx(
         if n == "println" and args.count <= 1 and not hasFuncOverrideNative(ctx, n, args.count) {
           return lowerPreludePrintln(ctx, insns, args, line)
         }
+        if (n == "nativeLoadByte" and args.count == 2) or (n == "nativeStoreByte" and args.count == 3) {
+          return lowerNativeByteAccess(ctx, insns, n, args)
+        }
         if n == "nativeNullPtr" and args.count == 0 {
           // The C NULL pointer as a NativePtr[Byte] (N4.5) — e.g. the
           // attr argument of pthread_create.  Placement is the mode
@@ -6386,6 +6389,33 @@ func exprAsTypeExpr(e: in Expr): TypeExpr {
     }
     case EParen(inner) -> exprAsTypeExpr(inner)
     case _ -> panic("Lyric.LlvmCodegen: this type argument form is not supported for --target native")
+  }
+}
+
+/// `nativeLoadByte(p, offset)` / `nativeStoreByte(p, offset, value)`
+/// (D161): the byte at `p + offset`, through an `i8` GEP.
+func lowerNativeByteAccess(ctx: in Ctx, insns: in List[NInsn], name: in String, args: in List[CallArg]): NVal {
+  val bytePtr = NPtr(pointee = NI8)
+  val p = lowerExprExpecting(ctx, insns, nativeCallArgExpr(args[0]), bytePtr)
+  val off = lowerExprExpecting(ctx, insns, nativeCallArgExpr(args[1]), NI64)
+  val addr = freshTmp(ctx)
+  val idx: List[NArg] = newList()
+  idx.add(NArg(ty = NI64, value = off.value))
+  insns.add(NGEP(dest = addr, ty = NI8, ptr = p.value, indices = idx))
+  if name == "nativeLoadByte" {
+    val dest = freshTmp(ctx)
+    insns.add(NLoad(dest = dest, ty = NI8, ptr = NLocal(name = addr)))
+    return NVal(ty = NI8, value = NLocal(name = dest))
+  }
+  val v = lowerExprExpecting(ctx, insns, nativeCallArgExpr(args[2]), NI8)
+  insns.add(NStore(ty = NI8, value = v.value, ptr = NLocal(name = addr)))
+  NVal(ty = NVoid, value = NUndef(ty = NVoid))
+}
+
+func nativeCallArgExpr(a: in CallArg): Expr {
+  match a {
+    case CAPositional(ex) -> ex
+    case CANamed(_, value, _) -> value
   }
 }
 

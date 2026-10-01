@@ -6967,6 +6967,8 @@ jobs:
           "$LYRIC_CLI_PATH" test --manifest examples/ui-customers/lyric.toml
           # The example driven in headless Chromium (#7836).
           bash scripts/ci/ui-browser-e2e.sh --target dotnet
+          # A real desktop window under Xvfb (docs/65 U5).
+          bash scripts/ci/ui-desktop-e2e.sh --target dotnet
 
       - name: Run tests (testing)
         if: matrix.id == 'testing'
