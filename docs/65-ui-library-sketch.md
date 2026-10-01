@@ -800,6 +800,10 @@ A Skia-based renderer or native widget hosts behind the same `WidgetKind`
 vocabulary. The semantic vocabulary is what keeps this possible. Cost: text
 shaping, IME and accessibility become the library's problem.
 
+The native host is planned in `docs/67-native-graphics-plan.md` (phase G10),
+on a GPU renderer (`lyric-draw`, `webgpu.h`) and FreeType/HarfBuzz text rather
+than Skia, together with the language and FFI building blocks it needs.
+
 ### 13.4 Server-side rendering for first paint
 
 The web host renders the initial `View` to HTML in the shell, so the first
