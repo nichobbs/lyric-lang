@@ -5875,6 +5875,30 @@ test "a renamed import that collides with another name is T0148 (#7564)" {
   assertTrue(diagMessageFor(twice, "T0148").contains("choose another name"), diagMessageFor(twice, "T0148"))
 }
 
+// #7928: the alias rewriter reads `g.member` as a use of the rename `g`,
+// so a rename sharing a package alias or a package path's head must be
+// reported, never silently resolved to the renamed item.
+test "a rename that is also a package alias or path head is T0148 (#7928)" {
+  val alias = checkRenamed("package App\nimport PkgX as g\nimport PkgY.{fromY as g}\nfunc f(): Int { 1 }\n")
+  assertEqualInt(countDiagCode(alias, "T0148"), 1, "g is also PkgX's alias")
+  assertTrue(diagMessageFor(alias, "T0148").contains("alias of PkgX"), diagMessageFor(alias, "T0148"))
+  val head = checkRenamed("package App\nimport PkgX\nimport PkgY.{fromY as PkgX}\nfunc f(): Int { 1 }\n")
+  assertEqualInt(countDiagCode(head, "T0148"), 1, "PkgX also begins an imported package's path")
+}
+
+test "two renames to one name are both T0148 (#7928)" {
+  val cr = checkRenamed("package App\nimport PkgY.{fromY as g, otherY as g}\nfunc f(): Int { 1 }\n")
+  assertEqualInt(countDiagCode(cr, "T0148"), 2, "each rename is reported")
+}
+
+test "a rename that is a case of a whole-imported union is T0148 (#7928)" {
+  val packages = importRulePackages()
+  packages.add(rulePkg("PkgU", "package PkgU\npub union Shape {\n  case Dot\n  case Box(w: Int)\n}\n"))
+  val src = "package App\nimport PkgU\nimport PkgY.{fromY as Dot}\nfunc f(): Int { 1 }\n"
+  val cr = checkWithImportedPackages(Lyric.AliasRewriter.rewriteFile(parse(src).file), packages)
+  assertEqualInt(countDiagCode(cr, "T0148"), 1, "Dot is also PkgU.Shape's case")
+}
+
 // #7552: the `sigs` slots keep one function per name, first registered; when
 // the import rule hides it, a bare reference takes the visible declaration,
 // generic or of another arity, rather than typing against the hidden one.

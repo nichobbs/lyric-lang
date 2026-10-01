@@ -4145,7 +4145,7 @@ func installImportRule(
     }
     w = w + 1
   }
-  checkRenamedImports(diag, renames, names, whole, importedPackages, fileItems)
+  checkRenamedImports(diag, renames, names, whole, aliasPkgs, aliasNames, importedPackages, fileItems)
   symTableSetImportRule(tbl, userPkg, whole, names, aliasPkgs, aliasNames)
 }
 
@@ -4158,16 +4158,39 @@ record RenamedImport {
 }
 
 // T0148: a renamed import's bare name must not also be a declaration of
-// this package, another import's bare name, or a public name of a package
-// imported whole; otherwise one spelling would mean two things (#7564).
+// this package, another import's bare name, a public name (or union or
+// enum case) of a package imported whole, a package alias, or the head of
+// an imported package's path; otherwise one spelling would mean two
+// things (#7564).  The alias and path-head checks matter because the
+// alias rewriter treats `g.member` as a use of the rename `g`, so an
+// unreported collision would silently send `g.member` to the renamed item
+// (#7928).
 func checkRenamedImports(
   diag: in List[Diagnostic],
   renames: in List[RenamedImport],
   selected: in List[String],
   whole: in List[String],
+  aliasPkgs: in List[String],
+  aliasNames: in List[String],
   importedPackages: in List[ImportedPackage],
   fileItems: in List[Item],
 ): Unit {
+  val heads: List[String] = newList()
+  for wp in whole {
+    heads.add(pathHead(wp))
+  }
+  for ap in aliasPkgs {
+    heads.add(pathHead(ap))
+  }
+  for sel in selected {
+    val bar = indexOfRaw(sel, "|")
+    if bar > 0 {
+      heads.add(pathHead(sel.substring(0, bar)))
+    }
+  }
+  for rn in renames {
+    heads.add(pathHead(rn.pkg))
+  }
   var r = 0
   while r < renames.count {
     val ren = renames[r]
@@ -4188,11 +4211,23 @@ func checkRenamedImports(
       }
     }
     var o = 0
-    while o < r {
-      if renames[o].local == ren.local and clash.length == 0 {
+    while o < renames.count {
+      if o != r and renames[o].local == ren.local and clash.length == 0 {
         clash = "'" + ren.local + "' also renames " + renames[o].pkg + "." + renames[o].name
       }
       o = o + 1
+    }
+    var a = 0
+    while a < aliasNames.count {
+      if aliasNames[a] == ren.local and clash.length == 0 {
+        clash = "'" + ren.local + "' is also the alias of " + aliasPkgs[a]
+      }
+      a = a + 1
+    }
+    for h in heads {
+      if h == ren.local and clash.length == 0 {
+        clash = "'" + ren.local + "' also begins an imported package's path"
+      }
     }
     for wp in whole {
       for ip in importedPackages {
@@ -4204,6 +4239,13 @@ func checkRenamedImports(
                 clash = wp + ", imported whole, also declares '" + ren.local + "'"
               }
               case None -> ()
+            }
+            if isPub and clash.length == 0 {
+              for cn in caseNamesOf(it) {
+                if cn == ren.local and clash.length == 0 {
+                  clash = wp + ", imported whole, also has the case '" + ren.local + "'"
+                }
+              }
             }
           }
         }
@@ -4220,6 +4262,32 @@ func checkRenamedImports(
     }
     r = r + 1
   }
+}
+
+// The first segment of a dotted package path.
+func pathHead(path: in String): String {
+  val dot = indexOfRaw(path, ".")
+  return if dot > 0 { path.substring(0, dot) } else { path }
+}
+
+// The case names a union or enum item makes visible bare, for the rename
+// collision check.
+func caseNamesOf(it: in Item): List[String] {
+  val acc: List[String] = newList()
+  match it.kind {
+    case IUnion(ud) -> {
+      for c in ud.cases {
+        acc.add(c.name)
+      }
+    }
+    case IEnum(ed) -> {
+      for c in ed.cases {
+        acc.add(c.name)
+      }
+    }
+    case _ -> ()
+  }
+  return acc
 }
 
 // The name a top-level item declares, for the rename collision check.

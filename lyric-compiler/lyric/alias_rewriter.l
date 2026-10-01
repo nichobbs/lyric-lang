@@ -306,8 +306,13 @@ func paramNamesOf(params: in List[Param]): List[String] {
 // preserved so resolution can disambiguate same-name symbols across packages
 // (#1488 regex_safe).  Single-segment paths and paths whose head isn't an alias
 // pass through unchanged.
+//
+// A multi-segment path whose head is a package alias stays the alias's
+// even when a rename shares the head; the checker reports that collision
+// as T0148 (#7928).
 func rewritePath(aliases: in List[String], p: in ModulePath): ModulePath {
-  if p.segments.count >= 1 {
+  val aliasHead = p.segments.count >= 2 and aliasContains(aliases, p.segments[0])
+  if p.segments.count >= 1 and not aliasHead {
     match renameTarget(aliases, p.segments[0]) {
       case Some(target) -> {
         var i = 1

@@ -17,8 +17,9 @@ D141.
   A local hides it from its declaration to the end of its block. Package
   aliases keep their function-wide approximation (#6311).
 - **T0148.** The new name must not be a declaration of the current
-  package, another import's bare name, or a public name of a package
-  imported whole. T0138 is retired.
+  package, another import's bare name, a public name or case of a package
+  imported whole, a package alias, or the head of an imported package's
+  path (#7928). Every rename in a clash is reported. T0138 is retired.
 - **Contract metadata.** A renamed item is left out of the contract's
   `selectedImports`, as for an aliased import: the contract's bodies are
   already rewritten.

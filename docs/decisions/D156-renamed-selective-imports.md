@@ -46,8 +46,13 @@ it could be implemented. Implementing it means:
    unknown-name error.
 5. **Collisions are T0148.** The new name must not also be a declaration
    of the current package, another import's bare name (listed or
-   renamed), or a public name of a package imported whole. Otherwise one
-   spelling would have two meanings.
+   renamed), a public name or case of a package imported whole, a
+   package alias, or the first segment of an imported package's path.
+   Otherwise one spelling would have two meanings. The alias and
+   path-head cases matter because `g.member` reads as a member of the
+   rename `g`: without the diagnostic, a use meant for the alias `g`
+   would silently resolve to the renamed item (#7928). The rewriter also
+   leaves a multi-segment path to its alias when both share the head.
 6. **Contract metadata.** A renamed item is not recorded in the
    contract's `selectedImports`. The rewritten bodies the contract carries
    already spell `P.f`, exactly as for an aliased import.
