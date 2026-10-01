@@ -27,8 +27,8 @@
 package Ui.Session
 
 import Std.Core
-import Ui.Core.{View, Element, Text, Empty, Handler, OnClick, Prop, WidgetKind, Step, UiEffect, Navigate, Back, Confirm, Notify, toastLevelName, eventName, fire, mapView, childrenOf}
-import Ui.Diff.{Patch, SetProp, diff, replaceAll, keyOf}
+import Ui.Core.{View, Element, Text, Empty, Handler, OnClick, Prop, WidgetKind, Step, UiEffect, Navigate, Back, Confirm, Notify, toastLevelName, eventName, fire, mapView, childrenOf, viewOf}
+import Ui.Diff.{Patch, SetProp, diff, replaceAll, keyOf, resolveLazy}
 import Ui.Protocol.{Event, NodeRef, At, Keyed, ValueEcho, refsKey, pathKey}
 import Std.Collections
 
@@ -102,7 +102,8 @@ pub func start[M, Msg, E](p: in Program[M, Msg, E], init: in Step[M, E]): Output
   val model: M = init.model
   val split: Split[E, Msg] = splitEffects(p, effects, noDialog)
   val dialog: Option[PendingDialog[Msg]] = split.dialog
-  val tree: View[SessionMsg[Msg]] = render(p, model, dialog)
+  val nothing: View[SessionMsg[Msg]] = Empty
+  val tree: View[SessionMsg[Msg]] = resolveLazy(render(p, model, dialog), nothing)
   val ivs: List[InputVersion] = newList()
   val s: Session[M, Msg] = Session(model = model, tree = tree, version = 1, dialog = dialog, inputVersions = ivs)
   return output(s, replaceAll(tree), split, false)
@@ -175,7 +176,8 @@ pub func detach[M, Msg](s: in Session[M, Msg]): Session[M, Msg] {
 pub func resume[M, Msg, E](p: in Program[M, Msg, E], s: in Session[M, Msg]): Output[M, Msg, E] {
   val model: M = s.model
   val dialog: Option[PendingDialog[Msg]] = s.dialog
-  val tree: View[SessionMsg[Msg]] = render(p, model, dialog)
+  val nothing: View[SessionMsg[Msg]] = Empty
+  val tree: View[SessionMsg[Msg]] = resolveLazy(render(p, model, dialog), nothing)
   val ivs: List[InputVersion] = newList()
   val next: Session[M, Msg] = Session(
     model = model,
@@ -231,8 +233,10 @@ pub func rerender[M, Msg, E](
   split: in Split[E, Msg],
   ivs: in List[InputVersion],
 ): Output[M, Msg, E] {
-  val tree: View[SessionMsg[Msg]] = render(p, model, dialog)
   val current: View[SessionMsg[Msg]] = s.tree
+  // Lazy subtrees whose fingerprint is unchanged keep their rendered
+  // subtree from the current tree, and `diff` skips them (D153).
+  val tree: View[SessionMsg[Msg]] = resolveLazy(render(p, model, dialog), current)
   val patches: List[Patch] = diff(current, tree)
   val version = if patches.count > 0 then s.version + 1 else s.version
   val next: Session[M, Msg] = Session(
@@ -389,7 +393,7 @@ pub func refsOf[Msg](tree: in View[Msg], path: in List[Int]): List[NodeRef] {
 
 /// The handler for event `name` on the node `path` names, if any.
 pub func handlerAt[Msg](tree: in View[Msg], path: in List[NodeRef], name: in String): Option[Handler[Msg]] {
-  val target: View[Msg] = match resolveRefs(tree, path) { case Some(n) -> n; case None -> return None }
+  val target: View[Msg] = match resolveRefs(tree, path) { case Some(n) -> viewOf(n); case None -> return None }
   return match target {
     case Element(_, _, _, handlers, _) -> {
       var found: Option[Handler[Msg]] = None

@@ -125,15 +125,37 @@ pub func fire[Msg](h: in Handler[Msg], data: in String): Msg {
 // ─── Views ────────────────────────────────────────────────────────────────────
 /// A description of what to show.  An empty `key` means "unkeyed": children
 /// are then reconciled by position (docs/65 §9.1).
+///
+/// `Lazy` is a subtree whose rendering is skipped when its `fingerprint` is
+/// unchanged (docs/65 §13.5, D153): the session renders it once per
+/// fingerprint and keeps the result as a `Memo`, which diffing skips while
+/// the fingerprint stays the same.  `Memo` is produced by the session, never
+/// by views.  Both are transparent: they occupy their subtree's position,
+/// and hosts never see them.
 pub union View[Msg] {
   case Element(kind: WidgetKind, key: String, props: List[Prop], handlers: List[Handler[Msg]], children: List[View[Msg]])
   case Text(value: String)
   case Empty
+  case Lazy(key: String, fingerprint: String, render: () -> View[Msg])
+  case Memo(key: String, fingerprint: String, child: View[Msg])
+}
+
+/// The view `v` shows: a `Memo`'s subtree, a `Lazy` rendered now, or `v`
+/// itself.
+pub func viewOf[Msg](v: in View[Msg]): View[Msg] {
+  return match v {
+    case Memo(_, _, c) -> viewOf(c)
+    case Lazy(_, _, r) -> {
+      val rendered: View[Msg] = r()
+      viewOf(rendered)
+    }
+    case _ -> v
+  }
 }
 
 /// The value of property `name` on `v`, if `v` is an element carrying it.
 pub func propOf[Msg](v: in View[Msg], name: in String): Option[String] {
-  return match v { case Element(_, _, props, _, _) -> lookupProp(props, name); case _ -> None }
+  return match viewOf(v) { case Element(_, _, props, _, _) -> lookupProp(props, name); case _ -> None }
 }
 
 /// The value of property `name` in `props`.
@@ -148,7 +170,13 @@ pub func lookupProp(props: in List[Prop], name: in String): Option[String] {
 
 /// The children of `v` (empty for text and empty views).
 pub func childrenOf[Msg](v: in View[Msg]): List[View[Msg]] {
-  return match v { case Element(_, _, _, _, cs) -> cs; case _ -> { val none: List[View[Msg]] = newList(); none } }
+  return match viewOf(v) {
+    case Element(_, _, _, _, cs) -> cs
+    case _ -> {
+      val none: List[View[Msg]] = newList()
+      none
+    }
+  }
 }
 
 /// `v` with every handler's message wrapped by `f`.  This is how a parent
@@ -168,6 +196,12 @@ pub func mapView[A, B](v: in View[A], f: in (A) -> B): View[B] {
     }
     case Text(s) -> Text(value = s)
     case Empty -> Empty
+    case Lazy(key, fingerprint, r) -> Lazy(
+      key = key,
+      fingerprint = fingerprint,
+      render = { -> val rendered: View[A] = r(); mapView(rendered, f) }
+    )
+    case Memo(key, fingerprint, c) -> Memo(key = key, fingerprint = fingerprint, child = mapView(c, f))
   }
 }
 

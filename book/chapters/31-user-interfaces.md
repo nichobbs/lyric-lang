@@ -223,6 +223,27 @@ from by key, so a click on a row that moved before the click arrived still
 reaches that row, and a click on a row that has since gone is dropped
 rather than delivered to its neighbour.
 
+### Skipping unchanged subtrees
+
+Every update renders the whole view and compares it with the last one.
+For a large subtree that rarely changes, wrap it in `lazyView` with a
+fingerprint of what it reads:
+
+```lyric
+Widgets.lazyView("orders", m.ordersVersion.toString(), { -> ordersTable(m.orders) })
+```
+
+The session renders the subtree once per fingerprint. While the
+fingerprint is unchanged it keeps the subtree it rendered last and does
+not compare it, so updates elsewhere on the screen cost nothing there.
+The fingerprint must change whenever anything the subtree shows changes:
+a version counter bumped by `update`, or an id plus an edit count. A
+stale fingerprint shows stale content. Each `lazyView` key must be unique
+within the view.
+
+Events, keys and `Ui.Testing` see through a lazy subtree, so tests and
+handlers work as they do without it.
+
 ### Typed routes
 
 Pages are a union, so a link names a page rather than a URL.

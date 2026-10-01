@@ -18,7 +18,7 @@ package Ui.Testing
 
 import Std.Core
 import Std.String
-import Ui.Core.{View, Element, Text, Empty, Handler, WidgetKind, kindName, eventName, fire, lookupProp}
+import Ui.Core.{View, Element, Text, Empty, Handler, WidgetKind, kindName, eventName, fire, lookupProp, viewOf}
 
 /// All text in `v`, depth first, joined by single spaces.
 pub func textOf[Msg](v: in View[Msg]): String {
@@ -28,9 +28,8 @@ pub func textOf[Msg](v: in View[Msg]): String {
 }
 
 pub func collectText[Msg](v: in View[Msg], acc: in List[String]): Unit {
-  match v {
+  match viewOf(v) {
     case Text(s) -> if s.length > 0 { acc.add(s) }
-    case Empty -> ()
     case Element(_, _, props, _, children) -> {
       match lookupProp(props, "label") {
         case Some(l) -> acc.add(l)
@@ -41,6 +40,7 @@ pub func collectText[Msg](v: in View[Msg], acc: in List[String]): Unit {
         collectText(cv, acc)
       }
     }
+    case _ -> ()
   }
 }
 
@@ -57,10 +57,11 @@ pub func findAll[Msg](v: in View[Msg], kind: in WidgetKind): List[View[Msg]] {
 }
 
 pub func collectKind[Msg](v: in View[Msg], kind: in String, acc: in List[View[Msg]]): Unit {
-  match v {
+  val shown: View[Msg] = viewOf(v)
+  match shown {
     case Element(k, _, _, _, children) -> {
       if kindName(k) == kind {
-        acc.add(v)
+        acc.add(shown)
       }
       for c in children {
         val cv: View[Msg] = c
@@ -98,8 +99,8 @@ pub func fieldInput[Msg](v: in View[Msg], label: in String): Option[View[Msg]] {
     val fv: View[Msg] = f
     match lookupPropOf(fv, "label") {
       case Some(l) -> if l == label {
-        return match fv {
-          case Element(_, _, _, _, children) -> if children.count > 0 then Some(value = children[0]) else None
+        return match viewOf(fv) {
+          case Element(_, _, _, _, children) -> if children.count > 0 then Some(value = viewOf(children[0])) else None
           case _ -> None
         }
       }
@@ -138,12 +139,12 @@ pub func fieldErrors[Msg](v: in View[Msg], label: in String): List[String] {
 
 /// The value of property `name` on element `v`.
 pub func lookupPropOf[Msg](v: in View[Msg], name: in String): Option[String] {
-  return match v { case Element(_, _, props, _, _) -> lookupProp(props, name); case _ -> None }
+  return match viewOf(v) { case Element(_, _, props, _, _) -> lookupProp(props, name); case _ -> None }
 }
 
 /// The message element `v`'s handler for event `name` produces with `data`.
 pub func fireOn[Msg](v: in View[Msg], name: in String, data: in String): Option[Msg] {
-  return match v {
+  return match viewOf(v) {
     case Element(_, _, _, handlers, _) -> {
       var acc: Option[Msg] = None
       for h in handlers {
