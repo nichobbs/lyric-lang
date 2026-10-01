@@ -1,4 +1,4 @@
-# 35 - WebAssembly Target and JS Ecosystem Integration (sketch)
+# 35 — WebAssembly Target and JS Ecosystem Integration (sketch)
 
 **Status:** Specced in D-progress-1028; sketch rewritten 2026-10-01 around the native (LLVM)
 backend. The original revision assumed a .NET AOT `wasi-wasm` route; that
@@ -319,7 +319,7 @@ lyric build --target native --triple wasm32-unknown-unknown --shape module
 `--shape module|component` are additional, triple-gated values on the
 `docs/63` shape axis. Today `--target native` fixes the shape at `aot`
 (`docs/63` "Settled"); for `wasm32` triples `module`/`component` replace that
-rule, and `portable|standalone|aot` are a diagnostic there. Convenience aliases `--target wasm` (module) and
+rule, and `portable`/`standalone`/`aot` become a diagnostic there. Convenience aliases `--target wasm` (module) and
 `--target wasm-component` (component) are sugar over the above.
 
 | Flag | Default | Meaning |
@@ -439,7 +439,8 @@ E0050: `protected type Ledger` cannot appear in a wasm export surface.
 
 Internally it is allowed in the single-threaded v1 profile (§5.2): mutual
 exclusion is trivially satisfied by the single thread and the lock is a
-re-entrancy counter. A blocking acquire on an already-held lock panics. This
+nesting-depth counter (a nested acquire by the current holder increments it;
+it exists for correct release bookkeeping, not to permit concurrent access). A blocking acquire on an already-held lock panics. This
 matches the entry-barrier semantics when no other thread can release.
 
 ### 10.2 Range subtypes
@@ -496,7 +497,7 @@ applies, because the native lowering is coroutine-based).
 |---|---|---|
 | W0 | Layout hardening, target-neutral: three-field ARC header, target-derived size tables, width-aware coroutine size intrinsic, `Long`-as-pointer audit of `_kernel_native` externs | Separate PR ahead of any wasm work; benefits existing targets; testable with the current ASan suites |
 | W1 | 32-bit `Float` | Owned by a separate work stream (`docs/67` G1); this plan blocks the `component` type mapping on it |
-| W2 | `wasm32-wasi` build: wasi-sdk pinned, per-triple `lyric_rt`, `wasm32` datalayout, link recipe, single-threaded runtime, unavailable-kernel twins, wasmtime test lane | Output: core module under WASI |
+| W2 | `wasm32-wasi` build: wasi-sdk pinned, per-triple `lyric_rt`, `wasm32` datalayout, link recipe, single-threaded runtime, unavailable-kernel twins, wasmtime test lane | Shape-agnostic bring-up: a plain core module that runs under WASI with no JS glue or WIT. It is the shared codegen base that W3 (`module`) and W4 (`component`) build their boundary code on, so it is not itself either published shape |
 | W3 | Browser `module` shape: JS imports (console, timers, `abort`), glue generator, `docs/65` U7 hook | |
 | W4 | `component` shape: canonical ABI wrappers, WIT generation, `jco` integration, publish bundle | |
 | W5 | `[npm]` table, `lyric restore`, extern shims, `B004x` diagnostics | |
@@ -525,26 +526,26 @@ entry, per repository policy.
 
 ### 13.2 Still open
 
-**Q-JS-002 - NPM shim ownership.** Curated shims in-tree (`stdlib/npm/`),
+**Q-JS-002 — NPM shim ownership.** Curated shims in-tree (`stdlib/npm/`),
 in a community registry, or generated from `.d.ts`. Start in-tree for a small
 set; decide the registry model before the 20th package.
 
-**Q-JS-004 - Scoped NPM name collisions.** `@a/b-c` and `@a/b` plus `-c` can
+**Q-JS-004 — Scoped NPM name collisions.** `@a/b-c` and `@a/b` plus `-c` can
 map to the same Lyric name. Suffix disambiguator, or hard `lyric restore`
 error?
 
-**Q-JS-006 - WIT async stability.** Gate the `component` async export on the
+**Q-JS-006 — WIT async stability.** Gate the `component` async export on the
 Component Model async ABI stabilising, or ship the callback/synchronous
 subset first with a warning?
 
-**Q-JS-007 - Linear-memory limits.** Default stack size and maximum heap for
+**Q-JS-007 — Linear-memory limits.** Default stack size and maximum heap for
 the `module` shape; whether `lyric_alloc` failure traps or returns an error.
 
-**Q-JS-008 - Browser I/O.** Whether `Std.Http` gets a `fetch`-backed browser
+**Q-JS-008 — Browser I/O.** Whether `Std.Http` gets a `fetch`-backed browser
 twin kernel in W3 or later, and how `Std.File` behaves with no preopened
 filesystem.
 
-**Q-JS-009 - Threads profile.** Whether `wasm32-wasi-threads` (shared memory,
+**Q-JS-009 — Threads profile.** Whether `wasm32-wasi-threads` (shared memory,
 `+atomics`, cross-origin isolation) is ever supported, and what it would do to
 the single-threaded `protected type` semantics.
 
