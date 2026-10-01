@@ -2153,10 +2153,10 @@ func embedLyricContract(lctx: in LoweringCtx, file: in SourceFile, resourceName:
   val offset = lctx.resourceData.count
 
   // Append the 4-byte LE length prefix.
-  lctx.resourceData.add(jsonLen % 256)
-  lctx.resourceData.add((jsonLen / 256) % 256)
-  lctx.resourceData.add((jsonLen / 65536) % 256)
-  lctx.resourceData.add((jsonLen / 16777216) % 256)
+  lctx.resourceData.add(jsonLen.toByte())
+  lctx.resourceData.add((jsonLen / 256).toByte())
+  lctx.resourceData.add((jsonLen / 65536).toByte())
+  lctx.resourceData.add((jsonLen / 16777216).toByte())
 
   // Append the UTF-8 bytes.
   var i = 0
@@ -2200,10 +2200,10 @@ func embedLyricAnnotationMeta(lctx: in LoweringCtx, file: in SourceFile, resourc
 
   val offset = lctx.resourceData.count
 
-  lctx.resourceData.add(jsonLen % 256)
-  lctx.resourceData.add((jsonLen / 256) % 256)
-  lctx.resourceData.add((jsonLen / 65536) % 256)
-  lctx.resourceData.add((jsonLen / 16777216) % 256)
+  lctx.resourceData.add(jsonLen.toByte())
+  lctx.resourceData.add((jsonLen / 256).toByte())
+  lctx.resourceData.add((jsonLen / 65536).toByte())
+  lctx.resourceData.add((jsonLen / 16777216).toByte())
 
   var i = 0
   while i < jsonLen {

@@ -97,8 +97,8 @@ test "byte round-trip" {
   // ASCII bytes so the content can be verified through readText without
   // indexing erased list elements (element typing is the J4 gap, #2667).
   val bytes: List[Byte] = newList()
-  bytes.add(104)
-  bytes.add(105)
+  bytes.add(104u8)
+  bytes.add(105u8)
   match writeBytes(p, bytes.toArray()) {
     case Ok(_) -> assertTrue(true, "writeBytes Ok")
     case Err(_) -> assertTrue(false, "writeBytes must succeed")

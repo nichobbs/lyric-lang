@@ -156,11 +156,11 @@ func producerSource(pkg: in String): String {
   "package " + pkg + "\n" + "\n" + "import Std.Collections\n" + "\n" + "pub func collectBytes(): List[slice[Byte]] {\n" +
     "  val result: List[slice[Byte]] = newList()\n" +
     "  val a: List[Byte] = newList()\n" +
-    "  a.add(1)\n" +
-    "  a.add(2)\n" +
+    "  a.add(1u8)\n" +
+    "  a.add(2u8)\n" +
     "  result.add(a.toArray())\n" +
     "  val b: List[Byte] = newList()\n" +
-    "  b.add(3)\n" +
+    "  b.add(3u8)\n" +
     "  result.add(b.toArray())\n" +
     "  result\n" +
     "}\n"

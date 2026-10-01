@@ -42,7 +42,7 @@ func toSlice(vals: in List[Int]): slice[Byte] {
   val l: List[Byte] = newList()
   var i = 0
   while i < vals.count {
-    l.add(vals[i])
+    l.add(vals[i].toByte())
     i = i + 1
   }
   l.toArray()
@@ -355,7 +355,7 @@ func bytesOf(vals: in slice[Int]): List[Int] {
   val l: List[Int] = newList()
   var i = 0
   while i < vals.length {
-    l.add(vals[i])
+    l.add(vals[i].toByte())
     i = i + 1
   }
   l

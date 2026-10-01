@@ -131,7 +131,7 @@ func assertFileDigestMatchesBytes(size: in Int, label: in String): Unit {
   val bytes: List[Byte] = newListWithCapacity(size)
   var i = 0
   while i < size {
-    bytes.add((i * 31 + 7) % 256)
+    bytes.add((i * 31 + 7).toByte())
     i = i + 1
   }
   val path = "/tmp/lyric-hash-test-stream-" + Uuid.uuidToString(Uuid.newUuid()) + ".bin"

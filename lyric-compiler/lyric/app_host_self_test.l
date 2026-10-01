@@ -52,7 +52,7 @@ func makeTemplate(prefix: in String, suffix: in String): slice[Byte] {
   // Pad out to the full reserved region (placeholder is 64 bytes).
   var z = Enc.encodeUtf8(PLACEHOLDER_HEX).length
   while z < RESERVED {
-    acc.add(0)
+    acc.add(0u8)
     z += 1
   }
   addStr(acc, suffix)
@@ -142,14 +142,14 @@ test "bind rejects ambiguous placeholder" {
   // pad first region
   var z = Enc.encodeUtf8(PLACEHOLDER_HEX).length
   while z < RESERVED {
-    acc.add(0)
+    acc.add(0u8)
     z += 1
   }
   // a second placeholder occurrence
   addStr(acc, PLACEHOLDER_HEX)
   var z2 = Enc.encodeUtf8(PLACEHOLDER_HEX).length
   while z2 < RESERVED {
-    acc.add(0)
+    acc.add(0u8)
     z2 += 1
   }
   match AppHost.bindAppHost(acc.toArray(), "app.dll") {

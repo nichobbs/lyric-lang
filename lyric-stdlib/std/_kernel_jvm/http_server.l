@@ -823,7 +823,7 @@ pub func urlDecode(s: in String): String {
       sb.append(s.substring(litStart, i - litStart))
       val bytes: List[Byte] = newList()
       while isPercentEscapeAt(s, i) {
-        bytes.add(hexDigitValue(s[i + 1]) * 16 + hexDigitValue(s[i + 2]))
+        bytes.add((hexDigitValue(s[i + 1]) * 16 + hexDigitValue(s[i + 2])).toByte())
         i = i + 3
       }
       sb.append(JString.new(bytes.toArray(), "UTF-8"))

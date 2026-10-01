@@ -403,9 +403,9 @@ func serveBytesOnce(l: in HttpSrv.HttpListener): Unit {
   val extra: Map[String, String] = newMap()
   extra.add("X-Kernel-Probe", "forty-two")
   val payload: List[Byte] = newList()
-  payload.add(97)
-  payload.add(98)
-  payload.add(99)
+  payload.add(97u8)
+  payload.add(98u8)
+  payload.add(99u8)
   HttpSrv.respondBytesWithHeaders(ctx, 202, "application/octet-stream", payload.toArray(), extra)
 }
 

@@ -79,10 +79,11 @@ test "an Int element is widened to a Long list's element type" {
   assertEqualLong(ls[0] + ls[1], 9, "4 + 5 as Long")
 }
 
-test "an Int element is widened to a Double list's element type" {
+// `Int` to `Double` crosses the widening chains, so it is explicit (#7969).
+test "an Int element converted with toDouble is inserted into a Double list" {
   val ds: List[Double] = newList()
   ds.add(1.5)
-  ds.add(0, 1)
+  ds.add(0, 1.toDouble())
   assertTrue(ds[0] + ds[1] == 2.5, "1 + 1.5 as Double")
 }
 

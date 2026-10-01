@@ -71,36 +71,36 @@ pub func hostEncodeUtf8(enc: in String, s: in String): slice[Byte] {
       val cu2 = s.codeUnitAt(i + 1)
       if cu2 >= 56320 and cu2 <= 57343 {
         val cp = 65536 + (cu - 55296) * 1024 + (cu2 - 56320)
-        result.add(240 + cp / 262144)
-        result.add(128 + (cp / 4096) % 64)
-        result.add(128 + (cp / 64) % 64)
-        result.add(128 + cp % 64)
+        result.add((240 + cp / 262144).toByte())
+        result.add((128 + (cp / 4096) % 64).toByte())
+        result.add((128 + (cp / 64) % 64).toByte())
+        result.add((128 + cp % 64).toByte())
         i += 2
       } else {
         // Lone high surrogate: U+FFFD.
-        result.add(239)
-        result.add(191)
-        result.add(189)
+        result.add(239u8)
+        result.add(191u8)
+        result.add(189u8)
         i += 1
       }
     } else if cu >= 55296 and cu <= 57343 {
       // Lone surrogate (a high surrogate at the end of the string, or any
       // low surrogate not preceded by a matching high one): U+FFFD.
-      result.add(239)
-      result.add(191)
-      result.add(189)
+      result.add(239u8)
+      result.add(191u8)
+      result.add(189u8)
       i += 1
     } else if cu <= 127 {
-      result.add(cu)
+      result.add(cu.toByte())
       i += 1
     } else if cu <= 2047 {
-      result.add(192 + cu / 64)
-      result.add(128 + cu % 64)
+      result.add((192 + cu / 64).toByte())
+      result.add((128 + cu % 64).toByte())
       i += 1
     } else {
-      result.add(224 + cu / 4096)
-      result.add(128 + (cu / 64) % 64)
-      result.add(128 + cu % 64)
+      result.add((224 + cu / 4096).toByte())
+      result.add((128 + (cu / 64) % 64).toByte())
+      result.add((128 + cu % 64).toByte())
       i += 1
     }
   }
@@ -147,16 +147,16 @@ pub func hostFromBase64(s: in String): slice[Byte] {
     val ch2 = s[i + 2]
     val ch3 = s[i + 3]
     if ch2 == '=' {
-      result.add(c0 * 4 + c1 / 16)
+      result.add((c0 * 4 + c1 / 16).toByte())
     } else {
       val c2 = b64v(ch2)
-      result.add(c0 * 4 + c1 / 16)
+      result.add((c0 * 4 + c1 / 16).toByte())
       if ch3 == '=' {
-        result.add(c1 % 16 * 16 + c2 / 4)
+        result.add((c1 % 16 * 16 + c2 / 4).toByte())
       } else {
         val c3 = b64v(ch3)
-        result.add(c1 % 16 * 16 + c2 / 4)
-        result.add(c2 % 4 * 64 + c3)
+        result.add((c1 % 16 * 16 + c2 / 4).toByte())
+        result.add((c2 % 4 * 64 + c3).toByte())
       }
     }
     i += 4

@@ -194,9 +194,9 @@ test "Std.File readBytes/writeBytes: zero-copy round-trip, missing path (ASan) (
     tempBase() +
     "/lyric-bytes-roundtrip.bin\"\n" +
     "  val src: List[Byte] = newList()\n" +
-    "  src.add(0)\n" +
-    "  src.add(1)\n" +
-    "  src.add(255)\n" +
+    "  src.add(0u8)\n" +
+    "  src.add(1u8)\n" +
+    "  src.add(255u8)\n" +
     "  match writeBytes(path, src.toArray()) {\n" +
     "    case Ok(_) -> {\n" +
     "    }\n" +
@@ -1100,9 +1100,9 @@ test "slice[T] via the list repr: bytes round-trip, listFiles, args (ASan)" {
     "  }\n" +
     "  val path = base + \"/bytes.bin\"\n" +
     "  val payload: List[Byte] = newList()\n" +
-    "  payload.add(104)\n" +
-    "  payload.add(0)\n" +
-    "  payload.add(105)\n" +
+    "  payload.add(104u8)\n" +
+    "  payload.add(0u8)\n" +
+    "  payload.add(105u8)\n" +
     "  match writeBytes(path, payload.toArray()) {\n" +
     "    case Ok(_) -> {\n" +
     "    }\n" +

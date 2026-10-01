@@ -3597,17 +3597,15 @@ func coerceTo(ctx: in Ctx, insns: in List[NInsn], v: in NVal, want: in NType, at
   }
   // #7452: narrow a wider non-literal integer to a declared-narrower slot,
   // the same `trunc` `.toByte()` emits explicitly (above). Reachable
-  // whenever the type checker admits an `Int`-typed argument at an
-  // unresolved generic parameter it never narrows itself — `List[Byte]`/
-  // `Map[K, Byte]`'s extern `add`/`set` are the concrete case (`typeEquiv`
-  // treats a bare `TyVar` as satisfied by any argument type,
-  // `typechecker_types.l`): `bytes.add((i * 31 + 7) % 256)` type-checks
-  // with an `Int` argument against the instantiated `Byte` element on every
-  // target. MSIL narrows implicitly (the CLR evaluation stack has no
-  // sub-`int32` width, so `List<byte>.Add` accepts the `int32` value as-is)
-  // and JVM emits `i2b`; LLVM IR has no such implicit narrowing — a
-  // mismatched SSA value width is a verifier error — so native must emit
-  // the `trunc` explicitly here too.
+  // whenever the type checker admits an `Int`-typed argument where a
+  // narrower type is lowered: a type parameter inside a generic body
+  // (`typeEquiv` treats a bare `TyVar` as satisfied by any argument type,
+  // `typechecker_types.l`) instantiated so that an `Int` reaches a `Byte`
+  // slot.  The stdlib collections' own element-taking members check their
+  // arguments against the element type since #7969.  MSIL narrows implicitly
+  // (the CLR evaluation stack has no sub-`int32` width) and JVM emits `i2b`;
+  // LLVM IR has no such implicit narrowing — a mismatched SSA value width is
+  // a verifier error — so native must emit the `trunc` explicitly here too.
   if (fromStr == "i64" and wantStr == "i32") or (fromStr == "i64" and wantStr == "i8") or (fromStr == "i32" and wantStr == "i8") {
     val dest = freshTmp(ctx)
     insns.add(NTrunc(dest = dest, fromTy = v.ty, value = v.value, toTy = want))
