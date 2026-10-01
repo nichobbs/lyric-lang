@@ -76,7 +76,7 @@ There is no Rust-style `macro_rules!`, no Lisp-style macros, no C++-style templa
 
 **Status:** REJECTED for arbitrary operators; LIMITED for arithmetic on numeric distinct types
 
-Users cannot define custom operators. Numeric distinct types may *derive* `Add`/`Sub`/`Mul`/`Div`/`Mod` via the `derives` clause; this is the only operator-overloading mechanism.
+Users cannot define custom operators. Numeric distinct types may *derive* `Add`/`Sub`/`Mul`/`Div`/`Mod` via the `derives` clause, and records whose fields all share one numeric type (vectors such as `Vec3`) may derive component-wise `Add`/`Sub` (D155); this is the only operator-overloading mechanism. Scaling, dot and matrix products stay methods, because they are not operations between two values of the same type.
 
 **Why:** Arbitrary operator overloading is a footgun. Users define `<<` for "stream insertion" or `+` for "string concatenation in custom DSL" and readability suffers. The constrained derive mechanism handles the genuine use case (treating `Cents + Cents` as `Cents`) without opening the floodgates.
 
@@ -218,6 +218,8 @@ There are no Kotlin-style suspend functions beyond `async`/`await`, no Python-st
 There is no inline assembly, no SIMD intrinsics exposed at the language level, no hardware-specific code paths.
 
 **Why:** Lyric is not a systems language. Performance-critical code that needs SIMD calls into native code via FFI; intrinsic-level access is out of scope.
+
+Packed buffers (`buffer[T]`), by-value records and the `Std.Math` vector types (D155) are not intrinsics: they are portable types whose code the backend is free to vectorise. A portable `vector[N, T]` type that lowers to SIMD registers would be a separate proposal, made only on benchmark evidence (`docs/67-native-graphics-plan.md` §4.6).
 
 ### Compile-time evaluation beyond constants
 

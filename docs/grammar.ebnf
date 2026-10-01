@@ -394,6 +394,7 @@ ItemKind =
     | DistinctTypeDecl                          (* 'type X = ...' *)
     | RecordDecl
     | ExposedRecordDecl
+    | ForeignRecordDecl                         (* kernel files only; D155 *)
     | UnionDecl
     | EnumDecl
     | OpaqueTypeDecl
@@ -494,6 +495,15 @@ RecordDecl =
 
 ExposedRecordDecl =
     'exposed' 'record' IDENT [ GenericParams ] [ WhereClause ] RecordBody ;
+
+(* A C-layout struct for the native FFI (D155, reference §11.6). 'foreign'
+   is contextual: an IDENT spelled "foreign" directly before 'record' at
+   item position, so 'foreign' stays usable as an identifier elsewhere.
+   Not generic. Field types are restricted by the checker (Plain types,
+   NativePtr[T], array[N, T], other foreign records), and the item is
+   rejected outside kernel files. *)
+ForeignRecordDecl =
+    'foreign' 'record' IDENT RecordBody ;
 
 RecordBody =
     '{' { NL } { RecordMember NL } '}' ;
@@ -677,6 +687,7 @@ AtomType =
     | GenericTypeApp
     | ArrayTypeForm
     | SliceTypeForm
+    | BufferTypeForm
     | RefinedTypeForm
     | UnitType
     | NeverType
@@ -697,6 +708,7 @@ TypeArg        = Type | ConstExpr ;           (* value generics admit const expr
 
 ArrayTypeForm = 'array' '[' ConstExpr ',' Type ']' ;
 SliceTypeForm = 'slice' '[' Type ']' ;
+BufferTypeForm = 'buffer' '[' Type ']' ;    (* D155; contextual, like 'slice' *)
 
 (* §4.1 Refined types
  *

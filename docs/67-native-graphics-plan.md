@@ -1,8 +1,9 @@
 # 67 - Native graphics, GPU and windowing: implementation plan (sketch)
 
-**Status:** Unbacked. The language changes in §4 need a decision-log entry
-(and the `docs/00` / `docs/04` revisions in §4.9) before any of it lands;
-the open questions are Q-GFX-001 to Q-GFX-010 (§10).
+**Status:** Specced in D155 (phase G0): Q-GFX-001 to Q-GFX-004 are
+resolved, `docs/01` specifies the §4 language features as not yet
+implemented, and `docs/00` / `docs/04` carry the §4.9 revisions. Phases G1
+to G10 are open; Q-GFX-005 to Q-GFX-010 remain open (§10).
 
 **Builds on:** `native/plan/` (the LLVM backend, D-N-001 onward),
 `docs/65-ui-library-sketch.md` §13.3 (non-HTML hosts), `docs/63-build-profiles-and-debugger.md`
@@ -62,7 +63,7 @@ hardware intrinsics or inline assembly (still rejected, §4.6).
 | 4 | Text | FreeType (rasterisation) and HarfBuzz (shaping), glyph atlas on the GPU. |
 | 5 | Mutable bulk data | `buffer[T]`, a contiguous buffer with **value semantics via copy-on-write** (§4.4). |
 | 6 | Value types | All-by-value records and small unions lower without heap or ARC on native (§4.2), aligning the implementation with the reference's "records are value types". |
-| 7 | `Float` | Becomes the 32-bit type the reference already says it is, on every backend (§4.1). |
+| 7 | `Float` | Becomes the 32-bit type the reference already says it is on MSIL and native; the JVM already complies (§4.1). |
 | 8 | Vector maths | `Std.Math` vector, matrix and quaternion records; component-wise `derives Add, Sub` on homogeneous numeric records; no new operator overloading (§4.6). |
 | 9 | C structs | `foreign record`, C-layout records declared only in kernel files (§4.7). |
 | 10 | Bindings | `lyric bindgen` generates kernel files from `webgpu.yml` and from clang's JSON AST; generated code is checked in and CI checks it is current (§5.3). |
@@ -80,7 +81,7 @@ Each item was checked against the code, not only the plan documents.
 | Records | Always heap-allocated with an ARC header on native. The IR layer has no by-value aggregate ABI (D-N-016 note). On MSIL only all-primitive records become `readonly struct`. | `native/plan/03-type-mapping.md` "Record types" |
 | Unions, `Option` | Heap-allocated with an ARC header on native, so an `Option[Vec3]` per frame is a `malloc`. | `native/plan/03-type-mapping.md` "Union types" |
 | `List[T]` / `slice[T]` | Shared `LyricList` representation with uniform 8-byte `int64_t` cells: no packed `Float` or record storage, so data cannot be handed to a GPU or C API without a copy and repack. `slice[T]` has no in-place mutation. | `lyric-rt/include/lyric_rt.h:233-241`, D-N-015, `docs/01` §2.7 |
-| `array[N, T]` | Parsed (`TArray`) and specified with range-subtype bounds-check elision; not lowered on native. | `parser/parser_ast.l:261`, `docs/01` §2.7 |
+| `array[N, T]` | Parsed (`TArray`) and specified with range-subtype bounds-check elision; not lowered on native, and erased to an untyped object reference on MSIL and JVM. | `parser/parser_ast.l:261`, `docs/01` §2.7 |
 | FFI | `extern func` with scalars, `String` and `NativePtr[T]`. Structs only by pointer, and there is no way to declare a C-layout struct. Callback trampolines require the userdata pointer to be the **last** parameter. | `docs/01` §11.6, `native/plan/05-ffi-design.md` |
 | Platforms | Linux x86-64 and AArch64, macOS AArch64. No Windows. | `docs/01` §13.1 (`--target native`) |
 | Concurrency | Cooperative, single-threaded scheduler. No safe multi-threading. | `native/plan/06-async-design.md` |
@@ -98,8 +99,8 @@ GPUs work in f32: vertex attributes, uniforms and most shader maths. An
 f64-only language doubles upload bandwidth and needs a conversion pass
 for every buffer.
 
-- `Float` lowers to `float` (native), `System.Single` / `R4` (MSIL) and
-  `float` (JVM).
+- `Float` lowers to `float` (native) and `System.Single` / `R4` (MSIL).
+  The JVM already lowers it to `float` (D-progress-464).
 - A float literal is `Double` unless suffixed (`1.5f32`) or next to a
   `Float` operand, mirroring the integer-literal rule (#7346).
 - `Float < Double` is already a lossless widening chain (reference
@@ -465,8 +466,8 @@ XL (a quarter or more of focused work).
 
 | Phase | Scope | Depends on | Exit criteria | Size |
 |---|---|---|---|---|
-| **G0** | Decision-log entry for §4; revisions to `docs/00` and `docs/04`; Q-GFX-001 to Q-GFX-004 resolved. | none | Decision accepted; reference updated with the new types as "specified". | S |
-| **G1** | `Float` as f32 on all three backends with migration of existing uses (§4.1); by-value records and small unions on native, with the C ABI for by-value structs (§4.2); `array[N, T]` on native (§4.3) with MSIL and JVM parity issues filed; profile-gated overflow checks on native (#6263); range-subtype bounds-check elision on native. | G0 | Self-tests on every backend; ASan clean; a bench showing `Vec3` arithmetic does not allocate. | L |
+| **G0** | Decision-log entry for §4; revisions to `docs/00` and `docs/04`; Q-GFX-001 to Q-GFX-004 resolved. | none | Decision accepted; reference updated with the new types as "specified". **Done (D155).** | S |
+| **G1** | `Float` as f32 on MSIL and native (the JVM already complies), with the literal rule and `.toFloat()` checked on all three and migration of existing uses (§4.1); by-value records and small unions on native, with the C ABI for by-value structs (§4.2); `array[N, T]` on native (§4.3) with MSIL and JVM parity issues filed; profile-gated overflow checks on native (#6263); range-subtype bounds-check elision on native. | G0 | Self-tests on every backend; ASan clean; a bench showing `Vec3` arithmetic does not allocate. | L |
 | **G2** | `Plain` marker (§4.5); `buffer[T]` with copy-on-write on native, and the shared-mark lowering on MSIL and JVM (§4.4); verifier array model; `withPointer` and `withMutPointer` under the `N0100` rules. | G1 | Self-tests on all backends prove aliasing is never observable; the COW check costs at most a small, fixed per-write overhead in `lyric bench`. | L |
 | **G3** | `foreign record` (§4.7); `@userdata` callbacks (§4.8); `lyric bindgen` (§5.3); C-binding library dependencies with link-requirement propagation (§6); `[native]` library resolution, restore with checksums, and bundling (§6). | G1, G2 | A test library binds a small C API end to end through generated bindings and is consumed by a separate application project. | XL |
 | **G4** | `lyric-window` on SDL3 and an example that opens a window, handles input, and plays a sound. | G3 | Example runs on Linux and macOS; event handling tested headless with the offscreen driver. | M |
@@ -478,7 +479,10 @@ XL (a quarter or more of focused work).
 | **G10** | Native `lyric-ui` host (§5.2): layout, widgets, focus, IME, clipboard, accessibility. | G6 | `examples/ui-customers/` runs natively with no application changes; screen-reader smoke test on macOS. | XL |
 
 **Critical path to a first native graphics program:** G0, G1, G2, G3, G4,
-G5. G8 and G9 can run in parallel once their dependencies land.
+G5.
+
+**Tracking:** epic #7939; G1 #7940, G2 #7941, G3 #7942, G4 #7943, G5 #7944,
+G6 #7945, G7 #7946, G8 #7947, G9 #7948, G10 #7949. G8 and G9 can run in parallel once their dependencies land.
 
 **Later (not planned here):** a Lyric shader subset compiled to WGSL,
 sharing `Std.Math` types between CPU and GPU code; `wasm32` with browser
@@ -512,10 +516,10 @@ the GPU.
 
 | Id | Question | Recommendation |
 |---|---|---|
-| Q-GFX-001 | `buffer[T]` semantics: copy-on-write value (§4.4) or reference? | Copy-on-write value. |
-| Q-GFX-002 | Make `Float` 32-bit on every backend now, with migration? | Yes; it is what the reference specifies. |
-| Q-GFX-003 | GPU API: `webgpu.h` (wgpu-native / Dawn) or SDL3's own GPU API? SDL_GPU means one dependency, but per-backend shader formats (SPIR-V, MSL, DXIL) and an offline shader toolchain; `webgpu.h` uses WGSL everywhere and maps to the browser. | `webgpu.h`. |
-| Q-GFX-004 | Extend `derives Add, Sub` to homogeneous numeric records (§4.6)? | Yes. |
+| Q-GFX-001 | `buffer[T]` semantics: copy-on-write value (§4.4) or reference? | **Resolved (D155):** copy-on-write value. |
+| Q-GFX-002 | Make `Float` 32-bit on every backend now, with migration? | **Resolved (D155):** yes. |
+| Q-GFX-003 | GPU API: `webgpu.h` (wgpu-native / Dawn) or SDL3's own GPU API? SDL_GPU means one dependency, but per-backend shader formats (SPIR-V, MSL, DXIL) and an offline shader toolchain; `webgpu.h` uses WGSL everywhere and maps to the browser. | **Resolved (D155):** `webgpu.h` via wgpu-native. |
+| Q-GFX-004 | Extend `derives Add, Sub` to homogeneous numeric records (§4.6)? | **Resolved (D155):** yes. |
 | Q-GFX-005 | Name and exact rules of the `Plain` marker; whether enums with explicit ordinals qualify. | As §4.5. |
 | Q-GFX-006 | `lyric bindgen` input: clang JSON AST only, or also `webgpu.yml`? | Both; `webgpu.yml` is the more stable source for WebGPU. |
 | Q-GFX-007 | Native libraries: prebuilt archives by default, or system packages? | Prebuilt by default, `pkg-config` opt-in. |
