@@ -1015,9 +1015,8 @@ pub func resolveGenerators(manifest: in Mf.Manifest, mfPath: in String): Generat
                 missing
             )
           } else {
-            val noFeatures: List[String] = newList()
             val stack: List[String] = newList()
-            match buildWorkspaceDep(dep.name, depDir, Emitter.Dotnet, noFeatures, false, None, stack) {
+            match buildGeneratorTree(dep.name, depDir, stack) {
               case Ok(dll) -> {
                 gens.dlls[dep.name] = dll
               }
@@ -1034,6 +1033,74 @@ pub func resolveGenerators(manifest: in Mf.Manifest, mfPath: in String): Generat
     }
   }
   gens
+}
+
+// Builds the generator (or generator dependency) `depName` in `depDir` for
+// dotnet, after building its own path and workspace dependencies: a project
+// build only links a local dependency that is already built, and nothing
+// else builds a generator's dependencies.  A dependency DLL newer than this
+// one makes it stale, so a changed SDK rebuilds the generator.
+func buildGeneratorTree(depName: in String, depDir: in String, stack: in List[String]): Result[String, String] {
+  if stack.contains(depName) {
+    return Err(error = "circular dependency detected: " + depName + " is already being built")
+  }
+  val depToml = Path.join(depDir, "lyric.toml")
+  val depMf = match File.readText(depToml) {
+    case Err(e) -> return Err(error = "cannot read " + depToml + ": " + IOError.message(e))
+    case Ok(text) -> match Mf.parseManifest(text, depToml) {
+      case Err(e) -> return Err(error = "malformed lyric.toml: " + Mf.ManifestError.message(e))
+      case Ok(m) -> m
+    }
+  }
+  stack.add(depName)
+  val wsCtx = Ws.findWorkspaceRoot(depDir)
+  val depDlls: List[String] = newList()
+  for d in depMf.deps {
+    match localDepDir(d, depDir, wsCtx) {
+      case Some(dir) -> match buildGeneratorTree(d.name, dir, stack) {
+        case Ok(dll) -> depDlls.add(dll)
+        case Err(e) -> {
+          stack.removeAt(stack.count - 1)
+          return Err(error = "its dependency '" + d.name + "' could not be built: " + e)
+        }
+      }
+      case None -> ()
+    }
+  }
+  stack.removeAt(stack.count - 1)
+  discardIfOlderThan(depDllPath(depMf, depDir), depDlls)
+  val noFeatures: List[String] = newList()
+  val buildStack: List[String] = newList()
+  buildWorkspaceDep(depName, depDir, Emitter.Dotnet, noFeatures, false, None, buildStack)
+}
+
+// Where `buildWorkspaceDep` puts the DLL of the dependency in `depDir`.
+func depDllPath(depMf: in Mf.Manifest, depDir: in String): String {
+  val dllName: String = match depMf.project {
+    case Some(p) -> match p.outputAssembly { case Some(asm) -> asm; case None -> p.name + ".dll" }
+    case None -> depMf.packageSection.name + ".dll"
+  }
+  Path.join(Path.join(depDir, "bin"), dllName)
+}
+
+// Deletes the built `dll` when any of `inputs` is newer, so the next build
+// of it is not skipped as up to date.
+func discardIfOlderThan(dll: in String, inputs: in List[String]): Unit {
+  val built = match File.stat(dll) { case Ok(st) -> st; case Err(_) -> return }
+  for input in inputs {
+    match File.stat(input) {
+      case Ok(st) -> {
+        if File.fileStatIsNewer(st, built) {
+          match File.deleteFile(dll) {
+            case Ok(_) -> ()
+            case Err(_) -> ()
+          }
+          return
+        }
+      }
+      case Err(_) -> ()
+    }
+  }
 }
 
 /// True for the targets that compile a `path` or `workspace = true`

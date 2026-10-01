@@ -234,7 +234,10 @@ No new F# shim is needed. The steps are:
    dependency whose manifest declares `kind = "source-generator"`. Registry
    and git generators are not supported yet (X0009).
 2. Check it declares `generate` and `main` (X0003), and build it for dotnet
-   with the normal dependency build, which skips an up-to-date build. A
+   with the normal dependency build, which skips an up-to-date build. Its own
+   `path` and `workspace = true` dependencies (such as `Lyric.GeneratorSdk`)
+   are built first, bottom-up, and a dependency rebuilt since the generator
+   was built makes the generator stale. A
    generator always runs on the build host, so it is built for dotnet whatever
    the consumer's `--target` (D150).
 3. Invoke the built DLL as `dotnet exec <dll>`: serialise the

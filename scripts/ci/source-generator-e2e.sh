@@ -20,7 +20,6 @@ if [ ! -x "$lyric_bin" ]; then
   exit 1
 fi
 
-app="examples/generators/app"
 expected=$'Order { id: Int, note: String }\nPoint { x: Long, y: Long }'
 
 check() {
@@ -37,8 +36,23 @@ check() {
 out_dir="$(mktemp -d)"
 trap 'rm -rf "$out_dir"' EXIT
 
-"$lyric_bin" build --manifest "$app/lyric.toml" --target dotnet -o "$out_dir/dotnet/Acme.App.dll" 2> "$out_dir/build.err"
+# Build from a private copy of the example and the SDK, keeping their
+# relative paths: CI runs this beside other suites that build
+# lyric-generator-sdk in place, and two builds writing one bin/ race.
+work="$out_dir/src"
+mkdir -p "$work/examples/generators"
+cp -r examples/generators/app examples/generators/describe "$work/examples/generators/"
+cp -r lyric-generator-sdk "$work/"
+rm -rf "$work"/examples/generators/*/bin "$work/lyric-generator-sdk/bin"
+app="$work/examples/generators/app"
+
+status=0
+"$lyric_bin" build --manifest "$app/lyric.toml" --target dotnet -o "$out_dir/dotnet/Acme.App.dll" 2> "$out_dir/build.err" || status=$?
 cat "$out_dir/build.err" >&2
+if [ "$status" -ne 0 ]; then
+  echo "::error::building the generator example for dotnet failed (exit $status)"
+  exit 1
+fi
 # The generator's warning for the union is reported at its annotation.
 if ! grep -q 'app.l: warning\[X0005\] [0-9]*:1: generator .Acme.Describe. on Shape \[AD001\]' "$out_dir/build.err"; then
   echo "::error::the generator's AD001 warning for Shape was not reported"
