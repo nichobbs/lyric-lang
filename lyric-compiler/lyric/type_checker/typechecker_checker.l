@@ -502,7 +502,7 @@ func foldOrErr(tbl: in SymbolTable, diag: in List[Diagnostic], name: in String, 
       // initialiser, so there the bound just cannot be folded.
       val ownNegation = match fe {
         case FEUnsignedNegation(tn, negSpan) -> if spanWithin(negSpan, e.span) {
-          diag.add(errorDiagnostic("T0147", unsignedNegationMessage(tn, tn == "Byte"), negSpan))
+          diag.add(errorDiagnostic("T0147", unsignedNegationMessage(tn), negSpan))
           true
         } else {
           false
