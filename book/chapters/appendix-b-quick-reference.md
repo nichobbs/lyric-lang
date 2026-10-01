@@ -1296,7 +1296,7 @@ Errors and warnings emitted during lexical analysis of source files.
 | Code | Severity | Meaning |
 |---|---|---|
 | `L0015` | error | Unrecognised numeric suffix (e.g. `100xyz`, `1u7`, `2i128`): the message names the suffix and lists the valid ones — `i8` `i16` `i32` `i64` `u8` `u16` `u32` `u64` `f32` `f64` on a decimal literal, only the integer suffixes on a hex/octal/binary literal, only `f32`/`f64` on a float literal |
-| `L0016` | error | Based literal has no valid digit body (e.g. bare `0x`, `0b___` with only underscores) |
+| `L0016` | error | Radix prefix with no digit after it, separators aside (e.g. bare `0x`, `0b`, `0o`, `0b___`): reported on the prefix as the literal's only diagnostic, with no follow-on `L0010`; a suffix after it adds no `L0015`, so `0xu8` is one `L0016` |
 
 ### Linter (L-series)
 
