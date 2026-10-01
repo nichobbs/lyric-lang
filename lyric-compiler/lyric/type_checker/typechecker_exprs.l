@@ -1162,8 +1162,8 @@ func checkQualifiedMemberRef(
   }
 }
 
-// `NativePtr[arg]` or `NativeWeak[arg]` in a `--target native` check (see
-// `SymbolTable.nativeIntrinsicTypes`); None for any other target.
+// `NativePtr[arg]` (every target) or `NativeWeak[arg]` (a `--target native`
+// check), from `SymbolTable.nativeIntrinsicTypes`; None when not registered.
 func nativeIntrinsicType(tbl: in SymbolTable, name: in String, arg: in Type): Option[Type] {
   match mapGet(tbl.nativeIntrinsicTypes, name) {
     case Some(tid) -> {
@@ -1175,8 +1175,9 @@ func nativeIntrinsicType(tbl: in SymbolTable, name: in String, arg: in Type): Op
   }
 }
 
-// The type of a call to a native FFI intrinsic function (docs/01 §11.6) in a
-// `--target native` check; None when `fn` names none or the target is another.
+// The type of a call to an FFI intrinsic function (docs/01 §11.6):
+// `nativeNullPtr()` on every target, `nativeAddrOf`/`NativeWeak` in a
+// `--target native` check; None when `fn` names none of these.
 // `Lyric.LlvmCodegen` intercepts these names before any name resolution:
 // `nativeNullPtr()` is the C NULL pointer as a `NativePtr[Byte]`,
 // `nativeAddrOf(x)` the address of the local `x: T` as a `NativePtr[T]`, and
@@ -1199,6 +1200,11 @@ func nativeIntrinsicCallType(
     case _ -> ""
   }
   if name != "nativeNullPtr" and name != "nativeAddrOf" and name != "NativeWeak" {
+    return None
+  }
+  // `nativeAddrOf` and `NativeWeak` lower only on the native target, which
+  // registers `NativeWeak`; elsewhere they are unknown names (D158).
+  if name != "nativeNullPtr" and not tbl.nativeIntrinsicTypes.containsKey("NativeWeak") {
     return None
   }
   val argTypes: List[Type] = newList()

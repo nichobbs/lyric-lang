@@ -892,7 +892,7 @@ custom properties (design tokens) with light and dark sets.
 | U2 | Server-driven web host (`Ui.Host`) + TS runtime; example runs in a browser | Implemented (MSIL, JVM); host and runtime covered by `lyric test` and `node --test`, and the example by a Playwright browser test on both targets (#7836) |
 | U3 | `[layers]` compiler feature, stdlib `@pure`/`@io` classification, `Y000x` diagnostics | Implemented (D149, every target); `examples/ui-customers` builds under the `ui` preset |
 | U4 | `@generate(Forms.Derive)` and `@generate(Ui.Routes)` | Implemented (D151); request schema 2; the example derives its form and routes on both targets |
-| U5 | Desktop webview host (native + MSIL) | Planned |
+| U5 | Desktop webview host (native + MSIL) | Planned; its C-library prerequisite shipped (D158) |
 | U6 | Data grid, `Lazy`, SSR first paint | Implemented on both targets: SSR first paint (D152), `Lazy` (D153), the data grid (D154) |
 | U7 | Client WASM host | Depends on `docs/35` |
 
@@ -1102,7 +1102,10 @@ are designs recorded for the phase that needs them.
   resume within `reconnectGraceMs`, `maxSessions` with eviction of detached
   sessions, input-version pruning, per-session lock (§8, §9.5, §10.1).
 - **Q-UI-008** *Resolved (design, U5):* the JVM desktop host binds the C
-  `webview` library, not JavaFX (§10.2).
+  `webview` library, not JavaFX (§10.2). D158 provides the binding
+  mechanism on both managed targets: `@library("webview") extern func`
+  lowers to P/Invoke on .NET and a Foreign Function & Memory downcall on
+  the JVM (JDK 22).
 - **Q-UI-009** *Resolved (implemented):* `FieldPath` and `DraftRows` with
   stable row ids (§11.7).
 - **Q-UI-010** *Resolved (design):* generate the runtime's widget schema,

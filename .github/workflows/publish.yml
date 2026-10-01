@@ -242,11 +242,11 @@ jobs:
         with:
           global-json-file: bootstrap/global.json
 
-      - name: Set up Java 21 (for the Maven resolver jar)
+      - name: Set up Java 22 (for the Maven resolver jar)
         uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6  # v6.0.1
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: '22'
 
       - name: Build stage 2 (self-hosted compiler)
         shell: bash
@@ -450,11 +450,11 @@ jobs:
         with:
           global-json-file: bootstrap/global.json
 
-      - name: Set up Java 21 (for the Maven resolver jar)
+      - name: Set up Java 22 (for the Maven resolver jar)
         uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6  # v6.0.1
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: '22'
 
       # docs/44-jvm-production-readiness-plan.md finding M-7: bundle
       # lyric-resolver.jar into the NuGet global tool too (Lyric.Cli.Aot.csproj
@@ -637,11 +637,11 @@ jobs:
       # Maven resolver for any library with a [maven] table — this silently
       # failed lyric-grpc/-web/-mq/-session/-lambda on every release until the
       # per-library logs were fixed (#5615) and the error became visible.
-      - name: Set up Java 21 (for the Maven resolver jar)
+      - name: Set up Java 22 (for the Maven resolver jar)
         uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6  # v6.0.1
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: '22'
 
       # Reuse the self-contained binary build-standalone already published to
       # this release instead of rebuilding the whole compiler (stage 2 + AOT)

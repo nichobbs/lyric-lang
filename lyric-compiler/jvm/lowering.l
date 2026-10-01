@@ -7408,10 +7408,16 @@ pub func lowerDeriveOrd(d: in LDistinctWithDerives, pool: in Pool): ClassFile {
 // the package host class and initialised in its `<clinit>`.  `initInsns` push
 // the value (no store / return); `lowerFuncsToClass` emits the `putstatic` and
 // the `<clinit>` wrapper.
+//
+// A `cache` slot is instead a private, non-final field left null by
+// `<clinit>`: the method that owns it fills it on first use (a C binding's
+// downcall handle, D158, so a missing library fails at the call, not when
+// the host class loads).
 pub record LStaticVal {
   name: String
   valType: JvmType
   initInsns: List[LInsn]
+  cache: Bool
 }
 
 // ── LConfigField — config block static fields (D046, #3228) ───────────────────
@@ -7611,11 +7617,15 @@ func lowerFuncsToClass(
     val clinitInsns: List[LInsn] = newList()
     for sv in staticVals.toArray() {
       val fa: List[Attribute] = newList()
-      cfFields.add(makeFieldInfo(ACC_PUBLIC + ACC_STATIC + ACC_FINAL, sv.name, typeDescriptor(sv.valType), fa))
-      for insn in sv.initInsns.toArray() {
-        clinitInsns.add(insn)
+      if sv.cache {
+        cfFields.add(makeFieldInfo(ACC_PRIVATE + ACC_STATIC, sv.name, typeDescriptor(sv.valType), fa))
+      } else {
+        cfFields.add(makeFieldInfo(ACC_PUBLIC + ACC_STATIC + ACC_FINAL, sv.name, typeDescriptor(sv.valType), fa))
+        for insn in sv.initInsns.toArray() {
+          clinitInsns.add(insn)
+        }
+        clinitInsns.add(LPutstatic(owner = funcsClass, name = sv.name, t = sv.valType))
       }
-      clinitInsns.add(LPutstatic(owner = funcsClass, name = sv.name, t = sv.valType))
     }
     clinitInsns.add(LReturn)
     val clinitParams: List[JvmType] = newList()

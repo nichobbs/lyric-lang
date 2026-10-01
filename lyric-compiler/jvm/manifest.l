@@ -99,6 +99,10 @@ pub func makeManifestMf(meta: in PackageMeta): String {
     "Implementation-Version: " +
     meta.version +
     "\n" +
+    // A C binding (D158) calls the JDK's restricted foreign-linker methods;
+    // granting the JAR's code native access lets `java -jar` run it without
+    // `--enable-native-access` or the JDK's restricted-method warning.
+    "Enable-Native-Access: ALL-UNNAMED\n" +
     classPathLine +
     "\n"
 }

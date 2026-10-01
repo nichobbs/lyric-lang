@@ -4188,6 +4188,101 @@ func installImportRule(
   symTableSetImportRule(tbl, userPkg, whole, names, aliasPkgs, aliasNames)
 }
 
+// The C bindings of a file (D158).  `@library("name")` names the C library
+// an `extern func` binds into: P/Invoke on .NET, a foreign-function downcall
+// on the JVM, a `-l` link flag on the native target.  The native target
+// alone can bind without one (the `lyric_rt` runtime is always linked), so
+// elsewhere a missing library is T0149.  A library's argument is one
+// non-empty string (T0150), and a library binding's parameters and result
+// are the C scalars and pointers every target can pass (T0151).
+func checkExternFuncBindings(diag: in List[Diagnostic], items: in List[Item], native: in Bool): Unit {
+  for it in items {
+    match it.kind {
+      case IExternFunc(decl) -> {
+        var libCount = 0
+        var libOk = true
+        for a in it.annotations {
+          if a.name.segments.count == 1 and a.name.segments[0] == "library" {
+            libCount = libCount + 1
+            val one = a.args.count == 1 and
+              match a.args[0] {
+                case ALiteral(v, _) -> match v { case AVString(x, _) -> x.length > 0; case _ -> false }
+                case _ -> false
+              }
+            if not one {
+              libOk = false
+              diag.add(
+                errorDiagnostic(
+                  "T0150",
+                  "@library takes one argument, the C library's name as a non-empty string: @library(\"webview\")",
+                  a.span
+                )
+              )
+            }
+          }
+        }
+        if libCount > 1 {
+          diag.add(errorDiagnostic("T0150", "extern func '" + decl.name + "' names more than one @library", decl.span))
+        }
+        if libCount == 0 and not native {
+          diag.add(
+            errorDiagnostic(
+              "T0149",
+              "extern func '" + decl.name + "' binds the C symbol \"" + decl.symbol +
+                "\" but names no library; add @library(\"name\") to bind it on --target dotnet and --target jvm",
+              decl.span
+            )
+          )
+        }
+        // Native lowers the full `extern func` surface (callbacks, `String`);
+        // the managed targets marshal only the types every runtime passes
+        // the same way.
+        if libCount > 0 and libOk and not native {
+          for p in decl.params {
+            checkCBindingType(diag, decl.name, p.ty, false)
+          }
+          match decl.ret {
+            case Some(te) -> checkCBindingType(diag, decl.name, te, true)
+            case None -> ()
+          }
+        }
+      }
+      case _ -> ()
+    }
+  }
+}
+
+// T0151 unless `te` is a type a C binding passes the same way on every
+// target: `Int` (int32), `Long` (int64), `Byte` (uint8), `Double`
+// (double), a `NativePtr[T]` (a pointer), or, as a result, `Unit` (void).
+// `Float` is excluded: MSIL and native carry it as a 64-bit double, so a C
+// `float` would receive the wrong bits (#7966).
+func checkCBindingType(diag: in List[Diagnostic], fname: in String, te: in TypeExpr, isResult: in Bool): Unit {
+  val ok = match te.kind {
+    case TRef(path) -> {
+      val n = path.segments[path.segments.count - 1]
+      path.segments.count == 1 and (n == "Int" or n == "Long" or n == "Byte" or n == "Double" or (isResult and n == "Unit"))
+    }
+    case TGenericApp(head, _) -> head.segments.count == 1 and head.segments[0] == "NativePtr"
+    case TUnit -> isResult
+    case TParen(inner) -> {
+      checkCBindingType(diag, fname, inner, isResult)
+      return
+    }
+    case _ -> false
+  }
+  if not ok {
+    diag.add(
+      errorDiagnostic(
+        "T0151",
+        "extern func '" + fname + "': this type cannot cross a C binding; use Int, Long, Byte, Double or NativePtr[T]" +
+          (if isResult { ", or Unit for no result" } else { "" }),
+        te.span
+      )
+    )
+  }
+}
+
 // A renamed selective import: `local` is the bare name for `pkg.name`.
 record RenamedImport {
   local: String
@@ -4501,26 +4596,31 @@ pub func checkWithImportedPackages(file: in SourceFile, importedPackages: in Lis
 }
 
 /// `checkWithImportedPackages` for a `--target native` build: the file may
-/// also use the native FFI intrinsics (docs/01 §11.6) — the `NativePtr[T]`
-/// and `NativeWeak[T]` types and the `nativeAddrOf`, `nativeNullPtr`,
-/// `NativeWeak` and `upgrade` calls — which no other target can lower.
+/// also use the native-only FFI intrinsics (docs/01 §11.6) — the
+/// `NativeWeak[T]` type and the `nativeAddrOf`, `NativeWeak` and `upgrade`
+/// calls — which no other target can lower.  `NativePtr[T]` and
+/// `nativeNullPtr()` exist on every target (D158).
 pub func checkWithImportedPackagesForNative(
   file: in SourceFile, importedPackages: in List[ImportedPackage]
 ): CheckResult {
   checkWithImportedPackagesCore(file, importedPackages, true, true)
 }
 
-// The native FFI intrinsic types.  `Lyric.LlvmCodegen` lowers both by name,
-// so they are declared here only to give their uses a type; the `clrName`s
-// name no CLR or JVM class and are never resolved.
-val nativeIntrinsicTypesSource: String = "package Lyric.NativeIntrinsics\n" + "extern type NativePtr[T] = \"lyric.native.NativePtr\"\n" + "extern type NativeWeak[T] = \"lyric.native.NativeWeak\"\n"
+// The FFI intrinsic types.  Every backend lowers them by name, so they are
+// declared here only to give their uses a type; the `clrName`s name no CLR
+// or JVM class and are never resolved.  `NativePtr[T]` is the raw pointer of
+// a C binding (`extern func`, D158) on every target; `NativeWeak[T]` exists
+// only on the native target, which alone has ARC.
+val ffiIntrinsicTypesSource: String = "package Lyric.NativeIntrinsics\n" + "extern type NativePtr[T] = \"lyric.native.NativePtr\"\n"
 
-// Register the native intrinsic types with no declaring package, so every
-// file sees them bare with no import, as codegen does.  They are registered
+val nativeIntrinsicTypesSource: String = ffiIntrinsicTypesSource + "extern type NativeWeak[T] = \"lyric.native.NativeWeak\"\n"
+
+// Register the FFI intrinsic types with no declaring package, so every file
+// sees them bare with no import, as codegen does.  They are registered
 // before any other package, so a type of the same name declared anywhere
-// else shadows them.
-func registerNativeIntrinsicTypes(tbl: in SymbolTable, ctr: in TypeIdCounter): Unit {
-  val pr = parse(nativeIntrinsicTypesSource)
+// else shadows them.  `native` adds the native-only `NativeWeak[T]`.
+func registerNativeIntrinsicTypes(tbl: in SymbolTable, ctr: in TypeIdCounter, native: in Bool): Unit {
+  val pr = parse(if native then nativeIntrinsicTypesSource else ffiIntrinsicTypesSource)
   val scratch: List[Diagnostic] = newList()
   for it in pr.file.items {
     registerItem(tbl, ctr, scratch, true, "", it)
@@ -4557,9 +4657,7 @@ func checkWithImportedPackagesCore(
   val diag: List[Diagnostic] = newList()
   val tbl = newSymbolTable()
   val ctr = newTypeIdCounter()
-  if nativeIntrinsics {
-    registerNativeIntrinsicTypes(tbl, ctr)
-  }
+  registerNativeIntrinsicTypes(tbl, ctr, nativeIntrinsics)
 
   // A destructuring module-level `val` binds each of its names (#7763).  The
   // compile pipeline has already desugared the file it passes here (so its
@@ -4656,6 +4754,7 @@ func checkWithImportedPackagesCore(
   symTableSetScope(tbl, userPkg, userImports)
   symTableRegisterPackageImports(tbl, userPkg, userImports)
   installImportRule(tbl, diag, userPkg, file.imports, importedPackages, file.items)
+  checkExternFuncBindings(diag, file.items, nativeIntrinsics)
   addSigsFromItems(tbl, diag, sigs, file.items, false, userPkg)
   registerImplsFromItems(tbl, newGenericContext(), implDiag, file.items)
   addMethodSigsFromItems(tbl, file.items, userPkg)

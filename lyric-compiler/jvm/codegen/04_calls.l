@@ -1123,6 +1123,10 @@ func lowerBuiltinOrStaticCall(
       insns.add(LInvokevirtual(owner = "java/io/PrintStream", name = "print", params = emptyPs2, ret = JVoid))
     }
     JVoid
+  } else if (not hasOverride) and funcName == "nativeNullPtr" and args.count == 0 {
+    // A `NativePtr[T]` is a `long` address on the JVM (D158).
+    insns.add(LLconst(v = 0i64))
+    JLong
   } else if (not hasOverride) and funcName == "panic" {
     if args.count > 0 {
       lowerCallArg(ctx, insns, args[0])
