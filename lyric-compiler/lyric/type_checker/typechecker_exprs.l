@@ -3856,24 +3856,6 @@ func unsignedIdentityMethod(t: in Type): Option[String] {
   }
 }
 
-// True when `e` already says it is unsigned: a `u32`/`u64` literal or a
-// `.toUInt()`/`.toULong()` call.
-func spellsUnsigned(e: in Expr): Bool {
-  match e.kind {
-    case ELiteral(lit) -> match lit {
-      case LInt(_, suffix, _) -> match suffix {
-        case U32 -> true
-        case U64 -> true
-        case _ -> false
-      }
-      case _ -> false
-    }
-    case ECall(fn, cargs) -> cargs.count == 0 and
-      (match fn.kind { case EMember(_, m) -> m == "toUInt" or m == "toULong"; case _ -> false })
-    case _ -> false
-  }
-}
-
 // Record `e`, an operand of type `t` at a position whose lowering depends on
 // signedness, as a conversion site when `t` is `UInt` or `ULong` (#7812).
 // `UInt` and `ULong` share their machine representation with `Int` and
@@ -3919,13 +3901,6 @@ func recordUnsignedCompoundValue(
     case AssPlus -> if stringPlus { recordUnsignedOperand(tbl, valueType, value) }
     case _ -> ()
   }
-}
-
-// True for the builtins that stringify their arguments.
-func isStringifyingBuiltin(name: in String): Bool {
-  name == "println" or name == "print" or name == "toString" or name == "format1" or name == "format2" or
-    name == "format3" or
-    name == "format4"
 }
 
 // True when `argTy` satisfies `paramTy` only by a numeric widening that a call

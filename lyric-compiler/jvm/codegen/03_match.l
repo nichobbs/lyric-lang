@@ -413,7 +413,7 @@ func genericCtorParamPrimitives(
         case Some(arg) -> {
           val argExpr = callArgExpr(arg)
           val argTy = peekPrimitiveJvm(ctx, argExpr)
-          if isJvmPrimitiveElemType(argTy) and not isUnsignedExpr(argExpr) {
+          if isJvmPrimitiveElemType(argTy) and not spellsUnsigned(argExpr) {
             val prev = match mapGet(solved, pIdx) { case Some(t) -> t; case None -> JVoid }
             solved[pIdx] = widerPrimitiveJvm(prev, argTy)
           } else {
@@ -578,7 +578,7 @@ func genericRecordCtorArgs(ctx: in FuncCtx, name: in String, callArgs: in List[C
     if flds[u].paramIdx >= 0 {
       match orderedW[u] {
         case Some(argU) -> {
-          if isUnsignedExpr(callArgExpr(argU)) {
+          if spellsUnsigned(callArgExpr(argU)) {
             return newList()
           }
         }
@@ -627,7 +627,7 @@ func genericRecordCtorArgs(ctx: in FuncCtx, name: in String, callArgs: in List[C
     if pIdx >= 0 and not solved.containsKey(pIdx) {
       match mapGet(byName, flds[k].name) {
         case Some(argExpr) -> {
-          if isUnsignedExpr(argExpr) {
+          if spellsUnsigned(argExpr) {
             return newList()
           }
           val single: List[Expr] = newList()

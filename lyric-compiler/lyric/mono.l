@@ -2686,14 +2686,6 @@ func lambdaShapeOfArg(e: in Expr): Option[Expr] {
   }
 }
 
-// Strip wrapping EParen layers (mono-local mirror of the codegen helper).
-func unwrapParenExprMono(e: in Expr): Expr {
-  match e.kind {
-    case EParen(inner) -> unwrapParenExprMono(inner)
-    case _ -> e
-  }
-}
-
 // The inference-only union-case ctor decl a call argument names, when the
 // argument is a direct `CaseName(...)` construction; `None` otherwise.
 func ctorSynthOfArg(state: in MonoState, e: in Expr): Option[FunctionDecl] {
@@ -2736,7 +2728,7 @@ func ctorSynthOfArg(state: in MonoState, e: in Expr): Option[FunctionDecl] {
 // would wrongly count as opaque and lose its (correct, safe) Object-defaulted
 // specialisation.
 func bareInferenceOnlyCtorRef(state: in MonoState, e: in Expr): Bool {
-  match unwrapParenExprMono(e).kind {
+  match stripExprParens(e).kind {
     case EPath(path) -> {
       if path.segments.count == 1 {
         match mapGet(state.funcDecls, path.segments[0]) {
@@ -3128,10 +3120,7 @@ func inferReturnFromName(
                   var handled = false
                   match ctorSynthOfArg(state, callArgExpr(args[i])) {
                     case Some(ctorD) -> {
-                      val ctorCallArgs = match unwrapParenExprMono(callArgExpr(args[i])).kind {
-                        case ECall(_, cas) -> cas
-                        case _ -> newList()
-                      }
+                      val ctorCallArgs = match stripExprParens(callArgExpr(args[i])).kind { case ECall(_, cas) -> cas; case _ -> newList() }
                       handled = partialUnifyCtorArg(state, env, typeParams, decl.params[i].ty, ctorD, ctorCallArgs, subst)
                     }
                     case None -> ()
@@ -4880,11 +4869,7 @@ func tupleScrutineeTypedMono(state: in MonoState, scrut: in Expr): Expr {
   if state.localBindingTypeSites.count == 0 or not checkerSitesApplyMono(state) {
     return scrut
   }
-  val isTuple = match scrut.kind {
-    case ETuple(_) -> true
-    case EParen(inner) -> match inner.kind { case ETuple(_) -> true; case _ -> false }
-    case _ -> false
-  }
+  val isTuple = match stripExprParens(scrut).kind { case ETuple(_) -> true; case _ -> false }
   if not isTuple {
     return scrut
   }
@@ -6263,10 +6248,7 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
                           var handled = false
                           match ctorSynthOfArg(state, callArgExpr(args[i])) {
                             case Some(ctorD) -> {
-                              val ctorCallArgs = match unwrapParenExprMono(callArgExpr(args[i])).kind {
-                                case ECall(_, cas) -> cas
-                                case _ -> newList()
-                              }
+                              val ctorCallArgs = match stripExprParens(callArgExpr(args[i])).kind { case ECall(_, cas) -> cas; case _ -> newList() }
                               handled = partialUnifyCtorArg(state, env, typeParams, baseDecl.params[i].ty, ctorD, ctorCallArgs, subst)
                             }
                             case None -> ()
@@ -7015,7 +6997,7 @@ func rewriteStmt(state: in MonoState, env: in Map[String, TypeExpr], stmt: in St
 // looking (or bail to the annotation), not treat it as a resolved `Unit`/etc.
 func directCallEnvTE(state: in MonoState, env: in Map[String, TypeExpr], init: in Expr): Option[TypeExpr] {
   var callArgCount = 0
-  val callFnName = match unwrapParenExprMono(init).kind {
+  val callFnName = match stripExprParens(init).kind {
     case ECall(fn, callArgs) -> {
       callArgCount = callArgs.count
       match fn.kind {
@@ -7126,7 +7108,7 @@ func agreeTE(a: in Option[TypeExpr], b: in Option[TypeExpr]): Option[TypeExpr] {
 // non-call branch, disagreement between branches) makes the whole
 // initializer bail to `annoTe`, preserving today's conservative default.
 func ifMatchBranchesAgreeTE(state: in MonoState, env: in Map[String, TypeExpr], init: in Expr): Option[TypeExpr] {
-  match unwrapParenExprMono(init).kind {
+  match stripExprParens(init).kind {
     case EIf(_, thenBranch, elseBranch, _) -> {
       match elseBranch {
         case None -> None
@@ -8408,7 +8390,7 @@ func isUnsignedPathMono(p: in ModulePath): Bool {
 // `e.toUInt()` / `e.toULong()` when `e` is a `UInt` / `ULong` that does not
 // already say so; `e` otherwise.
 func spellUnsignedOperandMono(state: in MonoState, env: in Map[String, TypeExpr], e: in Expr): Expr {
-  if spelledUnsignedMono(e) {
+  if spellsUnsigned(e) {
     return e
   }
   match inferExprTE(state, env, e) {
@@ -8446,22 +8428,6 @@ func unsignedMethodForPathMono(p: in ModulePath): String {
     "toULong"
   } else {
     ""
-  }
-}
-
-func spelledUnsignedMono(e: in Expr): Bool {
-  match e.kind {
-    case ELiteral(lit) -> match lit {
-      case LInt(_, suffix, _) -> match suffix {
-        case U32 -> true
-        case U64 -> true
-        case _ -> false
-      }
-      case _ -> false
-    }
-    case ECall(fn, cargs) -> cargs.count == 0 and
-      (match fn.kind { case EMember(_, m) -> m == "toUInt" or m == "toULong"; case _ -> false })
-    case _ -> false
   }
 }
 
@@ -8519,7 +8485,7 @@ func spellUnsignedSitesMono(state: in MonoState, env: in Map[String, TypeExpr], 
       Expr(kind = EInterpolated(segments = spelled), span = s)
     }
     case ECall(fn, args) -> match fn.kind {
-      case EPath(p) -> if p.segments.count == 1 and isStringifyingBuiltinMono(p.segments[0]) {
+      case EPath(p) -> if p.segments.count == 1 and isStringifyingBuiltin(p.segments[0]) {
         val spelled: List[CallArg] = newList()
         for a in args {
           match a {
@@ -8585,7 +8551,7 @@ func spellUnsignedCompoundValueMono(
 func spellUnsignedByTargetMono(
   state: in MonoState, env: in Map[String, TypeExpr], target: in Expr, value: in Expr
 ): Expr {
-  if spelledUnsignedMono(value) {
+  if spellsUnsigned(value) {
     return value
   }
   match inferExprTE(state, env, target) {
@@ -8602,10 +8568,4 @@ func spellUnsignedByTargetMono(
     }
     case None -> value
   }
-}
-
-func isStringifyingBuiltinMono(name: in String): Bool {
-  name == "println" or name == "print" or name == "toString" or name == "format1" or name == "format2" or
-    name == "format3" or
-    name == "format4"
 }

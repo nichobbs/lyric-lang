@@ -226,7 +226,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                   insns.add(LIconst(v = 0))
                   emitArrayLoad(insns, cellElemTy)
                   val cvTy = lowerExpr(ctx, insns, value)
-                  emitCompoundCombineJvm(ctx, insns, op, cellElemTy, cvTy, isUnsignedExpr(value))
+                  emitCompoundCombineJvm(ctx, insns, op, cellElemTy, cvTy, spellsUnsigned(value))
                   val resultSlot = allocSlot(ctx, "__cell_result_" + freshLabel(ctx), cellElemTy)
                   emitStore(insns, resultSlot, cellElemTy)
                   emitLoad(insns, cellSlot, cellType)
@@ -265,7 +265,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                   // erased-RHS coercion — see the helper's doc).
                   emitLoad(insns, slot, ty)
                   val cvTy = lowerExpr(ctx, insns, value)
-                  emitCompoundCombineJvm(ctx, insns, op, ty, cvTy, isUnsignedExpr(value))
+                  emitCompoundCombineJvm(ctx, insns, op, ty, cvTy, spellsUnsigned(value))
                   emitStoreLocalWriteThrough(ctx, insns, slot, ty)
                 }
               }
@@ -318,7 +318,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                   emitStore(insns, vSlot, vTy)
                   emitLoad(insns, curSlot, fty)
                   emitLoad(insns, vSlot, vTy)
-                  emitCompoundCombineJvm(ctx, insns, op, fty, vTy, isUnsignedExpr(value))
+                  emitCompoundCombineJvm(ctx, insns, op, fty, vTy, spellsUnsigned(value))
                   val combSlot = allocSlot(ctx, "__sfassign_comb_" + freshLabel(ctx), fty)
                   emitStore(insns, combSlot, fty)
                   insns.add(LAload(slot = 0))
@@ -413,7 +413,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
               emitStore(insns, vSlot, vTy)
               emitLoad(insns, curSlot, combTy)
               emitLoad(insns, vSlot, vTy)
-              emitCompoundCombineJvm(ctx, insns, op, combTy, vTy, isUnsignedExpr(value))
+              emitCompoundCombineJvm(ctx, insns, op, combTy, vTy, spellsUnsigned(value))
               val combSlot = allocSlot(ctx, "__fassign_comb_" + freshLabel(ctx), combTy)
               emitStore(insns, combSlot, combTy)
               emitLoad(insns, recvSlot, recvTy)
@@ -527,7 +527,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                 case overrideTy -> applyIndexedElemOverride(insns, overrideTy)
               }
               emitLoad(insns, rhsSlot, vTy)
-              emitCompoundCombineJvm(ctx, insns, op, elemTy, vTy, isUnsignedExpr(value))
+              emitCompoundCombineJvm(ctx, insns, op, elemTy, vTy, spellsUnsigned(value))
               if elemTy != elem {
                 boxIfNeeded(insns, elemTy)
               }
@@ -602,7 +602,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                   case overrideTy -> applyIndexedElemOverride(insns, overrideTy)
                 }
                 emitLoad(insns, rhsSlot, vTy)
-                emitCompoundCombineJvm(ctx, insns, op, elemTy, vTy, isUnsignedExpr(value))
+                emitCompoundCombineJvm(ctx, insns, op, elemTy, vTy, spellsUnsigned(value))
                 boxIfNeeded(insns, elemTy)
                 emitMapPut(insns)
               }
@@ -663,7 +663,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                   case overrideTy -> applyIndexedElemOverride(insns, overrideTy)
                 }
                 emitLoad(insns, rhsSlot, vTy)
-                emitCompoundCombineJvm(ctx, insns, op, elemTy, vTy, isUnsignedExpr(value))
+                emitCompoundCombineJvm(ctx, insns, op, elemTy, vTy, spellsUnsigned(value))
                 boxIfNeeded(insns, elemTy)
                 emitListSet(insns)
               }

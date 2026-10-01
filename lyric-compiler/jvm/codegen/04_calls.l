@@ -1062,7 +1062,7 @@ func lowerBuiltinOrStaticCall(
         ctx,
         insns,
         lowerCallArg(ctx, insns, args[0]),
-        isUnsignedExpr(callArgExpr(args[0]))
+        spellsUnsigned(callArgExpr(args[0]))
       )
       // #6754 (finding 1.1): a `UInt`/`ULong` argument, stringified via
       // `Integer`/`Long.toUnsignedString` BEFORE the double-normalization
@@ -1073,7 +1073,7 @@ func lowerBuiltinOrStaticCall(
       val unsignedTy = normalizeBytePrintArg(
         ctx,
         insns,
-        normalizeUnsignedPrintArg(insns, rawTy, isUnsignedExpr(callArgExpr(args[0])))
+        normalizeUnsignedPrintArg(insns, rawTy, spellsUnsigned(callArgExpr(args[0])))
       )
       // #4688: PrintStream.println(double) would hand off to Java's
       // Double.toString directly ("1500.0" for a whole value) — normalize
@@ -1100,13 +1100,13 @@ func lowerBuiltinOrStaticCall(
         ctx,
         insns,
         lowerCallArg(ctx, insns, args[0]),
-        isUnsignedExpr(callArgExpr(args[0]))
+        spellsUnsigned(callArgExpr(args[0]))
       )
       // #6754 (finding 1.1): same unsigned normalization as println above.
       val unsignedTy = normalizeBytePrintArg(
         ctx,
         insns,
-        normalizeUnsignedPrintArg(insns, rawTy, isUnsignedExpr(callArgExpr(args[0])))
+        normalizeUnsignedPrintArg(insns, rawTy, spellsUnsigned(callArgExpr(args[0])))
       )
       // #4688: same Double normalization as println above.
       val argTy = normalizeDoublePrintArg(ctx, insns, unsignedTy)
@@ -1139,7 +1139,7 @@ func lowerBuiltinOrStaticCall(
       // path below) would dispatch to `Integer`/`Long`'s own SIGNED
       // `toString()` — go straight to the unsigned static method on the
       // still-unboxed primitive instead.
-      val isUnsignedArg = isUnsignedExpr(callArgExpr(args[0])) and
+      val isUnsignedArg = spellsUnsigned(callArgExpr(args[0])) and
         (match argTy { case JInt -> true; case JLong -> true; case _ -> false })
       if isUnsignedArg {
         val uPs: List[JvmType] = newList()
@@ -4729,7 +4729,7 @@ func lowerMethodCall(
     // #6748: a `UInt`/`ULong` receiver — `String.valueOf(int/long)` below
     // would render a sign-bit-set value as negative; go through
     // `Integer`/`Long.toUnsignedString` instead.
-    val isUnsignedRecv = isUnsignedExpr(recv) and
+    val isUnsignedRecv = spellsUnsigned(recv) and
       (match recvTy { case JInt -> true; case JLong -> true; case _ -> false })
     if isUnsignedRecv {
       val uPs: List[JvmType] = newList()

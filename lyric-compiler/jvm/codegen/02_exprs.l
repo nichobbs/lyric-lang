@@ -76,7 +76,7 @@ func emitLongCompareUnsigned(insns: in List[LInsn]): Unit {
 
 // Lower a comparison expression.  lhs type determines which comparison is
 // used; `isUnsigned` (#6748, true when either operand is statically known
-// `UInt`/`ULong` — see `isUnsignedExpr`) selects `Integer`/`Long`'s
+// `UInt`/`ULong` — see `spellsUnsigned`) selects `Integer`/`Long`'s
 // `compareUnsigned` over the native signed `lcmp`/`if_icmpxx` for the
 // RELATIONAL ops (`<`/`<=`/`>`/`>=`); `==`/`!=` are sign-independent and stay
 // on the native op either way.
@@ -1353,7 +1353,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                     emitLoad(insns, rSlot, rhsTy)
                     // #6748: rhs may be a `UInt`/`ULong` value concatenated
                     // onto an erased-to-Object lhs (`xs[0] + uintVal`).
-                    coerceToStringForConcat(ctx, insns, rhsTy, isUnsignedExpr(rhs))
+                    coerceToStringForConcat(ctx, insns, rhsTy, spellsUnsigned(rhs))
                     insns.add(
                       LInvokevirtual(
                         owner = "java/lang/StringBuilder",
@@ -1411,7 +1411,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               // `append(String)` call or verification fails at the append.
               val rhsConcatTy = lowerExpr(ctx, insns, rhs)
               // #6748: rhs may be a `UInt`/`ULong` value (`"n=" + uintVal`).
-              coerceToStringForConcat(ctx, insns, rhsConcatTy, isUnsignedExpr(rhs))
+              coerceToStringForConcat(ctx, insns, rhsConcatTy, spellsUnsigned(rhs))
               val rhsSlot = allocSlot(ctx, "__add_rhs_" + freshLabel(ctx), JRef(className = "java/lang/String"))
               emitStore(insns, rhsSlot, JRef(className = "java/lang/String"))
               insns.add(LNew(className = "java/lang/StringBuilder"))
@@ -1553,7 +1553,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
           // `idiv`/`ldiv` compute the WRONG quotient whenever either operand
           // has its sign bit set — dispatch to `Integer`/`Long.divideUnsigned`
           // instead, mirroring the comparison fix above.
-          val isUnsignedDiv = isUnsignedExpr(lhs) or isUnsignedExpr(rhs)
+          val isUnsignedDiv = spellsUnsigned(lhs) or spellsUnsigned(rhs)
           match lhsTy {
             case JLong -> {
               if isUnsignedDiv {
@@ -1603,7 +1603,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileArithOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs)
           // #6748: see the matching `BDiv` note above.
-          val isUnsignedMod = isUnsignedExpr(lhs) or isUnsignedExpr(rhs)
+          val isUnsignedMod = spellsUnsigned(lhs) or spellsUnsigned(rhs)
           match lhsTy {
             case JLong -> {
               if isUnsignedMod {
@@ -2698,11 +2698,11 @@ func reconcileWidenedOperands(
 ): JvmType {
   val ps: List[JvmType] = newList()
   ps.add(JInt)
-  if isLongJvm(lhsTy) and isIntLikeJvm(rhsTy) and isUnsignedExpr(rhs) {
+  if isLongJvm(lhsTy) and isIntLikeJvm(rhsTy) and spellsUnsigned(rhs) {
     insns.add(LInvokestatic(owner = "java/lang/Integer", name = "toUnsignedLong", params = ps, ret = JLong))
     return JLong
   }
-  if isIntLikeJvm(lhsTy) and isUnsignedExpr(lhs) and isLongJvm(rhsTy) {
+  if isIntLikeJvm(lhsTy) and spellsUnsigned(lhs) and isLongJvm(rhsTy) {
     val rhsSlot = allocSlot(ctx, "__arith_rhs_" + freshLabel(ctx), JLong)
     emitStore(insns, rhsSlot, JLong)
     insns.add(LInvokestatic(owner = "java/lang/Integer", name = "toUnsignedLong", params = ps, ret = JLong))
@@ -2724,7 +2724,7 @@ func lowerCmpExpr(ctx: in FuncCtx, insns: in List[LInsn], op: in BinOp, lhs: in 
   // doesn't match stackmap"), since the StackMapTable declares an empty stack
   // at every branch target (see lowerIfExpr).
   val rslot = allocSlot(ctx, "__cmp_r_" + afterL, JInt)
-  val isUnsigned = isUnsignedExpr(lhs) or isUnsignedExpr(rhs)
+  val isUnsigned = spellsUnsigned(lhs) or spellsUnsigned(rhs)
   lowerCmp(ctx, insns, op, lhsTy, trueL, afterL, isUnsigned)
   // fall-through: comparison was false
   insns.add(LIconst(v = 0))
@@ -2932,37 +2932,37 @@ func lowerBoolCond(ctx: in FuncCtx, insns: in List[LInsn], cond: in Expr, failLa
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
-          lowerCmpFail(insns, BEq, lhsTy, failLabel, isUnsignedExpr(lhs) or isUnsignedExpr(rhs))
+          lowerCmpFail(insns, BEq, lhsTy, failLabel, spellsUnsigned(lhs) or spellsUnsigned(rhs))
         }
         case BNeq -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
-          lowerCmpFail(insns, BNeq, lhsTy, failLabel, isUnsignedExpr(lhs) or isUnsignedExpr(rhs))
+          lowerCmpFail(insns, BNeq, lhsTy, failLabel, spellsUnsigned(lhs) or spellsUnsigned(rhs))
         }
         case BLt -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
-          lowerCmpFail(insns, BLt, lhsTy, failLabel, isUnsignedExpr(lhs) or isUnsignedExpr(rhs))
+          lowerCmpFail(insns, BLt, lhsTy, failLabel, spellsUnsigned(lhs) or spellsUnsigned(rhs))
         }
         case BLte -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
-          lowerCmpFail(insns, BLte, lhsTy, failLabel, isUnsignedExpr(lhs) or isUnsignedExpr(rhs))
+          lowerCmpFail(insns, BLte, lhsTy, failLabel, spellsUnsigned(lhs) or spellsUnsigned(rhs))
         }
         case BGt -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
-          lowerCmpFail(insns, BGt, lhsTy, failLabel, isUnsignedExpr(lhs) or isUnsignedExpr(rhs))
+          lowerCmpFail(insns, BGt, lhsTy, failLabel, spellsUnsigned(lhs) or spellsUnsigned(rhs))
         }
         case BGte -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
-          lowerCmpFail(insns, BGte, lhsTy, failLabel, isUnsignedExpr(lhs) or isUnsignedExpr(rhs))
+          lowerCmpFail(insns, BGte, lhsTy, failLabel, spellsUnsigned(lhs) or spellsUnsigned(rhs))
         }
         case _ -> {
           // Coerce before the test (#5563 item 2): `cond` may lower to an
@@ -3021,37 +3021,37 @@ func lowerBoolCondTrue(ctx: in FuncCtx, insns: in List[LInsn], cond: in Expr, su
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
-          lowerCmp(ctx, insns, BEq, lhsTy, succeedLabel, "", isUnsignedExpr(lhs) or isUnsignedExpr(rhs))
+          lowerCmp(ctx, insns, BEq, lhsTy, succeedLabel, "", spellsUnsigned(lhs) or spellsUnsigned(rhs))
         }
         case BNeq -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
-          lowerCmp(ctx, insns, BNeq, lhsTy, succeedLabel, "", isUnsignedExpr(lhs) or isUnsignedExpr(rhs))
+          lowerCmp(ctx, insns, BNeq, lhsTy, succeedLabel, "", spellsUnsigned(lhs) or spellsUnsigned(rhs))
         }
         case BLt -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
-          lowerCmp(ctx, insns, BLt, lhsTy, succeedLabel, "", isUnsignedExpr(lhs) or isUnsignedExpr(rhs))
+          lowerCmp(ctx, insns, BLt, lhsTy, succeedLabel, "", spellsUnsigned(lhs) or spellsUnsigned(rhs))
         }
         case BLte -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
-          lowerCmp(ctx, insns, BLte, lhsTy, succeedLabel, "", isUnsignedExpr(lhs) or isUnsignedExpr(rhs))
+          lowerCmp(ctx, insns, BLte, lhsTy, succeedLabel, "", spellsUnsigned(lhs) or spellsUnsigned(rhs))
         }
         case BGt -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
-          lowerCmp(ctx, insns, BGt, lhsTy, succeedLabel, "", isUnsignedExpr(lhs) or isUnsignedExpr(rhs))
+          lowerCmp(ctx, insns, BGt, lhsTy, succeedLabel, "", spellsUnsigned(lhs) or spellsUnsigned(rhs))
         }
         case BGte -> {
           val rawLhsTy = lowerExpr(ctx, insns, lhs)
           val rhsTy = lowerExpr(ctx, insns, rhs)
           val lhsTy = reconcileWidenedOperands(ctx, insns, rawLhsTy, rhsTy, lhs, rhs, false)
-          lowerCmp(ctx, insns, BGte, lhsTy, succeedLabel, "", isUnsignedExpr(lhs) or isUnsignedExpr(rhs))
+          lowerCmp(ctx, insns, BGte, lhsTy, succeedLabel, "", spellsUnsigned(lhs) or spellsUnsigned(rhs))
         }
         case _ -> {
           // Coerce before the test (#5563 item 2): see the matching comment
@@ -3345,7 +3345,7 @@ func lowerInterpolated(ctx: in FuncCtx, insns: in List[LInsn], segments: in List
       case ISExpr(e) -> {
         val eTy = lowerExpr(ctx, insns, e)
         // #6748: an interpolated `UInt`/`ULong` segment (`"${uintVal}"`).
-        coerceToStringForConcat(ctx, insns, eTy, isUnsignedExpr(e))
+        coerceToStringForConcat(ctx, insns, eTy, spellsUnsigned(e))
         val eSlot = allocSlot(ctx, "__interp_" + freshLabel(ctx), JRef(className = "java/lang/String"))
         emitStore(insns, eSlot, JRef(className = "java/lang/String"))
         exprSlots.add(eSlot)

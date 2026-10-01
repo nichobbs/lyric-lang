@@ -2451,3 +2451,57 @@ test "a record method takes leading annotations (#7383)" {
   assertEqualInt(recordMethodAnnotationNames(pr, "later").count, 2, "two annotations before async func")
   assertEqualInt(recordMethodAnnotationNames(pr, "plain").count, 0, "an unannotated method has none")
 }
+
+// The one place the set of stringifying builtins is asserted (#7861): the type
+// checker and `Lyric.Mono` both consult `isStringifyingBuiltin`, so adding a
+// name here and there keeps unsigned arguments stringified unsigned.
+test "isStringifyingBuiltin is exactly the stringifying builtins (#7861)" {
+  val yes = ["println", "print", "toString", "format1", "format2", "format3", "format4"]
+  for n in yes {
+    assertTrue(isStringifyingBuiltin(n), n + " stringifies its arguments")
+  }
+  val no = ["panic", "assert", "default", "hashCode", "expect", "format", "format5", "printf", "Println", ""]
+  for n in no {
+    assertFalse(isStringifyingBuiltin(n), n + " does not stringify its arguments")
+  }
+}
+
+func exprBodyOf(src: in String): Option[Expr] {
+  val pr = parse("package P\nfunc f(): Int = " + src + "\n")
+  if diagCount(pr) != 0 or pr.file.items.count == 0 {
+    return None
+  }
+  match pr.file.items[0].kind {
+    case IFunc(fd) -> match fd.body {
+      case Some(b) -> match b { case FBExpr(e) -> Some(value = e); case FBBlock(_) -> None }
+      case None -> None
+    }
+    case _ -> None
+  }
+}
+
+func spellsUnsignedSrc(src: in String): Bool {
+  match exprBodyOf(src) {
+    case Some(e) -> spellsUnsigned(e)
+    case None -> {
+      assertTrue(false, "parses: " + src)
+      false
+    }
+  }
+}
+
+test "spellsUnsigned recognises only an explicitly unsigned spelling (#7861)" {
+  assertTrue(spellsUnsignedSrc("5u32"), "u32 literal")
+  assertTrue(spellsUnsignedSrc("5u64"), "u64 literal")
+  assertTrue(spellsUnsignedSrc("x.toUInt()"), ".toUInt()")
+  assertTrue(spellsUnsignedSrc("x.y.toULong()"), ".toULong()")
+  assertTrue(spellsUnsignedSrc("(x.toUInt())"), "parenthesised .toUInt()")
+  assertTrue(spellsUnsignedSrc("((7u64))"), "nested parens around a u64 literal")
+  assertFalse(spellsUnsignedSrc("5"), "unsuffixed literal")
+  assertFalse(spellsUnsignedSrc("5i64"), "i64 literal")
+  assertFalse(spellsUnsignedSrc("x"), "bare name")
+  assertFalse(spellsUnsignedSrc("x.toUInt(1)"), ".toUInt with an argument")
+  assertFalse(spellsUnsignedSrc("x.toLong()"), "signed conversion")
+  assertFalse(spellsUnsignedSrc("toUInt()"), "free function call")
+  assertFalse(spellsUnsignedSrc("x.toUInt() + 1"), "arithmetic on an unsigned spelling")
+}
