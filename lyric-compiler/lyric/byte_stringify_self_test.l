@@ -14,8 +14,8 @@
 //! `println` output cannot be captured in-process; the println test proves it
 //! runs (and, under `scripts/ilverify-selfhosted.sh`, verifies), and
 //! `scripts/ci/byte-println-e2e.sh` checks the printed text on both targets.
-//! `format1`/`format2` are covered by `byte_stringify_dotnet_self_test.l`
-//! (the JVM `format*` builtins are unimplemented stubs, #7367/#7840).
+//! `format1`/`format2` of a `Byte` render 0..255 on both targets: the
+//! builtins stringify each argument as `toString` does (#7840).
 //!
 //! Run via `lyric test`:
 //!
@@ -128,6 +128,26 @@ test "a Byte from an erased position widens unsigned" {
   assertEqual(toString(f().toUInt()), "128", "function-value result to UInt")
   assertTrue(bx.value.toUInt() > 127u32, "compares unsigned")
   assertEqual(toString(xs[0].toULong() / 5u64), "51", "divides unsigned")
+}
+
+test "format1 of a Byte" {
+  val d: Byte = 255u8
+  val h = ByteHolder(b = 128u8)
+  val xs = sample()
+  val bx = Box(value = 200u8)
+  assertEqual(format1("{0}", d), "255", "local")
+  assertEqual(format1("{0}", h.b), "128", "field")
+  assertEqual(format1("{0}", xs[0]), "0", "slice element 0")
+  assertEqual(format1("{0}", xs[1]), "127", "slice element 127")
+  assertEqual(format1("{0}", byteId(255u8)), "255", "call result")
+  assertEqual(format1("{0}", bx.value), "200", "generic field")
+}
+
+test "format2 of Bytes" {
+  val d: Byte = 255u8
+  val h = ByteHolder(b = 128u8)
+  assertEqual(format2("{0} {1}", d, h.b), "255 128", "local and field")
+  assertEqual(format2("{0}/{1}", byteId(0u8), byteId(127u8)), "0/127", "call results")
 }
 
 test "println of a Byte" {

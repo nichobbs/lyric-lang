@@ -811,6 +811,33 @@ test "String.replace on native (ASan) (#6888)" {
   assertEqualInt(r.exitCode, 42, "String.replace on native")
 }
 
+// `format1`-`format4` lower to `Std.String.formatArgs` in the shared middle
+// end (#7840), so native formats exactly as dotnet and the JVM do
+// (`format_builtin_self_test.l` covers those two).  The program imports
+// neither Std.String nor anything that does: the bridge must bundle it.
+// `UInt`/`ULong` arguments are not covered here because native does not
+// lower those types at all yet (N0007).
+test "format1-format4 on native (ASan) (#7840)" {
+  val src = "package T\n" + "func main(): Int {\n" + "  println(format1(\"a={0}\", 42))\n" +
+    "  println(format2(\"{1}{0}{1}\", \"a\", \"b\"))\n" +
+    "  println(format3(\"{0}-{1}-{2}\", 1, true, \"x\"))\n" +
+    "  println(format4(\"{3}{2}{1}{0}\", 1, 2, 3, 4))\n" +
+    "  println(format1(\"{{{0}}} {{0}} }}{{\", 7))\n" +
+    "  println(format2(\"{1}\", \"unused\", \"used\"))\n" +
+    "  println(format1(\"caf\\u{E9} {0}\", \"ok\"))\n" +
+    "  0\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 0, "exit code")
+  assertEqual(r.stdout, "a=42\nbab\n1-true-x\n4321\n{7} {0} }{\nused\ncafé ok\n", "formatted output")
+}
+
+test "format1 with a placeholder that has no argument panics on native (#7840)" {
+  val src = "package T\n" + "func main(): Int {\n" + "  println(format1(\"{1}\", 5))\n" + "  42\n" + "}\n"
+  val r = compileAndRunNative(src)
+  assertTrue(r.exitCode != 42 and r.exitCode != 0, "a missing argument must panic, not format")
+}
+
 test "Std.Time seams: epoch, monotonic, sleep (ASan)" {
   val src = "package T\n" + "import Std.Time\n" + "func main(): Int {\n" + "  val t0 = nowEpochMillis()\n" +
     "  if t0 < 1500000000000i64 {\n" +

@@ -1445,6 +1445,24 @@ pub func isStringifyingBuiltin(name: in String): Bool {
     name == "format4"
 }
 
+/// The argument count of the `format1`-`format4` builtin `name` (its
+/// template not counted), or None for any other name.  The type checker
+/// types these calls from it and `Lyric.Pipeline` lowers them to
+/// `Std.String.formatArgs` (#7840).
+pub func formatBuiltinArity(name: in String): Option[Int] {
+  if name == "format1" {
+    Some(value = 1)
+  } else if name == "format2" {
+    Some(value = 2)
+  } else if name == "format3" {
+    Some(value = 3)
+  } else if name == "format4" {
+    Some(value = 4)
+  } else {
+    None
+  }
+}
+
 /// True when `e` already says it is unsigned: a `u32`/`u64` literal or a
 /// `.toUInt()`/`.toULong()` call, possibly parenthesised.  The type checker
 /// skips recording such an operand, `Lyric.Mono` skips respelling it, and the

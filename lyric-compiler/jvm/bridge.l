@@ -2176,6 +2176,17 @@ pub func compileToJarBundledWithRestored(
 // expands the latter into a plain `IConfig` item on the CONSUMING file
 // before this bridge ever sees it, docs/58).  Used to force
 // `Std.EnvironmentHost` into the bundle (#7594).
+func fileImportsPackage(file: in SourceFile, pkg: in String): Bool {
+  var i = 0
+  while i < file.imports.count {
+    if dottedPath(file.imports[i].path) == pkg {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
 func fileHasConfigBlock(file: in SourceFile): Bool {
   var i = 0
   while i < file.items.count {
@@ -2952,6 +2963,24 @@ pub func compileProjectToJarBundledWithRestored(
   if anyConfigBlock {
     worklist.add("Std.EnvironmentHost")
   }
+  // `format1`-`format4` lower to `Std.String.formatArgs` (#7840), so a
+  // build calling one bundles `Std.String` whether or not anything imports
+  // it.  A bundled stdlib package that calls one is covered by the same
+  // check in the closure walk below.
+  var fmti = 0
+  var anyFormatCall = false
+  while fmti < userFiles.count and not anyFormatCall {
+    anyFormatCall = pipeUsesFormatBuiltin(userFiles[fmti])
+    fmti = fmti + 1
+  }
+  var fmtri = 0
+  while fmtri < restoredArtifacts.count and not anyFormatCall {
+    anyFormatCall = pipeUsesFormatBuiltin(restoredArtifacts[fmtri].source)
+    fmtri = fmtri + 1
+  }
+  if anyFormatCall {
+    worklist.add("Std.String")
+  }
   var rwi = 0
   while rwi < restoredArtifacts.count {
     val raImports = restoredArtifacts[rwi].source.imports
@@ -2975,6 +3004,9 @@ pub func compileProjectToJarBundledWithRestored(
           while fi < f.imports.count {
             worklist.add(dottedPath(f.imports[fi].path))
             fi = fi + 1
+          }
+          if not seen.containsKey("Std.String") and not fileImportsPackage(f, "Std.String") and pipeUsesFormatBuiltin(f) {
+            worklist.add("Std.String")
           }
         }
         case None -> ()

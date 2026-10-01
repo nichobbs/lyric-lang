@@ -11,7 +11,8 @@
 //!   • Record types with fields
 //!   • Union types (lowered to sealed-union IR)
 //!   • Basic builtin calls: println, print, panic, toString, assert, newList,
-//!     newMap, mapGet, default, format1..format3
+//!     newMap, mapGet, default (`format1`-`format4` are lowered to
+//!     `Std.String.formatArgs` by `Lyric.Pipeline` before codegen)
 //!   • Interpolated strings via String.Concat chains
 //!   • Match expressions with literal and binding patterns
 //!   • Constructor calls and field access
@@ -89,9 +90,6 @@ pub record CodegenCtx {
   tokConcat2: Int  // String.Concat(string,string)
   tokExceptionCtor: Int  // Exception..ctor(string) — one-arg ctor (callers emit ldstr+newobj+throw and rely on this arity)
   tokInvalidOpExceptionCtor: Int  // InvalidOperationException..ctor(string) — for internal invariant violations only
-  tokStringFormat1: Int  // String.Format(string,object)
-  tokStringFormat2: Int  // String.Format(string,object,object)
-  tokStringFormat3: Int  // String.Format(string,object,object,object)
   tokObjToString: Int  // Object.ToString() instance HASTHIS
   tokExcGetMessage: Int  // Exception.get_Message(): string  instance HASTHIS
   tokObjGetType: Int  // Object.GetType(): Type  instance HASTHIS
@@ -1027,26 +1025,27 @@ pub func newCodegenCtx(
       buildInstanceMethodSig(ioExcCtorPs, MVoid)
     )
 
-  // 10. String.Format(string,object): string  → 0x0A00000A
+  // 10.-12. String.Format(string,object[,object[,object]]): string.  Rows
+  // kept so later MemberRef rows don't shift; `format1`-`format4` lower to
+  // `Std.String.formatArgs` in the middle end (#7840), so nothing reads these
+  // tokens.
   val fmt1Ps: List[MsilType] = newList()
   fmt1Ps.add(MString)
   fmt1Ps.add(MObject)
-  val tokFmt1 = 0x0A000000 + ctxAddMemberRef(lctx, trString, "Format", "fmt1", buildStaticMethodSig(fmt1Ps, MString))
+  val _ = ctxAddMemberRef(lctx, trString, "Format", "fmt1", buildStaticMethodSig(fmt1Ps, MString))
 
-  // 11. String.Format(string,object,object): string  → 0x0A00000B
   val fmt2Ps: List[MsilType] = newList()
   fmt2Ps.add(MString)
   fmt2Ps.add(MObject)
   fmt2Ps.add(MObject)
-  val tokFmt2 = 0x0A000000 + ctxAddMemberRef(lctx, trString, "Format", "fmt2", buildStaticMethodSig(fmt2Ps, MString))
+  val _ = ctxAddMemberRef(lctx, trString, "Format", "fmt2", buildStaticMethodSig(fmt2Ps, MString))
 
-  // 12. String.Format(string,object,object,object): string  → 0x0A00000C
   val fmt3Ps: List[MsilType] = newList()
   fmt3Ps.add(MString)
   fmt3Ps.add(MObject)
   fmt3Ps.add(MObject)
   fmt3Ps.add(MObject)
-  val tokFmt3 = 0x0A000000 + ctxAddMemberRef(lctx, trString, "Format", "fmt3", buildStaticMethodSig(fmt3Ps, MString))
+  val _ = ctxAddMemberRef(lctx, trString, "Format", "fmt3", buildStaticMethodSig(fmt3Ps, MString))
 
   // 13. Object.ToString(): string  instance HASTHIS  → 0x0A00000D
   val toStrPs: List[MsilType] = newList()
@@ -2137,9 +2136,6 @@ pub func newCodegenCtx(
     tokConcat2 = tokConcat2,
     tokExceptionCtor = tokExcCtor,
     tokInvalidOpExceptionCtor = tokInvalidOpExcCtor,
-    tokStringFormat1 = tokFmt1,
-    tokStringFormat2 = tokFmt2,
-    tokStringFormat3 = tokFmt3,
     tokObjToString = tokObjToStr,
     tokExcGetMessage = tokExcGetMessage,
     tokObjGetType = tokObjGetType,
@@ -19087,66 +19083,6 @@ func lowerBuiltinOrStaticCallMsil(
       insns.add(MLdNull)
       MObject
     }
-  } else if (not hasQualifiedOverride) and funcName == "format1" {
-    if args.count >= 2 {
-      lowerCallArgMsil(cctx, fctx, insns, args[0])
-      val a1TyRaw = lowerCallArgMsil(cctx, fctx, insns, args[1])
-      val a1TyUnsigned = spellsUnsigned(callArgExpr(args[1])) or distinctUnsignedMsil(cctx, a1TyRaw)
-      val a1Ty = unwrapDistinctForStringMsil(cctx, insns, a1TyRaw)
-      // #6913: `String.Format`'s `{0}` placeholder calls `.ToString()` on the
-      // boxed arg internally — an unsigned-flagged box target for a bare
-      // `UInt`/`ULong` arg — see `spellsUnsigned`.
-      boxIfNeededUnsignedMsil(cctx, insns, a1Ty, a1TyUnsigned)
-      insns.add(MCall(methodToken = cctx.tokStringFormat1))
-    } else if args.count == 1 {
-      val _ = lowerCallArgMsil(cctx, fctx, insns, args[0])
-    } else {
-      val emptyTok = ctxInternUs(cctx.lctx, "")
-      insns.add(MLdStr(token = emptyTok))
-    }
-    MString
-  } else if (not hasQualifiedOverride) and funcName == "format2" {
-    if args.count >= 3 {
-      lowerCallArgMsil(cctx, fctx, insns, args[0])
-      val a1Ty2Raw = lowerCallArgMsil(cctx, fctx, insns, args[1])
-      val a1Ty2Unsigned = spellsUnsigned(callArgExpr(args[1])) or distinctUnsignedMsil(cctx, a1Ty2Raw)
-      val a1Ty2 = unwrapDistinctForStringMsil(cctx, insns, a1Ty2Raw)
-      boxIfNeededUnsignedMsil(cctx, insns, a1Ty2, a1Ty2Unsigned)
-      val a2Ty2Raw = lowerCallArgMsil(cctx, fctx, insns, args[2])
-      val a2Ty2Unsigned = spellsUnsigned(callArgExpr(args[2])) or distinctUnsignedMsil(cctx, a2Ty2Raw)
-      val a2Ty2 = unwrapDistinctForStringMsil(cctx, insns, a2Ty2Raw)
-      boxIfNeededUnsignedMsil(cctx, insns, a2Ty2, a2Ty2Unsigned)
-      insns.add(MCall(methodToken = cctx.tokStringFormat2))
-    } else if args.count >= 1 {
-      val _ = lowerCallArgMsil(cctx, fctx, insns, args[0])
-    } else {
-      val emptyTok = ctxInternUs(cctx.lctx, "")
-      insns.add(MLdStr(token = emptyTok))
-    }
-    MString
-  } else if (not hasQualifiedOverride) and funcName == "format3" {
-    if args.count >= 4 {
-      lowerCallArgMsil(cctx, fctx, insns, args[0])
-      val a1Ty3Raw = lowerCallArgMsil(cctx, fctx, insns, args[1])
-      val a1Ty3Unsigned = spellsUnsigned(callArgExpr(args[1])) or distinctUnsignedMsil(cctx, a1Ty3Raw)
-      val a1Ty3 = unwrapDistinctForStringMsil(cctx, insns, a1Ty3Raw)
-      boxIfNeededUnsignedMsil(cctx, insns, a1Ty3, a1Ty3Unsigned)
-      val a2Ty3Raw = lowerCallArgMsil(cctx, fctx, insns, args[2])
-      val a2Ty3Unsigned = spellsUnsigned(callArgExpr(args[2])) or distinctUnsignedMsil(cctx, a2Ty3Raw)
-      val a2Ty3 = unwrapDistinctForStringMsil(cctx, insns, a2Ty3Raw)
-      boxIfNeededUnsignedMsil(cctx, insns, a2Ty3, a2Ty3Unsigned)
-      val a3Ty3Raw = lowerCallArgMsil(cctx, fctx, insns, args[3])
-      val a3Ty3Unsigned = spellsUnsigned(callArgExpr(args[3])) or distinctUnsignedMsil(cctx, a3Ty3Raw)
-      val a3Ty3 = unwrapDistinctForStringMsil(cctx, insns, a3Ty3Raw)
-      boxIfNeededUnsignedMsil(cctx, insns, a3Ty3, a3Ty3Unsigned)
-      insns.add(MCall(methodToken = cctx.tokStringFormat3))
-    } else if args.count >= 1 {
-      val _ = lowerCallArgMsil(cctx, fctx, insns, args[0])
-    } else {
-      val emptyTok = ctxInternUs(cctx.lctx, "")
-      insns.add(MLdStr(token = emptyTok))
-    }
-    MString
   } else {
     // Record constructor call: EnglishGreeter(field1, field2, ...) → newobj .ctor.
     // Check recordCtorTokens before funcTokens so that record names are handled

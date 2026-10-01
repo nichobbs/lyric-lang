@@ -1453,39 +1453,6 @@ func lowerBuiltinOrStaticCall(
   } else if (not hasOverride) and funcName == "default" {
     insns.add(LAconstNull)
     JRef(className = "java/lang/Object")
-  } else if (not hasOverride) and funcName == "format1" {
-    // format1(template, arg1): String — simplified to first arg.
-    if args.count > 0 {
-      lowerCallArg(ctx, insns, args[0])
-    } else {
-      insns.add(LPushString(s = ""))
-      JVoid
-    }
-    JRef(className = "java/lang/String")
-  } else if (not hasOverride) and funcName == "format2" {
-    if args.count > 0 {
-      lowerCallArg(ctx, insns, args[0])
-    } else {
-      insns.add(LPushString(s = ""))
-      JVoid
-    }
-    JRef(className = "java/lang/String")
-  } else if (not hasOverride) and funcName == "format3" {
-    if args.count > 0 {
-      lowerCallArg(ctx, insns, args[0])
-    } else {
-      insns.add(LPushString(s = ""))
-      JVoid
-    }
-    JRef(className = "java/lang/String")
-  } else if (not hasOverride) and funcName == "format4" {
-    if args.count > 0 {
-      lowerCallArg(ctx, insns, args[0])
-    } else {
-      insns.add(LPushString(s = ""))
-      JVoid
-    }
-    JRef(className = "java/lang/String")
   } else if (not hasOverride) and funcName == "charToString" {
     if args.count > 0 {
       lowerCallArg(ctx, insns, args[0])

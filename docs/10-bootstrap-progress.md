@@ -317,7 +317,7 @@ deferred to Phase 3 by design.
 | Codegen diagnostics (E0003/E0004/E0012) replacing failwithf | **Shipped** | (stdlib-ergonomics) |
 | `Std.String` full surface (split, join, substring overload) | **Shipped** | (stdlib-ergonomics) |
 | `toString` polymorphic builtin | **Shipped** | (real-world-stdlib) |
-| `format1`..`format4` (String.Format wrappers) | **Shipped** | (real-world-stdlib) |
+| `format1`..`format4` — one placeholder grammar on every target, lowered to `Std.String.formatArgs` (#7840) | **Shipped** | (real-world-stdlib), docs/progress/2026-10-01-format-builtins-every-target.md |
 | `Std.File` (readText / writeText / fileExists / createDir) | **Shipped** | (real-world-stdlib) |
 | `Std.Collections` (IntList / StringList / LongList / *Map) | **Shipped** | (collections, superseded by generic-ffi) |
 | Generic `extern type` + `@externTarget` (FFI generics) | **Shipped** | (generic-ffi) |

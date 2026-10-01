@@ -610,6 +610,10 @@ pub func compileToNativeWithFlags(
     worklist.add(dottedPath(userFile.imports[ui].path))
     ui = ui + 1
   }
+  // `format1`-`format4` lower to `Std.String.formatArgs` (#7840).
+  if pipeUsesFormatBuiltin(userFile) {
+    worklist.add("Std.String")
+  }
   var wi = 0
   while wi < worklist.count {
     val pkg = worklist[wi]
@@ -991,6 +995,10 @@ pub func compileProjectToNativeWithFlags(
     while ui < ownFiles[ofi].imports.count {
       worklist.add(dottedPath(ownFiles[ofi].imports[ui].path))
       ui = ui + 1
+    }
+    // `format1`-`format4` lower to `Std.String.formatArgs` (#7840).
+    if pipeUsesFormatBuiltin(ownFiles[ofi]) {
+      worklist.add("Std.String")
     }
     ofi = ofi + 1
   }

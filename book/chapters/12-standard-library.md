@@ -94,7 +94,7 @@ The codegen builtins available without any import:
 - `panic(msg: String)` — raise a `Bug` immediately; no recovery
 - `assert(cond: Bool, msg: String)` — panic if `cond` is false
 - `toString(x)` — produce a `String` representation of any value
-- `format1(template, a)` through `format4(template, a, b, c, d)` — `String.Format`-style substitution using `{0}`, `{1}`, etc. as placeholders
+- `format1(template, a)` through `format4(template, a, b, c, d)` — substitute each argument, stringified as `toString` does, for its `{0}`, `{1}`, ... placeholder; `{{` and `}}` are literal braces, an unused argument is ignored, and a placeholder with no argument or a stray brace panics. Identical on every target; `Std.String.formatArgs(template, args)` does the same for any number of `String` arguments
 - `default()` — zero-initialise a value for the contextual type; useful when a `var` needs an initial sentinel
 
 For anything beyond these, you reach for the specific `Std` module.
