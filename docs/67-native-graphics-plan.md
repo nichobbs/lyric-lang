@@ -1,8 +1,9 @@
 # 67 - Native graphics, GPU and windowing: implementation plan (sketch)
 
-**Status:** Unbacked. The language changes in §4 need a decision-log entry
-(and the `docs/00` / `docs/04` revisions in §4.9) before any of it lands;
-the open questions are Q-GFX-001 to Q-GFX-010 (§10).
+**Status:** Specced in D155 (phase G0): Q-GFX-001 to Q-GFX-004 are
+resolved, `docs/01` specifies the §4 language features as not yet
+implemented, and `docs/00` / `docs/04` carry the §4.9 revisions. Phases G1
+to G10 are open; Q-GFX-005 to Q-GFX-010 remain open (§10).
 
 **Builds on:** `native/plan/` (the LLVM backend, D-N-001 onward),
 `docs/65-ui-library-sketch.md` §13.3 (non-HTML hosts), `docs/63-build-profiles-and-debugger.md`
@@ -465,7 +466,7 @@ XL (a quarter or more of focused work).
 
 | Phase | Scope | Depends on | Exit criteria | Size |
 |---|---|---|---|---|
-| **G0** | Decision-log entry for §4; revisions to `docs/00` and `docs/04`; Q-GFX-001 to Q-GFX-004 resolved. | none | Decision accepted; reference updated with the new types as "specified". | S |
+| **G0** | Decision-log entry for §4; revisions to `docs/00` and `docs/04`; Q-GFX-001 to Q-GFX-004 resolved. | none | Decision accepted; reference updated with the new types as "specified". **Done (D155).** | S |
 | **G1** | `Float` as f32 on all three backends with migration of existing uses (§4.1); by-value records and small unions on native, with the C ABI for by-value structs (§4.2); `array[N, T]` on native (§4.3) with MSIL and JVM parity issues filed; profile-gated overflow checks on native (#6263); range-subtype bounds-check elision on native. | G0 | Self-tests on every backend; ASan clean; a bench showing `Vec3` arithmetic does not allocate. | L |
 | **G2** | `Plain` marker (§4.5); `buffer[T]` with copy-on-write on native, and the shared-mark lowering on MSIL and JVM (§4.4); verifier array model; `withPointer` and `withMutPointer` under the `N0100` rules. | G1 | Self-tests on all backends prove aliasing is never observable; the COW check costs at most a small, fixed per-write overhead in `lyric bench`. | L |
 | **G3** | `foreign record` (§4.7); `@userdata` callbacks (§4.8); `lyric bindgen` (§5.3); C-binding library dependencies with link-requirement propagation (§6); `[native]` library resolution, restore with checksums, and bundling (§6). | G1, G2 | A test library binds a small C API end to end through generated bindings and is consumed by a separate application project. | XL |
@@ -512,10 +513,10 @@ the GPU.
 
 | Id | Question | Recommendation |
 |---|---|---|
-| Q-GFX-001 | `buffer[T]` semantics: copy-on-write value (§4.4) or reference? | Copy-on-write value. |
-| Q-GFX-002 | Make `Float` 32-bit on every backend now, with migration? | Yes; it is what the reference specifies. |
-| Q-GFX-003 | GPU API: `webgpu.h` (wgpu-native / Dawn) or SDL3's own GPU API? SDL_GPU means one dependency, but per-backend shader formats (SPIR-V, MSL, DXIL) and an offline shader toolchain; `webgpu.h` uses WGSL everywhere and maps to the browser. | `webgpu.h`. |
-| Q-GFX-004 | Extend `derives Add, Sub` to homogeneous numeric records (§4.6)? | Yes. |
+| Q-GFX-001 | `buffer[T]` semantics: copy-on-write value (§4.4) or reference? | **Resolved (D155):** copy-on-write value. |
+| Q-GFX-002 | Make `Float` 32-bit on every backend now, with migration? | **Resolved (D155):** yes. |
+| Q-GFX-003 | GPU API: `webgpu.h` (wgpu-native / Dawn) or SDL3's own GPU API? SDL_GPU means one dependency, but per-backend shader formats (SPIR-V, MSL, DXIL) and an offline shader toolchain; `webgpu.h` uses WGSL everywhere and maps to the browser. | **Resolved (D155):** `webgpu.h` via wgpu-native. |
+| Q-GFX-004 | Extend `derives Add, Sub` to homogeneous numeric records (§4.6)? | **Resolved (D155):** yes. |
 | Q-GFX-005 | Name and exact rules of the `Plain` marker; whether enums with explicit ordinals qualify. | As §4.5. |
 | Q-GFX-006 | `lyric bindgen` input: clang JSON AST only, or also `webgpu.yml`? | Both; `webgpu.yml` is the more stable source for WebGPU. |
 | Q-GFX-007 | Native libraries: prebuilt archives by default, or system packages? | Prebuilt by default, `pkg-config` opt-in. |

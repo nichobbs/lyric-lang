@@ -28,11 +28,11 @@ Lyric is not Ada with new syntax. It deliberately drops or alters several Ada fe
 
 **Secondary:** Teams in regulated or safety-adjacent domains (financial services, healthcare, infrastructure) where contract-based design and optional formal verification justify additional engineering investment.
 
-**Not the audience:** Systems programmers who need fine-grained memory control (Rust does this better, Lyric doesn't try). Scripting and rapid-prototyping users (Lyric's compile times and ceremony are wrong for this). Game developers needing hot-path optimization (different priorities). JVM-first shops in v1 (JVM backend is post-v1).
+**Not the audience:** Systems programmers who need fine-grained memory control (Rust does this better, Lyric doesn't try). Scripting and rapid-prototyping users (Lyric's compile times and ceremony are wrong for this). Engine developers who need hand-tuned memory layout and intrinsics (Lyric offers packed buffers and by-value types, not manual memory management). Graphical applications and games built on the native backend are in scope (D155, `docs/67-native-graphics-plan.md`); the bar is safe, allocation-free hot paths, not control over every byte. JVM-first shops in v1 (JVM backend is post-v1).
 
 ## What Lyric is not
 
-**Not a systems language.** Lyric uses tracing GC (the .NET runtime's). No ownership/borrowing, no manual memory management, no `unsafe` pointers. Memory safety comes from the host runtime, not from a borrow checker.
+**Not a systems language.** On the managed targets Lyric uses the host runtime's tracing GC; on the native target it uses automatic reference counting (`native/plan/04-arc-design.md`, D-N-005). Either way there is no ownership/borrowing and no manual memory management, and raw pointers exist only at the audited C boundary (`_kernel_native/` and `@unsafe_ffi`, §11.6 of the reference). Memory safety comes from the runtime and that boundary, not from a borrow checker. Mutable bulk data is a value type (`buffer[T]`, copy-on-write, D155), so performance-oriented code adds no shared mutable state.
 
 **Not a language without a runtime.** Lyric programs depend on the .NET BCL and the Lyric standard library. There is no freestanding mode, no OS-kernel target, no microcontroller target.
 
@@ -61,7 +61,7 @@ Lyric is not Ada with new syntax. It deliberately drops or alters several Ada fe
 | Property | Lyric | C# | F# | Rust | Kotlin | SPARK Ada |
 |---|---|---|---|---|---|---|
 | Primary domain | Services | General | General | Systems | General | Safety-critical |
-| Memory model | Host GC (.NET) | Host GC | Host GC | Ownership | Host GC | Stack/region |
+| Memory model | Host GC (.NET, JVM); ARC (native) | Host GC | Host GC | Ownership | Host GC | Stack/region |
 | Range subtypes | Yes (built-in) | No | No | Newtype | No | Yes |
 | Distinct nominal types | Yes (built-in) | No (workaround) | Units of measure | Newtype | Inline classes | Yes |
 | Reflection | None | Pervasive | Limited | None | Limited | None |
