@@ -96,7 +96,7 @@ Each form decides which names you can write bare:
 - `import Money.{Amount, Cents}` brings only `Amount` and `Cents`. Naming a union or enum type brings its cases too, so `case Square(n) ->` works after `import Shapes.{Shape}`. A listed name cannot be renamed (`{Amount as Amt}` is error T0138); alias the whole package instead.
 - `import Std.Collections as Coll` brings nothing bare; you write `Coll.newList()`.
 
-Any package you import can also be named by its full path, `Money.Amount`, whatever the form. A dotted path always names a package, so `import Time.Instant` imports a package called `Time.Instant`; to pick `Instant` out of `Time`, write `import Time.{Instant}`.
+Any package you import can also be named by its full path, `Money.Amount`, whatever the form. That includes constructors: `Money.Amount(cents = 100)` and, after `import Money as M`, `M.Amount(cents = 100)` build `Money`'s `Amount` even when your own package declares an `Amount` too, and a union case can be qualified by its union, `Shapes.Shape.Circle(r = 1)`. A dotted path always names a package, so `import Time.Instant` imports a package called `Time.Instant`; to pick `Instant` out of `Time`, write `import Time.{Instant}`.
 
 The one exception is `Option` and `Result`: they come from `Std.Core` but are visible everywhere without an explicit import, together with `Some`, `None`, `Ok` and `Err`. Every other name needs an import. Spelling the package out does not get around this: `Std.Rest.RestClient.create(url)` in a file that does not import `Std.Rest` (directly or through a whole import) is a compile error pointing at the missing `import Std.Rest`. Using a name that exists but that your imports do not bring in is a compile error that says where the name lives and how to import it:
 

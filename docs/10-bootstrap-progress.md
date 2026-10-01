@@ -286,6 +286,7 @@ deferred to Phase 3 by design.
 | `Lazy` subtrees: `Widgets.lazyView(key, fingerprint, render)` is rendered once per fingerprint; the session keeps the result as a `Memo` that diffing skips while the fingerprint is unchanged; transparent to events, keys, the wire tree, `Ui.Html` and `Ui.Testing` (docs/65 §13.5, U6) | **Shipped** | D153 |
 | Data grid: `Widgets.dataGrid` renders a window of rows in a body sized for all of them and reports `viewport`/`sort` events (no new protocol messages); pure `Ui.Grid` turns them into sequence-numbered `RowQuery`s the screen fetches, applying only the latest answer; `ui` layer preset admits `Ui.Grid`; JVM reads a generic record's `List[T]` field element as `T` (#7918) (docs/65 §13.6, U6) | **Shipped** | D154 |
 | Native builds stop on type errors: `--target native` gates on type-check errors like dotnet and JVM (single-file and project `build`, `run`, `test`, `--define`, path dependencies), with no binary written; the type checker types the native FFI intrinsics (`NativePtr[T]`, `NativeWeak[T]`, `nativeAddrOf`, `nativeNullPtr`, `upgrade`) on a native check only | **Shipped** | #7910 |
+| Qualified constructor calls: a record constructor qualified by package path or alias and a case qualified by its union build the qualifier's type even when the current package declares the same name; MSIL resolves the written qualifier first (docs/01 §2) | **Shipped** | D155 |
 
 ### Phase 2 — type system completion (complete)
 
