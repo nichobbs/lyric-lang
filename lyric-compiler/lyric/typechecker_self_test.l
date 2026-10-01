@@ -5891,6 +5891,16 @@ test "two renames to one name are both T0148 (#7928)" {
   assertEqualInt(countDiagCode(cr, "T0148"), 2, "each rename is reported")
 }
 
+// #7929: the rewriter would send every bare `Circle` (constructions and
+// pattern heads) to the renamed import, so a rename sharing this
+// package's own case name is reported.
+test "a rename that is a case of this package's union is T0148 (#7929)" {
+  val src = "package App\nimport PkgY.{fromY as Circle}\nunion Shape {\n  case Circle(r: Int)\n  case Dot\n}\nfunc f(): Int { 1 }\n"
+  val cr = checkRenamed(src)
+  assertEqualInt(countDiagCode(cr, "T0148"), 1, "Circle is also Shape's case")
+  assertTrue(diagMessageFor(cr, "T0148").contains("declares the case 'Circle'"), diagMessageFor(cr, "T0148"))
+}
+
 test "a rename that is a case of a whole-imported union is T0148 (#7928)" {
   val packages = importRulePackages()
   packages.add(rulePkg("PkgU", "package PkgU\npub union Shape {\n  case Dot\n  case Box(w: Int)\n}\n"))

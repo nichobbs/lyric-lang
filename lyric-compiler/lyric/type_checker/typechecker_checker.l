@@ -4157,8 +4157,8 @@ record RenamedImport {
   span: Span
 }
 
-// T0148: a renamed import's bare name must not also be a declaration of
-// this package, another import's bare name, a public name (or union or
+// T0148: a renamed import's bare name must not also be a declaration (or
+// a union or enum case) of this package, another import's bare name, a public name (or union or
 // enum case) of a package imported whole, a package alias, or the head of
 // an imported package's path; otherwise one spelling would mean two
 // things (#7564).  The alias and path-head checks matter because the
@@ -4202,6 +4202,11 @@ func checkRenamedImports(
           clash = "this package declares its own '" + ren.local + "'"
         }
         case None -> ()
+      }
+      for cn in caseNamesOf(it) {
+        if cn == ren.local and clash.length == 0 {
+          clash = "this package declares the case '" + ren.local + "'"
+        }
       }
     }
     for sel in selected {

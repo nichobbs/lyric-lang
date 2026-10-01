@@ -45,7 +45,7 @@ it could be implemented. Implementing it means:
    for them. For a bare name it would turn a legitimate earlier use into an
    unknown-name error.
 5. **Collisions are T0148.** The new name must not also be a declaration
-   of the current package, another import's bare name (listed or
+   or union/enum case of the current package (#7929), another import's bare name (listed or
    renamed), a public name or case of a package imported whole, a
    package alias, or the first segment of an imported package's path.
    Otherwise one spelling would have two meanings. The alias and
