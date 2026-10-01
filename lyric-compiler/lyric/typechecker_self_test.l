@@ -8926,7 +8926,7 @@ test "the native-only intrinsics are unknown to a managed-target check (#7910)" 
   assertTrue(hasDiagCode(cr, "T0020"), "nativeAddrOf: T0020 (" + diagCodesOf(cr) + ")")
 }
 
-// D157: C bindings run on every target, so NativePtr and nativeNullPtr
+// D158: C bindings run on every target, so NativePtr and nativeNullPtr
 // type everywhere; an extern func needs @library off native.
 val cBindingSrc: String = "package T\n@library(\"c\")\nextern func cMalloc(n: Long): NativePtr[Byte] = \"malloc\"\n" + "@library(\"c\")\nextern func cFree(p: NativePtr[Byte]): Unit = \"free\"\n" + "@unsafe_ffi\nfunc f(): Int {\n  val p: NativePtr[Byte] = cMalloc(8)\n  cFree(p)\n  cFree(nativeNullPtr())\n  0\n}\n"
 

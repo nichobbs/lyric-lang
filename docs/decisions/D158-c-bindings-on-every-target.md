@@ -83,8 +83,9 @@ Foreign Function & Memory API, final in JDK 22.
 ## Consequences
 
 - `extern_cbinding_self_test.l` calls libc (`abs`, `labs`, `toupper`,
-  `malloc`, `memset`, `free`) on dotnet and the JVM in CI, with `Int`,
-  `Long` and `NativePtr` arguments and results.
+  `ldexp`, `malloc`, `memset`, `free`) and `libm.so.6` by file name on
+  dotnet, the JVM and native in CI, with `Int`, `Long`, `Double` and
+  `NativePtr` arguments and results.
 - `typechecker_self_test.l` covers T0149–T0151 and the managed-target
   typing of `NativePtr`.
 - `"c"` on .NET relies on the runtime's `libc` mapping, which covers

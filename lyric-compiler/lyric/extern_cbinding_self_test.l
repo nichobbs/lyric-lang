@@ -1,14 +1,16 @@
-//! extern_cbinding_self_test.l — C bindings on the managed targets (D158).
+//! extern_cbinding_self_test.l — C bindings on every target (D158).
 //!
 //! An `extern func` with `@library("name")` calls the named C library's
-//! symbol: through P/Invoke on .NET and through the Foreign Function &
-//! Memory API on the JVM.  These tests call the C library itself, so they
+//! symbol: through P/Invoke on .NET, through the Foreign Function &
+//! Memory API on the JVM, and through a direct call linked with
+//! `-l<name>` on native.  These tests call the C library itself, so they
 //! need nothing installed beyond the runtime.  A `NativePtr[T]` crosses
 //! the call as a pointer in both directions.
 //!
-//! Run on both targets:
+//! Run on every target:
 //!   lyric test lyric-compiler/lyric/extern_cbinding_self_test.l
 //!   lyric test --target jvm lyric-compiler/lyric/extern_cbinding_self_test.l
+//!   lyric test --target native lyric-compiler/lyric/extern_cbinding_self_test.l
 @test_module
 package Lyric.ExternCBindingSelfTest
 

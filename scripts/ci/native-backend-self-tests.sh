@@ -81,7 +81,8 @@ for t in \
   lyric-compiler/lyric/record_semantics_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_type_self_test.l \
-  lyric-compiler/lyric/byte_native_self_test.l ; do
+  lyric-compiler/lyric/byte_native_self_test.l \
+  lyric-compiler/lyric/extern_cbinding_self_test.l ; do
   echo "=== $t (--target native) ==="
   "$lyric_bin" test --target native "$t"
 done
