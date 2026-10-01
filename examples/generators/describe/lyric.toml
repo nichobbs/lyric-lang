@@ -1,0 +1,21 @@
+# Acme.Describe — an example custom source generator (docs/40 §6).
+#
+# For each type annotated `@generate(Acme.Describe)` it emits
+# `<Type>.describe(v): String`, listing the type's fields.  The consumer in
+# ../app depends on it as an ordinary `path` dependency; the compiler builds
+# it and runs it while compiling the consumer.
+
+[package]
+name    = "Acme.Describe"
+version = "0.1.0"
+kind    = "source-generator"
+
+[project]
+name            = "Acme.Describe"
+output_assembly = "Acme.Describe.dll"
+
+[project.packages]
+"Acme.Describe" = "src/describe.l"
+
+[dependencies]
+"Lyric.GeneratorSdk" = { path = "../../../lyric-generator-sdk" }

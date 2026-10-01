@@ -423,7 +423,7 @@ AnnotationName = IDENT { '.' IDENT } ;
 AnnotationArgs = '(' [ AnnotationArg { ',' AnnotationArg } [ ',' ] ] ')' ;
 AnnotationArg  =
       IDENT '=' Literal
-    | IDENT
+    | IDENT { '.' IDENT }    (* a qualified name, e.g. @generate(Acme.Describe) *)
     | StringLit
     | IntLit ;
 

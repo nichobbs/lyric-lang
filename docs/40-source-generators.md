@@ -1,6 +1,8 @@
 # 40 — Custom Source Generator API
 
-**Status:** Specced in D075.
+**Status:** Specced in D075. The consumer side (local generator dependencies built
+and run by the compiler, X-series diagnostics) is implemented in D150; the
+diagnostics were renamed from G to X there, keeping their numbers.
 
 This document defines the custom source generator API, the `@generate` annotation
 form that replaces `@derive`, the `Lyric.GeneratorSdk` contract, and the
@@ -62,7 +64,7 @@ exposed record Order {
 - `union`
 - `interface`
 
-It is rejected (diagnostic G0001) on functions, modules, and `wire` blocks — those
+It is rejected (diagnostic X0001) on functions, modules, and `wire` blocks — those
 are not structural types and generators cannot meaningfully inspect their shape.
 
 ### 2.3 Built-in generator names
@@ -97,7 +99,7 @@ kind = "source-generator"
 
 `lyric publish` enforces that packages with `kind = "source-generator"` export a
 function matching the generator entry-point signature (§3.2). Packages without this
-kind declaration are rejected as generator arguments at G0002.
+kind declaration are rejected as generator arguments at X0002.
 
 ### 3.2 Entry point
 
@@ -110,7 +112,7 @@ pub func generate(req: GeneratorRequest): GeneratorResponse { ... }
 ```
 
 The name `generate` is fixed; the compiler locates it by name and signature. A
-missing or mismatched entry point is diagnosed at build time (G0003).
+missing or mismatched entry point is diagnosed at build time (X0003).
 
 ### 3.3 `Lyric.GeneratorSdk` types
 
@@ -197,7 +199,8 @@ record GeneratorResponse {
 `lyricSource` must contain only complete, parseable Lyric items (function declarations,
 `impl` blocks, type aliases). The compiler re-parses this string and injects the
 resulting items into the file before type checking. A parse error in `lyricSource`
-produces diagnostic G0004 pointing at the generator package, not the user's source.
+produces diagnostic X0004 at the `@generate` annotation, naming the generator and the
+line within the generated code.
 
 ---
 
@@ -227,15 +230,23 @@ compiler pipeline, before the file enters the in-process MSIL bridge (or the
 stage-0 `--internal-build` path that backs it during the bootstrap transition).
 No new F# shim is needed. The steps are:
 
-1. Resolve the generator package from the lock file (must already be present; `lyric
-   restore` is a prerequisite, like any other dependency).
-2. Compile the generator DLL (cached after first compile in the build session).
-3. Invoke the compiled DLL as a subprocess via a `Process.run` kernel extern:
-   serialise the `GeneratorRequest` to JSON on stdin; read the `GeneratorResponse`
-   JSON from stdout.
-4. If any `Error`-severity diagnostics are present, fail the build with G0005 (report
-   each as a child note).
-5. Append the returned `lyricSource` to the source text and add `additionalImports`
+1. Resolve the generator package: a `path = "..."` or `{ workspace = true }`
+   dependency whose manifest declares `kind = "source-generator"`. Registry
+   and git generators are not supported yet (X0009).
+2. Check it declares `generate` and `main` (X0003), and build it for dotnet
+   with the normal dependency build, which skips an up-to-date build. Its own
+   `path` and `workspace = true` dependencies (such as `Lyric.GeneratorSdk`)
+   are built first, bottom-up, and a dependency rebuilt since the generator
+   was built makes the generator stale. A
+   generator always runs on the build host, so it is built for dotnet whatever
+   the consumer's `--target` (D150).
+3. Invoke the built DLL as `dotnet exec <dll>`: serialise the
+   `GeneratorRequest` to JSON on stdin; read the `GeneratorResponse` JSON from
+   stdout. A non-zero exit, an empty or malformed response, or a run longer
+   than 60 s is X0009.
+4. Report every diagnostic the generator returned under X0005, with its own
+   code: an `Error` fails the build, a `Warning` or `Info` is printed.
+5. Check the returned `lyricSource` parses (X0004), then append it to the source text and add `additionalImports`
    to the import list; pass the augmented source to the compiler as normal.
 
 The compiler processes the augmented file like any other Lyric source and never
@@ -277,7 +288,7 @@ generator package is what causes the compiler to treat it as a generator rather 
 an importable library.
 
 A generator dependency may not be imported with `import`. It is only invocable via
-`@generate`. Attempting to `import` a source-generator package produces G0006.
+`@generate`. Attempting to `import` a source-generator package produces X0006.
 
 ### 5.2 Full example
 
@@ -307,9 +318,10 @@ pub func Order.toProto(self): slice[Byte] { ... }
 pub func Order.fromProto(bytes: in slice[Byte]): Option[Order] { ... }
 ```
 
-Both function sets go through full type checking. If `Proto.Derive` emits a function
-with a wrong signature the type checker surfaces a G0004 diagnostic referencing the
-generator.
+Both function sets go through full type checking. A type error in generated code is
+reported against the consumer's file, after the comment line that names the
+generator (`// @generate(Proto.Derive) generated for Order`); only a parse error is
+attributed to the generator itself (X0004).
 
 ---
 
@@ -373,15 +385,18 @@ What is **not** enforced (tracked as Q-SG-005):
 
 ```
 lyric-generator-sdk/
-  lyric.toml         [package] name = "Lyric.GeneratorSdk"; kind = "library"
-  std/
-    generator_sdk.l  — the descriptor types above
-    _kernel/
-      generator_sdk_host.l  — @externTarget bridges for JSON serialization
+  lyric.toml         [package] name = "Lyric.GeneratorSdk"
+  src/
+    generator_sdk.l  — the descriptor types, request/response JSON, runGenerator
+  tests/
+    generator_sdk_tests.l
+  PROTOCOL.md        — the stdin/stdout JSON protocol
 ```
 
-Published as `Lyric.GeneratorSdk` on NuGet. Versioned alongside compiler releases.
-Stable API; breaking changes require a major version bump and a decision log entry.
+The SDK is pure Lyric over `Std.*`; it has no kernel file. A generator depends on
+it by path or as a workspace member. `examples/generators/` holds a working
+generator (`Acme.Describe`) and a consumer that CI builds and runs on dotnet and
+JVM (`scripts/ci/source-generator-e2e.sh`).
 
 ---
 
@@ -391,12 +406,12 @@ Stable API; breaking changes require a major version bump and a decision log ent
 |-------|-------------|
 | P1 | Rename `@derive` → `@generate` in spec, language reference, and all docs |
 | P1 | `Generate.synthesizeItems` unifying the built-in path (replaces `JsonDerive.synthesizeItems`) |
-| P1 | Diagnostics G0001–G0003 (annotation target restriction, kind enforcement, missing entry point) |
+| P1 | Diagnostics X0001–X0003 (annotation target restriction, kind enforcement, missing entry point) |
 | P2 | `Lyric.GeneratorSdk` package (`lyric-generator-sdk/`) |
 | P2 | Custom generator subprocess bridge via `Process.run` kernel extern (no new `.fs` file) |
-| P2 | Diagnostics G0004–G0006 (parse error, error-severity diagnostic, import restriction) |
+| P2 | Diagnostics X0004–X0006 (parse error, error-severity diagnostic, import restriction) |
 | P2 | `lyric.toml` `kind = "source-generator"` enforcement in `Manifest.fs` |
-| P2 | Diagnostic G0008 (`@generate(Pkg.Name)` references a package not declared in `[dependencies]`) — supply-chain guard so a generator can't run unless the manifest opted into it. |
+| P2 | Diagnostic X0008 (`@generate(Pkg.Name)` references a package not declared in `[dependencies]`) — supply-chain guard so a generator can't run unless the manifest opted into it. |
 | P3 | `@generate(Sql)` built-in |
 | P3 | `@generate(Proto)` built-in (backed by `lyric-proto`) |
 
@@ -440,7 +455,7 @@ log-safe summary that deliberately omits internal fields.
 
 **Options:**
 1. Allow on all record kinds; let the generator decide.
-2. Allow only on `exposed` and plain records; reject on `opaque` with G0001.
+2. Allow only on `exposed` and plain records; reject on `opaque` with X0001.
 3. Allow with an explicit opt-in annotation (e.g. `@generate_opaque_ok`).
 
 **Recommendation:** Option 1 for now; add the `@generate_opaque_ok` guard if misuse
@@ -459,7 +474,7 @@ bridge. Adding fields to `GeneratorRequest` in a new SDK version is backwards-co
 
 **Recommendation:** Adopt semantic versioning on `Lyric.GeneratorSdk`. The compiler
 advertises the SDK version it ships. Generators declare a `>=` lower bound. The
-compiler emits G0007 if a generator's SDK lower bound is higher than the installed
+compiler emits X0007 if a generator's SDK lower bound is higher than the installed
 SDK version.
 
 ### Q-SG-004: IDE / LSP integration

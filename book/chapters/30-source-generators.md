@@ -36,7 +36,7 @@ After synthesis, the type gains `toJson`, `fromJson` (from the built-in), and `t
 
 ### §30.1.1 Where `@generate` is permitted
 
-`@generate` may appear on `record`, `exposed record`, `union`, and `interface`. It is not permitted on functions, `wire` blocks, or `config` blocks — those are not structural types and generators cannot meaningfully inspect their shape (diagnostic G0001).
+`@generate` may appear on `record`, `exposed record`, `union`, and `interface`. It is not permitted on functions, `wire` blocks, or `config` blocks — those are not structural types and generators cannot meaningfully inspect their shape (diagnostic X0001).
 
 ### §30.1.2 Built-in generators
 
@@ -53,7 +53,7 @@ The built-in set is closed. New built-ins require a compiler change and a decisi
 
 ## §30.2 Consuming a custom generator
 
-From the consumer's perspective, a source generator looks exactly like any other dependency. Add it to `lyric.toml`:
+From the consumer's perspective, a source generator is an ordinary local dependency: a `path` dependency, or a `workspace = true` one when both projects are in a workspace. Add it to `lyric.toml`:
 
 ```toml
 [package]
@@ -61,10 +61,10 @@ name    = "Sales.Reports"
 version = "0.1.0"
 
 [dependencies]
-"Csv.Derive" = "^1.0"
+"Csv.Derive" = { path = "../csv-derive" }
 ```
 
-Run `lyric restore` once to pull the package. Then annotate types as needed:
+Nothing else is needed. When you build, the compiler sees that `Csv.Derive`'s own manifest says `kind = "source-generator"`, builds it (skipping that when it is up to date), and runs it over every type you annotate. It is built for .NET and run with `dotnet exec` whatever `--target` you build for, so the same generator serves a JVM or native build. A generator registered in a package registry or fetched from git cannot be used yet (diagnostic X0009). Annotate types as needed:
 
 ```lyric
 package Sales.Reports
@@ -80,7 +80,7 @@ pub exposed record SalesRow {
 }
 ```
 
-There is no `import Csv.Derive` — source-generator packages cannot be imported; they are only invocable via `@generate` (attempting an import produces diagnostic G0006). The generated functions appear in the same namespace as your type and are visible to the rest of the package like any other member.
+There is no `import Csv.Derive` — source-generator packages cannot be imported; they are only invocable via `@generate` (attempting an import produces diagnostic X0006). The generated functions appear in the same namespace as your type and are visible to the rest of the package like any other member.
 
 ### §30.2.1 What the generated code looks like
 
@@ -119,7 +119,7 @@ kind    = "source-generator"
 "Lyric.GeneratorSdk" = "^1.0"
 ```
 
-`kind = "source-generator"` is what tells the compiler to treat this package as a generator rather than an importable library. `lyric publish` enforces that the entry point function is present before allowing publication (diagnostic G0003 if it is missing or has the wrong signature).
+`kind = "source-generator"` is what tells the compiler to treat this package as a generator rather than an importable library. When a consumer's build prepares the generator, the compiler checks that it declares `generate` and a `main` that runs it (diagnostic X0003 if either is missing).
 
 ### §30.3.2 The entry point
 
@@ -184,9 +184,9 @@ type GeneratorDiagnostic = record {
 }
 ```
 
-`lyricSource` must contain complete, parseable Lyric items — function declarations, `impl` blocks, type aliases. Partial statements are not valid. If `lyricSource` fails to parse, the compiler emits G0004 pointing at the generator package.
+`lyricSource` must contain complete, parseable Lyric items — function declarations, `impl` blocks, type aliases. Partial statements are not valid. If `lyricSource` fails to parse, the compiler emits X0004 at the `@generate` annotation, naming the generator and the line within the generated code.
 
-Any `Error`-severity diagnostic in `diagnostics` fails the build with G0005 and reports each message as a compiler note. `Warning` and `Info` diagnostics surface in compiler output without failing the build.
+Any `Error`-severity diagnostic in `diagnostics` fails the build; each is reported as its own X0005 error. `Warning` and `Info` diagnostics surface in compiler output without failing the build.
 
 ---
 
@@ -298,19 +298,28 @@ This is a bootstrap-quality implementation — it handles the happy path but is 
 
 ## §30.5 Generator diagnostics in practice
 
-When a generator returns an `Error` diagnostic, the compiler reports it like any other build error:
+Every generator problem is reported at the `@generate` annotation, in the same form as any other build error. When a generator returns an `Error` diagnostic:
 
 ```
-error[G0005]: source generator Csv.Derive reported an error
-  --> src/models.l:14:1
-   |
-14 | @generate(Csv.Derive)
-   | ^^^^^^^^^^^^^^^^^^^^^
-   |
-   = CSV002: unsupported field types in @generate(Csv.Derive): tags
+src/models.l: error[X0005] 14:1: generator 'Csv.Derive' on SalesRow [CSV002]: unsupported field types in @generate(Csv.Derive): tags
 ```
 
-The note `CSV002` is the code the generator chose to emit; it can be anything that helps the user understand what went wrong. Providing a code is optional but recommended — it makes it easy to search for in the generator's documentation.
+`CSV002` is the code the generator chose to emit; it can be anything that helps the user understand what went wrong. Providing a code is optional but recommended — it makes it easy to search for in the generator's documentation. A `Warning` or `Info` diagnostic is printed the same way as `warning[X0005]` or `note[X0005]` and does not fail the build.
+
+The full set:
+
+| Code | Meaning |
+|---|---|
+| X0001 | `@generate(Pkg.Name)` on something that is not a record, exposed record, union or interface. |
+| X0002 | The named dependency's manifest does not declare `kind = "source-generator"`. |
+| X0003 | The generator declares no `generate` entry point, or no `main` that calls `runGenerator(generate)`. |
+| X0004 | The generator returned code that does not parse; the message gives the line within the generated code. |
+| X0005 | The generator reported a diagnostic. |
+| X0006 | A source-generator package is imported. |
+| X0008 | The generator is not declared in `[dependencies]`. |
+| X0009 | The generator could not be built or run: its build failed, it exited non-zero, wrote no or malformed JSON, ran longer than 60 seconds, or is a registry or git dependency. |
+
+If a file has several failing annotations, all of them are reported.
 
 ---
 
@@ -375,7 +384,7 @@ lyric publish
 
 `lyric publish` checks that the entry point exists and has the correct signature before allowing publication. The package appears on NuGet with `kind = source-generator` recorded in its metadata, so `lyric search` and the LSP can identify generator packages distinctly from library packages.
 
-Consumers add it as a normal dependency. The lock file pins the generator to a version and SHA-512 checksum identically to any other dependency, providing supply-chain integrity.
+Consuming a published generator from the registry is not supported yet: the compiler needs a generator's source to build it, so today a consumer depends on it by path or as a workspace member (X0009 otherwise).
 
 ---
 

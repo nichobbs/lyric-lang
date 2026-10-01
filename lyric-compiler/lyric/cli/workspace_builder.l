@@ -26,6 +26,8 @@ import Lyric.Workspace as Ws
 import Lyric.Release as Release
 import Lyric.Emitter as Emitter
 import Lyric.Pipeline as Pipe
+import Lyric.Parser as Parser
+import Lyric.Generator as Generator
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Public API
@@ -119,7 +121,9 @@ pub func buildWorkspaceDeps(
       case Mf.DepSource.Workspace(versionOpt) -> {
         // Resolve the dependency name to its directory within the workspace.
         match Ws.resolveDep(dep.name, wsCtx) {
-          case Some(depDir) -> {
+          // A source generator is built and run by `resolveGenerators`, not
+          // linked (D150).
+          case Some(depDir) -> if not isGeneratorDep(depDir) {
             val buildResult = buildWorkspaceDep(dep.name, depDir, target, cliFeatures, noDefaultFeatures, versionOpt, buildStack)
             match buildResult {
               case Ok(dllPath) -> {
@@ -177,6 +181,9 @@ func addTransitiveDepFromDir(
   seen: in List[String],
   result: in List[String],
 ): Unit {
+  if isGeneratorDep(tDepDir) {
+    return
+  }
   val tToml = Path.join(tDepDir, "lyric.toml")
   if File.fileExists(tToml) {
     match File.readText(tToml) {
@@ -403,6 +410,11 @@ func collectTransitiveDepSources(
   while qi < queue.count {
     val depDir = queue[qi]
     qi += 1
+    if isGeneratorDep(depDir) {
+      // A generator's own dependencies are the generator's business: it is
+      // built and run, not compiled into this build (D150).
+      continue
+    }
     val depToml = Path.join(depDir, "lyric.toml")
     match File.readText(depToml) {
       case Err(_) -> ()
@@ -913,6 +925,184 @@ pub record ResolvedManifestDeps {
   depPackageFeatures: List[Pipe.PackageFeatureSet]
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Source-generator dependencies (docs/40 §5.1, D150)
+// ─────────────────────────────────────────────────────────────────────────────
+/// The `[package].kind` declared by the manifest in `depDir`, "" when it
+/// declares none or cannot be read.
+pub func depManifestKind(depDir: in String): String {
+  val depToml = Path.join(depDir, "lyric.toml")
+  match File.readText(depToml) {
+    case Err(_) -> ""
+    case Ok(text) -> match Mf.parseManifest(text, depToml) {
+      case Err(_) -> ""
+      case Ok(m) -> match m.packageSection.kind { case Some(k) -> k; case None -> "" }
+    }
+  }
+}
+
+/// True when the dependency in `depDir` is a source generator: it is built
+/// and run while compiling its consumer, never linked into it.
+pub func isGeneratorDep(depDir: in String): Bool {
+  depManifestKind(depDir) == "source-generator"
+}
+
+// The directory of `dep`, for a path or workspace dependency of the
+// manifest in `mfDir`.
+func localDepDir(dep: in Mf.DependencyEntry, mfDir: in String, wsCtx: in Option[Ws.WorkspaceContext]): Option[String] {
+  match dep.source {
+    case Mf.DepSource.Path(dir) -> Some(value = if Path.isAbsolute(dir) { dir } else { Path.join(mfDir, dir) })
+    case Mf.DepSource.Workspace(_) -> match wsCtx { case Some(ctx) -> Ws.resolveDep(dep.name, ctx); case None -> None }
+    case _ -> None
+  }
+}
+
+// Whether the generator in `depDir` declares the `generate` entry point and
+// a `main` that runs it (docs/40 §3.2, §6).
+func generatorEntryPoints(depDir: in String, depName: in String): (Bool, Bool) {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  collectDepTemplateSources(depDir, depName, pkgs)
+  var hasGenerate = false
+  var hasMain = false
+  for pkg in pkgs {
+    for src in pkg.sources {
+      val pr = Parser.parse(src)
+      for item in pr.file.items {
+        match item.kind {
+          case IFunc(fd) -> {
+            if fd.name == "generate" {
+              hasGenerate = true
+            }
+            if fd.name == "main" {
+              hasMain = true
+            }
+          }
+          case _ -> ()
+        }
+      }
+    }
+  };
+  (hasGenerate, hasMain)
+}
+
+/// The source generators the manifest at `mfPath` declares: each path or
+/// workspace dependency whose manifest says `kind = "source-generator"` is
+/// built for dotnet, whatever the consumer's target, since a generator runs
+/// on the host as `dotnet exec` (docs/40 §4.2).  Other dependencies are
+/// listed as libraries, so `@generate` naming one reports X0002.
+pub func resolveGenerators(manifest: in Mf.Manifest, mfPath: in String): Generator.GeneratorSet {
+  val gens = Generator.emptyGeneratorSet()
+  val mfDir = Path.dirname(mfPath)
+  val wsCtx = Ws.findWorkspaceRoot(mfDir)
+  for dep in manifest.deps {
+    match localDepDir(dep, mfDir, wsCtx) {
+      case None -> ()
+      case Some(depDir) -> {
+        val kind = depManifestKind(depDir)
+        if kind != "source-generator" {
+          gens.libraries[dep.name] = kind
+        } else {
+          val (hasGenerate, hasMain) = generatorEntryPoints(depDir, dep.name)
+          if not hasGenerate or not hasMain {
+            val missing = if not hasGenerate {
+              "pub func generate(req: GeneratorRequest): GeneratorResponse"
+            } else {
+              "func main(): Int { runGenerator(generate) }"
+            }
+            gens.failures[dep.name] = Generator.GeneratorFailure(
+              code = "X0003",
+              message = "source generator '" + dep.name + "' (" + depDir + ") does not declare " +
+                missing
+            )
+          } else {
+            val stack: List[String] = newList()
+            match buildGeneratorTree(dep.name, depDir, stack) {
+              case Ok(dll) -> {
+                gens.dlls[dep.name] = dll
+              }
+              case Err(e) -> {
+                gens.failures[dep.name] = Generator.GeneratorFailure(
+                  code = "X0009",
+                  message = "source generator '" + dep.name + "' could not be built: " + e
+                )
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  gens
+}
+
+// Builds the generator (or generator dependency) `depName` in `depDir` for
+// dotnet, after building its own path and workspace dependencies: a project
+// build only links a local dependency that is already built, and nothing
+// else builds a generator's dependencies.  A dependency DLL newer than this
+// one makes it stale, so a changed SDK rebuilds the generator.
+func buildGeneratorTree(depName: in String, depDir: in String, stack: in List[String]): Result[String, String] {
+  if stack.contains(depName) {
+    return Err(error = "circular dependency detected: " + depName + " is already being built")
+  }
+  val depToml = Path.join(depDir, "lyric.toml")
+  val depMf = match File.readText(depToml) {
+    case Err(e) -> return Err(error = "cannot read " + depToml + ": " + IOError.message(e))
+    case Ok(text) -> match Mf.parseManifest(text, depToml) {
+      case Err(e) -> return Err(error = "malformed lyric.toml: " + Mf.ManifestError.message(e))
+      case Ok(m) -> m
+    }
+  }
+  stack.add(depName)
+  val wsCtx = Ws.findWorkspaceRoot(depDir)
+  val depDlls: List[String] = newList()
+  for d in depMf.deps {
+    match localDepDir(d, depDir, wsCtx) {
+      case Some(dir) -> match buildGeneratorTree(d.name, dir, stack) {
+        case Ok(dll) -> depDlls.add(dll)
+        case Err(e) -> {
+          stack.removeAt(stack.count - 1)
+          return Err(error = "its dependency '" + d.name + "' could not be built: " + e)
+        }
+      }
+      case None -> ()
+    }
+  }
+  stack.removeAt(stack.count - 1)
+  discardIfOlderThan(depDllPath(depMf, depDir), depDlls)
+  val noFeatures: List[String] = newList()
+  val buildStack: List[String] = newList()
+  buildWorkspaceDep(depName, depDir, Emitter.Dotnet, noFeatures, false, None, buildStack)
+}
+
+// Where `buildWorkspaceDep` puts the DLL of the dependency in `depDir`.
+func depDllPath(depMf: in Mf.Manifest, depDir: in String): String {
+  val dllName: String = match depMf.project {
+    case Some(p) -> match p.outputAssembly { case Some(asm) -> asm; case None -> p.name + ".dll" }
+    case None -> depMf.packageSection.name + ".dll"
+  }
+  Path.join(Path.join(depDir, "bin"), dllName)
+}
+
+// Deletes the built `dll` when any of `inputs` is newer, so the next build
+// of it is not skipped as up to date.
+func discardIfOlderThan(dll: in String, inputs: in List[String]): Unit {
+  val built = match File.stat(dll) { case Ok(st) -> st; case Err(_) -> return }
+  for input in inputs {
+    match File.stat(input) {
+      case Ok(st) -> {
+        if File.fileStatIsNewer(st, built) {
+          match File.deleteFile(dll) {
+            case Ok(_) -> ()
+            case Err(_) -> ()
+          }
+          return
+        }
+      }
+      case Err(_) -> ()
+    }
+  }
+}
+
 /// True for the targets that compile a `path` or `workspace = true`
 /// dependency from its source into the same build, rather than linking its
 /// built DLL: Jvm (#6136) and Native (#7833).
@@ -996,7 +1186,11 @@ pub func resolveManifestDependencies(
         val depDir = if Path.isAbsolute(dir) { dir } else { Path.join(mfDir, dir) }
         val depToml = Path.join(depDir, "lyric.toml")
         val depBinDir = Path.join(depDir, "bin")
-        if File.fileExists(depToml) {
+        // A source generator is built and run by `resolveGenerators`, never
+        // linked or compiled into the consumer (D150).
+        if isGeneratorDep(depDir) {
+          ()
+        } else if File.fileExists(depToml) {
           match File.readText(depToml) {
             case Ok(depMfText) -> {
               match Mf.parseManifest(depMfText, depToml) {
@@ -1153,7 +1347,7 @@ pub func resolveManifestDependencies(
           case Some(wsCtx) -> {
             match Ws.resolveDep(dep.name, wsCtx) {
               case None -> ()
-              case Some(depDir) -> {
+              case Some(depDir) -> if not isGeneratorDep(depDir) {
                 collectDepTemplateSources(depDir, dep.name, depTemplatePkgsList)
                 collectDepPackageFeatures(depDir, cliFeatures, noDefaultFeatures, target, depPackageFeatures)
               }

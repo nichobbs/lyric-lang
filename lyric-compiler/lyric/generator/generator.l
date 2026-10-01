@@ -1,19 +1,21 @@
 //! generator/generator.l — Lyric.Generator
 //!
-//! Source-text pre-processor for custom @generate(Pkg.Name) annotations.
+//! Source-text pre-processor for custom `@generate(Pkg.Name)` annotations
+//! (docs/40, D075, D150).
 //!
-//! Called by Lyric.Cli.buildOne before the source is handed to the emitter.
-//! For each @generate(X.Y) annotation found in the source text (dotted names
-//! only — bare names like @generate(Json) are handled by the F# bootstrap's
-//! Generate.synthesizeItems pass), the pre-processor:
+//! `Lyric.Cli` reads each source file of a project and calls `preprocess`
+//! before parsing.  For each `@generate(X.Y)` annotation (dotted names only;
+//! a bare built-in like `@generate(Json)` is `Lyric.Derives`'s) it:
 //!
-//!   1. Resolves the generator package DLL from restored packages next to the
-//!      manifest.
-//!   2. Invokes it via `dotnet exec <dll>` with the GeneratorRequest JSON on
-//!      stdin.
-//!   3. Appends the returned lyricSource and additionalImports to the source.
+//!   1. Checks the generator is declared in the consumer's `[dependencies]`
+//!      and is a built `kind = "source-generator"` package (the CLI builds
+//!      each one for dotnet and passes its DLL in a `GeneratorSet`).
+//!   2. Runs it as `dotnet exec <dll>` with the GeneratorRequest JSON on
+//!      stdin and decodes the GeneratorResponse on stdout.
+//!   3. Checks the generated code parses, then appends it, and places its
+//!      `additionalImports` after the `package` line.
 //!
-//! See docs/40-source-generators.md and D075.
+//! Failures are X-series diagnostics carrying the annotation's position.
 package Lyric.Generator
 
 import Std.Core
@@ -22,7 +24,9 @@ import Std.String as Str
 import Std.File as File
 import Std.Path as Path
 import Std.ProcessCapture as ProcessCapture
+import Std.JsonValue as Jv
 import Lyric.Manifest as Manifest
+import Lyric.Parser as Parser
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Lightweight source scanner
@@ -42,6 +46,9 @@ pub record GenerateDirective {
   // raw field block text (empty for unions/interfaces)
   packageName: String
   // package header of the source file
+  line: Int
+  column: Int
+  // 1-based position of the `@` of `@generate`
 }
 
 func charIsIdent(c: in Char): Bool {
@@ -192,6 +199,21 @@ func readBracedBlock(src: in String, pos: inout Int): String {
   content
 }
 
+// The 1-based line and column of offset `at` in `src`.
+func lineAndColumn(src: in String, at: in Int): (Int, Int) {
+  var line = 1
+  var lineStart = 0
+  var i = 0
+  while i < at {
+    if Str.charAtOrReplacement(src, i) == '\n' {
+      line += 1
+      lineStart = i + 1
+    }
+    i += 1
+  };
+  (line, at - lineStart + 1)
+}
+
 // Scan `src` for all @generate(X.Y) directives where the argument contains a dot
 // (custom generator).  Returns a list of GenerateDirective values.
 //
@@ -235,6 +257,7 @@ pub func scanDirectives(src: in String, packageName: in String): List[GenerateDi
       // consume closing `"`
     } else if Str.charAtOrReplacement(src, i) == '@' and matchAt(src, i + 1, "generate(") {
       // Look for @generate(
+      val (atLine, atColumn) = lineAndColumn(src, i)
       var pos = i + 10
       // past "@generate("
       val arg = readDottedIdent(src, pos)
@@ -296,7 +319,21 @@ pub func scanDirectives(src: in String, packageName: in String): List[GenerateDi
           skipWs(src, pos)
           typeName = readIdent(src, pos)
         }
-        if typeName != "" {
+        // A directive that annotates no type is kept with an empty
+        // `typeName`, so the caller reports it (X0001).
+        if typeName == "" {
+          results.add(
+            GenerateDirective(
+              generatorArg = arg,
+              typeName = "",
+              typeKind = "",
+              rawFields = "",
+              packageName = packageName,
+              line = atLine,
+              column = atColumn
+            )
+          )
+        } else {
           // Skip to opening brace
           while pos < src.length and Str.charAtOrReplacement(src, pos) != '{' and Str.charAtOrReplacement(src, pos) != '\n' {
             pos += 1
@@ -310,7 +347,9 @@ pub func scanDirectives(src: in String, packageName: in String): List[GenerateDi
               typeName = typeName,
               typeKind = typeKind,
               rawFields = rawFields,
-              packageName = packageName
+              packageName = packageName,
+              line = atLine,
+              column = atColumn
             )
           )
         }
@@ -368,8 +407,8 @@ func parseFields(block: in String): List[StringPair] {
   fields
 }
 
-/// A pair of strings: `parseResponseJson` returns the generated source and
-/// its import lines.
+/// A pair of strings: a field's name and type text, or a type's kind and
+/// type-argument text.
 pub record StringPair {
   first: String
   second: String
@@ -550,98 +589,8 @@ func buildRequestJson(dir: in GenerateDirective, sourceFile: in String): String 
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. Generator response parsing
 // ─────────────────────────────────────────────────────────────────────────────
-func skipJsonWs(src: in String, pos: inout Int): Unit {
-  while pos < src.length and (Str.charAtOrReplacement(src, pos) == ' ' or Str.charAtOrReplacement(src, pos) == '\t' or Str.charAtOrReplacement(src, pos) == '\n' or Str.charAtOrReplacement(src, pos) == '\r') {
-    pos += 1
-  }
-}
-
-func parseJsonStringValue(src: in String, pos: inout Int): String {
-  pos += 1
-  // skip opening "
-  var s = ""
-  while pos < src.length and Str.charAtOrReplacement(src, pos) != '"' {
-    if Str.charAtOrReplacement(src, pos) == '\\' and pos + 1 < src.length {
-      pos += 1
-      val esc = Str.charAtOrReplacement(src, pos)
-      if esc == 'n' {
-        s = s + "\n"
-      } else if esc == 't' {
-        s = s + "\t"
-      } else if esc == 'r' {
-        s = s + "\r"
-      } else if esc == '"' {
-        s = s + "\""
-      } else if esc == '\\' {
-        s = s + "\\"
-      } else {
-        s = s + "\\" + Str.substring(src, pos, 1)
-      }
-    } else {
-      s = s + Str.substring(src, pos, 1)
-    }
-    pos += 1
-  }
-  if pos < src.length {
-    pos += 1
-  }
-  // skip closing "
-  s
-}
-
-// Find a top-level string value by key in a JSON object.
-func jsonGetString(json: in String, key: in String): Option[String] {
-  val needle = "\"" + key + "\""
-  var i = 0
-  while i <= json.length - needle.length {
-    var ok = true
-    var k = 0
-    while k < needle.length {
-      if Str.codeUnitAt(json, i + k) != Str.codeUnitAt(needle, k) {
-        ok = false
-      }
-      k += 1
-    }
-    if ok {
-      var pos = i + needle.length
-      skipJsonWs(json, pos)
-      if pos < json.length and Str.charAtOrReplacement(json, pos) == ':' {
-        pos += 1
-        skipJsonWs(json, pos)
-        if pos < json.length and Str.charAtOrReplacement(json, pos) == '"' {
-          val s = parseJsonStringValue(json, pos)
-          return Some(value = s)
-        }
-      }
-    }
-    i += 1
-  }
-  None
-}
-
-func parseJsonStringArray(json: in String, pos: inout Int): List[String] {
-  val items: List[String] = newList()
-  pos += 1
-  // skip [
-  skipJsonWs(json, pos)
-  while pos < json.length and Str.charAtOrReplacement(json, pos) != ']' {
-    if Str.charAtOrReplacement(json, pos) == '"' {
-      items.add(parseJsonStringValue(json, pos))
-    } else {
-      pos += 1
-    }
-    skipJsonWs(json, pos)
-    if pos < json.length and Str.charAtOrReplacement(json, pos) == ',' {
-      pos += 1
-    }
-    skipJsonWs(json, pos)
-  }
-  if pos < json.length {
-    pos += 1
-  }
-  // skip ]
-  items
-}
+/// How long one generator invocation may run before it is stopped.
+pub val generatorTimeoutMs: Int = 60000
 
 func isGeneratorIdentifier(s: in String): Bool {
   if s.length == 0 {
@@ -694,118 +643,104 @@ pub func isValidGeneratorImport(stmt: in String): Bool {
   }
 }
 
-// Parse the response JSON: extract lyricSource, additionalImports, and any
-// Error-severity diagnostics.  `stderr`, `exitCode`, and `timedOut` are
-// passed through from the capture result so they can be included in error
-// messages when stdout is empty or invalid (#1025).  An `additionalImports`
-// entry that is not a single import statement fails the response.
+/// One diagnostic a generator reported (`GeneratorDiagnostic` in
+/// `Lyric.GeneratorSdk`).  `severity` is "Error", "Warning" or "Info".
+pub record ReportedDiagnostic {
+  severity: String
+  message: String
+  code: String
+}
+
+/// A generator's decoded `GeneratorResponse`.
+pub record GeneratorResult {
+  lyricSource: String
+  imports: List[String]
+  diagnostics: List[ReportedDiagnostic]
+}
+
+/// Decodes a generator's stdout as a `GeneratorResponse`.  `stderr`,
+/// `exitCode` and `timedOut` come from the capture and explain an empty or
+/// malformed response.  An `additionalImports` entry that is not a single
+/// import statement fails the response.  The Err text describes why the
+/// generator could not be used; the caller reports it as X0009.
 pub func parseResponseJson(
   json: in String, stderr: in String, exitCode: in Int, timedOut: in Bool
-): Result[StringPair, String] {
-  // Guard: empty/non-JSON output — include stderr and exit code so the
-  // developer sees the actual failure reason instead of "may have crashed".
-  if json == "" {
-    if timedOut {
-      return Err(error = "generator timed out (killed after 10 s)")
-    }
-    val exitSuffix = if exitCode != 0 { " (exit " + Str.fromInt(exitCode) + ")" } else { "" }
-    val stderrSuffix = if stderr != "" { ": " + stderr } else { "" }
-    return Err(error = "generator produced no output" + exitSuffix + stderrSuffix)
+): Result[GeneratorResult, String] {
+  if timedOut {
+    return Err(error = "it did not finish within " + Str.fromInt(generatorTimeoutMs / 1000) + " s and was stopped")
   }
-  if not Str.contains(json, "lyricSource") {
-    return Err(error = "generator output is not a valid GeneratorResponse")
+  val trimmed = Str.trim(json)
+  if trimmed == "" {
+    val exitText = if exitCode != 0 { "it exited with code " + Str.fromInt(exitCode) } else { "it wrote no response" }
+    val stderrText = if Str.trim(stderr) != "" { ": " + Str.trim(stderr) } else { "" }
+    return Err(error = exitText + stderrText)
   }
-
-  val lyricSource = unwrapOr(jsonGetString(json, "lyricSource"), "")
-
-  // Parse additionalImports — find the key then the array
-  var importsText = ""
-  val imKey = "\"additionalImports\""
-  var ki = 0
-  while ki <= json.length - imKey.length {
-    var ok = true
-    var m = 0
-    while m < imKey.length {
-      if Str.codeUnitAt(json, ki + m) != Str.codeUnitAt(imKey, m) {
-        ok = false
-      }
-      m += 1
-    }
-    if ok {
-      var pos = ki + imKey.length
-      skipJsonWs(json, pos)
-      if pos < json.length and Str.charAtOrReplacement(json, pos) == ':' {
-        pos += 1
-        skipJsonWs(json, pos)
-        if pos < json.length and Str.charAtOrReplacement(json, pos) == '[' {
-          val items = parseJsonStringArray(json, pos)
-          var ii = 0
-          while ii < items.count {
-            if not isValidGeneratorImport(items[ii]) {
-              return Err(
-                error = "generator returned an additionalImports entry that is not a single import statement: " + items[ii]
-              )
-            }
-            if ii > 0 {
-              importsText = importsText + "\n"
-            }
-            importsText = importsText + items[ii]
-            ii += 1
+  val root = match Jv.parseValue(trimmed) {
+    case Ok(v) -> v
+    case Err(e) -> return Err(error = "its response is not valid JSON (" + e.message() + ")")
+  }
+  val lyricSource = match Jv.getString(root, "lyricSource") {
+    case Some(src) -> src
+    case None -> return Err(error = "its response has no \"lyricSource\" string")
+  }
+  val imports: List[String] = newList()
+  match Jv.getArray(root, "additionalImports") {
+    case Some(items) -> {
+      for item in items {
+        match Jv.asString(item) {
+          case Some(stmt) -> if isValidGeneratorImport(stmt) {
+            imports.add(stmt)
+          } else {
+            return Err(error = "its additionalImports entry is not a single import statement: " + stmt)
           }
+          case None -> return Err(error = "its additionalImports holds a value that is not a string")
         }
       }
-      ki = json.length
-      // found — done
-    } else {
-      ki += 1
     }
+    case None -> ()
   }
-
-  // Check for Error-severity diagnostics.
-  // Match "severity":"Error" as a literal substring — the generator SDK emits
-  // compact JSON (no spaces), so this is safe.  Generated source text goes
-  // through jsonEscape, so a type named Error becomes \"Error\" in the JSON
-  // and cannot produce a false match here.
-  if Str.contains(json, "\"severity\":\"Error\"") {
-    return Err(error = unwrapOr(jsonGetString(json, "message"), "generator error"))
+  val diags: List[ReportedDiagnostic] = newList()
+  match Jv.getArray(root, "diagnostics") {
+    case Some(items) -> {
+      for item in items {
+        val severity = unwrapOr(Jv.getString(item, "severity"), "Error")
+        val message = unwrapOr(Jv.getString(item, "message"), "")
+        val code = unwrapOr(Jv.getString(item, "code"), "")
+        diags.add(ReportedDiagnostic(severity = severity, message = message, code = code))
+      }
+    }
+    case None -> ()
   }
-
-  // Return lyricSource and imports as a pair (separator "\n---imports---\n")
-  Ok(value = StringPair(first = lyricSource, second = importsText))
+  Ok(value = GeneratorResult(lyricSource = lyricSource, imports = imports, diagnostics = diags))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §4a. Supply-chain enforcement (docs/40 §3.1, lyric-lang #737)
+// §5. Generator dependencies (docs/40 §3.1, §5.1; D150)
 // ─────────────────────────────────────────────────────────────────────────────
-// Verify a generator package is declared as a dependency in the consumer
-// manifest and (when locatable) carries `kind = "source-generator"`.
-//
-// Returns Ok(()) when the generator may proceed.  Returns Err with a
-// structured G0002 / G0008 message when the supply-chain check fails.
-//
-// G0008 — generator package not declared in [dependencies].  Always
-// enforceable because the consumer manifest is right there at mfPath.
-// G0001 is reserved by docs/40 §2.2 / §10 P1 for the annotation-target
-// restriction (`@generate` on non-structural types), so this check uses
-// the next free slot (G0008).
-//
-// G0002 — kind mismatch on the referenced package (matches the spec
-// reservation in docs/40 §10 P1 for kind enforcement).  Enforceable
-// when the dependency is a Path dep (we can read its lyric.toml).
-//
-// Registry / Workspace / Git deps skip the kind check until the
-// restore pipeline persists cached manifests under a known path
-// (`.lyric/restore/<name>-<ver>/lyric.toml`); G0008 still catches the
-// obvious supply-chain hole for those cases (the package must be in
-// `[dependencies]`).  See PR #753 and #757 (review-finding) for the
-// status of the cached-manifest probe; once cached `lyric.toml`s are
-// available, replace `case _ -> None` in `depManifestPath` below
-// with a probe under the restore root for Registry/Workspace/Git
-// variants.
-// Pure G0008 check — verifies the generator package appears in
-// `[dependencies]`.  Returns the matched DependencyEntry on success so
-// the caller can inspect the dep source.  Exposed `pub` so self-tests
-// can exercise it against synthesised Manifest values.
+/// Why a declared generator dependency cannot be run, with the diagnostic
+/// code to report it under (X0003 or X0009).
+pub record GeneratorFailure {
+  code: String
+  message: String
+}
+
+/// What a consumer's manifest offers `@generate(Pkg.Name)`: each generator
+/// dependency's built DLL by package name, the declared dependencies that
+/// are not generators (name to their `[package].kind`, "" when unset), and
+/// the generator dependencies that could not be built.  `Lyric.Cli` builds
+/// it from the manifest before any source is read.
+pub record GeneratorSet {
+  dlls: Map[String, String]
+  libraries: Map[String, String]
+  failures: Map[String, GeneratorFailure]
+}
+
+pub func emptyGeneratorSet(): GeneratorSet {
+  GeneratorSet(dlls = newMap(), libraries = newMap(), failures = newMap())
+}
+
+/// The X0008 check: `generatorArg` must name a package declared in
+/// `[dependencies]`, so no generator runs that the manifest did not opt into.
 pub func checkGeneratorDeclaredIn(
   consumerMf: in Manifest.Manifest, generatorArg: in String
 ): Result[Manifest.DependencyEntry, String] {
@@ -817,128 +752,22 @@ pub func checkGeneratorDeclaredIn(
     i = i + 1
   }
   Err(
-    error = "G0008: @generate(" + generatorArg + ") references a package not declared in [dependencies] of " +
+    error = "X0008: @generate(" + generatorArg + ") names a package that is not declared in [dependencies] of " +
       consumerMf.filePath +
-      "; add it to the manifest or the supply-chain check will reject the build"
+      "; a generator runs only when the manifest declares it"
   )
 }
 
-// Pure G0002 check — verifies the dependency's manifest declares
-// `[package].kind = "source-generator"`.  `depMfPath` is included in
-// the diagnostic so the user can locate the offending manifest.
-// Returns Result[String, String] (Ok("") = success) rather than
-// Result[Unit, String] or Result[Bool, String] to avoid cross-assembly ABI
-// mismatches: the F# and self-hosted emitters encode Unit and bool differently
-// in generic instantiation signatures (Unit → ValueTuple vs Object; bool →
-// TypeRef(System.Boolean) vs ELEMENT_TYPE_BOOLEAN).  String is a reference
-// type with unambiguous encoding across both emitters.  Tracked in #2557.
-pub func checkGeneratorKind(
-  generatorArg: in String, depMfPath: in String, depMf: in Manifest.Manifest
-): Result[String, String] {
-  match depMf.packageSection.kind {
-    case Some(k) -> if k == "source-generator" {
-      Ok(value = "")
-    } else {
-      Err(
-        error = "G0002: @generate(" + generatorArg + ") declares [package].kind = \"" + k +
-          "\" (must be \"source-generator\") in " +
-          depMfPath
-      )
-    }
-    case None -> Err(
-      error = "G0002: @generate(" + generatorArg + ") is missing [package].kind = \"source-generator\" in " +
-        depMfPath
-    )
-  }
-}
-
-func checkGeneratorDependency(mfPath: in String, generatorArg: in String): Result[String, String] {
-  val consumerMf = match File.readText(mfPath) {
-    case Err(_) -> return Ok(value = "")
-    // can't read manifest -> skip; cli.l will surface the real error
-    case Ok(text) -> match Manifest.parseManifest(text, mfPath) {
-      case Err(_) -> return Ok(value = "")
-      case Ok(m) -> m
-    }
-  }
-  // parse error -> cli.l will surface it
-  val declared = checkGeneratorDeclaredIn(consumerMf, generatorArg)
-  match declared {
-    case Err(e) -> return Err(error = e)
-    case Ok(_) -> ()
-  }
-  val dep = match declared { case Ok(d) -> d; case Err(_) -> return Ok(value = "") }
-  // unreachable — handled above
-  // If we can resolve the dep's manifest, check its [package].kind.
-  val depManifestPath = match dep.source {
-    case Manifest.Path(relDir) -> {
-      val manifestDir = Path.dirname(mfPath)
-      val absDir = if Path.isAbsolute(relDir) { relDir } else { Path.join(manifestDir, relDir) }
-      Some(value = Path.join(absDir, "lyric.toml"))
-    }
-    case _ -> None
-  }
-  match depManifestPath {
-    case None -> Ok(value = "")
-    // Registry / Workspace / Git — skip kind check (see header comment).
-    case Some(p) -> {
-      match File.readText(p) {
-        case Err(_) -> Ok(value = "")
-        // missing — restore step will surface it.
-        case Ok(text) -> match Manifest.parseManifest(text, p) {
-          case Err(_) -> Ok(value = "")
-          case Ok(depMf) -> checkGeneratorKind(generatorArg, p, depMf)
-        }
-      }
-      // parse error there — separate concern.
-    }
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// §5. Generator DLL resolution
-// ─────────────────────────────────────────────────────────────────────────────
-// Find the restored DLL for a generator package.
-// `manifestPath` is the path to the consumer's lyric.toml.
-// `generatorPkg` is the package name (e.g. "Proto.Derive").
-//
-// Convention: restored packages live in `.lyric/packages/<name>/` relative to
-// the manifest directory.  The build DLL is `<name>.dll` inside that directory.
-func resolveGeneratorDll(manifestPath: in String, generatorPkg: in String): Result[String, String] {
-  val manifestDir = Path.dirname(manifestPath)
-  // Sanitise package name to a filesystem-safe directory name
-  // (replace dots and other punctuation with dashes, lowercase).
-  var dirName = ""
-  var i = 0
-  while i < generatorPkg.length {
-    val c = Str.charAtOrReplacement(generatorPkg, i)
-    if c == '.' {
-      dirName = dirName + "-"
-    } else if (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '_' {
-      dirName = dirName + charToString(c)
-    }
-    i += 1
-  }
-  val pkgDir = Path.join(Path.join(Path.join(manifestDir, ".lyric"), "packages"), dirName)
-  val dllPath = Path.join(pkgDir, generatorPkg + ".dll")
-  if File.fileExists(dllPath) {
-    Ok(value = dllPath)
-  } else {
-    // Fall back: look for any .dll in the package directory
-    Err(error = "generator package '" + generatorPkg + "' not found at " + dllPath + " — run `lyric restore` first")
-  }
+pub func notAGeneratorMessage(generatorArg: in String, kind: in String, depMfPath: in String): String {
+  val declared = if kind == "" { "declares no [package].kind" } else { "declares [package].kind = \"" + kind + "\"" }
+  "X0002: @generate(" + generatorArg + ") names a package that is not a source generator: " + depMfPath + " " + declared +
+    ", and only kind = \"source-generator\" may be run"
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §6. Public entry point
 // ─────────────────────────────────────────────────────────────────────────────
-// `["exec", dllPath]` captured into a typed helper so the call site
-// stays AOT-safe and JIT-verifiable.  See #867 — when this list is
-// built inline as `val xs = newList(); xs.add(...)` the F# bootstrap
-// emitter erases its type argument to Object and the resulting
-// `runCapture(... List<object>, ...)` IL is rejected by the CLR JIT
-// with InvalidProgramException at first call.  The helper's explicit
-// `List[String]` return type forces the type to stay concrete.
+// `["exec", dllPath]` as a typed `List[String]` (#867).
 func buildCaptureArgs(dllPath: in String): List[String] {
   val args: List[String] = newList()
   args.add("exec")
@@ -946,114 +775,280 @@ func buildCaptureArgs(dllPath: in String): List[String] {
   args
 }
 
-/// Scan `source` for custom @generate(X.Y) directives and invoke the
-/// generator subprocess for each annotated type.  Returns augmented source
-/// with the generated Lyric fragments appended, or Err with a diagnostic
-/// message if any generator fails.
+/// A source file after its custom generators have run: the augmented text,
+/// and the warnings to print (generator-reported warnings and notes).
+pub record PreprocessOutput {
+  source: String
+  warnings: List[String]
+}
+
+// `<file>: <severity>[<code>] <line>:<column>: <message>`, the CLI's
+// diagnostic line shape.
+func generatorDiag(
+  file: in String,
+  severity: in String,
+  code: in String,
+  line: in Int,
+  column: in Int,
+  message: in String,
+): String {
+  file + ": " + severity + "[" + code + "] " + Str.fromInt(line) + ":" + Str.fromInt(column) + ": " + message
+}
+
+// The packages `source` imports by `import <name>` (with or without an alias
+// or selective list), each with its 1-based line.
+func importedPackages(source: in String): List[(String, Int)] {
+  val result: List[(String, Int)] = newList()
+  val lines = Str.split(source, "\n")
+  var li = 0
+  while li < lines.length {
+    val t = Str.trim(lines[li])
+    if Str.startsWith(t, "import ") and not Str.startsWith(t, "import extern ") {
+      var pos = 7
+      skipWs(t, pos)
+      val name = readDottedIdent(t, pos)
+      if name != "" {
+        result.add((name, li + 1))
+      }
+    }
+    li += 1
+  }
+  result
+}
+
+// The parse diagnostics of `fragment` when spliced into `pkgName` with
+// `imports`, as text; "" when it parses.
+func fragmentParseErrors(pkgName: in String, imports: in List[String], fragment: in String): String {
+  var header = "package " + pkgName + "\n"
+  for imp in imports {
+    header = header + imp + "\n"
+  }
+  val headerLines = Str.split(header, "\n").length - 1
+  val pr = Parser.parse(header + fragment)
+  var text = ""
+  var n = 0
+  for d in pr.diagnostics {
+    if n < 3 {
+      if text != "" {
+        text = text + "; "
+      }
+      val fragLine = d.span.startPos.line - headerLines
+      text = text + "line " + Str.fromInt(fragLine) + " of the generated code: " + d.message
+    }
+    n += 1
+  }
+  if n > 3 {
+    text = text + " (and " + Str.fromInt(n - 3) + " more)"
+  }
+  text
+}
+
+/// Runs the custom generators `source` names with `@generate(Pkg.Name)` and
+/// splices their output into it (docs/40 §4.2).  `consumerMf` is the
+/// manifest that declares the generators, `gens` what it offers (built by
+/// `Lyric.Cli`), and `sourceFilePath` the file, for diagnostics.
 ///
-/// `manifestPath` must be non-empty when the source contains custom generators;
-/// pass an empty string to indicate "no manifest", which causes Err if any
-/// custom @generate directives are present.  The Option[String] overload was
-/// retired to avoid a cross-assembly ABI mismatch between the F# and
-/// self-hosted emitters for nullary generic union cases (None ≡ null in F#
-/// vs newobj in self-hosted; tracked in #2557).
-pub func preprocess(source: in String, manifestPath: in String, sourceFilePath: in String): Result[String, String] {
+/// Errors are reported together, one per line in the CLI's diagnostic
+/// shape: X0001 (an annotation on something that is not a record, union or
+/// interface), X0002, X0003, X0004 (generated code that does not parse),
+/// X0005 (an error the generator reported), X0006 (an `import` of a
+/// generator package), X0008 and X0009 (a generator that could not be built
+/// or run).
+pub func preprocess(
+  source: in String,
+  consumerMf: in Option[Manifest.Manifest],
+  sourceFilePath: in String,
+  gens: in GeneratorSet,
+): Result[PreprocessOutput, String] {
   val pkgName = extractPackageName(source)
   val directives = scanDirectives(source, pkgName)
+  val warnings: List[String] = newList()
+  val errors: List[String] = newList()
+
+  // X0006: a generator package is run, never imported.
+  for (name, line) in importedPackages(source) {
+    if gens.dlls.containsKey(name) or gens.failures.containsKey(name) {
+      errors.add(
+        generatorDiag(
+          sourceFilePath,
+          "error",
+          "X0006",
+          line,
+          1,
+          "'" + name + "' is a source generator and cannot be imported; use it as @generate(" + name + ") on a type"
+        )
+      )
+    }
+  }
 
   if directives.count == 0 {
-    return Ok(value = source)
+    if errors.count > 0 {
+      return Err(error = Str.joinList("\n", errors))
+    }
+    return Ok(value = PreprocessOutput(source = source, warnings = warnings))
   }
 
-  if manifestPath.length == 0 {
-    return Err(error = "custom @generate(...) requires --manifest to locate generator packages")
+  val mf = match consumerMf {
+    case Some(m) -> m
+    case None -> {
+      val d = directives[0]
+      errors.add(
+        generatorDiag(
+          sourceFilePath,
+          "error",
+          "X0008",
+          d.line,
+          d.column,
+          "@generate(" + d.generatorArg +
+            ") needs a lyric.toml that declares the generator in [dependencies]; none was found for this file"
+        )
+      )
+      return Err(error = Str.joinList("\n", errors))
+    }
   }
-  val mfPath = manifestPath
 
   var augmented = source
-  var extraImports = ""
-
-  // Iterate over directives with a while loop (for-over-slice is not supported).
-  var di = 0
-  while di < directives.count {
-    val dir = directives[di]
-
-    // Supply-chain enforcement (#737): the generator package must be
-    // declared in the consumer's [dependencies] (G0008) and, when its
-    // manifest is locatable, must carry `kind = "source-generator"`
-    // (G0002).  Run before DLL resolution so a misconfigured manifest
-    // produces a clear diagnostic, not a "DLL not found" message.
-    match checkGeneratorDependency(mfPath, dir.generatorArg) {
-      case Err(e) -> return Err(error = e)
+  val extraImports: List[String] = newList()
+  for dir in directives {
+    val here = "@generate(" + dir.generatorArg + ")"
+    if dir.typeName == "" {
+      errors.add(
+        generatorDiag(
+          sourceFilePath,
+          "error",
+          "X0001",
+          dir.line,
+          dir.column,
+          here + " must annotate a record, exposed record, union or interface"
+        )
+      )
+      continue
+    }
+    match checkGeneratorDeclaredIn(mf, dir.generatorArg) {
+      case Err(e) -> {
+        errors.add(generatorDiag(sourceFilePath, "error", "X0008", dir.line, dir.column, Str.substring(e, 7, e.length - 7)))
+        continue
+      }
       case Ok(_) -> ()
     }
-
-    // #867 workaround — diverging-arm `val x = match` shape (see
-    // mfPath comment above).  Same shape, same restructure.
-    val dllPathRes = resolveGeneratorDll(mfPath, dir.generatorArg)
-    match dllPathRes {
-      case Err(e) -> return Err(error = e)
-      case Ok(_) -> ()
-    }
-    val dllPath = match dllPathRes { case Ok(p) -> p; case Err(_) -> "" }
-    // unreachable; guarded above
-
-    val requestJson = buildRequestJson(dir, sourceFilePath)
-    // Build args via a helper so the F# bootstrap emitter sees a
-    // `List[String]` return type and emits `List<string>`-typed IL.
-    // Inlining `val captureArgs = newList(); captureArgs.add(...);`
-    // makes the F# emitter erase the list's type argument to Object
-    // and the resulting `runCaptureWithDiagnostics(... List<object>, ...)` call is
-    // rejected by the CLR JIT with InvalidProgramException — #867.
-    val captureArgs = buildCaptureArgs(dllPath)
-    val captured = ProcessCapture.runCaptureWithDiagnostics("dotnet", captureArgs, requestJson)
-
-    match parseResponseJson(captured.stdout, captured.stderr, captured.exitCode, captured.timedOut) {
-      case Err(e) -> return Err(error = "generator '" + dir.generatorArg + "': " + e)
-      case Ok(parts) -> {
-        val generatedSource = parts.first
-        val importsLine = parts.second
-        if generatedSource != "" {
-          augmented = augmented + "\n// @generate(" + dir.generatorArg + ") generated for " + dir.typeName + "\n" +
-            generatedSource
+    val dllPath = match mapGet(gens.dlls, dir.generatorArg) {
+      case Some(p) -> p
+      case None -> {
+        match mapGet(gens.failures, dir.generatorArg) {
+          case Some(f) -> errors.add(generatorDiag(sourceFilePath, "error", f.code, dir.line, dir.column, f.message))
+          case None -> match mapGet(gens.libraries, dir.generatorArg) {
+            case Some(kind) -> {
+              val m = notAGeneratorMessage(dir.generatorArg, kind, dir.generatorArg + "'s lyric.toml")
+              errors.add(generatorDiag(sourceFilePath, "error", "X0002", dir.line, dir.column, Str.substring(m, 7, m.length - 7)))
+            }
+            case None -> errors.add(
+              generatorDiag(
+                sourceFilePath,
+                "error",
+                "X0009",
+                dir.line,
+                dir.column,
+                here +
+                  " cannot be run: a generator must be a path = \"...\" or workspace = true dependency, which the compiler builds; a registry or git generator is not supported"
+              )
+            )
+          }
         }
-        if importsLine != "" {
-          extraImports = extraImports + "\n" + importsLine
-        }
+        continue
       }
     }
 
-    di += 1
-  }
-
-  // Inject additional imports after the package declaration line.
-  if extraImports != "" {
-    val pkgLine = "package " + pkgName
-    var insertAt = 0
-    var i = 0
-    while i < augmented.length {
-      if matchAt(augmented, i, pkgLine) {
-        // Find the end of this line ('end' is a keyword — use 'lineEnd').
-        var lineEnd = i + pkgLine.length
-        while lineEnd < augmented.length and Str.charAtOrReplacement(augmented, lineEnd) != '\n' {
-          lineEnd += 1
-        }
-        if lineEnd < augmented.length {
-          lineEnd += 1
-        }
-        // include the newline
-        insertAt = lineEnd
-        i = augmented.length
-        // stop scanning
+    val captured = ProcessCapture.runCaptureWithDiagnosticsTimeout(
+      "dotnet",
+      buildCaptureArgs(dllPath),
+      buildRequestJson(dir, sourceFilePath),
+      generatorTimeoutMs
+    )
+    val result = match parseResponseJson(captured.stdout, captured.stderr, captured.exitCode, captured.timedOut) {
+      case Ok(r) -> r
+      case Err(why) -> {
+        errors.add(
+          generatorDiag(
+            sourceFilePath,
+            "error",
+            "X0009",
+            dir.line,
+            dir.column,
+            "generator '" + dir.generatorArg + "' failed for " + dir.typeName + ": " + why
+          )
+        )
+        continue
+      }
+    }
+    var reportedError = false
+    for d in result.diagnostics {
+      val codeText = if d.code != "" { " [" + d.code + "]" } else { "" }
+      val text = "generator '" + dir.generatorArg + "' on " + dir.typeName + codeText + ": " + d.message
+      if d.severity == "Error" {
+        reportedError = true
+        errors.add(generatorDiag(sourceFilePath, "error", "X0005", dir.line, dir.column, text))
       } else {
-        i += 1
+        val sev = if d.severity == "Warning" { "warning" } else { "note" }
+        warnings.add(generatorDiag(sourceFilePath, sev, "X0005", dir.line, dir.column, text))
       }
     }
-    if insertAt > 0 {
-      augmented = augmented.substring(0, insertAt) + extraImports + "\n" +
-        augmented.substring(insertAt, augmented.length - insertAt)
+    if reportedError {
+      continue
+    }
+    if result.lyricSource != "" {
+      val parseErrors = fragmentParseErrors(pkgName, result.imports, result.lyricSource)
+      if parseErrors != "" {
+        errors.add(
+          generatorDiag(
+            sourceFilePath,
+            "error",
+            "X0004",
+            dir.line,
+            dir.column,
+            "generator '" + dir.generatorArg + "' produced code for " + dir.typeName + " that does not parse: " + parseErrors
+          )
+        )
+        continue
+      }
+      augmented = augmented + "\n// @generate(" + dir.generatorArg + ") generated for " + dir.typeName + "\n" +
+        result.lyricSource
+    }
+    for imp in result.imports {
+      if not extraImports.contains(imp) {
+        extraImports.add(imp)
+      }
     }
   }
 
-  Ok(value = augmented)
+  if errors.count > 0 {
+    return Err(error = Str.joinList("\n", errors))
+  }
+  Ok(value = PreprocessOutput(source = insertImports(augmented, pkgName, extraImports), warnings = warnings))
+}
+
+// `source` with `imports` placed after its `package` line.
+func insertImports(source: in String, pkgName: in String, imports: in List[String]): String {
+  if imports.count == 0 {
+    return source
+  }
+  var importText = ""
+  for imp in imports {
+    importText = importText + imp + "\n"
+  }
+  val pkgLine = "package " + pkgName
+  var i = 0
+  while i < source.length {
+    if matchAt(source, i, pkgLine) {
+      var lineEnd = i + pkgLine.length
+      while lineEnd < source.length and Str.charAtOrReplacement(source, lineEnd) != '\n' {
+        lineEnd += 1
+      }
+      if lineEnd < source.length {
+        lineEnd += 1
+      }
+      return source.substring(0, lineEnd) + importText + source.substring(lineEnd, source.length - lineEnd)
+    }
+    i += 1
+  }
+  source
 }
