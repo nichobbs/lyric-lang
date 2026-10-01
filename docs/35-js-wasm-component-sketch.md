@@ -195,7 +195,7 @@ varargs, exceptions, tail calls or atomics. The findings:
 | 1 | ARC header | The C header is `{rc, weak, dtor}` while codegen models `{i32, ptr}` and relies on `weak` hiding in LP64 padding (`lyric_rt.h`, `llvm_codegen.l`). On wasm32 the header is 12 bytes and offsets diverge; the `2*sizeof(void*)` assert fails. Fix: an explicit three-field header on all targets (LP64 stays 16 bytes). | blocker |
 | 2 | Size tables | `sizeOfN`/`alignOfN`/`structSize`/`recAllocSize` hard-code 8-byte pointers. Replace with target-derived sizes (`getelementptr null, 1`). | blocker |
 | 3 | Coroutines | Frame size uses `llvm.coro.size.i64`; wasm32 needs the `.i32` form. | blocker |
-| 4 | Pointer-as-`Long` | `_kernel_native` externs treat a pointer and an `i64` as one machine word (`tcp_host.l`, `http_server.l`, others). Roughly 147 of 169 externs use `Long` or `NativePtr` and need auditing for wasm-ld signature checks. | blocker |
+| 4 | Pointer-as-`Long` | `_kernel_native` externs treat a pointer and an `i64` as one machine word (`tcp_host.l`, `http_server.l`, others). 107 of the 169 externs use `Long` or `NativePtr` and need auditing for wasm-ld signature checks. | blocker |
 | 5 | Link step | A single hard-coded host `clang ... -lpthread -ldl` invocation. | blocker |
 | 6 | Runtime archive | Single-triple `lyric_rt.a`; no CPU-feature flags. | blocker |
 | 7 | `fptosi` | Non-saturating conversion traps on NaN/out-of-range on wasm. Use the saturating form or `+nontrapping-fptoint`. | major |
@@ -209,7 +209,7 @@ types and builds with clang-18 in CI today; wasm32 uses the same clang.
 
 **`Float` width.** `Float` currently lowers to `double` on every backend.
 The WIT `f32` mapping (§7) and WebGPU interop (`docs/67`) require a true
-32-bit `Float`. That work is the `docs/67` G0 change and is owned by a
+32-bit `Float`. That work is `docs/67` G1 (G0, the decision entry, is done as D155) and is owned by a
 separate work stream; this plan depends on it landing before the `component`
 shape's type mapping is final (§12, W1).
 
@@ -316,9 +316,10 @@ lyric build --target native --triple wasm32-wasi --shape component [--wit-out <p
 lyric build --target native --triple wasm32-unknown-unknown --shape module
 ```
 
-`--shape module|component` joins the `docs/63` shape axis (existing values
-`portable|standalone|aot` are not valid for `wasm32` triples, which is a
-diagnostic). Convenience aliases `--target wasm` (module) and
+`--shape module|component` are additional, triple-gated values on the
+`docs/63` shape axis. Today `--target native` fixes the shape at `aot`
+(`docs/63` "Settled"); for `wasm32` triples `module`/`component` replace that
+rule, and `portable|standalone|aot` are a diagnostic there. Convenience aliases `--target wasm` (module) and
 `--target wasm-component` (component) are sugar over the above.
 
 | Flag | Default | Meaning |
@@ -494,7 +495,7 @@ applies, because the native lowering is coroutine-based).
 | Phase | Scope | Notes |
 |---|---|---|
 | W0 | Layout hardening, target-neutral: three-field ARC header, target-derived size tables, width-aware coroutine size intrinsic, `Long`-as-pointer audit of `_kernel_native` externs | Separate PR ahead of any wasm work; benefits existing targets; testable with the current ASan suites |
-| W1 | 32-bit `Float` | Owned by a separate work stream (`docs/67` G0); this plan blocks the `component` type mapping on it |
+| W1 | 32-bit `Float` | Owned by a separate work stream (`docs/67` G1); this plan blocks the `component` type mapping on it |
 | W2 | `wasm32-wasi` build: wasi-sdk pinned, per-triple `lyric_rt`, `wasm32` datalayout, link recipe, single-threaded runtime, unavailable-kernel twins, wasmtime test lane | Output: core module under WASI |
 | W3 | Browser `module` shape: JS imports (console, timers, `abort`), glue generator, `docs/65` U7 hook | |
 | W4 | `component` shape: canonical ABI wrappers, WIT generation, `jco` integration, publish bundle | |
@@ -519,7 +520,7 @@ entry, per repository policy.
 - **Q-JS-005** (`lyric test`): tests run on the wasm artifact under wasmtime
   or node via the native test lane (§5.4); a native-host run remains the
   default for ordinary development.
-- **Ordering with `docs/67` G0:** wasm32 waits for, or includes, the 32-bit
+- **Ordering with `docs/67` G1:** wasm32 waits for, or includes, the 32-bit
   `Float` change (W1).
 
 ### 13.2 Still open
