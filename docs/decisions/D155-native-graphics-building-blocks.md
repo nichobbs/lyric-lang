@@ -10,15 +10,16 @@ Q-GFX-004.
 docs/67 plans native graphical programs (windowed applications, GPU
 rendering, games) on `--target native`. Its audit (§3) found that the
 language has no way to hold packed, mutable bulk data, that `Float` is
-lowered as a 64-bit `double` on every backend although §2.1 specifies a
-32-bit type, that the native FFI cannot describe a C struct, and that
+lowered as a 64-bit `double` on MSIL and native (JVM has used a real
+32-bit `float` since D-progress-464) although §2.1 specifies a 32-bit type, that the native FFI cannot describe a C struct, and that
 `docs/00` and `docs/04` describe a narrower language than such programs
 need.
 
 ## Decision
 
 1. **`Float` is 32-bit on every backend** (Q-GFX-002). §2.1 already says
-   so; the backends are brought onto the specification. A float literal is
+   so, and the JVM already complies (D-progress-464); MSIL and native are
+   brought onto the specification. A float literal is
    `Double` unless it carries the `f32` suffix or is the other operand of a
    `Float`, mirroring the integer-literal rule (#7346). `.toFloat()` is
    defined on the numeric primitives, narrowing with round-to-nearest-even.
@@ -52,7 +53,9 @@ need.
    end computes it alone.
 
 4. **`array[N, T]` has value semantics.** Inline storage; assignment and
-   passing copy; element writes need a writable place.
+   passing copy; element writes need a writable place. No backend
+   implements this yet: MSIL and JVM erase the type to an object
+   reference and native does not lower it.
 
 5. **Component-wise `derives Add, Sub` on homogeneous numeric records**
    (Q-GFX-004). A record whose fields all have the same numeric type may
@@ -64,9 +67,10 @@ need.
 
 6. **`foreign record`** declares a C-layout struct. It is allowed only in
    kernel files (`_kernel_native/`, and a library's own kernel directory),
-   its fields are `Plain`, `NativePtr[T]`, `array[N, T]` or other foreign
-   records, laid out by the target's C rules, and it never appears in a
-   public API. `foreign` is a contextual keyword, recognised only directly
+   it is not generic, its fields are `Plain`, `NativePtr[T]`, `array[N, T]`
+   or other foreign records, laid out by the target's C rules, and it never
+   appears in a library's public API: the kernel's safe wrappers take
+   ordinary Lyric types. `foreign` is a contextual keyword, recognised only directly
    before `record`.
 
 7. **`@userdata` marks the closure-pointer parameter of a C callback

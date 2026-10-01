@@ -161,7 +161,7 @@ A consequence of newline termination: the postfix call and index forms bind only
 | `Unit` | unit type | single value `()` |
 | `Never` | bottom type | uninhabited |
 
-**`Float` is 32-bit (D155).** A float literal is a `Double` unless it carries the `f32` suffix (`1.5f32`) or is the other operand of a `Float` (`f * 2.0` with `f: Float`), the same rule an unsuffixed integer literal follows. `.toFloat()` narrows a `Double` (or converts an integer) with round-to-nearest-even. **Not yet implemented:** every backend still lowers `Float` to the 64-bit `double` representation (`docs/67-native-graphics-plan.md` §3); phase G1 brings each backend onto this specification.
+**`Float` is 32-bit (D155).** A float literal is a `Double` unless it carries the `f32` suffix (`1.5f32`) or is the other operand of a `Float` (`f * 2.0` with `f: Float`), the same rule an unsuffixed integer literal follows. `.toFloat()` narrows a `Double` (or converts an integer) with round-to-nearest-even. `--target jvm` already lowers `Float` to a 32-bit `float` (D-progress-464). **Not yet implemented** on `--target dotnet` and `--target native`, which still lower `Float` to the 64-bit `double` representation (`docs/67-native-graphics-plan.md` §3); phase G1 brings both onto this specification and checks the literal rule and `.toFloat()` on all three.
 
 Integer arithmetic panics on overflow in checked builds (default for `--debug`). In `--release` builds, overflow on unconstrained integer types wraps; range-constrained subtypes always panic on overflow regardless of build mode. **Not yet implemented:** no backend gates overflow checking on the build profile, so overflow panics in `--release` too. The profile axis became independently selectable in docs/63 band B0; wiring it through to codegen is band-B0 follow-up work (#6263). A `Byte op Byte` sum, difference or product is a `Byte` and wraps modulo 256 to `0..255`, as a `Byte` store always has, so `200u8 + 100u8` is `44` (#7852); an `Int` operand widens the result to `Int` instead (§4.3's `Byte < Int` chain).
 
@@ -389,7 +389,7 @@ The same identity rule holds for every other place the checker treats a type as 
 
 `List[T]` is mutated in place. `xs.add(item)` appends `item`; `xs.add(index, item)` inserts it before position `index`, moving the element at `index` and every later one up by one place, so `xs.add(0, item)` prepends and `xs.add(xs.count, item)` appends. An `index` outside `0 ..= xs.count` raises at run time (`ArgumentOutOfRangeException` on `--target dotnet`, `IndexOutOfBoundsException` on `--target jvm`) and leaves the list unchanged. The inserted element is widened to `T` like any other numeric argument (`List[Long].add(0, 5)`). Which form a two-argument `add` is follows the receiver, never the arity: on a `Map[K, V]`, `m.add(key, value)` adds an entry (#7797). `--target native` does not lower the two-argument list form yet and rejects it at build time (**N0007**).
 
-**Value semantics of `array[N, T]` (D155).** An array stores its elements inline and is a value: assigning or passing it copies it. An element write `a[i] = v` needs a writable place (a `var` local, an `out`/`inout` parameter, or a `var` field). **Not yet implemented on `--target native`** (docs/67 phase G1).
+**Value semantics of `array[N, T]` (D155).** An array stores its elements inline and is a value: assigning or passing it copies it. An element write `a[i] = v` needs a writable place (a `var` local, an `out`/`inout` parameter, or a `var` field). **Not yet implemented on any target** (docs/67 phase G1): `--target dotnet` and `--target jvm` erase `array[N, T]` to an untyped object reference, and `--target native` does not lower it.
 
 #### Buffers
 
@@ -2274,7 +2274,7 @@ extern func strlen(s: NativePtr[Byte]): Long = "strlen"
 
 **C structs, callbacks and buffers (D155; not yet implemented, docs/67 phase G3).**
 
-- `foreign record` declares a struct with C layout for the target triple. It is allowed only in kernel files, its fields are `Plain` types, `NativePtr[T]`, `array[N, T]` or other foreign records, and it may not appear in a `pub` signature outside a kernel. It is passed to C by value or by pointer (`nativeAddrOf` on a `var` local) under the platform C ABI. `foreign` is a contextual keyword, recognised only directly before `record`.
+- `foreign record` declares a struct with C layout for the target triple. It is allowed only in kernel files and is not generic, its fields are `Plain` types, `NativePtr[T]`, `array[N, T]` or other foreign records, and it never appears in a library's public API: the kernel's safe wrappers take ordinary Lyric types. It is passed to C by value or by pointer (`nativeAddrOf` on a `var` local) under the platform C ABI. `foreign` is a contextual keyword, recognised only directly before `record`.
 - `@userdata` on a parameter of a callback function type names the parameter that carries the closure pointer, so a trampoline can be synthesised when the C API does not put userdata last.
 - `b.withPointer((p: NativePtr[T]) -> R)` and `b.withMutPointer(...)` lend a buffer's storage to C for the duration of the closure; `withMutPointer` first makes the storage unique. The pointer may not escape the closure (`N0100`).
 
