@@ -34,6 +34,8 @@ extern type Fl = "System.Single"
 
 extern type Ip = "System.IntPtr"
 
+extern type Cv = "System.Convert"
+
 test "toString of an extern struct" {
   assertEqual(toString(Ts.FromMinutes(90.0)), "01:30:00", "TimeSpan")
   assertEqual(toString(Dt.new(2020, 1, 2, 3, 4, 5)), "2020-01-02T03:04:05.0000000", "DateTime")
@@ -43,6 +45,16 @@ test "toString of an extern struct" {
     "Guid"
   )
   assertEqual(toString(Ip.new(5)), "5", "IntPtr")
+}
+
+// `Convert.ToDecimal(Double)`/`ToSingle(Double)` build the values without a
+// culture-sensitive `Parse`, so only `toString` could follow the host
+// culture; `println-stringify-e2e.sh` reruns this module under de-DE (#7902).
+test "toString of an extern Decimal or Single is culture-invariant" {
+  assertEqual(toString(Cv.ToDecimal(1.25)), "1.25", "Decimal")
+  assertEqual(toString(Cv.ToDecimal(-1234567.5)), "-1234567.5", "negative Decimal, no group separator")
+  assertEqual(toString(Cv.ToSingle(1.5)), "1.5", "Single")
+  assertEqual(toString(Cv.ToSingle(-0.25)), "-0.25", "negative Single")
 }
 
 test "println of an extern struct" {

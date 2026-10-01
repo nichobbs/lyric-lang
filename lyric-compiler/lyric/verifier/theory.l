@@ -320,7 +320,7 @@ pub func foldIntLiteral(e: in Expr): Option[FoldedIntLit] {
     case EPrefix(op, inner) -> {
       match op {
         case PreNeg -> {
-          match unparenthesizedExpr(inner).kind {
+          match stripExprParens(inner).kind {
             case ELiteral(LInt(v, sfx, _)) -> {
               if isSome(unsignedSuffixWidth(sfx)) {
                 None
@@ -349,13 +349,6 @@ func unsignedSuffixWidth(suffix: in IntSuffix): Option[Int] {
     case U32 -> Some(value = 32)
     case U64 -> Some(value = 64)
     case _ -> None
-  }
-}
-
-func unparenthesizedExpr(e: in Expr): Expr {
-  match e.kind {
-    case EParen(inner) -> unparenthesizedExpr(inner)
-    case _ -> e
   }
 }
 

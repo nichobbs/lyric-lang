@@ -1580,9 +1580,20 @@ func inferBinop(
   }
 }
 
-// T0147's text.  Only `Byte` has a conversion to a signed type, so only its
-// hint can name one; `UInt`/`ULong` have none yet (docs/01 §4.1).
-func unsignedNegationMessage(typeText: in String, isByte: in Bool): String {
+// T0147's text for a negated operand of `operand`'s type.  Only `Byte`
+// (or a range of it) has a conversion to a signed type, so only its hint can
+// name one; `UInt`/`ULong` have none yet (docs/01 §4.1).
+func unsignedNegationMessageFor(operand: in Type): String {
+  unsignedNegationText(renderType(operand), isPrimOf(operand, PtByte))
+}
+
+// T0147's text for a negated constant of the unsigned primitive `typeName`
+// (`Byte`, `UInt` or `ULong`), as the constant folder names it.
+func unsignedNegationMessage(typeName: in String): String {
+  unsignedNegationText(typeName, typeName == "Byte")
+}
+
+func unsignedNegationText(typeText: in String, isByte: in Bool): String {
   val hint = if isByte {
     "convert it to a signed type first, e.g. `-(x.toInt())`"
   } else {
@@ -1599,7 +1610,7 @@ func inferPrefix(diag: in List[Diagnostic], op: in PrefixOp, inner: in Type, spa
       if not isNumericType(inner) {
         diag.add(errorDiagnostic("T0036", "unary minus requires a numeric operand (got " + renderType(inner) + ")", span))
       } else if isUnsignedConvReceiver(inner) {
-        diag.add(errorDiagnostic("T0147", unsignedNegationMessage(renderType(inner), isPrimOf(inner, PtByte)), span))
+        diag.add(errorDiagnostic("T0147", unsignedNegationMessageFor(inner), span))
         return TyError
       }
       inner

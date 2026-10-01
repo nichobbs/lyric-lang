@@ -156,7 +156,7 @@ func checkBoundNegation(tbl: in SymbolTable, diag: in List[Diagnostic], e: in Ex
   match tryFoldInt(tbl, e) {
     case FoldErr(fe) -> match fe {
       case FEUnsignedNegation(tn, negSpan) -> if spanWithin(negSpan, e.span) {
-        diag.add(errorDiagnostic("T0147", unsignedNegationMessage(tn, tn == "Byte"), negSpan))
+        diag.add(errorDiagnostic("T0147", unsignedNegationMessage(tn), negSpan))
       }
       case _ -> ()
     }

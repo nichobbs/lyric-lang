@@ -6,8 +6,8 @@
 //! targets — see the `Population`/`BigId` section below. The final section
 //! (#6913) extends this UInt/ULong test home to BARE (not range-/distinct-
 //! type-wrapped) `UInt`/`ULong` scalar comparison/division/stringification —
-//! the general `fctx.unsignedSlots` side-channel #6756 deliberately left out
-//! of scope (see that section's own header comment).
+//! the general unsigned-operand handling #6756 deliberately left out of scope
+//! (see that section's own header comment).
 //!
 //! Why this lives here and not in `lyric-stdlib/tests/*_tests.l`: those
 //! `_tests.l` files are compiled and run by the **F# stage-0** emitter, which
@@ -410,28 +410,17 @@ test "ULong-backed range subtype: construction and bounds (#6756)" {
 // checking consulted it for unsigned-aware codegen — a bare scalar's own
 // comparison/division/stringification still used plain SIGNED IL
 // (`clt`/`cgt`/`div`/`rem`/`Int32.ToString()`), silently misrendering any
-// value with the sign bit set. Fixed via a new `fctx.unsignedSlots`
-// side-channel (`Msil.Codegen`, keyed by SLOT INDEX rather than name — see
-// its own doc comment for why that avoids the JVM backend's separate
-// `unsignedUndo` scope-restore log) populated at every param/`val`/`var`/
-// `let` binding site whose declared type is `UInt`/`ULong`, consulted by
-// `isUnsignedExprMsil` from the `BLt`/`BGt`/`BLte`/`BGte`/`BDiv`/`BMod` binop
-// arms and every stringification call site (`println`, `print`, `toString`,
-// string interpolation, `+` string concatenation). Runs on BOTH targets:
-// JVM already got the equivalent fix in #6748/#6754 (`ctx.unsignedVars`/
-// `isUnsignedExpr`, `jvm/codegen/01_types.l`), so this section is a genuine
-// cross-target parity check, not just an MSIL-only regression pin.
-//
-// Scoped to the shape #6913's fix sketch actually asks for — a bare name
-// previously marked at a binding site, or a `u32`/`u64`-suffixed literal —
-// NOT a function call's declared return type or a container-element read
-// (the JVM backend's own LATER #6754/#6759 follow-on widenings past its
-// original `unsignedVars`/`isUnsignedExpr` shape); an expression of either
-// of those two shapes still conservatively compiles/runs correctly for
-// every value that fits the signed range either way, understating
-// "unsigned" only for a sign-bit-set value reached that way — a narrower,
-// tracked gap, not silently dropped (see `isUnsignedExprMsil`'s own doc
-// comment in `msil/codegen.l`).
+// value with the sign bit set. #6913 first fixed this with per-backend
+// tracking of the slots and locals declared `UInt`/`ULong`; #7812 replaced
+// that with one type-driven rule: the type checker records every
+// `UInt`/`ULong` operand whose lowering depends on signedness
+// (`recordUnsignedOperand`), `Lyric.Mono` spells it as the identity
+// `.toUInt()`/`.toULong()`, and both backends recognise that spelling through
+// the shared `Lyric.Parser.spellsUnsigned` at the `BLt`/`BGt`/`BLte`/`BGte`/
+// `BDiv`/`BMod` binop arms and every stringification call site (`println`,
+// `print`, `toString`, string interpolation, `+` string concatenation).
+// Runs on BOTH targets, so this section is a cross-target parity check, not
+// an MSIL-only regression pin.
 // ─────────────────────────────────────────────────────────────────────────────
 // ── UInt: comparison ─────────────────────────────────────────────────────────
 //
@@ -528,11 +517,9 @@ test "bare UInt println does not crash for a sign-bit-set value (#6913)" {
 // ── UInt: block-scope shadow does not leak unsigned-ness either direction ────
 //
 // Mirrors the JVM backend's #6754 finding-2 regression (name-keyed
-// `unsignedVars` needing its own scope-undo log) — MSIL's `unsignedSlots` is
-// keyed by SLOT INDEX instead (see its doc comment), so a shadowing bind
-// already gets a FRESH slot via the pre-existing #5191 general-shadowing fix
-// and this correctness property falls out "for free," but it's worth an
-// explicit A/B-verified regression pin rather than an unverified claim.
+// `unsignedVars` needing its own scope-undo log).  Since #7812 the type
+// checker spells each operand by its own binding's type, so a shadow cannot
+// inherit or erase the outer binding's unsigned-ness; this pins that.
 test "bare UInt: nested Int shadow is signed, outer UInt survives the block (#6913)" {
   val x: UInt = 3000000000u32
   val threshold: UInt = 1000000000u32

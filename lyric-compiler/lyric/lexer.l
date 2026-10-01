@@ -1376,6 +1376,12 @@ func unknownSuffixMessage(tail: in String, kind: in String): String {
   }
 }
 
+/// The L0016 text for a radix prefix (`0x`, as spelled) with no digit after it.
+@pure
+func emptyRadixMessage(prefix: in String, kind: in String): String {
+  "radix prefix `" + prefix + "` has no " + kind + " digits after it"
+}
+
 /// Consume a literal's suffix: an ASCII letter followed by letters, digits
 /// and underscores.  The whole run is the suffix, so `100xyz` and `1u8_x`
 /// are one literal with a bad suffix rather than a literal glued to an
@@ -1576,10 +1582,16 @@ func unsignedMaxText(suffix: in IntSuffix): String {
   }
 }
 
+/// Lex a `0x`/`0o`/`0b` literal.  A prefix with no digit after it (`0x`,
+/// `0b___`) is L0016 on the prefix alone: the literal has no value to
+/// range-check, so no L0010 follows, and any suffix after it (`0xu8`,
+/// `0xzz`) is consumed into the token without an L0015, since a suffix on a
+/// literal with no digits says nothing more about the mistake (#7899).
 func lexBasedInt(state: inout LexerState, startP: in Position, base: in Int): Unit {
   // Already at the leading `0`; consume it plus the base char.
   advance(state)        // '0'
   advance(state)        // 'x' / 'o' / 'b'
+  val prefixEnd = currentPosition(state)
   var raw = ""
   var keepReading = true
   while keepReading and not isAtEnd(state) {
@@ -1597,10 +1609,17 @@ func lexBasedInt(state: inout LexerState, startP: in Position, base: in Int): Un
   val suffixP = currentPosition(state)
   val tail = lexNumericSuffix(state)
   val body = stripUnderscores(raw)
+  val kind = if base == 16 { "hexadecimal" } else if base == 8 { "octal" } else { "binary" }
   val sfx = if tail.length == 0 { Some(value = NoIntSuffix) } else { intSuffixNamed(tail) }
+  if body.length == 0 {
+    val prefix = sourceSlice(state, startP.offset, prefixEnd.offset)
+    recordError(state, "L0016", emptyRadixMessage(prefix, kind), makeSpan(startP, prefixEnd))
+    val suffix = match sfx { case Some(s) -> s; case None -> NoIntSuffix }
+    emit(state, TInt(value = 0i64, suffix = suffix, raw = sourceSlice(state, startP.offset, state.pos)), startP)
+    return
+  }
   match sfx {
     case None -> {
-      val kind = if base == 16 { "hexadecimal" } else if base == 8 { "octal" } else { "binary" }
       recordError(state, "L0015", unknownSuffixMessage(tail, kind), makeSpan(suffixP, currentPosition(state)))
       emitIntLiteral(state, startP, parseIntLiteralValue(body, base, NoIntSuffix), NoIntSuffix, false)
     }

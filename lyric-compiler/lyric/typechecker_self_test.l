@@ -8776,6 +8776,10 @@ test "unary minus on a ULong is T0147 (#7854)" {
 test "unary minus on an unsigned range or distinct type is rejected (#7854)" {
   assertNegRejected(negSrc("func f(u: in UInt range 0 ..= 10): UInt range 0 ..= 10 {\n  -u\n}\n"), "inline UInt range")
   assertNegRejected(negSrc("func f(b: in Byte range 1 ..= 9): Int {\n  val n = -b\n  0\n}\n"), "inline Byte range")
+  val byteRange = parseCheck(negSrc("func f(b: in Byte range 1 ..= 9): Int {\n  val n = -b\n  0\n}\n"))
+  assertTrue(Str.contains(diagMessageFor(byteRange, "T0147"), "-(x.toInt())"), "a Byte range keeps the Byte hint")
+  val uintRange = parseCheck(negSrc("func f(u: in UInt range 0 ..= 10): UInt range 0 ..= 10 {\n  -u\n}\n"))
+  assertTrue(not Str.contains(diagMessageFor(uintRange, "T0147"), "-(x.toInt())"), "a UInt range has no Byte hint")
   // A distinct type has no unary minus whatever its base (docs/01 §2.3).
   val cr = parseCheck(negSrc("type Port = UInt range 0 ..= 65535\nfunc f(p: in Port): Port {\n  -p\n}\n"))
   assertEqualInt(countDiagCode(cr, "T0036"), 1, "distinct Port: T0036 (" + diagCodesOf(cr) + ")")
@@ -8790,6 +8794,12 @@ test "a negated unsigned constant is not folded (#7854)" {
   assertNegRejected(negSrc("val B = 5u32\ntype Small = Long range -(B * 2u32) ..= 5\n"), "range bound -(B * 2u32)")
   assertNegRejected(negSrc("func f(): Unit {\n  val n: Int range -(2u8) ..= 5 = 3\n}\n"), "inline local range bound")
   assertNegRejected(negSrc("func f(x: in Int range 0 ..= -(2u16)): Unit {\n}\n"), "inline parameter range bound")
+  val byteConst = diagMessageFor(parseCheck(negSrc("val K = -(5u8)\n")), "T0147")
+  assertTrue(Str.contains(byteConst, "(got Byte)"), "a Byte constant names Byte: " + byteConst)
+  assertTrue(Str.contains(byteConst, "-(x.toInt())"), "a Byte constant gets the Byte hint: " + byteConst)
+  val uintBound = diagMessageFor(parseCheck(negSrc("type Small = Int range -(1u32) ..= 5\n")), "T0147")
+  assertTrue(Str.contains(uintBound, "(got UInt)"), "a UInt bound names UInt: " + uintBound)
+  assertTrue(not Str.contains(uintBound, "-(x.toInt())"), "a UInt bound has no Byte hint: " + uintBound)
   // Through a constant, the negation is reported once, at the constant.
   val viaConst = parseCheck(negSrc("val K = -(5u8)\ntype Small = Int range K ..= 5\n"))
   assertEqualInt(countDiagCode(viaConst, "T0147"), 1, "via a constant: one T0147 (" + diagCodesOf(viaConst) + ")")

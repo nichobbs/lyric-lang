@@ -486,7 +486,9 @@ pub func pipeCheckAndMono(
 func foldNegatedIntLiteral(e: in Expr): Expr {
   match e.kind {
     case EPrefix(op, operand) -> match op {
-      case PreNeg -> match unparenthesized(operand).kind {
+      // The checker looks through parentheses under a negation
+      // (`-(2147483648)` is an `Int`), so the fold does too (#7397).
+      case PreNeg -> match stripExprParens(operand).kind {
         case ELiteral(lit) -> match lit {
           case LInt(v, sfx, raw) -> if isSignedIntSuffix(sfx) {
             Expr(
@@ -518,15 +520,6 @@ func isSignedIntSuffix(sfx: in IntSuffix): Bool {
     case I32 -> true
     case I64 -> true
     case _ -> false
-  }
-}
-
-// The checker looks through parentheses under a negation (`-(2147483648)`
-// is an `Int`), so the fold does too (#7397).
-func unparenthesized(e: in Expr): Expr {
-  match e.kind {
-    case EParen(inner) -> unparenthesized(inner)
-    case _ -> e
   }
 }
 

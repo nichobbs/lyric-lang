@@ -1159,3 +1159,46 @@ test "range and member syntax after a literal is not a suffix" {
   assertEqual(suffixAt(suffixed, 0), "other", "5u8.toInt(): u8 suffix kept")
   assertEqual(identNameAt(suffixed, 2), "toInt", "5u8.toInt(): method name")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #7899: a radix prefix with no digit after it (separators aside) is L0016,
+// spanning the prefix, and nothing else: no follow-on L0010, and a suffix
+// on the empty literal (`0xu8`, `0xzz`) adds no L0015.
+// ─────────────────────────────────────────────────────────────────────────────
+func checkEmptyRadix(src: in String, label: in String): Unit {
+  val r = lex(src)
+  assertEqualInt(diagCount(r), 1, label + ": one diagnostic")
+  assertEqual(r.diagnostics[0].code, "L0016", label + ": L0016")
+  assertEqualInt(r.diagnostics[0].span.startPos.offset, 0, label + ": the span starts at the prefix")
+  assertEqualInt(r.diagnostics[0].span.endPos.offset, 2, label + ": the span ends after the prefix")
+  assertEqual(tokenKindAt(r, 0), "int", label + ": still one int token")
+  assertTrue(intValueAt(r, 0) == 0i64, label + ": value 0")
+  assertEqual(tokenKindAt(r, 1), "eof", label + ": the whole literal is one token")
+}
+
+test "a radix prefix with no digits is l0016" {
+  checkEmptyRadix("0x", "0x")
+  checkEmptyRadix("0b", "0b")
+  checkEmptyRadix("0o", "0o")
+  checkEmptyRadix("0X", "0X")
+  checkEmptyRadix("0x_", "0x_")
+  checkEmptyRadix("0b___", "0b___")
+  val msg = lex("0b___").diagnostics[0].message
+  assertTrue(Str.contains(msg, "`0b`"), "0b___: the message names the prefix")
+  assertTrue(Str.contains(msg, "binary"), "0b___: the message names the base")
+}
+
+test "an empty radix literal with a suffix is one l0016" {
+  checkEmptyRadix("0xu8", "0xu8")
+  checkEmptyRadix("0o_i32", "0o_i32")
+  checkEmptyRadix("0xzz", "0xzz (a bad suffix adds no L0015)")
+  assertEqual(suffixAt(lex("0xu64"), 0), "u64", "0xu64: the valid suffix is kept")
+}
+
+test "an empty radix literal does not swallow what follows" {
+  val r = lex("0x + 1")
+  assertEqualInt(diagCount(r), 1, "0x + 1: one diagnostic")
+  assertEqual(r.diagnostics[0].code, "L0016", "0x + 1: L0016")
+  assertEqual(punctNameAt(r, 1), "+", "0x + 1: lexing resumes after the prefix")
+  assertTrue(intValueAt(r, 2) == 1i64, "0x + 1: 1")
+}
