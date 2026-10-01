@@ -97,8 +97,8 @@ pub func buildWorkspaceDeps(
   // dependency's own source, and any not-yet-lowered construct in it
   // surfaces as an unhandled CLI panic rather than a clean diagnostic
   // (#6820) — worse than JVM's mere DLL/JAR-naming collision. Skip
-  // unconditionally, matching Jvm, until resolving dependency source into
-  // the native bundle is designed (tracked in #6815 item 1).
+  // unconditionally, matching Jvm: like Jvm, native compiles the
+  // dependency's source into the consumer's own build instead (#7833).
   match target {
     case Emitter.Jvm -> {
       return (result, false, wsCtxOpt)
@@ -377,12 +377,13 @@ func collectDepPackageFeatures(
 
 /// Collect the source packages, and their feature sets, of every workspace
 /// and path dependency `manifest` reaches transitively whose packages are not
-/// in `pkgs` yet.  The JVM target has no restored form of a workspace or path
-/// dependency, so a bundle compiles each one from source — its dependencies'
-/// dependencies included, or a call from `lyric-web` into
+/// in `pkgs` yet.  The JVM and native targets have no restored form of a
+/// workspace or path dependency, so a build compiles each one from source —
+/// its dependencies' dependencies included, or a call from `lyric-web` into
 /// `lyric-resilience` has nothing to resolve against in a `lyric-ui` build
-/// (#7378).  Registry and git dependencies have no local manifest and are
-/// not walked.
+/// (#7378, #7833).  Registry and git dependencies have no local manifest and
+/// are not walked; on native, where nothing else can supply them, each one a
+/// walked dependency declares is reported, and the result is true.
 func collectTransitiveDepSources(
   manifest: in Mf.Manifest,
   mfDir: in String,
@@ -391,7 +392,8 @@ func collectTransitiveDepSources(
   target: in Emitter.CompileTarget,
   pkgs: in List[Emitter.ProjectPackage],
   features: in List[Pipe.PackageFeatureSet],
-): Unit {
+): Bool {
+  var unsupported = false
   val wsCtx: Option[Ws.WorkspaceContext] = Ws.findWorkspaceRoot(mfDir)
   val visited: List[String] = newList()
   visited.add(canonicalDir(mfDir))
@@ -425,11 +427,62 @@ func collectTransitiveDepSources(
             collectDepTemplateSources(depDir, depMf.packageSection.name, pkgs)
             collectDepPackageFeatures(depDir, cliFeatures, noDefaultFeatures, target, features)
           }
+          if targetIsNative(target) and nativeUnsupportedDeps(depMf) {
+            unsupported = true
+          }
           enqueueLocalDeps(depMf, depDir, wsCtx, visited, queue)
         }
       }
     }
   }
+  unsupported
+}
+
+// `[nuget]` and `[maven]` name .NET and JVM libraries, which a native build
+// has no way to link; a manifest that targets several platforms may still
+// declare them, so this is a warning.
+func warnNativeIgnoresHostTables(mf: in Mf.Manifest): Unit {
+  match mf.nuget {
+    case Some(n) -> if n.entries.count > 0 {
+      printErr(
+        "build: warning: the [nuget] packages in this manifest are .NET libraries; a --target native build does not link them"
+      )
+    }
+    case None -> ()
+  }
+  match mf.maven {
+    case Some(m) -> if m.entries.count > 0 {
+      printErr(
+        "build: warning: the [maven] artifacts in this manifest are JVM libraries; a --target native build does not link them"
+      )
+    }
+    case None -> ()
+  }
+}
+
+// Reports each registry or git dependency `mf` declares, which
+// `--target native` cannot compile; true if there was one.
+func nativeUnsupportedDeps(mf: in Mf.Manifest): Bool {
+  var any = false
+  for dep in mf.deps {
+    // `Std` is the standard library, which a native build always compiles
+    // from its own sources; a manifest may still declare it.
+    if dep.name == "Std" or Str.startsWith(dep.name, "Std.") {
+      continue
+    }
+    match dep.source {
+      case Mf.DepSource.Registry(_) -> {
+        printErr(nativeUnsupportedDepMessage(dep.name, "registry"))
+        any = true
+      }
+      case Mf.DepSource.Git(_, _, _, _) -> {
+        printErr(nativeUnsupportedDepMessage(dep.name, "git"))
+        any = true
+      }
+      case _ -> ()
+    }
+  }
+  any
 }
 
 /// Build a single workspace dependency and return its DLL path.
@@ -851,10 +904,38 @@ pub record ResolvedManifestDeps {
   /// single-file synthetic project request treats it as fatal per D123's
   /// "fail loud instead of silently degrading" conservative default.
   hadUnbuiltLocalDep: Bool
+  /// True when the target cannot use a declared dependency at all: a
+  /// registry or git dependency on `--target native` (#7833).  Fatal.
+  hadUnsupportedDep: Bool = false
   /// The `@cfg` features each `depTemplateSrcs` package is compiled with
   /// when bundled from source (`collectDepPackageFeatures`); pass as
   /// `EmitProjectRequest.packageFeatures`.
   depPackageFeatures: List[Pipe.PackageFeatureSet]
+}
+
+/// True for the targets that compile a `path` or `workspace = true`
+/// dependency from its source into the same build, rather than linking its
+/// built DLL: Jvm (#6136) and Native (#7833).
+pub func compilesDepsFromSource(target: in Emitter.CompileTarget): Bool {
+  match target {
+    case Emitter.Jvm -> true
+    case Emitter.Native -> true
+    case _ -> false
+  }
+}
+
+func targetIsNative(target: in Emitter.CompileTarget): Bool {
+  match target {
+    case Emitter.Native -> true
+    case _ -> false
+  }
+}
+
+/// The error for a dependency `--target native` cannot compile: native
+/// builds Lyric dependencies from source, so only a local one qualifies.
+pub func nativeUnsupportedDepMessage(depName: in String, kind: in String): String {
+  "build: dependency '" + depName + "' is a " + kind +
+    " dependency; --target native compiles Lyric dependencies from source and supports only path = \"...\" and workspace = true dependencies"
 }
 
 /// Resolve every dependency a manifest declares — workspace deps (built
@@ -883,6 +964,7 @@ pub func resolveManifestDependencies(
   val depPackageFeatures: List[Pipe.PackageFeatureSet] = newList()
   val seenDeps: List[String] = newList()
   var hadUnbuiltLocalDep = false
+  var hadUnsupportedDep = false
 
   val (wsDepDlls, wsHadError, wsCtxOpt) = buildWorkspaceDeps(manifest, mfPath, target, cliFeatures, noDefaultFeatures)
   if wsHadError {
@@ -934,17 +1016,9 @@ pub func resolveManifestDependencies(
                   // a fresh checkout's path dependency fail before it ever
                   // reached codegen, even though nothing on that path needs
                   // the DLL to exist (#6264).
-                  // Explicit `Native` arm (rather than folding it into the
-                  // wildcard) so this reads as a deliberate choice, not an
-                  // accident of the wildcard: a `path`/`workspace` dependency
-                  // on `--target native` is out of scope (#6809 — native has
-                  // no restored-binary concept, so `Emitter.emitNativeProject`
-                  // never reads `restoredDlls`/`depTemplateSrcs` at all; only
-                  // a project's OWN `[project.packages]` compiles for
-                  // native), so Native inherits Dotnet's "DLL matters"
-                  // behavior rather than silently absorbing whatever the Jvm
-                  // case does as targets are added later.
-                  val dllMatters = match target { case Emitter.Jvm -> false; case Emitter.Native -> true; case _ -> true }
+                  // Native, like Jvm, compiles the dependency from the source
+                  // collected below (#7833), so its DLL does not matter.
+                  val dllMatters = not compilesDepsFromSource(target)
                   // #6697: `dllMatters` also gates whether an EXISTING `.dll`
                   // is added to `restoredDlls` at all — not just whether a
                   // MISSING one is fatal. `bin/<name>.dll` here is always an
@@ -1091,10 +1165,17 @@ pub func resolveManifestDependencies(
     }
     di += 1
   }
+  if targetIsNative(target) and nativeUnsupportedDeps(manifest) {
+    hadUnsupportedDep = true
+  }
 
   val allNugetAssets = resolveAllNugetAssets(mfDir)
   val nugetPaths = allNugetAssets.dllPaths
-  warnIfNugetUnresolved(mfDir, manifest.nuget, nugetPaths)
+  if targetIsNative(target) {
+    warnNativeIgnoresHostTables(manifest)
+  } else {
+    warnIfNugetUnresolved(mfDir, manifest.nuget, nugetPaths)
+  }
   val (nugetLyricEntries, nugetThirdPartyPaths) = partitionNugetLyricDeps(nugetPaths)
   // #6697: NuGet is the dotnet-only package channel
   // (docs/39-package-registry.md §"NuGet.org as the .NET channel"; Maven is
@@ -1122,8 +1203,8 @@ pub func resolveManifestDependencies(
     }
   }
   val nativeAssetPaths = allNugetAssets.nativePaths
-  match target {
-    case Emitter.Jvm -> collectTransitiveDepSources(
+  if compilesDepsFromSource(target) {
+    val transitiveUnsupported = collectTransitiveDepSources(
       manifest,
       mfDir,
       cliFeatures,
@@ -1132,7 +1213,9 @@ pub func resolveManifestDependencies(
       depTemplatePkgsList,
       depPackageFeatures
     )
-    case _ -> ()
+    if transitiveUnsupported {
+      hadUnsupportedDep = true
+    }
   }
 
   ResolvedManifestDeps(
@@ -1142,6 +1225,7 @@ pub func resolveManifestDependencies(
     nativeAssetPaths = nativeAssetPaths,
     hadWorkspaceError = false,
     hadUnbuiltLocalDep = hadUnbuiltLocalDep,
+    hadUnsupportedDep = hadUnsupportedDep,
     depPackageFeatures = depPackageFeatures
   )
 }

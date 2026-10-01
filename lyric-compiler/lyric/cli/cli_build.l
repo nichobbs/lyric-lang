@@ -2182,7 +2182,7 @@ func buildReleaseProject(
   // (#5786).  Passed into `buildProject` via `preResolvedDeps` instead of
   // letting it re-resolve internally.
   val resolved = resolveManifestDependencies(manifest, mfPath, target, cliFeatures, noDefaultFeatures)
-  if resolved.hadWorkspaceError {
+  if resolved.hadWorkspaceError or resolved.hadUnsupportedDep {
     return 1
   }
 
@@ -2701,7 +2701,7 @@ pub func buildProjectFromManifest(
     case Some(r) -> r
     case None -> resolveManifestDependencies(manifest, mfPath, target, cliFeatures, noDefaultFeatures)
   }
-  if resolved.hadWorkspaceError {
+  if resolved.hadWorkspaceError or resolved.hadUnsupportedDep {
     return 1
   }
   val restoredDlls = resolved.restoredDlls
@@ -2736,15 +2736,14 @@ pub func buildProjectFromManifest(
   // (#6136). Harmless duplication on Dotnet is avoided by gating on target:
   // there, the dep is already resolved through `restoredDlls`, and compiling
   // its source a second time into the SAME bundle would double-declare it.
-  match target {
-    case Emitter.Jvm -> {
-      var jdpi = 0
-      while jdpi < depTemplatePkgsList.count {
-        pkgs.add(depTemplatePkgsList[jdpi])
-        jdpi += 1
-      }
+  // Native folds them the same way: it has no restored-binary concept, and a
+  // Lyric dependency's source is always local (#7833).
+  if compilesDepsFromSource(target) {
+    var jdpi = 0
+    while jdpi < depTemplatePkgsList.count {
+      pkgs.add(depTemplatePkgsList[jdpi])
+      jdpi += 1
     }
-    case _ -> ()
   }
 
   val asmName = stemOf(Path.basename(outPath), 4)
@@ -2845,7 +2844,8 @@ pub func buildProjectFromManifest(
       activeFeatures,
       mfDeclared,
       projReq.packageVersion,
-      projReq.contractsEnabled
+      projReq.contractsEnabled,
+      resolved.depPackageFeatures
     )
   } else {
     Emitter.emitProject(projReq)

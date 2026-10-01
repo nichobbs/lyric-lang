@@ -383,7 +383,19 @@ test "a genuinely multi-file [project.packages] entry merges through Emitter.emi
   val noLibs: List[String] = newList()
   val noDefines: List[String] = newList()
   val noFeatures: List[String] = newList()
-  val result = Emitter.emitNativeProject(pkgs, stem, "", "0", noLibs, noDefines, noFeatures, noFeatures, "", true)
+  val result = Emitter.emitNativeProject(
+    pkgs,
+    stem,
+    "",
+    "0",
+    noLibs,
+    noDefines,
+    noFeatures,
+    noFeatures,
+    "",
+    true,
+    newList()
+  )
   match result.outputPath {
     case None -> panic("multi-file package project compilation failed")
     case Some(_) -> ()

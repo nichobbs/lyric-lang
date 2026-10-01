@@ -969,9 +969,7 @@ lyric build --target native <file.l>   # writes a self-contained POSIX executabl
                                        # interface default/generic methods, generic protected
                                        # types, when: barriers, invariant re-checking,
                                        # async generators (yield in async func), a defer that
-                                       # must run during a panic; a manifest's cross-project
-                                       # [dependencies] (native has no restored-binary concept —
-                                       # a project's own [project.packages] DOES build, below)
+                                       # must run during a panic
 lyric build -o <dir> <file.l>          # write output files to <dir>
 lyric build --manifest lyric.toml      # build from project manifest
                                        # (with [project] output = "single", bundles every
@@ -980,7 +978,10 @@ lyric build --manifest lyric.toml      # build from project manifest
                                        # auto-restores [dependencies] when lyric.lock is missing/stale
                                        # ([nuget]/[maven] edits aren't detected — run `lyric restore`)
                                        # --target native (N9.7, #6809) compiles a project's own
-                                       # [project.packages] from source too, reordering units so
+                                       # [project.packages] from source too, plus its path and
+                                       # workspace = true [dependencies] and theirs, each with
+                                       # its own [features] (#7833); a registry or git
+                                       # dependency fails a native build. Reordering units so
                                        # whichever package declares main drives C-main synthesis
                                        # regardless of manifest order; --triple/--opt override the
                                        # manifest [native] table here too (#6815 item 2). A
