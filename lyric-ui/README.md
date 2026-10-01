@@ -3,11 +3,12 @@
 A model-view-update UI library for Lyric: one application model for desktop
 and web (`docs/65-ui-library-sketch.md`, D137).
 
-Status: **experimental, phases U1 to U4 and part of U6.** The pure core,
-the session driver, the server-driven web host with a prerendered first
-paint (D152), the `[layers]` checker (D149) and the form and route
-generators (D151) are implemented and tested; `Lazy` subtrees, the data
-grid, and the desktop and WASM hosts are planned (docs/65 §14).
+Status: **experimental, phases U1 to U6.** The pure core, the session
+driver, the server-driven web host with a prerendered first paint (D152),
+the desktop webview host (D162), the `[layers]` checker (D149), the form
+and route generators (D151), `Lazy` subtrees (D153) and the data grid
+(D154) are implemented and tested on .NET and the JVM; the WASM host is
+planned (docs/65 §14).
 
 ## The application model
 
@@ -41,6 +42,7 @@ packages, with its tests.
 | `Ui.Session` | runtime | the pure session step functions and `Program` |
 | `Ui.Host` | runtime | the host-independent session driver (`instance`, `Outbox`) |
 | `Ui.Host.Web` | app | server-driven web host over `lyric-web` + `lyric-ws` |
+| `Ui.Host.Desktop` | app | the web host on loopback, shown in a `webview` window |
 | `Ui.Host.Assets` | runtime | the embedded TypeScript runtime and theme (generated) |
 
 ## Typed routes
@@ -125,6 +127,24 @@ Keyed nodes (`keyed(key, view)`) are addressed by key in events, so a click
 on a row that moved between render and click still reaches that row, and a
 click on a row that has gone is dropped. Key the items of dynamic lists.
 
+## A desktop window
+
+`Ui.Host.Desktop.run(cfg, route)` shows the same screens in a window of the
+system webview (D162). It serves the web host on `127.0.0.1` with a per-run
+access token only the window receives, and ends the program when the
+window closes (`Desktop.close()` closes it from code):
+
+```lyric
+Desktop.run(Desktop.defaultConfig("Customers").copy(startPath = "/customers"), route)
+```
+
+It needs the C `webview` library 0.12.0 (and JDK 22+ on the JVM). On Linux:
+
+```sh
+sudo apt-get install -y libwebkit2gtk-4.1-dev cmake g++ pkg-config
+bash scripts/ci/install-webview.sh
+```
+
 ## Host runtime (TypeScript)
 
 `runtime/` holds the browser/webview runtime: it applies patches to a
@@ -145,4 +165,5 @@ node embed.mjs --check  # verify host_assets.l is up to date
 ```sh
 lyric test --manifest lyric-ui/lyric.toml
 lyric test --manifest lyric-ui/routes/lyric.toml   # the route generator
+bash scripts/ci/ui-desktop-e2e.sh --target dotnet   # a real window under Xvfb
 ```

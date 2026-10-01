@@ -3,14 +3,15 @@
 Line-of-business applications spend most of their code on screens: a form
 that loads a record, lets someone edit it, validates it, saves it and moves
 on. `lyric-ui` and `lyric-forms` give those screens one application model
-that is the same whether the screen is served to a browser or, later,
-shown in a desktop window. This chapter builds the edit-customer screen
-from `examples/ui-customers/`, then tests it and serves it.
+that is the same whether the screen is served to a browser or shown in a
+desktop window. This chapter builds the edit-customer screen from
+`examples/ui-customers/`, then tests it, serves it and opens it in a
+window.
 
-The libraries are `@experimental`. The pure core, the forms helpers, the
-server-driven web host and the `[layers]` checker are implemented; the
-desktop and WebAssembly hosts and the form generator are designed but not
-built yet (`docs/65-ui-library-sketch.md` §14).
+The libraries are `@experimental`. The pure core, the forms helpers and
+their generators, the server-driven web host, the desktop host and the
+`[layers]` checker are implemented; the WebAssembly host is designed but
+not built yet (`docs/65-ui-library-sketch.md` §14).
 
 ## Adding the dependencies
 
@@ -562,6 +563,7 @@ change any of them with `.copy`:
 | `reconnectGraceMs` | 120000 | how long a disconnected session can be resumed |
 | `maxSessions` | 10000 | sessions held in memory |
 | `prerender` | `true` | render each page's first view into the HTML |
+| `accessToken` | `""` | when set, admit only clients that present this token (below) |
 
 ### First paint
 
@@ -604,6 +606,71 @@ set `publicWsUrl`:
 
 ```lyric
 val cfg = WebHost.defaultConfig("Customers").copy(publicWsUrl = "wss://app.example.com/_ui")
+```
+
+### Admitting only your own client
+
+A server that should answer only one client, such as the desktop host
+below, sets `accessToken`. The first page request must then carry the
+token as the `_access` query parameter. The host answers it with a
+redirect to the same URL without the token and an `HttpOnly` cookie
+holding it; every later page request, and the session socket, must send
+that cookie and is refused with `403` otherwise.
+
+## A desktop window
+
+`Ui.Host.Desktop` shows the same screens in a window of their own instead
+of a browser tab. Its `run` takes the same `route` function as the web
+host:
+
+```lyric
+import Ui.Host.Desktop as Desktop
+
+func main(): Unit {
+  val repo = Store.seeded()
+  val cfg = Desktop.defaultConfig("Customers").copy(startPath = "/customers")
+  Desktop.run(cfg, { url: String -> route(repo, url) })
+}
+```
+
+The window is the operating system's webview: WebKitGTK on Linux, WebKit
+on macOS, WebView2 on Windows. Behind it the desktop host runs the web
+host on `127.0.0.1`, on a free port, with an access token that it makes
+fresh for each run and gives only to the window, so other programs on the
+machine cannot open the application. Everything in this chapter applies
+unchanged: the same runtime renders the same views and speaks the same
+protocol.
+
+`run` does not return. When the window closes, the program ends with exit
+status 0; if the window or its server cannot start, the reason goes to
+standard error and the exit status is 1. To close the window from the
+application, a "Quit" command's effect calls `Desktop.close()`.
+
+`DesktopConfig` has these fields:
+
+| Field | Default | Meaning |
+|---|---|---|
+| `title` | (argument) | window title |
+| `width`, `height` | 1024, 768 | initial window size in pixels |
+| `port` | 0 | loopback port; 0 picks a free one |
+| `startPath` | `/` | the first page shown |
+| `reconnectGraceMs` | 120000 | how long a session survives a page reload |
+| `devTools` | `false` | enable the webview's developer tools |
+
+The host needs the C `webview` library (version 0.12.0) at run time, and on
+the JVM, JDK 22 or later. Few Linux distributions package it, so build it
+once from the pinned release with the repository's script, which installs
+`libwebview.so` under `/usr/local`:
+
+```sh
+sudo apt-get install -y libwebkit2gtk-4.1-dev cmake g++ pkg-config
+bash scripts/ci/install-webview.sh
+```
+
+The example opens in a window with `--desktop`:
+
+```sh
+lyric run --manifest examples/ui-customers/lyric.toml -- --desktop
 ```
 
 ## Structuring a screen
@@ -658,4 +725,5 @@ the language reference §9.4.
 
 The library, the forms helpers and the example build and pass their tests
 on both `--target dotnet` and `--target jvm`. The web host serves browsers
-from either runtime.
+from either runtime, and the desktop host opens its window from either.
+The native target does not run `lyric-ui` yet.
