@@ -3,7 +3,7 @@
 **Status:** Specced in D155 (phase G0): Q-GFX-001 to Q-GFX-004 are
 resolved, `docs/01` specifies the §4 language features as not yet
 implemented, and `docs/00` / `docs/04` carry the §4.9 revisions. Phases G1
-to G10 are open. D156 resolves Q-GFX-005 to Q-GFX-010 (§10).
+to G10 are open. D156 and D157 resolve Q-GFX-005 to Q-GFX-010 (§10).
 
 **Builds on:** `native/plan/` (the LLVM backend, D-N-001 onward),
 `docs/65-ui-library-sketch.md` §13.3 (non-HTML hosts), `docs/63-build-profiles-and-debugger.md`
@@ -115,7 +115,7 @@ specification.
 
 ### 4.2 By-value records and small unions
 
-The reference already says records are value types. On native, a record
+A record with no `var` field is a value (D157). On native, such a record
 whose fields are all by-value types (scalars, distinct types over
 scalars, other by-value records, `array[N, T]` of those) lowers to an
 LLVM aggregate with no ARC header: on the stack, in registers, inline
@@ -130,11 +130,9 @@ Work:
   struct arguments and returns per System V AMD64 and AAPCS64.
 - ARC insertion skips by-value types entirely; a by-value record with no
   reference fields has no destructor.
-- **Semantics check (Q-GFX-008).** Value semantics means `var p = q;
-  p.x = 1` leaves `q` unchanged. Native records are heap-shared today, so
-  `var`-field mutation through a copy may currently be observable. The
-  current behaviour on each backend has to be pinned down, and any
-  divergence from value semantics treated as a bug.
+- **Mutable records stay shared (D157).** A record with a `var` field
+  has identity on every backend, so it keeps its heap representation; the
+  by-value lowering applies only to records without `var` fields.
 
 The language is unchanged; this is a codegen policy.
 
@@ -240,7 +238,8 @@ whole meaning:
 - scalars (`Bool`, `Byte`, `Int`, `Long`, `UInt`, `ULong`, `Float`,
   `Double`, `Char`);
 - distinct types over `Plain` types **without** a range constraint;
-- records whose fields are all `Plain` and which declare no `invariant:`;
+- records with no `var` field whose fields are all `Plain` and which
+  declare no `invariant:` (D157);
 - `array[N, T]` of `Plain`;
 - enums (as their ordinal).
 
@@ -523,6 +522,6 @@ the GPU.
 | Q-GFX-005 | Name and exact rules of the `Plain` marker; whether enums with explicit ordinals qualify. | **Resolved (D156):** `Plain`, as §4.5; Lyric enums have no explicit ordinals. |
 | Q-GFX-006 | `lyric bindgen` input: clang JSON AST only, or also `webgpu.yml`? | **Resolved (D156):** both; `webgpu.yml` drives WebGPU. |
 | Q-GFX-007 | Native libraries: prebuilt archives by default, or system packages? | **Resolved (D156):** prebuilt by default, `pkg-config` opt-in. |
-| Q-GFX-008 | Are by-value record semantics (`var` field mutation through a copy) currently consistent across backends? | **Resolved (D156):** records have value semantics on every backend; G1 audits and fixes divergences. |
+| Q-GFX-008 | Are by-value record semantics (`var` field mutation through a copy) currently consistent across backends? | **Resolved (D157, superseding D156 item 4):** consistent on all three, with reference semantics. Records without `var` fields are values; records with `var` fields have identity; an explicit marker for mutable records is a follow-up. |
 | Q-GFX-009 | Priority of the Windows port (G9) against G6 and G7. | **Resolved (D156):** start G9 in parallel once G3 lands. |
 | Q-GFX-010 | Should `lyric-game` include an entity-component system? | **Resolved (D156):** no; a separate library may follow the sample game. |
