@@ -1295,7 +1295,7 @@ Errors and warnings emitted during lexical analysis of source files.
 
 | Code | Severity | Meaning |
 |---|---|---|
-| `L0015` | error | Unrecognised numeric suffix (e.g. `100xyz`); use a valid type suffix (`u8`, `i32`, `f32`, etc.) or remove the suffix |
+| `L0015` | error | Unrecognised numeric suffix (e.g. `100xyz`, `1u7`, `2i128`): the message names the suffix and lists the valid ones — `i8` `i16` `i32` `i64` `u8` `u16` `u32` `u64` `f32` `f64` on a decimal literal, only the integer suffixes on a hex/octal/binary literal, only `f32`/`f64` on a float literal |
 | `L0016` | error | Based literal has no valid digit body (e.g. bare `0x`, `0b___` with only underscores) |
 
 ### Linter (L-series)
@@ -1330,7 +1330,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0033` | Comparison operands must be matching ordered types |
 | `T0034` | Logical operator applied to non-Bool operand |
 | `T0035` | `??` misuse: the left operand is not a nullable type, or the right operand does not match the nullable's inner type |
-| `T0036` | Unary minus on non-numeric type |
+| `T0036` | Unary minus on a non-numeric type (including any distinct type) |
 | `T0037` | `not` applied to non-Bool operand |
 | `T0041` | List literal elements have mismatched types |
 | `T0042` | Wrong number of arguments to a function or method call, a named argument naming no parameter, or a parameter with no default left without an argument |
@@ -1412,6 +1412,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0144` | Refutable pattern in a module-level `val` (a constructor, record, literal, range, type-test, alternative or const pattern). A module value has no failure path, so only names, `_`, `name @ <pattern>` and tuples of those are allowed; the message names the form. State a type with `val n: Int = 3`, not `val n is Int = 3` (#7763). |
 | `T0145` | An `impl` for a generic type whose type arguments are not the impl's own type parameters, each named once, or with an impl type parameter the target never names. An impl applies to every instantiation of its target (both backends attach its methods to the target's one generic class), so write `impl[T] I for Box[T]` (parameters in any order: `impl[K, V] I for Pair[V, K]`); an impl for a single instantiation such as `impl I for Box[Int]` is not supported (#7704). |
 | `T0146` | A local `val`'s pattern cannot match every value of its initializer's type (or annotation). A local `val` destructures with no failure path, so a tuple pattern needs a tuple of the same arity at every level (`val (a, b) = 5` and `val (a, b) = (1, 2, 3)` are errors), a constructor pattern needs the sole case of a single-case union (`val Some(x) = opt` is an error), a record pattern must name the initializer's own record and only its fields (`val Point { x, y } = n` for an `Int` `n` is an error), and a literal, range, type-test, alternative or const pattern is never allowed; use a `match`. Such bindings used to compile and fail at runtime (#7778). |
+| `T0147` | Unary minus on an unsigned operand (`Byte`, `UInt`, `ULong`, or a range over one), including a negated unsigned constant written in a range bound. No non-zero unsigned value has a negation of its own type, so `-(5u8)` used to wrap (#7854); convert a `Byte` first (`-(b.toInt())`), and give a value that can be negative a signed type |
 
 ### Type checker warnings (W-series)
 

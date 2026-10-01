@@ -841,16 +841,6 @@ func isHexDigitChar(c: in Char): Bool {
 }
 
 @pure
-func isOctalDigitChar(c: in Char): Bool {
-  c >= '0' and c <= '7'
-}
-
-@pure
-func isBinaryDigitChar(c: in Char): Bool {
-  c == '0' or c == '1'
-}
-
-@pure
 func isAsciiAlpha(c: in Char): Bool {
   (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z')
 }
@@ -1333,50 +1323,71 @@ func stripUnderscores(s: in String): String {
   sb
 }
 
-/// Result of peeling an integer-type suffix off a numeric body.
-record IntSuffixSplit {
-  body: String
-  suffix: IntSuffix
-}
-
-/// Result of peeling a float-type suffix off a numeric body.
-record FloatSuffixSplit {
-  body: String
-  suffix: FloatSuffix
-}
-
+/// The integer suffix spelled exactly `text`, or `None`.
 @pure
-func splitIntSuffix(raw: in String): IntSuffixSplit {
-  if raw.length >= 3 and Str.substring(raw, raw.length - 3, 3) == "i32" {
-    IntSuffixSplit(body = Str.substring(raw, 0, raw.length - 3), suffix = I32)
-  } else if raw.length >= 3 and Str.substring(raw, raw.length - 3, 3) == "i64" {
-    IntSuffixSplit(body = Str.substring(raw, 0, raw.length - 3), suffix = I64)
-  } else if raw.length >= 3 and Str.substring(raw, raw.length - 3, 3) == "i16" {
-    IntSuffixSplit(body = Str.substring(raw, 0, raw.length - 3), suffix = I16)
-  } else if raw.length >= 3 and Str.substring(raw, raw.length - 3, 3) == "u32" {
-    IntSuffixSplit(body = Str.substring(raw, 0, raw.length - 3), suffix = U32)
-  } else if raw.length >= 3 and Str.substring(raw, raw.length - 3, 3) == "u64" {
-    IntSuffixSplit(body = Str.substring(raw, 0, raw.length - 3), suffix = U64)
-  } else if raw.length >= 3 and Str.substring(raw, raw.length - 3, 3) == "u16" {
-    IntSuffixSplit(body = Str.substring(raw, 0, raw.length - 3), suffix = U16)
-  } else if raw.length >= 2 and Str.substring(raw, raw.length - 2, 2) == "i8" {
-    IntSuffixSplit(body = Str.substring(raw, 0, raw.length - 2), suffix = I8)
-  } else if raw.length >= 2 and Str.substring(raw, raw.length - 2, 2) == "u8" {
-    IntSuffixSplit(body = Str.substring(raw, 0, raw.length - 2), suffix = U8)
+func intSuffixNamed(text: in String): Option[IntSuffix] {
+  if text == "i8" {
+    Some(value = I8)
+  } else if text == "i16" {
+    Some(value = I16)
+  } else if text == "i32" {
+    Some(value = I32)
+  } else if text == "i64" {
+    Some(value = I64)
+  } else if text == "u8" {
+    Some(value = U8)
+  } else if text == "u16" {
+    Some(value = U16)
+  } else if text == "u32" {
+    Some(value = U32)
+  } else if text == "u64" {
+    Some(value = U64)
   } else {
-    IntSuffixSplit(body = raw, suffix = NoIntSuffix)
+    None
   }
 }
 
+/// The float suffix spelled exactly `text`, or `None`.
 @pure
-func splitFloatSuffix(raw: in String): FloatSuffixSplit {
-  if raw.length >= 3 and Str.substring(raw, raw.length - 3, 3) == "f32" {
-    FloatSuffixSplit(body = Str.substring(raw, 0, raw.length - 3), suffix = F32)
-  } else if raw.length >= 3 and Str.substring(raw, raw.length - 3, 3) == "f64" {
-    FloatSuffixSplit(body = Str.substring(raw, 0, raw.length - 3), suffix = F64)
+func floatSuffixNamed(text: in String): Option[FloatSuffix] {
+  if text == "f32" {
+    Some(value = F32)
+  } else if text == "f64" {
+    Some(value = F64)
   } else {
-    FloatSuffixSplit(body = raw, suffix = NoFloatSuffix)
+    None
   }
+}
+
+/// The L0015 text for an unrecognised suffix `tail` on a numeric literal.
+/// `kind` is the literal's kind (`decimal`, `hexadecimal`, `octal`,
+/// `binary`, `float`): a based literal takes only an integer suffix and a
+/// float literal only a float suffix, so each lists just the suffixes it
+/// accepts.
+@pure
+func unknownSuffixMessage(tail: in String, kind: in String): String {
+  val intSuffixes = "`i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`"
+  if kind == "decimal" {
+    "unrecognised numeric suffix `" + tail + "`; valid suffixes are " + intSuffixes + ", `f32` and `f64`"
+  } else if kind == "float" {
+    "unrecognised suffix `" + tail + "` on a float literal; valid float suffixes are `f32` and `f64`"
+  } else {
+    "unrecognised suffix `" + tail + "` on a " + kind + " integer literal; valid suffixes are " + intSuffixes
+  }
+}
+
+/// Consume a literal's suffix: an ASCII letter followed by letters, digits
+/// and underscores.  The whole run is the suffix, so `100xyz` and `1u8_x`
+/// are one literal with a bad suffix rather than a literal glued to an
+/// identifier.  Empty when no letter follows the digits.
+func lexNumericSuffix(state: inout LexerState): String {
+  var tail = ""
+  if not isAtEnd(state) and isAsciiAlpha(peek(state)) {
+    while not isAtEnd(state) and (isAsciiAlpha(peek(state)) or isDigitChar(peek(state)) or peek(state) == '_') {
+      tail = tail + charToString(advance(state))
+    }
+  }
+  tail
 }
 
 /// Parse a digit string in the given base as an unsigned 64-bit
@@ -1573,7 +1584,9 @@ func lexBasedInt(state: inout LexerState, startP: in Position, base: in Int): Un
   var keepReading = true
   while keepReading and not isAtEnd(state) {
     val c = peek(state)
-    val ok = if base == 16 { isHexDigitChar(c) } else if base == 8 { isOctalDigitChar(c) } else { isBinaryDigitChar(c) }
+    // A decimal digit outside a binary or octal base (`0b12`) stays in the
+    // body so the digit parse rejects it, rather than starting a suffix.
+    val ok = if base == 16 { isHexDigitChar(c) } else { isDigitChar(c) }
     if ok or c == '_' {
       advance(state)
       raw = raw + charToString(c)
@@ -1581,33 +1594,48 @@ func lexBasedInt(state: inout LexerState, startP: in Position, base: in Int): Un
       keepReading = false
     }
   }
-  // Optional integer suffix tail.
-  var tail = ""
-  while not isAtEnd(state) and (isAsciiAlpha(peek(state)) or isDigitChar(peek(state))) {
-    val c = advance(state)
-    tail = tail + charToString(c)
-  }
-  val split = splitIntSuffix(tail)
-  if split.body.length > 0 {
-    // Unrecognised characters in the suffix tail.  Re-glue them onto
-    // the body so they participate in the digit-overflow diagnostic
-    // and surface a clean L0010.
-    raw = raw + split.body
-  }
+  val suffixP = currentPosition(state)
+  val tail = lexNumericSuffix(state)
   val body = stripUnderscores(raw)
-  match parseIntLiteralValue(body, base, split.suffix) {
-    case IntLitOk(v) -> emit(
-      state,
-      TInt(value = v, suffix = split.suffix, raw = sourceSlice(state, startP.offset, state.pos)),
-      startP
-    )
+  val sfx = if tail.length == 0 { Some(value = NoIntSuffix) } else { intSuffixNamed(tail) }
+  match sfx {
+    case None -> {
+      val kind = if base == 16 { "hexadecimal" } else if base == 8 { "octal" } else { "binary" }
+      recordError(state, "L0015", unknownSuffixMessage(tail, kind), makeSpan(suffixP, currentPosition(state)))
+      emitIntLiteral(state, startP, parseIntLiteralValue(body, base, NoIntSuffix), NoIntSuffix, false)
+    }
+    case Some(suffix) -> emitIntLiteral(state, startP, parseIntLiteralValue(body, base, suffix), suffix, true)
+  }
+}
+
+/// Emit an integer literal token for a parsed value.  With `report`, an
+/// out-of-range value is L0010; without it (the suffix was already
+/// reported as L0015) the token is emitted silently so one typo yields one
+/// diagnostic.
+func emitIntLiteral(
+  state: inout LexerState,
+  startP: in Position,
+  parsed: in IntLiteralValue,
+  suffix: in IntSuffix,
+  report: in Bool,
+): Unit {
+  val raw = sourceSlice(state, startP.offset, state.pos)
+  match parsed {
+    case IntLitOk(v) -> emit(state, TInt(value = v, suffix = suffix, raw = raw), startP)
+    // The minimum's magnitude (`9223372036854775808`, `128i8`) is only
+    // well-formed under a unary minus; the parser cancels this L0010 when
+    // it builds that negation (#425 item 5, #1174, #7847).
     case IntLitMinMagnitude(v, msg) -> {
-      recordError(state, "L0010", msg, makeSpan(startP, currentPosition(state)))
-      emit(state, TInt(value = v, suffix = split.suffix, raw = sourceSlice(state, startP.offset, state.pos)), startP)
+      if report {
+        recordError(state, "L0010", msg, makeSpan(startP, currentPosition(state)))
+      }
+      emit(state, TInt(value = v, suffix = suffix, raw = raw), startP)
     }
     case IntLitOutOfRange(msg) -> {
-      recordError(state, "L0010", msg, makeSpan(startP, currentPosition(state)))
-      emit(state, TInt(value = 0i64, suffix = split.suffix, raw = sourceSlice(state, startP.offset, state.pos)), startP)
+      if report {
+        recordError(state, "L0010", msg, makeSpan(startP, currentPosition(state)))
+      }
+      emit(state, TInt(value = 0i64, suffix = suffix, raw = raw), startP)
     }
   }
 }
@@ -1702,35 +1730,28 @@ func lexDecimalNumber(state: inout LexerState): Unit {
       raw = raw + charToString(advance(state))
     }
   }
-  // Optional suffix tail (letters + digits — broad enough to catch
-  // `f32`, `i64`, and to swallow malformed tails into the parse error).
-  var tail = ""
-  while not isAtEnd(state) and (isAsciiAlpha(peek(state)) or isDigitChar(peek(state))) {
-    tail = tail + charToString(advance(state))
-  }
-  val combined = raw + tail
-  val endsInF = combined.length >= 3 and
-    (
-      Str.substring(combined, combined.length - 3, 3) == "f32" or
-        Str.substring(combined, combined.length - 3, 3) == "f64"
-    )
-  if isFloat or endsInF {
-    val fsplit = splitFloatSuffix(combined)
-    val stripped = stripUnderscores(fsplit.body)
-    match parseDoubleLiteral(stripped) {
-      case Some(v) -> emit(
-        state,
-        TFloat(value = v, suffix = fsplit.suffix, raw = sourceSlice(state, startP.offset, state.pos)),
-        startP
-      )
+  val suffixP = currentPosition(state)
+  val tail = lexNumericSuffix(state)
+  val floatSfx = floatSuffixNamed(tail)
+  val isFloatSfx = match floatSfx { case Some(_) -> true; case None -> false }
+  if isFloat or isFloatSfx {
+    val suffix = match floatSfx { case Some(fs) -> fs; case None -> NoFloatSuffix }
+    match parseDoubleLiteral(stripUnderscores(raw)) {
+      case Some(v) -> {
+        if tail.length > 0 and not isFloatSfx {
+          recordError(state, "L0015", unknownSuffixMessage(tail, "float"), makeSpan(suffixP, currentPosition(state)))
+        }
+        emit(state, TFloat(value = v, suffix = suffix, raw = sourceSlice(state, startP.offset, state.pos)), startP)
+      }
+      // A malformed body (`1e`, `2e+`) is the one diagnostic: whatever
+      // follows an exponent with no digits is not a separate suffix error.
       case None -> {
         recordError(state, "L0011", "invalid float literal", makeSpan(startP, currentPosition(state)))
-        emit(state, TFloat(value = 0.0, suffix = fsplit.suffix, raw = sourceSlice(state, startP.offset, state.pos)), startP)
+        emit(state, TFloat(value = 0.0, suffix = suffix, raw = sourceSlice(state, startP.offset, state.pos)), startP)
       }
     }
   } else {
-    val isplit = splitIntSuffix(combined)
-    val stripped = stripUnderscores(isplit.body)
+    val stripped = stripUnderscores(raw)
     if leadingZero {
       recordError(
         state,
@@ -1739,23 +1760,13 @@ func lexDecimalNumber(state: inout LexerState): Unit {
         makeSpan(startP, currentPosition(state))
       )
     }
-    match parseIntLiteralValue(stripped, 10, isplit.suffix) {
-      case IntLitOk(v) -> emit(
-        state,
-        TInt(value = v, suffix = isplit.suffix, raw = sourceSlice(state, startP.offset, state.pos)),
-        startP
-      )
-      // The minimum's magnitude (`9223372036854775808`, `128i8`) is only
-      // well-formed under a unary minus; the parser cancels this L0010 when
-      // it builds that negation (#425 item 5, #1174, #7847).
-      case IntLitMinMagnitude(v, msg) -> {
-        recordError(state, "L0010", msg, makeSpan(startP, currentPosition(state)))
-        emit(state, TInt(value = v, suffix = isplit.suffix, raw = sourceSlice(state, startP.offset, state.pos)), startP)
+    val intSfx = if tail.length == 0 { Some(value = NoIntSuffix) } else { intSuffixNamed(tail) }
+    match intSfx {
+      case None -> {
+        recordError(state, "L0015", unknownSuffixMessage(tail, "decimal"), makeSpan(suffixP, currentPosition(state)))
+        emitIntLiteral(state, startP, parseIntLiteralValue(stripped, 10, NoIntSuffix), NoIntSuffix, false)
       }
-      case IntLitOutOfRange(msg) -> {
-        recordError(state, "L0010", msg, makeSpan(startP, currentPosition(state)))
-        emit(state, TInt(value = 0i64, suffix = isplit.suffix, raw = sourceSlice(state, startP.offset, state.pos)), startP)
-      }
+      case Some(suffix) -> emitIntLiteral(state, startP, parseIntLiteralValue(stripped, 10, suffix), suffix, true)
     }
   }
 }

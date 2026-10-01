@@ -69,6 +69,7 @@ pub func resolveType(tbl: in SymbolTable, ctx: in GenericContext, diag: in List[
     case TRefined(under, range) -> {
       val args: List[Type] = newList()
       val baseTy = resolveTypePath(tbl, ctx, diag, under, te.span, args)
+      checkRangeBoundNegations(tbl, diag, range)
       val lo = rangeLo(range)
       val hi = rangeHi(range)
       val inc = rangeHiInclusive(range)
@@ -112,13 +113,54 @@ pub func exprLiteralLong(e: in Expr): Option[Long] {
     case ELiteral(lit) -> match lit { case LInt(v, _, _) -> Some(value = v); case _ -> None }
     case EParen(inner) -> exprLiteralLong(inner)
     case EPrefix(op, operand) -> match op {
-      case PreNeg -> match exprLiteralLong(operand) {
-        case Some(v) -> Some(value = 0i64 - v)
-        case None -> None
+      // A negated unsigned literal has no value of its type (T0147, #7854).
+      case PreNeg -> match unsignedLiteralTypeName(operand) {
+        case Some(_) -> None
+        case None -> match exprLiteralLong(operand) {
+          case Some(v) -> Some(value = 0i64 - v)
+          case None -> None
+        }
       }
       case _ -> None
     }
     case _ -> None
+  }
+}
+
+func unsignedLiteralTypeName(e: in Expr): Option[String] {
+  match e.kind {
+    case EParen(inner) -> unsignedLiteralTypeName(inner)
+    case ELiteral(lit) -> match lit { case LInt(_, sfx, _) -> unsignedSuffixTypeName(sfx); case _ -> None }
+    case _ -> None
+  }
+}
+
+// An inline range's bounds are folded here rather than type-checked, so a
+// unary minus on an unsigned constant in one is reported here (#7854).
+func checkRangeBoundNegations(tbl: in SymbolTable, diag: in List[Diagnostic], rb: in RangeBound): Unit {
+  match rb {
+    case RBClosed(lo, hi) -> {
+      checkBoundNegation(tbl, diag, lo)
+      checkBoundNegation(tbl, diag, hi)
+    }
+    case RBHalfOpen(lo, hi, _) -> {
+      checkBoundNegation(tbl, diag, lo)
+      checkBoundNegation(tbl, diag, hi)
+    }
+    case RBLowerOpen(hi) -> checkBoundNegation(tbl, diag, hi)
+    case RBUpperOpen(lo) -> checkBoundNegation(tbl, diag, lo)
+  }
+}
+
+func checkBoundNegation(tbl: in SymbolTable, diag: in List[Diagnostic], e: in Expr): Unit {
+  match tryFoldInt(tbl, e) {
+    case FoldErr(fe) -> match fe {
+      case FEUnsignedNegation(tn, negSpan) -> if spanWithin(negSpan, e.span) {
+        diag.add(errorDiagnostic("T0147", unsignedNegationMessage(tn, tn == "Byte"), negSpan))
+      }
+      case _ -> ()
+    }
+    case FoldOk(_) -> ()
   }
 }
 

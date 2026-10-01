@@ -489,6 +489,7 @@ func describeFoldError(fe: in FoldError): String {
     case FECycle(name) -> "constant '" + name + "' references itself transitively"
     case FEOverflow -> "integer overflow during constant evaluation"
     case FEDivByZero -> "division by zero in constant expression"
+    case FEUnsignedNegation(tn, _) -> "it negates a constant of the unsigned type " + tn
   }
 }
 
@@ -496,16 +497,34 @@ func foldOrErr(tbl: in SymbolTable, diag: in List[Diagnostic], name: in String, 
   match tryFoldInt(tbl, e) {
     case FoldOk(v) -> Some(value = v)
     case FoldErr(fe) -> {
-      diag.add(
-        errorDiagnostic(
-          "T0093",
-          "range subtype '" + name + "' has a symbolic bound that cannot be folded: " + describeFoldError(fe),
-          e.span
+      // A negation written in the bound itself is T0147 where it is; one
+      // reached through a constant's initialiser was reported at that
+      // initialiser, so there the bound just cannot be folded.
+      val ownNegation = match fe {
+        case FEUnsignedNegation(tn, negSpan) -> if spanWithin(negSpan, e.span) {
+          diag.add(errorDiagnostic("T0147", unsignedNegationMessage(tn, tn == "Byte"), negSpan))
+          true
+        } else {
+          false
+        }
+        case _ -> false
+      }
+      if not ownNegation {
+        diag.add(
+          errorDiagnostic(
+            "T0093",
+            "range subtype '" + name + "' has a symbolic bound that cannot be folded: " + describeFoldError(fe),
+            e.span
+          )
         )
-      )
+      }
       None
     }
   }
+}
+
+func spanWithin(inner: in Span, outer: in Span): Bool {
+  inner.startPos.offset >= outer.startPos.offset and inner.endPos.offset <= outer.endPos.offset
 }
 
 func checkClosed(
