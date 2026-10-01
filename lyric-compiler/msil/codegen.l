@@ -160,6 +160,8 @@ pub record CodegenCtx {
   tokDateTimeToStringO: Int    // DateTime.ToString(string): string  instance HASTHIS
   usDateTimeFormatO: Int       // ldstr token (0x70000000 | US heap offset) for the "o" format specifier
   tokDoubleToStringInv: Int    // Double.ToString(IFormatProvider): string  instance HASTHIS (#2462)
+  trIFormattable: Int          // System.IFormattable (#7902)
+  tokIFormattableToString: Int // IFormattable.ToString(string, IFormatProvider): string  instance HASTHIS (#7902)
   // Reverse lookup: simple field name → FieldDef token.  Populated by
   // addPackageTokens for IRecord and IExposedRec fields so EMember can emit
   // ldfld on an MObject receiver when the static type is unknown.
@@ -1852,6 +1854,22 @@ pub func newCodegenCtx(
       buildInstanceMethodSig(dblToStrPs, MString)
     )
 
+  // IFormattable.ToString(string, IFormatProvider): string — called with a
+  // null format and InvariantCulture, so `toString` of an extern value type
+  // (`Decimal`, `Single`, ...) does not follow the host culture (#7902).
+  val trIFormattable = ctxAddTypeRef(lctx, "System", "IFormattable", lctx.arRuntime)
+  val fmtToStrPs: List[MsilType] = newList()
+  fmtToStrPs.add(MString)
+  fmtToStrPs.add(MClassRef(typeRefCode = tdrTypeRef(trIFormatProvider), clrFqn = "System.IFormatProvider"))
+  val tokIFormattableToString = 0x0A000000 +
+    ctxAddMemberRef(
+      lctx,
+      trIFormattable,
+      "ToString",
+      "iformattable_tostring",
+      buildInstanceMethodSig(fmtToStrPs, MString)
+    )
+
   // Async SM synthesis (Phase B, Epic #2070).
   // AsyncTaskMethodBuilder and IAsyncStateMachine live in System.Runtime.
   val trAtmb = ctxAddTypeRef(lctx, "System.Runtime.CompilerServices", "AsyncTaskMethodBuilder", lctx.arRuntime)
@@ -2110,6 +2128,8 @@ pub func newCodegenCtx(
     tokDateTimeToStringO = tokDateTimeToStringO,
     usDateTimeFormatO = usDateTimeFormatO,
     tokDoubleToStringInv = tokDoubleToStringInv,
+    trIFormattable = trIFormattable,
+    tokIFormattableToString = tokIFormattableToString,
     tokListObjCtor = tokListObjCtor,
     tokListObjAdd = tokListObjAdd,
     tokListObjGetItem = tokListObjGetItem,
@@ -18249,6 +18269,9 @@ func emitStackValueToStringMsil(
         insns.add(MLdloca(slot = dtSlot - fctx.paramCount))
         insns.add(MLdStr(token = cctx.usDateTimeFormatO))
         insns.add(MCall(methodToken = cctx.tokDateTimeToStringO))
+      } else if isExternValueTypeMsil(argTy) {
+        boxIfNeededMsil(cctx, insns, argTy)
+        emitBoxedToStringInvariantMsil(cctx, fctx, insns)
       } else {
         // #6913: an unsigned-flagged box target for a bare `UInt`/
         // `ULong` operand — see `spellsUnsigned`.
@@ -18257,6 +18280,33 @@ func emitStackValueToStringMsil(
       }
     }
   }
+}
+
+func isExternValueTypeMsil(t: in MsilType): Bool {
+  match t {
+    case MValueTypeRef(_, _) -> true
+    case _ -> false
+  }
+}
+
+// Stringify the object reference on the stack.  `Object.ToString()` follows
+// the host culture for a formattable value (`Decimal` 1.25 is "1,25" under
+// de-DE), so an `IFormattable` is formatted with InvariantCulture, as
+// `toString(Double)` is (#2462, #7902); anything else keeps `ToString()`.
+func emitBoxedToStringInvariantMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn]): Unit {
+  val fmtL = freshLabelMsil(fctx)
+  val afterL = freshLabelMsil(fctx)
+  insns.add(MDup)
+  insns.add(MIsinst(typeToken = 0x01000000 + cctx.trIFormattable))
+  insns.add(MBrTrue(label = fmtL))
+  insns.add(MCallvirt(methodToken = cctx.tokObjToString))
+  insns.add(MBr(label = afterL))
+  insns.add(MLabel(id = fmtL))
+  insns.add(MCastclass(typeToken = 0x01000000 + cctx.trIFormattable))
+  insns.add(MLdNull)
+  insns.add(MCall(methodToken = cctx.tokInvariantCulture))
+  insns.add(MCallvirt(methodToken = cctx.tokIFormattableToString))
+  insns.add(MLabel(id = afterL))
 }
 
 // Lower a builtin or intra-package static call.

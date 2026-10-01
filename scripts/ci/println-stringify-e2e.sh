@@ -16,6 +16,11 @@
 #   println_extern_struct_dotnet_self_test.l dotnet      extern BCL structs
 #   println_extern_jvm_self_test.l         jvm           extern JDK objects
 #
+# The extern-struct module runs a second time under de-DE, whose decimal
+# separator is a comma, so its fixed-value `toString` assertions for
+# `Decimal` and `Single` prove those are culture-invariant (#7902).  Under a
+# .NET without ICU every culture is invariant and that run simply passes.
+#
 # Invoked from `compiler-self-tests-batch.sh` (whose CI job has Java 21), so
 # it needs no ci.yml step of its own.
 # ---------------------------------------------------------------------------
@@ -36,13 +41,20 @@ trap 'rm -rf "$work"' EXIT
 
 fail=0
 
-# check_pairs <target> <self-test> <expected pair count>
+# check_pairs <target> <self-test> <expected pair count> [locale]
 check_pairs() {
-  local target="$1" test_file="$2" want="$3"
+  local target="$1" test_file="$2" want="$3" locale="${4:-}"
   local stem log pairs n
   stem="$(basename "$test_file" .l)"
+  if [[ -n "$locale" ]]; then
+    stem="$stem@$locale"
+  fi
   log="$work/$stem-$target.log"
-  if ! "$lyric_bin" test --target "$target" "$test_file" >"$log" 2>&1; then
+  local -a run=("$lyric_bin" test --target "$target" "$test_file")
+  if [[ -n "$locale" ]]; then
+    run=(env LANG="$locale" LC_ALL="$locale" "${run[@]}")
+  fi
+  if ! "${run[@]}" >"$log" 2>&1; then
     echo "::error::$stem failed on --target $target" >&2
     cat "$log" >&2
     fail=1
@@ -76,5 +88,6 @@ check_pairs() {
 check_pairs dotnet lyric-compiler/lyric/println_stringify_self_test.l 8
 check_pairs jvm lyric-compiler/lyric/println_stringify_self_test.l 8
 check_pairs dotnet lyric-compiler/lyric/println_extern_struct_dotnet_self_test.l 7
+check_pairs dotnet lyric-compiler/lyric/println_extern_struct_dotnet_self_test.l 7 de_DE.UTF-8
 check_pairs jvm lyric-compiler/lyric/println_extern_jvm_self_test.l 3
 exit "$fail"
