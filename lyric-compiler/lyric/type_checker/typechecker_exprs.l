@@ -1225,12 +1225,15 @@ func nativeWeakUpgradeType(tbl: in SymbolTable, recvTy: in Type): Option[Type] {
   match mapGet(tbl.nativeIntrinsicTypes, "NativeWeak") {
     case Some(weakId) -> match unrefine(recvTy) {
       case TyUser(tid, _, targs) -> if typeIdEq(tid, weakId) and targs.count == 1 {
+        // `Option` not resolvable from the item pool (a partial check):
+        // defer to the general member path rather than fabricate a TyError
+        // that would unify with anything and swallow a real mismatch.
         match symTableTryFindInPackage(tbl, "Std.Core", "Option") {
           case Some(sym) -> match symbolTypeIdOpt(sym) {
             case Some(optId) -> Some(value = TyUser(id = optId, name = "Option", args = targs))
-            case None -> Some(value = TyError)
+            case None -> None
           }
-          case None -> Some(value = TyError)
+          case None -> None
         }
       } else {
         None
@@ -3040,7 +3043,8 @@ func substituteMethodSig(entry: in MethodEntry, recv: in Type, targs: in List[Ty
     span = entry.sig.span,
     isPure = entry.sig.isPure,
     isIo = entry.sig.isIo,
-    isEntry = entry.sig.isEntry
+    isEntry = entry.sig.isEntry,
+    isExternFunc = entry.sig.isExternFunc
   )
 }
 
@@ -3169,7 +3173,8 @@ func dropReceiverParam(full: in ResolvedSignature): ResolvedSignature {
     span = full.span,
     isPure = full.isPure,
     isIo = full.isIo,
-    isEntry = full.isEntry
+    isEntry = full.isEntry,
+    isExternFunc = full.isExternFunc
   )
 }
 
@@ -11352,11 +11357,17 @@ func checkCallArgsAgainstSig(
         if (match p.mode { case PMIn -> true; case _ -> false }) {
           recordUnsignedWidening(tbl, p.ty, argTy, callArgExpr(args[ai]))
         }
-        if not argSatisfiesParam(tbl, p.ty, argTy) and not listLiteralArgSatisfiesParam(tbl, p.ty, argTy, callArgExpr(args[ai])) {
+        val satisfied = if sig.isExternFunc {
+          argSatisfiesExternParam(tbl, p.ty, argTy)
+        } else {
+          argSatisfiesParam(tbl, p.ty, argTy)
+        }
+        if not satisfied and not listLiteralArgSatisfiesParam(tbl, p.ty, argTy, callArgExpr(args[ai])) {
           diag.add(
             errorDiagnostic(
               "T0043",
               argTypeMismatchSubject(argTy, args, ai) + " does not match parameter type " + renderOptTypeExpr(p.tyExpr, p.ty) +
+                externCallbackHint(tbl, sig, p.ty) +
                 typeMismatchHint(tbl, p.ty, argTy),
               span
             )
@@ -11431,6 +11442,8 @@ func expectedCallArgTypes(
           if ai2 >= 0 and ai2 < expected.count {
             if sig.generics.count > 0 {
               expected[ai2] = substituteTyVars(sig.params[k2].ty, sig.generics, targs)
+            } else if sig.isExternFunc {
+              expected[ai2] = externArgExpectedType(tbl, sig.params[k2].ty)
             } else {
               expected[ai2] = sig.params[k2].ty
             }
@@ -11494,6 +11507,89 @@ func nonGenericRecordCtorOf(tbl: in SymbolTable, fn: in Expr): Option[Symbol] {
   match constructorSymbolOf(tbl, fn) {
     case Some(ctorSym) -> if ctorIsGeneric(ctorSym) { None } else { Some(value = ctorSym) }
     case None -> None
+  }
+}
+
+// `NativePtr[Byte]`: the C `void*` an `extern func` declares for a callback's
+// userdata slot and for an opaque handle.  Only a native check knows the type.
+func isNativeBytePtrType(tbl: in SymbolTable, t: in Type): Bool {
+  match mapGet(tbl.nativeIntrinsicTypes, "NativePtr") {
+    case Some(ptrId) -> match unrefine(t) {
+      case TyUser(tid, _, targs) -> if typeIdEq(tid, ptrId) and targs.count == 1 {
+        match unrefine(targs[0]) {
+          case TyPrim(pt) -> match pt { case PtByte -> true; case _ -> false }
+          case _ -> false
+        }
+      } else {
+        false
+      }
+      case _ -> false
+    }
+    case None -> false
+  }
+}
+
+// An `extern func` callback parameter `(P1, …, Pk-1, NativePtr[Byte]) -> R`
+// takes the Lyric closure `(P1, …, Pk-1) -> R`: the native backend wraps it
+// in a C-ABI trampoline that receives the closure pointer through the
+// trailing userdata slot (docs/01 §11.6, N4.5).  None when `paramTy` is not
+// such a callback type.
+func externCallbackClosureType(tbl: in SymbolTable, paramTy: in Type): Option[Type] {
+  match unrefine(paramTy) {
+    case TyFunction(ps, ret, isAsync) -> if ps.count > 0 and isNativeBytePtrType(tbl, ps[ps.count - 1]) {
+      val reduced: List[Type] = newList()
+      var i = 0
+      while i < ps.count - 1 {
+        reduced.add(ps[i])
+        i = i + 1
+      }
+      Some(value = TyFunction(params = reduced, ret = ret, isAsync = isAsync))
+    } else {
+      None
+    }
+    case _ -> None
+  }
+}
+
+// The type an argument to an `extern func` parameter is inferred against: the
+// closure type for a callback parameter, the declared type otherwise.
+func externArgExpectedType(tbl: in SymbolTable, paramTy: in Type): Type {
+  match externCallbackClosureType(tbl, paramTy) {
+    case Some(closureTy) -> closureTy
+    case None -> paramTy
+  }
+}
+
+// An `extern func` argument meets its parameter under the native extern-call
+// adaptation (docs/01 §11.6, N4.5): a callback parameter takes only the
+// closure of its reduced signature, a closure value also passes as a
+// `NativePtr[Byte]` (its own pointer, the userdata a callback API is handed
+// alongside the callback), and every other argument follows the ordinary
+// rule.
+func argSatisfiesExternParam(tbl: in SymbolTable, paramTy: in Type, argTy: in Type): Bool {
+  match externCallbackClosureType(tbl, paramTy) {
+    case Some(closureTy) -> return argSatisfiesParam(tbl, closureTy, argTy)
+    case None -> ()
+  }
+  if isNativeBytePtrType(tbl, paramTy) {
+    match unrefine(argTy) {
+      case TyFunction(_, _, _) -> return true
+      case _ -> ()
+    }
+  }
+  argSatisfiesParam(tbl, paramTy, argTy)
+}
+
+// T0043 suffix naming the closure an `extern func` callback parameter takes,
+// since the declared C signature carries a userdata slot the closure lacks.
+func externCallbackHint(tbl: in SymbolTable, sig: in ResolvedSignature, paramTy: in Type): String {
+  if not sig.isExternFunc {
+    return ""
+  }
+  match externCallbackClosureType(tbl, paramTy) {
+    case Some(closureTy) -> " (an extern callback parameter takes a closure of type " + renderType(closureTy) +
+      ", without the trailing NativePtr[Byte] userdata slot)"
+    case None -> ""
   }
 }
 

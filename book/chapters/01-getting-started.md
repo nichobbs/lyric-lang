@@ -326,7 +326,10 @@ them explicitly with `NativeWeak[T]`, whose `upgrade()` returns
 > (`extern func`, `NativePtr[T]`,
 > `nativeAddrOf`, `nativeNullPtr`, closures as C callbacks) is confined to
 > `@unsafe_ffi` functions and the standard library's kernel files — the
-> compiler rejects it elsewhere (`N0100`). Constructs not yet lowered fail
+> compiler rejects it elsewhere (`N0100`). A call to an `extern func` is
+> type-checked against its declared signature like any other call; a
+> closure passed for a C callback has the callback's signature minus its
+> trailing `NativePtr[Byte]` userdata parameter. Constructs not yet lowered fail
 > the build with a diagnostic naming the construct rather than
 > miscompiling: interface default/generic methods, generic protected
 > types, `@projectable opaque type` (`N0101` — no `<Name>View` twin codegen

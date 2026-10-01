@@ -20,11 +20,9 @@ extern func toC(s: String): NativePtr[Byte] = "lyric_string_to_cstring"
 
 extern func freeC(p: NativePtr[Byte]): Unit = "lyric_cstring_free"
 
-// `args` rides as the raw kernel handle of a Std.Collections List[String]
-// (LyricList*): collection values passed as call arguments ride
-// NativePtr[Byte] under N4.5 argument adaptation, the convention
-// `process_capture_host.l`'s `rtProcessRun` also uses.
-extern func rtProcessRunInherited(path: NativePtr[Byte], args: NativePtr[Byte], outCode: NativePtr[Int]): Int = "lyric_process_run_inherited"
+// `args` is a Std.Collections `List[String]`, the `LyricList*` the C side
+// reads (borrowed for the call).
+extern func rtProcessRunInherited(path: NativePtr[Byte], args: List[String], outCode: NativePtr[Int]): Int = "lyric_process_run_inherited"
 
 extern func rtLastSpawnErrno(): Int = "lyric_process_last_spawn_errno"
 

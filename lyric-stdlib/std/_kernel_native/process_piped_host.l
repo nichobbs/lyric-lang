@@ -58,12 +58,9 @@ func parseArgString(argStr: in String): List[String] {
 }
 
 // ── Extern seam bindings (lyric-rt/src/lyric_process.c) ────────────────────
-// `args` rides as the raw kernel handle of a Std.Collections List[String]
-// (LyricList*): collection VALUES passed as call arguments (never stored
-// in a record) ride NativePtr[Byte] under N4.5 argument adaptation, the
-// same convention `_kernel_native/process_capture_host.l`'s
-// `rtProcessRun(path, args, ...)` already uses.
-extern func rtPipedSpawn(path: NativePtr[Byte], args: NativePtr[Byte]): Long = "lyric_process_piped_spawn"
+// `args` is a Std.Collections `List[String]`, the `LyricList*` the C side
+// reads (borrowed for the call).
+extern func rtPipedSpawn(path: NativePtr[Byte], args: List[String]): Long = "lyric_process_piped_spawn"
 
 extern func rtPipedReadLine(p: Long, outLine: NativePtr[String]): Int = "lyric_process_piped_read_line"
 
