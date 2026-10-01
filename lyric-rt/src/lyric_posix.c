@@ -14,6 +14,7 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <sys/uio.h>
 #include <time.h>
@@ -101,6 +102,31 @@ int64_t lyric_file_size(const char* path) {
     struct stat st;
     if (stat(path, &st) != 0) return -1;
     return (int64_t)st.st_size;
+}
+
+/* Fixed-width wrappers for the libc entry points whose C signatures use
+ * size_t / ssize_t or are variadic.  Those types are 32-bit on wasm32, so a
+ * Lyric extern declaring them as `Long` would not match the C signature
+ * there; these always take and return int64_t / int32_t on every target. */
+int64_t lyric_write_fd(int32_t fd, const void* buf, int64_t n) {
+    return (int64_t)write(fd, buf, (size_t)n);
+}
+
+int64_t lyric_read_fd(int32_t fd, void* buf, int64_t n) {
+    return (int64_t)read(fd, buf, (size_t)n);
+}
+
+/* open(2) is variadic, so it cannot be declared as a plain extern. */
+int32_t lyric_open_fd(const char* path, int32_t flags, int32_t mode) {
+    return (int32_t)open(path, flags, (mode_t)mode);
+}
+
+int64_t lyric_cstr_len(const char* s) {
+    return (int64_t)strlen(s);
+}
+
+void* lyric_malloc_raw(int64_t n) {
+    return malloc((size_t)n);
 }
 
 int32_t lyric_mutex_size(void) {

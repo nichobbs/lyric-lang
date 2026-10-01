@@ -1117,3 +1117,53 @@ test "nativeAddrOf passes a local's address to C out-params" {
   val r = compileAndRunAsan(src)
   assertEqualInt(r.exitCode, 0, "nativeAddrOf (ASan)")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// wasm32 layout smoke (docs/35 W0): the heap object layouts must not depend on
+// the host's 64-bit pointer width.  Lower a program that touches every
+// header-bearing heap shape (record, union, tuple, closure, string, list) for a
+// wasm32 triple, then let clang's WebAssembly backend consume the IR.
+// ─────────────────────────────────────────────────────────────────────────────
+func lowerForTriple(source: in String, triple: in String): String {
+  val pr = parse(source)
+  if pr.diagnostics.count > 0 {
+    panic("test source has parse diagnostics")
+  }
+  lowerNativePackage(codegenNativePackage(pr.file, triple))
+}
+
+val wasmLayoutSource: String = "package T\n" + "record Node {\n" + "  name: String\n" + "  n: Int\n" + "}\n" + "union Shape {\n" + "  case Circle(r: Int)\n" + "  case Tag(label: String, n: Int)\n" + "  case Empty\n" + "}\n" + "func size(s: in Shape): Int {\n" + "  match s {\n" + "    case Circle(r) -> r\n" + "    case Tag(label, n) -> label.length + n\n" + "    case Empty -> 0\n" + "  }\n" + "}\n" + "func main(): Int {\n" + "  val node = Node(name = \"abc\", n = 4)\n" + "  val (a, b) = (node.n, node.name.length)\n" + "  val base = 10\n" + "  val add: (Int) -> Int = { x -> x + base }\n" + "  val xs: List[Int] = [1, 2, 3]\n" + "  size(Circle(r = a)) + size(Tag(label = \"zz\", n = b)) + add(1) + xs.count\n" + "}\n"
+
+test "wasm32: ARC header is the explicit three-field struct and sizes come from LLVM" {
+  val ll = lowerForTriple(wasmLayoutSource, "wasm32-unknown-unknown")
+  assertTrue(Str.contains(ll, "{ i32, i32, i8*, "), "heap structs start with { i32 rc, i32 weak, i8* dtor }")
+  assertTrue(
+    Str.contains(ll, "ptrtoint %T.Node* getelementptr (%T.Node, %T.Node* null, i32 1) to i64"),
+    "record allocation size is LLVM's sizeof, not a hard-coded 64-bit table value"
+  )
+  assertTrue(not Str.contains(ll, "{ i32, i8*, "), "no two-field ARC header remains")
+}
+
+test "wasm32: the lowered IR compiles with clang's WebAssembly backend" {
+  val ll = lowerForTriple(wasmLayoutSource, "wasm32-unknown-unknown")
+  val dir = Path.join(tempBase(), "lyric-llvm-heap-selftest")
+  val _ = File.createDir(dir)
+  val stem = Path.join(dir, "wasm_" + Uuid.uuidToString(Uuid.newUuid()))
+  val llPath = stem + ".ll"
+  match File.writeText(llPath, ll) {
+    case Ok(_) -> {
+    }
+    case Err(_) -> panic("cannot write " + llPath)
+  }
+  val args: List[String] = newList()
+  args.add("--target=wasm32-unknown-unknown")
+  args.add("-O0")
+  args.add("-c")
+  args.add(llPath)
+  args.add("-o")
+  args.add(stem + ".o")
+  match Process.runCapture("clang", args, 120000) {
+    case Ok(res) -> assertEqualInt(res.exitCode, 0, "clang wasm32 object compile: " + res.stderr)
+    case Err(e) -> panic("clang could not be started: " + e)
+  }
+}

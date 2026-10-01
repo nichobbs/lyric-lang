@@ -137,6 +137,16 @@ test "memory ops render" {
   )
 }
 
+test "sizeof renders as a target-sized constant expression" {
+  val fields: List[NType] = newList()
+  fields.add(NI32)
+  assertEqual(
+    emitInsn(NSizeOf(dest = "sz", ty = NStruct(name = "T", fields = fields))),
+    "  %sz = ptrtoint %T* getelementptr (%T, %T* null, i32 1) to i64",
+    "sizeof"
+  )
+}
+
 test "conversions render" {
   assertEqual(
     emitInsn(NSExt(dest = "l", fromTy = NI32, value = NLocal(name = "i"), toTy = NI64)),

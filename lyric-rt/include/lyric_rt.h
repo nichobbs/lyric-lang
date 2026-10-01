@@ -27,22 +27,21 @@ extern "C" {
 
 typedef struct {
     _Atomic int32_t rc;    /* strong reference count; INT32_MAX = static sentinel */
-    _Atomic int32_t weak;  /* weak-ref count, plus 1 while any strong ref lives;
-                            * occupies the former alignment padding at offset 4,
-                            * so sizeof and every later field offset are unchanged */
+    _Atomic int32_t weak;  /* weak-ref count, plus 1 while any strong ref lives */
     void (*dtor)(void*);   /* destructor; may be NULL; must not free(obj)  */
 } LyricObjectHeader;
 
-/* The whole point of putting `weak` in the alignment padding between `rc` and
- * `dtor` is that the header stays two words and `dtor` keeps its offset, so the
- * codegen's `{ i32, ptr, <fields...> }` struct model and every downstream field
- * offset are unchanged from the pre-weak-count layout (#5504 / #5546).  These
- * assertions make that ABI contract a compile error to break; they encode the
- * 64-bit LP64 target the native backend assumes (D-N-008). */
-_Static_assert(sizeof(LyricObjectHeader) == 2 * sizeof(void*),
-               "LyricObjectHeader must stay two words: weak must fit rc's alignment padding");
-_Static_assert(offsetof(LyricObjectHeader, dtor) == sizeof(void*),
-               "dtor must keep its one-word offset; weak must live in rc's padding, not after dtor");
+/* The codegen models this header as the explicit LLVM struct
+ * `{ i32, i32, i8* }` (llvm_codegen.l `addArcHeader`), so the two sides agree
+ * on every target pointer width: LP64 gives 16 bytes with dtor at offset 8,
+ * ILP32 (wasm32) gives 12 bytes with dtor at offset 8.  These assertions make
+ * breaking that ABI contract a compile error. */
+_Static_assert(offsetof(LyricObjectHeader, rc) == 0,
+               "rc must be the first header word");
+_Static_assert(offsetof(LyricObjectHeader, weak) == sizeof(int32_t),
+               "weak must directly follow rc");
+_Static_assert(offsetof(LyricObjectHeader, dtor) == 2 * sizeof(int32_t),
+               "dtor must directly follow weak (no padding before it on LP64 or ILP32)");
 
 /* ── ARC intrinsics (D-N-011) ──────────────────────────────────────── */
 
@@ -331,6 +330,16 @@ int32_t lyric_o_append(void);
  * so the kernel layer calls this instead of declaring stat directly.
  * Returns -1 when the path cannot be stat'ed. */
 int64_t lyric_file_size(const char* path);
+
+/* Fixed-width wrappers over libc entry points whose C signatures use size_t /
+ * ssize_t (32-bit on wasm32) or are variadic (open).  The Lyric kernel layer
+ * declares these instead of the raw libc symbols so an extern's declared
+ * widths are identical on every target. */
+int64_t lyric_write_fd(int32_t fd, const void* buf, int64_t n);
+int64_t lyric_read_fd(int32_t fd, void* buf, int64_t n);
+int32_t lyric_open_fd(const char* path, int32_t flags, int32_t mode);
+int64_t lyric_cstr_len(const char* s);
+void* lyric_malloc_raw(int64_t n);
 
 /* sizeof(pthread_mutex_t) for the running platform, so protected-type
  * codegen can size the inline mutex slot without a hardcoded table. */

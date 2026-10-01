@@ -57,6 +57,10 @@ pub union NInsn {
   case NLoad(dest: String, ty: NType, ptr: NValue)
   case NStore(ty: NType, value: NValue, ptr: NValue)
   case NGEP(dest: String, ty: NType, ptr: NValue, indices: List[NArg])
+  /// `%dest = sizeof(ty)` as an `i64`, computed by LLVM from the target
+  /// datalayout (`ptrtoint (T* getelementptr (T, T* null, i32 1) to i64)`),
+  /// so allocation sizes follow the target's pointer width and alignment.
+  case NSizeOf(dest: String, ty: NType)
 
   // Integer arithmetic
   case NAdd(dest: String, ty: NType, a: NValue, b: NValue)
@@ -302,6 +306,11 @@ pub func emitInsn(i: in NInsn): String {
         nValueOperandString(ptr) +
         ", " +
         renderArgs(indices)
+    }
+    case NSizeOf(dest, ty) -> {
+      "  %" + quoteIrIdent(dest) + " = ptrtoint " + nTypeToIrString(ty) + "* getelementptr (" + nTypeToIrString(ty) + ", " +
+        nTypeToIrString(ty) +
+        "* null, i32 1) to i64"
     }
     case NAdd(dest, ty, a, b) -> renderBin("add", dest, ty, a, b)
     case NSub(dest, ty, a, b) -> renderBin("sub", dest, ty, a, b)

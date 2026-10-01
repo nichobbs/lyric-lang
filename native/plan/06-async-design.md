@@ -207,7 +207,7 @@ entry:
 
   ; Build URL string
   %id_str = call i8* @Std.Int.toString(i32 %id)
-  %base   = bitcast { i32, i8*, i64, i64 }* @.strobj.base_url to i8*
+  %base   = bitcast { i32, i32, i8*, i64, i64 }* @.strobj.base_url to i8*
   %url    = call i8* @lyric_string_concat(i8* %base, i8* %id_str)
   call void @lyric_release(i8* %id_str)
 

@@ -11,11 +11,13 @@
 @io
 package Std.LibcHost
 
-extern func write(fd: Int, buf: NativePtr[Byte], n: Long): Long = "write"
+// `write`/`read`/`open`/`strlen`/`malloc` go through fixed-width lyric-rt wrappers:
+// their C signatures use size_t/ssize_t (32-bit on wasm32) or are variadic.
+extern func write(fd: Int, buf: NativePtr[Byte], n: Long): Long = "lyric_write_fd"
 
-extern func read(fd: Int, buf: NativePtr[Byte], n: Long): Long = "read"
+extern func read(fd: Int, buf: NativePtr[Byte], n: Long): Long = "lyric_read_fd"
 
-extern func openFile(path: NativePtr[Byte], flags: Int, mode: Int): Int = "open"
+extern func openFile(path: NativePtr[Byte], flags: Int, mode: Int): Int = "lyric_open_fd"
 
 extern func closeFd(fd: Int): Int = "close"
 
@@ -25,9 +27,9 @@ extern func mkdir(path: NativePtr[Byte], mode: Int): Int = "mkdir"
 
 extern func rmdir(path: NativePtr[Byte]): Int = "rmdir"
 
-extern func strlen(s: NativePtr[Byte]): Long = "strlen"
+extern func strlen(s: NativePtr[Byte]): Long = "lyric_cstr_len"
 
-extern func malloc(n: Long): NativePtr[Byte] = "malloc"
+extern func malloc(n: Long): NativePtr[Byte] = "lyric_malloc_raw"
 
 extern func free(ptr: NativePtr[Byte]): Unit = "free"
 

@@ -27,20 +27,26 @@ requires UTF-8 iteration, not byte indexing.
 
 ## Heap-allocated types (all carry an ARC header)
 
-All heap-allocated values have the same two-word header at offset 0:
+All heap-allocated values have the same three-field header at offset 0:
 
 ```llvm
 ; Object header embedded at the start of every heap-allocated Lyric value:
-; [0]: i32  — reference count (atomic)
-; [1]: i8*  — destructor function pointer (void (*)(void*))
+; [0]: i32  — strong reference count (atomic)
+; [1]: i32  — weak count (atomic)
+; [2]: i8*  — destructor function pointer (void (*)(void*))
 ```
+
+The header is three named fields rather than two words with the weak count
+hidden in alignment padding, so the LLVM struct and the C `LyricObjectHeader`
+agree on every target pointer width (16 bytes on LP64, 12 on wasm32; `dtor` is
+at offset 8 on both).  Fields declared after the header start at GEP index 3.
 
 ---
 
 ## String
 
 ```llvm
-%LyricString = type { i32, i8*, i64, i64 }
+%LyricString = type { i32, i32, i8*, i64, i64 }
 ; [0] i32  rc
 ; [1] i8*  dtor (always @lyric_string_dtor)
 ; [2] i64  len  (byte count, not character count)
@@ -54,7 +60,7 @@ Lyric values of type `String` are `%LyricString*` — a pointer to this struct.
 
 ```llvm
 ; For "hello":
-@.strobj.0 = private unnamed_addr constant { i32, i8*, i64, i64, [6 x i8] } {
+@.strobj.0 = private unnamed_addr constant { i32, i32, i8*, i64, i64, [6 x i8] } {
   i32 2147483647,   ; INT32_MAX — saturated rc, never freed
   i8* null,         ; no destructor (static allocation)
   i64 5,            ; len (byte count, excluding null)
@@ -63,7 +69,7 @@ Lyric values of type `String` are `%LyricString*` — a pointer to this struct.
 }, align 8
 
 ; At use site, bitcast to %LyricString*:
-%str = bitcast { i32, i8*, i64, i64, [6 x i8] }* @.strobj.0 to %LyricString*
+%str = bitcast { i32, i32, i8*, i64, i64, [6 x i8] }* @.strobj.0 to %LyricString*
 ```
 
 Because static strings and heap strings are the same layout, call sites that
@@ -76,7 +82,7 @@ accept `%LyricString*` work transparently with both.
 A record `record Point { x: Int; y: Int }` lowers to:
 
 ```llvm
-%Lyric.Point = type { i32, i8*, i32, i32 }
+%Lyric.Point = type { i32, i32, i8*, i32, i32 }
 ; [0] i32  rc
 ; [1] i8*  dtor  (@Lyric.Point.__dtor)
 ; [2] i32  x
@@ -121,7 +127,7 @@ Payload sizes:
 - max payload = 16 bytes
 
 ```llvm
-%Lyric.Shape = type { i32, i8*, i32, [16 x i8] }
+%Lyric.Shape = type { i32, i32, i8*, i32, [16 x i8] }
 ; [0] i32        rc
 ; [1] i8*        dtor  (@Lyric.Shape.__dtor)
 ; [2] i32        discriminant: 0=Circle, 1=Rect
@@ -186,7 +192,7 @@ Distinct types wrapping **reference types** (e.g., `type MyString = String`)
 carry an ARC header:
 
 ```llvm
-%Lyric.MyString = type { i32, i8*, i8* }
+%Lyric.MyString = type { i32, i32, i8*, i8* }
 ; [0] i32  rc
 ; [1] i8*  dtor
 ; [2] i8*  value (the wrapped %LyricString*)
@@ -225,7 +231,7 @@ A closure is a heap-allocated struct containing:
 ```
 closure type `func(Int): String` that captures `prefix: String`:
 
-%Lyric.Closure_0 = type { i32, i8*, i8*, %LyricString* }
+%Lyric.Closure_0 = type { i32, i32, i8*, i8*, %LyricString* }
 ; [0] i32           rc
 ; [1] i8*           dtor
 ; [2] i8*           fn_ptr  (points to @closure_body_0(i8* env, i32 arg): i8*)
@@ -240,7 +246,7 @@ wrapper closure allocated on the heap.
 **Function type fat pointer** (`func(Int): String` as a value):
 
 ```llvm
-%LyricFn_Int_String = type { i32, i8*, i8*, i8* }
+%LyricFn_Int_String = type { i32, i32, i8*, i8*, i8* }
 ; [0] i32  rc
 ; [1] i8*  dtor
 ; [2] i8*  fn_ptr (void (*)(i8* env, <args>))
@@ -266,7 +272,7 @@ At a call site `f(42)`:
 > pointer `{ i8* obj, vtable* }` below was **not** implemented — the native
 > IR layer has no `insertvalue`/`extractvalue` and no by-value-aggregate ABI.
 > The shipped representation is a **heap-boxed** fat pointer
-> `{ i32 rc, i8* dtor, i8* obj, vtable* }` (an ordinary RC'd object), so ARC
+> `{ i32 rc, i32 weak, i8* dtor, i8* obj, vtable* }` (an ordinary RC'd object), so ARC
 > falls out of the existing owned-temp/destructor machinery. The vtable
 > layout and dispatch shape (GEP → load → bitcast → call with `obj` as arg 0)
 > are otherwise as described. See `docs/03-decision-log.md` §D-N-016.
@@ -365,7 +371,7 @@ Anonymous tuple `(Int, String)` lowers to a named struct (the name is mangled
 from field types):
 
 ```llvm
-%Lyric.Tuple2_Int_String = type { i32, i8*, i32, %LyricString* }
+%Lyric.Tuple2_Int_String = type { i32, i32, i8*, i32, %LyricString* }
 ; [0] i32           rc
 ; [1] i8*           dtor
 ; [2] i32           _0 (first element)
@@ -389,7 +395,7 @@ from field types):
 ; [1] i64  len (element count)
 
 ; List[Int] (RC heap, mutable):
-%Lyric.List__Int = type { i32, i8*, i32*, i64, i64 }
+%Lyric.List__Int = type { i32, i32, i8*, i32*, i64, i64 }
 ; [0] i32   rc
 ; [1] i8*   dtor
 ; [2] i32*  data (heap-allocated array of Int)
@@ -418,7 +424,7 @@ The dtor iterates all `len` elements and releases each.
 `protected type Counter { val: Int; ... }` lowers to:
 
 ```llvm
-%Lyric.Counter = type { i32, i8*, [40 x i8], i32 }
+%Lyric.Counter = type { i32, i32, i8*, [40 x i8], i32 }
 ; [0] i32        rc
 ; [1] i8*        dtor
 ; [2] [40 x i8]  mutex (pthread_mutex_t, 40 bytes on Linux x86-64)
