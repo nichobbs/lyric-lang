@@ -1,8 +1,8 @@
-# D156 — Renamed selective imports (`import P.{f as g}`)
+# D160 — Renamed selective imports (`import P.{f as g}`)
 
 **Status:** accepted, implemented
 
-Resolves #7564. Builds on D155 (qualified constructor calls).
+Resolves #7564. Builds on D159 (qualified constructor calls).
 Supersedes the T0138 rule of D141 ("renaming a listed item is not
 supported").
 
@@ -32,7 +32,7 @@ it could be implemented. Implementing it means:
 3. **Lowering.** `Lyric.AliasRewriter`, which already runs for every
    backend and the LSP (`pipePrepareForCheck`), rewrites each use of `g`
    to the qualified `P.f`. Every qualified form already resolves on every
-   backend, and constructors do so since D155. No backend needs
+   backend, and constructors do so since D159. No backend needs
    rename-specific code.
 4. **Shadowing is lexical.** A parameter, local, lambda parameter,
    pattern binding, `for`, `catch` or `scope` binding, or quantifier

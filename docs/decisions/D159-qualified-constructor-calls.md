@@ -1,4 +1,4 @@
-# D155 — Qualified constructor calls; the written qualifier decides
+# D159 — Qualified constructor calls; the written qualifier decides
 
 **Status:** accepted, implemented
 

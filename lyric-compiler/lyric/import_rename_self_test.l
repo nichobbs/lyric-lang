@@ -1,8 +1,8 @@
-//! import_rename_self_test.l — renamed selective imports (#7564, D156).
+//! import_rename_self_test.l — renamed selective imports (#7564, D160).
 //!
 //! `import P.{f as g}` makes `g` a bare name for `P.f` and leaves `f`
 //! itself hidden.  Every kind of item can be renamed: a function, a record
-//! (whose constructor then builds `P`'s record, D155), a union (whose cases
+//! (whose constructor then builds `P`'s record, D159), a union (whose cases
 //! are reached through the new name) and a value.  A parameter, local or
 //! pattern binding named like the rename hides it only within its own
 //! scope.

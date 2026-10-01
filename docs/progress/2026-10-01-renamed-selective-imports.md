@@ -1,4 +1,4 @@
-# Renamed selective imports (#7564, D156)
+# Renamed selective imports (#7564, D160)
 
 `import P.{f as g}` now works. It was T0138 ("not supported") since
 D141.
@@ -9,7 +9,7 @@ D141.
   (`Shp.Circle(...)`, `case Shp.Circle(r) ->`).
 - **Lowering.** `Lyric.AliasRewriter` rewrites each use of `g` to the
   qualified `P.f`, which every backend already resolves; qualified
-  constructors are D155. The rewriter runs in `pipePrepareForCheck`, so
+  constructors are D159. The rewriter runs in `pipePrepareForCheck`, so
   MSIL, JVM, native and the LSP all see it.
 - **Scoping.** Shadowing is lexical. A parameter, local, lambda
   parameter, pattern binding, `for`, `catch` or `scope` binding, or

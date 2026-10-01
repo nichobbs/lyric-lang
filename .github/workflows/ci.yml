@@ -1441,7 +1441,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/block_shadow_self_test.l
 
-      # Qualified constructor calls (D155): a package- or alias-qualified
+      # Qualified constructor calls (D159): a package- or alias-qualified
       # record constructor and a union-qualified case build the qualifier's
       # type even when this package declares the same simple name.
       - name: Qualified-constructor self-test (native lyric test)
@@ -1450,7 +1450,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/qualified_ctor_self_test.l
 
-      # Renamed selective imports (#7564, D156): `import P.{f as g}` for a
+      # Renamed selective imports (#7564, D160): `import P.{f as g}` for a
       # function, a record constructor and a union, with lexical shadowing.
       - name: Import-rename self-test (native lyric test)
         if: ${{ !cancelled() }}
@@ -4191,14 +4191,14 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/block_shadow_self_test.l
 
-      # JVM half of the qualified-constructor self-test (D155).
+      # JVM half of the qualified-constructor self-test (D159).
       - name: Qualified-constructor self-test on JVM (native lyric test --target jvm)
         if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/qualified_ctor_self_test.l
 
-      # JVM half of the import-rename self-test (D156).
+      # JVM half of the import-rename self-test (D160).
       - name: Import-rename self-test on JVM (native lyric test --target jvm)
         if: ${{ !cancelled() }}
         background: true
