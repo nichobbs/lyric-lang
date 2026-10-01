@@ -194,8 +194,8 @@ varargs, exceptions, tail calls or atomics. The findings:
 |---|---|---|---|
 | 1 | ARC header | The C header is `{rc, weak, dtor}` while codegen models `{i32, ptr}` and relies on `weak` hiding in LP64 padding (`lyric_rt.h`, `llvm_codegen.l`). On wasm32 the header is 12 bytes and offsets diverge; the `2*sizeof(void*)` assert fails. Fix: an explicit three-field header on all targets (LP64 stays 16 bytes). | blocker |
 | 2 | Size tables | `sizeOfN`/`alignOfN`/`structSize`/`recAllocSize` hard-code 8-byte pointers. Replace with target-derived sizes (`getelementptr null, 1`). | blocker |
-| 3 | Coroutines | Frame size uses `llvm.coro.size.i64`; wasm32 needs the `.i32` form. | blocker |
-| 4 | Pointer-as-`Long` | `_kernel_native` externs treat a pointer and an `i64` as one machine word (`tcp_host.l`, `http_server.l`, others). 107 of the 169 externs use `Long` or `NativePtr` and need auditing for wasm-ld signature checks. | blocker |
+| 3 | Coroutines | Audit flagged `llvm.coro.size.i64`; on inspection the width is only the intrinsic's result type and `lyric_alloc` takes `i64` on every target, so no change is needed (W0). | resolved |
+| 4 | Pointer-as-`Long` | Of the 107 `_kernel_native` externs mentioning `Long` or `NativePtr`, the wasm-relevant kernels are already width-stable. The `Long`-as-pointer-handle idiom is confined to the TCP/TLS, HTTP server and piped-process kernels, which are unavailable on WASI and get wasm twins in W2. `libc.l`'s `size_t`/`ssize_t`/variadic externs move to fixed-width `lyric-rt` wrappers (W0). | W0 |
 | 5 | Link step | A single hard-coded host `clang ... -lpthread -ldl` invocation. | blocker |
 | 6 | Runtime archive | Single-triple `lyric_rt.a`; no CPU-feature flags. | blocker |
 | 7 | `fptosi` | Non-saturating conversion traps on NaN/out-of-range on wasm. Use the saturating form or `+nontrapping-fptoint`. | major |
