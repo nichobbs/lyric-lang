@@ -4671,11 +4671,14 @@ func registerHeapTypes(
       val pd = u.protecteds[pdi]
       match pd.generics {
         case Some(_) -> {
-          // Generic protected types (#7830) are monomorphised on MSIL/JVM
-          // only; per-instantiation native layouts are #7864 (D-N-017).
+          // Generic protected types (#7830) lower on MSIL/JVM only;
+          // per-instantiation native layouts are #7864 (D-N-017).
+          // `nativeGenericProtectedDiagnostics` reports this as N0008
+          // before codegen; this is the fallback for a direct caller.
           panic(
-            "Lyric.LlvmCodegen: generic protected type '" + pd.name +
-              "' is not yet supported for --target native (#7864); declare it without type parameters or build for --target dotnet / jvm"
+            "Lyric.LlvmCodegen: [N0008] " + genericProtectedMessage(pd.name) + " (at " + pd.span.startPos.line.toString() + ":" +
+              pd.span.startPos.column.toString() +
+              ")"
           )
         }
         case None -> {
@@ -11893,6 +11896,29 @@ pub func nativeSelfShapeDiagnostics(units: in List[CodegenUnit]): List[Diagnosti
       ii = ii + 1
     }
     ua = ua + 1
+  }
+  diags
+}
+
+/// Message for `N0008`: a generic protected type on `--target native`.
+func genericProtectedMessage(name: in String): String {
+  "generic protected type '" + name +
+    "' is not yet supported for --target native (#7864); declare it without type parameters or build for --target dotnet / jvm"
+}
+
+/// Pre-pass (#7886): every generic `protected type` in `units` as an `N0008`
+/// diagnostic at its declaration.  `Lyric.LlvmBridge` runs it before codegen,
+/// beside `nativeSelfShapeDiagnostics`, so the build stops with a normal
+/// `error[N0008] file:line:col: ...` line.
+pub func nativeGenericProtectedDiagnostics(units: in List[CodegenUnit]): List[Diagnostic] {
+  val diags: List[Diagnostic] = newList()
+  for u in units {
+    for pd in u.protecteds {
+      match pd.generics {
+        case Some(_) -> diags.add(errorDiagnostic("N0008", genericProtectedMessage(u.pkgName + "." + pd.name), pd.span))
+        case None -> ()
+      }
+    }
   }
   diags
 }

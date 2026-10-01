@@ -39,9 +39,10 @@ later use of the value (`val s: String = counter.bump()` compiled).
 3. **JVM: erased like a generic record.** Type parameters become `Object`
    in field and member descriptors. A read through an instantiation is cast
    back to the instantiated type. `synchronized` members are unchanged.
-4. **Native: a build-time N0007** at the declaration, naming #7864, which
-   tracks per-instantiation layouts (the D-N-017 deferral). This replaces
-   the type-resolution panic at the first use.
+4. **Native: a build-time N0008** at the declaration, naming #7864, which
+   tracks per-instantiation layouts (the D-N-017 deferral). A pre-pass in
+   `Lyric.LlvmBridge` reports it before codegen, as N0006 is (#7886). This
+   replaces the type-resolution panic at the first use.
 5. **Unchanged:** an `impl` for a generic protected type stays T0136, and a
    method-generic member stays T0135.
 

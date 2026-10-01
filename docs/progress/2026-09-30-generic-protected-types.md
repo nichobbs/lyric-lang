@@ -7,8 +7,8 @@
 - JVM erases its type parameters to `Object`, as it does for a generic
   record.
 - Exclusion, `when:` barriers and invariants are unchanged.
-- `--target native` reports N0007 at the declaration; per-instantiation
-  native layouts are #7864.
+- `--target native` reports N0008 at the declaration, from a pre-pass that
+  runs before codegen (#7886); per-instantiation native layouts are #7864.
 
 Construction of every protected type, generic or not, is now type-checked
 like a record's:
