@@ -41,9 +41,13 @@ writes) twice.
 5. **Prerendered pages are not cached** (`Cache-Control: no-store`): each
    names a session.
 6. **Unclaimed sessions** (the browser never connects, or a crawler)
-   expire after `reconnectGraceMs` and count toward `maxSessions` like
-   disconnected sessions. At capacity, the page is served unrendered and
-   the socket gets the "server busy" page as before.
+   expire after `reconnectGraceMs` and count toward `maxSessions`. When
+   the registry is full, they are evicted before any session a browser
+   was using (`SessionEntry.claimed`). Page loads that never connect
+   therefore cannot push out a session waiting for its user to reconnect
+   (D138's resume guarantee). At capacity with nothing to evict, the page
+   is served unrendered, and the socket gets the "server busy" page as
+   before.
 7. **The URL is rebuilt.** `Request` has no raw query, so the shell
    rebuilds it from the parsed parameters, percent-encoded; parameter
    order may differ from what the browser sent.

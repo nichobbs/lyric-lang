@@ -20,10 +20,24 @@ view in its HTML, so first paint no longer waits for the WebSocket.
     disconnected session;
   - `shellHtml` takes the session id and the first view.
 
+- **Eviction.** A full registry evicts never-claimed prerendered sessions
+  before any session a browser was using (`SessionEntry.claimed`), so page
+  loads that never connect cannot push out a user who is reconnecting.
+- **JVM `max_stack` fix.** The assembler reset its tracked stack depth to 0
+  at every label. A comparison materialised as a constructor argument
+  inside another call branches with that call's arguments still on the
+  stack, so `max_stack` came out too small and the class failed
+  verification (`Operand stack overflow`, first hit by `admit` above).
+  Branches now record the depth at their target, and a label starts at the
+  deepest incoming edge (`noteBranch`, `enterLabel`).
+
 Tests:
 - `html_tests.l` (field, label and error wiring, checkbox, select,
   chrome, deterministic ids);
-- `host_tests.l` (the shell with a prerendered session, `snapshot`);
+- `host_tests.l`: the shell with a prerendered session, `snapshot`,
+  eviction order and `pageUrl`;
+- `silent_miscompile_guard_jvm_self_test.l`: a nested comparison
+  constructor argument verifies;
 - the browser e2e gains "the page arrives prerendered, then the session
   takes over", on dotnet and the JVM;
 - the `lyric-ui` suites pass on both targets.

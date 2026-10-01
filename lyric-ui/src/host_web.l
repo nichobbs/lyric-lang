@@ -223,21 +223,28 @@ func prerenderPage(s: in UiSocket, url: in String): FirstView {
 }
 
 /// The page URL a request names: its path and, when it has one, its query,
-/// as the runtime reports it in `hello`.  The query is rebuilt from the
-/// parsed parameters, so its order and encoding may differ from the
-/// original.
+/// as the runtime reports it in `hello`.
 pub func requestUrl(req: in Request): String {
-  var query = ""
-  for k in mapKeys(req.queryParams) {
-    match mapGet(req.queryParams, k) {
+  return pageUrl(req.path, req.queryParams)
+}
+
+/// `path` with `query` appended, percent-encoded.  The query is rebuilt
+/// from parsed parameters, which hold one value per name, so their order
+/// and encoding may differ from the URL the browser sent and a repeated
+/// name keeps one value.  Only the prerendered first view depends on it: a
+/// resumed session is found by its id, not its URL.
+pub func pageUrl(path: in String, query: in Map[String, String]): String {
+  var rebuilt = ""
+  for k in mapKeys(query) {
+    match mapGet(query, k) {
       case Some(v) -> {
-        query = query + (if query.length == 0 { "?" } else { "&" }) + Routing.encodeSegment(k) + "=" +
+        rebuilt = rebuilt + (if rebuilt.length == 0 { "?" } else { "&" }) + Routing.encodeSegment(k) + "=" +
           Routing.encodeSegment(v)
       }
       case None -> ()
     }
   }
-  return req.path + query
+  return path + rebuilt
 }
 
 /// The page shell: mount point, theme and runtime module.  `sessionId` and

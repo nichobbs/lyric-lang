@@ -574,6 +574,13 @@ pub record MethodAssembler {
   // real JVM handler entries (implicit `[exception]` on the stack, JVMS
   // §4.10.1.6) rather than ordinary empty-stack control-flow joins (#6551).
   var handlerLabels: Map[String, String]
+  // The deepest operand stack recorded at a branch to each label, and
+  // whether the instruction just lowered can fall through to the next one.
+  // A branch inside an expression (a comparison materialised as a call
+  // argument) reaches its label with values still on the stack, so a label
+  // starts at that depth rather than 0 (see `enterLabel`).
+  var labelDepths: Map[String, Int]
+  var reachable: Bool
 }
 
 /// Construct a fresh assembler sharing `pool`.
@@ -590,7 +597,9 @@ pub func newAssembler(pool: in Pool): MethodAssembler {
     curStack = 0,
     peakStack = 0,
     exnHandlers = newList(),
-    handlerLabels = newMap()
+    handlerLabels = newMap(),
+    labelDepths = newMap(),
+    reachable = true
   )
 }
 
@@ -620,12 +629,42 @@ pub func trackStack(asm: in MethodAssembler, delta: in Int): Unit {
   }
 }
 
-/// Reset the current stack depth to 0 (used at an ordinary label / branch
-/// target, where Lyric's codegen invariants guarantee the operand stack is
-/// empty on every incoming edge).  For an exception-handler entry label, use
-/// `resetStackToHandlerEntry` instead — see its doc comment (#6551).
+/// Reset the current stack depth to 0.  For an exception-handler entry
+/// label, use `resetStackToHandlerEntry` instead — see its doc comment
+/// (#6551); for an ordinary label, `enterLabel`.
 pub func resetStack(asm: in MethodAssembler): Unit {
   asm.curStack = 0
+}
+
+/// Records that a branch to `label` leaves the current stack depth on its
+/// incoming edge.
+pub func noteBranch(asm: in MethodAssembler, label: in String): Unit {
+  val prior = match mapGet(asm.labelDepths, label) { case Some(d) -> d; case None -> 0 }
+  if asm.curStack > prior {
+    asm.labelDepths[label] = asm.curStack
+  }
+}
+
+/// Marks the end of straight-line code: the next instruction is reached
+/// only through a label.
+pub func noteNoFallthrough(asm: in MethodAssembler): Unit {
+  asm.reachable = false
+}
+
+/// Sets the stack depth at an ordinary label to the deepest of its incoming
+/// edges seen so far: the branches recorded by `noteBranch` and the
+/// fall-through from the previous instruction.  A label reached only by a
+/// backward branch not yet lowered (a loop head) starts empty, which the
+/// codegen guarantees for loop heads.  Over-estimating only raises
+/// `max_stack`; the verifier checks the real depths against the frames.
+pub func enterLabel(asm: in MethodAssembler, label: in String): Unit {
+  val recorded = match mapGet(asm.labelDepths, label) { case Some(d) -> d; case None -> 0 }
+  val fallthrough = if asm.reachable and asm.curStack > 0 { asm.curStack } else { 0 }
+  asm.curStack = if recorded > fallthrough { recorded } else { fallthrough }
+  asm.reachable = true
+  if asm.curStack > asm.peakStack {
+    asm.peakStack = asm.curStack
+  }
 }
 
 /// Reset the current stack depth to 1 (used at an exception-handler entry
@@ -638,6 +677,7 @@ pub func resetStack(asm: in MethodAssembler): Unit {
 /// producing a `maxStack` that is 1 too small and a runtime `VerifyError:
 /// Operand stack overflow` (#6551).
 pub func resetStackToHandlerEntry(asm: in MethodAssembler): Unit {
+  asm.reachable = true
   asm.curStack = 1
   if asm.curStack > asm.peakStack {
     asm.peakStack = asm.curStack

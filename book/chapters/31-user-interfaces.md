@@ -522,7 +522,9 @@ the live view is applied, so a test waits for `#lyric-ui:not([aria-busy])`.
 
 Each prerendered page names a session, so the host serves it with
 `Cache-Control: no-store`. A session that no browser claims expires after
-`reconnectGraceMs`, like a disconnected one. The first view is whatever
+`reconnectGraceMs`, like a disconnected one. When `maxSessions` is reached,
+unclaimed sessions are evicted first, so page loads that never connect
+(crawlers, `curl`) do not push out a user who is reconnecting. The first view is whatever
 `init` and the view produce before its effects finish, typically a
 loading state.
 

@@ -333,33 +333,41 @@ pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
       // join (depth 0).  See `resetStackToHandlerEntry`'s doc comment (#6551).
       match mapGet(asm.handlerLabels, n) {
         case Some(_) -> resetStackToHandlerEntry(asm)
-        case None -> resetStack(asm)
+        case None -> enterLabel(asm, n)
       }
     }
     // No `resetStack`: a line marker is not a basic-block boundary, and
     // treating it as one would corrupt the stackmap frames.
     case LLineMarker(n, _) -> emitLabel(asm, n)
     case LNop -> emitNop(asm)
-    case LReturn -> emitReturn(asm)
+    case LReturn -> {
+      emitReturn(asm)
+      noteNoFallthrough(asm)
+    }
     case LIreturn -> {
       emitIreturn(asm)
       trackStack(asm, -1)
+      noteNoFallthrough(asm)
     }
     case LLreturn -> {
       emitLreturn(asm)
       trackStack(asm, -2)
+      noteNoFallthrough(asm)
     }
     case LDreturn -> {
       emitDreturn(asm)
       trackStack(asm, -2)
+      noteNoFallthrough(asm)
     }
     case LAreturn -> {
       emitAreturn(asm)
       trackStack(asm, -1)
+      noteNoFallthrough(asm)
     }
     case LAthrow -> {
       emitAthrow(asm)
       trackStack(asm, -1)
+      noteNoFallthrough(asm)
     }
 
     case LIconst(v) -> {
@@ -653,70 +661,90 @@ pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
       trackStack(asm, -1)
     }
 
-    case LGoto(l) -> emitGoto(asm, l)
+    case LGoto(l) -> {
+      emitGoto(asm, l)
+      noteBranch(asm, l)
+      noteNoFallthrough(asm)
+    }
     case LIfeq(l) -> {
       emitIfeq(asm, l)
       trackStack(asm, -1)
+      noteBranch(asm, l)
     }
     case LIfnull(l) -> {
       emitIfnull(asm, l)
       trackStack(asm, -1)
+      noteBranch(asm, l)
     }
     case LIfnonnull(l) -> {
       emitIfnonnull(asm, l)
       trackStack(asm, -1)
+      noteBranch(asm, l)
     }
     case LIfne(l) -> {
       emitIfne(asm, l)
       trackStack(asm, -1)
+      noteBranch(asm, l)
     }
     case LIflt(l) -> {
       emitIflt(asm, l)
       trackStack(asm, -1)
+      noteBranch(asm, l)
     }
     case LIfge(l) -> {
       emitIfge(asm, l)
       trackStack(asm, -1)
+      noteBranch(asm, l)
     }
     case LIfgt(l) -> {
       emitIfgt(asm, l)
       trackStack(asm, -1)
+      noteBranch(asm, l)
     }
     case LIfle(l) -> {
       emitIfle(asm, l)
       trackStack(asm, -1)
+      noteBranch(asm, l)
     }
     case LIfIcmpeq(l) -> {
       emitIfIcmpeq(asm, l)
       trackStack(asm, -2)
+      noteBranch(asm, l)
     }
     case LIfIcmpne(l) -> {
       emitIfIcmpne(asm, l)
       trackStack(asm, -2)
+      noteBranch(asm, l)
     }
     case LIfIcmplt(l) -> {
       emitIfIcmplt(asm, l)
       trackStack(asm, -2)
+      noteBranch(asm, l)
     }
     case LIfIcmpge(l) -> {
       emitIfIcmpge(asm, l)
       trackStack(asm, -2)
+      noteBranch(asm, l)
     }
     case LIfIcmpgt(l) -> {
       emitIfIcmpgt(asm, l)
       trackStack(asm, -2)
+      noteBranch(asm, l)
     }
     case LIfIcmple(l) -> {
       emitIfIcmple(asm, l)
       trackStack(asm, -2)
+      noteBranch(asm, l)
     }
     case LIfAcmpeq(l) -> {
       emitIfAcmpeq(asm, l)
       trackStack(asm, -2)
+      noteBranch(asm, l)
     }
     case LIfAcmpne(l) -> {
       emitIfAcmpne(asm, l)
       trackStack(asm, -2)
+      noteBranch(asm, l)
     }
 
     case LGetfield(owner, name, t) -> {
@@ -865,10 +893,20 @@ pub func lowerInsn(insn: in LInsn, asm: in MethodAssembler): Unit {
     case LTableswitch(lo, hi, def, cases) -> {
       emitTableSwitch(asm, lo, hi, def, cases)
       trackStack(asm, -1)
+      noteBranch(asm, def)
+      for c in cases {
+        noteBranch(asm, c)
+      }
+      noteNoFallthrough(asm)
     }
     case LLookupswitch(def, pairs) -> {
       emitLookupSwitch(asm, def, pairs)
       trackStack(asm, -1)
+      noteBranch(asm, def)
+      for pr in pairs {
+        noteBranch(asm, pr.label)
+      }
+      noteNoFallthrough(asm)
     }
 
     case LTryCatch(_, _, _, _) -> ()
