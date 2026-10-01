@@ -3,7 +3,7 @@
 **Status:** Specced in D137. Phases U1 (pure core, `lyric-forms`, example),
 U2 (server-driven web host and TypeScript runtime), U3 (enforced
 `[layers]`, D149) and U4 (`Forms.Derive` and `Ui.Routes`, D151) are
-implemented; see
+implemented, as is U6's prerendered first paint (D152); see
 §14 for the phase plan and §15 for what the first implementation surfaced
 and how each finding was resolved. The open questions Q-UI-001 to Q-UI-011
 are resolved (§16): Q-UI-011 by the compiler fixes of §15, the others by
@@ -801,8 +801,24 @@ shaping, IME and accessibility become the library's problem.
 
 ### 13.4 Server-side rendering for first paint
 
-The web host renders the initial `View` to HTML in the shell so the first
+The web host renders the initial `View` to HTML in the shell, so the first
 paint does not wait for the WebSocket.
+
+**Implemented (D152).** With `HostConfig.prerender` on (the default):
+
+- **Serving the page.** A page request starts the session for its URL,
+  detached, and `Ui.Html` renders its first view into the shell. The shell
+  carries the session id as `data-sid` and is served with
+  `Cache-Control: no-store`.
+- **Connecting.** The runtime's `hello` resumes that session, so `init`
+  and its effects run once. The resume's full-tree patch replaces the
+  prerendered markup, which `Ui.Html` writes exactly as the runtime's
+  renderer would.
+- **Until then.** The page is inert, and `aria-busy` stays on the mount
+  until the first patch is applied.
+- **Unclaimed sessions** expire after `reconnectGraceMs`.
+- **The URL** is rebuilt from the request's parsed query parameters, so
+  their order and encoding may differ from what the browser sent.
 
 ### 13.5 `Lazy` subtrees
 
@@ -842,7 +858,7 @@ custom properties (design tokens) with light and dark sets.
 | U3 | `[layers]` compiler feature, stdlib `@pure`/`@io` classification, `Y000x` diagnostics | Implemented (D149, every target); `examples/ui-customers` builds under the `ui` preset |
 | U4 | `@generate(Forms.Derive)` and `@generate(Ui.Routes)` | Implemented (D151); request schema 2; the example derives its form and routes on both targets |
 | U5 | Desktop webview host (native + MSIL) | Planned |
-| U6 | Data grid, `Lazy`, SSR first paint | Planned |
+| U6 | Data grid, `Lazy`, SSR first paint | SSR first paint implemented (D152, both targets); `Lazy` and the data grid planned |
 | U7 | Client WASM host | Depends on `docs/35` |
 
 ---

@@ -146,9 +146,14 @@ test "static pages render their message" {
 
 test "shell helpers" {
   assertEqual(Web.escapeHtml("<a href=\"x\">&'"), "&lt;a href=&quot;x&quot;&gt;&amp;&#39;", "escape")
-  val html = Web.shellHtml("Cust <omers>", "ws://h:8080/_ui")
+  val html = Web.shellHtml("Cust <omers>", "ws://h:8080/_ui", "", "")
   assertTrue(contains(html, "<title>Cust &lt;omers&gt;</title>"), "escaped title")
-  assertTrue(contains(html, "data-ws=\"ws://h:8080/_ui\""), "socket url")
+  assertTrue(contains(html, "data-ws=\"ws://h:8080/_ui\">"), "socket url, no session")
+  val pre = Web.shellHtml("C", "ws://h/_ui", "ab12", "<p class=\"lui-paragraph\">Hi</p>")
+  assertTrue(
+    contains(pre, "data-ws=\"ws://h/_ui\" data-sid=\"ab12\"><p class=\"lui-paragraph\">Hi</p></div>"),
+    "prerendered: " + pre
+  )
 }
 
 test "session socket url follows the page scheme and host" {
@@ -366,4 +371,12 @@ test "a closed instance drops the results of its running effects" {
   inst.close()
   Time.sleepMillis(800)
   assertEqualInt(rec.all().count, 1, "only the initial render")
+}
+
+test "an instance's snapshot is its current view as HTML (D152)" {
+  val rec = Recorder()
+  val inst = Host.staticPage("Not found", "There is no page at /x.")
+  assertEqual(inst.snapshot(), "", "nothing before start")
+  inst.start(RecordingOutbox(rec = rec))
+  assertTrue(contains(inst.snapshot(), "<p class=\"lui-paragraph\">There is no page at /x.</p>"), inst.snapshot())
 }

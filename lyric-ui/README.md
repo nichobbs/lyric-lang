@@ -3,10 +3,11 @@
 A model-view-update UI library for Lyric: one application model for desktop
 and web (`docs/65-ui-library-sketch.md`, D137).
 
-Status: **experimental, phases U1 to U4.** The pure core, the session
-driver, the server-driven web host, the `[layers]` checker (D149) and the
-form and route generators (D151) are implemented and tested; desktop and
-WASM hosts are planned (docs/65 §14).
+Status: **experimental, phases U1 to U4 and part of U6.** The pure core,
+the session driver, the server-driven web host with a prerendered first
+paint (D152), the `[layers]` checker (D149) and the form and route
+generators (D151) are implemented and tested; `Lazy` subtrees, the data
+grid, and the desktop and WASM hosts are planned (docs/65 §14).
 
 ## The application model
 
@@ -33,6 +34,7 @@ packages, with its tests.
 | `Ui.Widgets` | view | typed builders for the semantic widget set |
 | `Ui.Forms` | view | renders a `Forms.FormSchema` as fields |
 | `Ui.Routing` | logic, effects, view | URL path splitting and percent encoding for typed routes |
+| `Ui.Html` | runtime | a rendered view as HTML, for the prerendered first paint |
 | `Ui.Testing` | tests | queries over `View` values: `click`, `typeInto`, `fieldErrors`, `hasText` |
 | `Ui.Diff` | runtime | view diffing, patches, and the reference patch applier |
 | `Ui.Protocol` | runtime | the JSON wire format between session and host |
