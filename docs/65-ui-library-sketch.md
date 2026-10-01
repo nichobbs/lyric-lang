@@ -909,6 +909,10 @@ was in the JVM backend or the build tooling, and each was fixed there
   not resolve `[dependencies]` (#6815 item 1(b)), so a native application
   cannot depend on `lyric-ui` or `lyric-forms`, which blocks the priority
   target. Generic protected types are also unsupported on native.
+  Dependency resolution is resolved (#7833): a native project build compiles
+  its `path` and `workspace = true` dependencies, and theirs, from source,
+  each with its own features. Generic protected types on native remain
+  #7864.
 - **F-14: `@generate` custom generators are not usable end to end** (#7834). The
   compiler side exists, but a generator DLL must be staged by hand under
   `.lyric/packages/`, and nothing in CI runs a real generator. Phase U4
@@ -965,10 +969,10 @@ that the separate host and runtime suites could not see:
 ### Consequence for the plan
 
 The compiler work came first (Q-UI-011 is resolved in favour of fixing the
-compiler, not reshaping the library). F-9 is a naming note. F-10 to F-15
-remain open and bound later phases: F-13 blocks the native host (U5 on
-native), F-14 blocks U4, and F-10/F-15 are needed before effects run
-concurrently.
+compiler, not reshaping the library). F-9 is a naming note. F-10, F-11,
+F-12 and F-15 are resolved (D145 to D148). F-13's dependency half is
+resolved; native generic protected types (#7864) still bound U5 on native.
+F-14 blocks U4.
 
 ---
 

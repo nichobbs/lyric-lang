@@ -210,6 +210,19 @@ pub func noPackageFeatures(): List[Pipe.PackageFeatureSet] {
 }
 
 /// The feature set package `name` is erased with in `req`.
+func depPackageFeaturesFor(
+  // The features recorded for dependency package `name`, if it is one.
+  sets: in List[Pipe.PackageFeatureSet],
+  name: in String,
+): Option[Pipe.PackageFeatureSet] {
+  for pf in sets {
+    if pf.packageName == name {
+      return Some(value = pf)
+    }
+  }
+  None
+}
+
 func featuresForPackage(req: in EmitProjectRequest, name: in String): Pipe.PackageFeatureSet {
   for pf in req.packageFeatures {
     if pf.packageName == name {
@@ -3199,10 +3212,12 @@ func emitNativeInProcess(
 /// (#6818) — since the native bridge (like the MSIL/JVM bridges) expects
 /// one valid `package` unit per entry, not raw per-file concatenation.
 ///
-/// `[dependencies]` on other restored Lyric packages (NuGet/Maven-style
-/// prebuilt binaries) are NOT threaded here: native has no restored-binary
-/// concept, so a caller resolving those is out of scope for this entry
-/// point (see the decision log for the tracked follow-up).
+/// `pkgs` includes the packages of the project's `path` and
+/// `workspace = true` dependencies, compiled from source like its own
+/// (#7833); `packageFeatures` carries each dependency package's own
+/// `@cfg` features.  A package not listed there uses
+/// `activeFeatures`/`declaredFeatures`.  Native has no restored-binary
+/// concept, so registry and git dependencies are refused before this point.
 pub func emitNativeProject(
   pkgs: in List[ProjectPackage],
   outputPath: in String,
@@ -3214,6 +3229,7 @@ pub func emitNativeProject(
   declaredFeatures: in List[String],
   packageVersion: in String,
   contractsEnabled: in Bool,
+  packageFeatures: in List[Pipe.PackageFeatureSet],
 ): EmitResult {
   val outDir = Path.dirname(outputPath)
   if Str.isNotEmpty(outDir) {
@@ -3236,8 +3252,11 @@ pub func emitNativeProject(
   var pi = 0
   while pi < pkgs.count {
     val pkg = pkgs[pi]
+    val depFeatures = depPackageFeaturesFor(packageFeatures, pkg.name)
+    val pkgActive = match depFeatures { case Some(pf) -> pf.active; case None -> activeFeatures }
+    val pkgDeclared = match depFeatures { case Some(pf) -> pf.declared; case None -> declaredFeatures }
     if pkg.sources.count > 1 {
-      val mergedRes = mergePackageSourcesWithOrigins(pkg.name, pkg.sources, pkg.paths, activeFeatures, declaredFeatures)
+      val mergedRes = mergePackageSourcesWithOrigins(pkg.name, pkg.sources, pkg.paths, pkgActive, pkgDeclared)
       // No single on-disk path names the merged blob as a whole —
       // `mergedRes.origins` carries the real per-line attribution instead.
       nativePkgs.add(
@@ -3245,19 +3264,21 @@ pub func emitNativeProject(
           name = pkg.name,
           source = mergedRes.source,
           path = "",
-          ioForbiddenReason = pkg.ioForbiddenReason
+          ioForbiddenReason = pkg.ioForbiddenReason,
+          features = depFeatures
         )
       )
       nativeOrigins.add(DiagUtil.PackageLineOrigins(origins = mergedRes.origins))
     } else {
-      val merged = mergePackageSources(pkg.name, pkg.sources, activeFeatures, declaredFeatures)
+      val merged = mergePackageSources(pkg.name, pkg.sources, pkgActive, pkgDeclared)
       val pkgPath = if pkg.paths.count > 0 { pkg.paths[0] } else { "" }
       nativePkgs.add(
         LlvmBridge.NativeSourcePackage(
           name = pkg.name,
           source = merged,
           path = pkgPath,
-          ioForbiddenReason = pkg.ioForbiddenReason
+          ioForbiddenReason = pkg.ioForbiddenReason,
+          features = depFeatures
         )
       )
       nativeOrigins.add(DiagUtil.PackageLineOrigins(origins = newList()))

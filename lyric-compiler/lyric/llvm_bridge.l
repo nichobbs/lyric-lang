@@ -592,15 +592,10 @@ pub func compileToNativeWithFlags(
 // §2.35. Multi-package native project build (#6809): the native analog of
 // `Msil.Bridge.compileProjectToMsilWithRestoredAndVersion` /
 // `Jvm.Bridge.compileProjectToJarBundledWithRestored` for a project's OWN
-// `[project.packages]` — a manifest's `[dependencies]` on OTHER restored
-// Lyric packages (NuGet/Maven-style prebuilt binaries, or another project's
-// own DLL/JAR) stay explicitly out of scope: native has no restored-binary
-// concept (unlike dotnet/jvm, it always compiles the whole reachable world
-// from source, mirroring how `Std.*` stdlib sources are bundled today), and
-// a workspace/path dependency is itself just another `[project.packages]`
-// tree the CALLER can feed in as more `NativeSourcePackage` entries once a
-// follow-up teaches the CLI to resolve that graph (`docs/03-decision-log.md`
-// tracks the exact cut).
+// `[project.packages]` and those of its path and workspace dependencies.
+// Native has no restored-binary concept: like the `Std.*` stdlib sources, a
+// dependency is compiled from source, and the CLI passes its packages in as
+// further `NativeSourcePackage` entries, each with its own features (#7833).
 // ─────────────────────────────────────────────────────────────────────────────
 /// One own-package's pre-merged source for a native project build.
 /// `Lyric.Emitter.emitNativeProject` merges a multi-file package's sources
@@ -621,6 +616,10 @@ pub record NativeSourcePackage {
   /// `Lyric.Pipeline.MiddleEndOptions.ioForbiddenReason` for the package
   /// (`[layers]`, D149); "" when it may do I/O.
   ioForbiddenReason: String = ""
+  /// The `@cfg` features a dependency package is erased with: its own
+  /// manifest's (#7833).  None for the project's own packages, which use the
+  /// build's features.
+  features: Option[PackageFeatureSet] = None
 }
 
 /// True when `file` declares a top-level `func main` — the project entry
@@ -753,7 +752,9 @@ pub func compileProjectToNativeWithFlags(
   // translation at all).
   var ppi = 0
   while ppi < packages.count {
-    val cfgFile = match pipeParseAndErase(packages[ppi].source, "native", activeFeatures, declaredFeatures, nativeDefines, nativePkgLabelAt(packages, ppi), nativePkgOriginsAt(originsByPkg, ppi)) {
+    val pkgActive = match packages[ppi].features { case Some(pf) -> pf.active; case None -> activeFeatures }
+    val pkgDeclared = match packages[ppi].features { case Some(pf) -> pf.declared; case None -> declaredFeatures }
+    val cfgFile = match pipeParseAndErase(packages[ppi].source, "native", pkgActive, pkgDeclared, nativeDefines, nativePkgLabelAt(packages, ppi), nativePkgOriginsAt(originsByPkg, ppi)) {
       case Some(f) -> f
       case None -> return false
     }

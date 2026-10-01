@@ -1671,7 +1671,8 @@ func cmdTestManifest(
   }
 
   if targetJvm {
-    collectTransitiveDepSources(
+    // Only native reports unsupported dependencies here.
+    val _ = collectTransitiveDepSources(
       manifest,
       mfDir,
       cliFeatures,
