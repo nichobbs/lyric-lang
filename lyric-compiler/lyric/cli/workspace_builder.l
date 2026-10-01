@@ -913,19 +913,6 @@ pub record ResolvedManifestDeps {
   depPackageFeatures: List[Pipe.PackageFeatureSet]
 }
 
-/// Resolve every dependency a manifest declares — workspace deps (built
-/// recursively via `buildWorkspaceDeps`), local `path = "..."` deps, and
-/// `[nuget]` assets that are themselves Lyric packages — into the
-/// `restoredDllPaths` / `nugetAssemblyPaths` / `depTemplateSrcs` shape
-/// `Emitter.EmitProjectRequest` expects.  `cliFeatures` /
-/// `noDefaultFeatures` (the root build's explicit CLI feature selection)
-/// are forwarded into every workspace dependency's build — see
-/// `buildWorkspaceDeps`'s doc comment for the composition rule (#5571).
-/// Does NOT itself resolve feature sets (see `resolveManifestFeatures`) or
-/// `[maven]` classpath injection (see `injectMavenClasspathForJvm`) —
-/// those are independent concerns with their own callers.  Never triggers
-/// a restore: a dependency that isn't already built is reported via
-/// `hadUnbuiltLocalDep` / the printed message, not fetched.
 /// True for the targets that compile a `path` or `workspace = true`
 /// dependency from its source into the same build, rather than linking its
 /// built DLL: Jvm (#6136) and Native (#7833).
@@ -951,6 +938,19 @@ pub func nativeUnsupportedDepMessage(depName: in String, kind: in String): Strin
     " dependency; --target native compiles Lyric dependencies from source and supports only path = \"...\" and workspace = true dependencies"
 }
 
+/// Resolve every dependency a manifest declares — workspace deps (built
+/// recursively via `buildWorkspaceDeps`), local `path = "..."` deps, and
+/// `[nuget]` assets that are themselves Lyric packages — into the
+/// `restoredDllPaths` / `nugetAssemblyPaths` / `depTemplateSrcs` shape
+/// `Emitter.EmitProjectRequest` expects.  `cliFeatures` /
+/// `noDefaultFeatures` (the root build's explicit CLI feature selection)
+/// are forwarded into every workspace dependency's build — see
+/// `buildWorkspaceDeps`'s doc comment for the composition rule (#5571).
+/// Does NOT itself resolve feature sets (see `resolveManifestFeatures`) or
+/// `[maven]` classpath injection (see `injectMavenClasspathForJvm`) —
+/// those are independent concerns with their own callers.  Never triggers
+/// a restore: a dependency that isn't already built is reported via
+/// `hadUnbuiltLocalDep` / the printed message, not fetched.
 pub func resolveManifestDependencies(
   manifest: in Mf.Manifest,
   mfPath: in String,
