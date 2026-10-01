@@ -10,6 +10,9 @@
 //! is now seeded from the field's function type, substituted with the
 //! instantiation's type arguments for a generic record.
 //!
+//! A bare call to such a field from a member body reaches the field before a
+//! same-named top-level function (docs/01 §2.4).
+//!
 //! Runs on both targets:
 //!   lyric test --target dotnet lyric-compiler/lyric/lambda_field_ctor_arg_self_test.l
 //!   lyric test --target jvm lyric-compiler/lyric/lambda_field_ctor_arg_self_test.l
@@ -89,4 +92,67 @@ test "a lambda returning a union case wrapped in Some" {
     case None -> assertTrue(false, "positive classified as None")
   }
   assertTrue(c.classify(0).isNone, "non-positive is None")
+}
+
+func choose(n: in Int): Option[String] {
+  if n > 0 {
+    Some(value = "top-level")
+  } else {
+    None
+  }
+}
+
+record Shadow {
+  choose: (Int) -> Option[String]
+  func viaBare(self: in Shadow, n: in Int): String {
+    match choose(n) {
+      case Some(s) -> s
+      case None -> "none"
+    }
+  }
+}
+
+record ShadowOf[T] {
+  choose: (Int) -> Option[T]
+  func viaBare(self: in ShadowOf[T], n: in Int): Option[T] {
+    choose(n)
+  }
+}
+
+// A bare name in a member body means the enclosing type's field before a
+// same-named top-level function (docs/01 §2.4, #6173).
+test "a bare call in a record method reaches the field, not a same-named function" {
+  val r = Shadow(choose = { _: Int -> Some(value = "field") })
+  assertEqual(r.viaBare(1), "field", "bare call")
+  match choose(1) {
+    case Some(s) -> assertEqual(s, "top-level", "free function")
+    case None -> assertTrue(false, "the free function returned Some")
+  }
+}
+
+// Inside a generic record the field's type names a type parameter, so the
+// call reaches the backend as written rather than through a typed local.
+test "a bare call in a generic record method reaches the field" {
+  val r: ShadowOf[String] = ShadowOf(choose = { _: Int -> Some(value = "field") })
+  match r.viaBare(1) {
+    case Some(s) -> assertEqual(s, "field", "bare call")
+    case None -> assertTrue(false, "the field returned Some")
+  }
+  val none: ShadowOf[String] = ShadowOf(choose = { _: Int -> None })
+  assertTrue(none.viaBare(1).isNone, "None through the field")
+}
+
+protected type ShadowCell[T] {
+  var choose: (Int) -> Option[T]
+  func pick(n: in Int): Option[T] {
+    choose(n)
+  }
+}
+
+test "a bare call in a generic protected type reaches the field" {
+  val c: ShadowCell[String] = ShadowCell(choose = { _: Int -> Some(value = "field") })
+  match c.pick(1) {
+    case Some(s) -> assertEqual(s, "field", "bare call")
+    case None -> assertTrue(false, "the field returned Some")
+  }
 }

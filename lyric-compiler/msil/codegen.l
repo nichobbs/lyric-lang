@@ -19147,6 +19147,15 @@ func lowerBuiltinOrStaticCallMsil(
             // value.
             val valueTy = lowerExprMsil(cctx, fctx, insns, Expr(kind = EPath(path = path), span = path.span))
             invokeLoadedFuncValueMsil(cctx, fctx, insns, args, valueTy, mapGet(fctx.funcValRetTypes, funcName))
+          } else if path.segments.count == 1 and isBareSelfFieldCallMsil(cctx, fctx, funcName) {
+            // A bare call to a function-typed field of the enclosing record
+            // or impl target means `self.<name>(args)`, ahead of a same-named
+            // free function (§2.4, #6173).  The type checker rewrites such a
+            // call through a typed local when the field's type has a source
+            // spelling; inside a generic type it names a type parameter and
+            // the call arrives here as written.
+            val selfCall = Expr(kind = ECall(fn = selfMemberExprMsil(funcName, path.span), args = args), span = path.span)
+            lowerExprMsil(cctx, fctx, insns, selfCall)
           } else {
             // Static call resolution.  Functions are registered FQN-keyed
             // by `addPackageTokens` (#1183 Phase 2), so a call site that
@@ -33645,6 +33654,19 @@ func selfIsGenericInstMsil(fctx: in FuncCtx): Bool {
 }
 
 // `self.<name>`, the explicit form of a bare field or sibling-method reference.
+// True when `name` is a field of the type whose method is being lowered and no
+// sibling method shares the name (a sibling method keeps the call, #6489).
+// `fctx.className` is the receiver's dotted FQN only inside a method body; a
+// top-level function's is the bare package name, which never forms a
+// `fieldTokens` key.
+func isBareSelfFieldCallMsil(cctx: in CodegenCtx, fctx: in FuncCtx, name: in String): Bool {
+  if fctx.className.length == 0 {
+    return false
+  }
+  val key = fctx.className + "/" + name
+  cctx.fieldTokens.containsKey(key) and not cctx.methodTokens.containsKey(key)
+}
+
 func selfMemberExprMsil(name: in String, span: in Span): Expr {
   Expr(kind = EMember(receiver = Expr(kind = ESelf, span = span), memberName = name), span = span)
 }

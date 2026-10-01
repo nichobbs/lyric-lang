@@ -885,6 +885,9 @@ func isLambdaLocal(ctx: in FuncCtx, name: in String): Bool {
 // spelling; inside a generic type it names a type parameter and is left as
 // written, so the backend loads the field from `this` itself.
 func isLambdaSelfField(ctx: in FuncCtx, name: in String): Bool {
+  // A field beats a same-named top-level function: a bare name in a member
+  // body resolves against the enclosing type's fields unless it is a local
+  // or parameter (§2.4, #6173), as the type checker resolves it.
   match lookupSlot(ctx, name) {
     case Some(_) -> return false
     case None -> ()
