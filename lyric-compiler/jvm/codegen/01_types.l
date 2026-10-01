@@ -112,7 +112,7 @@ pub record JvmFuncSig {
   // backend itself rather than at a source operand position: a distinct or
   // range subtype's `$value` accessor (`coerceToStringForConcat`).  A source
   // call's result is recognised as unsigned from the type checker's operand
-  // sites instead (#7812, `isUnsignedExpr`).  Registrations that never reach
+  // sites instead (#7812, `spellsUnsigned`).  Registrations that never reach
   // such an accessor pass `false`.  No default per the JVM-codegen
   // no-defaulted-field rule (see `isIface`/`retIsSelf` above).
   retIsUnsigned: Bool
@@ -1846,37 +1846,6 @@ pub func isUnsignedTypeExpr(te: in TypeExpr): Bool {
   }
 }
 
-// True when `e` is a `UInt`/`ULong` value whose lowering must be unsigned
-// (comparison, division, remainder, stringification).  The type checker
-// decides it (#7812): at every such operand position it records an operand
-// whose checked type is `UInt`/`ULong`, and `Lyric.Mono.desugarCheckedFile`
-// spells it as the identity `.toUInt()` / `.toULong()` call recognised here,
-// whatever the operand's shape (a field read, an element, a call result, a
-// match binding).  A `u32`/`u64`-suffixed literal is unsigned by its suffix.
-// A monomorphised generic body, which the checker typed only over its type
-// parameters, is spelled the same way by `Lyric.Mono` from the
-// specialisation's declared types.  Anything else is not unsigned: the
-// backend never guesses from an operand's shape.
-pub func isUnsignedExpr(e: in Expr): Bool {
-  match e.kind {
-    case ELiteral(lit) -> {
-      match lit {
-        case LInt(_, suffix, _) -> match suffix { case U32 -> true; case U64 -> true; case _ -> false }
-        case _ -> false
-      }
-    }
-    case EParen(inner) -> isUnsignedExpr(inner)
-    case ECall(callee, callArgs) -> callArgs.count == 0 and
-      (
-        match callee.kind {
-          case EMember(_, mname) -> mname == "toUInt" or mname == "toULong"
-          case _ -> false
-        }
-      )
-    case _ -> false
-  }
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. Load / store / return helpers.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2649,7 +2618,7 @@ pub func tryQualifiedModuleValJvm(ctx: in FuncCtx, expr: in Expr): Option[JvmFun
                 recordRetClass = None,
                 retIsSelf = false,
                 // A module-val read is `EMember`, never `ECall` — never
-                // consulted by `isUnsignedExpr`'s `ECall` arm.
+                // consulted by `spellsUnsigned`'s `ECall` arm.
                 retIsUnsigned = false,
                 recordRetHead = newList(),
                 ownTypeParams = newList(),

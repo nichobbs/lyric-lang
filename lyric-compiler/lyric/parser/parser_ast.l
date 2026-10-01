@@ -1397,6 +1397,48 @@ pub func argsWithDefaults(
   Some(value = filled)
 }
 
+/// `e` with every enclosing `EParen` removed.  The type checker keys an open
+/// tuple site by the parenthesised expression and recognises it through any
+/// depth of parentheses; `Lyric.Mono` must see the same tuple to rewrite it
+/// (#7863), so both strip with this one helper.
+pub func stripExprParens(e: in Expr): Expr {
+  match e.kind {
+    case EParen(inner) -> stripExprParens(inner)
+    case _ -> e
+  }
+}
+
+/// True for the builtins that stringify their arguments: the positions where
+/// a `UInt`/`ULong` argument must be stringified unsigned (#7812).  The type
+/// checker records those arguments as conversion sites and `Lyric.Mono`
+/// respells them, so both passes must agree on this one list (#7861).
+pub func isStringifyingBuiltin(name: in String): Bool {
+  name == "println" or name == "print" or name == "toString" or name == "format1" or name == "format2" or
+    name == "format3" or
+    name == "format4"
+}
+
+/// True when `e` already says it is unsigned: a `u32`/`u64` literal or a
+/// `.toUInt()`/`.toULong()` call, possibly parenthesised.  The type checker
+/// skips recording such an operand, `Lyric.Mono` skips respelling it, and the
+/// MSIL and JVM backends lower exactly these as unsigned (#7812, #7861).
+pub func spellsUnsigned(e: in Expr): Bool {
+  match e.kind {
+    case ELiteral(lit) -> match lit {
+      case LInt(_, suffix, _) -> match suffix {
+        case U32 -> true
+        case U64 -> true
+        case _ -> false
+      }
+      case _ -> false
+    }
+    case EParen(inner) -> spellsUnsigned(inner)
+    case ECall(fn, cargs) -> cargs.count == 0 and
+      (match fn.kind { case EMember(_, m) -> m == "toUInt" or m == "toULong"; case _ -> false })
+    case _ -> false
+  }
+}
+
 /// `argsWithDefaults` over declared parameters, or `args` unchanged when
 /// they cannot be paired.
 pub func argsWithParamDefaults(params: in List[Param], skip: in Int, args: in List[CallArg]): List[CallArg] {

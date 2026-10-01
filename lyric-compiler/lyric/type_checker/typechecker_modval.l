@@ -157,13 +157,6 @@ func stripPatternParens(p: in Pattern): Pattern {
   }
 }
 
-func stripExprParens(e: in Expr): Expr {
-  match e.kind {
-    case EParen(inner) -> stripExprParens(inner)
-    case _ -> e
-  }
-}
-
 // The element types of a tuple annotation of arity `n`, or None when `ty` is
 // not written as one.
 func tupleElemTypes(ty: in TypeExpr, n: in Int): Option[List[TypeExpr]] {

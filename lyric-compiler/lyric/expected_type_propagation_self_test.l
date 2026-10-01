@@ -451,6 +451,21 @@ func scrutGeneric[T](x: in T): List[T] {
   }
 }
 
+// The checker sees a matched literal through any depth of parentheses, so
+// Mono must too.
+func scrutDoubleParen(): Int {
+  match ((None, 5)) {
+    case (Some(x), n) -> x + n
+    case (o, n) -> addOpt(o, n)
+  }
+}
+
+func scrutTripleParen(): Int {
+  match (((Ok(2), Err("abc")))) {
+    case (a, b) -> resValue(a) + resValue(b)
+  }
+}
+
 async func asyncScrut(): Int {
   match (None, await five()) {
     case (o, n) -> addOpt(o, n)
@@ -568,6 +583,8 @@ test "a tuple literal matched directly" {
   assertEqualInt(scrutOkErr(), 302, "Ok and Err")
   assertEqualInt(scrutNewList(), 207, "newList")
   assertEqualInt(scrutWhole(), 1005, "an arm binding the whole tuple")
+  assertEqualInt(scrutDoubleParen(), 1005, "double parentheses")
+  assertEqualInt(scrutTripleParen(), 302, "triple parentheses")
   val xs = scrutGeneric(8)
   assertEqualInt(xs[0] + xs.count * 100, 108, "in a generic body")
 }
