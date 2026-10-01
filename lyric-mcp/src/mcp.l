@@ -35,6 +35,7 @@
 //! `RpcHandler`/`RpcTransport` and `lyric-cache/src/cache.l`'s `Clock`
 //! already apply for the identical reason.
 @runtime_checked
+@io
 package Mcp
 
 import Std.Core

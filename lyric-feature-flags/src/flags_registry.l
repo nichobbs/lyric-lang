@@ -24,6 +24,7 @@
 //! them.  Mirrors the same caveat on `Flags.InProcessFlagStore` and
 //! `Cache.InProcessCacheStore` (lyric-lang #411).
 @runtime_checked
+@io
 package Flags.Registry
 
 import Std.Core

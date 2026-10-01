@@ -18,6 +18,7 @@
 //! codegen) should import this; do not use directly from application
 //! packages.
 @axiom("java.lang.Exception is the Java checked-exception root; \n        JvmException wraps it for Lyric callers at the FFI boundary \n        per docs/31-maven-linking.md §5")
+@io
 package Std.JvmExceptionHost
 
 // The canonical JVM exception type.  Represents any Java

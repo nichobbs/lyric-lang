@@ -22,6 +22,7 @@
 //!
 //! Property-based generators and a richer harness (parallel runs,
 //! xunit-style discovery, fixtures) remain Phase 3 follow-ups.
+@io
 package Std.Testing
 
 import Std.File

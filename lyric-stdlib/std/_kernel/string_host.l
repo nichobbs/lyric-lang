@@ -10,6 +10,7 @@
 //!
 //! Internal: only Std.String should import this.
 @axiom("System.Text.StringBuilder, String.IndexOf(string, int, StringComparison), String.CompareOrdinal(string, string) and String.get_Chars(int) conform to their documented .NET contracts")
+@pure
 package Std.StringHost
 
 extern type HostStringBuilder = "System.Text.StringBuilder"

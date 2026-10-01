@@ -30,6 +30,7 @@
 //! replacement byte sequence), so the output no longer diverges across
 //! targets for this input shape.
 @runtime_checked
+@pure
 package Std.Encoding
 
 import Std.Core

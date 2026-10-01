@@ -23,6 +23,7 @@
 //!     case None    -> println("missing")
 //!   }
 @runtime_checked
+@pure
 package Std.Collections
 
 import Std.Core

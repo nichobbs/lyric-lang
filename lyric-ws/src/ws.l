@@ -44,6 +44,7 @@
 //!   LYRIC_CONFIG_WS_AUTH_ISSUER                — expected iss claim (default: "")
 //!   LYRIC_CONFIG_WS_AUTH_AUDIENCE              — expected aud claim (default: "")
 @runtime_checked
+@io
 package Ws
 
 import Std.Core

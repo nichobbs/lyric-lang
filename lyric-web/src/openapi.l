@@ -43,6 +43,7 @@
 //!   required: false / absent  the parameter is Option[T]
 //!   format: int32+minimum+maximum together emit an Int range N..=M subtype
 @runtime_checked
+@pure
 package Web.OpenApi
 
 import Std.Core

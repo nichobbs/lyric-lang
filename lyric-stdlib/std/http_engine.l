@@ -182,6 +182,7 @@
 //! data (one `kind` always maps to one status) rather than duplicated
 //! alongside it on every event.
 @runtime_checked
+@pure
 package Std.HttpEngine
 
 import Std.Core

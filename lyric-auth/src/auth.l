@@ -33,6 +33,7 @@
 //! See lyric-web/src/aspects.l for the HTTP bindings (RequiresAuth,
 //! RequiresRole, ApiKey).
 @runtime_checked
+@io
 package Auth
 
 import Std.Core

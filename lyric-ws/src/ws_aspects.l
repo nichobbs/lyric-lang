@@ -2,6 +2,7 @@
 //!
 //! See docs/26-aspects.md and docs/27-aspect-libraries.md.
 @runtime_checked
+@io
 package Ws.Aspects
 
 import Std.Core

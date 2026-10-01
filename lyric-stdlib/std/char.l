@@ -18,6 +18,7 @@
 //! They are the building blocks for `digitValue`, `hexDigitValue`, and any
 //! pure-Lyric text processing that needs arithmetic on characters.
 @runtime_checked
+@pure
 package Std.Char
 
 import Std.Core

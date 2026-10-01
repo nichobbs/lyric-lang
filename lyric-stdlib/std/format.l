@@ -15,6 +15,7 @@
 //!   3. Padding (`padLeft`, `padRight`), pure Lyric over
 //!      `Std.String.StringBuilder`, linear in the padded width.
 @runtime_checked
+@pure
 package Std.Format
 
 import Std.FormatHost as Host

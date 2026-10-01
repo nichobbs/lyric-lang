@@ -3,6 +3,7 @@
 //! App helpers compose existing stdlib pieces. They should not hide IO,
 //! logging, or process exit policy from callers.
 @runtime_checked
+@io
 package Std.App
 
 import Std.Core

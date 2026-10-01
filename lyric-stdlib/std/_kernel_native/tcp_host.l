@@ -134,6 +134,7 @@
 //! A plain socket's fd, by contrast, genuinely IS an `Int` at the C ABI
 //! (`int32_t`), so `Listener.fd`/`Conn.fd` need no such trick.
 @axiom("lyric_sock_*/lyric_tls_* (lyric-rt/src/lyric_tls.c) conform to their documented contracts")
+@io
 package Std.TcpHost
 
 import Std.Core

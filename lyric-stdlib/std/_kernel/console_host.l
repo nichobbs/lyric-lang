@@ -23,6 +23,7 @@
 //! Import this kernel module only when exact byte-level control is required
 //! (e.g. the LSP Content-Length framing reader).
 @axiom("System.Console operations and System.Threading.Tasks.TaskFactory.StartNew/Task.Wait conform to their documented .NET contracts")
+@io
 package Std.ConsoleHost
 
 import Std.Core

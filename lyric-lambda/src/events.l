@@ -20,6 +20,7 @@
 //!       |> Lambda.onSqs("MyApp.Queue.handleBatch")
 //!       |> Lambda.onS3("MyApp.Storage.handleObjectEvent"))
 @runtime_checked
+@pure
 package Lambda.Events
 
 import Std.Core

@@ -14,6 +14,7 @@
 //! JSON that came from outside the program should be read with the
 //! `tryGet*` family instead (#7251).
 @runtime_checked
+@pure
 package Std.Json
 
 import Std.Core

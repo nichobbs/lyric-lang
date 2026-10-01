@@ -32,6 +32,7 @@ func unwrapOrFail(opt: in Option[Contract], label: in String): Contract {
         packageName = "",
         version = "",
         level = "",
+        purity = "",
         formatVersion = 0,
         decls = newList(),
         dependencies = newList(),
@@ -458,6 +459,7 @@ func testContractToJsonRoundTrip(): Unit {
     packageName = "RoundTrip.Pkg",
     version = "1.2.3",
     level = "runtime_checked",
+    purity = "",
     formatVersion = 2,
     decls = decls,
     dependencies = newList(),
@@ -525,6 +527,7 @@ func testContractToJsonOmitsDefaults(): Unit {
     packageName = "Geom",
     version = "0.1.0",
     level = "runtime_checked",
+    purity = "",
     formatVersion = 2,
     decls = decls,
     dependencies = newList(),
@@ -1244,4 +1247,37 @@ func isSomeDecl(o: in Option[ContractDecl]): Bool {
     case Some(_) -> true
     case None -> false
   }
+}
+
+// A package-level `@pure` / `@io` is the package's `[layers]` class
+// (docs/65 §5, D149); it crosses into the contract's `purity`, which the
+// JSON carries only when set.
+test "buildContractFromFile records the package class and JSON round-trips it" {
+  val pure = buildContractFromFile(parse("@pure\npackage P\n\npub func f(): Int = 1\n").file, "1.0.0")
+  assertEqual(pure.purity, "pure", "@pure package")
+  val io = buildContractFromFile(parse("@runtime_checked\n@io\npackage P\n").file, "1.0.0")
+  assertEqual(io.purity, "io", "@io package")
+  assertEqual(io.level, "runtime_checked", "the level is unaffected")
+  val plain = buildContractFromFile(parse("package P\n").file, "1.0.0")
+  assertEqual(plain.purity, "", "unclassified package")
+  assertTrue(not Str.contains(contractToJson(plain), "\"purity\""), "no purity key when unclassified")
+  val json = contractToJson(pure)
+  assertTrue(Str.contains(json, "\"purity\": \"pure\""), "purity key written")
+  val back = unwrapOrFail(parseFromJson(json), "purity round trip")
+  assertEqual(back.purity, "pure", "purity read back")
+}
+
+// A function's `@io` crosses into its repr so a restored consumer's
+// signature carries it (D149), and the repr still re-parses.
+test "buildContractFromFile keeps @io on a function" {
+  val c = buildContractFromFile(
+    parse("@pure\npackage P\n\n@io\npub func now(): Int = 1\npub func pure1(): Int = 2\n").file,
+    "1.0.0"
+  )
+  val io = unwrapDeclOrFail(findDeclByKind(c.decls, "func", "now"), "func now missing")
+  assertTrue(Str.startsWith(io.repr, "@io pub func now"), "@io carried (got " + io.repr + ")")
+  val plain = unwrapDeclOrFail(findDeclByKind(c.decls, "func", "pure1"), "func pure1 missing")
+  assertTrue(not Str.contains(plain.repr, "@io"), "no @io on an ordinary function")
+  val rt = parse("package P\n\n" + io.repr + " = 1\n")
+  assertEqualInt(rt.diagnostics.count, 0, "the repr re-parses (got " + io.repr + ")")
 }

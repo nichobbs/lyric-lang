@@ -13,6 +13,7 @@
 //!     case None -> ...      // no enabled "Save" button
 //!   }
 @runtime_checked
+@pure
 package Ui.Testing
 
 import Std.Core

@@ -42,6 +42,7 @@
 //!
 //! See docs/03-decision-log.md D056 and lyric-storage/README.md.
 @runtime_checked
+@io
 package Storage
 
 import Std.Core

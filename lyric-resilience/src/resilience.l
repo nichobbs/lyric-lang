@@ -40,6 +40,7 @@
 //!
 //! See docs/26-aspects.md §18, docs/27-aspect-libraries.md, D056.
 @runtime_checked
+@io
 package Resilience
 
 import Std.Core

@@ -4,6 +4,7 @@
 //! diagnostics, not durable audit records. Structured fields are modeled
 //! now so later sinks can preserve them without changing call sites.
 @runtime_checked
+@io
 package Std.Log
 
 import Std.Char

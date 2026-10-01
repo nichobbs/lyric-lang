@@ -47,6 +47,7 @@
 //!
 //! See docs/35-lambda-library.md, decision log D062.
 @runtime_checked
+@io
 package Lambda
 
 import Std.Core

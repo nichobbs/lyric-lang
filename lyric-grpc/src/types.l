@@ -3,6 +3,7 @@
 //! Consumers open a GrpcChannel to a server address, make RPC calls passing
 //! raw slice[Byte] payloads, and receive raw slice[Byte] responses.
 //! The gRPC status code and message are surfaced via GrpcStatus on error.
+@pure
 package Grpc.Types
 
 import Std.Core

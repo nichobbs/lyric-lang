@@ -7,6 +7,7 @@
 //! For non-security uses (simulations, games, test fixtures), prefer
 //! Std.Random which is faster.
 @runtime_checked
+@io
 package Std.SecureRandom
 
 import Std.Core

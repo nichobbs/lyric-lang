@@ -57,6 +57,7 @@
 //! `connectElasticsearch` / `connectMeilisearch` accept these values explicitly
 //! instead, for callers that don't want env-var-driven configuration.
 @runtime_checked
+@io
 package Search
 
 import Std.Core

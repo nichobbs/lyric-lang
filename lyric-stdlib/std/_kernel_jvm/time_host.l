@@ -30,6 +30,7 @@
 //!
 //! Internal: only Std.Time should import this.
 @axiom("java.time.* / java.lang.Math.round / java.lang.System.nanoTime / java.lang.Thread.sleep conform to their documented JVM / ISO 8601 contracts")
+@io
 package Std.TimeHost
 
 import Std.Core

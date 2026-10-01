@@ -28,6 +28,7 @@
 //! `encodeNode`.  JSON is produced and parsed with the cross-target
 //! `Std.JsonValue` value model, so the protocol is identical on every target.
 @runtime_checked
+@pure
 package Ui.Protocol
 
 import Std.Core

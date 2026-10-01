@@ -25,6 +25,7 @@
 //! surface (`X509Chain`/`X509ChainPolicy`) — see the "TLS client
 //! configuration" section below for the design rationale.
 @axiom("System.Net.Http and System.Net.Security TLS configuration operations conform to their documented .NET contracts")
+@io
 package Std.HttpHost
 
 import Std.Core

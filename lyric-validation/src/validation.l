@@ -36,6 +36,7 @@
 //!
 //! See docs/03-decision-log.md D056 and lyric-validation/README.md.
 @runtime_checked
+@pure
 package Validation
 
 import Std.Core

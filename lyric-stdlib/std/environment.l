@@ -4,6 +4,7 @@
 //! are ordinary data errors. Process exit is intentionally explicit and
 //! does not hide behind app-host helpers.
 @runtime_checked
+@io
 package Std.Environment
 
 import Std.Core

@@ -34,6 +34,7 @@
 //!
 //! See docs/26-aspects.md §18, docs/27-aspect-libraries.md, and lyric-mq/README.md.
 @runtime_checked
+@io
 package Mq.Aspects
 
 import Std.Core

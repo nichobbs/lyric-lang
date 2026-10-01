@@ -4,6 +4,7 @@
 //! handling. No exceptions for recoverable errors; all IO and parsing
 //! failures are encoded as union cases.
 @runtime_checked
+@pure
 package Std.Errors
 
 // ---------------------------------------------------------------------------

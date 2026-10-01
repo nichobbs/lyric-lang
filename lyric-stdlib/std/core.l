@@ -4,6 +4,7 @@
 //! rest of the stdlib builds on. Keep these APIs boring and stable:
 //! Option and Result appear in almost every safe wrapper.
 @runtime_checked
+@pure
 package Std.Core
 
 // ---------------------------------------------------------------------------

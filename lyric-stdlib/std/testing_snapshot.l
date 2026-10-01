@@ -11,6 +11,7 @@
 //!   • `snapshotMatchIn(dir, label, actual)` — panics on mismatch or I/O error,
 //!     including a first-differing-line excerpt from the stored snapshot.
 //!   • `snapshotMatch(label, actual)`  — convenience wrapper using `snapshots/`.
+@io
 package Std.Testing.Snapshot
 
 import Std.String

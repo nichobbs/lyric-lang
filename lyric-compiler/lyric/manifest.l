@@ -181,6 +181,34 @@ pub record NativeConfig {
   extraLibs: List[String]
 }
 
+/// `[layers]` section (docs/65 §5, D149): assigns project packages to
+/// layers and optionally names a preset (`preset = "ui"`) and custom
+/// rules.  `preset` is "" when absent.  Names are validated later, by
+/// `Lyric.Layers`, which reports Y0006 for an unknown layer or preset.
+pub record LayersSection {
+  preset: String
+  packages: List[LayerAssignment]
+  rules: List[LayerRuleSpec]
+}
+
+/// One `[layers.packages]` entry: a package name or glob (`*` matches one
+/// dotted segment) and the layer it belongs to.
+pub record LayerAssignment {
+  pattern: String
+  layer: String
+}
+
+/// One custom rule, from `[layers.rules]` (`logic = { may_import = [...] }`)
+/// or a `[layers.rules.<name>]` sub-table.  `mayImport` holds layer names,
+/// the classes `pure` and `io`, and package patterns; `mayNotImport` holds
+/// package patterns only.  `allowAsync` defaults to true.
+pub record LayerRuleSpec {
+  name: String
+  mayImport: List[String]
+  mayNotImport: List[String]
+  allowAsync: Bool
+}
+
 /// `[features]` section per `docs/24-build-features.md` (D045).  v1
 /// implementation accepts only empty implication arrays per declared
 /// feature; non-empty implications are deferred to v1.1.
@@ -305,6 +333,9 @@ pub record Manifest {
   native: Option[NativeConfig]
   /// Non-None when this manifest also declares a `[contracts]` table.
   contracts: Option[ContractsSection]
+  /// Non-None when this manifest declares a `[layers]` table or any
+  /// `[layers.*]` sub-table (docs/65 §5, D149).
+  layers: Option[LayersSection]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -314,6 +345,7 @@ pub record Manifest {
 union TVal {
   case TVStr(s: String)
   case TVBool(b: Bool)
+  case TVStrList(items: List[String])
 }
 
 // A single key–value pair inside an inline table.
@@ -547,7 +579,7 @@ func parseStringArray(c: inout Cursor, filePath: in String): Result[List[String]
 }
 
 // Parse a TOML inline table: `{ key = value, ... }`.
-// Values may be quoted strings or booleans (true/false).
+// Values may be quoted strings, booleans (true/false) or string arrays.
 func parseInlineTable(c: inout Cursor, filePath: in String): Result[List[InlinePair], ManifestError] {
   skipOne(c)  // consume `{`
   val pairs: List[InlinePair] = newList()
@@ -612,11 +644,9 @@ func parseInlineTable(c: inout Cursor, filePath: in String): Result[List[InlineP
             skipOne(c)
             pairs.add(InlinePair(key = key, tval = TVBool(b = false)))
           } else if vc == '[' {
-            // Array value (e.g. features = ["aws"]) — consume and skip;
-            // InlinePair only tracks strings and bools so arrays are discarded.
             match parseStringArray(c, filePath) {
               case Err(e) -> return Err(error = e)
-              case Ok(_) -> ()  // intentionally dropped
+              case Ok(items) -> pairs.add(InlinePair(key = key, tval = TVStrList(items = items)))
             }
           } else {
             return Err(
@@ -624,7 +654,7 @@ func parseInlineTable(c: inout Cursor, filePath: in String): Result[List[InlineP
                 filePath = filePath,
                 line = c.line,
                 column = c.col,
-                message = "expected string or bool value in inline table"
+                message = "expected a string, bool or string array value in inline table"
               )
             )
           }
@@ -1270,18 +1300,20 @@ func assembleFeatures(entries: in List[Entry]): Result[Option[FeaturesSection], 
     val e = entries[i]
     if e.section == "features" {
       match e.value {
-        case VStrList(items) -> if e.key == "default" {
-          defaults = Some(value = items)
-        } else if items.count > 0 {
-          return Err(
-            error = InvalidField(
-              section = "features",
-              field = e.key,
-              message = "v1 requires an empty array (feature implications are deferred to v1.1)"
+        case VStrList(items) -> {
+          if e.key == "default" {
+            defaults = Some(value = items)
+          } else if items.count > 0 {
+            return Err(
+              error = InvalidField(
+                section = "features",
+                field = e.key,
+                message = "v1 requires an empty array (feature implications are deferred to v1.1)"
+              )
             )
-          )
-        } else {
-          declared.add(e.key)
+          } else {
+            declared.add(e.key)
+          }
         }
         case _ -> return Err(error = InvalidField(section = "features", field = e.key, message = "expected an array (use [] for v1)"))
       }
@@ -1492,6 +1524,178 @@ func assembleNative(entries: in List[Entry]): Result[Option[NativeConfig], Manif
   Ok(value = Some(value = NativeConfig(triple = triple, optLevel = opt, extraLibs = libs)))
 }
 
+func isLayersSection(section: in String): Bool {
+  section == "layers" or Str.startsWith(section, "layers.")
+}
+
+func layersInvalid(section: in String, field: in String, message: in String): ManifestError {
+  InvalidField(section = section, field = field, message = message)
+}
+
+// A `may_import` / `may_not_import` value: a string array.
+func layerNameList(section: in String, field: in String, v: in Value): Result[List[String], ManifestError] {
+  match v {
+    case VStrList(items) -> Ok(value = items)
+    case _ -> Err(error = layersInvalid(section, field, "expected an array of strings"))
+  }
+}
+
+// Adds or merges a rule, so `[layers.rules] x = {...}` and
+// `[layers.rules.x]` cannot silently disagree: naming a rule twice is an
+// error.
+func addLayerRule(
+  rules: in List[LayerRuleSpec], rule: in LayerRuleSpec, section: in String
+): Result[Unit, ManifestError] {
+  for r in rules {
+    if r.name == rule.name {
+      return Err(error = layersInvalid(section, rule.name, "rule '" + rule.name + "' is defined more than once"))
+    }
+  }
+  rules.add(rule)
+  Ok(value = ())
+}
+
+/// `[layers]` per docs/65 §5 (D149).  Accepts `preset` in `[layers]`,
+/// package assignments in `[layers.packages]`, and rules either inline in
+/// `[layers.rules]` or as `[layers.rules.<name>]` sub-tables.  Unknown keys
+/// are errors rather than ignored, so a misspelt rule cannot silently
+/// weaken the layering.  Returns `Ok(None)` when no layers table exists.
+func assembleLayers(entries: in List[Entry]): Result[Option[LayersSection], ManifestError] {
+  var present = false
+  for e in entries {
+    if isLayersSection(e.section) {
+      present = true
+    }
+  }
+  if not present {
+    return Ok(value = None)
+  }
+  var preset = ""
+  val packages: List[LayerAssignment] = newList()
+  val rules: List[LayerRuleSpec] = newList()
+  // Sub-table rules, keyed by name, in first-seen order.
+  val subNames: List[String] = newList()
+  for e in entries {
+    if e.section == "layers" {
+      if e.key == "preset" {
+        match e.value {
+          case VStr(v) -> {
+            preset = v
+          }
+          case _ -> return Err(error = layersInvalid("layers", "preset", "expected a string"))
+        }
+      } else {
+        return Err(error = layersInvalid("layers", e.key, "unknown key (expected 'preset')"))
+      }
+    } else if e.section == "layers.packages" {
+      match e.value {
+        case VStr(layer) -> packages.add(LayerAssignment(pattern = e.key, layer = layer))
+        case _ -> return Err(error = layersInvalid("layers.packages", e.key, "expected a layer name string"))
+      }
+    } else if e.section == "layers.rules" {
+      match e.value {
+        case VTable(pairs) -> {
+          var mayImport: List[String] = newList()
+          var mayNot: List[String] = newList()
+          var allowAsync = true
+          for p in pairs {
+            if p.key == "may_import" {
+              match p.tval {
+                case TVStrList(items) -> {
+                  mayImport = items
+                }
+                case _ -> return Err(error = layersInvalid("layers.rules", e.key + ".may_import", "expected an array of strings"))
+              }
+            } else if p.key == "may_not_import" {
+              match p.tval {
+                case TVStrList(items) -> {
+                  mayNot = items
+                }
+                case _ -> return Err(error = layersInvalid("layers.rules", e.key + ".may_not_import", "expected an array of strings"))
+              }
+            } else if p.key == "async" {
+              match p.tval {
+                case TVBool(b) -> {
+                  allowAsync = b
+                }
+                case _ -> return Err(error = layersInvalid("layers.rules", e.key + ".async", "expected true or false"))
+              }
+            } else {
+              return Err(
+                error = layersInvalid(
+                  "layers.rules",
+                  e.key + "." + p.key,
+                  "unknown key (expected 'may_import', 'may_not_import' or 'async')"
+                )
+              )
+            }
+          }
+          match addLayerRule(rules, LayerRuleSpec(name = e.key, mayImport = mayImport, mayNotImport = mayNot, allowAsync = allowAsync), "layers.rules") {
+            case Err(err) -> return Err(error = err)
+            case Ok(_) -> ()
+          }
+        }
+        case _ -> return Err(error = layersInvalid("layers.rules", e.key, "expected an inline table { may_import = [...], ... }"))
+      }
+    } else if Str.startsWith(e.section, "layers.rules.") {
+      val name = Str.substring(e.section, 13, e.section.length - 13)
+      if e.key != "may_import" and e.key != "may_not_import" and e.key != "async" {
+        return Err(
+          error = layersInvalid(e.section, e.key, "unknown key (expected 'may_import', 'may_not_import' or 'async')")
+        )
+      }
+      if not listContains(subNames, name) {
+        subNames.add(name)
+      }
+    } else if isLayersSection(e.section) {
+      return Err(
+        error = layersInvalid(
+          e.section,
+          e.key,
+          "unknown table (expected [layers], [layers.packages] or [layers.rules])"
+        )
+      )
+    }
+  }
+  for name in subNames {
+    val section = "layers.rules." + name
+    var mayImport: List[String] = newList()
+    var mayNot: List[String] = newList()
+    var allowAsync = true
+    for e in entries {
+      if e.section == section {
+        if e.key == "may_import" {
+          match layerNameList(section, e.key, e.value) {
+            case Err(err) -> return Err(error = err)
+            case Ok(items) -> {
+              mayImport = items
+            }
+          }
+        } else if e.key == "may_not_import" {
+          match layerNameList(section, e.key, e.value) {
+            case Err(err) -> return Err(error = err)
+            case Ok(items) -> {
+              mayNot = items
+            }
+          }
+        } else {
+          match e.value {
+            case VBool(b) -> {
+              allowAsync = b
+            }
+            case _ -> return Err(error = layersInvalid(section, e.key, "expected true or false"))
+          }
+        }
+      }
+    }
+    match addLayerRule(rules, LayerRuleSpec(name = name, mayImport = mayImport, mayNotImport = mayNot, allowAsync = allowAsync), section) {
+      case Err(err) -> return Err(error = err)
+      case Ok(_) -> ()
+    }
+  }
+  Ok(value = Some(value = LayersSection(preset = preset, packages = packages, rules = rules)))
+}
+
 func assembleWorkspace(entries: in List[Entry]): Option[WorkspaceSection] {
   if not hasSection(entries, "workspace") {
     return None
@@ -1592,22 +1796,28 @@ pub func parseManifest(text: in String, filePath: in String): Result[Manifest, M
                       case Err(e) -> Err(
                         error = e
                       )
-                      case Ok(contractsOpt) -> Ok(
-                        value = Manifest(
-                          filePath = filePath,
-                          packageSection = pkg,
-                          project = project,
-                          deps = deps,
-                          nuget = nuget,
-                          maven = mavenOpt,
-                          features = featuresOpt,
-                          build = buildOpt,
-                          workspace = ws,
-                          registry = reg,
-                          native = nativeOpt,
-                          contracts = contractsOpt
+                      case Ok(contractsOpt) -> match assembleLayers(entries) {
+                        case Err(e) -> Err(
+                          error = e
                         )
-                      )
+                        case Ok(layersOpt) -> Ok(
+                          value = Manifest(
+                            filePath = filePath,
+                            packageSection = pkg,
+                            project = project,
+                            deps = deps,
+                            nuget = nuget,
+                            maven = mavenOpt,
+                            features = featuresOpt,
+                            build = buildOpt,
+                            workspace = ws,
+                            registry = reg,
+                            native = nativeOpt,
+                            contracts = contractsOpt,
+                            layers = layersOpt
+                          )
+                        )
+                      }
                     }
                   }
                 }

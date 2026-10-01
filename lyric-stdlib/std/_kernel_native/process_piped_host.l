@@ -39,6 +39,7 @@
 //! lower (D-N-003; issue #6887). The managed twins hold the `try`/`catch`
 //! in their own copies of the seams.
 @axiom("fork/execvp piped child stdio via lyric-rt conforms to its documented contract")
+@io
 package Std.ProcessPipedHost
 
 import Std.Core

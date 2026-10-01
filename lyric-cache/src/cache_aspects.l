@@ -37,6 +37,7 @@
 //! See docs/03-decision-log.md D055, docs/57-stdlib-ecosystem-library-review.md
 //! §4, and lyric-cache/README.md.
 @runtime_checked
+@io
 package Cache.Aspects
 
 import Std.Core

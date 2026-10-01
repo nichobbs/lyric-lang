@@ -9,6 +9,7 @@
 //! process-wide shared instance, or makeRandom(seed) for a seeded instance
 //! (useful in tests and simulations that require determinism).
 @runtime_checked
+@io
 package Std.Random
 
 import Std.Core

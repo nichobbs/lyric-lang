@@ -8,6 +8,7 @@
 //!
 //! Internal: only Std.ProcessCapture and Std.Process should import this.
 @axiom("System.Diagnostics.Process piped stdout/stderr capture")
+@io
 package Std.ProcessCaptureHost
 
 import Std.Core

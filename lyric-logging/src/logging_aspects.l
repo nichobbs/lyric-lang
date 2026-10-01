@@ -30,6 +30,7 @@
 //!
 //! See docs/26-aspects.md §18, docs/27-aspect-libraries.md.
 @runtime_checked
+@io
 package Std.Logging.Aspects
 
 import Std.Core

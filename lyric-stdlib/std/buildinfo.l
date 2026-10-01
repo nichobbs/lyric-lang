@@ -27,6 +27,7 @@
 //! `Option[String]`, `None` unless the build explicitly supplies the
 //! `git_hash` / `build_timestamp` defines (docs/60 §9.2). `features` is the
 //! active feature set, unifying docs/24 Q-features-003.
+@pure
 package Std.BuildInfo
 
 import Std.Core

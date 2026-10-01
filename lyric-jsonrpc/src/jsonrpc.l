@@ -24,6 +24,7 @@
 //! over dispatch, order-preserving, notifications are skipped in the
 //! response array, and an empty batch is `-32600 Invalid Request`. A batch
 //! longer than `maxBatchSize` is rejected whole with one `-32600` response.
+@io
 package JsonRpc
 
 import Std.Core

@@ -27,6 +27,7 @@
 //! same classification as `Std.Yaml`.  Parsing is depth-limited (default
 //! 128) so a hostile document cannot exhaust the stack.
 @runtime_checked
+@pure
 package Std.JsonValue
 
 import Std.Core

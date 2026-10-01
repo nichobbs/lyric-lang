@@ -13,6 +13,7 @@
 //! per `compiler/lyric/std/_kernel/README.md` the kernel is the audited
 //! extern boundary, not a general-purpose API.
 @axiom("System.IO.File / Directory operations conform to their documented .NET contracts")
+@io
 package Std.FileHost
 
 import Std.Core

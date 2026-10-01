@@ -61,6 +61,7 @@
 //! See docs/35-lambda-library.md §8.4/§12, docs/18-jvm-emission.md, D064,
 //! and the JVM decision recorded in docs/03-decision-log.md.
 @cfg(feature = "jvm")
+@io
 package Lambda.Kernel.Runtime
 
 import Lambda

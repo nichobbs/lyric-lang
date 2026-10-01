@@ -1174,3 +1174,114 @@ test "[contracts] section with internal whitespace in brackets" {
     case None -> panic("[contracts] section with internal whitespace should be recognized")
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// [layers] (docs/65 §5, D149)
+// ─────────────────────────────────────────────────────────────────────────────
+val layersHead = "[package]\nname = \"app\"\nversion = \"1.0.0\"\n"
+
+func layersOf(toml: in String): LayersSection {
+  match parseOk(layersHead + toml).layers {
+    case Some(l) -> l
+    case None -> panic("[layers] should be present")
+  }
+}
+
+func invalidFieldOf(e: in ManifestError): String {
+  match e {
+    case InvalidField(section, field, _) -> section + "/" + field
+    case _ -> "not InvalidField: " + manifestErrorText(e)
+  }
+}
+
+test "[layers] is absent when the manifest has no layers table" {
+  assertTrue(parseOk(layersHead).layers.isNone, "no [layers]")
+}
+
+test "[layers] preset and package assignments keep their order" {
+  val l = layersOf(
+    "[layers]\npreset = \"ui\"\n[layers.packages]\n\"Shop.Domain\" = \"domain\"\n\"Shop.Screens.*.Logic\" = \"logic\"\n"
+  )
+  assertEqual(l.preset, "ui", "preset")
+  assertEqualInt(l.packages.count, 2, "two assignments")
+  assertEqual(l.packages[0].pattern, "Shop.Domain", "first pattern")
+  assertEqual(l.packages[1].pattern, "Shop.Screens.*.Logic", "glob pattern")
+  assertEqual(l.packages[1].layer, "logic", "glob layer")
+  assertEqualInt(l.rules.count, 0, "no rules")
+}
+
+test "[layers.packages] alone makes the section present with no preset" {
+  val l = layersOf("[layers.packages]\n\"Shop.Domain\" = \"core\"\n")
+  assertEqual(l.preset, "", "no preset")
+  assertEqualInt(l.packages.count, 1, "one assignment")
+}
+
+test "[layers.rules] inline tables carry arrays and async" {
+  val l = layersOf(
+    "[layers.rules]\ncore = { may_import = [\"core\", \"pure\"], may_not_import = [\"Ui.*\"], async = false }\nshell = { may_import = [\"core\", \"io\"] }\n"
+  )
+  assertEqualInt(l.rules.count, 2, "two rules")
+  assertEqual(l.rules[0].name, "core", "first rule")
+  assertEqualInt(l.rules[0].mayImport.count, 2, "core may_import")
+  assertEqual(l.rules[0].mayImport[1], "pure", "core may_import[1]")
+  assertEqual(l.rules[0].mayNotImport[0], "Ui.*", "core may_not_import")
+  assertFalse(l.rules[0].allowAsync, "core forbids async")
+  assertTrue(l.rules[1].allowAsync, "async defaults to true")
+  assertEqualInt(l.rules[1].mayNotImport.count, 0, "no denials")
+}
+
+test "[layers.rules.<name>] sub-tables are rules too" {
+  val l = layersOf("[layers.rules.core]\nmay_import = [\n  \"core\", # own layer\n  \"pure\",\n]\nasync = false\n")
+  assertEqualInt(l.rules.count, 1, "one rule")
+  assertEqual(l.rules[0].name, "core", "rule name")
+  assertEqualInt(l.rules[0].mayImport.count, 2, "multi-line array")
+  assertFalse(l.rules[0].allowAsync, "async = false")
+}
+
+test "a rule named both inline and as a sub-table is an error" {
+  val e = parseErr(
+    layersHead + "[layers.rules]\ncore = { may_import = [\"pure\"] }\n[layers.rules.core]\nasync = false\n"
+  )
+  assertEqual(invalidFieldOf(e), "layers.rules.core/core", "duplicate rule")
+}
+
+test "unknown [layers] keys and tables are errors" {
+  assertEqual(
+    invalidFieldOf(parseErr(layersHead + "[layers]\npresets = \"ui\"\n")),
+    "layers/presets",
+    "misspelt preset"
+  )
+  assertEqual(
+    invalidFieldOf(parseErr(layersHead + "[layers.rules]\ncore = { may_imports = [\"pure\"] }\n")),
+    "layers.rules/core.may_imports",
+    "misspelt inline key"
+  )
+  assertEqual(
+    invalidFieldOf(parseErr(layersHead + "[layers.rules.core]\nmayimport = [\"pure\"]\n")),
+    "layers.rules.core/mayimport",
+    "misspelt sub-table key"
+  )
+  assertEqual(
+    invalidFieldOf(parseErr(layersHead + "[layers.package]\n\"A\" = \"b\"\n")),
+    "layers.package/A",
+    "misspelt table"
+  )
+}
+
+test "[layers] values of the wrong type are errors" {
+  assertEqual(
+    invalidFieldOf(parseErr(layersHead + "[layers]\npreset = true\n")),
+    "layers/preset",
+    "preset not a string"
+  )
+  assertEqual(
+    invalidFieldOf(parseErr(layersHead + "[layers.packages]\n\"A\" = [\"b\"]\n")),
+    "layers.packages/A",
+    "assignment not a string"
+  )
+  assertEqual(
+    invalidFieldOf(parseErr(layersHead + "[layers.rules]\ncore = { async = \"no\" }\n")),
+    "layers.rules/core.async",
+    "async not a bool"
+  )
+}

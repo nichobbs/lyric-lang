@@ -9,6 +9,7 @@
 //! `compiler/lyric/std/_kernel/README.md` the kernel is the audited
 //! extern boundary, not a general-purpose API.
 @axiom("System.Math and System.Double operations conform to their documented .NET / IEEE 754 contracts")
+@pure
 package Std.MathHost
 
 extern type NetMath = "System.Math"

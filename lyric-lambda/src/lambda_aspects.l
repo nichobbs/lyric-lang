@@ -33,6 +33,7 @@
 //!
 //! See docs/26-aspects.md §18, docs/27-aspect-libraries.md, docs/35-lambda-library.md.
 @runtime_checked
+@io
 package Lambda.Aspects
 
 import Std.Core

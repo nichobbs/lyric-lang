@@ -8,6 +8,7 @@
 //!
 //! Internal: only Std.String should import this.
 @axiom("java.lang.StringBuilder, String.indexOf(String, int) and String.compareTo(String) conform to their documented JVM contracts")
+@pure
 package Std.StringHost
 
 extern type HostStringBuilder = "java.lang.StringBuilder"

@@ -2709,6 +2709,19 @@ pub func buildProjectFromManifest(
   val nugetThirdPartyPaths = resolved.nugetThirdPartyPaths
   val nativeAssetPaths = resolved.nativeAssetPaths
 
+  // `[layers]` (docs/65 §5, D149), checked on the project's own packages
+  // before the JVM path below folds dependency sources into `pkgs`.
+  val layered = match checkProjectLayers(manifest, mfPath, pkgs, depTemplatePkgsList, restoredDlls, target, activeFeatures, mfDeclared) {
+    case Some(l) -> l
+    case None -> return 1
+  }
+  while pkgs.count > 0 {
+    pkgs.removeAt(pkgs.count - 1)
+  }
+  for lp in layered {
+    pkgs.add(lp)
+  }
+
   // On Jvm, a workspace/path dependency's own packages must ride the same
   // bundled compile as `pkgs`: `resolveManifestDependencies` never populates
   // `restoredDllPaths` for a workspace/path/NuGet-Lyric dependency on Jvm

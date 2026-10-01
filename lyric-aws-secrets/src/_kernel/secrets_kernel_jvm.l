@@ -69,6 +69,7 @@
 //! Enabled only when the "jvm" feature flag is active.
 //! See docs/35-lambda-library.md §12.3, issue #5411.
 @cfg(feature = "jvm")
+@io
 package AwsSecrets.Kernel.Net
 
 import Std.Core

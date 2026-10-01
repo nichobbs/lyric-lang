@@ -360,6 +360,11 @@ pub record Contract {
   /// `proof_required(unsafe_blocks_allowed)` /
   /// `proof_required(checked_arithmetic)` / `axiom`.
   level: String
+  /// Package class for `[layers]` (docs/65 §5, D149): "pure" or "io" from
+  /// the source's package-level `@pure` / `@io`, "" when unclassified.
+  /// Written to the JSON only when set, so an unclassified package's
+  /// contract is unchanged.
+  purity: String
   formatVersion: Int
   decls: List[ContractDecl]
   /// Direct dependencies' contract metadata (format v3+; absent in v1-v2).
@@ -561,6 +566,7 @@ func parseFromRoot(root: in JsonElement): Option[Contract] {
       packageName = getStr(root, "packageName", ""),
       version = getStr(root, "version", "0.0.0"),
       level = getStr(root, "level", "runtime_checked"),
+      purity = getStr(root, "purity", ""),
       formatVersion = getInt(root, "formatVersion", 1),
       decls = decls,
       dependencies = getDependencies(root),
@@ -762,6 +768,9 @@ pub func contractToJson(c: in Contract): String {
   sb = sb + "  \"packageName\": \"" + escapeJson(c.packageName) + "\",\n"
   sb = sb + "  \"version\": \"" + escapeJson(c.version) + "\",\n"
   sb = sb + "  \"level\": \"" + escapeJson(c.level) + "\",\n"
+  if c.purity != "" {
+    sb = sb + "  \"purity\": \"" + escapeJson(c.purity) + "\",\n"
+  }
 
   // v3: always emit contractHash and dependencies (even empty list) to match
   // the F# renderer's unconditional output — parsers expecting the key present
@@ -1096,7 +1105,19 @@ func reprForFunc(fn: in FunctionDecl): String {
   }
   val retStr = match fn.ret { case Some(t) -> ": " + renderTypeExpr(t); case None -> "" }
   val asyncPrefix = if fn.isAsync { "async " } else { "" }
-  "pub " + asyncPrefix + "func " + fn.name + renderGenerics(fn.generics) + "(" + params + ")" + retStr
+  // `@io` rides in the repr so a restored consumer's signature carries it
+  // and the layer rules see the call (D149).
+  val ioPrefix = if hasAnnotationNamed(fn.annotations, "io") { "@io " } else { "" }
+  ioPrefix + "pub " + asyncPrefix + "func " + fn.name + renderGenerics(fn.generics) + "(" + params + ")" + retStr
+}
+
+func hasAnnotationNamed(anns: in List[Annotation], name: in String): Bool {
+  for a in anns {
+    if a.name.segments.count == 1 and a.name.segments[0] == name {
+      return true
+    }
+  }
+  false
 }
 
 // Render a generic function's body as re-parseable source text — one
@@ -1699,6 +1720,18 @@ func proofRequiredModifier(ann: in Annotation): String {
   modifier
 }
 
+/// The package class a file declares for `[layers]` (docs/65 §5, D149):
+/// "pure" for a package-level `@pure`, "io" for `@io`, else "".  A file
+/// carrying both is reported by `Lyric.Layers` (Y0009); here `@io` wins,
+/// the conservative reading.
+@stable(since = "0.7")
+pub func purityOfFile(file: in SourceFile): String {
+  match findFileAnnotation(file, "io") {
+    case Some(_) -> "io"
+    case None -> match findFileAnnotation(file, "pure") { case Some(_) -> "pure"; case None -> "" }
+  }
+}
+
 /// Determine the verification level for a SourceFile from its file-
 /// level annotations.  Mirrors `bootstrap/src/Lyric.Emitter/ContractMeta.fs::levelOfFile`:
 /// `@axiom` wins → "axiom"; otherwise `@proof_required(modifier?)`
@@ -1861,6 +1894,7 @@ pub func buildContractFromFile(file: in SourceFile, version: in String): Contrac
     packageName = joinDots(file.packageDecl.path.segments),
     version = version,
     level = levelOfFile(file),
+    purity = purityOfFile(file),
     formatVersion = 2,
     decls = decls,
     dependencies = newList(),

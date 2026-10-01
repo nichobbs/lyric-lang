@@ -7,6 +7,7 @@
 //! Internal: only Std.Process should import this.  All callers are
 //! audited; the @axiom asserts the BCL contract.
 @axiom("System.Diagnostics.Process conforms to its documented .NET contracts")
+@io
 package Std.ProcessHost
 
 import Std.Core

@@ -39,6 +39,7 @@
 //! `tls_tests.l` exercises the cross-algorithm case, which both targets
 //! classify identically as `KeyMismatch`.
 @runtime_checked
+@io
 package Std.Tls
 
 import Std.Core

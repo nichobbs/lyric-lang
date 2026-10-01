@@ -20,6 +20,7 @@
 //!
 //! Internal: only Std.Uuid should import this.
 @axiom("System.Guid conforms to its documented .NET contract")
+@io
 package Std.UuidHost
 
 import Std.Core

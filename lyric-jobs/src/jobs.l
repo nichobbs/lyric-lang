@@ -47,6 +47,7 @@
 //!
 //! See docs/03-decision-log.md D056 and lyric-jobs/README.md.
 @runtime_checked
+@io
 package Jobs
 
 import Std.Core

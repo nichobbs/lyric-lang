@@ -4,6 +4,7 @@
 //! become IOError values, while host failures are caught at this wrapper
 //! layer and do not leak as Bug into application code.
 @runtime_checked
+@io
 package Std.Directory
 
 import Std.Core

@@ -25,6 +25,7 @@
 //!
 //! Internal: only Std.Uuid should import this.
 @axiom("java.util.UUID conforms to its documented JVM contract")
+@io
 package Std.UuidHost
 
 import Std.Core

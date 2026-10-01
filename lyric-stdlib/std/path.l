@@ -4,6 +4,7 @@
 //! rules. They do not touch the filesystem and therefore do not return
 //! IOError.
 @runtime_checked
+@pure
 package Std.Path
 
 import Std.Collections

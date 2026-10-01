@@ -27,6 +27,7 @@
 //! `close` (called when the session is evicted or expires) cancels the
 //! scope, and any effect result that arrives afterwards is dropped.
 @runtime_checked
+@io
 package Ui.Host
 
 import Std.Core

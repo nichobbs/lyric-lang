@@ -5,8 +5,8 @@
 //! the full client is generated from Docker's OpenAPI spec.
 //!
 //! API Documentation: https://docs.docker.com/engine/api/v1.40/
-
 @runtime_checked
+@pure
 package Lyric.Docker.Api
 
 import Std.Core

@@ -11,6 +11,7 @@
 //! read or write hands the host array straight through with no copy
 //! (D-progress-974).
 @runtime_checked
+@io
 package Std.File
 
 import Std.Core

@@ -34,6 +34,7 @@
 //!     wraps on .NET.
 //!
 //! Internal: only Std.Json should import this.
+@pure
 package Std.JsonHost
 
 import Std.Core

@@ -40,6 +40,7 @@
 //!
 //! See docs/03-decision-log.md D055 and lyric-cache/README.md.
 @runtime_checked
+@io
 package Cache
 
 import Std.Core

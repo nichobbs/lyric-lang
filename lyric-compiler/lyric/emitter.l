@@ -140,6 +140,10 @@ pub record ProjectPackage {
   /// alone was never extended to cover the multi-file case, but the
   /// merged package is no longer unattributed.
   paths: List[String]
+  /// Why the package may not do I/O under the manifest's `[layers]`
+  /// (docs/65 §5, D149), e.g. "layer 'logic'"; "" when it may.  Passed to
+  /// `Lyric.Pipeline.MiddleEndOptions.ioForbiddenReason` by every backend.
+  ioForbiddenReason: String = ""
 }
 
 pub record EmitProjectRequest {
@@ -2416,7 +2420,9 @@ pub func emitProject(req: in EmitProjectRequest): EmitResult {
       // per-line attribution instead (#6282).
       val mergedPaths: List[String] = newList()
       mergedPaths.add("")
-      mergedPkgs.add(ProjectPackage(name = pkg.name, sources = merged, paths = mergedPaths))
+      mergedPkgs.add(
+        ProjectPackage(name = pkg.name, sources = merged, paths = mergedPaths, ioForbiddenReason = pkg.ioForbiddenReason)
+      )
       pkgOrigins.add(DiagUtil.PackageLineOrigins(origins = mergedRes.origins))
     } else {
       mergedPkgs.add(pkg)
@@ -2618,7 +2624,8 @@ func emitProjectInProcess(req: in EmitProjectRequest, pkgOrigins: in List[DiagUt
     payloads.add(
       MsilBridge.ProjectPackagePayload(
         name = pkg.name,
-        source = mergePackageSources(pkg.name, pkg.sources, req.activeFeatures, req.declaredFeatures)
+        source = mergePackageSources(pkg.name, pkg.sources, req.activeFeatures, req.declaredFeatures),
+        ioForbiddenReason = pkg.ioForbiddenReason
       )
     )
     sourcePaths.add(if pkg.sources.count == 1 and pkg.paths.count == 1 { pkg.paths[0] } else { "" })
@@ -2691,7 +2698,8 @@ func emitProjectInProcess(req: in EmitProjectRequest, pkgOrigins: in List[DiagUt
     depTemplatePkgs.add(
       MsilBridge.ProjectPackagePayload(
         name = pkg.name,
-        source = mergePackageSources(pkg.name, pkg.sources, req.activeFeatures, req.declaredFeatures)
+        source = mergePackageSources(pkg.name, pkg.sources, req.activeFeatures, req.declaredFeatures),
+        ioForbiddenReason = pkg.ioForbiddenReason
       )
     )
     dtpi = dtpi + 1
@@ -2929,6 +2937,18 @@ func nativeBridgePanicDiagnostic(message: in String): Diagnostic {
   }
 }
 
+// Package name -> `ProjectPackage.ioForbiddenReason`, for the packages
+// that have one.
+func ioForbiddenByPackage(pkgs: in List[ProjectPackage]): Map[String, String] {
+  val m: Map[String, String] = newMap()
+  for p in pkgs {
+    if p.ioForbiddenReason != "" and not m.containsKey(p.name) {
+      m[p.name] = p.ioForbiddenReason
+    }
+  }
+  m
+}
+
 func emitProjectJvmInProcess(req: in EmitProjectRequest, pkgOrigins: in List[DiagUtil.PackageLineOrigins]): EmitResult {
   if req.packages.count == 0 {
     return failResult("no packages specified in project build")
@@ -3034,6 +3054,7 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest, pkgOrigins: in List[Dia
         pkgPaths,
         pkgOrigins,
         pkgFeatures,
+        ioForbiddenByPackage(req.packages),
         req.contractsEnabled
       )
     } catch Bug as b {
@@ -3219,12 +3240,26 @@ pub func emitNativeProject(
       val mergedRes = mergePackageSourcesWithOrigins(pkg.name, pkg.sources, pkg.paths, activeFeatures, declaredFeatures)
       // No single on-disk path names the merged blob as a whole —
       // `mergedRes.origins` carries the real per-line attribution instead.
-      nativePkgs.add(LlvmBridge.NativeSourcePackage(name = pkg.name, source = mergedRes.source, path = ""))
+      nativePkgs.add(
+        LlvmBridge.NativeSourcePackage(
+          name = pkg.name,
+          source = mergedRes.source,
+          path = "",
+          ioForbiddenReason = pkg.ioForbiddenReason
+        )
+      )
       nativeOrigins.add(DiagUtil.PackageLineOrigins(origins = mergedRes.origins))
     } else {
       val merged = mergePackageSources(pkg.name, pkg.sources, activeFeatures, declaredFeatures)
       val pkgPath = if pkg.paths.count > 0 { pkg.paths[0] } else { "" }
-      nativePkgs.add(LlvmBridge.NativeSourcePackage(name = pkg.name, source = merged, path = pkgPath))
+      nativePkgs.add(
+        LlvmBridge.NativeSourcePackage(
+          name = pkg.name,
+          source = merged,
+          path = pkgPath,
+          ioForbiddenReason = pkg.ioForbiddenReason
+        )
+      )
       nativeOrigins.add(DiagUtil.PackageLineOrigins(origins = newList()))
     }
     pi = pi + 1

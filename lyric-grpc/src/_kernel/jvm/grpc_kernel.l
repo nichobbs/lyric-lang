@@ -7,6 +7,7 @@
 //! Not compiled today — present to drive API parity with the .NET kernel.
 //! See docs/18-jvm-emission.md and docs/37-grpc-proto-sketch.md §8.2.
 @cfg(feature = "jvm")
+@io
 package Grpc.Kernel.Jvm
 
 import Grpc.Types

@@ -12,6 +12,7 @@
 //! deliberately avoid local-time conversion to keep behaviour
 //! reproducible across machines.
 @runtime_checked
+@pure
 package Std.Time
 
 import Std.Core
@@ -23,6 +24,7 @@ import Std.TimeHost
 // =====================================================================
 /// Current UTC time.
 @stable(since = "1.0")
+@io
 pub func now(): Instant {
   hostNow()
 }
@@ -284,6 +286,7 @@ pub func toIsoString(t: in Instant): String {
 // =====================================================================
 /// Current UTC time as Unix milliseconds since the epoch.
 @stable(since = "1.0")
+@io
 pub func nowEpochMillis(): Long {
   hostEpochMillis()
 }
@@ -297,6 +300,7 @@ pub func nowEpochMillis(): Long {
 /// JVM:  backed by java.lang.System.nanoTime.
 /// Native: backed by CLOCK_MONOTONIC via lyric-rt.
 @stable(since = "1.0")
+@io
 pub func monotonicNanos(): Long {
   hostMonotonicNanos()
 }
@@ -307,6 +311,7 @@ pub func monotonicNanos(): Long {
 ///
 /// Implemented on `dotnet` (`Thread.Sleep`), `jvm` (`Thread.sleep`), and
 /// native (`lyric_rt`) — works on every target.
+@io
 pub func sleepMillis(ms: in Int): Unit {
   if ms <= 0 {
     return

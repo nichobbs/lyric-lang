@@ -11,6 +11,7 @@
 //!
 //! Internal: only Std.String should import this.
 @axiom("lyric_string_concat_list, lyric_string_index_of_from and lyric_string_cmp conform to their lyric_rt.h contracts")
+@pure
 package Std.StringHost
 
 import Std.Collections

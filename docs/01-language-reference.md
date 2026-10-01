@@ -1705,6 +1705,46 @@ pub use extern Docker.DotNet.{DockerClient}  // re-exports external type (D116 Q
 
 Re-exports surface a name from a dependency (Lyric or external) as if declared in the current package. Useful for facade packages. External re-exports make the external type part of the public API surface; consumers depend on the host runtime's availability.
 
+### 9.4 Package classes and layers (`@pure`, `@io`, `[layers]`)
+
+**Package classes (D149).** A package may declare, on its `package` line, whether it performs I/O:
+
+```
+@pure
+package Money
+
+@io
+package Customers.Store
+```
+
+`@pure` means the package's functions compute their results from their arguments alone: no I/O, no clock, no randomness, no shared mutable state. A function inside a `@pure` package may be marked `@io` individually (`@io pub func now(): Instant`); that function, and only it, is the package's I/O surface. `@io` on a package means it performs I/O. Every stdlib and first-party library package declares one. The class is recorded in the package's contract metadata (`"purity"`), and a function's `@io` rides in its contract signature, so both survive compilation. A package-level `@pure` or `@io` takes no arguments, a package is not both, and all files of a package agree (**Y0009**). The package-level `@pure` is distinct from the function-level `@pure` of §6.3, which marks a function callable from a contract clause.
+
+**Layers.** A manifest may assign its own packages to layers and say which layers each may import:
+
+```toml
+[layers]
+preset = "ui"                     # optional
+
+[layers.packages]
+"Customers.Domain"    = "domain"
+"Customers.*.Logic"   = "logic"   # * matches one dotted segment
+
+[layers.rules]                    # custom layers, or replacements for a preset's
+core = { may_import = ["core", "pure", "Acme.Util"], may_not_import = ["Acme.**"], async = false }
+```
+
+A rule's `may_import` lists layer names, the classes `pure` and `io`, and package patterns (an entry starting with an upper-case letter); `may_not_import` lists package patterns; `async` (default `true`) says whether the layer may declare `async func`. A rule may also be written as a `[layers.rules.<name>]` sub-table; naming a rule twice is an error, as is any unknown key in a `[layers]` table. In a pattern, `*` matches one dotted segment and a final `**` matches one or more. When several `[layers.packages]` entries match a package, the most specific wins (more literal segments; an exact name beats any pattern); equally specific entries naming different layers, and an entry matching no project package, are **Y0009**. A package may instead declare its layer in source, `@layer("logic")` before `package`; a layer the manifest also assigns must agree (**Y0005**).
+
+The only preset is `ui` (docs/65 §5.2): layers `domain`, `ports`, `logic`, `effects`, `view`, each closed to the `Ui` packages except `Ui.Core` (logic, effects, view) and `Ui.Widgets`/`Ui.Forms` (view); `logic` and `view` may not import `io` or declare `async func`; a view may import another view.
+
+**Rules.** The build checks every project package in a layer, on every target, before code generation:
+
+- Each import must be allowed by the layer's rule (**Y0001**). A package pattern decides first: the more specific of a matching `may_import` and `may_not_import` pattern wins, and a tie denies. Otherwise the imported package counts by its layer if it is a layered project package, else by its class (`pure`/`io`); `import extern` counts as `io`. An imported package with neither is **Y0002**. Packages outside any layer are unrestricted.
+- `async func` in a layer whose rule sets `async = false` is **Y0004**. Unknown layer or preset names are **Y0006**.
+- A package that may not do I/O (a `@pure` package, or a package in a layer whose rule does not allow `io`) may not call an `@io` function (**Y0003**) or a protected type's `entry` (**Y0008**), and may not hold shared mutable state in a module-level `val`: a value of an extern (host) type, which includes `List`, `Map` and `Set`, or a protected-type instance (**Y0007**). In a `@pure` package, the functions it marks `@io` are exempt from Y0003 and Y0008.
+
+Layer checks read the manifest, so a single-file build has none; the package-level rules of the last bullet apply to a `@pure` package in any build.
+
 ## 10. Wire / Dependency Injection
 
 ### 10.1 Wire blocks

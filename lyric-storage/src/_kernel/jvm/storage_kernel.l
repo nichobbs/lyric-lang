@@ -44,6 +44,7 @@
 //! contract.
 @axiom("java.util.Base64 / java.security.MessageDigest / java.util.HexFormat / java.io.File and its streams conform to their documented JVM contracts")
 @cfg(feature = "jvm")
+@io
 package Storage.Kernel.Jvm
 
 import Std.Collections

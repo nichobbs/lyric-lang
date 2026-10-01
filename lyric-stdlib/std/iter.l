@@ -6,6 +6,7 @@
 //! build a `List[T]` via the generic FFI in `Std.Collections`, then
 //! return `list.toArray()` so the caller sees `slice[T]`.
 @runtime_checked
+@pure
 package Std.Iter
 
 import Std.Core

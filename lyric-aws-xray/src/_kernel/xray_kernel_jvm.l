@@ -35,6 +35,7 @@
 //! Enabled only when the "jvm" feature flag is active.
 //! See docs/35-lambda-library.md §13.4.
 @cfg(feature = "jvm")
+@io
 package AwsXRay.Kernel.Net
 
 import AwsXRay

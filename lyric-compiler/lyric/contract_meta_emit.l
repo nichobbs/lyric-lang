@@ -176,6 +176,9 @@ func emitContractJson(contract: in Meta.Contract, contractHash: in String): Stri
   fields.add(("packageName", jsonString(contract.packageName)))
   fields.add(("version", jsonString(contract.version)))
   fields.add(("level", jsonString(contract.level)))
+  if contract.purity != "" {
+    fields.add(("purity", jsonString(contract.purity)))
+  }
   fields.add(("formatVersion", jsonNumber(contract.formatVersion)))
   fields.add(("contractHash", jsonString(contractHash)))
   fields.add(("dependencies", emitDependencies(contract.dependencies)))

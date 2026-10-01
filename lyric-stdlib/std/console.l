@@ -5,6 +5,7 @@
 //! is fallible: EOF and host failures are surfaced as Result values so
 //! application code does not need to catch Bug at ordinary call sites.
 @runtime_checked
+@io
 package Std.Console
 
 import Std.Core

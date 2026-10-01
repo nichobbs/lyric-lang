@@ -2820,6 +2820,43 @@ func recordAsyncCallSite(tbl: in SymbolTable, span: in Span, isAsyncCall: in Boo
   }
 }
 
+// D149: note whether the call at `span` binds to an `@io` function or a
+// protected type's `entry`.  Cleared and set like `recordAsyncCallSite`, so a
+// re-inference of the same call keeps only the last resolution's answer.
+func recordEffectCallSite(tbl: in SymbolTable, span: in Span, sig: in ResolvedSignature, callee: in Expr): Unit {
+  val key = recordCopySiteKey(span)
+  if tbl.effectCallSites.containsKey(key) {
+    tbl.effectCallSites.remove(key)
+  }
+  if sig.isIo or sig.isEntry {
+    tbl.effectCallSites.add(key, EffectCallSite(span = span, callee = calleeText(callee), isEntry = sig.isEntry))
+  }
+}
+
+func clearEffectCallSite(tbl: in SymbolTable, span: in Span): Unit {
+  val key = recordCopySiteKey(span)
+  if tbl.effectCallSites.containsKey(key) {
+    tbl.effectCallSites.remove(key)
+  }
+}
+
+// The callee of a call as written: `f`, `Pkg.f`, `x.m`.
+func calleeText(e: in Expr): String {
+  match e.kind {
+    case EPath(p) -> modulePathJoin(p.segments)
+    case EMember(recv, name) -> {
+      val r = calleeText(recv)
+      if r == "" {
+        name
+      } else {
+        r + "." + name
+      }
+    }
+    case EParen(inner) -> calleeText(inner)
+    case _ -> ""
+  }
+}
+
 // #7801: note whether the call at `span` binds to one of the stdlib's
 // evidence-free collection constructors (see
 // `SymbolTable.emptyCollectionCtorSites`).  Cleared and set by the `ECall`
@@ -2895,7 +2932,9 @@ func substituteMethodSig(entry: in MethodEntry, recv: in Type, targs: in List[Ty
     isGenerator = entry.sig.isGenerator,
     originPackage = entry.sig.originPackage,
     span = entry.sig.span,
-    isPure = entry.sig.isPure
+    isPure = entry.sig.isPure,
+    isIo = entry.sig.isIo,
+    isEntry = entry.sig.isEntry
   )
 }
 
@@ -3022,7 +3061,9 @@ func dropReceiverParam(full: in ResolvedSignature): ResolvedSignature {
     isGenerator = full.isGenerator,
     originPackage = full.originPackage,
     span = full.span,
-    isPure = full.isPure
+    isPure = full.isPure,
+    isIo = full.isIo,
+    isEntry = full.isEntry
   )
 }
 
@@ -9961,10 +10002,12 @@ func inferExprCore(
       recordGeneratorCallSite(tbl, e.span, false)
       recordEmptyCollectionCtorSite(tbl, e.span, false)
       recordAsyncCallSite(tbl, e.span, false)
+      clearEffectCallSite(tbl, e.span)
       match directSig {
         case Some(sig) -> {
           recordGeneratorCallSite(tbl, e.span, sig.isGenerator)
           recordAsyncCallSite(tbl, e.span, sig.isAsync and not sig.isGenerator)
+          recordEffectCallSite(tbl, e.span, sig, fn)
           recordEmptyCollectionCtorSite(tbl, e.span, isStdEmptyCollectionCtor(sig, fn))
           if callArgsHaveHoistHazard(args) {
             recordHoistedCallArgs(sc, tbl, args, argTypes, sigExpectedArgTypes(sig, None, args, argTypes))
@@ -10029,6 +10072,7 @@ func inferExprCore(
                 case Some(mp) -> {
                   recordGeneratorCallSite(tbl, e.span, mp.sig.isGenerator)
                   recordAsyncCallSite(tbl, e.span, mp.sig.isAsync and not mp.sig.isGenerator)
+                  recordEffectCallSite(tbl, e.span, mp.sig, fn)
                   checkContractCallPure(sc, diag, mp.sig, fn, e.span)
                   checkCallArgsAgainstSig(sc, tbl, diag, mp.sig, args, argTypes, e.span)
                   if callArgsHaveHoistHazard(args) {

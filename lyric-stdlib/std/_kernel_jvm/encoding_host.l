@@ -12,6 +12,7 @@
 //!
 //! Internal: only Std.Encoding should import this.
 @axiom("JVM List[Byte].toArray() produces a properly typed byte array and java.lang.String.getBytes(\"UTF-8\") conforms to its documented JVM contract; pure-Lyric accumulators are safe on JVM")
+@pure
 package Std.EncodingHost
 
 import Std.Core

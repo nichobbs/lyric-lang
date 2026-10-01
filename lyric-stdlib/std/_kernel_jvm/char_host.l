@@ -27,6 +27,7 @@
 //!
 //! Internal: only Std.Char should import this.
 @axiom("java.lang.Character character operations conform to their documented JVM contracts")
+@pure
 package Std.CharHost
 
 // =====================================================================

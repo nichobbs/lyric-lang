@@ -29,6 +29,7 @@
 //! contract.
 @axiom("System.Convert / System.Security.Cryptography.MD5 / System.IO.Path / System.IO.File / System.IO.Directory conform to documented .NET semantics")
 @cfg(feature = "dotnet")
+@io
 package Storage.Kernel.Net
 
 // =====================================================================

@@ -13,6 +13,7 @@
 //!
 //! Internal: only Std.Format should import this.
 @axiom("System.Globalization.CultureInfo and System.String/Int/Double formatting operations conform to their documented .NET contracts")
+@pure
 package Std.FormatHost
 
 extern type CultureInfo = "System.Globalization.CultureInfo"

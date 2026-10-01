@@ -25,6 +25,7 @@
 //! kernel should shrink to reuse it.
 @cfg(feature = "dotnet")
 @axiom("System.Net.Http operations conform to their documented .NET contracts")
+@io
 package OTel.Kernel.Net.Otlp
 
 import Std.Core

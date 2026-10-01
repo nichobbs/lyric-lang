@@ -58,6 +58,7 @@
 //! concurrently with looking them up.  Mirrors the same caveat on
 //! `Flags.Registry`, `Flags.InProcessFlagStore`, and
 //! `Cache.InProcessCacheStore` (lyric-lang #411).
+@io
 package I18n.Kernel
 
 import Std.Core

@@ -4,6 +4,7 @@
 //! and response-body failures are data, not exceptions. The only place
 //! host failures are caught is this stdlib boundary.
 @runtime_checked
+@io
 package Std.Http
 
 import Std.Console

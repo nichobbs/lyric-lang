@@ -466,6 +466,9 @@ pub func compileToMsilWithVersion(
 pub record ProjectPackagePayload {
   name: String
   source: String
+  /// `Lyric.Pipeline.MiddleEndOptions.ioForbiddenReason` for the package
+  /// (`[layers]`, D149); "" when it may do I/O.
+  ioForbiddenReason: String = ""
 }
 
 /// Intermediate carrier used by `compileProjectToMsilWithRestoredAndVersion`'s
@@ -487,6 +490,7 @@ record ParsedUserPkg {
   // alongside `label` the same way and for the same reason — see the doc
   // comment above. Empty for a single-file package (or when unknown).
   origins: List[DiagUtil.MergedLineOrigin]
+  ioForbiddenReason: String
 }
 
 /// Compile a list of packages into ONE bundled .NET PE DLL using the
@@ -821,7 +825,15 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
       case Some(f) -> f
       case None -> return false
     }
-    parsedPkgs.add(ParsedUserPkg(name = pkg.name, file = erased, label = pkgLabel, origins = pkgOrigins))
+    parsedPkgs.add(
+      ParsedUserPkg(
+        name = pkg.name,
+        file = erased,
+        label = pkgLabel,
+        origins = pkgOrigins,
+        ioForbiddenReason = pkg.ioForbiddenReason
+      )
+    )
     pi = pi + 1
   }
 
@@ -877,7 +889,13 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     // After template expansion, matching the JVM bridge — see the
     // single-file pipeline's placement comment.
     val rewritten = resolveTypeAliasesMsil(rewritten0)
-    parsedPkgs[wei] = ParsedUserPkg(name = wep.name, file = rewritten, label = wep.label, origins = wep.origins)
+    parsedPkgs[wei] = ParsedUserPkg(
+      name = wep.name,
+      file = rewritten,
+      label = wep.label,
+      origins = wep.origins,
+      ioForbiddenReason = wep.ioForbiddenReason
+    )
     wei = wei + 1
   }
 
@@ -1082,7 +1100,8 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
       awaitAsyncCalls = true,
       contractsEnabled = contractsEnabled,
       checkedSourceOut = projOptsCheckedOut,
-      memberRecvClassesOut = projOptsRecvOut
+      memberRecvClassesOut = projOptsRecvOut,
+      ioForbiddenReason = pp.ioForbiddenReason
     )
     val monoFile = match pipeCheckAndMono(pp.file, importedPkgs, importedItems, allImportedGenFuncs, allImportedIfaceDecls, allImportedRecordDecls, projOpts) {
       case Some(f) -> f

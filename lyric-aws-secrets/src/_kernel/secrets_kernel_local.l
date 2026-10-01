@@ -31,6 +31,7 @@
 //!
 //! Enabled only when the "local" feature flag is active.
 @cfg(feature = "local")
+@io
 package AwsSecrets.Kernel.Net
 
 import Std.Core

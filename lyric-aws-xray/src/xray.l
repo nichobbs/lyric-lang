@@ -39,6 +39,7 @@
 //!
 //! See docs/35-lambda-library.md §13, decision log D064.
 @runtime_checked
+@io
 package AwsXRay
 
 import Std.Core

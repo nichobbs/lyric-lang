@@ -15,6 +15,7 @@
 //! `compiler/lyric/std/_kernel/README.md` the kernel is the audited
 //! extern boundary, not a general-purpose API.
 @axiom("System.Char and System.Convert character operations conform to their documented .NET contracts")
+@pure
 package Std.CharHost
 
 extern type NetChar = "System.Char"

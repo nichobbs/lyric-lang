@@ -72,6 +72,7 @@
 //! wrapped in `try { … } catch Bug as b { Err(b.message) }`.
 //!
 //! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
+@io
 package Db.Kernel.Net
 
 import Std.Core

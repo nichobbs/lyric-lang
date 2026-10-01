@@ -5,6 +5,7 @@
 //! wraps the connection in the opaque `DockerClient` handle; these helpers only
 //! resolve socket *paths* so they expose no platform/extern types.
 @runtime_checked
+@io
 package Lyric.Docker.Sockets
 
 import Std.Core

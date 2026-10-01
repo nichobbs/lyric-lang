@@ -9,6 +9,7 @@
 //! so that trailing backslashes before the closing quote do not escape it
 //! (Windows CRT CommandLineToArgvW convention; safe on all platforms).
 @runtime_checked
+@io
 package Std.Process
 
 import Std.Core

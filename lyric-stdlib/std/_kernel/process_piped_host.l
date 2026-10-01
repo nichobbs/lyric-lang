@@ -34,6 +34,7 @@
 //!
 //! Internal: only Std.Process should import this.
 @axiom("System.Diagnostics.Process piped stdin/stdout and System.Threading.Tasks.TaskFactory.StartNew/Task.Wait conform to their documented .NET contracts")
+@io
 package Std.ProcessPipedHost
 
 import Std.Core

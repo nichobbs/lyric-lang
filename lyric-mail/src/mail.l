@@ -38,6 +38,7 @@
 //!
 //! See docs/03-decision-log.md D062 and lyric-mail/README.md.
 @runtime_checked
+@io
 package Mail
 
 import Std.Core

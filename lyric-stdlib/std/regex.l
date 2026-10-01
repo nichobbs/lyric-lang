@@ -21,6 +21,7 @@
 //! .NET Match type to the kernel.  Use isMatch for boolean checks and
 //! tryIsMatch for the ReDoS-safe path.
 @runtime_checked
+@pure
 package Std.Regex
 
 import Std.Core

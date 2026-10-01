@@ -59,6 +59,7 @@
 //! detection on this target (the JVM twin, `_kernel_jvm/tls_host.l`, detects
 //! both shapes via a sign/verify round-trip).
 @axiom("System.Security.Cryptography.X509Certificates operations conform to their documented .NET contracts")
+@io
 package Std.TlsHost
 
 import Std.Core
@@ -125,7 +126,9 @@ pub func hostCertFromPemBytes(bytes: in slice[Byte]): Result[CertHandle, HostLoa
 /// `CreateFromPem(certPem, keyPem)` overload via a per-call mode-700 temp
 /// subdirectory (module header); the directory and both files are deleted
 /// immediately after this call returns, on every path.
-pub func hostIdentityFromPemBytes(certBytes: in slice[Byte], keyBytes: in slice[Byte]): Result[CertHandle, HostLoadError] {
+pub func hostIdentityFromPemBytes(
+  certBytes: in slice[Byte], keyBytes: in slice[Byte]
+): Result[CertHandle, HostLoadError] {
   val dir = newSecureTempDir()
   val certPath = NetPath.Combine(dir, "cert.pem")
   val keyPath = NetPath.Combine(dir, "key.pem")

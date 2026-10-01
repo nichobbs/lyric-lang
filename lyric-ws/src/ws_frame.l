@@ -21,6 +21,7 @@
 //! `FrameFeedResult`; never reuse the value passed into `feedFrames` after
 //! the call.
 @runtime_checked
+@pure
 package Ws.Frame
 
 import Std.Core

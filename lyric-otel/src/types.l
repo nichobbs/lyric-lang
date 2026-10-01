@@ -14,6 +14,7 @@
 //! platform-neutral; only the OTLP/HTTP *export* step
 //! (`OTel.Otlp.flushOtlpAsync`) is platform-specific, because it needs a
 //! real HTTP transport (see `_kernel/net/otlp_kernel.l`).
+@io
 package OTel.Types
 
 import Std.Core

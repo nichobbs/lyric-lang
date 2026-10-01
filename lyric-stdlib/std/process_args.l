@@ -18,6 +18,7 @@
 //! and native kernels split it back into an argv list.  Pure Lyric with no
 //! kernel dependency, so every target shares this one implementation.
 @runtime_checked
+@io
 package Std.ProcessArgs
 
 import Std.Core

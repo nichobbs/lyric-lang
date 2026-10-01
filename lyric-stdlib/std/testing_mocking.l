@@ -24,6 +24,7 @@
 //!     val _ = clock.now()
 //!     println(toString(stubCounterGet(ticks)))   // prints "2"
 //!   }
+@io
 package Std.Testing.Mocking
 
 /// Thread-safe call counter for @stubbable mocking.  Each stub

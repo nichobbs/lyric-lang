@@ -27,6 +27,7 @@
 //! context fields (stage variables, authorizer context, request-time epoch,
 //! multi-value header maps, etc.) that are not exposed through Web.Router.
 @runtime_checked
+@pure
 package Lambda.ApiGw
 
 import Std.Core

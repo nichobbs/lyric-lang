@@ -49,6 +49,7 @@
 //! header) — reliably detects a same-algorithm wrong-key pairing, not
 //! just a cross-algorithm one.
 @axiom("lyric_tls_validate_cert_pem/_key_pem/_identity_pem (lyric-rt/src/lyric_tls.c) conform to their documented contracts")
+@io
 package Std.TlsHost
 
 import Std.Core
@@ -105,7 +106,9 @@ pub func hostCertFromPemBytes(bytes: in slice[Byte]): Result[CertHandle, HostLoa
 /// Combine a certificate and private key from raw PEM bytes, verifying
 /// the pairing via `lyric_tls_validate_identity_pem` (module header).
 @unsafe_ffi
-pub func hostIdentityFromPemBytes(certBytes: in slice[Byte], keyBytes: in slice[Byte]): Result[CertHandle, HostLoadError] {
+pub func hostIdentityFromPemBytes(
+  certBytes: in slice[Byte], keyBytes: in slice[Byte]
+): Result[CertHandle, HostLoadError] {
   val certTextOpt = tryDecodeUtf8(certBytes)
   val keyTextOpt = tryDecodeUtf8(keyBytes)
   match certTextOpt {
@@ -116,14 +119,8 @@ pub func hostIdentityFromPemBytes(certBytes: in slice[Byte], keyBytes: in slice[
     case None -> return Err(error = HostMalformed(message = "private key PEM is not valid UTF-8"))
     case Some(_) -> ()
   }
-  val certText = match certTextOpt {
-    case Some(t) -> t
-    case None -> ""
-  }
-  val keyText = match keyTextOpt {
-    case Some(t) -> t
-    case None -> ""
-  }
+  val certText = match certTextOpt { case Some(t) -> t; case None -> "" }
+  val keyText = match keyTextOpt { case Some(t) -> t; case None -> "" }
   // Cert-only validation first, so a malformed CERTIFICATE (as opposed to
   // a malformed key, or a mismatched pairing) is reported distinctly —
   // std/tls.l's identityFromBytes relies on exactly this ordering to

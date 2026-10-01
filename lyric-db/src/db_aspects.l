@@ -27,6 +27,7 @@
 //!
 //! See docs/03-decision-log.md D056 and lyric-db/README.md.
 @runtime_checked
+@io
 package Db.Aspects
 
 import Std.Core

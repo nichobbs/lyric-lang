@@ -84,6 +84,7 @@
 //!
 //! See docs/35-lambda-library.md §6, decision log D063.
 @runtime_checked
+@io
 package AwsSecrets
 
 import Std.Core

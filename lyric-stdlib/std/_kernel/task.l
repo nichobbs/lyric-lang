@@ -115,6 +115,7 @@
 //!     synthesises the static `AsyncLocal<T>` field + `.cctor` init
 //!     directly on this package's program type.
 @runtime_checked
+@io
 package Std.Task
 
 import Std.Core

@@ -21,6 +21,7 @@
 //! `compiler/lyric/std/_kernel/README.md` the kernel is the audited
 //! extern boundary, not a general-purpose API.
 @axiom("System.DateTime / System.TimeSpan / System.DateTimeOffset / System.Threading.Thread conform to their documented .NET contracts")
+@io
 package Std.TimeHost
 
 import Std.Core

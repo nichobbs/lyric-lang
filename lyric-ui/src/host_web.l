@@ -27,6 +27,7 @@
 //! new browser gets a "server busy" page instead.  Expired sessions are
 //! removed whenever a session is created or resumed.
 @runtime_checked
+@io
 package Ui.Host.Web
 
 import Std.Core

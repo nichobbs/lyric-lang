@@ -11,6 +11,7 @@
 //!      classification). Centralises the `@externTarget` boundary so
 //!      the audited kernel surface stays in one place per Decision F.
 @runtime_checked
+@pure
 package Std.Math
 
 import Std.MathHost as Host

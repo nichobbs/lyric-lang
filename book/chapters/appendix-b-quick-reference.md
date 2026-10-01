@@ -687,7 +687,23 @@ output_assembly = "myapp.dll"
 "myapp.TestFixtures" = { path = "src/test_fixtures", test_only = true }
                                     # importable by [project.tests]/lyric test,
                                     # excluded from the production bundle (#6579)
+
+# Enforced package layering (lang-ref §9.4, D149)
+[layers]
+preset = "ui"                        # optional; the only preset
+
+[layers.packages]
+"myapp.Core"      = "domain"
+"myapp.*.Logic"   = "logic"          # * = one segment, final ** = one or more
+
+[layers.rules]                       # custom layers or preset replacements
+core = { may_import = ["core", "pure"], may_not_import = ["Acme.**"], async = false }
 ```
+
+Layer diagnostics: Y0001 forbidden import, Y0002 unclassified import, Y0003
+`@io` call, Y0004 `async func`, Y0005 `@layer` disagrees with the manifest,
+Y0006 unknown layer/preset, Y0007 mutable module-level state, Y0008 protected
+`entry` call, Y0009 malformed annotation or `[layers.packages]` entry.
 
 ---
 
@@ -706,6 +722,9 @@ output_assembly = "myapp.dll"
 | `@generate(Json\|Sql\|Proto)` | `exposed record`, `record`, `union`, `interface` | Invoke built-in source generator for the named target |
 | `@generate(Pkg.Name)` | `exposed record`, `record`, `union`, `interface` | Invoke custom source generator from package `Pkg` |
 | `@experimental` | `pub` item | May change without SemVer major bump |
+| `@io` | package | The package performs I/O (layer class, lang-ref §9.4) |
+| `@io` | function in a `@pure` package | The function performs I/O; packages that may not do I/O may not call it (Y0003) |
+| `@layer("name")` | package | Places the package in a `[layers]` layer; must agree with the manifest (Y0005) |
 | `@inline_template` | `pub aspect` | C-mode template: weaver rewrites `args.<field>` to bare `<field>` paths against the matched function's parameters; mismatches surface as A0042 diagnostics. Without this annotation a `pub aspect` template is B′-mode by default (shared shape-keyed specialisation, no dedicated annotation); `args.<field>` in a B′-mode template body is a hard error (A0046) unless the `around` advice declares the field(s) in a `where TArgs has { field: Type, ... }` row clause (chapter 22 §22.7), in which case a matched function missing the field is A0047 instead |
 | `@global_clock_unsafe` | function | Suppresses the proof-system warning for non-`@stubbable` clock access |
 | `@hidden` | field in `@projectable` opaque type | Excluded from generated view type |
@@ -718,6 +737,7 @@ output_assembly = "myapp.dll"
 | `@no_aspect("Name")` | function | Opt out of a specific named aspect (name is a string literal) |
 | `@provided` | wire member | Parameter to the generated bootstrap function |
 | `@pure` | function | No side effects; callable from contracts and `@proof_required` code |
+| `@pure` | package | The package does no I/O and holds no shared mutable state (layer class, lang-ref §9.4) |
 | `@runtime_checked` | package | Contracts are runtime asserts (default) |
 | `@sensitive` | `config` field | Mark field value as secret; redacted in diagnostics and `lyric explain` output |
 | `@stable(since="X.Y")` | `pub` item | API is frozen from version X.Y; SemVer-major to remove |

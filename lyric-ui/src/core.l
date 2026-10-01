@@ -11,6 +11,7 @@
 //! `Step` and `UiEffect`); only view packages import `Ui.Widgets`, which
 //! builds `View` values (docs/65 §5.2).
 @runtime_checked
+@pure
 package Ui.Core
 
 import Std.Core

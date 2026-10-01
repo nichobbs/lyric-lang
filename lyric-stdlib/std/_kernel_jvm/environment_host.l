@@ -80,6 +80,7 @@
 //! would for a real, present-but-empty OS variable — there is no portable
 //! way to UNSET a variable through this function on any target.
 @axiom("java.lang.System and java.util.concurrent.ConcurrentHashMap operations conform to their documented JVM contracts")
+@io
 package Std.EnvironmentHost
 
 import Std.Core

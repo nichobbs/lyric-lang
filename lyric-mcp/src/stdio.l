@@ -12,6 +12,7 @@
 //! through `Std.Process.pipedReadLineWithin`, so a client call to a server
 //! that never answers ends at its deadline.
 @runtime_checked
+@io
 package Mcp.Stdio
 
 import Std.Core

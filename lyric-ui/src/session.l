@@ -23,6 +23,7 @@
 //! dropped (it is derivable from the model because `view` is pure) and
 //! `resume` renders it again when a host reconnects (D138, Q-UI-007).
 @runtime_checked
+@pure
 package Ui.Session
 
 import Std.Core

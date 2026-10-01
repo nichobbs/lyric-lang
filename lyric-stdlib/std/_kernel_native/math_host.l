@@ -11,6 +11,7 @@
 //! `round`, which rounds half away from zero and would diverge from the
 //! managed targets on *.5 inputs).
 @axiom("C99 libm functions conform to their documented contracts")
+@pure
 package Std.MathHost
 
 extern func cSin(x: Double): Double = "sin"

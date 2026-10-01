@@ -5,6 +5,7 @@
 //! precondition (`requires:`) panic via `PreconditionViolated` when the
 //! caller violates it (see `substring`, `repeat`).
 @runtime_checked
+@pure
 package Std.String
 
 import Std.Core

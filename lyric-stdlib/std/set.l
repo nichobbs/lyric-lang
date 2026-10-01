@@ -14,6 +14,7 @@
 //! `contains`) that appear in the function bodies as receiver calls on the
 //! extern type.
 @runtime_checked
+@pure
 package Std.Set
 
 import Std.Core

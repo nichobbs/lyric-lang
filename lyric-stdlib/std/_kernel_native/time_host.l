@@ -37,6 +37,7 @@
 //!
 //! Internal: only Std.Time should import this.
 @axiom("POSIX clocks, usleep(3), and llround(3) via lyric-rt/libm conform to their documented contracts; the civil-calendar helpers follow the proleptic Gregorian calendar")
+@io
 package Std.TimeHost
 
 import Std.Core

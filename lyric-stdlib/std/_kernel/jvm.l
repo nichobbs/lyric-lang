@@ -8,6 +8,7 @@
 
 @axiom("Std.Jvm provides JVM-target escape hatches for interoperating with \
         Java exception semantics per docs/31-maven-linking.md Q-J012")
+@io
 package Std.Jvm
 
 import Std.Core

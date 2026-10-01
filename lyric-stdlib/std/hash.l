@@ -8,6 +8,7 @@
 //! output is filesystem-safe and matches the wire format used by NuGet
 //! signing manifests.
 @runtime_checked
+@pure
 package Std.Hash
 
 import Std.Core

@@ -39,6 +39,7 @@
 //! `stdinReader` below decodes explicitly as UTF-8 for the same reason: the
 //! JVM's platform-default charset is ASCII under a C/POSIX locale.
 @axiom("java.lang.System.{out,err,in}, java.io.BufferedReader and java.lang.Thread conform to their documented JVM contracts")
+@io
 package Std.ConsoleHost
 
 import Std.Core

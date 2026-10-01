@@ -39,6 +39,7 @@
 //! `compiler/lyric/std/_kernel/README.md` the kernel is the audited
 //! extern boundary, not a general-purpose API.
 @axiom("Char and Int share the i32 native representation, so the code-point bridge is a lossless identity; ASCII-range classification below matches System.Char's Unicode-category verdicts for U+0000..U+007F")
+@pure
 package Std.CharHost
 
 // =====================================================================

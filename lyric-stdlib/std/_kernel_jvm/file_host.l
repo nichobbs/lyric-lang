@@ -33,6 +33,7 @@
 //!
 //! Internal: only Std.File should import this.
 @axiom("java.io.File / FileInputStream / FileOutputStream conform to their documented JVM contracts")
+@io
 package Std.FileHost
 
 import Std.Core

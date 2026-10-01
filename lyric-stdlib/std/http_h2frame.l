@@ -82,6 +82,7 @@
 //! `Long`. `PING` opaque data (§6.7) is left as a raw 8-byte `slice[Byte]`
 //! rather than decoded to an integer.
 @runtime_checked
+@pure
 package Std.HttpEngine.H2Frame
 
 import Std.Core

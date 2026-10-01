@@ -8,6 +8,7 @@
 //!
 //! Tracks lyric-lang #330.
 @runtime_checked
+@pure
 package Std.RegexSafe
 
 import Std.Core

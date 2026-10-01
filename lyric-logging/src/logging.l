@@ -11,6 +11,7 @@
 //! Aspect templates for automatic call instrumentation live in
 //! Std.Logging.Aspects; import that package to use them.
 @runtime_checked
+@io
 package Std.Logging
 
 import Std.Core

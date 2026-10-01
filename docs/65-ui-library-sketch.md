@@ -1,7 +1,8 @@
 # 65 - UI library: one app model for desktop and web (sketch)
 
-**Status:** Specced in D137. Phases U1 (pure core, `lyric-forms`, example)
-and U2 (server-driven web host and TypeScript runtime) are implemented; see
+**Status:** Specced in D137. Phases U1 (pure core, `lyric-forms`, example),
+U2 (server-driven web host and TypeScript runtime) and U3 (enforced
+`[layers]`, D149) are implemented; see
 §14 for the phase plan and §15 for what the first implementation surfaced
 and how each finding was resolved. The open questions Q-UI-001 to Q-UI-011
 are resolved (§16): Q-UI-011 by the compiler fixes of §15, the others by
@@ -200,12 +201,20 @@ logic = { may_import = ["domain", "logic", "pure"], async = false }
 | `ports` | `domain`, `pure` | `Ui.*`, `effects`, `view` |
 | `logic` | `domain`, `logic`, `pure`, `Ui.Core` | `Ui` widgets, `ports`, `effects`, `io`; no `async func` |
 | `effects` | `domain`, `logic`, `ports`, `pure`, `io`, `Ui.Core` | `Ui` widgets, `view` |
-| `view` | `domain`, own `logic`, `pure`, `Ui.Core`, `Ui.Widgets` | `ports`, `effects`, `io`; no `async func` |
+| `view` | `domain`, `logic`, `view`, `pure`, `Ui.Core`, `Ui.Widgets`, `Ui.Forms` | `ports`, `effects`, `io`; no `async func` |
 | unlayered (`app`) | anything | nothing |
 
 `Ui.Core` holds only data types (`View`, `Step`, `UiEffect`, `Event`); it is
 itself classified `pure`. `Ui.Widgets` is `pure` too (it builds values), but
 is restricted to `view` by the preset so that logic cannot construct views.
+
+As implemented (D149), every layer is closed to the `Ui` packages
+(`may_not_import = ["Ui", "Ui.**"]`) except the ones its row names, and two
+cells differ from the first sketch: a view may import any `logic` package,
+not only its own screen's (the manifest cannot tell which one is "own"
+without naming each screen), and a view may import another `view`, which an
+embedded component needs (§6.2). `Ui.Forms`, the form widget builder, is a
+view-only package like `Ui.Widgets`.
 
 ### 5.3 Stdlib classification
 
@@ -232,6 +241,14 @@ pure layers, and a call to that function from a pure layer is the error.
 | `Y0004` | `async func` declared in a layer that forbids it. |
 | `Y0005` | `@layer` annotation disagrees with the manifest. |
 | `Y0006` | Unknown layer name or preset. |
+| `Y0007` | A package that may not do I/O holds shared mutable state in a module-level `val` (§5.5). |
+| `Y0008` | A package that may not do I/O calls a protected-type `entry` (§5.5). |
+| `Y0009` | A malformed `@pure`/`@io`/`@layer`, files of one package that disagree on its class, or a `[layers.packages]` entry that matches no package or ties with another. |
+
+"A package that may not do I/O" is a `@pure` package or a package in a layer
+whose rule does not allow `io`; Y0003, Y0007 and Y0008 apply to both. In a
+`@pure` package, the functions it marks `@io` are exempt from Y0003 and
+Y0008. The full rules are in docs/01 §9.4.
 
 ### 5.5 Mutable state in pure layers
 
@@ -772,7 +789,7 @@ custom properties (design tokens) with light and dark sets.
 |---|---|---|
 | U1 | `lyric-forms`; `lyric-ui` pure core (`Ui.Core`, `Ui.Widgets`, `Ui.Diff`, `Ui.Protocol`, `Ui.Session`, `Ui.Testing`); example logic, view and tests | Implemented (MSIL, JVM) |
 | U2 | Server-driven web host (`Ui.Host`) + TS runtime; example runs in a browser | Implemented (MSIL, JVM); host and runtime covered by `lyric test` and `node --test`, and the example by a Playwright browser test on both targets (#7836) |
-| U3 | `[layers]` compiler feature, stdlib `@pure`/`@io` classification, `Y000x` diagnostics | Planned |
+| U3 | `[layers]` compiler feature, stdlib `@pure`/`@io` classification, `Y000x` diagnostics | Implemented (D149, every target); `examples/ui-customers` builds under the `ui` preset |
 | U4 | `@generate(Forms.Derive)` and `@generate(Ui.Routes)` | Planned |
 | U5 | Desktop webview host (native + MSIL) | Planned |
 | U6 | Data grid, `Lazy`, SSR first paint | Planned |
@@ -959,12 +976,12 @@ concurrently.
 
 All resolved. Q-UI-011 by the compiler fixes of §15; Q-UI-001 to Q-UI-010 by
 D138 (`docs/decisions/D138-ui-open-questions.md`), whose entries replace the
-questions below. Q-UI-001, -005, -007 and -009 are implemented; the others
+questions below. Q-UI-001, -003, -005, -007 and -009 are implemented; the others
 are designs recorded for the phase that needs them.
 
 - **Q-UI-001** *Resolved (implemented):* `Step` stays a record (§4.1).
 - **Q-UI-002** *Resolved (design):* `Ctx[A] = { ui: UiCtx, app: A }` (§6.4).
-- **Q-UI-003** *Resolved (design, U3):* package-level purity rules
+- **Q-UI-003** *Resolved (implemented, D149):* package-level purity rules
   `Y0007`/`Y0008` in the `[layers]` feature (§5.5).
 - **Q-UI-004** *Resolved (design, U4):* `@generate` request schema version 2
   with annotations, type parameters and invariants as source text (§11.4).

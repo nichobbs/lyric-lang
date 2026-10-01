@@ -25,6 +25,7 @@
 //! `NullHandler` that refuses any inbound request and ignores inbound
 //! notifications.
 @runtime_checked
+@io
 package Mcp.Client
 
 import Std.Core

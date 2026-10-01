@@ -15,6 +15,7 @@
 //! strictly greater one, and `mergeRuns` takes from the left run when
 //! `cmp(left, right) <= 0`, so equal elements keep their original order.
 @runtime_checked
+@pure
 package Std.Sort
 
 import Std.Collections

@@ -32,6 +32,7 @@
 //! Only active when compiled with feature = "jvm".
 //! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
 @cfg(feature = "jvm")
+@io
 package Web.Kernel.Runtime
 
 import Std.Core

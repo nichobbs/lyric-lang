@@ -6,6 +6,7 @@
 //!
 //! Internal: only Std.SecureRandom should import this.
 @axiom("System.Security.Cryptography.RandomNumberGenerator conforms to its documented .NET contracts and produces cryptographically strong output")
+@io
 package Std.SecureRandomHost
 
 extern type SecureRng = "System.Security.Cryptography.RandomNumberGenerator"
