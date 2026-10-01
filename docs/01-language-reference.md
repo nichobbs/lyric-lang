@@ -270,6 +270,8 @@ record Customer {
 
 Records are value types (compile to .NET `readonly struct` for primitives, `record class` otherwise — see `docs/09-msil-emission.md` §5 for the selection rule). A `readonly struct` record (e.g. `Point` above, all-`Double` fields) gets structural equality for free from the CLR's own default value-type equality. A `record class` record (e.g. `Customer` above) does **not** — it needs an explicit `@derive(Equals)` annotation (e.g. `@derive(Equals) record Customer { … }`), which also synthesizes `GetHashCode()` kept consistent with it, to get real field-by-field structural `==`/`!=`; without it, a `record class` falls back to reference identity, unlike unions (§2.5), which have structural equality unconditionally regardless of backing representation.
 
+**Value semantics (D156).** A record is copied when it is assigned, passed, returned, stored in a field or collection, or captured by a closure or `spawn`: after `var p = q; p.x = 1` (with `x` a `var` field), `q` is unchanged. The copy includes record-typed fields recursively; fields of reference type (`List`, `Map`, `Set`, closures, protected types, extern objects) are copied as references, as for `.copy()` below. A record with no `var` field anywhere in its record-typed fields is immutable, so a backend may share its storage. Whether each backend already behaves this way for records with `var` fields is being audited in docs/67 phase G1 (#7940); any divergence is a bug.
+
 Construction:
 
 ```
