@@ -375,6 +375,30 @@ third (out-of-range) form. Fix: pick masked-unsigned as canonical (matches
 MSIL `conv.u1`), normalize every producer, mask both operands of `JByte`
 comparisons, and add ≥128 round-trip self-tests.
 
+> **Status (2026-09-30):** fixed on both targets, in three steps.
+> D-progress-639 made masked-unsigned `0..255` the canonical JVM form: every
+> producer normalises, both operands of a `JByte` comparison re-mask, and a
+> compound result re-masks (`b *= 2` on 200 is 144); MSIL re-narrows
+> `Byte` stores with `conv.u1`. `byte_arithmetic_self_test.l` covers equality
+> against a `List`/slice element, unsigned ordering above 127, wrapping
+> compound arithmetic and an `Option` payload, on both targets. The
+> stringify and erased-position half was fixed by #7852 (PR #7869): a JVM
+> call returning `Byte` is re-masked (`ireturn` narrows it to a signed
+> byte), `toString`/`.toString()`/`println` print `Byte` unsigned on both
+> targets, and a `u8` literal, a `Byte op Byte` result and an inlined literal
+> module `val` stay `Byte` through a lambda, a generic field, an `Option` or
+> a `List` (`byte_stringify_self_test.l`, `byte_erased_positions_self_test.l`).
+> #7812 (PR #7860) did the same for the unsigned 32/64-bit types: `UInt`/
+> `ULong` operands compare, divide and print unsigned from their checked type
+> rather than their syntax. It does not touch `Byte`, whose comparisons were
+> already masked. Re-checked against the current code (`maskByteUnsigned` in
+> `lyric-compiler/jvm/codegen/`) with `200.toByte()` against a slice element, a
+> `u8` literal, a call result, an `Option` payload and a `List` element, and
+> `b1 < b2`, `b *= 2u8` on 200: identical results on both targets. Nothing
+> `Byte`-specific remains open here. The JVM `format1`/`format2` builtins are
+> still stubs that return the template unformatted (#7367/#7840), so how they
+> render a `Byte` is tested on dotnet only (`byte_stringify_dotnet_self_test.l`).
+
 ### 4.4 BLOCKER — Silent wrong-value fallbacks under an advisory type gate
 
 The JVM bridge deliberately does not gate on type errors ("advisory",

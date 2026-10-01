@@ -9098,26 +9098,7 @@ func sigExpectedArgTypes(
     pi = pi + 1
   }
   val srcIdx = argIndicesInParamOrder(args, paramNames)
-  var targs: List[Type] = newList()
-  if sig.generics.count > 0 {
-    val paramTys: List[Type] = newList()
-    val slotTys: List[Type] = newList()
-    match recvTy {
-      case Some(rt) -> {
-        paramTys.add(sig.params[0].ty)
-        slotTys.add(rt)
-      }
-      case None -> ()
-    }
-    var k = 0
-    while k < srcIdx.count {
-      paramTys.add(sig.params[k + offset].ty)
-      val ai = srcIdx[k]
-      slotTys.add(if ai >= 0 and ai < argTypes.count { argTypes[ai] } else { TyError })
-      k = k + 1
-    }
-    targs = inferGenericArgsJoined(sig.generics, paramTys, slotTys)
-  }
+  val targs = sigCallTypeArgsInOrder(sig, recvTy, srcIdx, argTypes)
   var j = 0
   while j < srcIdx.count {
     val ai = srcIdx[j]
@@ -9128,6 +9109,106 @@ func sigExpectedArgTypes(
     j = j + 1
   }
   expected
+}
+
+// The type arguments a call to the generic `sig` binds, in `sig.generics`
+// order: each parameter's type unified with its argument's (`srcIdx` maps
+// parameters, after a method's receiver, to argument indices), joined along
+// the numeric widening chains (D-progress-969).  Empty for a non-generic sig.
+func sigCallTypeArgsInOrder(
+  sig: in ResolvedSignature,
+  recvTy: in Option[Type],
+  srcIdx: in List[Int],
+  argTypes: in List[Type],
+): List[Type] {
+  if sig.generics.count == 0 {
+    return newList()
+  }
+  val offset = match recvTy { case Some(_) -> 1; case None -> 0 }
+  val paramTys: List[Type] = newList()
+  val slotTys: List[Type] = newList()
+  match recvTy {
+    case Some(rt) -> {
+      paramTys.add(sig.params[0].ty)
+      slotTys.add(rt)
+    }
+    case None -> ()
+  }
+  var k = 0
+  while k < srcIdx.count {
+    paramTys.add(sig.params[k + offset].ty)
+    val ai = srcIdx[k]
+    slotTys.add(if ai >= 0 and ai < argTypes.count { argTypes[ai] } else { TyError })
+    k = k + 1
+  }
+  inferGenericArgsJoined(sig.generics, paramTys, slotTys)
+}
+
+// Record the type arguments the call to the generic function `sig` whose
+// callee is at `sp` binds (see `SymbolTable.genericCallTypeArgSites`, #7865).  Only a call whose
+// every type argument is closed and has a source spelling here is recorded;
+// a call checked twice at different type arguments (synthesized code sharing
+// one span, or a re-check against an expected type) is `conflicting`.
+func recordGenericCallTypeArgs(
+  tbl: in SymbolTable,
+  sig: in ResolvedSignature,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  sp: in Span,
+): Unit {
+  if sig.generics.count == 0 or isNoSourceSpan(sp) or sp.endPos.offset <= sp.startPos.offset {
+    return
+  }
+  if args.count > sig.params.count {
+    return
+  }
+  val paramNames: List[String] = newList()
+  var pi = 0
+  while pi < sig.params.count {
+    paramNames.add(sig.params[pi].name)
+    pi = pi + 1
+  }
+  val noRecv: Option[Type] = None
+  val targs = sigCallTypeArgsInOrder(sig, noRecv, argIndicesInParamOrder(args, paramNames), argTypes)
+  if targs.count != sig.generics.count {
+    return
+  }
+  match typeExprsForRef(tbl, targs, sp) {
+    case Some(tes) -> {
+      val key = recordCopySiteKey(sp)
+      val renderedArgs: List[String] = newList()
+      var ri = 0
+      while ri < targs.count {
+        renderedArgs.add(renderType(targs[ri]))
+        ri = ri + 1
+      }
+      val rendered = joinStrs(renderedArgs, ", ")
+      match mapGet(tbl.genericCallTypeArgSites, key) {
+        case Some(prev) -> if prev.rendered != rendered and not prev.conflicting {
+          tbl.genericCallTypeArgSites.remove(key)
+          tbl.genericCallTypeArgSites.add(
+            key,
+            GenericCallTypeArgsSite(
+              typeParams = prev.typeParams,
+              typeArgs = prev.typeArgs,
+              rendered = prev.rendered,
+              conflicting = true
+            )
+          )
+        }
+        case None -> tbl.genericCallTypeArgSites.add(
+          key,
+          GenericCallTypeArgsSite(
+            typeParams = sig.generics,
+            typeArgs = tes,
+            rendered = rendered,
+            conflicting = false
+          )
+        )
+      }
+    }
+    case None -> ()
+  }
 }
 
 // Whether `t` is or contains an instantiation of a generic type.
@@ -9664,7 +9745,7 @@ func inferExprCore(
       var i = 0
       while i < args.count {
         val ae = callArgExpr(args[i])
-        if lambdaHasUnannotatedParam(ae) or argIsAmbiguousUnionCaseCtor(tbl, ae) or argIsBranchingExpr(ae) {
+        if argIsLambdaLiteral(ae) or argIsAmbiguousUnionCaseCtor(tbl, ae) or argIsBranchingExpr(ae) {
           val scratch: List[Diagnostic] = newList()
           argTypes.add(inferExpr(sc, tbl, sigs, scratch, ae))
           anyDeferredLambda = true
@@ -9708,7 +9789,7 @@ func inferExprCore(
         var di = 0
         while di < args.count {
           val dae = callArgExpr(args[di])
-          if lambdaHasUnannotatedParam(dae) or argIsAmbiguousUnionCaseCtor(tbl, dae) or argIsBranchingExpr(dae) {
+          if argIsLambdaLiteral(dae) or argIsAmbiguousUnionCaseCtor(tbl, dae) or argIsBranchingExpr(dae) {
             argTypes[di] = inferExprExpected(sc, tbl, sigs, diag, dae, expectedArgTys[di])
           } else if argIsCaseCtorCall(tbl, dae) {
             argTypes[di] = adoptUnionCaseExpected(tbl, true, argTypes[di], expectedArgTys[di])
@@ -9775,6 +9856,10 @@ func inferExprCore(
           checkContractCallPure(sc, diag, sig, fn, e.span)
           checkCallArgsAgainstSig(sc, tbl, diag, sig, args, argTypes, e.span)
           recordGenericArgWidenings(tbl, sig, None, args, argTypes)
+          match fn.kind {
+            case EPath(_) -> recordGenericCallTypeArgs(tbl, sig, args, argTypes, fn.span)
+            case _ -> ()
+          }
           if sig.originPackage.length > 0 and sig.originPackage != symTableScopePkg(tbl) {
             recordSigArgConversions(tbl, sig, args, argTypes)
           }
@@ -9782,7 +9867,13 @@ func inferExprCore(
           checkBoundsSatisfied(tbl, diag, sig, argTypes, e.span)
           // Instantiate a generic return type from the argument types (#1488
           // category B) so `unwrapOr(opt, 0): T` yields `Int`, not `TyVar("T")`.
-          instantiateReturnType(sig, argTypes)
+          val instRet = instantiateReturnType(sig, argTypes)
+          // A generic call's result type is evidence for `Lyric.Mono` where
+          // it cannot infer the call's type arguments itself (#7865).
+          if sig.generics.count > 0 {
+            recordResultTypeAt(tbl, instRet, e.span)
+          }
+          instRet
         }
         case None -> match unionCaseSymbolOf(tbl, fn) {
           case Some(caseSym) -> {
@@ -10342,17 +10433,153 @@ func inferLambda(
   }
   val bodyValuePos = match expectedReturn { case Some(rt) -> not isUnitType(rt); case None -> false }
   val noLambdaRte: Option[TypeExpr] = None
-  // #7696: `tailExpected` is `TyError` here too — a lambda body's own return
-  // type is out of this entry's scope (it is inferred from `bodyTy` below,
-  // not declared), so a literal inside it keeps inferring as `slice[T]`.
-  val bodyTy = checkBlock(sc, tbl, sigs, sc.genericNames, TyError, noLambdaRte, diag, body, bodyValuePos, TyError)
-  scopePop(sc)
-  TyFunction(params = paramTypes, ret = bodyTy, isAsync = false)
+  // #7865: a closed, non-`Unit` expected return type is the lambda's declared
+  // return type, exactly as a function's is: each `return` is checked against
+  // it, the trailing value (through `if`/`match`/block tails) is checked
+  // against it, and a value of a narrower type along a lossless widening
+  // chain widens to it (docs/01 §4.1), so `{ -> 5 }` is a `() -> Long` where
+  // one is expected.  With no such expectation (bare inference, or a generic
+  // callee's still-open `T`) the return type is inferred from the body and
+  // `TyError` keeps a literal inferring as `slice[T]` (#7696).  A `List`
+  // return type is not adopted either: a bracket literal checked against it
+  // is built as a `List` only where a backend sees that type from the
+  // literal's own position, which a lambda body's value is not.
+  val declaredRet: Option[Type] = match expectedReturn {
+    case Some(rt) -> if bodyValuePos and typeIsClosed(unrefine(rt)) and not isStdListType(tbl, rt) {
+      Some(value = rt)
+    } else {
+      None
+    }
+    case None -> None
+  }
+  // The body's own scope: the enclosing frames, with the lambda's return type
+  // (`TyError` when it has none) in place of the enclosing function's, so a
+  // `return` nested in a branch or block of the body is checked against the
+  // lambda, not the function around it.
+  val lsc = Scope(
+    bindings = sc.bindings,
+    frameStarts = sc.frameStarts,
+    returnTy = match declaredRet { case Some(rt) -> rt; case None -> TyError },
+    genericNames = sc.genericNames,
+    returnTyExpr = noLambdaRte,
+    selfFields = sc.selfFields,
+    selfChecked = sc.selfChecked,
+    selfType = sc.selfType,
+    contractDepth = sc.contractDepth
+  )
+  match declaredRet {
+    case Some(rt) -> {
+      val bodyTy = checkBlock(lsc, tbl, sigs, sc.genericNames, rt, noLambdaRte, diag, body, true, rt)
+      scopePop(sc)
+      TyFunction(params = paramTypes, ret = lambdaReturnAgainst(tbl, rt, bodyTy, body), isAsync = false)
+    }
+    case None -> {
+      val bodyTy = checkBlock(lsc, tbl, sigs, sc.genericNames, TyError, noLambdaRte, diag, body, bodyValuePos, TyError)
+      scopePop(sc)
+      TyFunction(params = paramTypes, ret = bodyTy, isAsync = false)
+    }
+  }
+}
+
+// Record the types the unannotated parameters of the lambda at `sp` took from
+// the function type expected of it (see `SymbolTable.lambdaParamTypeSites`,
+// #7865).  A parameter whose type is not closed (an unbound type parameter,
+// an error) or has no source spelling here is left unannotated; two checks of
+// one lambda that type a parameter differently are `conflicting`.
+func recordLambdaParamTypes(tbl: in SymbolTable, ps: in List[LambdaParam], lt: in Type, sp: in Span): Unit {
+  if isNoSourceSpan(sp) or sp.endPos.offset <= sp.startPos.offset {
+    return
+  }
+  match lt {
+    case TyFunction(pts, _, _) -> recordLambdaParamTypesOf(tbl, ps, pts, sp)
+    case _ -> ()
+  }
+}
+
+func recordLambdaParamTypesOf(tbl: in SymbolTable, ps: in List[LambdaParam], pts: in List[Type], sp: in Span): Unit {
+  if pts.count != ps.count {
+    return
+  }
+  val tes: List[TypeExpr] = newList()
+  val known: List[Bool] = newList()
+  var rendered = ""
+  var anyKnown = false
+  var i = 0
+  while i < ps.count {
+    var te = TypeExpr(kind = TUnit, span = sp)
+    var isKnown = false
+    match ps[i].ty {
+      case Some(_) -> ()
+      case None -> if typeIsClosed(pts[i]) {
+        match typeExprForRef(tbl, pts[i], sp) {
+          case Some(pte) -> {
+            te = pte
+            isKnown = true
+          }
+          case None -> ()
+        }
+      }
+    }
+    tes.add(te)
+    known.add(isKnown)
+    rendered = rendered + (if isKnown { renderType(pts[i]) } else { "_" }) + ";"
+    if isKnown {
+      anyKnown = true
+    }
+    i = i + 1
+  }
+  if not anyKnown {
+    return
+  }
+  val key = recordCopySiteKey(sp)
+  match mapGet(tbl.lambdaParamTypeSites, key) {
+    case Some(prev) -> if prev.rendered != rendered and not prev.conflicting {
+      tbl.lambdaParamTypeSites.remove(key)
+      tbl.lambdaParamTypeSites.add(
+        key,
+        LambdaParamTypesSite(paramTypes = prev.paramTypes, known = prev.known, rendered = prev.rendered, conflicting = true)
+      )
+    }
+    case None -> tbl.lambdaParamTypeSites.add(
+      key,
+      LambdaParamTypesSite(paramTypes = tes, known = known, rendered = rendered, conflicting = false)
+    )
+  }
+}
+
+// True when `t` is the stdlib `List[T]` (by type id, like the bracket-literal
+// arm of `inferExprExpected`).
+func isStdListType(tbl: in SymbolTable, t: in Type): Bool {
+  match unrefine(t) {
+    case TyUser(tid, _, _) -> isStdCollectionsHostType(tbl, tid, "List")
+    case _ -> false
+  }
+}
+
+// The return type of a lambda whose body, of type `bodyTy`, is checked
+// against the declared return type `rt` (#7865): `rt` when the body diverges
+// (every path `return`s or panics) or its value widens to `rt` (the widening
+// is made explicit at the trailing value, as for a function body), otherwise
+// the body's own type, which the consumer then reports as a mismatch.
+func lambdaReturnAgainst(tbl: in SymbolTable, rt: in Type, bodyTy: in Type, body: in Block): Type {
+  val diverges = match bodyTy { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }
+  if diverges {
+    return rt
+  }
+  if numericWidensTo(rt, bodyTy) {
+    match blockValueExpr(body) {
+      case Some(tailE) -> recordWideningSite(tbl, rt, bodyTy, tailE, false)
+      case None -> ()
+    }
+    return rt
+  }
+  bodyTy
 }
 
 // True for a lambda literal (possibly parenthesised) with at least one
-// unannotated parameter — the only expression shape whose typing benefits
-// from a contextual expected type (A2).
+// unannotated parameter, whose type before the expectation-aware pass
+// (`TyError` parameters) is no evidence for a generic callee's type
+// arguments (A2).
 func lambdaHasUnannotatedParam(e: in Expr): Bool {
   match e.kind {
     case EParen(inner) -> lambdaHasUnannotatedParam(inner)
@@ -10368,6 +10595,19 @@ func lambdaHasUnannotatedParam(e: in Expr): Bool {
       }
       false
     }
+    case _ -> false
+  }
+}
+
+// True for a lambda literal (possibly parenthesised).  Every lambda argument
+// is deferred to the expectation-aware pass: an unannotated parameter takes
+// its type from the parameter's function type (A2), and the lambda's return
+// type is that function type's return type, so its body's value widens to it
+// (#7865).
+func argIsLambdaLiteral(e: in Expr): Bool {
+  match e.kind {
+    case EParen(inner) -> argIsLambdaLiteral(inner)
+    case ELambda(_, _) -> true
     case _ -> false
   }
 }
@@ -10482,16 +10722,11 @@ pub func inferExprExpected(
   match e.kind {
     case EParen(inner) -> inferExprExpected(sc, tbl, sigs, diag, inner, expected)
     case ELambda(ps, body) -> match unrefine(expected) {
-      case TyFunction(eps, eret, _) -> inferLambda(
-        sc,
-        tbl,
-        sigs,
-        diag,
-        ps,
-        body,
-        eps,
-        Some(value = eret)
-      )
+      case TyFunction(eps, eret, _) -> {
+        val lt = inferLambda(sc, tbl, sigs, diag, ps, body, eps, Some(value = eret))
+        recordLambdaParamTypes(tbl, ps, lt, e.span)
+        lt
+      }
       case _ -> inferExpr(sc, tbl, sigs, diag, e)
     }
     // #6814: a bare union-case-constructor call whose name is ambiguous

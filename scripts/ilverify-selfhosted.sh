@@ -260,6 +260,7 @@ SELF_TESTS=(
   lyric-compiler/lyric/byte_stringify_self_test.l
   lyric-compiler/lyric/byte_stringify_dotnet_self_test.l
   lyric-compiler/lyric/byte_erased_positions_self_test.l
+  lyric-compiler/lyric/function_value_typing_self_test.l
 )
 st_errors=0
 st_failed=()

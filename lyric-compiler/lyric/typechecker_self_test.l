@@ -8542,3 +8542,103 @@ test "list literal joins array element types" {
   assertTrue(hasDiagCode(cr, "T0070"), "the literal is not an Int")
   assertTrue(diagMessagesContain(cr, "slice[array[?, Opt[Int]]]"), "joined element type Opt[Int]")
 }
+
+// #7865: a lambda checked where a function type is expected takes its return
+// type: the body's value, each branch and each `return` widen to it along the
+// lossless chains, recorded as conversion sites, exactly as a function body's
+// value does.  Narrowing stays rejected (`val b: Byte = 5` is T0060 too).
+test "a lambda body widens to the expected return type (#7865)" {
+  val lit = parseCheck("package P\nfunc f(): Long {\n  val g: () -> Long = { -> 5 }\n  g()\n}\n")
+  assertEqualInt(diagCount(lit), 0, "{ -> 5 } is a () -> Long")
+  assertEqualInt(lit.symbols.argConversionSites.count, 1, "the literal is widened explicitly")
+  val arg = parseCheck("package P\nfunc call(f: in () -> Long): Long { f() }\nfunc g(): Long { call({ -> 5 }) }\n")
+  assertEqualInt(diagCount(arg), 0, "a zero-parameter lambda argument takes the parameter's return type")
+  val branches = parseCheck(
+    "package P\nfunc f(): Long {\n  val g: (Bool) -> Long = { c -> if c { 1 } else { 2 } }\n  g(true)\n}\n"
+  )
+  assertEqualInt(diagCount(branches), 0, "if branches widen")
+  assertEqualInt(branches.symbols.argConversionSites.count, 2, "each branch is widened explicitly")
+  val ret = parseCheck(
+    "package P\nfunc f(): Long {\n  val g: (Bool) -> Long = { c ->\n    if c {\n      return 1\n    }\n    2\n  }\n  g(true)\n}\n"
+  )
+  assertEqualInt(diagCount(ret), 0, "a nested return widens")
+  assertEqualInt(ret.symbols.argConversionSites.count, 2, "the return and the trailing value are widened")
+  val unsigned = parseCheck("package P\nfunc f(): ULong {\n  val g: () -> ULong = { -> 7u32 }\n  g()\n}\n")
+  assertEqualInt(diagCount(unsigned), 0, "UInt to ULong")
+  val narrow = parseCheck("package P\nfunc f(): Byte {\n  val g: () -> Byte = { -> 5 }\n  g()\n}\n")
+  assertEqualInt(countDiagCode(narrow, "T0060"), 1, "an Int literal is not a Byte, as at a binding")
+  val wrong = parseCheck("package P\nfunc f(): Long {\n  val g: () -> Long = { -> \"s\" }\n  g()\n}\n")
+  assertEqualInt(countDiagCode(wrong, "T0060"), 1, "a String body is still rejected")
+  val wrongRet = parseCheck(
+    "package P\nfunc f(): Long {\n  val g: (Bool) -> Long = { c ->\n    if c {\n      return \"s\"\n    }\n    2\n  }\n  g(true)\n}\n"
+  )
+  assertEqualInt(countDiagCode(wrongRet, "T0065"), 1, "a mismatched return is checked against the lambda")
+}
+
+// #7865: a `return` nested in a branch of a lambda body is checked against the
+// lambda's return type, never the enclosing function's.
+test "a nested return in a lambda is not checked against the enclosing function (#7865)" {
+  val cr = parseCheck(
+    "package P\nfunc f(): Int {\n  val g: (Int) -> String = { n ->\n    if n > 0 {\n      return \"pos\"\n    }\n    \"neg\"\n  }\n  g(1).length\n}\n"
+  )
+  assertEqualInt(diagCount(cr), 0, "return \"pos\" belongs to the String lambda")
+  val bare = parseCheck(
+    "package P\nfunc f(): Int {\n  val g = { n: Int ->\n    if n > 0 {\n      return \"pos\"\n    }\n    \"neg\"\n  }\n  g(1).length\n}\n"
+  )
+  assertEqualInt(countDiagCode(bare, "T0065"), 0, "an unannotated lambda's return is not the function's either")
+}
+
+// #7865: the type checker records each generic call's resolved type
+// arguments, keyed by the callee's span, for `Lyric.Mono` to fall back to.
+test "a generic call's resolved type arguments are recorded (#7865)" {
+  val src = "package P\nval B = 9u8\nfunc applyT[T](f: in () -> T): T { f() }\nfunc g(): Byte { applyT({ -> B }) }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "clean")
+  val keys = mapKeys(cr.symbols.genericCallTypeArgSites)
+  assertEqualInt(keys.count, 1, "one generic call")
+  match mapGet(cr.symbols.genericCallTypeArgSites, keys[0]) {
+    case Some(site) -> {
+      assertFalse(site.conflicting, "not conflicting")
+      assertEqualInt(site.typeArgs.count, 1, "one type argument")
+      assertEqual(site.typeParams[0], "T", "for T")
+      assertEqual(typeExprText(site.typeArgs[0]), "Byte", "bound to Byte")
+    }
+    case None -> assertTrue(false, "site present")
+  }
+  val openCall = parseCheck(
+    "package P\nfunc applyT[T](f: in () -> T): T { f() }\nfunc g[U](u: in U): U { applyT({ -> u }) }\n"
+  )
+  assertEqualInt(
+    openCall.symbols.genericCallTypeArgSites.count,
+    0,
+    "a type argument naming a type parameter is not recorded"
+  )
+}
+
+// #7865: the types a lambda's unannotated parameters take from the expected
+// function type are recorded for `Lyric.Mono` to write onto the parameters.
+test "a lambda's unannotated parameter types are recorded (#7865)" {
+  val cr = parseCheck(
+    "package P\nfunc f(): Long {\n  val g: (Int, String) -> Long = { i, s: String -> i.toLong() }\n  g(1, \"x\")\n}\n"
+  )
+  assertEqualInt(diagCount(cr), 0, "clean")
+  val keys = mapKeys(cr.symbols.lambdaParamTypeSites)
+  assertEqualInt(keys.count, 1, "one lambda")
+  match mapGet(cr.symbols.lambdaParamTypeSites, keys[0]) {
+    case Some(site) -> {
+      assertFalse(site.conflicting, "not conflicting")
+      assertTrue(site.known[0], "the unannotated parameter is known")
+      assertEqual(typeExprText(site.paramTypes[0]), "Int", "typed Int")
+      assertFalse(site.known[1], "the annotated parameter is left as written")
+    }
+    case None -> assertTrue(false, "site present")
+  }
+  val genericLambda = parseCheck(
+    "package P\nfunc h[T](x: in T, f: in (T) -> T): T { f(x) }\nfunc g[U](u: in U): U { h(u, { v -> v }) }\n"
+  )
+  assertEqualInt(
+    genericLambda.symbols.lambdaParamTypeSites.count,
+    0,
+    "a parameter typed by a type parameter is not recorded"
+  )
+}

@@ -209,6 +209,20 @@ val process = { x: Int ->
 }
 ```
 
+When a function type is expected, the closure also takes its return type, the way a function takes its declared one. The closure's value, and any `return` inside it, widens to that type like a function's return value does:
+
+```lyric
+val big: () -> Long = { -> 5 }            // 5 widens to Long
+val pick: (Bool) -> Long = { c ->
+  if c {
+    return 1                               // returns 1 from the closure, as a Long
+  }
+  2
+}
+```
+
+A `return` inside a closure always leaves the closure, not the function around it. Narrowing is never implicit, here or anywhere: `val b: () -> Byte = { -> 5 }` is rejected just as `val b: Byte = 5` is; write `5u8`.
+
 ### Trailing lambda syntax
 
 When the last parameter of a function is a closure, you can move it outside the parentheses. This is how collection methods read naturally:
