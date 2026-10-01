@@ -60,6 +60,7 @@ package Lyric.SilentMiscompileGuardJvmSelfTest
 
 import Std.Core
 import Std.Testing
+import Std.Collections
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Test fixtures.
@@ -693,4 +694,54 @@ test "println accepts a Float argument without VerifyError" {
   val f: Float = 2.5f32
   println(f)
   assertTrue(f == 2.5f32, "the Float value itself is unaffected by the println call")
+}
+
+// A comparison materialised as a constructor argument inside another call
+// branches with the call's earlier arguments still on the operand stack.
+// The assembler reset the tracked depth to 0 at every label, so the values
+// pushed after the branch were not counted and max_stack came out too small:
+// `VerifyError: Operand stack overflow` (found in `Ui.Host.SessionRegistry`'s
+// `admit`).  Labels now start at the depth of their incoming branches.
+record StackEntry {
+  name: String
+  since: Long
+  claimed: Bool
+}
+
+protected type StackRegistry {
+  var byId: Map[String, StackEntry] = newMap()
+  entry admit(id: in String, connectionId: in String, now: in Long, max: in Int): Bool {
+    while byId.count >= max {
+      var oldest = ""
+      var oldestSince = now
+      for sid in mapKeys(byId) {
+        match mapGet(byId, sid) {
+          case Some(e) -> if oldest.length == 0 or e.since < oldestSince {
+            oldest = sid
+            oldestSince = e.since
+          }
+          case None -> ()
+        }
+      }
+      if oldest.length == 0 {
+        return false
+      }
+      byId.remove(oldest)
+    }
+    byId.add(id, StackEntry(name = connectionId, since = now, claimed = connectionId.length > 0))
+    return true
+  }
+  entry claimedOf(id: in String): Bool {
+    return match mapGet(byId, id) { case Some(e) -> e.claimed; case None -> false }
+  }
+}
+
+test "a comparison passed as a nested constructor argument verifies" {
+  val reg = StackRegistry()
+  assertTrue(reg.admit("a", "c1", 1, 2), "admitted a")
+  assertTrue(reg.admit("b", "", 2, 2), "admitted b")
+  assertTrue(reg.admit("c", "c3", 3, 2), "admitted c by evicting the oldest")
+  assertTrue(reg.claimedOf("c"), "c is claimed")
+  assertFalse(reg.claimedOf("b"), "b is unclaimed")
+  assertFalse(reg.claimedOf("a"), "a was evicted")
 }

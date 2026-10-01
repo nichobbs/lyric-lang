@@ -276,6 +276,34 @@ test "the session registry evicts the longest-detached session when full" {
   }
 }
 
+test "a full registry evicts a never-claimed prerendered session before a dropped one (D152)" {
+  val reg = Host.SessionRegistry()
+  assertTrue(reg.admit("used", dummy(), "cu", 0, 10_000, 10), "admitted a session a browser used")
+  match reg.release("cu", 100) {
+    case _ -> ()
+  }
+  // Prerendered after the drop, so younger, but never claimed.
+  assertTrue(reg.admit("pre", dummy(), "", 200, 10_000, 10), "admitted a prerendered session")
+  assertTrue(reg.isDetached("pre"), "a prerendered session starts disconnected")
+  assertTrue(reg.admit("new", dummy(), "cn", 300, 10_000, 2), "room made by eviction")
+  match reg.instanceOf("pre") {
+    case Some(_) -> assertTrue(false, "the unclaimed session goes first")
+    case None -> assertTrue(true, "pre evicted")
+  }
+  match reg.attach("used", "cu2", 400, 10_000) {
+    case Host.ResumedSession(_) -> assertTrue(true, "the dropped session can still resume")
+    case Host.Unknown -> assertTrue(false, "the dropped session should survive")
+  }
+}
+
+test "the page URL rebuilds the query, percent-encoded" {
+  val none: Map[String, String] = newMap()
+  assertEqual(Web.pageUrl("/customers", none), "/customers", "no query")
+  val q: Map[String, String] = newMap()
+  q["tab"] = "notes & more"
+  assertEqual(Web.pageUrl("/customers/1", q), "/customers/1?tab=notes%20%26%20more", "encoded")
+}
+
 test "a full registry of connected sessions admits no more" {
   val reg = Host.SessionRegistry()
   assertTrue(reg.admit("a", dummy(), "ca", 0, 10_000, 10), "admitted a")

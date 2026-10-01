@@ -816,7 +816,8 @@ paint does not wait for the WebSocket.
   renderer would.
 - **Until then.** The page is inert, and `aria-busy` stays on the mount
   until the first patch is applied.
-- **Unclaimed sessions** expire after `reconnectGraceMs`.
+- **Unclaimed sessions** expire after `reconnectGraceMs`, and at capacity
+  are evicted before any session a browser was using.
 - **The URL** is rebuilt from the request's parsed query parameters, so
   their order and encoding may differ from what the browser sent.
 

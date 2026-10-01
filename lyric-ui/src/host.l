@@ -49,11 +49,14 @@ pub interface Outbox {
 
 // ─── Sessions ─────────────────────────────────────────────────────────────────
 /// One live session: its instance, the connection it is attached to (empty
-/// while disconnected) and when it was last attached or detached.
+/// while disconnected), when it was last attached or detached, and whether
+/// a connection has ever claimed it (false for a prerendered page whose
+/// browser has not connected yet, D152).
 pub record SessionEntry {
   instance: Instance
   connectionId: String
   since: Long
+  claimed: Bool = true
 }
 
 /// The outcome of a reconnect attempt.
@@ -78,7 +81,9 @@ pub protected type SessionRegistry {
   var byConnection: Map[String, String] = newMap()
   /// Adds session `id`, attached to `connectionId`, when there is room for
   /// it under `max`: expired sessions are removed first, then the
-  /// longest-disconnected ones are evicted.  False, adding nothing, when
+  /// longest-disconnected ones are evicted, never-claimed prerendered
+  /// sessions before any that a browser was using, so page loads that never
+  /// connect cannot push out a session waiting for its user to reconnect.  False, adding nothing, when
   /// every session is connected and the limit is reached.  Making room and
   /// adding happen under one lock, so concurrent connections cannot together
   /// exceed `max`.
@@ -87,11 +92,19 @@ pub protected type SessionRegistry {
     while byId.count >= max {
       var oldest = ""
       var oldestSince = now
+      var oldestClaimed = true
       for sid in mapKeys(byId) {
         match mapGet(byId, sid) {
-          case Some(e) -> if e.connectionId.length == 0 and (oldest.length == 0 or e.since < oldestSince) {
-            oldest = sid
-            oldestSince = e.since
+          case Some(e) -> if e.connectionId.length == 0 {
+            // An unclaimed session beats a claimed one; within a class,
+            // the longest disconnected goes first.
+            val better = oldest.length == 0 or (oldestClaimed and not e.claimed) or
+              (oldestClaimed == e.claimed and e.since < oldestSince)
+            if better {
+              oldest = sid
+              oldestSince = e.since
+              oldestClaimed = e.claimed
+            }
           }
           case None -> ()
         }
@@ -105,7 +118,10 @@ pub protected type SessionRegistry {
       }
       byId.remove(oldest)
     }
-    byId.add(id, SessionEntry(instance = inst, connectionId = connectionId, since = now))
+    byId.add(
+      id,
+      SessionEntry(instance = inst, connectionId = connectionId, since = now, claimed = connectionId.length > 0)
+    )
     // An empty connection id admits the session disconnected: a page
     // prerendered before its socket connects (D152).  It expires like any
     // disconnected session unless a connection attaches within `graceMs`.
