@@ -8834,7 +8834,7 @@ func emitHeapAlloc(ctx: in Ctx, insns: in List[NInsn], objTy: in NType, dtorName
   val rcPtr = freshTmp(ctx)
   val rcArgs: List[NArg] = newList()
   rcArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-  rcArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  rcArgs.add(NArg(ty = NI32, value = NLitInt(v = arcRcSlot, ty = NI32)))
   insns.add(NGEP(dest = rcPtr, ty = structTy, ptr = NLocal(name = obj), indices = rcArgs))
   insns.add(NStore(ty = NI32, value = NLitInt(v = 1i64, ty = NI32), ptr = NLocal(name = rcPtr)))
   val dtorPtr = freshTmp(ctx)

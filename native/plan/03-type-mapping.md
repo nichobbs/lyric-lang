@@ -62,6 +62,7 @@ Lyric values of type `String` are `%LyricString*` — a pointer to this struct.
 ; For "hello":
 @.strobj.0 = private unnamed_addr constant { i32, i32, i8*, i64, i64, [6 x i8] } {
   i32 2147483647,   ; INT32_MAX — saturated rc, never freed
+  i32 0,            ; weak count (unused for static strings)
   i8* null,         ; no destructor (static allocation)
   i64 5,            ; len (byte count, excluding null)
   i64 6,            ; cap (allocated bytes, including null terminator)
@@ -84,12 +85,14 @@ A record `record Point { x: Int; y: Int }` lowers to:
 ```llvm
 %Lyric.Point = type { i32, i32, i8*, i32, i32 }
 ; [0] i32  rc
-; [1] i8*  dtor  (@Lyric.Point.__dtor)
-; [2] i32  x
-; [3] i32  y
+; [1] i32  weak
+; [2] i8*  dtor  (@Lyric.Point.__dtor)
+; [3] i32  x
+; [4] i32  y
 ```
 
-Fields appear in declaration order, preceded by the two header words.
+Fields appear in declaration order, preceded by the three header fields, so
+field `k` is at GEP index `3 + k` (`arcHeaderSlots` in `llvm_codegen.l`).
 
 **Reference-typed fields** (fields whose type is heap-allocated) are stored as
 pointers. When the record is constructed, the ARC of each reference-typed field
@@ -100,17 +103,19 @@ field is released.
 
 ```llvm
 ; 1. Allocate
-%raw = call i8* @lyric_alloc(i64 16)   ; sizeof(%Lyric.Point)
+%size = ptrtoint %Lyric.Point* getelementptr (%Lyric.Point, %Lyric.Point* null, i32 1) to i64
+%raw = call i8* @lyric_alloc(i64 %size)   ; LLVM computes sizeof for the target
 %obj = bitcast i8* %raw to %Lyric.Point*
 ; 2. Write header
 %rc_ptr  = getelementptr inbounds %Lyric.Point, %Lyric.Point* %obj, i32 0, i32 0
 store i32 1, i32* %rc_ptr
-%dtor_ptr = getelementptr inbounds %Lyric.Point, %Lyric.Point* %obj, i32 0, i32 1
+%dtor_ptr = getelementptr inbounds %Lyric.Point, %Lyric.Point* %obj, i32 0, i32 2
 store i8* bitcast (void (%Lyric.Point*)* @Lyric.Point.__dtor to i8*), i8** %dtor_ptr
+call void @lyric_weak_init(i8* %raw)      ; seeds the weak count (header field 1) to 1
 ; 3. Write fields
-%x_ptr = getelementptr inbounds %Lyric.Point, %Lyric.Point* %obj, i32 0, i32 2
+%x_ptr = getelementptr inbounds %Lyric.Point, %Lyric.Point* %obj, i32 0, i32 3
 store i32 3, i32* %x_ptr
-%y_ptr = getelementptr inbounds %Lyric.Point, %Lyric.Point* %obj, i32 0, i32 3
+%y_ptr = getelementptr inbounds %Lyric.Point, %Lyric.Point* %obj, i32 0, i32 4
 store i32 4, i32* %y_ptr
 ; 4. result = %obj (rc=1, caller owns it)
 ```
@@ -127,11 +132,13 @@ Payload sizes:
 - max payload = 16 bytes
 
 ```llvm
-%Lyric.Shape = type { i32, i32, i8*, i32, [16 x i8] }
+%Lyric.Shape = type { i32, i32, i8*, i32, i32, [2 x i64] }
 ; [0] i32        rc
-; [1] i8*        dtor  (@Lyric.Shape.__dtor)
-; [2] i32        discriminant: 0=Circle, 1=Rect
-; [3] [16 x i8]  payload (max_payload bytes, untyped at this level)
+; [1] i32        weak
+; [2] i8*        dtor  (@Lyric.Shape.__dtor)
+; [3] i32        discriminant: 0=Circle, 1=Rect
+; [4] i32        pad (keeps the payload 8-aligned)
+; [5] [2 x i64]  payload (max_payload bytes in 8-byte words, untyped at this level)
 ```
 
 Discriminant values are assigned in declaration order starting from 0.
@@ -141,12 +148,12 @@ address to the concrete case struct pointer:
 
 ```llvm
 ; Getting Circle's radius from a Shape* %s:
-%disc_ptr = getelementptr inbounds %Lyric.Shape, %Lyric.Shape* %s, i32 0, i32 2
+%disc_ptr = getelementptr inbounds %Lyric.Shape, %Lyric.Shape* %s, i32 0, i32 3
 %disc = load i32, i32* %disc_ptr
 ; switch on disc:
 ;   0 → Circle case:
-%pay_ptr = getelementptr inbounds %Lyric.Shape, %Lyric.Shape* %s, i32 0, i32 3
-%circ_ptr = bitcast [16 x i8]* %pay_ptr to { double }*
+%pay_ptr = getelementptr inbounds %Lyric.Shape, %Lyric.Shape* %s, i32 0, i32 5
+%circ_ptr = bitcast [2 x i64]* %pay_ptr to { double }*
 %radius_ptr = getelementptr inbounds { double }, { double }* %circ_ptr, i32 0, i32 0
 %radius = load double, double* %radius_ptr
 ```
@@ -156,7 +163,7 @@ reference-typed fields in the active case:
 
 ```llvm
 define private void @Lyric.Shape.__dtor(%Lyric.Shape* %self) {
-  %disc_ptr = getelementptr inbounds %Lyric.Shape, %Lyric.Shape* %self, i32 0, i32 2
+  %disc_ptr = getelementptr inbounds %Lyric.Shape, %Lyric.Shape* %self, i32 0, i32 3
   %disc = load i32, i32* %disc_ptr
   switch i32 %disc, label %done [
     i32 0, label %case_circle
