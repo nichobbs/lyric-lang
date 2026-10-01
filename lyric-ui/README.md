@@ -71,7 +71,9 @@ Layout `column`, `row`, `card`, `section`; text `heading`, `paragraph`,
 `badge`, `showIf`; feedback `banner`, `spinner`; actions `button`, `primaryButton`,
 `buttonWith`, `link`; forms `form`, `field`, `textInput`, `textArea`,
 `numberInput`, `checkbox`, `select`; data `table`, `tableRow`. Use `keyed`
-on items of dynamic lists so reorders patch as moves.
+on items of dynamic lists so reorders patch as moves, and `lazyView(key,
+fingerprint, render)` for a subtree that should be rendered and diffed only
+when its fingerprint changes.
 
 ## Serving a web application
 

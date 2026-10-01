@@ -16,7 +16,7 @@
 package Ui.Diff
 
 import Std.Core
-import Ui.Core.{View, Element, Text, Empty, Handler, Prop, WidgetKind, kindName, eventName, lookupProp}
+import Ui.Core.{View, Element, Text, Empty, Lazy, Memo, Handler, Prop, WidgetKind, kindName, eventName, lookupProp, viewOf}
 import Std.Collections
 
 // ─── Wire nodes ───────────────────────────────────────────────────────────────
@@ -40,6 +40,14 @@ pub func toWire[Msg](v: in View[Msg]): WireNode {
     }
     case Text(s) -> WText(value = s)
     case Empty -> WEmpty
+    case Lazy(_, _, r) -> {
+      val rendered: View[Msg] = r()
+      toWire(rendered)
+    }
+    case Memo(_, _, c) -> {
+      val shown: View[Msg] = c
+      toWire(shown)
+    }
   }
 }
 
@@ -87,6 +95,17 @@ pub func replaceAll[Msg](v: in View[Msg]): List[Patch] {
 }
 
 pub func diffNode[Msg](before: in View[Msg], after: in View[Msg], path: in List[Int], acc: in List[Patch]): Unit {
+  // A memoised subtree whose fingerprint is unchanged renders the same:
+  // nothing below it is compared.
+  match before {
+    case Memo(k1, f1, _) -> match after { case Memo(k2, f2, _) -> if k1 == k2 and f1 == f2 { return }; case _ -> () }
+    case _ -> ()
+  }
+  diffShown(viewOf(before), viewOf(after), path, acc)
+}
+
+/// `diffNode` on two views with any memo already unwrapped.
+pub func diffShown[Msg](before: in View[Msg], after: in View[Msg], path: in List[Int], acc: in List[Patch]): Unit {
   match before {
     case Text(a) -> match after {
       case Text(b) -> if a != b { acc.add(SetText(path = path, value = b)) }
@@ -107,6 +126,78 @@ pub func diffNode[Msg](before: in View[Msg], after: in View[Msg], path: in List[
       }
       case _ -> acc.add(Replace(path = path, node = toWire(after)))
     }
+    case _ -> acc.add(Replace(path = path, node = toWire(after)))
+  }
+}
+
+/// `tree` with every `Lazy` resolved to a `Memo`: one whose key and
+/// fingerprint match a `Memo` in `previous` reuses that memo's subtree
+/// without rendering; any other is rendered now.  Lazy keys are unique
+/// within a view; a key that occurs twice is rendered every time.
+pub func resolveLazy[Msg](tree: in View[Msg], previous: in View[Msg]): View[Msg] {
+  val memos: Map[String, View[Msg]] = newMap()
+  val repeated: List[String] = newList()
+  collectMemos(previous, memos, repeated)
+  return resolveWith(tree, memos, repeated)
+}
+
+/// Records each `Memo` in `v` by key; a key seen twice goes to `repeated`.
+pub func collectMemos[Msg](v: in View[Msg], memos: in Map[String, View[Msg]], repeated: in List[String]): Unit {
+  match v {
+    case Memo(key, _, c) -> {
+      if memos.containsKey(key) {
+        repeated.add(key)
+      } else {
+        memos[key] = v
+      }
+      collectMemos(c, memos, repeated)
+    }
+    case Element(_, _, _, _, cs) -> {
+      for c in cs {
+        collectMemos(c, memos, repeated)
+      }
+    }
+    case _ -> ()
+  }
+}
+
+/// `resolveLazy`'s walk, against memos already collected.
+pub func resolveWith[Msg](v: in View[Msg], memos: in Map[String, View[Msg]], repeated: in List[String]): View[Msg] {
+  return match v {
+    case Lazy(key, fingerprint, r) -> {
+      val reused: Option[View[Msg]] = if containsString(repeated, key) then None else reusable(memos, key, fingerprint)
+      match reused {
+        case Some(m) -> m
+        case None -> {
+          val rendered: View[Msg] = r()
+          Memo(key = key, fingerprint = fingerprint, child = resolveWith(rendered, memos, repeated))
+        }
+      }
+    }
+    case Memo(key, fingerprint, c) -> Memo(
+      key = key,
+      fingerprint = fingerprint,
+      child = resolveWith(c, memos, repeated)
+    )
+    case Element(kind, key, props, handlers, children) -> {
+      val cs: List[View[Msg]] = newList()
+      for c in children {
+        cs.add(resolveWith(c, memos, repeated))
+      }
+      Element(kind = kind, key = key, props = props, handlers = handlers, children = cs)
+    }
+    case _ -> v
+  }
+}
+
+/// The previous memo under `key`, when its fingerprint is `fingerprint`.
+pub func reusable[Msg](memos: in Map[String, View[Msg]], key: in String, fingerprint: in String): Option[View[Msg]] {
+  return match mapGet(memos, key) {
+    case Some(m) -> match m {
+      case Memo(_, f, _) -> if f == fingerprint then Some(value = m) else None
+      case _ -> None
+    }
+    case None -> None
   }
 }
 
@@ -203,7 +294,7 @@ pub func diffKeyed[Msg](
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 /// The key of `v` (empty when `v` is unkeyed or not an element).
 pub func keyOf[Msg](v: in View[Msg]): String {
-  return match v { case Element(_, key, _, _, _) -> key; case _ -> "" }
+  return match viewOf(v) { case Element(_, key, _, _, _) -> key; case _ -> "" }
 }
 
 /// True when every child has a non-empty key and no key repeats.

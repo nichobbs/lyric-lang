@@ -10,7 +10,7 @@
 package Ui.Widgets
 
 import Std.Core
-import Ui.Core.{View, Element, Text, Empty, Handler, OnClick, OnInput, OnChange, OnSubmit, Prop, WidgetKind}
+import Ui.Core.{View, Element, Text, Empty, Handler, OnClick, OnInput, OnChange, OnSubmit, Prop, WidgetKind, Lazy}
 import Std.Collections
 
 // ─── Low-level constructors ───────────────────────────────────────────────────
@@ -35,8 +35,24 @@ pub func keyed[Msg](key: in String, v: in View[Msg]): View[Msg] {
       handlers = handlers,
       children = children
     )
+    case Lazy(k, fingerprint, r) -> Lazy(
+      key = k,
+      fingerprint = fingerprint,
+      render = { -> val rendered: View[Msg] = r(); keyed(key, rendered) }
+    )
     case _ -> v
   }
+}
+
+/// A subtree that is rendered again only when `fingerprint` changes
+/// (docs/65 §13.5, D153).  While it is unchanged, the session keeps the
+/// subtree it rendered last and skips diffing it, so an expensive or large
+/// subtree costs nothing on updates that do not touch it.  `key` names the
+/// subtree and must be unique within the view; `fingerprint` must change
+/// whenever anything `render` reads changes (a version counter or a
+/// digest of the inputs).
+pub func lazyView[Msg](key: in String, fingerprint: in String, render: in () -> View[Msg]): View[Msg] {
+  return Lazy(key = key, fingerprint = fingerprint, render = render)
 }
 
 /// A text node.

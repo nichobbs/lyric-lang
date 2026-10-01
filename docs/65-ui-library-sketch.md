@@ -3,7 +3,8 @@
 **Status:** Specced in D137. Phases U1 (pure core, `lyric-forms`, example),
 U2 (server-driven web host and TypeScript runtime), U3 (enforced
 `[layers]`, D149) and U4 (`Forms.Derive` and `Ui.Routes`, D151) are
-implemented, as is U6's prerendered first paint (D152); see
+implemented, as are U6's prerendered first paint (D152) and `Lazy`
+subtrees (D153); see
 §14 for the phase plan and §15 for what the first implementation surfaced
 and how each finding was resolved. The open questions Q-UI-001 to Q-UI-011
 are resolved (§16): Q-UI-011 by the compiler fixes of §15, the others by
@@ -827,6 +828,20 @@ paint does not wait for the WebSocket.
 structural hash of `deps` is unchanged. Needs `derives Hash` (or
 equivalent) on model types.
 
+**Implemented (D153)** with an explicit fingerprint in place of hashed
+dependencies:
+
+- **Building.** `Widgets.lazyView(key, fingerprint, render)`; the author
+  derives the `String` fingerprint from everything `render` reads.
+- **Rendering.** After each render the session resolves the tree against
+  the previous one: a `Lazy` whose key and fingerprint match keeps the
+  previous subtree without rendering, and any other is rendered and kept
+  as a `Memo`.
+- **Diffing.** Two `Memo`s with the same key and fingerprint produce no
+  patches.
+- **Elsewhere** both are transparent: events, keys, the wire tree,
+  `Ui.Html` and `Ui.Testing` see the subtree they show.
+
 ### 13.6 Data grid
 
 A host widget with its own sub-protocol: the host reports the visible row
@@ -859,7 +874,7 @@ custom properties (design tokens) with light and dark sets.
 | U3 | `[layers]` compiler feature, stdlib `@pure`/`@io` classification, `Y000x` diagnostics | Implemented (D149, every target); `examples/ui-customers` builds under the `ui` preset |
 | U4 | `@generate(Forms.Derive)` and `@generate(Ui.Routes)` | Implemented (D151); request schema 2; the example derives its form and routes on both targets |
 | U5 | Desktop webview host (native + MSIL) | Planned |
-| U6 | Data grid, `Lazy`, SSR first paint | SSR first paint implemented (D152, both targets); `Lazy` and the data grid planned |
+| U6 | Data grid, `Lazy`, SSR first paint | SSR first paint (D152) and `Lazy` (D153) implemented on both targets; the data grid planned |
 | U7 | Client WASM host | Depends on `docs/35` |
 
 ---
