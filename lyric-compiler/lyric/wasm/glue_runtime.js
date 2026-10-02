@@ -1,0 +1,332 @@
+// ---- Lyric wasm32 module glue runtime (docs/35, phase W3) ----
+// Instantiates the module, satisfies its WASI imports in the host, and wraps
+// each exported `pub func` so JS callers pass and receive ordinary values.
+// `wasmFile` and `LYRIC_EXPORTS` come from the generated header above.
+
+const LYRIC_ABI_VERSION = 1;
+const ERRNO_BADF = 8;
+const ERRNO_NOSYS = 52;
+const ERRNO_SPIPE = 70;
+const WASI_NAMESPACE = 'wasi_snapshot_preview1';
+
+/** Thrown out of an export when the program calls `exit` / `proc_exit`. */
+export class LyricExit extends Error {
+  constructor(code) {
+    super('lyric program exited with code ' + code);
+    this.name = 'LyricExit';
+    this.code = code;
+  }
+}
+
+const utf8Encoder = new TextEncoder();
+
+function isNode() {
+  return typeof process !== 'undefined' && process.versions != null && process.versions.node != null;
+}
+
+async function loadModule(source) {
+  if (source instanceof WebAssembly.Module) return source;
+  if (source === undefined || source === null) {
+    source = new URL(wasmFile, import.meta.url);
+  }
+  if (source instanceof ArrayBuffer || ArrayBuffer.isView(source)) {
+    return WebAssembly.compile(source);
+  }
+  if (typeof source === 'string') source = new URL(source, import.meta.url);
+  if (source instanceof URL && source.protocol === 'file:' && isNode()) {
+    const fs = await import('node:fs/promises');
+    return WebAssembly.compile(await fs.readFile(source));
+  }
+  const response = await source;
+  const res = response instanceof URL ? await fetch(response) : response;
+  if (typeof WebAssembly.compileStreaming === 'function' &&
+      res.headers && res.headers.get('Content-Type') === 'application/wasm') {
+    return WebAssembly.compileStreaming(res);
+  }
+  return WebAssembly.compile(await res.arrayBuffer());
+}
+
+function lineSink(write) {
+  let pending = '';
+  return {
+    write(text) {
+      pending += text;
+      let nl = pending.indexOf('\n');
+      while (nl >= 0) {
+        write(pending.slice(0, nl));
+        pending = pending.slice(nl + 1);
+        nl = pending.indexOf('\n');
+      }
+    },
+    flush() {
+      if (pending.length > 0) {
+        write(pending);
+        pending = '';
+      }
+    },
+  };
+}
+
+/**
+ * Instantiate a Lyric module.
+ *
+ * @param source  ArrayBuffer, URL, Response (or promise of one) or a
+ *                WebAssembly.Module; defaults to the `.wasm` next to this file.
+ * @param options { stdout, stderr, stdin, args, env, imports }
+ *                stdout/stderr receive raw text chunks (default: console.log /
+ *                console.error per line); stdin() returns a string,
+ *                Uint8Array or null for end of input.
+ */
+export async function instantiate(source, options = {}) {
+  const module = await loadModule(source);
+  const sinks = {
+    1: options.stdout ? { write: options.stdout, flush() {} } : lineSink((l) => console.log(l)),
+    2: options.stderr ? { write: options.stderr, flush() {} } : lineSink((l) => console.error(l)),
+  };
+  const decoders = { 1: new TextDecoder(), 2: new TextDecoder() };
+  const env = options.env || {};
+  let memory = null;
+  let stdinBuffer = new Uint8Array(0);
+  const view = () => new DataView(memory.buffer);
+  const bytes = () => new Uint8Array(memory.buffer);
+
+  function stringList(items) {
+    const encoded = items.map((s) => utf8Encoder.encode(s + '\0'));
+    return { encoded, total: encoded.reduce((n, e) => n + e.length, 0) };
+  }
+  function writeStringList(list, ptrs, buf) {
+    const dv = view();
+    const mem = bytes();
+    let at = buf;
+    list.encoded.forEach((e, i) => {
+      dv.setUint32(ptrs + i * 4, at, true);
+      mem.set(e, at);
+      at += e.length;
+    });
+  }
+
+  const wasi = {
+    args_sizes_get(argcPtr, sizePtr) {
+      const l = stringList(options.args || []);
+      view().setUint32(argcPtr, l.encoded.length, true);
+      view().setUint32(sizePtr, l.total, true);
+      return 0;
+    },
+    args_get(ptrs, buf) {
+      writeStringList(stringList(options.args || []), ptrs, buf);
+      return 0;
+    },
+    environ_sizes_get(countPtr, sizePtr) {
+      const l = stringList(Object.entries(env).map(([k, v]) => k + '=' + v));
+      view().setUint32(countPtr, l.encoded.length, true);
+      view().setUint32(sizePtr, l.total, true);
+      return 0;
+    },
+    environ_get(ptrs, buf) {
+      writeStringList(stringList(Object.entries(env).map(([k, v]) => k + '=' + v)), ptrs, buf);
+      return 0;
+    },
+    clock_res_get(id, resPtr) {
+      view().setBigUint64(resPtr, 1000n, true);
+      return 0;
+    },
+    clock_time_get(id, precision, timePtr) {
+      let ns;
+      if (id === 0) {
+        ns = BigInt(Math.round((performance.timeOrigin + performance.now()) * 1000)) * 1000n;
+      } else {
+        ns = BigInt(Math.round(performance.now() * 1e6));
+      }
+      view().setBigUint64(timePtr, ns, true);
+      return 0;
+    },
+    random_get(buf, len) {
+      const mem = bytes();
+      for (let off = 0; off < len; off += 65536) {
+        crypto.getRandomValues(mem.subarray(buf + off, buf + Math.min(len, off + 65536)));
+      }
+      return 0;
+    },
+    fd_write(fd, iovs, iovsLen, writtenPtr) {
+      const sink = sinks[fd];
+      if (!sink) return ERRNO_BADF;
+      const dv = view();
+      const mem = bytes();
+      let total = 0;
+      for (let i = 0; i < iovsLen; i++) {
+        const ptr = dv.getUint32(iovs + i * 8, true);
+        const len = dv.getUint32(iovs + i * 8 + 4, true);
+        const text = decoders[fd].decode(mem.subarray(ptr, ptr + len), { stream: true });
+        if (text.length > 0) sink.write(text);
+        total += len;
+      }
+      dv.setUint32(writtenPtr, total, true);
+      return 0;
+    },
+    fd_read(fd, iovs, iovsLen, readPtr) {
+      if (fd !== 0) return ERRNO_BADF;
+      const dv = view();
+      const mem = bytes();
+      let total = 0;
+      for (let i = 0; i < iovsLen; i++) {
+        const ptr = dv.getUint32(iovs + i * 8, true);
+        const len = dv.getUint32(iovs + i * 8 + 4, true);
+        if (stdinBuffer.length === 0 && options.stdin) {
+          const next = options.stdin();
+          if (typeof next === 'string') stdinBuffer = utf8Encoder.encode(next);
+          else if (next) stdinBuffer = next;
+        }
+        const n = Math.min(len, stdinBuffer.length);
+        mem.set(stdinBuffer.subarray(0, n), ptr);
+        stdinBuffer = stdinBuffer.subarray(n);
+        total += n;
+        if (n < len) break;
+      }
+      dv.setUint32(readPtr, total, true);
+      return 0;
+    },
+    fd_close(fd) {
+      return fd <= 2 ? 0 : ERRNO_BADF;
+    },
+    fd_seek(fd) {
+      return fd <= 2 ? ERRNO_SPIPE : ERRNO_BADF;
+    },
+    fd_fdstat_get(fd, ptr) {
+      if (fd > 2) return ERRNO_BADF;
+      const dv = view();
+      dv.setUint8(ptr, 2); // filetype: character device
+      dv.setUint16(ptr + 2, 0, true);
+      dv.setBigUint64(ptr + 8, 0xffffffffffffffffn, true);
+      dv.setBigUint64(ptr + 16, 0xffffffffffffffffn, true);
+      return 0;
+    },
+    fd_prestat_get() {
+      return ERRNO_BADF;
+    },
+    fd_prestat_dir_name() {
+      return ERRNO_BADF;
+    },
+    sched_yield() {
+      return 0;
+    },
+    proc_exit(code) {
+      throw new LyricExit(code);
+    },
+  };
+
+  const imports = {};
+  for (const imp of WebAssembly.Module.imports(module)) {
+    if (!imports[imp.module]) imports[imp.module] = {};
+    if (imp.module === WASI_NAMESPACE) {
+      imports[imp.module][imp.name] = wasi[imp.name] || (() => ERRNO_NOSYS);
+    }
+  }
+  if (options.imports) {
+    for (const [ns, members] of Object.entries(options.imports)) {
+      imports[ns] = Object.assign(imports[ns] || {}, members);
+    }
+  }
+  for (const imp of WebAssembly.Module.imports(module)) {
+    if (imp.module !== WASI_NAMESPACE && !(imports[imp.module] && imports[imp.module][imp.name])) {
+      throw new Error('missing host import ' + imp.module + '.' + imp.name +
+        ' (pass it in options.imports)');
+    }
+  }
+
+  const instance = await WebAssembly.instantiate(module, imports);
+  const raw = instance.exports;
+  memory = raw.memory;
+  if (typeof raw.lyric_wasm_abi_version !== 'function' || raw.lyric_wasm_abi_version() !== LYRIC_ABI_VERSION) {
+    throw new Error('this glue was generated for lyric wasm ABI ' + LYRIC_ABI_VERSION +
+      ' but the module reports ' + (raw.lyric_wasm_abi_version ? raw.lyric_wasm_abi_version() : 'none'));
+  }
+  if (typeof raw._initialize === 'function') raw._initialize();
+
+  const readString = (strPtr) => {
+    const len = raw.lyric_wasm_string_len(strPtr);
+    const data = raw.lyric_wasm_string_data(strPtr);
+    return new TextDecoder().decode(new Uint8Array(memory.buffer, data, len));
+  };
+  const newString = (text) => {
+    const enc = utf8Encoder.encode(text);
+    const buf = raw.lyric_wasm_alloc(enc.length);
+    new Uint8Array(memory.buffer, buf, enc.length).set(enc);
+    const s = raw.lyric_wasm_string_new(buf, enc.length);
+    raw.lyric_wasm_free(buf);
+    return s;
+  };
+
+  const lowerArg = (kind, value, owned) => {
+    switch (kind) {
+      case 'Int': return value | 0;
+      case 'Byte': return value & 0xff;
+      case 'Long': return BigInt.asIntN(64, BigInt(value));
+      case 'Bool': return value ? 1 : 0;
+      case 'Float': return Math.fround(value);
+      case 'Double': return +value;
+      case 'String': {
+        const s = newString(String(value));
+        owned.push(s);
+        return s;
+      }
+      default: throw new Error('unsupported parameter kind ' + kind);
+    }
+  };
+  const liftResult = (kind, value) => {
+    switch (kind) {
+      case 'Unit': return undefined;
+      case 'Int': return value | 0;
+      case 'Byte': return value & 0xff;
+      case 'Long': return value;
+      case 'Bool': return value !== 0;
+      case 'Float': case 'Double': return value;
+      case 'String': {
+        try {
+          return readString(value);
+        } finally {
+          raw.lyric_wasm_release(value);
+        }
+      }
+      default: throw new Error('unsupported result kind ' + kind);
+    }
+  };
+
+  const lyric = { raw, memory, flush() { sinks[1].flush(); sinks[2].flush(); } };
+
+  for (const ex of LYRIC_EXPORTS) {
+    const fn = raw[ex.wasm];
+    if (typeof fn !== 'function') continue;
+    lyric[ex.js] = (...args) => {
+      if (args.length !== ex.params.length) {
+        throw new TypeError(ex.js + ' takes ' + ex.params.length + ' argument(s), got ' + args.length);
+      }
+      const owned = [];
+      try {
+        const lowered = ex.params.map((kind, i) => lowerArg(kind, args[i], owned));
+        return liftResult(ex.ret, fn(...lowered));
+      } finally {
+        for (const s of owned) raw.lyric_wasm_release(s);
+      }
+    };
+  }
+
+  if (typeof raw.__main_argc_argv === 'function') {
+    lyric.run = (args = options.args || []) => {
+      const list = stringList(['program', ...args]);
+      const ptrs = raw.lyric_wasm_alloc(list.encoded.length * 4 + 4);
+      const buf = raw.lyric_wasm_alloc(list.total);
+      writeStringList(list, ptrs, buf);
+      try {
+        return raw.__main_argc_argv(list.encoded.length, ptrs);
+      } catch (e) {
+        if (e instanceof LyricExit) return e.code;
+        throw e;
+      } finally {
+        lyric.flush();
+        raw.lyric_wasm_free(buf);
+        raw.lyric_wasm_free(ptrs);
+      }
+    };
+  }
+  return lyric;
+}

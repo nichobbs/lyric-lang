@@ -561,6 +561,10 @@ pub union BuildShape {
   case SPortable
   case SStandalone
   case SAot
+  /// wasm32 browser/JS-host module plus generated glue (docs/35 W3); native only.
+  case SModule
+  /// wasm32 WASI component plus WIT (docs/35 W4); native only.
+  case SComponent
 }
 
 pub func profileName(p: in BuildProfile): String {
@@ -575,6 +579,8 @@ pub func shapeName(s: in BuildShape): String {
     case SPortable -> "portable"
     case SStandalone -> "standalone"
     case SAot -> "aot"
+    case SModule -> "module"
+    case SComponent -> "component"
   }
 }
 
@@ -595,6 +601,10 @@ pub func parseShapeName(s: in String): Option[BuildShape] {
     Some(value = SStandalone)
   } else if s == "aot" {
     Some(value = SAot)
+  } else if s == "module" {
+    Some(value = SModule)
+  } else if s == "component" {
+    Some(value = SComponent)
   } else {
     None
   }
@@ -637,20 +647,38 @@ pub func shapeFlagConflictError(shapeArg: in String, sawAot: in Bool, sawStandal
 
 /// `F0043` — the requested shape is not valid for the requested target
 /// (docs/63 §5.1).  A native build is AOT by construction, so `portable` and
-/// `standalone` are meaningless there rather than merely unimplemented.
+/// `standalone` are meaningless there rather than merely unimplemented.  The
+/// wasm32 shapes `module` and `component` (docs/35) are native-only, and the
+/// managed targets reject them through the catch-all below.
 pub func shapeTargetError(shape: in BuildShape, target: in Emitter.CompileTarget): Option[String] {
   match target {
     case Emitter.Native -> match shape {
       case SAot -> None
+      case SModule -> None
+      case SComponent -> None
       case _ -> {
         val msg = "error[F0043]: --target native does not support --shape " + shapeName(shape) +
           "; a native build is ahead-of-time compiled and needs no managed runtime, so `aot` is " +
-          "its only shape (omit --shape, or pass --shape aot explicitly)"
+          "its only host shape (omit --shape, or pass --shape aot explicitly; --shape module is the wasm32 shape)"
         Some(value = msg)
       }
     }
-    case _ -> None
+    case _ -> match shape {
+      case SModule -> Some(value = wasmShapeNeedsNativeError(shape, target))
+      case SComponent -> Some(value = wasmShapeNeedsNativeError(shape, target))
+      case _ -> None
+    }
   }
+}
+
+func wasmShapeNeedsNativeError(shape: in BuildShape, target: in Emitter.CompileTarget): String {
+  val targetName = match target {
+    case Emitter.Dotnet -> "dotnet"
+    case Emitter.Jvm -> "jvm"
+    case Emitter.Native -> "native"
+  }
+  "error[F0043]: --shape " + shapeName(shape) + " is a WebAssembly shape and needs --target native " +
+    "(with --triple wasm32-wasi); --target " + targetName + " has no such shape"
 }
 
 /// `F0044` — the shape is valid for this target but its toolchain path is not
@@ -667,6 +695,11 @@ pub func shapeUnsupportedError(shape: in BuildShape, target: in Emitter.CompileT
       val msg = "error[F0044]: --shape standalone is not implemented yet (issue #6262). " +
         "Use --shape portable for a framework-dependent artifact, or --shape aot for a " +
         "self-contained native binary."
+      Some(value = msg)
+    }
+    case SComponent -> {
+      val msg = "error[F0044]: --shape component is not implemented yet (docs/35 W4). " +
+        "Use --shape module for a browser/JS-host module plus generated glue."
       Some(value = msg)
     }
     case _ -> None

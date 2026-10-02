@@ -1107,6 +1107,7 @@ pub func buildOneNativeWithFeatures(
   noDefaultFeatures: in Bool,
   allFeatures: in Bool,
   cliDefines: in List[String],
+  wasmShape: in String = "",
 ): Int {
   val buildStart = Time.now()
   var source = match File.readText(sourcePath) {
@@ -1187,7 +1188,7 @@ pub func buildOneNativeWithFeatures(
   var resolvedNugetPaths: List[String] = newList()
   var resolvedNativePaths: List[String] = newList()
   val result = if isNativeTarget {
-    Emitter.emitNative(req, effTriple, effOpt, effLibs)
+    Emitter.emitNative(req, effTriple, effOpt, effLibs, wasmShape)
   } else {
     val outcome = emitSingleFileOrProject(req, sourcePath, manifestPath, cliFeatures, noDefaultFeatures, allFeatures)
     resolvedRestoredDlls = outcome.restoredDlls
@@ -1486,7 +1487,7 @@ func cmdBuild(argv: in slice[String]): Int {
     match parsedShape {
       case Some(_) -> ()
       case None -> {
-        printErr("build: --shape must be portable, standalone, or aot, got \"" + shapeArg + "\"")
+        printErr("build: --shape must be portable, standalone, aot, module or component, got \"" + shapeArg + "\"")
         return 1
       }
     }
@@ -1765,7 +1766,8 @@ func cmdBuild(argv: in slice[String]): Int {
           None,
           withProfileDefine(cliDefines, axes.profile),
           tripleArg,
-          effOptArgProj
+          effOptArgProj,
+          nativeShapeName(axes.shape)
         )
       }
       case None -> {
@@ -1781,7 +1783,8 @@ func cmdBuild(argv: in slice[String]): Int {
           None,
           withProfileDefine(cliDefines, axes.profile),
           tripleArg,
-          effOptArgProj
+          effOptArgProj,
+          nativeShapeName(axes.shape)
         )
       }
     }
@@ -1852,7 +1855,7 @@ func cmdBuild(argv: in slice[String]): Int {
       val dir = Path.dirname(sourcePath)
       val stem = stemOf(Path.basename(sourcePath), 2)  // strip ".l"
       val buildKind = readBuildKindFromManifest(manifestArg)
-      val ext = outputExt(target, buildKind)
+      val ext = match axes.shape { case SModule -> ".wasm"; case _ -> outputExt(target, buildKind) }
       Path.join(dir, stem + ext)
     }
   }
@@ -1862,6 +1865,10 @@ func cmdBuild(argv: in slice[String]): Int {
   // doc comment. A no-op on Dotnet/Jvm (returns `optArg` unchanged).
   val effOptArg = resolveNativeOptDefault(optArg, manifestArg, target, axes.profile)
 
+  if watch and nativeShapeName(axes.shape).length > 0 {
+    printErr("build: --watch is not supported with --shape " + shapeName(axes.shape) + " yet")
+    return 1
+  }
   if watch {
     val files: List[String] = newList()
     files.add(sourcePath)
@@ -1892,8 +1899,18 @@ func cmdBuild(argv: in slice[String]): Int {
     cliFeatures,
     noDefaultFeatures,
     allFeatures,
-    withProfileDefine(cliDefines, axes.profile)
+    withProfileDefine(cliDefines, axes.profile),
+    nativeShapeName(axes.shape)
   )
+}
+
+// The native bridge's output-shape name for the resolved shape: "module" for
+// the wasm32 browser/JS-host module, "" for every ordinary native binary.
+pub func nativeShapeName(shape: in BuildShape): String {
+  match shape {
+    case SModule -> "module"
+    case _ -> ""
+  }
 }
 
 // Append the well-known `build_profile` define (docs/60 §3.3) for the resolved
@@ -2557,6 +2574,7 @@ pub func buildProjectWithNativeFlags(
   cliDefines: in List[String],
   nativeTriple: in String,
   nativeOpt: in String,
+  wasmShape: in String = "",
 ): Int {
   val mfText = match File.readText(mfPath) {
     case Ok(text) -> text
@@ -2586,7 +2604,8 @@ pub func buildProjectWithNativeFlags(
     preResolvedDeps,
     cliDefines,
     nativeTriple,
-    nativeOpt
+    nativeOpt,
+    wasmShape
   )
 }
 
@@ -2611,6 +2630,7 @@ pub func buildProjectFromManifest(
   cliDefines: in List[String],
   nativeTriple: in String,
   nativeOpt: in String,
+  wasmShape: in String = "",
 ): Int {
   val buildStart = Time.now()
   val proj: Mf.ProjectSection = match manifest.project {
@@ -2673,7 +2693,7 @@ pub func buildProjectFromManifest(
   val outPath = match explicitOut {
     case Some(o) -> o
     case None -> {
-      val ext = outputExt(target, buildKind)
+      val ext = if wasmShape == "module" { ".wasm" } else { outputExt(target, buildKind) }
       val stem = match proj.outputAssembly { case Some(s) -> s; case None -> proj.name + ext }
       Path.join(Path.join(mfDir, "bin"), stem)
     }
@@ -2889,7 +2909,8 @@ pub func buildProjectFromManifest(
       mfDeclared,
       projReq.packageVersion,
       projReq.contractsEnabled,
-      resolved.depPackageFeatures
+      resolved.depPackageFeatures,
+      wasmShape
     )
   } else {
     Emitter.emitProject(projReq)
