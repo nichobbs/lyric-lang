@@ -8,13 +8,18 @@
 //!                  never called.  Both spellings produce identical results.
 //!
 //! Also covers spawn: `spawn asyncFn()` returns a Task<T> handle; a subsequent
-//! `await handle` unwraps it via the blocking path in non-SM context.
+//! `await handle` unwraps it via the blocking path in non-SM context.  The
+//! handle also instantiates a generic function over the task, not over the
+//! callee's logical result, so a generic `@externInstance` receiver
+//! (`Task.Wait`) is bound to a real task for a `Unit`- and a value-returning
+//! callee alike.
 //!
 //!   lyric test lyric-compiler/lyric/async_extern_self_test.l
 @test_module
 package Lyric.AsyncExternSelfTest
 
 import Std.Core
+import Std.Task
 import Std.Testing
 
 extern type StringReader = "System.IO.StringReader"
@@ -80,4 +85,52 @@ test "await async instance extern without @externInstance is pass-through" {
   val reader = newStringReader("hello await nohint")
   val content = await stringReaderReadToEndNoHint(reader)
   assertEqual(content, "hello await nohint", "await on the no-hint blocking extern should pass through resolved T")
+}
+
+// A `spawn` handle is the callee's task object, so a generic over the handle
+// specialises over the task.  The type checker types the handle as the
+// callee's logical result, which used to specialise `T` as `Unit` (a `void`
+// parameter, `TypeLoadException: The signature is incorrect.` as the class
+// loaded) or as `Int` (an unboxed primitive handed a `Task<int>`, an access
+// violation).  `Task.Wait(int)` is the receiver the generic stands for.
+@externInstance
+@externTarget("System.Threading.Tasks.Task.Wait")
+func taskWaitMs[T](t: in T, timeoutMs: in Int): Bool = false
+
+async func spawnedUnitWork(ms: in Int): Unit {
+  await Std.Task.delay(ms)
+  return ()
+}
+
+async func spawnedIntWork(ms: in Int): Int {
+  await Std.Task.delay(ms)
+  return 41
+}
+
+test "generic extern receiver bound to a spawn handle of a Unit-returning async func" {
+  val t = spawn spawnedUnitWork(10)
+  assertTrue(taskWaitMs(t, 10000), "the spawned Unit-returning task completes within the budget")
+}
+
+test "generic extern receiver bound to a spawn handle of a value-returning async func" {
+  val t = spawn spawnedIntWork(10)
+  assertTrue(taskWaitMs(t, 10000), "the spawned Int-returning task completes within the budget")
+  assertEqualInt(await t, 41, "the handle still awaits to the callee's result after the bounded wait")
+}
+
+test "generic extern receiver on a spawn handle reports a timeout as false and keeps the task" {
+  val t = spawn spawnedIntWork(400)
+  assertFalse(taskWaitMs(t, 1), "a 1 ms wait on a 400 ms task times out")
+  assertTrue(taskWaitMs(t, 10000), "the same task completes on a later, longer wait")
+  assertEqualInt(await t, 41, "the task's result is intact after the timed-out wait")
+}
+
+test "generic extern receiver bound to a spawn call used directly as the argument" {
+  assertTrue(taskWaitMs(spawn spawnedUnitWork(10), 10000), "a spawn expression passed straight to the generic")
+}
+
+test "generic extern receiver bound to a parenthesised spawn operand" {
+  val t = spawn (spawnedIntWork(10))
+  assertTrue(taskWaitMs(t, 10000), "spawn of a parenthesised async call still hands the generic a task")
+  assertEqualInt(await t, 41, "the handle awaits to the callee's result")
 }
