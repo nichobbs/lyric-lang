@@ -43,6 +43,13 @@ func atMostTenth(x: in Float): Bool
   true
 }
 
+union Shape {
+  case Circle(r: Float)
+  case Rect(w: Float, h: Float)
+}
+
+func radius(s: in Shape): Float = match s { case Circle(r) -> r; case Rect(w, _) -> w }
+
 record Small {
   v: Float
   invariant: v <= 0.1
@@ -192,4 +199,10 @@ test "NaN compares unordered" {
   assertTrue(nan != nan, "NaN is not equal to itself")
   assertTrue(not (nan < 1.0f32), "NaN is not less than 1")
   assertEqual("${nan}", "NaN", "NaN renders as NaN")
+}
+
+test "an unsuffixed literal is a Float in a union case argument" {
+  assertTrue(radius(Shape.Circle(r = 0.1)) == 0.1f32, "named case argument")
+  assertTrue(radius(Circle(r = 2.5)) == 2.5f32, "unqualified case")
+  assertTrue(radius(Shape.Rect(w = 0.3, h = 1.0)) == 0.3f32, "two fields")
 }

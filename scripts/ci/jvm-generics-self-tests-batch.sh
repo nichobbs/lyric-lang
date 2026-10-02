@@ -98,6 +98,7 @@ for t in \
   lyric-compiler/lyric/overflow_panic_self_test.l \
   lyric-compiler/lyric/record_eq_self_test.l \
   lyric-compiler/lyric/byvalue_record_self_test.l \
+  lyric-compiler/lyric/inline_union_self_test.l \
   lyric-compiler/lyric/unsigned_typed_ops_self_test.l \
   lyric-compiler/lyric/unsigned_literal_max_self_test.l \
   lyric-compiler/lyric/signed_literal_suffix_range_self_test.l \
