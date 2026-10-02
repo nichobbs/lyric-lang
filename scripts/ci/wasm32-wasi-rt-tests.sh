@@ -56,4 +56,5 @@ if [ ! -x "$lyric_bin" ]; then
   exit 1
 fi
 export WASI_SDK_PATH="$wasi_dir" WASMTIME="$wasmtime_dir/wasmtime"
+export LYRIC_RT_WASM32_PATH="$PWD/lyric-rt/build-wasm32-wasi/lyric_rt.a"
 LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/llvm_wasm32_self_test.l
