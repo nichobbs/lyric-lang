@@ -143,7 +143,7 @@ func exclusionReason(unit: in CodegenUnit, fn: in FunctionDecl): String {
       case PMIn -> ()
       case _ -> return "parameter '" + p.name + "' is out/inout"
     }
-    if kindOf(p.ty).length == 0 {
+    if kindOf(p.ty).length == 0 or kindOf(p.ty) == "Unit" {
       return "parameter '" + p.name + "' has a type the module shape cannot pass"
     }
     i = i + 1
