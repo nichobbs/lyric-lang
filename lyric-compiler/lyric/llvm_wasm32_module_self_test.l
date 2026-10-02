@@ -385,3 +385,119 @@ console.log('code=' + code + ' waited=' + (dt >= 35));
   assertEqualInt(r.exitCode, 0, "node exits cleanly: " + r.stderr)
   assertTrue(Str.contains(r.stdout, "code=3 waited=true\n"), "main sleeps 40ms then returns 3: " + r.stdout)
 }
+
+val hostImportProgram: String = r#"package Probe
+
+@wasmImport("host")
+extern func hostAdd(a: Int, b: Int): Int = "add"
+
+@wasmImport("host")
+extern func hostShout(s: String): String = "shout"
+
+@wasmImport("host")
+extern func hostBig(x: Long): Long = "big"
+
+@wasmImport("host")
+extern func hostFlag(b: Bool): Bool = "flag"
+
+@wasmImport("ui")
+extern func hostLog(msg: String): Unit = "log"
+
+pub func viaHost(x: Int): Int {
+  hostAdd(x, 100)
+}
+
+pub func shoutIt(s: String): String {
+  hostShout(s) + "?"
+}
+
+pub func bigIt(x: Long): Long {
+  hostBig(x)
+}
+
+pub func flagIt(b: Bool): Bool {
+  hostFlag(b)
+}
+
+pub func logIt(m: String): Unit {
+  hostLog(m)
+}
+"#
+
+test "wasm32 module: @wasmImport externs call the JS the host passes to instantiate" {
+  val r = runNode(
+    hostImportProgram,
+    r"import { instantiate } from './prog.js';
+const log = [];
+const m = await instantiate(undefined, { imports: {
+  host: { add: (a, b) => a + b, shout: (s) => s.toUpperCase() + '!', big: (x) => x * 2n, flag: (b) => !b },
+  ui: { log: (t) => log.push(t) },
+} });
+console.log('via=' + m.viaHost(5));
+console.log('shout=' + m.shoutIt('wörld'));
+console.log('big=' + m.bigIt(21n) + ' ' + typeof m.bigIt(1n));
+console.log('flag=' + m.flagIt(true) + ',' + m.flagIt(false));
+m.logIt('one'); m.logIt('two');
+console.log('log=' + log.join('|'));
+"
+  )
+  assertEqualInt(r.exitCode, 0, "node exits cleanly: " + r.stderr)
+  assertTrue(Str.contains(r.stdout, "via=105\n"), "Int import: " + r.stdout)
+  assertTrue(Str.contains(r.stdout, "shout=WÖRLD!?\n"), "String in and out of a host import: " + r.stdout)
+  assertTrue(Str.contains(r.stdout, "big=42 bigint\n"), "Long import as bigint: " + r.stdout)
+  assertTrue(Str.contains(r.stdout, "flag=false,true\n"), "Bool import: " + r.stdout)
+  assertTrue(Str.contains(r.stdout, "log=one|two\n"), "Unit import in another module: " + r.stdout)
+}
+
+test "wasm32 module: a missing host import is reported by name at instantiate" {
+  val r = runNode(
+    hostImportProgram,
+    r"import { instantiate } from './prog.js';
+try {
+  await instantiate(undefined, { imports: { host: { add: (a, b) => a + b } } });
+  console.log('instantiated');
+} catch (e) {
+  console.log('error=' + e.message);
+}
+"
+  )
+  assertEqualInt(r.exitCode, 0, "node exits cleanly: " + r.stderr)
+  assertTrue(Str.contains(r.stdout, "missing host imports"), "names the problem: " + r.stdout)
+  assertTrue(
+    Str.contains(r.stdout, "ui.log") and Str.contains(r.stdout, "host.shout"),
+    "lists the missing imports: " + r.stdout
+  )
+}
+
+test "wasm32 module: the .d.ts types the host imports" {
+  val b = buildModule(hostImportProgram, "wasm32-wasi")
+  assertTrue(b.ok, "the module builds")
+  val dts = readGenerated(b.dir, "prog.d.ts")
+  assertTrue(Str.contains(dts, "export interface LyricHostImports"), "an imports interface: " + dts)
+  assertTrue(Str.contains(dts, "add(a: number, b: number): number;"), "host.add is typed: " + dts)
+  assertTrue(Str.contains(dts, "shout(s: string): string;"), "host.shout is typed: " + dts)
+  assertTrue(Str.contains(dts, "log(msg: string): void;"), "ui.log is typed: " + dts)
+}
+
+test "wasm32 module: @wasmImport without the module shape is N0015" {
+  if Environment.getVarOrDefault("WASI_SDK_PATH", "").length == 0 {
+    panic("WASI_SDK_PATH is not set")
+  }
+  val stdlib = findStdlibSourcesNative()
+  val dir = Path.join(tempBase(), "lyric-wasm32-module-" + Uuid.uuidToString(Uuid.newUuid()))
+  val _ = File.createDir(dir)
+  val flags: List[String] = newList()
+  val ok = compileToNativeWithShape(
+    hostImportProgram,
+    Path.join(dir, "prog.wasm"),
+    stdlib,
+    "wasm32-wasi",
+    "2",
+    flags,
+    newList(),
+    "",
+    true,
+    ""
+  )
+  assertFalse(ok, "a plain wasm32 build cannot satisfy a host import")
+}

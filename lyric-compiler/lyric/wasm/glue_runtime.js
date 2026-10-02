@@ -270,9 +270,35 @@ export async function instantiate(source, options = {}) {
       imports[imp.module][imp.name] = wasi[imp.name] || (() => ERRNO_NOSYS);
     }
   }
-  if (options.imports) {
-    for (const [ns, members] of Object.entries(options.imports)) {
-      imports[ns] = Object.assign(imports[ns] || {}, members);
+  // Host imports declared with `@wasmImport("module")`: the JS function the host
+  // passes in `options.imports[module][name]` receives decoded values (a String
+  // as a JS string, a Long as a bigint) and returns a decoded result; these
+  // wrappers lower and lift around it.  Names not declared that way are raw wasm
+  // imports and pass through unchanged.
+  const hostFns = options.imports || {};
+  const declared = new Set(LYRIC_IMPORTS.map((imp) => imp.module + '\u0000' + imp.name));
+  const missingHost = [];
+  for (const imp of LYRIC_IMPORTS) {
+    const fn = hostFns[imp.module] && hostFns[imp.module][imp.name];
+    if (typeof fn !== 'function') {
+      missingHost.push(imp.module + '.' + imp.name);
+      continue;
+    }
+    if (!imports[imp.module]) imports[imp.module] = {};
+    imports[imp.module][imp.name] = (...wasmArgs) => {
+      const decoded = imp.params.map((kind, i) => liftHostArg(kind, wasmArgs[i]));
+      return lowerHostResult(imp.ret, fn(...decoded));
+    };
+  }
+  if (missingHost.length > 0) {
+    throw new Error('missing host import' + (missingHost.length > 1 ? 's' : '') + ' ' +
+      missingHost.join(', ') + ' (pass ' + (missingHost.length > 1 ? 'them' : 'it') + ' in options.imports)');
+  }
+  for (const [ns, members] of Object.entries(hostFns)) {
+    for (const [name, value] of Object.entries(members)) {
+      if (!declared.has(ns + '\u0000' + name)) {
+        imports[ns] = Object.assign(imports[ns] || {}, { [name]: value });
+      }
     }
   }
   for (const imp of WebAssembly.Module.imports(module)) {
@@ -289,8 +315,6 @@ export async function instantiate(source, options = {}) {
     throw new Error('this glue was generated for lyric wasm ABI ' + LYRIC_ABI_VERSION +
       ' but the module reports ' + (raw.lyric_wasm_abi_version ? raw.lyric_wasm_abi_version() : 'none'));
   }
-  if (typeof raw._initialize === 'function') raw._initialize();
-
   const readString = (strPtr) => {
     const len = raw.lyric_wasm_string_len(strPtr);
     const data = raw.lyric_wasm_string_data(strPtr);
@@ -304,6 +328,34 @@ export async function instantiate(source, options = {}) {
     raw.lyric_wasm_free(buf);
     return s;
   };
+
+  // Host imports: a wasm value to the JS value the host function receives, and
+  // the host's result back to a wasm value (a String result is a fresh Lyric
+  // String the calling code then owns).
+  function liftHostArg(kind, value) {
+    switch (kind) {
+      case 'Int': return value | 0;
+      case 'Byte': return value & 0xff;
+      case 'Long': return value;
+      case 'Bool': return value !== 0;
+      case 'Float': case 'Double': return value;
+      case 'String': return readString(value);
+      default: throw new Error('unsupported host parameter kind ' + kind);
+    }
+  }
+  function lowerHostResult(kind, value) {
+    switch (kind) {
+      case 'Unit': return undefined;
+      case 'Int': return value | 0;
+      case 'Byte': return value & 0xff;
+      case 'Long': return BigInt.asIntN(64, BigInt(value));
+      case 'Bool': return value ? 1 : 0;
+      case 'Float': return Math.fround(value);
+      case 'Double': return +value;
+      case 'String': return newString(String(value));
+      default: throw new Error('unsupported host result kind ' + kind);
+    }
+  }
 
   const lowerArg = (kind, value, owned) => {
     switch (kind) {
@@ -448,5 +500,6 @@ export async function instantiate(source, options = {}) {
       }
     };
   }
+  if (typeof raw._initialize === 'function') raw._initialize();
   return lyric;
 }

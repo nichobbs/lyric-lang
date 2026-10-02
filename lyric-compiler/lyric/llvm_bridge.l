@@ -1537,6 +1537,25 @@ func linkAndEmitNative(
     return false
   }
   val wasmExports = if isModule { collectWasmExportsOf(units, ownUnits) } else { collectWasmExportsOf(units, 0) }
+  var ui = 0
+  while ui < units.count {
+    if units[ui].wasmImports.count > 0 and not isModule {
+      Console.error(
+        "error[N0015]: package " + units[ui].pkgName +
+          " declares a @wasmImport extern func, which only a --shape module build can satisfy (build with --triple wasm32-wasi --shape module)"
+      )
+      return false
+    }
+    ui = ui + 1
+  }
+  if wasmExports.importErrors.count > 0 {
+    var ii = 0
+    while ii < wasmExports.importErrors.count {
+      Console.error(wasmExports.importErrors[ii])
+      ii = ii + 1
+    }
+    return false
+  }
 
   val npkg = codegenNativeBundle(units, effTriple)
   val ll = lowerNativePackage(npkg)
@@ -1852,6 +1871,7 @@ func unitOf(f: in SourceFile, reachable: in Map[String, Bool], lowerAll: in Bool
   val fns: List[FunctionDecl] = newList()
   val externs: List[ExternFuncDecl] = newList()
   val nativeLibs: List[String] = newList()
+  val wasmImports: List[WasmImportDecl] = newList()
   val records: List[RecordDecl] = newList()
   val opaqueNames: List[String] = newList()
   val unions: List[UnionDecl] = newList()
@@ -1885,6 +1905,7 @@ func unitOf(f: in SourceFile, reachable: in Map[String, Bool], lowerAll: in Bool
         if lowerAll or reachable.containsKey(id) {
           externs.add(decl)
           addExternLibrary(nativeLibs, f.items[i].annotations)
+          addWasmImport(wasmImports, decl.symbol, f.items[i].annotations)
         }
       }
       case IRecord(decl) -> {
@@ -1943,6 +1964,7 @@ func unitOf(f: in SourceFile, reachable: in Map[String, Bool], lowerAll: in Bool
     fns = fns,
     externs = externs,
     nativeLibs = nativeLibs,
+    wasmImports = wasmImports,
     records = records,
     opaqueNames = opaqueNames,
     unions = unions,
