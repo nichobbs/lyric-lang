@@ -373,6 +373,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/quantifier_ident_self_test.l \
 	lyric-compiler/lyric/range_subtype_self_test.l \
 	lyric-compiler/lyric/record_field_closure_self_test.l \
+	lyric-compiler/lyric/record_arith_self_test.l \
 	lyric-compiler/lyric/record_option_field_self_test.l \
 	lyric-compiler/lyric/record_semantics_self_test.l \
 	lyric-compiler/lyric/release_self_test.l \

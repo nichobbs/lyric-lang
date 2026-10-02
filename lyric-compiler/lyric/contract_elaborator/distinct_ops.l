@@ -112,3 +112,98 @@ func rewriteDistinctCompound(s: in Statement, sites: in Map[String, String]): St
     case _ -> s
   }
 }
+
+// Derived component-wise arithmetic on a homogeneous numeric record (D155):
+//
+//   a + b   ->   {
+//                  val __lyric_ra_<s>_<e>_l: R = a
+//                  val __lyric_ra_<s>_<e>_r: R = b
+//                  R(x = <l>.x + <r>.x, y = <l>.y + <r>.y, ...)
+//                }
+//
+// so each operand is evaluated once, left to right, and `r += s` becomes
+// `r = <the same block>` (the checker allows only a variable or field target
+// there).  The temporaries are typed so a backend that erases an unannotated
+// local (the JVM) can read the fields back.
+pub func lowerRecordArith(file: in SourceFile, sites: in Map[String, RecordArithSite]): SourceFile {
+  if sites.count == 0 {
+    return file
+  }
+  mapFileAndContracts(
+    file,
+    { e: Expr -> rewriteRecordBinop(e, sites) },
+    { s: Statement -> rewriteRecordCompound(s, sites) }
+  )
+}
+
+func rewriteRecordBinop(e: in Expr, sites: in Map[String, RecordArithSite]): Expr {
+  match e.kind {
+    case EBinop(_, lhs, rhs) -> match mapGet(sites, recordCopySiteKey(e.span)) {
+      case Some(site) -> recordArithBlock(site, lhs, rhs, e.span)
+      case None -> e
+    }
+    case _ -> e
+  }
+}
+
+func rewriteRecordCompound(s: in Statement, sites: in Map[String, RecordArithSite]): Statement {
+  match s.kind {
+    case SAssign(target, op, value) -> match op {
+      case AssEq -> s
+      case _ -> match mapGet(sites, recordCopySiteKey(s.span)) {
+        case Some(site) -> mkStmt(
+          SAssign(
+            target = target,
+            op = AssEq,
+            value = recordArithBlock(
+              site,
+              target,
+              value,
+              s.span
+            )
+          ),
+          s.span
+        )
+        case None -> s
+      }
+    }
+    case _ -> s
+  }
+}
+
+func recordArithBlock(site: in RecordArithSite, lhs: in Expr, rhs: in Expr, sp: in Span): Expr {
+  val wsp = syntheticSpan(sp)
+  val base = "__lyric_ra_" + toString(sp.startPos.offset) + "_" + toString(sp.endPos.offset)
+  val lName = base + "_l"
+  val rName = base + "_r"
+  val stmts: List[Statement] = newList()
+  stmts.add(typedVal(lName, site.recordType, lhs, wsp))
+  stmts.add(typedVal(rName, site.recordType, rhs, wsp))
+  val args: List[CallArg] = newList()
+  for f in site.fields {
+    val lf = mkExpr(EMember(receiver = localPath(lName, wsp), memberName = f), wsp)
+    val rf = mkExpr(EMember(receiver = localPath(rName, wsp), memberName = f), wsp)
+    args.add(CANamed(name = f, value = mkExpr(EBinop(op = site.op, lhs = lf, rhs = rf), wsp), span = wsp))
+  }
+  val parts = Str.split(site.recordName, ".")
+  val segs: List[String] = newList()
+  var i = 0
+  while i < parts.length {
+    segs.add(parts[i])
+    i = i + 1
+  }
+  val ctor = mkExpr(ECall(fn = mkExpr(EPath(path = ModulePath(segments = segs, span = wsp)), wsp), args = args), wsp)
+  stmts.add(mkStmt(SExpr(expr = ctor), wsp))
+  mkExpr(EBlock(block = Block(statements = stmts, span = wsp)), wsp)
+}
+
+func typedVal(name: in String, ty: in Option[TypeExpr], init: in Expr, sp: in Span): Statement {
+  val pat = Pattern(kind = PBinding(name = name, inner = None), span = sp)
+  mkStmt(SLocal(binding = LBVal(pat = pat, ty = ty, init = init)), sp)
+}
+
+func localPath(name: in String, sp: in Span): Expr {
+  val segs: List[String] = newList()
+  segs.add(name)
+  mkExpr(EPath(path = ModulePath(segments = segs, span = sp)), sp)
+}

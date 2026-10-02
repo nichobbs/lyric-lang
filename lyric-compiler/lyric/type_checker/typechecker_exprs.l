@@ -1447,6 +1447,39 @@ func recordDistinctArith(tbl: in SymbolTable, lhs: in Type, rhs: in Type, span: 
   }
 }
 
+// Derived component-wise arithmetic on a homogeneous numeric record (D155):
+// both operands are one record type that derives `Add` / `Sub`.  The
+// declaration's own shape is checked by `checkRecordArithDerives` (T0152).
+pub func recordRecordArith(tbl: in SymbolTable, lhs: in Type, rhs: in Type, op: in BinOp, span: in Span): Unit {
+  if not typeEquiv(lhs, rhs) {
+    return
+  }
+  match lhs {
+    case TyUser(tid, _, _) -> match recordSymbolOfTid(tbl, tid) {
+      case Some(rs) -> {
+        val decl = match rs.kind { case DKRecord(_, rd) -> rd; case DKExposedRec(_, rd) -> rd; case _ -> return }
+        val names: List[String] = newList()
+        for m in decl.members {
+          match m {
+            case RMField(fd) -> names.add(fd.name)
+            case _ -> ()
+          }
+        }
+        val ctorPath = if rs.isImported and rs.originPackage.length > 0 { rs.originPackage + "." + rs.name } else { rs.name }
+        val key = recordCopySiteKey(span)
+        if not tbl.recordArithSites.containsKey(key) {
+          tbl.recordArithSites.add(
+            key,
+            RecordArithSite(recordName = ctorPath, fields = names, recordType = typeExprForRef(tbl, lhs, span), op = op)
+          )
+        }
+      }
+      case None -> ()
+    }
+    case _ -> ()
+  }
+}
+
 // `==`/`!=` or a derived comparison on two values of one distinct type.
 func recordDistinctCompare(tbl: in SymbolTable, lhs: in Type, rhs: in Type, span: in Span): Unit {
   if typeEquiv(lhs, rhs) {
@@ -1470,6 +1503,7 @@ func inferBinop(
       val lhsOk = isNumericType(lhs) or hasDerive(tbl, "Add", lhs)
       if not isNumericType(lhs) and hasDerive(tbl, "Add", lhs) {
         recordDistinctArith(tbl, lhs, rhs, span)
+        recordRecordArith(tbl, lhs, rhs, BAdd, span)
       }
       if not lhsOk {
         diag.add(
@@ -1500,6 +1534,7 @@ func inferBinop(
       val lhsOk = isNumericType(lhs) or hasDerive(tbl, "Sub", lhs)
       if not isNumericType(lhs) and hasDerive(tbl, "Sub", lhs) {
         recordDistinctArith(tbl, lhs, rhs, span)
+        recordRecordArith(tbl, lhs, rhs, BSub, span)
       }
       if not lhsOk {
         diag.add(

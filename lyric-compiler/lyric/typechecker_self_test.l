@@ -3179,6 +3179,34 @@ test "where bound satisfied ok" {
   assertTrue(not hasDiagCode(cr, "T0108"), "where-bound Add satisfied by @derive(Add): no T0108")
 }
 
+// Component-wise derives on records (D155): only Add and Sub, only on a
+// non-generic record whose fields share one numeric primitive type and which
+// has no invariant (T0152).
+test "a homogeneous numeric record may derive Add and Sub" {
+  val src = "package P\n@derive(Add, Sub)\nrecord V { x: Float\n y: Float }\nfunc f(a: in V, b: in V): V { a + b - b }\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "Vec2-shaped record")
+}
+
+test "record arithmetic derives outside the homogeneous numeric shape are T0152" {
+  val mixed = "package P\n@derive(Add)\nrecord V { x: Float\n y: Double }\n"
+  assertTrue(hasDiagCode(parseCheck(mixed), "T0152"), "mixed field types")
+  val nonNumeric = "package P\n@derive(Sub)\nrecord V { x: Int\n name: String }\n"
+  assertTrue(hasDiagCode(parseCheck(nonNumeric), "T0152"), "a String field")
+  val mul = "package P\n@derive(Mul)\nrecord V { x: Int }\n"
+  assertTrue(hasDiagCode(parseCheck(mul), "T0152"), "Mul")
+  val generic1 = "package P\n@derive(Add)\nrecord V[T] { x: T }\n"
+  assertTrue(hasDiagCode(parseCheck(generic1), "T0152"), "generic record")
+  val inv = "package P\n@derive(Add)\nrecord V { x: Int\n invariant: x >= 0 }\n"
+  assertTrue(hasDiagCode(parseCheck(inv), "T0152"), "a record with an invariant")
+  val empty = "package P\n@derive(Add)\nrecord V { }\n"
+  assertTrue(hasDiagCode(parseCheck(empty), "T0152"), "no fields")
+}
+
+test "compound arithmetic on a record needs a variable or field target" {
+  val src = "package P\n@derive(Add)\nrecord V { x: Int }\nrecord W { var v: V }\nfunc g(): W { W(v = V(x = 0)) }\nfunc f(v: in V) { g().v += v }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0134"), "a field of a call result")
+}
+
 test "where bound not satisfied rejected" {
   val src = "package P\nrecord Plain { value: Int }\nfunc add2[T](a: in T, b: in T): T where T: Add { default() }\nfunc f(): Plain { add2(Plain(value = 1), Plain(value = 2)) }\n"
   val cr = parseCheck(src)

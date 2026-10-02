@@ -3,7 +3,8 @@
 **Status:** Specced in D155 (phase G0): Q-GFX-001 to Q-GFX-004 are
 resolved, `docs/01` specifies the §4 language features as not yet
 implemented, and `docs/00` / `docs/04` carry the §4.9 revisions. Phases G1
-to G10 are open; G1's 32-bit `Float` (§4.1) has shipped on every backend.
+to G10 are open; G1's 32-bit `Float` (§4.1) and component-wise record
+arithmetic (§4.6) have shipped on every backend.
 D156 and D157 resolve Q-GFX-005 to Q-GFX-010 (§10).
 
 **Builds on:** `native/plan/` (the LLVM backend, D-N-001 onward),
@@ -287,7 +288,13 @@ mechanism:
 - Everything that is not component-wise between equal types is a method:
   `v.scale(s)`, `a.dot(b)`, `a.cross(b)`, `m.mul(n)`, `m.transform(v)`.
 
-Whether this extension is acceptable is Q-GFX-004. SIMD stays as `docs/04`
+Whether this extension is acceptable is Q-GFX-004 (resolved yes, D155).
+**Shipped (G1):** `@derive(Add, Sub)` on a non-generic record whose fields
+share one numeric primitive type and which has no invariant; other derives
+and shapes are T0152. The checker records each operator and
+`Lyric.ContractElaborator.lowerRecordArith` rewrites it to a constructor over
+the fields before any backend runs (`record_arith_self_test.l`, all three
+targets). SIMD stays as `docs/04`
 says: no intrinsics. Clang's SLP vectoriser handles small by-value float
 records reasonably well. A portable `vector[N, T]` type lowering to LLVM
 vectors is a later option, considered only if benchmarks show the

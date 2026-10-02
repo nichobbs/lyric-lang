@@ -3335,6 +3335,12 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/float32_self_test.l
+      # Component-wise derives Add, Sub on homogeneous numeric records (D155).
+      - name: Record arithmetic self-test (native lyric test)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/record_arith_self_test.l
       - name: Distinct-type collection self-test (native lyric test)
         if: ${{ !cancelled() }}
         background: true
@@ -5519,6 +5525,11 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/float32_self_test.l
+      - name: Record arithmetic self-test on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/record_arith_self_test.l
       - name: Distinct-type collection self-test on JVM (native lyric test --target jvm)
         if: ${{ !cancelled() }}
         background: true
