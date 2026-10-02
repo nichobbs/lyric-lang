@@ -700,11 +700,6 @@ pub func shapeUnsupportedError(shape: in BuildShape, target: in Emitter.CompileT
         "self-contained native binary."
       Some(value = msg)
     }
-    case SComponent -> {
-      val msg = "error[F0044]: --shape component is not implemented yet (docs/35 W4). " +
-        "Use --shape module for a browser/JS-host module plus generated glue."
-      Some(value = msg)
-    }
     case _ -> None
   }
 }
