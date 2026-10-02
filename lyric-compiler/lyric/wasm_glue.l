@@ -241,6 +241,13 @@ func collectUnitImports(unit: in CodegenUnit, imports: in List[WasmImport], erro
 /// The exports of the program's own units (`units[0 until ownUnits]`).  Two
 /// packages exporting the same bare name keep the first and note the second.
 pub func collectWasmExportsOf(units: in List[CodegenUnit], ownUnits: in Int): WasmExportSet {
+  collectWasmExportsOfShaped(units, ownUnits, false)
+}
+
+/// As `collectWasmExportsOf`; `perPackage` scopes the duplicate-name check to
+/// one package (the component shape renders one WIT interface per package, so
+/// the same name in two packages is not ambiguous there).
+pub func collectWasmExportsOfShaped(units: in List[CodegenUnit], ownUnits: in Int, perPackage: in Bool): WasmExportSet {
   val exports: List[WasmExport] = newList()
   val notes: List[String] = newList()
   val seen: Map[String, Bool] = newMap()
@@ -262,13 +269,14 @@ pub func collectWasmExportsOf(units: in List[CodegenUnit], ownUnits: in Int): Wa
     var ei = 0
     while ei < one.exports.count {
       val e = one.exports[ei]
-      if seen.containsKey(e.jsName) {
+      val key = if perPackage { e.wasmName } else { e.jsName }
+      if seen.containsKey(key) {
         notes.add(
           "warning[W0040]: pub func " + e.wasmName + " is not exported to JS: another package already exports '" + e.jsName +
             "'"
         )
       } else {
-        seen.add(e.jsName, true)
+        seen.add(key, true)
         exports.add(e)
       }
       ei = ei + 1

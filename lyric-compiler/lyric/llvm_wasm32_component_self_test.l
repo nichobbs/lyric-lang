@@ -64,6 +64,17 @@ pub func shout(name: String): String {
 pub func echo(s: String): String {
   s
 }
+
+pub func byteEcho(b: Byte): Byte {
+  b
+}
+
+pub func third(x: Float): Float {
+  x / 3.0
+}
+
+pub func nothing(): Unit {
+}
 "#
 
 func buildComponent(): String {
@@ -119,6 +130,10 @@ test "wasm32 component: validates, prints the generated WIT, and runs through jc
   assertTrue(Str.contains(w.stdout, "shout: func(name: string) -> string"), "WIT has shout: " + w.stdout)
   assertTrue(Str.contains(w.stdout, "big: func(x: s64) -> s64"), "WIT has big: " + w.stdout)
 
+  assertTrue(Str.contains(w.stdout, "byte-echo: func(b: u8) -> u8"), "WIT has byte-echo: " + w.stdout)
+  assertTrue(Str.contains(w.stdout, "third: func(x: f32) -> f32"), "WIT has third: " + w.stdout)
+  assertTrue(Str.contains(w.stdout, "nothing: func()"), "WIT has nothing: " + w.stdout)
+
   val outDir = Path.join(dir, "js")
   val jargs: List[String] = newList()
   jargs.add("transpile")
@@ -143,6 +158,9 @@ console.log('negate=' + p.negate(true));
 console.log('half=' + p.half(5));
 console.log('shout=' + p.shout('wörld ☃'));
 console.log('echo=' + p.echo(''));
+console.log('byte=' + p.byteEcho(200));
+console.log('third=' + p.third(3));
+console.log('nothing=' + p.nothing());
 console.log('loop=' + [1, 2, 3].map((i) => p.echo('x'.repeat(i * 1000)).length).join(','));
 "
   val scriptPath = Path.join(dir, "run.mjs")
@@ -157,6 +175,9 @@ console.log('loop=' + [1, 2, 3].map((i) => p.echo('x'.repeat(i * 1000)).length).
   assertTrue(Str.contains(n.stdout, "half=2.5"), "half: " + n.stdout)
   assertTrue(Str.contains(n.stdout, "shout=hello, wörld ☃!"), "shout: " + n.stdout)
   assertTrue(Str.contains(n.stdout, "echo=\n"), "echo empty: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "byte=200"), "byte: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "third=1\n"), "third: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "nothing=undefined"), "nothing: " + n.stdout)
   assertTrue(Str.contains(n.stdout, "loop=1000,2000,3000"), "loop: " + n.stdout)
 }
 
@@ -184,4 +205,36 @@ test "wasm32 component: a missing adapter is N0016, not a crash" {
   )
   val _r = Environment.setVar("LYRIC_WASI_ADAPTER", saved)
   assertFalse(ok, "component build without an adapter must fail")
+}
+
+test "wasm32 component: @wasmImport is refused with N0017" {
+  val _w = envOrPanic("WASI_SDK_PATH")
+  val stdlib = findStdlibSourcesNative()
+  val dir = Path.join(
+    Environment.getVarOrDefault("TMPDIR", "/tmp"),
+    "lyric-wasm32-component-import-" + Uuid.uuidToString(Uuid.newUuid())
+  )
+  val _d = File.createDir(dir)
+  val flags: List[String] = newList()
+  val ok = compileToNativeWithShape(
+    r#"package Probe
+
+@wasmImport("ui")
+extern func hostLog(msg: String): Unit = "log"
+
+pub func go(): Unit {
+  hostLog("x")
+}
+"#,
+    Path.join(dir, "prog.wasm"),
+    stdlib,
+    "wasm32-wasi",
+    "2",
+    flags,
+    newList(),
+    "",
+    true,
+    "component"
+  )
+  assertFalse(ok, "a component build cannot carry a host import yet (N0017)")
 }
