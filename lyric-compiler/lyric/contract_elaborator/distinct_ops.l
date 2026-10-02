@@ -226,10 +226,17 @@ func recordEqBlock(site: in RecordEqSite, lhs: in Expr, rhs: in Expr, sp: in Spa
   val stmts: List[Statement] = newList()
   stmts.add(typedVal(lName, site.recordType, lhs, wsp))
   stmts.add(typedVal(rName, site.recordType, rhs, wsp))
+  // Each nested record level is bound once per side to a temporary of its
+  // type: a backend that erases generic fields cannot read a member off an
+  // untyped intermediate value.
+  val lLevels: Map[String, String] = newMap()
+  val rLevels: Map[String, String] = newMap()
   var cmp = mkExpr(ELiteral(lit = LBool(value = true)), wsp)
   var first = true
   for path in site.paths {
-    val leaf = mkExpr(EBinop(op = BEq, lhs = memberChain(lName, path, wsp), rhs = memberChain(rName, path, wsp)), wsp)
+    val lhsLeaf = leafRead(lName, path, site.levelTypes, lLevels, stmts, wsp)
+    val rhsLeaf = leafRead(rName, path, site.levelTypes, rLevels, stmts, wsp)
+    val leaf = mkExpr(EBinop(op = BEq, lhs = lhsLeaf, rhs = rhsLeaf), wsp)
     cmp = if first { leaf } else { mkExpr(EBinop(op = BAnd, lhs = cmp, rhs = leaf), wsp) }
     first = false
   }
@@ -242,10 +249,41 @@ func recordEqBlock(site: in RecordEqSite, lhs: in Expr, rhs: in Expr, sp: in Spa
   mkExpr(EBlock(block = Block(statements = stmts, span = wsp)), wsp)
 }
 
-func memberChain(local: in String, path: in List[String], sp: in Span): Expr {
+// The read of the leaf at `path` off operand `local`, binding each nested
+// record level `levelTypes` names to a typed temporary the first time a path
+// goes through it (`levels` maps a level's dotted path to its temporary).
+func leafRead(
+  local: in String,
+  path: in List[String],
+  levelTypes: in Map[String, TypeExpr],
+  levels: in Map[String, String],
+  stmts: in List[Statement],
+  sp: in Span,
+): Expr {
   var e = localPath(local, sp)
-  for seg in path {
+  var dotted = ""
+  var i = 0
+  while i < path.count {
+    val seg = path[i]
+    dotted = if dotted.length == 0 { seg } else { dotted + "." + seg }
     e = mkExpr(EMember(receiver = e, memberName = seg), sp)
+    if i < path.count - 1 {
+      match mapGet(levels, dotted) {
+        case Some(bound) -> {
+          e = localPath(bound, sp)
+        }
+        case None -> match mapGet(levelTypes, dotted) {
+          case Some(te) -> {
+            val name = local + "_" + toString(levels.count)
+            stmts.add(typedVal(name, Some(value = te), e, sp))
+            levels[dotted] = name
+            e = localPath(name, sp)
+          }
+          case None -> ()
+        }
+      }
+    }
+    i = i + 1
   }
   e
 }

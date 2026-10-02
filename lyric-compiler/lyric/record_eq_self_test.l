@@ -96,6 +96,8 @@ test "nested records, strings and distinct fields" {
 
 test "generic, empty and union-holding records" {
   assertTrue(Box(value = 7) == Box(value = 7), "Box[Int]")
+  assertTrue(Box(value = Box(value = 7)) == Box(value = Box(value = 7)), "Box[Box[Int]] compares both levels")
+  assertFalse(Box(value = Box(value = 7)) == Box(value = Box(value = 8)), "Box[Box[Int]] inner differs")
   assertFalse(Box(value = "a") == Box(value = "b"), "Box[String]")
   assertTrue(Empty() == Empty(), "no fields")
   assertTrue(Tagged(shape = Shape.Nothing) == Tagged(shape = Shape.Nothing), "a nullary union field")

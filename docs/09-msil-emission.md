@@ -251,7 +251,7 @@ scenarios that require explicit layouts, the user must define an
 
 > `==` and `!=` on records are lowered before codegen (D164): field by field for a record with no `var` field or one deriving `Equals`, identity otherwise. The overrides below are what the CLR runtime uses for its own equality (collections, union payloads); emitting them for every such record is tracked in #8003.
 
-Records have structural equality. The compiler emits:
+For the CLR's own equality (collections, union payloads), each such record is to carry (#8003):
 
 - `Equals(object)` and `Equals(SelfType)` — field-by-field equality.
 - `GetHashCode()` — combination via `HashCode.Combine`.

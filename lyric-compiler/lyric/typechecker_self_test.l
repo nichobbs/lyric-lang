@@ -3219,6 +3219,8 @@ test "compound arithmetic on a record without the derive is T0030" {
 test "== on a record with a function field is T0153" {
   val bad = "package P\nrecord H { f: (Int) -> Int }\nfunc g(a: in H, b: in H): Bool { a == b }\n"
   assertTrue(hasDiagCode(parseCheck(bad), "T0153"), "a function field")
+  val nested = "package P\nrecord Box[T] { value: T }\nrecord H { f: (Int) -> Int }\nfunc g(a: in Box[Box[H]], b: in Box[Box[H]]): Bool { a == b }\n"
+  assertTrue(hasDiagCode(parseCheck(nested), "T0153"), "a function field under a generic record nested in itself")
   val mutable = "package P\nrecord H { var f: (Int) -> Int }\nfunc g(a: in H, b: in H): Bool { a == b }\n"
   assertTrue(not hasDiagCode(parseCheck(mutable), "T0153"), "a mutable record keeps identity")
 }

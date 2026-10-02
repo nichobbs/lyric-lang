@@ -1521,8 +1521,9 @@ pub func recordRecordEq(
   }
   val paths: List[List[String]] = newList()
   val prefix: List[String] = newList()
+  val levelTypes: Map[String, TypeExpr] = newMap()
   val visiting: List[String] = newList()
-  match collectEqLeaves(tbl, span, lhs, prefix, paths, visiting) {
+  match collectEqLeaves(tbl, span, lhs, prefix, paths, levelTypes, visiting) {
     case Some(bad) -> diag.add(
       errorDiagnostic(
         "T0153",
@@ -1534,7 +1535,10 @@ pub func recordRecordEq(
     case None -> {
       val key = recordCopySiteKey(span)
       if not tbl.recordEqSites.containsKey(key) {
-        tbl.recordEqSites.add(key, RecordEqSite(paths = paths, recordType = typeExprForRef(tbl, lhs, span), negate = negate))
+        tbl.recordEqSites.add(
+          key,
+          RecordEqSite(paths = paths, levelTypes = levelTypes, recordType = typeExprForRef(tbl, lhs, span), negate = negate)
+        )
       }
     }
   }
@@ -1546,6 +1550,7 @@ func collectEqLeaves(
   t: in Type,
   prefix: in List[String],
   leaves: in List[List[String]],
+  levelTypes: in Map[String, TypeExpr],
   visiting: in List[String],
 ): Option[String] {
   val u = unrefine(t)
@@ -1554,11 +1559,24 @@ func collectEqLeaves(
     case _ -> ()
   }
   match u {
-    case TyUser(tid, name, args) -> {
-      if isStructuralEqRecord(tbl, u) and not listContainsStr(visiting, name) {
-        visiting.add(name)
+    case TyUser(tid, _, args) -> {
+      // The guard keys on the instantiated type, so `Box[Box[Int]]` expands
+      // both levels.  A record that reaches itself through its own fields has
+      // no finite value; its repeated occurrence is compared as a leaf, and so
+      // is any expansion nested deeper than `maxEqExpansionDepth`.
+      val key = renderType(u)
+      if isStructuralEqRecord(tbl, u) and not listContainsStr(visiting, key) and visiting.count < maxEqExpansionDepth() {
+        visiting.add(key)
+        if prefix.count > 0 {
+          match typeExprForRef(tbl, u, span) {
+            case Some(te) -> {
+              levelTypes[dottedPath(prefix)] = te
+            }
+            case None -> ()
+          }
+        }
         for f in fieldsOfRecordInstantiated(tbl, tid, args) {
-          val bad = collectEqLeaves(tbl, span, f.ty, extendPath(prefix, f.name), leaves, visiting)
+          val bad = collectEqLeaves(tbl, span, f.ty, extendPath(prefix, f.name), leaves, levelTypes, visiting)
           match bad {
             case Some(_) -> return bad
             case None -> ()
@@ -1569,7 +1587,7 @@ func collectEqLeaves(
       }
       val scratch: List[Diagnostic] = newList()
       match distinctMemberType(tbl, scratch, u, "value", span) {
-        case Some(under) -> return collectEqLeaves(tbl, span, under, extendPath(prefix, "value"), leaves, visiting)
+        case Some(under) -> return collectEqLeaves(tbl, span, under, extendPath(prefix, "value"), leaves, levelTypes, visiting)
         case None -> ()
       }
     }
@@ -1578,6 +1596,8 @@ func collectEqLeaves(
   leaves.add(prefix)
   None
 }
+
+func maxEqExpansionDepth(): Int = 32
 
 func dottedPath(segs: in List[String]): String {
   var joined = ""

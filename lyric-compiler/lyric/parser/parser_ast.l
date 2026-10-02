@@ -1222,10 +1222,14 @@ pub record RecordArithSite {
 /// `a == b` / `a != b` on a record that compares field by field (D164):
 /// `paths` lists the member paths compared at the leaves (a nested
 /// structural record expanded into its fields, a distinct type read through
-/// `value`), `recordType` the type to annotate the operand temporaries with,
+/// `value`), `levelTypes` the type of each nested record the expansion goes
+/// through, keyed by its dotted member path (`inner`, `inner.p`), so each
+/// level is bound to a typed temporary, `recordType` the type to annotate the
+/// operand temporaries with,
 /// and `negate` is set for `!=`.
 pub record RecordEqSite {
   paths: List[List[String]]
+  levelTypes: Map[String, TypeExpr]
   recordType: Option[TypeExpr]
   negate: Bool
 }
