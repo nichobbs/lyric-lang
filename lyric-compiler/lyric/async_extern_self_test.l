@@ -108,31 +108,41 @@ async func spawnedIntWork(ms: in Int): Int {
 }
 
 test "generic extern receiver bound to a spawn handle of a Unit-returning async func" {
-  val t = spawn spawnedUnitWork(10)
-  assertTrue(taskWaitMs(t, 10000), "the spawned Unit-returning task completes within the budget")
+  scope {
+    val t = spawn spawnedUnitWork(10)
+    assertTrue(taskWaitMs(t, 10000), "the spawned Unit-returning task completes within the budget")
+  }
 }
 
 test "generic extern receiver bound to a spawn handle of a value-returning async func" {
-  val t = spawn spawnedIntWork(10)
-  assertTrue(taskWaitMs(t, 10000), "the spawned Int-returning task completes within the budget")
-  assertEqualInt(await t, 41, "the handle still awaits to the callee's result after the bounded wait")
+  scope {
+    val t = spawn spawnedIntWork(10)
+    assertTrue(taskWaitMs(t, 10000), "the spawned Int-returning task completes within the budget")
+    assertEqualInt(await t, 41, "the handle still awaits to the callee's result after the bounded wait")
+  }
 }
 
 test "generic extern receiver on a spawn handle reports a timeout as false and keeps the task" {
-  val t = spawn spawnedIntWork(400)
-  assertFalse(taskWaitMs(t, 1), "a 1 ms wait on a 400 ms task times out")
-  assertTrue(taskWaitMs(t, 10000), "the same task completes on a later, longer wait")
-  assertEqualInt(await t, 41, "the task's result is intact after the timed-out wait")
+  scope {
+    val t = spawn spawnedIntWork(400)
+    assertFalse(taskWaitMs(t, 1), "a 1 ms wait on a 400 ms task times out")
+    assertTrue(taskWaitMs(t, 10000), "the same task completes on a later, longer wait")
+    assertEqualInt(await t, 41, "the task's result is intact after the timed-out wait")
+  }
 }
 
 test "generic extern receiver bound to a spawn call used directly as the argument" {
-  assertTrue(taskWaitMs(spawn spawnedUnitWork(10), 10000), "a spawn expression passed straight to the generic")
+  scope {
+    assertTrue(taskWaitMs(spawn spawnedUnitWork(10), 10000), "a spawn expression passed straight to the generic")
+  }
 }
 
 test "generic extern receiver bound to a parenthesised spawn operand" {
-  val t = spawn (spawnedIntWork(10))
-  assertTrue(taskWaitMs(t, 10000), "spawn of a parenthesised async call still hands the generic a task")
-  assertEqualInt(await t, 41, "the handle awaits to the callee's result")
+  scope {
+    val t = spawn (spawnedIntWork(10))
+    assertTrue(taskWaitMs(t, 10000), "spawn of a parenthesised async call still hands the generic a task")
+    assertEqualInt(await t, 41, "the handle awaits to the callee's result")
+  }
 }
 
 // The specialisation is over the task for any generic, not only an extern
@@ -143,9 +153,11 @@ func keepSecond[T](x: in T, n: in Int): Int {
 }
 
 test "an ordinary generic over a spawn handle specialises over the task" {
-  val a = spawn spawnedIntWork(10)
-  val b = spawn spawnedUnitWork(10)
-  assertEqualInt(keepSecond(a, 1), 1, "Int-returning handle")
-  assertEqualInt(keepSecond(b, 2), 2, "Unit-returning handle")
-  assertEqualInt(await a, 41, "the handle still awaits to its result")
+  scope {
+    val a = spawn spawnedIntWork(10)
+    val b = spawn spawnedUnitWork(10)
+    assertEqualInt(keepSecond(a, 1), 1, "Int-returning handle")
+    assertEqualInt(keepSecond(b, 2), 2, "Unit-returning handle")
+    assertEqualInt(await a, 41, "the handle still awaits to its result")
+  }
 }

@@ -1,6 +1,6 @@
 # 68. Structured tasks: a first-class `Task[T]`, scope-bound `spawn`, and bounded waits
 
-_Status: **Unbacked sketch** (proposed, not implemented). Extends docs/01 §7.1,
+_Status: **Partly implemented.** §4's `spawn`-only-inside-`scope` rule (`V0034`) shipped in D165; the rest is a proposed, unimplemented sketch. Extends docs/01 §7.1,
 §7.3 and §7.4 and decision D119. Open questions Q-TASK-001 to Q-TASK-008 are
 listed in §9._
 

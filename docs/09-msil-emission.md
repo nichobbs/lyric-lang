@@ -1114,11 +1114,11 @@ guarantee is enforced by the shared front-end via the **consumption rule**
 (**V0014**, D119 slice S2): a spawned task must be *consumed* — `await`ed,
 or joined by an enclosing `scope` — and a spawned task that is dropped
 (flows into a value position, or falls out of scope, without being
-awaited or scope-joined) is a compile error. This is *not* a strict
-"`spawn` only lexically inside `scope`" rule: the idiomatic
-`val t = spawn f(); … ; await t` (a bare `spawn` whose handle is later
-awaited) is well-formed and is what MSIL and native already run today
-(D-N-022). No fire-and-forget.
+awaited or scope-joined) is a compile error. Since V0034 (docs/68 §4) it
+*is* a strict "`spawn` only lexically inside `scope`" rule: a `spawn`
+outside a `scope { }` of the same function or lambda body is rejected, so
+`val t = spawn f(); … ; await t` must sit inside a scope. No
+fire-and-forget.
 
 ### 15.3 Aggregate failure
 

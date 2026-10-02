@@ -31,8 +31,6 @@
 //!   - two `spawn`s in a `scope`, awaited and combined via early `return`
 //!     inside the scope (exercises the executor-close-on-return path);
 //!   - the same via fall-off out of the scope (executor-close-on-fall-off);
-//!   - a bare `spawn` with no enclosing `scope` (the degenerate path — the
-//!     handle is consumed by `await` with no executor);
 //!   - three concurrent spawns to confirm submit/join scales past two;
 //!   - a `Unit`-returning spawned task (the boxed-null Callable return);
 //!   - `await` in compound positions inside a scope body — compound-assignment
@@ -87,14 +85,6 @@ async func sumDoublesFallOff(a: in Int, b: in Int): Int {
     result = await ta + await tb
   }
   return result
-}
-
-// A bare `spawn` with no enclosing `scope`: there is no executor, so `spawn`
-// stays degenerate (runs synchronously) and the handle flows straight to
-// `await`.  Confirms the no-scope path still produces the value.
-async func bareSpawnRoundTrip(x: in Int): Int {
-  val t = spawn doubleIt(x)
-  return await t
 }
 
 // Three concurrent spawns combined — confirms submit/join scales past two and
@@ -452,11 +442,6 @@ test "scope with two spawns, early return, sums awaited results" {
 test "scope with two spawns, fall-off, sums awaited results" {
   assertEqualInt(await sumDoublesFallOff(3, 4), 14, "fall-off double(3)+double(4)")
   assertEqualInt(await sumDoublesFallOff(7, 8), 30, "fall-off double(7)+double(8)")
-}
-
-test "bare spawn without a scope round-trips through await" {
-  assertEqualInt(await bareSpawnRoundTrip(21), 42, "bare double(21)")
-  assertEqualInt(await bareSpawnRoundTrip(1), 2, "bare double(1)")
 }
 
 test "three concurrent spawns combine correctly" {

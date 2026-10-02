@@ -2066,7 +2066,11 @@ pub func checkNativeFfiBoundary(file: in SourceFile, diag: in List[Diagnostic]):
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §10b. V0014 — a spawned task must be consumed (no fire-and-forget).
+// §10b. V0014 / V0034 — a spawned task must be joined by a scope (docs/68 §4).
+//
+// V0034: a `spawn` is allowed only lexically inside a `scope { }` of the same
+// function or lambda body.  A discarded `spawn` statement outside a scope keeps
+// its V0014 (below); every other `spawn` outside a scope is V0034.
 //
 // D119: `spawn e` produces a task that must be awaited or joined by an
 // enclosing `scope { }`.  This pass rejects the unambiguous fire-and-forget
@@ -2093,6 +2097,31 @@ func isSpawnExprMc(e: in Expr): Bool {
     case EParen(inner) -> isSpawnExprMc(inner)
     case _ -> false
   }
+}
+
+// The operand of a `spawn` expression (through redundant parentheses), or None.
+func spawnOperandMc(e: in Expr): Option[Expr] {
+  match e.kind {
+    case ESpawn(inner) -> Some(value = inner)
+    case EParen(inner) -> spawnOperandMc(inner)
+    case _ -> None
+  }
+}
+
+// V0034: a `spawn` is only allowed lexically inside a `scope { }` of the same
+// function or lambda body (docs/68 §4): the scope is what joins the task and
+// carries its failure, and a lambda may outlive an enclosing scope, so a
+// lambda body needs a scope of its own.
+func reportSpawnOutsideScopeMc(ctx: in SpawnCtx, span: in Span): Unit {
+  ctx.diag.add(
+    errorDiagnostic(
+      "V0034",
+      "`spawn` outside a `scope { }` in '" + ctx.fnName + "': a spawned task must be joined by an enclosing scope, " +
+        "which also cancels its siblings and propagates its failure. Wrap the `spawn` (and the `await`s that use " +
+        "its handle) in a `scope { ... }` block; a lambda body needs its own scope.",
+      span
+    )
+  )
 }
 
 // `valuePos` = is this expr-or-block's value used?  A block's value-position
@@ -2156,7 +2185,12 @@ func walkExprForSpawn(ctx: in SpawnCtx, valuePos: in Bool, e: in Expr): Unit {
       }
     }
     case EYield(inner) -> walkExprForSpawn(ctx, true, inner)
-    case ESpawn(inner) -> walkExprForSpawn(ctx, true, inner)
+    case ESpawn(inner) -> {
+      if not ctx.inScope {
+        reportSpawnOutsideScopeMc(ctx, e.span)
+      }
+      walkExprForSpawn(ctx, true, inner)
+    }
     case ETry(inner) -> walkExprForSpawn(ctx, valuePos, inner)
     case EOld(inner) -> walkExprForSpawn(ctx, true, inner)
     case EPropagate(inner) -> walkExprForSpawn(ctx, true, inner)
@@ -2264,18 +2298,28 @@ func walkExprForSpawn(ctx: in SpawnCtx, valuePos: in Bool, e: in Expr): Unit {
 func walkStmtForSpawn(ctx: in SpawnCtx, stmtValuePos: in Bool, st: in Statement): Unit {
   match st.kind {
     case SExpr(x) -> {
-      if not ctx.inScope and not stmtValuePos and isSpawnExprMc(x) {
-        ctx.diag.add(
-          errorDiagnostic(
-            "V0014",
-            "spawned task is discarded in '" + ctx.fnName + "': a `spawn` whose result is thrown away is fire-and-forget. " +
-              "Bind and `await` it (`val t = spawn ...; await t`), or run it inside a `scope { }`.",
-            st.span
+      if not ctx.inScope and isSpawnExprMc(x) {
+        if not stmtValuePos {
+          ctx.diag.add(
+            errorDiagnostic(
+              "V0014",
+              "spawned task is discarded in '" + ctx.fnName + "': a `spawn` whose result is thrown away is fire-and-forget. " +
+                "Run it inside a `scope { }`, which joins it at exit.",
+              st.span
+            )
           )
-        )
+        } else {
+          reportSpawnOutsideScopeMc(ctx, st.span)
+        }
+        // One diagnostic per spawn: walk only the operand, not the spawn itself.
+        match spawnOperandMc(x) {
+          case Some(operand) -> walkExprForSpawn(ctx, true, operand)
+          case None -> walkExprForSpawn(ctx, stmtValuePos, x)
+        }
+      } else {
+        // The if/match branches inside x inherit this statement's value position.
+        walkExprForSpawn(ctx, stmtValuePos, x)
       }
-      // The if/match branches inside x inherit this statement's value position.
-      walkExprForSpawn(ctx, stmtValuePos, x)
     }
     case SLocal(binding) -> {
       match binding {

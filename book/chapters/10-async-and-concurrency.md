@@ -26,7 +26,7 @@ val user = await fetchUser(someId)
 return (await fetchUser(someId))?.name
 ```
 
-Calling an async function does not automatically await it. The call returns a task, and you decide what to do with it: await it immediately, or pass it to a `scope` block to run concurrently with other tasks.
+Calling an async function awaits it where it stands, with or without the `await` keyword, so async code reads like ordinary sequential code. The only way to run things concurrently is `spawn`, which starts a task and gives you its handle; a `spawn` must sit inside a `scope` block, which joins the task before the block ends.
 
 ```lyric
 // Awaited immediately — sequential

@@ -1242,11 +1242,10 @@ enclosing scope's executor tracks (`lowerSpawnSubmit`/`lowerSpawnCallable`,
 D-progress-602).
 
 A `spawn` *inside* a `scope` submits to that scope's executor. A `spawn`
-*outside* any scope has no executor, so it stays **degenerate** — `e` runs
-synchronously and the value flows straight to the consuming `await`. This is
-allowed: V0014 (D-progress-598) rejects only a *fire-and-forget* `spawn` used as
-a discarded statement, not a bare `spawn` bound and later `await`ed (the
-`val t = spawn f(); await t` idiom).
+*outside* any scope is the compile error V0034 (docs/68 §4; a discarded one
+keeps V0014, D-progress-598), so the lowering never sees a spawn without an
+enclosing executor. The degenerate synchronous path below is therefore only
+reachable from code the front-end already rejected.
 
 **`await`.** `await handle`, where `handle` is a `spawn`-produced
 `Future<T>`, calls a per-package `__lyric_await` static helper that does
