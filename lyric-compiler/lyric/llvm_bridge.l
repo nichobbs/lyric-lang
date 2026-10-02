@@ -1528,7 +1528,10 @@ func linkAndEmitNative(
     }
     case Err(e) -> {
       if isWasm {
-        Console.error("error[N0001]: the wasi-sdk clang could not be run (" + clangExe + "); check that $WASI_SDK_PATH points at an installed wasi-sdk")
+        Console.error(
+          "error[N0001]: the wasi-sdk clang could not be run (" + clangExe +
+            "); check that $WASI_SDK_PATH points at an installed wasi-sdk"
+        )
         Console.error("  the LLVM IR was written to " + llPath)
       } else {
         Console.error(
