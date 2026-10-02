@@ -20,9 +20,10 @@
 //! so each operand is evaluated once, left to right, the panic message is the
 //! same on every target, and no backend changes.  The synthesized operators
 //! carry zero-width spans, which no recorded site has, so they are left as
-//! the wrapping operators they are.  `x op= y` becomes `x = <the same block>`;
-//! a target that is not a side-effect-free path is first bound to typed
-//! temporaries (`SymbolTable.overflowCompoundTemps`).  `.wrappingAdd(y)` and
+//! the wrapping operators they are.  `x op= y` becomes `x = <the same block>`
+//! with `y` bound before `x` is read, the order the unchecked compound
+//! assignment uses (#7005); a target that is not a side-effect-free path is
+//! first bound to typed temporaries (`SymbolTable.overflowCompoundTemps`).  `.wrappingAdd(y)` and
 //! its siblings become the plain operator in every build.
 package Lyric.ContractElaborator
 
@@ -65,7 +66,7 @@ func rewriteOverflowExpr(e: in Expr, sites: in Map[String, String], checked: in 
         return e
       }
       match e.kind {
-        case EBinop(op, lhs, rhs) -> checkedBinop(tn, op, lhs, rhs, e.span)
+        case EBinop(op, lhs, rhs) -> checkedBinop(tn, op, lhs, rhs, false, e.span)
         case EPrefix(op, inner) -> match op {
           case PreNeg -> checkedNeg(tn, inner, e.span)
           case _ -> e
@@ -125,7 +126,7 @@ func rewriteOverflowStmt(
         case None -> return s
       }
       match mapGet(compoundTemps, key) {
-        case None -> mkStmt(SAssign(target = target, op = AssEq, value = checkedBinop(tn, bop, target, value, s.span)), s.span)
+        case None -> mkStmt(SAssign(target = target, op = AssEq, value = checkedBinop(tn, bop, target, value, true, s.span)), s.span)
         case Some(temps) -> compoundViaTemps(tn, bop, target, value, temps, s.span)
       }
     }
@@ -162,12 +163,14 @@ func compoundViaTemps(
     }
     case _ -> target
   }
-  stmts.add(mkStmt(SAssign(target = newTarget, op = AssEq, value = checkedBinop(tn, bop, newTarget, value, sp)), wsp))
+  stmts.add(mkStmt(SAssign(target = newTarget, op = AssEq, value = checkedBinop(tn, bop, newTarget, value, true, sp)), wsp))
   mkStmt(SExpr(expr = mkExpr(EBlock(block = Block(statements = stmts, span = wsp)), wsp)), sp)
 }
 
-// `lhs op rhs` on `tn`, panicking on overflow.
-func checkedBinop(tn: in String, op: in BinOp, lhs: in Expr, rhs: in Expr, sp: in Span): Expr {
+// `lhs op rhs` on `tn`, panicking on overflow.  A compound assignment
+// (`rhsFirst`) evaluates its right-hand side before it reads the target, as
+// the unchecked `x op= y` does (#7005).
+func checkedBinop(tn: in String, op: in BinOp, lhs: in Expr, rhs: in Expr, rhsFirst: Bool, sp: in Span): Expr {
   val wsp = syntheticSpan(sp)
   val base = tempBase(sp)
   val aName = base + "_a"
@@ -175,8 +178,13 @@ func checkedBinop(tn: in String, op: in BinOp, lhs: in Expr, rhs: in Expr, sp: i
   val rName = base + "_r"
   val stmts: List[Statement] = newList()
   val ty = Some(value = primTypeExpr(tn, wsp))
-  stmts.add(typedLocal(aName, ty, lhs, wsp))
-  stmts.add(typedLocal(bName, ty, rhs, wsp))
+  if rhsFirst {
+    stmts.add(typedLocal(bName, ty, rhs, wsp))
+    stmts.add(typedLocal(aName, ty, lhs, wsp))
+  } else {
+    stmts.add(typedLocal(aName, ty, lhs, wsp))
+    stmts.add(typedLocal(bName, ty, rhs, wsp))
+  }
   val a = localRef(aName, wsp)
   val b = localRef(bName, wsp)
   val r = localRef(rName, wsp)
