@@ -77,9 +77,11 @@ from the environment, starts the HTTP listener (built on
 `--target dotnet` `Std.HttpServer` now runs on a pure-Lyric sans-IO HTTP/1.1
 engine over a `System.Net.Sockets` + `SslStream` transport — the
 `System.Net.HttpListener` server was retired (docs/61 §6, TLS phase 3.3) — so
-connections are accepted and read concurrently. `lyric-web`'s own request
-dispatch still runs the pull loop one request at a time (its full move onto
-the concurrent server is tracked separately); see the README's "Known gaps".
+connections are accepted and read concurrently. `lyric-web` dispatches each
+parsed request on its own thread-pool task, so a slow or streaming handler
+does not stall other requests; in-flight handlers are bounded by the
+`LYRIC_HTTP_MAX_CONNECTIONS` connection cap (default 1000). Shared state used
+by handlers must therefore be thread-safe.
 
 Compose multiple packages' routers with `Web.merge` and scope them
 with `Web.prefix`.

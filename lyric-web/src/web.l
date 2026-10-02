@@ -1733,8 +1733,90 @@ func writeResponse(ctx: in HttpContext, resp: in Response): Unit {
   respondBytesWithHeaders(ctx, resp.status, contentType, resp.bodyBytes, resp.headers)
 }
 
-/// Run the accept loop for `router` on `host`:`port`.  Blocks forever
-/// (single-threaded, synchronous — one request handled at a time).
+/// One accepted request, run on its own thread-pool task by the dotnet accept
+/// loops (#7997). An interface rather than a closure for the same reason
+/// `Worker` is: a closure-typed value cannot be invoked from inside another
+/// closure on this target, but an interface method can.
+@cfg(feature = "dotnet")
+@stable(since = "0.3")
+pub interface RequestJob {
+  func run(): Unit
+}
+
+// Serves one request for `serveStreaming`/`serve`. The per-request `Bug`
+// isolation (#5261, #6222) lives here, inside the task, so a failure on one
+// request still cannot stop the listener or any other in-flight request.
+@cfg(feature = "dotnet")
+record PlainRequestJob {
+  router: Router
+  streaming: StreamingRoutes
+  ctx: HttpContext
+  label: String
+}
+
+@cfg(feature = "dotnet")
+impl RequestJob for PlainRequestJob {
+  func run(): Unit {
+    val ctx = self.ctx
+    try {
+      if not serveWebSocketUpgrade(self.router, ctx) {
+        val req = buildRequest(ctx)
+        val inner: Handler = StreamingAwareDispatchHandler(
+          routes = self.router.routes,
+          streamingRoutes = self.streaming.routes,
+          ctx = ctx
+        )
+        val chain: Handler = MiddlewareChain(mws = self.router.middlewares, idx = 0, inner = inner)
+        val resp = chain.handle(req)
+        if not isStreamedResponse(resp) {
+          writeResponse(ctx, resp)
+        }
+      }
+    } catch Bug as e {
+      Console.error("[lyric-web] request handling failed on " + self.label + ": " + e.message)
+      // The recovery write can itself throw when the failure correlates with a
+      // broken connection; keep it request-local.
+      try {
+        writeResponse(ctx, text(500, "Internal Server Error"))
+      } catch Bug as e2 {
+        Console.error("[lyric-web] failed to write 500 response on " + self.label + ": " + e2.message)
+      }
+    }
+  }
+}
+
+// Serves one request for `serveTls`.
+@cfg(feature = "dotnet")
+record TlsRequestJob {
+  router: Router
+  ctx: HttpContext
+  label: String
+}
+
+@cfg(feature = "dotnet")
+impl RequestJob for TlsRequestJob {
+  func run(): Unit {
+    val ctx = self.ctx
+    try {
+      if not serveWebSocketUpgrade(self.router, ctx) {
+        val req = buildRequest(ctx)
+        val resp = dispatch(self.router, req)
+        writeResponse(ctx, resp)
+      }
+    } catch Bug as e {
+      Console.error("[lyric-web] request handling failed on " + self.label + ": " + e.message)
+      try {
+        writeResponse(ctx, text(500, "Internal Server Error"))
+      } catch Bug as e2 {
+        Console.error("[lyric-web] failed to write 500 response on " + self.label + ": " + e2.message)
+      }
+    }
+  }
+}
+
+/// Run the accept loop for `router` on `host`:`port`.  Blocks forever.
+/// Each accepted request is handled on its own thread-pool task (#7997), so a
+/// slow or streaming handler never stalls other requests.
 /// Prefer `Web.start(router)` unless you need to bind without reading
 /// the environment (e.g. attaching a router built by `Lambda.withRouter`
 /// through a different entry point).
@@ -1742,9 +1824,11 @@ func writeResponse(ctx: in HttpContext, resp: in Response): Unit {
 /// dotnet: a `Std.HttpServer` pull loop over the pure-Lyric sans-IO HTTP/1.1
 /// engine + `System.Net.Sockets`/`SslStream` transport (the
 /// `System.Net.HttpListener` server was retired, docs/61 §6). The transport
-/// accepts and reads connections concurrently; this dispatch loop still
-/// handles one request at a time (its full move onto the concurrent server is
-/// tracked separately — see README "Known gaps").
+/// accepts and reads connections concurrently, and the dispatch loop hands
+/// each parsed request to its own task. Concurrency is bounded by the
+/// transport's connection cap (`LYRIC_HTTP_MAX_CONNECTIONS`, default 1000):
+/// HTTP/1.1 serves one request per connection at a time, so at most that many
+/// handlers run at once and further connections queue in the OS backlog.
 ///
 /// Delegates to `serveStreaming` with an empty streaming route table: an
 /// empty `StreamingRoutes` never matches, so `dispatchStreaming` always
@@ -1919,19 +2003,15 @@ pub func serveTls(
   }
   Console.println("[lyric-web] Listening on https://" + host + ":" + port.toString() + "/")
   startWorkers(router)
+  val label = "https://" + host + ":" + port.toString() + "/"
   while true {
     try {
       val ctx = nextContext(listener)
-      if not serveWebSocketUpgrade(router, ctx) {
-        val req = buildRequest(ctx)
-        val resp = dispatch(router, req)
-        writeResponse(ctx, resp)
-      }
+      HttpKernel.spawnRequestJob(TlsRequestJob(router = router, ctx = ctx, label = label))
     } catch Bug as e {
-      // A caught Bug means the request loop can no longer make progress; surface
-      // it loudly and stop rather than exiting 0 as if shut down cleanly (mirror
-      // of the plaintext `serve` failure path, #5260).
-      Console.error("[lyric-web] request handling failed on https://" + host + ":" + port.toString() + ": " + e.message)
+      // A caught Bug here means the listener itself can no longer make progress
+      // (`nextContext` failed); per-request failures are isolated in the job.
+      Console.error("[lyric-web] listener failed on " + label + ": " + e.message)
       stopListener(listener)
       Env.exitCode(1)
     }
@@ -2041,39 +2121,11 @@ pub func serveStreaming(router: in Router, streaming: in StreamingRoutes, host: 
   while true {
     try {
       val ctx = nextContext(listener)
-      try {
-        if not serveWebSocketUpgrade(router, ctx) {
-          val req = buildRequest(ctx)
-          val inner: Handler = StreamingAwareDispatchHandler(
-            routes = router.routes,
-            streamingRoutes = streaming.routes,
-            ctx = ctx
-          )
-          val chain: Handler = MiddlewareChain(mws = router.middlewares, idx = 0, inner = inner)
-          val resp = chain.handle(req)
-          if not isStreamedResponse(resp) {
-            writeResponse(ctx, resp)
-          }
-        }
-      } catch Bug as e {
-        Console.error("[lyric-web] request handling failed on " + prefixStr + ": " + e.message)
-        // The recovery write can itself throw when the failure correlates with
-        // a broken connection (one of the cases #5261 requires to stay
-        // request-local). Keep it inside this per-request scope: escalating to
-        // the outer nextContext-only catch would stop the listener and exit,
-        // reintroducing "one bad request kills the whole server" (#6222).
-        try {
-          writeResponse(ctx, text(500, "Internal Server Error"))
-        } catch Bug as e2 {
-          Console.error("[lyric-web] failed to write 500 response on " + prefixStr + ": " + e2.message)
-        }
-      }
+      HttpKernel.spawnRequestJob(PlainRequestJob(router = router, streaming = streaming, ctx = ctx, label = prefixStr))
     } catch Bug as e {
       // A caught Bug here means the listener itself can no longer make
       // progress (nextContext failed). Surface the failure loudly instead
-      // of exiting 0 as if the server had shut down cleanly — a silent
-      // exit 0 looks like success to process supervisors and masks the
-      // underlying defect from whoever is debugging it.
+      // of exiting 0 as if the server had shut down cleanly.
       Console.error("[lyric-web] listener failed on " + prefixStr + ": " + e.message)
       stopListener(listener)
       Env.exitCode(1)
