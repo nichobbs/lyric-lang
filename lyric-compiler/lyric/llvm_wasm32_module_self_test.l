@@ -501,3 +501,56 @@ test "wasm32 module: @wasmImport without the module shape is N0015" {
   )
   assertFalse(ok, "a plain wasm32 build cannot satisfy a host import")
 }
+
+test "wasm32 module: pub funcs named like glue members (run, memory) are left out, not clobbered" {
+  val b = buildModule(
+    r"package Probe
+
+pub func run(x: Int): Int {
+  x
+}
+
+pub func memory(x: Int): Int {
+  x
+}
+
+pub func keep(x: Int): Int {
+  x
+}
+",
+    "wasm32-wasi"
+  )
+  assertTrue(b.ok, "the module builds")
+  val js = readGenerated(b.dir, "prog.js")
+  assertTrue(Str.contains(js, "wasm: \"Probe.keep\""), "keep is exported: " + js)
+  assertFalse(Str.contains(js, "wasm: \"Probe.run\""), "run is the glue's entry point")
+  assertFalse(Str.contains(js, "wasm: \"Probe.memory\""), "memory is the glue's memory export")
+}
+
+test "wasm32 module: a malformed @wasmImport is an error, not an ordinary extern" {
+  val stdlib = findStdlibSourcesNative()
+  val dir = Path.join(tempBase(), "lyric-wasm32-module-" + Uuid.uuidToString(Uuid.newUuid()))
+  val _ = File.createDir(dir)
+  val flags: List[String] = newList()
+  val ok = compileToNativeWithShape(
+    r#"package Probe
+
+@wasmImport("")
+extern func hostLog(msg: String): Unit = "log"
+
+pub func go(): Unit {
+  hostLog("x")
+}
+"#,
+    Path.join(dir, "prog.wasm"),
+    stdlib,
+    "wasm32-wasi",
+    "2",
+    flags,
+    newList(),
+    "",
+    true,
+    "module"
+  )
+  assertFalse(ok, "an empty module name must fail the build (N0014)")
+}

@@ -83,6 +83,8 @@ import Lyric.LlvmIr
 pub record WasmImportDecl {
   symbol: String
   module: String
+  /// Why the `@wasmImport` annotation is unusable, or "" when it is well formed.
+  problem: String
 }
 
 pub record CodegenUnit {
@@ -13695,19 +13697,41 @@ pub func addExternLibrary(libs: in List[String], anns: in List[Annotation]): Uni
   }
 }
 
+/// Why a `@wasmImport` module string cannot be used, or "" when it can.  The
+/// string lands inside LLVM attribute quotes, so `"` and `\\` are rejected.
+func wasmImportModuleProblem(module: in String): String {
+  if module.length == 0 {
+    return "the module name is empty"
+  }
+  if Str.contains(module, "\"") or Str.contains(module, "\\") {
+    return "the module name must not contain a quote or backslash"
+  }
+  ""
+}
+
 /// Record `symbol` as a wasm import when `anns` carry `@wasmImport("module")`.
+/// A malformed annotation is recorded with its `problem` so the glue reports it
+/// (`N0014`) instead of silently treating the extern as an ordinary C one.
 pub func addWasmImport(imports: in List[WasmImportDecl], symbol: in String, anns: in List[Annotation]): Unit {
   for a in anns {
-    if a.name.segments.count == 1 and a.name.segments[0] == "wasmImport" and a.args.count == 1 {
-      match a.args[0] {
-        case ALiteral(value, _) -> match value {
-          case AVString(module, _) -> imports.add(
-            WasmImportDecl(symbol = symbol, module = module)
-          )
+    if a.name.segments.count == 1 and a.name.segments[0] == "wasmImport" {
+      var module = ""
+      var problem = "it needs exactly one string literal argument, the module name"
+      if a.args.count == 1 {
+        match a.args[0] {
+          case ALiteral(value, _) -> match value {
+            case AVString(m, _) -> {
+              module = m
+              problem = wasmImportModuleProblem(m)
+            }
+            case _ -> ()
+          }
           case _ -> ()
         }
-        case _ -> ()
       }
+      imports.add(
+        WasmImportDecl(symbol = symbol, module = if problem.length == 0 { module } else { "" }, problem = problem)
+      )
     }
   }
 }
@@ -13722,6 +13746,16 @@ pub func externLlName(imports: in List[WasmImportDecl], symbol: in String): Stri
   } else {
     symbol
   }
+}
+
+/// Why the `@wasmImport` on `symbol` is unusable, or "" when it is absent or fine.
+pub func wasmImportProblem(imports: in List[WasmImportDecl], symbol: in String): String {
+  for w in imports {
+    if w.symbol == symbol and w.problem.length > 0 {
+      return w.problem
+    }
+  }
+  ""
 }
 
 /// The module `symbol` is imported from, or "" when it is an ordinary extern.
