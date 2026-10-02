@@ -6853,7 +6853,10 @@ func recordCaseFieldWidenings(
   while k < srcIdx.count and k < ftypes.count {
     val ai = srcIdx[k]
     if ai >= 0 and ai < argTypes.count {
-      recordUnsignedWidening(tbl, substituteTyVars(ftypes[k], gnames, targs), argTypes[ai], callArgExpr(args[ai]))
+      val fieldTy = substituteTyVars(ftypes[k], gnames, targs)
+      recordUnsignedWidening(tbl, fieldTy, argTypes[ai], callArgExpr(args[ai]))
+      // An unsuffixed float literal for a `Float` field is a `Float` (D155).
+      val _ = adoptFloatLiteralType(tbl, callArgExpr(args[ai]), argTypes[ai], fieldTy)
     }
     k = k + 1
   }
