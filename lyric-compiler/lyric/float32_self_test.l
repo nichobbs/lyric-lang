@@ -48,11 +48,7 @@ union Shape {
   case Rect(w: Float, h: Float)
 }
 
-func radius(s: in Shape): Float =
-  match s {
-    case Circle(r) -> r
-    case Rect(w, _) -> w
-  }
+func radius(s: in Shape): Float = match s { case Circle(r) -> r; case Rect(w, _) -> w }
 
 record Small {
   v: Float
