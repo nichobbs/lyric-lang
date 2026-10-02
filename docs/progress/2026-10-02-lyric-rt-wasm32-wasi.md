@@ -8,7 +8,7 @@ lookup in the native bridge, then running Lyric programs) is the next slice.
 ## Build
 
 `make -C lyric-rt wasm32-wasi WASI_SDK=<wasi-sdk>` produces
-`build/wasm32-wasi/lyric_rt.a` with `-Wall -Wextra -Werror`;
+`build-wasm32-wasi/lyric_rt.a` with `-Wall -Wextra -Werror`;
 `make test-wasm32-wasi WASI_SDK=... WASMTIME=...` builds and runs
 `lyric_rt_test` under `wasmtime run --dir=.`. wasi-sdk 24 (clang 18, the
 version the other native lanes pin) and wasmtime 26.0.1 are downloaded from

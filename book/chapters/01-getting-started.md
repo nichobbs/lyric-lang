@@ -282,6 +282,14 @@ library (ARC intrinsics, strings, POSIX helpers), `libm`, and `libpthread`.
 `--opt 0|1|2|3|s` sets the clang optimisation level (default `2`).
 `lyric run --target native <file.l>` builds and runs in one step.
 
+`--triple wasm32-wasi` produces a WebAssembly module instead of a host
+executable. It needs a [wasi-sdk](https://github.com/WebAssembly/wasi-sdk)
+(`WASI_SDK_PATH`) and the wasm32 runtime (`make -C lyric-rt wasm32-wasi
+WASI_SDK=...`), and the result runs under a WASI runtime:
+`wasmtime run --dir=. hello.wasm`. Files, the clock, random numbers,
+arguments and the console work; processes, sockets and TLS are not
+available on WASI.
+
 Memory on this target is managed by automatic reference counting (ARC) —
 there is no garbage collector. Reference cycles are not collected; break
 them explicitly with `NativeWeak[T]`, whose `upgrade()` returns

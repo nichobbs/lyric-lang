@@ -301,7 +301,7 @@ import Std.Environment as Env
 // =====================================================================
 // Extern seam bindings.
 // =====================================================================
-extern func rtByteAt(s: String, idx: Int): Int = "lyric_string_byte_at"
+extern func rtByteAt(s: String, idx: Long): Int = "lyric_string_byte_at"
 
 extern func rtMalloc(n: Long): Long = "malloc"
 
@@ -377,7 +377,7 @@ extern func rtPtrToLong(p: NativePtr[Byte]): Long = "lyric_ptr_to_long"
 extern func rtLongToPtr(v: Long): NativePtr[Byte] = "lyric_long_to_ptr"
 
 func charCodeAt(s: in String, i: in Int): Int {
-  rtByteAt(s, i)
+  rtByteAt(s, i.toLong())
 }
 
 // =====================================================================

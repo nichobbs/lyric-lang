@@ -48,3 +48,13 @@ if [ ! -d "$wasmtime_dir" ]; then
 fi
 
 make -C lyric-rt test-wasm32-wasi WASI_SDK="$wasi_dir" WASMTIME="$wasmtime_dir/wasmtime"
+
+BUILD_CONFIG="${BUILD_CONFIG:-Debug}"
+lyric_bin="bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric"
+if [ ! -x "$lyric_bin" ]; then
+  echo "::error::AOT binary not found at $lyric_bin; cannot run the wasm32 self-test"
+  exit 1
+fi
+export WASI_SDK_PATH="$wasi_dir" WASMTIME="$wasmtime_dir/wasmtime"
+export LYRIC_RT_WASM32_PATH="$PWD/lyric-rt/build-wasm32-wasi/lyric_rt.a"
+LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/llvm_wasm32_self_test.l

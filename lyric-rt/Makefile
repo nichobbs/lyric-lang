@@ -2,7 +2,8 @@
 #
 #   make            -> build/lyric_rt.a
 #   make test       -> build and run the C unit tests
-#   make clean
+#   make clean              (host build only)
+#   make clean-wasm32-wasi
 #
 # CC defaults to clang (the toolchain the native backend drives; D-N-001)
 # but any C11 compiler works.
@@ -10,7 +11,7 @@
 # wasm32-wasi (docs/35 W2) is a second, cross-compiled build of the same
 # runtime with a pinned wasi-sdk:
 #
-#   make wasm32-wasi      WASI_SDK=/opt/wasi-sdk   -> build/wasm32-wasi/lyric_rt.a
+#   make wasm32-wasi      WASI_SDK=/opt/wasi-sdk   -> build-wasm32-wasi/lyric_rt.a
 #   make test-wasm32-wasi WASI_SDK=/opt/wasi-sdk WASMTIME=wasmtime
 #
 # lyric_process.c and lyric_tls.c are replaced by their *_unsupported.c
@@ -31,7 +32,7 @@ OBJS := $(SRCS:src/%.c=$(BUILD)/%.o)
 # it needs libdl (a no-op stub on glibc >= 2.34) and libpthread.
 TEST_LIBS := -lpthread -ldl
 
-.PHONY: all test test-asan clean wasm32-wasi test-wasm32-wasi
+.PHONY: all test test-asan clean clean-wasm32-wasi wasm32-wasi test-wasm32-wasi
 
 all: $(BUILD)/lyric_rt.a
 
@@ -79,7 +80,7 @@ test-asan: | $(BUILD)
 # ── wasm32-wasi ──────────────────────────────────────────────────────────
 WASI_SDK    ?=
 WASMTIME    ?= wasmtime
-WASM_BUILD  := $(BUILD)/wasm32-wasi
+WASM_BUILD  := build-wasm32-wasi
 WASM_CC     := $(WASI_SDK)/bin/clang
 WASM_AR     := $(WASI_SDK)/bin/llvm-ar
 WASM_CFLAGS := --target=wasm32-wasi --sysroot=$(WASI_SDK)/share/wasi-sysroot -O2 -std=c11 -Wall -Wextra -Werror
@@ -110,3 +111,6 @@ test-wasm32-wasi: $(WASM_BUILD)/lyric_rt.a
 
 clean:
 	rm -rf $(BUILD)
+
+clean-wasm32-wasi:
+	rm -rf $(WASM_BUILD)

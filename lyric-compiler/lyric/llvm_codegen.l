@@ -3857,7 +3857,7 @@ func lowerPreludePrintln(ctx: in Ctx, insns: in List[NInsn], args: in List[CallA
       insns,
       "lyric_console_write_line",
       NVoid,
-      arg2(NI64, NLitInt(v = 1i64, ty = NI64), empty.ty, empty.value)
+      arg2(NI32, NLitInt(v = 1i64, ty = NI32), empty.ty, empty.value)
     )
   }
   val pv = lowerPositionalArg(ctx, insns, args, 0)
@@ -3882,7 +3882,7 @@ func lowerPreludePrintln(ctx: in Ctx, insns: in List[NInsn], args: in List[CallA
     insns,
     "lyric_console_write_line",
     NVoid,
-    arg2(NI64, NLitInt(v = 1i64, ty = NI64), text.ty, text.value)
+    arg2(NI32, NLitInt(v = 1i64, ty = NI32), text.ty, text.value)
   )
 }
 
@@ -11389,9 +11389,11 @@ func runtimeDecls(): List[NFunc] {
   decls.add(mkDecl2("lyric_string_char_at", NI32, sTy, NI64))
   decls.add(mkDecl2("lyric_string_byte_at", NI8, sTy, NI64))
   decls.add(mkDecl2("lyric_string_eq", NI32, sTy, sTy))
-  // Same signature as `Std.ConsoleHost.consoleWriteLineFd` (Lyric `Int` fd),
-  // which this declaration shadows when the kernel is also bundled.
-  decls.add(mkDecl2("lyric_console_write_line", NVoid, NI64, sTy))
+  // Same signature as `Std.ConsoleHost.consoleWriteLineFd` (Lyric `Int` fd,
+  // `int32_t fd` in C), which this declaration shadows when the kernel is also
+  // bundled.  The width matters: wasm-ld rejects a call whose signature differs
+  // from the definition's, where x86-64 silently tolerates it.
+  decls.add(mkDecl2("lyric_console_write_line", NVoid, NI32, sTy))
   decls.add(mkDecl2("lyric_string_cmp", NI32, sTy, sTy))
   decls.add(mkDecl1("lyric_string_from_int", sTy, NI64))
   decls.add(mkDecl1("lyric_string_from_float", sTy, NDouble))
@@ -11561,10 +11563,27 @@ func externDeclOf(ctx: in Ctx, ef: in ExternFuncDecl): NFunc {
   mkDeclN(ef.symbol, retTypeToN(ctx, ef.ret), tys)
 }
 
+/// The symbol the platform's startup code calls with `(argc, argv)`.  wasi-libc's
+/// `_start` reaches the program through `__main_argc_argv` (clang renames a C
+/// `main(int, char**)` to it); a plain `main` there is an undefined weak
+/// symbol that traps on entry.
+func entryNameForTriple(triple: in String): String {
+  if Str.startsWith(triple, "wasm32") {
+    return "__main_argc_argv"
+  }
+  "main"
+}
+
 /// Synthesise the C-ABI `main` wrapper around the user's `func main`.
 /// An `async func main` returns its task: drive the scheduler until it
 /// completes, read the exit code, and drop the caller's task ref.
-func synthCMain(mainPkg: in String, userMainRet: in NType, userMainIr: in String, mainIsAsync: in Bool): NFunc {
+func synthCMain(
+  mainPkg: in String,
+  userMainRet: in NType,
+  userMainIr: in String,
+  mainIsAsync: in Bool,
+  entryName: in String,
+): NFunc {
   val p8 = NPtr(pointee = NI8)
   val params: List[NParam] = newList()
   params.add(NParam(name = "argc", ty = NI32))
@@ -11598,7 +11617,7 @@ func synthCMain(mainPkg: in String, userMainRet: in NType, userMainIr: in String
     }
     val asyncAttrs: List[String] = newList()
     return NFunc(
-      name = "main",
+      name = entryName,
       params = params,
       retTy = NI32,
       isPublic = true,
@@ -11620,7 +11639,7 @@ func synthCMain(mainPkg: in String, userMainRet: in NType, userMainIr: in String
   }
   val attrs: List[String] = newList()
   NFunc(
-    name = "main",
+    name = entryName,
     params = params,
     retTy = NI32,
     isPublic = true,
@@ -11823,7 +11842,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     ui = ui + 1
   }
   if mainIr.length > 0 {
-    fns.add(synthCMain(mainPkg, mainRet, mainIr, mainIsAsync))
+    fns.add(synthCMain(mainPkg, mainRet, mainIr, mainIsAsync, entryNameForTriple(triple)))
   }
   // Coroutine plumbing lands only in async-using modules: the coro
   // intrinsics + scheduler declares, and the resume/destroy wrapper
