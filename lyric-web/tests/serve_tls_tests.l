@@ -464,3 +464,101 @@ test "tlsServerConfigFromWebTls reports a missing cert file as CertFileNotFound"
     }
   }
 }
+
+// #7997: `serveTls` runs each request on its own task, so a handler blocked
+// over TLS must not stall other requests. `/slow` holds until released (or
+// 10s); `/fast` must complete while `/slow` is still in flight. dotnet-only:
+// the jvm Undertow listener already dispatches on worker threads.
+record TlsGate {
+  var released: Bool
+  var slowEntered: Bool
+  var slowDone: Bool
+}
+
+val tlsGate: TlsGate = TlsGate(released = false, slowEntered = false, slowDone = false)
+
+record TlsSlowHandler {
+}
+
+impl Web.Handler for TlsSlowHandler {
+  func handle(req: in Web.Request): Web.Response {
+    tlsGate.slowEntered = true
+    var waited = 0
+    while not tlsGate.released and waited < 10000 {
+      Time.sleepMillis(20)
+      waited = waited + 20
+    }
+    tlsGate.slowDone = true
+    Web.text(200, "slow")
+  }
+}
+
+func concurrentTlsRouter(): Web.Router {
+  var r = Web.create()
+  r = Web.addGet(r, "/hello/{name}", HelloHandler())
+  r = Web.addGet(r, "/slow", TlsSlowHandler())
+  r
+}
+
+func fixtureTrustingClient(): HttpClient {
+  HttpClientBuilder.build(
+    HttpClientBuilder.withCaCertificate(
+      HttpClientBuilder.new(),
+      match Certificate.fromPem(certPem) {
+        case Ok(c) -> c
+        case Err(e) -> panic("client CA load failed: " + TlsError.message(e))
+      }
+    )
+  )
+}
+
+@cfg(feature = "dotnet")
+func fetchSlowTls(url: in String): Unit {
+  match await fixtureTrustingClient().get(url) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+}
+
+@cfg(feature = "dotnet")
+test "serveTls: a blocked handler does not stall other requests (#7997)" {
+  val port = 18933
+  startTlsServerForTest(concurrentTlsRouter(), port, fixtureConfig())
+  val base = "https://localhost:" + port.toString()
+  val client = fixtureTrustingClient()
+
+  var attempt = 0
+  var up = false
+  while attempt < 40 and not up {
+    Time.sleepMillis(50)
+    match await client.get(base + "/hello/Ada") {
+      case Ok(_) -> {
+        up = true
+      }
+      case Err(_) -> {
+        attempt = attempt + 1
+      }
+    }
+  }
+  assertTrue(up, "TLS server is up")
+
+  val slowUrl = base + "/slow"
+  val _ = taskRun({ -> fetchSlowTls(slowUrl) })
+  var waited = 0
+  while not tlsGate.slowEntered and waited < 5000 {
+    Time.sleepMillis(20)
+    waited = waited + 20
+  }
+  assertTrue(tlsGate.slowEntered, "the slow handler is running")
+
+  match await client.get(base + "/hello/Bob") {
+    case Ok(resp) -> assertEqualInt(
+      HttpResponse.statusCode(resp),
+      200,
+      "/hello is served over TLS while /slow is blocked"
+    )
+    case Err(_) -> assertTrue(false, "request failed while /slow was blocked")
+  }
+  assertTrue(not tlsGate.slowDone, "/slow was still in flight when /hello completed")
+  tlsGate.released = true
+}

@@ -20,3 +20,5 @@ and hand it to `Web.Kernel.Runtime.spawnRequestJob`, which runs a
   another request completes while it is still in flight; it fails on the
   previous sequential loop.
 - JVM is unchanged: Undertow already dispatches on worker threads.
+- `tests/serve_tls_tests.l` adds the same blocked-handler regression over
+  `Web.serveTls` (dotnet); it fails when `serveTls` dispatches inline.
