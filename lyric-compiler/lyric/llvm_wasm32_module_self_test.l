@@ -95,6 +95,10 @@ pub func big(x: Long): Long {
   x * 3000000000i64
 }
 
+pub func byteEcho(b: Byte): Byte {
+  b
+}
+
 pub func negate(flag: Bool): Bool {
   not flag
 }
@@ -136,6 +140,7 @@ lines.push('add=' + m.add(2, 40));
 lines.push('add-big=' + m.add(2147483646, 1));
 lines.push('big=' + m.big(5n) + ' ' + typeof m.big(5n));
 lines.push('negate=' + m.negate(true) + ',' + m.negate(false));
+lines.push('byte=' + m.byteEcho(200) + ',' + m.byteEcho(255));
 lines.push('half=' + m.half(5));
 lines.push('third=' + m.third(1));
 lines.push('shout=' + m.shout('wörld ☃'));
@@ -151,6 +156,7 @@ console.log(lines.join('\n'));
   assertTrue(Str.contains(lines, "add-big=2147483647\n"), "Int at the top of its range: " + lines)
   assertTrue(Str.contains(lines, "big=15000000000 bigint\n"), "Long crosses as bigint: " + lines)
   assertTrue(Str.contains(lines, "negate=false,true\n"), "Bool: " + lines)
+  assertTrue(Str.contains(lines, "byte=200,255\n"), "Byte stays unsigned: " + lines)
   assertTrue(Str.contains(lines, "half=2.5\n"), "Double: " + lines)
   assertTrue(Str.contains(lines, "third=0.3333333432674408\n"), "Float is binary32: " + lines)
   assertTrue(Str.contains(lines, "shout=hello, wörld ☃!\n"), "String with non-ASCII: " + lines)
