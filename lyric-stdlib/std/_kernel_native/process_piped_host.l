@@ -60,25 +60,72 @@ func parseArgString(argStr: in String): List[String] {
 // ── Extern seam bindings (lyric-rt/src/lyric_process.c) ────────────────────
 // `args` is a Std.Collections `List[String]`, the `LyricList*` the C side
 // reads (borrowed for the call).
-extern func rtPipedSpawn(path: NativePtr[Byte], args: List[String]): Long = "lyric_process_piped_spawn"
+// A bare `NativePtr[T]` record field is rejected by the N0100 mode checker, so
+// long-lived handles are stored as `Long`; the externs below take the pointer
+// the C side declares (32-bit on wasm32), converted at the call boundary.
+extern func rtPtrToLong(p: NativePtr[Byte]): Long = "lyric_ptr_to_long"
 
-extern func rtPipedReadLine(p: Long, outLine: NativePtr[String]): Int = "lyric_process_piped_read_line"
+extern func rtLongToPtr(v: Long): NativePtr[Byte] = "lyric_long_to_ptr"
 
-extern func rtPipedReadLineWithin(p: Long, outLine: NativePtr[String], timeoutMs: Int): Int = "lyric_process_piped_read_line_within"
+extern func rtPipedSpawnRaw(path: NativePtr[Byte], args: List[String]): NativePtr[Byte] = "lyric_process_piped_spawn"
 
-extern func rtPipedWriteLine(p: Long, line: String): Int = "lyric_process_piped_write_line"
+func rtPipedSpawn(path: NativePtr[Byte], args: List[String]): Long {
+  rtPtrToLong(rtPipedSpawnRaw(path, args))
+}
 
-extern func rtPipedIsAlive(p: Long): Int = "lyric_process_piped_is_alive"
+extern func rtPipedReadLineRaw(p: NativePtr[Byte], outLine: NativePtr[String]): Int = "lyric_process_piped_read_line"
 
-extern func rtPipedKill(p: Long): Int = "lyric_process_piped_kill"
+func rtPipedReadLine(p: Long, outLine: NativePtr[String]): Int {
+  rtPipedReadLineRaw(rtLongToPtr(p), outLine)
+}
 
-extern func rtPipedWaitExit(p: Long, timeoutMs: Int): Int = "lyric_process_piped_wait_exit"
+extern func rtPipedReadLineWithinRaw(p: NativePtr[Byte], outLine: NativePtr[String], timeoutMs: Int): Int = "lyric_process_piped_read_line_within"
 
-extern func rtPipedExitCode(p: Long): Int = "lyric_process_piped_exit_code"
+func rtPipedReadLineWithin(p: Long, outLine: NativePtr[String], timeoutMs: Int): Int {
+  rtPipedReadLineWithinRaw(rtLongToPtr(p), outLine, timeoutMs)
+}
 
-extern func rtPipedCloseStdin(p: Long): Int = "lyric_process_piped_close_stdin"
+extern func rtPipedWriteLineRaw(p: NativePtr[Byte], line: String): Int = "lyric_process_piped_write_line"
 
-extern func rtPipedClose(p: Long): Unit = "lyric_process_piped_close"
+func rtPipedWriteLine(p: Long, line: String): Int {
+  rtPipedWriteLineRaw(rtLongToPtr(p), line)
+}
+
+extern func rtPipedIsAliveRaw(p: NativePtr[Byte]): Int = "lyric_process_piped_is_alive"
+
+func rtPipedIsAlive(p: Long): Int {
+  rtPipedIsAliveRaw(rtLongToPtr(p))
+}
+
+extern func rtPipedKillRaw(p: NativePtr[Byte]): Int = "lyric_process_piped_kill"
+
+func rtPipedKill(p: Long): Int {
+  rtPipedKillRaw(rtLongToPtr(p))
+}
+
+extern func rtPipedWaitExitRaw(p: NativePtr[Byte], timeoutMs: Int): Int = "lyric_process_piped_wait_exit"
+
+func rtPipedWaitExit(p: Long, timeoutMs: Int): Int {
+  rtPipedWaitExitRaw(rtLongToPtr(p), timeoutMs)
+}
+
+extern func rtPipedExitCodeRaw(p: NativePtr[Byte]): Int = "lyric_process_piped_exit_code"
+
+func rtPipedExitCode(p: Long): Int {
+  rtPipedExitCodeRaw(rtLongToPtr(p))
+}
+
+extern func rtPipedCloseStdinRaw(p: NativePtr[Byte]): Int = "lyric_process_piped_close_stdin"
+
+func rtPipedCloseStdin(p: Long): Int {
+  rtPipedCloseStdinRaw(rtLongToPtr(p))
+}
+
+extern func rtPipedCloseRaw(p: NativePtr[Byte]): Unit = "lyric_process_piped_close"
+
+func rtPipedClose(p: Long): Unit {
+  rtPipedCloseRaw(rtLongToPtr(p))
+}
 
 // ── Public handle + entry points ────────────────────────────────────────────
 /// Opaque handle to a running child process with piped stdin/stdout. See

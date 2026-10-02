@@ -232,6 +232,69 @@ test "wasm32: capabilities WASI lacks fail with a typed Err, not a link error or
   assertEqualInt(r.exitCode, 42, "spawning a process reports Err on wasm32-wasi")
 }
 
+test "wasm32: Std.Process.spawnPiped reports a typed Err" {
+  val r = runWasm(
+    "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Process\n" +
+      "func main(): Int {\n" +
+      "  val noArgs: List[String] = newList()\n" +
+      "  match spawnPiped(\"/bin/cat\", noArgs) {\n" +
+      "    case Ok(_) -> {\n" +
+      "      return 1\n" +
+      "    }\n" +
+      "    case Err(_) -> {\n" +
+      "    }\n" +
+      "  }\n" +
+      "  42\n" +
+      "}\n"
+  )
+  assertEqualInt(r.exitCode, 42, "the piped-process kernel links and reports Err on wasm32-wasi")
+}
+
+test "wasm32: the TCP and TLS client kernels link and report a typed Err" {
+  val r = runWasm(
+    "package T\n" + "import Std.Core\n" + "import Std.Tls\n" + "import Std.TcpHost\n" + "func main(): Int {\n" +
+      "  match hostListen(\"127.0.0.1\", 0) {\n" +
+      "    case Ok(_) -> {\n" +
+      "      return 1\n" +
+      "    }\n" +
+      "    case Err(_) -> {\n" +
+      "    }\n" +
+      "  }\n" +
+      "  match hostConnect(\"127.0.0.1\", 1) {\n" +
+      "    case Ok(_) -> {\n" +
+      "      return 2\n" +
+      "    }\n" +
+      "    case Err(_) -> {\n" +
+      "    }\n" +
+      "  }\n" +
+      "  match hostConnectTls(\"127.0.0.1\", 1, TlsTrustExclusive(caPem = \"x\"), None, TlsVersion.Tls12, \"http/1.1\") {\n" +
+      "    case Ok(_) -> {\n" +
+      "      return 3\n" +
+      "    }\n" +
+      "    case Err(_) -> {\n" +
+      "    }\n" +
+      "  }\n" +
+      "  42\n" +
+      "}\n"
+  )
+  assertEqualInt(r.exitCode, 42, "TCP and TLS dials report Err on wasm32-wasi")
+}
+
+test "wasm32: Std.HttpServer links and its bind failure panics with the TCP diagnostic" {
+  val r = runWasm(
+    "package T\n" + "import Std.HttpServer\n" + "func main(): Int {\n" +
+      "  val l = startListener(\"http://127.0.0.1:19730/\")\n" +
+      "  stopListener(l)\n" +
+      "  0\n" +
+      "}\n"
+  )
+  assertTrue(r.exitCode != 0, "a failed bind aborts")
+  assertTrue(
+    r.stderr.contains("TCP sockets are unavailable"),
+    "the panic carries the runtime's diagnostic: " + r.stderr
+  )
+}
+
 test "wasm32: a panic aborts with a nonzero exit and its message" {
   val r = runWasm("package T\n" + "func main(): Int {\n" + "  panic(\"boom-wasm\")\n" + "}\n")
   assertTrue(r.exitCode != 0, "a panic must not exit 0")

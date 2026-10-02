@@ -10,6 +10,9 @@
 # runner pays the download once.  wasi-sdk 24 ships clang 18, the same major
 # version the native backend's other CI lanes pin.
 #
+# It also runs scripts/audit-native-extern-abi.sh, which fails when a kernel
+# extern disagrees with the runtime definition it binds on the wasm32 ABI.
+#
 # Usage: bash scripts/ci/wasm32-wasi-rt-tests.sh
 # ---------------------------------------------------------------------------
 set -euo pipefail
@@ -46,6 +49,9 @@ if [ ! -d "$wasmtime_dir" ]; then
     "$WASMTIME_SHA256" "$tools/wasmtime.tar.xz"
   tar -xJf "$tools/wasmtime.tar.xz" -C "$tools"
 fi
+
+# Every _kernel_native extern must match the C ABI it binds (docs/35 W2 slice 3).
+WASI_SDK_PATH="$wasi_dir" bash scripts/audit-native-extern-abi.sh
 
 make -C lyric-rt test-wasm32-wasi WASI_SDK="$wasi_dir" WASMTIME="$wasmtime_dir/wasmtime"
 

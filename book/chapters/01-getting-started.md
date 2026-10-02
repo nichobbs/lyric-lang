@@ -287,8 +287,10 @@ executable. It needs a [wasi-sdk](https://github.com/WebAssembly/wasi-sdk)
 (`WASI_SDK_PATH`) and the wasm32 runtime (`make -C lyric-rt wasm32-wasi
 WASI_SDK=...`), and the result runs under a WASI runtime:
 `wasmtime run --dir=. hello.wasm`. Files, the clock, random numbers,
-arguments and the console work; processes, sockets and TLS are not
-available on WASI.
+arguments and the console work; processes, sockets, threads and TLS are not
+available on WASI. A program that uses them still builds. Spawning a process or dialling
+a connection returns the `Err` the library reports for any failed spawn or
+connect; `Std.HttpServer.startListener` panics on its failed bind.
 
 Memory on this target is managed by automatic reference counting (ARC) —
 there is no garbage collector. Reference cycles are not collected; break

@@ -32,7 +32,7 @@ OBJS := $(SRCS:src/%.c=$(BUILD)/%.o)
 # it needs libdl (a no-op stub on glibc >= 2.34) and libpthread.
 TEST_LIBS := -lpthread -ldl
 
-.PHONY: all test test-asan clean clean-wasm32-wasi wasm32-wasi test-wasm32-wasi
+.PHONY: all test test-asan clean clean-wasm32-wasi wasm32-wasi wasm32-wasi-ir test-wasm32-wasi
 
 all: $(BUILD)/lyric_rt.a
 
@@ -94,6 +94,17 @@ $(WASM_BUILD)/%.o: src/%.c include/lyric_rt.h | $(WASM_BUILD)
 	$(WASM_CC) $(WASM_CFLAGS) -Iinclude -c $< -o $@
 
 $(WASM_BUILD)/lyric_string.o: src/lyric_unicode_case_tables.inc
+
+# LLVM IR of the wasm32 runtime, for scripts/audit-native-extern-abi.sh: the
+# `define` lines are the exact C ABI each kernel extern must match.
+WASM_IR := $(WASM_SRCS:src/%.c=$(WASM_BUILD)/ir/%.ll)
+
+$(WASM_BUILD)/ir/%.ll: src/%.c include/lyric_rt.h src/lyric_unicode_case_tables.inc
+	@test -n "$(WASI_SDK)" || { echo "set WASI_SDK to a wasi-sdk install (see docs/35 §5.1)"; exit 1; }
+	mkdir -p $(WASM_BUILD)/ir
+	$(WASM_CC) $(WASM_CFLAGS) -Iinclude -S -emit-llvm $< -o $@
+
+wasm32-wasi-ir: $(WASM_IR)
 
 $(WASM_BUILD)/lyric_rt.a: $(WASM_OBJS)
 	$(WASM_AR) rcs $@ $(WASM_OBJS)

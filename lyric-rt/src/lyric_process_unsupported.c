@@ -140,3 +140,15 @@ int32_t lyric_process_piped_close_stdin(void* p) {
 void lyric_process_piped_close(void* p) {
     (void)p;
 }
+
+/* wasi-libc has no threads: report the failure pthread_create reports when it
+ * cannot start one, and treat any handle as already gone on join. */
+int32_t lyric_thread_create(int64_t* tid, void* (*start)(void*), void* arg) {
+    (void)tid; (void)start; (void)arg;
+    return EAGAIN;
+}
+
+int32_t lyric_thread_join(int64_t tid, void** retval) {
+    (void)tid; (void)retval;
+    return ESRCH;
+}
