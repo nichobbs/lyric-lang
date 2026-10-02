@@ -62,7 +62,6 @@ func compileAndRunWasm(source: in String, progArgs: in List[String]): WasmRun {
   args.add("--dir=" + dir + "::/work")
   args.add(wasmPath)
   if progArgs.count > 0 {
-    args.add("--")
     var i = 0
     while i < progArgs.count {
       args.add(progArgs[i])
@@ -95,7 +94,8 @@ test "wasm32: exit code and stdout through the wasi-libc entry point" {
 
 test "wasm32: every header-bearing heap shape (record, union, tuple, closure, list, string)" {
   val r = runWasm(
-    "package T\n" + "record Node {\n" + "  name: String\n" + "  n: Int\n" + "}\n" + "union Shape {\n" +
+    "package T\n" + "import Std.Collections\n" + "record Node {\n" + "  name: String\n" + "  n: Int\n" + "}\n" +
+      "union Shape {\n" +
       "  case Circle(r: Int)\n" +
       "  case Tag(label: String, n: Int)\n" +
       "  case Empty\n" +

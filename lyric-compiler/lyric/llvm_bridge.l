@@ -1486,6 +1486,10 @@ func linkAndEmitNative(
   if isWasm {
     clangArgs.add("--target=" + effTriple)
     clangArgs.add("--sysroot=" + Path.join(Path.join(wasiSdk, "share"), "wasi-sysroot"))
+    // wasm-ld only WARNS when a call's signature differs from the callee's
+    // definition and then compiles the call to a trap; make that a link error
+    // so an extern declared with the wrong width fails the build.
+    clangArgs.add("-Wl,--fatal-warnings")
   } else if triple.length > 0 {
     clangArgs.add("--target=" + triple)
   }

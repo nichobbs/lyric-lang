@@ -3857,7 +3857,7 @@ func lowerPreludePrintln(ctx: in Ctx, insns: in List[NInsn], args: in List[CallA
       insns,
       "lyric_console_write_line",
       NVoid,
-      arg2(NI64, NLitInt(v = 1i64, ty = NI64), empty.ty, empty.value)
+      arg2(NI32, NLitInt(v = 1i64, ty = NI32), empty.ty, empty.value)
     )
   }
   val pv = lowerPositionalArg(ctx, insns, args, 0)
@@ -3882,7 +3882,7 @@ func lowerPreludePrintln(ctx: in Ctx, insns: in List[NInsn], args: in List[CallA
     insns,
     "lyric_console_write_line",
     NVoid,
-    arg2(NI64, NLitInt(v = 1i64, ty = NI64), text.ty, text.value)
+    arg2(NI32, NLitInt(v = 1i64, ty = NI32), text.ty, text.value)
   )
 }
 
@@ -11389,9 +11389,11 @@ func runtimeDecls(): List[NFunc] {
   decls.add(mkDecl2("lyric_string_char_at", NI32, sTy, NI64))
   decls.add(mkDecl2("lyric_string_byte_at", NI8, sTy, NI64))
   decls.add(mkDecl2("lyric_string_eq", NI32, sTy, sTy))
-  // Same signature as `Std.ConsoleHost.consoleWriteLineFd` (Lyric `Int` fd),
-  // which this declaration shadows when the kernel is also bundled.
-  decls.add(mkDecl2("lyric_console_write_line", NVoid, NI64, sTy))
+  // Same signature as `Std.ConsoleHost.consoleWriteLineFd` (Lyric `Int` fd,
+  // `int32_t fd` in C), which this declaration shadows when the kernel is also
+  // bundled.  The width matters: wasm-ld rejects a call whose signature differs
+  // from the definition's, where x86-64 silently tolerates it.
+  decls.add(mkDecl2("lyric_console_write_line", NVoid, NI32, sTy))
   decls.add(mkDecl2("lyric_string_cmp", NI32, sTy, sTy))
   decls.add(mkDecl1("lyric_string_from_int", sTy, NI64))
   decls.add(mkDecl1("lyric_string_from_float", sTy, NDouble))

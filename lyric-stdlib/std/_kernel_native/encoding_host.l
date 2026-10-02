@@ -48,7 +48,7 @@ import Std.Collections
 // those alphabets is a single UTF-8 byte, so byte offset and code-unit
 // offset coincide, and any multi-byte (non-ASCII) input byte trips the
 // alphabet's own range check and correctly yields `None`/`-1` either way.
-extern func rtByteAt(s: String, idx: Int): Int = "lyric_string_byte_at"
+extern func rtByteAt(s: String, idx: Long): Int = "lyric_string_byte_at"
 
 // `String + Char` concatenation (the `"" + Std.Char.fromInt(cp)` idiom
 // `Std.Encoding.tryDecodeUtf8` uses to build its result one code unit at a
@@ -78,7 +78,7 @@ pub func hostGetUtf8Enc(): String {
 // Returns the UTF-8 byte value at `i` as an Int 0..255.  See the file
 // header for why this stands in for `toInt(s[i])` on native.
 pub func hostCharCodeAt(s: in String, i: in Int): Int {
-  rtByteAt(s, i)
+  rtByteAt(s, i.toLong())
 }
 
 // Returns the String representation of a full Unicode scalar value
