@@ -909,7 +909,7 @@ lyric build --release <file.l>         # optimized, debug info stripped. On --ta
 lyric build --shape portable <file.l>  # framework-dependent (default)
 lyric build --shape standalone <file.l>  # bundles a runtime (not implemented — F0044, #6262)
 lyric build --shape aot <file.l>       # native binary; --aot is sugar for this
-lyric build --target native --triple wasm32-wasi --shape module <file.l>  # .wasm + .js glue + .d.ts for a JS host (F0044 for --shape component until W4)
+lyric build --target native --triple wasm32-wasi --shape module <file.l>  # .wasm + .js glue + .d.ts for a JS host (--shape component builds a WebAssembly component, needs wasm-tools and $LYRIC_WASI_ADAPTER)
                                        # a manifest's own [build] shape = "portable"/"standalone" on
                                        # --target native raises F0043 too (#6268) -- not silently
                                        # upgraded to aot; only an UNDECLARED manifest shape defaults
@@ -1516,6 +1516,8 @@ span, exactly like `T0120`/`J008`.
 | `N0012` | An unknown native output shape name reached the native bridge; the wasm32 shape is `module`. |
 | `N0013` | The `--shape module` JS glue (`<name>.js`) or declarations (`<name>.d.ts`) could not be written next to the `.wasm`. |
 | `N0014` | A `@wasmImport` `extern func` has a parameter or result type the host import ABI cannot carry; use `Int`, `Long`, `Bool`, `Byte`, `Float`, `Double`, `String` or `Unit`. |
+| `N0016` | A `--shape component` build could not run `wasm-tools`, or `$LYRIC_WASI_ADAPTER` (the preview1 reactor adapter) is unset or missing, or a `wasm-tools` step failed. |
+| `N0017` | A package declares a `@wasmImport` `extern func` in a `--shape component` build; WIT imports are not generated yet. |
 | `N0015` | A package declares a `@wasmImport` `extern func` but the build is not `--shape module`; only that shape can satisfy a host import. |
 
 ### Custom source generators (X-series)

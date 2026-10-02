@@ -674,10 +674,7 @@ pub func shapeTargetError(shape: in BuildShape, target: in Emitter.CompileTarget
 // Only reached for the managed targets: `shapeTargetError` accepts these
 // shapes on `--target native` before it gets here.
 func wasmShapeNeedsNativeError(shape: in BuildShape, target: in Emitter.CompileTarget): String {
-  val targetName = match target {
-    case Emitter.Dotnet -> "dotnet"
-    case _ -> "jvm"
-  }
+  val targetName = match target { case Emitter.Dotnet -> "dotnet"; case _ -> "jvm" }
   "error[F0043]: --shape " + shapeName(shape) + " is a WebAssembly shape and needs --target native " +
     "(with --triple wasm32-wasi); --target " +
     targetName +
@@ -698,11 +695,6 @@ pub func shapeUnsupportedError(shape: in BuildShape, target: in Emitter.CompileT
       val msg = "error[F0044]: --shape standalone is not implemented yet (issue #6262). " +
         "Use --shape portable for a framework-dependent artifact, or --shape aot for a " +
         "self-contained native binary."
-      Some(value = msg)
-    }
-    case SComponent -> {
-      val msg = "error[F0044]: --shape component is not implemented yet (docs/35 W4). " +
-        "Use --shape module for a browser/JS-host module plus generated glue."
       Some(value = msg)
     }
     case _ -> None
