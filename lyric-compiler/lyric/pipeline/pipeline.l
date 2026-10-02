@@ -236,10 +236,7 @@ pub func wrappingArithMarker(): String = "__lyric_wrapping_arith"
 /// The decision is made here, where the resolved profile is known on every
 /// target and build path, and carried to the overflow pass on the file.
 func markWrappingArith(file: in SourceFile, defines: in List[BD.Define]): SourceFile {
-  val release = match BD.lookupDefine(defines, "build_profile") {
-    case Some(p) -> p == "release"
-    case None -> false
-  }
+  val release = match BD.lookupDefine(defines, "build_profile") { case Some(p) -> p == "release"; case None -> false }
   val isStd = file.packageDecl.path.segments.count > 0 and file.packageDecl.path.segments[0] == "Std"
   if not release and not isStd {
     return file

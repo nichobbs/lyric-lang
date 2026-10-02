@@ -53,10 +53,7 @@ func rewriteOverflowExpr(e: in Expr, sites: in Map[String, String], checked: in 
   match mapGet(sites, recordCopySiteKey(e.span)) {
     case None -> e
     case Some(kind) -> {
-      val colon = match Str.indexOf(kind, ":") {
-        case Some(c) -> c
-        case None -> return e
-      }
+      val colon = match Str.indexOf(kind, ":") { case Some(c) -> c; case None -> return e }
       val what = Str.substring(kind, 0, colon)
       val tn = Str.substring(kind, colon + 1, kind.length - colon - 1)
       if what == "wrap" {
@@ -67,10 +64,7 @@ func rewriteOverflowExpr(e: in Expr, sites: in Map[String, String], checked: in 
       }
       match e.kind {
         case EBinop(op, lhs, rhs) -> checkedBinop(tn, op, lhs, rhs, false, e.span)
-        case EPrefix(op, inner) -> match op {
-          case PreNeg -> checkedNeg(tn, inner, e.span)
-          case _ -> e
-        }
+        case EPrefix(op, inner) -> match op { case PreNeg -> checkedNeg(tn, inner, e.span); case _ -> e }
         case _ -> e
       }
     }
@@ -90,10 +84,7 @@ func wrappingCall(e: in Expr, tn: in String): Expr {
         if args.count != 1 {
           return e
         }
-        val arg = match args[0] {
-          case CAPositional(x) -> x
-          case CANamed(_, x, _) -> x
-        }
+        val arg = match args[0] { case CAPositional(x) -> x; case CANamed(_, x, _) -> x }
         val op = if name == "wrappingAdd" { BAdd } else if name == "wrappingSub" { BSub } else { BMul }
         mkExpr(EBinop(op = op, lhs = recv, rhs = arg), sp)
       }
@@ -114,19 +105,21 @@ func rewriteOverflowStmt(
   }
   match s.kind {
     case SAssign(target, op, value) -> {
-      val bop = match op {
-        case AssPlus -> BAdd
-        case AssMinus -> BSub
-        case AssStar -> BMul
-        case _ -> return s
-      }
+      val bop = match op { case AssPlus -> BAdd; case AssMinus -> BSub; case AssStar -> BMul; case _ -> return s }
       val key = recordCopySiteKey(s.span)
       val tn = match mapGet(sites, key) {
-        case Some(kind) -> if Str.startsWith(kind, "compound:") { Str.substring(kind, 9, kind.length - 9) } else { return s }
+        case Some(kind) -> if Str.startsWith(kind, "compound:") {
+          Str.substring(kind, 9, kind.length - 9)
+        } else {
+          return s
+        }
         case None -> return s
       }
       match mapGet(compoundTemps, key) {
-        case None -> mkStmt(SAssign(target = target, op = AssEq, value = checkedBinop(tn, bop, target, value, true, s.span)), s.span)
+        case None -> mkStmt(
+          SAssign(target = target, op = AssEq, value = checkedBinop(tn, bop, target, value, true, s.span)),
+          s.span
+        )
         case Some(temps) -> compoundViaTemps(tn, bop, target, value, temps, s.span)
       }
     }
@@ -138,7 +131,12 @@ func rewriteOverflowStmt(
 //   { val <t> = recv; val <i> = idx; <t>[<i>] = <checked <t>[<i>] op v> }
 // `recv.f op= v` likewise with only the receiver bound.
 func compoundViaTemps(
-  tn: in String, bop: in BinOp, target: in Expr, value: in Expr, temps: in CompoundTemps, sp: in Span
+  tn: in String,
+  bop: in BinOp,
+  target: in Expr,
+  value: in Expr,
+  temps: in CompoundTemps,
+  sp: in Span,
 ): Statement {
   val wsp = syntheticSpan(sp)
   val base = tempBase(sp)
@@ -163,7 +161,9 @@ func compoundViaTemps(
     }
     case _ -> target
   }
-  stmts.add(mkStmt(SAssign(target = newTarget, op = AssEq, value = checkedBinop(tn, bop, newTarget, value, true, sp)), wsp))
+  stmts.add(
+    mkStmt(SAssign(target = newTarget, op = AssEq, value = checkedBinop(tn, bop, newTarget, value, true, sp)), wsp)
+  )
   mkStmt(SExpr(expr = mkExpr(EBlock(block = Block(statements = stmts, span = wsp)), wsp)), sp)
 }
 
@@ -189,11 +189,7 @@ func checkedBinop(tn: in String, op: in BinOp, lhs: in Expr, rhs: in Expr, rhsFi
   val b = localRef(bName, wsp)
   val r = localRef(rName, wsp)
   val signed = tn == "Int" or tn == "Long"
-  val opWord = match op {
-    case BAdd -> "addition"
-    case BSub -> "subtraction"
-    case _ -> "multiplication"
-  }
+  val opWord = match op { case BAdd -> "addition"; case BSub -> "subtraction"; case _ -> "multiplication" }
   val msg = "arithmetic overflow: " + tn + " " + opWord
   match op {
     case BMul -> {
@@ -206,7 +202,12 @@ func checkedBinop(tn: in String, op: in BinOp, lhs: in Expr, rhs: in Expr, rhsFi
         stmts.add(typedLocal(wName, Some(value = primTypeExpr(wide, wsp)), prod, wsp))
         val w = localRef(wName, wsp)
         val outOfRange = if tn == "Int" {
-          bin(BOr, bin(BLt, w, typedIntLit("Long", 0i64 - 2147483648i64, wsp), wsp), bin(BGt, w, typedIntLit("Long", 2147483647i64, wsp), wsp), wsp)
+          bin(
+            BOr,
+            bin(BLt, w, typedIntLit("Long", 0i64 - 2147483648i64, wsp), wsp),
+            bin(BGt, w, typedIntLit("Long", 2147483647i64, wsp), wsp),
+            wsp
+          )
         } else if tn == "UInt" {
           bin(BGt, unsignedOf("ULong", w, wsp), typedIntLit("ULong", 4294967295i64, wsp), wsp)
         } else {
@@ -337,7 +338,15 @@ func panicIf(cond: in Expr, msg: in String, sp: in Span): Statement {
   val call = mkExpr(ECall(fn = localRef("panic", sp), args = args), sp)
   val thenStmts: List[Statement] = newList()
   thenStmts.add(mkStmt(SExpr(expr = call), sp))
-  val ifE = mkExpr(EIf(cond = cond, thenBranch = EOBBlock(block = Block(statements = thenStmts, span = sp)), elseBranch = None, thenForm = false), sp)
+  val ifE = mkExpr(
+    EIf(
+      cond = cond,
+      thenBranch = EOBBlock(block = Block(statements = thenStmts, span = sp)),
+      elseBranch = None,
+      thenForm = false
+    ),
+    sp
+  )
   mkStmt(SExpr(expr = ifE), sp)
 }
 
@@ -364,6 +373,16 @@ func primTypeExpr(tn: in String, sp: in Span): TypeExpr {
 
 // An integer literal of type `tn`, spelled with that type's suffix.
 func typedIntLit(tn: in String, v: in Long, sp: in Span): Expr {
-  val suffix = if tn == "Long" { I64 } else if tn == "UInt" { U32 } else if tn == "ULong" { U64 } else if tn == "Byte" { U8 } else { I32 }
+  val suffix = if tn == "Long" {
+    I64
+  } else if tn == "UInt" {
+    U32
+  } else if tn == "ULong" {
+    U64
+  } else if tn == "Byte" {
+    U8
+  } else {
+    I32
+  }
   mkExpr(ELiteral(lit = LInt(value = v, suffix = suffix, raw = "")), sp)
 }

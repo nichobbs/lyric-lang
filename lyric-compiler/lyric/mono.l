@@ -1933,9 +1933,7 @@ func typedLocalBlockTE(blk: in Block): Option[TypeExpr] {
     match blk.statements[i].kind {
       case SLocal(binding) -> match binding {
         case LBVal(pat, ty, _) -> match pat.kind {
-          case PBinding(name, None) -> if name == tailName {
-            return ty
-          }
+          case PBinding(name, None) -> if name == tailName { return ty }
           case _ -> ()
         }
         case _ -> ()

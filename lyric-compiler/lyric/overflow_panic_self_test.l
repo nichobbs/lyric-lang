@@ -58,15 +58,12 @@ test "unsigned and Byte overflow panics" {
 }
 
 test "compound assignment overflow panics" {
-  assertPanicsWith("+=", "arithmetic overflow: Int addition", { ->
-    var n = maxInt()
-    n += 1
-  })
-  assertPanicsWith("indexed *=", "arithmetic overflow: Long multiplication", { ->
-    val xs: List[Long] = newList()
-    xs.add(maxLong())
-    xs[0] *= 2i64
-  })
+  assertPanicsWith("+=", "arithmetic overflow: Int addition", { -> var n = maxInt(); n += 1 })
+  assertPanicsWith(
+    "indexed *=",
+    "arithmetic overflow: Long multiplication",
+    { -> val xs: List[Long] = newList(); xs.add(maxLong()); xs[0] *= 2i64 }
+  )
 }
 
 test "unsigned results up to each type's limit" {
