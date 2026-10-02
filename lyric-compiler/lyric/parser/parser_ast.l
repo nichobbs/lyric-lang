@@ -1219,6 +1219,15 @@ pub record RecordArithSite {
   op: BinOp
 }
 
+/// The types of the temporaries an overflow-checked compound assignment
+/// (`xs[f()] += 1`, `g().count += 1`, D163) binds its target's receiver and
+/// index to, so the target is evaluated once.  `None` where the target has
+/// no such part (a field target has no index).
+pub record CompoundTemps {
+  recvType: Option[TypeExpr]
+  indexType: Option[TypeExpr]
+}
+
 /// A reference to another package's function used as a VALUE (not called),
 /// recorded by the type checker (`SymbolTable.funcRefSites`, keyed by
 /// `recordCopySiteKey` of the reference's span) and desugared by

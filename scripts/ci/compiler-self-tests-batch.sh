@@ -209,6 +209,14 @@ if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
   LYRIC_BIN="$lyric_bin" bash scripts/ci/byte-println-e2e.sh
   ran="$ran byte-println-e2e"
 fi
+# D163: integer overflow panics in a debug build and wraps in a release build,
+# both targets (Java 21, as above).
+idx=$((idx + 1))
+if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
+  echo "=== scripts/ci/overflow-profile-e2e.sh ==="
+  LYRIC_BIN="$lyric_bin" bash scripts/ci/overflow-profile-e2e.sh dotnet jvm
+  ran="$ran overflow-profile-e2e"
+fi
 # #7858: `println(x)` writes what `toString(x)` returns for records, lists,
 # extern structs and extern objects, on both targets (Java 21, as above).
 idx=$((idx + 1))

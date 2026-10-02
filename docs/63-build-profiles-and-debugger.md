@@ -13,10 +13,10 @@ toolchain path on any target and fails loud with `F0044` (#6262); the profile
 axis reaches codegen only on `--target native` so far — `resolveNativeOptDefault`
 defaults the clang `-O` level from the profile (`2` under `--release`, `0`
 under `--debug`) when neither `--opt` nor `[native] opt_level` supply one
-(D-progress-913) — `--target dotnet`/`--target jvm` still perform no
-optimization under `--release`, and overflow-checking semantics remain
-undecided on every target, exactly as the language reference describes
-(#6263, still open for those two pieces).
+(D-progress-913) — and integer overflow panics under `--debug` and wraps
+under `--release` on every target (D163). `--target dotnet`/`--target jvm`
+still perform no optimization under `--release`, and contract elision is not
+yet profile-driven (#6263, still open for those two pieces).
 
 **Method.** The current-state findings in §2 were produced by auditing the code
 as source of truth. Every claim is grounded in a `file:line` reference, an

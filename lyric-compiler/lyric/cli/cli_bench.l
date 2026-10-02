@@ -56,13 +56,17 @@ func runBenchOnSource(
       }
 
       val benchTarget: Emitter.CompileTarget = if targetJvm { Emitter.Jvm } else { Emitter.Dotnet }
+      // Benchmarks measure release code: integer arithmetic wraps instead of
+      // carrying a debug build's overflow checks (D163).
+      val benchDefines: List[String] = newList()
+      benchDefines.add("build_profile=release")
       val req = Emitter.EmitRequest(
         source = rewritten,
         assemblyName = stem,
         outputPath = outPath,
         target = benchTarget,
         packageVersion = "",
-        defines = newList(),
+        defines = benchDefines,
         path = sourcePath,
         contractsEnabled = true
       )

@@ -107,17 +107,9 @@ if acc < 0 { println(toString(acc)) }
 
 This forces `acc` to be live without actually printing anything (the condition is never true for reasonable inputs). The alternative is to return the accumulated value from the function, but since `@bench` functions must return `Unit`, the guard idiom is the idiomatic choice.
 
-### Stay within `Int` range
+### Benchmarks build with the release profile
 
-Lyric's `Int` is a 32-bit signed integer with overflow-checked arithmetic (`Add_Ovf`, `Mul_Ovf`). An accumulator that exceeds `2_147_483_647` raises `OverflowException` at runtime. Choose loop bounds accordingly:
-
-| Accumulation | Safe upper bound |
-|---|---|
-| `acc = acc + i` (linear) | `i < 65_536` (sum ≈ 2.1 billion) |
-| `acc = acc + i * i` (quadratic) | `i <= 1_000` (sum ≈ 333 million) |
-| `acc = acc + f(i)` where `f` is bounded by `B` | `i < 2_000_000_000 / B` |
-
-If you need the accumulator to hold larger values, use `Double`:
+`lyric bench` compiles with the release profile, so integer arithmetic wraps on overflow instead of carrying a debug build's overflow checks (D163), and the timings reflect what a release build runs. An accumulator that exceeds `2_147_483_647` therefore wraps silently rather than panicking; if a benchmark's result matters, keep it in range or use `Long` or `Double`:
 
 ```lyric
 @bench
@@ -131,8 +123,6 @@ pub func benchDoubleSum(): Unit {
   if acc < 0.0 { println(toString(acc)) }
 }
 ```
-
-`Double` arithmetic uses non-overflow opcodes and the accumulator can grow freely. Note that the loop *counter* `i` is still `Int` — the `Int`-range limit applies to `i` as well. A loop running `while i < 1_000_000` is safe since `1_000_000` is well within int32 range, but `while i < 5_000_000_000` would overflow the counter itself.
 
 ### Include helpers in the same file
 

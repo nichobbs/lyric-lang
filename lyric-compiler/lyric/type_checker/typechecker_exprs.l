@@ -1480,6 +1480,48 @@ pub func recordRecordArith(tbl: in SymbolTable, lhs: in Type, rhs: in Type, op: 
   }
 }
 
+// The overflow-checked integer type `t` is, or "" (D163).  `Nat` is left out:
+// it is a non-negative `Long` whose arithmetic keeps its own rules.
+pub func overflowTypeName(t: in Type): String {
+  match unrefine(t) {
+    case TyPrim(pt) -> match pt {
+      case PtInt -> "Int"
+      case PtLong -> "Long"
+      case PtUInt -> "UInt"
+      case PtULong -> "ULong"
+      case PtByte -> "Byte"
+      case _ -> ""
+    }
+    case _ -> ""
+  }
+}
+
+pub func recordOverflowSite(tbl: in SymbolTable, span: in Span, kind: in String): Unit {
+  val key = recordCopySiteKey(span)
+  if tbl.overflowSites.containsKey(key) {
+    tbl.overflowSites.remove(key)
+  }
+  tbl.overflowSites.add(key, kind)
+}
+
+func isWrappingMethodName(n: in String): Bool {
+  n == "wrappingAdd" or n == "wrappingSub" or n == "wrappingMul" or n == "wrappingNeg"
+}
+
+// `+`, `-` or `*` whose result is an overflow-checked integer type (D163).
+func recordOverflowBinop(tbl: in SymbolTable, op: in BinOp, result: in Type, span: in Span): Unit {
+  val opName = match op {
+    case BAdd -> "add"
+    case BSub -> "sub"
+    case BMul -> "mul"
+    case _ -> return
+  }
+  val tn = overflowTypeName(result)
+  if tn.length > 0 {
+    recordOverflowSite(tbl, span, opName + ":" + tn)
+  }
+}
+
 // `==`/`!=` or a derived comparison on two values of one distinct type.
 func recordDistinctCompare(tbl: in SymbolTable, lhs: in Type, rhs: in Type, span: in Span): Unit {
   if typeEquiv(lhs, rhs) {
@@ -9987,7 +10029,23 @@ func inferExprCore(
         }
         case None -> ()
       }
-      inferPrefix(diag, op, it, e.span)
+      val prefixT = inferPrefix(diag, op, it, e.span)
+      // Negating a non-literal `Int` / `Long` overflows on its minimum value
+      // (D163).  A negated literal is folded at its own type.
+      match op {
+        case PreNeg -> {
+          val tn = overflowTypeName(prefixT)
+          val isLit = match inner.kind {
+            case ELiteral(_) -> true
+            case _ -> false
+          }
+          if (tn == "Int" or tn == "Long") and not isLit {
+            recordOverflowSite(tbl, e.span, "neg:" + tn)
+          }
+        }
+        case _ -> ()
+      }
+      prefixT
     }
 
     case EBinop(op, l, r) -> {
@@ -10015,6 +10073,7 @@ func inferExprCore(
         recordHoistedComposite(sc, tbl, r, rt, lt)
       }
       val binT = inferBinop(tbl, diag, op, lt, rt, e.span)
+      recordOverflowBinop(tbl, op, binT, e.span)
       val signSensitive = match op {
         case BLt -> true
         case BLte -> true
@@ -10154,6 +10213,46 @@ func inferExprCore(
         }
         case _ -> {
         }
+      }
+      // `.wrappingAdd(y)` / `.wrappingSub(y)` / `.wrappingMul(y)` /
+      // `.wrappingNeg()` on an integer: the arithmetic wraps whatever the
+      // build profile (D163).  Lowered to the plain operator by
+      // `Lyric.ContractElaborator.lowerOverflowChecks`.
+      match fn.kind {
+        case EMember(wRecv, wName) -> if isWrappingMethodName(wName) {
+          val wt = match cachedRecvType { case Some(t) -> t; case None -> inferExpr(sc, tbl, sigs, diag, wRecv) }
+          val tn = overflowTypeName(wt)
+          if tn.length > 0 {
+            val arity = if wName == "wrappingNeg" { 0 } else { 1 }
+            if args.count != arity {
+              diag.add(
+                errorDiagnostic(
+                  "T0042",
+                  "'" + wName + "' expects " + toString(arity) + " argument(s), got " + toString(args.count),
+                  e.span
+                )
+              )
+              return TyError
+            }
+            if arity == 1 {
+              val argE = callArgExpr(args[0])
+              val at = inferExprExpected(sc, tbl, sigs, diag, argE, wt)
+              if not typeEquiv(unrefine(at), unrefine(wt)) and not typeEquiv(at, TyError) {
+                diag.add(
+                  errorDiagnostic(
+                    "T0043",
+                    "'" + wName + "' on " + renderType(wt) + " takes a " + renderType(wt) + " (got " + renderType(at) + ")",
+                    argE.span
+                  )
+                )
+              }
+            }
+            recordOverflowSite(tbl, e.span, "wrap:" + tn)
+            return wt
+          }
+          cachedRecvType = Some(value = wt)
+        }
+        case _ -> ()
       }
       // Record `.copy(field = value, ...)` (docs/01 §2.4): a
       // non-destructive update of a record value, checked here and rewritten

@@ -3341,6 +3341,14 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/record_arith_self_test.l
+      # Integer overflow follows the build profile (D163).
+      - name: Overflow self-tests (native lyric test)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/overflow_self_test.l
+          bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --target dotnet lyric-compiler/lyric/overflow_panic_self_test.l
       - name: Distinct-type collection self-test (native lyric test)
         if: ${{ !cancelled() }}
         background: true
@@ -5530,6 +5538,13 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/record_arith_self_test.l
+      - name: Overflow self-tests on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: |
+          bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/overflow_self_test.l
+          bash scripts/ci/self-test.sh --target jvm lyric-compiler/lyric/overflow_panic_self_test.l
       - name: Distinct-type collection self-test on JVM (native lyric test --target jvm)
         if: ${{ !cancelled() }}
         background: true

@@ -81,6 +81,7 @@ for t in \
   lyric-compiler/lyric/record_semantics_self_test.l \
   lyric-compiler/lyric/float32_self_test.l \
   lyric-compiler/lyric/record_arith_self_test.l \
+  lyric-compiler/lyric/overflow_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_type_self_test.l \
   lyric-compiler/lyric/byte_native_self_test.l \
@@ -90,3 +91,5 @@ for t in \
 done
 # #7858: the text `println(<Byte>)` writes on native.
 LYRIC_BIN="$lyric_bin" bash scripts/ci/byte-println-e2e.sh native
+# D163: a debug build panics on integer overflow, a release build wraps.
+LYRIC_BIN="$lyric_bin" bash scripts/ci/overflow-profile-e2e.sh native
