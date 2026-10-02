@@ -28,9 +28,16 @@ Lyric has a conventional set of primitive types, with two entries worth a closer
 
 `Never` is covered in detail in §2.5.
 
-**Overflow behaviour** differs by build mode. In debug builds (the default when you run `lyric run` or `lyric build` without flags), integer arithmetic panics on overflow. In release builds (`lyric build --release`), overflow on *unconstrained* integer types wraps silently. Range-constrained subtypes — covered next — always panic on overflow regardless of build mode. (**Not yet implemented:** no backend gates overflow checking on the build profile, so overflow currently panics in release builds too — see [#6263].)
+**Overflow behaviour** differs by build profile. In a debug build (the default for `lyric run`, `lyric test` and `lyric build`), `+`, `-`, `*` and unary `-` on `Byte`, `Int`, `Long`, `UInt` and `ULong` panic on overflow with `arithmetic overflow: Int addition` (or the matching type and operation). In a release build (`lyric build --release`) they wrap: `2147483647 + 1` is `-2147483648`. Range-constrained subtypes, covered next, panic on an out-of-range result in every build.
 
-[#6263]: https://github.com/nichobbs/lyric-lang/issues/6263
+When wrapping is what you mean, as in a hash or a checksum, say so. `.wrappingAdd(y)`, `.wrappingSub(y)`, `.wrappingMul(y)` and `.wrappingNeg()` wrap in every build:
+
+```lyric
+var h: Int = -2128831035
+for b in bytes {
+  h = h.xor(b.toInt()).wrappingMul(16777619)   // FNV-1a
+}
+```
 
 Floating-point follows IEEE 754-2019 with round-to-nearest-even and traps disabled. `NaN != NaN` is `true`, as the standard requires.
 

@@ -1901,7 +1901,9 @@ func emitPerPackagePackage(
     packageVersion = "0.1.0",
     depTemplateSrcs = noDepTemplateSrcs,
     nugetAssemblyPaths = emptyNugetPaths,
-    defines = newList(),
+    // The toolchain itself (compiler and stdlib) is built with the release
+    // profile: its arithmetic wraps, as a shipped library's does (D163).
+    defines = toolchainDefines(),
     packageFeatures = noPackageFeatures(),
     contractsEnabled = true
   )
@@ -2085,6 +2087,12 @@ pub func emitPerPackageClosure(entrySource: in String, outDir: in String, target
 /// `assemblySimpleNameFromDll` derives the `AssemblyRef` from the bundle's
 /// file stem, so every in-bundle package resolves to `Lyric.Compiler` with no
 /// per-package assembly-name remapping in `stdlibAssemblyName`.
+func toolchainDefines(): List[String] {
+  val ds: List[String] = newList()
+  ds.add("build_profile=release")
+  ds
+}
+
 pub func emitCompilerBundle(entrySource: in String, outPath: in String, target: in CompileTarget): EmitResult {
   // Single-assembly bundle emit is a .NET concept; the JVM toolchain bundles
   // a package's transitive closure into one JAR via `compileToJarBundled`.
@@ -2140,7 +2148,9 @@ pub func emitCompilerBundle(entrySource: in String, outPath: in String, target: 
     packageVersion = "0.1.0",
     depTemplateSrcs = noDepTemplateSrcs,
     nugetAssemblyPaths = emptyNugetPaths,
-    defines = newList(),
+    // The toolchain itself (compiler and stdlib) is built with the release
+    // profile: its arithmetic wraps, as a shipped library's does (D163).
+    defines = toolchainDefines(),
     packageFeatures = noPackageFeatures(),
     contractsEnabled = true
   )

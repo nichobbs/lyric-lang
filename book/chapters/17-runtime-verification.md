@@ -94,8 +94,9 @@ The runtime overhead of contract checking is real: evaluating Boolean expression
 > contract elaborator, so contracts are checked identically in `--debug` and
 > `--release`, and `--release-contracts` has no effect. The profile became an
 > independently selectable axis in docs/63 band B0; wiring it through to
-> codegen — for contract elision, overflow checking, and optimization alike —
-> is tracked in [#6263]. The policy below describes the intended design.
+> codegen for contract elision and optimization is tracked in [#6263] (integer
+> overflow checking already follows the profile, D163). The policy below
+> describes the intended design.
 
 [#6263]: https://github.com/nichobbs/lyric-lang/issues/6263
 

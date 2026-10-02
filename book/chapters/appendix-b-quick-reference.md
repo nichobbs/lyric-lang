@@ -72,7 +72,7 @@ string
 | `Unit` | unit type | single value `()` |
 | `Never` | bottom type | uninhabited; assignable to any type |
 
-Integer overflow panics in debug builds; wraps in release for unconstrained types. Range-subtypes always panic on overflow regardless of build mode.
+Integer overflow (`+ - *`, unary `-` on `Byte`/`Int`/`Long`/`UInt`/`ULong`) panics in debug builds and wraps in release builds (D163); `.wrappingAdd/Sub/Mul(y)` and `.wrappingNeg()` wrap in every build. Range-subtypes always panic on an out-of-range result.
 
 ### Type declarations
 
@@ -900,10 +900,10 @@ lyric build --force <file.l>           # rebuild unconditionally (bypass increme
                                        # PROFILE axis (optimization + debug symbols):
 lyric build --debug <file.l>           # unoptimized, debug info retained (the default)
 lyric build --release <file.l>         # optimized, debug info stripped. On --target native, the
-                                       # clang -O level now defaults from this axis (2 vs. 0, #6263
-                                       # partial); dotnet/jvm still perform no optimization, and
-                                       # overflow-check/contract-elision semantics stay undecided
-                                       # on every target (#6263 remains open for those two pieces).
+                                       # clang -O level defaults from this axis (2 vs. 0). Integer
+                                       # overflow wraps instead of panicking (D163). dotnet/jvm
+                                       # perform no further optimization, and contract elision
+                                       # is not yet profile-driven (#6263).
                                        # NOTE: --release no longer implies AOT. Pass --aot too.
                                        # SHAPE axis (packaging), independent of profile and target:
 lyric build --shape portable <file.l>  # framework-dependent (default)

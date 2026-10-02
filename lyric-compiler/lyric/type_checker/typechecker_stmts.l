@@ -234,8 +234,6 @@ func checkRecordCompoundAssign(
   valueType: in Type,
   span: in Span,
 ): Unit {
-  val bop = match op { case AssPlus -> BAdd; case AssMinus -> BSub; case _ -> return }
-  val marker = compoundAssignDerive(op)
   val isRecord = match targetType {
     case TyUser(tid, _, _) -> match recordSymbolOfTid(tbl, tid) {
       case Some(_) -> true
@@ -243,9 +241,20 @@ func checkRecordCompoundAssign(
     }
     case _ -> false
   }
-  if not isRecord or not hasDerive(tbl, marker, targetType) {
+  if not isRecord {
     return
   }
+  // `r op= s` is `r = r op s`, so it needs the marker the binary operator
+  // does; only `Add` and `Sub` are derivable on a record (T0152).
+  val marker = compoundAssignDerive(op)
+  val derivable = match op { case AssPlus -> true; case AssMinus -> true; case _ -> false }
+  if not derivable or not hasDerive(tbl, marker, targetType) {
+    diag.add(
+      errorDiagnostic("T0030", "compound assignment needs " + renderType(targetType) + " to derive " + marker, span)
+    )
+    return
+  }
+  val bop = match op { case AssMinus -> BSub; case _ -> BAdd }
   if isPurePathExpr(target) {
     recordRecordArith(tbl, targetType, valueType, bop, span)
   } else {
@@ -257,6 +266,70 @@ func checkRecordCompoundAssign(
         span
       )
     )
+  }
+}
+
+func recordOverflowCompound(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  target: in Expr,
+  targetType: in Type,
+  span: in Span,
+): Unit {
+  val tn = overflowTypeName(targetType)
+  if tn.length == 0 {
+    return
+  }
+  recordOverflowSite(tbl, span, "compound:" + tn)
+  if isOverflowPureTarget(target) {
+    return
+  }
+  // The rewrite binds the receiver (and index) once; type them here, where
+  // the scope is known.  Re-inferring an already-checked expression reports
+  // nothing new, so its diagnostics go to a scratch list.
+  val scratch: List[Diagnostic] = newList()
+  val temps = match target.kind {
+    case EIndex(recv, idxs) -> {
+      val rt = inferExpr(sc, tbl, sigs, scratch, recv)
+      val it = if idxs.count == 1 { typeExprForRef(tbl, inferExpr(sc, tbl, sigs, scratch, idxs[0]), span) } else { None }
+      CompoundTemps(recvType = typeExprForRef(tbl, rt, span), indexType = it)
+    }
+    case EMember(recv, _) -> {
+      val rt = inferExpr(sc, tbl, sigs, scratch, recv)
+      CompoundTemps(recvType = typeExprForRef(tbl, rt, span), indexType = None)
+    }
+    case _ -> CompoundTemps(recvType = None, indexType = None)
+  }
+  val key = recordCopySiteKey(span)
+  if tbl.overflowCompoundTemps.containsKey(key) {
+    tbl.overflowCompoundTemps.remove(key)
+  }
+  tbl.overflowCompoundTemps.add(key, temps)
+}
+
+// A compound-assignment target the overflow rewrite may evaluate twice
+// (`x op= y` becomes `x = <checked x op y>`): a variable, `self`, a field
+// path on one, or an index into one by a variable or literal.
+pub func isOverflowPureTarget(e: in Expr): Bool {
+  match e.kind {
+    case EPath(_) -> true
+    case ESelf -> true
+    case EMember(recv, _) -> isOverflowPureTarget(recv)
+    case EParen(inner) -> isOverflowPureTarget(inner)
+    case EIndex(recv, idxs) -> {
+      if not isOverflowPureTarget(recv) {
+        return false
+      }
+      for ix in idxs {
+        val simple = match ix.kind { case EPath(_) -> true; case ELiteral(_) -> true; case _ -> false }
+        if not simple {
+          return false
+        }
+      }
+      true
+    }
+    case _ -> false
   }
 }
 
@@ -430,6 +503,13 @@ pub func checkStatement(
       // `isStringPlusVarAssign` (typechecker_exprs.l) for the full rationale
       // and the #5688 follow-up (#5657).
       val stringPlusAssign = isStringPlusVarAssign(target, op, targetType)
+      // `x += y`, `-=` and `*=` on an overflow-checked integer type (D163).
+      match op {
+        case AssPlus -> recordOverflowCompound(sc, tbl, sigs, target, targetType, stmt.span)
+        case AssMinus -> recordOverflowCompound(sc, tbl, sigs, target, targetType, stmt.span)
+        case AssStar -> recordOverflowCompound(sc, tbl, sigs, target, targetType, stmt.span)
+        case _ -> ()
+      }
       // A compound assignment on a distinct type is rewritten to
       // `target = T.from(target.value <op> value.value)` (#7361).  That
       // evaluates the target twice, so it must be a variable or field path.
@@ -515,6 +595,9 @@ pub func checkStatement(
         // D-progress-1026-return-position-list-literals.md).
         val t = inferExprExpected(sc, tbl, sigs, diag, e, returnTy)
         val isNever = match t { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }
+        if not isNever and tbl.lambdaReturnFrames.count > 0 and (match returnTy { case TyError -> true; case _ -> false }) {
+          tbl.lambdaReturnFrames[tbl.lambdaReturnFrames.count - 1].add(t)
+        }
         // A returned value initialises the result, so it widens like an
         // initialiser (docs/01 §4.1, #7805).
         recordWideningSite(tbl, returnTy, t, e, false)

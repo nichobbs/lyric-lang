@@ -222,7 +222,51 @@ pub func pipeParseAndErase(
   // synthesized item is never itself erased. `activeFeatures` is the user's own
   // feature set (not the synthetic target pseudo-feature cfg adds).
   val biFile = BD.synthesizeBuildInfo(cfgRes.file, targetName, activeFeatures, definesWk)
-  Some(value = biFile)
+  Some(value = markWrappingArith(biFile, definesWk))
+}
+
+/// The file annotation that tells `pipeCheckAndMono` to leave the file's
+/// integer arithmetic wrapping instead of checking it for overflow (D163).
+pub func wrappingArithMarker(): String = "__lyric_wrapping_arith"
+
+/// Integer overflow panics in a `debug` build and wraps in a `release` build
+/// (D163).  The standard library always wraps, whichever profile the program
+/// is built with, so a stdlib routine behaves the same whether it was
+/// prebuilt (dotnet) or compiled from source into the program (JVM, native).
+/// The decision is made here, where the resolved profile is known on every
+/// target and build path, and carried to the overflow pass on the file.
+func markWrappingArith(file: in SourceFile, defines: in List[BD.Define]): SourceFile {
+  val release = match BD.lookupDefine(defines, "build_profile") { case Some(p) -> p == "release"; case None -> false }
+  val isStd = file.packageDecl.path.segments.count > 0 and file.packageDecl.path.segments[0] == "Std"
+  if not release and not isStd {
+    return file
+  }
+  val anns: List[Annotation] = newList()
+  for a in file.fileAnnotations {
+    anns.add(a)
+  }
+  val segs: List[String] = newList()
+  segs.add(wrappingArithMarker())
+  val noArgs: List[AnnotationArg] = newList()
+  anns.add(Annotation(name = ModulePath(segments = segs, span = file.span), args = noArgs, span = file.span))
+  SourceFile(
+    moduleDoc = file.moduleDoc,
+    fileAnnotations = anns,
+    packageDecl = file.packageDecl,
+    imports = file.imports,
+    items = file.items,
+    span = file.span
+  )
+}
+
+/// Whether `file` carries `wrappingArithMarker()`.
+pub func hasWrappingArith(file: in SourceFile): Bool {
+  for a in file.fileAnnotations {
+    if a.name.segments.count == 1 and a.name.segments[0] == wrappingArithMarker() {
+      return true
+    }
+  }
+  false
 }
 
 /// The pre-typecheck rewrite chain, in the one authoritative order:
@@ -541,7 +585,16 @@ pub func pipeCheckAndMono(
   // which also re-checks a range subtype's derived arithmetic (#7226).
   val distinctLowered = lowerDistinctOps(invChecked, tcRes.symbols.distinctOpSites, tcRes.symbols.distinctCompoundSites)
   // Component-wise arithmetic on homogeneous numeric records (D155).
-  val checked = lowerRecordArith(distinctLowered, tcRes.symbols.recordArithSites)
+  val recordLowered = lowerRecordArith(distinctLowered, tcRes.symbols.recordArithSites)
+  // Integer overflow panics in a debug build and wraps in a release build or
+  // in the standard library (D163); `.wrappingAdd(...)` and its siblings
+  // become the plain operator either way.
+  val checked = lowerOverflowChecks(
+    recordLowered,
+    tcRes.symbols.overflowSites,
+    tcRes.symbols.overflowCompoundTemps,
+    not hasWrappingArith(recordLowered)
+  )
 
   val mcRes = checkFile(checked)
   if gate(opts.pkgLabel, opts.lineOrigins, mcRes.diagnostics) {

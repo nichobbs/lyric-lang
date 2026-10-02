@@ -3207,6 +3207,15 @@ test "compound arithmetic on a record needs a variable or field target" {
   assertTrue(hasDiagCode(parseCheck(src), "T0134"), "a field of a call result")
 }
 
+test "compound arithmetic on a record without the derive is T0030" {
+  val plain = "package P\nrecord V { x: Int }\nfunc f(a: in V, b: in V) {\n var r = a\n r += b\n}\n"
+  assertTrue(hasDiagCode(parseCheck(plain), "T0030"), "+= without derives Add")
+  val sub = "package P\n@derive(Add)\nrecord V { x: Int }\nfunc f(a: in V, b: in V) {\n var r = a\n r -= b\n}\n"
+  assertTrue(hasDiagCode(parseCheck(sub), "T0030"), "-= with only derives Add")
+  val ok = "package P\n@derive(Add)\nrecord V { x: Int }\nfunc f(a: in V, b: in V) {\n var r = a\n r += b\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(ok), "T0030"), "+= with derives Add")
+}
+
 test "where bound not satisfied rejected" {
   val src = "package P\nrecord Plain { value: Int }\nfunc add2[T](a: in T, b: in T): T where T: Add { default() }\nfunc f(): Plain { add2(Plain(value = 1), Plain(value = 2)) }\n"
   val cr = parseCheck(src)

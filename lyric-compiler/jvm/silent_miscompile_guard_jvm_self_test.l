@@ -329,14 +329,20 @@ test "Float compound assignment on a local" {
   assertTrue(f == 1.25f32, "f /= 2.0f")
 }
 
-test "Byte compound assignment wraps unsigned on a local" {
+// D163: plain compound operators panic on overflow in a debug build; the
+// in-range forms pin the unsigned representation and `wrapping*` pins the
+// unsigned 8-bit wraparound (matching MSIL conv.u1).
+test "Byte compound assignment stays unsigned on a local, wrapping methods wrap" {
   var b: Byte = 200.toByte()
-  b += 100.toByte()
-  // 300 wraps to 44 (unsigned 8-bit), matching MSIL conv.u1.
-  assertEqualInt(b.toInt(), 44, "200 += 100 wraps to 44")
-  var m: Byte = 200.toByte()
+  b += 50.toByte()
+  assertEqualInt(b.toInt(), 250, "200 += 50 stays unsigned at 250")
+  b = b.wrappingAdd(100.toByte())
+  assertEqualInt(b.toInt(), 94, "250 wrappingAdd 100 wraps to 94")
+  var m: Byte = 100.toByte()
   m *= 2.toByte()
-  assertEqualInt(m.toInt(), 144, "200 *= 2 wraps to 144")
+  assertEqualInt(m.toInt(), 200, "100 *= 2 stays unsigned at 200")
+  m = m.wrappingMul(2.toByte())
+  assertEqualInt(m.toInt(), 144, "200 wrappingMul 2 wraps to 144")
 }
 
 test "compound assignment coerces an erased match payload" {
@@ -359,7 +365,7 @@ test "compound assignment on hoisted (captured) vars of each shape" {
   var hs = "x"
   var hl: Long = 10i64
   var hi = 3
-  var hb: Byte = 200.toByte()
+  var hb: Byte = 40.toByte()
   var hd: Double = 1.0
   val bump = { -> hf += 0.5f32; hs += "y"; hl += 2i64; hi += 4; hb *= 2.toByte(); hd += 0.5 }
   bump()
@@ -367,12 +373,15 @@ test "compound assignment on hoisted (captured) vars of each shape" {
   assertEqual(hs, "xy", "hoisted String +=")
   assertEqualLong(hl, 12i64, "hoisted Long +=")
   assertEqualInt(hi, 7, "hoisted Int +=")
-  assertEqualInt(hb.toInt(), 144, "hoisted Byte *= wraps unsigned")
+  assertEqualInt(hb.toInt(), 80, "hoisted Byte *= stays unsigned")
   assertTrue(hd == 1.5, "hoisted Double +=")
   bump()
   assertTrue(hf == 2.0f32, "hoisted Float += (second call)")
   assertEqual(hs, "xyy", "hoisted String += (second call)")
   assertTrue(hd == 2.0, "hoisted Double += (second call)")
+  assertEqualInt(hb.toInt(), 160, "hoisted Byte *= stays unsigned (second call, > 127)")
+  hb = hb.wrappingMul(2.toByte())
+  assertEqualInt(hb.toInt(), 64, "hoisted Byte wrappingMul wraps unsigned")
 }
 
 // `emitArrayLoad`'s (`lyric-compiler/jvm/codegen/05_stmts.l`) typed-dispatch
@@ -716,10 +725,7 @@ protected type StackRegistry {
       var oldestSince = now
       for sid in mapKeys(byId) {
         match mapGet(byId, sid) {
-          case Some(e) -> if oldest.length == 0 or e.since < oldestSince {
-            oldest = sid
-            oldestSince = e.since
-          }
+          case Some(e) -> if oldest.length == 0 or e.since < oldestSince { oldest = sid; oldestSince = e.since }
           case None -> ()
         }
       }

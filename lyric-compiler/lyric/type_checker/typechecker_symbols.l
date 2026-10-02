@@ -318,6 +318,11 @@ pub record SymbolTable {
   /// `recordCopySiteKey` of the operand's span (see
   /// `Lyric.Parser.HoistOperandTypeSite`, #7823).
   hoistOperandTypeSites: Map[String, HoistOperandTypeSite]
+  /// One frame per lambda being checked with no expected return type: the
+  /// types of the values its `return` statements produce.  A lambda body that
+  /// ends in `return` has the type `Never`; its function type's result is the
+  /// type of the returned values (`inferLambda`).
+  lambdaReturnFrames: List[List[Type]]
   /// The type arguments of each call to a generic function whose type
   /// arguments are all closed, keyed by `recordCopySiteKey` of the callee's span
   /// (see `Lyric.Parser.GenericCallTypeArgsSite`, #7865).
@@ -399,6 +404,16 @@ pub record SymbolTable {
   /// span, or by the statement's span for `a += b`.  Lowered by
   /// `Lyric.ContractElaborator.lowerRecordArith`.
   recordArithSites: Map[String, RecordArithSite]
+  /// Integer arithmetic that can overflow (D163), keyed by span:
+  /// `add:<T>` / `sub:<T>` / `mul:<T>` for a binop, `neg:<T>` for unary
+  /// minus, `compound:<T>` for `x += y` / `-=` / `*=` (keyed by the
+  /// statement), and `wrap:<T>` for a `.wrappingAdd(...)`-style call.  `<T>` is
+  /// `Int`, `Long`, `UInt`, `ULong` or `Byte`.  Lowered by
+  /// `Lyric.ContractElaborator.lowerOverflowChecks`.
+  overflowSites: Map[String, String]
+  /// For a `compound:<T>` site whose target is not a side-effect-free path,
+  /// the types of its receiver and index temporaries (D163).
+  overflowCompoundTemps: Map[String, CompoundTemps]
   /// The package whose bare-name lookups obey its file's import list
   /// (docs/01 §9.2, #7463), boxed as a 0/1-element list; empty = no
   /// restriction.  Set for the file being checked only: an imported
@@ -533,6 +548,7 @@ pub func newSymbolTable(): SymbolTable {
     tuplePatternBindingSites = newMap(),
     listLiteralTypeSites = newMap(),
     hoistOperandTypeSites = newMap(),
+    lambdaReturnFrames = newList(),
     genericCallTypeArgSites = newMap(),
     lambdaParamTypeSites = newMap(),
     moduleValTypes = newMap(),
@@ -549,6 +565,8 @@ pub func newSymbolTable(): SymbolTable {
     distinctOpSites = newMap(),
     distinctCompoundSites = newMap(),
     recordArithSites = newMap(),
+    overflowSites = newMap(),
+    overflowCompoundTemps = newMap(),
     importRulePkg = newList(),
     importVisiblePkgs = newMap(),
     importVisibleNames = newMap(),

@@ -1908,15 +1908,17 @@ func inferExprTE(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
   }
 }
 
-// The annotation of a block `{ val n: T = e; n }`, the shape
-// `listLiteralTypedMono` produces, so a generic call taking such a block as
-// an argument still infers its type arguments (#7818).  `None` for any other
-// block.
+// The annotation of a block that ends in a local it declared with one,
+// `{ val n: T = e; n }` (the shape `listLiteralTypedMono` produces, #7818)
+// or `{ val a: T = x; ...; val r: T = a + b; ...; r }` (an overflow-checked
+// operator, D163), so a generic call taking such a block as an argument
+// still infers its type arguments.  `None` for any other block.
 func typedLocalBlockTE(blk: in Block): Option[TypeExpr] {
-  if blk.statements.count != 2 {
+  val n = blk.statements.count
+  if n < 2 {
     return None
   }
-  val tailName = match blk.statements[1].kind {
+  val tailName = match blk.statements[n - 1].kind {
     case SExpr(tail) -> match tail.kind {
       case EPath(p) -> if p.segments.count == 1 { p.segments[0] } else { "" }
       case _ -> ""
@@ -1926,20 +1928,21 @@ func typedLocalBlockTE(blk: in Block): Option[TypeExpr] {
   if tailName == "" {
     return None
   }
-  match blk.statements[0].kind {
-    case SLocal(binding) -> match binding {
-      case LBVal(pat, Some(ty), _) -> match pat.kind {
-        case PBinding(name, None) -> if name == tailName {
-          Some(value = ty)
-        } else {
-          None
+  var i = n - 2
+  while i >= 0 {
+    match blk.statements[i].kind {
+      case SLocal(binding) -> match binding {
+        case LBVal(pat, ty, _) -> match pat.kind {
+          case PBinding(name, None) -> if name == tailName { return ty }
+          case _ -> ()
         }
-        case _ -> None
+        case _ -> ()
       }
-      case _ -> None
+      case _ -> ()
     }
-    case _ -> None
+    i = i - 1
   }
+  None
 }
 
 // Infer the element type produced by indexing `recv` (`recv[i]`).  Map -> V,
