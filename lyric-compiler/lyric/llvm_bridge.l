@@ -6,6 +6,8 @@
 //! `?`-propagation → derives → mono → weave → reachability over the
 //! bundled stdlib → `Lyric.LlvmCodegen.codegenNativeBundle` →
 //! `Lyric.LlvmLowering.lowerNativePackage` → write `.ll` → clang (D-N-001).
+//! `--triple wasm32-wasi` links with the wasi-sdk's clang and the wasm32
+//! `lyric_rt` archive instead (no `-lpthread`/`-ldl`; docs/35 W2).
 //!
 //! Bundling model: like `Jvm.Bridge.compileToJarBundled`, the user
 //! package plus the transitive closure of its stdlib imports compile

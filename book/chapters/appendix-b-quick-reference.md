@@ -1497,7 +1497,7 @@ span, exactly like `T0120`/`J008`.
 
 | Code | Meaning |
 |---|---|
-| `N0001` | `clang` was not found on `PATH`. |
+| `N0001` | `clang` was not found on `PATH` (for `--triple wasm32-wasi`: the wasi-sdk's `clang` under `$WASI_SDK_PATH` could not be run). |
 | `N0002` | The generated LLVM IR (`.ll`) could not be written to disk. |
 | `N0003` | `lyric_rt.a` (the native runtime archive) was not found; set `LYRIC_RT_PATH` or run `make -C lyric-rt`. |
 | `N0004` | `clang` failed while compiling/linking the generated `.ll` file; its own stderr is included. |

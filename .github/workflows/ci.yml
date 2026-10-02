@@ -2820,7 +2820,8 @@ jobs:
         run: bash scripts/ci/native-backend-self-tests.sh
 
       # docs/35 W2: lyric-rt cross-compiled for wasm32-wasi (pinned wasi-sdk),
-      # C unit tests run under a pinned wasmtime.
+      # C unit tests run under a pinned wasmtime, then llvm_wasm32_self_test.l
+      # compiles and runs real Lyric programs for wasm32-wasi under wasmtime.
       - name: lyric-rt wasm32-wasi build + unit tests
         background: true
         working-directory: ${{ github.workspace }}
