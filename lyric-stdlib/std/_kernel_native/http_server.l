@@ -284,7 +284,7 @@
 //! returns the advanced `Std.HttpEngine.Connection` bundled with its
 //! `ReqOutcome` in a new `ReadOutcome` record; see that record's own doc
 //! comment for the full reasoning.
-@axiom("lyric_mutex_*/lyric_sem_* (lyric-rt/src/lyric_posix.c), pthread_create/pthread_join, and malloc/free conform to their documented POSIX/C99 contracts")
+@axiom("lyric_mutex_*/lyric_sem_* (lyric-rt/src/lyric_posix.c), lyric_thread_create/lyric_thread_join (lyric-rt/src/lyric_posix.c; pthread_create/pthread_join on POSIX hosts), and malloc/free conform to their documented POSIX/C99 contracts")
 @io
 package Std.HttpServer
 
