@@ -343,6 +343,11 @@ record MonoState {
   /// lambda's span; the `ELambda` rewrite writes each onto its parameter as
   /// the annotation (#7865).
   lambdaParamTypeSites: Map[String, LambdaParamTypesSite]
+  /// The calls the type checker bound to an `async func`
+  /// (`SymbolTable.asyncCallSites`), keyed by `recordCopySiteKey` of the
+  /// call's span.  Empty on a target that awaits a direct call itself, where a
+  /// `spawn` handle is not a task object; consulted by `spawnHandleTEMono`.
+  asyncCallSites: Map[String, Bool]
   /// Counter for the fresh locals a copy desugar binds (length = next id).
   copyTicker: List[Int]
   seenSpecs: Map[String, Bool]
@@ -402,6 +407,7 @@ func newMonoState(
     hoistOperandTypeSites = newMap(),
     genericCallTypeArgSites = newMap(),
     lambdaParamTypeSites = newMap(),
+    asyncCallSites = newMap(),
     copyTicker = newList(),
     seenSpecs = newMap(),
     allSpecs = newList(),
@@ -1828,6 +1834,29 @@ func inferLitTE(lit: in Literal, span: in Span): Option[TypeExpr] {
 // through to `None` — those calls stay generic in the emitted IL,
 // which is the same fall-back behaviour the pre-#349 code shipped
 // (and remains correct for imported generics that use CLR generics).
+// The type a generic call infers for a `spawn <async call>` handle on a target
+// where the handle is the callee's task object (`Task` / `Task<T>`; both are a
+// `System.Threading.Tasks.Task`).  The type checker types the handle as the
+// callee's logical result (`Unit`, `Int`, ...), which would specialise a
+// generic over the result instead of over the task: a `void`-typed parameter
+// for `Unit` (`TypeLoadException: The signature is incorrect.`), a mis-typed
+// primitive for a value-returning callee.  Nothing is inferred when the target
+// awaits a direct call itself (`asyncCallSites` is empty) or the operand is not
+// a call the checker bound to an `async func`.
+func spawnHandleTEMono(state: in MonoState, inner: in Expr): Option[TypeExpr] {
+  if state.asyncCallSites.count == 0 or not checkerSitesApplyMono(state) {
+    return None
+  }
+  match inner.kind {
+    case ECall(_, _) -> if state.asyncCallSites.containsKey(recordCopySiteKey(inner.span)) {
+      Some(value = TypeExpr(kind = TRef(path = singleSegPath("Task")), span = inner.span))
+    } else {
+      None
+    }
+    case _ -> None
+  }
+}
+
 func inferExprTE(state: in MonoState, env: in Map[String, TypeExpr], expr: in Expr): Option[TypeExpr] {
   match expr.kind {
     case ELiteral(lit) -> inferLitTE(lit, expr.span)
@@ -1882,6 +1911,7 @@ func inferExprTE(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
       }
     }
     case ETypeApp(fn, targs) -> inferTypeAppValueTE(state, env, fn, targs)
+    case ESpawn(inner) -> spawnHandleTEMono(state, inner)
     // A field read Mono cannot resolve itself (a restored package's record)
     // falls back to the type checker's recorded type, as a call does (#7441).
     case EMember(recv, name) -> match inferMemberTE(state, env, recv, name) {
@@ -7925,6 +7955,7 @@ pub func monoFileWithImportsAndTypeDecls(
     newMap(),
     newMap(),
     newMap(),
+    newMap(),
     newMap()
   )
 }
@@ -7944,6 +7975,7 @@ pub func monoFileWithLambdaTypes(
   genericCallTypeArgSites: in Map[String, GenericCallTypeArgsSite],
   lambdaParamTypeSites: in Map[String, LambdaParamTypesSite],
   specSites: in Map[String, Map[String, ArgConversionSite]],
+  asyncCallSites: in Map[String, Bool],
 ): MonoResult {
   // ── Phase 1: collect generic function decls ─────────────────────────────
   // #349: also collect every IFunc (generic + non-generic) and every
@@ -8269,6 +8301,9 @@ pub func monoFileWithLambdaTypes(
       case None -> ()
     }
     gci = gci + 1
+  }
+  for ak in mapKeys(asyncCallSites) {
+    state.asyncCallSites.add(ak, true)
   }
   val lpKeys = mapKeys(lambdaParamTypeSites)
   var lpi = 0

@@ -672,7 +672,8 @@ pub func pipeCheckAndMono(
     tcRes.symbols.callResultTypes,
     tcRes.symbols.genericCallTypeArgSites,
     tcRes.symbols.lambdaParamTypeSites,
-    specSites
+    specSites,
+    asyncCalls
   )
   if gate(opts.pkgLabel, opts.lineOrigins, monoRes.diagnostics) {
     return None
