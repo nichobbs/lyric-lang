@@ -1434,6 +1434,10 @@ func linkAndEmitNative(
   if DiagUtil.diagReportAndAbort(nativeGenericProtectedDiagnostics(units)) {
     return false
   }
+  // docs/67 §4.2: a by-value record has no C struct ABI yet.
+  if DiagUtil.diagReportAndAbort(nativeByValueExternDiagnostics(units)) {
+    return false
+  }
 
   // Resolve the target triple before codegen (the datalayout depends
   // on it).
@@ -1652,6 +1656,7 @@ func unitOf(f: in SourceFile, reachable: in Map[String, Bool], lowerAll: in Bool
   val externs: List[ExternFuncDecl] = newList()
   val nativeLibs: List[String] = newList()
   val records: List[RecordDecl] = newList()
+  val opaqueNames: List[String] = newList()
   val unions: List[UnionDecl] = newList()
   val enums: List[EnumDecl] = newList()
   val distincts: List[DistinctTypeDecl] = newList()
@@ -1705,6 +1710,7 @@ func unitOf(f: in SourceFile, reachable: in Map[String, Bool], lowerAll: in Bool
       case IOpaque(decl) -> {
         if decl.hasBody {
           records.add(opaqueToRecordDecl(decl))
+          opaqueNames.add(decl.name)
         }
       }
       // Interface + impl are collected together (N3.2): the impl's vtable
@@ -1741,6 +1747,7 @@ func unitOf(f: in SourceFile, reachable: in Map[String, Bool], lowerAll: in Bool
     externs = externs,
     nativeLibs = nativeLibs,
     records = records,
+    opaqueNames = opaqueNames,
     unions = unions,
     enums = enums,
     distincts = distincts,

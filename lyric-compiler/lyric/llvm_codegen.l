@@ -88,6 +88,9 @@ pub record CodegenUnit {
   // packages' signatures may reference them); generic declarations are
   // skipped at registration and panic only when actually used.
   records: List[RecordDecl]
+  // Names of the `records` that were declared `opaque type`: they keep the
+  // heap form (docs/67 §4.2) even when every field is by-value.
+  opaqueNames: List[String]
   unions: List[UnionDecl]
   enums: List[EnumDecl]
   distincts: List[DistinctTypeDecl]
@@ -157,6 +160,10 @@ record NRecInfo {
   fieldNames: List[String]
   fieldTys: List[NType]
   fieldDefaults: List[Option[Expr]]
+  // docs/67 §4.2: a record with no `var` field whose fields are all by-value
+  // lowers to a plain LLVM struct VALUE (no ARC header, no allocation, no
+  // destructor); every other record is the shared heap form behind a pointer.
+  byValue: Bool
 }
 
 record NUnionCaseInfo {
@@ -439,6 +446,13 @@ record Ctx {
   // are protected types (a trailing `__mutex: i8*` field, construction
   // routes through `lowerProtectedConstructArgs`) rather than plain records.
   protectedRecNames: Map[String, Bool]
+  // Record names (bare and package-qualified) that keep the heap form even
+  // when every field is by-value: opaque types and the target of any
+  // `impl I for R` (an interface box holds a heap object, docs/67 §4.2).
+  heapOnlyRecs: Map[String, Bool]
+  // By-value record boxes (`__box<R>`) already defined: a by-value record
+  // stored in a List/Map/Task slot lives in a refcounted box.
+  byValueBoxes: Map[String, Bool]
   // ARC state (per function).  `scopeRefs` stacks the ref-typed locals
   // each lexical scope owns; `tempScopes` stacks the owned temporaries
   // of each evaluation region; the depth lists snapshot both stacks at
@@ -1020,10 +1034,14 @@ func retTypeToN(ctx: in Ctx, ret: in Option[TypeExpr]): NType {
   }
 }
 
-/// The pointer type for a registered record.  The struct body carries
-/// the ARC header (rc, weak, dtor) followed by the fields, so GEP field
-/// indices are `arcHeaderSlots + declIndex`.
+/// The type of a registered record's value.  A heap record is a pointer whose
+/// struct body carries the ARC header (rc, weak, dtor) followed by the fields,
+/// so GEP field indices are `arcHeaderSlots + declIndex`; a by-value record is
+/// the header-less struct itself, read with `extractvalue`.
 func recPtrType(ri: in NRecInfo): NType {
+  if ri.byValue {
+    return NStruct(name = ri.irName, fields = layoutFieldTys(ri.fieldTys))
+  }
   val fields: List[NType] = newList()
   addArcHeader(fields)
   var i = 0
@@ -1075,8 +1093,25 @@ func sizeOfN(ctx: in Ctx, t: in NType): Int {
     // A Unit field (e.g. `Result[Unit, E]`'s Ok payload) occupies one
     // undef byte — see layoutFieldTys.
     case NVoid -> 1
-    case _ -> panic("Lyric.LlvmCodegen: by-value aggregate fields are not supported in native heap layouts")
+    // A by-value record (docs/67 §4.2): C layout of its fields.  Looked up by
+    // name because a struct value's own `fields` may come from a stub.
+    case NStruct(name, _) -> structSize(ctx, byValueLayoutOf(ctx, name))
+    case _ -> panic("Lyric.LlvmCodegen: this aggregate type cannot be sized for a native heap layout")
   }
+}
+
+/// The layout field types of the by-value record `name`.
+func byValueLayoutOf(ctx: in Ctx, name: in String): List[NType] {
+  match mapGet(ctx.recordDefs, name) {
+    case Some(ri) -> {
+      if ri.byValue {
+        return layoutFieldTys(ri.fieldTys)
+      }
+    }
+    case None -> {
+    }
+  }
+  panic("Lyric.LlvmCodegen: internal — '" + name + "' is not a registered by-value record")
 }
 
 /// Struct-definition field types for a record/union-case layout:
@@ -1107,6 +1142,19 @@ func isVoidNType(t: in NType): Bool {
 func alignOfN(ctx: in Ctx, t: in NType): Int {
   match t {
     case NArray(elem, _) -> alignOfN(ctx, elem)
+    case NStruct(name, _) -> {
+      val fields = byValueLayoutOf(ctx, name)
+      var maxA = 1
+      var i = 0
+      while i < fields.count {
+        val a = alignOfN(ctx, fields[i])
+        if a > maxA {
+          maxA = a
+        }
+        i = i + 1
+      }
+      maxA
+    }
     case _ -> sizeOfN(ctx, t)
   }
 }
@@ -2637,6 +2685,16 @@ func lowerBinop(ctx: in Ctx, insns: in List[NInsn], op: in BinOp, lhs: in Expr, 
       case None -> ()
     }
   }
+  // By-value records compare field by field.
+  if (op == BEq or op == BNeq) and isByValueStructNType(a.ty) {
+    val eq = emitStructEq(ctx, insns, a.ty, a.value, b.value)
+    if op == BEq {
+      return NVal(ty = NI1, value = NLocal(name = eq))
+    }
+    val ne = freshTmp(ctx)
+    insns.add(NXor(dest = ne, ty = NI1, a = NLocal(name = eq), b = NLitInt(v = 1i64, ty = NI1)))
+    return NVal(ty = NI1, value = NLocal(name = ne))
+  }
   val w = widenOperands(ctx, insns, a, b)
   if isComparisonOp(op) {
     match w.ty {
@@ -2859,6 +2917,12 @@ func lowerRecordFieldLoad(ctx: in Ctx, insns: in List[NInsn], ri: in NRecInfo, v
   // A Unit field has no stored data (layoutFieldTys).
   if isVoidNType(ri.fieldTys[idx]) {
     return NVal(ty = NVoid, value = NUndef(ty = NVoid))
+  }
+  // A by-value record is read straight out of the aggregate.
+  if ri.byValue {
+    val ext = freshTmp(ctx)
+    insns.add(NExtractValue(dest = ext, aggTy = v.ty, agg = v.value, index = idx))
+    return NVal(ty = ri.fieldTys[idx], value = NLocal(name = ext))
   }
   val structTy = match v.ty { case NPtr(pointee) -> pointee; case _ -> panic("unreachable") }
   val fieldPtr = freshTmp(ctx)
@@ -3610,6 +3674,12 @@ func lowerByRefArg(ctx: in Ctx, insns: in List[NInsn], ex: in Expr, declTy: in N
       val idx = recFieldIndex(ri, fieldName)
       if idx < 0 {
         panic("Lyric.LlvmCodegen: record '" + ri.irName + "' has no field '" + fieldName + "'")
+      }
+      if ri.byValue {
+        panic(
+          "Lyric.LlvmCodegen: out/inout argument '." + fieldName + "' is a field of by-value record '" + ri.irName +
+            "', which has no `var` field to write through"
+        )
       }
       val fieldTy = ri.fieldTys[idx]
       // #6813: same widening hazard as the bare-local branch above — a
@@ -4423,6 +4493,16 @@ func curPkgQualifiedGet[T](ctx: in Ctx, m: in Map[String, T], bareOrDotted: in S
   mapGet(m, bareOrDotted)
 }
 
+/// The IR struct name of a receiver type: the pointee of a heap object's
+/// pointer, or a by-value record's struct itself; "" for any other type.
+func receiverStructName(t: in NType): String {
+  match t {
+    case NPtr(pointee) -> match pointee { case NStruct(n, _) -> n; case _ -> "" }
+    case NStruct(n, _) -> n
+    case _ -> ""
+  }
+}
+
 func tryLowerConstruct(
   ctx: in Ctx,
   insns: in List[NInsn],
@@ -4550,23 +4630,14 @@ func lowerUfcsCall(
   // different function: an impl method's own key is collision-free by
   // construction (package + record + method).
   var sigOpt: Option[NFuncSig] = None
-  match recv.ty {
-    case NPtr(pointee) -> {
-      match pointee {
-        case NStruct(tyName, _) -> {
-          match mapGet(ctx.implDirectMethods, tyName + "." + name + "/" + arity) {
-            case Some(sigKey) -> {
-              sigOpt = mapGet(ctx.sigs, sigKey)
-            }
-            case None -> {
-            }
-          }
-        }
-        case _ -> {
-        }
+  val recvTyName = receiverStructName(recv.ty)
+  if recvTyName.length > 0 {
+    match mapGet(ctx.implDirectMethods, recvTyName + "." + name + "/" + arity) {
+      case Some(sigKey) -> {
+        sigOpt = mapGet(ctx.sigs, sigKey)
       }
-    }
-    case _ -> {
+      case None -> {
+      }
     }
   }
   match sigOpt {
@@ -4580,47 +4651,39 @@ func lowerUfcsCall(
     case Some(_) -> {
     }
     case None -> {
-      match recv.ty {
-        case NPtr(pointee) -> {
-          match pointee {
-            case NStruct(tyName, _) -> {
-              // `tyName` is already package-qualified (e.g. "Std.Tls.Identity"
-              // for a record/opaque type's ARC pointee). An extension-method
-              // -style declaration (`func Identity.rawHandle(...)`, as opposed
-              // to a D037 in-type-body method) registers its sig under the
-              // compound "TypeName.methodName" name — try the exact qualified
-              // form first, then the bare "TypeName.methodName" form (no
-              // package prefix; matches the registry's own bare-name key).
-              sigOpt = mapGet(ctx.sigs, tyName + "." + name + "/" + arity)
-              val dotIdx = lastDotIndex(tyName)
-              match sigOpt {
-                case Some(_) -> {
-                }
-                case None -> {
-                  if dotIdx > 0 {
-                    val bareTyName = Str.substring(tyName, dotIdx + 1, tyName.length - dotIdx - 1)
-                    sigOpt = mapGet(ctx.sigs, bareTyName + "." + name + "/" + arity)
-                  }
-                }
-              }
-              match sigOpt {
-                case Some(_) -> {
-                }
-                case None -> {
-                  // Legacy fallback: a D037 in-type-body method desugars to a
-                  // bare package-level function living in the receiver
-                  // type's DEFINING package (not qualified by the type name).
-                  if dotIdx > 0 {
-                    sigOpt = mapGet(ctx.sigs, Str.substring(tyName, 0, dotIdx) + "." + name + "/" + arity)
-                  }
-                }
-              }
-            }
-            case _ -> {
+      if recvTyName.length > 0 {
+        val tyName = recvTyName
+        // `tyName` is already package-qualified (e.g. "Std.Tls.Identity"
+        // for a record/opaque type's ARC pointee, or a by-value record's
+        // struct). An extension-method
+        // -style declaration (`func Identity.rawHandle(...)`, as opposed
+        // to a D037 in-type-body method) registers its sig under the
+        // compound "TypeName.methodName" name — try the exact qualified
+        // form first, then the bare "TypeName.methodName" form (no
+        // package prefix; matches the registry's own bare-name key).
+        sigOpt = mapGet(ctx.sigs, tyName + "." + name + "/" + arity)
+        val dotIdx = lastDotIndex(tyName)
+        match sigOpt {
+          case Some(_) -> {
+          }
+          case None -> {
+            if dotIdx > 0 {
+              val bareTyName = Str.substring(tyName, dotIdx + 1, tyName.length - dotIdx - 1)
+              sigOpt = mapGet(ctx.sigs, bareTyName + "." + name + "/" + arity)
             }
           }
         }
-        case _ -> {
+        match sigOpt {
+          case Some(_) -> {
+          }
+          case None -> {
+            // Legacy fallback: a D037 in-type-body method desugars to a
+            // bare package-level function living in the receiver
+            // type's DEFINING package (not qualified by the type name).
+            if dotIdx > 0 {
+              sigOpt = mapGet(ctx.sigs, Str.substring(tyName, 0, dotIdx) + "." + name + "/" + arity)
+            }
+          }
         }
       }
     }
@@ -4805,6 +4868,299 @@ func rangeBoundLit(e: in Expr): Option[Long] {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// §10.4. By-value records (docs/67 §4.2).
+// ─────────────────────────────────────────────────────────────────────────────
+// A record with no `var` field whose fields are all by-value (scalars, enums,
+// distinct types over those, and other by-value records) lowers to a plain LLVM
+// struct VALUE: no ARC header, no heap allocation, no retain/release, no
+// destructor.  The decision is made once per record declaration, before any
+// layout is computed, so every other record's field types and every type
+// mapping agree.  Records with a `var` field keep the shared heap form (D157);
+// so do opaque types and the target of an `impl I for R` (an interface box
+// holds a heap object).
+record NByValState {
+  decls: Map[String, RecordDecl]
+  declPkgs: Map[String, String]
+  distincts: Map[String, DistinctTypeDecl]
+  distinctPkgs: Map[String, String]
+  enums: Map[String, Bool]
+  heapOnly: Map[String, Bool]
+  results: Map[String, NRecInfo]
+  failed: Map[String, Bool]
+  visiting: Map[String, Bool]
+  typeDefs: List[NTypeDefn]
+}
+
+/// The bare name of an `impl <Iface> for <Target>`'s target type.
+func implTargetBareName(te: in TypeExpr): String {
+  match te.kind {
+    case TRef(path) -> lastSeg(path)
+    case TGenericApp(head, _) -> lastSeg(head)
+    case TParen(inner) -> implTargetBareName(inner)
+    case _ -> ""
+  }
+}
+
+/// Fill `heapOnly` (`Ctx.heapOnlyRecs`): opaque types (package-qualified) and
+/// every `impl I for R` target (bare name, conservative across packages).
+func fillHeapOnlyRecs(heapOnly: in Map[String, Bool], units: in List[CodegenUnit]): Unit {
+  for u in units {
+    for n in u.opaqueNames {
+      if not heapOnly.containsKey(u.pkgName + "." + n) {
+        heapOnly.add(u.pkgName + "." + n, true)
+      }
+    }
+    for im in u.impls {
+      val target = implTargetBareName(im.target)
+      if target.length > 0 and not heapOnly.containsKey(target) {
+        heapOnly.add(target, true)
+      }
+    }
+  }
+}
+
+func isHeapOnlyRec(ctx: in Ctx, pkg: in String, name: in String): Bool {
+  ctx.heapOnlyRecs.containsKey(name) or ctx.heapOnlyRecs.containsKey(pkg + "." + name)
+}
+
+func recordHasVarField(rd: in RecordDecl): Bool {
+  for f in recFieldsOf(rd) {
+    if f.isMutable {
+      return true
+    }
+  }
+  false
+}
+
+/// A field type that keeps a record by-value once resolved: a scalar, a
+/// Unit placeholder, or another by-value record's struct value.
+func isByValueFieldNType(t: in NType): Bool {
+  match t {
+    case NI1 -> true
+    case NI8 -> true
+    case NI32 -> true
+    case NI64 -> true
+    case NFloat -> true
+    case NDouble -> true
+    case NVoid -> true
+    case NStruct(_, _) -> true
+    case _ -> false
+  }
+}
+
+func byValuePathKey(pkg: in String, path: in ModulePath): String {
+  if path.segments.count == 1 {
+    pkg + "." + path.segments[0]
+  } else {
+    modulePathJoin(path.segments)
+  }
+}
+
+/// The NType of a by-value field written as `te`, as a zero- or one-element
+/// list (empty: the field is not by-value, so the record keeps the heap form).
+func classifyByValueField(st: in NByValState, pkg: in String, te: in TypeExpr): List[NType] {
+  val res: List[NType] = newList()
+  match te.kind {
+    case TParen(inner) -> return classifyByValueField(st, pkg, inner)
+    case TUnit -> {
+      res.add(NVoid)
+      return res
+    }
+    case TRef(path) -> {
+      val joined = byValuePathKey(pkg, path)
+      val bare = lastSeg(path)
+      var declKey = ""
+      if st.decls.containsKey(joined) {
+        declKey = joined
+      } else if st.decls.containsKey(bare) {
+        declKey = bare
+      }
+      if declKey.length > 0 {
+        val rd = st.decls[declKey]
+        val rpkg = st.declPkgs[declKey]
+        if classifyByValueRecord(st, rpkg, rd) {
+          val ri = st.results[rpkg + "." + rd.name]
+          res.add(NStruct(name = ri.irName, fields = layoutFieldTys(ri.fieldTys)))
+        }
+        return res
+      }
+      if st.enums.containsKey(joined) or st.enums.containsKey(bare) {
+        res.add(NI32)
+        return res
+      }
+      var distKey = ""
+      if st.distincts.containsKey(joined) {
+        distKey = joined
+      } else if st.distincts.containsKey(bare) {
+        distKey = bare
+      }
+      if distKey.length > 0 {
+        val dd = st.distincts[distKey]
+        match dd.generics {
+          case Some(_) -> return res
+          case None -> return classifyByValueField(st, st.distinctPkgs[distKey], dd.underlying)
+        }
+      }
+      if bare == "Int" or bare == "Char" {
+        res.add(NI32)
+      } else if bare == "Long" {
+        res.add(NI64)
+      } else if bare == "Double" {
+        res.add(NDouble)
+      } else if bare == "Float" {
+        res.add(NFloat)
+      } else if bare == "Bool" {
+        res.add(NI1)
+      } else if bare == "Byte" {
+        res.add(NI8)
+      }
+      res
+    }
+    case _ -> res
+  }
+}
+
+/// Classify one non-generic record declaration; a by-value record's full
+/// `NRecInfo` lands in `st.results` and its struct definition in `st.typeDefs`
+/// (nested by-value records first, so a definition never precedes the ones it
+/// embeds).
+func classifyByValueRecord(st: in NByValState, pkg: in String, rd: in RecordDecl): Bool {
+  val irName = pkg + "." + rd.name
+  if st.results.containsKey(irName) {
+    return true
+  }
+  if st.failed.containsKey(irName) or st.visiting.containsKey(irName) {
+    return false
+  }
+  match rd.generics {
+    case Some(_) -> return false
+    case None -> {
+    }
+  }
+  if recordHasVarField(rd) or st.heapOnly.containsKey(rd.name) or st.heapOnly.containsKey(irName) {
+    st.failed.add(irName, true)
+    return false
+  }
+  val fields = recFieldsOf(rd)
+  if fields.count == 0 {
+    st.failed.add(irName, true)
+    return false
+  }
+  st.visiting.add(irName, true)
+  val names: List[String] = newList()
+  val tys: List[NType] = newList()
+  val dflts: List[Option[Expr]] = newList()
+  var ok = true
+  var i = 0
+  while i < fields.count and ok {
+    val ft = classifyByValueField(st, pkg, fields[i].ty)
+    if ft.count == 0 {
+      ok = false
+    } else {
+      names.add(fields[i].name)
+      tys.add(ft[0])
+      dflts.add(fields[i].dflt)
+    }
+    i = i + 1
+  }
+  st.visiting.remove(irName)
+  if not ok {
+    st.failed.add(irName, true)
+    return false
+  }
+  st.results.add(
+    irName,
+    NRecInfo(irName = irName, fieldNames = names, fieldTys = tys, fieldDefaults = dflts, byValue = true)
+  )
+  st.typeDefs.add(NTypeDefn(name = irName, fields = layoutFieldTys(tys)))
+  true
+}
+
+/// Classify every non-generic record of the bundle; the by-value records'
+/// `NRecInfo`s land in the result's `results` (by IR name) and their struct
+/// definitions are appended to `typeDefs`.
+func classifyByValueRecords(
+  heapOnly: in Map[String, Bool], units: in List[CodegenUnit], typeDefs: in List[NTypeDefn]
+): NByValState {
+  val st = NByValState(
+    decls = newMap(),
+    declPkgs = newMap(),
+    distincts = newMap(),
+    distinctPkgs = newMap(),
+    enums = newMap(),
+    heapOnly = heapOnly,
+    results = newMap(),
+    failed = newMap(),
+    visiting = newMap(),
+    typeDefs = typeDefs
+  )
+  for u in units {
+    for rd in u.records {
+      if not st.decls.containsKey(u.pkgName + "." + rd.name) {
+        st.decls.add(u.pkgName + "." + rd.name, rd)
+        st.declPkgs.add(u.pkgName + "." + rd.name, u.pkgName)
+      }
+      if not st.decls.containsKey(rd.name) {
+        st.decls.add(rd.name, rd)
+        st.declPkgs.add(rd.name, u.pkgName)
+      }
+    }
+    for dd in u.distincts {
+      if not st.distincts.containsKey(u.pkgName + "." + dd.name) {
+        st.distincts.add(u.pkgName + "." + dd.name, dd)
+        st.distinctPkgs.add(u.pkgName + "." + dd.name, u.pkgName)
+      }
+      if not st.distincts.containsKey(dd.name) {
+        st.distincts.add(dd.name, dd)
+        st.distinctPkgs.add(dd.name, u.pkgName)
+      }
+    }
+    for ed in u.enums {
+      st.enums.add(u.pkgName + "." + ed.name, true)
+      st.enums.add(ed.name, true)
+    }
+  }
+  for u in units {
+    for rd in u.records {
+      val _ = classifyByValueRecord(st, u.pkgName, rd)
+    }
+  }
+  st
+}
+
+/// Whether a generic record instantiated at `argTys` is by-value: no `var`
+/// field, not opaque / interface-implementing, and every instantiated field a
+/// by-value type.
+func genericRecordByValue(ctx: in Ctx, gkey: in String, rd: in RecordDecl, tys: in List[NType]): Bool {
+  val pkg = match mapGet(ctx.genericDeclPkg, gkey) { case Some(p) -> p; case None -> "" }
+  if recordHasVarField(rd) or isHeapOnlyRec(ctx, pkg, rd.name) or tys.count == 0 {
+    return false
+  }
+  for t in tys {
+    if not isByValueFieldNType(t) {
+      return false
+    }
+  }
+  true
+}
+
+/// True when `t` is a by-value record's struct value (never a pointer): a bare
+/// named struct appears as a value type for by-value records only.
+func isByValueStructNType(t: in NType): Bool {
+  match t {
+    case NStruct(_, _) -> true
+    case _ -> false
+  }
+}
+
+func byValueRecName(t: in NType): String {
+  match t {
+    case NStruct(name, _) -> name
+    case _ -> ""
+  }
+}
+
 /// Register every non-generic record/union/enum/distinct declaration in
 /// the bundle.  Two phases: names first (so pointer-typed fields can
 /// reference any registered type, including cyclically), then field
@@ -4812,6 +5168,8 @@ func rangeBoundLit(e: in Expr): Option[Long] {
 func registerHeapTypes(
   ctx: in Ctx, units: in List[CodegenUnit], typeDefs: in List[NTypeDefn], fns: in List[NFunc]
 ): Unit {
+  fillHeapOnlyRecs(ctx.heapOnlyRecs, units)
+  val byVal = classifyByValueRecords(ctx.heapOnlyRecs, units, typeDefs).results
   // Phase A: allocate names.
   var ui = 0
   while ui < units.count {
@@ -4825,12 +5183,19 @@ func registerHeapTypes(
           val emptyNames: List[String] = newList()
           val emptyTys: List[NType] = newList()
           val emptyDflts: List[Option[Expr]] = newList()
-          val stub = NRecInfo(
-            irName = u.pkgName + "." + rd.name,
-            fieldNames = emptyNames,
-            fieldTys = emptyTys,
-            fieldDefaults = emptyDflts
-          )
+          // A by-value record is registered with its full layout up front, so
+          // other layouts (union payload sizes, other records' fields) can
+          // size and name it before Phase B reaches its declaration.
+          val stub = match mapGet(byVal, u.pkgName + "." + rd.name) {
+            case Some(full) -> full
+            case None -> NRecInfo(
+              irName = u.pkgName + "." + rd.name,
+              fieldNames = emptyNames,
+              fieldTys = emptyTys,
+              fieldDefaults = emptyDflts,
+              byValue = false
+            )
+          }
           addRecKey(ctx, u.pkgName + "." + rd.name, stub)
           addRecKey(ctx, rd.name, stub)
         }
@@ -4877,7 +5242,8 @@ func registerHeapTypes(
             irName = u.pkgName + "." + pd.name,
             fieldNames = emptyNames,
             fieldTys = emptyTys,
-            fieldDefaults = emptyDflts
+            fieldDefaults = emptyDflts,
+            byValue = false
           )
           addRecKey(ctx, u.pkgName + "." + pd.name, stub)
           addRecKey(ctx, pd.name, stub)
@@ -5206,11 +5572,22 @@ func registerRecordLayout(
   fns: in List[NFunc],
   strict: in Bool,
 ): Unit {
+  val irName = pkg + "." + rd.name
+  // A by-value record was fully registered (layout and struct definition)
+  // before Phase A; there is no header, destructor, or heap layout to add.
+  match mapGet(ctx.recordDefs, irName) {
+    case Some(pre) -> {
+      if pre.byValue and pre.irName == irName {
+        return
+      }
+    }
+    case None -> {
+    }
+  }
   val fields = recFieldsOf(rd)
   val names: List[String] = newList()
   val tys: List[NType] = newList()
   val dflts: List[Option[Expr]] = newList()
-  val irName = pkg + "." + rd.name
   var i = 0
   while i < fields.count {
     names.add(fields[i].name)
@@ -5230,7 +5607,7 @@ func registerRecordLayout(
     dflts.add(fields[i].dflt)
     i = i + 1
   }
-  val ri = NRecInfo(irName = irName, fieldNames = names, fieldTys = tys, fieldDefaults = dflts)
+  val ri = NRecInfo(irName = irName, fieldNames = names, fieldTys = tys, fieldDefaults = dflts, byValue = false)
   replaceRecKey(ctx, pkg + "." + rd.name, ri)
   replaceRecKey(ctx, rd.name, ri)
   val defnFields: List[NType] = newList()
@@ -5440,6 +5817,8 @@ func mangleNTypeArg(t: in NType): String {
       }
     }
     case NArray(elem, size) -> "arr" + size.toString() + "." + mangleNTypeArg(elem)
+    // A by-value record: its IR name (`V*` is the pointer to a heap `V`).
+    case NStruct(name, _) -> name
     case _ -> nTypeToIrString(t)
   }
 }
@@ -6110,7 +6489,15 @@ func emitTaskComplete(ctx: in Ctx, insns: in List[NInsn], v: in NVal): Unit {
     case NVoid -> {
     }
     case _ -> {
-      slotV = slotOfVal(ctx, insns, v)
+      if isByValueStructNType(v.ty) {
+        // The result slot takes over the box's only reference.
+        val box = boxByValue(ctx, insns, v)
+        val boxSlot = freshTmp(ctx)
+        insns.add(NPtrToInt(dest = boxSlot, fromTy = box.ty, value = box.value, toTy = NI64))
+        slotV = NLocal(name = boxSlot)
+      } else {
+        slotV = slotOfVal(ctx, insns, v)
+      }
       isRef = refFlagOf(v.ty)
     }
   }
@@ -6121,8 +6508,48 @@ func emitTaskComplete(ctx: in Ctx, insns: in List[NInsn], v: in NVal): Unit {
   insns.add(NCallVoid(fn = NGlobal(name = "lyric_task_complete"), args = cArgs))
 }
 
+/// The refcounted box (`__box<R>`) a by-value record occupies in a
+/// List/Map/Task slot: the ARC header followed by the struct.  The box holds
+/// no references (a by-value record's fields are all by-value), so it has no
+/// destructor and the runtime frees it when the last reference drops.
+func byValueBoxType(ctx: in Ctx, t: in NType): NType {
+  val nm = "__box<" + mangleNTypeArg(t) + ">"
+  val fields: List[NType] = newList()
+  addArcHeader(fields)
+  fields.add(t)
+  if not ctx.byValueBoxes.containsKey(nm) {
+    ctx.byValueBoxes.add(nm, true)
+    ctx.moduleTypeDefs.add(NTypeDefn(name = nm, fields = fields))
+  }
+  NPtr(pointee = NStruct(name = nm, fields = fields))
+}
+
+/// Allocate a box holding the by-value record `v`: an OWNED (rc = 1) pointer,
+/// not registered with any temp scope.
+func boxByValue(ctx: in Ctx, insns: in List[NInsn], v: in NVal): NVal {
+  val boxTy = byValueBoxType(ctx, v.ty)
+  val boxStructTy = match boxTy { case NPtr(pointee) -> pointee; case _ -> panic("unreachable") }
+  val obj = emitHeapAlloc(ctx, insns, boxTy, "")
+  val payloadPtr = freshTmp(ctx)
+  val gArgs: List[NArg] = newList()
+  gArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  gArgs.add(NArg(ty = NI32, value = NLitInt(v = arcHeaderSlots.toLong(), ty = NI32)))
+  insns.add(NGEP(dest = payloadPtr, ty = boxStructTy, ptr = NLocal(name = obj), indices = gArgs))
+  insns.add(NStore(ty = v.ty, value = v.value, ptr = NLocal(name = payloadPtr)))
+  NVal(ty = boxTy, value = NLocal(name = obj))
+}
+
 // Widen a value to the container's 64-bit slot representation.
 func slotOfVal(ctx: in Ctx, insns: in List[NInsn], v: in NVal): NValue {
+  if isByValueStructNType(v.ty) {
+    // The container retains the box (its element flag is 1); the temp scope
+    // drops this construction's own reference.
+    val box = boxByValue(ctx, insns, v)
+    registerTemp(ctx, box)
+    val dest = freshTmp(ctx)
+    insns.add(NPtrToInt(dest = dest, fromTy = box.ty, value = box.value, toTy = NI64))
+    return NLocal(name = dest)
+  }
   if isRefNType(v.ty) {
     val dest = freshTmp(ctx)
     insns.add(NPtrToInt(dest = dest, fromTy = v.ty, value = v.value, toTy = NI64))
@@ -6175,6 +6602,21 @@ func valOfSlot(ctx: in Ctx, insns: in List[NInsn], slot: in NValue, elemTy: in N
     return NVal(ty = elemTy, value = NLocal(name = dest))
   }
   match elemTy {
+    // A by-value record is loaded out of its box (a copy: values have no identity).
+    case NStruct(_, _) -> {
+      val boxTy = byValueBoxType(ctx, elemTy)
+      val boxStructTy = match boxTy { case NPtr(pointee) -> pointee; case _ -> panic("unreachable") }
+      val box = freshTmp(ctx)
+      insns.add(NIntToPtr(dest = box, fromTy = NI64, value = slot, toTy = boxTy))
+      val payloadPtr = freshTmp(ctx)
+      val gArgs: List[NArg] = newList()
+      gArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+      gArgs.add(NArg(ty = NI32, value = NLitInt(v = arcHeaderSlots.toLong(), ty = NI32)))
+      insns.add(NGEP(dest = payloadPtr, ty = boxStructTy, ptr = NLocal(name = box), indices = gArgs))
+      val dest = freshTmp(ctx)
+      insns.add(NLoad(dest = dest, ty = elemTy, ptr = NLocal(name = payloadPtr)))
+      NVal(ty = elemTy, value = NLocal(name = dest))
+    }
     case NI64 -> NVal(ty = NI64, value = slot)
     case NDouble -> {
       val dest = freshTmp(ctx)
@@ -6229,7 +6671,8 @@ func refFlagOf(t: in NType): NValue {
   if isWeakNType(t) {
     return NLitInt(v = 2i64, ty = NI32)
   }
-  if isRefNType(t) {
+  // A by-value record is stored boxed, and the box is a strong reference.
+  if isRefNType(t) or isByValueStructNType(t) {
     return NLitInt(v = 1i64, ty = NI32)
   }
   NLitInt(v = 0i64, ty = NI32)
@@ -6275,7 +6718,7 @@ func constructMap(ctx: in Ctx, insns: in List[NInsn], k: in NType, v: in NType):
   if isStringNType(k) {
     keyFlag = NLitInt(v = 1i64, ty = NI32)
   } else {
-    if isRefNType(k) {
+    if isRefNType(k) or isByValueStructNType(k) {
       panic("Lyric.LlvmCodegen: Map keys on --target native must be String or a scalar type; got " + nTypeToIrString(k))
     }
   }
@@ -7032,7 +7475,7 @@ func tupleRecInfo(ctx: in Ctx, elemTys: in List[NType]): NRecInfo {
     dflts.add(noD)
     fi = fi + 1
   }
-  val ri = NRecInfo(irName = nm, fieldNames = names, fieldTys = elemTys, fieldDefaults = dflts)
+  val ri = NRecInfo(irName = nm, fieldNames = names, fieldTys = elemTys, fieldDefaults = dflts, byValue = false)
   ctx.recordDefs.add(nm, ri)
   val defnFields: List[NType] = newList()
   addArcHeader(defnFields)
@@ -7336,7 +7779,7 @@ func instantiateGenericRecordOpt(ctx: in Ctx, gkey: in String, argTys: in List[N
   val stubDflts: List[Option[Expr]] = newList()
   ctx.recordDefs.add(
     instName,
-    NRecInfo(irName = instName, fieldNames = stubNames, fieldTys = stubTys, fieldDefaults = stubDflts)
+    NRecInfo(irName = instName, fieldNames = stubNames, fieldTys = stubTys, fieldDefaults = stubDflts, byValue = false)
   )
   var i = 0
   while i < fields.count {
@@ -7351,10 +7794,15 @@ func instantiateGenericRecordOpt(ctx: in Ctx, gkey: in String, argTys: in List[N
     dflts.add(fields[i].dflt)
     i = i + 1
   }
-  val ri = NRecInfo(irName = instName, fieldNames = names, fieldTys = tys, fieldDefaults = dflts)
+  val byValue = genericRecordByValue(ctx, gkey, rd, tys)
+  val ri = NRecInfo(irName = instName, fieldNames = names, fieldTys = tys, fieldDefaults = dflts, byValue = byValue)
   ctx.recordDefs.remove(instName)
   ctx.recordDefs.add(instName, ri)
   ctx.instMeta.add(instName, NInstInfo(gkey = gkey, argTys = argTys))
+  if byValue {
+    ctx.moduleTypeDefs.add(NTypeDefn(name = instName, fields = layoutFieldTys(tys)))
+    return Some(value = ri)
+  }
   val defnFields: List[NType] = newList()
   addArcHeader(defnFields)
   val layoutTys = layoutFieldTys(tys)
@@ -7706,6 +8154,22 @@ func unifyTyArg(
               }
             }
             case _ -> {
+            }
+          }
+        }
+        // An instantiated generic BY-VALUE record is the struct itself.
+        case NStruct(instName, _) -> {
+          match mapGet(ctx.instMeta, instName) {
+            case Some(meta) -> {
+              if targs.count == meta.argTys.count {
+                var i = 0
+                while i < targs.count {
+                  unifyTypeArgWith(ctx, targs[i], meta.argTys[i], paramNames, boundNames, boundTys)
+                  i = i + 1
+                }
+              }
+            }
+            case None -> {
             }
           }
         }
@@ -9194,6 +9658,42 @@ func loadCaseField(
   v
 }
 
+/// An `i1` local holding `a == b` for two by-value record values: every field
+/// equal by its own type's `==` (a struct field recursively).
+func emitStructEq(ctx: in Ctx, body: in List[NInsn], t: in NType, a: in NValue, b: in NValue): String {
+  val ri = match mapGet(ctx.recordDefs, byValueRecName(t)) {
+    case Some(r) -> r
+    case None -> panic(
+      "Lyric.LlvmCodegen: internal — equality on unregistered struct '" + byValueRecName(t) + "'"
+    )
+  }
+  var acc = ""
+  var fi = 0
+  while fi < ri.fieldTys.count {
+    if not isVoidNType(ri.fieldTys[fi]) {
+      val ea = freshTmp(ctx)
+      body.add(NExtractValue(dest = ea, aggTy = t, agg = a, index = fi))
+      val eb = freshTmp(ctx)
+      body.add(NExtractValue(dest = eb, aggTy = t, agg = b, index = fi))
+      val eq = emitValueEqN(ctx, body, ri.fieldTys[fi], ea, eb)
+      if acc.length == 0 {
+        acc = eq
+      } else {
+        val both = freshTmp(ctx)
+        body.add(NAnd(dest = both, ty = NI1, a = NLocal(name = acc), b = NLocal(name = eq)))
+        acc = both
+      }
+    }
+    fi = fi + 1
+  }
+  if acc.length == 0 {
+    val tru = freshTmp(ctx)
+    body.add(NICmp(dest = tru, pred = IEq, ty = NI1, a = NLitInt(v = 1i64, ty = NI1), b = NLitInt(v = 1i64, ty = NI1)))
+    acc = tru
+  }
+  acc
+}
+
 /// An `i1` local holding `a == b` for two values of IR type `t`, by the
 /// rules `synthUnionEq` documents.
 func emitValueEqN(ctx: in Ctx, body: in List[NInsn], t: in NType, a: in String, b: in String): String {
@@ -9213,6 +9713,9 @@ func emitValueEqN(ctx: in Ctx, body: in List[NInsn], t: in NType, a: in String, 
       return dest
     }
     case _ -> ()
+  }
+  if isByValueStructNType(t) {
+    return emitStructEq(ctx, body, t, NLocal(name = a), NLocal(name = b))
   }
   match unionInfoOfNType(ctx, t) {
     case Some(inner) -> {
@@ -9348,6 +9851,27 @@ func lowerRecordConstructArgs(ctx: in Ctx, insns: in List[NInsn], ri: in NRecInf
   lowerRecordConstructVals(ctx, insns, ri, vals)
 }
 
+/// Build a by-value record: an `insertvalue` chain from `undef`, with no
+/// allocation and no ARC.  A Unit field's placeholder byte stays undef.
+func buildByValueRecord(ctx: in Ctx, insns: in List[NInsn], ri: in NRecInfo, vals: in List[NVal]): NVal {
+  val aggTy = recPtrType(ri)
+  var cur: NValue = NUndef(ty = aggTy)
+  var fi = 0
+  while fi < vals.count {
+    if isVoidNType(ri.fieldTys[fi]) {
+      fi = fi + 1
+      continue
+    }
+    val dest = freshTmp(ctx)
+    insns.add(
+      NInsertValue(dest = dest, aggTy = aggTy, agg = cur, elemTy = ri.fieldTys[fi], elem = vals[fi].value, index = fi)
+    )
+    cur = NLocal(name = dest)
+    fi = fi + 1
+  }
+  NVal(ty = aggTy, value = cur)
+}
+
 /// Construct a record from pre-lowered field values (coerced here).
 func lowerRecordConstructVals(ctx: in Ctx, insns: in List[NInsn], ri: in NRecInfo, rawVals: in List[NVal]): NVal {
   val vals: List[NVal] = newList()
@@ -9358,6 +9882,9 @@ func lowerRecordConstructVals(ctx: in Ctx, insns: in List[NInsn], ri: in NRecInf
       case want -> vals.add(coerceTo(ctx, insns, rawVals[vi], want))
     }
     vi = vi + 1
+  }
+  if ri.byValue {
+    return buildByValueRecord(ctx, insns, ri, vals)
   }
   val objTy = recPtrType(ri)
   val structTy = match objTy { case NPtr(pointee) -> pointee; case _ -> panic("unreachable") }
@@ -9748,6 +10275,8 @@ func recInfoOfType(ctx: in Ctx, t: in NType): Option[NRecInfo] {
         case _ -> None
       }
     }
+    // A by-value record is the struct itself, never behind a pointer.
+    case NStruct(name, _) -> mapGet(ctx.recordDefs, name)
     case _ -> None
   }
 }
@@ -10654,6 +11183,7 @@ func zeroValueOf(ty: in NType): NValue {
     case NDouble -> NLitFloat(v = 0.0, ty = NDouble)
     case NFloat -> NLitFloat(v = 0.0, ty = NFloat)
     case NPtr(pointee) -> NLitNull(ty = NPtr(pointee = pointee))
+    case NStruct(_, _) -> NUndef(ty = ty)
     case _ -> NLitInt(v = 0i64, ty = ty)
   }
 }
@@ -10900,6 +11430,12 @@ func lowerFieldAssign(
   if idx < 0 {
     panic("Lyric.LlvmCodegen: record '" + ri.irName + "' has no field '" + fieldName + "'")
   }
+  if ri.byValue {
+    panic(
+      "Lyric.LlvmCodegen: internal — assignment to field '." + fieldName + "' of by-value record '" + ri.irName +
+        "' (a record with no `var` field cannot be assigned through)"
+    )
+  }
   val fieldTy = ri.fieldTys[idx]
   val structTy = match obj.ty { case NPtr(pointee) -> pointee; case _ -> panic("unreachable") }
   val fieldPtr = freshTmp(ctx)
@@ -11071,6 +11607,8 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     ifaceVtables = mod.ifaceVtables,
     implDirectMethods = mod.implDirectMethods,
     protectedRecNames = mod.protectedRecNames,
+    heapOnlyRecs = mod.heapOnlyRecs,
+    byValueBoxes = mod.byValueBoxes,
     scopeRefs = newList(),
     tempScopes = newList(),
     loopVarDepth = newList(),
@@ -11786,7 +12324,20 @@ func externDeclOf(ctx: in Ctx, ef: in ExternFuncDecl): NFunc {
     }
     i = i + 1
   }
-  mkDeclN(ef.symbol, retTypeToN(ctx, ef.ret), tys)
+  val retN = retTypeToN(ctx, ef.ret)
+  // Backstop for `nativeByValueExternDiagnostics`: never emit an LLVM
+  // aggregate where the C ABI expects the platform's struct passing.
+  var k = 0
+  while k < tys.count {
+    if isByValueStructNType(tys[k]) {
+      panic("N0010: " + byValueExternMessage(ef.name, byValueRecName(tys[k])))
+    }
+    k = k + 1
+  }
+  if isByValueStructNType(retN) {
+    panic("N0010: " + byValueExternMessage(ef.name, byValueRecName(retN)))
+  }
+  mkDeclN(ef.symbol, retN, tys)
 }
 
 /// The symbol the platform's startup code calls with `(argc, argv)`.  wasi-libc's
@@ -11992,6 +12543,8 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     ifaceVtables = newMap(),
     implDirectMethods = newMap(),
     protectedRecNames = newMap(),
+    heapOnlyRecs = newMap(),
+    byValueBoxes = newMap(),
     scopeRefs = newList(),
     tempScopes = newList(),
     loopVarDepth = newList(),
@@ -12233,6 +12786,7 @@ pub func unitOfFile(pkgName: in String, file: in SourceFile): CodegenUnit {
   val externs: List[ExternFuncDecl] = newList()
   val nativeLibs: List[String] = newList()
   val records: List[RecordDecl] = newList()
+  val opaqueNames: List[String] = newList()
   val unions: List[UnionDecl] = newList()
   val enums: List[EnumDecl] = newList()
   val distincts: List[DistinctTypeDecl] = newList()
@@ -12286,6 +12840,7 @@ pub func unitOfFile(pkgName: in String, file: in SourceFile): CodegenUnit {
       case IOpaque(decl) -> {
         if decl.hasBody {
           records.add(opaqueToRecordDecl(decl))
+          opaqueNames.add(decl.name)
         }
       }
       case ITypeAlias(_) -> {
@@ -12304,6 +12859,7 @@ pub func unitOfFile(pkgName: in String, file: in SourceFile): CodegenUnit {
     externs = externs,
     nativeLibs = nativeLibs,
     records = records,
+    opaqueNames = opaqueNames,
     unions = unions,
     enums = enums,
     distincts = distincts,
@@ -12543,6 +13099,58 @@ pub func nativeSelfShapeDiagnostics(units: in List[CodegenUnit]): List[Diagnosti
       ii = ii + 1
     }
     ua = ua + 1
+  }
+  diags
+}
+
+/// The by-value record a type written as `te` names, or "" when it names
+/// anything else.
+func byValueRecordNameOf(st: in NByValState, pkg: in String, te: in TypeExpr): String {
+  val ft = classifyByValueField(st, pkg, te)
+  if ft.count == 1 {
+    return byValueRecName(ft[0])
+  }
+  ""
+}
+
+/// Message for `N0010`: a by-value record in an `extern func` signature.
+func byValueExternMessage(fnName: in String, recName: in String): String {
+  "extern func '" + fnName + "' passes by-value record '" + recName +
+    "' across the C boundary, which is not supported yet: a by-value record is an LLVM aggregate, not the platform C " +
+    "struct ABI (docs/67 §4.2); pass a NativePtr, or declare the record with a `var` field so it keeps its heap form"
+}
+
+/// Pre-pass: every `extern func` parameter or return of a by-value record
+/// (docs/67 §4.2) as an `N0010` diagnostic at the declaration.  The C ABI for
+/// by-value struct arguments (System V AMD64, AAPCS64) is a separate piece of
+/// work, so the boundary rejects them instead of emitting a mismatched call.
+pub func nativeByValueExternDiagnostics(units: in List[CodegenUnit]): List[Diagnostic] {
+  val diags: List[Diagnostic] = newList()
+  val heapOnly: Map[String, Bool] = newMap()
+  fillHeapOnlyRecs(heapOnly, units)
+  val sink: List[NTypeDefn] = newList()
+  val st = classifyByValueRecords(heapOnly, units, sink)
+  for u in units {
+    for ef in u.externs {
+      var bad = ""
+      for p in ef.params {
+        if bad.length == 0 {
+          bad = byValueRecordNameOf(st, u.pkgName, p.ty)
+        }
+      }
+      match ef.ret {
+        case Some(rt) -> {
+          if bad.length == 0 {
+            bad = byValueRecordNameOf(st, u.pkgName, rt)
+          }
+        }
+        case None -> {
+        }
+      }
+      if bad.length > 0 {
+        diags.add(errorDiagnostic("N0010", byValueExternMessage(ef.name, bad), ef.span))
+      }
+    }
   }
   diags
 }
@@ -13117,7 +13725,7 @@ func registerProtectedLayout(
   tys.add(NPtr(pointee = NI8))
   val noDflt: Option[Expr] = None
   dflts.add(noDflt)
-  val ri = NRecInfo(irName = irName, fieldNames = names, fieldTys = tys, fieldDefaults = dflts)
+  val ri = NRecInfo(irName = irName, fieldNames = names, fieldTys = tys, fieldDefaults = dflts, byValue = false)
   replaceRecKey(ctx, pkg + "." + pd.name, ri)
   replaceRecKey(ctx, pd.name, ri)
   if not ctx.protectedRecNames.containsKey(ri.irName) {

@@ -366,6 +366,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/overflow_panic_self_test.l \
 	lyric-compiler/lyric/overflow_self_test.l \
 	lyric-compiler/lyric/record_eq_self_test.l \
+	lyric-compiler/lyric/byvalue_record_self_test.l \
 	lyric-compiler/lyric/record_omitted_default_self_test.l \
 	lyric-compiler/lyric/outparam_self_test.l \
 	lyric-compiler/lyric/parser_self_test.l \
@@ -450,6 +451,7 @@ test-native-rt: ## Run the lyric-rt C unit tests
 test-native: native-rt ## Run the native backend self-tests (needs clang and ./bin/lyric)
 	LYRIC_LOAD_COMPILER=1 ./bin/lyric test lyric-compiler/lyric/llvm_ir_self_test.l
 	LYRIC_LOAD_COMPILER=1 ./bin/lyric test lyric-compiler/lyric/llvm_codegen_self_test.l
+	LYRIC_LOAD_COMPILER=1 ./bin/lyric test lyric-compiler/lyric/llvm_byvalue_record_self_test.l
 
 # ── Maven resolver ──────────────────────────────────────────────────────────
 

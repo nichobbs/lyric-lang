@@ -50,6 +50,7 @@ for t in \
   lyric-compiler/lyric/llvm_ir_self_test.l \
   lyric-compiler/lyric/llvm_codegen_self_test.l \
   lyric-compiler/lyric/llvm_heap_self_test.l \
+  lyric-compiler/lyric/llvm_byvalue_record_self_test.l \
   lyric-compiler/lyric/llvm_ffi_self_test.l \
   lyric-compiler/lyric/llvm_collections_self_test.l \
   lyric-compiler/lyric/llvm_stdlib_self_test.l \
@@ -83,6 +84,7 @@ for t in \
   lyric-compiler/lyric/record_arith_self_test.l \
   lyric-compiler/lyric/overflow_self_test.l \
   lyric-compiler/lyric/record_eq_self_test.l \
+  lyric-compiler/lyric/byvalue_record_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_type_self_test.l \
   lyric-compiler/lyric/byte_native_self_test.l \

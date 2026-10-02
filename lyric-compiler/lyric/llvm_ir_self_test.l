@@ -153,6 +153,46 @@ test "sizeof renders as a target-sized constant expression" {
   )
 }
 
+test "aggregate insertvalue and extractvalue render" {
+  val fields: List[NType] = newList()
+  fields.add(NFloat)
+  fields.add(NI32)
+  val agg = NStruct(name = "Pt", fields = fields)
+  assertEqual(
+    emitInsn(
+      NInsertValue(
+        dest = "a1",
+        aggTy = agg,
+        agg = NUndef(ty = agg),
+        elemTy = NFloat,
+        elem = NLitFloat(v = 1.5, ty = NFloat),
+        index = 0
+      )
+    ),
+    "  %a1 = insertvalue %Pt undef, float 0x3FF8000000000000, 0",
+    "insertvalue from undef"
+  )
+  assertEqual(
+    emitInsn(
+      NInsertValue(
+        dest = "a2",
+        aggTy = agg,
+        agg = NLocal(name = "a1"),
+        elemTy = NI32,
+        elem = NLocal(name = "n"),
+        index = 1
+      )
+    ),
+    "  %a2 = insertvalue %Pt %a1, i32 %n, 1",
+    "insertvalue chained"
+  )
+  assertEqual(
+    emitInsn(NExtractValue(dest = "x", aggTy = agg, agg = NLocal(name = "a2"), index = 1)),
+    "  %x = extractvalue %Pt %a2, 1",
+    "extractvalue"
+  )
+}
+
 test "conversions render" {
   assertEqual(
     emitInsn(NSExt(dest = "l", fromTy = NI32, value = NLocal(name = "i"), toTy = NI64)),
