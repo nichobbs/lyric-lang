@@ -48,6 +48,9 @@ pub union NValue {
   case NLitFloat(v: Double, ty: NType)
   case NLitNull(ty: NType)
   case NUndef(ty: NType)
+  /// `zeroinitializer` of an aggregate type: every field zero (the default of a
+  /// by-value record that was declared without an initializer).
+  case NZeroInit(ty: NType)
   /// The literal `none` token operand (`llvm.coro.suspend(token none, ...)`).
   case NLitTokenNone
 }
@@ -205,6 +208,7 @@ pub func nValueOperandString(v: in NValue): String {
     case NLitFloat(value, _) -> floatToIrString(value)
     case NLitNull(_) -> "null"
     case NUndef(_) -> "undef"
+    case NZeroInit(_) -> "zeroinitializer"
     case NLitTokenNone -> "none"
   }
 }
@@ -219,6 +223,7 @@ pub func nValueType(v: in NValue): Option[NType] {
     case NLitFloat(_, ty) -> Some(value = ty)
     case NLitNull(ty) -> Some(value = ty)
     case NUndef(ty) -> Some(value = ty)
+    case NZeroInit(ty) -> Some(value = ty)
     case NLitTokenNone -> Some(value = NToken)
   }
 }

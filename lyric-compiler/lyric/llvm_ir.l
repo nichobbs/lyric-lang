@@ -61,6 +61,13 @@ pub union NInsn {
   /// datalayout (`ptrtoint (T* getelementptr (T, T* null, i32 1) to i64)`),
   /// so allocation sizes follow the target's pointer width and alignment.
   case NSizeOf(dest: String, ty: NType)
+  /// `%dest = insertvalue aggTy agg, elemTy elem, index`: a copy of the
+  /// first-class aggregate `agg` with field `index` replaced.  By-value
+  /// records (docs/67 §4.2) are built from `undef` through a chain of these.
+  case NInsertValue(dest: String, aggTy: NType, agg: NValue, elemTy: NType, elem: NValue, index: Int)
+  /// `%dest = extractvalue aggTy agg, index`: field `index` of a first-class
+  /// aggregate.
+  case NExtractValue(dest: String, aggTy: NType, agg: NValue, index: Int)
 
   // Integer arithmetic
   case NAdd(dest: String, ty: NType, a: NValue, b: NValue)
@@ -320,6 +327,15 @@ pub func emitInsn(i: in NInsn): String {
       "  %" + quoteIrIdent(dest) + " = ptrtoint " + nTypeToIrString(ty) + "* getelementptr (" + nTypeToIrString(ty) + ", " +
         nTypeToIrString(ty) +
         "* null, i32 1) to i64"
+    }
+    case NInsertValue(dest, aggTy, agg, elemTy, elem, index) -> {
+      "  %" + quoteIrIdent(dest) + " = insertvalue " + nValueTypedString(aggTy, agg) + ", " +
+        nValueTypedString(elemTy, elem) +
+        ", " +
+        index.toString()
+    }
+    case NExtractValue(dest, aggTy, agg, index) -> {
+      "  %" + quoteIrIdent(dest) + " = extractvalue " + nValueTypedString(aggTy, agg) + ", " + index.toString()
     }
     case NAdd(dest, ty, a, b) -> renderBin("add", dest, ty, a, b)
     case NSub(dest, ty, a, b) -> renderBin("sub", dest, ty, a, b)

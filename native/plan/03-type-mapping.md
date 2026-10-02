@@ -95,6 +95,16 @@ A record `record Point { x: Int; y: Int }` lowers to:
 Fields appear in declaration order, preceded by the three header fields, so
 field `k` is at GEP index `3 + k` (`arcHeaderSlots` in `llvm_codegen.l`).
 
+**By-value records (docs/67 §4.2).** A record with no `var` field whose fields
+are all by-value (scalars, enums, distinct types, other by-value records) has no
+ARC header and is never behind a pointer: `%Lyric.Point = type { i32, i32 }` is
+the value itself, built with `insertvalue` from `undef` and read with
+`extractvalue`, with no allocation, no retain/release and no destructor. Opaque
+types, `impl I for R` targets and records with a `var` field keep the heap form
+above. A by-value record stored in a List/Map/Task slot lives in a refcounted
+`__box<R>`; one in an `extern func` signature is rejected (`N0010`, C ABI #8009); an
+`impl I for R` target stays heap until interface boxing of values lands (#8010).
+
 **Reference-typed fields** (fields whose type is heap-allocated) are stored as
 pointers. When the record is constructed, the ARC of each reference-typed field
 argument is incremented. When the record is destroyed (dtor), each reference-typed

@@ -149,6 +149,16 @@ Work:
 
 The language is unchanged; this is a codegen policy.
 
+_Status:_ by-value **records** shipped on native (G1, #7940; progress entry
+`2026-10-02-native-by-value-records`): a record with no `var` field whose fields
+are scalars, enums, distinct types or other such records is an LLVM struct value
+(`insertvalue`/`extractvalue`, no heap, no ARC), boxed only inside `List`/`Map`/
+`Task` slots. Opaque types, interface implementers and generic instantiations
+over reference types keep the heap form. An `extern func` naming a by-value
+record, including in a callback type, is rejected (`N0010`; the C ABI is #8009,
+and boxing a by-value record into an interface is #8010). Inline tagged unions,
+`array[N, T]` fields and the C ABI for by-value structs remain open.
+
 ### 4.3 `array[N, T]`
 
 A fixed-length array with inline storage and value semantics: assigning
