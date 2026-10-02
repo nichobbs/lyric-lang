@@ -4440,10 +4440,30 @@ func desugarCopiesInFunc(state: in MonoState, env: in Map[String, TypeExpr], fn:
     params = desugarParamDefaults(state, fn.params),
     ret = fn.ret,
     whereClause = fn.whereClause,
-    contracts = fn.contracts,
+    contracts = desugarContracts(state, env, fn.contracts),
     body = rewriteFuncBodyWithRet(state, env, fn.body, fn.ret),
     span = fn.span
   )
+}
+
+// Contract clauses are type-checked like expressions in the body, so their
+// conversion sites (a widened operand, a literal adopted as a `Float`, D155)
+// are rewritten the same way; the contract elaborator then copies the
+// rewritten clause into the body.
+func desugarContracts(
+  state: in MonoState, env: in Map[String, TypeExpr], cs: in List[ContractClause]
+): List[ContractClause] {
+  val rewritten: List[ContractClause] = newList()
+  for c in cs {
+    match c {
+      case CCRequires(e, sp) -> rewritten.add(CCRequires(expr = rewriteExpr(state, env, e), span = sp))
+      case CCEnsures(e, sp) -> rewritten.add(CCEnsures(expr = rewriteExpr(state, env, e), span = sp))
+      case CCWhen(e, sp) -> rewritten.add(CCWhen(expr = rewriteExpr(state, env, e), span = sp))
+      case CCDecreases(e, sp) -> rewritten.add(CCDecreases(expr = rewriteExpr(state, env, e), span = sp))
+      case CCRaises(_, _) -> rewritten.add(c)
+    }
+  }
+  rewritten
 }
 
 // A parameter's default and a field's default are checked in the declaring
@@ -4545,6 +4565,9 @@ func desugarCopiesInRecord(state: in MonoState, decl: in RecordDecl): RecordDecl
         }
         members.add(RMFunc(fn = desugarCopiesInFunc(state, env, fn)))
       }
+      // Checked, and rewritten, as its synthesized `__lyric_checked_*`
+      // function (`Lyric.ContractElaborator.synthesizeInvariantCheckers`);
+      // rewriting it here too would consume that copy's conversion sites.
       case RMInvariant(_) -> members.add(m)
     }
   }
@@ -4622,6 +4645,7 @@ func desugarCopiesInItemKind(state: in MonoState, kind: in ItemKind): ItemKind {
       for m in decl.members {
         match m {
           case OMField(fd) -> members.add(OMField(field = desugarFieldDefault(state, fd)))
+          // See `desugarCopiesInRecord`'s `RMInvariant` arm.
           case OMInvariant(_) -> members.add(m)
         }
       }
@@ -4691,7 +4715,7 @@ func desugarCopiesInItemKind(state: in MonoState, kind: in ItemKind): ItemKind {
                   name = ed.name,
                   params = desugarParamDefaults(state, ed.params),
                   ret = ed.ret,
-                  contracts = ed.contracts,
+                  contracts = desugarContracts(state, env, ed.contracts),
                   body = newBody,
                   span = ed.span
                 )
@@ -5990,6 +6014,29 @@ func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
   rewritten
 }
 
+// An unsuffixed float literal the type checker found where a `Float` is
+// required, rewritten to its `f32` form holding the binary32 value (D155).
+func float32Literal(e: in Expr): Expr {
+  match e.kind {
+    case ELiteral(lit) -> match lit {
+      case LFloat(v, _, raw) -> Expr(
+        kind = ELiteral(
+          lit = LFloat(
+            value = float32LiteralValue(raw, v),
+            suffix = F32,
+            raw = raw
+          )
+        ),
+        span = e.span
+      )
+      case _ -> e
+    }
+    case EPrefix(op, operand) -> Expr(kind = EPrefix(op = op, operand = float32Literal(operand)), span = e.span)
+    case EParen(inner) -> Expr(kind = EParen(inner = float32Literal(inner)), span = e.span)
+    case _ -> e
+  }
+}
+
 func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: in Expr): Expr {
   val s = expr.span
   val ownSites = checkerSitesApplyMono(state)
@@ -6004,6 +6051,9 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
     match mapGet(state.argConversionSites, convKey) {
       case Some(conv) -> {
         state.argConversionSites.remove(convKey)
+        if conv.method == floatLiteralSiteMethod() {
+          return float32Literal(expr)
+        }
         val inner = rewriteExpr(state, env, expr)
         val noArgs: List[CallArg] = newList()
         return Expr(

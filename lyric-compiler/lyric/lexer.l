@@ -1720,6 +1720,209 @@ func parseDoubleLiteral(body: in String): Option[Double] {
   parseOptDouble(body)
 }
 
+// ── binary32 literal values ─────────────────────────────────────────────────
+// A `Float` literal is the decimal text rounded to the nearest IEEE 754
+// binary32 value, ties to even (D155).  It is computed once here, as the
+// `Double` that holds that binary32 value exactly, so every backend narrows
+// a literal it can represent exactly and no backend re-rounds.
+//
+// Rounding the already correctly rounded binary64 value `v` to binary32 is
+// correct except when `v` lands exactly on a binary32 halfway point: the
+// decimal text may lie on either side of it (double rounding).  That case
+// is decided by comparing the decimal text with the halfway point exactly.
+/// The value of the float literal `raw` (its source spelling, underscores
+/// and no suffix allowed) as a `Float`: `v`, its binary64 value, rounded to
+/// binary32 and returned as the `Double` holding that value exactly.
+pub func float32LiteralValue(raw: in String, v: in Double): Double {
+  roundToFloat32(stripUnderscores(raw), v)
+}
+
+func roundToFloat32(text: in String, v: in Double): Double {
+  if v != v or v == 0.0 {
+    return v
+  }
+  val neg = v < 0.0
+  val a = if neg { 0.0 - v } else { v }
+  val maxDouble = 1.7976931348623157e308
+  val infinity = maxDouble * 2.0
+  if a > maxDouble {
+    return v
+  }
+  var e = 0
+  var p = 1.0
+  if a >= 1.0 {
+    while p * 2.0 <= a {
+      p = p * 2.0
+      e = e + 1
+    }
+  } else {
+    while p > a {
+      p = p * 0.5
+      e = e - 1
+    }
+  }
+  if e > 127 {
+    return withSign(neg, infinity)
+  }
+  // Binary32 has 24 significant bits and its smallest exponent is -126, so
+  // the spacing of binary32 values near `a` is 2^(ex - 23).
+  val ex = if e < -126 { -126 } else { e }
+  val ulp = powerOfTwo(ex - 23)
+  val q = a / ulp
+  val fl = q.toLong().toDouble()
+  val r = q - fl
+  var m = fl
+  if r > 0.5 {
+    m = fl + 1.0
+  } else if r == 0.5 {
+    val halfway = fl.toLong() * 2i64 + 1i64
+    val c = compareDecimalToDyadic(text, halfway, ex - 24)
+    if c > 0 or (c == 0 and fl.toLong() % 2i64 == 1i64) {
+      m = fl + 1.0
+    }
+  }
+  val res = m * ulp
+  if res >= powerOfTwo(128) {
+    return withSign(neg, infinity)
+  }
+  withSign(neg, res)
+}
+
+func withSign(neg: in Bool, x: in Double): Double = if neg { 0.0 - x } else { x }
+
+// 2^n as a Double, for -1074 <= n <= 1023.
+func powerOfTwo(n: in Int): Double {
+  var x = 1.0
+  var i = 0
+  if n >= 0 {
+    while i < n {
+      x = x * 2.0
+      i = i + 1
+    }
+  } else {
+    while i > n {
+      x = x * 0.5
+      i = i - 1
+    }
+  }
+  x
+}
+
+// The sign of (the decimal number `text`) - n * 2^k: -1, 0 or 1.  `text` is
+// an unsigned decimal float literal without underscores or suffix.
+func compareDecimalToDyadic(text: in String, n: in Long, k: in Int): Int {
+  // The literal as an integer digit string times 10^scale.
+  var mantissa = text
+  var exponent = 0
+  var ei = 0
+  while ei < text.length {
+    if text[ei] == 'e' or text[ei] == 'E' {
+      mantissa = Str.substring(text, 0, ei)
+      val expRaw = Str.substring(text, ei + 1, text.length - ei - 1)
+      val expText = if Str.startsWith(expRaw, "+") { Str.substring(expRaw, 1, expRaw.length - 1) } else { expRaw }
+      exponent = match tryParseInt(expText) { case Ok(x) -> x; case Err(_) -> 0 }
+      ei = text.length
+    } else {
+      ei = ei + 1
+    }
+  }
+  var litDigits = ""
+  var fracDigits = 0
+  var seenPoint = false
+  var mi = 0
+  while mi < mantissa.length {
+    val ch = mantissa[mi]
+    if ch == '.' {
+      seenPoint = true
+    } else {
+      litDigits = litDigits + charToString(ch)
+      if seenPoint {
+        fracDigits = fracDigits + 1
+      }
+    }
+    mi = mi + 1
+  }
+  val litScale = exponent - fracDigits
+  // n * 2^k as an integer digit string times 10^scale: n * 2^k when k >= 0,
+  // and n * 5^-k * 10^k otherwise.
+  val digits: List[Int] = newList()
+  var nv = n
+  if nv == 0i64 {
+    digits.add(0)
+  }
+  while nv > 0i64 {
+    digits.add((nv % 10i64).toInt())
+    nv = nv / 10i64
+  }
+  val factor = if k >= 0 { 2 } else { 5 }
+  val times = if k >= 0 { k } else { 0 - k }
+  var ti = 0
+  while ti < times {
+    var carry = 0
+    var di = 0
+    while di < digits.count {
+      val prod = digits[di] * factor + carry
+      digits[di] = prod % 10
+      carry = prod / 10
+      di = di + 1
+    }
+    while carry > 0 {
+      digits.add(carry % 10)
+      carry = carry / 10
+    }
+    ti = ti + 1
+  }
+  var dyDigits = ""
+  var bi = digits.count - 1
+  while bi >= 0 {
+    dyDigits = dyDigits + toString(digits[bi])
+    bi = bi - 1
+  }
+  val dyScale = if k >= 0 { 0 } else { k }
+  compareScaledDecimals(litDigits, litScale, dyDigits, dyScale)
+}
+
+// The sign of (a * 10^aScale) - (b * 10^bScale) for non-negative integer
+// digit strings `a` and `b`.
+func compareScaledDecimals(a: in String, aScale: in Int, b: in String, bScale: in Int): Int {
+  val na = trimLeadingZeros(a)
+  val nb = trimLeadingZeros(b)
+  if na.length == 0 and nb.length == 0 {
+    return 0
+  }
+  if na.length == 0 {
+    return -1
+  }
+  if nb.length == 0 {
+    return 1
+  }
+  // Magnitude: the position of the leading digit.
+  val magA = na.length + aScale
+  val magB = nb.length + bScale
+  if magA != magB {
+    return if magA > magB { 1 } else { -1 }
+  }
+  val len = if na.length > nb.length { na.length } else { nb.length }
+  var i = 0
+  while i < len {
+    val da = if i < na.length { na[i].toInt() - '0'.toInt() } else { 0 }
+    val db = if i < nb.length { nb[i].toInt() - '0'.toInt() } else { 0 }
+    if da != db {
+      return if da > db { 1 } else { -1 }
+    }
+    i = i + 1
+  }
+  0
+}
+
+func trimLeadingZeros(s: in String): String {
+  var i = 0
+  while i < s.length and s[i] == '0' {
+    i = i + 1
+  }
+  Str.substring(s, i, s.length - i)
+}
+
 func lexDecimalNumber(state: inout LexerState): Unit {
   val startP = currentPosition(state)
   // Detect an illegal C-style leading-zero decimal (e.g. `0755`).  A
@@ -1760,7 +1963,8 @@ func lexDecimalNumber(state: inout LexerState): Unit {
         if tail.length > 0 and not isFloatSfx {
           recordError(state, "L0015", unknownSuffixMessage(tail, "float"), makeSpan(suffixP, currentPosition(state)))
         }
-        emit(state, TFloat(value = v, suffix = suffix, raw = sourceSlice(state, startP.offset, state.pos)), startP)
+        val fv = match suffix { case F32 -> roundToFloat32(stripUnderscores(raw), v); case _ -> v }
+        emit(state, TFloat(value = fv, suffix = suffix, raw = sourceSlice(state, startP.offset, state.pos)), startP)
       }
       // A malformed body (`1e`, `2e+`) is the one diagnostic: whatever
       // follows an exponent with no digits is not a separate suffix error.

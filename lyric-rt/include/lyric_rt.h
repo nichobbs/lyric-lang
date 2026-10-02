@@ -111,6 +111,7 @@ void         lyric_string_dtor(void* obj);
  * lowering.  Each returns a fresh rc=1 string. */
 LyricString* lyric_string_from_int(int64_t v);
 LyricString* lyric_string_from_float(double v);
+LyricString* lyric_string_from_float32(float v);
 LyricString* lyric_string_from_bool(int32_t v);
 LyricString* lyric_string_from_char(int32_t codepoint);
 LyricString* lyric_string_substring(LyricString* s, int64_t start, int64_t len);

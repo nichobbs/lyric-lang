@@ -33,6 +33,10 @@ extern func cToUpper(c: Int): Int = "toupper"
 @library("c")
 extern func cLdexp(x: Double, e: Int): Double = "ldexp"
 
+// A C `float` is a `Float` on every target (D155, #7966).
+@library("c")
+extern func cLdexpf(x: Float, e: Int): Float = "ldexpf"
+
 // A file name is passed to the loader as written: glibc's unversioned
 // libm.so is a linker script, not a loadable library (CI runs on glibc).
 @library("libm.so.6")
@@ -66,6 +70,11 @@ test "a Long C function passes and returns 64 bits" {
 
 test "a Double argument and result cross the call" {
   assertTrue(cLdexp(1.5, 3) == 12.0, "ldexp(1.5, 3)")
+}
+
+test "a Float argument and result cross the call as a C float" {
+  assertTrue(cLdexpf(1.5f32, 3) == 12.0f32, "ldexpf(1.5, 3)")
+  assertTrue(cLdexpf(0.1, 1) == 0.2f32, "ldexpf(0.1, 1) doubles the Float nearest 0.1")
 }
 
 test "a library named by its file name loads as written" {

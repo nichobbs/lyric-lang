@@ -177,8 +177,8 @@ test "incrementCounter keeps distinct names independent" {
 
 // ─── Histograms ───────────────────────────────────────────────────────────────
 test "recordHistogram accumulates count and sum across calls with the same name" {
-  recordHistogram("otel_span_tests.hist.a", 10.0f32, "ms")
-  recordHistogram("otel_span_tests.hist.a", 20.0f32, "ms")
+  recordHistogram("otel_span_tests.hist.a", 10.0, "ms")
+  recordHistogram("otel_span_tests.hist.a", 20.0, "ms")
   val histograms = globalMetricsBuffer.snapshotHistograms().toArray()
   var found = false
   var i = 0

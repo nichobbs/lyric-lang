@@ -3523,6 +3523,7 @@ func coerceToStringForConcat(ctx: in FuncCtx, insns: in List[LInsn], ty: in JvmT
       // Double operand renders identically on both targets.
       match ty {
         case JDouble -> emitNormalizeDoubleString(ctx, insns)
+        case JFloat -> emitNormalizeFloatString(ctx, insns)
         case _ -> ()
       }
     }
@@ -3706,7 +3707,20 @@ func emitStripTrailingDotZero(ctx: in FuncCtx, insns: in List[LInsn], sSlot: in 
 // target — every branchy path below stores its result to a slot before a
 // `goto`/label and reloads after the merge, never leaving a value on the
 // stack across one.
+// `Double`: .NET's fixed-point range is -4 <= exp <= 16.
 func emitNormalizeDoubleString(ctx: in FuncCtx, insns: in List[LInsn]): Unit {
+  emitNormalizeFloatingString(ctx, insns, 16)
+}
+
+// `Float` (D155): `String.valueOf(float)` is the shortest round-tripping
+// binary32 decimal, as `Single.ToString()` is; .NET's fixed-point range for
+// binary32 is -4 <= exp <= 8, and Java's own (1e-3 <= |v| < 1e7) lies inside
+// it, so the same three regimes apply.
+func emitNormalizeFloatString(ctx: in FuncCtx, insns: in List[LInsn]): Unit {
+  emitNormalizeFloatingString(ctx, insns, 8)
+}
+
+func emitNormalizeFloatingString(ctx: in FuncCtx, insns: in List[LInsn], maxFixedExp: in Int): Unit {
   val strTy = JRef(className = "java/lang/String")
   val objTy = JRef(className = "java/lang/Object")
 
@@ -3837,7 +3851,7 @@ func emitNormalizeDoubleString(ctx: in FuncCtx, insns: in List[LInsn]): Unit {
   insns.add(LIconst(v = -4))
   insns.add(LIfIcmplt(label = sciTargetLabel))
   emitLoad(insns, expSlot, JInt)
-  insns.add(LIconst(v = 16))
+  insns.add(LIconst(v = maxFixedExp))
   insns.add(LIfIcmpgt(label = sciTargetLabel))
 
   // ── Regime 2: reformat as plain fixed-point decimal. ──

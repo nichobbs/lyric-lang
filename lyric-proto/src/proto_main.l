@@ -10,7 +10,6 @@ package Proto
 
 import Std.Core
 import Std.Collections
-import extern System.{Single}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ─── .NET kernel boundary (inlined from Proto.Kernel.Net) ────────────────────
@@ -50,25 +49,11 @@ pub func bufToBytes(buf: ProtoBuffer): slice[Byte] {
   return buf.bytes.toArray()
 }
 
-// Narrow a `Double` to a true 32-bit CLR `Single` via `System.Convert.ToSingle`.
-// `Single` flows only between this and `singleToInt32Bits` below, mirroring
-// `Msil.Kernel.dblToSingle`/`bufF4Le`'s identical narrow-then-reinterpret idiom.
-@externTarget("System.Convert.ToSingle")
-@externStatic
-func dblToSingle(v: in Double): Single = ()
-
+/// Reinterpret a 32-bit float as its IEEE 754 bit pattern (returned as Int).
+/// Proto3 `float` fields are 32-bit, as `Float` is (D155).
 @externTarget("System.BitConverter.SingleToInt32Bits")
 @externStatic
-func singleToInt32Bits(v: in Single): Int = ()
-
-/// Reinterpret a 32-bit float as its IEEE 754 bit pattern (returned as Int).
-/// Proto3 `float` fields are 32-bit; Lyric's `Float` erases to CLR `double`,
-/// so `v` is narrowed to a real `Single` before the bit-pattern reinterpret
-/// (a direct `SingleToInt32Bits(Float)` call declares a `(double) -> int32`
-/// signature that matches no real BCL overload, #5704).
-pub func floatToInt32Bits(v: in Float): Int {
-  singleToInt32Bits(dblToSingle(v))
-}
+pub func floatToInt32Bits(v: in Float): Int = ()
 
 /// Reinterpret a 64-bit double as its IEEE 754 bit pattern (returned as Long).
 @externTarget("System.BitConverter.DoubleToInt64Bits")

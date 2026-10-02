@@ -277,9 +277,8 @@ test "Byte-backed range subtype: bounds, including values above 127 (#6661)" {
 
 // NAMED `Double` range subtype (the existing coverage was inline-only,
 // `Long addBig`/`halveRatio` above) plus `Float` — the JVM-specific bug:
-// `Float` (`JFloat`, a real 32-bit type distinct from `JDouble` on this
-// backend, unlike MSIL where `Float` erases to `MDouble`) was folded as an
-// INTEGER bound before the fix, so `Weight.tryFrom(...)` either failed
+// `Float` (`JFloat`, a real 32-bit type distinct from `JDouble`) was folded
+// as an INTEGER bound before the fix, so `Weight.tryFrom(...)` either failed
 // class verification or silently compared the wrong bit pattern.
 type Fraction = Double range 0.0 ..= 1.0
 
@@ -315,6 +314,7 @@ test "Float-backed range subtype: bounds — the #6661 headline case" {
   assertTrue(weightIsOk(Weight.tryFrom(100.0f32)), "100.0 upper bound inclusive")
   assertFalse(weightIsOk(Weight.tryFrom(-0.5f32)), "-0.5 below lower bound")
   assertFalse(weightIsOk(Weight.tryFrom(100.5f32)), "100.5 above upper bound")
+  assertTrue(Weight.from(55.5f32).toFloat() == 55.5f32, "toFloat reads the wrapped value back")
 }
 
 test "Float-backed range subtype: from() constructs in-range and panics out-of-range (#6661)" {
@@ -324,22 +324,16 @@ test "Float-backed range subtype: from() constructs in-range and panics out-of-r
   assertPanics("Weight.from(100.5) panics above the upper bound", { -> val _ = Weight.from(100.5f32) })
 }
 
-// No `.toFloat()`/`.toDouble()` projection assertion here (same reasoning as
-// `SmallByte` above): a `Float`-backed distinct type's conversion-method NAME
-// is per-backend (`Jvm.Lowering.jvmDistinctConvName` -> `"toFloat"` on JVM,
-// since `JFloat` is its own JVM representation; MSIL erases `Float` to
-// `MDouble` in scalar position, so `Msil.Lowering.distinctConvName` names it
-// `"toDouble"` there) — no single method name is portable across both
-// targets this file runs on. The JVM-only `.toFloat()` round-trip (the
-// #6661-followup gap where `jvmDistinctConvName` had no `JFloat` case at all,
-// so a constructed `Weight` could never be read back on JVM) lives in
-// `range_subtype_float_jvm_self_test.l`.
+// `Weight.from(x).toFloat()` read-back (the #6661 follow-up where
+// `jvmDistinctConvName` had no `JFloat` case, so a constructed `Weight` could
+// never be read back on JVM) is pinned on every target, with exact bounds, by
+// `float32_self_test.l`'s `Ratio` cases now that `Float` is binary32 on MSIL
+// and native too (D155).
 //
 // ─────────────────────────────────────────────────────────────────────────────
 // #6756 — `UInt`/`ULong`-backed range subtypes, moved here (dual-target) now
 // that MSIL has a real `UInt`/`ULong` representation. Before the fix,
-// `Msil.Codegen.typeExprToMsilCtx` had no `UInt`/`ULong` arm at all (unlike
-// `Float`, which already erased to `MDouble`), so a `UInt`/`ULong`-backed
+// `Msil.Codegen.typeExprToMsilCtx` had no `UInt`/`ULong` arm at all, so a `UInt`/`ULong`-backed
 // distinct type fell through to "user type in this package" on
 // `--target dotnet` and crashed the CLR loader ("Common Language Runtime
 // detected an invalid program"). Fixed by erasing `UInt -> MInt` /

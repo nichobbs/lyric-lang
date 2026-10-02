@@ -843,6 +843,60 @@ func adoptIntLiteralType(e: in Expr, actual: in Type, expected: in Type): Type {
   actual
 }
 
+// True when `e` is a float literal written without a suffix (`1.5`, not
+// `1.5f32`), seen through parentheses and a unary minus.  Such a literal is a
+// `Double` unless its context requires a `Float` (D155).
+func isUnsuffixedFloatLit(e: in Expr): Bool {
+  match e.kind {
+    case ELiteral(lit) -> match lit {
+      case LFloat(_, sfx, _) -> match sfx { case NoFloatSuffix -> true; case _ -> false }
+      case _ -> false
+    }
+    case EPrefix(op, operand) -> match op { case PreNeg -> isUnsuffixedFloatLit(operand); case _ -> false }
+    case EParen(inner) -> isUnsuffixedFloatLit(inner)
+    case _ -> false
+  }
+}
+
+func isFloatType(t: in Type): Bool {
+  match unrefine(t) {
+    case TyPrim(pt) -> match pt { case PtFloat -> true; case _ -> false }
+    case _ -> false
+  }
+}
+
+func isPlainDouble(t: in Type): Bool {
+  match t {
+    case TyPrim(pt) -> match pt { case PtDouble -> true; case _ -> false }
+    case _ -> false
+  }
+}
+
+// An unsuffixed float literal where a `Float` is required (a binding, an
+// argument, a field, a return, a default, or the other operand of a `Float`
+// operator) is a `Float` (D155).  The site is recorded so
+// `Lyric.Mono.desugarCheckedFile` rewrites the literal to its `f32` form,
+// which every backend lowers as binary32.  Returns `expected` when the
+// literal adopts it, `actual` otherwise.
+pub func adoptFloatLiteralType(tbl: in SymbolTable, e: in Expr, actual: in Type, expected: in Type): Type {
+  if isUnsuffixedFloatLit(e) and isPlainDouble(actual) and isFloatType(expected) {
+    recordFloatLiteralSite(tbl, e)
+    return expected
+  }
+  actual
+}
+
+func recordFloatLiteralSite(tbl: in SymbolTable, e: in Expr): Unit {
+  val key = recordCopySiteKey(e.span)
+  if tbl.argConversionSites.containsKey(key) {
+    tbl.argConversionSites.remove(key)
+  }
+  tbl.argConversionSites.add(
+    key,
+    ArgConversionSite(method = floatLiteralSiteMethod(), startOffset = e.span.startPos.offset)
+  )
+}
+
 func isPlainLong(t: in Type): Bool {
   match t {
     case TyPrim(pt) -> match pt { case PtLong -> true; case _ -> false }
@@ -2030,9 +2084,8 @@ func monadAccessorShapeMismatchDiag(
 
 // Numeric / character conversion methods (#1901): `b.toInt()`, `c.toLong()`,
 // etc.  The target primitive each one yields; `None` for any other name.
-// `toFloat` is intentionally absent — the MSIL backend has no R4 representation
-// distinct from `Double`, so a `Float` conversion is not offered until that
-// gap is closed (Band 4). `toNat` (#2050 / Band 4's Int/Long/Byte/Char/Double
+// `toFloat` narrows to the 32-bit `Float` (D155) with round-to-nearest-even.
+// `toNat` (#2050 / Band 4's Int/Long/Byte/Char/Double
 // -> Nat direction) is now implemented on `--target dotnet` as a CHECKED
 // conversion (Msil.Codegen.emitCheckedToNatMsil): `Nat` erases to the same
 // `int64` as `Long`, so this is really `.toLong()` plus a non-negative check,
@@ -2056,6 +2109,9 @@ func numericConvTarget(name: in String): Option[PrimType] {
   if name == "toDouble" {
     return Some(value = PtDouble)
   }
+  if name == "toFloat" {
+    return Some(value = PtFloat)
+  }
   if name == "toNat" {
     return Some(value = PtNat)
   }
@@ -2072,10 +2128,10 @@ func numericConvTarget(name: in String): Option[PrimType] {
 // "works" for `.toInt()`/`.toLong()` by accident, since `Nat` and `Long`
 // share the same MSIL erasure and codegen dispatches on the erased type).
 // The other unsigned integers (`UInt`, `ULong`) have no backend representation
-// as a conversion-method receiver either, and `Float` has no R4 representation
-// distinct from `Double`; conversion support for all of these as a RECEIVER is
-// tracked in #2050 / Band 4 and must land with real backend support, not a
-// checker-only claim.
+// as a conversion-method receiver either; conversion support for them as a
+// RECEIVER is tracked in #2050 / Band 4 and must land with real backend
+// support, not a checker-only claim.  `Float` is a receiver since every
+// backend represents it as binary32 (D155).
 func isNumericOrCharType(t: in Type): Bool {
   match unrefine(t) {
     case TyPrim(pt) -> match pt {
@@ -2083,6 +2139,7 @@ func isNumericOrCharType(t: in Type): Bool {
       case PtInt -> true
       case PtLong -> true
       case PtDouble -> true
+      case PtFloat -> true
       case PtChar -> true
       case _ -> false
     }
@@ -3977,8 +4034,9 @@ func wideningMethod(paramTy: in Type, argTy: in Type): Option[String] {
   if isPrimOf(paramTy, PtUInt) {
     return Some(value = "toUInt")
   }
-  // The other conversion methods exist only on these receivers (not `Float`,
-  // `UInt`, `ULong`, `Nat`: #2050); any other widening is left unconvertible.
+  // The other conversion methods exist only on these receivers (not `UInt`,
+  // `ULong`, `Nat`: #2050); any other widening is left unconvertible.  A
+  // `Float` widens to `Double` with `.toDouble()` (D155).
   if not isNumericOrCharType(argTy) {
     return None
   }
@@ -4108,10 +4166,11 @@ func recordUnsignedCompoundValue(
 }
 
 // True when `argTy` satisfies `paramTy` only by a numeric widening that a call
-// through a function value cannot convert (a `Float` argument: that
-// conversion does not exist yet, #2050). The erased
-// call would pass the argument boxed
-// at its own type, so such a call is rejected rather than failing at run time.
+// through a function value cannot convert (one `wideningMethod` has no
+// method for). The erased call would pass the argument boxed at its own type,
+// so such a call is rejected rather than failing at run time.  Every current
+// widening chain has a method, `Float < Double` included since D155; this
+// keeps a future chain from silently miscompiling until it gets one.
 func unconvertibleWidening(paramTy: in Type, argTy: in Type): Bool {
   if typeEquiv(paramTy, argTy) {
     return false
@@ -5571,7 +5630,7 @@ func inferConstructionExpected(
           } else {
             val fieldTy = instantiatedFieldType(fieldNames, fieldTypes, gnames, targs, nm, fieldTypeByName(fields, nm))
             recordUnsignedWidening(tbl, fieldTy, argTy, valE)
-            if not argSatisfiesParam(tbl, fieldTy, argTy) and not listLiteralArgSatisfiesParam(tbl, fieldTy, argTy, valE) {
+            if not argSatisfiesParam(tbl, fieldTy, argTy) and not literalArgSatisfiesParam(tbl, fieldTy, argTy, valE) {
               diag.add(
                 errorDiagnostic(
                   "T0104",
@@ -5597,7 +5656,7 @@ func inferConstructionExpected(
           } else {
             val fieldTy = instantiatedFieldType(fieldNames, fieldTypes, gnames, targs, fields[posIdx].name, fields[posIdx].ty)
             recordUnsignedWidening(tbl, fieldTy, argTy, ae)
-            if not argSatisfiesParam(tbl, fieldTy, argTy) and not listLiteralArgSatisfiesParam(tbl, fieldTy, argTy, ae) {
+            if not argSatisfiesParam(tbl, fieldTy, argTy) and not literalArgSatisfiesParam(tbl, fieldTy, argTy, ae) {
               diag.add(
                 errorDiagnostic(
                   "T0104",
@@ -5650,7 +5709,7 @@ func inferConstructionExpected(
         } else {
           val fieldTy = fieldTypeByName(fields, nm)
           recordUnsignedWidening(tbl, fieldTy, argTy, valE)
-          if not argSatisfiesParam(tbl, fieldTy, argTy) and not listLiteralArgSatisfiesParam(tbl, fieldTy, argTy, valE) {
+          if not argSatisfiesParam(tbl, fieldTy, argTy) and not literalArgSatisfiesParam(tbl, fieldTy, argTy, valE) {
             diag.add(
               errorDiagnostic(
                 "T0104",
@@ -5676,7 +5735,7 @@ func inferConstructionExpected(
         } else {
           val fieldTy = fields[posIdx].ty
           recordUnsignedWidening(tbl, fieldTy, argTy, ae)
-          if not argSatisfiesParam(tbl, fieldTy, argTy) and not listLiteralArgSatisfiesParam(tbl, fieldTy, argTy, ae) {
+          if not argSatisfiesParam(tbl, fieldTy, argTy) and not literalArgSatisfiesParam(tbl, fieldTy, argTy, ae) {
             diag.add(
               errorDiagnostic(
                 "T0104",
@@ -8740,7 +8799,7 @@ func checkStdCollectionMemberArgs(
   var k = 0
   while k < ps.count and k < args.count and k < argTypes.count {
     val p = ps[k]
-    if not argSatisfiesParam(tbl, p.ty, argTypes[k]) and not listLiteralArgSatisfiesParam(tbl, p.ty, argTypes[k], callArgExpr(args[k])) {
+    if not argSatisfiesParam(tbl, p.ty, argTypes[k]) and not literalArgSatisfiesParam(tbl, p.ty, argTypes[k], callArgExpr(args[k])) {
       val slot = if p.role == "index" {
         "the index type " + renderType(p.ty)
       } else {
@@ -9900,8 +9959,8 @@ func inferExprCore(
       // Rust-style integer-literal inference: an unsuffixed literal operand
       // adopts the other operand's concrete integer type, so `someLong <= 0`
       // / `someLong + 1` type-check without a `0i64` suffix (#2514).
-      val lt = adoptIntLiteralType(l, lt0, rt0)
-      val rt = adoptIntLiteralType(r, rt0, lt0)
+      val lt = adoptFloatLiteralType(tbl, l, adoptIntLiteralType(l, lt0, rt0), rt0)
+      val rt = adoptFloatLiteralType(tbl, r, adoptIntLiteralType(r, rt0, lt0), lt0)
       // A `UInt` operand beside a `ULong` one zero-extends (#7350, #7382);
       // spelling it `.toULong()` keeps every backend from having to recover
       // the operand's signedness from its shape (#7805).
@@ -10457,8 +10516,7 @@ func inferExprCore(
                           if k < args.count {
                             noteExpectedFlow(sc, tbl, callArgExpr(args[k]), paramTypes[k])
                           }
-                          val kLiteralOk = k < args.count and
-                            listLiteralArgSatisfiesParam(tbl, paramTypes[k], argTypes[k], callArgExpr(args[k]))
+                          val kLiteralOk = k < args.count and literalArgSatisfiesParam(tbl, paramTypes[k], argTypes[k], callArgExpr(args[k]))
                           if not argSatisfiesParam(tbl, paramTypes[k], argTypes[k]) and not kLiteralOk {
                             diag.add(
                               errorDiagnostic(
@@ -11197,6 +11255,9 @@ pub func inferExprExpected(
   expected: in Type,
 ): Type {
   noteExpectedFlow(sc, tbl, e, expected)
+  if isUnsuffixedFloatLit(e) and isFloatType(expected) {
+    return adoptFloatLiteralType(tbl, e, inferExpr(sc, tbl, sigs, diag, e), expected)
+  }
   match e.kind {
     case EParen(inner) -> inferExprExpected(sc, tbl, sigs, diag, inner, expected)
     case ELambda(ps, body) -> match unrefine(expected) {
@@ -11553,7 +11614,7 @@ func checkCallArgsAgainstSig(
         } else {
           argSatisfiesParam(tbl, p.ty, argTy)
         }
-        if not satisfied and not listLiteralArgSatisfiesParam(tbl, p.ty, argTy, callArgExpr(args[ai])) {
+        if not satisfied and not literalArgSatisfiesParam(tbl, p.ty, argTy, callArgExpr(args[ai])) {
           diag.add(
             errorDiagnostic(
               "T0043",
@@ -11815,7 +11876,14 @@ func paramsMatchArgs(tbl: in SymbolTable, params: in List[ResolvedParam], argTyp
 // VALUE (a variable, a call result, …) still cannot satisfy a `List[T]`
 // field; only the literal can, exactly matching what codegen actually
 // builds.
-func listLiteralArgSatisfiesParam(tbl: in SymbolTable, fieldTy: in Type, argTy: in Type, argExpr: in Expr): Bool {
+//
+// An unsuffixed float literal also satisfies a `Float` parameter or field: it
+// adopts `Float` there (D155, `adoptFloatLiteralType`).
+func literalArgSatisfiesParam(tbl: in SymbolTable, fieldTy: in Type, argTy: in Type, argExpr: in Expr): Bool {
+  if isUnsuffixedFloatLit(argExpr) and isPlainDouble(argTy) and isFloatType(fieldTy) {
+    recordFloatLiteralSite(tbl, argExpr)
+    return true
+  }
   val isLiteral = match argExpr.kind { case EList(_) -> true; case _ -> false }
   if not isLiteral {
     return false

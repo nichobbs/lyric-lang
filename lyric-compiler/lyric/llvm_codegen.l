@@ -221,6 +221,12 @@ record NDistinctInfo {
   boundsText: String
   /// `Byte`/`UInt`/`ULong`-backed: bounds compare unsigned.
   isUnsigned: Bool
+  /// A `Double`/`Float` range: `loF ..= hiF` (or `..<` when `hiExclusive`),
+  /// rounded to binary32 for `Float` (D155).
+  isFloat: Bool = false
+  loF: Double = 0.0
+  hiF: Double = 0.0
+  hiExclusive: Bool = false
 }
 
 /// Reverse metadata for a type instantiation: which generic declaration
@@ -640,8 +646,11 @@ pub func typeExprToNType(te: in TypeExpr): NType {
       if n == "Long" {
         return NI64
       }
-      if n == "Float" or n == "Double" {
+      if n == "Double" {
         return NDouble
+      }
+      if n == "Float" {
+        return NFloat
       }
       if n == "Bool" {
         return NI1
@@ -808,8 +817,11 @@ func typeToNOpt(ctx: in Ctx, te: in TypeExpr): Option[NType] {
       if n == "Long" {
         return Some(value = NI64)
       }
-      if n == "Float" or n == "Double" {
+      if n == "Double" {
         return Some(value = NDouble)
+      }
+      if n == "Float" {
+        return Some(value = NFloat)
       }
       if n == "Bool" {
         return Some(value = NI1)
@@ -1054,6 +1066,7 @@ func sizeOfN(ctx: in Ctx, t: in NType): Int {
     case NI32 -> 4
     case NI64 -> 8
     case NDouble -> 8
+    case NFloat -> 4
     case NPtr(_) -> ctx.ptrBytes
     case NArray(elem, size) -> sizeOfN(ctx, elem) * size
     // A Unit field (e.g. `Result[Unit, E]`'s Ok payload) occupies one
@@ -2025,6 +2038,10 @@ func widenOperands(ctx: in Ctx, insns: in List[NInsn], a: in NVal, b: in NVal): 
     case _ -> {
     }
   }
+  // `Float < Double` (D155): a mixed pair computes in binary64.
+  if isFloatingNType(a.ty) and isFloatingNType(b.ty) {
+    return WidenedOperands(a = extendFloatToDouble(ctx, insns, a), b = extendFloatToDouble(ctx, insns, b), ty = NDouble)
+  }
   val ra = intNTypeRank(a.ty)
   val rb = intNTypeRank(b.ty)
   if ra > 0 and rb > 0 {
@@ -2135,6 +2152,7 @@ func emitToString(ctx: in Ctx, insns: in List[NInsn], v: in NVal): NVal {
       arg1(NI32, widenBoolToI32(ctx, insns, v.value))
     )
     case NDouble -> callRuntime(ctx, insns, "lyric_string_from_float", lyricStringNType(), arg1(NDouble, v.value))
+    case NFloat -> callRuntime(ctx, insns, "lyric_string_from_float32", lyricStringNType(), arg1(NFloat, v.value))
     case _ -> {
       if isStringNType(v.ty) {
         return v
@@ -2155,6 +2173,7 @@ func isScalarNType(t: in NType): Bool {
     case NI8 -> true
     case NI1 -> true
     case NDouble -> true
+    case NFloat -> true
     case _ -> false
   }
 }
@@ -2372,7 +2391,11 @@ func lowerLiteral(ctx: in Ctx, insns: in List[NInsn], lit: in Literal): NVal {
         NVal(ty = NI32, value = NLitInt(v = v, ty = NI32))
       }
     }
-    case LFloat(v, _, _) -> NVal(ty = NDouble, value = NLitFloat(v = v))
+    // A `Float` literal's value is binary32-exact (D155).
+    case LFloat(v, sfx, _) -> match sfx {
+      case F32 -> NVal(ty = NFloat, value = NLitFloat(v = v, ty = NFloat))
+      case _ -> NVal(ty = NDouble, value = NLitFloat(v = v, ty = NDouble))
+    }
     case LChar(codepoint) -> NVal(ty = NI32, value = NLitInt(v = codepoint.toLong(), ty = NI32))
     case LString(text) -> emitStringLiteral(ctx, insns, text)
     case LTripleString(text) -> emitStringLiteral(ctx, insns, text)
@@ -2419,10 +2442,10 @@ func lowerPrefix(ctx: in Ctx, insns: in List[NInsn], op: in PrefixOp, operand: i
   match op {
     case PreNeg -> {
       match v.ty {
-        case NDouble -> {
+        case NDouble | NFloat -> {
           val dest = freshTmp(ctx)
-          insns.add(NFNeg(dest = dest, a = v.value))
-          NVal(ty = NDouble, value = NLocal(name = dest))
+          insns.add(NFNeg(dest = dest, ty = v.ty, a = v.value))
+          NVal(ty = v.ty, value = NLocal(name = dest))
         }
         case _ -> {
           val dest = freshTmp(ctx)
@@ -2480,17 +2503,38 @@ func binIntOp(
   NVal(ty = ty, value = NLocal(name = dest))
 }
 
-func binFloatOp(ctx: in Ctx, insns: in List[NInsn], op: in BinOp, a: in NValue, b: in NValue): NVal {
+func binFloatOp(ctx: in Ctx, insns: in List[NInsn], op: in BinOp, ty: in NType, a: in NValue, b: in NValue): NVal {
   val dest = freshTmp(ctx)
   match op {
-    case BAdd -> insns.add(NFAdd(dest = dest, a = a, b = b))
-    case BSub -> insns.add(NFSub(dest = dest, a = a, b = b))
-    case BMul -> insns.add(NFMul(dest = dest, a = a, b = b))
-    case BDiv -> insns.add(NFDiv(dest = dest, a = a, b = b))
-    case BMod -> insns.add(NFRem(dest = dest, a = a, b = b))
+    case BAdd -> insns.add(NFAdd(dest = dest, ty = ty, a = a, b = b))
+    case BSub -> insns.add(NFSub(dest = dest, ty = ty, a = a, b = b))
+    case BMul -> insns.add(NFMul(dest = dest, ty = ty, a = a, b = b))
+    case BDiv -> insns.add(NFDiv(dest = dest, ty = ty, a = a, b = b))
+    case BMod -> insns.add(NFRem(dest = dest, ty = ty, a = a, b = b))
     case _ -> panic("Lyric.LlvmCodegen: unexpected float binop")
   }
-  NVal(ty = NDouble, value = NLocal(name = dest))
+  NVal(ty = ty, value = NLocal(name = dest))
+}
+
+/// True for the binary floating-point types, `Double` and `Float`.
+func isFloatingNType(t: in NType): Bool {
+  match t {
+    case NDouble -> true
+    case NFloat -> true
+    case _ -> false
+  }
+}
+
+/// `float` -> `double`: exact (D155).
+func extendFloatToDouble(ctx: in Ctx, insns: in List[NInsn], v: in NVal): NVal {
+  match v.ty {
+    case NFloat -> {
+      val dest = freshTmp(ctx)
+      insns.add(NFPExt(dest = dest, value = v.value))
+      NVal(ty = NDouble, value = NLocal(name = dest))
+    }
+    case _ -> v
+  }
 }
 
 func icmpPredFor(op: in BinOp): ICmpPred {
@@ -2586,9 +2630,9 @@ func lowerBinop(ctx: in Ctx, insns: in List[NInsn], op: in BinOp, lhs: in Expr, 
   val w = widenOperands(ctx, insns, a, b)
   if isComparisonOp(op) {
     match w.ty {
-      case NDouble -> {
+      case NDouble | NFloat -> {
         val dest = freshTmp(ctx)
-        insns.add(NFCmp(dest = dest, pred = fcmpPredFor(op), a = w.a.value, b = w.b.value))
+        insns.add(NFCmp(dest = dest, pred = fcmpPredFor(op), ty = w.ty, a = w.a.value, b = w.b.value))
         return NVal(ty = NI1, value = NLocal(name = dest))
       }
       case NI8 -> {
@@ -2613,7 +2657,7 @@ func lowerBinop(ctx: in Ctx, insns: in List[NInsn], op: in BinOp, lhs: in Expr, 
     }
   }
   match w.ty {
-    case NDouble -> binFloatOp(ctx, insns, op, w.a.value, w.b.value)
+    case NDouble | NFloat -> binFloatOp(ctx, insns, op, w.ty, w.a.value, w.b.value)
     case ty -> binIntOp(ctx, insns, op, ty, w.a.value, w.b.value, line)
   }
 }
@@ -2626,6 +2670,7 @@ func isConcatStringifiableNType(t: in NType): Bool {
     case NI64 -> true
     case NI1 -> true
     case NDouble -> true
+    case NFloat -> true
     case _ -> false
   }
 }
@@ -3054,6 +3099,42 @@ func lowerScalarMethodCall(
     }
     return Some(value = emitToString(ctx, insns, v))
   }
+  // A `Float` receiver of any conversion but `toFloat` converts as the
+  // `Double` it widens to exactly (D155).
+  val isFloatRecv = match v.ty { case NFloat -> true; case _ -> false }
+  if isFloatRecv and args.count == 0 and (name == "toLong" or name == "toInt" or name == "toChar" or name == "toByte" or name == "toDouble" or name == "toNat") {
+    return lowerScalarMethodCall(ctx, insns, extendFloatToDouble(ctx, insns, v), name, args, line, recvExpr)
+  }
+  if name == "toFloat" and args.count == 0 {
+    match v.ty {
+      case NI32 -> {
+        val dest = freshTmp(ctx)
+        insns.add(NSIToFP(dest = dest, fromTy = NI32, value = v.value, toTy = NFloat))
+        return Some(value = NVal(ty = NFloat, value = NLocal(name = dest)))
+      }
+      case NI64 -> {
+        val dest = freshTmp(ctx)
+        insns.add(NSIToFP(dest = dest, fromTy = NI64, value = v.value, toTy = NFloat))
+        return Some(value = NVal(ty = NFloat, value = NLocal(name = dest)))
+      }
+      // `Byte` is unsigned: zero-extend before the signed conversion.
+      case NI8 -> {
+        val wide = freshTmp(ctx)
+        insns.add(NZExt(dest = wide, fromTy = NI8, value = v.value, toTy = NI32))
+        val dest = freshTmp(ctx)
+        insns.add(NSIToFP(dest = dest, fromTy = NI32, value = NLocal(name = wide), toTy = NFloat))
+        return Some(value = NVal(ty = NFloat, value = NLocal(name = dest)))
+      }
+      case NDouble -> {
+        val dest = freshTmp(ctx)
+        insns.add(NFPTrunc(dest = dest, value = v.value))
+        return Some(value = NVal(ty = NFloat, value = NLocal(name = dest)))
+      }
+      case NFloat -> return Some(value = v)
+      case _ -> {
+      }
+    }
+  }
   if name == "toLong" and args.count == 0 {
     match v.ty {
       case NI32 -> {
@@ -3098,7 +3179,7 @@ func lowerScalarMethodCall(
       }
     }
   }
-  if (name == "toFloat" or name == "toDouble") and args.count == 0 {
+  if name == "toDouble" and args.count == 0 {
     match v.ty {
       case NI32 -> {
         val dest = freshTmp(ctx)
@@ -3111,6 +3192,14 @@ func lowerScalarMethodCall(
         return Some(value = NVal(ty = NDouble, value = NLocal(name = dest)))
       }
       case NDouble -> return Some(value = v)
+      // `Byte` is unsigned: zero-extend before the signed conversion.
+      case NI8 -> {
+        val wide = freshTmp(ctx)
+        insns.add(NZExt(dest = wide, fromTy = NI8, value = v.value, toTy = NI32))
+        val dest = freshTmp(ctx)
+        insns.add(NSIToFP(dest = dest, fromTy = NI32, value = NLocal(name = wide), toTy = NDouble))
+        return Some(value = NVal(ty = NDouble, value = NLocal(name = dest)))
+      }
       case _ -> {
       }
     }
@@ -3128,6 +3217,14 @@ func lowerScalarMethodCall(
         return Some(value = NVal(ty = NI8, value = NLocal(name = dest)))
       }
       case NI8 -> return Some(value = v)
+      // Truncate toward zero, then keep the low 8 bits (modulo 256).
+      case NDouble -> {
+        val wide = freshTmp(ctx)
+        insns.add(NFPToSI(dest = wide, fromTy = NDouble, value = v.value, toTy = NI64))
+        val dest = freshTmp(ctx)
+        insns.add(NTrunc(dest = dest, fromTy = NI64, value = NLocal(name = wide), toTy = NI8))
+        return Some(value = NVal(ty = NI8, value = NLocal(name = dest)))
+      }
       case _ -> {
       }
     }
@@ -3148,9 +3245,9 @@ func lowerScalarMethodCall(
         // `-1.0 < d < 65536.0` (ordered, so NaN fails) before truncating
         // toward zero, then the surrogate check on the integer.
         val gtLo = freshTmp(ctx)
-        insns.add(NFCmp(dest = gtLo, pred = FOgt, a = v.value, b = NLitFloat(v = 0.0 - 1.0)))
+        insns.add(NFCmp(dest = gtLo, pred = FOgt, ty = NDouble, a = v.value, b = NLitFloat(v = 0.0 - 1.0, ty = NDouble)))
         val ltHi = freshTmp(ctx)
-        insns.add(NFCmp(dest = ltHi, pred = FOlt, a = v.value, b = NLitFloat(v = 65536.0)))
+        insns.add(NFCmp(dest = ltHi, pred = FOlt, ty = NDouble, a = v.value, b = NLitFloat(v = 65536.0, ty = NDouble)))
         val inRange = freshTmp(ctx)
         insns.add(NAnd(dest = inRange, ty = NI1, a = NLocal(name = gtLo), b = NLocal(name = ltHi)))
         val bad = freshTmp(ctx)
@@ -3583,7 +3680,11 @@ func coerceTo(ctx: in Ctx, insns: in List[NInsn], v: in NVal, want: in NType, at
         return NVal(ty = want, value = NLitInt(v = litV, ty = want))
       }
       match want {
-        case NDouble -> return NVal(ty = NDouble, value = NLitFloat(v = longToDouble(litV)))
+        case NDouble -> return NVal(ty = NDouble, value = NLitFloat(v = longToDouble(litV), ty = NDouble))
+        // An integer literal where a `Float` is lowered (a range-pattern
+        // bound, which is not type-checked against the scrutinee): the
+        // nearest binary32 value, rounded once from the exact integer.
+        case NFloat -> return NVal(ty = NFloat, value = NLitFloat(v = float32LiteralValue(litV.toString(), longToDouble(litV)), ty = NFloat))
         case _ -> {
         }
       }
@@ -3593,6 +3694,11 @@ func coerceTo(ctx: in Ctx, insns: in List[NInsn], v: in NVal, want: in NType, at
   }
   val fromStr = nTypeToIrString(v.ty)
   val wantStr = nTypeToIrString(want)
+  // The implicit `Float < Double` widening at a binding, argument, field or
+  // return (D155).
+  if fromStr == "float" and wantStr == "double" {
+    return extendFloatToDouble(ctx, insns, v)
+  }
   if fromStr == "i32" and wantStr == "i64" {
     val dest = freshTmp(ctx)
     insns.add(NSExt(dest = dest, fromTy = NI32, value = v.value, toTy = NI64))
@@ -4907,6 +5013,10 @@ func registerDistinct(ctx: in Ctx, pkg: in String, dd: in DistinctTypeDecl, stri
   var lo = 0i64
   var hi = 0i64
   var boundsText = ""
+  var isFloatRange = false
+  var loF = 0.0
+  var hiF = 0.0
+  var hiExclusive = false
   match dd.rangeClause {
     case Some(rb) -> {
       var loExprOpt: Option[Expr] = None
@@ -4936,40 +5046,70 @@ func registerDistinct(ctx: in Ctx, pkg: in String, dd: in DistinctTypeDecl, stri
         }
         return
       }
-      // var-mutation shape (#4631: value-position match over Option
-      // mis-lowers in the stage-0 seed).
-      var loOpt: Option[Long] = None
-      match loExprOpt {
-        case Some(e) -> {
-          loOpt = rangeBoundLit(e)
-        }
-        case None -> {
-        }
-      }
-      var hiOpt: Option[Long] = None
-      match hiExprOpt {
-        case Some(e) -> {
-          hiOpt = rangeBoundLit(e)
-        }
-        case None -> {
-        }
-      }
       var boundsOk = false
-      match loOpt {
-        case Some(l) -> {
-          match hiOpt {
-            case Some(h) -> {
-              hasRange = true
-              boundsOk = true
-              lo = l
-              hi = if hiInclusive { h } else { h - 1i64 }
-              boundsText = "[" + toString(l) + ", " + toString(h) + (if hiInclusive { "]" } else { ")" })
-            }
-            case None -> {
+      if isFloatingNType(under) {
+        // A floating-point range: ordered compares against the bounds (a NaN
+        // is in no range), rounded to binary32 for a `Float` range (D155).
+        // var-mutation shape (#4631).
+        match loExprOpt {
+          case Some(le) -> {
+            match hiExprOpt {
+              case Some(he) -> {
+                val lb = foldLiteralBound(le)
+                val hb = foldLiteralBound(he)
+                if lb.ok and hb.ok {
+                  val single = match under { case NFloat -> true; case _ -> false }
+                  hasRange = true
+                  boundsOk = true
+                  isFloatRange = true
+                  loF = if single { lb.f32 } else { lb.d }
+                  hiF = if single { hb.f32 } else { hb.d }
+                  hiExclusive = not hiInclusive
+                  boundsText = "[" + floatBoundText(lb) + ", " + floatBoundText(hb) + (if hiInclusive { "]" } else { ")" })
+                }
+              }
+              case None -> {
+              }
             }
           }
+          case None -> {
+          }
         }
-        case None -> {
+      } else {
+        // var-mutation shape (#4631: value-position match over Option
+        // mis-lowers in the stage-0 seed).
+        var loOpt: Option[Long] = None
+        match loExprOpt {
+          case Some(e) -> {
+            loOpt = rangeBoundLit(e)
+          }
+          case None -> {
+          }
+        }
+        var hiOpt: Option[Long] = None
+        match hiExprOpt {
+          case Some(e) -> {
+            hiOpt = rangeBoundLit(e)
+          }
+          case None -> {
+          }
+        }
+        match loOpt {
+          case Some(l) -> {
+            match hiOpt {
+              case Some(h) -> {
+                hasRange = true
+                boundsOk = true
+                lo = l
+                hi = if hiInclusive { h } else { h - 1i64 }
+                boundsText = "[" + toString(l) + ", " + toString(h) + (if hiInclusive { "]" } else { ")" })
+              }
+              case None -> {
+              }
+            }
+          }
+          case None -> {
+          }
         }
       }
       if not boundsOk {
@@ -4993,7 +5133,11 @@ func registerDistinct(ctx: in Ctx, pkg: in String, dd: in DistinctTypeDecl, stri
     lo = lo,
     hi = hi,
     boundsText = boundsText,
-    isUnsigned = isUnsigned
+    isUnsigned = isUnsigned,
+    isFloat = isFloatRange,
+    loF = loF,
+    hiF = hiF,
+    hiExclusive = hiExclusive
   )
   if not ctx.distinctDefs.containsKey(pkg + "." + dd.name) {
     ctx.distinctDefs.add(pkg + "." + dd.name, info)
@@ -5981,6 +6125,14 @@ func slotOfVal(ctx: in Ctx, insns: in List[NInsn], v: in NVal): NValue {
       insns.add(NBitcast(dest = dest, fromTy = NDouble, value = v.value, toTy = NI64))
       NLocal(name = dest)
     }
+    // A `Float` occupies the low 32 bits of the slot.
+    case NFloat -> {
+      val bits = freshTmp(ctx)
+      insns.add(NBitcast(dest = bits, fromTy = NFloat, value = v.value, toTy = NI32))
+      val dest = freshTmp(ctx)
+      insns.add(NZExt(dest = dest, fromTy = NI32, value = NLocal(name = bits), toTy = NI64))
+      NLocal(name = dest)
+    }
     case NI32 -> {
       val dest = freshTmp(ctx)
       insns.add(NSExt(dest = dest, fromTy = NI32, value = v.value, toTy = NI64))
@@ -6018,6 +6170,13 @@ func valOfSlot(ctx: in Ctx, insns: in List[NInsn], slot: in NValue, elemTy: in N
       val dest = freshTmp(ctx)
       insns.add(NBitcast(dest = dest, fromTy = NI64, value = slot, toTy = NDouble))
       NVal(ty = NDouble, value = NLocal(name = dest))
+    }
+    case NFloat -> {
+      val bits = freshTmp(ctx)
+      insns.add(NTrunc(dest = bits, fromTy = NI64, value = slot, toTy = NI32))
+      val dest = freshTmp(ctx)
+      insns.add(NBitcast(dest = dest, fromTy = NI32, value = NLocal(name = bits), toTy = NFloat))
+      NVal(ty = NFloat, value = NLocal(name = dest))
     }
     case NI32 -> {
       val dest = freshTmp(ctx)
@@ -9142,8 +9301,35 @@ func distinctRangeMessage(name: in String, method: in String, di: in NDistinctIn
   short + "." + method + ": value out of range " + di.boundsText
 }
 
+// A floating-point range bound as the managed targets name it in the
+// violation message: the bound as written, an integer bound without a
+// fractional part.
+func floatBoundText(b: in LiteralBound): String {
+  if b.isFloat {
+    b.d.toString()
+  } else {
+    b.l.toString()
+  }
+}
+
 /// An `i1` that is true when `v` lies outside `di`'s bounds.
 func distinctOutOfRange(ctx: in Ctx, insns: in List[NInsn], di: in NDistinctInfo, v: in NVal): NValue {
+  if di.isFloat {
+    val geLo = freshTmp(ctx)
+    insns.add(
+      NFCmp(dest = geLo, pred = FOge, ty = di.underlying, a = v.value, b = NLitFloat(v = di.loF, ty = di.underlying))
+    )
+    val inHi = freshTmp(ctx)
+    val hiPred = if di.hiExclusive { FOlt } else { FOle }
+    insns.add(
+      NFCmp(dest = inHi, pred = hiPred, ty = di.underlying, a = v.value, b = NLitFloat(v = di.hiF, ty = di.underlying))
+    )
+    val inRange = freshTmp(ctx)
+    insns.add(NAnd(dest = inRange, ty = NI1, a = NLocal(name = geLo), b = NLocal(name = inHi)))
+    val bad = freshTmp(ctx)
+    insns.add(NXor(dest = bad, ty = NI1, a = NLocal(name = inRange), b = NLitInt(v = 1i64, ty = NI1)))
+    return NLocal(name = bad)
+  }
   val ltPred = if di.isUnsigned { IUlt } else { ISlt }
   val gtPred = if di.isUnsigned { IUgt } else { ISgt }
   val loCmp = freshTmp(ctx)
@@ -9398,7 +9584,10 @@ func emitPatternTest(
         }
       }
     }
-    case PLiteral(lit) -> {
+    case PLiteral(lit0) -> {
+      // A float literal pattern on a `Float` scrutinee is the `Float` nearest
+      // the literal (D155), so `case 0.1` matches `0.1f32`.
+      val lit = floatPatternLiteralFor(lit0, sv.ty)
       val lv = lowerLiteral(ctx, insns, lit)
       if isStringNType(sv.ty) {
         val eq = callRuntime(ctx, insns, "lyric_string_eq", NI32, arg2(sv.ty, sv.value, lv.ty, lv.value))
@@ -9407,9 +9596,10 @@ func emitPatternTest(
         insns.add(NCondBr(cond = NLocal(name = isEq), thenLabel = okLabel, elseLabel = failLabel))
       } else {
         match sv.ty {
-          case NDouble -> {
+          case NDouble | NFloat -> {
+            val lc = coerceTo(ctx, insns, lv, sv.ty)
             val cmp = freshTmp(ctx)
-            insns.add(NFCmp(dest = cmp, pred = FOeq, a = sv.value, b = lv.value))
+            insns.add(NFCmp(dest = cmp, pred = FOeq, ty = sv.ty, a = sv.value, b = lc.value))
             insns.add(NCondBr(cond = NLocal(name = cmp), thenLabel = okLabel, elseLabel = failLabel))
           }
           case sty -> {
@@ -9422,13 +9612,19 @@ func emitPatternTest(
       }
     }
     case PRange(lo, inclusive, hi, _) -> {
-      val loV = coerceTo(ctx, insns, lowerExpr(ctx, insns, lo), sv.ty)
-      val hiV = coerceTo(ctx, insns, lowerExpr(ctx, insns, hi), sv.ty)
+      val loV = lowerRangeBound(ctx, insns, lo, sv.ty)
+      val hiV = lowerRangeBound(ctx, insns, hi, sv.ty)
       val geLo = freshTmp(ctx)
-      insns.add(NICmp(dest = geLo, pred = ISge, ty = sv.ty, a = sv.value, b = loV.value))
       val leHi = freshTmp(ctx)
-      val hiPred = if inclusive { ISle } else { ISlt }
-      insns.add(NICmp(dest = leHi, pred = hiPred, ty = sv.ty, a = sv.value, b = hiV.value))
+      if isFloatingNType(sv.ty) {
+        // Ordered compares: a NaN scrutinee lies in no range.
+        insns.add(NFCmp(dest = geLo, pred = FOge, ty = sv.ty, a = sv.value, b = loV.value))
+        insns.add(NFCmp(dest = leHi, pred = if inclusive { FOle } else { FOlt }, ty = sv.ty, a = sv.value, b = hiV.value))
+      } else {
+        insns.add(NICmp(dest = geLo, pred = ISge, ty = sv.ty, a = sv.value, b = loV.value))
+        val hiPred = if inclusive { ISle } else { ISlt }
+        insns.add(NICmp(dest = leHi, pred = hiPred, ty = sv.ty, a = sv.value, b = hiV.value))
+      }
       val both = freshTmp(ctx)
       insns.add(NAnd(dest = both, ty = NI1, a = NLocal(name = geLo), b = NLocal(name = leHi)))
       insns.add(NCondBr(cond = NLocal(name = both), thenLabel = okLabel, elseLabel = failLabel))
@@ -10156,9 +10352,82 @@ func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
   }
 }
 
+// A float literal pattern against a `Float` scrutinee, rewritten to its
+// binary32 form (D155).
+func floatPatternLiteralFor(lit: in Literal, scrutTy: in NType): Literal {
+  match scrutTy {
+    case NFloat -> match lit {
+      case LFloat(v, sfx, raw) -> match sfx {
+        case F32 -> lit
+        case _ -> LFloat(
+          value = float32LiteralValue(raw, v),
+          suffix = F32,
+          raw = raw
+        )
+      }
+      case _ -> lit
+    }
+    case _ -> lit
+  }
+}
+
+// A range pattern bound against a `Float` scrutinee: a float literal bound,
+// possibly negated or parenthesised, denotes the nearest `Float` (D155).
+// One bound of a range pattern, in the scrutinee's type.  Range-pattern
+// bounds are not type-checked against the scrutinee, so an integer bound on a
+// floating scrutinee (`case 0 ..= 1` on a `Float`) is converted here, as the
+// JVM and MSIL backends do.
+func lowerRangeBound(ctx: in Ctx, insns: in List[NInsn], bound: in Expr, scrutTy: in NType): NVal {
+  val bv = lowerExpr(ctx, insns, floatPatternBoundFor(bound, scrutTy))
+  if isFloatingNType(scrutTy) and isIntNType(bv.ty) {
+    match bv.value {
+      case NLitInt(_, _) -> ()
+      case _ -> {
+        val wide = match bv.ty {
+          case NI8 -> {
+            val z = freshTmp(ctx)
+            insns.add(NZExt(dest = z, fromTy = NI8, value = bv.value, toTy = NI32))
+            NVal(ty = NI32, value = NLocal(name = z))
+          }
+          case _ -> bv
+        }
+        val dest = freshTmp(ctx)
+        insns.add(NSIToFP(dest = dest, fromTy = wide.ty, value = wide.value, toTy = scrutTy))
+        return NVal(ty = scrutTy, value = NLocal(name = dest))
+      }
+    }
+  }
+  coerceTo(ctx, insns, bv, scrutTy)
+}
+
+func floatPatternBoundFor(e: in Expr, scrutTy: in NType): Expr {
+  match scrutTy {
+    case NFloat -> match e.kind {
+      case ELiteral(lit) -> Expr(
+        kind = ELiteral(lit = floatPatternLiteralFor(lit, scrutTy)),
+        span = e.span
+      )
+      case EParen(inner) -> Expr(
+        kind = EParen(inner = floatPatternBoundFor(inner, scrutTy)),
+        span = e.span
+      )
+      case EPrefix(op, inner) -> Expr(
+        kind = EPrefix(
+          op = op,
+          operand = floatPatternBoundFor(inner, scrutTy)
+        ),
+        span = e.span
+      )
+      case _ -> e
+    }
+    case _ -> e
+  }
+}
+
 func zeroValueOf(ty: in NType): NValue {
   match ty {
-    case NDouble -> NLitFloat(v = 0.0)
+    case NDouble -> NLitFloat(v = 0.0, ty = NDouble)
+    case NFloat -> NLitFloat(v = 0.0, ty = NFloat)
     case NPtr(pointee) -> NLitNull(ty = NPtr(pointee = pointee))
     case _ -> NLitInt(v = 0i64, ty = ty)
   }
@@ -10216,7 +10485,7 @@ func combineIndexedAssignValue(
   } else {
     val rhsC = coerceTo(ctx, insns, rhs, ty)
     match ty {
-      case NDouble -> binFloatOp(ctx, insns, binOp, cur.value, rhsC.value)
+      case NDouble | NFloat -> binFloatOp(ctx, insns, binOp, ty, cur.value, rhsC.value)
       case _ -> binIntOp(ctx, insns, binOp, ty, cur.value, rhsC.value, line)
     }
   }
@@ -10369,7 +10638,7 @@ func lowerAssign(
       } else {
         val rhsC = coerceTo(ctx, insns, rhs, ty)
         match ty {
-          case NDouble -> binFloatOp(ctx, insns, binOp, cur.value, rhsC.value)
+          case NDouble | NFloat -> binFloatOp(ctx, insns, binOp, ty, cur.value, rhsC.value)
           case _ -> binIntOp(ctx, insns, binOp, ty, cur.value, rhsC.value, line)
         }
       }
@@ -10433,7 +10702,7 @@ func lowerFieldAssign(
       } else {
         val rhsC = coerceTo(ctx, insns, rhs, fieldTy)
         match fieldTy {
-          case NDouble -> binFloatOp(ctx, insns, binOp, cur.value, rhsC.value)
+          case NDouble | NFloat -> binFloatOp(ctx, insns, binOp, fieldTy, cur.value, rhsC.value)
           case _ -> binIntOp(ctx, insns, binOp, fieldTy, cur.value, rhsC.value, line)
         }
       }
@@ -11126,6 +11395,7 @@ func runtimeDecls(): List[NFunc] {
   decls.add(mkDecl2("lyric_string_cmp", NI32, sTy, sTy))
   decls.add(mkDecl1("lyric_string_from_int", sTy, NI64))
   decls.add(mkDecl1("lyric_string_from_float", sTy, NDouble))
+  decls.add(mkDecl1("lyric_string_from_float32", sTy, NFloat))
   decls.add(mkDecl1("lyric_string_from_bool", sTy, NI32))
   decls.add(mkDecl1("lyric_string_from_char", sTy, NI32))
   decls.add(mkDecl3("lyric_string_substring", sTy, sTy, NI64, NI64))

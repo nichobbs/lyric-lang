@@ -24,6 +24,12 @@
 #include <unistd.h>
 #include <pthread.h>
 
+/* True when `s` holds exactly the bytes of the C string `want`. */
+static int string_is(LyricString* s, const char* want) {
+    size_t n = strlen(want);
+    return lyric_string_len(s) == (int64_t)n && memcmp(LYRIC_STRING_DATA(s), want, n) == 0;
+}
+
 static int failures = 0;
 
 #define CHECK(cond)                                                        \
@@ -156,6 +162,53 @@ static void test_strings(void) {
     LyricString* fninf = lyric_string_from_float(-1.0 / 0.0);
     CHECK(lyric_string_len(fninf) == 9);
     CHECK(memcmp(LYRIC_STRING_DATA(fninf), "-Infinity", 9) == 0);
+
+    /* .NET's default Double.ToString() / Single.ToString() rendering: the
+     * shortest round-tripping digits, fixed notation for decimal exponents
+     * -4 ..= 16 (Double) or -4 ..= 8 (Float), scientific otherwise (D155). */
+    CHECK(string_is(lyric_string_from_float(0.1 + 0.2), "0.30000000000000004"));
+    CHECK(string_is(lyric_string_from_float(1e16), "10000000000000000"));
+    CHECK(string_is(lyric_string_from_float(1e17), "1E+17"));
+    CHECK(string_is(lyric_string_from_float(1e15), "1000000000000000"));
+    CHECK(string_is(lyric_string_from_float(1e-5), "1E-05"));
+    CHECK(string_is(lyric_string_from_float(0.0001), "0.0001"));
+    CHECK(string_is(lyric_string_from_float(1.0 / 3.0), "0.3333333333333333"));
+    CHECK(string_is(lyric_string_from_float(-0.0), "-0"));
+    CHECK(string_is(lyric_string_from_float(1500.0), "1500"));
+    CHECK(string_is(lyric_string_from_float(123.456), "123.456"));
+    CHECK(string_is(lyric_string_from_float(5e-324), "5E-324"));
+    CHECK(string_is(lyric_string_from_float(1.7976931348623157e308), "1.7976931348623157E+308"));
+    CHECK(string_is(lyric_string_from_float(-2.5e-7), "-2.5E-07"));
+    CHECK(string_is(lyric_string_from_float32(0.3f), "0.3"));
+    CHECK(string_is(lyric_string_from_float32(16777216.0f), "16777216"));
+    CHECK(string_is(lyric_string_from_float32(1.0f / 3.0f), "0.33333334"));
+    CHECK(string_is(lyric_string_from_float32(1e7f), "10000000"));
+    CHECK(string_is(lyric_string_from_float32(1.234567e7f), "12345670"));
+    CHECK(string_is(lyric_string_from_float32(1e8f), "100000000"));
+    CHECK(string_is(lyric_string_from_float32(1e9f), "1E+09"));
+    CHECK(string_is(lyric_string_from_float32(123456789.0f), "123456790"));
+    CHECK(string_is(lyric_string_from_float32(1e-4f), "0.0001"));
+    CHECK(string_is(lyric_string_from_float32(1e-5f), "1E-05"));
+    CHECK(string_is(lyric_string_from_float32(3.4028235e38f), "3.4028235E+38"));
+    CHECK(string_is(lyric_string_from_float32(1.401298e-45f), "1E-45"));
+    CHECK(string_is(lyric_string_from_float32(1.17549435e-38f), "1.1754944E-38"));
+    CHECK(string_is(lyric_string_from_float32(0.1f), "0.1"));
+    CHECK(string_is(lyric_string_from_float32(123456.7f), "123456.7"));
+    CHECK(string_is(lyric_string_from_float32(-0.0f), "-0"));
+    CHECK(string_is(lyric_string_from_float32(0.1f + 0.2f), "0.3"));
+    /* Next to a power of two the rounding interval is lopsided: the nearest
+     * p-digit decimal falls outside it and .NET picks its neighbour
+     * (2^-24 and two binary32 bit patterns); an exact tie goes to the even
+     * digit, as .NET does (63769.3125f is "63769.312"). */
+    CHECK(string_is(lyric_string_from_float32(63769.3125f), "63769.312"));
+    CHECK(string_is(lyric_string_from_float32(3000970.25f), "3000970.2"));
+    CHECK(string_is(lyric_string_from_float(5.9604644775390625e-08), "5.960464477539063E-08"));
+    CHECK(string_is(lyric_string_from_float(3.0517578125e-05), "3.0517578125E-05"));
+    {
+        union { uint32_t u; float f; } b1 = { 1795162112u }, b2 = { 260046848u };
+        CHECK(string_is(lyric_string_from_float32(b1.f), "1.5474251E+26"));
+        CHECK(string_is(lyric_string_from_float32(b2.f), "1.2621775E-29"));
+    }
 
     LyricString* t = lyric_string_from_bool(1);
     CHECK(memcmp(LYRIC_STRING_DATA(t), "true", 4) == 0);
@@ -1025,11 +1078,6 @@ static int stdin_from_pipe(int* write_end) {
     close(fds[0]);
     *write_end = fds[1];
     return saved;
-}
-
-static int string_is(LyricString* s, const char* want) {
-    size_t n = strlen(want);
-    return lyric_string_len(s) == (int64_t)n && memcmp(LYRIC_STRING_DATA(s), want, n) == 0;
 }
 
 static void test_stdin_lines_and_bytes(void) {

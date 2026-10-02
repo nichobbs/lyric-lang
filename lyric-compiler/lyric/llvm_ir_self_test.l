@@ -53,9 +53,9 @@ test "operands render" {
 
 test "float literals render as exact hex bits" {
   // 1.0 = 0x3FF0000000000000; 0.0 = all zeroes; -2.0 = 0xC000000000000000
-  assertEqual(nValueOperandString(NLitFloat(v = 1.0)), "0x3FF0000000000000", "1.0")
-  assertEqual(nValueOperandString(NLitFloat(v = 0.0)), "0x0000000000000000", "0.0")
-  assertEqual(nValueOperandString(NLitFloat(v = -2.0)), "0xC000000000000000", "-2.0")
+  assertEqual(nValueOperandString(NLitFloat(v = 1.0, ty = NDouble)), "0x3FF0000000000000", "1.0")
+  assertEqual(nValueOperandString(NLitFloat(v = 0.0, ty = NDouble)), "0x0000000000000000", "0.0")
+  assertEqual(nValueOperandString(NLitFloat(v = -2.0, ty = NDouble)), "0xC000000000000000", "-2.0")
 }
 
 test "identifiers quote only when needed" {
@@ -97,12 +97,12 @@ test "arithmetic and comparison render" {
     "icmp slt"
   )
   assertEqual(
-    emitInsn(NFCmp(dest = "c", pred = FOeq, a = NLocal(name = "x"), b = NLocal(name = "y"))),
+    emitInsn(NFCmp(dest = "c", pred = FOeq, ty = NDouble, a = NLocal(name = "x"), b = NLocal(name = "y"))),
     "  %c = fcmp oeq double %x, %y",
     "fcmp oeq"
   )
   assertEqual(
-    emitInsn(NFAdd(dest = "s", a = NLocal(name = "x"), b = NLocal(name = "y"))),
+    emitInsn(NFAdd(dest = "s", ty = NDouble, a = NLocal(name = "x"), b = NLocal(name = "y"))),
     "  %s = fadd double %x, %y",
     "fadd"
   )

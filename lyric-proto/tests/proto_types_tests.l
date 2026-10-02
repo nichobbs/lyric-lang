@@ -189,19 +189,10 @@ test "Fix64Field round-trips through encode/decode" {
 // Convenience-constructor coverage (#3383): doubleField builds a Fix64 field,
 // so it round-trips through findFixed64.
 //
-// floatField's round-trip (#5704): `floatToInt32Bits` used to declare a
-// `SingleToInt32Bits(Float)` extern directly, which erases to a
-// `(double) -> int32` signature matching no real BCL overload; fixed by
-// narrowing through a real `Single` first (`dblToSingle` +
-// `singleToInt32Bits`, mirroring `Msil.Kernel.bufF4Le`'s idiom).  Asserted
-// against `3.14159f32`'s known IEEE-754 binary32 bit pattern (`0x40490fd0`)
-// rather than `doubleToInt32Bits(3.14159)` — the latter would assert the
-// (wrong) binary64-truncated bits, defeating the point of the round-trip.
-// `3.14159` is deliberately NOT exactly representable in either binary32 or
-// binary64 (review feedback on PR #7169), so this exercises the actual
-// `Convert.ToSingle` double->single rounding path `dblToSingle` performs —
-// an exactly-representable value like `2.5` would pass even if the
-// narrowing conversion were silently skipped.
+// floatField's round-trip (#5704): asserted against `3.14159f32`'s IEEE 754
+// binary32 bit pattern (`0x40490fd0`).  `3.14159` is exactly representable in
+// neither binary32 nor binary64, so the bits would differ if the value were
+// carried as a `Double` anywhere on the way to `SingleToInt32Bits`.
 test "floatField round-trips through Fix32 and decodes to the true binary32 bits" {
   val bytes = encodeMessage([floatField(7, 3.14159f32)])
   match decodeMessage(bytes) {

@@ -306,7 +306,7 @@ The string after `=` is the C symbol. The `@library` argument is the library's b
 
 Each target calls the symbol its own way. On .NET the declaration becomes a P/Invoke method. On the JVM it becomes a call through the Foreign Function & Memory API, which needs **JDK 22 or later** to run; the handle is looked up on the first call, so a missing library fails at that call rather than when your program starts. On `--target native` the symbol is called directly and the library is linked in.
 
-Only simple values cross the call: `Int`, `Long`, `Byte`, `Double` and `NativePtr[T]`, with `Unit` allowed as a result (error T0151 otherwise; `Float` is not supported yet). A `NativePtr[T]` is an opaque address. Code that holds one must be an `@unsafe_ffi` function (N0100), the same rule as on the native target:
+Only simple values cross the call: `Int`, `Long`, `Byte`, `Float` (a C `float`), `Double` and `NativePtr[T]`, with `Unit` allowed as a result (error T0151 otherwise). A `NativePtr[T]` is an opaque address. Code that holds one must be an `@unsafe_ffi` function (N0100), the same rule as on the native target:
 
 ```lyric
 @library("c")

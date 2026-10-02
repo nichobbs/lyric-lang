@@ -8,6 +8,7 @@ import Std.Core
 import Std.Collections
 import Std.String
 import Lyric.Parser
+import Lyric.Lexer as Lex
 import Jvm.Classfile
 import Jvm.Lowering
 import Jvm.AutoFfi
@@ -1430,6 +1431,46 @@ func isRefJvm(ty: in JvmType): Bool {
   }
 }
 
+// The value a float literal pattern denotes against a `Float` scrutinee: the
+// literal rounded to binary32 (D155).
+func floatPatternValueJvm(v: in Double, sfx: in FloatSuffix, raw: in String): Double {
+  match sfx {
+    case F32 -> v
+    case _ -> Lex.float32LiteralValue(raw, v)
+  }
+}
+
+// A float literal range bound, possibly negated or parenthesised, as its
+// binary32 value; `None` for any other bound expression.
+func floatRangeBoundValueJvm(e: in Expr): Option[Double] {
+  match e.kind {
+    case ELiteral(lit) -> match lit {
+      case LFloat(v, sfx, raw) -> Some(value = floatPatternValueJvm(v, sfx, raw))
+      case _ -> None
+    }
+    case EParen(inner) -> floatRangeBoundValueJvm(inner)
+    case EPrefix(op, inner) -> match op {
+      case PreNeg -> match floatRangeBoundValueJvm(inner) {
+        case Some(fv) -> Some(value = 0.0 - fv)
+        case None -> None
+      }
+      case _ -> None
+    }
+    case _ -> None
+  }
+}
+
+// Push one bound of a range pattern over a `Float` scrutinee as a `float`.
+func lowerFloatRangeBoundJvm(ctx: in FuncCtx, insns: in List[LInsn], bound: in Expr): Unit {
+  match floatRangeBoundValueJvm(bound) {
+    case Some(fv) -> insns.add(LFconst(v = fv))
+    case None -> {
+      val bTy = lowerExpr(ctx, insns, bound)
+      coerceArgTo(insns, bTy, JFloat)
+    }
+  }
+}
+
 // The numeric width an integer/float literal denotes — used to pick the
 // comparison and (un)box width for a `PRange` whose scrutinee is erased.
 func rangeBoundTypeJvm(e: in Expr): JvmType {
@@ -1437,7 +1478,7 @@ func rangeBoundTypeJvm(e: in Expr): JvmType {
     case ELiteral(lit) -> {
       match lit {
         case LInt(_, suffix, _) -> match suffix { case I64 -> JLong; case U64 -> JLong; case _ -> JInt }
-        case LFloat(_, _, _) -> JDouble
+        case LFloat(_, sfx, _) -> match sfx { case F32 -> JFloat; case _ -> JDouble }
         case _ -> JInt
       }
     }
@@ -1452,7 +1493,7 @@ func rangeNumericTypeJvm(scrutTy: in JvmType, lo: in Expr): JvmType {
   match scrutTy {
     case JLong -> JLong
     case JDouble -> JDouble
-    case JFloat -> JDouble
+    case JFloat -> JFloat
     case JInt -> JInt
     case JByte -> JInt
     case JChar -> JInt
@@ -1791,14 +1832,26 @@ func lowerPatternTest(
           insns.add(LIconst(v = cp))
           insns.add(LIfIcmpne(label = failLabel))
         }
-        case LFloat(fv, _, _) -> {
+        case LFloat(fv, fsfx, fraw) -> {
+          // Against a `Float` scrutinee the literal is the nearest `Float`
+          // (D155), so `case 0.1` matches `0.1f32`.
+          val patIsFloat = match numHint { case JFloat -> true; case _ -> match fsfx { case F32 -> true; case _ -> false } }
           emitLoad(insns, scrutSlot, scrutTy)
-          if scrutIsRef {
-            insns.add(LCheckcast(className = "java/lang/Double"))
-            insns.add(LUnboxDouble)
+          if patIsFloat {
+            if scrutIsRef {
+              insns.add(LCheckcast(className = "java/lang/Float"))
+              insns.add(LUnboxFloat)
+            }
+            insns.add(LFconst(v = floatPatternValueJvm(fv, fsfx, fraw)))
+            insns.add(LFcmpl)
+          } else {
+            if scrutIsRef {
+              insns.add(LCheckcast(className = "java/lang/Double"))
+              insns.add(LUnboxDouble)
+            }
+            insns.add(LDconst(v = fv))
+            insns.add(LDcmpl)
           }
-          insns.add(LDconst(v = fv))
-          insns.add(LDcmpl)
           insns.add(LIfne(label = failLabel))
         }
         case LString(s) -> {
@@ -1844,6 +1897,24 @@ func lowerPatternTest(
           val hiTy = lowerExpr(ctx, insns, hi)
           coerceArgTo(insns, hiTy, JLong)
           insns.add(LLcmp)
+          if inclusive {
+            insns.add(LIfgt(label = failLabel))
+          } else {
+            insns.add(LIfge(label = failLabel))
+          }
+        }
+        // A `Float` range compares in binary32 against bounds rounded to the
+        // nearest `Float` (D155).
+        case JFloat -> {
+          emitLoad(insns, scrutSlot, scrutTy)
+          coerceArgTo(insns, scrutTy, JFloat)
+          lowerFloatRangeBoundJvm(ctx, insns, lo)
+          insns.add(LFcmpl)
+          insns.add(LIflt(label = failLabel))
+          emitLoad(insns, scrutSlot, scrutTy)
+          coerceArgTo(insns, scrutTy, JFloat)
+          lowerFloatRangeBoundJvm(ctx, insns, hi)
+          insns.add(LFcmpl)
           if inclusive {
             insns.add(LIfgt(label = failLabel))
           } else {

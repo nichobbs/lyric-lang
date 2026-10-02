@@ -6712,17 +6712,18 @@ test "qualified function value prefers the imported package among same-suffix pa
   )
 }
 
-// A call through a function value converts only the widenings it has a
-// conversion for; a `Float` has none (#2050), so it is rejected rather than
-// passed boxed as a `Float` (D-progress-964).  A widening to `ULong` converts
-// with `.toULong()` (#7805), one to `UInt` with `.toUInt()` (#7812).
-test "function-value call converts unsigned widenings and rejects a Float argument" {
+// A call through a function value carries out each widening with a
+// conversion method (D-progress-964): `.toULong()` for a widening to `ULong`
+// (#7805), `.toUInt()` to `UInt` (#7812), and `.toDouble()` for a `Float`
+// argument to a `Double` parameter (D155; before that, `Float` had no
+// conversion methods and the call was T0043).
+test "function-value call converts unsigned and Float widenings" {
   val okU = "package P\npub func g(f: (UInt) -> UInt, b: in Byte): UInt {\n  f(b)\n}\n"
   assertEqualInt(diagCount(parseCheck(okU)), 0, "Byte into a (UInt) -> UInt value widens")
   val okL = "package P\npub func g(f: (ULong) -> ULong, b: in Byte, u: in UInt): ULong {\n  f(b) + f(u)\n}\n"
   assertEqualInt(diagCount(parseCheck(okL)), 0, "Byte and UInt into a (ULong) -> ULong value widen")
-  val badF = "package P\npub func g(f: (Double) -> Double, x: in Float): Double {\n  f(x)\n}\n"
-  assertTrue(hasDiagCode(parseCheck(badF), "T0043"), "Float into a (Double) -> Double value is T0043")
+  val okF = "package P\npub func g(f: (Double) -> Double, x: in Float): Double {\n  f(x)\n}\n"
+  assertEqualInt(diagCount(parseCheck(okF)), 0, "Float into a (Double) -> Double value widens")
   val ok = "package P\npub func g(f: (Long) -> Long, i: in Int): Long {\n  f(i)\n}\n"
   assertEqualInt(diagCount(parseCheck(ok)), 0, "Int into a (Long) -> Long value still widens")
 }
@@ -8963,8 +8964,8 @@ test "a type that cannot cross a C binding is T0151 (D158)" {
     "@library(\"c\")\nextern func k(x: Float): Float = \"k\"\n"
   assertEqualInt(
     countDiagCode(parseCheck(src), "T0151"),
-    4,
-    "String, Bool and Float parameters and a Float result; Unit and Double results are fine"
+    2,
+    "String and Bool parameters; Unit, Double and Float results and a Float parameter are fine (#7966)"
   )
 }
 
