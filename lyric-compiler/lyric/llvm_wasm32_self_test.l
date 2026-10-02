@@ -124,7 +124,9 @@ test "wasm32: Float is binary32 and renders with .NET's shortest round-trip rule
     "package T\n" + "import Std.Console\n" + "func main(): Int {\n" + "  val a: Float = 0.1\n" +
       "  val b: Float = 0.2\n" +
       "  println((a + b).toString())\n" +
-      "  println((1.0 / 3.0).toString())\n" +
+      "  val c: Float = 1.0\n" +
+      "  val d: Float = 3.0\n" +
+      "  println((c / d).toString())\n" +
       "  0\n" +
       "}\n"
   )
