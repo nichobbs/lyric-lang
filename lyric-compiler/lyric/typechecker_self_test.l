@@ -10040,4 +10040,73 @@ test "== on a union, tuple or option that holds an array is built element by ele
   assertEqualInt(cr.symbols.wrapEqSites.count, 2, "both comparisons are recorded")
   val fns = "package P\nfunc f(p: in (array[2, (Int) -> Int], Int), q: in (array[2, (Int) -> Int], Int)): Bool { p == q }\n"
   assertEqualInt(countDiagCode(parseCheck(fns), "T0153"), 1, "a function inside is still T0153")
+
+// #7828: a method call that leaves out a defaulted argument records the
+// parameter count of the overload it resolved to, so every backend binds the
+// same overload; an overload taking exactly the written arguments wins over
+// one that fills the rest from defaults, as for a free function.
+func recordedArities(cr: in CheckResult): List[Int] {
+  val acc: List[Int] = newList()
+  for k in mapKeys(cr.symbols.methodCallArities) {
+    match mapGet(cr.symbols.methodCallArities, k) {
+      case Some(n) -> acc.add(n)
+      case None -> ()
+    }
+  }
+  acc
+}
+
+test "a method call omitting a default records the resolved overload's arity (#7828)" {
+  val exactSrc = "package P\nrecord O {\n  n: Int\n  func m(self: in O, x: in Int, y: in Int = 2): Int { x + y }\n" +
+    "  func m(self: in O, x: in Int): Int { x }\n}\nfunc g(o: in O): Int { o.m(1) }\n"
+  val exact = parseCheck(exactSrc)
+  assertEqualInt(diagCount(exact), 0, "clean: " + diagCodesOf(exact))
+  assertEqualInt(recordedArities(exact).count, 0, "o.m(1) resolves to m(x), which takes exactly the written argument")
+  val typedSrc = "package P\nrecord O {\n  n: Int\n  func m(self: in O, x: in String): Int { 0 }\n" +
+    "  func m(self: in O, x: in Int, y: in Int = 2): Int { x + y }\n" +
+    "  func viaSibling(self: in O): Int { m(1) }\n}\nfunc g(o: in O): Int { o.m(1) }\n"
+  val typed = parseCheck(typedSrc)
+  assertEqualInt(diagCount(typed), 0, "clean: " + diagCodesOf(typed))
+  val ar = recordedArities(typed)
+  assertEqualInt(ar.count, 2, "o.m(1) and the bare m(1) both resolve past m(x: String)")
+  assertEqualInt(ar[0], 2, "the resolved overload takes two parameters")
+  assertEqualInt(ar[1], 2, "the resolved overload takes two parameters")
+}
+
+// #7828: an impl method whose default differs from the interface member's,
+// or which only one of the two declares, is T0155 (a warning) at the impl
+// method's parameter; equal defaults are not.
+func ifaceDefaultSrc(ifaceParam: in String, implParam: in String): String {
+  "package P\ninterface Shape {\n  func area(self: in Self, " + ifaceParam + "): Int\n" +
+    "  func label(self: in Self, p: in String = \"s\"): String { p }\n}\n" +
+    "record Sq { s: Int }\nimpl Shape for Sq {\n  func area(self: in Sq, " +
+    implParam +
+    "): Int { self.s * k }\n}\n"
+}
+
+test "an impl default that differs from the interface's is T0155 (#7828)" {
+  val differ = parseCheck(ifaceDefaultSrc("k: in Int = 2", "k: in Int = 3"))
+  assertEqualInt(countDiagCode(differ, "T0155"), 1, "different defaults: " + diagCodesOf(differ))
+  assertEqualInt(diagCount(differ), 1, "a warning only")
+  assertTrue(diagMessagesContain(differ, "has a different default from the one interface 'Shape' declares"), "message")
+  val implOnly = parseCheck(ifaceDefaultSrc("k: in Int", "k: in Int = 3"))
+  assertEqualInt(countDiagCode(implOnly, "T0155"), 1, "only the impl declares one: " + diagCodesOf(implOnly))
+  assertTrue(diagMessagesContain(implOnly, "has a default that interface 'Shape' does not declare"), "message")
+  val ifaceOnly = parseCheck(ifaceDefaultSrc("k: in Int = 2", "k: in Int"))
+  assertEqualInt(countDiagCode(ifaceOnly, "T0155"), 1, "only the interface declares one: " + diagCodesOf(ifaceOnly))
+  assertTrue(diagMessagesContain(ifaceOnly, "has no default, but interface 'Shape' declares one"), "message")
+  val same = parseCheck(ifaceDefaultSrc("k: in Int = (1 + 1)", "k: in Int = 1 + 1"))
+  assertEqualInt(countDiagCode(same, "T0155"), 0, "the same default written alike: " + diagCodesOf(same))
+  val none = parseCheck(ifaceDefaultSrc("k: in Int", "k: in Int"))
+  assertEqualInt(diagCount(none), 0, "no defaults at all: " + diagCodesOf(none))
+}
+
+test "an impl overriding an interface default method with another default is T0155 (#7828)" {
+  val src = "package P\ninterface Shape {\n  func label(self: in Self, p: in String = \"s\"): String { p }\n}\n" +
+    "record Sq { s: Int }\nimpl Shape for Sq {\n  func label(self: in Sq, p: in String = \"q\"): String { p }\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0155"), 1, "overridden default method: " + diagCodesOf(cr))
+  val sameSrc = "package P\ninterface Shape {\n  func label(self: in Self, p: in String = \"s\"): String { p }\n}\n" +
+    "record Sq { s: Int }\nimpl Shape for Sq {\n  func label(self: in Sq, p: in String = \"s\"): String { p }\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(sameSrc), "T0155"), 0, "the same default")
 }

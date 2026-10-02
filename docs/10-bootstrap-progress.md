@@ -131,7 +131,10 @@ deferred to Phase 3 by design.
   record, `impl`, interface, protected or dot-named method that omits a
   defaulted argument splices the default on both targets, with arguments
   paired as the type checker pairs them (#7820;
-  `docs/progress/2026-09-30-method-default-args.md`).
+  `docs/progress/2026-09-30-method-default-args.md`), and binds the
+  overload the type checker resolved on every target; an `impl` default
+  that differs from the interface's is warned about (T0155) (#7828;
+  `docs/progress/2026-10-02-method-overload-default-dispatch.md`).
 
 ### Phase 5 — self-hosting
 

@@ -138,6 +138,12 @@ pub record MiddleEndOptions {
   /// receiver it sees as `Object` with it (#7378).  Backends that keep
   /// generic types pass a map and ignore it.
   memberRecvClassesOut: Map[String, String]
+  /// Receives the type checker's `methodCallArities` for the file (callee
+  /// `methodCallSiteKey` -> the resolved method's parameter count, for each
+  /// method call that leaves out a defaulted argument).  Every backend looks
+  /// a method's overloads up by this count, so the call binds to the
+  /// overload the checker resolved (#7828).
+  methodCallAritiesOut: Map[String, Int]
   /// Why this package may not do I/O, from the manifest's `[layers]`
   /// (docs/65 §5, D149): "layer 'logic'" for a package in a layer whose
   /// rule does not allow `io`, "" otherwise.  A package-level `@pure` has
@@ -624,6 +630,12 @@ pub func pipeCheckAndMono(
           opts.memberRecvClassesOut.add(rk, cls)
         }
       }
+      case None -> ()
+    }
+  }
+  for ak in mapKeys(tcRes.symbols.methodCallArities) {
+    match mapGet(tcRes.symbols.methodCallArities, ak) {
+      case Some(n) -> if not opts.methodCallAritiesOut.containsKey(ak) { opts.methodCallAritiesOut.add(ak, n) }
       case None -> ()
     }
   }

@@ -385,6 +385,7 @@ pub func compileToJar(
   // hazard does not apply here, so it must never fire on this target.
   val optsCheckedOut: List[SourceFile] = newList()
   val recvClasses: Map[String, String] = newMap()
+  val callArities: Map[String, Int] = newMap()
   val opts = MiddleEndOptions(
     tcFatal = true,
     tcReport = false,
@@ -396,6 +397,7 @@ pub func compileToJar(
     contractsEnabled = true,
     checkedSourceOut = optsCheckedOut,
     memberRecvClassesOut = recvClasses,
+    methodCallAritiesOut = callArities,
     arraysAsLists = true
   )
   val file = match pipeMiddleEnd(file0, importedPkgs, noDeriveImports, allMonoFuncs, pipeInterfaceDecls(importedItems), pipeRecordDecls(importedItems), noTemplates, opts, None) {
@@ -404,7 +406,7 @@ pub func compileToJar(
   }
 
   val noSeed: Map[String, String] = newMap()
-  val pkg = codegenPackage(file, withRecvClasses(noSeed, recvClasses))
+  val pkg = codegenPackage(file, withRecvClasses(noSeed, recvClasses, callArities))
   val pool = poolNew()
   val classFiles = lowerPackage(pkg, pool)
 
@@ -532,6 +534,7 @@ func runMiddleEnd(
   lineOrigins: in List[DiagUtil.MergedLineOrigin],
   checkedOut: in List[SourceFile],
   recvClassesOut: in Map[String, String],
+  aritiesOut: in Map[String, Int],
   typeIndex: in Option[Weaver.TypeOwnerIndex],
   ioForbiddenReason: in String,
   contractsEnabled: in Bool = true,
@@ -549,6 +552,7 @@ func runMiddleEnd(
     contractsEnabled = contractsEnabled,
     checkedSourceOut = checkedOut,
     memberRecvClassesOut = recvClassesOut,
+    methodCallAritiesOut = aritiesOut,
     arraysAsLists = true,
     ioForbiddenReason = ioForbiddenReason
   )
@@ -746,9 +750,14 @@ func collectStdlibNonGenericFuncsJvm(files: in List[SourceFile]): List[FunctionD
 // `seed` plus the type checker's field-access receiver classes for the file
 // being generated, as `~recv~<span key>` -> JVM class (`Ui/Host/SessionEntry`).
 // `Jvm.Codegen.narrowErasedReceiverJvm` reads them; the `~` prefix keeps them
-// out of every type-name lookup (#7378).
-func withRecvClasses(seed: in Map[String, String], recvClasses: in Map[String, String]): Map[String, String] {
-  if recvClasses.count == 0 {
+// out of every type-name lookup (#7378).  Also the parameter count of the
+// method each call leaving out a defaulted argument resolved to, as
+// `~arity~<methodCallSiteKey>` -> count (`Jvm.Codegen.methodCallArityJvm`,
+// #7828).
+func withRecvClasses(
+  seed: in Map[String, String], recvClasses: in Map[String, String], arities: in Map[String, Int]
+): Map[String, String] {
+  if recvClasses.count == 0 and arities.count == 0 {
     return seed
   }
   val merged: Map[String, String] = newMap()
@@ -761,6 +770,12 @@ func withRecvClasses(seed: in Map[String, String], recvClasses: in Map[String, S
   for rk in mapKeys(recvClasses) {
     match mapGet(recvClasses, rk) {
       case Some(dotted) -> merged.add("~recv~" + rk, dotted.replace(".", "/"))
+      case None -> ()
+    }
+  }
+  for ak in mapKeys(arities) {
+    match mapGet(arities, ak) {
+      case Some(n) -> merged.add("~arity~" + ak, toString(n))
       case None -> ()
     }
   }
@@ -3402,7 +3417,8 @@ pub func compileProjectToJarBundledWithRestored(
   // generic bodies from it (see `MiddleEndOptions.checkedSourceOut`).
   val userChecked: List[SourceFile] = newList()
   val userRecvClasses: Map[String, String] = newMap()
-  match runMiddleEnd(arrayTypedOrSelf(arrayTypedByPkg, userFile), importedPkgs, allMonoFuncs, allTemplates, true, userPkgLabel, userPkgOrigins, userChecked, userRecvClasses, Some(value = weaveTypeIndex), unwrapOr(mapGet(ioForbiddenByPkg, userEntryPkgName), ""), contractsEnabled) {
+  val userCallArities: Map[String, Int] = newMap()
+  match runMiddleEnd(arrayTypedOrSelf(arrayTypedByPkg, userFile), importedPkgs, allMonoFuncs, allTemplates, true, userPkgLabel, userPkgOrigins, userChecked, userRecvClasses, userCallArities, Some(value = weaveTypeIndex), unwrapOr(mapGet(ioForbiddenByPkg, userEntryPkgName), ""), contractsEnabled) {
     case Some(f) -> {
       // Register sigs synthesised by `deriveFile` (inside `runMiddleEnd`) so
       // that call-site resolution in `codegenPackageInto` can find them.  The
@@ -3487,7 +3503,8 @@ pub func compileProjectToJarBundledWithRestored(
         allClasses,
         withRecvClasses(
           externSeedForFileCached(f, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache),
-          userRecvClasses
+          userRecvClasses,
+          userCallArities
         ),
         userFileName,
         unsafeFieldLockNames
@@ -3548,11 +3565,12 @@ pub func compileProjectToJarBundledWithRestored(
     val ok = try {
       val siblingChecked: List[SourceFile] = newList()
       val siblingRecvClasses: Map[String, String] = newMap()
+      val siblingCallArities: Map[String, Int] = newMap()
       // Stdlib contracts are always enabled (#7748);
       // stdlib authors' contracts run in all cases. Project packages respect
       // the manifest [contracts] enabled setting.
       val pkgContractsEnabled = if isProjectPkg { contractsEnabled } else { true }
-      match runMiddleEnd(arrayTypedOrSelf(arrayTypedByPkg, f), importedPkgs, allMonoFuncs, allTemplates, isProjectPkg, siblingPkgLabel, siblingPkgOrigins, siblingChecked, siblingRecvClasses, Some(value = weaveTypeIndex), if isProjectPkg { unwrapOr(mapGet(ioForbiddenByPkg, pkgName), "") } else { "" }, pkgContractsEnabled) {
+      match runMiddleEnd(arrayTypedOrSelf(arrayTypedByPkg, f), importedPkgs, allMonoFuncs, allTemplates, isProjectPkg, siblingPkgLabel, siblingPkgOrigins, siblingChecked, siblingRecvClasses, siblingCallArities, Some(value = weaveTypeIndex), if isProjectPkg { unwrapOr(mapGet(ioForbiddenByPkg, pkgName), "") } else { "" }, pkgContractsEnabled) {
         case Some(ff) -> {
           // #7502: register THIS bundled/sibling package's own
           // derive-synthesised free functions (`Point.fromJson`, `Point.
@@ -3620,7 +3638,8 @@ pub func compileProjectToJarBundledWithRestored(
             allClasses,
             withRecvClasses(
               externSeedForFileCached(ff, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache),
-              siblingRecvClasses
+              siblingRecvClasses,
+              siblingCallArities
             ),
             bundledFileName,
             unsafeFieldLockNames

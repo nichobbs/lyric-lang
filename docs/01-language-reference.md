@@ -1241,7 +1241,19 @@ with them; a call on the concrete type (`sq.area()` where `sq: Square`)
 takes the `impl` method's own defaults. The two may differ, and neither is
 inherited by the other: an `impl` method that omits a default the interface
 member declares requires the argument on a concrete-typed call. Declaring
-the same default in both places keeps the two call forms equivalent.
+the same default in both places keeps the two call forms equivalent. When
+an `impl` method's parameter has a different default from the interface
+member's, or only one of the two declares a default, the compiler warns at
+the `impl` method's parameter (**T0155**, a warning): defaults count as the
+same when they are written alike, ignoring parentheses (#7828).
+
+When a type has several methods of one name, a method call binds to the
+overload the type checker selects: among the overloads whose parameters
+accept the arguments, one taking exactly the arguments written is preferred
+over one that fills omitted arguments from defaults, as for a free function;
+otherwise the first declared applies. Every backend dispatches the call to
+that overload, so with `m(x: String)` and `m(x: Int, y: Int = 2)`, `o.m(1)`
+calls the second on every target (#7828).
 
 Field-style access `x.name` (no call parens) to a name that exists **only**
 as a D037 dot-named (UFCS) function — never as a real record/union field — is

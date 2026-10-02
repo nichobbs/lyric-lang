@@ -1920,6 +1920,9 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
                 )
               )
               case Some(fn) -> {
+                if fn.params.count == sig.params.count {
+                  reportImplDefaultMismatches(diag, ifaceName, sig.name, sig.params, fn.params)
+                }
                 if fn.params.count != sig.params.count {
                   diag.add(
                     errorDiagnostic(
@@ -1978,12 +1981,175 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
               }
             }
           }
+          // An `impl` method overriding an interface default method.
+          case IMFunc(ifn) -> match findImplMethod(decl, ifn.name) {
+            case Some(fn) -> if fn.params.count == ifn.params.count {
+              reportImplDefaultMismatches(diag, ifaceName, ifn.name, ifn.params, fn.params)
+            }
+            case None -> ()
+          }
           case _ -> {
           }
         }
         i = i + 1
       }
     }
+  }
+}
+
+// T0155 (warning): a parameter of an `impl` method whose default is not the
+// one the interface member declares for it, or which only one of the two
+// gives a default.  A call takes the defaults of the declaration it resolves
+// through (docs/01 §"Default arguments"), so a call through the interface
+// type and a call on the concrete type would fill the argument differently
+// (#7828).  `ifaceParams` and `implParams` have the same count.
+func reportImplDefaultMismatches(
+  diag: in List[Diagnostic],
+  ifaceName: in String,
+  methodName: in String,
+  ifaceParams: in List[Param],
+  implParams: in List[Param],
+): Unit {
+  var i = 0
+  while i < implParams.count {
+    val ip = ifaceParams[i]
+    val mp = implParams[i]
+    val subject = "parameter '" + mp.name + "' of impl method '" + methodName + "'"
+    val through = "a call on a value of interface type '" + ifaceName + "'"
+    val why = match ip.dflt {
+      case Some(ie) -> match mp.dflt {
+        case Some(me) -> if sameDefaultExpr(ie, me) {
+          ""
+        } else {
+          subject + " has a different default from the one interface '" + ifaceName + "' declares; " + through +
+            " uses the interface's default and a call on the implementing type uses this one"
+        }
+        case None -> subject + " has no default, but interface '" + ifaceName +
+          "' declares one; " +
+          through +
+          " uses the interface's default and a call on the implementing type must pass the argument"
+      }
+      case None -> match mp.dflt {
+        case Some(_) -> subject + " has a default that interface '" + ifaceName +
+          "' does not declare; " +
+          through +
+          " must pass the argument and a call on the implementing type uses this default"
+        case None -> ""
+      }
+    }
+    if why.length > 0 {
+      diag.add(warningDiagnostic("T0155", why + " (declare the same default in both)", mp.span))
+    }
+    i = i + 1
+  }
+}
+
+// True when two default expressions are written the same way, ignoring
+// spans and parentheses: literals by value, names by their spelling, and
+// calls, members, operators, tuples and lists by their parts.  Any other
+// form counts as different.
+func sameDefaultExpr(a: in Expr, b: in Expr): Bool {
+  val x = stripExprParens(a)
+  val y = stripExprParens(b)
+  match x.kind {
+    case ELiteral(la) -> match y.kind { case ELiteral(lb) -> sameLiteral(la, lb); case _ -> false }
+    case EPath(pa) -> match y.kind { case EPath(pb) -> sameSegments(pa.segments, pb.segments); case _ -> false }
+    case EMember(ra, na) -> match y.kind {
+      case EMember(rb, nb) -> na == nb and sameDefaultExpr(ra, rb)
+      case _ -> false
+    }
+    case EPrefix(oa, ea) -> match y.kind {
+      case EPrefix(ob, eb) -> oa == ob and sameDefaultExpr(ea, eb)
+      case _ -> false
+    }
+    case EBinop(oa, la2, ra2) -> match y.kind {
+      case EBinop(ob, lb2, rb2) -> oa == ob and sameDefaultExpr(la2, lb2) and
+        sameDefaultExpr(ra2, rb2)
+      case _ -> false
+    }
+    case ETuple(xs) -> match y.kind { case ETuple(ys) -> sameDefaultExprs(xs, ys); case _ -> false }
+    case EList(xs) -> match y.kind { case EList(ys) -> sameDefaultExprs(xs, ys); case _ -> false }
+    case ECall(fa, aa) -> match y.kind {
+      case ECall(fb, ab) -> sameDefaultExpr(fa, fb) and sameCallArgs(aa, ab)
+      case _ -> false
+    }
+    case _ -> false
+  }
+}
+
+func sameDefaultExprs(xs: in List[Expr], ys: in List[Expr]): Bool {
+  if xs.count != ys.count {
+    return false
+  }
+  var i = 0
+  while i < xs.count {
+    if not sameDefaultExpr(xs[i], ys[i]) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+func sameCallArgs(xs: in List[CallArg], ys: in List[CallArg]): Bool {
+  if xs.count != ys.count {
+    return false
+  }
+  var i = 0
+  while i < xs.count {
+    val same = match xs[i] {
+      case CAPositional(ea) -> match ys[i] {
+        case CAPositional(eb) -> sameDefaultExpr(ea, eb)
+        case _ -> false
+      }
+      case CANamed(na, ea, _) -> match ys[i] {
+        case CANamed(nb, eb, _) -> na == nb and sameDefaultExpr(ea, eb)
+        case _ -> false
+      }
+    }
+    if not same {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+func sameSegments(xs: in List[String], ys: in List[String]): Bool {
+  if xs.count != ys.count {
+    return false
+  }
+  var i = 0
+  while i < xs.count {
+    if xs[i] != ys[i] {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+func sameLiteral(a: in Literal, b: in Literal): Bool {
+  match a {
+    case LInt(va, sa, _) -> match b { case LInt(vb, sb, _) -> va == vb and sa == sb; case _ -> false }
+    case LFloat(va, sa, _) -> match b { case LFloat(vb, sb, _) -> va == vb and sa == sb; case _ -> false }
+    case LChar(ca) -> match b { case LChar(cb) -> ca == cb; case _ -> false }
+    case LBool(ba) -> match b { case LBool(bb) -> ba == bb; case _ -> false }
+    case LUnit -> match b { case LUnit -> true; case _ -> false }
+    case _ -> match literalText(a) {
+      case Some(ta) -> match literalText(b) { case Some(tb) -> ta == tb; case None -> false }
+      case None -> false
+    }
+  }
+}
+
+// The text of a string literal of any spelling.
+func literalText(l: in Literal): Option[String] {
+  match l {
+    case LString(t) -> Some(value = t)
+    case LTripleString(t) -> Some(value = t)
+    case LRawString(t) -> Some(value = t)
+    case _ -> None
   }
 }
 

@@ -181,7 +181,23 @@ func demo(): Unit {
 
 The rule is the same for every kind of call — free functions, record and `impl` methods, interface members, protected-type entries: named arguments go to the parameters they name, positional arguments fill the rest in order, and anything still missing takes its default. Leaving out a parameter that has no default, naming a parameter that does not exist, or giving a parameter twice (`connect(host = "a", host = "b")`, or `connect("db", host = "x")`, where the positional `"db"` already supplied `host`) is a compile-time error (`T0042`).
 
-A default belongs to the declaration the call resolves through. Calling a method on an interface-typed value uses the interface's defaults; calling it on the concrete type uses the `impl` method's. Declare the same default in both places if the two calls should behave alike.
+A default belongs to the declaration the call resolves through. Calling a method on an interface-typed value uses the interface's defaults; calling it on the concrete type uses the `impl` method's. Declare the same default in both places if the two calls should behave alike; the compiler warns (`T0155`) at an `impl` method parameter whose default differs from the interface's, or where only one of the two has a default.
+
+When a type has several methods of the same name, an overload that takes exactly the arguments you wrote is preferred over one that would fill the rest from defaults:
+
+```lyric
+record Shelf {
+  n: Int
+
+  func put(self: in Shelf, label: in String): Int { 1 }
+  func put(self: in Shelf, slot: in Int, depth: in Int = 0): Int { 2 }
+}
+
+func demoShelf(s: in Shelf): Unit {
+  println(toString(s.put("a")))  // 1
+  println(toString(s.put(3)))    // 2: put(slot, depth = 0), the only one that accepts an Int
+}
+```
 
 ## Closures and lambdas
 

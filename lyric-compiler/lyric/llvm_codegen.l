@@ -127,6 +127,9 @@ pub record CodegenUnit {
   // Whether this package's own source file has `import Std.String` in
   // scope (#6588 review follow-up, #6752) — see `Ctx.pkgImportsStdString`.
   importsStdString: Bool
+  // The type checker's `methodCallArities` for this package's file (empty
+  // for a bundled package): see `Ctx.methodCallArities` (#7828).
+  methodCallArities: Map[String, Int]
 }
 
 /// A module-level `val`/`const` binding, normalized for native inlining
@@ -364,6 +367,11 @@ record Ctx {
   // `Option[Int]` UFCS form (`Lyric.TypeChecker.stringIndexOfMember`) is
   // never shadowed by the raw `Int`-returning runtime intrinsic.
   pkgImportsStdString: Map[String, Bool]
+  // The parameter count of the method each call leaving out a defaulted
+  // argument resolved to, keyed `<pkg>|<methodCallSiteKey>` (each unit's
+  // `methodCallArities` under its package): a method call looks its
+  // overload up by this count rather than by the arguments written (#7828).
+  methodCallArities: Map[String, Int]
   // Package the function being lowered belongs to (self-package call
   // resolution).
   curPkg: List[String]
@@ -3568,7 +3576,8 @@ func lowerCallArgsWithReceiver(
     panic(
       "Lyric.LlvmCodegen: method call to '" + sig.irName + "' passes " + (args.count + 1).toString() +
         " argument(s) (incl. receiver) but the declaration has " +
-        sig.paramTys.count.toString()
+        sig.paramTys.count.toString() +
+        " (default arguments are not yet supported for --target native, #7985)"
     )
   }
   val ordered: List[NArg] = newList()
@@ -4249,7 +4258,7 @@ func lowerCallEx(
         }
         match lowerCollectionMethodCall(ctx, insns, recvVal, memberName, args) {
           case Some(v) -> return v
-          case None -> return lowerUfcsCall(ctx, insns, recvVal, memberName, args, line, wantTask)
+          case None -> return lowerUfcsCall(ctx, insns, recvVal, memberName, args, line, wantTask, methodCallSiteKey(fnExpr))
         }
       }
     }
@@ -4705,6 +4714,7 @@ func lowerUfcsCall(
   args: in List[CallArg],
   line: in Int,
   wantTask: in Bool,
+  siteKey: in String,
 ): NVal {
   if name == "upgrade" and args.count == 0 {
     match weakTargetOfType(ctx, recv.ty) {
@@ -4732,7 +4742,9 @@ func lowerUfcsCall(
     case None -> {
     }
   }
-  val arity = (args.count + 1).toString()
+  // The overload the type checker resolved, by its parameter count plus the
+  // receiver (#7828).
+  val arity = (methodCallArity(ctx.methodCallArities, ctx.curPkg[0] + "|" + siteKey, args.count) + 1).toString()
   // `.<name>(...)` on a CONCRETE record receiver — try an `impl I
   // for R` method FIRST, via the index `registerImplDirectMethods` built
   // from every impl's PACKAGE-QUALIFIED `<pkg>.<record>.<method>/<arity>`
@@ -13012,6 +13024,7 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     globals = mod.globals,
     sigs = mod.sigs,
     pkgImportsStdString = mod.pkgImportsStdString,
+    methodCallArities = mod.methodCallArities,
     curPkg = curPkg,
     curRet = curRet,
     moduleVals = mod.moduleVals,
@@ -13926,6 +13939,17 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     }
     impUi = impUi + 1
   }
+  val methodCallArities: Map[String, Int] = newMap()
+  for cu in units {
+    for ak in mapKeys(cu.methodCallArities) {
+      match mapGet(cu.methodCallArities, ak) {
+        case Some(n) -> if not methodCallArities.containsKey(cu.pkgName + "|" + ak) {
+          methodCallArities.add(cu.pkgName + "|" + ak, n)
+        }
+        case None -> ()
+      }
+    }
+  }
   val emptySlots: Map[String, String] = newMap()
   val emptyTypes: Map[String, NType] = newMap()
   val emptyEnumTypes: Map[String, String] = newMap()
@@ -13961,6 +13985,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     globals = newList(),
     sigs = sigs,
     pkgImportsStdString = pkgImportsStdString,
+    methodCallArities = methodCallArities,
     curPkg = newList(),
     curRet = newList(),
     moduleVals = moduleVals,
@@ -14342,7 +14367,8 @@ pub func unitOfFile(pkgName: in String, file: in SourceFile): CodegenUnit {
     impls = impls,
     protecteds = protecteds,
     moduleVals = moduleVals,
-    importsStdString = fileImportsStdString(file)
+    importsStdString = fileImportsStdString(file),
+    methodCallArities = newMap()
   )
 }
 

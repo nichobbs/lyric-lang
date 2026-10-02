@@ -1508,6 +1508,43 @@ pub func recordCopySiteKey(sp: in Span): String {
   toString(sp.startPos.offset) + ":" + toString(sp.endPos.offset)
 }
 
+/// The key of a method call site in `SymbolTable.methodCallArities`: the
+/// span of its callee with any parentheses or explicit type arguments
+/// removed (`o.m`, or `m` for a bare call to a sibling method), and the
+/// method's name, so that every backend finds the entry from the callee it
+/// dispatches on (#7828).
+pub func methodCallSiteKey(callee: in Expr): String {
+  match callee.kind {
+    case EParen(inner) -> methodCallSiteKey(inner)
+    case ETypeApp(inner, _) -> methodCallSiteKey(inner)
+    case EMember(_, name) -> recordCopySiteKey(callee.span) + ":" + name
+    case EPath(path) -> methodCallPathKey(path)
+    case _ -> recordCopySiteKey(callee.span)
+  }
+}
+
+/// `methodCallSiteKey` of a bare call to a sibling method, from its path.
+pub func methodCallPathKey(path: in ModulePath): String {
+  val last = if path.segments.count == 0 { "" } else { path.segments[path.segments.count - 1] }
+  recordCopySiteKey(path.span) + ":" + last
+}
+
+/// The number of arguments a method call passes once its omitted defaulted
+/// arguments are filled: the parameter count of the method the type checker
+/// resolved it to when the call leaves any out (`arities`, from
+/// `SymbolTable.methodCallArities`, under the call's `methodCallSiteKey`),
+/// else the number written.  Backends key a method's overloads by this
+/// count (#7828).
+pub func methodCallArity(arities: in Map[String, Int], siteKey: in String, written: in Int): Int {
+  if arities.count == 0 {
+    return written
+  }
+  match mapGet(arities, siteKey) {
+    case Some(n) -> n
+    case None -> written
+  }
+}
+
 /// A call's arguments in the callee's parameter order with every omitted
 /// defaulted parameter filled from its declared default: the argument list
 /// every backend lowers, whatever the callee is (a free function, a record,
