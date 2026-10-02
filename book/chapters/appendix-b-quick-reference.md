@@ -1512,9 +1512,9 @@ span, exactly like `T0120`/`J008`.
 | `N0008` | A `protected type` declares type parameters. Generic protected types build on `--target dotnet` and `--target jvm`; native has no per-instantiation protected-type layout yet (#7864). Reported at the declaration before codegen. |
 | `N0009` | A `--triple wasm32-wasi` build found no wasi-sdk; set `WASI_SDK_PATH` to its install directory. |
 | `N0010` | An `extern func` signature (including a callback parameter or a return) names a record that `--target native` lowers by value; the C struct ABI for it is #8009, so pass a `NativePtr` or use a record with a `var` field until then. |
-| `N0011` | `--shape module` was given a triple that is not wasm32; pass `--triple wasm32-wasi`. |
-| `N0012` | An unknown native output shape name reached the native bridge; the wasm32 shape is `module`. |
-| `N0013` | The `--shape module` JS glue (`<name>.js`) or declarations (`<name>.d.ts`) could not be written next to the `.wasm`. |
+| `N0011` | `--shape module` or `--shape component` was given a triple that is not wasm32; pass `--triple wasm32-wasi`. |
+| `N0012` | An unknown native output shape name reached the native bridge; the wasm32 shapes are `module` and `component`. |
+| `N0013` | A generated file could not be written next to the `.wasm`: the `--shape module` JS glue (`<name>.js`) or declarations (`<name>.d.ts`), or the `--shape component` WIT (`<name>.wit`) or C wrappers (`<name>.cabi.c`). |
 | `N0014` | A `@wasmImport` `extern func` has a parameter or result type the host import ABI cannot carry; use `Int`, `Long`, `Bool`, `Byte`, `Float`, `Double`, `String` or `Unit`. |
 | `N0016` | A `--shape component` build could not run `wasm-tools`, or `$LYRIC_WASI_ADAPTER` (the preview1 reactor adapter) is unset or missing, or a `wasm-tools` step failed. |
 | `N0017` | A package declares a `@wasmImport` `extern func` in a `--shape component` build; WIT imports are not generated yet. |

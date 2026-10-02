@@ -182,6 +182,8 @@ console.log('loop=' + [1, 2, 3].map((i) => p.echo('x'.repeat(i * 1000)).length).
 }
 
 test "wasm32 component: a missing adapter is N0016, not a crash" {
+  val _w = envOrPanic("WASI_SDK_PATH")
+  val _t = envOrPanic("WASM_TOOLS")
   val stdlib = findStdlibSourcesNative()
   val dir = Path.join(
     Environment.getVarOrDefault("TMPDIR", "/tmp"),
