@@ -1882,7 +1882,24 @@ func emitSelfParamChecksJvm(
           insns.add(LAload(slot = slot))
           insns.add(LCheckcast(className = selfTypeName))
           if isHolderMode(p.mode) {
-            emitStore(insns, slot, selfTy)
+            // The StackMapTable builder types a slot by its FIRST store (the
+            // holder unwrap's erased `Object`), so narrowing the unwrapped
+            // slot in place is invisible at every later branch-target frame
+            // (an overflow-checked `other.n = other.n + self.n` joins after
+            // the check's `if`).  Rebind the name to a fresh slot of the
+            // concrete class and carry the write-through bookkeeping to it.
+            val narrowedHolder = allocSlot(ctx, p.name, selfTy)
+            emitStore(insns, narrowedHolder, selfTy)
+            match mapGet(ctx.holderArraySlot, slot) {
+              case Some(arrSlot) -> {
+                ctx.holderArraySlot.add(narrowedHolder, arrSlot)
+                match mapGet(ctx.holderElemType, slot) {
+                  case Some(et) -> ctx.holderElemType.add(narrowedHolder, et)
+                  case None -> ()
+                }
+              }
+              case None -> ()
+            }
             ctx.types.remove(p.name)
             ctx.types.add(p.name, selfTy)
           } else {

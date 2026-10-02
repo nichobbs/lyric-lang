@@ -249,7 +249,9 @@ func checkRecordCompoundAssign(
   val marker = compoundAssignDerive(op)
   val derivable = match op { case AssPlus -> true; case AssMinus -> true; case _ -> false }
   if not derivable or not hasDerive(tbl, marker, targetType) {
-    diag.add(errorDiagnostic("T0030", "compound assignment needs " + renderType(targetType) + " to derive " + marker, span))
+    diag.add(
+      errorDiagnostic("T0030", "compound assignment needs " + renderType(targetType) + " to derive " + marker, span)
+    )
     return
   }
   val bop = match op { case AssMinus -> BSub; case _ -> BAdd }
@@ -320,11 +322,7 @@ pub func isOverflowPureTarget(e: in Expr): Bool {
         return false
       }
       for ix in idxs {
-        val simple = match ix.kind {
-          case EPath(_) -> true
-          case ELiteral(_) -> true
-          case _ -> false
-        }
+        val simple = match ix.kind { case EPath(_) -> true; case ELiteral(_) -> true; case _ -> false }
         if not simple {
           return false
         }
@@ -597,6 +595,9 @@ pub func checkStatement(
         // D-progress-1026-return-position-list-literals.md).
         val t = inferExprExpected(sc, tbl, sigs, diag, e, returnTy)
         val isNever = match t { case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }; case _ -> false }
+        if not isNever and tbl.lambdaReturnFrames.count > 0 and (match returnTy { case TyError -> true; case _ -> false }) {
+          tbl.lambdaReturnFrames[tbl.lambdaReturnFrames.count - 1].add(t)
+        }
         // A returned value initialises the result, so it widens like an
         // initialiser (docs/01 §4.1, #7805).
         recordWideningSite(tbl, returnTy, t, e, false)

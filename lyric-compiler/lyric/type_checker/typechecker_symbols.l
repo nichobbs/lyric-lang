@@ -318,6 +318,11 @@ pub record SymbolTable {
   /// `recordCopySiteKey` of the operand's span (see
   /// `Lyric.Parser.HoistOperandTypeSite`, #7823).
   hoistOperandTypeSites: Map[String, HoistOperandTypeSite]
+  /// One frame per lambda being checked with no expected return type: the
+  /// types of the values its `return` statements produce.  A lambda body that
+  /// ends in `return` has the type `Never`; its function type's result is the
+  /// type of the returned values (`inferLambda`).
+  lambdaReturnFrames: List[List[Type]]
   /// The type arguments of each call to a generic function whose type
   /// arguments are all closed, keyed by `recordCopySiteKey` of the callee's span
   /// (see `Lyric.Parser.GenericCallTypeArgsSite`, #7865).
@@ -543,6 +548,7 @@ pub func newSymbolTable(): SymbolTable {
     tuplePatternBindingSites = newMap(),
     listLiteralTypeSites = newMap(),
     hoistOperandTypeSites = newMap(),
+    lambdaReturnFrames = newList(),
     genericCallTypeArgSites = newMap(),
     lambdaParamTypeSites = newMap(),
     moduleValTypes = newMap(),

@@ -1510,12 +1510,7 @@ func isWrappingMethodName(n: in String): Bool {
 
 // `+`, `-` or `*` whose result is an overflow-checked integer type (D163).
 func recordOverflowBinop(tbl: in SymbolTable, op: in BinOp, result: in Type, span: in Span): Unit {
-  val opName = match op {
-    case BAdd -> "add"
-    case BSub -> "sub"
-    case BMul -> "mul"
-    case _ -> return
-  }
+  val opName = match op { case BAdd -> "add"; case BSub -> "sub"; case BMul -> "mul"; case _ -> return }
   val tn = overflowTypeName(result)
   if tn.length > 0 {
     recordOverflowSite(tbl, span, opName + ":" + tn)
@@ -10035,10 +10030,7 @@ func inferExprCore(
       match op {
         case PreNeg -> {
           val tn = overflowTypeName(prefixT)
-          val isLit = match inner.kind {
-            case ELiteral(_) -> true
-            case _ -> false
-          }
+          val isLit = match inner.kind { case ELiteral(_) -> true; case _ -> false }
           if (tn == "Int" or tn == "Long") and not isLit {
             recordOverflowSite(tbl, e.span, "neg:" + tn)
           }
@@ -11146,9 +11138,19 @@ func inferLambda(
       TyFunction(params = paramTypes, ret = lambdaReturnAgainst(tbl, rt, bodyTy, body), isAsync = false)
     }
     case None -> {
+      val returned: List[Type] = newList()
+      tbl.lambdaReturnFrames.add(returned)
       val bodyTy = checkBlock(lsc, tbl, sigs, sc.genericNames, TyError, noLambdaRte, diag, body, bodyValuePos, TyError)
+      tbl.lambdaReturnFrames.removeAt(tbl.lambdaReturnFrames.count - 1)
       scopePop(sc)
-      TyFunction(params = paramTypes, ret = bodyTy, isAsync = false)
+      // A body whose every path `return`s has the type `Never`; the lambda's
+      // result is then the type of the first value it returns.
+      val bodyDiverges = match bodyTy {
+        case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }
+        case _ -> false
+      }
+      val retTy = if bodyDiverges and returned.count > 0 { returned[0] } else { bodyTy }
+      TyFunction(params = paramTypes, ret = retTy, isAsync = false)
     }
   }
 }
