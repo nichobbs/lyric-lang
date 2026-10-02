@@ -551,3 +551,36 @@ test "hint-less @externTarget instance method verified by metadata still compile
     "a hint-less @externTarget whose calling convention metadata CAN confirm must still compile cleanly"
   )
 }
+
+// ─── F0047: untyped module-level val whose type could not be predicted ──────
+// The pre-scan cannot predict a chained-call initializer's type, so it types
+// readers of `big0047` as `object` while the field is really `int32`.  That
+// disagreement across a value type used to be silent IL corruption (an
+// uncatchable AccessViolationException at the first unbox); it must now be a
+// positioned build diagnostic on the initializer.
+test "F0047: untyped module-level val with an unpredictable value-type initializer fails cleanly" {
+  val src = "package F0047App\n" + "\n" + "func cond0047(): Bool = true\n" +
+    "val big0047 = cond0047().toString().length\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  println(toString(big0047 + 1))\n" +
+    "}\n"
+  val diags: List[Diagnostic] = newList()
+  val ok = compileDiag("F0047Bad", src, diags)
+  assertTrue(
+    not ok,
+    "an untyped module val whose initializer type cannot be predicted must be rejected, not compile to corrupt IL"
+  )
+  assertDiagAt(diags, "F0047", 4, 15, "F0047: chained-call initializer of an untyped module-level val")
+}
+
+// Companion "good" case: the same val with an explicit annotation compiles.
+test "annotated module-level val with the same initializer still compiles" {
+  val src = "package F0047GoodApp\n" + "\n" + "func cond0047g(): Bool = true\n" +
+    "val big0047g: Int = cond0047g().toString().length\n" +
+    "\n" +
+    "func main(): Unit {\n" +
+    "  println(toString(big0047g + 1))\n" +
+    "}\n"
+  assertTrue(compiles("F0047Good", src), "an explicitly annotated module-level val must compile")
+}

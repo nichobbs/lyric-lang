@@ -5431,9 +5431,18 @@ func isLiteralI4ExprMsilWithEnv(e: in Expr, env: in Map[String, Bool]): Bool {
 // lookups; every other arm ignores them.
 func inferUntypedStaticValMsilType(
   e: in Expr, env: in Map[String, MsilType], cctx: in CodegenCtx, pkgName: in String
+): MsilType = inferUntypedStaticValMsilTypeWith(e, env, cctx, pkgName, true)
+
+// `resolveCalls` gates the arms that resolve a CALL's result type against the
+// package-level function registry.  A lambda body (`inferLambdaBodyExprMsilType`)
+// passes `false`: a callee name there may be a captured local closure that
+// merely shares a name with an unrelated package-level function (#7126), which
+// this pass has no symbol table to tell apart.
+func inferUntypedStaticValMsilTypeWith(
+  e: in Expr, env: in Map[String, MsilType], cctx: in CodegenCtx, pkgName: in String, resolveCalls: in Bool
 ): MsilType {
   match e.kind {
-    case EParen(inner) -> inferUntypedStaticValMsilType(inner, env, cctx, pkgName)
+    case EParen(inner) -> inferUntypedStaticValMsilTypeWith(inner, env, cctx, pkgName, resolveCalls)
     // LBool/LChar/LUnit are unreachable here in practice: the caller only
     // reaches this function when isLiteralI4ExprMsilWithEnv(decl.init, ...)
     // returned false, and that function unconditionally returns true for
@@ -5473,9 +5482,9 @@ func inferUntypedStaticValMsilType(
     // PreNot always produces MBool regardless of operand type; PreRef is a
     // bare passthrough of the operand's type. Both mirror lowerExprMsil too.
     case EPrefix(op, inner) -> match op {
-      case PreNeg -> inferUntypedStaticValMsilType(inner, env, cctx, pkgName)
+      case PreNeg -> inferUntypedStaticValMsilTypeWith(inner, env, cctx, pkgName, resolveCalls)
       case PreNot -> MBool
-      case PreRef -> inferUntypedStaticValMsilType(inner, env, cctx, pkgName)
+      case PreRef -> inferUntypedStaticValMsilTypeWith(inner, env, cctx, pkgName, resolveCalls)
     }
     // A bare reference to an earlier module-level `val`/`const` (#5955):
     // resolve through `env` — mirrors `isLiteralI4ExprMsilWithEnv`'s EPath
@@ -5516,27 +5525,27 @@ func inferUntypedStaticValMsilType(
       match op {
         case BEq | BNeq | BLt | BLte | BGt | BGte | BAnd | BOr | BImplies -> MBool
         case BAdd -> {
-          match inferUntypedStaticValMsilType(lhs, env, cctx, pkgName) {
+          match inferUntypedStaticValMsilTypeWith(lhs, env, cctx, pkgName, resolveCalls) {
             case MString -> MString
             case MLong -> MLong
             case MDouble -> MDouble
             case MFloat -> MFloat
             // `Byte op Byte` stays `Byte` (`wrapByteArithMsil`).
-            case MByte -> if isByteMsil(inferUntypedStaticValMsilType(rhs, env, cctx, pkgName)) { MByte } else { MInt }
+            case MByte -> if isByteMsil(inferUntypedStaticValMsilTypeWith(rhs, env, cctx, pkgName, resolveCalls)) { MByte } else { MInt }
             case _ -> MInt
           }
         }
         case BSub | BMul -> {
-          match inferUntypedStaticValMsilType(lhs, env, cctx, pkgName) {
+          match inferUntypedStaticValMsilTypeWith(lhs, env, cctx, pkgName, resolveCalls) {
             case MLong -> MLong
             case MDouble -> MDouble
             case MFloat -> MFloat
-            case MByte -> if isByteMsil(inferUntypedStaticValMsilType(rhs, env, cctx, pkgName)) { MByte } else { MInt }
+            case MByte -> if isByteMsil(inferUntypedStaticValMsilTypeWith(rhs, env, cctx, pkgName, resolveCalls)) { MByte } else { MInt }
             case _ -> MInt
           }
         }
         case BDiv -> {
-          match inferUntypedStaticValMsilType(lhs, env, cctx, pkgName) {
+          match inferUntypedStaticValMsilTypeWith(lhs, env, cctx, pkgName, resolveCalls) {
             case MLong -> MLong
             case MDouble -> MDouble
             case MFloat -> MFloat
@@ -5551,7 +5560,7 @@ func inferUntypedStaticValMsilType(
         // or this predictor reintroduces the exact predicted-vs-actual
         // `ldsfld` divergence #5955 eliminates.
         case BMod -> {
-          match inferUntypedStaticValMsilType(lhs, env, cctx, pkgName) {
+          match inferUntypedStaticValMsilTypeWith(lhs, env, cctx, pkgName, resolveCalls) {
             case MLong -> MLong
             case MDouble -> MDouble
             case MFloat -> MFloat
@@ -5561,8 +5570,8 @@ func inferUntypedStaticValMsilType(
         }
         case BXor -> MBool
         case BCoalesce -> {
-          match inferUntypedStaticValMsilType(lhs, env, cctx, pkgName) {
-            case MObject -> inferUntypedStaticValMsilType(rhs, env, cctx, pkgName)
+          match inferUntypedStaticValMsilTypeWith(lhs, env, cctx, pkgName, resolveCalls) {
+            case MObject -> inferUntypedStaticValMsilTypeWith(rhs, env, cctx, pkgName, resolveCalls)
             case t -> t
           }
         }
@@ -5590,7 +5599,7 @@ func inferUntypedStaticValMsilType(
     // `ECall` codegen uses — a separate, untested path this fix does not
     // add; a union-case-literal module-level val stays a documented
     // `MObject` fallback, no worse than before this fix.
-    case ECall(fn, _) -> match fn.kind {
+    case ECall(fn, cargs) -> match fn.kind {
       case EPath(path) -> {
         val funcName = lastSegmentMsil(path)
         val localCtorKey = pkgName + "." + funcName
@@ -5630,12 +5639,118 @@ func inferUntypedStaticValMsilType(
               MClass(className = ctorKey)
             }
           }
-          case None -> MObject
+          // Not a record constructor: a call to a declared function. The
+          // callee's declared return type is what `lowerExprMsil`'s call
+          // lowering pushes, so predict it from the same registry.
+          case None -> if resolveCalls {
+            resolveQualifiedFreeCallRetTypePB(cctx, pkgName, path.segments, cargs.count)
+          } else {
+            MObject
+          }
+        }
+      }
+      // `recv.toLong()`-style numeric conversions, or a package-qualified
+      // call parsed as nested `EMember`s (`Pkg.Sub.func(...)`).
+      case EMember(recv, memberName) -> if not resolveCalls {
+        MObject
+      } else {
+        val convTy = numericConversionResultMsilType(
+          memberName,
+          cargs.count,
+          inferUntypedStaticValMsilTypeWith(recv, env, cctx, pkgName, resolveCalls)
+        )
+        match convTy {
+          case MObject -> match flattenPureQualifierPB(fn) {
+            // A chain rooted at a module-level val is a value-receiver call
+            // (`earlierVal.trim()`), never a package-qualified free call.
+            case Some(segs) -> if segs.count >= 2 and not env.containsKey(segs[0]) and not cctx.staticValMsilTypes.containsKey(segs[0]) {
+              resolveQualifiedFreeCallRetTypePB(cctx, pkgName, segs, cargs.count)
+            } else {
+              MObject
+            }
+            case None -> MObject
+          }
+          case t -> t
         }
       }
       case _ -> MObject
     }
+    // `.length` / `.count` on a String, List or slice receiver is an `Int`
+    // (`lowerExprMsil`'s EMember arms for those receivers).
+    case EMember(recv, memberName) -> {
+      if resolveCalls and (memberName == "length" or memberName == "count") {
+        match inferUntypedStaticValMsilTypeWith(recv, env, cctx, pkgName, resolveCalls) {
+          case MString -> MInt
+          case MConcreteList(_) -> MInt
+          case MListOf(_) -> MInt
+          case MArray(_) -> MInt
+          case _ -> MObject
+        }
+      } else {
+        MObject
+      }
+    }
     case _ -> MObject
+  }
+}
+
+// Result type of the numeric / character conversion intrinsics
+// (`x.toLong()`, ...) that `lowerExprMsil`'s method-call lowering emits as a
+// single `conv.*`.  `MObject` means "not a conversion this predictor knows".
+func numericConversionResultMsilType(member: in String, argc: in Int, recvTy: in MsilType): MsilType {
+  if argc != 0 or not isNumericMsil(recvTy) {
+    return MObject
+  }
+  if member == "toLong" or member == "toNat" {
+    MLong
+  } else if member == "toInt" or member == "toUInt" {
+    MInt
+  } else if member == "toByte" {
+    MByte
+  } else if member == "toChar" {
+    MChar
+  } else if member == "toDouble" {
+    MDouble
+  } else if member == "toFloat" {
+    MFloat
+  } else {
+    MObject
+  }
+}
+
+// Lyric-facing name of a type the predictor/lowering can produce, for
+// diagnostics only.
+func msilValueTypeNameMsil(ty: in MsilType): String {
+  match ty {
+    case MInt -> "Int"
+    case MLong -> "Long"
+    case MDouble -> "Double"
+    case MFloat -> "Float"
+    case MBool -> "Bool"
+    case MChar -> "Char"
+    case MByte -> "Byte"
+    case MString -> "String"
+    case MObject -> "an untyped reference"
+    case _ -> "a reference type"
+  }
+}
+
+// True for the CLR value types the predictor can produce.  A module-level
+// `val`'s static field type that disagrees with its predicted type across
+// this boundary is unsafe: readers push the predicted type's representation
+// onto the stack, so a value type read as `object` (or as a different value
+// type) is dereferenced as a garbage object reference at the first `unbox`.
+func isClrValueTypeMsil(ty: in MsilType): Bool {
+  match ty {
+    case MInt -> true
+    case MLong -> true
+    case MDouble -> true
+    case MFloat -> true
+    case MBool -> true
+    case MChar -> true
+    case MByte -> true
+    case MNativeInt -> true
+    case _ -> false
   }
 }
 
@@ -23185,7 +23300,7 @@ func inferLambdaBodyExprMsilType(
       // Every other operator (comparisons, boolean, BXor) is unconditionally
       // safe to delegate: its result type never depends on whether either
       // operand's own type is resolvable.
-      case _ -> inferUntypedStaticValMsilType(e, paramEnv, cctx, pkgName)
+      case _ -> inferUntypedStaticValMsilTypeWith(e, paramEnv, cctx, pkgName, false)
     }
     // #7125/#7126: a bare name in a lambda body must resolve ONLY against
     // `paramEnv` (the lambda's OWN explicitly-typed parameters) — never
@@ -23217,7 +23332,7 @@ func inferLambdaBodyExprMsilType(
         MObject
       }
     }
-    case _ -> inferUntypedStaticValMsilType(e, paramEnv, cctx, pkgName)
+    case _ -> inferUntypedStaticValMsilTypeWith(e, paramEnv, cctx, pkgName, false)
   }
 }
 
@@ -42789,6 +42904,31 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
           }
         }
         val fieldTy = match decl.ty { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> valTy }
+        // Every reader of this field was lowered (or will be) against the type
+        // `addPackageTokens` PREDICTED for it, while the field itself takes the
+        // type its initializer really lowers to.  Where the two disagree across
+        // a CLR value type, a read pushes the wrong representation (an `int64`
+        // treated as an `object` reference is dereferenced at the first
+        // `unbox`: an uncatchable AccessViolationException).  Fail the build
+        // instead of emitting that IL.
+        if not isAsyncLocalVal {
+          match mapGet(cctx.staticValMsilTypes, pkgName + "." + fieldName) {
+            case Some(predictedTy) -> {
+              if predictedTy != fieldTy and (isClrValueTypeMsil(predictedTy) or isClrValueTypeMsil(fieldTy)) {
+                cctx.diagnostics.add(
+                  errorDiagnostic(
+                    "F0047",
+                    "cannot determine the type of module-level val '" + fieldName + "' consistently: its initializer is " +
+                      msilValueTypeNameMsil(fieldTy) + " but readers of the val were typed as " + msilValueTypeNameMsil(predictedTy) +
+                      "; add an explicit type annotation (`val " + fieldName + ": " + msilValueTypeNameMsil(fieldTy) + " = ...`)",
+                    decl.init.span
+                  )
+                )
+              }
+            }
+            case None -> ()
+          }
+        }
         // When the init is a single ldc.i4 (literal Int), inline into constValues
         // and pass an empty initInsns to avoid generating a .cctor for this field.
         // All uses of the val in this package will emit ldc.i4 directly.
