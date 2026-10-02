@@ -520,3 +520,18 @@ int32_t lyric_secure_random(uint8_t* buf, int64_t n) {
     return 0;
 #endif
 }
+
+#if !defined(__wasi__)
+int32_t lyric_thread_create(int64_t* tid, void* (*start)(void*), void* arg) {
+    pthread_t t;
+    int rc = pthread_create(&t, NULL, start, arg);
+    if (rc == 0) {
+        *tid = (int64_t)(uintptr_t)t;
+    }
+    return (int32_t)rc;
+}
+
+int32_t lyric_thread_join(int64_t tid, void** retval) {
+    return (int32_t)pthread_join((pthread_t)(uintptr_t)tid, retval);
+}
+#endif

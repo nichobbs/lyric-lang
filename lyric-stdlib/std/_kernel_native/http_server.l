@@ -389,9 +389,11 @@ func rtSemDestroy(s: Long): Unit {
   rtSemDestroyRaw(rtLongToPtr(s))
 }
 
-extern func pthreadCreate(tid: NativePtr[Long], attr: NativePtr[Byte], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = "pthread_create"
+// Thread spawn/join go through fixed-width lyric-rt wrappers: pthread_t is
+// 32-bit on wasm32, where the wrappers fail typed instead of the symbols missing.
+extern func pthreadCreate(tid: NativePtr[Long], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = "lyric_thread_create"
 
-extern func pthreadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = "pthread_join"
+extern func pthreadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = "lyric_thread_join"
 
 // ARC retain/release for a `pthread_create`d closure (#6797, `native/plan/
 // 05-ffi-design.md`'s "Callback trampolines" section: "If the C function
@@ -1043,7 +1045,7 @@ func spawnConnectionThread(conn: in Conn, queue: in ServerQueue, body: () -> Uni
   // else keeps `worker` alive for the spawned thread's own use of it.
   rtRetain(worker)
   val workerHandle = rtPtrToLong(worker)
-  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)
+  val rc = pthreadCreate(nativeAddrOf(tid), worker, worker)
   if rc == 0 {
     registerTid(queue, tid, workerHandle)
   } else {
@@ -1281,7 +1283,7 @@ pub func startListener(prefix: in String): HttpListener {
       // release through regardless).
       rtRetain(worker)
       val workerHandle = rtPtrToLong(worker)
-      val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)
+      val rc = pthreadCreate(nativeAddrOf(tid), worker, worker)
       if rc != 0 {
         panic("Std.HttpServer.startListener: failed to spawn the accept thread")
       }
@@ -1337,7 +1339,7 @@ pub func startListenerTls(host: in String, port: in Int, tls: in TlsServerConfig
       // Retained before `pthreadCreate` (#6797, extern-decl comment above).
       rtRetain(worker)
       val workerHandle = rtPtrToLong(worker)
-      val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)
+      val rc = pthreadCreate(nativeAddrOf(tid), worker, worker)
       if rc != 0 {
         // Unlike `startListener`'s `panic()` on this same failure (whose
         // orphaned retain is moot -- the process aborts), this function

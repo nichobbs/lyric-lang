@@ -252,8 +252,7 @@ test "wasm32: Std.Process.spawnPiped reports a typed Err" {
 
 test "wasm32: the TCP and TLS client kernels link and report a typed Err" {
   val r = runWasm(
-    "package T\n" + "import Std.Core\n" + "import Std.Tls\n" + "import Std.TcpHost\n" +
-      "func main(): Int {\n" +
+    "package T\n" + "import Std.Core\n" + "import Std.Tls\n" + "import Std.TcpHost\n" + "func main(): Int {\n" +
       "  match hostListen(\"127.0.0.1\", 0) {\n" +
       "    case Ok(_) -> {\n" +
       "      return 1\n" +
@@ -284,13 +283,16 @@ test "wasm32: the TCP and TLS client kernels link and report a typed Err" {
 test "wasm32: Std.HttpServer links and its bind failure panics with the TCP diagnostic" {
   val r = runWasm(
     "package T\n" + "import Std.HttpServer\n" + "func main(): Int {\n" +
-      "  val l = startListener(\"http://127.0.0.1:0/\")\n" +
+      "  val l = startListener(\"http://127.0.0.1:19730/\")\n" +
       "  stopListener(l)\n" +
       "  0\n" +
       "}\n"
   )
   assertTrue(r.exitCode != 0, "a failed bind aborts")
-  assertTrue(r.stderr.contains("TCP sockets are unavailable"), "the panic carries the runtime's diagnostic")
+  assertTrue(
+    r.stderr.contains("TCP sockets are unavailable"),
+    "the panic carries the runtime's diagnostic: " + r.stderr
+  )
 }
 
 test "wasm32: a panic aborts with a nonzero exit and its message" {

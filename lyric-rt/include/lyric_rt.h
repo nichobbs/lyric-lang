@@ -394,6 +394,13 @@ void lyric_sem_init(void* s, int32_t initial);
 void lyric_sem_wait(void* s);
 int32_t lyric_sem_trywait(void* s);
 void lyric_sem_post(void* s);
+
+/* Thread spawn/join with fixed-width handles (pthread_t is 32-bit on wasm32,
+ * where wasi-libc has no threads at all: the unsupported twin fails every
+ * create with EAGAIN).  `tid` receives an opaque handle; both return 0 on
+ * success or an errno value. */
+int32_t lyric_thread_create(int64_t* tid, void* (*start)(void*), void* arg);
+int32_t lyric_thread_join(int64_t tid, void** retval);
 void lyric_sem_destroy(void* s);
 
 /* Milliseconds since the Unix epoch (CLOCK_REALTIME). */

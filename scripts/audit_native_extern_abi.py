@@ -25,9 +25,9 @@ LYRIC = {"Int": "i32", "Char": "i32", "Long": "i64", "Double": "double",
 def split_top(s):
     out, depth, cur = [], 0, ""
     for ch in s:
-        if ch in "([{<":
+        if ch in "([{":
             depth += 1
-        elif ch in ")]}>":
+        elif ch in ")]}":
             depth -= 1
         if ch == "," and depth == 0:
             out.append(cur.strip())
