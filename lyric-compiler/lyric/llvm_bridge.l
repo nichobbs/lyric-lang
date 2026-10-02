@@ -1469,7 +1469,7 @@ func linkAndEmitNative(
   val wasiSdk = if isWasm { findWasiSdk() } else { "" }
   if isWasm and wasiSdk.length == 0 {
     Console.error(
-      "error[N0005]: a wasm32 build needs a wasi-sdk (set WASI_SDK_PATH to its install directory, e.g. /opt/wasi-sdk; docs/35 section 5.1)"
+      "error[N0009]: a wasm32 build needs a wasi-sdk (set WASI_SDK_PATH to its install directory, e.g. /opt/wasi-sdk; docs/35 section 5.1)"
     )
     Console.error("  the LLVM IR was written to " + llPath)
     return false
