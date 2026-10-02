@@ -8822,6 +8822,18 @@ test "a function or method parameter given more than once is T0042 (#7846)" {
   assertTrue(diagMessagesContain(ext, "parameter 'x' is given more than once"), "extern func: " + diagCodesOf(ext))
 }
 
+// A repeated argument is one mistake: it is reported once, not again as an
+// arity mismatch or once per extra repetition (PR #8011 review).
+test "a parameter repeated past the arity is one T0042" {
+  val fnSrc = "package P\nfunc f(a: in Int, b: in Int): Int { a + b }\n"
+  val thrice = parseCheck(fnSrc + "func g(): Int { f(a = 1, a = 2, a = 3) }\n")
+  assertEqualInt(countDiagCode(thrice, "T0042"), 1, "f(a = 1, a = 2, a = 3): " + diagCodesOf(thrice))
+  assertTrue(diagMessagesContain(thrice, "parameter 'a' is given more than once"), "message")
+  val recSrc = "package P\nrecord A {\n  n: Int\n  func m(self: in A, a: in Int): Int { a }\n}\n"
+  val mThrice = parseCheck(recSrc + "func g(x: in A): Int { x.m(a = 1, a = 2, a = 3) }\n")
+  assertEqualInt(countDiagCode(mThrice, "T0042"), 1, "x.m(a = 1, a = 2, a = 3): " + diagCodesOf(mThrice))
+}
+
 test "a constructor or union-case field given more than once is T0104 (#7846)" {
   val recSrc = "package P\nrecord Pt {\n  x: Int\n  y: Int\n}\n"
   val twice = parseCheck(recSrc + "func g(): Pt { Pt(x = 1, x = 2, y = 3) }\n")

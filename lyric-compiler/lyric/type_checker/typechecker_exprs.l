@@ -5449,7 +5449,8 @@ func argIndicesInParamOrder(args: in List[CallArg], paramNames: in List[String])
 // `Lyric.Parser.argsWithDefaults`) assumes no such argument exists.
 // `slotNames` are the callee's parameters or fields in declaration order
 // ("" for a positional-only union-case field); with none (an unresolved
-// callee) only a repeated name is detectable.  True when any was reported.
+// callee) only a repeated name is detectable.  Each repeated name is reported
+// once.  True when any was reported.
 func reportRepeatedCallArgs(
   diag: in List[Diagnostic],
   code: in String,
@@ -5470,6 +5471,8 @@ func reportRepeatedCallArgs(
     }
   }
   val seen: List[String] = newList()
+  // A name repeated more than twice is one mistake, reported once.
+  val repeated: List[String] = newList()
   var reported = false
   for a in args {
     match a {
@@ -5483,7 +5486,10 @@ func reportRepeatedCallArgs(
           j = j + 1
         }
         if stringListContains(seen, nm) {
-          diag.add(errorDiagnostic(code, what + " '" + nm + "' is given more than once", asp))
+          if not stringListContains(repeated, nm) {
+            diag.add(errorDiagnostic(code, what + " '" + nm + "' is given more than once", asp))
+            repeated.add(nm)
+          }
           reported = true
         } else if slot >= 0 and slot < leading {
           diag.add(
@@ -12000,7 +12006,11 @@ func checkCallArgsAgainstSig(
     paramNames.add(sig.params[pni].name)
     pni = pni + 1
   }
-  val _ = reportRepeatedCallArgs(diag, "T0042", "parameter", args, paramNames)
+  // A repeated argument also throws the count and the name pairing off, so
+  // the arity and pairing checks below would report the same mistake again.
+  if reportRepeatedCallArgs(diag, "T0042", "parameter", args, paramNames) {
+    return
+  }
   if args.count < minRequired or args.count > sig.params.count {
     val expectedMsg = if minRequired == sig.params.count {
       toString(sig.params.count) + " argument(s)"
