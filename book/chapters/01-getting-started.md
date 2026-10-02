@@ -292,6 +292,24 @@ available on WASI. A program that uses them still builds. Spawning a process or 
 a connection returns the `Err` the library reports for any failed spawn or
 connect; `Std.HttpServer.startListener` panics on its failed bind.
 
+To call a program from JavaScript (a browser, node, Deno), add `--shape
+module`: `lyric build hello.l --target native --triple wasm32-wasi --shape
+module` writes `hello.wasm`, `hello.js` and `hello.d.ts`. Every `pub func` whose
+parameters and result are `Int`, `Long`, `Bool`, `Float`, `Double`, `String` or
+`Unit` becomes a typed JavaScript function (a `Long` is a `bigint`):
+
+```js
+import { instantiate } from './hello.js';
+const lyric = await instantiate();
+lyric.add(2, 40);          // 42
+lyric.greet('wörld');      // a String in, a String out
+lyric.run(['arg']);        // runs `main`, returns its exit code
+```
+
+A `pub func` that takes or returns anything else (a record, a list) is left out
+with a `W0040` warning. A panic inside an export throws a
+`WebAssembly.RuntimeError`; the instance should be discarded afterwards.
+
 Memory on this target is managed by automatic reference counting (ARC) —
 there is no garbage collector. Reference cycles are not collected; break
 them explicitly with `NativeWeak[T]`, whose `upgrade()` returns

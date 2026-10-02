@@ -108,7 +108,7 @@ independent of the build profile, following `docs/63`.
 | Triple | Use |
 |---|---|
 | `wasm32-wasi` | WASI runtimes (wasmtime, node `node:wasi`), component shape |
-| `wasm32-unknown-unknown` | Browser core module with explicit JS imports |
+| `wasm32-unknown-unknown` | Not used: the browser `module` shape builds with the `wasm32-wasi` toolchain and satisfies its few WASI imports from the generated glue (D-progress-1029) |
 
 | Shape | Artifact | Interface | Typical consumer |
 |---|---|---|---|
@@ -499,7 +499,7 @@ applies, because the native lowering is coroutine-based).
 | W0 | **Shipped (#7960).** Layout hardening, target-neutral: three-field ARC header, allocation sizes from LLVM (`NSizeOf`) instead of 64-bit size tables, pinned wasm32 datalayout, fixed-width `lyric-rt` wrappers for the `size_t`/variadic libc externs. The coroutine size intrinsic needed no change, and the `Long`-as-pointer audit found only `libc.l` exposed on the wasm-relevant kernels | Landed ahead of any wasm work; benefits existing targets; verified by every native self-test suite plus a wasm32 lowering smoke test that compiles with clang's WebAssembly backend |
 | W1 | 32-bit `Float` | Owned by a separate work stream (`docs/67` G1); this plan blocks the `component` type mapping on it |
 | W2 | **Slice 1 shipped (runtime, #7995):** `lyric-rt` builds for `wasm32-wasi` and its C tests run under wasmtime in CI. **Slice 2 (compiler):** the native bridge links `--triple wasm32-wasi` with a wasi-sdk clang against the per-triple runtime archive, emits `__main_argc_argv`, and `llvm_wasm32_self_test.l` runs Lyric programs under wasmtime in CI. **Slice 3 (shipped):** the TCP/TLS, piped-process and HTTP-server kernels take the `NativePtr[Byte]` the C side declares and convert their `Long` record handles at the call boundary; thread spawn/join go through fixed-width `lyric_thread_*` wrappers; `scripts/audit-native-extern-abi.sh` fails CI when any kernel extern disagrees with the runtime's wasm32 ABI. Programs reaching those kernels now link and fail at runtime with their typed errors. `wasm32-wasi` build: wasi-sdk pinned, per-triple `lyric_rt`, `wasm32` datalayout, link recipe, single-threaded runtime, unavailable-kernel twins, wasmtime test lane | Shape-agnostic bring-up: a plain core module that runs under WASI with no JS glue or WIT. It is the shared codegen base that W3 (`module`) and W4 (`component`) build their boundary code on, so it is not itself either published shape |
-| W3 | Browser `module` shape: JS imports (console, timers, `abort`), glue generator, `docs/65` U7 hook | |
+| W3 | Browser `module` shape. **Slice 1 shipped (D-progress-1029):** `--shape module` links a reactor module against wasi-libc, the generated `<name>.js` glue satisfies its WASI imports (stdio, clock, random, args, env) and wraps every `pub func` over `Int`/`Long`/`Bool`/`Byte`/`Float`/`Double`/`String`/`Unit`, `<name>.d.ts` types them, and `llvm_wasm32_module_self_test.l` drives the result from node. **Still to do:** host timers for `async`/`sleepMillis`, a `fetch`-backed `Std.Http` (Q-JS-008), the `docs/65` U7 hook, the `[wasm]` manifest table | The module shape reuses the W2 toolchain rather than a `wasm32-unknown-unknown` build (D-progress-1029): one runtime, a small WASI shim in JS |
 | W4 | `component` shape: canonical ABI wrappers, WIT generation, `jco` integration, publish bundle | |
 | W5 | `[npm]` table, `lyric restore`, extern shims, `B004x` diagnostics | |
 
