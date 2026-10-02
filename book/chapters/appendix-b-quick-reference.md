@@ -1335,7 +1335,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0036` | Unary minus on a non-numeric type (including any distinct type) |
 | `T0037` | `not` applied to non-Bool operand |
 | `T0041` | List literal elements have mismatched types |
-| `T0042` | Wrong number of arguments to a function or method call, a named argument naming no parameter, or a parameter with no default left without an argument |
+| `T0042` | Wrong number of arguments to a function or method call, a named argument naming no parameter, a parameter with no default left without an argument, or a parameter given more than once (named twice, or named after a leading positional argument supplied it: `f(1, a = 2)`) |
 | `T0043` | Argument type does not match parameter type |
 | `T0044` | Called value is not a function |
 | `T0050` | Unknown type parameter in where clause |
@@ -1371,7 +1371,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0101` | Constructor names a field the type does not have |
 | `T0102` | Pattern-matching an opaque type's representation outside its declaring package |
 | `T0103` | A numeric/character conversion method (`.toInt()`, `.toLong()`, `.toByte()`, `.toChar()`, `.toDouble()`, `.toNat()`, ...) is called on a receiver type it does not apply to, such as `String`, `Bool` or `Unit`, `.toUInt()` on a primitive outside `Byte`/`UInt`, or `.toULong()` on a primitive outside `Byte`/`UInt`/`ULong` |
-| `T0104` | Constructor argument does not fit the constructed type: a named or positional argument's type does not match the field's type (including a record `.copy(field = value)` argument), or more positional arguments are supplied than the type has fields |
+| `T0104` | Constructor argument does not fit the constructed type: a named or positional argument's type does not match the field's type (including a record `.copy(field = value)` argument), more positional arguments are supplied than the type has fields, or a field is given more than once (named twice, or named after a leading positional argument supplied it) |
 | `T0105` | Constructor call (record, opaque, generic or non-generic, or a named-field union case) omits a required field with no default, in an all-named-args construction |
 | `T0106` | An `impl` method's parameter type does not match the interface method's declared parameter type |
 | `T0107` | An `impl` method's return type does not match the interface method's declared return type |

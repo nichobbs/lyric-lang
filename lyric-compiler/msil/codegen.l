@@ -17515,7 +17515,7 @@ func fillCtorDefaultArgs(cctx: in CodegenCtx, ctorKey: in String, args: in List[
 // argsWithDefaults` over the names and defaults registered for `tokKey` by
 // addPackageTokens.  `skip` leading parameters are the receiver of a
 // method-style call (`r.m(args)` resolved to `func T.m(self, ...)`).  `args`
-// unchanged when no parameters are registered or the call cannot be paired.
+// unchanged when no parameters are registered.
 func funcArgsWithDefaultsMsil(
   cctx: in CodegenCtx, tokKey: in String, skip: in Int, args: in List[CallArg]
 ): List[CallArg] {
@@ -17539,10 +17539,7 @@ func funcArgsWithDefaultsMsil(
   if names.count == 0 {
     return args
   }
-  match argsWithDefaults(names, defaults, skip, args) {
-    case Some(filled) -> filled
-    case None -> args
-  }
+  argsWithDefaults(tokKey, names, defaults, skip, args)
 }
 
 // A method call's arguments in parameter order with its omitted defaulted
@@ -17550,7 +17547,7 @@ func funcArgsWithDefaultsMsil(
 // are registered under its dispatch key (`registerMethodParamModes`).
 func methodArgsWithDefaultsMsil(cctx: in CodegenCtx, dispatchKey: in String, args: in List[CallArg]): List[CallArg] {
   match mapGet(cctx.methodParamDecls, dispatchKey) {
-    case Some(params) -> argsWithParamDefaults(params, 0, args)
+    case Some(params) -> argsWithParamDefaults(dispatchKey, params, 0, args)
     case None -> args
   }
 }

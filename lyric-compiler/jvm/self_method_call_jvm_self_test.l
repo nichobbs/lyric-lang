@@ -24,6 +24,7 @@ package Lyric.SelfMethodCallJvmSelfTest
 
 import Std.Core
 import Std.Testing
+import Std.String as Str
 
 record SErr {
   code: String
@@ -164,6 +165,27 @@ test "bare call shadowed by a sibling method resolves the method (#6489)" {
 test "bare call with no same-named sibling still resolves the free function (#6489)" {
   val h = ShadowHolder(n = 0)
   assertEqualInt(h.viaBareFree(), 41, "free function resolution unaffected when no sibling shadows it")
+}
+
+// #7846: a QUALIFIED call inside a method body names another package's
+// function even when the enclosing type has a same-named method.  The JVM
+// backend used to lower `Str.repeat(s, 2)` inside `repeat` as a sibling call
+// (`aload_0; invokevirtual RepeatHolder.repeat`) with the other function's
+// arguments, which fails verification; `Str.trim(s)` inside `trim` recursed.
+record RepeatHolder {
+  word: String
+  func repeat(n: in Int): String {
+    Str.repeat(self.word, n) + "!"
+  }
+  func trim(s: in String): String {
+    "[" + Str.trim(s) + "]"
+  }
+}
+
+test "a qualified call is never a sibling-method call (#7846)" {
+  val h = RepeatHolder(word = "ab")
+  assertEqual(h.repeat(2), "abab!", "Str.repeat resolves to Std.String.repeat")
+  assertEqual(h.trim("  x "), "[x]", "Str.trim resolves to Std.String.trim")
 }
 
 // #6304: a lambda inside an impl/record method body captures `self` as a

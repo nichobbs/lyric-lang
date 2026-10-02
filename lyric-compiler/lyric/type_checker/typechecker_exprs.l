@@ -5198,8 +5198,9 @@ func argTypesInFieldOrder(args: in List[CallArg], argTypes: in List[Type], field
 // defaulted parameter).  Mirrors `argTypesInFieldOrder` (#3157) and codegen's
 // `reorderFuncNamedArgs`: named args land at their declared slot, positional
 // args fill the remaining slots left to right.  A named arg whose name matches
-// no parameter occupies no slot (it is reported by codegen's reorder pass);
-// its slot stays -1 so no misaligned type check fires against it (#3066).
+// no parameter occupies no slot (`reportUnpairedCallArgs` reports it), so no
+// misaligned type check fires against it (#3066); a repeated one is reported
+// by `reportRepeatedCallArgs` (#7846).
 func argIndicesInParamOrder(args: in List[CallArg], paramNames: in List[String]): List[Int] {
   val result: List[Int] = newList()
   var fi = 0
@@ -5249,6 +5250,70 @@ func argIndicesInParamOrder(args: in List[CallArg], paramNames: in List[String])
     argIdx = argIdx + 1
   }
   result
+}
+
+// Report, with `code`, each call argument that supplies a parameter (or
+// field, per `what`) an earlier argument already supplied (#7846): a name
+// given twice (`f(a = 1, a = 2)`), or a name given for a parameter a leading
+// positional argument already took (`f(1, a = 2)` for `f(a: Int, b: Int = 0)`;
+// positional arguments before the first named one bind in order).  Every
+// pairing pass (`argIndicesInParamOrder`, `argTypesInFieldOrder`,
+// `Lyric.Parser.argsWithDefaults`) assumes no such argument exists.
+// `slotNames` are the callee's parameters or fields in declaration order
+// ("" for a positional-only union-case field); with none (an unresolved
+// callee) only a repeated name is detectable.  True when any was reported.
+func reportRepeatedCallArgs(
+  diag: in List[Diagnostic],
+  code: in String,
+  what: in String,
+  args: in List[CallArg],
+  slotNames: in List[String],
+): Bool {
+  var leading = 0
+  var inPrefix = true
+  while inPrefix and leading < args.count {
+    match args[leading] {
+      case CAPositional(_) -> {
+        leading = leading + 1
+      }
+      case CANamed(_, _, _) -> {
+        inPrefix = false
+      }
+    }
+  }
+  val seen: List[String] = newList()
+  var reported = false
+  for a in args {
+    match a {
+      case CANamed(nm, _, asp) -> {
+        var slot = -1
+        var j = 0
+        while j < slotNames.count and slot < 0 {
+          if slotNames[j] == nm {
+            slot = j
+          }
+          j = j + 1
+        }
+        if stringListContains(seen, nm) {
+          diag.add(errorDiagnostic(code, what + " '" + nm + "' is given more than once", asp))
+          reported = true
+        } else if slot >= 0 and slot < leading {
+          diag.add(
+            errorDiagnostic(
+              code,
+              what + " '" + nm + "' is given more than once (positional argument " + toString(slot + 1) +
+                " already supplies it)",
+              asp
+            )
+          )
+          reported = true
+        }
+        seen.add(nm)
+      }
+      case CAPositional(_) -> ()
+    }
+  }
+  reported
 }
 
 func fieldHasName(fields: in List[CtorField], name: in String): Bool {
@@ -5614,6 +5679,7 @@ func inferConstructionExpected(
     // than the confusing "cannot infer type arguments" T0110.
     val prelimFields: List[CtorField] = newList()
     val _ = collectCtorFields(tbl, sym, prelimFields)
+    val _ = reportRepeatedCallArgs(diag, "T0104", "field", args, fieldNames)
     if reportMissingCtorFields(prelimFields, args, sym, span, diag) {
       return TyError
     }
@@ -5762,6 +5828,7 @@ func inferConstructionExpected(
   }
   val fields: List[CtorField] = newList()
   val _ = collectCtorFields(tbl, sym, fields)
+  val _ = reportRepeatedCallArgs(diag, "T0104", "field", args, ctorFieldNames(sym))
   // #6739: generalizes the #3156 missing-required-field check (originally
   // scoped to the generic-constructor path only) to non-generic records —
   // omitting a required field from an all-named-args construction used to
@@ -6721,6 +6788,18 @@ func recordGenericArgWidenings(
 // `.name`/`.hasDefault`, so there's no need to resolve real field types
 // (and no need for a `Diagnostic` scratch list / generic context) just to
 // build this list.
+// A union case's fields in declaration order, "" for a positional one.
+func unionCaseSlotNames(uc: in UnionCase): List[String] {
+  val names: List[String] = newList()
+  for f in uc.fields {
+    match f {
+      case UFNamed(nm, _, _) -> names.add(nm)
+      case UFPos(_, _) -> names.add("")
+    }
+  }
+  names
+}
+
 func collectUnionCaseFields(uc: in UnionCase, acc: in List[CtorField]): Unit {
   var i = 0
   while i < uc.fields.count {
@@ -6761,6 +6840,7 @@ func inferUnionCaseConstruction(
         if checkMissingFields {
           val prelimFields: List[CtorField] = newList()
           collectUnionCaseFields(uc, prelimFields)
+          val _ = reportRepeatedCallArgs(diag, "T0104", "field", args, unionCaseSlotNames(uc))
           if reportMissingCtorFields(prelimFields, args, caseSym, span, diag) {
             return TyError
           }
@@ -10600,6 +10680,10 @@ func inferExprCore(
                   }
                 }
                 case None -> {
+                  // No declared signature to pair against, but a name given
+                  // twice is never a valid call (#7846).
+                  val noSlots: List[String] = newList()
+                  val _ = reportRepeatedCallArgs(diag, "T0042", "parameter", args, noSlots)
                   if isMemberCallee {
                     match fnT {
                       case TyError -> match memberRecvTy {
@@ -11716,6 +11800,13 @@ func checkCallArgsAgainstSig(
     }
     mri = mri + 1
   }
+  val paramNames: List[String] = newList()
+  var pni = 0
+  while pni < sig.params.count {
+    paramNames.add(sig.params[pni].name)
+    pni = pni + 1
+  }
+  val _ = reportRepeatedCallArgs(diag, "T0042", "parameter", args, paramNames)
   if args.count < minRequired or args.count > sig.params.count {
     val expectedMsg = if minRequired == sig.params.count {
       toString(sig.params.count) + " argument(s)"
@@ -11729,12 +11820,6 @@ func checkCallArgsAgainstSig(
     // are paired with their parameter by name for named args (#3066),
     // mirroring the constructor path's `argTypesInFieldOrder`; a
     // purely positional call pairs slot k with arg k as before.
-    val paramNames: List[String] = newList()
-    var pni = 0
-    while pni < sig.params.count {
-      paramNames.add(sig.params[pni].name)
-      pni = pni + 1
-    }
     val srcIdx = argIndicesInParamOrder(args, paramNames)
     reportUnpairedCallArgs(diag, sig, args, paramNames, srcIdx, span)
     var k = 0

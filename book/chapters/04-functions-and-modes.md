@@ -179,7 +179,7 @@ func demo(): Unit {
 }
 ```
 
-The rule is the same for every kind of call — free functions, record and `impl` methods, interface members, protected-type entries: named arguments go to the parameters they name, positional arguments fill the rest in order, and anything still missing takes its default. Leaving out a parameter that has no default, or naming a parameter that does not exist, is a compile-time error (`T0042`).
+The rule is the same for every kind of call — free functions, record and `impl` methods, interface members, protected-type entries: named arguments go to the parameters they name, positional arguments fill the rest in order, and anything still missing takes its default. Leaving out a parameter that has no default, naming a parameter that does not exist, or giving a parameter twice (`connect(host = "a", host = "b")`, or `connect("db", host = "x")`, where the positional `"db"` already supplied `host`) is a compile-time error (`T0042`).
 
 A default belongs to the declaration the call resolves through. Calling a method on an interface-typed value uses the interface's defaults; calling it on the concrete type uses the `impl` method's. Declare the same default in both places if the two calls should behave alike.
 

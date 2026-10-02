@@ -977,7 +977,7 @@ func lowerCallArg(ctx: in FuncCtx, insns: in List[LInsn], arg: in CallArg): JvmT
 // A call's arguments in `sig`'s parameter order with its omitted defaulted
 // parameters filled (#1503, #7820): `Lyric.Parser.argsWithDefaults` over the
 // registered parameter names and defaults.  `args` unchanged when `sig`
-// registers no parameter names or the call cannot be paired.
+// registers no parameter names.
 func reorderAndFillJvmArgs(sig: in JvmFuncSig, args: in List[CallArg]): List[CallArg] {
   jvmArgsWithDefaults(sig, 0, args)
 }
@@ -989,10 +989,7 @@ func jvmArgsWithDefaults(sig: in JvmFuncSig, skip: in Int, args: in List[CallArg
   if sig.paramNames.count == 0 {
     return args
   }
-  match argsWithDefaults(sig.paramNames, sig.paramDefaults, skip, args) {
-    case Some(filled) -> filled
-    case None -> args
-  }
+  argsWithDefaults(sig.owner + "." + sig.jvmMethodName, sig.paramNames, sig.paramDefaults, skip, args)
 }
 
 // The reserved language built-ins (T0140: not redeclarable outside
@@ -3811,8 +3808,14 @@ func lowerGeneralStaticCall(
   // and already finds `<cls>#m`) and the bare `m()` form here.  Must come after
   // the ctor check above (constructors are never dispatched as instance calls)
   // and before the general funcSigs lookup (to override any static function of
-  // the same bare name visible at the call site).
-  match ctx.selfClass {
+  // the same bare name visible at the call site).  A qualified call
+  // (`Kernel.send(h, json)` inside a method that is itself named `send`)
+  // names another package's function, never the sibling, exactly as MSIL's
+  // `bareSiblingHit` gate decides (#6489); before this gate it was lowered
+  // as `aload_0; invokevirtual selfCls.send` with the other function's
+  // arguments, bytecode that fails verification (#7846).
+  val siblingCls: Option[String] = if path.segments.count <= 1 { ctx.selfClass } else { None }
+  match siblingCls {
     case Some(selfCls) -> {
       match mapGet(ctx.funcSigs, selfCls + "#" + funcName) {
         case Some(sig) -> {

@@ -1635,22 +1635,21 @@ func collectDeriveFreeSigs(
         if isDeriveFreeName(decl.name) {
           val params: List[JvmType] = newList()
           val paramNames: List[String] = newList()
+          val paramDefaults: List[Option[Expr]] = newList()
           var pi = 0
           while pi < decl.params.count {
             params.add(typeExprToJvmExtern(decl.params[pi].ty, owner, externTypes))
             paramNames.add(decl.params[pi].name)
+            paramDefaults.add(decl.params[pi].dflt)
             pi = pi + 1
           }
           val ret = match decl.ret { case Some(te) -> typeExprToJvmExtern(te, owner, externTypes); case None -> JVoid }
-          // paramDefaults intentionally empty: derive-synthesized free functions have
-          // no default values.  Using an empty list avoids the stage-0 bootstrap
-          // List[Option[Expr]] miscompile on .add() (#3139).
           val sig = JvmFuncSig(
             owner = owner,
             params = params,
             ret = ret,
             paramNames = paramNames,
-            paramDefaults = newList(),
+            paramDefaults = paramDefaults,
             paramModes = newList(),
             isIface = false,
             // Eagerly resolved against the DECLARING file's own package/extern
@@ -1760,6 +1759,7 @@ func collectWovenSigsMatching(
         if matchName(decl.name) {
           val params: List[JvmType] = newList()
           val paramNames: List[String] = newList()
+          val paramDefaults: List[Option[Expr]] = newList()
           var pi = 0
           while pi < decl.params.count {
             // #7357: a QUALIFIED param type (`Lambda.LambdaContext`, the row-
@@ -1774,6 +1774,7 @@ func collectWovenSigsMatching(
             // this file's `externSeedForFile` seed (now transitive) resolves.
             params.add(typeExprToJvmExtern(decl.params[pi].ty, owner, externTypes))
             paramNames.add(decl.params[pi].name)
+            paramDefaults.add(decl.params[pi].dflt)
             pi = pi + 1
           }
           val ret = match decl.ret { case Some(te) -> typeExprToJvmExtern(te, owner, externTypes); case None -> JVoid }
@@ -1782,7 +1783,7 @@ func collectWovenSigsMatching(
             params = params,
             ret = ret,
             paramNames = paramNames,
-            paramDefaults = newList(),
+            paramDefaults = paramDefaults,
             paramModes = newList(),
             isIface = false,
             retGenericArgs = returnTypeGenericArgs(decl.ret),
@@ -1836,11 +1837,9 @@ func collectWovenSigsMatching(
 // Without this, the proceed call falls through to the `(…)Object` guess and
 // the JVM rejects the descriptor mismatch (NoSuchMethodError / VerifyError) —
 // the JVM analogue of the MSIL #3402 weave breakage.  The synthesised target /
-// wrappers keep the original function's params and return type, so an empty
-// `paramDefaults` is correct (the proceed substitution forwards every
-// parameter positionally) and avoids the stage-0 bootstrap
-// `List[Option[Expr]]` `.add()` miscompile (same rationale as
-// `collectDeriveFreeSigs`).
+// wrappers keep the original function's params, defaults and return type.
+// Every sig records its parameters' defaults, one per name, because
+// `Lyric.Parser.argsWithDefaults` pairs each call against them (#7846).
 func collectAspectWovenSigs(
   file: in SourceFile, into: in Map[String, JvmFuncSig], externTypes: in Map[String, String]
 ): Unit {
@@ -1901,10 +1900,10 @@ func isMonoSpecializedName(name: in String): Bool {
 // `owner/name` key are registered — same rationale as `collectAspectWovenSigs`.
 // Param/return types resolve through the file's extern types unioned with the
 // imported `externSeed` (a specialised stdlib sig references `Map[..]` /
-// `List[..]`, whose extern aliases live in `Std.CollectionsHost`).  Empty
-// `paramDefaults` avoids the stage-0 bootstrap `List[Option[Expr]]` `.add()`
-// miscompile (same rationale as `collectDeriveFreeSigs`); mono forwards every
-// argument positionally, so defaults are never consulted at these call sites.
+// `List[..]`, whose extern aliases live in `Std.CollectionsHost`).  A
+// specialised copy keeps the generic's parameter defaults, so a call that
+// names its arguments or leaves a defaulted one out pairs as it would
+// against the generic itself (#7846).
 func collectMonoSpecializedSigs(
   file: in SourceFile,
   into: in Map[String, JvmFuncSig],
@@ -1944,10 +1943,12 @@ func collectMonoSpecializedSigs(
           val params: List[JvmType] = holderAwareParamTypes(decl.params, owner, false, newList(), fnExternTypes)
           val paramNames: List[String] = newList()
           val paramModes: List[ParamMode] = newList()
+          val paramDefaults: List[Option[Expr]] = newList()
           var pi = 0
           while pi < decl.params.count {
             paramNames.add(decl.params[pi].name)
             paramModes.add(decl.params[pi].mode)
+            paramDefaults.add(decl.params[pi].dflt)
             pi = pi + 1
           }
           // A specialised async generator's factory returns the synthesised
@@ -1973,7 +1974,7 @@ func collectMonoSpecializedSigs(
             params = params,
             ret = ret,
             paramNames = paramNames,
-            paramDefaults = newList(),
+            paramDefaults = paramDefaults,
             paramModes = paramModes,
             isIface = false,
             retGenericArgs = if isGenerator {
