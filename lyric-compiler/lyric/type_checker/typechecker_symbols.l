@@ -314,10 +314,15 @@ pub record SymbolTable {
   /// `Lyric.Parser.ListLiteralTypeSite`, #7818).
   listLiteralTypeSites: Map[String, ListLiteralTypeSite]
   /// Each operand evaluated before an `await` or a `?` in the same
-  /// expression whose type is a generic instantiation, keyed by
+  /// expression whose type is a generic instantiation, and each argument of
+  /// a generic constructor that leaves its own type open (#7844), keyed by
   /// `recordCopySiteKey` of the operand's span (see
   /// `Lyric.Parser.HoistOperandTypeSite`, #7823).
   hoistOperandTypeSites: Map[String, HoistOperandTypeSite]
+  /// The type expected of a method call's result, keyed by
+  /// `recordCopySiteKey` of the call's span, while the call is checked
+  /// against it: the hoisted receiver's type can come from it (#7844).
+  methodCallResultExpected: Map[String, Type]
   /// One frame per lambda being checked with no expected return type: the
   /// types of the values its `return` statements produce.  A lambda body that
   /// ends in `return` has the type `Never`; its function type's result is the
@@ -549,6 +554,7 @@ pub func newSymbolTable(): SymbolTable {
     tuplePatternBindingSites = newMap(),
     listLiteralTypeSites = newMap(),
     hoistOperandTypeSites = newMap(),
+    methodCallResultExpected = newMap(),
     lambdaReturnFrames = newList(),
     genericCallTypeArgSites = newMap(),
     lambdaParamTypeSites = newMap(),

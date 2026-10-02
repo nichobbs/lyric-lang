@@ -1359,9 +1359,12 @@ pub record ListLiteralTypeSite {
 /// built a hoisted `None`, `Ok(2)` or `newList()` from the value alone
 /// (`Option<object>` for a `None` passed as an `Option[Int]`).
 /// `Lyric.Mono.desugarCheckedFile` binds the operand to a local annotated
-/// with this type, which the hoist keeps on its fresh local (#7823).  Two
-/// checks of one source position with different types (synthesized code)
-/// are `conflicting` and left as written.
+/// with this type, which the hoist keeps on its fresh local (#7823).  An
+/// argument of a generic constructor whose own type is open (`None` for an
+/// `Option[T]` field) is recorded the same way, since a backend with reified
+/// generics builds it before choosing the constructor's instantiation
+/// (#7844).  Two checks of one source position with different types
+/// (synthesized code) are `conflicting` and left as written.
 pub record HoistOperandTypeSite {
   operandType: TypeExpr
   rendered: String

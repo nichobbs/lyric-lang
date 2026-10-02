@@ -922,7 +922,18 @@ assignment (#7850);
 type, which a generic body's specialisation substitutes like any other
 annotation; and `Lyric.HoistEngine.hzBind` keeps the annotation on the
 fresh local it binds the operand to.  The same holds for `Lyric.Propagate`'s
-`?` hoist, which shares the engine.
+`?` hoist, which shares the engine.  A method receiver whose own type is
+open takes its type from the resolved method's receiver parameter,
+instantiated from the other arguments or the type expected of the result,
+and is T0154 when nothing fixes it (#7844).
+
+A generic constructor's arguments are lowered before its instantiation is
+chosen (`buildInBundleGenericCtorTok` infers it from the argument types), so
+an argument that leaves its own type open was built at `object` when nothing
+around the construction gave its type (`val h = Holder(value = None,
+fallback = 5)`).  The checker records such an argument's field type in
+`SymbolTable.hoistOperandTypeSites` too, and Mono binds it to a local of that
+type in the same way (#7844).
 
 The M1.4 blocking shim (`.GetAwaiter().GetResult()` synchronously) is
 retained as a fallback for ineligible shapes — awaits in expression

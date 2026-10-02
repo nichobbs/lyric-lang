@@ -7061,7 +7061,9 @@ func inferUnionCaseConstruction(
         }
         val gnames = unionDeclGenericNames(decl)
         val ftypes = unionCaseFieldTypes(tbl, diag, uc, gnames, caseSym.originPackage)
-        val targs = inferGenericArgs(gnames, ftypes, argTypes)
+        // Named arguments bind by field name, in any order (#7844).
+        val orderedArgTypes = argTypesInFieldOrder(args, argTypes, unionCaseSlotNames(uc))
+        val targs = inferGenericArgs(gnames, ftypes, orderedArgTypes)
         recordCaseFieldWidenings(tbl, uc, ftypes, gnames, targs, args, argTypes)
         TyUser(id = parentId, name = decl.name, args = targs)
       }
@@ -7188,7 +7190,10 @@ func findGenericInPairs(name: in String, paramTys: in List[Type], argTys: in Lis
 // (`pair(a: T, b: T): T`) the occurrences must agree: a second binding that is
 // not `typeEquiv` to the first yields `TyError` for that name (#2228), so an
 // inconsistent call (already a T0043 at the argument check) doesn't produce a
-// misleading concrete return type.
+// misleading concrete return type.  An argument that leaves the name open
+// (`None` for an `Option[T]` parameter) does not hide what a later argument
+// fixes (#7844): `f(None, 5)` with `f[T](a: Option[T], b: T)` binds `T` to
+// `Int`, not to the hole.
 func inferGenericArgsDeep(names: in List[String], paramTys: in List[Type], argTys: in List[Type]): List[Type] {
   val result: List[Type] = newList()
   var g = 0
@@ -7231,7 +7236,16 @@ func inferOneGenericArg(name: in String, paramTys: in List[Type], argTys: in Lis
             }
             case None -> return TyError
           }
+        } else if typeIsHole(bound) {
+          // An argument that left the parameter open (`None` for an
+          // `Option[T]` parameter) bound nothing; a later one fixes it
+          // (#7844): `Holder(value = None, fallback = 5)` binds `T` to `Int`.
+          bound = v
+          boundBare = bare
         } else {
+          // A partly open binding (`Option[<hole>]`) takes what a later
+          // occurrence fixes inside it.
+          bound = joinOpenTypes(bound, v)
           boundBare = boundBare and bare
         }
       }
@@ -7241,6 +7255,13 @@ func inferOneGenericArg(name: in String, paramTys: in List[Type], argTys: in Lis
     i = i + 1
   }
   bound
+}
+
+func typeIsHole(t: in Type): Bool {
+  match t {
+    case TyError -> true
+    case _ -> false
+  }
 }
 
 func isBareTyVar(t: in Type, name: in String): Bool {
@@ -9902,6 +9923,231 @@ func binopShortCircuits(op: in BinOp): Bool {
   }
 }
 
+// The type the method the checker resolved for `recv.name(args)` gives a
+// receiver evaluated before an `await` or a `?` in the arguments (#7844):
+// its receiver parameter instantiated from the receiver, the other arguments
+// and then, for what they leave open, `resultExpected` (the type expected of
+// the call's result, `TyError` for none).  `TyError` when the call bound to
+// no method the receiver's type declares.
+func hoistedRecvType(
+  tbl: in SymbolTable,
+  methodPick: in Option[MethodCallPick],
+  collMemberParams: in Option[List[CollMemberParam]],
+  recvTy: in Type,
+  name: in String,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  resultExpected: in Type,
+): Type {
+  match methodPick {
+    case Some(mp) -> match mp.fullSig {
+      case Some(fullS) -> return methodRecvTypeFromSig(fullS, recvTy, args, argTypes, resultExpected)
+      case None -> ()
+    }
+    case None -> match collMemberParams { case Some(_) -> (); case None -> return TyError }
+  }
+  // A method of the receiver's own type, or a stdlib collection member: the
+  // receiver's type arguments are left as fresh variables, which the
+  // method's parameters bind from the arguments.
+  val pattern = match unrefine(recvTy) {
+    case TyUser(tid, tname, targs) -> {
+      if targs.count == 0 {
+        return TyError
+      }
+      val vars: List[Type] = newList()
+      var vi = 0
+      while vi < targs.count {
+        vars.add(TyVar(name = recvTypeVarName(vi)))
+        vi = vi + 1
+      }
+      TyUser(id = tid, name = tname, args = vars)
+    }
+    case _ -> return TyError
+  }
+  match methodPick {
+    case Some(_) -> {
+      // Every method that fits the call (overloads, or one method reached
+      // through more than one registration) must give the receiver the same
+      // type.
+      val cands = methodCandidatesFor(tbl, pattern, name)
+      var found: Type = TyError
+      var any = false
+      var ci = 0
+      while ci < cands.count {
+        val c = cands[ci]
+        if args.count <= c.params.count and minRequiredParams(c) <= args.count {
+          val t = recvTypeFromMethod(c, pattern, recvTy, args, argTypes, resultExpected)
+          if not any {
+            found = t
+            any = true
+          } else if renderType(t) != renderType(found) {
+            return TyError
+          }
+        }
+        ci = ci + 1
+      }
+      found
+    }
+    case None -> match stdCollectionMemberParams(tbl, pattern, name, args.count) {
+      case Some(cps) -> {
+        val names = recvTypeVarNames(pattern)
+        val paramTys: List[Type] = newList()
+        val slotTys: List[Type] = newList()
+        var k = 0
+        while k < cps.count and k < argTypes.count {
+          paramTys.add(cps[k].ty)
+          slotTys.add(argTypes[k])
+          k = k + 1
+        }
+        paramTys.add(pattern)
+        slotTys.add(recvTy)
+        substituteTyVars(pattern, names, inferGenericArgsDeep(names, paramTys, slotTys))
+      }
+      case None -> TyError
+    }
+  }
+}
+
+// The type the method `sig` of the receiver's own type, its parameters over
+// `pattern`'s fresh type variables, gives a receiver of type `recvTy`.
+func recvTypeFromMethod(
+  sig: in ResolvedSignature,
+  pattern: in Type,
+  recvTy: in Type,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  resultExpected: in Type,
+): Type {
+  val names = recvTypeVarNames(pattern)
+  var gi = 0
+  while gi < sig.generics.count {
+    names.add(sig.generics[gi])
+    gi = gi + 1
+  }
+  val paramNames: List[String] = newList()
+  var pi = 0
+  while pi < sig.params.count {
+    paramNames.add(sig.params[pi].name)
+    pi = pi + 1
+  }
+  val srcIdx = argIndicesInParamOrder(args, paramNames)
+  val paramTys: List[Type] = newList()
+  val slotTys: List[Type] = newList()
+  var k = 0
+  while k < srcIdx.count {
+    val ai = srcIdx[k]
+    if ai >= 0 and ai < argTypes.count {
+      paramTys.add(sig.params[k].ty)
+      slotTys.add(argTypes[ai])
+    }
+    k = k + 1
+  }
+  paramTys.add(pattern)
+  slotTys.add(recvTy)
+  val targs = inferGenericArgsDeep(names, paramTys, slotTys)
+  fillTypeArgsFromResult(targs, names, sig.returnTy, resultExpected)
+  substituteTyVars(pattern, names, targs)
+}
+
+func recvTypeVarNames(pattern: in Type): List[String] {
+  val names: List[String] = newList()
+  var ni = 0
+  while ni < typeArgsOf(pattern).count {
+    names.add(recvTypeVarName(ni))
+    ni = ni + 1
+  }
+  names
+}
+
+func recvTypeVarName(i: in Int): String {
+  "__lyric_recv_" + toString(i)
+}
+
+func typeArgsOf(t: in Type): List[Type] {
+  match t {
+    case TyUser(_, _, targs) -> targs
+    case _ -> newList()
+  }
+}
+
+// Fill each type argument in `targs` (for `names`) that the call left open
+// from the type expected of its result, `resultExpected`, against the
+// declared result type `retTy`.
+func fillTypeArgsFromResult(targs: in List[Type], names: in List[String], retTy: in Type, resultExpected: in Type): Unit {
+  if typeIsHole(resultExpected) or typeIsHole(retTy) {
+    return
+  }
+  val retTys: List[Type] = newList()
+  retTys.add(retTy)
+  val resTys: List[Type] = newList()
+  resTys.add(unrefine(resultExpected))
+  val fromResult = inferGenericArgsDeep(names, retTys, resTys)
+  var g = 0
+  while g < targs.count and g < fromResult.count {
+    targs[g] = joinOpenTypes(targs[g], fromResult[g])
+    g = g + 1
+  }
+}
+
+// The type a method call's full signature `fullS` (a dot-named function,
+// receiver parameter included) gives its receiver.
+func methodRecvTypeFromSig(
+  fullS: in ResolvedSignature,
+  recvTy: in Type,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  resultExpected: in Type,
+): Type {
+  if fullS.params.count == 0 or args.count > fullS.params.count - 1 {
+    return TyError
+  }
+  val selfTy = fullS.params[0].ty
+  if fullS.generics.count == 0 {
+    return selfTy
+  }
+  val paramNames: List[String] = newList()
+  var pi = 1
+  while pi < fullS.params.count {
+    paramNames.add(fullS.params[pi].name)
+    pi = pi + 1
+  }
+  val srcIdx = argIndicesInParamOrder(args, paramNames)
+  val targs = sigCallTypeArgsInOrder(fullS, Some(value = recvTy), srcIdx, argTypes)
+  fillTypeArgsFromResult(targs, fullS.generics, fullS.returnTy, resultExpected)
+  substituteTyVars(selfTy, fullS.generics, targs)
+}
+
+// A receiver the hoist binds whose type neither it nor the method's signature
+// fixes (`emptyCell().size(await f())` for `func emptyCell[T](): Cell[T]` and
+// `size(self: in Cell[T], k: in Int)`) would be built at an open
+// instantiation by a backend with reified generics, so it is an error: the
+// program annotates it (#7844).
+func reportOpenHoistedReceiver(
+  sc: in Scope,
+  diag: in List[Diagnostic],
+  recv: in Expr,
+  own: in Type,
+  expected: in Type,
+  memberName: in String,
+): Unit {
+  if not hoistBindsOperand(sc, recv) or not typeMentionsGenericInst(own) {
+    return
+  }
+  val t = joinOpenTypes(own, unrefine(expected))
+  if typeIsClosedOver(t, sc.genericNames) {
+    return
+  }
+  diag.add(
+    errorDiagnostic(
+      "T0154",
+      "cannot infer the type arguments of the receiver of '" + memberName +
+        "': it is evaluated before an 'await' or '?' in the arguments, and neither the receiver, the other arguments " +
+        "nor the type expected of the result fixes them; bind the receiver to a local with a type annotation first",
+      recv.span
+    )
+  )
+}
+
 // Whether any argument of a call contains an `await` or a `?`.
 func callArgsHaveHoistHazard(args: in List[CallArg]): Bool {
   var i = 0
@@ -9930,37 +10176,15 @@ func recordHoistedCallArgs(
   recordHoistedOperands(sc, tbl, es, argTypes, expected)
 }
 
-// `inferGenericArgsDeep`, except that an argument leaving a type parameter
-// open (`None` for an `Option[T]` parameter) does not hide what a later
-// argument fixes: `f(None, 5)` with `f[T](a: Option[T], b: T)` binds `T` to
-// `Int`, not to the hole.
-func inferGenericArgsJoined(names: in List[String], paramTys: in List[Type], argTys: in List[Type]): List[Type] {
-  val base = inferGenericArgsDeep(names, paramTys, argTys)
-  val result: List[Type] = newList()
-  var g = 0
-  while g < names.count {
-    var b = base[g]
-    var i = 0
-    while i < paramTys.count and i < argTys.count {
-      match findGenericInPair(names[g], paramTys[i], argTys[i]) {
-        case Some(v) -> {
-          if typeEquiv(b, v) {
-            b = joinOpenTypes(b, v)
-          }
-        }
-        case None -> ()
-      }
-      i = i + 1
-    }
-    result.add(b)
-    g = g + 1
-  }
-  result
-}
-
 // The construction `fn(args)` of `ctorTy`: each argument is expected to have
-// its field's type.
-func recordHoistedCtorArgs(
+// its field's type.  The operands the hoist binds are recorded at it, and so
+// is every argument that leaves its own type open (`None`, `Ok(2)`,
+// `newList()`) when the construction's type fixes it (#7844): a backend with
+// reified generics builds a generic constructor's arguments before it has
+// chosen the constructor's instantiation, so with no type around the
+// construction (`val h = Holder(value = None, fallback = 5)`) the `None` was
+// an `Option<object>` stored in an `Option<int>` field.
+func recordCtorArgOperandTypes(
   sc: in Scope,
   tbl: in SymbolTable,
   fn: in Expr,
@@ -9968,13 +10192,45 @@ func recordHoistedCtorArgs(
   argTypes: in List[Type],
   ctorTy: in Type,
 ): Unit {
-  if not callArgsHaveHoistHazard(args) {
+  val hazard = callArgsHaveHoistHazard(args)
+  val openArg = ctorHasOpenArg(sc, args, argTypes, ctorTy)
+  if not hazard and not openArg {
     return
   }
   match ctorArgExpectedTypes(tbl, fn, args, ctorTy) {
-    case Some(expected) -> recordHoistedCallArgs(sc, tbl, args, argTypes, expected)
+    case Some(expected) -> {
+      if hazard {
+        recordHoistedCallArgs(sc, tbl, args, argTypes, expected)
+      }
+      if openArg {
+        var i = 0
+        while i < args.count and i < argTypes.count and i < expected.count {
+          val ae = callArgExpr(args[i])
+          if not typeIsClosedOver(argTypes[i], sc.genericNames) and hoistBindsOperand(sc, ae) {
+            recordHoistOperandTypeOver(tbl, sc.genericNames, ae, argTypes[i], expected[i])
+          }
+          i = i + 1
+        }
+      }
+    }
     case None -> ()
   }
+}
+
+// Whether the construction of `ctorTy`, a closed generic instantiation,
+// takes an argument whose own type is open.
+func ctorHasOpenArg(sc: in Scope, args: in List[CallArg], argTypes: in List[Type], ctorTy: in Type): Bool {
+  if not typeMentionsGenericInst(ctorTy) or not typeIsClosedOver(ctorTy, sc.genericNames) {
+    return false
+  }
+  var i = 0
+  while i < args.count and i < argTypes.count {
+    if not typeIsClosedOver(argTypes[i], sc.genericNames) {
+      return true
+    }
+    i = i + 1
+  }
+  false
 }
 
 // The type each argument of a call to `sig` is expected to have, in argument
@@ -10047,7 +10303,7 @@ func sigCallTypeArgsInOrder(
     slotTys.add(if ai >= 0 and ai < argTypes.count { argTypes[ai] } else { TyError })
     k = k + 1
   }
-  inferGenericArgsJoined(sig.generics, paramTys, slotTys)
+  inferGenericArgsDeep(sig.generics, paramTys, slotTys)
 }
 
 // Record the type arguments the call to the generic function `sig` whose
@@ -10797,17 +11053,30 @@ func inferExprCore(
         }
       }
       // A receiver evaluated before an argument holding an `await` or a `?`
-      // is hoisted too (#7850).
+      // is hoisted too (#7850).  A receiver whose own type is open
+      // takes it from the method's receiver parameter, instantiated from the
+      // other arguments or the type expected of the result (#7844).
       if isMemberCallee and callArgsHaveHoistHazard(args) {
         match fn.kind {
           case EMember(hoistRecv, _) -> match memberRecvTy {
-            case Some(hoistRecvTy) -> recordHoistOperandType(
-              sc,
-              tbl,
-              hoistRecv,
-              hoistRecvTy,
-              TyError
-            )
+            case Some(hoistRecvTy) -> {
+              val resultExpected = match mapGet(tbl.methodCallResultExpected, recordCopySiteKey(e.span)) {
+                case Some(rx) -> rx
+                case None -> TyError
+              }
+              val recvExpected = hoistedRecvType(
+                tbl,
+                methodPick,
+                collMemberParams,
+                hoistRecvTy,
+                memberName,
+                args,
+                argTypes,
+                resultExpected
+              )
+              recordHoistOperandType(sc, tbl, hoistRecv, hoistRecvTy, recvExpected)
+              reportOpenHoistedReceiver(sc, diag, hoistRecv, hoistRecvTy, recvExpected, memberName)
+            }
             case None -> ()
           }
           case _ -> ()
@@ -10880,14 +11149,14 @@ func inferExprCore(
           case Some(caseSym) -> {
             val caseTy = inferUnionCaseConstruction(tbl, diag, caseSym, args, argTypes, e.span, true)
             noteCtorArgFlows(sc, tbl, fn, args, caseTy)
-            recordHoistedCtorArgs(sc, tbl, fn, args, argTypes, caseTy)
+            recordCtorArgOperandTypes(sc, tbl, fn, args, argTypes, caseTy)
             caseTy
           }
           case None -> match constructorSymbolOf(tbl, fn) {
             case Some(ctorSym) -> {
               val ctorTy = inferConstruction(tbl, diag, ctorSym, args, argTypes, e.span)
               noteCtorArgFlows(sc, tbl, fn, args, ctorTy)
-              recordHoistedCtorArgs(sc, tbl, fn, args, argTypes, ctorTy)
+              recordCtorArgOperandTypes(sc, tbl, fn, args, argTypes, ctorTy)
               ctorTy
             }
             // #6838: the callee names a union/enum TYPE itself, not one of its
@@ -11733,6 +12002,34 @@ func expectsGenericRecordCtor(tbl: in SymbolTable, fn: in Expr, expected: in Typ
   }
 }
 
+// A method call checked where `expected` is expected of its result: a
+// receiver the hoist binds can take its type from it (#7844).
+func inferMethodCallExpected(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  e: in Expr,
+  expected: in Type,
+): Type {
+  if typeIsHole(expected) or isNoSourceSpan(e.span) {
+    return inferExpr(sc, tbl, sigs, diag, e)
+  }
+  val key = recordCopySiteKey(e.span)
+  val prior = mapGet(tbl.methodCallResultExpected, key)
+  if tbl.methodCallResultExpected.containsKey(key) {
+    tbl.methodCallResultExpected.remove(key)
+  }
+  tbl.methodCallResultExpected.add(key, expected)
+  val t = inferExpr(sc, tbl, sigs, diag, e)
+  tbl.methodCallResultExpected.remove(key)
+  match prior {
+    case Some(p) -> tbl.methodCallResultExpected.add(key, p)
+    case None -> ()
+  }
+  t
+}
+
 // A2: infer `e` under a contextual expected type.  The expectation is
 // consumed only by the shapes that need it — a lambda literal (its
 // unannotated params adopt the expected function type's parameter types), an
@@ -11788,7 +12085,7 @@ pub func inferExprExpected(
         match constructorSymbolOf(tbl, fn) {
           case Some(ctorSym) -> {
             val ctorTy = inferConstructionExpected(tbl, diag, ctorSym, cargs, cargTypes, e.span, expected)
-            recordHoistedCtorArgs(sc, tbl, fn, cargs, cargTypes, ctorTy)
+            recordCtorArgOperandTypes(sc, tbl, fn, cargs, cargTypes, ctorTy)
             ctorTy
           }
           case None -> inferExpr(sc, tbl, sigs, diag, e)
@@ -11810,7 +12107,7 @@ pub func inferExprExpected(
               inferUnionCaseConstruction(tbl, diag, caseSym, cargs, cargTypes, e.span, true),
               expected
             )
-            recordHoistedCtorArgs(sc, tbl, fn, cargs, cargTypes, caseTy)
+            recordCtorArgOperandTypes(sc, tbl, fn, cargs, cargTypes, caseTy)
             caseTy
           }
           case None -> if diag.count > diagCountBefore { TyError } else { inferExpr(sc, tbl, sigs, diag, e) }
@@ -11821,6 +12118,7 @@ pub func inferExprExpected(
         val isCaseCtor = match unionCaseSymbolOf(tbl, fn) { case Some(_) -> true; case None -> false }
         adoptUnionCaseExpected(tbl, isCaseCtor, inferExpr(sc, tbl, sigs, diag, e), expected)
       }
+      case EMember(_, _) -> inferMethodCallExpected(sc, tbl, sigs, diag, e, expected)
       case _ -> inferExpr(sc, tbl, sigs, diag, e)
     }
     // #7752: an `if`/`match`/brace block in a position with a known expected
@@ -12062,23 +12360,44 @@ func reportUnknownNamedArgs(diag: in List[Diagnostic], args: in List[CallArg], p
   }
 }
 
-// For each parameter, the index of the one named argument that names it, or
-// -1: the pairing that still holds once an argument is repeated, which
-// leaves the positional arguments' slots unknown.
-func uniqueNamedArgIndices(args: in List[CallArg], paramNames: in List[String]): List[Int] {
-  val idx: List[Int] = newList()
-  for pn in paramNames {
-    var found = -1
-    var n = 0
-    var ai = 0
-    while ai < args.count {
-      match args[ai] {
-        case CANamed(nm, _, _) -> if nm == pn { found = ai; n = n + 1 }
-        case CAPositional(_) -> ()
+// For each parameter, the index of the argument that pairs with it whatever
+// else the call repeats, or -1: a positional argument before the first named
+// one fills the parameter at its own position, and otherwise the one named
+// argument that names the parameter.  A positional argument after a named one
+// is left out, since its slot depends on the pairing a repeat throws off.
+func uniquelyPairedArgIndices(args: in List[CallArg], paramNames: in List[String]): List[Int] {
+  var leading = 0
+  var stop = false
+  while leading < args.count and not stop {
+    match args[leading] {
+      case CAPositional(_) -> {
+        leading = leading + 1
       }
-      ai = ai + 1
+      case CANamed(_, _, _) -> {
+        stop = true
+      }
     }
-    idx.add(if n == 1 { found } else { -1 })
+  }
+  val idx: List[Int] = newList()
+  var pi = 0
+  while pi < paramNames.count {
+    if pi < leading {
+      idx.add(pi)
+    } else {
+      val pn = paramNames[pi]
+      var found = -1
+      var n = 0
+      var ai = 0
+      while ai < args.count {
+        match args[ai] {
+          case CANamed(nm, _, _) -> if nm == pn { found = ai; n = n + 1 }
+          case CAPositional(_) -> ()
+        }
+        ai = ai + 1
+      }
+      idx.add(if n == 1 { found } else { -1 })
+    }
+    pi = pi + 1
   }
   idx
 }
@@ -12110,11 +12429,12 @@ func checkCallArgsAgainstSig(
   }
   // A repeated argument also throws the count and the positional pairing
   // off, so the arity check and the checks of positional arguments would
-  // report the same mistake again.  A name that names no parameter, and each
-  // argument named exactly once, are still checked.
+  // report the same mistake again.  A name that names no parameter, each
+  // positional argument before the first named one, and each argument named
+  // exactly once, are still checked.
   if reportRepeatedCallArgs(diag, "T0042", "parameter", args, paramNames) {
     reportUnknownNamedArgs(diag, args, paramNames)
-    checkPairedCallArgs(sc, tbl, diag, sig, args, argTypes, uniqueNamedArgIndices(args, paramNames), span)
+    checkPairedCallArgs(sc, tbl, diag, sig, args, argTypes, uniquelyPairedArgIndices(args, paramNames), span)
     return
   }
   if args.count < minRequired or args.count > sig.params.count {

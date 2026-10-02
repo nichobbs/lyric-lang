@@ -87,6 +87,7 @@ for t in \
   lyric-compiler/lyric/record_eq_self_test.l \
   lyric-compiler/lyric/byvalue_record_self_test.l \
   lyric-compiler/lyric/inline_union_self_test.l \
+  lyric-compiler/lyric/generic_ctor_open_arg_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_type_self_test.l \
   lyric-compiler/lyric/byte_native_self_test.l \

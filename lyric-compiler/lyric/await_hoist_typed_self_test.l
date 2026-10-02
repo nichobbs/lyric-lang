@@ -13,7 +13,9 @@
 //!
 //! The type checker now records the type of each such operand's position,
 //! `Lyric.Mono` binds the operand to a local of that type, and the hoist keeps
-//! the annotation on its fresh local.  Every case really suspends
+//! the annotation on its fresh local.  A method receiver whose own type is
+//! open takes its type from the resolved method, instantiated from the
+//! other arguments or the expected result (#7844).  Every case really suspends
 //! (`Std.Task.delay`) and runs on both targets.
 //!
 //! Run via `lyric test`:
@@ -251,6 +253,37 @@ async func methodReceiver(): Int {
   OptPair(o = None, n = 2).total(await five())
 }
 
+record Cell[T] {
+  v: Option[T]
+
+  func orDefault(self: in Cell[T], d: in T): T {
+    match self.v {
+      case Some(x) -> x
+      case None -> d
+    }
+  }
+
+  func tagged(self: in Cell[T], tag: in Int): (Option[T], Int) {
+    (self.v, tag)
+  }
+}
+
+func emptyCell[T](): Cell[T] {
+  Cell(v = None)
+}
+
+// A receiver whose own type is open takes its type from the method's
+// receiver parameter, instantiated from the other arguments or the expected
+// result (#7844).
+async func openReceiverFromArgument(): Int {
+  emptyCell().orDefault(await five())
+}
+
+async func openReceiverFromResult(): Int {
+  val r: (Option[Int], Int) = emptyCell().tagged(await five())
+  pairValue(r)
+}
+
 async func tupleElement(): Int {
   pairValue((None, await five()))
 }
@@ -350,6 +383,8 @@ test "a left operand before an awaited right one" {
 test "method receivers and arguments before an awaited argument" {
   assertEqualInt(await methodArg(), 1008, "method argument")
   assertEqualInt(await methodReceiver(), 1007, "method receiver")
+  assertEqualInt(await openReceiverFromArgument(), 5, "open receiver, typed from the argument")
+  assertEqualInt(await openReceiverFromResult(), 1005, "open receiver, typed from the expected result")
 }
 
 test "a tuple element before an awaited one" {
