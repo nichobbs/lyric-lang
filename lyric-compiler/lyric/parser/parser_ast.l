@@ -1219,6 +1219,17 @@ pub record RecordArithSite {
   op: BinOp
 }
 
+/// `a == b` / `a != b` on a record that compares field by field (D164):
+/// `paths` lists the member paths compared at the leaves (a nested
+/// structural record expanded into its fields, a distinct type read through
+/// `value`), `recordType` the type to annotate the operand temporaries with,
+/// and `negate` is set for `!=`.
+pub record RecordEqSite {
+  paths: List[List[String]]
+  recordType: Option[TypeExpr]
+  negate: Bool
+}
+
 /// The types of the temporaries an overflow-checked compound assignment
 /// (`xs[f()] += 1`, `g().count += 1`, D163) binds its target's receiver and
 /// index to, so the target is evaluated once.  `None` where the target has

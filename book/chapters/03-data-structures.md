@@ -45,19 +45,19 @@ Arguments to `.copy` must be named, each naming a real field at most once, with 
 
 **Function-typed fields.** A record can hold functions, and calling one looks like a method call: given `record Handler { apply: (Int) -> Int }`, `h.apply(2)` runs the function stored in `apply`. This is a convenient way to describe a program as data (an `update` and a `view` function, say) and pass it around as one value.
 
-**Structural equality.** A record compiled to a `readonly struct` (all-primitive fields, like `Point` above) gets structural equality for free from the CLR's own default value-type equality: `Point(x = 1.0, y = 2.0) == Point(x = 1.0, y = 2.0)` is always `true`, with no annotation needed. A record compiled to a `record class` (like `Customer`, which holds reference-typed fields) does **not** get this for free — it needs an explicit `@derive(Equals)` annotation to get real field-by-field `==`/`!=` (this also synthesizes a consistent `hashCode`):
+**Structural equality.** A record with no `var` field is a value, so `==` and `!=` compare it field by field: `Point(x = 1.0, y = 2.0) == Point(x = 1.0, y = 2.0)` is `true`, with no annotation needed. A field that is itself such a record is compared by its fields, a distinct type by its underlying value, and every other field with its own type's `==` (a `String` by its text, a union structurally, a `Double` by IEEE rules, so a `NaN` field never compares equal). A record with a function-typed field has no `==` (**T0153**).
+
+A record with a `var` field has identity (see "Values and mutable records" in the reference): `==` asks whether two bindings refer to the same instance. Deriving `Equals` gives it field-by-field `==` instead, and also synthesizes a consistent `hash`:
 
 ```lyric
 @derive(Equals)
-record Customer {
-  id: CustomerId
-  email: Email
-  joinedAt: Instant
-  isActive: Bool
+record Account {
+  var balance: Long
+  owner: String
 }
 ```
 
-Without `@derive(Equals)`, a `record class`-backed record falls back to reference identity — two independently-constructed `Customer` values with identical fields would compare `false`. Unions (§3.2) are different: they get structural equality unconditionally, with no annotation required, regardless of backing representation.
+Unions (§3.2) get structural equality unconditionally, with no annotation required.
 
 **Component-wise arithmetic.** A record whose fields all have the same numeric type can derive `Add` and `Sub`. `+` and `-` then work field by field on two values of that record:
 

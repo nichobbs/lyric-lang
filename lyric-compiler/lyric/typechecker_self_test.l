@@ -3216,6 +3216,13 @@ test "compound arithmetic on a record without the derive is T0030" {
   assertTrue(not hasDiagCode(parseCheck(ok), "T0030"), "+= with derives Add")
 }
 
+test "== on a record with a function field is T0153" {
+  val bad = "package P\nrecord H { f: (Int) -> Int }\nfunc g(a: in H, b: in H): Bool { a == b }\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0153"), "a function field")
+  val mutable = "package P\nrecord H { var f: (Int) -> Int }\nfunc g(a: in H, b: in H): Bool { a == b }\n"
+  assertTrue(not hasDiagCode(parseCheck(mutable), "T0153"), "a mutable record keeps identity")
+}
+
 test "where bound not satisfied rejected" {
   val src = "package P\nrecord Plain { value: Int }\nfunc add2[T](a: in T, b: in T): T where T: Add { default() }\nfunc f(): Plain { add2(Plain(value = 1), Plain(value = 2)) }\n"
   val cr = parseCheck(src)

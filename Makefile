@@ -365,6 +365,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/nested_slice_for_jvm_self_test.l \
 	lyric-compiler/lyric/overflow_panic_self_test.l \
 	lyric-compiler/lyric/overflow_self_test.l \
+	lyric-compiler/lyric/record_eq_self_test.l \
 	lyric-compiler/lyric/record_omitted_default_self_test.l \
 	lyric-compiler/lyric/outparam_self_test.l \
 	lyric-compiler/lyric/parser_self_test.l \

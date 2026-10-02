@@ -197,6 +197,59 @@ func recordArithBlock(site: in RecordArithSite, lhs: in Expr, rhs: in Expr, sp: 
   mkExpr(EBlock(block = Block(statements = stmts, span = wsp)), wsp)
 }
 
+/// Lower `==` / `!=` on a structural record (D164) into a block that binds
+/// each operand once, left to right, and compares the two field by field:
+/// `{ val l: T = a; val r: T = b; l.f == r.f and l.g.h == r.g.h }`, negated
+/// for `!=`.  A record with no fields compares equal.
+pub func lowerRecordEq(file: in SourceFile, sites: in Map[String, RecordEqSite]): SourceFile {
+  if sites.count == 0 {
+    return file
+  }
+  mapFileAndContracts(file, { e: Expr -> rewriteRecordEq(e, sites) }, { s: Statement -> s })
+}
+
+func rewriteRecordEq(e: in Expr, sites: in Map[String, RecordEqSite]): Expr {
+  match e.kind {
+    case EBinop(_, lhs, rhs) -> match mapGet(sites, recordCopySiteKey(e.span)) {
+      case Some(site) -> recordEqBlock(site, lhs, rhs, e.span)
+      case None -> e
+    }
+    case _ -> e
+  }
+}
+
+func recordEqBlock(site: in RecordEqSite, lhs: in Expr, rhs: in Expr, sp: in Span): Expr {
+  val wsp = syntheticSpan(sp)
+  val base = "__lyric_req_" + toString(sp.startPos.offset) + "_" + toString(sp.endPos.offset)
+  val lName = base + "_l"
+  val rName = base + "_r"
+  val stmts: List[Statement] = newList()
+  stmts.add(typedVal(lName, site.recordType, lhs, wsp))
+  stmts.add(typedVal(rName, site.recordType, rhs, wsp))
+  var cmp = mkExpr(ELiteral(lit = LBool(value = true)), wsp)
+  var first = true
+  for path in site.paths {
+    val leaf = mkExpr(EBinop(op = BEq, lhs = memberChain(lName, path, wsp), rhs = memberChain(rName, path, wsp)), wsp)
+    cmp = if first { leaf } else { mkExpr(EBinop(op = BAnd, lhs = cmp, rhs = leaf), wsp) }
+    first = false
+  }
+  val result = if site.negate {
+    mkExpr(EPrefix(op = PreNot, operand = mkExpr(EParen(inner = cmp), wsp)), wsp)
+  } else {
+    cmp
+  }
+  stmts.add(mkStmt(SExpr(expr = result), wsp))
+  mkExpr(EBlock(block = Block(statements = stmts, span = wsp)), wsp)
+}
+
+func memberChain(local: in String, path: in List[String], sp: in Span): Expr {
+  var e = localPath(local, sp)
+  for seg in path {
+    e = mkExpr(EMember(receiver = e, memberName = seg), sp)
+  }
+  e
+}
+
 func typedVal(name: in String, ty: in Option[TypeExpr], init: in Expr, sp: in Span): Statement {
   val pat = Pattern(kind = PBinding(name = name, inner = None), span = sp)
   mkStmt(SLocal(binding = LBVal(pat = pat, ty = ty, init = init)), sp)

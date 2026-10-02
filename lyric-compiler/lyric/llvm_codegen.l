@@ -367,6 +367,9 @@ record Ctx {
   // synthesised functions (destructors) appended during lowering.
   moduleTypeDefs: List[NTypeDefn]
   moduleFns: List[NFunc]
+  // Union equality functions already synthesised (or being synthesised),
+  // by union IR name.
+  unionEqFns: Map[String, Bool]
   // Generic functions (N3.1): declarations by call key, instantiation
   // cache, and reverse instantiation metadata for unification.
   genericFnDefs: Map[String, FunctionDecl]
@@ -2626,6 +2629,13 @@ func lowerBinop(ctx: in Ctx, insns: in List[NInsn], op: in BinOp, lhs: in Expr, 
       }
     }
     return lowerStringBinop(ctx, insns, op, a2, b2)
+  }
+  // Unions compare structurally (docs/01 §2.5): same case, equal payloads.
+  if op == BEq or op == BNeq {
+    match unionInfoOfNType(ctx, a.ty) {
+      case Some(ui) -> return lowerUnionEq(ctx, insns, ui, a, b, op == BNeq)
+      case None -> ()
+    }
   }
   val w = widenOperands(ctx, insns, a, b)
   if isComparisonOp(op) {
@@ -9008,6 +9018,221 @@ func synthUnionDtor(ctx: in Ctx, ui: in NUnionInfo): NFunc {
   )
 }
 
+// ── Union equality ──────────────────────────────────────────────────────────
+/// The registered union a heap pointer type points at, if any.
+func unionInfoOfNType(ctx: in Ctx, t: in NType): Option[NUnionInfo] {
+  val name = match t {
+    case NPtr(pointee) -> match pointee { case NStruct(n, _) -> n; case _ -> return None }
+    case _ -> return None
+  }
+  for k in mapKeys(ctx.unionDefs) {
+    match mapGet(ctx.unionDefs, k) {
+      case Some(ui) -> if ui.irName == name { return Some(value = ui) }
+      case None -> ()
+    }
+  }
+  None
+}
+
+func unionEqName(ui: in NUnionInfo): String {
+  ui.irName + ".eq"
+}
+
+/// `a == b` (or `!=`) on two values of union `ui`, through its synthesised
+/// equality function.
+func lowerUnionEq(ctx: in Ctx, insns: in List[NInsn], ui: in NUnionInfo, a: in NVal, b: in NVal, negate: in Bool): NVal {
+  val fnName = ensureUnionEq(ctx, ui)
+  val ra = freshTmp(ctx)
+  insns.add(NBitcast(dest = ra, fromTy = a.ty, value = a.value, toTy = NPtr(pointee = NI8)))
+  val rb = freshTmp(ctx)
+  insns.add(NBitcast(dest = rb, fromTy = b.ty, value = b.value, toTy = NPtr(pointee = NI8)))
+  val args: List[NArg] = newList()
+  args.add(NArg(ty = NPtr(pointee = NI8), value = NLocal(name = ra)))
+  args.add(NArg(ty = NPtr(pointee = NI8), value = NLocal(name = rb)))
+  val eq = freshTmp(ctx)
+  insns.add(NCall(dest = eq, retTy = NI1, fn = NGlobal(name = fnName), args = args))
+  if not negate {
+    return NVal(ty = NI1, value = NLocal(name = eq))
+  }
+  val ne = freshTmp(ctx)
+  insns.add(NXor(dest = ne, ty = NI1, a = NLocal(name = eq), b = NLitInt(v = 1i64, ty = NI1)))
+  NVal(ty = NI1, value = NLocal(name = ne))
+}
+
+/// The name of union `ui`'s equality function, synthesising it into the
+/// module on first use.  The name is registered before the body is built,
+/// so a union whose payload holds the same union refers to it recursively.
+func ensureUnionEq(ctx: in Ctx, ui: in NUnionInfo): String {
+  val fnName = unionEqName(ui)
+  if not ctx.unionEqFns.containsKey(ui.irName) {
+    ctx.unionEqFns.add(ui.irName, true)
+    ctx.moduleFns.add(synthUnionEq(ctx, ui))
+  }
+  fnName
+}
+
+/// `i1 Union.eq(i8* a, i8* b)`: the same instance, or the same case with
+/// each payload field equal by its own type's `==` (a `String` by its text,
+/// a union structurally, a float by IEEE rules, any other reference by
+/// identity).
+func synthUnionEq(ctx: in Ctx, ui: in NUnionInfo): NFunc {
+  val body: List[NInsn] = newList()
+  body.add(NLabel(name = "entry"))
+  val objTy = unionPtrType(ui)
+  val structTy = match objTy { case NPtr(pointee) -> pointee; case _ -> panic("unreachable") }
+  val trueL = "eq.true"
+  val falseL = "eq.false"
+  val sameL = "eq.cmp"
+  val same = freshTmp(ctx)
+  body.add(NICmp(dest = same, pred = IEq, ty = NPtr(pointee = NI8), a = NLocal(name = "ra"), b = NLocal(name = "rb")))
+  body.add(NCondBr(cond = NLocal(name = same), thenLabel = trueL, elseLabel = sameL))
+  body.add(NLabel(name = sameL))
+  body.add(NBitcast(dest = "oa", fromTy = NPtr(pointee = NI8), value = NLocal(name = "ra"), toTy = objTy))
+  body.add(NBitcast(dest = "ob", fromTy = NPtr(pointee = NI8), value = NLocal(name = "rb"), toTy = objTy))
+  val discA = loadUnionDisc(ctx, body, structTy, "oa")
+  val discB = loadUnionDisc(ctx, body, structTy, "ob")
+  val discEq = freshTmp(ctx)
+  body.add(NICmp(dest = discEq, pred = IEq, ty = NI32, a = NLocal(name = discA), b = NLocal(name = discB)))
+  val switchL = "eq.switch"
+  body.add(NCondBr(cond = NLocal(name = discEq), thenLabel = switchL, elseLabel = falseL))
+  body.add(NLabel(name = switchL))
+  val switchCases: List[NSwitchCase] = newList()
+  var ci = 0
+  while ci < ui.cases.count {
+    switchCases.add(NSwitchCase(matchVal = ci.toLong(), label = "eq.case." + ci.toString()))
+    ci = ci + 1
+  }
+  body.add(NSwitch(ty = NI32, scrutinee = NLocal(name = discA), defaultLabel = trueL, cases = switchCases))
+  var cj = 0
+  while cj < ui.cases.count {
+    body.add(NLabel(name = "eq.case." + cj.toString()))
+    val caseTy = casePayloadStructType(ui, ui.cases[cj])
+    val hasFields = ui.cases[cj].fieldTys.count > 0
+    val pa = if hasFields { loadCasePayloadPtr(ctx, body, ui, structTy, caseTy, "oa") } else { "" }
+    val pb = if hasFields { loadCasePayloadPtr(ctx, body, ui, structTy, caseTy, "ob") } else { "" }
+    var fi = 0
+    while fi < ui.cases[cj].fieldTys.count {
+      val fty = ui.cases[cj].fieldTys[fi]
+      if not isVoidNType(fty) {
+        val va = loadCaseField(ctx, body, caseTy, pa, fi, fty)
+        val vb = loadCaseField(ctx, body, caseTy, pb, fi, fty)
+        val eq = emitValueEqN(ctx, body, fty, va, vb)
+        val nextL = "eq.case." + cj.toString() + ".f" + fi.toString()
+        body.add(NCondBr(cond = NLocal(name = eq), thenLabel = nextL, elseLabel = falseL))
+        body.add(NLabel(name = nextL))
+      }
+      fi = fi + 1
+    }
+    body.add(NBr(label = trueL))
+    cj = cj + 1
+  }
+  body.add(NLabel(name = trueL))
+  body.add(NRet(ty = NI1, value = NLitInt(v = 1i64, ty = NI1)))
+  body.add(NLabel(name = falseL))
+  body.add(NRet(ty = NI1, value = NLitInt(v = 0i64, ty = NI1)))
+  val params: List[NParam] = newList()
+  params.add(NParam(name = "ra", ty = NPtr(pointee = NI8)))
+  params.add(NParam(name = "rb", ty = NPtr(pointee = NI8)))
+  val attrs: List[String] = newList()
+  NFunc(
+    name = unionEqName(ui),
+    params = params,
+    retTy = NI1,
+    isPublic = false,
+    isExtern = false,
+    body = body,
+    attributes = attrs
+  )
+}
+
+func loadUnionDisc(ctx: in Ctx, body: in List[NInsn], structTy: in NType, obj: in String): String {
+  val discPtr = freshTmp(ctx)
+  val args: List[NArg] = newList()
+  args.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  args.add(NArg(ty = NI32, value = NLitInt(v = unionDiscSlot, ty = NI32)))
+  body.add(NGEP(dest = discPtr, ty = structTy, ptr = NLocal(name = obj), indices = args))
+  val disc = freshTmp(ctx)
+  body.add(NLoad(dest = disc, ty = NI32, ptr = NLocal(name = discPtr)))
+  disc
+}
+
+func loadCasePayloadPtr(
+  ctx: in Ctx,
+  body: in List[NInsn],
+  ui: in NUnionInfo,
+  structTy: in NType,
+  caseTy: in NType,
+  obj: in String,
+): String {
+  val payloadPtr = freshTmp(ctx)
+  val args: List[NArg] = newList()
+  args.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  args.add(NArg(ty = NI32, value = NLitInt(v = unionPayloadSlot, ty = NI32)))
+  body.add(NGEP(dest = payloadPtr, ty = structTy, ptr = NLocal(name = obj), indices = args))
+  val casePtr = freshTmp(ctx)
+  body.add(
+    NBitcast(
+      dest = casePtr,
+      fromTy = NPtr(pointee = NArray(elem = NI64, size = ui.payloadWords)),
+      value = NLocal(name = payloadPtr),
+      toTy = NPtr(pointee = caseTy)
+    )
+  )
+  casePtr
+}
+
+func loadCaseField(
+  ctx: in Ctx, body: in List[NInsn], caseTy: in NType, casePtr: in String, fi: in Int, fty: in NType
+): String {
+  val fieldPtr = freshTmp(ctx)
+  val args: List[NArg] = newList()
+  args.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  args.add(NArg(ty = NI32, value = NLitInt(v = fi.toLong(), ty = NI32)))
+  body.add(NGEP(dest = fieldPtr, ty = caseTy, ptr = NLocal(name = casePtr), indices = args))
+  val v = freshTmp(ctx)
+  body.add(NLoad(dest = v, ty = fty, ptr = NLocal(name = fieldPtr)))
+  v
+}
+
+/// An `i1` local holding `a == b` for two values of IR type `t`, by the
+/// rules `synthUnionEq` documents.
+func emitValueEqN(ctx: in Ctx, body: in List[NInsn], t: in NType, a: in String, b: in String): String {
+  val dest = freshTmp(ctx)
+  if isStringNType(t) {
+    val r = freshTmp(ctx)
+    val args: List[NArg] = newList()
+    args.add(NArg(ty = t, value = NLocal(name = a)))
+    args.add(NArg(ty = t, value = NLocal(name = b)))
+    body.add(NCall(dest = r, retTy = NI32, fn = NGlobal(name = "lyric_string_eq"), args = args))
+    body.add(NICmp(dest = dest, pred = INe, ty = NI32, a = NLocal(name = r), b = NLitInt(v = 0i64, ty = NI32)))
+    return dest
+  }
+  match t {
+    case NDouble | NFloat -> {
+      body.add(NFCmp(dest = dest, pred = FOeq, ty = t, a = NLocal(name = a), b = NLocal(name = b)))
+      return dest
+    }
+    case _ -> ()
+  }
+  match unionInfoOfNType(ctx, t) {
+    case Some(inner) -> {
+      val fnName = ensureUnionEq(ctx, inner)
+      val ra = freshTmp(ctx)
+      body.add(NBitcast(dest = ra, fromTy = t, value = NLocal(name = a), toTy = NPtr(pointee = NI8)))
+      val rb = freshTmp(ctx)
+      body.add(NBitcast(dest = rb, fromTy = t, value = NLocal(name = b), toTy = NPtr(pointee = NI8)))
+      val args: List[NArg] = newList()
+      args.add(NArg(ty = NPtr(pointee = NI8), value = NLocal(name = ra)))
+      args.add(NArg(ty = NPtr(pointee = NI8), value = NLocal(name = rb)))
+      body.add(NCall(dest = dest, retTy = NI1, fn = NGlobal(name = fnName), args = args))
+      return dest
+    }
+    case None -> ()
+  }
+  body.add(NICmp(dest = dest, pred = IEq, ty = t, a = NLocal(name = a), b = NLocal(name = b)))
+  dest
+}
+
 // ── Construction ─────────────────────────────────────────────────────────────
 /// Allocate a heap object and initialise its ARC header (rc = 1 per
 /// Rule 1; dtor null when the type owns no refs).
@@ -10827,6 +11052,7 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     caseToGenericUnion = mod.caseToGenericUnion,
     moduleTypeDefs = mod.moduleTypeDefs,
     moduleFns = mod.moduleFns,
+    unionEqFns = mod.unionEqFns,
     genericFnDefs = mod.genericFnDefs,
     genericFnPkg = mod.genericFnPkg,
     fnInstCache = mod.fnInstCache,
@@ -11728,6 +11954,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     caseToGenericUnion = emptyCaseGen,
     moduleTypeDefs = newList(),
     moduleFns = newList(),
+    unionEqFns = newMap(),
     genericFnDefs = emptyGenFns,
     genericFnPkg = emptyGenFnPkg,
     fnInstCache = emptyFnInsts,
