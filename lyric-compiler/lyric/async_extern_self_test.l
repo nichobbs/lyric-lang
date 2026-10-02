@@ -128,3 +128,9 @@ test "generic extern receiver on a spawn handle reports a timeout as false and k
 test "generic extern receiver bound to a spawn call used directly as the argument" {
   assertTrue(taskWaitMs(spawn spawnedUnitWork(10), 10000), "a spawn expression passed straight to the generic")
 }
+
+test "generic extern receiver bound to a parenthesised spawn operand" {
+  val t = spawn (spawnedIntWork(10))
+  assertTrue(taskWaitMs(t, 10000), "spawn of a parenthesised async call still hands the generic a task")
+  assertEqualInt(await t, 41, "the handle awaits to the callee's result")
+}

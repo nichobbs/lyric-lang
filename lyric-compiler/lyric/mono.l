@@ -1848,6 +1848,7 @@ func spawnHandleTEMono(state: in MonoState, inner: in Expr): Option[TypeExpr] {
     return None
   }
   match inner.kind {
+    case EParen(operand) -> spawnHandleTEMono(state, operand)
     case ECall(_, _) -> if state.asyncCallSites.containsKey(recordCopySiteKey(inner.span)) {
       Some(value = TypeExpr(kind = TRef(path = singleSegPath("Task")), span = inner.span))
     } else {
