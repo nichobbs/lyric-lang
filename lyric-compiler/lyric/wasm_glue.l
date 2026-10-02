@@ -50,7 +50,7 @@ func kindOf(te: in TypeExpr): String {
   match te.kind {
     case TRef(path) -> {
       val n = segLast(path)
-      if n == "Int" or n == "Long" or n == "Bool" or n == "Byte" or n == "Float" or n == "Double" or n == "String" {
+      if n == "Int" or n == "Long" or n == "Bool" or n == "Byte" or n == "Float" or n == "Double" or n == "String" or n == "Unit" {
         return n
       }
       ""

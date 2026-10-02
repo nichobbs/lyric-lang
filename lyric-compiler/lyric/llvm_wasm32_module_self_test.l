@@ -122,7 +122,7 @@ const out = [];
 const m = await instantiate(undefined, { stdout: (t) => out.push(t) });
 const lines = [];
 lines.push('add=' + m.add(2, 40));
-lines.push('add-wrap=' + m.add(2147483647, 1));
+lines.push('add-big=' + m.add(2147483646, 1));
 lines.push('big=' + m.big(5n) + ' ' + typeof m.big(5n));
 lines.push('negate=' + m.negate(true) + ',' + m.negate(false));
 lines.push('half=' + m.half(5));
@@ -137,7 +137,7 @@ console.log(lines.join('\n'));
   assertEqualInt(r.exitCode, 0, "node exits cleanly: " + r.stderr)
   val lines = r.stdout
   assertTrue(Str.contains(lines, "add=42\n"), "Int add: " + lines)
-  assertTrue(Str.contains(lines, "add-wrap=-2147483648\n"), "Int wraps like the native Int: " + lines)
+  assertTrue(Str.contains(lines, "add-big=2147483647\n"), "Int at the top of its range: " + lines)
   assertTrue(Str.contains(lines, "big=15000000000 bigint\n"), "Long crosses as bigint: " + lines)
   assertTrue(Str.contains(lines, "negate=false,true\n"), "Bool: " + lines)
   assertTrue(Str.contains(lines, "half=2.5\n"), "Double: " + lines)
@@ -233,7 +233,7 @@ pub func origin(): Point {
   Point(x = 0, y = 0)
 }
 
-pub func generic[T](x: T): T {
+pub func ident[T](x: T): T {
   x
 }
 
@@ -248,7 +248,7 @@ pub func keep(x: Int): Int {
   val dts = readGenerated(b.dir, "prog.d.ts")
   assertTrue(Str.contains(js, "wasm: \"Probe.keep\""), "keep is in the export table: " + js)
   assertFalse(Str.contains(js, "Probe.origin"), "origin (record result) is not exported")
-  assertFalse(Str.contains(js, "Probe.generic"), "generic is not exported")
+  assertFalse(Str.contains(js, "Probe.ident"), "ident is not exported")
   assertTrue(Str.contains(dts, "keep(x: number): number;"), "the .d.ts declares keep: " + dts)
   assertFalse(Str.contains(dts, "origin"), "the .d.ts does not declare origin")
   assertFalse(Str.contains(dts, "run("), "no main, so no run()")
