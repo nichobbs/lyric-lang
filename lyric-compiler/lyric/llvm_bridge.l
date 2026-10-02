@@ -330,6 +330,53 @@ pub func findLyricRtArchive(): String {
   walkUpFor(Environment.currentDirectory(), devRel)
 }
 
+/// Whether `triple` targets WebAssembly (docs/35): those builds link with a
+/// wasi-sdk clang against the per-triple `lyric_rt` archive, never the host's.
+func isWasmTriple(triple: in String): Bool {
+  Str.startsWith(triple, "wasm32")
+}
+
+/// clang's canonical spelling of the WASI triple; the shorter `wasm32-wasi`
+/// makes it print an "overriding the module target triple" warning.
+func normalizeNativeTriple(triple: in String): String {
+  if triple == "wasm32-wasi" {
+    return "wasm32-unknown-wasi"
+  }
+  triple
+}
+
+/// Locate the wasm32 `lyric_rt` archive: `$LYRIC_RT_WASM32_PATH` override, the
+/// installed layout (`<bin>/lib/lyric_rt-wasm32-wasi.a`), then the dev layout
+/// (`lyric-rt/build/wasm32-wasi/lyric_rt.a`).  `$LYRIC_RT_PATH` is the HOST
+/// archive's override and never applies here.
+func findWasmRtArchive(): String {
+  val envOverride = Environment.getVarOrDefault("LYRIC_RT_WASM32_PATH", "")
+  if envOverride.length > 0 and File.fileExists(envOverride) {
+    return envOverride
+  }
+  val appBase = Environment.appBaseDirectory()
+  val installed = Path.join(Path.join(appBase, "lib"), "lyric_rt-wasm32-wasi.a")
+  if File.fileExists(installed) {
+    return installed
+  }
+  val devRel = Path.join(Path.join(Path.join("lyric-rt", "build"), "wasm32-wasi"), "lyric_rt.a")
+  val hit = walkUpFor(appBase, devRel)
+  if hit.length > 0 {
+    return hit
+  }
+  walkUpFor(Environment.currentDirectory(), devRel)
+}
+
+/// The wasi-sdk install root (`$WASI_SDK_PATH`, the variable wasi-sdk's own
+/// docs use), or "" when it is not set or has no clang.
+func findWasiSdk(): String {
+  val root = Environment.getVarOrDefault("WASI_SDK_PATH", "")
+  if root.length > 0 and File.fileExists(Path.join(Path.join(root, "bin"), "clang")) {
+    return root
+  }
+  ""
+}
+
 /// The host triple from `clang -print-effective-triple`, or "" when
 /// clang is unavailable.
 func detectHostTriple(): String {
@@ -1388,10 +1435,11 @@ func linkAndEmitNative(
 
   // Resolve the target triple before codegen (the datalayout depends
   // on it).
-  var effTriple = triple
+  var effTriple = normalizeNativeTriple(triple)
   if effTriple.length == 0 {
     effTriple = detectHostTriple()
   }
+  val isWasm = isWasmTriple(effTriple)
 
   val npkg = codegenNativeBundle(units, effTriple)
   val ll = lowerNativePackage(npkg)
@@ -1406,9 +1454,23 @@ func linkAndEmitNative(
     }
   }
 
-  val rtPath = findLyricRtArchive()
+  val rtPath = if isWasm { findWasmRtArchive() } else { findLyricRtArchive() }
   if rtPath.length == 0 {
-    Console.error("error[N0003]: lyric_rt.a not found (set LYRIC_RT_PATH, or build it with `make -C lyric-rt`)")
+    if isWasm {
+      Console.error(
+        "error[N0003]: the wasm32 lyric_rt archive was not found (set LYRIC_RT_WASM32_PATH, or build it with `make -C lyric-rt wasm32-wasi WASI_SDK=<wasi-sdk>`)"
+      )
+    } else {
+      Console.error("error[N0003]: lyric_rt.a not found (set LYRIC_RT_PATH, or build it with `make -C lyric-rt`)")
+    }
+    Console.error("  the LLVM IR was written to " + llPath)
+    return false
+  }
+  val wasiSdk = if isWasm { findWasiSdk() } else { "" }
+  if isWasm and wasiSdk.length == 0 {
+    Console.error(
+      "error[N0005]: a wasm32 build needs a wasi-sdk (set WASI_SDK_PATH to its install directory, e.g. /opt/wasi-sdk; docs/35 section 5.1)"
+    )
     Console.error("  the LLVM IR was written to " + llPath)
     return false
   }
@@ -1421,18 +1483,23 @@ func linkAndEmitNative(
     clangArgs.add(extraClangFlags[xi])
     xi = xi + 1
   }
-  if triple.length > 0 {
+  if isWasm {
+    clangArgs.add("--target=" + effTriple)
+    clangArgs.add("--sysroot=" + Path.join(Path.join(wasiSdk, "share"), "wasi-sysroot"))
+  } else if triple.length > 0 {
     clangArgs.add("--target=" + triple)
   }
   clangArgs.add(llPath)
   clangArgs.add(rtPath)
   clangArgs.add("-lm")
-  clangArgs.add("-lpthread")
-  // libdl for the lyric_tls.c OpenSSL seam's dlopen/dlsym (a no-op stub on
-  // glibc >= 2.34; a real dependency on older glibc / musl). A program that
-  // never references the TLS seam does not pull lyric_tls.o from the archive,
-  // so this stays inert for non-TLS binaries. docs/61 §7, issue #5890.
-  clangArgs.add("-ldl")
+  if not isWasm {
+    clangArgs.add("-lpthread")
+    // libdl for the lyric_tls.c OpenSSL seam's dlopen/dlsym (a no-op stub on
+    // glibc >= 2.34; a real dependency on older glibc / musl). A program that
+    // never references the TLS seam does not pull lyric_tls.o from the archive,
+    // so this stays inert for non-TLS binaries. docs/61 §7, issue #5890.
+    clangArgs.add("-ldl")
+  }
   var li = 0
   while li < npkg.nativeLibs.count {
     clangArgs.add(nativeLinkArg(npkg.nativeLibs[li]))
@@ -1440,7 +1507,8 @@ func linkAndEmitNative(
   }
   clangArgs.add("-o")
   clangArgs.add(outputPath)
-  match Process.runCapture("clang", clangArgs, 300000) {
+  val clangExe = if isWasm { Path.join(Path.join(wasiSdk, "bin"), "clang") } else { "clang" }
+  match Process.runCapture(clangExe, clangArgs, 300000) {
     case Ok(res) -> {
       if res.exitCode != 0 {
         Console.error("error[N0004]: clang failed while compiling " + llPath + ":")
