@@ -13,9 +13,15 @@ parameter more than once reported the mistake several times:
 Both are fixed:
 
 - `reportRepeatedCallArgs` reports each repeated name once.
-- `checkCallArgsAgainstSig` stops after a repeated argument. That covers
-  functions, methods, `impl` and interface members and `extern func`s.
+- After a repeated argument, `checkCallArgsAgainstSig` skips the arity
+  check and the checks that depend on positional pairing. It still reports
+  a name that names no parameter (`f(a = 1, a = 2, zzz = 3)` is the repeat
+  plus "no parameter named 'zzz'") and type-checks each argument named
+  exactly once (`uniqueNamedArgIndices`). That covers functions, methods,
+  `impl` and interface members and `extern func`s.
 
 The constructor and union-case paths (T0104) share the per-name
 deduplication. `typechecker_self_test.l` asserts exactly one T0042 for
-`f(a = 1, a = 2, a = 3)` and for `x.m(a = 1, a = 2, a = 3)`.
+`f(a = 1, a = 2, a = 3)` and for `x.m(a = 1, a = 2, a = 3)`, the repeat plus
+the unknown-name T0042 for `f(a = 1, a = 2, zzz = 3)`, and a T0043 for
+`f(a = 1, a = 2, b = "s")`.

@@ -12038,14 +12038,7 @@ func reportUnpairedCallArgs(
   srcIdx: in List[Int],
   span: in Span,
 ): Unit {
-  for a in args {
-    match a {
-      case CANamed(nm, _, asp) -> if not paramNames.contains(nm) {
-        diag.add(errorDiagnostic("T0042", "no parameter named '" + nm + "'", asp))
-      }
-      case CAPositional(_) -> ()
-    }
-  }
+  reportUnknownNamedArgs(diag, args, paramNames)
   var k = 0
   while k < sig.params.count {
     if srcIdx[k] < 0 and not sig.params[k].hasDefault {
@@ -12055,6 +12048,39 @@ func reportUnpairedCallArgs(
     }
     k = k + 1
   }
+}
+
+// T0042 for each named argument that names no parameter.
+func reportUnknownNamedArgs(diag: in List[Diagnostic], args: in List[CallArg], paramNames: in List[String]): Unit {
+  for a in args {
+    match a {
+      case CANamed(nm, _, asp) -> if not paramNames.contains(nm) {
+        diag.add(errorDiagnostic("T0042", "no parameter named '" + nm + "'", asp))
+      }
+      case CAPositional(_) -> ()
+    }
+  }
+}
+
+// For each parameter, the index of the one named argument that names it, or
+// -1: the pairing that still holds once an argument is repeated, which
+// leaves the positional arguments' slots unknown.
+func uniqueNamedArgIndices(args: in List[CallArg], paramNames: in List[String]): List[Int] {
+  val idx: List[Int] = newList()
+  for pn in paramNames {
+    var found = -1
+    var n = 0
+    var ai = 0
+    while ai < args.count {
+      match args[ai] {
+        case CANamed(nm, _, _) -> if nm == pn { found = ai; n = n + 1 }
+        case CAPositional(_) -> ()
+      }
+      ai = ai + 1
+    }
+    idx.add(if n == 1 { found } else { -1 })
+  }
+  idx
 }
 
 func checkCallArgsAgainstSig(
@@ -12082,9 +12108,13 @@ func checkCallArgsAgainstSig(
     paramNames.add(sig.params[pni].name)
     pni = pni + 1
   }
-  // A repeated argument also throws the count and the name pairing off, so
-  // the arity and pairing checks below would report the same mistake again.
+  // A repeated argument also throws the count and the positional pairing
+  // off, so the arity check and the checks of positional arguments would
+  // report the same mistake again.  A name that names no parameter, and each
+  // argument named exactly once, are still checked.
   if reportRepeatedCallArgs(diag, "T0042", "parameter", args, paramNames) {
+    reportUnknownNamedArgs(diag, args, paramNames)
+    checkPairedCallArgs(sc, tbl, diag, sig, args, argTypes, uniqueNamedArgIndices(args, paramNames), span)
     return
   }
   if args.count < minRequired or args.count > sig.params.count {
@@ -12102,48 +12132,63 @@ func checkCallArgsAgainstSig(
     // purely positional call pairs slot k with arg k as before.
     val srcIdx = argIndicesInParamOrder(args, paramNames)
     reportUnpairedCallArgs(diag, sig, args, paramNames, srcIdx, span)
-    var k = 0
-    while k < sig.params.count {
-      val p = sig.params[k]
-      val ai = srcIdx[k]
-      if ai >= 0 {
-        val argTy = if ai < argTypes.count { argTypes[ai] } else { TyError }
-        noteExpectedFlow(sc, tbl, callArgExpr(args[ai]), p.ty)
-        if (match p.mode { case PMIn -> true; case _ -> false }) {
-          recordUnsignedWidening(tbl, p.ty, argTy, callArgExpr(args[ai]))
-        }
-        val satisfied = if sig.isExternFunc {
-          argSatisfiesExternParam(tbl, p.ty, argTy)
-        } else {
-          argSatisfiesParam(tbl, p.ty, argTy)
-        }
-        if not satisfied and not literalArgSatisfiesParam(tbl, p.ty, argTy, callArgExpr(args[ai])) {
-          diag.add(
-            errorDiagnostic(
-              "T0043",
-              argTypeMismatchSubject(argTy, args, ai) + " does not match parameter type " + renderOptTypeExpr(p.tyExpr, p.ty) +
-                externCallbackHint(tbl, sig, p.ty) +
-                typeMismatchHint(tbl, p.ty, argTy),
-              span
-            )
-          )
-        }
-        // #1487 (§5.2): a value-type `out`/`inout` argument must be a
-        // writable l-value (reference-type by-ref params are mutated in
-        // place — see `isByRefValueType`).
-        if modeNeedsLValue(p.mode) and isByRefValueType(p.ty) and not argIsValidByRefTarget(sc, callArgExpr(args[ai])) {
-          diag.add(
-            errorDiagnostic(
-              "T0085",
-              "argument for `out`/`inout` parameter '" + p.name +
-                "' must be a mutable l-value (a `var`, or an `out`/`inout` binding)",
-              span
-            )
-          )
-        }
+    checkPairedCallArgs(sc, tbl, diag, sig, args, argTypes, srcIdx, span)
+  }
+}
+
+// Check each argument against the parameter `srcIdx` pairs it with
+// (`srcIdx[k]` is the argument for parameter k, or -1).
+func checkPairedCallArgs(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  sig: in ResolvedSignature,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  srcIdx: in List[Int],
+  span: in Span,
+): Unit {
+  var k = 0
+  while k < sig.params.count {
+    val p = sig.params[k]
+    val ai = srcIdx[k]
+    if ai >= 0 {
+      val argTy = if ai < argTypes.count { argTypes[ai] } else { TyError }
+      noteExpectedFlow(sc, tbl, callArgExpr(args[ai]), p.ty)
+      if (match p.mode { case PMIn -> true; case _ -> false }) {
+        recordUnsignedWidening(tbl, p.ty, argTy, callArgExpr(args[ai]))
       }
-      k = k + 1
+      val satisfied = if sig.isExternFunc {
+        argSatisfiesExternParam(tbl, p.ty, argTy)
+      } else {
+        argSatisfiesParam(tbl, p.ty, argTy)
+      }
+      if not satisfied and not literalArgSatisfiesParam(tbl, p.ty, argTy, callArgExpr(args[ai])) {
+        diag.add(
+          errorDiagnostic(
+            "T0043",
+            argTypeMismatchSubject(argTy, args, ai) + " does not match parameter type " + renderOptTypeExpr(p.tyExpr, p.ty) +
+              externCallbackHint(tbl, sig, p.ty) +
+              typeMismatchHint(tbl, p.ty, argTy),
+            span
+          )
+        )
+      }
+      // #1487 (§5.2): a value-type `out`/`inout` argument must be a
+      // writable l-value (reference-type by-ref params are mutated in
+      // place — see `isByRefValueType`).
+      if modeNeedsLValue(p.mode) and isByRefValueType(p.ty) and not argIsValidByRefTarget(sc, callArgExpr(args[ai])) {
+        diag.add(
+          errorDiagnostic(
+            "T0085",
+            "argument for `out`/`inout` parameter '" + p.name +
+              "' must be a mutable l-value (a `var`, or an `out`/`inout` binding)",
+            span
+          )
+        )
+      }
     }
+    k = k + 1
   }
 }
 

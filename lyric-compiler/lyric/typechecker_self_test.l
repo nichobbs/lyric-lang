@@ -8872,6 +8872,16 @@ test "a parameter repeated past the arity is one T0042" {
   val recSrc = "package P\nrecord A {\n  n: Int\n  func m(self: in A, a: in Int): Int { a }\n}\n"
   val mThrice = parseCheck(recSrc + "func g(x: in A): Int { x.m(a = 1, a = 2, a = 3) }\n")
   assertEqualInt(countDiagCode(mThrice, "T0042"), 1, "x.m(a = 1, a = 2, a = 3): " + diagCodesOf(mThrice))
+  // Checks that do not depend on pairing the repeated name still run: a name
+  // that names no parameter, and an argument named exactly once.
+  val unknown = parseCheck(fnSrc + "func g(): Int { f(a = 1, a = 2, zzz = 3) }\n")
+  assertEqualInt(countDiagCode(unknown, "T0042"), 2, "f(a = 1, a = 2, zzz = 3): " + diagCodesOf(unknown))
+  assertTrue(diagMessagesContain(unknown, "parameter 'a' is given more than once"), "the repeat")
+  assertTrue(diagMessagesContain(unknown, "no parameter named 'zzz'"), "the unknown name")
+  assertFalse(diagMessagesContain(unknown, "expected 2 argument(s)"), "no arity mismatch")
+  val badType = parseCheck(fnSrc + "func g(): Int { f(a = 1, a = 2, b = \"s\") }\n")
+  assertEqualInt(countDiagCode(badType, "T0042"), 1, "f(a = 1, a = 2, b = \"s\"): " + diagCodesOf(badType))
+  assertEqualInt(countDiagCode(badType, "T0043"), 1, "the argument named once is still type-checked")
 }
 
 test "a constructor or union-case field given more than once is T0104 (#7846)" {
