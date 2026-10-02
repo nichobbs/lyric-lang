@@ -1514,6 +1514,8 @@ span, exactly like `T0120`/`J008`.
 | `N0011` | `--shape module` was given a triple that is not wasm32; pass `--triple wasm32-wasi`. |
 | `N0012` | An unknown native output shape name reached the native bridge; the wasm32 shape is `module`. |
 | `N0013` | The `--shape module` JS glue (`<name>.js`) or declarations (`<name>.d.ts`) could not be written next to the `.wasm`. |
+| `N0014` | A `@wasmImport` `extern func` has a parameter or result type the host import ABI cannot carry; use `Int`, `Long`, `Bool`, `Byte`, `Float`, `Double`, `String` or `Unit`. |
+| `N0015` | A package declares a `@wasmImport` `extern func` but the build is not `--shape module`; only that shape can satisfy a host import. |
 
 ### Custom source generators (X-series)
 

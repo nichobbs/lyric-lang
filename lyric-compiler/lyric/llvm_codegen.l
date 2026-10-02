@@ -1729,7 +1729,7 @@ func buildSigs(units: in List[CodegenUnit]): Map[String, NFuncSig] {
       val arity = ef.params.count
       checkExternNoByRefParams(ef)
       val sig = NFuncSig(
-        irName = ef.symbol,
+        irName = externLlName(u.wasmImports, ef.symbol),
         pkg = u.pkgName,
         paramNames = paramNamesOf(ef.params),
         paramTys = paramTysOf(ef.params),
@@ -13377,8 +13377,9 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     var ei = 0
     while ei < u.externs.count {
       val ef = u.externs[ei]
-      if not declaredExterns.containsKey(ef.symbol) {
-        declaredExterns.add(ef.symbol, true)
+      val llName = externLlName(u.wasmImports, ef.symbol)
+      if not declaredExterns.containsKey(llName) {
+        declaredExterns.add(llName, true)
         val plain = externDeclOf(ctx, ef)
         val importModule = wasmImportModule(u.wasmImports, ef.symbol)
         if importModule.length > 0 {
@@ -13387,7 +13388,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
           attrs.add("\"wasm-import-name\"=\"" + ef.symbol + "\"")
           externDecls.add(
             NFunc(
-              name = plain.name,
+              name = llName,
               params = plain.params,
               retTy = plain.retTy,
               isPublic = plain.isPublic,
@@ -13708,6 +13709,18 @@ pub func addWasmImport(imports: in List[WasmImportDecl], symbol: in String, anns
         case _ -> ()
       }
     }
+  }
+}
+
+/// The LLVM symbol an extern is declared and called under.  A wasm import keeps
+/// its JS-visible name in the `wasm-import-name` attribute, so its LLVM name is
+/// namespaced: a host function called `log` must not collide with libm's.
+pub func externLlName(imports: in List[WasmImportDecl], symbol: in String): String {
+  val module = wasmImportModule(imports, symbol)
+  if module.length > 0 {
+    "wasmimport." + module + "." + symbol
+  } else {
+    symbol
   }
 }
 
