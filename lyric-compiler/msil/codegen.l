@@ -5661,7 +5661,9 @@ func inferUntypedStaticValMsilTypeWith(
         )
         match convTy {
           case MObject -> match flattenPureQualifierPB(fn) {
-            case Some(segs) -> if segs.count >= 2 {
+            // A chain rooted at a module-level val is a value-receiver call
+            // (`earlierVal.trim()`), never a package-qualified free call.
+            case Some(segs) -> if segs.count >= 2 and not env.containsKey(segs[0]) and not cctx.staticValMsilTypes.containsKey(segs[0]) {
               resolveQualifiedFreeCallRetTypePB(cctx, pkgName, segs, cargs.count)
             } else {
               MObject
