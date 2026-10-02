@@ -1387,18 +1387,37 @@ pub func recordCopySiteKey(sp: in Span): String {
 /// include it; the receiver itself is never among `args`).  Arguments pair
 /// with parameters as the type checker pairs them: each named argument goes
 /// to its parameter, then the positional ones fill the free parameters left
-/// to right.  None when the arguments cannot be paired (a repeated or
-/// unknown name, too many arguments) or a parameter with no default is
-/// left unsupplied; the type checker has reported that call already.
+/// to right.  The type checker rejects every call whose arguments cannot be
+/// paired this way (T0042: too many arguments, a name naming no parameter or
+/// given twice or after a positional argument took its parameter, a
+/// parameter with no default left unsupplied; #7820, #7846), so reaching a
+/// backend with one is a compiler bug, reported by `panic` rather than
+/// lowered as some backend-specific guess.  `callee` names the function the
+/// backend resolved the call to, for that message.
 pub func argsWithDefaults(
+  callee: in String,
   paramNames: in List[String],
   defaults: in List[Option[Expr]],
   skip: in Int,
   args: in List[CallArg],
-): Option[List[CallArg]] {
+): List[CallArg] {
   val total = paramNames.count - skip
-  if total < 0 or defaults.count != paramNames.count or args.count > total {
-    return None
+  if total < 0 or defaults.count != paramNames.count {
+    panic(
+      "internal compiler error: the parameters registered for '" + callee + "' are inconsistent: " +
+        toString(paramNames.count) +
+        " parameter name(s), " +
+        toString(defaults.count) +
+        " default slot(s), skipping " +
+        toString(skip)
+    )
+  }
+  if args.count > total {
+    unpairableCallArgs(
+      callee,
+      "expected at most " + toString(total) + " argument(s), got " + toString(args.count),
+      paramNames
+    )
   }
   val slots: List[Int] = newList()
   var s = 0
@@ -1418,8 +1437,11 @@ pub func argsWithDefaults(
           }
           pi = pi + 1
         }
-        if found < 0 or slots[found] >= 0 {
-          return None
+        if found < 0 {
+          unpairableCallArgs(callee, "no parameter named '" + nm + "'", paramNames)
+        }
+        if slots[found] >= 0 {
+          unpairableCallArgs(callee, "parameter '" + nm + "' is given more than once", paramNames)
         }
         slots[found] = ai
       }
@@ -1436,7 +1458,7 @@ pub func argsWithDefaults(
           next = next + 1
         }
         if next >= total {
-          return None
+          unpairableCallArgs(callee, "a positional argument has no free parameter", paramNames)
         }
         slots[next] = ai
         next = next + 1
@@ -1453,12 +1475,29 @@ pub func argsWithDefaults(
     } else {
       match defaults[skip + k] {
         case Some(d) -> filled.add(CAPositional(expr = d))
-        case None -> return None
+        case None -> unpairableCallArgs(
+          callee,
+          "parameter '" + paramNames[skip + k] + "' has no argument and no default",
+          paramNames
+        )
       }
     }
     k = k + 1
   }
-  Some(value = filled)
+  filled
+}
+
+func unpairableCallArgs(callee: in String, why: in String, paramNames: in List[String]): Unit {
+  var names = ""
+  for nm in paramNames {
+    names = if names.length == 0 { nm } else { names + ", " + nm }
+  }
+  panic(
+    "internal compiler error: a call to '" + callee + "' (parameters: " + names +
+      ") reached code generation with arguments " +
+      "the type checker should have rejected (T0042): " +
+      why
+  )
 }
 
 /// `e` with every enclosing `EParen` removed.  The type checker keys an open
@@ -1521,17 +1560,15 @@ pub func spellsUnsigned(e: in Expr): Bool {
   }
 }
 
-/// `argsWithDefaults` over declared parameters, or `args` unchanged when
-/// they cannot be paired.
-pub func argsWithParamDefaults(params: in List[Param], skip: in Int, args: in List[CallArg]): List[CallArg] {
+/// `argsWithDefaults` over declared parameters.
+pub func argsWithParamDefaults(
+  callee: in String, params: in List[Param], skip: in Int, args: in List[CallArg]
+): List[CallArg] {
   val names: List[String] = newList()
   val defaults: List[Option[Expr]] = newList()
   for p in params {
     names.add(p.name)
     defaults.add(p.dflt)
   }
-  match argsWithDefaults(names, defaults, skip, args) {
-    case Some(filled) -> filled
-    case None -> args
-  }
+  argsWithDefaults(callee, names, defaults, skip, args)
 }

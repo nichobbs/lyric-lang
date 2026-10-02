@@ -520,3 +520,238 @@ func mapStmt(s: in Statement, m: in AstMapper): Statement {
   val fs = m.stmt
   fs(rebuilt)
 }
+
+/// True when `p` holds for some expression `mapExprsInFile` would visit in
+/// `file` (the same reach, contract clauses excluded), stopping at the first
+/// one.  Nothing is rebuilt.
+pub func anyExprInFile(file: in SourceFile, p: in (Expr) -> Bool): Bool {
+  for it in file.items {
+    if anyInItem(it, p) {
+      return true
+    }
+  }
+  false
+}
+
+func anyInItem(it: in Item, p: in (Expr) -> Bool): Bool {
+  match it.kind {
+    case IFunc(fn) -> anyInFunction(fn, p)
+    case IRecord(decl) -> anyInRecordDecl(decl, p)
+    case IExposedRec(decl) -> anyInRecordDecl(decl, p)
+    case IOpaque(decl) -> {
+      for mem in decl.members {
+        match mem {
+          case OMField(fd) -> if anyInExprOpt(fd.dflt, p) { return true }
+          case _ -> ()
+        }
+      }
+      false
+    }
+    case IImpl(decl) -> {
+      for mem in decl.members {
+        match mem {
+          case IMplFunc(fn) -> if anyInFunction(fn, p) { return true }
+          case _ -> ()
+        }
+      }
+      false
+    }
+    case IInterface(decl) -> {
+      for mem in decl.members {
+        match mem {
+          case IMFunc(fn) -> if anyInFunction(fn, p) { return true }
+          case _ -> ()
+        }
+      }
+      false
+    }
+    case IProtected(decl) -> {
+      for mem in decl.members {
+        val hit = match mem {
+          case PMEntry(ed) -> anyInFunctionBody(ed.body, p)
+          case PMFunc(fn) -> anyInFunction(fn, p)
+          case PMField(pf) -> match pf {
+            case PFVar(_, _, init, _, _, _) -> anyInExprOpt(init, p)
+            case PFLet(_, _, init, _, _, _) -> anyInExprOpt(init, p)
+            case PFImmutable(fd) -> anyInExprOpt(fd.dflt, p)
+          }
+          case _ -> false
+        }
+        if hit {
+          return true
+        }
+      }
+      false
+    }
+    case IVal(decl) -> anyInExpr(decl.init, p)
+    case IConst(decl) -> anyInExpr(decl.init, p)
+    case ITest(decl) -> anyInBlock(decl.body, p)
+    case IProperty(decl) -> anyInExprOpt(decl.guardExpr, p) or anyInBlock(decl.body, p)
+    case _ -> false
+  }
+}
+
+func anyInRecordDecl(decl: in RecordDecl, p: in (Expr) -> Bool): Bool {
+  for mem in decl.members {
+    val hit = match mem {
+      case RMField(fd) -> anyInExprOpt(fd.dflt, p)
+      case RMFunc(fn) -> anyInFunction(fn, p)
+      case _ -> false
+    }
+    if hit {
+      return true
+    }
+  }
+  false
+}
+
+func anyInFunction(fn: in FunctionDecl, p: in (Expr) -> Bool): Bool {
+  match fn.body {
+    case Some(b) -> anyInFunctionBody(b, p)
+    case None -> false
+  }
+}
+
+func anyInFunctionBody(b: in FunctionBody, p: in (Expr) -> Bool): Bool {
+  match b {
+    case FBExpr(e) -> anyInExpr(e, p)
+    case FBBlock(blk) -> anyInBlock(blk, p)
+  }
+}
+
+func anyInExprOpt(eo: in Option[Expr], p: in (Expr) -> Bool): Bool {
+  match eo {
+    case Some(e) -> anyInExpr(e, p)
+    case None -> false
+  }
+}
+
+func anyInExprs(xs: in List[Expr], p: in (Expr) -> Bool): Bool {
+  for x in xs {
+    if anyInExpr(x, p) {
+      return true
+    }
+  }
+  false
+}
+
+func anyInEob(eob: in ExprOrBlock, p: in (Expr) -> Bool): Bool {
+  match eob {
+    case EOBExpr(e) -> anyInExpr(e, p)
+    case EOBBlock(blk) -> anyInBlock(blk, p)
+  }
+}
+
+func anyInExpr(e: in Expr, p: in (Expr) -> Bool): Bool {
+  if p(e) {
+    return true
+  }
+  match e.kind {
+    case EInterpolated(segs) -> {
+      for seg in segs {
+        match seg {
+          case ISExpr(x) -> if anyInExpr(x, p) { return true }
+          case ISText(_, _) -> ()
+        }
+      }
+      false
+    }
+    case EParen(inner) -> anyInExpr(inner, p)
+    case ETuple(xs) -> anyInExprs(xs, p)
+    case EList(xs) -> anyInExprs(xs, p)
+    case EIf(cond, thenB, elseB, _) -> anyInExpr(cond, p) or anyInEob(thenB, p) or
+      (match elseB { case Some(eb) -> anyInEob(eb, p); case None -> false })
+    case EMatch(scrut, arms) -> {
+      if anyInExpr(scrut, p) {
+        return true
+      }
+      for arm in arms {
+        if anyInExprOpt(arm.guard, p) or anyInEob(arm.body, p) {
+          return true
+        }
+      }
+      false
+    }
+    case EAwait(inner) -> anyInExpr(inner, p)
+    case EYield(inner) -> anyInExpr(inner, p)
+    case ESpawn(inner) -> anyInExpr(inner, p)
+    case ETry(inner) -> anyInExpr(inner, p)
+    case EOld(inner) -> anyInExpr(inner, p)
+    case EForall(_, w, body) -> anyInExprOpt(w, p) or anyInExpr(body, p)
+    case EExists(_, w, body) -> anyInExprOpt(w, p) or anyInExpr(body, p)
+    case ELambda(_, body) -> anyInBlock(body, p)
+    case ECall(fn, args) -> {
+      if anyInExpr(fn, p) {
+        return true
+      }
+      for a in args {
+        val v = match a { case CANamed(_, x, _) -> x; case CAPositional(x) -> x }
+        if anyInExpr(v, p) {
+          return true
+        }
+      }
+      false
+    }
+    case ETypeApp(fn, _) -> anyInExpr(fn, p)
+    case EIndex(recv, idx) -> anyInExpr(recv, p) or anyInExprs(idx, p)
+    case EMember(recv, _) -> anyInExpr(recv, p)
+    case EPropagate(inner) -> anyInExpr(inner, p)
+    case EPrefix(_, x) -> anyInExpr(x, p)
+    case EBinop(_, l, r) -> anyInExpr(l, p) or anyInExpr(r, p)
+    case ERange(rb) -> match rb {
+      case RBClosed(lo, hi) -> anyInExpr(lo, p) or anyInExpr(hi, p)
+      case RBHalfOpen(lo, hi, _) -> anyInExpr(lo, p) or anyInExpr(hi, p)
+      case RBLowerOpen(hi) -> anyInExpr(hi, p)
+      case RBUpperOpen(lo) -> anyInExpr(lo, p)
+    }
+    case EAssign(t, _, v) -> anyInExpr(t, p) or anyInExpr(v, p)
+    case EBlock(blk) -> anyInBlock(blk, p)
+    case EUnsafe(blk) -> anyInBlock(blk, p)
+    case _ -> false
+  }
+}
+
+func anyInBlock(blk: in Block, p: in (Expr) -> Bool): Bool {
+  for s in blk.statements {
+    if anyInStmt(s, p) {
+      return true
+    }
+  }
+  false
+}
+
+func anyInStmt(s: in Statement, p: in (Expr) -> Bool): Bool {
+  match s.kind {
+    case SLocal(b) -> match b {
+      case LBVal(_, _, init) -> anyInExpr(init, p)
+      case LBLet(_, _, init) -> anyInExpr(init, p)
+      case LBVar(_, _, init) -> anyInExprOpt(init, p)
+    }
+    case SAssign(t, _, v) -> anyInExpr(t, p) or anyInExpr(v, p)
+    case SReturn(v) -> anyInExprOpt(v, p)
+    case SThrow(x) -> anyInExpr(x, p)
+    case STry(body, catches, fin) -> {
+      if anyInBlock(body, p) {
+        return true
+      }
+      for c in catches {
+        if anyInBlock(c.body, p) {
+          return true
+        }
+      }
+      match fin {
+        case Some(fb) -> anyInBlock(fb, p)
+        case None -> false
+      }
+    }
+    case SDefer(body) -> anyInBlock(body, p)
+    case SScope(_, body) -> anyInBlock(body, p)
+    case SFor(_, _, iter, body) -> anyInExpr(iter, p) or anyInBlock(body, p)
+    case SWhile(_, cond, body) -> anyInExpr(cond, p) or anyInBlock(body, p)
+    case SLoop(_, body) -> anyInBlock(body, p)
+    case SInvariant(x) -> anyInExpr(x, p)
+    case SExpr(x) -> anyInExpr(x, p)
+    case SRule(l, r) -> anyInExpr(l, p) or anyInExpr(r, p)
+    case _ -> false
+  }
+}

@@ -894,6 +894,10 @@ either already match or be a non-generic interface the argument implements;
 a *value* of type `Result[English, String]` is never implicitly a
 `Result[Greeter, String]`. A named argument to a union-case constructor
 must name one of the case's fields, like a record constructor's (**T0101**).
+A record, opaque or union-case constructor given the same field more than
+once — named twice (`Pt(x = 1, x = 2, y = 3)`), or named after a leading
+positional argument already supplied it (`Pt(1, x = 2)`) — is **T0104**,
+reported at the repeated argument (#7846).
 
 An unannotated local whose initializer is an empty construction that fixes
 no type arguments — the stdlib's `newList()`, `newListWithCapacity(n)`,
@@ -1214,7 +1218,11 @@ to the parameter it names, then the positional arguments fill the remaining
 parameters left to right, and every parameter still without an argument
 takes its declared default, evaluated at the call. A named argument that
 names no parameter, or a parameter with no default left without an argument
-(`f(b = 1)` for `f(a: Int, b: Int = 0)`), is **T0042**. A default is the
+(`f(b = 1)` for `f(a: Int, b: Int = 0)`), is **T0042**. So is a parameter
+given more than once: named twice (`f(a = 1, a = 2)`), or named after a
+positional argument already supplied it (`f(1, a = 2)`; the positional
+arguments before the first named one take the leading parameters in order).
+The diagnostic points at the repeated argument (#7846). A default is the
 converted value §4.1 describes (a `UInt` default for a `ULong` parameter
 zero-extends), whichever package makes the call (#7811, #7820).
 

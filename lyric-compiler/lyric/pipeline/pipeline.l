@@ -801,12 +801,10 @@ func lowerFormatBuiltin(e: in Expr): Expr {
 /// bundling backend (JVM, native) otherwise links only when some bundled
 /// package imports it.
 pub func pipeUsesFormatBuiltin(file: in SourceFile): Bool {
-  val hits: List[Bool] = newList()
-  val _ = mapExprsInFile(file, { e: Expr -> noteFormatCall(e, hits) })
-  hits.count > 0
+  anyExprInFile(file, { e: Expr -> isFormatCall(e) })
 }
 
-func noteFormatCall(e: in Expr, hits: in List[Bool]): Expr {
+func isFormatCall(e: in Expr): Bool {
   match e.kind {
     case ECall(fn, cargs) -> match fn.kind {
       case EPath(p) -> {
@@ -819,15 +817,12 @@ func noteFormatCall(e: in Expr, hits: in List[Bool]): Expr {
           )
         val isLowered = p.segments.count == 3 and p.segments[0] == "Std" and p.segments[1] == "String" and
           p.segments[2] == "formatArgs"
-        if isBuiltin or isLowered {
-          hits.add(true)
-        }
+        isBuiltin or isLowered
       }
-      case _ -> ()
+      case _ -> false
     }
-    case _ -> ()
+    case _ -> false
   }
-  e
 }
 
 // `toString(arg)`; a string literal is already its own stringification.

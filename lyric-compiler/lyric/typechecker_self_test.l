@@ -8739,6 +8739,65 @@ test "an unpaired call argument or unsupplied required parameter is T0042 (#7820
   assertEqualInt(countDiagCode(mFine, "T0042"), 0, "a method's defaulted and named forms are accepted")
 }
 
+// #7846: a parameter given twice, by name or by name after a leading
+// positional argument already took it, is T0042 at the repeated argument;
+// the same for a constructor's or union case's field is T0104.
+test "a function or method parameter given more than once is T0042 (#7846)" {
+  val fnSrc = "package P\nfunc f(a: in Int, b: in Int = 0): Int { a + b }\n"
+  val twice = parseCheck(fnSrc + "func g(): Int { f(a = 1, a = 2) }\n")
+  assertEqualInt(countDiagCode(twice, "T0042"), 1, "f(a = 1, a = 2): " + diagCodesOf(twice))
+  assertTrue(diagMessagesContain(twice, "parameter 'a' is given more than once"), "message")
+  val posThenNamed = parseCheck(fnSrc + "func g(): Int { f(1, a = 2) }\n")
+  assertEqualInt(countDiagCode(posThenNamed, "T0042"), 1, "f(1, a = 2): " + diagCodesOf(posThenNamed))
+  assertTrue(
+    diagMessagesContain(
+      posThenNamed,
+      "parameter 'a' is given more than once (positional argument 1 already supplies it)"
+    ),
+    "message"
+  )
+  val fine = parseCheck(fnSrc + "func g(): Int { f(b = 2, 1) + f(1, b = 2) + f(a = 1, b = 2) }\n")
+  assertEqualInt(diagCount(fine), 0, "each parameter given once: " + diagCodesOf(fine))
+  val recSrc = "package P\nrecord A {\n  n: Int\n  func m(self: in A, a: in Int, b: in Int = 1): Int { a + b }\n}\n"
+  val mTwice = parseCheck(recSrc + "func g(x: in A): Int { x.m(a = 1, a = 2) }\n")
+  assertEqualInt(countDiagCode(mTwice, "T0042"), 1, "x.m(a = 1, a = 2): " + diagCodesOf(mTwice))
+  val mPos = parseCheck(recSrc + "func g(x: in A): Int { x.m(1, a = 2) }\n")
+  assertEqualInt(countDiagCode(mPos, "T0042"), 1, "x.m(1, a = 2): " + diagCodesOf(mPos))
+  val implSrc = "package P\ninterface S {\n  func area(self: in Self, k: in Int, j: in Int = 0): Int\n}\n" +
+    "record Q {\n  s: Int\n}\nimpl S for Q {\n  func area(self: in Q, k: in Int, j: in Int = 0): Int { self.s * k + j }\n}\n"
+  val viaImpl = parseCheck(implSrc + "func g(q: in Q): Int { q.area(k = 1, k = 2) }\n")
+  assertEqualInt(countDiagCode(viaImpl, "T0042"), 1, "impl method: " + diagCodesOf(viaImpl))
+  val viaIface = parseCheck(implSrc + "func g(s: in S): Int { s.area(1, k = 2) }\n")
+  assertEqualInt(countDiagCode(viaIface, "T0042"), 1, "interface member: " + diagCodesOf(viaIface))
+  val ext = parseCheck(externAbsSrc("  cAbs(x = 1, x = 2)\n"))
+  assertTrue(diagMessagesContain(ext, "parameter 'x' is given more than once"), "extern func: " + diagCodesOf(ext))
+}
+
+test "a constructor or union-case field given more than once is T0104 (#7846)" {
+  val recSrc = "package P\nrecord Pt {\n  x: Int\n  y: Int\n}\n"
+  val twice = parseCheck(recSrc + "func g(): Pt { Pt(x = 1, x = 2, y = 3) }\n")
+  assertEqualInt(countDiagCode(twice, "T0104"), 1, "Pt(x = 1, x = 2, y = 3): " + diagCodesOf(twice))
+  assertTrue(diagMessagesContain(twice, "field 'x' is given more than once"), "message")
+  val posThenNamed = parseCheck(recSrc + "func g(): Pt { Pt(1, x = 2) }\n")
+  assertEqualInt(countDiagCode(posThenNamed, "T0104"), 1, "Pt(1, x = 2): " + diagCodesOf(posThenNamed))
+  assertTrue(
+    diagMessagesContain(posThenNamed, "field 'x' is given more than once (positional argument 1 already supplies it)"),
+    "message"
+  )
+  val fine = parseCheck(recSrc + "func g(): Pt { Pt(y = 2, 1) }\nfunc h(): Pt { Pt(1, y = 2) }\n")
+  assertEqualInt(diagCount(fine), 0, "each field given once: " + diagCodesOf(fine))
+  val genSrc = "package P\nrecord Box[T] {\n  v: T\n  w: Int\n}\n"
+  val gen = parseCheck(genSrc + "func g(): Box[Int] { Box(v = 1, v = 2, w = 3) }\n")
+  assertEqualInt(countDiagCode(gen, "T0104"), 1, "generic record: " + diagCodesOf(gen))
+  val unSrc = "package P\nunion U {\n  case C(a: Int, b: Int)\n  case D\n}\n"
+  val caseTwice = parseCheck(unSrc + "func g(): U { C(a = 1, a = 2, b = 3) }\n")
+  assertEqualInt(countDiagCode(caseTwice, "T0104"), 1, "C(a = 1, a = 2, b = 3): " + diagCodesOf(caseTwice))
+  val casePos = parseCheck(unSrc + "func g(): U { C(1, a = 2) }\n")
+  assertEqualInt(countDiagCode(casePos, "T0104"), 1, "C(1, a = 2): " + diagCodesOf(casePos))
+  val caseFine = parseCheck(unSrc + "func g(): U { C(1, b = 2) }\n")
+  assertEqualInt(diagCount(caseFine), 0, "each case field given once: " + diagCodesOf(caseFine))
+}
+
 test "a concrete-typed call resolves through the impl method's own parameters (#7820)" {
   val src = "package P\ninterface S {\n  func area(self: in Self, k: in Int = 2): Int\n}\nrecord Q {\n  s: Int\n}\n" +
     "impl S for Q {\n  func area(self: in Q, k: in Int): Int { self.s * k }\n}\n"
