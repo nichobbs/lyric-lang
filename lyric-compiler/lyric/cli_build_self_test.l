@@ -321,6 +321,16 @@ test "shapeUnsupportedError: module and component are both implemented" {
   }
 }
 
+test "watchShapeError: --watch is refused for the component shape" {
+  match Cli.watchShapeError(true, Cli.SComponent) {
+    case Some(m) -> assertTrue(
+      Str.contains(m, "--watch") and Str.contains(m, "component"),
+      "names the flag and shape: " + m
+    )
+    case None -> assertTrue(false, "watch + component must be refused")
+  }
+}
+
 test "watchShapeError: --watch is refused for the module shape on every build path" {
   match Cli.watchShapeError(true, Cli.SModule) {
     case Some(m) -> assertTrue(
