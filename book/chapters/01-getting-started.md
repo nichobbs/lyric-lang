@@ -393,7 +393,7 @@ By default every declaration is visible only inside its own package. `pub` makes
 
 - Named construction: `User(name = "Alice", age = 30)`. This is the only construction form — positional construction is not allowed.
 - Non-destructive update: `alice.copy(name = "Bob")` produces a new `User` with `name` changed and everything else unchanged.
-- Structural equality: two `User` values are equal if all their fields are equal.
+- Structural equality: two `User` values are equal if all their fields are equal (a record with a `var` field compares by identity instead, unless it derives `Equals`).
 
 ### `val` is immutable, `var` is mutable
 

@@ -197,6 +197,97 @@ func recordArithBlock(site: in RecordArithSite, lhs: in Expr, rhs: in Expr, sp: 
   mkExpr(EBlock(block = Block(statements = stmts, span = wsp)), wsp)
 }
 
+/// Lower `==` / `!=` on a structural record (D164) into a block that binds
+/// each operand once, left to right, and compares the two field by field:
+/// `{ val l: T = a; val r: T = b; l.f == r.f and l.g.h == r.g.h }`, negated
+/// for `!=`.  A record with no fields compares equal.
+pub func lowerRecordEq(file: in SourceFile, sites: in Map[String, RecordEqSite]): SourceFile {
+  if sites.count == 0 {
+    return file
+  }
+  mapFileAndContracts(file, { e: Expr -> rewriteRecordEq(e, sites) }, { s: Statement -> s })
+}
+
+func rewriteRecordEq(e: in Expr, sites: in Map[String, RecordEqSite]): Expr {
+  match e.kind {
+    case EBinop(_, lhs, rhs) -> match mapGet(sites, recordCopySiteKey(e.span)) {
+      case Some(site) -> recordEqBlock(site, lhs, rhs, e.span)
+      case None -> e
+    }
+    case _ -> e
+  }
+}
+
+func recordEqBlock(site: in RecordEqSite, lhs: in Expr, rhs: in Expr, sp: in Span): Expr {
+  val wsp = syntheticSpan(sp)
+  val base = "__lyric_req_" + toString(sp.startPos.offset) + "_" + toString(sp.endPos.offset)
+  val lName = base + "_l"
+  val rName = base + "_r"
+  val stmts: List[Statement] = newList()
+  stmts.add(typedVal(lName, site.recordType, lhs, wsp))
+  stmts.add(typedVal(rName, site.recordType, rhs, wsp))
+  // Each nested record level is bound once per side to a temporary of its
+  // type: a backend that erases generic fields cannot read a member off an
+  // untyped intermediate value.
+  val lLevels: Map[String, String] = newMap()
+  val rLevels: Map[String, String] = newMap()
+  var cmp = mkExpr(ELiteral(lit = LBool(value = true)), wsp)
+  var first = true
+  for path in site.paths {
+    val lhsLeaf = leafRead(lName, path, site.levelTypes, lLevels, stmts, wsp)
+    val rhsLeaf = leafRead(rName, path, site.levelTypes, rLevels, stmts, wsp)
+    val leaf = mkExpr(EBinop(op = BEq, lhs = lhsLeaf, rhs = rhsLeaf), wsp)
+    cmp = if first { leaf } else { mkExpr(EBinop(op = BAnd, lhs = cmp, rhs = leaf), wsp) }
+    first = false
+  }
+  val result = if site.negate {
+    mkExpr(EPrefix(op = PreNot, operand = mkExpr(EParen(inner = cmp), wsp)), wsp)
+  } else {
+    cmp
+  }
+  stmts.add(mkStmt(SExpr(expr = result), wsp))
+  mkExpr(EBlock(block = Block(statements = stmts, span = wsp)), wsp)
+}
+
+// The read of the leaf at `path` off operand `local`, binding each nested
+// record level `levelTypes` names to a typed temporary the first time a path
+// goes through it (`levels` maps a level's dotted path to its temporary).
+func leafRead(
+  local: in String,
+  path: in List[String],
+  levelTypes: in Map[String, TypeExpr],
+  levels: in Map[String, String],
+  stmts: in List[Statement],
+  sp: in Span,
+): Expr {
+  var e = localPath(local, sp)
+  var dotted = ""
+  var i = 0
+  while i < path.count {
+    val seg = path[i]
+    dotted = if dotted.length == 0 { seg } else { dotted + "." + seg }
+    e = mkExpr(EMember(receiver = e, memberName = seg), sp)
+    if i < path.count - 1 {
+      match mapGet(levels, dotted) {
+        case Some(bound) -> {
+          e = localPath(bound, sp)
+        }
+        case None -> match mapGet(levelTypes, dotted) {
+          case Some(te) -> {
+            val name = local + "_" + toString(levels.count)
+            stmts.add(typedVal(name, Some(value = te), e, sp))
+            levels[dotted] = name
+            e = localPath(name, sp)
+          }
+          case None -> ()
+        }
+      }
+    }
+    i = i + 1
+  }
+  e
+}
+
 func typedVal(name: in String, ty: in Option[TypeExpr], init: in Expr, sp: in Span): Statement {
   val pat = Pattern(kind = PBinding(name = name, inner = None), span = sp)
   mkStmt(SLocal(binding = LBVal(pat = pat, ty = ty, init = init)), sp)

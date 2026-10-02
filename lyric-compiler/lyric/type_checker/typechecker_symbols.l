@@ -404,6 +404,7 @@ pub record SymbolTable {
   /// span, or by the statement's span for `a += b`.  Lowered by
   /// `Lyric.ContractElaborator.lowerRecordArith`.
   recordArithSites: Map[String, RecordArithSite]
+  recordEqSites: Map[String, RecordEqSite]
   /// Integer arithmetic that can overflow (D163), keyed by span:
   /// `add:<T>` / `sub:<T>` / `mul:<T>` for a binop, `neg:<T>` for unary
   /// minus, `compound:<T>` for `x += y` / `-=` / `*=` (keyed by the
@@ -565,6 +566,7 @@ pub func newSymbolTable(): SymbolTable {
     distinctOpSites = newMap(),
     distinctCompoundSites = newMap(),
     recordArithSites = newMap(),
+    recordEqSites = newMap(),
     overflowSites = newMap(),
     overflowCompoundTemps = newMap(),
     importRulePkg = newList(),

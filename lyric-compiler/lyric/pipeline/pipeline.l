@@ -584,8 +584,13 @@ pub func pipeCheckAndMono(
   // Operators on distinct types go through the underlying value (#7361),
   // which also re-checks a range subtype's derived arithmetic (#7226).
   val distinctLowered = lowerDistinctOps(invChecked, tcRes.symbols.distinctOpSites, tcRes.symbols.distinctCompoundSites)
-  // Component-wise arithmetic on homogeneous numeric records (D155).
-  val recordLowered = lowerRecordArith(distinctLowered, tcRes.symbols.recordArithSites)
+  // Component-wise arithmetic on homogeneous numeric records (D155), and
+  // field-by-field `==` / `!=` on value records and records deriving
+  // `Equals` (D164).
+  val recordLowered = lowerRecordEq(
+    lowerRecordArith(distinctLowered, tcRes.symbols.recordArithSites),
+    tcRes.symbols.recordEqSites
+  )
   // Integer overflow panics in a debug build and wraps in a release build or
   // in the standard library (D163); `.wrappingAdd(...)` and its siblings
   // become the plain operator either way.

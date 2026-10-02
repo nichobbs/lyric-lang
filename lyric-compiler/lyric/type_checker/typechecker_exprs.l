@@ -1480,6 +1480,142 @@ pub func recordRecordArith(tbl: in SymbolTable, lhs: in Type, rhs: in Type, op: 
   }
 }
 
+// A record whose `==` compares field by field (D164): one with no `var`
+// field (a value, D157), or one that derives `Equals`.
+pub func isStructuralEqRecord(tbl: in SymbolTable, t: in Type): Bool {
+  match unrefine(t) {
+    case TyUser(tid, _, _) -> match recordSymbolOfTid(tbl, tid) {
+      case Some(rs) -> {
+        val decl = match rs.kind { case DKRecord(_, rd) -> rd; case DKExposedRec(_, rd) -> rd; case _ -> return false }
+        if hasDerive(tbl, "Equals", t) {
+          return true
+        }
+        for m in decl.members {
+          match m {
+            case RMField(fd) -> if fd.isMutable { return false }
+            case _ -> ()
+          }
+        }
+        true
+      }
+      case None -> false
+    }
+    case _ -> false
+  }
+}
+
+// `==` / `!=` on a structural record (D164).  The site lists the member
+// paths compared at the leaves: a field that is itself a structural record
+// is expanded into its fields, and a distinct type is compared through
+// `.value`.  A field of function type has no `==` (T0153).
+pub func recordRecordEq(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  lhs: in Type,
+  rhs: in Type,
+  negate: Bool,
+  span: in Span,
+): Unit {
+  if not typeEquiv(lhs, rhs) or not isStructuralEqRecord(tbl, lhs) {
+    return
+  }
+  val paths: List[List[String]] = newList()
+  val prefix: List[String] = newList()
+  val levelTypes: Map[String, TypeExpr] = newMap()
+  val visiting: List[String] = newList()
+  match collectEqLeaves(tbl, span, lhs, prefix, paths, levelTypes, visiting) {
+    case Some(bad) -> diag.add(
+      errorDiagnostic(
+        "T0153",
+        "`" + renderType(lhs) + "` has no `==`: field `" + bad +
+          "` is a function, and functions cannot be compared",
+        span
+      )
+    )
+    case None -> {
+      val key = recordCopySiteKey(span)
+      if not tbl.recordEqSites.containsKey(key) {
+        tbl.recordEqSites.add(
+          key,
+          RecordEqSite(paths = paths, levelTypes = levelTypes, recordType = typeExprForRef(tbl, lhs, span), negate = negate)
+        )
+      }
+    }
+  }
+}
+
+func collectEqLeaves(
+  tbl: in SymbolTable,
+  span: in Span,
+  t: in Type,
+  prefix: in List[String],
+  leaves: in List[List[String]],
+  levelTypes: in Map[String, TypeExpr],
+  visiting: in List[String],
+): Option[String] {
+  val u = unrefine(t)
+  match u {
+    case TyFunction(_, _, _) -> return Some(value = dottedPath(prefix))
+    case _ -> ()
+  }
+  match u {
+    case TyUser(tid, _, args) -> {
+      // The guard keys on the instantiated type, so `Box[Box[Int]]` expands
+      // both levels.  A record that reaches itself through its own fields has
+      // no finite value; its repeated occurrence is compared as a leaf, and so
+      // is any expansion nested deeper than `maxEqExpansionDepth`.
+      val key = renderType(u)
+      if isStructuralEqRecord(tbl, u) and not listContainsStr(visiting, key) and visiting.count < maxEqExpansionDepth() {
+        visiting.add(key)
+        if prefix.count > 0 {
+          match typeExprForRef(tbl, u, span) {
+            case Some(te) -> {
+              levelTypes[dottedPath(prefix)] = te
+            }
+            case None -> ()
+          }
+        }
+        for f in fieldsOfRecordInstantiated(tbl, tid, args) {
+          val bad = collectEqLeaves(tbl, span, f.ty, extendPath(prefix, f.name), leaves, levelTypes, visiting)
+          match bad {
+            case Some(_) -> return bad
+            case None -> ()
+          }
+        }
+        visiting.removeAt(visiting.count - 1)
+        return None
+      }
+      val scratch: List[Diagnostic] = newList()
+      match distinctMemberType(tbl, scratch, u, "value", span) {
+        case Some(under) -> return collectEqLeaves(tbl, span, under, extendPath(prefix, "value"), leaves, levelTypes, visiting)
+        case None -> ()
+      }
+    }
+    case _ -> ()
+  }
+  leaves.add(prefix)
+  None
+}
+
+func maxEqExpansionDepth(): Int = 32
+
+func dottedPath(segs: in List[String]): String {
+  var joined = ""
+  for s in segs {
+    joined = if joined.length == 0 { s } else { joined + "." + s }
+  }
+  joined
+}
+
+func extendPath(prefix: in List[String], name: in String): List[String] {
+  val p: List[String] = newList()
+  for s in prefix {
+    p.add(s)
+  }
+  p.add(name)
+  p
+}
+
 // The overflow-checked integer type `t` is, or "" (D163).  `Nat` is left out:
 // it is a non-negative `Long` whose arithmetic keeps its own rules.
 pub func overflowTypeName(t: in Type): String {
@@ -1687,6 +1823,7 @@ func inferBinop(
         )
       }
       recordDistinctCompare(tbl, lhs, rhs, span)
+      recordRecordEq(tbl, diag, lhs, rhs, false, span)
       TyPrim(pt = PtBool)
     }
     case BNeq -> {
@@ -1700,6 +1837,7 @@ func inferBinop(
         )
       }
       recordDistinctCompare(tbl, lhs, rhs, span)
+      recordRecordEq(tbl, diag, lhs, rhs, true, span)
       TyPrim(pt = PtBool)
     }
     case BLt -> {

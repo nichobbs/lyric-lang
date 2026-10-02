@@ -10,7 +10,7 @@
 # erased_slot_widen_self_test.l, #7782; list_insert_self_test.l, #7797;
 # list_literal_join_self_test.l, #7818; await_hoist_typed_self_test.l, #7823;
 # expected_type_propagation_self_test.l, #7855; the overflow self-tests,
-# D163),
+# D163; record_eq_self_test.l, D164),
 # through one
 # `lyric test`
 # invocation per file.
@@ -96,6 +96,7 @@ for t in \
   lyric-compiler/lyric/expected_type_propagation_self_test.l \
   lyric-compiler/lyric/overflow_self_test.l \
   lyric-compiler/lyric/overflow_panic_self_test.l \
+  lyric-compiler/lyric/record_eq_self_test.l \
   lyric-compiler/lyric/unsigned_typed_ops_self_test.l \
   lyric-compiler/lyric/unsigned_literal_max_self_test.l \
   lyric-compiler/lyric/signed_literal_suffix_range_self_test.l \
