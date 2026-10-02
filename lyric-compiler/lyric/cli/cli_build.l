@@ -1891,7 +1891,11 @@ func cmdBuild(argv: in slice[String]): Int {
       val dir = Path.dirname(sourcePath)
       val stem = stemOf(Path.basename(sourcePath), 2)  // strip ".l"
       val buildKind = readBuildKindFromManifest(manifestArg)
-      val ext = match axes.shape { case SModule -> ".wasm"; case SComponent -> ".wasm"; case _ -> outputExt(target, buildKind) }
+      val ext = match axes.shape {
+        case SModule -> ".wasm"
+        case SComponent -> ".wasm"
+        case _ -> outputExt(target, buildKind)
+      }
       Path.join(dir, stem + ext)
     }
   }

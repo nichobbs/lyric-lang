@@ -1758,7 +1758,9 @@ func runWasmTools(args: in List[String], what: in String): Bool {
     case Err(e) -> {
       Console.error(
         "error[N0016]: wasm-tools could not be run (" + findWasmTools() +
-          "); install it (docs/35 section 5.1) or point $WASM_TOOLS at the binary (" + e + ")"
+          "); install it (docs/35 section 5.1) or point $WASM_TOOLS at the binary (" +
+          e +
+          ")"
       )
       false
     }

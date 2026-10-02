@@ -310,13 +310,10 @@ test "shapeTargetError: module and component are native-only wasm32 shapes (docs
   }
 }
 
-test "shapeUnsupportedError: component is F0044 until W4; module is implemented" {
+test "shapeUnsupportedError: module and component are both implemented" {
   match Cli.shapeUnsupportedError(Cli.SComponent, Emitter.Native) {
-    case None -> assertTrue(false, "component must be reported unimplemented")
-    case Some(m) -> assertTrue(
-      Str.contains(m, "F0044") and Str.contains(m, "docs/35"),
-      "component names F0044, got: " + m
-    )
+    case None -> ()
+    case Some(m) -> assertTrue(false, "component is implemented, got: " + m)
   }
   match Cli.shapeUnsupportedError(Cli.SModule, Emitter.Native) {
     case None -> ()
@@ -326,7 +323,10 @@ test "shapeUnsupportedError: component is F0044 until W4; module is implemented"
 
 test "watchShapeError: --watch is refused for the module shape on every build path" {
   match Cli.watchShapeError(true, Cli.SModule) {
-    case Some(m) -> assertTrue(Str.contains(m, "--watch") and Str.contains(m, "module"), "names the flag and shape: " + m)
+    case Some(m) -> assertTrue(
+      Str.contains(m, "--watch") and Str.contains(m, "module"),
+      "names the flag and shape: " + m
+    )
     case None -> assertTrue(false, "watch + module must be refused")
   }
   match Cli.watchShapeError(false, Cli.SModule) {
