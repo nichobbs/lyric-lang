@@ -1200,7 +1200,7 @@ func addFuncSig(
 ): Unit {
   // Imported stdlib functions don't get to shadow the codegen builtins.
   // `println`, `toString`, `panic`, `assert`, `expect`, `default`,
-  // `format1`, `format2` are wired in `codegenBuiltinType` with
+  // `format1`-`format4` are wired in `codegenBuiltinType` with
   // intentionally polymorphic `TyError` parameter types so that
   // ergonomic forms like `println(11)` typecheck.  The stdlib's
   // concrete `pub func println(s: in String): Unit` would, once it's
@@ -1285,7 +1285,9 @@ func isCodegenBuiltinName(name: in String): Bool {
   name == "println" or name == "toString" or name == "panic" or name == "default" or name == "expect" or
     name == "assert" or
     name == "format1" or
-    name == "format2"
+    name == "format2" or
+    name == "format3" or
+    name == "format4"
 }
 
 // The bare names every backend's `lowerBuiltinOrStaticCall{Msil,}`/

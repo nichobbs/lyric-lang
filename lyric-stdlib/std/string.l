@@ -299,6 +299,91 @@ pub func joinList(sep: in String, xs: in List[String]): String {
 }
 
 // ---------------------------------------------------------------------------
+// Placeholder formatting - the runtime of the `format1`-`format4` builtins.
+// ---------------------------------------------------------------------------
+/// Substitute `args` into the placeholders of `template`.
+///
+/// `{n}`, where `n` is one or more decimal digits, is replaced by `args[n]`.
+/// `{{` is a literal `{` and `}}` is a literal `}`.  An argument no
+/// placeholder names is ignored.  Any other `{` or `}` panics, as does a
+/// placeholder whose index has no argument, so a template either formats in
+/// full or not at all.  Every other character is copied unchanged.  Linear
+/// in the length of the result.
+///
+/// The `format1`-`format4` builtins stringify each argument exactly as
+/// `toString` does and call this function on every target (#7840), so
+/// `formatArgs("{0}+{1}", ["a", "b"])` is `format2("{0}+{1}", "a", "b")`,
+/// for any number of arguments.
+@pure
+@stable(since = "1.2")
+pub func formatArgs(template: in String, args: in slice[String]): String {
+  val n = template.length
+  val sb = StringBuilder.new()
+  var segStart = 0
+  var i = 0
+  while i < n {
+    val c = SH.hostCodeUnitAt(template, i)
+    if c == 123 {
+      sb.append(template.substring(segStart, i - segStart))
+      if i + 1 < n and SH.hostCodeUnitAt(template, i + 1) == 123 {
+        sb.append("{")
+        i += 2
+      } else {
+        var j = i + 1
+        var index = 0
+        while j < n and isAsciiDigitUnit(SH.hostCodeUnitAt(template, j)) {
+          // Past `args.length` the index can only be out of range, so stop
+          // accumulating rather than overflow on a long digit run.
+          if index <= args.length {
+            index = index * 10 + (SH.hostCodeUnitAt(template, j) - 48)
+          }
+          j += 1
+        }
+        if j == i + 1 or j >= n or SH.hostCodeUnitAt(template, j) != 125 {
+          panic(
+            "format: malformed placeholder at offset " + toString(i) + " of template \"" + template +
+              "\"; a placeholder is {n} with a decimal argument index, and a literal brace is written {{ or }}"
+          )
+        }
+        if index >= args.length {
+          panic(
+            "format: placeholder " + template.substring(i, j + 1 - i) + " at offset " + toString(i) + " of template \"" +
+              template +
+              "\" has no argument; " +
+              toString(args.length) +
+              " supplied"
+          )
+        }
+        sb.append(args[index])
+        i = j + 1
+      }
+      segStart = i
+    } else if c == 125 {
+      sb.append(template.substring(segStart, i - segStart))
+      if i + 1 < n and SH.hostCodeUnitAt(template, i + 1) == 125 {
+        sb.append("}")
+        i += 2
+        segStart = i
+      } else {
+        panic(
+          "format: unmatched '}' at offset " + toString(i) + " of template \"" + template +
+            "\"; a literal brace is written {{ or }}"
+        )
+      }
+    } else {
+      i += 1
+    }
+  }
+  sb.append(template.substring(segStart, n - segStart))
+  sb.toString()
+}
+
+@pure
+func isAsciiDigitUnit(c: in Int): Bool {
+  c >= 48 and c <= 57
+}
+
+// ---------------------------------------------------------------------------
 // StringBuilder.
 // ---------------------------------------------------------------------------
 /// A mutable string accumulator with amortised O(1) append.

@@ -678,7 +678,119 @@ pub func pipeWeave(
   if gate(pkgLabel, origins, weaveRes.diagnostics) {
     return None
   }
-  Some(value = AwaitHoist.hoistAwaitsFile(weaveRes.file, extraRecordDecls))
+  // After weaving, so advice spliced in from another package is lowered too;
+  // before the await hoist, which must see the tree codegen sees.
+  val formatted = mapExprsInFile(weaveRes.file, lowerFormatBuiltin)
+  Some(value = AwaitHoist.hoistAwaitsFile(formatted, extraRecordDecls))
+}
+
+/// `formatN(template, a1, ..., aN)` becomes
+/// `Std.String.formatArgs(template, [toString(a1), ..., toString(aN)])`
+/// (#7840).  The placeholder grammar is implemented once, in Lyric, and every
+/// argument is stringified exactly as `toString` stringifies it, so the
+/// builtins agree on every target: a `UInt`/`ULong` argument the type checker
+/// respelled as `.toUInt()`/`.toULong()` (#7812) renders unsigned, a `Double`
+/// renders culture-invariant, and a `Byte` renders 0..255.  The template is
+/// evaluated first and the arguments left to right, as before.  Every
+/// synthesised node carries the call's own span: each is a `String`, as the
+/// call is, so a span-keyed side table can never type one of them as the
+/// argument it wraps.  A bundling backend links `Std.String` into any build
+/// whose sources `pipeUsesFormatBuiltin`.
+func lowerFormatBuiltin(e: in Expr): Expr {
+  match e.kind {
+    case ECall(fn, cargs) -> match fn.kind {
+      case EPath(p) -> if p.segments.count == 1 {
+        match formatBuiltinArity(p.segments[0]) {
+          case Some(arity) -> if cargs.count == arity + 1 {
+            val strs: List[Expr] = newList()
+            var i = 1
+            while i < cargs.count {
+              strs.add(stringifiedFormatArg(callArgExprOf(cargs[i]), e.span))
+              i = i + 1
+            }
+            val calleeSegs: List[String] = newList()
+            calleeSegs.add("Std")
+            calleeSegs.add("String")
+            calleeSegs.add("formatArgs")
+            val newArgs: List[CallArg] = newList()
+            newArgs.add(CAPositional(expr = callArgExprOf(cargs[0])))
+            newArgs.add(CAPositional(expr = Expr(kind = EList(exprs = strs), span = e.span)))
+            Expr(
+              kind = ECall(
+                fn = Expr(kind = EPath(path = ModulePath(segments = calleeSegs, span = fn.span)), span = fn.span),
+                args = newArgs
+              ),
+              span = e.span
+            )
+          } else {
+            e
+          }
+          case None -> e
+        }
+      } else {
+        e
+      }
+      case _ -> e
+    }
+    case _ -> e
+  }
+}
+
+/// True when `file` calls a `format1`-`format4` builtin, before or after
+/// `lowerFormatBuiltin` rewrote it: its build needs `Std.String`, which a
+/// bundling backend (JVM, native) otherwise links only when some bundled
+/// package imports it.
+pub func pipeUsesFormatBuiltin(file: in SourceFile): Bool {
+  val hits: List[Bool] = newList()
+  val _ = mapExprsInFile(file, { e: Expr -> noteFormatCall(e, hits) })
+  hits.count > 0
+}
+
+func noteFormatCall(e: in Expr, hits: in List[Bool]): Expr {
+  match e.kind {
+    case ECall(fn, cargs) -> match fn.kind {
+      case EPath(p) -> {
+        val isBuiltin = p.segments.count == 1 and
+          (
+            match formatBuiltinArity(p.segments[0]) {
+              case Some(arity) -> cargs.count == arity + 1
+              case None -> false
+            }
+          )
+        val isLowered = p.segments.count == 3 and p.segments[0] == "Std" and p.segments[1] == "String" and
+          p.segments[2] == "formatArgs"
+        if isBuiltin or isLowered {
+          hits.add(true)
+        }
+      }
+      case _ -> ()
+    }
+    case _ -> ()
+  }
+  e
+}
+
+// `toString(arg)`; a string literal is already its own stringification.
+func stringifiedFormatArg(arg: in Expr, span: in Span): Expr {
+  match arg.kind {
+    case ELiteral(lit) -> match lit { case LString(_) -> return arg; case _ -> () }
+    case _ -> ()
+  }
+  val segs: List[String] = newList()
+  segs.add("toString")
+  val args: List[CallArg] = newList()
+  args.add(CAPositional(expr = arg))
+  Expr(
+    kind = ECall(fn = Expr(kind = EPath(path = ModulePath(segments = segs, span = span)), span = span), args = args),
+    span = span
+  )
+}
+
+func callArgExprOf(arg: in CallArg): Expr {
+  match arg {
+    case CAPositional(x) -> x
+    case CANamed(_, x, _) -> x
+  }
 }
 
 /// `file0` with the rewrites its type check recorded made explicit

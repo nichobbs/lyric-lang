@@ -107,18 +107,20 @@ func codegenBuiltinType(name: in String): Option[Type] {
     ps.add(TyPrim(pt = PtString))
     return Some(value = TyFunction(params = ps, ret = TyPrim(pt = PtUnit), isAsync = false))
   }
-  if name == "format1" {
-    val ps: List[Type] = newList()
-    ps.add(TyPrim(pt = PtString))
-    ps.add(TyError)
-    return Some(value = TyFunction(params = ps, ret = TyPrim(pt = PtString), isAsync = false))
-  }
-  if name == "format2" {
-    val ps: List[Type] = newList()
-    ps.add(TyPrim(pt = PtString))
-    ps.add(TyError)
-    ps.add(TyError)
-    return Some(value = TyFunction(params = ps, ret = TyPrim(pt = PtString), isAsync = false))
+  match formatBuiltinArity(name) {
+    case Some(arity) -> {
+      // `formatN(template, a1, ..., aN)`: a `String` template and N arguments
+      // of any type, each stringified as `toString` does (#7840).
+      val ps: List[Type] = newList()
+      ps.add(TyPrim(pt = PtString))
+      var fi = 0
+      while fi < arity {
+        ps.add(TyError)
+        fi = fi + 1
+      }
+      return Some(value = TyFunction(params = ps, ret = TyPrim(pt = PtString), isAsync = false))
+    }
+    case None -> ()
   }
   if name == "stringToUtf8Bytes" {
     // JVM codegen intrinsic (`lowerCall` in jvm/codegen/04_calls.l): kernel
