@@ -1537,11 +1537,8 @@ func linkAndEmitNative(
     Console.error("error[N0011]: --shape " + shape + " needs a wasm32 triple (pass --triple wasm32-wasi)")
     return false
   }
-  val wasmExports = if isModule or isComponent {
-    collectWasmExportsOf(units, ownUnits)
-  } else {
-    collectWasmExportsOf(units, 0)
-  }
+  val allExports = collectWasmExportsOf(units, if isModule or isComponent { ownUnits } else { 0 })
+  val wasmExports = if isModule { withoutReservedJsNames(allExports) } else { allExports }
   var ui = 0
   while ui < units.count {
     if units[ui].wasmImports.count > 0 and isComponent {

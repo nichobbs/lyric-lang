@@ -627,6 +627,21 @@ func testBuildShapeOnly(): Unit {
   }
 }
 
+// The wasm32 output shapes are manifest-selectable (docs/35 W3/W4).
+func testBuildWasmShapes(): Unit {
+  for name in ["module", "component"] {
+    val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[build]\nshape = \"" + name + "\"\n"
+    val m = parseOk(toml)
+    match m.build {
+      case None -> assertTrue(false, "build-wasm-shapes: expected Some(BuildSection) for " + name)
+      case Some(b) -> {
+        assertEqual(b.shape, name, "build-wasm-shapes: shape " + name)
+        assertTrue(b.shapeDeclared, "build-wasm-shapes: declared " + name)
+      }
+    }
+  }
+}
+
 // Symmetric to `testBuildShapeOnly`: declaring only `profile` leaves
 // `shapeDeclared` false (#6268).
 func testBuildProfileOnlyDeclared(): Unit {
@@ -1010,6 +1025,7 @@ test "[build] kind/shape/profile parse independently" {
 
 test "[build] shape alone leaves kind and profile at defaults" {
   testBuildShapeOnly()
+  testBuildWasmShapes()
 }
 
 test "[build] profile alone leaves shapeDeclared false (#6268)" {

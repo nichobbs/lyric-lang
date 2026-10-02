@@ -201,6 +201,11 @@ pub func collectWasmExports(unit: in CodegenUnit): WasmExportSet {
 /// The host imports of one unit, with `N0014` errors for unsupported signatures.
 func collectUnitImports(unit: in CodegenUnit, imports: in List[WasmImport], errors: in List[String]): Unit {
   for ef in unit.externs {
+    val problem = wasmImportProblem(unit.wasmImports, ef.symbol)
+    if problem.length > 0 {
+      errors.add("error[N0014]: @wasmImport extern func " + unit.pkgName + "." + ef.name + ": " + problem)
+      continue
+    }
     val module = wasmImportModule(unit.wasmImports, ef.symbol)
     if module.length == 0 {
       continue
@@ -427,4 +432,37 @@ pub func renderGlueTypes(set: in WasmExportSet): String {
     "export function instantiate(\n  source?: ArrayBuffer | ArrayBufferView | URL | string | Response | Promise<Response> | WebAssembly.Module,\n  options" +
     optionsMark +
     ": LyricInstantiateOptions,\n): Promise<LyricModule>;\n"
+}
+
+/// Names the generated JS glue object already uses.  An export with one of these
+/// names would overwrite the member (`run`, `memory`, `flush`, `raw`) or make the
+/// `instantiate()` result thenable (`then`), so it is left out with a `W0040`.
+func isReservedJsName(name: in String): Bool {
+  name == "run" or name == "memory" or name == "flush" or name == "raw" or name == "then"
+}
+
+/// `set` without the exports whose names the JS glue object reserves (module shape).
+pub func withoutReservedJsNames(set: in WasmExportSet): WasmExportSet {
+  val kept: List[WasmExport] = newList()
+  val notes: List[String] = newList()
+  for n in set.notes {
+    notes.add(n)
+  }
+  for e in set.exports {
+    if isReservedJsName(e.jsName) {
+      notes.add(
+        "warning[W0040]: pub func " + e.wasmName + " is not exported to JS: '" + e.jsName +
+          "' is a member of the generated glue object; rename the function"
+      )
+    } else {
+      kept.add(e)
+    }
+  }
+  WasmExportSet(
+    imports = set.imports,
+    importErrors = set.importErrors,
+    exports = kept,
+    notes = notes,
+    hasMain = set.hasMain
+  )
 }

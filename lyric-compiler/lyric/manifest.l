@@ -1101,14 +1101,15 @@ func resolveBuildShape(entries: in List[Entry]): Result[String, ManifestError] {
   match findString(entries, "build", "shape") {
     case None -> Ok(value = "portable")
     case Some(shape) -> {
-      if shape == "portable" or shape == "standalone" or shape == "aot" {
+      if shape == "portable" or shape == "standalone" or shape == "aot" or shape == "module" or shape == "component" {
         Ok(value = shape)
       } else {
         Err(
           error = InvalidField(
             section = "build",
             field = "shape",
-            message = "must be \"portable\", \"standalone\", or \"aot\", got \"" + shape + "\""
+            message = "must be \"portable\", \"standalone\", \"aot\", \"module\", or \"component\", got \"" + shape +
+              "\""
           )
         )
       }
