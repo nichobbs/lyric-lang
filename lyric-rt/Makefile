@@ -2,7 +2,8 @@
 #
 #   make            -> build/lyric_rt.a
 #   make test       -> build and run the C unit tests
-#   make clean
+#   make clean              (host build only)
+#   make clean-wasm32-wasi
 #
 # CC defaults to clang (the toolchain the native backend drives; D-N-001)
 # but any C11 compiler works.
@@ -31,7 +32,7 @@ OBJS := $(SRCS:src/%.c=$(BUILD)/%.o)
 # it needs libdl (a no-op stub on glibc >= 2.34) and libpthread.
 TEST_LIBS := -lpthread -ldl
 
-.PHONY: all test test-asan clean wasm32-wasi test-wasm32-wasi
+.PHONY: all test test-asan clean clean-wasm32-wasi wasm32-wasi test-wasm32-wasi
 
 all: $(BUILD)/lyric_rt.a
 
@@ -109,4 +110,7 @@ test-wasm32-wasi: $(WASM_BUILD)/lyric_rt.a
 	$(WASMTIME) run --dir=. $(WASM_BUILD)/lyric_rt_test.wasm
 
 clean:
-	rm -rf $(BUILD) $(WASM_BUILD)
+	rm -rf $(BUILD)
+
+clean-wasm32-wasi:
+	rm -rf $(WASM_BUILD)
