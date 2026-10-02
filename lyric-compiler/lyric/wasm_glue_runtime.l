@@ -5,7 +5,7 @@
 package Lyric.WasmGlueRuntime
 
 pub func glueRuntimeJs(): String {
-  r#"// ---- Lyric wasm32 module glue runtime (docs/35, phase W3) ----
+  r"// ---- Lyric wasm32 module glue runtime (docs/35, phase W3) ----
 // Instantiates the module, satisfies its WASI imports in the host, and wraps
 // each exported `pub func` so JS callers pass and receive ordinary values.
 // `wasmFile` and `LYRIC_EXPORTS` come from the generated header above.
@@ -337,5 +337,5 @@ export async function instantiate(source, options = {}) {
   }
   return lyric;
 }
-"#
+"
 }

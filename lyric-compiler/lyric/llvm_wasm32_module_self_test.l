@@ -43,7 +43,18 @@ func buildModule(source: in String, triple: in String): ModuleBuild {
   val dir = Path.join(tempBase(), "lyric-wasm32-module-" + Uuid.uuidToString(Uuid.newUuid()))
   val _ = File.createDir(dir)
   val flags: List[String] = newList()
-  val ok = compileToNativeWithShape(source, Path.join(dir, "prog.wasm"), stdlib, triple, "2", flags, newList(), "", true, "module")
+  val ok = compileToNativeWithShape(
+    source,
+    Path.join(dir, "prog.wasm"),
+    stdlib,
+    triple,
+    "2",
+    flags,
+    newList(),
+    "",
+    true,
+    "module"
+  )
   ModuleBuild(ok = ok, dir = dir)
 }
 
@@ -117,7 +128,7 @@ func main(): Int {
 test "wasm32 module: scalar, Long, Bool, Float, Double, String and Unit exports round-trip through the glue" {
   val r = runNode(
     scalarProgram,
-    r#"import { instantiate } from './prog.js';
+    r"import { instantiate } from './prog.js';
 const out = [];
 const m = await instantiate(undefined, { stdout: (t) => out.push(t) });
 const lines = [];
@@ -132,7 +143,7 @@ lines.push('shout-empty=' + m.shout(''));
 m.nothing();
 lines.push('stdout=' + JSON.stringify(out));
 console.log(lines.join('\n'));
-"#
+"
   )
   assertEqualInt(r.exitCode, 0, "node exits cleanly: " + r.stderr)
   val lines = r.stdout
@@ -144,7 +155,10 @@ console.log(lines.join('\n'));
   assertTrue(Str.contains(lines, "third=0.3333333432674408\n"), "Float is binary32: " + lines)
   assertTrue(Str.contains(lines, "shout=hello, wörld ☃!\n"), "String with non-ASCII: " + lines)
   assertTrue(Str.contains(lines, "shout-empty=hello, !\n"), "empty String: " + lines)
-  assertTrue(Str.contains(lines, "stdout=[\"nothing ran\",\"\\n\"]\n"), "Unit export prints through the stdout hook: " + lines)
+  assertTrue(
+    Str.contains(lines, "stdout=[\"nothing ran\",\"\\n\"]\n"),
+    "Unit export prints through the stdout hook: " + lines
+  )
 }
 
 test "wasm32 module: run() calls main with argv and returns its exit code" {
@@ -165,14 +179,14 @@ func main(): Int {
   5
 }
 "#,
-    r#"import { instantiate } from './prog.js';
+    r"import { instantiate } from './prog.js';
 const out = [];
 const m = await instantiate(undefined, { stdout: (t) => out.push(t) });
 const code = m.run(['x', 'y z']);
 m.flush();
 console.log('code=' + code);
 console.log('out=' + out.join(''));
-"#
+"
   )
   assertEqualInt(r.exitCode, 0, "node exits cleanly: " + r.stderr)
   assertTrue(Str.contains(r.stdout, "code=5\n"), "exit code from main: " + r.stdout)
@@ -181,13 +195,13 @@ console.log('out=' + out.join(''));
 
 test "wasm32 module: repeated String calls do not grow linear memory" {
   val r = runNode(
-    r#"package Probe
+    r"package Probe
 
 pub func echo(s: String): String {
   s + s
 }
-"#,
-    r#"import { instantiate } from './prog.js';
+",
+    r"import { instantiate } from './prog.js';
 const m = await instantiate();
 const text = 'abcdefghij'.repeat(20);
 for (let i = 0; i < 200; i++) m.echo(text);
@@ -197,7 +211,7 @@ for (let i = 0; i < 20000; i++) {
 }
 const after = m.memory.buffer.byteLength;
 console.log('grew=' + (after - before));
-"#
+"
   )
   assertEqualInt(r.exitCode, 0, "node exits cleanly: " + r.stderr)
   assertTrue(Str.contains(r.stdout, "grew=0\n"), "argument and result Strings are released: " + r.stdout)
@@ -206,14 +220,14 @@ console.log('grew=' + (after - before));
 test "wasm32 module: a panic in an export traps, with its message on the stderr hook" {
   val r = runNode(
     scalarProgram,
-    r#"import { instantiate } from './prog.js';
+    r"import { instantiate } from './prog.js';
 const err = [];
 const m = await instantiate(undefined, { stderr: (t) => err.push(t) });
 let trapped = false;
 try { m.bad(1); } catch (e) { trapped = e instanceof WebAssembly.RuntimeError; }
 console.log('trapped=' + trapped);
 console.log('stderr=' + err.join(''));
-"#
+"
   )
   assertEqualInt(r.exitCode, 0, "node exits cleanly: " + r.stderr)
   assertTrue(Str.contains(r.stdout, "trapped=true\n"), "the abort surfaces as a wasm trap: " + r.stdout)
@@ -222,7 +236,7 @@ console.log('stderr=' + err.join(''));
 
 test "wasm32 module: unsupported pub funcs are left out of the glue, the rest are exported" {
   val b = buildModule(
-    r#"package Probe
+    r"package Probe
 
 pub record Point {
   x: Int
@@ -240,7 +254,7 @@ pub func ident[T](x: T): T {
 pub func keep(x: Int): Int {
   x
 }
-"#,
+",
     "wasm32-wasi"
   )
   assertTrue(b.ok, "the module builds")
@@ -261,17 +275,17 @@ test "wasm32 module: a host triple is rejected with N0011" {
 
 test "wasm32 module: a library with no main instantiates and exports its functions" {
   val r = runNode(
-    r#"package Probe
+    r"package Probe
 
 pub func one(): Int {
   1
 }
-"#,
-    r#"import { instantiate } from './prog.js';
+",
+    r"import { instantiate } from './prog.js';
 const m = await instantiate();
 console.log('one=' + m.one());
 console.log('keys=' + Object.keys(m).sort().join(','));
-"#
+"
   )
   assertEqualInt(r.exitCode, 0, "node exits cleanly: " + r.stderr)
   assertTrue(Str.contains(r.stdout, "one=1\n"), "a library with no main instantiates and calls: " + r.stdout)
