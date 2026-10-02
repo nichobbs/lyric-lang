@@ -138,6 +138,24 @@ test "an unannotated u8 literal is a Byte" {
   assertEqual("v=" + typed.value, "v=128", "annotated Box[Byte]")
 }
 
+// #7841: an unsuffixed literal assigned or compound-assigned to a `Byte`
+// takes its type.
+test "an unsuffixed literal on the right of a Byte assignment (#7841)" {
+  var b: Byte = 200u8
+  b += 50
+  assertEqual(toString(b), "250", "Byte += 50")
+  b -= 100
+  assertEqual(toString(b), "150", "Byte -= 100")
+  b /= 7
+  assertEqual(toString(b), "21", "Byte /= 7")
+  b %= 4
+  assertEqual(toString(b), "1", "Byte %= 4")
+  b *= 3
+  assertEqual(toString(b), "3", "Byte *= 3")
+  b = 255
+  assertEqual(toString(b), "255", "Byte = 255")
+}
+
 test "println of a Byte" {
   val a: Byte = 0u8
   val d: Byte = 255u8

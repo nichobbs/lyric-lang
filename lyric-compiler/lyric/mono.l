@@ -6040,6 +6040,42 @@ func float32Literal(e: in Expr): Expr {
   }
 }
 
+// An unsuffixed integer literal the type checker found where a `Byte`,
+// `UInt` or `ULong` is required, given that type's suffix (#7841).
+func suffixedIntLiteral(e: in Expr, sfx: in IntSuffix): Expr {
+  match e.kind {
+    case ELiteral(lit) -> match lit {
+      case LInt(v, _, raw) -> Expr(
+        kind = ELiteral(
+          lit = LInt(
+            value = v,
+            suffix = sfx,
+            raw = raw + intSuffixText(sfx)
+          )
+        ),
+        span = e.span
+      )
+      case _ -> e
+    }
+    case EParen(inner) -> Expr(kind = EParen(inner = suffixedIntLiteral(inner, sfx)), span = e.span)
+    case _ -> e
+  }
+}
+
+func intSuffixText(sfx: in IntSuffix): String {
+  match sfx {
+    case U8 -> "u8"
+    case U16 -> "u16"
+    case U32 -> "u32"
+    case U64 -> "u64"
+    case I8 -> "i8"
+    case I16 -> "i16"
+    case I32 -> "i32"
+    case I64 -> "i64"
+    case NoIntSuffix -> ""
+  }
+}
+
 func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: in Expr): Expr {
   val s = expr.span
   val ownSites = checkerSitesApplyMono(state)
@@ -6056,6 +6092,10 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
         state.argConversionSites.remove(convKey)
         if conv.method == floatLiteralSiteMethod() {
           return float32Literal(expr)
+        }
+        match intLiteralSiteSuffix(conv.method) {
+          case Some(sfx) -> return suffixedIntLiteral(expr, sfx)
+          case None -> ()
         }
         val inner = rewriteExpr(state, env, expr)
         val noArgs: List[CallArg] = newList()

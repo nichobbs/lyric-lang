@@ -847,6 +847,55 @@ test "unsigned operands at signedness-sensitive positions are conversion sites (
   assertEqualInt(signed.symbols.argConversionSites.count, 0, "no site for a signed operand, ==, or +")
 }
 
+// The methods of the conversion sites `cr` recorded, comma-separated.
+func conversionMethodsOf(cr: in CheckResult): String {
+  val ms: List[String] = newList()
+  for k in mapKeys(cr.symbols.argConversionSites) {
+    match mapGet(cr.symbols.argConversionSites, k) {
+      case Some(site) -> ms.add(site.method)
+      case None -> ()
+    }
+  }
+  Str.joinList(",", ms)
+}
+
+// #7841: an unsuffixed literal assigned or compound-assigned to a `Byte`,
+// `UInt` or `ULong` takes the target's type, as at a binding, and is given
+// its suffix; one that does not fit is T0015, not a type mismatch.
+test "an unsuffixed literal takes the type of an assignment target (#7841)" {
+  for ty in ["Byte", "UInt", "ULong", "Int", "Long"] {
+    for op in ["=", "+=", "-=", "*=", "/=", "%="] {
+      val src = "package P\nfunc f(x0: in " + ty + "): " + ty + " {\n  var x = x0\n  x " + op + " 7\n  x\n}\n"
+      val cr = parseCheck(src)
+      assertEqualInt(diagCount(cr), 0, ty + " x " + op + " 7: " + diagCodesOf(cr))
+    }
+  }
+  val u = parseCheck("package P\nfunc f(): UInt {\n  var x: UInt = 10u32\n  x %= 7\n  x\n}\n")
+  assertEqualInt(diagCount(u), 0, "UInt %= 7: " + diagCodesOf(u))
+  assertEqualInt(u.symbols.argConversionSites.count, 1, "the literal takes the u32 suffix")
+  assertEqual(conversionMethodsOf(u), intLiteralSiteMethod(U32), "u32 literal site")
+  val b = parseCheck("package P\nfunc f(): Byte {\n  var x: Byte = 1u8\n  x += 200\n  x = 255\n  x\n}\n")
+  assertEqualInt(diagCount(b), 0, "Byte += 200 and = 255: " + diagCodesOf(b))
+  assertEqual(conversionMethodsOf(b), intLiteralSiteMethod(U8) + "," + intLiteralSiteMethod(U8), "u8 literal sites")
+  val ul = parseCheck("package P\nfunc f(): ULong {\n  var x: ULong = 1u64\n  x *= 3000000000\n  x\n}\n")
+  assertEqualInt(diagCount(ul), 0, "ULong *= 3000000000: " + diagCodesOf(ul))
+  assertEqual(conversionMethodsOf(ul), intLiteralSiteMethod(U64), "u64 literal site")
+  val neg = parseCheck("package P\nfunc f(): UInt {\n  var x: UInt = 1u32\n  x += -1\n  x\n}\n")
+  assertEqualInt(countDiagCode(neg, "T0015"), 1, "UInt += -1: " + diagCodesOf(neg))
+  assertEqualInt(countDiagCode(neg, "T0063"), 0, "an out-of-range literal is not also a type mismatch")
+  assertTrue(diagMessagesContain(neg, "literal -1 is out of range for type UInt"), "message")
+  val big = parseCheck("package P\nfunc f(): Byte {\n  var x: Byte = 1u8\n  x = 256\n  x\n}\n")
+  assertEqualInt(countDiagCode(big, "T0015"), 1, "Byte = 256: " + diagCodesOf(big))
+  val binds = parseCheck(
+    "package P\nfunc f(): ULong {\n  val a: UInt = 7\n  val b: Byte = 255\n  val c: ULong = 9\n  c + a.toULong() + b.toULong()\n}\n"
+  )
+  assertEqualInt(diagCount(binds), 0, "annotated bindings: " + diagCodesOf(binds))
+  val badBind = parseCheck("package P\nfunc f(): UInt {\n  val a: UInt = -7\n  a\n}\n")
+  assertEqualInt(countDiagCode(badBind, "T0015"), 1, "val a: UInt = -7: " + diagCodesOf(badBind))
+  val arg = parseCheck("package P\nfunc g(u: in UInt): UInt { u }\nfunc f(): UInt { g(7) }\n")
+  assertEqualInt(diagCount(arg), 0, "an argument: " + diagCodesOf(arg))
+}
+
 test "index byte with conversion accepted" {
   val src = "package P\nfunc f(a: in slice[Byte]): Int { a[0].toInt() }\n"
   val cr = parseCheck(src)
@@ -8822,7 +8871,7 @@ test "list literal joins array element types" {
 // #7865: a lambda checked where a function type is expected takes its return
 // type: the body's value, each branch and each `return` widen to it along the
 // lossless chains, recorded as conversion sites, exactly as a function body's
-// value does.  Narrowing stays rejected (`val b: Byte = 5` is T0060 too).
+// value does.  Narrowing stays rejected (`val b: Byte = 300` is T0015).
 test "a lambda body widens to the expected return type (#7865)" {
   val lit = parseCheck("package P\nfunc f(): Long {\n  val g: () -> Long = { -> 5 }\n  g()\n}\n")
   assertEqualInt(diagCount(lit), 0, "{ -> 5 } is a () -> Long")
@@ -8841,8 +8890,8 @@ test "a lambda body widens to the expected return type (#7865)" {
   assertEqualInt(ret.symbols.argConversionSites.count, 2, "the return and the trailing value are widened")
   val unsigned = parseCheck("package P\nfunc f(): ULong {\n  val g: () -> ULong = { -> 7u32 }\n  g()\n}\n")
   assertEqualInt(diagCount(unsigned), 0, "UInt to ULong")
-  val narrow = parseCheck("package P\nfunc f(): Byte {\n  val g: () -> Byte = { -> 5 }\n  g()\n}\n")
-  assertEqualInt(countDiagCode(narrow, "T0060"), 1, "an Int literal is not a Byte, as at a binding")
+  val narrow = parseCheck("package P\nfunc f(): Byte {\n  val g: () -> Byte = { -> 300 }\n  g()\n}\n")
+  assertEqualInt(countDiagCode(narrow, "T0060"), 1, "an Int literal a Byte cannot hold is not a Byte, as at a binding")
   val wrong = parseCheck("package P\nfunc f(): Long {\n  val g: () -> Long = { -> \"s\" }\n  g()\n}\n")
   assertEqualInt(countDiagCode(wrong, "T0060"), 1, "a String body is still rejected")
   val wrongRet = parseCheck(
@@ -9349,7 +9398,13 @@ test "List.add checks its argument against the element type (#7969)" {
     "element type Double",
     "List[Double].add(Int) crosses the widening chains"
   )
-  assertCollectionCallMismatch("xs: in List[Byte]", "xs.add(0)", "element type Byte", "List[Byte].add(an Int literal)")
+  assertCollectionCallClean("xs: in List[Byte]", "xs.add(0)", "List[Byte].add(an Int literal a Byte holds) (#7841)")
+  assertCollectionCallMismatch(
+    "xs: in List[Byte]",
+    "xs.add(256)",
+    "element type Byte",
+    "List[Byte].add(an Int literal no Byte holds)"
+  )
   assertCollectionCallClean("xs: in List[Byte]", "xs.add(0u8)", "List[Byte].add(a Byte literal)")
   assertCollectionCallClean("xs: in List[Shape], sq: in Square", "xs.add(sq)", "List[Shape].add(an implementor)")
   assertCollectionCallClean("xs: in List[List[Int]]", "xs.add([1, 2])", "List[List[Int]].add(a bracket literal)")

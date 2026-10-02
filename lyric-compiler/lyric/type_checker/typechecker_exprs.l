@@ -845,6 +845,56 @@ func adoptIntLiteralType(e: in Expr, actual: in Type, expected: in Type): Type {
   actual
 }
 
+// The literal suffix of `t` when it is `Byte`, `UInt` or `ULong` (after
+// stripping range refinements): the integer types no `Int` widens to, so an
+// unsuffixed literal can initialise one only by adopting it.
+func unsignedLiteralSuffix(t: in Type): Option[IntSuffix] {
+  match unrefine(t) {
+    case TyPrim(pt) -> match pt {
+      case PtByte -> Some(value = U8)
+      case PtUInt -> Some(value = U32)
+      case PtULong -> Some(value = U64)
+      case _ -> None
+    }
+    case _ -> None
+  }
+}
+
+func isSomeSuffix(o: in Option[IntSuffix]): Bool {
+  match o {
+    case Some(_) -> true
+    case None -> false
+  }
+}
+
+// An unsuffixed integer literal where a `Byte`, `UInt` or `ULong` is required
+// (a binding, an assignment or compound assignment, an argument, a field, a
+// return value, a list element) is of that type when its value fits it
+// (docs/01 §2.1, #7841).  The site is recorded so
+// `Lyric.Mono.desugarCheckedFile` gives the literal the matching suffix,
+// which every backend sizes the constant by.  A literal that does not fit
+// keeps its own type, and the caller reports T0015 or a type mismatch.
+func adoptUnsignedIntLiteral(tbl: in SymbolTable, e: in Expr, actual: in Type, expected: in Type): Type {
+  val adopted = adoptIntLiteralType(e, actual, expected)
+  if isPlainInt(adopted) or isPlainLong(adopted) {
+    return actual
+  }
+  match unsignedLiteralSuffix(expected) {
+    case Some(sfx) -> {
+      val key = recordCopySiteKey(e.span)
+      if tbl.argConversionSites.containsKey(key) {
+        tbl.argConversionSites.remove(key)
+      }
+      tbl.argConversionSites.add(
+        key,
+        ArgConversionSite(method = intLiteralSiteMethod(sfx), startOffset = e.span.startPos.offset)
+      )
+    }
+    case None -> ()
+  }
+  adopted
+}
+
 // True when `e` is a float literal written without a suffix (`1.5`, not
 // `1.5f32`), seen through parentheses and a unary minus.  Such a literal is a
 // `Double` unless its context requires a `Float` (D155).
@@ -11621,6 +11671,9 @@ pub func inferExprExpected(
   if isUnsuffixedFloatLit(e) and isFloatType(expected) {
     return adoptFloatLiteralType(tbl, e, inferExpr(sc, tbl, sigs, diag, e), expected)
   }
+  if isUnsuffixedIntLit(e) and isSomeSuffix(unsignedLiteralSuffix(expected)) {
+    return adoptUnsignedIntLiteral(tbl, e, inferExpr(sc, tbl, sigs, diag, e), expected)
+  }
   match e.kind {
     case EParen(inner) -> inferExprExpected(sc, tbl, sigs, diag, inner, expected)
     case ELambda(ps, body) -> match unrefine(expected) {
@@ -12247,6 +12300,12 @@ func literalArgSatisfiesParam(tbl: in SymbolTable, fieldTy: in Type, argTy: in T
   if isUnsuffixedFloatLit(argExpr) and isPlainDouble(argTy) and isFloatType(fieldTy) {
     recordFloatLiteralSite(tbl, argExpr)
     return true
+  }
+  // An unsuffixed integer literal argument for a `Byte`/`UInt`/`ULong`
+  // parameter or field takes its type when it fits (#7841).
+  if isUnsuffixedIntLit(argExpr) and isSomeSuffix(unsignedLiteralSuffix(fieldTy)) {
+    val adopted = adoptUnsignedIntLiteral(tbl, argExpr, argTy, fieldTy)
+    return not (isPlainInt(adopted) or isPlainLong(adopted))
   }
   val isLiteral = match argExpr.kind { case EList(_) -> true; case _ -> false }
   if not isLiteral {

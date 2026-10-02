@@ -119,6 +119,62 @@ test "compound division and remainder on an unsigned field" {
   assertEqual(s, "v=18446744073709551615", "String += ULong field")
 }
 
+// #7841: an unsuffixed literal assigned or compound-assigned to a `Byte`,
+// `UInt` or `ULong` takes the target's type.
+test "an unsuffixed literal on the right of an assignment (#7841)" {
+  var u: UInt = 4000000000u32
+  u %= 7
+  assertEqual(toString(u), "3", "UInt %= 7")
+  u = 4000000000
+  assertEqual(toString(u), "4000000000", "UInt = 4000000000")
+  u /= 3
+  assertEqual(toString(u), "1333333333", "UInt /= 3")
+  u = 3000000000
+  u += 1000000000
+  assertEqual(toString(u), "4000000000", "UInt += 1000000000")
+  u -= 5
+  assertEqual(toString(u), "3999999995", "UInt -= 5")
+  u = 2000000000
+  u *= 2
+  assertEqual(toString(u), "4000000000", "UInt *= 2")
+  assertTrue(u > 2147483648u32, "an assigned UInt above 2^31 compares unsigned")
+  var l: ULong = maxU64()
+  l %= 10
+  assertEqual(toString(l), "5", "ULong %= 10")
+  l = 9
+  l += 9223372036854775807
+  assertEqual(toString(l), "9223372036854775816", "ULong += 9223372036854775807")
+  l /= 2
+  assertEqual(toString(l), "4611686018427387908", "ULong /= 2")
+  l -= 8
+  l *= 2
+  assertEqual(toString(l), "9223372036854775800", "ULong -= 8, *= 2")
+  var b: Byte = 200u8
+  b += 50
+  assertEqual(toString(b), "250", "Byte += 50")
+  b -= 100
+  assertEqual(toString(b), "150", "Byte -= 100")
+  b /= 7
+  assertEqual(toString(b), "21", "Byte /= 7")
+  b %= 4
+  assertEqual(toString(b), "1", "Byte %= 4")
+  b *= 3
+  assertEqual(toString(b), "3", "Byte *= 3")
+  b = 255
+  assertEqual(toString(b), "255", "Byte = 255")
+  val h = holder()
+  h.u %= 7
+  assertEqual(toString(h.u), "3", "UInt field %= 7")
+  h.v /= 10
+  assertEqual(toString(h.v), "1844674407370955161", "ULong field /= 10")
+  var i = 10
+  i %= 7
+  assertEqual(toString(i), "3", "Int %= 7")
+  var lg: Long = 10
+  lg += 7
+  assertEqual(toString(lg), "17", "Long += 7")
+}
+
 test "a slice element" {
   val xs: slice[ULong] = [maxU64(), 10u64]
   val us: slice[UInt] = [4000000000u32, 7u32]

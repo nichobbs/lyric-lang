@@ -1274,6 +1274,32 @@ pub record ArgConversionSite {
 /// rather than wrapped in a conversion call.
 pub func floatLiteralSiteMethod(): String = "__f32_literal"
 
+/// The `ArgConversionSite.method` marking an unsuffixed integer literal that
+/// adopts `Byte`, `UInt` or `ULong` from its context (#7841): it is rewritten
+/// to its `u8`/`u32`/`u64` form, so every backend sizes the constant by the
+/// type it initialises.
+pub func intLiteralSiteMethod(suffix: in IntSuffix): String {
+  match suffix {
+    case U8 -> "__u8_literal"
+    case U32 -> "__u32_literal"
+    case U64 -> "__u64_literal"
+    case _ -> ""
+  }
+}
+
+/// The suffix an `intLiteralSiteMethod` site gives its literal.
+pub func intLiteralSiteSuffix(method: in String): Option[IntSuffix] {
+  if method == "__u8_literal" {
+    Some(value = U8)
+  } else if method == "__u32_literal" {
+    Some(value = U32)
+  } else if method == "__u64_literal" {
+    Some(value = U64)
+  } else {
+    None
+  }
+}
+
 /// A call through a function value that the type checker typed: `calleeType`
 /// is the callee's checked function type spelled as source.  A backend that
 /// erases function values to a uniform boxed delegate must know a call's
