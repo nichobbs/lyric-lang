@@ -9,7 +9,7 @@ now compiles with `lyric build --target native --triple wasm32-wasi` to a core
 `llvm_bridge.l` picks the toolchain by triple. A `wasm32` triple links with the
 wasi-sdk's clang (`$WASI_SDK_PATH`, `N0009` when unset) and `--sysroot`, against
 the per-triple runtime archive (`$LYRIC_RT_WASM32_PATH`, the installed
-`lib/lyric_rt-wasm32-wasi.a`, or `lyric-rt/build/wasm32-wasi/lyric_rt.a`);
+`lib/lyric_rt-wasm32-wasi.a`, or `lyric-rt/build-wasm32-wasi/lyric_rt.a`);
 `$LYRIC_RT_PATH` is the host archive's override and never applies. `-lpthread`
 and `-ldl` are not passed. `wasm32-wasi` is normalised to clang's
 `wasm32-unknown-wasi` so clang does not warn about overriding the module triple.

@@ -347,7 +347,7 @@ func normalizeNativeTriple(triple: in String): String {
 
 /// Locate the wasm32 `lyric_rt` archive: `$LYRIC_RT_WASM32_PATH` override, the
 /// installed layout (`<bin>/lib/lyric_rt-wasm32-wasi.a`), then the dev layout
-/// (`lyric-rt/build/wasm32-wasi/lyric_rt.a`).  `$LYRIC_RT_PATH` is the HOST
+/// (`lyric-rt/build-wasm32-wasi/lyric_rt.a`).  `$LYRIC_RT_PATH` is the HOST
 /// archive's override and never applies here.
 func findWasmRtArchive(): String {
   val envOverride = Environment.getVarOrDefault("LYRIC_RT_WASM32_PATH", "")
@@ -359,7 +359,7 @@ func findWasmRtArchive(): String {
   if File.fileExists(installed) {
     return installed
   }
-  val devRel = Path.join(Path.join(Path.join("lyric-rt", "build"), "wasm32-wasi"), "lyric_rt.a")
+  val devRel = Path.join(Path.join("lyric-rt", "build-wasm32-wasi"), "lyric_rt.a")
   val hit = walkUpFor(appBase, devRel)
   if hit.length > 0 {
     return hit
@@ -1521,11 +1521,16 @@ func linkAndEmitNative(
       }
     }
     case Err(e) -> {
-      Console.error(
-        "error[N0001]: clang was not found on PATH (install it via your platform's package manager: `apt install clang`, Xcode CLI tools, ...)"
-      )
-      Console.error("  the LLVM IR was written to " + llPath + "; compile it manually with:")
-      Console.error("  clang -O" + effOpt + " " + llPath + " " + rtPath + " -lm -lpthread -ldl -o " + outputPath)
+      if isWasm {
+        Console.error("error[N0001]: the wasi-sdk clang could not be run (" + clangExe + "); check that $WASI_SDK_PATH points at an installed wasi-sdk")
+        Console.error("  the LLVM IR was written to " + llPath)
+      } else {
+        Console.error(
+          "error[N0001]: clang was not found on PATH (install it via your platform's package manager: `apt install clang`, Xcode CLI tools, ...)"
+        )
+        Console.error("  the LLVM IR was written to " + llPath + "; compile it manually with:")
+        Console.error("  clang -O" + effOpt + " " + llPath + " " + rtPath + " -lm -lpthread -ldl -o " + outputPath)
+      }
       Console.error("  (" + e + ")")
       return false
     }

@@ -10,7 +10,7 @@
 # wasm32-wasi (docs/35 W2) is a second, cross-compiled build of the same
 # runtime with a pinned wasi-sdk:
 #
-#   make wasm32-wasi      WASI_SDK=/opt/wasi-sdk   -> build/wasm32-wasi/lyric_rt.a
+#   make wasm32-wasi      WASI_SDK=/opt/wasi-sdk   -> build-wasm32-wasi/lyric_rt.a
 #   make test-wasm32-wasi WASI_SDK=/opt/wasi-sdk WASMTIME=wasmtime
 #
 # lyric_process.c and lyric_tls.c are replaced by their *_unsupported.c
@@ -79,7 +79,7 @@ test-asan: | $(BUILD)
 # ── wasm32-wasi ──────────────────────────────────────────────────────────
 WASI_SDK    ?=
 WASMTIME    ?= wasmtime
-WASM_BUILD  := $(BUILD)/wasm32-wasi
+WASM_BUILD  := build-wasm32-wasi
 WASM_CC     := $(WASI_SDK)/bin/clang
 WASM_AR     := $(WASI_SDK)/bin/llvm-ar
 WASM_CFLAGS := --target=wasm32-wasi --sysroot=$(WASI_SDK)/share/wasi-sysroot -O2 -std=c11 -Wall -Wextra -Werror
@@ -109,4 +109,4 @@ test-wasm32-wasi: $(WASM_BUILD)/lyric_rt.a
 	$(WASMTIME) run --dir=. $(WASM_BUILD)/lyric_rt_test.wasm
 
 clean:
-	rm -rf $(BUILD)
+	rm -rf $(BUILD) $(WASM_BUILD)
