@@ -209,6 +209,10 @@ record NUnionInfo {
   irName: String
   cases: List[NUnionCaseInfo]
   payloadWords: Int
+  // docs/67 §4.2: a union whose every payload field is by-value is an inline
+  // tagged struct VALUE `{ i32 disc, i32 pad, [W x i64] payload }` (no ARC
+  // header, no allocation, no destructor); every other union is a heap object.
+  inline: Bool
 }
 
 /// Resolves a case name to its union and discriminant index.
@@ -1056,7 +1060,42 @@ func recPtrType(ri: in NRecInfo): NType {
 /// The pointer type for a registered union: header, i32 discriminant,
 /// i32 pad (so the payload is 8-aligned on LP64), then the payload words.
 func unionPtrType(ui: in NUnionInfo): NType {
+  if ui.inline {
+    return NStruct(name = ui.irName, fields = unionInlineFields(ui.payloadWords))
+  }
   NPtr(pointee = NStruct(name = ui.irName, fields = unionBodyFields(ui.payloadWords)))
+}
+
+/// The struct body of an inline union value: discriminant, pad, payload words.
+func unionInlineFields(payloadWords: in Int): List[NType] {
+  val fields: List[NType] = newList()
+  fields.add(NI32)
+  fields.add(NI32)
+  fields.add(NArray(elem = NI64, size = payloadWords))
+  fields
+}
+
+/// The struct definition's body: with the ARC header for a heap union.
+func unionStructFields(ui: in NUnionInfo): List[NType] {
+  if ui.inline {
+    return unionInlineFields(ui.payloadWords)
+  }
+  unionBodyFields(ui.payloadWords)
+}
+
+/// GEP indices of the discriminant and payload words of a union object.
+func unionDiscIdx(ui: in NUnionInfo): Long {
+  if ui.inline {
+    return 0i64
+  }
+  unionDiscSlot
+}
+
+func unionPayloadIdx(ui: in NUnionInfo): Long {
+  if ui.inline {
+    return 2i64
+  }
+  unionPayloadSlot
 }
 
 func unionBodyFields(payloadWords: in Int): List[NType] {
@@ -1103,6 +1142,15 @@ func sizeOfN(ctx: in Ctx, t: in NType): Int {
 
 /// The layout field types of the by-value record `name`.
 func byValueLayoutOf(ctx: in Ctx, name: in String): List[NType] {
+  match mapGet(ctx.unionDefs, name) {
+    case Some(ui) -> {
+      if ui.inline {
+        return unionInlineFields(ui.payloadWords)
+      }
+    }
+    case None -> {
+    }
+  }
   match mapGet(ctx.recordDefs, name) {
     case Some(ri) -> {
       if ri.byValue {
@@ -4919,6 +4967,11 @@ record NByValState {
   failed: Map[String, Bool]
   visiting: Map[String, Bool]
   typeDefs: List[NTypeDefn]
+  // Non-generic unions: declarations by qualified and bare name, and the ones
+  // that classify as inline (docs/67 §4.2) by IR name.
+  unionDecls: Map[String, UnionDecl]
+  unionPkgs: Map[String, String]
+  uresults: Map[String, NUnionInfo]
 }
 
 /// The path an `impl <Iface> for <Target>`'s target type names.
@@ -4944,6 +4997,12 @@ func fillHeapOnlyRecs(heapOnly: in Map[String, Bool], units: in List[CodegenUnit
       putOnce(declared, u.pkgName + "." + rd.name)
       if not firstPkg.containsKey(rd.name) {
         firstPkg.add(rd.name, u.pkgName)
+      }
+    }
+    for ud in u.unions {
+      putOnce(declared, u.pkgName + "." + ud.name)
+      if not firstPkg.containsKey(ud.name) {
+        firstPkg.add(ud.name, u.pkgName)
       }
     }
   }
@@ -5044,7 +5103,19 @@ func classifyByValueField(st: in NByValState, pkg: in String, te: in TypeExpr): 
         }
         return res
       }
-      if st.heapNames.containsKey("u:" + joined) or st.heapNames.containsKey("u:" + bare) {
+      var unionKey = ""
+      if st.unionDecls.containsKey(joined) {
+        unionKey = joined
+      } else if st.unionDecls.containsKey(bare) {
+        unionKey = bare
+      }
+      if unionKey.length > 0 {
+        val ud = st.unionDecls[unionKey]
+        val upkg = st.unionPkgs[unionKey]
+        if classifyInlineUnion(st, upkg, ud) {
+          val ui = st.uresults[upkg + "." + ud.name]
+          res.add(NStruct(name = ui.irName, fields = unionInlineFields(ui.payloadWords)))
+        }
         return res
       }
       if st.enums.containsKey(joined) or st.enums.containsKey(bare) {
@@ -5142,6 +5213,130 @@ func classifyByValueRecord(st: in NByValState, pkg: in String, rd: in RecordDecl
   true
 }
 
+/// Size and alignment of a by-value field type during classification, before
+/// the registries exist (the same C rules as `sizeOfN`/`alignOfN`).
+func stSizeOf(st: in NByValState, t: in NType): Int {
+  match t {
+    case NI1 -> 1
+    case NI8 -> 1
+    case NI32 -> 4
+    case NI64 -> 8
+    case NDouble -> 8
+    case NFloat -> 4
+    case NVoid -> 1
+    case NStruct(name, _) -> {
+      if st.uresults.containsKey(name) {
+        return 8 + 8 * st.uresults[name].payloadWords
+      }
+      stStructSize(st, layoutFieldTys(st.results[name].fieldTys))
+    }
+    case _ -> panic("Lyric.LlvmCodegen: internal — unsizable by-value field type")
+  }
+}
+
+func stAlignOf(st: in NByValState, t: in NType): Int {
+  match t {
+    case NStruct(name, _) -> {
+      if st.uresults.containsKey(name) {
+        return 8
+      }
+      val fields = layoutFieldTys(st.results[name].fieldTys)
+      var maxA = 1
+      for f in fields {
+        val a = stAlignOf(st, f)
+        if a > maxA {
+          maxA = a
+        }
+      }
+      maxA
+    }
+    case _ -> stSizeOf(st, t)
+  }
+}
+
+func stStructSize(st: in NByValState, fields: in List[NType]): Int {
+  var off = 0
+  var maxA = 1
+  for f in fields {
+    val a = stAlignOf(st, f)
+    if a > maxA {
+      maxA = a
+    }
+    off = roundUpTo(off, a)
+    off = off + stSizeOf(st, f)
+  }
+  roundUpTo(off, maxA)
+}
+
+/// Classify one non-generic union declaration: inline when no `impl` targets
+/// it and every case payload field is by-value (scalars, enums, distinct
+/// types, by-value records, other inline unions).  A union that holds itself,
+/// directly or through another union, is a cycle and stays heap.  The full
+/// `NUnionInfo` lands in `st.uresults` and its struct definitions in
+/// `st.typeDefs`, inner types first.
+func classifyInlineUnion(st: in NByValState, pkg: in String, ud: in UnionDecl): Bool {
+  val irName = pkg + "." + ud.name
+  if st.uresults.containsKey(irName) {
+    return true
+  }
+  if st.failed.containsKey(irName) or st.visiting.containsKey(irName) {
+    return false
+  }
+  match ud.generics {
+    case Some(_) -> return false
+    case None -> {
+    }
+  }
+  if st.heapOnly.containsKey(irName) {
+    st.failed.add(irName, true)
+    return false
+  }
+  st.visiting.add(irName, true)
+  val cases: List[NUnionCaseInfo] = newList()
+  var maxBytes = 0
+  var ok = true
+  var ci = 0
+  while ci < ud.cases.count and ok {
+    val cd = ud.cases[ci]
+    val names: List[String] = newList()
+    val tys: List[NType] = newList()
+    var fi = 0
+    while fi < cd.fields.count and ok {
+      val ft = classifyByValueField(st, pkg, unionFieldTy(cd.fields[fi]))
+      if ft.count == 0 {
+        ok = false
+      } else {
+        names.add(unionFieldName(cd.fields[fi], fi))
+        tys.add(ft[0])
+      }
+      fi = fi + 1
+    }
+    if ok {
+      val sz = stStructSize(st, layoutFieldTys(tys))
+      if sz > maxBytes {
+        maxBytes = sz
+      }
+      cases.add(NUnionCaseInfo(name = cd.name, fieldNames = names, fieldTys = tys))
+    }
+    ci = ci + 1
+  }
+  st.visiting.remove(irName)
+  if not ok {
+    st.failed.add(irName, true)
+    return false
+  }
+  val words = (maxBytes + 7) / 8
+  val ui = NUnionInfo(irName = irName, cases = cases, payloadWords = words, inline = true)
+  st.uresults.add(irName, ui)
+  st.typeDefs.add(NTypeDefn(name = irName, fields = unionInlineFields(words)))
+  for c in cases {
+    if c.fieldTys.count > 0 {
+      st.typeDefs.add(NTypeDefn(name = casePayloadStructName(ui, c.name), fields = layoutFieldTys(c.fieldTys)))
+    }
+  }
+  true
+}
+
 /// Classify every non-generic record of the bundle; the by-value records'
 /// `NRecInfo`s land in the result's `results` (by IR name) and their struct
 /// definitions are appended to `typeDefs`.
@@ -5165,7 +5360,10 @@ func classifyByValueRecords(
     results = newMap(),
     failed = newMap(),
     visiting = newMap(),
-    typeDefs = typeDefs
+    typeDefs = typeDefs,
+    unionDecls = newMap(),
+    unionPkgs = newMap(),
+    uresults = newMap()
   )
   for u in units {
     for rd in u.records {
@@ -5205,8 +5403,14 @@ func classifyByValueRecords(
         case Some(_) -> {
         }
         case None -> {
-          putOnce(st.heapNames, "u:" + u.pkgName + "." + ud.name)
-          putOnce(st.heapNames, "u:" + ud.name)
+          if not st.unionDecls.containsKey(u.pkgName + "." + ud.name) {
+            st.unionDecls.add(u.pkgName + "." + ud.name, ud)
+            st.unionPkgs.add(u.pkgName + "." + ud.name, u.pkgName)
+          }
+          if not st.unionDecls.containsKey(ud.name) {
+            st.unionDecls.add(ud.name, ud)
+            st.unionPkgs.add(ud.name, u.pkgName)
+          }
         }
       }
     }
@@ -5222,6 +5426,9 @@ func classifyByValueRecords(
   for u in units {
     for rd in u.records {
       val _ = classifyByValueRecord(st, u.pkgName, rd)
+    }
+    for ud in u.unions {
+      val _ = classifyInlineUnion(st, u.pkgName, ud)
     }
   }
   st
@@ -5267,7 +5474,9 @@ func registerHeapTypes(
   ctx: in Ctx, units: in List[CodegenUnit], typeDefs: in List[NTypeDefn], fns: in List[NFunc]
 ): Unit {
   fillHeapOnlyRecs(ctx.heapOnlyRecs, units)
-  val byVal = classifyByValueRecords(ctx.heapOnlyRecs, units, typeDefs).results
+  val byValState = classifyByValueRecords(ctx.heapOnlyRecs, units, typeDefs)
+  val byVal = byValState.results
+  val byValU = byValState.uresults
   // Phase A: allocate names.
   var ui = 0
   while ui < units.count {
@@ -5307,7 +5516,17 @@ func registerHeapTypes(
         case Some(_) -> registerGenericUnion(ctx, u.pkgName, ud)
         case None -> {
           val emptyCases: List[NUnionCaseInfo] = newList()
-          val stub = NUnionInfo(irName = u.pkgName + "." + ud.name, cases = emptyCases, payloadWords = 0)
+          // An inline union is registered with its full layout up front, like a
+          // by-value record.
+          val stub = match mapGet(byValU, u.pkgName + "." + ud.name) {
+            case Some(full) -> full
+            case None -> NUnionInfo(
+              irName = u.pkgName + "." + ud.name,
+              cases = emptyCases,
+              payloadWords = 0,
+              inline = false
+            )
+          }
           addUnionKey(ctx, u.pkgName + "." + ud.name, stub)
           addUnionKey(ctx, ud.name, stub)
         }
@@ -5759,6 +5978,18 @@ func registerUnionLayout(
 ): Unit {
   val cases: List[NUnionCaseInfo] = newList()
   val irName = pkg + "." + ud.name
+  // An inline union was fully registered (layout and struct definitions)
+  // before Phase A; only its case names remain to register.
+  match mapGet(ctx.unionDefs, irName) {
+    case Some(pre) -> {
+      if pre.inline and pre.irName == irName {
+        registerUnionCaseRefs(ctx, pkg, ud.name, pre)
+        return
+      }
+    }
+    case None -> {
+    }
+  }
   var maxBytes = 0
   var ci = 0
   while ci < ud.cases.count {
@@ -5790,7 +6021,7 @@ func registerUnionLayout(
     ci = ci + 1
   }
   val words = (maxBytes + 7) / 8
-  val ui = NUnionInfo(irName = irName, cases = cases, payloadWords = words)
+  val ui = NUnionInfo(irName = irName, cases = cases, payloadWords = words, inline = false)
   replaceUnionKey(ctx, pkg + "." + ud.name, ui)
   replaceUnionKey(ctx, ud.name, ui)
   typeDefs.add(NTypeDefn(name = ui.irName, fields = unionBodyFields(words)))
@@ -5801,18 +6032,29 @@ func registerUnionLayout(
         NTypeDefn(name = casePayloadStructName(ui, cases[ci2].name), fields = layoutFieldTys(cases[ci2].fieldTys))
       )
     }
-    // Case-name entries resolve constructor calls and patterns.  The
-    // unqualified name mirrors source scoping (first-wins).
+    ci2 = ci2 + 1
+  }
+  registerUnionCaseRefs(ctx, pkg, ud.name, ui)
+  if unionHasRefFields(ui) {
+    fns.add(synthUnionDtor(ctx, ui))
+  }
+}
+
+/// Case-name entries resolve constructor calls and patterns.  The
+/// unqualified name mirrors source scoping (first-wins).
+func registerUnionCaseRefs(ctx: in Ctx, pkg: in String, unionName: in String, ui: in NUnionInfo): Unit {
+  var ci2 = 0
+  while ci2 < ui.cases.count {
     val cref = NCaseRef(unionKey = ui.irName, caseIdx = ci2)
-    val bare = cases[ci2].name
+    val bare = ui.cases[ci2].name
     if not ctx.caseRefs.containsKey(bare) {
       ctx.caseRefs.add(bare, cref)
     }
-    if not ctx.caseRefs.containsKey(ud.name + "." + bare) {
-      ctx.caseRefs.add(ud.name + "." + bare, cref)
+    if not ctx.caseRefs.containsKey(unionName + "." + bare) {
+      ctx.caseRefs.add(unionName + "." + bare, cref)
     }
-    if not ctx.caseRefs.containsKey(pkg + "." + ud.name + "." + bare) {
-      ctx.caseRefs.add(pkg + "." + ud.name + "." + bare, cref)
+    if not ctx.caseRefs.containsKey(pkg + "." + unionName + "." + bare) {
+      ctx.caseRefs.add(pkg + "." + unionName + "." + bare, cref)
     }
     // A case qualified by its package alone (`Tcp.TlsTrustInsecure` under
     // `import Std.TcpHost as Tcp`, which the alias rewrite makes
@@ -5821,9 +6063,6 @@ func registerUnionLayout(
       ctx.caseRefs.add(pkg + "." + bare, cref)
     }
     ci2 = ci2 + 1
-  }
-  if unionHasRefFields(ui) {
-    fns.add(synthUnionDtor(ctx, ui))
   }
 }
 
@@ -6415,15 +6654,25 @@ func unionCaseIndexOf(ui: in NUnionInfo, name: in String): Int {
   0 - 1
 }
 
+/// An inline union value viewed as a pointer to a hoisted stack copy, so the
+/// pointer-based discriminant and payload GEPs apply to it.
+func inlineUnionAddr(ctx: in Ctx, insns: in List[NInsn], v: in NVal): NVal {
+  val slot = "iu.addr." + freshTmp(ctx)
+  ctx.allocas.add(NAlloca(dest = slot, ty = v.ty))
+  insns.add(NStore(ty = v.ty, value = v.value, ptr = NLocal(name = slot)))
+  NVal(ty = NPtr(pointee = v.ty), value = NLocal(name = slot))
+}
+
 /// Read field `fi` of union `ui`'s case `caseIdx` payload as a borrow.
 func emitUnionPayloadFieldRead(
   ctx: in Ctx,
   insns: in List[NInsn],
   ui: in NUnionInfo,
-  scrutinee: in NVal,
+  scrutinee0: in NVal,
   caseIdx: in Int,
   fi: in Int,
 ): NVal {
+  val scrutinee = if ui.inline { inlineUnionAddr(ctx, insns, scrutinee0) } else { scrutinee0 }
   val structTy = match scrutinee.ty {
     case NPtr(pointee) -> pointee
     case _ -> panic("Lyric.LlvmCodegen: union payload read on a non-pointer value")
@@ -7782,6 +8031,24 @@ func mustGetGenericRecord(ctx: in Ctx, key: in String): RecordDecl {
   }
 }
 
+/// Whether a generic union instantiated with these case field types is inline:
+/// not an `impl` target, and every payload field by-value (a self-reference is
+/// still a pointer to the registration stub, so a recursive union stays heap).
+func genericUnionInline(ctx: in Ctx, gkey: in String, ud: in UnionDecl, cases: in List[NUnionCaseInfo]): Bool {
+  val pkg = match mapGet(ctx.genericDeclPkg, gkey) { case Some(p) -> p; case None -> "" }
+  if isHeapOnlyRec(ctx, pkg, ud.name) {
+    return false
+  }
+  for c in cases {
+    for t in c.fieldTys {
+      if not isByValueFieldNType(t) {
+        return false
+      }
+    }
+  }
+  true
+}
+
 func instantiateGenericUnionOpt(ctx: in Ctx, gkey: in String, argTys: in List[NType]): Option[NUnionInfo] {
   if not ctx.genericUnionDefs.containsKey(gkey) {
     return None
@@ -7803,7 +8070,7 @@ func instantiateGenericUnionOpt(ctx: in Ctx, gkey: in String, argTys: in List[NT
   // re-entering (a compiler stack overflow before, #7280), exactly as the
   // non-generic registration does; the stub is replaced below.
   val emptyCases: List[NUnionCaseInfo] = newList()
-  ctx.unionDefs.add(instName, NUnionInfo(irName = instName, cases = emptyCases, payloadWords = 0))
+  ctx.unionDefs.add(instName, NUnionInfo(irName = instName, cases = emptyCases, payloadWords = 0, inline = false))
   val cases: List[NUnionCaseInfo] = newList()
   var maxBytes = 0
   var ci = 0
@@ -7831,11 +8098,12 @@ func instantiateGenericUnionOpt(ctx: in Ctx, gkey: in String, argTys: in List[NT
     ci = ci + 1
   }
   val words = (maxBytes + 7) / 8
-  val ui = NUnionInfo(irName = instName, cases = cases, payloadWords = words)
+  val inlineU = genericUnionInline(ctx, gkey, ud, cases)
+  val ui = NUnionInfo(irName = instName, cases = cases, payloadWords = words, inline = inlineU)
   ctx.unionDefs.remove(instName)
   ctx.unionDefs.add(instName, ui)
   ctx.instMeta.add(instName, NInstInfo(gkey = gkey, argTys = argTys))
-  ctx.moduleTypeDefs.add(NTypeDefn(name = instName, fields = unionBodyFields(words)))
+  ctx.moduleTypeDefs.add(NTypeDefn(name = instName, fields = unionStructFields(ui)))
   var ci2 = 0
   while ci2 < cases.count {
     if cases[ci2].fieldTys.count > 0 {
@@ -7845,7 +8113,7 @@ func instantiateGenericUnionOpt(ctx: in Ctx, gkey: in String, argTys: in List[NT
     }
     ci2 = ci2 + 1
   }
-  if unionHasRefFields(ui) {
+  if unionHasRefFields(ui) and not ui.inline {
     ctx.moduleFns.add(synthUnionDtor(ctx, ui))
   }
   Some(value = ui)
@@ -9376,9 +9644,6 @@ func lowerExprExpecting(ctx: in Ctx, insns: in List[NInsn], e: in Expr, want: in
 /// whose case belongs to the expected union instantiation; constructs
 /// it against the concrete case field types.
 func caseConstructForExpected(ctx: in Ctx, insns: in List[NInsn], e: in Expr, want: in NType): Option[NVal] {
-  if not isRefNType(want) {
-    return None
-  }
   val ui = match unionInfoOfType(ctx, want) { case Some(u) -> u; case None -> return None }
   var refName = ""
   val noArgs: List[CallArg] = newList()
@@ -9585,11 +9850,22 @@ func synthUnionDtor(ctx: in Ctx, ui: in NUnionInfo): NFunc {
 func unionInfoOfNType(ctx: in Ctx, t: in NType): Option[NUnionInfo] {
   val name = match t {
     case NPtr(pointee) -> match pointee { case NStruct(n, _) -> n; case _ -> return None }
+    case NStruct(n, _) -> n
     case _ -> return None
   }
   for k in mapKeys(ctx.unionDefs) {
     match mapGet(ctx.unionDefs, k) {
-      case Some(ui) -> if ui.irName == name { return Some(value = ui) }
+      case Some(ui) -> {
+        if ui.irName == name {
+          // A pointer to an inline union is a raw `NativePtr`; a bare struct
+          // is a union only when inline.
+          val isPtr = match t { case NPtr(_) -> true; case _ -> false }
+          if isPtr == ui.inline {
+            return None
+          }
+          return Some(value = ui)
+        }
+      }
       case None -> ()
     }
   }
@@ -9602,8 +9878,13 @@ func unionEqName(ui: in NUnionInfo): String {
 
 /// `a == b` (or `!=`) on two values of union `ui`, through its synthesised
 /// equality function.
-func lowerUnionEq(ctx: in Ctx, insns: in List[NInsn], ui: in NUnionInfo, a: in NVal, b: in NVal, negate: in Bool): NVal {
+func lowerUnionEq(
+  ctx: in Ctx, insns: in List[NInsn], ui: in NUnionInfo, a0: in NVal, b0: in NVal, negate: in Bool
+): NVal {
   val fnName = ensureUnionEq(ctx, ui)
+  // Inline unions compare through stack copies.
+  val a = if ui.inline { inlineUnionAddr(ctx, insns, a0) } else { a0 }
+  val b = if ui.inline { inlineUnionAddr(ctx, insns, b0) } else { b0 }
   val ra = freshTmp(ctx)
   insns.add(NBitcast(dest = ra, fromTy = a.ty, value = a.value, toTy = NPtr(pointee = NI8)))
   val rb = freshTmp(ctx)
@@ -9637,11 +9918,21 @@ func ensureUnionEq(ctx: in Ctx, ui: in NUnionInfo): String {
 /// each payload field equal by its own type's `==` (a `String` by its text,
 /// a union structurally, a float by IEEE rules, any other reference by
 /// identity).
-func synthUnionEq(ctx: in Ctx, ui: in NUnionInfo): NFunc {
+func synthUnionEq(mctx: in Ctx, ui: in NUnionInfo): NFunc {
+  // A function-level view of the module ctx: it owns the stack slots an inline
+  // union field's comparison spills into, hoisted to the entry block below.
+  val ctx = freshFnCtx(mctx, mctx.mainPkg, NI1)
   val body: List[NInsn] = newList()
   body.add(NLabel(name = "entry"))
-  val objTy = unionPtrType(ui)
-  val structTy = match objTy { case NPtr(pointee) -> pointee; case _ -> panic("unreachable") }
+  val structTy = if ui.inline {
+    unionPtrType(ui)
+  } else {
+    match unionPtrType(ui) {
+      case NPtr(pointee) -> pointee
+      case _ -> panic("unreachable")
+    }
+  }
+  val objTy = NPtr(pointee = structTy)
   val trueL = "eq.true"
   val falseL = "eq.false"
   val sameL = "eq.cmp"
@@ -9651,8 +9942,8 @@ func synthUnionEq(ctx: in Ctx, ui: in NUnionInfo): NFunc {
   body.add(NLabel(name = sameL))
   body.add(NBitcast(dest = "oa", fromTy = NPtr(pointee = NI8), value = NLocal(name = "ra"), toTy = objTy))
   body.add(NBitcast(dest = "ob", fromTy = NPtr(pointee = NI8), value = NLocal(name = "rb"), toTy = objTy))
-  val discA = loadUnionDisc(ctx, body, structTy, "oa")
-  val discB = loadUnionDisc(ctx, body, structTy, "ob")
+  val discA = loadUnionDisc(ctx, body, ui, structTy, "oa")
+  val discB = loadUnionDisc(ctx, body, ui, structTy, "ob")
   val discEq = freshTmp(ctx)
   body.add(NICmp(dest = discEq, pred = IEq, ty = NI32, a = NLocal(name = discA), b = NLocal(name = discB)))
   val switchL = "eq.switch"
@@ -9696,22 +9987,30 @@ func synthUnionEq(ctx: in Ctx, ui: in NUnionInfo): NFunc {
   params.add(NParam(name = "ra", ty = NPtr(pointee = NI8)))
   params.add(NParam(name = "rb", ty = NPtr(pointee = NI8)))
   val attrs: List[String] = newList()
+  val finalBody: List[NInsn] = newList()
+  finalBody.add(NLabel(name = "entry"))
+  appendInsns(finalBody, ctx.allocas)
+  var bi = 1
+  while bi < body.count {
+    finalBody.add(body[bi])
+    bi = bi + 1
+  }
   NFunc(
     name = unionEqName(ui),
     params = params,
     retTy = NI1,
     isPublic = false,
     isExtern = false,
-    body = body,
+    body = finalBody,
     attributes = attrs
   )
 }
 
-func loadUnionDisc(ctx: in Ctx, body: in List[NInsn], structTy: in NType, obj: in String): String {
+func loadUnionDisc(ctx: in Ctx, body: in List[NInsn], ui: in NUnionInfo, structTy: in NType, obj: in String): String {
   val discPtr = freshTmp(ctx)
   val args: List[NArg] = newList()
   args.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-  args.add(NArg(ty = NI32, value = NLitInt(v = unionDiscSlot, ty = NI32)))
+  args.add(NArg(ty = NI32, value = NLitInt(v = unionDiscIdx(ui), ty = NI32)))
   body.add(NGEP(dest = discPtr, ty = structTy, ptr = NLocal(name = obj), indices = args))
   val disc = freshTmp(ctx)
   body.add(NLoad(dest = disc, ty = NI32, ptr = NLocal(name = discPtr)))
@@ -9729,7 +10028,7 @@ func loadCasePayloadPtr(
   val payloadPtr = freshTmp(ctx)
   val args: List[NArg] = newList()
   args.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-  args.add(NArg(ty = NI32, value = NLitInt(v = unionPayloadSlot, ty = NI32)))
+  args.add(NArg(ty = NI32, value = NLitInt(v = unionPayloadIdx(ui), ty = NI32)))
   body.add(NGEP(dest = payloadPtr, ty = structTy, ptr = NLocal(name = obj), indices = args))
   val casePtr = freshTmp(ctx)
   body.add(
@@ -9812,16 +10111,24 @@ func emitValueEqN(ctx: in Ctx, body: in List[NInsn], t: in NType, a: in String, 
     }
     case _ -> ()
   }
-  if isByValueStructNType(t) {
-    return emitStructEq(ctx, body, t, NLocal(name = a), NLocal(name = b))
-  }
   match unionInfoOfNType(ctx, t) {
     case Some(inner) -> {
       val fnName = ensureUnionEq(ctx, inner)
+      // An inline union compares through stack copies of both values.
+      val pa = if inner.inline {
+        inlineUnionAddr(ctx, body, NVal(ty = t, value = NLocal(name = a)))
+      } else {
+        NVal(ty = t, value = NLocal(name = a))
+      }
+      val pb = if inner.inline {
+        inlineUnionAddr(ctx, body, NVal(ty = t, value = NLocal(name = b)))
+      } else {
+        NVal(ty = t, value = NLocal(name = b))
+      }
       val ra = freshTmp(ctx)
-      body.add(NBitcast(dest = ra, fromTy = t, value = NLocal(name = a), toTy = NPtr(pointee = NI8)))
+      body.add(NBitcast(dest = ra, fromTy = pa.ty, value = pa.value, toTy = NPtr(pointee = NI8)))
       val rb = freshTmp(ctx)
-      body.add(NBitcast(dest = rb, fromTy = t, value = NLocal(name = b), toTy = NPtr(pointee = NI8)))
+      body.add(NBitcast(dest = rb, fromTy = pb.ty, value = pb.value, toTy = NPtr(pointee = NI8)))
       val args: List[NArg] = newList()
       args.add(NArg(ty = NPtr(pointee = NI8), value = NLocal(name = ra)))
       args.add(NArg(ty = NPtr(pointee = NI8), value = NLocal(name = rb)))
@@ -9829,6 +10136,9 @@ func emitValueEqN(ctx: in Ctx, body: in List[NInsn], t: in NType, a: in String, 
       return dest
     }
     case None -> ()
+  }
+  if isByValueStructNType(t) {
+    return emitStructEq(ctx, body, t, NLocal(name = a), NLocal(name = b))
   }
   body.add(NICmp(dest = dest, pred = IEq, ty = t, a = NLocal(name = a), b = NLocal(name = b)))
   dest
@@ -10055,13 +10365,28 @@ func lowerUnionConstructVals(
     vi = vi + 1
   }
   val objTy = unionPtrType(ui)
-  val structTy = match objTy { case NPtr(pointee) -> pointee; case _ -> panic("unreachable") }
+  // An inline union is built in a hoisted stack slot and loaded as a value:
+  // no allocation, no ARC header.
+  val structTy = if ui.inline {
+    objTy
+  } else {
+    match objTy {
+      case NPtr(pointee) -> pointee
+      case _ -> panic("unreachable")
+    }
+  }
   val dtorName = if unionHasRefFields(ui) { unionDtorName(ui) } else { "" }
-  val obj = emitHeapAlloc(ctx, insns, objTy, dtorName)
+  var obj = ""
+  if ui.inline {
+    obj = "iu.slot." + freshTmp(ctx)
+    ctx.allocas.add(NAlloca(dest = obj, ty = structTy))
+  } else {
+    obj = emitHeapAlloc(ctx, insns, objTy, dtorName)
+  }
   val discPtr = freshTmp(ctx)
   val dArgs: List[NArg] = newList()
   dArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-  dArgs.add(NArg(ty = NI32, value = NLitInt(v = unionDiscSlot, ty = NI32)))
+  dArgs.add(NArg(ty = NI32, value = NLitInt(v = unionDiscIdx(ui), ty = NI32)))
   insns.add(NGEP(dest = discPtr, ty = structTy, ptr = NLocal(name = obj), indices = dArgs))
   insns.add(NStore(ty = NI32, value = NLitInt(v = caseIdx.toLong(), ty = NI32), ptr = NLocal(name = discPtr)))
   if vals.count > 0 {
@@ -10086,6 +10411,11 @@ func lowerUnionConstructVals(
       fi = fi + 1
     }
   }
+  if ui.inline {
+    val loaded = freshTmp(ctx)
+    insns.add(NLoad(dest = loaded, ty = structTy, ptr = NLocal(name = obj)))
+    return NVal(ty = structTy, value = NLocal(name = loaded))
+  }
   val outV = NVal(ty = objTy, value = NLocal(name = obj))
   registerTemp(ctx, outV)
   outV
@@ -10104,7 +10434,7 @@ func emitCasePayloadPtr(
   val payloadPtr = freshTmp(ctx)
   val pArgs: List[NArg] = newList()
   pArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-  pArgs.add(NArg(ty = NI32, value = NLitInt(v = unionPayloadSlot, ty = NI32)))
+  pArgs.add(NArg(ty = NI32, value = NLitInt(v = unionPayloadIdx(ui), ty = NI32)))
   insns.add(NGEP(dest = payloadPtr, ty = structTy, ptr = NLocal(name = obj), indices = pArgs))
   val caseTy = casePayloadStructType(ui, ui.cases[caseIdx])
   val casePtr = freshTmp(ctx)
@@ -10280,9 +10610,18 @@ func unionInfoOfType(ctx: in Ctx, t: in NType): Option[NUnionInfo] {
   match t {
     case NPtr(pointee) -> {
       match pointee {
-        case NStruct(name, _) -> mapGet(ctx.unionDefs, name)
+        case NStruct(name, _) -> match mapGet(ctx.unionDefs, name) {
+          // A pointer to an inline union is a raw `NativePtr`, not a union.
+          case Some(ui) -> if ui.inline { None } else { Some(value = ui) }
+          case None -> None
+        }
         case _ -> None
       }
+    }
+    // An inline union is the struct itself, never behind a pointer.
+    case NStruct(name, _) -> match mapGet(ctx.unionDefs, name) {
+      case Some(ui) -> if ui.inline { Some(value = ui) } else { None }
+      case None -> None
     }
     case _ -> None
   }
@@ -10541,7 +10880,7 @@ func emitPatternTest(
 func emitConstructorTest(
   ctx: in Ctx,
   insns: in List[NInsn],
-  sv: in NVal,
+  sv0: in NVal,
   head: in ModulePath,
   subpats: in List[Pattern],
   okLabel: in String,
@@ -10561,12 +10900,12 @@ func emitConstructorTest(
   // registered, #6589) would hijack the test into a type-mismatched
   // `NICmp` against a pointer value instead of falling through to the
   // union-case check below.
-  match sv.ty {
+  match sv0.ty {
     case NI32 -> {
       match mapGet(ctx.enumDefs, joined) {
         case Some(idx) -> {
           val cmp = freshTmp(ctx)
-          insns.add(NICmp(dest = cmp, pred = IEq, ty = NI32, a = sv.value, b = NLitInt(v = idx.toLong(), ty = NI32)))
+          insns.add(NICmp(dest = cmp, pred = IEq, ty = NI32, a = sv0.value, b = NLitInt(v = idx.toLong(), ty = NI32)))
           insns.add(NCondBr(cond = NLocal(name = cmp), thenLabel = okLabel, elseLabel = failLabel))
           return
         }
@@ -10577,7 +10916,7 @@ func emitConstructorTest(
     case _ -> {
     }
   }
-  val ui = match unionInfoOfType(ctx, sv.ty) {
+  val ui = match unionInfoOfType(ctx, sv0.ty) {
     case Some(u) -> u
     case None -> panic(
       "Lyric.LlvmCodegen: constructor pattern '" + joined + "' matched against a non-union value"
@@ -10599,11 +10938,20 @@ func emitConstructorTest(
     panic("Lyric.LlvmCodegen: constructor pattern '" + joined + "' does not belong to union '" + ui.irName + "'")
   }
   val cref = NCaseRef(unionKey = ui.irName, caseIdx = caseIdxFound)
-  val structTy = match unionPtrType(ui) { case NPtr(pointee) -> pointee; case _ -> panic("unreachable") }
+  val structTy = if ui.inline {
+    unionPtrType(ui)
+  } else {
+    match unionPtrType(ui) {
+      case NPtr(pointee) -> pointee
+      case _ -> panic("unreachable")
+    }
+  }
+  // An inline scrutinee is addressed through a stack copy.
+  val sv = if ui.inline { inlineUnionAddr(ctx, insns, sv0) } else { sv0 }
   val discPtr = freshTmp(ctx)
   val dArgs: List[NArg] = newList()
   dArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-  dArgs.add(NArg(ty = NI32, value = NLitInt(v = unionDiscSlot, ty = NI32)))
+  dArgs.add(NArg(ty = NI32, value = NLitInt(v = unionDiscIdx(ui), ty = NI32)))
   insns.add(NGEP(dest = discPtr, ty = structTy, ptr = sv.value, indices = dArgs))
   val disc = freshTmp(ctx)
   insns.add(NLoad(dest = disc, ty = NI32, ptr = NLocal(name = discPtr)))
@@ -13232,7 +13580,7 @@ func byValueRecordNameOf(st: in NByValState, pkg: in String, te: in TypeExpr): S
 
 /// Message for `N0010`: a by-value record in an `extern func` signature.
 func byValueExternMessage(fnName: in String, recName: in String): String {
-  "extern func '" + fnName + "' passes by-value record '" + recName +
+  "extern func '" + fnName + "' passes by-value record or union '" + recName +
     "' across the C boundary: a by-value record is an LLVM aggregate, not the platform C struct ABI (docs/67 §4.2, " +
     "tracked in #8009); pass a NativePtr, or declare the record with a `var` field so it keeps its heap form"
 }

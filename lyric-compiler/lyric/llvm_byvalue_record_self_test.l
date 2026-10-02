@@ -649,8 +649,8 @@ test "a package-local union does not collide with another package's enum of the 
   sources.add(lib)
   val ll = lowerBundleToLl(sources)
   assertTrue(
-    Str.contains(ll, "%T.Rec = type { i32, i32, i8*, %T.LogLevel*, i32 }"),
-    "Rec holds the union pointer and stays heap"
+    Str.contains(ll, "%T.Rec = type { %T.LogLevel, i32 }"),
+    "Rec embeds the local union inline, not the other package's i32 enum"
   )
   val r = runLl(ll)
   assertEqualInt(r.exitCode, 42, "the union field is read as the union")
@@ -753,7 +753,7 @@ test "an extern func passing a by-value record is rejected with N0010" {
   val diags = nativeByValueExternDiagnostics(units)
   assertEqualInt(diags.count, 1, "only the by-value signature is reported")
   assertEqual(diags[0].code, "N0010", "the diagnostic code")
-  assertTrue(Str.contains(diags[0].message, "by-value record 'T.Pt'"), "the message names the record")
+  assertTrue(Str.contains(diags[0].message, "by-value record or union 'T.Pt'"), "the message names the record")
 }
 
 test "an extern func over a record with a var field is not rejected" {

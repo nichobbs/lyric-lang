@@ -105,6 +105,17 @@ above. A by-value record stored in a List/Map/Task slot lives in a refcounted
 `__box<R>`; one in an `extern func` signature is rejected (`N0010`, C ABI #8009); an
 `impl I for R` target stays heap until interface boxing of values lands (#8010).
 
+**Inline unions (docs/67 §4.2).** A union whose every case payload field is
+by-value (scalars, enums, distinct types, by-value records, other inline unions;
+nullary cases are free) is the tagged struct value
+`%Pkg.U = type { i32, i32, [W x i64] }` (discriminant, pad, `W` payload words
+sized with C rules): built in a hoisted stack slot and loaded as a value, matched
+through a stack copy, compared by case then payload, and boxed in a refcounted
+`__box<U>` inside List/Map/Task slots. Generic unions classify per
+instantiation (`Option[Int]` and `Option[Vec3]` inline, `Option[String]` heap).
+Unions with a reference payload, recursive unions and `impl` targets stay heap;
+an inline union in an `extern func` signature is rejected (`N0010`, #8009).
+
 **Reference-typed fields** (fields whose type is heap-allocated) are stored as
 pointers. When the record is constructed, the ARC of each reference-typed field
 argument is incremented. When the record is destroyed (dtor), each reference-typed

@@ -156,7 +156,15 @@ are scalars, enums, distinct types or other such records is an LLVM struct value
 `Task` slots. Opaque types, interface implementers and generic instantiations
 over reference types keep the heap form. An `extern func` naming a by-value
 record, including in a callback type, is rejected (`N0010`; the C ABI is #8009,
-and boxing a by-value record into an interface is #8010). Inline tagged unions,
+and boxing a by-value record into an interface is #8010).
+
+Inline **unions** shipped too (progress entry `2026-10-02-native-inline-unions`):
+a union whose every case payload field is by-value (scalars, enums, distinct
+types, by-value records, other inline unions; nullary cases are free) is the
+struct value `{ i32 disc, i32 pad, [W x i64] payload }`, so `Option[Vec3]`,
+`Option[Int]`, `Result[Int, Int]` and enums with scalar payloads cost no
+allocation and no ARC. Generic unions classify per instantiation; unions with a
+reference payload, recursive unions and `impl` targets keep the heap form.
 `array[N, T]` fields and the C ABI for by-value structs remain open.
 
 ### 4.3 `array[N, T]`
