@@ -16414,10 +16414,14 @@ func lowerPatternTestMsil(
         case _ -> ()
       }
       // A NaN scrutinee lies in no range: on doubles the `.un` compares are
-      // "or unordered", so NaN takes both fail branches (#7240).
+      // "or unordered", so NaN takes both fail branches (#7240).  A
+      // `UInt`/`ULong` scrutinee's bounds say they are unsigned (the type
+      // checker gives them their suffix or `.toUInt()`/`.toULong()`, #7842),
+      // and the `.un` compares are the unsigned ones on integers.
       val rangeIsDouble = isFloatingMsil(rangeNumTy)
+      val rangeUn = rangeIsDouble or spellsUnsigned(lo) or spellsUnsigned(hi)
       lowerRangeBoundMsil(cctx, fctx, insns, lo, rangeNumTy)
-      insns.add(if rangeIsDouble { MClt_Un } else { MClt })
+      insns.add(if rangeUn { MClt_Un } else { MClt })
       insns.add(MBrTrue(label = failLabel))   // scrut < lo
       emitLoadSlot(insns, scrutSlot, fctx.paramCount)
       match scrutTy {
@@ -16426,10 +16430,11 @@ func lowerPatternTestMsil(
       }
       lowerRangeBoundMsil(cctx, fctx, insns, hi, rangeNumTy)
       if inclusive {
-        insns.add(if rangeIsDouble { MCgt_Un } else { MCgt })
+        insns.add(if rangeUn { MCgt_Un } else { MCgt })
         insns.add(MBrTrue(label = failLabel))  // scrut > hi
       } else {
-        insns.add(MClt)
+        // `clt` is false for an unordered pair, so a NaN still fails here.
+        insns.add(if rangeUn and not rangeIsDouble { MClt_Un } else { MClt })
         insns.add(MBrFalse(label = failLabel)) // not (scrut < hi) → scrut >= hi
       }
     }
@@ -18401,6 +18406,14 @@ func rangeBoundTypeMsil(e: in Expr): MsilType {
         case LFloat(_, sfx, _) -> match sfx { case F32 -> MFloat; case _ -> MDouble }
         case _ -> MInt
       }
+    }
+    case EParen(inner) -> rangeBoundTypeMsil(inner)
+    // A `ULong` bound of another shape, spelled out by the type checker
+    // (#7842).
+    case ECall(fn, cargs) -> if cargs.count == 0 and (match fn.kind { case EMember(_, m) -> m == "toULong"; case _ -> false }) {
+      MLong
+    } else {
+      MInt
     }
     case _ -> MInt
   }

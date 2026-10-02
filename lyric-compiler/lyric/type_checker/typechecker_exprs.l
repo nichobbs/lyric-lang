@@ -7670,7 +7670,14 @@ func eraseTyVars(t: in Type): Type {
   }
 }
 
-func bindPatternTyped(sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnostic], pat: in Pattern, ty: in Type): Unit {
+func bindPatternTyped(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  pat: in Pattern,
+  ty: in Type,
+): Unit {
   match pat.kind {
     case PBinding(name, inner) -> {
       // The language has no `null` literal or null pattern (docs/01 §FFI,
@@ -7714,13 +7721,12 @@ func bindPatternTyped(sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnosti
       match inner {
         case None -> {
         }
-        case Some(p) -> bindPatternTyped(sc, tbl, diag, p, ty)
+        case Some(p) -> bindPatternTyped(sc, tbl, sigs, diag, p, ty)
       }
     }
     case PWildcard -> {
     }
-    case PLiteral(_) -> {
-    }
+    case PLiteral(lit) -> recordUnsignedLiteralPattern(tbl, diag, pat, lit, ty)
     case PConstructor(head, args) -> {
       val ftypes = match unionCaseSymbolForScrutinee(tbl, diag, pat2fnExpr(head, pat.span), ty) {
         case Some(caseSym) -> {
@@ -7736,7 +7742,7 @@ func bindPatternTyped(sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnosti
       var i = 0
       while i < args.count {
         val at = if i < ftypes.count { ftypes[i] } else { TyError }
-        bindPatternTyped(sc, tbl, diag, args[i], at)
+        bindPatternTyped(sc, tbl, sigs, diag, args[i], at)
         i = i + 1
       }
     }
@@ -7745,7 +7751,7 @@ func bindPatternTyped(sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnosti
       var i = 0
       while i < patterns.count {
         val et = if i < elems.count { elems[i] } else { TyError }
-        bindPatternTyped(sc, tbl, diag, patterns[i], et)
+        bindPatternTyped(sc, tbl, sigs, diag, patterns[i], et)
         i = i + 1
       }
     }
@@ -7766,7 +7772,7 @@ func bindPatternTyped(sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnosti
       var i = 0
       while i < fields.count {
         match fields[i] {
-          case RPFNamed(fname, p, _) -> bindPatternTyped(sc, tbl, diag, p, fieldEntryType(recFields, fname))
+          case RPFNamed(fname, p, _) -> bindPatternTyped(sc, tbl, sigs, diag, p, fieldEntryType(recFields, fname))
           case RPFShort(nm, _) -> scopeAdd(sc, LocalBinding(name = nm, ty = fieldEntryType(recFields, nm), isMutable = false))
         }
         i = i + 1
@@ -7778,19 +7784,19 @@ func bindPatternTyped(sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnosti
       // diagnostics discarded, only so the case patterns they hold record the
       // union they match (`recordCasePatternUnion`).
       if patterns.count > 0 {
-        bindPatternTyped(sc, tbl, diag, patterns[0], ty)
+        bindPatternTyped(sc, tbl, sigs, diag, patterns[0], ty)
       }
       var oi = 1
       while oi < patterns.count {
         val altDiag: List[Diagnostic] = newList()
         scopePush(sc)
-        bindPatternTyped(sc, tbl, altDiag, patterns[oi], ty)
+        bindPatternTyped(sc, tbl, sigs, altDiag, patterns[oi], ty)
         scopePop(sc)
         oi = oi + 1
       }
     }
     case PParen(inner) -> {
-      bindPatternTyped(sc, tbl, diag, inner, ty)
+      bindPatternTyped(sc, tbl, sigs, diag, inner, ty)
     }
     case PTypeTest(inner, tyExpr) -> {
       // `case x is T ->` narrows the scrutinee to `T`, so the inner pattern (and
@@ -7798,15 +7804,85 @@ func bindPatternTyped(sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnosti
       // against the tested type rather than the wider scrutinee type.
       val ctx = newGenericContext()
       val testTy = resolveType(tbl, ctx, diag, tyExpr)
-      bindPatternTyped(sc, tbl, diag, inner, testTy)
+      bindPatternTyped(sc, tbl, sigs, diag, inner, testTy)
     }
-    case PRange(_, _, _, _) -> {
+    case PRange(lo, _, hi, _) -> {
+      if isUnsignedPatternScrutinee(ty) {
+        checkUnsignedRangeBound(sc, tbl, sigs, diag, lo, ty)
+        checkUnsignedRangeBound(sc, tbl, sigs, diag, hi, ty)
+      }
     }
     case PConstRef(_) -> {
     }
     case _ -> {
     }
   }
+}
+
+// A `Byte`, `UInt` or `ULong` scrutinee: its literal and range patterns are
+// typed against it (#7842).
+func isUnsignedPatternScrutinee(ty: in Type): Bool {
+  match unsignedLiteralSuffix(ty) {
+    case Some(_) -> true
+    case None -> false
+  }
+}
+
+// A literal pattern against a `Byte`, `UInt` or `ULong` scrutinee (#7842).
+// An unsuffixed literal takes the scrutinee's type, recorded so
+// `Lyric.Mono` gives it the matching suffix: every backend compares the
+// constant at that width and representation (a `UInt` above 2^31 is a
+// 32-bit pattern, not a `Long`).  A literal the type cannot hold could never
+// match, so it is T0015.
+func recordUnsignedLiteralPattern(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  pat: in Pattern,
+  lit: in Literal,
+  ty: in Type,
+): Unit {
+  match lit {
+    case LInt(v, sfx, _) -> match sfx {
+      case NoIntSuffix -> match unsignedLiteralSuffix(ty) {
+        case Some(usfx) -> {
+          if intValueFitsType(v, ty) {
+            val key = recordCopySiteKey(pat.span)
+            if not tbl.argConversionSites.containsKey(key) {
+              tbl.argConversionSites.add(
+                key,
+                ArgConversionSite(method = intLiteralSiteMethod(usfx), startOffset = pat.span.startPos.offset)
+              )
+            }
+          } else {
+            diag.add(errorDiagnostic("T0015", "literal " + toString(v) + " is out of range for type " + renderType(ty), pat.span))
+          }
+        }
+        case None -> ()
+      }
+      case _ -> ()
+    }
+    case _ -> ()
+  }
+}
+
+// A range-pattern bound against a `Byte`, `UInt` or `ULong` scrutinee
+// (#7842): typed against the scrutinee like an initialiser, so an
+// unsuffixed literal takes its suffix (T0015 when it does not fit), and a
+// `UInt`/`ULong` bound of any other shape is recorded as an unsigned operand.
+// Each backend's range test then compares unsigned when a bound says so.
+func checkUnsignedRangeBound(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  bound: in Expr,
+  ty: in Type,
+): Unit {
+  val bt = inferExprExpected(sc, tbl, sigs, diag, bound, ty)
+  if reportIntLiteralOutOfRange(unrefine(ty), bound, diag) {
+    return
+  }
+  recordUnsignedOperand(tbl, bt, bound)
 }
 
 // Wrap a constructor head `ModulePath` as an `EPath` expression so the existing
@@ -7956,7 +8032,7 @@ func inferMatchExpr(
   var ai = 0
   while ai < arms.count {
     scopePush(sc)
-    bindPatternTyped(sc, tbl, diag, arms[ai].pattern, st)
+    bindPatternTyped(sc, tbl, sigs, diag, arms[ai].pattern, st)
     bindOpenTuplePattern(sc, tbl, arms[ai].pattern, scrutKey)
     checkConstRefPattern(tbl, sigs, diag, arms[ai].pattern, st)
     recordTuplePatternBindings(tbl, arms[ai].pattern, st, false, sc.genericNames)

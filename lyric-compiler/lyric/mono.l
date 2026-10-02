@@ -84,6 +84,21 @@ import Lyric.Parser
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Public types
 // ─────────────────────────────────────────────────────────────────────────────
+/// A specialisation to re-check (#7842): `specDecl` is the generic with its
+/// type arguments substituted throughout, named `specName`, its body as this
+/// pass received it.  `originPkg` is the package the generic is declared in,
+/// "" for the file being specialised.  The generic's own declaration has the
+/// span `specDecl.span`.
+pub record UnsignedSpecRequest {
+  specName: String
+  originPkg: String
+  specDecl: FunctionDecl
+  subst: Map[String, TypeExpr]
+  valueSubst: Map[String, Expr]
+  /// The call that first required the specialisation.
+  callSpan: Span
+}
+
 /// Result of the monomorphisation pass.
 pub record MonoResult {
   /// Rewritten SourceFile: generic IFunc items are removed, specialised
@@ -117,6 +132,12 @@ pub record MonoResult {
   /// The bridges route this list through `reportAndAbort` so M-errors abort
   /// codegen the same way parse/type-check/mode-check diagnostics do.
   diagnostics: List[Diagnostic]
+  /// Each specialisation whose type arguments mention `UInt` or `ULong`
+  /// (#7842).  A generic body is type-checked once, over its type
+  /// parameters, so an operand typed `T` is only known to be unsigned in the
+  /// specialisation.  `Lyric.Pipeline` re-checks each of these and passes the
+  /// conversions the checker records for it back in as `specSites`.
+  unsignedSpecs: List[UnsignedSpecRequest]
   // ─────────────────────────────────────────────────────────────────────────────
   // §2. Internal state
   // ─────────────────────────────────────────────────────────────────────────────
@@ -326,10 +347,14 @@ record MonoState {
   copyTicker: List[Int]
   seenSpecs: Map[String, Bool]
   allSpecs: List[SpecRequest]
-  /// One entry per specialised body being rewritten: true when its type
-  /// arguments mention `UInt`/`ULong`, so its unsigned operands must be
-  /// spelled out (`spellUnsignedSitesMono`, #7812).
-  spellUnsigned: List[Bool]
+  /// The conversions the type checker recorded for each specialisation it
+  /// re-checked, keyed by specialisation name (#7842); see
+  /// `MonoResult.unsignedSpecs`.
+  specSites: Map[String, Map[String, ArgConversionSite]]
+  /// The `specSites` entry of each specialised body being rewritten,
+  /// innermost last (an empty map for a body with none).
+  activeSpecSites: List[Map[String, ArgConversionSite]]
+  unsignedSpecs: List[UnsignedSpecRequest]
   diags: List[Diagnostic]
 }
 
@@ -380,7 +405,9 @@ func newMonoState(
     copyTicker = newList(),
     seenSpecs = newMap(),
     allSpecs = newList(),
-    spellUnsigned = newList(),
+    specSites = newMap(),
+    activeSpecSites = newList(),
+    unsignedSpecs = newList(),
     diags = newList()
   )
 }
@@ -3931,6 +3958,32 @@ pub func unionCtorInferenceDecls(items: in List[Item]): List[FunctionDecl] {
   ctorDecls
 }
 
+/// `decl`, a generic function, as the non-generic `specName` with `subst`
+/// and `valueSubst` applied to its signature and its whole body: the
+/// declaration a specialisation is type-checked as (#7842).
+pub func specializeFuncDecl(
+  decl: in FunctionDecl,
+  specName: in String,
+  subst: in Map[String, TypeExpr],
+  valueSubst: in Map[String, Expr],
+): FunctionDecl {
+  val sd = specializeFunc(decl, specName, subst, valueSubst)
+  FunctionDecl(
+    docComments = sd.docComments,
+    annotations = sd.annotations,
+    visibility = sd.visibility,
+    isAsync = sd.isAsync,
+    name = sd.name,
+    generics = None,
+    params = sd.params,
+    ret = sd.ret,
+    whereClause = None,
+    contracts = sd.contracts,
+    body = substValueInBody(valueSubst, sd.body),
+    span = sd.span
+  )
+}
+
 func specializeFunc(
   decl: in FunctionDecl,
   specName: in String,
@@ -4200,7 +4253,7 @@ pub func desugarCheckedFile(
   val noRewrites: Map[String, String] = newMap()
   if sites.count == 0 and funcRefSites.count == 0 and argConversionSites.count == 0 and localBindingTypeSites.count == 0 and funcValueCallSites.count == 0 and tuplePatternBindingSites.count == 0 and listLiteralTypeSites.count == 0 and hoistOperandTypeSites.count == 0 {
     val noDiags: List[Diagnostic] = newList()
-    return MonoResult(file = file, rewrites = noRewrites, diagnostics = noDiags)
+    return MonoResult(file = file, rewrites = noRewrites, diagnostics = noDiags, unsignedSpecs = newList())
   }
   val offsets: List[Int] = newList()
   val siteKeys = mapKeys(sites)
@@ -4350,7 +4403,7 @@ pub func desugarCheckedFile(
     items = items,
     span = file.span
   )
-  MonoResult(file = desugared, rewrites = noRewrites, diagnostics = state.diags)
+  MonoResult(file = desugared, rewrites = noRewrites, diagnostics = state.diags, unsignedSpecs = newList())
 }
 
 // The `.copy` site for a call inside a specialised generic from another
@@ -5870,7 +5923,14 @@ func rewriteMatchArms(
     }
     val newBody = rewriteEOB(state, env, arm.body)
     restoreEnv(env, snap)
-    buf.add(MatchArm(pattern = arm.pattern, guard = newGuard, body = newBody, span = arm.span))
+    buf.add(
+      MatchArm(
+        pattern = rewritePatternSitesMono(state, env, arm.pattern),
+        guard = newGuard,
+        body = newBody,
+        span = arm.span
+      )
+    )
     i = i + 1
   }
   buf
@@ -6010,11 +6070,7 @@ func genDeclResolvesForCallSite(
 }
 
 func rewriteExpr(state: in MonoState, env: in Map[String, TypeExpr], expr: in Expr): Expr {
-  val rewritten = rewriteExprInner(state, env, expr)
-  if state.spellUnsigned.count > 0 and state.spellUnsigned[state.spellUnsigned.count - 1] {
-    return spellUnsignedSitesMono(state, env, rewritten)
-  }
-  rewritten
+  rewriteExprInner(state, env, expr)
 }
 
 // An unsuffixed float literal the type checker found where a `Float` is
@@ -6038,6 +6094,187 @@ func float32Literal(e: in Expr): Expr {
     case EParen(inner) -> Expr(kind = EParen(inner = float32Literal(inner)), span = e.span)
     case _ -> e
   }
+}
+
+// The conversion the type checker recorded at `sp`, removed so the
+// expression it was recorded for is converted once: the innermost
+// specialisation's re-checked sites (#7842), then, in this file's own
+// bodies, the sites of the file's own check.
+func takeConversionSiteMono(state: in MonoState, sp: in Span, ownSites: in Bool): Option[ArgConversionSite] {
+  if state.activeSpecSites.count > 0 {
+    val top = state.activeSpecSites[state.activeSpecSites.count - 1]
+    if top.count > 0 {
+      val key = recordCopySiteKey(sp)
+      match mapGet(top, key) {
+        case Some(conv) -> {
+          top.remove(key)
+          return Some(value = conv)
+        }
+        case None -> ()
+      }
+    }
+  }
+  if ownSites and state.argConversionSites.count > 0 {
+    val key = recordCopySiteKey(sp)
+    match mapGet(state.argConversionSites, key) {
+      case Some(conv) -> {
+        state.argConversionSites.remove(key)
+        return Some(value = conv)
+      }
+      case None -> ()
+    }
+  }
+  None
+}
+
+// True when `e` already carries the conversion `conv` records: a
+// specialisation of a generic from this file is the generic's body after
+// the file's own check spelled its concrete operands, which its re-check
+// records again (#7842).
+func conversionSpelledMono(e: in Expr, conv: in ArgConversionSite): Bool {
+  if conv.method == floatLiteralSiteMethod() {
+    return not isUnsuffixedLiteralMono(e, true)
+  }
+  match intLiteralSiteSuffix(conv.method) {
+    case Some(_) -> return not isUnsuffixedLiteralMono(e, false)
+    case None -> ()
+  }
+  match e.kind {
+    case ECall(fn, cargs) -> cargs.count == 0 and
+      (match fn.kind { case EMember(_, m) -> m == conv.method; case _ -> false })
+    // A literal already of the type an identity `.toUInt()`/`.toULong()`
+    // names; a `u32` literal widening to `ULong` still needs its conversion.
+    case ELiteral(lit) -> match lit {
+      case LInt(_, sfx, _) -> match sfx {
+        case U32 -> conv.method == "toUInt"
+        case U64 -> conv.method == "toULong"
+        case _ -> false
+      }
+      case _ -> false
+    }
+    case EParen(inner) -> conversionSpelledMono(inner, conv)
+    case _ -> false
+  }
+}
+
+// An unsuffixed float (`isFloat`) or integer literal, possibly negated or
+// parenthesised.
+func isUnsuffixedLiteralMono(e: in Expr, isFloat: in Bool): Bool {
+  match e.kind {
+    case ELiteral(lit) -> match lit {
+      case LInt(_, sfx, _) -> not isFloat and
+        (match sfx { case NoIntSuffix -> true; case _ -> false })
+      case LFloat(_, sfx, _) -> isFloat and
+        (match sfx { case NoFloatSuffix -> true; case _ -> false })
+      case _ -> false
+    }
+    case EParen(inner) -> isUnsuffixedLiteralMono(inner, isFloat)
+    case EPrefix(op, operand) -> match op { case PreNeg -> isUnsuffixedLiteralMono(operand, isFloat); case _ -> false }
+    case _ -> false
+  }
+}
+
+func copySitesMono(sites: in Map[String, ArgConversionSite]): Map[String, ArgConversionSite] {
+  val acc: Map[String, ArgConversionSite] = newMap()
+  for k in mapKeys(sites) {
+    match mapGet(sites, k) {
+      case Some(v) -> acc.add(k, v)
+      case None -> ()
+    }
+  }
+  acc
+}
+
+// `pat` with the conversions the type checker recorded inside it applied:
+// an unsuffixed literal pattern against a `Byte`/`UInt`/`ULong` scrutinee
+// takes its suffix, and a range pattern's bounds are rewritten as
+// expressions (#7842).
+func rewritePatternSitesMono(state: in MonoState, env: in Map[String, TypeExpr], pat: in Pattern): Pattern {
+  val sp = pat.span
+  match pat.kind {
+    case PLiteral(lit) -> match takeConversionSiteMono(state, sp, checkerSitesApplyMono(state)) {
+      case Some(conv) -> match intLiteralSiteSuffix(conv.method) {
+        case Some(sfx) -> match lit {
+          case LInt(v, oldSfx, raw) -> match oldSfx {
+            case NoIntSuffix -> Pattern(
+              kind = PLiteral(
+                lit = LInt(
+                  value = v,
+                  suffix = sfx,
+                  raw = raw +
+                    intSuffixText(
+                      sfx
+                    )
+                )
+              ),
+              span = sp
+            )
+            case _ -> pat
+          }
+          case _ -> pat
+        }
+        case None -> pat
+      }
+      case None -> pat
+    }
+    case PRange(lo, inclusive, hi, bareDotDot) -> Pattern(
+      kind = PRange(
+        lo = rewriteExpr(state, env, lo),
+        inclusive = inclusive,
+        hi = rewriteExpr(state, env, hi),
+        bareDotDot = bareDotDot
+      ),
+      span = sp
+    )
+    case PBinding(name, inner) -> match inner {
+      case Some(ip) -> Pattern(
+        kind = PBinding(
+          name = name,
+          inner = Some(
+            value = rewritePatternSitesMono(
+              state,
+              env,
+              ip
+            )
+          )
+        ),
+        span = sp
+      )
+      case None -> pat
+    }
+    case PConstructor(head, args) -> Pattern(
+      kind = PConstructor(head = head, args = rewritePatternListMono(state, env, args)),
+      span = sp
+    )
+    case PRecord(head, fields, ignoreRest) -> {
+      val nf: List[RecordPatternField] = newList()
+      for f in fields {
+        match f {
+          case RPFNamed(n, fp, fsp) -> nf.add(
+            RPFNamed(name = n, pattern = rewritePatternSitesMono(state, env, fp), span = fsp)
+          )
+          case RPFShort(n, fsp) -> nf.add(RPFShort(name = n, span = fsp))
+        }
+      }
+      Pattern(kind = PRecord(head = head, fields = nf, ignoreRest = ignoreRest), span = sp)
+    }
+    case PTuple(ps) -> Pattern(kind = PTuple(patterns = rewritePatternListMono(state, env, ps)), span = sp)
+    case PParen(inner) -> Pattern(kind = PParen(inner = rewritePatternSitesMono(state, env, inner)), span = sp)
+    case PTypeTest(inner, ty) -> Pattern(
+      kind = PTypeTest(inner = rewritePatternSitesMono(state, env, inner), ty = ty),
+      span = sp
+    )
+    case POr(ps) -> Pattern(kind = POr(patterns = rewritePatternListMono(state, env, ps)), span = sp)
+    case _ -> pat
+  }
+}
+
+func rewritePatternListMono(state: in MonoState, env: in Map[String, TypeExpr], ps: in List[Pattern]): List[Pattern] {
+  val acc: List[Pattern] = newList()
+  for p in ps {
+    acc.add(rewritePatternSitesMono(state, env, p))
+  }
+  acc
 }
 
 // An unsuffixed integer literal the type checker found where a `Byte`,
@@ -6085,27 +6322,23 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
       case None -> ()
     }
   }
-  if ownSites and state.argConversionSites.count > 0 {
-    val convKey = recordCopySiteKey(s)
-    match mapGet(state.argConversionSites, convKey) {
-      case Some(conv) -> {
-        state.argConversionSites.remove(convKey)
-        if conv.method == floatLiteralSiteMethod() {
-          return float32Literal(expr)
-        }
-        match intLiteralSiteSuffix(conv.method) {
-          case Some(sfx) -> return suffixedIntLiteral(expr, sfx)
-          case None -> ()
-        }
-        val inner = rewriteExpr(state, env, expr)
-        val noArgs: List[CallArg] = newList()
-        return Expr(
-          kind = ECall(fn = Expr(kind = EMember(receiver = inner, memberName = conv.method), span = s), args = noArgs),
-          span = s
-        )
+  match takeConversionSiteMono(state, s, ownSites) {
+    case Some(conv) -> if not conversionSpelledMono(expr, conv) {
+      if conv.method == floatLiteralSiteMethod() {
+        return float32Literal(expr)
       }
-      case None -> ()
+      match intLiteralSiteSuffix(conv.method) {
+        case Some(sfx) -> return suffixedIntLiteral(expr, sfx)
+        case None -> ()
+      }
+      val inner = rewriteExpr(state, env, expr)
+      val noArgs: List[CallArg] = newList()
+      return Expr(
+        kind = ECall(fn = Expr(kind = EMember(receiver = inner, memberName = conv.method), span = s), args = noArgs),
+        span = s
+      )
     }
+    case None -> ()
   }
   if ownSites and state.hoistOperandTypeSites.count > 0 {
     val hoistKey = recordCopySiteKey(s)
@@ -6933,12 +7166,7 @@ func rewriteStmt(state: in MonoState, env: in Map[String, TypeExpr], stmt: in St
       }
       val newTarget = rewriteExpr(state, env, target)
       val newValue = rewriteExpr(state, env, value)
-      val spelledValue = if state.spellUnsigned.count > 0 and state.spellUnsigned[state.spellUnsigned.count - 1] {
-        spellUnsignedCompoundValueMono(state, env, op, newTarget, newValue)
-      } else {
-        newValue
-      }
-      Statement(kind = SAssign(target = newTarget, op = op, value = spelledValue), span = s)
+      Statement(kind = SAssign(target = newTarget, op = op, value = newValue), span = s)
     }
 
     case SReturn(opt) -> {
@@ -7696,13 +7924,16 @@ pub func monoFileWithImportsAndTypeDecls(
     newMap(),
     newMap(),
     newMap(),
+    newMap(),
     newMap()
   )
 }
 
 /// `monoFileWithImportsAndTypeDecls`, with the function type of each
 /// desugared function-value lambda in this file (D-progress-963), keyed by
-/// `recordCopySiteKey` of its span.
+/// `recordCopySiteKey` of its span.  `specSites` holds, for each
+/// specialisation a previous run reported in `unsignedSpecs` and the caller
+/// re-checked, the conversions the type checker recorded in it (#7842).
 pub func monoFileWithLambdaTypes(
   file: in SourceFile,
   importedGenDecls: in List[FunctionDecl],
@@ -7712,6 +7943,7 @@ pub func monoFileWithLambdaTypes(
   callResultTypes: in Map[String, TypeExpr],
   genericCallTypeArgSites: in Map[String, GenericCallTypeArgsSite],
   lambdaParamTypeSites: in Map[String, LambdaParamTypesSite],
+  specSites: in Map[String, Map[String, ArgConversionSite]],
 ): MonoResult {
   // ── Phase 1: collect generic function decls ─────────────────────────────
   // #349: also collect every IFunc (generic + non-generic) and every
@@ -7992,7 +8224,7 @@ pub func monoFileWithLambdaTypes(
   if genDecls.count == 0 {
     val emptyRewrites: Map[String, String] = newMap()
     val emptyDiags: List[Diagnostic] = newList()
-    return MonoResult(file = file, rewrites = emptyRewrites, diagnostics = emptyDiags)
+    return MonoResult(file = file, rewrites = emptyRewrites, diagnostics = emptyDiags, unsignedSpecs = newList())
   }
 
   val state = newMonoState(
@@ -8046,6 +8278,12 @@ pub func monoFileWithLambdaTypes(
       case None -> ()
     }
     lpi = lpi + 1
+  }
+  for sk in mapKeys(specSites) {
+    match mapGet(specSites, sk) {
+      case Some(sites) -> state.specSites.add(sk, sites)
+      case None -> ()
+    }
   }
 
   // ── Phase 2: rewrite non-generic items ──────────────────────────────────
@@ -8320,10 +8558,38 @@ pub func monoFileWithLambdaTypes(
     // for nested generic calls.
     val substitutedBody = substValueInBody(req.valueSubst, req.baseDecl.body)
     val env = seedEnvFromParams(req.baseDecl.params)
-    state.originScope.add(originPkgOf(req.baseDecl.annotations))
-    state.spellUnsigned.add(substMentionsUnsignedMono(req.subst))
+    val specOrigin = originPkgOf(req.baseDecl.annotations)
+    if substMentionsUnsignedMono(req.subst) {
+      state.unsignedSpecs.add(
+        UnsignedSpecRequest(
+          specName = req.specName,
+          originPkg = specOrigin,
+          specDecl = FunctionDecl(
+            docComments = req.baseDecl.docComments,
+            annotations = req.baseDecl.annotations,
+            visibility = req.baseDecl.visibility,
+            isAsync = req.baseDecl.isAsync,
+            name = req.baseDecl.name,
+            generics = None,
+            params = req.baseDecl.params,
+            ret = req.baseDecl.ret,
+            whereClause = None,
+            contracts = req.baseDecl.contracts,
+            body = substitutedBody,
+            span = req.baseDecl.span
+          ),
+          subst = req.subst,
+          valueSubst = req.valueSubst,
+          callSpan = req.callSpan
+        )
+      )
+    }
+    state.originScope.add(specOrigin)
+    state.activeSpecSites.add(
+      match mapGet(state.specSites, req.specName) { case Some(sites) -> copySitesMono(sites); case None -> newMap() }
+    )
     val newBody = rewriteFuncBodyWithRet(state, env, substitutedBody, req.baseDecl.ret)
-    state.spellUnsigned.removeAt(state.spellUnsigned.count - 1)
+    state.activeSpecSites.removeAt(state.activeSpecSites.count - 1)
     state.originScope.removeAt(state.originScope.count - 1)
     val finalDecl = FunctionDecl(
       docComments = req.baseDecl.docComments,
@@ -8388,7 +8654,7 @@ pub func monoFileWithLambdaTypes(
     span = file.span
   )
 
-  MonoResult(file = newFile, rewrites = rewrites, diagnostics = state.diags)
+  MonoResult(file = newFile, rewrites = rewrites, diagnostics = state.diags, unsignedSpecs = state.unsignedSpecs)
 }
 
 // Extract the base function name from a mangled specialisation name.
@@ -8414,14 +8680,15 @@ func extractBaseName(specName: in String): String {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Unsigned operands of specialised bodies (#7812)
+// Unsigned operands of specialised bodies (#7812, #7842)
 // ─────────────────────────────────────────────────────────────────────────────
 // The type checker spells every `UInt`/`ULong` operand whose lowering depends
 // on signedness as the identity `.toUInt()`/`.toULong()` (see
 // `recordUnsignedOperand` in `Lyric.TypeChecker`).  A generic body is checked
-// once, over its type parameters, so an operand typed `T` is spelled only
-// here, in a specialisation that binds `T` to `UInt`/`ULong`, from the types
-// the specialisation's parameters and locals now declare.
+// once, over its type parameters, so an operand typed `T` is known to be
+// unsigned only in a specialisation that binds `T` to `UInt`/`ULong`.  Such a
+// specialisation is reported in `MonoResult.unsignedSpecs`;
+// `Lyric.Pipeline` type-checks it and passes the conversions back in.
 // True when a type argument of `subst` mentions `UInt` or `ULong`.
 func substMentionsUnsignedMono(subst: in Map[String, TypeExpr]): Bool {
   for k in mapKeys(subst) {
@@ -8478,187 +8745,4 @@ func isUnsignedPathMono(p: in ModulePath): Bool {
   }
   val last = p.segments[p.segments.count - 1]
   last == "UInt" or last == "ULong"
-}
-
-// `e.toUInt()` / `e.toULong()` when `e` is a `UInt` / `ULong` that does not
-// already say so; `e` otherwise.
-func spellUnsignedOperandMono(state: in MonoState, env: in Map[String, TypeExpr], e: in Expr): Expr {
-  if spellsUnsigned(e) {
-    return e
-  }
-  match inferExprTE(state, env, e) {
-    case Some(te) -> {
-      val method = unsignedIdentityMethodMono(te)
-      if method.length == 0 {
-        return e
-      }
-      val noArgs: List[CallArg] = newList()
-      Expr(
-        kind = ECall(fn = Expr(kind = EMember(receiver = e, memberName = method), span = e.span), args = noArgs),
-        span = e.span
-      )
-    }
-    case None -> e
-  }
-}
-
-func unsignedIdentityMethodMono(te: in TypeExpr): String {
-  match te.kind {
-    case TRef(p) -> unsignedMethodForPathMono(p)
-    case TRefined(p, _) -> unsignedMethodForPathMono(p)
-    case TParen(inner) -> unsignedIdentityMethodMono(inner)
-    case _ -> ""
-  }
-}
-
-func unsignedMethodForPathMono(p: in ModulePath): String {
-  if p.segments.count != 1 {
-    return ""
-  }
-  if p.segments[0] == "UInt" {
-    "toUInt"
-  } else if p.segments[0] == "ULong" {
-    "toULong"
-  } else {
-    ""
-  }
-}
-
-func isStringTEMono(te: in Option[TypeExpr]): Bool {
-  match te {
-    case Some(t) -> match t.kind {
-      case TRef(p) -> p.segments.count == 1 and p.segments[0] == "String"
-      case _ -> false
-    }
-    case None -> false
-  }
-}
-
-// The operand positions `recordUnsignedOperand` covers, on an already
-// rewritten expression.
-func spellUnsignedSitesMono(state: in MonoState, env: in Map[String, TypeExpr], e: in Expr): Expr {
-  val s = e.span
-  match e.kind {
-    case EBinop(op, lhs, rhs) -> {
-      val signSensitive = match op {
-        case BLt -> true
-        case BLte -> true
-        case BGt -> true
-        case BGte -> true
-        case BDiv -> true
-        case BMod -> true
-        case _ -> false
-      }
-      if signSensitive {
-        return Expr(
-          kind = EBinop(
-            op = op,
-            lhs = spellUnsignedOperandMono(state, env, lhs),
-            rhs = spellUnsignedOperandMono(state, env, rhs)
-          ),
-          span = s
-        )
-      }
-      match op {
-        case BAdd -> if isStringTEMono(inferExprTE(state, env, lhs)) {
-          return Expr(kind = EBinop(op = op, lhs = lhs, rhs = spellUnsignedOperandMono(state, env, rhs)), span = s)
-        }
-        case _ -> ()
-      }
-      e
-    }
-    case EInterpolated(segs) -> {
-      val spelled: List[InterpolatedSegment] = newList()
-      for seg in segs {
-        match seg {
-          case ISText(t, sp) -> spelled.add(ISText(text = t, span = sp))
-          case ISExpr(se) -> spelled.add(ISExpr(expr = spellUnsignedOperandMono(state, env, se)))
-        }
-      }
-      Expr(kind = EInterpolated(segments = spelled), span = s)
-    }
-    case ECall(fn, args) -> match fn.kind {
-      case EPath(p) -> if p.segments.count == 1 and isStringifyingBuiltin(p.segments[0]) {
-        val spelled: List[CallArg] = newList()
-        for a in args {
-          match a {
-            case CAPositional(ae) -> spelled.add(CAPositional(expr = spellUnsignedOperandMono(state, env, ae)))
-            case CANamed(n, ae, nsp) -> spelled.add(
-              CANamed(name = n, value = spellUnsignedOperandMono(state, env, ae), span = nsp)
-            )
-          }
-        }
-        Expr(kind = ECall(fn = fn, args = spelled), span = s)
-      } else {
-        e
-      }
-      case EMember(recv, m) -> if m == "toString" and args.count == 0 {
-        Expr(
-          kind = ECall(
-            fn = Expr(
-              kind = EMember(receiver = spellUnsignedOperandMono(state, env, recv), memberName = m),
-              span = fn.span
-            ),
-            args = args
-          ),
-          span = s
-        )
-      } else {
-        e
-      }
-      case _ -> e
-    }
-    case EAssign(target, op, value) -> Expr(
-      kind = EAssign(
-        target = target,
-        op = op,
-        value = spellUnsignedCompoundValueMono(state, env, op, target, value)
-      ),
-      span = s
-    )
-    case _ -> e
-  }
-}
-
-// The value of `target op= value`, spelled unsigned for a `/=` or `%=` on a
-// `UInt`/`ULong` target and for the value a `String` `+=` appends.
-func spellUnsignedCompoundValueMono(
-  state: in MonoState,
-  env: in Map[String, TypeExpr],
-  op: in AssignOp,
-  target: in Expr,
-  value: in Expr,
-): Expr {
-  match op {
-    case AssSlash -> spellUnsignedByTargetMono(state, env, target, value)
-    case AssPercent -> spellUnsignedByTargetMono(state, env, target, value)
-    case AssPlus -> if isStringTEMono(inferExprTE(state, env, target)) {
-      spellUnsignedOperandMono(state, env, value)
-    } else {
-      value
-    }
-    case _ -> value
-  }
-}
-
-func spellUnsignedByTargetMono(
-  state: in MonoState, env: in Map[String, TypeExpr], target: in Expr, value: in Expr
-): Expr {
-  if spellsUnsigned(value) {
-    return value
-  }
-  match inferExprTE(state, env, target) {
-    case Some(te) -> {
-      val method = unsignedIdentityMethodMono(te)
-      if method.length == 0 {
-        return value
-      }
-      val noArgs: List[CallArg] = newList()
-      Expr(
-        kind = ECall(fn = Expr(kind = EMember(receiver = value, memberName = method), span = value.span), args = noArgs),
-        span = value.span
-      )
-    }
-    case None -> value
-  }
 }

@@ -423,12 +423,12 @@ Pattern kinds:
 | Pattern | Syntax |
 |---|---|
 | Wildcard | `_` |
-| Literal | `42` `"hello"` `true` |
+| Literal | `42` `"hello"` `true` (an integer literal takes a `Byte`/`UInt`/`ULong` scrutinee's type) |
 | Binding | `x` |
 | Constructor | `Circle(r)` `Some(v)` `Ok(x)` |
 | Record destructure | `Point { x, y }` `Point { x = 0.0, y }` |
 | Tuple | `(a, b)` |
-| Range | `0 ..= 9` |
+| Range | `0 ..= 9` (unsigned ordering on a `Byte`/`UInt`/`ULong` scrutinee) |
 | Const reference | `@NAME` (compares against the value of `val`/`const NAME`) |
 | Alternative | `A \| B` |
 | Guard | `case … where condition` or `case … if condition` |
@@ -1322,7 +1322,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0012` | Primitive type does not take type arguments |
 | `T0013` | Name is not a type |
 | `T0014` | Unknown qualified type name (last segment not in scope) |
-| `T0015` | Integer literal out of range for the declared integer type (an inline range-refined type, or a plain `Byte`/`Int`/`UInt`/`Long`/`ULong`/`Nat` binding or assignment target) |
+| `T0015` | Integer literal out of range for the declared integer type (an inline range-refined type, a plain `Byte`/`Int`/`UInt`/`Long`/`ULong`/`Nat` binding or assignment target, or a literal pattern or range bound against a `Byte`/`UInt`/`ULong` scrutinee) |
 | `T0016` | Non-exhaustive `match` (uncovered union/enum case, `Bool`, or scalar without `_`) |
 | `T0017` | Type alias is part of a cycle and does not resolve to a type |
 | `T0020` | Unknown name (undefined variable or function), including a type or package-qualified path whose package is not reachable from the file's imports (add the `import` it names) — the same check covers a qualified path in TYPE position (`val c: Pkg.Sub.Type`, a parameter/field/return type, or a generic type argument) and a qualified PATTERN head (`case Pkg.Sub.Kind.A -> ...`) |

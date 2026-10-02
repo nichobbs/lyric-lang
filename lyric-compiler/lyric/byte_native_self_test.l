@@ -156,6 +156,24 @@ test "an unsuffixed literal on the right of a Byte assignment (#7841)" {
   assertEqual(toString(b), "255", "Byte = 255")
 }
 
+func byteSize(b: in Byte): String {
+  match b {
+    case 200 ..= 255 -> "high"
+    case 128 -> "mid"
+    case 0 ..< 128 -> "low"
+    case _ -> "between"
+  }
+}
+
+// #7842: a range pattern on a `Byte` orders unsigned.
+test "range and literal patterns on a Byte (#7842)" {
+  assertEqual(byteSize(250u8), "high", "a Byte range above 127")
+  assertEqual(byteSize(255u8), "high", "a Byte range at 255")
+  assertEqual(byteSize(128u8), "mid", "a Byte literal pattern of 128")
+  assertEqual(byteSize(5u8), "low", "a Byte range below 128")
+  assertEqual(byteSize(150u8), "between", "a Byte between the ranges")
+}
+
 test "println of a Byte" {
   val a: Byte = 0u8
   val d: Byte = 255u8

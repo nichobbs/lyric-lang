@@ -896,6 +896,46 @@ test "an unsuffixed literal takes the type of an assignment target (#7841)" {
   assertEqualInt(diagCount(arg), 0, "an argument: " + diagCodesOf(arg))
 }
 
+// #7842: a literal or range pattern against a `UInt`/`ULong`/`Byte`
+// scrutinee is typed against it: an unsuffixed literal or bound takes its
+// suffix, a bound of another shape is an unsigned operand, and a literal the
+// type cannot hold is T0015.
+test "literal and range patterns take an unsigned scrutinee's type (#7842)" {
+  val lit = parseCheck(
+    "package P\nfunc f(x: in UInt): Int {\n  match x {\n    case 4000000000 -> 1\n    case 3000000000 ..= 3999999999 -> 2\n    case _ -> 3\n  }\n}\n"
+  )
+  assertEqualInt(diagCount(lit), 0, "UInt patterns: " + diagCodesOf(lit))
+  assertEqualInt(lit.symbols.argConversionSites.count, 3, "the literal and both bounds take the u32 suffix")
+  assertEqual(
+    conversionMethodsOf(lit),
+    intLiteralSiteMethod(U32) + "," + intLiteralSiteMethod(U32) + "," + intLiteralSiteMethod(U32),
+    "u32 sites"
+  )
+  val nested = parseCheck(
+    "package P\nunion Opt {\n  case Has(n: ULong)\n  case Empty\n}\nfunc f(x: in Opt): Int {\n  match x {\n    case Has(0 ..= 9) -> 1\n    case Has(10) -> 2\n    case _ -> 3\n  }\n}\n"
+  )
+  assertEqualInt(diagCount(nested), 0, "nested ULong patterns: " + diagCodesOf(nested))
+  assertEqualInt(nested.symbols.argConversionSites.count, 3, "nested literal and bounds take the u64 suffix")
+  val constBound = parseCheck(
+    "package P\nval Hi: UInt = 4000000000u32\nfunc f(x: in UInt): Int {\n  match x {\n    case 1u32 ..= Hi -> 1\n    case _ -> 2\n  }\n}\n"
+  )
+  assertEqualInt(diagCount(constBound), 0, "a named bound: " + diagCodesOf(constBound))
+  assertEqual(conversionMethodsOf(constBound), "toUInt", "a UInt bound of another shape is an unsigned operand")
+  val neg = parseCheck(
+    "package P\nfunc f(x: in UInt): Int {\n  match x {\n    case -1 -> 1\n    case -5 ..= 3 -> 2\n    case _ -> 3\n  }\n}\n"
+  )
+  assertEqualInt(countDiagCode(neg, "T0015"), 2, "a negative literal and bound: " + diagCodesOf(neg))
+  val byte = parseCheck(
+    "package P\nfunc f(x: in Byte): Int {\n  match x {\n    case 200 ..= 255 -> 1\n    case 256 -> 2\n    case _ -> 3\n  }\n}\n"
+  )
+  assertEqualInt(countDiagCode(byte, "T0015"), 1, "a Byte pattern of 256: " + diagCodesOf(byte))
+  val signed = parseCheck(
+    "package P\nfunc f(x: in Int): Int {\n  match x {\n    case -1 -> 1\n    case 0 ..= 9 -> 2\n    case _ -> 3\n  }\n}\n"
+  )
+  assertEqualInt(diagCount(signed), 0, "signed patterns: " + diagCodesOf(signed))
+  assertEqualInt(signed.symbols.argConversionSites.count, 0, "no site for a signed scrutinee")
+}
+
 test "index byte with conversion accepted" {
   val src = "package P\nfunc f(a: in slice[Byte]): Int { a[0].toInt() }\n"
   val cr = parseCheck(src)
