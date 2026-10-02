@@ -34,6 +34,8 @@ import Lyric.LlvmTypes
 import Lyric.LlvmIr
 import Lyric.LlvmCodegen
 import Lyric.LlvmLowering
+import Lyric.Emitter
+import Lyric.LlvmBridge
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Harness (mirrors llvm_heap_self_test.l).
@@ -137,6 +139,54 @@ func printlnShim(): String {
     "  consoleWriteFd(1, s)\n" +
     "  consoleNewlineFd(1)\n" +
     "}\n"
+}
+
+/// The `.ll` text a multi-package bundle lowers to (`sources[0]` is the entry package).
+func lowerBundleToLl(sources: in List[String]): String {
+  val units: List[CodegenUnit] = newList()
+  for src in sources {
+    val file = parseOrPanic(src)
+    units.add(unitOfFile(dottedPkgName(file), file))
+  }
+  lowerNativePackage(codegenNativeBundle(units, ""))
+}
+
+func runLl(ll: in String): RunOutcome {
+  val rt = findLyricRt()
+  if rt.length == 0 {
+    panic("lyric_rt.a not found; run `make -C lyric-rt` first")
+  }
+  val dir = Path.join(tempBase(), "lyric-llvm-byvalue-selftest")
+  val _ = File.createDir(dir)
+  val stem = Path.join(dir, "b_" + Uuid.uuidToString(Uuid.newUuid()))
+  val llPath = stem + ".ll"
+  match File.writeText(llPath, ll) {
+    case Ok(_) -> {
+    }
+    case Err(_) -> panic("cannot write " + llPath)
+  }
+  val clangArgs: List[String] = newList()
+  clangArgs.add("-O0")
+  clangArgs.add("-fsanitize=address")
+  clangArgs.add(llPath)
+  clangArgs.add(rt)
+  clangArgs.add("-lm")
+  clangArgs.add("-lpthread")
+  clangArgs.add("-o")
+  clangArgs.add(stem)
+  match Process.runCapture("clang", clangArgs, 120000) {
+    case Ok(res) -> {
+      if res.exitCode != 0 {
+        panic("clang failed on " + llPath + ": " + res.stderr)
+      }
+    }
+    case Err(e) -> panic("clang could not be started: " + e)
+  }
+  val noArgs: List[String] = newList()
+  match Process.runCapture(stem, noArgs, 60000) {
+    case Ok(res) -> RunOutcome(exitCode = res.exitCode, stdout = res.stdout)
+    case Err(e) -> panic("binary could not be started: " + e)
+  }
 }
 
 /// The text of the function `@name` in `ll`: from its `define` line to the
@@ -528,6 +578,133 @@ test "a by-value record survives an await in an async body (ASan)" {
     "func main(): Int {\n  val r = await work(Pt(x = 3, y = 4))\n  r.x + r.y\n}\n"
   val r = compileAndRunAsan(src)
   assertEqualInt(r.exitCode, 18, "(6 + 2) + (8 + 2)")
+}
+
+test "a raw NativePtr to a by-value record is not an ARC reference (nativeAddrOf and libc round-trip, ASan)" {
+  val src = "package T\n" + "record Pt {\n  x: Int\n  y: Int\n}\n" +
+    "extern func cMalloc(n: Long): NativePtr[Pt] = \"malloc\"\n" +
+    "extern func cFree(p: NativePtr[Pt]): Unit = \"free\"\n" +
+    "extern func cCopy(dst: NativePtr[Pt], src: NativePtr[Pt], n: Long): NativePtr[Pt] = \"memcpy\"\n" +
+    "@unsafe_ffi\n" +
+    "func main(): Int {\n" +
+    "  var a = Pt(x = 11, y = 31)\n" +
+    "  var b = Pt(x = 0, y = 0)\n" +
+    "  val pa = nativeAddrOf(a)\n" +
+    "  val _ = cCopy(nativeAddrOf(b), pa, 8)\n" +
+    "  val heap = cMalloc(8)\n" +
+    "  val _ = cCopy(heap, pa, 8)\n" +
+    "  cFree(heap)\n" +
+    "  a.x + b.y\n" +
+    "}\n"
+  val ll = lowerToLl(src)
+  assertTrue(not Str.contains(functionBody(ll, "T.main"), "lyric_retain"), "no retain of a stack slot or malloc result")
+  assertTrue(
+    not Str.contains(functionBody(ll, "T.main"), "lyric_release"),
+    "no release of a stack slot or malloc result"
+  )
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 42, "11 + 31 survive the address-of and the copies")
+}
+
+test "a var without an initializer starts as the zero record (ASan)" {
+  val src = "package T\n" + "record Pt {\n  x: Int\n  y: Int\n}\n" +
+    "func main(): Int {\n  var p: Pt\n  p.x + p.y + 7\n}\n"
+  val ll = lowerToLl(src)
+  assertTrue(Str.contains(ll, "zeroinitializer"), "the default is zeroinitializer, not undef")
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 7, "zero fields")
+}
+
+test "slice, concat, append, toList and Map overwrite and remove of boxed values (ASan)" {
+  val src = "package T\n" + "import Std.Collections\n" + "record Pt {\n  x: Int\n  y: Int\n}\n" + "func main(): Int {\n" +
+    "  val xs: slice[Pt] = [Pt(x = 1, y = 2), Pt(x = 3, y = 4), Pt(x = 5, y = 6)]\n" +
+    "  val sub = xs.slice(1, 3)\n" +
+    "  val merged = xs.concat(sub)\n" +
+    "  val ext = xs.append(Pt(x = 7, y = 8))\n" +
+    "  val copy = xs.toList()\n" +
+    "  val m: Map[Int, Pt] = newMap()\n" +
+    "  m.add(1, Pt(x = 10, y = 0))\n" +
+    "  m.add(1, Pt(x = 20, y = 0))\n" +
+    "  m.add(2, Pt(x = 30, y = 0))\n" +
+    "  val gone = m.remove(2)\n" +
+    "  var r = sub[0].x + merged[3].y + ext[3].x + copy[2].y + m[1].x + m.count\n" +
+    "  if gone { r = r + 100 }\n" +
+    "  r\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, (3 + 4 + 7 + 6 + 20 + 1 + 100) % 256, "every container copy owns its own box references")
+}
+
+test "a package-local union does not collide with another package's enum of the same name" {
+  val lib = "package Lib\n" + "enum LogLevel {\n  case Info\n  case Warn\n}\n"
+  val app = "package T\n" + "union LogLevel {\n  case Info(code: Int)\n  case Off\n}\n" +
+    "record Rec {\n  lvl: LogLevel\n  n: Int\n}\n" +
+    "func main(): Int {\n" +
+    "  val r = Rec(lvl = Info(code = 40), n = 2)\n" +
+    "  val c = match r.lvl {\n    case Info(code) -> code\n    case Off -> 0\n  }\n" +
+    "  c + r.n\n" +
+    "}\n"
+  val sources: List[String] = newList()
+  sources.add(app)
+  sources.add(lib)
+  val ll = lowerBundleToLl(sources)
+  assertTrue(
+    Str.contains(ll, "%T.Rec = type { i32, i32, i8*, %T.LogLevel*, i32 }"),
+    "Rec holds the union pointer and stays heap"
+  )
+  val r = runLl(ll)
+  assertEqualInt(r.exitCode, 42, "the union field is read as the union")
+}
+
+test "an impl target only keeps the heap form for its own package's record" {
+  val lib = "package Lib\n" + "record Sq {\n  s: Int\n}\n"
+  val app = "package T\n" + "interface Area {\n  func area(): Int\n}\n" + "record Sq {\n  s: Int\n}\n" +
+    "impl Area for Sq {\n  func area(): Int {\n    self.s * self.s\n  }\n}\n" +
+    "func total(a: in Area): Int {\n  a.area()\n}\n" +
+    "func main(): Int {\n  total(Sq(s = 6))\n}\n"
+  val sources: List[String] = newList()
+  sources.add(app)
+  sources.add(lib)
+  val ll = lowerBundleToLl(sources)
+  assertTrue(Str.contains(ll, "%T.Sq = type { i32, i32, i8*, i32 }"), "the implementer is a heap object")
+  assertTrue(Str.contains(ll, "%Lib.Sq = type { i32 }"), "the unrelated same-named record stays by-value")
+  val r = runLl(ll)
+  assertEqualInt(r.exitCode, 36, "interface dispatch")
+}
+
+test "a module-level val holding a by-value record is rejected like any non-literal module val" {
+  val src = "package T\n" + "record Pt {\n  x: Int\n  y: Int\n}\n" + "val origin: Pt = Pt(x = 1, y = 2)\n" +
+    "func main(): Int {\n  origin.x\n}\n"
+  val file = parseOrPanic(src)
+  assertPanicsWith(
+    "module val",
+    "non-literal initializer",
+    { -> val pkg = codegenNativePackage(file, ""); val _ = lowerNativePackage(pkg) }
+  )
+}
+
+test "N0010 also covers callback types and return positions, and stops a real native build" {
+  val cb = "package T\n" + "record Pt {\n  x: Int\n  y: Int\n}\n" +
+    "extern func onEach(f: (Pt) -> Int): Int = \"on_each\"\n" +
+    "func main(): Int {\n  0\n}\n"
+  val ret = "package T\n" + "record Pt {\n  x: Int\n  y: Int\n}\n" + "extern func make(n: Int): Pt = \"make_pt\"\n" +
+    "func main(): Int {\n  0\n}\n"
+  for src in [cb, ret] {
+    val units: List[CodegenUnit] = newList()
+    units.add(unitOfFile("T", parseOrPanic(src)))
+    val diags = nativeByValueExternDiagnostics(units)
+    assertEqualInt(diags.count, 1, "one diagnostic")
+    assertTrue(Str.contains(diags[0].message, "#8009"), "the message names the tracking issue")
+  }
+  val stdlib = findStdlibSourcesNative()
+  val stem = Path.join(
+    Path.join(tempBase(), "lyric-llvm-byvalue-selftest"),
+    "n0009_" + Uuid.uuidToString(Uuid.newUuid())
+  )
+  val _ = File.createDir(Path.dirname(stem))
+  val built = compileToNativeWithFlags(ret, stem, stdlib, "", "0", newList(), newList(), "", true)
+  assertTrue(not built, "linkAndEmitNative reports N0010 and aborts the build")
+  assertTrue(not File.fileExists(stem), "no binary is written")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

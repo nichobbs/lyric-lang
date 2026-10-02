@@ -1508,6 +1508,7 @@ span, exactly like `T0120`/`J008`.
 | `N0007` | A value flows into a codegen slot whose type it cannot be coerced to — most commonly a call argument against an extern generic collection method (`List[T].add`/`Map[K, V].add`, …) that the type checker admits with NO argument validation at all (an unresolved generic parameter is satisfied by any argument type on every target), so a genuinely incompatible argument (not a numeric narrowing — `coerceTo` narrows a wider `Int`/`Long` argument to a declared-narrower `Byte`/`Int` slot on its own, matching MSIL's implicit `List<byte>.Add` narrowing and JVM's `i2b`) reaches native codegen with no LLVM-IR-level conversion available. |
 | `N0008` | A `protected type` declares type parameters. Generic protected types build on `--target dotnet` and `--target jvm`; native has no per-instantiation protected-type layout yet (#7864). Reported at the declaration before codegen. |
 | `N0009` | A `--triple wasm32-wasi` build found no wasi-sdk; set `WASI_SDK_PATH` to its install directory. |
+| `N0010` | An `extern func` signature (including a callback parameter or a return) names a record that `--target native` lowers by value; the C struct ABI for it is #8009, so pass a `NativePtr` or use a record with a `var` field until then. |
 
 ### Custom source generators (X-series)
 

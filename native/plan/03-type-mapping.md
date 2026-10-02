@@ -102,7 +102,8 @@ the value itself, built with `insertvalue` from `undef` and read with
 `extractvalue`, with no allocation, no retain/release and no destructor. Opaque
 types, `impl I for R` targets and records with a `var` field keep the heap form
 above. A by-value record stored in a List/Map/Task slot lives in a refcounted
-`__box<R>`; one in an `extern func` signature is rejected (`N0010`).
+`__box<R>`; one in an `extern func` signature is rejected (`N0010`, C ABI #8009); an
+`impl I for R` target stays heap until interface boxing of values lands (#8010).
 
 **Reference-typed fields** (fields whose type is heap-allocated) are stored as
 pointers. When the record is constructed, the ARC of each reference-typed field

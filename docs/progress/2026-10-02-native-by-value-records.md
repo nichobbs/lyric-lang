@@ -17,7 +17,9 @@ no generic parameters, is not an `opaque type`, is not the target of any
 `Long`, `Float`, `Double`), an enum, a distinct type over one of those, or
 another by-value record. A generic record is classified per instantiation by
 its concrete field types (`Box[Int]` and `Box[Vec3]` are by-value,
-`Box[String]` is not). Everything else keeps the shared heap form, in
+`Box[String]` is not). A raw `NativePtr` to a by-value record is not an ARC reference
+(`isRefNType` recognises heap objects by their ARC header).
+Everything else keeps the shared heap form, in
 particular every record with a `var` field (D157). Unions stay heap.
 
 ## Lowering
@@ -35,8 +37,9 @@ particular every record with a `var` field (D157). Unions stay heap.
   site) compares field by field.
 - An `extern func` signature naming a by-value record is rejected as `N0010`
   (before codegen, with a codegen backstop): an LLVM aggregate is not the
-  platform C struct ABI. The C ABI for by-value struct arguments and returns
-  (System V AMD64, AAPCS64) remains the other half of docs/67 §4.2. No existing
+  platform C struct ABI (callback types included). The C ABI for by-value
+  struct arguments and returns (System V AMD64, AAPCS64) is #8009; boxing a
+  by-value record at an interface upcast is #8010. No existing
   kernel or example passes a record to C by value.
 
 ## Verification

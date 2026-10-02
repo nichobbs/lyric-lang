@@ -446,9 +446,10 @@ record Ctx {
   // are protected types (a trailing `__mutex: i8*` field, construction
   // routes through `lowerProtectedConstructArgs`) rather than plain records.
   protectedRecNames: Map[String, Bool]
-  // Record names (bare and package-qualified) that keep the heap form even
-  // when every field is by-value: opaque types and the target of any
-  // `impl I for R` (an interface box holds a heap object, docs/67 §4.2).
+  // Package-qualified record names that keep the heap form even when every
+  // field is by-value: opaque types and the target of any `impl I for R` (an
+  // interface box holds a heap object, docs/67 §4.2; boxing a value record at
+  // the upcast is #8010).
   heapOnlyRecs: Map[String, Bool]
   // By-value record boxes (`__box<R>`) already defined: a by-value record
   // stored in a List/Map/Task slot lives in a refcounted box.
@@ -1214,10 +1215,35 @@ func isRefNType(t: in NType): Bool {
   match t {
     case NPtr(pointee) -> {
       match pointee {
-        case NStruct(name, _) -> true
+        case NStruct(name, fields) -> isArcHeaderFields(fields) or Str.startsWith(name, "__weak<")
         case _ -> false
       }
     }
+    case _ -> false
+  }
+}
+
+/// Whether a struct body starts with the ARC header `{ i32, i32, i8* }`: true
+/// of every heap object, never of a by-value record, so a raw `NativePtr` to a
+/// by-value record (`NPtr` of its struct) is not an ARC-managed reference
+/// (docs/67 §4.2).  A `NativeWeak[T]` marker has no body and is recognised by
+/// its name.
+func isArcHeaderFields(fields: in List[NType]): Bool {
+  if fields.count < 3 {
+    return false
+  }
+  match fields[0] {
+    case NI32 -> {
+    }
+    case _ -> return false
+  }
+  match fields[1] {
+    case NI32 -> {
+    }
+    case _ -> return false
+  }
+  match fields[2] {
+    case NPtr(pointee) -> match pointee { case NI8 -> true; case _ -> false }
     case _ -> false
   }
 }
@@ -4885,6 +4911,9 @@ record NByValState {
   distincts: Map[String, DistinctTypeDecl]
   distinctPkgs: Map[String, String]
   enums: Map[String, Bool]
+  // Names that resolve to a non-record heap type, prefixed by kind: "r:" for a
+  // protected type or generic record, "u:" for a union, "i:" for an interface.
+  heapNames: Map[String, Bool]
   heapOnly: Map[String, Bool]
   results: Map[String, NRecInfo]
   failed: Map[String, Bool]
@@ -4892,36 +4921,59 @@ record NByValState {
   typeDefs: List[NTypeDefn]
 }
 
-/// The bare name of an `impl <Iface> for <Target>`'s target type.
-func implTargetBareName(te: in TypeExpr): String {
+/// The path an `impl <Iface> for <Target>`'s target type names.
+func implTargetPath(te: in TypeExpr): Option[ModulePath] {
   match te.kind {
-    case TRef(path) -> lastSeg(path)
-    case TGenericApp(head, _) -> lastSeg(head)
-    case TParen(inner) -> implTargetBareName(inner)
-    case _ -> ""
+    case TRef(path) -> Some(value = path)
+    case TGenericApp(head, _) -> Some(value = head)
+    case TParen(inner) -> implTargetPath(inner)
+    case _ -> None
   }
 }
 
-/// Fill `heapOnly` (`Ctx.heapOnlyRecs`): opaque types (package-qualified) and
-/// every `impl I for R` target (bare name, conservative across packages).
+/// Fill `heapOnly` (`Ctx.heapOnlyRecs`) with the package-qualified names of
+/// the records that keep the heap form whatever their fields: opaque types and
+/// every `impl I for R` target.  An unqualified target resolves like a type
+/// reference does: the impl's own package first, then the first package
+/// declaring a record of that name.
 func fillHeapOnlyRecs(heapOnly: in Map[String, Bool], units: in List[CodegenUnit]): Unit {
+  val declared: Map[String, Bool] = newMap()
+  val firstPkg: Map[String, String] = newMap()
   for u in units {
-    for n in u.opaqueNames {
-      if not heapOnly.containsKey(u.pkgName + "." + n) {
-        heapOnly.add(u.pkgName + "." + n, true)
+    for rd in u.records {
+      putOnce(declared, u.pkgName + "." + rd.name)
+      if not firstPkg.containsKey(rd.name) {
+        firstPkg.add(rd.name, u.pkgName)
       }
     }
+  }
+  for u in units {
+    for n in u.opaqueNames {
+      putOnce(heapOnly, u.pkgName + "." + n)
+    }
     for im in u.impls {
-      val target = implTargetBareName(im.target)
-      if target.length > 0 and not heapOnly.containsKey(target) {
-        heapOnly.add(target, true)
+      match implTargetPath(im.target) {
+        case Some(path) -> {
+          if path.segments.count == 1 {
+            val n = path.segments[0]
+            if declared.containsKey(u.pkgName + "." + n) {
+              putOnce(heapOnly, u.pkgName + "." + n)
+            } else if firstPkg.containsKey(n) {
+              putOnce(heapOnly, firstPkg[n] + "." + n)
+            }
+          } else {
+            putOnce(heapOnly, modulePathJoin(path.segments))
+          }
+        }
+        case None -> {
+        }
       }
     }
   }
 }
 
 func isHeapOnlyRec(ctx: in Ctx, pkg: in String, name: in String): Bool {
-  ctx.heapOnlyRecs.containsKey(name) or ctx.heapOnlyRecs.containsKey(pkg + "." + name)
+  ctx.heapOnlyRecs.containsKey(pkg + "." + name)
 }
 
 func recordHasVarField(rd: in RecordDecl): Bool {
@@ -4970,11 +5022,18 @@ func classifyByValueField(st: in NByValState, pkg: in String, te: in TypeExpr): 
     case TRef(path) -> {
       val joined = byValuePathKey(pkg, path)
       val bare = lastSeg(path)
+      // The same precedence as `lookupHeapType`: records (protected types
+      // included), unions, enums, distinct types, interfaces — each tried by
+      // the qualified name, then the bare one — before the scalar names.
       var declKey = ""
       if st.decls.containsKey(joined) {
         declKey = joined
+      } else if st.heapNames.containsKey("r:" + joined) {
+        return res
       } else if st.decls.containsKey(bare) {
         declKey = bare
+      } else if st.heapNames.containsKey("r:" + bare) {
+        return res
       }
       if declKey.length > 0 {
         val rd = st.decls[declKey]
@@ -4983,6 +5042,9 @@ func classifyByValueField(st: in NByValState, pkg: in String, te: in TypeExpr): 
           val ri = st.results[rpkg + "." + rd.name]
           res.add(NStruct(name = ri.irName, fields = layoutFieldTys(ri.fieldTys)))
         }
+        return res
+      }
+      if st.heapNames.containsKey("u:" + joined) or st.heapNames.containsKey("u:" + bare) {
         return res
       }
       if st.enums.containsKey(joined) or st.enums.containsKey(bare) {
@@ -5001,6 +5063,9 @@ func classifyByValueField(st: in NByValState, pkg: in String, te: in TypeExpr): 
           case Some(_) -> return res
           case None -> return classifyByValueField(st, st.distinctPkgs[distKey], dd.underlying)
         }
+      }
+      if st.heapNames.containsKey("i:" + joined) or st.heapNames.containsKey("i:" + bare) {
+        return res
       }
       if bare == "Int" or bare == "Char" {
         res.add(NI32)
@@ -5038,7 +5103,7 @@ func classifyByValueRecord(st: in NByValState, pkg: in String, rd: in RecordDecl
     case None -> {
     }
   }
-  if recordHasVarField(rd) or st.heapOnly.containsKey(rd.name) or st.heapOnly.containsKey(irName) {
+  if recordHasVarField(rd) or st.heapOnly.containsKey(irName) {
     st.failed.add(irName, true)
     return false
   }
@@ -5080,6 +5145,12 @@ func classifyByValueRecord(st: in NByValState, pkg: in String, rd: in RecordDecl
 /// Classify every non-generic record of the bundle; the by-value records'
 /// `NRecInfo`s land in the result's `results` (by IR name) and their struct
 /// definitions are appended to `typeDefs`.
+func putOnce(m: in Map[String, Bool], key: in String): Unit {
+  if not m.containsKey(key) {
+    m.add(key, true)
+  }
+}
+
 func classifyByValueRecords(
   heapOnly: in Map[String, Bool], units: in List[CodegenUnit], typeDefs: in List[NTypeDefn]
 ): NByValState {
@@ -5089,6 +5160,7 @@ func classifyByValueRecords(
     distincts = newMap(),
     distinctPkgs = newMap(),
     enums = newMap(),
+    heapNames = newMap(),
     heapOnly = heapOnly,
     results = newMap(),
     failed = newMap(),
@@ -5097,6 +5169,14 @@ func classifyByValueRecords(
   )
   for u in units {
     for rd in u.records {
+      match rd.generics {
+        case Some(_) -> {
+          // Resolved through the generic registry, never `recordDefs`.
+          continue
+        }
+        case None -> {
+        }
+      }
       if not st.decls.containsKey(u.pkgName + "." + rd.name) {
         st.decls.add(u.pkgName + "." + rd.name, rd)
         st.declPkgs.add(u.pkgName + "." + rd.name, u.pkgName)
@@ -5117,8 +5197,26 @@ func classifyByValueRecords(
       }
     }
     for ed in u.enums {
-      st.enums.add(u.pkgName + "." + ed.name, true)
-      st.enums.add(ed.name, true)
+      putOnce(st.enums, u.pkgName + "." + ed.name)
+      putOnce(st.enums, ed.name)
+    }
+    for ud in u.unions {
+      match ud.generics {
+        case Some(_) -> {
+        }
+        case None -> {
+          putOnce(st.heapNames, "u:" + u.pkgName + "." + ud.name)
+          putOnce(st.heapNames, "u:" + ud.name)
+        }
+      }
+    }
+    for pd in u.protecteds {
+      putOnce(st.heapNames, "r:" + u.pkgName + "." + pd.name)
+      putOnce(st.heapNames, "r:" + pd.name)
+    }
+    for idl in u.interfaces {
+      putOnce(st.heapNames, "i:" + u.pkgName + "." + idl.name)
+      putOnce(st.heapNames, "i:" + idl.name)
     }
   }
   for u in units {
@@ -10271,7 +10369,11 @@ func recInfoOfType(ctx: in Ctx, t: in NType): Option[NRecInfo] {
   match t {
     case NPtr(pointee) -> {
       match pointee {
-        case NStruct(name, _) -> mapGet(ctx.recordDefs, name)
+        case NStruct(name, _) -> match mapGet(ctx.recordDefs, name) {
+          // A pointer to a by-value record is a raw `NativePtr`, not a record.
+          case Some(ri) -> if ri.byValue { None } else { Some(value = ri) }
+          case None -> None
+        }
         case _ -> None
       }
     }
@@ -11183,7 +11285,7 @@ func zeroValueOf(ty: in NType): NValue {
     case NDouble -> NLitFloat(v = 0.0, ty = NDouble)
     case NFloat -> NLitFloat(v = 0.0, ty = NFloat)
     case NPtr(pointee) -> NLitNull(ty = NPtr(pointee = pointee))
-    case NStruct(_, _) -> NUndef(ty = ty)
+    case NStruct(_, _) -> NZeroInit(ty = ty)
     case _ -> NLitInt(v = 0i64, ty = ty)
   }
 }
@@ -13106,6 +13208,21 @@ pub func nativeSelfShapeDiagnostics(units: in List[CodegenUnit]): List[Diagnosti
 /// The by-value record a type written as `te` names, or "" when it names
 /// anything else.
 func byValueRecordNameOf(st: in NByValState, pkg: in String, te: in TypeExpr): String {
+  match te.kind {
+    // A callback type: its parameters and return cross the C boundary too.
+    case TFunction(parameters, retTy) -> {
+      for pt in parameters {
+        val n = byValueRecordNameOf(st, pkg, pt)
+        if n.length > 0 {
+          return n
+        }
+      }
+      return byValueRecordNameOf(st, pkg, retTy)
+    }
+    case TParen(inner) -> return byValueRecordNameOf(st, pkg, inner)
+    case _ -> {
+    }
+  }
   val ft = classifyByValueField(st, pkg, te)
   if ft.count == 1 {
     return byValueRecName(ft[0])
@@ -13116,14 +13233,14 @@ func byValueRecordNameOf(st: in NByValState, pkg: in String, te: in TypeExpr): S
 /// Message for `N0010`: a by-value record in an `extern func` signature.
 func byValueExternMessage(fnName: in String, recName: in String): String {
   "extern func '" + fnName + "' passes by-value record '" + recName +
-    "' across the C boundary, which is not supported yet: a by-value record is an LLVM aggregate, not the platform C " +
-    "struct ABI (docs/67 §4.2); pass a NativePtr, or declare the record with a `var` field so it keeps its heap form"
+    "' across the C boundary: a by-value record is an LLVM aggregate, not the platform C struct ABI (docs/67 §4.2, " +
+    "tracked in #8009); pass a NativePtr, or declare the record with a `var` field so it keeps its heap form"
 }
 
 /// Pre-pass: every `extern func` parameter or return of a by-value record
 /// (docs/67 §4.2) as an `N0010` diagnostic at the declaration.  The C ABI for
-/// by-value struct arguments (System V AMD64, AAPCS64) is a separate piece of
-/// work, so the boundary rejects them instead of emitting a mismatched call.
+/// by-value struct arguments (System V AMD64, AAPCS64) is tracked in #8009, so
+/// the boundary rejects them instead of emitting a mismatched call.
 pub func nativeByValueExternDiagnostics(units: in List[CodegenUnit]): List[Diagnostic] {
   val diags: List[Diagnostic] = newList()
   val heapOnly: Map[String, Bool] = newMap()
