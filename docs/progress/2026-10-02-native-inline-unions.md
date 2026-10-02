@@ -38,19 +38,41 @@ By-value records may now hold non-generic inline unions as fields.
 - An inline union in an `extern func` signature is rejected as `N0010`
   (#8009), as for by-value records.
 
+## Generic applications in field types
+
+A record or union field written as a generic application (`o: Option[Vec3]`,
+`case Got(o: Option[Int])`) is classified by resolving the generic declaration
+like codegen does (generic unions, then generic records, by the written name then
+the bare one), substituting the by-value arguments, and applying the same
+per-instantiation rule (`classifyGenericUnionInst` / `classifyGenericRecordInst`).
+The instantiation is registered with its layout and instantiation metadata
+before any layout, so codegen's lazy instantiation finds it and both agree by
+construction. A generic record whose instantiation is all by-value is by-value
+too (`Box[Int]` nested in another record). Classification runs once over the
+whole bundle, so a multi-package build classifies exactly as a single-package one
+(native has no separate compilation).
+
+## Equality
+
+`synthUnionEq` has no same-instance shortcut, so equality is structural (IEEE)
+for heap and inline unions alike: `x == x` with a NaN payload is false on native
+for both. On dotnet and jvm it is true for both forms (the host's `Equals`
+treats NaN as equal to itself) -- a pre-existing cross-target difference in
+union equality, not changed here.
+
 ## Left heap, with reasons
 
 - Unions with a reference payload (String, List, heap record, closure) and
   recursive unions: the payload needs ARC or indirection.
 - Unions that are `impl` targets: interface boxing of values is #8010 (native
   has no `impl` for unions at all today).
-- Records with a generic-application field (`record R { o: Option[Int] }`) stay
-  heap: the record classifier only resolves non-generic field types.
 
 ## Verification
 
 `llvm_inline_union_self_test.l` (ASan plus `.ll` assertions: no `lyric_alloc`,
 heap form kept where required, alignment, nesting, equality, List/Map boxing,
-closures, async, raw pointers, `N0010`) and `inline_union_self_test.l` (the whole
+generic applications in fields, closures, async, raw pointers, wasm32 layout,
+NaN equality, bundles, `N0010` including a generic union in an extern signature
+through the real build) and `inline_union_self_test.l` (the whole
 pipeline: `?` over `Option`/`Result`, structural `==`, collections, closures, on
 dotnet, jvm and native). Both are in the native CI list.

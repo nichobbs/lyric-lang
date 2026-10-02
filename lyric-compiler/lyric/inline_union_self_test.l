@@ -49,6 +49,16 @@ record Holder {
   n: Int
 }
 
+record Found {
+  at: Option[Vec3]
+  n: Int
+}
+
+union Msg {
+  case Got(o: Option[Int])
+  case Quiet
+}
+
 func area(s: in Shape): Int {
   match s {
     case Circle(r) -> r.toInt()
@@ -178,4 +188,36 @@ test "closures capture and return inline unions" {
   val base: Option[Int] = Some(10)
   val f = { k: Int -> match base { case Some(v) -> Some(v + k); case None -> None } }
   assertEqualInt(optOf(f(2)), 12, "captured and returned")
+}
+
+test "a record and a union holding Option embed it" {
+  val a = Found(at = Some(Vec3(x = 1.0, y = 2.0, z = 3.0)), n = 10)
+  val none: Option[Vec3] = None
+  val b = Found(at = none, n = 20)
+  val av = match a.at { case Some(v) -> v.z.toInt() + a.n; case None -> a.n }
+  val bv = match b.at { case Some(v) -> v.z.toInt(); case None -> b.n }
+  assertEqualInt(av + bv, 33, "13 + 20")
+  val m = Got(o = Some(7))
+  val got = match m { case Got(o) -> optOf(o); case Quiet -> 0 }
+  assertEqualInt(got, 7, "Option[Int] payload")
+  assertEqualInt(match Quiet { case Got(o) -> 1; case Quiet -> 2 }, 2, "nullary")
+}
+
+test "equality on a record holding a generic inline union" {
+  val one: Option[Int] = Some(1)
+  val none: Option[Int] = None
+  val a = Found(at = None, n = 1)
+  val b = Found(at = None, n = 1)
+  val c = Found(at = None, n = 2)
+  assertTrue(a == b, "equal")
+  assertTrue(a != c, "different n")
+  assertTrue(Got(o = one) == Got(o = one), "union holding Option")
+  assertTrue(Got(o = one) != Got(o = none), "different payload case")
+}
+
+test "Option from Map.get" {
+  val m: Map[String, Int] = newMap()
+  m.add("a", 40)
+  assertEqualInt(optOf(mapGet(m, "a")), 40, "hit")
+  assertEqualInt(optOf(mapGet(m, "b")), 0 - 1, "miss")
 }

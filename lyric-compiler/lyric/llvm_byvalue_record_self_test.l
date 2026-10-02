@@ -753,7 +753,7 @@ test "an extern func passing a by-value record is rejected with N0010" {
   val diags = nativeByValueExternDiagnostics(units)
   assertEqualInt(diags.count, 1, "only the by-value signature is reported")
   assertEqual(diags[0].code, "N0010", "the diagnostic code")
-  assertTrue(Str.contains(diags[0].message, "by-value record or union 'T.Pt'"), "the message names the record")
+  assertTrue(Str.contains(diags[0].message, "by-value record 'T.Pt'"), "the message names the record")
 }
 
 test "an extern func over a record with a var field is not rejected" {

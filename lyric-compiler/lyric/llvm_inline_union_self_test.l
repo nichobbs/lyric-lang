@@ -5,8 +5,8 @@
 //! distinct types, by-value records, other inline unions; nullary cases are
 //! free) lowers to a tagged struct VALUE `{ i32 disc, i32 pad, [W x i64] }`:
 //! no heap allocation, no ARC header, no destructor.  A union with any
-//! reference payload, a recursive union, and the target of an `impl I for U`
-//! keep the heap form.  The language is unchanged; these cases pin the codegen
+//! reference payload and a recursive union keep the heap form (native has no
+//! `impl` for unions, so there is no interface-boxing case to cover).  The language is unchanged; these cases pin the codegen
 //! policy.  Runtime cases compile with `-fsanitize=address`, so a leaked slot
 //! box or a double release exits non-zero; the IR cases inspect the `.ll`.
 //!
@@ -469,4 +469,162 @@ test "a package-local inline union is not shadowed by another package's enum of 
   assertTrue(Str.contains(ll, "%T.Rec = type { %T.LogLevel, i32 }"), "Rec embeds the local union, not an i32 enum")
   val r = runLl(ll)
   assertEqualInt(r.exitCode, 42, "the union field is read as the union")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Generic applications in field types, extern signatures, construction order,
+// payload widths, wasm32, NaN equality, bundles.
+// ─────────────────────────────────────────────────────────────────────────────
+test "a record and a union holding generic inline unions embed them inline (ASan)" {
+  val src = "package T\n" + optDecl + "record Pt {\n  x: Int\n  y: Int\n}\n" +
+    "record Holder {\n  o: Opt[Pt]\n  n: Int\n}\n" +
+    "union Msg {\n  case Got(o: Opt[Int])\n  case Quiet\n}\n" +
+    "func read(h: in Holder): Int {\n  match h.o {\n    case Has(p) -> p.x + p.y + h.n\n    case Nope -> h.n\n  }\n}\n" +
+    "func code(m: in Msg): Int {\n  match m {\n    case Got(o) -> match o {\n      case Has(v) -> v\n      case Nope -> 0 - 1\n    }\n    case Quiet -> 0\n  }\n}\n" +
+    "func main(): Int {\n" +
+    "  val a = Holder(o = Has(v = Pt(x = 1, y = 2)), n = 10)\n" +
+    "  val b = Holder(o = Nope, n = 20)\n" +
+    "  read(a) + read(b) + code(Got(o = Has(v = 7))) + code(Got(o = Nope)) + code(Quiet)\n" +
+    "}\n"
+  val ll = lowerToLl(src)
+  assertTrue(Str.contains(ll, "%T.Holder = type { %\"T.Opt<T.Pt>\", i32 }"), "Holder embeds Opt[Pt] inline")
+  assertTrue(
+    Str.contains(ll, "%T.Msg = type { i32, i32, [2 x i64] }"),
+    "Msg holds the 16-byte Opt[Int] in its payload words"
+  )
+  assertTrue(not Str.contains(functionBody(ll, "T.main"), "lyric_alloc"), "no allocation")
+  assertTrue(not Str.contains(ll, "T.Holder.dtor"), "no destructor")
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 13 + 20 + 7 - 1 + 0, "13 + 20 + 7 - 1 + 0")
+}
+
+test "equality on a record holding a generic inline union is structural" {
+  val src = "package T\n" + optDecl + "record Holder {\n  o: Opt[Int]\n  n: Int\n}\n" + "func main(): Int {\n" +
+    "  val a = Holder(o = Has(v = 3), n = 1)\n" +
+    "  val b = Holder(o = Has(v = 3), n = 1)\n" +
+    "  val c = Holder(o = Has(v = 4), n = 1)\n" +
+    "  val d = Holder(o = Nope, n = 1)\n" +
+    "  var r = 0\n" +
+    "  if a == b { r = r + 1 }\n" +
+    "  if a == c { r = r + 10 }\n" +
+    "  if a == d { r = r + 100 }\n" +
+    "  if d == d { r = r + 1000 }\n" +
+    "  r\n" +
+    "}\n"
+  val ll = lowerToLl(src)
+  assertTrue(Str.contains(ll, "%T.Holder = type { %\"T.Opt<i32>\", i32 }"), "inline field")
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 1001 % 256, "equal case and payload only")
+}
+
+test "a generic inline union in an extern signature is N0010, through the real build" {
+  val src = "package T\n" + optDecl + "extern func take(o: Opt[Int]): Int = \"take_opt\"\n" +
+    "func main(): Int {\n  0\n}\n"
+  val units: List[CodegenUnit] = newList()
+  units.add(unitOfFile("T", parseOrPanic(src)))
+  val diags = nativeByValueExternDiagnostics(units)
+  assertEqualInt(diags.count, 1, "one diagnostic")
+  assertEqual(diags[0].code, "N0010", "the code")
+  assertTrue(Str.contains(diags[0].message, "union 'T.Opt<i32>'"), "names the union instantiation")
+  assertTrue(Str.contains(diags[0].message, "reference payload"), "a union's own remedy")
+  assertTrue(not Str.contains(diags[0].message, "`var` field"), "no record remedy")
+  val stdlib = findStdlibSourcesNative()
+  val stem = Path.join(Path.join(tempBase(), "lyric-llvm-byvalue-selftest"), "iu_" + Uuid.uuidToString(Uuid.newUuid()))
+  val _ = File.createDir(Path.dirname(stem))
+  val built = compileToNativeWithFlags(src, stem, stdlib, "", "0", newList(), newList(), "", true)
+  assertTrue(not built, "linkAndEmitNative stops the build")
+  assertTrue(not File.fileExists(stem), "no binary is written")
+}
+
+test "two constructions of one union in a single call, and values kept across a loop (ASan)" {
+  val src = "package T\n" + "import Std.Collections\n" + optDecl + "func pair(a: in Opt[Int], b: in Opt[Int]): Int {\n" +
+    "  val x = match a {\n    case Has(v) -> v\n    case Nope -> 100\n  }\n" +
+    "  val y = match b {\n    case Has(v) -> v\n    case Nope -> 200\n  }\n" +
+    "  x * 3 + y\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val kept: List[Opt[Int]] = newList()\n" +
+    "  var i = 0\n" +
+    "  while i < 50 {\n" +
+    "    kept.add(if i % 2 == 0 { Has(v = i) } else { Nope })\n" +
+    "    i = i + 1\n" +
+    "  }\n" +
+    "  var t = 0\n" +
+    "  for k in kept {\n    t = t + match k {\n      case Has(v) -> v\n      case Nope -> 1\n    }\n  }\n" +
+    "  pair(Has(v = 4), Has(v = 5)) + pair(Nope, Has(v = 1)) + t\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, (17 + 301 + 600 + 25) % 256, "each construction owns its slot")
+}
+
+test "Option through Map get is inline (user Option, mapGet path, ASan)" {
+  val src = "package T\n" + "import Std.Collections\n" + "union Option[T] {\n  case Some(v: T)\n  case None\n}\n" +
+    "func main(): Int {\n" +
+    "  val m: Map[Int, Int] = newMap()\n" +
+    "  m.add(1, 40)\n" +
+    "  val hit = match mapGet(m, 1) {\n    case Some(v) -> v\n    case None -> 0\n  }\n" +
+    "  val miss = match mapGet(m, 2) {\n    case Some(v) -> v\n    case None -> 2\n  }\n" +
+    "  hit + miss\n" +
+    "}\n"
+  val ll = lowerToLl(src)
+  assertTrue(not Str.contains(functionBody(ll, "T.main"), "lyric_alloc"), "the Option result is not allocated")
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 42, "40 + 2")
+}
+
+test "a Float payload and a Double payload share one inline union" {
+  val src = "package T\n" + "union N {\n  case F(f: Float)\n  case D(d: Double)\n  case Z\n}\n" +
+    "func score(n: in N): Int {\n  match n {\n    case F(f) -> f.toInt()\n    case D(d) -> d.toInt()\n    case Z -> 0\n  }\n}\n" +
+    "func main(): Int {\n  score(F(f = 2.5f32)) + score(D(d = 40.75)) + score(Z)\n}\n"
+  val ll = lowerToLl(src)
+  assertTrue(Str.contains(ll, "%T.N = type { i32, i32, [1 x i64] }"), "one payload word for either width")
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 42, "2 + 40")
+}
+
+test "the wasm32 layout of an inline union and a record holding one" {
+  val src = "package T\n" + optDecl + "record Holder {\n  o: Opt[Long]\n  n: Int\n}\n" +
+    "func main(): Int {\n  val h = Holder(o = Has(v = 5), n = 1)\n  h.n\n}\n"
+  val pkg = codegenNativePackage(parseOrPanic(src), "wasm32-unknown-wasi")
+  val ll = lowerNativePackage(pkg)
+  assertTrue(Str.contains(ll, "target triple = \"wasm32-unknown-wasi\""), "wasm32 triple")
+  assertTrue(
+    Str.contains(ll, "\"T.Opt<i64>\" = type { i32, i32, [1 x i64] }"),
+    "payload words do not depend on pointer width"
+  )
+  assertTrue(Str.contains(ll, "%T.Holder = type { %\"T.Opt<i64>\", i32 }"), "the holder embeds it")
+}
+
+test "NaN payloads compare unequal under x == x for heap and inline unions alike" {
+  val src = "package T\n" + "union Inl {\n  case V(d: Double)\n  case Z\n}\n" +
+    "union Hp {\n  case V(d: Double, s: String)\n  case Z\n}\n" +
+    "func main(): Int {\n" +
+    "  val zero = 0.0\n" +
+    "  val nan = zero / zero\n" +
+    "  val i = V(d = nan)\n" +
+    "  val h = Hp.V(d = nan, s = \"s\")\n" +
+    "  var r = 0\n" +
+    "  if i == i { r = r + 1 }\n" +
+    "  if h == h { r = r + 10 }\n" +
+    "  if V(d = 1.0) == V(d = 1.0) { r = r + 100 }\n" +
+    "  r\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 100, "only the non-NaN comparison is equal")
+}
+
+test "classification is the same in a multi-package bundle" {
+  val lib = "package Lib\n" + "union Opt[T] {\n  case Has(v: T)\n  case Nope\n}\n" +
+    "record Slot {\n  o: Opt[Int]\n  k: Int\n}\n" +
+    "func mk(): Slot {\n  Slot(o = Has(v = 41), k = 1)\n}\n"
+  val app = "package T\n" + "func main(): Int {\n  val s = Lib.mk()\n  s.k\n}\n"
+  val sources: List[String] = newList()
+  sources.add(app)
+  sources.add(lib)
+  val ll = lowerBundleToLl(sources)
+  assertTrue(
+    Str.contains(ll, "%Lib.Slot = type { %\"Lib.Opt<i32>\", i32 }"),
+    "the library record embeds the instantiation inline"
+  )
+  assertTrue(Str.contains(ll, "\"Lib.Opt<i32>\" = type { i32, i32, [1 x i64] }"), "the instantiation is inline")
 }

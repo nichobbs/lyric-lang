@@ -458,6 +458,10 @@ record Ctx {
   // By-value record boxes (`__box<R>`) already defined: a by-value record
   // stored in a List/Map/Task slot lives in a refcounted box.
   byValueBoxes: Map[String, Bool]
+  // Per-function: the stack slot already holding a spilled inline-union value,
+  // by the SSA name of the value (`pinInlineUnion`), so a match addresses its
+  // scrutinee once rather than once per arm.
+  inlineAddrs: Map[String, String]
   // ARC state (per function).  `scopeRefs` stacks the ref-typed locals
   // each lexical scope owns; `tempScopes` stacks the owned temporaries
   // of each evaluation region; the depth lists snapshot both stacks at
@@ -4972,6 +4976,19 @@ record NByValState {
   unionDecls: Map[String, UnionDecl]
   unionPkgs: Map[String, String]
   uresults: Map[String, NUnionInfo]
+  // Generic declarations by qualified and bare name (first wins, as the
+  // generic registries), for classifying instantiated field types.
+  genUnionDecls: Map[String, UnionDecl]
+  genUnionPkgs: Map[String, String]
+  genRecDecls: Map[String, RecordDecl]
+  genRecPkgs: Map[String, String]
+  // The generic instantiations classified by-value, in registration order:
+  // their layouts and metadata, registered with the other by-value types
+  // before any layout, exactly as codegen's lazy instantiation would.
+  instRecs: List[NRecInfo]
+  instUnions: List[NUnionInfo]
+  instMetaNames: List[String]
+  instMetaInfos: List[NInstInfo]
 }
 
 /// The path an `impl <Iface> for <Target>`'s target type names.
@@ -5071,14 +5088,36 @@ func byValuePathKey(pkg: in String, path: in ModulePath): String {
 /// The NType of a by-value field written as `te`, as a zero- or one-element
 /// list (empty: the field is not by-value, so the record keeps the heap form).
 func classifyByValueField(st: in NByValState, pkg: in String, te: in TypeExpr): List[NType] {
+  val noNames: List[String] = newList()
+  val noTys: List[NType] = newList()
+  classifyByValueFieldEnv(st, pkg, te, noNames, noTys)
+}
+
+/// `classifyByValueField` under a generic environment: `envNames[i]` stands for
+/// the by-value type `envTys[i]` (the substituted arguments of an instantiation).
+func classifyByValueFieldEnv(
+  st: in NByValState,
+  pkg: in String,
+  te: in TypeExpr,
+  envNames: in List[String],
+  envTys: in List[NType],
+): List[NType] {
   val res: List[NType] = newList()
   match te.kind {
-    case TParen(inner) -> return classifyByValueField(st, pkg, inner)
+    case TParen(inner) -> return classifyByValueFieldEnv(st, pkg, inner, envNames, envTys)
     case TUnit -> {
       res.add(NVoid)
       return res
     }
+    case TGenericApp(head, args) -> return classifyGenericApp(st, pkg, head, args, envNames, envTys)
     case TRef(path) -> {
+      if path.segments.count == 1 {
+        val ei = envIndexOf(envNames, path.segments[0])
+        if ei >= 0 {
+          res.add(envTys[ei])
+          return res
+        }
+      }
       val joined = byValuePathKey(pkg, path)
       val bare = lastSeg(path)
       // The same precedence as `lookupHeapType`: records (protected types
@@ -5210,6 +5249,200 @@ func classifyByValueRecord(st: in NByValState, pkg: in String, rd: in RecordDecl
     NRecInfo(irName = irName, fieldNames = names, fieldTys = tys, fieldDefaults = dflts, byValue = true)
   )
   st.typeDefs.add(NTypeDefn(name = irName, fields = layoutFieldTys(tys)))
+  true
+}
+
+/// A generic application written as a field type: resolved like
+/// `typeToNEnvOpt` (generic unions, then generic records, by the written name
+/// then the bare one) and, when every argument is by-value, instantiated and
+/// classified by the per-instantiation rule, so a record or union holding
+/// `Option[Vec3]` or `Option[Int]` embeds it inline.
+func classifyGenericApp(
+  st: in NByValState,
+  pkg: in String,
+  head: in ModulePath,
+  args: in List[TypeArg],
+  envNames: in List[String],
+  envTys: in List[NType],
+): List[NType] {
+  val res: List[NType] = newList()
+  val joined = modulePathJoin(head.segments)
+  val bare = lastSeg(head)
+  if bare == "NativePtr" or bare == "NativeWeak" {
+    return res
+  }
+  val argTys: List[NType] = newList()
+  for a in args {
+    match a {
+      case TAType(inner) -> {
+        val ft = classifyByValueFieldEnv(st, pkg, inner, envNames, envTys)
+        if ft.count == 0 {
+          return res
+        }
+        argTys.add(ft[0])
+      }
+      case TAValue(_) -> return res
+    }
+  }
+  var uKey = ""
+  if st.genUnionDecls.containsKey(joined) {
+    uKey = joined
+  } else if st.genUnionDecls.containsKey(bare) {
+    uKey = bare
+  }
+  if uKey.length > 0 {
+    val ud = st.genUnionDecls[uKey]
+    val upkg = st.genUnionPkgs[uKey]
+    val gkey = upkg + "." + ud.name
+    val instName = instIrName(gkey, argTys)
+    if classifyGenericUnionInst(st, upkg, gkey, ud, instName, argTys) {
+      val ui = st.uresults[instName]
+      res.add(NStruct(name = instName, fields = unionInlineFields(ui.payloadWords)))
+    }
+    return res
+  }
+  var rKey = ""
+  if st.genRecDecls.containsKey(joined) {
+    rKey = joined
+  } else if st.genRecDecls.containsKey(bare) {
+    rKey = bare
+  }
+  if rKey.length > 0 {
+    val rd = st.genRecDecls[rKey]
+    val rpkg = st.genRecPkgs[rKey]
+    val gkey = rpkg + "." + rd.name
+    val instName = instIrName(gkey, argTys)
+    if classifyGenericRecordInst(st, rpkg, gkey, rd, instName, argTys) {
+      val ri = st.results[instName]
+      res.add(NStruct(name = instName, fields = layoutFieldTys(ri.fieldTys)))
+    }
+  }
+  res
+}
+
+func recordInstMeta(st: in NByValState, instName: in String, gkey: in String, argTys: in List[NType]): Unit {
+  st.instMetaNames.add(instName)
+  st.instMetaInfos.add(NInstInfo(gkey = gkey, argTys = argTys))
+}
+
+/// One instantiation of a generic union: inline when it is not an `impl`
+/// target and every case field, with the arguments substituted, is by-value.
+func classifyGenericUnionInst(
+  st: in NByValState,
+  pkg: in String,
+  gkey: in String,
+  ud: in UnionDecl,
+  instName: in String,
+  argTys: in List[NType],
+): Bool {
+  if st.uresults.containsKey(instName) {
+    return true
+  }
+  if st.failed.containsKey(instName) or st.visiting.containsKey(instName) {
+    return false
+  }
+  val envNames = genericParamNamesOf(ud.generics)
+  if envNames.count != argTys.count or st.heapOnly.containsKey(pkg + "." + ud.name) {
+    st.failed.add(instName, true)
+    return false
+  }
+  st.visiting.add(instName, true)
+  val cases: List[NUnionCaseInfo] = newList()
+  var maxBytes = 0
+  var ok = true
+  var ci = 0
+  while ci < ud.cases.count and ok {
+    val cd = ud.cases[ci]
+    val names: List[String] = newList()
+    val tys: List[NType] = newList()
+    var fi = 0
+    while fi < cd.fields.count and ok {
+      val ft = classifyByValueFieldEnv(st, pkg, unionFieldTy(cd.fields[fi]), envNames, argTys)
+      if ft.count == 0 {
+        ok = false
+      } else {
+        names.add(unionFieldName(cd.fields[fi], fi))
+        tys.add(ft[0])
+      }
+      fi = fi + 1
+    }
+    if ok {
+      val sz = stStructSize(st, layoutFieldTys(tys))
+      if sz > maxBytes {
+        maxBytes = sz
+      }
+      cases.add(NUnionCaseInfo(name = cd.name, fieldNames = names, fieldTys = tys))
+    }
+    ci = ci + 1
+  }
+  st.visiting.remove(instName)
+  if not ok {
+    st.failed.add(instName, true)
+    return false
+  }
+  val words = (maxBytes + 7) / 8
+  val ui = NUnionInfo(irName = instName, cases = cases, payloadWords = words, inline = true)
+  st.uresults.add(instName, ui)
+  st.instUnions.add(ui)
+  recordInstMeta(st, instName, gkey, argTys)
+  st.typeDefs.add(NTypeDefn(name = instName, fields = unionInlineFields(words)))
+  for c in cases {
+    if c.fieldTys.count > 0 {
+      st.typeDefs.add(NTypeDefn(name = casePayloadStructName(ui, c.name), fields = layoutFieldTys(c.fieldTys)))
+    }
+  }
+  true
+}
+
+/// One instantiation of a generic record: by-value when it has no `var` field,
+/// at least one field, is not an `impl` target, and every field is by-value.
+func classifyGenericRecordInst(
+  st: in NByValState,
+  pkg: in String,
+  gkey: in String,
+  rd: in RecordDecl,
+  instName: in String,
+  argTys: in List[NType],
+): Bool {
+  if st.results.containsKey(instName) {
+    return true
+  }
+  if st.failed.containsKey(instName) or st.visiting.containsKey(instName) {
+    return false
+  }
+  val envNames = genericParamNamesOf(rd.generics)
+  val fields = recFieldsOf(rd)
+  if envNames.count != argTys.count or fields.count == 0 or recordHasVarField(rd) or st.heapOnly.containsKey(pkg + "." + rd.name) {
+    st.failed.add(instName, true)
+    return false
+  }
+  st.visiting.add(instName, true)
+  val names: List[String] = newList()
+  val tys: List[NType] = newList()
+  val dflts: List[Option[Expr]] = newList()
+  var ok = true
+  var i = 0
+  while i < fields.count and ok {
+    val ft = classifyByValueFieldEnv(st, pkg, fields[i].ty, envNames, argTys)
+    if ft.count == 0 {
+      ok = false
+    } else {
+      names.add(fields[i].name)
+      tys.add(ft[0])
+      dflts.add(fields[i].dflt)
+    }
+    i = i + 1
+  }
+  st.visiting.remove(instName)
+  if not ok {
+    st.failed.add(instName, true)
+    return false
+  }
+  val ri = NRecInfo(irName = instName, fieldNames = names, fieldTys = tys, fieldDefaults = dflts, byValue = true)
+  st.results.add(instName, ri)
+  st.instRecs.add(ri)
+  recordInstMeta(st, instName, gkey, argTys)
+  st.typeDefs.add(NTypeDefn(name = instName, fields = layoutFieldTys(tys)))
   true
 }
 
@@ -5363,7 +5596,15 @@ func classifyByValueRecords(
     typeDefs = typeDefs,
     unionDecls = newMap(),
     unionPkgs = newMap(),
-    uresults = newMap()
+    uresults = newMap(),
+    genUnionDecls = newMap(),
+    genUnionPkgs = newMap(),
+    genRecDecls = newMap(),
+    genRecPkgs = newMap(),
+    instRecs = newList(),
+    instUnions = newList(),
+    instMetaNames = newList(),
+    instMetaInfos = newList()
   )
   for u in units {
     for rd in u.records {
@@ -5392,6 +5633,38 @@ func classifyByValueRecords(
       if not st.distincts.containsKey(dd.name) {
         st.distincts.add(dd.name, dd)
         st.distinctPkgs.add(dd.name, u.pkgName)
+      }
+    }
+    for gd in u.records {
+      match gd.generics {
+        case Some(_) -> {
+          if not st.genRecDecls.containsKey(u.pkgName + "." + gd.name) {
+            st.genRecDecls.add(u.pkgName + "." + gd.name, gd)
+            st.genRecPkgs.add(u.pkgName + "." + gd.name, u.pkgName)
+          }
+          if not st.genRecDecls.containsKey(gd.name) {
+            st.genRecDecls.add(gd.name, gd)
+            st.genRecPkgs.add(gd.name, u.pkgName)
+          }
+        }
+        case None -> {
+        }
+      }
+    }
+    for gu in u.unions {
+      match gu.generics {
+        case Some(_) -> {
+          if not st.genUnionDecls.containsKey(u.pkgName + "." + gu.name) {
+            st.genUnionDecls.add(u.pkgName + "." + gu.name, gu)
+            st.genUnionPkgs.add(u.pkgName + "." + gu.name, u.pkgName)
+          }
+          if not st.genUnionDecls.containsKey(gu.name) {
+            st.genUnionDecls.add(gu.name, gu)
+            st.genUnionPkgs.add(gu.name, u.pkgName)
+          }
+        }
+        case None -> {
+        }
       }
     }
     for ed in u.enums {
@@ -5477,6 +5750,19 @@ func registerHeapTypes(
   val byValState = classifyByValueRecords(ctx.heapOnlyRecs, units, typeDefs)
   val byVal = byValState.results
   val byValU = byValState.uresults
+  // Generic instantiations classified by-value are registered up front, like
+  // the non-generic ones, so a later lazy instantiation finds them.
+  for ri in byValState.instRecs {
+    ctx.recordDefs.add(ri.irName, ri)
+  }
+  for ui in byValState.instUnions {
+    ctx.unionDefs.add(ui.irName, ui)
+  }
+  var mi = 0
+  while mi < byValState.instMetaNames.count {
+    ctx.instMeta.add(byValState.instMetaNames[mi], byValState.instMetaInfos[mi])
+    mi = mi + 1
+  }
   // Phase A: allocate names.
   var ui = 0
   while ui < units.count {
@@ -6657,10 +6943,39 @@ func unionCaseIndexOf(ui: in NUnionInfo, name: in String): Int {
 /// An inline union value viewed as a pointer to a hoisted stack copy, so the
 /// pointer-based discriminant and payload GEPs apply to it.
 func inlineUnionAddr(ctx: in Ctx, insns: in List[NInsn], v: in NVal): NVal {
+  match v.value {
+    case NLocal(n) -> {
+      if ctx.inlineAddrs.containsKey(n) {
+        return NVal(ty = NPtr(pointee = v.ty), value = NLocal(name = ctx.inlineAddrs[n]))
+      }
+    }
+    case _ -> {
+    }
+  }
   val slot = "iu.addr." + freshTmp(ctx)
   ctx.allocas.add(NAlloca(dest = slot, ty = v.ty))
   insns.add(NStore(ty = v.ty, value = v.value, ptr = NLocal(name = slot)))
   NVal(ty = NPtr(pointee = v.ty), value = NLocal(name = slot))
+}
+
+/// Spill an inline-union value once, where it is produced, and remember the
+/// slot: every later `inlineUnionAddr` of the same value reuses it, and the
+/// store dominates them all.
+func pinInlineUnion(ctx: in Ctx, insns: in List[NInsn], v: in NVal): Unit {
+  match v.value {
+    case NLocal(n) -> {
+      if not ctx.inlineAddrs.containsKey(n) and isByValueStructNType(v.ty) and not isNoneUnion(unionInfoOfType(ctx, v.ty)) {
+        val addr = inlineUnionAddr(ctx, insns, v)
+        match addr.value {
+          case NLocal(slot) -> ctx.inlineAddrs.add(n, slot)
+          case _ -> {
+          }
+        }
+      }
+    }
+    case _ -> {
+    }
+  }
 }
 
 /// Read field `fi` of union `ui`'s case `caseIdx` payload as a borrow.
@@ -9936,9 +10251,9 @@ func synthUnionEq(mctx: in Ctx, ui: in NUnionInfo): NFunc {
   val trueL = "eq.true"
   val falseL = "eq.false"
   val sameL = "eq.cmp"
-  val same = freshTmp(ctx)
-  body.add(NICmp(dest = same, pred = IEq, ty = NPtr(pointee = NI8), a = NLocal(name = "ra"), b = NLocal(name = "rb")))
-  body.add(NCondBr(cond = NLocal(name = same), thenLabel = trueL, elseLabel = sameL))
+  // No same-instance shortcut: equality is structural (IEEE) for heap and inline
+  // unions alike, so `x == x` with a NaN payload is false for both.
+  body.add(NBr(label = sameL))
   body.add(NLabel(name = sameL))
   body.add(NBitcast(dest = "oa", fromTy = NPtr(pointee = NI8), value = NLocal(name = "ra"), toTy = objTy))
   body.add(NBitcast(dest = "ob", fromTy = NPtr(pointee = NI8), value = NLocal(name = "rb"), toTy = objTy))
@@ -11058,6 +11373,8 @@ func lowerMatch(
     panic("Lyric.LlvmCodegen: match with no arms")
   }
   val sv0 = lowerExpr(ctx, insns, scrutinee)
+  // An inline-union scrutinee is spilled once here, ahead of every arm test.
+  pinInlineUnion(ctx, insns, sv0)
   // Pin the scrutinee into a named local so every arm block can address
   // it (also keeps it alive across arms via the enclosing temp scope).
   val sv = sv0
@@ -12059,6 +12376,7 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     protectedRecNames = mod.protectedRecNames,
     heapOnlyRecs = mod.heapOnlyRecs,
     byValueBoxes = mod.byValueBoxes,
+    inlineAddrs = newMap(),
     scopeRefs = newList(),
     tempScopes = newList(),
     loopVarDepth = newList(),
@@ -12780,12 +13098,16 @@ func externDeclOf(ctx: in Ctx, ef: in ExternFuncDecl): NFunc {
   var k = 0
   while k < tys.count {
     if isByValueStructNType(tys[k]) {
-      panic("N0010: " + byValueExternMessage(ef.name, byValueRecName(tys[k])))
+      panic(
+        "N0010: " + byValueExternMessage(ef.name, byValueRecName(tys[k]), ctx.unionDefs.containsKey(byValueRecName(tys[k])))
+      )
     }
     k = k + 1
   }
   if isByValueStructNType(retN) {
-    panic("N0010: " + byValueExternMessage(ef.name, byValueRecName(retN)))
+    panic(
+      "N0010: " + byValueExternMessage(ef.name, byValueRecName(retN), ctx.unionDefs.containsKey(byValueRecName(retN)))
+    )
   }
   mkDeclN(ef.symbol, retN, tys)
 }
@@ -12995,6 +13317,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     protectedRecNames = newMap(),
     heapOnlyRecs = newMap(),
     byValueBoxes = newMap(),
+    inlineAddrs = newMap(),
     scopeRefs = newList(),
     tempScopes = newList(),
     loopVarDepth = newList(),
@@ -13579,10 +13902,16 @@ func byValueRecordNameOf(st: in NByValState, pkg: in String, te: in TypeExpr): S
 }
 
 /// Message for `N0010`: a by-value record in an `extern func` signature.
-func byValueExternMessage(fnName: in String, recName: in String): String {
-  "extern func '" + fnName + "' passes by-value record or union '" + recName +
-    "' across the C boundary: a by-value record is an LLVM aggregate, not the platform C struct ABI (docs/67 §4.2, " +
-    "tracked in #8009); pass a NativePtr, or declare the record with a `var` field so it keeps its heap form"
+func byValueExternMessage(fnName: in String, recName: in String, isUnion: in Bool): String {
+  val remedy = if isUnion {
+    "give a case a reference payload so the union keeps its heap form"
+  } else {
+    "declare the record with a `var` field so it keeps its heap form"
+  }
+  "extern func '" + fnName + "' passes by-value " + (if isUnion { "union" } else { "record" }) + " '" + recName +
+    "' across the C boundary: it is an LLVM aggregate, not the platform C struct ABI (docs/67 §4.2, tracked in #8009); " +
+    "pass a NativePtr, or " +
+    remedy
 }
 
 /// Pre-pass: every `extern func` parameter or return of a by-value record
@@ -13613,7 +13942,7 @@ pub func nativeByValueExternDiagnostics(units: in List[CodegenUnit]): List[Diagn
         }
       }
       if bad.length > 0 {
-        diags.add(errorDiagnostic("N0010", byValueExternMessage(ef.name, bad), ef.span))
+        diags.add(errorDiagnostic("N0010", byValueExternMessage(ef.name, bad, st.uresults.containsKey(bad)), ef.span))
       }
     }
   }
