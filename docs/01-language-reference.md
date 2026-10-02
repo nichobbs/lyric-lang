@@ -1476,6 +1476,8 @@ async func fetchUser(id: in UserId): User? {
 
 A direct call to an `async func` awaits in place wherever it appears: a lambda body, a `val` initializer, a `match` scrutinee, an operand, a call argument, or a statement. Only `spawn` (§7.4) keeps the task instead. The `await` keyword makes the wait explicit but does not change its meaning. On `--target dotnet`, where an `async func` returns its task, the compiler inserts the await (`Lyric.Propagate`, #7838): a suspend point inside an `async func`, a blocking wait elsewhere. Inside an `async func`'s own `try`/`catch`/`finally` a suspend point cannot be lowered, so there a direct async call is rejected with `F0046`; await it explicitly before or after the `try` block, as `V0012` requires for a written `await`. The JVM (synchronous lowering) and native (hot tasks) targets await a direct call themselves and never report `F0046`.
 
+A module-level `val` without a type annotation takes the type of its initializer. On `--target dotnet` the compiler predicts that type before lowering bodies (literals, operators, constructors, calls to declared functions, `.toLong()`-style conversions, `.length`); if the prediction and the real initializer type disagree across a primitive type, the build fails with `F0047` and asks for an annotation, rather than emitting a field whose readers use the wrong representation.
+
 **`--target native` (D-N-022):** a non-generator `async func` compiles
 to a real LLVM coroutine driven by a cooperative single-threaded
 scheduler in the native runtime. Tasks are hot (the body runs at the

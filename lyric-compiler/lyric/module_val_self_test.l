@@ -25,6 +25,16 @@
 //! JVM target parity is tracked in issue #2210.  The JVM emitter currently
 //! no-ops on `IVal` items at package scope; this CI step covers MSIL only.
 //!
+//! Untyped module vals whose initializer is a CALL or a numeric conversion
+//! (`1800000.toLong()`, `mkLong()`, `s.length`) are a fourth path: the
+//! pre-scan predicted `MObject` for them while the field took the
+//! initializer's real type (`int64`/`int32`).  Copying such a val into a
+//! local (`val cap = untypedLongConv`) stored the raw integer into an
+//! `object`-typed local, and the next use `unbox.any`'d it: an uncatchable
+//! AccessViolationException that killed the process.  The cases at the end
+//! of the file read each such val through a local and through arithmetic,
+//! including from a function declared BEFORE the val.
+//!
 //! Also covers `extern type`-typed module vals: the #1576 codegen fix ensures
 //! that a `val` whose type is a reference-typed `extern type` (e.g. `StringBuilder`)
 //! encodes its FieldDef signature as `ELEMENT_TYPE_CLASS + TypeRef` (correct CLR
@@ -200,4 +210,54 @@ test "untyped explicit-i64-suffix val infers Long, not MObject (#5301)" {
 
 test "untyped explicit-i64-suffix val usable in arithmetic via a helper function (#5301)" {
   assertTrue(untypedBigPlusOne() == 5000000001i64, "untypedBigPlusOne()")
+}
+
+// ── Untyped vals initialised by a call / numeric conversion ────────────────────
+// `readsLongCapEarly` is declared BEFORE `untypedLongConv`, so its read is
+// lowered before the val's own initializer is.
+func readsLongCapEarly(): Bool {
+  val cap = untypedLongConv
+  val start = mkLong()
+  start + cap - start == cap
+}
+
+val untypedLongConv = 1800000.toLong()
+
+func mkLong(): Long {
+  5000000.toLong()
+}
+
+val untypedCallLong = mkLong()
+
+val untypedStrLen = untypedGreeting.length
+
+val untypedDoubleConv = 3.toDouble()
+
+func timeoutExceeded(nowMs: in Long, startMs: in Long): Bool {
+  val timeoutMs = untypedLongConv
+  nowMs - startMs > timeoutMs
+}
+
+test "untyped val initialised by a numeric conversion copies into a local and unboxes safely" {
+  assertTrue(readsLongCapEarly(), "readsLongCapEarly()")
+}
+
+test "untyped Long val feeds Long subtract-and-compare through a local" {
+  assertTrue(timeoutExceeded(5000000.toLong(), 1.toLong()), "5000000 - 1 > 1800000")
+  assertTrue(not timeoutExceeded(1900000.toLong(), 1000000.toLong()), "1900000 - 1000000 <= 1800000")
+}
+
+test "untyped val initialised by a function call keeps the callee's Long type" {
+  val copy = untypedCallLong
+  assertTrue(copy - 1.toLong() == 4999999.toLong(), "untypedCallLong - 1")
+}
+
+test "untyped val initialised by .length keeps Int" {
+  val n = untypedStrLen
+  assertEqualInt(n + 1, 9, "untypedStrLen + 1")
+}
+
+test "untyped Double-conversion val copies into a local" {
+  val d = untypedDoubleConv
+  assertTrue(d + 0.5 == 3.5, "untypedDoubleConv + 0.5")
 }
