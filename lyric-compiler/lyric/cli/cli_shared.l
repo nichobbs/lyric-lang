@@ -671,11 +671,12 @@ pub func shapeTargetError(shape: in BuildShape, target: in Emitter.CompileTarget
   }
 }
 
+// Only reached for the managed targets: `shapeTargetError` accepts these
+// shapes on `--target native` before it gets here.
 func wasmShapeNeedsNativeError(shape: in BuildShape, target: in Emitter.CompileTarget): String {
   val targetName = match target {
     case Emitter.Dotnet -> "dotnet"
-    case Emitter.Jvm -> "jvm"
-    case Emitter.Native -> "native"
+    case _ -> "jvm"
   }
   "error[F0043]: --shape " + shapeName(shape) + " is a WebAssembly shape and needs --target native " +
     "(with --triple wasm32-wasi); --target " +

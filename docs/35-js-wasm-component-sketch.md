@@ -314,7 +314,7 @@ export function create(customerId: string, cents: bigint): Invoice | string;
 
 ```
 lyric build --target native --triple wasm32-wasi --shape component [--wit-out <path>] [--js-bindings]
-lyric build --target native --triple wasm32-unknown-unknown --shape module
+lyric build --target native --triple wasm32-wasi --shape module
 ```
 
 `--shape module|component` are additional, triple-gated values on the
@@ -326,7 +326,7 @@ rule, and `portable`/`standalone`/`aot` become a diagnostic there. Convenience a
 | Flag | Default | Meaning |
 |---|---|---|
 | `--wit-out <path>` | `target/wasm/<pkg>.wit` | Where to write the generated WIT file (component shape) |
-| `--js-bindings` | off | Also run `jco transpile` (component) or emit the JS glue module (module) |
+| `--js-bindings` | off | Component shape: also run `jco transpile`. The module shape always writes its glue (`<name>.js`, `<name>.d.ts`) next to the `.wasm` (D-progress-1029) |
 
 `lyric publish` for a wasm shape bundles the `.wasm`, WIT and generated
 bindings as an NPM-compatible tarball.

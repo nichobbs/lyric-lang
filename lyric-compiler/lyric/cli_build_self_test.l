@@ -324,6 +324,21 @@ test "shapeUnsupportedError: component is F0044 until W4; module is implemented"
   }
 }
 
+test "watchShapeError: --watch is refused for the module shape on every build path" {
+  match Cli.watchShapeError(true, Cli.SModule) {
+    case Some(m) -> assertTrue(Str.contains(m, "--watch") and Str.contains(m, "module"), "names the flag and shape: " + m)
+    case None -> assertTrue(false, "watch + module must be refused")
+  }
+  match Cli.watchShapeError(false, Cli.SModule) {
+    case None -> ()
+    case Some(m) -> assertTrue(false, "a one-shot module build is fine, got: " + m)
+  }
+  match Cli.watchShapeError(true, Cli.SAot) {
+    case None -> ()
+    case Some(m) -> assertTrue(false, "watch with the default native shape is fine, got: " + m)
+  }
+}
+
 test "nativeShapeName: only the module shape reaches the native bridge" {
   assertEqual(Cli.nativeShapeName(Cli.SModule), "module", "module")
   assertEqual(Cli.nativeShapeName(Cli.SAot), "", "aot")

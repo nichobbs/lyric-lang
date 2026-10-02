@@ -1716,6 +1716,13 @@ func cmdBuild(argv: in slice[String]): Int {
       }
       case None -> ()
     }
+    match watchShapeError(watch, axes.shape) {
+      case Some(msg) -> {
+        printErr(msg)
+        return 1
+      }
+      case None -> ()
+    }
     // `--watch` is an inner-loop tool; the packaging shapes are far too slow to
     // rebuild on every keystroke (#4203, re-scoped from `--release` per
     // docs/63 §5.3).
@@ -1894,9 +1901,12 @@ func cmdBuild(argv: in slice[String]): Int {
   // doc comment. A no-op on Dotnet/Jvm (returns `optArg` unchanged).
   val effOptArg = resolveNativeOptDefault(optArg, manifestArg, target, axes.profile)
 
-  if watch and nativeShapeName(axes.shape).length > 0 {
-    printErr("build: --watch is not supported with --shape " + shapeName(axes.shape) + " yet")
-    return 1
+  match watchShapeError(watch, axes.shape) {
+    case Some(msg) -> {
+      printErr(msg)
+      return 1
+    }
+    case None -> ()
   }
   if watch {
     val files: List[String] = newList()
@@ -1931,6 +1941,18 @@ func cmdBuild(argv: in slice[String]): Int {
     withProfileDefine(cliDefines, axes.profile),
     nativeShapeName(axes.shape)
   )
+}
+
+// `--watch` rebuilds through a path that carries no output shape, so a build that
+// needs one (the wasm32 `module` shape, which also writes glue next to the
+// output) would silently rebuild as an ordinary native binary. Reject it up
+// front on every build path (single-file and project) instead.
+pub func watchShapeError(watch: in Bool, shape: in BuildShape): Option[String] {
+  if watch and nativeShapeName(shape).length > 0 {
+    Some(value = "build: --watch is not supported with --shape " + shapeName(shape) + " yet")
+  } else {
+    None
+  }
 }
 
 // The native bridge's output-shape name for the resolved shape: "module" for

@@ -358,7 +358,7 @@ pub func docLines(docs: in List[DocComment]): List[String] {
 /// the body (the lexer only keeps the body, not the source's hash count).
 func rawStringLit(t: in String): String {
   var hashes = ""
-  while Str.contains(t, "\"" + hashes) and hashes.length < 64 {
+  while Str.contains(t, "\"" + hashes) {
     hashes = hashes + "#"
   }
   if hashes == "" and not Str.contains(t, "\"") {
