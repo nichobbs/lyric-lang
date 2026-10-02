@@ -43,7 +43,7 @@ func buildModule(source: in String, triple: in String): ModuleBuild {
   val dir = Path.join(tempBase(), "lyric-wasm32-module-" + Uuid.uuidToString(Uuid.newUuid()))
   val _ = File.createDir(dir)
   val flags: List[String] = newList()
-  val ok = compileToNativeWithFlags(source, Path.join(dir, "prog.wasm"), stdlib, triple, "2", flags, newList(), "", true, "module")
+  val ok = compileToNativeWithShape(source, Path.join(dir, "prog.wasm"), stdlib, triple, "2", flags, newList(), "", true, "module")
   ModuleBuild(ok = ok, dir = dir)
 }
 

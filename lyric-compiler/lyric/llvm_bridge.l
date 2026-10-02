@@ -579,7 +579,26 @@ pub func compileToNativeWithFlags(
   defines: in List[String],
   path: in String,
   contractsEnabled: in Bool = true,
-  shape: in String = "",
+): Bool {
+  compileToNativeWithShape(
+    source, outputPath, stdlibFiles, triple, optLevel, extraClangFlags, defines, path, contractsEnabled, ""
+  )
+}
+
+/// `compileToNativeWithFlags` with the output shape: "" for an ordinary native
+/// binary, "module" for the wasm32 browser/JS-host module plus JS glue
+/// (docs/35 W3).
+pub func compileToNativeWithShape(
+  source: in String,
+  outputPath: in String,
+  stdlibFiles: in List[NativeStdlibFile],
+  triple: in String,
+  optLevel: in String,
+  extraClangFlags: in List[String],
+  defines: in List[String],
+  path: in String,
+  contractsEnabled: in Bool,
+  shape: in String,
 ): Bool {
   // Parse + `@cfg` erasure with the `target.native` pseudo-feature
   // (D-N-013); `Lyric.Pipeline` owns the placement (erasure directly
@@ -889,7 +908,40 @@ pub func compileProjectToNativeWithFlags(
   // bridge's own out-of-range fallback.
   originsByPkg: in List[DiagUtil.PackageLineOrigins],
   contractsEnabled: in Bool = true,
-  shape: in String = "",
+): Bool {
+  compileProjectToNativeWithShape(
+    packages, outputPath, stdlibFiles, triple, optLevel, extraClangFlags, defines, activeFeatures, declaredFeatures, packageVersion, originsByPkg, contractsEnabled, ""
+  )
+}
+
+/// `compileProjectToNativeWithFlags` with the output shape (see
+/// `compileToNativeWithShape`).
+pub func compileProjectToNativeWithShape(
+  packages: in List[NativeSourcePackage],
+  outputPath: in String,
+  stdlibFiles: in List[NativeStdlibFile],
+  triple: in String,
+  optLevel: in String,
+  extraClangFlags: in List[String],
+  defines: in List[String],
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
+  packageVersion: in String,
+  // Per-merged-line provenance for a genuinely multi-file own package,
+  // parallel to `packages` by index (#6824 item 1; mirrors
+  // `Msil.Bridge`/`Jvm.Bridge`'s `originsByPkg`/`pkgOriginsByName`
+  // parameters). `originsByPkg[i]` is empty for a single-file package (its
+  // real path already survives via `packages[i].path`) and non-empty for a
+  // multi-file package, letting diagnostic rendering — across parse,
+  // typecheck, modecheck, elaborate, propagate, mono, AND weave (all folded
+  // into `pipeMiddleEnd` below, unlike the MSIL/JVM bridges' separate weave
+  // phase) — resolve the merged blob's line numbers back to their real
+  // on-disk file and line.  Shorter than `packages` (including empty) is
+  // valid; missing entries resolve to no translation, matching the JVM
+  // bridge's own out-of-range fallback.
+  originsByPkg: in List[DiagUtil.PackageLineOrigins],
+  contractsEnabled: in Bool,
+  shape: in String,
 ): Bool {
   if packages.count == 0 {
     Console.error("error[N0005]: native project build received no packages")

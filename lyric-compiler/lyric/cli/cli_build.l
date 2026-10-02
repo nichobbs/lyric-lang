@@ -1107,7 +1107,27 @@ pub func buildOneNativeWithFeatures(
   noDefaultFeatures: in Bool,
   allFeatures: in Bool,
   cliDefines: in List[String],
-  wasmShape: in String = "",
+): Int {
+  buildOneNativeShaped(
+    sourcePath, outPath, target, manifestPath, nativeTriple, nativeOpt, cliFeatures, noDefaultFeatures, allFeatures,
+    cliDefines, ""
+  )
+}
+
+// `buildOneNativeWithFeatures` with the native output shape ("" for an
+// ordinary binary, "module" for the wasm32 browser/JS-host module).
+pub func buildOneNativeShaped(
+  sourcePath: in String,
+  outPath: in String,
+  target: in Emitter.CompileTarget,
+  manifestPath: in Option[String],
+  nativeTriple: in String,
+  nativeOpt: in String,
+  cliFeatures: in List[String],
+  noDefaultFeatures: in Bool,
+  allFeatures: in Bool,
+  cliDefines: in List[String],
+  wasmShape: in String,
 ): Int {
   val buildStart = Time.now()
   var source = match File.readText(sourcePath) {
@@ -1188,7 +1208,7 @@ pub func buildOneNativeWithFeatures(
   var resolvedNugetPaths: List[String] = newList()
   var resolvedNativePaths: List[String] = newList()
   val result = if isNativeTarget {
-    Emitter.emitNative(req, effTriple, effOpt, effLibs, wasmShape)
+    Emitter.emitNativeWithShape(req, effTriple, effOpt, effLibs, wasmShape)
   } else {
     val outcome = emitSingleFileOrProject(req, sourcePath, manifestPath, cliFeatures, noDefaultFeatures, allFeatures)
     resolvedRestoredDlls = outcome.restoredDlls
@@ -1771,7 +1791,7 @@ func cmdBuild(argv: in slice[String]): Int {
         )
       }
       case None -> {
-        return buildProjectWithNativeFlags(
+        return buildProjectWithNativeFlagsShaped(
           mfPath,
           explicitOut,
           target,
@@ -1889,7 +1909,7 @@ func cmdBuild(argv: in slice[String]): Int {
     )
   }
 
-  buildOneNativeWithFeatures(
+  buildOneNativeShaped(
     sourcePath,
     outPath,
     target,
@@ -2574,7 +2594,29 @@ pub func buildProjectWithNativeFlags(
   cliDefines: in List[String],
   nativeTriple: in String,
   nativeOpt: in String,
-  wasmShape: in String = "",
+): Int {
+  buildProjectWithNativeFlagsShaped(
+    mfPath, explicitOut, target, cliFeatures, noDefaultFeatures, allFeatures, noRestore, packageVersionOverride,
+    preResolvedDeps, cliDefines, nativeTriple, nativeOpt, ""
+  )
+}
+
+// `buildProjectWithNativeFlags` with the native output shape ("" for an
+// ordinary binary, "module" for the wasm32 browser/JS-host module).
+pub func buildProjectWithNativeFlagsShaped(
+  mfPath: in String,
+  explicitOut: in Option[String],
+  target: in Emitter.CompileTarget,
+  cliFeatures: in List[String],
+  noDefaultFeatures: in Bool,
+  allFeatures: in Bool,
+  noRestore: in Bool,
+  packageVersionOverride: in Option[String],
+  preResolvedDeps: in Option[ResolvedManifestDeps],
+  cliDefines: in List[String],
+  nativeTriple: in String,
+  nativeOpt: in String,
+  wasmShape: in String,
 ): Int {
   val mfText = match File.readText(mfPath) {
     case Ok(text) -> text
@@ -2630,7 +2672,7 @@ pub func buildProjectFromManifest(
   cliDefines: in List[String],
   nativeTriple: in String,
   nativeOpt: in String,
-  wasmShape: in String = "",
+  wasmShape: in String,
 ): Int {
   val buildStart = Time.now()
   val proj: Mf.ProjectSection = match manifest.project {
@@ -2898,7 +2940,7 @@ pub func buildProjectFromManifest(
   }
 
   val result = if isNativeTarget {
-    Emitter.emitNativeProject(
+    Emitter.emitNativeProjectWithShape(
       pkgs,
       outPath,
       effTriple,
