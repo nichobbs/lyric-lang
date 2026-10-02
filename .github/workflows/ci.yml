@@ -2118,6 +2118,13 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/ffi-f0015-negative-test.sh
 
+      # M0007 negative test, dotnet and jvm (#7842, #8024).
+      - name: Unsigned specialisation M0007 negative test
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/unsigned-specialisation-m0007-test.sh
+
       # D105 Phase 2: F0021–F0023, F0034 external-interface impl conformance
       # negative tests.  Phase 1 (PR #3851) wired `impl ExternInterface for
       # Record` end to end at the codegen layer; this phase adds

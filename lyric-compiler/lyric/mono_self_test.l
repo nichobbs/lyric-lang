@@ -29,11 +29,14 @@ package Lyric.MonoSelfTest
 import Std.Core
 import Std.Collections
 import Std.Testing
+import Std.String as Str
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.AliasRewriter
 import Lyric.ContractElaborator
 import Lyric.Mono
+import Lyric.TypeChecker
+import Lyric.Pipeline
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -2840,4 +2843,72 @@ test "a same-file generic on `result` in ensures: specialises without M0002 (#74
   val res = monoFile(elaborateFile(parse(src).file))
   assertTrue(hasFunc(res.file, "isFull__String"), "isFull specialised at String")
   assertEqualInt(diagCountCode(res.diagnostics, "M0002"), 0, "no dangling-reference M0002")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #7842: re-checking specialisations whose type arguments mention UInt/ULong
+// ─────────────────────────────────────────────────────────────────────────────
+func recheckOf(
+  src: in String, specs: in List[UnsignedSpecRequest], diags: in List[Diagnostic]
+): Map[String, Map[String, ArgConversionSite]] {
+  val noPkgs: List[ImportedPackage] = newList()
+  val noGen: List[FunctionDecl] = newList()
+  recheckUnsignedSpecs(specs, parse(src).file, noPkgs, noGen, false, diags)
+}
+
+val showSrc: String = "package P\nfunc showOf[T](x: in T): String = \"\${x}\"\nfunc f(): String { showOf(4000000000u32) }\n"
+
+test "a UInt specialisation is reported and re-checked (#7842)" {
+  val mr = runMono(showSrc)
+  assertEqualInt(mr.unsignedSpecs.count, 1, "showOf__UInt is reported")
+  val diags: List[Diagnostic] = newList()
+  val sites = recheckOf(showSrc, mr.unsignedSpecs, diags)
+  assertEqualInt(diags.count, 0, "it re-checks cleanly")
+  match mapGet(sites, mr.unsignedSpecs[0].specName) {
+    case Some(m) -> assertEqualInt(m.count, 1, "the interpolated T is an unsigned operand")
+    case None -> assertTrue(false, "sites for the specialisation")
+  }
+}
+
+test "M0007 when the specialised body does not type-check (#7842)" {
+  val src = "package P\nfunc asText[T](x: in T): String {\n  val s: String = x\n  s\n}\nfunc f(): String { asText(4000000000u32) }\n"
+  val mr = runMono(src)
+  assertEqualInt(mr.unsignedSpecs.count, 1, "asText__UInt is reported")
+  val diags: List[Diagnostic] = newList()
+  val sites = recheckOf(src, mr.unsignedSpecs, diags)
+  assertEqualInt(diags.count, 1, "one diagnostic")
+  assertEqual(diags[0].code, "M0007", "M0007")
+  assertTrue(
+    Str.contains(
+      diags[0].message,
+      "cannot specialise 'asText__UInt': with its type arguments substituted the body does not type-check (T0060"
+    ),
+    "message: " + diags[0].message
+  )
+  assertEqualInt(sites.count, 0, "no sites for a specialisation that failed")
+}
+
+test "M0007 when the declaring package is not available (#7842)" {
+  val mr = runMono(showSrc)
+  val req = mr.unsignedSpecs[0]
+  val moved: List[UnsignedSpecRequest] = newList()
+  moved.add(
+    UnsignedSpecRequest(
+      specName = req.specName,
+      originPkg = "Missing.Pkg",
+      specDecl = req.specDecl,
+      subst = req.subst,
+      valueSubst = req.valueSubst,
+      callSpan = req.callSpan
+    )
+  )
+  val diags: List[Diagnostic] = newList()
+  val sites = recheckOf(showSrc, moved, diags)
+  assertEqualInt(diags.count, 1, "one diagnostic")
+  assertEqual(diags[0].code, "M0007", "M0007")
+  assertTrue(
+    Str.contains(diags[0].message, "package 'Missing.Pkg', which declares the generic, is not available"),
+    "message: " + diags[0].message
+  )
+  assertEqualInt(sites.count, 0, "no sites")
 }

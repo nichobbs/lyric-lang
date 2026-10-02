@@ -691,7 +691,7 @@ pub func pipeCheckAndMono(
 // returned keyed by the specialisation's name.  The other functions in that
 // scope are checked as signatures only.  A specialisation whose body does
 // not check cleanly cannot be given its operands' signedness, so it is M0007.
-func recheckUnsignedSpecs(
+pub func recheckUnsignedSpecs(
   specs: in List[UnsignedSpecRequest],
   file0: in SourceFile,
   importedPkgs: in List[ImportedPackage],

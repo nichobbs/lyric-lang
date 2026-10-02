@@ -89,6 +89,17 @@ scope.
   - `Std.Sort.sort` over a `slice[UInt]`, which re-checks a specialisation of
     a stdlib generic.
 - `byte_native_self_test.l`, native: `Byte` range and literal patterns.
+- M0007, both paths (#8024): `mono_self_test.l` re-checks real
+  specialisations through `Lyric.Pipeline.recheckUnsignedSpecs` — a clean
+  one, one whose substituted body fails (`val s: String = x` with
+  `T = UInt`), and one whose declaring package is not in scope — asserting
+  the code and message. `scripts/ci/unsigned-specialisation-m0007-test.sh`
+  builds the failing fixture and a clean control with `lyric build` on
+  dotnet and jvm and asserts the M0007 code and message. The
+  missing-package path is kept as a diagnostic: `pipeMiddleEnd` and
+  `pipeCheckAndMono` are public and each bridge assembles the generic and
+  package lists itself, so nothing in the pipeline guarantees the two
+  agree.
 
 ## Not fixed here
 
