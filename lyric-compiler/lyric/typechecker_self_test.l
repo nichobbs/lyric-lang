@@ -3719,6 +3719,50 @@ test "generic record constructor with inferable type params does not emit T0110"
   assertTrue(not hasDiagCode(cr, "T0110"), "inferable generic ctor: no T0110")
 }
 
+// #7844: an argument that leaves a type parameter open (a nullary case of a
+// generic union, like `None`) does not hide what a later argument fixes, in a
+// record or union-case constructor and in a generic function call.
+test "a generic constructor binds a type parameter past an open argument (#7844)" {
+  val decls = "package P\nunion Opt[T] { case Nada; case Has(v: T) }\n" +
+    "record Holder[T] { value: Opt[T]; fallback: T }\nunion Shape[T] { case Pair(first: Opt[T], second: T); case Solo(only: T) }\n" +
+    "func pick[T](a: in Opt[T], b: in T): T { b }\n"
+  val src = decls + "func f(): Unit {\n  val h = Holder(value = Nada, fallback = 5)\n  val i: Int = h.fallback\n" +
+    "  val p = Holder(Nada, 6)\n  val s: Shape[Int] = Pair(second = 7, first = Nada)\n  val n: Int = pick(Nada, 5)\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "Nada first, then a fixing argument: clean (" + diagCodesOf(cr) + ")")
+  val bad = decls + "func f(): Unit {\n  val h = Holder(value = Nada, fallback = 5)\n  val s: String = h.fallback\n}\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0060"), "Holder(value = Nada, fallback = 5) is a Holder[Int]: T0060")
+}
+
+// #7844: a receiver evaluated before an `await` in the arguments is hoisted to
+// a local; when neither it, the other arguments nor the expected result type
+// fixes its type arguments, the program must annotate it (T0154).
+test "a hoisted receiver whose type nothing fixes is T0154 (#7844)" {
+  val decls = "package P\nimport Std.CollectionsHost\nunion Opt[T] { case Nada; case Has(v: T) }\n" +
+    "record Box[T] {\n  v: Opt[T]\n  func size(self: in Box[T], k: in Int): Int { k }\n" +
+    "  func orDefault(self: in Box[T], d: in T): T { d }\n  func peek(self: in Box[T], k: in Int): Opt[T] { self.v }\n}\n" +
+    "func emptyBox[T](): Box[T] { Box(v = Nada) }\nasync func five(): Int { 5 }\n"
+  val bad = decls + "async func f(): Int {\n  emptyBox().size(await five())\n}\n"
+  val badCr = checkWithImportedPackages(parse(bad).file, stdCollectionsHostPackages())
+  assertEqualInt(countDiagCode(badCr, "T0154"), 1, "nothing fixes T: one T0154 (" + diagCodesOf(badCr) + ")")
+  val fromArg = decls + "async func f(): Int {\n  emptyBox().orDefault(await five())\n}\n"
+  val argCr = checkWithImportedPackages(parse(fromArg).file, stdCollectionsHostPackages())
+  assertEqualInt(diagCount(argCr), 0, "the argument fixes T: clean (" + diagCodesOf(argCr) + ")")
+  val fromResult = decls + "async func f(): Opt[Int] {\n  val r: Opt[Int] = emptyBox().peek(await five())\n  r\n}\n"
+  val resCr = checkWithImportedPackages(parse(fromResult).file, stdCollectionsHostPackages())
+  assertEqualInt(diagCount(resCr), 0, "the expected result fixes T: clean (" + diagCodesOf(resCr) + ")")
+  val coll = decls + "async func f(): Unit {\n  newList().add(await five())\n}\n"
+  val collCr = checkWithImportedPackages(parse(coll).file, stdCollectionsHostPackages())
+  assertEqualInt(
+    countDiagCode(collCr, "T0154"),
+    0,
+    "List.add's element fixes the list's: no T0154 (" + diagCodesOf(collCr) + ")"
+  )
+  val noAwait = decls + "func f(): Int {\n  emptyBox().size(5)\n}\n"
+  val noAwaitCr = checkWithImportedPackages(parse(noAwait).file, stdCollectionsHostPackages())
+  assertEqualInt(countDiagCode(noAwaitCr, "T0154"), 0, "no await, nothing hoisted: no T0154")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // #2954: unknown constraint name in where-clause emits T0111 warning.
 // T0111 fires at the call site (checkBoundsSatisfied); T0051 fires at the
