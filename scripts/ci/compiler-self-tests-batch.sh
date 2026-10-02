@@ -129,6 +129,8 @@ for t in \
   lyric-compiler/lyric/list_literal_join_self_test.l \
   lyric-compiler/lyric/await_hoist_typed_self_test.l \
   lyric-compiler/lyric/expected_type_propagation_self_test.l \
+  lyric-compiler/lyric/overflow_self_test.l \
+  lyric-compiler/lyric/overflow_panic_self_test.l \
   lyric-compiler/lyric/byte_stringify_self_test.l \
   lyric-compiler/lyric/format_builtin_self_test.l \
   lyric-compiler/lyric/byte_erased_positions_self_test.l \

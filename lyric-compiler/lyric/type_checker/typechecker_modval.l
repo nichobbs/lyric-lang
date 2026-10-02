@@ -386,10 +386,12 @@ func binderType(p: in Pattern, ty: in Option[TypeExpr], name: in String): Option
 val modValTempPrefix = "__lyric_modval_"
 
 /// Records, in `tbl.moduleValTypes`, the checked type of every unannotated
-/// `val` the desugaring above synthesized (a temporary, or a name projected
-/// out of one), so `annotateModuleVals` can write it onto the declaration:
-/// a backend reads a tuple element back erased and needs the element type
-/// to narrow it (the #7728 rule, applied at module level).  A tuple pattern
+/// module `val` (including those the desugaring above synthesized: a
+/// temporary, or a name projected out of one), so `annotateModuleVals` can
+/// write it onto the declaration: a backend reads a tuple element back
+/// erased and needs the element type to narrow it (the #7728 rule, applied
+/// at module level), and the MSIL backend types a value's static field
+/// before it lowers the initializer.  A tuple pattern
 /// whose shape the initializer's type cannot have is T0144, reported once
 /// per declaration.
 pub func recordModuleValTypes(
@@ -427,7 +429,11 @@ pub func recordModuleValTypes(
                     recordModuleValType(tbl, name, inferModuleValInit(tbl, sigs, decl.init), decl.span)
                   }
                 }
-                case None -> ()
+                // Any other unannotated value: a backend that sizes the
+                // value's static field before lowering its initializer
+                // otherwise has to guess its type from the expression's
+                // shape, and a call or a block defeats the guess.
+                case None -> recordModuleValType(tbl, name, inferModuleValInit(tbl, sigs, decl.init), decl.span)
               }
             }
           }
