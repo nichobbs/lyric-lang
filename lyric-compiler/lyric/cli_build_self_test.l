@@ -299,7 +299,10 @@ test "shapeTargetError: module and component are native-only wasm32 shapes (docs
   }
   match Cli.shapeTargetError(Cli.SModule, Emitter.Dotnet) {
     case None -> assertTrue(false, "dotnet must reject module")
-    case Some(m) -> assertTrue(Str.contains(m, "F0043") and Str.contains(m, "--target native"), "dotnet/module names F0043, got: " + m)
+    case Some(m) -> assertTrue(
+      Str.contains(m, "F0043") and Str.contains(m, "--target native"),
+      "dotnet/module names F0043, got: " + m
+    )
   }
   match Cli.shapeTargetError(Cli.SComponent, Emitter.Jvm) {
     case None -> assertTrue(false, "jvm must reject component")
@@ -310,7 +313,10 @@ test "shapeTargetError: module and component are native-only wasm32 shapes (docs
 test "shapeUnsupportedError: component is F0044 until W4; module is implemented" {
   match Cli.shapeUnsupportedError(Cli.SComponent, Emitter.Native) {
     case None -> assertTrue(false, "component must be reported unimplemented")
-    case Some(m) -> assertTrue(Str.contains(m, "F0044") and Str.contains(m, "docs/35"), "component names F0044, got: " + m)
+    case Some(m) -> assertTrue(
+      Str.contains(m, "F0044") and Str.contains(m, "docs/35"),
+      "component names F0044, got: " + m
+    )
   }
   match Cli.shapeUnsupportedError(Cli.SModule, Emitter.Native) {
     case None -> ()

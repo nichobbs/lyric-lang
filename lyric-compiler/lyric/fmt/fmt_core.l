@@ -353,6 +353,20 @@ pub func docLines(docs: in List[DocComment]): List[String] {
   acc
 }
 
+/// A raw string literal spelling for `t`: `r"…"` when the body holds no quote,
+/// otherwise the fewest `#` delimiters whose closing `"##…` does not occur in
+/// the body (the lexer only keeps the body, not the source's hash count).
+func rawStringLit(t: in String): String {
+  var hashes = ""
+  while Str.contains(t, "\"" + hashes) and hashes.length < 64 {
+    hashes = hashes + "#"
+  }
+  if hashes == "" and not Str.contains(t, "\"") {
+    return "r\"" + t + "\""
+  }
+  "r" + hashes + "\"" + t + "\"" + hashes
+}
+
 pub func litStr(l: in Literal): String {
   match l {
     // Prefer the verbatim source spelling so `0xFF` / `100_000` / `2.99`
@@ -363,7 +377,7 @@ pub func litStr(l: in Literal): String {
     case LChar(cp) -> charLitStr(cp)
     case LString(t) -> "\"" + escapeStr(t) + "\""
     case LTripleString(t) -> "\"\"\"" + t + "\"\"\""
-    case LRawString(t) -> "r\"" + t + "\""
+    case LRawString(t) -> rawStringLit(t)
     case LBool(true) -> "true"
     case LBool(false) -> "false"
     case LUnit -> "()"

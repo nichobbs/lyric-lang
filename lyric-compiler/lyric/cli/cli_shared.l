@@ -678,7 +678,9 @@ func wasmShapeNeedsNativeError(shape: in BuildShape, target: in Emitter.CompileT
     case Emitter.Native -> "native"
   }
   "error[F0043]: --shape " + shapeName(shape) + " is a WebAssembly shape and needs --target native " +
-    "(with --triple wasm32-wasi); --target " + targetName + " has no such shape"
+    "(with --triple wasm32-wasi); --target " +
+    targetName +
+    " has no such shape"
 }
 
 /// `F0044` — the shape is valid for this target but its toolchain path is not

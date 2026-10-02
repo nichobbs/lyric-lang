@@ -2529,3 +2529,18 @@ test "an invariant's @message round trips" {
   val acc = format(parse(src))
   assertTrue(Str.contains(acc, "invariant: name.length > 0 @message(\"Name is required\")"), "format keeps the message: " + acc)
 }
+
+test "a raw string holding quotes keeps its hash delimiters" {
+  val src = "package P\n\nfunc f(): String {\n  r##\"say \"hi\" and \"#x\"##\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "raw string with quotes: round-trips")
+  val once = format(parse(src))
+  assertTrue(Str.contains(once, "r##\"say"), "needs two hashes because the body holds a quote followed by a hash: " + once)
+  assertEqual(once, format(parse(once)), "raw string with quotes: idempotent")
+}
+
+test "a quote-free raw string stays r-quote" {
+  val src = "package P\n\nfunc f(): String {\n  r\"C:\\path\"\n}\n"
+  val once = format(parse(src))
+  assertTrue(Str.contains(once, "r\"C:\\path\""), "plain raw string unchanged: " + once)
+}

@@ -581,7 +581,16 @@ pub func compileToNativeWithFlags(
   contractsEnabled: in Bool = true,
 ): Bool {
   compileToNativeWithShape(
-    source, outputPath, stdlibFiles, triple, optLevel, extraClangFlags, defines, path, contractsEnabled, ""
+    source,
+    outputPath,
+    stdlibFiles,
+    triple,
+    optLevel,
+    extraClangFlags,
+    defines,
+    path,
+    contractsEnabled,
+    ""
   )
 }
 
@@ -910,7 +919,19 @@ pub func compileProjectToNativeWithFlags(
   contractsEnabled: in Bool = true,
 ): Bool {
   compileProjectToNativeWithShape(
-    packages, outputPath, stdlibFiles, triple, optLevel, extraClangFlags, defines, activeFeatures, declaredFeatures, packageVersion, originsByPkg, contractsEnabled, ""
+    packages,
+    outputPath,
+    stdlibFiles,
+    triple,
+    optLevel,
+    extraClangFlags,
+    defines,
+    activeFeatures,
+    declaredFeatures,
+    packageVersion,
+    originsByPkg,
+    contractsEnabled,
+    ""
   )
 }
 
@@ -1505,7 +1526,10 @@ func linkAndEmitNative(
   val isWasm = isWasmTriple(effTriple)
   val isModule = shape == "module"
   if shape.length > 0 and not isModule {
-    Console.error("error[N0012]: unknown native output shape '" + shape + "'; the wasm32 shapes are 'module' (and 'component', not yet implemented)")
+    Console.error(
+      "error[N0012]: unknown native output shape '" + shape +
+        "'; the wasm32 shapes are 'module' (and 'component', not yet implemented)"
+    )
     return false
   }
   if isModule and not isWasm {

@@ -3166,7 +3166,11 @@ pub func emitNative(req: in EmitRequest, triple: in String, optLevel: in String,
 /// `emitNative` with the output shape: "" for an ordinary native binary,
 /// "module" for the wasm32 browser/JS-host module plus JS glue (docs/35 W3).
 pub func emitNativeWithShape(
-  req: in EmitRequest, triple: in String, optLevel: in String, extraLibs: in List[String], shape: in String
+  req: in EmitRequest,
+  triple: in String,
+  optLevel: in String,
+  extraLibs: in List[String],
+  shape: in String,
 ): EmitResult {
   val outDir = Path.dirname(req.outputPath)
   if Str.isNotEmpty(outDir) {
@@ -3179,7 +3183,11 @@ pub func emitNativeWithShape(
 }
 
 func emitNativeInProcess(
-  req: in EmitRequest, triple: in String, optLevel: in String, extraLibs: in List[String], shape: in String
+  req: in EmitRequest,
+  triple: in String,
+  optLevel: in String,
+  extraLibs: in List[String],
+  shape: in String,
 ): EmitResult {
   val stdlibFiles = findStdlibSourcesNative()
   // `[native].extra_libs` (N6.4) become `-l<name>` clang flags, threaded
@@ -3254,8 +3262,18 @@ pub func emitNativeProject(
   packageFeatures: in List[Pipe.PackageFeatureSet],
 ): EmitResult {
   emitNativeProjectWithShape(
-    pkgs, outputPath, triple, optLevel, extraLibs, defines, activeFeatures, declaredFeatures, packageVersion,
-    contractsEnabled, packageFeatures, ""
+    pkgs,
+    outputPath,
+    triple,
+    optLevel,
+    extraLibs,
+    defines,
+    activeFeatures,
+    declaredFeatures,
+    packageVersion,
+    contractsEnabled,
+    packageFeatures,
+    ""
   )
 }
 

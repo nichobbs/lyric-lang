@@ -1109,8 +1109,17 @@ pub func buildOneNativeWithFeatures(
   cliDefines: in List[String],
 ): Int {
   buildOneNativeShaped(
-    sourcePath, outPath, target, manifestPath, nativeTriple, nativeOpt, cliFeatures, noDefaultFeatures, allFeatures,
-    cliDefines, ""
+    sourcePath,
+    outPath,
+    target,
+    manifestPath,
+    nativeTriple,
+    nativeOpt,
+    cliFeatures,
+    noDefaultFeatures,
+    allFeatures,
+    cliDefines,
+    ""
   )
 }
 
@@ -2596,8 +2605,19 @@ pub func buildProjectWithNativeFlags(
   nativeOpt: in String,
 ): Int {
   buildProjectWithNativeFlagsShaped(
-    mfPath, explicitOut, target, cliFeatures, noDefaultFeatures, allFeatures, noRestore, packageVersionOverride,
-    preResolvedDeps, cliDefines, nativeTriple, nativeOpt, ""
+    mfPath,
+    explicitOut,
+    target,
+    cliFeatures,
+    noDefaultFeatures,
+    allFeatures,
+    noRestore,
+    packageVersionOverride,
+    preResolvedDeps,
+    cliDefines,
+    nativeTriple,
+    nativeOpt,
+    ""
   )
 }
 
