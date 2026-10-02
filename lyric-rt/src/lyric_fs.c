@@ -6,7 +6,7 @@
  * these functions return -1/0/NULL rather than panicking, matching the
  * console/platform helpers in lyric_posix.c.
  */
-#if defined(__linux__)
+#if defined(__linux__) || defined(__wasi__)
 /* dirent's d_name / getcwd's ERANGE handling need POSIX.1-2008. */
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE
@@ -289,7 +289,18 @@ int32_t lyric_dir_create_all(const char* path) {
 }
 
 int32_t lyric_dir_remove(const char* path) {
-    return rmdir(path) == 0 ? 0 : -1;
+    /* POSIX rmdir accepts a trailing '/'; WASI's path_remove_directory does
+     * not, so strip trailing slashes (keeping a lone "/") on every target. */
+    size_t n = strlen(path);
+    while (n > 1 && path[n - 1] == '/') n--;
+    if (n == strlen(path)) return rmdir(path) == 0 ? 0 : -1;
+    char* trimmed = (char*)malloc(n + 1);
+    if (!trimmed) return -1;
+    memcpy(trimmed, path, n);
+    trimmed[n] = '\0';
+    int rc = rmdir(trimmed);
+    free(trimmed);
+    return rc == 0 ? 0 : -1;
 }
 
 int32_t lyric_dir_exists(const char* path) {
@@ -504,7 +515,7 @@ int32_t lyric_env_cwd_ok(LyricString** out) {
  * /proc/self/exe, then strips the trailing basename, keeping a trailing
  * '/' to match .NET's AppContext.BaseDirectory contract exactly. */
 int32_t lyric_env_app_base_directory_ok(LyricString** out) {
-#if defined(__linux__)
+#if defined(__linux__) || defined(__wasi__)
     size_t cap = 256;
     char* buf = (char*)malloc(cap);
     if (!buf) return -1;

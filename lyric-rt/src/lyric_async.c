@@ -36,8 +36,9 @@
  * destructor destroys its coroutine frame and releases a ref-typed
  * result.
  */
-#if defined(__linux__)
+#if defined(__linux__) || defined(__wasi__)
 #define _POSIX_C_SOURCE 200809L
+#define _DEFAULT_SOURCE
 #endif
 
 #include "lyric_rt.h"

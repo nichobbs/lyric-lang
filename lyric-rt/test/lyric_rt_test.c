@@ -1,7 +1,7 @@
 /* lyric_rt_test.c — unit tests for the lyric-rt runtime (N0.4).
  * Run via `make -C lyric-rt test`.  Exits non-zero on the first failure.
  */
-#if defined(__linux__)
+#if defined(__linux__) || defined(__wasi__)
 /* mkstemp/mkdtemp need POSIX.1-2008 / XSI visibility under -std=c11. */
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE
@@ -16,13 +16,19 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef __wasi__
 #include <signal.h>
+#endif
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <time.h>
+#ifndef __wasi__
 #include <sys/wait.h>
+#endif
 #include <unistd.h>
+#ifndef __wasi__
 #include <pthread.h>
+#endif
 
 /* True when `s` holds exactly the bytes of the C string `want`. */
 static int string_is(LyricString* s, const char* want) {
@@ -31,6 +37,32 @@ static int string_is(LyricString* s, const char* want) {
 }
 
 static int failures = 0;
+
+#if defined(__wasi__)
+/* wasi-libc has no mkstemp/mkdtemp, and the only writable location is a
+ * preopened directory (`wasmtime run --dir=.`), so a "/tmp/..._XXXXXX"
+ * template becomes a counter-suffixed name under the current directory. */
+static void wasi_temp_name(char* tmpl) {
+    static int counter = 0;
+    size_t n = strlen(tmpl);
+    char* x = tmpl + n - 6;
+    char suffix[8];
+    snprintf(suffix, sizeof suffix, "%06d", ++counter);
+    memcpy(x, suffix, 6);
+    const char* base = strrchr(tmpl, '/');
+    memmove(tmpl, base ? base + 1 : tmpl, strlen(base ? base + 1 : tmpl) + 1);
+}
+
+static char* mkdtemp(char* tmpl) {
+    wasi_temp_name(tmpl);
+    return mkdir(tmpl, 0700) == 0 ? tmpl : NULL;
+}
+
+static int mkstemp(char* tmpl) {
+    wasi_temp_name(tmpl);
+    return open(tmpl, O_RDWR | O_CREAT | O_EXCL, 0600);
+}
+#endif
 
 #define CHECK(cond)                                                        \
     do {                                                                   \
@@ -984,6 +1016,7 @@ static void test_list_slice_concat_append(void) {
  * independent bounds condition (`start < 0`, `stop < start`, `stop >
  * length`) so a fix that only guards one of the three can't silently
  * regress the other two. */
+#ifndef __wasi__
 static void run_forked_slice_oob(int64_t start, int64_t stop) {
     pid_t pid = fork();
     CHECK(pid >= 0);
@@ -999,12 +1032,15 @@ static void run_forked_slice_oob(int64_t start, int64_t stop) {
     CHECK(waitpid(pid, &status, 0) == pid);
     CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
 }
+#endif /* !__wasi__ */
 
+#ifndef __wasi__
 static void test_list_slice_oob_aborts(void) {
     run_forked_slice_oob(0, 5);  /* stop > len */
     run_forked_slice_oob(-1, 1); /* start < 0 */
     run_forked_slice_oob(1, 0);  /* stop < start */
 }
+#endif /* !__wasi__ */
 
 /* `s[i]` (#6237) out-of-bounds must panic, mirroring `lyric_string_byte_at`'s
  * existing bounds check; forked so the abort leaves no residue in the
@@ -1012,6 +1048,7 @@ static void test_list_slice_oob_aborts(void) {
  * offset that does not start a BMP character (a continuation byte, a
  * supplementary-plane sequence, a CESU-encoded surrogate) panics the same
  * way, since no `Char` can hold it. */
+#ifndef __wasi__
 static void run_forked_char_at_abort(const char* bytes, int64_t n, int64_t idx) {
     pid_t pid = fork();
     CHECK(pid >= 0);
@@ -1026,13 +1063,17 @@ static void run_forked_char_at_abort(const char* bytes, int64_t n, int64_t idx) 
     CHECK(waitpid(pid, &status, 0) == pid);
     CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
 }
+#endif /* !__wasi__ */
 
+#ifndef __wasi__
 static void test_string_char_at_oob_aborts(void) {
     run_forked_char_at_abort("hi", 2, -1); /* idx < 0 */
     run_forked_char_at_abort("hi", 2, 2);  /* idx == len */
     run_forked_char_at_abort("hi", 2, 99); /* idx > len */
 }
+#endif /* !__wasi__ */
 
+#ifndef __wasi__
 static void test_string_char_at_non_bmp_aborts(void) {
     run_forked_char_at_abort("a\xF0\x9F\x98\x80", 5, 1); /* U+1F600 */
     run_forked_char_at_abort("h\xC3\xA9", 3, 2);           /* continuation byte */
@@ -1044,6 +1085,7 @@ static void test_string_char_at_non_bmp_aborts(void) {
     CHECK(lyric_string_byte_at(s, 1) == 0xF0);
     lyric_release(s);
 }
+#endif /* !__wasi__ */
 
 static void test_read_bytes(void) {
     char tmpl[] = "/tmp/lyric_rt_bytes_XXXXXX";
@@ -1069,6 +1111,7 @@ static void test_read_bytes(void) {
 }
 
 /* Points fd 0 at a fresh pipe and returns the saved original stdin. */
+#ifndef __wasi__
 static int stdin_from_pipe(int* write_end) {
     int fds[2];
     CHECK(pipe(fds) == 0);
@@ -1079,7 +1122,9 @@ static int stdin_from_pipe(int* write_end) {
     *write_end = fds[1];
     return saved;
 }
+#endif /* !__wasi__ */
 
+#ifndef __wasi__
 static void test_stdin_lines_and_bytes(void) {
     int w = -1;
     int saved = stdin_from_pipe(&w);
@@ -1122,7 +1167,9 @@ static void test_stdin_lines_and_bytes(void) {
     CHECK(dup2(saved, STDIN_FILENO) == STDIN_FILENO);
     close(saved);
 }
+#endif /* !__wasi__ */
 
+#ifndef __wasi__
 static void test_stdin_wait_times_out(void) {
     int w = -1;
     int saved = stdin_from_pipe(&w);
@@ -1143,6 +1190,7 @@ static void test_stdin_wait_times_out(void) {
     CHECK(dup2(saved, STDIN_FILENO) == STDIN_FILENO);
     close(saved);
 }
+#endif /* !__wasi__ */
 
 static void test_write_bytes(void) {
     char tmpl[] = "/tmp/lyric_rt_wbytes_XXXXXX";
@@ -1237,6 +1285,7 @@ static void test_dir_list2(void) {
  * lyric_dir_list_typed) by its bare name; readdir order is unspecified,
  * so tests look entries up by name instead of assuming a position.
  * Returns the LYRIC_DIRENT_* digit on a match, -1 if not found. */
+#ifndef __wasi__
 static int32_t find_entry_kind(LyricList* entries, const char* target) {
     int64_t n = lyric_list_len(entries);
     size_t target_len = strlen(target);
@@ -1250,7 +1299,9 @@ static int32_t find_entry_kind(LyricList* entries, const char* target) {
     }
     return -1;
 }
+#endif /* !__wasi__ */
 
+#ifndef __wasi__
 static void test_dir_list_typed(void) {
     /* Missing directory: same ok-flag protocol as lyric_dir_list2. */
     int32_t ok = 1;
@@ -1314,7 +1365,9 @@ static void test_dir_list_typed(void) {
     rmdir(subp);
     rmdir(tmpl);
 }
+#endif /* !__wasi__ */
 
+#ifndef __wasi__
 static void test_is_dir_nofollow(void) {
     /* A real directory is a directory; a file is not. */
     char tmpl[] = "/tmp/lyric_rt_nofollow_XXXXXX";
@@ -1345,6 +1398,7 @@ static void test_is_dir_nofollow(void) {
     unlink(filep);
     rmdir(tmpl);
 }
+#endif /* !__wasi__ */
 
 static void test_args(void) {
     /* Unset: empty list rather than a crash. */
@@ -1436,22 +1490,28 @@ static void test_map_string_keys(void) {
 }
 
 static void test_posix(void) {
-    CHECK(lyric_o_rdonly() == 0);
+    CHECK(lyric_o_rdonly() == O_RDONLY);
     CHECK(lyric_mutex_size() > 0);
 
     CHECK(lyric_cstr_len("lyric") == 5);
     void* raw = lyric_malloc_raw(16);
     CHECK(raw != NULL);
     free(raw);
-    int32_t fd = lyric_open_fd("/dev/null", lyric_o_wronly(), 0);
+    char fd_tmpl[] = "/tmp/lyric_rt_fdwrap_XXXXXX";
+    int tmp_fd = mkstemp(fd_tmpl);
+    CHECK(tmp_fd >= 0);
+    close(tmp_fd);
+    int32_t fd = lyric_open_fd(fd_tmpl, lyric_o_wronly(), 0);
     CHECK(fd >= 0);
     CHECK(lyric_write_fd(fd, "abc", 3) == 3);
     close(fd);
-    fd = lyric_open_fd("/dev/null", lyric_o_rdonly(), 0);
+    fd = lyric_open_fd(fd_tmpl, lyric_o_rdonly(), 0);
     CHECK(fd >= 0);
     char sink[4];
-    CHECK(lyric_read_fd(fd, sink, 4) == 0);
+    CHECK(lyric_read_fd(fd, sink, 4) == 3);
+    CHECK(memcmp(sink, "abc", 3) == 0);
     close(fd);
+    unlink(fd_tmpl);
 
     char mutex_buf[128];
     CHECK(lyric_mutex_size() <= (int32_t)sizeof(mutex_buf));
@@ -1488,13 +1548,16 @@ typedef struct {
     volatile int posted; /* 1 once the waiter thread has woken and observed the post */
 } sem_thread_ctx_t;
 
+#ifndef __wasi__
 static void* sem_wait_thread(void* arg) {
     sem_thread_ctx_t* ctx = (sem_thread_ctx_t*)arg;
     lyric_sem_wait(ctx->sem); /* blocks until test_semaphore's post below */
     ctx->posted = 1;
     return NULL;
 }
+#endif /* !__wasi__ */
 
+#ifndef __wasi__
 static void test_semaphore(void) {
     CHECK(lyric_sem_size() > 0);
 
@@ -1549,6 +1612,7 @@ static void test_semaphore(void) {
     CHECK(lyric_sem_trywait(sem_buf3) == 0); /* both credits already drained */
     lyric_sem_destroy(sem_buf3);
 }
+#endif /* !__wasi__ */
 
 static void test_uuid_v4(void) {
     /* Canonical lowercase hyphenated form with the RFC 4122 version-4
@@ -1682,8 +1746,10 @@ static void test_file_mtime(void) {
     CHECK(lyric_file_mtime_epoch_nanos_ok(path2, &nanos2) == 0);
     CHECK(nanos2 > nanos);
 
+#ifndef __wasi__
     /* A pre-1970 mtime round-trips too (negative epoch nanos, within
-     * Instant's own supported 1677..2262 window). */
+     * Instant's own supported 1677..2262 window).  WASI file timestamps are
+     * unsigned nanoseconds, so a pre-1970 mtime cannot be set there. */
     times[0].tv_sec = -3600;
     times[0].tv_usec = 0;
     times[1].tv_sec = -3600;
@@ -1692,6 +1758,7 @@ static void test_file_mtime(void) {
     int64_t negNanos = 0;
     CHECK(lyric_file_mtime_epoch_nanos_ok(path, &negNanos) == 0);
     CHECK(negNanos == -3600000000000LL);
+#endif
 
     CHECK(lyric_file_delete(path) == 0);
     CHECK(lyric_file_delete(path2) == 0);
@@ -1768,6 +1835,7 @@ static void test_directories(void) {
     CHECK(!lyric_dir_exists(dir));
 }
 
+#ifndef __wasi__
 static void test_console_write_line(void) {
     int fds[2];
     CHECK(pipe(fds) == 0);
@@ -1787,7 +1855,9 @@ static void test_console_write_line(void) {
     lyric_release(s);
     lyric_release(empty);
 }
+#endif /* !__wasi__ */
 
+#ifndef __wasi__
 static void test_console_write_bytes(void) {
     int fds[2];
     CHECK(pipe(fds) == 0);
@@ -1812,6 +1882,7 @@ static void test_console_write_bytes(void) {
     lyric_release(bytes);
     lyric_release(empty);
 }
+#endif /* !__wasi__ */
 
 static void test_environment(void) {
     static const char* name = "LYRIC_RT_TEST_ENV_VAR_UNIQUE";
@@ -1846,6 +1917,7 @@ static void test_environment(void) {
     unsetenv(name);
 }
 
+#ifndef __wasi__
 static void test_process(void) {
     /* /bin/echo hello world -> stdout "hello world\n", exit 0, empty stderr. */
     LyricList* args = lyric_list_new(1);
@@ -1908,7 +1980,9 @@ static void test_process(void) {
     lyric_release(out4);
     lyric_release(err4);
 }
+#endif /* !__wasi__ */
 
+#ifndef __wasi__
 static void test_process_run_inherited(void) {
     LyricList* args = lyric_list_new(2);
     LyricString* a1 = lyric_string_from_literal((const uint8_t*)"-c", 2);
@@ -1950,6 +2024,7 @@ static void test_process_run_inherited(void) {
     CHECK(code4 == 128 + 9);
     lyric_release(kargs);
 }
+#endif /* !__wasi__ */
 
 static LyricString* str_lit(const char* c) {
     return lyric_string_from_literal((const uint8_t*)c, (int64_t)strlen(c));
@@ -1984,6 +2059,7 @@ static void test_string_replace(void) {
     check_replace("caf\xc3\xa9 caf\xc3\xa9", "\xc3\xa9", "e", "cafe cafe"); /* multibyte */
 }
 
+#ifndef __wasi__
 static void test_process_closed_stdio(void) {
     /* Regression: with fd 1/2 closed in the caller, pipe() hands the child
      * those very numbers.  The original wiring dup2'ed in place (a no-op
@@ -2027,7 +2103,9 @@ static void test_process_closed_stdio(void) {
     CHECK(WIFEXITED(status));
     CHECK(WEXITSTATUS(status) == 0);
 }
+#endif /* !__wasi__ */
 
+#ifndef __wasi__
 static void test_process_closed_stdin_stdout(void) {
     /* With fds 0 and 1 closed, pipe() returns {0,1} for out_pipe, so
      * out_pipe[1] IS STDOUT_FILENO.  The pipes are created CLOEXEC, and a
@@ -2058,8 +2136,10 @@ static void test_process_closed_stdin_stdout(void) {
     CHECK(WIFEXITED(status));
     CHECK(WEXITSTATUS(status) == 0);
 }
+#endif /* !__wasi__ */
 
 /* ── Nonblocking process op (the async process leaf, D-N-023) ───────── */
+#ifndef __wasi__
 static void test_process_op_basic(void) {
     /* echo through the pump loop: start, pump until done, read results. */
     LyricList* args = lyric_list_new(1);
@@ -2086,7 +2166,9 @@ static void test_process_op_basic(void) {
     lyric_release(errs);
     lyric_process_free(op);
 }
+#endif /* !__wasi__ */
 
+#ifndef __wasi__
 static void test_process_op_kill(void) {
     /* A sleeping child killed mid-run: partial output preserved, op done,
      * signal-termination exit code reported. */
@@ -2123,7 +2205,9 @@ static void test_process_op_kill(void) {
     lyric_release(out);
     lyric_process_free(op);
 }
+#endif /* !__wasi__ */
 
+#ifndef __wasi__
 static void test_process_op_kill_after_exit(void) {
     /* kill on an op whose child already finished must NOT report a
      * kill (#5107: the deadline can fire inside the window between the
@@ -2146,7 +2230,9 @@ static void test_process_op_kill_after_exit(void) {
     CHECK(lyric_process_exit_code(op) == 0); /* real status preserved */
     lyric_process_free(op);
 }
+#endif /* !__wasi__ */
 
+#ifndef __wasi__
 static void test_process_op_exec_failure(void) {
     /* execvp failure inside the child: exit 127, empty output, no spawn
      * failure (matching lyric_process_run and shell convention). */
@@ -2170,8 +2256,10 @@ static void test_process_op_exec_failure(void) {
     lyric_release(errs);
     lyric_process_free(op);
 }
+#endif /* !__wasi__ */
 
 /* -- stdin + sync timeout (#4752 closure) --------------------------- */
+#ifndef __wasi__
 static void test_process_stdin_roundtrip(void) {
     /* cat echoes stdin back on stdout through the sync runner. */
     LyricString* content = lyric_string_from_literal((const uint8_t*)"in-out", 6);
@@ -2188,7 +2276,9 @@ static void test_process_stdin_roundtrip(void) {
     lyric_release(out);
     lyric_release(err);
 }
+#endif /* !__wasi__ */
 
+#ifndef __wasi__
 static void test_process_stdin_large_no_deadlock(void) {
     /* 256 KiB through cat: far beyond the pipe buffer in BOTH
      * directions, so this deadlocks unless stdin writes interleave
@@ -2212,7 +2302,9 @@ static void test_process_stdin_large_no_deadlock(void) {
     lyric_release(out);
     lyric_release(err);
 }
+#endif /* !__wasi__ */
 
+#ifndef __wasi__
 static void test_process_stdin_child_ignores(void) {
     /* A child that exits without reading its (large) stdin: the EPIPE
      * path must silently drop the rest — no SIGPIPE death, real exit
@@ -2242,7 +2334,9 @@ static void test_process_stdin_child_ignores(void) {
     lyric_release(out);
     lyric_release(err);
 }
+#endif /* !__wasi__ */
 
+#ifndef __wasi__
 static void test_process_sync_timeout(void) {
     /* The sync runner kills a sleeping child at the deadline,
      * preserving pre-timeout output (mirrors the async op contract). */
@@ -2266,7 +2360,9 @@ static void test_process_sync_timeout(void) {
     lyric_release(out);
     lyric_release(err);
 }
+#endif /* !__wasi__ */
 
+#ifndef __wasi__
 static void test_process_sync_timeout_pending_stdin(void) {
     /* Deadline kill with a stdin feed still in flight (#5175): the
      * child never reads, so the pipe buffer fills and the parent is
@@ -2303,7 +2399,9 @@ static void test_process_sync_timeout_pending_stdin(void) {
     lyric_release(out);
     lyric_release(err);
 }
+#endif /* !__wasi__ */
 
+#ifndef __wasi__
 static void test_process_sync_timeout_grandchild_writer(void) {
     /* Group kill (D-N-025): the background writer is in the child's
      * process group, so the deadline kill takes it too — the drain
@@ -2338,7 +2436,9 @@ static void test_process_sync_timeout_grandchild_writer(void) {
     lyric_release(out);
     lyric_release(err);
 }
+#endif /* !__wasi__ */
 
+#ifndef __wasi__
 static void test_process_sync_timeout_setsid_escapee(void) {
     /* The drain-budget backstop (#5176) still matters for a
      * descendant that leaves the child's process group: a setsid'd
@@ -2409,7 +2509,9 @@ static void test_process_sync_timeout_setsid_escapee(void) {
             "in 3 attempts (heavily loaded runner?); drain-budget bounds "
             "not exercised this run\n");
 }
+#endif /* !__wasi__ */
 
+#ifndef __wasi__
 static void test_process_op_stdin(void) {
     /* The async op pumps stdin nonblockingly: cat round-trips 256 KiB
      * through start/pump alone. */
@@ -2436,13 +2538,17 @@ static void test_process_op_stdin(void) {
     lyric_release(out);
     lyric_process_free(op);
 }
+#endif /* !__wasi__ */
 
 /* ── Long-lived piped child stdio (issue #6142) ──────────────────────── */
 
+#ifndef __wasi__
 static LyricString* mk_str(const char* s) {
     return lyric_string_from_literal((const uint8_t*)s, (int64_t)strlen(s));
 }
+#endif /* !__wasi__ */
 
+#ifndef __wasi__
 static void test_process_piped_line_roundtrip(void) {
     /* `cat` echoes each written line back on stdout — the direct
      * line-oriented round trip the MCP stdio transport needs. */
@@ -2483,7 +2589,9 @@ static void test_process_piped_line_roundtrip(void) {
     CHECK(lyric_process_piped_read_line(p, &got3) == 0);
     lyric_process_piped_close(p);
 }
+#endif /* !__wasi__ */
 
+#ifndef __wasi__
 static void test_process_piped_final_line_without_newline(void) {
     /* `printf` (no trailing newline) — the final-partial-line-at-EOF
      * case: read_line must still return it once, then report
@@ -2512,7 +2620,9 @@ static void test_process_piped_final_line_without_newline(void) {
     CHECK(lyric_process_piped_exit_code(p) == 0);
     lyric_process_piped_close(p);
 }
+#endif /* !__wasi__ */
 
+#ifndef __wasi__
 static void test_process_piped_read_line_within(void) {
     /* Issue #7451: a silent child times out (2) instead of blocking; a
      * line that arrives after the deadline is returned by the next read. */
@@ -2588,7 +2698,9 @@ static void test_process_piped_read_line_within(void) {
     CHECK(lyric_process_piped_wait_exit(r, 5000) == 1);
     lyric_process_piped_close(r);
 }
+#endif /* !__wasi__ */
 
+#ifndef __wasi__
 static void test_process_piped_burst_in_order(void) {
     /* 5000 lines from one `seq` burst (#7277): every line returned in
      * order, with CR-free content, and end-of-stream afterwards. */
@@ -2620,7 +2732,9 @@ static void test_process_piped_burst_in_order(void) {
     CHECK(lyric_process_piped_wait_exit(p, 5000) == 1);
     lyric_process_piped_close(p);
 }
+#endif /* !__wasi__ */
 
+#ifndef __wasi__
 static void test_process_piped_crlf_stripped(void) {
     /* A CRLF-terminated line (printf "a\r\nb\n") must have the \r
      * stripped, matching .NET's StreamReader.ReadLine()/the JVM twin's
@@ -2654,7 +2768,9 @@ static void test_process_piped_crlf_stripped(void) {
     CHECK(lyric_process_piped_wait_exit(p, 5000) == 1);
     lyric_process_piped_close(p);
 }
+#endif /* !__wasi__ */
 
+#ifndef __wasi__
 static void test_process_piped_kill(void) {
     /* A long-sleeping child, killed outright: is_alive flips to dead,
      * exit code reports signal termination, and kill on an
@@ -2681,7 +2797,9 @@ static void test_process_piped_kill(void) {
     CHECK(lyric_process_piped_kill(p) == 0); /* already reaped: no-op */
     lyric_process_piped_close(p);
 }
+#endif /* !__wasi__ */
 
+#ifndef __wasi__
 static void test_process_piped_spawn_failure(void) {
     /* A nonexistent executable: execvp fails inside the child, which
      * reports it over the exec-failure pipe, so spawn returns NULL (the
@@ -2690,7 +2808,9 @@ static void test_process_piped_spawn_failure(void) {
     CHECK(p == NULL);
     CHECK(lyric_process_last_spawn_errno() == ENOENT);
 }
+#endif /* !__wasi__ */
 
+#ifndef __wasi__
 static void test_process_piped_stderr_inherited(void) {
     /* The headline contract this kernel exists to preserve (module
      * header): stderr is NEVER piped here, so a child that writes a lot
@@ -2736,7 +2856,9 @@ static void test_process_piped_stderr_inherited(void) {
     CHECK(n > 0);
     CHECK(strstr(buf, "err-side") != NULL);
 }
+#endif /* !__wasi__ */
 
+#ifndef __wasi__
 static void test_process_piped_double_close(void) {
     /* Issue #6975: an earlier version of lyric_process_piped_close
      * unconditionally free()'d the handle, so a second call on the same
@@ -2750,7 +2872,9 @@ static void test_process_piped_double_close(void) {
     lyric_process_piped_close(p);
     lyric_process_piped_close(p);
 }
+#endif /* !__wasi__ */
 
+#ifndef __wasi__
 static void test_process_piped_read_after_close_with_buffered_line(void) {
     /* Issue #6993: lyric_process_piped_close (the #6975 addendum) freed
      * linebuf.data and NULL'd it, but never reset linebuf.len -- so a
@@ -2786,6 +2910,7 @@ static void test_process_piped_read_after_close_with_buffered_line(void) {
     LyricString* got2 = NULL;
     CHECK(lyric_process_piped_read_line(p, &got2) == 0);
 }
+#endif /* !__wasi__ */
 
 static void test_ok_variants(void) {
     char tmpl[] = "/tmp/lyric_rt_ok_XXXXXX";
@@ -3036,6 +3161,7 @@ static void test_async_multi_waiters(void) {
     CHECK(leaf.destroyed && w1.destroyed && w2.destroyed);
 }
 
+#ifndef __wasi__
 static void test_async_sleep_saturates(void) {
     /* An absurdly large sleep must saturate the nanosecond deadline
      * (#5083) — without the cap, `ms * 1000000` wraps negative and the
@@ -3054,9 +3180,11 @@ static void test_async_sleep_saturates(void) {
     CHECK(waitpid(pid, &status, 0) == pid);
     CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
 }
+#endif /* !__wasi__ */
 
 /* Body: await a task that can never complete (its "coroutine" was
  * never driven past RUNNING) — the deadlock detector must abort. */
+#ifndef __wasi__
 static void test_async_deadlock_aborts(void) {
     pid_t pid = fork();
     CHECK(pid >= 0);
@@ -3077,6 +3205,7 @@ static void test_async_deadlock_aborts(void) {
     CHECK(waitpid(pid, &status, 0) == pid);
     CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
 }
+#endif /* !__wasi__ */
 
 static LyricString* rt_str(const char* s) {
     return lyric_string_from_literal((const uint8_t*)s, (int64_t)strlen(s));
@@ -3115,62 +3244,138 @@ int main(void) {
     test_list_copy();
     test_list_slice_concat_append();
     test_list_bulk_builders();
+#ifndef __wasi__
     test_list_slice_oob_aborts();
+#endif
+#ifndef __wasi__
     test_string_char_at_oob_aborts();
+#endif
+#ifndef __wasi__
     test_string_char_at_non_bmp_aborts();
+#endif
     test_read_bytes();
     test_write_bytes();
+#ifndef __wasi__
     test_stdin_lines_and_bytes();
+#endif
+#ifndef __wasi__
     test_stdin_wait_times_out();
+#endif
     test_dir_list2();
+#ifndef __wasi__
     test_dir_list_typed();
+#endif
+#ifndef __wasi__
     test_is_dir_nofollow();
+#endif
     test_args();
     test_map_keys_values();
     test_posix();
+#ifndef __wasi__
     test_semaphore();
+#endif
     test_ok_variants();
     test_uuid_v4();
     test_file_io();
     test_file_mtime();
     test_directories();
+#ifndef __wasi__
     test_console_write_line();
+#endif
+#ifndef __wasi__
     test_console_write_bytes();
+#endif
     test_environment();
+#ifndef __wasi__
     test_process();
+#endif
+#ifndef __wasi__
     test_process_closed_stdio();
+#endif
+#ifndef __wasi__
     test_process_closed_stdin_stdout();
+#endif
+#ifndef __wasi__
     test_process_op_basic();
+#endif
+#ifndef __wasi__
     test_process_op_kill();
+#endif
+#ifndef __wasi__
     test_process_op_kill_after_exit();
+#endif
+#ifndef __wasi__
     test_process_op_exec_failure();
+#endif
+#ifndef __wasi__
     test_process_stdin_roundtrip();
+#endif
+#ifndef __wasi__
     test_process_stdin_large_no_deadlock();
+#endif
+#ifndef __wasi__
     test_process_stdin_child_ignores();
+#endif
+#ifndef __wasi__
     test_process_sync_timeout();
+#endif
+#ifndef __wasi__
     test_process_sync_timeout_pending_stdin();
+#endif
+#ifndef __wasi__
     test_process_sync_timeout_grandchild_writer();
+#endif
+#ifndef __wasi__
     test_process_sync_timeout_setsid_escapee();
+#endif
+#ifndef __wasi__
     test_process_op_stdin();
+#endif
+#ifndef __wasi__
     test_process_piped_line_roundtrip();
+#endif
+#ifndef __wasi__
     test_process_run_inherited();
+#endif
     test_string_replace();
+#ifndef __wasi__
     test_process_piped_final_line_without_newline();
+#endif
+#ifndef __wasi__
     test_process_piped_read_line_within();
+#endif
+#ifndef __wasi__
     test_process_piped_burst_in_order();
+#endif
+#ifndef __wasi__
     test_process_piped_crlf_stripped();
+#endif
+#ifndef __wasi__
     test_process_piped_kill();
+#endif
+#ifndef __wasi__
     test_process_piped_spawn_failure();
+#endif
+#ifndef __wasi__
     test_process_piped_stderr_inherited();
+#endif
+#ifndef __wasi__
     test_process_piped_double_close();
+#endif
+#ifndef __wasi__
     test_process_piped_read_after_close_with_buffered_line();
+#endif
     test_async_hot_completion();
     test_async_block_on_sleep();
     test_async_interleave();
     test_async_await_chain();
     test_async_multi_waiters();
+#ifndef __wasi__
     test_async_sleep_saturates();
+#endif
+#ifndef __wasi__
     test_async_deadlock_aborts();
+#endif
     if (failures == 0) {
         printf("lyric_rt_test: all tests passed\n");
         return 0;
