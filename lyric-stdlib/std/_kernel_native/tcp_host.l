@@ -299,33 +299,88 @@ extern func rtSockReadBytes(fd: Int, maxBytes: Long, okOut: NativePtr[Int]): sli
 
 extern func rtSockWriteBytes(fd: Int, bytes: slice[Byte]): Long = "lyric_sock_write_bytes"
 
-// --- TLS (server-side) --------------------------------------------------
-extern func rtTlsServerNew(certPem: NativePtr[Byte], keyPem: NativePtr[Byte], minVersion: Int, clientCaPem: NativePtr[Byte], requireClientCert: Int, alpnCsv: NativePtr[Byte]): Long = "lyric_tls_server_new"
+// A bare `NativePtr[T]` record field is rejected by the N0100 mode checker, so
+// long-lived handles are stored as `Long`; the externs below take the pointer
+// the C side declares (32-bit on wasm32), converted at the call boundary.
+extern func rtPtrToLong(p: NativePtr[Byte]): Long = "lyric_ptr_to_long"
 
-extern func rtTlsServerAccept(serverCtx: Long, fd: Int): Long = "lyric_tls_server_accept"
+extern func rtLongToPtr(v: Long): NativePtr[Byte] = "lyric_long_to_ptr"
+
+// --- TLS (server-side) --------------------------------------------------
+extern func rtTlsServerNewRaw(certPem: NativePtr[Byte], keyPem: NativePtr[Byte], minVersion: Int, clientCaPem: NativePtr[Byte], requireClientCert: Int, alpnCsv: NativePtr[Byte]): NativePtr[Byte] = "lyric_tls_server_new"
+
+func rtTlsServerNew(certPem: NativePtr[Byte], keyPem: NativePtr[Byte], minVersion: Int, clientCaPem: NativePtr[Byte], requireClientCert: Int, alpnCsv: NativePtr[Byte]): Long {
+  rtPtrToLong(rtTlsServerNewRaw(certPem, keyPem, minVersion, clientCaPem, requireClientCert, alpnCsv))
+}
+
+extern func rtTlsServerAcceptRaw(serverCtx: NativePtr[Byte], fd: Int): NativePtr[Byte] = "lyric_tls_server_accept"
+
+func rtTlsServerAccept(serverCtx: Long, fd: Int): Long {
+  rtPtrToLong(rtTlsServerAcceptRaw(rtLongToPtr(serverCtx), fd))
+}
 
 extern func rtSockSetTimeouts(fd: Int, timeoutMs: Int): Int = "lyric_sock_set_timeouts"
 
-extern func rtTlsCtxFree(ctx: Long): Unit = "lyric_tls_ctx_free"
+extern func rtTlsCtxFreeRaw(ctx: NativePtr[Byte]): Unit = "lyric_tls_ctx_free"
 
-extern func rtTlsShutdown(conn: Long): Unit = "lyric_tls_shutdown"
+func rtTlsCtxFree(ctx: Long): Unit {
+  rtTlsCtxFreeRaw(rtLongToPtr(ctx))
+}
 
-extern func rtTlsFree(conn: Long): Unit = "lyric_tls_free"
+extern func rtTlsShutdownRaw(conn: NativePtr[Byte]): Unit = "lyric_tls_shutdown"
 
-extern func rtTlsAlpnString(conn: Long): String = "lyric_tls_alpn_string"
+func rtTlsShutdown(conn: Long): Unit {
+  rtTlsShutdownRaw(rtLongToPtr(conn))
+}
 
-extern func rtTlsReadBytes(conn: Long, maxBytes: Long, okOut: NativePtr[Int]): slice[Byte] = "lyric_tls_read_bytes"
+extern func rtTlsFreeRaw(conn: NativePtr[Byte]): Unit = "lyric_tls_free"
 
-extern func rtTlsWriteBytes(conn: Long, bytes: slice[Byte]): Long = "lyric_tls_write_bytes"
+func rtTlsFree(conn: Long): Unit {
+  rtTlsFreeRaw(rtLongToPtr(conn))
+}
+
+extern func rtTlsAlpnStringRaw(conn: NativePtr[Byte]): String = "lyric_tls_alpn_string"
+
+func rtTlsAlpnString(conn: Long): String {
+  rtTlsAlpnStringRaw(rtLongToPtr(conn))
+}
+
+extern func rtTlsReadBytesRaw(conn: NativePtr[Byte], maxBytes: Long, okOut: NativePtr[Int]): slice[Byte] = "lyric_tls_read_bytes"
+
+func rtTlsReadBytes(conn: Long, maxBytes: Long, okOut: NativePtr[Int]): slice[Byte] {
+  rtTlsReadBytesRaw(rtLongToPtr(conn), maxBytes, okOut)
+}
+
+extern func rtTlsWriteBytesRaw(conn: NativePtr[Byte], bytes: slice[Byte]): Long = "lyric_tls_write_bytes"
+
+func rtTlsWriteBytes(conn: Long, bytes: slice[Byte]): Long {
+  rtTlsWriteBytesRaw(rtLongToPtr(conn), bytes)
+}
 
 // --- TLS (client-side; N9.4, issue #6105) -------------------------------
-extern func rtTlsClientNew(caPem: NativePtr[Byte], minVersion: Int, insecure: Int): Long = "lyric_tls_client_new"
+extern func rtTlsClientNewRaw(caPem: NativePtr[Byte], minVersion: Int, insecure: Int): NativePtr[Byte] = "lyric_tls_client_new"
 
-extern func rtTlsClientNewAdditive(caPem: NativePtr[Byte], minVersion: Int, insecure: Int): Long = "lyric_tls_client_new_additive"
+func rtTlsClientNew(caPem: NativePtr[Byte], minVersion: Int, insecure: Int): Long {
+  rtPtrToLong(rtTlsClientNewRaw(caPem, minVersion, insecure))
+}
 
-extern func rtTlsClientSetIdentity(clientCtx: Long, certPem: NativePtr[Byte], keyPem: NativePtr[Byte]): Int = "lyric_tls_client_set_identity"
+extern func rtTlsClientNewAdditiveRaw(caPem: NativePtr[Byte], minVersion: Int, insecure: Int): NativePtr[Byte] = "lyric_tls_client_new_additive"
 
-extern func rtTlsClientConnect(clientCtx: Long, fd: Int, sniHost: NativePtr[Byte], alpnCsv: NativePtr[Byte]): Long = "lyric_tls_client_connect"
+func rtTlsClientNewAdditive(caPem: NativePtr[Byte], minVersion: Int, insecure: Int): Long {
+  rtPtrToLong(rtTlsClientNewAdditiveRaw(caPem, minVersion, insecure))
+}
+
+extern func rtTlsClientSetIdentityRaw(clientCtx: NativePtr[Byte], certPem: NativePtr[Byte], keyPem: NativePtr[Byte]): Int = "lyric_tls_client_set_identity"
+
+func rtTlsClientSetIdentity(clientCtx: Long, certPem: NativePtr[Byte], keyPem: NativePtr[Byte]): Int {
+  rtTlsClientSetIdentityRaw(rtLongToPtr(clientCtx), certPem, keyPem)
+}
+
+extern func rtTlsClientConnectRaw(clientCtx: NativePtr[Byte], fd: Int, sniHost: NativePtr[Byte], alpnCsv: NativePtr[Byte]): NativePtr[Byte] = "lyric_tls_client_connect"
+
+func rtTlsClientConnect(clientCtx: Long, fd: Int, sniHost: NativePtr[Byte], alpnCsv: NativePtr[Byte]): Long {
+  rtPtrToLong(rtTlsClientConnectRaw(rtLongToPtr(clientCtx), fd, sniHost, alpnCsv))
+}
 
 // The server's ALPN preference list — `h2` first, matching docs/61 §6.4
 // phase 4.4 and the dotnet twin's `setApplicationProtocols`; a peer that

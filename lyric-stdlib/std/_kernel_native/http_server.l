@@ -301,33 +301,69 @@ import Std.Environment as Env
 // =====================================================================
 // Extern seam bindings.
 // =====================================================================
-extern func rtByteAt(s: String, idx: Long): Int = "lyric_string_byte_at"
+extern func rtByteAt(s: String, idx: Long): Byte = "lyric_string_byte_at"
 
-extern func rtMalloc(n: Long): Long = "malloc"
+extern func rtMallocRaw(n: Long): NativePtr[Byte] = "lyric_malloc_raw"
 
-extern func rtFree(p: Long): Unit = "free"
+func rtMalloc(n: Long): Long {
+  rtPtrToLong(rtMallocRaw(n))
+}
+
+extern func rtFreeRaw(p: NativePtr[Byte]): Unit = "free"
+
+func rtFree(p: Long): Unit {
+  rtFreeRaw(rtLongToPtr(p))
+}
 
 // Marks a raw malloc'd buffer as a deliberate, provably-safe retention
 // LeakSanitizer should not report (issue #6802) -- see `lyric_rt.c`'s own
 // doc comment on `lyric_lsan_ignore_leak` for the full reasoning.
 // `stopListener`'s queue-free step is the one call site.
-extern func rtLsanIgnoreLeak(p: Long): Unit = "lyric_lsan_ignore_leak"
+extern func rtLsanIgnoreLeakRaw(p: NativePtr[Byte]): Unit = "lyric_lsan_ignore_leak"
+
+func rtLsanIgnoreLeak(p: Long): Unit {
+  rtLsanIgnoreLeakRaw(rtLongToPtr(p))
+}
 
 extern func rtMutexSize(): Int = "lyric_mutex_size"
 
-extern func rtMutexInit(m: Long): Unit = "lyric_mutex_init"
+extern func rtMutexInitRaw(m: NativePtr[Byte]): Unit = "lyric_mutex_init"
 
-extern func rtMutexLock(m: Long): Unit = "lyric_mutex_lock"
+func rtMutexInit(m: Long): Unit {
+  rtMutexInitRaw(rtLongToPtr(m))
+}
 
-extern func rtMutexUnlock(m: Long): Unit = "lyric_mutex_unlock"
+extern func rtMutexLockRaw(m: NativePtr[Byte]): Unit = "lyric_mutex_lock"
 
-extern func rtMutexDestroy(m: Long): Unit = "lyric_mutex_destroy"
+func rtMutexLock(m: Long): Unit {
+  rtMutexLockRaw(rtLongToPtr(m))
+}
+
+extern func rtMutexUnlockRaw(m: NativePtr[Byte]): Unit = "lyric_mutex_unlock"
+
+func rtMutexUnlock(m: Long): Unit {
+  rtMutexUnlockRaw(rtLongToPtr(m))
+}
+
+extern func rtMutexDestroyRaw(m: NativePtr[Byte]): Unit = "lyric_mutex_destroy"
+
+func rtMutexDestroy(m: Long): Unit {
+  rtMutexDestroyRaw(rtLongToPtr(m))
+}
 
 extern func rtSemSize(): Int = "lyric_sem_size"
 
-extern func rtSemInit(s: Long, initial: Int): Unit = "lyric_sem_init"
+extern func rtSemInitRaw(s: NativePtr[Byte], initial: Int): Unit = "lyric_sem_init"
 
-extern func rtSemWait(s: Long): Unit = "lyric_sem_wait"
+func rtSemInit(s: Long, initial: Int): Unit {
+  rtSemInitRaw(rtLongToPtr(s), initial)
+}
+
+extern func rtSemWaitRaw(s: NativePtr[Byte]): Unit = "lyric_sem_wait"
+
+func rtSemWait(s: Long): Unit {
+  rtSemWaitRaw(rtLongToPtr(s))
+}
 
 // Non-blocking: returns 1 and consumes one credit if the count is
 // already positive, 0 and consumes nothing otherwise. `stopListener`'s
@@ -335,11 +371,23 @@ extern func rtSemWait(s: Long): Unit = "lyric_sem_wait"
 // stop the instant there is genuinely nothing left to drain, instead of
 // blocking forever on a post that will never come (#6796) — see
 // `stopListener`'s own doc comment on the drain loop below.
-extern func rtSemTryWait(s: Long): Int = "lyric_sem_trywait"
+extern func rtSemTryWaitRaw(s: NativePtr[Byte]): Int = "lyric_sem_trywait"
 
-extern func rtSemPost(s: Long): Unit = "lyric_sem_post"
+func rtSemTryWait(s: Long): Int {
+  rtSemTryWaitRaw(rtLongToPtr(s))
+}
 
-extern func rtSemDestroy(s: Long): Unit = "lyric_sem_destroy"
+extern func rtSemPostRaw(s: NativePtr[Byte]): Unit = "lyric_sem_post"
+
+func rtSemPost(s: Long): Unit {
+  rtSemPostRaw(rtLongToPtr(s))
+}
+
+extern func rtSemDestroyRaw(s: NativePtr[Byte]): Unit = "lyric_sem_destroy"
+
+func rtSemDestroy(s: Long): Unit {
+  rtSemDestroyRaw(rtLongToPtr(s))
+}
 
 extern func pthreadCreate(tid: NativePtr[Long], attr: NativePtr[Byte], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = "pthread_create"
 
@@ -377,7 +425,7 @@ extern func rtPtrToLong(p: NativePtr[Byte]): Long = "lyric_ptr_to_long"
 extern func rtLongToPtr(v: Long): NativePtr[Byte] = "lyric_long_to_ptr"
 
 func charCodeAt(s: in String, i: in Int): Int {
-  rtByteAt(s, i.toLong())
+  rtByteAt(s, i.toLong()).toInt()
 }
 
 // =====================================================================
