@@ -28,7 +28,7 @@ Lyric has a conventional set of primitive types, with two entries worth a closer
 
 `Never` is covered in detail in §2.5.
 
-**Overflow behaviour** differs by build profile. In a debug build (the default for `lyric run`, `lyric test` and `lyric build`), `+`, `-`, `*` and unary `-` on `Byte`, `Int`, `Long`, `UInt` and `ULong` panic on overflow with `arithmetic overflow: Int addition` (or the matching type and operation). In a release build (`lyric build --release`) they wrap: `2147483647 + 1` is `-2147483648`. Range-constrained subtypes, covered next, panic on an out-of-range result in every build.
+**Overflow behaviour** differs by build profile. In a debug build (the default for `lyric run`, `lyric test` and `lyric build`), `+`, `-` and `*` on `Byte`, `Int`, `Long`, `UInt` and `ULong`, and unary `-` on `Int` and `Long`, panic on overflow with `arithmetic overflow: Int addition` (or the matching type and operation). In a release build (`lyric build --release`) they wrap: `2147483647 + 1` is `-2147483648`. Range-constrained subtypes, covered next, panic on an out-of-range result in every build.
 
 When wrapping is what you mean, as in a hash or a checksum, say so. `.wrappingAdd(y)`, `.wrappingSub(y)`, `.wrappingMul(y)` and `.wrappingNeg()` wrap in every build:
 

@@ -72,7 +72,7 @@ string
 | `Unit` | unit type | single value `()` |
 | `Never` | bottom type | uninhabited; assignable to any type |
 
-Integer overflow (`+ - *`, unary `-` on `Byte`/`Int`/`Long`/`UInt`/`ULong`) panics in debug builds and wraps in release builds (D163); `.wrappingAdd/Sub/Mul(y)` and `.wrappingNeg()` wrap in every build. Range-subtypes always panic on an out-of-range result.
+Integer overflow (`+ - *` on `Byte`/`Int`/`Long`/`UInt`/`ULong`, unary `-` on `Int`/`Long`) panics in debug builds and wraps in release builds (D163); `.wrappingAdd/Sub/Mul(y)` and `.wrappingNeg()` wrap in every build. Range-subtypes always panic on an out-of-range result.
 
 ### Type declarations
 
