@@ -291,3 +291,91 @@ console.log('keys=' + Object.keys(m).sort().join(','));
   assertTrue(Str.contains(r.stdout, "one=1\n"), "a library with no main instantiates and calls: " + r.stdout)
   assertFalse(Str.contains(r.stdout, "run"), "no main, so no run: " + r.stdout)
 }
+
+val asyncProgram: String = r#"package Probe
+
+import Std.Time
+
+pub async func later(x: Int, ms: Int): Int {
+  Time.sleepMillis(ms)
+  x + 1
+}
+
+pub async func tag(s: String, ms: Int): String {
+  Time.sleepMillis(ms)
+  s + "!"
+}
+
+pub async func immediate(): Int {
+  41
+}
+
+pub async func wide(x: Long): Long {
+  Time.sleepMillis(5)
+  x * 2i64
+}
+
+pub async func shrink(x: Double): Double {
+  Time.sleepMillis(5)
+  x / 4.0
+}
+
+func main(): Int {
+  Time.sleepMillis(40)
+  3
+}
+"#
+
+test "wasm32 module: async exports return Promises driven by host timers" {
+  val r = runNode(
+    asyncProgram,
+    r"import { instantiate } from './prog.js';
+const m = await instantiate();
+const t0 = performance.now();
+const v = await m.later(41, 60);
+const dt = performance.now() - t0;
+console.log('later=' + v + ' waited=' + (dt >= 50));
+console.log('tag=' + await m.tag('wörld', 10));
+console.log('immediate=' + await m.immediate());
+console.log('wide=' + await m.wide(3000000000n) + ' ' + typeof (await m.wide(1n)));
+console.log('shrink=' + await m.shrink(10));
+"
+  )
+  assertEqualInt(r.exitCode, 0, "node exits cleanly: " + r.stderr)
+  assertTrue(Str.contains(r.stdout, "later=42 waited=true\n"), "an async export resolves after its sleep: " + r.stdout)
+  assertTrue(Str.contains(r.stdout, "tag=wörld!\n"), "String argument and result through a task: " + r.stdout)
+  assertTrue(Str.contains(r.stdout, "immediate=41\n"), "an async func that never suspends: " + r.stdout)
+  assertTrue(Str.contains(r.stdout, "wide=6000000000 bigint\n"), "Long result: " + r.stdout)
+  assertTrue(Str.contains(r.stdout, "shrink=2.5\n"), "Double result decoded from the slot bits: " + r.stdout)
+}
+
+test "wasm32 module: concurrent async exports interleave on one scheduler" {
+  val r = runNode(
+    asyncProgram,
+    r"import { instantiate } from './prog.js';
+const m = await instantiate();
+const order = [];
+const slow = m.later(1, 80).then((v) => order.push('slow' + v));
+const fast = m.later(2, 10).then((v) => order.push('fast' + v));
+await Promise.all([slow, fast]);
+console.log('order=' + order.join(','));
+"
+  )
+  assertEqualInt(r.exitCode, 0, "node exits cleanly: " + r.stderr)
+  assertTrue(Str.contains(r.stdout, "order=fast3,slow2\n"), "the shorter sleep finishes first: " + r.stdout)
+}
+
+test "wasm32 module: a blocking sleep in run() waits through poll_oneoff" {
+  val r = runNode(
+    asyncProgram,
+    r"import { instantiate } from './prog.js';
+const m = await instantiate();
+const t0 = performance.now();
+const code = m.run([]);
+const dt = performance.now() - t0;
+console.log('code=' + code + ' waited=' + (dt >= 35));
+"
+  )
+  assertEqualInt(r.exitCode, 0, "node exits cleanly: " + r.stderr)
+  assertTrue(Str.contains(r.stdout, "code=3 waited=true\n"), "main sleeps 40ms then returns 3: " + r.stdout)
+}

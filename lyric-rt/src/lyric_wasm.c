@@ -16,7 +16,7 @@
 /* Bumped when the exported helper set changes incompatibly; the glue refuses a
  * module whose version differs from the one it was generated for. */
 int32_t lyric_wasm_abi_version(void) {
-    return 1;
+    return 2;
 }
 
 /* A scratch buffer in linear memory for the glue to copy bytes into or out of
@@ -52,4 +52,17 @@ void lyric_wasm_retain(void* obj) {
 
 void lyric_wasm_release(void* obj) {
     lyric_release(obj);
+}
+
+/* Drive the cooperative scheduler for an async export (docs/35 §11): runs every
+ * ready task and returns the milliseconds until the next timer fires (rounded
+ * up, 0 when one is due now), or -1 when no task can ever make progress.  The
+ * glue calls it from a host timer and resolves a call's promise once its task
+ * is complete (lyric_task_is_complete / lyric_task_result). */
+int64_t lyric_wasm_poll(void) {
+    int64_t ns = lyric_sched_poll();
+    if (ns <= 0) {
+        return ns;
+    }
+    return (ns + 999999) / 1000000;
 }

@@ -1670,6 +1670,9 @@ func wasmGlueHelperSymbols(): List[String] {
   names.add("lyric_wasm_string_data")
   names.add("lyric_wasm_retain")
   names.add("lyric_wasm_release")
+  names.add("lyric_wasm_poll")
+  names.add("lyric_task_is_complete")
+  names.add("lyric_task_result")
   names
 }
 

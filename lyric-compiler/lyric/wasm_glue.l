@@ -27,6 +27,9 @@ pub record WasmExport {
   paramNames: List[String]
   params: List[String]
   ret: String
+  /// An `async func`: the wasm export returns a task and the glue wrapper
+  /// returns a Promise settled from host timers.
+  isAsync: Bool
 }
 
 pub record WasmExportSet {
@@ -61,6 +64,27 @@ func kindOf(te: in TypeExpr): String {
   }
 }
 
+/// The result kind of `fn`: the declared type, unwrapping an `Async[T]` /
+/// `Task[T]` annotation; "Unit" when none was declared; "" when unsupported.
+func resultKindOf(fn: in FunctionDecl): String {
+  match fn.ret {
+    case None -> "Unit"
+    case Some(t) -> match t.kind {
+      case TGenericApp(head, args) -> {
+        val n = segLast(head)
+        if (n == "Async" or n == "Task") and args.count == 1 {
+          match args[0] {
+            case TAType(inner) -> return kindOf(inner)
+            case _ -> return ""
+          }
+        }
+        ""
+      }
+      case _ -> kindOf(t)
+    }
+  }
+}
+
 func isPubFn(fn: in FunctionDecl): Bool {
   match fn.visibility {
     case Some(VisPub(_)) -> true
@@ -92,9 +116,6 @@ func exclusionReason(unit: in CodegenUnit, fn: in FunctionDecl): String {
   if hasGenerics(fn) {
     return "it is generic"
   }
-  if fn.isAsync {
-    return "it is async"
-  }
   if sameNameCount(unit, fn.name) > 1 {
     return "it is overloaded"
   }
@@ -110,13 +131,8 @@ func exclusionReason(unit: in CodegenUnit, fn: in FunctionDecl): String {
     }
     i = i + 1
   }
-  match fn.ret {
-    case Some(t) -> {
-      if kindOf(t).length == 0 {
-        return "its result type is not one the module shape can return"
-      }
-    }
-    case None -> ()
+  if resultKindOf(fn).length == 0 {
+    return "its result type is not one the module shape can return"
   }
   ""
 }
@@ -145,14 +161,15 @@ pub func collectWasmExports(unit: in CodegenUnit): WasmExportSet {
           names.add(fn.params[pi].name)
           pi = pi + 1
         }
-        val ret = match fn.ret { case Some(t) -> kindOf(t); case None -> "Unit" }
+        val ret = resultKindOf(fn)
         exports.add(
           WasmExport(
             jsName = fn.name,
             wasmName = unit.pkgName + "." + fn.name,
             paramNames = names,
             params = params,
-            ret = ret
+            ret = ret,
+            isAsync = fn.isAsync
           )
         )
       }
@@ -231,6 +248,7 @@ func exportTableJs(set: in WasmExportSet): String {
       "  { js: " + jsString(e.jsName) + ", wasm: " + jsString(e.wasmName) + ", params: [" + Str.joinList(", ", ps) +
         "], ret: " +
         jsString(e.ret) +
+        (if e.isAsync { ", async: true" } else { "" }) +
         " }"
     )
     i = i + 1
@@ -273,7 +291,8 @@ pub func renderGlueTypes(set: in WasmExportSet): String {
       ps.add(e.paramNames[pi] + ": " + tsType(e.params[pi]))
       pi = pi + 1
     }
-    members.add("  " + e.jsName + "(" + Str.joinList(", ", ps) + "): " + tsType(e.ret) + ";")
+    val tsRet = if e.isAsync { "Promise<" + tsType(e.ret) + ">" } else { tsType(e.ret) }
+    members.add("  " + e.jsName + "(" + Str.joinList(", ", ps) + "): " + tsRet + ";")
     i = i + 1
   }
   if set.hasMain {
