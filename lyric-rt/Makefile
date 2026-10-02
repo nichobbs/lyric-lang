@@ -6,6 +6,16 @@
 #
 # CC defaults to clang (the toolchain the native backend drives; D-N-001)
 # but any C11 compiler works.
+#
+# wasm32-wasi (docs/35 W2) is a second, cross-compiled build of the same
+# runtime with a pinned wasi-sdk:
+#
+#   make wasm32-wasi      WASI_SDK=/opt/wasi-sdk   -> build/wasm32-wasi/lyric_rt.a
+#   make test-wasm32-wasi WASI_SDK=/opt/wasi-sdk WASMTIME=wasmtime
+#
+# lyric_process.c and lyric_tls.c are replaced by their *_unsupported.c
+# twins there (WASI has no child processes, BSD sockets or dlopen); the
+# twins keep every symbol resolvable and report the documented failure.
 
 CC      ?= clang
 AR      ?= ar
@@ -21,7 +31,7 @@ OBJS := $(SRCS:src/%.c=$(BUILD)/%.o)
 # it needs libdl (a no-op stub on glibc >= 2.34) and libpthread.
 TEST_LIBS := -lpthread -ldl
 
-.PHONY: all test test-asan clean
+.PHONY: all test test-asan clean wasm32-wasi test-wasm32-wasi
 
 all: $(BUILD)/lyric_rt.a
 
@@ -65,6 +75,38 @@ test: $(BUILD)/lyric_rt.a
 test-asan: | $(BUILD)
 	$(CC) $(CFLAGS) -fsanitize=address -Iinclude test/lyric_tls_test.c src/lyric_tls.c src/lyric_string.c src/lyric_rt.c src/lyric_weak.c src/lyric_collections.c $(TEST_LIBS) -o $(BUILD)/lyric_tls_test_asan
 	$(BUILD)/lyric_tls_test_asan
+
+# ── wasm32-wasi ──────────────────────────────────────────────────────────
+WASI_SDK    ?=
+WASMTIME    ?= wasmtime
+WASM_BUILD  := $(BUILD)/wasm32-wasi
+WASM_CC     := $(WASI_SDK)/bin/clang
+WASM_AR     := $(WASI_SDK)/bin/llvm-ar
+WASM_CFLAGS := --target=wasm32-wasi --sysroot=$(WASI_SDK)/share/wasi-sysroot -O2 -std=c11 -Wall -Wextra -Werror
+WASM_SRCS   := src/lyric_rt.c src/lyric_string.c src/lyric_weak.c \
+               src/lyric_posix.c src/lyric_collections.c src/lyric_async.c \
+               src/lyric_fs.c src/lyric_process_unsupported.c src/lyric_net_unsupported.c
+WASM_OBJS   := $(WASM_SRCS:src/%.c=$(WASM_BUILD)/%.o)
+
+$(WASM_BUILD)/%.o: src/%.c include/lyric_rt.h | $(WASM_BUILD)
+	@test -n "$(WASI_SDK)" || { echo "set WASI_SDK to a wasi-sdk install (see docs/35 §5.1)"; exit 1; }
+	$(WASM_CC) $(WASM_CFLAGS) -Iinclude -c $< -o $@
+
+$(WASM_BUILD)/lyric_string.o: src/lyric_unicode_case_tables.inc
+
+$(WASM_BUILD)/lyric_rt.a: $(WASM_OBJS)
+	$(WASM_AR) rcs $@ $(WASM_OBJS)
+
+$(WASM_BUILD):
+	mkdir -p $(WASM_BUILD)
+
+wasm32-wasi: $(WASM_BUILD)/lyric_rt.a
+
+# The unit tests that need fork, pthreads, signals, processes or TLS are
+# compiled out under __wasi__; the rest run under a WASI runtime.
+test-wasm32-wasi: $(WASM_BUILD)/lyric_rt.a
+	$(WASM_CC) $(WASM_CFLAGS) -Iinclude test/lyric_rt_test.c $(WASM_BUILD)/lyric_rt.a -o $(WASM_BUILD)/lyric_rt_test.wasm
+	$(WASMTIME) run --dir=. $(WASM_BUILD)/lyric_rt_test.wasm
 
 clean:
 	rm -rf $(BUILD)

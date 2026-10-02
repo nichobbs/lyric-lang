@@ -2819,6 +2819,13 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/native-backend-self-tests.sh
 
+      # docs/35 W2: lyric-rt cross-compiled for wasm32-wasi (pinned wasi-sdk),
+      # C unit tests run under a pinned wasmtime.
+      - name: lyric-rt wasm32-wasi build + unit tests
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/wasm32-wasi-rt-tests.sh
+
       # `lyric test --target native` smoke test (N7.2): an ordinary
       # `@test_module` (no compiler-package imports, unlike the llvm_self_test_n*
       # files above) compiles through `Emitter.emitNative` and runs as a

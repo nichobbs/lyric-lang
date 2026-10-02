@@ -2,8 +2,9 @@
  * struct layouts that differ between the Phase 1 targets (Linux
  * x86-64/AArch64, macOS AArch64).  See native/plan/05-ffi-design.md.
  */
-#if defined(__linux__)
-/* clock_gettime needs POSIX.1-2008; getrandom(2) needs _DEFAULT_SOURCE. */
+#if defined(__linux__) || defined(__wasi__)
+/* clock_gettime needs POSIX.1-2008; getrandom(2) needs _DEFAULT_SOURCE
+ * (wasi-libc gates its POSIX declarations the same way). */
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE
 #endif
@@ -13,7 +14,9 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#if !defined(__wasi__)
 #include <pthread.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -21,7 +24,9 @@
 #include <time.h>
 #include <unistd.h>
 
-#if defined(__linux__)
+#if defined(__wasi__)
+/* getentropy is declared in <unistd.h>. */
+#elif defined(__linux__)
 #include <sys/random.h>
 #elif defined(__APPLE__)
 #include <sys/random.h>
@@ -251,6 +256,77 @@ void* lyric_malloc_raw(int64_t n) {
     return malloc((size_t)n);
 }
 
+#if defined(__wasi__)
+/* wasm32-wasi runs a single thread (docs/35 §5.2, D-progress-1028): there is
+ * no other thread to exclude, so a protected type's lock is a nesting-depth
+ * counter that keeps lock/unlock pairs balanced across a member that calls a
+ * sibling.  Releasing a lock that is not held, or waiting on a semaphore no
+ * one can post, would otherwise hang or corrupt state, so both panic. */
+typedef struct {
+    int32_t depth;
+} lyric_wasm_mutex_t;
+
+int32_t lyric_mutex_size(void) {
+    return (int32_t)sizeof(lyric_wasm_mutex_t);
+}
+
+void lyric_mutex_init(void* m) {
+    ((lyric_wasm_mutex_t*)m)->depth = 0;
+}
+
+void lyric_mutex_lock(void* m) {
+    ((lyric_wasm_mutex_t*)m)->depth += 1;
+}
+
+void lyric_mutex_unlock(void* m) {
+    lyric_wasm_mutex_t* mu = (lyric_wasm_mutex_t*)m;
+    if (mu->depth <= 0) {
+        lyric_panic_msg("unlock of a lock that is not held", "lyric_posix.c", __LINE__);
+    }
+    mu->depth -= 1;
+}
+
+void lyric_mutex_destroy(void* m) {
+    (void)m;
+}
+
+typedef struct {
+    int32_t count;
+} lyric_sem_t;
+
+int32_t lyric_sem_size(void) {
+    return (int32_t)sizeof(lyric_sem_t);
+}
+
+void lyric_sem_init(void* s, int32_t initial) {
+    ((lyric_sem_t*)s)->count = initial;
+}
+
+void lyric_sem_wait(void* s) {
+    lyric_sem_t* sem = (lyric_sem_t*)s;
+    if (sem->count <= 0) {
+        lyric_panic_msg("semaphore wait would block forever: no other thread can post on wasm32-wasi",
+                        "lyric_posix.c", __LINE__);
+    }
+    sem->count -= 1;
+}
+
+int32_t lyric_sem_trywait(void* s) {
+    lyric_sem_t* sem = (lyric_sem_t*)s;
+    if (sem->count <= 0) return 0;
+    sem->count -= 1;
+    return 1;
+}
+
+void lyric_sem_post(void* s) {
+    ((lyric_sem_t*)s)->count += 1;
+}
+
+void lyric_sem_destroy(void* s) {
+    (void)s;
+}
+
+#else
 int32_t lyric_mutex_size(void) {
     return (int32_t)sizeof(pthread_mutex_t);
 }
@@ -369,6 +445,8 @@ void lyric_sem_destroy(void* s) {
     pthread_mutex_destroy(&sem->mutex);
 }
 
+#endif /* __wasi__ */
+
 int64_t lyric_epoch_millis(void) {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
@@ -416,7 +494,7 @@ LyricString* lyric_uuid_v4(void) {
 }
 
 int32_t lyric_secure_random(uint8_t* buf, int64_t n) {
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(__wasi__)
     /* getentropy caps each call at 256 bytes. */
     int64_t off = 0;
     while (off < n) {
