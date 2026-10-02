@@ -847,6 +847,95 @@ test "unsigned operands at signedness-sensitive positions are conversion sites (
   assertEqualInt(signed.symbols.argConversionSites.count, 0, "no site for a signed operand, ==, or +")
 }
 
+// The methods of the conversion sites `cr` recorded, comma-separated.
+func conversionMethodsOf(cr: in CheckResult): String {
+  val ms: List[String] = newList()
+  for k in mapKeys(cr.symbols.argConversionSites) {
+    match mapGet(cr.symbols.argConversionSites, k) {
+      case Some(site) -> ms.add(site.method)
+      case None -> ()
+    }
+  }
+  Str.joinList(",", ms)
+}
+
+// #7841: an unsuffixed literal assigned or compound-assigned to a `Byte`,
+// `UInt` or `ULong` takes the target's type, as at a binding, and is given
+// its suffix; one that does not fit is T0015, not a type mismatch.
+test "an unsuffixed literal takes the type of an assignment target (#7841)" {
+  for ty in ["Byte", "UInt", "ULong", "Int", "Long"] {
+    for op in ["=", "+=", "-=", "*=", "/=", "%="] {
+      val src = "package P\nfunc f(x0: in " + ty + "): " + ty + " {\n  var x = x0\n  x " + op + " 7\n  x\n}\n"
+      val cr = parseCheck(src)
+      assertEqualInt(diagCount(cr), 0, ty + " x " + op + " 7: " + diagCodesOf(cr))
+    }
+  }
+  val u = parseCheck("package P\nfunc f(): UInt {\n  var x: UInt = 10u32\n  x %= 7\n  x\n}\n")
+  assertEqualInt(diagCount(u), 0, "UInt %= 7: " + diagCodesOf(u))
+  assertEqualInt(u.symbols.argConversionSites.count, 1, "the literal takes the u32 suffix")
+  assertEqual(conversionMethodsOf(u), intLiteralSiteMethod(U32), "u32 literal site")
+  val b = parseCheck("package P\nfunc f(): Byte {\n  var x: Byte = 1u8\n  x += 200\n  x = 255\n  x\n}\n")
+  assertEqualInt(diagCount(b), 0, "Byte += 200 and = 255: " + diagCodesOf(b))
+  assertEqual(conversionMethodsOf(b), intLiteralSiteMethod(U8) + "," + intLiteralSiteMethod(U8), "u8 literal sites")
+  val ul = parseCheck("package P\nfunc f(): ULong {\n  var x: ULong = 1u64\n  x *= 3000000000\n  x\n}\n")
+  assertEqualInt(diagCount(ul), 0, "ULong *= 3000000000: " + diagCodesOf(ul))
+  assertEqual(conversionMethodsOf(ul), intLiteralSiteMethod(U64), "u64 literal site")
+  val neg = parseCheck("package P\nfunc f(): UInt {\n  var x: UInt = 1u32\n  x += -1\n  x\n}\n")
+  assertEqualInt(countDiagCode(neg, "T0015"), 1, "UInt += -1: " + diagCodesOf(neg))
+  assertEqualInt(countDiagCode(neg, "T0063"), 0, "an out-of-range literal is not also a type mismatch")
+  assertTrue(diagMessagesContain(neg, "literal -1 is out of range for type UInt"), "message")
+  val big = parseCheck("package P\nfunc f(): Byte {\n  var x: Byte = 1u8\n  x = 256\n  x\n}\n")
+  assertEqualInt(countDiagCode(big, "T0015"), 1, "Byte = 256: " + diagCodesOf(big))
+  val binds = parseCheck(
+    "package P\nfunc f(): ULong {\n  val a: UInt = 7\n  val b: Byte = 255\n  val c: ULong = 9\n  c + a.toULong() + b.toULong()\n}\n"
+  )
+  assertEqualInt(diagCount(binds), 0, "annotated bindings: " + diagCodesOf(binds))
+  val badBind = parseCheck("package P\nfunc f(): UInt {\n  val a: UInt = -7\n  a\n}\n")
+  assertEqualInt(countDiagCode(badBind, "T0015"), 1, "val a: UInt = -7: " + diagCodesOf(badBind))
+  val arg = parseCheck("package P\nfunc g(u: in UInt): UInt { u }\nfunc f(): UInt { g(7) }\n")
+  assertEqualInt(diagCount(arg), 0, "an argument: " + diagCodesOf(arg))
+}
+
+// #7842: a literal or range pattern against a `UInt`/`ULong`/`Byte`
+// scrutinee is typed against it: an unsuffixed literal or bound takes its
+// suffix, a bound of another shape is an unsigned operand, and a literal the
+// type cannot hold is T0015.
+test "literal and range patterns take an unsigned scrutinee's type (#7842)" {
+  val lit = parseCheck(
+    "package P\nfunc f(x: in UInt): Int {\n  match x {\n    case 4000000000 -> 1\n    case 3000000000 ..= 3999999999 -> 2\n    case _ -> 3\n  }\n}\n"
+  )
+  assertEqualInt(diagCount(lit), 0, "UInt patterns: " + diagCodesOf(lit))
+  assertEqualInt(lit.symbols.argConversionSites.count, 3, "the literal and both bounds take the u32 suffix")
+  assertEqual(
+    conversionMethodsOf(lit),
+    intLiteralSiteMethod(U32) + "," + intLiteralSiteMethod(U32) + "," + intLiteralSiteMethod(U32),
+    "u32 sites"
+  )
+  val nested = parseCheck(
+    "package P\nunion Opt {\n  case Has(n: ULong)\n  case Empty\n}\nfunc f(x: in Opt): Int {\n  match x {\n    case Has(0 ..= 9) -> 1\n    case Has(10) -> 2\n    case _ -> 3\n  }\n}\n"
+  )
+  assertEqualInt(diagCount(nested), 0, "nested ULong patterns: " + diagCodesOf(nested))
+  assertEqualInt(nested.symbols.argConversionSites.count, 3, "nested literal and bounds take the u64 suffix")
+  val constBound = parseCheck(
+    "package P\nval Hi: UInt = 4000000000u32\nfunc f(x: in UInt): Int {\n  match x {\n    case 1u32 ..= Hi -> 1\n    case _ -> 2\n  }\n}\n"
+  )
+  assertEqualInt(diagCount(constBound), 0, "a named bound: " + diagCodesOf(constBound))
+  assertEqual(conversionMethodsOf(constBound), "toUInt", "a UInt bound of another shape is an unsigned operand")
+  val neg = parseCheck(
+    "package P\nfunc f(x: in UInt): Int {\n  match x {\n    case -1 -> 1\n    case -5 ..= 3 -> 2\n    case _ -> 3\n  }\n}\n"
+  )
+  assertEqualInt(countDiagCode(neg, "T0015"), 2, "a negative literal and bound: " + diagCodesOf(neg))
+  val byte = parseCheck(
+    "package P\nfunc f(x: in Byte): Int {\n  match x {\n    case 200 ..= 255 -> 1\n    case 256 -> 2\n    case _ -> 3\n  }\n}\n"
+  )
+  assertEqualInt(countDiagCode(byte, "T0015"), 1, "a Byte pattern of 256: " + diagCodesOf(byte))
+  val signed = parseCheck(
+    "package P\nfunc f(x: in Int): Int {\n  match x {\n    case -1 -> 1\n    case 0 ..= 9 -> 2\n    case _ -> 3\n  }\n}\n"
+  )
+  assertEqualInt(diagCount(signed), 0, "signed patterns: " + diagCodesOf(signed))
+  assertEqualInt(signed.symbols.argConversionSites.count, 0, "no site for a signed scrutinee")
+}
+
 test "index byte with conversion accepted" {
   val src = "package P\nfunc f(a: in slice[Byte]): Int { a[0].toInt() }\n"
   val cr = parseCheck(src)
@@ -8773,6 +8862,28 @@ test "a function or method parameter given more than once is T0042 (#7846)" {
   assertTrue(diagMessagesContain(ext, "parameter 'x' is given more than once"), "extern func: " + diagCodesOf(ext))
 }
 
+// A repeated argument is one mistake: it is reported once, not again as an
+// arity mismatch or once per extra repetition (PR #8011 review).
+test "a parameter repeated past the arity is one T0042" {
+  val fnSrc = "package P\nfunc f(a: in Int, b: in Int): Int { a + b }\n"
+  val thrice = parseCheck(fnSrc + "func g(): Int { f(a = 1, a = 2, a = 3) }\n")
+  assertEqualInt(countDiagCode(thrice, "T0042"), 1, "f(a = 1, a = 2, a = 3): " + diagCodesOf(thrice))
+  assertTrue(diagMessagesContain(thrice, "parameter 'a' is given more than once"), "message")
+  val recSrc = "package P\nrecord A {\n  n: Int\n  func m(self: in A, a: in Int): Int { a }\n}\n"
+  val mThrice = parseCheck(recSrc + "func g(x: in A): Int { x.m(a = 1, a = 2, a = 3) }\n")
+  assertEqualInt(countDiagCode(mThrice, "T0042"), 1, "x.m(a = 1, a = 2, a = 3): " + diagCodesOf(mThrice))
+  // Checks that do not depend on pairing the repeated name still run: a name
+  // that names no parameter, and an argument named exactly once.
+  val unknown = parseCheck(fnSrc + "func g(): Int { f(a = 1, a = 2, zzz = 3) }\n")
+  assertEqualInt(countDiagCode(unknown, "T0042"), 2, "f(a = 1, a = 2, zzz = 3): " + diagCodesOf(unknown))
+  assertTrue(diagMessagesContain(unknown, "parameter 'a' is given more than once"), "the repeat")
+  assertTrue(diagMessagesContain(unknown, "no parameter named 'zzz'"), "the unknown name")
+  assertFalse(diagMessagesContain(unknown, "expected 2 argument(s)"), "no arity mismatch")
+  val badType = parseCheck(fnSrc + "func g(): Int { f(a = 1, a = 2, b = \"s\") }\n")
+  assertEqualInt(countDiagCode(badType, "T0042"), 1, "f(a = 1, a = 2, b = \"s\"): " + diagCodesOf(badType))
+  assertEqualInt(countDiagCode(badType, "T0043"), 1, "the argument named once is still type-checked")
+}
+
 test "a constructor or union-case field given more than once is T0104 (#7846)" {
   val recSrc = "package P\nrecord Pt {\n  x: Int\n  y: Int\n}\n"
   val twice = parseCheck(recSrc + "func g(): Pt { Pt(x = 1, x = 2, y = 3) }\n")
@@ -8822,7 +8933,7 @@ test "list literal joins array element types" {
 // #7865: a lambda checked where a function type is expected takes its return
 // type: the body's value, each branch and each `return` widen to it along the
 // lossless chains, recorded as conversion sites, exactly as a function body's
-// value does.  Narrowing stays rejected (`val b: Byte = 5` is T0060 too).
+// value does.  Narrowing stays rejected (`val b: Byte = 300` is T0015).
 test "a lambda body widens to the expected return type (#7865)" {
   val lit = parseCheck("package P\nfunc f(): Long {\n  val g: () -> Long = { -> 5 }\n  g()\n}\n")
   assertEqualInt(diagCount(lit), 0, "{ -> 5 } is a () -> Long")
@@ -8841,8 +8952,8 @@ test "a lambda body widens to the expected return type (#7865)" {
   assertEqualInt(ret.symbols.argConversionSites.count, 2, "the return and the trailing value are widened")
   val unsigned = parseCheck("package P\nfunc f(): ULong {\n  val g: () -> ULong = { -> 7u32 }\n  g()\n}\n")
   assertEqualInt(diagCount(unsigned), 0, "UInt to ULong")
-  val narrow = parseCheck("package P\nfunc f(): Byte {\n  val g: () -> Byte = { -> 5 }\n  g()\n}\n")
-  assertEqualInt(countDiagCode(narrow, "T0060"), 1, "an Int literal is not a Byte, as at a binding")
+  val narrow = parseCheck("package P\nfunc f(): Byte {\n  val g: () -> Byte = { -> 300 }\n  g()\n}\n")
+  assertEqualInt(countDiagCode(narrow, "T0060"), 1, "an Int literal a Byte cannot hold is not a Byte, as at a binding")
   val wrong = parseCheck("package P\nfunc f(): Long {\n  val g: () -> Long = { -> \"s\" }\n  g()\n}\n")
   assertEqualInt(countDiagCode(wrong, "T0060"), 1, "a String body is still rejected")
   val wrongRet = parseCheck(
@@ -9349,7 +9460,13 @@ test "List.add checks its argument against the element type (#7969)" {
     "element type Double",
     "List[Double].add(Int) crosses the widening chains"
   )
-  assertCollectionCallMismatch("xs: in List[Byte]", "xs.add(0)", "element type Byte", "List[Byte].add(an Int literal)")
+  assertCollectionCallClean("xs: in List[Byte]", "xs.add(0)", "List[Byte].add(an Int literal a Byte holds) (#7841)")
+  assertCollectionCallMismatch(
+    "xs: in List[Byte]",
+    "xs.add(256)",
+    "element type Byte",
+    "List[Byte].add(an Int literal no Byte holds)"
+  )
   assertCollectionCallClean("xs: in List[Byte]", "xs.add(0u8)", "List[Byte].add(a Byte literal)")
   assertCollectionCallClean("xs: in List[Shape], sq: in Square", "xs.add(sq)", "List[Shape].add(an implementor)")
   assertCollectionCallClean("xs: in List[List[Int]]", "xs.add([1, 2])", "List[List[Int]].add(a bracket literal)")

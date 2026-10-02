@@ -11131,8 +11131,11 @@ func emitPatternTest(
         insns.add(NFCmp(dest = geLo, pred = FOge, ty = sv.ty, a = sv.value, b = loV.value))
         insns.add(NFCmp(dest = leHi, pred = if inclusive { FOle } else { FOlt }, ty = sv.ty, a = sv.value, b = hiV.value))
       } else {
-        insns.add(NICmp(dest = geLo, pred = ISge, ty = sv.ty, a = sv.value, b = loV.value))
-        val hiPred = if inclusive { ISle } else { ISlt }
+        // A `Byte` (`i8`) orders unsigned, as its comparisons do (#4628,
+        // #7842).
+        val isByte = match sv.ty { case NI8 -> true; case _ -> false }
+        insns.add(NICmp(dest = geLo, pred = if isByte { IUge } else { ISge }, ty = sv.ty, a = sv.value, b = loV.value))
+        val hiPred = if inclusive { if isByte { IUle } else { ISle } } else { if isByte { IUlt } else { ISlt } }
         insns.add(NICmp(dest = leHi, pred = hiPred, ty = sv.ty, a = sv.value, b = hiV.value))
       }
       val both = freshTmp(ctx)

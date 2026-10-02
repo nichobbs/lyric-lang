@@ -543,7 +543,10 @@ pub func checkStatement(
           case None -> checkRecordCompoundAssign(tbl, diag, op, target, targetType, valueType, stmt.span)
         }
       }
-      if not stringPlusAssign and not argSatisfiesParam(tbl, targetType, valueType) {
+      // A literal that does not fit the target (`x += -1` on a `UInt`) is
+      // T0015, as for a binding, rather than a type mismatch (#7841).
+      val literalOutOfRange = not stringPlusAssign and reportIntLiteralOutOfRange(targetType, value, diag)
+      if not stringPlusAssign and not literalOutOfRange and not argSatisfiesParam(tbl, targetType, valueType) {
         diag.add(
           errorDiagnostic(
             "T0063",

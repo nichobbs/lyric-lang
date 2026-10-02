@@ -629,20 +629,371 @@ pub func pipeCheckAndMono(
 
   val derived = deriveFileWithImports(propRes.file, deriveImports)
 
+  val noSpecSites: Map[String, Map[String, ArgConversionSite]] = newMap()
+  val lambdaTypes = funcValueLambdaTypes(valueSites)
+  val monoRes0 = monoFileWithLambdaTypes(
+    derived,
+    monoGenFuncs,
+    monoIfaceDecls,
+    monoRecordDecls,
+    lambdaTypes,
+    tcRes.symbols.callResultTypes,
+    tcRes.symbols.genericCallTypeArgSites,
+    tcRes.symbols.lambdaParamTypeSites,
+    noSpecSites
+  )
+  if gate(opts.pkgLabel, opts.lineOrigins, monoRes0.diagnostics) {
+    return None
+  }
+  if monoRes0.unsignedSpecs.count == 0 {
+    return Some(value = mapExprsInFile(monoRes0.file, foldNegatedIntLiteral))
+  }
+  // A specialisation binding a type parameter to `UInt`/`ULong` is checked
+  // on its own, and specialised again with what the checker records in it
+  // (#7842).
+  val recheckDiags: List[Diagnostic] = newList()
+  val specSites = recheckUnsignedSpecs(
+    monoRes0.unsignedSpecs,
+    file0,
+    importedPkgs,
+    monoGenFuncs,
+    opts.nativeIntrinsics,
+    recheckDiags
+  )
+  if gate(opts.pkgLabel, opts.lineOrigins, recheckDiags) {
+    return None
+  }
   val monoRes = monoFileWithLambdaTypes(
     derived,
     monoGenFuncs,
     monoIfaceDecls,
     monoRecordDecls,
-    funcValueLambdaTypes(valueSites),
+    lambdaTypes,
     tcRes.symbols.callResultTypes,
     tcRes.symbols.genericCallTypeArgSites,
-    tcRes.symbols.lambdaParamTypeSites
+    tcRes.symbols.lambdaParamTypeSites,
+    specSites
   )
   if gate(opts.pkgLabel, opts.lineOrigins, monoRes.diagnostics) {
     return None
   }
   Some(value = mapExprsInFile(monoRes.file, foldNegatedIntLiteral))
+}
+
+// ─── Unsigned specialisations (#7842) ──────────────────────────────────────
+// A generic body is type-checked once, over its type parameters, so whether
+// an operand of type `T` is a `UInt`/`ULong` (and must compare, divide and
+// print unsigned) is known only once `T` is bound.  Each specialisation
+// binding a type parameter to `UInt`/`ULong` is type-checked as the
+// non-generic function it is, in the scope of the package declaring the
+// generic, and the conversions the checker records in its body
+// (`argConversionSites`: unsigned operands, widenings, literal suffixes) are
+// returned keyed by the specialisation's name.  The other functions in that
+// scope are checked as signatures only.  A specialisation whose body does
+// not check cleanly cannot be given its operands' signedness, so it is M0007.
+pub func recheckUnsignedSpecs(
+  specs: in List[UnsignedSpecRequest],
+  file0: in SourceFile,
+  importedPkgs: in List[ImportedPackage],
+  monoGenFuncs: in List[FunctionDecl],
+  native: in Bool,
+  diags: in List[Diagnostic],
+): Map[String, Map[String, ArgConversionSite]] {
+  val acc: Map[String, Map[String, ArgConversionSite]] = newMap()
+  // One check per origin package and round; a round holds at most one
+  // specialisation of each generic, since the specialisations of one generic
+  // share its source spans.
+  var pending: List[UnsignedSpecRequest] = newList()
+  for sp in specs {
+    pending.add(sp)
+  }
+  while pending.count > 0 {
+    val origin = pending[0].originPkg
+    val round: List[UnsignedSpecRequest] = newList()
+    val rest: List[UnsignedSpecRequest] = newList()
+    val roundSpans: List[Int] = newList()
+    for sp in pending {
+      val start = sp.specDecl.span.startPos.offset
+      if sp.originPkg == origin and not intListContainsPipe(roundSpans, start) {
+        round.add(sp)
+        roundSpans.add(start)
+      } else {
+        rest.add(sp)
+      }
+    }
+    pending = rest
+    recheckSpecRound(round, origin, file0, importedPkgs, monoGenFuncs, native, diags, acc)
+  }
+  acc
+}
+
+func recheckSpecRound(
+  round: in List[UnsignedSpecRequest],
+  origin: in String,
+  file0: in SourceFile,
+  importedPkgs: in List[ImportedPackage],
+  monoGenFuncs: in List[FunctionDecl],
+  native: in Bool,
+  diags: in List[Diagnostic],
+  acc: in Map[String, Map[String, ArgConversionSite]],
+): Unit {
+  val checkDecls: List[FunctionDecl] = newList()
+  val items: List[Item] = newList()
+  var imports: List[ImportDecl] = newList()
+  var pkgDecl = file0.packageDecl
+  val checkPkgs: List[ImportedPackage] = newList()
+  if origin == "" {
+    for it in file0.items {
+      items.add(signatureOnlyItem(it))
+    }
+    imports = file0.imports
+    for ip in importedPkgs {
+      checkPkgs.add(ip)
+    }
+    for sp in round {
+      checkDecls.add(
+        match rawGenericDecl(file0.items, sp.specDecl.span) {
+          case Some(raw) -> specializeFuncDecl(raw, sp.specName, sp.subst, sp.valueSubst)
+          case None -> sp.specDecl
+        }
+      )
+    }
+  } else {
+    var found = false
+    for ip in importedPkgs {
+      if ip.name == origin {
+        found = true
+        for it in ip.items {
+          items.add(signatureOnlyItem(it))
+        }
+        for dep in ip.imports {
+          imports.add(wholeImportDecl(dep, file0.span))
+        }
+      } else {
+        checkPkgs.add(ip)
+      }
+    }
+    if not found {
+      for sp in round {
+        diags.add(
+          errorDiagnostic(
+            "M0007",
+            "cannot specialise '" + sp.specName + "': package '" + origin +
+              "', which declares the generic, is not available to type-check the specialisation, so its operations on UInt/ULong values cannot be made unsigned",
+            sp.callSpan
+          )
+        )
+      }
+      return
+    }
+    // The package's private generics, which a specialised body may call.
+    for gf in monoGenFuncs {
+      if originPkgOf(gf.annotations) == origin and not itemsDeclareFunc(items, gf) {
+        items.add(funcItem(stripBody(gf)))
+      }
+    }
+    pkgDecl = PackageDecl(path = ModulePath(segments = dottedSegments(origin), span = file0.span), span = file0.span)
+    for sp in round {
+      checkDecls.add(sp.specDecl)
+    }
+  }
+  for cd in checkDecls {
+    items.add(funcItem(cd))
+  }
+  val checkFile = SourceFile(
+    moduleDoc = file0.moduleDoc,
+    fileAnnotations = file0.fileAnnotations,
+    packageDecl = pkgDecl,
+    imports = imports,
+    items = items,
+    span = file0.span
+  )
+  val res = if native {
+    checkWithImportedPackagesForNative(checkFile, checkPkgs)
+  } else {
+    checkWithImportedPackages(checkFile, checkPkgs)
+  }
+  var ri = 0
+  while ri < round.count {
+    val sp = round[ri]
+    val cd = checkDecls[ri]
+    val lo = bodySpanOffset(cd, true)
+    val hi = bodySpanOffset(cd, false)
+    var firstError = ""
+    for d in res.diagnostics {
+      if d.severity == DiagError and d.span.startPos.offset >= lo and d.span.endPos.offset <= hi and firstError == "" {
+        firstError = d.code + " " + d.message
+      }
+    }
+    if firstError != "" {
+      diags.add(
+        errorDiagnostic(
+          "M0007",
+          "cannot specialise '" + sp.specName + "': with its type arguments substituted the body does not type-check (" +
+            firstError +
+            "), so its operations on UInt/ULong values cannot be made unsigned",
+          sp.callSpan
+        )
+      )
+    } else {
+      val sites: Map[String, ArgConversionSite] = newMap()
+      for k in mapKeys(res.symbols.argConversionSites) {
+        match mapGet(res.symbols.argConversionSites, k) {
+          case Some(site) -> if site.startOffset >= lo and site.startOffset < hi { sites.add(k, site) }
+          case None -> ()
+        }
+      }
+      acc.add(sp.specName, sites)
+    }
+    ri = ri + 1
+  }
+}
+
+func intListContainsPipe(xs: in List[Int], v: in Int): Bool {
+  for x in xs {
+    if x == v {
+      return true
+    }
+  }
+  false
+}
+
+// Where a function's body starts (`start`) or ends in its source; 0 for none.
+func bodySpanOffset(fd: in FunctionDecl, start: in Bool): Int {
+  match fd.body {
+    case Some(b) -> match b {
+      case FBBlock(blk) -> if start { blk.span.startPos.offset } else { blk.span.endPos.offset }
+      case FBExpr(e) -> if start { e.span.startPos.offset } else { e.span.endPos.offset }
+    }
+    case None -> 0
+  }
+}
+
+// The top-level generic function in `items` declared at `sp`.
+func rawGenericDecl(items: in List[Item], sp: in Span): Option[FunctionDecl] {
+  for it in items {
+    match it.kind {
+      case IFunc(fd) -> if fd.span.startPos.offset == sp.startPos.offset and fd.span.endPos.offset == sp.endPos.offset {
+        match fd.generics {
+          case Some(_) -> return Some(value = fd)
+          case None -> ()
+        }
+      }
+      case _ -> ()
+    }
+  }
+  None
+}
+
+func itemsDeclareFunc(items: in List[Item], fd: in FunctionDecl): Bool {
+  for it in items {
+    match it.kind {
+      case IFunc(d) -> if d.name == fd.name and d.span.startPos.offset == fd.span.startPos.offset { return true }
+      case _ -> ()
+    }
+  }
+  false
+}
+
+func funcItem(fd: in FunctionDecl): Item {
+  val noDocs: List[DocComment] = newList()
+  val noAnns: List[Annotation] = newList()
+  Item(docComments = noDocs, annotations = noAnns, visibility = fd.visibility, kind = IFunc(decl = fd), span = fd.span)
+}
+
+// `fd` as a signature: no body, and `@axiom`, which the type checker
+// accepts without one.
+func stripBody(fd: in FunctionDecl): FunctionDecl {
+  val anns: List[Annotation] = newList()
+  for a in fd.annotations {
+    anns.add(a)
+  }
+  val noArgs: List[AnnotationArg] = newList()
+  val axiomSegs: List[String] = newList()
+  axiomSegs.add("axiom")
+  anns.add(Annotation(name = ModulePath(segments = axiomSegs, span = fd.span), args = noArgs, span = fd.span))
+  FunctionDecl(
+    docComments = fd.docComments,
+    annotations = anns,
+    visibility = fd.visibility,
+    isAsync = fd.isAsync,
+    name = fd.name,
+    generics = fd.generics,
+    params = fd.params,
+    ret = fd.ret,
+    whereClause = fd.whereClause,
+    contracts = fd.contracts,
+    body = None,
+    span = fd.span
+  )
+}
+
+// `it` with its function bodies removed: a scope for checking one
+// specialisation needs the signatures only.
+func signatureOnlyItem(it: in Item): Item {
+  match it.kind {
+    case IFunc(fd) -> Item(
+      docComments = it.docComments,
+      annotations = it.annotations,
+      visibility = it.visibility,
+      kind = IFunc(decl = stripBody(fd)),
+      span = it.span
+    )
+    case IImpl(decl) -> {
+      val members: List[ImplMember] = newList()
+      for m in decl.members {
+        match m {
+          case IMplFunc(fd) -> members.add(IMplFunc(fn = stripBody(fd)))
+          case IMplAssoc(a) -> members.add(IMplAssoc(assoc = a))
+        }
+      }
+      Item(
+        docComments = it.docComments,
+        annotations = it.annotations,
+        visibility = it.visibility,
+        kind = IImpl(
+          decl = ImplDecl(
+            generics = decl.generics,
+            iface = decl.iface,
+            target = decl.target,
+            whereClause = decl.whereClause,
+            members = members,
+            span = decl.span
+          )
+        ),
+        span = it.span
+      )
+    }
+    case _ -> it
+  }
+}
+
+func dottedSegments(name: in String): List[String] {
+  val segs: List[String] = newList()
+  var start = 0
+  var i = 0
+  while i < name.length {
+    if name.substring(i, 1) == "." {
+      segs.add(name.substring(start, i - start))
+      start = i + 1
+    }
+    i = i + 1
+  }
+  if start < name.length {
+    segs.add(name.substring(start))
+  }
+  segs
+}
+
+func wholeImportDecl(name: in String, sp: in Span): ImportDecl {
+  ImportDecl(
+    path = ModulePath(segments = dottedSegments(name), span = sp),
+    selector = None,
+    asAlias = None,
+    isPubUse = false,
+    isExtern = false,
+    span = sp
+  )
 }
 
 // `-<unsuffixed or signed-suffixed integer literal>` becomes one negative

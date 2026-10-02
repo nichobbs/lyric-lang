@@ -1482,6 +1482,14 @@ func rangeBoundTypeJvm(e: in Expr): JvmType {
         case _ -> JInt
       }
     }
+    case EParen(inner) -> rangeBoundTypeJvm(inner)
+    // A `ULong` bound of another shape, spelled out by the type checker
+    // (#7842).
+    case ECall(fn, cargs) -> if cargs.count == 0 and (match fn.kind { case EMember(_, m) -> m == "toULong"; case _ -> false }) {
+      JLong
+    } else {
+      JInt
+    }
     case _ -> JInt
   }
 }
@@ -1784,11 +1792,14 @@ func lowerPatternTest(
           // `ClassCastException` at runtime. `numHint` equals `scrutTy` (never
           // `JLong` on its own for an erased Object scrutinee) at every other
           // call site, so this is a no-op there.
+          // A `u32` literal is a `UInt`, an `int` holding its 32-bit pattern
+          // whatever its magnitude (#7842).
           val useLong = match numHint {
             case JLong -> true
             case _ -> match suffix {
               case I64 -> true
               case U64 -> true
+              case U32 -> false
               case _ -> (v < -2147483648i64 or v > 2147483647i64)
             }
           }
@@ -1884,19 +1895,31 @@ func lowerPatternTest(
       // `Result[Long, String]` payload must compare as `long`, not fall back
       // to guessing `Int` from the range bounds' own literal widths.
       val numTy = rangeNumericTypeJvm(numHint, lo)
+      // A `UInt`/`ULong` scrutinee's bounds say they are unsigned (the type
+      // checker gives them their suffix or `.toUInt()`/`.toULong()`, #7842):
+      // the test then orders through `Integer`/`Long.compareUnsigned`.
+      val rangeUn = spellsUnsigned(lo) or spellsUnsigned(hi)
       match numTy {
         case JLong -> {
           emitLoad(insns, scrutSlot, scrutTy)
           coerceArgTo(insns, scrutTy, JLong)
           val loTy = lowerExpr(ctx, insns, lo)
           coerceArgTo(insns, loTy, JLong)
-          insns.add(LLcmp)
+          if rangeUn {
+            emitLongCompareUnsigned(insns)
+          } else {
+            insns.add(LLcmp)
+          }
           insns.add(LIflt(label = failLabel))   // scrut < lo
           emitLoad(insns, scrutSlot, scrutTy)
           coerceArgTo(insns, scrutTy, JLong)
           val hiTy = lowerExpr(ctx, insns, hi)
           coerceArgTo(insns, hiTy, JLong)
-          insns.add(LLcmp)
+          if rangeUn {
+            emitLongCompareUnsigned(insns)
+          } else {
+            insns.add(LLcmp)
+          }
           if inclusive {
             insns.add(LIfgt(label = failLabel))
           } else {
@@ -1945,12 +1968,24 @@ func lowerPatternTest(
           coerceArgTo(insns, scrutTy, JInt)
           val loTy = lowerExpr(ctx, insns, lo)
           coerceArgTo(insns, loTy, JInt)
-          insns.add(LIfIcmplt(label = failLabel))   // scrut < lo
+          if rangeUn {
+            emitIntCompareUnsigned(insns)
+            insns.add(LIflt(label = failLabel))
+          } else {
+            insns.add(LIfIcmplt(label = failLabel))   // scrut < lo
+          }
           emitLoad(insns, scrutSlot, scrutTy)
           coerceArgTo(insns, scrutTy, JInt)
           val hiTy = lowerExpr(ctx, insns, hi)
           coerceArgTo(insns, hiTy, JInt)
-          if inclusive {
+          if rangeUn {
+            emitIntCompareUnsigned(insns)
+            if inclusive {
+              insns.add(LIfgt(label = failLabel))
+            } else {
+              insns.add(LIfge(label = failLabel))
+            }
+          } else if inclusive {
             insns.add(LIfIcmpgt(label = failLabel))
           } else {
             insns.add(LIfIcmpge(label = failLabel))

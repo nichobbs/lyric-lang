@@ -845,6 +845,56 @@ func adoptIntLiteralType(e: in Expr, actual: in Type, expected: in Type): Type {
   actual
 }
 
+// The literal suffix of `t` when it is `Byte`, `UInt` or `ULong` (after
+// stripping range refinements): the integer types no `Int` widens to, so an
+// unsuffixed literal can initialise one only by adopting it.
+func unsignedLiteralSuffix(t: in Type): Option[IntSuffix] {
+  match unrefine(t) {
+    case TyPrim(pt) -> match pt {
+      case PtByte -> Some(value = U8)
+      case PtUInt -> Some(value = U32)
+      case PtULong -> Some(value = U64)
+      case _ -> None
+    }
+    case _ -> None
+  }
+}
+
+func isSomeSuffix(o: in Option[IntSuffix]): Bool {
+  match o {
+    case Some(_) -> true
+    case None -> false
+  }
+}
+
+// An unsuffixed integer literal where a `Byte`, `UInt` or `ULong` is required
+// (a binding, an assignment or compound assignment, an argument, a field, a
+// return value, a list element) is of that type when its value fits it
+// (docs/01 §2.1, #7841).  The site is recorded so
+// `Lyric.Mono.desugarCheckedFile` gives the literal the matching suffix,
+// which every backend sizes the constant by.  A literal that does not fit
+// keeps its own type, and the caller reports T0015 or a type mismatch.
+func adoptUnsignedIntLiteral(tbl: in SymbolTable, e: in Expr, actual: in Type, expected: in Type): Type {
+  val adopted = adoptIntLiteralType(e, actual, expected)
+  if isPlainInt(adopted) or isPlainLong(adopted) {
+    return actual
+  }
+  match unsignedLiteralSuffix(expected) {
+    case Some(sfx) -> {
+      val key = recordCopySiteKey(e.span)
+      if tbl.argConversionSites.containsKey(key) {
+        tbl.argConversionSites.remove(key)
+      }
+      tbl.argConversionSites.add(
+        key,
+        ArgConversionSite(method = intLiteralSiteMethod(sfx), startOffset = e.span.startPos.offset)
+      )
+    }
+    case None -> ()
+  }
+  adopted
+}
+
 // True when `e` is a float literal written without a suffix (`1.5`, not
 // `1.5f32`), seen through parentheses and a unary minus.  Such a literal is a
 // `Double` unless its context requires a `Float` (D155).
@@ -5399,7 +5449,8 @@ func argIndicesInParamOrder(args: in List[CallArg], paramNames: in List[String])
 // `Lyric.Parser.argsWithDefaults`) assumes no such argument exists.
 // `slotNames` are the callee's parameters or fields in declaration order
 // ("" for a positional-only union-case field); with none (an unresolved
-// callee) only a repeated name is detectable.  True when any was reported.
+// callee) only a repeated name is detectable.  Each repeated name is reported
+// once.  True when any was reported.
 func reportRepeatedCallArgs(
   diag: in List[Diagnostic],
   code: in String,
@@ -5420,6 +5471,8 @@ func reportRepeatedCallArgs(
     }
   }
   val seen: List[String] = newList()
+  // A name repeated more than twice is one mistake, reported once.
+  val repeated: List[String] = newList()
   var reported = false
   for a in args {
     match a {
@@ -5433,7 +5486,10 @@ func reportRepeatedCallArgs(
           j = j + 1
         }
         if stringListContains(seen, nm) {
-          diag.add(errorDiagnostic(code, what + " '" + nm + "' is given more than once", asp))
+          if not stringListContains(repeated, nm) {
+            diag.add(errorDiagnostic(code, what + " '" + nm + "' is given more than once", asp))
+            repeated.add(nm)
+          }
           reported = true
         } else if slot >= 0 and slot < leading {
           diag.add(
@@ -7614,7 +7670,14 @@ func eraseTyVars(t: in Type): Type {
   }
 }
 
-func bindPatternTyped(sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnostic], pat: in Pattern, ty: in Type): Unit {
+func bindPatternTyped(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  pat: in Pattern,
+  ty: in Type,
+): Unit {
   match pat.kind {
     case PBinding(name, inner) -> {
       // The language has no `null` literal or null pattern (docs/01 §FFI,
@@ -7658,13 +7721,12 @@ func bindPatternTyped(sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnosti
       match inner {
         case None -> {
         }
-        case Some(p) -> bindPatternTyped(sc, tbl, diag, p, ty)
+        case Some(p) -> bindPatternTyped(sc, tbl, sigs, diag, p, ty)
       }
     }
     case PWildcard -> {
     }
-    case PLiteral(_) -> {
-    }
+    case PLiteral(lit) -> recordUnsignedLiteralPattern(tbl, diag, pat, lit, ty)
     case PConstructor(head, args) -> {
       val ftypes = match unionCaseSymbolForScrutinee(tbl, diag, pat2fnExpr(head, pat.span), ty) {
         case Some(caseSym) -> {
@@ -7680,7 +7742,7 @@ func bindPatternTyped(sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnosti
       var i = 0
       while i < args.count {
         val at = if i < ftypes.count { ftypes[i] } else { TyError }
-        bindPatternTyped(sc, tbl, diag, args[i], at)
+        bindPatternTyped(sc, tbl, sigs, diag, args[i], at)
         i = i + 1
       }
     }
@@ -7689,7 +7751,7 @@ func bindPatternTyped(sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnosti
       var i = 0
       while i < patterns.count {
         val et = if i < elems.count { elems[i] } else { TyError }
-        bindPatternTyped(sc, tbl, diag, patterns[i], et)
+        bindPatternTyped(sc, tbl, sigs, diag, patterns[i], et)
         i = i + 1
       }
     }
@@ -7710,7 +7772,7 @@ func bindPatternTyped(sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnosti
       var i = 0
       while i < fields.count {
         match fields[i] {
-          case RPFNamed(fname, p, _) -> bindPatternTyped(sc, tbl, diag, p, fieldEntryType(recFields, fname))
+          case RPFNamed(fname, p, _) -> bindPatternTyped(sc, tbl, sigs, diag, p, fieldEntryType(recFields, fname))
           case RPFShort(nm, _) -> scopeAdd(sc, LocalBinding(name = nm, ty = fieldEntryType(recFields, nm), isMutable = false))
         }
         i = i + 1
@@ -7722,19 +7784,19 @@ func bindPatternTyped(sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnosti
       // diagnostics discarded, only so the case patterns they hold record the
       // union they match (`recordCasePatternUnion`).
       if patterns.count > 0 {
-        bindPatternTyped(sc, tbl, diag, patterns[0], ty)
+        bindPatternTyped(sc, tbl, sigs, diag, patterns[0], ty)
       }
       var oi = 1
       while oi < patterns.count {
         val altDiag: List[Diagnostic] = newList()
         scopePush(sc)
-        bindPatternTyped(sc, tbl, altDiag, patterns[oi], ty)
+        bindPatternTyped(sc, tbl, sigs, altDiag, patterns[oi], ty)
         scopePop(sc)
         oi = oi + 1
       }
     }
     case PParen(inner) -> {
-      bindPatternTyped(sc, tbl, diag, inner, ty)
+      bindPatternTyped(sc, tbl, sigs, diag, inner, ty)
     }
     case PTypeTest(inner, tyExpr) -> {
       // `case x is T ->` narrows the scrutinee to `T`, so the inner pattern (and
@@ -7742,15 +7804,85 @@ func bindPatternTyped(sc: in Scope, tbl: in SymbolTable, diag: in List[Diagnosti
       // against the tested type rather than the wider scrutinee type.
       val ctx = newGenericContext()
       val testTy = resolveType(tbl, ctx, diag, tyExpr)
-      bindPatternTyped(sc, tbl, diag, inner, testTy)
+      bindPatternTyped(sc, tbl, sigs, diag, inner, testTy)
     }
-    case PRange(_, _, _, _) -> {
+    case PRange(lo, _, hi, _) -> {
+      if isUnsignedPatternScrutinee(ty) {
+        checkUnsignedRangeBound(sc, tbl, sigs, diag, lo, ty)
+        checkUnsignedRangeBound(sc, tbl, sigs, diag, hi, ty)
+      }
     }
     case PConstRef(_) -> {
     }
     case _ -> {
     }
   }
+}
+
+// A `Byte`, `UInt` or `ULong` scrutinee: its literal and range patterns are
+// typed against it (#7842).
+func isUnsignedPatternScrutinee(ty: in Type): Bool {
+  match unsignedLiteralSuffix(ty) {
+    case Some(_) -> true
+    case None -> false
+  }
+}
+
+// A literal pattern against a `Byte`, `UInt` or `ULong` scrutinee (#7842).
+// An unsuffixed literal takes the scrutinee's type, recorded so
+// `Lyric.Mono` gives it the matching suffix: every backend compares the
+// constant at that width and representation (a `UInt` above 2^31 is a
+// 32-bit pattern, not a `Long`).  A literal the type cannot hold could never
+// match, so it is T0015.
+func recordUnsignedLiteralPattern(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  pat: in Pattern,
+  lit: in Literal,
+  ty: in Type,
+): Unit {
+  match lit {
+    case LInt(v, sfx, _) -> match sfx {
+      case NoIntSuffix -> match unsignedLiteralSuffix(ty) {
+        case Some(usfx) -> {
+          if intValueFitsType(v, ty) {
+            val key = recordCopySiteKey(pat.span)
+            if not tbl.argConversionSites.containsKey(key) {
+              tbl.argConversionSites.add(
+                key,
+                ArgConversionSite(method = intLiteralSiteMethod(usfx), startOffset = pat.span.startPos.offset)
+              )
+            }
+          } else {
+            diag.add(errorDiagnostic("T0015", "literal " + toString(v) + " is out of range for type " + renderType(ty), pat.span))
+          }
+        }
+        case None -> ()
+      }
+      case _ -> ()
+    }
+    case _ -> ()
+  }
+}
+
+// A range-pattern bound against a `Byte`, `UInt` or `ULong` scrutinee
+// (#7842): typed against the scrutinee like an initialiser, so an
+// unsuffixed literal takes its suffix (T0015 when it does not fit), and a
+// `UInt`/`ULong` bound of any other shape is recorded as an unsigned operand.
+// Each backend's range test then compares unsigned when a bound says so.
+func checkUnsignedRangeBound(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  bound: in Expr,
+  ty: in Type,
+): Unit {
+  val bt = inferExprExpected(sc, tbl, sigs, diag, bound, ty)
+  if reportIntLiteralOutOfRange(unrefine(ty), bound, diag) {
+    return
+  }
+  recordUnsignedOperand(tbl, bt, bound)
 }
 
 // Wrap a constructor head `ModulePath` as an `EPath` expression so the existing
@@ -7900,7 +8032,7 @@ func inferMatchExpr(
   var ai = 0
   while ai < arms.count {
     scopePush(sc)
-    bindPatternTyped(sc, tbl, diag, arms[ai].pattern, st)
+    bindPatternTyped(sc, tbl, sigs, diag, arms[ai].pattern, st)
     bindOpenTuplePattern(sc, tbl, arms[ai].pattern, scrutKey)
     checkConstRefPattern(tbl, sigs, diag, arms[ai].pattern, st)
     recordTuplePatternBindings(tbl, arms[ai].pattern, st, false, sc.genericNames)
@@ -11621,6 +11753,9 @@ pub func inferExprExpected(
   if isUnsuffixedFloatLit(e) and isFloatType(expected) {
     return adoptFloatLiteralType(tbl, e, inferExpr(sc, tbl, sigs, diag, e), expected)
   }
+  if isUnsuffixedIntLit(e) and isSomeSuffix(unsignedLiteralSuffix(expected)) {
+    return adoptUnsignedIntLiteral(tbl, e, inferExpr(sc, tbl, sigs, diag, e), expected)
+  }
   match e.kind {
     case EParen(inner) -> inferExprExpected(sc, tbl, sigs, diag, inner, expected)
     case ELambda(ps, body) -> match unrefine(expected) {
@@ -11903,14 +12038,7 @@ func reportUnpairedCallArgs(
   srcIdx: in List[Int],
   span: in Span,
 ): Unit {
-  for a in args {
-    match a {
-      case CANamed(nm, _, asp) -> if not paramNames.contains(nm) {
-        diag.add(errorDiagnostic("T0042", "no parameter named '" + nm + "'", asp))
-      }
-      case CAPositional(_) -> ()
-    }
-  }
+  reportUnknownNamedArgs(diag, args, paramNames)
   var k = 0
   while k < sig.params.count {
     if srcIdx[k] < 0 and not sig.params[k].hasDefault {
@@ -11920,6 +12048,39 @@ func reportUnpairedCallArgs(
     }
     k = k + 1
   }
+}
+
+// T0042 for each named argument that names no parameter.
+func reportUnknownNamedArgs(diag: in List[Diagnostic], args: in List[CallArg], paramNames: in List[String]): Unit {
+  for a in args {
+    match a {
+      case CANamed(nm, _, asp) -> if not paramNames.contains(nm) {
+        diag.add(errorDiagnostic("T0042", "no parameter named '" + nm + "'", asp))
+      }
+      case CAPositional(_) -> ()
+    }
+  }
+}
+
+// For each parameter, the index of the one named argument that names it, or
+// -1: the pairing that still holds once an argument is repeated, which
+// leaves the positional arguments' slots unknown.
+func uniqueNamedArgIndices(args: in List[CallArg], paramNames: in List[String]): List[Int] {
+  val idx: List[Int] = newList()
+  for pn in paramNames {
+    var found = -1
+    var n = 0
+    var ai = 0
+    while ai < args.count {
+      match args[ai] {
+        case CANamed(nm, _, _) -> if nm == pn { found = ai; n = n + 1 }
+        case CAPositional(_) -> ()
+      }
+      ai = ai + 1
+    }
+    idx.add(if n == 1 { found } else { -1 })
+  }
+  idx
 }
 
 func checkCallArgsAgainstSig(
@@ -11947,7 +12108,15 @@ func checkCallArgsAgainstSig(
     paramNames.add(sig.params[pni].name)
     pni = pni + 1
   }
-  val _ = reportRepeatedCallArgs(diag, "T0042", "parameter", args, paramNames)
+  // A repeated argument also throws the count and the positional pairing
+  // off, so the arity check and the checks of positional arguments would
+  // report the same mistake again.  A name that names no parameter, and each
+  // argument named exactly once, are still checked.
+  if reportRepeatedCallArgs(diag, "T0042", "parameter", args, paramNames) {
+    reportUnknownNamedArgs(diag, args, paramNames)
+    checkPairedCallArgs(sc, tbl, diag, sig, args, argTypes, uniqueNamedArgIndices(args, paramNames), span)
+    return
+  }
   if args.count < minRequired or args.count > sig.params.count {
     val expectedMsg = if minRequired == sig.params.count {
       toString(sig.params.count) + " argument(s)"
@@ -11963,48 +12132,63 @@ func checkCallArgsAgainstSig(
     // purely positional call pairs slot k with arg k as before.
     val srcIdx = argIndicesInParamOrder(args, paramNames)
     reportUnpairedCallArgs(diag, sig, args, paramNames, srcIdx, span)
-    var k = 0
-    while k < sig.params.count {
-      val p = sig.params[k]
-      val ai = srcIdx[k]
-      if ai >= 0 {
-        val argTy = if ai < argTypes.count { argTypes[ai] } else { TyError }
-        noteExpectedFlow(sc, tbl, callArgExpr(args[ai]), p.ty)
-        if (match p.mode { case PMIn -> true; case _ -> false }) {
-          recordUnsignedWidening(tbl, p.ty, argTy, callArgExpr(args[ai]))
-        }
-        val satisfied = if sig.isExternFunc {
-          argSatisfiesExternParam(tbl, p.ty, argTy)
-        } else {
-          argSatisfiesParam(tbl, p.ty, argTy)
-        }
-        if not satisfied and not literalArgSatisfiesParam(tbl, p.ty, argTy, callArgExpr(args[ai])) {
-          diag.add(
-            errorDiagnostic(
-              "T0043",
-              argTypeMismatchSubject(argTy, args, ai) + " does not match parameter type " + renderOptTypeExpr(p.tyExpr, p.ty) +
-                externCallbackHint(tbl, sig, p.ty) +
-                typeMismatchHint(tbl, p.ty, argTy),
-              span
-            )
-          )
-        }
-        // #1487 (§5.2): a value-type `out`/`inout` argument must be a
-        // writable l-value (reference-type by-ref params are mutated in
-        // place — see `isByRefValueType`).
-        if modeNeedsLValue(p.mode) and isByRefValueType(p.ty) and not argIsValidByRefTarget(sc, callArgExpr(args[ai])) {
-          diag.add(
-            errorDiagnostic(
-              "T0085",
-              "argument for `out`/`inout` parameter '" + p.name +
-                "' must be a mutable l-value (a `var`, or an `out`/`inout` binding)",
-              span
-            )
-          )
-        }
+    checkPairedCallArgs(sc, tbl, diag, sig, args, argTypes, srcIdx, span)
+  }
+}
+
+// Check each argument against the parameter `srcIdx` pairs it with
+// (`srcIdx[k]` is the argument for parameter k, or -1).
+func checkPairedCallArgs(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  sig: in ResolvedSignature,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  srcIdx: in List[Int],
+  span: in Span,
+): Unit {
+  var k = 0
+  while k < sig.params.count {
+    val p = sig.params[k]
+    val ai = srcIdx[k]
+    if ai >= 0 {
+      val argTy = if ai < argTypes.count { argTypes[ai] } else { TyError }
+      noteExpectedFlow(sc, tbl, callArgExpr(args[ai]), p.ty)
+      if (match p.mode { case PMIn -> true; case _ -> false }) {
+        recordUnsignedWidening(tbl, p.ty, argTy, callArgExpr(args[ai]))
       }
-      k = k + 1
+      val satisfied = if sig.isExternFunc {
+        argSatisfiesExternParam(tbl, p.ty, argTy)
+      } else {
+        argSatisfiesParam(tbl, p.ty, argTy)
+      }
+      if not satisfied and not literalArgSatisfiesParam(tbl, p.ty, argTy, callArgExpr(args[ai])) {
+        diag.add(
+          errorDiagnostic(
+            "T0043",
+            argTypeMismatchSubject(argTy, args, ai) + " does not match parameter type " + renderOptTypeExpr(p.tyExpr, p.ty) +
+              externCallbackHint(tbl, sig, p.ty) +
+              typeMismatchHint(tbl, p.ty, argTy),
+            span
+          )
+        )
+      }
+      // #1487 (§5.2): a value-type `out`/`inout` argument must be a
+      // writable l-value (reference-type by-ref params are mutated in
+      // place — see `isByRefValueType`).
+      if modeNeedsLValue(p.mode) and isByRefValueType(p.ty) and not argIsValidByRefTarget(sc, callArgExpr(args[ai])) {
+        diag.add(
+          errorDiagnostic(
+            "T0085",
+            "argument for `out`/`inout` parameter '" + p.name +
+              "' must be a mutable l-value (a `var`, or an `out`/`inout` binding)",
+            span
+          )
+        )
+      }
     }
+    k = k + 1
   }
 }
 
@@ -12247,6 +12431,12 @@ func literalArgSatisfiesParam(tbl: in SymbolTable, fieldTy: in Type, argTy: in T
   if isUnsuffixedFloatLit(argExpr) and isPlainDouble(argTy) and isFloatType(fieldTy) {
     recordFloatLiteralSite(tbl, argExpr)
     return true
+  }
+  // An unsuffixed integer literal argument for a `Byte`/`UInt`/`ULong`
+  // parameter or field takes its type when it fits (#7841).
+  if isUnsuffixedIntLit(argExpr) and isSomeSuffix(unsignedLiteralSuffix(fieldTy)) {
+    val adopted = adoptUnsignedIntLiteral(tbl, argExpr, argTy, fieldTy)
+    return not (isPlainInt(adopted) or isPlainLong(adopted))
   }
   val isLiteral = match argExpr.kind { case EList(_) -> true; case _ -> false }
   if not isLiteral {
