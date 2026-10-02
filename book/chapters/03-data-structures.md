@@ -59,6 +59,24 @@ record Customer {
 
 Without `@derive(Equals)`, a `record class`-backed record falls back to reference identity — two independently-constructed `Customer` values with identical fields would compare `false`. Unions (§3.2) are different: they get structural equality unconditionally, with no annotation required, regardless of backing representation.
 
+**Component-wise arithmetic.** A record whose fields all have the same numeric type can derive `Add` and `Sub`. `+` and `-` then work field by field on two values of that record:
+
+```lyric
+@derive(Add, Sub)
+record Vec2 {
+  x: Float
+  y: Float
+}
+
+val a = Vec2(x = 1.0, y = 2.0)
+val b = Vec2(x = 0.5, y = 0.5)
+val c = a + b              // Vec2(x = 1.5, y = 2.5)
+var p = a
+p -= b                     // p is now Vec2(x = 0.5, y = 1.5)
+```
+
+That is the whole of operator support on records: there is no `Mul`, `Div` or `Mod`, and a record with fields of different types, a generic record or a record with an `invariant:` cannot derive `Add` or `Sub` (error T0152). Scaling, dot products and other vector operations are ordinary methods (`v.scale(2.0)`, `a.dot(b)`).
+
 **Visibility.** By default, all fields are visible within the package. `pub` on the record itself makes the record type visible to other packages. `pub` on an individual field makes that field accessible outside the package:
 
 ```lyric

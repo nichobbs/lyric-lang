@@ -1206,6 +1206,19 @@ pub record RecordCopySite {
   conflicting: Bool
 }
 
+/// Derived component-wise arithmetic on a homogeneous numeric record (D155):
+/// `a + b` (or `a += b`) where both operands are one record type that
+/// derives `Add` (or `Sub`).  `recordName` is the constructor path (qualified
+/// by the declaring package when the record is imported), `fields` the
+/// fields in declaration order, `recordType` the type to annotate the
+/// operand temporaries with, and `op` the field-level operator.
+pub record RecordArithSite {
+  recordName: String
+  fields: List[String]
+  recordType: Option[TypeExpr]
+  op: BinOp
+}
+
 /// A reference to another package's function used as a VALUE (not called),
 /// recorded by the type checker (`SymbolTable.funcRefSites`, keyed by
 /// `recordCopySiteKey` of the reference's span) and desugared by

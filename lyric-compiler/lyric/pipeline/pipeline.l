@@ -539,7 +539,9 @@ pub func pipeCheckAndMono(
   val invChecked = wrapInvariantConstructions(copyRes.file, tcRes.symbols.invariantCtorSites)
   // Operators on distinct types go through the underlying value (#7361),
   // which also re-checks a range subtype's derived arithmetic (#7226).
-  val checked = lowerDistinctOps(invChecked, tcRes.symbols.distinctOpSites, tcRes.symbols.distinctCompoundSites)
+  val distinctLowered = lowerDistinctOps(invChecked, tcRes.symbols.distinctOpSites, tcRes.symbols.distinctCompoundSites)
+  // Component-wise arithmetic on homogeneous numeric records (D155).
+  val checked = lowerRecordArith(distinctLowered, tcRes.symbols.recordArithSites)
 
   val mcRes = checkFile(checked)
   if gate(opts.pkgLabel, opts.lineOrigins, mcRes.diagnostics) {

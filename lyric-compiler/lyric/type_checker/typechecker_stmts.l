@@ -222,6 +222,44 @@ func isPurePathExpr(e: in Expr): Bool {
   }
 }
 
+// `r += s` / `r -= s` on a homogeneous numeric record that derives `Add` /
+// `Sub` (D155) is rewritten to `r = r + s`, which evaluates `r` twice, so it
+// needs a variable or field target (T0134), as for a distinct type.
+func checkRecordCompoundAssign(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  op: in AssignOp,
+  target: in Expr,
+  targetType: in Type,
+  valueType: in Type,
+  span: in Span,
+): Unit {
+  val bop = match op { case AssPlus -> BAdd; case AssMinus -> BSub; case _ -> return }
+  val marker = compoundAssignDerive(op)
+  val isRecord = match targetType {
+    case TyUser(tid, _, _) -> match recordSymbolOfTid(tbl, tid) {
+      case Some(_) -> true
+      case None -> false
+    }
+    case _ -> false
+  }
+  if not isRecord or not hasDerive(tbl, marker, targetType) {
+    return
+  }
+  if isPurePathExpr(target) {
+    recordRecordArith(tbl, targetType, valueType, bop, span)
+  } else {
+    diag.add(
+      errorDiagnostic(
+        "T0134",
+        "compound assignment to a record (" + renderType(targetType) +
+          ") needs a variable or field target; write the assignment out (`x = x + y`)",
+        span
+      )
+    )
+  }
+}
+
 // The `derives` marker a compound operator's binary form requires.
 func compoundAssignDerive(op: in AssignOp): String {
   match op {
@@ -422,7 +460,7 @@ pub func checkStatement(
               )
             }
           }
-          case None -> ()
+          case None -> checkRecordCompoundAssign(tbl, diag, op, target, targetType, valueType, stmt.span)
         }
       }
       if not stringPlusAssign and not argSatisfiesParam(tbl, targetType, valueType) {

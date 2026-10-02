@@ -394,6 +394,11 @@ pub record SymbolTable {
   /// A compound assignment (`c += d`) whose target is distinct-typed, keyed
   /// by the statement's span, mapped to `<T>.from`.
   distinctCompoundSites: Map[String, String]
+  /// Derived component-wise arithmetic on a homogeneous numeric record
+  /// (`a + b` on a `Vec3` that derives `Add`, D155), keyed by the binop's
+  /// span, or by the statement's span for `a += b`.  Lowered by
+  /// `Lyric.ContractElaborator.lowerRecordArith`.
+  recordArithSites: Map[String, RecordArithSite]
   /// The package whose bare-name lookups obey its file's import list
   /// (docs/01 §9.2, #7463), boxed as a 0/1-element list; empty = no
   /// restriction.  Set for the file being checked only: an imported
@@ -543,6 +548,7 @@ pub func newSymbolTable(): SymbolTable {
     stdCollectionsHostIndexed = stdCollectionsHostIndexed,
     distinctOpSites = newMap(),
     distinctCompoundSites = newMap(),
+    recordArithSites = newMap(),
     importRulePkg = newList(),
     importVisiblePkgs = newMap(),
     importVisibleNames = newMap(),

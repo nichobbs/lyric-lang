@@ -2053,6 +2053,81 @@ func checkRecordDeclTypes(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
   }
 }
 
+// A record may derive `Add` and `Sub` only as component-wise operators on a
+// homogeneous numeric record (D155): every field has the same numeric
+// primitive type, the record is not generic, and it has no `invariant:` (the
+// component-wise result is built field by field and would not be re-checked).
+// `Mul`, `Div` and `Mod` are not component-wise vector operations; scaling and
+// products are methods.  T0152 otherwise.
+func checkRecordArithDerives(diag: in List[Diagnostic], anns: in List[Annotation], decl: in RecordDecl): Unit {
+  val derives = extractDerives(anns)
+  for d in derives {
+    if d == "Mul" or d == "Div" or d == "Mod" {
+      diag.add(
+        errorDiagnostic(
+          "T0152",
+          "record '" + decl.name + "' cannot derive " + d +
+            ": a record derives only Add and Sub, component-wise; write scaling and products as methods",
+          decl.span
+        )
+      )
+    } else if d == "Add" or d == "Sub" {
+      match homogeneousNumericProblem(decl) {
+        case Some(why) -> diag.add(
+          errorDiagnostic(
+            "T0152",
+            "record '" + decl.name + "' cannot derive " + d + ": " + why,
+            decl.span
+          )
+        )
+        case None -> ()
+      }
+    }
+  }
+}
+
+// Why `decl` is not a homogeneous numeric record, or `None` when it is.
+func homogeneousNumericProblem(decl: in RecordDecl): Option[String] {
+  match decl.generics {
+    case Some(_) -> return Some(value = "a generic record has no single field type to add")
+    case None -> ()
+  }
+  var fieldType = ""
+  var count = 0
+  for m in decl.members {
+    match m {
+      case RMField(fd) -> {
+        val tn = match fd.ty.kind {
+          case TRef(path) -> if path.segments.count == 1 { path.segments[0] } else { "" }
+          case _ -> ""
+        }
+        if not isNumericPrimitiveName(tn) {
+          return Some(
+            value = "field '" + fd.name +
+              "' is not a numeric primitive (component-wise arithmetic needs every field to be one numeric type)"
+          )
+        }
+        if count > 0 and tn != fieldType {
+          return Some(
+            value = "field '" + fd.name + "' is " + tn + " but earlier fields are " + fieldType +
+              " (every field must have the same numeric type)"
+          )
+        }
+        fieldType = tn
+        count = count + 1
+      }
+      case RMInvariant(_) -> return Some(
+        value = "a record with an invariant cannot derive arithmetic (the component-wise result would not be re-checked)"
+      )
+      case RMFunc(_) -> ()
+    }
+  }
+  if count == 0 {
+    return Some(value = "it has no fields")
+  }
+  None
+}
+
 func checkUnionDeclTypes(tbl: in SymbolTable, diag: in List[Diagnostic], decl: in UnionDecl): Unit {
   val ctx = declGenericContext(decl.generics)
   var i = 0
@@ -3551,8 +3626,14 @@ func checkDeclTypeRefs(tbl: in SymbolTable, diag: in List[Diagnostic], items: in
   var i = 0
   while i < items.count {
     match items[i].kind {
-      case IRecord(decl) -> checkRecordDeclTypes(tbl, diag, decl)
-      case IExposedRec(decl) -> checkRecordDeclTypes(tbl, diag, decl)
+      case IRecord(decl) -> {
+        checkRecordDeclTypes(tbl, diag, decl)
+        checkRecordArithDerives(diag, items[i].annotations, decl)
+      }
+      case IExposedRec(decl) -> {
+        checkRecordDeclTypes(tbl, diag, decl)
+        checkRecordArithDerives(diag, items[i].annotations, decl)
+      }
       case IUnion(decl) -> checkUnionDeclTypes(tbl, diag, decl)
       case IInterface(decl) -> checkInterfaceDeclTypes(tbl, diag, decl)
       case IOpaque(decl) -> checkOpaqueDeclTypes(tbl, diag, decl)

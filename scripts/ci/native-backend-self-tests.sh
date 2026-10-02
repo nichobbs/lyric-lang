@@ -80,6 +80,7 @@ for t in \
   lyric-compiler/lyric/distinct_ops_self_test.l \
   lyric-compiler/lyric/record_semantics_self_test.l \
   lyric-compiler/lyric/float32_self_test.l \
+  lyric-compiler/lyric/record_arith_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_type_self_test.l \
   lyric-compiler/lyric/byte_native_self_test.l \
