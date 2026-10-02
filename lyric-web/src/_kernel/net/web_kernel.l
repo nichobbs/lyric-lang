@@ -162,6 +162,17 @@ pub func startWorkerLoop(intervalMs: in Int, worker: in Web.Worker): Unit {
   )
 }
 
+// ─── Per-request dispatch (#7997) ────────────────────────────────────────────
+/// Run `job.run()` on its own thread-pool task so the accept loop can pull the
+/// next request immediately. Fire-and-forget: `RequestJob` implementations
+/// isolate their own failures (a `Bug` is logged and answered with a 500), so
+/// the discarded `Task` is never left holding an unobserved exception. The job
+/// is invoked through its interface method, not a captured closure value (see
+/// `startWorkerLoop`).
+pub func spawnRequestJob(job: in Web.RequestJob): Unit {
+  val _ = taskRunAction({ -> job.run() })
+}
+
 // ─── WebSocket upgrade (`Web.addWebSocket`, #7831) ───────────────────────────
 /// Hand the upgrade request `ctx` to `endpoint`: the connection leaves the
 /// HTTP server (`Std.HttpServer.takeConnection`) and the endpoint answers
