@@ -12360,23 +12360,44 @@ func reportUnknownNamedArgs(diag: in List[Diagnostic], args: in List[CallArg], p
   }
 }
 
-// For each parameter, the index of the one named argument that names it, or
-// -1: the pairing that still holds once an argument is repeated, which
-// leaves the positional arguments' slots unknown.
-func uniqueNamedArgIndices(args: in List[CallArg], paramNames: in List[String]): List[Int] {
-  val idx: List[Int] = newList()
-  for pn in paramNames {
-    var found = -1
-    var n = 0
-    var ai = 0
-    while ai < args.count {
-      match args[ai] {
-        case CANamed(nm, _, _) -> if nm == pn { found = ai; n = n + 1 }
-        case CAPositional(_) -> ()
+// For each parameter, the index of the argument that pairs with it whatever
+// else the call repeats, or -1: a positional argument before the first named
+// one fills the parameter at its own position, and otherwise the one named
+// argument that names the parameter.  A positional argument after a named one
+// is left out, since its slot depends on the pairing a repeat throws off.
+func uniquelyPairedArgIndices(args: in List[CallArg], paramNames: in List[String]): List[Int] {
+  var leading = 0
+  var stop = false
+  while leading < args.count and not stop {
+    match args[leading] {
+      case CAPositional(_) -> {
+        leading = leading + 1
       }
-      ai = ai + 1
+      case CANamed(_, _, _) -> {
+        stop = true
+      }
     }
-    idx.add(if n == 1 { found } else { -1 })
+  }
+  val idx: List[Int] = newList()
+  var pi = 0
+  while pi < paramNames.count {
+    if pi < leading {
+      idx.add(pi)
+    } else {
+      val pn = paramNames[pi]
+      var found = -1
+      var n = 0
+      var ai = 0
+      while ai < args.count {
+        match args[ai] {
+          case CANamed(nm, _, _) -> if nm == pn { found = ai; n = n + 1 }
+          case CAPositional(_) -> ()
+        }
+        ai = ai + 1
+      }
+      idx.add(if n == 1 { found } else { -1 })
+    }
+    pi = pi + 1
   }
   idx
 }
@@ -12408,11 +12429,12 @@ func checkCallArgsAgainstSig(
   }
   // A repeated argument also throws the count and the positional pairing
   // off, so the arity check and the checks of positional arguments would
-  // report the same mistake again.  A name that names no parameter, and each
-  // argument named exactly once, are still checked.
+  // report the same mistake again.  A name that names no parameter, each
+  // positional argument before the first named one, and each argument named
+  // exactly once, are still checked.
   if reportRepeatedCallArgs(diag, "T0042", "parameter", args, paramNames) {
     reportUnknownNamedArgs(diag, args, paramNames)
-    checkPairedCallArgs(sc, tbl, diag, sig, args, argTypes, uniqueNamedArgIndices(args, paramNames), span)
+    checkPairedCallArgs(sc, tbl, diag, sig, args, argTypes, uniquelyPairedArgIndices(args, paramNames), span)
     return
   }
   if args.count < minRequired or args.count > sig.params.count {

@@ -8926,6 +8926,11 @@ test "a parameter repeated past the arity is one T0042" {
   val badType = parseCheck(fnSrc + "func g(): Int { f(a = 1, a = 2, b = \"s\") }\n")
   assertEqualInt(countDiagCode(badType, "T0042"), 1, "f(a = 1, a = 2, b = \"s\"): " + diagCodesOf(badType))
   assertEqualInt(countDiagCode(badType, "T0043"), 1, "the argument named once is still type-checked")
+  // A positional argument before the first named one pairs with the
+  // parameter at its position whatever the call repeats (PR #8023 review).
+  val leading = parseCheck(fnSrc + "func g(): Int { f(\"s\", b = 1, b = 2) }\n")
+  assertEqualInt(countDiagCode(leading, "T0042"), 1, "f(\"s\", b = 1, b = 2): " + diagCodesOf(leading))
+  assertEqualInt(countDiagCode(leading, "T0043"), 1, "the leading positional argument is still type-checked")
 }
 
 test "a constructor or union-case field given more than once is T0104 (#7846)" {
