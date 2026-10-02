@@ -16,7 +16,7 @@
 /* Bumped when the exported helper set changes incompatibly; the glue refuses a
  * module whose version differs from the one it was generated for. */
 int32_t lyric_wasm_abi_version(void) {
-    return 1;
+    return 2;
 }
 
 /* A scratch buffer in linear memory for the glue to copy bytes into or out of

@@ -277,3 +277,26 @@ void lyric_task_block_on(LyricTask* root) {
         }
     }
 }
+
+/* Run every ready task (waking expired sleepers) until none is runnable, without
+ * ever blocking, for hosts that own the event loop (the wasm `module` shape,
+ * docs/35 §11).  Returns -1 when no task is READY or SLEEPING, else the
+ * nanoseconds until the earliest sleeper wakes (0 when one is already due). */
+int64_t lyric_sched_poll(void) {
+    for (;;) {
+        LyricTask* t = ready_pop();
+        if (t) {
+            run_one(t);
+            continue;
+        }
+        int64_t next_deadline = wake_expired_sleepers();
+        if (g_ready_head) {
+            continue;
+        }
+        if (next_deadline < 0) {
+            return -1;
+        }
+        int64_t wait_ns = next_deadline - lyric_monotonic_nanos();
+        return wait_ns > 0 ? wait_ns : 0;
+    }
+}

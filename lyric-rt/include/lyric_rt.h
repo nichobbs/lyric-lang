@@ -633,6 +633,9 @@ void       lyric_async_await(LyricTask* waiter, LyricTask* dep);
 void       lyric_async_sleep(LyricTask* t, int64_t ms);
 /* Drive the scheduler until `root` completes (sync-context await). */
 void       lyric_task_block_on(LyricTask* root);
+/* Run every ready task without blocking (host-driven event loops).  Returns -1
+ * when nothing is ready or sleeping, else ns until the earliest sleeper wakes. */
+int64_t    lyric_sched_poll(void);
 /* The task whose frame is executing (codegen reads it inside bodies). */
 LyricTask* lyric_current_task(void);
 void       lyric_set_current_task(LyricTask* t);

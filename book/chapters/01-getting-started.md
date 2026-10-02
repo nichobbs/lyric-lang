@@ -304,9 +304,12 @@ const lyric = await instantiate();
 lyric.add(2, 40);          // 42
 lyric.greet('wörld');      // a String in, a String out
 lyric.run(['arg']);        // runs `main`, returns its exit code
+await lyric.compute(1);  // an `async func` export returns a Promise
 ```
 
-A `pub func` that takes or returns anything else (a record, a list) is left out
+An `async func` export returns a Promise that resolves after its `Std.Time.sleepMillis`
+calls, driven by the host's timers rather than by blocking. A `pub func` that takes or
+returns anything else (a record, a list) is left out
 with a `W0040` warning. A panic inside an export throws a
 `WebAssembly.RuntimeError`; the instance should be discarded afterwards.
 

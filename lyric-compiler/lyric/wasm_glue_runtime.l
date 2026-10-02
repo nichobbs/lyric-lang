@@ -10,7 +10,7 @@ pub func glueRuntimeJs(): String {
 // each exported `pub func` so JS callers pass and receive ordinary values.
 // `wasmFile` and `LYRIC_EXPORTS` come from the generated header above.
 
-const LYRIC_ABI_VERSION = 1;
+const LYRIC_ABI_VERSION = 2;
 const ERRNO_BADF = 8;
 const ERRNO_NOSYS = 52;
 const ERRNO_SPIPE = 70;
@@ -51,6 +51,18 @@ async function loadModule(source) {
     return WebAssembly.compileStreaming(res);
   }
   return WebAssembly.compile(await res.arrayBuffer());
+}
+
+function blockFor(ms, wakeAt) {
+  if (typeof SharedArrayBuffer === 'function' && typeof Atomics === 'object') {
+    try {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+      return;
+    } catch (e) {
+      // Atomics.wait is refused on a browser's main thread: fall through to the spin.
+    }
+  }
+  while (performance.now() < wakeAt) { /* spin */ }
 }
 
 function lineSink(write) {
@@ -213,6 +225,43 @@ export async function instantiate(source, options = {}) {
     fd_prestat_dir_name() {
       return ERRNO_BADF;
     },
+    // Only clock subscriptions are supported (that is what nanosleep and the
+    // scheduler's idle wait use).  A blocking wait cannot yield to the event
+    // loop, so it uses Atomics.wait where the host allows it (workers, node)
+    // and spins otherwise; prefer an async export, which never blocks.
+    poll_oneoff(subsPtr, eventsPtr, nsubs, neventsPtr) {
+      const dv = view();
+      let wakeAt = Infinity;
+      const clockSubs = [];
+      for (let i = 0; i < nsubs; i++) {
+        const base = subsPtr + i * 48;
+        if (dv.getUint8(base + 8) !== 0) return ERRNO_NOSYS;
+        const clockId = dv.getUint32(base + 16, true);
+        const timeout = dv.getBigUint64(base + 24, true);
+        const absolute = (dv.getUint16(base + 40, true) & 1) === 1;
+        let deadlineMs;
+        if (absolute) {
+          const nowNs = clockId === 0
+            ? BigInt(Math.round((performance.timeOrigin + performance.now()) * 1000)) * 1000n
+            : BigInt(Math.round(performance.now() * 1e6));
+          deadlineMs = performance.now() + Number(timeout - nowNs) / 1e6;
+        } else {
+          deadlineMs = performance.now() + Number(timeout) / 1e6;
+        }
+        wakeAt = Math.min(wakeAt, deadlineMs);
+        clockSubs.push(dv.getBigUint64(base, true));
+      }
+      const waitMs = wakeAt - performance.now();
+      if (waitMs > 0) blockFor(waitMs, wakeAt);
+      clockSubs.forEach((userdata, i) => {
+        const ev = eventsPtr + i * 32;
+        dv.setBigUint64(ev, userdata, true);
+        dv.setUint16(ev + 8, 0, true);
+        dv.setUint8(ev + 10, 0);
+      });
+      dv.setUint32(neventsPtr, clockSubs.length, true);
+      return 0;
+    },
     sched_yield() {
       return 0;
     },
@@ -300,9 +349,80 @@ export async function instantiate(source, options = {}) {
 
   const lyric = { raw, memory, flush() { sinks[1].flush(); sinks[2].flush(); } };
 
+  // A finished task's 64-bit result slot, decoded the way the native backend
+  // stored it (Int sign-extended, Float in the low 32 bits, Double as its bits,
+  // a String as its pointer).  A String result stays owned by the task, so it is
+  // copied out before the caller releases the task.
+  const liftSlot = (kind, slot) => {
+    switch (kind) {
+      case 'Unit': return undefined;
+      case 'Int': return Number(BigInt.asIntN(32, slot));
+      case 'Byte': return Number(slot & 0xffn);
+      case 'Bool': return (slot & 0xffffffffn) !== 0n;
+      case 'Long': return BigInt.asIntN(64, slot);
+      case 'Float': {
+        const dv = new DataView(new ArrayBuffer(4));
+        dv.setUint32(0, Number(slot & 0xffffffffn), true);
+        return dv.getFloat32(0, true);
+      }
+      case 'Double': {
+        const dv = new DataView(new ArrayBuffer(8));
+        dv.setBigUint64(0, BigInt.asUintN(64, slot), true);
+        return dv.getFloat64(0, true);
+      }
+      case 'String': return readString(Number(slot & 0xffffffffn));
+      default: throw new Error('unsupported result kind ' + kind);
+    }
+  };
+
+  // Drive the scheduler from host timers until `task` completes.
+  const settle = (task, kind, resolve, reject) => {
+    const step = () => {
+      try {
+        const wait = raw.lyric_wasm_poll();
+        if (raw.lyric_task_is_complete(task)) {
+          try {
+            resolve(liftSlot(kind, raw.lyric_task_result(task)));
+          } finally {
+            raw.lyric_wasm_release(task);
+          }
+        } else if (wait < 0) {
+          reject(new Error('deadlock: the async call can never complete (no ready tasks, no timers)'));
+        } else {
+          setTimeout(step, Number(wait));
+        }
+      } catch (e) {
+        reject(e);
+      }
+    };
+    step();
+  };
+
   for (const ex of LYRIC_EXPORTS) {
     const fn = raw[ex.wasm];
     if (typeof fn !== 'function') continue;
+    if (ex.async) {
+      lyric[ex.js] = (...args) => new Promise((resolve, reject) => {
+        if (args.length !== ex.params.length) {
+          reject(new TypeError(ex.js + ' takes ' + ex.params.length + ' argument(s), got ' + args.length));
+          return;
+        }
+        // String arguments stay alive until the task completes: the coroutine may
+        // read them after its first suspension.
+        const owned = [];
+        const releaseArgs = () => { for (const s of owned) raw.lyric_wasm_release(s); };
+        let task;
+        try {
+          task = fn(...ex.params.map((kind, i) => lowerArg(kind, args[i], owned)));
+        } catch (e) {
+          releaseArgs();
+          reject(e);
+          return;
+        }
+        settle(task, ex.ret, (v) => { releaseArgs(); resolve(v); }, (e) => { releaseArgs(); reject(e); });
+      });
+      continue;
+    }
     lyric[ex.js] = (...args) => {
       if (args.length !== ex.params.length) {
         throw new TypeError(ex.js + ' takes ' + ex.params.length + ' argument(s), got ' + args.length);

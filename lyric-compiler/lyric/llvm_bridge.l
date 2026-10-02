@@ -1688,9 +1688,27 @@ func appendWasmModuleLinkArgs(clangArgs: in List[String], set: in WasmExportSet)
     hi = hi + 1
   }
   var ei = 0
+  var anyAsync = false
   while ei < set.exports.count {
     clangArgs.add("-Wl,--export=" + set.exports[ei].wasmName)
+    if set.exports[ei].isAsync {
+      anyAsync = true
+    }
     ei = ei + 1
+  }
+  // An async export needs the scheduler entry and the task accessors the glue
+  // polls with; a module without one never links the scheduler.
+  if anyAsync {
+    val asyncHelpers: List[String] = newList()
+    asyncHelpers.add("lyric_wasm_poll")
+    asyncHelpers.add("lyric_task_is_complete")
+    asyncHelpers.add("lyric_task_result")
+    var ai = 0
+    while ai < asyncHelpers.count {
+      clangArgs.add("-Wl,--undefined=" + asyncHelpers[ai])
+      clangArgs.add("-Wl,--export=" + asyncHelpers[ai])
+      ai = ai + 1
+    }
   }
   if set.hasMain {
     clangArgs.add("-Wl,--export=__main_argc_argv")
