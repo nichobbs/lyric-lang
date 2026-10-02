@@ -304,7 +304,7 @@ const lyric = await instantiate();
 lyric.add(2, 40);          // 42
 lyric.greet('wörld');      // a String in, a String out
 lyric.run(['arg']);        // runs `main`, returns its exit code
-await lyric.fetchLater(1); // an `async func` export returns a Promise
+await lyric.compute(1);  // an `async func` export returns a Promise
 ```
 
 An `async func` export returns a Promise that resolves after its `Std.Time.sleepMillis`

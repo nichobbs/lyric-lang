@@ -3,8 +3,9 @@
 //!
 //! `collectWasmExports` decides which of the entry package's `pub func`s a JS
 //! caller can reach: those whose parameters and result are `Int`, `Long`,
-//! `Bool`, `Byte`, `Float`, `Double`, `String` or `Unit`, which are neither
-//! generic, `async`, overloaded nor use `out`/`inout` parameters.  Every other
+//! `Bool`, `Byte`, `Float`, `Double`, `String` or `Unit` (an `async func`'s
+//! declared or `Async[T]` result), which are neither generic, overloaded nor
+//! use `out`/`inout` parameters; an async one becomes a Promise.  Every other
 //! `pub func` is reported as a `W0040` note and left out; no function is
 //! silently dropped.  `renderGlueModule` prepends the generated export table to
 //! the static runtime (`Lyric.WasmGlueRuntime`), and `renderGlueTypes` writes
