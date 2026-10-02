@@ -52,6 +52,7 @@ import Lyric.LlvmIr
 import Lyric.LlvmCodegen
 import Lyric.LlvmLowering
 import Lyric.WasmGlue
+import Lyric.ComponentGlue
 
 func dottedPath(path: in ModulePath): String {
   pipeDottedPath(path)
@@ -1524,25 +1525,29 @@ func linkAndEmitNative(
     effTriple = detectHostTriple()
   }
   val isWasm = isWasmTriple(effTriple)
+  val isComponent = shape == "component"
   val isModule = shape == "module"
-  if shape.length > 0 and not isModule {
+  if shape.length > 0 and not isModule and not isComponent {
     Console.error(
-      "error[N0012]: unknown native output shape '" + shape +
-        "'; the wasm32 shapes are 'module' (and 'component', not yet implemented)"
+      "error[N0012]: unknown native output shape '" + shape + "'; the wasm32 shapes are 'module' and 'component'"
     )
     return false
   }
-  if isModule and not isWasm {
-    Console.error("error[N0011]: --shape module needs a wasm32 triple (pass --triple wasm32-wasi)")
+  if (isModule or isComponent) and not isWasm {
+    Console.error("error[N0011]: --shape " + shape + " needs a wasm32 triple (pass --triple wasm32-wasi)")
     return false
   }
-  val wasmExports = if isModule {
-    withoutReservedJsNames(collectWasmExportsOf(units, ownUnits))
-  } else {
-    collectWasmExportsOf(units, 0)
-  }
+  val allExports = collectWasmExportsOfShaped(units, if isModule or isComponent { ownUnits } else { 0 }, isComponent)
+  val wasmExports = if isModule { withoutReservedJsNames(allExports) } else { allExports }
   var ui = 0
   while ui < units.count {
+    if units[ui].wasmImports.count > 0 and isComponent {
+      Console.error(
+        "error[N0017]: package " + units[ui].pkgName +
+          " declares a @wasmImport extern func, which the component shape cannot lower to a WIT import yet; use --shape module"
+      )
+      return false
+    }
     if units[ui].wasmImports.count > 0 and not isModule {
       Console.error(
         "error[N0015]: package " + units[ui].pkgName +
@@ -1613,8 +1618,33 @@ func linkAndEmitNative(
     if isModule {
       appendWasmModuleLinkArgs(clangArgs, wasmExports)
     }
+    if isComponent {
+      clangArgs.add("-mexec-model=reactor")
+      clangArgs.add("-Wl,-z,stack-size=1048576")
+    }
   } else if triple.length > 0 {
     clangArgs.add("--target=" + triple)
+  }
+  // The component shape compiles generated C wrappers (canonical-ABI lift and
+  // lower) into the same link, and links to a core module that is componentised
+  // afterwards.
+  val cabiExports = componentExportsOf(wasmExports)
+  val cabiPath = wasmGlueStem(outputPath) + ".cabi.c"
+  val coreOut = if isComponent { wasmGlueStem(outputPath) + ".core.wasm" } else { outputPath }
+  if isComponent {
+    var cni = 0
+    while cni < cabiExports.notes.count {
+      Console.error(cabiExports.notes[cni])
+      cni = cni + 1
+    }
+    match File.writeText(cabiPath, renderCabi(cabiExports.exports, componentVersion())) {
+      case Ok(_) -> ()
+      case Err(e) -> {
+        Console.error("error[N0013]: cannot write the component wrappers " + cabiPath + ": " + IOError.message(e))
+        return false
+      }
+    }
+    clangArgs.add(cabiPath)
   }
   clangArgs.add(llPath)
   clangArgs.add(rtPath)
@@ -1633,7 +1663,7 @@ func linkAndEmitNative(
     li = li + 1
   }
   clangArgs.add("-o")
-  clangArgs.add(outputPath)
+  clangArgs.add(coreOut)
   val clangExe = if isWasm { Path.join(Path.join(wasiSdk, "bin"), "clang") } else { "clang" }
   match Process.runCapture(clangExe, clangArgs, 300000) {
     case Ok(res) -> {
@@ -1669,6 +1699,11 @@ func linkAndEmitNative(
       return false
     }
   }
+  if isComponent {
+    if not buildComponent(coreOut, outputPath, cabiExports.exports) {
+      return false
+    }
+  }
   if Environment.getVarOrDefault("LYRIC_KEEP_LL", "").length == 0 {
     match File.deleteFile(llPath) {
       case Ok(_) -> {
@@ -1676,8 +1711,106 @@ func linkAndEmitNative(
       case Err(_) -> {
       }
     }
+    if isComponent {
+      match File.deleteFile(cabiPath) {
+        case Ok(_) -> ()
+        case Err(_) -> ()
+      }
+      match File.deleteFile(coreOut) {
+        case Ok(_) -> ()
+        case Err(_) -> ()
+      }
+    }
   }
   true
+}
+
+/// The version of the WIT package a component declares.  A project's own
+/// version is not threaded to the native link yet, so every component is
+/// `0.1.0`.
+func componentVersion(): String {
+  "0.1.0"
+}
+
+/// Locate `wasm-tools`: `$WASM_TOOLS`, else `wasm-tools` on PATH.
+func findWasmTools(): String {
+  val env = Environment.getVarOrDefault("WASM_TOOLS", "")
+  if env.length > 0 {
+    return env
+  }
+  "wasm-tools"
+}
+
+/// Run one `wasm-tools` step; false (after printing `N0016`) on failure.
+func runWasmTools(args: in List[String], what: in String): Bool {
+  match Process.runCapture(findWasmTools(), args, 300000) {
+    case Ok(res) -> {
+      if res.exitCode != 0 {
+        Console.error("error[N0016]: wasm-tools failed while " + what + ":")
+        Console.error(res.stderr)
+        return false
+      }
+      true
+    }
+    case Err(e) -> {
+      Console.error(
+        "error[N0016]: wasm-tools could not be run (" + findWasmTools() +
+          "); install it (docs/35 section 5.1) or point $WASM_TOOLS at the binary (" +
+          e +
+          ")"
+      )
+      false
+    }
+  }
+}
+
+/// Wrap the linked core module `corePath` as a WASI component at `outputPath`:
+/// write `<stem>.wit`, embed it, and componentise against the preview1 reactor
+/// adapter (`$LYRIC_WASI_ADAPTER`).
+func buildComponent(corePath: in String, outputPath: in String, exports: in List[WasmExport]): Bool {
+  val adapter = Environment.getVarOrDefault("LYRIC_WASI_ADAPTER", "")
+  if adapter.length == 0 or not File.fileExists(adapter) {
+    Console.error(
+      "error[N0016]: a component build needs the WASI preview1 reactor adapter; set $LYRIC_WASI_ADAPTER to wasi_snapshot_preview1.reactor.wasm (docs/35 section 5.1)"
+    )
+    return false
+  }
+  val stem = wasmGlueStem(outputPath)
+  val witPath = stem + ".wit"
+  match File.writeText(witPath, renderWit(exports, componentVersion())) {
+    case Ok(_) -> ()
+    case Err(e) -> {
+      Console.error("error[N0013]: cannot write the WIT file " + witPath + ": " + IOError.message(e))
+      return false
+    }
+  }
+  val embedded = stem + ".embedded.wasm"
+  val embedArgs: List[String] = newList()
+  embedArgs.add("component")
+  embedArgs.add("embed")
+  embedArgs.add(witPath)
+  embedArgs.add(corePath)
+  embedArgs.add("--world")
+  embedArgs.add(witWorldName(exports))
+  embedArgs.add("-o")
+  embedArgs.add(embedded)
+  if not runWasmTools(embedArgs, "embedding the WIT") {
+    return false
+  }
+  val newArgs: List[String] = newList()
+  newArgs.add("component")
+  newArgs.add("new")
+  newArgs.add(embedded)
+  newArgs.add("--adapt")
+  newArgs.add("wasi_snapshot_preview1=" + adapter)
+  newArgs.add("-o")
+  newArgs.add(outputPath)
+  val ok = runWasmTools(newArgs, "componentising the module")
+  match File.deleteFile(embedded) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+  ok
 }
 
 /// The runtime helpers the generated glue calls (`lyric-rt/src/lyric_wasm.c`).

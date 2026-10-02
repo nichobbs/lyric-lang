@@ -1891,7 +1891,11 @@ func cmdBuild(argv: in slice[String]): Int {
       val dir = Path.dirname(sourcePath)
       val stem = stemOf(Path.basename(sourcePath), 2)  // strip ".l"
       val buildKind = readBuildKindFromManifest(manifestArg)
-      val ext = match axes.shape { case SModule -> ".wasm"; case _ -> outputExt(target, buildKind) }
+      val ext = match axes.shape {
+        case SModule -> ".wasm"
+        case SComponent -> ".wasm"
+        case _ -> outputExt(target, buildKind)
+      }
       Path.join(dir, stem + ext)
     }
   }
@@ -1960,6 +1964,7 @@ pub func watchShapeError(watch: in Bool, shape: in BuildShape): Option[String] {
 pub func nativeShapeName(shape: in BuildShape): String {
   match shape {
     case SModule -> "module"
+    case SComponent -> "component"
     case _ -> ""
   }
 }
@@ -2777,7 +2782,7 @@ pub func buildProjectFromManifest(
   val outPath = match explicitOut {
     case Some(o) -> o
     case None -> {
-      val ext = if wasmShape == "module" { ".wasm" } else { outputExt(target, buildKind) }
+      val ext = if wasmShape == "module" or wasmShape == "component" { ".wasm" } else { outputExt(target, buildKind) }
       val stem = match proj.outputAssembly { case Some(s) -> s; case None -> proj.name + ext }
       Path.join(Path.join(mfDir, "bin"), stem)
     }

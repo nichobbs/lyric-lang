@@ -328,6 +328,16 @@ returns anything else (a record, a list) is left out
 with a `W0040` warning. A panic inside an export throws a
 `WebAssembly.RuntimeError`; the instance should be discarded afterwards.
 
+To publish a program as a WebAssembly component (callable from `wasmtime`, or from
+JavaScript through `jco transpile`), use `--shape component` instead: `lyric build
+hello.l --target native --triple wasm32-wasi --shape component` writes
+`hello.wasm` (the component) and `hello.wit` (the interface generated from your
+`pub func`s, one WIT interface per package). It needs `wasm-tools` (`$WASM_TOOLS`
+or on `PATH`) and the WASI preview1 reactor adapter (`$LYRIC_WASI_ADAPTER`); a
+missing tool is error `N0016`. Today the exports may use `Int`, `Long`, `Bool`,
+`Byte`, `Float`, `Double`, `String` and `Unit`; async exports and host imports
+(`@wasmImport`, `N0017`) are not part of the component shape yet.
+
 Memory on this target is managed by automatic reference counting (ARC) —
 there is no garbage collector. Reference cycles are not collected; break
 them explicitly with `NativeWeak[T]`, whose `upgrade()` returns
