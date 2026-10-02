@@ -698,8 +698,9 @@ func codeTokens(source: in String): List[String] {
       case _ -> true
     }
     if include {
-      // String and character literals are compared by their *decoded*
-      // value, not their raw source spelling.  The formatter legitimately
+      // String, raw-string and character literals are compared by their
+      // *decoded* value, not their raw source spelling (a raw string's `#`
+      // delimiters are re-derived from its body).  The formatter legitimately
       // canonicalises escapes — e.g. a control character may render as
       // `\u{0000}` while a printable non-ASCII scalar renders as the
       // literal character — so `"\u{FFFD}"` and `"<U+FFFD>"` are the same
@@ -712,6 +713,7 @@ func codeTokens(source: in String): List[String] {
       val text = match t.token {
         case TString(s) -> "str:" + s
         case TStringPart(s) -> "spart:" + s
+        case TRawString(s) -> "raw:" + s
         case TChar(cp) -> "char:" + toString(cp)
         case _ -> if en > st and st >= 0 and en <= source.length {
           Str.substring(source, st, en - st)

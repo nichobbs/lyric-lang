@@ -10,8 +10,10 @@
 # runner pays the download once.  wasi-sdk 24 ships clang 18, the same major
 # version the native backend's other CI lanes pin.
 #
-# It also runs scripts/audit-native-extern-abi.sh, which fails when a kernel
-# extern disagrees with the runtime definition it binds on the wasm32 ABI.
+# It also checks the embedded JS glue is current, runs the module-shape
+# self-test under node, and runs scripts/audit-native-extern-abi.sh, which fails
+# when a kernel extern disagrees with the runtime definition it binds on the
+# wasm32 ABI.
 #
 # Usage: bash scripts/ci/wasm32-wasi-rt-tests.sh
 # ---------------------------------------------------------------------------
@@ -50,6 +52,9 @@ if [ ! -d "$wasmtime_dir" ]; then
   tar -xJf "$tools/wasmtime.tar.xz" -C "$tools"
 fi
 
+# The module-shape JS glue is embedded in the compiler from a real .js file.
+python3 scripts/gen_wasm_glue.py --check
+
 # Every _kernel_native extern must match the C ABI it binds (docs/35 W2 slice 3).
 WASI_SDK_PATH="$wasi_dir" bash scripts/audit-native-extern-abi.sh
 
@@ -64,3 +69,6 @@ fi
 export WASI_SDK_PATH="$wasi_dir" WASMTIME="$wasmtime_dir/wasmtime"
 export LYRIC_RT_WASM32_PATH="$PWD/lyric-rt/build-wasm32-wasi/lyric_rt.a"
 LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/llvm_wasm32_self_test.l
+# The browser/JS-host `module` shape runs under node through its generated glue.
+command -v node >/dev/null || { echo "::error::node not found on the runner"; exit 1; }
+LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/llvm_wasm32_module_self_test.l

@@ -77,6 +77,16 @@ import Lyric.LlvmIr
 /// function bodies to lower (the bridge pre-filters to the reachable
 /// set for bundled stdlib packages); `externs` are the reachable
 /// `extern func` declarations.
+/// An `extern func` marked `@wasmImport("module")` (docs/35 W3 slice 3): on a
+/// `--shape module` build its symbol becomes a wasm import named `symbol` from
+/// `module`, satisfied by the JS the host passes to `instantiate`.
+pub record WasmImportDecl {
+  symbol: String
+  module: String
+  /// Why the `@wasmImport` annotation is unusable, or "" when it is well formed.
+  problem: String
+}
+
 pub record CodegenUnit {
   pkgName: String
   fns: List[FunctionDecl]
@@ -84,6 +94,8 @@ pub record CodegenUnit {
   // Libraries the reachable externs name with `@library("name")` (D158),
   // linked as `-l<name>`; "c" is the C library the link already has.
   nativeLibs: List[String]
+  /// The reachable externs marked `@wasmImport` (see `WasmImportDecl`).
+  wasmImports: List[WasmImportDecl]
   // Type declarations register unfiltered (layouts are cheap and other
   // packages' signatures may reference them); generic declarations are
   // skipped at registration and panic only when actually used.
@@ -1719,7 +1731,7 @@ func buildSigs(units: in List[CodegenUnit]): Map[String, NFuncSig] {
       val arity = ef.params.count
       checkExternNoByRefParams(ef)
       val sig = NFuncSig(
-        irName = ef.symbol,
+        irName = externLlName(u.wasmImports, ef.symbol),
         pkg = u.pkgName,
         paramNames = paramNamesOf(ef.params),
         paramTys = paramTysOf(ef.params),
@@ -13370,9 +13382,29 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     var ei = 0
     while ei < u.externs.count {
       val ef = u.externs[ei]
-      if not declaredExterns.containsKey(ef.symbol) {
-        declaredExterns.add(ef.symbol, true)
-        externDecls.add(externDeclOf(ctx, ef))
+      val llName = externLlName(u.wasmImports, ef.symbol)
+      if not declaredExterns.containsKey(llName) {
+        declaredExterns.add(llName, true)
+        val plain = externDeclOf(ctx, ef)
+        val importModule = wasmImportModule(u.wasmImports, ef.symbol)
+        if importModule.length > 0 {
+          val attrs: List[String] = newList()
+          attrs.add("\"wasm-import-module\"=\"" + importModule + "\"")
+          attrs.add("\"wasm-import-name\"=\"" + ef.symbol + "\"")
+          externDecls.add(
+            NFunc(
+              name = llName,
+              params = plain.params,
+              retTy = plain.retTy,
+              isPublic = plain.isPublic,
+              isExtern = plain.isExtern,
+              body = plain.body,
+              attributes = attrs
+            )
+          )
+        } else {
+          externDecls.add(plain)
+        }
       }
       ei = ei + 1
     }
@@ -13561,6 +13593,7 @@ pub func unitOfFile(pkgName: in String, file: in SourceFile): CodegenUnit {
   val fns: List[FunctionDecl] = newList()
   val externs: List[ExternFuncDecl] = newList()
   val nativeLibs: List[String] = newList()
+  val wasmImports: List[WasmImportDecl] = newList()
   val records: List[RecordDecl] = newList()
   val opaqueNames: List[String] = newList()
   val unions: List[UnionDecl] = newList()
@@ -13577,6 +13610,7 @@ pub func unitOfFile(pkgName: in String, file: in SourceFile): CodegenUnit {
       case IExternFunc(decl) -> {
         externs.add(decl)
         addExternLibrary(nativeLibs, file.items[i].annotations)
+        addWasmImport(wasmImports, decl.symbol, file.items[i].annotations)
       }
       // Module-level `val`/`const` (#5977 part 2): collect for use-site
       // inlining. A `val` with a non-binding (destructuring) pattern is not a
@@ -13634,6 +13668,7 @@ pub func unitOfFile(pkgName: in String, file: in SourceFile): CodegenUnit {
     fns = fns,
     externs = externs,
     nativeLibs = nativeLibs,
+    wasmImports = wasmImports,
     records = records,
     opaqueNames = opaqueNames,
     unions = unions,
@@ -13663,6 +13698,77 @@ pub func addExternLibrary(libs: in List[String], anns: in List[Annotation]): Uni
       }
     }
   }
+}
+
+/// Why a `@wasmImport` module string cannot be used, or "" when it can.  The
+/// string lands inside LLVM attribute quotes, so `"` and `\\` are rejected.
+func wasmImportModuleProblem(module: in String): String {
+  if module.length == 0 {
+    return "the module name is empty"
+  }
+  if Str.contains(module, "\"") or Str.contains(module, "\\") {
+    return "the module name must not contain a quote or backslash"
+  }
+  ""
+}
+
+/// Record `symbol` as a wasm import when `anns` carry `@wasmImport("module")`.
+/// A malformed annotation is recorded with its `problem` so the glue reports it
+/// (`N0014`) instead of silently treating the extern as an ordinary C one.
+pub func addWasmImport(imports: in List[WasmImportDecl], symbol: in String, anns: in List[Annotation]): Unit {
+  for a in anns {
+    if a.name.segments.count == 1 and a.name.segments[0] == "wasmImport" {
+      var module = ""
+      var problem = "it needs exactly one string literal argument, the module name"
+      if a.args.count == 1 {
+        match a.args[0] {
+          case ALiteral(value, _) -> match value {
+            case AVString(m, _) -> {
+              module = m
+              problem = wasmImportModuleProblem(m)
+            }
+            case _ -> ()
+          }
+          case _ -> ()
+        }
+      }
+      imports.add(
+        WasmImportDecl(symbol = symbol, module = if problem.length == 0 { module } else { "" }, problem = problem)
+      )
+    }
+  }
+}
+
+/// The LLVM symbol an extern is declared and called under.  A wasm import keeps
+/// its JS-visible name in the `wasm-import-name` attribute, so its LLVM name is
+/// namespaced: a host function called `log` must not collide with libm's.
+pub func externLlName(imports: in List[WasmImportDecl], symbol: in String): String {
+  val module = wasmImportModule(imports, symbol)
+  if module.length > 0 {
+    "wasmimport." + module + "." + symbol
+  } else {
+    symbol
+  }
+}
+
+/// Why the `@wasmImport` on `symbol` is unusable, or "" when it is absent or fine.
+pub func wasmImportProblem(imports: in List[WasmImportDecl], symbol: in String): String {
+  for w in imports {
+    if w.symbol == symbol and w.problem.length > 0 {
+      return w.problem
+    }
+  }
+  ""
+}
+
+/// The module `symbol` is imported from, or "" when it is an ordinary extern.
+pub func wasmImportModule(imports: in List[WasmImportDecl], symbol: in String): String {
+  for w in imports {
+    if w.symbol == symbol {
+      return w.module
+    }
+  }
+  ""
 }
 
 /// Methods declared inside a record body desugar to package functions

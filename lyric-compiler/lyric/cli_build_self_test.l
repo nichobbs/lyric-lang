@@ -288,6 +288,63 @@ test "shapeTargetError: native accepts aot; managed targets accept every shape" 
   }
 }
 
+test "shapeTargetError: module and component are native-only wasm32 shapes (docs/35)" {
+  match Cli.shapeTargetError(Cli.SModule, Emitter.Native) {
+    case None -> ()
+    case Some(m) -> assertTrue(false, "native accepts module, got: " + m)
+  }
+  match Cli.shapeTargetError(Cli.SComponent, Emitter.Native) {
+    case None -> ()
+    case Some(m) -> assertTrue(false, "native accepts component, got: " + m)
+  }
+  match Cli.shapeTargetError(Cli.SModule, Emitter.Dotnet) {
+    case None -> assertTrue(false, "dotnet must reject module")
+    case Some(m) -> assertTrue(
+      Str.contains(m, "F0043") and Str.contains(m, "--target native"),
+      "dotnet/module names F0043, got: " + m
+    )
+  }
+  match Cli.shapeTargetError(Cli.SComponent, Emitter.Jvm) {
+    case None -> assertTrue(false, "jvm must reject component")
+    case Some(m) -> assertTrue(Str.contains(m, "F0043"), "jvm/component names F0043, got: " + m)
+  }
+}
+
+test "shapeUnsupportedError: component is F0044 until W4; module is implemented" {
+  match Cli.shapeUnsupportedError(Cli.SComponent, Emitter.Native) {
+    case None -> assertTrue(false, "component must be reported unimplemented")
+    case Some(m) -> assertTrue(
+      Str.contains(m, "F0044") and Str.contains(m, "docs/35"),
+      "component names F0044, got: " + m
+    )
+  }
+  match Cli.shapeUnsupportedError(Cli.SModule, Emitter.Native) {
+    case None -> ()
+    case Some(m) -> assertTrue(false, "module is implemented, got: " + m)
+  }
+}
+
+test "watchShapeError: --watch is refused for the module shape on every build path" {
+  match Cli.watchShapeError(true, Cli.SModule) {
+    case Some(m) -> assertTrue(Str.contains(m, "--watch") and Str.contains(m, "module"), "names the flag and shape: " + m)
+    case None -> assertTrue(false, "watch + module must be refused")
+  }
+  match Cli.watchShapeError(false, Cli.SModule) {
+    case None -> ()
+    case Some(m) -> assertTrue(false, "a one-shot module build is fine, got: " + m)
+  }
+  match Cli.watchShapeError(true, Cli.SAot) {
+    case None -> ()
+    case Some(m) -> assertTrue(false, "watch with the default native shape is fine, got: " + m)
+  }
+}
+
+test "nativeShapeName: only the module shape reaches the native bridge" {
+  assertEqual(Cli.nativeShapeName(Cli.SModule), "module", "module")
+  assertEqual(Cli.nativeShapeName(Cli.SAot), "", "aot")
+  assertEqual(Cli.nativeShapeName(Cli.SPortable), "", "portable")
+}
+
 test "shapeUnsupportedError: standalone is F0044 until it is implemented (#6262)" {
   match Cli.shapeUnsupportedError(Cli.SStandalone, Emitter.Dotnet) {
     case None -> assertTrue(false, "standalone is not implemented and must fail loud")
@@ -588,7 +645,7 @@ test "shapeName: every shape has a printable name (#6281)" {
 test "parseShapeName round-trips every shape through shapeName (#6281)" {
   // Guarantees a message built from `shapeName(parseShapeName(x))` can never
   // come out blank for a value the CLI accepted.
-  for nm in ["portable", "standalone", "aot"] {
+  for nm in ["portable", "standalone", "aot", "module", "component"] {
     match Cli.parseShapeName(nm) {
       case Some(sh) -> assertEqual(Cli.shapeName(sh), nm, "round-trip " + nm)
       case None -> assertTrue(false, "parseShapeName rejected a valid shape: " + nm)

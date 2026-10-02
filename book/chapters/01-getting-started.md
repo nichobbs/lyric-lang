@@ -292,6 +292,42 @@ available on WASI. A program that uses them still builds. Spawning a process or 
 a connection returns the `Err` the library reports for any failed spawn or
 connect; `Std.HttpServer.startListener` panics on its failed bind.
 
+To call a program from JavaScript (a browser, node, Deno), add `--shape
+module`: `lyric build hello.l --target native --triple wasm32-wasi --shape
+module` writes `hello.wasm`, `hello.js` and `hello.d.ts`. Every `pub func` whose
+parameters and result are `Int`, `Long`, `Bool`, `Float`, `Double`, `String` or
+`Unit` becomes a typed JavaScript function (a `Long` is a `bigint`):
+
+```js
+import { instantiate } from './hello.js';
+const lyric = await instantiate();
+lyric.add(2, 40);          // 42
+lyric.greet('wörld');      // a String in, a String out
+lyric.run(['arg']);        // runs `main`, returns its exit code
+await lyric.compute(1);  // an `async func` export returns a Promise
+```
+
+To call JavaScript from Lyric, declare a host import with `@wasmImport` and pass
+the function when you instantiate:
+
+```lyric
+@wasmImport("ui")
+extern func showMessage(text: String): Unit = "show"
+```
+
+```js
+const lyric = await instantiate(undefined, {
+  imports: { ui: { show: (text) => console.log(text) } },
+});
+```
+
+Instantiation fails with a `missing host imports` error if a declared import is
+not supplied, and the generated `.d.ts` types the `imports` option. An `async func` export returns a Promise that resolves after its `Std.Time.sleepMillis`
+calls, driven by the host's timers rather than by blocking. A `pub func` that takes or
+returns anything else (a record, a list) is left out
+with a `W0040` warning. A panic inside an export throws a
+`WebAssembly.RuntimeError`; the instance should be discarded afterwards.
+
 Memory on this target is managed by automatic reference counting (ARC) —
 there is no garbage collector. Reference cycles are not collected; break
 them explicitly with `NativeWeak[T]`, whose `upgrade()` returns

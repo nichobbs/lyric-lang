@@ -51,6 +51,7 @@ import Lyric.LlvmTypes
 import Lyric.LlvmIr
 import Lyric.LlvmCodegen
 import Lyric.LlvmLowering
+import Lyric.WasmGlue
 
 func dottedPath(path: in ModulePath): String {
   pipeDottedPath(path)
@@ -579,6 +580,35 @@ pub func compileToNativeWithFlags(
   path: in String,
   contractsEnabled: in Bool = true,
 ): Bool {
+  compileToNativeWithShape(
+    source,
+    outputPath,
+    stdlibFiles,
+    triple,
+    optLevel,
+    extraClangFlags,
+    defines,
+    path,
+    contractsEnabled,
+    ""
+  )
+}
+
+/// `compileToNativeWithFlags` with the output shape: "" for an ordinary native
+/// binary, "module" for the wasm32 browser/JS-host module plus JS glue
+/// (docs/35 W3).
+pub func compileToNativeWithShape(
+  source: in String,
+  outputPath: in String,
+  stdlibFiles: in List[NativeStdlibFile],
+  triple: in String,
+  optLevel: in String,
+  extraClangFlags: in List[String],
+  defines: in List[String],
+  path: in String,
+  contractsEnabled: in Bool,
+  shape: in String,
+): Bool {
   // Parse + `@cfg` erasure with the `target.native` pseudo-feature
   // (D-N-013); `Lyric.Pipeline` owns the placement (erasure directly
   // after parse, before anything indexes the items).
@@ -753,7 +783,7 @@ pub func compileToNativeWithFlags(
   units.add(unitOf(userFile, reachable, true))
   appendBundledUnits(toBundle, reachable, units)
 
-  linkAndEmitNative(units, outputPath, triple, optLevel, extraClangFlags)
+  linkAndEmitNative(units, 1, outputPath, triple, optLevel, extraClangFlags, shape)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -887,6 +917,52 @@ pub func compileProjectToNativeWithFlags(
   // bridge's own out-of-range fallback.
   originsByPkg: in List[DiagUtil.PackageLineOrigins],
   contractsEnabled: in Bool = true,
+): Bool {
+  compileProjectToNativeWithShape(
+    packages,
+    outputPath,
+    stdlibFiles,
+    triple,
+    optLevel,
+    extraClangFlags,
+    defines,
+    activeFeatures,
+    declaredFeatures,
+    packageVersion,
+    originsByPkg,
+    contractsEnabled,
+    ""
+  )
+}
+
+/// `compileProjectToNativeWithFlags` with the output shape (see
+/// `compileToNativeWithShape`).
+pub func compileProjectToNativeWithShape(
+  packages: in List[NativeSourcePackage],
+  outputPath: in String,
+  stdlibFiles: in List[NativeStdlibFile],
+  triple: in String,
+  optLevel: in String,
+  extraClangFlags: in List[String],
+  defines: in List[String],
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
+  packageVersion: in String,
+  // Per-merged-line provenance for a genuinely multi-file own package,
+  // parallel to `packages` by index (#6824 item 1; mirrors
+  // `Msil.Bridge`/`Jvm.Bridge`'s `originsByPkg`/`pkgOriginsByName`
+  // parameters). `originsByPkg[i]` is empty for a single-file package (its
+  // real path already survives via `packages[i].path`) and non-empty for a
+  // multi-file package, letting diagnostic rendering — across parse,
+  // typecheck, modecheck, elaborate, propagate, mono, AND weave (all folded
+  // into `pipeMiddleEnd` below, unlike the MSIL/JVM bridges' separate weave
+  // phase) — resolve the merged blob's line numbers back to their real
+  // on-disk file and line.  Shorter than `packages` (including empty) is
+  // valid; missing entries resolve to no translation, matching the JVM
+  // bridge's own out-of-range fallback.
+  originsByPkg: in List[DiagUtil.PackageLineOrigins],
+  contractsEnabled: in Bool,
+  shape: in String,
 ): Bool {
   if packages.count == 0 {
     Console.error("error[N0005]: native project build received no packages")
@@ -1185,7 +1261,7 @@ pub func compileProjectToNativeWithFlags(
   }
   appendBundledUnits(toBundle, reachable, units)
 
-  linkAndEmitNative(units, outputPath, triple, optLevel, extraClangFlags)
+  linkAndEmitNative(units, ownFiles.count, outputPath, triple, optLevel, extraClangFlags, shape)
 }
 
 // Appends one `CodegenUnit` per bundled (stdlib) package in `toBundle` whose
@@ -1414,10 +1490,12 @@ func walkReachableFns(
 // ─────────────────────────────────────────────────────────────────────────────
 func linkAndEmitNative(
   units: in List[CodegenUnit],
+  ownUnits: in Int,
   outputPath: in String,
   triple: in String,
   optLevel: in String,
   extraClangFlags: in List[String],
+  shape: in String,
 ): Bool {
   // #7585: `Self` nested inside a generic type argument (`List[Self]`,
   // `Option[Self]`) in an interface method signature has no uniform
@@ -1446,6 +1524,42 @@ func linkAndEmitNative(
     effTriple = detectHostTriple()
   }
   val isWasm = isWasmTriple(effTriple)
+  val isModule = shape == "module"
+  if shape.length > 0 and not isModule {
+    Console.error(
+      "error[N0012]: unknown native output shape '" + shape +
+        "'; the wasm32 shapes are 'module' (and 'component', not yet implemented)"
+    )
+    return false
+  }
+  if isModule and not isWasm {
+    Console.error("error[N0011]: --shape module needs a wasm32 triple (pass --triple wasm32-wasi)")
+    return false
+  }
+  val wasmExports = if isModule {
+    withoutReservedJsNames(collectWasmExportsOf(units, ownUnits))
+  } else {
+    collectWasmExportsOf(units, 0)
+  }
+  var ui = 0
+  while ui < units.count {
+    if units[ui].wasmImports.count > 0 and not isModule {
+      Console.error(
+        "error[N0015]: package " + units[ui].pkgName +
+          " declares a @wasmImport extern func, which only a --shape module build can satisfy (build with --triple wasm32-wasi --shape module)"
+      )
+      return false
+    }
+    ui = ui + 1
+  }
+  if wasmExports.importErrors.count > 0 {
+    var ii = 0
+    while ii < wasmExports.importErrors.count {
+      Console.error(wasmExports.importErrors[ii])
+      ii = ii + 1
+    }
+    return false
+  }
 
   val npkg = codegenNativeBundle(units, effTriple)
   val ll = lowerNativePackage(npkg)
@@ -1496,6 +1610,9 @@ func linkAndEmitNative(
     // definition and then compiles the call to a trap; make that a link error
     // so an extern declared with the wrong width fails the build.
     clangArgs.add("-Wl,--fatal-warnings")
+    if isModule {
+      appendWasmModuleLinkArgs(clangArgs, wasmExports)
+    }
   } else if triple.length > 0 {
     clangArgs.add("--target=" + triple)
   }
@@ -1547,10 +1664,110 @@ func linkAndEmitNative(
   // Keep the workspace clean on success; the .ll is a build
   // intermediate (re-emit with a failing clang run or via LYRIC_RT_PATH
   // tricks when debugging).
-  match File.deleteFile(llPath) {
-    case Ok(_) -> {
+  if isModule {
+    if not writeWasmGlue(outputPath, wasmExports) {
+      return false
     }
-    case Err(_) -> {
+  }
+  if Environment.getVarOrDefault("LYRIC_KEEP_LL", "").length == 0 {
+    match File.deleteFile(llPath) {
+      case Ok(_) -> {
+      }
+      case Err(_) -> {
+      }
+    }
+  }
+  true
+}
+
+/// The runtime helpers the generated glue calls (`lyric-rt/src/lyric_wasm.c`).
+/// They are unreferenced by Lyric code, so each one both forces its archive
+/// member into the link (`--undefined`) and is exported by name.
+func wasmGlueHelperSymbols(): List[String] {
+  val names: List[String] = newList()
+  names.add("lyric_wasm_abi_version")
+  names.add("lyric_wasm_alloc")
+  names.add("lyric_wasm_free")
+  names.add("lyric_wasm_string_new")
+  names.add("lyric_wasm_string_len")
+  names.add("lyric_wasm_string_data")
+  names.add("lyric_wasm_retain")
+  names.add("lyric_wasm_release")
+  names
+}
+
+/// Link flags for `--shape module` (docs/35 §4): a reactor module (no `_start`;
+/// the glue calls `_initialize`, then exports), a 1 MiB shadow stack, the glue
+/// helpers, and every exported `pub func`, plus `__main_argc_argv` when the
+/// program has a `main`.
+func appendWasmModuleLinkArgs(clangArgs: in List[String], set: in WasmExportSet): Unit {
+  clangArgs.add("-mexec-model=reactor")
+  clangArgs.add("-Wl,-z,stack-size=1048576")
+  val helpers = wasmGlueHelperSymbols()
+  var hi = 0
+  while hi < helpers.count {
+    clangArgs.add("-Wl,--undefined=" + helpers[hi])
+    clangArgs.add("-Wl,--export=" + helpers[hi])
+    hi = hi + 1
+  }
+  var ei = 0
+  var anyAsync = false
+  while ei < set.exports.count {
+    clangArgs.add("-Wl,--export=" + set.exports[ei].wasmName)
+    if set.exports[ei].isAsync {
+      anyAsync = true
+    }
+    ei = ei + 1
+  }
+  // An async export needs the scheduler entry and the task accessors the glue
+  // polls with; a module without one never links the scheduler.
+  if anyAsync {
+    val asyncHelpers: List[String] = newList()
+    asyncHelpers.add("lyric_wasm_poll")
+    asyncHelpers.add("lyric_task_is_complete")
+    asyncHelpers.add("lyric_task_result")
+    var ai = 0
+    while ai < asyncHelpers.count {
+      clangArgs.add("-Wl,--undefined=" + asyncHelpers[ai])
+      clangArgs.add("-Wl,--export=" + asyncHelpers[ai])
+      ai = ai + 1
+    }
+  }
+  if set.hasMain {
+    clangArgs.add("-Wl,--export=__main_argc_argv")
+  }
+}
+
+/// `<output minus .wasm>` — the stem the glue `.js` and `.d.ts` share.
+func wasmGlueStem(outputPath: in String): String {
+  if Str.endsWith(outputPath, ".wasm") {
+    return Str.substring(outputPath, 0, outputPath.length - 5)
+  }
+  outputPath
+}
+
+/// Write `<stem>.js` and `<stem>.d.ts` next to the module and print the
+/// `W0040` notes for `pub func`s the glue cannot export.
+func writeWasmGlue(outputPath: in String, set: in WasmExportSet): Bool {
+  var ni = 0
+  while ni < set.notes.count {
+    Console.error(set.notes[ni])
+    ni = ni + 1
+  }
+  val stem = wasmGlueStem(outputPath)
+  val wasmFile = Path.basename(outputPath)
+  match File.writeText(stem + ".js", renderGlueModule(set, wasmFile)) {
+    case Ok(_) -> ()
+    case Err(e) -> {
+      Console.error("error[N0013]: cannot write the JS glue " + stem + ".js: " + IOError.message(e))
+      return false
+    }
+  }
+  match File.writeText(stem + ".d.ts", renderGlueTypes(set)) {
+    case Ok(_) -> ()
+    case Err(e) -> {
+      Console.error("error[N0013]: cannot write the TypeScript declarations " + stem + ".d.ts: " + IOError.message(e))
+      return false
     }
   }
   true
@@ -1658,6 +1875,7 @@ func unitOf(f: in SourceFile, reachable: in Map[String, Bool], lowerAll: in Bool
   val fns: List[FunctionDecl] = newList()
   val externs: List[ExternFuncDecl] = newList()
   val nativeLibs: List[String] = newList()
+  val wasmImports: List[WasmImportDecl] = newList()
   val records: List[RecordDecl] = newList()
   val opaqueNames: List[String] = newList()
   val unions: List[UnionDecl] = newList()
@@ -1691,6 +1909,7 @@ func unitOf(f: in SourceFile, reachable: in Map[String, Bool], lowerAll: in Bool
         if lowerAll or reachable.containsKey(id) {
           externs.add(decl)
           addExternLibrary(nativeLibs, f.items[i].annotations)
+          addWasmImport(wasmImports, decl.symbol, f.items[i].annotations)
         }
       }
       case IRecord(decl) -> {
@@ -1749,6 +1968,7 @@ func unitOf(f: in SourceFile, reachable: in Map[String, Bool], lowerAll: in Bool
     fns = fns,
     externs = externs,
     nativeLibs = nativeLibs,
+    wasmImports = wasmImports,
     records = records,
     opaqueNames = opaqueNames,
     unions = unions,

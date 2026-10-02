@@ -86,7 +86,8 @@ WASM_AR     := $(WASI_SDK)/bin/llvm-ar
 WASM_CFLAGS := --target=wasm32-wasi --sysroot=$(WASI_SDK)/share/wasi-sysroot -O2 -std=c11 -Wall -Wextra -Werror
 WASM_SRCS   := src/lyric_rt.c src/lyric_string.c src/lyric_weak.c \
                src/lyric_posix.c src/lyric_collections.c src/lyric_async.c \
-               src/lyric_fs.c src/lyric_process_unsupported.c src/lyric_net_unsupported.c
+               src/lyric_fs.c src/lyric_process_unsupported.c src/lyric_net_unsupported.c \
+               src/lyric_wasm.c src/lyric_wasm_async.c
 WASM_OBJS   := $(WASM_SRCS:src/%.c=$(WASM_BUILD)/%.o)
 
 $(WASM_BUILD)/%.o: src/%.c include/lyric_rt.h | $(WASM_BUILD)

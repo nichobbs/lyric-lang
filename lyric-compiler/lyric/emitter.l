@@ -3150,7 +3150,7 @@ pub func emit(req: in EmitRequest): EmitResult {
   match req.target {
     case Dotnet -> emitMsilInProcess(req)
     case Jvm -> emitJvmInProcess(req)
-    case Native -> emitNativeInProcess(req, "", "", newList())
+    case Native -> emitNativeInProcess(req, "", "", newList(), "")
   }
 }
 
@@ -3160,6 +3160,18 @@ pub func emit(req: in EmitRequest): EmitResult {
 /// explicit knobs (`emitNative`) so the CLI can thread `--triple` /
 /// `--opt` without widening EmitRequest for two native-only fields.
 pub func emitNative(req: in EmitRequest, triple: in String, optLevel: in String, extraLibs: in List[String]): EmitResult {
+  emitNativeWithShape(req, triple, optLevel, extraLibs, "")
+}
+
+/// `emitNative` with the output shape: "" for an ordinary native binary,
+/// "module" for the wasm32 browser/JS-host module plus JS glue (docs/35 W3).
+pub func emitNativeWithShape(
+  req: in EmitRequest,
+  triple: in String,
+  optLevel: in String,
+  extraLibs: in List[String],
+  shape: in String,
+): EmitResult {
   val outDir = Path.dirname(req.outputPath)
   if Str.isNotEmpty(outDir) {
     match File.createDir(outDir) {
@@ -3167,11 +3179,15 @@ pub func emitNative(req: in EmitRequest, triple: in String, optLevel: in String,
       case Err(_) -> ()
     }
   }
-  emitNativeInProcess(req, triple, optLevel, extraLibs)
+  emitNativeInProcess(req, triple, optLevel, extraLibs, shape)
 }
 
 func emitNativeInProcess(
-  req: in EmitRequest, triple: in String, optLevel: in String, extraLibs: in List[String]
+  req: in EmitRequest,
+  triple: in String,
+  optLevel: in String,
+  extraLibs: in List[String],
+  shape: in String,
 ): EmitResult {
   val stdlibFiles = findStdlibSourcesNative()
   // `[native].extra_libs` (N6.4) become `-l<name>` clang flags, threaded
@@ -3190,7 +3206,7 @@ func emitNativeInProcess(
   // exception.
   val diags: List[Diagnostic] = newList()
   val ok = try {
-    LlvmBridge.compileToNativeWithFlags(
+    LlvmBridge.compileToNativeWithShape(
       req.source,
       req.outputPath,
       stdlibFiles,
@@ -3199,7 +3215,8 @@ func emitNativeInProcess(
       clangFlags,
       req.defines,
       req.path,
-      req.contractsEnabled
+      req.contractsEnabled,
+      shape
     )
   } catch Bug as b {
     diags.add(nativeBridgePanicDiagnostic(b.message))
@@ -3243,6 +3260,37 @@ pub func emitNativeProject(
   packageVersion: in String,
   contractsEnabled: in Bool,
   packageFeatures: in List[Pipe.PackageFeatureSet],
+): EmitResult {
+  emitNativeProjectWithShape(
+    pkgs,
+    outputPath,
+    triple,
+    optLevel,
+    extraLibs,
+    defines,
+    activeFeatures,
+    declaredFeatures,
+    packageVersion,
+    contractsEnabled,
+    packageFeatures,
+    ""
+  )
+}
+
+/// `emitNativeProject` with the output shape (see `emitNativeWithShape`).
+pub func emitNativeProjectWithShape(
+  pkgs: in List[ProjectPackage],
+  outputPath: in String,
+  triple: in String,
+  optLevel: in String,
+  extraLibs: in List[String],
+  defines: in List[String],
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
+  packageVersion: in String,
+  contractsEnabled: in Bool,
+  packageFeatures: in List[Pipe.PackageFeatureSet],
+  shape: in String,
 ): EmitResult {
   val outDir = Path.dirname(outputPath)
   if Str.isNotEmpty(outDir) {
@@ -3306,7 +3354,7 @@ pub func emitNativeProject(
   // #7452: same `try`/`catch` boundary as `emitNativeInProcess` above.
   val projDiags: List[Diagnostic] = newList()
   val ok = try {
-    LlvmBridge.compileProjectToNativeWithFlags(
+    LlvmBridge.compileProjectToNativeWithShape(
       nativePkgs,
       outputPath,
       stdlibFiles,
@@ -3318,7 +3366,8 @@ pub func emitNativeProject(
       declaredFeatures,
       packageVersion,
       nativeOrigins,
-      contractsEnabled
+      contractsEnabled,
+      shape
     )
   } catch Bug as b {
     projDiags.add(nativeBridgePanicDiagnostic(b.message))

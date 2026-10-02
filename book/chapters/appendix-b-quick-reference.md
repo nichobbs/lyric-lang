@@ -909,6 +909,7 @@ lyric build --release <file.l>         # optimized, debug info stripped. On --ta
 lyric build --shape portable <file.l>  # framework-dependent (default)
 lyric build --shape standalone <file.l>  # bundles a runtime (not implemented — F0044, #6262)
 lyric build --shape aot <file.l>       # native binary; --aot is sugar for this
+lyric build --target native --triple wasm32-wasi --shape module <file.l>  # .wasm + .js glue + .d.ts for a JS host (F0044 for --shape component until W4)
                                        # a manifest's own [build] shape = "portable"/"standalone" on
                                        # --target native raises F0043 too (#6268) -- not silently
                                        # upgraded to aot; only an UNDECLARED manifest shape defaults
@@ -1428,6 +1429,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 |---|---|---|
 | `W0002` | warning | A `forall`/`exists` in a contract of a runtime-checked package: its domain is a type, so it cannot be evaluated. The top-level `and`-conjunct containing it is skipped at runtime; the clause's other conjuncts are still checked. Put the property in a `@proof_required` package to have it proved. |
 | `W0006` | warning | A `pub` function exposes an **imported nested** host extern type (a CLR FQN containing `+`, e.g. `System.Text.Json.JsonElement+ArrayEnumerator`) in its signature. Nested types are host implementation details meant to stay behind the `_kernel/` FFI boundary. A kernel file that declares the extern type locally is exempt. Fix: wrap the host type in an opaque Lyric type (as `Std.Json` does with `JsonArrayCursor` / `JsonObjectCursor`) instead of exposing it directly. Top-level domain extern types are not flagged. |
+| `W0040` | warning | A `pub func` is left out of the `--shape module` JS glue because a parameter or its result is a type the module shape cannot carry (a record, list or option), or it is generic, overloaded, or takes an `out`/`inout` parameter. The function is still compiled; it just has no JS wrapper. |
 
 ### Emitter (E-series)
 
@@ -1510,6 +1512,11 @@ span, exactly like `T0120`/`J008`.
 | `N0008` | A `protected type` declares type parameters. Generic protected types build on `--target dotnet` and `--target jvm`; native has no per-instantiation protected-type layout yet (#7864). Reported at the declaration before codegen. |
 | `N0009` | A `--triple wasm32-wasi` build found no wasi-sdk; set `WASI_SDK_PATH` to its install directory. |
 | `N0010` | An `extern func` signature (including a callback parameter or a return) names a record that `--target native` lowers by value; the C struct ABI for it is #8009, so pass a `NativePtr` or use a record with a `var` field until then. |
+| `N0011` | `--shape module` was given a triple that is not wasm32; pass `--triple wasm32-wasi`. |
+| `N0012` | An unknown native output shape name reached the native bridge; the wasm32 shape is `module`. |
+| `N0013` | The `--shape module` JS glue (`<name>.js`) or declarations (`<name>.d.ts`) could not be written next to the `.wasm`. |
+| `N0014` | A `@wasmImport` `extern func` has a parameter or result type the host import ABI cannot carry; use `Int`, `Long`, `Bool`, `Byte`, `Float`, `Double`, `String` or `Unit`. |
+| `N0015` | A package declares a `@wasmImport` `extern func` but the build is not `--shape module`; only that shape can satisfy a host import. |
 
 ### Custom source generators (X-series)
 
