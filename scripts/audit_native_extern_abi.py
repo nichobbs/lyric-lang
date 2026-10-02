@@ -69,6 +69,8 @@ def parse_ir(ir_dir):
 
 
 def parse_externs(kernel_dir):
+    # Single-line declarations only: `lyric fmt` keeps every kernel extern on one
+    # line, and a wrapped one would be skipped here rather than diffed.
     pat = re.compile(r'^\s*(?:pub\s+)?extern func (\w+)\((.*)\)\s*(?::\s*(.*?))?\s*=\s*"(\w+)"\s*$')
     for path in sorted(glob.glob(os.path.join(kernel_dir, "*.l"))):
         for no, line in enumerate(open(path, encoding="utf-8"), 1):
