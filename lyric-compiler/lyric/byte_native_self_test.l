@@ -3,7 +3,8 @@
 //! #7852).
 //!
 //! `Byte` is unsigned (0..255) and lowers to LLVM `i8`, so every widening must
-//! zero-extend and every result must wrap modulo 256. Every stringification
+//! zero-extend and every result must stay in 0..255 (D163: plain operators panic on
+//! overflow in a debug build; `wrapping*` wraps modulo 256). Every stringification
 //! case reads a `Byte` from a local, a record field, a slice element, a call
 //! result and a generic `Box[Byte]` field, with values 0, 127, 128 and 255.
 //!
@@ -94,32 +95,44 @@ test "generic Box[Byte] field" {
   assertEqual("v=" + bx.value, "v=255", "String +")
 }
 
-test "Byte arithmetic wraps modulo 256" {
+test "Byte arithmetic stays unsigned, wrapping methods wrap modulo 256" {
   val a: Byte = 200u8
   val b: Byte = 100u8
-  val sum: Byte = a + b
-  val diff: Byte = b - a
-  val prod: Byte = 16u8 * 17u8
-  assertEqualInt(sum.toInt(), 44, "200 + 100")
-  assertEqualInt(diff.toInt(), 156, "100 - 200")
-  assertEqualInt(prod.toInt(), 16, "16 * 17")
+  val sum: Byte = a + 50u8
+  val diff: Byte = a - b
+  val prod: Byte = 15u8 * 17u8
+  val wsum: Byte = a.wrappingAdd(b)
+  val wdiff: Byte = b.wrappingSub(a)
+  val wprod: Byte = 16u8.wrappingMul(17u8)
+  assertEqualInt(sum.toInt(), 250, "200 + 50")
+  assertEqualInt(diff.toInt(), 100, "200 - 100")
+  assertEqualInt(prod.toInt(), 255, "15 * 17")
+  assertEqualInt(wsum.toInt(), 44, "200 wrappingAdd 100")
+  assertEqualInt(wdiff.toInt(), 156, "100 wrappingSub 200")
+  assertEqualInt(wprod.toInt(), 16, "16 wrappingMul 17")
   assertEqualInt((a / 3u8).toInt(), 66, "200 / 3 is unsigned")
   assertEqualInt((a % 3u8).toInt(), 2, "200 % 3 is unsigned")
   assertTrue(a > b, "200 > 100 compares unsigned")
   var c: Byte = 250u8
-  c += 10u8
-  assertEqualInt(c.toInt(), 4, "250 += 10")
-  c -= 5u8
-  assertEqualInt(c.toInt(), 255, "4 -= 5")
+  c += 5u8
+  assertEqualInt(c.toInt(), 255, "250 += 5")
+  c -= 55u8
+  assertEqualInt(c.toInt(), 200, "255 -= 55")
+  c = c.wrappingAdd(60u8)
+  assertEqualInt(c.toInt(), 4, "200 wrappingAdd 60")
+  c = c.wrappingSub(5u8)
+  assertEqualInt(c.toInt(), 255, "4 wrappingSub 5")
 }
 
 test "an unannotated u8 literal is a Byte" {
   val a = 200u8
-  val sum = a + 100u8
-  assertEqualInt(sum.toInt(), 44, "200u8 + 100u8 wraps")
-  assertEqual(toString(sum), "44", "toString of the sum")
+  val sum = a + 50u8
+  assertEqualInt(sum.toInt(), 250, "200u8 + 50u8")
+  assertEqual(toString(sum), "250", "toString of the sum")
+  val wsum = a.wrappingAdd(100u8)
+  assertEqualInt(wsum.toInt(), 44, "200u8 wrappingAdd 100u8 wraps")
   val bx = Box(value = 255u8)
-  val next: Byte = bx.value + 1u8
+  val next: Byte = bx.value.wrappingAdd(1u8)
   assertEqualInt(next.toInt(), 0, "Box[Byte] payload wraps")
   val typed: Box[Byte] = Box(value = 128u8)
   assertEqual("v=" + typed.value, "v=128", "annotated Box[Byte]")

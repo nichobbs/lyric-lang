@@ -93,17 +93,25 @@ test "a captured Byte in a function value" {
   assertEqual(toString(m), "252", "captured var")
 }
 
-test "Byte arithmetic stays a Byte and wraps" {
+// D163: plain `+`/`-`/`*` panic on overflow in a debug build, so the in-range
+// forms check the result stays an unsigned Byte and `wrapping*` checks the
+// 8-bit truncation.
+test "Byte arithmetic stays a Byte, wrapping methods wrap" {
   val a: Byte = 200u8
   val b: Byte = 100u8
-  assertEqual(toString(a + b), "44", "add wraps")
-  assertEqual(toString(b - a), "156", "sub wraps")
-  assertEqual(toString(a * 2u8), "144", "mul wraps")
+  assertEqual(toString(a + 50u8), "250", "add stays unsigned")
+  assertEqual(toString(a - b), "100", "sub stays unsigned")
+  assertEqual(toString(b * 2u8), "200", "mul stays unsigned")
   assertEqual(toString(a + 55u8), "255", "add at the top of the range")
+  assertEqual(toString(a.wrappingAdd(b)), "44", "wrappingAdd wraps")
+  assertEqual(toString(b.wrappingSub(a)), "156", "wrappingSub wraps")
+  assertEqual(toString(a.wrappingMul(2u8)), "144", "wrappingMul wraps")
   val f: (Byte) -> Byte = { x -> x + 1u8 }
   assertEqual(toString(f(200u8)), "201", "in a function value")
-  val g: () -> Byte = { -> a + b }
+  val g: () -> Byte = { -> a.wrappingAdd(b) }
   assertEqual(toString(g()), "44", "wrapped result of a function value")
+  val h: () -> Byte = { -> a + 50u8 }
+  assertEqual(toString(h()), "250", "unsigned result of a function value")
   val wide: Int = a.toInt() + 100
   assertEqual(toString(wide), "300", "an Int operand widens instead")
 }

@@ -61,12 +61,15 @@ exposed record ByteHolder {
 }
 
 // #5520's record-field fix (MSIL) plus #6526's registration fix (JVM)
-// together: an exposed record's Byte field wraps unsigned on overflow on
-// BOTH targets.
-test "exposed record Byte field compound assignment wraps unsigned" {
+// together: an exposed record's Byte field stays unsigned and truncates to
+// 8 bits on BOTH targets.  D163: plain `+=` panics on overflow in a debug
+// build, so the wraparound is checked through `wrappingAdd`.
+test "exposed record Byte field compound assignment stays unsigned, wrapping method wraps" {
   var h = ByteHolder(value = 200.toByte())
-  h.value += 100.toByte()
-  assertEqualInt(h.value.toInt(), 44, "h.value += 100 on 200 wraps unsigned to 44, not 300")
+  h.value += 50.toByte()
+  assertEqualInt(h.value.toInt(), 250, "h.value += 50 on 200 stays unsigned at 250")
+  h.value = h.value.wrappingAdd(100.toByte())
+  assertEqualInt(h.value.toInt(), 94, "h.value wrappingAdd 100 on 250 wraps unsigned to 94, not 350")
 }
 
 // #6533 follow-up audit (MSIL only): `Msil.Codegen.liftLambdasMsil`'s
