@@ -8,7 +8,8 @@
 # tests, #7457; bare_func_ref_self_test.l, #7586; async_generator_self_test.l,
 # #7720; compiler_bugs_3502_3505_3547_self_test.l, #7752;
 # erased_slot_widen_self_test.l, #7782; list_insert_self_test.l, #7797;
-# list_literal_join_self_test.l, #7818; await_hoist_typed_self_test.l, #7823;
+# list_literal_join_self_test.l, #7818; tuple_expected_type_self_test.l,
+# #7824; await_hoist_typed_self_test.l, #7823;
 # expected_type_propagation_self_test.l, #7855;
 # generic_ctor_open_arg_self_test.l, #7844; the overflow self-tests,
 # D163; record_eq_self_test.l, D164; task_shadow_self_test.l, D166),
@@ -93,6 +94,7 @@ for t in \
   lyric-compiler/lyric/erased_slot_widen_self_test.l \
   lyric-compiler/lyric/list_insert_self_test.l \
   lyric-compiler/lyric/list_literal_join_self_test.l \
+  lyric-compiler/lyric/tuple_expected_type_self_test.l \
   lyric-compiler/lyric/await_hoist_typed_self_test.l \
   lyric-compiler/lyric/expected_type_propagation_self_test.l \
   lyric-compiler/lyric/generic_ctor_open_arg_self_test.l \
