@@ -98,6 +98,8 @@ for t in \
   lyric-compiler/lyric/generic_ctor_open_arg_self_test.l \
   lyric-compiler/lyric/overflow_self_test.l \
   lyric-compiler/lyric/overflow_panic_self_test.l \
+  lyric-compiler/lyric/fixed_array_self_test.l \
+  lyric-compiler/lyric/fixed_array_panic_self_test.l \
   lyric-compiler/lyric/record_eq_self_test.l \
   lyric-compiler/lyric/task_shadow_self_test.l \
   lyric-compiler/lyric/task_kernel_record_self_test.l \

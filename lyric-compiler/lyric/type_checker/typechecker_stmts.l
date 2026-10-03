@@ -289,17 +289,21 @@ func recordOverflowCompound(
   // the scope is known.  Re-inferring an already-checked expression reports
   // nothing new, so its diagnostics go to a scratch list.
   val scratch: List[Diagnostic] = newList()
-  val temps = match target.kind {
-    case EIndex(recv, idxs) -> {
-      val rt = inferExpr(sc, tbl, sigs, scratch, recv)
-      val it = if idxs.count == 1 { typeExprForRef(tbl, inferExpr(sc, tbl, sigs, scratch, idxs[0]), span) } else { None }
-      CompoundTemps(recvType = typeExprForRef(tbl, rt, span), indexType = it)
+  val arrTemps = arrayCompoundTemps(sc, tbl, sigs, target, span)
+  val temps = match arrTemps {
+    case Some(at) -> at
+    case None -> match target.kind {
+      case EIndex(recv, idxs) -> {
+        val rt = inferExpr(sc, tbl, sigs, scratch, recv)
+        val it = if idxs.count == 1 { typeExprForRef(tbl, inferExpr(sc, tbl, sigs, scratch, idxs[0]), span) } else { None }
+        CompoundTemps(recvType = typeExprForRef(tbl, rt, span), indexType = it, arrayChain = false)
+      }
+      case EMember(recv, _) -> {
+        val rt = inferExpr(sc, tbl, sigs, scratch, recv)
+        CompoundTemps(recvType = typeExprForRef(tbl, rt, span), indexType = None, arrayChain = false)
+      }
+      case _ -> CompoundTemps(recvType = None, indexType = None, arrayChain = false)
     }
-    case EMember(recv, _) -> {
-      val rt = inferExpr(sc, tbl, sigs, scratch, recv)
-      CompoundTemps(recvType = typeExprForRef(tbl, rt, span), indexType = None)
-    }
-    case _ -> CompoundTemps(recvType = None, indexType = None)
   }
   val key = recordCopySiteKey(span)
   if tbl.overflowCompoundTemps.containsKey(key) {
@@ -425,6 +429,7 @@ pub func checkStatement(
             case None -> TyError
             case Some(e) -> {
               val t = inferExpr(sc, tbl, sigs, diag, e)
+              noteArrayStore(tbl, e, t)
               recordLocalFuncType(tbl, e, t)
               t
             }
@@ -439,6 +444,7 @@ pub func checkStatement(
           match initOpt {
             case Some(initE) -> {
               val initType = inferExprExpected(sc, tbl, sigs, diag, initE, declT)
+              noteArrayStore(tbl, initE, initType)
 
               val literalOutOfRange = reportIntLiteralOutOfRange(declT, initE, diag)
               if not literalOutOfRange and not argSatisfiesParam(tbl, declT, initType) {
@@ -456,6 +462,7 @@ pub func checkStatement(
               checkRefinedLiteralBound(declT, initE, diag)
             }
             case None -> {
+              noteArrayZeroInit(tbl, diag, declT, recordCopySiteKey(stmt.span), stmt.span, "var '" + name + "'")
             }
           }
           scopeAdd(sc, LocalBinding(name = name, ty = declT, isMutable = true))
@@ -495,7 +502,10 @@ pub func checkStatement(
 
     case SAssign(target, op, value) -> {
       val targetType = inferExpr(sc, tbl, sigs, diag, target)
+      exemptArrayCopy(tbl, target)
+      checkArrayElementWrite(sc, tbl, sigs, diag, target)
       val valueType = inferExprExpected(sc, tbl, sigs, diag, value, targetType)
+      noteArrayStore(tbl, value, valueType)
       recordHoistedAssignValue(sc, tbl, target, value, valueType, targetType)
       noteOpenBindingAssign(sc, tbl, sigs, target, valueType)
       // `s += <rhs>` onto a String plain-variable target accepts any RHS type
@@ -683,6 +693,12 @@ pub func checkStatement(
         // while it was inferred, never its bare name (#7771).
         case _ -> {
           val iterType = inferExpr(sc, tbl, sigs, diag, iter)
+          match arraySiteOf(tbl, iterType, iter.span) {
+            case Some(site) -> if not tbl.arrayForSites.containsKey(recordCopySiteKey(iter.span)) {
+              tbl.arrayForSites.add(recordCopySiteKey(iter.span), site)
+            }
+            case None -> if isArrayType(iterType) { diag.add(arrayUnknownLength(iterType, iter.span)) }
+          }
           if forIterIsGeneratorCall(tbl, iter) {
             iterType
           } else {

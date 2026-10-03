@@ -293,7 +293,8 @@ pub func compileToMsilWithVersion(
     awaitAsyncCalls = true,
     contractsEnabled = contractsEnabled,
     checkedSourceOut = singleFileOptsCheckedOut,
-    memberRecvClassesOut = singleFileOptsRecvOut
+    memberRecvClassesOut = singleFileOptsRecvOut,
+    arraysAsLists = true
   )
   val file = match pipeCheckAndMono(file0, importedPkgs, noDeriveImports, allMonoFuncs, stdlibIfaces, stdlibRecs, singleFileOpts) {
     case Some(f) -> f
@@ -1102,6 +1103,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
       contractsEnabled = contractsEnabled,
       checkedSourceOut = projOptsCheckedOut,
       memberRecvClassesOut = projOptsRecvOut,
+      arraysAsLists = true,
       ioForbiddenReason = pp.ioForbiddenReason
     )
     val monoFile = match pipeCheckAndMono(pp.file, importedPkgs, importedItems, allImportedGenFuncs, allImportedIfaceDecls, allImportedRecordDecls, projOpts) {

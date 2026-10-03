@@ -1937,7 +1937,8 @@ pub func typeExprToJvm(te: in TypeExpr, pkgName: in String): JvmType {
     case TNullable(_) -> JRef(className = "java/lang/Object")
     case TTuple(_) -> JRef(className = "java/lang/Object")
     case TFunction(_, _) -> JRef(className = "java/lang/Object")
-    case TArray(_, _) -> JRef(className = "java/lang/Object")
+    // `array[N, T]` is an `ArrayList` on this target (D167), as `List[T]` is.
+    case TArray(_, _) -> JRef(className = "java/util/ArrayList")
     // A range subtype's runtime representation is its underlying primitive
     // (e.g. `Nat range 0 ..= 1000000` is really a `long`, a `Long`-backed
     // range is a `long`) — recurse into the underlying `TRef` rather than
@@ -2788,6 +2789,7 @@ pub func recordDeclaredElemType(ctx: in FuncCtx, name: in String, ty: in TypeExp
   val elems: List[TypeExpr] = newList()
   match ty.kind {
     case TSlice(elem) -> elems.add(elem)
+    case TArray(_, elem) -> elems.add(elem)
     case TGenericApp(head, args) -> {
       if head.segments.count == 1 and lastSegment(head) == "List" and args.count == 1 {
         match args[0] {

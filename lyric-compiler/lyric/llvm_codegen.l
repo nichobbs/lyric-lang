@@ -823,6 +823,17 @@ func typeToN(ctx: in Ctx, te: in TypeExpr): NType {
       }
       typeExprToNType(te)
     }
+    case TArray(_, _) -> {
+      val emptyNames: List[String] = newList()
+      val emptyTys: List[NType] = newList()
+      match typeToNEnvOpt(ctx, te, emptyNames, emptyTys) {
+        case Some(t) -> return t
+        case None -> panic(
+          "error[N0020] " + te.span.startPos.line.toString() + ":" + te.span.startPos.column.toString() +
+            ": this `array[N, T]` has no native layout: its length must be a compile-time constant (a value-generic length is not supported) and its element type must have a native lowering (docs/67 §4.3)"
+        )
+      }
+    }
     case TParen(inner) -> typeToN(ctx, inner)
     case _ -> typeExprToNType(te)
   }
@@ -891,6 +902,11 @@ func typeToNOpt(ctx: in Ctx, te: in TypeExpr): Option[NType] {
       typeToNEnvOpt(ctx, te, emptyNames, emptyTys)
     }
     case TSlice(_) -> {
+      val emptyNames: List[String] = newList()
+      val emptyTys: List[NType] = newList()
+      typeToNEnvOpt(ctx, te, emptyNames, emptyTys)
+    }
+    case TArray(_, _) -> {
       val emptyNames: List[String] = newList()
       val emptyTys: List[NType] = newList()
       typeToNEnvOpt(ctx, te, emptyNames, emptyTys)
@@ -4081,6 +4097,12 @@ func lowerCallEx(
     case EPath(path) -> {
       if path.segments.count == 1 {
         val n = path.segments[0]
+        if n == arrayCopyIntrinsic() and args.count == 1 {
+          return lowerPositionalArg(ctx, insns, args, 0)
+        }
+        if n == arrayUncheckedIntrinsic() and args.count == 1 {
+          return lowerPositionalArg(ctx, insns, args, 0)
+        }
         if n == "panic" and args.count == 1 {
           val msg = lowerPositionalArg(ctx, insns, args, 0)
           val cs = callRuntime(ctx, insns, "lyric_string_to_cstring", NPtr(pointee = NI8), arg1(lyricStringNType(), msg.value))
@@ -4242,6 +4264,12 @@ func lowerCallEx(
         }
         case _ -> {
         }
+      }
+      if tname == arrayCopyIntrinsic() and args.count == 1 {
+        return lowerArrayCopyCall(ctx, insns, targs, args)
+      }
+      if tname == arrayFillIntrinsic() and args.count == 1 {
+        return lowerArrayFillCall(ctx, insns, targs, args)
       }
       if (tname == "newList" or tname == "newListWithCapacity") and targs.count == 1 {
         match targs[0] {
@@ -5077,6 +5105,7 @@ func recordHasVarField(rd: in RecordDecl): Bool {
 /// Unit placeholder, or another by-value record's struct value.
 func isByValueFieldNType(t: in NType): Bool {
   match t {
+    case NArray(e, _) -> isByValueFieldNType(e)
     case NI1 -> true
     case NI8 -> true
     case NI32 -> true
@@ -5122,6 +5151,19 @@ func classifyByValueFieldEnv(
       return res
     }
     case TGenericApp(head, args) -> return classifyGenericApp(st, pkg, head, args, envNames, envTys)
+    // `array[N, T]` of a by-value element is itself by-value (D167).
+    case TArray(size, elem) -> {
+      match arrayLenOfSize(size) {
+        case Some(n) -> {
+          val ft = classifyByValueFieldEnv(st, pkg, elem, envNames, envTys)
+          if ft.count == 1 and isByValueFieldNType(ft[0]) and not isVoidNType(ft[0]) {
+            res.add(NArray(elem = ft[0], size = n))
+          }
+        }
+        case None -> ()
+      }
+      return res
+    }
     case TRef(path) -> {
       if path.segments.count == 1 {
         val ei = envIndexOf(envNames, path.segments[0])
@@ -5469,6 +5511,7 @@ func stSizeOf(st: in NByValState, t: in NType): Int {
     case NDouble -> 8
     case NFloat -> 4
     case NVoid -> 1
+    case NArray(elem, size) -> stSizeOf(st, elem) * size
     case NStruct(name, _) -> {
       if st.uresults.containsKey(name) {
         return 8 + 8 * st.uresults[name].payloadWords
@@ -5481,6 +5524,7 @@ func stSizeOf(st: in NByValState, t: in NType): Int {
 
 func stAlignOf(st: in NByValState, t: in NType): Int {
   match t {
+    case NArray(elem, _) -> stAlignOf(st, elem)
     case NStruct(name, _) -> {
       if st.uresults.containsKey(name) {
         return 8
@@ -5733,6 +5777,547 @@ func genericRecordByValue(ctx: in Ctx, gkey: in String, rd: in RecordDecl, tys: 
     }
   }
   true
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// `array[N, T]` (D167, docs/67 §4.3).
+//
+// `Lyric.ContractElaborator.lowerArrays` has already lowered bounds checks (a
+// panic before the access), `.length`, `for`, `==` and `.toSlice()`; what is
+// left for the backend is the type, the literal, the element read and write, and
+// the three intrinsics (`arrayFillIntrinsic`, `arrayCopyIntrinsic`,
+// `arrayUncheckedIntrinsic`).
+// ─────────────────────────────────────────────────────────────────────────────
+/// The integer a (possibly parenthesised, possibly negated) literal expression is.
+func literalIntOfExpr(e: in Expr): Option[Int] {
+  match e.kind {
+    case ELiteral(lit) -> match lit { case LInt(v, _, _) -> Some(value = v.toInt()); case _ -> None }
+    case EParen(inner) -> literalIntOfExpr(inner)
+    case EPrefix(op, operand) -> match op {
+      case PreNeg -> match literalIntOfExpr(operand) {
+        case Some(v) -> Some(value = 0 - v)
+        case None -> None
+      }
+      case _ -> None
+    }
+    case _ -> None
+  }
+}
+
+/// The compile-time length written in an `array[N, T]` type: an integer
+/// literal.  The pipeline rewrites every length it resolved (a constant, an
+/// expression that folds) to its literal before a backend runs, so codegen
+/// never looks a name up.
+func arrayLenOfSize(size: in TypeArg): Option[Int] {
+  match size {
+    case TAValue(ve) -> literalIntOfExpr(ve)
+    case TAType(_) -> None
+  }
+}
+
+/// `array[N, T]`: the inline LLVM array `[N x T]` when `T` is by-value, so an
+/// array of by-value elements is itself by-value (and can sit in a by-value
+/// record, with no allocation); otherwise the reference-counted `List`
+/// representation, which shares its index, assignment and iteration paths.
+func arrayNType(ctx: in Ctx, size: in TypeArg, el: in NType): Option[NType] {
+  match arrayLenOfSize(size) {
+    case Some(n) -> if isByValueFieldNType(el) and not isVoidNType(el) {
+      Some(value = NArray(elem = el, size = n))
+    } else {
+      Some(value = listNType(ctx, el))
+    }
+    case None -> None
+  }
+}
+
+/// An aggregate stored by value that a `List` / `Map` / `Task` slot holds boxed:
+/// a by-value record or union's struct, or an inline array.
+func isBoxedValueNType(t: in NType): Bool {
+  match t {
+    case NStruct(_, _) -> true
+    case NArray(_, _) -> true
+    case _ -> false
+  }
+}
+
+/// The type of the storage `e` names when it is a place the backend can take
+/// the address of: a local, a field of a heap record, or an element of an inline
+/// array in one.  `None` for anything else (a call result, a by-value record's
+/// field), which is read as a value.
+func placeNType(ctx: in Ctx, e: in Expr): Option[NType] {
+  match e.kind {
+    case EParen(inner) -> placeNType(ctx, inner)
+    case ESelf -> mapGet(ctx.varTypes, "self")
+    case EPath(p) -> if p.segments.count == 1 and ctx.varSlots.containsKey(p.segments[0]) {
+      mapGet(ctx.varTypes, p.segments[0])
+    } else {
+      None
+    }
+    case EMember(recv, fieldName) -> match placeOrListElemNType(ctx, recv) {
+      case Some(rt) -> match rt {
+        case NPtr(_) -> match recInfoOfType(ctx, rt) {
+          case Some(ri) -> {
+            val idx = recFieldIndex(ri, fieldName)
+            if idx >= 0 and not ri.byValue {
+              Some(value = ri.fieldTys[idx])
+            } else {
+              None
+            }
+          }
+          case None -> None
+        }
+        case _ -> None
+      }
+      case None -> None
+    }
+    case EIndex(recv, idxs) -> if idxs.count == 1 {
+      match placeNType(ctx, recv) {
+        case Some(rt) -> match rt { case NArray(el, _) -> Some(value = el); case _ -> None }
+        case None -> None
+      }
+    } else {
+      None
+    }
+    case _ -> None
+  }
+}
+
+/// `placeNType`, or, for the element of a heap array (a `List` in a place) that
+/// is a reference to a record, that record's type: the record's own field is a
+/// place whatever holds the reference (`cs[i].hits[j] = v`).
+func placeOrListElemNType(ctx: in Ctx, e: in Expr): Option[NType] {
+  match placeNType(ctx, e) {
+    case Some(t) -> return Some(value = t)
+    case None -> ()
+  }
+  match e.kind {
+    case EParen(inner) -> placeOrListElemNType(ctx, inner)
+    case EIndex(recv, idxs) -> if idxs.count == 1 {
+      match placeNType(ctx, recv) {
+        case Some(rt) -> match rt {
+          case NArray(_, _) -> None
+          case _ -> match listElemOfType(ctx, rt) {
+            case Some(el) -> match el { case NPtr(_) -> Some(value = el); case _ -> None }
+            case None -> None
+          }
+        }
+        case None -> None
+      }
+    } else {
+      None
+    }
+    case _ -> None
+  }
+}
+
+/// The address of the place `e` (`placeNType` is `Some`): a pointer to its storage.
+func placeAddr(ctx: in Ctx, insns: in List[NInsn], e: in Expr): NVal {
+  match e.kind {
+    case EParen(inner) -> placeAddr(ctx, insns, inner)
+    case ESelf -> localAddr(ctx, "self")
+    case EPath(p) -> localAddr(ctx, p.segments[0])
+    case EMember(recv, fieldName) -> {
+      val obj = lowerExpr(ctx, insns, recv)
+      val ri = match recInfoOfType(ctx, obj.ty) {
+        case Some(r) -> r
+        case None -> panic("Lyric.LlvmCodegen: internal — a field place on a value that is not a record")
+      }
+      val idx = recFieldIndex(ri, fieldName)
+      val structTy = match obj.ty {
+        case NPtr(pointee) -> pointee
+        case _ -> panic("Lyric.LlvmCodegen: internal — a field place on a record value")
+      }
+      val fieldPtr = freshTmp(ctx)
+      val fArgs: List[NArg] = newList()
+      fArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+      fArgs.add(NArg(ty = NI32, value = NLitInt(v = (arcHeaderSlots + idx).toLong(), ty = NI32)))
+      insns.add(NGEP(dest = fieldPtr, ty = structTy, ptr = obj.value, indices = fArgs))
+      NVal(ty = NPtr(pointee = ri.fieldTys[idx]), value = NLocal(name = fieldPtr))
+    }
+    case EIndex(recv, idxs) -> {
+      val base = placeAddr(ctx, insns, recv)
+      val arrTy = match base.ty {
+        case NPtr(pointee) -> pointee
+        case _ -> panic("Lyric.LlvmCodegen: internal — an element place off a non-pointer")
+      }
+      match arrTy {
+        case NArray(el, n) -> {
+          val idx = lowerArrayIndexValue(ctx, insns, idxs[0], n, e.span.startPos.line)
+          arrayElemPtr(ctx, insns, base, arrTy, el, idx)
+        }
+        case _ -> panic("Lyric.LlvmCodegen: internal — an element place off a value that is not an array")
+      }
+    }
+    case _ -> panic("Lyric.LlvmCodegen: internal — the address of a value that is not a place")
+  }
+}
+
+func localAddr(ctx: in Ctx, name: in String): NVal {
+  val ty = match mapGet(ctx.varTypes, name) {
+    case Some(t) -> t
+    case None -> panic("Lyric.LlvmCodegen: no variable '" + name + "'")
+  }
+  val slot = match mapGet(ctx.varSlots, name) {
+    case Some(s) -> s
+    case None -> panic("Lyric.LlvmCodegen: no storage slot for '" + name + "'")
+  }
+  NVal(ty = NPtr(pointee = ty), value = NLocal(name = slot))
+}
+
+/// The element pointer `&arr[idx]` of the inline array at `arrAddr`.
+func arrayElemPtr(
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  arrAddr: in NVal,
+  arrTy: in NType,
+  elemTy: in NType,
+  idx: in NValue,
+): NVal {
+  val dest = freshTmp(ctx)
+  val gArgs: List[NArg] = newList()
+  gArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  gArgs.add(NArg(ty = NI32, value = idx))
+  insns.add(NGEP(dest = dest, ty = arrTy, ptr = arrAddr.value, indices = gArgs))
+  NVal(ty = NPtr(pointee = elemTy), value = NLocal(name = dest))
+}
+
+/// A stack copy of an array value, so an element of an rvalue can be addressed.
+func spillArray(ctx: in Ctx, insns: in List[NInsn], v: in NVal): NVal {
+  val slot = "arr.addr." + freshTmp(ctx)
+  ctx.allocas.add(NAlloca(dest = slot, ty = v.ty))
+  insns.add(NStore(ty = v.ty, value = v.value, ptr = NLocal(name = slot)))
+  NVal(ty = NPtr(pointee = v.ty), value = NLocal(name = slot))
+}
+
+/// The index of an array access with the `__lyric_unchecked` marker removed:
+/// the lowering has already checked (or proven) it.
+func uncheckedIndexInner(idx: in Expr): Option[Expr] {
+  match idx.kind {
+    case ECall(fn, args) -> match fn.kind {
+      case EPath(p) -> if p.segments.count == 1 and p.segments[0] == arrayUncheckedIntrinsic() and args.count == 1 {
+        Some(value = nativeCallArgExpr(args[0]))
+      } else {
+        None
+      }
+      case _ -> None
+    }
+    case EParen(inner) -> uncheckedIndexInner(inner)
+    case _ -> None
+  }
+}
+
+/// `panic("index <i> out of range for array[<n>]")` for the index value `iv`,
+/// the message the shared lowering gives a checked access.
+func lowerArrayOobPanic(ctx: in Ctx, insns: in List[NInsn], iv: in NValue, n: in Int, sp: in Span): Unit {
+  val name = "__lyric_oob_" + freshTmp(ctx)
+  // The message's temporaries live only on this path, which never returns:
+  // their scope is dropped without a release on the in-range path.
+  pushVarScope(ctx)
+  pushTempScope(ctx)
+  bindLocal(ctx, insns, name, NVal(ty = NI32, value = iv))
+  val idxSegs: List[String] = newList()
+  idxSegs.add(name)
+  val idxRef = mkExpr(EPath(path = ModulePath(segments = idxSegs, span = sp)), sp)
+  val toStr = mkExpr(ECall(fn = mkExpr(EMember(receiver = idxRef, memberName = "toString"), sp), args = newList()), sp)
+  val head = mkExpr(EBinop(op = BAdd, lhs = mkExpr(ELiteral(lit = LString(text = "index ")), sp), rhs = toStr), sp)
+  val msg = mkExpr(
+    EBinop(
+      op = BAdd,
+      lhs = head,
+      rhs = mkExpr(ELiteral(lit = LString(text = " out of range for array[" + n.toString() + "]")), sp)
+    ),
+    sp
+  )
+  val panicSegs: List[String] = newList()
+  panicSegs.add("panic")
+  val args: List[CallArg] = newList()
+  args.add(CAPositional(expr = msg))
+  val call = mkExpr(ECall(fn = mkExpr(EPath(path = ModulePath(segments = panicSegs, span = sp)), sp), args = args), sp)
+  val _ = lowerExpr(ctx, insns, call)
+  ctx.tempScopes.removeAt(ctx.tempScopes.count - 1)
+  popVarScope(ctx, insns)
+}
+
+/// The `i32` index of an access to an `array[n, _]`.  An index the lowering has
+/// not settled (code a pass synthesised after it) is checked here, with a fixed
+/// message; a settled one is not.
+func lowerArrayIndexValue(ctx: in Ctx, insns: in List[NInsn], idx: in Expr, n: in Int, line: in Int): NValue {
+  match uncheckedIndexInner(idx) {
+    case Some(inner) -> lowerExprExpecting(ctx, insns, inner, NI32).value
+    case None -> {
+      val v = lowerExprExpecting(ctx, insns, idx, NI32)
+      val ok = freshTmp(ctx)
+      insns.add(NICmp(dest = ok, pred = IUlt, ty = NI32, a = v.value, b = NLitInt(v = n.toLong(), ty = NI32)))
+      val okL = freshLabel(ctx, "arr.in")
+      val badL = freshLabel(ctx, "arr.oob")
+      insns.add(NCondBr(cond = NLocal(name = ok), thenLabel = okL, elseLabel = badL))
+      insns.add(NLabel(name = badL))
+      lowerArrayOobPanic(ctx, insns, v.value, n, idx.span)
+      insns.add(NBr(label = okL))
+      insns.add(NLabel(name = okL))
+      v.value
+    }
+  }
+}
+
+func readArrayElem(
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  arrAddr: in NVal,
+  arrTy: in NType,
+  elemTy: in NType,
+  n: in Int,
+  idxExpr: in Expr,
+  line: in Int,
+): NVal {
+  val idx = lowerArrayIndexValue(ctx, insns, idxExpr, n, line)
+  val ptr = arrayElemPtr(ctx, insns, arrAddr, arrTy, elemTy, idx)
+  val dest = freshTmp(ctx)
+  insns.add(NLoad(dest = dest, ty = elemTy, ptr = ptr.value))
+  NVal(ty = elemTy, value = NLocal(name = dest))
+}
+
+/// `a[i]` where `a` is a place holding an inline array: the element is read
+/// through its address, never by loading the whole array.
+func lowerArrayIndexRead(
+  ctx: in Ctx, insns: in List[NInsn], receiver: in Expr, idxExpr: in Expr, line: in Int
+): Option[NVal] {
+  match placeNType(ctx, receiver) {
+    case Some(t) -> match t {
+      case NArray(el, n) -> {
+        val addr = placeAddr(ctx, insns, receiver)
+        Some(value = readArrayElem(ctx, insns, addr, t, el, n, idxExpr, line))
+      }
+      case _ -> None
+    }
+    case None -> None
+  }
+}
+
+/// `a[i] = v` / `a[i] op= v` where `a` is a place holding an inline array;
+/// false when the receiver is not one.
+func lowerArrayElemAssign(
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  receiver: in Expr,
+  idxExpr: in Expr,
+  op: in AssignOp,
+  value: in Expr,
+  line: in Int,
+): Bool {
+  val arrTy = match placeNType(ctx, receiver) { case Some(t) -> t; case None -> return false }
+  match arrTy {
+    case NArray(el, n) -> {
+      val addr = placeAddr(ctx, insns, receiver)
+      val idx = lowerArrayIndexValue(ctx, insns, idxExpr, n, line)
+      val ptr = arrayElemPtr(ctx, insns, addr, arrTy, el, idx)
+      val newVal = match op {
+        case AssEq -> lowerExprExpecting(ctx, insns, value, el)
+        case _ -> {
+          // The right-hand side is evaluated before the element is read, as
+          // for a list element (`combineIndexedAssignValue`).
+          val rhs = lowerExpr(ctx, insns, value)
+          val curDest = freshTmp(ctx)
+          insns.add(NLoad(dest = curDest, ty = el, ptr = ptr.value))
+          val cur = NVal(ty = el, value = NLocal(name = curDest))
+          combineIndexedAssignValue(ctx, insns, op, el, cur, rhs, line)
+        }
+      }
+      insns.add(NStore(ty = el, value = newVal.value, ptr = ptr.value))
+      true
+    }
+    case _ -> false
+  }
+}
+
+/// `[a, b, c]` against an inline array type: an `insertvalue` chain.
+func lowerArrayLiteral(
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  elems: in List[Expr],
+  arrTy: in NType,
+  elemTy: in NType,
+  n: in Int,
+): NVal {
+  if elems.count != n {
+    panic(
+      "Lyric.LlvmCodegen: an array literal of " + elems.count.toString() + " element(s) for " + nTypeToIrString(arrTy)
+    )
+  }
+  var cur: NValue = NUndef(ty = arrTy)
+  var i = 0
+  while i < elems.count {
+    val v = lowerExprExpecting(ctx, insns, elems[i], elemTy)
+    val dest = freshTmp(ctx)
+    insns.add(NInsertValue(dest = dest, aggTy = arrTy, agg = cur, elemTy = elemTy, elem = v.value, index = i))
+    cur = NLocal(name = dest)
+    i = i + 1
+  }
+  NVal(ty = arrTy, value = cur)
+}
+
+func arrayTypeExprOfArgs(targs: in List[TypeArg]): Option[TypeExpr] {
+  if targs.count != 1 {
+    return None
+  }
+  match targs[0] {
+    case TAType(te) -> Some(value = te)
+    case TAValue(_) -> None
+  }
+}
+
+func arrayElemTypeExpr(te: in TypeExpr): Option[TypeExpr] {
+  match te.kind {
+    case TArray(_, el) -> Some(value = el)
+    case TParen(inner) -> arrayElemTypeExpr(inner)
+    case _ -> None
+  }
+}
+
+/// `__lyric_array_copy[array[N, T]](a)`: an inline array is already a value, so
+/// its copy is itself; the `List` representation is copied element by element,
+/// an element that is an array copied in turn.
+func lowerArrayCopyCall(ctx: in Ctx, insns: in List[NInsn], targs: in List[TypeArg], args: in List[CallArg]): NVal {
+  val v = match arrayTypeExprOfArgs(targs) {
+    case Some(te) -> lowerExprExpecting(ctx, insns, nativeCallArgExpr(args[0]), typeToN(ctx, te))
+    case None -> lowerPositionalArg(ctx, insns, args, 0)
+  }
+  copyArrayValue(ctx, insns, v, arrayTypeExprOfArgs(targs))
+}
+
+func copyArrayValue(ctx: in Ctx, insns: in List[NInsn], v: in NVal, arrTe: in Option[TypeExpr]): NVal {
+  match v.ty {
+    case NArray(_, _) -> return v
+    case _ -> ()
+  }
+  val elemTy = match listElemOfType(ctx, v.ty) { case Some(t) -> t; case None -> return v }
+  val elemTe: Option[TypeExpr] = match arrTe { case Some(te) -> arrayElemTypeExpr(te); case None -> None }
+  val nested = match elemTe {
+    case Some(et) -> match et.kind { case TArray(_, _) -> true; case _ -> false }
+    case None -> false
+  }
+  val dst = constructList(ctx, insns, elemTy)
+  val srcP = collectionAsI8(ctx, insns, v)
+  val dstP = collectionAsI8(ctx, insns, dst)
+  val lenV = callRuntime(ctx, insns, "lyric_list_len", NI64, arg1(NPtr(pointee = NI8), srcP))
+  val idxSlot = "acopy.idx." + freshTmp(ctx)
+  ctx.allocas.add(NAlloca(dest = idxSlot, ty = NI64))
+  insns.add(NStore(ty = NI64, value = NLitInt(v = 0i64, ty = NI64), ptr = NLocal(name = idxSlot)))
+  val condL = freshLabel(ctx, "acopy.cond")
+  val bodyL = freshLabel(ctx, "acopy.body")
+  val exitL = freshLabel(ctx, "acopy.exit")
+  insns.add(NBr(label = condL))
+  insns.add(NLabel(name = condL))
+  val cur = freshTmp(ctx)
+  insns.add(NLoad(dest = cur, ty = NI64, ptr = NLocal(name = idxSlot)))
+  val cmp = freshTmp(ctx)
+  insns.add(NICmp(dest = cmp, pred = ISlt, ty = NI64, a = NLocal(name = cur), b = lenV.value))
+  insns.add(NCondBr(cond = NLocal(name = cmp), thenLabel = bodyL, elseLabel = exitL))
+  insns.add(NLabel(name = bodyL))
+  pushTempScope(ctx)
+  val gArgs: List[NArg] = newList()
+  gArgs.add(NArg(ty = NPtr(pointee = NI8), value = srcP))
+  gArgs.add(NArg(ty = NI64, value = NLocal(name = cur)))
+  val slot = callRuntime(ctx, insns, "lyric_list_get", NI64, gArgs)
+  val elemV = valOfSlot(ctx, insns, slot.value, elemTy)
+  val copied = if nested { copyArrayValue(ctx, insns, elemV, elemTe) } else { elemV }
+  pushToList(ctx, insns, dstP, copied)
+  popTempScope(ctx, insns)
+  val next = freshTmp(ctx)
+  insns.add(NAdd(dest = next, ty = NI64, a = NLocal(name = cur), b = NLitInt(v = 1i64, ty = NI64)))
+  insns.add(NStore(ty = NI64, value = NLocal(name = next), ptr = NLocal(name = idxSlot)))
+  insns.add(NBr(label = condL))
+  insns.add(NLabel(name = exitL))
+  dst
+}
+
+/// `__lyric_array_fill[array[N, T]](z)`: an array of `N` elements, each a
+/// fresh evaluation of `z`.  An inline array's elements are values, so `z` is
+/// evaluated once and stored `N` times; the `List` representation evaluates it
+/// once per element (a mutable record must not be shared).
+func lowerArrayFillCall(ctx: in Ctx, insns: in List[NInsn], targs: in List[TypeArg], args: in List[CallArg]): NVal {
+  val arrTe = match arrayTypeExprOfArgs(targs) {
+    case Some(te) -> te
+    case None -> panic("Lyric.LlvmCodegen: internal — an array fill without its array type")
+  }
+  val arrTy = typeToN(ctx, arrTe)
+  val zExpr = nativeCallArgExpr(args[0])
+  match arrTy {
+    case NArray(el, n) -> {
+      val z = lowerExprExpecting(ctx, insns, zExpr, el)
+      val slot = "afill.addr." + freshTmp(ctx)
+      ctx.allocas.add(NAlloca(dest = slot, ty = arrTy))
+      insns.add(NStore(ty = arrTy, value = NZeroInit(ty = arrTy), ptr = NLocal(name = slot)))
+      val addr = NVal(ty = NPtr(pointee = arrTy), value = NLocal(name = slot))
+      val idxSlot = "afill.idx." + freshTmp(ctx)
+      ctx.allocas.add(NAlloca(dest = idxSlot, ty = NI32))
+      insns.add(NStore(ty = NI32, value = NLitInt(v = 0i64, ty = NI32), ptr = NLocal(name = idxSlot)))
+      val condL = freshLabel(ctx, "afill.cond")
+      val bodyL = freshLabel(ctx, "afill.body")
+      val exitL = freshLabel(ctx, "afill.exit")
+      insns.add(NBr(label = condL))
+      insns.add(NLabel(name = condL))
+      val cur = freshTmp(ctx)
+      insns.add(NLoad(dest = cur, ty = NI32, ptr = NLocal(name = idxSlot)))
+      val cmp = freshTmp(ctx)
+      insns.add(NICmp(dest = cmp, pred = ISlt, ty = NI32, a = NLocal(name = cur), b = NLitInt(v = n.toLong(), ty = NI32)))
+      insns.add(NCondBr(cond = NLocal(name = cmp), thenLabel = bodyL, elseLabel = exitL))
+      insns.add(NLabel(name = bodyL))
+      val ptr = arrayElemPtr(ctx, insns, addr, arrTy, el, NLocal(name = cur))
+      insns.add(NStore(ty = el, value = z.value, ptr = ptr.value))
+      val next = freshTmp(ctx)
+      insns.add(NAdd(dest = next, ty = NI32, a = NLocal(name = cur), b = NLitInt(v = 1i64, ty = NI32)))
+      insns.add(NStore(ty = NI32, value = NLocal(name = next), ptr = NLocal(name = idxSlot)))
+      insns.add(NBr(label = condL))
+      insns.add(NLabel(name = exitL))
+      val dest = freshTmp(ctx)
+      insns.add(NLoad(dest = dest, ty = arrTy, ptr = NLocal(name = slot)))
+      NVal(ty = arrTy, value = NLocal(name = dest))
+    }
+    case _ -> {
+      val elemTy = match listElemOfType(ctx, arrTy) {
+        case Some(t) -> t
+        case None -> panic("Lyric.LlvmCodegen: internal — an array fill of " + nTypeToIrString(arrTy))
+      }
+      val n = match arrTe.kind {
+        case TArray(size, _) -> match arrayLenOfSize(size) {
+          case Some(k) -> k
+          case None -> panic(
+            "error[N0020] " + arrTe.span.startPos.line.toString() + ":" +
+              arrTe.span.startPos.column.toString() +
+              ": this `array[N, T]` has no native layout: its length must be a compile-time constant (a value-generic length is not supported)"
+          )
+        }
+        case _ -> 0
+      }
+      val dst = constructList(ctx, insns, elemTy)
+      val dstP = collectionAsI8(ctx, insns, dst)
+      val idxSlot = "afill.idx." + freshTmp(ctx)
+      ctx.allocas.add(NAlloca(dest = idxSlot, ty = NI32))
+      insns.add(NStore(ty = NI32, value = NLitInt(v = 0i64, ty = NI32), ptr = NLocal(name = idxSlot)))
+      val condL = freshLabel(ctx, "afill.cond")
+      val bodyL = freshLabel(ctx, "afill.body")
+      val exitL = freshLabel(ctx, "afill.exit")
+      insns.add(NBr(label = condL))
+      insns.add(NLabel(name = condL))
+      val cur = freshTmp(ctx)
+      insns.add(NLoad(dest = cur, ty = NI32, ptr = NLocal(name = idxSlot)))
+      val cmp = freshTmp(ctx)
+      insns.add(NICmp(dest = cmp, pred = ISlt, ty = NI32, a = NLocal(name = cur), b = NLitInt(v = n.toLong(), ty = NI32)))
+      insns.add(NCondBr(cond = NLocal(name = cmp), thenLabel = bodyL, elseLabel = exitL))
+      insns.add(NLabel(name = bodyL))
+      pushTempScope(ctx)
+      val z = lowerExprExpecting(ctx, insns, zExpr, elemTy)
+      pushToList(ctx, insns, dstP, z)
+      popTempScope(ctx, insns)
+      val next = freshTmp(ctx)
+      insns.add(NAdd(dest = next, ty = NI32, a = NLocal(name = cur), b = NLitInt(v = 1i64, ty = NI32)))
+      insns.add(NStore(ty = NI32, value = NLocal(name = next), ptr = NLocal(name = idxSlot)))
+      insns.add(NBr(label = condL))
+      insns.add(NLabel(name = exitL))
+      dst
+    }
+  }
 }
 
 /// True when `t` is a by-value record's struct value (never a pointer): a bare
@@ -7163,7 +7748,7 @@ func emitTaskComplete(ctx: in Ctx, insns: in List[NInsn], v: in NVal): Unit {
     case NVoid -> {
     }
     case _ -> {
-      if isByValueStructNType(v.ty) {
+      if isBoxedValueNType(v.ty) {
         // The result slot takes over the box's only reference.
         val box = boxByValue(ctx, insns, v)
         val boxSlot = freshTmp(ctx)
@@ -7215,7 +7800,7 @@ func boxByValue(ctx: in Ctx, insns: in List[NInsn], v: in NVal): NVal {
 
 // Widen a value to the container's 64-bit slot representation.
 func slotOfVal(ctx: in Ctx, insns: in List[NInsn], v: in NVal): NValue {
-  if isByValueStructNType(v.ty) {
+  if isBoxedValueNType(v.ty) {
     // The container retains the box (its element flag is 1); the temp scope
     // drops this construction's own reference.
     val box = boxByValue(ctx, insns, v)
@@ -7276,8 +7861,8 @@ func valOfSlot(ctx: in Ctx, insns: in List[NInsn], slot: in NValue, elemTy: in N
     return NVal(ty = elemTy, value = NLocal(name = dest))
   }
   match elemTy {
-    // A by-value record is loaded out of its box (a copy: values have no identity).
-    case NStruct(_, _) -> {
+    // A by-value record or array is loaded out of its box (a copy: values have no identity).
+    case NStruct(_, _) | NArray(_, _) -> {
       val boxTy = byValueBoxType(ctx, elemTy)
       val boxStructTy = match boxTy { case NPtr(pointee) -> pointee; case _ -> panic("unreachable") }
       val box = freshTmp(ctx)
@@ -7346,7 +7931,7 @@ func refFlagOf(t: in NType): NValue {
     return NLitInt(v = 2i64, ty = NI32)
   }
   // A by-value record is stored boxed, and the box is a strong reference.
-  if isRefNType(t) or isByValueStructNType(t) {
+  if isRefNType(t) or isBoxedValueNType(t) {
     return NLitInt(v = 1i64, ty = NI32)
   }
   NLitInt(v = 0i64, ty = NI32)
@@ -7392,7 +7977,7 @@ func constructMap(ctx: in Ctx, insns: in List[NInsn], k: in NType, v: in NType):
   if isStringNType(k) {
     keyFlag = NLitInt(v = 1i64, ty = NI32)
   } else {
-    if isRefNType(k) or isByValueStructNType(k) {
+    if isRefNType(k) or isBoxedValueNType(k) {
       panic("Lyric.LlvmCodegen: Map keys on --target native must be String or a scalar type; got " + nTypeToIrString(k))
     }
   }
@@ -7437,6 +8022,10 @@ func collectionConstructForExpected(ctx: in Ctx, insns: in List[NInsn], e: in Ex
   // same way `newList()` takes its element types from the expected type.
   match e.kind {
     case EList(elems) -> {
+      match want {
+        case NArray(el, n) -> return Some(value = lowerArrayLiteral(ctx, insns, elems, want, el, n))
+        case _ -> ()
+      }
       match listElemOfType(ctx, want) {
         case Some(elem) -> return Some(value = lowerListLiteral(ctx, insns, elems, elem))
         case None -> return None
@@ -7826,7 +8415,18 @@ func lowerCollectionIndex(
   if indices.count != 1 {
     panic("Lyric.LlvmCodegen: indexing takes exactly one index for --target native")
   }
+  match lowerArrayIndexRead(ctx, insns, receiver, indices[0], line) {
+    case Some(v) -> return v
+    case None -> ()
+  }
   val recv = lowerExpr(ctx, insns, receiver)
+  match recv.ty {
+    case NArray(el, n) -> {
+      val addr = spillArray(ctx, insns, recv)
+      return readArrayElem(ctx, insns, addr, recv.ty, el, n, indices[0], line)
+    }
+    case _ -> ()
+  }
   if isStringNType(recv.ty) {
     // `s[i]` (#6237): `i` is a byte offset, matching this backend's
     // existing byte-indexed `.length`/`.substring` model (D-N-006); the
@@ -8302,6 +8902,12 @@ func typeToNEnvOpt(ctx: in Ctx, te: in TypeExpr, envNames: in List[String], envT
       // and `.length` reuse the list paths wholesale.
       match typeToNEnvOpt(ctx, element, envNames, envTys) {
         case Some(el) -> Some(value = listNType(ctx, el))
+        case None -> None
+      }
+    }
+    case TArray(size, element) -> {
+      match typeToNEnvOpt(ctx, element, envNames, envTys) {
+        case Some(el) -> arrayNType(ctx, size, el)
         case None -> None
       }
     }
@@ -8876,6 +9482,15 @@ func unifyTyArg(
         case None -> ()
       }
     }
+    case TArray(_, elemTe) -> {
+      match argTy {
+        case NArray(el, _) -> unifyTyArg(ctx, elemTe, el, paramNames, boundNames, boundTys)
+        case _ -> match listElemOfType(ctx, argTy) {
+          case Some(et) -> unifyTyArg(ctx, elemTe, et, paramNames, boundNames, boundTys)
+          case None -> ()
+        }
+      }
+    }
     case TParen(inner) -> unifyTyArg(ctx, inner, argTy, paramNames, boundNames, boundTys)
     case _ -> {
     }
@@ -8967,6 +9582,7 @@ func teMentionsUnbound(te: in TypeExpr, paramNames: in List[String], bound: in L
       false
     }
     case TSlice(inner) -> teMentionsUnbound(inner, paramNames, bound)
+    case TArray(_, inner) -> teMentionsUnbound(inner, paramNames, bound)
     case TParen(inner) -> teMentionsUnbound(inner, paramNames, bound)
     case TFunction(params, ret) -> {
       var i = 0
@@ -10418,6 +11034,36 @@ func emitStructEq(ctx: in Ctx, body: in List[NInsn], t: in NType, a: in NValue, 
   acc
 }
 
+/// An `i1` local holding `a == b` for two inline arrays `[n x el]`: every
+/// element pair equal by the element type's `==`.
+func emitArrayEq(
+  ctx: in Ctx, body: in List[NInsn], t: in NType, el: in NType, n: in Int, a: in String, b: in String
+): String {
+  var acc = ""
+  var i = 0
+  while i < n {
+    val ea = freshTmp(ctx)
+    body.add(NExtractValue(dest = ea, aggTy = t, agg = NLocal(name = a), index = i))
+    val eb = freshTmp(ctx)
+    body.add(NExtractValue(dest = eb, aggTy = t, agg = NLocal(name = b), index = i))
+    val eq = emitValueEqN(ctx, body, el, ea, eb)
+    if acc.length == 0 {
+      acc = eq
+    } else {
+      val both = freshTmp(ctx)
+      body.add(NAnd(dest = both, ty = NI1, a = NLocal(name = acc), b = NLocal(name = eq)))
+      acc = both
+    }
+    i = i + 1
+  }
+  if acc.length == 0 {
+    val tru = freshTmp(ctx)
+    body.add(NICmp(dest = tru, pred = IEq, ty = NI1, a = NLitInt(v = 1i64, ty = NI1), b = NLitInt(v = 1i64, ty = NI1)))
+    acc = tru
+  }
+  acc
+}
+
 /// An `i1` local holding `a == b` for two values of IR type `t`, by the
 /// rules `synthUnionEq` documents.
 func emitValueEqN(ctx: in Ctx, body: in List[NInsn], t: in NType, a: in String, b: in String): String {
@@ -10436,6 +11082,12 @@ func emitValueEqN(ctx: in Ctx, body: in List[NInsn], t: in NType, a: in String, 
       body.add(NFCmp(dest = dest, pred = FOeq, ty = t, a = NLocal(name = a), b = NLocal(name = b)))
       return dest
     }
+    case _ -> ()
+  }
+  match t {
+    // An inline `array[N, T]` (D167) is equal when every element is, each by
+    // its own type's rules (a nested array element by element).
+    case NArray(el, n) -> return emitArrayEq(ctx, body, t, el, n, a, b)
     case _ -> ()
   }
   match unionInfoOfNType(ctx, t) {
@@ -11966,6 +12618,7 @@ func zeroValueOf(ty: in NType): NValue {
     case NFloat -> NLitFloat(v = 0.0, ty = NFloat)
     case NPtr(pointee) -> NLitNull(ty = NPtr(pointee = pointee))
     case NStruct(_, _) -> NZeroInit(ty = ty)
+    case NArray(_, _) -> NZeroInit(ty = ty)
     case _ -> NLitInt(v = 0i64, ty = ty)
   }
 }
@@ -12047,6 +12700,9 @@ func lowerIndexAssign(
 ): Unit {
   if indices.count != 1 {
     panic("Lyric.LlvmCodegen: indexed assignment takes exactly one index for --target native")
+  }
+  if lowerArrayElemAssign(ctx, insns, receiver, indices[0], op, value, line) {
+    return
   }
   val recv = lowerExpr(ctx, insns, receiver)
   match listElemOfType(ctx, recv.ty) {
@@ -13117,7 +13773,15 @@ func externDeclOf(ctx: in Ctx, ef: in ExternFuncDecl): NFunc {
         "N0010: " + byValueExternMessage(ef.name, byValueRecName(tys[k]), ctx.unionDefs.containsKey(byValueRecName(tys[k])))
       )
     }
+    match tys[k] {
+      case NArray(_, _) -> panic("N0010: " + byValueExternMessage(ef.name, "array", false))
+      case _ -> ()
+    }
     k = k + 1
+  }
+  match retN {
+    case NArray(_, _) -> panic("N0010: " + byValueExternMessage(ef.name, "array", false))
+    case _ -> ()
   }
   if isByValueStructNType(retN) {
     panic(
@@ -14005,6 +14669,10 @@ func byValueRecordNameOf(st: in NByValState, pkg: in String, te: in TypeExpr): S
   }
   val ft = classifyByValueField(st, pkg, te)
   if ft.count == 1 {
+    match ft[0] {
+      case NArray(_, _) -> return "array"
+      case _ -> ()
+    }
     return byValueRecName(ft[0])
   }
   ""
@@ -14012,6 +14680,11 @@ func byValueRecordNameOf(st: in NByValState, pkg: in String, te: in TypeExpr): S
 
 /// Message for `N0010`: a by-value record in an `extern func` signature.
 func byValueExternMessage(fnName: in String, recName: in String, isUnion: in Bool): String {
+  if recName == "array" {
+    return "extern func '" + fnName +
+      "' passes an inline `array[N, T]` across the C boundary: it is an LLVM aggregate, not a C array parameter " +
+      "(docs/67 §4.3, tracked in #8009); pass a NativePtr to its first element"
+  }
   val remedy = if isUnion {
     "give a case a reference payload so the union keeps its heap form"
   } else {

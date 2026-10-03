@@ -37,9 +37,9 @@ out="$work/bi_define_jvm_fixture.jar"
 "$lyric_bin" build --target jvm --define version=8.8.8 --define build_profile=release --define git_hash=beadfeed "$fixture" -o "$out" --force
 result="$(java -jar "$out")"
 echo "$result"
-echo "$result" | grep -qx "V=8.8.8"   || { echo "::error::version define not injected into BuildInfo on JVM"; exit 1; }
-echo "$result" | grep -qx "P=release"  || { echo "::error::build_profile define not injected into BuildInfo on JVM"; exit 1; }
-echo "$result" | grep -qx "T=jvm"      || { echo "::error::BuildInfo.target is not jvm on the JVM build"; exit 1; }
-echo "$result" | grep -qx "G=beadfeed" || { echo "::error::git_hash define not wrapped into BuildInfo.gitHash on JVM"; exit 1; }
+grep -qx "V=8.8.8" <<< "$result"   || { echo "::error::version define not injected into BuildInfo on JVM"; exit 1; }
+grep -qx "P=release" <<< "$result"  || { echo "::error::build_profile define not injected into BuildInfo on JVM"; exit 1; }
+grep -qx "T=jvm" <<< "$result"      || { echo "::error::BuildInfo.target is not jvm on the JVM build"; exit 1; }
+grep -qx "G=beadfeed" <<< "$result" || { echo "::error::git_hash define not wrapped into BuildInfo.gitHash on JVM"; exit 1; }
 echo "BuildInfo JVM --define runtime path OK (V=8.8.8 P=release T=jvm G=beadfeed)" >> "$GITHUB_STEP_SUMMARY"
 

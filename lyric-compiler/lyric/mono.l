@@ -568,7 +568,9 @@ func typeExprKey(te: in TypeExpr): String {
     case TUnit -> "Unit"
     case TNever -> "Never"
     case TSelf -> "Self"
-    case TArray(_, elem) -> "Arr_" + typeExprKey(elem)
+    // The length is part of the type: `array[2, Int]` and `array[3, Int]`
+    // are different specialisations.
+    case TArray(sz, elem) -> "Arr" + typeArgListKey(singleTypeArg(sz)) + "_" + typeExprKey(elem)
     case TSlice(elem) -> "Slice_" + typeExprKey(elem)
     case TNullable(inner) -> "Nullable_" + typeExprKey(inner)
     case TTuple(ts) -> "Tup_" + typeExprListKey(ts)
@@ -643,6 +645,12 @@ func genericAppArgsMono(te: in TypeExpr): List[TypeArg] {
     case TNullable(inner) -> genericAppArgsMono(inner)
     case _ -> newList()
   }
+}
+
+func singleTypeArg(a: in TypeArg): List[TypeArg] {
+  val xs: List[TypeArg] = newList()
+  xs.add(a)
+  xs
 }
 
 func typeArgListKey(args: in List[TypeArg]): String {
@@ -4858,7 +4866,14 @@ func desugarRecordCopyMono(
     val fname = site.fields[fi]
     val value = match mapGet(given, fname) {
       case Some(tmp) -> singleSegPathExpr(tmp, sp)
-      case None -> Expr(kind = EMember(receiver = singleSegPathExpr(base, sp), memberName = fname), span = sp)
+      case None -> copyArrayFieldRead(
+        Expr(
+          kind = EMember(receiver = singleSegPathExpr(base, sp), memberName = fname),
+          span = sp
+        ),
+        copyFieldTypeMono(site, fname),
+        sp
+      )
     }
     ctorArgs.add(CANamed(name = fname, value = value, span = sp))
     fi = fi + 1
@@ -5002,6 +5017,34 @@ func hoistOperandTypedMono(state: in MonoState, site: in HoistOperandTypeSite, e
   stmts.add(copyTypedValStmtMono(name, Some(value = site.operandType), e, sp))
   stmts.add(Statement(kind = SExpr(expr = singleSegPathExpr(name, sp)), span = sp))
   Expr(kind = EBlock(block = Block(statements = stmts, span = sp)), span = sp)
+}
+
+// A field of array type that `.copy(...)` carries over unchanged is stored in a
+// new record, so it is copied (D167): the record has identity when it has a
+// `var` field, and the two must not share the array.
+func copyArrayFieldRead(read: in Expr, fieldTy: in Option[TypeExpr], sp: in Span): Expr {
+  match fieldTy {
+    case Some(te) -> match te.kind {
+      case TArray(_, _) -> {
+        val targs: List[TypeArg] = newList()
+        targs.add(TAType(ty = te))
+        val segs: List[String] = newList()
+        segs.add(arrayCopyIntrinsic())
+        val callee = Expr(
+          kind = ETypeApp(
+            fn = Expr(kind = EPath(path = ModulePath(segments = segs, span = sp)), span = sp),
+            args = targs
+          ),
+          span = sp
+        )
+        val cargs: List[CallArg] = newList()
+        cargs.add(CAPositional(expr = read))
+        Expr(kind = ECall(fn = callee, args = cargs), span = sp)
+      }
+      case _ -> read
+    }
+    case None -> read
+  }
 }
 
 // The type of field `name` recorded on a copy site, when it has one.
@@ -8573,7 +8616,7 @@ pub func monoFileWithLambdaTypes(
     val substitutedBody = substValueInBody(req.valueSubst, req.baseDecl.body)
     val env = seedEnvFromParams(req.baseDecl.params)
     val specOrigin = originPkgOf(req.baseDecl.annotations)
-    if substMentionsUnsignedMono(req.subst) {
+    if substMentionsUnsignedMono(req.subst) or substMentionsArrayMono(req.subst) {
       state.unsignedSpecs.add(
         UnsignedSpecRequest(
           specName = req.specName,
@@ -8712,6 +8755,54 @@ func substMentionsUnsignedMono(subst: in Map[String, TypeExpr]): Bool {
     }
   }
   false
+}
+
+// True when a type argument of `subst` mentions `array[N, T]`: such a
+// specialisation is re-checked too, so the array operations on its operands
+// of type `T` are lowered (D167).
+func substMentionsArrayMono(subst: in Map[String, TypeExpr]): Bool {
+  for k in mapKeys(subst) {
+    match mapGet(subst, k) {
+      case Some(te) -> if teMentionsArrayMono(te) { return true }
+      case None -> ()
+    }
+  }
+  false
+}
+
+func teMentionsArrayMono(te: in TypeExpr): Bool {
+  match te.kind {
+    case TArray(_, _) -> true
+    case TParen(inner) -> teMentionsArrayMono(inner)
+    case TGenericApp(_, args) -> {
+      for a in args {
+        match a {
+          case TAType(ate) -> if teMentionsArrayMono(ate) { return true }
+          case TAValue(_) -> ()
+        }
+      }
+      false
+    }
+    case TTuple(elems) -> {
+      for el in elems {
+        if teMentionsArrayMono(el) {
+          return true
+        }
+      }
+      false
+    }
+    case TSlice(elem) -> teMentionsArrayMono(elem)
+    case TNullable(inner) -> teMentionsArrayMono(inner)
+    case TFunction(ps, r) -> {
+      for pte in ps {
+        if teMentionsArrayMono(pte) {
+          return true
+        }
+      }
+      teMentionsArrayMono(r)
+    }
+    case _ -> false
+  }
 }
 
 func teMentionsUnsignedMono(te: in TypeExpr): Bool {

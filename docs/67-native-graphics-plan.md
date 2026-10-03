@@ -165,7 +165,7 @@ struct value `{ i32 disc, i32 pad, [W x i64] payload }`, so `Option[Vec3]`,
 `Option[Int]`, `Result[Int, Int]` and enums with scalar payloads cost no
 allocation and no ARC. Generic unions classify per instantiation; unions with a
 reference payload, recursive unions and `impl` targets keep the heap form.
-`array[N, T]` fields and the C ABI for by-value structs remain open.
+The C ABI for by-value structs remains open (`array[N, T]` fields: §4.3).
 
 ### 4.3 `array[N, T]`
 
@@ -175,10 +175,22 @@ matrices and small lookup tables need.
 
 - Element writes `a[i] = v` need a writable place: a `var` local, an
   `out`/`inout` parameter, or a `var` field.
-- Bounds checks are elided when the index type is a range subtype that
-  proves the access, as the reference already specifies.
-- Lowered to `[N x T]` on native, an inline fixed buffer struct on MSIL,
-  and a Java array on the JVM.
+- Bounds checks are elided when the index is a literal in range or a
+  NAMED range subtype that proves the access (an inline `Int range` annotation
+  is not a proof). An integer index of any width is accepted; a non-`Int` one
+  is range checked as a `Long`.
+- Lowered to `[N x T]` on native, and to a `List` on MSIL and the JVM
+  (D167).
+
+**Status: implemented (D167, progress entry `2026-10-02-fixed-arrays`).**
+Bracket-literal construction, zero fill, element writes, copies by the
+ownership rule (an array stored into a writable place, or read from one and
+escaping, is copied; immutable places are never copied), `.length`, `for`,
+`.toSlice()`, `==` and named-range-subtype bounds-check elision work on all
+three targets. On native an array of by-value elements is
+an inline `[N x T]` with no allocation and a by-value record may hold one; any
+other element type is a heap array. Value-generic `N` (D167 item 6) and the C
+ABI for an array in an `extern func` signature (N0010, #8009) are open.
 
 ### 4.4 `buffer[T]`: contiguous, mutable, value semantics
 
@@ -503,7 +515,7 @@ XL (a quarter or more of focused work).
 | Phase | Scope | Depends on | Exit criteria | Size |
 |---|---|---|---|---|
 | **G0** | Decision-log entry for §4; revisions to `docs/00` and `docs/04`; Q-GFX-001 to Q-GFX-004 resolved. | none | Decision accepted; reference updated with the new types as "specified". **Done (D155).** | S |
-| **G1** | `Float` as f32 on MSIL and native (the JVM already complies), with the literal rule and `.toFloat()` checked on all three and migration of existing uses (§4.1); by-value records and small unions on native, with the C ABI for by-value structs (§4.2); `array[N, T]` on native (§4.3) with MSIL and JVM parity issues filed; profile-gated overflow checks on native (#6263); range-subtype bounds-check elision on native. | G0 | Self-tests on every backend; ASan clean; a bench showing `Vec3` arithmetic does not allocate. | L |
+| **G1** | `Float` as f32 on MSIL and native (the JVM already complies), with the literal rule and `.toFloat()` checked on all three and migration of existing uses (§4.1); by-value records and small unions on native, with the C ABI for by-value structs (§4.2); `array[N, T]` (§4.3, D167: implemented on all three targets, value-generic `N` open); profile-gated overflow checks on native (#6263); range-subtype bounds-check elision on native. | G0 | Self-tests on every backend; ASan clean; a bench showing `Vec3` arithmetic does not allocate. | L |
 | **G2** | `Plain` marker (§4.5); `buffer[T]` with copy-on-write on native, and the shared-mark lowering on MSIL and JVM (§4.4); verifier array model; `withPointer` and `withMutPointer` under the `N0100` rules. | G1 | Self-tests on all backends prove aliasing is never observable; the COW check costs at most a small, fixed per-write overhead in `lyric bench`. | L |
 | **G3** | `foreign record` (§4.7); `@userdata` callbacks (§4.8); `lyric bindgen` (§5.3); C-binding library dependencies with link-requirement propagation (§6); `[native]` library resolution, restore with checksums, and bundling (§6). | G1, G2 | A test library binds a small C API end to end through generated bindings and is consumed by a separate application project. | XL |
 | **G4** | `lyric-window` on SDL3 and an example that opens a window, handles input, and plays a sound. | G3 | Example runs on Linux and macOS; event handling tested headless with the offscreen driver. | M |
