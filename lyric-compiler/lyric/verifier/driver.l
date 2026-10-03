@@ -246,26 +246,32 @@ pub func proveSourceWithOptions(source: in String, allowUnverified: in Bool): Pr
     // Bring every integer/bitvector operand to one sort before discharge
     // (#7848).  A goal that cannot be reconciled means something other than
     // the source, so it fails closed as V0033 — neither the trivial
-    // discharger nor the solver sees it.
-    match reconcileGoalSorts(g) {
-      case Ok(rg) -> {
-        val outcome = discharge(rg)
-        results.add(ProofResult(goal = rg, outcome = outcome))
-        match outcomeToDiag(rg, outcome, allowUnverified) {
-          case Some(d) -> resultDiags.add(d)
-          case None -> {
+    // discharger nor the solver sees it.  A goal carrying a construct VC
+    // generation already reported as V0033 fails the same way, without a
+    // second report (#7874).
+    if goalIsPoisoned(g) {
+      results.add(ProofResult(goal = g, outcome = Unknown(reason = "not translatable: a construct reported above (V0033)")))
+    } else {
+      match reconcileGoalSorts(g) {
+        case Ok(rg) -> {
+          val outcome = discharge(rg)
+          results.add(ProofResult(goal = rg, outcome = outcome))
+          match outcomeToDiag(rg, outcome, allowUnverified) {
+            case Some(d) -> resultDiags.add(d)
+            case None -> {
+            }
           }
         }
-      }
-      case Err(reason) -> {
-        results.add(ProofResult(goal = g, outcome = Unknown(reason = "not translatable: " + reason)))
-        resultDiags.add(
-          errorDiagnostic(
-            "V0033",
-            goalKindDisplay(g.kind) + " — cannot translate the obligation into the proof logic faithfully: " + reason,
-            g.origin
+        case Err(reason) -> {
+          results.add(ProofResult(goal = g, outcome = Unknown(reason = "not translatable: " + reason)))
+          resultDiags.add(
+            errorDiagnostic(
+              "V0033",
+              goalKindDisplay(g.kind) + " — cannot translate the obligation into the proof logic faithfully: " + reason,
+              g.origin
+            )
           )
-        )
+        }
       }
     }
     i = i + 1

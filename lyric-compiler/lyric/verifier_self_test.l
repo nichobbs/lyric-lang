@@ -1390,3 +1390,41 @@ test "a binding's initializer discharges its callee's precondition (#7871)" {
   )
   assertRefuted(pos + "func f(y: in Int): Int\n{\n  var r = 1\n  r = pos(y)\n  r\n}\n", "assign-call-precondition")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// An untranslatable construct is reported once, and its goal stays failed
+// (#7874).
+// ─────────────────────────────────────────────────────────────────────────────
+func countDiagCode(s: in ProofSummary, code: in String): Int {
+  var n = 0
+  var i = 0
+  while i < s.diagnostics.count {
+    if s.diagnostics[i].code == code {
+      n = n + 1
+    }
+    i = i + 1
+  }
+  n
+}
+
+test "a UInt beside an Int is reported once and its goal fails (#7874)" {
+  val s = provePkg("func m(a: in UInt, i: in Int): Bool\n  ensures: result\n{\n  a < i\n}\n")
+  assertEqualInt(countDiagCode(s, "V0033"), 1, "one V0033 for one mix")
+  assertTrue(summaryHasFailure(s), "the goal is not discharged")
+  assertEqualInt(summaryDischargedCount(s), 0, "nothing is discharged")
+}
+
+test "an untranslatable result range keeps the postcondition failed (#7874)" {
+  val s = provePkg("func c(x: in UInt): UInt range -1 ..= 5\n  ensures: result == x\n{\n  x\n}\n")
+  assertEqualInt(countDiagCode(s, "V0033"), 1, "one V0033 for the bound")
+  assertTrue(summaryHasFailure(s), "the postcondition is not reported discharged")
+}
+
+test "an untranslatable callee contract is reported once across calls (#7874)" {
+  val s = provePkg(
+    "func k(a: in UInt, i: in Int): Bool\n  requires: a < i\n{\n  true\n}\n" +
+      "func u(a: in UInt, i: in Int): Bool\n{\n  k(a, i) and k(a, i)\n}\n"
+  )
+  assertEqualInt(countDiagCode(s, "V0033"), 1, "one V0033 for the contract")
+  assertTrue(summaryHasFailure(s), "the goals that use it are not discharged")
+}

@@ -316,6 +316,26 @@ func untranslatableDiag(reason: in String, sp: in Span): Diagnostic {
   errorDiagnostic("V0033", "cannot translate this into the proof logic faithfully: " + reason, sp)
 }
 
+// A term standing for a construct already reported as V0033.  It keeps
+// every goal it reaches failed — the driver never hands such a goal to the
+// discharger or the solver — without a second report at the goal (#7874).
+func poisonTerm(t: in Term): Term {
+  TApp(name = untranslatableMarker(), args = termList1(t), retSort = sortOf(t))
+}
+
+// A callee contract or `@pure` body is translated once more at every call;
+// a construct there that cannot be translated is reported (once, after
+// `dedupeDiagnostics`) even when the callee itself is not proved.
+func keepUntranslatableDiags(src: in List[Diagnostic], dst: in List[Diagnostic]): Unit {
+  var i = 0
+  while i < src.count {
+    if src[i].code == "V0033" {
+      dst.add(src[i])
+    }
+    i = i + 1
+  }
+}
+
 // Convert a translated value to the sort it is bound, passed or returned
 // at (a literal taking an unsigned declared type, a lossless widening).  On
 // failure the term is kept and a V0033 error is recorded.
@@ -324,7 +344,7 @@ func coerceTermAt(t: in Term, target: in Sort, sp: in Span, diagsOut: in List[Di
     case Ok(c) -> c
     case Err(reason) -> {
       diagsOut.add(untranslatableDiag(reason, sp))
-      t
+      poisonTerm(t)
     }
   }
 }
@@ -692,7 +712,7 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
         case Ok(pair) -> TIte(cond = condR.term, thenT = pair.lhs, elseT = pair.rhs)
         case Err(reason) -> {
           branchDiags.add(untranslatableDiag(reason, e.span))
-          TIte(cond = condR.term, thenT = thenR.term, elseT = elseR.term)
+          poisonTerm(TIte(cond = condR.term, thenT = thenR.term, elseT = elseR.term))
         }
       }
       val sc: List[Term] = newList()
@@ -734,18 +754,22 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
       val (xR, xDiags) = translateExpr(env, operand)
       match builtinOfPrefix(op) {
         case Some(b) -> {
-          match b {
+          val unsignedNeg = match b {
             case BOpNeg -> match sortOf(xR.term) {
-              case SBitVec(_) -> xDiags.add(untranslatableDiag("an unsigned value is negated", e.span))
-              case _ -> ()
+              case SBitVec(_) -> {
+                xDiags.add(untranslatableDiag("an unsigned value is negated", e.span))
+                true
+              }
+              case _ -> false
             }
-            case _ -> ()
+            case _ -> false
           }
           val sc: List[Term] = newList()
           appendTermList(sc, xR.sideConds)
           val asList: List[Term] = newList()
           appendTermList(asList, xR.assumed)
-          val t = TBuiltin(op = b, args = termList1(xR.term))
+          val rawT = TBuiltin(op = b, args = termList1(xR.term))
+          val t = if unsignedNeg { poisonTerm(rawT) } else { rawT }
           // `-x` overflows for the type's minimum (D163, #7871).
           if env.checkedArithmetic {
             match b {
@@ -799,7 +823,7 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
           } else {
             termList2(lR.term, rR.term)
           }
-          val term = TBuiltin(op = b, args = args)
+          val term = if sortDiags.count > 0 { poisonTerm(TBuiltin(op = b, args = args)) } else { TBuiltin(op = b, args = args) }
           val sc: List[Term] = newList()
           appendTermList(sc, lR.sideConds)
           appendTermList(sc, rR.sideConds)
@@ -994,7 +1018,8 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
                     }
                     match bodyExprOpt {
                       case Some(bodyExpr) -> {
-                        val (bodyR, _) = translateExpr(innerEnv, bodyExpr)
+                        val (bodyR, bodyDiags) = translateExpr(innerEnv, bodyExpr)
+                        keepUntranslatableDiags(bodyDiags, allArgDiags)
                         val bodySubst = substTerm(paramSubst, paramSubstNames, bodyR.term)
                         pureUnfold.add(TBuiltin(op = BOpEq, args = termList2(callTerm, bodySubst)))
                       }
@@ -1013,7 +1038,8 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
               while ci < decl.contracts.count {
                 match decl.contracts[ci] {
                   case CCRequires(pre, _) -> {
-                    val (preR, _) = translateExpr(innerEnv, pre)
+                    val (preR, preDiags) = translateExpr(innerEnv, pre)
+                    keepUntranslatableDiags(preDiags, allArgDiags)
                     preConds.add(substTerm(paramSubst, paramSubstNames, preR.term))
                   }
                   case _ -> {
@@ -1045,7 +1071,8 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
               while ci < decl.contracts.count {
                 match decl.contracts[ci] {
                   case CCEnsures(post, _) -> {
-                    val (postR, _) = translateExpr(resultEnv, post)
+                    val (postR, postDiags) = translateExpr(resultEnv, post)
+                    keepUntranslatableDiags(postDiags, allArgDiags)
                     postConds.add(substTerm(paramSubst, paramSubstNames, postR.term))
                   }
                   case _ -> {
@@ -1933,7 +1960,7 @@ func wpAssign(
               case Ok(pair) -> TBuiltin(op = bin, args = termList2(pair.lhs, pair.rhs))
               case Err(reason) -> {
                 rhsDiags.add(untranslatableDiag(reason, sp))
-                TBuiltin(op = bin, args = termList2(existing, rhsR.term))
+                poisonTerm(TBuiltin(op = bin, args = termList2(existing, rhsR.term)))
               }
             }
             if env.checkedArithmetic {
@@ -2491,8 +2518,11 @@ pub func goalsForFunctionWithExtraHyps(
     case Err(reason) -> {
       val retSpan = match decl.ret { case Some(te) -> te.span; case None -> decl.span }
       rangeDiags.add(untranslatableDiag("the result's declared range: " + reason, retSpan))
-      val none: List[Term] = newList()
-      none
+      // The obligation stays in the goal, failed, so the postcondition is
+      // never reported discharged while weaker than declared (#7874).
+      val failed: List[Term] = newList()
+      failed.add(poisonTerm(falseT()))
+      failed
     }
   }
   val allPostParts: List[Term] = newList()
@@ -3020,5 +3050,28 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
     i = i + 1
   };
 
-  (allGoals, allDiags)
+  (allGoals, dedupeDiagnostics(allDiags))
+}
+
+// Drop a diagnostic identical (code, message and span) to an earlier one: an
+// expression translated more than once — a callee contract at each call, a
+// loop condition before and after the havoc — reports its construct once.
+func dedupeDiagnostics(diags: in List[Diagnostic]): List[Diagnostic] {
+  val seen: Map[String, Bool] = newMap()
+  val kept: List[Diagnostic] = newList()
+  var i = 0
+  while i < diags.count {
+    val d = diags[i]
+    val key = d.code + "@" + spanKey(d.span) + ":" + d.message
+    if not seen.containsKey(key) {
+      seen.add(key, true)
+      kept.add(d)
+    }
+    i = i + 1
+  }
+  kept
+}
+
+func spanKey(sp: in Span): String {
+  intToString(sp.startPos.offset) + "-" + intToString(sp.endPos.offset)
 }
