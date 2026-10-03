@@ -1536,6 +1536,18 @@ pub func isValidNpmName(name: in String): Bool {
   isNpmNamePart(name)
 }
 
+/// ASCII-uppercase a one-character string.  Spelled with a table rather than
+/// `Str.toUpper`, which the stage-0 emitter mis-resolves to `Std.Char` in a
+/// file importing both modules (#2125).
+func npmUpperAscii(one: in String): String {
+  val at = Str.indexOfRaw("abcdefghijklmnopqrstuvwxyz", one)
+  if at < 0 {
+    one
+  } else {
+    Str.substring("ABCDEFGHIJKLMNOPQRSTUVWXYZ", at, 1)
+  }
+}
+
 /// The Lyric package identifier for an NPM package name (docs/35 section 9.3):
 /// strip `@`, map `/` to `.`, and PascalCase each `-`/`_`/`.`-separated
 /// segment (`node-fetch` -> `NodeFetch`, `@aws-sdk/client-s3` ->
@@ -1557,7 +1569,7 @@ pub func npmPackageIdent(name: in String): String {
         upperNext = true
       } else {
         val one = Str.substring(seg, ci, 1)
-        ident = ident + (if upperNext { Str.toUpper(one) } else { one })
+        ident = ident + (if upperNext { npmUpperAscii(one) } else { one })
         upperNext = false
       }
       ci += 1
