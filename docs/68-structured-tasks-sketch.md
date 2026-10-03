@@ -1,6 +1,6 @@
 # 68. Structured tasks: a first-class `Task[T]`, scope-bound `spawn`, and bounded waits
 
-_Status: **Partly implemented.** §4's `spawn`-only-inside-`scope` rule (`V0034`) shipped in D165 and §3's `Task[T]` type (checker, mono, MSIL, JVM) in D166; the API in §5, `V0035` and the native backend remain a proposed sketch. Extends docs/01 §7.1,
+_Status: **Partly implemented.** §4's `spawn`-only-inside-`scope` rule (`V0034`) shipped in D165 and §3's `Task[T]` type (checker, mono, MSIL, JVM) in D166 and §5's `waitFor`, `isDone` and `awaitAll` in D168; `cancel`, `awaitAny`, `V0035` and the native backend remain a proposed sketch. Extends docs/01 §7.1,
 §7.3 and §7.4 and decision D119. Open questions Q-TASK-001 to Q-TASK-008 are
 listed in §9._
 
@@ -113,7 +113,7 @@ pub func awaitAny[T](ts: in List[Task[T]]): T
 - **`isDone`** is `waitFor(t, 0)`.
 - **`cancel`** requests cooperative cancellation (§7.3). It is idempotent. The
   task still has to be awaited, or be left for the scope to join.
-- **`awaitAll`** is the `Promise.all` case: it returns results in input order.
+- **`awaitAll`** is the `Promise.all` case: it returns results in input order. _D168 ships the in-order join and raises the first failure in input order; the fail-fast cancel of the rest below needs `cancel`. The old scope-joining `awaitAll(Scope)` is now `awaitScope`._
   On the first failure it cancels the rest and raises that failure. The empty
   list yields an empty list.
 - **`awaitAny`** returns the first result and cancels the rest (Q-TASK-006).

@@ -23,6 +23,11 @@ async func failingTask(): Int {
   return boom()
 }
 
+async func failingLater(): Int {
+  await delay(50)
+  return boom()
+}
+
 async func timesOutThenFinishes(): Bool {
   scope {
     val t = spawn slowValue(400, 7)
@@ -82,7 +87,7 @@ async func awaitAllWithFailure(): Int {
 
 async func waitThenAwaitFailed(seen: in List[Bool]): Int {
   scope {
-    val t = spawn failingTask()
+    val t = spawn failingLater()
     seen.add(waitFor(t, 20000))
     return await t
   }

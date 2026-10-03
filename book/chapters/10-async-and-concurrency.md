@@ -26,7 +26,7 @@ val user = await fetchUser(someId)
 return (await fetchUser(someId))?.name
 ```
 
-Calling an async function awaits it where it stands, with or without the `await` keyword, so async code reads like ordinary sequential code. The only way to run things concurrently is `spawn`, which starts a task and gives you its handle; a `spawn` must sit inside a `scope` block, which joins the task before the block ends. The handle has the type `Task[R]` (`R` is what the spawned function returns), so you can pass it to a function that takes `t: in Task[Int]`, keep several in a `List[Task[Int]]`, and `await` each one.
+Calling an async function awaits it where it stands, with or without the `await` keyword, so async code reads like ordinary sequential code. The only way to run things concurrently is `spawn`, which starts a task and gives you its handle; a `spawn` must sit inside a `scope` block, which joins the task before the block ends. The handle has the type `Task[R]` (`R` is what the spawned function returns), so you can pass it to a function that takes `t: in Task[Int]`, keep several in a `List[Task[Int]]`, and `await` each one. `Std.Task` gives you `waitFor(t, ms)` to wait a bounded time and look again, `isDone(t)`, and `awaitAll(tasks)` to collect a whole list of handles in order.
 
 ```lyric
 // Awaited immediately — sequential
