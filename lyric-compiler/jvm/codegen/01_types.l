@@ -1515,6 +1515,48 @@ pub func recordRetClassOf(
   }
 }
 
+// The built-in `Task[T]` spawn handle (docs/68) is a `Future`, never
+// `Std.Task`'s JVM kernel `record Task` (non-generic, so `Task[X]` cannot
+// mean it).  The bundle-wide bare ctor key `Task` holds that record, so a
+// `Task[X]` application must not resolve to it.  A user-declared generic
+// `Task` record resolves to its own class and is untouched.
+pub func kernelTaskRecordClass(): String {
+  "Std/Task/Task"
+}
+
+// Unlike the MSIL `builtinTaskHeadMsil` there is no scope check here: the JVM
+// side only drops a resolution that is exactly the kernel's non-generic record
+// (`dropKernelTaskRecordClass`), so a user's own `Task` record, whatever its
+// arity, resolves to a different class and is never affected.
+func isBuiltinTaskApp(head: in ModulePath, argCount: in Int): Bool {
+  head.segments.count == 1 and head.segments[0] == "Task" and argCount == 1
+}
+
+pub func dropKernelTaskRecordClass(cls: in Option[String]): Option[String] {
+  match cls {
+    case Some(c) -> {
+      if c == kernelTaskRecordClass() {
+        return None
+      }
+      cls
+    }
+    case None -> None
+  }
+}
+
+// True when an extern/import alias resolution of a `Task[X]` application names
+// `Std.Task`'s kernel record (dotted or slashed), which a built-in handle never is.
+func isKernelTaskRecordFqn(head: in ModulePath, argCount: in Int, fqn: in String): Bool {
+  isBuiltinTaskApp(head, argCount) and fqn.replace(".", "/") == kernelTaskRecordClass()
+}
+
+func dropKernelTaskRecord(head: in ModulePath, argCount: in Int, cls: in Option[String]): Option[String] {
+  if isBuiltinTaskApp(head, argCount) {
+    return dropKernelTaskRecordClass(cls)
+  }
+  cls
+}
+
 func recordRetClassOfTe(te: in TypeExpr, owner: in String, localRecordNames: in Map[String, Bool]): Option[String] {
   match te.kind {
     case TParen(inner) -> recordRetClassOfTe(inner, owner, localRecordNames)
@@ -1603,11 +1645,11 @@ func recordRetClassOfBundleTe(
     // and the extern-typed function gets a bogus `checkcast` to that
     // record's class, producing a `ClassCastException` at runtime — a real
     // regression this exact fix closes (see the decision log).
-    case TGenericApp(head, _) -> {
+    case TGenericApp(head, targs) -> {
       if head.segments.count == 1 and externTypes.containsKey(head.segments[0]) {
         None
       } else {
-        recordRetClassOfBundleHead(head, owner, ctorReg)
+        dropKernelTaskRecord(head, targs.count, recordRetClassOfBundleHead(head, owner, ctorReg))
       }
     }
     // `Lyric.Mono`'s monomorphizer can rewrite a specialised function's
@@ -1696,9 +1738,9 @@ func ctorClassForBundle(ctorReg: in Map[String, String], owner: in String, name:
 pub func recordParamClassOf(ty: in TypeExpr, ctx: in FuncCtx): Option[String] {
   match ty.kind {
     case TParen(inner) -> recordParamClassOf(inner, ctx)
-    case TGenericApp(head, _) -> {
+    case TGenericApp(head, targs) -> {
       if head.segments.count == 1 {
-        ctorClassFor(ctx, head.segments[0])
+        dropKernelTaskRecord(head, targs.count, ctorClassFor(ctx, head.segments[0]))
       } else {
         mapGet(ctx.ctors, joinSegsDotted(head.segments))
       }
@@ -1762,7 +1804,7 @@ pub func typeExprToJvmExtern(te: in TypeExpr, pkgName: in String, externTypes: i
         case None -> typeExprToJvm(te, pkgName)
       }
     }
-    case TGenericApp(head, _) -> {
+    case TGenericApp(head, targs) -> {
       // A GENERIC `extern type` alias (`JvmConcurrentDict[K, V] =
       // "java.util.concurrent.ConcurrentHashMap"`) parses as TGenericApp, so
       // the TRef arm never resolved it and every value of the alias erased to
@@ -1784,14 +1826,24 @@ pub func typeExprToJvmExtern(te: in TypeExpr, pkgName: in String, externTypes: i
         match qualifiedExternKey(head) {
           case Some(qk) -> {
             match mapGet(externTypes, qk) {
-              case Some(javaFqn) -> return JRef(className = stripClrAritySuffix(javaFqn).replace(".", "/"))
+              case Some(javaFqn) -> {
+                if not isKernelTaskRecordFqn(head, targs.count, javaFqn) {
+                  return JRef(className = stripClrAritySuffix(javaFqn).replace(".", "/"))
+                }
+              }
               case None -> ()
             }
           }
           case None -> ()
         }
         match mapGet(externTypes, hseg) {
-          case Some(javaFqn) -> JRef(className = stripClrAritySuffix(javaFqn).replace(".", "/"))
+          case Some(javaFqn) -> {
+            if isKernelTaskRecordFqn(head, targs.count, javaFqn) {
+              typeExprToJvm(te, pkgName)
+            } else {
+              JRef(className = stripClrAritySuffix(javaFqn).replace(".", "/"))
+            }
+          }
           case None -> typeExprToJvm(te, pkgName)
         }
       }

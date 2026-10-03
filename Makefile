@@ -406,6 +406,8 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/string_ordinal_self_test.l \
 	lyric-compiler/lyric/stubbable_self_test.l \
 	lyric-compiler/lyric/synthesized_method_self_test.l \
+	lyric-compiler/lyric/task_kernel_record_self_test.l \
+	lyric-compiler/lyric/task_shadow_self_test.l \
 	lyric-compiler/lyric/test_synth_self_test.l \
 	lyric-compiler/lyric/toarray_array_abi_self_test.l \
 	lyric-compiler/lyric/try_catch_expr_self_test.l \

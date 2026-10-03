@@ -6991,11 +6991,16 @@ func makeToCharDoubleHelperFunc(pkgName: in String): LFunc {
 }
 
 func makeAwaitHelperFunc(): LFunc {
-  val futureTy = JRef(className = "java/util/concurrent/Future")
   val objTy = JRef(className = "java/lang/Object")
   val insns: List[LInsn] = newList()
+  // A value that is not a `Future` (a degenerate or already-resolved result
+  // reaching an `await` through an erased `Object` slot) is returned as is.
+  insns.add(LAload(slot = 0))
+  insns.add(LInstanceof(className = "java/util/concurrent/Future"))
+  insns.add(LIfeq(label = "aw_plain"))
   insns.add(LLabel(name = "aw_start"))
   insns.add(LAload(slot = 0))
+  insns.add(LCheckcast(className = "java/util/concurrent/Future"))
   insns.add(
     LInvokeinterface(owner = "java/util/concurrent/Future", name = "get", params = newList(), ret = objTy, argCount = 1)
   )
@@ -7012,6 +7017,9 @@ func makeAwaitHelperFunc(): LFunc {
     )
   )
   insns.add(LAthrow)
+  insns.add(LLabel(name = "aw_plain"))
+  insns.add(LAload(slot = 0))
+  insns.add(LAreturn)
   insns.add(
     LTryCatch(
       startLabel = "aw_start",
@@ -7021,7 +7029,7 @@ func makeAwaitHelperFunc(): LFunc {
     )
   )
   val ps: List[JvmType] = newList()
-  ps.add(futureTy)
+  ps.add(objTy)
   LFunc(flags = 0x0009, name = awaitHelperName(), params = ps, ret = objTy, insns = insns, maxStack = 0, maxLocals = 1)
 }
 
@@ -8424,9 +8432,10 @@ pub func codegenPackageWithSigsSeeded(
   // so a non-empty accumulator is a sound (never-missing) signal that the helper
   // may be needed.  A package with only lambdas emits an unused helper (six
   // instructions over always-present JDK types); harmless.
-  if closureAcc.count > 0 {
-    fns.add(makeAwaitHelperFunc())
-  }
+  // Every package also joins a `Task[T]` handle that reached it through an
+  // erased `Object` slot (a parameter from another package), so the helper is
+  // always present.
+  fns.add(makeAwaitHelperFunc())
 
   items.add(LPFuncs(funcsClass = funcsClass, fns = fns, staticVals = staticVals))
 

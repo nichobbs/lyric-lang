@@ -499,6 +499,21 @@ func resolveQualifiedAliasPath(
   TyError
 }
 
+// Whether `Task[X]` names the built-in task type here (docs/68 §3): the bare
+// name `Task` resolves to nothing, to the `System.Threading.Tasks.Task` extern
+// every kernel declares, or to the JVM kernel's `Std.Task` record. A package's
+// own type called `Task` still wins.
+func taskNameIsBuiltin(tbl: in SymbolTable): Bool {
+  match symTableTryFindOne(tbl, "Task") {
+    case None -> true
+    case Some(sym) -> match sym.kind {
+      case DKExternType(_, decl) -> decl.clrName == "System.Threading.Tasks.Task"
+      case DKRecord(_, _) -> sym.originPackage == "Std.Task"
+      case _ -> false
+    }
+  }
+}
+
 func resolveTypePath(
   tbl: in SymbolTable,
   ctx: in GenericContext,
@@ -525,6 +540,9 @@ func resolveTypePath(
     }
     if gctxIsTypeParam(ctx, name) and args.count == 0 {
       return TyVar(name = name)
+    }
+    if name == "Task" and args.count == 1 and taskNameIsBuiltin(tbl) {
+      return taskType(args[0])
     }
     match symTableTryFindOne(tbl, name) {
       case Some(sym) -> {

@@ -1,6 +1,6 @@
 # 68. Structured tasks: a first-class `Task[T]`, scope-bound `spawn`, and bounded waits
 
-_Status: **Partly implemented.** §4's `spawn`-only-inside-`scope` rule (`V0034`) shipped in D165; the rest is a proposed, unimplemented sketch. Extends docs/01 §7.1,
+_Status: **Partly implemented.** §4's `spawn`-only-inside-`scope` rule (`V0034`) shipped in D165 and §3's `Task[T]` type (checker, mono, MSIL, JVM) in D166; the API in §5, `V0035` and the native backend remain a proposed sketch. Extends docs/01 §7.1,
 §7.3 and §7.4 and decision D119. Open questions Q-TASK-001 to Q-TASK-008 are
 listed in §9._
 
@@ -203,7 +203,7 @@ case.
   bounded work. Is a `detach` needed for long-lived background work, with its
   failures reported to a handler? This sketch assumes no.
 - **Q-TASK-003: `Task` as a bare name.** Alias for `Task[Unit]` as written, or
-  require `Task[Unit]` everywhere.
+  require `Task[Unit]` everywhere. _Resolved in D166: assignability, not an alias (a `Task[R]` converts to an extern `Task`, a bare `Task` to `Task[Unit]`)._
 - **Q-TASK-004: escape rule strength.** The local rules in §4.1 versus a
   lifetime-parameter scheme. This sketch takes the local rules.
 - **Q-TASK-005: stuck tasks.** Should a scope have a cancel-then-abandon

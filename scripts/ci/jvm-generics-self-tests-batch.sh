@@ -11,7 +11,7 @@
 # list_literal_join_self_test.l, #7818; await_hoist_typed_self_test.l, #7823;
 # expected_type_propagation_self_test.l, #7855;
 # generic_ctor_open_arg_self_test.l, #7844; the overflow self-tests,
-# D163; record_eq_self_test.l, D164),
+# D163; record_eq_self_test.l, D164; task_shadow_self_test.l, D166),
 # through one
 # `lyric test`
 # invocation per file.
@@ -99,6 +99,8 @@ for t in \
   lyric-compiler/lyric/overflow_self_test.l \
   lyric-compiler/lyric/overflow_panic_self_test.l \
   lyric-compiler/lyric/record_eq_self_test.l \
+  lyric-compiler/lyric/task_shadow_self_test.l \
+  lyric-compiler/lyric/task_kernel_record_self_test.l \
   lyric-compiler/lyric/byvalue_record_self_test.l \
   lyric-compiler/lyric/inline_union_self_test.l \
   lyric-compiler/lyric/unsigned_typed_ops_self_test.l \

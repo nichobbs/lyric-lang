@@ -3423,6 +3423,60 @@ func recordFieldFuncTypeMsil(
   }
 }
 
+// The built-in `Task[T]` spawn handle (docs/68) lowers to the BCL task
+// type: `Task[Unit]` to the non-generic `Task`, `Task[X]` to `Task<X>`.  A
+// Lyric type or extern named `Task` in scope shadows it, as in the checker.
+func builtinTaskHeadMsil(cctx: in CodegenCtx, head: in ModulePath, args: in List[TypeArg], pkgName: in String): Bool {
+  head.segments.count == 1 and args.count == 1 and lastSegmentMsil(head) == "Task" and
+    not hasLyricTypeCandidateInScope(cctx, pkgName, "Task")
+}
+
+func taskOfResultMsil(cctx: in CodegenCtx, res: in MsilType): MsilType {
+  if res == MVoid {
+    MClassRef(typeRefCode = tdrTypeRef(cctx.trTask), clrFqn = "System.Threading.Tasks.Task")
+  } else {
+    val targs: List[MsilType] = newList()
+    targs.add(res)
+    MGenericInst(typeRefCode = tdrTypeRef(cctx.trTask1), headFqn = "System.Threading.Tasks.Task`1", typeArgs = targs)
+  }
+}
+
+// `spawn` of a call that already resolved to its value (a blocking
+// `@externTarget async` binding) still yields a `Task[R]` handle: wrap the
+// value as an already-completed task so the handle's type is uniform.
+func wrapResolvedAsTaskMsil(cctx: in CodegenCtx, insns: in List[MInsn], valueTy: in MsilType): MsilType {
+  val lctx = cctx.lctx
+  if valueTy == MVoid {
+    val noParams: List[MsilType] = newList()
+    val mr = ctxAddMemberRef(
+      lctx,
+      cctx.trTask,
+      "get_CompletedTask",
+      "task_get_completed",
+      buildStaticMethodSig(noParams, baseTaskMsil(cctx))
+    )
+    insns.add(MCall(methodToken = 0x0A000000 + mr))
+    baseTaskMsil(cctx)
+  } else {
+    val openSig = buildTaskFromResultOpenSig(tdrTypeRef(cctx.trTask1))
+    val mr = ctxAddMemberRef(lctx, cctx.trTask, "FromResult", "task_from_result_open", openSig)
+    val specArgs: List[MsilType] = newList()
+    specArgs.add(valueTy)
+    val ms = ctxAddMethodSpec(
+      lctx,
+      mdorMemberRef(mr),
+      "task_from_result_" + msilTypeKey(valueTy),
+      buildMethodSpecBlob(specArgs)
+    )
+    insns.add(MCall(methodToken = 0x2B000000 + ms))
+    taskOfResultMsil(cctx, valueTy)
+  }
+}
+
+func baseTaskMsil(cctx: in CodegenCtx): MsilType {
+  MClassRef(typeRefCode = tdrTypeRef(cctx.trTask), clrFqn = "System.Threading.Tasks.Task")
+}
+
 func typeExprMentionsNamesMsil(te: in TypeExpr, names: in List[String]): Bool {
   match te.kind {
     case TRef(path) -> path.segments.count == 1 and names.contains(path.segments[0])
@@ -5439,7 +5493,11 @@ func inferUntypedStaticValMsilType(
 // merely shares a name with an unrelated package-level function (#7126), which
 // this pass has no symbol table to tell apart.
 func inferUntypedStaticValMsilTypeWith(
-  e: in Expr, env: in Map[String, MsilType], cctx: in CodegenCtx, pkgName: in String, resolveCalls: in Bool
+  e: in Expr,
+  env: in Map[String, MsilType],
+  cctx: in CodegenCtx,
+  pkgName: in String,
+  resolveCalls: in Bool,
 ): MsilType {
   match e.kind {
     case EParen(inner) -> inferUntypedStaticValMsilTypeWith(inner, env, cctx, pkgName, resolveCalls)
@@ -5482,9 +5540,21 @@ func inferUntypedStaticValMsilTypeWith(
     // PreNot always produces MBool regardless of operand type; PreRef is a
     // bare passthrough of the operand's type. Both mirror lowerExprMsil too.
     case EPrefix(op, inner) -> match op {
-      case PreNeg -> inferUntypedStaticValMsilTypeWith(inner, env, cctx, pkgName, resolveCalls)
+      case PreNeg -> inferUntypedStaticValMsilTypeWith(
+        inner,
+        env,
+        cctx,
+        pkgName,
+        resolveCalls
+      )
       case PreNot -> MBool
-      case PreRef -> inferUntypedStaticValMsilTypeWith(inner, env, cctx, pkgName, resolveCalls)
+      case PreRef -> inferUntypedStaticValMsilTypeWith(
+        inner,
+        env,
+        cctx,
+        pkgName,
+        resolveCalls
+      )
     }
     // A bare reference to an earlier module-level `val`/`const` (#5955):
     // resolve through `env` — mirrors `isLiteralI4ExprMsilWithEnv`'s EPath
@@ -5531,7 +5601,11 @@ func inferUntypedStaticValMsilTypeWith(
             case MDouble -> MDouble
             case MFloat -> MFloat
             // `Byte op Byte` stays `Byte` (`wrapByteArithMsil`).
-            case MByte -> if isByteMsil(inferUntypedStaticValMsilTypeWith(rhs, env, cctx, pkgName, resolveCalls)) { MByte } else { MInt }
+            case MByte -> if isByteMsil(inferUntypedStaticValMsilTypeWith(rhs, env, cctx, pkgName, resolveCalls)) {
+              MByte
+            } else {
+              MInt
+            }
             case _ -> MInt
           }
         }
@@ -5540,7 +5614,11 @@ func inferUntypedStaticValMsilTypeWith(
             case MLong -> MLong
             case MDouble -> MDouble
             case MFloat -> MFloat
-            case MByte -> if isByteMsil(inferUntypedStaticValMsilTypeWith(rhs, env, cctx, pkgName, resolveCalls)) { MByte } else { MInt }
+            case MByte -> if isByteMsil(inferUntypedStaticValMsilTypeWith(rhs, env, cctx, pkgName, resolveCalls)) {
+              MByte
+            } else {
+              MInt
+            }
             case _ -> MInt
           }
         }
@@ -8274,6 +8352,20 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
     }
     case TGenericApp(head, args) -> {
       val headSeg = lastSegmentMsil(head)
+      if builtinTaskHeadMsil(cctx, head, args, pkgName) {
+        match args[0] {
+          case TAType(inner) -> {
+            // An erased type-parameter result has no usable `Task<X>`
+            // instantiation (CLR generics are invariant), so it lowers to the
+            // base `Task` every `Task<X>` converts to.
+            if typeExprMentionsNamesMsil(inner, cctx.pbGenerics) {
+              return baseTaskMsil(cctx)
+            }
+            return taskOfResultMsil(cctx, typeExprToMsilCtx(cctx, inner, pkgName))
+          }
+          case TAValue(_) -> return MObject
+        }
+      }
       // A C pointer (D158) is a `native int` on .NET, whatever it points at.
       if headSeg == "NativePtr" and args.count == 1 {
         return MNativeInt
@@ -11787,7 +11879,12 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
     }
 
     case ESpawn(inner) -> {
-      lowerExprMsil(cctx, fctx, insns, inner)
+      val spawned = lowerExprMsil(cctx, fctx, insns, inner)
+      if isTaskTypeMsil(cctx, spawned) {
+        spawned
+      } else {
+        wrapResolvedAsTaskMsil(cctx, insns, spawned)
+      }
     }
 
     // ── Propagate (?) — bootstrap: just lower inner ───────────────────────────
@@ -29457,6 +29554,15 @@ func inferCallReturnTypePB(
         awaited
       }
     }
+    // `ts[i]` over a typed `List[...]`: the element type, so an `await ts[i]`
+    // of a `List[Task[T]]` handle gets its awaiter field and resume label.
+    case EIndex(ixRecv, ixArgs) -> {
+      match inferCallReturnTypePB(cctx, pkgName, ixRecv, spawnNms, spawnTys, localNms, localTys) {
+        case MConcreteList(elemTy) -> if ixArgs.count == 1 { elemTy } else { MObject }
+        case MListOf(elemTy) -> if ixArgs.count == 1 { elemTy } else { MObject }
+        case _ -> MObject
+      }
+    }
     // Field projection: `client.handle` types through the bundle-stable
     // declared-field registry.  A package-qualifier chain never resolves a
     // receiver class, so this cannot mis-fire on qualified names.
@@ -34727,6 +34833,12 @@ func typeExprToMsilGApp(
   generics: in List[String],
 ): MsilType {
   val headSeg = lastSegmentMsil(head)
+  if builtinTaskHeadMsil(cctx, head, args, pkgName) {
+    match args[0] {
+      case TAType(inner) -> return taskOfResultMsil(cctx, typeExprToMsilG(cctx, inner, pkgName, generics))
+      case TAValue(_) -> return MObject
+    }
+  }
   if headSeg == "List" and args.count == 1 {
     match args[0] {
       case TAType(elemTe) -> {
@@ -34875,6 +34987,17 @@ func typeExprToMsilGenBody(
       // MObject (#3332).  The outer head is always a concrete type (Result,
       // Option, a user union…); only the args may carry generic vars.
       val headSeg = lastSegmentMsil(head)
+      if builtinTaskHeadMsil(cctx, head, args, pkgName) {
+        match args[0] {
+          case TAType(te2) -> {
+            if typeExprMentionsNamesMsil(te2, generics) {
+              return baseTaskMsil(cctx)
+            }
+            return taskOfResultMsil(cctx, typeExprToMsilGenBody(cctx, te2, pkgName, generics))
+          }
+          case TAValue(_) -> return MObject
+        }
+      }
       if headSeg == "List" and args.count == 1 {
         match args[0] {
           case TAType(te2) -> {
@@ -35015,6 +35138,17 @@ func typeExprToMsilGenSig(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Stri
       // List[Byte] uses sliceElemMsilGenSig (Byte→MByte) not the scalar path
       // (Byte→MInt) (#3473).
       val headSeg = lastSegmentMsil(head)
+      if builtinTaskHeadMsil(cctx, head, args, pkgName) {
+        match args[0] {
+          case TAType(te2) -> {
+            if typeExprMentionsNamesMsil(te2, generics) {
+              return baseTaskMsil(cctx)
+            }
+            return taskOfResultMsil(cctx, typeExprToMsilGenSig(cctx, te2, pkgName, generics))
+          }
+          case TAValue(_) -> return MObject
+        }
+      }
       if headSeg == "List" and args.count == 1 {
         match args[0] {
           case TAType(te2) -> {
@@ -42919,8 +43053,14 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
                   errorDiagnostic(
                     "F0047",
                     "cannot determine the type of module-level val '" + fieldName + "' consistently: its initializer is " +
-                      msilValueTypeNameMsil(fieldTy) + " but readers of the val were typed as " + msilValueTypeNameMsil(predictedTy) +
-                      "; add an explicit type annotation (`val " + fieldName + ": " + msilValueTypeNameMsil(fieldTy) + " = ...`)",
+                      msilValueTypeNameMsil(fieldTy) +
+                      " but readers of the val were typed as " +
+                      msilValueTypeNameMsil(predictedTy) +
+                      "; add an explicit type annotation (`val " +
+                      fieldName +
+                      ": " +
+                      msilValueTypeNameMsil(fieldTy) +
+                      " = ...`)",
                     decl.init.span
                   )
                 )

@@ -9634,3 +9634,75 @@ test "a same-named local List is not checked as the stdlib collection (#7969)" {
   val src = "package P\nrecord List[T] { }\nfunc f(xs: in List[Int], s: in String): Unit {\n  xs.add(s)\n}\n"
   assertEqualInt(countDiagCode(parseCheck(src), "T0043"), 0, "a local record List's add is not the stdlib member")
 }
+
+// ── The built-in `Task[T]` handle (docs/68 §3) ───────────────────────────────
+func taskProgram(body: in String): String {
+  "package P\nasync func g(): Int { 1 }\nasync func u(): Unit { }\n" + body
+}
+
+test "spawn of an async call is a Task[R], and annotating it as such is clean" {
+  val cr = parseCheck(
+    taskProgram("func f(): Unit {\n  val t: Task[Int] = spawn g()\n  val k: Task[Unit] = spawn u()\n}\n")
+  )
+  assertEqualInt(diagCount(cr), 0, "spawn g(): Task[Int], spawn u(): Task[Unit]")
+}
+
+test "a spawn handle is not its result: it does not satisfy an Int" {
+  val cr = parseCheck(taskProgram("func f(): Unit {\n  val n: Int = spawn g()\n}\n"))
+  assertTrue(diagCount(cr) > 0, "Task[Int] is not an Int")
+  assertTrue(diagMessagesContain(cr, "Task[Int]"), "the diagnostic names the handle type: " + diagCodesOf(cr))
+}
+
+test "await of a Task[R] yields R" {
+  val ok = parseCheck(taskProgram("func f(): Unit {\n  val t = spawn g()\n  val n: Int = await t\n}\n"))
+  assertEqualInt(diagCount(ok), 0, "await t: Int")
+  val bad = parseCheck(taskProgram("func f(): Unit {\n  val t = spawn g()\n  val s: String = await t\n}\n"))
+  assertTrue(diagCount(bad) > 0, "await t is not a String")
+}
+
+test "await spawn and a direct async call both give the callee's result" {
+  val cr = parseCheck(
+    taskProgram(
+      "func f(): Unit {\n  val a: Int = await spawn g()\n  val b: Int = await g()\n  val c: Int = g()\n}\n"
+    )
+  )
+  assertEqualInt(diagCount(cr), 0, "await spawn g(), await g() and g() are Int")
+}
+
+test "a generic over a Task[T] infers T from the handle" {
+  val cr = parseCheck(
+    taskProgram(
+      "func unwrap[T](t: in Task[T]): T { await t }\nfunc f(): Unit {\n  val n: Int = unwrap(spawn g())\n}\n"
+    )
+  )
+  assertEqualInt(diagCount(cr), 0, "unwrap(spawn g()): Int, T bound to Int through Task[T]")
+}
+
+test "a Task[R] handle satisfies the bare Task extern, and the bare Task satisfies Task[Unit]" {
+  val src = taskProgram(
+    "extern type Task = \"System.Threading.Tasks.Task\"\n" + "func waitOn(t: in Task): Unit { }\n" +
+      "func back(b: in Task): Task[Unit] { b }\n" +
+      "func f(): Unit {\n  val t = spawn g()\n  waitOn(t)\n  waitOn(spawn u())\n}\n"
+  )
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "handle to bare Task parameter, bare Task to Task[Unit]: " + diagCodesOf(cr))
+}
+
+test "a package's own generic Task type wins over the built-in" {
+  val cr = parseCheck("package P\nrecord Task[T] {\n  v: T\n}\nfunc f(t: in Task[Int]): Int { t.v }\n")
+  assertEqualInt(diagCount(cr), 0, "the user's Task[T] record resolves and has its own field: " + diagCodesOf(cr))
+}
+
+test "a spawn handle is not recorded as a source type for the middle end" {
+  val cr = parseCheck(
+    taskProgram(
+      "func w[T](t: in T, n: in Int): Int { n }\nfunc f(): Unit {\n  val t = spawn g()\n  val r = w(t, 1)\n}\n"
+    )
+  )
+  assertEqualInt(diagCount(cr), 0, "a generic called with a handle checks clean")
+  assertEqualInt(
+    cr.symbols.genericCallTypeArgSites.count,
+    0,
+    "no type-argument site names the handle type: no backend can spell Task[Int]"
+  )
+}
