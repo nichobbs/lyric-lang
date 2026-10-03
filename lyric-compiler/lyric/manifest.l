@@ -179,6 +179,14 @@ pub record NativeConfig {
   triple: String
   optLevel: String
   extraLibs: List[String]
+  /// `[wasm] version`: the WIT package version of a `--shape component` build
+  /// ("" = the project's `[package]` version, else `0.1.0`).
+  wasmVersion: String = ""
+  /// `[wasm] world`: the WIT world name ("" = `<package>-world`).
+  wasmWorld: String = ""
+  /// `[wasm] stack`: the shadow-stack size in bytes of a wasm32 module or
+  /// component (0 = the 1 MiB default).
+  wasmStack: Int = 0
 }
 
 /// `[layers]` section (docs/65 §5, D149): assigns project packages to
@@ -1491,9 +1499,128 @@ func invalidLibName(name: in String): Bool {
 /// whitespace-free bare library name that does not start with `-`; any
 /// violation is `Err(InvalidField)`.  Returns `Ok(None)` when no
 /// `[native]` table is present.
+func findInt(entries: in List[Entry], section: in String, key: in String): Option[Int] {
+  var i = 0
+  while i < entries.count {
+    val e = entries[i]
+    if e.section == section and e.key == key {
+      match e.value {
+        case VInt(n) -> return Some(value = n)
+        case _ -> return None
+      }
+    }
+    i += 1
+  }
+  None
+}
+
+func isDigitText(s: in String): Bool {
+  var i = 0
+  while i < s.length {
+    val c = Str.charAtOrReplacement(s, i)
+    if c < '0' or c > '9' {
+      return false
+    }
+    i += 1
+  }
+  s.length > 0
+}
+
+/// `[wasm]` (docs/35 section 8): `version` (a `major.minor.patch` WIT package
+/// version), `world` (a WIT world name: lowercase letters, digits and `-`,
+/// starting with a letter) and `stack` (the shadow-stack size in bytes, a multiple
+/// of 16 between 64 KiB and 64 MiB).
+record WasmCfg {
+  version: String
+  world: String
+  stack: Int
+}
+
+func assembleWasm(entries: in List[Entry]): Result[Option[WasmCfg], ManifestError] {
+  val none: Option[WasmCfg] = None
+  if not hasSection(entries, "wasm") {
+    return Ok(value = none)
+  }
+  val version = unwrapOr(findString(entries, "wasm", "version"), "")
+  if version != "" {
+    val parts = Str.split(version, ".")
+    if parts.length != 3 or not (isDigitText(parts[0]) and isDigitText(parts[1]) and isDigitText(parts[2])) {
+      return Err(
+        error = InvalidField(
+          section = "wasm",
+          field = "version",
+          message = "must be major.minor.patch (for example \"1.2.0\"), got \"" + version + "\""
+        )
+      )
+    }
+  }
+  val world = unwrapOr(findString(entries, "wasm", "world"), "")
+  if world != "" {
+    var wi = 0
+    var bad = false
+    while wi < world.length {
+      val c = Str.charAtOrReplacement(world, wi)
+      val isLower = c >= 'a' and c <= 'z'
+      val isDigit = c >= '0' and c <= '9'
+      if not (isLower or (wi > 0 and (isDigit or c == '-'))) {
+        bad = true
+      }
+      wi += 1
+    }
+    if bad {
+      return Err(
+        error = InvalidField(
+          section = "wasm",
+          field = "world",
+          message = "must be a WIT name (lowercase letters, digits and '-', starting with a letter), got \"" +
+            world +
+            "\""
+        )
+      )
+    }
+  }
+  val stackOpt = findInt(entries, "wasm", "stack")
+  val stack = unwrapOr(stackOpt, 0)
+  val stackDeclared = match stackOpt { case Some(_) -> true; case None -> false }
+  if stackDeclared and (stack < 65536 or stack > 67108864 or stack % 16 != 0) {
+    return Err(
+      error = InvalidField(
+        section = "wasm",
+        field = "stack",
+        message = "must be a multiple of 16 between 65536 and 67108864 bytes, got " + stack.toString()
+      )
+    )
+  }
+  Ok(value = Some(value = WasmCfg(version = version, world = world, stack = stack)))
+}
+
 func assembleNative(entries: in List[Entry]): Result[Option[NativeConfig], ManifestError] {
+  match assembleWasm(entries) {
+    case Err(e) -> return Err(error = e)
+    case Ok(wasm) -> return assembleNativeWith(entries, wasm)
+  }
+}
+
+func assembleNativeWith(entries: in List[Entry], wasm: in Option[WasmCfg]): Result[Option[NativeConfig], ManifestError] {
+  val wasmVersion = match wasm { case Some(w) -> w.version; case None -> "" }
+  val wasmWorld = match wasm { case Some(w) -> w.world; case None -> "" }
+  val wasmStack = match wasm { case Some(w) -> w.stack; case None -> 0 }
   if not hasSection(entries, "native") {
-    return Ok(value = None)
+    return match wasm {
+      case None -> Ok(value = None)
+      case Some(_) -> Ok(
+        value = Some(
+          value = NativeConfig(
+            triple = "",
+            optLevel = "",
+            extraLibs = newList(),
+            wasmVersion = wasmVersion,
+            wasmWorld = wasmWorld,
+            wasmStack = wasmStack
+          )
+        )
+      )
+    }
   }
   val triple = unwrapOr(findString(entries, "native", "triple"), "")
   val opt = unwrapOr(findString(entries, "native", "opt_level"), "")
@@ -1522,7 +1649,18 @@ func assembleNative(entries: in List[Entry]): Result[Option[NativeConfig], Manif
     }
     li = li + 1
   }
-  Ok(value = Some(value = NativeConfig(triple = triple, optLevel = opt, extraLibs = libs)))
+  Ok(
+    value = Some(
+      value = NativeConfig(
+        triple = triple,
+        optLevel = opt,
+        extraLibs = libs,
+        wasmVersion = wasmVersion,
+        wasmWorld = wasmWorld,
+        wasmStack = wasmStack
+      )
+    )
+  )
 }
 
 func isLayersSection(section: in String): Bool {

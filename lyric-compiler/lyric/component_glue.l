@@ -1715,13 +1715,16 @@ pub func witPackageName(pkgs: in List[ComponentPkg], version: in String): String
   "lyric:" + witName(firstPkgName(pkgs)) + "@" + version
 }
 
-/// The world name: `<package>-world`.
-pub func witWorldName(pkgs: in List[ComponentPkg]): String {
+/// The world name: the `[wasm] world` override, else `<package>-world`.
+pub func witWorldName(pkgs: in List[ComponentPkg], world: in String): String {
+  if world.length > 0 {
+    return world
+  }
   witName(firstPkgName(pkgs)) + "-world"
 }
 
 /// The WIT document for the exporting packages (docs/35 §7.2).
-pub func renderWit(pkgs: in List[ComponentPkg], version: in String): String {
+pub func renderWit(pkgs: in List[ComponentPkg], version: in String, world: in String): String {
   val ex = exportingPkgs(pkgs)
   val parts: List[String] = newList()
   parts.add("package " + witPackageName(pkgs, version) + ";\n")
@@ -1761,7 +1764,7 @@ pub func renderWit(pkgs: in List[ComponentPkg], version: in String): String {
   for p in ex {
     exportLines.add("  export " + witName(p.pkg) + ";")
   }
-  parts.add("world " + witWorldName(pkgs) + " {\n" + Str.joinList("\n", exportLines) + "\n}\n")
+  parts.add("world " + witWorldName(pkgs, world) + " {\n" + Str.joinList("\n", exportLines) + "\n}\n")
   Str.joinList("\n", parts)
 }
 
