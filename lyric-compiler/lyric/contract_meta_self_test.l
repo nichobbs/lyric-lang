@@ -17,6 +17,7 @@ import Std.String as Str
 import Std.Path as Path
 import Std.Environment as Environment
 import Lyric.ContractMeta
+import Lyric.ContractElaborator
 import Lyric.Parser
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1280,4 +1281,53 @@ test "buildContractFromFile keeps @io on a function" {
   assertTrue(not Str.contains(plain.repr, "@io"), "no @io on an ordinary function")
   val rt = parse("package P\n\n" + io.repr + " = 1\n")
   assertEqualInt(rt.diagnostics.count, 0, "the repr re-parses (got " + io.repr + ")")
+}
+
+// #7827 / D168: each default of a public callable is compiled into a thunk,
+// and the contract renders the parameter's default as a call to it, so no
+// default expression leaves the package.  A parameter whose type names a
+// type parameter, and a private function, export none.
+test "buildContractFromFile renders parameter defaults as calls to compiled thunks (#7827)" {
+  val src = "package P\n\nval base: Int = 1\n\n" + "pub func f(x: in Int = base + 4, y: in Int): Int = x + y\n" +
+    "pub func g[T](o: in Option[T] = None, n: in Int = 2): Int = n\n" +
+    "func priv(z: in Int = 1): Int = z\n" +
+    "pub record R {\n  n: Int\n  func m(self: in R, k: in Int = 3): Int {\n    k\n  }\n}\n" +
+    "pub interface I {\n  func a(self: in Self, s: in Int = 2): Int\n}\n" +
+    "pub record Q {\n  q: Int\n}\n" +
+    "impl I for Q {\n  func a(self: in Q, s: in Int = 4): Int {\n    s\n  }\n}\n"
+  val c = buildContractFromFile(synthesizeDefaultThunks(parse(src).file), "1.0.0")
+  val f = unwrapDeclOrFail(findDeclByKind(c.decls, "func", "f"), "func f missing")
+  assertTrue(Str.contains(f.repr, "x: in Int = P.__lyric_default__f__2__x()"), "f's default is a thunk call: " + f.repr)
+  assertTrue(not Str.contains(f.repr, "base"), "the default expression is not carried: " + f.repr)
+  assertTrue(Str.contains(f.repr, "y: in Int)"), "y has no default: " + f.repr)
+  assertTrue(isSomeDecl(findDeclByKind(c.decls, "func", "__lyric_default__f__2__x")), "the thunk is exported")
+  val g = unwrapDeclOrFail(findDeclByKind(c.decls, "func", "g"), "func g missing")
+  assertTrue(Str.contains(g.repr, "n: in Int = P.__lyric_default__g__2__n()"), "g's Int default: " + g.repr)
+  assertTrue(Str.contains(g.repr, "o: in Option[T],"), "a T-typed default is not exported: " + g.repr)
+  assertTrue(not isSomeDecl(findDeclByKind(c.decls, "func", "__lyric_default__g__2__o")), "no thunk for it")
+  assertTrue(
+    not isSomeDecl(findDeclByKind(c.decls, "func", "__lyric_default__priv__1__z")),
+    "no thunk for a private function"
+  )
+  val r = unwrapDeclOrFail(findDeclByKind(c.decls, "record", "R"), "record R missing")
+  assertTrue(Str.contains(r.repr, "k: in Int = P.__lyric_default__R__m__2__k()"), "record method: " + r.repr)
+  val i = unwrapDeclOrFail(findDeclByKind(c.decls, "interface", "I"), "interface I missing")
+  assertTrue(Str.contains(i.repr, "s: in Int = P.__lyric_default__I__a__2__s()"), "interface member: " + i.repr)
+  val q = unwrapDeclOrFail(findDeclByKind(c.decls, "impl", "Q"), "impl for Q missing")
+  assertTrue(
+    Str.contains(q.repr, "func a(self: in Q, s: in Int = P.__lyric_default__Q__I__a__2__s()): Int"),
+    "the impl carries its method head: " + q.repr
+  )
+  val reparsed = parse("package P\n\n" + f.repr + "\n\n" + r.repr + "\n\n" + i.repr + "\n\n" + q.repr + "\n")
+  assertEqualInt(reparsed.diagnostics.count, 0, "the reprs re-parse")
+}
+
+// Without defaults the impl repr stays bodyless.
+test "an impl with no defaulted parameter keeps its empty repr (#7827)" {
+  val src = "package P\n\npub interface I {\n  func a(self: in Self, s: in Int): Int\n}\n" +
+    "pub record Q {\n  q: Int\n}\n" +
+    "impl I for Q {\n  func a(self: in Q, s: in Int): Int {\n    s\n  }\n}\n"
+  val c = buildContractFromFile(synthesizeDefaultThunks(parse(src).file), "1.0.0")
+  val q = unwrapDeclOrFail(findDeclByKind(c.decls, "impl", "Q"), "impl for Q missing")
+  assertEqual(q.repr, "impl I for Q {}", "unchanged repr")
 }

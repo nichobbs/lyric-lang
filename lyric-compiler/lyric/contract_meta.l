@@ -937,6 +937,61 @@ func renderParam(p: in Param): String {
   p.name + ": " + modeStr + renderTypeExpr(p.ty)
 }
 
+// The default thunks a package compiled (`Lyric.ContractElaborator.
+// synthesizeDefaultThunks`, #7827): its dotted name and the thunks' names.
+record DefaultThunks {
+  pkg: String
+  names: Map[String, Bool]
+}
+
+func defaultThunksOf(file: in SourceFile): DefaultThunks {
+  val names: Map[String, Bool] = newMap()
+  for it in file.items {
+    match it.kind {
+      case IFunc(fn) -> if fn.name.startsWith(defaultThunkPrefix()) and not names.containsKey(fn.name) {
+        names.add(fn.name, true)
+      }
+      case _ -> ()
+    }
+  }
+  DefaultThunks(pkg = joinDots(file.packageDecl.path.segments), names = names)
+}
+
+// A callable's parameter list, each parameter with a default rendered as
+// `name: mode Type = <Pkg>.<thunk>()`: the call to the thunk the package
+// compiled the default into.  The default expression itself is written in
+// the declaring package's scope and never leaves it; a consumer that leaves
+// the argument out calls the thunk (#7827).  A parameter with no thunk (no
+// default, or one whose type names a type parameter) renders without one.
+func renderParamsWithDefaults(
+  params: in List[Param], dt: in DefaultThunks, owner: in String, callable: in String
+): String {
+  var acc = ""
+  var i = 0
+  while i < params.count {
+    if i > 0 {
+      acc = acc + ", "
+    }
+    acc = acc + renderParam(params[i])
+    val thunk = defaultThunkName(owner, callable, params.count, params[i].name)
+    if dt.names.containsKey(thunk) {
+      acc = acc + " = " + dt.pkg + "." + thunk + "()"
+    }
+    i = i + 1
+  }
+  acc
+}
+
+// True when one of `params` has a default compiled into a thunk.
+func anyParamHasThunk(params: in List[Param], dt: in DefaultThunks, owner: in String, callable: in String): Bool {
+  for p in params {
+    if dt.names.containsKey(defaultThunkName(owner, callable, params.count, p.name)) {
+      return true
+    }
+  }
+  false
+}
+
 // Render one `GenericParam` as a source-level fragment:
 // `GPType` → bare name; `GPValue` → `name: constraint`.
 func renderGenericParam(gp: in GenericParam): String {
@@ -981,16 +1036,8 @@ func renderGenerics(g: in Option[GenericParams]): String {
 // walks `RMFunc` members), but `checkFunctionBody` skips a member whose body
 // is `None` — the same rule that exempts interface/extern signatures — so a
 // bodyless render round-trips cleanly with no T0114 risk.
-func reprForRecordMethod(fn: in FunctionDecl): String {
-  var params = ""
-  var i = 0
-  while i < fn.params.count {
-    if i > 0 {
-      params = params + ", "
-    }
-    params = params + renderParam(fn.params[i])
-    i = i + 1
-  }
+func reprForRecordMethod(fn: in FunctionDecl, dt: in DefaultThunks, owner: in String): String {
+  val params = renderParamsWithDefaults(fn.params, dt, owner, fn.name)
   val retStr = match fn.ret { case Some(t) -> ": " + renderTypeExpr(t); case None -> "" }
   val asyncPrefix = if fn.isAsync { "async " } else { "" }
   // `@pure` rides into the repr so a restored consumer's contract clauses
@@ -1034,7 +1081,7 @@ func reprForRecordMethod(fn: in FunctionDecl): String {
 // `buildContractFromFile`'s item match, so a downstream consumer's
 // reference to the type failed T0020 "unknown name" before codegen ever
 // ran).
-func reprForRecord(decl: in RecordDecl, isExposed: in Bool): String {
+func reprForRecord(decl: in RecordDecl, isExposed: in Bool, dt: in DefaultThunks): String {
   var fields = ""
   var i = 0
   var emittedAny = false
@@ -1057,7 +1104,7 @@ func reprForRecord(decl: in RecordDecl, isExposed: in Bool): String {
   while mi < decl.members.count {
     match decl.members[mi] {
       case RMFunc(fn) -> {
-        methods = methods + "\n  " + reprForRecordMethod(fn)
+        methods = methods + "\n  " + reprForRecordMethod(fn, dt, decl.name)
       }
       case _ -> ()
     }
@@ -1093,16 +1140,8 @@ func reprForRecord(decl: in RecordDecl, isExposed: in Bool): String {
 // Dropping the keyword here silently degrades every restored async
 // function to a synchronous signature, producing a `MissingMethodException`
 // at runtime against the real (Task-wrapped) compiled method.
-func reprForFunc(fn: in FunctionDecl): String {
-  var params = ""
-  var i = 0
-  while i < fn.params.count {
-    if i > 0 {
-      params = params + ", "
-    }
-    params = params + renderParam(fn.params[i])
-    i = i + 1
-  }
+func reprForFunc(fn: in FunctionDecl, dt: in DefaultThunks): String {
+  val params = renderParamsWithDefaults(fn.params, dt, "", fn.name)
   val retStr = match fn.ret { case Some(t) -> ": " + renderTypeExpr(t); case None -> "" }
   val asyncPrefix = if fn.isAsync { "async " } else { "" }
   // `@io` rides in the repr so a restored consumer's signature carries it
@@ -1200,14 +1239,14 @@ func hasPureAnnotation(anns: in List[Annotation]): Bool {
 // specialise from — both cases call (or intrinsically inline) the real
 // implementation directly, and neither needs its implementation
 // reconstructed from source.
-func funcDecl(fn: in FunctionDecl, vis: in Option[Visibility]): ContractDecl {
+func funcDecl(fn: in FunctionDecl, vis: in Option[Visibility], dt: in DefaultThunks): ContractDecl {
   val isGeneric = match fn.generics { case Some(_) -> true; case None -> false }
   val isExternWrapper = hasExternTargetAnnotation(fn.annotations)
   val bodyText = if isGeneric and not isExternWrapper { funcBodyText(fn) } else { None }
   ContractDecl(
     kind = "func",
     name = fn.name,
-    repr = reprForFunc(fn),
+    repr = reprForFunc(fn, dt),
     visibility = visibilityStr(vis),
     isPure = hasPureAnnotation(fn.annotations),
     stability = "",
@@ -1287,7 +1326,14 @@ func reprForProtected(decl: in ProtectedTypeDecl): String {
 // neither `TRef` nor `TGenericApp` (e.g. a tuple or slice type — corner
 // cases with no interface-binding relevance) so a malformed repr is never
 // emitted.
-func reprForImplHead(decl: in ImplDecl): Option[String] {
+//
+// An impl method with a parameter default compiled into a thunk (#7827) is
+// carried as a bodyless head (`func area(self: in Sq, scale: in Int =
+// Pkg.<thunk>()): Int`), so a consumer's call on the concrete type takes the
+// impl method's default, as it would within the package; with no such
+// method the repr stays `impl I for T {}`, and the consumer reads the
+// methods' signatures from the interface.
+func reprForImplHead(decl: in ImplDecl, dt: in DefaultThunks): Option[String] {
   val targetName = implTargetSimpleName(decl)
   if Str.isEmpty(targetName) {
     return None
@@ -1296,7 +1342,21 @@ func reprForImplHead(decl: in ImplDecl): Option[String] {
   if Str.isEmpty(ifaceName) {
     return None
   }
-  Some(value = "impl " + ifaceName + " for " + targetName + " {}")
+  val owner = implDefaultThunkOwner(targetName, lastSegOf(decl.iface.head.segments))
+  var methods = ""
+  for m in decl.members {
+    match m {
+      case IMplFunc(fn) -> if anyParamHasThunk(fn.params, dt, owner, fn.name) {
+        methods = methods + "\n  " + reprForRecordMethod(fn, dt, owner)
+      }
+      case IMplAssoc(_) -> ()
+    }
+  }
+  if methods == "" {
+    Some(value = "impl " + ifaceName + " for " + targetName + " {}")
+  } else {
+    Some(value = "impl " + ifaceName + " for " + targetName + " {" + methods + "\n}")
+  }
 }
 
 // The contract-decl `name` for an impl: the simple target type name (the type
@@ -1347,7 +1407,7 @@ func strListContains(list: in List[String], s: in String): Bool {
 // than an abstract member: a consumer's `impl` may still omit it, and a
 // call through the interface resolves (T0113 no longer exempts imported
 // interfaces, #7575).
-func reprForInterface(decl: in InterfaceDecl): String {
+func reprForInterface(decl: in InterfaceDecl, dt: in DefaultThunks): String {
   var members = ""
   var i = 0
   while i < decl.members.count {
@@ -1356,14 +1416,14 @@ func reprForInterface(decl: in InterfaceDecl): String {
         if Str.isNotEmpty(members) {
           members = members + "; "
         }
-        members = members + reprForFunctionSig(sig)
+        members = members + reprForFunctionSig(sig, dt, decl.name)
       }
       case IMFunc(fn) -> match funcBodyText(fn) {
         case Some(body) -> {
           if Str.isNotEmpty(members) {
             members = members + "; "
           }
-          members = members + reprForRecordMethod(fn) + " " + body
+          members = members + reprForRecordMethod(fn, dt, decl.name) + " " + body
         }
         case None -> ()
       }
@@ -1376,16 +1436,8 @@ func reprForInterface(decl: in InterfaceDecl): String {
 
 // Render a FunctionSig (interface-method head form, no body).
 // Carries `async` forward for the same reason `reprForFunc` does (#6372).
-func reprForFunctionSig(sig: in FunctionSig): String {
-  var params = ""
-  var i = 0
-  while i < sig.params.count {
-    if i > 0 {
-      params = params + ", "
-    }
-    params = params + renderParam(sig.params[i])
-    i = i + 1
-  }
+func reprForFunctionSig(sig: in FunctionSig, dt: in DefaultThunks, owner: in String): String {
+  val params = renderParamsWithDefaults(sig.params, dt, owner, sig.name)
   val retStr = match sig.ret { case Some(t) -> ": " + renderTypeExpr(t); case None -> "" }
   val asyncPrefix = if sig.isAsync { "async " } else { "" }
   asyncPrefix + "func " + sig.name + renderGenerics(sig.generics) + "(" + params + ")" + retStr
@@ -1777,6 +1829,7 @@ pub func levelOfFile(file: in SourceFile): String {
 @stable(since = "0.1")
 pub func buildContractFromFile(file: in SourceFile, version: in String): Contract {
   val decls: List[ContractDecl] = newList()
+  val thunks = defaultThunksOf(file)
 
   // Pre-pass: collect names of all pub type-like items so impl-block
   // filtering can check whether the impl target is a public type.
@@ -1810,12 +1863,16 @@ pub func buildContractFromFile(file: in SourceFile, version: in String): Contrac
     val it = file.items[i]
     if isPubVis(it.visibility) {
       match it.kind {
-        case IRecord(r) -> decls.add(basicDecl("record", r.name, reprForRecord(r, isExposed = false), it.visibility))
-        case IExposedRec(r) -> decls.add(basicDecl("record", r.name, reprForRecord(r, isExposed = true), it.visibility))
-        case IFunc(f) -> decls.add(funcDecl(f, it.visibility))
+        case IRecord(r) -> decls.add(
+          basicDecl("record", r.name, reprForRecord(r, isExposed = false, dt = thunks), it.visibility)
+        )
+        case IExposedRec(r) -> decls.add(
+          basicDecl("record", r.name, reprForRecord(r, isExposed = true, dt = thunks), it.visibility)
+        )
+        case IFunc(f) -> decls.add(funcDecl(f, it.visibility, thunks))
         case IUnion(u) -> decls.add(basicDecl("union", u.name, reprForUnion(u), it.visibility))
         case IEnum(e) -> decls.add(basicDecl("enum", e.name, reprForEnum(e), it.visibility))
-        case IInterface(ix) -> decls.add(basicDecl("interface", ix.name, reprForInterface(ix), it.visibility))
+        case IInterface(ix) -> decls.add(basicDecl("interface", ix.name, reprForInterface(ix, thunks), it.visibility))
         case IDistinctType(d) -> decls.add(basicDecl("distinct", d.name, reprForDistinct(d), it.visibility))
         case IOpaque(o) -> decls.add(basicDecl("opaque", o.name, reprForOpaque(o), it.visibility))
         case ITypeAlias(a) -> decls.add(basicDecl("alias", a.name, reprForTypeAlias(a), it.visibility))
@@ -1869,7 +1926,7 @@ pub func buildContractFromFile(file: in SourceFile, version: in String): Contrac
       case IImpl(idecl) -> {
         val targetName = implTargetSimpleName(idecl)
         if strListContains(pubTypeNames, targetName) {
-          match reprForImplHead(idecl) {
+          match reprForImplHead(idecl, thunks) {
             // impl blocks have no visibility keyword; use None (package-private string "")
             // which `renderDecl` omits for v1/v2.  For v3 the F# writer also uses "" here.
             case Some(repr) -> decls.add(basicDecl("impl", implReprName(idecl), repr, None))

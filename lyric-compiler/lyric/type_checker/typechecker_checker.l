@@ -2018,7 +2018,10 @@ func reportImplDefaultMismatches(
     val through = "a call on a value of interface type '" + ifaceName + "'"
     val why = match ip.dflt {
       case Some(ie) -> match mp.dflt {
-        case Some(me) -> if sameDefaultExpr(ie, me) {
+        // A default declared in a package restored from its contract
+        // metadata is a call to the thunk compiled from it (#7827); its
+        // expression is not known here, so it is not compared.
+        case Some(me) -> if sameDefaultExpr(ie, me) or isDefaultThunkCall(ie) or isDefaultThunkCall(me) {
           ""
         } else {
           subject + " has a different default from the one interface '" + ifaceName + "' declares; " + through +

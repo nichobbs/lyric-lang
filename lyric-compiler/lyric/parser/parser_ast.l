@@ -1667,6 +1667,46 @@ func unpairableCallArgs(callee: in String, why: in String, paramNames: in List[S
   )
 }
 
+/// The name of the thunk a package compiles a parameter default of one of
+/// its public callables into (`Lyric.ContractElaborator.
+/// synthesizeDefaultThunks`, #7827): `owner` is "" for a free function, the
+/// type for a record method or interface member, `<Type>__<Interface>` for
+/// an `impl` method; `arity` is the callable's parameter count, receiver
+/// included.  A dot-named function's dots become `__`.
+pub func defaultThunkName(owner: in String, callable: in String, arity: in Int, param: in String): String {
+  val ownerPart = if owner.length == 0 { "" } else { owner.replace(".", "__") + "__" }
+  defaultThunkPrefix() + ownerPart + callable.replace(".", "__") + "__" + toString(arity) + "__" + param
+}
+
+/// The prefix every `defaultThunkName` starts with.
+pub func defaultThunkPrefix(): String {
+  "__lyric_default__"
+}
+
+/// The `defaultThunkName` owner of an `impl` method of interface `iface` on
+/// type `target` (both simple names).
+pub func implDefaultThunkOwner(target: in String, iface: in String): String {
+  target + "__" + iface
+}
+
+/// True when `e` calls a default thunk (`defaultThunkName`), bare or
+/// package-qualified: the default of a parameter declared in a package
+/// restored from its contract metadata, whose expression is not known here.
+pub func isDefaultThunkCall(e: in Expr): Bool {
+  match stripExprParens(e).kind {
+    case ECall(fn, args) -> args.count == 0 and
+      (
+        match fn.kind {
+          case EPath(p) -> p.segments.count > 0 and
+            p.segments[p.segments.count - 1].startsWith(defaultThunkPrefix())
+          case EMember(_, m) -> m.startsWith(defaultThunkPrefix())
+          case _ -> false
+        }
+      )
+    case _ -> false
+  }
+}
+
 /// `e` with every enclosing `EParen` removed.  The type checker keys an open
 /// tuple site by the parenthesised expression and recognises it through any
 /// depth of parentheses; `Lyric.Mono` must see the same tuple to rewrite it

@@ -2332,6 +2332,20 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: LYRIC_LOAD_COMPILER=1 bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/restored_slice_list_return_self_test.l
 
+      # Restored-dependency default arguments self-test (#7827, D168).  A
+      # call that leaves out a defaulted argument of a free function, record
+      # method, dot-named function, interface member or `impl` method in a
+      # restored package calls the thunk the library compiled the default
+      # into; covers a default reading a private value and a widening
+      # default.  Builds the producer and consumer for both targets (a DLL
+      # run under `dotnet`, a JAR under `java`).  Uses `Lyric.Emitter`, so
+      # LYRIC_LOAD_COMPILER=1 is needed.
+      - name: Restored-dependency default arguments self-test (native lyric test)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: LYRIC_LOAD_COMPILER=1 bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/restored_default_args_self_test.l
+
       # Async extern unwrapping self-test — pins the Band 3 Phase A fix for the
       # @externTarget async silent miscompile (epic #2070, D085, D-progress-415).
       # Before this fix, @externTarget async func left Task<T> on the stack where

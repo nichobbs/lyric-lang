@@ -10110,3 +10110,18 @@ test "an impl overriding an interface default method with another default is T01
     "record Sq { s: Int }\nimpl Shape for Sq {\n  func label(self: in Sq, p: in String = \"s\"): String { p }\n}\n"
   assertEqualInt(countDiagCode(parseCheck(sameSrc), "T0155"), 0, "the same default")
 }
+
+// #7827: a default known only as a call to a restored package's compiled
+// thunk is not compared; a one-sided default still is.
+test "T0155 does not compare a default known only as a thunk call (#7827)" {
+  val thunk = "func __lyric_default__Shape__area__2__k(): Int { 2 }\n"
+  val src = "package P\n" + thunk +
+    "interface Shape {\n  func area(self: in Self, k: in Int = __lyric_default__Shape__area__2__k()): Int\n}\n" +
+    "record Sq { s: Int }\nimpl Shape for Sq {\n  func area(self: in Sq, k: in Int = 3): Int { self.s * k }\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0155"), 0, "not compared: " + diagCodesOf(cr))
+  val oneSided = "package P\n" + thunk +
+    "interface Shape {\n  func area(self: in Self, k: in Int = __lyric_default__Shape__area__2__k()): Int\n}\n" +
+    "record Sq { s: Int }\nimpl Shape for Sq {\n  func area(self: in Sq, k: in Int): Int { self.s * k }\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(oneSided), "T0155"), 1, "the impl declares none")
+}

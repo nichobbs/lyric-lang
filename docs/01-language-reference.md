@@ -1245,7 +1245,21 @@ the same default in both places keeps the two call forms equivalent. When
 an `impl` method's parameter has a different default from the interface
 member's, or only one of the two declares a default, the compiler warns at
 the `impl` method's parameter (**T0155**, a warning): defaults count as the
-same when they are written alike, ignoring parentheses (#7828).
+same when they are written alike, ignoring parentheses, and a default known
+only from a restored package's metadata (below) is not compared (#7828).
+
+A callee in a package restored from its compiled form (a `[dependencies]`
+path or registry package consumed as a DLL or JAR) fills an omitted argument
+the same way, by the same rule for whose default applies. The declaring
+package compiles each default of its public callables (free and dot-named
+functions, record methods, interface members, and `impl` methods of public
+types) into a public function its contract metadata names, and the call
+evaluates the default by calling it, so the default may read the package's
+private values and a widening default converts as it does within the package
+(#7827, D168, docs/45 §5). A parameter whose type names a type parameter of
+the callable or of its owner type, or `Self`, and a parameter of a method in
+a generic `impl`, export no default: across a restored package boundary such
+an argument must be passed (**T0042** otherwise).
 
 When a type has several methods of one name, a method call binds to the
 overload the type checker selects: among the overloads whose parameters
