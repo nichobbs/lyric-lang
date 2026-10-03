@@ -824,3 +824,64 @@ pub func go(n: Int): Int {
     "an import name starting with a digit is not a WIT identifier"
   )
 }
+
+func componentBuildDir(source: in String, shape: in String): String {
+  val _w = envOrPanic("WASI_SDK_PATH")
+  val stdlib = findStdlibSourcesNative()
+  val dir = Path.join(
+    Environment.getVarOrDefault("TMPDIR", "/tmp"),
+    "lyric-wasm32-component-opt-" + Uuid.uuidToString(Uuid.newUuid())
+  )
+  val _d = File.createDir(dir)
+  val flags: List[String] = newList()
+  val ok = compileToNativeWithShape(
+    source,
+    Path.join(dir, "prog.wasm"),
+    stdlib,
+    "wasm32-wasi",
+    "2",
+    flags,
+    newList(),
+    "",
+    true,
+    shape
+  )
+  if not ok {
+    panic("wasm32 component compilation failed for shape " + shape)
+  }
+  dir
+}
+
+test "wasm32 component: the shape options set the WIT version, world and stack size" {
+  val dir = componentBuildDir(program, "component;version=2.3.4;world=my-world;stack=131072")
+  val wit = match File.readText(Path.join(dir, "prog.wit")) { case Ok(t) -> t; case Err(_) -> "" }
+  assertTrue(Str.contains(wit, "package lyric:probe@2.3.4;"), "version: " + wit)
+  assertTrue(Str.contains(wit, "world my-world {"), "world: " + wit)
+  val vargs: List[String] = newList()
+  vargs.add("validate")
+  vargs.add(Path.join(dir, "prog.wasm"))
+  val v = run(envOrPanic("WASM_TOOLS"), vargs)
+  assertTrue(v.exitCode == 0, "the component validates: " + v.stderr)
+}
+
+test "wasm32 component: a package that only imports host functions builds" {
+  val dir = componentBuildDir(
+    r#"package Probe
+
+@wasmImport("ui")
+extern func hostAdd(a: Int, b: Int): Int = "add"
+
+func unused(): Int {
+  hostAdd(1, 2)
+}
+"#,
+    "component"
+  )
+  val wit = match File.readText(Path.join(dir, "prog.wit")) { case Ok(t) -> t; case Err(_) -> "" }
+  assertTrue(Str.contains(wit, "interface ui") and Str.contains(wit, "import ui;"), "the import is declared: " + wit)
+  val vargs: List[String] = newList()
+  vargs.add("validate")
+  vargs.add(Path.join(dir, "prog.wasm"))
+  val v = run(envOrPanic("WASM_TOOLS"), vargs)
+  assertTrue(v.exitCode == 0, "the component validates: " + v.stderr)
+}

@@ -28,6 +28,7 @@ import Std.Core
 import Std.Collections
 import Std.Console as Console
 import Std.String as Str
+import Std.Parse as Parse
 import Lyric.BuildDefines as BD
 import Std.File as File
 import Std.Path as Path
@@ -595,11 +596,52 @@ pub func compileToNativeWithFlags(
   )
 }
 
+/// The parsed shape argument: `module`, `component`, or "" plus the options a
+/// `[wasm]` manifest table adds (`component;version=1.2.0;world=w;stack=131072`).
+/// An option the build does not use is ignored.
+record ShapeSpec {
+  base: String
+  version: String
+  world: String
+  stack: Int
+}
+
+func parseShapeSpec(spec: in String): ShapeSpec {
+  val parts = Str.split(spec, ";")
+  var version = ""
+  var world = ""
+  var stack = 0
+  var i = 1
+  while i < parts.count {
+    val kv = Str.split(parts[i], "=")
+    if kv.count == 2 {
+      if kv[0] == "version" {
+        version = kv[1]
+      } else if kv[0] == "world" {
+        world = kv[1]
+      } else if kv[0] == "stack" {
+        stack = match Parse.parseOptInt(kv[1]) { case Some(n) -> n; case None -> 0 }
+      }
+    }
+    i = i + 1
+  }
+  val base = if parts.count > 0 { parts[0] } else { "" }
+  ShapeSpec(base = base, version = version, world = world, stack = stack)
+}
+
+func shapeStackSize(spec: in ShapeSpec): String {
+  if spec.stack > 0 {
+    spec.stack.toString()
+  } else {
+    "1048576"
+  }
+}
+
 /// For `--shape component`: append the generated canonical-ABI shims to the
 /// package's AST and record its exports in `pkgs`; any other shape passes the
 /// file through.  Reports the shims' `W0040` notes and an internal failure.
 func shimForComponent(file: in SourceFile, shape: in String, pkgs: in List[ComponentPkg]): Option[SourceFile] {
-  if shape != "component" {
+  if parseShapeSpec(shape).base != "component" {
     return Some(value = file)
   }
   val r = componentRewriteFile(file)
@@ -1549,16 +1591,18 @@ func linkAndEmitNative(
     effTriple = detectHostTriple()
   }
   val isWasm = isWasmTriple(effTriple)
-  val isComponent = shape == "component"
-  val isModule = shape == "module"
-  if shape.length > 0 and not isModule and not isComponent {
+  val spec = parseShapeSpec(shape)
+  val isComponent = spec.base == "component"
+  val isModule = spec.base == "module"
+  val witVersion = if spec.version.length > 0 { spec.version } else { componentVersion() }
+  if spec.base.length > 0 and not isModule and not isComponent {
     Console.error(
-      "error[N0012]: unknown native output shape '" + shape + "'; the wasm32 shapes are 'module' and 'component'"
+      "error[N0012]: unknown native output shape '" + spec.base + "'; the wasm32 shapes are 'module' and 'component'"
     )
     return false
   }
   if (isModule or isComponent) and not isWasm {
-    Console.error("error[N0011]: --shape " + shape + " needs a wasm32 triple (pass --triple wasm32-wasi)")
+    Console.error("error[N0011]: --shape " + spec.base + " needs a wasm32 triple (pass --triple wasm32-wasi)")
     return false
   }
   if isComponent {
@@ -1640,11 +1684,11 @@ func linkAndEmitNative(
     // so an extern declared with the wrong width fails the build.
     clangArgs.add("-Wl,--fatal-warnings")
     if isModule {
-      appendWasmModuleLinkArgs(clangArgs, wasmExports)
+      appendWasmModuleLinkArgs(clangArgs, wasmExports, shapeStackSize(spec))
     }
     if isComponent {
       clangArgs.add("-mexec-model=reactor")
-      clangArgs.add("-Wl,-z,stack-size=1048576")
+      clangArgs.add("-Wl,-z,stack-size=" + shapeStackSize(spec))
     }
   } else if triple.length > 0 {
     clangArgs.add("--target=" + triple)
@@ -1655,7 +1699,7 @@ func linkAndEmitNative(
   val cabiPath = wasmGlueStem(outputPath) + ".cabi.c"
   val coreOut = if isComponent { wasmGlueStem(outputPath) + ".core.wasm" } else { outputPath }
   if isComponent {
-    match File.writeText(cabiPath, renderCabi(componentPkgs, componentVersion())) {
+    match File.writeText(cabiPath, renderCabi(componentPkgs, witVersion)) {
       case Ok(_) -> ()
       case Err(e) -> {
         Console.error("error[N0013]: cannot write the component wrappers " + cabiPath + ": " + IOError.message(e))
@@ -1718,7 +1762,7 @@ func linkAndEmitNative(
     }
   }
   if isComponent {
-    if not buildComponent(coreOut, outputPath, componentPkgs) {
+    if not buildComponent(coreOut, outputPath, componentPkgs, witVersion, spec.world) {
       return false
     }
   }
@@ -1743,9 +1787,8 @@ func linkAndEmitNative(
   true
 }
 
-/// The version of the WIT package a component declares.  A project's own
-/// version is not threaded to the native link yet, so every component is
-/// `0.1.0`.
+/// The WIT package version of a component whose build was given no version (no
+/// `[wasm] version` and no project version).
 func componentVersion(): String {
   "0.1.0"
 }
@@ -1785,7 +1828,13 @@ func runWasmTools(args: in List[String], what: in String): Bool {
 /// Wrap the linked core module `corePath` as a WASI component at `outputPath`:
 /// write `<stem>.wit`, embed it, and componentise against the preview1 reactor
 /// adapter (`$LYRIC_WASI_ADAPTER`).
-func buildComponent(corePath: in String, outputPath: in String, pkgs: in List[ComponentPkg]): Bool {
+func buildComponent(
+  corePath: in String,
+  outputPath: in String,
+  pkgs: in List[ComponentPkg],
+  version: in String,
+  world: in String,
+): Bool {
   val adapter = Environment.getVarOrDefault("LYRIC_WASI_ADAPTER", "")
   if adapter.length == 0 or not File.fileExists(adapter) {
     Console.error(
@@ -1795,7 +1844,7 @@ func buildComponent(corePath: in String, outputPath: in String, pkgs: in List[Co
   }
   val stem = wasmGlueStem(outputPath)
   val witPath = stem + ".wit"
-  match File.writeText(witPath, renderWit(pkgs, componentVersion())) {
+  match File.writeText(witPath, renderWit(pkgs, version, world)) {
     case Ok(_) -> ()
     case Err(e) -> {
       Console.error("error[N0013]: cannot write the WIT file " + witPath + ": " + IOError.message(e))
@@ -1809,7 +1858,7 @@ func buildComponent(corePath: in String, outputPath: in String, pkgs: in List[Co
   embedArgs.add(witPath)
   embedArgs.add(corePath)
   embedArgs.add("--world")
-  embedArgs.add(witWorldName(pkgs))
+  embedArgs.add(witWorldName(pkgs, world))
   embedArgs.add("-o")
   embedArgs.add(embedded)
   if not runWasmTools(embedArgs, "embedding the WIT") {
@@ -1851,9 +1900,9 @@ func wasmGlueHelperSymbols(): List[String] {
 /// the glue calls `_initialize`, then exports), a 1 MiB shadow stack, the glue
 /// helpers, and every exported `pub func`, plus `__main_argc_argv` when the
 /// program has a `main`.
-func appendWasmModuleLinkArgs(clangArgs: in List[String], set: in WasmExportSet): Unit {
+func appendWasmModuleLinkArgs(clangArgs: in List[String], set: in WasmExportSet, stack: in String): Unit {
   clangArgs.add("-mexec-model=reactor")
-  clangArgs.add("-Wl,-z,stack-size=1048576")
+  clangArgs.add("-Wl,-z,stack-size=" + stack)
   val helpers = wasmGlueHelperSymbols()
   var hi = 0
   while hi < helpers.count {
