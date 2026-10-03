@@ -1579,9 +1579,10 @@ The first-party UI generators (D151) report their own codes under `X0005`:
 | `V0011` | error | Unknown verification-level modifier |
 | `V0012` | error | (mode checker) `await` inside a `try`/`catch`/`finally` block in an async function — a CLR IL constraint (not the verifier-side async rejection, which is `V0032`) |
 | `V0013` | warning | Proof goal contains NaN or ±Infinity float literal; substituted with `0.0` in SMT-LIB output — verification result may be incorrect |
-| `V0014` | error | (mode checker) A spawned task is discarded — a `spawn` used as a statement outside a `scope { }` is fire-and-forget. Bind and `await` it, or run it inside a `scope { }` (D119 §7.4) |
+| `V0014` | error | (mode checker) A spawned task is discarded: a `spawn` used as a statement is fire-and-forget. Bind the handle and `await` it inside the `scope { }` (D119 §7.4) |
 | `V0032` | error | Contract clause (`requires:`/`ensures:`) on an `async func` or `yield`-bearing generator — the WP/SP calculus cannot model suspend/resume, so the verifier rejects the function rather than checking it against an unmodelled body. Move the contract to a synchronous core, or mark the package `@runtime_checked` |
 | `V0033` | error | A proof obligation cannot be translated faithfully — an unsigned (`UInt`/`ULong`) operand beside a signed variable, a negative or too-wide constant used as an unsigned value, an unsigned negation, or a result range bound that is not a fitting literal. Add an explicit conversion or write the bound as a literal of the base type |
+| `V0034` | error | (mode checker) `spawn` outside a `scope { }`. A spawned task must not outlive its scope, so every `spawn` sits lexically inside one in the same function or lambda body (D165, docs/68 §4). Wrap the `spawn` and its `await` in `scope { ... }` |
 
 ### Bench (B-series)
 

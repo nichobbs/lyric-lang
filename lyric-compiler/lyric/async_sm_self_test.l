@@ -319,22 +319,28 @@ test "Phase B.3: string concat with both operands awaited" {
 // goes through emitBlockingAwait on the Task<T> local.
 // spawn + immediate await in expression position: `await spawn f(args)`
 async func asyncSpawnImmediate(n: in Int): Int {
-  await spawn asyncAddOne(n)
+  scope {
+    return await spawn asyncAddOne(n)
+  }
 }
 
 // spawn stored in local, awaited later (requires pre-scan spawnEnv tracking)
 async func asyncSpawnAndStore(n: in Int): Int {
-  val handle = spawn asyncAddOne(n)
-  await handle
+  scope {
+    val handle = spawn asyncAddOne(n)
+    return await handle
+  }
 }
 
 // Two spawns stored, both awaited (structured-concurrency starter pattern)
 async func asyncSpawnTwoAndAdd(a: in Int, b: in Int): Int {
-  val h1 = spawn asyncAddOne(a)
-  val h2 = spawn asyncAddOne(b)
-  val r1 = await h1
-  val r2 = await h2
-  r1 + r2
+  scope {
+    val h1 = spawn asyncAddOne(a)
+    val h2 = spawn asyncAddOne(b)
+    val r1 = await h1
+    val r2 = await h2
+    return r1 + r2
+  }
 }
 
 test "Phase 4: await spawn in expression position" {

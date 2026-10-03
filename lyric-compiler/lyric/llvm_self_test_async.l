@@ -280,7 +280,7 @@ test "async generators (yield inside async func) are rejected with a distinct di
 // ─────────────────────────────────────────────────────────────────────────────
 test "spawn binds a value that a later await reads back" {
   val src = "package T\n" + "async func compute(n: in Int): Int {\n  return n * 3\n}\n" +
-    "async func run(): Int {\n  val t = spawn compute(4)\n  val more = 8\n  val v = await t\n  return v + more\n}\n" +
+    "async func run(): Int {\n  scope {\n    val t = spawn compute(4)\n    val more = 8\n    val v = await t\n    return v + more\n  }\n}\n" +
     "func main(): Int {\n  await run()\n}\n"
   val r = compileAndRun(src)
   assertEqualInt(r.exitCode, 20, "spawn compute(4) == 12, held across other work, awaited later: 12 + 8")
@@ -365,9 +365,11 @@ test "two spawned sleepers interleave: effect order proves genuine concurrency" 
     "}\n" +
     "func main(): Int {\n" +
     "  val log: List[Int] = newList()\n" +
-    "  val a = spawn worker(log, 1, 20, 60)\n" +
-    "  val b = spawn worker(log, 2, 40, 90)\n" +
-    "  await a\n  await b\n" +
+    "  scope {\n" +
+    "    val a = spawn worker(log, 1, 20, 60)\n" +
+    "    val b = spawn worker(log, 2, 40, 90)\n" +
+    "    await a\n    await b\n" +
+    "  }\n" +
     "  if log.count == 4 and log[0] == 1 and log[1] == 2 and log[2] == 11 and log[3] == 12 {\n    77\n  } else {\n    1\n  }\n" +
     "}\n"
   val r = compileAndRunBundled(src)
@@ -384,9 +386,11 @@ test "interleaving sleepers are leak-free under ASan" {
     "}\n" +
     "func main(): Int {\n" +
     "  val log: List[Int] = newList()\n" +
-    "  val a = spawn worker(log, 1, 20, 60)\n" +
-    "  val b = spawn worker(log, 2, 40, 90)\n" +
-    "  await a\n  await b\n" +
+    "  scope {\n" +
+    "    val a = spawn worker(log, 1, 20, 60)\n" +
+    "    val b = spawn worker(log, 2, 40, 90)\n" +
+    "    await a\n    await b\n" +
+    "  }\n" +
     "  if log.count == 4 and log[0] == 1 and log[1] == 2 and log[2] == 11 and log[3] == 12 {\n    77\n  } else {\n    1\n  }\n" +
     "}\n"
   val r = compileAndRunBundledAsan(src)
@@ -414,10 +418,12 @@ test "String args and results across suspends are leak-free under ASan" {
   val src = "package T\n" + "import Std.String as Str\n" + "import Std.Time as Time\n" +
     "async func tagIt(s: in String, ms: in Int): String {\n  Time.sleepMillis(ms)\n  return s + \"!\"\n}\n" +
     "async func run(): Int {\n" +
-    "  val a = spawn tagIt(\"le\" + \"ft\", 20)\n" +
-    "  val b = spawn tagIt(\"ri\" + \"ght\", 40)\n" +
-    "  val joined = await a + \"|\" + await b\n" +
-    "  return joined.length\n" +
+    "  scope {\n" +
+    "    val a = spawn tagIt(\"le\" + \"ft\", 20)\n" +
+    "    val b = spawn tagIt(\"ri\" + \"ght\", 40)\n" +
+    "    val joined = await a + \"|\" + await b\n" +
+    "    return joined.length\n" +
+    "  }\n" +
     "}\n" +
     "func main(): Int {\n  await run()\n}\n"
   val r = compileAndRunBundledAsan(src)
@@ -429,7 +435,7 @@ test "String args and results across suspends are leak-free under ASan" {
 // named codegen diagnostic, not an IR type error.
 test "an un-awaited spawned task in a value position is a named diagnostic" {
   val src = "package T\n" + "async func f(): Int {\n  return 1\n}\n" + "func g(n: in Int): Int {\n  n\n}\n" +
-    "func main(): Int {\n  val t = spawn f()\n  g(t)\n}\n"
+    "func main(): Int {\n  scope {\n    val t = spawn f()\n    return g(t)\n  }\n}\n"
   assertNativeCodegenPanics(
     src,
     "without being awaited",
@@ -463,7 +469,7 @@ test "spawn/scope with String-typed task bindings is leak-free under ASan" {
 test "async func main returning Int: exit code read from the completed task" {
   val src = "package T\n" + "import Std.Time as Time\n" +
     "async func step(n: in Int): Int {\n  Time.sleepMillis(10)\n  return n + 1\n}\n" +
-    "async func main(): Int {\n  val a = spawn step(20)\n  val b = spawn step(30)\n  await a + await b\n}\n"
+    "async func main(): Int {\n  scope {\n    val a = spawn step(20)\n    val b = spawn step(30)\n    return await a + await b\n  }\n}\n"
   val r = compileAndRunBundled(src)
   assertEqualInt(r.exitCode, 52, "async main's task result (21 + 31) becomes the process exit code")
 }
@@ -550,9 +556,11 @@ test "two spawned runCaptures interleave: the shorter child completes first" {
     "}\n" +
     "func main(): Int {\n" +
     "  val log: List[Int] = newList()\n" +
-    "  val a = spawn worker(log, 1, \"0.35\")\n" +
-    "  val b = spawn worker(log, 2, \"0.1\")\n" +
-    "  await a\n  await b\n" +
+    "  scope {\n" +
+    "    val a = spawn worker(log, 1, \"0.35\")\n" +
+    "    val b = spawn worker(log, 2, \"0.1\")\n" +
+    "    await a\n    await b\n" +
+    "  }\n" +
     "  if log.count == 2 and log[0] == 2 and log[1] == 1 {\n    77\n  } else {\n    1\n  }\n" +
     "}\n"
   val r = compileAndRunBundled(src)
@@ -572,9 +580,11 @@ test "interleaved runCaptures are leak-free under ASan" {
     "}\n" +
     "func main(): Int {\n" +
     "  val log: List[Int] = newList()\n" +
-    "  val a = spawn worker(log, 1, \"0.35\")\n" +
-    "  val b = spawn worker(log, 2, \"0.1\")\n" +
-    "  await a\n  await b\n" +
+    "  scope {\n" +
+    "    val a = spawn worker(log, 1, \"0.35\")\n" +
+    "    val b = spawn worker(log, 2, \"0.1\")\n" +
+    "    await a\n    await b\n" +
+    "  }\n" +
     "  if log.count == 2 and log[0] == 2 and log[1] == 1 {\n    77\n  } else {\n    1\n  }\n" +
     "}\n"
   val r = compileAndRunBundledAsan(src)

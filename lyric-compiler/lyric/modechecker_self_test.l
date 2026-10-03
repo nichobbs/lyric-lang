@@ -232,6 +232,82 @@ test "trailing spawn in a non-value try body is V0014" {
   assertTrue(hasDiagCode(result, "V0014"), "trailing spawn in non-value try body: V0014")
 }
 
+// ── V0034: `spawn` is only allowed inside a `scope { }` (docs/68 §4) ───────────
+func diagCodeCount(result: in ModeCheckResult, code: in String): Int {
+  var n = 0
+  var i = 0
+  while i < result.diagnostics.count {
+    if result.diagnostics[i].code == code {
+      n = n + 1
+    }
+    i = i + 1
+  }
+  n
+}
+
+test "spawn bound to a val outside a scope is V0034" {
+  val src = "package P\nasync func f(): Int {\n  val t = spawn g()\n  await t\n}\nasync func g(): Int { 1 }\n"
+  val result = parseCheck(src)
+  assertEqualInt(diagCodeCount(result, "V0034"), 1, "spawn bound outside scope: one V0034")
+  assertFalse(hasDiagCode(result, "V0014"), "a consumed spawn is not V0014")
+}
+
+test "await spawn outside a scope is V0034" {
+  val src = "package P\nasync func f(): Int {\n  await spawn g()\n}\nasync func g(): Int { 1 }\n"
+  val result = parseCheck(src)
+  assertEqualInt(diagCodeCount(result, "V0034"), 1, "await spawn outside scope: one V0034")
+}
+
+test "trailing spawn in value position outside a scope is V0034, not V0014" {
+  val src = "package P\nasync func f(): Int {\n  val a = 1\n  spawn g()\n}\nasync func g(): Int { 1 }\n"
+  val result = parseCheck(src)
+  assertEqualInt(diagCodeCount(result, "V0034"), 1, "trailing spawn outside scope: one V0034")
+  assertFalse(hasDiagCode(result, "V0014"), "a returned spawn is not discarded")
+}
+
+test "discarded spawn outside a scope reports V0014 only, once" {
+  val src = "package P\nasync func f(): Unit {\n  spawn g()\n  val done = 1\n}\nasync func g(): Unit {}\n"
+  val result = parseCheck(src)
+  assertEqualInt(diagCodeCount(result, "V0014"), 1, "discarded spawn: one V0014")
+  assertEqualInt(diagCodeCount(result, "V0034"), 0, "discarded spawn: no second V0034")
+}
+
+test "spawn inside a scope is not V0034" {
+  val src = "package P\nasync func f(): Int {\n  scope {\n    val t = spawn g()\n    return await t\n  }\n}\nasync func g(): Int { 1 }\n"
+  val result = parseCheck(src)
+  assertFalse(hasDiagCode(result, "V0034"), "spawn inside scope: no V0034")
+}
+
+test "spawn nested in an if, a loop and a match inside a scope is not V0034" {
+  val src = "package P\nasync func f(): Unit {\n  scope {\n    if true {\n      val a = spawn g()\n      await a\n    }\n    while false {\n      val b = spawn g()\n      await b\n    }\n    match 1 {\n      case _ -> {\n        val c = spawn g()\n        await c\n      }\n    }\n  }\n}\nasync func g(): Unit {}\n"
+  val result = parseCheck(src)
+  assertFalse(hasDiagCode(result, "V0034"), "spawn in nested blocks of a scope: no V0034")
+}
+
+test "spawn in a lambda body inside a scope is V0034 (the lambda may outlive the scope)" {
+  val src = "package P\nasync func f(): Unit {\n  scope {\n    val h = { x: Int ->\n      val t = spawn g()\n      await t\n    }\n  }\n}\nasync func g(): Int { 1 }\n"
+  val result = parseCheck(src)
+  assertEqualInt(diagCodeCount(result, "V0034"), 1, "spawn in a lambda without its own scope: one V0034")
+}
+
+test "spawn in a lambda body with its own scope is not V0034" {
+  val src = "package P\nasync func f(): Unit {\n  val h = { x: Int ->\n    scope {\n      val t = spawn g()\n      await t\n    }\n  }\n}\nasync func g(): Int { 1 }\n"
+  val result = parseCheck(src)
+  assertFalse(hasDiagCode(result, "V0034"), "lambda with its own scope: no V0034")
+}
+
+test "spawn in a test block outside a scope is V0034" {
+  val src = "package P\n@test_module\nasync func g(): Int { 1 }\ntest \"t\" {\n  val t = spawn g()\n  val r = await t\n}\n"
+  val result = parseCheck(src)
+  assertEqualInt(diagCodeCount(result, "V0034"), 1, "spawn in a test block outside a scope: one V0034")
+}
+
+test "spawn in a sync function outside a scope is V0034" {
+  val src = "package P\nasync func g(): Int { 1 }\nfunc f(): Int {\n  val t = spawn g()\n  await t\n}\n"
+  val result = parseCheck(src)
+  assertEqualInt(diagCodeCount(result, "V0034"), 1, "spawn in a sync function outside a scope: one V0034")
+}
+
 // #5164: EMatch arms share the same walkExprOrBlockForSpawn(ctx, valuePos,
 // arms[i].body) call as EIf branches — mirror the if-branch tests above for
 // a match arm. Block-bodied arms (`case _ -> { ... }`) mirror the if-branch
