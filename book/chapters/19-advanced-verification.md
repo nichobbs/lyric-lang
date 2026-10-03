@@ -303,24 +303,19 @@ pub protected type Bucket {
 }
 ```
 
-Running `lyric prove` on this package generates six obligations — one postcondition goal per entry plus one side goal per `assert` — and all discharge under Z3.
+Running `lyric prove` on this package generates a postcondition goal per entry — the invariant over the fields' final values — plus one side goal per `assert`, and all discharge under Z3.
 
 **How the prover sees a protected entry.** The VC generator translates each `entry` as if it were a standalone function with:
 
 - One symbolic variable per field (`tokens: Real`, `capacity: Real`).
-- The type's `invariant:` clauses prepended as additional `requires:` preconditions.
-- The entry's own `requires:` clauses appended after.
+- The type's `invariant:` clauses prepended as additional `requires:` preconditions, and appended as `ensures:` postconditions.
+- The entry's own `requires:` and `ensures:` clauses after them.
 
-The body is then run through the standard wp calculus. Assignments to fields (`tokens = tokens - count`) rebind the symbolic variable for the rest of the block, so `assert(tokens >= 0.0)` after the assignment verifies the updated value.
+The body is then run through the standard wp calculus. Assignments to fields (`tokens = tokens - count`) rebind the symbolic variable for the rest of the block. In the postconditions, a `var` field stands for the value it holds when the entry returns — on each path through the body, the value that path leaves — and `old(tokens)` for its value on entry. So an entry that breaks the invariant on any path is refuted even with no `assert` in it.
 
-**Why `assert` rather than `ensures:`?** The invariant is about mutable state. A postcondition `ensures: tokens >= 0.0` in the Lyric contract language describes the *return value*, not the final field state. Expressing invariant preservation requires naming the updated field value — which, in a sequential block that may reassign the field multiple times, is most naturally done with an explicit `assert` at the point where the field reaches its final value.
+**What the `assert`s add.** They are not needed for preservation; they check the invariant at a chosen point mid-body and give that point's facts to the rest of the block. Keep them where an intermediate state matters, or where a failing proof is easier to read against a named line.
 
-The pattern therefore is:
-1. Declare the structural invariant in the `invariant:` clause.
-2. After each mutation sequence, add `assert(invariant_holds)` to prove preservation.
-3. The prover sees the `assert` as a side goal and uses the branch conditions, preconditions, and intermediate bindings as hypotheses.
-
-**Branch conditions are automatically in scope.** The `if tokens >= count` guard is available to the prover when checking the `assert` inside the taken branch — the verifier wraps branch-internal side goals with the condition as a hypothesis. This is why `assert(tokens >= 0.0)` inside `if tokens >= count` discharges: the prover knows both `tokens >= count` and `count > 0.0`, so `tokens - count >= 0.0` follows.
+**Branch conditions are automatically in scope.** The `if tokens >= count` guard is available to the prover when checking the `assert` inside the taken branch — the verifier wraps branch-internal side goals with the condition as a hypothesis. This is why `assert(tokens >= 0.0)` inside `if tokens >= count` discharges: the prover knows both `tokens >= count` and `count > 0.0`, so `tokens - count >= 0.0` follows. Facts a branch establishes stay on that branch: an `assert` inside one branch tells the prover nothing about the other.
 
 **Constructor postconditions.** A `func make(...)` that constructs a protected type proves a standard postcondition. Use `result.field` in `ensures:` to state structural facts:
 

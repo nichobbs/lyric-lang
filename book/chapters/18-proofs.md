@@ -12,7 +12,7 @@ The proof system discharges contracts by handing them to an SMT solver. That sol
 
 - Domain cores with arithmetic invariants: balance arithmetic, conservation properties, range constraints on financial values. These sit squarely in the decidable fragment of linear integer arithmetic, which Z3 handles deterministically and quickly.
 - Data structures with universally quantified correctness properties: a sorted set where every element satisfies an ordering invariant, a BST where left keys are smaller than the root. Z3 handles inductive datatypes with quantifiers over finite structure.
-- Bounded computations with explicit loop invariants: when you can state what holds before and after each iteration, the wp calculus can verify the loop.
+- Bounded computations with explicit loop invariants: when you can state what holds before and after each iteration, the wp calculus can verify the loop. The prover checks the invariant on entry, then reasons about an *arbitrary* iteration — every variable the loop assigns holds an unknown value satisfying the invariant and the condition — and checks that the body re-establishes the invariant. After the loop it knows only the invariant and that the condition is false, so the invariant must say everything the rest of the function needs.
 
 **Less suited to `@proof_required`:**
 
@@ -108,6 +108,8 @@ The key mechanism that makes module-level proof tractable is the Hoare call rule
 2. **Assume** `debit`'s `ensures:` after the call — treat the postcondition as an established fact for the rest of the analysis.
 
 In both steps each parameter in the contract stands for the argument passed to it. A named argument goes to the parameter it names, whatever order the call writes it in (`debit(amount = a, from = acct)` binds `from` to `acct`), and a parameter the call leaves out stands for its default value.
+
+A method call works the same way when the file declares the function it runs: `acct.withdraw(n)` on an `Account` reaches `func Account.withdraw(a: in Account, n: in Int)`, with `acct` as its first argument. Each such call has a result of its own, so `acct.next() == acct.next()` is provable only if the contract says so (or the method is `@pure`). A method the file does not declare is an unknown function of its receiver and arguments: the same call twice gives the same value, and nothing else is known about it. An argument passed to an `out` or `inout` parameter holds a new value after the call; in the callee's `ensures:` the parameter means its final value and `old(p)` the value passed in.
 
 This is the deal: you prove each function independently, and at call sites you trust what you proved. The proof for `execute` does not need to know how `debit` works internally; it only needs to know what `debit` promises.
 

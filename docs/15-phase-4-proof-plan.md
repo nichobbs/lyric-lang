@@ -278,7 +278,7 @@ Lyric.Verifier/
 | opaque type               | SMT-LIB datatype with one private field       | fields are not exported across packages — the VC generator inlines invariant facts but not the representation |
 | function type             | uninterpreted sort + apply axiom (`@pure` only)| non-`@pure` functions cannot appear as values in contracts |
 | `Result[T, E]`            | the standard Lyric-defined two-arm union; treated as datatype | |
-| protected-type ref        | fields bound as symbolic `Real`/`Int`/… vars | per-entry sequential reasoning via `goalsForProtectedType`; `invariant:` clauses injected as `requires:` hypotheses on each entry; invariant preservation checked via explicit `assert` in the body |
+| protected-type ref        | fields bound as symbolic `Real`/`Int`/… vars | per-entry sequential reasoning via `goalsForProtectedType`; `invariant:` clauses are `requires:` hypotheses on each entry and `ensures:` obligations over the values its `var` fields hold when it returns (#8102) |
 
 Range subtype values lift to `Int` with the bound as a `forall`-
 introduced hypothesis. This is the same trick SPARK uses; it lets
@@ -287,20 +287,40 @@ theory.
 
 ### 5.3 Loops
 
-A loop `while c invariant: ι { S }` desugars to the standard Hoare
-encoding:
+A loop `while c invariant: ι { S }` is proved by the standard Hoare
+rule, in an arbitrary iteration's state (#8102):
 
-> `assert ι (at loop entry)`
-> `havoc all vars modified in S`
-> `assume ι ∧ c`
-> `S`
-> `assert ι (preserved by body)`
-> `assume ι ∧ ¬c`
+> `assert ι` (at loop entry), and `c`'s own obligations under `ι`
+> `havoc` every variable `c` or `S` may change
+> `assume ι`; `assert` `c`'s own obligations (after any iteration)
+> `assume c`; `S`, its obligations proved under `ι ∧ c`
+> `assert ι` (preserved: over the values `S` leaves)
+> `assume ι ∧ ¬c` (the rest of the block)
 
-The VC generator emits three sub-VCs: *establish*, *preserve*,
-*conclude*. Each is reported separately so a failed proof points to
-"the body does not preserve the invariant" rather than the lump
-"the loop is wrong."
+What may change is every variable assigned anywhere in `c` or `S` — in a
+nested `if` or `match` arm, an inner loop, a lambda — and every variable
+passed to an `out`/`inout` parameter of a function the file declares,
+including the receiver of such a method. Each havocked variable is a
+fresh symbol per loop translation (`i!loop12`), never shared with
+another loop or path, and keeps its type's width and range as a fact.
+The preserved invariant is translated with a placeholder for each
+changed variable, which every path through the body replaces with the
+value it leaves (`finishPost`); the same mechanism states an `ensures:`
+over an `out`/`inout` parameter or a protected type's `var` field at the
+function's end, with `old(p)` its entry value.
+
+The body is walked as statements to its end — an `if` or a call in last
+position changes state, it is not the loop's value. A `return` or `?`
+in the body, like `break` and `continue` (#7396), fails closed
+(`V0026`): the invariant says nothing about the value it leaves with.
+The loop's exit facts hold only after the loop, and the facts one branch
+of an `if` establishes hold only under that branch's condition, so a
+loop that never exits on one path proves nothing about another.
+
+The VC generator emits *establish*, *preserve* and the condition's and
+body's own obligations as separate goals, so a failed proof points to
+"the body does not preserve the invariant" rather than the lump "the
+loop is wrong."
 
 `for x in xs invariant: ι { S }` desugars to a `while` where the
 implicit iterator state is `(remaining: slice[T], processed: slice[T])`
@@ -349,6 +369,32 @@ At a call the callee's contract is instantiated with the argument each
 parameter receives: named arguments by name, positional ones in order
 into the remaining parameters, an omitted parameter by its default, and a
 record constructor's fields likewise (#7873).
+
+A method call `recv.m(args)` reaches a dot-named `func R.m(self: R, ...)`
+the file declares when `recv` is a value of the file's record (or
+protected type) `R` and `R` declares no method `m` of its own; it is
+applied by that function's contract, the receiver its first argument,
+with a result of its own at each call site unless the method is `@pure`
+— two calls agree only where the contract says so. `R.m(args)` on a type
+name is a call of `func R.m` by path. Any other method call is an
+uninterpreted function of the receiver and the arguments, one function
+per method name, argument shape (a named argument keeps its name) and
+sorts: `a.f() == a.f()` holds by congruence, `a.f() == b.g()` and
+`a.f() == b.f()` do not. Congruence treats the method as a function of
+its receiver and arguments — true of the `@pure` calls a contract may
+make (T0133), and an assumption about an unmodelled method called in a
+body, which mutation through the receiver (the verifier has no heap)
+would break. A call through a computed callee is a fresh
+value. No two distinct values share a symbol: every value the verifier
+introduces — a call result, a havocked variable, an unmodelled
+expression — has a name of its own, with a `!` no Lyric identifier
+contains (#8101).
+
+An argument passed to an `out`/`inout` parameter holds a new, unknown
+value after the call; in the callee's `ensures:` the parameter is its
+value after the call, a symbol of its own, and `old(p)` the argument.
+A write to a record field or element fails closed (`V0026`): a record is
+a reference, and the verifier has no heap to follow its aliases.
 
 Obligations raised inside an expression — a callee's `requires:`, an
 overflow obligation — are proved wherever the expression occurs: an
