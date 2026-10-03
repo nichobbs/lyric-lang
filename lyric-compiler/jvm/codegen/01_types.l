@@ -1544,6 +1544,12 @@ pub func dropKernelTaskRecordClass(cls: in Option[String]): Option[String] {
   }
 }
 
+// True when an extern/import alias resolution of a `Task[X]` application names
+// `Std.Task`'s kernel record (dotted or slashed), which a built-in handle never is.
+func isKernelTaskRecordFqn(head: in ModulePath, argCount: in Int, fqn: in String): Bool {
+  isBuiltinTaskApp(head, argCount) and fqn.replace(".", "/") == kernelTaskRecordClass()
+}
+
 func dropKernelTaskRecord(head: in ModulePath, argCount: in Int, cls: in Option[String]): Option[String] {
   if isBuiltinTaskApp(head, argCount) {
     return dropKernelTaskRecordClass(cls)
@@ -1798,7 +1804,7 @@ pub func typeExprToJvmExtern(te: in TypeExpr, pkgName: in String, externTypes: i
         case None -> typeExprToJvm(te, pkgName)
       }
     }
-    case TGenericApp(head, _) -> {
+    case TGenericApp(head, targs) -> {
       // A GENERIC `extern type` alias (`JvmConcurrentDict[K, V] =
       // "java.util.concurrent.ConcurrentHashMap"`) parses as TGenericApp, so
       // the TRef arm never resolved it and every value of the alias erased to
@@ -1820,14 +1826,24 @@ pub func typeExprToJvmExtern(te: in TypeExpr, pkgName: in String, externTypes: i
         match qualifiedExternKey(head) {
           case Some(qk) -> {
             match mapGet(externTypes, qk) {
-              case Some(javaFqn) -> return JRef(className = stripClrAritySuffix(javaFqn).replace(".", "/"))
+              case Some(javaFqn) -> {
+                if not isKernelTaskRecordFqn(head, targs.count, javaFqn) {
+                  return JRef(className = stripClrAritySuffix(javaFqn).replace(".", "/"))
+                }
+              }
               case None -> ()
             }
           }
           case None -> ()
         }
         match mapGet(externTypes, hseg) {
-          case Some(javaFqn) -> JRef(className = stripClrAritySuffix(javaFqn).replace(".", "/"))
+          case Some(javaFqn) -> {
+            if isKernelTaskRecordFqn(head, targs.count, javaFqn) {
+              typeExprToJvm(te, pkgName)
+            } else {
+              JRef(className = stripClrAritySuffix(javaFqn).replace(".", "/"))
+            }
+          }
           case None -> typeExprToJvm(te, pkgName)
         }
       }
