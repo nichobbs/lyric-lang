@@ -23,6 +23,7 @@ import Std.Environment as Environment
 import Std.Uuid as Uuid
 import Lyric.Emitter
 import Lyric.LlvmBridge
+import Lyric.DiagnosticUtil as DiagUtil
 
 func envOrPanic(name: in String): String {
   val v = Environment.getVarOrDefault(name, "")
@@ -442,4 +443,94 @@ console.log('many=' + p.many(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18));
   assertTrue(Str.contains(n.stdout, "{\"tag\":\"square\",\"val\":2}"), "variant: " + n.stdout)
   assertTrue(Str.contains(n.stdout, "describe=xyz,empty"), "describe: " + n.stdout)
   assertTrue(Str.contains(n.stdout, "many=171"), "spilled params: " + n.stdout)
+}
+
+test "wasm32 component: colliding WIT names are left out with the interface still valid" {
+  val dir = buildComponentOf(
+    r"package Probe
+
+record Item {
+  n: Int
+}
+
+pub func Item(n: Int): Int {
+  n
+}
+
+pub func fooBar(n: Int): Int {
+  n + 1
+}
+
+pub func foo_bar(n: Int): Int {
+  n + 2
+}
+
+pub func keep(n: Int): Int {
+  n
+}
+"
+  )
+  val wit = match File.readText(Path.join(dir, "prog.wit")) { case Ok(t) -> t; case Err(_) -> "" }
+  assertTrue(Str.contains(wit, "foo-bar: func"), "the first of two colliding names is kept: " + wit)
+  assertTrue(Str.contains(wit, "keep: func"), "keep is exported: " + wit)
+  assertFalse(Str.contains(wit, "item: func"), "a function named like a record is left out: " + wit)
+  val vargs: List[String] = newList()
+  vargs.add("validate")
+  vargs.add(Path.join(dir, "prog.wasm"))
+  val v = run(envOrPanic("WASM_TOOLS"), vargs)
+  assertTrue(v.exitCode == 0, "the component validates: " + v.stderr)
+}
+
+test "wasm32 component: two exporting packages in one project each get an interface" {
+  val _w = envOrPanic("WASI_SDK_PATH")
+  val stdlib = findStdlibSourcesNative()
+  val dir = Path.join(
+    Environment.getVarOrDefault("TMPDIR", "/tmp"),
+    "lyric-wasm32-component-proj-" + Uuid.uuidToString(Uuid.newUuid())
+  )
+  val _d = File.createDir(dir)
+  val pkgs: List[NativeSourcePackage] = newList()
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Proj.Math",
+      path = "",
+      source = "package Proj.Math\npub func add(a: Int, b: Int): Int {\n  a + b\n}\n"
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Proj.Text",
+      path = "",
+      source = "package Proj.Text\npub func shout(s: String): String {\n  s + \"!\"\n}\n"
+    )
+  )
+  val flags: List[String] = newList()
+  val noFeatures: List[String] = newList()
+  val noOrigins: List[DiagUtil.PackageLineOrigins] = newList()
+  val ok = compileProjectToNativeWithShape(
+    pkgs,
+    Path.join(dir, "prog.wasm"),
+    stdlib,
+    "wasm32-wasi",
+    "2",
+    flags,
+    newList(),
+    noFeatures,
+    noFeatures,
+    "",
+    noOrigins,
+    true,
+    "component"
+  )
+  assertTrue(ok, "the two-package component builds")
+  val wit = match File.readText(Path.join(dir, "prog.wit")) { case Ok(t) -> t; case Err(_) -> "" }
+  assertTrue(
+    Str.contains(wit, "interface proj-math") and Str.contains(wit, "interface proj-text"),
+    "an interface per package: " + wit
+  )
+  val vargs: List[String] = newList()
+  vargs.add("validate")
+  vargs.add(Path.join(dir, "prog.wasm"))
+  val v = run(envOrPanic("WASM_TOOLS"), vargs)
+  assertTrue(v.exitCode == 0, "the component validates: " + v.stderr)
 }

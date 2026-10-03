@@ -26,7 +26,6 @@ import Std.Core
 import Std.Collections
 import Std.String as Str
 import Std.Char as Ch
-import Lyric.Lexer
 import Lyric.Parser
 
 /// WIT's reserved words, which a Lyric name must escape with `%`.
@@ -1073,11 +1072,6 @@ func externPreamble(): String {
   Str.joinList("\n", l)
 }
 
-/// The record layout of a parameter list spilled to memory (more than 16 flat values).
-func paramsAsFields(params: in List[WitField]): List[WitField] {
-  params
-}
-
 func retKindOf(ret: in WitTy): String {
   val fl = flatOf(ret)
   if fl.count == 0 {
@@ -1198,7 +1192,14 @@ pub func componentRewriteFile(file: in SourceFile): ComponentRewrite {
     match it.kind {
       case IFunc(d) -> {
         if isPubDecl(d) and d.name != "main" {
-          val why = exportBlocker(d, tbl)
+          var why = exportBlocker(d, tbl)
+          if why.length == 0 {
+            for ex in exports {
+              if witName(ex.jsName) == witName(d.name) {
+                why = "its WIT name " + witName(d.name) + " is already taken by " + ex.jsName
+              }
+            }
+          }
           if why.length > 0 {
             notes.add("warning[W0040]: pub func " + pkg + "." + d.name + " is not exported to the component: " + why)
           } else {
