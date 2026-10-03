@@ -1529,3 +1529,209 @@ test "a named range subtype's result and a range-typed var carry their bound (#7
     "uninitialised-var-assigned"
   )
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A method call is its own value: an unmodelled method is an uninterpreted
+// function of its receiver and arguments, a declared one is applied by its
+// contract with a result of its own at each call (#8101).
+// ─────────────────────────────────────────────────────────────────────────────
+func assertFailsClosed(body: in String, code: in String, label: in String): Unit {
+  val s = provePkg(body)
+  assertTrue(summaryHasDiagCode(s, code), label + ": " + code + " reported")
+  assertTrue(summaryHasErrorDiag(s), label + ": the proof fails closed")
+}
+
+test "different unmodelled methods are not equal (#8101)" {
+  val rec = "record P {\n  x: Int\n}\n"
+  assertRefuted(
+    rec + "func f(a: in P, b: in P): Bool\n  ensures: result\n{\n  a.size() == b.length()\n}\n",
+    "different-methods"
+  )
+  assertRefuted(rec + "func f(a: in P): Bool\n  ensures: result\n{\n  a.size() == a.length()\n}\n", "same-receiver")
+  assertRefuted(
+    rec + "func f(a: in P, b: in P): Bool\n  ensures: result\n{\n  a.size() == b.size()\n}\n",
+    "different-receivers"
+  )
+  assertRefuted(rec + "func f(a: in P): Bool\n  ensures: result\n{\n  a.at(1) == a.at(2)\n}\n", "different-arguments")
+  assertRefuted(
+    rec + "func f(a: in P): Bool\n  ensures: result\n{\n  a.span(lo = 1, hi = 2) == a.span(hi = 1, lo = 2)\n}\n",
+    "named-arguments-swapped"
+  )
+}
+
+test "an unmodelled method is a function of its receiver and arguments (#8101)" {
+  val rec = "record P {\n  x: Int\n}\n"
+  assertDischarged(rec + "func f(a: in P): Bool\n  ensures: result\n{\n  a.size() == a.size()\n}\n", "same-call")
+  assertDischarged(
+    rec + "func f(a: in P, b: in P): Bool\n  requires: a == b\n  ensures: result\n{\n  a.at(1) == b.at(1)\n}\n",
+    "equal-receivers"
+  )
+}
+
+test "a declared method is applied by its contract, one result per call (#8101)" {
+  val acc = "record Acc {\n  bal: Int\n}\n" +
+    "func Acc.next(acc: in Acc): Int\n  ensures: result > acc.bal\n{\n  acc.bal + 1\n}\n"
+  assertDischarged(acc + "func g(a: in Acc): Bool\n  ensures: result\n{\n  a.next() > a.bal\n}\n", "contract-used")
+  assertRefuted(acc + "func g(a: in Acc): Bool\n  ensures: result\n{\n  a.next() == a.next()\n}\n", "fresh-per-call")
+  assertRefuted(
+    acc + "func g(a: in Acc, b: in Acc): Bool\n  ensures: result\n{\n  a.next() == b.next()\n}\n",
+    "different-receivers"
+  )
+  val pure = "record Acc {\n  bal: Int\n}\n" + "@pure\nfunc Acc.peek(acc: in Acc): Int = acc.bal\n"
+  assertDischarged(pure + "func g(a: in Acc): Bool\n  ensures: result\n{\n  a.peek() == a.bal\n}\n", "pure-unfold")
+  assertDischarged(
+    pure + "func g(a: in Acc): Bool\n  ensures: result\n{\n  a.peek() == a.peek()\n}\n",
+    "pure-congruent"
+  )
+  val take = "record Acc {\n  bal: Int\n}\n" +
+    "func Acc.take(acc: in Acc, n: in Int): Int\n  requires: n > 0\n{\n  n\n}\n"
+  assertRefuted(take + "func g(a: in Acc): Int\n{\n  a.take(0)\n}\n", "precondition-checked")
+  assertDischarged(take + "func g(a: in Acc): Int\n{\n  a.take(3)\n}\n", "precondition-met")
+  assertDischarged(take + "func g(a: in Acc): Int\n{\n  Acc.take(a, 3)\n}\n", "static-call")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A loop is proved in an arbitrary iteration's state: everything it may
+// change is havocked before the invariant and the condition are assumed,
+// the condition's own obligations hold wherever it is evaluated, and the
+// body's obligations hold under `invariant and cond` (#8102).
+// ─────────────────────────────────────────────────────────────────────────────
+test "an invariant the body breaks is not preserved (#8102)" {
+  assertRefuted(
+    "func f(n: in Int): Int\n{\n  var i = 0\n  while i < n\n    invariant: i >= 0\n  {\n    i = i - 1\n  }\n  i\n}\n",
+    "decrement"
+  )
+  assertDischarged(
+    "func f(n: in Int): Int\n  ensures: result >= 0\n{\n  var i = 0\n  while i < n\n    invariant: i >= 0\n  {\n    i = i + 1\n  }\n  i\n}\n",
+    "increment"
+  )
+  assertRefuted(
+    "func f(n: in Int): Int\n{\n  var i = 0\n  var flag = 0\n  while i < n\n    invariant: flag == 0\n  {\n" +
+      "    if i == 3 {\n      flag = 1\n    }\n    i = i + 1\n  }\n  flag\n}\n",
+    "assigned-in-a-branch"
+  )
+  assertRefuted(
+    "func f(n: in Int): Int\n{\n  var i = 0\n  while i < n\n    invariant: i >= 0\n  {\n" +
+      "    if i > 5 {\n      i = -100\n    } else {\n      i = i + 1\n    }\n  }\n  i\n}\n",
+    "trailing-if"
+  )
+}
+
+test "a loop's exit facts hold only after the loop (#8102)" {
+  assertRefuted(
+    "func f(n: in Int): Int\n  ensures: result == 0\n{\n  var i = 0\n  while i < n\n    invariant: i >= 0\n  {\n" +
+      "    i = i + 1\n  }\n  i\n}\n",
+    "exit-value-unknown"
+  )
+  assertDischarged(
+    "func f(n: in Int): Int\n  requires: n >= 0\n  ensures: result == n\n{\n  var i = 0\n  while i < n\n" +
+      "    invariant: i >= 0 and i <= n\n  {\n    i = i + 1\n  }\n  i\n}\n",
+    "exit-value-from-invariant"
+  )
+}
+
+test "a loop body's obligations hold under the invariant and the condition (#8102)" {
+  val pos = "func pos(x: in Int): Int\n  requires: x > 0\n{\n  x\n}\n"
+  assertDischarged(
+    pos + "func f(n: in Int): Int\n{\n  var i = 0\n  var s = 0\n  while i < n\n    invariant: i >= 0\n  {\n" +
+      "    s = pos(n - i)\n    i = i + 1\n  }\n  s\n}\n",
+    "guarded-by-condition"
+  )
+  assertRefuted(
+    pos + "func f(n: in Int): Int\n{\n  var i = 0\n  var s = 0\n  while i < n\n    invariant: i >= 0\n  {\n" +
+      "    s = pos(i)\n    i = i + 1\n  }\n  s\n}\n",
+    "not-implied"
+  )
+}
+
+test "a loop condition's obligations hold on entry and after every iteration (#8102)" {
+  assertCheckedRefuted(
+    "func f(n: in Int): Int\n{\n  var i = 0\n  while i + 1 < n\n    invariant: i >= 0\n  {\n    i = i + 1\n  }\n  i\n}\n",
+    "condition-overflows"
+  )
+  assertCheckedDischarged(
+    "func f(n: in Int): Int\n  requires: n > 0\n{\n  var i = 0\n  while i + 1 < n\n    invariant: i >= 0 and i < n\n  {\n" +
+      "    i = i + 1\n  }\n  i\n}\n",
+    "condition-bounded"
+  )
+  val pos = "func pos(x: in Int): Int\n  requires: x > 0\n{\n  x\n}\n"
+  assertRefuted(
+    pos +
+      "func f(n: in Int): Int\n{\n  var i = 1\n  while pos(i) < n\n    invariant: i >= 0\n  {\n    i = i + 1\n  }\n  i\n}\n",
+    "condition-precondition"
+  )
+  assertDischarged(
+    pos +
+      "func f(n: in Int): Int\n{\n  var i = 1\n  while pos(i) < n\n    invariant: i >= 1\n  {\n    i = i + 1\n  }\n  i\n}\n",
+    "condition-precondition-met"
+  )
+}
+
+test "a return or a field write in a loop body fails closed (#8102)" {
+  assertFailsClosed(
+    "func f(n: in Int): Int\n  ensures: result > 0\n{\n  var i = 0\n  while i < n\n    invariant: true\n  {\n    return -5\n  }\n  1\n}\n",
+    "V0026",
+    "return-in-body"
+  )
+  assertFailsClosed("record P {\n  var x: Int\n}\nfunc f(p: in P): Int\n{\n  p.x = 1\n  0\n}\n", "V0026", "field-write")
+}
+
+test "a branch's facts stay on that branch (#8102)" {
+  assertRefuted(
+    "func f(x: in Int): Int\n  ensures: result > 0\n{\n  if x > 0 {\n    assert(x > 0)\n  }\n  x\n}\n",
+    "assert-in-branch"
+  )
+  // The loop never exits, so on that path nothing after it runs; the
+  // other path still returns -1.
+  assertRefuted(
+    "func f(x: in Int): Int\n  ensures: result > 0\n{\n  var i = 0\n  if x > 0 {\n    while true\n" +
+      "      invariant: true\n    {\n      i = i + 1\n    }\n  }\n  -1\n}\n",
+    "non-exiting-loop-on-one-path"
+  )
+}
+
+test "an out or inout argument holds a new value after the call (#8102)" {
+  val inc = "func inc(x: inout Int): Unit\n  ensures: x == old(x) + 1\n{\n  x = x + 1\n}\n"
+  assertDischarged(inc, "callee-proved")
+  assertRefuted(
+    "func inc(x: inout Int): Unit\n  ensures: x == old(x)\n{\n  x = x + 1\n}\n",
+    "callee-ensures-the-final-value"
+  )
+  assertRefuted(
+    inc + "func g(): Int\n  ensures: result == 5\n{\n  var a = 5\n  inc(a)\n  a\n}\n",
+    "caller-sees-a-new-value"
+  )
+}
+
+test "a protected entry's invariant holds of the fields it leaves (#8102)" {
+  assertRefuted(
+    "protected type Counter {\n  var n: Int\n  invariant: n >= 0\n  entry bad(): Unit {\n    n = 0 - 1\n  }\n}\n",
+    "entry-breaks-invariant"
+  )
+  assertDischarged(
+    "protected type Counter {\n  var n: Int\n  invariant: n >= 0\n  entry inc(): Unit {\n    n = n + 1\n  }\n}\n",
+    "entry-keeps-invariant"
+  )
+}
+
+test "an if whose branches agree is no tautology unless they are (#8102)" {
+  val p = TBuiltin(
+    op = BOpGt,
+    args = termList2(TVar(name = "x", sort = SInt), TLit(value = VLInt(n = 0i64), sort = SInt))
+  )
+  val c = TVar(name = "c", sort = SBool)
+  val hyps: List[Term] = newList()
+  val syms: List[SymbolDecl] = newList()
+  val g = Goal(
+    hypotheses = hyps,
+    conclusion = TIte(cond = c, thenT = p, elseT = p),
+    symbols = syms,
+    origin = zeroSpan(),
+    kind = GKAssertion,
+    label = "ite-same-arms"
+  )
+  match trivialDischarge(g) {
+    case Some(_) -> assertTrue(false, "ite(c, p, p) is not discharged syntactically")
+    case None -> ()
+  }
+}

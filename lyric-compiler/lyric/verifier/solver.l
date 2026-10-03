@@ -236,7 +236,8 @@ func isTautology(t: in Term): Bool {
     case TBuiltin(BOpImplies, args) -> args.count == 2 and termEq(args[0], args[1])
     case TBuiltin(BOpAnd, args) -> allTautologies(args)
     case TBuiltin(BOpOr, args) -> anyTautology(args)
-    case TIte(_, a, b) -> termEq(a, b) or (isTautology(a) and isTautology(b))
+    // `if c then p else p` is `p`, a tautology only when `p` is (#8102).
+    case TIte(_, a, b) -> isTautology(a) and isTautology(b)
     case _ -> false
   }
 }

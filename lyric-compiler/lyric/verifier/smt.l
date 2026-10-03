@@ -42,14 +42,17 @@ pub func smtRenderSort(s: in Sort): String {
   }
 }
 
-// Replace non-alphanumeric/non-underscore/non-dot chars with underscore.
+// Replace every char but letters, digits, `_`, `.` and `!` with an
+// underscore.  `!` never occurs in a Lyric identifier, so the names the
+// verifier synthesizes with it (`x!7`, `lyric!tdiv`) stay apart from every
+// source name (#8101).
 pub func smtSanitize(s: in String): String {
   var result = ""
   var i = 0
   while i < s.length {
     match charAt(s, i) {
       case Some(c) -> {
-        if isLetter(c) or isDigit(c) or c == '_' or c == '.' {
+        if isLetter(c) or isDigit(c) or c == '_' or c == '.' or c == '!' {
           result = result + charToString(c)
         } else {
           result = result + "_"
@@ -240,8 +243,9 @@ func bitVecOpName(op: in Builtin): Option[String] {
 // Lyric's signed `/` and `%` truncate toward zero on every target (`-7 / 2
 // == -3`, `-7 % 2 == -1`), but SMT-LIB's `div`/`mod` are Euclidean (`(div
 // (- 7) 2)` is `-4`), so signed integer division renders through these
-// preamble definitions instead (#7870).  The names contain `!`, which
-// `smtSanitize` never emits, so no user symbol can collide with them.
+// preamble definitions instead (#7870).  The names contain `!`, which no
+// Lyric identifier does, and every name the verifier synthesizes with a `!`
+// ends in a counter (`freshName`), so nothing else can collide with them.
 val smtTruncDivName: String = "lyric!tdiv"
 
 val smtTruncRemName: String = "lyric!trem"

@@ -33,8 +33,28 @@ pub record VEnv {
   // constructor call that leaves a defaulted field out is completed with
   // its default (#7873).
   pub recordDefaults: Map[String, List[Option[Expr]]]
+  // One entry per verifier-synthesized name handed out so far — loop
+  // havocs, call results, untranslated values — shared by every copy of
+  // the environment, so no two of them ever share a name (#8101, #8102).
+  pub fresh: List[Int]
+  // `<Record>.<method>` for every method declared inside a record body: a
+  // record's own method takes precedence over a dot-named function of the
+  // same name, so a call to one never borrows the other's contract (#8101).
+  pub recordMethods: Map[String, Bool]
+  // The variables a postcondition being proved speaks of at the end of the
+  // code walked — a loop invariant over the variables its body assigns, an
+  // `ensures:` over the function's `out`/`inout` parameters — each with the
+  // placeholder that stands for its final value in the postcondition.  Every
+  // path's end substitutes the variable's value there for the placeholder
+  // (`finishPost`, #8102).
+  pub finals: List[FinalSlot]
   // Copy helpers — use explicit names list to avoid iterating Map.keys on a
   // TypeBuilderInstantiation, which generates invalid IL.
+}
+
+pub record FinalSlot {
+  pub varName: String
+  pub placeholder: String
 }
 
 // Resolve a distinct-type chain to its underlying TypeExpr.  Stops on the first
@@ -145,6 +165,9 @@ pub func envEmpty(callees: in Map[String, FunctionDecl], symbols: in List[Symbol
   val distincts: Map[String, TypeExpr] = newMap()
   val fieldInfos: Map[String, SortInfo] = newMap()
   val recordDefaults: Map[String, List[Option[Expr]]] = newMap()
+  val fresh: List[Int] = newList()
+  val recordMethods: Map[String, Bool] = newMap()
+  val finals: List[FinalSlot] = newList()
   VEnv(
     vars = vars,
     varNames = varNames,
@@ -154,7 +177,10 @@ pub func envEmpty(callees: in Map[String, FunctionDecl], symbols: in List[Symbol
     checkedArithmetic = checkedArithmetic,
     distincts = distincts,
     fieldInfos = fieldInfos,
-    recordDefaults = recordDefaults
+    recordDefaults = recordDefaults,
+    fresh = fresh,
+    recordMethods = recordMethods,
+    finals = finals
   )
 }
 
@@ -184,7 +210,10 @@ pub func envBind(name: in String, info: in SortInfo, env: in VEnv): VEnv {
     checkedArithmetic = env.checkedArithmetic,
     distincts = env.distincts,
     fieldInfos = env.fieldInfos,
-    recordDefaults = env.recordDefaults
+    recordDefaults = env.recordDefaults,
+    fresh = env.fresh,
+    recordMethods = env.recordMethods,
+    finals = env.finals
   )
 }
 
@@ -213,7 +242,10 @@ pub func envBindTerm(name: in String, term: in Term, info: in SortInfo, env: in 
     checkedArithmetic = env.checkedArithmetic,
     distincts = env.distincts,
     fieldInfos = env.fieldInfos,
-    recordDefaults = env.recordDefaults
+    recordDefaults = env.recordDefaults,
+    fresh = env.fresh,
+    recordMethods = env.recordMethods,
+    finals = env.finals
   )
 }
 
@@ -223,6 +255,22 @@ pub func envLookup(name: in String, env: in VEnv): Option[Term] {
 
 pub func envLookupSort(name: in String, env: in VEnv): Option[SortInfo] {
   mapGet(env.sorts, name)
+}
+
+// A name for a value the verifier introduces — a loop's havocked variable,
+// a call's result, a construct it does not model — that no other name in
+// any goal has: `!` never appears in a Lyric identifier, and the counter is
+// shared by every copy of the environment.  Two distinct values must never
+// share a name, or the solver takes them for equal (#8101, #8102).
+func freshName(env: in VEnv, base: in String): String {
+  val n = env.fresh.count
+  env.fresh.add(n)
+  base + "!" + intToString(n)
+}
+
+// An unconstrained value of `srt` with a name of its own.
+func freshVar(env: in VEnv, base: in String, srt: in Sort): Term {
+  TVar(name = freshName(env, base), sort = srt)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -478,7 +526,10 @@ func varlessEnv(env: in VEnv): VEnv {
     checkedArithmetic = env.checkedArithmetic,
     distincts = env.distincts,
     fieldInfos = env.fieldInfos,
-    recordDefaults = env.recordDefaults
+    recordDefaults = env.recordDefaults,
+    fresh = env.fresh,
+    recordMethods = env.recordMethods,
+    finals = env.finals
   )
 }
 
@@ -523,6 +574,421 @@ func distinctFromCallee(env: in VEnv, fn: in Expr): Option[String] {
       }
     }
     case _ -> None
+  }
+}
+
+// Declare the callee `name` once per goal's symbols, however many calls
+// reach it: a second `declare-fun` of one name is an SMT-LIB error.
+func addUserFunOnce(symbols: in List[SymbolDecl], name: in String, paramSorts: in List[Sort], resultSort: in Sort): Unit {
+  var i = 0
+  while i < symbols.count {
+    match symbols[i] {
+      case DeclUserFun(existing, _, _) -> {
+        if existing == name {
+          return ()
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  symbols.add(DeclUserFun(name = name, paramSorts = paramSorts, resultSort = resultSort))
+}
+
+// A call to a function this file declares, by the Hoare call rule: its
+// `requires:` are side conditions at the arguments, its `ensures:` and its
+// result's range and width are facts about the result.  The result is the
+// callee applied to its arguments, or — for a method call (`freshResult`)
+// on a callee that is not `@pure` — a value of its own at this call site,
+// so two calls agree only where the contract says so (#8101).  An `out` or
+// `inout` parameter's `ensures:` speak of its value after the call, a
+// value of its own; `old(p)` is the argument (#8102).
+func translateResolvedCall(
+  env: in VEnv,
+  name: in String,
+  decl: in FunctionDecl,
+  args: in List[CallArg],
+  rawArgTerms: in List[Term],
+  argSpans: in List[Span],
+  callSpan: in Span,
+  argSides: in List[Term],
+  argAssumed: in List[Term],
+  allArgDiags: in List[Diagnostic],
+  freshResult: in Bool,
+): (TranslateResult, List[Diagnostic]) {
+  val resultInfo = match decl.ret { case Some(te) -> sortOfTypeExprE(env, te); case None -> unitSortInfo() }
+  val resultSort = resultInfo.sort
+  val paramSorts: List[Sort] = newList()
+  var pi = 0
+  while pi < decl.params.count {
+    paramSorts.add(sortOfTypeExprE(env, decl.params[pi].ty).sort)
+    pi = pi + 1
+  }
+  addUserFunOnce(env.symbols, name, paramSorts, resultSort)
+
+  // Build inner env for translating contracts.
+  val innerVars: Map[String, Term] = newMap()
+  val innerSorts: Map[String, SortInfo] = newMap()
+  val innerVarNames: List[String] = newList()
+  var ii = 0
+  while ii < decl.params.count {
+    val pInfo = sortOfTypeExprE(env, decl.params[ii].ty)
+    innerVars.add(decl.params[ii].name, TVar(name = decl.params[ii].name, sort = pInfo.sort))
+    innerSorts.add(decl.params[ii].name, pInfo)
+    innerVarNames.add(decl.params[ii].name)
+    ii = ii + 1
+  }
+  val emptyCallees: Map[String, FunctionDecl] = newMap()
+  val innerEnv = VEnv(
+    vars = innerVars,
+    varNames = innerVarNames,
+    sorts = innerSorts,
+    callees = emptyCallees,
+    symbols = env.symbols,
+    checkedArithmetic = false,
+    distincts = env.distincts,
+    fieldInfos = env.fieldInfos,
+    recordDefaults = env.recordDefaults,
+    fresh = env.fresh,
+    recordMethods = env.recordMethods,
+    finals = env.finals
+  )
+  // A parameter default is evaluated at the call, in the callee's
+  // parameter scope.
+  val defaultEnv = VEnv(
+    vars = innerVars,
+    varNames = innerVarNames,
+    sorts = innerSorts,
+    callees = env.callees,
+    symbols = env.symbols,
+    checkedArithmetic = env.checkedArithmetic,
+    distincts = env.distincts,
+    fieldInfos = env.fieldInfos,
+    recordDefaults = env.recordDefaults,
+    fresh = env.fresh,
+    recordMethods = env.recordMethods,
+    finals = env.finals
+  )
+
+  // Each argument goes to the parameter it names, or by position,
+  // and an omitted one takes its default (#7873); each takes its
+  // parameter's sort (#7848), so a literal passed to a `UInt`
+  // parameter is a bitvector in the call and in the callee
+  // contract it is substituted into.
+  val paramNames: List[String] = newList()
+  val paramDefaults: List[Option[Expr]] = newList()
+  var pn = 0
+  while pn < decl.params.count {
+    paramNames.add(decl.params[pn].name)
+    paramDefaults.add(decl.params[pn].dflt)
+    pn = pn + 1
+  }
+  val paired = pairArgTerms(
+    name,
+    paramNames,
+    paramSorts,
+    paramDefaults,
+    defaultEnv,
+    true,
+    args,
+    rawArgTerms,
+    argSpans,
+    callSpan,
+    argSides,
+    argAssumed,
+    allArgDiags
+  )
+  val argTerms = paired.terms
+  val rawCallTerm = if freshResult and not isPure(decl) {
+    TVar(name = freshName(env, name + "!result"), sort = resultSort)
+  } else {
+    TApp(name = name, args = argTerms, retSort = resultSort)
+  }
+  val callTerm = if paired.paired { rawCallTerm } else { poisonTerm(rawCallTerm) }
+
+  // Param substitution map: param[i].name → argTerms[i].
+  val paramSubst: Map[String, Term] = newMap()
+  val paramSubstNames: List[String] = newList()
+  var si = 0
+  while si < decl.params.count {
+    paramSubst.add(decl.params[si].name, argTerms[si])
+    paramSubstNames.add(decl.params[si].name)
+    si = si + 1
+  }
+
+  // @pure callee: translate body expr, emit equality as assumption.
+  val pureUnfold: List[Term] = newList()
+  if isPure(decl) {
+    match decl.body {
+      case Some(body) -> {
+        val bodyExprOpt = match body {
+          case FBExpr(be) -> Some(value = be)
+          case FBBlock(blk) -> {
+            if blk.statements.count == 1 {
+              match blk.statements[0].kind {
+                case SReturn(Some(be)) -> Some(value = be)
+                case SExpr(be) -> Some(value = be)
+                case _ -> None
+              }
+            } else {
+              None
+            }
+          }
+        }
+        match bodyExprOpt {
+          case Some(bodyExpr) -> {
+            val (bodyR, bodyDiags) = translateExpr(innerEnv, bodyExpr)
+            keepUntranslatableDiags(bodyDiags, allArgDiags)
+            val bodySubst = substTerm(paramSubst, paramSubstNames, bodyR.term)
+            pureUnfold.add(TBuiltin(op = BOpEq, args = termList2(callTerm, bodySubst)))
+          }
+          case None -> {
+          }
+        }
+      }
+      case None -> {
+      }
+    }
+  }
+
+  // Requires clauses → side conditions.
+  val preConds: List[Term] = newList()
+  var ci = 0
+  while ci < decl.contracts.count {
+    match decl.contracts[ci] {
+      case CCRequires(pre, _) -> {
+        val (preR, preDiags) = translateExpr(innerEnv, pre)
+        keepUntranslatableDiags(preDiags, allArgDiags)
+        preConds.add(substTerm(paramSubst, paramSubstNames, preR.term))
+      }
+      case _ -> {
+      }
+    }
+    ci = ci + 1
+  }
+
+  // Ensures clauses → assumed hypotheses.
+  val postConds: List[Term] = newList()
+  val resultSI = SortInfo(sort = resultSort, range = RBKNone)
+  val resultVars2 = copyVarMap(innerVars, innerVarNames)
+  val resultSorts2 = copySortMap(innerSorts, innerVarNames)
+  val resultVarNames2 = copyNameList(innerVarNames)
+  resultVars2.add("result", callTerm)
+  resultSorts2.add("result", resultSI)
+  resultVarNames2.add("result")
+  // An `out`/`inout` parameter named in an `ensures:` is its value after
+  // the call; `old(p)` is the value passed in.
+  val postSubst: Map[String, Term] = newMap()
+  val postSubstNames: List[String] = newList()
+  var psi = 0
+  while psi < decl.params.count {
+    val pp = decl.params[psi]
+    match pp.mode {
+      case PMIn -> postSubst.add(pp.name, argTerms[psi])
+      case _ -> {
+        val oldKey = "old." + pp.name
+        resultVars2.add(oldKey, TVar(name = oldKey, sort = paramSorts[psi]))
+        resultSorts2.add(oldKey, sortOfTypeExprE(env, pp.ty))
+        resultVarNames2.add(oldKey)
+        postSubst.add(oldKey, argTerms[psi])
+        postSubstNames.add(oldKey)
+        postSubst.add(pp.name, TVar(name = freshName(env, pp.name + "!post"), sort = paramSorts[psi]))
+      }
+    }
+    postSubstNames.add(pp.name)
+    psi = psi + 1
+  }
+  val resultEnv = VEnv(
+    vars = resultVars2,
+    varNames = resultVarNames2,
+    sorts = resultSorts2,
+    callees = emptyCallees,
+    symbols = env.symbols,
+    checkedArithmetic = false,
+    distincts = env.distincts,
+    fieldInfos = env.fieldInfos,
+    recordDefaults = env.recordDefaults,
+    fresh = env.fresh,
+    recordMethods = env.recordMethods,
+    finals = env.finals
+  )
+  ci = 0
+  while ci < decl.contracts.count {
+    match decl.contracts[ci] {
+      case CCEnsures(post, _) -> {
+        val (postR, postDiags) = translateExpr(resultEnv, post)
+        keepUntranslatableDiags(postDiags, allArgDiags)
+        postConds.add(substTerm(postSubst, postSubstNames, postR.term))
+      }
+      case _ -> {
+      }
+    }
+    ci = ci + 1
+  }
+
+  val sc: List[Term] = newList()
+  appendTermList(sc, argSides)
+  appendTermList(sc, preConds)
+  val asList: List[Term] = newList()
+  appendTermList(asList, argAssumed)
+  appendTermList(asList, postConds)
+  appendTermList(asList, pureUnfold)
+  appendTermList(asList, intWidthHypothesesForTerm(callTerm, resultInfo))
+  // The callee proves its result is in its declared range (#7872).
+  appendTermList(asList, rangeHypothesesForTerm(callTerm, resultInfo))
+  val knownCalleeTR = TranslateResult(term = callTerm, sideConds = sc, assumed = asList)
+  val knownCalleePair: (TranslateResult, List[Diagnostic]) = (knownCalleeTR, allArgDiags)
+  knownCalleePair
+}
+
+// The function a `recv.m(...)` call runs, when this file declares it: a
+// dot-named `func R.m(self: R, ...)` on the record (or protected type) `R`
+// that `recv` is, unless `R` declares its own method `m`, which the call
+// reaches first.  `None` when the receiver's type is not one of the file's
+// records, or the function's first parameter does not take it.
+func resolveMethodCallee(env: in VEnv, recvTerm: in Term, methodName: in String): Option[ResolvedCallee] {
+  val recvSort = sortOf(recvTerm)
+  match recvSort {
+    case SDatatype(rName, targs) -> {
+      if targs.count > 0 or env.recordMethods.containsKey(rName + "." + methodName) {
+        return None
+      }
+      match findRecordFields(env, rName) {
+        case Some(_) -> ()
+        case None -> {
+          return None
+        }
+      }
+      val key = rName + "." + methodName
+      match mapGet(env.callees, key) {
+        case Some(decl) -> {
+          if decl.params.count >= 1 and sortEq(sortOfTypeExprE(env, decl.params[0].ty).sort, recvSort) {
+            Some(value = ResolvedCallee(name = key, decl = decl))
+          } else {
+            None
+          }
+        }
+        case None -> None
+      }
+    }
+    case _ -> None
+  }
+}
+
+// `T.m(...)` where `T` names no binding but the file declares `func T.m`:
+// a call of that function, like a call by its path.
+func resolveStaticCallee(env: in VEnv, receiver: in Expr, methodName: in String): Option[ResolvedCallee] {
+  match receiver.kind {
+    case EPath(path) -> {
+      if path.segments.count != 1 {
+        return None
+      }
+      match envLookup(path.segments[0], env) {
+        case Some(_) -> None
+        case None -> {
+          val key = path.segments[0] + "." + methodName
+          match mapGet(env.callees, key) {
+            case Some(decl) -> Some(value = ResolvedCallee(name = key, decl = decl))
+            case None -> None
+          }
+        }
+      }
+    }
+    case _ -> None
+  }
+}
+
+record ResolvedCallee {
+  name: String
+  decl: FunctionDecl
+}
+
+// `recv.m(args)`.  A method this file declares is applied by its contract,
+// the receiver its first argument, with a result of its own at each call
+// unless the method is `@pure`.  Any other method is an uninterpreted
+// function of the receiver and the arguments, named by the method and their
+// sorts: two calls are equal when their method, receiver and arguments are
+// (congruence), and nothing more is known — so `a.f() == b.g()` is not
+// provable (#8101).
+func translateMethodCall(
+  env: in VEnv,
+  receiver: in Expr,
+  methodName: in String,
+  args: in List[CallArg],
+  rawArgTerms: in List[Term],
+  argSpans: in List[Span],
+  callSpan: in Span,
+  argSides: in List[Term],
+  argAssumed: in List[Term],
+  allArgDiags: in List[Diagnostic],
+): (TranslateResult, List[Diagnostic]) {
+  match resolveStaticCallee(env, receiver, methodName) {
+    case Some(rc) -> {
+      return translateResolvedCall(
+        env,
+        rc.name,
+        rc.decl,
+        args,
+        rawArgTerms,
+        argSpans,
+        callSpan,
+        argSides,
+        argAssumed,
+        allArgDiags,
+        false
+      )
+    }
+    case None -> ()
+  }
+  val (recvR, recvDiags) = translateExpr(env, receiver)
+  val diags: List[Diagnostic] = newList()
+  appendTermList2(diags, recvDiags)
+  appendTermList2(diags, allArgDiags)
+  val sides: List[Term] = newList()
+  appendTermList(sides, recvR.sideConds)
+  appendTermList(sides, argSides)
+  val facts: List[Term] = newList()
+  appendTermList(facts, recvR.assumed)
+  appendTermList(facts, argAssumed)
+  match resolveMethodCallee(env, recvR.term, methodName) {
+    case Some(rc) -> {
+      val fullArgs: List[CallArg] = newList()
+      fullArgs.add(CAPositional(expr = receiver))
+      val fullTerms: List[Term] = newList()
+      fullTerms.add(recvR.term)
+      val fullSpans: List[Span] = newList()
+      fullSpans.add(receiver.span)
+      var i = 0
+      while i < args.count {
+        fullArgs.add(args[i])
+        fullTerms.add(rawArgTerms[i])
+        fullSpans.add(argSpans[i])
+        i = i + 1
+      }
+      translateResolvedCall(env, rc.name, rc.decl, fullArgs, fullTerms, fullSpans, callSpan, sides, facts, diags, true)
+    }
+    case None -> {
+      val ufArgs: List[Term] = newList()
+      ufArgs.add(recvR.term)
+      // One function per method, argument shape and sorts: `!`-separated
+      // parts (no part contains a `!`), a named argument keeping its name,
+      // so `a.f(x = 1, y = 2)` and `a.f(y = 1, x = 2)` are different
+      // applications, and every application is well-sorted.
+      var ufName = "method!" + methodName + "!" + smtSanitize(sortDisplay(sortOf(recvR.term)))
+      var i = 0
+      while i < rawArgTerms.count {
+        ufArgs.add(rawArgTerms[i])
+        val shape = match args[i] { case CANamed(argName, _, _) -> "!n!" + argName; case CAPositional(_) -> "!p" }
+        ufName = ufName + shape + "!" + smtSanitize(sortDisplay(sortOf(rawArgTerms[i])))
+        i = i + 1
+      }
+      // Every unmodelled result shares one sort, so results the source may
+      // compare are comparable; distinct functions keep them distinct.
+      val t = TApp(name = ufName, args = ufArgs, retSort = SUninterp(name = "call"))
+      val methodTR = TranslateResult(term = t, sideConds = sides, assumed = facts)
+      val methodPair: (TranslateResult, List[Diagnostic]) = (methodTR, diags)
+      methodPair
+    }
   }
 }
 
@@ -696,6 +1162,23 @@ func intBitsOfExpr(env: in VEnv, e: in Expr): Int {
               case None -> 0
             }
           }
+        }
+      }
+      case EMember(receiver, methodName) -> {
+        val resolved = match resolveStaticCallee(env, receiver, methodName) {
+          case Some(rc) -> Some(value = rc)
+          case None -> match staticSortOfExpr(env, receiver) {
+            case Some(srt) -> resolveMethodCallee(
+              env,
+              TVar(name = "self", sort = srt),
+              methodName
+            )
+            case None -> None
+          }
+        }
+        match resolved {
+          case Some(rc) -> match rc.decl.ret { case Some(te) -> sortOfTypeExprE(env, te).intBits; case None -> 0 }
+          case None -> 0
         }
       }
       case _ -> 0
@@ -986,7 +1469,7 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
           val diags: List[Diagnostic] = newList()
           appendTermList2(diags, xDiags)
           val prefixSort = SUninterp(name = "prefix")
-          val prefixVar = TVar(name = "?prefix", sort = prefixSort)
+          val prefixVar = freshVar(env, "prefix", prefixSort)
           val prefixPair: (TranslateResult, List[Diagnostic]) = (singleTR(prefixVar), diags)
           prefixPair
         }
@@ -1060,7 +1543,7 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
           appendTermList2(diags, lDiags)
           appendTermList2(diags, rDiags)
           val binopSort = SUninterp(name = "binop")
-          val binopVar = TVar(name = "?binop", sort = binopSort)
+          val binopVar = freshVar(env, "binop", binopSort)
           val binopPair: (TranslateResult, List[Diagnostic]) = (singleTR(binopVar), diags)
           binopPair
         }
@@ -1161,195 +1644,19 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
           }
           match mapGet(env.callees, name) {
             case Some(decl) -> {
-              val resultInfo = match decl.ret { case Some(te) -> sortOfTypeExprE(env, te); case None -> unitSortInfo() }
-              val resultSort = resultInfo.sort
-              val paramSorts: List[Sort] = newList()
-              var pi = 0
-              while pi < decl.params.count {
-                paramSorts.add(sortOfTypeExprE(env, decl.params[pi].ty).sort)
-                pi = pi + 1
-              }
-              env.symbols.add(DeclUserFun(name = name, paramSorts = paramSorts, resultSort = resultSort))
-
-              // Build inner env for translating contracts.
-              val innerVars: Map[String, Term] = newMap()
-              val innerSorts: Map[String, SortInfo] = newMap()
-              val innerVarNames: List[String] = newList()
-              var ii = 0
-              while ii < decl.params.count {
-                val pInfo = sortOfTypeExprE(env, decl.params[ii].ty)
-                innerVars.add(decl.params[ii].name, TVar(name = decl.params[ii].name, sort = pInfo.sort))
-                innerSorts.add(decl.params[ii].name, pInfo)
-                innerVarNames.add(decl.params[ii].name)
-                ii = ii + 1
-              }
-              val emptyCallees: Map[String, FunctionDecl] = newMap()
-              val emptySymbols: List[SymbolDecl] = newList()
-              val innerEnv = VEnv(
-                vars = innerVars,
-                varNames = innerVarNames,
-                sorts = innerSorts,
-                callees = emptyCallees,
-                symbols = emptySymbols,
-                checkedArithmetic = false,
-                distincts = env.distincts,
-                fieldInfos = env.fieldInfos,
-                recordDefaults = env.recordDefaults
-              )
-              // A parameter default is evaluated at the call, in the callee's
-              // parameter scope.
-              val defaultEnv = VEnv(
-                vars = innerVars,
-                varNames = innerVarNames,
-                sorts = innerSorts,
-                callees = env.callees,
-                symbols = env.symbols,
-                checkedArithmetic = env.checkedArithmetic,
-                distincts = env.distincts,
-                fieldInfos = env.fieldInfos,
-                recordDefaults = env.recordDefaults
-              )
-
-              // Each argument goes to the parameter it names, or by position,
-              // and an omitted one takes its default (#7873); each takes its
-              // parameter's sort (#7848), so a literal passed to a `UInt`
-              // parameter is a bitvector in the call and in the callee
-              // contract it is substituted into.
-              val paramNames: List[String] = newList()
-              val paramDefaults: List[Option[Expr]] = newList()
-              var pn = 0
-              while pn < decl.params.count {
-                paramNames.add(decl.params[pn].name)
-                paramDefaults.add(decl.params[pn].dflt)
-                pn = pn + 1
-              }
-              val paired = pairArgTerms(
+              return translateResolvedCall(
+                env,
                 name,
-                paramNames,
-                paramSorts,
-                paramDefaults,
-                defaultEnv,
-                true,
+                decl,
                 args,
                 rawArgTerms,
                 argSpans,
                 e.span,
                 argSides,
                 argAssumed,
-                allArgDiags
+                allArgDiags,
+                false
               )
-              val argTerms = paired.terms
-              val rawCallTerm = TApp(name = name, args = argTerms, retSort = resultSort)
-              val callTerm = if paired.paired { rawCallTerm } else { poisonTerm(rawCallTerm) }
-
-              // Param substitution map: param[i].name → argTerms[i].
-              val paramSubst: Map[String, Term] = newMap()
-              val paramSubstNames: List[String] = newList()
-              var si = 0
-              while si < decl.params.count {
-                paramSubst.add(decl.params[si].name, argTerms[si])
-                paramSubstNames.add(decl.params[si].name)
-                si = si + 1
-              }
-
-              // @pure callee: translate body expr, emit equality as assumption.
-              val pureUnfold: List[Term] = newList()
-              if isPure(decl) {
-                match decl.body {
-                  case Some(body) -> {
-                    val bodyExprOpt = match body {
-                      case FBExpr(be) -> Some(value = be)
-                      case FBBlock(blk) -> {
-                        if blk.statements.count == 1 {
-                          match blk.statements[0].kind {
-                            case SReturn(Some(be)) -> Some(value = be)
-                            case SExpr(be) -> Some(value = be)
-                            case _ -> None
-                          }
-                        } else {
-                          None
-                        }
-                      }
-                    }
-                    match bodyExprOpt {
-                      case Some(bodyExpr) -> {
-                        val (bodyR, bodyDiags) = translateExpr(innerEnv, bodyExpr)
-                        keepUntranslatableDiags(bodyDiags, allArgDiags)
-                        val bodySubst = substTerm(paramSubst, paramSubstNames, bodyR.term)
-                        pureUnfold.add(TBuiltin(op = BOpEq, args = termList2(callTerm, bodySubst)))
-                      }
-                      case None -> {
-                      }
-                    }
-                  }
-                  case None -> {
-                  }
-                }
-              }
-
-              // Requires clauses → side conditions.
-              val preConds: List[Term] = newList()
-              var ci = 0
-              while ci < decl.contracts.count {
-                match decl.contracts[ci] {
-                  case CCRequires(pre, _) -> {
-                    val (preR, preDiags) = translateExpr(innerEnv, pre)
-                    keepUntranslatableDiags(preDiags, allArgDiags)
-                    preConds.add(substTerm(paramSubst, paramSubstNames, preR.term))
-                  }
-                  case _ -> {
-                  }
-                }
-                ci = ci + 1
-              }
-
-              // Ensures clauses → assumed hypotheses.
-              val postConds: List[Term] = newList()
-              val resultSI = SortInfo(sort = resultSort, range = RBKNone)
-              val resultVars2 = copyVarMap(innerVars, innerVarNames)
-              val resultSorts2 = copySortMap(innerSorts, innerVarNames)
-              val resultVarNames2 = copyNameList(innerVarNames)
-              resultVars2.add("result", callTerm)
-              resultSorts2.add("result", resultSI)
-              resultVarNames2.add("result")
-              val resultEnv = VEnv(
-                vars = resultVars2,
-                varNames = resultVarNames2,
-                sorts = resultSorts2,
-                callees = emptyCallees,
-                symbols = emptySymbols,
-                checkedArithmetic = false,
-                distincts = env.distincts,
-                fieldInfos = env.fieldInfos,
-                recordDefaults = env.recordDefaults
-              )
-              ci = 0
-              while ci < decl.contracts.count {
-                match decl.contracts[ci] {
-                  case CCEnsures(post, _) -> {
-                    val (postR, postDiags) = translateExpr(resultEnv, post)
-                    keepUntranslatableDiags(postDiags, allArgDiags)
-                    postConds.add(substTerm(paramSubst, paramSubstNames, postR.term))
-                  }
-                  case _ -> {
-                  }
-                }
-                ci = ci + 1
-              }
-
-              val sc: List[Term] = newList()
-              appendTermList(sc, argSides)
-              appendTermList(sc, preConds)
-              val asList: List[Term] = newList()
-              appendTermList(asList, argAssumed)
-              appendTermList(asList, postConds)
-              appendTermList(asList, pureUnfold)
-              appendTermList(asList, intWidthHypothesesForTerm(callTerm, resultInfo))
-              // The callee proves its result is in its declared range (#7872).
-              appendTermList(asList, rangeHypothesesForTerm(callTerm, resultInfo))
-              val knownCalleeTR = TranslateResult(term = callTerm, sideConds = sc, assumed = asList)
-              val knownCalleePair: (TranslateResult, List[Diagnostic]) = (knownCalleeTR, allArgDiags)
-              knownCalleePair
             }
             case None -> {
               // Distinct-type constructor (`UserId(n)`) — `pub type UserId = Long`
@@ -1405,15 +1712,40 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
             }
             case None -> ()
           }
-          // Any other non-path callee — uninterpreted.  Its arguments'
-          // obligations and facts still hold.
-          val diags: List[Diagnostic] = newList()
-          appendTermList2(diags, allArgDiags)
-          val callSort = SUninterp(name = "call")
-          val callVar = TVar(name = "?call", sort = callSort)
-          val callTR = TranslateResult(term = callVar, sideConds = argSides, assumed = argAssumed)
-          val callPair: (TranslateResult, List[Diagnostic]) = (callTR, diags)
-          callPair
+          match fn.kind {
+            case EMember(receiver, methodName) -> translateMethodCall(
+              env,
+              receiver,
+              methodName,
+              args,
+              rawArgTerms,
+              argSpans,
+              e.span,
+              argSides,
+              argAssumed,
+              allArgDiags
+            )
+            case _ -> {
+              // A call through a computed callee — a lambda, another call's
+              // result: a value of its own at this call site, never one
+              // shared with another call (#8101).  The callee expression's
+              // and the arguments' obligations and facts still hold.
+              val (fnR, fnDiags) = translateExpr(env, fn)
+              val diags: List[Diagnostic] = newList()
+              appendTermList2(diags, fnDiags)
+              appendTermList2(diags, allArgDiags)
+              val sc: List[Term] = newList()
+              appendTermList(sc, fnR.sideConds)
+              appendTermList(sc, argSides)
+              val asList: List[Term] = newList()
+              appendTermList(asList, fnR.assumed)
+              appendTermList(asList, argAssumed)
+              val callVar = freshVar(env, "call", SUninterp(name = "call"))
+              val callTR = TranslateResult(term = callVar, sideConds = sc, assumed = asList)
+              val callPair: (TranslateResult, List[Diagnostic]) = (callTR, diags)
+              callPair
+            }
+          }
         }
       }
     }
@@ -1580,7 +1912,7 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
       val diags: List[Diagnostic] = newList()
       diags.add(warningDiagnostic("V0024", "expression construct not yet modelled in proof translation", e.span))
       val exprSort = SUninterp(name = "expr")
-      val exprVar = TVar(name = "?expr", sort = exprSort)
+      val exprVar = freshVar(env, "expr", exprSort)
       val exprPair: (TranslateResult, List[Diagnostic]) = (singleTR(exprVar), diags)
       exprPair
     }
@@ -1657,7 +1989,7 @@ func buildMatchIte(
         ctxSpan
       )
     )
-    return TVar(name = "?match.fallthrough", sort = sortOf(scrutTerm))
+    return freshVar(env, "match", sortOf(scrutTerm))
   }
   val arm = arms[idx]
   val condOpt = matchCond(arm.pattern, scrutTerm)
@@ -1715,7 +2047,7 @@ func translateArmBody(
     case EOBBlock(_) -> {
       diagsOut.add(warningDiagnostic("V0028", "block-form match arm bodies not yet supported in M4.1 verifier", arm.span))
       val matchblockSort = SUninterp(name = "matchblock")
-      TVar(name = "?matchblock", sort = matchblockSort)
+      freshVar(env, "matchblock", matchblockSort)
     }
   }
 }
@@ -1850,22 +2182,30 @@ func mergeWpResults(a: in WpResult, b: in WpResult, wp: in Term): WpResult {
 // ─────────────────────────────────────────────────────────────────────────────
 // §8. WP over a function body.
 // ─────────────────────────────────────────────────────────────────────────────
-// WP over a single expression (for FBExpr).
+// WP over a single expression (for FBExpr), the value the path ends with.
 func wpExpr(env: in VEnv, resultSort: in SortInfo, postcond: in Term, e: in Expr): WpResult {
+  // An assignment nested in the expression is something `translateExpr`
+  // cannot follow; fail closed rather than prove the postcondition of the
+  // wrong state (#8102).
+  if effectsOfExpr(env, e).assigned.count > 0 {
+    return unsupportedWp("an assignment inside an expression", e.span)
+  }
   val (r, diags) = translateExpr(env, e)
+  // A variable passed to an `out`/`inout` parameter holds its new value
+  // when the postcondition is checked (#8102).
+  val after = havocOutArgs(env, e)
   // Substitute result into postcond, at the declared result sort (#7848).
-  val substMap: Map[String, Term] = newMap()
-  substMap.add("result", coerceTermAt(r.term, resultSort.sort, e.span, diags))
-  val substMapNames: List[String] = newList()
-  substMapNames.add("result")
-  val wp = substTerm(substMap, substMapNames, postcond)
+  val wp = finishPost(after.env, postcond, coerceTermAt(r.term, resultSort.sort, e.span, diags))
   val sideGoals: List[SideGoal] = newList()
   var i = 0
   while i < r.sideConds.count {
     sideGoals.add(SideGoal(term = r.sideConds[i], kind = GKAssertion, span = e.span))
     i = i + 1
   }
-  WpResult(wp = wp, sideGoals = sideGoals, assumed = r.assumed, diags = diags)
+  val asList: List[Term] = newList()
+  appendTermList(asList, r.assumed)
+  appendTermList(asList, after.hyps)
+  WpResult(wp = wp, sideGoals = sideGoals, assumed = asList, diags = diags)
 }
 
 pub func wpBody(env: in VEnv, resultSort: in SortInfo, postcond: in Term, body: in FunctionBody): WpResult {
@@ -1879,15 +2219,46 @@ pub func wpBlock(env: in VEnv, resultSort: in SortInfo, postcond: in Term, stmts
   wpWalk(env, resultSort, postcond, stmts, 0)
 }
 
+// The rest of the block after an expression statement or binding whose
+// translation is `r`: its side conditions are side goals, its facts are
+// facts, and the variables it passed out hold new values from here on.
+func wpAfterExpr(
+  env: in VEnv,
+  resultSort: in SortInfo,
+  postcond: in Term,
+  stmts: in List[Statement],
+  idx: in Int,
+  e: in Expr,
+  r: in TranslateResult,
+  rDiags: in List[Diagnostic],
+): WpResult {
+  val after = havocOutArgs(env, e)
+  val inner = wpWalk(after.env, resultSort, postcond, stmts, idx + 1)
+  val sg: List[SideGoal] = newList()
+  var i = 0
+  while i < r.sideConds.count {
+    sg.add(SideGoal(term = r.sideConds[i], kind = GKAssertion, span = e.span))
+    i = i + 1
+  }
+  i = 0
+  while i < inner.sideGoals.count {
+    sg.add(inner.sideGoals[i])
+    i = i + 1
+  }
+  val asList: List[Term] = newList()
+  appendTermList(asList, r.assumed)
+  appendTermList(asList, after.hyps)
+  appendTermList(asList, inner.assumed)
+  val di: List[Diagnostic] = newList()
+  appendTermList2(di, rDiags)
+  appendTermList2(di, inner.diags)
+  WpResult(wp = inner.wp, sideGoals = sg, assumed = asList, diags = di)
+}
+
 func wpWalk(env: in VEnv, resultSort: in SortInfo, postcond: in Term, stmts: in List[Statement], idx: in Int): WpResult {
   if idx >= stmts.count {
     // Empty tail — postcond[result := unit].
-    val substMap: Map[String, Term] = newMap()
-    substMap.add("result", unitTerm())
-    val substMapNames: List[String] = newList()
-    substMapNames.add("result")
-    val wp = substTerm(substMap, substMapNames, postcond)
-    emptyWpResult(wp)
+    emptyWpResult(finishPost(env, postcond, unitTerm()))
   } else {
     val st = stmts[idx]
     match st.kind {
@@ -1895,12 +2266,7 @@ func wpWalk(env: in VEnv, resultSort: in SortInfo, postcond: in Term, stmts: in 
         wpExpr(env, resultSort, postcond, e)
       }
       case SReturn(None) -> {
-        val substMap: Map[String, Term] = newMap()
-        substMap.add("result", unitTerm())
-        val substMapNames: List[String] = newList()
-        substMapNames.add("result")
-        val wp = substTerm(substMap, substMapNames, postcond)
-        emptyWpResult(wp)
+        emptyWpResult(finishPost(env, postcond, unitTerm()))
       }
       case SExpr(callExpr) -> {
         // Check if this is `assert(φ)`.
@@ -1926,43 +2292,48 @@ func wpWalk(env: in VEnv, resultSort: in SortInfo, postcond: in Term, stmts: in 
             WpResult(wp = inner.wp, sideGoals = sg, assumed = asList, diags = di)
           }
           case None -> {
-            // Trailing expression in a block is the implicit return value (#3371).
-            if idx + 1 >= stmts.count {
-              wpExpr(env, resultSort, postcond, callExpr)
-            } else {
-              // Check if it's an if statement.
-              match tryExtractIf(callExpr) {
-                case Some(ifTriple) -> {
-                  wpIfStmt(env, resultSort, postcond, stmts, idx, ifTriple.cond, ifTriple.thenBranch, ifTriple.elseBranchOpt, st.span)
-                }
-                case None -> {
-                  // General call or expression statement.
-                  match callExpr.kind {
-                    case ECall(_, _) -> {
-                      val (callR, callDiags) = translateExpr(env, callExpr)
-                      val inner = wpWalk(env, resultSort, postcond, stmts, idx + 1)
-                      val sg: List[SideGoal] = newList()
-                      var i = 0
-                      while i < callR.sideConds.count {
-                        sg.add(SideGoal(term = callR.sideConds[i], kind = GKAssertion, span = callExpr.span))
-                        i = i + 1
+            match tryExtractIf(callExpr) {
+              // An `if` is walked branch by branch, so assignments in it
+              // reach the rest of the block — and, when it ends the block,
+              // its branches' values are the block's (#8102).
+              case Some(ifTriple) -> {
+                wpIfStmt(env, resultSort, postcond, stmts, idx, ifTriple.cond, ifTriple.thenBranch, ifTriple.elseBranchOpt, st.span)
+              }
+              case None -> {
+                match callExpr.kind {
+                  case EAssign(target, op, value) -> wpAssign(env, resultSort, postcond, stmts, idx, target, op, value, st.span)
+                  case _ -> {
+                    if idx + 1 >= stmts.count {
+                      // Trailing expression in a block is the implicit return value (#3371).
+                      wpExpr(env, resultSort, postcond, callExpr)
+                    } else {
+                      match callExpr.kind {
+                        case ECall(_, _) -> {
+                          if hasEffectsOtherThanCalls(effectsOfExpr(env, callExpr)) {
+                            unsupportedWp("an assignment or a jump inside an expression", callExpr.span)
+                          } else {
+                            val (callR, callDiags) = translateExpr(env, callExpr)
+                            wpAfterExpr(env, resultSort, postcond, stmts, idx, callExpr, callR, callDiags)
+                          }
+                        }
+                        case _ -> {
+                          // Any other expression statement is evaluated for
+                          // nothing but its effects, which the verifier
+                          // cannot follow inside an expression: skipping one
+                          // that assigns or jumps would prove the rest of
+                          // the block in the wrong state (#8102).
+                          if hasEffectsOtherThanCalls(effectsOfExpr(env, callExpr)) {
+                            unsupportedWp("an assignment or a jump inside an expression statement", callExpr.span)
+                          } else {
+                            val after = havocOutArgs(env, callExpr)
+                            val inner = wpWalk(after.env, resultSort, postcond, stmts, idx + 1)
+                            val asList: List[Term] = newList()
+                            appendTermList(asList, after.hyps)
+                            appendTermList(asList, inner.assumed)
+                            WpResult(wp = inner.wp, sideGoals = inner.sideGoals, assumed = asList, diags = inner.diags)
+                          }
+                        }
                       }
-                      i = 0
-                      while i < inner.sideGoals.count {
-                        sg.add(inner.sideGoals[i])
-                        i = i + 1
-                      }
-                      val asList: List[Term] = newList()
-                      appendTermList(asList, callR.assumed)
-                      appendTermList(asList, inner.assumed)
-                      val di: List[Diagnostic] = newList()
-                      appendTermList2(di, callDiags)
-                      appendTermList2(di, inner.diags)
-                      WpResult(wp = inner.wp, sideGoals = sg, assumed = asList, diags = di)
-                    }
-                    case _ -> {
-                      // Other SExpr — skip.
-                      wpWalk(env, resultSort, postcond, stmts, idx + 1)
                     }
                   }
                 }
@@ -2090,8 +2461,9 @@ func wpIfStmt(
   appendStmtList(elseFull, elseStmts)
   appendStmtList(elseFull, rest)
 
-  val thenR = wpWalk(env, resultSort, postcond, thenFull, 0)
-  val elseR = wpWalk(env, resultSort, postcond, elseFull, 0)
+  val afterCond = havocOutArgs(env, cond)
+  val thenR = wpWalk(afterCond.env, resultSort, postcond, thenFull, 0)
+  val elseR = wpWalk(afterCond.env, resultSort, postcond, elseFull, 0)
 
   val notCond = mkNot(condR.term)
   // Guard branch side goals by their branch condition.
@@ -2114,9 +2486,21 @@ func wpIfStmt(
     i = i + 1
   }
 
+  // A branch's facts hold on that branch only: one branch's assertion or
+  // a loop in it that never exits must not reach the other (#8102).
   val asList: List[Term] = newList()
-  appendTermList(asList, thenR.assumed)
-  appendTermList(asList, elseR.assumed)
+  appendTermList(asList, condR.assumed)
+  appendTermList(asList, afterCond.hyps)
+  i = 0
+  while i < thenR.assumed.count {
+    asList.add(mkImplies(condR.term, thenR.assumed[i]))
+    i = i + 1
+  }
+  i = 0
+  while i < elseR.assumed.count {
+    asList.add(mkImplies(notCond, elseR.assumed[i]))
+    i = i + 1
+  }
   val di: List[Diagnostic] = newList()
   appendTermList2(di, condDiags)
   appendTermList2(di, thenR.diags)
@@ -2169,10 +2553,13 @@ func wpLocal(
       // sort (an unannotated one is an integer, as before).  Its declared
       // range stays with it, for the values assigned to it (#7872).
       val info = match ty { case Some(t) -> sortOfTypeExprE(env, t); case None -> SortInfo(sort = SInt, range = RBKNone) }
-      val env2 = envBind(name, info, env)
+      // The value is one of its own: the source name may be bound again
+      // elsewhere in the function (#8102).
+      val initial = freshVar(env, name, info.sort)
+      val env2 = envBindTerm(name, initial, info, env)
       val inner = wpWalk(env2, resultSort, postcond, stmts, idx + 1)
       val asList: List[Term] = newList()
-      appendTermList(asList, rangeHypotheses(name, info))
+      appendTermList(asList, rangeHypothesesForTerm(initial, info))
       appendTermList(asList, inner.assumed)
       WpResult(wp = inner.wp, sideGoals = inner.sideGoals, assumed = asList, diags = inner.diags)
     }
@@ -2192,6 +2579,9 @@ func wpBindInit(
   ty: in Option[TypeExpr],
   init: in Expr,
 ): WpResult {
+  if effectsOfExpr(env, init).assigned.count > 0 {
+    return unsupportedWp("an assignment inside an expression", init.span)
+  }
   val (initR, initDiags) = translateExpr(env, init)
   // Honor the declared type's range bound (#3854) instead of always
   // discarding it in favor of the inferred-from-init RBKNone sort — a
@@ -2205,7 +2595,9 @@ func wpBindInit(
     case Some(_) -> coerceTermAt(initR.term, info.sort, init.span, initDiags)
     case None -> initR.term
   }
-  val env2 = envBindTerm(name, boundTerm, info, env)
+  // The initializer's `out`/`inout` arguments change before the binding.
+  val after = havocOutArgs(env, init)
+  val env2 = envBindTerm(name, boundTerm, info, after.env)
   val inner = wpWalk(env2, resultSort, postcond, stmts, idx + 1)
   val sg: List[SideGoal] = newList()
   var i = 0
@@ -2220,6 +2612,7 @@ func wpBindInit(
   }
   val asList: List[Term] = newList()
   appendTermList(asList, initR.assumed)
+  appendTermList(asList, after.hyps)
   appendTermList(asList, rangeHypothesesForTerm(boundTerm, info))
   appendTermList(asList, inner.assumed)
   val di: List[Diagnostic] = newList()
@@ -2228,6 +2621,11 @@ func wpBindInit(
   WpResult(wp = inner.wp, sideGoals = sg, assumed = asList, diags = di)
 }
 
+// `x = v` / `x op= v`, then the rest of the block.  Only a variable is a
+// target the verifier models: a record is a reference, and a write to one
+// of its fields is seen through every alias of it, which the verifier has
+// no heap to follow — so a field or element write fails closed rather than
+// leave the proof reasoning about the old value (#8102).
 func wpAssign(
   env: in VEnv,
   resultSort: in SortInfo,
@@ -2239,109 +2637,147 @@ func wpAssign(
   value: in Expr,
   sp: in Span,
 ): WpResult {
-  match target.kind {
-    case EPath(path) -> {
-      if path.segments.count == 1 {
-        val name = path.segments[0]
-        val (rhsR, rhsDiags) = translateExpr(env, value)
-        // The right-hand side's side conditions are obligations, and so is a
-        // compound assignment's overflow under checked arithmetic (#7871).
-        val rhsSide: List[Term] = newList()
-        appendTermList(rhsSide, rhsR.sideConds)
-        val rawCombined = match op {
-          case AssEq -> rhsR.term
-          case _ -> {
-            val existing = match envLookup(name, env) { case Some(t) -> t; case None -> TVar(name = name, sort = SInt) }
-            val bin = match op {
-              case AssPlus -> BOpAdd
-              case AssMinus -> BOpSub
-              case AssStar -> BOpMul
-              case AssSlash -> BOpDiv
-              case AssPercent -> BOpMod
-              case _ -> BOpAdd
-            }
-            val combinedOp = match unifyOperands(existing, rhsR.term) {
-              case Ok(pair) -> TBuiltin(op = bin, args = termList2(pair.lhs, pair.rhs))
-              case Err(reason) -> {
-                rhsDiags.add(untranslatableDiag(reason, sp))
-                poisonTerm(TBuiltin(op = bin, args = termList2(existing, rhsR.term)))
-              }
-            }
-            if env.checkedArithmetic {
-              match combinedOp {
-                case TBuiltin(_, cargs) -> {
-                  match sortOf(cargs[0]) {
-                    case SInt -> match bin {
-                      case BOpAdd | BOpSub | BOpMul -> appendTermList(
-                        rhsSide,
-                        signedWidthBounds(combinedOp, overflowBitsOfExpr(env, target))
-                      )
-                      case _ -> ()
-                    }
-                    case SBitVec(w) -> appendTermList(rhsSide, unsignedOverflowSideConds(bin, cargs[0], cargs[1], combinedOp, w))
-                    case _ -> ()
-                  }
-                }
+  val name = match target.kind {
+    case EPath(path) -> if path.segments.count == 1 { path.segments[0] } else { "" }
+    case _ -> ""
+  }
+  if name.length == 0 {
+    return unsupportedWp("an assignment to a field or an element", target.span)
+  }
+  if effectsOfExpr(env, value).assigned.count > 0 {
+    return unsupportedWp("an assignment inside an expression", value.span)
+  }
+  val (rhsR, rhsDiags) = translateExpr(env, value)
+  // The right-hand side's side conditions are obligations, and so is a
+  // compound assignment's overflow under checked arithmetic (#7871).
+  val rhsSide: List[Term] = newList()
+  appendTermList(rhsSide, rhsR.sideConds)
+  val rawCombined = match op {
+    case AssEq -> rhsR.term
+    case _ -> {
+      val existing = match envLookup(name, env) { case Some(t) -> t; case None -> TVar(name = name, sort = SInt) }
+      val bin = match op {
+        case AssPlus -> BOpAdd
+        case AssMinus -> BOpSub
+        case AssStar -> BOpMul
+        case AssSlash -> BOpDiv
+        case AssPercent -> BOpMod
+        case _ -> BOpAdd
+      }
+      val combinedOp = match unifyOperands(existing, rhsR.term) {
+        case Ok(pair) -> TBuiltin(op = bin, args = termList2(pair.lhs, pair.rhs))
+        case Err(reason) -> {
+          rhsDiags.add(untranslatableDiag(reason, sp))
+          poisonTerm(TBuiltin(op = bin, args = termList2(existing, rhsR.term)))
+        }
+      }
+      if env.checkedArithmetic {
+        match combinedOp {
+          case TBuiltin(_, cargs) -> {
+            match sortOf(cargs[0]) {
+              case SInt -> match bin {
+                case BOpAdd | BOpSub | BOpMul -> appendTermList(
+                  rhsSide,
+                  signedWidthBounds(combinedOp, overflowBitsOfExpr(env, target))
+                )
                 case _ -> ()
               }
+              case SBitVec(w) -> appendTermList(rhsSide, unsignedOverflowSideConds(bin, cargs[0], cargs[1], combinedOp, w))
+              case _ -> ()
             }
-            combinedOp
           }
+          case _ -> ()
         }
-        // The assigned value takes the variable's sort (#7848).
-        val combined = match envLookupSort(name, env) {
-          case Some(si) -> coerceTermAt(rawCombined, si.sort, value.span, rhsDiags)
-          case None -> rawCombined
-        }
-        val info = match envLookupSort(name, env) {
-          case Some(si) -> si
-          case None -> SortInfo(sort = sortOf(combined), range = RBKNone)
-        }
-        val env2 = envBindTerm(name, combined, info, env)
-        val inner = wpWalk(env2, resultSort, postcond, stmts, idx + 1)
-        val sg: List[SideGoal] = newList()
-        var si = 0
-        while si < rhsSide.count {
-          sg.add(SideGoal(term = rhsSide[si], kind = GKAssertion, span = sp))
-          si = si + 1
-        }
-        si = 0
-        while si < inner.sideGoals.count {
-          sg.add(inner.sideGoals[si])
-          si = si + 1
-        }
-        val asList: List[Term] = newList()
-        appendTermList(asList, rhsR.assumed)
-        // A range-typed variable is range-checked after every assignment
-        // (docs/01 §2.2), so the assigned value is in range from here on.
-        appendTermList(asList, rangeHypothesesForTerm(combined, info))
-        appendTermList(asList, inner.assumed)
-        val di: List[Diagnostic] = newList()
-        appendTermList2(di, rhsDiags)
-        appendTermList2(di, inner.diags)
-        WpResult(wp = inner.wp, sideGoals = sg, assumed = asList, diags = di)
-      } else {
-        val di: List[Diagnostic] = newList()
-        di.add(warningDiagnostic("V0026", "complex assignment target not yet supported in proof body", target.span))
-        val inner = wpWalk(env, resultSort, postcond, stmts, idx + 1)
-        val allDi: List[Diagnostic] = newList()
-        appendTermList2(allDi, di)
-        appendTermList2(allDi, inner.diags)
-        WpResult(wp = inner.wp, sideGoals = inner.sideGoals, assumed = inner.assumed, diags = allDi)
       }
-    }
-    case _ -> {
-      val di: List[Diagnostic] = newList()
-      di.add(warningDiagnostic("V0026", "complex assignment target not yet supported in proof body", target.span))
-      val inner = wpWalk(env, resultSort, postcond, stmts, idx + 1)
-      val allDi: List[Diagnostic] = newList()
-      appendTermList2(allDi, di)
-      appendTermList2(allDi, inner.diags)
-      WpResult(wp = inner.wp, sideGoals = inner.sideGoals, assumed = inner.assumed, diags = allDi)
+      combinedOp
     }
   }
+  // The assigned value takes the variable's sort (#7848).
+  val combined = match envLookupSort(name, env) {
+    case Some(si) -> coerceTermAt(rawCombined, si.sort, value.span, rhsDiags)
+    case None -> rawCombined
+  }
+  val info = match envLookupSort(name, env) {
+    case Some(si) -> si
+    case None -> SortInfo(sort = sortOf(combined), range = RBKNone)
+  }
+  // The right-hand side's `out`/`inout` arguments change before the store.
+  val after = havocOutArgs(env, value)
+  val env2 = envBindTerm(name, combined, info, after.env)
+  val inner = wpWalk(env2, resultSort, postcond, stmts, idx + 1)
+  val sg: List[SideGoal] = newList()
+  var si = 0
+  while si < rhsSide.count {
+    sg.add(SideGoal(term = rhsSide[si], kind = GKAssertion, span = sp))
+    si = si + 1
+  }
+  si = 0
+  while si < inner.sideGoals.count {
+    sg.add(inner.sideGoals[si])
+    si = si + 1
+  }
+  val asList: List[Term] = newList()
+  appendTermList(asList, rhsR.assumed)
+  appendTermList(asList, after.hyps)
+  // A range-typed variable is range-checked after every assignment
+  // (docs/01 §2.2), so the assigned value is in range from here on.
+  appendTermList(asList, rangeHypothesesForTerm(combined, info))
+  appendTermList(asList, inner.assumed)
+  val di: List[Diagnostic] = newList()
+  appendTermList2(di, rhsDiags)
+  appendTermList2(di, inner.diags)
+  WpResult(wp = inner.wp, sideGoals = sg, assumed = asList, diags = di)
 }
 
+// Each invariant of a loop, translated in `env`: their conjunction (each
+// with its own side conditions folded in) and the facts their translation
+// brings, such as a callee's `ensures:`.
+record LoopInvariant {
+  term: Term
+  facts: List[Term]
+  diags: List[Diagnostic]
+}
+
+func translateInvariants(env: in VEnv, invExprs: in List[Expr]): LoopInvariant {
+  val terms: List[Term] = newList()
+  val facts: List[Term] = newList()
+  val diags: List[Diagnostic] = newList()
+  var i = 0
+  while i < invExprs.count {
+    val (invT, invAs, invDs) = translateContract(env, invExprs[i])
+    terms.add(invT)
+    appendTermList(facts, invAs)
+    appendTermList2(diags, invDs)
+    i = i + 1
+  }
+  LoopInvariant(term = mkAnd(terms), facts = facts, diags = diags)
+}
+
+func termsWith(xs: in List[Term], ys: in List[Term]): List[Term] {
+  val joined: List[Term] = newList()
+  appendTermList(joined, xs)
+  appendTermList(joined, ys)
+  joined
+}
+
+// `while cond { invariant: inv; body }`, then the rest of the block, by the
+// loop rule (#8102):
+//
+//   - establish: `inv` holds on entry;
+//   - the condition's side conditions hold wherever it is evaluated — on
+//     entry, under `inv`, and after any iteration: in a state where every
+//     variable the loop may change (an assignment's target, an `out` or
+//     `inout` argument) holds an arbitrary value of its type and `inv`
+//     holds;
+//   - preserve: in that arbitrary state, `inv and cond` and the body's
+//     effects give `inv` again, evaluated in the state the body ends in;
+//   - the body's own side goals hold under `inv and cond` in that state;
+//   - the rest of the block runs in an arbitrary such state where `inv and
+//     not cond` holds.
+//
+// A `return` (or `?`) in the body leaves the loop with a value the
+// invariant says nothing about, so it fails closed, as `break` and
+// `continue` do (#7396).
 func wpWhile(
   env: in VEnv,
   resultSort: in SortInfo,
@@ -2363,137 +2799,554 @@ func wpWhile(
     }
     i = i + 1
   }
+  val sg: List[SideGoal] = newList()
+  val di: List[Diagnostic] = newList()
 
-  // Translate invariant terms.
-  val invTerms: List[Term] = newList()
-  val invDiags: List[Diagnostic] = newList()
+  // On entry.
+  val invEntry = translateInvariants(env, invExprs)
+  appendTermList2(di, invEntry.diags)
+  sg.add(SideGoal(term = invEntry.term, kind = GKLoopEstablish, span = sp))
+  val (condEntryR, condEntryDiags) = translateExpr(env, cond)
+  appendTermList2(di, condEntryDiags)
+  val entryHyps: List[Term] = newList()
+  appendTermList(entryHyps, invEntry.facts)
+  entryHyps.add(invEntry.term)
+  appendTermList(entryHyps, condEntryR.assumed)
+  val condEntrySides: List[SideGoal] = newList()
   i = 0
-  while i < invExprs.count {
-    val (invT, _, invDs) = translateContract(env, invExprs[i])
-    invTerms.add(invT)
-    appendTermList2(invDiags, invDs)
+  while i < condEntryR.sideConds.count {
+    condEntrySides.add(SideGoal(term = condEntryR.sideConds[i], kind = GKAssertion, span = cond.span))
     i = i + 1
   }
-  val iotaT = mkAnd(invTerms)
+  guardSideGoals(condEntrySides, entryHyps, sg)
 
-  val (condR, condDiags) = translateExpr(env, cond)
-
-  // Preserve: wp(realBody, iota) under the invariant environment.
-  val preservePostcond = iotaT
-  val bodyBlock = Block(statements = realStmts, span = body.span)
-  val bodyWp = wpBody(env, resultSort, preservePostcond, FBBlock(block = bodyBlock))
-  val preserveCond = mkImplies(mkAnd(termList2(iotaT, condR.term)), bodyWp.wp)
-
-  // Havoc modified variables.
-  val modifiedVars: List[String] = newList()
-  collectModifiedVars(realStmts, modifiedVars)
-  var envAfterHavoc = env
-  // A havocked `Int`/`Long` still holds a value of its type (#7871).
-  val havocWidthHyps: List[Term] = newList()
+  // An arbitrary iteration: everything the body or the condition may
+  // change holds a value of its own.
+  val bodyEffects = effectsOfStmts(env, realStmts)
+  val changed = effectsChanged(bodyEffects)
+  addNames(changed, effectsChanged(effectsOfExpr(env, cond)))
+  val havoc = havocVars(env, changed, "loop")
+  val envH = havoc.env
+  val invH = translateInvariants(envH, invExprs)
+  val (condHR, _) = translateExpr(envH, cond)
+  val iterHyps: List[Term] = newList()
+  appendTermList(iterHyps, havoc.hyps)
+  appendTermList(iterHyps, invH.facts)
+  iterHyps.add(invH.term)
+  appendTermList(iterHyps, condHR.assumed)
+  val condIterSides: List[SideGoal] = newList()
   i = 0
-  while i < modifiedVars.count {
-    val vname = modifiedVars[i]
-    val vinfo = match envLookupSort(vname, env) {
-      case Some(si) -> si
-      case None -> SortInfo(sort = SInt, range = RBKNone)
+  while i < condHR.sideConds.count {
+    condIterSides.add(SideGoal(term = condHR.sideConds[i], kind = GKAssertion, span = cond.span))
+    i = i + 1
+  }
+  guardSideGoals(condIterSides, iterHyps, sg)
+
+  // The condition's own `out`/`inout` arguments change as it is evaluated.
+  val afterCond = havocOutArgs(envH, cond)
+  val bodyHyps = termsWith(iterHyps, afterCond.hyps)
+  bodyHyps.add(condHR.term)
+
+  if bodyEffects.jumps.contains("return") {
+    di.add(
+      errorDiagnostic(
+        "V0026",
+        "a `return` or `?` inside a loop body is not yet supported by the verifier; the proof fails here",
+        sp
+      )
+    )
+    sg.add(SideGoal(term = falseT(), kind = GKLoopPreserve, span = sp))
+  } else {
+    // Preserve: the invariant at the end of the body, over the values the
+    // body leaves — each changed variable is a placeholder `finishPost`
+    // replaces at every path's end.
+    val finals: List[FinalSlot] = newList()
+    var envP = envH
+    i = 0
+    while i < changed.count {
+      match envLookupSort(changed[i], envH) {
+        case Some(vinfo) -> {
+          val placeholder = freshName(env, changed[i] + "!final")
+          finals.add(FinalSlot(varName = changed[i], placeholder = placeholder))
+          envP = envBindTerm(changed[i], TVar(name = placeholder, sort = vinfo.sort), vinfo, envP)
+        }
+        case None -> ()
+      }
+      i = i + 1
     }
-    val havocName = vname + "$loopout"
-    val havocTerm = TVar(name = havocName, sort = vinfo.sort)
-    envAfterHavoc = envBindTerm(vname, havocTerm, vinfo, envAfterHavoc)
-    appendTermList(havocWidthHyps, intWidthHypothesesForTerm(havocTerm, vinfo))
-    i = i + 1
+    val invFinal = translateInvariants(envP, invExprs)
+    val preservePost = if invFinal.facts.count == 0 {
+      invFinal.term
+    } else {
+      mkImplies(mkAnd(invFinal.facts), invFinal.term)
+    }
+    // The body ends with a unit statement, so its last real statement is
+    // walked as a statement — an `if` or a call there changes state — and
+    // never taken for a value.
+    val bodyStmts: List[Statement] = newList()
+    appendStmtList(bodyStmts, realStmts)
+    bodyStmts.add(Statement(kind = SExpr(expr = Expr(kind = ELiteral(lit = LUnit), span = body.span)), span = body.span))
+    val bodyWp = wpWalk(envWithFinals(afterCond.env, finals), resultSort, preservePost, bodyStmts, 0)
+    appendTermList2(di, bodyWp.diags)
+    val preserveHyps = termsWith(bodyHyps, bodyWp.assumed)
+    sg.add(SideGoal(term = mkImplies(mkAnd(preserveHyps), bodyWp.wp), kind = GKLoopPreserve, span = sp))
+    guardSideGoals(bodyWp.sideGoals, bodyHyps, sg)
   }
 
-  // Re-translate invariant and cond in post-havoc env.
-  val iotaPostTerms: List[Term] = newList()
-  val iotaPostDiags: List[Diagnostic] = newList()
-  i = 0
-  while i < invExprs.count {
-    val (invT, _, invDs) = translateContract(envAfterHavoc, invExprs[i])
-    iotaPostTerms.add(invT)
-    appendTermList2(iotaPostDiags, invDs)
-    i = i + 1
-  }
-  val iotaPostT = mkAnd(iotaPostTerms)
-  val (condPostR, _) = translateExpr(envAfterHavoc, cond)
-
-  // Post-loop assumed: iota /\ !cond.
-  val postLoopAssumed: List[Term] = newList()
-  postLoopAssumed.add(iotaPostT)
-  postLoopAssumed.add(mkNot(condPostR.term))
-  appendTermList(postLoopAssumed, havocWidthHyps)
-
-  // Collect rest of stmts.
+  // After the loop.
+  val exitHyps: List[Term] = newList()
+  appendTermList(exitHyps, iterHyps)
+  appendTermList(exitHyps, afterCond.hyps)
+  exitHyps.add(mkNot(condHR.term))
   val rest: List[Statement] = newList()
   var ri = idx + 1
   while ri < stmts.count {
     rest.add(stmts[ri])
     ri = ri + 1
   }
-  val inner = wpWalk(envAfterHavoc, resultSort, postcond, rest, 0)
-
-  val sg: List[SideGoal] = newList()
-  sg.add(SideGoal(term = iotaT, kind = GKLoopEstablish, span = sp))
-  sg.add(SideGoal(term = preserveCond, kind = GKLoopPreserve, span = sp))
-  i = 0
-  while i < bodyWp.sideGoals.count {
-    sg.add(bodyWp.sideGoals[i])
-    i = i + 1
-  }
-  i = 0
-  while i < inner.sideGoals.count {
-    sg.add(inner.sideGoals[i])
-    i = i + 1
-  }
-
-  val asList: List[Term] = newList()
-  appendTermList(asList, condR.assumed)
-  appendTermList(asList, bodyWp.assumed)
-  appendTermList(asList, postLoopAssumed)
-  appendTermList(asList, inner.assumed)
-
-  val di: List[Diagnostic] = newList()
-  appendTermList2(di, invDiags)
-  appendTermList2(di, condDiags)
-  appendTermList2(di, bodyWp.diags)
+  val inner = wpWalk(afterCond.env, resultSort, postcond, rest, 0)
+  guardSideGoals(inner.sideGoals, exitHyps, sg)
+  appendTermList2(di, invH.diags)
   appendTermList2(di, inner.diags)
 
+  val asList: List[Term] = newList()
+  appendTermList(asList, condEntryR.assumed)
+  appendTermList(asList, invEntry.facts)
+  appendTermList(asList, exitHyps)
+  appendTermList(asList, inner.assumed)
   WpResult(wp = inner.wp, sideGoals = sg, assumed = asList, diags = di)
 }
 
-// Collect names of variables modified by SAssign in a statement list.
-func collectModifiedVars(stmts: in List[Statement], output: in List[String]): Unit {
+// ─────────────────────────────────────────────────────────────────────────────
+// §9a. What code may change, and how it may leave.
+// ─────────────────────────────────────────────────────────────────────────────
+// The effects of a statement list or expression, as far as the verifier's
+// model of state goes: the variables it assigns (the root variable of an
+// assigned field or element, `p` for `p.x = v`), the variables it passes to
+// an `out`/`inout` parameter of a function this file declares (and the
+// receiver of such a method), and the ways it may leave other than by
+// falling through (`return`, `break`, `continue`, `throw`).  Assignments
+// inside a lambda count — the lambda may run here — but its jumps do not.
+record Effects {
+  assigned: List[String]
+  outArgs: List[String]
+  jumps: List[String]
+}
+
+func emptyEffects(): Effects {
+  val assigned: List[String] = newList()
+  val outArgs: List[String] = newList()
+  val jumps: List[String] = newList()
+  Effects(assigned = assigned, outArgs = outArgs, jumps = jumps)
+}
+
+func effectsOfStmts(env: in VEnv, stmts: in List[Statement]): Effects {
+  val eff = emptyEffects()
+  effStmts(env, stmts, false, eff)
+  eff
+}
+
+func effectsOfExpr(env: in VEnv, e: in Expr): Effects {
+  val eff = emptyEffects()
+  effExpr(env, e, false, eff)
+  eff
+}
+
+// Every variable `eff` says may change: assigned or passed out.
+func effectsChanged(eff: in Effects): List[String] {
+  val names: List[String] = newList()
+  addNames(names, eff.assigned)
+  addNames(names, eff.outArgs)
+  names
+}
+
+func hasEffectsOtherThanCalls(eff: in Effects): Bool {
+  eff.assigned.count > 0 or eff.jumps.count > 0
+}
+
+func addName(names: in List[String], n: in String): Unit {
+  if not names.contains(n) {
+    names.add(n)
+  }
+}
+
+func addNames(names: in List[String], src: in List[String]): Unit {
   var i = 0
-  while i < stmts.count {
-    collectModifiedVarsSt(stmts[i], output)
+  while i < src.count {
+    addName(names, src[i])
     i = i + 1
   }
 }
 
-func collectModifiedVarsSt(st: in Statement, output: in List[String]): Unit {
+// The variable an assignment target or argument stores into: `x` for `x`,
+// `x.f`, `x.f.g` and `x[i]`.
+func rootVarOf(e: in Expr): Option[String] {
+  match e.kind {
+    case EPath(path) -> if path.segments.count == 1 { Some(value = path.segments[0]) } else { None }
+    case EParen(inner) -> rootVarOf(inner)
+    case EMember(receiver, _) -> rootVarOf(receiver)
+    case EIndex(receiver, _) -> rootVarOf(receiver)
+    case _ -> None
+  }
+}
+
+func effBlock(env: in VEnv, blk: in Block, inLambda: in Bool, eff: in Effects): Unit {
+  effStmts(env, blk.statements, inLambda, eff)
+}
+
+func effStmts(env: in VEnv, stmts: in List[Statement], inLambda: in Bool, eff: in Effects): Unit {
+  var i = 0
+  while i < stmts.count {
+    effStmt(env, stmts[i], inLambda, eff)
+    i = i + 1
+  }
+}
+
+func effJump(kind: in String, inLambda: in Bool, eff: in Effects): Unit {
+  if not inLambda {
+    addName(eff.jumps, kind)
+  }
+}
+
+func effStmt(env: in VEnv, st: in Statement, inLambda: in Bool, eff: in Effects): Unit {
   match st.kind {
-    case SAssign(target, _, _) -> {
-      match target.kind {
-        case EPath(path) -> {
-          if path.segments.count == 1 {
-            val name = path.segments[0]
-            if not output.contains(name) {
-              output.add(name)
-            }
-          }
+    case SLocal(binding) -> match binding {
+      case LBVal(_, _, init) -> effExpr(env, init, inLambda, eff)
+      case LBLet(_, _, init) -> effExpr(env, init, inLambda, eff)
+      case LBVar(_, _, Some(init)) -> effExpr(env, init, inLambda, eff)
+      case LBVar(_, _, None) -> ()
+    }
+    case SAssign(target, _, value) -> effAssign(env, target, value, inLambda, eff)
+    case SReturn(valueOpt) -> {
+      match valueOpt {
+        case Some(v) -> effExpr(env, v, inLambda, eff)
+        case None -> ()
+      }
+      effJump("return", inLambda, eff)
+    }
+    case SBreak(_) -> effJump("break", inLambda, eff)
+    case SContinue(_) -> effJump("continue", inLambda, eff)
+    case SThrow(x) -> {
+      effExpr(env, x, inLambda, eff)
+      effJump("throw", inLambda, eff)
+    }
+    case STry(body, catches, finally_) -> {
+      effBlock(env, body, inLambda, eff)
+      var ci = 0
+      while ci < catches.count {
+        effBlock(env, catches[ci].body, inLambda, eff)
+        ci = ci + 1
+      }
+      match finally_ {
+        case Some(fb) -> effBlock(env, fb, inLambda, eff)
+        case None -> ()
+      }
+    }
+    case SDefer(body) -> effBlock(env, body, inLambda, eff)
+    case SScope(_, body) -> effBlock(env, body, inLambda, eff)
+    case SFor(_, _, iter, body) -> {
+      effExpr(env, iter, inLambda, eff)
+      effBlock(env, body, inLambda, eff)
+    }
+    case SWhile(_, cond, body) -> {
+      effExpr(env, cond, inLambda, eff)
+      effBlock(env, body, inLambda, eff)
+    }
+    case SLoop(_, body) -> effBlock(env, body, inLambda, eff)
+    case SInvariant(x) -> effExpr(env, x, inLambda, eff)
+    case SExpr(x) -> effExpr(env, x, inLambda, eff)
+    case SRule(lhs, rhs) -> {
+      effExpr(env, lhs, inLambda, eff)
+      effExpr(env, rhs, inLambda, eff)
+    }
+    case SItem(_) -> ()
+  }
+}
+
+func effAssign(env: in VEnv, target: in Expr, value: in Expr, inLambda: in Bool, eff: in Effects): Unit {
+  match rootVarOf(target) {
+    case Some(n) -> addName(eff.assigned, n)
+    case None -> ()
+  }
+  // An index or a field's receiver is evaluated too.
+  effExpr(env, target, inLambda, eff)
+  effExpr(env, value, inLambda, eff)
+}
+
+func effEob(env: in VEnv, eob: in ExprOrBlock, inLambda: in Bool, eff: in Effects): Unit {
+  match eob {
+    case EOBExpr(x) -> effExpr(env, x, inLambda, eff)
+    case EOBBlock(blk) -> effBlock(env, blk, inLambda, eff)
+  }
+}
+
+func effExprList(env: in VEnv, xs: in List[Expr], inLambda: in Bool, eff: in Effects): Unit {
+  var i = 0
+  while i < xs.count {
+    effExpr(env, xs[i], inLambda, eff)
+    i = i + 1
+  }
+}
+
+func effExpr(env: in VEnv, e: in Expr, inLambda: in Bool, eff: in Effects): Unit {
+  match e.kind {
+    case EParen(inner) -> effExpr(env, inner, inLambda, eff)
+    case EAwait(inner) -> effExpr(env, inner, inLambda, eff)
+    case EYield(inner) -> effExpr(env, inner, inLambda, eff)
+    case ESpawn(inner) -> effExpr(env, inner, inLambda, eff)
+    case ETry(inner) -> effExpr(env, inner, inLambda, eff)
+    case EOld(inner) -> effExpr(env, inner, inLambda, eff)
+    case EPropagate(inner) -> {
+      // `e?` returns early on an error.
+      effExpr(env, inner, inLambda, eff)
+      effJump("return", inLambda, eff)
+    }
+    case EBlock(blk) -> effBlock(env, blk, inLambda, eff)
+    case EUnsafe(blk) -> effBlock(env, blk, inLambda, eff)
+    case EPrefix(_, operand) -> effExpr(env, operand, inLambda, eff)
+    case EBinop(_, lhs, rhs) -> {
+      effExpr(env, lhs, inLambda, eff)
+      effExpr(env, rhs, inLambda, eff)
+    }
+    case EMember(receiver, _) -> effExpr(env, receiver, inLambda, eff)
+    case ETypeApp(fn, _) -> effExpr(env, fn, inLambda, eff)
+    case EAssign(target, _, value) -> effAssign(env, target, value, inLambda, eff)
+    case ECall(fn, args) -> {
+      effExpr(env, fn, inLambda, eff)
+      var i = 0
+      while i < args.count {
+        val argExpr = match args[i] { case CANamed(_, v, _) -> v; case CAPositional(x) -> x }
+        effExpr(env, argExpr, inLambda, eff)
+        i = i + 1
+      }
+      effOutArgs(env, fn, args, eff)
+    }
+    case EIndex(receiver, indices) -> {
+      effExpr(env, receiver, inLambda, eff)
+      effExprList(env, indices, inLambda, eff)
+    }
+    case ETuple(exprs) -> effExprList(env, exprs, inLambda, eff)
+    case EList(exprs) -> effExprList(env, exprs, inLambda, eff)
+    case EInterpolated(segments) -> {
+      var i = 0
+      while i < segments.count {
+        match segments[i] {
+          case ISExpr(x) -> effExpr(env, x, inLambda, eff)
+          case ISText(_, _) -> ()
         }
-        case _ -> {
+        i = i + 1
+      }
+    }
+    case ERange(bound) -> match bound {
+      case RBClosed(lo, hi) -> {
+        effExpr(env, lo, inLambda, eff)
+        effExpr(env, hi, inLambda, eff)
+      }
+      case RBHalfOpen(lo, hi, _) -> {
+        effExpr(env, lo, inLambda, eff)
+        effExpr(env, hi, inLambda, eff)
+      }
+      case RBLowerOpen(hi) -> effExpr(env, hi, inLambda, eff)
+      case RBUpperOpen(lo) -> effExpr(env, lo, inLambda, eff)
+    }
+    case ELambda(_, body) -> effBlock(env, body, true, eff)
+    case EIf(cond, thenBranch, elseBranch, _) -> {
+      effExpr(env, cond, inLambda, eff)
+      effEob(env, thenBranch, inLambda, eff)
+      match elseBranch {
+        case Some(eb) -> effEob(env, eb, inLambda, eff)
+        case None -> ()
+      }
+    }
+    case EMatch(scrutinee, arms) -> {
+      effExpr(env, scrutinee, inLambda, eff)
+      var i = 0
+      while i < arms.count {
+        match arms[i].guard {
+          case Some(g) -> effExpr(env, g, inLambda, eff)
+          case None -> ()
+        }
+        effEob(env, arms[i].body, inLambda, eff)
+        i = i + 1
+      }
+    }
+    case _ -> ()
+  }
+}
+
+// The variables a call passes to an `out`/`inout` parameter of the function
+// it resolves to: by path, a dot-named `T.m(...)`, or a method whose
+// receiver parameter is one.
+func effOutArgs(env: in VEnv, fn: in Expr, args: in List[CallArg], eff: in Effects): Unit {
+  match fn.kind {
+    case EPath(path) -> match mapGet(env.callees, joinPathSegments(path.segments)) {
+      case Some(decl) -> effOutParams(decl, 0, args, eff)
+      case None -> ()
+    }
+    case EMember(receiver, methodName) -> {
+      match resolveStaticCallee(env, receiver, methodName) {
+        case Some(rc) -> effOutParams(rc.decl, 0, args, eff)
+        case None -> {
+          val methodOpt = match staticSortOfExpr(env, receiver) {
+            case Some(srt) -> resolveMethodCallee(env, TVar(name = "self", sort = srt), methodName)
+            case None -> None
+          }
+          match methodOpt {
+            case Some(rc) -> {
+              match rc.decl.params[0].mode {
+                case PMIn -> ()
+                case _ -> match rootVarOf(receiver) { case Some(n) -> addName(eff.outArgs, n); case None -> () }
+              }
+              effOutParams(rc.decl, 1, args, eff)
+            }
+            case None -> ()
+          }
         }
       }
     }
-    case SWhile(_, _, body) -> collectModifiedVars(body.statements, output)
-    case SFor(_, _, _, body) -> collectModifiedVars(body.statements, output)
-    case SLoop(_, body) -> collectModifiedVars(body.statements, output)
-    case SDefer(body) -> collectModifiedVars(body.statements, output)
-    case SScope(_, body) -> collectModifiedVars(body.statements, output)
-    case STry(body, _, _) -> collectModifiedVars(body.statements, output)
-    case _ -> {
+    case _ -> ()
+  }
+}
+
+func effOutParams(decl: in FunctionDecl, skip: in Int, args: in List[CallArg], eff: in Effects): Unit {
+  val names: List[String] = newList()
+  var k = 0
+  while k < decl.params.count {
+    names.add(decl.params[k].name)
+    k = k + 1
+  }
+  match pairCallArgs(names, skip, args) {
+    case Ok(slots) -> {
+      var si = 0
+      while si < slots.count {
+        val slot = slots[si]
+        if slot >= 0 {
+          match decl.params[skip + si].mode {
+            case PMIn -> ()
+            case _ -> {
+              val argExpr = match args[slot] { case CANamed(_, v, _) -> v; case CAPositional(x) -> x }
+              match rootVarOf(argExpr) {
+                case Some(n) -> addName(eff.outArgs, n)
+                case None -> ()
+              }
+            }
+          }
+        }
+        si = si + 1
+      }
     }
+    case Err(_) -> {
+      // Arguments that do not fit the parameters fail closed at the call
+      // (#7873); every variable passed may change for all this knows.
+      var ai = 0
+      while ai < args.count {
+        val argExpr = match args[ai] { case CANamed(_, v, _) -> v; case CAPositional(x) -> x }
+        match rootVarOf(argExpr) {
+          case Some(n) -> addName(eff.outArgs, n)
+          case None -> ()
+        }
+        ai = ai + 1
+      }
+    }
+  }
+}
+
+// `env` with each of `names` that it binds rebound to a value of its own of
+// the same sort — what it holds after code that may change it — plus what
+// is still known of each: a range-typed variable is in its range, an
+// `Int`/`Long` within its width.  `tag` names the havoc in the solver's
+// counterexamples (`i!loop12`).
+record Havoc {
+  env: VEnv
+  hyps: List[Term]
+}
+
+func havocVars(env: in VEnv, names: in List[String], tag: in String): Havoc {
+  var envH = env
+  val hyps: List[Term] = newList()
+  var i = 0
+  while i < names.count {
+    val vname = names[i]
+    match envLookupSort(vname, env) {
+      case Some(vinfo) -> {
+        val t = freshVar(env, vname + "!" + tag, vinfo.sort)
+        envH = envBindTerm(vname, t, vinfo, envH)
+        appendTermList(hyps, intWidthHypothesesForTerm(t, vinfo))
+        appendTermList(hyps, rangeHypothesesForTerm(t, vinfo))
+      }
+      // A name with no binding here is declared inside the code itself.
+      case None -> ()
+    }
+    i = i + 1
+  }
+  Havoc(env = envH, hyps = hyps)
+}
+
+// After an expression evaluates: the variables it passed to an `out` or
+// `inout` parameter hold new values (#8102).
+func havocOutArgs(env: in VEnv, e: in Expr): Havoc {
+  val eff = effectsOfExpr(env, e)
+  havocVars(env, eff.outArgs, "out")
+}
+
+// `env` whose postcondition placeholders are `finals`.
+func envWithFinals(env: in VEnv, finals: in List[FinalSlot]): VEnv {
+  VEnv(
+    vars = env.vars,
+    varNames = env.varNames,
+    sorts = env.sorts,
+    callees = env.callees,
+    symbols = env.symbols,
+    checkedArithmetic = env.checkedArithmetic,
+    distincts = env.distincts,
+    fieldInfos = env.fieldInfos,
+    recordDefaults = env.recordDefaults,
+    fresh = env.fresh,
+    recordMethods = env.recordMethods,
+    finals = finals
+  )
+}
+
+// The postcondition at the end of a path: `result` is `resultTerm`, and
+// each placeholder in `env.finals` is its variable's value here.
+func finishPost(env: in VEnv, postcond: in Term, resultTerm: in Term): Term {
+  val substMap: Map[String, Term] = newMap()
+  val substNames: List[String] = newList()
+  substMap.add("result", resultTerm)
+  substNames.add("result")
+  var i = 0
+  while i < env.finals.count {
+    val slot = env.finals[i]
+    match envLookup(slot.varName, env) {
+      case Some(t) -> {
+        substMap.add(slot.placeholder, t)
+        substNames.add(slot.placeholder)
+      }
+      case None -> ()
+    }
+    i = i + 1
+  }
+  substTerm(substMap, substNames, postcond)
+}
+
+// Fail closed: `what` cannot be modelled, so the path's obligation is
+// `false` and the error says why.
+func unsupportedWp(what: in String, sp: in Span): WpResult {
+  val di: List[Diagnostic] = newList()
+  di.add(errorDiagnostic("V0026", what + " is not yet supported by the verifier; the proof fails here", sp))
+  val sg: List[SideGoal] = newList()
+  val asList: List[Term] = newList()
+  WpResult(wp = falseT(), sideGoals = sg, assumed = asList, diags = di)
+}
+
+// Each side goal of `src`, holding where `hyps` hold.
+func guardSideGoals(src: in List[SideGoal], hyps: in List[Term], dst: in List[SideGoal]): Unit {
+  var i = 0
+  while i < src.count {
+    val g = src[i]
+    val t = if hyps.count == 0 { g.term } else { mkImplies(mkAnd(hyps), g.term) }
+    dst.add(SideGoal(term = t, kind = g.kind, span = g.span))
+    i = i + 1
   }
 }
 
@@ -2710,6 +3563,20 @@ pub func goalsForFunction(env0: in VEnv, decl: in FunctionDecl): (List[Goal], Li
 pub func goalsForFunctionWithExtraHyps(
   env0: in VEnv, decl: in FunctionDecl, extraHyps: in List[Term]
 ): (List[Goal], List[Diagnostic]) {
+  val noState: List[String] = newList()
+  goalsForFunctionWithState(env0, decl, extraHyps, noState)
+}
+
+// Like `goalsForFunctionWithExtraHyps`, where the names in `stateVars` —
+// bound in `env0`, like a protected type's `var` fields — are state the
+// body may change: an `ensures:` speaks of their values when the function
+// returns, and `old(n)` of their values on entry (#8102).
+pub func goalsForFunctionWithState(
+  env0: in VEnv,
+  decl: in FunctionDecl,
+  extraHyps: in List[Term],
+  stateVars: in List[String],
+): (List[Goal], List[Diagnostic]) {
   // Soundness guard: WP/SP has no suspend/resume model; reject contract-bearing async/yield rather than opaquing (#3298).
   if decl.contracts.count > 0 and (decl.isAsync or funcBodyContainsYield(decl)) {
     val asyncDiags: List[Diagnostic] = newList()
@@ -2760,6 +3627,19 @@ pub func goalsForFunctionWithExtraHyps(
     envWithOld = envBindTerm("old." + p.name, t, info, envWithOld)
     i = i + 1
   }
+  i = 0
+  while i < stateVars.count {
+    match envLookup(stateVars[i], env0) {
+      case Some(entryTerm) -> match envLookupSort(stateVars[i], env0) {
+        case Some(info) -> {
+          envWithOld = envBindTerm("old." + stateVars[i], entryTerm, info, envWithOld)
+        }
+        case None -> ()
+      }
+      case None -> ()
+    }
+    i = i + 1
+  }
 
   // Translate requires clauses.
   val preTerms: List[Term] = newList()
@@ -2781,6 +3661,39 @@ pub func goalsForFunctionWithExtraHyps(
   }
   val preTerm = mkAnd(preTerms)
 
+  // An `out`/`inout` parameter named in an `ensures:` is its value when the
+  // function returns: a placeholder each path's end replaces with the value
+  // the parameter holds there (`finishPost`); `old(p)` is its value on entry
+  // (#8102).
+  val paramFinals: List[FinalSlot] = newList()
+  var envForPost = envWithOld
+  i = 0
+  while i < decl.params.count {
+    val p = decl.params[i]
+    match p.mode {
+      case PMIn -> ()
+      case _ -> {
+        val info = sortOfTypeExprE(env0, p.ty)
+        val placeholder = freshName(env0, p.name + "!final")
+        paramFinals.add(FinalSlot(varName = p.name, placeholder = placeholder))
+        envForPost = envBindTerm(p.name, TVar(name = placeholder, sort = info.sort), info, envForPost)
+      }
+    }
+    i = i + 1
+  }
+  i = 0
+  while i < stateVars.count {
+    match envLookupSort(stateVars[i], env0) {
+      case Some(info) -> {
+        val placeholder = freshName(env0, stateVars[i] + "!final")
+        paramFinals.add(FinalSlot(varName = stateVars[i], placeholder = placeholder))
+        envForPost = envBindTerm(stateVars[i], TVar(name = placeholder, sort = info.sort), info, envForPost)
+      }
+      case None -> ()
+    }
+    i = i + 1
+  }
+
   // Translate ensures clauses.
   val postTerms: List[Term] = newList()
   val postAssumed: List[Term] = newList()
@@ -2789,7 +3702,7 @@ pub func goalsForFunctionWithExtraHyps(
   while i < decl.contracts.count {
     match decl.contracts[i] {
       case CCEnsures(e, _) -> {
-        val (t, asList, d) = translateContract(envWithOld, e)
+        val (t, asList, d) = translateContract(envForPost, e)
         postTerms.add(t)
         appendTermList(postAssumed, asList)
         appendTermList2(postDiags, d)
@@ -2837,7 +3750,7 @@ pub func goalsForFunctionWithExtraHyps(
   appendTermList(allPostParts, rangeTerms)
   val combinedPost = mkAnd(allPostParts)
 
-  val wpRes = wpBody(envWithOld, resultSort, combinedPost, body)
+  val wpRes = wpBody(envWithFinals(envWithOld, paramFinals), resultSort, combinedPost, body)
 
   // Main goal hypotheses.
   val hypotheses: List[Term] = newList()
@@ -2927,7 +3840,10 @@ func freshSymbolsEnv(env: in VEnv): VEnv {
     checkedArithmetic = env.checkedArithmetic,
     distincts = env.distincts,
     fieldInfos = env.fieldInfos,
-    recordDefaults = env.recordDefaults
+    recordDefaults = env.recordDefaults,
+    fresh = env.fresh,
+    recordMethods = env.recordMethods,
+    finals = env.finals
   )
 }
 
@@ -3061,7 +3977,18 @@ func goalsForProtectedEntry(
       }
       mfi = mfi + 1
     }
-    val (goals, diags) = goalsForFunctionWithExtraHyps(fnEnv, synthDecl, fieldRangeHyps)
+    // An entry may assign its type's `var` fields: its `ensures:` and the
+    // type's invariant hold of their values when it returns (#8102).
+    val varFields: List[String] = newList()
+    var vfi = 0
+    while vfi < protMembers.count {
+      match protMembers[vfi] {
+        case PMField(pf) -> match pf { case PFVar(vfName, _, _, _, _, _) -> varFields.add(vfName); case _ -> () }
+        case _ -> ()
+      }
+      vfi = vfi + 1
+    }
+    val (goals, diags) = goalsForFunctionWithState(fnEnv, synthDecl, fieldRangeHyps, varFields)
     var gi = 0
     while gi < goals.count {
       allGoals.add(goals[gi])
@@ -3330,6 +4257,32 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
     ri = ri + 1
   }
 
+  // A record's own methods, which a `recv.m(...)` call reaches before any
+  // dot-named `func R.m` (#8101).
+  val recordMethodsMap: Map[String, Bool] = newMap()
+  var rmi = 0
+  while rmi < file.items.count {
+    match file.items[rmi].kind {
+      case IRecord(rmDecl) -> {
+        var rmj = 0
+        while rmj < rmDecl.members.count {
+          match rmDecl.members[rmj] {
+            case RMFunc(rmFn) -> {
+              val rmKey = rmDecl.name + "." + rmFn.name
+              if not recordMethodsMap.containsKey(rmKey) {
+                recordMethodsMap.add(rmKey, true)
+              }
+            }
+            case _ -> ()
+          }
+          rmj = rmj + 1
+        }
+      }
+      case _ -> ()
+    }
+    rmi = rmi + 1
+  }
+
   // Build env0 carrying the distinct-type alias map collected above (#3853).
   val env0Init = envEmpty(callees, sharedSymbols, checkedArith)
   val env0 = VEnv(
@@ -3341,7 +4294,10 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
     checkedArithmetic = env0Init.checkedArithmetic,
     distincts = distinctMap,
     fieldInfos = fieldInfosMap,
-    recordDefaults = recordDefaultsMap
+    recordDefaults = recordDefaultsMap,
+    fresh = env0Init.fresh,
+    recordMethods = recordMethodsMap,
+    finals = env0Init.finals
   )
 
   val allGoals: List[Goal] = newList()
