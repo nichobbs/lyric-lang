@@ -138,6 +138,11 @@ pub record MonoResult {
   /// specialisation.  `Lyric.Pipeline` re-checks each of these and passes the
   /// conversions the checker records for it back in as `specSites`.
   unsignedSpecs: List[UnsignedSpecRequest]
+  /// Each specialisation of a generic declared in another package, its body
+  /// as it was before its calls were rewritten.  That package's type checker
+  /// resolved the body's method calls, so `Lyric.Pipeline` re-checks those
+  /// whose dispatch depends on it in that package's scope.
+  foreignSpecs: List[UnsignedSpecRequest]
   // ─────────────────────────────────────────────────────────────────────────────
   // §2. Internal state
   // ─────────────────────────────────────────────────────────────────────────────
@@ -360,6 +365,7 @@ record MonoState {
   /// innermost last (an empty map for a body with none).
   activeSpecSites: List[Map[String, ArgConversionSite]]
   unsignedSpecs: List[UnsignedSpecRequest]
+  foreignSpecs: List[UnsignedSpecRequest]
   diags: List[Diagnostic]
 }
 
@@ -414,6 +420,7 @@ func newMonoState(
     specSites = newMap(),
     activeSpecSites = newList(),
     unsignedSpecs = newList(),
+    foreignSpecs = newList(),
     diags = newList()
   )
 }
@@ -4314,7 +4321,13 @@ pub func desugarCheckedFile(
   val noRewrites: Map[String, String] = newMap()
   if sites.count == 0 and funcRefSites.count == 0 and argConversionSites.count == 0 and localBindingTypeSites.count == 0 and funcValueCallSites.count == 0 and tuplePatternBindingSites.count == 0 and listLiteralTypeSites.count == 0 and hoistOperandTypeSites.count == 0 {
     val noDiags: List[Diagnostic] = newList()
-    return MonoResult(file = file, rewrites = noRewrites, diagnostics = noDiags, unsignedSpecs = newList())
+    return MonoResult(
+      file = file,
+      rewrites = noRewrites,
+      diagnostics = noDiags,
+      unsignedSpecs = newList(),
+      foreignSpecs = newList()
+    )
   }
   val offsets: List[Int] = newList()
   val siteKeys = mapKeys(sites)
@@ -4464,7 +4477,13 @@ pub func desugarCheckedFile(
     items = items,
     span = file.span
   )
-  MonoResult(file = desugared, rewrites = noRewrites, diagnostics = state.diags, unsignedSpecs = newList())
+  MonoResult(
+    file = desugared,
+    rewrites = noRewrites,
+    diagnostics = state.diags,
+    unsignedSpecs = newList(),
+    foreignSpecs = newList()
+  )
 }
 
 // The `.copy` site for a call inside a specialised generic from another
@@ -8356,7 +8375,13 @@ pub func monoFileWithLambdaTypes(
   if genDecls.count == 0 {
     val emptyRewrites: Map[String, String] = newMap()
     val emptyDiags: List[Diagnostic] = newList()
-    return MonoResult(file = file, rewrites = emptyRewrites, diagnostics = emptyDiags, unsignedSpecs = newList())
+    return MonoResult(
+      file = file,
+      rewrites = emptyRewrites,
+      diagnostics = emptyDiags,
+      unsignedSpecs = newList(),
+      foreignSpecs = newList()
+    )
   }
 
   val state = newMonoState(
@@ -8697,30 +8722,36 @@ pub func monoFileWithLambdaTypes(
     val substitutedBody = substValueInBody(req.valueSubst, req.baseDecl.body)
     val env = seedEnvFromParams(req.baseDecl.params)
     val specOrigin = originPkgOf(req.baseDecl.annotations)
-    if substMentionsUnsignedMono(req.subst) or substMentionsArrayMono(req.subst) or req.valueSubst.count > 0 {
-      state.unsignedSpecs.add(
-        UnsignedSpecRequest(
-          specName = req.specName,
-          originPkg = specOrigin,
-          specDecl = FunctionDecl(
-            docComments = req.baseDecl.docComments,
-            annotations = req.baseDecl.annotations,
-            visibility = req.baseDecl.visibility,
-            isAsync = req.baseDecl.isAsync,
-            name = req.baseDecl.name,
-            generics = None,
-            params = req.baseDecl.params,
-            ret = req.baseDecl.ret,
-            whereClause = None,
-            contracts = req.baseDecl.contracts,
-            body = substitutedBody,
-            span = req.baseDecl.span
-          ),
-          subst = req.subst,
-          valueSubst = req.valueSubst,
-          callSpan = req.callSpan
-        )
+    val unsignedSpec = substMentionsUnsignedMono(req.subst) or substMentionsArrayMono(req.subst) or
+      req.valueSubst.count > 0
+    if unsignedSpec or specOrigin.length > 0 {
+      val specReq = UnsignedSpecRequest(
+        specName = req.specName,
+        originPkg = specOrigin,
+        specDecl = FunctionDecl(
+          docComments = req.baseDecl.docComments,
+          annotations = req.baseDecl.annotations,
+          visibility = req.baseDecl.visibility,
+          isAsync = req.baseDecl.isAsync,
+          name = req.baseDecl.name,
+          generics = None,
+          params = req.baseDecl.params,
+          ret = req.baseDecl.ret,
+          whereClause = None,
+          contracts = req.baseDecl.contracts,
+          body = substitutedBody,
+          span = req.baseDecl.span
+        ),
+        subst = req.subst,
+        valueSubst = req.valueSubst,
+        callSpan = req.callSpan
       )
+      if unsignedSpec {
+        state.unsignedSpecs.add(specReq)
+      }
+      if specOrigin.length > 0 {
+        state.foreignSpecs.add(specReq)
+      }
     }
     state.originScope.add(specOrigin)
     state.activeSpecSites.add(
@@ -8792,7 +8823,13 @@ pub func monoFileWithLambdaTypes(
     span = file.span
   )
 
-  MonoResult(file = newFile, rewrites = rewrites, diagnostics = state.diags, unsignedSpecs = state.unsignedSpecs)
+  MonoResult(
+    file = newFile,
+    rewrites = rewrites,
+    diagnostics = state.diags,
+    unsignedSpecs = state.unsignedSpecs,
+    foreignSpecs = state.foreignSpecs
+  )
 }
 
 // Extract the base function name from a mangled specialisation name.

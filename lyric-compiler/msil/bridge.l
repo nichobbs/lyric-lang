@@ -118,6 +118,22 @@ func seedResultTypeRefs(cctx: in CodegenCtx): Unit {
   }
 }
 
+// Make `arities` (one package's `MiddleEndOptions.methodCallAritiesOut`) the
+// method-call arities the next `codegenMPackage` call dispatches by.  They
+// are keyed by source spans, which only mean something within the package
+// they were recorded for, so each package's codegen sees its own (#7828).
+func useMethodCallAritiesMsil(cctx: in CodegenCtx, arities: in Map[String, Int]): Unit {
+  for k in mapKeys(cctx.methodCallArities) {
+    cctx.methodCallArities.remove(k)
+  }
+  for k in mapKeys(arities) {
+    match mapGet(arities, k) {
+      case Some(n) -> cctx.methodCallArities.add(k, n)
+      case None -> ()
+    }
+  }
+}
+
 // #4898: prints any `cctx.diagnostics` accumulated by `codegenMPackage`
 // (F0021–F0027, F0034 — external interface conformance, try-catch-as-expression
 // Unit/value mismatch, typed-delegate non-literal arguments, and hint-less
@@ -283,6 +299,7 @@ pub func compileToMsilWithVersion(
   // machine), so F0045's protected-region hazard applies on this target.
   val singleFileOptsCheckedOut: List[SourceFile] = newList()
   val singleFileOptsRecvOut: Map[String, String] = newMap()
+  val singleFileCallArities: Map[String, Int] = newMap()
   val singleFileOpts = MiddleEndOptions(
     tcFatal = true,
     tcReport = false,
@@ -294,6 +311,7 @@ pub func compileToMsilWithVersion(
     contractsEnabled = contractsEnabled,
     checkedSourceOut = singleFileOptsCheckedOut,
     memberRecvClassesOut = singleFileOptsRecvOut,
+    methodCallAritiesOut = singleFileCallArities,
     arraysAsLists = true
   )
   val file = match pipeCheckAndMono(file0, importedPkgs, noDeriveImports, allMonoFuncs, stdlibIfaces, stdlibRecs, singleFileOpts) {
@@ -411,6 +429,7 @@ pub func compileToMsilWithVersion(
   // `cctx.diagnostics` instead of panicking.  Report and abort here, the
   // same way the type-checker / mode-checker error lists just above in this
   // pipeline gate the build, instead of proceeding to lower invalid IR.
+  useMethodCallAritiesMsil(cctx, singleFileCallArities)
   val pkg = codegenMPackage(liftedFile, cctx)
   if abortOnCodegenDiagnosticsMsil(cctx) {
     return false
@@ -1068,6 +1087,8 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     areck = areck + 1
   }
   val perPkgFiles: List[SourceFile] = newList()
+  // Each package's `methodCallAritiesOut` (#7828), parallel to `perPkgFiles`.
+  val perPkgCallArities: List[Map[String, Int]] = newList()
   // The type-checked, `.copy`-desugared file per package: contract metadata
   // takes generic bodies from it (see `MiddleEndOptions.checkedSourceOut`).
   val perPkgChecked: List[SourceFile] = newList()
@@ -1092,6 +1113,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     // #7198: see the other `MiddleEndOptions` construction site in this file.
     val projOptsCheckedOut: List[SourceFile] = newList()
     val projOptsRecvOut: Map[String, String] = newMap()
+    val projCallArities: Map[String, Int] = newMap()
     val projOpts = MiddleEndOptions(
       tcFatal = true,
       tcReport = false,
@@ -1103,6 +1125,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
       contractsEnabled = contractsEnabled,
       checkedSourceOut = projOptsCheckedOut,
       memberRecvClassesOut = projOptsRecvOut,
+      methodCallAritiesOut = projCallArities,
       arraysAsLists = true,
       ioForbiddenReason = pp.ioForbiddenReason
     )
@@ -1112,6 +1135,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     }
 
     perPkgFiles.add(monoFile)
+    perPkgCallArities.add(projCallArities)
     perPkgChecked.add(if projOptsCheckedOut.count > 0 { projOptsCheckedOut[0] } else { pp.file })
     perPkgNames.add(pp.name)
 
@@ -1400,6 +1424,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   val mpkgs: List[MPackage] = newList()
   var ci = 0
   while ci < liftedFiles.count {
+    useMethodCallAritiesMsil(cctx, perPkgCallArities[ci])
     val mpkg = codegenMPackage(liftedFiles[ci], cctx)
     mpkgs.add(mpkg)
     if abortOnCodegenDiagnosticsMsilInPkgWithOrigins(cctx, parsedPkgs[ci].label, parsedPkgs[ci].origins) {

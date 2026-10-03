@@ -661,7 +661,7 @@ func lowerCall(ctx: in FuncCtx, insns: in List[LInsn], fn: in Expr, args: in Lis
       lowerCall(ctx, insns, innerFn, args)
     }
     case EMember(recv, memberName) -> {
-      lowerMethodCall(ctx, insns, recv, memberName, args)
+      lowerMethodCall(ctx, insns, recv, memberName, args, methodCallSiteKey(fn))
     }
     case EParen(inner) -> {
       lowerCall(ctx, insns, inner, args)
@@ -964,6 +964,35 @@ func lowerLambdaInvoke(ctx: in FuncCtx, insns: in List[LInsn], name: in String, 
   // guard, panicked instead of computing the correct value.
   insns.add(LAload(slot = slot))
   lowerLambdaInvokeTail(ctx, insns, args, mapGet(ctx.funcValRetTypes, name))
+}
+
+// The signature of `cls`'s method `name` a call binds to: the overload with
+// as many parameters as the type checker resolved the call to (the
+// `~arity~` seed entry under the call's `methodCallSiteKey`, `siteKey`,
+// when the call leaves out a defaulted argument, else the `written`
+// argument count), then the first-registered overload of that name (#7828).
+func methodSigJvm(
+  ctx: in FuncCtx, cls: in String, name: in String, siteKey: in String, written: in Int
+): Option[JvmFuncSig] {
+  if callResolvedToDotNamedJvm(ctx, siteKey) {
+    return None
+  }
+  val arity = match mapGet(ctx.externTypes, "~arity~" + siteKey) { case Some(n) -> n; case None -> toString(written) }
+  match mapGet(ctx.funcSigs, cls + "#" + name + "/" + arity) {
+    case Some(sig) -> Some(value = sig)
+    case None -> mapGet(ctx.funcSigs, cls + "#" + name)
+  }
+}
+
+// True when the type checker resolved the method call at `siteKey` to a
+// dot-named function `func T.m(self, ...)` rather than a method of the
+// receiver's type (`Lyric.Parser.methodCallTargetCode` records it as a
+// negative count, #8098): its type's same-named methods are not candidates.
+func callResolvedToDotNamedJvm(ctx: in FuncCtx, siteKey: in String): Bool {
+  match mapGet(ctx.externTypes, "~arity~" + siteKey) {
+    case Some(n) -> n.startsWith("-")
+    case None -> false
+  }
 }
 
 // Lower a single call argument.
@@ -3826,9 +3855,20 @@ func lowerGeneralStaticCall(
   // as `aload_0; invokevirtual selfCls.send` with the other function's
   // arguments, bytecode that fails verification (#7846).
   val siblingCls: Option[String] = if path.segments.count <= 1 { ctx.selfClass } else { None }
+  // A bare call the checker resolved to a dot-named function `func T.m(self,
+  // ...)` rather than the sibling method is `self.m(args)`, which the
+  // member dispatch lowers (#8098).
+  match siblingCls {
+    case Some(_) -> if callResolvedToDotNamedJvm(ctx, methodCallPathKey(path)) {
+      val selfRecv = Expr(kind = ESelf, span = path.span)
+      val dotCallee = Expr(kind = EMember(receiver = selfRecv, memberName = funcName), span = path.span)
+      return lowerCall(ctx, insns, dotCallee, args)
+    }
+    case None -> ()
+  }
   match siblingCls {
     case Some(selfCls) -> {
-      match mapGet(ctx.funcSigs, selfCls + "#" + funcName) {
+      match methodSigJvm(ctx, selfCls, funcName, methodCallPathKey(path), args.count) {
         case Some(sig) -> {
           insns.add(LAload(slot = 0))
           val callArgs = reorderAndFillJvmArgs(sig, args)
@@ -4497,6 +4537,7 @@ func lowerMethodCall(
   recv: in Expr,
   memberName: in String,
   args: in List[CallArg],
+  siteKey: in String,
 ): JvmType {
   // A package-qualified type-associated call (`Std.Http.Url.tryFrom(s)`,
   // `Lyric.Docker.ContainerId.tryFrom(s)`) resolves through the declaring
@@ -5370,7 +5411,7 @@ func lowerMethodCall(
   // so the call site wraps/unwraps holder arrays (#1763).
   match recvTy {
     case JRef(cls) -> {
-      match mapGet(ctx.funcSigs, cls + "#" + memberName) {
+      match methodSigJvm(ctx, cls, memberName, siteKey, args.count) {
         case Some(sig) -> {
           val margs = reorderAndFillJvmArgs(sig, args)
           if anyHolderMode(sig.paramModes) {
