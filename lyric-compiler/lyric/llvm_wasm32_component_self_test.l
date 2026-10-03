@@ -736,3 +736,57 @@ pub func go(n: Int): Int {
   val v = run(envOrPanic("WASM_TOOLS"), vargs)
   assertTrue(v.exitCode == 0, "the component validates: " + v.stderr)
 }
+
+test "wasm32 component: host import names that fold to one WIT name are an error" {
+  val _w = envOrPanic("WASI_SDK_PATH")
+  val _t = envOrPanic("WASM_TOOLS")
+  val _a = envOrPanic("LYRIC_WASI_ADAPTER")
+  assertFalse(
+    componentBuildOk(
+      r#"package Probe
+
+@wasmImport("ui.log")
+extern func a(n: Int): Int = "x"
+
+@wasmImport("ui-log")
+extern func b(n: Int): Int = "x"
+
+pub func go(n: Int): Int {
+  a(n) + b(n)
+}
+"#
+    ),
+    "two modules that fold to one WIT interface name"
+  )
+  assertFalse(
+    componentBuildOk(
+      r#"package Probe
+
+@wasmImport("ui")
+extern func a(n: Int): Int = "log.x"
+
+@wasmImport("ui")
+extern func b(n: Int): Int = "log-x"
+
+pub func go(n: Int): Int {
+  a(n) + b(n)
+}
+"#
+    ),
+    "two functions of one module that fold to one WIT function name"
+  )
+  assertFalse(
+    componentBuildOk(
+      r#"package Probe
+
+@wasmImport("probe")
+extern func a(n: Int): Int = "x"
+
+pub func go(n: Int): Int {
+  a(n)
+}
+"#
+    ),
+    "a module named like the exported package"
+  )
+}

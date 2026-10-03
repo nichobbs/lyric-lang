@@ -1278,7 +1278,7 @@ func hostImportOf(d: in ExternFuncDecl, module: in String, tbl: in TypeTable): R
   }
   val retSlot = match ret { case WString -> 1; case _ -> 0 }
   if width + retSlot > 16 {
-    return Err(error = "@wasmImport extern func " + d.name + " needs more than 16 flat core parameters")
+    return Err(error = "@wasmImport extern func " + d.name + " has more than 16 flat core parameters")
   }
   Ok(
     value = HostImport(
@@ -1555,6 +1555,34 @@ pub func importConflict(pkgs: in List[ComponentPkg]): String {
       }
       seen.add(h)
     }
+  }
+  val uniq = uniqueImports(pkgs)
+  var i = 0
+  while i < uniq.count {
+    var j = i + 1
+    while j < uniq.count {
+      val a = uniq[i]
+      val b = uniq[j]
+      if a.module != b.module and witName(a.module) == witName(b.module) {
+        return "the host import modules '" + a.module + "' and '" + b.module + "' both become the WIT interface " +
+          witName(a.module) +
+          "; rename one"
+      }
+      if a.module == b.module and a.name != b.name and witName(a.name) == witName(b.name) {
+        return "the host imports " + a.module + "." + a.name + " and " + b.module + "." + b.name +
+          " both become the WIT function " +
+          witName(a.name) +
+          "; rename one"
+      }
+      j = j + 1
+    }
+    for p in exportingPkgs(pkgs) {
+      if witName(p.pkg) == witName(uniq[i].module) {
+        return "the host import module '" + uniq[i].module + "' has the same WIT name as the exported package " + p.pkg +
+          "; rename one"
+      }
+    }
+    i = i + 1
   }
   ""
 }
