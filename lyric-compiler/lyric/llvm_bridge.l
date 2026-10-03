@@ -595,6 +595,25 @@ pub func compileToNativeWithFlags(
   )
 }
 
+/// For `--shape component`: append the generated canonical-ABI shims to the
+/// package's AST and record its exports in `pkgs`; any other shape passes the
+/// file through.  Reports the shims' `W0040` notes and an internal failure.
+func shimForComponent(file: in SourceFile, shape: in String, pkgs: in List[ComponentPkg]): Option[SourceFile] {
+  if shape != "component" {
+    return Some(value = file)
+  }
+  val r = componentRewriteFile(file)
+  for n in r.info.notes {
+    Console.error(n)
+  }
+  if r.error.length > 0 {
+    Console.error("error[N0018]: component shim generation failed for package " + r.info.pkg + ": " + r.error)
+    return None
+  }
+  pkgs.add(r.info)
+  Some(value = r.file)
+}
+
 /// `compileToNativeWithFlags` with the output shape: "" for an ordinary native
 /// binary, "module" for the wasm32 browser/JS-host module plus JS glue
 /// (docs/35 W3).
@@ -620,6 +639,8 @@ pub func compileToNativeWithShape(
     case Some(f) -> f
     case None -> return false
   }
+  val componentPkgs: List[ComponentPkg] = newList()
+  val shimFile = match shimForComponent(cfgFile, shape, componentPkgs) { case Some(f) -> f; case None -> return false }
 
   // Pre-typecheck rewrite chain: alias rewrite only.  The native bridge
   // does not expand docs/58 wire/config templates or synthesise
@@ -627,7 +648,7 @@ pub func compileToNativeWithShape(
   // (docs/59 §9.2 divergence flag) instead of an invisible omission.
   val noWires: Map[String, WireExpand.CollectedWireTemplate] = newMap()
   val noConfigs: Map[String, WireExpand.CollectedConfigTemplate] = newMap()
-  val userFile0 = match pipeExpandAndRewrite(cfgFile, noWires, noConfigs, false, false, false, path, noOrigins) {
+  val userFile0 = match pipeExpandAndRewrite(shimFile, noWires, noConfigs, false, false, false, path, noOrigins) {
     case Some(f) -> f
     case None -> return false
   }
@@ -784,7 +805,7 @@ pub func compileToNativeWithShape(
   units.add(unitOf(userFile, reachable, true))
   appendBundledUnits(toBundle, reachable, units)
 
-  linkAndEmitNative(units, 1, outputPath, triple, optLevel, extraClangFlags, shape)
+  linkAndEmitNative(units, 1, outputPath, triple, optLevel, extraClangFlags, shape, componentPkgs)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -989,6 +1010,7 @@ pub func compileProjectToNativeWithShape(
   // package's own `@cfg(feature = ...)` items are never user-feature-gated
   // on any target, same as the single-source path).
   val cfgFiles: List[SourceFile] = newList()
+  val componentPkgs: List[ComponentPkg] = newList()
   // #6824 item 1: label each own package's parse-phase diagnostics with its
   // real on-disk path when known, and translate a multi-file package's
   // merged-blob line numbers via `originsByPkg` — parity with the MSIL/JVM
@@ -1002,7 +1024,8 @@ pub func compileProjectToNativeWithShape(
       case Some(f) -> f
       case None -> return false
     }
-    cfgFiles.add(cfgFile)
+    val shimFile = match shimForComponent(cfgFile, shape, componentPkgs) { case Some(f) -> f; case None -> return false }
+    cfgFiles.add(shimFile)
     ppi = ppi + 1
   }
 
@@ -1262,7 +1285,7 @@ pub func compileProjectToNativeWithShape(
   }
   appendBundledUnits(toBundle, reachable, units)
 
-  linkAndEmitNative(units, ownFiles.count, outputPath, triple, optLevel, extraClangFlags, shape)
+  linkAndEmitNative(units, ownFiles.count, outputPath, triple, optLevel, extraClangFlags, shape, componentPkgs)
 }
 
 // Appends one `CodegenUnit` per bundled (stdlib) package in `toBundle` whose
@@ -1497,6 +1520,7 @@ func linkAndEmitNative(
   optLevel: in String,
   extraClangFlags: in List[String],
   shape: in String,
+  componentPkgs: in List[ComponentPkg],
 ): Bool {
   // #7585: `Self` nested inside a generic type argument (`List[Self]`,
   // `Option[Self]`) in an interface method signature has no uniform
@@ -1628,16 +1652,10 @@ func linkAndEmitNative(
   // The component shape compiles generated C wrappers (canonical-ABI lift and
   // lower) into the same link, and links to a core module that is componentised
   // afterwards.
-  val cabiExports = componentExportsOf(wasmExports)
   val cabiPath = wasmGlueStem(outputPath) + ".cabi.c"
   val coreOut = if isComponent { wasmGlueStem(outputPath) + ".core.wasm" } else { outputPath }
   if isComponent {
-    var cni = 0
-    while cni < cabiExports.notes.count {
-      Console.error(cabiExports.notes[cni])
-      cni = cni + 1
-    }
-    match File.writeText(cabiPath, renderCabi(cabiExports.exports, componentVersion())) {
+    match File.writeText(cabiPath, renderCabi(componentPkgs, componentVersion())) {
       case Ok(_) -> ()
       case Err(e) -> {
         Console.error("error[N0013]: cannot write the component wrappers " + cabiPath + ": " + IOError.message(e))
@@ -1700,7 +1718,7 @@ func linkAndEmitNative(
     }
   }
   if isComponent {
-    if not buildComponent(coreOut, outputPath, cabiExports.exports) {
+    if not buildComponent(coreOut, outputPath, componentPkgs) {
       return false
     }
   }
@@ -1767,7 +1785,7 @@ func runWasmTools(args: in List[String], what: in String): Bool {
 /// Wrap the linked core module `corePath` as a WASI component at `outputPath`:
 /// write `<stem>.wit`, embed it, and componentise against the preview1 reactor
 /// adapter (`$LYRIC_WASI_ADAPTER`).
-func buildComponent(corePath: in String, outputPath: in String, exports: in List[WasmExport]): Bool {
+func buildComponent(corePath: in String, outputPath: in String, pkgs: in List[ComponentPkg]): Bool {
   val adapter = Environment.getVarOrDefault("LYRIC_WASI_ADAPTER", "")
   if adapter.length == 0 or not File.fileExists(adapter) {
     Console.error(
@@ -1777,7 +1795,7 @@ func buildComponent(corePath: in String, outputPath: in String, exports: in List
   }
   val stem = wasmGlueStem(outputPath)
   val witPath = stem + ".wit"
-  match File.writeText(witPath, renderWit(exports, componentVersion())) {
+  match File.writeText(witPath, renderWit(pkgs, componentVersion())) {
     case Ok(_) -> ()
     case Err(e) -> {
       Console.error("error[N0013]: cannot write the WIT file " + witPath + ": " + IOError.message(e))
@@ -1791,7 +1809,7 @@ func buildComponent(corePath: in String, outputPath: in String, exports: in List
   embedArgs.add(witPath)
   embedArgs.add(corePath)
   embedArgs.add("--world")
-  embedArgs.add(witWorldName(exports))
+  embedArgs.add(witWorldName(pkgs))
   embedArgs.add("-o")
   embedArgs.add(embedded)
   if not runWasmTools(embedArgs, "embedding the WIT") {
