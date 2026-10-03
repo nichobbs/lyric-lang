@@ -1524,6 +1524,10 @@ pub func kernelTaskRecordClass(): String {
   "Std/Task/Task"
 }
 
+// Unlike the MSIL `builtinTaskHeadMsil` there is no scope check here: the JVM
+// side only drops a resolution that is exactly the kernel's non-generic record
+// (`dropKernelTaskRecordClass`), so a user's own `Task` record, whatever its
+// arity, resolves to a different class and is never affected.
 func isBuiltinTaskApp(head: in ModulePath, argCount: in Int): Bool {
   head.segments.count == 1 and head.segments[0] == "Task" and argCount == 1
 }

@@ -8146,21 +8146,18 @@ func recordCallResultType(tbl: in SymbolTable, fn: in Expr, t: in Type, sp: in S
 // end (docs/68 §3): `typeExprForRef` refuses the built-in id, so a spawn
 // handle's type reaches `Lyric.Mono` only through this record, keyed like any
 // call result.  Written as `Task[R]` when `R` itself has a source spelling.
-func recordTaskHandleTypeAt(tbl: in SymbolTable, handle: in Type, sp: in Span): Unit {
+func recordTaskHandleTypeAt(tbl: in SymbolTable, result: in Type, sp: in Span): Unit {
   val key = recordCopySiteKey(sp)
   if tbl.callResultTypes.containsKey(key) or isNoSourceSpan(sp) {
     return
   }
-  match taskResultType(handle) {
-    case Some(r) -> match typeExprForRef(tbl, r, sp) {
-      case Some(rte) -> {
-        val segs: List[String] = newList()
-        segs.add("Task")
-        val targs: List[TypeArg] = newList()
-        targs.add(TAType(ty = rte))
-        tbl.callResultTypes.add(key, TypeExpr(kind = TGenericApp(head = refTypePath(segs, sp), args = targs), span = sp))
-      }
-      case None -> ()
+  match typeExprForRef(tbl, result, sp) {
+    case Some(rte) -> {
+      val segs: List[String] = newList()
+      segs.add("Task")
+      val targs: List[TypeArg] = newList()
+      targs.add(TAType(ty = rte))
+      tbl.callResultTypes.add(key, TypeExpr(kind = TGenericApp(head = refTypePath(segs, sp), args = targs), span = sp))
     }
     case None -> ()
   }
@@ -11451,9 +11448,9 @@ func inferExprCore(
       TyPrim(PtUnit)
     }
     case ESpawn(inner) -> {
-      val handle = taskType(inferExpr(sc, tbl, sigs, diag, inner))
-      recordTaskHandleTypeAt(tbl, handle, e.span)
-      handle
+      val result = inferExpr(sc, tbl, sigs, diag, inner)
+      recordTaskHandleTypeAt(tbl, result, e.span)
+      taskType(result)
     }
     case EOld(inner) -> inferExpr(sc, tbl, sigs, diag, inner)
 
