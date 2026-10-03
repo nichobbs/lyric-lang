@@ -612,9 +612,9 @@ func parseShapeSpec(spec: in String): ShapeSpec {
   var world = ""
   var stack = 0
   var i = 1
-  while i < parts.count {
+  while i < parts.length {
     val kv = Str.split(parts[i], "=")
-    if kv.count == 2 {
+    if kv.length == 2 {
       if kv[0] == "version" {
         version = kv[1]
       } else if kv[0] == "world" {
@@ -625,7 +625,7 @@ func parseShapeSpec(spec: in String): ShapeSpec {
     }
     i = i + 1
   }
-  val base = if parts.count > 0 { parts[0] } else { "" }
+  val base = if parts.length > 0 { parts[0] } else { "" }
   ShapeSpec(base = base, version = version, world = world, stack = stack)
 }
 

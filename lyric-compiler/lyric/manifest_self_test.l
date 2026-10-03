@@ -655,7 +655,7 @@ func testWasmTable(): Unit {
       assertEqual(n.triple, "", "wasm-table: no [native] keys, so no triple")
     }
   }
-  for bad in ["version = \"1.2\"", "world = \"My World\"", "stack = 100"] {
+  for bad in ["version = \"1.2\"", "world = \"My World\"", "stack = 100", "stack = 0"] {
     val t = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[wasm]\n" + bad + "\n"
     match parseManifest(t, "lyric.toml") {
       case Ok(_) -> assertTrue(false, "wasm-table: expected a rejection of " + bad)

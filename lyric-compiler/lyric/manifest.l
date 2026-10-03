@@ -1544,7 +1544,7 @@ func assembleWasm(entries: in List[Entry]): Result[Option[WasmCfg], ManifestErro
   val version = unwrapOr(findString(entries, "wasm", "version"), "")
   if version != "" {
     val parts = Str.split(version, ".")
-    if parts.count != 3 or not (isDigitText(parts[0]) and isDigitText(parts[1]) and isDigitText(parts[2])) {
+    if parts.length != 3 or not (isDigitText(parts[0]) and isDigitText(parts[1]) and isDigitText(parts[2])) {
       return Err(
         error = InvalidField(
           section = "wasm",
@@ -1579,8 +1579,10 @@ func assembleWasm(entries: in List[Entry]): Result[Option[WasmCfg], ManifestErro
       )
     }
   }
-  val stack = unwrapOr(findInt(entries, "wasm", "stack"), 0)
-  if stack != 0 and (stack < 65536 or stack > 67108864 or stack % 16 != 0) {
+  val stackOpt = findInt(entries, "wasm", "stack")
+  val stack = unwrapOr(stackOpt, 0)
+  val stackDeclared = match stackOpt { case Some(_) -> true; case None -> false }
+  if stackDeclared and (stack < 65536 or stack > 67108864 or stack % 16 != 0) {
     return Err(
       error = InvalidField(
         section = "wasm",
