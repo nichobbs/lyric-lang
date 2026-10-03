@@ -10040,6 +10040,7 @@ test "== on a union, tuple or option that holds an array is built element by ele
   assertEqualInt(cr.symbols.wrapEqSites.count, 2, "both comparisons are recorded")
   val fns = "package P\nfunc f(p: in (array[2, (Int) -> Int], Int), q: in (array[2, (Int) -> Int], Int)): Bool { p == q }\n"
   assertEqualInt(countDiagCode(parseCheck(fns), "T0153"), 1, "a function inside is still T0153")
+}
 
 // #7828: a method call that leaves out a defaulted argument records the
 // parameter count of the overload it resolved to, so every backend binds the
