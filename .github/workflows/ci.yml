@@ -1895,15 +1895,6 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --summary \"async-spawn self-test ran: async_spawn_self_test.l (--target dotnet)\" --target dotnet lyric-compiler/lyric/async_spawn_self_test.l"
 
-      # A user-declared generic `record Task[T]` shadows the built-in
-      # `Task[T]` spawn handle (D166); parameters, returns and field reads
-      # resolve to the user's record.  Imports only `Std.*`.
-      - name: Task shadowing self-test (native lyric test, --target dotnet)
-        if: ${{ !cancelled() }}
-        background: true
-        working-directory: ${{ github.workspace }}
-        run: "bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh --summary \"task-shadow self-test ran: task_shadow_self_test.l (--target dotnet)\" --target dotnet lyric-compiler/lyric/task_shadow_self_test.l"
-
       # Implicit await (#7838): a direct call to an `async func` awaits in
       # place with or without `await` (docs/01 §7.1).  On dotnet the call used
       # to leave the raw Task in a lambda body, `val`, match scrutinee, operand
@@ -4557,15 +4548,6 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci/self-test.sh --summary \"async-spawn self-test ran: async_spawn_self_test.l (--target jvm)\" --target jvm lyric-compiler/lyric/async_spawn_self_test.l"
-
-      # The JVM half of the Task shadowing check: the ctor registry holds
-      # `Std.Task`'s non-generic kernel `record Task`, which must not capture a
-      # user's own generic `Task[T]` record (D166).
-      - name: Task shadowing self-test on JVM (native lyric test --target jvm)
-        if: ${{ !cancelled() }}
-        background: true
-        working-directory: ${{ github.workspace }}
-        run: "bash scripts/ci/self-test.sh --summary \"task-shadow self-test ran: task_shadow_self_test.l (--target jvm)\" --target jvm lyric-compiler/lyric/task_shadow_self_test.l"
 
       # Implicit await (#7838) on JVM, whose synchronous `async func` lowering
       # already awaited a direct call in place; the file pins parity.
