@@ -650,17 +650,10 @@ func futureGetTimed(f: in JFuture, ms: in Long, unit: in JTimeUnit): JObject {
   f.get(ms, unit)
 }
 
-/// Block the calling thread for at most `timeoutMs` milliseconds waiting
-/// for the spawned task `t`; returns `true` when it has finished and `false`
-/// on timeout.  Does not consume the task and can be called repeatedly.
-///
-/// A task that finished by failing (or being cancelled) counts as finished:
-/// `waitFor` returns `true` and the failure is raised by the later
-/// `await t`, never by `waitFor` itself.
-pub func waitFor[T](t: in Task[T], timeoutMs: in Int): Bool
-  requires: timeoutMs >= 0
-{
-  val f: JFuture = t
+/// The non-generic engine `waitFor[T]` builds on.  `pub` because a generic
+/// function's body is compiled into each calling package, which can only call
+/// `pub` names.
+pub func futureWaitDone(f: in JFuture, timeoutMs: in Int): Bool {
   if timeoutMs == 0 {
     return futureIsDone(f)
   }
@@ -671,6 +664,19 @@ pub func waitFor[T](t: in Task[T], timeoutMs: in Int): Bool
   } catch Bug as _ {
     return futureIsDone(f)
   }
+}
+
+/// Block the calling thread for at most `timeoutMs` milliseconds waiting
+/// for the spawned task `t`; returns `true` when it has finished and `false`
+/// on timeout.  Does not consume the task and can be called repeatedly.
+///
+/// A task that finished by failing (or being cancelled) counts as finished:
+/// `waitFor` returns `true` and the failure is raised by the later
+/// `await t`, never by `waitFor` itself.
+pub func waitFor[T](t: in Task[T], timeoutMs: in Int): Bool
+  requires: timeoutMs >= 0
+{
+  return futureWaitDone(t, timeoutMs)
 }
 
 /// True when the spawned task `t` has already finished (successfully, with a

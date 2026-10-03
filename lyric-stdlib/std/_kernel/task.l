@@ -545,6 +545,18 @@ pub func runWithin[T](timeoutMs: in Int, f: in () -> T): Option[T]
 // `System.Threading.Tasks.Task<T>`, which is a `Task`, so the same
 // `Task.Wait(int)` binding used by `runActionWithin` serves every `T`.
 // =====================================================================
+/// The non-generic engine `waitFor[T]` builds on: `Task.Wait(int)` that
+/// reports a task which finished by failing or being cancelled as finished
+/// rather than throwing.  `pub` because a generic function's body is
+/// compiled into each calling package, which can only call `pub` names.
+pub func waitTaskDone(t: in Task, timeoutMs: in Int): Bool {
+  try {
+    return waitTaskMs(t, timeoutMs)
+  } catch Bug as _ {
+    return true
+  }
+}
+
 /// Block the calling thread for at most `timeoutMs` milliseconds waiting
 /// for the spawned task `t`; returns `true` when it has finished and `false`
 /// on timeout.  Does not consume the task and can be called repeatedly.
@@ -555,11 +567,7 @@ pub func runWithin[T](timeoutMs: in Int, f: in () -> T): Option[T]
 pub func waitFor[T](t: in Task[T], timeoutMs: in Int): Bool
   requires: timeoutMs >= 0
 {
-  try {
-    return waitTaskMs(t, timeoutMs)
-  } catch Bug as _ {
-    return true
-  }
+  return waitTaskDone(t, timeoutMs)
 }
 
 /// True when the spawned task `t` has already finished (successfully, with a
