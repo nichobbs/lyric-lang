@@ -230,6 +230,18 @@ val n: Nat = i.toNat()     // panics if i < 0; use tryToNat() for a Result
 
 This is occasionally verbose but eliminates an entire class of bugs: no silent precision loss, no silent truncation, and no sign change from an `Int` quietly becoming a `UInt`.
 
+The widening also reaches a scalar inside a value you are building, when the type you are building is known: a constructor argument of a generic type and a tuple element widen to the slot the expected type gives them, at any depth.
+
+```lyric
+val u: UInt = 4000000000u32
+val a: Option[ULong] = Some(u)               // 4000000000, zero-extended
+val b: (ULong, Int) = (u, 1)
+val c: Result[Long, String] = Ok(42)
+val d: List[(ULong, Int)] = [(u, 1), (u, 2)]
+```
+
+A value that already exists is not converted, though. An `Option[UInt]` is a different type from an `Option[ULong]`, so `val p: Option[ULong] = o` with `o: Option[UInt]` is an error (`T0060`); rebuild it with its contents converted, for example `mapOption(o, { x -> x.toULong() })`.
+
 An integer literal without a suffix is an `Int` when it fits and a `Long` when it does not, so `3000000000` is a `Long` and `val x: Int = 3000000000` is a compile error (`T0015`) rather than a wrapped value.
 
 ## §2.5 The type `Never`
