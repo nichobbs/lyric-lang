@@ -2902,6 +2902,15 @@ func orderCtorArgsPadded(fields: in List[JvmCaseField], args: in List[CallArg]):
   result
 }
 
+// A `Task[X]` return head resolves the bare ctor key to `Std.Task`'s
+// non-generic kernel record, which a built-in handle is never.
+func dropKernelTaskRecordForHead(head: in List[String], cls: in Option[String]): Option[String] {
+  if head.count == 1 and head[0] == "Task" {
+    return dropKernelTaskRecordClass(cls)
+  }
+  cls
+}
+
 // A free-function call's invoke descriptor must use `sig.ret` verbatim (it
 // has to match the callee's actually emitted method descriptor for JVM
 // linking, docs/44 J4 M-1 — `sig.ret` for a generic-record return is the
@@ -2933,15 +2942,7 @@ func narrowStaticCallResult(ctx: in FuncCtx, insns: in List[LInsn], sig: in JvmF
       }
       // A `Task[X]` return head resolves the bare ctor key to `Std.Task`'s
       // non-generic kernel record, which a built-in handle is never.
-      val narrowTo = if sig.recordRetHead.count == 1 and sig.recordRetHead[0] == "Task" {
-        match cls {
-          case Some(c) -> if c == kernelTaskRecordClass() { None } else { cls }
-          case None -> None
-        }
-      } else {
-        cls
-      }
-      match narrowTo {
+      match dropKernelTaskRecordForHead(sig.recordRetHead, cls) {
         case Some(c) -> {
           insns.add(LCheckcast(className = c))
           JRef(className = c)

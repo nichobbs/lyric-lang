@@ -1528,15 +1528,23 @@ func isBuiltinTaskApp(head: in ModulePath, argCount: in Int): Bool {
   head.segments.count == 1 and head.segments[0] == "Task" and argCount == 1
 }
 
+pub func dropKernelTaskRecordClass(cls: in Option[String]): Option[String] {
+  match cls {
+    case Some(c) -> {
+      if c == kernelTaskRecordClass() {
+        return None
+      }
+      cls
+    }
+    case None -> None
+  }
+}
+
 func dropKernelTaskRecord(head: in ModulePath, argCount: in Int, cls: in Option[String]): Option[String] {
   if isBuiltinTaskApp(head, argCount) {
-    match cls {
-      case Some(c) -> if c == kernelTaskRecordClass() { None } else { cls }
-      case None -> None
-    }
-  } else {
-    cls
+    return dropKernelTaskRecordClass(cls)
   }
+  cls
 }
 
 func recordRetClassOfTe(te: in TypeExpr, owner: in String, localRecordNames: in Map[String, Bool]): Option[String] {
