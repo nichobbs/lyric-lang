@@ -39,6 +39,15 @@ pub func typeIdEq(a: in TypeId, b: in TypeId): Bool {
   a.id == b.id
 }
 
+// The built-in `Task[T]` (docs/68 §3): the handle `spawn f(x)` returns, with
+// `T` the callee's result.  It has no declaring symbol, so it takes a reserved
+// id (`freshTypeId` starts at 1) and never reaches `symTableTypeSymbolOf`,
+// which keeps it out of every table that turns a checked type back into a
+// source type: no backend knows a source spelling for it.
+pub func builtinTaskTypeId(): TypeId {
+  TypeId(id = -1)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. Resolved type.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -81,6 +90,25 @@ pub func unrefine(t: in Type): Type {
   match t {
     case TyRefined(u, _, _, _) -> unrefine(u)
     case _ -> t
+  }
+}
+
+// `Task[result]`.
+pub func taskType(result: in Type): Type {
+  val targs: List[Type] = newList()
+  targs.add(result)
+  TyUser(id = builtinTaskTypeId(), name = "Task", args = targs)
+}
+
+// The result type `R` of a `Task[R]`; None for any other type.
+pub func taskResultType(t: in Type): Option[Type] {
+  match unrefine(t) {
+    case TyUser(id, _, args) -> if typeIdEq(id, builtinTaskTypeId()) and args.count == 1 {
+      Some(value = args[0])
+    } else {
+      None
+    }
+    case _ -> None
   }
 }
 
@@ -189,11 +217,37 @@ func typeEquivCore(a: in Type, b: in Type): Bool {
     case TyPrim(pa) -> match b { case TyPrim(pb) -> primEq(pa, pb); case _ -> false }
     case TySelf -> match b { case TySelf -> true; case _ -> false }
     case TyNullable(ia) -> match b { case TyNullable(ib) -> typeEquiv(ia, ib); case _ -> false }
-    case TyTuple(xs) -> match b { case TyTuple(ys) -> if xs.count != ys.count { false } else { listTypesEquiv(xs, ys) }; case _ -> false }
-    case TyFunction(ps1, r1, asy1) -> match b { case TyFunction(ps2, r2, asy2) -> if asy1 != asy2 { false } else if ps1.count != ps2.count { false } else if not listTypesEquiv(ps1, ps2) { false } else { typeEquiv(r1, r2) }; case _ -> false }
-    case TyArray(sz1, e1) -> match b { case TyArray(sz2, e2) -> if not optIntEq(sz1, sz2) { false } else { typeEquiv(e1, e2) }; case _ -> false }
+    case TyTuple(xs) -> match b {
+      case TyTuple(ys) -> if xs.count != ys.count { false } else { listTypesEquiv(xs, ys) }
+      case _ -> false
+    }
+    case TyFunction(ps1, r1, asy1) -> match b {
+      case TyFunction(ps2, r2, asy2) -> if asy1 != asy2 {
+        false
+      } else if ps1.count != ps2.count {
+        false
+      } else if not listTypesEquiv(ps1, ps2) {
+        false
+      } else {
+        typeEquiv(r1, r2)
+      }
+      case _ -> false
+    }
+    case TyArray(sz1, e1) -> match b {
+      case TyArray(sz2, e2) -> if not optIntEq(sz1, sz2) { false } else { typeEquiv(e1, e2) }
+      case _ -> false
+    }
     case TySlice(e1) -> match b { case TySlice(e2) -> typeEquiv(e1, e2); case _ -> false }
-    case TyUser(id1, _, args1) -> match b { case TyUser(id2, _, args2) -> if not typeIdEq(id1, id2) { false } else if args1.count != args2.count { false } else { listTypesEquiv(args1, args2) }; case _ -> false }
+    case TyUser(id1, _, args1) -> match b {
+      case TyUser(id2, _, args2) -> if not typeIdEq(id1, id2) {
+        false
+      } else if args1.count != args2.count {
+        false
+      } else {
+        listTypesEquiv(args1, args2)
+      }
+      case _ -> false
+    }
     case TyException -> match b { case TyException -> true; case _ -> false }
     // `typeEquiv` strips refinements before dispatching here, so this arm
     // is only reached if `typeEquivCore` is called directly; unwrap to be
@@ -234,7 +288,10 @@ pub func renderType(t: in Type): String {
     case TyNullable(inner) -> renderType(inner) + "?"
     case TyTuple(elems) -> "(" + joinTypes(elems, ", ") + ")"
     case TySlice(e) -> "slice[" + renderType(e) + "]"
-    case TyArray(sz, e) -> match sz { case None -> "array[?, " + renderType(e) + "]"; case Some(n) -> "array[" + toString(n) + ", " + renderType(e) + "]" }
+    case TyArray(sz, e) -> match sz {
+      case None -> "array[?, " + renderType(e) + "]"
+      case Some(n) -> "array[" + toString(n) + ", " + renderType(e) + "]"
+    }
     case TyFunction(ps, r, fAsync) -> {
       val prefix = if fAsync { "async " } else { "" }
       val pstr = "(" + joinTypes(ps, ", ") + ")"

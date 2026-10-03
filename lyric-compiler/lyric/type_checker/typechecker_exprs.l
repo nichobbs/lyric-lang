@@ -8142,6 +8142,30 @@ func recordCallResultType(tbl: in SymbolTable, fn: in Expr, t: in Type, sp: in S
 
 // Record `t` as the result type of the expression at `sp` (see
 // `SymbolTable.callResultTypes`).
+// The one place a `Task[R]` handle is given a source spelling for the middle
+// end (docs/68 §3): `typeExprForRef` refuses the built-in id, so a spawn
+// handle's type reaches `Lyric.Mono` only through this record, keyed like any
+// call result.  Written as `Task[R]` when `R` itself has a source spelling.
+func recordTaskHandleTypeAt(tbl: in SymbolTable, handle: in Type, sp: in Span): Unit {
+  val key = recordCopySiteKey(sp)
+  if tbl.callResultTypes.containsKey(key) or isNoSourceSpan(sp) {
+    return
+  }
+  match taskResultType(handle) {
+    case Some(r) -> match typeExprForRef(tbl, r, sp) {
+      case Some(rte) -> {
+        val segs: List[String] = newList()
+        segs.add("Task")
+        val targs: List[TypeArg] = newList()
+        targs.add(TAType(ty = rte))
+        tbl.callResultTypes.add(key, TypeExpr(kind = TGenericApp(head = refTypePath(segs, sp), args = targs), span = sp))
+      }
+      case None -> ()
+    }
+    case None -> ()
+  }
+}
+
 func recordResultTypeAt(tbl: in SymbolTable, t: in Type, sp: in Span): Unit {
   val key = recordCopySiteKey(sp)
   if tbl.callResultTypes.containsKey(key) {
@@ -11413,12 +11437,24 @@ func inferExprCore(
       propagateUnwrap(it)
     }
 
-    case EAwait(inner) -> inferExpr(sc, tbl, sigs, diag, inner)
+    // `await t` on a `Task[R]` handle yields `R`; any other operand keeps its
+    // own type (a direct async call is already its result, docs/01 §7.1).
+    case EAwait(inner) -> {
+      val awaited = inferExpr(sc, tbl, sigs, diag, inner)
+      match taskResultType(awaited) {
+        case Some(r) -> r
+        case None -> awaited
+      }
+    }
     case EYield(inner) -> {
       inferExpr(sc, tbl, sigs, diag, inner)
       TyPrim(PtUnit)
     }
-    case ESpawn(inner) -> inferExpr(sc, tbl, sigs, diag, inner)
+    case ESpawn(inner) -> {
+      val handle = taskType(inferExpr(sc, tbl, sigs, diag, inner))
+      recordTaskHandleTypeAt(tbl, handle, e.span)
+      handle
+    }
     case EOld(inner) -> inferExpr(sc, tbl, sigs, diag, inner)
 
     // Inside a checked member body (`sc.selfChecked`, #6487) a whole-`self`
@@ -12946,8 +12982,46 @@ pub func ofTypeOrEmptyLiteral(t: in Type, e: in Expr): String {
 // (#2303).  Used at argument-position checks so a concrete type that conforms
 // to an interface can be passed where the interface is expected
 // (`invoiceTotal(feed: PriceFeed, …)` called with a `TrackedFeed`).
+// True when `t` is the bare, non-generic `Task` extern type (the BCL
+// `System.Threading.Tasks.Task` every kernel declares, or the JVM kernel's
+// `Std.Task` record), not the built-in `Task[T]`.
+func isBareTaskType(tbl: in SymbolTable, t: in Type): Bool {
+  match unrefine(t) {
+    case TyUser(id, _, args) -> {
+      if args.count != 0 or typeIdEq(id, builtinTaskTypeId()) {
+        return false
+      }
+      match symTableTypeSymbolOf(tbl, id) {
+        case Some(sym) -> match sym.kind {
+          case DKExternType(_, decl) -> decl.clrName == "System.Threading.Tasks.Task"
+          case DKRecord(_, _) -> sym.name == "Task" and sym.originPackage == "Std.Task"
+          case _ -> false
+        }
+        case None -> false
+      }
+    }
+    case _ -> false
+  }
+}
+
+// docs/68 §3: a `Task[R]` handle satisfies the bare `Task` extern (every
+// `Task<R>` is a `Task`), and the bare `Task` satisfies `Task[Unit]` (the bare
+// name stands for `Task[Unit]`, as `Std.Task.delay`'s result does).
+func taskHandleAssignable(tbl: in SymbolTable, expected: in Type, actual: in Type): Bool {
+  match taskResultType(actual) {
+    case Some(_) -> isBareTaskType(tbl, expected)
+    case None -> match taskResultType(expected) {
+      case Some(r) -> isBareTaskType(tbl, actual) and typeEquiv(r, TyPrim(pt = PtUnit))
+      case None -> false
+    }
+  }
+}
+
 func argSatisfiesParam(tbl: in SymbolTable, paramTy: in Type, argTy: in Type): Bool {
   if typeEquiv(paramTy, argTy) {
+    return true
+  }
+  if taskHandleAssignable(tbl, paramTy, argTy) {
     return true
   }
   // M6: numeric widening — Int satisfies Long, Float satisfies Double, etc.
@@ -13076,6 +13150,9 @@ func argSatisfiesParam(tbl: in SymbolTable, paramTy: in Type, argTy: in Type): B
 // yields `Ok(NativeConnection(...))` (#2514).
 pub func typeAssignable(tbl: in SymbolTable, expected: in Type, actual: in Type): Bool {
   if typeEquiv(expected, actual) {
+    return true
+  }
+  if taskHandleAssignable(tbl, expected, actual) {
     return true
   }
   match unrefine(expected) {

@@ -1,6 +1,6 @@
 # 68. Structured tasks: a first-class `Task[T]`, scope-bound `spawn`, and bounded waits
 
-_Status: **Partly implemented.** §4's `spawn`-only-inside-`scope` rule (`V0034`) shipped in D165; the rest is a proposed, unimplemented sketch. Extends docs/01 §7.1,
+_Status: **Partly implemented.** §4's `spawn`-only-inside-`scope` rule (`V0034`) shipped in D165 and §3's `Task[T]` type (checker, mono, MSIL, JVM) in D166; the API in §5, `V0035` and the native backend remain a proposed sketch. Extends docs/01 §7.1,
 §7.3 and §7.4 and decision D119. Open questions Q-TASK-001 to Q-TASK-008 are
 listed in §9._
 

@@ -575,3 +575,89 @@ test "a panic escaping a scope body propagates without waiting for unfinished sp
   // inline (bounded, `go` still 0) and the panic follows it.
   assertPanics("scope-body panic propagates past a live spawned task", { -> panicWithUnfinishedSpawn() })
 }
+
+// ── Task[T] spawn handles (docs/68) ──────────────────────────────────────
+async func triple(n: in Int): Int {
+  return n * 3
+}
+
+async func noteDone(): Unit {
+  return ()
+}
+
+async func awaitHandleParam(t: in Task[Int]): Int {
+  return await t
+}
+
+func passHandleDown(t: in Task[Int]): Int {
+  return await t
+}
+
+func identityOver[T](x: in T): T {
+  return x
+}
+
+async func typedHandle(n: in Int): Int {
+  scope {
+    val t: Task[Int] = spawn triple(n)
+    return await t
+  }
+}
+
+async func handleToParam(n: in Int): Int {
+  scope {
+    val t = spawn triple(n)
+    return passHandleDown(t)
+  }
+}
+
+async func handleThroughGeneric(n: in Int): Int {
+  scope {
+    val t = identityOver(spawn triple(n))
+    return await t
+  }
+}
+
+async func unitHandle(): Unit {
+  scope {
+    val t: Task[Unit] = spawn noteDone()
+    await t
+  }
+}
+
+async func handleList(): Int {
+  scope {
+    val ts: List[Task[Int]] = newList()
+    ts.add(spawn triple(1))
+    ts.add(spawn triple(2))
+    ts.add(spawn triple(3))
+    var sum = 0
+    var i = 0
+    while i < ts.count {
+      sum = sum + (await ts[i])
+      i = i + 1
+    }
+    return sum
+  }
+}
+
+test "Task[Int] annotated local holds a spawn handle" {
+  assertEqualInt(await typedHandle(5), 15, "typed handle awaits to the result")
+}
+
+test "a spawn handle passes to a Task[Int] parameter" {
+  assertEqualInt(await handleToParam(4), 12, "handle passed down")
+}
+
+test "a generic over a spawn handle specialises over Task[Int]" {
+  assertEqualInt(await handleThroughGeneric(7), 21, "generic over a handle")
+}
+
+test "Task[Unit] handle" {
+  await unitHandle()
+  assertTrue(true, "Task[Unit] awaited")
+}
+
+test "List[Task[Int]] of handles" {
+  assertEqualInt(await handleList(), 18, "sum of tripled handles")
+}

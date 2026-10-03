@@ -1859,6 +1859,26 @@ pub func buildArrayEmptyOpenSig(): List[Byte] {
   bufToList(w)
 }
 
+// Signature blob for the OPEN generic `Task.FromResult<TResult>(TResult):
+// Task<TResult>`: GENERIC callconv, one generic parameter, one formal
+// parameter `!!0`, return `GENERICINST CLASS Task`1<!!0>`.  `taskTdr` is the
+// `Task`1` TypeDefOrRef coded index.
+pub func buildTaskFromResultOpenSig(taskTdr: in Int): List[Byte] {
+  val w = bufNew()
+  bufU1(w, 0x10)
+  writeCompressedInt(w, 1)
+  writeCompressedInt(w, 1)
+  bufU1(w, 0x15)             // ELEMENT_TYPE_GENERICINST
+  bufU1(w, 0x12)             // ELEMENT_TYPE_CLASS
+  writeCompressedInt(w, taskTdr)
+  writeCompressedInt(w, 1)   // one type argument
+  bufU1(w, 0x1E)             // MVAR 0
+  writeCompressedInt(w, 0)
+  bufU1(w, 0x1E)             // parameter: MVAR 0
+  writeCompressedInt(w, 0)
+  bufToList(w)
+}
+
 // Add a MethodSpec row instantiating a generic method.  `methodCoded` is a
 // MethodDefOrRef coded index (use `mdorMemberRef`/`mdorMethodDef`) naming the
 // open generic method; `sig` is a `buildMethodSpecBlob` instantiation blob.

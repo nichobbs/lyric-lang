@@ -1498,7 +1498,11 @@ func closureRetTypeOfTe(
 pub func recordRetHeadOf(retOpt: in Option[TypeExpr]): List[String] {
   match retOpt {
     case Some(te) -> match te.kind {
-      case TGenericApp(head, _) -> head.segments
+      case TGenericApp(head, targs) -> if isBuiltinTaskApp(head, targs.count) {
+        newList()
+      } else {
+        head.segments
+      }
       case TParen(inner) -> recordRetHeadOf(Some(value = inner))
       case _ -> newList()
     }
@@ -1515,11 +1519,20 @@ pub func recordRetClassOf(
   }
 }
 
+// The built-in `Task[T]` spawn handle (docs/68) is never a constructible
+// record: `Std.Task`'s JVM kernel declares a non-generic `record Task`, whose
+// bare name must not capture `Task[X]` through the bundle-wide ctor registry.
+func isBuiltinTaskApp(head: in ModulePath, argCount: in Int): Bool {
+  head.segments.count == 1 and head.segments[0] == "Task" and argCount == 1
+}
+
 func recordRetClassOfTe(te: in TypeExpr, owner: in String, localRecordNames: in Map[String, Bool]): Option[String] {
   match te.kind {
     case TParen(inner) -> recordRetClassOfTe(inner, owner, localRecordNames)
-    case TGenericApp(head, _) -> {
-      if head.segments.count == 1 {
+    case TGenericApp(head, targs) -> {
+      if isBuiltinTaskApp(head, targs.count) {
+        None
+      } else if head.segments.count == 1 {
         val seg = head.segments[0]
         if localRecordNames.containsKey(seg) {
           Some(value = owner + "/" + seg)
@@ -1603,8 +1616,8 @@ func recordRetClassOfBundleTe(
     // and the extern-typed function gets a bogus `checkcast` to that
     // record's class, producing a `ClassCastException` at runtime — a real
     // regression this exact fix closes (see the decision log).
-    case TGenericApp(head, _) -> {
-      if head.segments.count == 1 and externTypes.containsKey(head.segments[0]) {
+    case TGenericApp(head, targs) -> {
+      if isBuiltinTaskApp(head, targs.count) or (head.segments.count == 1 and externTypes.containsKey(head.segments[0])) {
         None
       } else {
         recordRetClassOfBundleHead(head, owner, ctorReg)
@@ -1634,7 +1647,12 @@ func recordRetClassOfBundleTe(
 // cross-package spelling) via the same DOTTED-qualified key `addCtorKeys`
 // (`06_items.l`) already registers for every constructible type.
 func recordRetClassOfBundleHead(head: in ModulePath, owner: in String, ctorReg: in Map[String, String]): Option[String] {
-  if head.segments.count == 1 {
+  if head.segments.count == 1 and head.segments[0] == "Task" {
+    // The bundle-global bare `Task` key is `Std.Task`'s JVM kernel record; a
+    // `Task` return type elsewhere is the built-in handle (docs/68), a
+    // `Future`, never that record.
+    mapGet(ctorReg, owner + "::Task")
+  } else if head.segments.count == 1 {
     ctorClassForBundle(ctorReg, owner, head.segments[0])
   } else {
     mapGet(ctorReg, joinSegments(head.segments, "."))
@@ -1696,8 +1714,10 @@ func ctorClassForBundle(ctorReg: in Map[String, String], owner: in String, name:
 pub func recordParamClassOf(ty: in TypeExpr, ctx: in FuncCtx): Option[String] {
   match ty.kind {
     case TParen(inner) -> recordParamClassOf(inner, ctx)
-    case TGenericApp(head, _) -> {
-      if head.segments.count == 1 {
+    case TGenericApp(head, targs) -> {
+      if isBuiltinTaskApp(head, targs.count) {
+        None
+      } else if head.segments.count == 1 {
         ctorClassFor(ctx, head.segments[0])
       } else {
         mapGet(ctx.ctors, joinSegsDotted(head.segments))
@@ -1861,7 +1881,7 @@ pub func typeExprToJvm(te: in TypeExpr, pkgName: in String): JvmType {
       }
     }
     case TSlice(_) -> JArray(elem = JRef(className = "java/lang/Object"))
-    case TGenericApp(head, _) -> {
+    case TGenericApp(head, args) -> {
       // `List[T]` / `Map[K, V]` map to their concrete runtime class (`newList()` →
       // `ArrayList`, `newMap()` → `HashMap`) rather than generic-erased `Object`, so
       // instance dispatch (`xs.add(...)`) resolves through auto-FFI.  Restricted to
@@ -1878,6 +1898,11 @@ pub func typeExprToJvm(te: in TypeExpr, pkgName: in String): JvmType {
         // A C pointer crosses the foreign-function boundary as its address
         // (D158); `MemorySegment` conversion happens only at the downcall.
         JLong
+      } else if isBuiltinTaskApp(head, args.count) {
+        // The built-in `Task[T]` spawn handle (docs/68) is the `Future` a
+        // `spawn` inside a `scope { }` yields, so `await` of a declared
+        // `Task[T]` parameter, local or field joins it.
+        JRef(className = "java/util/concurrent/Future")
       } else {
         JRef(className = "java/lang/Object")
       }
