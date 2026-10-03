@@ -643,7 +643,14 @@ pub func pipeCheckAndMono(
   // checker (#7222).  After `.copy` desugaring, so a copy's constructor call
   // is covered too; after `checkedSourceOut` is captured, so generic bodies
   // exported for another package's specialisation stay checker-free.
-  val invChecked = wrapInvariantConstructions(copyRes.file, tcRes.symbols.invariantCtorSites)
+  // Each public callable's parameter defaults, as checked and desugared, are
+  // compiled into thunks its contract metadata can name (#7827, D168): here,
+  // before mono drops the public generic functions from the file and while
+  // every default carries its conversions.  A native build emits no contract
+  // metadata (and a `--shape module` build exports every public function to
+  // JavaScript), so it gets none.
+  val withThunks = if opts.nativeIntrinsics { copyRes.file } else { synthesizeDefaultThunks(copyRes.file) }
+  val invChecked = wrapInvariantConstructions(withThunks, tcRes.symbols.invariantCtorSites)
   // Operators on distinct types go through the underlying value (#7361),
   // which also re-checks a range subtype's derived arithmetic (#7226).
   val distinctLowered = lowerDistinctOps(invChecked, tcRes.symbols.distinctOpSites, tcRes.symbols.distinctCompoundSites)

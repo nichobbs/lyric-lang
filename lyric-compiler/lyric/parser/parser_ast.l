@@ -1671,11 +1671,78 @@ func unpairableCallArgs(callee: in String, why: in String, paramNames: in List[S
 /// its public callables into (`Lyric.ContractElaborator.
 /// synthesizeDefaultThunks`, #7827): `owner` is "" for a free function, the
 /// type for a record method or interface member, `<Type>__<Interface>` for
-/// an `impl` method; `arity` is the callable's parameter count, receiver
-/// included.  A dot-named function's dots become `__`.
-pub func defaultThunkName(owner: in String, callable: in String, arity: in Int, param: in String): String {
+/// an `impl` method; `params` are the callable's parameters, receiver
+/// included.  A dot-named function's dots become `__`.  The callable's
+/// parameter types are part of the name (`paramTypesKey`), so two overloads
+/// of one name never share a thunk, and the thunk synthesiser and the
+/// contract renderer, which both compute it from the declaration, agree on
+/// it whatever order the overloads are declared in (#8085).
+pub func defaultThunkName(owner: in String, callable: in String, params: in List[Param], param: in String): String {
   val ownerPart = if owner.length == 0 { "" } else { owner.replace(".", "__") + "__" }
-  defaultThunkPrefix() + ownerPart + callable.replace(".", "__") + "__" + toString(arity) + "__" + param
+  defaultThunkPrefix() + ownerPart + callable.replace(".", "__") + "__" + paramTypesKey(params) + "__" + param
+}
+
+/// An identifier-safe spelling of a parameter list's types, in order:
+/// `(self: in R, x: in Int, f: in List[Int])` is `R_Int_List_of_Int_end`.
+pub func paramTypesKey(params: in List[Param]): String {
+  var acc = ""
+  var i = 0
+  while i < params.count {
+    acc = if i == 0 { typeExprKey(params[i].ty) } else { acc + "_" + typeExprKey(params[i].ty) }
+    i = i + 1
+  }
+  if params.count == 0 {
+    "none"
+  } else {
+    acc
+  }
+}
+
+/// An identifier-safe spelling of a type expression (`paramTypesKey`).
+pub func typeExprKey(te: in TypeExpr): String {
+  match te.kind {
+    case TRef(path) -> segmentsKey(path.segments)
+    case TGenericApp(head, args) -> {
+      var acc = segmentsKey(head.segments) + "_of"
+      for a in args {
+        acc = acc + "_" + (match a { case TAType(t) -> typeExprKey(t); case TAValue(_) -> "value" })
+      }
+      acc + "_end"
+    }
+    case TArray(_, elem) -> "array_of_" + typeExprKey(elem) + "_end"
+    case TSlice(elem) -> "slice_of_" + typeExprKey(elem) + "_end"
+    case TRefined(underlying, _) -> segmentsKey(underlying.segments) + "_range"
+    case TTuple(types) -> {
+      var acc = "tuple"
+      for t in types {
+        acc = acc + "_" + typeExprKey(t)
+      }
+      acc + "_end"
+    }
+    case TNullable(inner) -> typeExprKey(inner) + "_opt"
+    case TFunction(ps, r) -> {
+      var acc = "fn"
+      for p in ps {
+        acc = acc + "_" + typeExprKey(p)
+      }
+      acc + "_to_" + typeExprKey(r) + "_end"
+    }
+    case TUnit -> "Unit"
+    case TSelf -> "Self"
+    case TNever -> "Never"
+    case TParen(inner) -> typeExprKey(inner)
+    case TError -> "error"
+  }
+}
+
+func segmentsKey(segs: in List[String]): String {
+  var acc = ""
+  var i = 0
+  while i < segs.count {
+    acc = if i == 0 { segs[i] } else { acc + "_" + segs[i] }
+    i = i + 1
+  }
+  acc
 }
 
 /// The prefix every `defaultThunkName` starts with.

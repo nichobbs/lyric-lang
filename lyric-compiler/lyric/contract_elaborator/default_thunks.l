@@ -6,18 +6,19 @@
 //! consumers only through its contract metadata, and a default expression is
 //! written in the declaring package's scope (it may read the package's
 //! private values), so it cannot be carried to the consumer as source.
-//! Instead, once the package is type-checked and desugared (the end of
-//! `Lyric.Pipeline.pipeCheckAndMono`), `synthesizeDefaultThunks` appends to
-//! it one public function per defaulted parameter of each public callable (a
-//! free or dot-named function, a record or exposed-record method, an
-//! interface member, an `impl` method of a public type):
+//! Instead, once the type checker's results are desugared into the package
+//! (`Lyric.Pipeline.pipeCheckAndMono`, before mono drops its public generic
+//! functions), `synthesizeDefaultThunks` appends to it one public function
+//! per defaulted parameter of each public callable (a free or dot-named
+//! function, a record or exposed-record method, an interface member, an
+//! `impl` method of a public type):
 //!
-//!     @no_aspect pub func __lyric_default__[<owner>__]<name>__<arity>__<param>(): <ParamType> { <default> }
+//!     @no_aspect pub func __lyric_default__[<owner>__]<name>__<param types>__<param>(): <ParamType> { <default> }
 //!
-//! (`Lyric.Parser.defaultThunkName`).  Its body is the parameter's default as
-//! the type checker checked and the middle end desugared it, so a widening
-//! default already carries its conversion, and no checker pass sees the
-//! expression twice.  The contract records the parameter's default as a call
+//! (`Lyric.Parser.defaultThunkName`; the parameter types keep two overloads
+//! of one name apart, #8085).  Its body is the parameter's default as the
+//! type checker checked and desugared it, so a widening default already
+//! carries its conversion, and no checker pass sees the expression twice.  The contract records the parameter's default as a call
 //! to the thunk (`Lyric.ContractMeta`), and a consumer that leaves the
 //! argument out calls the compiled thunk.  `@no_aspect` keeps an aspect that
 //! matches public functions from wrapping it.
@@ -34,6 +35,8 @@ import Lyric.Lexer
 import Lyric.Parser
 
 pub func synthesizeDefaultThunks(file: in SourceFile): SourceFile {
+  // Functions already in the file: a thunk an earlier pass synthesised is
+  // not added again.
   val existing: Map[String, Bool] = newMap()
   for it in file.items {
     match it.kind {
@@ -41,22 +44,44 @@ pub func synthesizeDefaultThunks(file: in SourceFile): SourceFile {
       case _ -> ()
     }
   }
+  // Thunks added by this pass: one name reached twice is a collision.
+  val addedNames: Map[String, Bool] = newMap()
   val pubTypes = publicTypeNames(file)
   val added: List[Item] = newList()
   for it in file.items {
     if isPublic(it.visibility) {
       match it.kind {
         case IFunc(fn) -> if not fn.name.startsWith(defaultThunkPrefix()) {
-          addThunks(added, existing, "", fn.name, emptyNames(), fn.generics, fn.params, it.span)
+          addThunks(added, existing, addedNames, "", fn.name, emptyNames(), fn.generics, fn.params, it.span)
         }
-        case IRecord(decl) -> addRecordThunks(added, existing, decl, it.span)
-        case IExposedRec(decl) -> addRecordThunks(added, existing, decl, it.span)
+        case IRecord(decl) -> addRecordThunks(added, existing, addedNames, decl, it.span)
+        case IExposedRec(decl) -> addRecordThunks(added, existing, addedNames, decl, it.span)
         case IInterface(decl) -> {
           val owner = genericNames(decl.generics)
           for m in decl.members {
             match m {
-              case IMSig(sig) -> addThunks(added, existing, decl.name, sig.name, owner, sig.generics, sig.params, it.span)
-              case IMFunc(fn) -> addThunks(added, existing, decl.name, fn.name, owner, fn.generics, fn.params, it.span)
+              case IMSig(sig) -> addThunks(
+                added,
+                existing,
+                addedNames,
+                decl.name,
+                sig.name,
+                owner,
+                sig.generics,
+                sig.params,
+                it.span
+              )
+              case IMFunc(fn) -> addThunks(
+                added,
+                existing,
+                addedNames,
+                decl.name,
+                fn.name,
+                owner,
+                fn.generics,
+                fn.params,
+                it.span
+              )
               case IMAssoc(_) -> ()
             }
           }
@@ -73,7 +98,17 @@ pub func synthesizeDefaultThunks(file: in SourceFile): SourceFile {
           val implGenerics = genericNames(decl.generics)
           for m in decl.members {
             match m {
-              case IMplFunc(fn) -> addThunks(added, existing, owner, fn.name, implGenerics, fn.generics, fn.params, it.span)
+              case IMplFunc(fn) -> addThunks(
+                added,
+                existing,
+                addedNames,
+                owner,
+                fn.name,
+                implGenerics,
+                fn.generics,
+                fn.params,
+                it.span
+              )
               case IMplAssoc(_) -> ()
             }
           }
@@ -111,11 +146,17 @@ func thunkImplTarget(decl: in ImplDecl): String {
   }
 }
 
-func addRecordThunks(added: in List[Item], existing: in Map[String, Bool], decl: in RecordDecl, sp: in Span): Unit {
+func addRecordThunks(
+  added: in List[Item],
+  existing: in Map[String, Bool],
+  addedNames: in Map[String, Bool],
+  decl: in RecordDecl,
+  sp: in Span,
+): Unit {
   val owner = genericNames(decl.generics)
   for m in decl.members {
     match m {
-      case RMFunc(fn) -> addThunks(added, existing, decl.name, fn.name, owner, fn.generics, fn.params, sp)
+      case RMFunc(fn) -> addThunks(added, existing, addedNames, decl.name, fn.name, owner, fn.generics, fn.params, sp)
       case _ -> ()
     }
   }
@@ -124,6 +165,7 @@ func addRecordThunks(added: in List[Item], existing: in Map[String, Bool], decl:
 func addThunks(
   added: in List[Item],
   existing: in Map[String, Bool],
+  addedNames: in Map[String, Bool],
   owner: in String,
   name: in String,
   ownerGenerics: in List[String],
@@ -141,9 +183,15 @@ func addThunks(
   for p in params {
     match p.dflt {
       case Some(d) -> if not typeExprNamesAny(p.ty, inScope) {
-        val thunk = defaultThunkName(owner, name, params.count, p.name)
+        val thunk = defaultThunkName(owner, name, params, p.name)
+        if addedNames.containsKey(thunk) {
+          panic(
+            "internal compiler error: two parameter defaults map to the default thunk '" + thunk +
+              "'; overloads of one name must differ in their parameter types (#8085)"
+          )
+        }
         if not existing.containsKey(thunk) {
-          existing.add(thunk, true)
+          addedNames.add(thunk, true)
           added.add(thunkItem(thunk, p.ty, d, sp))
         }
       }

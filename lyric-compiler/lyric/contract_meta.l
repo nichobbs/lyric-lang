@@ -973,7 +973,7 @@ func renderParamsWithDefaults(
       acc = acc + ", "
     }
     acc = acc + renderParam(params[i])
-    val thunk = defaultThunkName(owner, callable, params.count, params[i].name)
+    val thunk = defaultThunkName(owner, callable, params, params[i].name)
     if dt.names.containsKey(thunk) {
       acc = acc + " = " + dt.pkg + "." + thunk + "()"
     }
@@ -985,7 +985,7 @@ func renderParamsWithDefaults(
 // True when one of `params` has a default compiled into a thunk.
 func anyParamHasThunk(params: in List[Param], dt: in DefaultThunks, owner: in String, callable: in String): Bool {
   for p in params {
-    if dt.names.containsKey(defaultThunkName(owner, callable, params.count, p.name)) {
+    if dt.names.containsKey(defaultThunkName(owner, callable, params, p.name)) {
       return true
     }
   }

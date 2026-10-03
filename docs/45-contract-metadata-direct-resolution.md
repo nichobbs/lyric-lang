@@ -173,22 +173,29 @@ implicit widening is applied by the declaring package's middle end.
 
 **Format.** The declaring package compiles each default of a public
 callable into a public thunk (`Lyric.ContractElaborator.
-synthesizeDefaultThunks`, at the end of `Lyric.Pipeline.pipeCheckAndMono`):
+synthesizeDefaultThunks`, in `Lyric.Pipeline.pipeCheckAndMono` once the
+checker's results are desugared and before mono drops the public generic
+functions):
 
 ```lyric
-@no_aspect pub func __lyric_default__[<owner>__]<callable>__<arity>__<param>(): <ParamType> { <default> }
+@no_aspect pub func __lyric_default__[<owner>__]<callable>__<param types>__<param>(): <ParamType> { <default> }
 ```
 
 (`Lyric.Parser.defaultThunkName`: `owner` is absent for a free or dot-named
 function, whose dots become `__`, the type for a record or exposed-record method or an interface
-member, and `<Type>__<Interface>` for an `impl` method; `arity` counts the
-receiver.) The body is the default as type-checked and desugared, so a
+member, and `<Type>__<Interface>` for an `impl` method; `<param types>` is
+`Lyric.Parser.paramTypesKey` of the callable's parameters, receiver
+included, so two overloads of one name never share a thunk, and the
+synthesiser and the contract renderer compute the same name from the
+declaration whatever order its overloads are declared in (#8085). A second
+default reaching a name already synthesised is an internal compiler error,
+never a silently shared thunk.) The body is the default as type-checked and desugared, so a
 widening default carries its conversion. The thunk is an ordinary `func`
 decl of the contract, and each parameter with a thunk renders its default as
 a call to it:
 
 ```lyric
-pub func f(x: in Int = Rd.Lib.__lyric_default__f__1__x()): Int
+pub func f(x: in Int = Rd.Lib.__lyric_default__f__Int__x()): Int
 ```
 
 Record and interface member heads render the same way, and an `impl` with

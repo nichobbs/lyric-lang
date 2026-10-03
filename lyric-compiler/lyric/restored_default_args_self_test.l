@@ -13,7 +13,9 @@
 //! private value of the library works, and a widening default converts in
 //! the library.  A call takes the defaults of the declaration it resolves
 //! through, as within a package: the interface member's on an
-//! interface-typed value, the `impl` method's on the concrete type.
+//! interface-typed value, the `impl` method's on the concrete type.  Two
+//! overloads of one method each keep their own default (#8085): the thunk's
+//! name carries the overload's parameter types.
 //!
 //! Each case builds a producer DLL / JAR through `Lyric.Emitter.emitProject`,
 //! then a consumer that restores it (`restoredDllPaths`), runs it and
@@ -167,7 +169,9 @@ func libSource(): String {
     "pub func fromBase(x: in Int = base + 1): Int {\n  x\n}\n\n" +
     "pub func widened(x: in ULong = bigU): ULong {\n  x\n}\n\n" +
     "pub func mixed(a: in Int, b: in Int = 10, c: in Int = 100): Int {\n  a + b * 2 + c * 3\n}\n\n" +
-    "pub record Acc {\n  n: Int\n\n  func add(self: in Acc, x: in Int = 5): Int {\n    self.n + x\n  }\n}\n\n" +
+    "pub record Acc {\n  n: Int\n\n  func add(self: in Acc, x: in Int = 5): Int {\n    self.n + x\n  }\n\n" +
+    "  func at(self: in Acc, i: in Int, f: in Int = 3): Int {\n    i * f\n  }\n\n" +
+    "  func at(self: in Acc, i: in Int, j: in Int, k: in Int, f: in Int = 4): Int {\n    i + j + k + f * 100\n  }\n}\n\n" +
     "pub func Acc.scaled(self: in Acc, k: in Int = 3): Int {\n  self.n * k\n}\n\n" +
     "pub interface Shape {\n  func area(self: in Self, scale: in Int = 2): Int\n\n" +
     "  func describe(self: in Self, prefix: in String = \"shape:\"): String {\n" +
@@ -190,6 +194,8 @@ func appSource(): String {
     "  println(toString(mixed(1, c = 3)))\n" +
     "  println(toString(Acc(n = 1).add()))\n" +
     "  println(toString(Acc(n = 4).scaled()))\n" +
+    "  println(toString(Acc(n = 0).at(5)))\n" +
+    "  println(toString(Acc(n = 0).at(1, 2, 3)))\n" +
     "  println(toString(Sq(s = 4).area()))\n" +
     "  println(toString(viaShape(Sq(s = 4))))\n" +
     "  println(toString(areaOf(Sq(s = 4))))\n" +
@@ -209,6 +215,8 @@ func expectedLines(): List[String] {
   e.add("30")
   e.add("6")
   e.add("12")
+  e.add("15")
+  e.add("406")
   e.add("12")
   e.add("8")
   e.add("8")
@@ -225,4 +233,21 @@ test "a restored callee's omitted defaults are filled on dotnet (#7827)" {
 
 test "a restored callee's omitted defaults are filled on the JVM (#7827)" {
   assertLines("jvm", runRestored("defaults", true, libSource(), appSource()), expectedLines())
+}
+
+// A public generic function's defaults whose type names no type parameter
+// are exported too: the thunks are synthesised before mono drops the
+// generic from the package (#8085).  dotnet only: a restored generic
+// function is not callable on the JVM at all yet, with or without a
+// default (NoSuchMethodError on `Rd.Lib.idOr(ArrayList, int)`), a separate
+// gap.
+test "a restored generic function's non-generic default is filled on dotnet (#8085)" {
+  val lib = "package Rd.Lib\n\nimport Std.Collections\n\n" +
+    "pub func idOr[T](v: in List[T], n: in Int = 7): Int {\n  n + v.count\n}\n"
+  val app = "package Rd.App\n\nimport Std.Collections\nimport Rd.Lib\n\nfunc main(): Unit {\n" +
+    "  val xs: List[String] = newList()\n  println(toString(idOr(xs)))\n  println(toString(idOr(xs, 2)))\n}\n"
+  val e: List[String] = newList()
+  e.add("7")
+  e.add("2")
+  assertLines("dotnet generic", runRestored("generic", false, lib, app), e)
 }

@@ -20,14 +20,16 @@ consumers call it.
 
 ## Decision
 
-1. **(b): each default becomes a thunk in the declaring package.** Once a
-   package is type-checked and desugared (the end of
-   `Lyric.Pipeline.pipeCheckAndMono`), `Lyric.ContractElaborator.
+1. **(b): each default becomes a thunk in the declaring package.** Once the
+   type checker's results are desugared into a package (in
+   `Lyric.Pipeline.pipeCheckAndMono`, before mono drops its public generic
+   functions), `Lyric.ContractElaborator.
    synthesizeDefaultThunks` appends one public, `@no_aspect` function per
    defaulted parameter of each public callable: a free or dot-named
    function, a record or exposed-record method, an interface member
    (abstract or default), and an `impl` method of a public type. Its name is
-   `Lyric.Parser.defaultThunkName` (`__lyric_default__[<owner>__]<callable>__<arity>__<param>`),
+   `Lyric.Parser.defaultThunkName` (`__lyric_default__[<owner>__]<callable>__<param types>__<param>`;
+   the parameter types keep two overloads apart, #8085),
    it takes no arguments, returns the parameter's type, and its body is the
    default as checked and desugared, so a widening default already carries
    its conversion and a default may read the package's private values.
@@ -76,9 +78,18 @@ synthetics on the JVM). Its cost is one public function per exported
 default, and a static call where the source-level call would have evaluated
 the expression inline.
 
-Synthesising after the middle end, rather than before type checking, means
-the default expression is checked once, at the parameter, so its
-diagnostics keep naming the parameter default (#7811) and appear once.
+Synthesising after type checking, rather than before it, means the default
+expression is checked once, at the parameter, so its diagnostics keep naming
+the parameter default (#7811) and appear once; doing it before mono keeps the
+public generic functions, which mono drops from the file, and their
+non-generic defaults.
+
+The thunk name carries the callable's parameter types (#8085) rather than
+its parameter count or a declaration index: both sides compute it from the
+declaration alone, so it cannot drift with declaration order, and a second
+default reaching one name panics as an internal error. Methods of one name
+and parameter count in one type are rejected anyway (T0156, matching T0001
+for functions), because every backend tells overloads apart by count.
 
 ## Consequences
 

@@ -7,6 +7,7 @@ import Std.Collections
 import Std.String
 import Lyric.Lexer
 import Lyric.Parser
+import Lyric.Fmt as Fmt
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Check result.
@@ -2047,113 +2048,12 @@ func reportImplDefaultMismatches(
   }
 }
 
-// True when two default expressions are written the same way, ignoring
-// spans and parentheses: literals by value, names by their spelling, and
-// calls, members, operators, tuples and lists by their parts.  Any other
-// form counts as different.
+// True when two default expressions are written the same way: their
+// canonical, span-free renderings (`Lyric.Fmt.exprInline`) agree, ignoring
+// enclosing parentheses.  Every expression form compares, so two `if`,
+// `match` or interpolated defaults written alike are the same default.
 func sameDefaultExpr(a: in Expr, b: in Expr): Bool {
-  val x = stripExprParens(a)
-  val y = stripExprParens(b)
-  match x.kind {
-    case ELiteral(la) -> match y.kind { case ELiteral(lb) -> sameLiteral(la, lb); case _ -> false }
-    case EPath(pa) -> match y.kind { case EPath(pb) -> sameSegments(pa.segments, pb.segments); case _ -> false }
-    case EMember(ra, na) -> match y.kind {
-      case EMember(rb, nb) -> na == nb and sameDefaultExpr(ra, rb)
-      case _ -> false
-    }
-    case EPrefix(oa, ea) -> match y.kind {
-      case EPrefix(ob, eb) -> oa == ob and sameDefaultExpr(ea, eb)
-      case _ -> false
-    }
-    case EBinop(oa, la2, ra2) -> match y.kind {
-      case EBinop(ob, lb2, rb2) -> oa == ob and sameDefaultExpr(la2, lb2) and
-        sameDefaultExpr(ra2, rb2)
-      case _ -> false
-    }
-    case ETuple(xs) -> match y.kind { case ETuple(ys) -> sameDefaultExprs(xs, ys); case _ -> false }
-    case EList(xs) -> match y.kind { case EList(ys) -> sameDefaultExprs(xs, ys); case _ -> false }
-    case ECall(fa, aa) -> match y.kind {
-      case ECall(fb, ab) -> sameDefaultExpr(fa, fb) and sameCallArgs(aa, ab)
-      case _ -> false
-    }
-    case _ -> false
-  }
-}
-
-func sameDefaultExprs(xs: in List[Expr], ys: in List[Expr]): Bool {
-  if xs.count != ys.count {
-    return false
-  }
-  var i = 0
-  while i < xs.count {
-    if not sameDefaultExpr(xs[i], ys[i]) {
-      return false
-    }
-    i = i + 1
-  }
-  true
-}
-
-func sameCallArgs(xs: in List[CallArg], ys: in List[CallArg]): Bool {
-  if xs.count != ys.count {
-    return false
-  }
-  var i = 0
-  while i < xs.count {
-    val same = match xs[i] {
-      case CAPositional(ea) -> match ys[i] {
-        case CAPositional(eb) -> sameDefaultExpr(ea, eb)
-        case _ -> false
-      }
-      case CANamed(na, ea, _) -> match ys[i] {
-        case CANamed(nb, eb, _) -> na == nb and sameDefaultExpr(ea, eb)
-        case _ -> false
-      }
-    }
-    if not same {
-      return false
-    }
-    i = i + 1
-  }
-  true
-}
-
-func sameSegments(xs: in List[String], ys: in List[String]): Bool {
-  if xs.count != ys.count {
-    return false
-  }
-  var i = 0
-  while i < xs.count {
-    if xs[i] != ys[i] {
-      return false
-    }
-    i = i + 1
-  }
-  true
-}
-
-func sameLiteral(a: in Literal, b: in Literal): Bool {
-  match a {
-    case LInt(va, sa, _) -> match b { case LInt(vb, sb, _) -> va == vb and sa == sb; case _ -> false }
-    case LFloat(va, sa, _) -> match b { case LFloat(vb, sb, _) -> va == vb and sa == sb; case _ -> false }
-    case LChar(ca) -> match b { case LChar(cb) -> ca == cb; case _ -> false }
-    case LBool(ba) -> match b { case LBool(bb) -> ba == bb; case _ -> false }
-    case LUnit -> match b { case LUnit -> true; case _ -> false }
-    case _ -> match literalText(a) {
-      case Some(ta) -> match literalText(b) { case Some(tb) -> ta == tb; case None -> false }
-      case None -> false
-    }
-  }
-}
-
-// The text of a string literal of any spelling.
-func literalText(l: in Literal): Option[String] {
-  match l {
-    case LString(t) -> Some(value = t)
-    case LTripleString(t) -> Some(value = t)
-    case LRawString(t) -> Some(value = t)
-    case _ -> None
-  }
+  Fmt.exprInline(0, stripExprParens(a)) == Fmt.exprInline(0, stripExprParens(b))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3926,6 +3826,79 @@ func checkImplMemberBodies(
   }
 }
 
+// One method's name, parameter count (receiver included) and span, for
+// `checkSameArityMethods`.
+record MethodHead {
+  name: String
+  arity: Int
+  span: Span
+}
+
+// T0156: two methods of one name in one record, interface or `impl` must
+// differ in their number of parameters, as two functions of one name in a
+// package must (T0001).  A call binds an overload by its parameter count:
+// every backend keys a method by name and parameter count, and so does the
+// thunk a parameter default compiles into for a restored consumer, so two
+// same-count overloads would silently share one (#8085).
+func checkSameArityMethods(diag: in List[Diagnostic], owner: in String, heads: in List[MethodHead]): Unit {
+  var j = 1
+  while j < heads.count {
+    var k = 0
+    var clash = false
+    while k < j and not clash {
+      if heads[k].name == heads[j].name and heads[k].arity == heads[j].arity {
+        clash = true
+      }
+      k = k + 1
+    }
+    if clash {
+      diag.add(
+        errorDiagnostic(
+          "T0156",
+          "method '" + heads[j].name + "' of '" + owner + "' has the same number of parameters (" + toString(heads[j].arity) +
+            ") as an earlier method of that name; methods of one name must differ in their number of parameters",
+          heads[j].span
+        )
+      )
+    }
+    j = j + 1
+  }
+}
+
+func recordMethodHeads(members: in List[RecordMember]): List[MethodHead] {
+  val acc: List[MethodHead] = newList()
+  for m in members {
+    match m {
+      case RMFunc(fn) -> acc.add(MethodHead(name = fn.name, arity = fn.params.count, span = fn.span))
+      case _ -> ()
+    }
+  }
+  acc
+}
+
+func interfaceMethodHeads(members: in List[InterfaceMember]): List[MethodHead] {
+  val acc: List[MethodHead] = newList()
+  for m in members {
+    match m {
+      case IMSig(sig) -> acc.add(MethodHead(name = sig.name, arity = sig.params.count, span = sig.span))
+      case IMFunc(fn) -> acc.add(MethodHead(name = fn.name, arity = fn.params.count, span = fn.span))
+      case IMAssoc(_) -> ()
+    }
+  }
+  acc
+}
+
+func implMethodHeads(members: in List[ImplMember]): List[MethodHead] {
+  val acc: List[MethodHead] = newList()
+  for m in members {
+    match m {
+      case IMplFunc(fn) -> acc.add(MethodHead(name = fn.name, arity = fn.params.count, span = fn.span))
+      case IMplAssoc(_) -> ()
+    }
+  }
+  acc
+}
+
 func checkDeclTypeRefs(tbl: in SymbolTable, diag: in List[Diagnostic], items: in List[Item]): Unit {
   val emptyCtx = newGenericContext()
   var i = 0
@@ -3944,6 +3917,7 @@ func checkDeclTypeRefs(tbl: in SymbolTable, diag: in List[Diagnostic], items: in
           decl.span
         )
         checkValueGenericArrayFields(diag, decl.name, decl.generics, recordFieldTypeExprs(decl))
+        checkSameArityMethods(diag, decl.name, recordMethodHeads(decl.members))
       }
       case IExposedRec(decl) -> {
         checkRecordDeclTypes(tbl, diag, decl)
@@ -3958,6 +3932,7 @@ func checkDeclTypeRefs(tbl: in SymbolTable, diag: in List[Diagnostic], items: in
           decl.span
         )
         checkValueGenericArrayFields(diag, decl.name, decl.generics, recordFieldTypeExprs(decl))
+        checkSameArityMethods(diag, decl.name, recordMethodHeads(decl.members))
       }
       case IUnion(decl) -> {
         checkUnionDeclTypes(tbl, diag, decl)
@@ -3972,7 +3947,10 @@ func checkDeclTypeRefs(tbl: in SymbolTable, diag: in List[Diagnostic], items: in
         )
         checkValueGenericArrayFields(diag, decl.name, decl.generics, unionFieldTypeExprs(decl))
       }
-      case IInterface(decl) -> checkInterfaceDeclTypes(tbl, diag, decl)
+      case IInterface(decl) -> {
+        checkInterfaceDeclTypes(tbl, diag, decl)
+        checkSameArityMethods(diag, decl.name, interfaceMethodHeads(decl.members))
+      }
       case IOpaque(decl) -> checkOpaqueDeclTypes(tbl, diag, decl)
       case IProtected(decl) -> checkProtectedDeclTypes(tbl, diag, decl)
       case ITypeAlias(decl) -> {
@@ -5255,6 +5233,7 @@ func checkWithImportedPackagesCore(
         checkImplConformance(tbl, diag, decl)
         checkImplOnProtected(tbl, diag, decl, file.items)
         checkImplMethodNameConflicts(tbl, diag, decl, file.items)
+        checkSameArityMethods(diag, "impl " + implIfaceName(decl), implMethodHeads(decl.members))
         checkImplMemberBodies(tbl, sigs, diag, decl)
       }
       case IProtected(decl) -> checkProtectedMemberBodies(tbl, sigs, diag, decl)

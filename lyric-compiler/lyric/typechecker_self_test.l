@@ -10125,3 +10125,47 @@ test "T0155 does not compare a default known only as a thunk call (#7827)" {
     "record Sq { s: Int }\nimpl Shape for Sq {\n  func area(self: in Sq, k: in Int): Int { self.s * k }\n}\n"
   assertEqualInt(countDiagCode(parseCheck(oneSided), "T0155"), 1, "the impl declares none")
 }
+
+// #8085: two methods of one name in one record, interface or impl must
+// differ in their number of parameters, as two functions must (T0001);
+// overloads of different counts stay valid.
+test "same-name methods with one parameter count are T0156 (#8085)" {
+  val rec = parseCheck(
+    "package P\nrecord R {\n  n: Int\n  func scale(self: in R, x: in Int, f: in Int = 1): Int { x * f }\n" +
+      "  func scale(self: in R, x: in String, f: in Int = 2): Int { f }\n}\n"
+  )
+  assertEqualInt(countDiagCode(rec, "T0156"), 1, "record: " + diagCodesOf(rec))
+  assertTrue(diagMessagesContain(rec, "method 'scale' of 'R' has the same number of parameters (3)"), "message")
+  val iface = parseCheck(
+    "package P\ninterface I {\n  func m(self: in Self, x: in Int): Int\n  func m(self: in Self, x: in String): Int\n}\n"
+  )
+  assertEqualInt(countDiagCode(iface, "T0156"), 1, "interface: " + diagCodesOf(iface))
+  val implSrc = parseCheck(
+    "package P\ninterface I {\n  func m(self: in Self, x: in Int): Int\n}\nrecord Q { q: Int }\n" +
+      "impl I for Q {\n  func m(self: in Q, x: in Int): Int { x }\n  func m(self: in Q, x: in String): Int { 0 }\n}\n"
+  )
+  assertEqualInt(countDiagCode(implSrc, "T0156"), 1, "impl: " + diagCodesOf(implSrc))
+  val ok = parseCheck(
+    "package P\nrecord R {\n  n: Int\n  func scale(self: in R, x: in Int): Int { x }\n" +
+      "  func scale(self: in R, x: in Int, f: in Int = 2): Int { x * f }\n}\n"
+  )
+  assertEqualInt(countDiagCode(ok, "T0156"), 0, "different counts: " + diagCodesOf(ok))
+}
+
+// #8085 review: T0155 compares every expression form, so an interpolated or
+// an `if` default written the same way in both places is not reported.
+test "identical interpolated and if defaults are not T0155 (#8085)" {
+  val interp = parseCheck(
+    ifaceDefaultSrc("k: in String = \"a\${1 + 1}b\"", "k: in String = \"a\${1 + 1}b\"").replace(
+      "self.s * k",
+      "self.s"
+    )
+  )
+  assertEqualInt(countDiagCode(interp, "T0155"), 0, "interpolated: " + diagCodesOf(interp))
+  val cond = parseCheck(ifaceDefaultSrc("k: in Int = if true { 2 } else { 3 }", "k: in Int = if true { 2 } else { 3 }"))
+  assertEqualInt(countDiagCode(cond, "T0155"), 0, "if: " + diagCodesOf(cond))
+  val condDiff = parseCheck(
+    ifaceDefaultSrc("k: in Int = if true { 2 } else { 3 }", "k: in Int = if true { 2 } else { 4 }")
+  )
+  assertEqualInt(countDiagCode(condDiff, "T0155"), 1, "a different if: " + diagCodesOf(condDiff))
+}
