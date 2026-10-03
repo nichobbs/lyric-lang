@@ -1123,6 +1123,26 @@ pub func buildOneNativeWithFeatures(
   )
 }
 
+/// The shape argument the native bridge parses: the shape name plus the
+/// `[wasm]` manifest options (`component;version=1.2.0;world=w;stack=131072`),
+/// or "" for an ordinary native build.
+func shapeSpec(shape: in String, version: in String, world: in String, stack: in Int): String {
+  if shape.length == 0 {
+    return ""
+  }
+  var spec = shape
+  if version.length > 0 {
+    spec = spec + ";version=" + version
+  }
+  if world.length > 0 {
+    spec = spec + ";world=" + world
+  }
+  if stack > 0 {
+    spec = spec + ";stack=" + stack.toString()
+  }
+  spec
+}
+
 // `buildOneNativeWithFeatures` with the native output shape ("" for an
 // ordinary binary, "module" for the wasm32 browser/JS-host module).
 pub func buildOneNativeShaped(
@@ -1190,6 +1210,9 @@ pub func buildOneNativeShaped(
   var effTriple = nativeTriple
   var effOpt = nativeOpt
   val effLibs: List[String] = newList()
+  var wasmVersion = ""
+  var wasmWorld = ""
+  var wasmStack = 0
   if isNativeTarget {
     val ncResult = resolveNativeConfig(manifestPath)
     match ncResult {
@@ -1208,6 +1231,9 @@ pub func buildOneNativeShaped(
           for lib in nc.extraLibs {
             effLibs.add(lib)
           }
+          wasmVersion = nc.wasmVersion
+          wasmWorld = nc.wasmWorld
+          wasmStack = nc.wasmStack
         }
         case None -> ()
       }
@@ -1217,7 +1243,7 @@ pub func buildOneNativeShaped(
   var resolvedNugetPaths: List[String] = newList()
   var resolvedNativePaths: List[String] = newList()
   val result = if isNativeTarget {
-    Emitter.emitNativeWithShape(req, effTriple, effOpt, effLibs, wasmShape)
+    Emitter.emitNativeWithShape(req, effTriple, effOpt, effLibs, shapeSpec(wasmShape, wasmVersion, wasmWorld, wasmStack))
   } else {
     val outcome = emitSingleFileOrProject(req, sourcePath, manifestPath, cliFeatures, noDefaultFeatures, allFeatures)
     resolvedRestoredDlls = outcome.restoredDlls
@@ -2969,6 +2995,9 @@ pub func buildProjectFromManifest(
   var effTriple = nativeTriple
   var effOpt = nativeOpt
   val effLibs: List[String] = newList()
+  var wasmVersion = projReq.packageVersion
+  var wasmWorld = ""
+  var wasmStack = 0
   if isNativeTarget {
     match manifest.native {
       case Some(nc) -> {
@@ -2981,6 +3010,11 @@ pub func buildProjectFromManifest(
         for lib in nc.extraLibs {
           effLibs.add(lib)
         }
+        if nc.wasmVersion.length > 0 {
+          wasmVersion = nc.wasmVersion
+        }
+        wasmWorld = nc.wasmWorld
+        wasmStack = nc.wasmStack
       }
       case None -> ()
     }
@@ -2999,7 +3033,7 @@ pub func buildProjectFromManifest(
       projReq.packageVersion,
       projReq.contractsEnabled,
       resolved.depPackageFeatures,
-      wasmShape
+      shapeSpec(wasmShape, wasmVersion, wasmWorld, wasmStack)
     )
   } else {
     Emitter.emitProject(projReq)

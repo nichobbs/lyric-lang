@@ -642,6 +642,28 @@ func testBuildWasmShapes(): Unit {
   }
 }
 
+// `[wasm]` carries the component version, world and stack size (docs/35 section 8).
+func testWasmTable(): Unit {
+  val toml = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[wasm]\nversion = \"1.2.0\"\nworld = \"my-world\"\nstack = 131072\n"
+  val m = parseOk(toml)
+  match m.native {
+    case None -> assertTrue(false, "wasm-table: expected a native config carrying [wasm]")
+    case Some(n) -> {
+      assertEqual(n.wasmVersion, "1.2.0", "wasm-table: version")
+      assertEqual(n.wasmWorld, "my-world", "wasm-table: world")
+      assertEqualInt(n.wasmStack, 131072, "wasm-table: stack")
+      assertEqual(n.triple, "", "wasm-table: no [native] keys, so no triple")
+    }
+  }
+  for bad in ["version = \"1.2\"", "world = \"My World\"", "stack = 100", "stack = 0"] {
+    val t = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[wasm]\n" + bad + "\n"
+    match parseManifest(t, "lyric.toml") {
+      case Ok(_) -> assertTrue(false, "wasm-table: expected a rejection of " + bad)
+      case Err(_) -> ()
+    }
+  }
+}
+
 // Symmetric to `testBuildShapeOnly`: declaring only `profile` leaves
 // `shapeDeclared` false (#6268).
 func testBuildProfileOnlyDeclared(): Unit {
@@ -1026,6 +1048,7 @@ test "[build] kind/shape/profile parse independently" {
 test "[build] shape alone leaves kind and profile at defaults" {
   testBuildShapeOnly()
   testBuildWasmShapes()
+  testWasmTable()
 }
 
 test "[build] profile alone leaves shapeDeclared false (#6268)" {

@@ -341,6 +341,17 @@ WIT `option`, `result`, `list`, `record`, `enum` and `variant`. A `@wasmImport` 
 (`Int`, `Long`, `Float`, `Double` and `String` signatures), so the same host-call
 syntax works in both shapes. Async exports are not part of the component shape yet.
 
+A `[wasm]` table in `lyric.toml` sets the component's WIT package `version` (default: your
+`[package]` version), the WIT `world` name, and the shadow `stack` size in bytes (both wasm32
+shapes):
+
+```toml
+[wasm]
+version = "1.2.0"
+world = "my-world"
+stack = 262144
+```
+
 Memory on this target is managed by automatic reference counting (ARC) —
 there is no garbage collector. Reference cycles are not collected; break
 them explicitly with `NativeWeak[T]`, whose `upgrade()` returns
