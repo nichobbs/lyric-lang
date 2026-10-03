@@ -1518,6 +1518,8 @@ span, exactly like `T0120`/`J008`.
 | `N0013` | A generated file could not be written next to the `.wasm`: the `--shape module` JS glue (`<name>.js`) or declarations (`<name>.d.ts`), or the `--shape component` WIT (`<name>.wit`) or C wrappers (`<name>.cabi.c`). |
 | `N0014` | A `@wasmImport` `extern func` has a parameter or result type the host import ABI cannot carry; use `Int`, `Long`, `Bool`, `Byte`, `Float`, `Double`, `String` or `Unit`. |
 | `N0016` | A `--shape component` build could not run `wasm-tools`, or `$LYRIC_WASI_ADAPTER` (the preview1 reactor adapter) is unset or missing, or a `wasm-tools` step failed. |
+| `N0018` | Generating the `--shape component` shims for a package failed: a `@wasmImport` extern with an unsupported type, an empty or quoted module name, or too many flat parameters. |
+| `N0019` | Two `@wasmImport` externs bind the same host function (module and name) with different signatures. |
 | `N0015` | A package declares a `@wasmImport` `extern func` but the build is not `--shape module`; only that shape can satisfy a host import. |
 
 ### Custom source generators (X-series)

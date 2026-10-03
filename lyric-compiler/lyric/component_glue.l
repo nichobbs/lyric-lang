@@ -1284,7 +1284,10 @@ func hostImportOf(d: in ExternFuncDecl, module: in String, tbl: in TypeTable): R
     value = HostImport(
       module = module,
       name = d.symbol,
-      cSym = "lyric_host_" + sanitizeIdent(module) + "_" + sanitizeIdent(d.symbol),
+      cSym = "lyric_host_" + module.length.toString() + "_" + sanitizeIdent(module) + "_" +
+        d.symbol.length.toString() +
+        "_" +
+        sanitizeIdent(d.symbol),
       params = params,
       ret = ret
     )
@@ -1505,13 +1508,19 @@ func exportBlocker(d: in FunctionDecl, tbl: in TypeTable): String {
 /// The host imports of `pkgs` with a repeated (module, name) kept once: two
 /// externs binding the same host function share one WIT function and one C
 /// wrapper.
+/// Identity of a host function: the literal (module, name) pair, length-prefixed
+/// so no two distinct pairs share a key.
+func importKey(h: in HostImport): String {
+  h.module.length.toString() + ":" + h.module + h.name
+}
+
 func uniqueImports(pkgs: in List[ComponentPkg]): List[HostImport] {
   val r: List[HostImport] = newList()
   for p in pkgs {
     for h in p.imports {
       var seen = false
       for q in r {
-        if q.cSym == h.cSym {
+        if importKey(q) == importKey(h) {
           seen = true
         }
       }
@@ -1538,7 +1547,7 @@ pub func importConflict(pkgs: in List[ComponentPkg]): String {
   for p in pkgs {
     for h in p.imports {
       for q in seen {
-        if q.cSym == h.cSym and importSignature(q) != importSignature(h) {
+        if importKey(q) == importKey(h) and importSignature(q) != importSignature(h) {
           return "the host import " + h.module + "." + h.name + " is declared with two signatures: " + importSignature(q) +
             " and " +
             importSignature(h)

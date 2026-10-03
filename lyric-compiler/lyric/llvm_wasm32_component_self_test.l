@@ -712,3 +712,27 @@ pub func go(n: Int): Int {
     "the same host function with different signatures cannot be one WIT function"
   )
 }
+
+test "wasm32 component: host imports whose names sanitize alike stay distinct" {
+  val dir = buildComponentOf(
+    r#"package Probe
+
+@wasmImport("ui.log")
+extern func a(n: Int): Int = "x"
+
+@wasmImport("ui")
+extern func b(n: Int): Int = "log.x"
+
+pub func go(n: Int): Int {
+  a(n) + b(n)
+}
+"#
+  )
+  val wit = match File.readText(Path.join(dir, "prog.wit")) { case Ok(t) -> t; case Err(_) -> "" }
+  assertTrue(Str.contains(wit, "interface ui-log") and Str.contains(wit, "interface ui {"), "two interfaces: " + wit)
+  val vargs: List[String] = newList()
+  vargs.add("validate")
+  vargs.add(Path.join(dir, "prog.wasm"))
+  val v = run(envOrPanic("WASM_TOOLS"), vargs)
+  assertTrue(v.exitCode == 0, "the component validates: " + v.stderr)
+}

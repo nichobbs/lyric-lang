@@ -1564,7 +1564,7 @@ func linkAndEmitNative(
   if isComponent {
     val clash = importConflict(componentPkgs)
     if clash.length > 0 {
-      Console.error("error[N0018]: " + clash)
+      Console.error("error[N0019]: " + clash)
       return false
     }
   }
