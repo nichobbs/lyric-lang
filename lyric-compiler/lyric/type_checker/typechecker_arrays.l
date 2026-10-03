@@ -213,12 +213,7 @@ pub func arrayToSliceNotCalled(t: in Type, sp: in Span): Diagnostic {
 pub func inValueGenericBody(tbl: in SymbolTable): Bool = tbl.valueGenericBodies.count > 0
 
 pub func arrayUnknownLength(t: in Type, sp: in Span): Diagnostic {
-  errorDiagnostic(
-    "T0160",
-    "the length of " + renderType(t) +
-      " is not a compile-time constant (an array length set by a record's value generic parameter is not supported yet, #8090)",
-    sp
-  )
+  errorDiagnostic("T0160", "the length of " + renderType(t) + " is not known at compile time", sp)
 }
 
 /// `a.toSlice()` on an array (the call's callee `fn` is the member
@@ -387,12 +382,7 @@ pub func noteArrayIndex(
         return
       }
       diag.add(
-        errorDiagnostic(
-          "T0160",
-          "cannot index " + renderType(recvTy) +
-            ": its length is not a compile-time constant (an array length set by a record's value generic parameter is not supported yet, #8090)",
-          span
-        )
+        errorDiagnostic("T0160", "cannot index " + renderType(recvTy) + ": its length is not known at compile time", span)
       )
       return
     }
@@ -1287,21 +1277,94 @@ pub func arrayLengthParam(size: in TypeArg, vps: in List[String]): Option[String
 }
 
 /// The value-generic function a call names, when it has one: the length
-/// parameters of its arrays are bound from the call's arguments.
+/// parameters of its arrays are bound from the call's arguments.  The callee
+/// is the function's name, or the name under explicit generic arguments
+/// (`total[3](a)`, which the parser leaves as an index expression) when their
+/// count is the function's generic parameter count.
 pub func valueGenericCallee(tbl: in SymbolTable, fn: in Expr, argCount: in Int): Option[FunctionDecl] {
-  val name = match fn.kind {
-    case EPath(p) -> if p.segments.count == 1 { p.segments[0] } else { return None }
-    case _ -> return None
+  val name = calleeSimpleName(fn)
+  if name.length == 0 {
+    return None
   }
+  val explicitCount = explicitGenericArgs(fn).count
   for sym in symTableTryFindAll(tbl, name) {
     match sym.kind {
       case DKFunc(decl) -> if decl.params.count >= argCount and valueGenericNames(decl.generics).count > 0 {
-        return Some(value = decl)
+        if explicitCount == 0 or explicitCount == genericParamCount(decl.generics) {
+          return Some(value = decl)
+        }
       }
       case _ -> ()
     }
   }
   None
+}
+
+func calleeSimpleName(fn: in Expr): String {
+  match fn.kind {
+    case EPath(p) -> if p.segments.count == 1 { p.segments[0] } else { "" }
+    case EIndex(inner, _) -> match inner.kind {
+      case EPath(p) -> if p.segments.count == 1 { p.segments[0] } else { "" }
+      case _ -> ""
+    }
+    case ETypeApp(inner, _) -> match inner.kind {
+      case EPath(p) -> if p.segments.count == 1 { p.segments[0] } else { "" }
+      case _ -> ""
+    }
+    case _ -> ""
+  }
+}
+
+/// The explicit generic arguments of a callee (`total[3]`), in order; empty
+/// for a bare name.
+pub func explicitGenericArgs(fn: in Expr): List[TypeArg] {
+  val acc: List[TypeArg] = newList()
+  match fn.kind {
+    case EIndex(_, indices) -> {
+      for ix in indices {
+        acc.add(TAValue(expr = ix))
+      }
+    }
+    case ETypeApp(_, targs) -> {
+      for ta in targs {
+        acc.add(ta)
+      }
+    }
+    case _ -> ()
+  }
+  acc
+}
+
+func genericParamCount(generics: in Option[GenericParams]): Int {
+  match generics {
+    case Some(gp) -> gp.params.count
+    case None -> 0
+  }
+}
+
+/// The lengths a call gives a value-generic function explicitly
+/// (`total[3](a)` binds `N = 3`): each explicit argument in a value generic
+/// parameter's position that is a compile-time constant.
+pub func explicitValueGenericBindings(tbl: in SymbolTable, decl: in FunctionDecl, fn: in Expr): Map[String, Int] {
+  val bound: Map[String, Int] = newMap()
+  val targs = explicitGenericArgs(fn)
+  match decl.generics {
+    case Some(gp) -> if targs.count == gp.params.count {
+      var i = 0
+      while i < gp.params.count {
+        match gp.params[i] {
+          case GPValue(n, _, _) -> match resolveArrayLength(tbl, newGenericContext(), targs[i]) {
+            case Some(len) -> bound.add(n, len)
+            case None -> ()
+          }
+          case _ -> ()
+        }
+        i = i + 1
+      }
+    }
+    case None -> ()
+  }
+  bound
 }
 
 /// Binds each value generic parameter `te` names as an array length to the

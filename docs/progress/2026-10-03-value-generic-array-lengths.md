@@ -10,14 +10,20 @@ record's value generic parameter sizing an array field is #8090.
 - A call binds each value generic parameter that sizes an array parameter to
   the argument's length (`total(a)` with `a: array[3, Int]` binds `N = 3`),
   or explicitly (`total[3](a)`). Two arguments that give one parameter
-  different lengths are **T0043**.
+  different lengths, or an argument whose length is not the explicit one
+  (`total[3](a)` with `a: array[5, Int]`), are **T0043**. A value parameter
+  that no argument gives a length (`make()` for
+  `func make[N: Nat](): array[N, Int]`) is **T0110**; `make[4]()` gives it.
 - A result type that mentions `N` has the bound length, so
   `func doubled[N: Nat](a: in array[N, Int]): array[N, Int]` returns an
   `array[3, Int]` for that call and the result can be indexed, measured and
   passed on.
 - In the body `N` is an `Int` constant and `a.length` is `N`.
 - A length that is neither a compile-time constant nor a value generic
-  parameter is **T0160** where the type is written.
+  parameter is **T0160** where the type is written, and a record or union
+  field sized by the type's own value generic parameter is **T0160** where
+  the field is declared (#8090). A later use of such an array reports only
+  that its length is not known.
 
 ## Design
 

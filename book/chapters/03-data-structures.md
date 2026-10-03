@@ -343,7 +343,7 @@ total(small)          // N = 3
 total(doubled(big))   // N = 4; doubled returns an array[4, Int]
 ```
 
-Each length is compiled separately, exactly as if you had written it out, so bounds checks, copies and `==` behave as they do for a literal length. Two arguments that disagree about `N` are a compile-time error (T0043). A record cannot yet size an array field with its own value generic parameter (#8090).
+Each length is compiled separately, exactly as if you had written it out, so bounds checks, copies and `==` behave as they do for a literal length. Two arguments that disagree about `N`, or an argument that disagrees with an explicit `total[3](a)`, are a compile-time error (T0043). When no argument has the length (`func make[N: Nat](): array[N, Int]`), give it explicitly: `make[4]()`; a bare `make()` is T0110. A record cannot yet size an array field with its own value generic parameter (#8090).
 
 **Slices** are dynamically sized, heap-allocated sequences. They are reference types backed by .NET's `List<T>`.
 

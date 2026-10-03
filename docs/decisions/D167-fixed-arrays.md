@@ -85,8 +85,9 @@ specialises the function per length and checks each specialisation again
 with the length bound, so its array operations are lowered as for a literal
 length. Inside the generic body itself a value-parameter length is not
 checked (each specialisation is). A record's value generic parameter sizing
-an array field is #8090; until it lands such a field is rejected where it
-needs a length (T0160). A length that is neither a compile-time constant nor
+an array field is #8090; until it lands such a field is T0160 where it is
+declared. A call checks an explicit length against its array arguments
+(T0043) and reports a value parameter it cannot bind (T0110). A length that is neither a compile-time constant nor
 a value generic parameter is T0160 where the type is written.
 
 - **T0158** (an array index that is not an integer or a range subtype of
@@ -94,7 +95,8 @@ a value generic parameter is T0160 where the type is written.
   union that holds an array in any field cannot derive `Equals`, `Hash`,
   `Show` or an ordering), **T0160** (a length that is neither a constant nor a value
   generic parameter, or an array that must be copied or indexed but has no
-  known length, i.e. a record's value generic parameter, #8090) and
+  known length, and a record or union field sized by the type's own value
+  generic parameter, #8090) and
   **T0113** (an array member other than `length` and `toSlice`, or `toSlice`
   referenced without being called) are the other diagnostics the
   implementation added, with **N0020** on `--target native` for an array type

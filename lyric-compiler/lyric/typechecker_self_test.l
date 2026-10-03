@@ -9943,6 +9943,37 @@ test "a value-generic array length is bound per call and checked per specialisat
   )
 }
 
+test "an explicit value-generic length is checked against the arguments" {
+  val ok = "package P\nfunc f[N: Nat](a: in array[N, Int]): array[N, Int] = a\nfunc g(): Int {\n  val a: array[3, Int] = [1, 2, 3]\n  val r: array[3, Int] = f[3](a)\n  r.length\n}\n"
+  val okCr = parseCheck(ok)
+  assertEqualInt(diagCount(okCr), 0, "a matching explicit length (" + diagCodesOf(okCr) + ")")
+  val bad = "package P\nfunc f[N: Nat](a: in array[N, Int]): Int = 0\nfunc g(): Int {\n  val a: array[5, Int] = [1, 2, 3, 4, 5]\n  f[3](a)\n}\n"
+  val badCr = parseCheck(bad)
+  assertEqualInt(countDiagCode(badCr, "T0043"), 1, "an argument of another length (" + diagCodesOf(badCr) + ")")
+  assertTrue(Str.contains(diagCodesOf(badCr), "'N' = 3"), "the message names the explicit length")
+}
+
+test "a value-generic length no argument gives is T0110" {
+  val src = "package P\nfunc make[N: Nat](): array[N, Int] {\n  var r: array[N, Int]\n  r\n}\nfunc g(): Int {\n  val m = make()\n  0\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0110"), 1, "the length cannot be inferred (" + diagCodesOf(cr) + ")")
+  val explicit = "package P\nfunc make[N: Nat](): array[N, Int] {\n  var r: array[N, Int]\n  r\n}\nfunc g(): Int {\n  val m = make[4]()\n  m.length\n}\n"
+  val ecr = parseCheck(explicit)
+  assertEqualInt(diagCount(ecr), 0, "an explicit length (" + diagCodesOf(ecr) + ")")
+}
+
+test "a record's value generic parameter cannot size an array field yet" {
+  val src = "package P\nrecord FixedVec[T, N: Nat] {\n  items: array[N, T]\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0160"), 1, "the field is reported (" + diagCodesOf(cr) + ")")
+  assertTrue(Str.contains(diagCodesOf(cr), "#8090"), "the message names the tracking issue")
+  val nonConst = "package P\nfunc g(): Int {\n  val n = 4\n  var a: array[n, Int]\n  a.length\n}\n"
+  assertFalse(
+    Str.contains(diagCodesOf(parseCheck(nonConst)), "#8090"),
+    "a non-constant length is not blamed on records (" + diagCodesOf(parseCheck(nonConst)) + ")"
+  )
+}
+
 test "a protected type's array field follows the zero-fill rule" {
   val ok = "package P\nprotected type T {\n  var hits: array[3, Int]\n}\n"
   val okCr = parseCheck(ok)

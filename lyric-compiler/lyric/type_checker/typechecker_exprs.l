@@ -10484,9 +10484,11 @@ func valueGenericParamsOf(tbl: in SymbolTable, fn: in Expr, argCount: in Int): L
 
 // A call to a value-generic function binds each value generic parameter
 // that sizes an array parameter to the length of the array argument (D167
-// item 6), records the binding for `Lyric.Mono`, and gives the result type
-// those lengths.  Two arguments binding one parameter to different lengths is
-// T0043.
+// item 6), or to the length the call gives explicitly (`total[3](a)`),
+// records an inferred binding for `Lyric.Mono`, and gives the result type
+// those lengths.  Two arguments binding one parameter to different lengths,
+// or an argument whose length is not the explicit one, is T0043; a parameter
+// neither the arguments nor the call give a length is T0110.
 func bindValueGenericCall(
   tbl: in SymbolTable,
   diag: in List[Diagnostic],
@@ -10497,12 +10499,14 @@ func bindValueGenericCall(
 ): Type {
   val decl = match valueGenericCallee(tbl, fn, args.count) { case Some(d) -> d; case None -> return instRet }
   val vps = valueGenericNames(decl.generics)
+  val isExplicit = explicitGenericArgs(fn).count > 0
+  val bound = explicitValueGenericBindings(tbl, decl, fn)
+  val explicitNames = mapKeys(bound)
   val paramNames: List[String] = newList()
   for p in decl.params {
     paramNames.add(p.name)
   }
   val order = argIndicesInParamOrder(args, paramNames)
-  val bound: Map[String, Int] = newMap()
   val conflicts: List[String] = newList()
   var i = 0
   while i < decl.params.count and i < order.count {
@@ -10513,21 +10517,44 @@ func bindValueGenericCall(
     i = i + 1
   }
   for c in conflicts {
-    diag.add(
-      errorDiagnostic(
-        "T0043",
-        "the arguments of this call give the length '" + c + "' of '" + decl.name +
-          "' different values: every array sized by '" +
-          c +
-          "' must have the same length",
-        fn.span
-      )
-    )
+    val msg = if explicitNames.contains(c) {
+      "an argument of this call does not have the length '" + c + "' = " +
+        toString(match mapGet(bound, c) { case Some(n) -> n; case None -> 0 }) +
+        " that the call gives '" +
+        decl.name +
+        "'"
+    } else {
+      "the arguments of this call give the length '" + c + "' of '" + decl.name +
+        "' different values: every array sized by '" +
+        c +
+        "' must have the same length"
+    }
+    diag.add(errorDiagnostic("T0043", msg, fn.span))
   }
-  if conflicts.count > 0 or bound.count != vps.count {
+  if conflicts.count > 0 {
     return instRet
   }
-  if not isNoSourceSpan(fn.span) {
+  if bound.count != vps.count {
+    if not inValueGenericBody(tbl) and not anyErrorType(argTypes) {
+      for vp in vps {
+        if not bound.containsKey(vp) {
+          diag.add(
+            errorDiagnostic(
+              "T0110",
+              "cannot infer the length '" + vp + "' of '" + decl.name +
+                "': no array argument has it as its length; give the generic arguments explicitly, as in '" +
+                decl.name +
+                "[...](...)'",
+              fn.span
+            )
+          )
+        }
+      }
+      return TyError
+    }
+    return instRet
+  }
+  if not isExplicit and not isNoSourceSpan(fn.span) {
     val key = recordCopySiteKey(fn.span)
     if not tbl.valueGenericCallSites.containsKey(key) {
       tbl.valueGenericCallSites.add(key, bound)
@@ -10537,6 +10564,42 @@ func bindValueGenericCall(
     case Some(rte) -> withBoundArrayLengths(rte, instRet, vps, bound)
     case None -> instRet
   }
+}
+
+func checkExplicitValueGenericCall(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  fn: in Expr,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  sp: in Span,
+): Option[Type] {
+  if explicitGenericArgs(fn).count == 0 {
+    return None
+  }
+  match valueGenericCallee(tbl, fn, args.count) {
+    case Some(_) -> ()
+    case None -> return None
+  }
+  val inner = match fn.kind { case EIndex(i, _) -> i; case ETypeApp(i, _) -> i; case _ -> return None }
+  val sig = match findDirectSig(sc, tbl, sigs, inner, args.count, argTypes) {
+    case Some(s) -> s
+    case None -> return None
+  }
+  checkCallArgsAgainstSig(sc, tbl, sigs, diag, sig, args, argTypes, sp)
+  Some(value = bindValueGenericCall(tbl, diag, fn, args, argTypes, instantiateReturnType(sig, argTypes)))
+}
+
+func anyErrorType(ts: in List[Type]): Bool {
+  for t in ts {
+    match t {
+      case TyError -> return true
+      case _ -> ()
+    }
+  }
+  false
 }
 
 // Record the type arguments the call to the generic function `sig` whose
@@ -11273,6 +11336,11 @@ func inferExprCore(
         }
         i = i + 1
       }
+      // A value-generic function under explicit generic arguments
+      // (`total[3](a)`) is indexed, not named, so it has no direct signature
+      // and its callee types as an error; its arguments and lengths are
+      // checked here and give the call its type.
+      val explicitValueGenericTy = checkExplicitValueGenericCall(sc, tbl, sigs, diag, fn, args, argTypes, e.span)
       // Try direct-sig lookup first.
       val directSig = findDirectSig(sc, tbl, sigs, fn, args.count, argTypes)
       // A4: method-space resolution for a member callee — consulted only when
@@ -11621,7 +11689,7 @@ func inferExprCore(
                       }
                       ret
                     }
-                    case TyError -> TyError
+                    case TyError -> match explicitValueGenericTy { case Some(vt) -> vt; case None -> TyError }
                     case _ -> {
                       diag.add(errorDiagnostic("T0044", "called value of non-function type " + renderType(fnT), e.span))
                       TyError
