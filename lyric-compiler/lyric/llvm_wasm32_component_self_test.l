@@ -790,3 +790,37 @@ pub func go(n: Int): Int {
     "a module named like the exported package"
   )
 }
+
+test "wasm32 component: host import names must be WIT-safe identifiers" {
+  val _w = envOrPanic("WASI_SDK_PATH")
+  val _t = envOrPanic("WASM_TOOLS")
+  val _a = envOrPanic("LYRIC_WASI_ADAPTER")
+  assertFalse(
+    componentBuildOk(
+      r#"package Probe
+
+@wasmImport("ui log")
+extern func a(n: Int): Int = "x"
+
+pub func go(n: Int): Int {
+  a(n)
+}
+"#
+    ),
+    "a module name with a space is not a WIT identifier"
+  )
+  assertFalse(
+    componentBuildOk(
+      r#"package Probe
+
+@wasmImport("ui")
+extern func a(n: Int): Int = "9lives"
+
+pub func go(n: Int): Int {
+  a(n)
+}
+"#
+    ),
+    "an import name starting with a digit is not a WIT identifier"
+  )
+}

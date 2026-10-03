@@ -1190,6 +1190,24 @@ func addDef(t: in WitTy, defs: in List[WitTy]): Unit {
   defs.add(t)
 }
 
+/// A name that becomes a WIT identifier: a letter first, then letters, digits and
+/// the separators `witName` folds (`.`, `-`, `_`).
+func isWitSafeName(s: in String): Bool {
+  if s.length == 0 {
+    return false
+  }
+  var i = 0
+  while i < s.length {
+    val c = Str.charAtOrReplacement(s, i)
+    val ok = isUpperCh(c) or isLowerCh(c) or (i > 0 and (isDigitCh(c) or c == '.' or c == '-' or c == '_'))
+    if not ok {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
 func sanitizeIdent(s: in String): String {
   var acc = ""
   var i = 0
@@ -1249,8 +1267,17 @@ func importTy(te: in TypeExpr, tbl: in TypeTable): Result[WitTy, String] {
 
 /// The host import an annotated extern declares, or an error.
 func hostImportOf(d: in ExternFuncDecl, module: in String, tbl: in TypeTable): Result[HostImport, String] {
-  if module.length == 0 or Str.contains(module, "\"") or Str.contains(module, "\\") {
-    return Err(error = "@wasmImport on " + d.name + " needs one string literal module name without a quote or backslash")
+  if not isWitSafeName(module) {
+    return Err(
+      error = "@wasmImport on " + d.name + ": the module name '" + module +
+        "' must start with a letter and use only letters, digits, '.', '-' and '_' (it becomes a WIT interface name)"
+    )
+  }
+  if not isWitSafeName(d.symbol) {
+    return Err(
+      error = "@wasmImport extern func " + d.name + ": the import name '" + d.symbol +
+        "' must start with a letter and use only letters, digits, '.', '-' and '_' (it becomes a WIT function name)"
+    )
   }
   val params: List[WitField] = newList()
   var width = 0
