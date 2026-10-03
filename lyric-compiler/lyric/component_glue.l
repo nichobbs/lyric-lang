@@ -1016,11 +1016,23 @@ pub record CExport {
   retKind: String
 }
 
+/// An `extern func` marked `@wasmImport("module")`, lowered to a WIT import: the
+/// Lyric extern is rewritten to the generated C function `cSym`, which calls the
+/// real core import with the canonical flat arguments.
+pub record HostImport {
+  module: String
+  name: String
+  cSym: String
+  params: List[WitField]
+  ret: WitTy
+}
+
 pub record ComponentPkg {
   pkg: String
   exports: List[CExport]
   defs: List[WitTy]
   notes: List[String]
+  imports: List[HostImport]
 }
 
 pub record ComponentRewrite {
@@ -1178,6 +1190,137 @@ func addDef(t: in WitTy, defs: in List[WitTy]): Unit {
   defs.add(t)
 }
 
+/// A name that becomes a WIT identifier: a letter first, then letters, digits and
+/// the separators `witName` folds (`.`, `-`, `_`).
+func isWitSafeName(s: in String): Bool {
+  if s.length == 0 {
+    return false
+  }
+  var i = 0
+  while i < s.length {
+    val c = Str.charAtOrReplacement(s, i)
+    val ok = isUpperCh(c) or isLowerCh(c) or (i > 0 and (isDigitCh(c) or c == '.' or c == '-' or c == '_'))
+    if not ok {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+func sanitizeIdent(s: in String): String {
+  var acc = ""
+  var i = 0
+  while i < s.length {
+    val c = Str.charAtOrReplacement(s, i)
+    if isUpperCh(c) or isLowerCh(c) or isDigitCh(c) {
+      acc = acc + c.toString()
+    } else {
+      acc = acc + "_"
+    }
+    i = i + 1
+  }
+  acc
+}
+
+/// The `@wasmImport` module string of `anns`: None when absent, Some("") when
+/// the annotation is malformed.
+func wasmImportModuleOf(anns: in List[Annotation]): Option[String] {
+  for a in anns {
+    if a.name.segments.count == 1 and a.name.segments[0] == "wasmImport" {
+      if a.args.count == 1 {
+        match a.args[0] {
+          case ALiteral(value, _) -> match value { case AVString(m, _) -> return Some(value = m); case _ -> () }
+          case _ -> ()
+        }
+      }
+      return Some(value = "")
+    }
+  }
+  None
+}
+
+func withoutWasmImport(anns: in List[Annotation]): List[Annotation] {
+  val r: List[Annotation] = newList()
+  for a in anns {
+    if not (a.name.segments.count == 1 and a.name.segments[0] == "wasmImport") {
+      r.add(a)
+    }
+  }
+  r
+}
+
+/// A scalar or `String` host-import type (`Bool` and `Byte` are not carried).
+func importTy(te: in TypeExpr, tbl: in TypeTable): Result[WitTy, String] {
+  match resolveValueTy(te, tbl, 0) {
+    case Err(e) -> failTy(e)
+    case Ok(t) -> match t {
+      case WInt -> okTy(t)
+      case WLong -> okTy(t)
+      case WFloat -> okTy(t)
+      case WDouble -> okTy(t)
+      case WString -> okTy(t)
+      case _ -> failTy("a host import parameter or result must be Int, Long, Float, Double or String")
+    }
+  }
+}
+
+/// The host import an annotated extern declares, or an error.
+func hostImportOf(d: in ExternFuncDecl, module: in String, tbl: in TypeTable): Result[HostImport, String] {
+  if not isWitSafeName(module) {
+    return Err(
+      error = "@wasmImport on " + d.name + ": the module name '" + module +
+        "' must start with a letter and use only letters, digits, '.', '-' and '_' (it becomes a WIT interface name)"
+    )
+  }
+  if not isWitSafeName(d.symbol) {
+    return Err(
+      error = "@wasmImport extern func " + d.name + ": the import name '" + d.symbol +
+        "' must start with a letter and use only letters, digits, '.', '-' and '_' (it becomes a WIT function name)"
+    )
+  }
+  val params: List[WitField] = newList()
+  var width = 0
+  for p in d.params {
+    match importTy(p.ty, tbl) {
+      case Err(e) -> return Err(error = "@wasmImport extern func " + d.name + ", parameter " + p.name + ": " + e)
+      case Ok(t) -> {
+        params.add(WitField(name = p.name, ty = t))
+        width = width + flatOf(t).count
+      }
+    }
+  }
+  val ret = match d.ret {
+    case None -> WUnit
+    case Some(te) -> match resolveTy(te, tbl, 0) {
+      case Err(e) -> return Err(error = "@wasmImport extern func " + d.name + ", result: " + e)
+      case Ok(t) -> match t {
+        case WUnit -> WUnit
+        case _ -> match importTy(te, tbl) {
+          case Ok(rt) -> rt
+          case Err(e) -> return Err(error = "@wasmImport extern func " + d.name + ", result: " + e)
+        }
+      }
+    }
+  }
+  val retSlot = match ret { case WString -> 1; case _ -> 0 }
+  if width + retSlot > 16 {
+    return Err(error = "@wasmImport extern func " + d.name + " has more than 16 flat core parameters")
+  }
+  Ok(
+    value = HostImport(
+      module = module,
+      name = d.symbol,
+      cSym = "lyric_host_" + module.length.toString() + "_" + sanitizeIdent(module) + "_" +
+        d.symbol.length.toString() +
+        "_" +
+        sanitizeIdent(d.symbol),
+      params = params,
+      ret = ret
+    )
+  )
+}
+
 /// Add the generated shims to `file` and describe its exports.  An export the
 /// component ABI cannot carry gets a `W0040` note and is left out.
 pub func componentRewriteFile(file: in SourceFile): ComponentRewrite {
@@ -1188,7 +1331,37 @@ pub func componentRewriteFile(file: in SourceFile): ComponentRewrite {
   val defs: List[WitTy] = newList()
   val notes: List[String] = newList()
   val bodies: List[String] = newList()
+  val imports: List[HostImport] = newList()
+  val baseItems: List[Item] = newList()
   for it in file.items {
+    match it.kind {
+      case IExternFunc(d) -> {
+        match wasmImportModuleOf(it.annotations) {
+          case None -> baseItems.add(it)
+          case Some(m) -> match hostImportOf(d, m, tbl) {
+            case Err(e) -> {
+              val info0 = ComponentPkg(pkg = pkg, exports = exports, defs = defs, notes = notes, imports = imports)
+              return ComponentRewrite(file = file, info = info0, error = e)
+            }
+            case Ok(h) -> {
+              imports.add(h)
+              baseItems.add(
+                Item(
+                  docComments = it.docComments,
+                  annotations = withoutWasmImport(it.annotations),
+                  visibility = it.visibility,
+                  kind = IExternFunc(
+                    decl = ExternFuncDecl(name = d.name, params = d.params, ret = d.ret, symbol = h.cSym, span = d.span)
+                  ),
+                  span = it.span
+                )
+              )
+            }
+          }
+        }
+      }
+      case _ -> baseItems.add(it)
+    }
     match it.kind {
       case IFunc(d) -> {
         if isPubDecl(d) and d.name != "main" {
@@ -1255,9 +1428,20 @@ pub func componentRewriteFile(file: in SourceFile): ComponentRewrite {
       case _ -> ()
     }
   }
-  val info = ComponentPkg(pkg = pkg, exports = exports, defs = defs, notes = notes)
-  if exports.count == 0 {
+  val info = ComponentPkg(pkg = pkg, exports = exports, defs = defs, notes = notes, imports = imports)
+  if exports.count == 0 and imports.count == 0 {
     return ComponentRewrite(file = file, info = info, error = "")
+  }
+  if exports.count == 0 {
+    val importOnly = SourceFile(
+      moduleDoc = file.moduleDoc,
+      fileAnnotations = file.fileAnnotations,
+      packageDecl = file.packageDecl,
+      imports = file.imports,
+      items = baseItems,
+      span = file.span
+    )
+    return ComponentRewrite(file = importOnly, info = info, error = "")
   }
   val text = "package " + pkg + "\nimport Std.Collections\n" + externPreamble() + "\n" + Str.joinList("\n", g.chunks) +
     "\n" +
@@ -1274,7 +1458,7 @@ pub func componentRewriteFile(file: in SourceFile): ComponentRewrite {
     return ComponentRewrite(file = file, info = info, error = "the generated shims did not parse: " + errs)
   }
   val items: List[Item] = newList()
-  for it in file.items {
+  for it in baseItems {
     items.add(it)
   }
   for it in pr.file.items {
@@ -1348,6 +1532,107 @@ func exportBlocker(d: in FunctionDecl, tbl: in TypeTable): String {
 }
 
 // ─── WIT ─────────────────────────────────────────────────────────────────────
+/// The host imports of `pkgs` with a repeated (module, name) kept once: two
+/// externs binding the same host function share one WIT function and one C
+/// wrapper.
+/// Identity of a host function: the literal (module, name) pair, length-prefixed
+/// so no two distinct pairs share a key.
+func importKey(h: in HostImport): String {
+  h.module.length.toString() + ":" + h.module + h.name
+}
+
+func uniqueImports(pkgs: in List[ComponentPkg]): List[HostImport] {
+  val r: List[HostImport] = newList()
+  for p in pkgs {
+    for h in p.imports {
+      var seen = false
+      for q in r {
+        if importKey(q) == importKey(h) {
+          seen = true
+        }
+      }
+      if not seen {
+        r.add(h)
+      }
+    }
+  }
+  r
+}
+
+func importSignature(h: in HostImport): String {
+  val ps: List[String] = newList()
+  for f in h.params {
+    ps.add(lyricTy(f.ty))
+  }
+  "(" + Str.joinList(", ", ps) + "): " + lyricTy(h.ret)
+}
+
+/// A message when two externs bind the same host function (module and name)
+/// with different signatures, or "" when the imports are consistent.
+pub func importConflict(pkgs: in List[ComponentPkg]): String {
+  val seen: List[HostImport] = newList()
+  for p in pkgs {
+    for h in p.imports {
+      for q in seen {
+        if importKey(q) == importKey(h) and importSignature(q) != importSignature(h) {
+          return "the host import " + h.module + "." + h.name + " is declared with two signatures: " + importSignature(q) +
+            " and " +
+            importSignature(h)
+        }
+      }
+      seen.add(h)
+    }
+  }
+  val uniq = uniqueImports(pkgs)
+  var i = 0
+  while i < uniq.count {
+    var j = i + 1
+    while j < uniq.count {
+      val a = uniq[i]
+      val b = uniq[j]
+      if a.module != b.module and witName(a.module) == witName(b.module) {
+        return "the host import modules '" + a.module + "' and '" + b.module + "' both become the WIT interface " +
+          witName(a.module) +
+          "; rename one"
+      }
+      if a.module == b.module and a.name != b.name and witName(a.name) == witName(b.name) {
+        return "the host imports " + a.module + "." + a.name + " and " + b.module + "." + b.name +
+          " both become the WIT function " +
+          witName(a.name) +
+          "; rename one"
+      }
+      j = j + 1
+    }
+    for p in exportingPkgs(pkgs) {
+      if witName(p.pkg) == witName(uniq[i].module) {
+        return "the host import module '" + uniq[i].module + "' has the same WIT name as the exported package " + p.pkg +
+          "; rename one"
+      }
+    }
+    i = i + 1
+  }
+  ""
+}
+
+/// The distinct `@wasmImport` modules of `pkgs`, in first-seen order.
+func importModules(pkgs: in List[ComponentPkg]): List[String] {
+  val r: List[String] = newList()
+  for p in pkgs {
+    for h in p.imports {
+      var seen = false
+      for q in r {
+        if q == h.module {
+          seen = true
+        }
+      }
+      if not seen {
+        r.add(h.module)
+      }
+    }
+  }
+  r
+}
+
 func witRef(t: in WitTy): String {
   match t {
     case WBool -> "bool"
@@ -1440,6 +1725,20 @@ pub func renderWit(pkgs: in List[ComponentPkg], version: in String): String {
   val ex = exportingPkgs(pkgs)
   val parts: List[String] = newList()
   parts.add("package " + witPackageName(pkgs, version) + ";\n")
+  for m in importModules(pkgs) {
+    val ilines: List[String] = newList()
+    for h in uniqueImports(pkgs) {
+      if h.module == m {
+        val ps: List[String] = newList()
+        for f in h.params {
+          ps.add(witName(f.name) + ": " + witRef(f.ty))
+        }
+        val tail = if isUnit(h.ret) { "" } else { " -> " + witRef(h.ret) }
+        ilines.add("  " + witName(h.name) + ": func(" + Str.joinList(", ", ps) + ")" + tail + ";")
+      }
+    }
+    parts.add("interface " + witName(m) + " {\n" + Str.joinList("\n", ilines) + "\n}\n")
+  }
   for p in ex {
     val lines: List[String] = newList()
     for d in p.defs {
@@ -1456,6 +1755,9 @@ pub func renderWit(pkgs: in List[ComponentPkg], version: in String): String {
     parts.add("interface " + witName(p.pkg) + " {\n" + Str.joinList("\n", lines) + "\n}\n")
   }
   val exportLines: List[String] = newList()
+  for m in importModules(pkgs) {
+    exportLines.add("  import " + witName(m) + ";")
+  }
   for p in ex {
     exportLines.add("  export " + witName(p.pkg) + ";")
   }
@@ -1563,10 +1865,83 @@ func cabiRuntime(): String {
   Str.joinList("\n", l)
 }
 
+func cTypeOfTy(t: in WitTy): String {
+  match t {
+    case WInt -> "int32_t"
+    case WLong -> "int64_t"
+    case WFloat -> "float"
+    case WDouble -> "double"
+    case WString -> "void*"
+    case _ -> "void"
+  }
+}
+
+/// The C function a Lyric `@wasmImport` extern calls: it lowers the arguments to
+/// the canonical flat form (a string is borrowed as pointer and length), calls the
+/// real core import, and lifts the result (a string comes back through a return
+/// area the host fills using `cabi_realloc`).
+func renderImportWrapper(pkgs: in List[ComponentPkg], h: in HostImport, i: in Int, version: in String): String {
+  val l: List[String] = newList()
+  val id = "lyric:" + witName(firstPkgName(pkgs)) + "/" + witName(h.module) + "@" + version
+  val rawName = "lyric_rawimport" + idStr(i)
+  val rawParams: List[String] = newList()
+  val ownParams: List[String] = newList()
+  val callArgs: List[String] = newList()
+  var pi = 0
+  for f in h.params {
+    val a = "a" + idStr(pi)
+    ownParams.add(cTypeOfTy(f.ty) + " " + a)
+    match f.ty {
+      case WString -> {
+        rawParams.add("int32_t")
+        rawParams.add("int32_t")
+        callArgs.add("(int32_t)(uintptr_t)lyric_wasm_string_data(" + a + ")")
+        callArgs.add("lyric_wasm_string_len(" + a + ")")
+      }
+      case t -> {
+        rawParams.add(cTypeOfTy(t))
+        callArgs.add(a)
+      }
+    }
+    pi = pi + 1
+  }
+  val isStr = match h.ret { case WString -> true; case _ -> false }
+  if isStr {
+    rawParams.add("int32_t")
+  }
+  val rawRet = if isStr { "void" } else { cTypeOfTy(h.ret) }
+  l.add("__attribute__((import_module(\"" + id + "\"), import_name(\"" + witName(h.name) + "\")))")
+  l.add(
+    "extern " + rawRet + " " + rawName + "(" +
+      (if rawParams.count == 0 { "void" } else { Str.joinList(", ", rawParams) }) +
+      ");"
+  )
+  val retC = cTypeOfTy(h.ret)
+  l.add(retC + " " + h.cSym + "(" + (if ownParams.count == 0 { "void" } else { Str.joinList(", ", ownParams) }) + ") {")
+  if isStr {
+    callArgs.add("(int32_t)(uintptr_t)ret")
+    l.add("  int32_t ret[2] = {0, 0};")
+    l.add("  " + rawName + "(" + Str.joinList(", ", callArgs) + ");")
+    l.add("  return lyric_cabi_string_lift(ret[0], ret[1]);")
+  } else if isUnit(h.ret) {
+    l.add("  " + rawName + "(" + Str.joinList(", ", callArgs) + ");")
+  } else {
+    l.add("  return " + rawName + "(" + Str.joinList(", ", callArgs) + ");")
+  }
+  l.add("}")
+  l.add("")
+  Str.joinList("\n", l)
+}
+
 /// The C file for the exporting packages (see the module header).
 pub func renderCabi(pkgs: in List[ComponentPkg], version: in String): String {
   val buf: List[String] = newList()
   buf.add(cabiRuntime())
+  var hi = 0
+  for h in uniqueImports(pkgs) {
+    buf.add(renderImportWrapper(pkgs, h, hi, version))
+    hi = hi + 1
+  }
   var n = 0
   for p in exportingPkgs(pkgs) {
     for e in p.exports {

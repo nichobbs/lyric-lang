@@ -1561,17 +1561,17 @@ func linkAndEmitNative(
     Console.error("error[N0011]: --shape " + shape + " needs a wasm32 triple (pass --triple wasm32-wasi)")
     return false
   }
+  if isComponent {
+    val clash = importConflict(componentPkgs)
+    if clash.length > 0 {
+      Console.error("error[N0019]: " + clash)
+      return false
+    }
+  }
   val allExports = collectWasmExportsOfShaped(units, if isModule or isComponent { ownUnits } else { 0 }, isComponent)
   val wasmExports = if isModule { withoutReservedJsNames(allExports) } else { allExports }
   var ui = 0
   while ui < units.count {
-    if units[ui].wasmImports.count > 0 and isComponent {
-      Console.error(
-        "error[N0017]: package " + units[ui].pkgName +
-          " declares a @wasmImport extern func, which the component shape cannot lower to a WIT import yet; use --shape module"
-      )
-      return false
-    }
     if units[ui].wasmImports.count > 0 and not isModule {
       Console.error(
         "error[N0015]: package " + units[ui].pkgName +
