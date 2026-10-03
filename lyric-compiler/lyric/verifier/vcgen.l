@@ -24,6 +24,10 @@ pub record VEnv {
   // Threaded through every VEnv constructor so `sortOfTypeExprE` can recurse
   // through alias chains and produce the underlying primitive's sort (#3853).
   pub distincts: Map[String, TypeExpr]
+  // `SortInfo.intBits` of each `Int`/`Long` record or protected-type field,
+  // keyed by its selector (`<Type>__<field>`), so the width of a field read
+  // is known to `@proof_required(checked_arithmetic)` (#7871).
+  pub fieldIntBits: Map[String, Int]
   // Copy helpers — use explicit names list to avoid iterating Map.keys on a
   // TypeBuilderInstantiation, which generates invalid IL.
 }
@@ -70,7 +74,7 @@ pub func sortOfTypeExprE(env: in VEnv, te: in TypeExpr): SortInfo {
       if underlying.segments.count == 1 and env.distincts.containsKey(underlying.segments[0]) {
         val baseTe = TypeExpr(kind = TRef(path = underlying), span = resolved.span)
         val base = sortOfTypeExpr(resolveDistinct(env.distincts, baseTe))
-        refinedSortInfo(base.sort, range)
+        refinedSortInfo(base.sort, base.intBits, range)
       } else {
         sortOfTypeExpr(resolved)
       }
@@ -124,6 +128,7 @@ pub func envEmpty(callees: in Map[String, FunctionDecl], symbols: in List[Symbol
   val sorts: Map[String, SortInfo] = newMap()
   val varNames: List[String] = newList()
   val distincts: Map[String, TypeExpr] = newMap()
+  val fieldIntBits: Map[String, Int] = newMap()
   VEnv(
     vars = vars,
     varNames = varNames,
@@ -131,7 +136,8 @@ pub func envEmpty(callees: in Map[String, FunctionDecl], symbols: in List[Symbol
     callees = callees,
     symbols = symbols,
     checkedArithmetic = checkedArithmetic,
-    distincts = distincts
+    distincts = distincts,
+    fieldIntBits = fieldIntBits
   )
 }
 
@@ -159,7 +165,8 @@ pub func envBind(name: in String, info: in SortInfo, env: in VEnv): VEnv {
     callees = env.callees,
     symbols = env.symbols,
     checkedArithmetic = env.checkedArithmetic,
-    distincts = env.distincts
+    distincts = env.distincts,
+    fieldIntBits = env.fieldIntBits
   )
 }
 
@@ -186,7 +193,8 @@ pub func envBindTerm(name: in String, term: in Term, info: in SortInfo, env: in 
     callees = env.callees,
     symbols = env.symbols,
     checkedArithmetic = env.checkedArithmetic,
-    distincts = env.distincts
+    distincts = env.distincts,
+    fieldIntBits = env.fieldIntBits
   )
 }
 
@@ -394,6 +402,187 @@ func isPure(fn: in FunctionDecl): Bool {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// §4a. Static integer width (#7871).
+// ─────────────────────────────────────────────────────────────────────────────
+// `Int` and `Long` share the unbounded `Int` sort, so the width an
+// overflow obligation checks against comes from the expression's static
+// type: a binding's declared type (`SortInfo.intBits`), a field's, a
+// callee's result type, a literal's suffix.  Returns 32 or 64, or 0 when
+// the expression names no width — an unsuffixed literal, which takes its
+// context's type, or a value the verifier does not type.
+func intBitsOfExpr(env: in VEnv, e: in Expr): Int {
+  match e.kind {
+    case ELiteral(lit) -> match lit {
+      case LInt(v, suffix, _) -> match suffix {
+        case I64 -> 64
+        case I32 | I16 | I8 -> 32
+        case NoIntSuffix -> {
+          // Only a `Long` holds an unsuffixed literal beyond 32 bits.
+          if v < signedMinOfBits(32) or v > signedMaxOfBits(32) {
+            64
+          } else {
+            0
+          }
+        }
+        case _ -> 0
+      }
+      case _ -> 0
+    }
+    case EParen(inner) -> intBitsOfExpr(env, inner)
+    case EPath(path) -> {
+      if path.segments.count == 1 {
+        match envLookupSort(path.segments[0], env) {
+          case Some(si) -> si.intBits
+          case None -> 0
+        }
+      } else {
+        0
+      }
+    }
+    case EResult -> match envLookupSort("result", env) { case Some(si) -> si.intBits; case None -> 0 }
+    case EOld(inner) -> intBitsOfExpr(env, inner)
+    case EPrefix(op, operand) -> match op { case PreNeg -> intBitsOfExpr(env, operand); case _ -> 0 }
+    case EBinop(op, lhs, rhs) -> match op {
+      case BAdd | BSub | BMul | BDiv | BMod -> maxInt(
+        intBitsOfExpr(env, lhs),
+        intBitsOfExpr(env, rhs)
+      )
+      case _ -> 0
+    }
+    case EIf(_, thenBranch, elseBranchOpt, _) -> {
+      val a = intBitsOfEob(env, thenBranch)
+      match elseBranchOpt {
+        case Some(eb) -> maxInt(a, intBitsOfEob(env, eb))
+        case None -> a
+      }
+    }
+    case EMatch(_, arms) -> {
+      var bits = 0
+      var i = 0
+      while i < arms.count {
+        bits = maxInt(bits, intBitsOfEob(env, arms[i].body))
+        i = i + 1
+      }
+      bits
+    }
+    case EBlock(blk) -> match blockLastExpr(blk) { case Some(last) -> intBitsOfExpr(env, last); case None -> 0 }
+    case ECall(fn, _) -> match fn.kind {
+      case EPath(path) -> {
+        val name = joinPathSegments(path.segments)
+        match mapGet(env.callees, name) {
+          case Some(decl) -> match decl.ret { case Some(te) -> sortOfTypeExprE(env, te).intBits; case None -> 0 }
+          case None -> {
+            // A distinct type's constructor yields its underlying value.
+            match mapGet(env.distincts, name) {
+              case Some(under) -> sortOfTypeExprE(env, under).intBits
+              case None -> 0
+            }
+          }
+        }
+      }
+      case _ -> 0
+    }
+    case EMember(receiver, memberName) -> {
+      val recName = recordNameOfExpr(env, receiver)
+      if recName.length > 0 {
+        match mapGet(env.fieldIntBits, recName + "__" + memberName) {
+          case Some(b) -> b
+          case None -> 0
+        }
+      } else {
+        0
+      }
+    }
+    case _ -> 0
+  }
+}
+
+func intBitsOfEob(env: in VEnv, eob: in ExprOrBlock): Int {
+  match eob {
+    case EOBExpr(x) -> intBitsOfExpr(env, x)
+    case EOBBlock(blk) -> match blockLastExpr(blk) { case Some(last) -> intBitsOfExpr(env, last); case None -> 0 }
+  }
+}
+
+// The record datatype an expression's value belongs to, or "" when it is
+// not a known record: a binding of a record sort, or a field of one.
+func recordNameOfExpr(env: in VEnv, e: in Expr): String {
+  match staticSortOfExpr(env, e) {
+    case Some(srt) -> match srt {
+      case SDatatype(rName, _) -> match findRecordFields(env, rName) {
+        case Some(_) -> rName
+        case None -> ""
+      }
+      case _ -> ""
+    }
+    case None -> ""
+  }
+}
+
+// The sort of a binding, `result`, or a record field read from one, without
+// translating the expression.
+func staticSortOfExpr(env: in VEnv, e: in Expr): Option[Sort] {
+  match e.kind {
+    case EParen(inner) -> staticSortOfExpr(env, inner)
+    case EPath(path) -> {
+      if path.segments.count == 1 {
+        match envLookupSort(path.segments[0], env) {
+          case Some(si) -> Some(value = si.sort)
+          case None -> None
+        }
+      } else {
+        None
+      }
+    }
+    case EResult -> match envLookupSort("result", env) { case Some(si) -> Some(value = si.sort); case None -> None }
+    case EMember(receiver, memberName) -> {
+      val inner = recordNameOfExpr(env, receiver)
+      if inner.length > 0 {
+        findRecordFieldSort(env, inner, memberName)
+      } else {
+        None
+      }
+    }
+    case _ -> None
+  }
+}
+
+func joinPathSegments(segs: in List[String]): String {
+  var name = ""
+  var j = 0
+  while j < segs.count {
+    if j > 0 {
+      name = name + "."
+    }
+    name = name + segs[j]
+    j = j + 1
+  }
+  name
+}
+
+func maxInt(a: in Int, b: in Int): Int {
+  if a > b {
+    a
+  } else {
+    b
+  }
+}
+
+// The width an overflow obligation checks `e` against: its static width,
+// or `Int`'s when it names none — an expression of unsuffixed literals is
+// an `Int` unless its context makes it a `Long`, and checking a `Long`
+// against the narrower range can only fail a proof, never pass a wrong
+// one (#7871).
+func overflowBitsOfExpr(env: in VEnv, e: in Expr): Int {
+  val b = intBitsOfExpr(env, e)
+  if b == 0 {
+    32
+  } else {
+    b
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // §5. Expression translation.
 // ─────────────────────────────────────────────────────────────────────────────
 pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnostic]) {
@@ -557,6 +746,16 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
           val asList: List[Term] = newList()
           appendTermList(asList, xR.assumed)
           val t = TBuiltin(op = b, args = termList1(xR.term))
+          // `-x` overflows for the type's minimum (D163, #7871).
+          if env.checkedArithmetic {
+            match b {
+              case BOpNeg -> match sortOf(xR.term) {
+                case SInt -> appendTermList(sc, signedWidthBounds(t, overflowBitsOfExpr(env, operand)))
+                case _ -> ()
+              }
+              case _ -> ()
+            }
+          }
           val prefixTR = TranslateResult(term = t, sideConds = sc, assumed = asList)
           val prefixBuiltinPair: (TranslateResult, List[Diagnostic]) = (prefixTR, xDiags)
           prefixBuiltinPair
@@ -605,16 +804,14 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
           appendTermList(sc, lR.sideConds)
           appendTermList(sc, rR.sideConds)
           // @proof_required(checked_arithmetic): overflow side conditions.
+          // A signed result must stay inside its type's width — 32 bits
+          // for `Int`, 64 for `Long` — since an overflow panics in a debug
+          // build and wraps in a release one (D163, #7871).
           if env.checkedArithmetic {
             match sortOf(args[0]) {
               case SInt -> {
                 match b {
-                  case BOpAdd | BOpSub | BOpMul -> {
-                    val minI64: Long = -9223372036854775807i64 - 1i64
-                    val maxI64: Long = 9223372036854775807i64
-                    sc.add(TBuiltin(op = BOpLte, args = termList2(TLit(value = VLInt(n = minI64), sort = SInt), term)))
-                    sc.add(TBuiltin(op = BOpLte, args = termList2(term, TLit(value = VLInt(n = maxI64), sort = SInt))))
-                  }
+                  case BOpAdd | BOpSub | BOpMul -> appendTermList(sc, signedWidthBounds(term, overflowBitsOfExpr(env, e)))
                   case _ -> {
                   }
                 }
@@ -716,13 +913,8 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
           }
           match mapGet(env.callees, name) {
             case Some(decl) -> {
-              val resultSort = match decl.ret {
-                case Some(te) -> sortOfTypeExprE(env, te).sort
-                case None -> {
-                  val ua: List[Sort] = newList()
-                  SDatatype(name = "Unit", args = ua)
-                }
-              }
+              val resultInfo = match decl.ret { case Some(te) -> sortOfTypeExprE(env, te); case None -> unitSortInfo() }
+              val resultSort = resultInfo.sort
               val paramSorts: List[Sort] = newList()
               var pi = 0
               while pi < decl.params.count {
@@ -777,7 +969,8 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
                 callees = emptyCallees,
                 symbols = emptySymbols,
                 checkedArithmetic = false,
-                distincts = env.distincts
+                distincts = env.distincts,
+                fieldIntBits = env.fieldIntBits
               )
 
               // @pure callee: translate body expr, emit equality as assumption.
@@ -845,7 +1038,8 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
                 callees = emptyCallees,
                 symbols = emptySymbols,
                 checkedArithmetic = false,
-                distincts = env.distincts
+                distincts = env.distincts,
+                fieldIntBits = env.fieldIntBits
               )
               ci = 0
               while ci < decl.contracts.count {
@@ -867,6 +1061,7 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
               appendTermList(asList, argAssumed)
               appendTermList(asList, postConds)
               appendTermList(asList, pureUnfold)
+              appendTermList(asList, intWidthHypothesesForTerm(callTerm, resultInfo))
               val knownCalleeTR = TranslateResult(term = callTerm, sideConds = sc, assumed = asList)
               val knownCalleePair: (TranslateResult, List[Diagnostic]) = (knownCalleeTR, allArgDiags)
               knownCalleePair
@@ -1633,86 +1828,73 @@ func wpLocal(
   match binding {
     case LBVal(pat, ty, init) -> {
       val name = match pat.kind { case PBinding(n, _) -> n; case _ -> "?pat" }
-      val (initR, initDiags) = translateExpr(env, init)
-      // Honor the declared type's range bound (#3854) instead of always
-      // discarding it in favor of the inferred-from-init RBKNone sort — a
-      // `val x: Percent = ...` binding must carry `0 <= x <= 100` forward.
-      val info = match ty {
-        case Some(t) -> sortOfTypeExprE(env, t)
-        case None -> SortInfo(sort = sortOf(initR.term), range = RBKNone)
-      }
-      val boundTerm = match ty {
-        case Some(_) -> coerceTermAt(initR.term, info.sort, init.span, initDiags)
-        case None -> initR.term
-      }
-      val env2 = envBindTerm(name, boundTerm, info, env)
-      val inner = wpWalk(env2, resultSort, postcond, stmts, idx + 1)
-      val asList: List[Term] = newList()
-      appendTermList(asList, initR.assumed)
-      appendTermList(asList, rangeHypotheses(name, info))
-      appendTermList(asList, inner.assumed)
-      val di: List[Diagnostic] = newList()
-      appendTermList2(di, initDiags)
-      appendTermList2(di, inner.diags)
-      WpResult(wp = inner.wp, sideGoals = inner.sideGoals, assumed = asList, diags = di)
+      wpBindInit(env, resultSort, postcond, stmts, idx, name, ty, init)
     }
-    case LBLet(name, ty, init) -> {
-      val (initR, initDiags) = translateExpr(env, init)
-      // See LBVal above (#3854): a range-subtype-typed `let` must carry its
-      // bound forward as a hypothesis too.
-      val info = match ty {
-        case Some(t) -> sortOfTypeExprE(env, t)
-        case None -> SortInfo(sort = sortOf(initR.term), range = RBKNone)
-      }
-      val boundTerm = match ty {
-        case Some(_) -> coerceTermAt(initR.term, info.sort, init.span, initDiags)
-        case None -> initR.term
-      }
-      val env2 = envBindTerm(name, boundTerm, info, env)
-      val inner = wpWalk(env2, resultSort, postcond, stmts, idx + 1)
-      val asList: List[Term] = newList()
-      appendTermList(asList, initR.assumed)
-      appendTermList(asList, rangeHypotheses(name, info))
-      appendTermList(asList, inner.assumed)
-      val di: List[Diagnostic] = newList()
-      appendTermList2(di, initDiags)
-      appendTermList2(di, inner.diags)
-      WpResult(wp = inner.wp, sideGoals = inner.sideGoals, assumed = asList, diags = di)
-    }
-    case LBVar(name, ty, Some(init)) -> {
-      val (initR, initDiags) = translateExpr(env, init)
-      // See LBVal above (#3854): an initialized range-subtype-typed `var`
-      // must carry its bound forward as a hypothesis too.
-      val info = match ty {
-        case Some(t) -> sortOfTypeExprE(env, t)
-        case None -> SortInfo(sort = sortOf(initR.term), range = RBKNone)
-      }
-      val boundTerm = match ty {
-        case Some(_) -> coerceTermAt(initR.term, info.sort, init.span, initDiags)
-        case None -> initR.term
-      }
-      val env2 = envBindTerm(name, boundTerm, info, env)
-      val inner = wpWalk(env2, resultSort, postcond, stmts, idx + 1)
-      val asList: List[Term] = newList()
-      appendTermList(asList, initR.assumed)
-      appendTermList(asList, rangeHypotheses(name, info))
-      appendTermList(asList, inner.assumed)
-      val di: List[Diagnostic] = newList()
-      appendTermList2(di, initDiags)
-      appendTermList2(di, inner.diags)
-      WpResult(wp = inner.wp, sideGoals = inner.sideGoals, assumed = asList, diags = di)
-    }
+    case LBLet(name, ty, init) -> wpBindInit(env, resultSort, postcond, stmts, idx, name, ty, init)
+    case LBVar(name, ty, Some(init)) -> wpBindInit(env, resultSort, postcond, stmts, idx, name, ty, init)
     case LBVar(name, ty, None) -> {
       // Uninitialized var — bind to a fresh symbolic value of its declared
       // sort (an unannotated one is an integer, as before).
       val info = match ty {
-        case Some(t) -> SortInfo(sort = sortOfTypeExprE(env, t).sort, range = RBKNone)
+        case Some(t) -> {
+          val declared = sortOfTypeExprE(env, t)
+          SortInfo(sort = declared.sort, range = RBKNone, intBits = declared.intBits)
+        }
         case None -> SortInfo(sort = SInt, range = RBKNone)
       }
       val env2 = envBind(name, info, env)
       wpWalk(env2, resultSort, postcond, stmts, idx + 1)
     }
   }
+}
+
+// `val`/`let`/`var name[: ty] = init`, then the rest of the block.  The
+// initializer's side conditions — a callee's `requires:`, an overflow
+// obligation — are side goals like an expression statement's (#7871).
+func wpBindInit(
+  env: in VEnv,
+  resultSort: in SortInfo,
+  postcond: in Term,
+  stmts: in List[Statement],
+  idx: in Int,
+  name: in String,
+  ty: in Option[TypeExpr],
+  init: in Expr,
+): WpResult {
+  val (initR, initDiags) = translateExpr(env, init)
+  // Honor the declared type's range bound (#3854) instead of always
+  // discarding it in favor of the inferred-from-init RBKNone sort — a
+  // `val x: Percent = ...` binding must carry `0 <= x <= 100` forward.  An
+  // unannotated binding takes its initializer's sort and width.
+  val info = match ty {
+    case Some(t) -> sortOfTypeExprE(env, t)
+    case None -> SortInfo(sort = sortOf(initR.term), range = RBKNone, intBits = intBitsOfExpr(env, init))
+  }
+  val boundTerm = match ty {
+    case Some(_) -> coerceTermAt(initR.term, info.sort, init.span, initDiags)
+    case None -> initR.term
+  }
+  val env2 = envBindTerm(name, boundTerm, info, env)
+  val inner = wpWalk(env2, resultSort, postcond, stmts, idx + 1)
+  val sg: List[SideGoal] = newList()
+  var i = 0
+  while i < initR.sideConds.count {
+    sg.add(SideGoal(term = initR.sideConds[i], kind = GKAssertion, span = init.span))
+    i = i + 1
+  }
+  i = 0
+  while i < inner.sideGoals.count {
+    sg.add(inner.sideGoals[i])
+    i = i + 1
+  }
+  val asList: List[Term] = newList()
+  appendTermList(asList, initR.assumed)
+  appendTermList(asList, rangeHypotheses(name, info))
+  appendTermList(asList, inner.assumed)
+  val di: List[Diagnostic] = newList()
+  appendTermList2(di, initDiags)
+  appendTermList2(di, inner.diags)
+  WpResult(wp = inner.wp, sideGoals = sg, assumed = asList, diags = di)
 }
 
 func wpAssign(
@@ -1731,6 +1913,10 @@ func wpAssign(
       if path.segments.count == 1 {
         val name = path.segments[0]
         val (rhsR, rhsDiags) = translateExpr(env, value)
+        // The right-hand side's side conditions are obligations, and so is a
+        // compound assignment's overflow under checked arithmetic (#7871).
+        val rhsSide: List[Term] = newList()
+        appendTermList(rhsSide, rhsR.sideConds)
         val rawCombined = match op {
           case AssEq -> rhsR.term
           case _ -> {
@@ -1743,13 +1929,32 @@ func wpAssign(
               case AssPercent -> BOpMod
               case _ -> BOpAdd
             }
-            match unifyOperands(existing, rhsR.term) {
+            val combinedOp = match unifyOperands(existing, rhsR.term) {
               case Ok(pair) -> TBuiltin(op = bin, args = termList2(pair.lhs, pair.rhs))
               case Err(reason) -> {
                 rhsDiags.add(untranslatableDiag(reason, sp))
                 TBuiltin(op = bin, args = termList2(existing, rhsR.term))
               }
             }
+            if env.checkedArithmetic {
+              match combinedOp {
+                case TBuiltin(_, cargs) -> {
+                  match sortOf(cargs[0]) {
+                    case SInt -> match bin {
+                      case BOpAdd | BOpSub | BOpMul -> appendTermList(
+                        rhsSide,
+                        signedWidthBounds(combinedOp, overflowBitsOfExpr(env, target))
+                      )
+                      case _ -> ()
+                    }
+                    case SBitVec(w) -> appendTermList(rhsSide, unsignedOverflowSideConds(bin, cargs[0], cargs[1], combinedOp, w))
+                    case _ -> ()
+                  }
+                }
+                case _ -> ()
+              }
+            }
+            combinedOp
           }
         }
         // The assigned value takes the variable's sort (#7848).
@@ -1763,13 +1968,24 @@ func wpAssign(
         }
         val env2 = envBindTerm(name, combined, info, env)
         val inner = wpWalk(env2, resultSort, postcond, stmts, idx + 1)
+        val sg: List[SideGoal] = newList()
+        var si = 0
+        while si < rhsSide.count {
+          sg.add(SideGoal(term = rhsSide[si], kind = GKAssertion, span = sp))
+          si = si + 1
+        }
+        si = 0
+        while si < inner.sideGoals.count {
+          sg.add(inner.sideGoals[si])
+          si = si + 1
+        }
         val asList: List[Term] = newList()
         appendTermList(asList, rhsR.assumed)
         appendTermList(asList, inner.assumed)
         val di: List[Diagnostic] = newList()
         appendTermList2(di, rhsDiags)
         appendTermList2(di, inner.diags)
-        WpResult(wp = inner.wp, sideGoals = inner.sideGoals, assumed = asList, diags = di)
+        WpResult(wp = inner.wp, sideGoals = sg, assumed = asList, diags = di)
       } else {
         val di: List[Diagnostic] = newList()
         di.add(warningDiagnostic("V0026", "complex assignment target not yet supported in proof body", target.span))
@@ -1838,6 +2054,8 @@ func wpWhile(
   val modifiedVars: List[String] = newList()
   collectModifiedVars(realStmts, modifiedVars)
   var envAfterHavoc = env
+  // A havocked `Int`/`Long` still holds a value of its type (#7871).
+  val havocWidthHyps: List[Term] = newList()
   i = 0
   while i < modifiedVars.count {
     val vname = modifiedVars[i]
@@ -1846,7 +2064,9 @@ func wpWhile(
       case None -> SortInfo(sort = SInt, range = RBKNone)
     }
     val havocName = vname + "$loopout"
-    envAfterHavoc = envBindTerm(vname, TVar(name = havocName, sort = vinfo.sort), vinfo, envAfterHavoc)
+    val havocTerm = TVar(name = havocName, sort = vinfo.sort)
+    envAfterHavoc = envBindTerm(vname, havocTerm, vinfo, envAfterHavoc)
+    appendTermList(havocWidthHyps, intWidthHypothesesForTerm(havocTerm, vinfo))
     i = i + 1
   }
 
@@ -1867,6 +2087,7 @@ func wpWhile(
   val postLoopAssumed: List[Term] = newList()
   postLoopAssumed.add(iotaPostT)
   postLoopAssumed.add(mkNot(condPostR.term))
+  appendTermList(postLoopAssumed, havocWidthHyps)
 
   // Collect rest of stmts.
   val rest: List[Statement] = newList()
@@ -2185,6 +2406,7 @@ pub func goalsForFunctionWithExtraHyps(
     envWithParams = envBind(p.name, info, envWithParams)
     val hyps = rangeHypotheses(p.name, info)
     appendTermList(paramHyps, hyps)
+    appendTermList(paramHyps, intWidthHypothesesForTerm(TVar(name = p.name, sort = info.sort), info))
     i = i + 1
   }
 
@@ -2366,7 +2588,8 @@ func freshSymbolsEnv(env: in VEnv): VEnv {
     callees = env.callees,
     symbols = freshSyms,
     checkedArithmetic = env.checkedArithmetic,
-    distincts = env.distincts
+    distincts = env.distincts,
+    fieldIntBits = env.fieldIntBits
   )
 }
 
@@ -2474,6 +2697,7 @@ func goalsForProtectedEntry(
               val fTerm = TApp(name = protName + "__" + fname, args = args1, retSort = fInfo.sort)
               fnEnv = envBindTerm(fname, fTerm, fInfo, fnEnv)
               appendTermList(fieldRangeHyps, rangeHypothesesForTerm(fTerm, fInfo))
+              appendTermList(fieldRangeHyps, intWidthHypothesesForTerm(fTerm, fInfo))
             }
             case PFLet(fname, fty, _, _, _, _) -> {
               val fInfo = sortOfTypeExprE(env0, fty)
@@ -2482,6 +2706,7 @@ func goalsForProtectedEntry(
               val fTerm = TApp(name = protName + "__" + fname, args = args2, retSort = fInfo.sort)
               fnEnv = envBindTerm(fname, fTerm, fInfo, fnEnv)
               appendTermList(fieldRangeHyps, rangeHypothesesForTerm(fTerm, fInfo))
+              appendTermList(fieldRangeHyps, intWidthHypothesesForTerm(fTerm, fInfo))
             }
             case PFImmutable(fd) -> {
               val fInfo = sortOfTypeExprE(env0, fd.ty)
@@ -2490,6 +2715,7 @@ func goalsForProtectedEntry(
               val fTerm = TApp(name = protName + "__" + fd.name, args = args3, retSort = fInfo.sort)
               fnEnv = envBindTerm(fd.name, fTerm, fInfo, fnEnv)
               appendTermList(fieldRangeHyps, rangeHypothesesForTerm(fTerm, fInfo))
+              appendTermList(fieldRangeHyps, intWidthHypothesesForTerm(fTerm, fInfo))
             }
           }
         }
@@ -2552,6 +2778,22 @@ func goalsForProtectedMembers(
       }
     }
     mi = mi + 1
+  }
+}
+
+// Register one field of a record or protected type's datatype under its
+// selector name, and its signed width when it is an `Int` or `Long` (#7871).
+func addDatatypeField(
+  dtFields: in List[DatatypeField],
+  bitsMap: in Map[String, Int],
+  distinctMap: in Map[String, TypeExpr],
+  selector: in String,
+  ty: in TypeExpr,
+): Unit {
+  val info = sortOfTypeExpr(resolveDistinct(distinctMap, ty))
+  dtFields.add(DatatypeField(name = selector, sort = info.sort))
+  if info.intBits > 0 and not bitsMap.containsKey(selector) {
+    bitsMap.add(selector, info.intBits)
   }
 }
 
@@ -2649,6 +2891,8 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
     dti0 = dti0 + 1
   }
 
+  val fieldIntBitsMap: Map[String, Int] = newMap()
+
   // Pre-register every `IRecord` as an SMT datatype with one constructor
   // matching the record's fields.  Lets the verifier reason about
   // `Amount(value = c)` constructors and `result.value` field reads against
@@ -2672,14 +2916,13 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
           var fi = 0
           while fi < recDecl.members.count {
             match recDecl.members[fi] {
-              case RMField(fld) -> {
-                dtFields.add(
-                  DatatypeField(
-                    name = recDecl.name + "__" + fld.name,
-                    sort = sortOfTypeExpr(resolveDistinct(distinctMap, fld.ty)).sort
-                  )
-                )
-              }
+              case RMField(fld) -> addDatatypeField(
+                dtFields,
+                fieldIntBitsMap,
+                distinctMap,
+                recDecl.name + "__" + fld.name,
+                fld.ty
+              )
               case _ -> ()
             }
             fi = fi + 1
@@ -2699,21 +2942,21 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
           match pdecl.members[pfi] {
             case PMField(pf) -> {
               match pf {
-                case PFVar(fname, fty, _, _, _, _) -> {
-                  dtFields.add(
-                    DatatypeField(name = pdecl.name + "__" + fname, sort = sortOfTypeExpr(resolveDistinct(distinctMap, fty)).sort)
-                  )
-                }
-                case PFLet(fname, fty, _, _, _, _) -> {
-                  dtFields.add(
-                    DatatypeField(name = pdecl.name + "__" + fname, sort = sortOfTypeExpr(resolveDistinct(distinctMap, fty)).sort)
-                  )
-                }
-                case PFImmutable(fd) -> {
-                  dtFields.add(
-                    DatatypeField(name = pdecl.name + "__" + fd.name, sort = sortOfTypeExpr(resolveDistinct(distinctMap, fd.ty)).sort)
-                  )
-                }
+                case PFVar(fname, fty, _, _, _, _) -> addDatatypeField(
+                  dtFields,
+                  fieldIntBitsMap,
+                  distinctMap,
+                  pdecl.name + "__" + fname,
+                  fty
+                )
+                case PFLet(fname, fty, _, _, _, _) -> addDatatypeField(
+                  dtFields,
+                  fieldIntBitsMap,
+                  distinctMap,
+                  pdecl.name + "__" + fname,
+                  fty
+                )
+                case PFImmutable(fd) -> addDatatypeField(dtFields, fieldIntBitsMap, distinctMap, pdecl.name + "__" + fd.name, fd.ty)
               }
             }
             case _ -> ()
@@ -2738,7 +2981,8 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
     callees = env0Init.callees,
     symbols = env0Init.symbols,
     checkedArithmetic = env0Init.checkedArithmetic,
-    distincts = distinctMap
+    distincts = distinctMap,
+    fieldIntBits = fieldIntBitsMap
   )
 
   val allGoals: List[Goal] = newList()

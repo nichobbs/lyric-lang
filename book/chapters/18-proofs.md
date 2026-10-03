@@ -275,9 +275,11 @@ pub func credit(a: in Account, amount: in Amount): Result[Account, AccountError]
 }
 ```
 
-With `checked_arithmetic`, the expression `a.balance + v` inside the `if` condition generates an additional goal: prove that the addition does not overflow `Long.max`. Because `a.balance` is of type `Cents` (range `0 ..= 1_000_000_000_00`) and `v` is also `Cents`, the sum is at most `2_000_000_000_00`, which is well within `Long.max`. Z3 discharges the overflow VC automatically.
+With `checked_arithmetic`, the expression `a.balance + v` inside the `if` condition generates an additional goal: prove that the addition does not overflow `Long.max`. The bound is the operand's own width: an `Int` sum must stay within `Int.max` (2,147,483,647), a `Long` sum within `Long.max`, and an unsigned one must not wrap. Because `a.balance` is of type `Cents` (range `0 ..= 1_000_000_000_00`) and `v` is also `Cents`, the sum is at most `2_000_000_000_00`, which is well within `Long.max`. Z3 discharges the overflow VC automatically.
 
-The modifier is optional because overflow VCs add goals, and goals take time. For non-financial code, the overhead is not worth it. For any package that handles monetary amounts, enabling it provides a static guarantee that arithmetic never wraps — a guarantee runtime checking cannot provide because overflow is not an exception.
+`lyric prove` does not depend on the build profile. It reasons as a debug build behaves: an overflow panics rather than producing a value. Without the modifier, a proof therefore covers only the executions that do not overflow, and a release build, where the same operation wraps, is outside it. With the modifier, overflow is ruled out altogether, so the proof holds whichever profile the program is built with. In either mode an `Int` parameter or callee result is known to lie within the `Int` range, and a `Long` one within the `Long` range.
+
+The modifier is optional because overflow VCs add goals, and goals take time. For non-financial code, the overhead is not worth it. For any package that handles monetary amounts, enabling it provides a static guarantee that arithmetic never wraps — a guarantee runtime checking cannot provide: a debug build panics only once an overflow happens, and a release build wraps silently.
 
 ## Exercises
 

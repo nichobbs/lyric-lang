@@ -265,7 +265,7 @@ Lyric.Verifier/
 | Lyric type                | Lyric-VC sort                                | Notes |
 |---------------------------|----------------------------------------------|-------|
 | `Bool`                    | `Bool`                                       | trivial |
-| `Int`, `Long`, `Nat`      | `Int` (mathematical integer)                 | overflow handled separately, see §5.4. `/` and `%` truncate toward zero as at runtime, not SMT-LIB's Euclidean `div`/`mod`: they render as `lyric!tdiv`/`lyric!trem`, which the preamble defines as `(ite (= b 0) (div a 0) (ite (= (>= a 0) (>= b 0)) (div (abs a) (abs b)) (- (div (abs a) (abs b)))))` and `(ite (= b 0) (mod a 0) (- a (* b (lyric!tdiv a b))))`. A zero divisor falls through to the solver's unspecified `div`/`mod`, so division by zero stays unconstrained (#7870) |
+| `Int`, `Long`, `Nat`      | `Int` (mathematical integer)                 | overflow handled separately, see §5.4; a parameter, field or callee result carries its type's 32- or 64-bit bounds as a hypothesis. `/` and `%` truncate toward zero as at runtime, not SMT-LIB's Euclidean `div`/`mod`: they render as `lyric!tdiv`/`lyric!trem`, which the preamble defines as `(ite (= b 0) (div a 0) (ite (= (>= a 0) (>= b 0)) (div (abs a) (abs b)) (- (div (abs a) (abs b)))))` and `(ite (= b 0) (mod a 0) (- a (* b (lyric!tdiv a b))))`. A zero divisor falls through to the solver's unspecified `div`/`mod`, so division by zero stays unconstrained (#7870) |
 | range subtype `T range a ..= b` | `Int` with implicit `a ≤ x ≤ b` axiom on every binder | preserves identity loss is fine in proof; CLR identity matters only for emission |
 | `UInt`, `ULong`, `Byte`   | `(_ BitVec n)`                               | bitvector arithmetic, slow but decidable. A `u8`/`u16`/`u32`/`u64` literal is a `(_ bvN n)` constant of its width (a `u64` literal from 2^63 up is its unsigned value, #7839); an unsuffixed literal next to an unsigned operand takes that operand's width. Ordering, `/` and `%` use the unsigned `bvult`/`bvule`/`bvugt`/`bvuge`/`bvudiv`/`bvurem`; `+`, `-`, `*` are `bvadd`/`bvsub`/`bvmul`. A narrower unsigned operand zero-extends along `Byte < UInt < ULong`, and a `Byte` enters the signed chain through `bv2nat`. A range subtype over an unsigned base folds its bounds unsigned. Any other mix of the two sorts (a `UInt` beside an `Int` variable, a negative constant as an unsigned value, an unsigned negation, a bound that does not fit its base) fails closed with `V0033` (#7848) |
 | `Float`, `Double`         | SMT `Real` (mathematical reals)              | sound approximation: avoids IEEE 754 FP theory and its rounding-mode complexity; linear arithmetic over reals is decidable and fast; division emits `/` (Real div) not `div` (integer) |
@@ -312,20 +312,43 @@ The user-written invariant is conjoined with the implicit
 
 Range subtypes give bounded integers. Plain `Int`/`Long` are
 unbounded mathematical integers in the proof but bounded `Int32`/
-`Int64` at runtime. The mismatch is real and is handled in two
-modes:
+`Int64` at runtime, where `+`, `-`, `*` and unary `-` panic on overflow
+in a `debug` build and wrap in a `release` build (D163). `lyric prove`
+takes no build profile: it reasons with the `debug` (checked) semantics,
+the sound choice for a proof, since a panicking operation never produces
+the value a later obligation is stated over (#7871).
 
-- **`@proof_required(unchecked_arithmetic)`** (default): the prover
-  treats `Int`/`Long` as `Int`. Overflow is the user's problem.
-  Programs that *would* overflow at runtime can still verify; the
-  runtime separately raises `IntegerOverflow`. Documented hazard.
-- **`@proof_required(checked_arithmetic)`**: every arithmetic
-  operation generates an additional VC `result ∈ [Int.min, Int.max]`.
-  Slow but sound. Recommended for safety-critical code (the original
-  Phase 0 audience, `00-overview.md`). On a `UInt`/`ULong`/`Byte`
-  bitvector the VC is that the operation does not wrap: `x <= x + y`
-  for `+`, `y <= x` for `-`, and `y == 0 or (x * y) / y == x` for `*`,
-  all ordered unsigned (#7848).
+- **Width facts, every mode.** A value that exists at runtime holds a
+  value of its type, so the verifier assumes `Int.MinValue <= v <=
+  Int.MaxValue` for each `Int` (and the 64-bit bounds for each `Long`)
+  parameter, protected-type field, callee result and variable a loop
+  havocs. A value the body computes gets no such fact from its type; its
+  arithmetic stays mathematical.
+- **`@proof_required`** (no modifier): arithmetic is mathematical and
+  overflow is not an obligation. A proof is a partial-correctness proof
+  under the `debug` semantics: an execution that overflows panics before
+  the postcondition is reached. It does not cover a `release` build, where
+  the same operation wraps instead.
+- **`@proof_required(checked_arithmetic)`**: every signed `+`, `-`, `*`
+  and unary `-` carries the obligation `Min <= result <= Max` for the
+  operand's own width — 32 bits for `Int`, 64 for `Long` (and `Nat`) — so
+  `2147483647 + 1` on `Int` is refuted while the same sum on `Long` is
+  not. The width comes from the expression's static type: a binding's or
+  field's declared type, a callee's result type, an `i64`/`i32` suffix. An
+  unsuffixed-literal expression is checked as an `Int` unless a literal
+  needs 64 bits; checking a `Long` against the narrower range can fail a
+  proof, never pass a wrong one. A compound assignment (`+=`, `-=`, `*=`)
+  carries the obligation of its operator. On a `UInt`/`ULong`/`Byte`
+  bitvector the obligation is that the operation does not wrap: `x <= x +
+  y` for `+`, `y <= x` for `-`, and `y == 0 or (x * y) / y == x` for `*`,
+  all ordered unsigned (#7848). With no overflow possible, both profiles
+  compute the same values, so a `checked_arithmetic` proof holds for a
+  `release` build too.
+
+Obligations raised inside an expression — a callee's `requires:`, an
+overflow obligation — are proved wherever the expression occurs: an
+expression statement, a returned value, a `val`/`let`/`var` initializer or
+the right-hand side of an assignment (#7871).
 
 A negated integer literal is one signed constant, as
 `foldNegatedIntLiteral` makes it for the backends: `-9223372036854775808`,

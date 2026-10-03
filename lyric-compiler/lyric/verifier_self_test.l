@@ -1274,3 +1274,119 @@ test "truncating division satisfies its identities symbolically (#7870)" {
     "compound-assignment"
   )
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Signed overflow is checked at the operand's width: 32 bits for `Int`, 64
+// for `Long` (D163, #7871).
+// ─────────────────────────────────────────────────────────────────────────────
+func proveChecked(body: in String): ProofSummary {
+  prove("@proof_required(checked_arithmetic)\npackage C\n" + body)
+}
+
+func assertCheckedDischarged(body: in String, label: in String): Unit {
+  val s = proveChecked(body)
+  assertTrue(summaryTotalCount(s) > 0, label + ": goals generated")
+  assertTrue(not summaryHasErrorDiag(s), label + ": no error diagnostics")
+  assertTrue(not summaryHasFailure(s), label + ": every goal discharged")
+}
+
+func assertCheckedRefuted(body: in String, label: in String): Unit {
+  val s = proveChecked(body)
+  assertTrue(summaryHasCounterexample(s), label + ": the solver finds a counterexample")
+  assertTrue(not summaryHasDiagCode(s, "V0033"), label + ": the obligation is translatable")
+}
+
+test "Int addition overflows past Int.MaxValue, not Long.MaxValue (#7871)" {
+  assertCheckedRefuted("func inc(x: in Int): Int\n{\n  x + 1\n}\n", "int-inc-unconstrained")
+  assertCheckedRefuted("func inc(x: in Int): Int\n  requires: x >= 2147483647\n{\n  x + 1\n}\n", "int-inc-at-max")
+  assertCheckedDischarged("func inc(x: in Int): Int\n  requires: x < 2147483647\n{\n  x + 1\n}\n", "int-inc-below-max")
+  assertCheckedDischarged(
+    "func inc(x: in Long): Long\n  requires: x == 2147483647\n{\n  x + 1\n}\n",
+    "long-inc-past-int-max"
+  )
+  assertCheckedRefuted(
+    "func inc(x: in Long): Long\n  requires: x == 9223372036854775807\n{\n  x + 1\n}\n",
+    "long-inc-at-max"
+  )
+  assertCheckedDischarged(
+    "func inc(x: in Long): Long\n  requires: x < 9223372036854775807\n{\n  x + 1\n}\n",
+    "long-inc-below-max"
+  )
+}
+
+test "Int subtraction, multiplication and negation overflow at Int.MinValue (#7871)" {
+  assertCheckedRefuted("func dec(x: in Int): Int\n  requires: x <= -2147483648\n{\n  x - 1\n}\n", "int-dec-at-min")
+  assertCheckedDischarged("func dec(x: in Int): Int\n  requires: x > -2147483648\n{\n  x - 1\n}\n", "int-dec-above-min")
+  assertCheckedDischarged(
+    "func dec(x: in Long): Long\n  requires: x == -2147483648\n{\n  x - 1\n}\n",
+    "long-dec-past-int-min"
+  )
+  assertCheckedRefuted(
+    "func dec(x: in Long): Long\n  requires: x == -9223372036854775808\n{\n  x - 1\n}\n",
+    "long-dec-at-min"
+  )
+  assertCheckedRefuted("func neg(x: in Int): Int\n{\n  -x\n}\n", "int-neg-of-min")
+  assertCheckedDischarged("func neg(x: in Int): Int\n  requires: x > -2147483648\n{\n  -x\n}\n", "int-neg-above-min")
+  assertCheckedRefuted("func neg(x: in Long): Long\n{\n  -x\n}\n", "long-neg-of-min")
+  assertCheckedDischarged(
+    "func dbl(x: in Int): Int\n  requires: x >= -1073741824 and x <= 1073741823\n{\n  x * 2\n}\n",
+    "int-mul-in-range"
+  )
+  assertCheckedRefuted("func dbl(x: in Int): Int\n  requires: x == 1073741824\n{\n  x * 2\n}\n", "int-mul-past-max")
+  assertCheckedDischarged(
+    "func dbl(x: in Long): Long\n  requires: x == 1073741824\n{\n  x * 2\n}\n",
+    "long-mul-past-int-max"
+  )
+}
+
+test "a binding's initializer and a compound assignment are checked at the binding's width (#7871)" {
+  assertCheckedRefuted("func f(x: in Int): Int\n{\n  val y = x + 1\n  y\n}\n", "val-initializer")
+  assertCheckedDischarged(
+    "func f(x: in Int): Int\n  requires: x < 100\n{\n  val y = x + 1\n  y\n}\n",
+    "val-initializer-bounded"
+  )
+  assertCheckedDischarged(
+    "func f(x: in Int): Long\n  requires: x == 2147483647\n{\n  val y: Long = x\n  y + 1\n}\n",
+    "long-binding-of-int"
+  )
+  assertCheckedRefuted("func f(x: in Int): Int\n{\n  var y = x\n  y += 1\n  y\n}\n", "compound-add")
+  assertCheckedDischarged(
+    "func f(x: in Int): Int\n  requires: x < 2147483647\n{\n  var y = x\n  y += 1\n  y\n}\n",
+    "compound-add-bounded"
+  )
+  assertCheckedRefuted("func f(x: in UInt): UInt\n{\n  var y = x\n  y += 1\n  y\n}\n", "compound-unsigned-wrap")
+}
+
+test "a record field is checked at its declared width (#7871)" {
+  val rec = "record Counter {\n  count: Long\n  small: Int\n}\n"
+  assertCheckedDischarged(
+    rec + "func bump(c: in Counter): Long\n  requires: c.count == 2147483647\n{\n  c.count + 1\n}\n",
+    "long-field"
+  )
+  assertCheckedRefuted(
+    rec + "func bump(c: in Counter): Int\n  requires: c.small == 2147483647\n{\n  c.small + 1\n}\n",
+    "int-field"
+  )
+}
+
+test "Int and Long parameters and callee results lie within their width (#7871)" {
+  assertDischarged(
+    "func f(x: in Int): Bool\n  ensures: result\n{\n  x <= 2147483647 and x >= -2147483648\n}\n",
+    "int-param-width"
+  )
+  assertRefuted("func f(x: in Long): Bool\n  ensures: result\n{\n  x <= 2147483647\n}\n", "long-param-wider")
+  assertDischarged(
+    "func id(x: in Int): Int\n{\n  x\n}\nfunc g(y: in Int): Long\n  ensures: result < 2147483648\n{\n  id(y)\n}\n",
+    "int-callee-result-width"
+  )
+}
+
+test "a binding's initializer discharges its callee's precondition (#7871)" {
+  val pos = "func pos(x: in Int): Int\n  requires: x > 0\n{\n  x\n}\n"
+  assertRefuted(pos + "func f(y: in Int): Int\n{\n  val r = pos(y)\n  r\n}\n", "val-call-precondition")
+  assertDischarged(
+    pos + "func f(y: in Int): Int\n  requires: y > 0\n{\n  val r = pos(y)\n  r\n}\n",
+    "val-call-precondition-met"
+  )
+  assertRefuted(pos + "func f(y: in Int): Int\n{\n  var r = 1\n  r = pos(y)\n  r\n}\n", "assign-call-precondition")
+}
