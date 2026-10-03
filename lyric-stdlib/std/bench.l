@@ -14,7 +14,8 @@ import Std.BenchHost
 /// allocated: on dotnet the managed heap (`GC.GetAllocatedBytesForCurrentThread`),
 /// on the JVM the thread's allocation counter
 /// (`ThreadMXBean.getCurrentThreadAllocatedBytes`), and on native every object,
-/// collection and string the runtime allocated (`lyric_alloc`).  Values the
+/// collection and string the runtime allocated (`lyric_alloc`; the C buffers
+/// its file, process, socket and TLS code allocates are not counted).  Values the
 /// native backend stores inline (by-value records, inline arrays) allocate
 /// nothing.
 @experimental

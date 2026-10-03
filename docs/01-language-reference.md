@@ -2859,14 +2859,14 @@ benchmark  runs=N  warmup=M
 funcName  min=Xms  max=Xms  mean=Xms  alloc=NB/run
 ```
 
-`alloc` is the bytes the current thread allocated on the heap per run, measured over a further `--runs` untimed runs between two `Std.Bench.allocatedBytes()` readings: the CLR's `GC.GetAllocatedBytesForCurrentThread()` on dotnet, HotSpot's `ThreadMXBean.getCurrentThreadAllocatedBytes()` on the JVM and the `lyric_rt` allocator's per-thread total on native. A bench whose values live on the stack (records without `var` fields and `array[N, T]` on native) reports `alloc=0B/run`.
+`alloc` is the bytes the current thread allocated on the heap per run (on native, what `lyric_alloc` allocated: objects, collections and strings, not the C library buffers the runtime's file, process, socket and TLS code allocates itself), measured over a further `--runs` untimed runs between two `Std.Bench.allocatedBytes()` readings: the CLR's `GC.GetAllocatedBytesForCurrentThread()` on dotnet, HotSpot's `ThreadMXBean.getCurrentThreadAllocatedBytes()` on the JVM and the `lyric_rt` allocator's per-thread total on native. A bench whose values live on the stack (records without `var` fields and `array[N, T]` on native) reports `alloc=0B/run`.
 
 **Flags:**
 
 | Flag | Default | Effect |
 |------|---------|--------|
-| `--runs N` | `10` | Number of timed iterations per benchmark |
-| `--warmup N` | `3` | Un-timed iterations before the timed region (JIT, cache warm-up) |
+| `--runs N` | `100` | Number of timed iterations per benchmark (at least 1) |
+| `--warmup N` | `5` | Un-timed iterations before the timed region (JIT, cache warm-up; at least 0) |
 | `--filter s` | *(all)* | Only run benchmarks whose function name contains `s` |
 
 **Exit codes:** `0` = benchmark ran and results printed; `2` = compilation error; `64` = usage error or constraint violation.

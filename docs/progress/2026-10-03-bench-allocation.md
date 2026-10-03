@@ -25,6 +25,10 @@ exit criterion: `Vec3` arithmetic does not allocate on native.
   allocation are measured separately, and prints
   `name  min=Xms  max=Xms  mean=Xms  alloc=NB/run`. It adds `import Std.Time`
   and `import Std.Bench` when the module lacks them.
+- `--runs` must be at least 1 and `--warmup` at least 0; anything else is a
+  usage error (exit 64) rather than a division by zero in the harness. The
+  documented defaults are corrected to the real ones, 100 runs and 5 warmup
+  runs.
 - `--target native` builds the bench module with the native backend and runs
   the executable. `--target jvm`, documented as blocked on `Std.Time`
   (#3302), works and the stale note is removed.

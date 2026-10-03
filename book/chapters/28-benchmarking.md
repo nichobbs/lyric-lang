@@ -43,10 +43,10 @@ pub func benchIntSum(): Unit {
 lyric bench benchmarks/bench_numeric.l
 ```
 
-This compiles a timing harness around every `@bench` function, runs 10 timed iterations per benchmark (preceded by 3 warmup iterations), and prints results to stdout:
+This compiles a timing harness around every `@bench` function, runs 100 timed iterations per benchmark (preceded by 5 warmup iterations), and prints results to stdout:
 
 ```
-benchmark  runs=10  warmup=3
+benchmark  runs=100  warmup=5
 
 benchIntSum        min=0.068ms  max=0.091ms  mean=0.073ms  alloc=0B/run
 benchIntMulAcc     min=0.011ms  max=0.013ms  mean=0.011ms  alloc=0B/run

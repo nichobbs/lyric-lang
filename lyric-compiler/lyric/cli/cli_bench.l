@@ -149,6 +149,10 @@ func cmdBench(argv: in slice[String]): Int {
       if i + 1 < argv.length {
         match parseOptInt(argv[i + 1]) {
           case Some(n) -> {
+            if n < 1 {
+              printErr("bench: --runs must be at least 1, got " + toString(n))
+              return 64
+            }
             runsArg = n
             i += 2
           }
@@ -165,6 +169,10 @@ func cmdBench(argv: in slice[String]): Int {
       if i + 1 < argv.length {
         match parseOptInt(argv[i + 1]) {
           case Some(n) -> {
+            if n < 0 {
+              printErr("bench: --warmup must not be negative, got " + toString(n))
+              return 64
+            }
             warmupArg = n
             i += 2
           }
