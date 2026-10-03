@@ -696,7 +696,10 @@ func testNpmTable(): Unit {
     "\"@a/b/c\" = \"1\"",
     "\"zod\" = \"\"",
     "\"zod\" = 3",
-    "\"foo-bar\" = \"1\"\n\"foo_bar\" = \"1\""
+    "\"foo-bar\" = \"1\"\n\"foo_bar\" = \"1\"",
+    "\"aws-sdk__client-s3\" = \"1\"\n\"@aws-sdk/client-s3\" = \"1\"",
+    "\"zod\" = \"1\\\"2\"",
+    "\"zod\" = \"^$1\""
   ]
   for bad in bads {
     match parseManifest(head + "[npm]\n" + bad + "\n", "lyric.toml") {

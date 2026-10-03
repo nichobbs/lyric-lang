@@ -182,8 +182,8 @@ test "npmInstallArgs: scripts off, registry only when set" {
 }
 
 test "npmShimFileName: scope folded into the name, no path separators" {
-  assertEqual(Cli.npmShimFileName("node-fetch"), "node-fetch.l", "plain name")
-  assertEqual(Cli.npmShimFileName("@aws-sdk/client-s3"), "aws-sdk__client-s3.l", "scoped name")
+  assertEqual(Mf.npmShimFileName("node-fetch"), "node-fetch.l", "plain name")
+  assertEqual(Mf.npmShimFileName("@aws-sdk/client-s3"), "aws-sdk__client-s3.l", "scoped name")
 }
 
 test "npmShimStub / npmShimProblem: scaffold satisfies its own check, stripped header is B0043" {

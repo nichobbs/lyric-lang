@@ -407,7 +407,7 @@ pub exposed record FetchError {
 ```
 
 NPM package names map to Lyric package identifiers by stripping `@`,
-replacing `/` with `.`, and PascalCasing each `-`/`_`-separated segment
+replacing `/` with `.`, and PascalCasing each `-`/`_`/`.`-separated segment (a segment starting with a digit gets an `N` prefix; two names mapping to the same identifier or the same shim file are a manifest error, Q-JS-004)
 (`node-fetch` to `NodeFetch`, `@aws-sdk/client-s3` to `AwsSdk.ClientS3`).
 
 ### 9.4 Diagnostic codes

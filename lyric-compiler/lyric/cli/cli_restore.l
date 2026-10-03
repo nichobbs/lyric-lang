@@ -1131,14 +1131,6 @@ pub func npmInstallArgs(installDir: in String, registry: in String): List[String
   args
 }
 
-/// The shim file name for an NPM package (docs/35 section 9.3): the package
-/// name with `@` dropped and `/` written `__` (`@aws-sdk/client-s3` ->
-/// `aws-sdk__client-s3`).
-pub func npmShimFileName(name: in String): String {
-  val bare = if Str.startsWith(name, "@") { Str.substring(name, 1) } else { name }
-  Str.replace(bare, "/", "__") + ".l"
-}
-
 /// The `@axiom` header every shim opens with.
 pub func npmShimAxiom(e: in Mf.NpmEntry): String {
   "@axiom(\"from npm " + e.name + " " + e.version + "\")"
@@ -1160,7 +1152,7 @@ pub func npmShimProblem(text: in String, e: in Mf.NpmEntry): String {
   if Str.contains(text, prefix) {
     ""
   } else {
-    "B0043: " + npmShimFileName(e.name) + " lost its @axiom(\"from npm " + e.name +
+    "B0043: " + Mf.npmShimFileName(e.name) + " lost its @axiom(\"from npm " + e.name +
       " ...\") header; restore will not use it as the shim for this package"
   }
 }
@@ -1217,7 +1209,7 @@ pub func restoreNpmPackages(manifest: in Mf.Manifest, mfDir: in String): Int {
       printErr("restore: B0040: npm install finished but \"" + e.name + "\" is not in node_modules")
       return 1
     }
-    val shimPath = Path.join(shimDir, npmShimFileName(e.name))
+    val shimPath = Path.join(shimDir, Mf.npmShimFileName(e.name))
     if File.fileExists(shimPath) {
       match File.readText(shimPath) {
         case Err(err) -> {

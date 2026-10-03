@@ -1536,6 +1536,29 @@ pub func isValidNpmName(name: in String): Bool {
   isNpmNamePart(name)
 }
 
+/// The shim file name for an NPM package (docs/35 section 9.3): the package
+/// name with `@` dropped and `/` written `__` (`@aws-sdk/client-s3` ->
+/// `aws-sdk__client-s3.l`).
+pub func npmShimFileName(name: in String): String {
+  val bare = if Str.startsWith(name, "@") { Str.substring(name, 1) } else { name }
+  Str.replace(bare, "/", "__") + ".l"
+}
+
+/// A range is written into the generated shim's `@axiom("...")` string and
+/// the install `package.json`, so it must hold no quote, backslash, `$`
+/// (interpolation) or control character.
+func isShimSafeRange(range: in String): Bool {
+  var i = 0
+  while i < range.length {
+    val c = Str.charAtOrReplacement(range, i)
+    if c == '"' or c == '\\' or c == '$' or c < ' ' {
+      return false
+    }
+    i += 1
+  }
+  true
+}
+
 /// ASCII-uppercase a one-character string.  Spelled with a table rather than
 /// `Str.toUpper`, which the stage-0 emitter mis-resolves to `Std.Char` in a
 /// file importing both modules (#2125).
@@ -1623,9 +1646,29 @@ func assembleNpm(entries: in List[Entry]): Result[Option[NpmSection], ManifestEr
           )
         )
       }
+      if not isShimSafeRange(range) {
+        return Err(
+          error = InvalidField(
+            section = "npm",
+            field = e.key,
+            message = "the version range must not contain a quote, backslash, '$' or control character"
+          )
+        )
+      }
       val ident = npmPackageIdent(e.key)
       var j = 0
       while j < npmEntries.count {
+        if npmShimFileName(npmEntries[j].name) == npmShimFileName(e.key) {
+          return Err(
+            error = InvalidField(
+              section = "npm",
+              field = e.key,
+              message = "its shim file \"" + npmShimFileName(e.key) + "\" is already taken by \"" +
+                npmEntries[j].name +
+                "\""
+            )
+          )
+        }
         if npmEntries[j].ident == ident {
           return Err(
             error = InvalidField(
