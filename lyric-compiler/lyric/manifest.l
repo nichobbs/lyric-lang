@@ -1656,6 +1656,15 @@ func assembleNpm(entries: in List[Entry]): Result[Option[NpmSection], ManifestEr
         )
       }
       val ident = npmPackageIdent(e.key)
+      if ident.length == 0 {
+        return Err(
+          error = InvalidField(
+            section = "npm",
+            field = e.key,
+            message = "has no letters or digits to build a Lyric package identifier from"
+          )
+        )
+      }
       var j = 0
       while j < npmEntries.count {
         if npmShimFileName(npmEntries[j].name) == npmShimFileName(e.key) {

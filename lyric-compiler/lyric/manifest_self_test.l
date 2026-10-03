@@ -655,7 +655,7 @@ func testWasmTable(): Unit {
       assertEqual(n.triple, "", "wasm-table: no [native] keys, so no triple")
     }
   }
-  for bad in ["version = \"1.2\"", "world = \"My World\"", "stack = 100", "stack = 0"] {
+  for bad in ["version = \"1.2\"", "world = \"My World\"", "stack = 100", "stack = 0", "stack = \"131072\"", "version = 1", "world = 2"] {
     val t = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[wasm]\n" + bad + "\n"
     match parseManifest(t, "lyric.toml") {
       case Ok(_) -> assertTrue(false, "wasm-table: expected a rejection of " + bad)
@@ -696,6 +696,7 @@ func testNpmTable(): Unit {
     "\"@a/b/c\" = \"1\"",
     "\"zod\" = \"\"",
     "\"zod\" = 3",
+    "\"---\" = \"1\"",
     "\"foo-bar\" = \"1\"\n\"foo_bar\" = \"1\"",
     "\"aws-sdk__client-s3\" = \"1\"\n\"@aws-sdk/client-s3\" = \"1\"",
     "\"zod\" = \"1\\\"2\"",
@@ -710,12 +711,6 @@ func testNpmTable(): Unit {
   for opt in ["registry = \"ftp://x\"", "registry = 5"] {
     match parseManifest(head + "[npm]\n\"zod\" = \"^3\"\n\n[npm.options]\n" + opt + "\n", "lyric.toml") {
       case Ok(_) -> assertTrue(false, "npm-table: expected a rejection of " + opt)
-      case Err(_) -> ()
-    }
-  }
-  for bad in ["stack = \"131072\"", "version = 1", "world = 2"] {
-    match parseManifest(head + "[wasm]\n" + bad + "\n", "lyric.toml") {
-      case Ok(_) -> assertTrue(false, "wasm-table: expected a rejection of wrongly typed " + bad)
       case Err(_) -> ()
     }
   }
