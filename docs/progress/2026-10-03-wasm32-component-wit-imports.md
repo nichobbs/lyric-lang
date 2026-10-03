@@ -12,4 +12,4 @@
 - The component self-test builds a program importing two modules (`Unit`, `Int`,
   `String` in and out, `Double`), transpiles it with `jco --map`, and calls it
   from node with the host functions supplied.
-- `N0017` now means only "a bundled dependency declares a host import".
+- `N0017` is removed: the rewrite covers every project package, so no host import is left unlowered.

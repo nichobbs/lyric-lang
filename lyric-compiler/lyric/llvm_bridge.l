@@ -1565,13 +1565,6 @@ func linkAndEmitNative(
   val wasmExports = if isModule { withoutReservedJsNames(allExports) } else { allExports }
   var ui = 0
   while ui < units.count {
-    if units[ui].wasmImports.count > 0 and isComponent {
-      Console.error(
-        "error[N0017]: bundled package " + units[ui].pkgName +
-          " declares a @wasmImport extern func; the component shape lowers host imports only from the program's own packages (use --shape module)"
-      )
-      return false
-    }
     if units[ui].wasmImports.count > 0 and not isModule {
       Console.error(
         "error[N0015]: package " + units[ui].pkgName +

@@ -592,3 +592,73 @@ test "wasm32 component: two exporting packages in one project each get an interf
   val v = run(envOrPanic("WASM_TOOLS"), vargs)
   assertTrue(v.exitCode == 0, "the component validates: " + v.stderr)
 }
+
+func componentBuildOk(source: in String): Bool {
+  val stdlib = findStdlibSourcesNative()
+  val dir = Path.join(
+    Environment.getVarOrDefault("TMPDIR", "/tmp"),
+    "lyric-wasm32-component-neg-" + Uuid.uuidToString(Uuid.newUuid())
+  )
+  val _d = File.createDir(dir)
+  val flags: List[String] = newList()
+  compileToNativeWithShape(
+    source,
+    Path.join(dir, "prog.wasm"),
+    stdlib,
+    "wasm32-wasi",
+    "2",
+    flags,
+    newList(),
+    "",
+    true,
+    "component"
+  )
+}
+
+test "wasm32 component: host imports with unsupported shapes are rejected" {
+  val _w = envOrPanic("WASI_SDK_PATH")
+  val _t = envOrPanic("WASM_TOOLS")
+  val _a = envOrPanic("LYRIC_WASI_ADAPTER")
+  assertFalse(
+    componentBuildOk(
+      r#"package Probe
+
+@wasmImport("ui")
+extern func flag(b: Bool): Unit = "flag"
+
+pub func go(): Unit {
+  flag(true)
+}
+"#
+    ),
+    "a Bool parameter is not carried across a host import"
+  )
+  assertFalse(
+    componentBuildOk(
+      r#"package Probe
+
+@wasmImport("")
+extern func bad(n: Int): Unit = "bad"
+
+pub func go(): Unit {
+  bad(1)
+}
+"#
+    ),
+    "an empty module name is malformed"
+  )
+  assertFalse(
+    componentBuildOk(
+      r#"package Probe
+
+@wasmImport("ui")
+extern func wide(a: Int, b: Int, c: Int, d: Int, e: Int, f: Int, g: Int, h: Int, i: Int, j: Int, k: Int, l: Int, m: Int, n: Int, o: Int, p: Int): Unit = "wide"
+
+pub func go(): Unit {
+  wide(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16)
+}
+"#
+    ),
+    "more than 15 flat parameters is rejected"
+  )
+}

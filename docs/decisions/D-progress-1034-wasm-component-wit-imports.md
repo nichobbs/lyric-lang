@@ -22,8 +22,11 @@ Extends D-progress-1031 (host imports in the module shape) and D-progress-1033.
    solved with namespacing.
 4. **Types.** `Int`, `Long`, `Float`, `Double`, `String` and `Unit` (result only);
    `Bool`, `Byte`, records and the rest are an error naming the parameter, and more
-   than 15 flat parameters is an error. A `@wasmImport` in a bundled dependency
-   package stays `N0017`.
+   than 15 flat parameters is an error (one slot is reserved for the return-area
+   pointer a `String` result adds). The rewrite runs over every package of a
+   project, dependencies included, so a host import is lowered wherever it is
+   declared; the slice-1 `N0017` ("component shape cannot lower imports") is
+   removed rather than narrowed, since nothing can reach it any more.
 
 ## Not in this slice
 
