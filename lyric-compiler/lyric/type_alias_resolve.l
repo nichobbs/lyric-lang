@@ -282,15 +282,24 @@ func resolveTypeExprAt(
       }
       TGenericApp(head = head2, args = args2)
     }
-    case TArray(size, element) -> TArray(
-      size = resolveTypeArgAt(aliasTargets, genericNames, size, depth + 1),
-      element = resolveTypeExprAt(
-        aliasTargets,
-        genericNames,
-        element,
-        depth + 1
-      )
-    )
+    case TArray(size, element) -> {
+      val element2 = resolveTypeExprAt(aliasTargets, genericNames, element, depth + 1)
+      if aliasTargets.containsKey(arraysAsListsKey()) {
+        // A backend whose `array[N, T]` is a `List[T]` (D167).
+        val segs: List[String] = newList()
+        segs.add("List")
+        val targs: List[TypeArg] = newList()
+        targs.add(TAType(ty = element2))
+        TGenericApp(head = ModulePath(segments = segs, span = te.span), args = targs)
+      } else {
+        val lenKey = arrayLenMarkerPrefix() + recordCopySiteKey(te.span)
+        val resolvedLen = match mapGet(aliasTargets, lenKey) {
+          case Some(lt) -> match lt.kind { case TArray(lsz, _) -> lsz; case _ -> size }
+          case None -> size
+        }
+        TArray(size = resolveTypeArgAt(aliasTargets, genericNames, resolvedLen, depth + 1), element = element2)
+      }
+    }
     case TSlice(element) -> TSlice(
       element = resolveTypeExprAt(aliasTargets, genericNames, element, depth + 1)
     )

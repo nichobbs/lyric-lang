@@ -2086,6 +2086,76 @@ func checkRecordArithDerives(diag: in List[Diagnostic], anns: in List[Annotation
   }
 }
 
+// A derived `equals`, `hash`, `show` or ordering reads each field by the
+// field type's own `==` or text, and no such code exists for an array (D167):
+// `==` on an array compares element by element, but derived code would compare
+// the array's reference.  So a type with a field that holds an array anywhere
+// (directly, in an `Option`, a tuple, a collection, or a nested record or
+// union) derives none of them (T0159); `Add` and `Sub` have their own rule
+// (T0152).
+func checkArrayFieldDerives(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  anns: in List[Annotation],
+  typeName: in String,
+  generics: in Option[GenericParams],
+  fieldTypes: in List[TypeExpr],
+  span: in Span,
+): Unit {
+  val derives = extractDerives(anns)
+  if derives.count == 0 {
+    return
+  }
+  val ctx = declGenericContext(generics)
+  val scratch: List[Diagnostic] = newList()
+  var hasArray = false
+  for ft in fieldTypes {
+    val seen: List[Int] = newList()
+    if typeHoldsArray(tbl, resolveType(tbl, ctx, scratch, ft), seen) {
+      hasArray = true
+    }
+  }
+  if not hasArray {
+    return
+  }
+  for d in derives {
+    if not (d == "Add" or d == "Sub" or d == "Mul" or d == "Div" or d == "Mod") {
+      diag.add(
+        errorDiagnostic(
+          "T0159",
+          "'" + typeName + "' cannot derive " + d +
+            ": a field holds an array, which derived code would treat by reference; write the method by hand (`==` compares arrays element by element)",
+          span
+        )
+      )
+    }
+  }
+}
+
+func recordFieldTypeExprs(decl: in RecordDecl): List[TypeExpr] {
+  val tys: List[TypeExpr] = newList()
+  for m in decl.members {
+    match m {
+      case RMField(fd) -> tys.add(fd.ty)
+      case _ -> ()
+    }
+  }
+  tys
+}
+
+func unionFieldTypeExprs(decl: in UnionDecl): List[TypeExpr] {
+  val tys: List[TypeExpr] = newList()
+  for c in decl.cases {
+    for f in c.fields {
+      match f {
+        case UFNamed(_, ty, _) -> tys.add(ty)
+        case UFPos(ty, _) -> tys.add(ty)
+      }
+    }
+  }
+  tys
+}
+
 // Why `decl` is not a homogeneous numeric record, or `None` when it is.
 func homogeneousNumericProblem(decl: in RecordDecl): Option[String] {
   match decl.generics {
@@ -3629,12 +3699,41 @@ func checkDeclTypeRefs(tbl: in SymbolTable, diag: in List[Diagnostic], items: in
       case IRecord(decl) -> {
         checkRecordDeclTypes(tbl, diag, decl)
         checkRecordArithDerives(diag, items[i].annotations, decl)
+        checkArrayFieldDerives(
+          tbl,
+          diag,
+          items[i].annotations,
+          decl.name,
+          decl.generics,
+          recordFieldTypeExprs(decl),
+          decl.span
+        )
       }
       case IExposedRec(decl) -> {
         checkRecordDeclTypes(tbl, diag, decl)
         checkRecordArithDerives(diag, items[i].annotations, decl)
+        checkArrayFieldDerives(
+          tbl,
+          diag,
+          items[i].annotations,
+          decl.name,
+          decl.generics,
+          recordFieldTypeExprs(decl),
+          decl.span
+        )
       }
-      case IUnion(decl) -> checkUnionDeclTypes(tbl, diag, decl)
+      case IUnion(decl) -> {
+        checkUnionDeclTypes(tbl, diag, decl)
+        checkArrayFieldDerives(
+          tbl,
+          diag,
+          items[i].annotations,
+          decl.name,
+          decl.generics,
+          unionFieldTypeExprs(decl),
+          decl.span
+        )
+      }
       case IInterface(decl) -> checkInterfaceDeclTypes(tbl, diag, decl)
       case IOpaque(decl) -> checkOpaqueDeclTypes(tbl, diag, decl)
       case IProtected(decl) -> checkProtectedDeclTypes(tbl, diag, decl)
@@ -3993,7 +4092,10 @@ func checkItemDeclaredInits(
       val owner = extractGenericNames(decl.generics)
       for m in decl.members {
         match m {
-          case OMField(fd) -> checkFieldDefault(tbl, sigs, diag, owner, decl.name, fd.name, fd.ty, fd.dflt)
+          case OMField(fd) -> {
+            checkFieldDefault(tbl, sigs, diag, owner, decl.name, fd.name, fd.ty, fd.dflt)
+            noteFieldZeroDefault(tbl, diag, owner, decl.name, fd)
+          }
           case OMInvariant(_) -> ()
         }
       }
@@ -4003,36 +4105,18 @@ func checkItemDeclaredInits(
       for m in decl.members {
         match m {
           case PMField(pf) -> match pf {
-            case PFVar(name, ty, init, _, _, _) -> checkFieldDefault(
-              tbl,
-              sigs,
-              diag,
-              owner,
-              decl.name,
-              name,
-              ty,
-              init
-            )
-            case PFLet(name, ty, init, _, _, _) -> checkFieldDefault(
-              tbl,
-              sigs,
-              diag,
-              owner,
-              decl.name,
-              name,
-              ty,
-              init
-            )
-            case PFImmutable(fd) -> checkFieldDefault(
-              tbl,
-              sigs,
-              diag,
-              owner,
-              decl.name,
-              fd.name,
-              fd.ty,
-              fd.dflt
-            )
+            case PFVar(name, ty, init, _, _, sp) -> {
+              checkFieldDefault(tbl, sigs, diag, owner, decl.name, name, ty, init)
+              noteFieldZeroDefaultOf(tbl, diag, owner, decl.name, name, ty, init, sp)
+            }
+            case PFLet(name, ty, init, _, _, sp) -> {
+              checkFieldDefault(tbl, sigs, diag, owner, decl.name, name, ty, init)
+              noteFieldZeroDefaultOf(tbl, diag, owner, decl.name, name, ty, init, sp)
+            }
+            case PFImmutable(fd) -> {
+              checkFieldDefault(tbl, sigs, diag, owner, decl.name, fd.name, fd.ty, fd.dflt)
+              noteFieldZeroDefault(tbl, diag, owner, decl.name, fd)
+            }
           }
           case PMEntry(ed) -> checkParamDefaults(tbl, sigs, diag, owner, ed.name, ed.params)
           case PMFunc(fn) -> checkParamDefaults(tbl, sigs, diag, concatGenericNames(owner, fn.generics), fn.name, fn.params)
@@ -4070,6 +4154,53 @@ func checkItemDeclaredInits(
   }
 }
 
+// A field of array type with no default is filled with its element type's
+// zero value (D167); T0156 when the element type has none.
+func noteFieldZeroDefault(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  genericNames: in List[String],
+  typeName: in String,
+  fd: in FieldDecl,
+): Unit {
+  noteFieldZeroDefaultOf(tbl, diag, genericNames, typeName, fd.name, fd.ty, fd.dflt, fd.span)
+}
+
+func noteFieldZeroDefaultOf(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  genericNames: in List[String],
+  typeName: in String,
+  fieldName: in String,
+  fieldTy: in TypeExpr,
+  dflt: in Option[Expr],
+  fieldSpan: in Span,
+): Unit {
+  val hasDefault = match dflt { case Some(_) -> true; case None -> false }
+  if hasDefault {
+    return
+  }
+  val ctx = newGenericContext()
+  if genericNames.count > 0 {
+    gctxPush(ctx, genericNames)
+  }
+  val scratch: List[Diagnostic] = newList()
+  val declT = resolveType(tbl, ctx, scratch, fieldTy)
+  // A field whose element type is a type variable has no zero value and is a
+  // required constructor argument, not an error.
+  if typeMentionsTyVar(declT) {
+    return
+  }
+  noteArrayZeroInit(
+    tbl,
+    diag,
+    declT,
+    recordCopySiteKey(fieldSpan),
+    fieldSpan,
+    "field '" + typeName + "." + fieldName + "'"
+  )
+}
+
 func checkRecordDeclaredInits(
   tbl: in SymbolTable,
   sigs: in Map[String, ResolvedSignature],
@@ -4079,7 +4210,10 @@ func checkRecordDeclaredInits(
   val owner = recordDeclGenericNames(decl)
   for m in decl.members {
     match m {
-      case RMField(fd) -> checkFieldDefault(tbl, sigs, diag, owner, decl.name, fd.name, fd.ty, fd.dflt)
+      case RMField(fd) -> {
+        checkFieldDefault(tbl, sigs, diag, owner, decl.name, fd.name, fd.ty, fd.dflt)
+        noteFieldZeroDefault(tbl, diag, owner, decl.name, fd)
+      }
       case RMFunc(fn) -> checkParamDefaults(tbl, sigs, diag, concatGenericNames(owner, fn.generics), fn.name, fn.params)
       case RMInvariant(_) -> ()
     }
@@ -4754,6 +4888,7 @@ func checkWithImportedPackagesCore(
   }
 
   val userPkg = dottedPackageName(file.packageDecl.path)
+  tbl.arrayLenPkg.add(userPkg)
   val userImports = collectImportNames(file.imports)
 
   // T1: register imported items first (shadow without error), tagging each
@@ -4915,6 +5050,7 @@ func checkWithImportedPackagesCore(
   recordMutableModuleVals(tbl, sigs, file.items)
   // The uses of each open local binding fix its annotation (#7788).
   resolveOpenBindingSites(tbl)
+  reportUnspellableArrayCopies(tbl, diag)
 
   CheckResult(file = file, symbols = tbl, sigs = sigs, diagnostics = diag)
 }

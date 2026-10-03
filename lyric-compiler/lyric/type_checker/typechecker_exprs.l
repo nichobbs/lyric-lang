@@ -1456,6 +1456,31 @@ func distinctFactoryType(sc: in Scope, tbl: in SymbolTable, fn: in Expr): Option
   }
 }
 
+// The underlying type of the non-generic distinct type `t`.
+func distinctUnderlyingOf(tbl: in SymbolTable, t: in Type): Option[Type] {
+  val tid = match t { case TyUser(id, _, _) -> id; case _ -> return None }
+  var i = 0
+  while i < tbl.symbols.count {
+    val sym = tbl.symbols[i]
+    match sym.kind {
+      case DKDistinctType(did, dt) -> if typeIdEq(did, tid) {
+        match dt.generics {
+          case Some(_) -> return None
+          case None -> ()
+        }
+        val saved = enterDeclaringScope(tbl, sym)
+        val scratch: List[Diagnostic] = newList()
+        val underlying = resolveType(tbl, newGenericContext(), scratch, dt.underlying)
+        restoreScope(tbl, saved)
+        return Some(value = underlying)
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  None
+}
+
 // The `from` path of a distinct type (`type Cents = Long range ...`,
 // `type UserId = Long`), if `t` is one (#7361).
 pub func distinctFromPath(tbl: in SymbolTable, t: in Type): Option[String] {
@@ -1569,28 +1594,48 @@ pub func recordRecordEq(
   if not typeEquiv(lhs, rhs) or not isStructuralEqRecord(tbl, lhs) {
     return
   }
+  match buildRecordEqSite(tbl, span, lhs, negate) {
+    case Err(bad) -> diag.add(
+      if bad.endsWith("~") {
+        eqTooDeepDiagnostic(lhs, span)
+      } else {
+        errorDiagnostic(
+          "T0153",
+          "`" + renderType(lhs) + "` has no `==`: field `" + bad + "` is a function, and functions cannot be compared",
+          span
+        )
+      }
+    )
+    case Ok(site) -> {
+      val key = recordCopySiteKey(span)
+      if not tbl.recordEqSites.containsKey(key) {
+        tbl.recordEqSites.add(key, site)
+      }
+    }
+  }
+}
+
+// The `RecordEqSite` of a structural record type `t`, or the path of the
+// function-typed field that has no `==` (T0153).
+pub func buildRecordEqSite(tbl: in SymbolTable, span: in Span, t: in Type, negate: Bool): Result[RecordEqSite, String] {
   val paths: List[List[String]] = newList()
   val prefix: List[String] = newList()
   val levelTypes: Map[String, TypeExpr] = newMap()
+  val arrayLeaves: Map[String, ArrayEqSite] = newMap()
+  val wrapLeaves: Map[String, EqShape] = newMap()
   val visiting: List[String] = newList()
-  match collectEqLeaves(tbl, span, lhs, prefix, paths, levelTypes, visiting) {
-    case Some(bad) -> diag.add(
-      errorDiagnostic(
-        "T0153",
-        "`" + renderType(lhs) + "` has no `==`: field `" + bad +
-          "` is a function, and functions cannot be compared",
-        span
+  match collectEqLeaves(tbl, span, t, prefix, paths, levelTypes, arrayLeaves, wrapLeaves, visiting) {
+    case Some(bad) -> Err(error = bad)
+    case None -> Ok(
+      value = RecordEqSite(
+        paths = paths,
+        levelTypes = levelTypes,
+        recordType = typeExprForRef(tbl, t, span),
+        negate = negate,
+        arrayLeaves = arrayLeaves,
+        wrapLeaves = wrapLeaves
       )
     )
-    case None -> {
-      val key = recordCopySiteKey(span)
-      if not tbl.recordEqSites.containsKey(key) {
-        tbl.recordEqSites.add(
-          key,
-          RecordEqSite(paths = paths, levelTypes = levelTypes, recordType = typeExprForRef(tbl, lhs, span), negate = negate)
-        )
-      }
-    }
   }
 }
 
@@ -1601,11 +1646,19 @@ func collectEqLeaves(
   prefix: in List[String],
   leaves: in List[List[String]],
   levelTypes: in Map[String, TypeExpr],
+  arrayLeaves: in Map[String, ArrayEqSite],
+  wrapLeaves: in Map[String, EqShape],
   visiting: in List[String],
 ): Option[String] {
   val u = unrefine(t)
   match u {
     case TyFunction(_, _, _) -> return Some(value = dottedPath(prefix))
+    case TyArray(Some(_), _) -> match buildArrayEqSite(tbl, span, u, false) {
+      case Err(bad) -> return Some(value = dottedPath(prefix) + "." + bad)
+      case Ok(site) -> {
+        arrayLeaves[dottedPath(prefix)] = site
+      }
+    }
     case _ -> ()
   }
   match u {
@@ -1626,7 +1679,17 @@ func collectEqLeaves(
           }
         }
         for f in fieldsOfRecordInstantiated(tbl, tid, args) {
-          val bad = collectEqLeaves(tbl, span, f.ty, extendPath(prefix, f.name), leaves, levelTypes, visiting)
+          val bad = collectEqLeaves(
+            tbl,
+            span,
+            f.ty,
+            extendPath(prefix, f.name),
+            leaves,
+            levelTypes,
+            arrayLeaves,
+            wrapLeaves,
+            visiting
+          )
           match bad {
             case Some(_) -> return bad
             case None -> ()
@@ -1637,11 +1700,31 @@ func collectEqLeaves(
       }
       val scratch: List[Diagnostic] = newList()
       match distinctMemberType(tbl, scratch, u, "value", span) {
-        case Some(under) -> return collectEqLeaves(tbl, span, under, extendPath(prefix, "value"), leaves, levelTypes, visiting)
+        case Some(under) -> return collectEqLeaves(
+          tbl,
+          span,
+          under,
+          extendPath(prefix, "value"),
+          leaves,
+          levelTypes,
+          arrayLeaves,
+          wrapLeaves,
+          visiting
+        )
         case None -> ()
       }
     }
     case _ -> ()
+  }
+  // A tuple, union or distinct type that holds an array is compared by its
+  // shape, not by the host's equality (D167).
+  if isEqWrapperType(tbl, u) {
+    match buildEqShape(tbl, span, u, 0) {
+      case Err(bad) -> return Some(value = dottedPath(prefix) + "." + bad)
+      case Ok(shape) -> {
+        wrapLeaves[dottedPath(prefix)] = shape
+      }
+    }
   }
   leaves.add(prefix)
   None
@@ -1705,7 +1788,9 @@ func recordOverflowBinop(tbl: in SymbolTable, op: in BinOp, result: in Type, spa
 
 // `==`/`!=` or a derived comparison on two values of one distinct type.
 func recordDistinctCompare(tbl: in SymbolTable, lhs: in Type, rhs: in Type, span: in Span): Unit {
-  if typeEquiv(lhs, rhs) {
+  // A distinct type holding an array is compared by `recordWrapEq`, which
+  // reads its `.value` and compares the array element by element.
+  if typeEquiv(lhs, rhs) and not isEqWrapperType(tbl, lhs) {
     match distinctFromPath(tbl, lhs) {
       case Some(_) -> recordDistinctSite(tbl, span, "cmp")
       case None -> ()
@@ -1874,6 +1959,8 @@ func inferBinop(
       }
       recordDistinctCompare(tbl, lhs, rhs, span)
       recordRecordEq(tbl, diag, lhs, rhs, false, span)
+      recordArrayEq(tbl, diag, lhs, rhs, false, span)
+      recordWrapEq(tbl, diag, lhs, rhs, false, span)
       TyPrim(pt = PtBool)
     }
     case BNeq -> {
@@ -1888,6 +1975,8 @@ func inferBinop(
       }
       recordDistinctCompare(tbl, lhs, rhs, span)
       recordRecordEq(tbl, diag, lhs, rhs, true, span)
+      recordArrayEq(tbl, diag, lhs, rhs, true, span)
+      recordWrapEq(tbl, diag, lhs, rhs, true, span)
       TyPrim(pt = PtBool)
     }
     case BLt -> {
@@ -2133,9 +2222,13 @@ func builtinMember(tbl: in SymbolTable, recvRaw: in Type, name: in String): Opti
       }
       None
     }
-    case TyArray(_, _) -> {
+    case TyArray(_, elem) -> {
       if name == "length" {
         return Some(value = TyPrim(pt = PtInt))
+      }
+      if name == "toSlice" {
+        val ps: List[Type] = newList()
+        return Some(value = TyFunction(params = ps, ret = TySlice(element = elem), isAsync = false))
       }
       None
     }
@@ -3771,7 +3864,17 @@ func checkRecordCopy(
     var ni = 0
     while ni < fields.count {
       names.add(fields[ni].name)
-      fieldTes.add(typeExprForRef(tbl, fields[ni].ty, e.span))
+      if isArrayType(fields[ni].ty) {
+        // An array field carried over by `.copy` is copied (D167), so its
+        // type must be spelled, a type variable by name.
+        val arrTe = typeExprForRefWithVars(tbl, fields[ni].ty, e.span)
+        if (match arrTe { case Some(_) -> false; case None -> true }) {
+          diag.add(arrayUnknownLength(fields[ni].ty, e.span))
+        }
+        fieldTes.add(arrTe)
+      } else {
+        fieldTes.add(typeExprForRef(tbl, fields[ni].ty, e.span))
+      }
       ni = ni + 1
     }
     val ctorPath = match recordSymbolOfTid(tbl, tid) {
@@ -4110,6 +4213,20 @@ func refTypePath(segs: in List[String], sp: in Span): ModulePath {
 // the annotation names the same type in the calling package; `None` for a
 // type with no source spelling here (a type variable, `Self`, an error).
 func typeExprForRef(tbl: in SymbolTable, t: in Type, sp: in Span): Option[TypeExpr] {
+  typeExprForRefV(tbl, t, sp, false)
+}
+
+func typeExprsForRef(tbl: in SymbolTable, ts: in List[Type], sp: in Span): Option[List[TypeExpr]] {
+  typeExprsForRefV(tbl, ts, sp, false)
+}
+
+/// `typeExprForRef` that spells a type variable by its name, for the array
+/// lowering's copy and fill intrinsics inside a generic body (D167).
+func typeExprForRefWithVars(tbl: in SymbolTable, t: in Type, sp: in Span): Option[TypeExpr] {
+  typeExprForRefV(tbl, t, sp, true)
+}
+
+func typeExprForRefV(tbl: in SymbolTable, t: in Type, sp: in Span, vars: in Bool): Option[TypeExpr] {
   match t {
     case TyPrim(pt) -> match pt {
       case PtUnit -> Some(value = TypeExpr(kind = TUnit, span = sp))
@@ -4120,24 +4237,34 @@ func typeExprForRef(tbl: in SymbolTable, t: in Type, sp: in Span): Option[TypeEx
         Some(value = TypeExpr(kind = TRef(path = refTypePath(segs, sp)), span = sp))
       }
     }
-    case TyRefined(u, _, _, _) -> typeExprForRef(tbl, u, sp)
-    case TyNullable(inner) -> match typeExprForRef(tbl, inner, sp) {
+    case TyRefined(u, _, _, _) -> typeExprForRefV(tbl, u, sp, vars)
+    case TyNullable(inner) -> match typeExprForRefV(tbl, inner, sp, vars) {
       case Some(te) -> Some(value = TypeExpr(kind = TNullable(inner = te), span = sp))
       case None -> None
     }
-    case TySlice(e) -> match typeExprForRef(tbl, e, sp) {
+    case TySlice(e) -> match typeExprForRefV(tbl, e, sp, vars) {
       case Some(te) -> Some(value = TypeExpr(kind = TSlice(element = te), span = sp))
       case None -> None
     }
-    case TyTuple(elems) -> match typeExprsForRef(tbl, elems, sp) {
+    case TyArray(sz, e) -> match sz {
+      case Some(n) -> match typeExprForRefV(tbl, e, sp, vars) {
+        case Some(te) -> {
+          val lenLit = mkExpr(ELiteral(lit = LInt(value = n.toLong(), suffix = I32, raw = "")), sp)
+          Some(value = TypeExpr(kind = TArray(size = TAValue(expr = lenLit), element = te), span = sp))
+        }
+        case None -> None
+      }
+      case None -> None
+    }
+    case TyTuple(elems) -> match typeExprsForRefV(tbl, elems, sp, vars) {
       case Some(tes) -> Some(value = TypeExpr(kind = TTuple(types = tes), span = sp))
       case None -> None
     }
     case TyFunction(ps, r, isAsync) -> if isAsync {
       None
     } else {
-      match typeExprsForRef(tbl, ps, sp) {
-        case Some(ptes) -> match typeExprForRef(tbl, r, sp) {
+      match typeExprsForRefV(tbl, ps, sp, vars) {
+        case Some(ptes) -> match typeExprForRefV(tbl, r, sp, vars) {
           case Some(rte) -> Some(
             value = TypeExpr(
               kind = TFunction(parameters = ptes, retTy = rte),
@@ -4180,7 +4307,7 @@ func typeExprForRef(tbl: in SymbolTable, t: in Type, sp: in Span): Option[TypeEx
         if args.count == 0 {
           Some(value = TypeExpr(kind = TRef(path = refTypePath(segs, sp)), span = sp))
         } else {
-          match typeExprsForRef(tbl, args, sp) {
+          match typeExprsForRefV(tbl, args, sp, vars) {
             case Some(ates) -> {
               val targs: List[TypeArg] = newList()
               var ai = 0
@@ -4196,11 +4323,18 @@ func typeExprForRef(tbl: in SymbolTable, t: in Type, sp: in Span): Option[TypeEx
       }
       case None -> None
     }
+    case TyVar(nm) -> if vars {
+      val vsegs: List[String] = newList()
+      vsegs.add(nm)
+      Some(value = TypeExpr(kind = TRef(path = refTypePath(vsegs, sp)), span = sp))
+    } else {
+      None
+    }
     case _ -> None
   }
 }
 
-func typeExprsForRef(tbl: in SymbolTable, ts: in List[Type], sp: in Span): Option[List[TypeExpr]] {
+func typeExprsForRefV(tbl: in SymbolTable, ts: in List[Type], sp: in Span, vars: in Bool): Option[List[TypeExpr]] {
   val acc: List[TypeExpr] = newList()
   var i = 0
   while i < ts.count {
@@ -5027,6 +5161,7 @@ func modeNeedsLValue(m: in ParamMode): Bool {
 func isByRefValueType(t: in Type): Bool {
   match unrefine(t) {
     case TyPrim(pt) -> match pt { case PtString -> false; case PtUnit -> false; case PtNever -> false; case _ -> true }
+    case TyArray(_, _) -> true
     case _ -> false
   }
 }
@@ -5540,6 +5675,7 @@ func collectCtorFieldsFromRecord(
   scratch: in List[Diagnostic],
   members: in List[RecordMember],
   acc: in List[CtorField],
+  implicitZero: in Bool,
 ): Unit {
   var i = 0
   while i < members.count {
@@ -5552,6 +5688,10 @@ func collectCtorFieldsFromRecord(
             hasDef = true
           }
           case None -> {
+            // An array field with no default is zero filled where its record
+            // is declared; another package's record (whose declaration
+            // carries no such default) needs the field given (D167).
+            hasDef = implicitZero and fieldHasZeroDefault(tbl, t, fd.span)
           }
         }
         acc.add(CtorField(name = fd.name, ty = t, hasDefault = hasDef))
@@ -5569,6 +5709,7 @@ func collectCtorFieldsFromOpaque(
   scratch: in List[Diagnostic],
   members: in List[OpaqueMember],
   acc: in List[CtorField],
+  implicitZero: in Bool,
 ): Unit {
   var i = 0
   while i < members.count {
@@ -5581,6 +5722,7 @@ func collectCtorFieldsFromOpaque(
             hasDef = true
           }
           case None -> {
+            hasDef = implicitZero and fieldHasZeroDefault(tbl, t, fd.span)
           }
         }
         acc.add(CtorField(name = fd.name, ty = t, hasDefault = hasDef))
@@ -5610,21 +5752,25 @@ func collectCtorFields(tbl: in SymbolTable, sym: in Symbol, acc: in List[CtorFie
   val saved = enterDeclaringScope(tbl, sym)
   val result = match sym.kind {
     case DKRecord(_, rd) -> {
-      collectCtorFieldsFromRecord(tbl, ctx, scratch, rd.members, acc)
+      collectCtorFieldsFromRecord(tbl, ctx, scratch, rd.members, acc, not sym.isImported)
       true
     }
     case DKExposedRec(_, rd) -> {
-      collectCtorFieldsFromRecord(tbl, ctx, scratch, rd.members, acc)
+      collectCtorFieldsFromRecord(tbl, ctx, scratch, rd.members, acc, not sym.isImported)
       true
     }
     case DKOpaque(_, od) -> {
-      collectCtorFieldsFromOpaque(tbl, ctx, scratch, od.members, acc)
+      collectCtorFieldsFromOpaque(tbl, ctx, scratch, od.members, acc, not sym.isImported)
       true
     }
     case DKProtected(_, _) -> {
       for fd in ctorAllFields(sym) {
-        val hasDef = match fd.dflt { case Some(_) -> true; case None -> false }
-        acc.add(CtorField(name = fd.name, ty = resolveType(tbl, ctx, scratch, fd.ty), hasDefault = hasDef))
+        val t = resolveType(tbl, ctx, scratch, fd.ty)
+        val hasDef = match fd.dflt {
+          case Some(_) -> true
+          case None -> not sym.isImported and fieldHasZeroDefault(tbl, t, fd.span)
+        }
+        acc.add(CtorField(name = fd.name, ty = t, hasDefault = hasDef))
       }
       true
     }
@@ -8125,6 +8271,7 @@ pub func inferExpr(
     case ECall(fn, _) -> recordCallResultType(tbl, fn, t, e.span)
     case _ -> ()
   }
+  noteArrayPlaceRead(sc, tbl, sigs, e, t)
   t
 }
 
@@ -10695,6 +10842,17 @@ func inferExprCore(
         recordHoistedComposite(sc, tbl, r, rt, lt)
       }
       val binT = inferBinop(tbl, diag, op, lt, rt, e.span)
+      match op {
+        case BEq -> {
+          exemptArrayCopy(tbl, l)
+          exemptArrayCopy(tbl, r)
+        }
+        case BNeq -> {
+          exemptArrayCopy(tbl, l)
+          exemptArrayCopy(tbl, r)
+        }
+        case _ -> ()
+      }
       recordOverflowBinop(tbl, op, binT, e.span)
       val signSensitive = match op {
         case BLt -> true
@@ -10752,9 +10910,26 @@ func inferExprCore(
       // distinct-typed operand (#7361); they previously typed as `TyError`.
       match distinctFactoryType(sc, tbl, fn) {
         case Some(ft) -> {
+          // The argument initialises the underlying value, so a bracket
+          // literal builds an `array[N, T]` or `List[T]` underlying type
+          // (D167) as it would for a binding of that type.
+          val under = distinctUnderlyingOf(tbl, ft)
           var ai = 0
           while ai < args.count {
-            val _ = inferExpr(sc, tbl, sigs, diag, callArgExpr(args[ai]))
+            match under {
+              case Some(ut) -> if ai == 0 {
+                val argE = callArgExpr(args[ai])
+                val _ = inferExprExpected(sc, tbl, sigs, diag, argE, ut)
+                if isArrayType(ut) {
+                  noteArrayLiteralType(tbl, argE, ut)
+                }
+              } else {
+                val _ = inferExpr(sc, tbl, sigs, diag, callArgExpr(args[ai]))
+              }
+              case None -> {
+                val _ = inferExpr(sc, tbl, sigs, diag, callArgExpr(args[ai]))
+              }
+            }
             ai = ai + 1
           }
           return ft
@@ -10974,6 +11149,10 @@ func inferExprCore(
         case Some(rt) -> inferMemberBase(tbl, rt, memberName)
         case None -> inferExpr(sc, tbl, sigs, diag, fn)
       }
+      match memberRecvTy {
+        case Some(arrRt) -> if isMemberCallee and memberName == "toSlice" { noteArrayToSlice(tbl, fn, arrRt) }
+        case None -> ()
+      }
       // A2 (docs/59 §5.1): lambda arguments with unannotated params — and,
       // per #6814, a bare union-case-constructor argument whose name is
       // ambiguous across imported packages — are typed in two passes.  The
@@ -10995,10 +11174,13 @@ func inferExprCore(
       val argTypes: List[Type] = newList()
       var anyDeferredLambda = false
       var anyCaseCtorArg = false
+      // A bracket literal given to a record field of array type is typed
+      // against the field (D167): the fields are known before the arguments.
+      val ctorFieldTys = ctorArrayFieldTypes(tbl, fn, args)
       var i = 0
       while i < args.count {
         val ae = callArgExpr(args[i])
-        if argIsLambdaLiteral(ae) or argIsAmbiguousUnionCaseCtor(tbl, ae) or argIsBranchingExpr(ae) {
+        if argIsLambdaLiteral(ae) or argIsAmbiguousUnionCaseCtor(tbl, ae) or argIsBranchingExpr(ae) or argIsListLiteral(ae) {
           val scratch: List[Diagnostic] = newList()
           argTypes.add(inferExpr(sc, tbl, sigs, scratch, ae))
           anyDeferredLambda = true
@@ -11053,6 +11235,18 @@ func inferExprCore(
           }
         }
       }
+      match memberRecvTy {
+        case Some(arrRt) -> if isMemberCallee and isArrayType(arrRt) and memberName != "toSlice" {
+          val resolved = match directSig {
+            case Some(_) -> true
+            case None -> match methodPick { case Some(_) -> true; case None -> false }
+          }
+          if not resolved {
+            diag.add(arrayNoMember(arrRt, memberName, e.span))
+          }
+        }
+        case None -> ()
+      }
       if anyDeferredLambda or anyCaseCtorArg {
         val lambdaSig = match directSig {
           case Some(_) -> directSig
@@ -11065,7 +11259,17 @@ func inferExprCore(
         var di = 0
         while di < args.count {
           val dae = callArgExpr(args[di])
-          if argIsLambdaLiteral(dae) or argIsAmbiguousUnionCaseCtor(tbl, dae) or argIsBranchingExpr(dae) {
+          if argIsListLiteral(dae) {
+            // Typed against the parameter or field only when that is an
+            // array (D167); a `List` or `slice` parameter keeps the plain
+            // literal type and the literal-argument rule.
+            val expectedArr = match ctorFieldTys[di] { case TyError -> expectedArgTys[di]; case ft -> ft }
+            argTypes[di] = if isArrayType(expectedArr) {
+              inferExprExpected(sc, tbl, sigs, diag, dae, expectedArr)
+            } else {
+              inferExpr(sc, tbl, sigs, diag, dae)
+            }
+          } else if argIsLambdaLiteral(dae) or argIsAmbiguousUnionCaseCtor(tbl, dae) or argIsBranchingExpr(dae) {
             argTypes[di] = inferExprExpected(sc, tbl, sigs, diag, dae, expectedArgTys[di])
           } else if argIsCaseCtorCall(tbl, dae) {
             argTypes[di] = adoptUnionCaseExpected(tbl, true, argTypes[di], expectedArgTys[di])
@@ -11120,6 +11324,10 @@ func inferExprCore(
         }
         case _ -> ()
       }
+      // A `.copy(...)` argument is stored into the new record's field.
+      if isMemberCallee and memberName == "copy" {
+        noteArrayStores(tbl, args, argTypes)
+      }
       // `xs.add(x)` on an open binding fixes its element type (#7788).
       if isMemberCallee and memberName == "add" {
         match fn.kind {
@@ -11145,7 +11353,7 @@ func inferExprCore(
             recordHoistedCallArgs(sc, tbl, args, argTypes, sigExpectedArgTypes(sig, None, args, argTypes))
           }
           checkContractCallPure(sc, diag, sig, fn, e.span)
-          checkCallArgsAgainstSig(sc, tbl, diag, sig, args, argTypes, e.span)
+          checkCallArgsAgainstSig(sc, tbl, sigs, diag, sig, args, argTypes, e.span)
           recordGenericArgWidenings(tbl, sig, None, args, argTypes)
           match fn.kind {
             case EPath(_) -> recordGenericCallTypeArgs(tbl, sig, args, argTypes, fn.span)
@@ -11176,6 +11384,7 @@ func inferExprCore(
           case None -> match constructorSymbolOf(tbl, fn) {
             case Some(ctorSym) -> {
               val ctorTy = inferConstruction(tbl, diag, ctorSym, args, argTypes, e.span)
+              noteArrayStores(tbl, args, argTypes)
               noteCtorArgFlows(sc, tbl, fn, args, ctorTy)
               recordCtorArgOperandTypes(sc, tbl, fn, args, argTypes, ctorTy)
               ctorTy
@@ -11206,7 +11415,7 @@ func inferExprCore(
                   recordAsyncCallSite(tbl, e.span, mp.sig.isAsync and not mp.sig.isGenerator)
                   recordEffectCallSite(tbl, e.span, mp.sig, fn)
                   checkContractCallPure(sc, diag, mp.sig, fn, e.span)
-                  checkCallArgsAgainstSig(sc, tbl, diag, mp.sig, args, argTypes, e.span)
+                  checkCallArgsAgainstSig(sc, tbl, sigs, diag, mp.sig, args, argTypes, e.span)
                   if callArgsHaveHoistHazard(args) {
                     val mpExpected = match mp.fullSig {
                       case Some(fullS) -> match memberRecvTy {
@@ -11419,6 +11628,20 @@ func inferExprCore(
         case _ -> inferExpr(sc, tbl, sigs, diag, recv)
       }
       recordMemberRecvClass(tbl, recv.span, rt)
+      match unrefine(rt) {
+        case TyArray(Some(n), _) -> if name == "length" {
+          exemptArrayCopy(tbl, recv)
+          if not tbl.arrayLenSites.containsKey(recordCopySiteKey(e.span)) {
+            tbl.arrayLenSites.add(recordCopySiteKey(e.span), n)
+          }
+        } else if name == "toSlice" {
+          diag.add(arrayToSliceNotCalled(rt, e.span))
+        } else {
+          diag.add(arrayNoMember(rt, name, e.span))
+        }
+        case TyArray(None, _) -> diag.add(arrayUnknownLength(rt, e.span))
+        case _ -> ()
+      }
       match distinctMemberType(tbl, diag, rt, name, e.span) {
         case Some(dt) -> return dt
         case None -> ()
@@ -11513,6 +11736,13 @@ func inferExprCore(
           inferExpr(sc, tbl, sigs, diag, indices[ii])
         }
         ii = ii + 1
+      }
+      if isArrayType(rt) {
+        exemptArrayCopy(tbl, recvE)
+        if indices.count == 1 {
+          val idxScratch: List[Diagnostic] = newList()
+          noteArrayIndex(tbl, diag, rt, indices[0], inferExpr(sc, tbl, sigs, idxScratch, indices[0]), e.span)
+        }
       }
       val nonIndexable = nonIndexableNativeKind(tbl, rt)
       if nonIndexable != "" {
@@ -11656,7 +11886,10 @@ func inferExprCore(
     // and the immutability of the target exactly as the statement path does.
     case EAssign(target, op, value) -> {
       val targetType = inferExpr(sc, tbl, sigs, diag, target)
+      exemptArrayCopy(tbl, target)
+      checkArrayElementWrite(sc, tbl, sigs, diag, target)
       val valueType = inferExprExpected(sc, tbl, sigs, diag, value, targetType)
+      noteArrayStore(tbl, value, valueType)
       recordHoistedAssignValue(sc, tbl, target, value, valueType, targetType)
       noteOpenBindingAssign(sc, tbl, sigs, target, valueType)
       val stringPlusAssign = isStringPlusVarAssign(target, op, targetType)
@@ -11960,6 +12193,78 @@ func argIsBranchingExpr(e: in Expr): Bool {
   }
 }
 
+// A call argument (possibly parenthesised) that is a bracket literal `[...]`,
+// which the `ECall` arm defers to the second pass so it can be typed as an
+// `array[N, T]` when the selected parameter or field is one (D167).
+// Each array-typed argument of a record construction or `.copy(...)` is
+// stored into a field, so it is copied unless it is a fresh value (D167).
+func noteArrayStores(tbl: in SymbolTable, args: in List[CallArg], argTypes: in List[Type]): Unit {
+  var i = 0
+  while i < args.count and i < argTypes.count {
+    noteArrayStore(tbl, callArgExpr(args[i]), argTypes[i])
+    i = i + 1
+  }
+}
+
+func argIsListLiteral(e: in Expr): Bool {
+  match e.kind {
+    case EParen(inner) -> argIsListLiteral(inner)
+    case EList(_) -> true
+    case _ -> false
+  }
+}
+
+// The field type each argument of a record construction `R(...)` initialises,
+// positionally aligned with `args`, for the arguments that are bracket
+// literals given to a field of array type (`TyError` elsewhere): such an
+// argument is typed against the field.
+func ctorArrayFieldTypes(tbl: in SymbolTable, fn: in Expr, args: in List[CallArg]): List[Type] {
+  val tys: List[Type] = newList()
+  var any = false
+  for a in args {
+    if argIsListLiteral(callArgExpr(a)) {
+      any = true
+    }
+  }
+  var k = 0
+  while k < args.count {
+    tys.add(TyError)
+    k = k + 1
+  }
+  if not any {
+    return tys
+  }
+  val ctorSym = match constructorSymbolOf(tbl, fn) { case Some(sy) -> sy; case None -> return tys }
+  if ctorIsGeneric(ctorSym) {
+    return tys
+  }
+  val fields: List[CtorField] = newList()
+  if not collectCtorFields(tbl, ctorSym, fields) {
+    return tys
+  }
+  var pos = 0
+  var i = 0
+  while i < args.count {
+    match args[i] {
+      case CANamed(nm, _, _) -> {
+        for f in fields {
+          if f.name == nm {
+            tys[i] = f.ty
+          }
+        }
+      }
+      case CAPositional(_) -> {
+        if pos < fields.count {
+          tys[i] = fields[pos].ty
+        }
+        pos = pos + 1
+      }
+    }
+    i = i + 1
+  }
+  tys
+}
+
 // #7752: true for a call-argument expression (possibly parenthesised) that is
 // a union-case-constructor call, whose type the `ECall` arm lets adopt the
 // selected parameter's instantiation (`adoptUnionCaseExpected`).
@@ -12118,6 +12423,7 @@ pub func inferExprExpected(
         match constructorSymbolOf(tbl, fn) {
           case Some(ctorSym) -> {
             val ctorTy = inferConstructionExpected(tbl, diag, ctorSym, cargs, cargTypes, e.span, expected)
+            noteArrayStores(tbl, cargs, cargTypes)
             recordCtorArgOperandTypes(sc, tbl, fn, cargs, cargTypes, ctorTy)
             ctorTy
           }
@@ -12277,6 +12583,39 @@ pub func inferExprExpected(
         } else {
           inferExpr(sc, tbl, sigs, diag, e)
         }
+      }
+      // A bracket literal where an `array[N, T]` is expected builds one: it
+      // must have exactly `N` elements, each checked against `T` (D167,
+      // T0155).
+      case TyArray(Some(n), elemTy) -> {
+        if elems.count != n {
+          diag.add(
+            errorDiagnostic(
+              "T0155",
+              "an array literal of " + toString(elems.count) + " element(s) where " + renderType(expected) +
+                " is expected: it must have exactly " +
+                toString(n),
+              e.span
+            )
+          )
+        }
+        var ai = 0
+        while ai < elems.count {
+          val et = inferExprExpected(sc, tbl, sigs, diag, elems[ai], elemTy)
+          recordWideningSite(tbl, elemTy, et, elems[ai], false)
+          if not argSatisfiesParam(tbl, elemTy, et) {
+            diag.add(
+              errorDiagnostic(
+                "T0041",
+                "array literal element has type " + renderType(et) + " but " + renderType(expected) + " expects " +
+                  renderType(elemTy),
+                elems[ai].span
+              )
+            )
+          }
+          ai = ai + 1
+        }
+        TyArray(size = Some(value = n), element = elemTy)
       }
       // A bracket literal where a numeric `slice[T]` is expected: each
       // element initialises a `T`, so it widens like an initialiser (docs/01
@@ -12438,6 +12777,7 @@ func uniquelyPairedArgIndices(args: in List[CallArg], paramNames: in List[String
 func checkCallArgsAgainstSig(
   sc: in Scope,
   tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
   diag: in List[Diagnostic],
   sig: in ResolvedSignature,
   args: in List[CallArg],
@@ -12467,7 +12807,7 @@ func checkCallArgsAgainstSig(
   // exactly once, are still checked.
   if reportRepeatedCallArgs(diag, "T0042", "parameter", args, paramNames) {
     reportUnknownNamedArgs(diag, args, paramNames)
-    checkPairedCallArgs(sc, tbl, diag, sig, args, argTypes, uniquelyPairedArgIndices(args, paramNames), span)
+    checkPairedCallArgs(sc, tbl, sigs, diag, sig, args, argTypes, uniquelyPairedArgIndices(args, paramNames), span)
     return
   }
   if args.count < minRequired or args.count > sig.params.count {
@@ -12485,7 +12825,7 @@ func checkCallArgsAgainstSig(
     // purely positional call pairs slot k with arg k as before.
     val srcIdx = argIndicesInParamOrder(args, paramNames)
     reportUnpairedCallArgs(diag, sig, args, paramNames, srcIdx, span)
-    checkPairedCallArgs(sc, tbl, diag, sig, args, argTypes, srcIdx, span)
+    checkPairedCallArgs(sc, tbl, sigs, diag, sig, args, argTypes, srcIdx, span)
   }
 }
 
@@ -12494,6 +12834,7 @@ func checkCallArgsAgainstSig(
 func checkPairedCallArgs(
   sc: in Scope,
   tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
   diag: in List[Diagnostic],
   sig: in ResolvedSignature,
   args: in List[CallArg],
@@ -12526,6 +12867,13 @@ func checkPairedCallArgs(
             span
           )
         )
+      }
+      // An array passed to `out`/`inout` is the caller's own place and is
+      // not copied; any other argument is a read that escapes into the
+      // callee, so one read from a writable place is copied (D167).
+      if modeNeedsLValue(p.mode) {
+        exemptArrayCopy(tbl, callArgExpr(args[ai]))
+        checkArrayByRefArg(sc, tbl, sigs, diag, callArgExpr(args[ai]), argTy, span)
       }
       // #1487 (§5.2): a value-type `out`/`inout` argument must be a
       // writable l-value (reference-type by-ref params are mutated in

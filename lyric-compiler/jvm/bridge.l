@@ -395,7 +395,8 @@ pub func compileToJar(
     awaitAsyncCalls = false,
     contractsEnabled = true,
     checkedSourceOut = optsCheckedOut,
-    memberRecvClassesOut = recvClasses
+    memberRecvClassesOut = recvClasses,
+    arraysAsLists = true
   )
   val file = match pipeMiddleEnd(file0, importedPkgs, noDeriveImports, allMonoFuncs, pipeInterfaceDecls(importedItems), pipeRecordDecls(importedItems), noTemplates, opts, None) {
     case Some(f) -> pipeCBindingsToFuncs(f)
@@ -548,6 +549,7 @@ func runMiddleEnd(
     contractsEnabled = contractsEnabled,
     checkedSourceOut = checkedOut,
     memberRecvClassesOut = recvClassesOut,
+    arraysAsLists = true,
     ioForbiddenReason = ioForbiddenReason
   )
   // `@library` extern funcs become foreign-function downcall methods (D158).
@@ -579,6 +581,27 @@ func runMiddleEnd(
 // `Msil.Bridge` too (D-progress-748). Both bridges now run it.
 func resolveTypeAliases(file: in SourceFile): SourceFile {
   TAR.resolveAliasesInFile(BFR.collectFuncAliasTargets(file), file)
+}
+
+// `array[N, T]` is a `List[T]` on this target (D167): the middle end lowers
+// every array operation and type (`MiddleEndOptions.arraysAsLists`), but the
+// signature, field, case and constructor registries are built from the parsed
+// file before it runs, so they are built from this copy with the array types
+// already spelled as lists.  The middle end itself is given the original,
+// which the type checker needs.
+func arrayTypesAsLists(file: in SourceFile): SourceFile {
+  val marker: Map[String, TypeExpr] = newMap()
+  marker.add(arraysAsListsKey(), TypeExpr(kind = TUnit, span = file.span))
+  TAR.resolveAliasesInFile(marker, file)
+}
+
+// The array-typed original of `f` (a package's file, registered by package
+// name) when `f` is its list-typed copy, else `f`.
+func arrayTypedOrSelf(originals: in Map[String, SourceFile], f: in SourceFile): SourceFile {
+  match mapGet(originals, dottedPath(f.packageDecl.path)) {
+    case Some(orig) -> orig
+    case None -> f
+  }
 }
 
 // Collect every pure-Lyric generic `pub func` from the parsed stdlib source
@@ -2437,6 +2460,7 @@ pub func compileProjectToJarBundledWithRestored(
     )
     wtd = wtd + 1
   }
+  val arrayTypedByPkg: Map[String, SourceFile] = newMap()
   var wei = 0
   while wei < userFiles.count {
     // #6824 item 3: label/attribute this package's wire/config-template and
@@ -2457,7 +2481,9 @@ pub func compileProjectToJarBundledWithRestored(
     // #6404: resolve every project package's `alias X = ...` references
     // before ANYTHING (type-check, signature/case/ctor registration below,
     // codegen) reads the file — see `resolveTypeAliases`'s comment.
-    userFiles[wei] = resolveTypeAliases(rewritten)
+    val resolvedUf = resolveTypeAliases(rewritten)
+    arrayTypedByPkg.add(dottedPath(resolvedUf.packageDecl.path), resolvedUf)
+    userFiles[wei] = arrayTypesAsLists(resolvedUf)
     wei = wei + 1
   }
   val userFile = userFiles[mainIdx]
@@ -2498,14 +2524,17 @@ pub func compileProjectToJarBundledWithRestored(
   // flat list, not a per-package reachability walk.
   val userEntryPkgName = dottedPath(userFile.packageDecl.path)
   val userEntryItems: List[Item] = newList()
+  // The type checker of every other package reads these items, so they keep
+  // `array[N, T]` spelled as an array (`arrayTypesAsLists`).
+  val userEntryArrayTyped = arrayTypedOrSelf(arrayTypedByPkg, userFile)
   var uei = 0
-  while uei < userFile.items.count {
+  while uei < userEntryArrayTyped.items.count {
     // #6580: the entry package is the user's own project, so an `internal`
     // item must be visible to sibling project packages too — see
     // `pipeIsCrossPackageItemProject`'s doc comment for why this differs
     // from the stdlib/restored-dependency loops below (still pub-only).
-    if pipeIsCrossPackageItemProject(userFile.items[uei]) {
-      userEntryItems.add(userFile.items[uei])
+    if pipeIsCrossPackageItemProject(userEntryArrayTyped.items[uei]) {
+      userEntryItems.add(userEntryArrayTyped.items[uei])
     }
     uei = uei + 1
   }
@@ -2645,14 +2674,15 @@ pub func compileProjectToJarBundledWithRestored(
   while svi < userFiles.count {
     if svi != mainIdx {
       val sf = userFiles[svi]
+      val sfArrayTyped = arrayTypedOrSelf(arrayTypedByPkg, sf)
       val spn = dottedPath(sf.packageDecl.path)
       val sItems: List[Item] = newList()
       var sii = 0
-      while sii < sf.items.count {
+      while sii < sfArrayTyped.items.count {
         // #6580: a sibling PROJECT package (not stdlib/restored), so
         // `internal` items must be visible too.
-        if pipeIsCrossPackageItemProject(sf.items[sii]) {
-          sItems.add(sf.items[sii])
+        if pipeIsCrossPackageItemProject(sfArrayTyped.items[sii]) {
+          sItems.add(sfArrayTyped.items[sii])
         }
         sii = sii + 1
       }
@@ -3372,7 +3402,7 @@ pub func compileProjectToJarBundledWithRestored(
   // generic bodies from it (see `MiddleEndOptions.checkedSourceOut`).
   val userChecked: List[SourceFile] = newList()
   val userRecvClasses: Map[String, String] = newMap()
-  match runMiddleEnd(userFile, importedPkgs, allMonoFuncs, allTemplates, true, userPkgLabel, userPkgOrigins, userChecked, userRecvClasses, Some(value = weaveTypeIndex), unwrapOr(mapGet(ioForbiddenByPkg, userEntryPkgName), ""), contractsEnabled) {
+  match runMiddleEnd(arrayTypedOrSelf(arrayTypedByPkg, userFile), importedPkgs, allMonoFuncs, allTemplates, true, userPkgLabel, userPkgOrigins, userChecked, userRecvClasses, Some(value = weaveTypeIndex), unwrapOr(mapGet(ioForbiddenByPkg, userEntryPkgName), ""), contractsEnabled) {
     case Some(f) -> {
       // Register sigs synthesised by `deriveFile` (inside `runMiddleEnd`) so
       // that call-site resolution in `codegenPackageInto` can find them.  The
@@ -3522,7 +3552,7 @@ pub func compileProjectToJarBundledWithRestored(
       // stdlib authors' contracts run in all cases. Project packages respect
       // the manifest [contracts] enabled setting.
       val pkgContractsEnabled = if isProjectPkg { contractsEnabled } else { true }
-      match runMiddleEnd(f, importedPkgs, allMonoFuncs, allTemplates, isProjectPkg, siblingPkgLabel, siblingPkgOrigins, siblingChecked, siblingRecvClasses, Some(value = weaveTypeIndex), if isProjectPkg { unwrapOr(mapGet(ioForbiddenByPkg, pkgName), "") } else { "" }, pkgContractsEnabled) {
+      match runMiddleEnd(arrayTypedOrSelf(arrayTypedByPkg, f), importedPkgs, allMonoFuncs, allTemplates, isProjectPkg, siblingPkgLabel, siblingPkgOrigins, siblingChecked, siblingRecvClasses, Some(value = weaveTypeIndex), if isProjectPkg { unwrapOr(mapGet(ioForbiddenByPkg, pkgName), "") } else { "" }, pkgContractsEnabled) {
         case Some(ff) -> {
           // #7502: register THIS bundled/sibling package's own
           // derive-synthesised free functions (`Point.fromJson`, `Point.

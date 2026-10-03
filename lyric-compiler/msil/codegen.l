@@ -8557,7 +8557,23 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Str
         MGenericInstByName(sb, objArgs)
       }
     }
-    case TArray(_, _) -> MObject
+    // `array[N, T]` is a `List[T]` on this target (D167): the middle end
+    // lowers every array in a package it compiles, and a restored
+    // dependency's signature, spelled from its contract, must map the same way.
+    case TArray(_, arrElem) -> {
+      val listSegs: List[String] = newList()
+      listSegs.add("List")
+      val listArgs: List[TypeArg] = newList()
+      listArgs.add(TAType(ty = arrElem))
+      typeExprToMsilCtx(
+        cctx,
+        TypeExpr(
+          kind = TGenericApp(head = ModulePath(segments = listSegs, span = te.span), args = listArgs),
+          span = te.span
+        ),
+        pkgName
+      )
+    }
     // Inline refined type (`Long range 0 ..= n`): the runtime representation
     // is the refinement's UNDERLYING type — hard-wiring MInt truncated Long /
     // Double bases (docs/59 §3 F2).  Named range subtypes already resolve

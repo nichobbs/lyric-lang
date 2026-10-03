@@ -1232,6 +1232,106 @@ pub record RecordEqSite {
   levelTypes: Map[String, TypeExpr]
   recordType: Option[TypeExpr]
   negate: Bool
+  /// The leaves of `paths` that are arrays, keyed by dotted path: they are
+  /// compared element by element (D167), not with `==`.
+  arrayLeaves: Map[String, ArrayEqSite]
+  /// The leaves of `paths` that are a tuple, union or distinct type holding an
+  /// array, keyed by dotted path: compared by their `EqShape`.
+  wrapLeaves: Map[String, EqShape]
+}
+
+/// How `==` compares one element of an array (D167): with the element
+/// type's own `==`, through the `value` of a distinct type, as a structural
+/// record, or, for an array of arrays, as a nested array.
+pub union ArrayEqElem {
+  case AEPlain
+  case AEValue
+  case AERecord(site: RecordEqSite)
+  case AEArray(site: ArrayEqSite)
+  case AEShape(shape: EqShape)
+}
+
+/// How `==` compares a value whose type is a tuple, a union (`Option` and
+/// `Result` included) or a distinct type that holds an array (D167), where the
+/// host's own equality would compare the array by reference.
+pub union EqShape {
+  case ESPlain
+  case ESArray(site: ArrayEqSite)
+  case ESRecord(site: RecordEqSite)
+  case ESDistinct(inner: EqShape)
+  case ESTuple(elems: List[EqShape])
+  case ESUnion(cases: List[EqUnionCase])
+}
+
+/// One case of a union compared by `ESUnion`: the path the case is written
+/// with in a pattern, and how each payload field is compared.
+pub record EqUnionCase {
+  head: List[String]
+  fields: List[EqShape]
+}
+
+/// `==` / `!=` on a value of `valueType` compared by `shape`.
+pub record WrapEqSite {
+  shape: EqShape
+  valueType: Option[TypeExpr]
+  negate: Bool
+}
+
+/// `a == b` / `a != b` on `array[len, T]` operands (D167): an element-wise
+/// comparison of `len` elements; `arrayType` and `elemType` annotate the
+/// operand and element temporaries, and `negate` is set for `!=`.
+pub record ArrayEqSite {
+  len: Int
+  arrayType: Option[TypeExpr]
+  elemType: Option[TypeExpr]
+  elem: ArrayEqElem
+  negate: Bool
+}
+
+/// An access `a[i]` on an `array[len, T]` (D167).  `elide` is set when the
+/// index's type proves it lies in `0 ..< len`, so no bounds check is needed;
+/// `unwrap` when the index is a distinct type read through `.value`, `wide`
+/// when the integer is not an `Int` (range checked as a `Long`, then narrowed).
+pub record ArrayIndexSite {
+  len: Int
+  elide: Bool
+  unwrap: Bool
+  wide: Bool
+}
+
+/// The intrinsics `Lyric.TypeChecker` and `Lyric.ContractElaborator.lowerArrays`
+/// spell array operations with (D167):
+///
+/// - `__lyric_array_fill[array[N, T]](z)` builds an `array[N, T]` of `N`
+///   fresh evaluations of `z`;
+/// - `__lyric_array_copy[array[N, T]](a)` is a copy of `a`, elements that are
+///   arrays copied in turn;
+/// - `a[__lyric_unchecked(i)]` is an access whose bounds the lowering has
+///   already checked (or proven), so the backend emits no check of its own.
+pub func arrayFillIntrinsic(): String = "__lyric_array_fill"
+
+pub func arrayCopyIntrinsic(): String = "__lyric_array_copy"
+
+pub func arrayUncheckedIntrinsic(): String = "__lyric_unchecked"
+
+/// The reserved key that puts `Lyric.TypeAliasResolve.resolveAliasesInFile`
+/// in its array-to-`List` mode: every `array[N, T]` type expression becomes
+/// `List[T]`, for a backend whose arrays are lists.
+pub func arraysAsListsKey(): String = "__lyric_arrays_as_lists"
+
+/// The prefix of the keys that give `Lyric.TypeAliasResolve.resolveAliasesInFile`
+/// the resolved length of an `array[N, T]` type expression: the key is the
+/// prefix followed by `recordCopySiteKey` of the type expression and the value
+/// an `array[<literal>, ()]` type carrying the length (D167).
+pub func arrayLenMarkerPrefix(): String = "__lyric_alen:"
+
+/// An `array[len, T]` operand whose spelled type the array lowering needs
+/// (a `for` iterable, a `.toSlice()` receiver, a copied place read).
+pub record ArraySite {
+  len: Int
+  arrayType: Option[TypeExpr]
+  elemType: Option[TypeExpr]
+  span: Span
 }
 
 /// The types of the temporaries an overflow-checked compound assignment
@@ -1241,6 +1341,7 @@ pub record RecordEqSite {
 pub record CompoundTemps {
   recvType: Option[TypeExpr]
   indexType: Option[TypeExpr]
+  arrayChain: Bool
 }
 
 /// A reference to another package's function used as a VALUE (not called),

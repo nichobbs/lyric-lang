@@ -410,6 +410,44 @@ pub record SymbolTable {
   /// `Lyric.ContractElaborator.lowerRecordArith`.
   recordArithSites: Map[String, RecordArithSite]
   recordEqSites: Map[String, RecordEqSite]
+  /// `==` / `!=` on two `array[N, T]` operands (D167), keyed by the binop's
+  /// span.
+  arrayEqSites: Map[String, ArrayEqSite]
+  wrapEqSites: Map[String, WrapEqSite]
+  /// One entry per `buildEqShape` call in progress: the nesting across the
+  /// record and array sites it builds, which restart their own depth.
+  eqShapeNesting: List[Int]
+  /// Every `a[i]` on an `array[N, T]` (D167), keyed by the index
+  /// expression's span.
+  arrayIndexSites: Map[String, ArrayIndexSite]
+  /// `a.length` on an `array[N, T]`, keyed by the member expression's span,
+  /// mapped to `N`.
+  arrayLenSites: Map[String, Int]
+  /// `a.toSlice()`, keyed by the span of the `a.toSlice` member expression.
+  arraySliceSites: Map[String, ArraySite]
+  /// The iterable of a `for x in a` over an array, keyed by its span.
+  arrayForSites: Map[String, ArraySite]
+  /// A place read (`a`, `r.f`, `xs[i]`) of array type, keyed by its span:
+  /// storing it anywhere copies it (D167).  A read whose consumer only
+  /// inspects the array (an index receiver, `.length`, an `==` operand, an
+  /// assignment target) is removed again.
+  arrayCopySites: Map[String, ArraySite]
+  /// The place reads (by span) no consumer ever stores, so none is copied;
+  /// kept apart from `arrayCopySites` because an expression the checker
+  /// infers again (a scratch inference of a receiver) is recorded again.
+  arrayCopyExempt: Map[String, Bool]
+  /// The resolved length of each `array[N, T]` type expression of the file
+  /// whose `N` is a constant or an expression rather than a literal, keyed by
+  /// `recordCopySiteKey` of the type expression; the pipeline rewrites each to
+  /// its literal before a backend runs.  `arrayLenPkg` names the file's own
+  /// package: a type expression resolved in another package's scope (an
+  /// imported record's field) has a span of another file and is not recorded.
+  arrayTypeLens: Map[String, Int]
+  arrayLenPkg: List[String]
+  /// The zero value of an initializer-less array-typed local (keyed by the
+  /// statement's span) or of an array-typed field with no default (keyed by
+  /// the field declaration's span).
+  arrayZeroSites: Map[String, Expr]
   /// Integer arithmetic that can overflow (D163), keyed by span:
   /// `add:<T>` / `sub:<T>` / `mul:<T>` for a binop, `neg:<T>` for unary
   /// minus, `compound:<T>` for `x += y` / `-=` / `*=` (keyed by the
@@ -573,6 +611,18 @@ pub func newSymbolTable(): SymbolTable {
     distinctCompoundSites = newMap(),
     recordArithSites = newMap(),
     recordEqSites = newMap(),
+    arrayEqSites = newMap(),
+    wrapEqSites = newMap(),
+    eqShapeNesting = newList(),
+    arrayIndexSites = newMap(),
+    arrayLenSites = newMap(),
+    arraySliceSites = newMap(),
+    arrayForSites = newMap(),
+    arrayCopySites = newMap(),
+    arrayCopyExempt = newMap(),
+    arrayTypeLens = newMap(),
+    arrayLenPkg = newList(),
+    arrayZeroSites = newMap(),
     overflowSites = newMap(),
     overflowCompoundTemps = newMap(),
     importRulePkg = newList(),

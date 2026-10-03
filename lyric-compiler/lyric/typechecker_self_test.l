@@ -8971,12 +8971,11 @@ test "a concrete-typed call resolves through the impl method's own parameters (#
 // types for fixed-size arrays too.  An `array[2, Opt[T]]` element whose `T`
 // nothing fixes takes `Int` from a sibling `array[2, Opt[Int]]` (#7818's join
 // had no `TyArray` arm, so the literal kept the first element's open type).
-// The checked type does not carry the size (`array[?, ...]`).
 test "list literal joins array element types" {
-  val src = "package P\nunion Opt[T] {\n  case Yes(v: T)\n  case No\n}\nfunc holes[T](): array[2, Opt[T]] {\n  var a: array[2, Opt[T]]\n  a\n}\nfunc f(a: in array[2, Opt[Int]]): Int {\n  [holes(), a]\n}\n"
+  val src = "package P\nunion Opt[T] {\n  case Yes(v: T)\n  case No\n}\nfunc holes[T](): array[2, Opt[T]] {\n  [No, No]\n}\nfunc f(a: in array[2, Opt[Int]]): Int {\n  [holes(), a]\n}\n"
   val cr = parseCheck(src)
   assertTrue(hasDiagCode(cr, "T0070"), "the literal is not an Int")
-  assertTrue(diagMessagesContain(cr, "slice[array[?, Opt[Int]]]"), "joined element type Opt[Int]")
+  assertTrue(diagMessagesContain(cr, "slice[array[2, Opt[Int]]]"), "joined element type Opt[Int]")
 }
 
 // #7865: a lambda checked where a function type is expected takes its return
@@ -9705,4 +9704,311 @@ test "a spawn handle is not recorded as a source type for the middle end" {
     0,
     "no type-argument site names the handle type: no backend can spell Task[Int]"
   )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// array[N, T] (D167).
+// ─────────────────────────────────────────────────────────────────────────────
+test "an array's length is part of its type" {
+  val same = "package P\nfunc f(a: in array[3, Int]): array[3, Int] { a }\n"
+  assertEqualInt(diagCount(parseCheck(same)), 0, "same length: clean (" + diagCodesOf(parseCheck(same)) + ")")
+  val diff = "package P\nfunc f(a: in array[3, Int]): array[4, Int] { a }\n"
+  assertTrue(
+    hasDiagCode(parseCheck(diff), "T0070"),
+    "a differing length does not match the return type (" + diagCodesOf(parseCheck(diff)) + ")"
+  )
+  val named = "package P\nval SIZE: Int = 3\nfunc f(a: in array[SIZE, Int]): array[3, Int] { a }\n"
+  assertEqualInt(diagCount(parseCheck(named)), 0, "a constant length folds (" + diagCodesOf(parseCheck(named)) + ")")
+}
+
+test "a bracket literal builds an array of exactly N elements (T0155)" {
+  val ok = "package P\nfunc f(): array[3, Int] {\n  val a: array[3, Int] = [1, 2, 3]\n  a\n}\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "three elements: clean (" + diagCodesOf(parseCheck(ok)) + ")")
+  val few = "package P\nfunc f(): Int {\n  val a: array[3, Int] = [1, 2]\n  a[0]\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(few), "T0155"), 1, "two elements for array[3, Int]")
+  val many = "package P\nfunc f(): array[2, Int] { [1, 2, 3] }\n"
+  assertEqualInt(countDiagCode(parseCheck(many), "T0155"), 1, "a return value")
+  val arg = "package P\nfunc g(a: in array[3, Int]): Int { a[0] }\nfunc f(): Int { g([1, 2, 3, 4]) }\n"
+  assertEqualInt(countDiagCode(parseCheck(arg), "T0155"), 1, "an argument")
+  val field = "package P\nrecord R { a: array[2, Int] }\nfunc f(): R { R(a = [1, 2, 3]) }\n"
+  assertEqualInt(countDiagCode(parseCheck(field), "T0155"), 1, "a field")
+  val nested = "package P\nfunc f(): array[2, array[2, Int]] { [[1, 2], [3]] }\n"
+  assertEqualInt(countDiagCode(parseCheck(nested), "T0155"), 1, "a nested row")
+  val elem = "package P\nfunc f(): array[2, Int] { [1, \"x\"] }\n"
+  assertTrue(hasDiagCode(parseCheck(elem), "T0041"), "an element of the wrong type")
+}
+
+test "a declaration without an initializer needs an element type with a zero (T0156)" {
+  val ok = "package P\nenum M {\n  case A\n  case B\n}\nrecord V { x: Float\n y: Int = 2 }\ntype C = Int range 0 ..= 9\nfunc f() {\n  var a: array[2, Int]\n  var b: array[2, Float]\n  var c: array[2, M]\n  var d: array[2, V]\n  var e: array[2, array[2, Bool]]\n  var g: array[2, C]\n  a[0] = 1\n}\n"
+  assertEqualInt(
+    diagCount(parseCheck(ok)),
+    0,
+    "scalars, enums, records, nested arrays, ranges holding 0: clean (" + diagCodesOf(parseCheck(ok)) + ")"
+  )
+  val str = "package P\nfunc f() {\n  var a: array[2, String]\n  a[0] = \"x\"\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(str), "T0156"), 1, "a String has no zero")
+  val union = "package P\nunion U {\n  case X\n  case Y(n: Int)\n}\nfunc f() {\n  var a: array[2, U]\n  a[0] = X\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(union), "T0156"), 1, "a union has no zero")
+  val range = "package P\ntype C = Int range 1 ..= 9\nfunc f() {\n  var a: array[2, C]\n  a[0] = C.from(3)\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(range), "T0156"), 1, "a range excluding zero has no zero")
+  val field = "package P\nrecord R { a: array[2, String] }\n"
+  assertEqualInt(countDiagCode(parseCheck(field), "T0156"), 1, "a field with no default")
+  val withDefault = "package P\nrecord R { a: array[2, String] = [\"a\", \"b\"] }\n"
+  assertEqualInt(
+    diagCount(parseCheck(withDefault)),
+    0,
+    "a default makes the zero unnecessary (" + diagCodesOf(parseCheck(withDefault)) + ")"
+  )
+  val initialized = "package P\nfunc f() {\n  var a: array[2, String] = [\"a\", \"b\"]\n  a[0] = \"c\"\n}\n"
+  assertEqualInt(
+    diagCount(parseCheck(initialized)),
+    0,
+    "an initializer makes it unnecessary (" + diagCodesOf(parseCheck(initialized)) + ")"
+  )
+}
+
+test "an element is written through a var local, an out or inout parameter or a var field (T0157)" {
+  val ok = "package P\nrecord R { var a: array[2, Int] }\nfunc f(p: inout array[2, Int], q: out array[2, Int], r: in R) {\n  var l: array[2, Int] = [1, 2]\n  l[0] = 1\n  p[0] = 2\n  q = [0, 0]\n  q[1] = 3\n  r.a[0] = 4\n  l[1] += 1\n}\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "writable places: clean (" + diagCodesOf(parseCheck(ok)) + ")")
+  val valLocal = "package P\nfunc f() {\n  val l: array[2, Int] = [1, 2]\n  l[0] = 1\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(valLocal), "T0157"), 1, "a val local")
+  val inParam = "package P\nfunc f(p: in array[2, Int]) {\n  p[0] = 1\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(inParam), "T0157"), 1, "an in parameter")
+  val valField = "package P\nrecord R { a: array[2, Int] = [1, 2] }\nfunc f(r: in R) {\n  r.a[0] = 1\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(valField), "T0157"), 1, "a field that is not var")
+  val compound = "package P\nfunc f(p: in array[2, Int]) {\n  p[0] += 1\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(compound), "T0157"), 1, "a compound assignment")
+  val call = "package P\nfunc g(): array[2, Int] { [1, 2] }\nfunc f() {\n  g()[0] = 1\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(call), "T0157"), 1, "a call result")
+  val nested = "package P\nfunc f(p: in array[2, array[2, Int]]) {\n  p[0][1] = 1\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(nested), "T0157"), 1, "an element of a nested array through an in parameter")
+  val argToInout = "package P\nfunc g(p: inout array[2, Int]) {\n  p[0] = 1\n}\nfunc f() {\n  val l: array[2, Int] = [1, 2]\n  g(l)\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(argToInout), "T0085"), 1, "a val array passed to inout")
+}
+
+test "an array is indexed by an integer or an integer range subtype (T0158)" {
+  val ok = "package P\ntype Slot = Int range 0 ..= 1\nfunc f(a: in array[2, Int], s: in Slot, i: in Int): Int { a[s] + a[i] + a[0] }\n"
+  assertEqualInt(
+    diagCount(parseCheck(ok)),
+    0,
+    "Int, a range subtype, a literal: clean (" + diagCodesOf(parseCheck(ok)) + ")"
+  )
+  val str = "package P\nfunc f(a: in array[2, Int]): Int { a[\"x\"] }\n"
+  assertEqualInt(countDiagCode(parseCheck(str), "T0158"), 1, "a String index")
+  val flt = "package P\nfunc f(a: in array[2, Int], i: in Float): Int { a[i] }\n"
+  assertEqualInt(countDiagCode(parseCheck(flt), "T0158"), 1, "a Float index")
+  val wideOk = "package P\nalias Idx = Int\ntype Wide = Long range 0 ..= 1\nfunc f(a: in array[2, Int], l: in Long, b: in Byte, n: in Idx, w: in Wide): Int { a[l] + a[b] + a[n] + a[w] + a[1i64] + a[1u8] }\n"
+  assertEqualInt(
+    diagCount(parseCheck(wideOk)),
+    0,
+    "Long, Byte, an alias of Int, a Long-based range subtype, suffixed literals (" + diagCodesOf(parseCheck(wideOk)) +
+      ")"
+  )
+}
+
+test "a collection element is not a writable array place (T0157)" {
+  val list = "package P\nfunc f(xs: in slice[array[2, Int]]) {\n  xs[0][1] = 5\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(list), "T0157"), 1, "an element of a slice of arrays")
+  val byRef = "package P\nfunc g(p: inout array[2, Int]) {\n  p[0] = 1\n}\nfunc f(xs: inout array[2, array[2, Int]]) {\n  g(xs[0])\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(byRef), "T0157"), 1, "an element is not a variable or field argument")
+  val okInout = "package P\nrecord R { var a: array[2, Int] }\nfunc g(p: inout array[2, Int]) {\n  p[0] = 1\n}\nfunc f(r: in R, q: inout array[2, Int]) {\n  g(r.a)\n  g(q)\n}\n"
+  assertEqualInt(
+    diagCount(parseCheck(okInout)),
+    0,
+    "a field and an inout parameter (" + diagCodesOf(parseCheck(okInout)) + ")"
+  )
+}
+
+test "an array has no members but length and toSlice (T0113)" {
+  val bad = "package P\nfunc f(a: in array[2, Int]) {\n  a.add(1)\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(bad), "T0113"), 1, "a method call")
+  val field = "package P\nfunc f(a: in array[2, Int]): Int { a.size }\n"
+  assertEqualInt(countDiagCode(parseCheck(field), "T0113"), 1, "a field")
+}
+
+test "the index sites record which accesses need no bounds check" {
+  val src = "package P\ntype Slot = Int range 0 ..= 3\ntype Wide = Int range 0 ..= 9\nfunc f(a: in array[4, Int], s: in Slot, w: in Wide, i: in Int, r: in Int range 1 ..< 3): Int {\n  a[s] + a[w] + a[i] + a[r] + a[2] + a[4]\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "clean (" + diagCodesOf(cr) + ")")
+  var elided = 0
+  var checked = 0
+  var unwrapped = 0
+  for k in mapKeys(cr.symbols.arrayIndexSites) {
+    match mapGet(cr.symbols.arrayIndexSites, k) {
+      case Some(site) -> {
+        if site.elide {
+          elided = elided + 1
+        } else {
+          checked = checked + 1
+        }
+        if site.unwrap {
+          unwrapped = unwrapped + 1
+        }
+      }
+      case None -> ()
+    }
+  }
+  assertEqualInt(
+    elided,
+    2,
+    "Slot and the literal 2 are proven; an inline range is not enforced on every path, so it is checked"
+  )
+  assertEqualInt(checked, 4, "Wide, Int, the inline range and the literal 4 are checked")
+  assertEqualInt(unwrapped, 2, "both named range subtypes are read through .value")
+}
+
+test "== on arrays compares element by element and rejects function elements (T0153)" {
+  val ok = "package P\nfunc f(a: in array[2, Int], b: in array[2, Int]): Bool { a == b and a != b }\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "clean (" + diagCodesOf(parseCheck(ok)) + ")")
+  val fns = "package P\nfunc f(a: in array[2, (Int) -> Int], b: in array[2, (Int) -> Int]): Bool { a == b }\n"
+  assertEqualInt(countDiagCode(parseCheck(fns), "T0153"), 1, "an array of functions has no ==")
+  val mismatch = "package P\nfunc f(a: in array[2, Int], b: in array[3, Int]): Bool { a == b }\n"
+  assertEqualInt(countDiagCode(parseCheck(mismatch), "T0032"), 1, "arrays of different lengths")
+}
+
+test ".length and .toSlice() on an array" {
+  val src = "package P\nfunc f(a: in array[5, Int]): Int {\n  val s = a.toSlice()\n  a.length + s.length\n}\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "clean (" + diagCodesOf(parseCheck(src)) + ")")
+  val bad = "package P\nfunc f(a: in array[5, Int]): slice[String] { a.toSlice() }\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0070"), "toSlice yields slice[Int] (" + diagCodesOf(parseCheck(bad)) + ")")
+}
+
+test "a type with an array field derives no equals, hash, show or ordering (T0159)" {
+  val bad = "package P\n@derive(Equals)\nrecord R { a: array[2, Int] }\n"
+  assertEqualInt(
+    countDiagCode(parseCheck(bad), "T0159"),
+    1,
+    "a record deriving Equals (" + diagCodesOf(parseCheck(bad)) + ")"
+  )
+  val union = "package P\n@derive(Show)\nunion U {\n  case A(a: array[2, Int])\n  case B\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(union), "T0159"), 1, "a union deriving Show")
+  val ok = "package P\nrecord R { a: array[2, Int] }\nfunc f(x: in R, y: in R): Bool { x == y }\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "== needs no derive (" + diagCodesOf(parseCheck(ok)) + ")")
+  val nested = "package P\nrecord Inner { a: array[2, Int] }\n@derive(Equals)\nrecord Outer { i: Inner }\n"
+  assertEqualInt(countDiagCode(parseCheck(nested), "T0159"), 1, "an array reached through a nested record")
+  val viaSlice = "package P\n@derive(Equals)\nrecord R { a: slice[array[2, Int]] }\n"
+  assertEqualInt(countDiagCode(parseCheck(viaSlice), "T0159"), 1, "an array inside a slice")
+  val viaTuple = "package P\n@derive(Equals)\nrecord R { a: (Int, array[2, Int]) }\n"
+  assertEqualInt(countDiagCode(parseCheck(viaTuple), "T0159"), 1, "an array inside a tuple")
+  val viaAlias = "package P\nalias Row = array[2, Int]\n@derive(Equals)\nrecord R { a: Row }\n"
+  assertEqualInt(countDiagCode(parseCheck(viaAlias), "T0159"), 1, "an array behind an alias")
+}
+
+test "a ULong range reaching 2^64 - 1 is not a bounds-check proof" {
+  val src = "package P\ntype Big = ULong range 0 ..= 18446744073709551615u64\ntype Small = ULong range 0 ..= 3u64\nfunc f(a: in array[4, Int], b: in Big, s: in Small): Int {\n  a[b] + a[s]\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "clean (" + diagCodesOf(cr) + ")")
+  var elided = 0
+  var checked = 0
+  for k in mapKeys(cr.symbols.arrayIndexSites) {
+    match mapGet(cr.symbols.arrayIndexSites, k) {
+      case Some(site) -> if site.elide { elided = elided + 1 } else { checked = checked + 1 }
+      case None -> ()
+    }
+  }
+  assertEqualInt(elided, 1, "only the range that fits the array")
+  assertEqualInt(checked, 1, "the full ULong range is checked")
+}
+
+test "a zero value is not built for a record with an invariant (T0156)" {
+  val bad = "package P\nrecord Inv { x: Int\n invariant: x >= 0 }\nfunc f() {\n  var a: array[2, Inv]\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(bad), "T0156"), 1, "a record with an invariant")
+  val ok = "package P\nrecord Plain { x: Int }\nfunc f() {\n  var a: array[2, Plain]\n}\n"
+  assertEqualInt(
+    diagCount(parseCheck(ok)),
+    0,
+    "a record without one is zero filled (" + diagCodesOf(parseCheck(ok)) + ")"
+  )
+}
+
+test "an array whose length is not known is T0160 where it is used" {
+  val len = "package P\nfunc f[N: Nat](a: in array[N, Int]): Int {\n  a.length\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(len), "T0160"), 1, "length of a value-generic array")
+  val index = "package P\nfunc f[N: Nat](a: in array[N, Int]): Int {\n  a[0]\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(index), "T0160"), 1, "index into a value-generic array")
+  val copy = "package P\nfunc f[N: Nat](a: in array[N, Int]) {\n  var b = a\n  b = a\n}\n"
+  assertTrue(
+    hasDiagCode(parseCheck(copy), "T0160"),
+    "a copy of a value-generic array (" + diagCodesOf(parseCheck(copy)) + ")"
+  )
+  val eq = "package P\nfunc f[N: Nat](a: in array[N, Int], b: in array[N, Int]): Bool {\n  a == b\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(eq), "T0160"), 1, "== on value-generic arrays")
+  val nonConst = "package P\nfunc size(): Int = 3\nval M: Int = size()\nfunc first(a: in array[M, Int]): Int = 0\n"
+  assertEqualInt(
+    countDiagCode(parseCheck(nonConst), "T0160"),
+    1,
+    "a length that is not a constant (" + diagCodesOf(parseCheck(nonConst)) + ")"
+  )
+  val unusedGen = "package P\nfunc f[N: Nat](a: in array[N, Int]): Int = 0\n"
+  assertEqualInt(countDiagCode(parseCheck(unusedGen), "T0160"), 0, "a value generic length that is not used")
+  val iter = "package P\nfunc f[N: Nat](a: in array[N, Int]): Int {\n  var t = 0\n  for x in a {\n    t = t + x\n  }\n  t\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(iter), "T0160"), 1, "for over a value-generic array")
+}
+
+test "a protected type's array field follows the zero-fill rule" {
+  val ok = "package P\nprotected type T {\n  var hits: array[3, Int]\n}\n"
+  val okCr = parseCheck(ok)
+  assertEqualInt(diagCount(okCr), 0, "a zeroable element (" + diagCodesOf(okCr) + ")")
+  assertEqualInt(okCr.symbols.arrayZeroSites.count, 1, "the field is zero filled")
+  val ctor = "package P\nopaque type B {\n  xs: array[2, Int]\n}\nprotected type T {\n  var hits: array[3, Int]\n}\nfunc mk(): Int {\n  val b = B()\n  val t = T()\n  0\n}\n"
+  val ctorCr = parseCheck(ctor)
+  assertEqualInt(
+    countDiagCode(ctorCr, "T0105"),
+    0,
+    "a zero-filled field is not a required argument (" + diagCodesOf(ctorCr) + ")"
+  )
+  val bad = "package P\nprotected type T {\n  var names: array[2, String]\n}\n"
+  assertEqualInt(
+    countDiagCode(parseCheck(bad), "T0156"),
+    1,
+    "an element with no zero (" + diagCodesOf(parseCheck(bad)) + ")"
+  )
+}
+
+test "toSlice on an array is called, not referenced" {
+  val bare = "package P\nfunc f(a: in array[3, Int]): Int {\n  val g = a.toSlice\n  0\n}\n"
+  val cr = parseCheck(bare)
+  assertEqualInt(countDiagCode(cr, "T0113"), 1, "a bare toSlice (" + diagCodesOf(cr) + ")")
+  assertTrue(Str.contains(diagCodesOf(cr), "is called, not referenced"), "the message says to call it")
+  val wrapped = "package P\nfunc f(a: in array[3, Int]): Int {\n  val g = { -> a.toSlice() }\n  g().count\n}\n"
+  val wcr = parseCheck(wrapped)
+  assertEqualInt(diagCount(wcr), 0, "a lambda that calls it (" + diagCodesOf(wcr) + ")")
+}
+
+test "an array element passed to out or inout needs a writable array" {
+  val bad = "package P\nfunc bump(x: inout Int) {\n  x = x + 10\n}\nfunc f(p: in array[2, Int]) {\n  bump(p[0])\n}\nfunc g() {\n  val a: array[2, Int] = [1, 2]\n  bump(a[1])\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(bad), "T0157"), 2, "an element of an in parameter and of a val")
+  val ok = "package P\nfunc bump(x: inout Int) {\n  x = x + 10\n}\nfunc f(p: inout array[2, Int]) {\n  bump(p[0])\n  var a: array[2, Int] = [1, 2]\n  bump(a[1])\n}\n"
+  val okCr = parseCheck(ok)
+  assertEqualInt(diagCount(okCr), 0, "an inout parameter and a var local (" + diagCodesOf(okCr) + ")")
+}
+
+test "an array is found at any depth and a recursive shape is T0160" {
+  val deep = "package P\nrecord F {\n  arr: array[2, Int]\n}\nrecord E {\n  f: (Int, (Int, (Int, (Int, (Int, (Int, (Int, (Int, (Int, F)))))))))\n}\n@derive(Equals)\nrecord R {\n  e: (Int, (Int, (Int, E)))\n}\n"
+  assertEqualInt(
+    countDiagCode(parseCheck(deep), "T0159"),
+    1,
+    "an array twelve levels down (" + diagCodesOf(parseCheck(deep)) + ")"
+  )
+  val plain = "package P\nrecord G {\n  x: Int\n}\n@derive(Equals)\nrecord R {\n  g: (Int, (Int, (Int, (Int, (Int, (Int, (Int, (Int, (Int, (Int, G))))))))))\n}\n"
+  assertEqualInt(
+    countDiagCode(parseCheck(plain), "T0159"),
+    0,
+    "no array at any depth (" + diagCodesOf(parseCheck(plain)) + ")"
+  )
+  val rec = "package P\nunion Tree {\n  case Leaf(a: array[2, Int])\n  case Node(l: Tree, r: Tree)\n}\nfunc same(x: in Tree, y: in Tree): Bool {\n  x == y\n}\n"
+  assertEqualInt(
+    countDiagCode(parseCheck(rec), "T0160"),
+    1,
+    "== on a recursive union holding an array (" + diagCodesOf(parseCheck(rec)) + ")"
+  )
+}
+
+test "== on a union, tuple or option that holds an array is built element by element" {
+  val ok = "package P\nunion U {\n  case A(a: array[2, Int])\n  case B\n}\nfunc f(x: in U, y: in U, p: in (Int, array[2, Int]), q: in (Int, array[2, Int])): Bool {\n  x == y and p != q\n}\n"
+  val cr = parseCheck(ok)
+  assertEqualInt(diagCount(cr), 0, "clean (" + diagCodesOf(cr) + ")")
+  assertEqualInt(cr.symbols.wrapEqSites.count, 2, "both comparisons are recorded")
+  val fns = "package P\nfunc f(p: in (array[2, (Int) -> Int], Int), q: in (array[2, (Int) -> Int], Int)): Bool { p == q }\n"
+  assertEqualInt(countDiagCode(parseCheck(fns), "T0153"), 1, "a function inside is still T0153")
 }
