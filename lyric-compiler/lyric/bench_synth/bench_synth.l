@@ -8,20 +8,23 @@
 //!   1. Warms up each `@bench` function <warmup> times (un-timed).
 //!   2. Runs each `@bench` function <runs> times and records wall-clock time
 //!      via `Std.Time.now()` / `since()` / `totalMillis()`.
-//!   3. Prints min / max / mean milliseconds per bench to stdout.
+//!   3. Runs each `@bench` function <runs> more times, untimed, between two
+//!      `Std.Bench.allocatedBytes()` readings.
+//!   4. Prints min / max / mean milliseconds and the bytes allocated per run
+//!      for each bench to stdout.
 //!
 //! The rewrite preserves the original source bytes for all non-synthesised
 //! items so that type-checker diagnostics still point at user code.
 //!
 //! Requirements for the input bench module:
 //!   * `@bench_module` annotation at the file level.
-//!   * `import Std.Time` — used by the synthesised harness.
+//!   * `import Std.Time` and `import Std.Bench` — used by the synthesised
+//!     harness.
 //!   * Each benchmarked function must have signature `func name(): Unit`.
 //!   * No user-defined `func main()`.
 //!
-//! If `Std.Time` is not already imported, the synthesiser injects
-//! `import Std.Time` immediately before the first item so the
-//! harness functions resolve correctly.
+//! Either import the module does not already have is injected immediately
+//! before the first item so the harness functions resolve correctly.
 package Lyric.BenchSynth
 
 import Std.Core
@@ -118,13 +121,13 @@ func parseErrors(diags: in List[Diagnostic]): List[Diagnostic] {
   acc
 }
 
-func hasTimeImport(imports: in List[ImportDecl]): Bool {
+func hasStdImport(imports: in List[ImportDecl], module: in String): Bool {
   var i = 0
   var found = false
   while i < imports.count {
     val imp = imports[i]
     if imp.path.segments.count == 2 {
-      if imp.path.segments[0] == "Std" and imp.path.segments[1] == "Time" {
+      if imp.path.segments[0] == "Std" and imp.path.segments[1] == module {
         found = true
       }
     }
@@ -207,10 +210,23 @@ func synthesizeMain(benches: in List[BenchSlot], runs: in Int, warmup: in Int): 
     sb = sb + "    " + rVar + " = " + rVar + " + 1\n"
     sb = sb + "  }\n"
     sb = sb + "  val " + meanV + " = " + sumV + " / " + runsF + "\n"
-    // Output line: "name  min=Xms  max=Xms  mean=Xms".
+    // Allocation: a separate untimed loop, so the clock reads (which
+    // allocate on some targets) are not counted against the benchmark.
+    val a0V = "__lyric_a0_" + idx
+    val a1V = "__lyric_a1_" + idx
+    val kVar = "__lyric_k_" + idx
+    sb = sb + "  val " + a0V + " = allocatedBytes()\n"
+    sb = sb + "  var " + kVar + " = 0\n"
+    sb = sb + "  while " + kVar + " < " + runsStr + " {\n"
+    sb = sb + "    " + name + "()\n"
+    sb = sb + "    " + kVar + " = " + kVar + " + 1\n"
+    sb = sb + "  }\n"
+    sb = sb + "  val " + a1V + " = allocatedBytes()\n"
+    // Output line: "name  min=Xms  max=Xms  mean=Xms  alloc=NB/run".
     sb = sb + "  println(\"" + nameEsc + "\" + \"  min=\" + toString(" + minV + ") + \"ms\""
     sb = sb + "       + \"  max=\" + toString(" + maxV + ") + \"ms\""
-    sb = sb + "       + \"  mean=\" + toString(" + meanV + ") + \"ms\")\n"
+    sb = sb + "       + \"  mean=\" + toString(" + meanV + ") + \"ms\""
+    sb = sb + "       + \"  alloc=\" + toString((" + a1V + " - " + a0V + ") / " + runsStr + "i64) + \"B/run\")\n"
     i = i + 1
   }
   sb = sb + "  return 0\n"
@@ -260,17 +276,23 @@ pub func synthesizeBench(source: in String, runs: in Int, warmup: in Int, filter
     i = i + 1
   }
 
-  // Emit the original source verbatim.  If Std.Time is not already
-  // imported we inject it just before the first item so the synthesised
-  // harness can call now() / since() / totalMillis().
-  val injectTime = not hasTimeImport(pf.file.imports)
+  // Emit the original source verbatim, with `import Std.Time` (now /
+  // since / totalMillis) and `import Std.Bench` (allocatedBytes) injected
+  // before the first item when the module does not already import them.
+  var injected = ""
+  if not hasStdImport(pf.file.imports, "Time") {
+    injected = injected + "import Std.Time\n"
+  }
+  if not hasStdImport(pf.file.imports, "Bench") {
+    injected = injected + "import Std.Bench\n"
+  }
   var sb = ""
-  if injectTime and pf.file.items.count > 0 {
+  if injected.length > 0 and pf.file.items.count > 0 {
     val firstItemStart = pf.file.items[0].span.startPos.offset
     if firstItemStart > 0 {
       sb = source.substring(0, firstItemStart)
     }
-    sb = sb + "\nimport Std.Time\n"
+    sb = sb + "\n" + injected
     sb = sb + source.substring(firstItemStart, source.length - firstItemStart)
   } else {
     sb = source

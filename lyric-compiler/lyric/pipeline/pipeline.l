@@ -52,6 +52,7 @@ package Lyric.Pipeline
 
 import Std.Core
 import Std.Collections
+import Std.String as Str
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.TypeChecker
@@ -63,6 +64,7 @@ import Lyric.BuildDefines as BD
 import Lyric.AwaitHoist as AwaitHoist
 import Lyric.AliasRewriter as Aliases
 import Lyric.Stubbable as Stubbable
+import Lyric.TypeAliasResolve as TypeAliasResolve
 import Lyric.ImplDefaults as ImplDefaults
 import Lyric.WireExpand as WireExpand
 import Lyric.Mono
@@ -148,6 +150,11 @@ pub record MiddleEndOptions {
   /// `NativeWeak[T]`, `nativeAddrOf`, `nativeNullPtr`); elsewhere they are
   /// unknown names.
   nativeIntrinsics: Bool = false
+  /// Whether `array[N, T]` is a `List[T]` on this target (dotnet and the
+  /// JVM): `Lyric.ContractElaborator.lowerArraysToLists` gives it that
+  /// representation after the array operations are lowered (D167).  Native
+  /// lowers the array types itself.
+  arraysAsLists: Bool = false
 }
 
 // Report `diags` (package-labelled when `pkgLabel` is non-empty, further
@@ -222,7 +229,51 @@ pub func pipeParseAndErase(
   // synthesized item is never itself erased. `activeFeatures` is the user's own
   // feature set (not the synthetic target pseudo-feature cfg adds).
   val biFile = BD.synthesizeBuildInfo(cfgRes.file, targetName, activeFeatures, definesWk)
-  Some(value = markWrappingArith(biFile, definesWk))
+  val arrayImports = withArrayImports(biFile, source)
+  Some(value = markWrappingArith(arrayImports, definesWk))
+}
+
+/// A file that spells an `array[N, T]` type may need `Std.Collections` after
+/// lowering (a `List` for `.toSlice()` and, on dotnet and the JVM, the array
+/// itself), so the import is added before anything resolves imports (D167).
+func withArrayImports(file: in SourceFile, source: in String): SourceFile {
+  if not Str.contains(source, "array[") {
+    return file
+  }
+  val segs0 = file.packageDecl.path.segments
+  if segs0.count > 0 and segs0[0] == "Std" {
+    return file
+  }
+  for imp in file.imports {
+    if imp.path.segments.count == 2 and imp.path.segments[0] == "Std" and imp.path.segments[1] == "Collections" and (match imp.asAlias { case Some(_) -> false; case None -> true }) and (match imp.selector { case Some(_) -> false; case None -> true }) {
+      return file
+    }
+  }
+  val imports: List[ImportDecl] = newList()
+  for imp in file.imports {
+    imports.add(imp)
+  }
+  val segs: List[String] = newList()
+  segs.add("Std")
+  segs.add("Collections")
+  imports.add(
+    ImportDecl(
+      path = ModulePath(segments = segs, span = file.span),
+      selector = None,
+      asAlias = None,
+      isPubUse = false,
+      isExtern = false,
+      span = file.span
+    )
+  )
+  SourceFile(
+    moduleDoc = file.moduleDoc,
+    fileAnnotations = file.fileAnnotations,
+    packageDecl = file.packageDecl,
+    imports = imports,
+    items = file.items,
+    span = file.span
+  )
 }
 
 /// The file annotation that tells `pipeCheckAndMono` to leave the file's
@@ -589,13 +640,30 @@ pub func pipeCheckAndMono(
   // `Equals` (D164).
   val recordLowered = lowerRecordEq(
     lowerRecordArith(distinctLowered, tcRes.symbols.recordArithSites),
-    tcRes.symbols.recordEqSites
+    tcRes.symbols.recordEqSites,
+    tcRes.symbols.arrayEqSites,
+    tcRes.symbols.wrapEqSites
+  )
+  // `array[N, T]` (D167): bounds-checked indexing, `.length`, `.toSlice()`,
+  // `for` over an array, copies on store and zero-filled declarations become
+  // forms every backend lowers.  Before the overflow pass, which still finds
+  // a compound assignment's statement and its operators by their own spans.
+  val arraysLowered = lowerArrays(
+    recordLowered,
+    ArraySites(
+      index = tcRes.symbols.arrayIndexSites,
+      len = tcRes.symbols.arrayLenSites,
+      slice = tcRes.symbols.arraySliceSites,
+      forIter = tcRes.symbols.arrayForSites,
+      copy = tcRes.symbols.arrayCopySites,
+      zero = tcRes.symbols.arrayZeroSites
+    )
   )
   // Integer overflow panics in a debug build and wraps in a release build or
   // in the standard library (D163); `.wrappingAdd(...)` and its siblings
   // become the plain operator either way.
   val checked = lowerOverflowChecks(
-    recordLowered,
+    arraysLowered,
     tcRes.symbols.overflowSites,
     tcRes.symbols.overflowCompoundTemps,
     not hasWrappingArith(recordLowered)
@@ -631,14 +699,16 @@ pub func pipeCheckAndMono(
 
   val noSpecSites: Map[String, Map[String, ArgConversionSite]] = newMap()
   val lambdaTypes = funcValueLambdaTypes(valueSites)
+  val derivedLens = withArrayLens(derived, tcRes.symbols.arrayTypeLens)
   val monoRes0 = monoFileWithLambdaTypes(
-    derived,
+    derivedLens,
     monoGenFuncs,
     monoIfaceDecls,
     monoRecordDecls,
     lambdaTypes,
     tcRes.symbols.callResultTypes,
     tcRes.symbols.genericCallTypeArgSites,
+    tcRes.symbols.valueGenericCallSites,
     tcRes.symbols.lambdaParamTypeSites,
     noSpecSites
   )
@@ -646,38 +716,62 @@ pub func pipeCheckAndMono(
     return None
   }
   if monoRes0.unsignedSpecs.count == 0 {
-    return Some(value = mapExprsInFile(monoRes0.file, foldNegatedIntLiteral))
+    return Some(value = finishMono(monoRes0.file, opts))
   }
   // A specialisation binding a type parameter to `UInt`/`ULong` is checked
   // on its own, and specialised again with what the checker records in it
   // (#7842).
   val recheckDiags: List[Diagnostic] = newList()
-  val specSites = recheckUnsignedSpecs(
+  val specArrays: Map[String, SpecArraySites] = newMap()
+  val specSites = recheckSpecs(
     monoRes0.unsignedSpecs,
     file0,
     importedPkgs,
     monoGenFuncs,
     opts.nativeIntrinsics,
-    recheckDiags
+    recheckDiags,
+    Some(value = tcRes.symbols),
+    specArrays
   )
   if gate(opts.pkgLabel, opts.lineOrigins, recheckDiags) {
     return None
   }
   val monoRes = monoFileWithLambdaTypes(
-    derived,
+    derivedLens,
     monoGenFuncs,
     monoIfaceDecls,
     monoRecordDecls,
     lambdaTypes,
     tcRes.symbols.callResultTypes,
     tcRes.symbols.genericCallTypeArgSites,
+    tcRes.symbols.valueGenericCallSites,
     tcRes.symbols.lambdaParamTypeSites,
     specSites
   )
   if gate(opts.pkgLabel, opts.lineOrigins, monoRes.diagnostics) {
     return None
   }
-  Some(value = mapExprsInFile(monoRes.file, foldNegatedIntLiteral))
+  Some(value = finishMono(lowerSpecArrays(monoRes.file, specArrays), opts))
+}
+
+// The monomorphised file as the backend receives it: negated integer
+// literals folded, and on a target that represents `array[N, T]` as a
+// `List[T]` (D167), the array intrinsics and types lowered to lists.
+func finishMono(file: in SourceFile, opts: in MiddleEndOptions): SourceFile {
+  val folded = mapExprsInFile(file, foldNegatedIntLiteral)
+  if opts.arraysAsLists {
+    lowerArraysToLists(folded)
+  } else {
+    folded
+  }
+}
+
+/// `array[N, T]` as a `List[T]` (D167): the fill and copy intrinsics become
+/// loops and every remaining `array[N, T]` type expression becomes `List[T]`.
+func lowerArraysToLists(file: in SourceFile): SourceFile {
+  val marker: Map[String, TypeExpr] = newMap()
+  marker.add(arraysAsListsKey(), TypeExpr(kind = TUnit, span = file.span))
+  TypeAliasResolve.resolveAliasesInFile(marker, lowerArrayIntrinsicsToLists(file))
 }
 
 // ─── Unsigned specialisations (#7842) ──────────────────────────────────────
@@ -698,6 +792,37 @@ pub func recheckUnsignedSpecs(
   monoGenFuncs: in List[FunctionDecl],
   native: in Bool,
   diags: in List[Diagnostic],
+): Map[String, Map[String, ArgConversionSite]] {
+  val noArrays: Map[String, SpecArraySites] = newMap()
+  recheckSpecs(specs, file0, importedPkgs, monoGenFuncs, native, diags, None, noArrays)
+}
+
+/// The `array[N, T]` operations (D167) a re-checked specialisation records
+/// that its generic body, checked over `T`, could not: the sites to lower on
+/// the specialised function's own body.
+pub record SpecArraySites {
+  arrays: ArraySites
+  arrayEq: Map[String, ArrayEqSite]
+  recordEq: Map[String, RecordEqSite]
+  wrapEq: Map[String, WrapEqSite]
+  /// The resolved lengths of the function's `array[N, T]` type expressions
+  /// whose `N` is not a literal.
+  lens: Map[String, Int]
+}
+
+// A specialisation binding a type parameter to `UInt`/`ULong` or to an array
+// type is re-checked as the non-generic function it is.  `known`, for the
+// file's own generics, holds what the generic body's own check recorded and
+// the pre-monomorphisation passes have already lowered.
+pub func recheckSpecs(
+  specs: in List[UnsignedSpecRequest],
+  file0: in SourceFile,
+  importedPkgs: in List[ImportedPackage],
+  monoGenFuncs: in List[FunctionDecl],
+  native: in Bool,
+  diags: in List[Diagnostic],
+  known: in Option[SymbolTable],
+  arrAcc: in Map[String, SpecArraySites],
 ): Map[String, Map[String, ArgConversionSite]] {
   val acc: Map[String, Map[String, ArgConversionSite]] = newMap()
   // One check per origin package and round; a round holds at most one
@@ -722,7 +847,7 @@ pub func recheckUnsignedSpecs(
       }
     }
     pending = rest
-    recheckSpecRound(round, origin, file0, importedPkgs, monoGenFuncs, native, diags, acc)
+    recheckSpecRound(round, origin, file0, importedPkgs, monoGenFuncs, native, diags, acc, known, arrAcc)
   }
   acc
 }
@@ -736,6 +861,8 @@ func recheckSpecRound(
   native: in Bool,
   diags: in List[Diagnostic],
   acc: in Map[String, Map[String, ArgConversionSite]],
+  known: in Option[SymbolTable],
+  arrAcc: in Map[String, SpecArraySites],
 ): Unit {
   val checkDecls: List[FunctionDecl] = newList()
   val items: List[Item] = newList()
@@ -831,7 +958,7 @@ func recheckSpecRound(
           "M0007",
           "cannot specialise '" + sp.specName + "': with its type arguments substituted the body does not type-check (" +
             firstError +
-            "), so its operations on UInt/ULong values cannot be made unsigned",
+            "), so its operations on UInt/ULong or array values cannot be lowered",
           sp.callSpan
         )
       )
@@ -844,9 +971,164 @@ func recheckSpecRound(
         }
       }
       acc.add(sp.specName, sites)
+      // Only the generic's own file is lowered before monomorphisation, so
+      // only there is a site the generic's check recorded already handled.
+      val prior = if origin == "" { known } else { None }
+      val sa = specArraySitesOf(res.symbols, prior, lo, hi, cd.span.startPos.offset, cd.span.endPos.offset)
+      if specArraySitesNonEmpty(sa) {
+        arrAcc.add(sp.specName, sa)
+      }
     }
     ri = ri + 1
   }
+}
+
+func specArraySitesNonEmpty(sa: in SpecArraySites): Bool {
+  sa.arrays.index.count > 0 or sa.arrays.len.count > 0 or sa.arrays.slice.count > 0 or sa.arrays.forIter.count > 0 or
+    sa.arrays.copy.count > 0 or
+    sa.arrays.zero.count > 0 or
+    sa.arrayEq.count > 0 or
+    sa.recordEq.count > 0 or
+    sa.wrapEq.count > 0 or
+    sa.lens.count > 0
+}
+
+func specArraySitesOf(
+  syms: in SymbolTable,
+  prior: in Option[SymbolTable],
+  lo: in Int,
+  hi: in Int,
+  fnLo: in Int,
+  fnHi: in Int,
+): SpecArraySites {
+  val none = newSymbolTable()
+  val p = match prior { case Some(t) -> t; case None -> none }
+  val usePrior = match prior { case Some(_) -> true; case None -> false }
+  SpecArraySites(
+    arrays = ArraySites(
+      index = siteSlice(syms.arrayIndexSites, p.arrayIndexSites, usePrior, lo, hi),
+      len = siteSlice(syms.arrayLenSites, p.arrayLenSites, usePrior, lo, hi),
+      slice = siteSlice(syms.arraySliceSites, p.arraySliceSites, usePrior, lo, hi),
+      forIter = siteSlice(syms.arrayForSites, p.arrayForSites, usePrior, lo, hi),
+      copy = siteSlice(syms.arrayCopySites, p.arrayCopySites, usePrior, lo, hi),
+      zero = siteSlice(syms.arrayZeroSites, p.arrayZeroSites, usePrior, lo, hi)
+    ),
+    arrayEq = siteSlice(syms.arrayEqSites, p.arrayEqSites, usePrior, lo, hi),
+    recordEq = siteSlice(syms.recordEqSites, p.recordEqSites, usePrior, lo, hi),
+    wrapEq = siteSlice(syms.wrapEqSites, p.wrapEqSites, usePrior, lo, hi),
+    lens = siteSlice(syms.arrayTypeLens, p.arrayTypeLens, usePrior, fnLo, fnHi)
+  )
+}
+
+// The entries of `m` whose span starts in `lo ..< hi`, less those `prior`
+// holds when `usePrior`.
+func siteSlice[V](
+  m: in Map[String, V], prior: in Map[String, V], usePrior: in Bool, lo: in Int, hi: in Int
+): Map[String, V] {
+  val picked: Map[String, V] = newMap()
+  for k in mapKeys(m) {
+    val st = siteKeyStart(k)
+    if st >= lo and st < hi and not (usePrior and prior.containsKey(k)) {
+      match mapGet(m, k) {
+        case Some(v) -> picked.add(k, v)
+        case None -> ()
+      }
+    }
+  }
+  picked
+}
+
+// The start offset of a `recordCopySiteKey` (`"<start>:<end>"`).
+func siteKeyStart(key: in String): Int {
+  var n = 0
+  var i = 0
+  while i < key.length {
+    val ch = Str.substring(key, i, 1)
+    if ch == ":" {
+      return n
+    }
+    match Str.indexOf("0123456789", ch) {
+      case Some(d) -> {
+        n = n * 10 + d
+      }
+      case None -> {
+        return n
+      }
+    }
+    i = i + 1
+  }
+  n
+}
+
+// `file` with each `array[N, T]` type expression whose length the checker
+// resolved (`lens`, keyed by the type expression's span) written with that
+// length as a literal, so a backend never resolves a name (D167).
+func withArrayLens(file: in SourceFile, lens: in Map[String, Int]): SourceFile {
+  if lens.count == 0 {
+    return file
+  }
+  val marker: Map[String, TypeExpr] = newMap()
+  for k in mapKeys(lens) {
+    match mapGet(lens, k) {
+      case Some(n) -> {
+        val lit = Expr(kind = ELiteral(lit = LInt(value = n.toLong(), suffix = I32, raw = "")), span = file.span)
+        marker.add(
+          arrayLenMarkerPrefix() + k,
+          TypeExpr(
+            kind = TArray(size = TAValue(expr = lit), element = TypeExpr(kind = TUnit, span = file.span)),
+            span = file.span
+          )
+        )
+      }
+      case None -> ()
+    }
+  }
+  TypeAliasResolve.resolveAliasesInFile(marker, file)
+}
+
+// Lowers the array sites a specialisation recorded on that specialised
+// function's body: each function is lowered on its own, because the
+// specialisations of one generic share its source spans.
+func lowerSpecArrays(file: in SourceFile, specArrays: in Map[String, SpecArraySites]): SourceFile {
+  if specArrays.count == 0 {
+    return file
+  }
+  val items: List[Item] = newList()
+  for it in file.items {
+    match it.kind {
+      case IFunc(fd) -> match mapGet(specArrays, fd.name) {
+        case Some(sa) -> {
+          val one: List[Item] = newList()
+          one.add(it)
+          val oneFile = SourceFile(
+            moduleDoc = file.moduleDoc,
+            fileAnnotations = file.fileAnnotations,
+            packageDecl = file.packageDecl,
+            imports = file.imports,
+            items = one,
+            span = file.span
+          )
+          val lowered = lowerArrays(
+            lowerRecordEq(withArrayLens(oneFile, sa.lens), sa.recordEq, sa.arrayEq, sa.wrapEq),
+            sa.arrays
+          )
+          for li in lowered.items {
+            items.add(li)
+          }
+        }
+        case None -> items.add(it)
+      }
+      case _ -> items.add(it)
+    }
+  }
+  SourceFile(
+    moduleDoc = file.moduleDoc,
+    fileAnnotations = file.fileAnnotations,
+    packageDecl = file.packageDecl,
+    imports = file.imports,
+    items = items,
+    span = file.span
+  )
 }
 
 func intListContainsPipe(xs: in List[Int], v: in Int): Bool {

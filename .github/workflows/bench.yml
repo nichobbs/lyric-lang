@@ -137,6 +137,13 @@ jobs:
             --runs "$RUNS" --warmup "$WARMUP" \
             | tee bench-results/bench_json.txt
 
+      - name: bench — Vec3 value-record arithmetic
+        continue-on-error: true
+        run: |
+          "$LYRIC_BIN" bench benchmarks/bench_vec3.l \
+            --runs "$RUNS" --warmup "$WARMUP" \
+            | tee bench-results/bench_vec3.txt
+
       # ── Generate HTML report ─────────────────────────────────────────────────
 
       - name: Generate HTML report
@@ -147,6 +154,7 @@ jobs:
             bench-results/bench_contracts.txt \
             bench-results/bench_string.txt \
             bench-results/bench_json.txt \
+            bench-results/bench_vec3.txt \
             --output bench-results/report.html \
             --title "Lyric Performance Report" \
             --git-sha "${{ github.sha }}" \

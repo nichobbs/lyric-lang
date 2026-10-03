@@ -286,14 +286,64 @@ Use tuples sparingly. If you find yourself writing `(UserId, Instant, String)` a
 
 Lyric distinguishes between two collection types with different tradeoffs.
 
-**Arrays** are fixed-size and length is part of the type. They are value types — they live on the stack (or inline in a containing struct) and have no heap allocation.
+**Arrays** are fixed-size and the length is part of the type. They are values: assigning, passing or returning an array copies it, and a write through one binding is never seen through another.
 
 ```lyric
-val bytes: array[16, Byte]        // 16 bytes, length in type
+var bytes: array[16, Byte]        // 16 bytes, length in type, zero filled
 val zeros: array[4, Int] = [0, 0, 0, 0]
 ```
 
-The length is known at compile time. `array[16, Byte]` and `array[32, Byte]` are different types.
+The length is known at compile time. `array[16, Byte]` and `array[32, Byte]` are different types. A bracket literal where an array is expected builds one and must have exactly `N` elements (T0155). A declaration with no initializer, and a record field with no default, is filled with the element type's zero value: `0`, `0.0`, `false`, an enum's first case, a record of zeros, or a nested array of them. An element type with no zero (a `String`, a union, a range excluding zero) needs an initializer (T0156).
+
+```lyric
+var m: array[3, Int] = [1, 2, 3]
+val first = m[0]                  // reads an element
+m[1] = 20                         // writes through a var local
+m[2] += 5
+
+var copy = m                      // a copy
+copy[0] = 100                     // m[0] is still 1
+
+for x in m { println("${x}") }    // over the array's value when the loop starts
+val s = m.toSlice()               // a new slice[Int]; m.length is 3, a constant
+```
+
+An element write needs a writable place: a `var` local, an `out` or `inout` parameter, or a `var` field. Anything else, such as a `val` local or an `in` parameter, is T0157, because the array would otherwise change under a binding that cannot be assigned. `==` and `!=` compare two arrays element by element.
+
+```lyric
+func bump(a: inout array[4, Int], i: in Int) {
+  a[i] = a[i] + 10                // the caller's array changes
+}
+```
+
+On `--target native` an array of by-value elements (numbers, enums, records with no `var` field, other such arrays) is stored inline with no allocation, so a `Vec3` table or a 4 by 4 matrix inside a by-value record costs nothing to copy beyond its bytes. `--target dotnet` and `--target jvm` store an array as a `List`.
+
+A function can take an array of any length by making the length a value generic parameter. Each call binds `N` to its argument's length, and `N` is an ordinary `Int` constant in the body:
+
+```lyric
+func total[N: Nat](a: in array[N, Int]): Int {
+  var t = 0
+  for i in 0 ..< N {
+    t = t + a[i]
+  }
+  t
+}
+
+func doubled[N: Nat](a: in array[N, Int]): array[N, Int] {
+  var r = a
+  for i in 0 ..< N {
+    r[i] = a[i] * 2
+  }
+  r
+}
+
+val small: array[3, Int] = [1, 2, 3]
+val big: array[4, Int] = [5, 6, 7, 8]
+total(small)          // N = 3
+total(doubled(big))   // N = 4; doubled returns an array[4, Int]
+```
+
+Each length is compiled separately, exactly as if you had written it out, so bounds checks, copies and `==` behave as they do for a literal length. Two arguments that disagree about `N`, or an argument that disagrees with an explicit `total[3](a)`, are a compile-time error (T0043). When no argument has the length (`func make[N: Nat](): array[N, Int]`), give it explicitly: `make[4]()`; a bare `make()` is T0110. A record cannot yet size an array field with its own value generic parameter (#8090).
 
 **Slices** are dynamically sized, heap-allocated sequences. They are reference types backed by .NET's `List<T>`.
 
@@ -316,13 +366,16 @@ for x in xs { println("${x}") } // iteration
 
 There is no in-place mutation. `append` and `concat` produce new slices.
 
-**Bounds checking and range subtypes.** Array and slice indexing is bounds-checked at runtime. But if the index type's range statically proves the access is in bounds, the compiler elides the check entirely:
+**Bounds checking and range subtypes.** Array and slice indexing is bounds-checked at runtime; an index outside `0 ..< N` panics with `index <i> out of range for array[<N>]`. But if the index is a literal in range, or its type is a named range subtype whose range statically proves the access is in bounds, the compiler elides the check entirely, in every build and on every target (an inline `Int range 0 ..= 3` annotation is not a proof, since it is not enforced on every path):
 
 ```lyric
-val xs: array[100, Int]
-val i: Int range 0 ..= 99 = ...
+type Slot = Int range 0 ..= 99
+var xs: array[100, Int]
+val i: Slot = Slot.from(7)
 val v = xs[i]                    // bounds check elided — proven safe by type
 ```
+
+An array index is an integer (`Int`, `Long`, `Byte`, ...) or a range subtype of one (T0158 otherwise); a non-`Int` index is range checked as a `Long`. An array has no members but `.length` and `.toSlice()` (T0113). An element of a `List` is not a writable array place (T0157).
 
 With a plain `Int` index, you get the runtime check and the compiler will not guarantee it's safe:
 

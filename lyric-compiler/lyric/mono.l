@@ -338,6 +338,11 @@ record MonoState {
   /// this pass cannot infer from its argument expressions takes the unbound
   /// ones from here (`fillCheckedTypeArgsMono`, #7865).
   genericCallTypeArgSites: Map[String, GenericCallTypeArgsSite]
+  /// The value generic parameters the type checker bound for each call to a
+  /// value-generic function from its array arguments' lengths
+  /// (`SymbolTable.valueGenericCallSites`, D167 item 6), keyed like
+  /// `genericCallTypeArgSites`.
+  valueGenericCallSites: Map[String, Map[String, Int]]
   /// The types the type checker gave each lambda's unannotated parameters
   /// (`SymbolTable.lambdaParamTypeSites`), keyed by `recordCopySiteKey` of the
   /// lambda's span; the `ELambda` rewrite writes each onto its parameter as
@@ -401,6 +406,7 @@ func newMonoState(
     listLiteralTypeSites = newMap(),
     hoistOperandTypeSites = newMap(),
     genericCallTypeArgSites = newMap(),
+    valueGenericCallSites = newMap(),
     lambdaParamTypeSites = newMap(),
     copyTicker = newList(),
     seenSpecs = newMap(),
@@ -568,7 +574,9 @@ func typeExprKey(te: in TypeExpr): String {
     case TUnit -> "Unit"
     case TNever -> "Never"
     case TSelf -> "Self"
-    case TArray(_, elem) -> "Arr_" + typeExprKey(elem)
+    // The length is part of the type: `array[2, Int]` and `array[3, Int]`
+    // are different specialisations.
+    case TArray(sz, elem) -> "Arr" + typeArgListKey(singleTypeArg(sz)) + "_" + typeExprKey(elem)
     case TSlice(elem) -> "Slice_" + typeExprKey(elem)
     case TNullable(inner) -> "Nullable_" + typeExprKey(inner)
     case TTuple(ts) -> "Tup_" + typeExprListKey(ts)
@@ -643,6 +651,12 @@ func genericAppArgsMono(te: in TypeExpr): List[TypeArg] {
     case TNullable(inner) -> genericAppArgsMono(inner)
     case _ -> newList()
   }
+}
+
+func singleTypeArg(a: in TypeArg): List[TypeArg] {
+  val xs: List[TypeArg] = newList()
+  xs.add(a)
+  xs
 }
 
 func typeArgListKey(args: in List[TypeArg]): String {
@@ -922,7 +936,16 @@ func substTypeExpr(subst: in Map[String, TypeExpr], valueSubst: in Map[String, E
 // carries the substituted concrete value.
 func substTypeArg(subst: in Map[String, TypeExpr], valueSubst: in Map[String, Expr], arg: in TypeArg): TypeArg {
   match arg {
-    case TAType(inner) -> TAType(ty = substTypeExpr(subst, valueSubst, inner))
+    // `array[N, T]` parses its length `N` as a type name; a bound value
+    // generic parameter there is its value.
+    case TAType(inner) -> match inner.kind {
+      case TRef(p) -> if p.segments.count == 1 and valueSubst.containsKey(p.segments[0]) {
+        TAValue(expr = valueSubst[p.segments[0]])
+      } else {
+        TAType(ty = substTypeExpr(subst, valueSubst, inner))
+      }
+      case _ -> TAType(ty = substTypeExpr(subst, valueSubst, inner))
+    }
     case TAValue(e) -> TAValue(expr = substExprValue(valueSubst, e))
   }
 }
@@ -1073,6 +1096,24 @@ func substExprValue(valueSubst: in Map[String, Expr], expr: in Expr): Expr {
     }
     case EBlock(blk) -> Expr(kind = EBlock(block = substBlockValue(valueSubst, blk)), span = s)
     case EUnsafe(blk) -> Expr(kind = EUnsafe(block = substBlockValue(valueSubst, blk)), span = s)
+    case ERange(rb) -> Expr(
+      kind = ERange(
+        bound = match rb {
+          case RBClosed(lo, hi) -> RBClosed(
+            lo = substExprValue(valueSubst, lo),
+            hi = substExprValue(valueSubst, hi)
+          )
+          case RBHalfOpen(lo, hi, bare) -> RBHalfOpen(
+            lo = substExprValue(valueSubst, lo),
+            hi = substExprValue(valueSubst, hi),
+            bareDotDot = bare
+          )
+          case RBLowerOpen(hi) -> RBLowerOpen(hi = substExprValue(valueSubst, hi))
+          case RBUpperOpen(lo) -> RBUpperOpen(lo = substExprValue(valueSubst, lo))
+        }
+      ),
+      span = s
+    )
     case ELambda(lparams, body) -> Expr(
       kind = ELambda(lambdaParams = lparams, body = substBlockValue(valueSubst, body)),
       span = s
@@ -1394,6 +1435,12 @@ func unifyTE(
         case TArray(_, elem2) -> unifyTE(typeParams, elem1, elem2, subst)
         case _ -> ()
       }
+    }
+    // `array[N, T]` against `array[3, Int]` binds `T`; the length `N` is a
+    // value generic parameter, bound from the type checker's call site.
+    case TArray(_, elem1) -> match argTE.kind {
+      case TArray(_, elem2) -> unifyTE(typeParams, elem1, elem2, subst)
+      case _ -> ()
     }
     case TFunction(ps1, r1) -> {
       match argTE.kind {
@@ -4858,7 +4905,14 @@ func desugarRecordCopyMono(
     val fname = site.fields[fi]
     val value = match mapGet(given, fname) {
       case Some(tmp) -> singleSegPathExpr(tmp, sp)
-      case None -> Expr(kind = EMember(receiver = singleSegPathExpr(base, sp), memberName = fname), span = sp)
+      case None -> copyArrayFieldRead(
+        Expr(
+          kind = EMember(receiver = singleSegPathExpr(base, sp), memberName = fname),
+          span = sp
+        ),
+        copyFieldTypeMono(site, fname),
+        sp
+      )
     }
     ctorArgs.add(CANamed(name = fname, value = value, span = sp))
     fi = fi + 1
@@ -5002,6 +5056,34 @@ func hoistOperandTypedMono(state: in MonoState, site: in HoistOperandTypeSite, e
   stmts.add(copyTypedValStmtMono(name, Some(value = site.operandType), e, sp))
   stmts.add(Statement(kind = SExpr(expr = singleSegPathExpr(name, sp)), span = sp))
   Expr(kind = EBlock(block = Block(statements = stmts, span = sp)), span = sp)
+}
+
+// A field of array type that `.copy(...)` carries over unchanged is stored in a
+// new record, so it is copied (D167): the record has identity when it has a
+// `var` field, and the two must not share the array.
+func copyArrayFieldRead(read: in Expr, fieldTy: in Option[TypeExpr], sp: in Span): Expr {
+  match fieldTy {
+    case Some(te) -> match te.kind {
+      case TArray(_, _) -> {
+        val targs: List[TypeArg] = newList()
+        targs.add(TAType(ty = te))
+        val segs: List[String] = newList()
+        segs.add(arrayCopyIntrinsic())
+        val callee = Expr(
+          kind = ETypeApp(
+            fn = Expr(kind = EPath(path = ModulePath(segments = segs, span = sp)), span = sp),
+            args = targs
+          ),
+          span = sp
+        )
+        val cargs: List[CallArg] = newList()
+        cargs.add(CAPositional(expr = read))
+        Expr(kind = ECall(fn = callee, args = cargs), span = sp)
+      }
+      case _ -> read
+    }
+    case None -> read
+  }
 }
 
 // The type of field `name` recorded on a copy site, when it has one.
@@ -5152,6 +5234,34 @@ func annotateLambdaParamsMono(state: in MonoState, lparams: in List[LambdaParam]
     }
     case None -> lparams
   }
+}
+
+// The value generic parameters the type checker bound for the call whose
+// callee is at `calleeSpan` from its array arguments' lengths (D167 item 6),
+// as integer literals; empty when it bound none of `valueParams`.
+func checkedValueArgsMono(state: in MonoState, valueParams: in List[String], calleeSpan: in Span): Map[String, Expr] {
+  val acc: Map[String, Expr] = newMap()
+  if valueParams.count == 0 or not checkerSitesApplyMono(state) {
+    return acc
+  }
+  match mapGet(state.valueGenericCallSites, recordCopySiteKey(calleeSpan)) {
+    case Some(bound) -> {
+      for vp in valueParams {
+        match mapGet(bound, vp) {
+          case Some(n) -> acc.add(
+            vp,
+            Expr(
+              kind = ELiteral(lit = LInt(value = n.toLong(), suffix = NoIntSuffix, raw = toString(n))),
+              span = calleeSpan
+            )
+          )
+          case None -> ()
+        }
+      }
+    }
+    case None -> ()
+  }
+  acc
 }
 
 // Bind each of `typeParams` that `subst` leaves unbound to the type argument
@@ -6036,6 +6146,8 @@ func indexExprToTypeArgMono(state: in MonoState, e: in Expr): Option[TypeArg] {
         case None -> None
       }
     }
+    // An integer literal is a value generic argument (`total[3](a)`).
+    case ELiteral(lit) -> match lit { case LInt(_, _, _) -> Some(value = TAValue(expr = e)); case _ -> None }
     case _ -> None
   }
 }
@@ -6559,10 +6671,15 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
                 // cross-package resolution at codegen instead of being rewritten
                 // with an argument list that doesn't match the specialisation's
                 // real signature (invalid IL at runtime).
-                if typeParams.count > 0 and valueParams.count == 0 and args.count <= baseDecl.params.count {
+                // Value generic parameters are bound here only by the array
+                // lengths the type checker read off this call's arguments
+                // (D167 item 6); otherwise they need an explicit `f[N]`.
+                val checkedValues = checkedValueArgsMono(state, valueParams, fn.span)
+                val valuesBound = valueParams.count == 0 or checkedValues.count == valueParams.count
+                if (typeParams.count > 0 or valueParams.count > 0) and valuesBound and args.count <= baseDecl.params.count {
                   if genDeclResolvesForCallSite(state, env, fname, args, baseDecl) {
-                    // Pure type-generic call site: existing inference path
-                    // (value generics require explicit `f[N]` type apps).
+                    // Type parameters are inferred below; value parameters
+                    // come from `checkedValues`.
                     val subst: Map[String, TypeExpr] = newMap()
                     val bareBound: Map[String, Bool] = newMap()
                     // Tracks, per processed argument index, whether that
@@ -6684,14 +6801,13 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
                     }
                     if substIsComplete(typeParams, subst) {
                       val allParams = extractAllParamInfo(baseDecl.generics)
-                      val emptyValueSubst: Map[String, Expr] = newMap()
-                      val name = specFuncName(fname, allParams, subst, emptyValueSubst)
+                      val name = specFuncName(fname, allParams, subst, checkedValues)
                       validateWhereBounds(baseDecl, subst, fn.span, state.diags)
                       if not state.seenSpecs.containsKey(name) {
                         state.seenSpecs.add(name, true)
-                        val specDecl = specializeFunc(baseDecl, name, subst, emptyValueSubst)
+                        val specDecl = specializeFunc(baseDecl, name, subst, checkedValues)
                         state.allSpecs.add(
-                          SpecRequest(specName = name, baseDecl = specDecl, subst = subst, valueSubst = emptyValueSubst, callSpan = fn.span)
+                          SpecRequest(specName = name, baseDecl = specDecl, subst = subst, valueSubst = checkedValues, callSpan = fn.span)
                         )
                         // A specialised copy's concrete signature joins the inference
                         // surface, so `val v = f(...)` types `v` once `f` is rewritten.
@@ -7939,6 +8055,7 @@ pub func monoFileWithImportsAndTypeDecls(
     newMap(),
     newMap(),
     newMap(),
+    newMap(),
     newMap()
   )
 }
@@ -7956,6 +8073,7 @@ pub func monoFileWithLambdaTypes(
   lambdaTypes: in Map[String, TypeExpr],
   callResultTypes: in Map[String, TypeExpr],
   genericCallTypeArgSites: in Map[String, GenericCallTypeArgsSite],
+  valueGenericCallSites: in Map[String, Map[String, Int]],
   lambdaParamTypeSites: in Map[String, LambdaParamTypesSite],
   specSites: in Map[String, Map[String, ArgConversionSite]],
 ): MonoResult {
@@ -8284,6 +8402,12 @@ pub func monoFileWithLambdaTypes(
     }
     gci = gci + 1
   }
+  for vk in mapKeys(valueGenericCallSites) {
+    match mapGet(valueGenericCallSites, vk) {
+      case Some(vs) -> state.valueGenericCallSites.add(vk, vs)
+      case None -> ()
+    }
+  }
   val lpKeys = mapKeys(lambdaParamTypeSites)
   var lpi = 0
   while lpi < lpKeys.count {
@@ -8573,7 +8697,7 @@ pub func monoFileWithLambdaTypes(
     val substitutedBody = substValueInBody(req.valueSubst, req.baseDecl.body)
     val env = seedEnvFromParams(req.baseDecl.params)
     val specOrigin = originPkgOf(req.baseDecl.annotations)
-    if substMentionsUnsignedMono(req.subst) {
+    if substMentionsUnsignedMono(req.subst) or substMentionsArrayMono(req.subst) or req.valueSubst.count > 0 {
       state.unsignedSpecs.add(
         UnsignedSpecRequest(
           specName = req.specName,
@@ -8712,6 +8836,54 @@ func substMentionsUnsignedMono(subst: in Map[String, TypeExpr]): Bool {
     }
   }
   false
+}
+
+// True when a type argument of `subst` mentions `array[N, T]`: such a
+// specialisation is re-checked too, so the array operations on its operands
+// of type `T` are lowered (D167).
+func substMentionsArrayMono(subst: in Map[String, TypeExpr]): Bool {
+  for k in mapKeys(subst) {
+    match mapGet(subst, k) {
+      case Some(te) -> if teMentionsArrayMono(te) { return true }
+      case None -> ()
+    }
+  }
+  false
+}
+
+func teMentionsArrayMono(te: in TypeExpr): Bool {
+  match te.kind {
+    case TArray(_, _) -> true
+    case TParen(inner) -> teMentionsArrayMono(inner)
+    case TGenericApp(_, args) -> {
+      for a in args {
+        match a {
+          case TAType(ate) -> if teMentionsArrayMono(ate) { return true }
+          case TAValue(_) -> ()
+        }
+      }
+      false
+    }
+    case TTuple(elems) -> {
+      for el in elems {
+        if teMentionsArrayMono(el) {
+          return true
+        }
+      }
+      false
+    }
+    case TSlice(elem) -> teMentionsArrayMono(elem)
+    case TNullable(inner) -> teMentionsArrayMono(inner)
+    case TFunction(ps, r) -> {
+      for pte in ps {
+        if teMentionsArrayMono(pte) {
+          return true
+        }
+      }
+      teMentionsArrayMono(r)
+    }
+    case _ -> false
+  }
 }
 
 func teMentionsUnsignedMono(te: in TypeExpr): Bool {

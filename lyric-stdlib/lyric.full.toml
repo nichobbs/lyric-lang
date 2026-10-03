@@ -97,6 +97,8 @@ output_assembly = "Lyric.Stdlib.dll"
 
 # Tier 5 — structured data, markup, time.
 "Std.Time"             = "std/time.l"
+"Std.BenchHost"        = "std/_kernel/bench_host.l"
+"Std.Bench"            = "std/bench.l"
 "Std.Json"             = "std/json.l"
 "Std.Xml"              = "std/xml.l"
 "Std.Yaml"             = "std/yaml.l"

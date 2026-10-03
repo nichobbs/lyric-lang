@@ -48,6 +48,9 @@ _Static_assert(offsetof(LyricObjectHeader, dtor) == 2 * sizeof(int32_t),
 /* malloc + abort-on-OOM.  All Lyric heap allocation goes through here. */
 void* lyric_alloc(uint64_t size);
 
+/* Bytes this thread has allocated through lyric_alloc (Std.Bench). */
+int64_t lyric_rt_allocated_bytes(void);
+
 /* free() for a raw lyric_alloc buffer that is NOT an ARC object (no header).
  * Used for a protected type's runtime-sized mutex buffer (D-N-017); ARC
  * objects are freed by lyric_release, never this.  No-op on NULL. */

@@ -41,7 +41,20 @@ pub func resolveType(tbl: in SymbolTable, ctx: in GenericContext, diag: in List[
       TyFunction(params = pts, ret = rt, isAsync = false)
     }
 
-    case TArray(_, elem) -> TyArray(size = None, element = resolveType(tbl, ctx, diag, elem))
+    case TArray(size, elem) -> {
+      val len = resolveArrayLength(tbl, ctx, size)
+      if (match len { case Some(_) -> false; case None -> true }) and not arrayLengthIsTypeParam(ctx, size) {
+        diag.add(
+          errorDiagnostic(
+            "T0160",
+            "the length of an `array[N, T]` must be a compile-time constant integer from 0 to 2147483647 (a literal, a constant or a constant expression) or a value generic parameter",
+            te.span
+          )
+        )
+      }
+      noteArrayTypeLength(tbl, te, size, len)
+      TyArray(size = len, element = resolveType(tbl, ctx, diag, elem))
+    }
 
     case TSlice(elem) -> TySlice(element = resolveType(tbl, ctx, diag, elem))
 
@@ -75,6 +88,63 @@ pub func resolveType(tbl: in SymbolTable, ctx: in GenericContext, diag: in List[
       val inc = rangeHiInclusive(range)
       TyRefined(underlying = baseTy, lo = lo, hi = hi, hiInclusive = inc)
     }
+  }
+}
+
+// Records the resolved length of an `array[N, T]` type expression whose `N`
+// is not a literal, for the pipeline to write back (see
+// `SymbolTable.arrayTypeLens`).
+func noteArrayTypeLength(tbl: in SymbolTable, te: in TypeExpr, size: in TypeArg, len: in Option[Int]): Unit {
+  val isLiteral = match size {
+    case TAValue(ve) -> match ve.kind { case ELiteral(_) -> true; case _ -> false }
+    case TAType(_) -> false
+  }
+  if isLiteral or tbl.arrayLenPkg.count == 0 or symTableScopePkg(tbl) != tbl.arrayLenPkg[0] {
+    return
+  }
+  match len {
+    case Some(n) -> {
+      val key = recordCopySiteKey(te.span)
+      if not tbl.arrayTypeLens.containsKey(key) {
+        tbl.arrayTypeLens.add(key, n)
+      }
+    }
+    case None -> ()
+  }
+}
+
+// The length `N` of an `array[N, T]` (D167) when it is a compile-time
+// integer: a literal, or a constant expression or `val` that folds to one.
+// `None` when it names a value generic parameter or does not fold; such an
+// array has no known length until it is bound at a use (item 6 of D167).
+func arrayLengthIsTypeParam(ctx: in GenericContext, size: in TypeArg): Bool {
+  match size {
+    case TAType(te) -> match te.kind {
+      case TRef(path) -> path.segments.count == 1 and gctxIsTypeParam(ctx, path.segments[0])
+      case _ -> false
+    }
+    case TAValue(ve) -> match ve.kind {
+      case EPath(path) -> path.segments.count == 1 and gctxIsTypeParam(ctx, path.segments[0])
+      case _ -> false
+    }
+  }
+}
+
+pub func resolveArrayLength(tbl: in SymbolTable, ctx: in GenericContext, size: in TypeArg): Option[Int] {
+  val folded = match size {
+    case TAValue(ve) -> tryFoldInt(tbl, ve)
+    case TAType(te) -> match te.kind {
+      case TRef(path) -> if path.segments.count == 1 and not gctxIsTypeParam(ctx, path.segments[0]) {
+        tryFoldInt(tbl, Expr(kind = EPath(path = path), span = te.span))
+      } else {
+        FoldErr(error = FENotConstant)
+      }
+      case _ -> FoldErr(error = FENotConstant)
+    }
+  }
+  match folded {
+    case FoldOk(v) -> if v >= 0i64 and v <= 2147483647i64 { Some(value = v.toInt()) } else { None }
+    case FoldErr(_) -> None
   }
 }
 

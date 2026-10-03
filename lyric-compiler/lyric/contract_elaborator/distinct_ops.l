@@ -201,26 +201,172 @@ func recordArithBlock(site: in RecordArithSite, lhs: in Expr, rhs: in Expr, sp: 
 /// each operand once, left to right, and compares the two field by field:
 /// `{ val l: T = a; val r: T = b; l.f == r.f and l.g.h == r.g.h }`, negated
 /// for `!=`.  A record with no fields compares equal.
-pub func lowerRecordEq(file: in SourceFile, sites: in Map[String, RecordEqSite]): SourceFile {
-  if sites.count == 0 {
+pub func lowerRecordEq(
+  file: in SourceFile,
+  sites: in Map[String, RecordEqSite],
+  arraySites: in Map[String, ArrayEqSite],
+  wrapSites: in Map[String, WrapEqSite],
+): SourceFile {
+  if sites.count == 0 and arraySites.count == 0 and wrapSites.count == 0 {
     return file
   }
-  mapFileAndContracts(file, { e: Expr -> rewriteRecordEq(e, sites) }, { s: Statement -> s })
+  mapFileAndContracts(file, { e: Expr -> rewriteRecordEq(e, sites, arraySites, wrapSites) }, { s: Statement -> s })
 }
 
-func rewriteRecordEq(e: in Expr, sites: in Map[String, RecordEqSite]): Expr {
+func rewriteRecordEq(
+  e: in Expr,
+  sites: in Map[String, RecordEqSite],
+  arraySites: in Map[String, ArrayEqSite],
+  wrapSites: in Map[String, WrapEqSite],
+): Expr {
   match e.kind {
-    case EBinop(_, lhs, rhs) -> match mapGet(sites, recordCopySiteKey(e.span)) {
-      case Some(site) -> recordEqBlock(site, lhs, rhs, e.span)
-      case None -> e
+    case EBinop(_, lhs, rhs) -> {
+      val key = recordCopySiteKey(e.span)
+      match mapGet(sites, key) {
+        case Some(site) -> recordEqBlock(site, lhs, rhs, e.span, "")
+        case None -> match mapGet(arraySites, key) {
+          case Some(site) -> arrayEqBlock(site, lhs, rhs, e.span, "")
+          case None -> match mapGet(wrapSites, key) {
+            case Some(site) -> wrapEqBlock(site, lhs, rhs, e.span)
+            case None -> e
+          }
+        }
+      }
     }
     case _ -> e
   }
 }
 
-func recordEqBlock(site: in RecordEqSite, lhs: in Expr, rhs: in Expr, sp: in Span): Expr {
+// `a == b` on a tuple, union or distinct type holding an array (D167): each
+// operand is bound once, then compared part by part, an array element by
+// element.
+//   { val l: T = a
+//     val r: T = b
+//     match l { case C(x0) -> match r { case C(y0) -> <x0 == y0>; case _ -> false }; ... } }
+func wrapEqBlock(site: in WrapEqSite, lhs: in Expr, rhs: in Expr, sp: in Span): Expr {
   val wsp = syntheticSpan(sp)
-  val base = "__lyric_req_" + toString(sp.startPos.offset) + "_" + toString(sp.endPos.offset)
+  val base = "__lyric_weq_" + toString(sp.startPos.offset) + "_" + toString(sp.endPos.offset)
+  val lName = base + "_l"
+  val rName = base + "_r"
+  val stmts: List[Statement] = newList()
+  stmts.add(typedVal(lName, site.valueType, lhs, wsp))
+  stmts.add(typedVal(rName, site.valueType, rhs, wsp))
+  val cmp = eqShapeExpr(site.shape, localPath(lName, wsp), localPath(rName, wsp), sp, "w")
+  val result = if site.negate {
+    mkExpr(EPrefix(op = PreNot, operand = mkExpr(EParen(inner = cmp), wsp)), wsp)
+  } else {
+    cmp
+  }
+  stmts.add(mkStmt(SExpr(expr = result), wsp))
+  mkExpr(EBlock(block = Block(statements = stmts, span = wsp)), wsp)
+}
+
+func boolLit(b: in Bool, sp: in Span): Expr {
+  mkExpr(ELiteral(lit = LBool(value = b)), sp)
+}
+
+func matchArm(pat: in Pattern, body: in Expr, sp: in Span): MatchArm {
+  MatchArm(pattern = pat, guard = None, body = EOBExpr(expr = body), span = sp)
+}
+
+func bindingPat(name: in String, sp: in Span): Pattern {
+  Pattern(kind = PBinding(name = name, inner = None), span = sp)
+}
+
+// The names `<tag><prefix><k>` for `k` in `0 ..< n`, and the patterns that bind them.
+func shapeNames(base: in String, n: in Int): List[String] {
+  val names: List[String] = newList()
+  var k = 0
+  while k < n {
+    names.add(base + toString(k))
+    k = k + 1
+  }
+  names
+}
+
+func bindingPats(names: in List[String], sp: in Span): List[Pattern] {
+  val ps: List[Pattern] = newList()
+  for nm in names {
+    ps.add(bindingPat(nm, sp))
+  }
+  ps
+}
+
+// The conjunction of each part's comparison (`true` for none).
+func partsEq(shapes: in List[EqShape], xs: in List[String], ys: in List[String], sp: in Span, tag: in String): Expr {
+  val wsp = syntheticSpan(sp)
+  var cmp = boolLit(true, wsp)
+  var k = 0
+  while k < shapes.count {
+    val part = eqShapeExpr(shapes[k], localPath(xs[k], wsp), localPath(ys[k], wsp), sp, tag + "p" + toString(k) + "_")
+    cmp = if k == 0 { part } else { mkExpr(EBinop(op = BAnd, lhs = cmp, rhs = part), wsp) }
+    k = k + 1
+  }
+  cmp
+}
+
+func eqShapeExpr(shape: in EqShape, a: in Expr, b: in Expr, sp: in Span, tag: in String): Expr {
+  val wsp = syntheticSpan(sp)
+  val base = "__lyric_ws_" + tag + toString(sp.startPos.offset) + "_" + toString(sp.endPos.offset)
+  match shape {
+    case ESPlain -> mkExpr(EBinop(op = BEq, lhs = a, rhs = b), wsp)
+    case ESArray(site) -> arrayEqBlock(site, a, b, sp, tag)
+    case ESRecord(site) -> recordEqBlock(site, a, b, sp, tag)
+    case ESDistinct(inner) -> eqShapeExpr(inner, valueOf(a), valueOf(b), sp, tag + "d")
+    case ESTuple(elems) -> {
+      val xs = shapeNames(base + "_x", elems.count)
+      val ys = shapeNames(base + "_y", elems.count)
+      val inner = partsEq(elems, xs, ys, sp, tag)
+      val matchB = mkExpr(
+        EMatch(
+          scrutinee = b,
+          arms = oneArm(
+            matchArm(Pattern(kind = PTuple(patterns = bindingPats(ys, wsp)), span = wsp), inner, wsp)
+          )
+        ),
+        wsp
+      )
+      mkExpr(
+        EMatch(
+          scrutinee = a,
+          arms = oneArm(matchArm(Pattern(kind = PTuple(patterns = bindingPats(xs, wsp)), span = wsp), matchB, wsp))
+        ),
+        wsp
+      )
+    }
+    case ESUnion(cases) -> {
+      val armsA: List[MatchArm] = newList()
+      var ci = 0
+      for c in cases {
+        val xs = shapeNames(base + "_c" + toString(ci) + "x", c.fields.count)
+        val ys = shapeNames(base + "_c" + toString(ci) + "y", c.fields.count)
+        val headPath = ModulePath(segments = c.head, span = wsp)
+        val inner = partsEq(c.fields, xs, ys, sp, tag + "c" + toString(ci) + "_")
+        val armsB: List[MatchArm] = newList()
+        armsB.add(
+          matchArm(Pattern(kind = PConstructor(head = headPath, args = bindingPats(ys, wsp)), span = wsp), inner, wsp)
+        )
+        armsB.add(matchArm(Pattern(kind = PWildcard, span = wsp), boolLit(false, wsp), wsp))
+        val matchB = mkExpr(EMatch(scrutinee = b, arms = armsB), wsp)
+        armsA.add(
+          matchArm(Pattern(kind = PConstructor(head = headPath, args = bindingPats(xs, wsp)), span = wsp), matchB, wsp)
+        )
+        ci = ci + 1
+      }
+      mkExpr(EMatch(scrutinee = a, arms = armsA), wsp)
+    }
+  }
+}
+
+func oneArm(arm: in MatchArm): List[MatchArm] {
+  val arms: List[MatchArm] = newList()
+  arms.add(arm)
+  arms
+}
+
+func recordEqBlock(site: in RecordEqSite, lhs: in Expr, rhs: in Expr, sp: in Span, tag: in String): Expr {
+  val wsp = syntheticSpan(sp)
+  val base = "__lyric_req_" + tag + toString(sp.startPos.offset) + "_" + toString(sp.endPos.offset)
   val lName = base + "_l"
   val rName = base + "_r"
   val stmts: List[Statement] = newList()
@@ -233,18 +379,108 @@ func recordEqBlock(site: in RecordEqSite, lhs: in Expr, rhs: in Expr, sp: in Spa
   val rLevels: Map[String, String] = newMap()
   var cmp = mkExpr(ELiteral(lit = LBool(value = true)), wsp)
   var first = true
+  var leafNo = 0
   for path in site.paths {
     val lhsLeaf = leafRead(lName, path, site.levelTypes, lLevels, stmts, wsp)
     val rhsLeaf = leafRead(rName, path, site.levelTypes, rLevels, stmts, wsp)
-    val leaf = mkExpr(EBinop(op = BEq, lhs = lhsLeaf, rhs = rhsLeaf), wsp)
+    val leaf = match mapGet(site.arrayLeaves, dottedLeaf(path)) {
+      case Some(arr) -> arrayEqBlock(arr, lhsLeaf, rhsLeaf, sp, tag + "f" + toString(leafNo) + "_")
+      case None -> match mapGet(site.wrapLeaves, dottedLeaf(path)) {
+        case Some(sh) -> eqShapeExpr(sh, lhsLeaf, rhsLeaf, sp, tag + "f" + toString(leafNo) + "_")
+        case None -> mkExpr(EBinop(op = BEq, lhs = lhsLeaf, rhs = rhsLeaf), wsp)
+      }
+    }
     cmp = if first { leaf } else { mkExpr(EBinop(op = BAnd, lhs = cmp, rhs = leaf), wsp) }
     first = false
+    leafNo = leafNo + 1
   }
   val result = if site.negate {
     mkExpr(EPrefix(op = PreNot, operand = mkExpr(EParen(inner = cmp), wsp)), wsp)
   } else {
     cmp
   }
+  stmts.add(mkStmt(SExpr(expr = result), wsp))
+  mkExpr(EBlock(block = Block(statements = stmts, span = wsp)), wsp)
+}
+
+func dottedLeaf(path: in List[String]): String {
+  var joined = ""
+  for seg in path {
+    joined = if joined.length == 0 { seg } else { joined + "." + seg }
+  }
+  joined
+}
+
+// `a == b` on two arrays (D167): each operand is bound once, then compared
+// element by element, an element that is a structural record field by field
+// and a nested array in turn.
+//   { val l: array[N, T] = a
+//     val r: array[N, T] = b
+//     var i = 0
+//     var ok = true
+//     while ok and i < N { if not (l[i] == r[i]) { ok = false }; i = i + 1 }
+//     ok }
+func arrayEqBlock(site: in ArrayEqSite, lhs: in Expr, rhs: in Expr, sp: in Span, tag: in String): Expr {
+  val wsp = syntheticSpan(sp)
+  val base = "__lyric_aeq_" + tag + toString(sp.startPos.offset) + "_" + toString(sp.endPos.offset)
+  val lName = base + "_l"
+  val rName = base + "_r"
+  val iName = base + "_i"
+  val okName = base + "_ok"
+  val stmts: List[Statement] = newList()
+  stmts.add(typedVal(lName, site.arrayType, lhs, wsp))
+  stmts.add(typedVal(rName, site.arrayType, rhs, wsp))
+  stmts.add(
+    mkStmt(
+      SLocal(binding = LBVar(name = iName, ty = Some(value = intTypeExpr(wsp)), init = Some(value = intLit(0, wsp)))),
+      wsp
+    )
+  )
+  stmts.add(
+    mkStmt(
+      SLocal(
+        binding = LBVar(
+          name = okName,
+          ty = Some(value = boolTypeExpr(wsp)),
+          init = Some(value = mkExpr(ELiteral(lit = LBool(value = true)), wsp))
+        )
+      ),
+      wsp
+    )
+  )
+  val le = uncheckedIndex(localRef(lName, wsp), localRef(iName, wsp), wsp)
+  val re = uncheckedIndex(localRef(rName, wsp), localRef(iName, wsp), wsp)
+  val same: Expr = match site.elem {
+    case AEPlain -> mkExpr(EBinop(op = BEq, lhs = le, rhs = re), wsp)
+    case AEValue -> mkExpr(EBinop(op = BEq, lhs = valueOf(le), rhs = valueOf(re)), wsp)
+    case AERecord(rs) -> recordEqBlock(rs, le, re, sp, tag + "e_")
+    case AEArray(inner) -> arrayEqBlock(inner, le, re, sp, tag + "e_")
+    case AEShape(sh) -> eqShapeExpr(sh, le, re, sp, tag + "e_")
+  }
+  val setFalse: List[Statement] = newList()
+  setFalse.add(
+    mkStmt(
+      SAssign(target = localRef(okName, wsp), op = AssEq, value = mkExpr(ELiteral(lit = LBool(value = false)), wsp)),
+      wsp
+    )
+  )
+  val notSame = mkExpr(EPrefix(op = PreNot, operand = mkExpr(EParen(inner = same), wsp)), wsp)
+  val ifE = mkExpr(
+    EIf(
+      cond = notSame,
+      thenBranch = EOBBlock(block = Block(statements = setFalse, span = wsp)),
+      elseBranch = None,
+      thenForm = false
+    ),
+    wsp
+  )
+  val body: List[Statement] = newList()
+  body.add(mkStmt(SExpr(expr = ifE), wsp))
+  body.add(incrementStmt(iName, wsp))
+  val cond = bin(BAnd, localRef(okName, wsp), bin(BLt, localRef(iName, wsp), intLit(site.len, wsp), wsp), wsp)
+  stmts.add(mkStmt(SWhile(label = None, cond = cond, body = Block(statements = body, span = wsp)), wsp))
+  val ok = localRef(okName, wsp)
+  val result = if site.negate { mkExpr(EPrefix(op = PreNot, operand = ok), wsp) } else { ok }
   stmts.add(mkStmt(SExpr(expr = result), wsp))
   mkExpr(EBlock(block = Block(statements = stmts, span = wsp)), wsp)
 }

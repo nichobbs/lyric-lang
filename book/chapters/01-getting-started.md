@@ -518,6 +518,7 @@ Core commands you will use constantly:
 | `lyric prove` | Verify all packages in the discovered project |
 | `lyric bench <file.l>` | Measure runtime performance of `@bench_module` functions |
 | `lyric bench <file.l> --target jvm` | Benchmark on the JVM target (`java -jar`) |
+| `lyric bench <file.l> --target native` | Benchmark the native executable |
 | `lyric bench` | Run benchmarks for all packages in the discovered project |
 | `lyric bench --target jvm` | Project mode on JVM target |
 | `lyric bench <file.l> --runs <N> --warmup <N>` | Control timed and warmup iteration counts |

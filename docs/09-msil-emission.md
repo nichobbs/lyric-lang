@@ -1526,7 +1526,7 @@ CLR or AOT linker resolves the actual code.
 | `opaque type T`                 | sealed struct/class with `[Lyric.Opaque]`     |
 | `union U { case A, case B(...) }`| sealed-class hierarchy `U`, `U_A`, `U_B`     |
 | `enum E`                        | CLR `enum E : int`                           |
-| `array[N, T]`                   | `T[]` of fixed length, length checked statically |
+| `array[N, T]`                   | `List<T>` (`List<int>`, so numeric elements are not boxed), copied where D167's ownership rule requires; bounds checks are lowered to explicit code by the shared pipeline. A typed `T[]` is a later optimisation (#8041) |
 | `slice[T]`                      | `ImmutableArray<T>` (or `ReadOnlyMemory<T>` for views) |
 | `T?`                            | union: `case Some(T)`, `case None` (sealed-class hierarchy) |
 | function (`func`)               | `static` method on `<package>$Funcs`         |

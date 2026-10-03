@@ -5008,6 +5008,7 @@ func registerFieldElemSig(
   val elems: List[TypeExpr] = newList()
   match fty.kind {
     case TSlice(elem) -> elems.add(elem)
+    case TArray(_, elem) -> elems.add(elem)
     case TGenericApp(head, args) -> {
       if head.segments.count == 1 and lastSegment(head) == "List" and args.count == 1 {
         match args[0] {

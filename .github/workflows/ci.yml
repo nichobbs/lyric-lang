@@ -1133,9 +1133,9 @@ jobs:
           "$lyric_bin" build --define version=7.7.7 --define build_profile=release --define git_hash=abcdef "$fixture" -o "$out" --force
           result="$(dotnet "$out")"
           echo "$result"
-          echo "$result" | grep -qx "V=7.7.7"  || { echo "::error::version define not injected into BuildInfo"; exit 1; }
-          echo "$result" | grep -qx "P=release" || { echo "::error::build_profile define not injected into BuildInfo"; exit 1; }
-          echo "$result" | grep -qx "G=abcdef" || { echo "::error::git_hash define not wrapped into BuildInfo.gitHash"; exit 1; }
+          grep -qx "V=7.7.7" <<< "$result"  || { echo "::error::version define not injected into BuildInfo"; exit 1; }
+          grep -qx "P=release" <<< "$result" || { echo "::error::build_profile define not injected into BuildInfo"; exit 1; }
+          grep -qx "G=abcdef" <<< "$result" || { echo "::error::git_hash define not wrapped into BuildInfo.gitHash"; exit 1; }
           echo "BuildInfo --define runtime path OK (V=7.7.7 P=release G=abcdef)" >> "$GITHUB_STEP_SUMMARY"
 
       # Distinct/range-subtype static-factory self-test, dotnet leg (#1501)
@@ -2659,6 +2659,8 @@ jobs:
       - uses: ./.github/actions/lyric-test-setup
         with:
           build-config: ${{ env.BUILD_CONFIG }}
+          # fixed_array_project_self_test.l checks the JVM build of the same project.
+          java: 'true'
       # Builds lyric-rt (C unit tests under both clang and gcc), then runs the
       # three llvm self-tests: llvm_ir (serializer), llvm_codegen (N1 scalar
       # programs compiled through parse -> codegen -> clang -> run), and

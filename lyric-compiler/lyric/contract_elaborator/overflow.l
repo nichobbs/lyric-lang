@@ -138,6 +138,9 @@ func compoundViaTemps(
   temps: in CompoundTemps,
   sp: in Span,
 ): Statement {
+  if temps.arrayChain {
+    return compoundViaArrayTemps(tn, bop, target, value, temps, sp)
+  }
   val wsp = syntheticSpan(sp)
   val base = tempBase(sp)
   val stmts: List[Statement] = newList()
@@ -165,6 +168,94 @@ func compoundViaTemps(
     mkStmt(SAssign(target = newTarget, op = AssEq, value = checkedBinop(tn, bop, newTarget, value, true, sp)), wsp)
   )
   mkStmt(SExpr(expr = mkExpr(EBlock(block = Block(statements = stmts, span = wsp)), wsp)), sp)
+}
+
+// `a[i][j] op= v` on an `array[N, T]` target (D167): only the indexes (and
+// an impure record the array is a field of) are bound, never the array, whose
+// by-value locals would be copies on native.  An index already lowered to
+// `__lyric_unchecked(<checked>)` keeps that marker around its temporary.
+//   { val <t> = owner; val <i0> = <inner index>; val <i1> = ...;
+//     <t>.f[<i0>][<i1>] = <checked <t>.f[<i0>][<i1>] op v> }
+func compoundViaArrayTemps(
+  tn: in String,
+  bop: in BinOp,
+  target: in Expr,
+  value: in Expr,
+  temps: in CompoundTemps,
+  sp: in Span,
+): Statement {
+  val wsp = syntheticSpan(sp)
+  val base = tempBase(sp)
+  val stmts: List[Statement] = newList()
+  val levels: List[Expr] = newList()
+  var root = target
+  var going = true
+  while going {
+    match root.kind {
+      case EIndex(inner, _) -> {
+        levels.add(root)
+        root = inner
+      }
+      case EParen(inner) -> {
+        root = inner
+      }
+      case _ -> {
+        going = false
+      }
+    }
+  }
+  var cur: Expr = root
+  match root.kind {
+    case EMember(owner, name) -> match temps.recvType {
+      case Some(_) -> {
+        stmts.add(typedLocal(base + "_t", temps.recvType, owner, wsp))
+        cur = mkExpr(EMember(receiver = localRef(base + "_t", wsp), memberName = name), root.span)
+      }
+      case None -> ()
+    }
+    case _ -> ()
+  }
+  var k = levels.count - 1
+  var n = 0
+  while k >= 0 {
+    val level = levels[k]
+    match level.kind {
+      case EIndex(_, idxs) -> {
+        val idx = idxs[0]
+        val inner = uncheckedArg(idx)
+        val iname = base + "_i" + toString(n)
+        n = n + 1
+        stmts.add(
+          typedLocal(iname, Some(value = primTypeExpr("Int", wsp)), match inner { case Some(x) -> x; case None -> idx }, wsp)
+        )
+        val ref = localRef(iname, wsp)
+        val newIdx = match inner { case Some(_) -> callOf(arrayUncheckedIntrinsic(), oneExpr(ref), wsp); case None -> ref }
+        cur = mkExpr(EIndex(receiver = cur, indices = oneExpr(newIdx)), level.span)
+      }
+      case _ -> ()
+    }
+    k = k - 1
+  }
+  stmts.add(mkStmt(SAssign(target = cur, op = AssEq, value = checkedBinop(tn, bop, cur, value, true, sp)), wsp))
+  mkStmt(SExpr(expr = mkExpr(EBlock(block = Block(statements = stmts, span = wsp)), wsp)), sp)
+}
+
+// The argument of `__lyric_unchecked(<arg>)`, or `None` for any other index.
+func uncheckedArg(e: in Expr): Option[Expr] {
+  match e.kind {
+    case ECall(fn, args) -> match fn.kind {
+      case EPath(p) -> if p.segments.count == 1 and p.segments[0] == arrayUncheckedIntrinsic() and args.count == 1 {
+        match args[0] {
+          case CAPositional(x) -> Some(value = x)
+          case CANamed(_, x, _) -> Some(value = x)
+        }
+      } else {
+        None
+      }
+      case _ -> None
+    }
+    case _ -> None
+  }
 }
 
 // `lhs op rhs` on `tn`, panicking on overflow.  A compound assignment

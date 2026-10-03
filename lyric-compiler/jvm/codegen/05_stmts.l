@@ -440,7 +440,23 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
         insns.add(LPop)
         return JVoid
       }
-      val recvTy = lowerExpr(ctx, insns, recv)
+      val recvTy0 = lowerExpr(ctx, insns, recv)
+      // An imprecisely-typed list receiver (a generic field read `cell.v`
+      // where `v: T` is a `List` or `array[N, T]`, erased to `Object`) is
+      // cast to `ArrayList` before the index is pushed, exactly as the read
+      // path in `02_exprs.l` does; without it `ArrayList.set` fails
+      // verification ("Object is not assignable to ArrayList").
+      val recvTy = match recvTy0 {
+        case JRef(c0) -> {
+          if c0 == "java/lang/String" or c0 == "java/util/ArrayList" or c0 == "java/util/HashMap" {
+            recvTy0
+          } else {
+            insns.add(LCheckcast(className = "java/util/ArrayList"))
+            JRef(className = "java/util/ArrayList")
+          }
+        }
+        case _ -> recvTy0
+      }
       match recvTy {
         case JArray(elem) -> {
           match op {

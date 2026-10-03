@@ -107,7 +107,7 @@ union Shape {
 enum Color { case Red; case Green; case Blue }
 
 // Container types
-val fixed:   array[16, Byte]     // fixed-size; length is part of the type
+var fixed:   array[16, Byte]     // fixed-size, a value, zero filled; length is part of the type
 val dynamic: slice[Int]          // dynamic length
 
 // Tuple
@@ -769,6 +769,7 @@ Y0006 unknown layer/preset, Y0007 mutable module-level state, Y0008 protected
 | `Std.Format` | Number and string formatting | `toHexString`, `toHexStringUpper`, `formatFixed`, `zeroPad`, `hexPad`, `padLeft`, `padRight` |
 | `Std.Encoding` | Byte-level encoding | `encodeBase64`, `tryDecodeBase64`, `encodeHex`, `tryDecodeHex`, `encodeUtf8`, `tryDecodeUtf8` |
 | `Std.Ffi` | C memory and C strings for `@library` bindings (all `@unsafe_ffi`, D161) | `allocate`, `release`, `toCString`, `tryFromCString` |
+| `Std.Bench` | Benchmark measurements | `allocatedBytes` (heap bytes the current thread has allocated) |
 | `Std.Uuid` | UUID generation and parsing | `Uuid`, `newUuid`, `nilUuid`, `uuidToString`, `parseUuidOpt` |
 | `Std.Stream` | I/O stream interfaces | `ByteReader`, `ByteWriter`, `TextReader`, `TextWriter`, `Closable` |
 | `Std.Time` | Instants and durations | `Instant`, `Duration`, `now`, `toIsoString`, ISO-8601 parsing, `tryFromEpochMillis`/`tryFromEpochSeconds` |
@@ -1204,18 +1205,17 @@ lyric prove --manifest <lyric.toml>    # project mode: override manifest discove
 
 # Benchmarking  (see chapter 28)
 lyric bench <file.l>                   # compile and run @bench_module timing harness
-lyric bench <file.l> --target jvm      # benchmark on JVM target (java -jar); see note below
-lyric bench <file.l> --runs <N>        # number of timed iterations (default: 10)
-lyric bench <file.l> --warmup <N>      # un-timed warmup iterations (default: 3)
+lyric bench <file.l> --target jvm      # benchmark on JVM target (java -jar)
+lyric bench <file.l> --target native   # benchmark the native executable
+lyric bench <file.l> --runs <N>        # number of timed iterations (default: 100, at least 1)
+lyric bench <file.l> --warmup <N>      # un-timed warmup iterations (default: 5)
 lyric bench <file.l> --filter <substr> # only run benchmarks whose name contains <substr>
 lyric bench                            # project mode: run all @bench_module files in project
-lyric bench --target jvm               # project mode: JVM target; see note below
+lyric bench --target jvm               # project mode: JVM target
 lyric bench --manifest <lyric.toml>    # project mode: override manifest discovery
-# Output: "name  min=Xms  max=Xms  mean=Xms" per @bench function
+# Output: "name  min=Xms  max=Xms  mean=Xms  alloc=NB/run" per @bench function
+#   alloc = heap bytes per run (Std.Bench.allocatedBytes(), current thread)
 # Requirements: file must carry @bench_module; @bench functions must be pub func f(): Unit
-# Note: --target jvm is wired but currently blocked on JVM Std.Time support
-#       (the timing harness uses now()/since()/totalMillis()); see issue #3302.
-#       --target dotnet is fully supported.
 
 # Code generation
 lyric openapi <spec.json>              # generate a typed Std.Rest client from an OpenAPI 3.x JSON spec
@@ -1378,7 +1378,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0107` | An `impl` method's return type does not match the interface method's declared return type |
 | `T0108` | A generic type argument does not satisfy a `where`-clause constraint on its type parameter |
 | `T0109` | Value expression used where a type argument is required |
-| `T0110` | Generic constructor's type parameter(s) cannot be inferred from the arguments (add explicit type arguments). A field value that leaves a parameter open, such as `None`, does not stop another field from fixing it: `Holder(value = None, fallback = 5)` is a `Holder[Int]` (#7844). |
+| `T0110` | Generic constructor's type parameter(s) cannot be inferred from the arguments (add explicit type arguments). A field value that leaves a parameter open, such as `None`, does not stop another field from fixing it: `Holder(value = None, fallback = 5)` is a `Holder[Int]` (#7844). Also a function's value generic parameter that no array argument gives a length, such as `make()` for `func make[N: Nat](): array[N, Int]` (write `make[4]()`). |
 | `T0111` | Unknown constraint name in a `where` clause (warning) |
 | `T0112` | Refutable pattern in a `for` loop binding (only names, `_`, parentheses, and tuples of those) |
 | `T0113` | Unknown member: `x.name` or `x.name(...)` names no field, method, or impl method of the receiver's user-defined type, or of a distinct type (a distinct type does not expose its underlying type's members; read them through `.value`) |
@@ -1412,8 +1412,14 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0150` | An `@library` argument is not one non-empty string, or a declaration has more than one `@library`. |
 | `T0151` | A C binding's parameter or result type cannot cross the call; use `Int`, `Long`, `Byte`, `Float`, `Double`, `NativePtr[T]`, or `Unit` as a result. |
 | `T0152` | A record derives arithmetic it cannot have: only `Add` and `Sub`, and only on a non-generic record with no invariant whose fields all have one numeric type (component-wise, D155). |
-| `T0153` | `==` or `!=` on a record that compares field by field (no `var` field, or `@derive(Equals)`) reaches a function-typed field, which has no `==` (D164). |
+| `T0153` | `==` or `!=` on a record that compares field by field (no `var` field, or `@derive(Equals)`) reaches a function-typed field, which has no `==` (D164). The same for `==` on an array whose elements are functions (D167). |
 | `T0154` | A method-call receiver evaluated before an `await` or `?` in its arguments has a type argument that neither the receiver, the other arguments nor the expected result type fixes; bind the receiver to an annotated local (#7844). |
+| `T0155` | A bracket literal where an `array[N, T]` is expected does not have exactly `N` elements (D167). |
+| `T0156` | A declaration of array type with no initializer, or a record field of array type with no default, has an element type with no zero value: a `String`, a union, a function, or a range excluding zero (D167). Give it an initializer. |
+| `T0157` | An element write `a[i] = v` (or `a[i] op= v`), or an `inout`/`out` array argument, on an array that is not a writable place: it needs a `var` local, an `out`/`inout` parameter or a `var` field; a collection element is not one (D167). |
+| `T0158` | An array index that is not an integer or a range subtype of one (D167). |
+| `T0159` | `@derive(Equals)` (or `Hash`, `Show`, an ordering, ...) on a record or union that has an array field: derived code would compare or print the array by reference, so write the method by hand. `==` on the type already compares the array element by element. The array may be reached through an `Option`, a tuple, a collection, an alias or a nested record or union (D167). |
+| `T0160` | The length in an `array[N, T]` type is neither a compile-time constant from 0 to 2147483647 nor a value generic parameter; or a record or union field's array length is one of the type's value generic parameters (#8090); or `==` on a type that holds an array is recursive or nested too deeply to compare element by element. A function's value generic parameter is supported: each length is checked in its own specialisation. |
 | `T0139` | An `impl` for a non-protected target (record, exposed record, union, or opaque type) declares a method whose name clashes with the target's own record-body (D037) method, or with a method of another `impl` for the same target. No backend can compile either shape (MSIL/JVM fail codegen with a duplicate-member error; native has no consistent tie-break); rename the impl method, the record's own method, or one of the two interface methods. The protected-type analog of this check is `T0136`. |
 | `T0140` | A non-`Std.*` package declares a `func`/`pub func` under one of the reserved language-built-in names (`println`, `print`, `panic`, `assert`, `toString`, `default`, `expect`, `format1`-`format4`, `hashCode`, `__lyric_protected_wait`, `__lyric_protected_notify`) — every backend's builtin-call dispatcher intercepts these names unconditionally, so the declaration would be silently uncallable. Rename it. A `Std.*` package may still declare one of these names for its own distinctly-typed, qualified-only function (`Std.Console.println`) — see D-progress-1024 (#7508). |
 | `T0141` | `&<expr>` is used anywhere — `&` is grammatically prefix-only (no infix form) and reserved for a planned function-reference form no backend implements. Every use is rejected, including `x & y`, which previously parsed as `x` (a complete expression) followed by a silently re-entered, silently accepted `&y` statement that discarded `y` with no diagnostic. Use `.and()`/`.or()`/`.xor()`/`.shl()`/`.shr()` for bitwise operations; pass a lambda where a function reference was wanted. |
@@ -1512,7 +1518,7 @@ span, exactly like `T0120`/`J008`.
 | `N0007` | A value flows into a codegen slot whose type it cannot be coerced to — most commonly a call argument against an extern generic collection method (`List[T].add`/`Map[K, V].add`, …) that the type checker admits with NO argument validation at all (an unresolved generic parameter is satisfied by any argument type on every target), so a genuinely incompatible argument (not a numeric narrowing — `coerceTo` narrows a wider `Int`/`Long` argument to a declared-narrower `Byte`/`Int` slot on its own, matching MSIL's implicit `List<byte>.Add` narrowing and JVM's `i2b`) reaches native codegen with no LLVM-IR-level conversion available. |
 | `N0008` | A `protected type` declares type parameters. Generic protected types build on `--target dotnet` and `--target jvm`; native has no per-instantiation protected-type layout yet (#7864). Reported at the declaration before codegen. |
 | `N0009` | A `--triple wasm32-wasi` build found no wasi-sdk; set `WASI_SDK_PATH` to its install directory. |
-| `N0010` | An `extern func` signature (including a callback parameter or a return) names a record that `--target native` lowers by value; the C struct ABI for it is #8009, so pass a `NativePtr` or use a record with a `var` field until then. |
+| `N0010` | An `extern func` signature (including a callback parameter or a return) names a record that `--target native` lowers by value, or an inline `array[N, T]`; the C struct ABI for it is #8009, so pass a `NativePtr` (to an array's first element) or use a record with a `var` field until then. |
 | `N0011` | `--shape module` or `--shape component` was given a triple that is not wasm32; pass `--triple wasm32-wasi`. |
 | `N0012` | An unknown native output shape name reached the native bridge; the wasm32 shapes are `module` and `component`. |
 | `N0013` | A generated file could not be written next to the `.wasm`: the `--shape module` JS glue (`<name>.js`) or declarations (`<name>.d.ts`), or the `--shape component` WIT (`<name>.wit`) or C wrappers (`<name>.cabi.c`). |
@@ -1521,6 +1527,7 @@ span, exactly like `T0120`/`J008`.
 | `N0016` | A `--shape component` build could not run `wasm-tools`, or `$LYRIC_WASI_ADAPTER` (the preview1 reactor adapter) is unset or missing, or a `wasm-tools` step failed. |
 | `N0018` | Generating the `--shape component` shims for a package failed: a `@wasmImport` extern with an unsupported type, a module or import name that is not a WIT identifier (a letter first, then letters, digits, `.`, `-`, `_`), or too many flat parameters. |
 | `N0019` | `@wasmImport` externs conflict in a `--shape component` build: one host function (module and name) declared with different signatures, module or function names that fold to the same WIT name (`ui.log` and `ui-log`), or a module named like an exported package. |
+| `N0020` | An `array[N, T]` reached `--target native` with no native layout: a length the type checker did not resolve to an integer, or an element type with no native lowering (D167). The checker rejects a non-constant length (T0160) first, so this is the backend's own check. |
 
 ### Custom source generators (X-series)
 

@@ -52,6 +52,7 @@ for t in \
   lyric-compiler/lyric/llvm_heap_self_test.l \
   lyric-compiler/lyric/llvm_byvalue_record_self_test.l \
   lyric-compiler/lyric/llvm_inline_union_self_test.l \
+  lyric-compiler/lyric/llvm_fixed_array_self_test.l \
   lyric-compiler/lyric/llvm_ffi_self_test.l \
   lyric-compiler/lyric/llvm_collections_self_test.l \
   lyric-compiler/lyric/llvm_stdlib_self_test.l \
@@ -67,6 +68,7 @@ for t in \
   lyric-compiler/lyric/llvm_inout_self_test.l \
   lyric-compiler/lyric/llvm_project_self_test.l \
   lyric-compiler/lyric/cli_run_native_project_self_test.l \
+  lyric-compiler/lyric/fixed_array_project_self_test.l \
   lyric-compiler/lyric/native_dependency_self_test.l \
   lyric-compiler/lyric/native_string_normalize_panic_self_test.l \
   lyric-compiler/lyric/llvm_self_test_self_iface.l \
@@ -88,6 +90,8 @@ for t in \
   lyric-compiler/lyric/byvalue_record_self_test.l \
   lyric-compiler/lyric/inline_union_self_test.l \
   lyric-compiler/lyric/generic_ctor_open_arg_self_test.l \
+  lyric-compiler/lyric/fixed_array_self_test.l \
+  lyric-compiler/lyric/bench_alloc_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_type_self_test.l \
   lyric-compiler/lyric/byte_native_self_test.l \
@@ -99,3 +103,7 @@ done
 LYRIC_BIN="$lyric_bin" bash scripts/ci/byte-println-e2e.sh native
 # D163: a debug build panics on integer overflow, a release build wraps.
 LYRIC_BIN="$lyric_bin" bash scripts/ci/overflow-profile-e2e.sh native
+# D167: an array index outside `0 ..< N` panics with the index and length.
+LYRIC_BIN="$lyric_bin" bash scripts/ci/fixed-array-e2e.sh native
+# docs/67 G1: Vec3 arithmetic and an inline array of Vec3 allocate nothing.
+LYRIC_BIN="$lyric_bin" bash scripts/ci/bench-vec3-alloc.sh

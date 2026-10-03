@@ -132,6 +132,9 @@ for t in \
   lyric-compiler/lyric/generic_ctor_open_arg_self_test.l \
   lyric-compiler/lyric/overflow_self_test.l \
   lyric-compiler/lyric/overflow_panic_self_test.l \
+  lyric-compiler/lyric/fixed_array_self_test.l \
+  lyric-compiler/lyric/fixed_array_panic_self_test.l \
+  lyric-compiler/lyric/bench_alloc_self_test.l \
   lyric-compiler/lyric/record_eq_self_test.l \
   lyric-compiler/lyric/task_shadow_self_test.l \
   lyric-compiler/lyric/task_kernel_record_self_test.l \
@@ -224,6 +227,14 @@ if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
   echo "=== scripts/ci/overflow-profile-e2e.sh ==="
   LYRIC_BIN="$lyric_bin" bash scripts/ci/overflow-profile-e2e.sh dotnet jvm
   ran="$ran overflow-profile-e2e"
+fi
+# D167: an array index outside `0 ..< N` panics with the index and length,
+# both targets (Java 21, as above).
+idx=$((idx + 1))
+if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
+  echo "=== scripts/ci/fixed-array-e2e.sh ==="
+  LYRIC_BIN="$lyric_bin" bash scripts/ci/fixed-array-e2e.sh dotnet jvm
+  ran="$ran fixed-array-e2e"
 fi
 # #7858: `println(x)` writes what `toString(x)` returns for records, lists,
 # extern structs and extern objects, on both targets (Java 21, as above).
