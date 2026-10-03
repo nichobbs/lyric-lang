@@ -769,6 +769,7 @@ Y0006 unknown layer/preset, Y0007 mutable module-level state, Y0008 protected
 | `Std.Format` | Number and string formatting | `toHexString`, `toHexStringUpper`, `formatFixed`, `zeroPad`, `hexPad`, `padLeft`, `padRight` |
 | `Std.Encoding` | Byte-level encoding | `encodeBase64`, `tryDecodeBase64`, `encodeHex`, `tryDecodeHex`, `encodeUtf8`, `tryDecodeUtf8` |
 | `Std.Ffi` | C memory and C strings for `@library` bindings (all `@unsafe_ffi`, D161) | `allocate`, `release`, `toCString`, `tryFromCString` |
+| `Std.Bench` | Benchmark measurements | `allocatedBytes` (heap bytes the current thread has allocated) |
 | `Std.Uuid` | UUID generation and parsing | `Uuid`, `newUuid`, `nilUuid`, `uuidToString`, `parseUuidOpt` |
 | `Std.Stream` | I/O stream interfaces | `ByteReader`, `ByteWriter`, `TextReader`, `TextWriter`, `Closable` |
 | `Std.Time` | Instants and durations | `Instant`, `Duration`, `now`, `toIsoString`, ISO-8601 parsing, `tryFromEpochMillis`/`tryFromEpochSeconds` |
@@ -1204,18 +1205,17 @@ lyric prove --manifest <lyric.toml>    # project mode: override manifest discove
 
 # Benchmarking  (see chapter 28)
 lyric bench <file.l>                   # compile and run @bench_module timing harness
-lyric bench <file.l> --target jvm      # benchmark on JVM target (java -jar); see note below
-lyric bench <file.l> --runs <N>        # number of timed iterations (default: 10)
-lyric bench <file.l> --warmup <N>      # un-timed warmup iterations (default: 3)
+lyric bench <file.l> --target jvm      # benchmark on JVM target (java -jar)
+lyric bench <file.l> --target native   # benchmark the native executable
+lyric bench <file.l> --runs <N>        # number of timed iterations (default: 100, at least 1)
+lyric bench <file.l> --warmup <N>      # un-timed warmup iterations (default: 5)
 lyric bench <file.l> --filter <substr> # only run benchmarks whose name contains <substr>
 lyric bench                            # project mode: run all @bench_module files in project
-lyric bench --target jvm               # project mode: JVM target; see note below
+lyric bench --target jvm               # project mode: JVM target
 lyric bench --manifest <lyric.toml>    # project mode: override manifest discovery
-# Output: "name  min=Xms  max=Xms  mean=Xms" per @bench function
+# Output: "name  min=Xms  max=Xms  mean=Xms  alloc=NB/run" per @bench function
+#   alloc = heap bytes per run (Std.Bench.allocatedBytes(), current thread)
 # Requirements: file must carry @bench_module; @bench functions must be pub func f(): Unit
-# Note: --target jvm is wired but currently blocked on JVM Std.Time support
-#       (the timing harness uses now()/since()/totalMillis()); see issue #3302.
-#       --target dotnet is fully supported.
 
 # Code generation
 lyric openapi <spec.json>              # generate a typed Std.Rest client from an OpenAPI 3.x JSON spec

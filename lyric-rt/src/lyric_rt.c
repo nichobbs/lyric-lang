@@ -24,13 +24,23 @@
  * sanitizer runtime at all. */
 extern void __lsan_ignore_object(const void* p) __attribute__((weak));
 
+/* Bytes this thread has requested from lyric_alloc since it started: every
+ * heap object, collection and string buffer Lyric code allocates.  Read by
+ * `Std.Bench.allocatedBytes` to report allocation per benchmark run. */
+static _Thread_local uint64_t lyric_allocated_bytes = 0;
+
 void* lyric_alloc(uint64_t size) {
     void* p = malloc((size_t)size);
     if (!p) {
         fputs("lyric: out of memory\n", stderr);
         abort();
     }
+    lyric_allocated_bytes += size;
     return p;
+}
+
+int64_t lyric_rt_allocated_bytes(void) {
+    return (int64_t)lyric_allocated_bytes;
 }
 
 /* Free a raw buffer obtained from lyric_alloc that is NOT an ARC object with a

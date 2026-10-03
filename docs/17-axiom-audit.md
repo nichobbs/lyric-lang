@@ -681,6 +681,31 @@ obligations.
 
 ---
 
+### `Std.BenchHost` — `lyric-stdlib/std/_kernel/bench_host.l`, `lyric-stdlib/std/_kernel_jvm/bench_host.l`
+
+```
+@axiom("System.GC.GetAllocatedBytesForCurrentThread conforms to its documented .NET contract")
+@axiom("com.sun.management.ThreadMXBean.getCurrentThreadAllocatedBytes conforms to its documented JDK contract")
+```
+
+**Host surface**: `System.GC.GetAllocatedBytesForCurrentThread()` on .NET;
+`java.lang.management.ManagementFactory.getThreadMXBean()` and
+`com.sun.management.ThreadMXBean.getCurrentThreadAllocatedBytes()` on the
+JVM. The native twin binds `lyric_rt_allocated_bytes`, the per-thread total
+`lyric_alloc` keeps, covered by the `lyric-rt` C unit tests.
+
+**Gap**: the axiom assumes the counter is the current thread's cumulative
+heap allocation and never decreases. The JVM bean is HotSpot's extension
+interface; a JVM without it fails the cast at the call, not silently. The
+prover models nothing here: `Std.Bench.allocatedBytes` has no contract.
+
+**Caller obligation**: None. The value is a measurement for benchmarks and
+allocation checks, not an input to program logic.
+
+**Review**: Stable.
+
+---
+
 ## 14a. Pattern matching
 
 ### `Std.RegexHost` — `lyric-stdlib/std/_kernel/regex_host.l`
@@ -901,7 +926,8 @@ All are provisional pending weaver integration.
 | `Std.JvmExceptionHost`   | `jvm_exception.l`            | 0      | 1           |
 | `Std.Task`               | `task.l`                     | 1      | 0           |
 | `Std.FfiHost`            | `ffi_host.l`                 | 1      | 0           |
-| **Total**                |                              | **30** | **2**       |
+| `Std.BenchHost`          | `bench_host.l`               | 1      | 0           |
+| **Total**                |                              | **31** | **2**       |
 
 ### JVM kernel (`lyric-stdlib/std/_kernel_jvm/`)
 
@@ -936,16 +962,21 @@ recorded in the §19 baseline.
 | `Std.UuidHost`           | `uuid_host.l`                | 1      | 0           |
 | `Std.RegexHost`          | `regex_host.l`               | 1      | 0           |
 | `Std.StringHost`         | `string_host.l`              | 1      | 0           |
-| **Total**                |                              | **24** | **0**       |
+| `Std.BenchHost`          | `bench_host.l`               | 1      | 0           |
+| **Total**                |                              | **25** | **0**       |
 
 ### Combined total
 
-.NET (30 stable + 2 provisional = 32) + JVM (24 stable + 0 provisional =
-24) = **56** `@axiom` annotations covering the entire extern boundary
+.NET (31 stable + 2 provisional = 33) + JVM (25 stable + 0 provisional =
+25) = **58** `@axiom` annotations covering the entire extern boundary
 across both targets.  `Std.FfiHost` (D161) binds the C library's `malloc`
 and `free` through `@library("c")`; it has no `_kernel_jvm/` or
 `_kernel_native/` twin because the one file lowers on every target (D158),
-so it is counted once, in the .NET table.  `Std.StringHost` (both targets) joined the boundary
+so it is counted once, in the .NET table.  `Std.BenchHost` (both targets)
+joined the boundary with `Std.Bench.allocatedBytes` (docs/67 G1): the
+current thread's allocation counter, `GC.GetAllocatedBytesForCurrentThread`
+on .NET and `com.sun.management.ThreadMXBean.getCurrentThreadAllocatedBytes`
+on the JVM (its native twin is a `lyric_rt` symbol, outside this audit).  `Std.StringHost` (both targets) joined the boundary
 with `Std.String.StringBuilder` and `indexOfFrom` (#7257, #7258).  `Std.TlsHost` (both targets) joined the boundary
 with the `Std.Tls` PEM certificate/key loading module (docs/61 phase 1,
 epic #5874).  The JVM `Std.HttpHost` axiom was re-scoped from the
@@ -994,6 +1025,7 @@ spaces; consult the kernel file itself for the unfolded source.
 
 | Platform | Package | File | Axiom |
 |---|---|---|---|
+| `dotnet` | `Std.BenchHost` | `bench_host.l` | System.GC.GetAllocatedBytesForCurrentThread conforms to its documented .NET contract |
 | `dotnet` | `Std.CharHost` | `char_host.l` | System.Char and System.Convert character operations conform to their documented .NET contracts |
 | `dotnet` | `Std.CollectionsHost` | `collections_host.l` | System.Collections.Generic.List / Dictionary conform to their documented .NET contracts |
 | `dotnet` | `Std.ConsoleHost` | `console_host.l` | System.Console operations and System.Threading.Tasks.TaskFactory.StartNew/Task.Wait conform to their documented .NET contracts |
@@ -1026,6 +1058,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `dotnet` | `Std.TlsHost` | `tls_host.l` | System.Security.Cryptography.X509Certificates operations conform to their documented .NET contracts |
 | `dotnet` | `Std.UnicodeHost` | `unicode_host.l` | System.Char.GetUnicodeCategory returns System.Globalization.UnicodeCategory whose underlying type is int32 |
 | `dotnet` | `Std.UuidHost` | `uuid_host.l` | System.Guid conforms to its documented .NET contract |
+| `jvm` | `Std.BenchHost` | `bench_host.l` | com.sun.management.ThreadMXBean.getCurrentThreadAllocatedBytes conforms to its documented JDK contract |
 | `jvm` | `Std.CharHost` | `char_host.l` | java.lang.Character character operations conform to their documented JVM contracts |
 | `jvm` | `Std.CollectionsHost` | `collections_host.l` | java.util.ArrayList / HashMap conform to their documented JVM contracts |
 | `jvm` | `Std.ConsoleHost` | `console_host.l` | java.lang.System.{out,err,in}, java.io.BufferedReader and java.lang.Thread conform to their documented JVM contracts |
