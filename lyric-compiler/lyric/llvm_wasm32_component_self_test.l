@@ -341,36 +341,94 @@ test "wasm32 component: a missing adapter is N0016, not a crash" {
   assertFalse(ok, "component build without an adapter must fail")
 }
 
-test "wasm32 component: @wasmImport is refused with N0017" {
-  val _w = envOrPanic("WASI_SDK_PATH")
-  val stdlib = findStdlibSourcesNative()
-  val dir = Path.join(
-    Environment.getVarOrDefault("TMPDIR", "/tmp"),
-    "lyric-wasm32-component-import-" + Uuid.uuidToString(Uuid.newUuid())
-  )
-  val _d = File.createDir(dir)
-  val flags: List[String] = newList()
-  val ok = compileToNativeWithShape(
-    r#"package Probe
+val importProgram: String = r#"package Probe
+
+import Std.Console
 
 @wasmImport("ui")
 extern func hostLog(msg: String): Unit = "log"
 
-pub func go(): Unit {
-  hostLog("x")
+@wasmImport("ui")
+extern func hostAdd(a: Int, b: Int): Int = "add"
+
+@wasmImport("ui")
+extern func hostGreet(name: String): String = "greet"
+
+@wasmImport("math")
+extern func hostHalf(x: Double): Double = "half"
+
+pub func go(n: Int): Int {
+  hostLog("go called")
+  hostAdd(n, 40)
 }
-"#,
-    Path.join(dir, "prog.wasm"),
-    stdlib,
-    "wasm32-wasi",
-    "2",
-    flags,
-    newList(),
-    "",
-    true,
-    "component"
+
+pub func hello(name: String): String {
+  hostGreet(name) + "!"
+}
+
+pub func halve(x: Double): Double {
+  hostHalf(x)
+}
+"#
+
+test "wasm32 component: @wasmImport lowers to WIT imports the host satisfies" {
+  val dir = buildComponentOf(importProgram)
+  val wasm = Path.join(dir, "prog.wasm")
+  val wit = match File.readText(Path.join(dir, "prog.wit")) { case Ok(t) -> t; case Err(_) -> "" }
+  assertTrue(
+    Str.contains(wit, "interface ui") and Str.contains(wit, "interface math"),
+    "an interface per import module: " + wit
   )
-  assertFalse(ok, "a component build cannot carry a host import yet (N0017)")
+  assertTrue(
+    Str.contains(wit, "import ui;") and Str.contains(wit, "greet: func(name: string) -> string"),
+    "world imports and signatures: " + wit
+  )
+  val vargs: List[String] = newList()
+  vargs.add("validate")
+  vargs.add(wasm)
+  val v = run(envOrPanic("WASM_TOOLS"), vargs)
+  assertTrue(v.exitCode == 0, "wasm-tools validate: " + v.stderr)
+  val outDir = Path.join(dir, "js")
+  val jargs: List[String] = newList()
+  jargs.add("transpile")
+  jargs.add(wasm)
+  jargs.add("-o")
+  jargs.add(outDir)
+  jargs.add("--map")
+  jargs.add("lyric:probe/ui@0.1.0=../ui.js")
+  jargs.add("--map")
+  jargs.add("lyric:probe/math@0.1.0=../math.js")
+  val j = run(envOrPanic("JCO"), jargs)
+  assertTrue(j.exitCode == 0, "jco transpile: " + j.stderr)
+  val lnargs: List[String] = newList()
+  lnargs.add("-s")
+  lnargs.add(envOrPanic("LYRIC_JCO_NODE_MODULES"))
+  lnargs.add(Path.join(dir, "node_modules"))
+  val _ln = run("ln", lnargs)
+  val _u = File.writeText(
+    Path.join(dir, "ui.js"),
+    r"export const log = (m) => { globalThis.__logged = m; };
+export const add = (a, b) => a + b;
+export const greet = (n) => 'hi ' + n;
+"
+  )
+  val _m = File.writeText(Path.join(dir, "math.js"), r"export const half = (x) => x / 2;
+")
+  val script = r"import * as m from './js/prog.js';
+const p = m.probe;
+console.log('go=' + p.go(2) + ' logged=' + globalThis.__logged);
+console.log('hello=' + p.hello('wörld ☃'));
+console.log('halve=' + p.halve(5));
+"
+  val scriptPath = Path.join(dir, "run.mjs")
+  val _s = File.writeText(scriptPath, script)
+  val nargs: List[String] = newList()
+  nargs.add(scriptPath)
+  val n = run(Environment.getVarOrDefault("NODE", "node"), nargs)
+  assertTrue(n.exitCode == 0, "node: " + n.stderr + n.stdout)
+  assertTrue(Str.contains(n.stdout, "go=42 logged=go called"), "host call and Unit import: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "hello=hi wörld ☃!"), "string in and out through an import: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "halve=2.5"), "Double through a second import module: " + n.stdout)
 }
 
 test "wasm32 component: records, options, results, lists, enums and variants cross the boundary" {
