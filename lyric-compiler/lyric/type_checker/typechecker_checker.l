@@ -7,6 +7,7 @@ import Std.Collections
 import Std.String
 import Lyric.Lexer
 import Lyric.Parser
+import Lyric.Fmt as Fmt
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Check result.
@@ -1920,6 +1921,9 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
                 )
               )
               case Some(fn) -> {
+                if fn.params.count == sig.params.count {
+                  reportImplDefaultMismatches(diag, ifaceName, sig.name, sig.params, fn.params)
+                }
                 if fn.params.count != sig.params.count {
                   diag.add(
                     errorDiagnostic(
@@ -1978,6 +1982,13 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
               }
             }
           }
+          // An `impl` method overriding an interface default method.
+          case IMFunc(ifn) -> match findImplMethod(decl, ifn.name) {
+            case Some(fn) -> if fn.params.count == ifn.params.count {
+              reportImplDefaultMismatches(diag, ifaceName, ifn.name, ifn.params, fn.params)
+            }
+            case None -> ()
+          }
           case _ -> {
           }
         }
@@ -1985,6 +1996,64 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
       }
     }
   }
+}
+
+// T0161 (warning): a parameter of an `impl` method whose default is not the
+// one the interface member declares for it, or which only one of the two
+// gives a default.  A call takes the defaults of the declaration it resolves
+// through (docs/01 §"Default arguments"), so a call through the interface
+// type and a call on the concrete type would fill the argument differently
+// (#7828).  `ifaceParams` and `implParams` have the same count.
+func reportImplDefaultMismatches(
+  diag: in List[Diagnostic],
+  ifaceName: in String,
+  methodName: in String,
+  ifaceParams: in List[Param],
+  implParams: in List[Param],
+): Unit {
+  var i = 0
+  while i < implParams.count {
+    val ip = ifaceParams[i]
+    val mp = implParams[i]
+    val subject = "parameter '" + mp.name + "' of impl method '" + methodName + "'"
+    val through = "a call on a value of interface type '" + ifaceName + "'"
+    val why = match ip.dflt {
+      case Some(ie) -> match mp.dflt {
+        // A default declared in a package restored from its contract
+        // metadata is a call to the thunk compiled from it (#7827); its
+        // expression is not known here, so it is not compared.
+        case Some(me) -> if sameDefaultExpr(ie, me) or isDefaultThunkCall(ie) or isDefaultThunkCall(me) {
+          ""
+        } else {
+          subject + " has a different default from the one interface '" + ifaceName + "' declares; " + through +
+            " uses the interface's default and a call on the implementing type uses this one"
+        }
+        case None -> subject + " has no default, but interface '" + ifaceName +
+          "' declares one; " +
+          through +
+          " uses the interface's default and a call on the implementing type must pass the argument"
+      }
+      case None -> match mp.dflt {
+        case Some(_) -> subject + " has a default that interface '" + ifaceName +
+          "' does not declare; " +
+          through +
+          " must pass the argument and a call on the implementing type uses this default"
+        case None -> ""
+      }
+    }
+    if why.length > 0 {
+      diag.add(warningDiagnostic("T0161", why + " (declare the same default in both)", mp.span))
+    }
+    i = i + 1
+  }
+}
+
+// True when two default expressions are written the same way: their
+// canonical, span-free renderings (`Lyric.Fmt.exprInline`) agree, ignoring
+// enclosing parentheses.  Every expression form compares, so two `if`,
+// `match` or interpolated defaults written alike are the same default.
+func sameDefaultExpr(a: in Expr, b: in Expr): Bool {
+  Fmt.exprInline(0, stripExprParens(a)) == Fmt.exprInline(0, stripExprParens(b))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3757,6 +3826,81 @@ func checkImplMemberBodies(
   }
 }
 
+// One method's name, parameter count (receiver included) and span, for
+// `checkSameArityMethods`.
+record MethodHead {
+  name: String
+  arity: Int
+  span: Span
+}
+
+// T0162: two methods of one name in one record, interface or `impl` must
+// differ in their number of parameters, as two functions of one name in a
+// package must (T0001).  This is a limit of this compiler's dispatch-key
+// scheme, not of the CLR or the JVM, which overload by full signature: the
+// MSIL, JVM and native backends key a method by its type, name and
+// parameter count, so two same-count overloads would silently bind to one
+// (#8085).
+func checkSameArityMethods(diag: in List[Diagnostic], owner: in String, heads: in List[MethodHead]): Unit {
+  var j = 1
+  while j < heads.count {
+    var k = 0
+    var clash = false
+    while k < j and not clash {
+      if heads[k].name == heads[j].name and heads[k].arity == heads[j].arity {
+        clash = true
+      }
+      k = k + 1
+    }
+    if clash {
+      diag.add(
+        errorDiagnostic(
+          "T0162",
+          "method '" + heads[j].name + "' of '" + owner + "' has the same number of parameters (" + toString(heads[j].arity) +
+            ") as an earlier method of that name; this compiler tells a type's methods of one name apart by their " +
+            "number of parameters, so overloads must differ in it",
+          heads[j].span
+        )
+      )
+    }
+    j = j + 1
+  }
+}
+
+func recordMethodHeads(members: in List[RecordMember]): List[MethodHead] {
+  val acc: List[MethodHead] = newList()
+  for m in members {
+    match m {
+      case RMFunc(fn) -> acc.add(MethodHead(name = fn.name, arity = fn.params.count, span = fn.span))
+      case _ -> ()
+    }
+  }
+  acc
+}
+
+func interfaceMethodHeads(members: in List[InterfaceMember]): List[MethodHead] {
+  val acc: List[MethodHead] = newList()
+  for m in members {
+    match m {
+      case IMSig(sig) -> acc.add(MethodHead(name = sig.name, arity = sig.params.count, span = sig.span))
+      case IMFunc(fn) -> acc.add(MethodHead(name = fn.name, arity = fn.params.count, span = fn.span))
+      case IMAssoc(_) -> ()
+    }
+  }
+  acc
+}
+
+func implMethodHeads(members: in List[ImplMember]): List[MethodHead] {
+  val acc: List[MethodHead] = newList()
+  for m in members {
+    match m {
+      case IMplFunc(fn) -> acc.add(MethodHead(name = fn.name, arity = fn.params.count, span = fn.span))
+      case IMplAssoc(_) -> ()
+    }
+  }
+  acc
+}
+
 func checkDeclTypeRefs(tbl: in SymbolTable, diag: in List[Diagnostic], items: in List[Item]): Unit {
   val emptyCtx = newGenericContext()
   var i = 0
@@ -3775,6 +3919,7 @@ func checkDeclTypeRefs(tbl: in SymbolTable, diag: in List[Diagnostic], items: in
           decl.span
         )
         checkValueGenericArrayFields(diag, decl.name, decl.generics, recordFieldTypeExprs(decl))
+        checkSameArityMethods(diag, decl.name, recordMethodHeads(decl.members))
       }
       case IExposedRec(decl) -> {
         checkRecordDeclTypes(tbl, diag, decl)
@@ -3789,6 +3934,7 @@ func checkDeclTypeRefs(tbl: in SymbolTable, diag: in List[Diagnostic], items: in
           decl.span
         )
         checkValueGenericArrayFields(diag, decl.name, decl.generics, recordFieldTypeExprs(decl))
+        checkSameArityMethods(diag, decl.name, recordMethodHeads(decl.members))
       }
       case IUnion(decl) -> {
         checkUnionDeclTypes(tbl, diag, decl)
@@ -3803,7 +3949,10 @@ func checkDeclTypeRefs(tbl: in SymbolTable, diag: in List[Diagnostic], items: in
         )
         checkValueGenericArrayFields(diag, decl.name, decl.generics, unionFieldTypeExprs(decl))
       }
-      case IInterface(decl) -> checkInterfaceDeclTypes(tbl, diag, decl)
+      case IInterface(decl) -> {
+        checkInterfaceDeclTypes(tbl, diag, decl)
+        checkSameArityMethods(diag, decl.name, interfaceMethodHeads(decl.members))
+      }
       case IOpaque(decl) -> checkOpaqueDeclTypes(tbl, diag, decl)
       case IProtected(decl) -> checkProtectedDeclTypes(tbl, diag, decl)
       case ITypeAlias(decl) -> {
@@ -5086,6 +5235,7 @@ func checkWithImportedPackagesCore(
         checkImplConformance(tbl, diag, decl)
         checkImplOnProtected(tbl, diag, decl, file.items)
         checkImplMethodNameConflicts(tbl, diag, decl, file.items)
+        checkSameArityMethods(diag, "impl " + implIfaceName(decl), implMethodHeads(decl.members))
         checkImplMemberBodies(tbl, sigs, diag, decl)
       }
       case IProtected(decl) -> checkProtectedMemberBodies(tbl, sigs, diag, decl)

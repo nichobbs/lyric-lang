@@ -4875,35 +4875,34 @@ func registerInstanceSigErased(
   // matching the interface slot's descriptor).
   val retIsSelf = match retOpt { case Some(te) -> isSelfTypeExprJvm(te); case None -> false }
   val key = className + "#" + methodName
-  if not into.containsKey(key) {
-    into.add(
-      key,
-      JvmFuncSig(
-        owner = className,
-        params = ps,
-        ret = ret,
-        paramNames = paramNames,
-        paramDefaults = paramDefs,
-        paramModes = modes,
-        isIface = false,
-        retGenericArgs = eagerlyResolveGenericArgs(returnTypeGenericArgsFiltered(retOpt, typeParams), owner, externTypes),
-        closureRetTy = closureRetTypeOf(retOpt, owner, typeParams, externTypes),
-        recordRetClass = None,
-        retIsSelf = retIsSelf,
-        // A distinct type's `$value` accessor carries it so stringification
-        // formats a `UInt`/`ULong` underlying value unsigned (D-progress-968).
-        retIsUnsigned = match retOpt { case Some(te) -> isUnsignedTypeExpr(te); case None -> false },
-        recordRetHead = newList(),
-        ownTypeParams = newList(),
-        declParamTypeExprs = newList(),
-        declRetTypeExprRaw = None,
-        declRetExternTypes = newMap(),
-        // `invokevirtual`/`invokeinterface` under its own plain name —
-        // never a dot-named registrant, nothing to mangle.
-        jvmMethodName = methodName
-      )
+  addMethodSigJvm(
+    into,
+    key,
+    JvmFuncSig(
+      owner = className,
+      params = ps,
+      ret = ret,
+      paramNames = paramNames,
+      paramDefaults = paramDefs,
+      paramModes = modes,
+      isIface = false,
+      retGenericArgs = eagerlyResolveGenericArgs(returnTypeGenericArgsFiltered(retOpt, typeParams), owner, externTypes),
+      closureRetTy = closureRetTypeOf(retOpt, owner, typeParams, externTypes),
+      recordRetClass = None,
+      retIsSelf = retIsSelf,
+      // A distinct type's `$value` accessor carries it so stringification
+      // formats a `UInt`/`ULong` underlying value unsigned (D-progress-968).
+      retIsUnsigned = match retOpt { case Some(te) -> isUnsignedTypeExpr(te); case None -> false },
+      recordRetHead = newList(),
+      ownTypeParams = newList(),
+      declParamTypeExprs = newList(),
+      declRetTypeExprRaw = None,
+      declRetExternTypes = newMap(),
+      // `invokevirtual`/`invokeinterface` under its own plain name —
+      // never a dot-named registrant, nothing to mangle.
+      jvmMethodName = methodName
     )
-  }
+  )
 }
 
 // Like `registerInstanceSigErased`, but for an `impl <ExternInterface> for
@@ -4939,37 +4938,36 @@ func registerInstanceSigImplExtern(
   val noTypeParams: List[String] = newList()
   val retIsSelf = match retOpt { case Some(te) -> isSelfTypeExprJvm(te); case None -> false }
   val key = className + "#" + methodName
-  if not into.containsKey(key) {
-    into.add(
-      key,
-      JvmFuncSig(
-        owner = className,
-        params = ps,
-        ret = ret,
-        paramNames = paramNames,
-        paramDefaults = paramDefs,
-        paramModes = modes,
-        isIface = false,
-        retGenericArgs = eagerlyResolveGenericArgs(
-          returnTypeGenericArgsFiltered(retOpt, noTypeParams),
-          owner,
-          externTypes
-        ),
-        closureRetTy = closureRetTypeOf(retOpt, owner, noTypeParams, externTypes),
-        recordRetClass = None,
-        retIsSelf = retIsSelf,
-        retIsUnsigned = false,
-        recordRetHead = newList(),
-        ownTypeParams = newList(),
-        declParamTypeExprs = newList(),
-        declRetTypeExprRaw = None,
-        declRetExternTypes = newMap(),
-        // `invokevirtual`/`invokeinterface` under its own plain name —
-        // never a dot-named registrant, nothing to mangle.
-        jvmMethodName = methodName
-      )
+  addMethodSigJvm(
+    into,
+    key,
+    JvmFuncSig(
+      owner = className,
+      params = ps,
+      ret = ret,
+      paramNames = paramNames,
+      paramDefaults = paramDefs,
+      paramModes = modes,
+      isIface = false,
+      retGenericArgs = eagerlyResolveGenericArgs(
+        returnTypeGenericArgsFiltered(retOpt, noTypeParams),
+        owner,
+        externTypes
+      ),
+      closureRetTy = closureRetTypeOf(retOpt, owner, noTypeParams, externTypes),
+      recordRetClass = None,
+      retIsSelf = retIsSelf,
+      retIsUnsigned = false,
+      recordRetHead = newList(),
+      ownTypeParams = newList(),
+      declParamTypeExprs = newList(),
+      declRetTypeExprRaw = None,
+      declRetExternTypes = newMap(),
+      // `invokevirtual`/`invokeinterface` under its own plain name —
+      // never a dot-named registrant, nothing to mangle.
+      jvmMethodName = methodName
     )
-  }
+  )
 }
 
 // Register a record/protected/opaque field's DECLARED `slice[Elem]` /
@@ -5236,6 +5234,20 @@ pub func refreshMethodDefaultsJvm(file: in SourceFile, registry: in Map[String, 
   }
 }
 
+// Register an instance or interface method's signature under `key`
+// (`<class>#<method>`, which the first-registered overload keeps) and under
+// `key/<parameter count>`, the key a call looks up once it knows which
+// overload the type checker resolved (#7828).
+func addMethodSigJvm(into: in Map[String, JvmFuncSig], key: in String, sig: in JvmFuncSig): Unit {
+  if not into.containsKey(key) {
+    into.add(key, sig)
+  }
+  val arityKey = key + "/" + toString(sig.paramNames.count)
+  if not into.containsKey(arityKey) {
+    into.add(arityKey, sig)
+  }
+}
+
 func refreshOneMethodDefaultsJvm(
   registry: in Map[String, JvmFuncSig],
   cls: in String,
@@ -5243,7 +5255,14 @@ func refreshOneMethodDefaultsJvm(
   params: in List[Param],
 ): Unit {
   val real = stripLeadingSelfParam(params)
-  match mapGet(registry, cls + "#" + methodName) {
+  refreshMethodSigDefaultsJvm(mapGet(registry, cls + "#" + methodName + "/" + toString(real.count)), cls, real)
+  refreshMethodSigDefaultsJvm(mapGet(registry, cls + "#" + methodName), cls, real)
+}
+
+// Refresh `found`'s parameter defaults from `real` when it is the method
+// they declare: same owner and the same parameter names.
+func refreshMethodSigDefaultsJvm(found: in Option[JvmFuncSig], cls: in String, real: in List[Param]): Unit {
+  match found {
     case Some(sig) -> {
       if sig.owner != cls or sig.paramNames.count != real.count or sig.paramDefaults.count != real.count {
         return
@@ -5305,39 +5324,38 @@ func registerIfaceSig(
   // gates the call site's checkcast substitution off, #6431).
   val retIsSelf = match retOpt { case Some(te) -> isSelfTypeExprJvm(te); case None -> false }
   val key = ifClass + "#" + methodName
-  if not into.containsKey(key) {
-    into.add(
-      key,
-      JvmFuncSig(
-        owner = ifClass,
-        params = ps,
-        ret = ret,
-        paramNames = pNames,
-        paramDefaults = pDefs,
-        paramModes = pModes,
-        isIface = true,
-        // Resolved eagerly against the DECLARING file's own `owner`/`externTypes`
-        // (#5050), same as `collectFileSigsSeeded`/`registerInstanceSigErased` —
-        // filtered against the interface's OWN generic params first so a bare
-        // `T` isn't mistaken for a resolved type (mirrors the `mapGet` guard).
-        retGenericArgs = eagerlyResolveGenericArgs(returnTypeGenericArgsFiltered(retOpt, typeParams), owner, externTypes),
-        closureRetTy = closureRetTypeOf(retOpt, owner, typeParams, externTypes),
-        recordRetClass = None,
-        retIsSelf = retIsSelf,
-        // Keyed `<ifaceClass>#<method>` — interface method calls are
-        // `ECall(EMember(…), …)`, same as `registerInstanceSigErased`.
-        retIsUnsigned = false,
-        recordRetHead = newList(),
-        ownTypeParams = newList(),
-        declParamTypeExprs = newList(),
-        declRetTypeExprRaw = None,
-        declRetExternTypes = newMap(),
-        // `invokeinterface` under its own plain name — never a dot-named
-        // registrant, nothing to mangle.
-        jvmMethodName = methodName
-      )
+  addMethodSigJvm(
+    into,
+    key,
+    JvmFuncSig(
+      owner = ifClass,
+      params = ps,
+      ret = ret,
+      paramNames = pNames,
+      paramDefaults = pDefs,
+      paramModes = pModes,
+      isIface = true,
+      // Resolved eagerly against the DECLARING file's own `owner`/`externTypes`
+      // (#5050), same as `collectFileSigsSeeded`/`registerInstanceSigErased` —
+      // filtered against the interface's OWN generic params first so a bare
+      // `T` isn't mistaken for a resolved type (mirrors the `mapGet` guard).
+      retGenericArgs = eagerlyResolveGenericArgs(returnTypeGenericArgsFiltered(retOpt, typeParams), owner, externTypes),
+      closureRetTy = closureRetTypeOf(retOpt, owner, typeParams, externTypes),
+      recordRetClass = None,
+      retIsSelf = retIsSelf,
+      // Keyed `<ifaceClass>#<method>` — interface method calls are
+      // `ECall(EMember(…), …)`, same as `registerInstanceSigErased`.
+      retIsUnsigned = false,
+      recordRetHead = newList(),
+      ownTypeParams = newList(),
+      declParamTypeExprs = newList(),
+      declRetTypeExprRaw = None,
+      declRetExternTypes = newMap(),
+      // `invokeinterface` under its own plain name — never a dot-named
+      // registrant, nothing to mangle.
+      jvmMethodName = methodName
     )
-  }
+  )
 }
 
 // Register a wire's static factory method under the `<wireShortName>.<method>`
@@ -5829,15 +5847,16 @@ pub func originScopedExternTypes(
   if origin.length == 0 or origin == pkgName {
     return externTypes
   }
-  // The receiver classes and constructor import scope describe the file
-  // being generated; the specialised copy's body was written elsewhere, so
-  // its spans do not refer to them and its bare constructor names resolve
+  // The receiver classes, method-call arities and constructor import scope
+  // describe the file being generated; the specialised copy's body was
+  // written elsewhere, so its spans do not refer to them and its bare
+  // constructor names resolve
   // in the origin package's scope: the origin itself, the names it imports
   // selectively, then the packages it imports whole (see
   // `ctorClassFromImports`).
   val view: Map[String, String] = newMap()
   for k in mapKeys(externTypes) {
-    if k.startsWith("~recv~") or k.startsWith("~ctor-") {
+    if k.startsWith("~recv~") or k.startsWith("~arity~") or k.startsWith("~ctor-") {
       continue
     }
     match mapGet(externTypes, k) {

@@ -609,6 +609,18 @@ pub record CodegenCtx {
   // `methodParamModes`: a call omitting a defaulted argument splices its
   // default (`methodArgsWithDefaultsMsil`, #7820).
   methodParamDecls: Map[String, List[Param]]
+  // The parameter count of the method each call in the package being
+  // generated resolved to, when the call leaves out a defaulted argument
+  // (`Lyric.TypeChecker`'s `methodCallArities`, keyed by
+  // `methodCallSiteKey`; set per package by the bridge).  Method dispatch
+  // keys an overload by it, not by the number of arguments written (#7828).
+  methodCallArities: Map[String, Int]
+  // A restored function's declared parameter MsilTypes, keyed by FQN.
+  // `funcParamTypes` records its scalar parameters as `MObject` (see
+  // `registerRestoredFunc`), which the method-style call of a restored
+  // dot-named function must not take for a reference parameter: it would
+  // box an `Int` argument for an `int32` parameter (#7827).
+  restoredFuncParamTypes: Map[String, List[MsilType]]
   // Pending interface implementations discovered by the IImpl pre-pass.  Each
   // entry maps an implementing record's FQ name to its impl block(s); used to
   // (a) inject impl methods into the target MRecord, and (b) emit MPImpl items
@@ -2280,6 +2292,8 @@ pub func newCodegenCtx(
     methodParamTypes = newMap(),
     methodParamModes = newMap(),
     methodParamDecls = newMap(),
+    methodCallArities = newMap(),
+    restoredFuncParamTypes = newMap(),
     implEntries = newList(),
     nextMethodDefRow = newList(),
     nextFieldDefRow = newList(),
@@ -17775,6 +17789,18 @@ func funcArgsWithDefaultsMsil(
   argsWithDefaults(tokKey, names, defaults, skip, args)
 }
 
+// The number of arguments a method call passes once its omitted defaulted
+// arguments are filled: the parameter count of the overload the type
+// checker resolved it to (`cctx.methodCallArities`), else the `written`
+// count (#7828).  A body specialised from another package's generic was
+// checked there, so its spans do not key this package's entries.
+func methodCallArityMsil(cctx: in CodegenCtx, fctx: in FuncCtx, siteKey: in String, written: in Int): Int {
+  if fctx.originPkg.length > 0 and fctx.originPkg != fctx.pkgName {
+    return written
+  }
+  methodCallArity(cctx.methodCallArities, siteKey, written)
+}
+
 // A method call's arguments in parameter order with its omitted defaulted
 // parameters filled (#7820): the method's receiver-less declared parameters
 // are registered under its dispatch key (`registerMethodParamModes`).
@@ -18260,7 +18286,7 @@ pub func lowerCallMsil(
       lowerCallMsil(cctx, fctx, insns, innerFn, args)
     }
     case EMember(recv, memberName) -> {
-      lowerMethodCallMsil(cctx, fctx, insns, recv, memberName, args)
+      lowerMethodCallMsil(cctx, fctx, insns, recv, memberName, args, methodCallSiteKey(fn))
     }
     case EParen(inner) -> {
       lowerCallMsil(cctx, fctx, insns, inner, args)
@@ -20117,7 +20143,8 @@ func lowerBuiltinOrStaticCallMsil(
                 val selfCallee = selfMemberExprMsil(funcName, path.span)
                 return lowerExprMsil(cctx, fctx, insns, Expr(kind = ECall(fn = selfCallee, args = args), span = path.span))
               }
-              val sibArityKey = fctx.className + "/" + funcName + "/" + toString(args.count)
+              val sibArityKey = fctx.className + "/" + funcName + "/" +
+                toString(methodCallArityMsil(cctx, fctx, methodCallPathKey(path), args.count))
               val sibKey = if cctx.methodTokens.containsKey(sibArityKey) { sibArityKey } else { fctx.className + "/" + funcName }
               val sibTok = match mapGet(cctx.methodTokens, sibKey) {
                 case Some(t) -> t
@@ -20800,7 +20827,11 @@ func lowerMethodCallMsil(
   recv: in Expr,
   memberName: in String,
   args: in List[CallArg],
+  siteKey: in String,
 ): MsilType {
+  // The overload the type checker resolved: its parameter count, which the
+  // arity-qualified dispatch keys below are built from (#7828).
+  val callArity = methodCallArityMsil(cctx, fctx, siteKey, args.count)
   // #7546: a package-qualified distinct/range-subtype static factory call
   // (`Lyric.Pkg.Port.tryFrom(n)` inside package `Lyric.Pkg`, or
   // `Std.Http.Url.tryFrom(s)` through an import) parses its receiver as a
@@ -21169,7 +21200,7 @@ func lowerMethodCallMsil(
       // different-arity overload through the bare key would silently bind the
       // wrong MethodDef.  The registration side writes `class/name/arity`
       // for every overload; prefer it when present.
-      val arityDispatchKey = cls + "/" + memberName + "/" + toString(args.count)
+      val arityDispatchKey = cls + "/" + memberName + "/" + toString(callArity)
       val dispatchKey = if cctx.methodTokens.containsKey(arityDispatchKey) {
         arityDispatchKey
       } else {
@@ -21286,9 +21317,12 @@ func lowerMethodCallMsil(
           // static call.  Mirrors the BEq `derivedEqualsTokenMsil` path but for named calls.
           match mapGet(cctx.funcTokens, cls + "." + memberName) {
             case Some(funcTok) -> {
-              val funcParamList = match mapGet(cctx.funcParamTypes, cls + "." + memberName) {
-                case Some(pts) -> pts
-                case None -> newList()
+              val funcParamList = match mapGet(cctx.restoredFuncParamTypes, cls + "." + memberName) {
+                case Some(rpts) -> rpts
+                case None -> match mapGet(cctx.funcParamTypes, cls + "." + memberName) {
+                  case Some(pts) -> pts
+                  case None -> newList()
+                }
               }
               val dargs = funcArgsWithDefaultsMsil(cctx, cls + "." + memberName, 1, args)
               var i = 0
@@ -21325,7 +21359,7 @@ func lowerMethodCallMsil(
       // TypeSpec-parented MemberRef at lowering (mirroring `MLdfldGeneric`'s
       // field-read pattern) instead of reusing the plain `methodTokens` row.
       val plainFqn = stripGenericArity(fqn)
-      val garityKey = plainFqn + "/" + memberName + "/" + toString(args.count)
+      val garityKey = plainFqn + "/" + memberName + "/" + toString(callArity)
       val gbareKey = plainFqn + "/" + memberName
       val gDispatchKey = if cctx.methodRetTypes.containsKey(garityKey) { garityKey } else { gbareKey }
       if cctx.methodRetTypes.containsKey(gDispatchKey) {
@@ -43997,6 +44031,26 @@ func registerRestoredFunc(
   // `pop` after void cross-assembly calls → InvalidProgramException.
   cctx.funcRetTypes.add(fqn, retType)
   cctx.funcParamModes.add(fqn, paramModesOf(fn.params))
+  // Parameter names and defaults, as `addPackageTokens` records them for an
+  // in-bundle function, so a call pairs named arguments and fills an
+  // omitted default: the contract renders a default as a call to the thunk
+  // the producer compiled it into (#7827).
+  var rni = 0
+  while rni < fn.params.count {
+    val rnKeys: List[String] = newList()
+    rnKeys.add(fqn + "/param" + toString(rni))
+    rnKeys.add(fqn + "/" + toString(fn.params.count) + "/param" + toString(rni))
+    for rk in rnKeys {
+      if not cctx.funcParamNames.containsKey(rk) {
+        cctx.funcParamNames.add(rk, fn.params[rni].name)
+      }
+      match fn.params[rni].dflt {
+        case Some(rd) -> if not cctx.funcDefaultExprs.containsKey(rk) { cctx.funcDefaultExprs.add(rk, rd) }
+        case None -> ()
+      }
+    }
+    rni = rni + 1
+  }
   // Record the declared parameter MsilTypes so a cross-package call site can
   // push each parameter's expected type onto `collExpect` (lowerCallMsil),
   // exactly as the same-package path does (see funcParamTypes above).  Without
@@ -44024,6 +44078,9 @@ func registerRestoredFunc(
   }
   if not cctx.funcParamTypes.containsKey(fqn) {
     cctx.funcParamTypes.add(fqn, hintParamTypes)
+  }
+  if not cctx.restoredFuncParamTypes.containsKey(fqn) {
+    cctx.restoredFuncParamTypes.add(fqn, paramTypes)
   }
   // #3273 item 4: mirror addPackageTokens' `funcParamFnInner`/`funcParamFnRetType`
   // registration (in-bundle only, previously) for a RESTORED function's
@@ -44477,7 +44534,7 @@ func registerRestoredImpl(
                 recordTypeRefRow,
                 art.packageName,
                 sig.name,
-                sig.params,
+                restoredImplMethodParams(idecl, sig.name, sig.params),
                 sig.ret,
                 implGenerics
               )
@@ -44487,7 +44544,7 @@ func registerRestoredImpl(
                 recordTypeRefRow,
                 art.packageName,
                 fn.name,
-                fn.params,
+                restoredImplMethodParams(idecl, fn.name, fn.params),
                 fn.ret,
                 implGenerics
               )
@@ -44501,6 +44558,20 @@ func registerRestoredImpl(
     }
     i = i + 1
   }
+}
+
+// The parameters a restored `impl`'s method `name` declares when the contract
+// carries its head (it does when one of them has a default, #7827), else the
+// interface member's `ifaceParams`: a call on the concrete type takes the
+// impl method's defaults.
+func restoredImplMethodParams(idecl: in ImplDecl, name: in String, ifaceParams: in List[Param]): List[Param] {
+  for m in idecl.members {
+    match m {
+      case IMplFunc(fn) -> if fn.name == name and fn.params.count == ifaceParams.count { return fn.params }
+      case IMplAssoc(_) -> ()
+    }
+  }
+  ifaceParams
 }
 
 // Register a restored record's OWN body methods (`func peek(self: in R): T { … }`

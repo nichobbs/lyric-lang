@@ -3671,9 +3671,11 @@ func minRequiredParams(sig: in ResolvedSignature): Int {
 // Resolve `recv.name(<argc args>)` against the method-signature space
 // (docs/59 A4): the type's own/interface methods first, then dot-named
 // type-associated functions.  Selection prefers an arity-fitting candidate
-// whose params accept the supplied argument types, then any arity-fitting
-// candidate, then the first candidate at all (so T0042/T0043 report against
-// a real signature instead of silently degrading).
+// whose params accept the supplied argument types — one taking exactly
+// `argc` parameters over one that fills the rest from defaults, as a free
+// call does (#7828) — then any arity-fitting candidate, then the first
+// candidate at all (so T0042/T0043 report against a real signature instead
+// of silently degrading).
 func resolveMethodCallPick(
   tbl: in SymbolTable,
   sigs: in Map[String, ResolvedSignature],
@@ -3703,6 +3705,7 @@ func resolveMethodCallPick(
     picks.add(MethodCallPick(sig = dropReceiverParam(dotted[d]), fullSig = Some(value = dotted[d])))
     d = d + 1
   }
+  var exact: Option[MethodCallPick] = None
   var best: Option[MethodCallPick] = None
   var arityFit: Option[MethodCallPick] = None
   var anyPick: Option[MethodCallPick] = None
@@ -3724,17 +3727,33 @@ func resolveMethodCallPick(
         case Some(_) -> {
         }
       }
-      match best {
-        case None -> if suppliedArgsMatch(tbl, p.sig.params, argTypes) { best = Some(value = p) }
-        case Some(_) -> {
+      if suppliedArgsMatch(tbl, p.sig.params, argTypes) {
+        match best {
+          case None -> {
+            best = Some(value = p)
+          }
+          case Some(_) -> {
+          }
+        }
+        if p.sig.params.count == argc {
+          match exact {
+            case None -> {
+              exact = Some(value = p)
+            }
+            case Some(_) -> {
+            }
+          }
         }
       }
     }
     k = k + 1
   }
-  match best {
-    case Some(_) -> best
-    case None -> match arityFit { case Some(_) -> arityFit; case None -> anyPick }
+  match exact {
+    case Some(_) -> exact
+    case None -> match best {
+      case Some(_) -> best
+      case None -> match arityFit { case Some(_) -> arityFit; case None -> anyPick }
+    }
   }
 }
 
@@ -11567,6 +11586,7 @@ func inferExprCore(
               }
               case None -> match methodPick {
                 case Some(mp) -> {
+                  recordMethodCallArity(tbl, fn, args.count, mp.sig.params.count)
                   recordGeneratorCallSite(tbl, e.span, mp.sig.isGenerator)
                   recordAsyncCallSite(tbl, e.span, mp.sig.isAsync and not mp.sig.isGenerator)
                   recordEffectCallSite(tbl, e.span, mp.sig, fn)
@@ -12848,6 +12868,19 @@ func checkContractCallPure(
       span
     )
   )
+}
+
+// Record the parameter count of the method a call resolved to when the call
+// leaves out a defaulted argument (`SymbolTable.methodCallArities`, #7828);
+// a call inferred again replaces what an earlier inference recorded.
+func recordMethodCallArity(tbl: in SymbolTable, callee: in Expr, written: in Int, resolved: in Int): Unit {
+  val key = methodCallSiteKey(callee)
+  if tbl.methodCallArities.containsKey(key) {
+    tbl.methodCallArities.remove(key)
+  }
+  if resolved != written {
+    tbl.methodCallArities.add(key, resolved)
+  }
 }
 
 // A call's arguments pair with its parameters by name, then positionally

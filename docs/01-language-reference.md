@@ -1241,7 +1241,40 @@ with them; a call on the concrete type (`sq.area()` where `sq: Square`)
 takes the `impl` method's own defaults. The two may differ, and neither is
 inherited by the other: an `impl` method that omits a default the interface
 member declares requires the argument on a concrete-typed call. Declaring
-the same default in both places keeps the two call forms equivalent.
+the same default in both places keeps the two call forms equivalent. When
+an `impl` method's parameter has a different default from the interface
+member's, or only one of the two declares a default, the compiler warns at
+the `impl` method's parameter (**T0161**, a warning): defaults count as the
+same when they are written alike (any expression form, compared as written,
+ignoring enclosing parentheses), and a default known
+only from a restored package's metadata (below) is not compared (#7828).
+
+A callee in a package restored from its compiled form (a `[dependencies]`
+path or registry package consumed as a DLL or JAR) fills an omitted argument
+the same way, by the same rule for whose default applies. The declaring
+package compiles each default of its public callables (free and dot-named
+functions, record methods, interface members, and `impl` methods of public
+types) into a public function its contract metadata names, and the call
+evaluates the default by calling it, so the default may read the package's
+private values and a widening default converts as it does within the package
+(#7827, D168, docs/45 §5). A parameter whose type names a type parameter of
+the callable or of its owner type, or `Self`, and a parameter of a method in
+a generic `impl`, export no default: across a restored package boundary such
+an argument must be passed (**T0042** otherwise).
+
+Methods of one name declared in one record, interface or `impl` must differ
+in their number of parameters, as two functions of one name in a package
+must (**T0001**); two with the same count are **T0162** (#8085). This is a
+limit of this compiler's method dispatch, not of .NET or the JVM: its MSIL,
+JVM and native backends identify a method by its type, name and parameter
+count. When a type
+has several methods of one name, a method call binds to the
+overload the type checker selects: among the overloads whose parameters
+accept the arguments, one taking exactly the arguments written is preferred
+over one that fills omitted arguments from defaults, as for a free function;
+otherwise the first declared applies. Every backend dispatches the call to
+that overload, so with `m(x: String)` and `m(x: Int, y: Int = 2)`, `o.m(1)`
+calls the second on every target (#7828).
 
 Field-style access `x.name` (no call parens) to a name that exists **only**
 as a D037 dot-named (UFCS) function — never as a real record/union field — is
