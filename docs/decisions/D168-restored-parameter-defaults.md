@@ -28,8 +28,10 @@ consumers call it.
    defaulted parameter of each public callable: a free or dot-named
    function, a record or exposed-record method, an interface member
    (abstract or default), and an `impl` method of a public type. Its name is
-   `Lyric.Parser.defaultThunkName` (`__lyric_default__[<owner>__]<callable>__<param types>__<param>`;
-   the parameter types keep two overloads apart, #8085),
+   `Lyric.Parser.defaultThunkName`, an injective, length-prefixed encoding
+   of the callable's kind (function, record method, interface member, impl
+   method), owner, name, parameter types and the parameter (docs/45 §5,
+   #8085, #8097),
    it takes no arguments, returns the parameter's type, and its body is the
    default as checked and desugared, so a widening default already carries
    its conversion and a default may read the package's private values.
@@ -84,12 +86,16 @@ the parameter default (#7811) and appear once; doing it before mono keeps the
 public generic functions, which mono drops from the file, and their
 non-generic defaults.
 
-The thunk name carries the callable's parameter types (#8085) rather than
-its parameter count or a declaration index: both sides compute it from the
-declaration alone, so it cannot drift with declaration order, and a second
-default reaching one name panics as an internal error. Methods of one name
+The thunk name carries the callable's kind and parameter types (#8085,
+#8097) rather than a declaration index: both sides compute it from the
+declaration alone, so it cannot drift with declaration order. Every part
+is length- or count-prefixed, so the encoding is injective: a record method
+and a dot-named function of the same type and name, for instance, never
+share a thunk. A second default reaching one name, or a thunk named for a
+parameter with no default, panics as an internal error. Methods of one name
 and parameter count in one type are rejected anyway (T0162, matching T0001
-for functions), because every backend tells overloads apart by count.
+for functions), because this compiler's backends tell a type's overloads
+apart by count.
 
 ## Consequences
 

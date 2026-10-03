@@ -178,24 +178,44 @@ checker's results are desugared and before mono drops the public generic
 functions):
 
 ```lyric
-@no_aspect pub func __lyric_default__[<owner>__]<callable>__<param types>__<param>(): <ParamType> { <default> }
+@no_aspect pub func __lyric_default__<kind><owner><callable><params><param>(): <ParamType> { <default> }
 ```
 
-(`Lyric.Parser.defaultThunkName`: `owner` is absent for a free or dot-named
-function, whose dots become `__`, the type for a record or exposed-record method or an interface
-member, and `<Type>__<Interface>` for an `impl` method; `<param types>` is
-`Lyric.Parser.paramTypesKey` of the callable's parameters, receiver
-included, so two overloads of one name never share a thunk, and the
-synthesiser and the contract renderer compute the same name from the
-declaration whatever order its overloads are declared in (#8085). A second
-default reaching a name already synthesised is an internal compiler error,
-never a silently shared thunk.) The body is the default as type-checked and desugared, so a
+The name (`Lyric.Parser.defaultThunkName`) is an injective encoding of the
+callable's kind, owner, name, parameter types and the defaulted parameter
+(#8085, #8097), computed from the declaration by both the synthesiser and the
+contract renderer, so it does not depend on declaration order:
+
+- `<kind>` is one letter: `f` a free or dot-named function, `m` a record or
+  exposed-record method, `i` an interface member, `p` an `impl` method.
+- A *name* is written as its length, `_`, then its text (`Acc` is `3_Acc`).
+  A *list* is written as its count and `_`, then its items.
+- `<owner>` is a list of names: empty for a function, the type for a method,
+  the interface for a member, the target type then the interface for an
+  `impl` method. `<callable>` is the callable's name split at its dots
+  (`Acc.scaled` is `2_3_Acc6_scaled`).
+- `<params>` is the parameter count (receiver included) and `_`, then each
+  parameter's type: a letter for its form followed by its parts
+  (`Lyric.Parser.thunkTypeKey`: `r` named, then its path; `g` generic
+  application, then its path and its type arguments; `a` array, `s` slice,
+  `n` range subtype, `t` tuple, `o` nullable, `c` function, `u` Unit, `e`
+  `Self`, `x` Never). `<param>` is the parameter's name.
+
+Every part is length- or count-prefixed and every type starts with a letter
+for its form, so the encoding is prefix-free and no two distinct (kind,
+owner, callable, parameter types, parameter) tuples share a name: a record's
+method `scaled` and a dot-named `func Acc.scaled` with the same parameters
+get `__lyric_default__m1_3_Acc1_6_scaled2_r1_3_Accr1_3_Int1_k` and
+`__lyric_default__f0_2_3_Acc6_scaled2_r1_3_Accr1_3_Int1_k`. A second default
+reaching a name already synthesised, or a thunk named for a parameter that
+declares no default, is an internal compiler error, never a shared or
+fabricated default. The body is the default as type-checked and desugared, so a
 widening default carries its conversion. The thunk is an ordinary `func`
 decl of the contract, and each parameter with a thunk renders its default as
 a call to it:
 
 ```lyric
-pub func f(x: in Int = Rd.Lib.__lyric_default__f__Int__x()): Int
+pub func f(x: in Int = Rd.Lib.__lyric_default__f0_1_1_f1_r1_3_Int1_x()): Int
 ```
 
 Record and interface member heads render the same way, and an `impl` with

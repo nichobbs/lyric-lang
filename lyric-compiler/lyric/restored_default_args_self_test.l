@@ -14,8 +14,10 @@
 //! the library.  A call takes the defaults of the declaration it resolves
 //! through, as within a package: the interface member's on an
 //! interface-typed value, the `impl` method's on the concrete type.  Two
-//! overloads of one method each keep their own default (#8085): the thunk's
-//! name carries the overload's parameter types.
+//! overloads of one method each keep their own default (#8085), and so do a
+//! record method and a dot-named function of the same type and name
+//! (#8097): the thunk's name is an injective encoding of the callable's
+//! kind, owner, name and parameter types.
 //!
 //! Each case builds a producer DLL / JAR through `Lyric.Emitter.emitProject`,
 //! then a consumer that restores it (`restoredDllPaths`), runs it and
@@ -250,4 +252,80 @@ test "a restored generic function's non-generic default is filled on dotnet (#80
   e.add("7")
   e.add("2")
   assertLines("dotnet generic", runRestored("generic", false, lib, app), e)
+}
+
+// #8097: a record method and a dot-named function of the same type, name
+// and parameters each keep their own default across the restored boundary,
+// and a parameter that declares no default stays required even when the
+// same-named method's parameter has one.
+func methodAndDotNamedLib(): String {
+  "package Rd.Lib\n\n" + "pub record Acc {\n  n: Int\n\n" +
+    "  func scaled(self: in Acc, k: in Int = 7): Int {\n    self.n - k\n  }\n\n" +
+    "  func trim(self: in Acc, k: in Int = 2): Int {\n    self.n - k\n  }\n}\n\n" +
+    "pub func Acc.scaled(self: in Acc, k: in Int = 3): Int {\n  self.n * k\n}\n\n" +
+    "pub func Acc.trim(self: in Acc, k: in Int): Int {\n  self.n + k\n}\n"
+}
+
+func methodAndDotNamedApp(): String {
+  "package Rd.App\n\n" + "import Rd.Lib\n\n" + "func main(): Unit {\n" + "  println(toString(Acc(n = 4).scaled()))\n" +
+    "  println(toString(Acc.scaled(Acc(n = 4))))\n" +
+    "  println(toString(Acc(n = 9).trim()))\n" +
+    "  println(toString(Acc.trim(Acc(n = 9), 1)))\n" +
+    "}\n"
+}
+
+func methodAndDotNamedLines(): List[String] {
+  val e: List[String] = newList()
+  e.add("-3")
+  e.add("12")
+  e.add("7")
+  e.add("10")
+  e
+}
+
+// True when a consumer of `libSrc` compiles; the library must.
+func consumerCompiles(label: in String, jvm: in Bool, libSrc: in String, appSrc: in String): Bool {
+  val dir = freshTempDir(label + (if jvm { "-jvm" } else { "-dotnet" }))
+  val ext = if jvm { ".jar" } else { ".dll" }
+  val target = if jvm { Emitter.Jvm } else { Emitter.Dotnet }
+  val libPath = Path.join(dir, "Rd.Lib" + ext)
+  val noRestored: List[String] = newList()
+  if not emitOne("Rd.Lib", libSrc, libPath, target, noRestored) {
+    cleanup(dir)
+    panic(label + ": the library failed to compile")
+  }
+  val restored: List[String] = newList()
+  restored.add("Rd.Lib\t" + libPath)
+  val ok = emitOne("Rd.App", appSrc, Path.join(dir, "Rd.App" + ext), target, restored)
+  cleanup(dir)
+  ok
+}
+
+func omitsRequiredArgApp(): String {
+  "package Rd.App\n\n" + "import Rd.Lib\n\n" + "func main(): Unit {\n" + "  println(toString(Acc.trim(Acc(n = 9))))\n" +
+    "}\n"
+}
+
+test "a record method and a same-named dot-named function keep their own defaults on dotnet (#8097)" {
+  assertLines(
+    "dotnet",
+    runRestored("dotnamed", false, methodAndDotNamedLib(), methodAndDotNamedApp()),
+    methodAndDotNamedLines()
+  )
+  assertTrue(
+    not consumerCompiles("dotnamed-required", false, methodAndDotNamedLib(), omitsRequiredArgApp()),
+    "the dot-named function's k has no default, so leaving it out does not compile"
+  )
+}
+
+test "a record method and a same-named dot-named function keep their own defaults on the JVM (#8097)" {
+  assertLines(
+    "jvm",
+    runRestored("dotnamed", true, methodAndDotNamedLib(), methodAndDotNamedApp()),
+    methodAndDotNamedLines()
+  )
+  assertTrue(
+    not consumerCompiles("dotnamed-required", true, methodAndDotNamedLib(), omitsRequiredArgApp()),
+    "the dot-named function's k has no default, so leaving it out does not compile"
+  )
 }

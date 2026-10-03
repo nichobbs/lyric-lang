@@ -957,6 +957,46 @@ func defaultThunksOf(file: in SourceFile): DefaultThunks {
   DefaultThunks(pkg = joinDots(file.packageDecl.path.segments), names = names)
 }
 
+// The kind and owner a callable's default thunks are named under
+// (`Lyric.Parser.defaultThunkName`).
+record ThunkOwner {
+  kind: DefaultThunkKind
+  names: List[String]
+}
+
+func thunkOwner(kind: in DefaultThunkKind, name: in String): ThunkOwner {
+  val names: List[String] = newList()
+  names.add(name)
+  ThunkOwner(kind = kind, names = names)
+}
+
+func functionThunkOwner(): ThunkOwner {
+  val names: List[String] = newList()
+  ThunkOwner(kind = DTFunction, names = names)
+}
+
+// The thunk a parameter's default was compiled into, if any.  Only a
+// parameter that declares a default has one; a thunk named for a parameter
+// that declares none would mean `defaultThunkName` maps two parameters to
+// one name, an internal error rather than a default to render (#8097).
+func paramThunk(
+  params: in List[Param], i: in Int, dt: in DefaultThunks, owner: in ThunkOwner, callable: in String
+): Option[String] {
+  val thunk = defaultThunkName(owner.kind, owner.names, callable, params, params[i].name)
+  if not dt.names.containsKey(thunk) {
+    return None
+  }
+  match params[i].dflt {
+    case Some(_) -> Some(value = thunk)
+    case None -> panic(
+      "internal compiler error: parameter '" + params[i].name + "' of '" + callable +
+        "' declares no default, but the default thunk '" +
+        thunk +
+        "' is named for it (Lyric.Parser.defaultThunkName must be injective, #8097)"
+    )
+  }
+}
+
 // A callable's parameter list, each parameter with a default rendered as
 // `name: mode Type = <Pkg>.<thunk>()`: the call to the thunk the package
 // compiled the default into.  The default expression itself is written in
@@ -964,7 +1004,7 @@ func defaultThunksOf(file: in SourceFile): DefaultThunks {
 // the argument out calls the thunk (#7827).  A parameter with no thunk (no
 // default, or one whose type names a type parameter) renders without one.
 func renderParamsWithDefaults(
-  params: in List[Param], dt: in DefaultThunks, owner: in String, callable: in String
+  params: in List[Param], dt: in DefaultThunks, owner: in ThunkOwner, callable: in String
 ): String {
   var acc = ""
   var i = 0
@@ -973,9 +1013,11 @@ func renderParamsWithDefaults(
       acc = acc + ", "
     }
     acc = acc + renderParam(params[i])
-    val thunk = defaultThunkName(owner, callable, params, params[i].name)
-    if dt.names.containsKey(thunk) {
-      acc = acc + " = " + dt.pkg + "." + thunk + "()"
+    match paramThunk(params, i, dt, owner, callable) {
+      case Some(thunk) -> {
+        acc = acc + " = " + dt.pkg + "." + thunk + "()"
+      }
+      case None -> ()
     }
     i = i + 1
   }
@@ -983,11 +1025,14 @@ func renderParamsWithDefaults(
 }
 
 // True when one of `params` has a default compiled into a thunk.
-func anyParamHasThunk(params: in List[Param], dt: in DefaultThunks, owner: in String, callable: in String): Bool {
-  for p in params {
-    if dt.names.containsKey(defaultThunkName(owner, callable, params, p.name)) {
-      return true
+func anyParamHasThunk(params: in List[Param], dt: in DefaultThunks, owner: in ThunkOwner, callable: in String): Bool {
+  var i = 0
+  while i < params.count {
+    match paramThunk(params, i, dt, owner, callable) {
+      case Some(_) -> return true
+      case None -> ()
     }
+    i = i + 1
   }
   false
 }
@@ -1036,7 +1081,7 @@ func renderGenerics(g: in Option[GenericParams]): String {
 // walks `RMFunc` members), but `checkFunctionBody` skips a member whose body
 // is `None` — the same rule that exempts interface/extern signatures — so a
 // bodyless render round-trips cleanly with no T0114 risk.
-func reprForRecordMethod(fn: in FunctionDecl, dt: in DefaultThunks, owner: in String): String {
+func reprForRecordMethod(fn: in FunctionDecl, dt: in DefaultThunks, owner: in ThunkOwner): String {
   val params = renderParamsWithDefaults(fn.params, dt, owner, fn.name)
   val retStr = match fn.ret { case Some(t) -> ": " + renderTypeExpr(t); case None -> "" }
   val asyncPrefix = if fn.isAsync { "async " } else { "" }
@@ -1104,7 +1149,7 @@ func reprForRecord(decl: in RecordDecl, isExposed: in Bool, dt: in DefaultThunks
   while mi < decl.members.count {
     match decl.members[mi] {
       case RMFunc(fn) -> {
-        methods = methods + "\n  " + reprForRecordMethod(fn, dt, decl.name)
+        methods = methods + "\n  " + reprForRecordMethod(fn, dt, thunkOwner(DTRecordMethod, decl.name))
       }
       case _ -> ()
     }
@@ -1141,7 +1186,7 @@ func reprForRecord(decl: in RecordDecl, isExposed: in Bool, dt: in DefaultThunks
 // function to a synchronous signature, producing a `MissingMethodException`
 // at runtime against the real (Task-wrapped) compiled method.
 func reprForFunc(fn: in FunctionDecl, dt: in DefaultThunks): String {
-  val params = renderParamsWithDefaults(fn.params, dt, "", fn.name)
+  val params = renderParamsWithDefaults(fn.params, dt, functionThunkOwner(), fn.name)
   val retStr = match fn.ret { case Some(t) -> ": " + renderTypeExpr(t); case None -> "" }
   val asyncPrefix = if fn.isAsync { "async " } else { "" }
   // `@io` rides in the repr so a restored consumer's signature carries it
@@ -1342,7 +1387,10 @@ func reprForImplHead(decl: in ImplDecl, dt: in DefaultThunks): Option[String] {
   if Str.isEmpty(ifaceName) {
     return None
   }
-  val owner = implDefaultThunkOwner(targetName, lastSegOf(decl.iface.head.segments))
+  val ownerNames: List[String] = newList()
+  ownerNames.add(targetName)
+  ownerNames.add(lastSegOf(decl.iface.head.segments))
+  val owner = ThunkOwner(kind = DTImplMethod, names = ownerNames)
   var methods = ""
   for m in decl.members {
     match m {
@@ -1416,14 +1464,14 @@ func reprForInterface(decl: in InterfaceDecl, dt: in DefaultThunks): String {
         if Str.isNotEmpty(members) {
           members = members + "; "
         }
-        members = members + reprForFunctionSig(sig, dt, decl.name)
+        members = members + reprForFunctionSig(sig, dt, thunkOwner(DTInterfaceMember, decl.name))
       }
       case IMFunc(fn) -> match funcBodyText(fn) {
         case Some(body) -> {
           if Str.isNotEmpty(members) {
             members = members + "; "
           }
-          members = members + reprForRecordMethod(fn, dt, decl.name) + " " + body
+          members = members + reprForRecordMethod(fn, dt, thunkOwner(DTInterfaceMember, decl.name)) + " " + body
         }
         case None -> ()
       }
@@ -1436,7 +1484,7 @@ func reprForInterface(decl: in InterfaceDecl, dt: in DefaultThunks): String {
 
 // Render a FunctionSig (interface-method head form, no body).
 // Carries `async` forward for the same reason `reprForFunc` does (#6372).
-func reprForFunctionSig(sig: in FunctionSig, dt: in DefaultThunks, owner: in String): String {
+func reprForFunctionSig(sig: in FunctionSig, dt: in DefaultThunks, owner: in ThunkOwner): String {
   val params = renderParamsWithDefaults(sig.params, dt, owner, sig.name)
   val retStr = match sig.ret { case Some(t) -> ": " + renderTypeExpr(t); case None -> "" }
   val asyncPrefix = if sig.isAsync { "async " } else { "" }

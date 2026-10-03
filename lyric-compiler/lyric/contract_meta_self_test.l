@@ -1298,33 +1298,42 @@ test "buildContractFromFile renders parameter defaults as calls to compiled thun
   val c = buildContractFromFile(synthesizeDefaultThunks(parse(src).file), "1.0.0")
   val f = unwrapDeclOrFail(findDeclByKind(c.decls, "func", "f"), "func f missing")
   assertTrue(
-    Str.contains(f.repr, "x: in Int = P.__lyric_default__f__Int_Int__x()"),
+    Str.contains(f.repr, "x: in Int = P.__lyric_default__f0_1_1_f2_r1_3_Intr1_3_Int1_x()"),
     "f's default is a thunk call: " + f.repr
   )
   assertTrue(not Str.contains(f.repr, "base"), "the default expression is not carried: " + f.repr)
   assertTrue(Str.contains(f.repr, "y: in Int)"), "y has no default: " + f.repr)
-  assertTrue(isSomeDecl(findDeclByKind(c.decls, "func", "__lyric_default__f__Int_Int__x")), "the thunk is exported")
+  assertTrue(
+    isSomeDecl(findDeclByKind(c.decls, "func", "__lyric_default__f0_1_1_f2_r1_3_Intr1_3_Int1_x")),
+    "the thunk is exported"
+  )
   val g = unwrapDeclOrFail(findDeclByKind(c.decls, "func", "g"), "func g missing")
   assertTrue(
-    Str.contains(g.repr, "n: in Int = P.__lyric_default__g__Option_of_T_end_Int__n()"),
+    Str.contains(g.repr, "n: in Int = P.__lyric_default__f0_1_1_g2_g1_6_Option1_tr1_1_Tr1_3_Int1_n()"),
     "g's Int default: " + g.repr
   )
   assertTrue(Str.contains(g.repr, "o: in Option[T],"), "a T-typed default is not exported: " + g.repr)
   assertTrue(
-    not isSomeDecl(findDeclByKind(c.decls, "func", "__lyric_default__g__Option_of_T_end_Int__o")),
+    not isSomeDecl(findDeclByKind(c.decls, "func", "__lyric_default__f0_1_1_g2_g1_6_Option1_tr1_1_Tr1_3_Int1_o")),
     "no thunk for it"
   )
   assertTrue(
-    not isSomeDecl(findDeclByKind(c.decls, "func", "__lyric_default__priv__Int__z")),
+    not isSomeDecl(findDeclByKind(c.decls, "func", "__lyric_default__f0_1_4_priv1_r1_3_Int1_z")),
     "no thunk for a private function"
   )
   val r = unwrapDeclOrFail(findDeclByKind(c.decls, "record", "R"), "record R missing")
-  assertTrue(Str.contains(r.repr, "k: in Int = P.__lyric_default__R__m__R_Int__k()"), "record method: " + r.repr)
+  assertTrue(
+    Str.contains(r.repr, "k: in Int = P.__lyric_default__m1_1_R1_1_m2_r1_1_Rr1_3_Int1_k()"),
+    "record method: " + r.repr
+  )
   val i = unwrapDeclOrFail(findDeclByKind(c.decls, "interface", "I"), "interface I missing")
-  assertTrue(Str.contains(i.repr, "s: in Int = P.__lyric_default__I__a__Self_Int__s()"), "interface member: " + i.repr)
+  assertTrue(
+    Str.contains(i.repr, "s: in Int = P.__lyric_default__i1_1_I1_1_a2_er1_3_Int1_s()"),
+    "interface member: " + i.repr
+  )
   val q = unwrapDeclOrFail(findDeclByKind(c.decls, "impl", "Q"), "impl for Q missing")
   assertTrue(
-    Str.contains(q.repr, "func a(self: in Q, s: in Int = P.__lyric_default__Q__I__a__Q_Int__s()): Int"),
+    Str.contains(q.repr, "func a(self: in Q, s: in Int = P.__lyric_default__p2_1_Q1_I1_1_a2_r1_1_Qr1_3_Int1_s()): Int"),
     "the impl carries its method head: " + q.repr
   )
   val reparsed = parse("package P\n\n" + f.repr + "\n\n" + r.repr + "\n\n" + i.repr + "\n\n" + q.repr + "\n")
@@ -1352,32 +1361,109 @@ test "same-count overloads render distinct default thunks (#8085)" {
   val c = buildContractFromFile(synthesizeDefaultThunks(parse(src).file), "1.0.0")
   val r = unwrapDeclOrFail(findDeclByKind(c.decls, "record", "R"), "record R missing")
   assertTrue(
-    Str.contains(r.repr, "x: in Int, factor: in Int = P.__lyric_default__R__scale__R_Int_Int__factor()"),
+    Str.contains(
+      r.repr,
+      "x: in Int, factor: in Int = P.__lyric_default__m1_1_R1_5_scale3_r1_1_Rr1_3_Intr1_3_Int6_factor()"
+    ),
     "the Int overload's own thunk: " + r.repr
   )
   assertTrue(
-    Str.contains(r.repr, "x: in String, factor: in Int = P.__lyric_default__R__scale__R_String_Int__factor()"),
+    Str.contains(
+      r.repr,
+      "x: in String, factor: in Int = P.__lyric_default__m1_1_R1_5_scale3_r1_1_Rr1_6_Stringr1_3_Int6_factor()"
+    ),
     "the String overload's own thunk: " + r.repr
   )
-  assertTrue(isSomeDecl(findDeclByKind(c.decls, "func", "__lyric_default__R__scale__R_Int_Int__factor")), "first thunk")
   assertTrue(
-    isSomeDecl(findDeclByKind(c.decls, "func", "__lyric_default__R__scale__R_String_Int__factor")),
+    isSomeDecl(findDeclByKind(c.decls, "func", "__lyric_default__m1_1_R1_5_scale3_r1_1_Rr1_3_Intr1_3_Int6_factor")),
+    "first thunk"
+  )
+  assertTrue(
+    isSomeDecl(findDeclByKind(c.decls, "func", "__lyric_default__m1_1_R1_5_scale3_r1_1_Rr1_6_Stringr1_3_Int6_factor")),
     "second thunk"
   )
 }
 
-// The name spells every type form without characters an identifier cannot
-// hold.
-test "paramTypesKey spells types as identifier text (#8085)" {
+// The name spells every type form as identifier text, each part length- or
+// count-prefixed (#8085, #8097).
+test "defaultThunkName spells every type form as identifier text (#8097)" {
   val pr = parse(
     "package P\n\nfunc k(a: in List[Int], b: in slice[String], c: in (Int, Bool), d: in (Int) -> Std.Core.Unit, e: in Int?): Unit {}\n"
   )
+  val none: List[String] = newList()
   match pr.file.items[0].kind {
     case IFunc(fn) -> assertEqual(
-      paramTypesKey(fn.params),
-      "List_of_Int_end_slice_of_String_end_tuple_Int_Bool_end_fn_Int_to_Std_Core_Unit_end_Int_opt",
-      "key"
+      defaultThunkName(DTFunction, none, "k", fn.params, "e"),
+      "__lyric_default__f0_1_1_k5_g1_4_List1_tr1_3_Intsr1_6_Stringt2_r1_3_Intr1_4_Boolc1_r1_3_Intr3_3_Std4_Core4_Unitor1_3_Int1_e",
+      "name"
     )
     case _ -> assertTrue(false, "a function")
   }
+}
+
+// #8097: the encoding is injective across kinds and owner/callable splits:
+// the same owner, name, parameters and parameter give a different name for
+// a function, a record method, an interface member and an impl method, and
+// `Acc` + `scaled` never meets `Acc.scaled` or `Acc__scaled`.
+test "defaultThunkName distinguishes every kind and owner split (#8097)" {
+  val pr = parse("package P\n\nfunc k(self: in Acc, k: in Int = 1): Int = k\n")
+  match pr.file.items[0].kind {
+    case IFunc(fn) -> {
+      val none: List[String] = newList()
+      val acc: List[String] = newList()
+      acc.add("Acc")
+      val accI: List[String] = newList()
+      accI.add("Acc")
+      accI.add("I")
+      val accU: List[String] = newList()
+      accU.add("Acc__")
+      val names: List[String] = newList()
+      names.add(defaultThunkName(DTFunction, none, "Acc.scaled", fn.params, "k"))
+      names.add(defaultThunkName(DTFunction, none, "Acc__scaled", fn.params, "k"))
+      names.add(defaultThunkName(DTRecordMethod, acc, "scaled", fn.params, "k"))
+      names.add(defaultThunkName(DTRecordMethod, accU, "scaled", fn.params, "k"))
+      names.add(defaultThunkName(DTInterfaceMember, acc, "scaled", fn.params, "k"))
+      names.add(defaultThunkName(DTImplMethod, accI, "scaled", fn.params, "k"))
+      var i = 0
+      while i < names.count {
+        var j = i + 1
+        while j < names.count {
+          assertTrue(names[i] != names[j], "distinct: " + names[i] + " / " + names[j])
+          j = j + 1
+        }
+        i = i + 1
+      }
+    }
+    case _ -> assertTrue(false, "a function")
+  }
+}
+
+// #8097: a record method and a dot-named function of the same type, name
+// and parameters each render their own default's thunk, and a parameter
+// with no default renders none, even when the other callable's parameter
+// of that name has one.
+test "a record method and a same-named dot-named function keep their own defaults (#8097)" {
+  val both = "package P\n\npub record Acc {\n  n: Int\n  func scaled(self: in Acc, k: in Int = 3): Int {\n    self.n * k\n  }\n}\n\n" +
+    "pub func Acc.scaled(self: in Acc, k: in Int = 5): Int {\n  self.n + k\n}\n"
+  val c = buildContractFromFile(synthesizeDefaultThunks(parse(both).file), "1.0.0")
+  val r = unwrapDeclOrFail(findDeclByKind(c.decls, "record", "Acc"), "record Acc missing")
+  assertTrue(
+    Str.contains(r.repr, "k: in Int = P.__lyric_default__m1_3_Acc1_6_scaled2_r1_3_Accr1_3_Int1_k()"),
+    "the method's own thunk: " + r.repr
+  )
+  val f = unwrapDeclOrFail(findDeclByKind(c.decls, "func", "Acc.scaled"), "func Acc.scaled missing")
+  assertTrue(
+    Str.contains(f.repr, "k: in Int = P.__lyric_default__f0_2_3_Acc6_scaled2_r1_3_Accr1_3_Int1_k()"),
+    "the function's own thunk: " + f.repr
+  )
+  val oneSided = "package P\n\npub record Acc {\n  n: Int\n  func scaled(self: in Acc, k: in Int = 3): Int {\n    self.n * k\n  }\n}\n\n" +
+    "pub func Acc.scaled(self: in Acc, k: in Int): Int {\n  self.n + k\n}\n"
+  val c2 = buildContractFromFile(synthesizeDefaultThunks(parse(oneSided).file), "1.0.0")
+  val f2 = unwrapDeclOrFail(findDeclByKind(c2.decls, "func", "Acc.scaled"), "func Acc.scaled missing")
+  assertTrue(not Str.contains(f2.repr, "="), "no default rendered for a parameter that has none: " + f2.repr)
+  val r2 = unwrapDeclOrFail(findDeclByKind(c2.decls, "record", "Acc"), "record Acc missing")
+  assertTrue(
+    Str.contains(r2.repr, "k: in Int = P.__lyric_default__m1_3_Acc"),
+    "the method keeps its default: " + r2.repr
+  )
 }

@@ -5,6 +5,7 @@ package Lyric.Parser
 
 import Std.Core
 import Std.Collections
+import Std.String as Str
 import Lyric.Lexer
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1667,82 +1668,55 @@ func unpairableCallArgs(callee: in String, why: in String, paramNames: in List[S
   )
 }
 
-/// The name of the thunk a package compiles a parameter default of one of
-/// its public callables into (`Lyric.ContractElaborator.
-/// synthesizeDefaultThunks`, #7827): `owner` is "" for a free function, the
-/// type for a record method or interface member, `<Type>__<Interface>` for
-/// an `impl` method; `params` are the callable's parameters, receiver
-/// included.  A dot-named function's dots become `__`.  The callable's
-/// parameter types are part of the name (`paramTypesKey`), so two overloads
-/// of one name never share a thunk, and the thunk synthesiser and the
-/// contract renderer, which both compute it from the declaration, agree on
-/// it whatever order the overloads are declared in (#8085).
-pub func defaultThunkName(owner: in String, callable: in String, params: in List[Param], param: in String): String {
-  val ownerPart = if owner.length == 0 { "" } else { owner.replace(".", "__") + "__" }
-  defaultThunkPrefix() + ownerPart + callable.replace(".", "__") + "__" + paramTypesKey(params) + "__" + param
+/// The kind of callable a default thunk belongs to (`defaultThunkName`).
+pub union DefaultThunkKind {
+  /// A free function, or a dot-named one (`func T.m`): no owner.
+  case DTFunction
+  /// A method of a record or exposed record: the owner is the type.
+  case DTRecordMethod
+  /// An interface member: the owner is the interface.
+  case DTInterfaceMember
+  /// An `impl` method: the owner is the target type, then the interface.
+  case DTImplMethod
 }
 
-/// An identifier-safe spelling of a parameter list's types, in order:
-/// `(self: in R, x: in Int, f: in List[Int])` is `R_Int_List_of_Int_end`.
-pub func paramTypesKey(params: in List[Param]): String {
-  var acc = ""
-  var i = 0
-  while i < params.count {
-    acc = if i == 0 { typeExprKey(params[i].ty) } else { acc + "_" + typeExprKey(params[i].ty) }
-    i = i + 1
+/// The name of the thunk a package compiles the default of parameter
+/// `param` of one of its public callables into (`Lyric.ContractElaborator.
+/// synthesizeDefaultThunks`, #7827); `params` are the callable's parameters,
+/// receiver included.  The synthesiser and the contract renderer both
+/// compute it from the declaration, so it does not depend on declaration
+/// order.
+///
+/// The encoding is injective (#8085, #8097): after the prefix come a letter
+/// for the kind (`f`, `m`, `i`, `p`), the owner's names, the callable's name
+/// split at its dots, the parameter count and each parameter's type
+/// (`thunkTypeKey`), then the parameter's name.  Every name is written as
+/// its length, `_` and its text, every list as its count and `_` before its
+/// items, and every type starts with a letter for its form, so no two
+/// distinct callables, overloads or parameters share a thunk:
+/// `func scaled(self: in Acc, k: in Int = 3)` in `record Acc` is
+/// `__lyric_default__m1_3_Acc1_6_scaled2_r1_3_Accr1_3_Int1_k`, and the
+/// dot-named `func Acc.scaled` with the same parameters is
+/// `__lyric_default__f0_2_3_Acc6_scaled2_r1_3_Accr1_3_Int1_k`.
+pub func defaultThunkName(
+  kind: in DefaultThunkKind,
+  owner: in List[String],
+  callable: in String,
+  params: in List[Param],
+  param: in String,
+): String {
+  val kindKey = match kind {
+    case DTFunction -> "f"
+    case DTRecordMethod -> "m"
+    case DTInterfaceMember -> "i"
+    case DTImplMethod -> "p"
   }
-  if params.count == 0 {
-    "none"
-  } else {
-    acc
+  var acc = defaultThunkPrefix() + kindKey + thunkNamesKey(owner) + thunkNamesKey(dottedSegments(callable)) +
+    thunkCountKey(params.count)
+  for p in params {
+    acc = acc + thunkTypeKey(p.ty)
   }
-}
-
-/// An identifier-safe spelling of a type expression (`paramTypesKey`).
-pub func typeExprKey(te: in TypeExpr): String {
-  match te.kind {
-    case TRef(path) -> segmentsKey(path.segments)
-    case TGenericApp(head, args) -> {
-      var acc = segmentsKey(head.segments) + "_of"
-      for a in args {
-        acc = acc + "_" + (match a { case TAType(t) -> typeExprKey(t); case TAValue(_) -> "value" })
-      }
-      acc + "_end"
-    }
-    case TArray(_, elem) -> "array_of_" + typeExprKey(elem) + "_end"
-    case TSlice(elem) -> "slice_of_" + typeExprKey(elem) + "_end"
-    case TRefined(underlying, _) -> segmentsKey(underlying.segments) + "_range"
-    case TTuple(types) -> {
-      var acc = "tuple"
-      for t in types {
-        acc = acc + "_" + typeExprKey(t)
-      }
-      acc + "_end"
-    }
-    case TNullable(inner) -> typeExprKey(inner) + "_opt"
-    case TFunction(ps, r) -> {
-      var acc = "fn"
-      for p in ps {
-        acc = acc + "_" + typeExprKey(p)
-      }
-      acc + "_to_" + typeExprKey(r) + "_end"
-    }
-    case TUnit -> "Unit"
-    case TSelf -> "Self"
-    case TNever -> "Never"
-    case TParen(inner) -> typeExprKey(inner)
-    case TError -> "error"
-  }
-}
-
-func segmentsKey(segs: in List[String]): String {
-  var acc = ""
-  var i = 0
-  while i < segs.count {
-    acc = if i == 0 { segs[i] } else { acc + "_" + segs[i] }
-    i = i + 1
-  }
-  acc
+  acc + thunkNameKey(param)
 }
 
 /// The prefix every `defaultThunkName` starts with.
@@ -1750,10 +1724,69 @@ pub func defaultThunkPrefix(): String {
   "__lyric_default__"
 }
 
-/// The `defaultThunkName` owner of an `impl` method of interface `iface` on
-/// type `target` (both simple names).
-pub func implDefaultThunkOwner(target: in String, iface: in String): String {
-  target + "__" + iface
+// `name`'s dot-separated parts (`Acc.scaled` -> `Acc`, `scaled`).
+func dottedSegments(name: in String): List[String] {
+  val acc: List[String] = newList()
+  for part in Str.split(name, ".") {
+    acc.add(part)
+  }
+  acc
+}
+
+func thunkCountKey(n: in Int): String {
+  toString(n) + "_"
+}
+
+func thunkNameKey(name: in String): String {
+  thunkCountKey(name.length) + name
+}
+
+func thunkNamesKey(names: in List[String]): String {
+  var acc = thunkCountKey(names.count)
+  for n in names {
+    acc = acc + thunkNameKey(n)
+  }
+  acc
+}
+
+/// The `defaultThunkName` spelling of a type: a letter for its form, then
+/// its parts (`r` named, `g` generic application, `a` array, `s` slice, `n`
+/// range subtype, `t` tuple, `o` nullable, `c` function, `u` Unit, `e`
+/// Self, `x` Never, `q` an erroneous type; parentheses add nothing).
+pub func thunkTypeKey(te: in TypeExpr): String {
+  match te.kind {
+    case TRef(path) -> "r" + thunkNamesKey(path.segments)
+    case TGenericApp(head, args) -> {
+      var acc = "g" + thunkNamesKey(head.segments) + thunkCountKey(args.count)
+      for a in args {
+        acc = acc + (match a { case TAType(t) -> "t" + thunkTypeKey(t); case TAValue(_) -> "v" })
+      }
+      acc
+    }
+    case TArray(_, elem) -> "a" + thunkTypeKey(elem)
+    case TSlice(elem) -> "s" + thunkTypeKey(elem)
+    case TRefined(underlying, _) -> "n" + thunkNamesKey(underlying.segments)
+    case TTuple(types) -> {
+      var acc = "t" + thunkCountKey(types.count)
+      for t in types {
+        acc = acc + thunkTypeKey(t)
+      }
+      acc
+    }
+    case TNullable(inner) -> "o" + thunkTypeKey(inner)
+    case TFunction(ps, r) -> {
+      var acc = "c" + thunkCountKey(ps.count)
+      for p in ps {
+        acc = acc + thunkTypeKey(p)
+      }
+      acc + thunkTypeKey(r)
+    }
+    case TUnit -> "u"
+    case TSelf -> "e"
+    case TNever -> "x"
+    case TParen(inner) -> thunkTypeKey(inner)
+    case TError -> "q"
+  }
 }
 
 /// True when `e` calls a default thunk (`defaultThunkName`), bare or

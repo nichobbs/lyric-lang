@@ -3836,10 +3836,11 @@ record MethodHead {
 
 // T0162: two methods of one name in one record, interface or `impl` must
 // differ in their number of parameters, as two functions of one name in a
-// package must (T0001).  A call binds an overload by its parameter count:
-// every backend keys a method by name and parameter count, and so does the
-// thunk a parameter default compiles into for a restored consumer, so two
-// same-count overloads would silently share one (#8085).
+// package must (T0001).  This is a limit of this compiler's dispatch-key
+// scheme, not of the CLR or the JVM, which overload by full signature: the
+// MSIL, JVM and native backends key a method by its type, name and
+// parameter count, so two same-count overloads would silently bind to one
+// (#8085).
 func checkSameArityMethods(diag: in List[Diagnostic], owner: in String, heads: in List[MethodHead]): Unit {
   var j = 1
   while j < heads.count {
@@ -3856,7 +3857,8 @@ func checkSameArityMethods(diag: in List[Diagnostic], owner: in String, heads: i
         errorDiagnostic(
           "T0162",
           "method '" + heads[j].name + "' of '" + owner + "' has the same number of parameters (" + toString(heads[j].arity) +
-            ") as an earlier method of that name; methods of one name must differ in their number of parameters",
+            ") as an earlier method of that name; this compiler tells a type's methods of one name apart by their " +
+            "number of parameters, so overloads must differ in it",
           heads[j].span
         )
       )

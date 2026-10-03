@@ -1264,7 +1264,10 @@ an argument must be passed (**T0042** otherwise).
 
 Methods of one name declared in one record, interface or `impl` must differ
 in their number of parameters, as two functions of one name in a package
-must (**T0001**); two with the same count are **T0162** (#8085). When a type
+must (**T0001**); two with the same count are **T0162** (#8085). This is a
+limit of this compiler's method dispatch, not of .NET or the JVM: its MSIL,
+JVM and native backends identify a method by its type, name and parameter
+count. When a type
 has several methods of one name, a method call binds to the
 overload the type checker selects: among the overloads whose parameters
 accept the arguments, one taking exactly the arguments written is preferred
