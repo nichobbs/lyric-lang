@@ -2132,6 +2132,72 @@ func checkArrayFieldDerives(
   }
 }
 
+// A field of a value-generic type whose array length is one of the type's
+// value generic parameters (`record FixedVec[T, N: Nat] { items: array[N, T] }`)
+// is not supported yet (#8090): each length would need its own specialised
+// type, since a length cannot be a CLR or JVM type parameter.
+func checkValueGenericArrayFields(
+  diag: in List[Diagnostic],
+  typeName: in String,
+  generics: in Option[GenericParams],
+  fieldTypes: in List[TypeExpr],
+): Unit {
+  val vps = valueGenericNames(generics)
+  if vps.count == 0 {
+    return
+  }
+  for ft in fieldTypes {
+    reportValueGenericArrayLengths(diag, typeName, vps, ft)
+  }
+}
+
+func reportValueGenericArrayLengths(
+  diag: in List[Diagnostic],
+  typeName: in String,
+  vps: in List[String],
+  te: in TypeExpr,
+): Unit {
+  match te.kind {
+    case TArray(size, elem) -> {
+      match arrayLengthParam(size, vps) {
+        case Some(p) -> diag.add(
+          errorDiagnostic(
+            "T0160",
+            "an array whose length is the value generic parameter '" + p + "' of '" + typeName +
+              "' is not supported yet (#8090); a function's value generic parameter can size an array",
+            te.span
+          )
+        )
+        case None -> ()
+      }
+      reportValueGenericArrayLengths(diag, typeName, vps, elem)
+    }
+    case TSlice(elem) -> reportValueGenericArrayLengths(diag, typeName, vps, elem)
+    case TNullable(inner) -> reportValueGenericArrayLengths(diag, typeName, vps, inner)
+    case TParen(inner) -> reportValueGenericArrayLengths(diag, typeName, vps, inner)
+    case TTuple(tys) -> {
+      for t in tys {
+        reportValueGenericArrayLengths(diag, typeName, vps, t)
+      }
+    }
+    case TGenericApp(_, targs) -> {
+      for ta in targs {
+        match ta {
+          case TAType(t) -> reportValueGenericArrayLengths(diag, typeName, vps, t)
+          case TAValue(_) -> ()
+        }
+      }
+    }
+    case TFunction(ps, r) -> {
+      for t in ps {
+        reportValueGenericArrayLengths(diag, typeName, vps, t)
+      }
+      reportValueGenericArrayLengths(diag, typeName, vps, r)
+    }
+    case _ -> ()
+  }
+}
+
 func recordFieldTypeExprs(decl: in RecordDecl): List[TypeExpr] {
   val tys: List[TypeExpr] = newList()
   for m in decl.members {
@@ -3708,6 +3774,7 @@ func checkDeclTypeRefs(tbl: in SymbolTable, diag: in List[Diagnostic], items: in
           recordFieldTypeExprs(decl),
           decl.span
         )
+        checkValueGenericArrayFields(diag, decl.name, decl.generics, recordFieldTypeExprs(decl))
       }
       case IExposedRec(decl) -> {
         checkRecordDeclTypes(tbl, diag, decl)
@@ -3721,6 +3788,7 @@ func checkDeclTypeRefs(tbl: in SymbolTable, diag: in List[Diagnostic], items: in
           recordFieldTypeExprs(decl),
           decl.span
         )
+        checkValueGenericArrayFields(diag, decl.name, decl.generics, recordFieldTypeExprs(decl))
       }
       case IUnion(decl) -> {
         checkUnionDeclTypes(tbl, diag, decl)
@@ -3733,6 +3801,7 @@ func checkDeclTypeRefs(tbl: in SymbolTable, diag: in List[Diagnostic], items: in
           unionFieldTypeExprs(decl),
           decl.span
         )
+        checkValueGenericArrayFields(diag, decl.name, decl.generics, unionFieldTypeExprs(decl))
       }
       case IInterface(decl) -> checkInterfaceDeclTypes(tbl, diag, decl)
       case IOpaque(decl) -> checkOpaqueDeclTypes(tbl, diag, decl)

@@ -577,3 +577,53 @@ test "a protected type's array field with no default is zero filled" {
   assertEqualInt(t.hit(1), 2, "the field keeps its writes")
   assertEqualInt(t.hit(2), 1, "another element starts at zero")
 }
+
+func totalOf[N: Nat](a: in array[N, Int]): Int {
+  var t = 0
+  for x in a {
+    t = t + x
+  }
+  t
+}
+
+func doubledOf[N: Nat](a: in array[N, Int]): array[N, Int] {
+  var r = a
+  for i in 0 ..< N {
+    r[i] = a[i] * 2
+  }
+  r
+}
+
+func countOf[T, N: Nat](a: in array[N, T]): Int = a.length
+
+func sameArrays[N: Nat](a: in array[N, Int], b: in array[N, Int]): Bool = a == b
+
+func filledWith[N: Nat](v: in Int): array[N, Int] {
+  var r: array[N, Int]
+  for i in 0 ..< N {
+    r[i] = v + i
+  }
+  r
+}
+
+test "a value-generic length is bound by the argument's array" {
+  val a: array[3, Int] = [1, 2, 3]
+  val b: array[4, Int] = [5, 6, 7, 8]
+  assertEqualInt(totalOf(a), 6, "N bound to 3")
+  assertEqualInt(totalOf(b), 26, "N bound to 4")
+  assertEqualInt(totalOf[3](a), 6, "an explicit length")
+  val d = doubledOf(a)
+  assertEqualInt(d.length, 3, "the result has the bound length")
+  assertEqualInt(d[2], 6, "and the doubled elements")
+  assertEqualInt(totalOf(doubledOf(b)), 52, "a result passed on")
+  assertEqualInt(a[0], 1, "the argument is not written")
+  val names: array[2, String] = ["x", "y"]
+  assertEqualInt(countOf(names), 2, "a type and a value parameter together")
+  assertEqualInt(countOf(b), 4, "the same generic at another length")
+  assertTrue(sameArrays(d, doubledOf(a)), "== inside a value-generic body")
+  assertFalse(sameArrays(a, d), "and !=")
+  val f = filledWith[4](10)
+  assertEqualInt(f.length, 4, "a length no argument gives, given explicitly")
+  assertEqualInt(f[3], 13, "and the body ran at that length")
+  assertEqualInt(totalOf(filledWith[2](1)), 3, "its result passed on")
+}

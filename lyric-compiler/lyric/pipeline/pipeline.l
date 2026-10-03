@@ -708,6 +708,7 @@ pub func pipeCheckAndMono(
     lambdaTypes,
     tcRes.symbols.callResultTypes,
     tcRes.symbols.genericCallTypeArgSites,
+    tcRes.symbols.valueGenericCallSites,
     tcRes.symbols.lambdaParamTypeSites,
     noSpecSites
   )
@@ -743,6 +744,7 @@ pub func pipeCheckAndMono(
     lambdaTypes,
     tcRes.symbols.callResultTypes,
     tcRes.symbols.genericCallTypeArgSites,
+    tcRes.symbols.valueGenericCallSites,
     tcRes.symbols.lambdaParamTypeSites,
     specSites
   )

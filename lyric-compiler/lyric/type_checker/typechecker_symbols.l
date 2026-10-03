@@ -417,6 +417,13 @@ pub record SymbolTable {
   /// One entry per `buildEqShape` call in progress: the nesting across the
   /// record and array sites it builds, which restart their own depth.
   eqShapeNesting: List[Int]
+  /// One entry per value-generic function body being checked (D167 item 6):
+  /// an array whose length is a value generic parameter has no length there,
+  /// and each specialisation is checked again with the length bound.
+  valueGenericBodies: List[Int]
+  /// The value generic parameters a call binds from its array arguments'
+  /// lengths, keyed by the callee's span, for `Lyric.Mono`.
+  valueGenericCallSites: Map[String, Map[String, Int]]
   /// Every `a[i]` on an `array[N, T]` (D167), keyed by the index
   /// expression's span.
   arrayIndexSites: Map[String, ArrayIndexSite]
@@ -614,6 +621,8 @@ pub func newSymbolTable(): SymbolTable {
     arrayEqSites = newMap(),
     wrapEqSites = newMap(),
     eqShapeNesting = newList(),
+    valueGenericBodies = newList(),
+    valueGenericCallSites = newMap(),
     arrayIndexSites = newMap(),
     arrayLenSites = newMap(),
     arraySliceSites = newMap(),
