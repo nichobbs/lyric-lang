@@ -14,6 +14,12 @@ package Lyric.CliRestoreSelfTest
 import Std.Core
 import Std.Collections
 import Std.Testing
+import Std.String as Str
+import Std.File as File
+import Std.Path as Path
+import Std.Errors
+import Std.Environment as Environment
+import Std.Uuid
 import Lyric.Cli as Cli
 import Lyric.Manifest as Mf
 
@@ -143,4 +149,124 @@ test "extractMavenJarPaths: 'jarPath' occurring as a string VALUE (not a key) is
   val paths = Cli.extractMavenJarPaths(json)
   assertEqualInt(paths.count, 1, "extractMavenJarPaths: only the genuine jarPath key is matched")
   assertEqual(paths[0], "/real/one.jar", "extractMavenJarPaths: the real entry's path")
+}
+
+// ─── NPM restore (docs/35 section 9) ────────────────────────────────────
+func npmEntry(name: in String, version: in String): Mf.NpmEntry {
+  Mf.NpmEntry(name = name, version = version, ident = Mf.npmPackageIdent(name))
+}
+
+func npmSection(entries: in List[Mf.NpmEntry], registry: in String): Mf.NpmSection {
+  Mf.NpmSection(entries = entries, registry = registry)
+}
+
+test "buildNpmPackageJson: one dependency row per entry, escaped" {
+  val es: List[Mf.NpmEntry] = newList()
+  es.add(npmEntry("node-fetch", "^3"))
+  es.add(npmEntry("@aws-sdk/client-s3", "^3.600"))
+  val json = Cli.buildNpmPackageJson(npmSection(es, ""))
+  assertTrue(Str.contains(json, "\"private\": true"), "package.json is private")
+  assertTrue(Str.contains(json, "\"node-fetch\": \"^3\",\n"), "first row with trailing comma")
+  assertTrue(Str.contains(json, "\"@aws-sdk/client-s3\": \"^3.600\"\n"), "last row without a comma")
+}
+
+test "npmInstallArgs: scripts off, registry only when set" {
+  val plain = Cli.npmInstallArgs("/x/npm", "")
+  assertEqualInt(plain.count, 6, "no registry flag by default")
+  assertEqual(plain[1], "--prefix", "prefix flag")
+  assertEqual(plain[2], "/x/npm", "install dir")
+  assertEqual(plain[3], "--ignore-scripts", "install hooks never run during restore")
+  val custom = Cli.npmInstallArgs("/x/npm", "https://npm.example.com/")
+  assertEqualInt(custom.count, 8, "registry adds two arguments")
+  assertEqual(custom[7], "https://npm.example.com/", "registry value")
+}
+
+test "npmShimFileName: scope folded into the name, no path separators" {
+  assertEqual(Cli.npmShimFileName("node-fetch"), "node-fetch.l", "plain name")
+  assertEqual(Cli.npmShimFileName("@aws-sdk/client-s3"), "aws-sdk__client-s3.l", "scoped name")
+}
+
+test "npmShimStub / npmShimProblem: scaffold satisfies its own check, stripped header is B0043" {
+  val e = npmEntry("node-fetch", "^3")
+  val stub = Cli.npmShimStub(e)
+  assertEqual(stub, "@axiom(\"from npm node-fetch ^3\")\npackage NodeFetch\n", "stub text")
+  assertEqual(Cli.npmShimProblem(stub, e), "", "the scaffold is accepted")
+  assertEqual(Cli.npmShimProblem(stub + "// edited\n", e), "", "later edits are fine")
+  val stripped = Cli.npmShimProblem("package NodeFetch\n", e)
+  assertTrue(Str.startsWith(stripped, "B0043"), "a shim without the header is B0043")
+  assertTrue(
+    Str.startsWith(Cli.npmShimProblem("@axiom(\"from npm other 1\")\npackage NodeFetch\n", e), "B0043"),
+    "a header naming a different package is B0043"
+  )
+}
+
+func npmTempDir(): String {
+  val base = Environment.getVarOrDefault(
+    "TMPDIR",
+    Environment.getVarOrDefault("TEMP", Environment.getVarOrDefault("TMP", "/tmp"))
+  )
+  val root = Path.join(base, "lyric-npmrestore-" + uuidToString(newUuid()))
+  match File.createDir(root) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create temp dir " + root + ": " + IOError.message(e))
+  }
+  root
+}
+
+func putFile(path: in String, text: in String): Unit {
+  match File.writeText(path, text) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write " + path + ": " + IOError.message(e))
+  }
+}
+
+func npmManifest(dir: in String, deps: in String): Mf.Manifest {
+  val text = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[npm]\n" + deps
+  match Mf.parseManifest(text, Path.join(dir, "lyric.toml")) {
+    case Ok(m) -> m
+    case Err(e) -> panic("manifest: " + Mf.ManifestError.message(e))
+  }
+}
+
+test "restoreNpmPackages: installs a package, scaffolds its shim, refuses a stripped shim, reports B0040" {
+  val dir = npmTempDir()
+  val pkgDir = Path.join(dir, "fakepkg")
+  match File.createDir(pkgDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create " + pkgDir + ": " + IOError.message(e))
+  }
+  putFile(
+    Path.join(pkgDir, "package.json"),
+    "{ \"name\": \"fakepkg\", \"version\": \"1.0.0\", \"main\": \"index.js\" }\n"
+  )
+  putFile(Path.join(pkgDir, "index.js"), "module.exports = {}\n")
+
+  val m = npmManifest(dir, "\"fakepkg\" = \"file:" + pkgDir + "\"\n")
+  assertEqualInt(Cli.restoreNpmPackages(m, dir), 0, "first restore succeeds")
+  val installed = Path.join(Path.join(Path.join(Path.join(dir, "target"), "npm"), "node_modules"), "fakepkg")
+  assertTrue(File.fileExists(Path.join(installed, "package.json")), "package is in node_modules")
+  val shim = Path.join(Path.join(dir, "_extern_npm"), "fakepkg.l")
+  assertTrue(File.fileExists(shim), "shim scaffold written")
+  match File.readText(shim) {
+    case Ok(text) -> assertTrue(Str.contains(text, "package Fakepkg"), "scaffold names the package")
+    case Err(_) -> assertTrue(false, "cannot read the shim")
+  }
+
+  putFile(shim, "@axiom(\"from npm fakepkg file:" + pkgDir + "\")\npackage Fakepkg\n// hand-authored\n")
+  assertEqualInt(Cli.restoreNpmPackages(m, dir), 0, "a hand-authored shim is kept")
+  match File.readText(shim) {
+    case Ok(text) -> assertTrue(Str.contains(text, "// hand-authored"), "the edit survived a second restore")
+    case Err(_) -> assertTrue(false, "cannot read the shim")
+  }
+
+  putFile(shim, "package Fakepkg\n")
+  assertTrue(Cli.restoreNpmPackages(m, dir) != 0, "B0043: a shim without its @axiom header is refused")
+
+  val missing = npmManifest(dir, "\"nosuchpkg\" = \"file:" + Path.join(dir, "absent") + "\"\n")
+  assertTrue(Cli.restoreNpmPackages(missing, dir) != 0, "B0040: a package npm cannot install fails the restore")
+
+  match File.deleteDirRecursive(dir) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
 }

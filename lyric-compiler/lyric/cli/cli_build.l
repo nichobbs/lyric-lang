@@ -1123,10 +1123,21 @@ pub func buildOneNativeWithFeatures(
   )
 }
 
+/// The component's WIT package version: the manifest's `[wasm] version` when
+/// it names one, else the project's `[package]` version ("" for a single file,
+/// which the bridge turns into `0.1.0`).
+pub func effectiveWasmVersion(packageVersion: in String, manifestVersion: in String): String {
+  if manifestVersion.length > 0 {
+    manifestVersion
+  } else {
+    packageVersion
+  }
+}
+
 /// The shape argument the native bridge parses: the shape name plus the
 /// `[wasm]` manifest options (`component;version=1.2.0;world=w;stack=131072`),
 /// or "" for an ordinary native build.
-func shapeSpec(shape: in String, version: in String, world: in String, stack: in Int): String {
+pub func shapeSpec(shape: in String, version: in String, world: in String, stack: in Int): String {
   if shape.length == 0 {
     return ""
   }
@@ -3010,9 +3021,7 @@ pub func buildProjectFromManifest(
         for lib in nc.extraLibs {
           effLibs.add(lib)
         }
-        if nc.wasmVersion.length > 0 {
-          wasmVersion = nc.wasmVersion
-        }
+        wasmVersion = effectiveWasmVersion(projReq.packageVersion, nc.wasmVersion)
         wasmWorld = nc.wasmWorld
         wasmStack = nc.wasmStack
       }
