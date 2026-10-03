@@ -10606,6 +10606,13 @@ func lowerExprExpecting(ctx: in Ctx, insns: in List[NInsn], e: in Expr, want: in
       return coerceUnlessDiverged(ctx, insns, lowerBlockValueW(ctx, insns, block, w3), want, Some(value = e.span))
     }
     case EParen(inner) -> return lowerExprExpecting(ctx, insns, inner, want)
+    case ETuple(exprs) -> {
+      match tupleConstructForExpected(ctx, insns, exprs, want) {
+        case Some(v) -> return v
+        case None -> {
+        }
+      }
+    }
     case ECall(_, _) -> {
       ctx.pendingCallRetWant.clear()
       ctx.pendingCallRetWant.add(want)
@@ -10617,6 +10624,28 @@ func lowerExprExpecting(ctx: in Ctx, insns: in List[NInsn], e: in Expr, want: in
     }
   }
   coerceUnlessDiverged(ctx, insns, lowerExpr(ctx, insns, e), want, Some(value = e.span))
+}
+
+/// A tuple literal against an expected tuple type of the same arity: each
+/// component is lowered against its expected component type, so a `None`,
+/// `Some(...)`, `[]` or lambda component gets its type from the tuple type
+/// (#7824) and the tuple is built at exactly `want`'s layout.  Lowering the
+/// components bare would leave a payload-free case with no type to take.
+func tupleConstructForExpected(ctx: in Ctx, insns: in List[NInsn], exprs: in List[Expr], want: in NType): Option[NVal] {
+  val ri = match recInfoOfType(ctx, want) { case Some(r) -> r; case None -> return None }
+  if not Str.startsWith(ri.irName, "__tuple<") or ri.fieldTys.count != exprs.count {
+    return None
+  }
+  val vals: List[NVal] = newList()
+  var i = 0
+  while i < exprs.count {
+    match ri.fieldTys[i] {
+      case NVoid -> vals.add(lowerExpr(ctx, insns, exprs[i]))
+      case fieldTy -> vals.add(lowerExprExpecting(ctx, insns, exprs[i], fieldTy))
+    }
+    i = i + 1
+  }
+  Some(value = lowerRecordConstructVals(ctx, insns, ri, vals))
 }
 
 /// The (caseName, args) of `e` when it is a union-case construction

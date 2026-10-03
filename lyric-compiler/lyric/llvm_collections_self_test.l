@@ -462,3 +462,59 @@ test "slice[String].append returns a fresh extended slice, source untouched (ASa
   val r = compileAndRunAsan(src)
   assertEqualInt(r.exitCode, 73, "append: extended.length=3, xs.length=2 (untouched), extended[2]=\"ccc\".length=3")
 }
+
+// A tuple literal takes each component's type from the expected tuple type
+// (#7824): `None` in a tuple element of an annotated list, a tuple return
+// value or a tuple argument has no type of its own.  The String payloads make
+// the ASan run check the tuple and list ownership of each component.
+func tuplePairDecls(): String {
+  optionDecl() + "func pairLen(p: in (Option[String], Int)): Int {\n" + "  match p {\n" +
+    "    case (Some(s), w) -> s.length + w\n" +
+    "    case (None, w) -> w\n" +
+    "  }\n" +
+    "}\n"
+}
+
+test "a list literal of tuples holding None against an annotated slice and List (ASan)" {
+  val src = "package T\n" + tuplePairDecls() + "func main(): Int {\n" +
+    "  val xs: slice[(Option[String], Int)] = [(None, 1), (Some(\"ab\"), 3)]\n" +
+    "  val ys: List[(Option[String], Int)] = [(None, 10)]\n" +
+    "  ys.add((Some(\"abc\"), 20))\n" +
+    "  var t = 0\n" +
+    "  for p in xs {\n" +
+    "    t = t + pairLen(p)\n" +
+    "  }\n" +
+    "  for q in ys {\n" +
+    "    t = t + pairLen(q)\n" +
+    "  }\n" +
+    "  t\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 39, "1 + (2+3) + 10 + (3+20)")
+}
+
+test "a tuple holding None as a return value, argument, binding and nested tuple (ASan)" {
+  val src = "package T\n" + tuplePairDecls() + "func noneFirst(w: in Int): (Option[String], Int) {\n" + "  (None, w)\n" +
+    "}\n" +
+    "func pick(useSome: in Bool): (Option[String], Int) {\n" +
+    "  if useSome {\n" +
+    "    return (Some(\"xyz\"), 1)\n" +
+    "  }\n" +
+    "  (None, 2)\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val a = pairLen(noneFirst(4)) + pairLen(pick(true)) + pairLen(pick(false))\n" +
+    "  val b = pairLen((None, 5))\n" +
+    "  var c: (Option[String], Int) = (Some(\"q\"), 0)\n" +
+    "  c = (None, 6)\n" +
+    "  val n: ((Option[String], Int), Option[String]) = ((None, 7), None)\n" +
+    "  val (inner, tag) = n\n" +
+    "  val d = match tag {\n" +
+    "    case Some(s) -> s.length\n" +
+    "    case None -> 8\n" +
+    "  }\n" +
+    "  a + b + pairLen(c) + pairLen(inner) + d\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 36, "4 + (3+1) + 2 + 5 + 6 + 7 + 8")
+}
