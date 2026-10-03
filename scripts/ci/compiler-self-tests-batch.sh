@@ -127,6 +127,7 @@ for t in \
   lyric-compiler/lyric/erased_slot_widen_self_test.l \
   lyric-compiler/lyric/list_insert_self_test.l \
   lyric-compiler/lyric/list_literal_join_self_test.l \
+  lyric-compiler/lyric/tuple_expected_type_self_test.l \
   lyric-compiler/lyric/await_hoist_typed_self_test.l \
   lyric-compiler/lyric/expected_type_propagation_self_test.l \
   lyric-compiler/lyric/generic_ctor_open_arg_self_test.l \
