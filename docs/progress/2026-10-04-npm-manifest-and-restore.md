@@ -6,8 +6,8 @@
 - `[npm]` / `[npm.options]` parsed and validated in `Lyric.Manifest`, including the
   package-identifier mapping; colliding identifiers are rejected (Q-JS-004).
 - `lyric restore` installs into `target/npm/node_modules/` with install scripts off
-  (`B0040`) and scaffolds `_extern_npm/` shims it never overwrites (`B0043`).
+  (`B0060`) and scaffolds `_extern_npm/` shims it never overwrites (`B0063`).
 - Wrongly typed `[wasm]` values are now errors (review suggestion on the `[wasm]` table).
 - Tests: manifest parsing and rejections; the restore helpers; an end-to-end restore
-  of a local `file:` package through real `npm`, covering scaffold, keep, `B0043` and
-  `B0040`.
+  of a local `file:` package through real `npm`, covering scaffold, keep, `B0063` and
+  `B0060`.

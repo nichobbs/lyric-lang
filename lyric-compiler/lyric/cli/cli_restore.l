@@ -1143,24 +1143,24 @@ pub func npmShimStub(e: in Mf.NpmEntry): String {
   npmShimAxiom(e) + "\npackage " + e.ident + "\n"
 }
 
-/// `""` when an existing shim keeps its `@axiom("from npm <name> ...")` header
-/// (B0043 otherwise): the annotation is what places the file in the
+/// `""` when an existing shim still opens with its `@axiom("from npm <name> ...")` header
+/// (B0063 otherwise): the annotation is what places the file in the
 /// `_kernel` trust tier, so a shim that lost it must not be treated as
 /// restored.
 pub func npmShimProblem(text: in String, e: in Mf.NpmEntry): String {
   val prefix = "@axiom(\"from npm " + e.name + " "
-  if Str.contains(text, prefix) {
+  if Str.startsWith(Str.trimStart(text), prefix) {
     ""
   } else {
-    "B0043: " + Mf.npmShimFileName(e.name) + " lost its @axiom(\"from npm " + e.name +
+    "B0063: " + Mf.npmShimFileName(e.name) + " lost its @axiom(\"from npm " + e.name +
       " ...\") header; restore will not use it as the shim for this package"
   }
 }
 
 /// Install the manifest's `[npm]` packages into `target/npm/node_modules/`
 /// and scaffold a missing shim per package under `_extern_npm/`.  A failed
-/// install or a package absent from `node_modules` afterwards is B0040; a
-/// hand-edited shim that lost its `@axiom` header is B0043.
+/// install or a package absent from `node_modules` afterwards is B0060; a
+/// hand-edited shim that lost its `@axiom` header is B0063.
 pub func restoreNpmPackages(manifest: in Mf.Manifest, mfDir: in String): Int {
   val npm = match manifest.npm { case Some(n) -> n; case None -> return 0 }
   if npm.entries.count == 0 {
@@ -1189,11 +1189,11 @@ pub func restoreNpmPackages(manifest: in Mf.Manifest, mfDir: in String): Int {
     600000
   )
   if captureResult.timedOut {
-    printErr("restore: B0040: npm install timed out after 600 seconds")
+    printErr("restore: B0060: npm install timed out after 600 seconds")
     return 1
   }
   if captureResult.exitCode != 0 {
-    printErr("restore: B0040: npm install failed (exit " + toString(captureResult.exitCode) + ")")
+    printErr("restore: B0060: npm install failed (exit " + toString(captureResult.exitCode) + ")")
     if captureResult.stderr.length > 0 {
       printErr(captureResult.stderr)
     }
@@ -1206,7 +1206,7 @@ pub func restoreNpmPackages(manifest: in Mf.Manifest, mfDir: in String): Int {
     i += 1
     val installed = Path.join(Path.join(Path.join(installDir, "node_modules"), e.name), "package.json")
     if not File.fileExists(installed) {
-      printErr("restore: B0040: npm install finished but \"" + e.name + "\" is not in node_modules")
+      printErr("restore: B0060: npm install finished but \"" + e.name + "\" is not in node_modules")
       return 1
     }
     val shimPath = Path.join(shimDir, Mf.npmShimFileName(e.name))

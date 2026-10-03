@@ -186,17 +186,21 @@ test "npmShimFileName: scope folded into the name, no path separators" {
   assertEqual(Mf.npmShimFileName("@aws-sdk/client-s3"), "aws-sdk__client-s3.l", "scoped name")
 }
 
-test "npmShimStub / npmShimProblem: scaffold satisfies its own check, stripped header is B0043" {
+test "npmShimStub / npmShimProblem: scaffold satisfies its own check, stripped header is B0063" {
   val e = npmEntry("node-fetch", "^3")
   val stub = Cli.npmShimStub(e)
   assertEqual(stub, "@axiom(\"from npm node-fetch ^3\")\npackage NodeFetch\n", "stub text")
   assertEqual(Cli.npmShimProblem(stub, e), "", "the scaffold is accepted")
   assertEqual(Cli.npmShimProblem(stub + "// edited\n", e), "", "later edits are fine")
-  val stripped = Cli.npmShimProblem("package NodeFetch\n", e)
-  assertTrue(Str.startsWith(stripped, "B0043"), "a shim without the header is B0043")
   assertTrue(
-    Str.startsWith(Cli.npmShimProblem("@axiom(\"from npm other 1\")\npackage NodeFetch\n", e), "B0043"),
-    "a header naming a different package is B0043"
+    Str.startsWith(Cli.npmShimProblem("package NodeFetch\n// @axiom(\"from npm node-fetch ^3\")\n", e), "B0063"),
+    "a header moved into a comment is B0063"
+  )
+  val stripped = Cli.npmShimProblem("package NodeFetch\n", e)
+  assertTrue(Str.startsWith(stripped, "B0063"), "a shim without the header is B0063")
+  assertTrue(
+    Str.startsWith(Cli.npmShimProblem("@axiom(\"from npm other 1\")\npackage NodeFetch\n", e), "B0063"),
+    "a header naming a different package is B0063"
   )
 }
 
@@ -228,7 +232,7 @@ func npmManifest(dir: in String, deps: in String): Mf.Manifest {
   }
 }
 
-test "restoreNpmPackages: installs a package, scaffolds its shim, refuses a stripped shim, reports B0040" {
+test "restoreNpmPackages: installs a package, scaffolds its shim, refuses a stripped shim, reports B0060" {
   val dir = npmTempDir()
   val pkgDir = Path.join(dir, "fakepkg")
   match File.createDir(pkgDir) {
@@ -260,10 +264,10 @@ test "restoreNpmPackages: installs a package, scaffolds its shim, refuses a stri
   }
 
   putFile(shim, "package Fakepkg\n")
-  assertTrue(Cli.restoreNpmPackages(m, dir) != 0, "B0043: a shim without its @axiom header is refused")
+  assertTrue(Cli.restoreNpmPackages(m, dir) != 0, "B0063: a shim without its @axiom header is refused")
 
   val missing = npmManifest(dir, "\"nosuchpkg\" = \"file:" + Path.join(dir, "absent") + "\"\n")
-  assertTrue(Cli.restoreNpmPackages(missing, dir) != 0, "B0040: a package npm cannot install fails the restore")
+  assertTrue(Cli.restoreNpmPackages(missing, dir) != 0, "B0060: a package npm cannot install fails the restore")
 
   match File.deleteDirRecursive(dir) {
     case Ok(_) -> ()

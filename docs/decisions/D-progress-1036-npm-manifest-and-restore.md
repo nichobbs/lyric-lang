@@ -24,12 +24,12 @@ restoring them. The extern form that calls them is the next slice.
    `npm install --prefix target/npm --ignore-scripts --no-audit --no-fund`
    (plus `--registry`). Install scripts never run: restoring a dependency must not
    execute its code. A non-zero exit, a timeout, or a declared package missing from
-   `node_modules` is `B0040`. `pnpm`/`yarn` selection is not implemented; `npm` only.
+   `node_modules` is `B0060`. `pnpm`/`yarn` selection is not implemented; `npm` only.
 5. **Shims.** docs/35 said restore "generates" shims and also that they are hand
    authored. Resolved as: restore scaffolds a missing `_extern_npm/<name>.l` with the
    `@axiom("from npm <name> <range>")` header and the package declaration, and never
    overwrites an existing file. File names drop `@` and write `/` as `__`. A shim
-   that lost its header is `B0043` (the annotation is what puts it in the kernel
+   that lost its header is `B0063` (the annotation is what puts it in the kernel
    trust tier).
 6. **Auto-restore.** `lyric build`'s auto-restore does not notice `[npm]` edits,
    like `[nuget]`/`[maven]`.
@@ -37,5 +37,12 @@ restoring them. The extern form that calls them is the next slice.
 ## Not in this slice
 
 The `@externTarget("npm", package:, symbol:)` form, its lowering to wasm imports in
-the module shape and WIT imports in the component shape, and the build-time `B0041`
-and `B0042` checks. `B0041` is only meaningful once a build consumes the shims.
+the module shape and WIT imports in the component shape, and the build-time `B0061`
+and `B0062` checks. `B0061` is only meaningful once a build consumes the shims.
+
+## Diagnostic codes
+
+docs/35 sketched `B0040`-`B0043` for these checks, but `docs/22` section 9 already ships
+those four for SDK root discovery. The NPM diagnostics are renumbered `B0060`-`B0063`
+(install failure, no shim, missing symbol, stripped shim header); `B0061` and `B0062`
+stay reserved for the build-time checks.

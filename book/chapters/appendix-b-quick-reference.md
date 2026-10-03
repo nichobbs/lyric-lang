@@ -1594,14 +1594,14 @@ The first-party UI generators (D151) report their own codes under `X0005`:
 | `V0033` | error | A proof obligation cannot be translated faithfully — an unsigned (`UInt`/`ULong`) operand beside a signed variable, a negative or too-wide constant used as an unsigned value, an unsigned negation, or a result range bound that is not a fitting literal. Add an explicit conversion or write the bound as a literal of the base type |
 | `V0034` | error | (mode checker) `spawn` outside a `scope { }`. A spawned task must not outlive its scope, so every `spawn` sits lexically inside one in the same function or lambda body (D165, docs/68 §4). Wrap the `spawn` and its `await` in `scope { ... }` |
 
-### NPM restore diagnostics (B004x)
+### NPM restore diagnostics (B006x)
 
 | Code | Meaning |
 |---|---|
-| `B0040` | `lyric restore` could not install the `[npm]` packages: `npm install` exited non-zero or timed out, or a declared package is missing from `target/npm/node_modules/` afterwards. |
-| `B0043` | A shim in `_extern_npm/` lost its `@axiom("from npm <name> ...")` header; restore will not treat it as the shim for that package. |
+| `B0060` | `lyric restore` could not install the `[npm]` packages: `npm install` exited non-zero or timed out, or a declared package is missing from `target/npm/node_modules/` afterwards. |
+| `B0063` | A shim in `_extern_npm/` lost its `@axiom("from npm <name> ...")` header; restore will not treat it as the shim for that package. |
 
-`B0041` (declared in `[npm]` with no shim) and `B0042` (a shim names a symbol the installed package lacks) are reserved for the build-time check, which is not wired up yet.
+`B0061` (declared in `[npm]` with no shim) and `B0062` (a shim names a symbol the installed package lacks) are reserved for the build-time check, which is not wired up yet.
 
 ### Bench (B-series)
 
