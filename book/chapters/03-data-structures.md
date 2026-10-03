@@ -318,6 +318,33 @@ func bump(a: inout array[4, Int], i: in Int) {
 
 On `--target native` an array of by-value elements (numbers, enums, records with no `var` field, other such arrays) is stored inline with no allocation, so a `Vec3` table or a 4 by 4 matrix inside a by-value record costs nothing to copy beyond its bytes. `--target dotnet` and `--target jvm` store an array as a `List`.
 
+A function can take an array of any length by making the length a value generic parameter. Each call binds `N` to its argument's length, and `N` is an ordinary `Int` constant in the body:
+
+```lyric
+func total[N: Nat](a: in array[N, Int]): Int {
+  var t = 0
+  for i in 0 ..< N {
+    t = t + a[i]
+  }
+  t
+}
+
+func doubled[N: Nat](a: in array[N, Int]): array[N, Int] {
+  var r = a
+  for i in 0 ..< N {
+    r[i] = a[i] * 2
+  }
+  r
+}
+
+val small: array[3, Int] = [1, 2, 3]
+val big: array[4, Int] = [5, 6, 7, 8]
+total(small)          // N = 3
+total(doubled(big))   // N = 4; doubled returns an array[4, Int]
+```
+
+Each length is compiled separately, exactly as if you had written it out, so bounds checks, copies and `==` behave as they do for a literal length. Two arguments that disagree about `N` are a compile-time error (T0043). A record cannot yet size an array field with its own value generic parameter (#8090).
+
 **Slices** are dynamically sized, heap-allocated sequences. They are reference types backed by .NET's `List<T>`.
 
 ```lyric

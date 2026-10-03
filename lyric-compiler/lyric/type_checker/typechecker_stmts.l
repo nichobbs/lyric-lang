@@ -697,7 +697,9 @@ pub func checkStatement(
             case Some(site) -> if not tbl.arrayForSites.containsKey(recordCopySiteKey(iter.span)) {
               tbl.arrayForSites.add(recordCopySiteKey(iter.span), site)
             }
-            case None -> if isArrayType(iterType) { diag.add(arrayUnknownLength(iterType, iter.span)) }
+            case None -> if isArrayType(iterType) and not inValueGenericBody(tbl) {
+              diag.add(arrayUnknownLength(iterType, iter.span))
+            }
           }
           if forIterIsGeneratorCall(tbl, iter) {
             iterType
@@ -1649,6 +1651,42 @@ pub func checkFunctionBody(
   selfChecked: in Bool,
   selfType: in Type,
 ): Unit {
+  val valueGeneric = declHasValueGenerics(fn.generics)
+  if valueGeneric {
+    tbl.valueGenericBodies.add(1)
+  }
+  checkFunctionBodyAt(tbl, sigs, diag, fn, sig, extraLocals, selfFieldLocals, selfChecked, selfType)
+  if valueGeneric {
+    tbl.valueGenericBodies.removeAt(tbl.valueGenericBodies.count - 1)
+  }
+}
+
+func declHasValueGenerics(generics: in Option[GenericParams]): Bool {
+  match generics {
+    case Some(gp) -> {
+      for p in gp.params {
+        match p {
+          case GPValue(_, _, _) -> return true
+          case _ -> ()
+        }
+      }
+      false
+    }
+    case None -> false
+  }
+}
+
+func checkFunctionBodyAt(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  fn: in FunctionDecl,
+  sig: in ResolvedSignature,
+  extraLocals: in List[LocalBinding],
+  selfFieldLocals: in List[LocalBinding],
+  selfChecked: in Bool,
+  selfType: in Type,
+): Unit {
   if hasExternTargetAnnotation(fn.annotations) {
     // F0002: both @externStatic and @externInstance on one extern.
     if hasConflictingExternHints(fn.annotations) {
@@ -1708,6 +1746,11 @@ pub func checkFunctionBody(
   val declaredReturnTyStr = match fn.ret {
     case Some(rte) -> renderTypeExpr(rte, sig.returnTy)
     case None -> renderType(sig.returnTy)
+  }
+  // A value generic parameter (`N: Nat`) is an `Int` constant in the body;
+  // each specialisation substitutes its bound value (D167 item 6).
+  for vp in valueGenericNames(fn.generics) {
+    scopeAdd(sc, LocalBinding(name = vp, ty = TyPrim(pt = PtInt), isMutable = false))
   }
   var i = 0
   while i < sig.params.count {

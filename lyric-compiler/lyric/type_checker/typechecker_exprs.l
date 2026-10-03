@@ -3868,7 +3868,7 @@ func checkRecordCopy(
         // An array field carried over by `.copy` is copied (D167), so its
         // type must be spelled, a type variable by name.
         val arrTe = typeExprForRefWithVars(tbl, fields[ni].ty, e.span)
-        if (match arrTe { case Some(_) -> false; case None -> true }) {
+        if (match arrTe { case Some(_) -> false; case None -> true }) and not inValueGenericBody(tbl) {
           diag.add(arrayUnknownLength(fields[ni].ty, e.span))
         }
         fieldTes.add(arrTe)
@@ -10474,6 +10474,71 @@ func sigCallTypeArgsInOrder(
   inferGenericArgsDeep(sig.generics, paramTys, slotTys)
 }
 
+// The value generic parameters of the value-generic function `fn` names.
+func valueGenericParamsOf(tbl: in SymbolTable, fn: in Expr, argCount: in Int): List[String] {
+  match valueGenericCallee(tbl, fn, argCount) {
+    case Some(d) -> valueGenericNames(d.generics)
+    case None -> newList()
+  }
+}
+
+// A call to a value-generic function binds each value generic parameter
+// that sizes an array parameter to the length of the array argument (D167
+// item 6), records the binding for `Lyric.Mono`, and gives the result type
+// those lengths.  Two arguments binding one parameter to different lengths is
+// T0043.
+func bindValueGenericCall(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  fn: in Expr,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  instRet: in Type,
+): Type {
+  val decl = match valueGenericCallee(tbl, fn, args.count) { case Some(d) -> d; case None -> return instRet }
+  val vps = valueGenericNames(decl.generics)
+  val paramNames: List[String] = newList()
+  for p in decl.params {
+    paramNames.add(p.name)
+  }
+  val order = argIndicesInParamOrder(args, paramNames)
+  val bound: Map[String, Int] = newMap()
+  val conflicts: List[String] = newList()
+  var i = 0
+  while i < decl.params.count and i < order.count {
+    val ai = order[i]
+    if ai >= 0 and ai < argTypes.count {
+      bindArrayLengths(decl.params[i].ty, argTypes[ai], vps, bound, conflicts)
+    }
+    i = i + 1
+  }
+  for c in conflicts {
+    diag.add(
+      errorDiagnostic(
+        "T0043",
+        "the arguments of this call give the length '" + c + "' of '" + decl.name +
+          "' different values: every array sized by '" +
+          c +
+          "' must have the same length",
+        fn.span
+      )
+    )
+  }
+  if conflicts.count > 0 or bound.count != vps.count {
+    return instRet
+  }
+  if not isNoSourceSpan(fn.span) {
+    val key = recordCopySiteKey(fn.span)
+    if not tbl.valueGenericCallSites.containsKey(key) {
+      tbl.valueGenericCallSites.add(key, bound)
+    }
+  }
+  match decl.ret {
+    case Some(rte) -> withBoundArrayLengths(rte, instRet, vps, bound)
+    case None -> instRet
+  }
+}
+
 // Record the type arguments the call to the generic function `sig` whose
 // callee is at `sp` binds (see `SymbolTable.genericCallTypeArgSites`, #7865).  Only a call whose
 // every type argument is closed and has a source spelling here is recorded;
@@ -10482,6 +10547,7 @@ func sigCallTypeArgsInOrder(
 func recordGenericCallTypeArgs(
   tbl: in SymbolTable,
   sig: in ResolvedSignature,
+  valueParams: in List[String],
   args: in List[CallArg],
   argTypes: in List[Type],
   sp: in Span,
@@ -10499,8 +10565,23 @@ func recordGenericCallTypeArgs(
     pi = pi + 1
   }
   val noRecv: Option[Type] = None
-  val targs = sigCallTypeArgsInOrder(sig, noRecv, argIndicesInParamOrder(args, paramNames), argTypes)
-  if targs.count != sig.generics.count {
+  val allTargs = sigCallTypeArgsInOrder(sig, noRecv, argIndicesInParamOrder(args, paramNames), argTypes)
+  if allTargs.count != sig.generics.count {
+    return
+  }
+  // A value generic parameter is bound by `bindValueGenericCall`, not here;
+  // only the type parameters are recorded.
+  val typeParamNames: List[String] = newList()
+  val targs: List[Type] = newList()
+  var gi = 0
+  while gi < sig.generics.count {
+    if not valueParams.contains(sig.generics[gi]) {
+      typeParamNames.add(sig.generics[gi])
+      targs.add(allTargs[gi])
+    }
+    gi = gi + 1
+  }
+  if targs.count == 0 {
     return
   }
   match typeExprsForRef(tbl, targs, sp) {
@@ -10529,7 +10610,7 @@ func recordGenericCallTypeArgs(
         case None -> tbl.genericCallTypeArgSites.add(
           key,
           GenericCallTypeArgsSite(
-            typeParams = sig.generics,
+            typeParams = typeParamNames,
             typeArgs = tes,
             rendered = rendered,
             conflicting = false
@@ -11356,7 +11437,14 @@ func inferExprCore(
           checkCallArgsAgainstSig(sc, tbl, sigs, diag, sig, args, argTypes, e.span)
           recordGenericArgWidenings(tbl, sig, None, args, argTypes)
           match fn.kind {
-            case EPath(_) -> recordGenericCallTypeArgs(tbl, sig, args, argTypes, fn.span)
+            case EPath(_) -> recordGenericCallTypeArgs(
+              tbl,
+              sig,
+              valueGenericParamsOf(tbl, fn, args.count),
+              args,
+              argTypes,
+              fn.span
+            )
             case _ -> ()
           }
           if sig.originPackage.length > 0 and sig.originPackage != symTableScopePkg(tbl) {
@@ -11366,7 +11454,7 @@ func inferExprCore(
           checkBoundsSatisfied(tbl, diag, sig, argTypes, e.span)
           // Instantiate a generic return type from the argument types (#1488
           // category B) so `unwrapOr(opt, 0): T` yields `Int`, not `TyVar("T")`.
-          val instRet = instantiateReturnType(sig, argTypes)
+          val instRet = bindValueGenericCall(tbl, diag, fn, args, argTypes, instantiateReturnType(sig, argTypes))
           // A generic call's result type is evidence for `Lyric.Mono` where
           // it cannot infer the call's type arguments itself (#7865).
           if sig.generics.count > 0 {
@@ -11639,7 +11727,7 @@ func inferExprCore(
         } else {
           diag.add(arrayNoMember(rt, name, e.span))
         }
-        case TyArray(None, _) -> diag.add(arrayUnknownLength(rt, e.span))
+        case TyArray(None, _) -> if not inValueGenericBody(tbl) { diag.add(arrayUnknownLength(rt, e.span)) }
         case _ -> ()
       }
       match distinctMemberType(tbl, diag, rt, name, e.span) {
@@ -13365,6 +13453,15 @@ func taskHandleAssignable(tbl: in SymbolTable, expected: in Type, actual: in Typ
 func argSatisfiesParam(tbl: in SymbolTable, paramTy: in Type, argTy: in Type): Bool {
   if typeEquiv(paramTy, argTy) {
     return true
+  }
+  // A parameter `array[N, T]` whose length is a value generic parameter
+  // takes an array of any length; the call binds `N` (D167 item 6).
+  match unrefine(paramTy) {
+    case TyArray(None, pe) -> match unrefine(argTy) {
+      case TyArray(_, ae) -> return argSatisfiesParam(tbl, pe, ae)
+      case _ -> ()
+    }
+    case _ -> ()
   }
   if taskHandleAssignable(tbl, paramTy, argTy) {
     return true

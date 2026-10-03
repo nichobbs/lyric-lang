@@ -86,7 +86,12 @@ func addArrayCopySite(tbl: in SymbolTable, e: in Expr, t: in Type): Unit {
   if tbl.arrayCopySites.containsKey(key) or tbl.arrayCopyExempt.containsKey(key) {
     return
   }
-  val site = match arraySiteOf(tbl, t, e.span) { case Some(s) -> s; case None -> poisonedArraySite(e.span) }
+  val site = match arraySiteOf(tbl, t, e.span) {
+    case Some(s) -> s
+    // A value-generic length: the copy is recorded when the specialisation
+    // that binds it is checked.
+    case None -> if inValueGenericBody(tbl) { return } else { poisonedArraySite(e.span) }
+  }
   tbl.arrayCopySites.add(key, site)
 }
 
@@ -201,11 +206,17 @@ pub func arrayToSliceNotCalled(t: in Type, sp: in Span): Diagnostic {
   )
 }
 
+/// Inside a value-generic function's body (D167 item 6): an array whose
+/// length is a value generic parameter is checked again, with the length
+/// bound, in each specialisation, so its length-dependent operations are
+/// neither recorded nor reported here.
+pub func inValueGenericBody(tbl: in SymbolTable): Bool = tbl.valueGenericBodies.count > 0
+
 pub func arrayUnknownLength(t: in Type, sp: in Span): Diagnostic {
   errorDiagnostic(
     "T0160",
     "the length of " + renderType(t) +
-      " is not a compile-time constant (value-generic array lengths are not supported yet, D167 item 6)",
+      " is not a compile-time constant (an array length set by a record's value generic parameter is not supported yet, #8090)",
     sp
   )
 }
@@ -372,11 +383,14 @@ pub func noteArrayIndex(
   val n = match arrayLengthOf(recvTy) {
     case Some(n) -> n
     case None -> {
+      if inValueGenericBody(tbl) {
+        return
+      }
       diag.add(
         errorDiagnostic(
           "T0160",
           "cannot index " + renderType(recvTy) +
-            ": its length is not a compile-time constant (value-generic array lengths are not supported yet, D167 item 6)",
+            ": its length is not a compile-time constant (an array length set by a record's value generic parameter is not supported yet, #8090)",
           span
         )
       )
@@ -929,7 +943,7 @@ pub func recordArrayEq(
         }
       }
     }
-    case TyArray(None, _) -> diag.add(arrayUnknownLength(lhs, span))
+    case TyArray(None, _) -> if not inValueGenericBody(tbl) { diag.add(arrayUnknownLength(lhs, span)) }
     case _ -> ()
   }
 }
@@ -1230,5 +1244,180 @@ pub func recordWrapEq(
         )
       }
     }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Value-generic array lengths (D167 item 6).
+// ─────────────────────────────────────────────────────────────────────────────
+/// The value generic parameters of `generics`, in order.
+pub func valueGenericNames(generics: in Option[GenericParams]): List[String] {
+  val acc: List[String] = newList()
+  match generics {
+    case Some(gp) -> {
+      for p in gp.params {
+        match p {
+          case GPValue(n, _, _) -> acc.add(n)
+          case _ -> ()
+        }
+      }
+    }
+    case None -> ()
+  }
+  acc
+}
+
+/// The value generic parameter an `array[N, T]` length names, if any.
+pub func arrayLengthParam(size: in TypeArg, vps: in List[String]): Option[String] {
+  val name = match size {
+    case TAType(te) -> match te.kind {
+      case TRef(p) -> if p.segments.count == 1 { p.segments[0] } else { "" }
+      case _ -> ""
+    }
+    case TAValue(ve) -> match ve.kind {
+      case EPath(p) -> if p.segments.count == 1 { p.segments[0] } else { "" }
+      case _ -> ""
+    }
+  }
+  if name.length > 0 and vps.contains(name) {
+    Some(value = name)
+  } else {
+    None
+  }
+}
+
+/// The value-generic function a call names, when it has one: the length
+/// parameters of its arrays are bound from the call's arguments.
+pub func valueGenericCallee(tbl: in SymbolTable, fn: in Expr, argCount: in Int): Option[FunctionDecl] {
+  val name = match fn.kind {
+    case EPath(p) -> if p.segments.count == 1 { p.segments[0] } else { return None }
+    case _ -> return None
+  }
+  for sym in symTableTryFindAll(tbl, name) {
+    match sym.kind {
+      case DKFunc(decl) -> if decl.params.count >= argCount and valueGenericNames(decl.generics).count > 0 {
+        return Some(value = decl)
+      }
+      case _ -> ()
+    }
+  }
+  None
+}
+
+/// Binds each value generic parameter `te` names as an array length to the
+/// length of the matching array in `t` (the argument's type).  A parameter
+/// bound to two different lengths is recorded in `conflicts`.
+pub func bindArrayLengths(
+  te: in TypeExpr,
+  t: in Type,
+  vps: in List[String],
+  bound: in Map[String, Int],
+  conflicts: in List[String],
+): Unit {
+  match te.kind {
+    case TParen(inner) -> bindArrayLengths(inner, t, vps, bound, conflicts)
+    case TArray(size, elemTe) -> match unrefine(t) {
+      case TyArray(sz, elemTy) -> {
+        match arrayLengthParam(size, vps) {
+          case Some(p) -> match sz {
+            case Some(n) -> match mapGet(bound, p) {
+              case Some(prev) -> if prev != n and not conflicts.contains(p) {
+                conflicts.add(p)
+              }
+              case None -> bound.add(p, n)
+            }
+            case None -> ()
+          }
+          case None -> ()
+        }
+        bindArrayLengths(elemTe, elemTy, vps, bound, conflicts)
+      }
+      case _ -> ()
+    }
+    case TSlice(elemTe) -> match unrefine(t) {
+      case TySlice(elemTy) -> bindArrayLengths(elemTe, elemTy, vps, bound, conflicts)
+      case _ -> ()
+    }
+    case TTuple(tes) -> match unrefine(t) {
+      case TyTuple(tys) -> if tes.count == tys.count {
+        var i = 0
+        while i < tes.count {
+          bindArrayLengths(tes[i], tys[i], vps, bound, conflicts)
+          i = i + 1
+        }
+      }
+      case _ -> ()
+    }
+    case TGenericApp(_, targs) -> match unrefine(t) {
+      case TyUser(_, _, tys) -> if targs.count == tys.count {
+        var i = 0
+        while i < targs.count {
+          match targs[i] {
+            case TAType(ate) -> bindArrayLengths(ate, tys[i], vps, bound, conflicts)
+            case TAValue(_) -> ()
+          }
+          i = i + 1
+        }
+      }
+      case _ -> ()
+    }
+    case _ -> ()
+  }
+}
+
+/// `t` (the instantiated result type of a value-generic call) with each
+/// array whose length `te` spells as a bound value generic parameter given
+/// that length.
+pub func withBoundArrayLengths(te: in TypeExpr, t: in Type, vps: in List[String], bound: in Map[String, Int]): Type {
+  match te.kind {
+    case TParen(inner) -> withBoundArrayLengths(inner, t, vps, bound)
+    case TArray(size, elemTe) -> match t {
+      case TyArray(sz, elemTy) -> {
+        val len = match sz {
+          case Some(_) -> sz
+          case None -> match arrayLengthParam(size, vps) { case Some(p) -> mapGet(bound, p); case None -> None }
+        }
+        TyArray(size = len, element = withBoundArrayLengths(elemTe, elemTy, vps, bound))
+      }
+      case _ -> t
+    }
+    case TSlice(elemTe) -> match t {
+      case TySlice(elemTy) -> TySlice(
+        element = withBoundArrayLengths(elemTe, elemTy, vps, bound)
+      )
+      case _ -> t
+    }
+    case TTuple(tes) -> match t {
+      case TyTuple(tys) -> if tes.count == tys.count {
+        val acc: List[Type] = newList()
+        var i = 0
+        while i < tes.count {
+          acc.add(withBoundArrayLengths(tes[i], tys[i], vps, bound))
+          i = i + 1
+        }
+        TyTuple(elems = acc)
+      } else {
+        t
+      }
+      case _ -> t
+    }
+    case TGenericApp(_, targs) -> match t {
+      case TyUser(id, nm, tys) -> if targs.count == tys.count {
+        val acc: List[Type] = newList()
+        var i = 0
+        while i < targs.count {
+          match targs[i] {
+            case TAType(ate) -> acc.add(withBoundArrayLengths(ate, tys[i], vps, bound))
+            case TAValue(_) -> acc.add(tys[i])
+          }
+          i = i + 1
+        }
+        TyUser(id = id, name = nm, args = acc)
+      } else {
+        t
+      }
+      case _ -> t
+    }
+    case _ -> t
   }
 }
