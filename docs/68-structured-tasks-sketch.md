@@ -203,7 +203,7 @@ case.
   bounded work. Is a `detach` needed for long-lived background work, with its
   failures reported to a handler? This sketch assumes no.
 - **Q-TASK-003: `Task` as a bare name.** Alias for `Task[Unit]` as written, or
-  require `Task[Unit]` everywhere.
+  require `Task[Unit]` everywhere. _Resolved in D166: assignability, not an alias (a `Task[R]` converts to an extern `Task`, a bare `Task` to `Task[Unit]`)._
 - **Q-TASK-004: escape rule strength.** The local rules in §4.1 versus a
   lifetime-parameter scheme. This sketch takes the local rules.
 - **Q-TASK-005: stuck tasks.** Should a scope have a cancel-then-abandon

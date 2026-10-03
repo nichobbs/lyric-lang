@@ -2931,7 +2931,17 @@ func narrowStaticCallResult(ctx: in FuncCtx, insns: in List[LInsn], sig: in JvmF
       } else {
         mapGet(ctx.ctors, joinSegsDotted(sig.recordRetHead))
       }
-      match cls {
+      // A `Task[X]` return head resolves the bare ctor key to `Std.Task`'s
+      // non-generic kernel record, which a built-in handle is never.
+      val narrowTo = if sig.recordRetHead.count == 1 and sig.recordRetHead[0] == "Task" {
+        match cls {
+          case Some(c) -> if c == kernelTaskRecordClass() { None } else { cls }
+          case None -> None
+        }
+      } else {
+        cls
+      }
+      match narrowTo {
         case Some(c) -> {
           insns.add(LCheckcast(className = c))
           JRef(className = c)

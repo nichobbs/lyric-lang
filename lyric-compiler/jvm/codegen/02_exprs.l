@@ -2213,6 +2213,12 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
           case Some(pt) -> coerceAwaitResult(insns, pt, objTy)
           case None -> objTy
         }
+      } else if isErasedObjectType(t) {
+        // A `Task[T]`-typed parameter, local or field is erased to `Object`
+        // (the handle's static type is not tracked on the JVM, so a user type
+        // named `Task` keeps resolving as itself).  The helper joins it when it
+        // is a `Future` and passes any other value through.
+        lowerFutureGet(ctx, insns)
       } else {
         t
       }
@@ -5187,6 +5193,13 @@ func bareFuncRefPathExpr(nm: in String): Expr {
 // True when `t` is the `java/util/concurrent/Future` reference a `spawn`
 // submission yields.  `await` uses this to decide between a join (`Future.get()`)
 // and a pass-through (an already-materialized degenerate-async value).
+func isErasedObjectType(t: in JvmType): Bool {
+  match t {
+    case JRef(cls) -> cls == "java/lang/Object"
+    case _ -> false
+  }
+}
+
 func isFutureType(t: in JvmType): Bool {
   match t {
     case JRef(cls) -> cls == "java/util/concurrent/Future"
@@ -5307,7 +5320,7 @@ func coerceAwaitResult(insns: in List[LInsn], pt: in JvmType, objTy: in JvmType)
 func lowerFutureGet(ctx: in FuncCtx, insns: in List[LInsn]): JvmType {
   val objTy = JRef(className = "java/lang/Object")
   val ps: List[JvmType] = newList()
-  ps.add(JRef(className = "java/util/concurrent/Future"))
+  ps.add(objTy)
   insns.add(LInvokestatic(owner = ctx.pkgName, name = awaitHelperName(), params = ps, ret = objTy))
   objTy
 }
