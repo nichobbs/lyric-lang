@@ -24,10 +24,11 @@ pub record VEnv {
   // Threaded through every VEnv constructor so `sortOfTypeExprE` can recurse
   // through alias chains and produce the underlying primitive's sort (#3853).
   pub distincts: Map[String, TypeExpr]
-  // `SortInfo.intBits` of each `Int`/`Long` record or protected-type field,
-  // keyed by its selector (`<Type>__<field>`), so the width of a field read
-  // is known to `@proof_required(checked_arithmetic)` (#7871).
-  pub fieldIntBits: Map[String, Int]
+  // The sort info of each record and protected-type field, keyed by its
+  // selector (`<Type>__<field>`): its width for
+  // `@proof_required(checked_arithmetic)` (#7871) and the range a field of a
+  // range subtype carries into a proof (#7872).
+  pub fieldInfos: Map[String, SortInfo]
   // Each non-generic record's field defaults in declaration order, so a
   // constructor call that leaves a defaulted field out is completed with
   // its default (#7873).
@@ -67,17 +68,27 @@ func resolveDistinct(distincts: in Map[String, TypeExpr], te: in TypeExpr): Type
 // Env-aware sort lookup that follows distinct-type chains (#3853).  Use this
 // in vcgen wherever a TypeExpr is converted to a Sort; the env's
 // `distincts` map carries the file-level `pub type X = Y` aliases registered
-// in `goalsForFile`.
+// in `goalsForFile`, a named range subtype (`type Port = UInt range 1 ..=
+// 65535`) as its refined underlying type (#7872).
 pub func sortOfTypeExprE(env: in VEnv, te: in TypeExpr): SortInfo {
-  val resolved = resolveDistinct(env.distincts, te)
+  sortOfTypeExprWith(env.distincts, te)
+}
+
+pub func sortOfTypeExprWith(distincts: in Map[String, TypeExpr], te: in TypeExpr): SortInfo {
+  sortOfTypeExprDepth(distincts, te, 0)
+}
+
+// Bounded like `resolveDistinct`, against a cyclic chain of range subtypes.
+func sortOfTypeExprDepth(distincts: in Map[String, TypeExpr], te: in TypeExpr, depth: in Int): SortInfo {
+  val resolved = resolveDistinct(distincts, te)
   match resolved.kind {
     // A range over a distinct alias (`Cents range 0 ..= 100` with `type
     // Cents = ULong`) takes the alias's underlying sort, so its bounds fold
     // signed or unsigned as that sort requires (#7848).
     case TRefined(underlying, range) -> {
-      if underlying.segments.count == 1 and env.distincts.containsKey(underlying.segments[0]) {
+      if underlying.segments.count == 1 and distincts.containsKey(underlying.segments[0]) and depth < 16 {
         val baseTe = TypeExpr(kind = TRef(path = underlying), span = resolved.span)
-        val base = sortOfTypeExpr(resolveDistinct(env.distincts, baseTe))
+        val base = sortOfTypeExprDepth(distincts, baseTe, depth + 1)
         refinedSortInfo(base.sort, base.intBits, range)
       } else {
         sortOfTypeExpr(resolved)
@@ -132,7 +143,7 @@ pub func envEmpty(callees: in Map[String, FunctionDecl], symbols: in List[Symbol
   val sorts: Map[String, SortInfo] = newMap()
   val varNames: List[String] = newList()
   val distincts: Map[String, TypeExpr] = newMap()
-  val fieldIntBits: Map[String, Int] = newMap()
+  val fieldInfos: Map[String, SortInfo] = newMap()
   val recordDefaults: Map[String, List[Option[Expr]]] = newMap()
   VEnv(
     vars = vars,
@@ -142,7 +153,7 @@ pub func envEmpty(callees: in Map[String, FunctionDecl], symbols: in List[Symbol
     symbols = symbols,
     checkedArithmetic = checkedArithmetic,
     distincts = distincts,
-    fieldIntBits = fieldIntBits,
+    fieldInfos = fieldInfos,
     recordDefaults = recordDefaults
   )
 }
@@ -172,7 +183,7 @@ pub func envBind(name: in String, info: in SortInfo, env: in VEnv): VEnv {
     symbols = env.symbols,
     checkedArithmetic = env.checkedArithmetic,
     distincts = env.distincts,
-    fieldIntBits = env.fieldIntBits,
+    fieldInfos = env.fieldInfos,
     recordDefaults = env.recordDefaults
   )
 }
@@ -201,7 +212,7 @@ pub func envBindTerm(name: in String, term: in Term, info: in SortInfo, env: in 
     symbols = env.symbols,
     checkedArithmetic = env.checkedArithmetic,
     distincts = env.distincts,
-    fieldIntBits = env.fieldIntBits,
+    fieldInfos = env.fieldInfos,
     recordDefaults = env.recordDefaults
   )
 }
@@ -466,7 +477,7 @@ func varlessEnv(env: in VEnv): VEnv {
     symbols = env.symbols,
     checkedArithmetic = env.checkedArithmetic,
     distincts = env.distincts,
-    fieldIntBits = env.fieldIntBits,
+    fieldInfos = env.fieldInfos,
     recordDefaults = env.recordDefaults
   )
 }
@@ -477,6 +488,86 @@ func substIf(cond: in Bool, m: in Map[String, Term], names: in List[String], t: 
   } else {
     t
   }
+}
+
+// A sort no Lyric value but a primitive (or a distinct type over one) has.
+func isPrimitiveSort(srt: in Sort): Bool {
+  match srt {
+    case SInt -> true
+    case SBitVec(_) -> true
+    case SFloat32 -> true
+    case SFloat64 -> true
+    case SString -> true
+    case SBool -> true
+    case _ -> false
+  }
+}
+
+// The distinct type `T` a callee `T.from` names, if any.
+func distinctFromCallee(env: in VEnv, fn: in Expr): Option[String] {
+  match fn.kind {
+    case EMember(receiver, memberName) -> {
+      if memberName == "from" {
+        match receiver.kind {
+          case EPath(path) -> {
+            if path.segments.count == 1 and env.distincts.containsKey(path.segments[0]) {
+              Some(value = path.segments[0])
+            } else {
+              None
+            }
+          }
+          case _ -> None
+        }
+      } else {
+        None
+      }
+    }
+    case _ -> None
+  }
+}
+
+// Construct a value of the distinct type `typeName` from `arg`: the verifier
+// treats a distinct value as its underlying value (#3853), so the result is
+// the argument at the underlying sort.  For a range subtype the argument
+// must lie in the range — the construction panics otherwise — so the bound
+// is a side condition (#7872); a bound the verifier cannot state fails
+// closed (V0033).
+func translateDistinctConstruction(
+  env: in VEnv,
+  typeName: in String,
+  arg: in Term,
+  argSpan: in Span,
+  callSpan: in Span,
+  argSides: in List[Term],
+  argAssumed: in List[Term],
+  diags: in List[Diagnostic],
+): (TranslateResult, List[Diagnostic]) {
+  val segs: List[String] = newList()
+  segs.add(typeName)
+  val te = TypeExpr(kind = TRef(path = ModulePath(segments = segs, span = callSpan)), span = callSpan)
+  val info = sortOfTypeExprE(env, te)
+  val value = coerceTermAt(arg, info.sort, argSpan, diags)
+  val sc: List[Term] = newList()
+  appendTermList(sc, argSides)
+  val term = match rangeObligationsForTerm(value, info) {
+    case Ok(obligations) -> {
+      appendTermList(sc, obligations)
+      value
+    }
+    case Err(reason) -> {
+      diags.add(untranslatableDiag("the range of `" + typeName + "`: " + reason, callSpan))
+      poisonTerm(value)
+    }
+  }
+  val constructed: (TranslateResult, List[Diagnostic]) = (
+    TranslateResult(
+      term = term,
+      sideConds = sc,
+      assumed = argAssumed
+    ),
+    diags
+  )
+  constructed
 }
 
 // @proof_required(checked_arithmetic) on an unsigned `+`, `-` or `*`: the
@@ -612,8 +703,8 @@ func intBitsOfExpr(env: in VEnv, e: in Expr): Int {
     case EMember(receiver, memberName) -> {
       val recName = recordNameOfExpr(env, receiver)
       if recName.length > 0 {
-        match mapGet(env.fieldIntBits, recName + "__" + memberName) {
-          case Some(b) -> b
+        match mapGet(env.fieldInfos, recName + "__" + memberName) {
+          case Some(fi) -> fi.intBits
           case None -> 0
         }
       } else {
@@ -1102,7 +1193,7 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
                 symbols = emptySymbols,
                 checkedArithmetic = false,
                 distincts = env.distincts,
-                fieldIntBits = env.fieldIntBits,
+                fieldInfos = env.fieldInfos,
                 recordDefaults = env.recordDefaults
               )
               // A parameter default is evaluated at the call, in the callee's
@@ -1115,7 +1206,7 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
                 symbols = env.symbols,
                 checkedArithmetic = env.checkedArithmetic,
                 distincts = env.distincts,
-                fieldIntBits = env.fieldIntBits,
+                fieldInfos = env.fieldInfos,
                 recordDefaults = env.recordDefaults
               )
 
@@ -1229,7 +1320,7 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
                 symbols = emptySymbols,
                 checkedArithmetic = false,
                 distincts = env.distincts,
-                fieldIntBits = env.fieldIntBits,
+                fieldInfos = env.fieldInfos,
                 recordDefaults = env.recordDefaults
               )
               ci = 0
@@ -1254,6 +1345,8 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
               appendTermList(asList, postConds)
               appendTermList(asList, pureUnfold)
               appendTermList(asList, intWidthHypothesesForTerm(callTerm, resultInfo))
+              // The callee proves its result is in its declared range (#7872).
+              appendTermList(asList, rangeHypothesesForTerm(callTerm, resultInfo))
               val knownCalleeTR = TranslateResult(term = callTerm, sideConds = sc, assumed = asList)
               val knownCalleePair: (TranslateResult, List[Diagnostic]) = (knownCalleeTR, allArgDiags)
               knownCalleePair
@@ -1267,9 +1360,16 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
               // SUninterp("call.UserId") which z3 then refuses to use in
               // arithmetic (#3853).
               if env.distincts.containsKey(name) and rawArgTerms.count == 1 {
-                val distinctTR = TranslateResult(term = rawArgTerms[0], sideConds = argSides, assumed = argAssumed)
-                val distinctPair: (TranslateResult, List[Diagnostic]) = (distinctTR, allArgDiags)
-                return distinctPair
+                return translateDistinctConstruction(
+                  env,
+                  name,
+                  rawArgTerms[0],
+                  argSpans[0],
+                  e.span,
+                  argSides,
+                  argAssumed,
+                  allArgDiags
+                )
               }
               // Unknown callee — emit TApp with uninterpreted sort.
               val callNameSort = SUninterp(name = "call." + name)
@@ -1285,12 +1385,34 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
           }
         }
         case _ -> {
-          // Non-path callee — uninterpreted.
+          // `T.from(x)` on a distinct type `T` constructs a `T`: the
+          // argument's value, which must lie in `T`'s range when `T` is a
+          // range subtype — `from` panics outside it (#7872).
+          match distinctFromCallee(env, fn) {
+            case Some(typeName) -> {
+              if rawArgTerms.count == 1 {
+                return translateDistinctConstruction(
+                  env,
+                  typeName,
+                  rawArgTerms[0],
+                  argSpans[0],
+                  e.span,
+                  argSides,
+                  argAssumed,
+                  allArgDiags
+                )
+              }
+            }
+            case None -> ()
+          }
+          // Any other non-path callee — uninterpreted.  Its arguments'
+          // obligations and facts still hold.
           val diags: List[Diagnostic] = newList()
           appendTermList2(diags, allArgDiags)
           val callSort = SUninterp(name = "call")
           val callVar = TVar(name = "?call", sort = callSort)
-          val callPair: (TranslateResult, List[Diagnostic]) = (singleTR(callVar), diags)
+          val callTR = TranslateResult(term = callVar, sideConds = argSides, assumed = argAssumed)
+          val callPair: (TranslateResult, List[Diagnostic]) = (callTR, diags)
           callPair
         }
       }
@@ -1396,14 +1518,32 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
       val t = match recordFieldHit {
         case Some(fSort) -> TApp(name = recvRecName + "__" + memberName, args = termList1(rR.term), retSort = fSort)
         case None -> {
-          val unkSort = SUninterp(name = "field." + memberName)
-          TApp(name = "$field." + memberName, args = termList1(rR.term), retSort = unkSort)
+          if memberName == "value" and isPrimitiveSort(recvSort) {
+            // `x.value` on a distinct value reads its underlying value, which
+            // is how the verifier already represents `x` (#7872).
+            rR.term
+          } else {
+            val unkSort = SUninterp(name = "field." + memberName)
+            TApp(name = "$field." + memberName, args = termList1(rR.term), retSort = unkSort)
+          }
         }
       }
       val sc: List[Term] = newList()
       appendTermList(sc, rR.sideConds)
       val asList: List[Term] = newList()
       appendTermList(asList, rR.assumed)
+      // A field of a range subtype or of `Int`/`Long` holds a value of its
+      // type (#7871, #7872).
+      match recordFieldHit {
+        case Some(_) -> match mapGet(env.fieldInfos, recvRecName + "__" + memberName) {
+          case Some(fi) -> {
+            appendTermList(asList, rangeHypothesesForTerm(t, fi))
+            appendTermList(asList, intWidthHypothesesForTerm(t, fi))
+          }
+          case None -> ()
+        }
+        case None -> ()
+      }
       val memberTR = TranslateResult(term = t, sideConds = sc, assumed = asList)
       val memberPair: (TranslateResult, List[Diagnostic]) = (memberTR, rDiags)
       memberPair
@@ -2026,16 +2166,15 @@ func wpLocal(
     case LBVar(name, ty, Some(init)) -> wpBindInit(env, resultSort, postcond, stmts, idx, name, ty, init)
     case LBVar(name, ty, None) -> {
       // Uninitialized var — bind to a fresh symbolic value of its declared
-      // sort (an unannotated one is an integer, as before).
-      val info = match ty {
-        case Some(t) -> {
-          val declared = sortOfTypeExprE(env, t)
-          SortInfo(sort = declared.sort, range = RBKNone, intBits = declared.intBits)
-        }
-        case None -> SortInfo(sort = SInt, range = RBKNone)
-      }
+      // sort (an unannotated one is an integer, as before).  Its declared
+      // range stays with it, for the values assigned to it (#7872).
+      val info = match ty { case Some(t) -> sortOfTypeExprE(env, t); case None -> SortInfo(sort = SInt, range = RBKNone) }
       val env2 = envBind(name, info, env)
-      wpWalk(env2, resultSort, postcond, stmts, idx + 1)
+      val inner = wpWalk(env2, resultSort, postcond, stmts, idx + 1)
+      val asList: List[Term] = newList()
+      appendTermList(asList, rangeHypotheses(name, info))
+      appendTermList(asList, inner.assumed)
+      WpResult(wp = inner.wp, sideGoals = inner.sideGoals, assumed = asList, diags = inner.diags)
     }
   }
 }
@@ -2081,7 +2220,7 @@ func wpBindInit(
   }
   val asList: List[Term] = newList()
   appendTermList(asList, initR.assumed)
-  appendTermList(asList, rangeHypotheses(name, info))
+  appendTermList(asList, rangeHypothesesForTerm(boundTerm, info))
   appendTermList(asList, inner.assumed)
   val di: List[Diagnostic] = newList()
   appendTermList2(di, initDiags)
@@ -2173,6 +2312,9 @@ func wpAssign(
         }
         val asList: List[Term] = newList()
         appendTermList(asList, rhsR.assumed)
+        // A range-typed variable is range-checked after every assignment
+        // (docs/01 §2.2), so the assigned value is in range from here on.
+        appendTermList(asList, rangeHypothesesForTerm(combined, info))
         appendTermList(asList, inner.assumed)
         val di: List[Diagnostic] = newList()
         appendTermList2(di, rhsDiags)
@@ -2784,7 +2926,7 @@ func freshSymbolsEnv(env: in VEnv): VEnv {
     symbols = freshSyms,
     checkedArithmetic = env.checkedArithmetic,
     distincts = env.distincts,
-    fieldIntBits = env.fieldIntBits,
+    fieldInfos = env.fieldInfos,
     recordDefaults = env.recordDefaults
   )
 }
@@ -2977,19 +3119,37 @@ func goalsForProtectedMembers(
   }
 }
 
+// What a distinct type stands for in a proof: its underlying type, refined
+// by its range when it is a range subtype (`type Port = UInt range 1 ..=
+// 65535` is `UInt range 1 ..= 65535`), so a value of it carries the bound
+// and a construction must establish it (#7872).
+func distinctRepresentation(dt: in DistinctTypeDecl): TypeExpr {
+  match dt.rangeClause {
+    case Some(rb) -> match dt.underlying.kind {
+      case TRef(path) -> TypeExpr(
+        kind = TRefined(underlying = path, range = rb),
+        span = dt.underlying.span
+      )
+      case _ -> dt.underlying
+    }
+    case None -> dt.underlying
+  }
+}
+
 // Register one field of a record or protected type's datatype under its
-// selector name, and its signed width when it is an `Int` or `Long` (#7871).
+// selector name, with its sort info: its signed width when it is an `Int` or
+// `Long` (#7871), its range when it is a range subtype (#7872).
 func addDatatypeField(
   dtFields: in List[DatatypeField],
-  bitsMap: in Map[String, Int],
+  infos: in Map[String, SortInfo],
   distinctMap: in Map[String, TypeExpr],
   selector: in String,
   ty: in TypeExpr,
 ): Unit {
-  val info = sortOfTypeExpr(resolveDistinct(distinctMap, ty))
+  val info = sortOfTypeExprWith(distinctMap, ty)
   dtFields.add(DatatypeField(name = selector, sort = info.sort))
-  if info.intBits > 0 and not bitsMap.containsKey(selector) {
-    bitsMap.add(selector, info.intBits)
+  if not infos.containsKey(selector) {
+    infos.add(selector, info)
   }
 }
 
@@ -3079,7 +3239,7 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
     match file.items[dti0].kind {
       case IDistinctType(dtDecl) -> {
         if not distinctMap.containsKey(dtDecl.name) {
-          distinctMap.add(dtDecl.name, dtDecl.underlying)
+          distinctMap.add(dtDecl.name, distinctRepresentation(dtDecl))
         }
       }
       case _ -> ()
@@ -3087,7 +3247,7 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
     dti0 = dti0 + 1
   }
 
-  val fieldIntBitsMap: Map[String, Int] = newMap()
+  val fieldInfosMap: Map[String, SortInfo] = newMap()
   val recordDefaultsMap: Map[String, List[Option[Expr]]] = newMap()
 
   // Pre-register every `IRecord` as an SMT datatype with one constructor
@@ -3115,7 +3275,7 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
           while fi < recDecl.members.count {
             match recDecl.members[fi] {
               case RMField(fld) -> {
-                addDatatypeField(dtFields, fieldIntBitsMap, distinctMap, recDecl.name + "__" + fld.name, fld.ty)
+                addDatatypeField(dtFields, fieldInfosMap, distinctMap, recDecl.name + "__" + fld.name, fld.ty)
                 dtDefaults.add(fld.dflt)
               }
               case _ -> ()
@@ -3142,19 +3302,19 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
               match pf {
                 case PFVar(fname, fty, _, _, _, _) -> addDatatypeField(
                   dtFields,
-                  fieldIntBitsMap,
+                  fieldInfosMap,
                   distinctMap,
                   pdecl.name + "__" + fname,
                   fty
                 )
                 case PFLet(fname, fty, _, _, _, _) -> addDatatypeField(
                   dtFields,
-                  fieldIntBitsMap,
+                  fieldInfosMap,
                   distinctMap,
                   pdecl.name + "__" + fname,
                   fty
                 )
-                case PFImmutable(fd) -> addDatatypeField(dtFields, fieldIntBitsMap, distinctMap, pdecl.name + "__" + fd.name, fd.ty)
+                case PFImmutable(fd) -> addDatatypeField(dtFields, fieldInfosMap, distinctMap, pdecl.name + "__" + fd.name, fd.ty)
               }
             }
             case _ -> ()
@@ -3180,7 +3340,7 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
     symbols = env0Init.symbols,
     checkedArithmetic = env0Init.checkedArithmetic,
     distincts = distinctMap,
-    fieldIntBits = fieldIntBitsMap,
+    fieldInfos = fieldInfosMap,
     recordDefaults = recordDefaultsMap
   )
 

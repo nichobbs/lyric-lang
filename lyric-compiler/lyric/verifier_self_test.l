@@ -1481,3 +1481,51 @@ test "a call whose arguments do not match the callee fails closed (#7873)" {
   assertUntranslatable(sub + "func g(): Int\n  ensures: result == 7\n{\n  sub(c = 3, a = 10)\n}\n", "unknown-name")
   assertUntranslatable(sub + "func g(): Int\n  ensures: result == 7\n{\n  sub(10)\n}\n", "missing-argument")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A named range subtype carries its bound into a proof, and constructing one
+// must establish it (#7872).
+// ─────────────────────────────────────────────────────────────────────────────
+test "a named unsigned range subtype's bound is a hypothesis (#7872)" {
+  val port = "type Port = UInt range 1 ..= 65535\n"
+  assertDischarged(port + "func f(p: in Port): Bool\n  ensures: result\n{\n  p >= 1u32\n}\n", "port-lower")
+  assertDischarged(port + "func f(p: in Port): Bool\n  ensures: result\n{\n  p <= 65535u32\n}\n", "port-upper")
+  assertRefuted(port + "func f(p: in Port): Bool\n  ensures: result\n{\n  p >= 2u32\n}\n", "port-refute")
+  assertDischarged(port + "func v(p: in Port): UInt\n  ensures: result >= 1u32\n{\n  p.value\n}\n", "port-value")
+}
+
+test "a named signed range subtype's bound is a hypothesis (#7872)" {
+  val age = "type Age = Int range 0 ..= 150\n"
+  assertDischarged(age + "func g(a: in Age): Bool\n  ensures: result\n{\n  a <= 150 and a >= 0\n}\n", "age-bounds")
+  assertRefuted(age + "func g(a: in Age): Bool\n  ensures: result\n{\n  a < 150\n}\n", "age-refute")
+  val rec = age + "record Person {\n  age: Age\n}\n"
+  assertDischarged(rec + "func h(p: in Person): Bool\n  ensures: result\n{\n  p.age <= 150\n}\n", "age-field")
+}
+
+test "constructing a named range subtype must establish its bound (#7872)" {
+  val port = "type Port = UInt range 1 ..= 65535\n"
+  assertDischarged(port + "func mk(): Port\n{\n  Port.from(80u32)\n}\n", "port-from-literal")
+  assertRefuted(port + "func mk(): Port\n{\n  Port.from(0u32)\n}\n", "port-from-zero")
+  assertRefuted(port + "func mk(x: in UInt): Port\n{\n  Port.from(x)\n}\n", "port-from-unconstrained")
+  assertDischarged(
+    port + "func mk(x: in UInt): Port\n  requires: x >= 1 and x <= 65535\n{\n  Port.from(x)\n}\n",
+    "port-from-bounded"
+  )
+  val age = "type Age = Int range 0 ..= 150\n"
+  assertDischarged(age + "func mk(): Age\n{\n  Age.from(42)\n}\n", "age-from")
+  assertRefuted(age + "func mk(): Age\n{\n  Age.from(151)\n}\n", "age-from-above")
+  assertRefuted(age + "func mk(x: in Int): Int\n{\n  val a: Age = Age.from(x)\n  a.value\n}\n", "age-from-in-binding")
+  assertDischarged(age + "func pass(a: in Age): Age\n{\n  a\n}\n", "age-result-range")
+}
+
+test "a named range subtype's result and a range-typed var carry their bound (#7872)" {
+  val age = "type Age = Int range 0 ..= 150\n"
+  assertDischarged(
+    age + "func get(): Age\n{\n  Age.from(7)\n}\nfunc user(): Int\n  ensures: result <= 150\n{\n  get()\n}\n",
+    "callee-result-range"
+  )
+  assertDischarged(
+    "func h(y: in UInt): UInt\n  ensures: result <= 10\n{\n  var x: UInt range 0 ..= 10\n  x = y\n  x\n}\n",
+    "uninitialised-var-assigned"
+  )
+}

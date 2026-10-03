@@ -55,7 +55,7 @@ pub func valueOf(a: in Amount): Cents
 }
 ```
 
-The annotation makes `requires:` and `ensures:` clauses proof obligations as well as runtime checks. `lyric prove` feeds them to the VC generator, which produces SMT formulae the solver must discharge, and fails on any it cannot. `lyric build` does not run the prover, so it still compiles every clause into a runtime check (a quantifier, which has no runtime form, is checked only by `lyric prove`); run `lyric prove` in CI to get the static guarantee.
+The annotation makes `requires:` and `ensures:` clauses proof obligations as well as runtime checks. A range subtype such as `Cents` takes part too: the prover knows that every `Cents` parameter, field and callee result lies in `0 ..= 1_000_000_000_00`, and each `Cents.from(x)` is an obligation that `x` lies in that range, since `from` panics outside it. (`Cents.tryFrom(x)` returns an `Err` instead, so it carries no obligation.) `lyric prove` feeds them to the VC generator, which produces SMT formulae the solver must discharge, and fails on any it cannot. `lyric build` does not run the prover, so it still compiles every clause into a runtime check (a quantifier, which has no runtime form, is checked only by `lyric prove`); run `lyric prove` in CI to get the static guarantee.
 
 There is one new constraint on your call graph: a `@proof_required` package may only call:
 
