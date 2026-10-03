@@ -38,8 +38,10 @@ Implemented as option (b) of the issue, recorded in D168 and docs/45 §5:
   other.
 - T0155 does not compare a default known only as a thunk call.
 
-`restored_default_args_self_test.l` (new, CI step "Restored-dependency
-default arguments self-test") builds a producer and a consumer on both
+`restored_default_args_self_test.l` (new; run by
+`scripts/ci/restored-dependency-self-tests.sh`, which also runs the other
+restored producer/consumer self-tests from one ci.yml step, keeping ci.yml
+under its size ceiling) builds a producer and a consumer on both
 targets and checks 14 calls: a free function (omitted, positional, named),
 a default reading a private value, a widening `ULong` default from a `UInt`
 value, a mixed positional/named call, a record method, a dot-named function,

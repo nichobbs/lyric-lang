@@ -2266,39 +2266,14 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: LYRIC_LOAD_COMPILER=1 bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/cross_package_generics_self_test.l
 
-      # Cross-package Nat-backed range-subtype self-test (docs/59 §3.3 MINOR
-      # finding).  `typeExprToMsilCtx` had no arm for `Nat`, so a `Nat`-typed
-      # (or `Nat range A..=B`-typed) parameter/return/field fell through to
-      # `MClass("<pkg>.Nat")` — an in-package reference-type guess — instead
-      # of its real `int64` representation.  Self-consistent within one
-      # compilation unit, but a restored-package consumer decodes the real
-      # `I8` signature from metadata and the two encodings diverge:
-      # InvalidProgramException at the call site, the same failure shape as
-      # the Web.Request crash.  Builds a PRODUCER DLL (a `Nat range` distinct
-      # type used as a function parameter/return and as a record field) via
-      # `Lyric.Emitter.emitProject`, then compiles a CONSUMER that imports it
-      # as a restored dep and runs it.  Uses `Lyric.Emitter`, so
-      # LYRIC_LOAD_COMPILER=1 is needed.
-      - name: Cross-package Nat self-test (native lyric test)
+      # Restored-dependency (producer/consumer) self-tests: see the header of
+      # scripts/ci/restored-dependency-self-tests.sh. Uses Lyric.Emitter, so
+      # the script sets LYRIC_LOAD_COMPILER=1.
+      - name: Restored-dependency self-tests (native lyric test)
         if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
-        run: LYRIC_LOAD_COMPILER=1 bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/nat_cross_package_self_test.l
-
-      # Cross-assembly restored async funcs self-test (#5561).  Builds a
-      # PRODUCER DLL of `pub async func`s in-process via
-      # `Lyric.Emitter.emitProject`, then compiles a CONSUMER that awaits them
-      # as a restored dep and runs it.  Verifies the consumer MemberRef
-      # encodes the Task-wrapped kickoff return (asyncness derived from the
-      # producer DLL's own MethodDef metadata — contract reprs don't carry
-      # it) and that the caller-side await unwraps it, on both the blocking
-      # shim (plain main) and the Phase-B state-machine paths.  Uses
-      # `Lyric.Emitter`, so LYRIC_LOAD_COMPILER=1 is needed.
-      - name: Restored async funcs self-test (native lyric test)
-        if: ${{ !cancelled() }}
-        background: true
-        working-directory: ${{ github.workspace }}
-        run: LYRIC_LOAD_COMPILER=1 bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/restored_async_self_test.l
+        run: bash scripts/ci/restored-dependency-self-tests.sh
 
       # Restored-dependency qualified `pub val` self-test (#6133/#5275).  A
       # QUALIFIED reference (`Pkg.NAME`) to a restored dep's literal-foldable
@@ -2317,34 +2292,6 @@ jobs:
 
       - name: Wait for parallel tests (dotnet-a batch 9 split, #4975)
         wait-all: true
-
-      # Restored-dependency List[slice[Byte]] return self-test (#5575
-      # residual finding).  PR #6329's #6332 extension already fixed the
-      # underlying array-signature degrade; this pins it specifically across
-      # a genuine restored-DLL boundary (the shape #5575 is about), which
-      # that PR's same-bundle-only regression coverage does not exercise.
-      # Same two-stage PRODUCER/CONSUMER harness as the restored async
-      # self-test above.  Uses `Lyric.Emitter`, so LYRIC_LOAD_COMPILER=1 is
-      # needed.
-      - name: Restored dependency List[slice[Byte]] return self-test (native lyric test)
-        if: ${{ !cancelled() }}
-        background: true
-        working-directory: ${{ github.workspace }}
-        run: LYRIC_LOAD_COMPILER=1 bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/restored_slice_list_return_self_test.l
-
-      # Restored-dependency default arguments self-test (#7827, D168).  A
-      # call that leaves out a defaulted argument of a free function, record
-      # method, dot-named function, interface member or `impl` method in a
-      # restored package calls the thunk the library compiled the default
-      # into; covers a default reading a private value and a widening
-      # default.  Builds the producer and consumer for both targets (a DLL
-      # run under `dotnet`, a JAR under `java`).  Uses `Lyric.Emitter`, so
-      # LYRIC_LOAD_COMPILER=1 is needed.
-      - name: Restored-dependency default arguments self-test (native lyric test)
-        if: ${{ !cancelled() }}
-        background: true
-        working-directory: ${{ github.workspace }}
-        run: LYRIC_LOAD_COMPILER=1 bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/restored_default_args_self_test.l
 
       # Async extern unwrapping self-test — pins the Band 3 Phase A fix for the
       # @externTarget async silent miscompile (epic #2070, D085, D-progress-415).
