@@ -1344,7 +1344,7 @@ test "an impl with no defaulted parameter keeps its empty repr (#7827)" {
 // #8085: two overloads of one name and parameter count each get their own
 // thunk, named from their parameter types, and the contract points each
 // overload's parameter at its own.  (The type checker rejects such a pair,
-// T0001 / T0156; the name keeps them apart regardless.)
+// T0001 / T0162; the name keeps them apart regardless.)
 test "same-count overloads render distinct default thunks (#8085)" {
   val src = "package P\n\npub record R {\n  n: Int\n" +
     "  func scale(self: in R, x: in Int, factor: in Int = 1): Int {\n    x * factor\n  }\n" +

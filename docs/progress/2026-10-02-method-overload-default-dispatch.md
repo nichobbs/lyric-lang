@@ -1,4 +1,4 @@
-# Method calls with omitted defaults bind the checker's overload; T0155 for differing impl defaults (#7828)
+# Method calls with omitted defaults bind the checker's overload; T0161 for differing impl defaults (#7828)
 
 Two gaps left by #7820.
 
@@ -51,10 +51,10 @@ the written arguments over one that fills the rest from defaults, as free
 calls already did, so `o.m(1)` with `m(x)` and `m(x, y = 2)` calls `m(x)`
 (it called whichever was declared first).
 
-**T0155.** docs/01 makes a call take the defaults of the declaration it
+**T0161.** docs/01 makes a call take the defaults of the declaration it
 resolves through, so a call on an interface-typed value and one on the
 concrete type can fill an argument differently. The type checker now warns
-(T0155) at an `impl` method's parameter whose default differs from the
+(T0161) at an `impl` method's parameter whose default differs from the
 interface member's (abstract or default method), or where only one of the
 two declares one. Defaults count as equal when written alike, ignoring
 spans and parentheses.
@@ -63,6 +63,6 @@ spans and parentheses.
 gains four cases: exact-arity preference, an omitted default past a
 mismatching same-count overload (direct, bare sibling and `self.` calls),
 an overload with no method of the written count, and a generic record's
-overloads. `typechecker_self_test.l` gains the recorded-arity case and T0155
+overloads. `typechecker_self_test.l` gains the recorded-arity case and T0161
 for differing, impl-only, interface-only, equal and absent defaults, and for
 an overridden interface default method.

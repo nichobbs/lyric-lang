@@ -36,7 +36,7 @@ Implemented as option (b) of the issue, recorded in D168 and docs/45 §5:
   declared types (`CodegenCtx.restoredFuncParamTypes`). The JVM needed
   no backend change: it registers the restored source's signatures like any
   other.
-- T0155 does not compare a default known only as a thunk call.
+- T0161 does not compare a default known only as a thunk call.
 
 `restored_default_args_self_test.l` (new; run by
 `scripts/ci/restored-dependency-self-tests.sh`, which also runs the other

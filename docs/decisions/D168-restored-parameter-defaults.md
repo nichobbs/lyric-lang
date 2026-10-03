@@ -47,7 +47,7 @@ consumers call it.
    the declaration it statically resolves through: an interface-typed call
    gets the interface member's thunk, a call on the concrete type the `impl`
    method's (which is why the `impl` heads are carried), and a consumer's
-   own `impl` of a restored interface declares its own defaults. T0155 does
+   own `impl` of a restored interface declares its own defaults. T0161 does
    not compare a default it knows only as a thunk call.
 
 4. **Not exported:** a parameter whose type names a type parameter of the
@@ -88,7 +88,7 @@ The thunk name carries the callable's parameter types (#8085) rather than
 its parameter count or a declaration index: both sides compute it from the
 declaration alone, so it cannot drift with declaration order, and a second
 default reaching one name panics as an internal error. Methods of one name
-and parameter count in one type are rejected anyway (T0156, matching T0001
+and parameter count in one type are rejected anyway (T0162, matching T0001
 for functions), because every backend tells overloads apart by count.
 
 ## Consequences

@@ -1244,7 +1244,7 @@ member declares requires the argument on a concrete-typed call. Declaring
 the same default in both places keeps the two call forms equivalent. When
 an `impl` method's parameter has a different default from the interface
 member's, or only one of the two declares a default, the compiler warns at
-the `impl` method's parameter (**T0155**, a warning): defaults count as the
+the `impl` method's parameter (**T0161**, a warning): defaults count as the
 same when they are written alike (any expression form, compared as written,
 ignoring enclosing parentheses), and a default known
 only from a restored package's metadata (below) is not compared (#7828).
@@ -1264,7 +1264,7 @@ an argument must be passed (**T0042** otherwise).
 
 Methods of one name declared in one record, interface or `impl` must differ
 in their number of parameters, as two functions of one name in a package
-must (**T0001**); two with the same count are **T0156** (#8085). When a type
+must (**T0001**); two with the same count are **T0162** (#8085). When a type
 has several methods of one name, a method call binds to the
 overload the type checker selects: among the overloads whose parameters
 accept the arguments, one taking exactly the arguments written is preferred

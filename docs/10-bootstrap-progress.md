@@ -133,7 +133,7 @@ deferred to Phase 3 by design.
   paired as the type checker pairs them (#7820;
   `docs/progress/2026-09-30-method-default-args.md`), and binds the
   overload the type checker resolved on every target; an `impl` default
-  that differs from the interface's is warned about (T0155) (#7828;
+  that differs from the interface's is warned about (T0161) (#7828;
   `docs/progress/2026-10-02-method-overload-default-dispatch.md`).  A
   callee restored from a compiled dependency fills an omitted default too,
   by calling the thunk its package compiled the default into (#7827, D168;

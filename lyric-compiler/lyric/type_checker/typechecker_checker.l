@@ -1998,7 +1998,7 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
   }
 }
 
-// T0155 (warning): a parameter of an `impl` method whose default is not the
+// T0161 (warning): a parameter of an `impl` method whose default is not the
 // one the interface member declares for it, or which only one of the two
 // gives a default.  A call takes the defaults of the declaration it resolves
 // through (docs/01 §"Default arguments"), so a call through the interface
@@ -2042,7 +2042,7 @@ func reportImplDefaultMismatches(
       }
     }
     if why.length > 0 {
-      diag.add(warningDiagnostic("T0155", why + " (declare the same default in both)", mp.span))
+      diag.add(warningDiagnostic("T0161", why + " (declare the same default in both)", mp.span))
     }
     i = i + 1
   }
@@ -3834,7 +3834,7 @@ record MethodHead {
   span: Span
 }
 
-// T0156: two methods of one name in one record, interface or `impl` must
+// T0162: two methods of one name in one record, interface or `impl` must
 // differ in their number of parameters, as two functions of one name in a
 // package must (T0001).  A call binds an overload by its parameter count:
 // every backend keys a method by name and parameter count, and so does the
@@ -3854,7 +3854,7 @@ func checkSameArityMethods(diag: in List[Diagnostic], owner: in String, heads: i
     if clash {
       diag.add(
         errorDiagnostic(
-          "T0156",
+          "T0162",
           "method '" + heads[j].name + "' of '" + owner + "' has the same number of parameters (" + toString(heads[j].arity) +
             ") as an earlier method of that name; methods of one name must differ in their number of parameters",
           heads[j].span

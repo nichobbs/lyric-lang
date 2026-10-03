@@ -10074,7 +10074,7 @@ test "a method call omitting a default records the resolved overload's arity (#7
 }
 
 // #7828: an impl method whose default differs from the interface member's,
-// or which only one of the two declares, is T0155 (a warning) at the impl
+// or which only one of the two declares, is T0161 (a warning) at the impl
 // method's parameter; equal defaults are not.
 func ifaceDefaultSrc(ifaceParam: in String, implParam: in String): String {
   "package P\ninterface Shape {\n  func area(self: in Self, " + ifaceParam + "): Int\n" +
@@ -10084,88 +10084,88 @@ func ifaceDefaultSrc(ifaceParam: in String, implParam: in String): String {
     "): Int { self.s * k }\n}\n"
 }
 
-test "an impl default that differs from the interface's is T0155 (#7828)" {
+test "an impl default that differs from the interface's is T0161 (#7828)" {
   val differ = parseCheck(ifaceDefaultSrc("k: in Int = 2", "k: in Int = 3"))
-  assertEqualInt(countDiagCode(differ, "T0155"), 1, "different defaults: " + diagCodesOf(differ))
+  assertEqualInt(countDiagCode(differ, "T0161"), 1, "different defaults: " + diagCodesOf(differ))
   assertEqualInt(diagCount(differ), 1, "a warning only")
   assertTrue(diagMessagesContain(differ, "has a different default from the one interface 'Shape' declares"), "message")
   val implOnly = parseCheck(ifaceDefaultSrc("k: in Int", "k: in Int = 3"))
-  assertEqualInt(countDiagCode(implOnly, "T0155"), 1, "only the impl declares one: " + diagCodesOf(implOnly))
+  assertEqualInt(countDiagCode(implOnly, "T0161"), 1, "only the impl declares one: " + diagCodesOf(implOnly))
   assertTrue(diagMessagesContain(implOnly, "has a default that interface 'Shape' does not declare"), "message")
   val ifaceOnly = parseCheck(ifaceDefaultSrc("k: in Int = 2", "k: in Int"))
-  assertEqualInt(countDiagCode(ifaceOnly, "T0155"), 1, "only the interface declares one: " + diagCodesOf(ifaceOnly))
+  assertEqualInt(countDiagCode(ifaceOnly, "T0161"), 1, "only the interface declares one: " + diagCodesOf(ifaceOnly))
   assertTrue(diagMessagesContain(ifaceOnly, "has no default, but interface 'Shape' declares one"), "message")
   val same = parseCheck(ifaceDefaultSrc("k: in Int = (1 + 1)", "k: in Int = 1 + 1"))
-  assertEqualInt(countDiagCode(same, "T0155"), 0, "the same default written alike: " + diagCodesOf(same))
+  assertEqualInt(countDiagCode(same, "T0161"), 0, "the same default written alike: " + diagCodesOf(same))
   val none = parseCheck(ifaceDefaultSrc("k: in Int", "k: in Int"))
   assertEqualInt(diagCount(none), 0, "no defaults at all: " + diagCodesOf(none))
 }
 
-test "an impl overriding an interface default method with another default is T0155 (#7828)" {
+test "an impl overriding an interface default method with another default is T0161 (#7828)" {
   val src = "package P\ninterface Shape {\n  func label(self: in Self, p: in String = \"s\"): String { p }\n}\n" +
     "record Sq { s: Int }\nimpl Shape for Sq {\n  func label(self: in Sq, p: in String = \"q\"): String { p }\n}\n"
   val cr = parseCheck(src)
-  assertEqualInt(countDiagCode(cr, "T0155"), 1, "overridden default method: " + diagCodesOf(cr))
+  assertEqualInt(countDiagCode(cr, "T0161"), 1, "overridden default method: " + diagCodesOf(cr))
   val sameSrc = "package P\ninterface Shape {\n  func label(self: in Self, p: in String = \"s\"): String { p }\n}\n" +
     "record Sq { s: Int }\nimpl Shape for Sq {\n  func label(self: in Sq, p: in String = \"s\"): String { p }\n}\n"
-  assertEqualInt(countDiagCode(parseCheck(sameSrc), "T0155"), 0, "the same default")
+  assertEqualInt(countDiagCode(parseCheck(sameSrc), "T0161"), 0, "the same default")
 }
 
 // #7827: a default known only as a call to a restored package's compiled
 // thunk is not compared; a one-sided default still is.
-test "T0155 does not compare a default known only as a thunk call (#7827)" {
+test "T0161 does not compare a default known only as a thunk call (#7827)" {
   val thunk = "func __lyric_default__Shape__area__2__k(): Int { 2 }\n"
   val src = "package P\n" + thunk +
     "interface Shape {\n  func area(self: in Self, k: in Int = __lyric_default__Shape__area__2__k()): Int\n}\n" +
     "record Sq { s: Int }\nimpl Shape for Sq {\n  func area(self: in Sq, k: in Int = 3): Int { self.s * k }\n}\n"
   val cr = parseCheck(src)
-  assertEqualInt(countDiagCode(cr, "T0155"), 0, "not compared: " + diagCodesOf(cr))
+  assertEqualInt(countDiagCode(cr, "T0161"), 0, "not compared: " + diagCodesOf(cr))
   val oneSided = "package P\n" + thunk +
     "interface Shape {\n  func area(self: in Self, k: in Int = __lyric_default__Shape__area__2__k()): Int\n}\n" +
     "record Sq { s: Int }\nimpl Shape for Sq {\n  func area(self: in Sq, k: in Int): Int { self.s * k }\n}\n"
-  assertEqualInt(countDiagCode(parseCheck(oneSided), "T0155"), 1, "the impl declares none")
+  assertEqualInt(countDiagCode(parseCheck(oneSided), "T0161"), 1, "the impl declares none")
 }
 
 // #8085: two methods of one name in one record, interface or impl must
 // differ in their number of parameters, as two functions must (T0001);
 // overloads of different counts stay valid.
-test "same-name methods with one parameter count are T0156 (#8085)" {
+test "same-name methods with one parameter count are T0162 (#8085)" {
   val rec = parseCheck(
     "package P\nrecord R {\n  n: Int\n  func scale(self: in R, x: in Int, f: in Int = 1): Int { x * f }\n" +
       "  func scale(self: in R, x: in String, f: in Int = 2): Int { f }\n}\n"
   )
-  assertEqualInt(countDiagCode(rec, "T0156"), 1, "record: " + diagCodesOf(rec))
+  assertEqualInt(countDiagCode(rec, "T0162"), 1, "record: " + diagCodesOf(rec))
   assertTrue(diagMessagesContain(rec, "method 'scale' of 'R' has the same number of parameters (3)"), "message")
   val iface = parseCheck(
     "package P\ninterface I {\n  func m(self: in Self, x: in Int): Int\n  func m(self: in Self, x: in String): Int\n}\n"
   )
-  assertEqualInt(countDiagCode(iface, "T0156"), 1, "interface: " + diagCodesOf(iface))
+  assertEqualInt(countDiagCode(iface, "T0162"), 1, "interface: " + diagCodesOf(iface))
   val implSrc = parseCheck(
     "package P\ninterface I {\n  func m(self: in Self, x: in Int): Int\n}\nrecord Q { q: Int }\n" +
       "impl I for Q {\n  func m(self: in Q, x: in Int): Int { x }\n  func m(self: in Q, x: in String): Int { 0 }\n}\n"
   )
-  assertEqualInt(countDiagCode(implSrc, "T0156"), 1, "impl: " + diagCodesOf(implSrc))
+  assertEqualInt(countDiagCode(implSrc, "T0162"), 1, "impl: " + diagCodesOf(implSrc))
   val ok = parseCheck(
     "package P\nrecord R {\n  n: Int\n  func scale(self: in R, x: in Int): Int { x }\n" +
       "  func scale(self: in R, x: in Int, f: in Int = 2): Int { x * f }\n}\n"
   )
-  assertEqualInt(countDiagCode(ok, "T0156"), 0, "different counts: " + diagCodesOf(ok))
+  assertEqualInt(countDiagCode(ok, "T0162"), 0, "different counts: " + diagCodesOf(ok))
 }
 
-// #8085 review: T0155 compares every expression form, so an interpolated or
+// #8085 review: T0161 compares every expression form, so an interpolated or
 // an `if` default written the same way in both places is not reported.
-test "identical interpolated and if defaults are not T0155 (#8085)" {
+test "identical interpolated and if defaults are not T0161 (#8085)" {
   val interp = parseCheck(
     ifaceDefaultSrc("k: in String = \"a\${1 + 1}b\"", "k: in String = \"a\${1 + 1}b\"").replace(
       "self.s * k",
       "self.s"
     )
   )
-  assertEqualInt(countDiagCode(interp, "T0155"), 0, "interpolated: " + diagCodesOf(interp))
+  assertEqualInt(countDiagCode(interp, "T0161"), 0, "interpolated: " + diagCodesOf(interp))
   val cond = parseCheck(ifaceDefaultSrc("k: in Int = if true { 2 } else { 3 }", "k: in Int = if true { 2 } else { 3 }"))
-  assertEqualInt(countDiagCode(cond, "T0155"), 0, "if: " + diagCodesOf(cond))
+  assertEqualInt(countDiagCode(cond, "T0161"), 0, "if: " + diagCodesOf(cond))
   val condDiff = parseCheck(
     ifaceDefaultSrc("k: in Int = if true { 2 } else { 3 }", "k: in Int = if true { 2 } else { 4 }")
   )
-  assertEqualInt(countDiagCode(condDiff, "T0155"), 1, "a different if: " + diagCodesOf(condDiff))
+  assertEqualInt(countDiagCode(condDiff, "T0161"), 1, "a different if: " + diagCodesOf(condDiff))
 }
