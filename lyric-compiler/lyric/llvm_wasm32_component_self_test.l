@@ -78,6 +78,10 @@ pub func nothing(): Unit {
 "#
 
 func buildComponent(): String {
+  buildComponentOf(program)
+}
+
+func buildComponentOf(source: in String): String {
   val _w = envOrPanic("WASI_SDK_PATH")
   val _t = envOrPanic("WASM_TOOLS")
   val _a = envOrPanic("LYRIC_WASI_ADAPTER")
@@ -92,7 +96,7 @@ func buildComponent(): String {
   val _d = File.createDir(dir)
   val flags: List[String] = newList()
   val ok = compileToNativeWithShape(
-    program,
+    source,
     Path.join(dir, "prog.wasm"),
     stdlib,
     "wasm32-wasi",
@@ -181,6 +185,133 @@ console.log('loop=' + [1, 2, 3].map((i) => p.echo('x'.repeat(i * 1000)).length).
   assertTrue(Str.contains(n.stdout, "loop=1000,2000,3000"), "loop: " + n.stdout)
 }
 
+val richProgram: String = r#"package Probe
+
+record Point {
+  x: Int
+  y: Int
+}
+
+record Person {
+  name: String
+  age: Int
+  tags: List[String]
+  home: Option[Point]
+}
+
+enum Color {
+  case Red
+  case Green
+  case Blue
+}
+
+union Shape {
+  case Square(side: Double)
+  case Circle(radius: Double)
+  case Label(text: String)
+  case Empty
+}
+
+pub func mkPoint(x: Int, y: Int): Point {
+  Point(x = x, y = y)
+}
+
+pub func swap(p: Point): Point {
+  Point(x = p.y, y = p.x)
+}
+
+pub func makePerson(name: String, age: Int): Person {
+  Person(name = name, age = age, tags = [name, "tag"], home = Some(value = Point(x = age, y = 2)))
+}
+
+pub func older(p: Person): Person {
+  Person(name = p.name, age = p.age + 1, tags = p.tags, home = p.home)
+}
+
+pub func firstTag(p: Person): Option[String] {
+  if p.tags.count > 0 {
+    Some(value = p.tags[0])
+  } else {
+    None
+  }
+}
+
+pub func optInt(b: Bool): Option[Int] {
+  if b {
+    Some(value = 42)
+  } else {
+    None
+  }
+}
+
+pub func safeDiv(a: Int, b: Int): Result[Int, String] {
+  if b == 0 {
+    Err(error = "divide by zero")
+  } else {
+    Ok(value = a / b)
+  }
+}
+
+pub func sumAll(xs: List[Int]): Int {
+  var t = 0
+  for x in xs {
+    t = t + x
+  }
+  t
+}
+
+pub func names(ps: List[Person]): List[String] {
+  val acc: List[String] = newList()
+  for p in ps {
+    acc.add(p.name)
+  }
+  acc
+}
+
+pub func evens(n: Int): List[Int] {
+  val acc: List[Int] = newList()
+  var i = 0
+  while i < n {
+    acc.add(i * 2)
+    i = i + 1
+  }
+  acc
+}
+
+pub func nextColor(c: Color): Color {
+  match c {
+    case Color.Red -> Color.Green
+    case Color.Green -> Color.Blue
+    case Color.Blue -> Color.Red
+  }
+}
+
+pub func mkShape(k: Int): Shape {
+  if k == 0 {
+    Square(side = 2.0)
+  } else if k == 1 {
+    Circle(radius = 1.5)
+  } else if k == 2 {
+    Label(text = "hi")
+  } else {
+    Empty
+  }
+}
+
+pub func describe(s: Shape): String {
+  match s {
+    case Square(side) -> "square"
+    case Circle(radius) -> "circle"
+    case Label(text) -> text
+    case Empty -> "empty"
+  }
+}
+
+pub func many(a: Int, b: Int, c: Int, d: Int, e: Int, f: Int, g: Int, h: Int, i: Int, j: Int, k: Int, l: Int, m: Int, n: Int, o: Int, p: Int, q: Int, r: Int): Int {
+  a + b + c + d + e + f + g + h + i + j + k + l + m + n + o + p + q + r
+}
+"#
+
 test "wasm32 component: a missing adapter is N0016, not a crash" {
   val _w = envOrPanic("WASI_SDK_PATH")
   val _t = envOrPanic("WASM_TOOLS")
@@ -239,4 +370,76 @@ pub func go(): Unit {
     "component"
   )
   assertFalse(ok, "a component build cannot carry a host import yet (N0017)")
+}
+
+test "wasm32 component: records, options, results, lists, enums and variants cross the boundary" {
+  val dir = buildComponentOf(richProgram)
+  val wasm = Path.join(dir, "prog.wasm")
+  val vargs: List[String] = newList()
+  vargs.add("validate")
+  vargs.add(wasm)
+  val v = run(envOrPanic("WASM_TOOLS"), vargs)
+  assertTrue(v.exitCode == 0, "wasm-tools validate: " + v.stderr)
+  val outDir = Path.join(dir, "js")
+  val jargs: List[String] = newList()
+  jargs.add("transpile")
+  jargs.add(wasm)
+  jargs.add("-o")
+  jargs.add(outDir)
+  val j = run(envOrPanic("JCO"), jargs)
+  assertTrue(j.exitCode == 0, "jco transpile: " + j.stderr)
+  val lnargs: List[String] = newList()
+  lnargs.add("-s")
+  lnargs.add(envOrPanic("LYRIC_JCO_NODE_MODULES"))
+  lnargs.add(Path.join(dir, "node_modules"))
+  val _ln = run("ln", lnargs)
+  val script = r"import * as m from './js/prog.js';
+const p = m.probe;
+const show = (v) => JSON.stringify(v, (k, x) => typeof x === 'bigint' ? Number(x) : x);
+console.log('mkPoint=' + show(p.mkPoint(3, 4)));
+console.log('swap=' + show(p.swap({ x: 1, y: 2 })));
+const per = p.makePerson('ann', 30);
+console.log('person=' + show(per));
+console.log('older=' + show(p.older(per)));
+console.log('firstTag=' + show(p.firstTag(per)));
+console.log('optSome=' + show(p.optInt(true)) + ' optNone=' + show(p.optInt(false)));
+console.log('divOk=' + show(p.safeDiv(10, 2)));
+try { p.safeDiv(1, 0); console.log('divErr=none'); } catch (e) { console.log('divErr=' + show(e.payload ?? e)); }
+console.log('sumAll=' + p.sumAll(new Int32Array([1, 2, 3, 4])));
+console.log('names=' + show(p.names([p.makePerson('a', 1), p.makePerson('bb', 2)])));
+console.log('evens=' + show(Array.from(p.evens(5))));
+console.log('empty=' + show(Array.from(p.evens(0))));
+console.log('color=' + p.nextColor('red') + ',' + p.nextColor('blue'));
+console.log('shapes=' + [0, 1, 2, 3].map((k) => show(p.mkShape(k))).join(';'));
+console.log('describe=' + p.describe({ tag: 'label', val: 'xyz' }) + ',' + p.describe({ tag: 'empty' }));
+console.log('many=' + p.many(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18));
+"
+  val scriptPath = Path.join(dir, "run.mjs")
+  val _s = File.writeText(scriptPath, script)
+  val nargs: List[String] = newList()
+  nargs.add(scriptPath)
+  val n = run(Environment.getVarOrDefault("NODE", "node"), nargs)
+  assertTrue(n.exitCode == 0, "node: " + n.stderr + n.stdout)
+  assertTrue(Str.contains(n.stdout, "mkPoint={\"x\":3,\"y\":4}"), "mkPoint: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "swap={\"x\":2,\"y\":1}"), "swap: " + n.stdout)
+  assertTrue(
+    Str.contains(
+      n.stdout,
+      "person={\"name\":\"ann\",\"age\":30,\"tags\":[\"ann\",\"tag\"],\"home\":{\"x\":30,\"y\":2}}"
+    ),
+    "person: " + n.stdout
+  )
+  assertTrue(Str.contains(n.stdout, "\"age\":31"), "older: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "firstTag=\"ann\""), "firstTag: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "optSome=42 optNone=undefined"), "options: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "divOk=5"), "divOk: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "divErr=\"divide by zero\""), "divErr: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "sumAll=10"), "sumAll: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "names=[\"a\",\"bb\"]"), "names: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "evens=[0,2,4,6,8]"), "evens: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "empty=[]"), "empty list: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "color=green,red"), "enum: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "{\"tag\":\"square\",\"val\":2}"), "variant: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "describe=xyz,empty"), "describe: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "many=171"), "spilled params: " + n.stdout)
 }

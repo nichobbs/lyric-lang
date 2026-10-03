@@ -335,8 +335,10 @@ hello.l --target native --triple wasm32-wasi --shape component` writes
 `pub func`s, one WIT interface per package). It needs `wasm-tools` (`$WASM_TOOLS`
 or on `PATH`) and the WASI preview1 reactor adapter (`$LYRIC_WASI_ADAPTER`); a
 missing tool is error `N0016`. Today the exports may use `Int`, `Long`, `Bool`,
-`Byte`, `Float`, `Double`, `String` and `Unit`; async exports and host imports
-(`@wasmImport`, `N0017`) are not part of the component shape yet.
+`Byte`, `Float`, `Double`, `String` and `Unit`, plus `Option`, `Result`, `List` and your
+own records, enums and unions of one payload field (nested freely), which become
+WIT `option`, `result`, `list`, `record`, `enum` and `variant`. Async exports and host
+imports (`@wasmImport`, `N0017`) are not part of the component shape yet.
 
 Memory on this target is managed by automatic reference counting (ARC) —
 there is no garbage collector. Reference cycles are not collected; break

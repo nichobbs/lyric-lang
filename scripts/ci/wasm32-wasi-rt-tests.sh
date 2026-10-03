@@ -5,7 +5,7 @@
 # (docs/35 phase W2, D-progress-1028).
 #
 # Both toolchains are downloaded from their official GitHub releases and
-# sha256-verified, then cached under $WASM_TOOLS (default
+# sha256-verified, then cached under $LYRIC_WASM_TOOLCACHE (default
 # $RUNNER_TEMP/wasm-tools, falling back to a temp dir), so a persistent
 # runner pays the download once.  wasi-sdk 24 ships clang 18, the same major
 # version the native backend's other CI lanes pin.
@@ -32,7 +32,7 @@ WASI_ADAPTER_SHA256="5cf61fb9c5d5c47a63d2f61c4d8bfc3b2f862f7ed50e8d62c29c2335970
 JCO_VERSION="1.8.1"
 PREVIEW2_SHIM_VERSION="0.17.1"
 
-tools="${WASM_TOOLS:-${RUNNER_TEMP:-$(mktemp -d)}/wasm-tools}"
+tools="${LYRIC_WASM_TOOLCACHE:-${RUNNER_TEMP:-$(mktemp -d)}/wasm-tools}"
 mkdir -p "$tools"
 
 fetch() { # url sha256 dest-tarball
