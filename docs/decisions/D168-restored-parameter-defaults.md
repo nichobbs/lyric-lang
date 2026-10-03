@@ -52,10 +52,13 @@ consumers call it.
    own `impl` of a restored interface declares its own defaults. T0161 does
    not compare a default it knows only as a thunk call.
 
-4. **Not exported:** a parameter whose type names a type parameter of the
-   callable or of its owner, or `Self` (a nullary thunk has nothing to bind
-   the type parameter to), and the methods of a generic `impl`, whose head
-   the contract renders without its type parameters. A consumer passes
+4. **Not exported:** a parameter whose type names a type or value generic
+   parameter of the callable or of its owner anywhere in it (`T`, `T.Item`,
+   `array[N, Int]`, `Vec[N]`), or `Self` (a nullary thunk has nothing to
+   bind the parameter to); a parameter whose default reads a value generic
+   parameter; and the methods of a generic `impl`, whose head the contract
+   renders without its type parameters (the `impl` renders bodyless and gets
+   no thunks, #8099). A consumer passes
    those arguments explicitly. A native build synthesises no thunks: it
    writes no contract, and `--shape module` exports every public function to
    JavaScript.

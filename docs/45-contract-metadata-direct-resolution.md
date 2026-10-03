@@ -197,9 +197,18 @@ contract renderer, so it does not depend on declaration order:
 - `<params>` is the parameter count (receiver included) and `_`, then each
   parameter's type: a letter for its form followed by its parts
   (`Lyric.Parser.thunkTypeKey`: `r` named, then its path; `g` generic
-  application, then its path and its type arguments; `a` array, `s` slice,
-  `n` range subtype, `t` tuple, `o` nullable, `c` function, `u` Unit, `e`
-  `Self`, `x` Never). `<param>` is the parameter's name.
+  application, then its path and its type arguments, each `t` and a type or
+  `v` and a value; `a` array, then its length (`t`/`v` likewise) and element
+  type; `s` slice; `n` range subtype, then its path and bounds (`c` closed,
+  `h` half-open, `l` no lower bound, `u` no upper bound); `t` tuple; `o`
+  nullable; `c` function; `u` Unit; `e` `Self`; `x` Never). A value
+  (`Lyric.Parser.thunkExprKey`) is likewise a letter for its form and its
+  parts: `i` an integer literal, its digits as a name and a suffix letter;
+  `f` a floating-point literal; `h` a character; `s` a string; `b1`/`b0`; `p`
+  a name; `m` a member; `g`/`k` negation and `not`; `y` a binary operator,
+  its letter and operands; `c` a call; `t` a tuple. So `array[3, Int]` and
+  `array[4, Int]`, `Vec[3]` and `Vec[4]`, and `Int range 0 ..= 5` and
+  `Int range 0 ..= 6` spell differently. `<param>` is the parameter's name.
 
 Every part is length- or count-prefixed and every type starts with a letter
 for its form, so the encoding is prefix-free and no two distinct (kind,
@@ -226,11 +235,14 @@ instead of `impl Shape for Sq {}`, so a call on the concrete type takes the
 §"Default arguments"). A consumer re-parses the call like any other default
 and splices it; no default expression crosses the package boundary.
 
-**Not exported.** A parameter whose type names a type parameter of the
-callable or its owner, or `Self`, gets no thunk (a nullary thunk has
-nothing to bind the type parameter), and neither do the methods of a generic
-`impl` (whose head the contract does not render with its type parameters);
-a consumer must pass such an argument. A native build synthesises no
+**Not exported.** A parameter whose type names a type or value generic
+parameter of the callable or its owner anywhere in it (as a type, the head of
+a path such as `T.Item`, an array length or a value type argument), or
+`Self`, gets no thunk (a nullary thunk has nothing to bind the parameter
+to), nor does one whose default reads a value generic parameter. Neither do
+the methods of a generic `impl` (whose head the contract does not render
+with its type parameters; the `impl` renders bodyless, #8099). A consumer
+must pass such an argument. A native build synthesises no
 thunks: it emits no contract, and its `--shape module` glue exports every
 public function.
 

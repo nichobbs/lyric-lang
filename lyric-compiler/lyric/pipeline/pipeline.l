@@ -734,6 +734,14 @@ pub func pipeCheckAndMono(
   if gate(opts.pkgLabel, opts.lineOrigins, monoRes0.diagnostics) {
     return None
   }
+  foreignMethodCallArities(
+    monoRes0.foreignSpecs,
+    file0,
+    importedPkgs,
+    monoGenFuncs,
+    opts.nativeIntrinsics,
+    opts.methodCallAritiesOut
+  )
   if monoRes0.unsignedSpecs.count == 0 {
     return Some(value = finishMono(monoRes0.file, opts))
   }
@@ -871,6 +879,269 @@ pub func recheckSpecs(
   acc
 }
 
+// The scope a specialisation of `origin`'s generic is checked in: that
+// package's items as signatures (`items`), with its private generics, which a
+// specialised body may call, the packages it imports (`imports`), and every
+// other package (`checkPkgs`).  False when `origin` is not among
+// `importedPkgs`.
+func addOriginScope(
+  origin: in String,
+  file0: in SourceFile,
+  importedPkgs: in List[ImportedPackage],
+  monoGenFuncs: in List[FunctionDecl],
+  items: in List[Item],
+  imports: in List[ImportDecl],
+  checkPkgs: in List[ImportedPackage],
+): Bool {
+  var found = false
+  for ip in importedPkgs {
+    if ip.name == origin {
+      found = true
+      for it in ip.items {
+        items.add(signatureOnlyItem(it))
+      }
+      for dep in ip.imports {
+        imports.add(wholeImportDecl(dep, file0.span))
+      }
+    } else {
+      checkPkgs.add(ip)
+    }
+  }
+  if not found {
+    return false
+  }
+  for gf in monoGenFuncs {
+    if originPkgOf(gf.annotations) == origin and not itemsDeclareFunc(items, gf) {
+      items.add(funcItem(stripBody(gf)))
+    }
+  }
+  true
+}
+
+// ─── Method calls in other packages' generics (#7828, #8098) ───────────────
+// A call that leaves out a defaulted argument, or that a dot-named function
+// answers, is dispatched to the callee the type checker resolved
+// (`SymbolTable.methodCallArities`), keyed by the call's source span.  A
+// specialisation of another package's generic carries that package's spans,
+// which this package's check never saw, so each such specialisation whose
+// body calls a method that may need the resolution is checked in the scope
+// of the package declaring the generic, and what the checker records in its
+// body goes to `acc` keyed `<origin>|<methodCallSiteKey>`; each backend looks
+// a call in a body specialised from `origin` up under that key.  The checker
+// resolves a call in a generic body the same way for every specialisation,
+// so one specialisation of each generic is checked.
+pub func foreignMethodCallArities(
+  specs: in List[UnsignedSpecRequest],
+  file0: in SourceFile,
+  importedPkgs: in List[ImportedPackage],
+  monoGenFuncs: in List[FunctionDecl],
+  native: in Bool,
+  acc: in Map[String, Int],
+): Unit {
+  if specs.count == 0 {
+    return
+  }
+  val names = dispatchSensitiveMethodNames(file0, importedPkgs)
+  if names.count == 0 {
+    return
+  }
+  val byOrigin: Map[String, List[FunctionDecl]] = newMap()
+  val seen: Map[String, Bool] = newMap()
+  for sp in specs {
+    val seenKey = sp.originPkg + "|" + recordCopySiteKey(sp.specDecl.span)
+    if not seen.containsKey(seenKey) and specCallsAnyMethod(sp.specDecl, names) {
+      seen.add(seenKey, true)
+      match mapGet(byOrigin, sp.originPkg) {
+        case Some(ds) -> ds.add(sp.specDecl)
+        case None -> {
+          val ds: List[FunctionDecl] = newList()
+          ds.add(sp.specDecl)
+          byOrigin.add(sp.originPkg, ds)
+        }
+      }
+    }
+  }
+  for origin in mapKeys(byOrigin) {
+    match mapGet(byOrigin, origin) {
+      case Some(decls) -> foreignOriginArities(origin, decls, file0, importedPkgs, monoGenFuncs, native, acc)
+      case None -> ()
+    }
+  }
+}
+
+func foreignOriginArities(
+  origin: in String,
+  decls: in List[FunctionDecl],
+  file0: in SourceFile,
+  importedPkgs: in List[ImportedPackage],
+  monoGenFuncs: in List[FunctionDecl],
+  native: in Bool,
+  acc: in Map[String, Int],
+): Unit {
+  val items: List[Item] = newList()
+  val imports: List[ImportDecl] = newList()
+  val checkPkgs: List[ImportedPackage] = newList()
+  // A package not available here was never resolved against, so its
+  // generics' calls dispatch by the arguments written, as before.
+  if not addOriginScope(origin, file0, importedPkgs, monoGenFuncs, items, imports, checkPkgs) {
+    return
+  }
+  for d in decls {
+    items.add(funcItem(d))
+  }
+  val checkFile = SourceFile(
+    moduleDoc = file0.moduleDoc,
+    fileAnnotations = file0.fileAnnotations,
+    packageDecl = PackageDecl(
+      path = ModulePath(segments = dottedSegments(origin), span = file0.span),
+      span = file0.span
+    ),
+    imports = imports,
+    items = items,
+    span = file0.span
+  )
+  val res = if native {
+    checkWithImportedPackagesForNative(checkFile, checkPkgs)
+  } else {
+    checkWithImportedPackages(checkFile, checkPkgs)
+  }
+  // A package's source offsets are unique across its files (and a restored
+  // package is synthesised as one source), so an entry recorded at a
+  // signature's default never shares a key with a call in a body.
+  for k in mapKeys(res.symbols.methodCallArities) {
+    if not acc.containsKey(origin + "|" + k) {
+      match mapGet(res.symbols.methodCallArities, k) {
+        case Some(code) -> acc.add(origin + "|" + k, code)
+        case None -> ()
+      }
+    }
+  }
+}
+
+// The names of the methods whose calls the backends dispatch by the type
+// checker's resolution: one with a defaulted parameter (a call may leave it
+// out) and one an owner declares more than once, counting a dot-named
+// function `func T.m(...)` with `T`'s own `m`.
+func dispatchSensitiveMethodNames(file0: in SourceFile, importedPkgs: in List[ImportedPackage]): Map[String, Bool] {
+  val names: Map[String, Bool] = newMap()
+  val perOwner: Map[String, Bool] = newMap()
+  noteMethodItems(modulePathJoin(file0.packageDecl.path.segments) + "|", file0.items, names, perOwner)
+  for ip in importedPkgs {
+    noteMethodItems(ip.name + "|", ip.items, names, perOwner)
+  }
+  names
+}
+
+func noteMethodItems(
+  pkg: in String, items: in List[Item], names: in Map[String, Bool], perOwner: in Map[String, Bool]
+): Unit {
+  for it in items {
+    match it.kind {
+      case IFunc(fn) -> {
+        val dot = Str.lastIndexOfRaw(fn.name, ".")
+        if dot > 0 {
+          noteMethod(pkg + fn.name.substring(0, dot), fn.name.substring(dot + 1), fn.params, names, perOwner)
+        }
+      }
+      case IRecord(decl) -> noteRecordMethods(pkg, decl, names, perOwner)
+      case IExposedRec(decl) -> noteRecordMethods(pkg, decl, names, perOwner)
+      case IInterface(decl) -> {
+        for m in decl.members {
+          match m {
+            case IMSig(sig) -> noteMethod(pkg + decl.name, sig.name, sig.params, names, perOwner)
+            case IMFunc(fn) -> noteMethod(pkg + decl.name, fn.name, fn.params, names, perOwner)
+            case IMAssoc(_) -> ()
+          }
+        }
+      }
+      case IImpl(decl) -> {
+        for m in decl.members {
+          match m {
+            case IMplFunc(fn) -> noteMethod("", fn.name, fn.params, names, perOwner)
+            case IMplAssoc(_) -> ()
+          }
+        }
+      }
+      case _ -> ()
+    }
+  }
+}
+
+func noteRecordMethods(
+  pkg: in String, decl: in RecordDecl, names: in Map[String, Bool], perOwner: in Map[String, Bool]
+): Unit {
+  for m in decl.members {
+    match m {
+      case RMFunc(fn) -> noteMethod(pkg + decl.name, fn.name, fn.params, names, perOwner)
+      case _ -> ()
+    }
+  }
+}
+
+func noteMethod(
+  owner: in String,
+  name: in String,
+  params: in List[Param],
+  names: in Map[String, Bool],
+  perOwner: in Map[String, Bool],
+): Unit {
+  for p in params {
+    match p.dflt {
+      case Some(_) -> {
+        if not names.containsKey(name) {
+          names.add(name, true)
+        }
+      }
+      case None -> ()
+    }
+  }
+  // Owners are counted per package and type: a record's own methods and the
+  // dot-named functions of the type.  An impl method (`owner` "") is not
+  // counted: it never shares a name with its type's own methods (T0139).
+  if owner.length > 0 {
+    val ownerKey = owner + "." + name
+    if perOwner.containsKey(ownerKey) {
+      if not names.containsKey(name) {
+        names.add(name, true)
+      }
+    } else {
+      perOwner.add(ownerKey, true)
+    }
+  }
+}
+
+// True when `decl`'s body calls a method named in `names`, as `x.m(...)` or
+// as a bare call to a sibling method.
+func specCallsAnyMethod(decl: in FunctionDecl, names: in Map[String, Bool]): Bool {
+  val noDocs: List[DocComment] = newList()
+  val noAnns: List[Annotation] = newList()
+  val noImports: List[ImportDecl] = newList()
+  val items: List[Item] = newList()
+  items.add(funcItem(decl))
+  val f = SourceFile(
+    moduleDoc = noDocs,
+    fileAnnotations = noAnns,
+    packageDecl = PackageDecl(path = ModulePath(segments = newList(), span = decl.span), span = decl.span),
+    imports = noImports,
+    items = items,
+    span = decl.span
+  )
+  anyExprInFile(
+    f,
+    { e: Expr -> match e.kind { case ECall(callee, _) -> calleeMethodName(callee, names); case _ -> false } }
+  )
+}
+
+func calleeMethodName(callee: in Expr, names: in Map[String, Bool]): Bool {
+  match callee.kind {
+    case EParen(inner) -> calleeMethodName(inner, names)
+    case ETypeApp(inner, _) -> calleeMethodName(inner, names)
+    case EMember(_, name) -> names.containsKey(name)
+    case EPath(path) -> path.segments.count == 1 and names.containsKey(path.segments[0])
+    case _ -> false
+  }
+}
+
 func recheckSpecRound(
   round: in List[UnsignedSpecRequest],
   origin: in String,
@@ -905,21 +1176,7 @@ func recheckSpecRound(
       )
     }
   } else {
-    var found = false
-    for ip in importedPkgs {
-      if ip.name == origin {
-        found = true
-        for it in ip.items {
-          items.add(signatureOnlyItem(it))
-        }
-        for dep in ip.imports {
-          imports.add(wholeImportDecl(dep, file0.span))
-        }
-      } else {
-        checkPkgs.add(ip)
-      }
-    }
-    if not found {
+    if not addOriginScope(origin, file0, importedPkgs, monoGenFuncs, items, imports, checkPkgs) {
       for sp in round {
         diags.add(
           errorDiagnostic(
@@ -931,12 +1188,6 @@ func recheckSpecRound(
         )
       }
       return
-    }
-    // The package's private generics, which a specialised body may call.
-    for gf in monoGenFuncs {
-      if originPkgOf(gf.annotations) == origin and not itemsDeclareFunc(items, gf) {
-        items.add(funcItem(stripBody(gf)))
-      }
     }
     pkgDecl = PackageDecl(path = ModulePath(segments = dottedSegments(origin), span = file0.span), span = file0.span)
     for sp in round {

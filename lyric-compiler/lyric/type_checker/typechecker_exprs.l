@@ -11586,7 +11586,8 @@ func inferExprCore(
               }
               case None -> match methodPick {
                 case Some(mp) -> {
-                  recordMethodCallArity(tbl, fn, args.count, mp.sig.params.count)
+                  val pickedDotNamed = match mp.fullSig { case Some(_) -> true; case None -> false }
+                  recordMethodCallArity(tbl, fn, args.count, mp.sig.params.count, pickedDotNamed)
                   recordGeneratorCallSite(tbl, e.span, mp.sig.isGenerator)
                   recordAsyncCallSite(tbl, e.span, mp.sig.isAsync and not mp.sig.isGenerator)
                   recordEffectCallSite(tbl, e.span, mp.sig, fn)
@@ -12870,16 +12871,20 @@ func checkContractCallPure(
   )
 }
 
-// Record the parameter count of the method a call resolved to when the call
-// leaves out a defaulted argument (`SymbolTable.methodCallArities`, #7828);
-// a call inferred again replaces what an earlier inference recorded.
-func recordMethodCallArity(tbl: in SymbolTable, callee: in Expr, written: in Int, resolved: in Int): Unit {
+// Record the callee a method call resolved to when the backends could not
+// find it from the call alone (`SymbolTable.methodCallArities`): its
+// parameter count when the call leaves out a defaulted argument (#7828), and
+// that it is a dot-named function rather than the type's own method (#8098).
+// A call inferred again replaces what an earlier inference recorded.
+func recordMethodCallArity(
+  tbl: in SymbolTable, callee: in Expr, written: in Int, resolved: in Int, dotNamed: in Bool
+): Unit {
   val key = methodCallSiteKey(callee)
   if tbl.methodCallArities.containsKey(key) {
     tbl.methodCallArities.remove(key)
   }
-  if resolved != written {
-    tbl.methodCallArities.add(key, resolved)
+  if resolved != written or dotNamed {
+    tbl.methodCallArities.add(key, methodCallTargetCode(MethodCallTarget(dotNamed = dotNamed, arity = resolved)))
   }
 }
 

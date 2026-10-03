@@ -1467,3 +1467,98 @@ test "a record method and a same-named dot-named function keep their own default
     "the method keeps its default: " + r2.repr
   )
 }
+
+func thunkDeclNames(c: in Contract): List[String] {
+  val acc: List[String] = newList()
+  for d in c.decls {
+    if d.kind == "func" and Str.startsWith(d.name, "__lyric_default__") {
+      acc.add(d.name)
+    }
+  }
+  acc
+}
+
+// #8099: a generic impl exports no defaults: its methods' heads would name
+// type parameters the rendered `impl` head does not declare, so the impl
+// renders bodyless, no thunk is synthesised, and the contract re-parses.
+test "a generic impl exports no defaults (#8099)" {
+  val src = "package P\n\npub interface Sized {\n  func size(self: in Self, scale: in Int): Int\n}\n\n" +
+    "pub record Box[T] {\n  v: T\n}\n\n" +
+    "impl[T] Sized for Box[T] {\n  func size(self: in Box[T], scale: in Int = 3): Int {\n    scale\n  }\n}\n"
+  val c = buildContractFromFile(synthesizeDefaultThunks(parse(src).file), "1.0.0")
+  assertEqualInt(thunkDeclNames(c).count, 0, "no thunk for a generic impl's default")
+  val b = unwrapDeclOrFail(findDeclByKind(c.decls, "impl", "Box"), "impl for Box missing")
+  assertEqual(b.repr, "impl Sized for Box {}", "bodyless repr")
+  val i = unwrapDeclOrFail(findDeclByKind(c.decls, "interface", "Sized"), "interface Sized missing")
+  val reparsed = parse("package P\n\n" + i.repr + "\n\n" + b.repr + "\n")
+  assertEqualInt(reparsed.diagnostics.count, 0, "the reprs re-parse")
+}
+
+// Spell the thunk name of `x` in the first function of `src`.
+func firstFuncThunk(src: in String): String {
+  val pr = parse(src)
+  assertEqualInt(pr.diagnostics.count, 0, "parses: " + src)
+  val none: List[String] = newList()
+  match pr.file.items[0].kind {
+    case IFunc(fn) -> defaultThunkName(DTFunction, none, fn.name, fn.params, "x")
+    case _ -> {
+      assertTrue(false, "a function: " + src)
+      ""
+    }
+  }
+}
+
+func assertAllDistinct(names: in List[String]): Unit {
+  var i = 0
+  while i < names.count {
+    var j = i + 1
+    while j < names.count {
+      assertTrue(names[i] != names[j], "distinct: " + names[i] + " / " + names[j])
+      j = j + 1
+    }
+    i = i + 1
+  }
+}
+
+// #8098 review: array lengths, value type arguments and range bounds are part
+// of the parameter types' spelling, so overloads differing only there get
+// distinct thunks.
+test "defaultThunkName spells array lengths, value arguments and range bounds" {
+  val names: List[String] = newList()
+  names.add(firstFuncThunk("package P\n\nfunc k(a: in array[3, Int], x: in Int = 1): Int = x\n"))
+  names.add(firstFuncThunk("package P\n\nfunc k(a: in array[4, Int], x: in Int = 1): Int = x\n"))
+  names.add(firstFuncThunk("package P\n\nfunc k(a: in array[3u8, Int], x: in Int = 1): Int = x\n"))
+  names.add(firstFuncThunk("package P\n\nfunc k(a: in array[1 + 2, Int], x: in Int = 1): Int = x\n"))
+  names.add(firstFuncThunk("package P\n\nfunc k(a: in array[2 + 1, Int], x: in Int = 1): Int = x\n"))
+  names.add(firstFuncThunk("package P\n\nfunc k(a: in array[-3, Int], x: in Int = 1): Int = x\n"))
+  names.add(firstFuncThunk("package P\n\nfunc k(a: in Vec[\"a\"], x: in Int = 1): Int = x\n"))
+  names.add(firstFuncThunk("package P\n\nfunc k(a: in Vec[\"b\"], x: in Int = 1): Int = x\n"))
+  names.add(firstFuncThunk("package P\n\nfunc k(a: in Vec[3], x: in Int = 1): Int = x\n"))
+  names.add(firstFuncThunk("package P\n\nfunc k(a: in Vec[4], x: in Int = 1): Int = x\n"))
+  names.add(firstFuncThunk("package P\n\nfunc k(a: in Vec[Int], x: in Int = 1): Int = x\n"))
+  names.add(firstFuncThunk("package P\n\nfunc k(a: in Int range 0 ..= 5, x: in Int = 1): Int = x\n"))
+  names.add(firstFuncThunk("package P\n\nfunc k(a: in Int range 0 ..= 6, x: in Int = 1): Int = x\n"))
+  names.add(firstFuncThunk("package P\n\nfunc k(a: in Int range 0 ..< 6, x: in Int = 1): Int = x\n"))
+  names.add(firstFuncThunk("package P\n\nfunc k(a: in Long range 0 ..= 5, x: in Int = 1): Int = x\n"))
+  assertAllDistinct(names)
+}
+
+// #8098 review: a default is not exported when its parameter's type names a
+// type parameter through a qualified path or a value generic through an
+// array length, or when the default itself reads a value generic.
+test "defaults that name a type or value parameter anywhere are not exported" {
+  val src = "package P\n\n" +
+    "pub func g[N: Nat](a: in array[N, Int] = zeros(), k: in Int = N + 1, j: in Int = 2): Int {\n  j\n}\n\n" +
+    "pub func h[T](v: in T.Inner = mk(), j: in Int = 2): Int {\n  j\n}\n\n" +
+    "pub func w[N: Nat](v: in Vec[N] = mk(), j: in Int = 2): Int {\n  j\n}\n"
+  val c = buildContractFromFile(synthesizeDefaultThunks(parse(src).file), "1.0.0")
+  val names = thunkDeclNames(c)
+  var listed = ""
+  for n in names {
+    listed = listed + " " + n
+  }
+  assertEqualInt(names.count, 3, "only each function's j is exported:" + listed)
+  for n in names {
+    assertTrue(Str.endsWith(n, "1_j"), "a j thunk: " + n)
+  }
+}

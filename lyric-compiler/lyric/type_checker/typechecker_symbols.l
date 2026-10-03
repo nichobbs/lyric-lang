@@ -379,12 +379,14 @@ pub record SymbolTable {
   /// expression's span): the union the pattern matches, which the JVM
   /// resolves the case name in before the enclosing package's unions (#7761).
   memberRecvClasses: Map[String, String]
-  /// The number of parameters (receiver not counted) of the method each
-  /// method call resolved to, keyed by `methodCallSiteKey` of its callee,
-  /// for every call that leaves out a defaulted argument.  A backend that
-  /// tells a method's overloads apart by parameter count looks the callee up
-  /// by this count, not by the number of arguments written, so the call
-  /// binds to the overload the checker chose (#7828).
+  /// The callee each method call resolved to, keyed by `methodCallSiteKey`
+  /// of its callee (`Lyric.Parser.methodCallTargetCode`: its parameter count
+  /// with the receiver not counted, negated for a dot-named function), for
+  /// every call that leaves out a defaulted argument or resolves to a
+  /// dot-named function.  A backend looks the callee up by this entry, not
+  /// by the number of arguments written, so the call binds to the overload
+  /// the checker chose (#7828), and to a dot-named function even when the
+  /// type has a same-named method (#8098).
   methodCallArities: Map[String, Int]
   /// The first symbol declaring each type id, keyed by the id, filled lazily
   /// by `symTableTypeSymbolOf` as symbols are appended.

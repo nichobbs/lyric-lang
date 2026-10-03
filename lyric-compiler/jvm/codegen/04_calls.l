@@ -974,10 +974,24 @@ func lowerLambdaInvoke(ctx: in FuncCtx, insns: in List[LInsn], name: in String, 
 func methodSigJvm(
   ctx: in FuncCtx, cls: in String, name: in String, siteKey: in String, written: in Int
 ): Option[JvmFuncSig] {
+  if callResolvedToDotNamedJvm(ctx, siteKey) {
+    return None
+  }
   val arity = match mapGet(ctx.externTypes, "~arity~" + siteKey) { case Some(n) -> n; case None -> toString(written) }
   match mapGet(ctx.funcSigs, cls + "#" + name + "/" + arity) {
     case Some(sig) -> Some(value = sig)
     case None -> mapGet(ctx.funcSigs, cls + "#" + name)
+  }
+}
+
+// True when the type checker resolved the method call at `siteKey` to a
+// dot-named function `func T.m(self, ...)` rather than a method of the
+// receiver's type (`Lyric.Parser.methodCallTargetCode` records it as a
+// negative count, #8098): its type's same-named methods are not candidates.
+func callResolvedToDotNamedJvm(ctx: in FuncCtx, siteKey: in String): Bool {
+  match mapGet(ctx.externTypes, "~arity~" + siteKey) {
+    case Some(n) -> n.startsWith("-")
+    case None -> false
   }
 }
 
@@ -3841,6 +3855,17 @@ func lowerGeneralStaticCall(
   // as `aload_0; invokevirtual selfCls.send` with the other function's
   // arguments, bytecode that fails verification (#7846).
   val siblingCls: Option[String] = if path.segments.count <= 1 { ctx.selfClass } else { None }
+  // A bare call the checker resolved to a dot-named function `func T.m(self,
+  // ...)` rather than the sibling method is `self.m(args)`, which the
+  // member dispatch lowers (#8098).
+  match siblingCls {
+    case Some(_) -> if callResolvedToDotNamedJvm(ctx, methodCallPathKey(path)) {
+      val selfRecv = Expr(kind = ESelf, span = path.span)
+      val dotCallee = Expr(kind = EMember(receiver = selfRecv, memberName = funcName), span = path.span)
+      return lowerCall(ctx, insns, dotCallee, args)
+    }
+    case None -> ()
+  }
   match siblingCls {
     case Some(selfCls) -> {
       match methodSigJvm(ctx, selfCls, funcName, methodCallPathKey(path), args.count) {

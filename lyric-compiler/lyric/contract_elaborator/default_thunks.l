@@ -107,7 +107,10 @@ pub func synthesizeDefaultThunks(file: in SourceFile): SourceFile {
     match it.kind {
       case IImpl(decl) -> {
         val target = thunkImplTarget(decl)
-        if target.length > 0 and pubTypes.containsKey(target) {
+        // A generic impl exports no defaults (D168 item 4): its methods'
+        // heads would name type parameters the contract's `impl` head does
+        // not declare (#8099).
+        if target.length > 0 and pubTypes.containsKey(target) and not implIsGeneric(decl) {
           val owner: List[String] = newList()
           owner.add(target)
           owner.add(lastSegment(decl.iface.head.segments))
@@ -211,7 +214,7 @@ func addThunks(
   }
   for p in params {
     match p.dflt {
-      case Some(d) -> if not typeExprNamesAny(p.ty, inScope) {
+      case Some(d) -> if not typeExprNamesAny(p.ty, inScope) and not exprNamesAny(d, inScope) {
         val thunk = defaultThunkName(kind, owner, name, params, p.name)
         if addedNames.containsKey(thunk) {
           panic(
@@ -323,18 +326,19 @@ func lastSegment(segs: in List[String]): String {
   }
 }
 
-// True when `te` names `Self` or one of `names` anywhere in it.
+// True when `te` names `Self` or one of `names` anywhere in it: as a type
+// (`T`, or the head of a path such as `T.Item`), or as a value an array
+// length or value type argument uses (`array[N, Int]`, `Vec[N + 1]`).
 func typeExprNamesAny(te: in TypeExpr, names: in List[String]): Bool {
   match te.kind {
-    case TRef(path) -> path.segments.count == 1 and (path.segments[0] == "Self" or names.contains(path.segments[0]))
+    case TRef(path) -> pathNamesAny(path.segments, names)
     case TGenericApp(head, args) -> {
-      if head.segments.count == 1 and names.contains(head.segments[0]) {
+      if pathNamesAny(head.segments, names) {
         return true
       }
       for a in args {
-        match a {
-          case TAType(inner) -> if typeExprNamesAny(inner, names) { return true }
-          case TAValue(_) -> ()
+        if typeArgNamesAny(a, names) {
+          return true
         }
       }
       false
@@ -359,10 +363,64 @@ func typeExprNamesAny(te: in TypeExpr, names: in List[String]): Bool {
       false
     }
     case TSlice(elem) -> typeExprNamesAny(elem, names)
-    case TArray(_, elem) -> typeExprNamesAny(elem, names)
+    case TArray(size, elem) -> typeArgNamesAny(size, names) or typeExprNamesAny(elem, names)
     case TNullable(inner) -> typeExprNamesAny(inner, names)
     case TParen(inner) -> typeExprNamesAny(inner, names)
+    case TRefined(underlying, range) -> pathNamesAny(underlying.segments, names) or rangeNamesAny(range, names)
     case TSelf -> true
+    case _ -> false
+  }
+}
+
+func rangeNamesAny(r: in RangeBound, names: in List[String]): Bool {
+  match r {
+    case RBClosed(lo, hi) -> exprNamesAny(lo, names) or exprNamesAny(hi, names)
+    case RBHalfOpen(lo, hi, _) -> exprNamesAny(lo, names) or exprNamesAny(hi, names)
+    case RBLowerOpen(hi) -> exprNamesAny(hi, names)
+    case RBUpperOpen(lo) -> exprNamesAny(lo, names)
+  }
+}
+
+func pathNamesAny(segs: in List[String], names: in List[String]): Bool {
+  segs.count > 0 and (segs[0] == "Self" or names.contains(segs[0]))
+}
+
+func typeArgNamesAny(a: in TypeArg, names: in List[String]): Bool {
+  match a {
+    case TAType(inner) -> typeExprNamesAny(inner, names)
+    case TAValue(e) -> exprNamesAny(e, names)
+  }
+}
+
+// True when `e` (an array length, a value type argument or a default)
+// reads one of `names`.
+func exprNamesAny(e: in Expr, names: in List[String]): Bool {
+  match e.kind {
+    case EPath(path) -> pathNamesAny(path.segments, names)
+    case EMember(recv, _) -> exprNamesAny(recv, names)
+    case EPrefix(_, inner) -> exprNamesAny(inner, names)
+    case EBinop(_, lhs, rhs) -> exprNamesAny(lhs, names) or exprNamesAny(rhs, names)
+    case EParen(inner) -> exprNamesAny(inner, names)
+    case ECall(fn, args) -> {
+      if exprNamesAny(fn, names) {
+        return true
+      }
+      for a in args {
+        match a {
+          case CANamed(_, v, _) -> if exprNamesAny(v, names) { return true }
+          case CAPositional(v) -> if exprNamesAny(v, names) { return true }
+        }
+      }
+      false
+    }
+    case ETuple(es) -> {
+      for x in es {
+        if exprNamesAny(x, names) {
+          return true
+        }
+      }
+      false
+    }
     case _ -> false
   }
 }

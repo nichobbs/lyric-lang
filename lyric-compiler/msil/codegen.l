@@ -17792,13 +17792,22 @@ func funcArgsWithDefaultsMsil(
 // The number of arguments a method call passes once its omitted defaulted
 // arguments are filled: the parameter count of the overload the type
 // checker resolved it to (`cctx.methodCallArities`), else the `written`
-// count (#7828).  A body specialised from another package's generic was
-// checked there, so its spans do not key this package's entries.
+// count (#7828).
 func methodCallArityMsil(cctx: in CodegenCtx, fctx: in FuncCtx, siteKey: in String, written: in Int): Int {
+  methodCallTargetMsil(cctx, fctx, siteKey, written).arity
+}
+
+// The callee a method call binds to, as the type checker resolved it
+// (`Lyric.Parser.methodCallTarget` over `cctx.methodCallArities`): the
+// type's own method or a dot-named function, and its parameter count
+// (#7828, #8098).  A body specialised from another package's generic carries
+// that package's spans; `Lyric.Pipeline.foreignMethodCallArities` records
+// its calls under `<origin>|<siteKey>`.
+func methodCallTargetMsil(cctx: in CodegenCtx, fctx: in FuncCtx, siteKey: in String, written: in Int): MethodCallTarget {
   if fctx.originPkg.length > 0 and fctx.originPkg != fctx.pkgName {
-    return written
+    return methodCallTarget(cctx.methodCallArities, fctx.originPkg + "|" + siteKey, written)
   }
-  methodCallArity(cctx.methodCallArities, siteKey, written)
+  methodCallTarget(cctx.methodCallArities, siteKey, written)
 }
 
 // A method call's arguments in parameter order with its omitted defaulted
@@ -20138,8 +20147,10 @@ func lowerBuiltinOrStaticCallMsil(
               // (a generic class's member is called through a TypeSpec-parented
               // reference): lower exactly as `self.<name>(args)`, which the
               // generic-receiver dispatch handles, `Self` result included
-              // (#7704).
-              if selfIsGenericInstMsil(fctx) {
+              // (#7704).  So is a call the checker resolved to a dot-named
+              // function `func T.m(self, ...)` rather than the sibling
+              // method (#8098): the member dispatch takes it.
+              if selfIsGenericInstMsil(fctx) or methodCallTargetMsil(cctx, fctx, methodCallPathKey(path), args.count).dotNamed {
                 val selfCallee = selfMemberExprMsil(funcName, path.span)
                 return lowerExprMsil(cctx, fctx, insns, Expr(kind = ECall(fn = selfCallee, args = args), span = path.span))
               }
@@ -20829,9 +20840,11 @@ func lowerMethodCallMsil(
   args: in List[CallArg],
   siteKey: in String,
 ): MsilType {
-  // The overload the type checker resolved: its parameter count, which the
-  // arity-qualified dispatch keys below are built from (#7828).
-  val callArity = methodCallArityMsil(cctx, fctx, siteKey, args.count)
+  // The callee the type checker resolved: its parameter count, which the
+  // arity-qualified dispatch keys below are built from (#7828), and whether
+  // it is a dot-named function rather than the type's own method (#8098).
+  val callTarget = methodCallTargetMsil(cctx, fctx, siteKey, args.count)
+  val callArity = callTarget.arity
   // #7546: a package-qualified distinct/range-subtype static factory call
   // (`Lyric.Pkg.Port.tryFrom(n)` inside package `Lyric.Pkg`, or
   // `Std.Http.Url.tryFrom(s)` through an import) parses its receiver as a
@@ -21206,7 +21219,10 @@ func lowerMethodCallMsil(
       } else {
         cls + "/" + memberName
       }
-      match mapGet(cctx.methodTokens, dispatchKey) {
+      // A call the checker resolved to a dot-named function skips the type's
+      // own same-named methods (#8098).
+      val ownMethodTok: Option[Int] = if callTarget.dotNamed { None } else { mapGet(cctx.methodTokens, dispatchKey) }
+      match ownMethodTok {
         case Some(tok) -> {
           val margs = methodArgsWithDefaultsMsil(cctx, dispatchKey, args)
           val methodModes = match mapGet(cctx.methodParamModes, dispatchKey) { case Some(ms) -> ms; case None -> newList() }
@@ -21315,16 +21331,23 @@ func lowerMethodCallMsil(
           // registered in funcTokens as `cls + "." + memberName`.  The receiver is already
           // on the stack as the first (self) argument; load the remaining args and emit a
           // static call.  Mirrors the BEq `derivedEqualsTokenMsil` path but for named calls.
-          match mapGet(cctx.funcTokens, cls + "." + memberName) {
+          // The dot-named function with the resolved parameter count (the
+          // receiver counted), else the first registered of its name.
+          val dotArityKey = cls + "." + memberName + "/" + toString(callArity + 1)
+          val dotKey = if cctx.funcTokens.containsKey(dotArityKey) { dotArityKey } else { cls + "." + memberName }
+          match mapGet(cctx.funcTokens, dotKey) {
             case Some(funcTok) -> {
               val funcParamList = match mapGet(cctx.restoredFuncParamTypes, cls + "." + memberName) {
                 case Some(rpts) -> rpts
-                case None -> match mapGet(cctx.funcParamTypes, cls + "." + memberName) {
+                case None -> match mapGet(cctx.funcParamTypes, dotKey) {
                   case Some(pts) -> pts
-                  case None -> newList()
+                  case None -> match mapGet(cctx.funcParamTypes, cls + "." + memberName) {
+                    case Some(pts2) -> pts2
+                    case None -> newList()
+                  }
                 }
               }
-              val dargs = funcArgsWithDefaultsMsil(cctx, cls + "." + memberName, 1, args)
+              val dargs = funcArgsWithDefaultsMsil(cctx, dotKey, 1, args)
               var i = 0
               while i < dargs.count {
                 // Free-function param 0 is `self` (already on the stack); arg i maps to param i+1.
@@ -21336,7 +21359,13 @@ func lowerMethodCallMsil(
                 i = i + 1
               }
               insns.add(MCall(methodToken = funcTok))
-              return match mapGet(cctx.funcRetTypes, cls + "." + memberName) { case Some(rty) -> rty; case None -> MObject }
+              return match mapGet(cctx.funcRetTypes, dotKey) {
+                case Some(rty) -> rty
+                case None -> match mapGet(cctx.funcRetTypes, cls + "." + memberName) {
+                  case Some(rty2) -> rty2
+                  case None -> MObject
+                }
+              }
             }
             case None -> {
             }
@@ -21362,7 +21391,7 @@ func lowerMethodCallMsil(
       val garityKey = plainFqn + "/" + memberName + "/" + toString(callArity)
       val gbareKey = plainFqn + "/" + memberName
       val gDispatchKey = if cctx.methodRetTypes.containsKey(garityKey) { garityKey } else { gbareKey }
-      if cctx.methodRetTypes.containsKey(gDispatchKey) {
+      if not callTarget.dotNamed and cctx.methodRetTypes.containsKey(gDispatchKey) {
         val gargs = methodArgsWithDefaultsMsil(cctx, gDispatchKey, args)
         val openRetTy = match mapGet(cctx.methodRetTypes, gDispatchKey) { case Some(t) -> t; case None -> MObject }
         val openParamTypes: List[MsilType] = newList()

@@ -10074,6 +10074,23 @@ test "a method call omitting a default records the resolved overload's arity (#7
   assertEqualInt(ar[1], 2, "the resolved overload takes two parameters")
 }
 
+// #8098: a call resolved to a dot-named function records it as such
+// (`-1 - count`), so no backend binds the receiver type's same-named method
+// instead, whether or not the call leaves out a default.
+test "a method call resolved to a dot-named function records it (#8098)" {
+  val src = "package P\nrecord O {\n  n: Int\n  func m(self: in O, x: in Int): Int { x }\n}\n" +
+    "func O.m(o: in O, x: in Int, y: in Int): Int { x + y }\n" +
+    "record E {\n  n: Int\n  func m(self: in E, x: in Int, y: in Int = 2): Int { x + y }\n}\n" +
+    "func E.m(e: in E, x: in Int): Int { x }\n" +
+    "func g(o: in O, e: in E): Int { o.m(1) + o.m(1, 2) + e.m(1) + e.m(1, 5) }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "clean: " + diagCodesOf(cr))
+  val ar = recordedArities(cr)
+  assertEqualInt(ar.count, 2, "o.m(1, 2) and e.m(1) resolve to the dot-named functions")
+  assertTrue(ar.contains(-3), "o.m(1, 2): the dot-named O.m taking two")
+  assertTrue(ar.contains(-2), "e.m(1): the dot-named E.m taking one, not E's own m(x, y = 2)")
+}
+
 // #7828: an impl method whose default differs from the interface member's,
 // or which only one of the two declares, is T0161 (a warning) at the impl
 // method's parameter; equal defaults are not.

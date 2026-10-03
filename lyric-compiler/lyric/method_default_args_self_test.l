@@ -175,6 +175,44 @@ record GOv[T] {
   }
 }
 
+// A record method and a dot-named function of the same name and different
+// arity: a call runs whichever the checker resolved (#8098).
+record Od {
+  n: Int
+
+  func m(self: in Od, x: in Int): Int {
+    6000 + x
+  }
+
+  func viaSibling(self: in Od): Int {
+    m(1, 2)
+  }
+
+  func viaSiblingDefault(self: in Od): Int {
+    m(x = 1, y = 4)
+  }
+}
+
+func Od.m(o: in Od, x: in Int, y: in Int, z: in Int = 3): Int {
+  7000 + x * 100 + y * 10 + z
+}
+
+record Oe {
+  n: Int
+
+  func m(self: in Oe, x: in Int, y: in Int = 2): Int {
+    8000 + x * 10 + y
+  }
+
+  func viaSibling(self: in Oe): Int {
+    m(1)
+  }
+}
+
+func Oe.m(o: in Oe, x: in Int): Int {
+  9000 + x
+}
+
 func free(a: in Int, b: in Int = 10, c: in Int = 100): Int {
   a + b * 2 + c * 3
 }
@@ -279,4 +317,23 @@ test "a generic record's overloads (#7828)" {
   val g = GOv(v = 1)
   assertEqualInt(g.m(1), 4012, "GOv[Int].m(Int, y = 2)")
   assertEqualInt(g.m("s"), 3000, "GOv[Int].m(String)")
+}
+
+test "a dot-named function beside a record method of another arity (#8098)" {
+  val d = Od(n = 0)
+  assertEqualInt(d.m(1), 6001, "record m(x)")
+  assertEqualInt(d.m(1, 2, 5), 7125, "dot-named m(o, x, y, z), every argument")
+  assertEqualInt(d.m(1, 2), 7123, "dot-named m(o, x, y, z = 3), z omitted")
+  assertEqualInt(d.m(x = 1, y = 2), 7123, "named, z omitted")
+  assertEqualInt(Od.m(d, 1, 2), 7123, "static call of the dot-named function")
+  assertEqualInt(d.viaSibling(), 7123, "a bare call from a method")
+  assertEqualInt(d.viaSiblingDefault(), 7143, "a bare named call from a method")
+}
+
+test "a record method beside a dot-named function of another arity (#8098)" {
+  val e = Oe(n = 0)
+  assertEqualInt(e.m(1), 9001, "dot-named m(o, x): the exact arity wins over m(x, y = 2)")
+  assertEqualInt(e.m(1, 5), 8015, "record m(x, y), every argument")
+  assertEqualInt(e.m(1, y = 5), 8015, "record m(x, y) named")
+  assertEqualInt(e.viaSibling(), 9001, "a bare call from a method")
 }

@@ -5853,9 +5853,20 @@ pub func originScopedExternTypes(
   // constructor names resolve
   // in the origin package's scope: the origin itself, the names it imports
   // selectively, then the packages it imports whole (see
-  // `ctorClassFromImports`).
+  // `ctorClassFromImports`).  The method-call arities its body's calls
+  // resolved to were recorded in the origin's scope under
+  // `<origin>|<siteKey>` (`Lyric.Pipeline.foreignMethodCallArities`) and are
+  // seen here under their bare site keys.
   val view: Map[String, String] = newMap()
+  val originArity = "~arity~" + origin + "|"
   for k in mapKeys(externTypes) {
+    if k.startsWith(originArity) {
+      match mapGet(externTypes, k) {
+        case Some(v) -> view.add("~arity~" + k.substring(originArity.length), v)
+        case None -> ()
+      }
+      continue
+    }
     if k.startsWith("~recv~") or k.startsWith("~arity~") or k.startsWith("~ctor-") {
       continue
     }

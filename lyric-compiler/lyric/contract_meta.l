@@ -1377,7 +1377,9 @@ func reprForProtected(decl: in ProtectedTypeDecl): String {
 // Pkg.<thunk>()): Int`), so a consumer's call on the concrete type takes the
 // impl method's default, as it would within the package; with no such
 // method the repr stays `impl I for T {}`, and the consumer reads the
-// methods' signatures from the interface.
+// methods' signatures from the interface.  A generic impl exports no
+// defaults (D168 item 4): the head renders without its type parameters, so
+// its methods are never carried (#8099).
 func reprForImplHead(decl: in ImplDecl, dt: in DefaultThunks): Option[String] {
   val targetName = implTargetSimpleName(decl)
   if Str.isEmpty(targetName) {
@@ -1392,7 +1394,8 @@ func reprForImplHead(decl: in ImplDecl, dt: in DefaultThunks): Option[String] {
   ownerNames.add(lastSegOf(decl.iface.head.segments))
   val owner = ThunkOwner(kind = DTImplMethod, names = ownerNames)
   var methods = ""
-  for m in decl.members {
+  val implMembers: List[ImplMember] = if implIsGeneric(decl) { newList() } else { decl.members }
+  for m in implMembers {
     match m {
       case IMplFunc(fn) -> if anyParamHasThunk(fn.params, dt, owner, fn.name) {
         methods = methods + "\n  " + reprForRecordMethod(fn, dt, owner)

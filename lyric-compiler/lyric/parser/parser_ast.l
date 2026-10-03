@@ -1530,20 +1530,46 @@ pub func methodCallPathKey(path: in ModulePath): String {
   recordCopySiteKey(path.span) + ":" + last
 }
 
-/// The number of arguments a method call passes once its omitted defaulted
-/// arguments are filled: the parameter count of the method the type checker
-/// resolved it to when the call leaves any out (`arities`, from
-/// `SymbolTable.methodCallArities`, under the call's `methodCallSiteKey`),
-/// else the number written.  Backends key a method's overloads by this
-/// count (#7828).
-pub func methodCallArity(arities: in Map[String, Int], siteKey: in String, written: in Int): Int {
-  if arities.count == 0 {
-    return written
+/// The callee a method call binds to, as the type checker resolved it: a
+/// dot-named function (`func T.m(self, ...)`) or the receiver type's own
+/// method, and its parameter count with the receiver not counted.
+pub record MethodCallTarget {
+  dotNamed: Bool
+  arity: Int
+}
+
+/// The `SymbolTable.methodCallArities` entry for a call resolved to
+/// `target`: its parameter count for the type's own method, and `-1 - count`
+/// for a dot-named function (#7828, #8098).
+pub func methodCallTargetCode(target: in MethodCallTarget): Int {
+  if target.dotNamed {
+    -1 - target.arity
+  } else {
+    target.arity
   }
+}
+
+/// The callee a method call binds to: the one the type checker resolved
+/// (`arities`, from `SymbolTable.methodCallArities`, under the call's
+/// `methodCallSiteKey`), else the type's own method taking the `written`
+/// number of arguments.  Every backend dispatches the call to it, keying a
+/// method's overloads by its parameter count (#7828) and taking a dot-named
+/// function over a same-named method of the type when the checker resolved
+/// the call to it (#8098).
+pub func methodCallTarget(arities: in Map[String, Int], siteKey: in String, written: in Int): MethodCallTarget {
   match mapGet(arities, siteKey) {
-    case Some(n) -> n
-    case None -> written
+    case Some(code) -> if code < 0 {
+      MethodCallTarget(dotNamed = true, arity = -1 - code)
+    } else {
+      MethodCallTarget(dotNamed = false, arity = code)
+    }
+    case None -> MethodCallTarget(dotNamed = false, arity = written)
   }
+}
+
+/// `methodCallTarget`'s parameter count.
+pub func methodCallArity(arities: in Map[String, Int], siteKey: in String, written: in Int): Int {
+  methodCallTarget(arities, siteKey, written).arity
 }
 
 /// A call's arguments in the callee's parameter order with every omitted
@@ -1719,6 +1745,14 @@ pub func defaultThunkName(
   acc + thunkNameKey(param)
 }
 
+/// True when an `impl` is generic: it declares type parameters, or its
+/// target is a generic type's instantiation.  Such an impl's methods export
+/// no default thunks (D168 item 4, #8099).
+pub func implIsGeneric(decl: in ImplDecl): Bool {
+  val ownGenerics = match decl.generics { case Some(gps) -> gps.params.count > 0; case None -> false }
+  ownGenerics or (match decl.target.kind { case TGenericApp(_, _) -> true; case _ -> false })
+}
+
 /// The prefix every `defaultThunkName` starts with.
 pub func defaultThunkPrefix(): String {
   "__lyric_default__"
@@ -1731,6 +1765,120 @@ func dottedSegments(name: in String): List[String] {
     acc.add(part)
   }
   acc
+}
+
+func thunkTypeArgKey(a: in TypeArg): String {
+  match a {
+    case TAType(t) -> "t" + thunkTypeKey(t)
+    case TAValue(e) -> "v" + thunkExprKey(e)
+  }
+}
+
+func thunkRangeKey(r: in RangeBound): String {
+  match r {
+    case RBClosed(lo, hi) -> "c" + thunkExprKey(lo) + thunkExprKey(hi)
+    case RBHalfOpen(lo, hi, _) -> "h" + thunkExprKey(lo) + thunkExprKey(hi)
+    case RBLowerOpen(hi) -> "l" + thunkExprKey(hi)
+    case RBUpperOpen(lo) -> "u" + thunkExprKey(lo)
+  }
+}
+
+/// The `defaultThunkName` spelling of an expression a type may hold (an
+/// array length, a value type argument, a range bound): a letter for its
+/// form, then its parts (`i` integer literal with its suffix, `f`
+/// floating-point literal, `h` character, `b` boolean, `p` name, `m` member,
+/// `s` string, `u` unit, `g` negation, `k` logical not, `y` binary
+/// operator, `c` call, `t` tuple; parentheses add nothing).  Every form a
+/// compile-time constant (T0160) can take has its own spelling; `z` stands
+/// for a form no type can hold, and a collision through it is caught by
+/// the thunk synthesiser's internal-compiler-error check.
+pub func thunkExprKey(e: in Expr): String {
+  match e.kind {
+    case ELiteral(lit) -> match lit {
+      case LInt(v, suffix, _) -> "i" + thunkNameKey(toString(v)) + thunkIntSuffixKey(suffix)
+      case LFloat(v, suffix, _) -> "f" + thunkNameKey(toString(v)) + thunkFloatSuffixKey(suffix)
+      case LChar(cp) -> "h" + thunkCountKey(cp)
+      case LString(text) -> "s" + thunkNameKey(text)
+      case LTripleString(text) -> "s" + thunkNameKey(text)
+      case LRawString(text) -> "s" + thunkNameKey(text)
+      case LBool(b) -> if b { "b1" } else { "b0" }
+      case LUnit -> "u"
+    }
+    case EPath(path) -> "p" + thunkNamesKey(path.segments)
+    case EMember(recv, name) -> "m" + thunkExprKey(recv) + thunkNameKey(name)
+    case EPrefix(op, inner) -> match op {
+      case PreNeg -> "g" + thunkExprKey(inner)
+      case PreNot -> "k" + thunkExprKey(inner)
+      case PreRef -> "z"
+    }
+    case EBinop(op, lhs, rhs) -> "y" + thunkBinOpKey(op) + thunkExprKey(lhs) + thunkExprKey(rhs)
+    case EParen(inner) -> thunkExprKey(inner)
+    case ECall(fn, args) -> {
+      var acc = "c" + thunkExprKey(fn) + thunkCountKey(args.count)
+      for a in args {
+        match a {
+          case CANamed(n, v, _) -> {
+            acc = acc + "n" + thunkNameKey(n) + thunkExprKey(v)
+          }
+          case CAPositional(v) -> {
+            acc = acc + "o" + thunkExprKey(v)
+          }
+        }
+      }
+      acc
+    }
+    case ETuple(es) -> {
+      var acc = "t" + thunkCountKey(es.count)
+      for x in es {
+        acc = acc + thunkExprKey(x)
+      }
+      acc
+    }
+    case _ -> "z"
+  }
+}
+
+func thunkFloatSuffixKey(s: in FloatSuffix): String {
+  match s {
+    case F32 -> "a"
+    case F64 -> "b"
+    case NoFloatSuffix -> "n"
+  }
+}
+
+func thunkIntSuffixKey(s: in IntSuffix): String {
+  match s {
+    case I8 -> "a"
+    case I16 -> "b"
+    case I32 -> "c"
+    case I64 -> "d"
+    case U8 -> "e"
+    case U16 -> "f"
+    case U32 -> "g"
+    case U64 -> "h"
+    case NoIntSuffix -> "n"
+  }
+}
+
+func thunkBinOpKey(op: in BinOp): String {
+  match op {
+    case BAdd -> "a"
+    case BSub -> "s"
+    case BMul -> "m"
+    case BDiv -> "d"
+    case BMod -> "r"
+    case BAnd -> "n"
+    case BOr -> "o"
+    case BXor -> "x"
+    case BEq -> "e"
+    case BNeq -> "q"
+    case BLt -> "l"
+    case BLte -> "k"
+    case BGt -> "g"
+    case BGte -> "h"
+    case BCoalesce -> "c"
+    case BImplies -> "i"
+  }
 }
 
 func thunkCountKey(n: in Int): String {
@@ -1750,22 +1898,24 @@ func thunkNamesKey(names: in List[String]): String {
 }
 
 /// The `defaultThunkName` spelling of a type: a letter for its form, then
-/// its parts (`r` named, `g` generic application, `a` array, `s` slice, `n`
-/// range subtype, `t` tuple, `o` nullable, `c` function, `u` Unit, `e`
-/// Self, `x` Never, `q` an erroneous type; parentheses add nothing).
+/// its parts (`r` named, `g` generic application, `a` array with its length,
+/// `s` slice, `n` range subtype with its bounds, `t` tuple, `o` nullable,
+/// `c` function, `u` Unit, `e` Self, `x` Never, `q` an erroneous type;
+/// parentheses add nothing).  A type argument is `t` and a type or `v` and
+/// a value (`thunkExprKey`).
 pub func thunkTypeKey(te: in TypeExpr): String {
   match te.kind {
     case TRef(path) -> "r" + thunkNamesKey(path.segments)
     case TGenericApp(head, args) -> {
       var acc = "g" + thunkNamesKey(head.segments) + thunkCountKey(args.count)
       for a in args {
-        acc = acc + (match a { case TAType(t) -> "t" + thunkTypeKey(t); case TAValue(_) -> "v" })
+        acc = acc + thunkTypeArgKey(a)
       }
       acc
     }
-    case TArray(_, elem) -> "a" + thunkTypeKey(elem)
+    case TArray(size, elem) -> "a" + thunkTypeArgKey(size) + thunkTypeKey(elem)
     case TSlice(elem) -> "s" + thunkTypeKey(elem)
-    case TRefined(underlying, _) -> "n" + thunkNamesKey(underlying.segments)
+    case TRefined(underlying, range) -> "n" + thunkNamesKey(underlying.segments) + thunkRangeKey(range)
     case TTuple(types) -> {
       var acc = "t" + thunkCountKey(types.count)
       for t in types {

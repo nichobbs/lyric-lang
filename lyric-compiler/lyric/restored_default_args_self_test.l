@@ -17,7 +17,12 @@
 //! overloads of one method each keep their own default (#8085), and so do a
 //! record method and a dot-named function of the same type and name
 //! (#8097): the thunk's name is an injective encoding of the callable's
-//! kind, owner, name and parameter types.
+//! kind, owner, name and parameter types.  A generic `impl` exports no
+//! defaults (#8099).  A restored record method and dot-named function of the
+//! same name and different arity each answer the calls the checker resolved
+//! to them (#8098), and a public generic function whose body leaves out an
+//! overloaded method's default binds the checker's overload when another
+//! package specialises it, in the same build or restored.
 //!
 //! Each case builds a producer DLL / JAR through `Lyric.Emitter.emitProject`,
 //! then a consumer that restores it (`restoredDllPaths`), runs it and
@@ -327,5 +332,177 @@ test "a record method and a same-named dot-named function keep their own default
   assertTrue(
     not consumerCompiles("dotnamed-required", true, methodAndDotNamedLib(), omitsRequiredArgApp()),
     "the dot-named function's k has no default, so leaving it out does not compile"
+  )
+}
+
+// #8099: a generic impl exports no defaults (its method heads would name type
+// parameters the contract's `impl` head does not declare), so a consumer
+// passes the argument; leaving it out does not compile.
+func genericImplLib(): String {
+  "package Rd.Lib\n\n" + "pub interface Sized {\n  func size(self: in Self, scale: in Int): Int\n}\n\n" +
+    "pub record Box[T] {\n  v: T\n}\n\n" +
+    "impl[T] Sized for Box[T] {\n  func size(self: in Box[T], scale: in Int = 3): Int {\n    scale * 2\n  }\n}\n"
+}
+
+func genericImplOmitsApp(): String {
+  "package Rd.App\n\n" + "import Rd.Lib\n\n" + "func main(): Unit {\n" + "  println(toString(Box(v = 1).size()))\n" +
+    "}\n"
+}
+
+func genericImplPassesApp(): String {
+  "package Rd.App\n\n" + "import Rd.Lib\n\n" + "func main(): Unit {\n" + "  println(toString(Box(v = 1).size(4)))\n" +
+    "}\n"
+}
+
+test "a generic impl's default is not exported (#8099)" {
+  assertTrue(
+    not consumerCompiles("genimpl-omits-dotnet", false, genericImplLib(), genericImplOmitsApp()),
+    "dotnet: leaving out the generic impl's argument does not compile"
+  )
+  assertTrue(
+    consumerCompiles("genimpl-passes-dotnet", false, genericImplLib(), genericImplPassesApp()),
+    "dotnet: passing it does"
+  )
+  assertTrue(
+    not consumerCompiles("genimpl-omits-jvm", true, genericImplLib(), genericImplOmitsApp()),
+    "jvm: leaving out the generic impl's argument does not compile"
+  )
+  assertTrue(
+    consumerCompiles("genimpl-passes-jvm", true, genericImplLib(), genericImplPassesApp()),
+    "jvm: passing it does"
+  )
+}
+
+// #8098: a restored record method and dot-named function of the same name
+// and different arity: each call runs the one the checker resolved.
+func arityLib(): String {
+  "package Rd.Lib\n\n" + "pub record Od {\n  n: Int\n\n" +
+    "  func m(self: in Od, x: in Int): Int {\n    6000 + x\n  }\n}\n\n" +
+    "pub func Od.m(o: in Od, x: in Int, y: in Int, z: in Int = 3): Int {\n  7000 + x * 100 + y * 10 + z\n}\n\n" +
+    "pub record Oe {\n  n: Int\n\n" +
+    "  func m(self: in Oe, x: in Int, y: in Int = 2): Int {\n    8000 + x * 10 + y\n  }\n}\n\n" +
+    "pub func Oe.m(o: in Oe, x: in Int): Int {\n  9000 + x\n}\n"
+}
+
+func arityApp(): String {
+  "package Rd.App\n\n" + "import Rd.Lib\n\n" + "func main(): Unit {\n" + "  val d = Od(n = 0)\n" +
+    "  println(toString(d.m(1)))\n" +
+    "  println(toString(d.m(1, 2, 5)))\n" +
+    "  println(toString(d.m(1, 2)))\n" +
+    "  val e = Oe(n = 0)\n" +
+    "  println(toString(e.m(1)))\n" +
+    "  println(toString(e.m(1, 5)))\n" +
+    "}\n"
+}
+
+func arityLines(): List[String] {
+  val e: List[String] = newList()
+  e.add("6001")
+  e.add("7125")
+  e.add("7123")
+  e.add("9001")
+  e.add("8015")
+  e
+}
+
+test "a restored record method and dot-named function of another arity (#8098)" {
+  assertLines("dotnet", runRestored("arity", false, arityLib(), arityApp()), arityLines())
+  assertLines("jvm", runRestored("arity", true, arityLib(), arityApp()), arityLines())
+}
+
+// A public generic function whose body leaves out a defaulted argument of an
+// overloaded method, specialised in another package of the same build: the
+// specialised body still binds the overload the checker resolved in the
+// declaring package.
+func overloadInGenericLib(): String {
+  "package Rd.Lib\n\n" + "pub record Ov {\n  n: Int\n\n" +
+    "  func m(self: in Ov, x: in String): Int {\n    3000\n  }\n\n" +
+    "  func m(self: in Ov, x: in Int, y: in Int = 2): Int {\n    4000 + x * 10 + y\n  }\n}\n\n" +
+    "pub func viaGeneric[T](o: in Ov, t: in T): Int {\n  o.m(1)\n}\n"
+}
+
+func overloadInGenericApp(): String {
+  "package Rd.App\n\n" + "import Rd.Lib\n\n" + "func main(): Unit {\n" +
+    "  println(toString(viaGeneric(Ov(n = 0), \"s\")))\n" +
+    "  println(toString(viaGeneric(Ov(n = 0), 5)))\n" +
+    "}\n"
+}
+
+func overloadInGenericLines(): List[String] {
+  val e: List[String] = newList()
+  e.add("4012")
+  e.add("4012")
+  e
+}
+
+// Build `Rd.Lib` and `Rd.App` as one project (one output), run it and return
+// its trimmed stdout.
+func runBundle(label: in String, jvm: in Bool, libSrc: in String, appSrc: in String): String {
+  val dir = freshTempDir(label + (if jvm { "-jvm" } else { "-dotnet" }))
+  val ext = if jvm { ".jar" } else { ".dll" }
+  val outPath = Path.join(dir, "Rd.App" + ext)
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(mkPkg("Rd.Lib", libSrc))
+  pkgs.add(mkPkg("Rd.App", appSrc))
+  val req = Emitter.EmitProjectRequest(
+    packages = pkgs,
+    assemblyName = "Rd.App",
+    outputPath = outPath,
+    target = if jvm { Emitter.Jvm } else { Emitter.Dotnet },
+    restoredDllPaths = newList(),
+    activeFeatures = newList(),
+    declaredFeatures = newList(),
+    packageVersion = "",
+    depTemplateSrcs = newList(),
+    nugetAssemblyPaths = newList(),
+    defines = newList(),
+    packageFeatures = Emitter.noPackageFeatures(),
+    contractsEnabled = true
+  )
+  match Emitter.emitProject(req).outputPath {
+    case Some(_) -> ()
+    case None -> {
+      cleanup(dir)
+      panic(label + ": the project failed to compile")
+    }
+  }
+  val args: List[String] = newList()
+  val captured = if jvm {
+    args.add("-jar")
+    args.add(outPath)
+    Capture.runCaptureWithDiagnostics("java", args, "")
+  } else {
+    Emitter.copyStdlibDllsBeside(outPath, Emitter.findCompiledStdlibDir())
+    writeRuntimeConfig(outPath)
+    args.add("exec")
+    args.add(outPath)
+    Capture.runCaptureWithDiagnostics("dotnet", args, "")
+  }
+  cleanup(dir)
+  assertEqualInt(captured.exitCode, 0, label + ": the program exits 0 (stderr=" + captured.stderr + ")")
+  Str.trim(captured.stdout)
+}
+
+test "a generic body's omitted default binds the checker's overload when specialised in another package on dotnet" {
+  assertLines(
+    "dotnet bundle",
+    runBundle("generic-overload", false, overloadInGenericLib(), overloadInGenericApp()),
+    overloadInGenericLines()
+  )
+}
+
+test "a generic body's omitted default binds the checker's overload when specialised in another package on the JVM" {
+  assertLines(
+    "jvm bundle",
+    runBundle("generic-overload", true, overloadInGenericLib(), overloadInGenericApp()),
+    overloadInGenericLines()
+  )
+}
+
+test "a restored generic body's omitted default binds the checker's overload on dotnet" {
+  assertLines(
+    "dotnet restored",
+    runRestored("generic-overload", false, overloadInGenericLib(), overloadInGenericApp()),
+    overloadInGenericLines()
   )
 }
