@@ -113,12 +113,12 @@ test "awaitAll of an empty list is an empty list" {
 }
 
 test "awaitAll raises a failed task's failure" {
-  assertPanics("failing task propagates through awaitAll", { -> await awaitAllWithFailure() })
+  assertPanics("failing task propagates through awaitAll", { -> val r = await awaitAllWithFailure() })
 }
 
 test "waitFor reports a failed task finished and await raises its failure" {
   val seen: List[Bool] = newList()
-  assertPanics("await raises the failure", { -> await waitThenAwaitFailed(seen) })
+  assertPanics("await raises the failure", { -> val r = await waitThenAwaitFailed(seen) })
   assertEqualInt(seen.count, 1, "waitFor returned")
   assertTrue(seen[0], "waitFor returned true for the failed task, not a timeout")
 }
