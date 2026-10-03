@@ -2842,13 +2842,13 @@ The bootstrap formatter works directly from the parsed AST; it does not require 
 
 ### 13.9 Benchmark runner
 
-`lyric bench [<source.l>] [--target dotnet|jvm]` compiles a `@bench_module` file, synthesises a timing harness around each `@bench`-annotated function, and reports wall-clock statistics to stdout. `--target dotnet` (default) runs via `dotnet exec`. `--target jvm` dispatch is wired but currently blocked: the timing harness imports `Std.Time`, which does not yet compile on the JVM backend (#3302), so `lyric bench --target jvm` is not yet usable (#680 remains open).
+`lyric bench [<source.l>] [--target dotnet|jvm|native]` compiles a `@bench_module` file, synthesises a timing harness around each `@bench`-annotated function, and reports wall-clock statistics and heap allocation to stdout. `--target dotnet` (default) runs via `dotnet exec`, `--target jvm` via `java -jar` and `--target native` runs the built executable.
 
 **Project mode.** When invoked with no source file, `lyric bench` discovers the nearest `lyric.toml` and runs benchmarks for every `[project.packages]` source file that contains a `@bench_module` annotation. Pass `--manifest <lyric.toml>` to override discovery. `--target` applies to all files in the project.
 
 **Annotations:**
 
-- **`@bench_module`** — file-level; marks the file as a benchmark suite. Required; without it `lyric bench` exits with `B0900`.
+- **`@bench_module`** — file-level; marks the file as a benchmark suite. Required; without it `lyric bench` exits with `B0900`. The harness uses `Std.Time` and `Std.Bench`; either import the file lacks is added.
 - **`@bench`** — function-level; marks a `func name(): Unit` function (zero parameters, `Unit` return) as a benchmark entry point. The synthesiser calls it un-timed during warmup and timed during the measurement phase. Any function with this annotation is included regardless of visibility.
 
 **Output format:** one header line followed by one result line per benchmark:
@@ -2856,8 +2856,10 @@ The bootstrap formatter works directly from the parsed AST; it does not require 
 ```
 benchmark  runs=N  warmup=M
 
-funcName  min=Xms  max=Xms  mean=Xms
+funcName  min=Xms  max=Xms  mean=Xms  alloc=NB/run
 ```
+
+`alloc` is the bytes the current thread allocated on the heap per run, measured over a further `--runs` untimed runs between two `Std.Bench.allocatedBytes()` readings: the CLR's `GC.GetAllocatedBytesForCurrentThread()` on dotnet, HotSpot's `ThreadMXBean.getCurrentThreadAllocatedBytes()` on the JVM and the `lyric_rt` allocator's per-thread total on native. A bench whose values live on the stack (records without `var` fields and `array[N, T]` on native) reports `alloc=0B/run`.
 
 **Flags:**
 

@@ -65,6 +65,8 @@ output_assembly = "Lyric.Stdlib.dll"
 # stdlib.sh's content check now guards against, #4048).
 "Std.TimeHost"         = "std/_kernel/time_host.l"
 "Std.Time"             = "std/time.l"
+"Std.BenchHost"        = "std/_kernel/bench_host.l"
+"Std.Bench"            = "std/bench.l"
 
 # Tier 4 — structured data.
 # Std.Json was here; moved to F#-free self-hosted compile (D-progress-XXX).

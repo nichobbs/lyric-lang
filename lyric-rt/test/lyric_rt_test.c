@@ -140,6 +140,19 @@ static void test_free(void) {
     lyric_free(q);
 }
 
+/* lyric_rt_allocated_bytes counts every byte requested through lyric_alloc
+ * on this thread, and nothing else. */
+static void test_allocated_bytes(void) {
+    int64_t before = lyric_rt_allocated_bytes();
+    void* p = lyric_alloc(48);
+    CHECK(lyric_rt_allocated_bytes() - before == 48);
+    lyric_free(p);
+    CHECK(lyric_rt_allocated_bytes() - before == 48);
+    void* q = lyric_alloc(16);
+    CHECK(lyric_rt_allocated_bytes() - before == 64);
+    lyric_free(q);
+}
+
 static void test_strings(void) {
     LyricString* a = lyric_string_from_literal((const uint8_t*)"hello", 5);
     LyricString* b = lyric_string_from_literal((const uint8_t*)", world", 7);
@@ -3227,6 +3240,7 @@ int main(void) {
     test_string_ascii_case_compare();
     test_alloc_retain_release();
     test_free();
+    test_allocated_bytes();
     test_strings();
     test_string_trim_case_search();
     test_string_index_of_from_concat_list();

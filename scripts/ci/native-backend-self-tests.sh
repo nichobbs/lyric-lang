@@ -91,6 +91,7 @@ for t in \
   lyric-compiler/lyric/inline_union_self_test.l \
   lyric-compiler/lyric/generic_ctor_open_arg_self_test.l \
   lyric-compiler/lyric/fixed_array_self_test.l \
+  lyric-compiler/lyric/bench_alloc_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_type_self_test.l \
   lyric-compiler/lyric/byte_native_self_test.l \
@@ -104,3 +105,5 @@ LYRIC_BIN="$lyric_bin" bash scripts/ci/byte-println-e2e.sh native
 LYRIC_BIN="$lyric_bin" bash scripts/ci/overflow-profile-e2e.sh native
 # D167: an array index outside `0 ..< N` panics with the index and length.
 LYRIC_BIN="$lyric_bin" bash scripts/ci/fixed-array-e2e.sh native
+# docs/67 G1: Vec3 arithmetic and an inline array of Vec3 allocate nothing.
+LYRIC_BIN="$lyric_bin" bash scripts/ci/bench-vec3-alloc.sh

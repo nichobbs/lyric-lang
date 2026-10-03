@@ -5,7 +5,7 @@ Performance work without measurement is guesswork. Lyric provides `lyric bench` 
 This chapter covers how to write a benchmark module, how to interpret the output, how to control the experiment with `--runs`, `--warmup`, and `--filter`, and what pitfalls to avoid so your numbers reflect reality.
 
 ::: note
-`lyric bench` runs on the .NET target. JVM target support (`--target jvm`) is a v2 item. The `.NET` timings use `Std.Time.now()` / `since()` / `totalMillis()` backed by `System.Diagnostics.Stopwatch`, which measures wall-clock time to the nearest microsecond on most hosts.
+`lyric bench` runs on every target: `--target dotnet` (the default), `--target jvm` and `--target native`. Timings use `Std.Time.now()` / `since()` / `totalMillis()`, which read the host's monotonic clock (`System.Diagnostics.Stopwatch` on .NET), and allocation uses `Std.Bench.allocatedBytes()`.
 :::
 
 ## §28.1 Anatomy of a benchmark module
@@ -48,14 +48,14 @@ This compiles a timing harness around every `@bench` function, runs 10 timed ite
 ```
 benchmark  runs=10  warmup=3
 
-benchIntSum        min=0.068ms  max=0.091ms  mean=0.073ms
-benchIntMulAcc     min=0.011ms  max=0.013ms  mean=0.011ms
-benchGcd           min=0.481ms  max=0.543ms  mean=0.498ms
-benchDoubleSum     min=1.219ms  max=1.254ms  mean=1.231ms
-benchFibRecursive  min=5.501ms  max=6.127ms  mean=5.632ms
+benchIntSum        min=0.068ms  max=0.091ms  mean=0.073ms  alloc=0B/run
+benchIntMulAcc     min=0.011ms  max=0.013ms  mean=0.011ms  alloc=0B/run
+benchGcd           min=0.481ms  max=0.543ms  mean=0.498ms  alloc=0B/run
+benchDoubleSum     min=1.219ms  max=1.254ms  mean=1.231ms  alloc=0B/run
+benchFibRecursive  min=5.501ms  max=6.127ms  mean=5.632ms  alloc=0B/run
 ```
 
-The output is line-oriented and machine-readable: each benchmark line is `name  min=Xms  max=Xms  mean=Xms`.
+The output is line-oriented and machine-readable: each benchmark line is `name  min=Xms  max=Xms  mean=Xms  alloc=NB/run`.
 
 ### Controlling the run
 
@@ -218,6 +218,21 @@ The harness reports three statistics per benchmark:
 
 - **`mean`** — the arithmetic mean of all timed runs. The mean is the right number to compare across versions when you have enough runs (≥ 10) and a stable `max` (low jitter).
 
+### Allocation
+
+**`alloc`** is the heap bytes one run allocates on the current thread. The harness measures it over a further `--runs` untimed runs, between two `Std.Bench.allocatedBytes()` readings, so counting never slows the timed runs. A benchmark that reports `alloc=0B/run` never touches the heap, so it never causes a garbage collection or a reference-count release.
+
+The same code can allocate on one target and not on another. A record without `var` fields is a value, and on `--target native` it lives on the stack or inline in its container, as an `array[N, T]` does. On .NET and the JVM each record is a heap object:
+
+```
+$ lyric bench benchmarks/bench_vec3.l --target dotnet
+benchVec3AddSub  min=0.36ms  max=0.49ms  mean=0.42ms  alloc=640096B/run
+$ lyric bench benchmarks/bench_vec3.l --target native
+benchVec3AddSub  min=0.012ms  max=0.012ms  mean=0.012ms  alloc=0B/run
+```
+
+You can call `allocatedBytes()` yourself to check a piece of code: read it before and after, and the difference is what the code in between allocated.
+
 ### Sources of noise
 
 | Noise source | Symptom | Mitigation |
@@ -239,7 +254,7 @@ Do not compare absolute times across different machines or .NET versions. Do com
 
 ## §28.6 The benchmark files
 
-The `benchmarks/` directory in the repository contains four ready-to-run suites:
+The `benchmarks/` directory in the repository contains these ready-to-run suites:
 
 | File | What it measures |
 |---|---|
@@ -247,6 +262,8 @@ The `benchmarks/` directory in the repository contains four ready-to-run suites:
 | `bench_collections.l` | List build, traversal, build+sum; Map insert and insert+lookup |
 | `bench_contracts.l` | Plain vs `@runtime_checked` vs `@axiom` clamp function |
 | `bench_string.l` | Repeated concatenation, `toString`, `.length`, `Str.contains`, `Str.replace` |
+| `bench_json.l` | JSON decoding |
+| `bench_vec3.l` | `Vec3` addition, subtraction, scaling and dot product; an inline array of positions |
 
 Run them all as a baseline when you start performance work:
 
@@ -261,23 +278,21 @@ Keep a copy of the numbers before and after your change. The ratio is what matte
 
 ## §28.7 Cross-target comparison
 
-The JVM target (`--target jvm`) is on the roadmap for `lyric bench`. When it lands, the same benchmark file will run on both runtimes:
+The same benchmark file runs on every target:
 
 ```sh
-# today — .NET is the implicit target
-lyric bench benchmarks/bench_numeric.l
-
-# roadmap — explicit target selection
-lyric bench benchmarks/bench_numeric.l --target jvm
+lyric bench benchmarks/bench_numeric.l                   # .NET (the default)
+lyric bench benchmarks/bench_numeric.l --target jvm      # the JVM
+lyric bench benchmarks/bench_numeric.l --target native   # the native executable
 ```
 
-Note: today's `lyric bench` does not accept `--target`; `.NET` is always used. The flag arrives alongside full JVM pipeline integration. This will surface where .NET and the JVM JIT make different choices (floating-point vectorisation, bounds-check elimination, inline depth) and guide decisions about which operations benefit from target-specific stdlib implementations. Today, `.NET`-only numbers are already useful for absolute performance work and for comparing contract strategies.
+Comparing them shows where the .NET and JVM JITs and LLVM make different choices (floating-point vectorisation, bounds-check elimination, inlining), and the `alloc` column shows where a value that is a heap object on one target is a plain value on another. Ahead-of-time native code needs no warmup, so its `min` and `max` are usually close from the first run.
 
 ## Exercises
 
 1. **Baseline your machine**
 
-   Run each of the four benchmark files in `benchmarks/` with `--runs 20 --warmup 5`. Record the mean for every benchmark. Change nothing, run again five minutes later. How stable are the numbers? What is the largest ratio between the two runs?
+   Run each benchmark file in `benchmarks/` with `--runs 20 --warmup 5`. Record the mean for every benchmark. Change nothing, run again five minutes later. How stable are the numbers? What is the largest ratio between the two runs?
 
 2. **Isolate contract cost**
 
@@ -291,6 +306,10 @@ Note: today's `lyric bench` does not accept `--target`; `.NET` is always used. T
 
    Run `lyric bench benchmarks/bench_numeric.l --filter FibRecursive --runs 5 --warmup 0` and then `--warmup 5`. Compare `min` and `max`. How much does the missing warmup inflate the first-run cost?
 
-5. **Filter workflow**
+5. **Allocation across targets**
+
+   Run `benchmarks/bench_vec3.l` with `--target dotnet` and `--target native`. Which benchmarks allocate on each target? Add a `var` field to `Vec3` and run it again on native: what happens to the `alloc` column, and why?
+
+6. **Filter workflow**
 
    You are investigating whether a change to your GCD implementation improves performance. Add a faster version of `gcd` to `bench_numeric.l` under a new function `gcdFast` with its own `@bench` wrapper. Use `--filter Gcd` to run only the two GCD benchmarks side by side. What do you observe?

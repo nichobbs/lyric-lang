@@ -26,10 +26,10 @@ func runBenchOnSource(
   runsArg: in Int,
   warmupArg: in Int,
   filterArg: in String,
-  targetJvm: in Bool,
+  target: in Emitter.CompileTarget,
 ): Int {
   val stem = stemOf(Path.basename(sourcePath), 2)
-  val benchExt = if targetJvm { ".jar" } else { ".dll" }
+  val benchExt = match target { case Emitter.Jvm -> ".jar"; case Emitter.Dotnet -> ".dll"; case Emitter.Native -> "" }
   val outPath = Path.join(Path.join(Path.dirname(sourcePath), ".lyric-bench"), stem + benchExt)
 
   match BenchSynth.synthesizeBench(source, runsArg, warmupArg, filterArg) {
@@ -55,7 +55,6 @@ func runBenchOnSource(
         case Err(_) -> ()
       }
 
-      val benchTarget: Emitter.CompileTarget = if targetJvm { Emitter.Jvm } else { Emitter.Dotnet }
       // Benchmarks measure release code: integer arithmetic wraps instead of
       // carrying a debug build's overflow checks (D163).
       val benchDefines: List[String] = newList()
@@ -64,7 +63,7 @@ func runBenchOnSource(
         source = rewritten,
         assemblyName = stem,
         outputPath = outPath,
-        target = benchTarget,
+        target = target,
         packageVersion = "",
         defines = benchDefines,
         path = sourcePath,
@@ -91,29 +90,43 @@ func runBenchOnSource(
         }
         case Some(_) -> ()
       }
-      if targetJvm {
-        val jvmArgs: List[String] = newList()
-        jvmArgs.add("-jar")
-        jvmArgs.add(outPath)
-        match Process.run("java", jvmArgs) {
-          case Ok(code) -> code
-          case Err(e) -> {
-            printErr("bench: failed to start java: " + IOError.message(e))
-            1
+      match target {
+        case Emitter.Jvm -> {
+          val jvmArgs: List[String] = newList()
+          jvmArgs.add("-jar")
+          jvmArgs.add(outPath)
+          match Process.run("java", jvmArgs) {
+            case Ok(code) -> code
+            case Err(e) -> {
+              printErr("bench: failed to start java: " + IOError.message(e))
+              1
+            }
           }
         }
-      } else {
-        // Harness imports Std.Time, so stdlib DLLs must be co-located beside the output (mirrors runOnce).
-        copyRuntimeDepsBeside(outPath, findCompiledLibDir())
-        writeRuntimeConfig(outPath)
-        val execArgs: List[String] = newList()
-        execArgs.add("exec")
-        execArgs.add(outPath)
-        match Process.run("dotnet", execArgs) {
-          case Ok(code) -> code
-          case Err(e) -> {
-            printErr("bench: failed to start dotnet: " + IOError.message(e))
-            1
+        case Emitter.Native -> {
+          // The native build is the executable itself.
+          val noArgs: List[String] = newList()
+          match Process.run(outPath, noArgs) {
+            case Ok(code) -> code
+            case Err(e) -> {
+              printErr("bench: failed to start " + outPath + ": " + IOError.message(e))
+              1
+            }
+          }
+        }
+        case Emitter.Dotnet -> {
+          // Harness imports Std.Time, so stdlib DLLs must be co-located beside the output (mirrors runOnce).
+          copyRuntimeDepsBeside(outPath, findCompiledLibDir())
+          writeRuntimeConfig(outPath)
+          val execArgs: List[String] = newList()
+          execArgs.add("exec")
+          execArgs.add(outPath)
+          match Process.run("dotnet", execArgs) {
+            case Ok(code) -> code
+            case Err(e) -> {
+              printErr("bench: failed to start dotnet: " + IOError.message(e))
+              1
+            }
           }
         }
       }
@@ -126,7 +139,7 @@ func cmdBench(argv: in slice[String]): Int {
   var warmupArg = 5
   var filterArg = ""
   var manifestArg: Option[String] = None
-  var targetJvm = false
+  var target: Emitter.CompileTarget = Emitter.Dotnet
   val positional: List[String] = newList()
 
   var i = 1
@@ -184,16 +197,18 @@ func cmdBench(argv: in slice[String]): Int {
       if i + 1 < argv.length {
         val t = argv[i + 1]
         if t == "jvm" {
-          targetJvm = true
+          target = Emitter.Jvm
         } else if t == "dotnet" {
-          targetJvm = false
+          target = Emitter.Dotnet
+        } else if t == "native" {
+          target = Emitter.Native
         } else {
-          printErr("bench: --target must be 'dotnet' or 'jvm'")
+          printErr("bench: --target must be 'dotnet', 'jvm' or 'native'")
           return 1
         }
         i += 2
       } else {
-        printErr("bench: --target requires an argument (dotnet|jvm)")
+        printErr("bench: --target requires an argument (dotnet|jvm|native)")
         return 1
       }
     } else {
@@ -259,7 +274,7 @@ func cmdBench(argv: in slice[String]): Int {
       val bSource = benchSources[bi]
       bi += 1
       Console.println("== bench: " + bPath)
-      val rc = runBenchOnSource(bPath, bSource, runsArg, warmupArg, filterArg, targetJvm)
+      val rc = runBenchOnSource(bPath, bSource, runsArg, warmupArg, filterArg, target)
       if rc != 0 {
         anyFailed = true
       }
@@ -279,5 +294,5 @@ func cmdBench(argv: in slice[String]): Int {
     }
   }
 
-  runBenchOnSource(sourcePath, source, runsArg, warmupArg, filterArg, targetJvm)
+  runBenchOnSource(sourcePath, source, runsArg, warmupArg, filterArg, target)
 }
