@@ -1263,9 +1263,6 @@ func hostImportOf(d: in ExternFuncDecl, module: in String, tbl: in TypeTable): R
       }
     }
   }
-  if width > 15 {
-    return Err(error = "@wasmImport extern func " + d.name + " has more than 15 flat parameters")
-  }
   val ret = match d.ret {
     case None -> WUnit
     case Some(te) -> match resolveTy(te, tbl, 0) {
@@ -1278,6 +1275,10 @@ func hostImportOf(d: in ExternFuncDecl, module: in String, tbl: in TypeTable): R
         }
       }
     }
+  }
+  val retSlot = match ret { case WString -> 1; case _ -> 0 }
+  if width + retSlot > 16 {
+    return Err(error = "@wasmImport extern func " + d.name + " needs more than 16 flat core parameters")
   }
   Ok(
     value = HostImport(
@@ -1501,6 +1502,54 @@ func exportBlocker(d: in FunctionDecl, tbl: in TypeTable): String {
 }
 
 // ─── WIT ─────────────────────────────────────────────────────────────────────
+/// The host imports of `pkgs` with a repeated (module, name) kept once: two
+/// externs binding the same host function share one WIT function and one C
+/// wrapper.
+func uniqueImports(pkgs: in List[ComponentPkg]): List[HostImport] {
+  val r: List[HostImport] = newList()
+  for p in pkgs {
+    for h in p.imports {
+      var seen = false
+      for q in r {
+        if q.cSym == h.cSym {
+          seen = true
+        }
+      }
+      if not seen {
+        r.add(h)
+      }
+    }
+  }
+  r
+}
+
+func importSignature(h: in HostImport): String {
+  val ps: List[String] = newList()
+  for f in h.params {
+    ps.add(lyricTy(f.ty))
+  }
+  "(" + Str.joinList(", ", ps) + "): " + lyricTy(h.ret)
+}
+
+/// A message when two externs bind the same host function (module and name)
+/// with different signatures, or "" when the imports are consistent.
+pub func importConflict(pkgs: in List[ComponentPkg]): String {
+  val seen: List[HostImport] = newList()
+  for p in pkgs {
+    for h in p.imports {
+      for q in seen {
+        if q.cSym == h.cSym and importSignature(q) != importSignature(h) {
+          return "the host import " + h.module + "." + h.name + " is declared with two signatures: " + importSignature(q) +
+            " and " +
+            importSignature(h)
+        }
+      }
+      seen.add(h)
+    }
+  }
+  ""
+}
+
 /// The distinct `@wasmImport` modules of `pkgs`, in first-seen order.
 func importModules(pkgs: in List[ComponentPkg]): List[String] {
   val r: List[String] = newList()
@@ -1614,16 +1663,14 @@ pub func renderWit(pkgs: in List[ComponentPkg], version: in String): String {
   parts.add("package " + witPackageName(pkgs, version) + ";\n")
   for m in importModules(pkgs) {
     val ilines: List[String] = newList()
-    for p in pkgs {
-      for h in p.imports {
-        if h.module == m {
-          val ps: List[String] = newList()
-          for f in h.params {
-            ps.add(witName(f.name) + ": " + witRef(f.ty))
-          }
-          val tail = if isUnit(h.ret) { "" } else { " -> " + witRef(h.ret) }
-          ilines.add("  " + witName(h.name) + ": func(" + Str.joinList(", ", ps) + ")" + tail + ";")
+    for h in uniqueImports(pkgs) {
+      if h.module == m {
+        val ps: List[String] = newList()
+        for f in h.params {
+          ps.add(witName(f.name) + ": " + witRef(f.ty))
         }
+        val tail = if isUnit(h.ret) { "" } else { " -> " + witRef(h.ret) }
+        ilines.add("  " + witName(h.name) + ": func(" + Str.joinList(", ", ps) + ")" + tail + ";")
       }
     }
     parts.add("interface " + witName(m) + " {\n" + Str.joinList("\n", ilines) + "\n}\n")
@@ -1827,11 +1874,9 @@ pub func renderCabi(pkgs: in List[ComponentPkg], version: in String): String {
   val buf: List[String] = newList()
   buf.add(cabiRuntime())
   var hi = 0
-  for p in pkgs {
-    for h in p.imports {
-      buf.add(renderImportWrapper(pkgs, h, hi, version))
-      hi = hi + 1
-    }
+  for h in uniqueImports(pkgs) {
+    buf.add(renderImportWrapper(pkgs, h, hi, version))
+    hi = hi + 1
   }
   var n = 0
   for p in exportingPkgs(pkgs) {

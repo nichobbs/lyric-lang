@@ -1561,6 +1561,13 @@ func linkAndEmitNative(
     Console.error("error[N0011]: --shape " + shape + " needs a wasm32 triple (pass --triple wasm32-wasi)")
     return false
   }
+  if isComponent {
+    val clash = importConflict(componentPkgs)
+    if clash.length > 0 {
+      Console.error("error[N0018]: " + clash)
+      return false
+    }
+  }
   val allExports = collectWasmExportsOfShaped(units, if isModule or isComponent { ownUnits } else { 0 }, isComponent)
   val wasmExports = if isModule { withoutReservedJsNames(allExports) } else { allExports }
   var ui = 0

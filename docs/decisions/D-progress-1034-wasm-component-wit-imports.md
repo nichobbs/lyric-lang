@@ -22,8 +22,9 @@ Extends D-progress-1031 (host imports in the module shape) and D-progress-1033.
    solved with namespacing.
 4. **Types.** `Int`, `Long`, `Float`, `Double`, `String` and `Unit` (result only);
    `Bool`, `Byte`, records and the rest are an error naming the parameter, and more
-   than 15 flat parameters is an error (one slot is reserved for the return-area
-   pointer a `String` result adds). The rewrite runs over every package of a
+   than 16 flat core parameters (a `String` result adds a return-area pointer) is
+   an error. Externs binding the same (module, name) share one WIT function and one
+   C wrapper; the same host function declared with two signatures is an error. The rewrite runs over every package of a
    project, dependencies included, so a host import is lowered wherever it is
    declared; the slice-1 `N0017` ("component shape cannot lower imports") is
    removed rather than narrowed, since nothing can reach it any more.

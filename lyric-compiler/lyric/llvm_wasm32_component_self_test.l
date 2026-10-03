@@ -652,13 +652,63 @@ pub func go(): Unit {
       r#"package Probe
 
 @wasmImport("ui")
-extern func wide(a: Int, b: Int, c: Int, d: Int, e: Int, f: Int, g: Int, h: Int, i: Int, j: Int, k: Int, l: Int, m: Int, n: Int, o: Int, p: Int): Unit = "wide"
+extern func wide(a: Int, b: Int, c: Int, d: Int, e: Int, f: Int, g: Int, h: Int, i: Int, j: Int, k: Int, l: Int, m: Int, n: Int, o: Int, p: Int, q: Int): Unit = "wide"
 
 pub func go(): Unit {
-  wide(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16)
+  wide(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17)
 }
 "#
     ),
-    "more than 15 flat parameters is rejected"
+    "more than 16 flat parameters is rejected"
+  )
+}
+
+test "wasm32 component: externs binding one host function share a single import" {
+  val dir = buildComponentOf(
+    r#"package Probe
+
+@wasmImport("ui")
+extern func hostAdd(a: Int, b: Int): Int = "add"
+
+@wasmImport("ui")
+extern func hostAddAgain(a: Int, b: Int): Int = "add"
+
+pub func go(n: Int): Int {
+  hostAdd(n, 1) + hostAddAgain(n, 2)
+}
+"#
+  )
+  val wit = match File.readText(Path.join(dir, "prog.wit")) { case Ok(t) -> t; case Err(_) -> "" }
+  assertTrue(Str.contains(wit, "add: func(a: s32, b: s32) -> s32;"), "the function is declared: " + wit)
+  val first = Str.indexOfRaw(wit, "add: func")
+  val rest = Str.substring(wit, first + 9, wit.length - first - 9)
+  assertFalse(Str.contains(rest, "add: func"), "and declared once: " + wit)
+  val vargs: List[String] = newList()
+  vargs.add("validate")
+  vargs.add(Path.join(dir, "prog.wasm"))
+  val v = run(envOrPanic("WASM_TOOLS"), vargs)
+  assertTrue(v.exitCode == 0, "the component validates: " + v.stderr)
+}
+
+test "wasm32 component: one host function declared with two signatures is an error" {
+  val _w = envOrPanic("WASI_SDK_PATH")
+  val _t = envOrPanic("WASM_TOOLS")
+  val _a = envOrPanic("LYRIC_WASI_ADAPTER")
+  assertFalse(
+    componentBuildOk(
+      r#"package Probe
+
+@wasmImport("ui")
+extern func hostAdd(a: Int, b: Int): Int = "add"
+
+@wasmImport("ui")
+extern func hostAddLong(a: Long, b: Long): Long = "add"
+
+pub func go(n: Int): Int {
+  hostAdd(n, 1)
+}
+"#
+    ),
+    "the same host function with different signatures cannot be one WIT function"
   )
 }
