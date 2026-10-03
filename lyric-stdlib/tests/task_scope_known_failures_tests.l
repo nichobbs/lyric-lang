@@ -8,7 +8,7 @@
 //! also unwired) for a test that cannot cleanly pass yet.
 //!
 //! Status (2026-09-05): this file originally carried THREE tests, all
-//! pinned to issue #5329 (`scopeSpawn`/`awaitAll` never actually ran a
+//! pinned to issue #5329 (`scopeSpawn`/`awaitScope` never actually ran a
 //! spawned closure — `Task.Run(Action[, CancellationToken])`'s delegate
 //! never invoked on `--target dotnet`, plus a separate null-dereference on
 //! an empty scope on both targets). #5329's fix (a lambda literal passed
@@ -48,7 +48,7 @@ import Std.Testing
 import Std.Time
 
 // ─── Scope: D119 slice S3 sibling-cancel-on-first-fault ──────────────────────
-// One sibling panics; the other polls the scope's token in a loop.  awaitAll
+// One sibling panics; the other polls the scope's token in a loop.  awaitScope
 // must still surface the fault (pre-existing `Task.WhenAll` behaviour on
 // .NET; this backend's own join loop on JVM), and — the D119 S3 guarantee —
 // the polling sibling must observe the cancellation and stop before its loop
@@ -78,7 +78,7 @@ func testScopeSiblingObservesCancelOnFault(): Unit {
       }
     }
   )
-  assertPanics("awaitAll rethrows the faulting sibling's panic", { -> val r = await awaitAll(sc) })
+  assertPanics("awaitScope rethrows the faulting sibling's panic", { -> val r = await awaitScope(sc) })
   cancelScope(sc)
   disposeScope(sc)
   assertTrue(observedCancel, "the non-faulting sibling observed cancellation while still running")

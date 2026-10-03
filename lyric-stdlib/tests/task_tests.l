@@ -9,7 +9,7 @@
 //! `testScopeNormalCompletionRunsEveryChild` and
 //! `testScopeWithNoChildrenCompletesImmediately` were split out into
 //! `task_scope_known_failures_tests.l` (#5325) pending issue #5329's fix
-//! (`scopeSpawn`/`awaitAll` never actually ran a spawned closure on
+//! (`scopeSpawn`/`awaitScope` never actually ran a spawned closure on
 //! `--target dotnet`, and a separate null-dereference hit the empty-scope
 //! case on both targets). Both now pass on both targets and are merged
 //! back here per that file's own stated exit condition.
@@ -132,27 +132,27 @@ func testScopeNormalCompletionRunsEveryChild(): Unit {
   var b = 0
   scopeSpawn(sc, { -> a = 1 })
   scopeSpawn(sc, { -> b = 2 })
-  val r = await awaitAll(sc)
+  val r = await awaitScope(sc)
   cancelScope(sc)
   disposeScope(sc)
   assertEqualInt(a, 1, "first scopeSpawn'd action ran")
   assertEqualInt(b, 2, "second scopeSpawn'd action ran")
 }
 
-// Regression test for #5329 (bug 5): `awaitAll` on a scope with zero
+// Regression test for #5329 (bug 5): `awaitScope` on a scope with zero
 // spawned children null-dereferenced on both targets.
 func testScopeWithNoChildrenCompletesImmediately(): Unit {
   val sc = makeScope()
-  val r = await awaitAll(sc)
+  val r = await awaitScope(sc)
   cancelScope(sc)
   disposeScope(sc)
 }
 
 // `scopeSpawn` starts the action at once on both targets (the thread pool
-// on dotnet, a virtual thread on the JVM), not when `awaitAll` is called:
+// on dotnet, a virtual thread on the JVM), not when `awaitScope` is called:
 // a caller that never joins, such as a UI host running a session's
 // effects, still gets its actions run.  The JVM kernel used to hold every
-// action until `awaitAll`.
+// action until `awaitScope`.
 func testScopeSpawnStartsBeforeAwaitAll(): Unit {
   val sc = makeScope()
   val ran: List[Int] = newList()
@@ -162,8 +162,8 @@ func testScopeSpawnStartsBeforeAwaitAll(): Unit {
     sleepMillis(10)
     waited = waited + 10
   }
-  assertEqualInt(ran.count, 1, "the action ran without awaitAll")
-  val r = await awaitAll(sc)
+  assertEqualInt(ran.count, 1, "the action ran without awaitScope")
+  val r = await awaitScope(sc)
   cancelScope(sc)
   disposeScope(sc)
 }
@@ -196,12 +196,12 @@ func testScopeDropsFinishedChildren(): Unit {
     tries = tries + 1
   }
   assertTrue(scopePendingCount(sc) <= 1, "finished children are dropped")
-  val r = await awaitAll(sc)
+  val r = await awaitScope(sc)
   cancelScope(sc)
   disposeScope(sc)
 }
 
-// Pruning finished children keeps the first failure: `awaitAll` still
+// Pruning finished children keeps the first failure: `awaitScope` still
 // reports a child that failed before later spawns dropped the others.
 func testScopeKeepsFailureAcrossPruning(): Unit {
   val sc = makeScope()
@@ -215,13 +215,13 @@ func testScopeKeepsFailureAcrossPruning(): Unit {
   }
   var reported = ""
   try {
-    val r = await awaitAll(sc)
+    val r = await awaitScope(sc)
   } catch Bug as b {
     reported = b.message
   }
   cancelScope(sc)
   disposeScope(sc)
-  assertTrue(Str.contains(reported, "first child failed"), "awaitAll reports the failure, got: " + reported)
+  assertTrue(Str.contains(reported, "first child failed"), "awaitScope reports the failure, got: " + reported)
 }
 
 // ─── runWithin (#7461, D-progress-1021) ────────────────────────────────────────

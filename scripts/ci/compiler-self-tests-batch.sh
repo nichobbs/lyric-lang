@@ -138,6 +138,7 @@ for t in \
   lyric-compiler/lyric/record_eq_self_test.l \
   lyric-compiler/lyric/task_shadow_self_test.l \
   lyric-compiler/lyric/task_kernel_record_self_test.l \
+  lyric-compiler/lyric/task_handle_api_self_test.l \
   lyric-compiler/lyric/byvalue_record_self_test.l \
   lyric-compiler/lyric/inline_union_self_test.l \
   lyric-compiler/lyric/byte_stringify_self_test.l \

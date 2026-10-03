@@ -13494,7 +13494,8 @@ func isBareTaskType(tbl: in SymbolTable, t: in Type): Bool {
       }
       match symTableTypeSymbolOf(tbl, id) {
         case Some(sym) -> match sym.kind {
-          case DKExternType(_, decl) -> decl.clrName == "System.Threading.Tasks.Task"
+          case DKExternType(_, decl) -> decl.clrName == "System.Threading.Tasks.Task" or
+            decl.clrName == "java.util.concurrent.Future"
           case DKRecord(_, _) -> sym.name == "Task" and sym.originPackage == "Std.Task"
           case _ -> false
         }
@@ -13506,7 +13507,8 @@ func isBareTaskType(tbl: in SymbolTable, t: in Type): Bool {
 }
 
 // docs/68 §3: a `Task[R]` handle satisfies the bare `Task` extern (every
-// `Task<R>` is a `Task`), and the bare `Task` satisfies `Task[Unit]` (the bare
+// `Task<R>` is a `Task`) and, on the JVM, the `java.util.concurrent.Future` extern
+// a handle is at run time; the bare `Task` satisfies `Task[Unit]` (the bare
 // name stands for `Task[Unit]`, as `Std.Task.delay`'s result does).
 func taskHandleAssignable(tbl: in SymbolTable, expected: in Type, actual: in Type): Bool {
   match taskResultType(actual) {

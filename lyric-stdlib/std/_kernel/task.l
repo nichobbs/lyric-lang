@@ -27,7 +27,7 @@
 //!     the protected type's entry/func methods.
 //!
 //! D119 slice S3 (sibling-cancel-on-first-fault) — investigated, NOT
-//! shipped; the module remains as before (`awaitAll` propagates the first
+//! shipped; the module remains as before (`awaitScope` propagates the first
 //! fault via `Task.WhenAll`; there is no eager cross-sibling cancel).  Three
 //! independent, pre-existing MSIL-backend bugs were found while attempting
 //! this, each confirmed with a standalone repro outside `Std.Task` (so none
@@ -85,7 +85,7 @@
 //!      `registerStdlibFunc`/`registerRestoredFunc` — neither populated
 //!      the maps the fix reads from for a cross-assembly stdlib/restored
 //!      function call, only the in-bundle same-source-tree path did).
-//!      `Scope.scopeSpawn`/`awaitAll` now run spawned closures correctly
+//!      `Scope.scopeSpawn`/`awaitScope` now run spawned closures correctly
 //!      on `--target dotnet`; `lyric-stdlib/tests/task_scope_known_failures_tests.l`'s
 //!      `testScopeNormalCompletionRunsEveryChild` and
 //!      `testScopeWithNoChildrenCompletesImmediately` cases were merged
@@ -94,7 +94,7 @@
 //!      (2) above, which this fix does not touch.
 //!
 //! What *did* ship from this investigation: `await` on any extern-declared
-//! `Task`-typed value (`delay`, `delayWithCancel`, `awaitAll` below) did not
+//! `Task`-typed value (`delay`, `delayWithCancel`, `awaitScope` below) did not
 //! actually suspend/block at all before this change — `isTaskTypeMsil`
 //! compared the awaited expression's TypeRef row against the compiler's own
 //! eagerly-registered `cctx.trTask`/`cctx.trTask1` rows, which are never
@@ -258,7 +258,7 @@ func taskWhenAll(tasks: in slice[Task]): Task = ()
 //
 // D119 slice S3 (sibling-cancel-on-first-fault) is NOT shipped here — see
 // the module header for the three pre-existing MSIL-backend bugs found
-// while investigating it.  `awaitAll` below still surfaces the first
+// while investigating it.  `awaitScope` below still surfaces the first
 // child's fault to the caller via `Task.WhenAll`; there is no eager
 // cross-sibling cancel yet.
 //
@@ -274,7 +274,7 @@ func taskWhenAll(tasks: in slice[Task]): Task = ()
 //       scopeSpawn(scope, child1(tok))
 //       scopeSpawn(scope, child2(tok))
 //       try {
-//         await awaitAll(scope)
+//         await awaitScope(scope)
 //       } catch Exception as e {
 //         println("at least one child failed")
 //       }
@@ -286,7 +286,7 @@ pub protected type Scope {
   // Drops the children that have finished before adding `t`, so a
   // long-lived scope that spawns without joining (a UI session running its
   // effects) holds only its running children.  The first child that did
-  // not succeed is kept, so `awaitAll` still rethrows its failure.
+  // not succeed is kept, so `awaitScope` still rethrows its failure.
   entry addChild(t: in Task): Unit {
     var keptFailure = false
     var i = 0
@@ -324,7 +324,7 @@ pub protected type Scope {
 
 /// Construct a fresh scope.  The scope owns a cancellation source
 /// and an empty children list; spawn child tasks against it via
-/// `scopeSpawn`, then `await awaitAll(scope)` to join them.  Always
+/// `scopeSpawn`, then `await awaitScope(scope)` to join them.  Always
 /// pair construction with `defer { cancelScope(scope);
 /// disposeScope(scope) }` so the source is released on scope exit.
 pub func makeScope(): Scope {
@@ -373,7 +373,7 @@ func taskSucceeded(t: in Task): Bool {
 /// Wait for every registered child to complete.  When any child
 /// faults the call rethrows the underlying exception so the
 /// caller's `try/catch` surfaces it.
-pub func awaitAll(s: in Scope): Task {
+pub func awaitScope(s: in Scope): Task {
   return taskWhenAll(s.snapshot())
 }
 
@@ -537,4 +537,47 @@ pub func runWithin[T](timeoutMs: in Int, f: in () -> T): Option[T]
     return Some(results[0])
   }
   return None
+}
+
+// =====================================================================
+// `Task[T]` spawn-handle API (docs/68 §5).  A handle is the value of
+// `spawn f()` inside a `scope { }`; on this target it is a
+// `System.Threading.Tasks.Task<T>`, which is a `Task`, so the same
+// `Task.Wait(int)` binding used by `runActionWithin` serves every `T`.
+// =====================================================================
+/// Block the calling thread for at most `timeoutMs` milliseconds waiting
+/// for the spawned task `t`; returns `true` when it has finished and `false`
+/// on timeout.  Does not consume the task and can be called repeatedly.
+///
+/// A task that finished by failing (or being cancelled) counts as finished:
+/// `waitFor` returns `true` and the failure is raised by the later
+/// `await t`, never by `waitFor` itself.
+pub func waitFor[T](t: in Task[T], timeoutMs: in Int): Bool
+  requires: timeoutMs >= 0
+{
+  try {
+    return waitTaskMs(t, timeoutMs)
+  } catch Bug as _ {
+    return true
+  }
+}
+
+/// True when the spawned task `t` has already finished (successfully, with a
+/// failure, or cancelled).  `waitFor(t, 0)`.
+pub func isDone[T](t: in Task[T]): Bool {
+  return waitFor(t, 0)
+}
+
+/// Wait for every task in `ts` and return their results in input order (the
+/// `Promise.all` case).  The empty list yields an empty list.  When a task
+/// failed, the first failure in input order is raised and the later tasks are
+/// left for the enclosing `scope { }` to join.
+pub func awaitAll[T](ts: in List[Task[T]]): List[T] {
+  val results: List[T] = newList()
+  var i = 0
+  while i < ts.count {
+    results.add(await ts[i])
+    i = i + 1
+  }
+  return results
 }

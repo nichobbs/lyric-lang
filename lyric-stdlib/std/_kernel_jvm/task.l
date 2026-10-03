@@ -35,7 +35,7 @@
 //!
 //!   - `Scope.scopeSpawn` starts each action at once on a virtual thread
 //!     (`Thread.startVirtualThread`), as `_kernel/task.l` starts it at once
-//!     on the thread pool (`Task.Run`); `awaitAll` joins every thread
+//!     on the thread pool (`Task.Run`); `awaitScope` joins every thread
 //!     started so far.
 //!   - Each spawned action is wrapped so a fault sets the scope's shared
 //!     `AtomicBoolean` cancellation flag and records the first failure's
@@ -43,7 +43,7 @@
 //!     fault wins); cooperative siblings checking `isCancelled`/
 //!     `throwIfCancelled` observe the cancellation while still running —
 //!     the same cooperative-cancellation contract `_kernel/task.l`
-//!     documents (never a forced interrupt).  `awaitAll` re-panics with
+//!     documents (never a forced interrupt).  `awaitScope` re-panics with
 //!     the first failure's message once every spawned action has joined.
 //!   - `delay`/`delayWithCancel` block the calling (virtual) thread
 //!     directly (`Thread.sleep`, chunked so a cancellation token or a
@@ -233,7 +233,7 @@ pub func delayWithCancel(ms: in Int, token: in CancellationToken): Task {
 // =====================================================================
 // `Task` — see the module header: a value produced by any function in
 // this file is always already-resolved (the producing call already
-// blocked, or `awaitAll` already joined every spawned child) by the
+// blocked, or `awaitScope` already joined every spawned child) by the
 // time the caller holds it.
 // =====================================================================
 pub record Task {
@@ -246,12 +246,12 @@ pub record Task {
 // as `_kernel/task.l` starts it at once with `Task.Run`.  The scope keeps
 // the started threads in a list guarded by a `ReentrantLock`, since
 // actions may spawn further actions from their own threads, and
-// `awaitAll` joins every thread started so far.
+// `awaitScope` joins every thread started so far.
 //
 // Sibling-cancel-on-first-fault mirrors `_kernel/task.l`'s `runGuardedNet`:
 // each action is wrapped so a fault sets the shared cancellation flag and
 // (first-fault-wins, via `AtomicBoolean.compareAndSet`) records the
-// failure message; awaitAll re-panics with it once every action has
+// failure message; awaitScope re-panics with it once every action has
 // joined.
 //
 // The canonical usage pattern is unchanged from `_kernel/task.l`:
@@ -266,7 +266,7 @@ pub record Task {
 //       scopeSpawn(scope, { -> child1(tok) })
 //       scopeSpawn(scope, { -> child2(tok) })
 //       try {
-//         await awaitAll(scope)
+//         await awaitScope(scope)
 //       } catch Exception as e {
 //         println("at least one child failed")
 //       }
@@ -281,7 +281,7 @@ pub record Scope {
 }
 
 /// Construct a fresh scope.  Start children with `scopeSpawn`, then
-/// `await awaitAll(scope)` to join them.
+/// `await awaitScope(scope)` to join them.
 pub func makeScope(): Scope {
   Scope(
     threads = newList(),
@@ -365,7 +365,7 @@ func scopeThreadAlive(t: in JThread): Bool {
 
 /// The number of children the scope still tracks: those still running.  A
 /// child that finished is dropped the next time the scope spawns; a failure
-/// stays recorded for `awaitAll`.
+/// stays recorded for `awaitScope`.
 pub func scopePendingCount(s: in Scope): Int {
   scopeLock(s.guard)
   defer {
@@ -379,7 +379,7 @@ pub func scopePendingCount(s: in Scope): Int {
 // empty-string sentinel on `firstFault` — a sibling panicking with an
 // empty message must still be treated as a real fault, #5327) and set
 // the scope's cancellation flag so cooperative siblings still running
-// observe it.  Swallows the exception: `awaitAll` inspects
+// observe it.  Swallows the exception: `awaitScope` inspects
 // `firstFault`/`hasFault` itself after every action has joined.
 func runGuardedJvm(
   action: in () -> Unit,
@@ -415,7 +415,7 @@ func scopeThreads(s: in Scope): List[JThread] {
 /// failure's message is re-panicked once every action has completed —
 /// matching `_kernel/task.l`'s "rethrows the underlying exception"
 /// contract.
-pub func awaitAll(s: in Scope): Task {
+pub func awaitScope(s: in Scope): Task {
   for t in scopeThreads(s) {
     scopeThreadJoin(t)
   }
@@ -498,7 +498,7 @@ pub func hasAmbient(): Bool {
 // =====================================================================
 // Bounded-wait single-closure execution (#7461, D-progress-1021).
 //
-// Unlike `scopeSpawn`/`awaitAll` above, `runWithin` does NOT go through
+// Unlike `scopeSpawn`/`awaitScope` above, `runWithin` does NOT go through
 // the `spawn`/`scope { }` keywords: their join is an unconditional full
 // wait with no bounded/timeout variant (module header), so they cannot
 // give a real preemptive bound. Instead this mirrors the daemon-thread
@@ -626,4 +626,69 @@ pub func runWithin[T](timeoutMs: in Int, f: in () -> T): Option[T]
     return Some(results[0])
   }
   return None
+}
+
+// =====================================================================
+// `Task[T]` spawn-handle API (docs/68 §5).  A handle is the value of
+// `spawn f()` inside a `scope { }`; on this target it is the
+// `java.util.concurrent.Future` the scope's executor returned, which the
+// type checker lets a `Task[T]` stand for as `JFuture`.
+// =====================================================================
+extern type JFuture = "java.util.concurrent.Future"
+
+extern type JTimeUnit = "java.util.concurrent.TimeUnit"
+
+extern type JObject = "java.lang.Object"
+
+// Tail-position forms: a discarded auto-FFI instance call whose receiver is
+// a parameter emits no invoke on this backend (#5379).
+func futureIsDone(f: in JFuture): Bool {
+  f.isDone()
+}
+
+func futureGetTimed(f: in JFuture, ms: in Long, unit: in JTimeUnit): JObject {
+  f.get(ms, unit)
+}
+
+/// Block the calling thread for at most `timeoutMs` milliseconds waiting
+/// for the spawned task `t`; returns `true` when it has finished and `false`
+/// on timeout.  Does not consume the task and can be called repeatedly.
+///
+/// A task that finished by failing (or being cancelled) counts as finished:
+/// `waitFor` returns `true` and the failure is raised by the later
+/// `await t`, never by `waitFor` itself.
+pub func waitFor[T](t: in Task[T], timeoutMs: in Int): Bool
+  requires: timeoutMs >= 0
+{
+  val f: JFuture = t
+  if timeoutMs == 0 {
+    return futureIsDone(f)
+  }
+  try {
+    val unit: JTimeUnit = JTimeUnit.valueOf("MILLISECONDS")
+    val joined: JObject = futureGetTimed(f, timeoutMs, unit)
+    return futureIsDone(f)
+  } catch Bug as _ {
+    return futureIsDone(f)
+  }
+}
+
+/// True when the spawned task `t` has already finished (successfully, with a
+/// failure, or cancelled).  `waitFor(t, 0)`.
+pub func isDone[T](t: in Task[T]): Bool {
+  return waitFor(t, 0)
+}
+
+/// Wait for every task in `ts` and return their results in input order (the
+/// `Promise.all` case).  The empty list yields an empty list.  When a task
+/// failed, the first failure in input order is raised and the later tasks are
+/// left for the enclosing `scope { }` to join.
+pub func awaitAll[T](ts: in List[Task[T]]): List[T] {
+  val results: List[T] = newList()
+  var i = 0
+  while i < ts.count {
+    results.add(await ts[i])
+    i = i + 1
+  }
+  return results
 }

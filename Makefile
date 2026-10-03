@@ -408,6 +408,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/string_ordinal_self_test.l \
 	lyric-compiler/lyric/stubbable_self_test.l \
 	lyric-compiler/lyric/synthesized_method_self_test.l \
+	lyric-compiler/lyric/task_handle_api_self_test.l \
 	lyric-compiler/lyric/task_kernel_record_self_test.l \
 	lyric-compiler/lyric/task_shadow_self_test.l \
 	lyric-compiler/lyric/test_synth_self_test.l \
