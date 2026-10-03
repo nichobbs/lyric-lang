@@ -107,6 +107,8 @@ The key mechanism that makes module-level proof tractable is the Hoare call rule
 1. **Assert** `debit`'s `requires:` at the call site — confirm that the arguments satisfy `debit`'s precondition.
 2. **Assume** `debit`'s `ensures:` after the call — treat the postcondition as an established fact for the rest of the analysis.
 
+In both steps each parameter in the contract stands for the argument passed to it. A named argument goes to the parameter it names, whatever order the call writes it in (`debit(amount = a, from = acct)` binds `from` to `acct`), and a parameter the call leaves out stands for its default value.
+
 This is the deal: you prove each function independently, and at call sites you trust what you proved. The proof for `execute` does not need to know how `debit` works internally; it only needs to know what `debit` promises.
 
 To see this in action, let us trace through the conservation property proof step by step. The goal is to verify that `execute`'s postcondition holds:

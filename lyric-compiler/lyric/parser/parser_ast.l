@@ -1724,12 +1724,49 @@ pub func argsWithDefaults(
         toString(skip)
     )
   }
+  val slots: List[Int] = match pairCallArgs(paramNames, skip, args) {
+    case Ok(paired) -> paired
+    case Err(why) -> {
+      unpairableCallArgs(callee, why, paramNames)
+      newList()
+    }
+  }
+  val filled: List[CallArg] = newList()
+  var k = 0
+  while k < total {
+    if slots[k] >= 0 {
+      filled.add(args[slots[k]])
+    } else {
+      match defaults[skip + k] {
+        case Some(d) -> filled.add(CAPositional(expr = d))
+        case None -> unpairableCallArgs(
+          callee,
+          "parameter '" + paramNames[skip + k] + "' has no argument and no default",
+          paramNames
+        )
+      }
+    }
+    k = k + 1
+  }
+  filled
+}
+
+/// Pair a call's arguments with the callee's parameters after the first
+/// `skip`, as the type checker pairs them (`argsWithDefaults`): each named
+/// argument goes to its parameter, then the positional ones fill the free
+/// parameters left to right.  The result holds, for each of those
+/// parameters in order, the index in `args` of its argument, or -1 when the
+/// call leaves it out.  `Err` says why the arguments cannot be paired.  For a
+/// consumer that sees calls the type checker has not accepted (`lyric
+/// prove`, #7873), where `argsWithDefaults` would treat that as a compiler
+/// bug.
+pub func pairCallArgs(paramNames: in List[String], skip: in Int, args: in List[CallArg]): Result[List[Int], String] {
+  val total = paramNames.count - skip
+  if total < 0 {
+    return Err(error = "the parameter list is shorter than its receiver prefix")
+  }
   if args.count > total {
-    unpairableCallArgs(
-      callee,
-      "expected at most " + toString(total) + " argument(s), got " + toString(args.count),
-      paramNames
-    )
+    return Err(error = "expected at most " + toString(total) + " argument(s), got " + toString(args.count))
   }
   val slots: List[Int] = newList()
   var s = 0
@@ -1750,10 +1787,10 @@ pub func argsWithDefaults(
           pi = pi + 1
         }
         if found < 0 {
-          unpairableCallArgs(callee, "no parameter named '" + nm + "'", paramNames)
+          return Err(error = "no parameter named '" + nm + "'")
         }
         if slots[found] >= 0 {
-          unpairableCallArgs(callee, "parameter '" + nm + "' is given more than once", paramNames)
+          return Err(error = "parameter '" + nm + "' is given more than once")
         }
         slots[found] = ai
       }
@@ -1770,7 +1807,7 @@ pub func argsWithDefaults(
           next = next + 1
         }
         if next >= total {
-          unpairableCallArgs(callee, "a positional argument has no free parameter", paramNames)
+          return Err(error = "a positional argument has no free parameter")
         }
         slots[next] = ai
         next = next + 1
@@ -1779,24 +1816,7 @@ pub func argsWithDefaults(
     }
     ai = ai + 1
   }
-  val filled: List[CallArg] = newList()
-  var k = 0
-  while k < total {
-    if slots[k] >= 0 {
-      filled.add(args[slots[k]])
-    } else {
-      match defaults[skip + k] {
-        case Some(d) -> filled.add(CAPositional(expr = d))
-        case None -> unpairableCallArgs(
-          callee,
-          "parameter '" + paramNames[skip + k] + "' has no argument and no default",
-          paramNames
-        )
-      }
-    }
-    k = k + 1
-  }
-  filled
+  Ok(value = slots)
 }
 
 func unpairableCallArgs(callee: in String, why: in String, paramNames: in List[String]): Unit {

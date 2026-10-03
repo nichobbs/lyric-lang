@@ -749,7 +749,13 @@ For a call `g(args)` from `f` with continuation `S`:
 >      ⇒ wp(S, Q)[«side-effect of g» := result]
 
 That is: at the call site we *check* `g`'s precondition and *assume*
-its postcondition. The body of `g` is *not* re-analysed at the call
+its postcondition.
+
+`params := ⟦args⟧` pairs each argument with the parameter it is passed
+to, as the type checker pairs them: a named argument with the parameter
+it names, then the positional arguments with the remaining parameters
+in order. A parameter the call leaves out is replaced by its declared
+default, evaluated at the call in the callee's parameter scope (#7873). The body of `g` is *not* re-analysed at the call
 site; its proof obligations were discharged when `g` itself was
 verified. This is the Hoare-logic principle of *contract trust*, and
 it is the reason `@proof_required` callees must themselves be

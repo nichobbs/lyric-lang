@@ -1428,3 +1428,56 @@ test "an untranslatable callee contract is reported once across calls (#7874)" {
   assertEqualInt(countDiagCode(s, "V0033"), 1, "one V0033 for the contract")
   assertTrue(summaryHasFailure(s), "the goals that use it are not discharged")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A callee's contract takes each argument at the parameter it names, and an
+// omitted parameter's default (#7873).
+// ─────────────────────────────────────────────────────────────────────────────
+test "named arguments bind by name in the callee's contract (#7873)" {
+  val sub = "func sub(a: in Int, b: in Int): Int\n  ensures: result == a - b\n{\n  a - b\n}\n"
+  assertDischarged(sub + "func g(): Int\n  ensures: result == 7\n{\n  sub(b = 3, a = 10)\n}\n", "reordered-discharge")
+  assertRefuted(sub + "func g(): Int\n  ensures: result == -7\n{\n  sub(b = 3, a = 10)\n}\n", "reordered-refute")
+  assertDischarged(
+    sub + "func g(): Int\n  ensures: result == 7\n{\n  sub(b = 3, 10)\n}\n",
+    "positional-fills-free-slot"
+  )
+  val clamp = "func clamp(x: in Int, lo: in Int, hi: in Int): Int\n  requires: lo <= hi\n" +
+    "  ensures: result >= lo and result <= hi\n{\n  if x < lo { lo } else { if x > hi { hi } else { x } }\n}\n"
+  assertDischarged(
+    clamp + "func g(v: in Int): Int\n  ensures: result >= 0 and result <= 10\n{\n  clamp(hi = 10, lo = 0, x = v)\n}\n",
+    "clamp-discharge"
+  )
+  assertRefuted(
+    clamp + "func g(v: in Int): Int\n  ensures: result >= 0 and result <= 10\n{\n  clamp(hi = 0, lo = 10, x = v)\n}\n",
+    "clamp-precondition-refute"
+  )
+}
+
+test "an omitted parameter takes its default in the callee's contract (#7873)" {
+  val addk = "func addk(x: in Int, k: in Int = 5): Int\n  ensures: result == x + k\n{\n  x + k\n}\n"
+  assertDischarged(addk + "func g(y: in Int): Int\n  ensures: result == y + 5\n{\n  addk(y)\n}\n", "default-discharge")
+  assertRefuted(addk + "func g(y: in Int): Int\n  ensures: result == y\n{\n  addk(y)\n}\n", "default-refute")
+  assertDischarged(
+    addk + "func g(y: in Int): Int\n  ensures: result == y + 2\n{\n  addk(k = 2, x = y)\n}\n",
+    "default-overridden"
+  )
+  val div = "func half(n: in Int, d: in Int = 2): Int\n  requires: d != 0\n{\n  n / d\n}\n"
+  assertDischarged(div + "func g(): Int\n{\n  half(7)\n}\n", "default-meets-precondition")
+  assertRefuted(div + "func g(): Int\n{\n  half(d = 0, n = 7)\n}\n", "named-violates-precondition")
+}
+
+test "record constructor arguments bind by field name, with field defaults (#7873)" {
+  val rec = "record P {\n  x: Int\n  y: Int = 7\n}\n"
+  assertDischarged(
+    rec + "func mk(): P\n  ensures: result.x == 2 and result.y == 1\n{\n  P(y = 1, x = 2)\n}\n",
+    "record-named"
+  )
+  assertRefuted(rec + "func mk(): P\n  ensures: result.x == 1\n{\n  P(y = 1, x = 2)\n}\n", "record-named-refute")
+  assertDischarged(rec + "func mk(): P\n  ensures: result.y == 7\n{\n  P(x = 1)\n}\n", "record-default")
+}
+
+test "a call whose arguments do not match the callee fails closed (#7873)" {
+  val sub = "func sub(a: in Int, b: in Int): Int\n  ensures: result == a - b\n{\n  a - b\n}\n"
+  assertUntranslatable(sub + "func g(): Int\n  ensures: result == 7\n{\n  sub(c = 3, a = 10)\n}\n", "unknown-name")
+  assertUntranslatable(sub + "func g(): Int\n  ensures: result == 7\n{\n  sub(10)\n}\n", "missing-argument")
+}

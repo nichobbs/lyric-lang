@@ -28,6 +28,10 @@ pub record VEnv {
   // keyed by its selector (`<Type>__<field>`), so the width of a field read
   // is known to `@proof_required(checked_arithmetic)` (#7871).
   pub fieldIntBits: Map[String, Int]
+  // Each non-generic record's field defaults in declaration order, so a
+  // constructor call that leaves a defaulted field out is completed with
+  // its default (#7873).
+  pub recordDefaults: Map[String, List[Option[Expr]]]
   // Copy helpers — use explicit names list to avoid iterating Map.keys on a
   // TypeBuilderInstantiation, which generates invalid IL.
 }
@@ -129,6 +133,7 @@ pub func envEmpty(callees: in Map[String, FunctionDecl], symbols: in List[Symbol
   val varNames: List[String] = newList()
   val distincts: Map[String, TypeExpr] = newMap()
   val fieldIntBits: Map[String, Int] = newMap()
+  val recordDefaults: Map[String, List[Option[Expr]]] = newMap()
   VEnv(
     vars = vars,
     varNames = varNames,
@@ -137,7 +142,8 @@ pub func envEmpty(callees: in Map[String, FunctionDecl], symbols: in List[Symbol
     symbols = symbols,
     checkedArithmetic = checkedArithmetic,
     distincts = distincts,
-    fieldIntBits = fieldIntBits
+    fieldIntBits = fieldIntBits,
+    recordDefaults = recordDefaults
   )
 }
 
@@ -166,7 +172,8 @@ pub func envBind(name: in String, info: in SortInfo, env: in VEnv): VEnv {
     symbols = env.symbols,
     checkedArithmetic = env.checkedArithmetic,
     distincts = env.distincts,
-    fieldIntBits = env.fieldIntBits
+    fieldIntBits = env.fieldIntBits,
+    recordDefaults = env.recordDefaults
   )
 }
 
@@ -194,7 +201,8 @@ pub func envBindTerm(name: in String, term: in Term, info: in SortInfo, env: in 
     symbols = env.symbols,
     checkedArithmetic = env.checkedArithmetic,
     distincts = env.distincts,
-    fieldIntBits = env.fieldIntBits
+    fieldIntBits = env.fieldIntBits,
+    recordDefaults = env.recordDefaults
   )
 }
 
@@ -349,26 +357,125 @@ func coerceTermAt(t: in Term, target: in Sort, sp: in Span, diagsOut: in List[Di
   }
 }
 
-// The sort of the record field a constructor argument initialises: by name
-// for a named argument (selectors are registered as `<Record>__<field>`),
-// by position otherwise.
-func recordArgFieldSort(
-  recName: in String, fields: in List[DatatypeField], argName: in String, pos: in Int
-): Option[Sort] {
-  if argName.length > 0 {
-    val prefixed = recName + "__" + argName
-    var j = 0
-    while j < fields.count {
-      if fields[j].name == prefixed {
-        return Some(value = fields[j].sort)
+// A call's argument terms in the callee's parameter (or record's field)
+// order, and whether its arguments could be paired with them.
+pub record PairedArgs {
+  pub terms: List[Term]
+  pub paired: Bool
+}
+
+// Pair a call's arguments with `names` the way the type checker does —
+// named arguments by name, positional ones into the free slots left to
+// right (`Lyric.Parser.pairCallArgs`) — so a callee contract is instantiated
+// with the argument each parameter actually receives, whatever order named
+// arguments are written in (#7873).  A parameter the call leaves out takes
+// its declared default, translated in `defaultEnv`; with `substEarlier` the
+// default may name an earlier parameter, which is replaced by that
+// parameter's term.  Each term takes its slot's sort.  Arguments that cannot
+// be paired, or an omitted parameter without a default, are V0033 and give
+// poisoned terms, so no goal built from the call is discharged.
+func pairArgTerms(
+  calleeName: in String,
+  names: in List[String],
+  sorts: in List[Sort],
+  defaults: in List[Option[Expr]],
+  defaultEnv: in VEnv,
+  substEarlier: in Bool,
+  args: in List[CallArg],
+  rawArgTerms: in List[Term],
+  argSpans: in List[Span],
+  callSpan: in Span,
+  sideOut: in List[Term],
+  assumedOut: in List[Term],
+  diagsOut: in List[Diagnostic],
+): PairedArgs {
+  val terms: List[Term] = newList()
+  match pairCallArgs(names, 0, args) {
+    case Ok(slots) -> {
+      val earlier: Map[String, Term] = newMap()
+      val earlierNames: List[String] = newList()
+      var pi = 0
+      while pi < names.count {
+        val slot = slots[pi]
+        val t = if slot >= 0 {
+          coerceTermAt(rawArgTerms[slot], sorts[pi], argSpans[slot], diagsOut)
+        } else {
+          val dflt: Option[Expr] = if pi < defaults.count { defaults[pi] } else { None }
+          match dflt {
+            case Some(d) -> {
+              val (dR, dDiags) = translateExpr(defaultEnv, d)
+              appendTermList2(diagsOut, dDiags)
+              var k = 0
+              while k < dR.sideConds.count {
+                sideOut.add(substIf(substEarlier, earlier, earlierNames, dR.sideConds[k]))
+                k = k + 1
+              }
+              k = 0
+              while k < dR.assumed.count {
+                assumedOut.add(substIf(substEarlier, earlier, earlierNames, dR.assumed[k]))
+                k = k + 1
+              }
+              coerceTermAt(substIf(substEarlier, earlier, earlierNames, dR.term), sorts[pi], d.span, diagsOut)
+            }
+            case None -> {
+              diagsOut.add(
+                untranslatableDiag(
+                  "the call to '" + calleeName + "' gives no argument for '" + names[pi] + "', which has no default",
+                  callSpan
+                )
+              )
+              poisonTerm(TVar(name = names[pi], sort = sorts[pi]))
+            }
+          }
+        }
+        terms.add(t)
+        earlier.add(names[pi], t)
+        earlierNames.add(names[pi])
+        pi = pi + 1
       }
-      j = j + 1
+      PairedArgs(terms = terms, paired = true)
     }
-    None
-  } else if pos < fields.count {
-    Some(value = fields[pos].sort)
+    case Err(why) -> {
+      diagsOut.add(
+        untranslatableDiag(
+          "the arguments of the call to '" + calleeName + "' do not match its parameters: " + why,
+          callSpan
+        )
+      )
+      var pi = 0
+      while pi < names.count {
+        terms.add(poisonTerm(TVar(name = names[pi], sort = sorts[pi])))
+        pi = pi + 1
+      }
+      PairedArgs(terms = terms, paired = false)
+    }
+  }
+}
+
+// `env` without its bindings, for an expression evaluated outside the
+// caller's scope (a record field's default).
+func varlessEnv(env: in VEnv): VEnv {
+  val vars: Map[String, Term] = newMap()
+  val sorts: Map[String, SortInfo] = newMap()
+  val varNames: List[String] = newList()
+  VEnv(
+    vars = vars,
+    varNames = varNames,
+    sorts = sorts,
+    callees = env.callees,
+    symbols = env.symbols,
+    checkedArithmetic = env.checkedArithmetic,
+    distincts = env.distincts,
+    fieldIntBits = env.fieldIntBits,
+    recordDefaults = env.recordDefaults
+  )
+}
+
+func substIf(cond: in Bool, m: in Map[String, Term], names: in List[String], t: in Term): Term {
+  if cond {
+    substTerm(m, names, t)
   } else {
-    None
+    t
   }
 }
 
@@ -873,7 +980,6 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
       // Translate all arguments first.
       val rawArgTerms: List[Term] = newList()
       val argSpans: List[Span] = newList()
-      val argNames: List[String] = newList()
       val argSides: List[Term] = newList()
       val argAssumed: List[Term] = newList()
       val allArgDiags: List[Diagnostic] = newList()
@@ -883,7 +989,6 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
         val (ar, ad) = translateExpr(env, argExpr)
         rawArgTerms.add(ar.term)
         argSpans.add(argExpr.span)
-        argNames.add(match args[i] { case CANamed(n, _, _) -> n; case CAPositional(_) -> "" })
         appendTermList(argSides, ar.sideConds)
         appendTermList(argAssumed, ar.assumed)
         appendTermList2(allArgDiags, ad)
@@ -913,18 +1018,46 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
           // declared datatype's constructor and z3 typechecks the call.
           match findRecordFields(env, name) {
             case Some(recFields) -> {
-              val argTerms: List[Term] = newList()
-              var ai = 0
-              while ai < rawArgTerms.count {
-                match recordArgFieldSort(name, recFields, argNames[ai], ai) {
-                  case Some(fs) -> argTerms.add(coerceTermAt(rawArgTerms[ai], fs, argSpans[ai], allArgDiags))
-                  case None -> argTerms.add(rawArgTerms[ai])
-                }
-                ai = ai + 1
+              // Arguments go to fields by name, positional ones in order,
+              // and an omitted field takes its default (#7873).  Selectors
+              // are registered as `<Record>__<field>`.
+              val fieldNames: List[String] = newList()
+              val fieldSorts: List[Sort] = newList()
+              val prefix = name + "__"
+              var fi = 0
+              while fi < recFields.count {
+                val fname = recFields[fi].name
+                fieldNames.add(
+                  if fname.startsWith(prefix) { fname.substring(prefix.length, fname.length - prefix.length) } else { fname }
+                )
+                fieldSorts.add(recFields[fi].sort)
+                fi = fi + 1
               }
+              val fieldDefaults: List[Option[Expr]] = match mapGet(env.recordDefaults, name) {
+                case Some(ds) -> ds
+                case None -> {
+                  val noDefaults: List[Option[Expr]] = newList()
+                  noDefaults
+                }
+              }
+              val recPaired = pairArgTerms(
+                name,
+                fieldNames,
+                fieldSorts,
+                fieldDefaults,
+                varlessEnv(env),
+                false,
+                args,
+                rawArgTerms,
+                argSpans,
+                e.span,
+                argSides,
+                argAssumed,
+                allArgDiags
+              )
               val emptyArgs: List[Sort] = newList()
               val recRetSort: Sort = SDatatype(name = name, args = emptyArgs)
-              val recCallTerm = TApp(name = name, args = argTerms, retSort = recRetSort)
+              val recCallTerm = TApp(name = name, args = recPaired.terms, retSort = recRetSort)
               val recSc: List[Term] = newList()
               appendTermList(recSc, argSides)
               val recAs: List[Term] = newList()
@@ -946,31 +1079,6 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
                 pi = pi + 1
               }
               env.symbols.add(DeclUserFun(name = name, paramSorts = paramSorts, resultSort = resultSort))
-              // Each argument takes its parameter's sort (#7848), so a literal
-              // passed to a `UInt` parameter is a bitvector in the call and in
-              // the callee contract it is substituted into.
-              val argTerms: List[Term] = newList()
-              var ai = 0
-              while ai < rawArgTerms.count {
-                if ai < paramSorts.count {
-                  argTerms.add(coerceTermAt(rawArgTerms[ai], paramSorts[ai], argSpans[ai], allArgDiags))
-                } else {
-                  argTerms.add(rawArgTerms[ai])
-                }
-                ai = ai + 1
-              }
-              val callTerm = TApp(name = name, args = argTerms, retSort = resultSort)
-
-              // Build param substitution map: param[i].name → argTerms[i].
-              val paramSubst: Map[String, Term] = newMap()
-              val paramSubstNames: List[String] = newList()
-              val maxP = if decl.params.count < argTerms.count { decl.params.count } else { argTerms.count }
-              var si = 0
-              while si < maxP {
-                paramSubst.add(decl.params[si].name, argTerms[si])
-                paramSubstNames.add(decl.params[si].name)
-                si = si + 1
-              }
 
               // Build inner env for translating contracts.
               val innerVars: Map[String, Term] = newMap()
@@ -994,8 +1102,64 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
                 symbols = emptySymbols,
                 checkedArithmetic = false,
                 distincts = env.distincts,
-                fieldIntBits = env.fieldIntBits
+                fieldIntBits = env.fieldIntBits,
+                recordDefaults = env.recordDefaults
               )
+              // A parameter default is evaluated at the call, in the callee's
+              // parameter scope.
+              val defaultEnv = VEnv(
+                vars = innerVars,
+                varNames = innerVarNames,
+                sorts = innerSorts,
+                callees = env.callees,
+                symbols = env.symbols,
+                checkedArithmetic = env.checkedArithmetic,
+                distincts = env.distincts,
+                fieldIntBits = env.fieldIntBits,
+                recordDefaults = env.recordDefaults
+              )
+
+              // Each argument goes to the parameter it names, or by position,
+              // and an omitted one takes its default (#7873); each takes its
+              // parameter's sort (#7848), so a literal passed to a `UInt`
+              // parameter is a bitvector in the call and in the callee
+              // contract it is substituted into.
+              val paramNames: List[String] = newList()
+              val paramDefaults: List[Option[Expr]] = newList()
+              var pn = 0
+              while pn < decl.params.count {
+                paramNames.add(decl.params[pn].name)
+                paramDefaults.add(decl.params[pn].dflt)
+                pn = pn + 1
+              }
+              val paired = pairArgTerms(
+                name,
+                paramNames,
+                paramSorts,
+                paramDefaults,
+                defaultEnv,
+                true,
+                args,
+                rawArgTerms,
+                argSpans,
+                e.span,
+                argSides,
+                argAssumed,
+                allArgDiags
+              )
+              val argTerms = paired.terms
+              val rawCallTerm = TApp(name = name, args = argTerms, retSort = resultSort)
+              val callTerm = if paired.paired { rawCallTerm } else { poisonTerm(rawCallTerm) }
+
+              // Param substitution map: param[i].name → argTerms[i].
+              val paramSubst: Map[String, Term] = newMap()
+              val paramSubstNames: List[String] = newList()
+              var si = 0
+              while si < decl.params.count {
+                paramSubst.add(decl.params[si].name, argTerms[si])
+                paramSubstNames.add(decl.params[si].name)
+                si = si + 1
+              }
 
               // @pure callee: translate body expr, emit equality as assumption.
               val pureUnfold: List[Term] = newList()
@@ -1065,7 +1229,8 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
                 symbols = emptySymbols,
                 checkedArithmetic = false,
                 distincts = env.distincts,
-                fieldIntBits = env.fieldIntBits
+                fieldIntBits = env.fieldIntBits,
+                recordDefaults = env.recordDefaults
               )
               ci = 0
               while ci < decl.contracts.count {
@@ -2619,7 +2784,8 @@ func freshSymbolsEnv(env: in VEnv): VEnv {
     symbols = freshSyms,
     checkedArithmetic = env.checkedArithmetic,
     distincts = env.distincts,
-    fieldIntBits = env.fieldIntBits
+    fieldIntBits = env.fieldIntBits,
+    recordDefaults = env.recordDefaults
   )
 }
 
@@ -2922,6 +3088,7 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
   }
 
   val fieldIntBitsMap: Map[String, Int] = newMap()
+  val recordDefaultsMap: Map[String, List[Option[Expr]]] = newMap()
 
   // Pre-register every `IRecord` as an SMT datatype with one constructor
   // matching the record's fields.  Lets the verifier reason about
@@ -2943,16 +3110,14 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
         val skipGeneric = match recDecl.generics { case Some(_) -> true; case None -> false }
         if not skipGeneric {
           val dtFields: List[DatatypeField] = newList()
+          val dtDefaults: List[Option[Expr]] = newList()
           var fi = 0
           while fi < recDecl.members.count {
             match recDecl.members[fi] {
-              case RMField(fld) -> addDatatypeField(
-                dtFields,
-                fieldIntBitsMap,
-                distinctMap,
-                recDecl.name + "__" + fld.name,
-                fld.ty
-              )
+              case RMField(fld) -> {
+                addDatatypeField(dtFields, fieldIntBitsMap, distinctMap, recDecl.name + "__" + fld.name, fld.ty)
+                dtDefaults.add(fld.dflt)
+              }
               case _ -> ()
             }
             fi = fi + 1
@@ -2960,6 +3125,9 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
           val dtCtors: List[DatatypeCtor] = newList()
           dtCtors.add(DatatypeCtor(name = recDecl.name, fields = dtFields))
           sharedSymbols.add(DeclDatatype(name = recDecl.name, constructors = dtCtors))
+          if not recordDefaultsMap.containsKey(recDecl.name) {
+            recordDefaultsMap.add(recDecl.name, dtDefaults)
+          }
         }
       }
       // Same as IRecord above, but for protected types.  Lets
@@ -3012,7 +3180,8 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
     symbols = env0Init.symbols,
     checkedArithmetic = env0Init.checkedArithmetic,
     distincts = distinctMap,
-    fieldIntBits = fieldIntBitsMap
+    fieldIntBits = fieldIntBitsMap,
+    recordDefaults = recordDefaultsMap
   )
 
   val allGoals: List[Goal] = newList()
