@@ -1500,3 +1500,27 @@ test "Native Map indexed compound assignment against a missing key panics, not a
     "a compound assign against an absent map key must panic, not silently succeed"
   )
 }
+
+// A record method and a dot-named function of the same name and different
+// arity: each call runs the one the type checker resolved (#8098).  (A bare
+// call to a sibling method inside a record method does not lower on this
+// target at all yet, whatever the callee.)
+test "Native record method beside a dot-named function of another arity (#8098)" {
+  val src = "package T\n" + "import Std.Core\n" + "record Od {\n  n: Int\n" +
+    "  func m(self: in Od, x: in Int): Int {\n    60 + x\n  }\n}\n" +
+    "func Od.m(o: in Od, x: in Int, y: in Int): Int {\n  70 + x + y\n}\n" +
+    "record Oe {\n  n: Int\n" +
+    "  func m(self: in Oe, x: in Int, y: in Int): Int {\n    80 + x + y\n  }\n}\n" +
+    "func Oe.m(o: in Oe, x: in Int): Int {\n  90 + x\n}\n" +
+    "func main(): Int {\n" +
+    "  val d = Od(n = 0)\n" +
+    "  if d.m(1) != 61 {\n    return 1\n  }\n" +
+    "  if d.m(1, 2) != 73 {\n    return 2\n  }\n" +
+    "  val e = Oe(n = 0)\n" +
+    "  if e.m(1) != 91 {\n    return 4\n  }\n" +
+    "  if e.m(1, 2) != 83 {\n    return 5\n  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "each call runs the method the checker resolved")
+}

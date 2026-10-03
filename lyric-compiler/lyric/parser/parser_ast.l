@@ -5,6 +5,7 @@ package Lyric.Parser
 
 import Std.Core
 import Std.Collections
+import Std.String as Str
 import Lyric.Lexer
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1508,6 +1509,69 @@ pub func recordCopySiteKey(sp: in Span): String {
   toString(sp.startPos.offset) + ":" + toString(sp.endPos.offset)
 }
 
+/// The key of a method call site in `SymbolTable.methodCallArities`: the
+/// span of its callee with any parentheses or explicit type arguments
+/// removed (`o.m`, or `m` for a bare call to a sibling method), and the
+/// method's name, so that every backend finds the entry from the callee it
+/// dispatches on (#7828).
+pub func methodCallSiteKey(callee: in Expr): String {
+  match callee.kind {
+    case EParen(inner) -> methodCallSiteKey(inner)
+    case ETypeApp(inner, _) -> methodCallSiteKey(inner)
+    case EMember(_, name) -> recordCopySiteKey(callee.span) + ":" + name
+    case EPath(path) -> methodCallPathKey(path)
+    case _ -> recordCopySiteKey(callee.span)
+  }
+}
+
+/// `methodCallSiteKey` of a bare call to a sibling method, from its path.
+pub func methodCallPathKey(path: in ModulePath): String {
+  val last = if path.segments.count == 0 { "" } else { path.segments[path.segments.count - 1] }
+  recordCopySiteKey(path.span) + ":" + last
+}
+
+/// The callee a method call binds to, as the type checker resolved it: a
+/// dot-named function (`func T.m(self, ...)`) or the receiver type's own
+/// method, and its parameter count with the receiver not counted.
+pub record MethodCallTarget {
+  dotNamed: Bool
+  arity: Int
+}
+
+/// The `SymbolTable.methodCallArities` entry for a call resolved to
+/// `target`: its parameter count for the type's own method, and `-1 - count`
+/// for a dot-named function (#7828, #8098).
+pub func methodCallTargetCode(target: in MethodCallTarget): Int {
+  if target.dotNamed {
+    -1 - target.arity
+  } else {
+    target.arity
+  }
+}
+
+/// The callee a method call binds to: the one the type checker resolved
+/// (`arities`, from `SymbolTable.methodCallArities`, under the call's
+/// `methodCallSiteKey`), else the type's own method taking the `written`
+/// number of arguments.  Every backend dispatches the call to it, keying a
+/// method's overloads by its parameter count (#7828) and taking a dot-named
+/// function over a same-named method of the type when the checker resolved
+/// the call to it (#8098).
+pub func methodCallTarget(arities: in Map[String, Int], siteKey: in String, written: in Int): MethodCallTarget {
+  match mapGet(arities, siteKey) {
+    case Some(code) -> if code < 0 {
+      MethodCallTarget(dotNamed = true, arity = -1 - code)
+    } else {
+      MethodCallTarget(dotNamed = false, arity = code)
+    }
+    case None -> MethodCallTarget(dotNamed = false, arity = written)
+  }
+}
+
+/// `methodCallTarget`'s parameter count.
+pub func methodCallArity(arities: in Map[String, Int], siteKey: in String, written: in Int): Int {
+  methodCallTarget(arities, siteKey, written).arity
+}
+
 /// A call's arguments in the callee's parameter order with every omitted
 /// defaulted parameter filled from its declared default: the argument list
 /// every backend lowers, whatever the callee is (a free function, a record,
@@ -1628,6 +1692,269 @@ func unpairableCallArgs(callee: in String, why: in String, paramNames: in List[S
       "the type checker should have rejected (T0042): " +
       why
   )
+}
+
+/// The kind of callable a default thunk belongs to (`defaultThunkName`).
+pub union DefaultThunkKind {
+  /// A free function, or a dot-named one (`func T.m`): no owner.
+  case DTFunction
+  /// A method of a record or exposed record: the owner is the type.
+  case DTRecordMethod
+  /// An interface member: the owner is the interface.
+  case DTInterfaceMember
+  /// An `impl` method: the owner is the target type, then the interface.
+  case DTImplMethod
+}
+
+/// The name of the thunk a package compiles the default of parameter
+/// `param` of one of its public callables into (`Lyric.ContractElaborator.
+/// synthesizeDefaultThunks`, #7827); `params` are the callable's parameters,
+/// receiver included.  The synthesiser and the contract renderer both
+/// compute it from the declaration, so it does not depend on declaration
+/// order.
+///
+/// The encoding is injective (#8085, #8097): after the prefix come a letter
+/// for the kind (`f`, `m`, `i`, `p`), the owner's names, the callable's name
+/// split at its dots, the parameter count and each parameter's type
+/// (`thunkTypeKey`), then the parameter's name.  Every name is written as
+/// its length, `_` and its text, every list as its count and `_` before its
+/// items, and every type starts with a letter for its form, so no two
+/// distinct callables, overloads or parameters share a thunk:
+/// `func scaled(self: in Acc, k: in Int = 3)` in `record Acc` is
+/// `__lyric_default__m1_3_Acc1_6_scaled2_r1_3_Accr1_3_Int1_k`, and the
+/// dot-named `func Acc.scaled` with the same parameters is
+/// `__lyric_default__f0_2_3_Acc6_scaled2_r1_3_Accr1_3_Int1_k`.
+pub func defaultThunkName(
+  kind: in DefaultThunkKind,
+  owner: in List[String],
+  callable: in String,
+  params: in List[Param],
+  param: in String,
+): String {
+  val kindKey = match kind {
+    case DTFunction -> "f"
+    case DTRecordMethod -> "m"
+    case DTInterfaceMember -> "i"
+    case DTImplMethod -> "p"
+  }
+  var acc = defaultThunkPrefix() + kindKey + thunkNamesKey(owner) + thunkNamesKey(dottedSegments(callable)) +
+    thunkCountKey(params.count)
+  for p in params {
+    acc = acc + thunkTypeKey(p.ty)
+  }
+  acc + thunkNameKey(param)
+}
+
+/// True when an `impl` is generic: it declares type parameters, or its
+/// target is a generic type's instantiation.  Such an impl's methods export
+/// no default thunks (D168 item 4, #8099).
+pub func implIsGeneric(decl: in ImplDecl): Bool {
+  val ownGenerics = match decl.generics { case Some(gps) -> gps.params.count > 0; case None -> false }
+  ownGenerics or (match decl.target.kind { case TGenericApp(_, _) -> true; case _ -> false })
+}
+
+/// The prefix every `defaultThunkName` starts with.
+pub func defaultThunkPrefix(): String {
+  "__lyric_default__"
+}
+
+// `name`'s dot-separated parts (`Acc.scaled` -> `Acc`, `scaled`).
+func dottedSegments(name: in String): List[String] {
+  val acc: List[String] = newList()
+  for part in Str.split(name, ".") {
+    acc.add(part)
+  }
+  acc
+}
+
+func thunkTypeArgKey(a: in TypeArg): String {
+  match a {
+    case TAType(t) -> "t" + thunkTypeKey(t)
+    case TAValue(e) -> "v" + thunkExprKey(e)
+  }
+}
+
+func thunkRangeKey(r: in RangeBound): String {
+  match r {
+    case RBClosed(lo, hi) -> "c" + thunkExprKey(lo) + thunkExprKey(hi)
+    case RBHalfOpen(lo, hi, _) -> "h" + thunkExprKey(lo) + thunkExprKey(hi)
+    case RBLowerOpen(hi) -> "l" + thunkExprKey(hi)
+    case RBUpperOpen(lo) -> "u" + thunkExprKey(lo)
+  }
+}
+
+/// The `defaultThunkName` spelling of an expression a type may hold (an
+/// array length, a value type argument, a range bound): a letter for its
+/// form, then its parts (`i` integer literal with its suffix, `f`
+/// floating-point literal, `h` character, `b` boolean, `p` name, `m` member,
+/// `s` string, `u` unit, `g` negation, `k` logical not, `y` binary
+/// operator, `c` call, `t` tuple; parentheses add nothing).  Every form a
+/// compile-time constant (T0160) can take has its own spelling; `z` stands
+/// for a form no type can hold, and a collision through it is caught by
+/// the thunk synthesiser's internal-compiler-error check.
+pub func thunkExprKey(e: in Expr): String {
+  match e.kind {
+    case ELiteral(lit) -> match lit {
+      case LInt(v, suffix, _) -> "i" + thunkNameKey(toString(v)) + thunkIntSuffixKey(suffix)
+      case LFloat(v, suffix, _) -> "f" + thunkNameKey(toString(v)) + thunkFloatSuffixKey(suffix)
+      case LChar(cp) -> "h" + thunkCountKey(cp)
+      case LString(text) -> "s" + thunkNameKey(text)
+      case LTripleString(text) -> "s" + thunkNameKey(text)
+      case LRawString(text) -> "s" + thunkNameKey(text)
+      case LBool(b) -> if b { "b1" } else { "b0" }
+      case LUnit -> "u"
+    }
+    case EPath(path) -> "p" + thunkNamesKey(path.segments)
+    case EMember(recv, name) -> "m" + thunkExprKey(recv) + thunkNameKey(name)
+    case EPrefix(op, inner) -> match op {
+      case PreNeg -> "g" + thunkExprKey(inner)
+      case PreNot -> "k" + thunkExprKey(inner)
+      case PreRef -> "z"
+    }
+    case EBinop(op, lhs, rhs) -> "y" + thunkBinOpKey(op) + thunkExprKey(lhs) + thunkExprKey(rhs)
+    case EParen(inner) -> thunkExprKey(inner)
+    case ECall(fn, args) -> {
+      var acc = "c" + thunkExprKey(fn) + thunkCountKey(args.count)
+      for a in args {
+        match a {
+          case CANamed(n, v, _) -> {
+            acc = acc + "n" + thunkNameKey(n) + thunkExprKey(v)
+          }
+          case CAPositional(v) -> {
+            acc = acc + "o" + thunkExprKey(v)
+          }
+        }
+      }
+      acc
+    }
+    case ETuple(es) -> {
+      var acc = "t" + thunkCountKey(es.count)
+      for x in es {
+        acc = acc + thunkExprKey(x)
+      }
+      acc
+    }
+    case _ -> "z"
+  }
+}
+
+func thunkFloatSuffixKey(s: in FloatSuffix): String {
+  match s {
+    case F32 -> "a"
+    case F64 -> "b"
+    case NoFloatSuffix -> "n"
+  }
+}
+
+func thunkIntSuffixKey(s: in IntSuffix): String {
+  match s {
+    case I8 -> "a"
+    case I16 -> "b"
+    case I32 -> "c"
+    case I64 -> "d"
+    case U8 -> "e"
+    case U16 -> "f"
+    case U32 -> "g"
+    case U64 -> "h"
+    case NoIntSuffix -> "n"
+  }
+}
+
+func thunkBinOpKey(op: in BinOp): String {
+  match op {
+    case BAdd -> "a"
+    case BSub -> "s"
+    case BMul -> "m"
+    case BDiv -> "d"
+    case BMod -> "r"
+    case BAnd -> "n"
+    case BOr -> "o"
+    case BXor -> "x"
+    case BEq -> "e"
+    case BNeq -> "q"
+    case BLt -> "l"
+    case BLte -> "k"
+    case BGt -> "g"
+    case BGte -> "h"
+    case BCoalesce -> "c"
+    case BImplies -> "i"
+  }
+}
+
+func thunkCountKey(n: in Int): String {
+  toString(n) + "_"
+}
+
+func thunkNameKey(name: in String): String {
+  thunkCountKey(name.length) + name
+}
+
+func thunkNamesKey(names: in List[String]): String {
+  var acc = thunkCountKey(names.count)
+  for n in names {
+    acc = acc + thunkNameKey(n)
+  }
+  acc
+}
+
+/// The `defaultThunkName` spelling of a type: a letter for its form, then
+/// its parts (`r` named, `g` generic application, `a` array with its length,
+/// `s` slice, `n` range subtype with its bounds, `t` tuple, `o` nullable,
+/// `c` function, `u` Unit, `e` Self, `x` Never, `q` an erroneous type;
+/// parentheses add nothing).  A type argument is `t` and a type or `v` and
+/// a value (`thunkExprKey`).
+pub func thunkTypeKey(te: in TypeExpr): String {
+  match te.kind {
+    case TRef(path) -> "r" + thunkNamesKey(path.segments)
+    case TGenericApp(head, args) -> {
+      var acc = "g" + thunkNamesKey(head.segments) + thunkCountKey(args.count)
+      for a in args {
+        acc = acc + thunkTypeArgKey(a)
+      }
+      acc
+    }
+    case TArray(size, elem) -> "a" + thunkTypeArgKey(size) + thunkTypeKey(elem)
+    case TSlice(elem) -> "s" + thunkTypeKey(elem)
+    case TRefined(underlying, range) -> "n" + thunkNamesKey(underlying.segments) + thunkRangeKey(range)
+    case TTuple(types) -> {
+      var acc = "t" + thunkCountKey(types.count)
+      for t in types {
+        acc = acc + thunkTypeKey(t)
+      }
+      acc
+    }
+    case TNullable(inner) -> "o" + thunkTypeKey(inner)
+    case TFunction(ps, r) -> {
+      var acc = "c" + thunkCountKey(ps.count)
+      for p in ps {
+        acc = acc + thunkTypeKey(p)
+      }
+      acc + thunkTypeKey(r)
+    }
+    case TUnit -> "u"
+    case TSelf -> "e"
+    case TNever -> "x"
+    case TParen(inner) -> thunkTypeKey(inner)
+    case TError -> "q"
+  }
+}
+
+/// True when `e` calls a default thunk (`defaultThunkName`), bare or
+/// package-qualified: the default of a parameter declared in a package
+/// restored from its contract metadata, whose expression is not known here.
+pub func isDefaultThunkCall(e: in Expr): Bool {
+  match stripExprParens(e).kind {
+    case ECall(fn, args) -> args.count == 0 and
+      (
+        match fn.kind {
+          case EPath(p) -> p.segments.count > 0 and
+            p.segments[p.segments.count - 1].startsWith(defaultThunkPrefix())
+          case EMember(_, m) -> m.startsWith(defaultThunkPrefix())
+          case _ -> false
+        }
+      )
+    case _ -> false
+  }
 }
 
 /// `e` with every enclosing `EParen` removed.  The type checker keys an open

@@ -127,6 +127,9 @@ pub record CodegenUnit {
   // Whether this package's own source file has `import Std.String` in
   // scope (#6588 review follow-up, #6752) — see `Ctx.pkgImportsStdString`.
   importsStdString: Bool
+  // The type checker's `methodCallArities` for this package's file (empty
+  // for a bundled package): see `Ctx.methodCallArities` (#7828).
+  methodCallArities: Map[String, Int]
 }
 
 /// A module-level `val`/`const` binding, normalized for native inlining
@@ -364,9 +367,19 @@ record Ctx {
   // `Option[Int]` UFCS form (`Lyric.TypeChecker.stringIndexOfMember`) is
   // never shadowed by the raw `Int`-returning runtime intrinsic.
   pkgImportsStdString: Map[String, Bool]
+  // The parameter count of the method each call leaving out a defaulted
+  // argument resolved to, keyed `<pkg>|<methodCallSiteKey>` (each unit's
+  // `methodCallArities` under its package): a method call looks its
+  // overload up by this count rather than by the arguments written (#7828).
+  methodCallArities: Map[String, Int]
   // Package the function being lowered belongs to (self-package call
   // resolution).
   curPkg: List[String]
+  // The package a function specialised from another package's generic was
+  // written in (its `__lyric_origin`), else empty: its method calls'
+  // resolutions are keyed `<pkg>|<origin>|<methodCallSiteKey>`
+  // (`Lyric.Pipeline.foreignMethodCallArities`).
+  curOrigin: List[String]
   // Return type of the function being lowered (singleton list).
   curRet: List[NType]
   // Module-level `val`/`const` bindings by name (#5977 part 2), for use-site
@@ -3568,7 +3581,8 @@ func lowerCallArgsWithReceiver(
     panic(
       "Lyric.LlvmCodegen: method call to '" + sig.irName + "' passes " + (args.count + 1).toString() +
         " argument(s) (incl. receiver) but the declaration has " +
-        sig.paramTys.count.toString()
+        sig.paramTys.count.toString() +
+        " (default arguments are not yet supported for --target native, #7985)"
     )
   }
   val ordered: List[NArg] = newList()
@@ -4249,7 +4263,7 @@ func lowerCallEx(
         }
         match lowerCollectionMethodCall(ctx, insns, recvVal, memberName, args) {
           case Some(v) -> return v
-          case None -> return lowerUfcsCall(ctx, insns, recvVal, memberName, args, line, wantTask)
+          case None -> return lowerUfcsCall(ctx, insns, recvVal, memberName, args, line, wantTask, methodCallSiteKey(fnExpr))
         }
       }
     }
@@ -4705,6 +4719,7 @@ func lowerUfcsCall(
   args: in List[CallArg],
   line: in Int,
   wantTask: in Bool,
+  siteKey: in String,
 ): NVal {
   if name == "upgrade" and args.count == 0 {
     match weakTargetOfType(ctx, recv.ty) {
@@ -4732,7 +4747,12 @@ func lowerUfcsCall(
     case None -> {
     }
   }
-  val arity = (args.count + 1).toString()
+  // The callee the type checker resolved: its parameter count plus the
+  // receiver (#7828), and whether it is a dot-named function rather than a
+  // method of the receiver's type (#8098).
+  val originKey = if ctx.curOrigin.count > 0 { ctx.curOrigin[0] + "|" } else { "" }
+  val callTarget = methodCallTarget(ctx.methodCallArities, ctx.curPkg[0] + "|" + originKey + siteKey, args.count)
+  val arity = (callTarget.arity + 1).toString()
   // `.<name>(...)` on a CONCRETE record receiver — try an `impl I
   // for R` method FIRST, via the index `registerImplDirectMethods` built
   // from every impl's PACKAGE-QUALIFIED `<pkg>.<record>.<method>/<arity>`
@@ -4749,7 +4769,23 @@ func lowerUfcsCall(
   // construction (package + record + method).
   var sigOpt: Option[NFuncSig] = None
   val recvTyName = receiverStructName(recv.ty)
-  if recvTyName.length > 0 {
+  // A call resolved to a dot-named function `func T.m(self, ...)` takes it
+  // over any same-named method of the type (#8098).
+  if callTarget.dotNamed and recvTyName.length > 0 {
+    sigOpt = mapGet(ctx.sigs, recvTyName + "." + name + "/" + arity)
+    val dnDot = lastDotIndex(recvTyName)
+    match sigOpt {
+      case Some(_) -> ()
+      case None -> if dnDot > 0 {
+        sigOpt = mapGet(
+          ctx.sigs,
+          Str.substring(recvTyName, dnDot + 1, recvTyName.length - dnDot - 1) + "." + name + "/" + arity
+        )
+      }
+    }
+  }
+  val haveDotNamed = match sigOpt { case Some(_) -> true; case None -> false }
+  if recvTyName.length > 0 and not haveDotNamed {
     match mapGet(ctx.implDirectMethods, recvTyName + "." + name + "/" + arity) {
       case Some(sigKey) -> {
         sigOpt = mapGet(ctx.sigs, sigKey)
@@ -12994,6 +13030,10 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
   val isChar: Map[String, Bool] = newMap()
   val curPkg: List[String] = newList()
   curPkg.add(pkg)
+  val curOrigin: List[String] = newList()
+  for o in mod.curOrigin {
+    curOrigin.add(o)
+  }
   val curRet: List[NType] = newList()
   curRet.add(retTy)
   Ctx(
@@ -13012,7 +13052,9 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     globals = mod.globals,
     sigs = mod.sigs,
     pkgImportsStdString = mod.pkgImportsStdString,
+    methodCallArities = mod.methodCallArities,
     curPkg = curPkg,
+    curOrigin = curOrigin,
     curRet = curRet,
     moduleVals = mod.moduleVals,
     recordDefs = mod.recordDefs,
@@ -13281,6 +13323,11 @@ func lowerFunctionEnv(
     panic("Lyric.LlvmCodegen: un-monomorphized generic function '" + fn.name + "' reached the native backend")
   }
   val ctx0 = freshFnCtx(modCtx, pkg, NVoid)
+  ctx0.curOrigin.clear()
+  val origin = originPkgOf(fn.annotations)
+  if origin.length > 0 and origin != pkg {
+    ctx0.curOrigin.add(origin)
+  }
   var ei = 0
   while ei < envNames.count {
     ctx0.fnTyEnvNames.add(envNames[ei])
@@ -13926,6 +13973,17 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     }
     impUi = impUi + 1
   }
+  val methodCallArities: Map[String, Int] = newMap()
+  for cu in units {
+    for ak in mapKeys(cu.methodCallArities) {
+      match mapGet(cu.methodCallArities, ak) {
+        case Some(n) -> if not methodCallArities.containsKey(cu.pkgName + "|" + ak) {
+          methodCallArities.add(cu.pkgName + "|" + ak, n)
+        }
+        case None -> ()
+      }
+    }
+  }
   val emptySlots: Map[String, String] = newMap()
   val emptyTypes: Map[String, NType] = newMap()
   val emptyEnumTypes: Map[String, String] = newMap()
@@ -13961,7 +14019,9 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     globals = newList(),
     sigs = sigs,
     pkgImportsStdString = pkgImportsStdString,
+    methodCallArities = methodCallArities,
     curPkg = newList(),
+    curOrigin = newList(),
     curRet = newList(),
     moduleVals = moduleVals,
     recordDefs = emptyRecs,
@@ -14342,7 +14402,8 @@ pub func unitOfFile(pkgName: in String, file: in SourceFile): CodegenUnit {
     impls = impls,
     protecteds = protecteds,
     moduleVals = moduleVals,
-    importsStdString = fileImportsStdString(file)
+    importsStdString = fileImportsStdString(file),
+    methodCallArities = newMap()
   )
 }
 

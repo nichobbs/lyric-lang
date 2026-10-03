@@ -1241,7 +1241,53 @@ with them; a call on the concrete type (`sq.area()` where `sq: Square`)
 takes the `impl` method's own defaults. The two may differ, and neither is
 inherited by the other: an `impl` method that omits a default the interface
 member declares requires the argument on a concrete-typed call. Declaring
-the same default in both places keeps the two call forms equivalent.
+the same default in both places keeps the two call forms equivalent. When
+an `impl` method's parameter has a different default from the interface
+member's, or only one of the two declares a default, the compiler warns at
+the `impl` method's parameter (**T0161**, a warning): defaults count as the
+same when they are written alike (any expression form, compared as written,
+ignoring enclosing parentheses), and a default known
+only from a restored package's metadata (below) is not compared (#7828).
+
+A callee in a package restored from its compiled form (a `[dependencies]`
+path or registry package consumed as a DLL or JAR) fills an omitted argument
+the same way, by the same rule for whose default applies. The declaring
+package compiles each default of its public callables (free and dot-named
+functions, record methods, interface members, and `impl` methods of public
+types) into a public function its contract metadata names, and the call
+evaluates the default by calling it, so the default may read the package's
+private values and a widening default converts as it does within the package
+(#7827, D168, docs/45 §5). These export no default, so across a restored
+package boundary their argument must be passed (**T0042** otherwise): a
+parameter whose type names a type parameter or value generic parameter of
+the callable or of its owner type anywhere in it (`T`, `T.Item`,
+`array[N, Int]`), or `Self`; a parameter whose default reads a value generic
+parameter (`k: in Int = N`); a parameter of a method in a generic `impl`
+(#8099); and a parameter of a protected-type entry, since a protected type
+is not exported through contract metadata at all.
+
+Methods of one name declared in one record, exposed record, interface or
+`impl` must differ in their number of parameters, as two functions of one
+name in a package must (**T0001**); two with the same count are **T0162**
+(#8085). A protected type's entries and functions are not covered by
+T0162 (nor are their defaults exported to a restored consumer, above). This is a
+limit of this compiler's method dispatch, not of .NET or the JVM: its MSIL,
+JVM and native backends identify a method by its type, name and parameter
+count. When a type
+has several methods of one name, a method call binds to the
+overload the type checker selects: among the overloads whose parameters
+accept the arguments, one taking exactly the arguments written is preferred
+over one that fills omitted arguments from defaults, as for a free function;
+otherwise the first declared applies. Every backend dispatches the call to
+that overload, so with `m(x: String)` and `m(x: Int, y: Int = 2)`, `o.m(1)`
+calls the second on every target (#7828). The candidates include D037
+dot-named functions of the receiver's type, and the backends dispatch to the
+declaration selected, not only to its parameter count: with a record method
+`m(self, x: Int, y: Int = 2)` and `func O.m(o: in O, x: Int)`, `o.m(1)` calls
+the dot-named function and `o.m(1, 5)` the record method (#8098). The same
+holds inside a generic function of another package (in the same build or a
+restored dependency) once it is specialised for a call: its method calls
+bind as the type checker resolved them in the package that declares it.
 
 Field-style access `x.name` (no call parens) to a name that exists **only**
 as a D037 dot-named (UFCS) function — never as a real record/union field — is

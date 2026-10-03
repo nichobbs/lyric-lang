@@ -1,6 +1,6 @@
 # 45 — Contract Metadata Direct Resolution
 
-**Status**: Specced in D098. Phase 1 (`Lyric.ContractMetaEmit` v3 emitter) shipped in D-progress-471. Phases 2–5 deferred pending #2580.
+**Status**: Specced in D098. Phase 1 (`Lyric.ContractMetaEmit` v3 emitter) shipped in D-progress-471. Phases 2–5 deferred pending #2580. Parameter defaults (§5 of "Changes Required") specced and shipped in D168 (#7827).
 
 ## Problem
 
@@ -160,6 +160,99 @@ val art = loadRestored(dllPath)  // One JSON read, direct symbol table
 val symtbl = buildSymbolTable(art.contract, art.dependencies)
 // Thread symtbl into CodegenCtx
 ```
+
+### 5. Parameter defaults (#7827, D168)
+
+A call that leaves out a defaulted argument splices the parameter's default
+at the call. A consumer knows a restored package only through its contract,
+whose `repr` strings used to render each parameter without its default, so
+`f()` for a restored `pub func f(x: in Int = 5)` was T0042. The default
+expression cannot simply be rendered into `repr`: it is written in the
+declaring package's scope, may read that package's private values, and its
+implicit widening is applied by the declaring package's middle end.
+
+**Format.** The declaring package compiles each default of a public
+callable into a public thunk (`Lyric.ContractElaborator.
+synthesizeDefaultThunks`, in `Lyric.Pipeline.pipeCheckAndMono` once the
+checker's results are desugared and before mono drops the public generic
+functions):
+
+```lyric
+@no_aspect pub func __lyric_default__<kind><owner><callable><params><param>(): <ParamType> { <default> }
+```
+
+The name (`Lyric.Parser.defaultThunkName`) is an injective encoding of the
+callable's kind, owner, name, parameter types and the defaulted parameter
+(#8085, #8097), computed from the declaration by both the synthesiser and the
+contract renderer, so it does not depend on declaration order:
+
+- `<kind>` is one letter: `f` a free or dot-named function, `m` a record or
+  exposed-record method, `i` an interface member, `p` an `impl` method.
+- A *name* is written as its length, `_`, then its text (`Acc` is `3_Acc`).
+  A *list* is written as its count and `_`, then its items.
+- `<owner>` is a list of names: empty for a function, the type for a method,
+  the interface for a member, the target type then the interface for an
+  `impl` method. `<callable>` is the callable's name split at its dots
+  (`Acc.scaled` is `2_3_Acc6_scaled`).
+- `<params>` is the parameter count (receiver included) and `_`, then each
+  parameter's type: a letter for its form followed by its parts
+  (`Lyric.Parser.thunkTypeKey`: `r` named, then its path; `g` generic
+  application, then its path and its type arguments, each `t` and a type or
+  `v` and a value; `a` array, then its length (`t`/`v` likewise) and element
+  type; `s` slice; `n` range subtype, then its path and bounds (`c` closed,
+  `h` half-open, `l` no lower bound, `u` no upper bound); `t` tuple; `o`
+  nullable; `c` function; `u` Unit; `e` `Self`; `x` Never). A value
+  (`Lyric.Parser.thunkExprKey`) is likewise a letter for its form and its
+  parts: `i` an integer literal, its digits as a name and a suffix letter;
+  `f` a floating-point literal; `h` a character; `s` a string; `b1`/`b0`; `p`
+  a name; `m` a member; `g`/`k` negation and `not`; `y` a binary operator,
+  its letter and operands; `c` a call; `t` a tuple. So `array[3, Int]` and
+  `array[4, Int]`, `Vec[3]` and `Vec[4]`, and `Int range 0 ..= 5` and
+  `Int range 0 ..= 6` spell differently. `<param>` is the parameter's name.
+
+Every part is length- or count-prefixed and every type starts with a letter
+for its form, so the encoding is prefix-free and no two distinct (kind,
+owner, callable, parameter types, parameter) tuples share a name: a record's
+method `scaled` and a dot-named `func Acc.scaled` with the same parameters
+get `__lyric_default__m1_3_Acc1_6_scaled2_r1_3_Accr1_3_Int1_k` and
+`__lyric_default__f0_2_3_Acc6_scaled2_r1_3_Accr1_3_Int1_k`. A second default
+reaching a name already synthesised, or a thunk named for a parameter that
+declares no default, is an internal compiler error, never a shared or
+fabricated default. The body is the default as type-checked and desugared, so a
+widening default carries its conversion. The thunk is an ordinary `func`
+decl of the contract, and each parameter with a thunk renders its default as
+a call to it:
+
+```lyric
+pub func f(x: in Int = Rd.Lib.__lyric_default__f0_1_1_f1_r1_3_Int1_x()): Int
+```
+
+Record and interface member heads render the same way, and an `impl` with
+such a parameter carries its methods as bodyless heads
+(`impl Shape for Sq { func area(self: in Sq, scale: in Int = Rd.Lib.<thunk>()): Int }`)
+instead of `impl Shape for Sq {}`, so a call on the concrete type takes the
+`impl` method's default, as it would within the package (docs/01
+§"Default arguments"). A consumer re-parses the call like any other default
+and splices it; no default expression crosses the package boundary.
+
+**Not exported.** A parameter whose type names a type or value generic
+parameter of the callable or its owner anywhere in it (as a type, the head of
+a path such as `T.Item`, an array length or a value type argument), or
+`Self`, gets no thunk (a nullary thunk has nothing to bind the parameter
+to), nor does one whose default reads a value generic parameter. Neither do
+the methods of a generic `impl` (whose head the contract does not render
+with its type parameters; the `impl` renders bodyless, #8099). A consumer
+must pass such an argument. A native build synthesises no
+thunks: it emits no contract, and its `--shape module` glue exports every
+public function.
+
+**Versioning.** The change is additive within the existing format: a
+parameter default is already valid `repr` syntax and the thunks are ordinary
+`func` decls, so no field is added and `formatVersion` is unchanged (the
+precedent is `bmode`, D114). A reader that predates it re-parses the default
+and resolves the thunk like any restored function; a contract written before
+it carries no defaults, and its consumers pass every argument, as they had
+to before.
 
 ## Validation and Safety
 

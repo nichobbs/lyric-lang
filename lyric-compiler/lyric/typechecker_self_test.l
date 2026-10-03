@@ -10041,3 +10041,149 @@ test "== on a union, tuple or option that holds an array is built element by ele
   val fns = "package P\nfunc f(p: in (array[2, (Int) -> Int], Int), q: in (array[2, (Int) -> Int], Int)): Bool { p == q }\n"
   assertEqualInt(countDiagCode(parseCheck(fns), "T0153"), 1, "a function inside is still T0153")
 }
+
+// #7828: a method call that leaves out a defaulted argument records the
+// parameter count of the overload it resolved to, so every backend binds the
+// same overload; an overload taking exactly the written arguments wins over
+// one that fills the rest from defaults, as for a free function.
+func recordedArities(cr: in CheckResult): List[Int] {
+  val acc: List[Int] = newList()
+  for k in mapKeys(cr.symbols.methodCallArities) {
+    match mapGet(cr.symbols.methodCallArities, k) {
+      case Some(n) -> acc.add(n)
+      case None -> ()
+    }
+  }
+  acc
+}
+
+test "a method call omitting a default records the resolved overload's arity (#7828)" {
+  val exactSrc = "package P\nrecord O {\n  n: Int\n  func m(self: in O, x: in Int, y: in Int = 2): Int { x + y }\n" +
+    "  func m(self: in O, x: in Int): Int { x }\n}\nfunc g(o: in O): Int { o.m(1) }\n"
+  val exact = parseCheck(exactSrc)
+  assertEqualInt(diagCount(exact), 0, "clean: " + diagCodesOf(exact))
+  assertEqualInt(recordedArities(exact).count, 0, "o.m(1) resolves to m(x), which takes exactly the written argument")
+  val typedSrc = "package P\nrecord O {\n  n: Int\n  func m(self: in O, x: in String): Int { 0 }\n" +
+    "  func m(self: in O, x: in Int, y: in Int = 2): Int { x + y }\n" +
+    "  func viaSibling(self: in O): Int { m(1) }\n}\nfunc g(o: in O): Int { o.m(1) }\n"
+  val typed = parseCheck(typedSrc)
+  assertEqualInt(diagCount(typed), 0, "clean: " + diagCodesOf(typed))
+  val ar = recordedArities(typed)
+  assertEqualInt(ar.count, 2, "o.m(1) and the bare m(1) both resolve past m(x: String)")
+  assertEqualInt(ar[0], 2, "the resolved overload takes two parameters")
+  assertEqualInt(ar[1], 2, "the resolved overload takes two parameters")
+}
+
+// #8098: a call resolved to a dot-named function records it as such
+// (`-1 - count`), so no backend binds the receiver type's same-named method
+// instead, whether or not the call leaves out a default.
+test "a method call resolved to a dot-named function records it (#8098)" {
+  val src = "package P\nrecord O {\n  n: Int\n  func m(self: in O, x: in Int): Int { x }\n}\n" +
+    "func O.m(o: in O, x: in Int, y: in Int): Int { x + y }\n" +
+    "record E {\n  n: Int\n  func m(self: in E, x: in Int, y: in Int = 2): Int { x + y }\n}\n" +
+    "func E.m(e: in E, x: in Int): Int { x }\n" +
+    "func g(o: in O, e: in E): Int { o.m(1) + o.m(1, 2) + e.m(1) + e.m(1, 5) }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "clean: " + diagCodesOf(cr))
+  val ar = recordedArities(cr)
+  assertEqualInt(ar.count, 2, "o.m(1, 2) and e.m(1) resolve to the dot-named functions")
+  assertTrue(ar.contains(-3), "o.m(1, 2): the dot-named O.m taking two")
+  assertTrue(ar.contains(-2), "e.m(1): the dot-named E.m taking one, not E's own m(x, y = 2)")
+}
+
+// #7828: an impl method whose default differs from the interface member's,
+// or which only one of the two declares, is T0161 (a warning) at the impl
+// method's parameter; equal defaults are not.
+func ifaceDefaultSrc(ifaceParam: in String, implParam: in String): String {
+  "package P\ninterface Shape {\n  func area(self: in Self, " + ifaceParam + "): Int\n" +
+    "  func label(self: in Self, p: in String = \"s\"): String { p }\n}\n" +
+    "record Sq { s: Int }\nimpl Shape for Sq {\n  func area(self: in Sq, " +
+    implParam +
+    "): Int { self.s * k }\n}\n"
+}
+
+test "an impl default that differs from the interface's is T0161 (#7828)" {
+  val differ = parseCheck(ifaceDefaultSrc("k: in Int = 2", "k: in Int = 3"))
+  assertEqualInt(countDiagCode(differ, "T0161"), 1, "different defaults: " + diagCodesOf(differ))
+  assertEqualInt(diagCount(differ), 1, "a warning only")
+  assertTrue(diagMessagesContain(differ, "has a different default from the one interface 'Shape' declares"), "message")
+  val implOnly = parseCheck(ifaceDefaultSrc("k: in Int", "k: in Int = 3"))
+  assertEqualInt(countDiagCode(implOnly, "T0161"), 1, "only the impl declares one: " + diagCodesOf(implOnly))
+  assertTrue(diagMessagesContain(implOnly, "has a default that interface 'Shape' does not declare"), "message")
+  val ifaceOnly = parseCheck(ifaceDefaultSrc("k: in Int = 2", "k: in Int"))
+  assertEqualInt(countDiagCode(ifaceOnly, "T0161"), 1, "only the interface declares one: " + diagCodesOf(ifaceOnly))
+  assertTrue(diagMessagesContain(ifaceOnly, "has no default, but interface 'Shape' declares one"), "message")
+  val same = parseCheck(ifaceDefaultSrc("k: in Int = (1 + 1)", "k: in Int = 1 + 1"))
+  assertEqualInt(countDiagCode(same, "T0161"), 0, "the same default written alike: " + diagCodesOf(same))
+  val none = parseCheck(ifaceDefaultSrc("k: in Int", "k: in Int"))
+  assertEqualInt(diagCount(none), 0, "no defaults at all: " + diagCodesOf(none))
+}
+
+test "an impl overriding an interface default method with another default is T0161 (#7828)" {
+  val src = "package P\ninterface Shape {\n  func label(self: in Self, p: in String = \"s\"): String { p }\n}\n" +
+    "record Sq { s: Int }\nimpl Shape for Sq {\n  func label(self: in Sq, p: in String = \"q\"): String { p }\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0161"), 1, "overridden default method: " + diagCodesOf(cr))
+  val sameSrc = "package P\ninterface Shape {\n  func label(self: in Self, p: in String = \"s\"): String { p }\n}\n" +
+    "record Sq { s: Int }\nimpl Shape for Sq {\n  func label(self: in Sq, p: in String = \"s\"): String { p }\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(sameSrc), "T0161"), 0, "the same default")
+}
+
+// #7827: a default known only as a call to a restored package's compiled
+// thunk is not compared; a one-sided default still is.
+test "T0161 does not compare a default known only as a thunk call (#7827)" {
+  val thunk = "func __lyric_default__Shape__area__2__k(): Int { 2 }\n"
+  val src = "package P\n" + thunk +
+    "interface Shape {\n  func area(self: in Self, k: in Int = __lyric_default__Shape__area__2__k()): Int\n}\n" +
+    "record Sq { s: Int }\nimpl Shape for Sq {\n  func area(self: in Sq, k: in Int = 3): Int { self.s * k }\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0161"), 0, "not compared: " + diagCodesOf(cr))
+  val oneSided = "package P\n" + thunk +
+    "interface Shape {\n  func area(self: in Self, k: in Int = __lyric_default__Shape__area__2__k()): Int\n}\n" +
+    "record Sq { s: Int }\nimpl Shape for Sq {\n  func area(self: in Sq, k: in Int): Int { self.s * k }\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(oneSided), "T0161"), 1, "the impl declares none")
+}
+
+// #8085: two methods of one name in one record, interface or impl must
+// differ in their number of parameters, as two functions must (T0001);
+// overloads of different counts stay valid.
+test "same-name methods with one parameter count are T0162 (#8085)" {
+  val rec = parseCheck(
+    "package P\nrecord R {\n  n: Int\n  func scale(self: in R, x: in Int, f: in Int = 1): Int { x * f }\n" +
+      "  func scale(self: in R, x: in String, f: in Int = 2): Int { f }\n}\n"
+  )
+  assertEqualInt(countDiagCode(rec, "T0162"), 1, "record: " + diagCodesOf(rec))
+  assertTrue(diagMessagesContain(rec, "method 'scale' of 'R' has the same number of parameters (3)"), "message")
+  val iface = parseCheck(
+    "package P\ninterface I {\n  func m(self: in Self, x: in Int): Int\n  func m(self: in Self, x: in String): Int\n}\n"
+  )
+  assertEqualInt(countDiagCode(iface, "T0162"), 1, "interface: " + diagCodesOf(iface))
+  val implSrc = parseCheck(
+    "package P\ninterface I {\n  func m(self: in Self, x: in Int): Int\n}\nrecord Q { q: Int }\n" +
+      "impl I for Q {\n  func m(self: in Q, x: in Int): Int { x }\n  func m(self: in Q, x: in String): Int { 0 }\n}\n"
+  )
+  assertEqualInt(countDiagCode(implSrc, "T0162"), 1, "impl: " + diagCodesOf(implSrc))
+  val ok = parseCheck(
+    "package P\nrecord R {\n  n: Int\n  func scale(self: in R, x: in Int): Int { x }\n" +
+      "  func scale(self: in R, x: in Int, f: in Int = 2): Int { x * f }\n}\n"
+  )
+  assertEqualInt(countDiagCode(ok, "T0162"), 0, "different counts: " + diagCodesOf(ok))
+}
+
+// #8085 review: T0161 compares every expression form, so an interpolated or
+// an `if` default written the same way in both places is not reported.
+test "identical interpolated and if defaults are not T0161 (#8085)" {
+  val interp = parseCheck(
+    ifaceDefaultSrc("k: in String = \"a\${1 + 1}b\"", "k: in String = \"a\${1 + 1}b\"").replace(
+      "self.s * k",
+      "self.s"
+    )
+  )
+  assertEqualInt(countDiagCode(interp, "T0161"), 0, "interpolated: " + diagCodesOf(interp))
+  val cond = parseCheck(ifaceDefaultSrc("k: in Int = if true { 2 } else { 3 }", "k: in Int = if true { 2 } else { 3 }"))
+  assertEqualInt(countDiagCode(cond, "T0161"), 0, "if: " + diagCodesOf(cond))
+  val condDiff = parseCheck(
+    ifaceDefaultSrc("k: in Int = if true { 2 } else { 3 }", "k: in Int = if true { 2 } else { 4 }")
+  )
+  assertEqualInt(countDiagCode(condDiff, "T0161"), 1, "a different if: " + diagCodesOf(condDiff))
+}

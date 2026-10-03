@@ -725,6 +725,7 @@ pub func compileToNativeWithShape(
   // audit of native's own try/catch protected-region model (#7201).
   val optsCheckedOut: List[SourceFile] = newList()
   val optsRecvOut: Map[String, String] = newMap()
+  val optsCallArities: Map[String, Int] = newMap()
   val opts = MiddleEndOptions(
     tcFatal = true,
     tcReport = false,
@@ -736,6 +737,7 @@ pub func compileToNativeWithShape(
     contractsEnabled = contractsEnabled,
     checkedSourceOut = optsCheckedOut,
     memberRecvClassesOut = optsRecvOut,
+    methodCallAritiesOut = optsCallArities,
     nativeIntrinsics = true
   )
   val userFile = match pipeMiddleEnd(userFile0, importedPkgs, noDeriveImports, noImportedGenFuncs, pipeInterfaceDecls(importedItemsForMono), pipeRecordDecls(importedItemsForMono), noTemplates, opts, None) {
@@ -844,7 +846,7 @@ pub func compileToNativeWithShape(
   // Assemble the codegen units: the user package in full, then each
   // bundled package's reachable slice.
   val units: List[CodegenUnit] = newList()
-  units.add(unitOf(userFile, reachable, true))
+  units.add(unitOf(userFile, reachable, true, optsCallArities))
   appendBundledUnits(toBundle, reachable, units)
 
   linkAndEmitNative(units, 1, outputPath, triple, optLevel, extraClangFlags, shape, componentPkgs)
@@ -1137,6 +1139,8 @@ pub func compileProjectToNativeWithShape(
 
   // Middle-end every own file against the shared stdlib+sibling pool.
   val ownFiles: List[SourceFile] = newList()
+  // Each own file's `methodCallAritiesOut` (#7828), parallel to `ownFiles`.
+  val ownCallArities: List[Map[String, Int]] = newList()
   val noImportedGenFuncs: List[FunctionDecl] = newList()
   val noDeriveImports: List[Item] = newList()
   val noTemplates: Map[String, Weaver.CollectedTemplate] = newMap()
@@ -1154,6 +1158,7 @@ pub func compileProjectToNativeWithShape(
     // #7198: see the other `MiddleEndOptions` construction site in this file.
     val optsCheckedOut: List[SourceFile] = newList()
     val optsRecvOut: Map[String, String] = newMap()
+    val optsCallArities: Map[String, Int] = newMap()
     val opts = MiddleEndOptions(
       tcFatal = true,
       tcReport = false,
@@ -1165,6 +1170,7 @@ pub func compileProjectToNativeWithShape(
       contractsEnabled = contractsEnabled,
       checkedSourceOut = optsCheckedOut,
       memberRecvClassesOut = optsRecvOut,
+      methodCallAritiesOut = optsCallArities,
       ioForbiddenReason = if mei < packages.count { packages[mei].ioForbiddenReason } else { "" },
       nativeIntrinsics = true
     )
@@ -1173,6 +1179,7 @@ pub func compileProjectToNativeWithShape(
       case None -> return false
     }
     ownFiles.add(checked)
+    ownCallArities.add(optsCallArities)
     mei = mei + 1
   }
 
@@ -1316,12 +1323,12 @@ pub func compileProjectToNativeWithShape(
   }
   val units: List[CodegenUnit] = newList()
   if mainOwnIdx >= 0 {
-    units.add(unitOf(ownFiles[mainOwnIdx], reachable, true))
+    units.add(unitOf(ownFiles[mainOwnIdx], reachable, true, ownCallArities[mainOwnIdx]))
   }
   var uoi = 0
   while uoi < ownFiles.count {
     if uoi != mainOwnIdx {
-      units.add(unitOf(ownFiles[uoi], reachable, true))
+      units.add(unitOf(ownFiles[uoi], reachable, true, ownCallArities[uoi]))
     }
     uoi = uoi + 1
   }
@@ -1341,7 +1348,8 @@ func appendBundledUnits(
 ): Unit {
   var bi = 0
   while bi < toBundle.count {
-    val u = unitOf(toBundle[bi], reachable, false)
+    val noArities: Map[String, Int] = newMap()
+    val u = unitOf(toBundle[bi], reachable, false, noArities)
     if u.fns.count > 0 or u.externs.count > 0 or u.records.count > 0 or u.unions.count > 0 or u.enums.count > 0 or u.distincts.count > 0 {
       units.add(u)
     }
@@ -2070,7 +2078,9 @@ func indexFileFns(f: in SourceFile, bodyIndex: in Map[String, FunctionDecl], pkg
 // them.  Record methods lower with the user package (D037 desugar);
 // bundled-package record methods are a Phase N5 follow-up (calling one
 // panics with a resolution message today).
-func unitOf(f: in SourceFile, reachable: in Map[String, Bool], lowerAll: in Bool): CodegenUnit {
+func unitOf(
+  f: in SourceFile, reachable: in Map[String, Bool], lowerAll: in Bool, arities: in Map[String, Int]
+): CodegenUnit {
   val pkg = dottedPath(f.packageDecl.path)
   val fns: List[FunctionDecl] = newList()
   val externs: List[ExternFuncDecl] = newList()
@@ -2178,7 +2188,8 @@ func unitOf(f: in SourceFile, reachable: in Map[String, Bool], lowerAll: in Bool
     impls = impls,
     protecteds = protecteds,
     moduleVals = moduleVals,
-    importsStdString = fileImportsStdString(f)
+    importsStdString = fileImportsStdString(f),
+    methodCallArities = arities
   )
 }
 
