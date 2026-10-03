@@ -1,4 +1,4 @@
-# A `spawn` handle instantiates a generic over its task on `--target dotnet`
+# A `spawn` handle instantiates a generic over its task on `--target dotnet` (#8026)
 
 A generic function called with a `spawn` handle now specialises over the
 callee's task object on MSIL instead of over the callee's logical result. The

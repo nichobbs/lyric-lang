@@ -134,3 +134,18 @@ test "generic extern receiver bound to a parenthesised spawn operand" {
   assertTrue(taskWaitMs(t, 10000), "spawn of a parenthesised async call still hands the generic a task")
   assertEqualInt(await t, 41, "the handle awaits to the callee's result")
 }
+
+// The specialisation is over the task for any generic, not only an extern
+// receiver, and the synthesized `Task` needs no import in the calling file
+// beyond what this file already has.
+func keepSecond[T](x: in T, n: in Int): Int {
+  n
+}
+
+test "an ordinary generic over a spawn handle specialises over the task" {
+  val a = spawn spawnedIntWork(10)
+  val b = spawn spawnedUnitWork(10)
+  assertEqualInt(keepSecond(a, 1), 1, "Int-returning handle")
+  assertEqualInt(keepSecond(b, 2), 2, "Unit-returning handle")
+  assertEqualInt(await a, 41, "the handle still awaits to its result")
+}
