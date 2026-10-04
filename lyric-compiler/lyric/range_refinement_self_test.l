@@ -233,3 +233,43 @@ test "a tuple element is checked against its range (#8031)" {
   assertTrue(n == 2, "2 is in range")
   assertPanics("a tuple element of 10", { -> val bad: (Int range 0 ..= 3, String) = (ten(), "a"); val _ = bad })
 }
+
+record Duo[A, B] {
+  wide: A
+  narrow: B
+}
+
+func okLong(r: in Result[Long, Int range 0 ..= 3]): Long {
+  match r {
+    case Ok(v) -> v
+    case Err(_) -> -1i64
+  }
+}
+
+test "a construction that widens one slot checks the range of another (#7813, #8031)" {
+  val ok: (Long, Int range 0 ..= 3) = (two(), two())
+  val (w, n) = ok
+  assertTrue(w == 2i64 and n == 2, "the Int widens and the range holds")
+  assertPanics(
+    "a tuple element of 10 beside a widened one",
+    { -> val bad: (Long, Int range 0 ..= 3) = (two(), ten()); val _ = bad }
+  )
+  val duo: Duo[Long, Int range 0 ..= 3] = Duo(wide = two(), narrow = two())
+  assertTrue(duo.wide == 2i64 and duo.narrow == 2, "a generic record field widens beside a range")
+  assertPanics(
+    "a generic record field of 10 beside a widened one",
+    { -> val bad: Duo[Long, Int range 0 ..= 3] = Duo(wide = two(), narrow = ten()); val _ = bad }
+  )
+  val r: Result[Long, Int range 0 ..= 3] = Ok(two())
+  assertTrue(okLong(r) == 2i64, "an Ok payload widens where the Err type is a range")
+  assertPanics(
+    "an Err payload of 10 where Ok widens",
+    { -> val bad: Result[Long, Int range 0 ..= 3] = Err(ten()); val _ = bad }
+  )
+  val q: Result[Long, Int range 0 ..= 3] = Result.Ok(two())
+  assertTrue(okLong(q) == 2i64, "a qualified Ok payload widens")
+  assertPanics(
+    "a qualified Err payload of 10",
+    { -> val bad: Result[Long, Int range 0 ..= 3] = Result.Err(ten()); val _ = bad }
+  )
+}

@@ -7,9 +7,10 @@
 #
 # Builds one program per target and case: a record field at construction, a
 # `.copy` argument, a `var` field assignment, a compound assignment to it, a
-# union case payload (declared, or an `Option` instantiated with a range), an
-# argument through a function value, and a list element added, assigned and
-# written in a literal.  Each must exit non-zero
+# union case payload (declared, or an `Option` instantiated with a range), a
+# generic record field the expected instantiation makes a range beside one
+# that widens (#7813), an argument through a function value, and a list
+# element added, assigned and written in a literal.  Each must exit non-zero
 # and print the expected `RangeViolated: ... must be in Int range 0 ..= 3`,
 # after the in-range use before it and never reaching the line after it.
 # `range_refinement_self_test.l` covers the same cases in-process on dotnet
@@ -49,6 +50,11 @@ union Cmd {
   case Stop
 }
 
+record Duo[A, B] {
+  wide: A
+  narrow: B
+}
+
 func at(n: in Int): Int = n
 
 LYR
@@ -64,6 +70,7 @@ cases=(
   "add|var xs: List[Int range 0 ..= 3] = [at(1)]|xs.add(at(10))|RangeViolated: element must be in Int range 0 ..= 3"
   "element|var xs: List[Int range 0 ..= 3] = [at(1)]|xs[0] = at(10)|RangeViolated: element must be in Int range 0 ..= 3"
   "literal|val ok: List[Int range 0 ..= 3] = [at(3)]|val bad: List[Int range 0 ..= 3] = [at(10)]|RangeViolated: element must be in Int range 0 ..= 3"
+  "generic|val ok: Duo[Long, Int range 0 ..= 3] = Duo(wide = at(1), narrow = at(3))|val bad: Duo[Long, Int range 0 ..= 3] = Duo(wide = at(1), narrow = at(10))|RangeViolated: Duo field narrow must be in Int range 0 ..= 3"
   "option|val ok: Option[Int range 0 ..= 3] = Some(at(3))|val bad: Option[Int range 0 ..= 3] = Some(at(10))|RangeViolated: Some payload must be in Int range 0 ..= 3"
 )
 

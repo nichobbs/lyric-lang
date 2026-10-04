@@ -143,6 +143,8 @@ for t in \
   lyric-compiler/lyric/await_hoist_typed_self_test.l \
   lyric-compiler/lyric/expected_type_propagation_self_test.l \
   lyric-compiler/lyric/generic_ctor_open_arg_self_test.l \
+  lyric-compiler/lyric/generic_ctor_widening_self_test.l \
+  lyric-compiler/lyric/generic_ctor_unsigned_widening_self_test.l \
   lyric-compiler/lyric/overflow_self_test.l \
   lyric-compiler/lyric/overflow_panic_self_test.l \
   lyric-compiler/lyric/fixed_array_self_test.l \

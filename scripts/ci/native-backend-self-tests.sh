@@ -92,6 +92,7 @@ for t in \
   lyric-compiler/lyric/byvalue_record_self_test.l \
   lyric-compiler/lyric/inline_union_self_test.l \
   lyric-compiler/lyric/generic_ctor_open_arg_self_test.l \
+  lyric-compiler/lyric/generic_ctor_widening_self_test.l \
   lyric-compiler/lyric/fixed_array_self_test.l \
   lyric-compiler/lyric/value_generic_record_self_test.l \
   lyric-compiler/lyric/func_default_args_self_test.l \
