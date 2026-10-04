@@ -107,6 +107,7 @@ for t in \
   lyric-compiler/lyric/manifest_self_test.l \
   lyric-compiler/lyric/layers_self_test.l \
   lyric-compiler/lyric/cli_restore_self_test.l \
+  lyric-compiler/lyric/cli_npm_shims_self_test.l \
   lyric-compiler/lyric/cli_version_self_test.l \
   lyric-compiler/lyric/version_self_test.l \
   lyric-compiler/lyric/cli_workspace_builder_self_test.l \

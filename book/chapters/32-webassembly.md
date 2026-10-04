@@ -192,8 +192,17 @@ pub extern func fetchText(url: String): String = "default"
 ```
 
 The import name is the package export it binds; `"default"` is the default export.
-You write the declarations by hand and commit the file, so a reviewer sees exactly
+You write the declarations by hand, or let `lyric restore --generate-npm-shims` write them
+from the package's TypeScript declarations, and commit the file, so a reviewer sees exactly
 which part of the package your program touches. A restore never overwrites a shim.
+
+`--generate-npm-shims` covers the plain cases. It reads the package's `.d.ts` (`types` in its
+`package.json`, else `main` as `.d.ts`, else `index.d.ts`, else `@types/<name>`) and declares
+each function whose parameters and result are `string`, `number`, `boolean` or `bigint`; a
+`number` becomes a `Double` and a `bigint` a `Long`. Objects, classes, generics, overloads,
+optional and rest parameters and `Promise` results are listed in the shim as `// skipped`, for
+you to declare by hand. Running it again replaces the scaffold or an earlier generated file you have not touched (the header records a
+hash of the content); a shim you edited or added to is left alone unless you pass `--force`.
 
 How a package reaches your code depends on the shape:
 
@@ -257,9 +266,9 @@ The tracked work is in issues #8117 (component shape) and #8118 (NPM). Today:
 - `lyric publish` does not yet bundle a wasm artifact.
 
 ::: sidebar
-**Why the native backend and not .NET?** A .NET-to-WASI route would carry the whole
-runtime into every page and tie the output to a managed GC. The native backend already
-produces a small, ARC-managed binary, so the same code generator serves a browser tab,
-`wasmtime` and a native executable, and the web UI library's client host builds on
-exactly that.
+**Why the native backend and not .NET?** The first design compiled through .NET's WASI
+support; it was dropped (decision D-progress-1028) because that route ships the .NET runtime
+with every program, while the native backend already produces a small, ARC-managed binary. The
+same code generator therefore serves a browser tab, `wasmtime` and a native executable, and the
+web UI library's client host builds on it.
 :::

@@ -170,6 +170,15 @@ test "buildNpmPackageJson: one dependency row per entry, escaped" {
   assertTrue(Str.contains(json, "\"@aws-sdk/client-s3\": \"^3.600\"\n"), "last row without a comma")
 }
 
+test "buildNpmPackageJson: the package manager is recorded, so switching it asks for a restore" {
+  val es: List[Mf.NpmEntry] = newList()
+  es.add(npmEntry("zod", "^3"))
+  val asNpm = Cli.buildNpmPackageJson(Mf.NpmSection(entries = es, registry = "", manager = "npm"))
+  val asPnpm = Cli.buildNpmPackageJson(Mf.NpmSection(entries = es, registry = "", manager = "pnpm"))
+  assertTrue(Str.contains(asPnpm, "\"lyricManager\": \"pnpm\""), "the manager is in package.json: " + asPnpm)
+  assertTrue(asNpm != asPnpm, "a different manager is a different install")
+}
+
 test "npmInstallArgs: scripts off, registry only when set" {
   val plain = Cli.npmInstallArgs("npm", "/x/npm", "")
   assertEqualInt(plain.count, 6, "no registry flag by default")
