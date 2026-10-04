@@ -7,6 +7,12 @@ BUILD_CONFIG="${BUILD_CONFIG:-Debug}"
 LYRIC="${LYRIC:-$ROOT/bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric}"
 [ -x "$LYRIC" ] || LYRIC="$ROOT/bin/lyric"
 [ -x "$LYRIC" ] || { echo "::error::lyric binary not found"; exit 1; }
+# A private lyric_rt.a: this step runs in the background beside other
+# native steps, so the dev tree's lyric-rt/build may not exist yet or may be
+# mid-rebuild when the link runs.
+rt_build_dir="$(mktemp -d)/lyric-rt-build"
+make -C "$ROOT/lyric-rt" BUILD="$rt_build_dir"
+export LYRIC_RT_PATH="$rt_build_dir/lyric_rt.a"
 OUT="${TMPDIR:-/tmp}/native-web-smoke"
 PORT=18480
 
