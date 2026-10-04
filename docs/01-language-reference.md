@@ -1249,6 +1249,23 @@ The diagnostic points at the repeated argument (#7846). A default is the
 converted value §4.1 describes (a `UInt` default for a `ULong` parameter
 zero-extends), whichever package makes the call (#7811, #7820).
 
+**Argument evaluation order.** A call evaluates the receiver of a method
+call (`o` in `o.m(...)`) first, then each argument exactly once, left to
+right **as written**, positional and named alike, then the defaults of the
+parameters it leaves out, and passes the values in parameter order (D171,
+#8158). So `two(b = pos(x), a = zero(x))`, for `zero(x: inout Int)` that sets
+`x = 0`, runs `pos(x)` while `x` still holds its old value, and a defaulted
+parameter's default runs after every written argument even when it precedes
+them in the declaration (`mid(b = g(), a = h())` for
+`func mid(a: Int, d: Int = log(), b: Int)` runs `g()`, `h()`, `log()`). A
+default cannot read the caller's locals; the defaults of one call run in
+parameter order. The rule is the same for every callee the pairing rule
+above covers, for a callee in a restored package, and for record,
+exposed-record, opaque, protected-type and union-case constructors, and it
+matches `.copy` (§2.4) and the `?`/`await` operand hoists (§4.5, §7). An
+`out`/`inout` argument denotes its place, which the callee reads and writes
+when it runs.
+
 The default comes from the declaration the call **statically** resolves
 through. A call on an interface-typed value (`sh.area()` where `sh: Shape`)
 takes the interface member's defaults and dispatches to the implementation
