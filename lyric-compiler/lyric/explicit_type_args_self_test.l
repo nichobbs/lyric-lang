@@ -42,3 +42,18 @@ test "an explicit type argument types a lambda argument" {
   val r = apply[Int](2, { v: Int -> v * 10 })
   assertEqualInt(r, 20, "apply[Int] with a lambda")
 }
+
+func lazyOf[T](x: in T): () -> T {
+  return { -> val inner: T = x; inner }
+}
+
+func wrapList[T](x: in T): () -> List[T] {
+  return { -> val items: List[T] = newList(); items.add(x); items }
+}
+
+test "a lambda in a generic function names the function's type parameters" {
+  val f = lazyOf[Int](9)
+  assertEqualInt(f(), 9, "val inner: T inside the lambda")
+  val g = wrapList[String]("a")
+  assertEqualInt(g().count, 1, "List[T] inside the lambda")
+}

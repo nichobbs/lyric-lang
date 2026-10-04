@@ -11010,6 +11010,14 @@ func synthLambdaBody(
   capTys: in List[NType],
 ): NFunc {
   val ctx = freshFnCtx(modCtx, modCtx.curPkg[0], sig.retTy)
+  // The lambda body lowers inside the generic instantiation that contains it,
+  // so a type parameter it names (`val r: View[A] = ...`) resolves the same.
+  var tei = 0
+  while tei < modCtx.fnTyEnvNames.count {
+    ctx.fnTyEnvNames.add(modCtx.fnTyEnvNames[tei])
+    ctx.fnTyEnvTys.add(modCtx.fnTyEnvTys[tei])
+    tei = tei + 1
+  }
   val params: List[NParam] = newList()
   params.add(NParam(name = "env", ty = NPtr(pointee = NI8)))
   val bodyInsns: List[NInsn] = newList()
