@@ -23,7 +23,7 @@
 //!   deps    [--manifest <lyric.toml>]
 //!   publish [--manifest <lyric.toml>] [--dll <path>] [-o <dir>]
 //!   test    [<source.l>] [--manifest <lyric.toml>] [--filter <prefix>] [--list]
-//!   bench   [<source.l>] [--manifest <lyric.toml>] [--runs N] [--warmup N] [--filter <prefix>] [--target dotnet|jvm]
+//!   bench   [<source.l>] [--manifest <lyric.toml>] [--target dotnet|jvm|native] [--triple <llvm-triple>] [--opt 0|1|2|3|s] [--runs N] [--warmup N] [--filter <prefix>]
 //!   openapi <spec.json> [-o <out.l>] [--client-name <Name>] [--package <Pkg>]
 //!   --version / -v
 //!
@@ -302,7 +302,9 @@ func usageText(): String {
     "                 --property-trials N sets the sample count per property (default 100; requires --properties);\n" +
     "                 --seed N sets the RNG seed each property's driver starts from, XOR'd with its declared index so no two properties in a file sample the same sequence (default 1000; requires --properties)\n" +
     "  lyric bench   [<source.l>] [--manifest <lyric.toml>] [--target dotnet|jvm|native] [--triple <llvm-triple>] [--opt 0|1|2|3|s] [--runs N] [--warmup N] [--filter <prefix>]\n" +
-    "                (no source: benchmarks all @bench_module files in the discovered project)\n" +
+    "                (no source: benchmarks all @bench_module files in the discovered project;\n" +
+    "                --triple/--opt apply to --target native only, and a wasm32 triple is rejected\n" +
+    "                because the benchmark runs on this machine)\n" +
     "  lyric repl\n" +
     "\n" +
     "Quality:\n" +
