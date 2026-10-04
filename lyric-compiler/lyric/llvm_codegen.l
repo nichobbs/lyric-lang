@@ -781,7 +781,25 @@ pub func typeExprToNType(te: in TypeExpr): NType {
       }
       NFnPtr(params = ps, ret = typeExprToNType(retTy))
     }
-    case _ -> panic("Lyric.LlvmCodegen: this type form is not yet supported for --target native (Phase N1)")
+    case _ -> panic(
+      "Lyric.LlvmCodegen: " + typeFormName(te) + " at " + te.span.startPos.line.toString() + ":" +
+        te.span.startPos.column.toString() +
+        " is not yet supported for --target native (Phase N1)"
+    )
+  }
+}
+
+// The user-facing name of a type form `typeExprToNType` cannot lower, for its diagnostic.
+func typeFormName(te: in TypeExpr): String {
+  match te.kind {
+    case TArray(_, _) -> "an array type here"
+    case TSlice(_) -> "a slice type here"
+    case TRefined(_, _) -> "a range-refined type"
+    case TTuple(_) -> "a tuple type here"
+    case TNullable(_) -> "a nullable type (T?)"
+    case TNever -> "the Never type"
+    case TError -> "an erroneous type"
+    case _ -> "this type form"
   }
 }
 
