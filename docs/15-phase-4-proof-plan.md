@@ -433,9 +433,23 @@ Calls the verifier cannot follow fail closed or are over-approximated
   an unknown value, but the operands and subexpressions it evaluates keep
   their obligations and facts (#8107).
 - Integer `/` and `%` (and `/=`, `%=`) carry the obligation `divisor != 0`
-  in every mode; under `checked_arithmetic` a signed `/` also carries its
-  width bound, which `MinValue / -1` violates (#8107). (`MinValue % -1` is
-  #7882.)
+  in every mode, and on a signed operand `not (dividend == Min and divisor
+  == -1)` for its width: both trap in every build profile (D163) (#8107,
+  #7882).
+- A match arm's guard is translated in the arm's bindings: its side
+  conditions and facts hold where the pattern matches and no earlier arm
+  did, and the arm is taken when pattern and guard hold. An arm whose
+  pattern the verifier does not model (V0027) still has its guard and body
+  checked, under an unknown condition and with each binding a value of its
+  own; its value is #8142's open question.
+- A lambda's body is checked for every call: it is walked as a function
+  body, with each parameter a value of its own of its declared sort, each
+  captured `var`/`out`/`inout` binding whatever it holds by then and every
+  other capture at its value where the lambda is made; nothing the body
+  establishes is assumed outside it.
+- The right operand of `??` runs only when the left is null, which is not
+  modelled: its side conditions hold under an unknown condition (so they
+  must hold) and its facts give nothing.
 - A `?` or other jump in a loop condition fails closed (`V0026`) (#8143).
 - `old(e)` is `e` evaluated with every name that has an entry snapshot (a
   parameter, an `out`/`inout` parameter, a protected `var` field) at its
@@ -482,8 +496,8 @@ Known limitations, tracked separately: the early-return path of `?` in a binding
 unbound names and `if`-branch locals (#8109); no heap model, and record
 methods never verified (#8110); a callee's `ensures:` about an
 `out`/`inout` parameter not linked back to the argument (#8111);
-`Float`/`Double` as SMT reals (#8141); expression `match` arm guards and
-unsupported patterns (#8142); anonymous-range assignment (#8143);
+`Float`/`Double` as SMT reals (#8141); the value of an expression `match`
+arm with an unsupported pattern (#8142); anonymous-range assignment (#8143);
 precision and range gaps (#8103).
 
 Obligations raised inside an expression — a callee's `requires:`, an

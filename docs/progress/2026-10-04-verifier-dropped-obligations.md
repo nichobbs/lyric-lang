@@ -32,6 +32,37 @@ one (`f(b = 1, 2)`).
 
 Specification: `docs/15-phase-4-proof-plan.md` §5.2, §5.4.
 
+## Review follow-up
+
+The review found more obligations dropped in the same class, each a
+program `lyric prove` discharged and `lyric run` violated:
+
+- A match arm's guard was never translated (a fresh unknown stood for it);
+  it now is, in the arm's bindings, with its side conditions and facts
+  holding where the pattern matches, and the arm taken when it holds.
+- An arm whose pattern is unsupported (V0027) was skipped, body and all;
+  its guard and body are now checked under an unknown condition, its
+  bindings fresh.
+- Lambda bodies were never checked. A lambda is now walked as a function
+  body for every call: parameters fresh at their declared sorts, mutable
+  captures havocked, other captures at their values; nothing it
+  establishes is assumed outside it.
+- `a ?? b` kept `b`'s side conditions and facts unguarded although `b`
+  runs only when `a` is null; they now hold under an unknown condition, so
+  `b`'s obligations must hold and its facts give nothing. (`and`, `or`,
+  `implies`, `if` and `match` were already guarded; Lyric has no other lazy
+  operator.)
+- Signed `MinValue / -1` and `MinValue % -1` trap in every build profile
+  (D163); every signed `/`, `%`, `/=` and `%=` now carries `not (dividend
+  == Min and divisor == -1)` for its width in every mode. This closes
+  #7882. `examples/unsigned_proof.l`'s remainder example had that very bug
+  and now excludes `d == -1`; book §18 exercise 1 points it out.
+
+After the follow-up: `verifier_self_test.l` 136 tests, the CI prove
+examples (unsigned_proof 18/18) and `core_proof.l`, the earlier repros
+(only the separately filed ones still prove, plus legitimate programs),
+and the compiler self-test batch (3354 tests) all pass.
+
 Verified by `lyric-compiler/lyric/verifier_self_test.l` (131 tests, all
 passing; new refute and discharge cases for each item), the CI `lyric
 prove` examples (`unsigned_proof` now proves 18 obligations, its divisions

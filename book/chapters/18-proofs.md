@@ -287,7 +287,7 @@ The modifier is optional because overflow VCs add goals, and goals take time. Fo
 
 ## Exercises
 
-1. Create a package with `func divide(n: in Int, d: in Int): Int requires: d != 0 ensures: result * d + (n % d) == n` and mark it `@proof_required`. Run `lyric prove`. What goals does the verifier produce? Are they discharged by the trivial discharger or does Z3 engage?
+1. Create a package with `func divide(n: in Int, d: in Int): Int requires: d != 0 ensures: result * d + (n % d) == n` and mark it `@proof_required`. Run `lyric prove`. What goals does the verifier produce? Are they discharged by the trivial discharger or does Z3 engage? One goal fails: every integer `/` and `%` must have a non-zero divisor, and a signed one must also never divide the type's minimum by `-1`, which traps at runtime in every build profile. Strengthen the precondition until it discharges.
 
 2. Remove the `ensures:` clause from `debit` in the banking example, leaving `credit`'s postcondition in place. Mark `Transfer` `@proof_required` and try to prove `execute`'s conservation postcondition. What does the verifier report? What is missing from the hypothesis set in `--explain` output?
 
