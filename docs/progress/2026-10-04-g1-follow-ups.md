@@ -77,3 +77,13 @@ override it, as `lyric build` does. With no level named a bench builds at
 `-O2`. A `wasm32` triple is an error, since the benchmark runs on this
 machine, and `--triple`/`--opt` with another target is a usage error.
 `cli_build_self_test.l` covers the precedence (`resolveNativeBenchConfig`).
+
+## MSIL: a list literal of string concatenations is a `String` list
+
+The new native method registration iterates `for k in [pkg + "." + name,
+name]`. MSIL built that literal as an erased `List<object>`, because its
+element-type peek did not recognise a `+` expression, so `k` was an `object`
+local passed where a `string` was expected, which the ilverify gate rejects.
+The peek now types a string interpolation, and a `+` with a `String` operand,
+as `String`. `list_literal_index_self_test.l` covers it on dotnet and the JVM
+and runs under the ilverify gate.

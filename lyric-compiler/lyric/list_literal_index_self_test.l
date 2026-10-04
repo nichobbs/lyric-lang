@@ -45,6 +45,7 @@ package Lyric.ListLiteralIndexSelfTest
 
 import Std.Core
 import Std.Testing
+import Std.Collections
 
 func litIndex0(): Int {
   val xs = [9, 7]
@@ -112,6 +113,21 @@ func litVars(): Int {
   xs[0] + xs[1]
 }
 
+// A `+` with a `String` operand, and an interpolation, are `String`: the
+// loop variable over `[pkg + "." + name, "${name}!"]` is a `string`, not an
+// erased `object` passed where a `string` is expected (unverifiable IL).
+func litConcatKeys(pkg: in String, name: in String): String {
+  val seen: Map[String, String] = newMap()
+  var acc = ""
+  for k in [pkg + "." + name, "${name}!", name] {
+    if not seen.containsKey(k) {
+      seen.add(k, pkg)
+      acc = acc + k + ";"
+    }
+  }
+  acc
+}
+
 func litU16(): Bool {
   val xs = [1u16, 2u16]
   xs[0] + xs[1] == 3u16
@@ -154,6 +170,10 @@ test "unannotated list literals recover Double/Bool/Char/Long/Byte element types
 
 test "list literal over local variables recovers the element type (#5690)" {
   assertEqualInt(litVars(), 16, "[a, b] with Int locals indexes as Int")
+}
+
+test "list literal of concatenations and interpolations is a String list" {
+  assertEqual(litConcatKeys("P", "m"), "P.m;m!;m;", "keys iterate as String")
 }
 
 test "unannotated U16/U32/U64 list literal elements infer for indexed arithmetic on MSIL (#6782/#6973)" {
