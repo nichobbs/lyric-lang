@@ -274,3 +274,68 @@ test "restoreNpmPackages: installs a package, scaffolds its shim, refuses a stri
     case Err(_) -> ()
   }
 }
+
+test "npmShimImports: reads each npm: import of a shim and ignores other host imports" {
+  val src = "@axiom(\"from npm fakepkg 1\")\npackage Fakepkg\n\n@wasmImport(\"npm:fakepkg\")\nextern func add(a: Int, b: Int): Int = \"add\"\n\n@wasmImport(\"npm:@scope/other\")\nextern func dflt(a: Int): Int = \"default\"\n\n@wasmImport(\"ui\")\nextern func log(m: String): Unit = \"log\"\n"
+  val imps = Cli.npmShimImports(src)
+  assertEqualInt(imps.count, 2, "two npm imports, the ui import ignored")
+  assertEqual(imps[0].pkgName, "fakepkg", "first package")
+  assertEqual(imps[0].symbol, "add", "first symbol")
+  assertEqual(imps[1].pkgName, "@scope/other", "scoped package")
+  assertEqual(imps[1].symbol, "default", "default export")
+}
+
+test "parseNpmProbeOutput / npmMissingSymbols: a missing export or package is B0062" {
+  val rows = Cli.parseNpmProbeOutput("fakepkg\tadd,shout\n@scope/gone\t!Cannot find package\n")
+  assertEqualInt(rows.count, 2, "one row per package")
+  assertEqualInt(rows[0].exports.count, 2, "exports split on commas")
+  assertEqual(rows[1].error, "Cannot find package", "load failure carried")
+  val imps: List[Cli.NpmShimImport] = newList()
+  imps.add(Cli.NpmShimImport(pkgName = "fakepkg", symbol = "add"))
+  assertEqualInt(Cli.npmMissingSymbols(imps, rows).count, 0, "a present export is fine")
+  imps.add(Cli.NpmShimImport(pkgName = "fakepkg", symbol = "nope"))
+  imps.add(Cli.NpmShimImport(pkgName = "@scope/gone", symbol = "x"))
+  val problems = Cli.npmMissingSymbols(imps, rows)
+  assertEqualInt(problems.count, 2, "the absent export and the unloadable package")
+  assertTrue(
+    Str.contains(problems[0], "B0062") and Str.contains(problems[0], "\"nope\""),
+    "names the export: " + problems[0]
+  )
+  assertTrue(Str.contains(problems[1], "could not be loaded"), "names the load failure: " + problems[1])
+}
+
+test "checkNpmShims: B0061 without a shim, B0062 for an export the package lacks, clean when it matches" {
+  val dir = npmTempDir()
+  val pkgDir = Path.join(dir, "fakepkg")
+  match File.createDir(pkgDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create " + pkgDir + ": " + IOError.message(e))
+  }
+  putFile(
+    Path.join(pkgDir, "package.json"),
+    "{ \"name\": \"fakepkg\", \"version\": \"1.0.0\", \"type\": \"module\", \"main\": \"index.js\" }\n"
+  )
+  putFile(Path.join(pkgDir, "index.js"), "export function add(a, b) { return a + b; }\n")
+  val m = npmManifest(dir, "\"fakepkg\" = \"file:" + pkgDir + "\"\n")
+  assertEqualInt(Cli.restoreNpmPackages(m, dir), 0, "restore installs the package")
+  val shim = Path.join(Path.join(dir, "_extern_npm"), "fakepkg.l")
+
+  val _del = File.deleteFile(shim)
+  val missing = Cli.checkNpmShims(m, dir)
+  assertEqualInt(missing.count, 1, "no shim file")
+  assertTrue(Str.contains(missing[0], "B0061"), "B0061: " + missing[0])
+
+  val head = "@axiom(\"from npm fakepkg file:" + pkgDir + "\")\npackage Fakepkg\n\n@wasmImport(\"npm:fakepkg\")\n"
+  putFile(shim, head + "extern func add(a: Int, b: Int): Int = \"add\"\n")
+  assertEqualInt(Cli.checkNpmShims(m, dir).count, 0, "a bound export is accepted")
+
+  putFile(shim, head + "extern func nope(a: Int): Int = \"nope\"\n")
+  val bad = Cli.checkNpmShims(m, dir)
+  assertEqualInt(bad.count, 1, "an export the package lacks")
+  assertTrue(Str.contains(bad[0], "B0062") and Str.contains(bad[0], "add"), "B0062 lists the real exports: " + bad[0])
+
+  match File.deleteDirRecursive(dir) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+}

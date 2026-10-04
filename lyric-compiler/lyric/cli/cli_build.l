@@ -1242,7 +1242,7 @@ pub func buildOneNativeShaped(
           for lib in nc.extraLibs {
             effLibs.add(lib)
           }
-          wasmVersion = nc.wasmVersion
+          wasmVersion = effectiveWasmVersion("", nc.wasmVersion)
           wasmWorld = nc.wasmWorld
           wasmStack = nc.wasmStack
         }
@@ -3026,6 +3026,17 @@ pub func buildProjectFromManifest(
         wasmStack = nc.wasmStack
       }
       case None -> ()
+    }
+  }
+
+  if isNativeTarget and Str.startsWith(effTriple, "wasm32") {
+    val npmProblems = checkNpmShims(manifest, mfDir)
+    if npmProblems.count > 0 {
+      for p in npmProblems {
+        printErr(p)
+      }
+      printErr(mfPath + ": project build failed")
+      return 1
     }
   }
 

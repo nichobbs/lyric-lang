@@ -76,6 +76,40 @@ func runNode(source: in String, script: in String): Process.ProcessResult {
   }
 }
 
+/// Write `text` to `dir/rel`, creating the directories on the way.
+func writeIn(dir: in String, rel: in String, text: in String): Unit {
+  val full = Path.join(dir, rel)
+  val _ = File.createDir(Path.dirname(full))
+  val _w = File.writeText(full, text)
+}
+
+/// Build `source` as a module, install a fake NPM package `fakenpm` beside it,
+/// and run `script` under node.
+func runNodeWithFakeNpm(source: in String, script: in String): Process.ProcessResult {
+  val b = buildModule(source, "wasm32-wasi")
+  if not b.ok {
+    panic("wasm32 module compilation failed for a self-test program")
+  }
+  writeIn(
+    b.dir,
+    "node_modules/fakenpm/package.json",
+    "{ \"name\": \"fakenpm\", \"version\": \"1.0.0\", \"type\": \"module\", \"main\": \"index.js\" }\n"
+  )
+  writeIn(
+    b.dir,
+    "node_modules/fakenpm/index.js",
+    "export function add(a, b) { return a + b + 1000; }\nexport function shout(s) { return s.toUpperCase() + '!'; }\n"
+  )
+  writeIn(b.dir, "run.mjs", script)
+  val node = Environment.getVarOrDefault("NODE", "node")
+  val args: List[String] = newList()
+  args.add(Path.join(b.dir, "run.mjs"))
+  match Process.runCapture(node, args, 120000) {
+    case Ok(res) -> res
+    case Err(e) -> panic("node could not be started (set NODE): " + e)
+  }
+}
+
 func readGenerated(dir: in String, name: in String): String {
   match File.readText(Path.join(dir, name)) {
     case Ok(t) -> t
@@ -553,4 +587,77 @@ pub func go(): Unit {
     "module"
   )
   assertFalse(ok, "an empty module name must fail the build (N0014)")
+}
+
+val npmImportProgram: String = r#"package Probe
+
+@wasmImport("npm:fakenpm")
+extern func npmAdd(a: Int, b: Int): Int = "add"
+
+@wasmImport("npm:fakenpm")
+extern func npmShout(s: String): String = "shout"
+
+pub func viaNpm(x: Int): Int {
+  npmAdd(x, 1)
+}
+
+pub func shoutNpm(s: String): String {
+  npmShout(s)
+}
+"#
+
+test "wasm32 module: an npm: host import is satisfied by importing the package" {
+  val r = runNodeWithFakeNpm(
+    npmImportProgram,
+    r"import { instantiate } from './prog.js';
+const m = await instantiate();
+console.log('add=' + m.viaNpm(5));
+console.log('shout=' + m.shoutNpm('hi'));
+"
+  )
+  assertEqualInt(r.exitCode, 0, "node exits cleanly: " + r.stderr)
+  assertTrue(Str.contains(r.stdout, "add=1006\n"), "the package function ran: " + r.stdout)
+  assertTrue(Str.contains(r.stdout, "shout=HI!\n"), "String through the package: " + r.stdout)
+}
+
+test "wasm32 module: options.imports overrides an npm: package" {
+  val r = runNodeWithFakeNpm(
+    npmImportProgram,
+    r"import { instantiate } from './prog.js';
+const m = await instantiate(undefined, { imports: { 'npm:fakenpm': { add: (a, b) => a * b, shout: (s) => s + s } } });
+console.log('add=' + m.viaNpm(5));
+console.log('shout=' + m.shoutNpm('ab'));
+"
+  )
+  assertEqualInt(r.exitCode, 0, "node exits cleanly: " + r.stderr)
+  assertTrue(Str.contains(r.stdout, "add=5\n"), "the override ran: " + r.stdout)
+  assertTrue(Str.contains(r.stdout, "shout=abab\n"), "the String override ran: " + r.stdout)
+}
+
+test "wasm32 module: a missing npm: package names the import and the remedy" {
+  val b = buildModule(npmImportProgram, "wasm32-wasi")
+  assertTrue(b.ok, "the module builds")
+  writeIn(
+    b.dir,
+    "run.mjs",
+    "import { instantiate } from './prog.js';\ntry { await instantiate(); console.log('instantiated'); } catch (e) { console.log('error=' + e.message); }\n"
+  )
+  val args: List[String] = newList()
+  args.add(Path.join(b.dir, "run.mjs"))
+  match Process.runCapture(Environment.getVarOrDefault("NODE", "node"), args, 120000) {
+    case Err(e) -> panic("node could not be started: " + e)
+    case Ok(r) -> {
+      assertTrue(Str.contains(r.stdout, "npm:fakenpm"), "names the import: " + r.stdout)
+      assertTrue(Str.contains(r.stdout, "lyric restore"), "names the remedy: " + r.stdout)
+    }
+  }
+}
+
+test "wasm32 module: the .d.ts makes npm: imports optional" {
+  val b = buildModule(npmImportProgram, "wasm32-wasi")
+  assertTrue(b.ok, "the module builds")
+  val dts = readGenerated(b.dir, "prog.d.ts")
+  assertTrue(Str.contains(dts, "\"npm:fakenpm\"?: {"), "the module is optional: " + dts)
+  assertTrue(Str.contains(dts, "add(a: number, b: number): number;"), "the function is typed: " + dts)
+  assertTrue(Str.contains(dts, "options?: LyricInstantiateOptions"), "instantiate needs no options: " + dts)
 }
