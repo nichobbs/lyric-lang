@@ -120,6 +120,11 @@ writes `hello.wasm`, a component, and `hello.wit`, the interface generated from 
 | a union | `variant` |
 | an enum | `enum` |
 
+An `async func` export is an ordinary WIT function: the wrapper runs its task to
+completion before returning, sleeping out any `Std.Time.sleepMillis` the task waits on, so
+the host call blocks for that long (the build prints `W0041` as a reminder). A module-shape
+export is the non-blocking alternative: it returns a Promise.
+
 Lyric `snake_case` and `PascalCase` names become kebab-case; two names that fold to
 the same WIT name, or a function sharing a name with a type, leave the function out
 with a note.
@@ -243,7 +248,7 @@ The full table is in Appendix B.
 
 The tracked work is in issues #8117 (component shape) and #8118 (NPM). Today:
 
-- a component export cannot be an `async func`, take a tuple, or name a type from
+- a component export cannot take a tuple or name a type from
   another Lyric package;
 - a component host import carries `Int`, `Long`, `Float`, `Double`, `String` and
   `Unit` only, and an NPM import cannot return a `Promise`;
