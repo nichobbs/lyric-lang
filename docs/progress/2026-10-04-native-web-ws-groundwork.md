@@ -67,4 +67,4 @@ Native codegen fixes found by building `lyric-ui` natively (#7990):
 protected type in `lyric-ui` is non-generic and the native build passes the
 N0008 pre-pass. The remaining native blocker is `Std.Task` (`makeScope`,
 `scopeSpawn`, `cancelScope`, `isCancelled`), which has no `_kernel_native`
-twin.
+twin (tracked in #8135).
