@@ -127,6 +127,10 @@ pub record CodegenUnit {
   // Whether this package's own source file has `import Std.String` in
   // scope (#6588 review follow-up, #6752) — see `Ctx.pkgImportsStdString`.
   importsStdString: Bool
+  // The packages this unit's source file imports (dotted paths), for resolving
+  // a bare function name that several packages declare to the one the caller
+  // imports (`bareSig`).
+  imports: List[String]
   // The type checker's `methodCallArities` for this package's file (empty
   // for a bundled package): see `Ctx.methodCallArities` (#7828).
   methodCallArities: Map[String, Int]
@@ -371,6 +375,13 @@ record Ctx {
   // `Option[Int]` UFCS form (`Lyric.TypeChecker.stringIndexOfMember`) is
   // never shadowed by the raw `Int`-returning runtime intrinsic.
   pkgImportsStdString: Map[String, Bool]
+  // Bare function keys (`name/arity`) that more than one package declares, with
+  // every declaration in registration order, and the packages each package's
+  // source file imports. `bareSig` resolves such a key to the declaration in an
+  // imported package, as source scoping does, instead of whichever registered
+  // first (`Std.Char.toLower` versus `Std.String.toLower`).
+  sigAlts: Map[String, List[NFuncSig]]
+  pkgImports: Map[String, List[String]]
   // The parameter count of the method each call leaving out a defaulted
   // argument resolved to, keyed `<pkg>|<methodCallSiteKey>` (each unit's
   // `methodCallArities` under its package): a method call looks its
@@ -1786,6 +1797,100 @@ func buildSigs(units: in List[CodegenUnit]): Map[String, NFuncSig] {
     ui2 = ui2 + 1
   }
   sigs
+}
+
+/// The bare keys more than one package declares (see `Ctx.sigAlts`), each with
+/// all its declarations in registration order.
+func buildSigAlts(units: in List[CodegenUnit], sigs: in Map[String, NFuncSig]): Map[String, List[NFuncSig]] {
+  val all: Map[String, List[NFuncSig]] = newMap()
+  for u in units {
+    val names: List[String] = newList()
+    val arities: List[Int] = newList()
+    for fn in u.fns {
+      if not isGenericFn(fn) {
+        names.add(fn.name)
+        arities.add(fn.params.count)
+      }
+    }
+    for ef in u.externs {
+      names.add(ef.name)
+      arities.add(ef.params.count)
+    }
+    var i = 0
+    while i < names.count {
+      val bare = names[i] + "/" + arities[i].toString()
+      match mapGet(sigs, u.pkgName + "." + bare) {
+        case Some(sg) -> {
+          if not all.containsKey(bare) {
+            val fresh: List[NFuncSig] = newList()
+            all.add(bare, fresh)
+          }
+          match mapGet(all, bare) {
+            case Some(lst) -> {
+              var seen = false
+              for prior in lst {
+                if prior.pkg == sg.pkg {
+                  seen = true
+                }
+              }
+              if not seen {
+                lst.add(sg)
+              }
+            }
+            case None -> ()
+          }
+        }
+        case None -> ()
+      }
+      i = i + 1
+    }
+  }
+  val alts: Map[String, List[NFuncSig]] = newMap()
+  for key in mapKeys(all) {
+    match mapGet(all, key) {
+      case Some(lst) -> {
+        if lst.count > 1 {
+          alts.add(key, lst)
+        }
+      }
+      case None -> ()
+    }
+  }
+  alts
+}
+
+func buildPkgImports(units: in List[CodegenUnit]): Map[String, List[String]] {
+  val m: Map[String, List[String]] = newMap()
+  for u in units {
+    if not m.containsKey(u.pkgName) {
+      m.add(u.pkgName, u.imports)
+    }
+  }
+  m
+}
+
+/// A bare function key resolved against the calling package's imports: when
+/// several packages declare it, the declaration in a package the caller
+/// imports wins; otherwise the first registered, as before.
+func bareSig(ctx: in Ctx, key: in String): Option[NFuncSig] {
+  match mapGet(ctx.sigAlts, key) {
+    case None -> mapGet(ctx.sigs, key)
+    case Some(alts) -> {
+      match mapGet(ctx.pkgImports, ctx.curPkg[0]) {
+        case Some(imps) -> {
+          for sg in alts {
+            for p in imps {
+              if p == sg.pkg {
+                return Some(value = sg)
+              }
+            }
+          }
+        }
+        case None -> ()
+      }
+      mapGet(ctx.sigs, key)
+    }
+  }
 }
 
 /// Recursively flattens an `EPath`, or a chain of `EMember`s over an
@@ -4494,7 +4599,7 @@ func lowerCallEx(
       sigOpt = Some(value = s)
     }
     case None -> {
-      sigOpt = mapGet(ctx.sigs, key)
+      sigOpt = bareSig(ctx, key)
     }
   }
   match sigOpt {
@@ -4603,7 +4708,7 @@ func tryLowerQualifiedCallee(
     case Some(_) -> {
     }
     case None -> {
-      sigOpt = mapGet(ctx.sigs, key)
+      sigOpt = bareSig(ctx, key)
     }
   }
   match sigOpt {
@@ -4951,7 +5056,7 @@ func lowerUfcsCall(
     case Some(_) -> {
     }
     case None -> {
-      sigOpt = mapGet(ctx.sigs, name + "/" + arity)
+      sigOpt = bareSig(ctx, name + "/" + arity)
     }
   }
   match sigOpt {
@@ -13195,6 +13300,8 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     globals = mod.globals,
     sigs = mod.sigs,
     pkgImportsStdString = mod.pkgImportsStdString,
+    sigAlts = mod.sigAlts,
+    pkgImports = mod.pkgImports,
     methodCallArities = mod.methodCallArities,
     curPkg = curPkg,
     curOrigin = curOrigin,
@@ -14168,6 +14275,8 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     globals = newList(),
     sigs = sigs,
     pkgImportsStdString = pkgImportsStdString,
+    sigAlts = buildSigAlts(units, sigs),
+    pkgImports = buildPkgImports(units),
     methodCallArities = methodCallArities,
     curPkg = newList(),
     curOrigin = newList(),
@@ -14471,6 +14580,15 @@ pub func fileImportsStdString(file: in SourceFile): Bool {
   false
 }
 
+/// The dotted package paths `file` imports.
+pub func fileImportPackages(file: in SourceFile): List[String] {
+  val pkgs: List[String] = newList()
+  for imp in file.imports {
+    pkgs.add(modulePathJoin(imp.path.segments))
+  }
+  pkgs
+}
+
 /// Collect one source file's lowerable items into a CodegenUnit.
 pub func unitOfFile(pkgName: in String, file: in SourceFile): CodegenUnit {
   val fns: List[FunctionDecl] = newList()
@@ -14562,6 +14680,7 @@ pub func unitOfFile(pkgName: in String, file: in SourceFile): CodegenUnit {
     protecteds = protecteds,
     moduleVals = moduleVals,
     importsStdString = fileImportsStdString(file),
+    imports = fileImportPackages(file),
     methodCallArities = newMap()
   )
 }

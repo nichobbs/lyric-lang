@@ -105,7 +105,7 @@ pub func jwtConfigProblem(secret: in String, allowedAlgorithms: in String): Stri
   if allowedAlgorithms.length == 0 {
     return "allowedAlgorithms must name at least one algorithm"
   }
-  if contains(toLower(allowedAlgorithms), "none") {
+  if allowedAlgorithms.toLower().contains("none") {
     return "allowedAlgorithms must not include 'none'"
   }
   ""
@@ -324,7 +324,7 @@ pub func verifyJwt(
   requires: isStrongHmacSecret(secret)
   requires: allowedAlgorithms.length > 0
   // Case-insensitive check: catches "None", "NONE", "nOnE", etc.
-  requires: not contains(toLower(allowedAlgorithms), "none")
+  requires: not allowedAlgorithms.toLower().contains("none")
 {
   verifyJwtWithSkew(token, secret, issuer, audience, allowedAlgorithms, defaultClockSkewSeconds())
 }
@@ -340,7 +340,7 @@ pub func verifyJwt(
 ): Result[Unit, JwtError]
   requires: isStrongHmacSecret(secret)
   requires: allowedAlgorithms.length > 0
-  requires: not contains(toLower(allowedAlgorithms), "none")
+  requires: not allowedAlgorithms.toLower().contains("none")
 {
   verifyJwtWithSkew(token, secret, issuer, audience, allowedAlgorithms, defaultClockSkewSeconds())
 }
@@ -371,7 +371,7 @@ pub func verifyJwtWithSkew(
   requires: isStrongHmacSecret(secret)
   requires: allowedAlgorithms.length > 0
   // Case-insensitive check: catches "None", "NONE", "nOnE", etc.
-  requires: not contains(toLower(allowedAlgorithms), "none")
+  requires: not allowedAlgorithms.toLower().contains("none")
   requires: clockSkewSeconds >= 0 and clockSkewSeconds <= maxClockSkewSeconds()
 {
   // Lyric-level algorithm pinning: reject before reaching the extern if the
@@ -406,7 +406,7 @@ pub func verifyJwtWithSkew(
   requires: isStrongHmacSecret(secret)
   requires: allowedAlgorithms.length > 0
   // Case-insensitive check: catches "None", "NONE", "nOnE", etc.
-  requires: not contains(toLower(allowedAlgorithms), "none")
+  requires: not allowedAlgorithms.toLower().contains("none")
   requires: clockSkewSeconds >= 0 and clockSkewSeconds <= maxClockSkewSeconds()
 {
   // Lyric-level algorithm pinning: same guard as the .NET overload above.

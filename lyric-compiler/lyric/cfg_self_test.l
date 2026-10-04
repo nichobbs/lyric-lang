@@ -244,6 +244,15 @@ test "any all not composition" {
 }
 
 // Malformed composites are F0012 and keep the item, like a malformed leaf.
+test "a malformed operand under not keeps the item" {
+  val src = "package P\n" + "@cfg(not(maybe(feature = \"a\")))\n" + "pub func a(): Int { 1 }\n" +
+    "@cfg(any(maybe(feature = \"a\"), feature = \"b\"))\n" +
+    "pub func b(): Int { 2 }\n"
+  val res = applyCfgErasure(emptyFeatures(), emptyFeatures(), parseOk(src))
+  assertTrue(diagCount(res.diagnostics, "F0012") >= 2, "cfg_any: malformed operands report F0012")
+  assertEqualInt(res.file.items.count, 2, "cfg_any: a malformed operand keeps the item whatever wraps it")
+}
+
 test "f0012 malformed composite" {
   val src = "package P\n" + "@cfg(not(feature = \"a\", feature = \"b\"))\n" + "pub func a(): Int { 1 }\n" +
     "@cfg(maybe(feature = \"a\"))\n" +

@@ -2386,6 +2386,7 @@ func unitOf(
     protecteds = protecteds,
     moduleVals = moduleVals,
     importsStdString = fileImportsStdString(f),
+    imports = fileImportPackages(f),
     methodCallArities = arities
   )
 }

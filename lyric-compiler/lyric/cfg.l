@@ -171,8 +171,23 @@ func classifyAnnotations(
             a.span
           )
         )
-      } else if not evalCfgPredicate(active, declared, assumeTargets, a.args[0], diags) {
-        keep = false
+      } else {
+        val before = diags.count
+        val holds = evalCfgPredicate(active, declared, assumeTargets, a.args[0], diags)
+        // A malformed predicate anywhere inside (even under `not`, which
+        // would otherwise turn its placeholder `true` into an erasure) keeps
+        // the item; the `F0012` it reported fails the build.
+        var malformed = false
+        var di = before
+        while di < diags.count {
+          if diags[di].code == "F0012" {
+            malformed = true
+          }
+          di = di + 1
+        }
+        if not holds and not malformed {
+          keep = false
+        }
       }
     }
     i = i + 1
