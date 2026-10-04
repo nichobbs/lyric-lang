@@ -657,7 +657,37 @@ func exprIsCharTyped(ctx: in Ctx, e: in Expr): Bool {
     // Char vs Int — this backend's ordinary `varTypes`/literal shape
     // already distinguishes (`exprIsStringTyped`).
     case EIndex(recv, _) -> exprIsStringTyped(ctx, recv)
+    // A call to a function declared to return `Char` (`charAtOrReplacement`).
+    case ECall(fn, args) -> callReturnsChar(ctx, fn, args.count)
     case _ -> false
+  }
+}
+
+/// Whether the function a call names is declared to return `Char`: the
+/// call's result is an `NI32` the value alone cannot tell from an `Int`.
+func callReturnsChar(ctx: in Ctx, fn: in Expr, argc: in Int): Bool {
+  val key = callKeyOf(fn, argc)
+  if key.length == 0 {
+    return false
+  }
+  var sigOpt = mapGet(ctx.sigs, ctx.curPkg[0] + "." + key)
+  match sigOpt {
+    case Some(_) -> {
+    }
+    case None -> {
+      sigOpt = mapGet(ctx.sigs, key)
+    }
+  }
+  match sigOpt {
+    case Some(_) -> {
+    }
+    case None -> {
+      sigOpt = bareSig(ctx, key)
+    }
+  }
+  match sigOpt {
+    case Some(sig) -> match sig.retTy { case Some(rt) -> isCharTypeExpr(rt); case None -> false }
+    case None -> false
   }
 }
 

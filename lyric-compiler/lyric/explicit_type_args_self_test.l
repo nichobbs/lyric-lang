@@ -84,3 +84,12 @@ test "explicit type arguments on a stdlib generic bundle it" {
   assertTrue(isSome[Int](o), "isSome[Int] resolves and runs")
   assertEqualInt(unwrapOr[Int](o, 0), 3, "unwrapOr[Int]")
 }
+
+func firstChar(s: in String): Char {
+  return s[0]
+}
+
+test "a call returning Char renders as a character, not its code" {
+  assertEqual(firstChar("hi").toString(), "h", "Char.toString() on a call result")
+  assertEqual("x" + firstChar("yz").toString(), "xy", "concatenating a Char call result")
+}
