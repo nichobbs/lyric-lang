@@ -57,3 +57,24 @@ test "a lambda in a generic function names the function's type parameters" {
   val g = wrapList[String]("a")
   assertEqualInt(g().count, 1, "List[T] inside the lambda")
 }
+
+union Wrap[T] {
+  case Boxed(n: Int)
+  case Raw(v: T)
+}
+
+func tagged[T](label: in String, w: in Wrap[T]): Wrap[T] {
+  return w
+}
+
+func useTagged[T](x: in T): Wrap[T] {
+  return tagged("a", Boxed(n = 1))
+}
+
+test "a generic case construction argument takes its type arguments from the call's expected type" {
+  val w: Wrap[String] = useTagged("q")
+  match w {
+    case Boxed(n) -> assertEqualInt(n, 1, "the Boxed case came through")
+    case Raw(_) -> assertTrue(false, "unexpected Raw")
+  }
+}

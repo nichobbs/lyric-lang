@@ -10186,6 +10186,22 @@ func unifyTyArg(
   }
 }
 
+/// A construction of a generic union's case (`AnswerDialog(yes = true)`): its
+/// type arguments may be determined only by where the value is used, so a
+/// generic call takes it after the arguments that do bind them.
+func isGenericCaseCtorExpr(ctx: in Ctx, e: in Expr): Bool {
+  match e.kind {
+    case ECall(fn, _) -> match fn.kind {
+      case EPath(path) -> path.segments.count == 1 and
+        ctx.caseToGenericUnion.containsKey(path.segments[0]) and
+        not ctx.varTypes.containsKey(path.segments[0])
+      case _ -> false
+    }
+    case EParen(inner) -> isGenericCaseCtorExpr(ctx, inner)
+    case _ -> false
+  }
+}
+
 func copyStrings(xs: in List[String]): List[String] {
   val copy: List[String] = newList()
   for x in xs {
@@ -10464,7 +10480,7 @@ func lowerGenericFnCallWith(
         }
       }
       val ax = argExpr[found]
-      if isLambdaExpr(ax) {
+      if isLambdaExpr(ax) or isGenericCaseCtorExpr(ctx, ax) {
         // A lambda needs its function type before it can be lowered. Take
         // it from the parameter type under the type arguments the earlier
         // arguments bind (`mapForEach(m, { k, v -> ... })`); only when a
@@ -10492,7 +10508,20 @@ func lowerGenericFnCallWith(
     dli = dli + 1
   }
   var progressed = true
-  while pending.count > 0 and progressed {
+  var retBound = false
+  while pending.count > 0 and (progressed or not retBound) {
+    if not progressed {
+      // Nothing more binds from the arguments: let the expected type of the
+      // call bind the parameters only its return type mentions, then retry.
+      retBound = true
+      match retWant {
+        case Some(w) -> match fd.ret {
+          case Some(rte) -> unifyTyArg(ctx, rte, w, fnTyParamNames, seedNames, seedTys)
+          case None -> ()
+        }
+        case None -> ()
+      }
+    }
     progressed = false
     val still: List[Int] = newList()
     var pk = 0
@@ -10518,7 +10547,8 @@ func lowerGenericFnCallWith(
   if pending.count > 0 {
     val dpi = deferredLambdas[pending[0]]
     panic(
-      "Lyric.LlvmCodegen: cannot infer the function type of the lambda passed as parameter '" + fd.params[dpi].name +
+      "Lyric.LlvmCodegen: cannot infer the type of the lambda or case construction passed as parameter '" +
+        fd.params[dpi].name +
         "' of generic function '" +
         fd.name +
         "'; annotate the lambda's parameters or bind it to a typed val"
