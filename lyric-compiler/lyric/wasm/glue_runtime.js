@@ -275,7 +275,17 @@ export async function instantiate(source, options = {}) {
   // as a JS string, a Long as a bigint) and returns a decoded result; these
   // wrappers lower and lift around it.  Names not declared that way are raw wasm
   // imports and pass through unchanged.
-  const hostFns = options.imports || {};
+  const hostFns = Object.assign({}, options.imports || {});
+  // Host imports from an NPM package (`@wasmImport("npm:<package>")`) are
+  // satisfied by importing the package unless the caller supplies the module.
+  for (const [mod, load] of Object.entries(LYRIC_NPM)) {
+    if (hostFns[mod]) continue;
+    try {
+      hostFns[mod] = await load();
+    } catch (e) {
+      throw new Error('cannot load the NPM package behind host import ' + mod + ' (run `lyric restore`, or pass it in options.imports): ' + e.message);
+    }
+  }
   const declared = new Set(LYRIC_IMPORTS.map((imp) => imp.module + '\u0000' + imp.name));
   const missingHost = [];
   for (const imp of LYRIC_IMPORTS) {
@@ -294,7 +304,7 @@ export async function instantiate(source, options = {}) {
     throw new Error('missing host import' + (missingHost.length > 1 ? 's' : '') + ' ' +
       missingHost.join(', ') + ' (pass ' + (missingHost.length > 1 ? 'them' : 'it') + ' in options.imports)');
   }
-  for (const [ns, members] of Object.entries(hostFns)) {
+  for (const [ns, members] of Object.entries(options.imports || {})) {
     for (const [name, value] of Object.entries(members)) {
       if (!declared.has(ns + '\u0000' + name)) {
         imports[ns] = Object.assign(imports[ns] || {}, { [name]: value });

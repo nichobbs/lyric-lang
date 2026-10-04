@@ -1264,7 +1264,9 @@ pub func npmMissingSymbols(imports: in List[NpmShimImport], rows: in List[NpmPro
     for row in rows {
       if row.pkgName == imp.pkgName {
         if row.error.length > 0 {
-          problems.add("error[B0062]: the NPM package \"" + imp.pkgName + "\" could not be loaded: " + row.error)
+          problems.add(
+            "error[B0062]: the NPM package \"" + imp.pkgName + "\" could not be loaded: " + row.error + " (run `lyric restore`)"
+          )
         } else if not row.exports.contains(imp.symbol) {
           problems.add(
             "error[B0062]: the NPM package \"" + imp.pkgName + "\" has no export \"" + imp.symbol + "\" (its exports: " +
@@ -1295,7 +1297,7 @@ pub func checkNpmShims(manifest: in Mf.Manifest, mfDir: in String): List[String]
   for e in npm.entries {
     val shimPath = Path.join(Path.join(mfDir, "_extern_npm"), Mf.npmShimFileName(e.name))
     match File.readText(shimPath) {
-      case Err(err) -> problems.add("error[B0061]: cannot read " + shimPath + ": " + IOError.message(err))
+      case Err(err) -> problems.add("error: cannot read the NPM shim " + shimPath + ": " + IOError.message(err))
       case Ok(text) -> {
         for imp in npmShimImports(text) {
           if declared.containsKey(imp.pkgName) {
