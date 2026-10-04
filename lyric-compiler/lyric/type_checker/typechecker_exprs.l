@@ -3487,7 +3487,15 @@ func substituteMethodSig(entry: in MethodEntry, recv: in Type, targs: in List[Ty
     // never the alias identity of an unrelated aliased annotation, so pairing
     // the original `tyExpr` with the substituted `ty` for display stays sound.
     np.add(
-      ResolvedParam(name = p.name, ty = ty, mode = p.mode, hasDefault = p.hasDefault, span = p.span, tyExpr = p.tyExpr)
+      ResolvedParam(
+        name = p.name,
+        ty = ty,
+        mode = p.mode,
+        hasDefault = p.hasDefault,
+        span = p.span,
+        tyExpr = p.tyExpr,
+        defaultInert = p.defaultInert
+      )
     )
     i = i + 1
   }
@@ -10890,6 +10898,206 @@ func recordHoistedCallArgs(
   recordHoistedOperands(sc, tbl, es, argTypes, expected)
 }
 
+// ─── Argument evaluation order (D171) ──────────────────────────────────────
+//
+// A call's receiver is evaluated first, then its arguments exactly once,
+// left to right as written, then the defaults of the parameters it leaves
+// out; the values are passed in parameter order.  Every backend evaluates
+// the arguments in parameter order, which is the same thing unless named
+// arguments are written out of that order (or before an omitted parameter
+// whose default has an effect).  When the difference is observable
+// (`Lyric.Parser.callArgsNeedSourceOrder`), the call is recorded in
+// `argOrderSites` and `Lyric.Mono.desugarCheckedFile` evaluates its
+// arguments into temporaries first, so every backend inherits the order.
+// Whether evaluating `e` as an argument can neither cause nor observe an
+// effect: `Lyric.Parser.exprIsInert`, where a local name is inert only when
+// it can never be reassigned.  `self` is the call's own receiver binding.
+func argIsInert(sc: in Scope, e: in Expr): Bool {
+  match e.kind {
+    case EPath(p) -> if p.segments.count == 1 {
+      match scopeTryFind(sc, p.segments[0]) {
+        case Some(b) -> not b.isMutable
+        case None -> true
+      }
+    } else {
+      true
+    }
+    case ESelf -> true
+    case EParen(inner) -> argIsInert(sc, inner)
+    case _ -> exprIsInert(e)
+  }
+}
+
+// Whether `e` names a place: a name, `self`, or a field or element of one.
+// An `out`/`inout` argument that names a place passes the place itself, and
+// a method's receiver that names one may be mutated through `inout self`,
+// so neither is ever copied into a temporary.
+func argIsPlace(e: in Expr): Bool {
+  match e.kind {
+    case EPath(_) -> true
+    case ESelf -> true
+    case EParen(inner) -> argIsPlace(inner)
+    case EMember(recv, _) -> argIsPlace(recv)
+    case EIndex(recv, _) -> argIsPlace(recv)
+    case _ -> false
+  }
+}
+
+// Whether any argument of a call is named: only then can its arguments be
+// written out of parameter order.
+func callArgsHaveNamed(args: in List[CallArg]): Bool {
+  for a in args {
+    match a {
+      case CANamed(_, _, _) -> return true
+      case CAPositional(_) -> ()
+    }
+  }
+  false
+}
+
+// Record the call at `callSpan` in `argOrderSites` when its arguments must be
+// evaluated into temporaries to run in source order.  `slotNames` are the
+// parameters (or fields) the arguments pair with, `defaultEffect[k]` whether
+// leaving out parameter `k` runs a default that may cause or observe an
+// effect, `byRef[k]` whether parameter `k` is `out`/`inout`, and
+// `expected[i]` the type argument `i` is expected to have.  `recvTy` is the
+// type of a method call's receiver.  A call in a contract clause calls only
+// `@pure` functions, whose order is unobservable, and is left alone.
+func recordArgOrderSite(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  callSpan: in Span,
+  fn: in Expr,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  slotNames: in List[String],
+  defaultEffect: in List[Bool],
+  byRef: in List[Bool],
+  expected: in List[Type],
+  recvTy: in Option[Type],
+): Unit {
+  if sc.contractDepth.count > 0 or not callArgsHaveNamed(args) {
+    return
+  }
+  val slots: List[Int] = match pairCallArgs(slotNames, 0, args) { case Ok(paired) -> paired; case Err(_) -> return }
+  val argByRef: List[Bool] = newList()
+  var i = 0
+  while i < args.count {
+    argByRef.add(false)
+    i = i + 1
+  }
+  var k = 0
+  while k < slots.count {
+    if slots[k] >= 0 and k < byRef.count and byRef[k] {
+      argByRef[slots[k]] = true
+    }
+    k = k + 1
+  }
+  val bound: List[Bool] = newList()
+  i = 0
+  while i < args.count {
+    val ae = callArgExpr(args[i])
+    bound.add(if argByRef[i] { not argIsPlace(ae) } else { not argIsInert(sc, ae) })
+    i = i + 1
+  }
+  if not callArgsNeedSourceOrder(slots, args.count, bound, defaultEffect) {
+    return
+  }
+  i = 0
+  while i < args.count {
+    if bound[i] {
+      val own = if i < argTypes.count { argTypes[i] } else { TyError }
+      val want = if i < expected.count { expected[i] } else { TyError }
+      recordHoistOperandType(sc, tbl, callArgExpr(args[i]), own, want)
+    }
+    i = i + 1
+  }
+  var bindRecv = false
+  match fn.kind {
+    case EMember(recv, _) -> match recvTy {
+      case Some(rt) -> if not argIsInert(sc, recv) and not argIsPlace(recv) {
+        bindRecv = true
+        recordHoistOperandType(sc, tbl, recv, rt, TyError)
+      }
+      case None -> ()
+    }
+    case _ -> ()
+  }
+  val key = recordCopySiteKey(callSpan)
+  if tbl.argOrderSites.containsKey(key) {
+    tbl.argOrderSites.remove(key)
+  }
+  tbl.argOrderSites.add(key, ArgOrderSite(bound = bound, bindRecv = bindRecv, startOffset = callSpan.startPos.offset))
+}
+
+// `recordArgOrderSite` for a call to `sig`, whose parameters the arguments
+// pair with as `checkCallArgsAgainstSig` pairs them.
+func recordSigArgOrderSite(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  callSpan: in Span,
+  fn: in Expr,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  sig: in ResolvedSignature,
+  expected: in List[Type],
+  recvTy: in Option[Type],
+): Unit {
+  val names: List[String] = newList()
+  val defaultEffect: List[Bool] = newList()
+  val byRef: List[Bool] = newList()
+  for p in sig.params {
+    names.add(p.name)
+    defaultEffect.add(p.hasDefault and not p.defaultInert)
+    byRef.add(modeNeedsLValue(p.mode))
+  }
+  recordArgOrderSite(sc, tbl, callSpan, fn, args, argTypes, names, defaultEffect, byRef, expected, recvTy)
+}
+
+// `recordArgOrderSite` for the construction `fn(args)` of `ctorTy`: a
+// record, exposed record, opaque or protected type (`ctorSym`) or a union
+// case (`caseSym`), whose fields the arguments pair with by name and then
+// in order.  A union case's fields have no defaults.
+func recordCtorArgOrderSite(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  callSpan: in Span,
+  fn: in Expr,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  sym: in Symbol,
+  ctorTy: in Type,
+): Unit {
+  if not callArgsHaveNamed(args) {
+    return
+  }
+  val names: List[String] = newList()
+  val defaultEffect: List[Bool] = newList()
+  val byRef: List[Bool] = newList()
+  match sym.kind {
+    case DKUnionCase(_, uc) -> {
+      for nm in unionCaseSlotNames(uc) {
+        names.add(nm)
+        defaultEffect.add(false)
+        byRef.add(false)
+      }
+    }
+    case _ -> {
+      for fd in ctorAllFields(sym) {
+        names.add(fd.name)
+        defaultEffect.add(match fd.dflt { case Some(d) -> not exprIsInert(d); case None -> false })
+        byRef.add(false)
+      }
+    }
+  }
+  val expected: List[Type] = match ctorArgExpectedTypes(tbl, fn, args, ctorTy) {
+    case Some(tys) -> tys
+    case None -> newList()
+  }
+  val noRecv: Option[Type] = None
+  recordArgOrderSite(sc, tbl, callSpan, fn, args, argTypes, names, defaultEffect, byRef, expected, noRecv)
+}
+
 // The construction `fn(args)` of `ctorTy`: each argument is expected to have
 // its field's type.  The operands the hoist binds are recorded at it, and so
 // is every argument that leaves its own type open (`None`, `Ok(2)`,
@@ -12065,6 +12273,19 @@ func inferExprCore(
           }
           checkContractCallPure(sc, diag, sig, fn, e.span)
           checkCallArgsAgainstSig(sc, tbl, sigs, diag, sig, args, argTypes, e.span)
+          if callArgsHaveNamed(args) {
+            recordSigArgOrderSite(
+              sc,
+              tbl,
+              e.span,
+              fn,
+              args,
+              argTypes,
+              sig,
+              sigExpectedArgTypes(sig, None, args, argTypes),
+              memberRecvTy
+            )
+          }
           recordGenericArgWidenings(tbl, sig, None, args, argTypes)
           match fn.kind {
             case EPath(_) -> recordGenericCallTypeArgs(
@@ -12097,6 +12318,7 @@ func inferExprCore(
             val caseTy = inferUnionCaseConstruction(tbl, diag, caseSym, args, argTypes, e.span, true)
             noteCtorArgFlows(sc, tbl, fn, args, caseTy)
             recordCtorArgOperandTypes(sc, tbl, fn, args, argTypes, caseTy)
+            recordCtorArgOrderSite(sc, tbl, e.span, fn, args, argTypes, caseSym, caseTy)
             caseTy
           }
           case None -> match constructorSymbolOf(tbl, fn) {
@@ -12105,6 +12327,7 @@ func inferExprCore(
               noteArrayStores(tbl, args, argTypes)
               noteCtorArgFlows(sc, tbl, fn, args, ctorTy)
               recordCtorArgOperandTypes(sc, tbl, fn, args, argTypes, ctorTy)
+              recordCtorArgOrderSite(sc, tbl, e.span, fn, args, argTypes, ctorSym, ctorTy)
               ctorTy
             }
             // #6838: the callee names a union/enum TYPE itself, not one of its
@@ -12136,7 +12359,9 @@ func inferExprCore(
                   recordEffectCallSite(tbl, e.span, mp.sig, fn)
                   checkContractCallPure(sc, diag, mp.sig, fn, e.span)
                   checkCallArgsAgainstSig(sc, tbl, sigs, diag, mp.sig, args, argTypes, e.span)
-                  if callArgsHaveHoistHazard(args) {
+                  val mpHazard = callArgsHaveHoistHazard(args)
+                  val mpNamed = callArgsHaveNamed(args)
+                  if mpHazard or mpNamed {
                     val mpExpected = match mp.fullSig {
                       case Some(fullS) -> match memberRecvTy {
                         case Some(_) -> sigExpectedArgTypes(fullS, memberRecvTy, args, argTypes)
@@ -12144,7 +12369,12 @@ func inferExprCore(
                       }
                       case None -> sigExpectedArgTypes(mp.sig, None, args, argTypes)
                     }
-                    recordHoistedCallArgs(sc, tbl, args, argTypes, mpExpected)
+                    if mpHazard {
+                      recordHoistedCallArgs(sc, tbl, args, argTypes, mpExpected)
+                    }
+                    if mpNamed {
+                      recordSigArgOrderSite(sc, tbl, e.span, fn, args, argTypes, mp.sig, mpExpected, memberRecvTy)
+                    }
                   }
                   checkBoundsSatisfied(tbl, diag, mp.sig, argTypes, e.span)
                   match mp.fullSig {

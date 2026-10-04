@@ -25,6 +25,10 @@ pub record ResolvedParam {
   // consulted for pass/fail, only by `renderOptTypeExpr` call sites that want
   // to name the alias the user wrote (T0043).
   tyExpr: Option[TypeExpr] = None
+  // Whether the parameter's default is inert (`Lyric.Parser.exprIsInert`), so
+  // a call leaving it out need not order its evaluation after the explicit
+  // arguments (D171).  `false` when unknown: the call then orders it.
+  defaultInert: Bool = false
   // ─────────────────────────────────────────────────────────────────────────────
   // §2. Resolved where-clause bound.
   // ─────────────────────────────────────────────────────────────────────────────

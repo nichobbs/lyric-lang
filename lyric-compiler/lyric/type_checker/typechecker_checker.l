@@ -1034,7 +1034,8 @@ func resolveFunctionSig(
         mode = p.mode,
         hasDefault = match p.dflt { case None -> false; case Some(_) -> true },
         span = p.span,
-        tyExpr = Some(value = p.ty)
+        tyExpr = Some(value = p.ty),
+        defaultInert = match p.dflt { case None -> false; case Some(d) -> exprIsInert(d) }
       )
     )
     i = i + 1
@@ -1398,7 +1399,8 @@ func resolveMethodSigParts(
           mode = p.mode,
           hasDefault = match p.dflt { case None -> false; case Some(_) -> true },
           span = p.span,
-          tyExpr = Some(value = p.ty)
+          tyExpr = Some(value = p.ty),
+          defaultInert = match p.dflt { case None -> false; case Some(d) -> exprIsInert(d) }
         )
       )
     }
@@ -1700,7 +1702,8 @@ func substitutesSelfParams(params: in List[ResolvedParam], selfTy: in Type): Lis
         mode = rp.mode,
         hasDefault = rp.hasDefault,
         span = rp.span,
-        tyExpr = rp.tyExpr
+        tyExpr = rp.tyExpr,
+        defaultInert = rp.defaultInert
       )
     )
     i = i + 1

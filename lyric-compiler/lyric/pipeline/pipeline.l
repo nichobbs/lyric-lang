@@ -2227,7 +2227,8 @@ pub func pipeDesugarChecked(
     tcRes.symbols.funcValueCallSites,
     tcRes.symbols.tuplePatternBindingSites,
     listLiteralSites,
-    tcRes.symbols.hoistOperandTypeSites
+    tcRes.symbols.hoistOperandTypeSites,
+    tcRes.symbols.argOrderSites
   )
 }
 

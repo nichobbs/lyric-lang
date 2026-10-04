@@ -319,6 +319,10 @@ pub record SymbolTable {
   /// `recordCopySiteKey` of the operand's span (see
   /// `Lyric.Parser.HoistOperandTypeSite`, #7823).
   hoistOperandTypeSites: Map[String, HoistOperandTypeSite]
+  /// Each call whose arguments must be evaluated into temporaries to run in
+  /// source order (D171), keyed by `recordCopySiteKey` of the call's span
+  /// (see `Lyric.Parser.ArgOrderSite`).
+  argOrderSites: Map[String, ArgOrderSite]
   /// The type expected of a method call's result, keyed by
   /// `recordCopySiteKey` of the call's span, while the call is checked
   /// against it: the hoisted receiver's type can come from it (#7844).
@@ -630,6 +634,7 @@ pub func newSymbolTable(): SymbolTable {
     tuplePatternBindingSites = newMap(),
     listLiteralTypeSites = newMap(),
     hoistOperandTypeSites = newMap(),
+    argOrderSites = newMap(),
     methodCallResultExpected = newMap(),
     lambdaReturnFrames = newList(),
     genericCallTypeArgSites = newMap(),

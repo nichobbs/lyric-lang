@@ -337,6 +337,11 @@ record MonoState {
   /// `recordCopySiteKey` of the operand's span; `hoistOperandTypedMono`
   /// binds it through a local annotated with that type (#7823).
   hoistOperandTypeSites: Map[String, HoistOperandTypeSite]
+  /// Each call whose arguments the type checker found must be evaluated into
+  /// temporaries to run in source order (`SymbolTable.argOrderSites`, D171),
+  /// keyed by `recordCopySiteKey` of the call's span; `argOrderCallMono`
+  /// rewrites it.
+  argOrderSites: Map[String, ArgOrderSite]
   /// The type arguments the type checker resolved for each call to a generic
   /// function (`SymbolTable.genericCallTypeArgSites`), keyed by
   /// `recordCopySiteKey` of the callee's span.  A call whose type arguments
@@ -411,6 +416,7 @@ func newMonoState(
     tuplePatternBindingSites = newMap(),
     listLiteralTypeSites = newMap(),
     hoistOperandTypeSites = newMap(),
+    argOrderSites = newMap(),
     genericCallTypeArgSites = newMap(),
     valueGenericCallSites = newMap(),
     lambdaParamTypeSites = newMap(),
@@ -4378,7 +4384,7 @@ func funcRefLambdaMono(site: in FuncRefSite, sp: in Span): Expr {
 /// could not lower.  Only items containing a site are rewritten, and no
 /// generic is registered, so nothing is specialised here.
 pub func desugarRecordCopiesFile(file: in SourceFile, sites: in Map[String, RecordCopySite]): MonoResult {
-  desugarCheckedFile(file, sites, newMap(), newMap(), newMap(), newMap(), newMap(), newMap(), newMap())
+  desugarCheckedFile(file, sites, newMap(), newMap(), newMap(), newMap(), newMap(), newMap(), newMap(), newMap())
 }
 
 /// The post-type-check desugars: record `.copy(...)` calls (D-progress-948),
@@ -4387,8 +4393,10 @@ pub func desugarRecordCopiesFile(file: in SourceFile, sites: in Map[String, Reco
 /// function-valued (#7711) and open (#7788) locals, the callee types of calls through
 /// function values (#7716) and the element types of the names tuple patterns
 /// bind (#7728), the checked types of list literals no collection type
-/// was expected of (#7818) and the types of the operands the await and `?`
-/// hoists bind (#7823), each keyed by the type checker's span key.
+/// was expected of (#7818), the types of the operands the await and `?`
+/// hoists bind (#7823), and the calls whose arguments must be evaluated
+/// into temporaries to run in source order (D171), each keyed by the type
+/// checker's span key.
 pub func desugarCheckedFile(
   file: in SourceFile,
   sites: in Map[String, RecordCopySite],
@@ -4399,9 +4407,10 @@ pub func desugarCheckedFile(
   tuplePatternBindingSites: in Map[String, TuplePatternBindingSite],
   listLiteralTypeSites: in Map[String, ListLiteralTypeSite],
   hoistOperandTypeSites: in Map[String, HoistOperandTypeSite],
+  argOrderSites: in Map[String, ArgOrderSite],
 ): MonoResult {
   val noRewrites: Map[String, String] = newMap()
-  if sites.count == 0 and funcRefSites.count == 0 and argConversionSites.count == 0 and localBindingTypeSites.count == 0 and funcValueCallSites.count == 0 and tuplePatternBindingSites.count == 0 and listLiteralTypeSites.count == 0 and hoistOperandTypeSites.count == 0 {
+  if sites.count == 0 and funcRefSites.count == 0 and argConversionSites.count == 0 and localBindingTypeSites.count == 0 and funcValueCallSites.count == 0 and tuplePatternBindingSites.count == 0 and listLiteralTypeSites.count == 0 and hoistOperandTypeSites.count == 0 and argOrderSites.count == 0 {
     val noDiags: List[Diagnostic] = newList()
     return MonoResult(
       file = file,
@@ -4531,6 +4540,18 @@ pub func desugarCheckedFile(
       case None -> ()
     }
     hi = hi + 1
+  }
+  val orderKeys = mapKeys(argOrderSites)
+  var oi = 0
+  while oi < orderKeys.count {
+    match mapGet(argOrderSites, orderKeys[oi]) {
+      case Some(site) -> {
+        state.argOrderSites.add(orderKeys[oi], site)
+        offsets.add(site.startOffset)
+      }
+      case None -> ()
+    }
+    oi = oi + 1
   }
   val items: List[Item] = newList()
   var i = 0
@@ -5072,6 +5093,110 @@ func funcValueCallMono(
   )
   stmts.add(Statement(kind = SExpr(expr = call), span = sp))
   Expr(kind = EBlock(block = Block(statements = stmts, span = sp)), span = sp)
+}
+
+// A call whose arguments must run in source order (D171), `o.m(b = eb, a = ea)`
+// for `func m(self, a, b)`, becomes
+//
+//   {
+//     val __lyric_ao_<n>_r = o        // when `o` is not a place
+//     val __lyric_ao_<n>_0 = eb       // arguments in source order
+//     val __lyric_ao_<n>_1 = ea
+//     __lyric_ao_<n>_r.m(b = __lyric_ao_<n>_0, a = __lyric_ao_<n>_1)
+//   }
+//
+// The arguments keep their names and positions, so every backend pairs them
+// with the parameters as before and passes them in parameter order, filling
+// each omitted parameter from its default after all of them.  An argument
+// the site leaves in the call (an inert one, or the place an `out`/`inout`
+// argument names) gives the same value wherever it runs.  A temporary for an
+// operand whose type the checker recorded (`hoistOperandTypedMono`) takes that
+// type as its annotation.  An argument's temporary is read through a
+// zero-width span, which no span-keyed site names, so the read is never
+// rewritten as the argument itself was; the receiver's keeps the receiver's
+// span, which the backends key its class by.
+func argOrderCallMono(
+  state: in MonoState,
+  env: in Map[String, TypeExpr],
+  callee: in Expr,
+  args: in List[CallArg],
+  site: in ArgOrderSite,
+  sp: in Span,
+): Expr {
+  val id = state.copyTicker.count
+  state.copyTicker.add(0)
+  val base = "__lyric_ao_" + toString(id)
+  val stmts: List[Statement] = newList()
+  var fn = callee
+  if site.bindRecv {
+    match callee.kind {
+      case EMember(recv, mname) -> {
+        val rname = base + "_r"
+        stmts.add(copyTypedValStmtMono(rname, inferExprTE(state, env, recv), rewriteExpr(state, env, recv), recv.span))
+        fn = Expr(kind = EMember(receiver = singleSegPathExpr(rname, recv.span), memberName = mname), span = callee.span)
+      }
+      case _ -> ()
+    }
+  }
+  val callArgs: List[CallArg] = newList()
+  var i = 0
+  while i < args.count {
+    if i < site.bound.count and site.bound[i] {
+      val ae = callArgExpr(args[i])
+      val tmp = base + "_" + toString(i)
+      stmts.add(argOrderValStmtMono(tmp, rewriteExpr(state, env, ae), ae.span))
+      val read = singleSegPathExpr(tmp, Span(startPos = ae.span.startPos, endPos = ae.span.startPos))
+      callArgs.add(
+        match args[i] {
+          case CANamed(nm, _, asp) -> CANamed(name = nm, value = read, span = asp)
+          case CAPositional(_) -> CAPositional(expr = read)
+        }
+      )
+    } else {
+      callArgs.add(args[i])
+    }
+    i = i + 1
+  }
+  val call = rewriteExpr(state, env, Expr(kind = ECall(fn = fn, args = callArgs), span = sp))
+  stmts.add(Statement(kind = SExpr(expr = call), span = sp))
+  Expr(kind = EBlock(block = Block(statements = stmts, span = sp)), span = sp)
+}
+
+// `val <name> = init`, or `val <name>: T = x` when `init` is the
+// `{ val n: T = x; n }` that `hoistOperandTypedMono` gave an operand whose
+// type the checker recorded.
+func argOrderValStmtMono(name: in String, init: in Expr, sp: in Span): Statement {
+  match init.kind {
+    case EBlock(blk) -> if blk.statements.count == 2 {
+      match blk.statements[0].kind {
+        case SLocal(binding) -> match binding {
+          case LBVal(pat, ty, x) -> match ty {
+            case Some(te) -> match pat.kind {
+              case PBinding(n, None) -> {
+                val readsIt = match blk.statements[1].kind {
+                  case SExpr(tail) -> match tail.kind {
+                    case EPath(p) -> p.segments.count == 1 and p.segments[0] == n
+                    case _ -> false
+                  }
+                  case _ -> false
+                }
+                if readsIt {
+                  return copyTypedValStmtMono(name, Some(value = te), x, sp)
+                }
+              }
+              case _ -> ()
+            }
+            case None -> ()
+          }
+          case _ -> ()
+        }
+        case _ -> ()
+      }
+    }
+    case _ -> ()
+  }
+  val noTy: Option[TypeExpr] = None
+  copyTypedValStmtMono(name, noTy, init, sp)
 }
 
 // A list literal the type checker typed with no collection type expected of
@@ -6592,6 +6717,19 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
     match mapGet(state.funcValueCallSites, recordCopySiteKey(s)) {
       case Some(site) -> match expr.kind {
         case ECall(callee, callArgs) -> return funcValueCallMono(state, env, callee, callArgs, site, s)
+        case _ -> ()
+      }
+      case None -> ()
+    }
+  }
+  if ownSites and state.argOrderSites.count > 0 {
+    val orderKey = recordCopySiteKey(s)
+    match mapGet(state.argOrderSites, orderKey) {
+      case Some(site) -> match expr.kind {
+        case ECall(callee, callArgs) -> {
+          state.argOrderSites.remove(orderKey)
+          return argOrderCallMono(state, env, callee, callArgs, site, s)
+        }
         case _ -> ()
       }
       case None -> ()
