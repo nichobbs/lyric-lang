@@ -312,6 +312,7 @@ pub func compileToMsilWithVersion(
     checkedSourceOut = singleFileOptsCheckedOut,
     memberRecvClassesOut = singleFileOptsRecvOut,
     methodCallAritiesOut = singleFileCallArities,
+    genericItemsOut = newList(),
     arraysAsLists = true
   )
   val file = match pipeCheckAndMono(file0, importedPkgs, noDeriveImports, allMonoFuncs, stdlibIfaces, stdlibRecs, singleFileOpts) {
@@ -1126,6 +1127,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
       checkedSourceOut = projOptsCheckedOut,
       memberRecvClassesOut = projOptsRecvOut,
       methodCallAritiesOut = projCallArities,
+      genericItemsOut = newList(),
       arraysAsLists = true,
       ioForbiddenReason = pp.ioForbiddenReason
     )

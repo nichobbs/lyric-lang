@@ -144,6 +144,12 @@ pub record MiddleEndOptions {
   /// a method's overloads up by this count, so the call binds to the
   /// overload the checker resolved (#7828).
   methodCallAritiesOut: Map[String, Int]
+  /// Receives every visible (`pub` or `internal`) generic function with a
+  /// body, as it stands just before monomorphisation, which erases them from
+  /// the file.  A backend that instantiates generics itself at the call (native)
+  /// appends them to the package's output so another package of the project
+  /// can call them.  Other backends pass a list and ignore it.
+  genericItemsOut: List[Item]
   /// Why this package may not do I/O, from the manifest's `[layers]`
   /// (docs/65 §5, D149): "layer 'logic'" for a package in a layer whose
   /// rule does not allow `io`, "" otherwise.  A package-level `@pure` has
@@ -734,6 +740,19 @@ pub func pipeCheckAndMono(
     withArrayLens(derived, tcRes.symbols.arrayTypeLens),
     tcRes.symbols.valueRecordCtorSites
   )
+  for gi in derivedLens.items {
+    match gi.kind {
+      case IFunc(gd) -> {
+        val visible = match gd.visibility { case Some(_) -> true; case None -> false }
+        val isGen = match gd.generics { case Some(_) -> true; case None -> false }
+        val hasBody = match gd.body { case Some(_) -> true; case None -> false }
+        if visible and isGen and hasBody {
+          opts.genericItemsOut.add(gi)
+        }
+      }
+      case _ -> ()
+    }
+  }
   val monoRes0 = monoFileWithLambdaTypes(
     derivedLens,
     monoGenFuncs,

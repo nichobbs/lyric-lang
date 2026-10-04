@@ -572,6 +572,30 @@ func typedInitBlock(ty: in TypeExpr, init: in Expr, sp: in Span): Block {
   Block(statements = stmts, span = sp)
 }
 
+/// `file` with `generics` (visible generic functions, as they stood before
+/// monomorphisation) appended, for codegen's own instantiation at a
+/// cross-package call.
+func withGenericItems(file: in SourceFile, generics: in List[Item]): SourceFile {
+  if generics.count == 0 {
+    return file
+  }
+  val items: List[Item] = newList()
+  for it in file.items {
+    items.add(it)
+  }
+  for g in generics {
+    items.add(g)
+  }
+  SourceFile(
+    moduleDoc = file.moduleDoc,
+    fileAnnotations = file.fileAnnotations,
+    packageDecl = file.packageDecl,
+    imports = file.imports,
+    items = items,
+    span = file.span
+  )
+}
+
 // Native stores a module-level `val` with a non-literal initializer in a static
 // global that start-up code fills in (`Lyric.LlvmCodegen.loadModuleGlobal`).
 // That initializer becomes a function, appended here BEFORE type check and
@@ -874,6 +898,7 @@ pub func compileToNativeWithShape(
     checkedSourceOut = optsCheckedOut,
     memberRecvClassesOut = optsRecvOut,
     methodCallAritiesOut = optsCallArities,
+    genericItemsOut = newList(),
     nativeIntrinsics = true
   )
   val userFile = match pipeMiddleEnd(userFile0, importedPkgs, noDeriveImports, noImportedGenFuncs, pipeInterfaceDecls(importedItemsForMono), pipeRecordDecls(importedItemsForMono), noTemplates, opts, None) {
@@ -1291,6 +1316,7 @@ pub func compileProjectToNativeWithShape(
   val ownFiles: List[SourceFile] = newList()
   // Each own file's `methodCallAritiesOut` (#7828), parallel to `ownFiles`.
   val ownCallArities: List[Map[String, Int]] = newList()
+  val noImportedGenFuncs: List[FunctionDecl] = newList()
   val noDeriveImports: List[Item] = newList()
   val noTemplates: Map[String, Weaver.CollectedTemplate] = newMap()
   val importedItemsForMono = flattenImportedItems(importedPkgs)
@@ -1308,6 +1334,7 @@ pub func compileProjectToNativeWithShape(
     val optsCheckedOut: List[SourceFile] = newList()
     val optsRecvOut: Map[String, String] = newMap()
     val optsCallArities: Map[String, Int] = newMap()
+    val optsGenericItems: List[Item] = newList()
     val opts = MiddleEndOptions(
       tcFatal = true,
       tcReport = false,
@@ -1320,26 +1347,17 @@ pub func compileProjectToNativeWithShape(
       checkedSourceOut = optsCheckedOut,
       memberRecvClassesOut = optsRecvOut,
       methodCallAritiesOut = optsCallArities,
+      genericItemsOut = optsGenericItems,
       ioForbiddenReason = if mei < packages.count { packages[mei].ioForbiddenReason } else { "" },
       nativeIntrinsics = true
     )
-    // The project's other packages' generic functions, so a call to one
-    // specialises in the caller (a package's own generics are erased from its
-    // output once they are specialised, leaving nothing for codegen to
-    // instantiate on a cross-package call).
-    val siblingGenFuncs: List[FunctionDecl] = newList()
-    var sgi = 0
-    while sgi < ownFiles0.count {
-      if sgi != mei {
-        pipeAddGenericFuncs(ownFiles0[sgi].items, dottedPath(ownFiles0[sgi].packageDecl.path), false, false, siblingGenFuncs)
-      }
-      sgi = sgi + 1
-    }
-    val checked = match pipeMiddleEnd(ownFiles0[mei], importedPkgs, noDeriveImports, siblingGenFuncs, importedInterfaceDecls, importedRecordDecls, noTemplates, opts, None) {
+    val checked = match pipeMiddleEnd(ownFiles0[mei], importedPkgs, noDeriveImports, noImportedGenFuncs, importedInterfaceDecls, importedRecordDecls, noTemplates, opts, None) {
       case Some(f) -> f
       case None -> return false
     }
-    ownFiles.add(checked)
+    // Mono erased the package's visible generic functions; put them back so
+    // codegen can instantiate them for a call from another package.
+    ownFiles.add(withGenericItems(checked, optsGenericItems))
     ownCallArities.add(optsCallArities)
     mei = mei + 1
   }
