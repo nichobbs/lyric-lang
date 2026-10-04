@@ -4692,6 +4692,23 @@ func lowerCallEx(
         }
         return constructMap(ctx, insns, kTy, vTy)
       }
+      val explicitTes: List[TypeExpr] = newList()
+      var allTypes = true
+      for ta in targs {
+        match ta {
+          case TAType(inner) -> explicitTes.add(inner)
+          case TAValue(_) -> {
+            allTypes = false
+          }
+        }
+      }
+      if allTypes and tname.length > 0 {
+        match tryLowerExplicitGenericCall(ctx, insns, tname, explicitTes, args, line, wantTask, retWant) {
+          case Some(v) -> return v
+          case None -> {
+          }
+        }
+      }
     }
     case EIndex(ir, idxs) -> {
       // `newList[Long]()` parses as a call on an index expression, not
@@ -4715,6 +4732,17 @@ func lowerCallEx(
         val kTy = typeToN(ctx, exprAsTypeExpr(idxs[0]))
         val vTy = typeToN(ctx, exprAsTypeExpr(idxs[1]))
         return constructMap(ctx, insns, kTy, vTy)
+      }
+      if iname.length > 0 {
+        val idxTes: List[TypeExpr] = newList()
+        for ix in idxs {
+          idxTes.add(exprAsTypeExpr(ix))
+        }
+        match tryLowerExplicitGenericCall(ctx, insns, iname, idxTes, args, line, wantTask, retWant) {
+          case Some(v) -> return v
+          case None -> {
+          }
+        }
       }
     }
     case _ -> {
@@ -10137,6 +10165,53 @@ func unifyTyArg(
   }
 }
 
+func copyStrings(xs: in List[String]): List[String] {
+  val copy: List[String] = newList()
+  for x in xs {
+    copy.add(x)
+  }
+  copy
+}
+
+func copyNTypes(xs: in List[NType]): List[NType] {
+  val copy: List[NType] = newList()
+  for x in xs {
+    copy.add(x)
+  }
+  copy
+}
+
+/// `name[T1, T2](args)` where `name` is a generic function: the type
+/// arguments bind its type parameters in declaration order.
+func tryLowerExplicitGenericCall(
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  name: in String,
+  targTys: in List[TypeExpr],
+  args: in List[CallArg],
+  line: in Int,
+  wantTask: in Bool,
+  retWant: in Option[NType],
+): Option[NVal] {
+  val key = name + "/" + args.count.toString()
+  val selfKey = ctx.curPkg[0] + "." + key
+  var useKey = ""
+  if ctx.genericFnDefs.containsKey(selfKey) {
+    useKey = selfKey
+  } else if ctx.genericFnDefs.containsKey(key) {
+    useKey = key
+  }
+  if useKey.length == 0 {
+    return None
+  }
+  val tys: List[NType] = newList()
+  for te in targTys {
+    tys.add(typeToN(ctx, te))
+  }
+  val noPre: List[NVal] = newList()
+  Some(value = lowerGenericFnCallWith(ctx, insns, useKey, noPre, args, line, wantTask, retWant, tys))
+}
+
 /// Call a generic function: map arguments to parameters, infer the
 /// type-argument tuple from the argument types, instantiate the
 /// function (lowered once per tuple, cached), and emit the call.
@@ -10154,13 +10229,19 @@ func isLambdaExpr(e: in Expr): Bool {
 /// `pi` (lambda placeholders, typed `NVoid`, bind nothing). None when a type
 /// parameter the parameter mentions is still unbound.
 func lambdaParamWant(
-  ctx: in Ctx, fd: in FunctionDecl, pi: in Int, rawVals: in List[NVal], paramNames: in List[String]
+  ctx: in Ctx,
+  fd: in FunctionDecl,
+  pi: in Int,
+  rawVals: in List[NVal],
+  paramNames: in List[String],
+  seedNames: in List[String],
+  seedTys: in List[NType],
 ): Option[NType] {
   if pi >= fd.params.count {
     return None
   }
-  val boundNames: List[String] = newList()
-  val boundTys: List[NType] = newList()
+  val boundNames: List[String] = copyStrings(seedNames)
+  val boundTys: List[NType] = copyNTypes(seedTys)
   var j = 0
   while j < rawVals.count and j < pi {
     match rawVals[j].ty {
@@ -10178,10 +10259,16 @@ func lambdaParamWant(
 /// As `lambdaParamWant`, but binding from every lowered argument (used for
 /// a lambda deferred past the arguments after it).
 func lambdaParamWantAt(
-  ctx: in Ctx, fd: in FunctionDecl, pi: in Int, rawVals: in List[NVal], paramNames: in List[String]
+  ctx: in Ctx,
+  fd: in FunctionDecl,
+  pi: in Int,
+  rawVals: in List[NVal],
+  paramNames: in List[String],
+  seedNames: in List[String],
+  seedTys: in List[NType],
 ): Option[NType] {
-  val boundNames: List[String] = newList()
-  val boundTys: List[NType] = newList()
+  val boundNames: List[String] = copyStrings(seedNames)
+  val boundTys: List[NType] = copyNTypes(seedTys)
   var j = 0
   while j < rawVals.count {
     match rawVals[j].ty {
@@ -10248,6 +10335,24 @@ func lowerGenericFnCall(
   wantTask: in Bool,
   retWant: in Option[NType],
 ): NVal {
+  val noExplicit: List[NType] = newList()
+  lowerGenericFnCallWith(ctx, insns, gkey, preVals, args, line, wantTask, retWant, noExplicit)
+}
+
+/// `lowerGenericFnCall` with the call's explicit type arguments
+/// (`stay[String, NoEffect](m)`): they bind the function's type parameters in
+/// declaration order before any argument or the expected type is consulted.
+func lowerGenericFnCallWith(
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  gkey: in String,
+  preVals: in List[NVal],
+  args: in List[CallArg],
+  line: in Int,
+  wantTask: in Bool,
+  retWant: in Option[NType],
+  explicitTys: in List[NType],
+): NVal {
   val fd = mustGetGenericFn(ctx, gkey)
   val pkg = match mapGet(ctx.genericFnPkg, gkey) { case Some(pk) -> pk; case None -> ctx.curPkg[0] }
   val nParams = fd.params.count
@@ -10291,6 +10396,23 @@ func lowerGenericFnCall(
   val deferredLambdas: List[Int] = newList()
   val deferredLambdaExprs: List[Expr] = newList()
   val fnTyParamNames = genericParamNamesOf(fd.generics)
+  val seedNames: List[String] = newList()
+  val seedTys: List[NType] = newList()
+  if explicitTys.count > 0 {
+    if explicitTys.count != fnTyParamNames.count {
+      panic(
+        "Lyric.LlvmCodegen: generic function '" + fd.name + "' takes " + fnTyParamNames.count.toString() +
+          " type argument(s) but the call passes " +
+          explicitTys.count.toString()
+      )
+    }
+    var sdi = 0
+    while sdi < explicitTys.count {
+      seedNames.add(fnTyParamNames[sdi])
+      seedTys.add(explicitTys[sdi])
+      sdi = sdi + 1
+    }
+  }
   var pi = 0
   while pi < nParams {
     if pi < preVals.count {
@@ -10326,7 +10448,7 @@ func lowerGenericFnCall(
         // it from the parameter type under the type arguments the earlier
         // arguments bind (`mapForEach(m, { k, v -> ... })`); only when a
         // later argument is needed is the lambda deferred past it (#7282).
-        match lambdaParamWant(ctx, fd, pi, rawVals, fnTyParamNames) {
+        match lambdaParamWant(ctx, fd, pi, rawVals, fnTyParamNames, seedNames, seedTys) {
           case Some(w) -> rawVals.add(lowerExprExpecting(ctx, insns, ax, w))
           case None -> {
             deferredLambdas.add(pi)
@@ -10356,7 +10478,7 @@ func lowerGenericFnCall(
     while pk < pending.count {
       val di = pending[pk]
       val dpi = deferredLambdas[di]
-      match lambdaParamWantAt(ctx, fd, dpi, rawVals, fnTyParamNames) {
+      match lambdaParamWantAt(ctx, fd, dpi, rawVals, fnTyParamNames, seedNames, seedTys) {
         case Some(w) -> {
           rawVals[dpi] = lowerExprExpecting(ctx, insns, deferredLambdaExprs[di], w)
           progressed = true
@@ -10383,8 +10505,8 @@ func lowerGenericFnCall(
   }
   // Infer type args.
   val paramNames = fnTyParamNames
-  val boundNames: List[String] = newList()
-  val boundTys: List[NType] = newList()
+  val boundNames: List[String] = copyStrings(seedNames)
+  val boundTys: List[NType] = copyNTypes(seedTys)
   var pi2 = 0
   while pi2 < nParams {
     unifyTyArg(ctx, fd.params[pi2].ty, rawVals[pi2].ty, paramNames, boundNames, boundTys)
