@@ -1735,3 +1735,111 @@ test "an if whose branches agree is no tautology unless they are (#8102)" {
     case None -> ()
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A call's own facts never prove its own precondition; calls the verifier
+// cannot follow fail closed (#8102 review).
+// ─────────────────────────────────────────────────────────────────────────────
+func halfDecl(): String {
+  "func half(x: in Int): Int\n  requires: x >= 0\n  ensures: result >= 0 and result <= x\n{\n  0\n}\n"
+}
+
+func assertNotProved(body: in String, label: in String): Unit {
+  val s = provePkg(body)
+  assertTrue(summaryHasFailure(s) or summaryHasErrorDiag(s), label + ": not proved")
+}
+
+test "a loop condition's facts do not prove its own precondition (#8102)" {
+  assertRefuted(
+    halfDecl() + "func f(n: in Int): Int\n{\n  var i = 0\n  while half(n) > i\n    invariant: i >= 0\n  {\n" +
+      "    i = i + 1\n  }\n  i\n}\n",
+    "condition-precondition-from-its-own-postcondition"
+  )
+  assertDischarged(
+    halfDecl() + "func f(n: in Int): Int\n  requires: n >= 0\n{\n  var i = 0\n  while half(n) > i\n" +
+      "    invariant: i >= 0\n  {\n    i = i + 1\n  }\n  i\n}\n",
+    "condition-precondition-from-the-caller"
+  )
+}
+
+test "an invariant's or postcondition's facts do not prove its own preconditions (#8102)" {
+  assertRefuted(
+    halfDecl() + "func f(): Int\n{\n  var i = 5\n  while i > 0\n    invariant: half(i - 5) >= 0 or true\n  {\n" +
+      "    i = i - 1\n  }\n  i\n}\n",
+    "invariant-circular"
+  )
+  assertDischarged(
+    halfDecl() + "func f(): Int\n{\n  var i = 5\n  while i > 0\n    invariant: i >= 0 and i <= 5\n" +
+      "    invariant: half(5 - i) >= 0\n  {\n    i = i - 1\n  }\n  i\n}\n",
+    "invariant-precondition-from-the-invariant"
+  )
+  assertRefuted(halfDecl() + "func g(x: in Int): Bool\n  ensures: half(x) >= 0\n{\n  true\n}\n", "ensures-circular")
+  assertDischarged(
+    halfDecl() + "func g(x: in Int): Bool\n  requires: x >= 0\n  ensures: half(x) >= 0\n{\n  true\n}\n",
+    "ensures-precondition-met"
+  )
+  assertRefuted(halfDecl() + "func g(x: in Int): Int\n{\n  assert(half(x) >= 0)\n  0\n}\n", "assert-circular")
+}
+
+test "two out or inout parameters bound to one variable fail closed (#8102)" {
+  val f = "func f(x: inout Int, y: inout Int): Unit\n  ensures: y == old(y)\n{\n  x = x + 1\n}\n"
+  assertUntranslatable(f + "func g(): Int\n{\n  var a = 5\n  f(a, a)\n  a\n}\n", "aliased")
+  val s = provePkg(f + "func g(): Int\n{\n  var a = 5\n  var b = 6\n  f(a, b)\n  a\n}\n")
+  assertTrue(not summaryHasDiagCode(s, "V0033"), "distinct: no V0033")
+}
+
+test "a parameter default sees no other parameter (#8102)" {
+  assertUntranslatable(
+    "val a: Int = 7\nfunc f(a: in Int, b: in Int = a): Int\n  ensures: result == b\n{\n  b\n}\n" +
+      "func g(): Int\n  ensures: result == 1\n{\n  f(1)\n}\n",
+    "default-names-a-module-value"
+  )
+  assertDischarged(
+    "func f(a: in Int, b: in Int = 3): Int\n  ensures: result == b\n{\n  b\n}\n" +
+      "func g(): Int\n  ensures: result == 3\n{\n  f(1)\n}\n",
+    "literal-default"
+  )
+}
+
+test "a call by qualified path or with type arguments changes its out arguments (#8102)" {
+  val inc = "func inc(x: inout Int): Unit\n{\n  x = x + 1\n}\n"
+  assertNotProved(inc + "func g(): Int\n  ensures: result == 5\n{\n  var a = 5\n  U.inc(a)\n  a\n}\n", "qualified")
+  assertNotProved(
+    "func inc[T](x: inout Int, t: in T): Unit\n{\n  x = x + 1\n}\n" +
+      "func g(): Int\n  ensures: result == 5\n{\n  var a = 5\n  inc[Int](a, 0)\n  a\n}\n",
+    "type-arguments"
+  )
+  val pos = "func pos[T](x: in Int, t: in T): Int\n  requires: x > 0\n{\n  x\n}\n"
+  assertRefuted(pos + "func g(): Int\n{\n  pos[Int](0, 1)\n}\n", "type-arguments-precondition")
+  assertNotProved("func g(): Int\n  ensures: result == 5\n{\n  var a = 5\n  unknownCall(a)\n  a\n}\n", "unresolved")
+  assertDischarged(
+    "func g(): Int\n  ensures: result == 5\n{\n  val a = 5\n  unknownCall(a)\n  a\n}\n",
+    "unresolved-val"
+  )
+  val pos = "func pos(x: in Int): Int\n  requires: x > 0\n{\n  x\n}\n"
+  assertRefuted(pos + "func g(): Int\n{\n  U.pos(0)\n}\n", "qualified-precondition")
+  assertDischarged(pos + "func g(): Int\n{\n  U.pos(3)\n}\n", "qualified-precondition-met")
+}
+
+test "a protected entry calling its type's own member fails closed (#8102)" {
+  assertUntranslatable(
+    "protected type C {\n  var n: Int\n  invariant: n >= 0\n  func bump(): Unit {\n    n = n + 1\n  }\n" +
+      "  entry same(): Unit\n    ensures: n == old(n)\n  {\n    bump()\n  }\n}\n",
+    "member-call"
+  )
+}
+
+test "an expression statement keeps its obligations (#8102)" {
+  val pos = "func pos(x: in Int): Int\n  requires: x > 0\n{\n  x\n}\n"
+  assertRefuted(pos + "func g(): Int\n{\n  (pos(0))\n  1\n}\n", "parenthesized-call")
+  assertRefuted(pos + "func g(): Int\n{\n  pos(0) == 1\n  1\n}\n", "comparison")
+  assertDischarged(pos + "func g(): Int\n{\n  (pos(1))\n  1\n}\n", "met")
+}
+
+test "old of an expression is its value on entry (#8102)" {
+  assertRefuted("func bump(x: inout Int): Unit\n  ensures: x == old(x + 0)\n{\n  x = x + 1\n}\n", "old-expression")
+  assertDischarged(
+    "func bump(x: inout Int): Unit\n  ensures: x == old(x + 0) + 1\n{\n  x = x + 1\n}\n",
+    "old-expression-met"
+  )
+}
