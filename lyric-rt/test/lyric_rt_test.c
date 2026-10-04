@@ -3266,6 +3266,8 @@ static void test_thread_ref_slot(void) {
     lyric_thread_ref_set(a);
     CHECK(lyric_thread_ref_has() == 1);
     CHECK(lyric_thread_ref_get() == a);
+    CHECK(atomic_load(&a->rc) == 3);
+    lyric_release(a);
     CHECK(atomic_load(&a->rc) == 2);
     lyric_thread_ref_set(a);
     CHECK(atomic_load(&a->rc) == 2);

@@ -2805,7 +2805,11 @@ func lowerExpr(ctx: in Ctx, insns: in List[NInsn], expr: in Expr): NVal {
     // `self` in a record-method body is the desugared receiver param.
     case ESelf -> loadLocal(ctx, insns, "self")
     case ELambda(_, _) -> panic(
-      "Lyric.LlvmCodegen: a lambda here has no expected function type; bind it to an annotated val, a typed parameter, or a declared return type"
+      "Lyric.LlvmCodegen: a lambda here has no expected function type; bind it to an annotated val, a typed parameter, or a declared return type (in " +
+        ctx.curPkg[0] +
+        " at line " +
+        expr.span.startPos.line.toString() +
+        ")"
     )
     case ETuple(exprs) -> {
       val elems: List[NVal] = newList()

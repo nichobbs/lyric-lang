@@ -176,6 +176,7 @@ void lyric_thread_ref_set(void* obj) {
 }
 
 void* lyric_thread_ref_get(void) {
+    if (lyric_tl_ref != NULL) lyric_retain(lyric_tl_ref);
     return lyric_tl_ref;
 }
 

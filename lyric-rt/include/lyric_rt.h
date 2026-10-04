@@ -422,7 +422,7 @@ void lyric_global_unlock(void);
 
 /* A per-thread slot holding one retained Lyric object.  Set
  * retains the new object and releases the previous one (NULL clears it); get
- * returns a borrow that stays valid until the same thread sets the slot again.
+ * returns the object with a new reference the caller owns (NULL when empty).
  * `has` is 1 when an object is held.  Std.Task's ambient cancellation token. */
 void lyric_thread_ref_set(void* obj);
 void* lyric_thread_ref_get(void);
