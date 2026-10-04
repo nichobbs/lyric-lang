@@ -3030,7 +3030,24 @@ pub func buildProjectFromManifest(
   }
 
   if isNativeTarget and Str.startsWith(effTriple, "wasm32") {
-    val npmProblems = checkNpmShims(manifest, mfDir)
+    if not noRestore and npmRestoreNeeded(manifest, mfDir) {
+      Console.println("build: installing NPM packages ([npm] changed or not installed) ...")
+      val npmRc = restoreNpmPackages(manifest, mfDir)
+      if npmRc != 0 {
+        printErr("build: NPM restore failed")
+        return npmRc
+      }
+    }
+    val npmSources: List[String] = newList()
+    for pkg in pkgs {
+      for src in pkg.sources {
+        npmSources.add(src)
+      }
+    }
+    val npmProblems = npmUndeclaredImports(manifest.npm, npmSources)
+    for p in checkNpmShims(manifest, mfDir) {
+      npmProblems.add(p)
+    }
     if npmProblems.count > 0 {
       for p in npmProblems {
         printErr(p)

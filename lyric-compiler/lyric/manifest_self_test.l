@@ -687,6 +687,22 @@ func testNpmTable(): Unit {
     case None -> ()
     case Some(_) -> assertTrue(false, "npm-table: absent table must stay None")
   }
+  match m.npm {
+    case Some(n) -> assertEqual(n.manager, "npm", "npm-table: npm is the default manager")
+    case None -> ()
+  }
+  for mgr in ["npm", "pnpm", "yarn"] {
+    match parseOk(head + "[npm]\n\"zod\" = \"^3\"\n\n[npm.options]\nmanager = \"" + mgr + "\"\n").npm {
+      case Some(n) -> assertEqual(n.manager, mgr, "npm-table: manager " + mgr)
+      case None -> assertTrue(false, "npm-table: expected an [npm] section for manager " + mgr)
+    }
+  }
+  for bad in ["manager = \"bun\"", "manager = 3"] {
+    match parseManifest(head + "[npm]\n\"zod\" = \"^3\"\n\n[npm.options]\n" + bad + "\n", "lyric.toml") {
+      case Ok(_) -> assertTrue(false, "npm-table: expected a rejection of " + bad)
+      case Err(_) -> ()
+    }
+  }
   assertEqual(npmPackageIdent("7zip"), "N7zip", "npm-ident: leading digit")
   assertEqual(npmPackageIdent("left_pad.js"), "LeftPadJs", "npm-ident: separators")
   val bads = [
