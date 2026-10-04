@@ -2125,7 +2125,6 @@ func renderImportWrapper(pkgs: in List[ComponentPkg], h: in HostImport, i: in In
   Str.joinList("\n", l)
 }
 
-/// The C file for the exporting packages (see the module header).
 /// Whether any exported function of `pkgs` is an `async func`.
 pub func componentHasAsync(pkgs: in List[ComponentPkg]): Bool {
   for p in pkgs {
@@ -2138,6 +2137,7 @@ pub func componentHasAsync(pkgs: in List[ComponentPkg]): Bool {
   false
 }
 
+/// The C file for the exporting packages (see the module header).
 pub func renderCabi(pkgs: in List[ComponentPkg], version: in String): String {
   val buf: List[String] = newList()
   buf.add(cabiRuntime(componentHasAsync(pkgs)))
