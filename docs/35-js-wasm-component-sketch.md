@@ -1,6 +1,7 @@
 # 35 — WebAssembly Target and JS Ecosystem Integration (sketch)
 
-**Status:** Specced in D-progress-1028; sketch rewritten 2026-10-01 around the native (LLVM)
+**Status:** Specced in D-progress-1028 and implemented through W5 (D-progress-1029 to 1038;
+remaining work tracked in #8117 and #8118); sketch rewritten 2026-10-01 around the native (LLVM)
 backend. The original revision assumed a .NET AOT `wasi-wasm` route; that
 premise is withdrawn (§3). Open questions that still block implementation are
 in §13. Backed by D-progress-1028 (route, phase order (§12) and the resolved

@@ -689,7 +689,7 @@ workaround in user code because Lyric does not advertise them in v1.0.
 | `pub aspect` template libraries | v1.2 | Q-aspectlib-005'; `docs/27` |
 | `Lyric.Verifier` cross-call / quantifier discharge | Phase 4 proof system; F# `Lyric.Verifier` is the v1.0 verifier | `docs/15-phase-4-proof-plan.md` |
 | JUnit 5 full `LyricTestEngine` | B127+ | D-progress-206; `docs/32` |
-| WASM target (native backend to `wasm32`; module + component shapes) | Specced in D-progress-1028 (native backend to wasm32); Q-JS-002/004/006-009 open | `docs/35-js-wasm-component-sketch.md` |
+| WASM target (native backend to `wasm32`; module + component shapes) | Shipped through W5 (module and component shapes, `[wasm]`, `[npm]` restore and NPM imports; D-progress-1029-1038); remaining work tracked in #8117 and #8118; Q-JS-002/006-009 open | `docs/35-js-wasm-component-sketch.md` |
 | Package generics (module-level parameterisation) | Phase 5+ | `docs/04-out-of-scope.md` |
 | Effect system beyond `async` | Post-v1.0 | `docs/04-out-of-scope.md` |
 | REPL | Post-v1.0 | `docs/04-out-of-scope.md` |

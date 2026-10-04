@@ -292,89 +292,9 @@ available on WASI. A program that uses them still builds. Spawning a process or 
 a connection returns the `Err` the library reports for any failed spawn or
 connect; `Std.HttpServer.startListener` panics on its failed bind.
 
-To call a program from JavaScript (a browser, node, Deno), add `--shape
-module`: `lyric build hello.l --target native --triple wasm32-wasi --shape
-module` writes `hello.wasm`, `hello.js` and `hello.d.ts`. Every `pub func` whose
-parameters and result are `Int`, `Long`, `Bool`, `Float`, `Double`, `String` or
-`Unit` becomes a typed JavaScript function (a `Long` is a `bigint`):
-
-```js
-import { instantiate } from './hello.js';
-const lyric = await instantiate();
-lyric.add(2, 40);          // 42
-lyric.greet('wörld');      // a String in, a String out
-lyric.run(['arg']);        // runs `main`, returns its exit code
-await lyric.compute(1);  // an `async func` export returns a Promise
-```
-
-To call JavaScript from Lyric, declare a host import with `@wasmImport` and pass
-the function when you instantiate:
-
-```lyric
-@wasmImport("ui")
-extern func showMessage(text: String): Unit = "show"
-```
-
-```js
-const lyric = await instantiate(undefined, {
-  imports: { ui: { show: (text) => console.log(text) } },
-});
-```
-
-Instantiation fails with a `missing host imports` error if a declared import is
-not supplied, and the generated `.d.ts` types the `imports` option. An `async func` export returns a Promise that resolves after its `Std.Time.sleepMillis`
-calls, driven by the host's timers rather than by blocking. A `pub func` that takes or
-returns anything else (a record, a list) is left out
-with a `W0040` warning. A panic inside an export throws a
-`WebAssembly.RuntimeError`; the instance should be discarded afterwards.
-
-To publish a program as a WebAssembly component (callable from `wasmtime`, or from
-JavaScript through `jco transpile`), use `--shape component` instead: `lyric build
-hello.l --target native --triple wasm32-wasi --shape component` writes
-`hello.wasm` (the component) and `hello.wit` (the interface generated from your
-`pub func`s, one WIT interface per package). It needs `wasm-tools` (`$WASM_TOOLS`
-or on `PATH`) and the WASI preview1 reactor adapter (`$LYRIC_WASI_ADAPTER`); a
-missing tool is error `N0016`. Today the exports may use `Int`, `Long`, `Bool`,
-`Byte`, `Float`, `Double`, `String` and `Unit`, plus `Option`, `Result`, `List` and your
-own records, enums and unions of one payload field (nested freely), which become
-WIT `option`, `result`, `list`, `record`, `enum` and `variant`. A `@wasmImport` `extern func` becomes a WIT import
-(`Int`, `Long`, `Float`, `Double` and `String` signatures), so the same host-call
-syntax works in both shapes. Async exports are not part of the component shape yet.
-
-A `[wasm]` table in `lyric.toml` sets the component's WIT package `version` (default: your
-`[package]` version), the WIT `world` name, and the shadow `stack` size in bytes (both wasm32
-shapes):
-
-```toml
-[wasm]
-version = "1.2.0"
-world = "my-world"
-stack = 262144
-```
-
-An `[npm]` table declares NPM packages for the wasm32 targets, the way `[nuget]` does for .NET:
-
-```toml
-[npm]
-"node-fetch" = "^3"
-"@aws-sdk/client-s3" = "^3.600"
-```
-
-`lyric restore` installs them under `target/npm/node_modules/` (install scripts are not run) and
-writes a shim scaffold per package to `_extern_npm/`, such as `_extern_npm/node-fetch.l`, to
-which you add the declarations to. A declaration is a host import from the package:
-
-```lyric
-@wasmImport("npm:node-fetch")
-extern func fetchText(url: String): String = "default"
-```
-
-In a `--shape module` build the generated JS glue imports the package for you (pass
-`imports["npm:node-fetch"]` to `instantiate` to substitute your own). A wasm32 project build
-checks that every `[npm]` package has a shim and that each shim import names a real export of the
-installed package. In a `--shape component` build the import becomes the WIT interface
-`npm-node-fetch`, which you satisfy with
-`jco transpile --map lyric:<package>/npm-node-fetch@<version>=node-fetch`.
+To call a program from JavaScript add `--shape module`; to publish it as a WebAssembly
+component add `--shape component`. Both, host imports, the `[wasm]` and `[npm]` manifest
+tables and the NPM shim workflow are covered in Chapter 32.
 
 Memory on this target is managed by automatic reference counting (ARC) —
 there is no garbage collector. Reference cycles are not collected; break

@@ -39,7 +39,7 @@ The book is organised progressively. Each chapter builds on the previous ones. I
 
 **Part III — Safety by Construction** is where Lyric's distinctive character emerges: error handling via `Result`, contracts, and opaque types whose invariants are structurally enforced.
 
-**Part IV — Real Programs** covers the features you need to build something substantial: async/await, structured concurrency, compile-time dependency injection, the standard library, and FFI.
+**Part IV — Real Programs** covers the features you need to build something substantial: async/await, structured concurrency, compile-time dependency injection, the standard library, and FFI. Chapters 14 and 32 cover the JVM and WebAssembly targets.
 
 **Part V — Testing and Quality** shows how testing works in Lyric — unit tests, property-based tests, snapshot tests, and how `@stubbable` interfaces replace mocking frameworks.
 
