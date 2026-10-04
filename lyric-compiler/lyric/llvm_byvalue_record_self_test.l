@@ -688,6 +688,8 @@ test "a module-level val holding a by-value record is rejected like any non-lite
   )
 }
 
+// With no target named, nothing is lowered; on a real build the triple is
+// known, so an aggregate the lowering never covers (an inline union) stops it.
 test "N0010 also covers callback types and return positions, and stops a real native build" {
   val cb = "package T\n" + "record Pt {\n  x: Int\n  y: Int\n}\n" +
     "extern func onEach(f: (Pt) -> Int): Int = \"on_each\"\n" +
@@ -699,7 +701,7 @@ test "N0010 also covers callback types and return positions, and stops a real na
     units.add(unitOfFile("T", parseOrPanic(src)))
     val diags = nativeByValueExternDiagnostics(units)
     assertEqualInt(diags.count, 1, "one diagnostic")
-    assertTrue(Str.contains(diags[0].message, "#8009"), "the message names the tracking issue")
+    assertTrue(Str.contains(diags[0].message, "C struct ABI is not lowered"), "the message says why")
   }
   val stdlib = findStdlibSourcesNative()
   val stem = Path.join(
@@ -707,7 +709,10 @@ test "N0010 also covers callback types and return positions, and stops a real na
     "n0009_" + Uuid.uuidToString(Uuid.newUuid())
   )
   val _ = File.createDir(Path.dirname(stem))
-  val built = compileToNativeWithFlags(ret, stem, stdlib, "", "0", newList(), newList(), "", true)
+  val uni = "package T\n" + "union Pick {\n  case A(x: Int)\n  case B\n}\n" +
+    "extern func take(p: Pick): Int = \"take_pick\"\n" +
+    "func main(): Int {\n  0\n}\n"
+  val built = compileToNativeWithFlags(uni, stem, stdlib, "", "0", newList(), newList(), "", true)
   assertTrue(not built, "linkAndEmitNative reports N0010 and aborts the build")
   assertTrue(not File.fileExists(stem), "no binary is written")
 }

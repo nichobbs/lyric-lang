@@ -156,8 +156,12 @@ are scalars, enums, distinct types or other such records is an LLVM struct value
 `Task` slots. Opaque types and generic instantiations over reference types
 keep the heap form. An interface implementer stays a value too: an upcast
 copies it into a box the interface value owns, and its vtable slots are thunks
-that read it back out (#8010). An `extern func` naming a by-value record,
-including in a callback type, is rejected (`N0010`; the C ABI is #8009).
+that read it back out (#8010). An `extern func` taking or returning a by-value
+record, directly or in a callback type, follows the platform C ABI on x86-64,
+AArch64 and wasm32 (#8009): the record is coerced into registers, passed as
+`byval` memory, or returned through `sret`, as clang lowers the same C
+prototype, so `WGPUColor` or `SDL_FRect` cross by value. An inline array or
+union in an `extern func` signature is still `N0010`.
 
 Inline **unions** shipped too (progress entry `2026-10-02-native-inline-unions`):
 a union whose every case payload field is by-value (scalars, enums, distinct
@@ -191,7 +195,7 @@ escaping, is copied; immutable places are never copied), `.length`, `for`,
 three targets. On native an array of by-value elements is
 an inline `[N x T]` with no allocation and a by-value record may hold one; any
 other element type is a heap array. Value-generic `N` (D167 item 6) and the C
-ABI for an array in an `extern func` signature (N0010, #8009) are open.
+an array in an `extern func` signature (N0010: C passes no array by value; pass a `NativePtr` to its first element) are open.
 
 ### 4.4 `buffer[T]`: contiguous, mutable, value semantics
 

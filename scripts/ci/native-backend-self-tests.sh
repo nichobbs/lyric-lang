@@ -54,6 +54,7 @@ for t in \
   lyric-compiler/lyric/llvm_inline_union_self_test.l \
   lyric-compiler/lyric/llvm_fixed_array_self_test.l \
   lyric-compiler/lyric/llvm_ffi_self_test.l \
+  lyric-compiler/lyric/llvm_c_abi_self_test.l \
   lyric-compiler/lyric/llvm_collections_self_test.l \
   lyric-compiler/lyric/llvm_stdlib_self_test.l \
   lyric-compiler/lyric/llvm_tls_self_test.l \

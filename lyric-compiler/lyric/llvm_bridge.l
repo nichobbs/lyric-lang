@@ -1602,16 +1602,16 @@ func linkAndEmitNative(
   if DiagUtil.diagReportAndAbort(nativeGenericProtectedDiagnostics(units)) {
     return false
   }
-  // docs/67 §4.2: a by-value record has no C struct ABI yet.
-  if DiagUtil.diagReportAndAbort(nativeByValueExternDiagnostics(units)) {
-    return false
-  }
-
   // Resolve the target triple before codegen (the datalayout depends
-  // on it).
+  // on it, as does how a by-value record crosses the C boundary).
   var effTriple = normalizeNativeTriple(triple)
   if effTriple.length == 0 {
     effTriple = detectHostTriple()
+  }
+  // docs/67 §4.2: a by-value aggregate the target's C ABI lowering does not
+  // cover (#8009).
+  if DiagUtil.diagReportAndAbort(nativeByValueExternDiagnostics(units, effTriple)) {
+    return false
   }
   val isWasm = isWasmTriple(effTriple)
   val spec = parseShapeSpec(shape)
