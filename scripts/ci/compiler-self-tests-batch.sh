@@ -118,6 +118,7 @@ for t in \
   lyric-compiler/lyric/cli_copydll_self_test.l \
   lyric-compiler/lyric/cli_publish_self_test.l \
   lyric-compiler/lyric/verifier_self_test.l \
+  lyric-compiler/lyric/verifier_records_self_test.l \
   lyric-compiler/lyric/return_list_literal_self_test.l \
   lyric-compiler/lyric/closure_unannotated_result_self_test.l \
   lyric-compiler/lyric/lambda_field_ctor_arg_self_test.l \
