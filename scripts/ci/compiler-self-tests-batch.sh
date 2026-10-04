@@ -87,6 +87,7 @@ for t in \
   lyric-compiler/lyric/async_for_loop_suspend_self_test.l \
   lyric-compiler/lyric/async_match_suspend_self_test.l \
   lyric-compiler/lyric/method_default_args_self_test.l \
+  lyric-compiler/lyric/method_default_widening_self_test.l \
   lyric-compiler/lyric/erased_receiver_narrowing_self_test.l \
   lyric-compiler/lyric/erased_receiver_narrowing_dotnet_self_test.l \
   lyric-compiler/lyric/unannotated_list_result_self_test.l \

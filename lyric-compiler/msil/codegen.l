@@ -5936,6 +5936,20 @@ func listLiteralElemTypeMsil(fctx: in FuncCtx, e: in Expr): MsilType {
     }
     case EParen(inner) -> listLiteralElemTypeMsil(fctx, inner)
     case EPrefix(op, inner) -> match op { case PreNeg -> listLiteralElemTypeMsil(fctx, inner); case _ -> MObject }
+    // A string interpolation, and a `+` with a `String` operand, are `String`
+    // whatever the other parts are: `[pkg + "." + name, name]` is a
+    // `slice[String]`, and its loop variable must be a `string` local.
+    case EInterpolated(_) -> MString
+    case EBinop(op, lhs, rhs) -> match op {
+      case BAdd -> match listLiteralElemTypeMsil(fctx, lhs) {
+        case MString -> MString
+        case _ -> match listLiteralElemTypeMsil(fctx, rhs) {
+          case MString -> MString
+          case _ -> MObject
+        }
+      }
+      case _ -> MObject
+    }
     case _ -> MObject
   }
 }
@@ -34367,6 +34381,16 @@ func typeExprToMsilG(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in String, g
     // (which already special-cases an `MTypeVar` element, e.g. `!0[]` on the
     // stdlib `List<T>.ToArray()`).
     case TSlice(elem) -> MArray(elemTy = sliceElemMsilG(cctx, elem, pkgName, generics))
+    // `array[N, T]` is a `List[T]` (D167).  A restored generic record's field
+    // is spelled from its contract, unlowered, and its element may be the
+    // record's own parameter: `List<!0>`, as the dependency declared it (#8042).
+    case TArray(_, arrElem) -> {
+      val listSegs: List[String] = newList()
+      listSegs.add("List")
+      val listArgs: List[TypeArg] = newList()
+      listArgs.add(TAType(ty = arrElem))
+      typeExprToMsilGApp(cctx, ModulePath(segments = listSegs, span = te.span), listArgs, pkgName, generics)
+    }
     // A tuple is `object` in every signature, but its tracked element types
     // decide the `castclass`/`unbox.any` each destructured element gets: an
     // element naming the enclosing type's own parameter must be its `!n`, not

@@ -155,6 +155,9 @@ record NFuncSig {
   // (no `_kernel_native/` declaration uses `out`/`inout`; enforced in
   // `buildSigs`).
   paramModes: List[ParamMode]
+  // Each parameter's default expression, lowered at a call that leaves the
+  // parameter out (#7985).  Always `None` for extern funcs and receivers.
+  paramDefaults: List[Option[Expr]]
   retTy: Option[TypeExpr]
   isExternSym: Bool
   // Async callee (stage B2): the define returns a LyricTask* (as i8*) and
@@ -216,6 +219,10 @@ record NIfaceInfo {
   methodRetTys: List[NType]
   methodRetIsSelf: List[Bool]
   methodParamIsSelf: List[List[Bool]]
+  // Each method's parameter names and defaults, binding a call's named and
+  // omitted arguments (#7985).
+  methodParamNames: List[List[String]]
+  methodParamDefaults: List[List[Option[Expr]]]
 }
 
 /// Registered (non-generic) union type: cases plus the payload area
@@ -327,6 +334,9 @@ record Ctx {
   mainPkg: String
   // Target pointer width in bytes (ptrBytesForTriple).
   ptrBytes: Int
+  /// The target triple, which decides how a by-value record crosses the C
+  /// boundary (#8009); empty when the caller named none.
+  abiTriple: String = ""
   tmpTicker: List[Int]
   labelTicker: List[Int]
   strTicker: List[Int]
@@ -590,6 +600,7 @@ func isCharTypeExpr(te: in TypeExpr): Bool {
   match te.kind {
     case TRef(path) -> path.segments.count == 1 and path.segments[0] == "Char"
     case TParen(inner) -> isCharTypeExpr(inner)
+    case TRefined(under, _) -> isCharTypeExpr(TypeExpr(kind = TRef(path = under), span = te.span))
     case _ -> false
   }
 }
@@ -748,6 +759,8 @@ pub func typeExprToNType(te: in TypeExpr): NType {
     // performs for every vtable slot (see D-progress-1016).
     case TSelf -> NPtr(pointee = NI8)
     case TParen(inner) -> typeExprToNType(inner)
+    // An inline range type (`Int range 0 ..= 3`) is its base type.
+    case TRefined(under, _) -> typeExprToNType(TypeExpr(kind = TRef(path = under), span = te.span))
     case TFunction(parameters, retTy) -> {
       // A raw C function-pointer type (N4.5): only meaningful in extern
       // func parameter positions, where a Lyric closure argument is
@@ -848,6 +861,7 @@ func typeToN(ctx: in Ctx, te: in TypeExpr): NType {
       }
     }
     case TParen(inner) -> typeToN(ctx, inner)
+    case TRefined(under, _) -> typeToN(ctx, TypeExpr(kind = TRef(path = under), span = te.span))
     case _ -> typeExprToNType(te)
   }
 }
@@ -926,6 +940,7 @@ func typeToNOpt(ctx: in Ctx, te: in TypeExpr): Option[NType] {
     }
     case TUnit -> Some(value = NVoid)
     case TParen(inner) -> typeToNOpt(ctx, inner)
+    case TRefined(under, _) -> typeToNOpt(ctx, TypeExpr(kind = TRef(path = under), span = te.span))
     case _ -> None
   }
 }
@@ -1649,6 +1664,40 @@ func paramTysOf(params: in List[Param]): List[TypeExpr] {
   tys
 }
 
+func paramDefaultsOf(params: in List[Param]): List[Option[Expr]] {
+  val ds: List[Option[Expr]] = newList()
+  for p in params {
+    ds.add(p.dflt)
+  }
+  ds
+}
+
+func noParamDefaults(n: in Int): List[Option[Expr]] {
+  val ds: List[Option[Expr]] = newList()
+  var i = 0
+  while i < n {
+    val none: Option[Expr] = None
+    ds.add(none)
+    i = i + 1
+  }
+  ds
+}
+
+/// The fewest arguments a call to `sig` may write: the parameters before the
+/// trailing run of defaulted ones.
+func requiredArgCount(sig: in NFuncSig): Int {
+  var n = sig.paramDefaults.count
+  while n > 0 {
+    match sig.paramDefaults[n - 1] {
+      case Some(_) -> {
+        n = n - 1
+      }
+      case None -> return n
+    }
+  }
+  n
+}
+
 func paramModesOf(params: in List[Param]): List[ParamMode] {
   val modes: List[ParamMode] = newList()
   var i = 0
@@ -1704,6 +1753,9 @@ func irNameFor(pkg: in String, name: in String, arity: in Int, overloaded: in Bo
 /// matching source scoping.
 func buildSigs(units: in List[CodegenUnit]): Map[String, NFuncSig] {
   val sigs: Map[String, NFuncSig] = newMap()
+  val defaulted: List[NFuncSig] = newList()
+  val defaultedKeys: List[String] = newList()
+  val defaultedBare: List[String] = newList()
   // Pass 1: count same-package name+arity groups to detect overloads.
   val nameCount: Map[String, Int] = newMap()
   var ui = 0
@@ -1746,12 +1798,16 @@ func buildSigs(units: in List[CodegenUnit]): Map[String, NFuncSig] {
         paramNames = paramNamesOf(fn.params),
         paramTys = paramTysOf(fn.params),
         paramModes = paramModesOf(fn.params),
+        paramDefaults = paramDefaultsOf(fn.params),
         retTy = fn.ret,
         isExternSym = false,
         isAsync = fn.isAsync
       )
       addSig(sigs, u.pkgName + "." + fn.name + "/" + arity.toString(), sig)
       addSig(sigs, fn.name + "/" + arity.toString(), sig)
+      defaulted.add(sig)
+      defaultedKeys.add(u.pkgName + "." + fn.name)
+      defaultedBare.add(fn.name)
       fi = fi + 1
     }
     var ei = 0
@@ -1765,6 +1821,7 @@ func buildSigs(units: in List[CodegenUnit]): Map[String, NFuncSig] {
         paramNames = paramNamesOf(ef.params),
         paramTys = paramTysOf(ef.params),
         paramModes = paramModesOf(ef.params),
+        paramDefaults = noParamDefaults(ef.params.count),
         retTy = ef.ret,
         isExternSym = true,
         isAsync = false
@@ -1774,6 +1831,21 @@ func buildSigs(units: in List[CodegenUnit]): Map[String, NFuncSig] {
       ei = ei + 1
     }
     ui2 = ui2 + 1
+  }
+  // A call that leaves out trailing defaulted parameters writes fewer
+  // arguments than the declaration has: register each function under every
+  // shorter arity it accepts (#7985).  This runs after every exact arity is
+  // registered, so an overload declared with exactly the written arity wins.
+  var di = 0
+  while di < defaulted.count {
+    val sig = defaulted[di]
+    var k = requiredArgCount(sig)
+    while k < sig.paramTys.count {
+      addSig(sigs, defaultedKeys[di] + "/" + k.toString(), sig)
+      addSig(sigs, defaultedBare[di] + "/" + k.toString(), sig)
+      k = k + 1
+    }
+    di = di + 1
   }
   sigs
 }
@@ -3555,12 +3627,11 @@ func isPackagePathExpr(ctx: in Ctx, e: in Expr): Bool {
 /// lower each.  Positional args bind left-to-right; named args bind by
 /// declared name.
 func lowerCallArgs(ctx: in Ctx, insns: in List[NInsn], sig: in NFuncSig, args: in List[CallArg]): List[NArg] {
-  if args.count != sig.paramTys.count {
+  if args.count > sig.paramTys.count {
     panic(
       "Lyric.LlvmCodegen: call to '" + sig.irName + "' passes " + args.count.toString() +
         " argument(s) but the declaration has " +
-        sig.paramTys.count.toString() +
-        " (default arguments are not yet supported for --target native)"
+        sig.paramTys.count.toString()
     )
   }
   val ordered: List[NArg] = newList()
@@ -3577,12 +3648,11 @@ func lowerCallArgsWithReceiver(
   recv: in NVal,
   args: in List[CallArg],
 ): List[NArg] {
-  if args.count + 1 != sig.paramTys.count {
+  if args.count + 1 > sig.paramTys.count {
     panic(
       "Lyric.LlvmCodegen: method call to '" + sig.irName + "' passes " + (args.count + 1).toString() +
         " argument(s) (incl. receiver) but the declaration has " +
-        sig.paramTys.count.toString() +
-        " (default arguments are not yet supported for --target native, #7985)"
+        sig.paramTys.count.toString()
     )
   }
   val ordered: List[NArg] = newList()
@@ -3646,10 +3716,23 @@ func bindCallArgs(
       vi = vi + 1
     }
     if found < 0 {
-      panic("Lyric.LlvmCodegen: no argument bound for parameter " + pi2.toString() + " of '" + sig.irName + "'")
+      // A parameter the call leaves out takes its default, evaluated after
+      // the written arguments in parameter order, as on dotnet and the JVM.
+      val dflt = if pi2 < sig.paramDefaults.count { sig.paramDefaults[pi2] } else { None }
+      match dflt {
+        case Some(dex) -> {
+          vals.add(lowerArgAgainst(ctx, insns, sig, dex, pi2))
+          slots.add(pi2)
+          found = vals.count - 1
+        }
+        case None -> panic(
+          "Lyric.LlvmCodegen: no argument bound for parameter '" + sig.paramNames[pi2] + "' of '" + sig.irName +
+            "', which has no default"
+        )
+      }
     }
     if sig.isExternSym and isFunctionTypeExpr(sig.paramTys[pi2]) {
-      val fnDeclTy = typeExprToNType(sig.paramTys[pi2])
+      val fnDeclTy = externCallbackNType(ctx, sig.paramTys[pi2])
       val fv = externAdaptArg(ctx, insns, sig.paramTys[pi2], fnDeclTy, vals[found])
       ordered.add(NArg(ty = fnDeclTy, value = fv.value))
       pi2 = pi2 + 1
@@ -3851,7 +3934,16 @@ func coerceTo(ctx: in Ctx, insns: in List[NInsn], v: in NVal, want: in NType, at
   // fat pointer here (N3.2) — the type checker inserts no coercion node.
   match ifaceBoxInfoOfType(ctx, want) {
     case Some(info) -> {
-      match recordIrNameOfType(v.ty) {
+      // A by-value record is a struct value, not a pointer (#8010).
+      val implementer: Option[String] = match v.ty {
+        case NStruct(sname, _) -> if Str.startsWith(sname, "__") {
+          None
+        } else {
+          Some(value = sname)
+        }
+        case _ -> recordIrNameOfType(v.ty)
+      }
+      match implementer {
         case Some(rir) -> {
           match mapGet(ctx.ifaceVtables, rir + "|" + info.key) {
             case Some(vtGlobal) -> return buildIfaceBox(ctx, insns, v, info, vtGlobal)
@@ -4001,6 +4093,14 @@ func unboxToSelfSlot(ctx: in Ctx, insns: in List[NInsn], v: in NVal): NVal {
       if isRefNType(v.ty) {
         val dest = freshTmp(ctx)
         insns.add(NBitcast(dest = dest, fromTy = v.ty, value = v.value, toTy = NPtr(pointee = NI8)))
+        NVal(ty = NPtr(pointee = NI8), value = NLocal(name = dest))
+      } else if isBoxedValueNType(v.ty) {
+        // A by-value record: boxed for the call, as the vtable thunk reads
+        // its `Self` parameters out of a box (#8010).
+        val held = boxByValue(ctx, insns, v)
+        registerTemp(ctx, held)
+        val dest = freshTmp(ctx)
+        insns.add(NBitcast(dest = dest, fromTy = held.ty, value = held.value, toTy = NPtr(pointee = NI8)))
         NVal(ty = NPtr(pointee = NI8), value = NLocal(name = dest))
       } else {
         // Neither an interface box nor a ref type — the checker's own
@@ -4374,6 +4474,22 @@ func lowerCallEx(
     case _ -> {
     }
   }
+  // A bare call inside a method to a method of the receiver's type is
+  // `self.m(args)`, ahead of any free function of that name, as on dotnet
+  // and the JVM (#1722, #7985).
+  match fnExpr.kind {
+    case EPath(bp) -> if bp.segments.count == 1 {
+      match mapGet(ctx.varTypes, "self") {
+        case Some(selfTy) -> if receiverHasMethod(ctx, receiverStructName(selfTy), bp.segments[0]) {
+          val selfRecv = Expr(kind = ESelf, span = fnExpr.span)
+          val siblingCallee = Expr(kind = EMember(receiver = selfRecv, memberName = bp.segments[0]), span = fnExpr.span)
+          return lowerCallEx(ctx, insns, siblingCallee, args, line, wantTask)
+        }
+        case None -> ()
+      }
+    }
+    case _ -> ()
+  }
   // Static function call through the registry.
   val key = callKeyOf(fnExpr, args.count)
   if key.length == 0 {
@@ -4449,6 +4565,9 @@ func lowerResolvedSigCall(
     return emitAsyncCall(ctx, insns, sig.irName, callArgs, retTypeToN(ctx, sig.retTy), wantTask)
   }
   val retTy = retTypeToN(ctx, sig.retTy)
+  if sig.isExternSym and cAbiArch(ctx.abiTriple).length > 0 and cAbiNeeded(callArgs, retTy) {
+    return cAbiExternCall(ctx, insns, sig.irName, callArgs, retTy)
+  }
   match retTy {
     case NVoid -> {
       insns.add(NCallVoid(fn = NGlobal(name = sig.irName), args = callArgs))
@@ -4625,6 +4744,75 @@ func curPkgQualifiedGet[T](ctx: in Ctx, m: in Map[String, T], bareOrDotted: in S
   mapGet(m, bareOrDotted)
 }
 
+/// The `genericFnDefs` key of method `nameAndArity` (`<name>/<arity>`, the
+/// receiver counted) of the generic record that `recvTyName` instantiates.
+func genericRecordMethodKey(ctx: in Ctx, recvTyName: in String, nameAndArity: in String): Option[String] {
+  match mapGet(ctx.instMeta, recvTyName) {
+    case Some(im) -> {
+      val k = im.gkey + "." + nameAndArity
+      if ctx.genericFnDefs.containsKey(k) {
+        return Some(value = k)
+      }
+      val dot = lastDotIndex(im.gkey)
+      if dot > 0 {
+        val bk = Str.substring(im.gkey, dot + 1, im.gkey.length - dot - 1) + "." + nameAndArity
+        if ctx.genericFnDefs.containsKey(bk) {
+          return Some(value = bk)
+        }
+      }
+      None
+    }
+    case None -> None
+  }
+}
+
+/// Whether the type named `recvTyName` has a method `name` of any arity: a
+/// record method or dot-named function registered as `<Type>.<name>/<n>`, an
+/// impl method, or a generic record's method.
+func receiverHasMethod(ctx: in Ctx, recvTyName: in String, name: in String): Bool {
+  if recvTyName.length == 0 {
+    return false
+  }
+  val dot = lastDotIndex(recvTyName)
+  val bare = if dot > 0 { Str.substring(recvTyName, dot + 1, recvTyName.length - dot - 1) } else { recvTyName }
+  // The receiver is parameter 0, so a method's registered arity is at least 1.
+  var n = 1
+  while n <= 32 {
+    val suffix = "." + name + "/" + n.toString()
+    if ctx.sigs.containsKey(recvTyName + suffix) or ctx.sigs.containsKey(bare + suffix) {
+      return true
+    }
+    if ctx.implDirectMethods.containsKey(recvTyName + suffix) {
+      return true
+    }
+    match genericRecordMethodKey(ctx, recvTyName, name + "/" + n.toString()) {
+      case Some(_) -> return true
+      case None -> ()
+    }
+    // A record-body method is a package function whose first parameter is
+    // `self` of the record's type (D037).
+    val key = name + "/" + n.toString()
+    val own = if ctx.curPkg.count > 0 { mapGet(ctx.sigs, ctx.curPkg[0] + "." + key) } else { mapGet(ctx.sigs, key) }
+    match own {
+      case Some(sig) -> if isSelfMethodOf(sig, bare) { return true }
+      case None -> ()
+    }
+    n = n + 1
+  }
+  false
+}
+
+func isSelfMethodOf(sig: in NFuncSig, typeName: in String): Bool {
+  if sig.paramNames.count == 0 or sig.paramNames[0] != "self" {
+    return false
+  }
+  match sig.paramTys[0].kind {
+    case TRef(p) -> p.segments.count > 0 and p.segments[p.segments.count - 1] == typeName
+    case TSelf -> true
+    case _ -> false
+  }
+}
+
 /// The IR struct name of a receiver type: the pointee of a heap object's
 /// pointer, or a by-value record's struct itself; "" for any other type.
 func receiverStructName(t: in NType): String {
@@ -4794,11 +4982,16 @@ func lowerUfcsCall(
       }
     }
   }
+  // A method of a generic record, on one of its instances.
   match sigOpt {
-    case Some(_) -> {
-    }
-    case None -> {
-      sigOpt = mapGet(ctx.sigs, ctx.curPkg[0] + "." + name + "/" + arity)
+    case Some(_) -> ()
+    case None -> match genericRecordMethodKey(ctx, recvTyName, name + "/" + arity) {
+      case Some(gk) -> {
+        val instPre: List[NVal] = newList()
+        instPre.add(recv)
+        return lowerGenericFnCall(ctx, insns, gk, instPre, args, line, wantTask, None)
+      }
+      case None -> ()
     }
   }
   match sigOpt {
@@ -4809,12 +5002,13 @@ func lowerUfcsCall(
         val tyName = recvTyName
         // `tyName` is already package-qualified (e.g. "Std.Tls.Identity"
         // for a record/opaque type's ARC pointee, or a by-value record's
-        // struct). An extension-method
-        // -style declaration (`func Identity.rawHandle(...)`, as opposed
-        // to a D037 in-type-body method) registers its sig under the
-        // compound "TypeName.methodName" name — try the exact qualified
-        // form first, then the bare "TypeName.methodName" form (no
-        // package prefix; matches the registry's own bare-name key).
+        // struct). A dot-named function (`func Identity.rawHandle(...)`)
+        // and a D037 in-type-body method both register under the compound
+        // "TypeName.methodName" name — try the exact qualified form first,
+        // then the bare "TypeName.methodName" form (no package prefix;
+        // matches the registry's own bare-name key).  This runs before the
+        // package-level lookups below, so a method of the receiver's type
+        // wins over a same-named free function.
         sigOpt = mapGet(ctx.sigs, tyName + "." + name + "/" + arity)
         val dotIdx = lastDotIndex(tyName)
         match sigOpt {
@@ -4827,18 +5021,25 @@ func lowerUfcsCall(
             }
           }
         }
-        match sigOpt {
-          case Some(_) -> {
-          }
-          case None -> {
-            // Legacy fallback: a D037 in-type-body method desugars to a
-            // bare package-level function living in the receiver
-            // type's DEFINING package (not qualified by the type name).
-            if dotIdx > 0 {
-              sigOpt = mapGet(ctx.sigs, Str.substring(tyName, 0, dotIdx) + "." + name + "/" + arity)
-            }
-          }
-        }
+      }
+    }
+  }
+  match sigOpt {
+    case Some(_) -> {
+    }
+    case None -> {
+      sigOpt = mapGet(ctx.sigs, ctx.curPkg[0] + "." + name + "/" + arity)
+    }
+  }
+  match sigOpt {
+    case Some(_) -> {
+    }
+    case None -> {
+      // A UFCS call to a package function of the receiver type's defining
+      // package (not qualified by the type name).
+      val defDot = lastDotIndex(recvTyName)
+      if defDot > 0 {
+        sigOpt = mapGet(ctx.sigs, Str.substring(recvTyName, 0, defDot) + "." + name + "/" + arity)
       }
     }
   }
@@ -4884,6 +5085,9 @@ func lowerUfcsCall(
     return emitAsyncCall(ctx, insns, sig.irName, callArgs, retTypeToN(ctx, sig.retTy), wantTask)
   }
   val retTy = retTypeToN(ctx, sig.retTy)
+  if sig.isExternSym and cAbiArch(ctx.abiTriple).length > 0 and cAbiNeeded(callArgs, retTy) {
+    return cAbiExternCall(ctx, insns, sig.irName, callArgs, retTy)
+  }
   match retTy {
     case NVoid -> {
       insns.add(NCallVoid(fn = NGlobal(name = sig.irName), args = callArgs))
@@ -5078,48 +5282,14 @@ func implTargetPath(te: in TypeExpr): Option[ModulePath] {
 }
 
 /// Fill `heapOnly` (`Ctx.heapOnlyRecs`) with the package-qualified names of
-/// the records that keep the heap form whatever their fields: opaque types and
-/// every `impl I for R` target.  An unqualified target resolves like a type
-/// reference does: the impl's own package first, then the first package
-/// declaring a record of that name.
+/// the records that keep the heap form whatever their fields: opaque types.
+/// An `impl I for R` target is classified like any record: a by-value one is
+/// boxed when it is upcast to the interface (`buildIfaceBox`), and its vtable
+/// slots are thunks that read it out of the box (#8010).
 func fillHeapOnlyRecs(heapOnly: in Map[String, Bool], units: in List[CodegenUnit]): Unit {
-  val declared: Map[String, Bool] = newMap()
-  val firstPkg: Map[String, String] = newMap()
-  for u in units {
-    for rd in u.records {
-      putOnce(declared, u.pkgName + "." + rd.name)
-      if not firstPkg.containsKey(rd.name) {
-        firstPkg.add(rd.name, u.pkgName)
-      }
-    }
-    for ud in u.unions {
-      putOnce(declared, u.pkgName + "." + ud.name)
-      if not firstPkg.containsKey(ud.name) {
-        firstPkg.add(ud.name, u.pkgName)
-      }
-    }
-  }
   for u in units {
     for n in u.opaqueNames {
       putOnce(heapOnly, u.pkgName + "." + n)
-    }
-    for im in u.impls {
-      match implTargetPath(im.target) {
-        case Some(path) -> {
-          if path.segments.count == 1 {
-            val n = path.segments[0]
-            if declared.containsKey(u.pkgName + "." + n) {
-              putOnce(heapOnly, u.pkgName + "." + n)
-            } else if firstPkg.containsKey(n) {
-              putOnce(heapOnly, firstPkg[n] + "." + n)
-            }
-          } else {
-            putOnce(heapOnly, modulePathJoin(path.segments))
-          }
-        }
-        case None -> {
-        }
-      }
     }
   }
 }
@@ -5182,6 +5352,7 @@ func classifyByValueFieldEnv(
   val res: List[NType] = newList()
   match te.kind {
     case TParen(inner) -> return classifyByValueFieldEnv(st, pkg, inner, envNames, envTys)
+    case TRefined(under, _) -> return classifyByValueFieldEnv(st, pkg, TypeExpr(kind = TRef(path = under), span = te.span), envNames, envTys)
     case TUnit -> {
       res.add(NVoid)
       return res
@@ -6998,6 +7169,80 @@ func registerGenericRecord(ctx: in Ctx, pkg: in String, rd: in RecordDecl): Unit
       ctx.genericDeclPkg.add(rd.name, pkg)
     }
   }
+  registerGenericRecordMethods(ctx, pkg, rd)
+}
+
+// A generic record's methods are generic functions over the record's type
+// parameters (and their own), named `<Record>.<method>` with the receiver
+// `self: <Record>[T, ...]`, and instantiated per call like any generic
+// function.  A member call on an instance finds them through the instance's
+// generic key (`lowerMethodCallOnInstance`).
+func registerGenericRecordMethods(ctx: in Ctx, pkg: in String, rd: in RecordDecl): Unit {
+  val recParams = match rd.generics { case Some(gp) -> gp.params; case None -> return }
+  val selfArgs: List[TypeArg] = newList()
+  for gp in recParams {
+    match gp {
+      case GPType(n, sp) -> {
+        val segs: List[String] = newList()
+        segs.add(n)
+        selfArgs.add(TAType(ty = TypeExpr(kind = TRef(path = ModulePath(segments = segs, span = sp)), span = sp)))
+      }
+      // A value generic parameter cannot be a native type argument here.
+      case GPValue(_, _, _) -> return
+    }
+  }
+  for m in rd.members {
+    match m {
+      case RMFunc(fn) -> {
+        val allParams: List[GenericParam] = newList()
+        for gp in recParams {
+          allParams.add(gp)
+        }
+        match fn.generics {
+          case Some(fg) -> {
+            for gp in fg.params {
+              allParams.add(gp)
+            }
+          }
+          case None -> ()
+        }
+        val headSegs: List[String] = newList()
+        headSegs.add(rd.name)
+        val selfTe = TypeExpr(
+          kind = TGenericApp(head = ModulePath(segments = headSegs, span = fn.span), args = selfArgs),
+          span = fn.span
+        )
+        val params: List[Param] = newList()
+        for p in fn.params {
+          params.add(p.copy(ty = substSelfWith(p.ty, selfTe)))
+        }
+        val ret = match fn.ret { case Some(r) -> Some(value = substSelfWith(r, selfTe)); case None -> None }
+        val gspan = match rd.generics { case Some(gp) -> gp.span; case None -> fn.span }
+        val gfn = fn.copy(
+          name = rd.name + "." + fn.name,
+          generics = Some(value = GenericParams(params = allParams, span = gspan, legacyPrefixForm = false)),
+          params = params,
+          ret = ret
+        )
+        val akey = "." + fn.name + "/" + params.count.toString()
+        for k in [pkg + "." + rd.name + akey, rd.name + akey] {
+          if not ctx.genericFnDefs.containsKey(k) {
+            ctx.genericFnDefs.add(k, gfn)
+            ctx.genericFnPkg.add(k, pkg)
+          }
+        }
+      }
+      case _ -> ()
+    }
+  }
+}
+
+func substSelfWith(te: in TypeExpr, replacement: in TypeExpr): TypeExpr {
+  match te.kind {
+    case TSelf -> replacement
+    case TParen(inner) -> TypeExpr(kind = TParen(inner = substSelfWith(inner, replacement)), span = te.span)
+    case _ -> te
+  }
 }
 
 func registerGenericUnion(ctx: in Ctx, pkg: in String, ud: in UnionDecl): Unit {
@@ -7183,13 +7428,15 @@ func externCallbackClosureWant(ctx: in Ctx, t: in TypeExpr): NType {
             nTypeToIrString(lastTy)
         )
       }
+      // The closure's own types: a by-value record parameter is a struct
+      // value, as the Lyric function the closure wraps takes it (#8009).
       val reduced: List[NType] = newList()
       var i = 0
       while i < parameters.count - 1 {
-        reduced.add(typeExprToNType(parameters[i]))
+        reduced.add(typeToN(ctx, parameters[i]))
         i = i + 1
       }
-      closureNType(ctx, reduced, typeExprToNType(retTy))
+      closureNType(ctx, reduced, typeToN(ctx, retTy))
     }
     case _ -> panic("Lyric.LlvmCodegen: internal — externCallbackClosureWant on a non-function type")
   }
@@ -7205,6 +7452,21 @@ func trampolineFor(ctx: in Ctx, t: in TypeExpr): String {
   }
   match t.kind {
     case TFunction(parameters, retTy) -> {
+      // A signature carrying a by-value record takes the C-ABI form (#8009).
+      match callbackCAbi(ctx, parameters, retTy) {
+        case Some(cb) -> {
+          val cKey = nTypeToIrString(externCallbackNType(ctx, t))
+          match mapGet(ctx.trampolines, cKey) {
+            case Some(existing) -> return existing
+            case None -> ()
+          }
+          val cbName = "__lyric_cb_tramp." + ctx.trampolines.count.toString()
+          ctx.moduleFns.add(cAbiTrampoline(ctx, cbName, externCallbackClosureWant(ctx, t), cb))
+          ctx.trampolines.add(cKey, cbName)
+          return cbName
+        }
+        case None -> ()
+      }
       val rawParams: List[NType] = newList()
       var i = 0
       while i < parameters.count {
@@ -9701,10 +9963,20 @@ func lowerGenericFnCall(
         aj = aj + 1
       }
       if found < 0 {
-        panic(
-          "Lyric.LlvmCodegen: no argument bound for parameter '" + fd.params[pi].name + "' of generic function '" + fd.name +
-            "'"
-        )
+        // A parameter the call leaves out takes its default (#7985).
+        match fd.params[pi].dflt {
+          case Some(dex) -> {
+            argSlot.add(pi)
+            argExpr.add(dex)
+            found = argExpr.count - 1
+          }
+          case None -> panic(
+            "Lyric.LlvmCodegen: no argument bound for parameter '" + fd.params[pi].name +
+              "' of generic function '" +
+              fd.name +
+              "', which has no default"
+          )
+        }
       }
       val ax = argExpr[found]
       if isLambdaExpr(ax) {
@@ -13070,6 +13342,7 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     tmpTicker = mod.tmpTicker,
     labelTicker = mod.labelTicker,
     ptrBytes = mod.ptrBytes,
+    abiTriple = mod.abiTriple,
     strTicker = mod.strTicker,
     varSlots = slots,
     varTypes = types,
@@ -13834,12 +14107,17 @@ func externDeclOf(ctx: in Ctx, ef: in ExternFuncDecl): NFunc {
     // params/returns (slice/List/Map kernels, D-N-015) get the same
     // struct pointer type their call sites use.
     match ef.params[i].ty.kind {
-      case TFunction(_, _) -> tys.add(typeExprToNType(ef.params[i].ty))
+      case TFunction(_, _) -> tys.add(externCallbackNType(ctx, ef.params[i].ty))
       case _ -> tys.add(typeToN(ctx, ef.params[i].ty))
     }
     i = i + 1
   }
   val retN = retTypeToN(ctx, ef.ret)
+  // A by-value record crosses as the platform's C ABI passes the struct
+  // (#8009), on a target `cAbiArch` knows.
+  if cAbiArch(ctx.abiTriple).length > 0 and cAbiCovers(tys, retN) {
+    return cAbiExternDecl(ctx, ef.symbol, tys, retN)
+  }
   // Backstop for `nativeByValueExternDiagnostics`: never emit an LLVM
   // aggregate where the C ABI expects the platform's struct passing.
   var k = 0
@@ -14037,6 +14315,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     tmpTicker = newList(),
     labelTicker = newList(),
     ptrBytes = ptrBytesForTriple(triple),
+    abiTriple = triple,
     strTicker = newList(),
     varSlots = emptySlots,
     varTypes = emptyTypes,
@@ -14114,7 +14393,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
   registerInterfaceNames(ctx, units)
   registerHeapTypes(ctx, units, types, fns)
   registerInterfaceTypes(ctx, units, types, fns)
-  registerImplVtables(ctx, units)
+  registerImplVtables(ctx, units, fns)
   registerImplDirectMethods(ctx, units)
   registerProtectedMethods(ctx, units, fns)
   val externDecls: List[NFunc] = newList()
@@ -14523,7 +14802,8 @@ pub func wasmImportModule(imports: in List[WasmImportDecl], symbol: in String): 
 
 /// Methods declared inside a record body desugar to package functions
 /// with the explicit `self` receiver already in their parameter list
-/// (D037); non-generic ones lower like any other function.  The
+/// (D037), named `<Record>.<method>` as a dot-named function is; non-generic
+/// ones lower like any other function.  The
 /// parser's synthesised receiver is typed `Self` — substitute the
 /// concrete record reference so the native type mapping resolves it.
 pub func collectRecordMethods(pkgName: in String, decl: in RecordDecl, fns: in List[FunctionDecl]): Unit {
@@ -14538,7 +14818,12 @@ pub func collectRecordMethods(pkgName: in String, decl: in RecordDecl, fns: in L
             match fn.generics {
               case Some(_) -> {
               }
-              case None -> fns.add(substSelfInFn(fn, decl.name))
+              case None -> {
+                // Registered as `<Record>.<method>`, so a same-named method of
+                // another record in the package is a different function.
+                val lifted = substSelfInFn(fn, decl.name)
+                fns.add(lifted.copy(name = decl.name + "." + fn.name))
+              }
             }
           }
         }
@@ -14764,29 +15049,721 @@ func byValueRecordNameOf(st: in NByValState, pkg: in String, te: in TypeExpr): S
   ""
 }
 
-/// Message for `N0010`: a by-value record in an `extern func` signature.
+// ─────────────────────────────────────────────────────────────────────────────
+// C ABI for by-value records at the extern boundary (#8009).
+//
+// A by-value record is an LLVM struct value, and LLVM passes a first-class
+// aggregate argument field by field, which is not how C passes a struct.  An
+// `extern func` taking or returning one is declared and called the way clang
+// lowers the matching C prototype:
+//
+//   x86-64 System V: a record of at most 16 bytes travels in one or two
+//     eightbytes, each a `double` (only float/double fields, in an SSE
+//     register) or an `i64` (in a general register); a larger one, or one
+//     the remaining registers cannot hold, is `byval` memory; a large
+//     result is returned through an `sret` pointer.
+//   AArch64 (AAPCS64): a homogeneous aggregate of one to four floats or
+//     doubles is an `[N x T]` in FP registers; any other record of at most
+//     16 bytes is an `i64` or `[2 x i64]`; a larger one is passed as a pointer
+//     to a copy the caller makes, and returned through `sret`.
+//   wasm32 (basic C ABI): a record of a single scalar is that scalar; any
+//     other is `byval`, and returned through `sret`.
+//
+// A coerced value goes through a 16-byte stack buffer, so an eightbyte that
+// runs past the end of the record never reads beyond its storage; the callee
+// never reads the bytes past the record (System V and AAPCS64 leave a
+// register's upper bits unspecified).
+// ─────────────────────────────────────────────────────────────────────────────
+union CArgAbi {
+  case CAPlain
+  case CAParts(parts: List[NType])
+  case CAArray(elem: NType, count: Int, attrs: String)
+  case CAByval
+  case CAPtr
+}
+
+union CRetAbi {
+  case CRPlain
+  case CRParts(parts: List[NType])
+  case CRArray(elem: NType, count: Int)
+  case CRSret
+}
+
+record CAbiPlan {
+  args: List[CArgAbi]
+  ret: CRetAbi
+}
+
+/// The C ABI family of `triple`: "x86_64", "aarch64", "wasm32", or "" for a
+/// target whose struct passing the backend does not lower (N0010 there).
+pub func cAbiArch(triple: in String): String {
+  if Str.contains(triple, "windows") or Str.contains(triple, "mingw") {
+    return ""
+  }
+  if Str.startsWith(triple, "x86_64") {
+    return "x86_64"
+  }
+  if Str.startsWith(triple, "aarch64") or Str.startsWith(triple, "arm64") {
+    return "aarch64"
+  }
+  if Str.startsWith(triple, "wasm32") {
+    return "wasm32"
+  }
+  ""
+}
+
+// Whether every by-value aggregate in a signature is a record the C ABI
+// lowering covers: an inline array or union, or a by-value record inside a
+// callback type, keeps N0010.
+func cAbiCovers(tys: in List[NType], ret: in NType): Bool {
+  for t in tys {
+    if not cAbiTypeCovered(t) {
+      return false
+    }
+  }
+  cAbiTypeCovered(ret)
+}
+
+func cAbiTypeCovered(t: in NType): Bool {
+  match t {
+    case NArray(_, _) -> false
+    case NStruct(name, _) -> not Str.startsWith(name, "__")
+    case NFnPtr(ps, r) -> {
+      for p in ps {
+        if isBoxedValueNType(p) {
+          return false
+        }
+      }
+      not isBoxedValueNType(r)
+    }
+    case _ -> true
+  }
+}
+
+func cAbiNeeded(args: in List[NArg], ret: in NType): Bool {
+  for a in args {
+    if isByValueStructNType(a.ty) {
+      return true
+    }
+  }
+  isByValueStructNType(ret)
+}
+
+// One scalar of a by-value record, at its byte offset.
+record CScalar {
+  offset: Int
+  ty: NType
+}
+
+// The scalars of `t` at their offsets from `base`, nested records and inline
+// arrays flattened.
+func cFlatten(ctx: in Ctx, t: in NType, base: in Int, acc: in List[CScalar]): Unit {
+  match t {
+    case NStruct(name, _) -> {
+      val fields = layoutFieldTys(byValueLayoutOf(ctx, name))
+      var off = 0
+      for f in fields {
+        off = roundUpTo(off, alignOfN(ctx, f))
+        cFlatten(ctx, f, base + off, acc)
+        off = off + sizeOfN(ctx, f)
+      }
+    }
+    case NArray(elem, n) -> {
+      val sz = sizeOfN(ctx, elem)
+      var i = 0
+      while i < n {
+        cFlatten(ctx, elem, base + i * sz, acc)
+        i = i + 1
+      }
+    }
+    case _ -> acc.add(CScalar(offset = base, ty = t))
+  }
+}
+
+func isCFloatNType(t: in NType): Bool {
+  match t {
+    case NFloat -> true
+    case NDouble -> true
+    case _ -> false
+  }
+}
+
+// AArch64 homogeneous floating-point aggregate: one to four scalars, all
+// `float` or all `double`.
+func cHfaElem(scalars: in List[CScalar]): Option[NType] {
+  if scalars.count == 0 or scalars.count > 4 {
+    return None
+  }
+  val first = scalars[0].ty
+  if not isCFloatNType(first) {
+    return None
+  }
+  for sc in scalars {
+    if nTypeToIrString(sc.ty) != nTypeToIrString(first) {
+      return None
+    }
+  }
+  Some(value = first)
+}
+
+// x86-64: the eightbytes of a record of at most 16 bytes, `double` for an
+// SSE one (only floating-point scalars) and `i64` for an INTEGER one.
+func cSysvParts(ctx: in Ctx, t: in NType): List[NType] {
+  val scalars: List[CScalar] = newList()
+  cFlatten(ctx, t, 0, scalars)
+  val size = sizeOfN(ctx, t)
+  val parts: List[NType] = newList()
+  var eb = 0
+  while eb * 8 < size {
+    var allFloat = true
+    var any = false
+    for sc in scalars {
+      if sc.offset >= eb * 8 and sc.offset < eb * 8 + 8 {
+        any = true
+        if not isCFloatNType(sc.ty) {
+          allFloat = false
+        }
+      }
+    }
+    parts.add(if any and allFloat { NDouble } else { NI64 })
+    eb = eb + 1
+  }
+  parts
+}
+
+func cRetAbiOf(ctx: in Ctx, arch: in String, ret: in NType): CRetAbi {
+  if not isByValueStructNType(ret) {
+    return CRPlain
+  }
+  val size = sizeOfN(ctx, ret)
+  val scalars: List[CScalar] = newList()
+  cFlatten(ctx, ret, 0, scalars)
+  if arch == "x86_64" {
+    if size > 16 {
+      return CRSret
+    }
+    return CRParts(parts = cSysvParts(ctx, ret))
+  }
+  if arch == "aarch64" {
+    // A homogeneous aggregate is returned as the record itself, which LLVM
+    // returns in consecutive FP registers, as clang does.
+    match cHfaElem(scalars) {
+      case Some(_) -> return CRPlain
+      case None -> ()
+    }
+    if size > 16 {
+      return CRSret
+    }
+    if size > 8 {
+      return CRArray(elem = NI64, count = 2)
+    }
+    return CRParts(parts = listOfNType(NI64))
+  }
+  if scalars.count == 1 {
+    return CRParts(parts = listOfNType(scalars[0].ty))
+  }
+  CRSret
+}
+
+/// How each parameter and the result of a C call cross the boundary.
+func cAbiPlanOf(ctx: in Ctx, params: in List[NType], ret: in NType): CAbiPlan {
+  val arch = cAbiArch(ctx.abiTriple)
+  val args: List[CArgAbi] = newList()
+  val retAbi = cRetAbiOf(ctx, arch, ret)
+  // System V register budget: six general and eight SSE argument registers;
+  // an `sret` pointer takes the first general one.
+  var intLeft = 6
+  var sseLeft = 8
+  match retAbi {
+    case CRSret -> {
+      intLeft = intLeft - 1
+    }
+    case _ -> ()
+  }
+  for p in params {
+    if not isByValueStructNType(p) {
+      if isCFloatNType(p) {
+        sseLeft = sseLeft - 1
+      } else {
+        intLeft = intLeft - 1
+      }
+      args.add(CAPlain)
+      continue
+    }
+    val size = sizeOfN(ctx, p)
+    val scalars: List[CScalar] = newList()
+    cFlatten(ctx, p, 0, scalars)
+    if arch == "x86_64" {
+      if size > 16 {
+        args.add(CAByval)
+      } else {
+        val parts = cSysvParts(ctx, p)
+        var needInt = 0
+        var needSse = 0
+        for pt in parts {
+          if isCFloatNType(pt) {
+            needSse = needSse + 1
+          } else {
+            needInt = needInt + 1
+          }
+        }
+        if needInt <= intLeft and needSse <= sseLeft {
+          intLeft = intLeft - needInt
+          sseLeft = sseLeft - needSse
+          args.add(CAParts(parts = parts))
+        } else {
+          args.add(CAByval)
+        }
+      }
+    } else if arch == "aarch64" {
+      match cHfaElem(scalars) {
+        case Some(el) -> args.add(CAArray(elem = el, count = scalars.count, attrs = "alignstack(8)"))
+        case None -> if size > 16 {
+          args.add(CAPtr)
+        } else if size > 8 {
+          args.add(CAArray(elem = NI64, count = 2, attrs = ""))
+        } else {
+          args.add(CAParts(parts = listOfNType(NI64)))
+        }
+      }
+    } else if scalars.count == 1 {
+      args.add(CAParts(parts = listOfNType(scalars[0].ty)))
+    } else {
+      args.add(CAByval)
+    }
+  }
+  CAbiPlan(args = args, ret = retAbi)
+}
+
+func listOfNType(t: in NType): List[NType] {
+  val xs: List[NType] = newList()
+  xs.add(t)
+  xs
+}
+
+func cAggregateAttr(ctx: in Ctx, kind: in String, t: in NType): String {
+  kind + "(" + nTypeToIrString(t) + ") align " + toString(alignOfN(ctx, t))
+}
+
+// The LLVM return type a plan's result crosses as.
+func cRetNType(ret: in CRetAbi, declared: in NType): NType {
+  match ret {
+    case CRPlain -> declared
+    case CRParts(parts) -> if parts.count == 1 { parts[0] } else { NLitStruct(fields = parts) }
+    case CRArray(el, n) -> NArray(elem = el, size = n)
+    case CRSret -> NVoid
+  }
+}
+
+/// The `declare` of an extern whose signature carries a by-value record.
+func cAbiExternDecl(ctx: in Ctx, name: in String, tys: in List[NType], ret: in NType): NFunc {
+  val plan = cAbiPlanOf(ctx, tys, ret)
+  NFunc(
+    name = name,
+    params = cAbiParams(ctx, plan, tys, ret),
+    retTy = cRetNType(plan.ret, ret),
+    isPublic = false,
+    isExtern = true,
+    body = newList(),
+    attributes = newList()
+  )
+}
+
+// The C-facing parameters of a signature under `plan`: an `sret` pointer
+// first, then each parameter as one or more LLVM arguments, `p<i>` (a
+// coerced record's parts `p<i>_<k>`).
+func cAbiParams(ctx: in Ctx, plan: in CAbiPlan, tys: in List[NType], ret: in NType): List[NParam] {
+  val params: List[NParam] = newList()
+  match plan.ret {
+    case CRSret -> params.add(NParam(name = "sret", ty = NPtr(pointee = ret), attrs = cAggregateAttr(ctx, "sret", ret)))
+    case _ -> ()
+  }
+  var i = 0
+  while i < tys.count {
+    val nm = "p" + toString(i)
+    match plan.args[i] {
+      case CAPlain -> params.add(NParam(name = nm, ty = tys[i]))
+      case CAParts(parts) -> {
+        var k = 0
+        while k < parts.count {
+          params.add(NParam(name = nm + "_" + toString(k), ty = parts[k]))
+          k = k + 1
+        }
+      }
+      case CAArray(el, n, at) -> params.add(NParam(name = nm, ty = NArray(elem = el, size = n), attrs = at))
+      case CAByval -> params.add(
+        NParam(name = nm, ty = NPtr(pointee = tys[i]), attrs = cAggregateAttr(ctx, "byval", tys[i]))
+      )
+      case CAPtr -> params.add(NParam(name = nm, ty = NPtr(pointee = tys[i])))
+    }
+    i = i + 1
+  }
+  params
+}
+
+/// The C-facing function-pointer type of an extern callback parameter: a
+/// signature carrying a by-value record crosses as C passes it (#8009).
+func externCallbackNType(ctx: in Ctx, te: in TypeExpr): NType {
+  match te.kind {
+    case TParen(inner) -> externCallbackNType(ctx, inner)
+    case TFunction(parameters, retTy) -> match callbackCAbi(ctx, parameters, retTy) {
+      case Some(cb) -> {
+        val ptys: List[NType] = newList()
+        for prm in cAbiParams(ctx, cb.plan, cb.params, cb.ret) {
+          ptys.add(prm.ty)
+        }
+        NFnPtr(params = ptys, ret = cRetNType(cb.plan.ret, cb.ret))
+      }
+      case None -> typeExprToNType(te)
+    }
+    case _ -> typeExprToNType(te)
+  }
+}
+
+record CCallbackAbi {
+  params: List[NType]
+  ret: NType
+  plan: CAbiPlan
+}
+
+// A callback signature's own types and C ABI plan, when one of them is a
+// by-value record on a target the lowering covers.
+func callbackCAbi(ctx: in Ctx, parameters: in List[TypeExpr], retTy: in TypeExpr): Option[CCallbackAbi] {
+  if cAbiArch(ctx.abiTriple).length == 0 {
+    return None
+  }
+  val ps: List[NType] = newList()
+  var any = false
+  for pt in parameters {
+    val t = typeToN(ctx, pt)
+    if isByValueStructNType(t) {
+      any = true
+    }
+    ps.add(t)
+  }
+  val r = typeToN(ctx, retTy)
+  if isByValueStructNType(r) {
+    any = true
+  }
+  if not any {
+    return None
+  }
+  Some(value = CCallbackAbi(params = ps, ret = r, plan = cAbiPlanOf(ctx, ps, r)))
+}
+
+/// The trampoline for a callback whose signature carries a by-value record:
+/// it takes the C-ABI form, rebuilds each record, calls the closure, and
+/// returns the result as C expects it.
+func cAbiTrampoline(ctx: in Ctx, name: in String, closTy: in NType, cb: in CCallbackAbi): NFunc {
+  val closStruct = match closTy { case NPtr(pointee) -> pointee; case _ -> panic("unreachable") }
+  val n = cb.params.count
+  val allocas: List[NInsn] = newList()
+  val body: List[NInsn] = newList()
+  val udName = "p" + toString(n - 1)
+  body.add(NBitcast(dest = "hdr", fromTy = NPtr(pointee = NI8), value = NLocal(name = udName), toTy = closTy))
+  val gArgs: List[NArg] = newList()
+  gArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  gArgs.add(NArg(ty = NI32, value = NLitInt(v = closureFnSlot, ty = NI32)))
+  body.add(NGEP(dest = "slot", ty = closStruct, ptr = NLocal(name = "hdr"), indices = gArgs))
+  body.add(NLoad(dest = "fnraw", ty = NPtr(pointee = NI8), ptr = NLocal(name = "slot")))
+  val lyricParams: List[NType] = newList()
+  lyricParams.add(NPtr(pointee = NI8))
+  val callArgs: List[NArg] = newList()
+  callArgs.add(NArg(ty = NPtr(pointee = NI8), value = NLocal(name = udName)))
+  val scratchTy = NArray(elem = NI64, size = 2)
+  var i = 0
+  while i < n - 1 {
+    val t = cb.params[i]
+    val nm = "p" + toString(i)
+    lyricParams.add(t)
+    val v: NValue = match cb.plan.args[i] {
+      case CAPlain -> NLocal(name = nm)
+      case CAParts(parts) -> {
+        val buf = cScratchSlot(ctx, allocas)
+        var k = 0
+        while k < parts.count {
+          cStoreAt(ctx, body, buf, scratchTy, k * 8, parts[k], NLocal(name = nm + "_" + toString(k)))
+          k = k + 1
+        }
+        cLoadAt(ctx, body, buf, scratchTy, 0, t)
+      }
+      case CAArray(el, cnt, _) -> {
+        val arrTy = NArray(elem = el, size = cnt)
+        if isCFloatNType(el) {
+          val slot = freshTmp(ctx)
+          allocas.add(NAlloca(dest = slot, ty = t))
+          cStoreAt(ctx, body, slot, t, 0, arrTy, NLocal(name = nm))
+          val rv = freshTmp(ctx)
+          body.add(NLoad(dest = rv, ty = t, ptr = NLocal(name = slot)))
+          NLocal(name = rv)
+        } else {
+          val buf = cScratchSlot(ctx, allocas)
+          cStoreAt(ctx, body, buf, scratchTy, 0, arrTy, NLocal(name = nm))
+          cLoadAt(ctx, body, buf, scratchTy, 0, t)
+        }
+      }
+      case CAByval -> {
+        val rv = freshTmp(ctx)
+        body.add(NLoad(dest = rv, ty = t, ptr = NLocal(name = nm)))
+        NLocal(name = rv)
+      }
+      case CAPtr -> {
+        val rv = freshTmp(ctx)
+        body.add(NLoad(dest = rv, ty = t, ptr = NLocal(name = nm)))
+        NLocal(name = rv)
+      }
+    }
+    callArgs.add(NArg(ty = t, value = v))
+    i = i + 1
+  }
+  body.add(
+    NBitcast(
+      dest = "fn",
+      fromTy = NPtr(pointee = NI8),
+      value = NLocal(name = "fnraw"),
+      toTy = NFnPtr(params = lyricParams, ret = cb.ret)
+    )
+  )
+  val cRet = cRetNType(cb.plan.ret, cb.ret)
+  match cb.ret {
+    case NVoid -> {
+      body.add(NCallVoid(fn = NLocal(name = "fn"), args = callArgs))
+      body.add(NRetVoid)
+    }
+    case rt -> {
+      body.add(NCall(dest = "r", retTy = rt, fn = NLocal(name = "fn"), args = callArgs))
+      match cb.plan.ret {
+        case CRPlain -> body.add(NRet(ty = rt, value = NLocal(name = "r")))
+        case CRSret -> {
+          body.add(NStore(ty = rt, value = NLocal(name = "r"), ptr = NLocal(name = "sret")))
+          body.add(NRetVoid)
+        }
+        case _ -> {
+          val buf = cScratchSlot(ctx, allocas)
+          cStoreAt(ctx, body, buf, scratchTy, 0, rt, NLocal(name = "r"))
+          body.add(NRet(ty = cRet, value = cLoadAt(ctx, body, buf, scratchTy, 0, cRet)))
+        }
+      }
+    }
+  }
+  val full: List[NInsn] = newList()
+  for a in allocas {
+    full.add(a)
+  }
+  for b in body {
+    full.add(b)
+  }
+  NFunc(
+    name = name,
+    params = cAbiParams(ctx, cb.plan, cb.params, cb.ret),
+    retTy = cRet,
+    isPublic = false,
+    isExtern = false,
+    body = full,
+    attributes = newList()
+  )
+}
+
+// Store `v` of type `vTy` `byteOffset` bytes into the slot `slot` of type
+// `slotTy`.
+func cStoreAt(
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  slot: in String,
+  slotTy: in NType,
+  byteOffset: in Int,
+  vTy: in NType,
+  v: in NValue,
+): Unit {
+  val raw = freshTmp(ctx)
+  insns.add(
+    NBitcast(dest = raw, fromTy = NPtr(pointee = slotTy), value = NLocal(name = slot), toTy = NPtr(pointee = NI8))
+  )
+  val at = freshTmp(ctx)
+  val idx: List[NArg] = newList()
+  idx.add(NArg(ty = NI64, value = NLitInt(v = byteOffset.toLong(), ty = NI64)))
+  insns.add(NGEP(dest = at, ty = NI8, ptr = NLocal(name = raw), indices = idx))
+  val typed = freshTmp(ctx)
+  insns.add(NBitcast(dest = typed, fromTy = NPtr(pointee = NI8), value = NLocal(name = at), toTy = NPtr(pointee = vTy)))
+  insns.add(NStore(ty = vTy, value = v, ptr = NLocal(name = typed)))
+}
+
+// A 16-byte, 8-aligned stack buffer that a record of at most 16 bytes is
+// stored into and read back out of as its coerced parts.
+func cScratchSlot(ctx: in Ctx, allocas: in List[NInsn]): String {
+  val slot = freshTmp(ctx)
+  allocas.add(NAlloca(dest = slot, ty = NArray(elem = NI64, size = 2)))
+  slot
+}
+
+// A stack slot of the record's own type holding `v`.
+func cSpill(ctx: in Ctx, allocas: in List[NInsn], insns: in List[NInsn], ty: in NType, v: in NValue): String {
+  val slot = freshTmp(ctx)
+  allocas.add(NAlloca(dest = slot, ty = ty))
+  insns.add(NStore(ty = ty, value = v, ptr = NLocal(name = slot)))
+  slot
+}
+
+// The value of type `asTy` stored `byteOffset` bytes into the slot `slot`
+// of type `slotTy`.
+func cLoadAt(
+  ctx: in Ctx, insns: in List[NInsn], slot: in String, slotTy: in NType, byteOffset: in Int, asTy: in NType
+): NValue {
+  val raw = freshTmp(ctx)
+  insns.add(
+    NBitcast(dest = raw, fromTy = NPtr(pointee = slotTy), value = NLocal(name = slot), toTy = NPtr(pointee = NI8))
+  )
+  val at = freshTmp(ctx)
+  val idx: List[NArg] = newList()
+  idx.add(NArg(ty = NI64, value = NLitInt(v = byteOffset.toLong(), ty = NI64)))
+  insns.add(NGEP(dest = at, ty = NI8, ptr = NLocal(name = raw), indices = idx))
+  val typed = freshTmp(ctx)
+  insns.add(
+    NBitcast(dest = typed, fromTy = NPtr(pointee = NI8), value = NLocal(name = at), toTy = NPtr(pointee = asTy))
+  )
+  val v = freshTmp(ctx)
+  insns.add(NLoad(dest = v, ty = asTy, ptr = NLocal(name = typed)))
+  NLocal(name = v)
+}
+
+// Store `v` of type `vTy` at the start of the slot `slot` of type `slotTy`.
+func cStoreInto(
+  ctx: in Ctx, insns: in List[NInsn], slot: in String, slotTy: in NType, vTy: in NType, v: in NValue
+): Unit {
+  val typed = freshTmp(ctx)
+  insns.add(
+    NBitcast(dest = typed, fromTy = NPtr(pointee = slotTy), value = NLocal(name = slot), toTy = NPtr(pointee = vTy))
+  )
+  insns.add(NStore(ty = vTy, value = v, ptr = NLocal(name = typed)))
+}
+
+/// A call to an extern whose signature carries a by-value record, lowered
+/// as `cAbiExternDecl` declares it.
+func cAbiExternCall(ctx: in Ctx, insns: in List[NInsn], callee: in String, args: in List[NArg], ret: in NType): NVal {
+  val tys: List[NType] = newList()
+  for a in args {
+    tys.add(a.ty)
+  }
+  val plan = cAbiPlanOf(ctx, tys, ret)
+  val lowered: List[NArg] = newList()
+  var sretSlot = ""
+  match plan.ret {
+    case CRSret -> {
+      sretSlot = freshTmp(ctx)
+      ctx.allocas.add(NAlloca(dest = sretSlot, ty = ret))
+      lowered.add(NArg(ty = NPtr(pointee = ret), value = NLocal(name = sretSlot), attrs = cAggregateAttr(ctx, "sret", ret)))
+    }
+    case _ -> ()
+  }
+  val scratchTy = NArray(elem = NI64, size = 2)
+  var i = 0
+  while i < args.count {
+    val a = args[i]
+    match plan.args[i] {
+      case CAPlain -> lowered.add(a)
+      case CAParts(parts) -> {
+        val buf = cScratchSlot(ctx, ctx.allocas)
+        cStoreInto(ctx, insns, buf, scratchTy, a.ty, a.value)
+        var k = 0
+        while k < parts.count {
+          lowered.add(NArg(ty = parts[k], value = cLoadAt(ctx, insns, buf, scratchTy, k * 8, parts[k])))
+          k = k + 1
+        }
+      }
+      case CAArray(el, n, at) -> {
+        val arrTy = NArray(elem = el, size = n)
+        if isCFloatNType(el) {
+          // A homogeneous aggregate has exactly the array's layout, and may
+          // be larger than the scratch buffer.
+          val slot = cSpill(ctx, ctx.allocas, insns, a.ty, a.value)
+          lowered.add(NArg(ty = arrTy, value = cLoadAt(ctx, insns, slot, a.ty, 0, arrTy), attrs = at))
+        } else {
+          val buf = cScratchSlot(ctx, ctx.allocas)
+          cStoreInto(ctx, insns, buf, scratchTy, a.ty, a.value)
+          lowered.add(NArg(ty = arrTy, value = cLoadAt(ctx, insns, buf, scratchTy, 0, arrTy), attrs = at))
+        }
+      }
+      case CAByval -> {
+        val slot = cSpill(ctx, ctx.allocas, insns, a.ty, a.value)
+        lowered.add(NArg(ty = NPtr(pointee = a.ty), value = NLocal(name = slot), attrs = cAggregateAttr(ctx, "byval", a.ty)))
+      }
+      case CAPtr -> {
+        val slot = cSpill(ctx, ctx.allocas, insns, a.ty, a.value)
+        lowered.add(NArg(ty = NPtr(pointee = a.ty), value = NLocal(name = slot)))
+      }
+    }
+    i = i + 1
+  }
+  val callRet = cRetNType(plan.ret, ret)
+  match plan.ret {
+    case CRSret -> {
+      insns.add(NCallVoid(fn = NGlobal(name = callee), args = lowered))
+      val v = freshTmp(ctx)
+      insns.add(NLoad(dest = v, ty = ret, ptr = NLocal(name = sretSlot)))
+      NVal(ty = ret, value = NLocal(name = v))
+    }
+    case CRPlain -> match ret {
+      case NVoid -> {
+        insns.add(NCallVoid(fn = NGlobal(name = callee), args = lowered))
+        NVal(ty = NVoid, value = NUndef(ty = NVoid))
+      }
+      case _ -> {
+        val dest = freshTmp(ctx)
+        insns.add(NCall(dest = dest, retTy = ret, fn = NGlobal(name = callee), args = lowered))
+        val outV = NVal(ty = ret, value = NLocal(name = dest))
+        registerTemp(ctx, outV)
+        outV
+      }
+    }
+    case _ -> {
+      // The coerced result goes through the scratch buffer and is read back
+      // as the record.
+      val r = freshTmp(ctx)
+      insns.add(NCall(dest = r, retTy = callRet, fn = NGlobal(name = callee), args = lowered))
+      val buf = cScratchSlot(ctx, ctx.allocas)
+      cStoreInto(ctx, insns, buf, scratchTy, callRet, NLocal(name = r))
+      NVal(ty = ret, value = cLoadAt(ctx, insns, buf, scratchTy, 0, ret))
+    }
+  }
+}
+
+/// Message for `N0010`: a by-value aggregate in an `extern func` signature
+/// that the C ABI lowering does not cover.
 func byValueExternMessage(fnName: in String, recName: in String, isUnion: in Bool): String {
   if recName == "array" {
     return "extern func '" + fnName +
-      "' passes an inline `array[N, T]` across the C boundary: it is an LLVM aggregate, not a C array parameter " +
-      "(docs/67 §4.3, tracked in #8009); pass a NativePtr to its first element"
+      "' passes an inline `array[N, T]` across the C boundary, and C passes no array by value (docs/67 §4.3); " +
+      "pass a NativePtr to its first element"
   }
-  val remedy = if isUnion {
-    "give a case a reference payload so the union keeps its heap form"
-  } else {
-    "declare the record with a `var` field so it keeps its heap form"
+  if isUnion {
+    return "extern func '" + fnName + "' passes by-value union '" + recName +
+      "' across the C boundary, and a union has no C struct equivalent (docs/67 §4.2); pass a NativePtr, or " +
+      "give a case a reference payload so the union keeps its heap form"
   }
-  "extern func '" + fnName + "' passes by-value " + (if isUnion { "union" } else { "record" }) + " '" + recName +
-    "' across the C boundary: it is an LLVM aggregate, not the platform C struct ABI (docs/67 §4.2, tracked in #8009); " +
-    "pass a NativePtr, or " +
-    remedy
+  "extern func '" + fnName + "' passes by-value record '" + recName +
+    "' across the C boundary, and this target's C struct ABI is not lowered (x86-64, AArch64 and wasm32 are; docs/67 §4.2); " +
+    "pass a NativePtr, or declare the record with a `var` field so it keeps its heap form"
 }
 
-/// Pre-pass: every `extern func` parameter or return of a by-value record
-/// (docs/67 §4.2) as an `N0010` diagnostic at the declaration.  The C ABI for
-/// by-value struct arguments (System V AMD64, AAPCS64) is tracked in #8009, so
-/// the boundary rejects them instead of emitting a mismatched call.
-pub func nativeByValueExternDiagnostics(units: in List[CodegenUnit]): List[Diagnostic] {
+// The by-value aggregate `te` names that cannot cross the C boundary: a
+// record, at a parameter, the result or in a callback type, crosses when
+// `lowered`; an inline array or union never does.
+func uncoveredByValueName(st: in NByValState, pkg: in String, te: in TypeExpr, lowered: in Bool): String {
+  val n = byValueRecordNameOf(st, pkg, te)
+  if n.length == 0 or not lowered or n == "array" or st.uresults.containsKey(n) {
+    return n
+  }
+  ""
+}
+
+/// Pre-pass: every `extern func` parameter or return of a by-value aggregate
+/// (docs/67 §4.2) the C ABI lowering does not cover, as an `N0010` diagnostic
+/// at the declaration.  On a target `cAbiArch` knows, a by-value record
+/// crosses as C passes the struct, in a callback type too (#8009); an inline
+/// array or union, and any by-value record on another target (or with no
+/// target named), is rejected instead of emitting a mismatched call.
+pub func nativeByValueExternDiagnostics(units: in List[CodegenUnit], triple: in String = ""): List[Diagnostic] {
+  val lowered = cAbiArch(triple).length > 0
   val diags: List[Diagnostic] = newList()
   val heapOnly: Map[String, Bool] = newMap()
   fillHeapOnlyRecs(heapOnly, units)
@@ -14797,13 +15774,13 @@ pub func nativeByValueExternDiagnostics(units: in List[CodegenUnit]): List[Diagn
       var bad = ""
       for p in ef.params {
         if bad.length == 0 {
-          bad = byValueRecordNameOf(st, u.pkgName, p.ty)
+          bad = uncoveredByValueName(st, u.pkgName, p.ty, lowered)
         }
       }
       match ef.ret {
         case Some(rt) -> {
           if bad.length == 0 {
-            bad = byValueRecordNameOf(st, u.pkgName, rt)
+            bad = uncoveredByValueName(st, u.pkgName, rt, lowered)
           }
         }
         case None -> {
@@ -15662,11 +16639,15 @@ func registerProtectedMember(
   sigParamNames.add("self")
   val sigParamModes: List[ParamMode] = newList()
   sigParamModes.add(PMIn)
+  val sigParamDefaults: List[Option[Expr]] = newList()
+  val noSelfDefault: Option[Expr] = None
+  sigParamDefaults.add(noSelfDefault)
   var i = 0
   while i < sParams.count {
     sigParamTys.add(sParams[i].ty)
     sigParamNames.add(sParams[i].name)
     sigParamModes.add(PMIn)
+    sigParamDefaults.add(sParams[i].dflt)
     i = i + 1
   }
   val sig = NFuncSig(
@@ -15675,12 +16656,19 @@ func registerProtectedMember(
     paramNames = sigParamNames,
     paramTys = sigParamTys,
     paramModes = sigParamModes,
+    paramDefaults = sigParamDefaults,
     retTy = sRet,
     isExternSym = false,
     isAsync = false
   )
   addSig(ctx.sigs, pkg + "." + methodName + "/" + arity.toString(), sig)
   addSig(ctx.sigs, methodName + "/" + arity.toString(), sig)
+  var shorter = requiredArgCount(sig)
+  while shorter < arity {
+    addSig(ctx.sigs, pkg + "." + methodName + "/" + shorter.toString(), sig)
+    addSig(ctx.sigs, methodName + "/" + shorter.toString(), sig)
+    shorter = shorter + 1
+  }
   val retTyN = retTypeToN(ctx, sRet)
   val paramTysN: List[NType] = newList()
   val paramNamesN: List[String] = newList()
@@ -15803,11 +16791,28 @@ func implMethodName(recordName: in String, ifaceName: in String, methodName: in 
   recordName + "." + ifaceName + "." + methodName
 }
 
+/// An interface or impl method may write its receiver as an explicit first
+/// parameter (`func area(self: in Self, ...)`); the receiver is supplied
+/// separately here, so that parameter is dropped.
+func withoutExplicitSelf(params: in List[Param]): List[Param] {
+  if params.count > 0 and params[0].name == "self" {
+    val rest: List[Param] = newList()
+    var i = 1
+    while i < params.count {
+      rest.add(params[i])
+      i = i + 1
+    }
+    return rest
+  }
+  params
+}
+
 /// Rewrite an `impl I for R` method into a self-receiving package function:
 /// prepend `self: in R` (impl methods parse without an injected receiver —
 /// the body's `self` keyword lowers to `loadLocal("self")`), substitute any
 /// `Self` in the remaining signature, and give it the collision-free name.
 func implMethodToFn(recordName: in String, ifaceName: in String, fn: in FunctionDecl): FunctionDecl {
+  val ownParams = withoutExplicitSelf(fn.params)
   val newParams: List[Param] = newList()
   newParams.add(
     Param(
@@ -15821,8 +16826,8 @@ func implMethodToFn(recordName: in String, ifaceName: in String, fn: in Function
     )
   )
   var i = 0
-  while i < fn.params.count {
-    val p = fn.params[i]
+  while i < ownParams.count {
+    val p = ownParams[i]
     newParams.add(
       Param(
         mode = p.mode,
@@ -16065,7 +17070,8 @@ func synthIfaceBoxDtor(ctx: in Ctx, ii: in NIfaceInfo): NFunc {
 }
 
 /// The ordered subset of `idecl.members` that the native backend's vtable
-/// layout covers: non-generic `IMSig` signatures, skipping async methods
+/// layout covers: non-generic `IMSig` signatures and default methods
+/// (`IMFunc`), with any explicit `self` parameter dropped, skipping async methods
 /// (async interface dispatch is unimplemented on this backend) and any
 /// method with its own generics (MVAR is unbuildable, docs/43 Q-GEN-002).
 /// `registerInterfaceNames` (phase A, method-name list) and
@@ -16085,7 +17091,33 @@ func nonGenericSyncSigs(idecl: in InterfaceDecl): List[FunctionSig] {
           }
           case None -> {
             if not sig.isAsync {
-              sigs.add(sig)
+              sigs.add(sig.copy(params = withoutExplicitSelf(sig.params)))
+            }
+          }
+        }
+      }
+      // A default method takes a slot too: `Lyric.ImplDefaults` copies its
+      // body into every impl that does not override it, so each impl's
+      // vtable has a method to point the slot at.
+      case IMFunc(fn) -> {
+        match fn.generics {
+          case Some(_) -> {
+          }
+          case None -> {
+            if not fn.isAsync {
+              sigs.add(
+                FunctionSig(
+                  docComments = fn.docComments,
+                  isAsync = false,
+                  name = fn.name,
+                  generics = None,
+                  params = withoutExplicitSelf(fn.params),
+                  ret = fn.ret,
+                  whereClause = None,
+                  contracts = fn.contracts,
+                  span = fn.span
+                )
+              )
             }
           }
         }
@@ -16162,6 +17194,12 @@ func registerInterfaceNames(ctx: in Ctx, units: in List[CodegenUnit]): Unit {
             mretSelf.add(retIsSelf)
             mi = mi + 1
           }
+          val mparamNames: List[List[String]] = newList()
+          val mparamDefaults: List[List[Option[Expr]]] = newList()
+          for sg in sigs {
+            mparamNames.add(paramNamesOf(sg.params))
+            mparamDefaults.add(paramDefaultsOf(sg.params))
+          }
           val info = NIfaceInfo(
             key = qualified,
             irName = "__iface." + mangled,
@@ -16170,7 +17208,9 @@ func registerInterfaceNames(ctx: in Ctx, units: in List[CodegenUnit]): Unit {
             methodParamTys = newList(),
             methodRetTys = newList(),
             methodRetIsSelf = mretSelf,
-            methodParamIsSelf = mparamSelf
+            methodParamIsSelf = mparamSelf,
+            methodParamNames = mparamNames,
+            methodParamDefaults = mparamDefaults
           )
           registerIfaceInfo(ctx, u.pkgName, idecl.name, info)
         }
@@ -16226,7 +17266,9 @@ func registerInterfaceTypes(
             methodParamTys = pTys,
             methodRetTys = rTys,
             methodRetIsSelf = pre.methodRetIsSelf,
-            methodParamIsSelf = pre.methodParamIsSelf
+            methodParamIsSelf = pre.methodParamIsSelf,
+            methodParamNames = pre.methodParamNames,
+            methodParamDefaults = pre.methodParamDefaults
           )
           registerIfaceInfo(ctx, u.pkgName, idecl.name, info)
           val vtFields: List[NType] = newList()
@@ -16289,9 +17331,122 @@ func ifaceVtableInitStr(
   acc + " }"
 }
 
+/// The vtable of a by-value implementer `R` (#8010): an interface value holds
+/// it in a `__box<R>`, so each slot is a thunk taking the box as its erased
+/// `self`.  The thunk reads the record out of the box, does the same for each
+/// `Self` parameter, calls the impl method with the values, and boxes a
+/// `Self` result, which the caller owns.
+func byValueVtableInitStr(
+  ctx: in Ctx,
+  pkg: in String,
+  recordName: in String,
+  ri: in NRecInfo,
+  ifaceName: in String,
+  ii: in NIfaceInfo,
+  fns: in List[NFunc],
+): String {
+  val recTy = recPtrType(ri)
+  val boxTy = byValueBoxType(ctx, recTy)
+  val boxStructTy = match boxTy { case NPtr(pointee) -> pointee; case _ -> panic("unreachable") }
+  val i8p = NPtr(pointee = NI8)
+  var acc = "{ "
+  var i = 0
+  while i < ii.methodNames.count {
+    if i > 0 {
+      acc = acc + ", "
+    }
+    val implIr = pkg + "." + implMethodName(recordName, ifaceName, ii.methodNames[i])
+    val thunkName = implIr + ".vthunk"
+    val body: List[NInsn] = newList()
+    body.add(NLabel(name = "entry"))
+    val params: List[NParam] = newList()
+    params.add(NParam(name = "self", ty = i8p))
+    val implArgs: List[NArg] = newList()
+    implArgs.add(
+      NArg(ty = recTy, value = loadFromByValueBox(ctx, body, NLocal(name = "self"), boxTy, boxStructTy, recTy))
+    )
+    val implParamTys: List[NType] = newList()
+    implParamTys.add(recTy)
+    val thunkParamTys: List[NType] = newList()
+    thunkParamTys.add(i8p)
+    var pi = 0
+    while pi < ii.methodParamTys[i].count {
+      val pty = ii.methodParamTys[i][pi]
+      val pname = "a" + toString(pi)
+      params.add(NParam(name = pname, ty = pty))
+      thunkParamTys.add(pty)
+      if ii.methodParamIsSelf[i][pi] {
+        implArgs.add(NArg(ty = recTy, value = loadFromByValueBox(ctx, body, NLocal(name = pname), boxTy, boxStructTy, recTy)))
+        implParamTys.add(recTy)
+      } else {
+        implArgs.add(NArg(ty = pty, value = NLocal(name = pname)))
+        implParamTys.add(pty)
+      }
+      pi = pi + 1
+    }
+    val retTy = ii.methodRetTys[i]
+    val retIsSelf = ii.methodRetIsSelf[i]
+    val implRetTy = if retIsSelf { recTy } else { retTy }
+    match implRetTy {
+      case NVoid -> {
+        body.add(NCallVoid(fn = NGlobal(name = implIr), args = implArgs))
+        body.add(NRetVoid)
+      }
+      case _ -> {
+        val r = freshTmp(ctx)
+        body.add(NCall(dest = r, retTy = implRetTy, fn = NGlobal(name = implIr), args = implArgs))
+        if retIsSelf {
+          val held = boxByValue(ctx, body, NVal(ty = recTy, value = NLocal(name = r)))
+          val raw = freshTmp(ctx)
+          body.add(NBitcast(dest = raw, fromTy = held.ty, value = held.value, toTy = i8p))
+          body.add(NRet(ty = retTy, value = NLocal(name = raw)))
+        } else {
+          body.add(NRet(ty = retTy, value = NLocal(name = r)))
+        }
+      }
+    }
+    fns.add(
+      NFunc(
+        name = thunkName,
+        params = params,
+        retTy = retTy,
+        isPublic = false,
+        isExtern = false,
+        body = body,
+        attributes = newList()
+      )
+    )
+    val fnTyStr = nTypeToIrString(NFnPtr(params = thunkParamTys, ret = retTy))
+    acc = acc + "i8* bitcast (" + fnTyStr + " @" + quoteIrIdent(thunkName) + " to i8*)"
+    i = i + 1
+  }
+  acc + " }"
+}
+
+// The record a `__box<R>` at `raw` holds, read into a value.
+func loadFromByValueBox(
+  ctx: in Ctx,
+  body: in List[NInsn],
+  raw: in NValue,
+  boxTy: in NType,
+  boxStructTy: in NType,
+  recTy: in NType,
+): NValue {
+  val b = freshTmp(ctx)
+  body.add(NBitcast(dest = b, fromTy = NPtr(pointee = NI8), value = raw, toTy = boxTy))
+  val payload = freshTmp(ctx)
+  val gArgs: List[NArg] = newList()
+  gArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  gArgs.add(NArg(ty = NI32, value = NLitInt(v = arcHeaderSlots.toLong(), ty = NI32)))
+  body.add(NGEP(dest = payload, ty = boxStructTy, ptr = NLocal(name = b), indices = gArgs))
+  val v = freshTmp(ctx)
+  body.add(NLoad(dest = v, ty = recTy, ptr = NLocal(name = payload)))
+  NLocal(name = v)
+}
+
 /// Emit a vtable constant global for every `impl I for R` and record the
 /// `<recordIr>|<ifaceKey>` -> global-name mapping consulted at upcast sites.
-func registerImplVtables(ctx: in Ctx, units: in List[CodegenUnit]): Unit {
+func registerImplVtables(ctx: in Ctx, units: in List[CodegenUnit], fns: in List[NFunc]): Unit {
   var ua = 0
   while ua < units.count {
     val u = units[ua]
@@ -16311,19 +17466,30 @@ func registerImplVtables(ctx: in Ctx, units: in List[CodegenUnit]): Unit {
                 case None -> {
                 }
                 case Some(info) -> {
-                  match mapGet(ctx.recordDefs, recordName) {
+                  // The impl's own package's record of that name before
+                  // the first one declared anywhere.
+                  val target = match mapGet(ctx.recordDefs, u.pkgName + "." + recordName) {
+                    case Some(own) -> Some(value = own)
+                    case None -> mapGet(ctx.recordDefs, recordName)
+                  }
+                  match target {
                     case None -> {
                     }
                     case Some(ri) -> {
                       val selfPtrTy = recPtrType(ri)
                       val gname = ifaceVtableGlobalName(ri.irName, info)
                       if not ctx.ifaceVtables.containsKey(ri.irName + "|" + info.key) {
+                        val initStr = if ri.byValue {
+                          byValueVtableInitStr(ctx, u.pkgName, recordName, ri, ifaceName, info, fns)
+                        } else {
+                          ifaceVtableInitStr(ctx, u.pkgName, recordName, selfPtrTy, ifaceName, info)
+                        }
                         ctx.globals.add(
                           NGlobalDef(
                             name = gname,
                             linkage = "internal constant",
                             tyStr = nTypeToIrString(ifaceVtStructType(info)),
-                            initStr = ifaceVtableInitStr(ctx, u.pkgName, recordName, selfPtrTy, ifaceName, info),
+                            initStr = initStr,
                             align = 8
                           )
                         )
@@ -16390,7 +17556,7 @@ func registerImplDirectMethods(ctx: in Ctx, units: in List[CodegenUnit]): Unit {
                         }
                         case None -> {
                           if not fn.isAsync {
-                            val arity = (fn.params.count + 1).toString()
+                            val arity = (withoutExplicitSelf(fn.params).count + 1).toString()
                             val key = u.pkgName + "." + recordName + "." + fn.name + "/" + arity
                             val sigKey = u.pkgName + "." + implMethodName(recordName, ifaceName, fn.name) + "/" + arity
                             if not ctx.implDirectMethods.containsKey(key) {
@@ -16425,9 +17591,16 @@ func buildIfaceBox(ctx: in Ctx, insns: in List[NInsn], v: in NVal, ii: in NIface
   val structTy = ifaceBoxStructType(ii)
   val box = emitHeapAlloc(ctx, insns, boxTy, ifaceBoxDtorName(ii))
   // obj slot (ifaceBoxObjSlot): retain then store the erased object pointer.
+  // A by-value record is copied into a fresh `__box<R>` the interface value
+  // owns (#8010); its vtable's thunks read it back out.
   val objI8 = freshTmp(ctx)
-  insns.add(NBitcast(dest = objI8, fromTy = v.ty, value = v.value, toTy = NPtr(pointee = NI8)))
-  insns.add(NCallVoid(fn = NGlobal(name = "lyric_retain"), args = arg1(NPtr(pointee = NI8), NLocal(name = objI8))))
+  if isBoxedValueNType(v.ty) {
+    val held = boxByValue(ctx, insns, v)
+    insns.add(NBitcast(dest = objI8, fromTy = held.ty, value = held.value, toTy = NPtr(pointee = NI8)))
+  } else {
+    insns.add(NBitcast(dest = objI8, fromTy = v.ty, value = v.value, toTy = NPtr(pointee = NI8)))
+    insns.add(NCallVoid(fn = NGlobal(name = "lyric_retain"), args = arg1(NPtr(pointee = NI8), NLocal(name = objI8))))
+  }
   val objSlot = freshTmp(ctx)
   val objArgs: List[NArg] = newList()
   objArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
@@ -16485,6 +17658,15 @@ func reboxErasedSelfResult(ctx: in Ctx, insns: in List[NInsn], ii: in NIfaceInfo
   val boxVal = NVal(ty = boxTy, value = NLocal(name = box))
   registerTemp(ctx, boxVal)
   boxVal
+}
+
+/// One interface call argument, lowered against its parameter: a bare `Self`
+/// parameter unboxes explicitly (#7618), every other one coerces.
+func lowerIfaceArgAt(ctx: in Ctx, insns: in List[NInsn], ex: in Expr, pt: in NType, isSelf: in Bool): NVal {
+  if isSelf {
+    return unboxToSelfSlot(ctx, insns, lowerExpr(ctx, insns, ex))
+  }
+  coerceTo(ctx, insns, lowerExprExpecting(ctx, insns, ex, pt), pt)
 }
 
 /// Dispatch an interface method call: load `obj` and the vtable pointer,
@@ -16549,21 +17731,77 @@ func lowerIfaceDispatch(
   // a genuine `NativePtr[Byte]` parameter, which erases to the SAME `i8*`
   // but must coerce (and, on a mismatch, fail) through the ordinary path.
   val paramIsSelf = ii.methodParamIsSelf[slot]
+  val paramNames = ii.methodParamNames[slot]
+  val paramDefaults = ii.methodParamDefaults[slot]
+  // Written arguments are evaluated in source order, positional ones
+  // binding left to right and named ones by name; a parameter the call
+  // leaves out then takes the interface member's default (#7985).
+  val argExprs: List[Expr] = newList()
+  val argSlots: List[Int] = newList()
+  var nextPositional = 0
+  for a in args {
+    match a {
+      case CAPositional(ex) -> {
+        argExprs.add(ex)
+        argSlots.add(nextPositional)
+        nextPositional = nextPositional + 1
+      }
+      case CANamed(argName, value, _) -> {
+        var found = -1
+        var ni = 0
+        while ni < paramNames.count {
+          if paramNames[ni] == argName {
+            found = ni
+          }
+          ni = ni + 1
+        }
+        if found < 0 {
+          panic(
+            "Lyric.LlvmCodegen: named argument '" + argName + "' does not match a parameter of interface method '." +
+              ii.methodNames[slot] +
+              "'"
+          )
+        }
+        argExprs.add(value)
+        argSlots.add(found)
+      }
+    }
+  }
+  val slotVals: List[NVal] = newList()
+  val slotFilled: List[Bool] = newList()
+  for pt in paramTys {
+    slotVals.add(NVal(ty = pt, value = NUndef(ty = pt)))
+    slotFilled.add(false)
+  }
+  var ai = 0
+  while ai < argExprs.count {
+    val ps = argSlots[ai]
+    slotVals[ps] = lowerIfaceArgAt(ctx, insns, argExprs[ai], paramTys[ps], paramIsSelf[ps])
+    slotFilled[ps] = true
+    ai = ai + 1
+  }
+  var di = 0
+  while di < paramTys.count {
+    if not slotFilled[di] {
+      match paramDefaults[di] {
+        case Some(dex) -> {
+          slotVals[di] = lowerIfaceArgAt(ctx, insns, dex, paramTys[di], paramIsSelf[di])
+        }
+        case None -> panic(
+          "Lyric.LlvmCodegen: no argument bound for parameter '" + paramNames[di] + "' of interface method '." +
+            ii.methodNames[slot] +
+            "', which has no default"
+        )
+      }
+    }
+    di = di + 1
+  }
   val callArgs: List[NArg] = newList()
   callArgs.add(NArg(ty = NPtr(pointee = NI8), value = NLocal(name = objVal)))
-  var ai = 0
-  while ai < args.count {
-    val av = if paramIsSelf[ai] {
-      val raw = match args[ai] {
-        case CAPositional(ex) -> lowerExpr(ctx, insns, ex)
-        case CANamed(_, value, _) -> lowerExpr(ctx, insns, value)
-      }
-      unboxToSelfSlot(ctx, insns, raw)
-    } else {
-      lowerCallArgExpecting(ctx, insns, args, ai, paramTys[ai])
-    }
-    callArgs.add(NArg(ty = paramTys[ai], value = av.value))
-    ai = ai + 1
+  var ci = 0
+  while ci < paramTys.count {
+    callArgs.add(NArg(ty = paramTys[ci], value = slotVals[ci].value))
+    ci = ci + 1
   }
   match retTy {
     case NVoid -> {

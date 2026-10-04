@@ -54,6 +54,7 @@ for t in \
   lyric-compiler/lyric/llvm_inline_union_self_test.l \
   lyric-compiler/lyric/llvm_fixed_array_self_test.l \
   lyric-compiler/lyric/llvm_ffi_self_test.l \
+  lyric-compiler/lyric/llvm_c_abi_self_test.l \
   lyric-compiler/lyric/llvm_collections_self_test.l \
   lyric-compiler/lyric/llvm_stdlib_self_test.l \
   lyric-compiler/lyric/llvm_tls_self_test.l \
@@ -69,6 +70,7 @@ for t in \
   lyric-compiler/lyric/llvm_project_self_test.l \
   lyric-compiler/lyric/cli_run_native_project_self_test.l \
   lyric-compiler/lyric/fixed_array_project_self_test.l \
+  lyric-compiler/lyric/fixed_array_restored_self_test.l \
   lyric-compiler/lyric/native_dependency_self_test.l \
   lyric-compiler/lyric/native_string_normalize_panic_self_test.l \
   lyric-compiler/lyric/llvm_self_test_self_iface.l \
@@ -91,6 +93,8 @@ for t in \
   lyric-compiler/lyric/inline_union_self_test.l \
   lyric-compiler/lyric/generic_ctor_open_arg_self_test.l \
   lyric-compiler/lyric/fixed_array_self_test.l \
+  lyric-compiler/lyric/func_default_args_self_test.l \
+  lyric-compiler/lyric/method_default_args_self_test.l \
   lyric-compiler/lyric/bench_alloc_self_test.l \
   lyric-compiler/lyric/tuple_expected_type_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_test.l \
@@ -108,3 +112,5 @@ LYRIC_BIN="$lyric_bin" bash scripts/ci/overflow-profile-e2e.sh native
 LYRIC_BIN="$lyric_bin" bash scripts/ci/fixed-array-e2e.sh native
 # docs/67 G1: Vec3 arithmetic and an inline array of Vec3 allocate nothing.
 LYRIC_BIN="$lyric_bin" bash scripts/ci/bench-vec3-alloc.sh
+# #8031: an inline range type is checked wherever a value reaches it.
+LYRIC_BIN="$lyric_bin" bash scripts/ci/range-refinement-e2e.sh native

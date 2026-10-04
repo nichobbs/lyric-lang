@@ -1207,6 +1207,7 @@ lyric prove --manifest <lyric.toml>    # project mode: override manifest discove
 lyric bench <file.l>                   # compile and run @bench_module timing harness
 lyric bench <file.l> --target jvm      # benchmark on JVM target (java -jar)
 lyric bench <file.l> --target native   # benchmark the native executable
+lyric bench <file.l> --target native --opt 3   # native at another -O level (default 2; also --triple)
 lyric bench <file.l> --runs <N>        # number of timed iterations (default: 100, at least 1)
 lyric bench <file.l> --warmup <N>      # un-timed warmup iterations (default: 5)
 lyric bench <file.l> --filter <substr> # only run benchmarks whose name contains <substr>
@@ -1400,7 +1401,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0129` | A union- or enum-case pattern is matched against a value of a different type: `case Some(i)` on an `Int`, or `case Ok(v)` on an `Option`. The pattern can never match; it used to type-check and then take the wrong arm on dotnet or fail JVM verification. Fix the scrutinee or the pattern. A bare nullary case (`case None`) is checked the same way. Not checked when the scrutinee's type is unknown or open (a type variable, `Self`, a nullable). |
 | `T0130` | `break` or `continue` outside a loop, or `break label` / `continue label` where no enclosing loop has that label. A lambda body, a `defer` body and a `finally` block start with no enclosing loops. |
 | `T0131` | A loop reuses the label of a loop it is nested in, so `break label` would be ambiguous. Rename one; sibling loops may share a label. |
-| `T0132` | A contract clause has the wrong type: `requires:`, `ensures:`, `when:` and loop `invariant:` must be `Bool`. Clauses are checked in the function's scope, with `result` typed as the declared return type. |
+| `T0132` | A contract clause has the wrong type: `requires:`, `ensures:`, `when:`, loop `invariant:` and a protected type's `invariant:` must be `Bool` (a protected invariant reads the fields by bare name). Clauses are checked in the function's scope, with `result` typed as the declared return type. |
 | `T0133` | A contract clause or loop invariant calls a function that is not `@pure`. Mark the callee `@pure` if it has no side effects (the compiler trusts the annotation), or move the check into the body. |
 | `T0134` | A compound assignment (`+=`, `-=`, ...) to a distinct type, or to a record with derived `Add`/`Sub`, has a target that is not a variable or field path (`xs[i] += y`). The assignment is rewritten to `x = x op y`, which evaluates the target twice; write it out explicitly. |
 | `T0135` | A protected type's `func` member, or a method of an `impl` for a protected type, is `async` or declares its own type parameters. Every `entry` and `func` (and every such impl method) runs under the instance lock, which cannot be held across an `await` or taken by a method-generic member. |
@@ -1521,7 +1522,7 @@ span, exactly like `T0120`/`J008`.
 | `N0007` | A value flows into a codegen slot whose type it cannot be coerced to — most commonly a call argument against an extern generic collection method (`List[T].add`/`Map[K, V].add`, …) that the type checker admits with NO argument validation at all (an unresolved generic parameter is satisfied by any argument type on every target), so a genuinely incompatible argument (not a numeric narrowing — `coerceTo` narrows a wider `Int`/`Long` argument to a declared-narrower `Byte`/`Int` slot on its own, matching MSIL's implicit `List<byte>.Add` narrowing and JVM's `i2b`) reaches native codegen with no LLVM-IR-level conversion available. |
 | `N0008` | A `protected type` declares type parameters. Generic protected types build on `--target dotnet` and `--target jvm`; native has no per-instantiation protected-type layout yet (#7864). Reported at the declaration before codegen. |
 | `N0009` | A `--triple wasm32-wasi` build found no wasi-sdk; set `WASI_SDK_PATH` to its install directory. |
-| `N0010` | An `extern func` signature (including a callback parameter or a return) names a record that `--target native` lowers by value, or an inline `array[N, T]`; the C struct ABI for it is #8009, so pass a `NativePtr` (to an array's first element) or use a record with a `var` field until then. |
+| `N0010` | An `extern func` signature (including a callback parameter or a return) names an inline `array[N, T]` or a by-value union, which have no C equivalent, or a by-value record on a target whose C struct ABI the native backend does not lower (x86-64, AArch64 and wasm32 are lowered, #8009). Pass a `NativePtr` (to an array's first element), or give the type its heap form. |
 | `N0011` | `--shape module` or `--shape component` was given a triple that is not wasm32; pass `--triple wasm32-wasi`. |
 | `N0012` | An unknown native output shape name reached the native bridge; the wasm32 shapes are `module` and `component`. |
 | `N0013` | A generated file could not be written next to the `.wasm`: the `--shape module` JS glue (`<name>.js`) or declarations (`<name>.d.ts`), or the `--shape component` WIT (`<name>.wit`) or C wrappers (`<name>.cabi.c`). |

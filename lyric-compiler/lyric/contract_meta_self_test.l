@@ -750,6 +750,16 @@ func testBuildArrayTypeArg(): Unit {
   assertTrue(Str.contains(d.repr, "array[4, Int]"), "array: TAValue literal renders faithfully (got " + d.repr + ")")
 }
 
+// A `var` field stays `var` in the repr: a restored consumer can write
+// through it, and the record keeps its identity (D157, #8042).
+func testBuildVarFieldKept(): Unit {
+  val src = "package P\n\npub record Grid {\n  var cells: array[3, Int]\n  n: Int\n}\n"
+  val pr = parse(src)
+  val c = buildContractFromFile(pr.file, "1.0.0")
+  val d = unwrapDeclOrFail(findDeclByKind(c.decls, "record", "Grid"), "buildContractFromFile: record Grid missing")
+  assertEqual(d.repr, "pub record Grid { var cells: array[3, Int], n: Int }", "a var field keeps var")
+}
+
 // `buildContractFromFile` carries the supplied version.
 func testBuildVersionThreaded(): Unit {
   val src = "package P\n\npub func f(): Int { 1 }\n"
@@ -1177,6 +1187,10 @@ test "buildContractFromFile union mixed fields" {
 
 test "buildContractFromFile array type arg" {
   testBuildArrayTypeArg()
+}
+
+test "buildContractFromFile keeps var fields" {
+  testBuildVarFieldKept()
 }
 
 test "buildContractFromFile version threaded" {

@@ -19,6 +19,54 @@ import Lyric.Discovery as Disc
 // ─────────────────────────────────────────────────────────────────────────────
 // §11d. Bench command
 // ─────────────────────────────────────────────────────────────────────────────
+// The `--target native` build settings a bench uses: the manifest's
+// `[native]` table merged with the `--triple`/`--opt` flags, as `lyric build`
+// merges them (#8096).
+pub record NativeBenchConfig {
+  triple: String
+  optLevel: String
+  extraLibs: List[String]
+}
+
+// Resolves the native settings for a bench: a non-empty `--triple`/`--opt`
+// wins over the manifest's `triple`/`opt_level`, and `extra_libs` comes from
+// the manifest. A benchmark measures optimised code, so the level defaults to
+// `-O2` (the release profile) when neither names one. A wasm32 triple is
+// rejected: the benchmark runs on this machine.
+pub func resolveNativeBenchConfig(
+  manifestPath: in Option[String], cliTriple: in String, cliOpt: in String
+): Result[NativeBenchConfig, String] {
+  var triple = cliTriple
+  var opt = cliOpt
+  val libs: List[String] = newList()
+  match resolveNativeConfig(manifestPath) {
+    case Err(msg) -> return Err(error = msg)
+    case Ok(ncOpt) -> match ncOpt {
+      case Some(nc) -> {
+        if triple == "" {
+          triple = nc.triple
+        }
+        if opt == "" {
+          opt = nc.optLevel
+        }
+        for lib in nc.extraLibs {
+          libs.add(lib)
+        }
+      }
+      case None -> ()
+    }
+  }
+  if Str.startsWith(triple, "wasm32") {
+    return Err(
+      error = "bench: --target native runs the benchmark on this machine, so the triple cannot be '" + triple + "'"
+    )
+  }
+  if opt == "" {
+    opt = "2"
+  }
+  Ok(value = NativeBenchConfig(triple = triple, optLevel = opt, extraLibs = libs))
+}
+
 // Run bench synthesis and execution for a single source file with pre-read source.
 func runBenchOnSource(
   sourcePath: in String,
@@ -27,6 +75,7 @@ func runBenchOnSource(
   warmupArg: in Int,
   filterArg: in String,
   target: in Emitter.CompileTarget,
+  nativeCfg: in NativeBenchConfig,
 ): Int {
   val stem = stemOf(Path.basename(sourcePath), 2)
   val benchExt = match target { case Emitter.Jvm -> ".jar"; case Emitter.Dotnet -> ".dll"; case Emitter.Native -> "" }
@@ -69,7 +118,15 @@ func runBenchOnSource(
         path = sourcePath,
         contractsEnabled = true
       )
-      val result = Emitter.emit(req)
+      val result = match target {
+        case Emitter.Native -> Emitter.emitNative(
+          req,
+          nativeCfg.triple,
+          nativeCfg.optLevel,
+          nativeCfg.extraLibs
+        )
+        case _ -> Emitter.emit(req)
+      }
       var hadError = false
       for d in result.diagnostics.toArray() {
         match d.severity {
@@ -140,6 +197,8 @@ func cmdBench(argv: in slice[String]): Int {
   var filterArg = ""
   var manifestArg: Option[String] = None
   var target: Emitter.CompileTarget = Emitter.Dotnet
+  var tripleArg = ""
+  var optArg = ""
   val positional: List[String] = newList()
 
   var i = 1
@@ -201,6 +260,26 @@ func cmdBench(argv: in slice[String]): Int {
         printErr("bench: --manifest requires a path")
         return 1
       }
+    } else if arg == "--triple" {
+      if i + 1 < argv.length {
+        tripleArg = argv[i + 1]
+        i += 2
+      } else {
+        printErr("bench: --triple requires an argument (an LLVM target triple, e.g. x86_64-unknown-linux-gnu)")
+        return 1
+      }
+    } else if arg == "--opt" {
+      if i + 1 < argv.length {
+        optArg = argv[i + 1]
+        if not (optArg == "0" or optArg == "1" or optArg == "2" or optArg == "3" or optArg == "s") {
+          printErr("bench: --opt must be 0, 1, 2, 3 or s, got '" + optArg + "'")
+          return 64
+        }
+        i += 2
+      } else {
+        printErr("bench: --opt requires an argument (0, 1, 2, 3, or s)")
+        return 1
+      }
     } else if arg == "--target" {
       if i + 1 < argv.length {
         val t = argv[i + 1]
@@ -222,6 +301,23 @@ func cmdBench(argv: in slice[String]): Int {
     } else {
       positional.add(arg)
       i += 1
+    }
+  }
+
+  var nativeCfg = NativeBenchConfig(triple = "", optLevel = "", extraLibs = newList())
+  match target {
+    case Emitter.Native -> match resolveNativeBenchConfig(manifestArg, tripleArg, optArg) {
+      case Ok(cfg) -> {
+        nativeCfg = cfg
+      }
+      case Err(msg) -> {
+        printErr(msg)
+        return 1
+      }
+    }
+    case _ -> if tripleArg != "" or optArg != "" {
+      printErr("bench: --triple and --opt apply only to --target native")
+      return 64
     }
   }
 
@@ -282,7 +378,7 @@ func cmdBench(argv: in slice[String]): Int {
       val bSource = benchSources[bi]
       bi += 1
       Console.println("== bench: " + bPath)
-      val rc = runBenchOnSource(bPath, bSource, runsArg, warmupArg, filterArg, target)
+      val rc = runBenchOnSource(bPath, bSource, runsArg, warmupArg, filterArg, target, nativeCfg)
       if rc != 0 {
         anyFailed = true
       }
@@ -302,5 +398,5 @@ func cmdBench(argv: in slice[String]): Int {
     }
   }
 
-  runBenchOnSource(sourcePath, source, runsArg, warmupArg, filterArg, target)
+  runBenchOnSource(sourcePath, source, runsArg, warmupArg, filterArg, target, nativeCfg)
 }

@@ -2107,9 +2107,24 @@ func segmentsToString(segments: in List[String]): String {
 // then declared the same generic twice.  Dedupe by name against what
 // `postMono` already carries so this only ever ADDS the functions mono
 // actually removed.
+//
+// The post-mono file also has every `array[N, T]` lowered to the `List[T]`
+// that represents it (D167).  The contract describes the package's surface
+// as written, so an item whose declaration mentions an array type is taken
+// from `preMono` instead: a restored consumer then sees `array[3, Int]`, and
+// lowers it to the same `List` the DLL's member takes (#8042).
 func withGenericFuncsForContract(preMono: in SourceFile, postMono: in SourceFile): SourceFile {
   val items: List[Item] = newList()
   val postFuncNames: Map[String, Bool] = newMap()
+  val arrayItems: Map[String, Item] = newMap()
+  for pre in preMono.items {
+    if itemMentionsArrayMsil(pre) {
+      val key = contractItemKeyMsil(pre)
+      if key.length > 0 and not arrayItems.containsKey(key) {
+        arrayItems.add(key, pre)
+      }
+    }
+  }
   var pi = 0
   while pi < postMono.items.count {
     val it = postMono.items[pi]
@@ -2121,7 +2136,8 @@ func withGenericFuncsForContract(preMono: in SourceFile, postMono: in SourceFile
       }
       case _ -> ()
     }
-    items.add(it)
+    val asWritten = match mapGet(arrayItems, contractItemKeyMsil(it)) { case Some(pre) -> pre; case None -> it }
+    items.add(asWritten)
     pi = pi + 1
   }
   var gi = 0
@@ -2147,6 +2163,110 @@ func withGenericFuncsForContract(preMono: in SourceFile, postMono: in SourceFile
     items = items,
     span = postMono.span
   )
+}
+
+// The kind and name of a declaration (a function's with its arity), or ""
+// for an item the contract does not match by name.
+func contractItemKeyMsil(it: in Item): String {
+  match it.kind {
+    case IFunc(d) -> "f:" + d.name + "/" + toString(d.params.count)
+    case IRecord(d) -> "r:" + d.name
+    case IExposedRec(d) -> "x:" + d.name
+    case IOpaque(d) -> "o:" + d.name
+    case IUnion(d) -> "u:" + d.name
+    case ITypeAlias(d) -> "a:" + d.name
+    case IDistinctType(d) -> "d:" + d.name
+    case _ -> ""
+  }
+}
+
+func itemMentionsArrayMsil(it: in Item): Bool {
+  match it.kind {
+    case IFunc(d) -> funcMentionsArrayMsil(d)
+    case IRecord(d) -> recordMentionsArrayMsil(d)
+    case IExposedRec(d) -> recordMentionsArrayMsil(d)
+    case IOpaque(d) -> {
+      for m in d.members {
+        match m {
+          case OMField(fd) -> if typeMentionsArrayMsil(fd.ty) { return true }
+          case _ -> ()
+        }
+      }
+      false
+    }
+    case IUnion(d) -> {
+      for c in d.cases {
+        for f in c.fields {
+          val ty = match f { case UFNamed(_, t, _) -> t; case UFPos(t, _) -> t }
+          if typeMentionsArrayMsil(ty) {
+            return true
+          }
+        }
+      }
+      false
+    }
+    case ITypeAlias(d) -> typeMentionsArrayMsil(d.rhs)
+    case IDistinctType(d) -> typeMentionsArrayMsil(d.underlying)
+    case _ -> false
+  }
+}
+
+func recordMentionsArrayMsil(d: in RecordDecl): Bool {
+  for m in d.members {
+    match m {
+      case RMField(fd) -> if typeMentionsArrayMsil(fd.ty) { return true }
+      case RMFunc(fn) -> if funcMentionsArrayMsil(fn) { return true }
+      case _ -> ()
+    }
+  }
+  false
+}
+
+func funcMentionsArrayMsil(d: in FunctionDecl): Bool {
+  for p in d.params {
+    if typeMentionsArrayMsil(p.ty) {
+      return true
+    }
+  }
+  match d.ret {
+    case Some(r) -> typeMentionsArrayMsil(r)
+    case None -> false
+  }
+}
+
+func typeMentionsArrayMsil(te: in TypeExpr): Bool {
+  match te.kind {
+    case TArray(_, _) -> true
+    case TGenericApp(_, args) -> {
+      for a in args {
+        match a {
+          case TAType(t) -> if typeMentionsArrayMsil(t) { return true }
+          case TAValue(_) -> ()
+        }
+      }
+      false
+    }
+    case TSlice(e) -> typeMentionsArrayMsil(e)
+    case TTuple(ts) -> {
+      for t in ts {
+        if typeMentionsArrayMsil(t) {
+          return true
+        }
+      }
+      false
+    }
+    case TNullable(i) -> typeMentionsArrayMsil(i)
+    case TFunction(ps, r) -> {
+      for t in ps {
+        if typeMentionsArrayMsil(t) {
+          return true
+        }
+      }
+      typeMentionsArrayMsil(r)
+    }
+    case TParen(i) -> typeMentionsArrayMsil(i)
+    case _ -> false
+  }
 }
 
 // Return the MethodDef token of `main` if it was registered, or 0 for libraries.

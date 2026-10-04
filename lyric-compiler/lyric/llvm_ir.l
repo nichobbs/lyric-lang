@@ -30,6 +30,9 @@ import Lyric.LlvmTypes
 pub record NArg {
   ty: NType
   value: NValue
+  /// Parameter attributes at the call (`byval(%T) align 8`, `sret(%T)`),
+  /// which must match the callee's declaration (C ABI, #8009).
+  attrs: String = ""
 }
 
 pub record NSwitchCase {
@@ -133,6 +136,9 @@ pub union NInsn {
 pub record NParam {
   name: String
   ty: NType
+  /// Parameter attributes (`byval(%T) align 8`, `sret(%T) align 4`) for a
+  /// C-ABI declaration (#8009).
+  attrs: String = ""
 }
 
 pub record NFunc {
@@ -266,7 +272,11 @@ func renderArgs(args: in List[NArg]): String {
     if i > 0 {
       acc = acc + ", "
     }
-    acc = acc + nValueTypedString(args[i].ty, args[i].value)
+    if args[i].attrs.length > 0 {
+      acc = acc + nTypeToIrString(args[i].ty) + " " + args[i].attrs + " " + nValueOperandString(args[i].value)
+    } else {
+      acc = acc + nValueTypedString(args[i].ty, args[i].value)
+    }
     i = i + 1
   }
   acc
@@ -419,6 +429,9 @@ func renderParams(params: in List[NParam], withNames: in Bool): String {
       acc = acc + ", "
     }
     acc = acc + nTypeToIrString(params[i].ty)
+    if params[i].attrs.length > 0 {
+      acc = acc + " " + params[i].attrs
+    }
     if withNames {
       acc = acc + " %" + quoteIrIdent(params[i].name)
     }

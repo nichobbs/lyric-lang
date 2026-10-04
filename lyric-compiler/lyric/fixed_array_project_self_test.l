@@ -51,6 +51,7 @@ func mathSource(): String {
   "package Arr.Math\n\n" + "pub val SIZE: Int = 3\n\n" + "pub record Mat {\n  cells: array[4, Float]\n}\n\n" +
     "pub record Reading {\n  var values: array[SIZE, Float]\n}\n\n" +
     "pub record Acc {\n  var hits: array[3, Int]\n  var n: Int\n}\n\n" +
+    "pub record Box[T] {\n  var data: array[2, T]\n  tag: Int\n}\n\n" +
     "pub func identity(): Mat {\n  Mat(cells = [1.0, 0.0, 0.0, 1.0])\n}\n\n" +
     "pub func trace(m: in Mat): Float {\n  m.cells[0] + m.cells[3]\n}\n\n" +
     "pub func total(a: in array[3, Int]): Int {\n  var t = 0\n  for x in a {\n    t = t + x\n  }\n  t\n}\n\n" +
@@ -78,11 +79,16 @@ func appSource(): String {
     "  val z = zeros()\n" +
     "  val acc = makeAcc()\n" +
     "  acc.hits[1] = 6\n" +
+    "  val acc2 = Acc(n = 1)\n" +
+    "  acc2.hits[2] = 7\n" +
+    "  val bx: Box[Int] = Box(tag = 2)\n" +
+    "  val by = Box(data = [3, 4], tag = 0)\n" +
     "  val r = Reading(values = [1.0, 2.0, 3.0])\n" +
     "  val mm = Mat(cells = [2.0, 0.0, 0.0, 3.0])\n" +
     "  var same = 0\n" +
     "  if mm == m {\n    same = 100\n  }\n" +
-    "  total(h) + total(z) + acc.hits[1] + sumReading(r).toInt() + same + trace(mm).toInt() + copyCount()\n" +
+    "  total(h) + total(z) + acc.hits[1] + sumReading(r).toInt() + same + trace(mm).toInt() + copyCount() +\n" +
+    "    acc2.hits[0] + acc2.hits[2] + bx.data[1] + bx.tag + by.data[0] + by.data[1]\n" +
     "}\n"
 }
 
@@ -113,15 +119,18 @@ func runOn(target: in Emitter.CompileTarget, label: in String): Int {
 
 // 12 (total of the filled array) + 0 (zeros) + 6 (an element written through a
 // field) + 6 (a Reading sized by a constant) + 0 (the matrices differ) + 5 +
-// 1 (a copy made in a package that never spells an array type).
+// 1 (a copy made in a package that never spells an array type) + 7 (another
+// package's record whose array field is zero filled where it is built) + 2
+// (a generic one, zero filled at Int) + 7 (a generic one whose element type a
+// bracket literal binds) (#8042).
 test "a two-package project with arrays runs on dotnet" {
-  assertEqualInt(runOn(Emitter.Dotnet, "dotnet"), 30, "the exit code")
+  assertEqualInt(runOn(Emitter.Dotnet, "dotnet"), 46, "the exit code")
 }
 
 test "a two-package project with arrays runs on the JVM" {
-  assertEqualInt(runOn(Emitter.Jvm, "jvm"), 30, "the exit code")
+  assertEqualInt(runOn(Emitter.Jvm, "jvm"), 46, "the exit code")
 }
 
 test "a two-package project with arrays runs on native" {
-  assertEqualInt(runOn(Emitter.Native, "native"), 30, "the exit code")
+  assertEqualInt(runOn(Emitter.Native, "native"), 46, "the exit code")
 }

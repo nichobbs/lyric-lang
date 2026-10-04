@@ -11,8 +11,8 @@
 //! record methods and a bare call to a sibling method.  A default comes from
 //! the declaration the call resolves through: the interface member's for a
 //! call on an interface-typed value, the `impl` method's for a call on the
-//! concrete type.  A default that widens (`x: in ULong = someUInt`)
-//! zero-extends.
+//! concrete type.  A default that widens is in
+//! `method_default_widening_self_test.l`.
 //!
 //! A call that leaves out a defaulted argument binds the overload the type
 //! checker resolved, on both targets (#7828): the backends used to look a
@@ -20,14 +20,14 @@
 //! `m(x: Int, y: Int = 2)` and `m(x: String)` called `m(x: String)` on
 //! dotnet and failed verification on the JVM.  An overload taking exactly
 //! the written arguments wins over one that fills the rest from defaults.
+//!
+//! Every case runs on dotnet, the JVM and native (#7985).
 @test_module
 package MethodDefaultArgsSelfTest
 
 import Std.Core
 import Std.Collections
 import Std.Testing
-
-val bigU: UInt = 4000000000u32
 
 val base: Int = 100
 
@@ -40,10 +40,6 @@ record Acc {
 
   func mix(self: in Acc, a: in Int, b: in Int = 10, c: in Int = 100): Int {
     self.n + a * 1 + b * 2 + c * 3
-  }
-
-  func wide(self: in Acc, x: in ULong = bigU): ULong {
-    x
   }
 
   func fromModule(self: in Acc, x: in Int = base + 1): Int {
@@ -236,11 +232,6 @@ test "record method: named and mixed arguments fill the gaps" {
 test "free function: a mixed call fills the gap too" {
   assertEqualInt(free(1, c = 3), 1 + 20 + 9, "free(1, c = 3)")
   assertEqualInt(free(c = 3, a = 1), 1 + 20 + 9, "free named out of order")
-}
-
-test "record method: a widening default zero-extends" {
-  val w = Acc(n = 0).wide()
-  assertTrue(w == 4000000000u64, "ULong default from a UInt module value: " + toString(w))
 }
 
 test "record method: a default reading a module value" {

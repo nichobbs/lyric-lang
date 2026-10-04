@@ -173,7 +173,7 @@ func isNumericType(t: in Type): Bool {
     }
     // A range subtype is numeric/ordered when its underlying representation is —
     // otherwise arithmetic / comparison on a range-typed value would spuriously fail T0030/T0033.
-    case TyRefined(u, _, _, _) -> isNumericType(u)
+    case TyRefined(u, _, _, _, _) -> isNumericType(u)
     case TyError -> true
     case _ -> false
   }
@@ -255,7 +255,7 @@ func isOrderedType(t: in Type): Bool {
   }
   match t {
     case TyPrim(pt) -> match pt { case PtChar -> true; case PtString -> true; case _ -> false }
-    case TyRefined(u, _, _, _) -> isOrderedType(u)
+    case TyRefined(u, _, _, _, _) -> isOrderedType(u)
     case _ -> false
   }
 }
@@ -2927,7 +2927,7 @@ func typeIsClosed(t: in Type): Bool {
     case TyNullable(inner) -> typeIsClosed(inner)
     case TyTuple(elems) -> typesAreClosed(elems)
     case TyFunction(ps, ret, _) -> typesAreClosed(ps) and typeIsClosed(ret)
-    case TyRefined(u, _, _, _) -> typeIsClosed(u)
+    case TyRefined(u, _, _, _, _) -> typeIsClosed(u)
     case _ -> true
   }
 }
@@ -3847,6 +3847,7 @@ func checkRecordCopy(
             val want = fields[fi].ty
             val got = inferExprExpected(sc, tbl, sigs, diag, valE, want)
             recordUnsignedWidening(tbl, want, got, valE)
+            noteRangeSlot(tbl, want, valE, tname + " field " + nm)
             if not argSatisfiesParam(tbl, want, got) {
               diag.add(
                 errorDiagnostic(
@@ -4256,7 +4257,7 @@ func typeExprForRefV(tbl: in SymbolTable, t: in Type, sp: in Span, vars: in Bool
         Some(value = TypeExpr(kind = TRef(path = refTypePath(segs, sp)), span = sp))
       }
     }
-    case TyRefined(u, _, _, _) -> typeExprForRefV(tbl, u, sp, vars)
+    case TyRefined(u, _, _, _, _) -> typeExprForRefV(tbl, u, sp, vars)
     case TyNullable(inner) -> match typeExprForRefV(tbl, inner, sp, vars) {
       case Some(te) -> Some(value = TypeExpr(kind = TNullable(inner = te), span = sp))
       case None -> None
@@ -4517,6 +4518,143 @@ func recordWideningSite(tbl: in SymbolTable, target: in Type, src: in Type, e: i
 
 // `recordWideningSite` for an implicit widening at a position every backend
 // already widens signed values at.
+/// Records `e` as a value that must be in the inline range type `slot`
+/// (`Int range 0 ..= 3`), at a position no other pass checks: a record or
+/// union field, a collection element, an argument through a function value
+/// (#8031).  Function parameters, bindings, returns and `var` assignments are
+/// checked by `Lyric.ContractElaborator.insertRangeChecks`.
+pub func noteRangeSlot(tbl: in SymbolTable, slot: in Type, e: in Expr, subject: in String): Unit {
+  match slot {
+    case TyRefined(_, lo, hi, inc, src) -> {
+      if isNoSourceSpan(e.span) {
+        return
+      }
+      val key = recordCopySiteKey(e.span)
+      if not tbl.rangeCheckSites.containsKey(key) {
+        tbl.rangeCheckSites.add(key, RangeCheckSite(subject = subject, source = src, lo = lo, hi = hi, hiInclusive = inc))
+      }
+    }
+    case _ -> ()
+  }
+}
+
+/// A union case built where an instantiation is expected whose type
+/// arguments are range types (`Some(x)` for an `Option[Int range 0 ..= 3]`):
+/// each payload is checked against its field at that instantiation, since
+/// the case's own type arguments come from the payloads (#8031).
+func noteCaseRangeAgainstExpected(
+  tbl: in SymbolTable, caseSym: in Symbol, args: in List[CallArg], expected: in Type
+): Unit {
+  val eargs = match unrefine(expected) { case TyUser(_, _, a) -> a; case _ -> return }
+  var anyRange = false
+  for a in eargs {
+    match a {
+      case TyRefined(_, _, _, _, _) -> {
+        anyRange = true
+      }
+      case _ -> ()
+    }
+  }
+  if not anyRange {
+    return
+  }
+  match caseSym.kind {
+    case DKUnionCase(parentId, uc) -> match parentUnionDeclOf(tbl, parentId) {
+      case Some(decl) -> {
+        val gnames = unionDeclGenericNames(decl)
+        if gnames.count != eargs.count {
+          return
+        }
+        val scratch: List[Diagnostic] = newList()
+        val ftypes = unionCaseFieldTypes(tbl, scratch, uc, gnames, caseSym.originPackage)
+        val order = argIndicesInParamOrder(args, unionCaseSlotNames(uc))
+        var k = 0
+        while k < ftypes.count and k < order.count {
+          val ai = order[k]
+          if ai >= 0 and ai < args.count {
+            noteRangeSlot(tbl, substituteTyVars(ftypes[k], gnames, eargs), callArgExpr(args[ai]), uc.name + " payload")
+          }
+          k = k + 1
+        }
+      }
+      case None -> ()
+    }
+    case _ -> ()
+  }
+}
+
+/// A compound assignment (`r.f += 1`) to a range-refined field or element:
+/// the result is checked (#8031).
+func noteRangeCompound(tbl: in SymbolTable, slot: in Type, assignSpan: in Span, subject: in String): Unit {
+  match slot {
+    case TyRefined(_, lo, hi, inc, src) -> {
+      if isNoSourceSpan(assignSpan) {
+        return
+      }
+      val key = recordCopySiteKey(assignSpan)
+      if not tbl.rangeCompoundSites.containsKey(key) {
+        tbl.rangeCompoundSites.add(key, RangeCheckSite(subject = subject, source = src, lo = lo, hi = hi, hiInclusive = inc))
+      }
+    }
+    case _ -> ()
+  }
+}
+
+/// The subject of a range check on an assignment target: a field or an
+/// element; `None` for a variable, which the contract elaborator checks.
+/// An assignment to a range-refined field or element: a plain `=` checks the
+/// value, a compound assignment the result (#8031).
+pub func noteRangeAssign(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  target: in Expr,
+  op: in AssignOp,
+  targetType: in Type,
+  value: in Expr,
+  assignSpan: in Span,
+): Unit {
+  match rangeTargetSubject(sc, target) {
+    case Some(subj) -> match op {
+      case AssEq -> noteRangeSlot(tbl, targetType, value, subj)
+      case _ -> noteRangeCompound(tbl, targetType, assignSpan, subj)
+    }
+    case None -> ()
+  }
+}
+
+func rangeTargetSubject(sc: in Scope, target: in Expr): Option[String] {
+  match target.kind {
+    case EMember(recv, f) -> {
+      val owner = rangeReceiverName(sc, recv)
+      Some(value = if owner.length > 0 { owner + " field " + f } else { "field " + f })
+    }
+    case EIndex(_, _) -> Some(value = "element")
+    case EParen(inner) -> rangeTargetSubject(sc, inner)
+    case _ -> None
+  }
+}
+
+// The type name of a field assignment's receiver, for the range check's
+// message: a local or `self`; "" for any other receiver.
+func rangeReceiverName(sc: in Scope, recv: in Expr): String {
+  val t = match recv.kind {
+    case EPath(p) -> if p.segments.count == 1 {
+      match scopeTryFind(sc, p.segments[0]) {
+        case Some(b) -> b.ty
+        case None -> TyError
+      }
+    } else {
+      TyError
+    }
+    case ESelf -> sc.selfType
+    case _ -> TyError
+  }
+  match unrefine(t) {
+    case TyUser(_, n, _) -> n
+    case _ -> ""
+  }
+}
+
 func recordUnsignedWidening(tbl: in SymbolTable, target: in Type, src: in Type, e: in Expr): Unit {
   recordWideningSite(tbl, target, src, e, true)
 }
@@ -5192,6 +5330,19 @@ record CtorField {
   name: String
   ty: Type
   hasDefault: Bool
+  /// An array field with no default: the construction fills an omitted one
+  /// with its zero value (D167), built from the type at the construction.
+  zeroFill: Bool
+}
+
+// A field of type `t` declared without a default is zero filled when it is
+// an array of fixed length.  For a generic record the element type may name
+// a type parameter, so whether it has a zero is settled per construction.
+func isZeroFillField(t: in Type, dflt: in Option[Expr]): Bool {
+  match dflt {
+    case Some(_) -> false
+    case None -> match unrefine(t) { case TyArray(Some(_), _) -> true; case _ -> false }
+  }
 }
 
 func ctorIsGeneric(sym: in Symbol): Bool {
@@ -5694,7 +5845,7 @@ func collectCtorFieldsFromRecord(
   scratch: in List[Diagnostic],
   members: in List[RecordMember],
   acc: in List[CtorField],
-  implicitZero: in Bool,
+  isGeneric: in Bool,
 ): Unit {
   var i = 0
   while i < members.count {
@@ -5707,13 +5858,12 @@ func collectCtorFieldsFromRecord(
             hasDef = true
           }
           case None -> {
-            // An array field with no default is zero filled where its record
-            // is declared; another package's record (whose declaration
-            // carries no such default) needs the field given (D167).
-            hasDef = implicitZero and fieldHasZeroDefault(tbl, t, fd.span)
+            // An array field with no default is zero filled (D167); a generic
+            // record's is settled once its type arguments are known.
+            hasDef = fieldHasZeroDefault(tbl, t, fd.span) or (isGeneric and isZeroFillField(t, fd.dflt))
           }
         }
-        acc.add(CtorField(name = fd.name, ty = t, hasDefault = hasDef))
+        acc.add(CtorField(name = fd.name, ty = t, hasDefault = hasDef, zeroFill = isZeroFillField(t, fd.dflt)))
       }
       case _ -> {
       }
@@ -5728,7 +5878,7 @@ func collectCtorFieldsFromOpaque(
   scratch: in List[Diagnostic],
   members: in List[OpaqueMember],
   acc: in List[CtorField],
-  implicitZero: in Bool,
+  isGeneric: in Bool,
 ): Unit {
   var i = 0
   while i < members.count {
@@ -5741,10 +5891,10 @@ func collectCtorFieldsFromOpaque(
             hasDef = true
           }
           case None -> {
-            hasDef = implicitZero and fieldHasZeroDefault(tbl, t, fd.span)
+            hasDef = fieldHasZeroDefault(tbl, t, fd.span) or (isGeneric and isZeroFillField(t, fd.dflt))
           }
         }
-        acc.add(CtorField(name = fd.name, ty = t, hasDefault = hasDef))
+        acc.add(CtorField(name = fd.name, ty = t, hasDefault = hasDef, zeroFill = isZeroFillField(t, fd.dflt)))
       }
       case _ -> {
       }
@@ -5771,15 +5921,15 @@ func collectCtorFields(tbl: in SymbolTable, sym: in Symbol, acc: in List[CtorFie
   val saved = enterDeclaringScope(tbl, sym)
   val result = match sym.kind {
     case DKRecord(_, rd) -> {
-      collectCtorFieldsFromRecord(tbl, ctx, scratch, rd.members, acc, not sym.isImported)
+      collectCtorFieldsFromRecord(tbl, ctx, scratch, rd.members, acc, ctorIsGeneric(sym))
       true
     }
     case DKExposedRec(_, rd) -> {
-      collectCtorFieldsFromRecord(tbl, ctx, scratch, rd.members, acc, not sym.isImported)
+      collectCtorFieldsFromRecord(tbl, ctx, scratch, rd.members, acc, ctorIsGeneric(sym))
       true
     }
     case DKOpaque(_, od) -> {
-      collectCtorFieldsFromOpaque(tbl, ctx, scratch, od.members, acc, not sym.isImported)
+      collectCtorFieldsFromOpaque(tbl, ctx, scratch, od.members, acc, ctorIsGeneric(sym))
       true
     }
     case DKProtected(_, _) -> {
@@ -5787,9 +5937,10 @@ func collectCtorFields(tbl: in SymbolTable, sym: in Symbol, acc: in List[CtorFie
         val t = resolveType(tbl, ctx, scratch, fd.ty)
         val hasDef = match fd.dflt {
           case Some(_) -> true
-          case None -> not sym.isImported and fieldHasZeroDefault(tbl, t, fd.span)
+          case None -> fieldHasZeroDefault(tbl, t, fd.span) or
+            (ctorIsGeneric(sym) and isZeroFillField(t, fd.dflt))
         }
-        acc.add(CtorField(name = fd.name, ty = t, hasDefault = hasDef))
+        acc.add(CtorField(name = fd.name, ty = t, hasDefault = hasDef, zeroFill = isZeroFillField(t, fd.dflt)))
       }
       true
     }
@@ -6129,6 +6280,7 @@ func inferConstructionExpected(
           } else {
             val fieldTy = instantiatedFieldType(fieldNames, fieldTypes, gnames, targs, nm, fieldTypeByName(fields, nm))
             recordUnsignedWidening(tbl, fieldTy, argTy, valE)
+            noteRangeSlot(tbl, fieldTy, valE, sym.name + " field " + nm)
             if not argSatisfiesParam(tbl, fieldTy, argTy) and not literalArgSatisfiesParam(tbl, fieldTy, argTy, valE) {
               diag.add(
                 errorDiagnostic(
@@ -6155,6 +6307,7 @@ func inferConstructionExpected(
           } else {
             val fieldTy = instantiatedFieldType(fieldNames, fieldTypes, gnames, targs, fields[posIdx].name, fields[posIdx].ty)
             recordUnsignedWidening(tbl, fieldTy, argTy, ae)
+            noteRangeSlot(tbl, fieldTy, ae, sym.name + " field " + fields[posIdx].name)
             if not argSatisfiesParam(tbl, fieldTy, argTy) and not literalArgSatisfiesParam(tbl, fieldTy, argTy, ae) {
               diag.add(
                 errorDiagnostic(
@@ -6174,6 +6327,15 @@ func inferConstructionExpected(
       }
       i = i + 1
     }
+    noteCtorZeroArgs(
+      tbl,
+      diag,
+      sym,
+      fields,
+      args,
+      span,
+      { name: String, declared: Type -> instantiatedFieldType(fieldNames, fieldTypes, gnames, targs, name, declared) }
+    )
     return inferredTy
   }
   val resultTy = ctorResultType(sym)
@@ -6209,6 +6371,7 @@ func inferConstructionExpected(
         } else {
           val fieldTy = fieldTypeByName(fields, nm)
           recordUnsignedWidening(tbl, fieldTy, argTy, valE)
+          noteRangeSlot(tbl, fieldTy, valE, sym.name + " field " + nm)
           if not argSatisfiesParam(tbl, fieldTy, argTy) and not literalArgSatisfiesParam(tbl, fieldTy, argTy, valE) {
             diag.add(
               errorDiagnostic(
@@ -6235,6 +6398,7 @@ func inferConstructionExpected(
         } else {
           val fieldTy = fields[posIdx].ty
           recordUnsignedWidening(tbl, fieldTy, argTy, ae)
+          noteRangeSlot(tbl, fieldTy, ae, sym.name + " field " + fields[posIdx].name)
           if not argSatisfiesParam(tbl, fieldTy, argTy) and not literalArgSatisfiesParam(tbl, fieldTy, argTy, ae) {
             diag.add(
               errorDiagnostic(
@@ -6254,7 +6418,67 @@ func inferConstructionExpected(
     }
     i = i + 1
   }
+  noteCtorZeroArgs(tbl, diag, sym, fields, args, span, { name: String, declared: Type -> declared })
   resultTy
+}
+
+// Record the zero value of each array field the construction at `span`
+// leaves out (D167), for `lowerArrays` to pass as a named argument.  The zero
+// is built from the field's type as the construction sees it: a record from
+// another package carries no default for the field, and a generic record's
+// element type is known only here.  A generic record instantiated at an
+// element type with no zero needs the field given (T0105).
+func noteCtorZeroArgs(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  sym: in Symbol,
+  fields: in List[CtorField],
+  args: in List[CallArg],
+  span: in Span,
+  fieldTypeAt: (String, Type) -> Type,
+): Unit {
+  var positional = 0
+  for a in args {
+    match a {
+      case CAPositional(_) -> {
+        positional = positional + 1
+      }
+      case CANamed(_, _, _) -> ()
+    }
+  }
+  val zsp = Span(startPos = span.startPos, endPos = span.startPos)
+  val zeros: List[CallArg] = newList()
+  var fi = 0
+  while fi < fields.count {
+    val f = fields[fi]
+    var supplied = fi < positional
+    for a in args {
+      match a {
+        case CANamed(nm, _, _) -> if nm == f.name { supplied = true }
+        case CAPositional(_) -> ()
+      }
+    }
+    if f.zeroFill and not supplied {
+      val fty = fieldTypeAt(f.name, f.ty)
+      match zeroExprFor(tbl, fty, zsp, 0) {
+        case Some(z) -> zeros.add(CANamed(name = f.name, value = z, span = zsp))
+        case None -> diag.add(
+          errorDiagnostic(
+            "T0105",
+            "constructor '" + sym.name + "' is missing required field '" + f.name + "': its type " +
+              renderType(fty) +
+              " has no zero value to fill it with",
+            span
+          )
+        )
+      }
+    }
+    fi = fi + 1
+  }
+  val key = recordCopySiteKey(span)
+  if zeros.count > 0 and not tbl.arrayCtorZeroArgs.containsKey(key) {
+    tbl.arrayCtorZeroArgs.add(key, zeros)
+  }
 }
 
 // A QUALIFIED constructor call (`Pkg.Type(...)` or `Pkg.Sub.Type(...)`, the
@@ -7076,6 +7300,8 @@ func recordCaseFieldWidenings(
     if ai >= 0 and ai < argTypes.count {
       val fieldTy = substituteTyVars(ftypes[k], gnames, targs)
       recordUnsignedWidening(tbl, fieldTy, argTypes[ai], callArgExpr(args[ai]))
+      val fieldLabel = if names[k].length > 0 { "field " + names[k] } else { "field " + toString(k + 1) }
+      noteRangeSlot(tbl, fieldTy, callArgExpr(args[ai]), uc.name + " " + fieldLabel)
       // An unsuffixed float literal for a `Float` field is a `Float` (D155).
       val _ = adoptFloatLiteralType(tbl, callArgExpr(args[ai]), argTypes[ai], fieldTy)
     }
@@ -7132,6 +7358,18 @@ func recordGenericArgWidenings(
     val isIn = match p.mode { case PMIn -> true; case _ -> false }
     if ai >= 0 and ai < argTypes.count and isIn {
       recordUnsignedWidening(tbl, substituteTyVars(p.ty, sig.generics, targs), argTypes[ai], callArgExpr(args[ai]))
+      // A type parameter instantiated with an inline range type is checked
+      // at the call: the generic body knows nothing of the range (#8031).
+      // A parameter declared with a range is checked by the callee.
+      match p.ty {
+        case TyRefined(_, _, _, _, _) -> ()
+        case _ -> noteRangeSlot(
+          tbl,
+          substituteTyVars(p.ty, sig.generics, targs),
+          callArgExpr(args[ai]),
+          "argument " + toString(j + 1)
+        )
+      }
     }
     j = j + 1
   }
@@ -7166,7 +7404,7 @@ func collectUnionCaseFields(uc: in UnionCase, acc: in List[CtorField]): Unit {
   var i = 0
   while i < uc.fields.count {
     match uc.fields[i] {
-      case UFNamed(nm, _, _) -> acc.add(CtorField(name = nm, ty = TyError, hasDefault = false))
+      case UFNamed(nm, _, _) -> acc.add(CtorField(name = nm, ty = TyError, hasDefault = false, zeroFill = false))
       case UFPos(_, _) -> {
       }
     }
@@ -7312,6 +7550,10 @@ func findGenericInPair(name: in String, paramTy: in Type, argTy: in Type): Optio
     case TySlice(pe) -> match unrefine(argTy) { case TySlice(ae) -> findGenericInPair(name, pe, ae); case _ -> None }
     case TyArray(_, pe) -> match unrefine(argTy) {
       case TyArray(_, ae) -> findGenericInPair(name, pe, ae)
+      // A bracket literal (`Box(data = [1, 2])`) is typed as a slice; its
+      // element type binds the array's (#8042).  Whether it fits the array
+      // is checked against the instantiated field.
+      case TySlice(ae) -> findGenericInPair(name, pe, ae)
       case _ -> None
     }
     case TyNullable(pi) -> match unrefine(argTy) {
@@ -9020,7 +9262,7 @@ func typeIsClosedOver(t: in Type, typeParams: in List[String]): Bool {
     case TyNullable(inner) -> typeIsClosedOver(inner, typeParams)
     case TyTuple(elems) -> typesAreClosedOver(elems, typeParams)
     case TyFunction(ps, ret, _) -> typesAreClosedOver(ps, typeParams) and typeIsClosedOver(ret, typeParams)
-    case TyRefined(u, _, _, _) -> typeIsClosedOver(u, typeParams)
+    case TyRefined(u, _, _, _, _) -> typeIsClosedOver(u, typeParams)
     case _ -> true
   }
 }
@@ -9050,7 +9292,7 @@ func typeExprForOpenBinding(tbl: in SymbolTable, t: in Type, sp: in Span, typePa
     } else {
       None
     }
-    case TyRefined(u, _, _, _) -> typeExprForOpenBinding(tbl, u, sp, typeParams)
+    case TyRefined(u, _, _, _, _) -> typeExprForOpenBinding(tbl, u, sp, typeParams)
     case TySlice(e) -> match typeExprForOpenBinding(tbl, e, sp, typeParams) {
       case Some(te) -> Some(value = TypeExpr(kind = TSlice(element = te), span = sp))
       case None -> None
@@ -9468,6 +9710,7 @@ func recordCollectionArgWidenings(
   var k = 0
   while k < ps.count and k < args.count {
     recordUnsignedWidening(tbl, ps[k].ty, argTypes[k], callArgExpr(args[k]))
+    noteRangeSlot(tbl, ps[k].ty, callArgExpr(args[k]), "element")
     k = k + 1
   }
 }
@@ -10721,7 +10964,7 @@ func typeMentionsGenericInst(t: in Type): Bool {
       }
       false
     }
-    case TyRefined(u, _, _, _) -> typeMentionsGenericInst(u)
+    case TyRefined(u, _, _, _, _) -> typeMentionsGenericInst(u)
     case _ -> false
   }
 }
@@ -11337,9 +11580,6 @@ func inferExprCore(
       val argTypes: List[Type] = newList()
       var anyDeferredLambda = false
       var anyCaseCtorArg = false
-      // A bracket literal given to a record field of array type is typed
-      // against the field (D167): the fields are known before the arguments.
-      val ctorFieldTys = ctorArrayFieldTypes(tbl, fn, args)
       var i = 0
       while i < args.count {
         val ae = callArgExpr(args[i])
@@ -11415,6 +11655,10 @@ func inferExprCore(
         }
         case None -> ()
       }
+      // A bracket literal given to a record field of array type is typed
+      // against the field (D167); a generic record's field is instantiated
+      // at what the other arguments, and the literal's elements, bind.
+      val ctorFieldTys = ctorArrayFieldTypes(tbl, fn, args, argTypes, TyError)
       if anyDeferredLambda or anyCaseCtorArg {
         val lambdaSig = match directSig {
           case Some(_) -> directSig
@@ -11678,6 +11922,9 @@ func inferExprCore(
                             noteExpectedFlow(sc, tbl, callArgExpr(args[k]), paramTypes[k])
                           }
                           val kLiteralOk = k < args.count and literalArgSatisfiesParam(tbl, paramTypes[k], argTypes[k], callArgExpr(args[k]))
+                          if k < args.count {
+                            noteRangeSlot(tbl, paramTypes[k], callArgExpr(args[k]), "argument " + toString(k + 1))
+                          }
                           if not argSatisfiesParam(tbl, paramTypes[k], argTypes[k]) and not kLiteralOk {
                             diag.add(
                               errorDiagnostic(
@@ -12084,6 +12331,7 @@ func inferExprCore(
       if not stringPlusAssign {
         recordUnsignedWidening(tbl, targetType, valueType, value)
       }
+      noteRangeAssign(sc, tbl, target, op, targetType, value, e.span)
       recordUnsignedCompoundValue(tbl, op, targetType, valueType, value, stringPlusAssign)
       match target.kind {
         case EPath(p) -> if p.segments.count == 1 {
@@ -12394,8 +12642,16 @@ func argIsListLiteral(e: in Expr): Bool {
 // The field type each argument of a record construction `R(...)` initialises,
 // positionally aligned with `args`, for the arguments that are bracket
 // literals given to a field of array type (`TyError` elsewhere): such an
-// argument is typed against the field.
-func ctorArrayFieldTypes(tbl: in SymbolTable, fn: in Expr, args: in List[CallArg]): List[Type] {
+// argument is typed against the field.  A generic record's field is
+// instantiated at the type arguments `argTypes` bind (a literal's own
+// `slice[T]` type binds its element, #8042), or else `expected` gives.
+func ctorArrayFieldTypes(
+  tbl: in SymbolTable,
+  fn: in Expr,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  expected: in Type,
+): List[Type] {
   val tys: List[Type] = newList()
   var any = false
   for a in args {
@@ -12413,7 +12669,7 @@ func ctorArrayFieldTypes(tbl: in SymbolTable, fn: in Expr, args: in List[CallArg
   }
   val ctorSym = match constructorSymbolOf(tbl, fn) { case Some(sy) -> sy; case None -> return tys }
   if ctorIsGeneric(ctorSym) {
-    return tys
+    return genericCtorArrayFieldTypes(tbl, ctorSym, args, argTypes, expected, tys)
   }
   val fields: List[CtorField] = newList()
   if not collectCtorFields(tbl, ctorSym, fields) {
@@ -12435,6 +12691,67 @@ func ctorArrayFieldTypes(tbl: in SymbolTable, fn: in Expr, args: in List[CallArg
           tys[i] = fields[pos].ty
         }
         pos = pos + 1
+      }
+    }
+    i = i + 1
+  }
+  tys
+}
+
+func genericCtorArrayFieldTypes(
+  tbl: in SymbolTable,
+  ctorSym: in Symbol,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  expected: in Type,
+  tys: in List[Type],
+): List[Type] {
+  val gnames = ctorGenericNames(ctorSym)
+  val fieldNames = ctorFieldNames(ctorSym)
+  val fieldTypes = ctorFieldTypes(tbl, ctorSym, gnames)
+  val targs = inferGenericArgs(gnames, fieldTypes, argTypesInFieldOrder(args, argTypes, fieldNames))
+  match unrefine(expected) {
+    case TyUser(eid, _, eargs) -> match symbolTypeIdOpt(ctorSym) {
+      case Some(tid) -> if typeIdEq(eid, tid) and eargs.count == gnames.count {
+        var ei = 0
+        while ei < gnames.count {
+          if typeIsHole(targs[ei]) {
+            targs[ei] = eargs[ei]
+          }
+          ei = ei + 1
+        }
+      }
+      case None -> ()
+    }
+    case _ -> ()
+  }
+  var pos = 0
+  var i = 0
+  while i < args.count {
+    val fieldName = match args[i] {
+      case CANamed(nm, _, _) -> nm
+      case CAPositional(_) -> {
+        val nm = if pos < fieldNames.count { fieldNames[pos] } else { "" }
+        pos = pos + 1
+        nm
+      }
+    }
+    if argIsListLiteral(callArgExpr(args[i])) {
+      var j = 0
+      while j < fieldNames.count and j < fieldTypes.count {
+        if fieldNames[j] == fieldName {
+          val inst = substituteTyVars(fieldTypes[j], gnames, targs)
+          match unrefine(inst) {
+            case TyArray(Some(_), el) -> if not typeMentionsTyVar(inst) and not typeIsHole(el) {
+              tys[i] = inst
+              // The field's own type names a type parameter, so the
+              // literal is built through a binding of the instantiated type.
+              noteArrayLiteralType(tbl, callArgExpr(args[i]), inst)
+            }
+            case _ -> ()
+          }
+        }
+        j = j + 1
       }
     }
     i = i + 1
@@ -12599,6 +12916,19 @@ pub func inferExprExpected(
         }
         match constructorSymbolOf(tbl, fn) {
           case Some(ctorSym) -> {
+            // A bracket literal given to an array field is typed against the
+            // field at the instantiation (#8042).
+            val arrTys = ctorArrayFieldTypes(tbl, fn, cargs, cargTypes, expected)
+            var ari = 0
+            while ari < cargs.count {
+              match arrTys[ari] {
+                case TyError -> ()
+                case at -> {
+                  cargTypes[ari] = inferExprExpected(sc, tbl, sigs, diag, callArgExpr(cargs[ari]), at)
+                }
+              }
+              ari = ari + 1
+            }
             val ctorTy = inferConstructionExpected(tbl, diag, ctorSym, cargs, cargTypes, e.span, expected)
             noteArrayStores(tbl, cargs, cargTypes)
             recordCtorArgOperandTypes(sc, tbl, fn, cargs, cargTypes, ctorTy)
@@ -12623,6 +12953,7 @@ pub func inferExprExpected(
               inferUnionCaseConstruction(tbl, diag, caseSym, cargs, cargTypes, e.span, true),
               expected
             )
+            noteCaseRangeAgainstExpected(tbl, caseSym, cargs, expected)
             recordCtorArgOperandTypes(sc, tbl, fn, cargs, cargTypes, caseTy)
             caseTy
           }
@@ -12631,8 +12962,14 @@ pub func inferExprExpected(
       } else {
         // #7752: a qualified case constructor (`Result.Ok(...)`,
         // `Pkg.Shape.Circle(...)`) adopts the expected instantiation too.
-        val isCaseCtor = match unionCaseSymbolOf(tbl, fn) { case Some(_) -> true; case None -> false }
-        adoptUnionCaseExpected(tbl, isCaseCtor, inferExpr(sc, tbl, sigs, diag, e), expected)
+        val qualifiedCase = unionCaseSymbolOf(tbl, fn)
+        val isCaseCtor = match qualifiedCase { case Some(_) -> true; case None -> false }
+        val adopted = adoptUnionCaseExpected(tbl, isCaseCtor, inferExpr(sc, tbl, sigs, diag, e), expected)
+        match qualifiedCase {
+          case Some(cs) -> noteCaseRangeAgainstExpected(tbl, cs, cargs, expected)
+          case None -> ()
+        }
+        adopted
       }
       case EMember(_, _) -> inferMethodCallExpected(sc, tbl, sigs, diag, e, expected)
       case _ -> inferExpr(sc, tbl, sigs, diag, e)
@@ -12707,6 +13044,7 @@ pub func inferExprExpected(
         var ti = 0
         while ti < elems.count {
           ts.add(joinOpenTypes(inferExprExpected(sc, tbl, sigs, diag, elems[ti], ets[ti]), unrefine(ets[ti])))
+          noteRangeSlot(tbl, ets[ti], elems[ti], "tuple element " + toString(ti + 1))
           ti = ti + 1
         }
         recordHoistedOperands(sc, tbl, elems, ts, ets)
@@ -12743,6 +13081,7 @@ pub func inferExprExpected(
             elemOwn.add(et)
             elemAt.add(elemTy)
             recordWideningSite(tbl, elemTy, et, elems[li], false)
+            noteRangeSlot(tbl, elemTy, elems[li], "element")
             if not argSatisfiesParam(tbl, elemTy, et) {
               diag.add(
                 errorDiagnostic(
@@ -12780,6 +13119,7 @@ pub func inferExprExpected(
         while ai < elems.count {
           val et = inferExprExpected(sc, tbl, sigs, diag, elems[ai], elemTy)
           recordWideningSite(tbl, elemTy, et, elems[ai], false)
+          noteRangeSlot(tbl, elemTy, elems[ai], "element")
           if not argSatisfiesParam(tbl, elemTy, et) {
             diag.add(
               errorDiagnostic(

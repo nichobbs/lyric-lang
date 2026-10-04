@@ -9974,6 +9974,21 @@ test "a record's value generic parameter cannot size an array field yet" {
   )
 }
 
+test "a protected invariant is type-checked" {
+  val bad = "package P\nprotected type Gauge {\n  var level: Float = 0.1f32\n  invariant: level <= \"x\"\n  entry read(): Float {\n    level\n  }\n}\n"
+  val badCr = parseCheck(bad)
+  assertTrue(diagCount(badCr) > 0, "comparing a Float field with a String is an error (" + diagCodesOf(badCr) + ")")
+  val notBool = "package P\nprotected type Gauge {\n  var level: Int = 1\n  invariant: level + 1\n  entry read(): Int {\n    level\n  }\n}\n"
+  assertEqualInt(
+    countDiagCode(parseCheck(notBool), "T0132"),
+    1,
+    "an invariant that is not Bool (" + diagCodesOf(parseCheck(notBool)) + ")"
+  )
+  val ok = "package P\nprotected type Gauge {\n  var level: Float = 0.1f32\n  invariant: level <= 0.1 and level >= 0.0\n  entry read(): Float {\n    level\n  }\n}\n"
+  val okCr = parseCheck(ok)
+  assertEqualInt(diagCount(okCr), 0, "fields by bare name and Float literals (" + diagCodesOf(okCr) + ")")
+}
+
 test "a protected type's array field follows the zero-fill rule" {
   val ok = "package P\nprotected type T {\n  var hits: array[3, Int]\n}\n"
   val okCr = parseCheck(ok)
@@ -9992,6 +10007,25 @@ test "a protected type's array field follows the zero-fill rule" {
     1,
     "an element with no zero (" + diagCodesOf(parseCheck(bad)) + ")"
   )
+}
+
+test "a generic record's array field is zero filled per construction (#8042)" {
+  val decl = "package P\nrecord Box[T] {\n  var data: array[2, T]\n  tag: Int\n}\n"
+  val ok = decl + "func mk(): Int {\n  val b: Box[Int] = Box(tag = 1)\n  b.data[0]\n}\n"
+  val okCr = parseCheck(ok)
+  assertEqualInt(diagCount(okCr), 0, "an Int element has a zero (" + diagCodesOf(okCr) + ")")
+  assertEqualInt(okCr.symbols.arrayCtorZeroArgs.count, 1, "the construction passes the zero")
+  val noZero = decl + "func mk(): Int {\n  val b: Box[String] = Box(tag = 1)\n  b.tag\n}\n"
+  assertEqualInt(
+    countDiagCode(parseCheck(noZero), "T0105"),
+    1,
+    "a String element has no zero (" + diagCodesOf(parseCheck(noZero)) + ")"
+  )
+  val lit = decl + "func mk(): Int {\n  val b = Box(data = [1, 2], tag = 0)\n  b.data[1]\n}\n"
+  val litCr = parseCheck(lit)
+  assertEqualInt(diagCount(litCr), 0, "a bracket literal binds T (" + diagCodesOf(litCr) + ")")
+  val given = decl + "func mk(): Int {\n  val b = Box(data = [1, 2], tag = 0)\n  b.tag\n}\n"
+  assertEqualInt(parseCheck(given).symbols.arrayCtorZeroArgs.count, 0, "a given field is not filled")
 }
 
 test "toSlice on an array is called, not referenced" {

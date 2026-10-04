@@ -450,7 +450,7 @@ test "an extern func passing an inline union is rejected with N0010" {
   val diags = nativeByValueExternDiagnostics(units)
   assertEqualInt(diags.count, 1, "one diagnostic")
   assertEqual(diags[0].code, "N0010", "the diagnostic code")
-  assertTrue(Str.contains(diags[0].message, "#8009"), "the message names the tracking issue")
+  assertTrue(Str.contains(diags[0].message, "no C struct equivalent"), "the message says why")
 }
 
 test "a package-local inline union is not shadowed by another package's enum of the same name" {

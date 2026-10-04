@@ -293,7 +293,7 @@ var bytes: array[16, Byte]        // 16 bytes, length in type, zero filled
 val zeros: array[4, Int] = [0, 0, 0, 0]
 ```
 
-The length is known at compile time. `array[16, Byte]` and `array[32, Byte]` are different types. A bracket literal where an array is expected builds one and must have exactly `N` elements (T0155). A declaration with no initializer, and a record field with no default, is filled with the element type's zero value: `0`, `0.0`, `false`, an enum's first case, a record of zeros, or a nested array of them. An element type with no zero (a `String`, a union, a range excluding zero) needs an initializer (T0156).
+The length is known at compile time. `array[16, Byte]` and `array[32, Byte]` are different types. A bracket literal where an array is expected builds one and must have exactly `N` elements (T0155). A declaration with no initializer, and a record field with no default, is filled with the element type's zero value: `0`, `0.0`, `false`, an enum's first case, a record of zeros, or a nested array of them. An element type with no zero (a `String`, a union, a range excluding zero) needs an initializer (T0156). A construction that leaves an array field out gets the zero too, also for a record from another package or a generic one: `record Box[T] { var data: array[2, T] }` built as a `Box[Int]` starts with `[0, 0]`, and `Box(data = [1, 2])` is a `Box[Int]` because the literal binds `T`.
 
 ```lyric
 var m: array[3, Int] = [1, 2, 3]

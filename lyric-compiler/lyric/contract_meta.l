@@ -1137,7 +1137,10 @@ func reprForRecord(decl: in RecordDecl, isExposed: in Bool, dt: in DefaultThunks
           fields = fields + ", "
         }
         val defStr = match f.dflt { case Some(e) -> " = " + Fmt.exprInline(0, e); case None -> "" }
-        fields = fields + f.name + ": " + renderTypeExpr(f.ty) + defStr
+        // A `var` field stays one: it can be written through, and it gives
+        // the record identity (D157).
+        val varStr = if f.isMutable { "var " } else { "" }
+        fields = fields + varStr + f.name + ": " + renderTypeExpr(f.ty) + defStr
         emittedAny = true
       }
       case _ -> ()
@@ -1519,7 +1522,10 @@ func reprForOpaque(decl: in OpaqueTypeDecl): String {
           fields = fields + ", "
         }
         val defStr = match f.dflt { case Some(e) -> " = " + Fmt.exprInline(0, e); case None -> "" }
-        fields = fields + f.name + ": " + renderTypeExpr(f.ty) + defStr
+        // A `var` field stays one: it can be written through, and it gives
+        // the record identity (D157).
+        val varStr = if f.isMutable { "var " } else { "" }
+        fields = fields + varStr + f.name + ": " + renderTypeExpr(f.ty) + defStr
         emittedAny = true
       }
       case _ -> ()

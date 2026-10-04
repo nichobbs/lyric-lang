@@ -627,3 +627,29 @@ test "a value-generic length is bound by the argument's array" {
   assertEqualInt(f[3], 13, "and the body ran at that length")
   assertEqualInt(totalOf(filledWith[2](1)), 3, "its result passed on")
 }
+
+record Tagged[T] {
+  var data: array[2, T]
+  tag: Int
+}
+
+test "a generic record's array field is zero filled at the instantiated element type" {
+  val t: Tagged[Int] = Tagged(tag = 3)
+  assertEqualInt(t.data[0] + t.data[1], 0, "Int zeros")
+  t.data[1] = 4
+  assertEqualInt(t.data[1] + t.tag, 7, "the filled field is written through")
+  val f: Tagged[Float] = Tagged(tag = 0)
+  assertTrue(f.data[0] == 0.0f32, "Float zeros")
+  val b: Tagged[Bool] = Tagged(tag = 1)
+  assertFalse(b.data[1], "Bool zeros")
+}
+
+test "a bracket literal binds a generic record's element type" {
+  val t = Tagged(data = [5, 6], tag = 1)
+  assertEqualInt(t.data[0] + t.data[1] + t.tag, 12, "Tagged[Int] from [5, 6]")
+  // Annotated: an unannotated binding of a generic record loses its type
+  // arguments on the JVM (#8132).  The annotation also takes the
+  // construction through its expected type.
+  val s: Tagged[String] = Tagged(data = ["a", "b"], tag = 0)
+  assertEqual(s.data[0] + s.data[1], "ab", "Tagged[String] from a String literal")
+}
