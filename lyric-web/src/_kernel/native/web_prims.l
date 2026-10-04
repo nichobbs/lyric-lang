@@ -5,8 +5,6 @@ package Web.Kernel.Runtime
 import Std.Console
 import Std.Core
 import Std.Collections
-import Std.HttpServer
-import Std.Environment as Env
 import Web
 
 // ─── Crash isolation ─────────────────────────────────────────────────────────
@@ -23,6 +21,6 @@ func tickGuarded(worker: in Web.Worker): Unit {
   worker.tick()
 }
 
-pub func acceptNext(listener: in HttpListener, label: in String): Option[HttpContext] {
-  Some(value = nextContext(listener))
+pub func runAcceptStep(loop: in Web.AcceptLoop): Unit {
+  loop.step()
 }

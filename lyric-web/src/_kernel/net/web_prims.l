@@ -5,8 +5,6 @@ package Web.Kernel.Runtime
 import Std.Console
 import Std.Core
 import Std.Collections
-import Std.HttpServer
-import Std.Environment as Env
 import Web
 
 // ─── Crash isolation (#5261, #6222, #6935) ──────────────────────────────────
@@ -40,15 +38,12 @@ func tickGuarded(worker: in Web.Worker): Unit {
   }
 }
 
-/// The next request, or `None` after a listener failure: it is logged, the
-/// listener stopped and the exit code set to 1.
-pub func acceptNext(listener: in HttpListener, label: in String): Option[HttpContext] {
+/// One accept step. A failure of the listener itself is reported through the
+/// loop's `fail`, which logs it, stops the listener and sets the exit code.
+pub func runAcceptStep(loop: in Web.AcceptLoop): Unit {
   try {
-    Some(value = nextContext(listener))
+    loop.step()
   } catch Bug as e {
-    Console.error("[lyric-web] listener failed on " + label + ": " + e.message)
-    stopListener(listener)
-    Env.exitCode(1)
-    None
+    loop.fail(e.message)
   }
 }

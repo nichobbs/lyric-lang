@@ -1828,6 +1828,64 @@ impl RequestJob for PlainRequestJob {
   }
 }
 
+/// One step of a server's accept loop: pull the next request from the listener
+/// and hand it to a request job. `Web.Kernel.Runtime.runAcceptStep` runs it so
+/// a failure of the listener itself (`nextContext` failing) is reported through
+/// `fail` instead of silently ending the loop. Kept to `Web`'s own types so the
+/// kernel's public surface needs no `Std.HttpServer` type.
+@cfg(any(feature = "dotnet", feature = "native"))
+@stable(since = "0.3")
+pub interface AcceptLoop {
+  func step(): Unit
+  /// The listener can no longer make progress (`message` says why): surface it
+  /// loudly and set a non-zero exit code rather than exiting 0 as if the
+  /// server had shut down cleanly.
+  func fail(message: in String): Unit
+}
+
+@cfg(any(feature = "dotnet", feature = "native"))
+record PlainAcceptLoop {
+  listener: HttpListener
+  router: Router
+  streaming: StreamingRoutes
+  label: String
+}
+
+@cfg(any(feature = "dotnet", feature = "native"))
+impl AcceptLoop for PlainAcceptLoop {
+  func step(): Unit {
+    val ctx = nextContext(self.listener)
+    HttpKernel.spawnRequestJob(PlainRequestJob(router = self.router, streaming = self.streaming, ctx = ctx, label = self.label))
+  }
+
+  func fail(message: in String): Unit {
+    Console.error("[lyric-web] listener failed on " + self.label + ": " + message)
+    stopListener(self.listener)
+    Env.exitCode(1)
+  }
+}
+
+@cfg(any(feature = "dotnet", feature = "native"))
+record TlsAcceptLoop {
+  listener: HttpListener
+  router: Router
+  label: String
+}
+
+@cfg(any(feature = "dotnet", feature = "native"))
+impl AcceptLoop for TlsAcceptLoop {
+  func step(): Unit {
+    val ctx = nextContext(self.listener)
+    HttpKernel.spawnRequestJob(TlsRequestJob(router = self.router, ctx = ctx, label = self.label))
+  }
+
+  func fail(message: in String): Unit {
+    Console.error("[lyric-web] listener failed on " + self.label + ": " + message)
+    stopListener(self.listener)
+    Env.exitCode(1)
+  }
+}
+
 // Serves one request for `serveTls`.
 @cfg(any(feature = "dotnet", feature = "native"))
 record TlsRequestJob {
@@ -2046,14 +2104,11 @@ pub func serveTls(
   Console.println("[lyric-web] Listening on https://" + host + ":" + port.toString() + "/")
   startWorkers(router)
   val label = "https://" + host + ":" + port.toString() + "/"
+  val acceptLoop = TlsAcceptLoop(listener = listener, router = router, label = label)
   while true {
-    // `acceptNext` is `None` only when the listener itself can no longer make
-    // progress (`nextContext` failed; it has logged, stopped the listener and
-    // set the exit code); per-request failures are isolated in the job.
-    match HttpKernel.acceptNext(listener, label) {
-      case Some(ctx) -> HttpKernel.spawnRequestJob(TlsRequestJob(router = router, ctx = ctx, label = label))
-      case None -> ()
-    }
+    // Per-request failures are isolated in the job; a failure of the listener
+    // itself is reported by the loop's `fail`.
+    HttpKernel.runAcceptStep(acceptLoop)
   }
   return Ok(value = ())
 }
@@ -2157,14 +2212,11 @@ pub func serveStreaming(router: in Router, streaming: in StreamingRoutes, host: 
   val suffix = if streaming.routes.length > 0 { " (streaming enabled)" } else { "" }
   Console.println("[lyric-web] Listening on " + prefixStr + suffix)
   startWorkers(router)
+  val acceptLoop = PlainAcceptLoop(listener = listener, router = router, streaming = streaming, label = prefixStr)
   while true {
-    // `None` means the listener can no longer make progress (`nextContext`
-    // failed): `acceptNext` has surfaced it loudly and set a non-zero exit
-    // code instead of exiting 0 as if the server had shut down cleanly.
-    match HttpKernel.acceptNext(listener, prefixStr) {
-      case Some(ctx) -> HttpKernel.spawnRequestJob(PlainRequestJob(router = router, streaming = streaming, ctx = ctx, label = prefixStr))
-      case None -> ()
-    }
+    // A failure of the listener itself (`nextContext` failing) is reported by
+    // the loop's `fail`; per-request failures are isolated in the job.
+    HttpKernel.runAcceptStep(acceptLoop)
   }
 }
 
