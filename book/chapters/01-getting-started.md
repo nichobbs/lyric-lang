@@ -362,8 +362,19 @@ An `[npm]` table declares NPM packages for the wasm32 targets, the way `[nuget]`
 
 `lyric restore` installs them under `target/npm/node_modules/` (install scripts are not run) and
 writes a shim scaffold per package to `_extern_npm/`, such as `_extern_npm/node-fetch.l`, to
-which you add the `extern func` declarations. Calling the packages from a build is not wired
-up yet.
+which you add the declarations to. A declaration is a host import from the package:
+
+```lyric
+@wasmImport("npm:node-fetch")
+extern func fetchText(url: String): String = "default"
+```
+
+In a `--shape module` build the generated JS glue imports the package for you (pass
+`imports["npm:node-fetch"]` to `instantiate` to substitute your own). A wasm32 project build
+checks that every `[npm]` package has a shim and that each shim import names a real export of the
+installed package. In a `--shape component` build the import becomes the WIT interface
+`npm-node-fetch`, which you satisfy with
+`jco transpile --map lyric:<package>/npm-node-fetch@<version>=node-fetch`.
 
 Memory on this target is managed by automatic reference counting (ARC) —
 there is no garbage collector. Reference cycles are not collected; break

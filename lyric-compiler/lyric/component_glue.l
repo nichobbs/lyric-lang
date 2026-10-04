@@ -73,6 +73,10 @@ func isLowerCh(c: in Char): Bool {
   c >= 'a' and c <= 'z'
 }
 
+func isAlnumCh(c: in Char): Bool {
+  isLowerCh(c) or isUpperCh(c) or isDigitCh(c)
+}
+
 func isDigitCh(c: in Char): Bool {
   c >= '0' and c <= '9'
 }
@@ -1265,8 +1269,41 @@ func importTy(te: in TypeExpr, tbl: in TypeTable): Result[WitTy, String] {
   }
 }
 
+/// The WIT interface name a `@wasmImport` module string becomes.  An
+/// `npm:<package>` module (docs/35 section 9) is written `npm-<package>`:
+/// `@` dropped, every other character that is not a letter or digit (`/`, `.`,
+/// `_`, `~`, `-`) a single `-`, so `npm:@aws-sdk/client-s3` is the interface
+/// `npm-aws-sdk-client-s3`.  Any other module string is used as written.
+func hostModuleName(module: in String): String {
+  if not Str.startsWith(module, "npm:") {
+    return module
+  }
+  val pkg = Str.substring(module, 4)
+  var acc = "npm"
+  var i = 0
+  while i < pkg.length {
+    val c = Str.charAtOrReplacement(pkg, i)
+    if isLowerCh(c) or isUpperCh(c) or isDigitCh(c) {
+      acc = acc + "-" + c.toString()
+      var j = i + 1
+      while j < pkg.length and isAlnumCh(Str.charAtOrReplacement(pkg, j)) {
+        acc = acc + Str.charAtOrReplacement(pkg, j).toString()
+        j = j + 1
+      }
+      i = j
+    } else {
+      i = i + 1
+    }
+  }
+  acc
+}
+
 /// The host import an annotated extern declares, or an error.
-func hostImportOf(d: in ExternFuncDecl, module: in String, tbl: in TypeTable): Result[HostImport, String] {
+func hostImportOf(d: in ExternFuncDecl, rawModule: in String, tbl: in TypeTable): Result[HostImport, String] {
+  val module = hostModuleName(rawModule)
+  if Str.startsWith(rawModule, "npm:") and module == "npm" {
+    return Err(error = "@wasmImport on " + d.name + ": '" + rawModule + "' names no NPM package")
+  }
   if not isWitSafeName(module) {
     return Err(
       error = "@wasmImport on " + d.name + ": the module name '" + module +

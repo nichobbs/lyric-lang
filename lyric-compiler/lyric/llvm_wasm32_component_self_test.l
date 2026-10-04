@@ -915,3 +915,81 @@ func unused(): Int {
   val v = run(envOrPanic("WASM_TOOLS"), vargs)
   assertTrue(v.exitCode == 0, "the component validates: " + v.stderr)
 }
+
+val npmImportProgram: String = r#"package Probe
+
+@wasmImport("npm:@scope/fake.pkg")
+extern func npmAdd(a: Int, b: Int): Int = "add"
+
+@wasmImport("npm:@scope/fake.pkg")
+extern func npmShout(s: String): String = "shout"
+
+pub func viaNpm(x: Int): Int {
+  npmAdd(x, 1)
+}
+
+pub func shoutNpm(s: String): String {
+  npmShout(s)
+}
+"#
+
+test "wasm32 component: an npm: host import is a WIT import jco satisfies with the package" {
+  val dir = buildComponentOf(npmImportProgram)
+  val wasm = Path.join(dir, "prog.wasm")
+  val wit = match File.readText(Path.join(dir, "prog.wit")) { case Ok(t) -> t; case Err(_) -> "" }
+  assertTrue(Str.contains(wit, "interface npm-scope-fake-pkg"), "the package is a WIT interface: " + wit)
+  assertTrue(Str.contains(wit, "import npm-scope-fake-pkg;"), "the world imports it: " + wit)
+  val vargs: List[String] = newList()
+  vargs.add("validate")
+  vargs.add(wasm)
+  val v = run(envOrPanic("WASM_TOOLS"), vargs)
+  assertTrue(v.exitCode == 0, "wasm-tools validate: " + v.stderr)
+  val outDir = Path.join(dir, "js")
+  val jargs: List[String] = newList()
+  jargs.add("transpile")
+  jargs.add(wasm)
+  jargs.add("-o")
+  jargs.add(outDir)
+  jargs.add("--map")
+  jargs.add("lyric:probe/npm-scope-fake-pkg@0.1.0=@scope/fake.pkg")
+  val j = run(envOrPanic("JCO"), jargs)
+  assertTrue(j.exitCode == 0, "jco transpile: " + j.stderr)
+  val lnargs: List[String] = newList()
+  lnargs.add("-s")
+  lnargs.add(envOrPanic("LYRIC_JCO_NODE_MODULES"))
+  lnargs.add(Path.join(dir, "node_modules"))
+  val _ln = run("ln", lnargs)
+  val pkgDir = Path.join(Path.join(Path.join(outDir, "node_modules"), "@scope"), "fake.pkg")
+  val _pd = File.createDir(pkgDir)
+  val _pj = File.writeText(
+    Path.join(pkgDir, "package.json"),
+    "{ \"name\": \"@scope/fake.pkg\", \"version\": \"1.0.0\", \"type\": \"module\", \"main\": \"index.js\" }\n"
+  )
+  val _ix = File.writeText(
+    Path.join(pkgDir, "index.js"),
+    "export function add(a, b) { return a + b + 1000; }\nexport function shout(s) { return s.toUpperCase() + '!'; }\n"
+  )
+  val scriptPath = Path.join(dir, "run.mjs")
+  val _s = File.writeText(
+    scriptPath,
+    r"import * as m from './js/prog.js';
+console.log('add=' + m.probe.viaNpm(5));
+console.log('shout=' + m.probe.shoutNpm('hi'));
+"
+  )
+  val nargs: List[String] = newList()
+  nargs.add(scriptPath)
+  val n = run(Environment.getVarOrDefault("NODE", "node"), nargs)
+  assertTrue(n.exitCode == 0, "node: " + n.stderr + n.stdout)
+  assertTrue(Str.contains(n.stdout, "add=1006"), "the package function ran: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "shout=HI!"), "String through the package: " + n.stdout)
+}
+
+test "wasm32 component: an npm: module with no package name is rejected" {
+  assertFalse(
+    componentBuildOk(
+      "package Probe\n\n@wasmImport(\"npm:\")\nextern func f(a: Int): Int = \"f\"\n\npub func g(a: Int): Int {\n  f(a)\n}\n"
+    ),
+    "npm: alone names no package"
+  )
+}

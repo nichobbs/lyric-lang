@@ -13,6 +13,7 @@ import Std.Char as Ch
 import Std.ProcessCapture as ProcessCapture
 import Lyric.Manifest as Mf
 import Lyric.Lexer
+import Lyric.Parser as Parser
 import Lyric.Pack as Pack
 import Lyric.Workspace as Ws
 import Lyric.Discovery as Disc
@@ -1155,6 +1156,184 @@ pub func npmShimProblem(text: in String, e: in Mf.NpmEntry): String {
     "B0063: " + Mf.npmShimFileName(e.name) + " lost its @axiom(\"from npm " + e.name +
       " ...\") header; restore will not use it as the shim for this package"
   }
+}
+
+/// An `@wasmImport("npm:<package>")` extern of a shim: the package it reaches
+/// and the exported name it binds.
+pub record NpmShimImport {
+  pkgName: String
+  symbol: String
+}
+
+/// The NPM imports a shim declares, in source order.
+pub func npmShimImports(shimSource: in String): List[NpmShimImport] {
+  val found: List[NpmShimImport] = newList()
+  val pr = Parser.parse(shimSource)
+  for item in pr.file.items {
+    match item.kind {
+      case IExternFunc(d) -> {
+        for a in item.annotations {
+          if a.name.segments.count == 1 and a.name.segments[0] == "wasmImport" and a.args.count == 1 {
+            match a.args[0] {
+              case ALiteral(value, _) -> match value {
+                case AVString(m, _) -> {
+                  if Str.startsWith(m, "npm:") {
+                    found.add(NpmShimImport(pkgName = Str.substring(m, 4), symbol = d.symbol))
+                  }
+                }
+                case _ -> ()
+              }
+              case _ -> ()
+            }
+          }
+        }
+      }
+      case _ -> ()
+    }
+  }
+  found
+}
+
+/// `B0061` messages: the `[npm]` packages that have no shim file under
+/// `_extern_npm/`.
+pub func npmMissingShims(npm: in Mf.NpmSection, mfDir: in String): List[String] {
+  val problems: List[String] = newList()
+  for e in npm.entries {
+    val shimPath = Path.join(Path.join(mfDir, "_extern_npm"), Mf.npmShimFileName(e.name))
+    if not File.fileExists(shimPath) {
+      problems.add(
+        "error[B0061]: \"" + e.name + "\" is declared in [npm] but has no shim at " + shimPath + "; run `lyric restore`"
+      )
+    }
+  }
+  problems
+}
+
+/// One line of the export probe: the names a package exports, or why it
+/// could not be loaded.
+pub record NpmProbeRow {
+  pkgName: String
+  exports: List[String]
+  error: String
+}
+
+/// The probe script: loads each package named on the command line and prints
+/// `<package>\t<export>,<export>...` (or `<package>\t!<message>`).  It lives
+/// beside `node_modules` so bare specifiers resolve against the restored packages.
+pub func npmProbeScript(): String {
+  r"const [, , ...pkgs] = process.argv;
+for (const p of pkgs) {
+  try {
+    const m = await import(p);
+    console.log(p + '\t' + Object.keys(m).join(','));
+  } catch (e) {
+    console.log(p + '\t!' + String(e && e.message).split('\n')[0]);
+  }
+}
+"
+}
+
+pub func parseNpmProbeOutput(stdout: in String): List[NpmProbeRow] {
+  val rows: List[NpmProbeRow] = newList()
+  for line in Str.split(stdout, "\n") {
+    val tab = Str.indexOfRaw(line, "\t")
+    if tab > 0 {
+      val pkg = Str.substring(line, 0, tab)
+      val rest = Str.substring(line, tab + 1)
+      if Str.startsWith(rest, "!") {
+        rows.add(NpmProbeRow(pkgName = pkg, exports = newList(), error = Str.substring(rest, 1)))
+      } else {
+        val names: List[String] = newList()
+        for n in Str.split(rest, ",") {
+          if n.length > 0 {
+            names.add(n)
+          }
+        }
+        rows.add(NpmProbeRow(pkgName = pkg, exports = names, error = ""))
+      }
+    }
+  }
+  rows
+}
+
+/// `B0062` messages: the shim imports whose package, per `rows`, is missing or
+/// does not export the bound name.  Packages the probe did not cover are skipped.
+pub func npmMissingSymbols(imports: in List[NpmShimImport], rows: in List[NpmProbeRow]): List[String] {
+  val problems: List[String] = newList()
+  for imp in imports {
+    for row in rows {
+      if row.pkgName == imp.pkgName {
+        if row.error.length > 0 {
+          problems.add("error[B0062]: the NPM package \"" + imp.pkgName + "\" could not be loaded: " + row.error)
+        } else if not row.exports.contains(imp.symbol) {
+          problems.add(
+            "error[B0062]: the NPM package \"" + imp.pkgName + "\" has no export \"" + imp.symbol + "\" (its exports: " +
+              Str.joinList(", ", row.exports) +
+              ")"
+          )
+        }
+      }
+    }
+  }
+  problems
+}
+
+/// The `[npm]` build checks (docs/35 section 9.4): `B0061` for a package with
+/// no shim, `B0062` for a shim import the installed package does not export.
+/// Empty when the manifest has no `[npm]` packages.
+pub func checkNpmShims(manifest: in Mf.Manifest, mfDir: in String): List[String] {
+  val npm = match manifest.npm { case Some(n) -> n; case None -> return newList() }
+  val problems = npmMissingShims(npm, mfDir)
+  if problems.count > 0 {
+    return problems
+  }
+  val declared: Map[String, Bool] = newMap()
+  for e in npm.entries {
+    declared.add(e.name, true)
+  }
+  val imports: List[NpmShimImport] = newList()
+  for e in npm.entries {
+    val shimPath = Path.join(Path.join(mfDir, "_extern_npm"), Mf.npmShimFileName(e.name))
+    match File.readText(shimPath) {
+      case Err(err) -> problems.add("error[B0061]: cannot read " + shimPath + ": " + IOError.message(err))
+      case Ok(text) -> {
+        for imp in npmShimImports(text) {
+          if declared.containsKey(imp.pkgName) {
+            imports.add(imp)
+          }
+        }
+      }
+    }
+  }
+  if problems.count > 0 or imports.count == 0 {
+    return problems
+  }
+  val installDir = Path.join(Path.join(mfDir, "target"), "npm")
+  val scriptPath = Path.join(installDir, "lyric-npm-probe.mjs")
+  match File.writeText(scriptPath, npmProbeScript()) {
+    case Err(err) -> {
+      problems.add("error[B0060]: cannot write " + scriptPath + ": " + IOError.message(err) + "; run `lyric restore`")
+      return problems
+    }
+    case Ok(_) -> ()
+  }
+  val pkgs: List[String] = newList()
+  val seen: Map[String, Bool] = newMap()
+  pkgs.add(scriptPath)
+  for imp in imports {
+    if not seen.containsKey(imp.pkgName) {
+      seen.add(imp.pkgName, true)
+      pkgs.add(imp.pkgName)
+    }
+  }
+  val r = ProcessCapture.runCaptureWithDiagnosticsTimeout("node", pkgs, "", 60000)
+  if r.exitCode != 0 {
+    problems.add(
+      "error[B0062]: node could not probe the installed NPM packages (exit " + toString(r.exitCode) + "): " + r.stderr
+    )
+    return problems
+  }
+  npmMissingSymbols(imports, parseNpmProbeOutput(r.stdout))
 }
 
 /// Install the manifest's `[npm]` packages into `target/npm/node_modules/`
