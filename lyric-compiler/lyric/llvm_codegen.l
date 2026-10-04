@@ -3149,7 +3149,7 @@ func lowerBinop(ctx: in Ctx, insns: in List[NInsn], op: in BinOp, lhs: in Expr, 
         b2 = emitToString(ctx, insns, b2)
       }
     }
-    return lowerStringBinop(ctx, insns, op, a2, b2)
+    return lowerStringBinop(ctx, insns, op, a2, b2, line)
   }
   // Unions compare structurally (docs/01 §2.5): same case, equal payloads.
   if op == BEq or op == BNeq {
@@ -3216,9 +3216,14 @@ func isConcatStringifiableNType(t: in NType): Bool {
   }
 }
 
-func lowerStringBinop(ctx: in Ctx, insns: in List[NInsn], op: in BinOp, a: in NVal, b: in NVal): NVal {
+func lowerStringBinop(ctx: in Ctx, insns: in List[NInsn], op: in BinOp, a: in NVal, b: in NVal, line: in Int): NVal {
   if not (isStringNType(a.ty) and isStringNType(b.ty)) {
-    panic("Lyric.LlvmCodegen: mixed String/non-String operands (call .toString() explicitly)")
+    panic(
+      "Lyric.LlvmCodegen: mixed String/non-String operands (call .toString() explicitly) (in " + ctx.curPkg[0] +
+        " at line " +
+        line.toString() +
+        ")"
+    )
   }
   val sTy = lyricStringNType()
   match op {
@@ -13538,7 +13543,7 @@ func combineIndexedAssignValue(
     case AssEq -> BAdd
   }
   if isStringNType(ty) {
-    lowerStringBinop(ctx, insns, binOp, cur, coerceTo(ctx, insns, rhs, ty))
+    lowerStringBinop(ctx, insns, binOp, cur, coerceTo(ctx, insns, rhs, ty), line)
   } else {
     val rhsC = coerceTo(ctx, insns, rhs, ty)
     match ty {
@@ -13694,7 +13699,7 @@ func lowerAssign(
         case AssEq -> BAdd
       }
       if isStringNType(ty) {
-        lowerStringBinop(ctx, insns, binOp, cur, coerceTo(ctx, insns, rhs, ty))
+        lowerStringBinop(ctx, insns, binOp, cur, coerceTo(ctx, insns, rhs, ty), line)
       } else {
         val rhsC = coerceTo(ctx, insns, rhs, ty)
         match ty {
@@ -13764,7 +13769,7 @@ func lowerFieldAssign(
         case AssEq -> BAdd
       }
       if isStringNType(fieldTy) {
-        lowerStringBinop(ctx, insns, binOp, cur, coerceTo(ctx, insns, rhs, fieldTy))
+        lowerStringBinop(ctx, insns, binOp, cur, coerceTo(ctx, insns, rhs, fieldTy), line)
       } else {
         val rhsC = coerceTo(ctx, insns, rhs, fieldTy)
         match fieldTy {
