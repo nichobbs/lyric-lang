@@ -4532,8 +4532,6 @@ func recordWideningSite(tbl: in SymbolTable, target: in Type, src: in Type, e: i
   }
 }
 
-// `recordWideningSite` for an implicit widening at a position every backend
-// already widens signed values at.
 /// Records `e` as a value that must be in the inline range type `slot`
 /// (`Int range 0 ..= 3`), at a position no other pass checks: a record or
 /// union field, a collection element, an argument through a function value
@@ -4671,6 +4669,8 @@ func rangeReceiverName(sc: in Scope, recv: in Expr): String {
   }
 }
 
+// `recordWideningSite` for an implicit widening at a position every backend
+// already widens signed values at.
 func recordUnsignedWidening(tbl: in SymbolTable, target: in Type, src: in Type, e: in Expr): Unit {
   recordWideningSite(tbl, target, src, e, true)
 }
