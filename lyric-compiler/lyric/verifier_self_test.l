@@ -2243,3 +2243,57 @@ test "a lambda capturing a block's var sees what it holds when called (#8107)" {
     "block-var-capture"
   )
 }
+
+test "a division with an operand of unknown or distinct width excludes the wider minimum (#8107)" {
+  val bigDecl = "type Big = Long\n"
+  assertRefuted(
+    bigDecl + "func f(b: in Big, d: in Int): Long\n  requires: d == -1 and b.value < -2147483648\n{\n  b.value / d\n}\n",
+    "distinct-value-by-int"
+  )
+  assertRefuted(
+    bigDecl +
+      "func f(v: in Long, d: in Int): Long\n  requires: d == -1 and v < -2147483648\n{\n  Big.from(v).value / d\n}\n",
+    "from-value-by-int"
+  )
+  assertDischarged(
+    bigDecl + "func f(b: in Big, d: in Int): Long\n  requires: d == -1 and b.value > 0\n{\n  b.value / d\n}\n",
+    "distinct-value-positive"
+  )
+}
+
+test "a guard that fails leaves its out or inout arguments changed for later arms (#8107)" {
+  val decls = "func pos(x: in Int): Int\n  requires: x > 0\n{\n  x\n}\n" +
+    "func zeroNo(x: inout Int): Bool {\n  x = 0\n  false\n}\n"
+  assertRefuted(
+    decls +
+      "func f(): Int {\n  var x = 1\n  val r = match 3 {\n    case k if zeroNo(x) -> 1\n    case _ -> pos(x)\n  }\n  r\n}\n",
+    "failed-guard"
+  )
+  assertDischarged(
+    decls +
+      "func f(): Int {\n  var x = 1\n  val r = match 3 {\n    case k if k > 5 -> 1\n    case _ -> pos(x)\n  }\n  r\n}\n",
+    "pure-guard"
+  )
+}
+
+test "a call evaluates its receiver or callee before its arguments, in source order (#8107)" {
+  val recvDecls = zeroDecls() + "record R {\n  v: Int\n}\n" + "func zr(x: inout Int): R {\n  x = 0\n  R(v = 1)\n}\n" +
+    "func R.take(r: in R, n: in Int): Int {\n  n\n}\n"
+  assertRefuted(recvDecls + "func f(): Int {\n  var x = 1\n  zr(x).take(pos(x))\n}\n", "receiver")
+  assertDischarged(recvDecls + "func f(): Int {\n  var x = 1\n  zr(x).take(pos(1))\n}\n", "receiver-unaffected")
+  val pickDecls = zeroDecls() + "func pick(b: in Bool): (Int) -> Int {\n  { n: Int -> n }\n}\n"
+  assertRefuted(pickDecls + "func f(): Int {\n  var x = 1\n  pick(zero(x))(pos(x))\n}\n", "computed-callee")
+  assertDischarged(
+    pickDecls + "func f(): Int {\n  var x = 1\n  pick(zero(x))(pos(1))\n}\n",
+    "computed-callee-unaffected"
+  )
+  val namedDecls = zeroDecls() + "func pair2(a: in Int, b: in Bool): Int {\n  a\n}\n"
+  assertRefuted(
+    namedDecls + "func f(): Int {\n  var x = 1\n  pair2(b = zero(x), a = pos(x))\n}\n",
+    "named-source-order"
+  )
+  assertDischarged(
+    namedDecls + "func f(): Int {\n  var x = 1\n  pair2(a = pos(x), b = zero(x))\n}\n",
+    "named-parameter-order"
+  )
+}
