@@ -128,6 +128,20 @@ pub func outcomeToDiag(g: in Goal, outcome: in SolverOutcome, allowUnverified: i
       )
     }
     case Unknown(reason) -> {
+      // A query the solver rejected is a verifier bug: an error even with
+      // --allow-unverified, the solver's text only a detail line (#8102).
+      if reason.startsWith(solverRejectedMarker()) {
+        val detail = reason.substring(solverRejectedMarker().length, reason.length - solverRejectedMarker().length)
+        return Some(
+          value = errorDiagnostic(
+            "V0007",
+            goalKindDisplay(g.kind) + " — internal verifier error: the proof query for goal '" + g.label +
+              "' was malformed, so the goal is not proved; please report this\n  solver: " +
+              detail,
+            g.origin
+          )
+        )
+      }
       if allowUnverified {
         Some(value = warningDiagnostic("V0007", goalKindDisplay(g.kind) + " — solver returned unknown: " + reason, g.origin))
       } else {
@@ -297,17 +311,110 @@ pub func reconcileGoalSorts(g: in Goal): Result[Goal, String] {
     i = i + 1
   }
   match reconcileTermSorts(g.conclusion) {
-    case Ok(c) -> Ok(
-      value = Goal(
-        hypotheses = hyps,
-        conclusion = c,
-        symbols = g.symbols,
-        origin = g.origin,
-        kind = g.kind,
-        label = g.label
+    case Ok(c) -> {
+      // A value the verifier does not model has a sort of its own; one
+      // compared with or used as a value of another sort makes the query
+      // ill-sorted, which the solver would reject.  Fail closed here with
+      // what went wrong instead (#8102).
+      var hi = 0
+      while hi < hyps.count {
+        val hp = sortProblem(hyps[hi], SBool)
+        if hp.length > 0 {
+          return Err(error = hp)
+        }
+        hi = hi + 1
+      }
+      val cp = sortProblem(c, SBool)
+      if cp.length > 0 {
+        return Err(error = cp)
+      }
+      Ok(
+        value = Goal(
+          hypotheses = hyps,
+          conclusion = c,
+          symbols = g.symbols,
+          origin = g.origin,
+          kind = g.kind,
+          label = g.label
+        )
       )
-    )
+    }
     case Err(r) -> Err(error = r)
+  }
+}
+
+// "" when `t` is well-sorted and of sort `expected`; otherwise what is
+// wrong with it.
+func sortProblem(t: in Term, expected: in Sort): String {
+  val own = sortOf(t)
+  // Sorts the solver sees as one (`Float` and `Double` are both `Real`)
+  // are the same here.
+  if smtRenderSort(own) != smtRenderSort(expected) {
+    return "a value the verifier does not model (sort " + sortDisplay(own) + ") is used where a " + sortDisplay(expected) +
+      " is needed"
+  }
+  innerSortProblem(t)
+}
+
+func innerSortProblem(t: in Term): String {
+  match t {
+    case TVar(_, _) -> ""
+    case TLit(_, _) -> ""
+    case TBuiltin(op, args) -> {
+      if isSortUnifyingBuiltin(op) and args.count == 2 {
+        val p0 = innerSortProblem(args[0])
+        if p0.length > 0 {
+          return p0
+        }
+        sortProblem(args[1], sortOf(args[0]))
+      } else {
+        val boolArgs = match op { case BOpAnd | BOpOr | BOpNot | BOpImplies | BOpIff | BOpXor -> true; case _ -> false }
+        var i = 0
+        while i < args.count {
+          val p = if boolArgs { sortProblem(args[i], SBool) } else { innerSortProblem(args[i]) }
+          if p.length > 0 {
+            return p
+          }
+          i = i + 1
+        }
+        ""
+      }
+    }
+    case TApp(_, args, _) -> {
+      var i = 0
+      while i < args.count {
+        val p = innerSortProblem(args[i])
+        if p.length > 0 {
+          return p
+        }
+        i = i + 1
+      }
+      ""
+    }
+    case TLet(bindings, body) -> {
+      var i = 0
+      while i < bindings.count {
+        val p = innerSortProblem(bindings[i].term)
+        if p.length > 0 {
+          return p
+        }
+        i = i + 1
+      }
+      innerSortProblem(body)
+    }
+    case TIte(c, a, b) -> {
+      val pc = sortProblem(c, SBool)
+      if pc.length > 0 {
+        return pc
+      }
+      val pa = innerSortProblem(a)
+      if pa.length > 0 {
+        return pa
+      }
+      sortProblem(b, sortOf(a))
+    }
+    case TForall(_, _, body) -> sortProblem(body, SBool)
+    case TExists(_, body) -> sortProblem(body, SBool)
   }
 }
 

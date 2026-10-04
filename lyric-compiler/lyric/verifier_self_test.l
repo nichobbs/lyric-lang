@@ -1978,3 +1978,43 @@ test "a self-referential parameter default is cut, not unfolded forever (#8102)"
     "self-record-default"
   )
 }
+
+func summaryMentions(s: in ProofSummary, text: in String): Bool {
+  var i = 0
+  while i < s.diagnostics.count {
+    if s.diagnostics[i].message.contains(text) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+test "a call cut at a recursive default is a well-formed query (#8102)" {
+  val selfDefault = provePkg(
+    "@pure\nfunc f(x: in Int, b: in Int = f(0) + 1): Int\n  ensures: result == b\n{\n  b\n}\n" +
+      "func h(): Int\n  ensures: result == 42\n{\n  val a = f(5)\n  7\n}\n"
+  )
+  val mutualDefault = provePkg(
+    "@pure\nfunc g(x: in Int): Int\n  ensures: result == f(x) + 1\n{\n  f(x) + 1\n}\n" +
+      "@pure\nfunc f(x: in Int, b: in Int = g(0)): Int\n  ensures: result == b\n{\n  b\n}\n" +
+      "func k(y: in Int): Int\n  ensures: result == 42\n{\n  val a = g(1)\n  7\n}\n"
+  )
+  assertTrue(summaryHasFailure(selfDefault), "self-default: not proved")
+  assertTrue(summaryHasFailure(mutualDefault), "mutual-default: not proved")
+  assertTrue(not summaryMentions(selfDefault, "unexpected output"), "self-default: no solver error")
+  assertTrue(not summaryMentions(selfDefault, "malformed"), "self-default: a well-formed query")
+  assertTrue(not summaryMentions(mutualDefault, "unexpected output"), "mutual-default: no solver error")
+  assertTrue(not summaryMentions(mutualDefault, "malformed"), "mutual-default: a well-formed query")
+}
+
+test "an unmodelled value used at another sort fails closed before the solver (#8102)" {
+  val s = provePkg(
+    "func f(x: in Int): Int\n  ensures: result == x\n{\n  x\n}\n" +
+      "func g(): Int\n  ensures: result == 1\n{\n  val f = { x: Int -> 2 }\n  f(1)\n}\n"
+  )
+  assertTrue(summaryHasFailure(s), "not proved")
+  assertTrue(summaryHasDiagCode(s, "V0033"), "reported as untranslatable")
+  assertTrue(not summaryMentions(s, "malformed"), "a well-formed query")
+  assertTrue(not summaryMentions(s, "unexpected output"), "no solver error")
+}

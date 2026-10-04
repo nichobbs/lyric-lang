@@ -664,14 +664,158 @@ func collectFromTerm(
   }
 }
 
+// The constructor and selector names the goal's datatypes declare.
+func datatypeFunctionNames(symbols: in List[SymbolDecl]): Map[String, Bool] {
+  val names: Map[String, Bool] = newMap()
+  var i = 0
+  while i < symbols.count {
+    match symbols[i] {
+      case DeclDatatype(_, ctors) -> {
+        var c = 0
+        while c < ctors.count {
+          if not names.containsKey(ctors[c].name) {
+            names.add(ctors[c].name, true)
+          }
+          var f = 0
+          while f < ctors[c].fields.count {
+            if not names.containsKey(ctors[c].fields[f].name) {
+              names.add(ctors[c].fields[f].name, true)
+            }
+            f = f + 1
+          }
+          c = c + 1
+        }
+      }
+      case DeclUserFun(_, _, _) -> ()
+    }
+    i = i + 1
+  }
+  names
+}
+
+// `t` with each uninterpreted function applied at more than one signature
+// split into one function per signature: the first keeps its name, each
+// later one is `<name>!sig<k>`.  A datatype's own functions are left alone.
+func separateSignatures(t: in Term, datatypeFuncs: in Map[String, Bool]): Term {
+  val firstSig: Map[String, String] = newMap()
+  val renamed: Map[String, String] = newMap()
+  val counts: Map[String, Int] = newMap()
+  renameApps(t, datatypeFuncs, firstSig, renamed, counts)
+}
+
+func appSignature(args: in List[Term], ret: in Sort): String {
+  var sig = "("
+  var i = 0
+  while i < args.count {
+    sig = sig + smtRenderSort(sortOf(args[i])) + " "
+    i = i + 1
+  }
+  sig + ") " + smtRenderSort(ret)
+}
+
+func renameApps(
+  t: in Term,
+  datatypeFuncs: in Map[String, Bool],
+  firstSig: in Map[String, String],
+  renamed: in Map[String, String],
+  counts: in Map[String, Int],
+): Term {
+  match t {
+    case TVar(_, _) -> t
+    case TLit(_, _) -> t
+    case TBuiltin(op, args) -> TBuiltin(op = op, args = renameAppList(args, datatypeFuncs, firstSig, renamed, counts))
+    case TApp(name, args, retSort) -> {
+      val newArgs = renameAppList(args, datatypeFuncs, firstSig, renamed, counts)
+      if datatypeFuncs.containsKey(name) {
+        TApp(name = name, args = newArgs, retSort = retSort)
+      } else {
+        val sig = appSignature(newArgs, retSort)
+        val key = name + " " + sig
+        val finalName = match mapGet(firstSig, name) {
+          case None -> {
+            firstSig.add(name, sig)
+            name
+          }
+          case Some(first) -> {
+            if first == sig {
+              name
+            } else {
+              match mapGet(renamed, key) {
+                case Some(n) -> n
+                case None -> {
+                  val k = match mapGet(counts, name) { case Some(c) -> c + 1; case None -> 1 }
+                  if counts.containsKey(name) {
+                    val dropped = counts.remove(name)
+                  }
+                  counts.add(name, k)
+                  val fresh = name + "!sig" + intToString(k)
+                  renamed.add(key, fresh)
+                  fresh
+                }
+              }
+            }
+          }
+        }
+        TApp(name = finalName, args = newArgs, retSort = retSort)
+      }
+    }
+    case TLet(bindings, body) -> {
+      val nb: List[TermBinding] = newList()
+      var i = 0
+      while i < bindings.count {
+        nb.add(
+          TermBinding(name = bindings[i].name, term = renameApps(bindings[i].term, datatypeFuncs, firstSig, renamed, counts))
+        )
+        i = i + 1
+      }
+      TLet(bindings = nb, body = renameApps(body, datatypeFuncs, firstSig, renamed, counts))
+    }
+    case TIte(c, a, b) -> TIte(
+      cond = renameApps(c, datatypeFuncs, firstSig, renamed, counts),
+      thenT = renameApps(a, datatypeFuncs, firstSig, renamed, counts),
+      elseT = renameApps(b, datatypeFuncs, firstSig, renamed, counts)
+    )
+    case TForall(binders, triggers, body) -> TForall(
+      binders = binders,
+      triggers = triggers,
+      body = renameApps(body, datatypeFuncs, firstSig, renamed, counts)
+    )
+    case TExists(binders, body) -> TExists(
+      binders = binders,
+      body = renameApps(body, datatypeFuncs, firstSig, renamed, counts)
+    )
+  }
+}
+
+func renameAppList(
+  xs: in List[Term],
+  datatypeFuncs: in Map[String, Bool],
+  firstSig: in Map[String, String],
+  renamed: in Map[String, String],
+  counts: in Map[String, Int],
+): List[Term] {
+  val out2: List[Term] = newList()
+  var i = 0
+  while i < xs.count {
+    out2.add(renameApps(xs[i], datatypeFuncs, firstSig, renamed, counts))
+    i = i + 1
+  }
+  out2
+}
+
 // Render a goal as a self-contained SMT-LIB v2.6 file.
 pub func smtRenderGoal(g: in Goal): String {
   var output = smtRenderPreamble()
   output = output + "; goal: " + g.label + "\n"
   output = output + "; kind: " + goalKindDisplay(g.kind) + "\n"
 
-  // Build the claim: hypotheses => conclusion.
-  val claim = goalAsImplication(g)
+  // Build the claim: hypotheses => conclusion.  Every uninterpreted
+  // function is declared from its applications in the claim itself, so
+  // none is missed; one name applied at two signatures (a call cut at a
+  // recursive default with fewer arguments, a field read at two receiver
+  // sorts) becomes two functions (#8102).
+  val datatypeFuncs = datatypeFunctionNames(g.symbols)
+  val claim = separateSignatures(goalAsImplication(g), datatypeFuncs)
 
   // Collect (1) every uninterpreted sort name and (2) every TApp call site
   // whose function isn't already declared by a symbol.  Walking happens
@@ -683,12 +827,7 @@ pub func smtRenderGoal(g: in Goal): String {
   var si = 0
   while si < g.symbols.count {
     match g.symbols[si] {
-      case DeclUserFun(fname, _, _) -> {
-        val key = smtSanitize(fname)
-        if not knownFuncs.containsKey(key) {
-          knownFuncs.add(key, true)
-        }
-      }
+      case DeclUserFun(_, _, _) -> ()
       case DeclDatatype(_, dtCtors) -> {
         // (declare-datatypes ...) defines both the constructor and each
         // field selector — record them as "known" so the unknown-TApp
@@ -760,10 +899,15 @@ pub func smtRenderGoal(g: in Goal): String {
     k = k + 1
   }
 
-  // Emit registered symbol declarations.
+  // Emit the datatype declarations; functions are declared from the claim.
   var i = 0
   while i < g.symbols.count {
-    output = output + smtRenderSymbol(g.symbols[i]) + "\n"
+    match g.symbols[i] {
+      case DeclDatatype(_, _) -> {
+        output = output + smtRenderSymbol(g.symbols[i]) + "\n"
+      }
+      case DeclUserFun(_, _, _) -> ()
+    }
     i = i + 1
   }
 
