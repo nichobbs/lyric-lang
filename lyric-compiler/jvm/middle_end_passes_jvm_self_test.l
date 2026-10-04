@@ -83,6 +83,27 @@ func pickLabel(): String {
   "real"
 }
 
+// Composed predicates (`any` / `all` / `not`, docs/24 §4.1): three same-named
+// declarations, of which only the true composition survives.
+@cfg(any(feature = "never_active_j2_feature", feature = "never_active_j3_feature"))
+func composed(): String {
+  "any-inactive"
+}
+
+@cfg(all(feature = "never_active_j2_feature", not(feature = "never_active_j3_feature")))
+func composed(): String {
+  "all-inactive"
+}
+
+@cfg(not(any(feature = "never_active_j2_feature", feature = "never_active_j3_feature")))
+func composed(): String {
+  "composition-active"
+}
+
+test "@cfg any/all/not composition keeps only the true composition" {
+  assertEqual(composed(), "composition-active", "the inactive compositions are erased before type-check")
+}
+
 test "@cfg erases an inactive-feature function (Int)" {
   assertEqualInt(pickImpl(), 42, "inactive-feature @cfg func erased; ungated fallback (42) runs")
 }

@@ -17,6 +17,7 @@
 package Std.HttpServer.JvmTests
 
 import Std.Core
+import Std.Collections
 import Std.Encoding
 import Std.HttpServer
 import Std.String
@@ -95,4 +96,30 @@ test "a request body over the 10 MiB cap is answered 413 and never queued" {
   sock.close()
   stopListener(listener)
   assertTrue(resp.startsWith("HTTP/1.1 413"), "status 413: " + resp)
+}
+
+test "a chunked response streams its chunks and ends cleanly" {
+  val listener = startListener("http://127.0.0.1:8522/")
+  val server = JThread.new(
+    { ->
+      val ctx = nextContext(listener)
+      val noHeaders: Map[String, String] = newMap()
+      val stream = beginChunkedResponse(ctx, 200, "text/plain", noHeaders)
+      val first = encodeUtf8("hello ")
+      val second = encodeUtf8("chunked world")
+      val r1 = streamWriteChunk(stream, first, 0, first.length)
+      val r2 = streamWriteChunk(stream, second, 0, second.length)
+      endChunkedResponse(ctx, stream);
+      ()
+    }
+  )
+  server.start()
+  JThread.sleep(200i64)
+  val resp = exchange(8522, "GET /s HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n", encodeUtf8(""), 0)
+  server.join()
+  stopListener(listener)
+  assertTrue(resp.contains("200"), "status 200: " + resp)
+  assertTrue(contains(toLower(resp), "transfer-encoding: chunked"), "chunked encoding: " + resp)
+  assertTrue(resp.contains("hello "), "first chunk: " + resp)
+  assertTrue(resp.contains("chunked world"), "second chunk: " + resp)
 }
