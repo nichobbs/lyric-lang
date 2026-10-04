@@ -155,7 +155,7 @@ test "module-level val with a non-literal initializer is a shared static global 
     NativeSourcePackage(
       name = "Glob.App",
       path = "",
-      source = "package Glob.App\n" + "import Glob.Store\n" + "import Std.Core\n" + "import Std.Collections\n" +
+      source = "package Glob.App\n" + "import Glob.Store\n" + "import Glob.Store as Store\n" + "import Std.Core\n" + "import Std.Collections\n" +
         "import Std.Console as Console\n" +
         "record Counter {\n" +
         "  var n: Int = 0\n" +
@@ -181,7 +181,7 @@ test "module-level val with a non-literal initializer is a shared static global 
         "  }\n" +
         "  Console.println(\"derived=\" + derived.toString())\n" +
         "  Console.println(\"store=\" + storeCount().toString())\n" +
-        "  Console.println(Glob.Store.banner)\n" +
+        "  Console.println(Store.banner)\n" +
         "  Console.println(pick(\"picked\"))\n" +
         "  0\n" +
         "}\n"

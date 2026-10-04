@@ -120,3 +120,15 @@ LYRIC_BIN="$lyric_bin" bash scripts/ci/range-refinement-e2e.sh native
 # D169: a value-generic record is usable in its own package, and naming
 # another package's is T0164.
 LYRIC_BIN="$lyric_bin" bash scripts/ci/value-generic-record-e2e.sh native
+# Std.Task, Std.SecureRandom, Std.Json and Std.JsonValue on native (#8135, #7856):
+# the stdlib suites that need no catchable panic.
+for t in \
+  lyric-stdlib/tests/task_native_tests.l \
+  lyric-stdlib/tests/secure_random_native_tests.l \
+  lyric-stdlib/tests/json_native_tests.l \
+  lyric-stdlib/tests/json_value_tests.l ; do
+  echo "=== $t (--target native) ==="
+  "$lyric_bin" test --target native "$t"
+done
+# Std.Parse is a plain program, not a test module.
+"$lyric_bin" run --target native lyric-stdlib/tests/parse_tests.l
