@@ -195,8 +195,8 @@ which part of the package your program touches. A restore never overwrites a shi
 each function whose parameters and result are `string`, `number`, `boolean` or `bigint`; a
 `number` becomes a `Double` and a `bigint` a `Long`. Objects, classes, generics, overloads,
 optional and rest parameters and `Promise` results are listed in the shim as `// skipped`, for
-you to declare by hand. Running it again replaces the scaffold or an earlier generated file; a
-shim you edited is left alone unless you pass `--force`.
+you to declare by hand. Running it again replaces the scaffold or an earlier generated file you have not touched (the header records a
+hash of the content); a shim you edited or added to is left alone unless you pass `--force`.
 
 How a package reaches your code depends on the shape:
 

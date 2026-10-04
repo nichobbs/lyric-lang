@@ -193,6 +193,10 @@ test "generateNpmShims: writes a shim from the package's .d.ts that the build ch
   assertTrue(Str.contains(readOrEmpty(shim), "// hand-authored"), "the hand edit survived")
   assertEqualInt(Cli.generateNpmShims(m, dir, true), 0, "--force regenerates it")
   assertTrue(Str.contains(readOrEmpty(shim), "pub extern func add("), "forced regeneration wrote the declarations")
+  assertTrue(Cli.npmShimIsPristine(readOrEmpty(shim)), "a fresh generated file is pristine")
+  putFile(shim, readOrEmpty(shim) + "\n// declared by hand\n")
+  assertEqualInt(Cli.generateNpmShims(m, dir, false), 0, "an addition below the header is a hand edit")
+  assertTrue(Str.contains(readOrEmpty(shim), "// declared by hand"), "the hand-added declaration survived a rerun")
 
   match File.deleteDirRecursive(dir) {
     case Ok(_) -> ()
