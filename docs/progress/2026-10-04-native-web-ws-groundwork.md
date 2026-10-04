@@ -47,7 +47,7 @@ Self-tests: `cfg_self_test.l`, `cfg_gate_self_test.l`,
 `llvm_project_self_test.l` (module globals), `llvm_http_server_self_test.l`
 (takeConnection and chunked streaming, items N to P), `lyric-rt` C tests.
 
-Known gaps: `Std.Json` document parsing and floats on native (#7856), JVM
+Known gaps: `Std.Json` document parsing and floats on native (#7856), JVM (tracked in #8133)
 parity for the lyric-web/lyric-ws native-only seams.
 
 Native codegen fixes found by building `lyric-ui` natively (#7990):
