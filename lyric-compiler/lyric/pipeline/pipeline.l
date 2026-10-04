@@ -730,7 +730,10 @@ pub func pipeCheckAndMono(
 
   val noSpecSites: Map[String, Map[String, ArgConversionSite]] = newMap()
   val lambdaTypes = funcValueLambdaTypes(valueSites)
-  val derivedLens = withArrayLens(derived, tcRes.symbols.arrayTypeLens)
+  val derivedLens = markValueRecordCtors(
+    withArrayLens(derived, tcRes.symbols.arrayTypeLens),
+    tcRes.symbols.valueRecordCtorSites
+  )
   val monoRes0 = monoFileWithLambdaTypes(
     derivedLens,
     monoGenFuncs,
@@ -755,7 +758,10 @@ pub func pipeCheckAndMono(
     opts.methodCallAritiesOut
   )
   if monoRes0.unsignedSpecs.count == 0 {
-    return Some(value = finishMono(monoRes0.file, opts))
+    return match finishValueRecords(monoRes0.file, file0, importedPkgs, tcRes, opts) {
+      case Some(f) -> Some(value = finishMono(f, opts))
+      case None -> None
+    }
   }
   // A specialisation binding a type parameter to `UInt`/`ULong` is checked
   // on its own, and specialised again with what the checker records in it
@@ -790,7 +796,10 @@ pub func pipeCheckAndMono(
   if gate(opts.pkgLabel, opts.lineOrigins, monoRes.diagnostics) {
     return None
   }
-  Some(value = finishMono(lowerSpecArrays(monoRes.file, specArrays, opts.primitiveArrays), opts))
+  match finishValueRecords(lowerSpecArrays(monoRes.file, specArrays, opts.primitiveArrays), file0, importedPkgs, tcRes, opts) {
+    case Some(f) -> Some(value = finishMono(f, opts))
+    case None -> None
+  }
 }
 
 // The monomorphised file as the backend receives it: negated integer
@@ -1420,6 +1429,415 @@ func lowerSpecArrays(
     items = items,
     span = file.span
   )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Value-generic records (D169).
+// ─────────────────────────────────────────────────────────────────────────────
+// Before monomorphisation each construction of a value-generic record is
+// spelled with its instance's lengths (`Ints[3](data = a)`, or `Ints[N]()`
+// inside a value-generic body, which `Lyric.Mono` makes concrete in each
+// specialisation).  After it, `specialiseValueRecords` gives each instance
+// the program names its own record (`Ints__V3`), with the lengths
+// substituted in its fields and methods, and renames every reference.
+func markValueRecordCtors(file: in SourceFile, sites: in Map[String, List[TypeArg]]): SourceFile {
+  if sites.count == 0 {
+    return file
+  }
+  mapExprsInFile(
+    file,
+    { e: Expr ->
+      match e.kind {
+        case ECall(fn, args) -> match mapGet(sites, recordCopySiteKey(e.span)) {
+          case Some(vargs) -> match fn.kind {
+            case EPath(_) -> Expr(
+              kind = ECall(
+                fn = Expr(
+                  kind = ETypeApp(
+                    fn = fn,
+                    args = vargs
+                  ),
+                  span = fn.span
+                ),
+                args = args
+              ),
+              span = e.span
+            )
+            case _ -> e
+          }
+          case None -> e
+        }
+        case _ -> e
+      }
+    }
+  )
+}
+
+func valueGenericRecordDecl(it: in Item): Option[RecordDecl] {
+  val dOpt = match it.kind {
+    case IRecord(d) -> Some(value = d)
+    case IExposedRec(d) -> Some(value = d)
+    case _ -> None
+  }
+  match dOpt {
+    case Some(d) -> match d.generics {
+      case Some(g) -> if genericParamsHaveValue(g.params) { Some(value = d) } else { None }
+      case None -> None
+    }
+    case None -> None
+  }
+}
+
+func valueRecordMarkers(items: in List[Item], constArgs: in Map[String, Int], sp: in Span): Map[String, TypeExpr] {
+  val markers: Map[String, TypeExpr] = newMap()
+  for it in items {
+    match valueGenericRecordDecl(it) {
+      case Some(d) -> match d.generics {
+        case Some(g) -> {
+          val kinds: List[TypeArg] = newList()
+          for gp in g.params {
+            match gp {
+              case GPValue(_, _, gsp) -> kinds.add(TAValue(expr = Expr(kind = ELiteral(lit = LBool(value = true)), span = gsp)))
+              case GPType(_, gsp) -> kinds.add(TAType(ty = TypeExpr(kind = TUnit, span = gsp)))
+            }
+          }
+          val segs: List[String] = newList()
+          segs.add(d.name)
+          markers.add(
+            valueRecordMarkerPrefix() + d.name,
+            TypeExpr(kind = TGenericApp(head = ModulePath(segments = segs, span = d.span), args = kinds), span = d.span)
+          )
+        }
+        case None -> ()
+      }
+      case None -> ()
+    }
+  }
+  for k in mapKeys(constArgs) {
+    match mapGet(constArgs, k) {
+      case Some(n) -> markers.add(
+        valueArgMarkerPrefix() + k,
+        TypeExpr(
+          kind = TArray(
+            size = TAValue(
+              expr = Expr(
+                kind = ELiteral(
+                  lit = LInt(value = n.toLong(), suffix = I32, raw = "")
+                ),
+                span = sp
+              )
+            ),
+            element = TypeExpr(kind = TUnit, span = sp)
+          ),
+          span = sp
+        )
+      )
+      case None -> ()
+    }
+  }
+  markers
+}
+
+// One specialisation of a value-generic record: `spec` is `recordName` with
+// its value parameters bound as in `valueSubst`.
+record ValueRecordSpec {
+  spec: String
+  recordName: String
+  valueSubst: Map[String, Expr]
+}
+
+// The specialisations `markers` recorded under `valueRecordUsePrefix()` that
+// are not yet in `done`, with their value substitutions.
+func newValueRecordSpecs(
+  markers: in Map[String, TypeExpr], decls: in Map[String, RecordDecl], done: in List[String]
+): List[ValueRecordSpec] {
+  val specs: List[ValueRecordSpec] = newList()
+  val prefix = valueRecordUsePrefix()
+  for k in mapKeys(markers) {
+    if k.startsWith(prefix) {
+      val spec = k.substring(prefix.length, k.length - prefix.length)
+      if not done.contains(spec) {
+        match mapGet(markers, k) {
+          case Some(useTe) -> match useTe.kind {
+            case TGenericApp(head, largs) -> match mapGet(decls, head.segments[0]) {
+              case Some(d) -> {
+                val vs: Map[String, Expr] = newMap()
+                var li = 0
+                match d.generics {
+                  case Some(g) -> {
+                    for gp in g.params {
+                      match gp {
+                        case GPValue(nm, _, _) -> {
+                          match largs[li] {
+                            case TAValue(le) -> vs.add(nm, le)
+                            case TAType(_) -> ()
+                          }
+                          li = li + 1
+                        }
+                        case GPType(_, _) -> ()
+                      }
+                    }
+                  }
+                  case None -> ()
+                }
+                specs.add(ValueRecordSpec(spec = spec, recordName = head.segments[0], valueSubst = vs))
+              }
+              case None -> ()
+            }
+            case _ -> ()
+          }
+          case None -> ()
+        }
+      }
+    }
+  }
+  specs
+}
+
+// A record item with its methods as signatures, so checking a file that
+// holds it records nothing inside them.
+func recordSignatureOnly(it: in Item): Item {
+  val decl = match it.kind { case IRecord(d) -> d; case IExposedRec(d) -> d; case _ -> return it }
+  val members: List[RecordMember] = newList()
+  for m in decl.members {
+    match m {
+      case RMFunc(fn) -> members.add(RMFunc(fn = stripBody(fn)))
+      case _ -> members.add(m)
+    }
+  }
+  recordItemLike(it, decl.copy(members = members))
+}
+
+func oneItemFile(file: in SourceFile, it: in Item): SourceFile {
+  val one: List[Item] = newList()
+  one.add(it)
+  file.copy(items = one)
+}
+
+func recordItemLike(it: in Item, d: in RecordDecl): Item {
+  match it.kind {
+    case IExposedRec(_) -> it.copy(kind = IExposedRec(decl = d), span = it.span)
+    case _ -> it.copy(kind = IRecord(decl = d), span = it.span)
+  }
+}
+
+// Every specialisation of the value-generic records in `file` (D169),
+// replacing each record with its specialisations and every reference to an
+// instance with a reference to its specialisation.  `specsOut` receives the
+// specialisations made.
+func specialiseValueRecords(
+  file: in SourceFile, constArgs: in Map[String, Int], specsOut: in List[ValueRecordSpec]
+): SourceFile {
+  val decls: Map[String, RecordDecl] = newMap()
+  val declItems: Map[String, Item] = newMap()
+  for it in file.items {
+    match valueGenericRecordDecl(it) {
+      case Some(d) -> {
+        decls.add(d.name, d)
+        declItems.add(d.name, it)
+      }
+      case None -> ()
+    }
+  }
+  if decls.count == 0 {
+    return file
+  }
+  val markers = valueRecordMarkers(file.items, constArgs, file.span)
+  val renamed = TypeAliasResolve.resolveAliasesInFile(markers, file)
+  // A specialisation's fields and methods may name further instances, so
+  // specialise until no new one appears.
+  val done: List[String] = newList()
+  val specItems: Map[String, List[Item]] = newMap()
+  var pending = newValueRecordSpecs(markers, decls, done)
+  while pending.count > 0 {
+    for vs in pending {
+      done.add(vs.spec)
+      specsOut.add(vs)
+      match mapGet(decls, vs.recordName) {
+        case Some(d) -> match mapGet(declItems, vs.recordName) {
+          case Some(srcItem) -> {
+            val sd = specializeRecordValues(d, vs.spec, vs.valueSubst)
+            val specFile = TypeAliasResolve.resolveAliasesInFile(markers, oneItemFile(file, recordItemLike(srcItem, sd)))
+            if not specItems.containsKey(vs.recordName) {
+              val fresh: List[Item] = newList()
+              specItems.add(vs.recordName, fresh)
+            }
+            for si in specFile.items {
+              specItems[vs.recordName].add(si)
+            }
+          }
+          case None -> ()
+        }
+        case None -> ()
+      }
+    }
+    pending = newValueRecordSpecs(markers, decls, done)
+  }
+  // Each record is replaced, in place, by its specialisations.
+  val items: List[Item] = newList()
+  for it in renamed.items {
+    match valueGenericRecordDecl(it) {
+      case Some(d) -> match mapGet(specItems, d.name) {
+        case Some(sis) -> {
+          for si in sis {
+            items.add(si)
+          }
+        }
+        case None -> ()
+      }
+      case None -> items.add(it)
+    }
+  }
+  renamed.copy(items = items)
+}
+
+// Lowers the array operations in each specialised record's methods (D169).
+// A method of a value-generic record is checked once with its lengths
+// symbolic, which records no array operation; each specialisation is
+// checked again from the record's source with its lengths bound, as a
+// value-generic function's specialisation is (`recheckSpecRound`), and its
+// operations are lowered in the monomorphised record.
+func lowerValueRecordSpecs(
+  file: in SourceFile,
+  file0: in SourceFile,
+  specs: in List[ValueRecordSpec],
+  constArgs: in Map[String, Int],
+  importedPkgs: in List[ImportedPackage],
+  known: in SymbolTable,
+  opts: in MiddleEndOptions,
+  diags: in List[Diagnostic],
+): SourceFile {
+  if specs.count == 0 {
+    return file
+  }
+  val rawDecls: Map[String, Item] = newMap()
+  for it in file0.items {
+    match valueGenericRecordDecl(it) {
+      case Some(d) -> rawDecls.add(d.name, it)
+      case None -> ()
+    }
+  }
+  val markers = valueRecordMarkers(file0.items, constArgs, file0.span)
+  // Every specialisation, from the records' source: one is checked with its
+  // method bodies while the others, which it may name, are signatures.
+  val rawSpecItems: Map[String, Item] = newMap()
+  for vs in specs {
+    match mapGet(rawDecls, vs.recordName) {
+      case Some(rawItem) -> match valueGenericRecordDecl(rawItem) {
+        case Some(rawDecl) -> {
+          val rawSpec = specializeRecordValues(rawDecl, vs.spec, vs.valueSubst)
+          rawSpecItems.add(
+            vs.spec,
+            TypeAliasResolve.resolveAliasesInFile(markers, oneItemFile(file0, recordItemLike(rawItem, rawSpec))).items[0]
+          )
+        }
+        case None -> ()
+      }
+      case None -> ()
+    }
+  }
+  val specArrays: Map[String, SpecArraySites] = newMap()
+  for vs in specs {
+    match mapGet(rawSpecItems, vs.spec) {
+      case Some(rawSpecItem) -> {
+        val items: List[Item] = newList()
+        for it in file0.items {
+          items.add(signatureOnlyItem(it))
+        }
+        for other in specs {
+          if other.spec != vs.spec {
+            match mapGet(rawSpecItems, other.spec) {
+              case Some(oi) -> items.add(recordSignatureOnly(oi))
+              case None -> ()
+            }
+          }
+        }
+        items.add(rawSpecItem)
+        val checkFile = file0.copy(items = items)
+        val res = if opts.nativeIntrinsics {
+          checkWithImportedPackagesForNative(checkFile, importedPkgs)
+        } else {
+          checkWithImportedPackages(checkFile, importedPkgs)
+        }
+        val lo = rawSpecItem.span.startPos.offset
+        val hi = rawSpecItem.span.endPos.offset
+        var firstError = ""
+        for d in res.diagnostics {
+          if d.severity == DiagError and d.span.startPos.offset >= lo and d.span.endPos.offset <= hi and firstError == "" {
+            firstError = d.code + " " + d.message
+          }
+        }
+        if firstError != "" {
+          diags.add(
+            errorDiagnostic(
+              "M0007",
+              "cannot specialise '" + vs.recordName + "' as '" + vs.spec +
+                "': with its lengths substituted its methods do not type-check (" +
+                firstError +
+                ")",
+              rawSpecItem.span
+            )
+          )
+        } else {
+          val sa = specArraySitesOf(res.symbols, Some(value = known), lo, hi, lo, hi)
+          if specArraySitesNonEmpty(sa) {
+            specArrays.add(vs.spec, sa)
+          }
+        }
+      }
+      case None -> ()
+    }
+  }
+  if specArrays.count == 0 {
+    return file
+  }
+  val items: List[Item] = newList()
+  for it in file.items {
+    val name = match it.kind { case IRecord(d) -> d.name; case IExposedRec(d) -> d.name; case _ -> "" }
+    match mapGet(specArrays, name) {
+      case Some(sa) -> {
+        val arraySites = if opts.primitiveArrays { sa.arrays } else { sa.arrays.copy(literal = newMap()) }
+        val lowered = lowerArrays(
+          lowerRecordEq(withArrayLens(oneItemFile(file, it), sa.lens), sa.recordEq, sa.arrayEq, sa.wrapEq),
+          arraySites
+        )
+        for li in lowered.items {
+          items.add(li)
+        }
+      }
+      case None -> items.add(it)
+    }
+  }
+  file.copy(items = items)
+}
+
+// Specialises the value-generic records in the monomorphised `file` and
+// lowers the array operations in their methods (D169).  `None` when a
+// specialisation does not type-check.
+func finishValueRecords(
+  file: in SourceFile,
+  file0: in SourceFile,
+  importedPkgs: in List[ImportedPackage],
+  tcRes: in CheckResult,
+  opts: in MiddleEndOptions,
+): Option[SourceFile] {
+  val specs: List[ValueRecordSpec] = newList()
+  val specialised = specialiseValueRecords(file, tcRes.symbols.valueTypeArgSites, specs)
+  val diags: List[Diagnostic] = newList()
+  val lowered = lowerValueRecordSpecs(
+    specialised,
+    file0,
+    specs,
+    tcRes.symbols.valueTypeArgSites,
+    importedPkgs,
+    tcRes.symbols,
+    opts,
+    diags
+  )
+  if gate(opts.pkgLabel, opts.lineOrigins, diags) {
+    return None
+  }
+  Some(value = lowered)
 }
 
 func intListContainsPipe(xs: in List[Int], v: in Int): Bool {

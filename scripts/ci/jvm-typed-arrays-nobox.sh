@@ -59,20 +59,35 @@ func sum4(a: in array[4, Int]): Int {
   t
 }
 
+// An array of arrays is an `ArrayList` of typed rows; reading a row's
+// elements still boxes nothing.
+func gridSum(g: in array[2, array[3, Int]]): Int {
+  var t = 0
+  for row in g {
+    for x in row {
+      t = t + x
+    }
+  }
+  t
+}
+
 func main(): Int {
+  val r0: array[3, Int] = [1, 2, 3]
+  val r1: array[3, Int] = [4, 5, 6]
+  val g: array[2, array[3, Int]] = [r0, r1]
   val u: array[3, Float] = [1.0, 2.0, 3.0]
   val v: array[3, Float] = [4.0, 5.0, 6.0]
   val w = add3(u, v)
   var n: array[4, Int] = [1, 2, 3, 4]
   scaleInPlace(n, 3)
-  println(toString(dot3(w, u)) + " " + toString(sum4(n)))
+  println(toString(dot3(w, u)) + " " + toString(sum4(n)) + " " + toString(gridSum(g)))
   0
 }
 LYR
 
 "$LYRIC" build --target jvm "$work/arrays.l" -o "$work/arrays.jar"
 got="$(java -jar "$work/arrays.jar" 2>&1 | grep -v '^Picked up JAVA_TOOL_OPTIONS' || true)"
-[ "$got" = "46 30" ] || { echo "FAIL: expected '46 30', got '$got'"; exit 1; }
+[ "$got" = "46 30 21" ] || { echo "FAIL: expected '46 30 21', got '$got'"; exit 1; }
 
 mkdir "$work/classes"
 (cd "$work/classes" && unzip -q ../arrays.jar)
@@ -99,6 +114,16 @@ for sig in \
     fail=1
   fi
 done
+# The outer array is an `ArrayList`, so only boxing is ruled out here.
+grid="$(method_body "gridSum(java.util.ArrayList)")"
+if [ -z "$grid" ]; then
+  echo "FAIL: no method 'gridSum(java.util.ArrayList)'"
+  fail=1
+elif grep -Eq 'java/lang/(Integer|Long|Float|Double)\.valueOf' <<<"$grid"; then
+  echo "FAIL: gridSum boxes its rows' elements:"
+  grep -E 'valueOf' <<<"$grid" | sed 's/^/  /'
+  fail=1
+fi
 scale="$(grep -E 'scaleInPlace\(' "$work/disasm.txt" | head -1)"
 grep -q 'int\[\]' <<<"$scale" || { echo "FAIL: scaleInPlace does not take int[]: $scale"; fail=1; }
 [ "$fail" = 0 ] || exit 1

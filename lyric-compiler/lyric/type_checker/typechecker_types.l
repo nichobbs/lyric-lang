@@ -57,7 +57,11 @@ pub union Type {
   case TyTuple(elems: List[Type])
   case TyNullable(inner: Type)
   case TyFunction(params: List[Type], ret: Type, isAsync: Bool)
-  case TyArray(size: Option[Int], element: Type)
+  // `sizeVar` names the value generic parameter that is the length when
+  // `size` is `None` because the length is a parameter (`array[N, T]` in a
+  // value-generic declaration), and is "" otherwise.  Substituting the
+  // parameter fills `size` (D169).
+  case TyArray(size: Option[Int], element: Type, sizeVar: String)
   case TySlice(element: Type)
   /// `TyUser.name` is the declared name from the type environment
   /// (set by `resolveTypePath` from the matched `Symbol.name`).
@@ -81,6 +85,10 @@ pub union Type {
   /// which a runtime range check reads its bounds and message (#8031).
   case TyRefined(underlying: Type, lo: Option[Long], hi: Option[Long], hiInclusive: Bool, source: TypeExpr)
   case TySelf
+  // A value generic argument that is a known length: the `3` of
+  // `FixedVec[Int, 3]` (D169).  It appears only as a `TyUser` argument, or
+  // as what a value generic parameter is bound to.
+  case TyLen(n: Int)
   case TyVar(name: String)
   case TyError
   case TyException
@@ -218,6 +226,7 @@ func typeEquivCore(a: in Type, b: in Type): Bool {
     case TyVar(_) -> true
     case TyPrim(pa) -> match b { case TyPrim(pb) -> primEq(pa, pb); case _ -> false }
     case TySelf -> match b { case TySelf -> true; case _ -> false }
+    case TyLen(na) -> match b { case TyLen(nb) -> na == nb; case TyVar(_) -> true; case _ -> false }
     case TyNullable(ia) -> match b { case TyNullable(ib) -> typeEquiv(ia, ib); case _ -> false }
     case TyTuple(xs) -> match b {
       case TyTuple(ys) -> if xs.count != ys.count { false } else { listTypesEquiv(xs, ys) }
@@ -235,8 +244,12 @@ func typeEquivCore(a: in Type, b: in Type): Bool {
       }
       case _ -> false
     }
-    case TyArray(sz1, e1) -> match b {
-      case TyArray(sz2, e2) -> if not optIntEq(sz1, sz2) { false } else { typeEquiv(e1, e2) }
+    case TyArray(sz1, e1, _) -> match b {
+      case TyArray(sz2, e2, _) -> if not optIntEq(sz1, sz2) {
+        false
+      } else {
+        typeEquiv(e1, e2)
+      }
       case _ -> false
     }
     case TySlice(e1) -> match b { case TySlice(e2) -> typeEquiv(e1, e2); case _ -> false }
@@ -285,12 +298,13 @@ pub func renderType(t: in Type): String {
     case TyError -> "<error>"
     case TyException -> "Exception"
     case TySelf -> "Self"
+    case TyLen(n) -> toString(n)
     case TyVar(nm) -> nm
     case TyPrim(pt) -> primName(pt)
     case TyNullable(inner) -> renderType(inner) + "?"
     case TyTuple(elems) -> "(" + joinTypes(elems, ", ") + ")"
     case TySlice(e) -> "slice[" + renderType(e) + "]"
-    case TyArray(sz, e) -> match sz {
+    case TyArray(sz, e, _) -> match sz {
       case None -> "array[?, " + renderType(e) + "]"
       case Some(n) -> "array[" + toString(n) + ", " + renderType(e) + "]"
     }

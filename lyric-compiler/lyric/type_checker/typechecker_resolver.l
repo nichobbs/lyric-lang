@@ -53,7 +53,8 @@ pub func resolveType(tbl: in SymbolTable, ctx: in GenericContext, diag: in List[
         )
       }
       noteArrayTypeLength(tbl, te, size, len)
-      TyArray(size = len, element = resolveType(tbl, ctx, diag, elem))
+      val lenVar = match len { case Some(_) -> ""; case None -> arrayLengthParamName(ctx, size) }
+      TyArray(size = len, element = resolveType(tbl, ctx, diag, elem), sizeVar = lenVar)
     }
 
     case TSlice(elem) -> TySlice(element = resolveType(tbl, ctx, diag, elem))
@@ -64,14 +65,36 @@ pub func resolveType(tbl: in SymbolTable, ctx: in GenericContext, diag: in List[
     }
 
     case TGenericApp(head, argsList) -> {
+      // A type with value generic parameters (D169) takes a length at each
+      // value parameter's position and a type at every other.
+      val params = typeHeadGenericParams(tbl, head)
+      val anyValue = genericParamsHaveValue(params)
+      if anyValue {
+        reportForeignValueGenericRecord(tbl, diag, head, te.span)
+      }
       val resolvedArgs: List[Type] = newList()
       var i = 0
       while i < argsList.count {
-        match argsList[i] {
-          case TAType(t) -> resolvedArgs.add(resolveType(tbl, ctx, diag, t))
-          case TAValue(ve) -> {
-            diag.add(errorDiagnostic("T0109", "value expression used as type argument", ve.span))
-            resolvedArgs.add(TyError)
+        val valuePos = anyValue and i < params.count and genericParamIsValue(params[i])
+        if valuePos {
+          resolvedArgs.add(resolveLengthArg(tbl, ctx, diag, argsList[i], genericParamName(params[i]), head, te.span))
+        } else {
+          match argsList[i] {
+            case TAType(t) -> resolvedArgs.add(resolveType(tbl, ctx, diag, t))
+            case TAValue(ve) -> {
+              if anyValue {
+                diag.add(
+                  errorDiagnostic(
+                    "T0163",
+                    "a value is given where '" + modulePathJoin(head.segments) + "' takes a type argument",
+                    ve.span
+                  )
+                )
+              } else {
+                diag.add(errorDiagnostic("T0109", "value expression used as type argument", ve.span))
+              }
+              resolvedArgs.add(TyError)
+            }
           }
         }
         i = i + 1
@@ -127,6 +150,141 @@ func arrayLengthIsTypeParam(ctx: in GenericContext, size: in TypeArg): Bool {
       case EPath(path) -> path.segments.count == 1 and gctxIsTypeParam(ctx, path.segments[0])
       case _ -> false
     }
+  }
+}
+
+// A value-generic record is used only in its own package in this slice
+// (D169, #8150): each package would specialise it into its own runtime
+// types.
+func reportForeignValueGenericRecord(
+  tbl: in SymbolTable, diag: in List[Diagnostic], head: in ModulePath, span: in Span
+): Unit {
+  val name = head.segments[head.segments.count - 1]
+  for sym in symTableTryFindAllVisible(tbl, name) {
+    val isRec = match sym.kind { case DKRecord(_, _) -> true; case DKExposedRec(_, _) -> true; case _ -> false }
+    if isRec {
+      reportForeignValueRecordSym(tbl, diag, sym, span)
+      return
+    }
+  }
+}
+
+pub func reportForeignValueRecordSym(
+  tbl: in SymbolTable, diag: in List[Diagnostic], sym: in Symbol, span: in Span
+): Unit {
+  if sym.originPackage.length > 0 and sym.originPackage != symTableScopePkg(tbl) {
+    diag.add(
+      errorDiagnostic(
+        "T0164",
+        "'" + sym.name + "' has a value generic parameter, so it can be used only in its own package '" +
+          sym.originPackage +
+          "' for now (#8150)",
+        span
+      )
+    )
+  }
+}
+
+// The generic parameters of the record a type head names, when it is a
+// record or exposed record; empty otherwise.  Lets `resolveType` tell a value
+// parameter's position from a type parameter's (D169).
+func typeHeadGenericParams(tbl: in SymbolTable, head: in ModulePath): List[GenericParam] {
+  val none: List[GenericParam] = newList()
+  if head.segments.count == 0 {
+    return none
+  }
+  val name = head.segments[head.segments.count - 1]
+  for sym in symTableTryFindAllVisible(tbl, name) {
+    val gOpt = match sym.kind {
+      case DKRecord(_, rd) -> rd.generics
+      case DKExposedRec(_, rd) -> rd.generics
+      case _ -> None
+    }
+    match gOpt {
+      case Some(g) -> return g.params
+      case None -> ()
+    }
+  }
+  none
+}
+
+pub func genericParamsHaveValue(params: in List[GenericParam]): Bool {
+  for p in params {
+    if genericParamIsValue(p) {
+      return true
+    }
+  }
+  false
+}
+
+pub func genericParamIsValue(p: in GenericParam): Bool {
+  match p {
+    case GPValue(_, _, _) -> true
+    case GPType(_, _) -> false
+  }
+}
+
+pub func genericParamName(p: in GenericParam): String {
+  match p {
+    case GPValue(n, _, _) -> n
+    case GPType(n, _) -> n
+  }
+}
+
+// The argument at a value generic parameter's position: a known length
+// (`TyLen`), or a value generic parameter of the enclosing declaration
+// (`TyVar`).  Anything else is T0163.
+func resolveLengthArg(
+  tbl: in SymbolTable,
+  ctx: in GenericContext,
+  diag: in List[Diagnostic],
+  arg: in TypeArg,
+  paramName: in String,
+  head: in ModulePath,
+  span: in Span,
+): Type {
+  val pname = arrayLengthParamName(ctx, arg)
+  if pname.length > 0 {
+    return TyVar(name = pname)
+  }
+  match resolveArrayLength(tbl, ctx, arg) {
+    case Some(n) -> {
+      val isLiteral = match arg {
+        case TAValue(ve) -> match ve.kind { case ELiteral(_) -> true; case _ -> false }
+        case TAType(_) -> false
+      }
+      if not isLiteral {
+        val asp = match arg { case TAType(t) -> t.span; case TAValue(ve) -> ve.span }
+        val key = recordCopySiteKey(asp)
+        if not tbl.valueTypeArgSites.containsKey(key) {
+          tbl.valueTypeArgSites.add(key, n)
+        }
+      }
+      TyLen(n = n)
+    }
+    case None -> {
+      val asp = match arg { case TAType(t) -> t.span; case TAValue(ve) -> ve.span }
+      diag.add(
+        errorDiagnostic(
+          "T0163",
+          "the argument for the value generic parameter '" + paramName + "' of '" + modulePathJoin(head.segments) +
+            "' must be a compile-time constant integer from 0 to 2147483647 or a value generic parameter",
+          asp
+        )
+      )
+      TyError
+    }
+  }
+}
+
+// The value generic parameter an `array[N, T]`'s length names, or "".
+func arrayLengthParamName(ctx: in GenericContext, size: in TypeArg): String {
+  if not arrayLengthIsTypeParam(ctx, size) {
+    return ""
+  }
+  match size {
+    case TAType(te) -> match te.kind { case TRef(path) -> path.segments[0]; case _ -> "" }
+    case TAValue(ve) -> match ve.kind { case EPath(path) -> path.segments[0]; case _ -> "" }
   }
 }
 

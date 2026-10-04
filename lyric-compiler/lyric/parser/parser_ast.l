@@ -1378,6 +1378,57 @@ func primitiveArrayElementName(n: in String): Bool {
 /// an `array[<literal>, ()]` type carrying the length (D167).
 pub func arrayLenMarkerPrefix(): String = "__lyric_alen:"
 
+/// Value-generic records (D169) in `Lyric.TypeAliasResolve`'s alias map:
+/// - `valueRecordMarkerPrefix() + name` marks the record `name`, as a
+///   `name[...]` type whose arguments are a `TAValue` at each value generic
+///   parameter's position and a `TAType` at each type parameter's;
+/// - `valueArgMarkerPrefix() + recordCopySiteKey(span)` gives the length a
+///   constant argument at `span` folds to, as `array[<literal>, ()]`;
+/// - `valueRecordUsePrefix() + specName` is added by the pass for each
+///   specialisation it names, as `name[<lengths>]`.
+/// The pass renames each instance with literal lengths to its
+/// specialisation (`valueRecordSpecName`), and each construction marked
+/// `name[<lengths>](...)` to a construction of it.
+pub func valueRecordMarkerPrefix(): String = "__lyric_vrec:"
+
+pub func valueArgMarkerPrefix(): String = "__lyric_varg:"
+
+pub func valueRecordUsePrefix(): String = "__lyric_vuse:"
+
+/// Whether `name` is a value-generic record's specialisation
+/// (`valueRecordSpecName`): it ends in one or more `__V<digits>` parts.
+pub func isValueRecordSpecName(name: in String): Bool {
+  val at = match name.indexOf("__V") { case Some(k) -> k; case None -> return false }
+  if at == 0 {
+    return false
+  }
+  var i = at
+  while i < name.length {
+    if i + 3 > name.length or name.substring(i, 3) != "__V" {
+      return false
+    }
+    i = i + 3
+    val digitsStart = i
+    while i < name.length and "0123456789".contains(name.substring(i, 1)) {
+      i = i + 1
+    }
+    if i == digitsStart {
+      return false
+    }
+  }
+  true
+}
+
+/// The specialisation of value-generic record `name` at `lengths` (D169):
+/// `FixedVec__V3`, `Grid__V4__V2`.
+pub func valueRecordSpecName(name: in String, lengths: in List[Int]): String {
+  var s = name
+  for n in lengths {
+    s = s + "__V" + toString(n)
+  }
+  s
+}
+
 /// An `array[len, T]` operand whose spelled type the array lowering needs
 /// (a `for` iterable, a `.toSlice()` receiver, a copied place read).
 pub record ArraySite {

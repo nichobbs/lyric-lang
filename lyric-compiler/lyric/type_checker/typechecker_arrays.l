@@ -11,14 +11,14 @@ import Lyric.Parser
 
 pub func arrayLengthOf(t: in Type): Option[Int] {
   match unrefine(t) {
-    case TyArray(sz, _) -> sz
+    case TyArray(sz, _, _) -> sz
     case _ -> None
   }
 }
 
 pub func isArrayType(t: in Type): Bool {
   match unrefine(t) {
-    case TyArray(_, _) -> true
+    case TyArray(_, _, _) -> true
     case _ -> false
   }
 }
@@ -53,7 +53,7 @@ func isPlaceExprKind(e: in Expr): Bool {
 /// The array operand's site, its type spelled (a type variable by name).
 pub func arraySiteOf(tbl: in SymbolTable, t: in Type, sp: in Span): Option[ArraySite] {
   match unrefine(t) {
-    case TyArray(sz, el) -> match sz {
+    case TyArray(sz, el, _) -> match sz {
       case Some(n) -> match typeExprForRefWithVars(tbl, t, sp) {
         case Some(at) -> Some(
           value = ArraySite(
@@ -140,7 +140,7 @@ pub func noteArrayStore(tbl: in SymbolTable, e: in Expr, t: in Type): Unit {
   }
   val v = peelParens(e)
   match v.kind {
-    case EList(_) -> match unrefine(t) { case TyArray(_, el) -> if not isArrayType(el) { return }; case _ -> () }
+    case EList(_) -> match unrefine(t) { case TyArray(_, el, _) -> if not isArrayType(el) { return }; case _ -> () }
     case _ -> ()
   }
   addArrayCopySite(tbl, v, t)
@@ -685,76 +685,90 @@ pub func zeroExprFor(tbl: in SymbolTable, t: in Type, sp: in Span, depth: in Int
       case PtChar -> Some(value = zeroLit(LChar(codepoint = 0), sp))
       case _ -> None
     }
-    case TyArray(sz, el) -> match sz {
-      case Some(_) -> match zeroExprFor(tbl, el, sp, depth + 1) {
-        case Some(z) -> match typeExprForRef(tbl, t, sp) {
-          case Some(arrTe) -> {
-            val fillFn = mkExpr(
-              ETypeApp(fn = pathExprOf(listOf1(arrayFillIntrinsic()), sp), args = listOf1Arg(TAType(ty = arrTe))),
-              sp
-            )
-            Some(value = mkExpr(ECall(fn = fillFn, args = listOf1CallArg(CAPositional(expr = z))), sp))
-          }
-          case None -> None
-        }
-        case None -> None
+    case TyArray(sz, el, sv) -> match sz {
+      case Some(_) -> zeroArrayFill(tbl, t, el, sp, depth)
+      // A length that is a value generic parameter is known only inside a
+      // value-generic body, where each specialisation fills it (D169).
+      case None -> if sv.length > 0 and inValueGenericBody(tbl) {
+        zeroArrayFill(tbl, t, el, sp, depth)
+      } else {
+        None
       }
-      case None -> None
     }
     case TyUser(tid, _, targs) -> {
       if targs.count > 0 {
         return None
       }
-      match symTableTypeSymbolOf(tbl, tid) {
-        case Some(sym) -> match sym.kind {
-          case DKEnum(_, ed) -> {
-            if ed.cases.count == 0 {
-              return None
-            }
-            match typeSegsOf(typeExprForRef(tbl, t, sp)) {
-              case Some(segs) -> {
-                val full: List[String] = newList()
-                for sg in segs {
-                  full.add(sg)
-                }
-                full.add(ed.cases[0].name)
-                Some(value = pathExprOf(full, sp))
-              }
-              case None -> None
-            }
-          }
-          case DKDistinctType(_, dt) -> {
-            match dt.generics {
-              case Some(_) -> return None
-              case None -> ()
-            }
-            match dt.rangeClause {
-              case Some(rb) -> if not rangeBoundContainsZero(rb) { return None }
-              case None -> ()
-            }
-            val saved = enterDeclaringScope(tbl, sym)
-            val scratch: List[Diagnostic] = newList()
-            val under = resolveType(tbl, newGenericContext(), scratch, dt.underlying)
-            restoreScope(tbl, saved)
-            match zeroExprFor(tbl, under, sp, depth + 1) {
-              case Some(z) -> match typeSegsOf(typeExprForRef(tbl, t, sp)) {
-                case Some(segs) -> {
-                  // Spelled as the parser spells a static member call.
-                  val callee = mkExpr(EMember(receiver = pathExprOf(segs, sp), memberName = "from"), sp)
-                  Some(value = mkExpr(ECall(fn = callee, args = listOf1CallArg(CAPositional(expr = z))), sp))
-                }
-                case None -> None
-              }
-              case None -> None
-            }
-          }
-          case DKRecord(_, rd) -> zeroRecord(tbl, t, tid, rd, sp, depth)
-          case _ -> None
-        }
-        case None -> None
-      }
+      zeroUserType(tbl, t, tid, sp, depth)
     }
     case _ -> None
+  }
+}
+
+func zeroArrayFill(tbl: in SymbolTable, t: in Type, el: in Type, sp: in Span, depth: in Int): Option[Expr] {
+  match zeroExprFor(tbl, el, sp, depth + 1) {
+    case Some(z) -> match typeExprForRef(tbl, t, sp) {
+      case Some(arrTe) -> {
+        val fillFn = mkExpr(
+          ETypeApp(fn = pathExprOf(listOf1(arrayFillIntrinsic()), sp), args = listOf1Arg(TAType(ty = arrTe))),
+          sp
+        )
+        Some(value = mkExpr(ECall(fn = fillFn, args = listOf1CallArg(CAPositional(expr = z))), sp))
+      }
+      case None -> None
+    }
+    case None -> None
+  }
+}
+
+func zeroUserType(tbl: in SymbolTable, t: in Type, tid: in TypeId, sp: in Span, depth: in Int): Option[Expr] {
+  match symTableTypeSymbolOf(tbl, tid) {
+    case Some(sym) -> match sym.kind {
+      case DKEnum(_, ed) -> {
+        if ed.cases.count == 0 {
+          return None
+        }
+        match typeSegsOf(typeExprForRef(tbl, t, sp)) {
+          case Some(segs) -> {
+            val full: List[String] = newList()
+            for sg in segs {
+              full.add(sg)
+            }
+            full.add(ed.cases[0].name)
+            Some(value = pathExprOf(full, sp))
+          }
+          case None -> None
+        }
+      }
+      case DKDistinctType(_, dt) -> {
+        match dt.generics {
+          case Some(_) -> return None
+          case None -> ()
+        }
+        match dt.rangeClause {
+          case Some(rb) -> if not rangeBoundContainsZero(rb) { return None }
+          case None -> ()
+        }
+        val saved = enterDeclaringScope(tbl, sym)
+        val scratch: List[Diagnostic] = newList()
+        val under = resolveType(tbl, newGenericContext(), scratch, dt.underlying)
+        restoreScope(tbl, saved)
+        match zeroExprFor(tbl, under, sp, depth + 1) {
+          case Some(z) -> match typeSegsOf(typeExprForRef(tbl, t, sp)) {
+            case Some(segs) -> {
+              // Spelled as the parser spells a static member call.
+              val callee = mkExpr(EMember(receiver = pathExprOf(segs, sp), memberName = "from"), sp)
+              Some(value = mkExpr(ECall(fn = callee, args = listOf1CallArg(CAPositional(expr = z))), sp))
+            }
+            case None -> None
+          }
+          case None -> None
+        }
+      }
+      case DKRecord(_, rd) -> zeroRecord(tbl, t, tid, rd, sp, depth)
+      case _ -> None
+    }
+    case None -> None
   }
 }
 
@@ -830,7 +844,7 @@ pub func noteArrayZeroInit(
 ): Unit {
   val zsp = Span(startPos = sp.startPos, endPos = sp.startPos)
   match unrefine(declT) {
-    case TyArray(Some(_), _) -> match zeroExprFor(tbl, declT, zsp, 0) {
+    case TyArray(Some(_), _, _) -> match zeroExprFor(tbl, declT, zsp, 0) {
       case Some(z) -> if not tbl.arrayZeroSites.containsKey(key) {
         tbl.arrayZeroSites.add(key, z)
       }
@@ -851,7 +865,7 @@ pub func noteArrayZeroInit(
 /// (D167): it is an array whose element type has one.
 pub func fieldHasZeroDefault(tbl: in SymbolTable, t: in Type, sp: in Span): Bool {
   match unrefine(t) {
-    case TyArray(Some(_), _) -> match zeroExprFor(tbl, t, sp, 0) { case Some(_) -> true; case None -> false }
+    case TyArray(Some(_), _, _) -> match zeroExprFor(tbl, t, sp, 0) { case Some(_) -> true; case None -> false }
     case _ -> false
   }
 }
@@ -863,10 +877,10 @@ pub func fieldHasZeroDefault(tbl: in SymbolTable, t: in Type, sp: in Span): Bool
 /// the function-typed element that has no `==` (T0153).
 pub func buildArrayEqSite(tbl: in SymbolTable, span: in Span, t: in Type, negate: Bool): Result[ArrayEqSite, String] {
   match unrefine(t) {
-    case TyArray(Some(n), el) -> {
+    case TyArray(Some(n), el, _) -> {
       val elem: ArrayEqElem = match unrefine(el) {
         case TyFunction(_, _, _) -> return Err(error = "element")
-        case TyArray(Some(_), _) -> match buildArrayEqSite(tbl, span, el, false) {
+        case TyArray(Some(_), _, _) -> match buildArrayEqSite(tbl, span, el, false) {
           case Err(bad) -> return Err(error = "element." + bad)
           case Ok(site) -> AEArray(site = site)
         }
@@ -914,7 +928,7 @@ pub func recordArrayEq(
     return
   }
   match unrefine(lhs) {
-    case TyArray(Some(_), _) -> match buildArrayEqSite(tbl, span, lhs, negate) {
+    case TyArray(Some(_), _, _) -> match buildArrayEqSite(tbl, span, lhs, negate) {
       case Err(bad) -> diag.add(
         if bad.endsWith("~") {
           eqTooDeepDiagnostic(lhs, span)
@@ -933,7 +947,7 @@ pub func recordArrayEq(
         }
       }
     }
-    case TyArray(None, _) -> if not inValueGenericBody(tbl) { diag.add(arrayUnknownLength(lhs, span)) }
+    case TyArray(None, _, _) -> if not inValueGenericBody(tbl) { diag.add(arrayUnknownLength(lhs, span)) }
     case _ -> ()
   }
 }
@@ -950,7 +964,7 @@ pub func recordArrayEq(
 /// `seen` visits once, and the rest of a resolved type is a finite tree.
 pub func typeHoldsArray(tbl: in SymbolTable, t: in Type, seen: in List[Int]): Bool {
   match t {
-    case TyArray(_, _) -> true
+    case TyArray(_, _, _) -> true
     case TyRefined(u, _, _, _, _) -> typeHoldsArray(tbl, u, seen)
     case TyNullable(inner) -> typeHoldsArray(tbl, inner, seen)
     case TySlice(el) -> typeHoldsArray(tbl, el, seen)
@@ -1026,7 +1040,7 @@ pub func typeMentionsTyVar(t: in Type): Bool {
     case TyRefined(u, _, _, _, _) -> typeMentionsTyVar(u)
     case TyNullable(inner) -> typeMentionsTyVar(inner)
     case TySlice(el) -> typeMentionsTyVar(el)
-    case TyArray(_, el) -> typeMentionsTyVar(el)
+    case TyArray(_, el, _) -> typeMentionsTyVar(el)
     case TyTuple(elems) -> {
       for el in elems {
         if typeMentionsTyVar(el) {
@@ -1105,7 +1119,7 @@ func buildEqShapeAt(tbl: in SymbolTable, span: in Span, t: in Type, depth: in In
   }
   match u {
     case TyFunction(_, _, _) -> Err(error = "value")
-    case TyArray(Some(_), _) -> match buildArrayEqSite(tbl, span, u, false) {
+    case TyArray(Some(_), _, _) -> match buildArrayEqSite(tbl, span, u, false) {
       case Err(bad) -> Err(error = bad)
       case Ok(site) -> Ok(value = ESArray(site = site))
     }
@@ -1367,6 +1381,13 @@ pub func explicitValueGenericBindings(tbl: in SymbolTable, decl: in FunctionDecl
   bound
 }
 
+func bindOneArrayLength(p: in String, n: in Int, bound: in Map[String, Int], conflicts: in List[String]): Unit {
+  match mapGet(bound, p) {
+    case Some(prev) -> if prev != n and not conflicts.contains(p) { conflicts.add(p) }
+    case None -> bound.add(p, n)
+  }
+}
+
 /// Binds each value generic parameter `te` names as an array length to the
 /// length of the matching array in `t` (the argument's type).  A parameter
 /// bound to two different lengths is recorded in `conflicts`.
@@ -1379,18 +1400,18 @@ pub func bindArrayLengths(
 ): Unit {
   match te.kind {
     case TParen(inner) -> bindArrayLengths(inner, t, vps, bound, conflicts)
+    // A value-generic record's length argument (`v: in Ints[N]` given an
+    // `Ints[4]`, D169).
+    case TRef(path) -> if path.segments.count == 1 and vps.contains(path.segments[0]) {
+      match t {
+        case TyLen(n) -> bindOneArrayLength(path.segments[0], n, bound, conflicts)
+        case _ -> ()
+      }
+    }
     case TArray(size, elemTe) -> match unrefine(t) {
-      case TyArray(sz, elemTy) -> {
+      case TyArray(sz, elemTy, _) -> {
         match arrayLengthParam(size, vps) {
-          case Some(p) -> match sz {
-            case Some(n) -> match mapGet(bound, p) {
-              case Some(prev) -> if prev != n and not conflicts.contains(p) {
-                conflicts.add(p)
-              }
-              case None -> bound.add(p, n)
-            }
-            case None -> ()
-          }
+          case Some(p) -> match sz { case Some(n) -> bindOneArrayLength(p, n, bound, conflicts); case None -> () }
           case None -> ()
         }
         bindArrayLengths(elemTe, elemTy, vps, bound, conflicts)
@@ -1434,13 +1455,23 @@ pub func bindArrayLengths(
 pub func withBoundArrayLengths(te: in TypeExpr, t: in Type, vps: in List[String], bound: in Map[String, Int]): Type {
   match te.kind {
     case TParen(inner) -> withBoundArrayLengths(inner, t, vps, bound)
+    // A value-generic record's length argument (`Ints[N]`, D169).
+    case TRef(path) -> if path.segments.count == 1 and vps.contains(path.segments[0]) {
+      match mapGet(bound, path.segments[0]) {
+        case Some(n) -> TyLen(n = n)
+        case None -> t
+      }
+    } else {
+      t
+    }
     case TArray(size, elemTe) -> match t {
-      case TyArray(sz, elemTy) -> {
+      case TyArray(sz, elemTy, sv) -> {
         val len = match sz {
           case Some(_) -> sz
           case None -> match arrayLengthParam(size, vps) { case Some(p) -> mapGet(bound, p); case None -> None }
         }
-        TyArray(size = len, element = withBoundArrayLengths(elemTe, elemTy, vps, bound))
+        val lenVar = match len { case Some(_) -> ""; case None -> sv }
+        TyArray(size = len, element = withBoundArrayLengths(elemTe, elemTy, vps, bound), sizeVar = lenVar)
       }
       case _ -> t
     }

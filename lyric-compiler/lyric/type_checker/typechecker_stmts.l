@@ -2153,7 +2153,7 @@ func forIterElemType(tbl: in SymbolTable, diag: in List[Diagnostic], iter: in Ex
     case TyVar(_) -> TyError
     case TySelf -> TyError
     case TySlice(e) -> e
-    case TyArray(_, e) -> e
+    case TyArray(_, e, _) -> e
     case TyUser(iterId, _, iterArgs) -> {
       if iterArgs.count == 1 and isStdCollectionsHostType(tbl, iterId, "List") {
         iterArgs[0]

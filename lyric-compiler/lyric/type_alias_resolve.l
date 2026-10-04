@@ -215,6 +215,130 @@ func genericParamNamesOf(generics: in Option[GenericParams]): List[String] {
 // `testConstGenericValueCycleTerminates`). The ORIGINAL reference site's
 // span is kept on the resolved node so diagnostics still point at the use
 // site, not the `alias` declaration.
+// A value-generic record's instance whose lengths are all known (D169), as
+// a reference to its specialisation, which is recorded in `aliasTargets`
+// under `valueRecordUsePrefix()`.  `args` are the resolved arguments and
+// `origArgs` the written ones, whose spans key a constant's length.
+func valueRecordRef(
+  aliasTargets: in Map[String, TypeExpr],
+  head: in ModulePath,
+  args: in List[TypeArg],
+  origArgs: in List[TypeArg],
+): Option[TypeExprKind] {
+  if head.segments.count != 1 {
+    return None
+  }
+  val name = head.segments[0]
+  val kinds = match mapGet(aliasTargets, valueRecordMarkerPrefix() + name) {
+    case Some(m) -> match m.kind { case TGenericApp(_, ks) -> ks; case _ -> return None }
+    case None -> return None
+  }
+  if kinds.count != args.count {
+    return None
+  }
+  val lengths: List[Int] = newList()
+  val typeArgs: List[TypeArg] = newList()
+  var i = 0
+  while i < args.count {
+    match kinds[i] {
+      case TAValue(_) -> match valueArgLength(aliasTargets, args[i], origArgs[i]) {
+        case Some(n) -> lengths.add(n)
+        case None -> return None
+      }
+      case TAType(_) -> typeArgs.add(args[i])
+    }
+    i = i + 1
+  }
+  val spec = noteValueRecordUse(aliasTargets, head, name, lengths)
+  val segs: List[String] = newList()
+  segs.add(spec)
+  val path = ModulePath(segments = segs, span = head.span)
+  if typeArgs.count == 0 {
+    Some(value = TRef(path = path))
+  } else {
+    Some(value = TGenericApp(head = path, args = typeArgs))
+  }
+}
+
+// A construction the middle end marked with its instance's lengths
+// (`FixedVec[3](...)`), as a construction of the specialisation (D169).
+func valueRecordCtor(aliasTargets: in Map[String, TypeExpr], fn: in Expr, args: in List[TypeArg]): Option[ExprKind] {
+  val fnPath = match fn.kind {
+    case EPath(p) -> if p.segments.count == 1 { p } else { return None }
+    case _ -> return None
+  }
+  val name = fnPath.segments[0]
+  val fnSpan = fnPath.span
+  if not aliasTargets.containsKey(valueRecordMarkerPrefix() + name) {
+    return None
+  }
+  val lengths: List[Int] = newList()
+  for a in args {
+    match valueArgLength(aliasTargets, a, a) {
+      case Some(n) -> lengths.add(n)
+      case None -> return None
+    }
+  }
+  val segs: List[String] = newList()
+  segs.add(name)
+  val spec = noteValueRecordUse(aliasTargets, ModulePath(segments = segs, span = fnSpan), name, lengths)
+  val specSegs: List[String] = newList()
+  specSegs.add(spec)
+  Some(value = EPath(path = ModulePath(segments = specSegs, span = fnSpan)))
+}
+
+func valueArgLength(aliasTargets: in Map[String, TypeExpr], arg: in TypeArg, orig: in TypeArg): Option[Int] {
+  match arg {
+    case TAValue(ve) -> match ve.kind {
+      case ELiteral(lit) -> match lit {
+        case LInt(v, _, _) -> return Some(value = v.toInt())
+        case _ -> ()
+      }
+      case _ -> ()
+    }
+    case TAType(_) -> ()
+  }
+  val sp = match orig { case TAType(t) -> t.span; case TAValue(ve) -> ve.span }
+  match mapGet(aliasTargets, valueArgMarkerPrefix() + recordCopySiteKey(sp)) {
+    case Some(m) -> match m.kind {
+      case TArray(sz, _) -> match sz {
+        case TAValue(le) -> match le.kind {
+          case ELiteral(lit) -> match lit {
+            case LInt(v, _, _) -> Some(
+              value = v.toInt()
+            )
+            case _ -> None
+          }
+          case _ -> None
+        }
+        case TAType(_) -> None
+      }
+      case _ -> None
+    }
+    case None -> None
+  }
+}
+
+func noteValueRecordUse(
+  aliasTargets: in Map[String, TypeExpr],
+  head: in ModulePath,
+  name: in String,
+  lengths: in List[Int],
+): String {
+  val spec = valueRecordSpecName(name, lengths)
+  val key = valueRecordUsePrefix() + spec
+  if not aliasTargets.containsKey(key) {
+    val largs: List[TypeArg] = newList()
+    for n in lengths {
+      largs.add(
+        TAValue(expr = Expr(kind = ELiteral(lit = LInt(value = n.toLong(), suffix = I32, raw = "")), span = head.span))
+      )
+    }
+    aliasTargets.add(key, TypeExpr(kind = TGenericApp(head = head, args = largs), span = head.span))
+  }
+  spec
+}
+
 pub func resolveTypeExpr(
   aliasTargets: in Map[String, TypeExpr], genericNames: in List[String], te: in TypeExpr
 ): TypeExpr {
@@ -280,7 +404,10 @@ func resolveTypeExprAt(
       } else {
         head
       }
-      TGenericApp(head = head2, args = args2)
+      match valueRecordRef(aliasTargets, head2, args2, args) {
+        case Some(k) -> k
+        case None -> TGenericApp(head = head2, args = args2)
+      }
     }
     case TArray(size, element) -> {
       val element2 = resolveTypeExprAt(aliasTargets, genericNames, element, depth + 1)
@@ -789,7 +916,10 @@ func resolveExprAt(
         na.add(resolveTypeArgAt(aliasTargets, genericNames, args[i], depth))
         i = i + 1
       }
-      ETypeApp(fn = resolveExprAt(aliasTargets, genericNames, fn, depth), args = na)
+      match valueRecordCtor(aliasTargets, fn, na) {
+        case Some(k) -> k
+        case None -> ETypeApp(fn = resolveExprAt(aliasTargets, genericNames, fn, depth), args = na)
+      }
     }
     case EIndex(receiver, indices) -> {
       val ni: List[Expr] = newList()

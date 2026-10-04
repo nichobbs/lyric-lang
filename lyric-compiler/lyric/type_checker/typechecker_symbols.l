@@ -477,6 +477,15 @@ pub record SymbolTable {
   /// by the literal's span: a backend with typed primitive arrays builds it
   /// through `arrayOfIntrinsic` (#8041).
   arrayLiteralSites: Map[String, TypeExpr]
+  /// Each construction of a value-generic record (D169), keyed by the call's
+  /// span: the value arguments of the instance it builds, in parameter order,
+  /// as a literal length or the name of an enclosing value generic
+  /// parameter.  The middle end spells them on the call before
+  /// monomorphisation, so a specialised body's constructions are concrete.
+  valueRecordCtorSites: Map[String, List[TypeArg]]
+  /// A value-generic record's length argument written as a constant
+  /// (`Grid[Width, 2]`), keyed by the argument's span: its value.
+  valueTypeArgSites: Map[String, Int]
   /// Integer arithmetic that can overflow (D163), keyed by span:
   /// `add:<T>` / `sub:<T>` / `mul:<T>` for a binop, `neg:<T>` for unary
   /// minus, `compound:<T>` for `x += y` / `-=` / `*=` (keyed by the
@@ -659,6 +668,8 @@ pub func newSymbolTable(): SymbolTable {
     arrayZeroSites = newMap(),
     arrayCtorZeroArgs = newMap(),
     arrayLiteralSites = newMap(),
+    valueRecordCtorSites = newMap(),
+    valueTypeArgSites = newMap(),
     overflowSites = newMap(),
     overflowCompoundTemps = newMap(),
     importRulePkg = newList(),

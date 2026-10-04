@@ -197,8 +197,13 @@ escaping, is copied; immutable places are never copied), `.length`, `for`,
 `.toSlice()`, `==` and named-range-subtype bounds-check elision work on all
 three targets. On native an array of by-value elements is
 an inline `[N x T]` with no allocation and a by-value record may hold one; any
-other element type is a heap array. Value-generic `N` (D167 item 6) and the C
-an array in an `extern func` signature (N0010: C passes no array by value; pass a `NativePtr` to its first element) are open.
+other element type is a heap array. A value-generic length `N` (D167 item 6)
+sizes a function's array parameters and, since D169, a record's array fields
+(`record Mat[N: Nat] { var m: array[N, Float] }`), each length specialised on
+all three targets; a value-generic record is package-local for now (#8150),
+and unions, opaque and protected types cannot take one yet (#8149). An array
+in an `extern func` signature is open (N0010: C passes no array by value; pass
+a `NativePtr` to its first element).
 
 ### 4.4 `buffer[T]`: contiguous, mutable, value semantics
 
