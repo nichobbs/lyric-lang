@@ -25,7 +25,7 @@ tables, and what is not supported yet.
 | `wasm-tools` | `--shape component` | `$WASM_TOOLS`, else `PATH` |
 | the WASI preview1 reactor adapter | `--shape component` | `$LYRIC_WASI_ADAPTER` |
 | `node` | running a module, `[npm]` restore and checks | `PATH` (`$NODE` for tests) |
-| `jco` | running a component from JavaScript | `$JCO`, only to run the output |
+| `jco` | `--js-bindings`, running a component from JavaScript | `$JCO`, else `PATH` |
 
 A missing tool is a diagnostic naming it (`N0009` for the wasi-sdk, `N0016` for the
 component tools), not a crash.
@@ -121,20 +121,33 @@ writes `hello.wasm`, a component, and `hello.wit`, the interface generated from 
 | a union | `variant` |
 | an enum | `enum` |
 
+An `async func` export is an ordinary WIT function: the wrapper runs its task to
+completion before returning, sleeping out any `Std.Time.sleepMillis` the task waits on, so
+the host call blocks for that long (the build prints `W0041` as a reminder). A module-shape
+export is the non-blocking alternative: it returns a Promise.
+
 Lyric `snake_case` and `PascalCase` names become kebab-case; two names that fold to
 the same WIT name, or a function sharing a name with a type, leave the function out
 with a note.
 
-Run the component under any host that speaks the Component Model. From JavaScript:
+Run the component under any host that speaks the Component Model. From JavaScript,
+let the build run `jco` for you:
 
 ```sh
-jco transpile hello.wasm -o js/
+lyric build --target native --triple wasm32-wasi --shape component --js-bindings hello.l
 ```
+
+which also writes the bindings into `hello-js/` (`$JCO`, else `jco` on `PATH`; a missing
+`jco` is `N0022`). `--wit-out api/hello.wit` writes the WIT somewhere other than beside
+the component. Both flags belong to `--shape component` (`N0021` otherwise). Without
+`--js-bindings`, `jco transpile hello.wasm -o js/` does the same by hand.
 
 A `@wasmImport` `extern func` becomes a WIT import, so the host-call syntax is the same
 in both shapes; the module string becomes the interface name (`@wasmImport("ui")` is
 the interface `ui` of the package, `lyric:<package>/ui@<version>`) and you satisfy it
-with `jco transpile --map lyric:<package>/ui@<version>=./ui.js`.
+with a JavaScript module. With `--js-bindings` that module is `ui.js` beside the
+component (`jco --map lyric:<package>/ui@<version>=../ui.js`); by hand, map it wherever
+you keep it.
 
 ## The `[wasm]` table
 
@@ -191,7 +204,8 @@ How a package reaches your code depends on the shape:
   to run `lyric restore`.
 - **Component shape.** The package becomes the WIT interface `npm-node-fetch`
   (`@` dropped, each run of other characters a single `-`: `@aws-sdk/client-s3` is
-  `npm-aws-sdk-client-s3`). Satisfy it with
+  `npm-aws-sdk-client-s3`). With `--js-bindings` the build maps it to the package for
+  you; by hand, use
   `jco transpile --map lyric:<package>/npm-node-fetch@<version>=node-fetch`.
 
 A wasm32 project build first installs the packages itself when one is missing or the
@@ -221,6 +235,8 @@ same identifier or the same shim file are a manifest error.
 | `N0016` | the component tools or the WASI adapter are missing, or a `wasm-tools` step failed |
 | `N0018` | the component shims for a package could not be generated |
 | `N0019` | host imports conflict in a component build |
+| `N0021` | `--wit-out` or `--js-bindings` without `--shape component` (or a `;` in the path) |
+| `N0022` | `--js-bindings` could not run `jco`, or `jco transpile` failed |
 | `B0060` | `lyric restore` could not install an `[npm]` package |
 | `B0061` | an `[npm]` package has no shim |
 | `B0062` | a shim binds an export the package does not have |
@@ -233,7 +249,7 @@ The full table is in Appendix B.
 
 The tracked work is in issues #8117 (component shape) and #8118 (NPM). Today:
 
-- a component export cannot be an `async func` or name a type from
+- a component export cannot name a type from
   another Lyric package;
 - a component host import carries `Int`, `Long`, `Float`, `Double`, `String` and
   `Unit` only, and an NPM import cannot return a `Promise`;

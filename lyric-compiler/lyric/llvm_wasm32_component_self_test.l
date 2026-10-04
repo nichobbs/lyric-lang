@@ -994,6 +994,216 @@ test "wasm32 component: an npm: module with no package name is rejected" {
   )
 }
 
+val bindingsProgram: String = r#"package Probe
+
+@wasmImport("ui")
+extern func shout(s: String): String = "shout"
+
+@wasmImport("npm:@scope/fake.pkg")
+extern func npmAdd(a: Int, b: Int): Int = "add"
+
+pub func viaUi(s: String): String {
+  shout(s)
+}
+
+pub func viaNpm(x: Int): Int {
+  npmAdd(x, 1)
+}
+"#
+
+func buildWithOptions(source: in String, shape: in String, label: in String): String {
+  val _w = envOrPanic("WASI_SDK_PATH")
+  val stdlib = findStdlibSourcesNative()
+  val dir = Path.join(
+    Environment.getVarOrDefault("TMPDIR", "/tmp"),
+    "lyric-wasm32-component-" + label + "-" + Uuid.uuidToString(Uuid.newUuid())
+  )
+  val _d = File.createDir(dir)
+  val flags: List[String] = newList()
+  val ok = compileToNativeWithShape(
+    source,
+    Path.join(dir, "prog.wasm"),
+    stdlib,
+    "wasm32-wasi",
+    "2",
+    flags,
+    newList(),
+    "",
+    true,
+    shape
+  )
+  if not ok {
+    panic("wasm32 component compilation failed for shape " + shape)
+  }
+  dir
+}
+
+test "wasm32 component: --wit-out writes the WIT where asked" {
+  val dir = Path.join(
+    Environment.getVarOrDefault("TMPDIR", "/tmp"),
+    "lyric-wasm32-component-witout-" + Uuid.uuidToString(Uuid.newUuid())
+  )
+  val witPath = Path.join(Path.join(dir, "wit"), "api.wit")
+  val built = buildWithOptions(program, "component;wit=" + witPath, "witout")
+  assertTrue(File.fileExists(Path.join(built, "prog.wasm")), "the component is written")
+  assertFalse(File.fileExists(Path.join(built, "prog.wit")), "the WIT is not also written beside it")
+  val wit = match File.readText(witPath) { case Ok(t) -> t; case Err(_) -> "" }
+  assertTrue(Str.contains(wit, "package lyric:probe@0.1.0;"), "the WIT is at the requested path: " + wit)
+}
+
+test "wasm32 component: --js-bindings runs jco with the host imports mapped" {
+  val dir = buildWithOptions(bindingsProgram, "component;js", "jsbind")
+  val jsDir = Path.join(dir, "prog-js")
+  assertTrue(File.fileExists(Path.join(jsDir, "prog.js")), "jco wrote the bindings beside the component")
+  val lnargs: List[String] = newList()
+  lnargs.add("-s")
+  lnargs.add(envOrPanic("LYRIC_JCO_NODE_MODULES"))
+  lnargs.add(Path.join(dir, "node_modules"))
+  val _ln = run("ln", lnargs)
+  val _u = File.writeText(Path.join(dir, "ui.js"), "export const shout = (s) => s.toUpperCase() + '!';\n")
+  val pkgDir = Path.join(Path.join(Path.join(jsDir, "node_modules"), "@scope"), "fake.pkg")
+  val _pd = File.createDir(pkgDir)
+  val _pj = File.writeText(
+    Path.join(pkgDir, "package.json"),
+    "{ \"name\": \"@scope/fake.pkg\", \"version\": \"1.0.0\", \"type\": \"module\", \"main\": \"index.js\" }\n"
+  )
+  val _ix = File.writeText(Path.join(pkgDir, "index.js"), "export function add(a, b) { return a + b + 1000; }\n")
+  val scriptPath = Path.join(dir, "run.mjs")
+  val _s = File.writeText(
+    scriptPath,
+    r"import * as m from './prog-js/prog.js';
+console.log('ui=' + m.probe.viaUi('hi'));
+console.log('npm=' + m.probe.viaNpm(5));
+"
+  )
+  val nargs: List[String] = newList()
+  nargs.add(scriptPath)
+  val n = run(Environment.getVarOrDefault("NODE", "node"), nargs)
+  assertTrue(n.exitCode == 0, "node: " + n.stderr + n.stdout)
+  assertTrue(Str.contains(n.stdout, "ui=HI!"), "the plain host module is ../ui.js: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "npm=1006"), "the npm: module is the package: " + n.stdout)
+}
+
+test "wasm32 component: --js-bindings without jco is N0022, not a crash" {
+  val _w = envOrPanic("WASI_SDK_PATH")
+  val stdlib = findStdlibSourcesNative()
+  val dir = Path.join(
+    Environment.getVarOrDefault("TMPDIR", "/tmp"),
+    "lyric-wasm32-component-nojco-" + Uuid.uuidToString(Uuid.newUuid())
+  )
+  val _d = File.createDir(dir)
+  val flags: List[String] = newList()
+  val saved = Environment.getVarOrDefault("JCO", "")
+  val _e = Environment.setVar("JCO", Path.join(dir, "no-such-jco"))
+  val ok = compileToNativeWithShape(
+    program,
+    Path.join(dir, "prog.wasm"),
+    stdlib,
+    "wasm32-wasi",
+    "2",
+    flags,
+    newList(),
+    "",
+    true,
+    "component;js"
+  )
+  val _r = Environment.setVar("JCO", saved)
+  assertFalse(ok, "a build that cannot run jco must fail")
+  assertTrue(File.fileExists(Path.join(dir, "prog.wasm")), "the component itself was still produced")
+}
+
+val asyncComponentProgram: String = r#"package Probe
+
+import Std.Time
+
+pub async func later(x: Int, ms: Int): Int {
+  Time.sleepMillis(ms)
+  x + 1
+}
+
+pub async func tag(s: String, ms: Int): String {
+  Time.sleepMillis(ms)
+  s + "!"
+}
+
+pub async func immediate(): Int {
+  41
+}
+
+pub async func wide(x: Long): Long {
+  Time.sleepMillis(5)
+  x * 2i64
+}
+
+pub async func pair(n: Int): Option[Int] {
+  Time.sleepMillis(5)
+  if n > 0 {
+    Some(value = n * 2)
+  } else {
+    None
+  }
+}
+
+pub func plain(x: Int): Int {
+  x + 100
+}
+"#
+
+test "wasm32 component: an async export runs to completion inside the call, sleeping out its timers" {
+  val dir = buildComponentOf(asyncComponentProgram)
+  val wasm = Path.join(dir, "prog.wasm")
+  val wit = match File.readText(Path.join(dir, "prog.wit")) { case Ok(t) -> t; case Err(_) -> "" }
+  assertTrue(
+    Str.contains(wit, "later: func(x: s32, ms: s32) -> s32"),
+    "an async export is an ordinary WIT function: " + wit
+  )
+  val vargs: List[String] = newList()
+  vargs.add("validate")
+  vargs.add(wasm)
+  val v = run(envOrPanic("WASM_TOOLS"), vargs)
+  assertTrue(v.exitCode == 0, "wasm-tools validate: " + v.stderr)
+  val outDir = Path.join(dir, "js")
+  val jargs: List[String] = newList()
+  jargs.add("transpile")
+  jargs.add(wasm)
+  jargs.add("-o")
+  jargs.add(outDir)
+  val j = run(envOrPanic("JCO"), jargs)
+  assertTrue(j.exitCode == 0, "jco transpile: " + j.stderr)
+  val lnargs: List[String] = newList()
+  lnargs.add("-s")
+  lnargs.add(envOrPanic("LYRIC_JCO_NODE_MODULES"))
+  lnargs.add(Path.join(dir, "node_modules"))
+  val _ln = run("ln", lnargs)
+  val script = r"import * as m from './js/prog.js';
+const p = m.probe;
+const t0 = performance.now();
+const v = p.later(41, 60);
+const dt = performance.now() - t0;
+console.log('later=' + v + ' waited=' + (dt >= 50));
+console.log('tag=' + p.tag('wörld', 10));
+console.log('immediate=' + p.immediate());
+console.log('wide=' + p.wide(3000000000n));
+console.log('pair=' + p.pair(4) + ',' + p.pair(0));
+console.log('plain=' + p.plain(1));
+"
+  val scriptPath = Path.join(dir, "run.mjs")
+  val _s = File.writeText(scriptPath, script)
+  val nargs: List[String] = newList()
+  nargs.add(scriptPath)
+  val n = run(Environment.getVarOrDefault("NODE", "node"), nargs)
+  assertTrue(n.exitCode == 0, "node: " + n.stderr + n.stdout)
+  assertTrue(
+    Str.contains(n.stdout, "later=42 waited=true"),
+    "the call blocked for its sleep and returned the value: " + n.stdout
+  )
+  assertTrue(Str.contains(n.stdout, "tag=wörld!"), "String argument and result through a task: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "immediate=41"), "an async func that never suspends: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "wide=6000000000"), "Long result: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "pair=8,undefined"), "an Option result through a task: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "plain=101"), "a sync export beside the async ones: " + n.stdout)
+}
+
 val tupleProgram: String = r#"package Probe
 
 import Std.Collections

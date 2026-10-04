@@ -604,6 +604,10 @@ record ShapeSpec {
   version: String
   world: String
   stack: Int
+  /// `wit=<path>`: where the generated WIT is written ("" = beside the component).
+  witOut: String
+  /// `js`: also transpile the component with `jco` into `<stem>-js/`.
+  jsBindings: Bool
 }
 
 func parseShapeSpec(spec: in String): ShapeSpec {
@@ -611,22 +615,33 @@ func parseShapeSpec(spec: in String): ShapeSpec {
   var version = ""
   var world = ""
   var stack = 0
+  var witOut = ""
+  var jsBindings = false
   var i = 1
   while i < parts.length {
-    val kv = Str.split(parts[i], "=")
-    if kv.length == 2 {
-      if kv[0] == "version" {
-        version = kv[1]
-      } else if kv[0] == "world" {
-        world = kv[1]
-      } else if kv[0] == "stack" {
-        stack = match Parse.parseOptInt(kv[1]) { case Some(n) -> n; case None -> 0 }
+    val part = parts[i]
+    val eq = Str.indexOfRaw(part, "=")
+    if eq < 0 {
+      if part == "js" {
+        jsBindings = true
+      }
+    } else {
+      val key = Str.substring(part, 0, eq)
+      val value = Str.substring(part, eq + 1)
+      if key == "version" {
+        version = value
+      } else if key == "world" {
+        world = value
+      } else if key == "stack" {
+        stack = match Parse.parseOptInt(value) { case Some(n) -> n; case None -> 0 }
+      } else if key == "wit" {
+        witOut = value
       }
     }
     i = i + 1
   }
   val base = if parts.length > 0 { parts[0] } else { "" }
-  ShapeSpec(base = base, version = version, world = world, stack = stack)
+  ShapeSpec(base = base, version = version, world = world, stack = stack, witOut = witOut, jsBindings = jsBindings)
 }
 
 func shapeStackSize(spec: in ShapeSpec): String {
@@ -1697,6 +1712,11 @@ func linkAndEmitNative(
     if isComponent {
       clangArgs.add("-mexec-model=reactor")
       clangArgs.add("-Wl,-z,stack-size=" + shapeStackSize(spec))
+      // An async export is driven by the scheduler entry, which nothing in Lyric
+      // code references, so force its archive member into the link.
+      if componentHasAsync(componentPkgs) {
+        clangArgs.add("-Wl,--undefined=lyric_wasm_poll")
+      }
     }
   } else if triple.length > 0 {
     clangArgs.add("--target=" + triple)
@@ -1770,7 +1790,7 @@ func linkAndEmitNative(
     }
   }
   if isComponent {
-    if not buildComponent(coreOut, outputPath, componentPkgs, witVersion, spec.world) {
+    if not buildComponent(coreOut, outputPath, componentPkgs, witVersion, spec.world, spec.witOut, spec.jsBindings) {
       return false
     }
   }
@@ -1842,6 +1862,8 @@ func buildComponent(
   pkgs: in List[ComponentPkg],
   version: in String,
   world: in String,
+  witOut: in String,
+  jsBindings: in Bool,
 ): Bool {
   val adapter = Environment.getVarOrDefault("LYRIC_WASI_ADAPTER", "")
   if adapter.length == 0 or not File.fileExists(adapter) {
@@ -1851,7 +1873,13 @@ func buildComponent(
     return false
   }
   val stem = wasmGlueStem(outputPath)
-  val witPath = stem + ".wit"
+  val witPath = if witOut.length > 0 { witOut } else { stem + ".wit" }
+  if witOut.length > 0 {
+    match File.createDir(Path.dirname(witOut)) {
+      case Ok(_) -> ()
+      case Err(_) -> ()
+    }
+  }
   match File.writeText(witPath, renderWit(pkgs, version, world)) {
     case Ok(_) -> ()
     case Err(e) -> {
@@ -1885,7 +1913,52 @@ func buildComponent(
     case Ok(_) -> ()
     case Err(_) -> ()
   }
+  if ok and jsBindings {
+    return transpileBindings(outputPath, stem + "-js", pkgs, version)
+  }
   ok
+}
+
+/// `$JCO`, else `jco` on `PATH`.
+func findJco(): String {
+  val env = Environment.getVarOrDefault("JCO", "")
+  if env.length > 0 {
+    return env
+  }
+  "jco"
+}
+
+/// `--js-bindings`: transpile the component at `componentPath` with `jco` into
+/// `outDir`, mapping every host import to the JavaScript module that satisfies it
+/// (`jcoMapArgs`).  False (after printing `N0022`) when `jco` is missing or fails.
+func transpileBindings(
+  componentPath: in String, outDir: in String, pkgs: in List[ComponentPkg], version: in String
+): Bool {
+  val args: List[String] = newList()
+  args.add("transpile")
+  args.add(componentPath)
+  args.add("-o")
+  args.add(outDir)
+  for a in jcoMapArgs(pkgs, version) {
+    args.add(a)
+  }
+  match Process.runCapture(findJco(), args, 300000) {
+    case Ok(res) -> {
+      if res.exitCode != 0 {
+        Console.error("error[N0022]: jco transpile failed:")
+        Console.error(res.stderr)
+        return false
+      }
+      true
+    }
+    case Err(e) -> {
+      Console.error(
+        "error[N0022]: --js-bindings needs jco (" + findJco() + "); install @bytecodealliance/jco or point $JCO at it (" + e +
+          ")"
+      )
+      false
+    }
+  }
 }
 
 /// The runtime helpers the generated glue calls (`lyric-rt/src/lyric_wasm.c`).

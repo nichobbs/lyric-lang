@@ -326,8 +326,8 @@ rule, and `portable`/`standalone`/`aot` become a diagnostic there. Convenience a
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--wit-out <path>` | `target/wasm/<pkg>.wit` | Where to write the generated WIT file (component shape) |
-| `--js-bindings` | off | Component shape: also run `jco transpile`. The module shape always writes its glue (`<name>.js`, `<name>.d.ts`) next to the `.wasm` (D-progress-1029) |
+| `--wit-out <path>` | beside the component, `<name>.wit` | Where to write the generated WIT file (component shape; shipped, D-progress-1040) |
+| `--js-bindings` | off | Component shape: also run `jco transpile` into `<name>-js/` with a `--map` per host import (`npm:` imports to the package, others to `../<module>.js`); shipped, D-progress-1040. The module shape always writes its glue (`<name>.js`, `<name>.d.ts`) next to the `.wasm` (D-progress-1029) |
 
 `lyric publish` for a wasm shape bundles the `.wasm`, WIT and generated
 bindings as an NPM-compatible tarball.
@@ -485,7 +485,8 @@ except at the host edge:
   used.
 - **`component` shape:** `Async[T]` maps to WIT `future<T>` once the
   Component Model async ABI is stable (Q-JS-006). Until then `async func`
-  exports use a callback-style or synchronous-subset lowering with a warning.
+  exports use the synchronous-subset lowering with a `W0041` note (shipped,
+  D-progress-1043): the wrapper drives the scheduler until the task completes.
 
 No separate backend pass is needed (the earlier revision's claim that the
 MSIL/JVM state-machine lowering needed an unrelated WASM pass no longer
@@ -536,9 +537,10 @@ set; decide the registry model before the 20th package.
 map to the same Lyric name. Suffix disambiguator, or hard `lyric restore`
 error?
 
-**Q-JS-006 — WIT async stability.** Gate the `component` async export on the
-Component Model async ABI stabilising, or ship the callback/synchronous
-subset first with a warning?
+**Q-JS-006 — WIT async stability.** *Resolved for v1 in D-progress-1043: the
+synchronous subset ships (an `async func` export is a blocking WIT function,
+with a `W0041` note); `future<T>`/`stream<T>` wait for the Component Model
+async ABI to stabilise.*
 
 **Q-JS-007 — Linear-memory limits.** Default stack size and maximum heap for
 the `module` shape; whether `lyric_alloc` failure traps or returns an error.

@@ -1439,6 +1439,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `W0002` | warning | A `forall`/`exists` in a contract of a runtime-checked package: its domain is a type, so it cannot be evaluated. The top-level `and`-conjunct containing it is skipped at runtime; the clause's other conjuncts are still checked. Put the property in a `@proof_required` package to have it proved. |
 | `W0006` | warning | A `pub` function exposes an **imported nested** host extern type (a CLR FQN containing `+`, e.g. `System.Text.Json.JsonElement+ArrayEnumerator`) in its signature. Nested types are host implementation details meant to stay behind the `_kernel/` FFI boundary. A kernel file that declares the extern type locally is exempt. Fix: wrap the host type in an opaque Lyric type (as `Std.Json` does with `JsonArrayCursor` / `JsonObjectCursor`) instead of exposing it directly. Top-level domain extern types are not flagged. |
 | `W0040` | warning | A `pub func` is left out of the `--shape module` JS glue because a parameter or its result is a type the module shape cannot carry (a record, list or option), or it is generic, overloaded, or takes an `out`/`inout` parameter. The function is still compiled; it just has no JS wrapper. |
+| `W0041` | warning | A `pub async func` is exported from a `--shape component` build as a synchronous WIT function: the wrapper runs its task to completion, sleeping out its timers, so the host call blocks. Use the module shape for a non-blocking, Promise-returning export. |
 
 ### Emitter (E-series)
 
@@ -1530,6 +1531,8 @@ span, exactly like `T0120`/`J008`.
 | `N0018` | Generating the `--shape component` shims for a package failed: a `@wasmImport` extern with an unsupported type, a module or import name that is not a WIT identifier (a letter first, then letters, digits, `.`, `-`, `_`), or too many flat parameters. |
 | `N0019` | `@wasmImport` externs conflict in a `--shape component` build: one host function (module and name) declared with different signatures, module or function names that fold to the same WIT name (`ui.log` and `ui-log`), or a module named like an exported package. |
 | `N0020` | An `array[N, T]` reached `--target native` with no native layout: a length the type checker did not resolve to an integer, or an element type with no native lowering (D167). The checker rejects a non-constant length (T0160) first, so this is the backend's own check. |
+| `N0021` | `--wit-out` or `--js-bindings` was given without `--shape component`, or the `--wit-out` path contains `;`. |
+| `N0022` | `--js-bindings` could not run `jco` (`$JCO`, else `PATH`), or `jco transpile` failed. |
 
 ### Custom source generators (X-series)
 
