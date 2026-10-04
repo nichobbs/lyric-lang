@@ -91,6 +91,8 @@ for t in \
   lyric-compiler/lyric/inline_union_self_test.l \
   lyric-compiler/lyric/generic_ctor_open_arg_self_test.l \
   lyric-compiler/lyric/fixed_array_self_test.l \
+  lyric-compiler/lyric/func_default_args_self_test.l \
+  lyric-compiler/lyric/method_default_args_self_test.l \
   lyric-compiler/lyric/bench_alloc_self_test.l \
   lyric-compiler/lyric/tuple_expected_type_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_test.l \

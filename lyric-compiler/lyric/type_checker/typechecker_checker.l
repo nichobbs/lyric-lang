@@ -3133,11 +3133,38 @@ func checkProtectedMemberBodies(
         )
         checkFunctionBody(tbl, sigs, diag, fn, sig, fieldLocals, fieldLocals, true, selfTy)
       }
+      case PMInvariant(inv) -> checkProtectedInvariant(tbl, sigs, diag, inv, ownerGenerics, fieldLocals, selfTy)
       case _ -> {
       }
     }
     i = i + 1
   }
+}
+
+// A protected type's `invariant:` clause is a `Bool` over its fields, which
+// it reads by bare name as an entry body does.  It is checked here so an
+// ill-typed clause is reported and its literals follow the expected-type
+// rules (D155): the contract elaborator copies the clause into every entry's
+// exit checks after type checking (#7988).
+func checkProtectedInvariant(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  inv: in InvariantClause,
+  ownerGenerics: in List[String],
+  fieldLocals: in List[LocalBinding],
+  selfTy: in Type,
+): Unit {
+  val selfFields: Map[String, Type] = newMap()
+  for f in fieldLocals {
+    selfFields.add(f.name, f.ty)
+  }
+  val noRet: Option[TypeExpr] = None
+  val sc = newScopeForFunction(TyPrim(pt = PtBool), ownerGenerics, noRet, selfFields, true, selfTy)
+  for f in fieldLocals {
+    scopeAdd(sc, f)
+  }
+  checkBoolClause(sc, tbl, sigs, diag, inv.expr, "invariant", inv.span)
 }
 
 // #6487: the record-body counterpart of `protectedFieldLocals` — resolves

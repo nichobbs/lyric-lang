@@ -155,6 +155,9 @@ record NFuncSig {
   // (no `_kernel_native/` declaration uses `out`/`inout`; enforced in
   // `buildSigs`).
   paramModes: List[ParamMode]
+  // Each parameter's default expression, lowered at a call that leaves the
+  // parameter out (#7985).  Always `None` for extern funcs and receivers.
+  paramDefaults: List[Option[Expr]]
   retTy: Option[TypeExpr]
   isExternSym: Bool
   // Async callee (stage B2): the define returns a LyricTask* (as i8*) and
@@ -216,6 +219,10 @@ record NIfaceInfo {
   methodRetTys: List[NType]
   methodRetIsSelf: List[Bool]
   methodParamIsSelf: List[List[Bool]]
+  // Each method's parameter names and defaults, binding a call's named and
+  // omitted arguments (#7985).
+  methodParamNames: List[List[String]]
+  methodParamDefaults: List[List[Option[Expr]]]
 }
 
 /// Registered (non-generic) union type: cases plus the payload area
@@ -1649,6 +1656,40 @@ func paramTysOf(params: in List[Param]): List[TypeExpr] {
   tys
 }
 
+func paramDefaultsOf(params: in List[Param]): List[Option[Expr]] {
+  val ds: List[Option[Expr]] = newList()
+  for p in params {
+    ds.add(p.dflt)
+  }
+  ds
+}
+
+func noParamDefaults(n: in Int): List[Option[Expr]] {
+  val ds: List[Option[Expr]] = newList()
+  var i = 0
+  while i < n {
+    val none: Option[Expr] = None
+    ds.add(none)
+    i = i + 1
+  }
+  ds
+}
+
+/// The fewest arguments a call to `sig` may write: the parameters before the
+/// trailing run of defaulted ones.
+func requiredArgCount(sig: in NFuncSig): Int {
+  var n = sig.paramDefaults.count
+  while n > 0 {
+    match sig.paramDefaults[n - 1] {
+      case Some(_) -> {
+        n = n - 1
+      }
+      case None -> return n
+    }
+  }
+  n
+}
+
 func paramModesOf(params: in List[Param]): List[ParamMode] {
   val modes: List[ParamMode] = newList()
   var i = 0
@@ -1704,6 +1745,9 @@ func irNameFor(pkg: in String, name: in String, arity: in Int, overloaded: in Bo
 /// matching source scoping.
 func buildSigs(units: in List[CodegenUnit]): Map[String, NFuncSig] {
   val sigs: Map[String, NFuncSig] = newMap()
+  val defaulted: List[NFuncSig] = newList()
+  val defaultedKeys: List[String] = newList()
+  val defaultedBare: List[String] = newList()
   // Pass 1: count same-package name+arity groups to detect overloads.
   val nameCount: Map[String, Int] = newMap()
   var ui = 0
@@ -1746,12 +1790,16 @@ func buildSigs(units: in List[CodegenUnit]): Map[String, NFuncSig] {
         paramNames = paramNamesOf(fn.params),
         paramTys = paramTysOf(fn.params),
         paramModes = paramModesOf(fn.params),
+        paramDefaults = paramDefaultsOf(fn.params),
         retTy = fn.ret,
         isExternSym = false,
         isAsync = fn.isAsync
       )
       addSig(sigs, u.pkgName + "." + fn.name + "/" + arity.toString(), sig)
       addSig(sigs, fn.name + "/" + arity.toString(), sig)
+      defaulted.add(sig)
+      defaultedKeys.add(u.pkgName + "." + fn.name)
+      defaultedBare.add(fn.name)
       fi = fi + 1
     }
     var ei = 0
@@ -1765,6 +1813,7 @@ func buildSigs(units: in List[CodegenUnit]): Map[String, NFuncSig] {
         paramNames = paramNamesOf(ef.params),
         paramTys = paramTysOf(ef.params),
         paramModes = paramModesOf(ef.params),
+        paramDefaults = noParamDefaults(ef.params.count),
         retTy = ef.ret,
         isExternSym = true,
         isAsync = false
@@ -1774,6 +1823,21 @@ func buildSigs(units: in List[CodegenUnit]): Map[String, NFuncSig] {
       ei = ei + 1
     }
     ui2 = ui2 + 1
+  }
+  // A call that leaves out trailing defaulted parameters writes fewer
+  // arguments than the declaration has: register each function under every
+  // shorter arity it accepts (#7985).  This runs after every exact arity is
+  // registered, so an overload declared with exactly the written arity wins.
+  var di = 0
+  while di < defaulted.count {
+    val sig = defaulted[di]
+    var k = requiredArgCount(sig)
+    while k < sig.paramTys.count {
+      addSig(sigs, defaultedKeys[di] + "/" + k.toString(), sig)
+      addSig(sigs, defaultedBare[di] + "/" + k.toString(), sig)
+      k = k + 1
+    }
+    di = di + 1
   }
   sigs
 }
@@ -3555,12 +3619,11 @@ func isPackagePathExpr(ctx: in Ctx, e: in Expr): Bool {
 /// lower each.  Positional args bind left-to-right; named args bind by
 /// declared name.
 func lowerCallArgs(ctx: in Ctx, insns: in List[NInsn], sig: in NFuncSig, args: in List[CallArg]): List[NArg] {
-  if args.count != sig.paramTys.count {
+  if args.count > sig.paramTys.count {
     panic(
       "Lyric.LlvmCodegen: call to '" + sig.irName + "' passes " + args.count.toString() +
         " argument(s) but the declaration has " +
-        sig.paramTys.count.toString() +
-        " (default arguments are not yet supported for --target native)"
+        sig.paramTys.count.toString()
     )
   }
   val ordered: List[NArg] = newList()
@@ -3577,12 +3640,11 @@ func lowerCallArgsWithReceiver(
   recv: in NVal,
   args: in List[CallArg],
 ): List[NArg] {
-  if args.count + 1 != sig.paramTys.count {
+  if args.count + 1 > sig.paramTys.count {
     panic(
       "Lyric.LlvmCodegen: method call to '" + sig.irName + "' passes " + (args.count + 1).toString() +
         " argument(s) (incl. receiver) but the declaration has " +
-        sig.paramTys.count.toString() +
-        " (default arguments are not yet supported for --target native, #7985)"
+        sig.paramTys.count.toString()
     )
   }
   val ordered: List[NArg] = newList()
@@ -3646,7 +3708,20 @@ func bindCallArgs(
       vi = vi + 1
     }
     if found < 0 {
-      panic("Lyric.LlvmCodegen: no argument bound for parameter " + pi2.toString() + " of '" + sig.irName + "'")
+      // A parameter the call leaves out takes its default, evaluated after
+      // the written arguments in parameter order, as on dotnet and the JVM.
+      val dflt = if pi2 < sig.paramDefaults.count { sig.paramDefaults[pi2] } else { None }
+      match dflt {
+        case Some(dex) -> {
+          vals.add(lowerArgAgainst(ctx, insns, sig, dex, pi2))
+          slots.add(pi2)
+          found = vals.count - 1
+        }
+        case None -> panic(
+          "Lyric.LlvmCodegen: no argument bound for parameter '" + sig.paramNames[pi2] + "' of '" + sig.irName +
+            "', which has no default"
+        )
+      }
     }
     if sig.isExternSym and isFunctionTypeExpr(sig.paramTys[pi2]) {
       val fnDeclTy = typeExprToNType(sig.paramTys[pi2])
@@ -4374,6 +4449,22 @@ func lowerCallEx(
     case _ -> {
     }
   }
+  // A bare call inside a method to a method of the receiver's type is
+  // `self.m(args)`, ahead of any free function of that name, as on dotnet
+  // and the JVM (#1722, #7985).
+  match fnExpr.kind {
+    case EPath(bp) -> if bp.segments.count == 1 {
+      match mapGet(ctx.varTypes, "self") {
+        case Some(selfTy) -> if receiverHasMethod(ctx, receiverStructName(selfTy), bp.segments[0]) {
+          val selfRecv = Expr(kind = ESelf, span = fnExpr.span)
+          val siblingCallee = Expr(kind = EMember(receiver = selfRecv, memberName = bp.segments[0]), span = fnExpr.span)
+          return lowerCallEx(ctx, insns, siblingCallee, args, line, wantTask)
+        }
+        case None -> ()
+      }
+    }
+    case _ -> ()
+  }
   // Static function call through the registry.
   val key = callKeyOf(fnExpr, args.count)
   if key.length == 0 {
@@ -4625,6 +4716,75 @@ func curPkgQualifiedGet[T](ctx: in Ctx, m: in Map[String, T], bareOrDotted: in S
   mapGet(m, bareOrDotted)
 }
 
+/// Whether the type named `recvTyName` has a method `name` of any arity: a
+/// record method or dot-named function registered as `<Type>.<name>/<n>`, or
+/// an impl method.
+/// The `genericFnDefs` key of method `nameAndArity` (`<name>/<arity>`, the
+/// receiver counted) of the generic record that `recvTyName` instantiates.
+func genericRecordMethodKey(ctx: in Ctx, recvTyName: in String, nameAndArity: in String): Option[String] {
+  match mapGet(ctx.instMeta, recvTyName) {
+    case Some(im) -> {
+      val k = im.gkey + "." + nameAndArity
+      if ctx.genericFnDefs.containsKey(k) {
+        return Some(value = k)
+      }
+      val dot = lastDotIndex(im.gkey)
+      if dot > 0 {
+        val bk = Str.substring(im.gkey, dot + 1, im.gkey.length - dot - 1) + "." + nameAndArity
+        if ctx.genericFnDefs.containsKey(bk) {
+          return Some(value = bk)
+        }
+      }
+      None
+    }
+    case None -> None
+  }
+}
+
+func receiverHasMethod(ctx: in Ctx, recvTyName: in String, name: in String): Bool {
+  if recvTyName.length == 0 {
+    return false
+  }
+  val dot = lastDotIndex(recvTyName)
+  val bare = if dot > 0 { Str.substring(recvTyName, dot + 1, recvTyName.length - dot - 1) } else { recvTyName }
+  // The receiver is parameter 0, so a method's registered arity is at least 1.
+  var n = 1
+  while n <= 32 {
+    val suffix = "." + name + "/" + n.toString()
+    if ctx.sigs.containsKey(recvTyName + suffix) or ctx.sigs.containsKey(bare + suffix) {
+      return true
+    }
+    if ctx.implDirectMethods.containsKey(recvTyName + suffix) {
+      return true
+    }
+    match genericRecordMethodKey(ctx, recvTyName, name + "/" + n.toString()) {
+      case Some(_) -> return true
+      case None -> ()
+    }
+    // A record-body method is a package function whose first parameter is
+    // `self` of the record's type (D037).
+    val key = name + "/" + n.toString()
+    val own = if ctx.curPkg.count > 0 { mapGet(ctx.sigs, ctx.curPkg[0] + "." + key) } else { mapGet(ctx.sigs, key) }
+    match own {
+      case Some(sig) -> if isSelfMethodOf(sig, bare) { return true }
+      case None -> ()
+    }
+    n = n + 1
+  }
+  false
+}
+
+func isSelfMethodOf(sig: in NFuncSig, typeName: in String): Bool {
+  if sig.paramNames.count == 0 or sig.paramNames[0] != "self" {
+    return false
+  }
+  match sig.paramTys[0].kind {
+    case TRef(p) -> p.segments.count > 0 and p.segments[p.segments.count - 1] == typeName
+    case TSelf -> true
+    case _ -> false
+  }
+}
+
 /// The IR struct name of a receiver type: the pointee of a heap object's
 /// pointer, or a by-value record's struct itself; "" for any other type.
 func receiverStructName(t: in NType): String {
@@ -4794,11 +4954,16 @@ func lowerUfcsCall(
       }
     }
   }
+  // A method of a generic record, on one of its instances.
   match sigOpt {
-    case Some(_) -> {
-    }
-    case None -> {
-      sigOpt = mapGet(ctx.sigs, ctx.curPkg[0] + "." + name + "/" + arity)
+    case Some(_) -> ()
+    case None -> match genericRecordMethodKey(ctx, recvTyName, name + "/" + arity) {
+      case Some(gk) -> {
+        val instPre: List[NVal] = newList()
+        instPre.add(recv)
+        return lowerGenericFnCall(ctx, insns, gk, instPre, args, line, wantTask, None)
+      }
+      case None -> ()
     }
   }
   match sigOpt {
@@ -4809,12 +4974,13 @@ func lowerUfcsCall(
         val tyName = recvTyName
         // `tyName` is already package-qualified (e.g. "Std.Tls.Identity"
         // for a record/opaque type's ARC pointee, or a by-value record's
-        // struct). An extension-method
-        // -style declaration (`func Identity.rawHandle(...)`, as opposed
-        // to a D037 in-type-body method) registers its sig under the
-        // compound "TypeName.methodName" name — try the exact qualified
-        // form first, then the bare "TypeName.methodName" form (no
-        // package prefix; matches the registry's own bare-name key).
+        // struct). A dot-named function (`func Identity.rawHandle(...)`)
+        // and a D037 in-type-body method both register under the compound
+        // "TypeName.methodName" name — try the exact qualified form first,
+        // then the bare "TypeName.methodName" form (no package prefix;
+        // matches the registry's own bare-name key).  This runs before the
+        // package-level lookups below, so a method of the receiver's type
+        // wins over a same-named free function.
         sigOpt = mapGet(ctx.sigs, tyName + "." + name + "/" + arity)
         val dotIdx = lastDotIndex(tyName)
         match sigOpt {
@@ -4827,18 +4993,25 @@ func lowerUfcsCall(
             }
           }
         }
-        match sigOpt {
-          case Some(_) -> {
-          }
-          case None -> {
-            // Legacy fallback: a D037 in-type-body method desugars to a
-            // bare package-level function living in the receiver
-            // type's DEFINING package (not qualified by the type name).
-            if dotIdx > 0 {
-              sigOpt = mapGet(ctx.sigs, Str.substring(tyName, 0, dotIdx) + "." + name + "/" + arity)
-            }
-          }
-        }
+      }
+    }
+  }
+  match sigOpt {
+    case Some(_) -> {
+    }
+    case None -> {
+      sigOpt = mapGet(ctx.sigs, ctx.curPkg[0] + "." + name + "/" + arity)
+    }
+  }
+  match sigOpt {
+    case Some(_) -> {
+    }
+    case None -> {
+      // A UFCS call to a package function of the receiver type's defining
+      // package (not qualified by the type name).
+      val defDot = lastDotIndex(recvTyName)
+      if defDot > 0 {
+        sigOpt = mapGet(ctx.sigs, Str.substring(recvTyName, 0, defDot) + "." + name + "/" + arity)
       }
     }
   }
@@ -6997,6 +7170,80 @@ func registerGenericRecord(ctx: in Ctx, pkg: in String, rd: in RecordDecl): Unit
     if not ctx.genericDeclPkg.containsKey(rd.name) {
       ctx.genericDeclPkg.add(rd.name, pkg)
     }
+  }
+  registerGenericRecordMethods(ctx, pkg, rd)
+}
+
+// A generic record's methods are generic functions over the record's type
+// parameters (and their own), named `<Record>.<method>` with the receiver
+// `self: <Record>[T, ...]`, and instantiated per call like any generic
+// function.  A member call on an instance finds them through the instance's
+// generic key (`lowerMethodCallOnInstance`).
+func registerGenericRecordMethods(ctx: in Ctx, pkg: in String, rd: in RecordDecl): Unit {
+  val recParams = match rd.generics { case Some(gp) -> gp.params; case None -> return }
+  val selfArgs: List[TypeArg] = newList()
+  for gp in recParams {
+    match gp {
+      case GPType(n, sp) -> {
+        val segs: List[String] = newList()
+        segs.add(n)
+        selfArgs.add(TAType(ty = TypeExpr(kind = TRef(path = ModulePath(segments = segs, span = sp)), span = sp)))
+      }
+      // A value generic parameter cannot be a native type argument here.
+      case GPValue(_, _, _) -> return
+    }
+  }
+  for m in rd.members {
+    match m {
+      case RMFunc(fn) -> {
+        val allParams: List[GenericParam] = newList()
+        for gp in recParams {
+          allParams.add(gp)
+        }
+        match fn.generics {
+          case Some(fg) -> {
+            for gp in fg.params {
+              allParams.add(gp)
+            }
+          }
+          case None -> ()
+        }
+        val headSegs: List[String] = newList()
+        headSegs.add(rd.name)
+        val selfTe = TypeExpr(
+          kind = TGenericApp(head = ModulePath(segments = headSegs, span = fn.span), args = selfArgs),
+          span = fn.span
+        )
+        val params: List[Param] = newList()
+        for p in fn.params {
+          params.add(p.copy(ty = substSelfWith(p.ty, selfTe)))
+        }
+        val ret = match fn.ret { case Some(r) -> Some(value = substSelfWith(r, selfTe)); case None -> None }
+        val gspan = match rd.generics { case Some(gp) -> gp.span; case None -> fn.span }
+        val gfn = fn.copy(
+          name = rd.name + "." + fn.name,
+          generics = Some(value = GenericParams(params = allParams, span = gspan, legacyPrefixForm = false)),
+          params = params,
+          ret = ret
+        )
+        val akey = "." + fn.name + "/" + params.count.toString()
+        for k in [pkg + "." + rd.name + akey, rd.name + akey] {
+          if not ctx.genericFnDefs.containsKey(k) {
+            ctx.genericFnDefs.add(k, gfn)
+            ctx.genericFnPkg.add(k, pkg)
+          }
+        }
+      }
+      case _ -> ()
+    }
+  }
+}
+
+func substSelfWith(te: in TypeExpr, replacement: in TypeExpr): TypeExpr {
+  match te.kind {
+    case TSelf -> replacement
+    case TParen(inner) -> TypeExpr(kind = TParen(inner = substSelfWith(inner, replacement)), span = te.span)
+    case _ -> te
   }
 }
 
@@ -9701,10 +9948,20 @@ func lowerGenericFnCall(
         aj = aj + 1
       }
       if found < 0 {
-        panic(
-          "Lyric.LlvmCodegen: no argument bound for parameter '" + fd.params[pi].name + "' of generic function '" + fd.name +
-            "'"
-        )
+        // A parameter the call leaves out takes its default (#7985).
+        match fd.params[pi].dflt {
+          case Some(dex) -> {
+            argSlot.add(pi)
+            argExpr.add(dex)
+            found = argExpr.count - 1
+          }
+          case None -> panic(
+            "Lyric.LlvmCodegen: no argument bound for parameter '" + fd.params[pi].name +
+              "' of generic function '" +
+              fd.name +
+              "', which has no default"
+          )
+        }
       }
       val ax = argExpr[found]
       if isLambdaExpr(ax) {
@@ -14523,7 +14780,8 @@ pub func wasmImportModule(imports: in List[WasmImportDecl], symbol: in String): 
 
 /// Methods declared inside a record body desugar to package functions
 /// with the explicit `self` receiver already in their parameter list
-/// (D037); non-generic ones lower like any other function.  The
+/// (D037), named `<Record>.<method>` as a dot-named function is; non-generic
+/// ones lower like any other function.  The
 /// parser's synthesised receiver is typed `Self` — substitute the
 /// concrete record reference so the native type mapping resolves it.
 pub func collectRecordMethods(pkgName: in String, decl: in RecordDecl, fns: in List[FunctionDecl]): Unit {
@@ -14538,7 +14796,12 @@ pub func collectRecordMethods(pkgName: in String, decl: in RecordDecl, fns: in L
             match fn.generics {
               case Some(_) -> {
               }
-              case None -> fns.add(substSelfInFn(fn, decl.name))
+              case None -> {
+                // Registered as `<Record>.<method>`, so a same-named method of
+                // another record in the package is a different function.
+                val lifted = substSelfInFn(fn, decl.name)
+                fns.add(lifted.copy(name = decl.name + "." + fn.name))
+              }
             }
           }
         }
@@ -15662,11 +15925,15 @@ func registerProtectedMember(
   sigParamNames.add("self")
   val sigParamModes: List[ParamMode] = newList()
   sigParamModes.add(PMIn)
+  val sigParamDefaults: List[Option[Expr]] = newList()
+  val noSelfDefault: Option[Expr] = None
+  sigParamDefaults.add(noSelfDefault)
   var i = 0
   while i < sParams.count {
     sigParamTys.add(sParams[i].ty)
     sigParamNames.add(sParams[i].name)
     sigParamModes.add(PMIn)
+    sigParamDefaults.add(sParams[i].dflt)
     i = i + 1
   }
   val sig = NFuncSig(
@@ -15675,12 +15942,19 @@ func registerProtectedMember(
     paramNames = sigParamNames,
     paramTys = sigParamTys,
     paramModes = sigParamModes,
+    paramDefaults = sigParamDefaults,
     retTy = sRet,
     isExternSym = false,
     isAsync = false
   )
   addSig(ctx.sigs, pkg + "." + methodName + "/" + arity.toString(), sig)
   addSig(ctx.sigs, methodName + "/" + arity.toString(), sig)
+  var shorter = requiredArgCount(sig)
+  while shorter < arity {
+    addSig(ctx.sigs, pkg + "." + methodName + "/" + shorter.toString(), sig)
+    addSig(ctx.sigs, methodName + "/" + shorter.toString(), sig)
+    shorter = shorter + 1
+  }
   val retTyN = retTypeToN(ctx, sRet)
   val paramTysN: List[NType] = newList()
   val paramNamesN: List[String] = newList()
@@ -15803,11 +16077,28 @@ func implMethodName(recordName: in String, ifaceName: in String, methodName: in 
   recordName + "." + ifaceName + "." + methodName
 }
 
+/// An interface or impl method may write its receiver as an explicit first
+/// parameter (`func area(self: in Self, ...)`); the receiver is supplied
+/// separately here, so that parameter is dropped.
+func withoutExplicitSelf(params: in List[Param]): List[Param] {
+  if params.count > 0 and params[0].name == "self" {
+    val rest: List[Param] = newList()
+    var i = 1
+    while i < params.count {
+      rest.add(params[i])
+      i = i + 1
+    }
+    return rest
+  }
+  params
+}
+
 /// Rewrite an `impl I for R` method into a self-receiving package function:
 /// prepend `self: in R` (impl methods parse without an injected receiver —
 /// the body's `self` keyword lowers to `loadLocal("self")`), substitute any
 /// `Self` in the remaining signature, and give it the collision-free name.
 func implMethodToFn(recordName: in String, ifaceName: in String, fn: in FunctionDecl): FunctionDecl {
+  val ownParams = withoutExplicitSelf(fn.params)
   val newParams: List[Param] = newList()
   newParams.add(
     Param(
@@ -15821,8 +16112,8 @@ func implMethodToFn(recordName: in String, ifaceName: in String, fn: in Function
     )
   )
   var i = 0
-  while i < fn.params.count {
-    val p = fn.params[i]
+  while i < ownParams.count {
+    val p = ownParams[i]
     newParams.add(
       Param(
         mode = p.mode,
@@ -16065,7 +16356,8 @@ func synthIfaceBoxDtor(ctx: in Ctx, ii: in NIfaceInfo): NFunc {
 }
 
 /// The ordered subset of `idecl.members` that the native backend's vtable
-/// layout covers: non-generic `IMSig` signatures, skipping async methods
+/// layout covers: non-generic `IMSig` signatures and default methods
+/// (`IMFunc`), with any explicit `self` parameter dropped, skipping async methods
 /// (async interface dispatch is unimplemented on this backend) and any
 /// method with its own generics (MVAR is unbuildable, docs/43 Q-GEN-002).
 /// `registerInterfaceNames` (phase A, method-name list) and
@@ -16085,7 +16377,33 @@ func nonGenericSyncSigs(idecl: in InterfaceDecl): List[FunctionSig] {
           }
           case None -> {
             if not sig.isAsync {
-              sigs.add(sig)
+              sigs.add(sig.copy(params = withoutExplicitSelf(sig.params)))
+            }
+          }
+        }
+      }
+      // A default method takes a slot too: `Lyric.ImplDefaults` copies its
+      // body into every impl that does not override it, so each impl's
+      // vtable has a method to point the slot at.
+      case IMFunc(fn) -> {
+        match fn.generics {
+          case Some(_) -> {
+          }
+          case None -> {
+            if not fn.isAsync {
+              sigs.add(
+                FunctionSig(
+                  docComments = fn.docComments,
+                  isAsync = false,
+                  name = fn.name,
+                  generics = None,
+                  params = withoutExplicitSelf(fn.params),
+                  ret = fn.ret,
+                  whereClause = None,
+                  contracts = fn.contracts,
+                  span = fn.span
+                )
+              )
             }
           }
         }
@@ -16162,6 +16480,12 @@ func registerInterfaceNames(ctx: in Ctx, units: in List[CodegenUnit]): Unit {
             mretSelf.add(retIsSelf)
             mi = mi + 1
           }
+          val mparamNames: List[List[String]] = newList()
+          val mparamDefaults: List[List[Option[Expr]]] = newList()
+          for sg in sigs {
+            mparamNames.add(paramNamesOf(sg.params))
+            mparamDefaults.add(paramDefaultsOf(sg.params))
+          }
           val info = NIfaceInfo(
             key = qualified,
             irName = "__iface." + mangled,
@@ -16170,7 +16494,9 @@ func registerInterfaceNames(ctx: in Ctx, units: in List[CodegenUnit]): Unit {
             methodParamTys = newList(),
             methodRetTys = newList(),
             methodRetIsSelf = mretSelf,
-            methodParamIsSelf = mparamSelf
+            methodParamIsSelf = mparamSelf,
+            methodParamNames = mparamNames,
+            methodParamDefaults = mparamDefaults
           )
           registerIfaceInfo(ctx, u.pkgName, idecl.name, info)
         }
@@ -16226,7 +16552,9 @@ func registerInterfaceTypes(
             methodParamTys = pTys,
             methodRetTys = rTys,
             methodRetIsSelf = pre.methodRetIsSelf,
-            methodParamIsSelf = pre.methodParamIsSelf
+            methodParamIsSelf = pre.methodParamIsSelf,
+            methodParamNames = pre.methodParamNames,
+            methodParamDefaults = pre.methodParamDefaults
           )
           registerIfaceInfo(ctx, u.pkgName, idecl.name, info)
           val vtFields: List[NType] = newList()
@@ -16390,7 +16718,7 @@ func registerImplDirectMethods(ctx: in Ctx, units: in List[CodegenUnit]): Unit {
                         }
                         case None -> {
                           if not fn.isAsync {
-                            val arity = (fn.params.count + 1).toString()
+                            val arity = (withoutExplicitSelf(fn.params).count + 1).toString()
                             val key = u.pkgName + "." + recordName + "." + fn.name + "/" + arity
                             val sigKey = u.pkgName + "." + implMethodName(recordName, ifaceName, fn.name) + "/" + arity
                             if not ctx.implDirectMethods.containsKey(key) {
@@ -16490,6 +16818,21 @@ func reboxErasedSelfResult(ctx: in Ctx, insns: in List[NInsn], ii: in NIfaceInfo
 /// Dispatch an interface method call: load `obj` and the vtable pointer,
 /// index the method slot, bitcast the raw pointer to the method's function
 /// type, and call with `obj` (as `i8*`) as the receiver.
+func lowerIfaceArgAt(
+  // One interface call argument, lowered against its parameter: a bare `Self`
+  // parameter unboxes explicitly (#7618), every other one coerces.
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  ex: in Expr,
+  pt: in NType,
+  isSelf: in Bool,
+): NVal {
+  if isSelf {
+    return unboxToSelfSlot(ctx, insns, lowerExpr(ctx, insns, ex))
+  }
+  coerceTo(ctx, insns, lowerExprExpecting(ctx, insns, ex, pt), pt)
+}
+
 func lowerIfaceDispatch(
   ctx: in Ctx,
   insns: in List[NInsn],
@@ -16549,21 +16892,77 @@ func lowerIfaceDispatch(
   // a genuine `NativePtr[Byte]` parameter, which erases to the SAME `i8*`
   // but must coerce (and, on a mismatch, fail) through the ordinary path.
   val paramIsSelf = ii.methodParamIsSelf[slot]
+  val paramNames = ii.methodParamNames[slot]
+  val paramDefaults = ii.methodParamDefaults[slot]
+  // Written arguments are evaluated in source order, positional ones
+  // binding left to right and named ones by name; a parameter the call
+  // leaves out then takes the interface member's default (#7985).
+  val argExprs: List[Expr] = newList()
+  val argSlots: List[Int] = newList()
+  var nextPositional = 0
+  for a in args {
+    match a {
+      case CAPositional(ex) -> {
+        argExprs.add(ex)
+        argSlots.add(nextPositional)
+        nextPositional = nextPositional + 1
+      }
+      case CANamed(argName, value, _) -> {
+        var found = -1
+        var ni = 0
+        while ni < paramNames.count {
+          if paramNames[ni] == argName {
+            found = ni
+          }
+          ni = ni + 1
+        }
+        if found < 0 {
+          panic(
+            "Lyric.LlvmCodegen: named argument '" + argName + "' does not match a parameter of interface method '." +
+              ii.methodNames[slot] +
+              "'"
+          )
+        }
+        argExprs.add(value)
+        argSlots.add(found)
+      }
+    }
+  }
+  val slotVals: List[NVal] = newList()
+  val slotFilled: List[Bool] = newList()
+  for pt in paramTys {
+    slotVals.add(NVal(ty = pt, value = NUndef(ty = pt)))
+    slotFilled.add(false)
+  }
+  var ai = 0
+  while ai < argExprs.count {
+    val ps = argSlots[ai]
+    slotVals[ps] = lowerIfaceArgAt(ctx, insns, argExprs[ai], paramTys[ps], paramIsSelf[ps])
+    slotFilled[ps] = true
+    ai = ai + 1
+  }
+  var di = 0
+  while di < paramTys.count {
+    if not slotFilled[di] {
+      match paramDefaults[di] {
+        case Some(dex) -> {
+          slotVals[di] = lowerIfaceArgAt(ctx, insns, dex, paramTys[di], paramIsSelf[di])
+        }
+        case None -> panic(
+          "Lyric.LlvmCodegen: no argument bound for parameter '" + paramNames[di] + "' of interface method '." +
+            ii.methodNames[slot] +
+            "', which has no default"
+        )
+      }
+    }
+    di = di + 1
+  }
   val callArgs: List[NArg] = newList()
   callArgs.add(NArg(ty = NPtr(pointee = NI8), value = NLocal(name = objVal)))
-  var ai = 0
-  while ai < args.count {
-    val av = if paramIsSelf[ai] {
-      val raw = match args[ai] {
-        case CAPositional(ex) -> lowerExpr(ctx, insns, ex)
-        case CANamed(_, value, _) -> lowerExpr(ctx, insns, value)
-      }
-      unboxToSelfSlot(ctx, insns, raw)
-    } else {
-      lowerCallArgExpecting(ctx, insns, args, ai, paramTys[ai])
-    }
-    callArgs.add(NArg(ty = paramTys[ai], value = av.value))
-    ai = ai + 1
+  var ci = 0
+  while ci < paramTys.count {
+    callArgs.add(NArg(ty = paramTys[ci], value = slotVals[ci].value))
+    ci = ci + 1
   }
   match retTy {
     case NVoid -> {

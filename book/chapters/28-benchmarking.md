@@ -286,6 +286,8 @@ lyric bench benchmarks/bench_numeric.l --target jvm      # the JVM
 lyric bench benchmarks/bench_numeric.l --target native   # the native executable
 ```
 
+On `--target native` a benchmark builds at `-O2` unless you pass `--opt`, and it uses the project's `[native]` table, so a benchmark that calls a C library through `extra_libs` links the same way `lyric build` does.
+
 Comparing them shows where the .NET and JVM JITs and LLVM make different choices (floating-point vectorisation, bounds-check elimination, inlining), and the `alloc` column shows where a value that is a heap object on one target is a plain value on another. Ahead-of-time native code needs no warmup, so its `min` and `max` are usually close from the first run.
 
 ## Exercises

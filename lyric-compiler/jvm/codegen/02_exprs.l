@@ -3726,6 +3726,128 @@ func emitNormalizeFloatString(ctx: in FuncCtx, insns: in List[LInsn]): Unit {
   emitNormalizeFloatingString(ctx, insns, 8)
 }
 
+// Java's scientific form always has a digit after the point, so where one
+// significant digit already round-trips (the smallest subnormals: 4.9E-324
+// for Double.MIN_VALUE, 1.4E-45 for Float.MIN_VALUE) it prints two, while
+// .NET prints the one (5E-324, 1E-45) (#7987).  For a two-digit mantissa,
+// this rounds to one digit and keeps it when parsing it back gives the same
+// value: `sig`/`exp` become that digit and its exponent.
+func emitShortenTwoDigitMantissa(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  sigSlot: in Int,
+  expSlot: in Int,
+  digitsMantissaSlot: in Int,
+  expStrSlot: in Int,
+  isFloat: in Bool,
+): Unit {
+  val strTy = JRef(className = "java/lang/String")
+  val numTy = if isFloat { JFloat } else { JDouble }
+  val skipLabel = freshLabel(ctx)
+
+  emitLoad(insns, sigSlot, strTy)
+  emitStrLen(insns)
+  insns.add(LIconst(v = 2))
+  insns.add(LIfIcmpne(label = skipLabel))
+
+  val eSlot = allocSlot(ctx, "__dblstr_e_" + freshLabel(ctx), strTy)
+  insns.add(LPushString(s = "E"))
+  emitStore(insns, eSlot, strTy)
+
+  // orig = parse(digitsMantissa + "E" + expStr), the magnitude.
+  val origPieces: List[Int] = newList()
+  origPieces.add(digitsMantissaSlot)
+  origPieces.add(eSlot)
+  origPieces.add(expStrSlot)
+  emitConcatSlots(ctx, insns, origPieces)
+  emitParseFloating(insns, isFloat)
+  val origSlot = allocSlot(ctx, "__dblstr_orig_" + freshLabel(ctx), numTy)
+  emitStore(insns, origSlot, numTy)
+
+  // r = digit0 + (digit1 >= 5 ? 1 : 0)
+  val rSlot = allocSlot(ctx, "__dblstr_r_" + freshLabel(ctx), JInt)
+  emitSigDigitAt(insns, sigSlot, 0)
+  emitStore(insns, rSlot, JInt)
+  val noRoundLabel = freshLabel(ctx)
+  emitSigDigitAt(insns, sigSlot, 1)
+  insns.add(LIconst(v = 5))
+  insns.add(LIfIcmplt(label = noRoundLabel))
+  emitLoad(insns, rSlot, JInt)
+  insns.add(LIconst(v = 1))
+  insns.add(LIadd)
+  emitStore(insns, rSlot, JInt)
+  insns.add(LLabel(name = noRoundLabel))
+
+  // A carry to 10 is 1 at the next exponent.
+  val cExpSlot = allocSlot(ctx, "__dblstr_cexp_" + freshLabel(ctx), JInt)
+  emitLoad(insns, expSlot, JInt)
+  emitStore(insns, cExpSlot, JInt)
+  val noCarryLabel = freshLabel(ctx)
+  emitLoad(insns, rSlot, JInt)
+  insns.add(LIconst(v = 10))
+  insns.add(LIfIcmpne(label = noCarryLabel))
+  insns.add(LIconst(v = 1))
+  emitStore(insns, rSlot, JInt)
+  emitLoad(insns, cExpSlot, JInt)
+  insns.add(LIconst(v = 1))
+  insns.add(LIadd)
+  emitStore(insns, cExpSlot, JInt)
+  insns.add(LLabel(name = noCarryLabel))
+
+  val toStrPs: List[JvmType] = newList()
+  toStrPs.add(JInt)
+  val rStrSlot = allocSlot(ctx, "__dblstr_rs_" + freshLabel(ctx), strTy)
+  emitLoad(insns, rSlot, JInt)
+  insns.add(LInvokestatic(owner = "java/lang/Integer", name = "toString", params = toStrPs, ret = strTy))
+  emitStore(insns, rStrSlot, strTy)
+  val cExpStrSlot = allocSlot(ctx, "__dblstr_ces_" + freshLabel(ctx), strTy)
+  emitLoad(insns, cExpSlot, JInt)
+  insns.add(LInvokestatic(owner = "java/lang/Integer", name = "toString", params = toStrPs, ret = strTy))
+  emitStore(insns, cExpStrSlot, strTy)
+
+  // Keep the one-digit form only when it parses back to the same value.
+  val candPieces: List[Int] = newList()
+  candPieces.add(rStrSlot)
+  candPieces.add(eSlot)
+  candPieces.add(cExpStrSlot)
+  emitConcatSlots(ctx, insns, candPieces)
+  emitParseFloating(insns, isFloat)
+  emitLoad(insns, origSlot, numTy)
+  if isFloat {
+    insns.add(LFcmpl)
+  } else {
+    insns.add(LDcmpl)
+  }
+  insns.add(LIfne(label = skipLabel))
+  emitLoad(insns, rStrSlot, strTy)
+  emitStore(insns, sigSlot, strTy)
+  emitLoad(insns, cExpSlot, JInt)
+  emitStore(insns, expSlot, JInt)
+  insns.add(LLabel(name = skipLabel))
+}
+
+// Stack in: [String]; stack out: [double] or [float].
+func emitParseFloating(insns: in List[LInsn], isFloat: in Bool): Unit {
+  val ps: List[JvmType] = newList()
+  ps.add(JRef(className = "java/lang/String"))
+  if isFloat {
+    insns.add(LInvokestatic(owner = "java/lang/Float", name = "parseFloat", params = ps, ret = JFloat))
+  } else {
+    insns.add(LInvokestatic(owner = "java/lang/Double", name = "parseDouble", params = ps, ret = JDouble))
+  }
+}
+
+// Pushes the decimal value of the digit at `index` of the string in `slot`.
+func emitSigDigitAt(insns: in List[LInsn], slot: in Int, index: in Int): Unit {
+  emitLoad(insns, slot, JRef(className = "java/lang/String"))
+  insns.add(LIconst(v = index))
+  val ps: List[JvmType] = newList()
+  ps.add(JInt)
+  insns.add(LInvokevirtual(owner = "java/lang/String", name = "charAt", params = ps, ret = JChar))
+  insns.add(LIconst(v = 48))
+  insns.add(LIsub)
+}
+
 func emitNormalizeFloatingString(ctx: in FuncCtx, insns: in List[LInsn], maxFixedExp: in Int): Unit {
   val strTy = JRef(className = "java/lang/String")
   val objTy = JRef(className = "java/lang/Object")
@@ -3843,6 +3965,8 @@ func emitNormalizeFloatingString(ctx: in FuncCtx, insns: in List[LInsn], maxFixe
   emitConcatSlots(ctx, insns, sigPieces)
   emitStore(insns, sigDigitsSlot, strTy)
   insns.add(LLabel(name = sigDoneLabel))
+
+  emitShortenTwoDigitMantissa(ctx, insns, sigDigitsSlot, expSlot, digitsMantissaSlot, expStrSlot, maxFixedExp == 8)
 
   // nSig = sigDigits.length()
   emitLoad(insns, sigDigitsSlot, strTy)

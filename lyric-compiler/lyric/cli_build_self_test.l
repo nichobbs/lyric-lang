@@ -774,6 +774,59 @@ test "resolveNativeOptDefault: --opt still wins over a manifest [native] opt_lev
   )
 }
 
+// ─── resolveNativeBenchConfig: lyric bench --target native settings (#8096) ──
+test "resolveNativeBenchConfig: a bench defaults to -O2 with no flag or manifest" {
+  val noMf: Option[String] = None
+  match Cli.resolveNativeBenchConfig(noMf, "", "") {
+    case Ok(cfg) -> {
+      assertEqual(cfg.optLevel, "2", "a benchmark measures optimised code")
+      assertEqual(cfg.triple, "", "the host triple")
+      assertEqualInt(cfg.extraLibs.count, 0, "no extra libraries")
+    }
+    case Err(msg) -> assertTrue(false, "unexpected error: " + msg)
+  }
+}
+
+test "resolveNativeBenchConfig: the manifest's [native] table applies and flags win" {
+  val dir = freshTempDir("native-bench-config")
+  defer {
+    cleanup(dir)
+  }
+  val mfPath = Path.join(dir, "lyric.toml")
+  writeManifestOrPanic(
+    mfPath,
+    "[package]\n" + "name = \"App\"\n" + "version = \"0.1.0\"\n" + "\n" + "[native]\n" +
+      "triple = \"x86_64-unknown-linux-gnu\"\n" +
+      "opt_level = \"1\"\n" +
+      "extra_libs = [\"z\", \"m\"]\n"
+  )
+  match Cli.resolveNativeBenchConfig(Some(value = mfPath), "", "") {
+    case Ok(cfg) -> {
+      assertEqual(cfg.optLevel, "1", "manifest opt_level")
+      assertEqual(cfg.triple, "x86_64-unknown-linux-gnu", "manifest triple")
+      assertEqualInt(cfg.extraLibs.count, 2, "manifest extra_libs")
+      assertEqual(cfg.extraLibs[0], "z", "first extra library")
+    }
+    case Err(msg) -> assertTrue(false, "unexpected error: " + msg)
+  }
+  match Cli.resolveNativeBenchConfig(Some(value = mfPath), "aarch64-unknown-linux-gnu", "3") {
+    case Ok(cfg) -> {
+      assertEqual(cfg.optLevel, "3", "--opt wins")
+      assertEqual(cfg.triple, "aarch64-unknown-linux-gnu", "--triple wins")
+      assertEqualInt(cfg.extraLibs.count, 2, "extra_libs still apply")
+    }
+    case Err(msg) -> assertTrue(false, "unexpected error: " + msg)
+  }
+}
+
+test "resolveNativeBenchConfig: a wasm32 triple is rejected" {
+  val noMf: Option[String] = None
+  match Cli.resolveNativeBenchConfig(noMf, "wasm32-wasi", "") {
+    case Ok(_) -> assertTrue(false, "a wasm32 bench cannot run on this machine")
+    case Err(msg) -> assertTrue(Str.contains(msg, "wasm32-wasi"), "the message names the triple")
+  }
+}
+
 // ─── filterExtraRefs (#4282) ─────────────────────────────────────────
 test "filterExtraRefs: excludes the primary DLL and Lyric.Stdlib.dll, keeps only .dll files, sorted" {
   val files: List[String] = newList()
