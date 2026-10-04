@@ -119,6 +119,31 @@ fixes cover no longer proves, the CI `lyric prove` examples and
 `core_proof.l` still discharge, and the compiler self-test batch passes
 (3318 tests).
 
+## Third review
+
+Unfolding callee contracts at calls opened two holes through recursion,
+both confirmed:
+
+- A contract cycle (`ensures: result == f(x) + 1`, or `f`'s ensures
+  calling `g` and `g`'s calling `f`) unfolded into contradictory facts
+  every caller assumed. The contract-call graph is now checked for cycles
+  before goal generation; a function on a cycle has its `requires:` proved
+  at calls but its `ensures:` and `@pure` body never assumed.
+- A recursive call in a `requires:` was assumed by the callee and never
+  proved by callers. A function's own contracts are now translated with it
+  on the contract stack, as at its calls, and a call cut there whose
+  callee has a `requires:` fails closed (V0033).
+- Found while testing: a callee's `ensures:` was instantiated by
+  substituting its parameters into a term that already held the call, so a
+  caller variable sharing a parameter's name was rewritten inside the
+  call's own arguments (`fact(n - 1)` became `fact(n - 1 - 1)`), a fact
+  about the wrong term. `result` is now a placeholder substituted with the
+  parameters at once.
+
+`verifier_self_test.l` has 122 tests, all passing; the third review's repros
+no longer prove, the CI `lyric prove` examples and `core_proof.l` still
+discharge, and the compiler self-test batch passes (3322 tests).
+
 Specification: `docs/15-phase-4-proof-plan.md` §5.2–§5.4; book §18.1, §18.4,
 §19.7.
 

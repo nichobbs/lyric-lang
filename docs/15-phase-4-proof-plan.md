@@ -435,8 +435,20 @@ unknown condition). This applies both when an obligation is proved — so
 `f(0)` against `requires: x == 0 or pos(x) > 0` need not prove `0 > 0` —
 and when a contract is assumed. A callee's contract is translated at a
 call against the file's functions, so a call nested in its `requires:`
-puts that call's own precondition on the caller; a function reached again
-inside a contract it is unfolding is applied without a second unfolding.
+puts that call's own precondition on the caller.
+
+Recursion through contracts is cut the same way on both sides. A
+function's own `requires:` and `ensures:` are translated with it on the
+contract stack, as its callers translate them, so what it assumes of its
+contract is exactly what they prove. A function reached again inside a
+contract it is unfolding is applied without a second unfolding — no facts
+— and, if it has a `requires:`, fails closed (`V0033`): its precondition
+there cannot be stated. Before goals are generated, the contract-call
+graph (an edge from a function to every function its contracts, or its
+`@pure` body, call) is checked for cycles; a function on a cycle has its
+`requires:` proved at every call but its `ensures:` and `@pure` body never
+assumed, since a cycle (`ensures: result == f(x) + 1`) can make them
+contradictory. Recursion in a body, outside the contracts, is unaffected.
 
 A local binding shadows a file function of the same name: `val f = ...;
 f(x)` is a call through a computed callee (a fresh result, its mutable
