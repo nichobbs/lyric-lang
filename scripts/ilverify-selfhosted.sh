@@ -238,6 +238,8 @@ SELF_TESTS=(
   lyric-compiler/lyric/await_hoist_typed_self_test.l
   lyric-compiler/lyric/expected_type_propagation_self_test.l
   lyric-compiler/lyric/generic_ctor_open_arg_self_test.l
+  lyric-compiler/lyric/generic_ctor_widening_self_test.l
+  lyric-compiler/lyric/generic_ctor_unsigned_widening_self_test.l
   lyric-compiler/lyric/unannotated_list_result_self_test.l
   lyric-compiler/lyric/long_store_widen_self_test.l
   lyric-compiler/lyric/mixed_width_arith_self_test.l

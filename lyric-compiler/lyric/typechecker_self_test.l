@@ -936,6 +936,35 @@ test "literal and range patterns take an unsigned scrutinee's type (#7842)" {
   assertEqualInt(signed.symbols.argConversionSites.count, 0, "no site for a signed scrutinee")
 }
 
+// A scalar given to a generic constructor or a tuple element widens to the
+// slot the expected type fixes (docs/01 §4.1, #7813); an existing container
+// value does not: `Opt[UInt]` and `Opt[ULong]` stay distinct types.
+test "generic constructor arguments and tuple elements widen" {
+  val ok = "package P\nunion Opt[T] { case Has(value: T); case Gone }\n" + "func f(u: in UInt, i: in Int): Unit {\n" +
+    "  val a: Opt[ULong] = Has(u)\n  val b: (ULong, Int) = (u, 1)\n  val c: Opt[(Long, Int)] = Has((i, 1))\n}\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "ctor-widen: Has(u), (u, 1) and Has((i, 1)) widen")
+  val cross = "package P\nunion Opt[T] { case Has(value: T); case Gone }\n" +
+    "func f(i: in Int): Unit { val a: Opt[ULong] = Has(i) }\n"
+  assertTrue(hasDiagCode(parseCheck(cross), "T0060"), "ctor-widen: Int does not widen to ULong")
+}
+
+test "an existing container value does not widen" {
+  val src = "package P\nunion Opt[T] { case Has(value: T); case Gone }\n" +
+    "func f(o: in Opt[UInt], t: in (UInt, Int)): Unit {\n" +
+    "  val p: Opt[ULong] = o\n  val q: (ULong, Int) = t\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 2, "container-widen: both bindings rejected")
+  assertTrue(hasDiagCode(cr, "T0060"), "container-widen: T0060")
+  assertTrue(
+    diagMessagesContain(cr, "not the contents of an existing Opt[UInt] value"),
+    "container-widen: the hint names the existing value"
+  )
+  assertTrue(
+    diagMessagesContain(cr, "converted explicitly with .toULong()"),
+    "container-widen: the hint names the conversion"
+  )
+}
+
 test "index byte with conversion accepted" {
   val src = "package P\nfunc f(a: in slice[Byte]): Int { a[0].toInt() }\n"
   val cr = parseCheck(src)

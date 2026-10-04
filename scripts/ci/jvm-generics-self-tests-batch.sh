@@ -11,7 +11,8 @@
 # list_literal_join_self_test.l, #7818; tuple_expected_type_self_test.l,
 # #7824; await_hoist_typed_self_test.l, #7823;
 # expected_type_propagation_self_test.l, #7855;
-# generic_ctor_open_arg_self_test.l, #7844; the overflow self-tests,
+# generic_ctor_open_arg_self_test.l, #7844; the generic_ctor_*widening
+# self-tests, #7813; the overflow self-tests,
 # D163; record_eq_self_test.l, D164; task_shadow_self_test.l, D166),
 # through one
 # `lyric test`
@@ -99,6 +100,8 @@ for t in \
   lyric-compiler/lyric/await_hoist_typed_self_test.l \
   lyric-compiler/lyric/expected_type_propagation_self_test.l \
   lyric-compiler/lyric/generic_ctor_open_arg_self_test.l \
+  lyric-compiler/lyric/generic_ctor_widening_self_test.l \
+  lyric-compiler/lyric/generic_ctor_unsigned_widening_self_test.l \
   lyric-compiler/lyric/overflow_self_test.l \
   lyric-compiler/lyric/overflow_panic_self_test.l \
   lyric-compiler/lyric/fixed_array_self_test.l \
