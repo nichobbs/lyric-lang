@@ -1956,3 +1956,25 @@ test "a callee's postcondition speaks of the call, not a re-substituted one (#81
     "argument-names-the-parameter-refute"
   )
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A default that reaches its own function, or its own record, is cut like a
+// recursive contract and never recurses without end (#8102 fourth review).
+// ─────────────────────────────────────────────────────────────────────────────
+test "a self-referential parameter default is cut, not unfolded forever (#8102)" {
+  assertNotProved(
+    "@pure\nfunc f(x: in Int, b: in Int = f(0) + 1): Int\n  ensures: result == b\n{\n  b\n}\n" +
+      "func h(): Int\n  ensures: result == 42\n{\n  val a = f(5)\n  7\n}\n",
+    "self-default"
+  )
+  assertNotProved(
+    "@pure\nfunc g(x: in Int): Int\n  ensures: result == f(x) + 1\n{\n  f(x) + 1\n}\n" +
+      "@pure\nfunc f(x: in Int, b: in Int = g(0)): Int\n  ensures: result == b\n{\n  b\n}\n" +
+      "func k(y: in Int): Int\n  ensures: result == 42\n{\n  val a = g(1)\n  7\n}\n",
+    "mutual-default"
+  )
+  assertNotProved(
+    "record P {\n  x: Int = P().x + 1\n}\nfunc h(): Int\n  ensures: result == 42\n{\n  val p = P()\n  7\n}\n",
+    "self-record-default"
+  )
+}

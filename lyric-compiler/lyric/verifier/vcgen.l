@@ -694,6 +694,11 @@ func outArgsAlias(decl: in FunctionDecl, args: in List[CallArg]): String {
   }
 }
 
+// How many contracts and defaults may unfold inside one another at a call.
+func maxUnfoldDepth(): Int {
+  32
+}
+
 func hasRequires(decl: in FunctionDecl): Bool {
   var i = 0
   while i < decl.contracts.count {
@@ -760,6 +765,18 @@ func translateResolvedCall(
   freshResult: in Bool,
 ): (TranslateResult, List[Diagnostic]) {
   val resultInfo = match decl.ret { case Some(te) -> sortOfTypeExprE(env, te); case None -> unitSortInfo() }
+  // A backstop on how deep contracts and defaults unfold into one
+  // another: past it the call fails closed rather than recursing on.
+  if env.contractStack.count >= maxUnfoldDepth() {
+    allArgDiags.add(untranslatableDiag("the contracts reached through '" + decl.name + "' unfold too deeply", callSpan))
+    val deepTR = TranslateResult(
+      term = poisonTerm(TApp(name = name, args = rawArgTerms, retSort = resultInfo.sort)),
+      sideConds = argSides,
+      assumed = argAssumed
+    )
+    val deepPair: (TranslateResult, List[Diagnostic]) = (deepTR, allArgDiags)
+    return deepPair
+  }
   // A call reaching a function whose contract is already being unfolded
   // here — a function's own contracts are translated with it on the
   // stack — is that function applied to its arguments, with no second
@@ -833,7 +850,7 @@ func translateResolvedCall(
   // A parameter default sees the names declared at module level, never
   // the callee's other parameters (docs/01): it is translated with no
   // bindings, like a record field's default.
-  val defaultEnv = varlessEnv(env)
+  val defaultEnv = envInOwnContract(varlessEnv(env), decl.name)
 
   // Each argument goes to the parameter it names, or by position,
   // and an omitted one takes its default (#7873); each takes its
@@ -1903,6 +1920,20 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
           // declared datatype's constructor and z3 typechecks the call.
           match findRecordFields(env, name) {
             case Some(recFields) -> {
+              // A field default that constructs its own record again (or
+              // unfolds too deeply) would recurse without end: fail closed.
+              val recordKey = "record!" + name
+              if env.contractStack.contains(recordKey) or env.contractStack.count >= maxUnfoldDepth() {
+                allArgDiags.add(untranslatableDiag("a default of record '" + name + "' that constructs it again", e.span))
+                val emptyRecArgs: List[Sort] = newList()
+                val loopTR = TranslateResult(
+                  term = poisonTerm(freshVar(env, name, SDatatype(name = name, args = emptyRecArgs))),
+                  sideConds = argSides,
+                  assumed = argAssumed
+                )
+                val loopPair: (TranslateResult, List[Diagnostic]) = (loopTR, allArgDiags)
+                return loopPair
+              }
               // Arguments go to fields by name, positional ones in order,
               // and an omitted field takes its default (#7873).  Selectors
               // are registered as `<Record>__<field>`.
@@ -1930,7 +1961,7 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
                 fieldNames,
                 fieldSorts,
                 fieldDefaults,
-                varlessEnv(env),
+                envInOwnContract(varlessEnv(env), recordKey),
                 args,
                 rawArgTerms,
                 argSpans,
@@ -4680,6 +4711,7 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
 
   val fieldInfosMap: Map[String, SortInfo] = newMap()
   val recordDefaultsMap: Map[String, List[Option[Expr]]] = newMap()
+  val recordNames: List[String] = newList()
 
   // Pre-register every `IRecord` as an SMT datatype with one constructor
   // matching the record's fields.  Lets the verifier reason about
@@ -4718,6 +4750,7 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
           sharedSymbols.add(DeclDatatype(name = recDecl.name, constructors = dtCtors))
           if not recordDefaultsMap.containsKey(recDecl.name) {
             recordDefaultsMap.add(recDecl.name, dtDefaults)
+            recordNames.add(recDecl.name)
           }
         }
       }
@@ -4789,7 +4822,7 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
 
   // Build env0 carrying the distinct-type alias map collected above (#3853).
   val env0Init = envEmpty(callees, sharedSymbols, checkedArith)
-  val cyclicNames = contractCycles(env0Init, calleeDecls)
+  val cyclicNames = contractCycles(env0Init, calleeDecls, recordNames, recordDefaultsMap)
   val env0 = VEnv(
     vars = env0Init.vars,
     varNames = env0Init.varNames,
@@ -4853,8 +4886,17 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
 // last name segment so a method or qualified call is never missed.  A
 // cycle — a function reaching itself, directly or through others — is what
 // unfolding contracts at calls cannot settle (#8102).
-func contractCycles(env: in VEnv, decls: in List[FunctionDecl]): List[String] {
-  val succs: List[List[Int]] = newList()
+func contractCycles(
+  env: in VEnv,
+  decls: in List[FunctionDecl],
+  recordNames: in List[String],
+  recordDefaults: in Map[String, List[Option[Expr]]],
+): List[String] {
+  // Nodes: the functions, then the records (whose field defaults a
+  // constructor call translates).  A record is named by itself, as its
+  // constructor's call is.
+  val nodeNames: List[String] = newList()
+  val nodeCalls: List[List[String]] = newList()
   var i = 0
   while i < decls.count {
     val eff = emptyEffects()
@@ -4868,6 +4910,15 @@ func contractCycles(env: in VEnv, decls: in List[FunctionDecl]): List[String] {
       }
       ci = ci + 1
     }
+    // A call translates the defaults of the parameters it omits.
+    var pi = 0
+    while pi < d.params.count {
+      match d.params[pi].dflt {
+        case Some(x) -> effExpr(env, x, false, eff)
+        case None -> ()
+      }
+      pi = pi + 1
+    }
     if isPure(d) {
       match d.body {
         case Some(b) -> match b {
@@ -4877,10 +4928,37 @@ func contractCycles(env: in VEnv, decls: in List[FunctionDecl]): List[String] {
         case None -> ()
       }
     }
+    nodeNames.add(d.name)
+    nodeCalls.add(eff.calls)
+    i = i + 1
+  }
+  i = 0
+  while i < recordNames.count {
+    val eff = emptyEffects()
+    match mapGet(recordDefaults, recordNames[i]) {
+      case Some(ds) -> {
+        var di = 0
+        while di < ds.count {
+          match ds[di] {
+            case Some(x) -> effExpr(env, x, false, eff)
+            case None -> ()
+          }
+          di = di + 1
+        }
+      }
+      case None -> ()
+    }
+    nodeNames.add(recordNames[i])
+    nodeCalls.add(eff.calls)
+    i = i + 1
+  }
+  val succs: List[List[Int]] = newList()
+  i = 0
+  while i < nodeNames.count {
     val targets: List[Int] = newList()
     var j = 0
-    while j < decls.count {
-      if eff.calls.contains(nameLeaf(decls[j].name)) {
+    while j < nodeNames.count {
+      if nodeCalls[i].contains(nameLeaf(nodeNames[j])) {
         targets.add(j)
       }
       j = j + 1
