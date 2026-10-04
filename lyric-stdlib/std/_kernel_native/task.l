@@ -327,13 +327,15 @@ pub func hasAmbient(): Bool {
 // =====================================================================
 // Bounded waits.
 // =====================================================================
-/// Run `action` on its own thread and wait at most `timeoutMs` milliseconds;
-/// true when it finished in time.  A timed-out action keeps running.
+/// Run `action` on its own thread (with the caller's ambient token) and wait at
+/// most `timeoutMs` milliseconds; true when it finished in time.  A timed-out
+/// action keeps running.
 pub func runActionWithin(action: in () -> Unit, timeoutMs: in Int): Bool
   requires: timeoutMs >= 0
 {
   val job = Job()
-  startThread({ -> action(); markFinished(job) })
+  val inherited = currentToken()
+  startThread({ -> val previous = installToken(inherited); action(); restoreToken(previous); markFinished(job) })
   val deadline = rtMonotonicNanos() + timeoutMs.toLong() * 1000000i64
   while not jobFinished(job) and rtMonotonicNanos() - deadline < 0i64 {
     hostSleepMillis(1)
@@ -347,6 +349,9 @@ pub func runActionWithin(action: in () -> Unit, timeoutMs: in Int): Bool
 pub func runWithin[T](timeoutMs: in Int, f: in () -> T): Option[T]
   requires: timeoutMs >= 0
 {
+  // The worker appends to `results` outside the global lock; the caller reads
+  // it only after `markFinished` (which takes the lock) has run, so the append
+  // happens before the read.
   val results: List[T] = newList()
   val action: () -> Unit = { -> results.add(f()) }
   if not runActionWithin(action, timeoutMs) {

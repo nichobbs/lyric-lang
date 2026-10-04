@@ -199,3 +199,14 @@ test "runWithin reports None for a closure that overruns its budget" {
     case None -> assertTrue(true, "a zero budget reports None at once")
   }
 }
+
+test "a runWithin closure inherits the caller's ambient token" {
+  val src = makeCancelSource()
+  val previous = installToken(sourceToken(src))
+  val probe: () -> Bool = { -> hasAmbient() }
+  match runWithin(5000, probe) {
+    case Some(v) -> assertTrue(v, "the worker saw the caller's ambient token")
+    case None -> assertTrue(false, "the closure must finish in time")
+  }
+  restoreToken(previous)
+}
