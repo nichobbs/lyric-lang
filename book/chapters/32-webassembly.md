@@ -259,8 +259,9 @@ The tracked work is in issues #8117 (component shape) and #8118 (NPM). Today:
 
 - a component export cannot take a tuple or name a type from
   another Lyric package;
-- a component host import carries `Int`, `Long`, `Float`, `Double`, `String` and
-  `Unit` only, and an NPM import cannot return a `Promise`;
+- a component host import carries `Int`, `Long`, `Bool`, `Byte`, `Float`, `Double`,
+  `String` and `Unit` only (no records yet), and an NPM import cannot return a
+  `Promise`;
 - the browser has no `fetch`-backed `Std.Http`;
 - `lyric publish` does not yet bundle a wasm artifact.
 
