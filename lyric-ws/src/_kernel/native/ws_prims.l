@@ -22,6 +22,7 @@ package Ws.Kernel.Net
 
 import Std.Core
 import Std.Collections
+import Std.TcpHost
 import Std.TimeHost
 
 @axiom("lyric_mutex_* and lyric_thread_spawn_detached (lyric-rt/src/lyric_posix.c; pthread on POSIX hosts), lyric_malloc_raw, and lyric_retain/lyric_release conform to their documented contracts")
@@ -170,4 +171,54 @@ pub func runBackground(work: in () -> Unit): Unit {
 
 func threadSleep(ms: in Int): Unit {
   hostSleepMillis(ms)
+}
+
+// ─── Handler crash isolation ─────────────────────────────────────────────────
+// Native has no unwinding (D-N-003): a callback that panics ends the process,
+// so there is no failure to catch and each call runs the callback directly.
+func guardOnOpen(
+  cb: in (String, String, String, String, Map[String, String]) -> Unit,
+  connId: in String,
+  path: in String,
+  query: in String,
+  remoteAddress: in String,
+  headers: in Map[String, String],
+): Option[String] {
+  cb(connId, path, query, remoteAddress, headers)
+  None
+}
+
+func guardOnMessage(cb: in (String, String, String) -> Unit, connId: in String, msgType: in String, data: in String): Option[String] {
+  cb(connId, msgType, data)
+  None
+}
+
+func guardOnClose(cb: in (String, Int, String) -> Unit, connId: in String, code: in Int, reason: in String): Option[String] {
+  cb(connId, code, reason)
+  None
+}
+
+func guardOnError(cb: in (String, String) -> Unit, connId: in String, message: in String): Option[String] {
+  cb(connId, message)
+  None
+}
+
+// ─── Accept-loop policy ──────────────────────────────────────────────────────
+/// Whether the accept loop carries on after `e`. Native classifies an accept
+/// failure (`AcceptFailureKind`): a fatal one ends the loop (the listener is
+/// gone, including `hostStopListener`'s wake), a transient one is retried at
+/// once, and descriptor exhaustion backs off briefly so the loop does not spin.
+func acceptShouldContinue(e: in TcpError): Bool {
+  match e {
+    case AcceptFailed(_, _, kind) -> match kind {
+      case AcceptFatal -> false
+      case AcceptTransient -> true
+      case AcceptOverloaded -> {
+        threadSleep(50)
+        true
+      }
+    }
+    case BindFailed(_) -> false
+    case _ -> true
+  }
 }

@@ -812,7 +812,10 @@ pub func compileToNativeWithShape(
   // (docs/59 §9.2 divergence flag) instead of an invisible omission.
   val noWires: Map[String, WireExpand.CollectedWireTemplate] = newMap()
   val noConfigs: Map[String, WireExpand.CollectedConfigTemplate] = newMap()
-  val userFile0 = match pipeExpandAndRewrite(shimFile, noWires, noConfigs, false, false, false, path, noOrigins) {
+  // Config-template declarations become `pub record` twins (docs/58 §3); the
+  // collection runs over an alias-rewritten copy, as on the managed targets.
+  WireExpand.collectWireTemplates(Aliases.rewriteFile(shimFile).items, dottedPath(shimFile.packageDecl.path), noWires, noConfigs)
+  val userFile0 = match pipeExpandAndRewrite(shimFile, noWires, noConfigs, true, false, false, path, noOrigins) {
     case Some(f) -> hoistModuleValInits(f)
     case None -> return false
   }
@@ -1195,11 +1198,24 @@ pub func compileProjectToNativeWithShape(
     ppi = ppi + 1
   }
 
-  // Pre-typecheck rewrite chain: alias rewrite only, matching the
-  // single-source path (docs/59 §9.2 divergence flag — no wire/config
-  // template expansion or `@stubbable` synthesis on native yet).
+  // Pre-typecheck rewrite chain: alias rewrite and config-template expansion
+  // (a `pub config` template declares a `pub record` twin, docs/58 §3), matching
+  // the single-source path. The native bridge does not synthesise `@stubbable`
+  // stubs yet (docs/59 §9.2 divergence flag). Templates are collected from every
+  // own package, dependencies included (native compiles them from source), over
+  // alias-rewritten copies as on the managed targets.
   val noWires: Map[String, WireExpand.CollectedWireTemplate] = newMap()
   val noConfigs: Map[String, WireExpand.CollectedConfigTemplate] = newMap()
+  var wti = 0
+  while wti < cfgFiles.count {
+    WireExpand.collectWireTemplates(
+      Aliases.rewriteFile(cfgFiles[wti]).items,
+      dottedPath(cfgFiles[wti].packageDecl.path),
+      noWires,
+      noConfigs
+    )
+    wti = wti + 1
+  }
   val ownFiles0: List[SourceFile] = newList()
   var owi = 0
   while owi < cfgFiles.count {
@@ -1207,7 +1223,7 @@ pub func compileProjectToNativeWithShape(
     // for this package's wire/config-template and impl-default-inheritance
     // diagnostics (`packages`/`originsByPkg` are 1:1 by index with
     // `cfgFiles` — no filtering happens between the two loops).
-    val f0 = match pipeExpandAndRewrite(cfgFiles[owi], noWires, noConfigs, false, false, false, nativePkgLabelAt(packages, owi), nativePkgOriginsAt(originsByPkg, owi)) {
+    val f0 = match pipeExpandAndRewrite(cfgFiles[owi], noWires, noConfigs, true, false, false, nativePkgLabelAt(packages, owi), nativePkgOriginsAt(originsByPkg, owi)) {
       case Some(f) -> f
       case None -> return false
     }

@@ -114,11 +114,7 @@ pub func startWorkerLoop(intervalMs: in Int, worker: in Web.Worker): Unit {
     { ->
       while true {
         sleepMillis(intervalMs)
-        try {
-          worker.tick()
-        } catch Bug as e {
-          Console.error("[lyric-web] worker tick failed: " + e.message)
-        }
+        tickGuarded(worker)
       }
     }
   )
@@ -132,7 +128,7 @@ pub func startWorkerLoop(intervalMs: in Int, worker: in Web.Worker): Unit {
 /// is invoked through its interface method, not a captured closure value (see
 /// `startWorkerLoop`).
 pub func spawnRequestJob(job: in Web.RequestJob): Unit {
-  WsNet.runBackground({ -> job.run() })
+  WsNet.runBackground({ -> runJobGuarded(job) })
 }
 
 // ─── WebSocket upgrade (`Web.addWebSocket`, #7831) ───────────────────────────

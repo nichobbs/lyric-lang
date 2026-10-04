@@ -249,10 +249,14 @@ test "f0012 malformed composite" {
     "@cfg(maybe(feature = \"a\"))\n" +
     "pub func b(): Int { 2 }\n" +
     "@cfg(any())\n" +
-    "pub func c(): Int { 3 }\n"
+    "pub func c(): Int { 3 }\n" +
+    "@cfg(all())\n" +
+    "pub func d(): Int { 4 }\n" +
+    "@cfg(not())\n" +
+    "pub func e(): Int { 5 }\n"
   val res = applyCfgErasure(emptyFeatures(), emptyFeatures(), parseOk(src))
-  assertEqualInt(diagCount(res.diagnostics, "F0012"), 3, "cfg_any: three F0012")
-  assertEqualInt(res.file.items.count, 3, "cfg_any: malformed items are kept")
+  assertEqualInt(diagCount(res.diagnostics, "F0012"), 5, "cfg_any: five F0012 (not with two operands, unknown head, empty any/all/not)")
+  assertEqualInt(res.file.items.count, 5, "cfg_any: malformed items are kept")
 }
 
 // withTargetFeature appends without mutating the caller's list.

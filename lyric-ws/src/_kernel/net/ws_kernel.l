@@ -254,12 +254,9 @@ func invokeOnOpen(
   }
   match meta.onOpen {
     case Some(cb) -> {
-      try {
-        cb(connId, path, query, remoteAddress, headers);
-        ()
-      } catch Exception as e {
-        reportHandlerFailure(handle, connId, "onOpen", e.message);
-        ()
+      match guardOnOpen(cb, connId, path, query, remoteAddress, headers) {
+        case Some(message) -> reportHandlerFailure(handle, connId, "onOpen", message)
+        case None -> ()
       }
     }
     case None -> ()
@@ -273,12 +270,9 @@ func invokeOnMessage(handle: in Int, connId: in String, msgType: in String, data
   }
   match meta.onMessage {
     case Some(cb) -> {
-      try {
-        cb(connId, msgType, data);
-        ()
-      } catch Exception as e {
-        reportHandlerFailure(handle, connId, "onMessage", e.message);
-        ()
+      match guardOnMessage(cb, connId, msgType, data) {
+        case Some(message) -> reportHandlerFailure(handle, connId, "onMessage", message)
+        case None -> ()
       }
     }
     case None -> ()
@@ -292,12 +286,9 @@ func invokeOnClose(handle: in Int, connId: in String, code: in Int, reason: in S
   }
   match meta.onClose {
     case Some(cb) -> {
-      try {
-        cb(connId, code, reason);
-        ()
-      } catch Exception as e {
-        reportHandlerFailure(handle, connId, "onClose", e.message);
-        ()
+      match guardOnClose(cb, connId, code, reason) {
+        case Some(message) -> reportHandlerFailure(handle, connId, "onClose", message)
+        case None -> ()
       }
     }
     case None -> ()
@@ -307,15 +298,25 @@ func invokeOnClose(handle: in Int, connId: in String, code: in Int, reason: in S
 // A handler callback that throws must not end the connection's read loop
 // unobserved: the failure is reported through `onError` and the connection
 // carries on.  An `onError` that throws as well is written to stderr, the
-// only place left to report it.
+// only place left to report it.  (The `guard*` calls, in `ws_prims.l`, turn a
+// thrown failure into a message; on `--target native` there is no unwinding,
+// so a handler's `panic` ends the process, as any native panic does.)
 func reportHandlerFailure(handle: in Int, connId: in String, stage: in String, message: in String): Unit {
   val text = "the " + stage + " handler failed: " + message
-  try {
-    invokeOnError(handle, connId, text);
-    ()
-  } catch Exception as e {
-    Console.error("lyric-ws: connection " + connId + ": " + text + "; the onError handler also failed: " + e.message);
-    ()
+  var meta: RegistryMeta = default()
+  if not cdTryGetValue(registryMap, handle, meta) {
+    return
+  }
+  match meta.onError {
+    case Some(cb) -> {
+      match guardOnError(cb, connId, text) {
+        case Some(second) -> Console.error(
+          "lyric-ws: connection " + connId + ": " + text + "; the onError handler also failed: " + second
+        )
+        case None -> ()
+      }
+    }
+    case None -> ()
   }
 }
 
@@ -708,14 +709,10 @@ func wsAcceptLoop(
           }
         )
       }
-      case Err(e) -> match e {
-        case AcceptFailed(_) -> {
+      case Err(e) -> {
+        if not acceptShouldContinue(e) {
           running = false
         }
-        case BindFailed(_) -> {
-          running = false
-        }
-        case _ -> ()
       }
     }
   }

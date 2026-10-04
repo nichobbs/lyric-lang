@@ -63,6 +63,8 @@ output_assembly = "Web.dll"
 #            package's serve().
 "Web.Kernel.Runtime" = [
   "src/_kernel/net/web_kernel.l",
+  "src/_kernel/net/web_prims.l",
+  "src/_kernel/native/web_prims.l",
   "src/_kernel/jvm/web_kernel.l",
 ]
 

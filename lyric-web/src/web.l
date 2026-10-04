@@ -1779,11 +1779,19 @@ func writeResponse(ctx: in HttpContext, resp: in Response): Unit {
 @stable(since = "0.3")
 pub interface RequestJob {
   func run(): Unit
+  /// Report that `run` failed with `message` (logged against the job's label).
+  func fail(message: in String): Unit
+  /// Best-effort recovery after a failure: answer the client with a 500. May
+  /// itself fail when the connection is already broken.
+  func recover(): Unit
 }
 
 // Serves one request for `serveStreaming`/`serve`. The per-request `Bug`
-// isolation (#5261, #6222) lives here, inside the task, so a failure on one
-// request still cannot stop the listener or any other in-flight request.
+// isolation (#5261, #6222) runs this job through the kernel's guarded runner
+// (`Web.Kernel.Runtime.spawnRequestJob`, `fail`/`recover` below), so a failure
+// on one request still cannot stop the listener or any other in-flight
+// request. On `--target native` there is no unwinding (D-N-003), so a panic in
+// a handler ends the process instead.
 @cfg(any(feature = "dotnet", feature = "native"))
 record PlainRequestJob {
   router: Router
@@ -1796,30 +1804,27 @@ record PlainRequestJob {
 impl RequestJob for PlainRequestJob {
   func run(): Unit {
     val ctx = self.ctx
-    try {
-      if not serveWebSocketUpgrade(self.router, ctx) {
-        val req = buildRequest(ctx)
-        val inner: Handler = StreamingAwareDispatchHandler(
-          routes = self.router.routes,
-          streamingRoutes = self.streaming.routes,
-          ctx = ctx
-        )
-        val chain: Handler = MiddlewareChain(mws = self.router.middlewares, idx = 0, inner = inner)
-        val resp = chain.handle(req)
-        if not isStreamedResponse(resp) {
-          writeResponse(ctx, resp)
-        }
-      }
-    } catch Bug as e {
-      Console.error("[lyric-web] request handling failed on " + self.label + ": " + e.message)
-      // The recovery write can itself throw when the failure correlates with a
-      // broken connection; keep it request-local.
-      try {
-        writeResponse(ctx, text(500, "Internal Server Error"))
-      } catch Bug as e2 {
-        Console.error("[lyric-web] failed to write 500 response on " + self.label + ": " + e2.message)
+    if not serveWebSocketUpgrade(self.router, ctx) {
+      val req = buildRequest(ctx)
+      val inner: Handler = StreamingAwareDispatchHandler(
+        routes = self.router.routes,
+        streamingRoutes = self.streaming.routes,
+        ctx = ctx
+      )
+      val chain: Handler = MiddlewareChain(mws = self.router.middlewares, idx = 0, inner = inner)
+      val resp = chain.handle(req)
+      if not isStreamedResponse(resp) {
+        writeResponse(ctx, resp)
       }
     }
+  }
+
+  func fail(message: in String): Unit {
+    Console.error("[lyric-web] request handling failed on " + self.label + ": " + message)
+  }
+
+  func recover(): Unit {
+    writeResponse(self.ctx, text(500, "Internal Server Error"))
   }
 }
 
@@ -1835,20 +1840,19 @@ record TlsRequestJob {
 impl RequestJob for TlsRequestJob {
   func run(): Unit {
     val ctx = self.ctx
-    try {
-      if not serveWebSocketUpgrade(self.router, ctx) {
-        val req = buildRequest(ctx)
-        val resp = dispatch(self.router, req)
-        writeResponse(ctx, resp)
-      }
-    } catch Bug as e {
-      Console.error("[lyric-web] request handling failed on " + self.label + ": " + e.message)
-      try {
-        writeResponse(ctx, text(500, "Internal Server Error"))
-      } catch Bug as e2 {
-        Console.error("[lyric-web] failed to write 500 response on " + self.label + ": " + e2.message)
-      }
+    if not serveWebSocketUpgrade(self.router, ctx) {
+      val req = buildRequest(ctx)
+      val resp = dispatch(self.router, req)
+      writeResponse(ctx, resp)
     }
+  }
+
+  func fail(message: in String): Unit {
+    Console.error("[lyric-web] request handling failed on " + self.label + ": " + message)
+  }
+
+  func recover(): Unit {
+    writeResponse(self.ctx, text(500, "Internal Server Error"))
   }
 }
 
@@ -2043,15 +2047,12 @@ pub func serveTls(
   startWorkers(router)
   val label = "https://" + host + ":" + port.toString() + "/"
   while true {
-    try {
-      val ctx = nextContext(listener)
-      HttpKernel.spawnRequestJob(TlsRequestJob(router = router, ctx = ctx, label = label))
-    } catch Bug as e {
-      // A caught Bug here means the listener itself can no longer make progress
-      // (`nextContext` failed); per-request failures are isolated in the job.
-      Console.error("[lyric-web] listener failed on " + label + ": " + e.message)
-      stopListener(listener)
-      Env.exitCode(1)
+    // `acceptNext` is `None` only when the listener itself can no longer make
+    // progress (`nextContext` failed; it has logged, stopped the listener and
+    // set the exit code); per-request failures are isolated in the job.
+    match HttpKernel.acceptNext(listener, label) {
+      case Some(ctx) -> HttpKernel.spawnRequestJob(TlsRequestJob(router = router, ctx = ctx, label = label))
+      case None -> ()
     }
   }
   return Ok(value = ())
@@ -2157,16 +2158,12 @@ pub func serveStreaming(router: in Router, streaming: in StreamingRoutes, host: 
   Console.println("[lyric-web] Listening on " + prefixStr + suffix)
   startWorkers(router)
   while true {
-    try {
-      val ctx = nextContext(listener)
-      HttpKernel.spawnRequestJob(PlainRequestJob(router = router, streaming = streaming, ctx = ctx, label = prefixStr))
-    } catch Bug as e {
-      // A caught Bug here means the listener itself can no longer make
-      // progress (nextContext failed). Surface the failure loudly instead
-      // of exiting 0 as if the server had shut down cleanly.
-      Console.error("[lyric-web] listener failed on " + prefixStr + ": " + e.message)
-      stopListener(listener)
-      Env.exitCode(1)
+    // `None` means the listener can no longer make progress (`nextContext`
+    // failed): `acceptNext` has surfaced it loudly and set a non-zero exit
+    // code instead of exiting 0 as if the server had shut down cleanly.
+    match HttpKernel.acceptNext(listener, prefixStr) {
+      case Some(ctx) -> HttpKernel.spawnRequestJob(PlainRequestJob(router = router, streaming = streaming, ctx = ctx, label = prefixStr))
+      case None -> ()
     }
   }
 }
