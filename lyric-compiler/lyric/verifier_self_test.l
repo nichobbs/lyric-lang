@@ -2188,3 +2188,58 @@ test "signed MinValue / -1 and % -1 trap in every mode (#7882)" {
   )
   assertDischarged("func f(a: in Long, d: in Long): Long\n  requires: d > 0\n{\n  a / d\n}\n", "div-long-positive")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Unknown-width division and sequencing inside an expression (#8107).
+// ─────────────────────────────────────────────────────────────────────────────
+test "a signed division of unknown width excludes both minimums (#8107)" {
+  assertRefuted(
+    "func f(n: in Long): Long\n  requires: n < -2147483648\n{\n  match n {\n    case k -> k / -1\n  }\n}\n",
+    "match-binding-div"
+  )
+  assertRefuted(
+    "func f(n: in Long): Long\n  requires: n < -2147483648\n{\n  match n {\n    case k -> k % -1\n  }\n}\n",
+    "match-binding-rem"
+  )
+  assertDischarged(
+    "func f(n: in Long): Long\n  requires: n < -2147483648\n{\n  match n {\n    case k -> k / 2\n  }\n}\n",
+    "match-binding-div-by-two"
+  )
+}
+
+func zeroDecls(): String {
+  "func pos(x: in Int): Int\n  requires: x > 0\n{\n  x\n}\n" + "func zero(x: inout Int): Bool {\n  x = 0\n  true\n}\n" +
+    "func pair(a: in Bool, b: in Int): Int {\n  b\n}\n"
+}
+
+test "an out or inout argument changes the state for what an expression evaluates next (#8107)" {
+  assertRefuted(
+    zeroDecls() + "func f(): Int {\n  var x = 1\n  val r = if zero(x) { pos(x) } else { 1 }\n  r\n}\n",
+    "if"
+  )
+  assertRefuted(
+    zeroDecls() +
+      "func f(): Int {\n  var x = 1\n  val r = match zero(x) {\n    case true -> pos(x)\n    case _ -> 1\n  }\n  r\n}\n",
+    "match"
+  )
+  assertRefuted(
+    zeroDecls() +
+      "func f(): Int {\n  var x = 1\n  val r = match 3 {\n    case k if zero(x) -> pos(x)\n    case _ -> 1\n  }\n  r\n}\n",
+    "guard"
+  )
+  assertRefuted(zeroDecls() + "func f(): Bool {\n  var x = 1\n  zero(x) and pos(x) > 0\n}\n", "and")
+  assertRefuted(zeroDecls() + "func f(): Int {\n  var x = 1\n  pair(zero(x), pos(x))\n}\n", "sibling-arguments")
+  assertDischarged(
+    zeroDecls() + "func f(): Int {\n  var x = 1\n  val r = if zero(x) { pos(2) } else { 1 }\n  r\n}\n",
+    "if-unaffected"
+  )
+  assertDischarged(zeroDecls() + "func f(): Int {\n  var x = 1\n  pair(zero(x), pos(1))\n}\n", "arguments-unaffected")
+}
+
+test "a lambda capturing a block's var sees what it holds when called (#8107)" {
+  assertRefuted(
+    "func pos(x: in Int): Int\n  requires: x > 0\n{\n  x\n}\nfunc zap(x: inout Int): Unit {\n  x = 0\n}\n" +
+      "func f(c0: in Bool): Int {\n  val r = if c0 {\n    var c = 1\n    val g = { -> pos(c) }\n    zap(c)\n    g()\n  } else {\n    0\n  }\n  5\n}\n",
+    "block-var-capture"
+  )
+}

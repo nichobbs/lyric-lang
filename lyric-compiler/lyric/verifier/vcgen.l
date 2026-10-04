@@ -623,7 +623,8 @@ func varlessEnv(env: in VEnv): VEnv {
 // when `y` is zero, and on a signed `bits`-wide value when `x` is the
 // type's minimum and `y` is -1 (the quotient does not fit; .NET throws for
 // the remainder too): the obligations `y != 0` and `not (x == Min and y ==
-// -1)` (#8107, #7882).  Real division follows IEEE 754 and has none.
+// -1)` (#8107, #7882), for both widths when `bits` is 0 (unknown).  Real
+// division follows IEEE 754 and has none.
 func divisorSideConds(b: in Builtin, args: in List[Term], bits: in Int): List[Term] {
   val conds: List[Term] = newList()
   if args.count == 2 {
@@ -633,9 +634,22 @@ func divisorSideConds(b: in Builtin, args: in List[Term], bits: in Int): List[Te
       match divisorSort {
         case SInt -> {
           conds.add(TBuiltin(op = BOpNeq, args = termList2(args[1], intLitOfSort(0i64, divisorSort))))
-          val atMin = TBuiltin(op = BOpEq, args = termList2(args[0], intLitOfSort(signedMinOfBits(bits), SInt)))
-          val byMinusOne = TBuiltin(op = BOpEq, args = termList2(args[1], intLitOfSort(-1i64, SInt)))
-          conds.add(mkNot(mkAnd(termList2(atMin, byMinusOne))))
+          // A width the verifier does not know (0) is either: excluding
+          // only the narrower minimum would let a `Long`'s through.
+          val widths: List[Int] = newList()
+          if bits == 0 or bits == 32 {
+            widths.add(32)
+          }
+          if bits == 0 or bits == 64 {
+            widths.add(64)
+          }
+          var wi = 0
+          while wi < widths.count {
+            val atMin = TBuiltin(op = BOpEq, args = termList2(args[0], intLitOfSort(signedMinOfBits(widths[wi]), SInt)))
+            val byMinusOne = TBuiltin(op = BOpEq, args = termList2(args[1], intLitOfSort(-1i64, SInt)))
+            conds.add(mkNot(mkAnd(termList2(atMin, byMinusOne))))
+            wi = wi + 1
+          }
         }
         case SBitVec(_) -> conds.add(TBuiltin(op = BOpNeq, args = termList2(args[1], intLitOfSort(0i64, divisorSort))))
         case _ -> ()
@@ -1571,6 +1585,16 @@ func recordNameOfExpr(env: in VEnv, e: in Expr): String {
   }
 }
 
+// The sort info of an expression that names a binding, without translating
+// it; `None` for anything else.
+func staticSortInfoOfExpr(env: in VEnv, e: in Expr): Option[SortInfo] {
+  match e.kind {
+    case EParen(inner) -> staticSortInfoOfExpr(env, inner)
+    case EPath(path) -> if path.segments.count == 1 { envLookupSort(path.segments[0], env) } else { None }
+    case _ -> None
+  }
+}
+
 // The sort of a binding, `result`, or a record field read from one, without
 // translating the expression.
 func staticSortOfExpr(env: in VEnv, e: in Expr): Option[Sort] {
@@ -1704,13 +1728,17 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
 
     case EIf(cond, thenBranch, elseBranchOpt, _) -> {
       val (condR, condDiags) = translateExpr(env, cond)
+      // The branches run after the condition, in the state it leaves: a
+      // variable it passes to an `out`/`inout` parameter holds a new value
+      // there (#8107).
+      val afterCond = havocOutArgs(env, cond)
 
       // A branch's side conditions and facts hold when it is taken.
-      val (thenRaw, thenDiags) = translateEOB(env, thenBranch, e.span)
+      val (thenRaw, thenDiags) = translateEOB(afterCond.env, thenBranch, e.span)
       val thenR = guardTR(condR.term, thenRaw)
 
       val (elseRaw, elseDiags) = match elseBranchOpt {
-        case Some(eb) -> translateEOB(env, eb, e.span)
+        case Some(eb) -> translateEOB(afterCond.env, eb, e.span)
         case None -> {
           val ed: List[Diagnostic] = newList()
           val noBranchPair: (TranslateResult, List[Diagnostic]) = (singleTR(unitTerm()), ed)
@@ -1733,6 +1761,7 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
       appendTermList(sc, elseR.sideConds)
       val asList: List[Term] = newList()
       appendTermList(asList, condR.assumed)
+      appendTermList(asList, afterCond.hyps)
       appendTermList(asList, thenR.assumed)
       appendTermList(asList, elseR.assumed)
       val allDiags: List[Diagnostic] = newList()
@@ -1812,7 +1841,15 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
 
     case EBinop(op, lhs, rhs) -> {
       val (lR, lDiags) = translateExpr(env, lhs)
-      val (rRaw, rDiags) = translateExpr(env, rhs)
+      // The right operand runs after the left one, in the state it leaves
+      // (#8107).
+      val afterLhs = havocOutArgs(env, lhs)
+      val (rRawUnseq, rDiags) = translateExpr(afterLhs.env, rhs)
+      val rRaw = TranslateResult(
+        term = rRawUnseq.term,
+        sideConds = rRawUnseq.sideConds,
+        assumed = termsWith(afterLhs.hyps, rRawUnseq.assumed)
+      )
       // The right operand of `and`, `or` and `implies` is evaluated only
       // when the left one does not decide the result: its side conditions
       // and facts hold under that condition alone (#8102).
@@ -1861,7 +1898,7 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
           appendTermList(sc, rR.sideConds)
           // Integer division and remainder by zero panic in every build
           // profile: the divisor must be non-zero (#8107).
-          appendTermList(sc, divisorSideConds(b, args, overflowBitsOfExpr(env, e)))
+          appendTermList(sc, divisorSideConds(b, args, intBitsOfExpr(env, e)))
           // @proof_required(checked_arithmetic): overflow side conditions.
           // A signed result must stay inside its type's width — 32 bits
           // for `Int`, 64 for `Long` — since an overflow panics in a debug
@@ -1927,15 +1964,22 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
       val argSides: List[Term] = newList()
       val argAssumed: List[Term] = newList()
       val allArgDiags: List[Diagnostic] = newList()
+      // Arguments run left to right: one evaluated after an argument that
+      // passes a variable to an `out`/`inout` parameter sees its new value
+      // (#8107).
+      var argEnv = env
       var i = 0
       while i < args.count {
         val argExpr = match args[i] { case CANamed(_, v, _) -> v; case CAPositional(v) -> v }
-        val (ar, ad) = translateExpr(env, argExpr)
+        val (ar, ad) = translateExpr(argEnv, argExpr)
         rawArgTerms.add(ar.term)
         argSpans.add(argExpr.span)
         appendTermList(argSides, ar.sideConds)
         appendTermList(argAssumed, ar.assumed)
         appendTermList2(allArgDiags, ad)
+        val afterArg = havocOutArgs(argEnv, argExpr)
+        appendTermList(argAssumed, afterArg.hyps)
+        argEnv = afterArg.env
         i = i + 1
       }
 
@@ -2279,7 +2323,31 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
       appendTermList(allAssumed, scrutR.assumed)
 
       val noReach: List[Term] = newList()
-      val term = buildMatchIte(env, scrutR.term, arms, 0, noReach, allDiags, allSides, allAssumed, e.span)
+      // A binding of the whole scrutinee has its type: its width and range
+      // (#8107).
+      val scrutInfo = match staticSortInfoOfExpr(env, scrutinee) {
+        case Some(si) -> si
+        case None -> SortInfo(
+          sort = sortOf(scrutR.term),
+          range = RBKNone,
+          intBits = intBitsOfExpr(env, scrutinee)
+        )
+      }
+      // The arms run after the scrutinee, in the state it leaves (#8107).
+      val afterScrut = havocOutArgs(env, scrutinee)
+      appendTermList(allAssumed, afterScrut.hyps)
+      val term = buildMatchIte(
+        afterScrut.env,
+        scrutR.term,
+        scrutInfo,
+        arms,
+        0,
+        noReach,
+        allDiags,
+        allSides,
+        allAssumed,
+        e.span
+      )
       val matchTR = TranslateResult(term = term, sideConds = allSides, assumed = allAssumed)
       val matchPair: (TranslateResult, List[Diagnostic]) = (matchTR, allDiags)
       matchPair
@@ -2297,12 +2365,17 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
       val sc: List[Term] = newList()
       val asList: List[Term] = newList()
       val subs = evaluatedSubexprs(e)
+      var subEnv = env
       var si = 0
       while si < subs.count {
-        val (subR, subDiags) = translateExpr(env, subs[si])
+        val (subR, subDiags) = translateExpr(subEnv, subs[si])
         appendTermList2(diags, subDiags)
         appendTermList(sc, subR.sideConds)
         appendTermList(asList, subR.assumed)
+        // Subexpressions run in order (#8107).
+        val afterSub = havocOutArgs(subEnv, subs[si])
+        appendTermList(asList, afterSub.hyps)
+        subEnv = afterSub.env
         si = si + 1
       }
       val exprSort = SUninterp(name = "expr")
@@ -2356,7 +2429,8 @@ func translateBlockValue(env: in VEnv, blk: in Block, sp: in Span): (TranslateRe
                 ty = ty,
                 init = Some(
                   value = init
-                )
+                ),
+                mutable = false
               )
             )
             case _ -> None
@@ -2365,14 +2439,16 @@ func translateBlockValue(env: in VEnv, blk: in Block, sp: in Span): (TranslateRe
             value = BlockBinding(
               name = n,
               ty = ty,
-              init = Some(value = init)
+              init = Some(value = init),
+              mutable = false
             )
           )
           case LBVar(n, ty, initOpt) -> Some(
             value = BlockBinding(
               name = n,
               ty = ty,
-              init = initOpt
+              init = initOpt,
+              mutable = true
             )
           )
         }
@@ -2395,7 +2471,8 @@ func translateBlockValue(env: in VEnv, blk: in Block, sp: in Span): (TranslateRe
                 val after = havocOutArgs(cur, init)
                 appendTermList(facts, after.hyps)
                 appendTermList(facts, rangeHypothesesForTerm(boundTerm, info))
-                cur = envBindTerm(bb.name, boundTerm, info, after.env)
+                // A `var` is a binding a call or a lambda may change.
+                cur = envSetMutable(envBindTerm(bb.name, boundTerm, info, after.env), bb.name, bb.mutable)
               }
               case None -> {
                 val info = match bb.ty {
@@ -2404,7 +2481,7 @@ func translateBlockValue(env: in VEnv, blk: in Block, sp: in Span): (TranslateRe
                 }
                 val initial = freshVar(env, bb.name, info.sort)
                 appendTermList(facts, rangeHypothesesForTerm(initial, info))
-                cur = envBindTerm(bb.name, initial, info, cur)
+                cur = envSetMutable(envBindTerm(bb.name, initial, info, cur), bb.name, bb.mutable)
               }
             }
           }
@@ -2455,6 +2532,7 @@ record BlockBinding {
   name: String
   ty: Option[TypeExpr]
   init: Option[Expr]
+  mutable: Bool
 }
 
 func blockValueFailsClosed(
@@ -2623,6 +2701,7 @@ func blockLastExpr(blk: in Block): Option[Expr] {
 func buildMatchIte(
   env: in VEnv,
   scrutTerm: in Term,
+  scrutInfo: in SortInfo,
   arms: in List[MatchArm],
   idx: in Int,
   reach: in List[Term],
@@ -2670,6 +2749,7 @@ func buildMatchIte(
           val (gR, gDiags) = translateExpr(skipEnv, g)
           appendTermList2(diagsOut, gDiags)
           appendTermList(skipSides, gR.sideConds)
+          skipEnv = havocOutArgs(skipEnv, g).env
         }
         case None -> ()
       }
@@ -2679,7 +2759,7 @@ func buildMatchIte(
       }
       appendTermList(sidesOut, guardTerms(mkAnd(termsWith(reach, termList1(unknownMatch))), skipSides))
       val skippedReach = termsWith(reach, termList1(mkNot(unknownMatch)))
-      buildMatchIte(env, scrutTerm, arms, idx + 1, skippedReach, diagsOut, sidesOut, assumedOut, ctxSpan)
+      buildMatchIte(env, scrutTerm, scrutInfo, arms, idx + 1, skippedReach, diagsOut, sidesOut, assumedOut, ctxSpan)
     }
     case Some(cond) -> {
       val isUnconditional = isTrueT(cond)
@@ -2690,8 +2770,9 @@ func buildMatchIte(
       while bi < bindings.count {
         val bname = bindings[bi].bindName
         val bterm = bindings[bi].bindTerm
-        val info = SortInfo(sort = sortOf(bterm), range = RBKNone)
-        armEnv = envBindTerm(bname, bterm, info, armEnv)
+        // Every binding a supported pattern makes is the scrutinee itself.
+        val info = SortInfo(sort = sortOf(bterm), range = scrutInfo.range, intBits = scrutInfo.intBits)
+        armEnv = envSetMutable(envBindTerm(bname, bterm, info, armEnv), bname, false)
         bi = bi + 1
       }
       // The arm's side conditions and facts hold when it is the arm taken:
@@ -2704,6 +2785,10 @@ func buildMatchIte(
         case Some(g) -> {
           val (gR, gDiags) = translateExpr(armEnv, g)
           appendTermList2(diagsOut, gDiags)
+          // The body runs after the guard, in the state it leaves.
+          val afterGuard = havocOutArgs(armEnv, g)
+          appendTermList(assumedOut, afterGuard.hyps)
+          armEnv = afterGuard.env
           val guardReach = mkAnd(termsWith(reach, termList1(cond)))
           appendTermList(sidesOut, guardTerms(guardReach, gR.sideConds))
           appendTermList(assumedOut, guardTerms(guardReach, gR.assumed))
@@ -2721,7 +2806,18 @@ func buildMatchIte(
         armTerm
       } else {
         val restReach = termsWith(reach, termList1(mkNot(armMatches)))
-        val restTerm = buildMatchIte(env, scrutTerm, arms, idx + 1, restReach, diagsOut, sidesOut, assumedOut, ctxSpan)
+        val restTerm = buildMatchIte(
+          env,
+          scrutTerm,
+          scrutInfo,
+          arms,
+          idx + 1,
+          restReach,
+          diagsOut,
+          sidesOut,
+          assumedOut,
+          ctxSpan
+        )
         TIte(cond = armMatches, thenT = armTerm, elseT = restTerm)
       }
     }
@@ -3452,7 +3548,7 @@ func wpAssign(
         }
       }
       match combinedOp {
-        case TBuiltin(_, dargs) -> appendTermList(rhsSide, divisorSideConds(bin, dargs, overflowBitsOfExpr(env, target)))
+        case TBuiltin(_, dargs) -> appendTermList(rhsSide, divisorSideConds(bin, dargs, intBitsOfExpr(env, target)))
         case _ -> ()
       }
       if env.checkedArithmetic {
