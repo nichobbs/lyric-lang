@@ -3,7 +3,10 @@
 # HTTP routes plus a WebSocket echo over a raw RFC 6455 client.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-LYRIC="${LYRIC:-$ROOT/bin/lyric}"
+BUILD_CONFIG="${BUILD_CONFIG:-Debug}"
+LYRIC="${LYRIC:-$ROOT/bootstrap/src/Lyric.Cli.Aot/bin/${BUILD_CONFIG}/net10.0/lyric}"
+[ -x "$LYRIC" ] || LYRIC="$ROOT/bin/lyric"
+[ -x "$LYRIC" ] || { echo "::error::lyric binary not found"; exit 1; }
 OUT="${TMPDIR:-/tmp}/native-web-smoke"
 PORT=18480
 
