@@ -378,6 +378,17 @@ async func boomTask(): Int {
   panic("boom-in-spawned-task")
 }
 
+// #8105: a panic before the task's first suspension must be captured in the
+// task, not thrown from the spawn expression.  The statement between `spawn`
+// and `await` has to run on both targets, and the failure surfaces at `await`.
+async func spawnThenRecord(box: in MutBox): Int {
+  scope {
+    val t = spawn boomTask()
+    box.n = 1
+    return await t
+  }
+}
+
 async func awaitFailingSpawn(): Unit {
   scope {
     val t = spawn boomTask()
@@ -565,6 +576,12 @@ test "spawned task that panics propagates through await" {
   // separately end-to-end; message-substring matching through the test-synth
   // is avoided here as brittle.
   assertPanics("failing spawn propagates", { -> await awaitFailingSpawn() })
+}
+
+test "#8105: a panic before the first suspension is captured in the task" {
+  val box = MutBox(n = 0)
+  assertPanics("early panic surfaces at await", { -> val _ = await spawnThenRecord(box) })
+  assertEqualInt(box.n, 1, "statement between spawn and await ran")
 }
 
 test "a panic escaping a scope body propagates without waiting for unfinished spawns" {
