@@ -16,8 +16,9 @@ when its static scan can see them. A package that assigns exports at runtime
 2. **Probe.** The `B0062` export probe reports the union of the namespace keys and
    the keys of `default`, so the build check and the runtime see the same names.
 3. **Not a warning.** Demoting `B0062` for CommonJS packages would let a real typo
-   through, and the union is exact for `module.exports` objects.
+   through, and the union is a superset-safe check for `module.exports` objects (every name it accepts resolves at runtime).
 
-A package whose `module.exports` is a function with properties is covered the same
+A function read from `default` is bound to it, as `require(pkg).name(...)` would call it, so a
+CommonJS export that reaches a sibling through `this` keeps working. A package whose `module.exports` is a function with properties is covered the same
 way (`default` is a function). Exports defined behind a getter that throws are not
 enumerable by the probe and stay out of scope.

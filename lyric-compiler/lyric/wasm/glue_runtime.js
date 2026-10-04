@@ -288,7 +288,10 @@ export async function instantiate(source, options = {}) {
         get(target, key) {
           if (key in target) return target[key];
           const dflt = target.default;
-          return dflt !== null && (typeof dflt === 'object' || typeof dflt === 'function') ? dflt[key] : undefined;
+          if (dflt === null || (typeof dflt !== 'object' && typeof dflt !== 'function')) return undefined;
+          const member = dflt[key];
+          // Called as `require(pkg).name(...)` would be, so `this` is module.exports.
+          return typeof member === 'function' ? member.bind(dflt) : member;
         },
       });
     } catch (e) {

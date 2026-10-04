@@ -673,7 +673,7 @@ test "wasm32 module: an npm: package's CommonJS exports that Node cannot scan st
   writeIn(
     b.dir,
     "node_modules/fakenpm/index.js",
-    "const o = {};\no['ad' + 'd'] = (a, b) => a + b + 2000;\no['sh' + 'out'] = (s) => s.toUpperCase() + '?';\nmodule.exports = o;\n"
+    "const o = {};\no['ad' + 'd'] = (a, b) => a + b + 2000;\no['sh' + 'out'] = function (s) { return this.mark(s.toUpperCase()); };\no.mark = (s) => s + '?';\nmodule.exports = o;\n"
   )
   writeIn(
     b.dir,
