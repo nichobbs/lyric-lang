@@ -89,6 +89,7 @@ book/
     ├── 29-application-libraries.md
     ├── 30-source-generators.md
     ├── 31-user-interfaces.md
+    ├── 32-webassembly.md
     ├── appendix-a-vscode.md
     └── appendix-b-quick-reference.md
 ```
