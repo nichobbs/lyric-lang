@@ -2288,12 +2288,30 @@ test "a call evaluates its receiver or callee before its arguments, in source or
     "computed-callee-unaffected"
   )
   val namedDecls = zeroDecls() + "func pair2(a: in Int, b: in Bool): Int {\n  a\n}\n"
-  assertRefuted(
+  assertUntranslatable(
     namedDecls + "func f(): Int {\n  var x = 1\n  pair2(b = zero(x), a = pos(x))\n}\n",
-    "named-source-order"
+    "named-reordered"
   )
   assertDischarged(
     namedDecls + "func f(): Int {\n  var x = 1\n  pair2(a = pos(x), b = zero(x))\n}\n",
     "named-parameter-order"
   )
+}
+
+test "named arguments out of parameter order fail closed when one changes a variable (#8107)" {
+  val decls = "func pos(x: in Int): Int\n  requires: x > 0\n{\n  x\n}\n" +
+    "func zero(x: inout Int): Int {\n  x = 0\n  0\n}\n" +
+    "func two(a: in Int, b: in Int): Int {\n  a + b\n}\n" +
+    "record Pair {\n  a: Int\n  b: Int\n}\n"
+  assertUntranslatable(decls + "func f(): Int {\n  var x = 1\n  two(b = pos(x), a = zero(x))\n}\n", "call")
+  assertUntranslatable(
+    decls + "func f(): Int {\n  var x = 1\n  val p = Pair(b = pos(x), a = zero(x))\n  1\n}\n",
+    "record"
+  )
+  assertDischarged(
+    decls + "func f(): Int {\n  val x = 1\n  two(b = pos(x), a = pos(2))\n}\n",
+    "reordered-without-effects"
+  )
+  assertRefuted(decls + "func f(): Int {\n  var x = 1\n  two(a = zero(x), b = pos(x))\n}\n", "in-order-with-effects")
+  assertDischarged(decls + "func f(): Int {\n  var x = 1\n  two(a = pos(x), b = zero(x))\n}\n", "in-order-effect-last")
 }

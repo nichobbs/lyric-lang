@@ -1122,6 +1122,140 @@ func translateComputedCall(
   callPair
 }
 
+// The parameter names of the function or record a call reaches, in
+// order, when the verifier can tell; `None` otherwise.
+func calleeParamNames(env: in VEnv, fn: in Expr): Option[List[String]] {
+  val names: List[String] = newList()
+  match fn.kind {
+    case EPath(path) -> {
+      if localCallee(env, fn) {
+        return None
+      }
+      val name = joinPathSegments(path.segments)
+      match mapGet(env.callees, name) {
+        case Some(decl) -> {
+          var i = 0
+          while i < decl.params.count {
+            names.add(decl.params[i].name)
+            i = i + 1
+          }
+          return Some(value = names)
+        }
+        case None -> ()
+      }
+      match findRecordFields(env, name) {
+        case Some(fields) -> {
+          val prefix = name + "__"
+          var i = 0
+          while i < fields.count {
+            val fname = fields[i].name
+            names.add(if fname.startsWith(prefix) { fname.substring(prefix.length, fname.length - prefix.length) } else { fname })
+            i = i + 1
+          }
+          Some(value = names)
+        }
+        case None -> None
+      }
+    }
+    case EMember(receiver, methodName) -> {
+      // A static `T.m` takes its arguments from the first parameter; a
+      // method's first parameter is its receiver.
+      var skip = 0
+      val resolved: Option[ResolvedCallee] = match resolveStaticCallee(env, receiver, methodName) {
+        case Some(rc) -> Some(value = rc)
+        case None -> {
+          skip = 1
+          match staticSortOfExpr(env, receiver) {
+            case Some(srt) -> resolveMethodCallee(env, TVar(name = "self", sort = srt), methodName)
+            case None -> None
+          }
+        }
+      }
+      match resolved {
+        case Some(rc) -> {
+          var i = skip
+          while i < rc.decl.params.count {
+            names.add(rc.decl.params[i].name)
+            i = i + 1
+          }
+          Some(value = names)
+        }
+        case None -> None
+      }
+    }
+    case _ -> None
+  }
+}
+
+// Whether a call's arguments, as written, reach their parameters out of
+// order: a named argument for an earlier parameter after one for a later.
+// With the parameters unknown, any two arguments one of which is named may
+// be.
+func namedArgsReordered(env: in VEnv, fn: in Expr, args: in List[CallArg]): Bool {
+  var named = 0
+  var i = 0
+  while i < args.count {
+    match args[i] {
+      case CANamed(_, _, _) -> {
+        named = named + 1
+      }
+      case CAPositional(_) -> ()
+    }
+    i = i + 1
+  }
+  if named == 0 {
+    return false
+  }
+  match calleeParamNames(env, fn) {
+    case Some(params) -> {
+      var last = -1
+      var j = 0
+      while j < args.count {
+        val slot = match args[j] { case CAPositional(_) -> j; case CANamed(argName, _, _) -> indexOfName(params, argName) }
+        if slot < 0 or slot < last {
+          return true
+        }
+        last = slot
+        j = j + 1
+      }
+      false
+    }
+    case None -> args.count >= 2
+  }
+}
+
+func indexOfName(names: in List[String], name: in String): Int {
+  var i = 0
+  while i < names.count {
+    if names[i] == name {
+      return i
+    }
+    i = i + 1
+  }
+  -1
+}
+
+// Whether any argument passes a variable to an `out`/`inout` parameter.
+func anyArgChangesState(env: in VEnv, args: in List[CallArg]): Bool {
+  var i = 0
+  while i < args.count {
+    val argExpr = match args[i] { case CANamed(_, v, _) -> v; case CAPositional(v) -> v }
+    if effectsOfExpr(env, argExpr).outArgs.count > 0 {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+// A callee as the source spells it, for a diagnostic.
+func calleeDisplayName(fn: in Expr): String {
+  match qualifiedPathOf(fn) {
+    case Some(segs) -> joinPathSegments(segs)
+    case None -> match fn.kind { case EMember(_, m) -> m; case _ -> "a computed function" }
+  }
+}
+
 // A callee that names a local binding, which shadows any file function.
 func localCallee(env: in VEnv, fn: in Expr): Bool {
   match fn.kind {
@@ -2070,6 +2204,20 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
         appendTermList(argAssumed, afterArg.hyps)
         argEnv = afterArg.env
         i = i + 1
+      }
+      // Named arguments out of parameter order run in an order the language
+      // does not settle yet (as written, or by parameter): with an argument
+      // that changes a variable, either could break the other, so fail
+      // closed (#8107).
+      if namedArgsReordered(env, fn, args) and anyArgChangesState(env, args) {
+        allArgDiags.add(
+          untranslatableDiag(
+            "the call to '" + calleeDisplayName(fn) + "': the evaluation order of named arguments written out of " +
+              "parameter order is not modelled when an argument changes a variable",
+            e.span
+          )
+        )
+        argSides.add(poisonTerm(falseT()))
       }
 
       // A local binding — a lambda in a `val` — shadows a file function of
