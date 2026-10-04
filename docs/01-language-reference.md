@@ -2377,7 +2377,7 @@ loader prefers it by basename, so the public `Std.*` surface is
 identical on every target.  `@cfg(target = "dotnet" | "jvm" | "native")`
 additionally gates individual items per target; the predicate resolves
 against a `target.<name>` pseudo-feature the CLI injects (D-N-013) and
-is exempt from the `F0013` declared-features check.
+is exempt from the `F0013` declared-features check.  A predicate may also be composed with `any(...)`, `all(...)` and `not(...)`, nested to any depth (`@cfg(any(feature = "dotnet", feature = "native"))`, `docs/24-build-features.md` §4.1).
 
 Where the managed kernels rely on host exceptions, the shared pure
 layer instead delegates to exception-free **Result/Option seams** that

@@ -52,6 +52,9 @@ pub union AnnotationValue {
 pub union AnnotationArg {
   case AAName(name: String, value: AnnotationValue, span: Span)
   case ABare(name: String, span: Span)
+  /// A nested call-shaped argument, `any(feature = "a", feature = "b")`:
+  /// the head name, its arguments, and the span of the whole call.
+  case AACall(name: String, args: List[AnnotationArg], span: Span)
   case ALiteral(value: AnnotationValue, span: Span)
 }
 

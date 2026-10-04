@@ -426,6 +426,8 @@ AnnotationArgs = '(' [ AnnotationArg { ',' AnnotationArg } [ ',' ] ] ')' ;
 AnnotationArg  =
       IDENT '=' Literal
     | IDENT { '.' IDENT }    (* a qualified name, e.g. @generate(Acme.Describe) *)
+    | IDENT '(' [ AnnotationArg { ',' AnnotationArg } [ ',' ] ] ')'
+                             (* a nested call, e.g. @cfg(any(feature = "a", feature = "b")) *)
     | StringLit
     | IntLit ;
 

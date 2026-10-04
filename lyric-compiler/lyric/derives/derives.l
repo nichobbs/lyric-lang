@@ -77,6 +77,9 @@ func annotationArg1(ann: in Annotation, outer: in String): Option[String] {
         case AAName(_, _, _) -> {
           return None
         }
+        case AACall(_, _, _) -> {
+          return None
+        }
       }
     }
   }

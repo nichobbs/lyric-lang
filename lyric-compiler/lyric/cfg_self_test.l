@@ -18,7 +18,7 @@ import Lyric.TypeChecker
 func parseOk(src: in String): SourceFile {
   val pr = parse(src)
   if pr.diagnostics.count > 0 {
-    panic("parseOk: parser produced diagnostics, refusing to test against ill-formed source")
+    panic("parseOk: parser produced diagnostics (" + pr.diagnostics[0].code + ": " + pr.diagnostics[0].message + "), refusing to test against ill-formed source")
   }
   pr.file
 }
@@ -213,6 +213,46 @@ test "target predicate keeps and erases by active target" {
   val dotnetActive = applyCfgErasure(withTargetFeature(emptyFeatures(), "dotnet"), declared, sf)
   assertEqualInt(dotnetActive.diagnostics.count, 0, "cfg_target: dotnet-active erasure emits no diagnostics")
   assertEqualInt(dotnetActive.file.items.count, 2, "cfg_target: dotnet keeps onlyDotnet + always")
+}
+
+// `any(...)` keeps an item when one operand holds; `all(...)` needs every
+// operand; `not(...)` negates; they nest. One shared kernel file can thus be
+// compiled for dotnet and native but erased on jvm.
+test "any all not composition" {
+  val src = "package P\n" + "@cfg(any(feature = \"dotnet\", target = \"native\"))\n" + "pub func net(): Int { 1 }\n" +
+    "@cfg(all(feature = \"dotnet\", feature = \"extra\"))\n" +
+    "pub func both(): Int { 2 }\n" +
+    "@cfg(not(feature = \"jvm\"))\n" +
+    "pub func notJvm(): Int { 3 }\n" +
+    "@cfg(not(any(feature = \"dotnet\", all(feature = \"jvm\", feature = \"extra\"))))\n" +
+    "pub func nested(): Int { 4 }\n"
+  val sf = parseOk(src)
+  val declared = emptyFeatures()
+
+  val dotnet = applyCfgErasure(singletonList("dotnet"), declared, sf)
+  assertEqualInt(dotnet.diagnostics.count, 0, "cfg_any: dotnet emits no diagnostics")
+  assertEqualInt(dotnet.file.items.count, 2, "cfg_any: dotnet keeps net + notJvm")
+
+  val native = applyCfgErasure(withTargetFeature(emptyFeatures(), "native"), declared, sf)
+  assertEqualInt(native.file.items.count, 3, "cfg_any: native keeps net + notJvm + nested")
+
+  val jvm = applyCfgErasure(twoFeatures("jvm", "extra"), declared, sf)
+  assertEqualInt(jvm.file.items.count, 0, "cfg_any: jvm+extra erases everything")
+
+  val all = applyCfgErasure(twoFeatures("dotnet", "extra"), declared, sf)
+  assertEqualInt(all.file.items.count, 3, "cfg_any: dotnet+extra keeps net + both + notJvm")
+}
+
+// Malformed composites are F0012 and keep the item, like a malformed leaf.
+test "f0012 malformed composite" {
+  val src = "package P\n" + "@cfg(not(feature = \"a\", feature = \"b\"))\n" + "pub func a(): Int { 1 }\n" +
+    "@cfg(maybe(feature = \"a\"))\n" +
+    "pub func b(): Int { 2 }\n" +
+    "@cfg(any())\n" +
+    "pub func c(): Int { 3 }\n"
+  val res = applyCfgErasure(emptyFeatures(), emptyFeatures(), parseOk(src))
+  assertEqualInt(diagCount(res.diagnostics, "F0012"), 3, "cfg_any: three F0012")
+  assertEqualInt(res.file.items.count, 3, "cfg_any: malformed items are kept")
 }
 
 // withTargetFeature appends without mutating the caller's list.

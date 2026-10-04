@@ -11,7 +11,7 @@ M5.1 stage 5'.
 > **v1 scope note.** The first implementation ships a deliberately
 > narrow subset of the design below: `[features]` with a `default`
 > array (no implication arrays); `@cfg(feature = "X")` only (no
-> `any` / `all` / `not` — multiple `@cfg` annotations on one item AND
+> `any` / `all` / `not` (since shipped, see the note below) — multiple `@cfg` annotations on one item AND
 > together); CLI flags `--features`, `--no-default-features`,
 > `--all-features`; item erasure during type-checking. Implication
 > arrays and boolean predicate composition are deferred to v1.1; the
@@ -233,7 +233,7 @@ breaking the grammar:
 @cfg(debug_assertions)                  # future
 ```
 
-`feature = "X"` is the only atom in v1.
+`feature = "X"` is the only atom in v1, plus `target = "X"` (D-N-013). The composites `any(...)`, `all(...)` and `not(...)` are implemented (nested to any depth): a malformed composite (`not` with other than one operand, an empty `any`/`all`, an unknown head) is `F0012` and keeps the item. They are what lets one kernel file be compiled for `dotnet` and `native` and erased on `jvm`: `@cfg(any(feature = "dotnet", feature = "native"))`.
 
 ### 4.2 What can be gated
 

@@ -35288,7 +35288,7 @@ func isOptedOutMsil(fn: in FunctionDecl, aspectName: in String): Bool {
       // are accepted; only the leading identifier portion matters.
       var j = 0
       while j < ann.args.count {
-        val argName = match ann.args[j] { case AAName(n, _, _) -> n; case ABare(n, _) -> n; case ALiteral(_, _) -> "" }
+        val argName = match ann.args[j] { case AAName(n, _, _) -> n; case ABare(n, _) -> n; case ALiteral(_, _) -> ""; case AACall(_, _, _) -> "" }
         if argName == aspectName {
           return true
         }
@@ -42222,6 +42222,7 @@ func hasDeriveMarkerMsil(anns: in List[Annotation], marker: in String): Bool {
         case ABare(n, _) -> n
         case ALiteral(v, _) -> match v { case AVIdent(n, _) -> n; case _ -> "" }
         case AAName(_, _, _) -> ""
+        case AACall(_, _, _) -> ""
       }
       if nm == marker {
         return true

@@ -13,8 +13,10 @@
 //!     not declared, emits `F0013` (unknown feature) — typo guard.
 //!   * The item is *erased* if any `@cfg` evaluates to false.
 //!
-//! Boolean composition (`any` / `all` / `not`) and statement-level
-//! gating remain v1.1 scope per the design note's scope cut.
+//!   * Boolean composition: `@cfg(any(feature = "a", target = "b"))`,
+//!     `all(...)` and `not(...)`, nested to any depth.
+//!
+//! Statement-level gating remains v1.1 scope per the design note's scope cut.
 //!
 //! Wired into `Msil.Bridge.compileProjectToMsil` as the front-end pass
 //! that runs before `checkWithImports`, so feature-bearing requests can
@@ -59,6 +61,82 @@ func listContains(haystack: in List[String], needle: in String): Bool {
   false
 }
 
+// Evaluate one predicate argument of an `@cfg(...)`: `feature = "X"`,
+// `target = "X"`, or the composites `any(p, ...)` (true if any operand is),
+// `all(p, ...)` (true if every operand is) and `not(p)`.  A malformed
+// predicate emits `F0012` and evaluates to true, so a typo keeps the item
+// rather than silently erasing it.
+func evalCfgPredicate(active: in List[String], declared: in List[String], arg: in AnnotationArg, diags: in List[Diagnostic]): Bool {
+  val malformedMsg = "@cfg accepts 'feature = \"X\"', 'target = \"X\"', or any(...) / all(...) / not(...) of those"
+  match arg {
+    case AAName(argName, value, span) -> {
+      if argName != "feature" and argName != "target" {
+        diags.add(errorDiagnostic("F0012", malformedMsg, span))
+        return true
+      }
+      match value {
+        case AVString(rawName, _) -> {
+          // `@cfg(target = "native")` resolves against the
+          // pseudo-feature `target.native` the CLI injects into
+          // the active set (D-N-013); targets are never declared
+          // in [features], so the F0013 typo guard only applies
+          // to real features.
+          val featName = if argName == "target" { "target." + rawName } else { rawName }
+          if argName == "feature" and declared.count > 0 and not listContains(declared, featName) {
+            diags.add(
+              warningDiagnostic(
+                "F0013",
+                "feature '" + featName + "' is not declared in the manifest's [features] section",
+                span
+              )
+            )
+          }
+          listContains(active, featName)
+        }
+        case _ -> {
+          diags.add(errorDiagnostic("F0012", malformedMsg, span))
+          true
+        }
+      }
+    }
+    case AACall(name, operands, span) -> {
+      if name == "not" {
+        if operands.count != 1 {
+          diags.add(errorDiagnostic("F0012", "not(...) in @cfg takes exactly one predicate", span))
+          return true
+        }
+        return not evalCfgPredicate(active, declared, operands[0], diags)
+      }
+      if name != "any" and name != "all" {
+        diags.add(errorDiagnostic("F0012", malformedMsg, span))
+        return true
+      }
+      if operands.count == 0 {
+        diags.add(errorDiagnostic("F0012", name + "(...) in @cfg needs at least one predicate", span))
+        return true
+      }
+      var anyTrue = false
+      var allTrue = true
+      for op in operands {
+        if evalCfgPredicate(active, declared, op, diags) {
+          anyTrue = true
+        } else {
+          allTrue = false
+        }
+      }
+      if name == "any" { anyTrue } else { allTrue }
+    }
+    case ABare(_, span) -> {
+      diags.add(errorDiagnostic("F0012", malformedMsg, span))
+      true
+    }
+    case ALiteral(_, span) -> {
+      diags.add(errorDiagnostic("F0012", malformedMsg, span))
+      true
+    }
+  }
+}
+
 // Walk an item's annotations and decide whether it survives erasure.
 // Returns (keep, diagnostics).
 func classifyAnnotations(active: in List[String], declared: in List[String], anns: in List[Annotation]): ClassifyOut {
@@ -68,45 +146,16 @@ func classifyAnnotations(active: in List[String], declared: in List[String], ann
   while i < anns.count {
     val a = anns[i]
     if isCfgAnnotation(a) {
-      // v1 only accepts a single `feature = "X"` argument.  Anything
-      // else is malformed; we surface an F0012 diagnostic but treat
-      // the item as KEPT (less confusing than silent erasure on a typo).
-      val malformedMsg = "@cfg accepts a single 'feature = \"X\"' or 'target = \"X\"' argument in v1 (boolean composition is deferred)"
       if a.args.count != 1 {
-        diags.add(errorDiagnostic("F0012", malformedMsg, a.span))
-      } else {
-        match a.args[0] {
-          case AAName(argName, value, _) -> {
-            if argName != "feature" and argName != "target" {
-              diags.add(errorDiagnostic("F0012", malformedMsg, a.span))
-            } else {
-              match value {
-                case AVString(rawName, _) -> {
-                  // `@cfg(target = "native")` resolves against the
-                  // pseudo-feature `target.native` the CLI injects into
-                  // the active set (D-N-013); targets are never declared
-                  // in [features], so the F0013 typo guard only applies
-                  // to real features.
-                  val featName = if argName == "target" { "target." + rawName } else { rawName }
-                  if argName == "feature" and declared.count > 0 and not listContains(declared, featName) {
-                    diags.add(
-                      warningDiagnostic(
-                        "F0013",
-                        "feature '" + featName + "' is not declared in the manifest's [features] section",
-                        a.span
-                      )
-                    )
-                  }
-                  if not listContains(active, featName) {
-                    keep = false
-                  }
-                }
-                case _ -> diags.add(errorDiagnostic("F0012", malformedMsg, a.span))
-              }
-            }
-          }
-          case _ -> diags.add(errorDiagnostic("F0012", malformedMsg, a.span))
-        }
+        diags.add(
+          errorDiagnostic(
+            "F0012",
+            "@cfg takes a single predicate: 'feature = \"X\"', 'target = \"X\"', or any(...) / all(...) / not(...) of those",
+            a.span
+          )
+        )
+      } else if not evalCfgPredicate(active, declared, a.args[0], diags) {
+        keep = false
       }
     }
     i = i + 1

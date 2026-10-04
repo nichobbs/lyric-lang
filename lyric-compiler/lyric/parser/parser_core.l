@@ -481,6 +481,32 @@ pub func parseModulePath(st: inout ParseState): ModulePath {
 // ─────────────────────────────────────────────────────────────────────────────
 // Annotations.
 // ─────────────────────────────────────────────────────────────────────────────
+// The `(args)` tail of a call-shaped annotation argument, `any(a, b)`; the
+// head name has been consumed.
+func parseAnnotationCallTail(st: inout ParseState, name: in String, headSpan: in Span): AnnotationArg {
+  val _ = advance(st)
+  val inner: List[AnnotationArg] = newList()
+  var callEnd = headSpan
+  if not isPunct(peekToken(st), RParen) {
+    inner.add(parseAnnotationArg(st))
+    while isPunct(peekToken(st), Comma) {
+      val _ = advance(st)
+      if not isPunct(peekToken(st), RParen) {
+        inner.add(parseAnnotationArg(st))
+      }
+    }
+  }
+  match tryEatPunct(st, RParen) {
+    case Some(t) -> {
+      callEnd = t.span
+    }
+    case None -> {
+      emitErr(st, "P0012", "expected ')' to close annotation argument list", peekSpan(st))
+    }
+  }
+  AACall(name = name, args = inner, span = joinSpans(headSpan, callEnd))
+}
+
 func parseAnnotationArg(st: inout ParseState): AnnotationArg {
   val startSp = peekSpan(st)
   match peekToken(st) {
@@ -507,6 +533,8 @@ func parseAnnotationArg(st: inout ParseState): AnnotationArg {
           case AVIdent(_, s) -> s
         }
         AAName(name = name, value = value, span = joinSpans(nameTok.span, endSp))
+      } else if isPunct(peekToken(st), LParen) {
+        parseAnnotationCallTail(st, name, nameTok.span)
       } else {
         // A bare argument may be a qualified name: a custom generator is
         // named by its package, `@generate(Acme.Describe)` (docs/40 §2.1).
@@ -525,6 +553,11 @@ func parseAnnotationArg(st: inout ParseState): AnnotationArg {
         }
         ABare(name = qualified, span = joinSpans(nameTok.span, endSp))
       }
+    }
+    case TKeyword(KwNot) -> {
+      // `not` is a keyword, not an identifier: `@cfg(not(feature = "x"))`.
+      val kwTok = advance(st)
+      parseAnnotationCallTail(st, "not", kwTok.span)
     }
     case TInt(v, _, _) -> {
       val t = advance(st)
