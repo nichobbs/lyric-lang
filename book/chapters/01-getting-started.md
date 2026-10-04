@@ -352,6 +352,19 @@ world = "my-world"
 stack = 262144
 ```
 
+An `[npm]` table declares NPM packages for the wasm32 targets, the way `[nuget]` does for .NET:
+
+```toml
+[npm]
+"node-fetch" = "^3"
+"@aws-sdk/client-s3" = "^3.600"
+```
+
+`lyric restore` installs them under `target/npm/node_modules/` (install scripts are not run) and
+writes a shim scaffold per package to `_extern_npm/`, such as `_extern_npm/node-fetch.l`, to
+which you add the `extern func` declarations. Calling the packages from a build is not wired
+up yet.
+
 Memory on this target is managed by automatic reference counting (ARC) —
 there is no garbage collector. Reference cycles are not collected; break
 them explicitly with `NativeWeak[T]`, whose `upgrade()` returns

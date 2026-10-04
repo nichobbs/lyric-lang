@@ -1093,6 +1093,158 @@ func restoreMavenJars(manifest: in Mf.Manifest, mfDir: in String): Int {
   0
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// §10.n. NPM dependencies (docs/35 section 9)
+// ─────────────────────────────────────────────────────────────────────────────
+/// The `package.json` `lyric restore` hands to the package manager: one
+/// `dependencies` entry per `[npm]` row.  `private` keeps an accidental
+/// `npm publish` from the install directory from ever succeeding.
+pub func buildNpmPackageJson(npm: in Mf.NpmSection): String {
+  var deps = ""
+  var i = 0
+  while i < npm.entries.count {
+    val e = npm.entries[i]
+    if i > 0 {
+      deps = deps + ",\n"
+    }
+    deps = deps + "    \"" + jsonEscape(e.name) + "\": \"" + jsonEscape(e.version) + "\""
+    i += 1
+  }
+  "{\n  \"name\": \"lyric-npm-deps\",\n  \"private\": true,\n  \"dependencies\": {\n" + deps + "\n  }\n}\n"
+}
+
+/// The `npm` argument list for installing the declared packages into
+/// `installDir`.  `--ignore-scripts` keeps a dependency's install hooks from
+/// running arbitrary code during a restore.
+pub func npmInstallArgs(installDir: in String, registry: in String): List[String] {
+  val args: List[String] = newList()
+  args.add("install")
+  args.add("--prefix")
+  args.add(installDir)
+  args.add("--ignore-scripts")
+  args.add("--no-audit")
+  args.add("--no-fund")
+  if registry != "" {
+    args.add("--registry")
+    args.add(registry)
+  }
+  args
+}
+
+/// The `@axiom` header every shim opens with.
+pub func npmShimAxiom(e: in Mf.NpmEntry): String {
+  "@axiom(\"from npm " + e.name + " " + e.version + "\")"
+}
+
+/// The scaffold `lyric restore` writes for a package that has no shim yet:
+/// the trust-tier header and the package declaration, ready for the author to
+/// add `extern func` declarations (docs/35 section 9.3, hand-authored in v1).
+pub func npmShimStub(e: in Mf.NpmEntry): String {
+  npmShimAxiom(e) + "\npackage " + e.ident + "\n"
+}
+
+/// `""` when an existing shim still opens with its `@axiom("from npm <name> ...")` header
+/// (B0063 otherwise): the annotation is what places the file in the
+/// `_kernel` trust tier, so a shim that lost it must not be treated as
+/// restored.
+pub func npmShimProblem(text: in String, e: in Mf.NpmEntry): String {
+  val prefix = "@axiom(\"from npm " + e.name + " "
+  if Str.startsWith(Str.trimStart(text), prefix) {
+    ""
+  } else {
+    "B0063: " + Mf.npmShimFileName(e.name) + " lost its @axiom(\"from npm " + e.name +
+      " ...\") header; restore will not use it as the shim for this package"
+  }
+}
+
+/// Install the manifest's `[npm]` packages into `target/npm/node_modules/`
+/// and scaffold a missing shim per package under `_extern_npm/`.  A failed
+/// install or a package absent from `node_modules` afterwards is B0060; a
+/// hand-edited shim that lost its `@axiom` header is B0063.
+pub func restoreNpmPackages(manifest: in Mf.Manifest, mfDir: in String): Int {
+  val npm = match manifest.npm { case Some(n) -> n; case None -> return 0 }
+  if npm.entries.count == 0 {
+    return 0
+  }
+  val installDir = Path.join(Path.join(mfDir, "target"), "npm")
+  match File.createDir(installDir) {
+    case Err(e) -> {
+      printErr("restore: cannot create " + installDir + ": " + IOError.message(e))
+      return 1
+    }
+    case Ok(_) -> ()
+  }
+  match File.writeText(Path.join(installDir, "package.json"), buildNpmPackageJson(npm)) {
+    case Err(e) -> {
+      printErr("restore: cannot write package.json: " + IOError.message(e))
+      return 1
+    }
+    case Ok(_) -> ()
+  }
+  Console.println("restore: installing NPM packages ...")
+  val captureResult = ProcessCapture.runCaptureWithDiagnosticsTimeout(
+    "npm",
+    npmInstallArgs(installDir, npm.registry),
+    "",
+    600000
+  )
+  if captureResult.timedOut {
+    printErr("restore: B0060: npm install timed out after 600 seconds")
+    return 1
+  }
+  if captureResult.exitCode != 0 {
+    printErr("restore: B0060: npm install failed (exit " + toString(captureResult.exitCode) + ")")
+    if captureResult.stderr.length > 0 {
+      printErr(captureResult.stderr)
+    }
+    return 1
+  }
+  val shimDir = Path.join(mfDir, "_extern_npm")
+  var i = 0
+  while i < npm.entries.count {
+    val e = npm.entries[i]
+    i += 1
+    val installed = Path.join(Path.join(Path.join(installDir, "node_modules"), e.name), "package.json")
+    if not File.fileExists(installed) {
+      printErr("restore: B0060: npm install finished but \"" + e.name + "\" is not in node_modules")
+      return 1
+    }
+    val shimPath = Path.join(shimDir, Mf.npmShimFileName(e.name))
+    if File.fileExists(shimPath) {
+      match File.readText(shimPath) {
+        case Err(err) -> {
+          printErr("restore: cannot read " + shimPath + ": " + IOError.message(err))
+          return 1
+        }
+        case Ok(text) -> {
+          val problem = npmShimProblem(text, e)
+          if problem != "" {
+            printErr("restore: " + problem)
+            return 1
+          }
+        }
+      }
+    } else {
+      match File.createDir(shimDir) {
+        case Err(err) -> {
+          printErr("restore: cannot create " + shimDir + ": " + IOError.message(err))
+          return 1
+        }
+        case Ok(_) -> ()
+      }
+      match File.writeText(shimPath, npmShimStub(e)) {
+        case Err(err) -> {
+          printErr("restore: cannot write " + shimPath + ": " + IOError.message(err))
+          return 1
+        }
+        case Ok(_) -> Console.println("restore: wrote shim scaffold " + shimPath)
+      }
+    }
+  }
+  Console.println("restore: " + toString(npm.entries.count) + " NPM package(s) installed")
+  0
+}
+
 // Resolve and lock every dependency declared in the manifest at `mfPath`,
 // writing `lyric.lock` (or verifying it under `lockedMode`).  Extracted from
 // cmdRestore so `lyric build` can auto-restore when the lock is missing or
@@ -1463,6 +1615,11 @@ func runRestore(mfPath: in String, lockedMode: in Bool): Int {
   val mavenRc = restoreMavenJars(manifest, mfDir)
   if mavenRc != 0 {
     return mavenRc
+  }
+
+  val npmRc = restoreNpmPackages(manifest, mfDir)
+  if npmRc != 0 {
+    return npmRc
   }
 
   Console.println("restore: done")

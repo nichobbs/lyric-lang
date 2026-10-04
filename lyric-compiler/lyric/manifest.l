@@ -169,6 +169,24 @@ pub record MavenSection {
   javaVersion: Option[String]
 }
 
+/// A single `[npm]` entry (docs/35 section 9).  `name` is the NPM package
+/// name (`node-fetch`, `@aws-sdk/client-s3`), `version` the semver range
+/// passed opaquely to the package manager, and `ident` the Lyric package
+/// identifier the generated shim declares (`NodeFetch`, `AwsSdk.ClientS3`).
+pub record NpmEntry {
+  name: String
+  version: String
+  ident: String
+}
+
+/// `[npm]` / `[npm.options]` (docs/35 section 9.1).  `registry` is "" when
+/// `[npm.options]` names none (the package manager's default,
+/// `https://registry.npmjs.org/`).
+pub record NpmSection {
+  entries: List[NpmEntry]
+  registry: String
+}
+
 /// `[native]` section (N6.4): defaults for `--target native` builds.
 /// `triple` is the LLVM target triple (empty = auto-detect the host);
 /// `optLevel` is the clang `-O` level (empty = the built-in default "2");
@@ -329,6 +347,8 @@ pub record Manifest {
   deps: List[DependencyEntry]
   nuget: Option[NugetSection]
   maven: Option[MavenSection]
+  /// Non-None when this manifest declares an `[npm]` table (docs/35 section 9).
+  npm: Option[NpmSection]
   features: Option[FeaturesSection]
   /// Non-None when this manifest declares a `[build]` table **or** a
   /// `[build.define]` table (a `[build.define]`-only manifest yields a
@@ -1479,6 +1499,217 @@ func assembleMaven(entries: in List[Entry]): Result[Option[MavenSection], Manife
   Ok(value = Some(value = MavenSection(entries = mavenEntries, repositories = repositories, javaVersion = javaVersion)))
 }
 
+func isNpmNameChar(c: in Char): Bool {
+  (c >= 'a' and c <= 'z') or (c >= '0' and c <= '9') or c == '-' or c == '.' or c == '_' or c == '~'
+}
+
+/// Whether `part` is one NPM name segment: non-empty, lowercase letters,
+/// digits and `-._~`, not starting with `.` or `_`.
+func isNpmNamePart(part: in String): Bool {
+  if part.length == 0 {
+    return false
+  }
+  val first = Str.charAtOrReplacement(part, 0)
+  if first == '.' or first == '_' {
+    return false
+  }
+  var i = 0
+  while i < part.length {
+    if not isNpmNameChar(Str.charAtOrReplacement(part, i)) {
+      return false
+    }
+    i += 1
+  }
+  true
+}
+
+/// Whether `name` is a valid NPM package name: `pkg` or `@scope/pkg`, at most
+/// 214 characters.
+pub func isValidNpmName(name: in String): Bool {
+  if name.length == 0 or name.length > 214 {
+    return false
+  }
+  if Str.startsWith(name, "@") {
+    val parts = Str.split(Str.substring(name, 1), "/")
+    return parts.length == 2 and isNpmNamePart(parts[0]) and isNpmNamePart(parts[1])
+  }
+  isNpmNamePart(name)
+}
+
+/// The shim file name for an NPM package (docs/35 section 9.3): the package
+/// name with `@` dropped and `/` written `__` (`@aws-sdk/client-s3` ->
+/// `aws-sdk__client-s3.l`).
+pub func npmShimFileName(name: in String): String {
+  val bare = if Str.startsWith(name, "@") { Str.substring(name, 1) } else { name }
+  Str.replace(bare, "/", "__") + ".l"
+}
+
+/// A range is written into the generated shim's `@axiom("...")` string and
+/// the install `package.json`, so it must hold no quote, backslash, `$`
+/// (interpolation) or control character.
+func isShimSafeRange(range: in String): Bool {
+  var i = 0
+  while i < range.length {
+    val c = Str.charAtOrReplacement(range, i)
+    if c == '"' or c == '\\' or c == '$' or c < ' ' {
+      return false
+    }
+    i += 1
+  }
+  true
+}
+
+/// ASCII-uppercase a one-character string.  Spelled with a table rather than
+/// `Str.toUpper`, which the stage-0 emitter mis-resolves to `Std.Char` in a
+/// file importing both modules (#2125).
+func npmUpperAscii(one: in String): String {
+  val at = Str.indexOfRaw("abcdefghijklmnopqrstuvwxyz", one)
+  if at < 0 {
+    one
+  } else {
+    Str.substring("ABCDEFGHIJKLMNOPQRSTUVWXYZ", at, 1)
+  }
+}
+
+/// The Lyric package identifier for an NPM package name (docs/35 section 9.3):
+/// strip `@`, map `/` to `.`, and PascalCase each `-`/`_`/`.`-separated
+/// segment (`node-fetch` -> `NodeFetch`, `@aws-sdk/client-s3` ->
+/// `AwsSdk.ClientS3`).  A segment starting with a digit is prefixed `N` so
+/// the identifier stays a valid Lyric name (`7zip` -> `N7zip`).
+pub func npmPackageIdent(name: in String): String {
+  val bare = if Str.startsWith(name, "@") { Str.substring(name, 1) } else { name }
+  val scopes = Str.split(bare, "/")
+  var result = ""
+  var si = 0
+  while si < scopes.length {
+    var ident = ""
+    var upperNext = true
+    var ci = 0
+    val seg = scopes[si]
+    while ci < seg.length {
+      val c = Str.charAtOrReplacement(seg, ci)
+      if c == '-' or c == '_' or c == '.' or c == '~' {
+        upperNext = true
+      } else {
+        val one = Str.substring(seg, ci, 1)
+        ident = ident + (if upperNext { npmUpperAscii(one) } else { one })
+        upperNext = false
+      }
+      ci += 1
+    }
+    if ident.length > 0 and Str.charAtOrReplacement(ident, 0) >= '0' and Str.charAtOrReplacement(ident, 0) <= '9' {
+      ident = "N" + ident
+    }
+    result = if si == 0 { ident } else { result + "." + ident }
+    si += 1
+  }
+  result
+}
+
+/// Assemble `[npm]` / `[npm.options]` (docs/35 section 9.1).  Mirrors
+/// `assembleNuget`: a `"name" = "range"` entry, or the inline-table form with
+/// a `version` key.  Names must be valid NPM names, ranges non-empty, and two
+/// names that map to the same Lyric package identifier (Q-JS-004:
+/// `foo-bar` and `foo_bar`) are rejected so a shim can never silently shadow
+/// another.  `[npm.options].registry` must be an `http(s)://` URL.
+func assembleNpm(entries: in List[Entry]): Result[Option[NpmSection], ManifestError] {
+  val none: Option[NpmSection] = None
+  if not hasSection(entries, "npm") and not hasSection(entries, "npm.options") {
+    return Ok(value = none)
+  }
+  val npmEntries: List[NpmEntry] = newList()
+  var i = 0
+  while i < entries.count {
+    val e = entries[i]
+    if e.section == "npm" {
+      if not isValidNpmName(e.key) {
+        return Err(
+          error = InvalidField(
+            section = "npm",
+            field = e.key,
+            message = "not a valid NPM package name (lowercase letters, digits and '-._~', optionally scoped as '@scope/name')"
+          )
+        )
+      }
+      val versionOpt: Option[String] = match e.value {
+        case VStr(v) -> Some(value = v)
+        case VTable(pairs) -> findInlineStr(pairs, "version")
+        case _ -> None
+      }
+      val range = match versionOpt { case Some(v) -> Str.trim(v); case None -> "" }
+      if range == "" {
+        return Err(
+          error = InvalidField(
+            section = "npm",
+            field = e.key,
+            message = "expected a non-empty version range string or an inline table with a 'version' key"
+          )
+        )
+      }
+      if not isShimSafeRange(range) {
+        return Err(
+          error = InvalidField(
+            section = "npm",
+            field = e.key,
+            message = "the version range must not contain a quote, backslash, '$' or control character"
+          )
+        )
+      }
+      val ident = npmPackageIdent(e.key)
+      if ident.length == 0 {
+        return Err(
+          error = InvalidField(
+            section = "npm",
+            field = e.key,
+            message = "has no letters or digits to build a Lyric package identifier from"
+          )
+        )
+      }
+      var j = 0
+      while j < npmEntries.count {
+        if npmShimFileName(npmEntries[j].name) == npmShimFileName(e.key) {
+          return Err(
+            error = InvalidField(
+              section = "npm",
+              field = e.key,
+              message = "its shim file \"" + npmShimFileName(e.key) + "\" is already taken by \"" +
+                npmEntries[j].name +
+                "\""
+            )
+          )
+        }
+        if npmEntries[j].ident == ident {
+          return Err(
+            error = InvalidField(
+              section = "npm",
+              field = e.key,
+              message = "maps to the Lyric package \"" + ident + "\", already taken by \"" + npmEntries[j].name +
+                "\""
+            )
+          )
+        }
+        j += 1
+      }
+      npmEntries.add(NpmEntry(name = e.key, version = range, ident = ident))
+    }
+    i += 1
+  }
+  if hasKey(entries, "npm.options", "registry") and not hasString(entries, "npm.options", "registry") {
+    return Err(error = InvalidField(section = "npm.options", field = "registry", message = "must be a quoted URL string"))
+  }
+  val registry = unwrapOr(findString(entries, "npm.options", "registry"), "")
+  if registry != "" and not Str.startsWith(registry, "https://") and not Str.startsWith(registry, "http://") {
+    return Err(
+      error = InvalidField(
+        section = "npm.options",
+        field = "registry",
+        message = "must be an http:// or https:// URL, got \"" + registry + "\""
+      )
+    )
+  }
+  Ok(value = Some(value = NpmSection(entries = npmEntries, registry = registry)))
+}
+
 // An `extra_libs` entry becomes a `-l<name>` clang flag; reject an empty
 // name, one containing whitespace (any of space/tab/CR/LF — a stray CR can
 // survive a CRLF-edited manifest, #4874), or one starting with `-` (the
@@ -1499,6 +1730,31 @@ func invalidLibName(name: in String): Bool {
 /// whitespace-free bare library name that does not start with `-`; any
 /// violation is `Err(InvalidField)`.  Returns `Ok(None)` when no
 /// `[native]` table is present.
+func hasKey(entries: in List[Entry], section: in String, key: in String): Bool {
+  var i = 0
+  while i < entries.count {
+    if entries[i].section == section and entries[i].key == key {
+      return true
+    }
+    i += 1
+  }
+  false
+}
+
+func hasString(entries: in List[Entry], section: in String, key: in String): Bool {
+  match findString(entries, section, key) {
+    case Some(_) -> true
+    case None -> false
+  }
+}
+
+func hasInt(entries: in List[Entry], section: in String, key: in String): Bool {
+  match findInt(entries, section, key) {
+    case Some(_) -> true
+    case None -> false
+  }
+}
+
 func findInt(entries: in List[Entry], section: in String, key: in String): Option[Int] {
   var i = 0
   while i < entries.count {
@@ -1541,6 +1797,11 @@ func assembleWasm(entries: in List[Entry]): Result[Option[WasmCfg], ManifestErro
   if not hasSection(entries, "wasm") {
     return Ok(value = none)
   }
+  for key in ["version", "world"] {
+    if hasKey(entries, "wasm", key) and not hasString(entries, "wasm", key) {
+      return Err(error = InvalidField(section = "wasm", field = key, message = "must be a quoted string"))
+    }
+  }
   val version = unwrapOr(findString(entries, "wasm", "version"), "")
   if version != "" {
     val parts = Str.split(version, ".")
@@ -1578,6 +1839,15 @@ func assembleWasm(entries: in List[Entry]): Result[Option[WasmCfg], ManifestErro
         )
       )
     }
+  }
+  if hasKey(entries, "wasm", "stack") and not hasInt(entries, "wasm", "stack") {
+    return Err(
+      error = InvalidField(
+        section = "wasm",
+        field = "stack",
+        message = "must be an integer number of bytes (a bare number, not a quoted string)"
+      )
+    )
   }
   val stackOpt = findInt(entries, "wasm", "stack")
   val stack = unwrapOr(stackOpt, 0)
@@ -1915,47 +2185,51 @@ pub func parseManifest(text: in String, filePath: in String): Result[Manifest, M
         val project = assembleProject(entries)
         val ws = assembleWorkspace(entries)
         val reg = assembleRegistry(entries)
-        match assembleNuget(entries) {
+        match assembleNpm(entries) {
           case Err(e) -> Err(error = e)
-          case Ok(nuget) -> match assembleDeps(entries) {
+          case Ok(npmOpt) -> match assembleNuget(entries) {
             case Err(e) -> Err(error = e)
-            case Ok(deps) -> match assembleFeatures(entries) {
+            case Ok(nuget) -> match assembleDeps(entries) {
               case Err(e) -> Err(error = e)
-              case Ok(featuresOpt) -> match assembleMaven(entries) {
+              case Ok(deps) -> match assembleFeatures(entries) {
                 case Err(e) -> Err(error = e)
-                case Ok(mavenOpt) -> match assembleBuild(entries) {
-                  case Err(e) -> Err(
-                    error = e
-                  )
-                  case Ok(buildOpt) -> match assembleNative(entries) {
+                case Ok(featuresOpt) -> match assembleMaven(entries) {
+                  case Err(e) -> Err(error = e)
+                  case Ok(mavenOpt) -> match assembleBuild(entries) {
                     case Err(e) -> Err(
                       error = e
                     )
-                    case Ok(nativeOpt) -> match assembleContracts(entries) {
+                    case Ok(buildOpt) -> match assembleNative(entries) {
                       case Err(e) -> Err(
                         error = e
                       )
-                      case Ok(contractsOpt) -> match assembleLayers(entries) {
+                      case Ok(nativeOpt) -> match assembleContracts(entries) {
                         case Err(e) -> Err(
                           error = e
                         )
-                        case Ok(layersOpt) -> Ok(
-                          value = Manifest(
-                            filePath = filePath,
-                            packageSection = pkg,
-                            project = project,
-                            deps = deps,
-                            nuget = nuget,
-                            maven = mavenOpt,
-                            features = featuresOpt,
-                            build = buildOpt,
-                            workspace = ws,
-                            registry = reg,
-                            native = nativeOpt,
-                            contracts = contractsOpt,
-                            layers = layersOpt
+                        case Ok(contractsOpt) -> match assembleLayers(entries) {
+                          case Err(e) -> Err(
+                            error = e
                           )
-                        )
+                          case Ok(layersOpt) -> Ok(
+                            value = Manifest(
+                              filePath = filePath,
+                              packageSection = pkg,
+                              project = project,
+                              deps = deps,
+                              nuget = nuget,
+                              maven = mavenOpt,
+                              npm = npmOpt,
+                              features = featuresOpt,
+                              build = buildOpt,
+                              workspace = ws,
+                              registry = reg,
+                              native = nativeOpt,
+                              contracts = contractsOpt,
+                              layers = layersOpt
+                            )
+                          )
+                        }
                       }
                     }
                   }

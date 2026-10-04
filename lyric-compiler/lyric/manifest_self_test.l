@@ -655,10 +655,62 @@ func testWasmTable(): Unit {
       assertEqual(n.triple, "", "wasm-table: no [native] keys, so no triple")
     }
   }
-  for bad in ["version = \"1.2\"", "world = \"My World\"", "stack = 100", "stack = 0"] {
+  for bad in ["version = \"1.2\"", "world = \"My World\"", "stack = 100", "stack = 0", "stack = \"131072\"", "version = 1", "world = 2"] {
     val t = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[wasm]\n" + bad + "\n"
     match parseManifest(t, "lyric.toml") {
       case Ok(_) -> assertTrue(false, "wasm-table: expected a rejection of " + bad)
+      case Err(_) -> ()
+    }
+  }
+}
+
+func testNpmTable(): Unit {
+  val head = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n"
+  val m = parseOk(
+    head +
+      "[npm]\n\"node-fetch\" = \"^3\"\n\"@aws-sdk/client-s3\" = { version = \"^3.600\" }\n\n[npm.options]\nregistry = \"https://npm.example.com/\"\n"
+  )
+  match m.npm {
+    case None -> assertTrue(false, "npm-table: expected Some(NpmSection)")
+    case Some(n) -> {
+      assertEqualInt(n.entries.count, 2, "npm-table: entry count")
+      assertEqual(n.entries[0].name, "node-fetch", "npm-table: first name")
+      assertEqual(n.entries[0].version, "^3", "npm-table: first range")
+      assertEqual(n.entries[0].ident, "NodeFetch", "npm-table: first ident")
+      assertEqual(n.entries[1].name, "@aws-sdk/client-s3", "npm-table: scoped name")
+      assertEqual(n.entries[1].version, "^3.600", "npm-table: inline-table range")
+      assertEqual(n.entries[1].ident, "AwsSdk.ClientS3", "npm-table: scoped ident")
+      assertEqual(n.registry, "https://npm.example.com/", "npm-table: registry")
+    }
+  }
+  match parseOk(head).npm {
+    case None -> ()
+    case Some(_) -> assertTrue(false, "npm-table: absent table must stay None")
+  }
+  assertEqual(npmPackageIdent("7zip"), "N7zip", "npm-ident: leading digit")
+  assertEqual(npmPackageIdent("left_pad.js"), "LeftPadJs", "npm-ident: separators")
+  val bads = [
+    "\"Bad Name\" = \"1\"",
+    "\"_hidden\" = \"1\"",
+    "\"@scope\" = \"1\"",
+    "\"@a/b/c\" = \"1\"",
+    "\"zod\" = \"\"",
+    "\"zod\" = 3",
+    "\"---\" = \"1\"",
+    "\"foo-bar\" = \"1\"\n\"foo_bar\" = \"1\"",
+    "\"aws-sdk__client-s3\" = \"1\"\n\"@aws-sdk/client-s3\" = \"1\"",
+    "\"zod\" = \"1\\\"2\"",
+    "\"zod\" = \"^$1\""
+  ]
+  for bad in bads {
+    match parseManifest(head + "[npm]\n" + bad + "\n", "lyric.toml") {
+      case Ok(_) -> assertTrue(false, "npm-table: expected a rejection of " + bad)
+      case Err(_) -> ()
+    }
+  }
+  for opt in ["registry = \"ftp://x\"", "registry = 5"] {
+    match parseManifest(head + "[npm]\n\"zod\" = \"^3\"\n\n[npm.options]\n" + opt + "\n", "lyric.toml") {
+      case Ok(_) -> assertTrue(false, "npm-table: expected a rejection of " + opt)
       case Err(_) -> ()
     }
   }
@@ -1049,6 +1101,10 @@ test "[build] shape alone leaves kind and profile at defaults" {
   testBuildShapeOnly()
   testBuildWasmShapes()
   testWasmTable()
+}
+
+test "[npm] table: entries, idents, registry, rejections" {
+  testNpmTable()
 }
 
 test "[build] profile alone leaves shapeDeclared false (#6268)" {

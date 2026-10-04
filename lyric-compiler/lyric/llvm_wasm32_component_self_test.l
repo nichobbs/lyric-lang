@@ -21,6 +21,7 @@ import Std.Process as Process
 import Std.String as Str
 import Std.Environment as Environment
 import Std.Uuid as Uuid
+import Std.Parse as Parse
 import Lyric.Emitter
 import Lyric.LlvmBridge
 import Lyric.DiagnosticUtil as DiagUtil
@@ -862,6 +863,35 @@ test "wasm32 component: the shape options set the WIT version, world and stack s
   vargs.add(Path.join(dir, "prog.wasm"))
   val v = run(envOrPanic("WASM_TOOLS"), vargs)
   assertTrue(v.exitCode == 0, "the component validates: " + v.stderr)
+}
+
+// The initial value of the core module's `__stack_pointer` global: the top of
+// the stack region, so two builds of one program differ by exactly the
+// difference of their stack sizes.
+func stackPointerInit(wasmPath: in String): Int {
+  val pargs: List[String] = newList()
+  pargs.add("print")
+  pargs.add(wasmPath)
+  val printed = run(envOrPanic("WASM_TOOLS"), pargs)
+  val marker = "$__stack_pointer (;0;) (mut i32) i32.const "
+  match Str.indexOf(printed.stdout, marker) {
+    case None -> panic("no __stack_pointer global in " + wasmPath)
+    case Some(at) -> {
+      val rest = Str.substring(printed.stdout, at + marker.length)
+      val parts = Str.split(rest, ")")
+      match Parse.parseOptInt(parts[0]) {
+        case Some(n) -> n
+        case None -> panic("unreadable __stack_pointer initializer: " + parts[0])
+      }
+    }
+  }
+}
+
+test "wasm32 component: the stack option moves the stack pointer by the size difference" {
+  val small = componentBuildDir(program, "component;stack=65536")
+  val large = componentBuildDir(program, "component;stack=131072")
+  val delta = stackPointerInit(Path.join(large, "prog.wasm")) - stackPointerInit(Path.join(small, "prog.wasm"))
+  assertTrue(delta == 65536, "a 64 KiB larger stack raises the stack pointer by 65536, got " + delta.toString())
 }
 
 test "wasm32 component: a package that only imports host functions builds" {

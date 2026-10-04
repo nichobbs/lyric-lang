@@ -1826,3 +1826,14 @@ test "resolveWorkspaceImportDeps: --target jvm tolerates a NEVER-built member (n
   assertFalse(deps.hadUnbuiltMember, "an absent DLL is not fatal on --target jvm")
   cleanup(root)
 }
+
+test "effectiveWasmVersion: [wasm] version wins, else the [package] version, else empty" {
+  assertEqual(Cli.effectiveWasmVersion("2.3.4", ""), "2.3.4", "project version is the default")
+  assertEqual(Cli.effectiveWasmVersion("2.3.4", "9.0.0"), "9.0.0", "[wasm] version overrides it")
+  assertEqual(Cli.effectiveWasmVersion("", ""), "", "a single file leaves it to the bridge's 0.1.0")
+  assertEqual(
+    Cli.shapeSpec("component", Cli.effectiveWasmVersion("2.3.4", ""), "", 0),
+    "component;version=2.3.4",
+    "a project's [package] version reaches the shape argument"
+  )
+}
