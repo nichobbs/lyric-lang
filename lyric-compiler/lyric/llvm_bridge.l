@@ -1701,6 +1701,30 @@ func walkReachableFns(
           // every id in `pkgOfId` is registered with a real package name)
           // falls back to the old bundle-wide behavior rather than risk
           // silently under-including a genuine callee.
+          // The same plain name in several packages: codegen resolves it
+          // against the caller's DIRECT imports, so mark exactly those
+          // candidates (not the whole transitive closure, which would pull
+          // in unrelated packages' host seams).
+          match mapGet(bareTrailing, "=" + raw) {
+            case Some(sameName) -> {
+              val direct: List[String] = match mapGet(pkgImports, curPkg) { case Some(d) -> d; case None -> newList() }
+              for cand in sameName {
+                val candPkg = match mapGet(pkgOfId, cand) { case Some(p) -> p; case None -> "" }
+                var allowed = candPkg == curPkg
+                for dp in direct {
+                  if dp == candPkg {
+                    allowed = true
+                  }
+                }
+                if allowed and not reachable.containsKey(cand) {
+                  reachable.add(cand, true)
+                  fnWorklist.add(cand)
+                }
+              }
+            }
+            case None -> {
+            }
+          }
           match mapGet(bareTrailing, raw) {
             case Some(targets) -> {
               val closure = if curPkg.length == 0 {
@@ -2315,7 +2339,7 @@ func registerBareTrailingSegment(
 }
 
 func registerBareName(bareTrailing: in Map[String, List[String]], name: in String, arity: in Int, id: in String): Unit {
-  val key = name + "/" + arity.toString()
+  val key = "=" + name + "/" + arity.toString()
   match mapGet(bareTrailing, key) {
     case Some(targets) -> targets.add(id)
     case None -> {
