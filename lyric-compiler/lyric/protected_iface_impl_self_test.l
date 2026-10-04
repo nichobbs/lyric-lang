@@ -15,6 +15,7 @@
 package ProtectedIfaceImplSelfTest
 
 import Std.Core
+import Std.Collections
 import Std.Testing
 
 pub interface Counter {
@@ -73,4 +74,36 @@ test "an impl method is callable on the concrete protected receiver" {
 test "a protected type implements more than one interface" {
   val t = Tally(n = 3)
   assertTrue(describe(t) == "tally:6", "label calls a sibling member under the reentrant lock")
+}
+
+protected type Registry {
+  var items: Map[String, Int] = newMap()
+  entry add(key: in String, v: in Int): Int {
+    prune(100)
+    items.add(key, v)
+    total()
+  }
+  entry prune(limit: in Int): Unit {
+    if items.count > limit {
+      items = newMap()
+    }
+  }
+  entry total(): Int {
+    var sum = 0
+    for k in mapKeys(items) {
+      match mapGet(items, k) {
+        case Some(x) -> {
+          sum = sum + x
+        }
+        case None -> ()
+      }
+    }
+    sum
+  }
+}
+
+test "an entry calls a sibling entry by its bare name under the reentrant lock" {
+  val r = Registry()
+  assertTrue(r.add("a", 2) == 2, "first add totals through a bare sibling call")
+  assertTrue(r.add("b", 5) == 7, "a second add sees the first")
 }

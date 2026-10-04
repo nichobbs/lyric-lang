@@ -4513,6 +4513,25 @@ func lowerCallEx(
           }
         }
         val recvVal = lowerExpr(ctx, insns, receiver)
+        // `r.f(args)` where `f` is a function-typed field of the record `r`:
+        // read the field (a borrow) and call the closure it holds.
+        match recInfoOfType(ctx, recvVal.ty) {
+          case Some(ri) -> {
+            val fieldIdx = recFieldIndex(ri, memberName)
+            if fieldIdx >= 0 {
+              match closureSigOfType(ctx, ri.fieldTys[fieldIdx]) {
+                case Some(cs) -> {
+                  val fieldVal = lowerRecordFieldLoad(ctx, insns, ri, recvVal, memberName)
+                  return lowerClosureCall(ctx, insns, fieldVal, cs, args)
+                }
+                case None -> {
+                }
+              }
+            }
+          }
+          case None -> {
+          }
+        }
         val someRecvExpr: Option[Expr] = Some(value = receiver)
         match lowerScalarMethodCall(ctx, insns, recvVal, memberName, args, line, someRecvExpr) {
           case Some(v) -> return v
@@ -15287,6 +15306,8 @@ func makeProtectedFieldNames(decl: in ProtectedTypeDecl): Map[String, Bool] {
           case PFImmutable(fd) -> names.add(fd.name, true)
         }
       }
+      case PMEntry(ed) -> names.add("()" + ed.name, true)
+      case PMFunc(fn) -> names.add("()" + fn.name, true)
       case _ -> {
       }
     }
@@ -15347,7 +15368,20 @@ func desugarProtectedExpr(fieldNames: in Map[String, Bool], e: in Expr): Expr {
         }
         i = i + 1
       }
-      return Expr(kind = ECall(fn = desugarProtectedExpr(fieldNames, fn), args = args2), span = e.span)
+      // A bare call to a sibling entry/func becomes `self.m(..)`; the
+      // member's mutex is recursive, so re-entering it from inside the
+      // monitor is the same as MSIL's `Monitor.Enter` re-entry.
+      val callee = match fn.kind {
+        case EPath(cp) -> {
+          if cp.segments.count == 1 and fieldNames.containsKey("()" + cp.segments[0]) and not fieldNames.containsKey(cp.segments[0]) {
+            Expr(kind = EMember(receiver = Expr(kind = ESelf, span = fn.span), memberName = cp.segments[0]), span = fn.span)
+          } else {
+            desugarProtectedExpr(fieldNames, fn)
+          }
+        }
+        case _ -> desugarProtectedExpr(fieldNames, fn)
+      }
+      return Expr(kind = ECall(fn = callee, args = args2), span = e.span)
     }
     case EIndex(receiver, indices) -> {
       val idxs: List[Expr] = newList()

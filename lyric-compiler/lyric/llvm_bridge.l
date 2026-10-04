@@ -552,7 +552,11 @@ func typedInitBlock(ty: in TypeExpr, init: in Expr, sp: in Span): Block {
   stmts.add(
     Statement(
       kind = SLocal(
-        binding = LBVal(pat = Pattern(kind = PBinding(name = name, inner = noInner), span = sp), ty = Some(value = ty), init = init)
+        binding = LBVal(
+          pat = Pattern(kind = PBinding(name = name, inner = noInner), span = sp),
+          ty = Some(value = ty),
+          init = init
+        )
       ),
       span = sp
     )
@@ -604,7 +608,9 @@ func hoistModuleValInits(sf: in SourceFile): SourceFile {
                     body = Some(value = FBBlock(block = typedInitBlock(ty, decl.init, decl.span))),
                     span = decl.span
                   )
-                  hoisted.add(Item(docComments = noDocs, annotations = noAnns, visibility = None, kind = IFunc(decl = fd), span = it.span))
+                  hoisted.add(
+                    Item(docComments = noDocs, annotations = noAnns, visibility = None, kind = IFunc(decl = fd), span = it.span)
+                  )
                   // The `val` now just calls its initializer function, so the
                   // (possibly generic) initializer expression lives only in
                   // the typed hoisted body.
@@ -814,7 +820,12 @@ pub func compileToNativeWithShape(
   val noConfigs: Map[String, WireExpand.CollectedConfigTemplate] = newMap()
   // Config-template declarations become `pub record` twins (docs/58 §3); the
   // collection runs over an alias-rewritten copy, as on the managed targets.
-  WireExpand.collectWireTemplates(Aliases.rewriteFile(shimFile).items, dottedPath(shimFile.packageDecl.path), noWires, noConfigs)
+  WireExpand.collectWireTemplates(
+    Aliases.rewriteFile(shimFile).items,
+    dottedPath(shimFile.packageDecl.path),
+    noWires,
+    noConfigs
+  )
   val userFile0 = match pipeExpandAndRewrite(shimFile, noWires, noConfigs, true, false, false, path, noOrigins) {
     case Some(f) -> hoistModuleValInits(f)
     case None -> return false
@@ -2250,7 +2261,7 @@ func addKey(m: in Map[String, String], k: in String, v: in String): Unit {
   }
 }
 
-// An own package's `impl` method bodies are lowered whole (`unitOf`'s
+// An own package's `impl`, record and protected-type method bodies are lowered whole (`unitOf`'s
 // `collectImplMethods`), so what they call must be reachable too: index each
 // method under its lowered name and seed the walk with it. Without this a
 // stdlib function called only from an impl method (`Std.HttpServer.nextContext`
@@ -2268,19 +2279,40 @@ func seedImplMethods(
       case IImpl(decl) -> {
         val methods: List[FunctionDecl] = newList()
         collectImplMethods(pkg, decl, methods)
-        for fn in methods {
-          val id = pkg + "." + fn.name + "/" + fn.params.count.toString()
-          if not bodyIndex.containsKey(id) {
-            bodyIndex.add(id, fn)
-            pkgOfId.add(id, pkg)
-          }
-          if not reachable.containsKey(id) {
-            reachable.add(id, true)
-            fnWorklist.add(id)
-          }
-        }
+        seedMethodList(pkg, methods, bodyIndex, pkgOfId, reachable, fnWorklist)
+      }
+      case IRecord(decl) -> {
+        val methods: List[FunctionDecl] = newList()
+        collectRecordMethods(pkg, decl, methods)
+        seedMethodList(pkg, methods, bodyIndex, pkgOfId, reachable, fnWorklist)
+      }
+      case IProtected(decl) -> {
+        val methods: List[FunctionDecl] = newList()
+        collectProtectedMethods(pkg, decl, methods)
+        seedMethodList(pkg, methods, bodyIndex, pkgOfId, reachable, fnWorklist)
       }
       case _ -> ()
+    }
+  }
+}
+
+func seedMethodList(
+  pkg: in String,
+  methods: in List[FunctionDecl],
+  bodyIndex: in Map[String, FunctionDecl],
+  pkgOfId: in Map[String, String],
+  reachable: in Map[String, Bool],
+  fnWorklist: in List[String],
+): Unit {
+  for fn in methods {
+    val id = pkg + "." + fn.name + "/" + fn.params.count.toString()
+    if not bodyIndex.containsKey(id) {
+      bodyIndex.add(id, fn)
+      pkgOfId.add(id, pkg)
+    }
+    if not reachable.containsKey(id) {
+      reachable.add(id, true)
+      fnWorklist.add(id)
     }
   }
 }
@@ -2347,7 +2379,9 @@ func unitOf(
           case _ -> ()
         }
       }
-      case IConst(decl) -> moduleVals.add(ModuleValDef(name = decl.name, init = decl.init, ty = Some(value = decl.ty), pkg = pkg))
+      case IConst(decl) -> moduleVals.add(
+        ModuleValDef(name = decl.name, init = decl.init, ty = Some(value = decl.ty), pkg = pkg)
+      )
       case IExternFunc(decl) -> {
         val id = pkg + "." + decl.name + "/" + decl.params.count.toString()
         if lowerAll or reachable.containsKey(id) {

@@ -49,3 +49,22 @@ Self-tests: `cfg_self_test.l`, `cfg_gate_self_test.l`,
 
 Known gaps: `Std.Json` document parsing and floats on native (#7856), JVM
 parity for the lyric-web/lyric-ws native-only seams.
+
+Native codegen fixes found by building `lyric-ui` natively (#7990):
+
+- A bare call to a sibling entry or func inside a protected-type body
+  (`removeExpired(now, graceMs)` in `admit`) lowers to `self.removeExpired(..)`;
+  the member mutex is recursive, as `Monitor` is on MSIL. Covered by
+  `protected_iface_impl_self_test.l`.
+- The reachability walk now seeds record methods and protected-type members of
+  the project's own packages, not only free functions and `impl` methods, so a
+  stdlib generic used only there (`mapKeys` in a protected entry) reaches the
+  bundle.
+- `r.f(args)` on a function-typed record field reads the field and calls the
+  closure it holds (`record_field_closure_self_test.l`, now in the native lane).
+
+#7864 (generic protected types, N0008) does not block `lyric-ui`: every
+protected type in `lyric-ui` is non-generic and the native build passes the
+N0008 pre-pass. The remaining native blocker is `Std.Task` (`makeScope`,
+`scopeSpawn`, `cancelScope`, `isCancelled`), which has no `_kernel_native`
+twin.
