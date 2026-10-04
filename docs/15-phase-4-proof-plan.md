@@ -435,7 +435,15 @@ Calls the verifier cannot follow fail closed or are over-approximated
 - Integer `/` and `%` (and `/=`, `%=`) carry the obligation `divisor != 0`
   in every mode, and on a signed operand `not (dividend == Min and divisor
   == -1)` for its width: both trap in every build profile (D163) (#8107,
-  #7882).
+  #7882). When the verifier does not know the width, both the 32- and
+  64-bit minimums are excluded. A match binding of the whole scrutinee
+  carries the scrutinee's width and range. (Elsewhere an unknown width
+  defaults to 32 bits, which only makes the `+`, `-`, `*` and negation
+  overflow obligations stricter.)
+- Inside one expression, evaluation order is respected: an argument, a
+  branch or arm after a condition, scrutinee or guard, and the right
+  operand of a binary operator see the state the earlier part leaves — a
+  variable it passed to an `out`/`inout` parameter holds a new value.
 - A match arm's guard is translated in the arm's bindings: its side
   conditions and facts hold where the pattern matches and no earlier arm
   did, and the arm is taken when pattern and guard hold. An arm whose

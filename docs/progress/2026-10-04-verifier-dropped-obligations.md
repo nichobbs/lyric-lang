@@ -58,6 +58,27 @@ program `lyric prove` discharged and `lyric run` violated:
   #7882. `examples/unsigned_proof.l`'s remainder example had that very bug
   and now excludes `d == -1`; book §18 exercise 1 points it out.
 
+## Second review
+
+- A signed division whose width the verifier did not know took the 32-bit
+  minimum, so a `Long` `MinValue / -1` (or `% -1`) through a match binding
+  proved. An unknown width now excludes both minimums, and a match binding
+  of the whole scrutinee carries the scrutinee's width and range. The
+  other uses of the 32-bit default (`+`, `-`, `*`, negation overflow) only
+  make their obligations stricter.
+- `out`/`inout` calls inside one expression were not sequenced: what the
+  expression evaluated later (branches, arms, a guard's arm body, a right
+  operand, later arguments) was translated in the state before the call.
+  Each of those now sees the variables such a call passed in at new
+  values.
+- A `var` declared in a block used as a value was not marked as a binding
+  a call or lambda may change, so a lambda capturing it saw its initial
+  value; it now sees an arbitrary one.
+
+After the second review: `verifier_self_test.l` 139 tests, the CI prove
+examples, `core_proof.l`, every earlier repro, and the compiler self-test
+batch (3357 tests) all pass.
+
 After the follow-up: `verifier_self_test.l` 136 tests, the CI prove
 examples (unsigned_proof 18/18) and `core_proof.l`, the earlier repros
 (only the separately filed ones still prove, plus legitimate programs),
