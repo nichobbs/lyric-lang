@@ -60,6 +60,11 @@ pub record VEnv {
   // last: a call reaching one of them again inside that contract is not
   // unfolded a second time (#8102).
   pub contractStack: List[String]
+  // The functions on a cycle of the contract-call graph — whose
+  // `requires:`/`ensures:` (or `@pure` body) reach themselves again.  Their
+  // `ensures:` and body are never assumed at a call: a cycle can make them
+  // contradictory (#8102).
+  pub cyclic: List[String]
   // Copy helpers — use explicit names list to avoid iterating Map.keys on a
   // TypeBuilderInstantiation, which generates invalid IL.
 }
@@ -183,6 +188,7 @@ pub func envEmpty(callees: in Map[String, FunctionDecl], symbols: in List[Symbol
   val mutables: List[String] = newList()
   val protectedMembers: List[String] = newList()
   val contractStack: List[String] = newList()
+  val cyclic: List[String] = newList()
   VEnv(
     vars = vars,
     varNames = varNames,
@@ -198,7 +204,8 @@ pub func envEmpty(callees: in Map[String, FunctionDecl], symbols: in List[Symbol
     finals = finals,
     mutables = mutables,
     protectedMembers = protectedMembers,
-    contractStack = contractStack
+    contractStack = contractStack,
+    cyclic = cyclic
   )
 }
 
@@ -234,7 +241,8 @@ pub func envBind(name: in String, info: in SortInfo, env: in VEnv): VEnv {
     finals = env.finals,
     mutables = env.mutables,
     protectedMembers = env.protectedMembers,
-    contractStack = env.contractStack
+    contractStack = env.contractStack,
+    cyclic = env.cyclic
   )
 }
 
@@ -269,7 +277,8 @@ pub func envBindTerm(name: in String, term: in Term, info: in SortInfo, env: in 
     finals = env.finals,
     mutables = env.mutables,
     protectedMembers = env.protectedMembers,
-    contractStack = env.contractStack
+    contractStack = env.contractStack,
+    cyclic = env.cyclic
   )
 }
 
@@ -605,7 +614,8 @@ func varlessEnv(env: in VEnv): VEnv {
     finals = env.finals,
     mutables = env.mutables,
     protectedMembers = env.protectedMembers,
-    contractStack = env.contractStack
+    contractStack = env.contractStack,
+    cyclic = env.cyclic
   )
 }
 
@@ -684,6 +694,20 @@ func outArgsAlias(decl: in FunctionDecl, args: in List[CallArg]): String {
   }
 }
 
+func hasRequires(decl: in FunctionDecl): Bool {
+  var i = 0
+  while i < decl.contracts.count {
+    match decl.contracts[i] {
+      case CCRequires(_, _) -> {
+        return true
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  false
+}
+
 // `names` and then `name`, as a new list.
 func termsWithNames(names: in List[String], name: in String): List[String] {
   val longer: List[String] = newList()
@@ -737,14 +761,32 @@ func translateResolvedCall(
 ): (TranslateResult, List[Diagnostic]) {
   val resultInfo = match decl.ret { case Some(te) -> sortOfTypeExprE(env, te); case None -> unitSortInfo() }
   // A call reaching a function whose contract is already being unfolded
-  // here (a recursive contract) is that function applied to its
-  // arguments, with no second unfolding.
+  // here — a function's own contracts are translated with it on the
+  // stack — is that function applied to its arguments, with no second
+  // unfolding and so no facts.  Its precondition would be an obligation
+  // here, which unfolding it again cannot state: a callee with a
+  // `requires:` fails closed (#8102).
   if env.contractStack.contains(decl.name) {
     val recTerm = TApp(name = name, args = rawArgTerms, retSort = resultInfo.sort)
+    if hasRequires(decl) {
+      allArgDiags.add(
+        untranslatableDiag(
+          "a call to '" + decl.name + "' inside the contract it reaches again, whose `requires:` cannot be checked there",
+          callSpan
+        )
+      )
+      val recPoisonTR = TranslateResult(term = poisonTerm(recTerm), sideConds = argSides, assumed = argAssumed)
+      val recPoisonPair: (TranslateResult, List[Diagnostic]) = (recPoisonTR, allArgDiags)
+      return recPoisonPair
+    }
     val recTR = TranslateResult(term = recTerm, sideConds = argSides, assumed = argAssumed)
     val recPair: (TranslateResult, List[Diagnostic]) = (recTR, allArgDiags)
     return recPair
   }
+  // A function on a cycle of the contract-call graph has its `requires:`
+  // proved at the call, but its `ensures:` and `@pure` body, which the
+  // cycle can make contradictory, are never assumed (#8102).
+  val cyclicCallee = env.cyclic.contains(decl.name)
   // The callee's contract is translated against the file's functions, so
   // a call nested in a `requires:` brings its own precondition into the
   // caller's obligation (#8102).
@@ -785,7 +827,8 @@ func translateResolvedCall(
     finals = env.finals,
     mutables = env.mutables,
     protectedMembers = env.protectedMembers,
-    contractStack = contractStack
+    contractStack = contractStack,
+    cyclic = env.cyclic
   )
   // A parameter default sees the names declared at module level, never
   // the callee's other parameters (docs/01): it is translated with no
@@ -850,7 +893,7 @@ func translateResolvedCall(
 
   // @pure callee: translate body expr, emit equality as assumption.
   val pureUnfold: List[Term] = newList()
-  if isPure(decl) {
+  if isPure(decl) and not cyclicCallee {
     match decl.body {
       case Some(body) -> {
         val bodyExprOpt = match body {
@@ -905,13 +948,25 @@ func translateResolvedCall(
   val resultVars2 = copyVarMap(innerVars, innerVarNames)
   val resultSorts2 = copySortMap(innerSorts, innerVarNames)
   val resultVarNames2 = copyNameList(innerVarNames)
-  resultVars2.add("result", callTerm)
+  // `result` is a placeholder the parameter substitution replaces with the
+  // call, together with the parameters: substituting the parameters into
+  // the call itself would rewrite the caller's variables inside its
+  // arguments (`fact(n - 1)` read as `fact(n - 1 - 1)`, #8102).
+  val resultPlaceholder = freshVar(env, "result", resultSort)
+  resultVars2.add("result", resultPlaceholder)
   resultSorts2.add("result", resultSI)
   resultVarNames2.add("result")
   // An `out`/`inout` parameter named in an `ensures:` is its value after
   // the call; `old(p)` is the value passed in.
   val postSubst: Map[String, Term] = newMap()
   val postSubstNames: List[String] = newList()
+  match resultPlaceholder {
+    case TVar(placeholderName, _) -> {
+      postSubst.add(placeholderName, callTerm)
+      postSubstNames.add(placeholderName)
+    }
+    case _ -> ()
+  }
   var psi = 0
   while psi < decl.params.count {
     val pp = decl.params[psi]
@@ -945,15 +1000,18 @@ func translateResolvedCall(
     finals = env.finals,
     mutables = env.mutables,
     protectedMembers = env.protectedMembers,
-    contractStack = contractStack
+    contractStack = contractStack,
+    cyclic = env.cyclic
   )
   ci = 0
   while ci < decl.contracts.count {
     match decl.contracts[ci] {
       case CCEnsures(post, _) -> {
-        val postParts = translateContractParts(resultEnv, post)
-        keepUntranslatableDiags(postParts.diags, allArgDiags)
-        postConds.add(substTerm(postSubst, postSubstNames, mkAnd(partsHyps(postParts))))
+        if not cyclicCallee {
+          val postParts = translateContractParts(resultEnv, post)
+          keepUntranslatableDiags(postParts.diags, allArgDiags)
+          postConds.add(substTerm(postSubst, postSubstNames, mkAnd(partsHyps(postParts))))
+        }
       }
       case _ -> {
       }
@@ -3222,13 +3280,29 @@ record Effects {
   assigned: List[String]
   outArgs: List[String]
   jumps: List[String]
+  // The last name segment of every callee the code calls (`f` for `f(x)`,
+  // `P.f(x)` and `r.f()`), for the contract-call graph.
+  calls: List[String]
 }
 
 func emptyEffects(): Effects {
   val assigned: List[String] = newList()
   val outArgs: List[String] = newList()
   val jumps: List[String] = newList()
-  Effects(assigned = assigned, outArgs = outArgs, jumps = jumps)
+  val calls: List[String] = newList()
+  Effects(assigned = assigned, outArgs = outArgs, jumps = jumps, calls = calls)
+}
+
+// The last name segment a callee expression names, or "".
+func calleeLeaf(fn: in Expr): String {
+  match fn.kind {
+    case EPath(path) -> if path.segments.count > 0 { path.segments[path.segments.count - 1] } else { "" }
+    case EMember(_, member) -> member
+    case EParen(inner) -> calleeLeaf(inner)
+    case ETypeApp(inner, _) -> calleeLeaf(inner)
+    case EIndex(inner, _) -> calleeLeaf(inner)
+    case _ -> ""
+  }
 }
 
 func effectsOfStmts(env: in VEnv, stmts: in List[Statement]): Effects {
@@ -3411,6 +3485,10 @@ func effExpr(env: in VEnv, e: in Expr, inLambda: in Bool, eff: in Effects): Unit
         i = i + 1
       }
       effOutArgs(env, fn, args, eff)
+      val leaf = calleeLeaf(fn)
+      if leaf.length > 0 {
+        addName(eff.calls, leaf)
+      }
     }
     case EIndex(receiver, indices) -> {
       effExpr(env, receiver, inLambda, eff)
@@ -3647,6 +3725,30 @@ func envSetMutable(env: in VEnv, name: in String, mutable: in Bool): VEnv {
   envWithState(env, env.finals, mutables, env.protectedMembers)
 }
 
+// `env` for translating `name`'s own contracts: `name` is on the contract
+// stack, so a call to it there is cut where its callers cut it, and what
+// the function assumes of its contract is what they prove (#8102).
+func envInOwnContract(env: in VEnv, name: in String): VEnv {
+  VEnv(
+    vars = env.vars,
+    varNames = env.varNames,
+    sorts = env.sorts,
+    callees = env.callees,
+    symbols = env.symbols,
+    checkedArithmetic = env.checkedArithmetic,
+    distincts = env.distincts,
+    fieldInfos = env.fieldInfos,
+    recordDefaults = env.recordDefaults,
+    fresh = env.fresh,
+    recordMethods = env.recordMethods,
+    finals = env.finals,
+    mutables = env.mutables,
+    protectedMembers = env.protectedMembers,
+    contractStack = termsWithNames(env.contractStack, name),
+    cyclic = env.cyclic
+  )
+}
+
 // `env` whose postcondition placeholders are `finals`.
 func envWithFinals(env: in VEnv, finals: in List[FinalSlot]): VEnv {
   envWithState(env, finals, env.mutables, env.protectedMembers)
@@ -3670,7 +3772,8 @@ func envWithState(
     finals = finals,
     mutables = mutables,
     protectedMembers = protectedMembers,
-    contractStack = env.contractStack
+    contractStack = env.contractStack,
+    cyclic = env.cyclic
   )
 }
 
@@ -4018,7 +4121,7 @@ pub func goalsForFunctionWithState(
   while i < decl.contracts.count {
     match decl.contracts[i] {
       case CCRequires(e, _) -> {
-        val parts = translateContractParts(envWithParams, e)
+        val parts = translateContractParts(envInOwnContract(envWithParams, decl.name), e)
         appendTermList(preTerms, partsHyps(parts))
         appendTermList2(preDiags, parts.diags)
       }
@@ -4071,7 +4174,7 @@ pub func goalsForFunctionWithState(
   while i < decl.contracts.count {
     match decl.contracts[i] {
       case CCEnsures(e, _) -> {
-        val parts = translateContractParts(envForPost, e)
+        val parts = translateContractParts(envInOwnContract(envForPost, decl.name), e)
         postTerms.add(partsObligation(parts))
         appendTermList2(postDiags, parts.diags)
       }
@@ -4212,7 +4315,8 @@ func freshSymbolsEnv(env: in VEnv): VEnv {
     finals = env.finals,
     mutables = env.mutables,
     protectedMembers = env.protectedMembers,
-    contractStack = env.contractStack
+    contractStack = env.contractStack,
+    cyclic = env.cyclic
   )
 }
 
@@ -4484,12 +4588,14 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
   // A function is reachable by its name and by its name qualified with
   // this file's package (`P.f`, #8102).
   val callees: Map[String, FunctionDecl] = newMap()
+  val calleeDecls: List[FunctionDecl] = newList()
   val packagePrefix = joinPathSegments(file.packageDecl.path.segments) + "."
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
       case IFunc(fn) -> {
         callees.add(fn.name, fn)
+        calleeDecls.add(fn)
         if not callees.containsKey(packagePrefix + fn.name) {
           callees.add(packagePrefix + fn.name, fn)
         }
@@ -4504,7 +4610,10 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
         var mi = 0
         while mi < decl.members.count {
           match decl.members[mi] {
-            case PMFunc(fn) -> callees.add(decl.name + "::" + fn.name, fn)
+            case PMFunc(fn) -> {
+              callees.add(decl.name + "::" + fn.name, fn)
+              calleeDecls.add(fn)
+            }
             case PMEntry(ed) -> {
               val stubContracts: List[ContractClause] = newList()
               var pi = 0
@@ -4535,6 +4644,7 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
                 span = ed.span
               )
               callees.add(decl.name + "::" + ed.name, entryFn)
+              calleeDecls.add(entryFn)
             }
             case _ -> {
             }
@@ -4679,6 +4789,7 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
 
   // Build env0 carrying the distinct-type alias map collected above (#3853).
   val env0Init = envEmpty(callees, sharedSymbols, checkedArith)
+  val cyclicNames = contractCycles(env0Init, calleeDecls)
   val env0 = VEnv(
     vars = env0Init.vars,
     varNames = env0Init.varNames,
@@ -4694,7 +4805,8 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
     finals = env0Init.finals,
     mutables = env0Init.mutables,
     protectedMembers = env0Init.protectedMembers,
-    contractStack = env0Init.contractStack
+    contractStack = env0Init.contractStack,
+    cyclic = cyclicNames
   )
 
   val allGoals: List[Goal] = newList()
@@ -4733,6 +4845,99 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
   };
 
   (allGoals, dedupeDiagnostics(allDiags))
+}
+
+// The names of the functions on a cycle of the contract-call graph: an edge
+// runs from a function to every function its `requires:`/`ensures:` (and,
+// for a `@pure` function, its body, which a call unfolds) calls, matched by
+// last name segment so a method or qualified call is never missed.  A
+// cycle — a function reaching itself, directly or through others — is what
+// unfolding contracts at calls cannot settle (#8102).
+func contractCycles(env: in VEnv, decls: in List[FunctionDecl]): List[String] {
+  val succs: List[List[Int]] = newList()
+  var i = 0
+  while i < decls.count {
+    val eff = emptyEffects()
+    val d = decls[i]
+    var ci = 0
+    while ci < d.contracts.count {
+      match d.contracts[ci] {
+        case CCRequires(x, _) -> effExpr(env, x, false, eff)
+        case CCEnsures(x, _) -> effExpr(env, x, false, eff)
+        case _ -> ()
+      }
+      ci = ci + 1
+    }
+    if isPure(d) {
+      match d.body {
+        case Some(b) -> match b {
+          case FBExpr(x) -> effExpr(env, x, false, eff)
+          case FBBlock(blk) -> effBlock(env, blk, false, eff)
+        }
+        case None -> ()
+      }
+    }
+    val targets: List[Int] = newList()
+    var j = 0
+    while j < decls.count {
+      if eff.calls.contains(nameLeaf(decls[j].name)) {
+        targets.add(j)
+      }
+      j = j + 1
+    }
+    succs.add(targets)
+    i = i + 1
+  }
+  val cyclic: List[String] = newList()
+  i = 0
+  while i < decls.count {
+    if reachesItself(succs, i) {
+      addName(cyclic, decls[i].name)
+    }
+    i = i + 1
+  }
+  cyclic
+}
+
+// The part of a function name after its last `.` or `::`.
+func nameLeaf(name: in String): String {
+  var start = 0
+  var k = 0
+  while k < name.length {
+    val ch = name.substring(k, 1)
+    if ch == "." or ch == ":" {
+      start = k + 1
+    }
+    k = k + 1
+  }
+  name.substring(start, name.length - start)
+}
+
+func reachesItself(succs: in List[List[Int]], start: in Int): Bool {
+  val seen: List[Int] = newList()
+  val todo: List[Int] = newList()
+  var k = 0
+  while k < succs[start].count {
+    todo.add(succs[start][k])
+    k = k + 1
+  }
+  var t = 0
+  while t < todo.count {
+    val n = todo[t]
+    if n == start {
+      return true
+    }
+    if not seen.contains(n) {
+      seen.add(n)
+      var m = 0
+      while m < succs[n].count {
+        todo.add(succs[n][m])
+        m = m + 1
+      }
+    }
+    t = t + 1
+  }
+  false
 }
 
 // Drop a diagnostic identical (code, message and span) to an earlier one: an

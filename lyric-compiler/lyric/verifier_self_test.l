@@ -1910,3 +1910,49 @@ test "an untranslatable argument of a computed call keeps its goal failed (#7874
   assertTrue(summaryHasDiagCode(s, "V0033"), "V0033 reported")
   assertTrue(summaryHasFailure(s), "a goal stays failed")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Recursion through contracts: a function's own contracts are translated
+// with it on the contract stack, and a function on a contract-call cycle
+// never has its `ensures:` or `@pure` body assumed (#8102 third review).
+// ─────────────────────────────────────────────────────────────────────────────
+test "a contract cycle never assumes its own postcondition (#8102)" {
+  assertRefuted(
+    "@pure\nfunc f(x: in Int): Int\n  ensures: result == f(x) + 1\n{\n  0\n}\n" +
+      "func g(): Int\n  ensures: result == 42\n{\n  val a = f(0)\n  7\n}\n",
+    "self-cycle"
+  )
+  assertRefuted(
+    "@pure\nfunc f(x: in Int): Int\n  ensures: result == g(x)\n{\n  0\n}\n" +
+      "@pure\nfunc g(x: in Int): Int\n  ensures: result == f(x) + 1\n{\n  1\n}\n" +
+      "func h(): Int\n  ensures: result == 42\n{\n  val a = f(0)\n  7\n}\n",
+    "mutual-cycle"
+  )
+}
+
+test "a recursive call inside a requires fails closed (#8102)" {
+  assertUntranslatable(
+    "@pure\nfunc f(x: in Int): Int\n  requires: x < 10 and (f(x + 100) >= 0 or true)\n  ensures: result < -90\n{\n  x\n}\n" +
+      "func g(): Int\n  ensures: result < -90\n{\n  f(5)\n}\n",
+    "recursive-requires"
+  )
+}
+
+test "recursion outside contracts still uses the contract (#8102)" {
+  val fact = "func fact(n: in Int): Int\n  requires: n >= 0\n  ensures: result >= 1\n{\n" +
+    "  if n == 0 {\n    1\n  } else {\n    n * fact(n - 1)\n  }\n}\n"
+  assertDischarged(fact + "func g(): Int\n  ensures: result >= 1\n{\n  fact(3)\n}\n", "factorial")
+  assertRefuted(fact + "func g(): Int\n{\n  fact(-1)\n}\n", "factorial-precondition")
+}
+
+test "a callee's postcondition speaks of the call, not a re-substituted one (#8102)" {
+  val inc = "func inc(n: in Int): Int\n  ensures: result == n + 1\n{\n  n + 1\n}\n"
+  assertDischarged(
+    inc + "func g(n: in Int): Int\n  ensures: result == n + 2\n{\n  inc(n + 1)\n}\n",
+    "argument-names-the-parameter"
+  )
+  assertRefuted(
+    inc + "func g(n: in Int): Int\n  ensures: result == n + 3\n{\n  inc(n + 1)\n}\n",
+    "argument-names-the-parameter-refute"
+  )
+}
