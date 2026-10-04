@@ -66,7 +66,13 @@ func listContains(haystack: in List[String], needle: in String): Bool {
 // `all(p, ...)` (true if every operand is) and `not(p)`.  A malformed
 // predicate emits `F0012` and evaluates to true, so a typo keeps the item
 // rather than silently erasing it.
-func evalCfgPredicate(active: in List[String], declared: in List[String], arg: in AnnotationArg, diags: in List[Diagnostic]): Bool {
+func evalCfgPredicate(
+  active: in List[String],
+  declared: in List[String],
+  assumeTargets: in Bool,
+  arg: in AnnotationArg,
+  diags: in List[Diagnostic],
+): Bool {
   val malformedMsg = "@cfg accepts 'feature = \"X\"', 'target = \"X\"', or any(...) / all(...) / not(...) of those"
   match arg {
     case AAName(argName, value, span) -> {
@@ -76,6 +82,12 @@ func evalCfgPredicate(active: in List[String], declared: in List[String], arg: i
       }
       match value {
         case AVString(rawName, _) -> {
+          // A caller that evaluates before the target is known (the multi-file
+          // package merge) treats every `target = "X"` as active; the real
+          // per-target erasure runs later.
+          if argName == "target" and assumeTargets {
+            return true
+          }
           // `@cfg(target = "native")` resolves against the
           // pseudo-feature `target.native` the CLI injects into
           // the active set (D-N-013); targets are never declared
@@ -105,7 +117,7 @@ func evalCfgPredicate(active: in List[String], declared: in List[String], arg: i
           diags.add(errorDiagnostic("F0012", "not(...) in @cfg takes exactly one predicate", span))
           return true
         }
-        return not evalCfgPredicate(active, declared, operands[0], diags)
+        return not evalCfgPredicate(active, declared, assumeTargets, operands[0], diags)
       }
       if name != "any" and name != "all" {
         diags.add(errorDiagnostic("F0012", malformedMsg, span))
@@ -118,7 +130,7 @@ func evalCfgPredicate(active: in List[String], declared: in List[String], arg: i
       var anyTrue = false
       var allTrue = true
       for op in operands {
-        if evalCfgPredicate(active, declared, op, diags) {
+        if evalCfgPredicate(active, declared, assumeTargets, op, diags) {
           anyTrue = true
         } else {
           allTrue = false
@@ -139,7 +151,12 @@ func evalCfgPredicate(active: in List[String], declared: in List[String], arg: i
 
 // Walk an item's annotations and decide whether it survives erasure.
 // Returns (keep, diagnostics).
-func classifyAnnotations(active: in List[String], declared: in List[String], anns: in List[Annotation]): ClassifyOut {
+func classifyAnnotations(
+  active: in List[String],
+  declared: in List[String],
+  assumeTargets: in Bool,
+  anns: in List[Annotation],
+): ClassifyOut {
   val diags: List[Diagnostic] = newList()
   var keep = true
   var i = 0
@@ -154,7 +171,7 @@ func classifyAnnotations(active: in List[String], declared: in List[String], ann
             a.span
           )
         )
-      } else if not evalCfgPredicate(active, declared, a.args[0], diags) {
+      } else if not evalCfgPredicate(active, declared, assumeTargets, a.args[0], diags) {
         keep = false
       }
     }
@@ -191,7 +208,7 @@ pub func isFileCfgGatedOut(
 /// erased `test`/`property` item out of the synthesized runner, which is
 /// generated before erasure runs (#7481).
 pub func isItemCfgGatedOut(active: in List[String], declared: in List[String], annotations: in List[Annotation]): Bool {
-  not classifyAnnotations(active, declared, annotations).keep
+  not classifyAnnotations(active, declared, false, annotations).keep
 }
 
 /// A copy of `active` with the target pseudo-feature `target.<name>`
@@ -218,7 +235,7 @@ pub func withTargetFeature(active: in List[String], targetName: in String): List
 pub func applyCfgErasure(active: in List[String], declared: in List[String], sf: in SourceFile): CfgErasureResult {
   val allDiags: List[Diagnostic] = newList()
 
-  val fileClass = classifyAnnotations(active, declared, sf.fileAnnotations)
+  val fileClass = classifyAnnotations(active, declared, false, sf.fileAnnotations)
   var fi = 0
   while fi < fileClass.diagnostics.count {
     allDiags.add(fileClass.diagnostics[fi])
@@ -243,7 +260,7 @@ pub func applyCfgErasure(active: in List[String], declared: in List[String], sf:
   var i = 0
   while i < sf.items.count {
     val it = sf.items[i]
-    val cls = classifyAnnotations(active, declared, it.annotations)
+    val cls = classifyAnnotations(active, declared, false, it.annotations)
     var ci = 0
     while ci < cls.diagnostics.count {
       allDiags.add(cls.diagnostics[ci])
@@ -264,4 +281,18 @@ pub func applyCfgErasure(active: in List[String], declared: in List[String], sf:
     span = sf.span
   )
   CfgErasureResult(file = filtered, diagnostics = allDiags)
+}
+
+/// Whether the file-level `@cfg(...)` lines in `cfgLines` (one annotation per
+/// line, as written before `package`) erase the whole file against `active`.
+/// For the callers that gate a source file by text before it is parsed (the
+/// multi-file package merge, the test runner): the real predicate grammar
+/// (`feature`, `any`/`all`/`not`) is evaluated rather than a prefix match. A
+/// `target = "X"` atom counts as active here, since the target is not known
+/// yet and per-target erasure runs after the merge; a malformed predicate keeps
+/// the file, like `applyCfgErasure`.
+pub func cfgLinesGateFileOut(cfgLines: in String, active: in List[String]): Bool {
+  val pr = parse(cfgLines + "\npackage CfgGate\n")
+  val noDeclared: List[String] = newList()
+  not classifyAnnotations(active, noDeclared, true, pr.file.fileAnnotations).keep
 }

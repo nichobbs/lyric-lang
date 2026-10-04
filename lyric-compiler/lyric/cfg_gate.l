@@ -18,6 +18,7 @@ package Lyric.CfgGate
 import Std.Core
 import Std.Collections
 import Std.String as Str
+import Lyric.Cfg as Cfg
 
 /// Returns the package-stub source used when an entire file is gated
 /// out: a single `package <name>\n` line with no items.  Sibling packages
@@ -28,126 +29,49 @@ pub func emptyPackageStub(pkgName: in String): String {
   "package " + pkgName + "\n"
 }
 
-/// True when `source` is a Lyric file that begins with an
-/// `@cfg(feature = "X")` annotation whose feature is NOT in
-/// `activeFeatures`, gating the whole file (and therefore the package
-/// declaration it precedes) out of the build.
+/// True when `source` is a Lyric file whose file-level `@cfg(...)`
+/// annotations, taken together, are false for `activeFeatures` (a single
+/// `feature = "X"`, or an `any`/`all`/`not` composition), gating the whole file
+/// (and therefore the package declaration it precedes) out of the build.
 ///
-/// The detection is a string heuristic — full lex/parse is reserved for
-/// the emitter — but it filters out two classes of false positive:
-///
-///   1. `@cfg(...)` text inside a line comment (`// note: removed
-///      @cfg(feature = "x")`), which the old heuristic would have
-///      matched if the comment happened to anchor at column 0.
-///   2. Active features: the first `@cfg` whose feature IS in the
-///      active set is skipped so a later inactive `@cfg` annotation
-///      preceding the same `package` declaration can still gate the
-///      file out.
-///
-/// Known limitation: the comment filter only skips `@cfg` occurrences
-/// inside `//` line comments via `cfgIsInLineComment`; `@cfg` text inside
-/// a `/* … */` block comment is treated as a real annotation.  In practice
-/// block comments before `package` are unusual, so this is left as a
-/// documented edge case rather than a full tokenizer-level filter.
+/// The file's `@cfg(...)` lines are found by text (one annotation per line, as
+/// the formatter writes them, skipping `//` comments) and evaluated by
+/// `Lyric.Cfg`, the same predicate grammar the compiler applies after parsing,
+/// so a file gated by `any(...)`/`all(...)`/`not(...)` is skipped as well as one
+/// gated by a single feature. A `target = "X"` atom counts as active (the real
+/// per-target erasure runs later).
 ///
 /// Returns false when:
 ///   - the file has no `package` declaration at column 0;
-///   - no eligible `@cfg(feature = "...")` annotation precedes that
-///     `package` declaration;
-///   - every eligible annotation references a currently-active feature.
+///   - no `@cfg(...)` line precedes that `package` declaration;
+///   - the annotations hold for the active features, or are malformed.
 @pure
 @stable(since = "0.1")
 pub func isCfgGatedOut(source: in String, activeFeatures: in List[String]): Bool {
-  // Prepend "\n" so a leading "package " or "@cfg" line still has a
-  // preceding newline we can anchor against.  Indices below are into
-  // `searchable`, not `source`.
+  // Prepend "\n" so a leading "package " line still has a preceding newline
+  // to anchor against.
   val searchable = "\n" + source
-  val cfgMark = "@cfg(feature = \""
-  val pkgMark = "\npackage "
-
-  val pkgIdxOpt = Str.indexOf(searchable, pkgMark)
-  match pkgIdxOpt {
-    case None -> return false
+  match Str.indexOf(searchable, "\npackage ") {
+    case None -> false
     case Some(pkgIdx) -> {
-      // Walk the prefix [0, pkgIdx) looking for @cfg(feature = "X")
-      // occurrences that are NOT inside a // line comment.  The first
-      // inactive feature found gates the file; active features are
-      // skipped (a later inactive @cfg might still gate).
-      var scan = 0
-      var result = false
-      var done = false
-      while not done and scan < pkgIdx {
-        val tail = Str.substring(searchable, scan, pkgIdx - scan)
-        val relOpt = Str.indexOf(tail, cfgMark)
-        match relOpt {
-          case None -> {
-            done = true
-          }
-          case Some(relIdx) -> {
-            val cfgIdx = scan + relIdx
-            if cfgIsInLineComment(searchable, cfgIdx) {
-              // False positive inside a // comment — skip past this
-              // occurrence and keep scanning.
-              scan = cfgIdx + cfgMark.length
-            } else {
-              // Real @cfg annotation candidate — extract the feature
-              // name (the text between the opening and closing quote).
-              val cfgStart = cfgIdx + cfgMark.length
-              val afterCfg = Str.substring(searchable, cfgStart, searchable.length - cfgStart)
-              val closeOpt = Str.indexOf(afterCfg, "\"")
-              match closeOpt {
-                case None -> {
-                  done = true
-                }
-                case Some(closeIdx) -> {
-                  val featName = Str.substring(afterCfg, 0, closeIdx)
-                  if featureIsActive(featName, activeFeatures) {
-                    // Active feature: this annotation doesn't gate the
-                    // file; keep scanning for a later inactive one.
-                    scan = cfgIdx + cfgMark.length
-                  } else {
-                    result = true
-                    done = true
-                  }
-                }
-              }
-            }
-          }
+      // The `@cfg(...)` lines before `package` (one annotation per line, as
+      // the formatter writes them), skipping `//` comments, then evaluated by
+      // `Lyric.Cfg` so `any`/`all`/`not` compositions gate a file the same
+      // way they do once it is parsed.
+      val cfgLines: List[String] = newList()
+      for line in Str.split(Str.substring(searchable, 0, pkgIdx), "\n") {
+        val trimmed = Str.trim(line)
+        if Str.startsWith(trimmed, "@cfg(") {
+          cfgLines.add(trimmed)
         }
       }
-      return result
+      if cfgLines.count == 0 {
+        false
+      } else {
+        Cfg.cfgLinesGateFileOut(Str.joinList("\n", cfgLines), activeFeatures)
+      }
     }
   }
-}
-
-/// True when `pos` in `s` lies after a `//` line-comment marker on the
-/// same physical line.
-func cfgIsInLineComment(s: in String, pos: in Int): Bool {
-  // Walk back to the start of the current physical line.
-  var lineStart = pos
-  while lineStart > 0 and Str.codeUnitAt(s, lineStart - 1) != 10 {
-    lineStart = lineStart - 1
-  }
-  // Look for "//" in [lineStart, pos).
-  var i = lineStart
-  while i + 1 < pos {
-    if Str.codeUnitAt(s, i) == 47 and Str.codeUnitAt(s, i + 1) == 47 {
-      return true
-    }
-    i = i + 1
-  }
-  false
-}
-
-func featureIsActive(name: in String, activeFeatures: in List[String]): Bool {
-  var i = 0
-  while i < activeFeatures.count {
-    if activeFeatures[i] == name {
-      return true
-    }
-    i = i + 1
-  }
-  false
 }
 
 /// A single (path, contents) pair input to

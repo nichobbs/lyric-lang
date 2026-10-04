@@ -49,6 +49,7 @@ import Std.Path as Path
 import Std.Process as Process
 import Std.Environment as Environment
 import Lyric.Lexer
+import Lyric.Cfg as Cfg
 import Lyric.BuildDefines as BD
 import Lyric.CliShell as CliShell
 import Lyric.ContractMeta as Meta
@@ -1149,9 +1150,9 @@ func stripSpacesAndTabs(s: in String): String {
   result
 }
 
-// Returns true if the source file carries a file-level @cfg(feature = "X")
-// annotation where X is absent from activeFeatures (V1 form only: single
-// feature = "X" argument).  Used by mergePackageSources to skip bodies of
+// Returns true if the source file's file-level @cfg(...) annotations erase it
+// against activeFeatures (any predicate Lyric.Cfg understands: feature = "X",
+// any/all/not compositions; a target atom counts as active here).  Used by mergePackageSources to skip bodies of
 // cfg-erased files so their items don't appear ungated in the merged unit.
 //
 // Matching is whitespace-tolerant: `@cfg(feature="X")`, `@cfg( feature = "X" )`,
@@ -1164,24 +1165,16 @@ func fileIsCfgErasedByFeatures(source: in String, activeFeatures: in List[String
   if Str.length(ann) == 0 {
     return false
   }
-  val lines = Str.split(ann, "\n")
-  var i = 0
-  while i < lines.length {
-    val compact = stripSpacesAndTabs(Str.trim(lines[i]))
-    val prefix = "@cfg(feature=\""
-    if Str.startsWith(compact, prefix) {
-      val rest = compact.substring(prefix.length, compact.length - prefix.length)
-      val quotePos = Str.indexOfRaw(rest, "\"")
-      if quotePos >= 0 {
-        val featName = rest.substring(0, quotePos)
-        if not listContainsStr(activeFeatures, featName) {
-          return true
-        }
-      }
+  val cfgLines: List[String] = newList()
+  for line in Str.split(ann, "\n") {
+    if Str.startsWith(stripSpacesAndTabs(Str.trim(line)), "@cfg(") {
+      cfgLines.add(line)
     }
-    i = i + 1
   }
-  false
+  if cfgLines.count == 0 {
+    return false
+  }
+  Cfg.cfgLinesGateFileOut(Str.joinList("\n", cfgLines), activeFeatures)
 }
 
 // Merge `sources` into a single compilation unit string.  When `sources`

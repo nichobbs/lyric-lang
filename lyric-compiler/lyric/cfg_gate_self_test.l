@@ -236,3 +236,20 @@ test "assembleDirectoryPackageSources: empty input → no sources, no stub" {
   assertEqualInt(asm.sources.count, 0, "no input files → no sources and no stub (caller is expected to error earlier)")
   assertEqualInt(asm.gatedFiles.count, 0, "no input → no gated files")
 }
+
+test "any/all/not compositions gate a whole file" {
+  val anySrc = "@cfg(any(feature = \"dotnet\", feature = \"native\"))\npackage P\n"
+  assertTrue(isCfgGatedOut(anySrc, features1("jvm")), "any(...) with no active operand → gated")
+  assertTrue(not isCfgGatedOut(anySrc, features1("native")), "any(...) with one active operand → not gated")
+  val allSrc = "@cfg(all(feature = \"a\", feature = \"b\"))\npackage P\n"
+  assertTrue(isCfgGatedOut(allSrc, features1("a")), "all(...) missing an operand → gated")
+  assertTrue(not isCfgGatedOut(allSrc, features2("a", "b")), "all(...) fully active → not gated")
+  val notSrc = "@cfg(not(feature = \"jvm\"))\npackage P\n"
+  assertTrue(isCfgGatedOut(notSrc, features1("jvm")), "not(active) → gated")
+  assertTrue(not isCfgGatedOut(notSrc, emptyFeatures()), "not(inactive) → not gated")
+}
+
+test "a target atom does not gate a file before the target is known" {
+  val src = "@cfg(target = \"native\")\npackage P\n"
+  assertTrue(not isCfgGatedOut(src, emptyFeatures()), "target = X is left to per-target erasure")
+}
