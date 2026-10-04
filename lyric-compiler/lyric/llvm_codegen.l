@@ -10076,6 +10076,23 @@ func unifyTyArg(
       }
     }
     case TParen(inner) -> unifyTyArg(ctx, inner, argTy, paramNames, boundNames, boundTys)
+    // A function-typed parameter binds from the argument closure's own
+    // signature (`f: () -> T` against a `() -> Int` closure binds `T = Int`).
+    case TFunction(parameters, retTy) -> {
+      match closureSigOfType(ctx, argTy) {
+        case Some(cs) -> {
+          if parameters.count == cs.paramTys.count {
+            var pi = 0
+            while pi < parameters.count {
+              unifyTyArg(ctx, parameters[pi], cs.paramTys[pi], paramNames, boundNames, boundTys)
+              pi = pi + 1
+            }
+          }
+          unifyTyArg(ctx, retTy, cs.retTy, paramNames, boundNames, boundTys)
+        }
+        case None -> ()
+      }
+    }
     case _ -> {
     }
   }

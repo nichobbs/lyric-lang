@@ -414,6 +414,21 @@ int32_t lyric_thread_join(int64_t tid, void** retval);
  * the thread never ran and the caller still owns its retain. */
 int32_t lyric_thread_spawn_detached(void* (*start)(void*), void* arg);
 
+/* One process-wide lock for the short critical sections of stdlib kernels that
+ * keep no module state of their own (Std.Task's flags and child lists).  Never
+ * hold it across a blocking call. */
+void lyric_global_lock(void);
+void lyric_global_unlock(void);
+
+/* A per-thread slot holding one retained Lyric object.  Set
+ * retains the new object and releases the previous one (NULL clears it); get
+ * returns a borrow that stays valid until the same thread sets the slot again.
+ * `has` is 1 when an object is held.  Std.Task's ambient cancellation token. */
+void lyric_thread_ref_set(void* obj);
+void* lyric_thread_ref_get(void);
+int32_t lyric_thread_ref_has(void);
+void lyric_thread_ref_clear(void);
+
 /* Milliseconds since the Unix epoch (CLOCK_REALTIME). */
 int64_t lyric_epoch_millis(void);
 /* Nanoseconds since the Unix epoch (CLOCK_REALTIME) — the native

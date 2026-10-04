@@ -562,4 +562,36 @@ int32_t lyric_thread_spawn_detached(void* (*start)(void*), void* arg) {
     if (rc != 0) free(s);
     return (int32_t)rc;
 }
+
+static pthread_mutex_t lyric_global_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+void lyric_global_lock(void) {
+    pthread_mutex_lock(&lyric_global_mutex);
+}
+
+void lyric_global_unlock(void) {
+    pthread_mutex_unlock(&lyric_global_mutex);
+}
+
+static _Thread_local void* lyric_tl_ref = NULL;
+
+void lyric_thread_ref_set(void* obj) {
+    void* previous = lyric_tl_ref;
+    if (obj != NULL) lyric_retain(obj);
+    lyric_tl_ref = obj;
+    if (previous != NULL) lyric_release(previous);
+}
+
+void* lyric_thread_ref_get(void) {
+    return lyric_tl_ref;
+}
+
+void lyric_thread_ref_clear(void) {
+    lyric_thread_ref_set(NULL);
+}
+
+int32_t lyric_thread_ref_has(void) {
+    return lyric_tl_ref != NULL ? 1 : 0;
+}
+
 #endif

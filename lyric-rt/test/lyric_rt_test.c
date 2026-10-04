@@ -3254,6 +3254,30 @@ static void test_thread_spawn_detached(void) {
 }
 #endif
 
+/* The per-thread slot retains what it holds, releases the previous object on
+ * replace and on clear, and reports whether it holds one. */
+static void test_thread_ref_slot(void) {
+    LyricObjectHeader* a = (LyricObjectHeader*)lyric_alloc(sizeof(LyricObjectHeader));
+    atomic_store(&a->rc, 1);
+    lyric_weak_init(a);
+    a->dtor = counting_dtor;
+    dtor_calls = 0;
+    CHECK(lyric_thread_ref_has() == 0);
+    lyric_thread_ref_set(a);
+    CHECK(lyric_thread_ref_has() == 1);
+    CHECK(lyric_thread_ref_get() == a);
+    CHECK(atomic_load(&a->rc) == 2);
+    lyric_thread_ref_set(a);
+    CHECK(atomic_load(&a->rc) == 2);
+    lyric_thread_ref_clear();
+    CHECK(lyric_thread_ref_has() == 0);
+    CHECK(atomic_load(&a->rc) == 1);
+    lyric_global_lock();
+    lyric_global_unlock();
+    lyric_release(a);
+    CHECK(dtor_calls == 1);
+}
+
 static void test_string_ascii_case_compare(void) {
     CHECK(lyric_string_ascii_case_compare(rt_str("Content-Length"), rt_str("content-length")) == 1);
     CHECK(lyric_string_ascii_case_compare(rt_str("Host"), rt_str("host")) == 1);
@@ -3270,6 +3294,7 @@ int main(void) {
 #ifndef __wasi__
     test_thread_spawn_detached();
 #endif
+    test_thread_ref_slot();
     test_string_ascii_case_compare();
     test_alloc_retain_release();
     test_free();
