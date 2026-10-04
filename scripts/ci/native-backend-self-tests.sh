@@ -98,6 +98,7 @@ for t in \
   lyric-compiler/lyric/bench_alloc_self_test.l \
   lyric-compiler/lyric/tuple_expected_type_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_test.l \
+  lyric-compiler/lyric/record_field_closure_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_type_self_test.l \
   lyric-compiler/lyric/byte_native_self_test.l \
   lyric-compiler/lyric/extern_cbinding_self_test.l ; do

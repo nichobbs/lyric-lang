@@ -63,7 +63,7 @@ import Ws.Kernel.Jvm as WsKernelJvm
 // exchange primitive types (String/Int) with this file — never `WsHandler`/
 // `WsContext`/`WsMessage` — so neither kernel needs to import `Ws` itself,
 // avoiding an `Ws` <-> `Ws.Kernel.Jvm` import cycle.
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 func kernelCreateRegistry(maxMessageSizeBytes: in Int, pingIntervalMs: in Int): Result[Int, String] {
   WsKernelNet.createRegistry(maxMessageSizeBytes, pingIntervalMs)
 }
@@ -73,7 +73,7 @@ func kernelCreateRegistry(maxMessageSizeBytes: in Int, pingIntervalMs: in Int): 
   WsKernelJvm.createRegistry(maxMessageSizeBytes, pingIntervalMs)
 }
 
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 func kernelStartServer(
   host: in String,
   port: in Int,
@@ -127,7 +127,7 @@ func kernelStartServer(
   )
 }
 
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 func kernelCreateEndpoint(
   maxMessageSizeBytes: in Int,
   onOpen: in (String, String, String, String, Map[String, String]) -> Unit,
@@ -152,7 +152,7 @@ func kernelCreateEndpoint(
 /// Per-key token-bucket rate check (`Resilience.takeToken`) shared by `Ws.Aspects.WsRateLimit`,
 /// dispatched to the active kernel so the aspect works on both targets.
 @stable(since = "0.2")
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 pub func checkRateLimit(key: in String, messagesPerMinute: in Int, burstSize: in Int): Bool
   requires: key.length > 0
   requires: messagesPerMinute > 0
@@ -171,7 +171,7 @@ pub func checkRateLimit(key: in String, messagesPerMinute: in Int, burstSize: in
   WsKernelJvm.checkRateLimit(key, messagesPerMinute, burstSize)
 }
 
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 func kernelStopServer(registryHandle: in Int): Result[Unit, String] {
   WsKernelNet.stopServer(registryHandle)
 }
@@ -181,7 +181,7 @@ func kernelStopServer(registryHandle: in Int): Result[Unit, String] {
   WsKernelJvm.stopServer(registryHandle)
 }
 
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 func kernelSend(
   registryHandle: in Int, connectionId: in String, messageType: in String, data: in String
 ): Result[Unit, String] {
@@ -195,7 +195,7 @@ func kernelSend(
   WsKernelJvm.send(registryHandle, connectionId, messageType, data)
 }
 
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 func kernelBroadcast(registryHandle: in Int, messageType: in String, data: in String): Result[Unit, String] {
   WsKernelNet.broadcast(registryHandle, messageType, data)
 }
@@ -205,7 +205,7 @@ func kernelBroadcast(registryHandle: in Int, messageType: in String, data: in St
   WsKernelJvm.broadcast(registryHandle, messageType, data)
 }
 
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 func kernelClose(registryHandle: in Int, connectionId: in String, code: in Int, reason: in String): Result[Unit, String] {
   WsKernelNet.close(registryHandle, connectionId, code, reason)
 }
@@ -215,7 +215,7 @@ func kernelClose(registryHandle: in Int, connectionId: in String, code: in Int, 
   WsKernelJvm.close(registryHandle, connectionId, code, reason)
 }
 
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 func kernelConnectionCount(registryHandle: in Int): Int {
   WsKernelNet.connectionCount(registryHandle)
 }
@@ -225,7 +225,7 @@ func kernelConnectionCount(registryHandle: in Int): Int {
   WsKernelJvm.connectionCount(registryHandle)
 }
 
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 func kernelIsConnected(registryHandle: in Int, connectionId: in String): Bool {
   WsKernelNet.isConnected(registryHandle, connectionId)
 }

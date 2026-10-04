@@ -33,7 +33,8 @@ import Lyric.Parser
 /// One annotation found on one `config { }` field.  `argName` is `""` for a
 /// positional (`ALiteral`) or bare (`ABare`) arg — `argKind` distinguishes
 /// the two: `"bare"` for `ABare` (where `argValue` carries the bare
-/// identifier itself), one of `"string"`/`"int"`/`"bool"`/`"ident"` for a
+/// identifier itself), `"call"` for a nested `name(...)` argument (only the
+/// head name is recorded; config-field annotations do not use them), one of `"string"`/`"int"`/`"bool"`/`"ident"` for a
 /// `AAName`/`ALiteral` value, matching `AnnotationValue`'s four cases.
 pub record AnnotatedArg {
   argName: String
@@ -95,6 +96,7 @@ func collectArgs(anns: in Annotation): List[AnnotatedArg] {
         )
       )
       case ABare(name, _) -> acc.add(AnnotatedArg(argName = "", argKind = "bare", argValue = name))
+      case AACall(name, _, _) -> acc.add(AnnotatedArg(argName = "", argKind = "call", argValue = name))
       case ALiteral(value, _) -> acc.add(
         AnnotatedArg(
           argName = "",

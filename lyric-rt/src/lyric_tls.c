@@ -103,6 +103,33 @@ int32_t lyric_sock_close(int32_t fd) {
     return close(fd) == 0 ? 0 : -1;
 }
 
+LyricString* lyric_sock_peer_string(int32_t fd) {
+    struct sockaddr_storage ss;
+    socklen_t len = (socklen_t)sizeof ss;
+    char ip[INET6_ADDRSTRLEN];
+    char out[INET6_ADDRSTRLEN + 16];
+    if (fd < 0 || getpeername(fd, (struct sockaddr*)&ss, &len) != 0) {
+        return lyric_string_from_literal((const uint8_t*)"", 0);
+    }
+    int n;
+    if (ss.ss_family == AF_INET) {
+        const struct sockaddr_in* a = (const struct sockaddr_in*)&ss;
+        if (inet_ntop(AF_INET, &a->sin_addr, ip, sizeof ip) == NULL) {
+            return lyric_string_from_literal((const uint8_t*)"", 0);
+        }
+        n = snprintf(out, sizeof out, "%s:%u", ip, (unsigned)ntohs(a->sin_port));
+    } else if (ss.ss_family == AF_INET6) {
+        const struct sockaddr_in6* a = (const struct sockaddr_in6*)&ss;
+        if (inet_ntop(AF_INET6, &a->sin6_addr, ip, sizeof ip) == NULL) {
+            return lyric_string_from_literal((const uint8_t*)"", 0);
+        }
+        n = snprintf(out, sizeof out, "[%s]:%u", ip, (unsigned)ntohs(a->sin6_port));
+    } else {
+        return lyric_string_from_literal((const uint8_t*)"", 0);
+    }
+    return lyric_string_from_literal((const uint8_t*)out, (int64_t)n);
+}
+
 int32_t lyric_sock_connect(const char* host, int32_t port) {
     if (!host || port < 0 || port > 65535) {
         set_err("invalid host/port");

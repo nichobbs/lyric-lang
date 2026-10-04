@@ -170,6 +170,8 @@ func extractDerives(anns: in List[Annotation]): List[String] {
           case AAName(nm, _, _) -> result.add(nm)
           case ALiteral(_, _) -> {
           }
+          case AACall(_, _, _) -> {
+          }
         }
         j = j + 1
       }

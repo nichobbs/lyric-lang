@@ -708,6 +708,12 @@ pub record HttpContext {
   // `freeOneShotSem`'d (a use-after-free), possibly after that same
   // buffer has been reused for an unrelated request's `HttpContext`.
   var responded: Bool
+  // The client sent bytes past this request before any response (pipelining),
+  // so the connection cannot be handed to a protocol switch (`takeConnection`).
+  trailingInput: Bool
+  // Set once by `takeConnection`, on the puller thread: the connection thread
+  // then leaves the connection open for the new owner instead of closing it.
+  var taken: Bool
 }
 
 // =====================================================================
@@ -853,7 +859,7 @@ func reasonForStatus(status: in Int): String {
 // =====================================================================
 union ReqOutcome {
   case RoClose
-  case RoRequest(method: String, target: String, version: HttpVersion, headers: List[HeaderField], body: slice[Byte], keepAlive: Bool)
+  case RoRequest(method: String, target: String, version: HttpVersion, headers: List[HeaderField], body: slice[Byte], keepAlive: Bool, trailingInput: Bool)
   case RoProtocolFail(status: Int)
 }
 
@@ -952,7 +958,8 @@ func readOneRequest(conn: in Conn, initialEngineConn: in Connection): ReadOutcom
               version = version,
               headers = headers,
               body = body.toArray(),
-              keepAlive = not shouldClose(engineConn)
+              keepAlive = not shouldClose(engineConn),
+              trailingInput = i + 1 < events.count or hasBufferedInput(engineConn)
             )
           )
         }
@@ -978,13 +985,16 @@ func writeErrorResponse(conn: in Conn, status: in Int): Unit {
 // the puller, block until the puller responds, then either read the next
 // request (keep-alive) or close.
 func processConnection(conn: in Conn, queue: in ServerQueue, limits: in EngineLimits): Unit {
+  var closeOnExit = true
   defer {
     // Order is load-bearing (#6791, `unregisterConn`'s doc comment):
     // unregister BEFORE closing, never after, so `stopListener`'s shutdown
     // loop can never touch this connection's fd once this thread has begun
     // invalidating it.
     unregisterConn(queue, conn)
-    hostClose(conn)
+    if closeOnExit {
+      hostClose(conn)
+    }
   }
   var engineConn = newConnection(limits)
   var open = true
@@ -999,7 +1009,7 @@ func processConnection(conn: in Conn, queue: in ServerQueue, limits: in EngineLi
         writeErrorResponse(conn, status)
         open = false
       }
-      case RoRequest(method, target, version, headers, body, keepAlive) -> {
+      case RoRequest(method, target, version, headers, body, keepAlive, trailingInput) -> {
         val doneSem = newOneShotSem()
         val ctx = HttpContext(
           conn = conn,
@@ -1010,7 +1020,9 @@ func processConnection(conn: in Conn, queue: in ServerQueue, limits: in EngineLi
           body = body,
           keepAlive = keepAlive,
           done = doneSem,
-          responded = false
+          responded = false,
+          trailingInput = trailingInput,
+          taken = false
         )
         enqueueContext(queue, ctx)
         // Block until a respond helper releases `done`. A failed response
@@ -1019,7 +1031,12 @@ func processConnection(conn: in Conn, queue: in ServerQueue, limits: in EngineLi
         // iteration later (mirrors the dotnet twin's identical reasoning).
         rtSemWait(doneSem)
         freeOneShotSem(doneSem)
-        if not keepAlive {
+        if ctx.taken {
+          // `takeConnection` handed the connection to a new owner: leave it
+          // open (the owner `hostClose`s it) and stop reading HTTP from it.
+          closeOnExit = false
+          open = false
+        } else if not keepAlive {
           open = false
         }
       }
@@ -1835,4 +1852,104 @@ pub func respondBytesWithHeaders(
   headers: in Map[String, String],
 ): Unit {
   respondBytesWith(c, status, contentType, body, headers)
+}
+
+/// Take ownership of the transport connection under `c`, for a protocol
+/// switch such as a WebSocket upgrade (RFC 9110 §7.8). Completes the exchange
+/// in place of a `respond*` call: the connection thread stops reading HTTP
+/// requests from the connection and leaves it open, and the caller then owns
+/// it, including writing any `101 Switching Protocols` response and
+/// eventually calling `hostClose`.
+///
+/// Returns `Err` without touching the exchange when the request cannot be
+/// handed over: a request that is not HTTP/1.1, or a client that sent more
+/// bytes after the request before any response. The caller then answers the
+/// request with a `respond*` helper as usual.
+///
+/// Call at most once per context, and never after a `respond*` or
+/// chunked-response helper has completed the exchange.
+pub func takeConnection(c: in HttpContext): Result[Conn, String] {
+  if c.responded {
+    panic("Std.HttpServer: takeConnection called on a HttpContext that already responded (invariant violation)")
+  }
+  match c.version {
+    case HttpVersion.Http1_0 -> return Err(error = "only an HTTP/1.1 connection can switch protocols")
+    case HttpVersion.Http1_1 -> ()
+  }
+  if c.trailingInput {
+    return Err(error = "the client sent data after the request before any response")
+  }
+  c.responded = true
+  c.taken = true
+  rtSemPost(c.done)
+  Ok(value = c.conn)
+}
+
+// =====================================================================
+// Chunked (streaming) responses.
+//
+// `beginChunkedResponse` commits status/content-type/extra headers with
+// `Transfer-Encoding: chunked` (never a `Content-Length`) and returns an open
+// stream handle; `streamWriteChunk` writes-and-flushes one chunk at a time
+// (surfacing a broken connection as `Err`); `endChunkedResponse` writes the
+// zero-length terminating chunk and completes the exchange.
+// =====================================================================
+/// An open chunked response: the connection it writes to and the semaphore
+/// `endChunkedResponse` releases to complete the exchange.
+pub record HttpChunkedStream {
+  conn: Conn
+  done: Long
+}
+
+/// Commit status + content-type + extra headers, switch the response into
+/// chunked-transfer-encoding mode, and return the open stream handle to write
+/// chunks to. No `Content-Length` is set.
+pub func beginChunkedResponse(
+  c: in HttpContext,
+  status: in Int,
+  contentType: in String,
+  headers: in Map[String, String],
+): HttpChunkedStream {
+  if c.responded {
+    panic("Std.HttpServer: beginChunkedResponse called on a HttpContext that already responded (invariant violation)")
+  }
+  if status < 100 or status > 999 {
+    panic("HTTP response status must be a three-digit code (100..999), got " + toString(status))
+  }
+  c.responded = true
+  val respHeaders: List[HeaderField] = newList()
+  appendSafeHeader(respHeaders, "Content-Type", contentType)
+  respHeaders.add(HeaderField(name = "Transfer-Encoding", value = "chunked"))
+  appendConnectionHeader(respHeaders, c.version, c.keepAlive)
+  appendExtraHeaders(respHeaders, headers)
+  val head = serializeResponseHead(c.version, status, reasonForStatus(status), respHeaders)
+  val _ = hostWrite(c.conn, head)
+  HttpChunkedStream(conn = c.conn, done = c.done)
+}
+
+/// Write `bytes[offset..offset+count)` as one chunk and flush it immediately.
+/// A zero-length write is a no-op (the terminating zero-length chunk is
+/// written only by `endChunkedResponse`). `Err` surfaces a broken connection.
+pub func streamWriteChunk(
+  s: in HttpChunkedStream,
+  bytes: in slice[Byte],
+  offset: in Int,
+  count: in Int,
+): Result[Unit, String] {
+  if count <= 0 {
+    return Ok(value = ())
+  }
+  val payload = bytes.slice(offset, offset + count)
+  match hostWrite(s.conn, serializeChunk(payload)) {
+    case Ok(_) -> Ok(value = ())
+    case Err(e) -> Err(error = TcpError.message(e))
+  }
+}
+
+/// Write the terminating zero-length chunk and complete the exchange. A
+/// broken connection is swallowed: a disconnect mid-stream is routine and
+/// must not crash the accept loop.
+pub func endChunkedResponse(c: in HttpContext, s: in HttpChunkedStream): Unit {
+  val _ = hostWrite(s.conn, serializeLastChunk())
+  rtSemPost(s.done)
 }

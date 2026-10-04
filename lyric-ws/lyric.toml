@@ -15,7 +15,14 @@ output_assembly = "Ws.dll"
 "Ws.Frame"      = "src/ws_frame.l"
 "Ws.Handshake"  = "src/ws_handshake.l"
 "Ws.Aspects"    = "src/ws_aspects.l"
-"Ws.Kernel.Net" = "src/_kernel/net/ws_kernel.l"
+# Ws.Kernel.Net is one package in three files: the RFC 6455 server shared by
+# `dotnet` and `native`, and its per-target primitives (locks, concurrent
+# dictionary, background threads, sleep).
+"Ws.Kernel.Net" = [
+  "src/_kernel/net/ws_kernel.l",
+  "src/_kernel/net/ws_prims.l",
+  "src/_kernel/native/ws_prims.l",
+]
 "Ws.Kernel.Jvm" = "src/_kernel/jvm/ws_kernel.l"
 
 [project.tests]
@@ -41,6 +48,7 @@ output_assembly = "Ws.dll"
 default = ["dotnet"]
 dotnet = []   # pure-Lyric RFC 6455 over Std.TcpHost (Ws.Kernel.Net, #778)
 jvm    = []   # Undertow WebSockets (Phase 6)
+native = []   # the same pure-Lyric RFC 6455 over Std.TcpHost, on --target native
 
 [dependencies]
 "Lyric.Auth"   = { workspace = true }

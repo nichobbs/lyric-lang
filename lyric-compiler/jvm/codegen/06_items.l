@@ -1355,6 +1355,7 @@ func hasDeriveMarkerJvm(anns: in List[Annotation], marker: in String): Bool {
         case ABare(n, _) -> n
         case ALiteral(v, _) -> match v { case AVIdent(n, _) -> n; case _ -> "" }
         case AAName(_, _, _) -> ""
+        case AACall(_, _, _) -> ""
       }
       if nm == marker {
         return true

@@ -73,3 +73,23 @@ test "#5511: Long closure in a record field works via a var binding too" {
   val v = fld()
   assertEqualLong(v + 1i64, 1234567890124i64, "var-bound Long closure result should be usable in arithmetic")
 }
+
+record Wrapper {
+  inner: TwoFieldHolder
+}
+
+test "a function-typed field is called directly with method syntax" {
+  val h = TwoFieldHolder(a = { -> 7i64 }, b = { -> 9 })
+  assertEqualLong(h.a(), 7i64, "h.a() calls the closure held in the field")
+  assertEqualInt(h.b() + 1, 10, "h.b() result is usable in arithmetic")
+}
+
+test "a function-typed field is called through a nested receiver" {
+  val w = Wrapper(inner = TwoFieldHolder(a = { -> 1i64 }, b = { -> 2 }))
+  assertEqualInt(w.inner.b(), 2, "w.inner.b() calls through a field of a field")
+  val maybe: Option[Wrapper] = Some(w)
+  match maybe {
+    case Some(x) -> assertEqualLong(x.inner.a(), 1i64, "a bound pattern variable receiver")
+    case None -> assertTrue(false, "unreachable")
+  }
+}
