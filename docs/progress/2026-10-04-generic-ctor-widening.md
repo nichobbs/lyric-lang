@@ -4,7 +4,7 @@ After #7805 an implicit lossless widening (`Byte < Int < Long`,
 `Byte < UInt < ULong`, `Float < Double`, docs/01 §4.1) applied at every
 direct position, but not one level down: with `u: UInt`,
 `val a: Option[ULong] = Some(u)`, `val b: (ULong, Int) = (u, 1)` and, with
-`i: Int`, `val c: Result[Long, String] = Ok(i)` were all T0060. D169 settles
+`i: Int`, `val c: Result[Long, String] = Ok(i)` were all T0060. D170 settles
 the rule: a scalar inside a value being built widens to the slot the expected
 type fixes; a value already built does not.
 

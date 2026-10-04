@@ -1,4 +1,4 @@
-# D169 — Lossless widening applies inside a value being built, not to a built value
+# D170 — Lossless widening applies inside a value being built, not to a built value
 
 **Status:** accepted, implemented (#7813)
 
