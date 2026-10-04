@@ -436,14 +436,24 @@ Calls the verifier cannot follow fail closed or are over-approximated
   in every mode, and on a signed operand `not (dividend == Min and divisor
   == -1)` for its width: both trap in every build profile (D163) (#8107,
   #7882). When the verifier does not know the width, both the 32- and
-  64-bit minimums are excluded. A match binding of the whole scrutinee
-  carries the scrutinee's width and range. (Elsewhere an unknown width
-  defaults to 32 bits, which only makes the `+`, `-`, `*` and negation
-  overflow obligations stricter.)
-- Inside one expression, evaluation order is respected: an argument, a
-  branch or arm after a condition, scrutinee or guard, and the right
-  operand of a binary operator see the state the earlier part leaves — a
-  variable it passed to an `out`/`inout` parameter holds a new value.
+  64-bit minimums are excluded. An expression combining operands (an
+  arithmetic operator, the branches of an `if` or `match`) has an unknown
+  width when any operand does — a known `Int` operand does not make a
+  possibly wider one narrow — except an unsuffixed literal, which takes
+  its context's type. A distinct value's `.value` has the distinct type's
+  width and range, `T.from(x)` has `T`'s width, and a match binding of the
+  whole scrutinee carries the scrutinee's width and range. (The `+`, `-`,
+  `*` and negation overflow obligations use the widest known operand, or
+  32 bits when none is known: a result is at least that wide, so this can
+  only make them stricter.)
+- Inside one expression, evaluation order is respected: a call's receiver
+  or computed callee, then its arguments in source order (named ones too,
+  whatever the parameter order), a branch or arm after a condition,
+  scrutinee or guard, the arms after a guard that ran and failed, and the
+  right operand of a binary operator see the state the earlier part
+  leaves — a variable it passed to an `out`/`inout` parameter holds a new
+  value. Index receivers before indices, interpolation segments, and
+  tuple and list elements run left to right as well.
 - A match arm's guard is translated in the arm's bindings: its side
   conditions and facts hold where the pattern matches and no earlier arm
   did, and the arm is taken when pattern and guard hold. An arm whose

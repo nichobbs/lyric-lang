@@ -75,6 +75,29 @@ program `lyric prove` discharged and `lyric run` violated:
   a call or lambda may change, so a lambda capturing it saw its initial
   value; it now sees an arbitrary one.
 
+## Third review
+
+- A division mixing an operand of unknown width with an `Int` took the
+  `Int`'s width, so `b.value / d` with `b` a distinct type over `Long` and
+  `d: Int` proved and then threw at run time. An operator, `if` or `match`
+  now has an unknown width when any of its operands does (an unsuffixed
+  literal excepted), `.value` of a distinct value has the distinct type's
+  width and range, and `T.from(x)` has `T`'s width. The overflow
+  obligations keep the widest known operand, which is sound for them.
+- A guard's `out`/`inout` effects reached only its own arm's body: the
+  later arms, which run after the guard failed, were translated in the
+  state before it. They now see those variables at new values.
+- A call's receiver (`zr(x).take(pos(x))`) or computed callee
+  (`pick(zero(x))(pos(x))`) was translated after the arguments, though it
+  runs first. The arguments now start from the state it leaves. Named
+  arguments were already translated in source order; the other constructs
+  (index, interpolation, tuples, lists, field chains) were audited and
+  already run left to right.
+
+After the third review: `verifier_self_test.l` 142 tests, the CI prove
+examples, `core_proof.l`, every earlier repro, and the compiler self-test
+batch (3360 tests) all pass.
+
 After the second review: `verifier_self_test.l` 139 tests, the CI prove
 examples, `core_proof.l`, every earlier repro, and the compiler self-test
 batch (3357 tests) all pass.
