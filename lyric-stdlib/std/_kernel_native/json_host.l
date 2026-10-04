@@ -1,0 +1,428 @@
+//! std/_kernel_native/json_host.l — native backing for Std.Json.
+//!
+//! Mirrors `_kernel/json_host.l` function-for-function. The .NET kernel binds
+//! `System.Text.Json`; native has no JSON library, so this file is pure Lyric,
+//! identical in behaviour to the JVM twin (`_kernel_jvm/json_host.l`): parsing
+//! delegates to `Std.Yaml.parseJson` (the strict-JSON entry point of the
+//! pure-Lyric YAML 1.2 / JSON parser, D065) and the `JsonDoc` / `JsonElement` /
+//! enumerator handles are plain Lyric records over the parsed `YamlValue` tree.
+//! Neither twin can import the other (the loader picks one file per target by
+//! basename), so the file is kept in step with it by hand.
+//!
+//! Semantics notes vs the .NET kernel:
+//!   * `hostValueKind` returns the same `JsonValueKind` ordinals
+//!     (0=Undefined, 1=Object, 2=Array, 3=String, 4=Number, 5=True,
+//!     6=False, 7=Null) — `Std.Json` matches on these numbers.
+//!   * `hostGetRawText` re-serialises the element to canonical JSON rather
+//!     than returning the original input slice; string values include their
+//!     quotes, matching `JsonElement.GetRawText`.
+//!   * `hostEncodeString` escapes `"`, `\` and control characters only (not the
+//!     HTML-sensitive and non-ASCII characters .NET's default encoder also
+//!     escapes), the same as the JVM twin.
+//!   * Failures follow the .NET contracts: `hostParseJson` panics on malformed
+//!     input, `hostGet*` panic on a kind mismatch, `hostTryGet*` return false.
+//!   * `hostDisposeJson` is a no-op: the parsed tree is ordinary ARC-managed
+//!     data, not the pooled buffer `JsonDocument` wraps on .NET.
+//!
+//! Internal: only Std.Json should import this.
+package Std.JsonHost
+
+import Std.Core
+import Std.Collections
+import Std.Char
+import Std.Yaml
+import Std.String
+
+// ── Handle types ──────────────────────────────────────────────────────────────
+// Plain records over the parsed tree; the names and shapes mirror the
+// .NET kernel's extern types so `Std.Json` compiles unchanged.
+pub record JsonDoc {
+  root: JsonElement
+}
+
+pub record JsonElement {
+  node: YamlValue
+}
+
+pub record JsonArrayEnumerator {
+  items: List[YamlValue]
+  idx: Int
+}
+
+pub record JsonObjectEnumerator {
+  pairs: List[YamlPair]
+  idx: Int
+}
+
+pub record JsonProperty {
+  name: String
+  value: JsonElement
+}
+
+// ── Parsing ───────────────────────────────────────────────────────────────────
+pub func hostParseJson(s: in String): JsonDoc {
+  match parseJson(s) {
+    case Ok(v) -> JsonDoc(root = JsonElement(node = v))
+    case Err(e) -> panic("Std.Json: parse error: " + jsonParseErrMessage(e))
+  }
+}
+
+// Local mirror of `YamlError.message`: a cross-package dot-named function
+// call on a match-bound payload does not yet resolve in the JVM backend's
+// bundled compile, so the message text is built here.
+func jsonParseErrMessage(e: in YamlError): String {
+  match e {
+    case UnexpectedChar(pos, expected) -> "unexpected character at position " + toString(pos) + "; expected " + expected
+    case UnexpectedEof(pos, expected) -> "unexpected end of input at position " + toString(pos) + "; expected " +
+      expected
+    case InvalidNumber(pos, raw) -> "invalid number at position " + toString(pos) + ": '" + raw + "'"
+    case DuplicateKey(pos, key) -> "duplicate key at position " + toString(pos) + ": '" + key + "'"
+    case UnsupportedFeature(pos, feature) -> "unsupported YAML feature at position " + toString(pos) + ": " + feature
+    case InvalidDocument(message) -> "invalid document: " + message
+  }
+}
+
+pub func hostDisposeJson(d: in JsonDoc): Unit {
+  ()
+}
+
+pub func hostRootElement(d: in JsonDoc): JsonElement {
+  d.root
+}
+
+// ── Property access ───────────────────────────────────────────────────────────
+pub func hostGetProperty(elem: in JsonElement, name: in String): JsonElement {
+  var found: JsonElement = default()
+  if hostTryGetProperty(elem, name, found) {
+    found
+  } else {
+    panic("Std.Json: property '" + name + "' not found")
+  }
+}
+
+pub func hostTryGetProperty(elem: in JsonElement, name: in String, out_: out JsonElement): Bool {
+  match elem.node {
+    case YMapping(pairs) -> {
+      val idx = findPairIdx(pairs, name)
+      if idx >= 0 {
+        val hit: YamlPair = pairs[idx]
+        out_ = JsonElement(node = hit.value)
+        true
+      } else {
+        out_ = JsonElement(node = YNull)
+        false
+      }
+    }
+    case _ -> {
+      out_ = JsonElement(node = YNull)
+      false
+    }
+  }
+}
+
+// Index of the pair whose key equals `name`, or -1.  List elements are
+// erased to Object on the JVM; the explicitly-annotated binding restores
+// the concrete type so the `.key` field access resolves.
+func findPairIdx(pairs: in List[YamlPair], name: in String): Int {
+  var i = 0
+  while i < pairs.count {
+    val p: YamlPair = pairs[i]
+    if p.key == name {
+      return i
+    }
+    i = i + 1
+  }
+  0 - 1
+}
+
+// ── Leaf accessors ────────────────────────────────────────────────────────────
+pub func hostGetString(elem: in JsonElement): String {
+  match elem.node {
+    case YString(v) -> v
+    case _ -> panic("Std.Json: element is not a string")
+  }
+}
+
+pub func hostGetInt32(elem: in JsonElement): Int {
+  match elem.node {
+    case YInt(v) -> {
+      // Explicit range check (#4797): matches the .NET kernel's
+      // OverflowException contract (a catchable Bug) instead of silently
+      // truncating; also keeps this kernel free of Std.Parse (#4799).
+      if v > 2147483647i64 or v < 0i64 - 2147483648i64 {
+        panic("Std.Json: integer value out of Int32 range: " + toString(v))
+      }
+      v.toInt()
+    }
+    case _ -> panic("Std.Json: element is not an integer")
+  }
+}
+
+pub func hostGetInt64(elem: in JsonElement): Long {
+  match elem.node {
+    case YInt(v) -> v
+    case _ -> panic("Std.Json: element is not an integer")
+  }
+}
+
+pub func hostGetBoolean(elem: in JsonElement): Bool {
+  match elem.node {
+    case YBool(v) -> v
+    case _ -> panic("Std.Json: element is not a boolean")
+  }
+}
+
+pub func hostGetDouble(elem: in JsonElement): Double {
+  match elem.node {
+    case YFloat(v) -> v
+    // Distinct binding name: a Long and a Double payload sharing one local
+    // slot across arms gives the slot two widths — the join's stackmap
+    // frame cannot merge them (VerifyError).
+    case YInt(vi) -> vi.toDouble()
+    case _ -> panic("Std.Json: element is not a number")
+  }
+}
+
+pub func hostTryGetInt32(elem: in JsonElement, value: out Int): Bool {
+  match elem.node {
+    case YInt(v) -> {
+      // Out-of-range reports false (the .NET TryGetInt32 contract) rather
+      // than truncating (#4797); no Std.Parse round-trip (#4799).
+      if v > 2147483647i64 or v < 0i64 - 2147483648i64 {
+        value = 0
+        false
+      } else {
+        value = v.toInt()
+        true
+      }
+    }
+    case _ -> {
+      value = 0
+      false
+    }
+  }
+}
+
+pub func hostTryGetInt64(elem: in JsonElement, value: out Long): Bool {
+  match elem.node {
+    case YInt(v) -> {
+      value = v
+      true
+    }
+    case _ -> {
+      value = 0
+      false
+    }
+  }
+}
+
+pub func hostTryGetDouble(elem: in JsonElement, value: out Double): Bool {
+  match elem.node {
+    case YFloat(v) -> {
+      value = v
+      true
+    }
+    // Distinct binding name — see hostGetDouble.
+    case YInt(vi) -> {
+      value = vi.toDouble()
+      true
+    }
+    case _ -> {
+      value = 0.0
+      false
+    }
+  }
+}
+
+// Re-serialise the element as canonical JSON (see the header note on the
+// divergence from .NET's raw-input-slice semantics).
+pub func hostGetRawText(elem: in JsonElement): String {
+  writeJsonValue(elem.node)
+}
+
+// Returns the JsonValueKind ordinal of `elem`:
+// 0=Undefined, 1=Object, 2=Array, 3=String, 4=Number, 5=True, 6=False, 7=Null.
+pub func hostValueKind(elem: in JsonElement): Int {
+  match elem.node {
+    case YMapping(_) -> 1
+    case YSequence(_) -> 2
+    case YString(_) -> 3
+    case YInt(_) -> 4
+    case YFloat(_) -> 4
+    case YBool(v) -> {
+      if v {
+        5
+      } else {
+        6
+      }
+    }
+    case YNull -> 7
+  }
+}
+
+// ── Array enumeration ─────────────────────────────────────────────────────────
+// Mirrors JsonElement.EnumerateArray's MoveNext/Current protocol: the
+// cursor starts before the first element; MoveNext advances and reports
+// whether an element is available.  The enumerator records are
+// re-assigned through the `inout` parameter on each advance.
+pub func hostEnumerateArray(elem: in JsonElement): JsonArrayEnumerator {
+  match elem.node {
+    case YSequence(items) -> JsonArrayEnumerator(items = items, idx = 0 - 1)
+    case _ -> panic("Std.Json: element is not an array")
+  }
+}
+
+pub func hostEnumMoveNext(en: inout JsonArrayEnumerator): Bool {
+  if en.idx + 1 < en.items.count {
+    en = JsonArrayEnumerator(items = en.items, idx = en.idx + 1)
+    true
+  } else {
+    false
+  }
+}
+
+pub func hostEnumCurrent(en: inout JsonArrayEnumerator): JsonElement {
+  val cur: YamlValue = en.items[en.idx]
+  JsonElement(node = cur)
+}
+
+// ── Object enumeration ────────────────────────────────────────────────────────
+pub func hostEnumerateObject(elem: in JsonElement): JsonObjectEnumerator {
+  match elem.node {
+    case YMapping(pairs) -> JsonObjectEnumerator(pairs = pairs, idx = 0 - 1)
+    case _ -> panic("Std.Json: element is not an object")
+  }
+}
+
+pub func hostEnumObjectMoveNext(en: inout JsonObjectEnumerator): Bool {
+  if en.idx + 1 < en.pairs.count {
+    en = JsonObjectEnumerator(pairs = en.pairs, idx = en.idx + 1)
+    true
+  } else {
+    false
+  }
+}
+
+pub func hostEnumObjectCurrent(en: inout JsonObjectEnumerator): JsonProperty {
+  val pair: YamlPair = en.pairs[en.idx]
+  JsonProperty(name = pair.key, value = JsonElement(node = pair.value))
+}
+
+pub func hostPropertyName(prop: in JsonProperty): String {
+  prop.name
+}
+
+pub func hostPropertyValue(prop: in JsonProperty): JsonElement {
+  prop.value
+}
+
+// ── Serialisation helpers ─────────────────────────────────────────────────────
+// JSON-escape a string value, surrounding quotes included — equivalent to
+// .NET's JsonEncodedText.Encode with the quotes added, matching the .NET
+// kernel's documented contract.
+pub func hostEncodeString(s: in String): String {
+  val sb = StringBuilder.new()
+  appendEncodedString(sb, s)
+  sb.toString()
+}
+
+// Escape-free runs are copied as one substring each; per-character
+// concatenation made encoding quadratic in the string length (#7275).
+func appendEncodedString(sb: in StringBuilder, s: in String): Unit {
+  sb.appendChar('"')
+  var runStart = 0
+  var i = 0
+  while i < s.length {
+    val c = charAtOrReplacement(s, i)
+    val esc = if c == '"' {
+      "\\\""
+    } else if c == '\\' {
+      "\\\\"
+    } else if c == '\n' {
+      "\\n"
+    } else if c == '\r' {
+      "\\r"
+    } else if c == '\t' {
+      "\\t"
+    } else if c < ' ' {
+      // Remaining control characters (U+0000..U+001F) as \u00XX.
+      val cp = toInt(c)
+      "\\u00" + jsonHexDigit(cp / 16) + jsonHexDigit(cp % 16)
+    } else {
+      ""
+    }
+    if esc.length > 0 {
+      sb.append(s.substring(runStart, i - runStart))
+      sb.append(esc)
+      runStart = i + 1
+    }
+    i = i + 1
+  }
+  sb.append(s.substring(runStart, s.length - runStart))
+  sb.appendChar('"')
+}
+
+func jsonHexDigit(n: in Int): String {
+  if n < 10 {
+    toString(n)
+  } else if n == 10 {
+    "a"
+  } else if n == 11 {
+    "b"
+  } else if n == 12 {
+    "c"
+  } else if n == 13 {
+    "d"
+  } else if n == 14 {
+    "e"
+  } else {
+    "f"
+  }
+}
+
+// Canonical-JSON writer for hostGetRawText.
+func writeJsonValue(v: in YamlValue): String {
+  val sb = StringBuilder.new()
+  writeJsonValueTo(sb, v)
+  sb.toString()
+}
+
+// One builder is threaded through the recursion so nested containers are
+// written once instead of being re-copied at every level (#7275).
+func writeJsonValueTo(sb: in StringBuilder, v: in YamlValue): Unit {
+  match v {
+    case YNull -> sb.append("null")
+    case YBool(b) -> sb.append(if b { "true" } else { "false" })
+    case YInt(n) -> sb.append(toString(n))
+    case YFloat(f) -> sb.append(toString(f))
+    case YString(str) -> appendEncodedString(sb, str)
+    case YSequence(items) -> {
+      sb.appendChar('[')
+      var i = 0
+      while i < items.count {
+        if i > 0 {
+          sb.appendChar(',')
+        }
+        val el: YamlValue = items[i]
+        writeJsonValueTo(sb, el)
+        i = i + 1
+      }
+      sb.appendChar(']')
+    }
+    case YMapping(pairs) -> {
+      sb.appendChar('{')
+      var j = 0
+      while j < pairs.count {
+        if j > 0 {
+          sb.appendChar(',')
+        }
+        val pj: YamlPair = pairs[j]
+        appendEncodedString(sb, pj.key)
+        sb.appendChar(':')
+        writeJsonValueTo(sb, pj.value)
+        j = j + 1
+      }
+      sb.appendChar('}')
+    }
+  }
+}

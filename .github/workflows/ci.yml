@@ -2789,6 +2789,13 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/native-backend-self-tests.sh
 
+      # lyric-web + lyric-ws on --target native: builds examples/native-web,
+      # runs it, and checks HTTP routes plus a WebSocket echo.
+      - name: Native lyric-web/lyric-ws smoke
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/native-web-smoke.sh
+
       # docs/35 W2: lyric-rt cross-compiled for wasm32-wasi (pinned wasi-sdk),
       # C unit tests run under a pinned wasmtime, then llvm_wasm32_self_test.l
       # compiles and runs real Lyric programs for wasm32-wasi under wasmtime.

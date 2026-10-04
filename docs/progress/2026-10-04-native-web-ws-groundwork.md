@@ -13,9 +13,11 @@ First slices of unblocking the lyric-ui desktop host on `--target native`
   non-literal initializer is a zero-initialised static global. The native
   bridge hoists the initializer into `__lyric_mvinit_<name>()` before type
   check and monomorphisation (generic initialisers instantiate normally);
-  the codegen registers each referenced global and a synthesised
-  `lyric_init_module_globals` runs the initializers before `main`, dependency
-  packages first and declaration order within a package. Loads borrow from
+  the codegen registers each referenced global with a guard flag and a
+  synthesised `mvensure.<name>` function; every load calls it first, so an
+  initializer that reads another global (across files) runs that one first
+  regardless of file order, and `lyric_init_module_globals` ensures all of them
+  before `main`. Loads borrow from
   the global like a local slot. Only the project's own packages hoist; a
   non-literal `val` in a bundled stdlib package still reports the old error.
   `default()` against an expected type is now the zero value on native.
@@ -29,6 +31,21 @@ First slices of unblocking the lyric-ui desktop host on `--target native`
   server and the rate limiter are shared with `dotnet`; locks, the concurrent
   dictionary, background threads and sleep are per-target primitives in
   `_kernel/net/ws_prims.l` and `_kernel/native/ws_prims.l`.
+- **Native codegen fixes found on the way.** Bare-name function resolution is
+  import-aware (`toLower` on `Char` versus `String` no longer collides);
+  stdlib callees reachable only as `impl` methods are seeded into the
+  reachability walk; `Never` lowers as `void`; config-template expansion runs
+  on the native pipeline; the `lyric-auth` algorithm check uses the `String`
+  method form.
+- **Native stdlib twins.** `Std.Random`, `Std.Hash` (SHA-1/256/512, MD5, HMAC
+  inputs) and the `Std.Json` string encoder, which lyric-web needs.
 
-Tests: `cfg_self_test.l` (composition), `llvm_project_self_test.l` (globals),
-`lyric-rt` C tests.
+Verification: `examples/native-web` builds with `--target native` (18
+packages) and `scripts/ci/native-web-smoke.sh` (wired into CI) checks the
+routes, a 404, a POST body and a WebSocket echo over a raw RFC 6455 client.
+Self-tests: `cfg_self_test.l`, `cfg_gate_self_test.l`,
+`llvm_project_self_test.l` (module globals), `llvm_http_server_self_test.l`
+(takeConnection and chunked streaming, items N to P), `lyric-rt` C tests.
+
+Known gaps: `Std.Json` document parsing and floats on native (#7856), JVM
+parity for the lyric-web/lyric-ws native-only seams.
