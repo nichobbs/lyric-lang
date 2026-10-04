@@ -14470,21 +14470,17 @@ func wasmImportModuleProblem(module: in String): String {
 /// A malformed annotation is recorded with its `problem` so the glue reports it
 /// (`N0014`) instead of silently treating the extern as an ordinary C one.
 pub func addWasmImport(imports: in List[WasmImportDecl], symbol: in String, anns: in List[Annotation]): Unit {
-  for a in anns {
-    if a.name.segments.count == 1 and a.name.segments[0] == "wasmImport" {
+  match findAnnotation(anns, "wasmImport") {
+    case None -> ()
+    case Some(a) -> {
       var module = ""
       var problem = "it needs exactly one string literal argument, the module name"
-      if a.args.count == 1 {
-        match a.args[0] {
-          case ALiteral(value, _) -> match value {
-            case AVString(m, _) -> {
-              module = m
-              problem = wasmImportModuleProblem(m)
-            }
-            case _ -> ()
-          }
-          case _ -> ()
+      match annotationStringArg(a) {
+        case Some(m) -> {
+          module = m
+          problem = wasmImportModuleProblem(m)
         }
+        case None -> ()
       }
       imports.add(
         WasmImportDecl(symbol = symbol, module = if problem.length == 0 { module } else { "" }, problem = problem)

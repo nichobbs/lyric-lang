@@ -1320,18 +1320,10 @@ func sanitizeIdent(s: in String): String {
 /// The `@wasmImport` module string of `anns`: None when absent, Some("") when
 /// the annotation is malformed.
 func wasmImportModuleOf(anns: in List[Annotation]): Option[String] {
-  for a in anns {
-    if a.name.segments.count == 1 and a.name.segments[0] == "wasmImport" {
-      if a.args.count == 1 {
-        match a.args[0] {
-          case ALiteral(value, _) -> match value { case AVString(m, _) -> return Some(value = m); case _ -> () }
-          case _ -> ()
-        }
-      }
-      return Some(value = "")
-    }
+  match findAnnotation(anns, "wasmImport") {
+    case None -> None
+    case Some(a) -> match annotationStringArg(a) { case Some(m) -> Some(value = m); case None -> Some(value = "") }
   }
-  None
 }
 
 func withoutWasmImport(anns: in List[Annotation]): List[Annotation] {
