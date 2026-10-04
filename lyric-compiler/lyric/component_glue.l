@@ -134,6 +134,7 @@ pub union WitTy {
   case WOption(inner: WitTy)
   case WResult(ok: WitTy, err: WitTy)
   case WList(elem: WitTy)
+  case WTuple(elems: List[WitTy])
   case WRecord(name: String, fields: List[WitField])
   case WVariant(name: String, cases: List[WitCase])
   case WEnum(name: String, cases: List[String])
@@ -173,6 +174,13 @@ func lyricTy(t: in WitTy): String {
     case WOption(inner) -> "Option[" + lyricTy(inner) + "]"
     case WResult(ok, err) -> "Result[" + lyricTy(ok) + ", " + lyricTy(err) + "]"
     case WList(elem) -> "List[" + lyricTy(elem) + "]"
+    case WTuple(elems) -> {
+      val parts: List[String] = newList()
+      for e in elems {
+        parts.add(lyricTy(e))
+      }
+      "(" + Str.joinList(", ", parts) + ")"
+    }
     case WRecord(name, _) -> name
     case WVariant(name, _) -> name
     case WEnum(name, _) -> name
@@ -185,6 +193,7 @@ func tyKey(t: in WitTy): String {
     case WRecord(name, _) -> "R:" + name
     case WVariant(name, _) -> "V:" + name
     case WEnum(name, _) -> "E:" + name
+    case WTuple(_) -> "T:" + lyricTy(t)
     case _ -> lyricTy(t)
   }
 }
@@ -264,6 +273,19 @@ func resolveTy(te: in TypeExpr, tbl: in TypeTable, depth: in Int): Result[WitTy,
     case TNullable(inner) -> match resolveValueTy(inner, tbl, depth + 1) {
       case Ok(t) -> okTy(WOption(inner = t))
       case Err(e) -> failTy(e)
+    }
+    case TTuple(types) -> {
+      if types.count < 2 {
+        return failTy("a tuple needs at least two elements")
+      }
+      val elems: List[WitTy] = newList()
+      for te2 in types {
+        match resolveValueTy(te2, tbl, depth + 1) {
+          case Ok(t) -> elems.add(t)
+          case Err(e) -> return failTy("tuple element: " + e)
+        }
+      }
+      okTy(WTuple(elems = elems))
     }
     case TRef(path) -> {
       if path.segments.count != 1 {
@@ -444,6 +466,17 @@ func maxInt(a: in Int, b: in Int): Int {
   }
 }
 
+/// A tuple's elements as the positional fields its record-shaped layout uses.
+func tupleFields(elems: in List[WitTy]): List[WitField] {
+  val fields: List[WitField] = newList()
+  var i = 0
+  while i < elems.count {
+    fields.add(WitField(name = "f" + i.toString(), ty = elems[i]))
+    i = i + 1
+  }
+  fields
+}
+
 func alignOf(t: in WitTy): Int {
   match t {
     case WBool -> 1
@@ -456,6 +489,7 @@ func alignOf(t: in WitTy): Int {
     case WList(_) -> 4
     case WUnit -> 1
     case WEnum(_, _) -> 1
+    case WTuple(elems) -> alignOf(WRecord(name = "tuple", fields = tupleFields(elems)))
     case WRecord(_, fields) -> {
       var a = 1
       for f in fields {
@@ -485,6 +519,7 @@ func sizeOf(t: in WitTy): Int {
     case WList(_) -> 8
     case WUnit -> 0
     case WEnum(_, _) -> 1
+    case WTuple(elems) -> sizeOf(WRecord(name = "tuple", fields = tupleFields(elems)))
     case WRecord(_, fields) -> {
       var off = 0
       for f in fields {
@@ -552,6 +587,13 @@ func flatOf(t: in WitTy): List[String] {
       r.add("i32")
       r.add("i32")
     }
+    case WTuple(elems) -> {
+      for e in elems {
+        for k in flatOf(e) {
+          r.add(k)
+        }
+      }
+    }
     case WRecord(_, fields) -> {
       for f in fields {
         for k in flatOf(f.ty) {
@@ -592,6 +634,7 @@ func needsFree(t: in WitTy): Bool {
   match t {
     case WString -> true
     case WList(_) -> true
+    case WTuple(elems) -> needsFree(WRecord(name = "tuple", fields = tupleFields(elems)))
     case WRecord(_, fields) -> {
       for f in fields {
         if needsFree(f.ty) {
@@ -828,6 +871,48 @@ func emitType(g: in Gen, t: in WitTy, id: in Int) {
       lines.add("func __cabi_lowerflat_" + n + "(v: " + name + "): Unit {")
       lines.add("  cabiSetRetI32(__cabi_tag_" + n + "(v))")
       lines.add("}")
+    }
+    case WTuple(elems) -> {
+      val fields = tupleFields(elems)
+      lines.add("func __cabi_lift_" + n + "(): " + lt + " {")
+      var i = 0
+      while i < elems.count {
+        lines.add("  val f" + idStr(i) + " = " + liftExpr(g, elems[i]))
+        i = i + 1
+      }
+      val names: List[String] = newList()
+      i = 0
+      while i < elems.count {
+        names.add("f" + idStr(i))
+        i = i + 1
+      }
+      lines.add("  (" + Str.joinList(", ", names) + ")")
+      lines.add("}")
+      lines.add("func __cabi_load_" + n + "(ptr: Int): " + lt + " {")
+      i = 0
+      while i < elems.count {
+        lines.add("  val f" + idStr(i) + " = " + loadExpr(g, elems[i], "ptr + " + idStr(fieldOffset(fields, i))))
+        i = i + 1
+      }
+      lines.add("  (" + Str.joinList(", ", names) + ")")
+      lines.add("}")
+      lines.add("func __cabi_store_" + n + "(ptr: Int, v: " + lt + "): Unit {")
+      lines.add("  val (" + Str.joinList(", ", names) + ") = v")
+      i = 0
+      while i < elems.count {
+        lines.add("  " + storeStmt(g, elems[i], "ptr + " + idStr(fieldOffset(fields, i)), names[i]))
+        i = i + 1
+      }
+      lines.add("}")
+      if needsFree(t) {
+        lines.add("func __cabi_free_" + n + "(ptr: Int): Unit {")
+        i = 0
+        while i < elems.count {
+          lines.add("  " + freeStmt(g, elems[i], "ptr + " + idStr(fieldOffset(fields, i))))
+          i = i + 1
+        }
+        lines.add("}")
+      }
     }
     case WRecord(name, fields) -> {
       lines.add("func __cabi_lift_" + n + "(): " + name + " {")
@@ -1169,6 +1254,11 @@ func collectDefs(t: in WitTy, defs: in List[WitTy]): Unit {
   match t {
     case WOption(inner) -> collectDefs(inner, defs)
     case WList(elem) -> collectDefs(elem, defs)
+    case WTuple(elems) -> {
+      for e in elems {
+        collectDefs(e, defs)
+      }
+    }
     case WResult(ok, err) -> {
       collectDefs(ok, defs)
       collectDefs(err, defs)
@@ -1685,6 +1775,13 @@ func witRef(t: in WitTy): String {
     case WUnit -> "_"
     case WOption(inner) -> "option<" + witRef(inner) + ">"
     case WList(elem) -> "list<" + witRef(elem) + ">"
+    case WTuple(elems) -> {
+      val parts: List[String] = newList()
+      for e in elems {
+        parts.add(witRef(e))
+      }
+      "tuple<" + Str.joinList(", ", parts) + ">"
+    }
     case WResult(ok, err) -> {
       if isUnit(ok) and isUnit(err) {
         "result"
@@ -2028,7 +2125,6 @@ func renderImportWrapper(pkgs: in List[ComponentPkg], h: in HostImport, i: in In
   Str.joinList("\n", l)
 }
 
-/// The C file for the exporting packages (see the module header).
 /// Whether any exported function of `pkgs` is an `async func`.
 pub func componentHasAsync(pkgs: in List[ComponentPkg]): Bool {
   for p in pkgs {
@@ -2041,6 +2137,7 @@ pub func componentHasAsync(pkgs: in List[ComponentPkg]): Bool {
   false
 }
 
+/// The C file for the exporting packages (see the module header).
 pub func renderCabi(pkgs: in List[ComponentPkg], version: in String): String {
   val buf: List[String] = newList()
   buf.add(cabiRuntime(componentHasAsync(pkgs)))

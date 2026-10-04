@@ -108,7 +108,7 @@ lyric build --target native --triple wasm32-wasi --shape component hello.l
 writes `hello.wasm`, a component, and `hello.wit`, the interface generated from your
 `pub func`s with one WIT interface per package. The exports may use `Int`, `Long`,
 `Bool`, `Byte`, `Float`, `Double`, `String` and `Unit`, plus `Option`, `Result`,
-`List` and your own records, enums and unions of one payload field, nested freely:
+`List`, tuples and your own records, enums and unions of one payload field, nested freely:
 
 | Lyric | WIT |
 |---|---|
@@ -116,6 +116,7 @@ writes `hello.wasm`, a component, and `hello.wit`, the interface generated from 
 | `Float`, `Double` | `f32`, `f64` |
 | `Bool`, `String`, `Unit` | `bool`, `string`, no result |
 | `Option[T]`, `Result[T, E]`, `List[T]` | `option<T>`, `result<T, E>`, `list<T>` |
+| `(A, B)` | `tuple<a, b>` (JavaScript sees an array) |
 | a record | `record` |
 | a union | `variant` |
 | an enum | `enum` |
@@ -257,7 +258,7 @@ The full table is in Appendix B.
 
 The tracked work is in issues #8117 (component shape) and #8118 (NPM). Today:
 
-- a component export cannot take a tuple or name a type from
+- a component export cannot name a type from
   another Lyric package;
 - a component host import carries `Int`, `Long`, `Float`, `Double`, `String` and
   `Unit` only, and an NPM import cannot return a `Promise`;

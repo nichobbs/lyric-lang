@@ -1203,3 +1203,108 @@ console.log('plain=' + p.plain(1));
   assertTrue(Str.contains(n.stdout, "pair=8,undefined"), "an Option result through a task: " + n.stdout)
   assertTrue(Str.contains(n.stdout, "plain=101"), "a sync export beside the async ones: " + n.stdout)
 }
+
+val tupleProgram: String = r#"package Probe
+
+import Std.Collections
+
+record Box {
+  pair: (Int, String)
+  span: Option[(Int, Int)]
+}
+
+pub func swapPair(p: (Int, String)): (String, Int) {
+  val (a, b) = p
+  (b, a)
+}
+
+pub func triple(x: Int): (Int, Long, Double) {
+  (x, 3000000000i64, 0.5)
+}
+
+pub func pairs(n: Int): List[(Int, Int)] {
+  val acc: List[(Int, Int)] = newList()
+  var i = 0
+  while i < n {
+    acc.add((i, i * i))
+    i = i + 1
+  }
+  acc
+}
+
+pub func mkBox(n: Int): Box {
+  Box(pair = (n, "box"), span = Some(value = (n, n + 1)))
+}
+
+pub func boxSum(b: Box): Int {
+  val (n, _) = b.pair
+  match b.span {
+    case Some((lo, hi)) -> n + lo + hi
+    case None -> n
+  }
+}
+
+pub func divmod(a: Int, b: Int): Result[(Int, Int), String] {
+  if b == 0 {
+    Err(error = "divide by zero")
+  } else {
+    Ok(value = (a / b, a % b))
+  }
+}
+"#
+
+test "wasm32 component: tuples cross the boundary as WIT tuples, nested in lists, options, records and results" {
+  val dir = buildComponentOf(tupleProgram)
+  val wasm = Path.join(dir, "prog.wasm")
+  val wit = match File.readText(Path.join(dir, "prog.wit")) { case Ok(t) -> t; case Err(_) -> "" }
+  assertTrue(
+    Str.contains(wit, "swap-pair: func(p: tuple<s32, string>) -> tuple<string, s32>"),
+    "tuple<...> in the WIT: " + wit
+  )
+  assertTrue(Str.contains(wit, "span: option<tuple<s32, s32>>"), "a tuple inside a record field: " + wit)
+  val vargs: List[String] = newList()
+  vargs.add("validate")
+  vargs.add(wasm)
+  val v = run(envOrPanic("WASM_TOOLS"), vargs)
+  assertTrue(v.exitCode == 0, "wasm-tools validate: " + v.stderr)
+  val outDir = Path.join(dir, "js")
+  val jargs: List[String] = newList()
+  jargs.add("transpile")
+  jargs.add(wasm)
+  jargs.add("-o")
+  jargs.add(outDir)
+  val j = run(envOrPanic("JCO"), jargs)
+  assertTrue(j.exitCode == 0, "jco transpile: " + j.stderr)
+  val lnargs: List[String] = newList()
+  lnargs.add("-s")
+  lnargs.add(envOrPanic("LYRIC_JCO_NODE_MODULES"))
+  lnargs.add(Path.join(dir, "node_modules"))
+  val _ln = run("ln", lnargs)
+  val script = r"import * as m from './js/prog.js';
+const p = m.probe;
+const show = (v) => JSON.stringify(v, (k, x) => typeof x === 'bigint' ? Number(x) : x);
+console.log('swap=' + show(p.swapPair([7, 'seven'])));
+console.log('triple=' + show(p.triple(4)));
+console.log('pairs=' + show(p.pairs(4)));
+console.log('box=' + show(p.mkBox(3)));
+console.log('boxSum=' + p.boxSum({ pair: [10, 'x'], span: [1, 2] }) + ',' + p.boxSum({ pair: [10, 'x'], span: undefined }));
+console.log('divmod=' + show(p.divmod(17, 5)));
+try { p.divmod(1, 0); console.log('divmodErr=none'); } catch (e) { console.log('divmodErr=' + show(e.payload ?? e)); }
+"
+  val scriptPath = Path.join(dir, "run.mjs")
+  val _s = File.writeText(scriptPath, script)
+  val nargs: List[String] = newList()
+  nargs.add(scriptPath)
+  val n = run(Environment.getVarOrDefault("NODE", "node"), nargs)
+  assertTrue(n.exitCode == 0, "node: " + n.stderr + n.stdout)
+  assertTrue(Str.contains(n.stdout, "swap=[\"seven\",7]"), "swapPair: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "triple=[4,3000000000,0.5]"), "a three-tuple: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "pairs=[[0,0],[1,1],[2,4],[3,9]]"), "a list of tuples: " + n.stdout)
+  assertTrue(
+    Str.contains(n.stdout, "box={\"pair\":[3,\"box\"],\"span\":[3,4]}"),
+    "a record holding tuples: " + n.stdout
+  )
+  assertTrue(Str.contains(n.stdout, "boxSum=13,10"), "a tuple read back from the host: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "divmod=[3,2]"), "a tuple in a result: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "divmodErr=\"divide by zero\""), "the error side: " + n.stdout)
+}
