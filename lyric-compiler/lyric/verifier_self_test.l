@@ -1254,19 +1254,19 @@ test "signed % takes the dividend's sign (#7870)" {
 
 test "truncating division satisfies its identities symbolically (#7870)" {
   assertDischarged(
-    "func r(a: in Int, b: in Int): Int\n  requires: a < 0 and b != 0\n  ensures: result <= 0\n{\n  a % b\n}\n",
+    "func r(a: in Int, b: in Int): Int\n  requires: a < 0 and b != 0 and b != -1\n  ensures: result <= 0\n{\n  a % b\n}\n",
     "negative-dividend-remainder-is-non-positive"
   )
   assertRefuted(
-    "func r(a: in Int, b: in Int): Int\n  requires: a < 0 and b != 0\n  ensures: result < 0\n{\n  a % b\n}\n",
+    "func r(a: in Int, b: in Int): Int\n  requires: a < 0 and b != 0 and b != -1\n  ensures: result < 0\n{\n  a % b\n}\n",
     "remainder-can-be-zero"
   )
   assertDischarged(
-    "func q(a: in Long, b: in Long): Long\n  requires: b != 0\n  ensures: result == a - b * (a / b)\n{\n  a % b\n}\n",
+    "func q(a: in Long, b: in Long): Long\n  requires: b != 0 and b != -1\n  ensures: result == a - b * (a / b)\n{\n  a % b\n}\n",
     "division-identity"
   )
   assertDischarged(
-    "func n(a: in Long, b: in Long): Long\n  requires: b != 0\n  ensures: result == 0 - (0 - a) / b\n{\n  a / b\n}\n",
+    "func n(a: in Long, b: in Long): Long\n  requires: b != 0 and b != -1\n  ensures: result == 0 - (0 - a) / b\n{\n  a / b\n}\n",
     "negating-the-dividend-negates-the-quotient"
   )
   assertDischarged(
@@ -1461,7 +1461,7 @@ test "an omitted parameter takes its default in the callee's contract (#7873)" {
     addk + "func g(y: in Int): Int\n  ensures: result == y + 2\n{\n  addk(k = 2, x = y)\n}\n",
     "default-overridden"
   )
-  val div = "func half(n: in Int, d: in Int = 2): Int\n  requires: d != 0\n{\n  n / d\n}\n"
+  val div = "func half(n: in Int, d: in Int = 2): Int\n  requires: d > 0\n{\n  n / d\n}\n"
   assertDischarged(div + "func g(): Int\n{\n  half(7)\n}\n", "default-meets-precondition")
   assertRefuted(div + "func g(): Int\n{\n  half(d = 0, n = 7)\n}\n", "named-violates-precondition")
 }
@@ -2074,7 +2074,7 @@ test "an unmodelled construct keeps its operands' obligations (#8107)" {
 test "integer division and remainder need a non-zero divisor (#8107)" {
   assertRefuted("func g(x: in Int, y: in Int): Int\n{\n  x / y\n}\n", "div")
   assertRefuted("func g(x: in Int, y: in Int): Int\n{\n  x % y\n}\n", "mod")
-  assertDischarged("func g(x: in Int, y: in Int): Int\n  requires: y != 0\n{\n  x / y\n}\n", "div-guarded")
+  assertDischarged("func g(x: in Int, y: in Int): Int\n  requires: y > 0\n{\n  x / y\n}\n", "div-guarded")
   assertRefuted("func g(x: in UInt, y: in UInt): UInt\n{\n  x / y\n}\n", "unsigned-div")
   assertRefuted("func g(x: in Int, y: in Int): Int\n{\n  var z = x\n  z /= y\n  z\n}\n", "compound-div")
   assertCheckedRefuted(
@@ -2123,4 +2123,68 @@ test "a named argument then a positional one pairs alike in build and prove (#81
   }
   val sub = "func sub(a: in Int, b: in Int): Int\n  ensures: result == a - b\n{\n  a - b\n}\n"
   assertDischarged(sub + "func g(): Int\n  ensures: result == 7\n{\n  sub(b = 3, 10)\n}\n", "prove: same result")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Guards, unsupported arms, lambdas, `??` and signed division overflow
+// (#8107 review, #7882).
+// ─────────────────────────────────────────────────────────────────────────────
+func posFn(): String {
+  "func pos(x: in Int): Int\n  requires: x > 0\n{\n  x\n}\n"
+}
+
+test "a match-arm guard is checked and guards its arm (#8107)" {
+  assertRefuted(
+    posFn() + "func f(n: in Int): Int {\n  match n {\n    case k if pos(0) > 0 -> 1\n    case _ -> 2\n  }\n}\n",
+    "guard-precondition"
+  )
+  assertDischarged(
+    posFn() + "func f(n: in Int): Int {\n  match n {\n    case k if k > 0 -> pos(k)\n    case _ -> 2\n  }\n}\n",
+    "guard-establishes-arm"
+  )
+}
+
+test "an arm with an unsupported pattern still has its body checked (#8107)" {
+  assertRefuted(
+    posFn() +
+      "func f(o: in Option[Int]): Int {\n  match o {\n    case Some(v) -> {\n      pos(0)\n    }\n    case _ -> 1\n  }\n}\n",
+    "unsupported-pattern-body"
+  )
+  assertDischarged(
+    posFn() +
+      "func f(o: in Option[Int]): Int {\n  match o {\n    case Some(v) -> {\n      pos(1)\n    }\n    case _ -> 1\n  }\n}\n",
+    "unsupported-pattern-body-met"
+  )
+}
+
+test "a lambda's body is checked for every call (#8107)" {
+  assertRefuted(posFn() + "func f(): Int {\n  val g = { -> pos(0) }\n  g()\n}\n", "lambda-body")
+  assertRefuted(posFn() + "func f(): Int {\n  val g = { x: Int -> pos(x) }\n  g(5)\n}\n", "lambda-parameter-arbitrary")
+  assertDischarged(posFn() + "func f(): Int {\n  val g = { -> pos(1) }\n  g()\n}\n", "lambda-body-met")
+  assertDischarged(
+    posFn() + "func f(): Int {\n  val g = { x: Int -> if x > 0 { pos(x) } else { 1 } }\n  g(5)\n}\n",
+    "lambda-body-guarded"
+  )
+}
+
+test "the right operand of ?? is checked but proves nothing (#8107)" {
+  assertRefuted(posFn() + "func f(o: in Int?): Int {\n  o ?? pos(0)\n}\n", "coalesce-precondition")
+  assertRefuted(
+    "func f(o: in Int?, x: in Int): Int\n  ensures: result <= 100\n{\n" +
+      "  val r = o ?? (if true { val p: Int range 0 ..= 100 = x; p } else { 0 })\n  x\n}\n",
+    "coalesce-fact"
+  )
+  assertDischarged(posFn() + "func f(o: in Int?): Int {\n  o ?? pos(1)\n}\n", "coalesce-met")
+}
+
+test "signed MinValue / -1 and % -1 trap in every mode (#7882)" {
+  assertRefuted("func f(a: in Int, d: in Int): Int\n  requires: d != 0\n{\n  a % d\n}\n", "rem-unchecked")
+  assertRefuted("func f(a: in Int, d: in Int): Int\n  requires: d != 0\n{\n  a / d\n}\n", "div-unchecked")
+  assertRefuted("func f(a: in Long, d: in Long): Long\n  requires: d != 0\n{\n  a % d\n}\n", "rem-long")
+  assertCheckedRefuted("func f(a: in Int, d: in Int): Int\n  requires: d != 0\n{\n  a % d\n}\n", "rem-checked")
+  assertDischarged(
+    "func f(a: in Int, d: in Int): Int\n  requires: d != 0 and (d != -1 or a > -2147483648)\n{\n  a % d\n}\n",
+    "rem-guarded"
+  )
+  assertDischarged("func f(a: in Long, d: in Long): Long\n  requires: d > 0\n{\n  a / d\n}\n", "div-long-positive")
 }

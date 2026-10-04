@@ -56,13 +56,14 @@ pub func intMin(): Int
 
 // Signed division truncates toward zero and the remainder takes the
 // dividend's sign, as at runtime: -7 / 2 is -3 and -7 % 2 is -1, not the
-// Euclidean -4 and 1.
+// Euclidean -4 and 1.  A signed `/` or `%` must also never divide the
+// type's minimum by -1, which traps in every build profile.
 pub func halveNegative(x: Int): Int
   requires: x == -7
   ensures: result == -3
   = x / 2
 
 pub func negativeRemainder(x: Long, d: Long): Long
-  requires: x < 0 and d != 0
+  requires: x < 0 and d != 0 and d != -1
   ensures: result <= 0
   = x % d

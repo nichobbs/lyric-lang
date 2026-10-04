@@ -619,17 +619,24 @@ func varlessEnv(env: in VEnv): VEnv {
   )
 }
 
-// `x / y` and `x % y` on integers panic when `y` is zero, in every build
-// profile: the obligation `y != 0` (#8107).  Real division follows IEEE 754
-// and has none.
-func divisorSideConds(b: in Builtin, args: in List[Term]): List[Term] {
+// `x / y` and `x % y` on integers trap in every build profile (D163)
+// when `y` is zero, and on a signed `bits`-wide value when `x` is the
+// type's minimum and `y` is -1 (the quotient does not fit; .NET throws for
+// the remainder too): the obligations `y != 0` and `not (x == Min and y ==
+// -1)` (#8107, #7882).  Real division follows IEEE 754 and has none.
+func divisorSideConds(b: in Builtin, args: in List[Term], bits: in Int): List[Term] {
   val conds: List[Term] = newList()
   if args.count == 2 {
     val isIntDiv = match b { case BOpDiv | BOpMod -> true; case _ -> false }
     if isIntDiv {
       val divisorSort = sortOf(args[1])
       match divisorSort {
-        case SInt -> conds.add(TBuiltin(op = BOpNeq, args = termList2(args[1], intLitOfSort(0i64, divisorSort))))
+        case SInt -> {
+          conds.add(TBuiltin(op = BOpNeq, args = termList2(args[1], intLitOfSort(0i64, divisorSort))))
+          val atMin = TBuiltin(op = BOpEq, args = termList2(args[0], intLitOfSort(signedMinOfBits(bits), SInt)))
+          val byMinusOne = TBuiltin(op = BOpEq, args = termList2(args[1], intLitOfSort(-1i64, SInt)))
+          conds.add(mkNot(mkAnd(termList2(atMin, byMinusOne))))
+        }
         case SBitVec(_) -> conds.add(TBuiltin(op = BOpNeq, args = termList2(args[1], intLitOfSort(0i64, divisorSort))))
         case _ -> ()
       }
@@ -1809,11 +1816,19 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
       // The right operand of `and`, `or` and `implies` is evaluated only
       // when the left one does not decide the result: its side conditions
       // and facts hold under that condition alone (#8102).
-      val rR = match builtinOfBinop(op) {
-        case Some(BOpAnd) -> guardTR(lR.term, rRaw)
-        case Some(BOpImplies) -> guardTR(lR.term, rRaw)
-        case Some(BOpOr) -> guardTR(mkNot(lR.term), rRaw)
-        case _ -> rRaw
+      // `a ?? b` evaluates `b` only when `a` is null, which the verifier
+      // does not model: an unknown condition, so `b`'s side conditions must
+      // hold however it falls and its facts give nothing (#8107).
+      val coalesce = match op { case BCoalesce -> true; case _ -> false }
+      val rR = if coalesce {
+        guardTR(freshVar(env, "isnull", SBool), rRaw)
+      } else {
+        match builtinOfBinop(op) {
+          case Some(BOpAnd) -> guardTR(lR.term, rRaw)
+          case Some(BOpImplies) -> guardTR(lR.term, rRaw)
+          case Some(BOpOr) -> guardTR(mkNot(lR.term), rRaw)
+          case _ -> rRaw
+        }
       }
       match builtinOfBinop(op) {
         case Some(rawB) -> {
@@ -1846,7 +1861,7 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
           appendTermList(sc, rR.sideConds)
           // Integer division and remainder by zero panic in every build
           // profile: the divisor must be non-zero (#8107).
-          appendTermList(sc, divisorSideConds(b, args))
+          appendTermList(sc, divisorSideConds(b, args, overflowBitsOfExpr(env, e)))
           // @proof_required(checked_arithmetic): overflow side conditions.
           // A signed result must stay inside its type's width — 32 bits
           // for `Int`, 64 for `Long` — since an overflow panics in a debug
@@ -1854,9 +1869,8 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
           if env.checkedArithmetic {
             match sortOf(args[0]) {
               case SInt -> {
-                // `MinValue / -1` is the one quotient outside the width.
                 match b {
-                  case BOpAdd | BOpSub | BOpMul | BOpDiv -> appendTermList(sc, signedWidthBounds(term, overflowBitsOfExpr(env, e)))
+                  case BOpAdd | BOpSub | BOpMul -> appendTermList(sc, signedWidthBounds(term, overflowBitsOfExpr(env, e)))
                   case _ -> {
                   }
                 }
@@ -2273,6 +2287,8 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
 
     case EUnsafe(blk) -> translateBlockValue(env, blk, e.span)
 
+    case ELambda(params, body) -> translateLambda(env, params, body, e.span)
+
     case _ -> {
       val diags: List[Diagnostic] = newList()
       diags.add(warningDiagnostic("V0024", "expression construct not yet modelled in proof translation", e.span))
@@ -2455,6 +2471,65 @@ func blockValueFailsClosed(
   failedPair
 }
 
+// A lambda: its value is unknown, but its body may run whenever it is
+// called, so the body's obligations must hold for every call — each
+// parameter a value of its own of its declared sort, each captured
+// binding a call may store into (a `var`, an `out`/`inout` parameter)
+// whatever it holds by then, the rest at its value where the lambda is
+// made.  Nothing the body establishes is assumed outside it (#8107).
+func translateLambda(
+  env: in VEnv, params: in List[LambdaParam], body: in Block, sp: in Span
+): (TranslateResult, List[Diagnostic]) {
+  val captured = havocVars(env, env.mutables, "capture")
+  // What holds of the captures and parameters whatever the call: their
+  // types' widths and ranges.  Never the body's own facts, which a call's
+  // precondition must not be proved from (#8102).
+  val inside: List[Term] = newList()
+  appendTermList(inside, captured.hyps)
+  var lambdaEnv = captured.env
+  var pi = 0
+  while pi < params.count {
+    val p = params[pi]
+    val info = match p.ty {
+      case Some(t) -> sortOfTypeExprE(env, t)
+      case None -> SortInfo(sort = SUninterp(name = "lambdaparam"), range = RBKNone)
+    }
+    val pVar = freshVar(env, p.name, info.sort)
+    appendTermList(inside, intWidthHypothesesForTerm(pVar, info))
+    appendTermList(inside, rangeHypothesesForTerm(pVar, info))
+    lambdaEnv = envSetMutable(envBindTerm(p.name, pVar, info, lambdaEnv), p.name, false)
+    pi = pi + 1
+  }
+  // The body is walked as a function body is: its statements' obligations
+  // are side goals, and its path's own obligation (false where it has a
+  // statement the verifier cannot follow) must hold too.  Its value is not
+  // constrained.
+  val noFinals: List[FinalSlot] = newList()
+  val lambdaResult = SortInfo(sort = SUninterp(name = "lambdaresult"), range = RBKNone)
+  val bodyWp = wpBlock(envWithFinals(lambdaEnv, noFinals), lambdaResult, trueT(), body.statements)
+  val bodyDiags = bodyWp.diags
+  val obligations: List[Term] = newList()
+  var si = 0
+  while si < bodyWp.sideGoals.count {
+    val sc = bodyWp.sideGoals[si].term
+    obligations.add(if termIsPoisoned(sc) or inside.count == 0 { sc } else { mkImplies(mkAnd(inside), sc) })
+    si = si + 1
+  }
+  if not isTrueT(bodyWp.wp) {
+    obligations.add(
+      if termIsPoisoned(bodyWp.wp) or inside.count == 0 { bodyWp.wp } else { mkImplies(mkAnd(inside), bodyWp.wp) }
+    )
+  }
+  val noFacts: List[Term] = newList()
+  val lambdaTR = TranslateResult(
+    term = freshVar(env, "lambda", SUninterp(name = "lambda")),
+    sideConds = obligations,
+    assumed = noFacts
+  )
+  val lambdaPair: (TranslateResult, List[Diagnostic]) = (lambdaTR, bodyDiags)
+  lambdaPair
+}
+
 // The subexpressions a construct the verifier does not model evaluates
 // where it stands — not a lambda's body, which runs later.
 func evaluatedSubexprs(e: in Expr): List[Expr] {
@@ -2573,9 +2648,37 @@ func buildMatchIte(
     case None -> {
       // Pattern not supported in M4.1 — skip arm.
       diagsOut.add(warningDiagnostic("V0027", "match arm pattern not yet supported in M4.1 verifier", arm.span))
-      // The later arms are reached when this one does not match, under a
-      // condition the verifier cannot state: an unknown.
-      val skippedReach = termsWith(reach, termList1(mkNot(freshVar(env, "arm", SBool))))
+      // The arm is taken, and the later arms reached, under a condition the
+      // verifier cannot state: an unknown.  The arm's body (and guard)
+      // still run when it is taken, so their side conditions must hold
+      // however that unknown falls, its bindings each a value of their own
+      // (#8107).  Its value is the match's open question (#8142).
+      val unknownMatch = freshVar(env, "arm", SBool)
+      var skipEnv = env
+      val binders: List[String] = newList()
+      collectPatternBinders(arm.pattern.kind, binders)
+      var bn = 0
+      while bn < binders.count {
+        val binderInfo = SortInfo(sort = SUninterp(name = "binding"), range = RBKNone)
+        skipEnv = envBindTerm(binders[bn], freshVar(env, binders[bn], binderInfo.sort), binderInfo, skipEnv)
+        bn = bn + 1
+      }
+      val skipSides: List[Term] = newList()
+      val skipFacts: List[Term] = newList()
+      match arm.guard {
+        case Some(g) -> {
+          val (gR, gDiags) = translateExpr(skipEnv, g)
+          appendTermList2(diagsOut, gDiags)
+          appendTermList(skipSides, gR.sideConds)
+        }
+        case None -> ()
+      }
+      val skippedArmTerm = translateArmBody(skipEnv, arm, diagsOut, skipSides, skipFacts)
+      if termIsPoisoned(skippedArmTerm) {
+        skipSides.add(poisonTerm(falseT()))
+      }
+      appendTermList(sidesOut, guardTerms(mkAnd(termsWith(reach, termList1(unknownMatch))), skipSides))
+      val skippedReach = termsWith(reach, termList1(mkNot(unknownMatch)))
       buildMatchIte(env, scrutTerm, arms, idx + 1, skippedReach, diagsOut, sidesOut, assumedOut, ctxSpan)
     }
     case Some(cond) -> {
@@ -2594,8 +2697,18 @@ func buildMatchIte(
       // The arm's side conditions and facts hold when it is the arm taken:
       // no earlier arm matched and its pattern (and guard, which the
       // verifier does not model, so an unknown) holds (#8102).
+      // The guard runs, in the arm's bindings, when the pattern matches and
+      // no earlier arm did: its side conditions and facts hold there, and
+      // the arm is taken when it holds too (#8107).
       val armMatches = match arm.guard {
-        case Some(_) -> mkAnd(termList2(cond, freshVar(env, "guard", SBool)))
+        case Some(g) -> {
+          val (gR, gDiags) = translateExpr(armEnv, g)
+          appendTermList2(diagsOut, gDiags)
+          val guardReach = mkAnd(termsWith(reach, termList1(cond)))
+          appendTermList(sidesOut, guardTerms(guardReach, gR.sideConds))
+          appendTermList(assumedOut, guardTerms(guardReach, gR.assumed))
+          mkAnd(termList2(cond, gR.term))
+        }
         case None -> cond
       }
       val armSides: List[Term] = newList()
@@ -2604,14 +2717,65 @@ func buildMatchIte(
       val armReach = mkAnd(termsWith(reach, termList1(armMatches)))
       appendTermList(sidesOut, guardTerms(armReach, armSides))
       appendTermList(assumedOut, guardTerms(armReach, armAssumed))
-      if isUnconditional {
+      if isUnconditional and isNone(arm.guard) {
         armTerm
       } else {
         val restReach = termsWith(reach, termList1(mkNot(armMatches)))
         val restTerm = buildMatchIte(env, scrutTerm, arms, idx + 1, restReach, diagsOut, sidesOut, assumedOut, ctxSpan)
-        TIte(cond = cond, thenT = armTerm, elseT = restTerm)
+        TIte(cond = armMatches, thenT = armTerm, elseT = restTerm)
       }
     }
+  }
+}
+
+// The names a pattern binds, at any depth.
+func collectPatternBinders(kind: in PatternKind, names: in List[String]): Unit {
+  match kind {
+    case PBinding(n, inner) -> {
+      addName(names, n)
+      match inner {
+        case Some(p) -> collectPatternBinders(p.kind, names)
+        case None -> ()
+      }
+    }
+    case PConstructor(_, args) -> {
+      var i = 0
+      while i < args.count {
+        collectPatternBinders(args[i].kind, names)
+        i = i + 1
+      }
+    }
+    case PRecord(_, fields, _) -> {
+      var i = 0
+      while i < fields.count {
+        collectFieldPatternBinders(fields[i], names)
+        i = i + 1
+      }
+    }
+    case PTuple(pats) -> {
+      var i = 0
+      while i < pats.count {
+        collectPatternBinders(pats[i].kind, names)
+        i = i + 1
+      }
+    }
+    case POr(pats) -> {
+      var i = 0
+      while i < pats.count {
+        collectPatternBinders(pats[i].kind, names)
+        i = i + 1
+      }
+    }
+    case PParen(inner) -> collectPatternBinders(inner.kind, names)
+    case PTypeTest(inner, _) -> collectPatternBinders(inner.kind, names)
+    case _ -> ()
+  }
+}
+
+func collectFieldPatternBinders(field: in RecordPatternField, names: in List[String]): Unit {
+  match field {
+    case RPFNamed(_, p, _) -> collectPatternBinders(p.kind, names)
+    case RPFShort(n, _) -> addName(names, n)
   }
 }
 
@@ -3288,7 +3452,7 @@ func wpAssign(
         }
       }
       match combinedOp {
-        case TBuiltin(_, dargs) -> appendTermList(rhsSide, divisorSideConds(bin, dargs))
+        case TBuiltin(_, dargs) -> appendTermList(rhsSide, divisorSideConds(bin, dargs, overflowBitsOfExpr(env, target)))
         case _ -> ()
       }
       if env.checkedArithmetic {
@@ -3296,12 +3460,9 @@ func wpAssign(
           case TBuiltin(_, cargs) -> {
             match sortOf(cargs[0]) {
               case SInt -> match bin {
-                case BOpAdd | BOpSub | BOpMul | BOpDiv -> appendTermList(
+                case BOpAdd | BOpSub | BOpMul -> appendTermList(
                   rhsSide,
-                  signedWidthBounds(
-                    combinedOp,
-                    overflowBitsOfExpr(env, target)
-                  )
+                  signedWidthBounds(combinedOp, overflowBitsOfExpr(env, target))
                 )
                 case _ -> ()
               }
