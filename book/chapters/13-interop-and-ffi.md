@@ -343,6 +343,14 @@ func setTitle(w: in NativePtr[Byte], title: in String): Int {
 
 `Std.Ffi` is built from two intrinsics you can use directly for other C data: `nativeLoadByte(p, offset)` reads the byte at `p + offset` and `nativeStoreByte(p, offset, value)` writes one, on all three targets. `Ffi.allocate(size)` gives you C heap memory to use them on. There is no bounds check, which is why they, like every function in `Std.Ffi`, are allowed only in `@unsafe_ffi` code.
 
+## §13.11 JavaScript and NPM packages
+
+On the `wasm32` target the foreign boundary is JavaScript rather than the BCL or C. A
+`@wasmImport("module") extern func` declares a function the host supplies, and an
+`@wasmImport("npm:<package>")` extern binds an export of an installed NPM package; the
+`[npm]` table and `lyric restore` manage the packages. Chapter 32 covers both, along
+with the module and component output shapes.
+
 ## Exercises
 
 1. Write an `extern package System.Console` that wraps `Console.ReadLine()` and `Console.WriteLine(string)`. Provide `requires:` and `ensures:` clauses that reflect what the BCL actually guarantees. Then write a Lyric `Console` package that wraps it, returning `Option[String]` from `readLine()` — `Some(line)` when a line is read, `None` when EOF is reached.
