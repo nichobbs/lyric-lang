@@ -140,6 +140,19 @@ both confirmed:
   about the wrong term. `result` is now a placeholder substituted with the
   parameters at once.
 
+## Fourth review
+
+No new soundness hole; one crash. A parameter default reaching its own
+function (`b: Int = f(0) + 1`) recursed without end in `lyric prove` (a
+stack overflow). Defaults are now translated with the callee on the
+contract stack and are edges of the contract-call graph; a record field
+default that constructs its own record fails closed; and contracts and
+defaults unfold at most 32 deep before a call fails closed (V0033).
+`verifier_self_test.l` has 123 tests, all passing; the repros no longer
+crash (`lyric prove` reports the goals unproved), the CI `lyric prove`
+examples and `core_proof.l` still discharge, and the compiler self-test
+batch passes (3323 tests).
+
 `verifier_self_test.l` has 122 tests, all passing; the third review's repros
 no longer prove, the CI `lyric prove` examples and `core_proof.l` still
 discharge, and the compiler self-test batch passes (3322 tests).

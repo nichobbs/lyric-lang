@@ -449,6 +449,12 @@ graph (an edge from a function to every function its contracts, or its
 `requires:` proved at every call but its `ensures:` and `@pure` body never
 assumed, since a cycle (`ensures: result == f(x) + 1`) can make them
 contradictory. Recursion in a body, outside the contracts, is unaffected.
+Parameter and record-field defaults are part of the same picture: a
+call's omitted-parameter defaults are translated with the callee on the
+contract stack and are edges of the contract-call graph, and a record
+field default that constructs its record again fails closed (`V0033`).
+As a backstop, contracts and defaults unfold inside one another at most
+32 deep; past that the call fails closed (`V0033`).
 
 A local binding shadows a file function of the same name: `val f = ...;
 f(x)` is a call through a computed callee (a fresh result, its mutable
