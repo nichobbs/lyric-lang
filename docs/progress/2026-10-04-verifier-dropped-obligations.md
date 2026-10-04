@@ -89,10 +89,18 @@ program `lyric prove` discharged and `lyric run` violated:
   state before it. They now see those variables at new values.
 - A call's receiver (`zr(x).take(pos(x))`) or computed callee
   (`pick(zero(x))(pos(x))`) was translated after the arguments, though it
-  runs first. The arguments now start from the state it leaves. Named
-  arguments were already translated in source order; the other constructs
-  (index, interpolation, tuples, lists, field chains) were audited and
-  already run left to right.
+  runs first. The arguments now start from the state it leaves. The other
+  constructs (index, interpolation, tuples, lists, field chains) were
+  audited and already run left to right.
+- Named arguments written out of parameter order run in parameter order on
+  the backends but were sequenced as written, so `two(b = pos(x), a =
+  zero(x))` proved and failed at run time. The order is not settled in the
+  language reference yet, so such a call (or record construction) now fails
+  closed with V0033 when an argument changes a variable.
+
+After the fourth review (named-argument order): `verifier_self_test.l`
+143 tests, the CI prove examples, `core_proof.l`, the review repros, and
+the compiler self-test batch (3361 tests) all pass.
 
 After the third review: `verifier_self_test.l` 142 tests, the CI prove
 examples, `core_proof.l`, every earlier repro, and the compiler self-test

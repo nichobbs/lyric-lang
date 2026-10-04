@@ -447,13 +447,14 @@ Calls the verifier cannot follow fail closed or are over-approximated
   32 bits when none is known: a result is at least that wide, so this can
   only make them stricter.)
 - Inside one expression, evaluation order is respected: a call's receiver
-  or computed callee, then its arguments in source order (named ones too,
-  whatever the parameter order), a branch or arm after a condition,
+  or computed callee, then its arguments in order, a branch or arm after a condition,
   scrutinee or guard, the arms after a guard that ran and failed, and the
   right operand of a binary operator see the state the earlier part
   leaves — a variable it passed to an `out`/`inout` parameter holds a new
   value. Index receivers before indices, interpolation segments, and
-  tuple and list elements run left to right as well.
+  tuple and list elements run left to right as well. A call whose named
+  arguments are written out of parameter order fails closed (V0033) when
+  an argument changes a variable, since that order is not yet settled.
 - A match arm's guard is translated in the arm's bindings: its side
   conditions and facts hold where the pattern matches and no earlier arm
   did, and the arm is taken when pattern and guard hold. An arm whose
