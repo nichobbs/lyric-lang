@@ -542,6 +542,32 @@ func stdlibImportClosure(pkg: in String, stdlib: in NativeStdlib): List[Imported
   visible
 }
 
+// `{ val v: T = init; v }`: the declared type sits on a typed local so the
+// monomorphiser infers a generic initializer's type arguments from it
+// (it reads annotated locals, not the function's return type).
+func typedInitBlock(ty: in TypeExpr, init: in Expr, sp: in Span): Block {
+  val name = "__lyric_mvinit_value"
+  val noInner: Option[Pattern] = None
+  val stmts: List[Statement] = newList()
+  stmts.add(
+    Statement(
+      kind = SLocal(
+        binding = LBVal(pat = Pattern(kind = PBinding(name = name, inner = noInner), span = sp), ty = Some(value = ty), init = init)
+      ),
+      span = sp
+    )
+  )
+  val segs: List[String] = newList()
+  segs.add(name)
+  stmts.add(
+    Statement(
+      kind = SExpr(expr = Expr(kind = EPath(path = ModulePath(segments = segs, span = sp)), span = sp)),
+      span = sp
+    )
+  )
+  Block(statements = stmts, span = sp)
+}
+
 // Native stores a module-level `val` with a non-literal initializer in a static
 // global that start-up code fills in (`Lyric.LlvmCodegen.loadModuleGlobal`).
 // That initializer becomes a function, appended here BEFORE type check and
@@ -577,7 +603,7 @@ func hoistModuleValInits(sf: in SourceFile): SourceFile {
                     ret = Some(value = ty),
                     whereClause = None,
                     contracts = noContracts,
-                    body = Some(value = FBExpr(expr = decl.init)),
+                    body = Some(value = FBBlock(block = typedInitBlock(ty, decl.init, decl.span))),
                     span = decl.span
                   )
                   items.add(Item(docComments = noDocs, annotations = noAnns, visibility = None, kind = IFunc(decl = fd), span = it.span))
