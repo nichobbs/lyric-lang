@@ -93,3 +93,14 @@ test "a function-typed field is called through a nested receiver" {
     case None -> assertTrue(false, "unreachable")
   }
 }
+
+record Handler[M, Msg] {
+  update: (M, Msg) -> M
+  view: (M) -> String
+}
+
+test "a generic record built from lambdas takes its function types from the expected type" {
+  val h: Handler[Int, Int] = Handler(update = { m: Int, d: Int -> m + d }, view = { m: Int -> "n=" + m.toString() })
+  assertEqualInt(h.update(1, 2), 3, "the update lambda ran with the bound type arguments")
+  assertEqual(h.view(7), "n=7", "the view lambda ran")
+}

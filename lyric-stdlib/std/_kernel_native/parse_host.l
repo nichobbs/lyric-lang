@@ -29,7 +29,7 @@ extern func toC(s: String): NativePtr[Byte] = "lyric_string_to_cstring"
 
 extern func freeC(p: NativePtr[Byte]): Unit = "lyric_cstring_free"
 
-extern func cStrtod(s: NativePtr[Byte], end: NativePtr[Byte]): Double = "strtod"
+extern func cStrtod(s: NativePtr[Byte], endp: NativePtr[Byte]): Double = "strtod"
 
 pub func hostTryParseDouble(s: in String, value: out Double): Bool {
   value = 0.0
@@ -47,7 +47,7 @@ pub func hostTryParseDouble(s: in String, value: out Double): Bool {
 @unsafe_ffi
 func strtodChecked(t: in String): Double {
   val c = toC(t)
-  val v = cStrtod(c, nativeNullPtr())
+  val v: Double = cStrtod(c, nativeNullPtr())
   freeC(c)
   v
 }

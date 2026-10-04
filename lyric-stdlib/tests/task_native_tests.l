@@ -48,7 +48,10 @@ test "delayWithCancel returns early once the token is cancelled" {
   val start = monotonicNanos()
   val r = await delayWithCancel(5000, tok)
   val elapsedMs = (monotonicNanos() - start) / 1000000i64
-  assertTrue(elapsedMs < 1000i64, "an already-cancelled token ends the delay promptly (elapsed=" + toString(elapsedMs) + "ms)")
+  assertTrue(
+    elapsedMs < 1000i64,
+    "an already-cancelled token ends the delay promptly (elapsed=" + toString(elapsedMs) + "ms)"
+  )
   assertTrue(isCancelled(tok), "the token is still cancelled afterwards")
 }
 

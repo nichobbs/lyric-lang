@@ -9872,6 +9872,11 @@ func lowerGenericRecordConstruct(
     ai = ai + 1
   }
   val rawVals: List[NVal] = newList()
+  // A lambda field is deferred: its function type may mention type
+  // parameters that only the other fields or the expected type bind, so it is
+  // lowered last, against the field's type under those bindings.
+  val deferredLambda: List[Bool] = newList()
+  val fieldExprs: List[Option[Expr]] = newList()
   var fi2 = 0
   while fi2 < fields.count {
     var found2 = 0 - 1
@@ -9882,15 +9887,27 @@ func lowerGenericRecordConstruct(
       }
       aj = aj + 1
     }
+    var fe: Option[Expr] = None
     if found2 >= 0 {
-      rawVals.add(lowerExpr(ctx, insns, argFieldExpr[found2]))
+      fe = Some(value = argFieldExpr[found2])
     } else {
       match fields[fi2].dflt {
-        case Some(d) -> rawVals.add(lowerExpr(ctx, insns, d))
+        case Some(d) -> {
+          fe = Some(value = d)
+        }
         case None -> panic(
           "Lyric.LlvmCodegen: missing field '" + fields[fi2].name + "' constructing record '" + rd.name + "'"
         )
       }
+    }
+    fieldExprs.add(fe)
+    val fexpr = match fe { case Some(x) -> x; case None -> panic("unreachable") }
+    if isLambdaExpr(fexpr) {
+      deferredLambda.add(true)
+      rawVals.add(NVal(ty = NVoid, value = NUndef(ty = NVoid)))
+    } else {
+      deferredLambda.add(false)
+      rawVals.add(lowerExpr(ctx, insns, fexpr))
     }
     fi2 = fi2 + 1
   }
@@ -9903,7 +9920,9 @@ func lowerGenericRecordConstruct(
   val boundTys: List[NType] = newList()
   var ufi = 0
   while ufi < fields.count {
-    unifyTyArg(ctx, fields[ufi].ty, rawVals[ufi].ty, envNames, boundNames, boundTys)
+    if not deferredLambda[ufi] {
+      unifyTyArg(ctx, fields[ufi].ty, rawVals[ufi].ty, envNames, boundNames, boundTys)
+    }
     ufi = ufi + 1
   }
   if boundNames.count < envNames.count {
@@ -9927,6 +9946,22 @@ func lowerGenericRecordConstruct(
       }
       case None -> ()
     }
+  }
+  var dli = 0
+  while dli < fields.count {
+    if deferredLambda[dli] {
+      val lamExpr = match fieldExprs[dli] { case Some(x) -> x; case None -> panic("unreachable") }
+      match typeToNEnvOpt(ctx, fields[dli].ty, boundNames, boundTys) {
+        case Some(want) -> {
+          rawVals[dli] = lowerExprExpecting(ctx, insns, lamExpr, want)
+        }
+        case None -> {
+          rawVals[dli] = lowerExpr(ctx, insns, lamExpr)
+        }
+      }
+      unifyTyArg(ctx, fields[dli].ty, rawVals[dli].ty, envNames, boundNames, boundTys)
+    }
+    dli = dli + 1
   }
   val envTys: List[NType] = newList()
   var pi = 0
