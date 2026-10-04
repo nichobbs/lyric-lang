@@ -4802,7 +4802,15 @@ func lowerCallEx(
   // Static function call through the registry.
   val key = callKeyOf(fnExpr, args.count)
   if key.length == 0 {
-    panic("Lyric.LlvmCodegen: indirect calls are not yet supported for --target native (rest of Phase N2.6)")
+    panic(
+      "Lyric.LlvmCodegen: indirect calls are not yet supported for --target native (rest of Phase N2.6): the callee is a " +
+        describeExprKind(fnExpr.kind) +
+        " expression (in " +
+        ctx.curPkg[0] +
+        " at line " +
+        line.toString() +
+        ")"
+    )
   }
   // Resolution order: self-package qualified, then the key as written,
   // then heap-type constructors (records, union cases, distinct types).
