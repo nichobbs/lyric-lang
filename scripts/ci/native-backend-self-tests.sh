@@ -69,6 +69,7 @@ for t in \
   lyric-compiler/lyric/llvm_project_self_test.l \
   lyric-compiler/lyric/cli_run_native_project_self_test.l \
   lyric-compiler/lyric/fixed_array_project_self_test.l \
+  lyric-compiler/lyric/fixed_array_restored_self_test.l \
   lyric-compiler/lyric/native_dependency_self_test.l \
   lyric-compiler/lyric/native_string_normalize_panic_self_test.l \
   lyric-compiler/lyric/llvm_self_test_self_iface.l \
@@ -110,3 +111,5 @@ LYRIC_BIN="$lyric_bin" bash scripts/ci/overflow-profile-e2e.sh native
 LYRIC_BIN="$lyric_bin" bash scripts/ci/fixed-array-e2e.sh native
 # docs/67 G1: Vec3 arithmetic and an inline array of Vec3 allocate nothing.
 LYRIC_BIN="$lyric_bin" bash scripts/ci/bench-vec3-alloc.sh
+# #8031: an inline range type is checked wherever a value reaches it.
+LYRIC_BIN="$lyric_bin" bash scripts/ci/range-refinement-e2e.sh native

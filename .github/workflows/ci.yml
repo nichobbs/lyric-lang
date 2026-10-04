@@ -2620,7 +2620,8 @@ jobs:
       - uses: ./.github/actions/lyric-test-setup
         with:
           build-config: ${{ env.BUILD_CONFIG }}
-          # fixed_array_project_self_test.l checks the JVM build of the same project.
+          # fixed_array_project_self_test.l and fixed_array_restored_self_test.l
+          # check the JVM builds of their projects too.
           java: 'true'
       # Builds lyric-rt (C unit tests under both clang and gcc), then runs the
       # three llvm self-tests: llvm_ir (serializer), llvm_codegen (N1 scalar

@@ -979,7 +979,7 @@ func renderType(cr: in CheckResult, ty: in Type): String {
         s + "]"
       }
     }
-    case TyRefined(u, lo, hi, inc) -> {
+    case TyRefined(u, lo, hi, inc, _) -> {
       // Render lo/hi conditionally so open-ended forms produce
       // `Int range 5 ..` / `Int range ..= 9` instead of trailing-op /
       // leading-double-space output.

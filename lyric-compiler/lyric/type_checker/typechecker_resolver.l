@@ -86,7 +86,7 @@ pub func resolveType(tbl: in SymbolTable, ctx: in GenericContext, diag: in List[
       val lo = rangeLo(range)
       val hi = rangeHi(range)
       val inc = rangeHiInclusive(range)
-      TyRefined(underlying = baseTy, lo = lo, hi = hi, hiInclusive = inc)
+      TyRefined(underlying = baseTy, lo = lo, hi = hi, hiInclusive = inc, source = te)
     }
   }
 }

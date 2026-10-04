@@ -318,7 +318,7 @@ func isULongType(t: in Type): Bool {
 
 func classifyArrayIndex(tbl: in SymbolTable, idxTy: in Type, n: in Int): IndexKind {
   match idxTy {
-    case TyRefined(u, _, _, _) -> match intFlavor(u) {
+    case TyRefined(u, _, _, _, _) -> match intFlavor(u) {
       case 1 -> IndexKind(kind = "", elide = false, wide = false)
       case 2 -> IndexKind(kind = "", elide = false, wide = true)
       case _ -> badIndex()
@@ -664,7 +664,7 @@ pub func zeroExprFor(tbl: in SymbolTable, t: in Type, sp: in Span, depth: in Int
     return None
   }
   match t {
-    case TyRefined(u, lo, hi, inc) -> {
+    case TyRefined(u, lo, hi, inc, _) -> {
       val loOk = match lo { case Some(l) -> l <= 0i64; case None -> true }
       val hiOk = match hi { case Some(h) -> if inc { h >= 0i64 } else { h > 0i64 }; case None -> true }
       if loOk and hiOk {
@@ -951,7 +951,7 @@ pub func recordArrayEq(
 pub func typeHoldsArray(tbl: in SymbolTable, t: in Type, seen: in List[Int]): Bool {
   match t {
     case TyArray(_, _) -> true
-    case TyRefined(u, _, _, _) -> typeHoldsArray(tbl, u, seen)
+    case TyRefined(u, _, _, _, _) -> typeHoldsArray(tbl, u, seen)
     case TyNullable(inner) -> typeHoldsArray(tbl, inner, seen)
     case TySlice(el) -> typeHoldsArray(tbl, el, seen)
     case TyTuple(elems) -> {
@@ -1023,7 +1023,7 @@ func recordFieldsHoldArray(tbl: in SymbolTable, tid: in TypeId, seen: in List[In
 pub func typeMentionsTyVar(t: in Type): Bool {
   match t {
     case TyVar(_) -> true
-    case TyRefined(u, _, _, _) -> typeMentionsTyVar(u)
+    case TyRefined(u, _, _, _, _) -> typeMentionsTyVar(u)
     case TyNullable(inner) -> typeMentionsTyVar(inner)
     case TySlice(el) -> typeMentionsTyVar(el)
     case TyArray(_, el) -> typeMentionsTyVar(el)

@@ -153,10 +153,11 @@ _Status:_ by-value **records** shipped on native (G1, #7940; progress entry
 `2026-10-02-native-by-value-records`): a record with no `var` field whose fields
 are scalars, enums, distinct types or other such records is an LLVM struct value
 (`insertvalue`/`extractvalue`, no heap, no ARC), boxed only inside `List`/`Map`/
-`Task` slots. Opaque types, interface implementers and generic instantiations
-over reference types keep the heap form. An `extern func` naming a by-value
-record, including in a callback type, is rejected (`N0010`; the C ABI is #8009,
-and boxing a by-value record into an interface is #8010).
+`Task` slots. Opaque types and generic instantiations over reference types
+keep the heap form. An interface implementer stays a value too: an upcast
+copies it into a box the interface value owns, and its vtable slots are thunks
+that read it back out (#8010). An `extern func` naming a by-value record,
+including in a callback type, is rejected (`N0010`; the C ABI is #8009).
 
 Inline **unions** shipped too (progress entry `2026-10-02-native-inline-unions`):
 a union whose every case payload field is by-value (scalars, enums, distinct

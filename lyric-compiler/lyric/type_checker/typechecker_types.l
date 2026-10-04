@@ -77,7 +77,9 @@ pub union Type {
   /// dedicated checks (e.g. T0015 inline-literal range validation).
   /// Named distinct range subtypes (`type Age = Int range …`) resolve to
   /// `TyUser`, not `TyRefined`; carrying their bounds is Band-4 work.
-  case TyRefined(underlying: Type, lo: Option[Long], hi: Option[Long], hiInclusive: Bool)
+  /// `source` is the refined type as written (`Int range 0 ..= 9`), from
+  /// which a runtime range check reads its bounds and message (#8031).
+  case TyRefined(underlying: Type, lo: Option[Long], hi: Option[Long], hiInclusive: Bool, source: TypeExpr)
   case TySelf
   case TyVar(name: String)
   case TyError
@@ -88,7 +90,7 @@ pub union Type {
 
 pub func unrefine(t: in Type): Type {
   match t {
-    case TyRefined(u, _, _, _) -> unrefine(u)
+    case TyRefined(u, _, _, _, _) -> unrefine(u)
     case _ -> t
   }
 }
@@ -252,7 +254,7 @@ func typeEquivCore(a: in Type, b: in Type): Bool {
     // `typeEquiv` strips refinements before dispatching here, so this arm
     // is only reached if `typeEquivCore` is called directly; unwrap to be
     // safe and keep the match exhaustive.
-    case TyRefined(u, _, _, _) -> typeEquivCore(unrefine(u), unrefine(b))
+    case TyRefined(u, _, _, _, _) -> typeEquivCore(unrefine(u), unrefine(b))
   }
 }
 
@@ -297,7 +299,7 @@ pub func renderType(t: in Type): String {
       val pstr = "(" + joinTypes(ps, ", ") + ")"
       prefix + pstr + " -> " + renderType(r)
     }
-    case TyRefined(u, lo, hi, inc) -> {
+    case TyRefined(u, lo, hi, inc, _) -> {
       // Render lo/hi conditionally so open-ended forms produce
       // `Int range 5 ..` / `Int range ..= 9` instead of the malformed
       // `Int range 5 ..= ` (trailing operator) or `Int range  ..= 9`

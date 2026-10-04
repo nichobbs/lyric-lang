@@ -149,7 +149,7 @@ func forRangeBoundsElemType(loTy: in Type, hiTy: in Type): Type {
 // subtypes (`type Age = Int range …`) is Band-4 work and is not covered here.
 func checkRefinedLiteralBound(declT: in Type, init: in Expr, diag: in List[Diagnostic]): Unit {
   match declT {
-    case TyRefined(_, lo, hi, inc) -> match exprLiteralLong(init) {
+    case TyRefined(_, lo, hi, inc, _) -> match exprLiteralLong(init) {
       case None -> {
       }
       case Some(v) -> {
@@ -570,6 +570,7 @@ pub func checkStatement(
       if not stringPlusAssign {
         recordUnsignedWidening(tbl, targetType, valueType, value)
       }
+      noteRangeAssign(sc, tbl, target, op, targetType, value, stmt.span)
       recordUnsignedCompoundValue(tbl, op, targetType, valueType, value, stringPlusAssign)
       // #1487 (§5.2): an `in` parameter — like a `val`/`let` binding — is
       // immutable and cannot be reassigned.  The checker records this as

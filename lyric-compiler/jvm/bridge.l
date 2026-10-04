@@ -1652,11 +1652,17 @@ func collectFuncCallKeys(decl: in FunctionDecl, registry: in Map[String, JvmFunc
 // Detect a derive-synthesised free-function name: `deriveFile` emits names of
 // the form `TypeName.method` (e.g. `Point.equals`, `Color.show`), which always
 // contain a dot.  Bare names (e.g. `classify`, `main`) are not derive-free.
+// A range checker `Lyric.ContractElaborator.insertRangeSiteChecks`
+// synthesizes after type checking (`__lyric_range_<n>`, #8031): registered
+// with the derive-synthesized functions, since the pre-check file lacks it.
+func isRangeCheckerName(name: in String): Bool = Str.startsWith(name, "__lyric_range_")
+
 func isDeriveFreeName(name: in String): Bool {
   Str.contains(name, ".")
 }
 
 // Register IFunc items whose name contains a "." — the `TypeName.method` form
+// (and the `__lyric_range_<n>` range checkers, #8031)
 // that `deriveFile` synthesises for `@derive(Equals/Show/Hash/Ord)` free
 // functions (e.g. `Point.equals`, `Color.show`).  Called after `runMiddleEnd`
 // to patch the registry built from the pre-derive `userFile` (#3139).
@@ -1670,7 +1676,7 @@ func collectDeriveFreeSigs(
   while i < file.items.count {
     match file.items[i].kind {
       case IFunc(decl) -> {
-        if isDeriveFreeName(decl.name) {
+        if isDeriveFreeName(decl.name) or isRangeCheckerName(decl.name) {
           val params: List[JvmType] = newList()
           val paramNames: List[String] = newList()
           val paramDefaults: List[Option[Expr]] = newList()
@@ -1714,8 +1720,9 @@ func collectDeriveFreeSigs(
             declParamTypeExprs = newList(),
             declRetTypeExprRaw = None,
             declRetExternTypes = newMap(),
-            // Always dot-named here (`isDeriveFreeName` gate above) — mangled
-            // into `TypeName$member` so it doesn't collide with another
+            // A dot-named derive function is mangled into `TypeName$member`
+            // (a range checker has no dot and keeps its name) so it doesn't
+            // collide with another
             // type's same-named derived member on this package's shared
             // host class (#7501).
             jvmMethodName = jvmDotMethodNameFromDeclName(decl.name)

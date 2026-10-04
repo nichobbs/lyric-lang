@@ -1388,6 +1388,21 @@ pub record FuncRefSite {
 /// function value, D-progress-964; a widening to `ULong`, #7805), or the
 /// identity `.toUInt()`/`.toULong()` on a `UInt`/`ULong` operand whose
 /// lowering depends on signedness (#7812).
+/// A value the type checker found flowing into an inline range type at a
+/// position nothing else checks (#8031): a record or union field, an element,
+/// an argument through a function value.  `Lyric.ContractElaborator`
+/// wraps the value in a range check that fails with
+/// `RangeViolated: <subject> must be in <type>`.  `lo`/`hi` are the folded
+/// integer bounds (`None` when a bound is open or not an integer, when the
+/// bounds of `source` are read instead).
+pub record RangeCheckSite {
+  subject: String
+  source: TypeExpr
+  lo: Option[Long]
+  hi: Option[Long]
+  hiInclusive: Bool
+}
+
 pub record ArgConversionSite {
   method: String
   startOffset: Int
