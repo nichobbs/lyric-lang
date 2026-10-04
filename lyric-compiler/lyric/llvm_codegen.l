@@ -597,6 +597,7 @@ func isCharTypeExpr(te: in TypeExpr): Bool {
   match te.kind {
     case TRef(path) -> path.segments.count == 1 and path.segments[0] == "Char"
     case TParen(inner) -> isCharTypeExpr(inner)
+    case TRefined(under, _) -> isCharTypeExpr(TypeExpr(kind = TRef(path = under), span = te.span))
     case _ -> false
   }
 }
@@ -755,6 +756,8 @@ pub func typeExprToNType(te: in TypeExpr): NType {
     // performs for every vtable slot (see D-progress-1016).
     case TSelf -> NPtr(pointee = NI8)
     case TParen(inner) -> typeExprToNType(inner)
+    // An inline range type (`Int range 0 ..= 3`) is its base type.
+    case TRefined(under, _) -> typeExprToNType(TypeExpr(kind = TRef(path = under), span = te.span))
     case TFunction(parameters, retTy) -> {
       // A raw C function-pointer type (N4.5): only meaningful in extern
       // func parameter positions, where a Lyric closure argument is
@@ -855,6 +858,7 @@ func typeToN(ctx: in Ctx, te: in TypeExpr): NType {
       }
     }
     case TParen(inner) -> typeToN(ctx, inner)
+    case TRefined(under, _) -> typeToN(ctx, TypeExpr(kind = TRef(path = under), span = te.span))
     case _ -> typeExprToNType(te)
   }
 }
@@ -933,6 +937,7 @@ func typeToNOpt(ctx: in Ctx, te: in TypeExpr): Option[NType] {
     }
     case TUnit -> Some(value = NVoid)
     case TParen(inner) -> typeToNOpt(ctx, inner)
+    case TRefined(under, _) -> typeToNOpt(ctx, TypeExpr(kind = TRef(path = under), span = te.span))
     case _ -> None
   }
 }
@@ -4716,9 +4721,6 @@ func curPkgQualifiedGet[T](ctx: in Ctx, m: in Map[String, T], bareOrDotted: in S
   mapGet(m, bareOrDotted)
 }
 
-/// Whether the type named `recvTyName` has a method `name` of any arity: a
-/// record method or dot-named function registered as `<Type>.<name>/<n>`, or
-/// an impl method.
 /// The `genericFnDefs` key of method `nameAndArity` (`<name>/<arity>`, the
 /// receiver counted) of the generic record that `recvTyName` instantiates.
 func genericRecordMethodKey(ctx: in Ctx, recvTyName: in String, nameAndArity: in String): Option[String] {
@@ -4741,6 +4743,9 @@ func genericRecordMethodKey(ctx: in Ctx, recvTyName: in String, nameAndArity: in
   }
 }
 
+/// Whether the type named `recvTyName` has a method `name` of any arity: a
+/// record method or dot-named function registered as `<Type>.<name>/<n>`, an
+/// impl method, or a generic record's method.
 func receiverHasMethod(ctx: in Ctx, recvTyName: in String, name: in String): Bool {
   if recvTyName.length == 0 {
     return false
@@ -5355,6 +5360,7 @@ func classifyByValueFieldEnv(
   val res: List[NType] = newList()
   match te.kind {
     case TParen(inner) -> return classifyByValueFieldEnv(st, pkg, inner, envNames, envTys)
+    case TRefined(under, _) -> return classifyByValueFieldEnv(st, pkg, TypeExpr(kind = TRef(path = under), span = te.span), envNames, envTys)
     case TUnit -> {
       res.add(NVoid)
       return res
@@ -16815,24 +16821,18 @@ func reboxErasedSelfResult(ctx: in Ctx, insns: in List[NInsn], ii: in NIfaceInfo
   boxVal
 }
 
-/// Dispatch an interface method call: load `obj` and the vtable pointer,
-/// index the method slot, bitcast the raw pointer to the method's function
-/// type, and call with `obj` (as `i8*`) as the receiver.
-func lowerIfaceArgAt(
-  // One interface call argument, lowered against its parameter: a bare `Self`
-  // parameter unboxes explicitly (#7618), every other one coerces.
-  ctx: in Ctx,
-  insns: in List[NInsn],
-  ex: in Expr,
-  pt: in NType,
-  isSelf: in Bool,
-): NVal {
+/// One interface call argument, lowered against its parameter: a bare `Self`
+/// parameter unboxes explicitly (#7618), every other one coerces.
+func lowerIfaceArgAt(ctx: in Ctx, insns: in List[NInsn], ex: in Expr, pt: in NType, isSelf: in Bool): NVal {
   if isSelf {
     return unboxToSelfSlot(ctx, insns, lowerExpr(ctx, insns, ex))
   }
   coerceTo(ctx, insns, lowerExprExpecting(ctx, insns, ex, pt), pt)
 }
 
+/// Dispatch an interface method call: load `obj` and the vtable pointer,
+/// index the method slot, bitcast the raw pointer to the method's function
+/// type, and call with `obj` (as `i8*`) as the receiver.
 func lowerIfaceDispatch(
   ctx: in Ctx,
   insns: in List[NInsn],

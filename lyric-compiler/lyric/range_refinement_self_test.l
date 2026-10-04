@@ -3,7 +3,11 @@
 //! `Int range 0 ..= 9` erased to `Int` and only a literal initializer was
 //! checked (T0015).  A refined parameter, return value, binding or `var`
 //! assignment is now a runtime contract that fails with `RangeViolated`.
-//! Runs on dotnet and JVM (native has no `assertPanics`).
+//! So is a value reaching a range type anywhere else (#8031): a record or
+//! union field, a `.copy` argument, a field or element assignment, a
+//! collection element and an argument through a function value.
+//! Runs on dotnet and JVM (native has no `assertPanics`;
+//! `scripts/ci/range-refinement-e2e.sh` runs the panics on every target).
 @test_module
 package RangeRefinementSelfTest
 
@@ -133,4 +137,99 @@ test "a lambda assigning a captured refined var is checked" {
 test "an assignment inside a list literal is checked (#7398)" {
   assertTrue(viaListedLambda(3) == 3, "3 is in range")
   assertPanics("99 is outside 0 ..= 3 (list)", { -> val _ = viaListedLambda(99) })
+}
+
+val maxSteps: Int = 3
+
+record Slot {
+  i: Int range 0 ..= 3
+}
+
+record Dial {
+  var level: Int range 0 ..= 3
+}
+
+record Bounded {
+  n: Int range 0 ..= maxSteps
+  big: Long range 0i64 ..= 5000000000i64
+  p: Double range 0.0 ..= 1.0
+}
+
+union Cmd {
+  case Move(steps: Int range 0 ..= 3)
+  case Stop
+}
+
+func ten(): Int = 10
+
+func two(): Int = 2
+
+func stepsOf(c: in Cmd): Int {
+  match c {
+    case Move(s) -> s
+    case Stop -> 0
+  }
+}
+
+test "a record field is checked at construction (#8031)" {
+  assertTrue(Slot(i = two()).i == 2, "2 is in 0 ..= 3")
+  assertPanics("10 is outside 0 ..= 3 (named)", { -> val _ = Slot(i = ten()) })
+  assertPanics("a named bound is folded", { -> val _ = Bounded(n = ten(), big = 1i64, p = 0.5) })
+  assertPanics("a Long field", { -> val _ = Bounded(n = 1, big = 6000000000i64, p = 0.5) })
+  assertPanics("a Double field", { -> val _ = Bounded(n = 1, big = 1i64, p = 1.5) })
+  assertTrue(Bounded(n = 3, big = 5000000000i64, p = 1.0).n == 3, "every bound is inclusive")
+}
+
+test "a copy argument is checked (#8031)" {
+  val s = Slot(i = 1)
+  assertTrue(s.copy(i = two()).i == 2, "2 is in range")
+  assertPanics("10 is outside 0 ..= 3 (copy)", { -> val _ = s.copy(i = ten()) })
+}
+
+test "a var field assignment is checked (#8031)" {
+  val d = Dial(level = 0)
+  d.level = two()
+  d.level += 1
+  assertTrue(d.level == 3, "2 + 1 is in range")
+  assertPanics("assigning 10", { -> d.level = ten() })
+  assertPanics("3 + 1 leaves 0 ..= 3", { -> d.level += 1 })
+}
+
+test "a union case payload is checked (#8031)" {
+  assertTrue(stepsOf(Move(steps = two())) == 2, "2 is in range")
+  assertPanics("10 is outside 0 ..= 3 (payload)", { -> val _ = Move(steps = ten()) })
+}
+
+test "an argument through a function value is checked (#8031)" {
+  val f = { k: Int range 0 ..= 3 -> k * 2 }
+  assertTrue(f(two()) == 4, "2 is in range")
+  assertPanics("10 is outside 0 ..= 3 (lambda)", { -> val _ = f(ten()) })
+}
+
+test "collection elements are checked (#8031)" {
+  var xs: List[Int range 0 ..= 3] = [1, two()]
+  xs.add(3)
+  assertTrue(xs.count == 3, "three elements in range")
+  assertPanics("adding 10", { -> xs.add(ten()) })
+  assertPanics("assigning 10 to an element", { -> xs[0] = ten() })
+  assertPanics("a literal element", { -> val ys: List[Int range 0 ..= 3] = [ten()]; val _ = ys.count })
+}
+
+test "a generic payload is checked against a range instantiation (#8031)" {
+  val ok: Option[Int range 0 ..= 3] = Some(two())
+  assertTrue(ok == Some(2), "2 is in range")
+  assertPanics(
+    "Some(10) for Option[Int range 0 ..= 3]",
+    { -> val bad: Option[Int range 0 ..= 3] = Some(ten()); val _ = bad }
+  )
+  var m: Map[String, Int range 0 ..= 3] = newMap()
+  m.add("a", two())
+  assertPanics("a map value", { -> m.add("b", ten()) })
+}
+
+test "a tuple element is checked against its range (#8031)" {
+  val ok: (Int range 0 ..= 3, String) = (two(), "a")
+  val (n, _) = ok
+  assertTrue(n == 2, "2 is in range")
+  assertPanics("a tuple element of 10", { -> val bad: (Int range 0 ..= 3, String) = (ten(), "a"); val _ = bad })
 }

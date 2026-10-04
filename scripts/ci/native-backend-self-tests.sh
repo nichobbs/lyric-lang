@@ -110,3 +110,5 @@ LYRIC_BIN="$lyric_bin" bash scripts/ci/overflow-profile-e2e.sh native
 LYRIC_BIN="$lyric_bin" bash scripts/ci/fixed-array-e2e.sh native
 # docs/67 G1: Vec3 arithmetic and an inline array of Vec3 allocate nothing.
 LYRIC_BIN="$lyric_bin" bash scripts/ci/bench-vec3-alloc.sh
+# #8031: an inline range type is checked wherever a value reaches it.
+LYRIC_BIN="$lyric_bin" bash scripts/ci/range-refinement-e2e.sh native

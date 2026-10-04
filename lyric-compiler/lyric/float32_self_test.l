@@ -216,6 +216,8 @@ test "the smallest subnormals print one digit" {
   assertEqual(toString(5.0e-324), "5E-324", "the Double minimum subnormal")
   assertEqual(toString(1.0e-323), "1E-323", "twice the Double minimum subnormal")
   assertEqual(toString(8.0e-323), "8E-323", "16 times the Double minimum subnormal")
+  assertEqual(toString(1.5e20), "1.5E+20", "a two-digit mantissa that one digit cannot round-trip")
+  assertEqual(toString(1.5e10), "15000000000", "and in fixed notation")
 }
 
 protected type Gauge {

@@ -433,6 +433,12 @@ pub record SymbolTable {
   /// The value generic parameters a call binds from its array arguments'
   /// lengths, keyed by the callee's span, for `Lyric.Mono`.
   valueGenericCallSites: Map[String, Map[String, Int]]
+  /// Values flowing into an inline range type at a position nothing else
+  /// checks, keyed by the value's span (`RangeCheckSite`, #8031).
+  rangeCheckSites: Map[String, RangeCheckSite]
+  /// Compound assignments (`r.f += 1`) whose target is a range-refined
+  /// field or element, keyed by the assignment's span (#8031).
+  rangeCompoundSites: Map[String, RangeCheckSite]
   /// Every `a[i]` on an `array[N, T]` (D167), keyed by the index
   /// expression's span.
   arrayIndexSites: Map[String, ArrayIndexSite]
@@ -633,6 +639,8 @@ pub func newSymbolTable(): SymbolTable {
     eqShapeNesting = newList(),
     valueGenericBodies = newList(),
     valueGenericCallSites = newMap(),
+    rangeCheckSites = newMap(),
+    rangeCompoundSites = newMap(),
     arrayIndexSites = newMap(),
     arrayLenSites = newMap(),
     arraySliceSites = newMap(),

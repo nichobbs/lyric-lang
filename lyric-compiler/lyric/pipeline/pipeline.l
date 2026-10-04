@@ -681,12 +681,17 @@ pub func pipeCheckAndMono(
   // Integer overflow panics in a debug build and wraps in a release build or
   // in the standard library (D163); `.wrappingAdd(...)` and its siblings
   // become the plain operator either way.
-  val checked = lowerOverflowChecks(
+  val overflowChecked = lowerOverflowChecks(
     arraysLowered,
     tcRes.symbols.overflowSites,
     tcRes.symbols.overflowCompoundTemps,
     not hasWrappingArith(recordLowered)
   )
+  // A value reaching an inline range type at a position the elaborator's
+  // range checks do not cover (a field, an element, a function-value
+  // argument) is checked through a synthesized checker (#8031).  After the
+  // overflow pass, which finds compound assignments by their own spans.
+  val checked = insertRangeSiteChecks(overflowChecked, tcRes.symbols.rangeCheckSites, tcRes.symbols.rangeCompoundSites)
 
   val mcRes = checkFile(checked)
   if gate(opts.pkgLabel, opts.lineOrigins, mcRes.diagnostics) {
