@@ -14,7 +14,13 @@ PORT=18480
 "$OUT" &
 PID=$!
 trap 'kill $PID 2>/dev/null || true' EXIT
-for _ in $(seq 1 50); do curl -sf "http://127.0.0.1:$PORT/" >/dev/null && break; sleep 0.2; done
+ready=0
+for _ in $(seq 1 50); do
+  if curl -sf "http://127.0.0.1:$PORT/" >/dev/null; then ready=1; break; fi
+  kill -0 $PID 2>/dev/null || { echo "FAIL: server exited before becoming ready"; exit 1; }
+  sleep 0.2
+done
+[ "$ready" = 1 ] || { echo "FAIL: server not ready on port $PORT after 10s"; exit 1; }
 
 expect() { [ "$1" = "$2" ] || { echo "FAIL: expected '$2' got '$1'"; exit 1; }; }
 expect "$(curl -s http://127.0.0.1:$PORT/)" "hello native"
@@ -39,7 +45,7 @@ n = hdr[1] & 0x7f
 body = b""
 while len(body) < n:
     body += s.recv(n - len(body))
-assert body, "empty echo"
+assert body == b"echo:ping", body
 print("ws echo:", body)
 PY
 echo "native-web smoke OK"
