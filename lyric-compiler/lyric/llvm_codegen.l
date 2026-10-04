@@ -15003,14 +15003,16 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     }
     ui = ui + 1
   }
-  if mainIr.length > 0 {
-    var initGlobalsIr = ""
-    if ctx.mvInits.count > 0 {
-      initGlobalsIr = "lyric_init_module_globals"
-      for gf in synthModuleGlobalFns(initGlobalsIr, ctx.mvInits, ctx.mvInitTys) {
-        fns.add(gf)
-      }
+  // The globals' ensure functions are referenced by every read, so they are
+  // emitted for a library (no `main`) too.
+  var initGlobalsIr = ""
+  if ctx.mvInits.count > 0 {
+    initGlobalsIr = "lyric_init_module_globals"
+    for gf in synthModuleGlobalFns(initGlobalsIr, ctx.mvInits, ctx.mvInitTys) {
+      fns.add(gf)
     }
+  }
+  if mainIr.length > 0 {
     fns.add(synthCMain(mainPkg, mainRet, mainIr, mainIsAsync, entryNameForTriple(triple), initGlobalsIr))
   }
   // Coroutine plumbing lands only in async-using modules: the coro
