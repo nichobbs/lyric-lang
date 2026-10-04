@@ -396,6 +396,36 @@ value after the call, a symbol of its own, and `old(p)` the argument.
 A write to a record field or element fails closed (`V0026`): a record is
 a reference, and the verifier has no heap to follow its aliases.
 
+The same call's facts never prove its own precondition. A contract
+expression — `requires:`, `ensures:`, a loop `invariant:`, an `assert` —
+translates to its side conditions (callee `requires:`, overflow bounds),
+the facts its evaluation brings (callee `ensures:`) and its value; proving
+it takes `sides ∧ (facts ⇒ value)`, and assuming it gives all three. A
+loop condition's side conditions are guarded by the invariant only, never
+by the condition's own facts, which guard the body and the code after the
+loop.
+
+Calls the verifier cannot follow fail closed or are over-approximated
+(#8102):
+
+- Two `out`/`inout` parameters bound to one variable (`f(a, a)`) fail
+  closed (`V0033`): the callee's proof assumes they do not alias.
+- A parameter default sees no other parameter, only module-level names
+  (docs/01); it is translated with no bindings, and one naming a value the
+  verifier does not model (a module `val`) fails closed (`V0033`).
+- `f[T](args)` is a call of `f`; `P.f(args)` with `P` the file's own
+  package reaches `f` by contract like `f(args)`.
+- A call the verifier cannot resolve may have `out`/`inout` parameters:
+  every argument (or receiver) naming a binding a call may store into — a
+  `var` local, an `out`/`inout` parameter, a protected type's `var` field —
+  holds a new, unknown value afterwards.
+- Inside a protected type, a bare call to one of the type's own members
+  fails closed (`V0033`): its effect on the fields is not modelled.
+- An expression statement of any form keeps its obligations and facts.
+- `old(e)` is `e` evaluated with every name that has an entry snapshot (a
+  parameter, an `out`/`inout` parameter, a protected `var` field) at its
+  entry value.
+
 Obligations raised inside an expression — a callee's `requires:`, an
 overflow obligation — are proved wherever the expression occurs: an
 expression statement, a returned value, a `val`/`let`/`var` initializer or

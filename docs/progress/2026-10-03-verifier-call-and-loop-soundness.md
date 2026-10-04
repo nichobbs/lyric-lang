@@ -63,6 +63,38 @@ translated before the body ran, so any invariant true on entry was
   being skipped with a warning: records are references, and the verifier has
   no heap.
 
+## Review follow-up
+
+An independent soundness review of the change found eight more holes, each
+confirmed by a program `lyric prove` discharged and `lyric run` violated:
+
+- A call's own `ensures:` facts proved its own `requires:` in a loop
+  condition, a loop invariant (establish, preserve), a function's
+  `ensures:` and an `assert`. Contract expressions now translate to side
+  conditions, facts and value; an obligation is `sides and (facts =>
+  value)`, and a loop condition's side conditions are guarded by the
+  invariant alone.
+- `f(a, a)` with two `out`/`inout` parameters now fails closed (V0033).
+- A parameter default was translated in the callee's parameter scope; it
+  now sees no other parameter, and a default naming an unmodelled value
+  (a module `val`) fails closed.
+- `P.inc(a)` (package-qualified) and `inc[Int](a, 0)` lost the `out`/`inout`
+  havoc; both now resolve like `inc(a)`. A call the verifier cannot resolve
+  havocs every `var`/`out`/`inout` binding it is passed.
+- A bare call to a protected type's own member from an entry now fails
+  closed (V0033) instead of resolving to nothing.
+- Expression statements of any form (`(pos(0))`, `pos(0) == 1`) keep their
+  obligations.
+- `old(e)` for a non-path `e` meant the current value; it is now `e` at the
+  entry snapshots.
+- A value reported untranslatable (V0033) and then discarded by a
+  statement now still keeps a goal failed.
+
+Each fix has a refute case and a discharge case in `verifier_self_test.l`
+(112 tests, all passing); the review's repro programs no longer prove, the
+CI `lyric prove` examples and `core_proof.l` still discharge, and the
+compiler self-test batch passes (3309 tests).
+
 Specification: `docs/15-phase-4-proof-plan.md` §5.2–§5.4; book §18.1, §18.4,
 §19.7.
 
