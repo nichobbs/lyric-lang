@@ -12645,6 +12645,52 @@ func argIsListLiteral(e: in Expr): Bool {
 // argument is typed against the field.  A generic record's field is
 // instantiated at the type arguments `argTypes` bind (a literal's own
 // `slice[T]` type binds its element, #8042), or else `expected` gives.
+// `ctorArrayFieldTypes` for a union case constructor: a bracket literal
+// given to a case field of array type is typed against the field, as for a
+// record field (D167).  A field whose type names one of the union's type
+// parameters is left to the call's expected argument types.
+func unionCaseArrayFieldTypes(tbl: in SymbolTable, fn: in Expr, args: in List[CallArg], tys: in List[Type]): List[Type] {
+  val caseSym = match unionCaseSymbolOf(tbl, fn) { case Some(cs) -> cs; case None -> return tys }
+  match caseSym.kind {
+    case DKUnionCase(parentId, uc) -> match parentUnionDeclOf(tbl, parentId) {
+      case Some(decl) -> {
+        val scratch: List[Diagnostic] = newList()
+        val ftypes = unionCaseFieldTypes(tbl, scratch, uc, unionDeclGenericNames(decl), caseSym.originPackage)
+        val names = unionCaseSlotNames(uc)
+        var pos = 0
+        var i = 0
+        while i < args.count {
+          val fi = match args[i] {
+            case CANamed(nm, _, _) -> indexOfName(names, nm)
+            case CAPositional(_) -> {
+              pos = pos + 1
+              pos - 1
+            }
+          }
+          if fi >= 0 and fi < ftypes.count and not typeMentionsTyVar(ftypes[fi]) {
+            tys[i] = ftypes[fi]
+          }
+          i = i + 1
+        }
+        tys
+      }
+      case None -> tys
+    }
+    case _ -> tys
+  }
+}
+
+func indexOfName(names: in List[String], nm: in String): Int {
+  var i = 0
+  while i < names.count {
+    if names[i] == nm {
+      return i
+    }
+    i = i + 1
+  }
+  -1
+}
+
 func ctorArrayFieldTypes(
   tbl: in SymbolTable,
   fn: in Expr,
@@ -12667,7 +12713,10 @@ func ctorArrayFieldTypes(
   if not any {
     return tys
   }
-  val ctorSym = match constructorSymbolOf(tbl, fn) { case Some(sy) -> sy; case None -> return tys }
+  val ctorSym = match constructorSymbolOf(tbl, fn) {
+    case Some(sy) -> sy
+    case None -> return unionCaseArrayFieldTypes(tbl, fn, args, tys)
+  }
   if ctorIsGeneric(ctorSym) {
     return genericCtorArrayFieldTypes(tbl, ctorSym, args, argTypes, expected, tys)
   }
@@ -13131,6 +13180,13 @@ pub func inferExprExpected(
             )
           }
           ai = ai + 1
+        }
+        val litKey = recordCopySiteKey(e.span)
+        if not tbl.arrayLiteralSites.containsKey(litKey) {
+          match typeExprForRef(tbl, TyArray(size = Some(value = n), element = elemTy), e.span) {
+            case Some(arrTe) -> tbl.arrayLiteralSites.add(litKey, arrTe)
+            case None -> ()
+          }
         }
         TyArray(size = Some(value = n), element = elemTy)
       }

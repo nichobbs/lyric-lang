@@ -446,9 +446,13 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
       // cast to `ArrayList` before the index is pushed, exactly as the read
       // path in `02_exprs.l` does; without it `ArrayList.set` fails
       // verification ("Object is not assignable to ArrayList").
+      // An `Object`-typed receiver is left unnarrowed and written through the
+      // package's `__lyricErasedIndexGet`/`Set` helpers, as the read path does
+      // (`02_exprs.l`): it may be a typed Java array (#8041).
+      val erasedRecv = isErasedObject(recvTy0)
       val recvTy = match recvTy0 {
         case JRef(c0) -> {
-          if c0 == "java/lang/String" or c0 == "java/util/ArrayList" or c0 == "java/util/HashMap" {
+          if c0 == "java/lang/String" or c0 == "java/util/ArrayList" or c0 == "java/util/HashMap" or erasedRecv {
             recvTy0
           } else {
             insns.add(LCheckcast(className = "java/util/ArrayList"))
@@ -490,7 +494,13 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
               // SAME helper `.append()`'s `lowerSliceAppendJvm` already uses)
               // widens first when the declared type is known and numeric,
               // falling back to the prior erased-target boxing otherwise.
-              coerceScalarToSliceElem(insns, vTy, indexedElemTypeOverride(ctx, recv, false), elem)
+              // A primitive array (`array[N, Int]` is `int[]`, #8041) stores
+              // the value unboxed at the element's own width.
+              if isJvmPrimitiveElemType(elem) {
+                coerceArgTo(insns, vTy, elem)
+              } else {
+                coerceScalarToSliceElem(insns, vTy, indexedElemTypeOverride(ctx, recv, false), elem)
+              }
               emitArrayStore(insns, elem)
             }
             case _ -> {
@@ -538,9 +548,13 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
               // so an un-narrowed fallback here would be strictly worse
               // than the pre-fix behavior for the common case where the
               // RHS's type IS the container's real element type.
-              val elemTy = match indexedElemTypeOverride(ctx, recv, false) {
-                case JVoid -> emitUnboxObjectTo(insns, vTy)
-                case overrideTy -> applyIndexedElemOverride(insns, overrideTy)
+              val elemTy = if isJvmPrimitiveElemType(elem) {
+                elem
+              } else {
+                match indexedElemTypeOverride(ctx, recv, false) {
+                  case JVoid -> emitUnboxObjectTo(insns, vTy)
+                  case overrideTy -> applyIndexedElemOverride(insns, overrideTy)
+                }
               }
               emitLoad(insns, rhsSlot, vTy)
               emitCompoundCombineJvm(ctx, insns, op, elemTy, vTy, spellsUnsigned(value))
@@ -652,7 +666,11 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                 emitLoad(insns, listSlot, recvTy)
                 emitLoad(insns, idxSlot, JInt)
                 emitLoad(insns, rhsSlot, JRef(className = "java/lang/Object"))
-                emitListSet(insns)
+                if erasedRecv {
+                  emitErasedIndexSetJvm(ctx, insns)
+                } else {
+                  emitListSet(insns)
+                }
               }
               case _ -> {
                 // Compound: stash list + index + RHS to locals, then load
@@ -671,7 +689,11 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                 emitLoad(insns, idxSlot, JInt)
                 emitLoad(insns, listSlot, recvTy)
                 emitLoad(insns, idxSlot, JInt)
-                emitListGet(insns)
+                if erasedRecv {
+                  emitErasedIndexGetJvm(ctx, insns)
+                } else {
+                  emitListGet(insns)
+                }
                 // The list's real declared element type (#5688) — see the
                 // matching HashMap-arm comment above.
                 val elemTy = match indexedElemTypeOverride(ctx, recv, true) {
@@ -681,7 +703,11 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                 emitLoad(insns, rhsSlot, vTy)
                 emitCompoundCombineJvm(ctx, insns, op, elemTy, vTy, spellsUnsigned(value))
                 boxIfNeeded(insns, elemTy)
-                emitListSet(insns)
+                if erasedRecv {
+                  emitErasedIndexSetJvm(ctx, insns)
+                } else {
+                  emitListSet(insns)
+                }
               }
             }
           }
@@ -1263,6 +1289,18 @@ func lowerBindingInit(ctx: in FuncCtx, insns: in List[LInsn], init: in Expr, tyO
     case Some(te) -> {
       match listLiteralElems(init) {
         case Some(exprs) -> {
+          // A numeric `array[N, T]` binding is a typed Java array (#8041),
+          // built in place from the literal's elements.
+          match localAnnotatedJvmType(ctx, te) {
+            case JArray(pe) -> if isJvmPrimitiveElemType(pe) {
+              val args: List[CallArg] = newList()
+              for x in exprs {
+                args.add(CAPositional(expr = x))
+              }
+              return lowerPrimitiveArrayOf(ctx, insns, pe, args)
+            }
+            case _ -> ()
+          }
           val elemTe = match sliceElemTypeExpr(te) {
             case Some(e) -> Some(value = e)
             case None -> {

@@ -473,6 +473,10 @@ pub record SymbolTable {
   /// The zero-valued named arguments a record construction leaves out,
   /// keyed by the construction's span (D167, #8042).
   arrayCtorZeroArgs: Map[String, List[CallArg]]
+  /// The `array[N, T]` each bracket literal typed as an array builds, keyed
+  /// by the literal's span: a backend with typed primitive arrays builds it
+  /// through `arrayOfIntrinsic` (#8041).
+  arrayLiteralSites: Map[String, TypeExpr]
   /// Integer arithmetic that can overflow (D163), keyed by span:
   /// `add:<T>` / `sub:<T>` / `mul:<T>` for a binop, `neg:<T>` for unary
   /// minus, `compound:<T>` for `x += y` / `-=` / `*=` (keyed by the
@@ -654,6 +658,7 @@ pub func newSymbolTable(): SymbolTable {
     arrayLenPkg = newList(),
     arrayZeroSites = newMap(),
     arrayCtorZeroArgs = newMap(),
+    arrayLiteralSites = newMap(),
     overflowSites = newMap(),
     overflowCompoundTemps = newMap(),
     importRulePkg = newList(),

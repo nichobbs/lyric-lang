@@ -161,6 +161,11 @@ pub record MiddleEndOptions {
   /// representation after the array operations are lowered (D167).  Native
   /// lowers the array types itself.
   arraysAsLists: Bool = false
+  /// With `arraysAsLists`, keep an `array[N, T]` of a primitive element
+  /// (`primitiveArrayElement`) an array, with its fill, copy and literal
+  /// intrinsics, for a backend that has typed primitive arrays (the JVM,
+  /// #8041).
+  primitiveArrays: Bool = false
 }
 
 // Report `diags` (package-labelled when `pkgLabel` is non-empty, further
@@ -676,7 +681,8 @@ pub func pipeCheckAndMono(
       forIter = tcRes.symbols.arrayForSites,
       copy = tcRes.symbols.arrayCopySites,
       zero = tcRes.symbols.arrayZeroSites,
-      ctorZero = tcRes.symbols.arrayCtorZeroArgs
+      ctorZero = tcRes.symbols.arrayCtorZeroArgs,
+      literal = if opts.primitiveArrays { tcRes.symbols.arrayLiteralSites } else { newMap() }
     )
   )
   // Integer overflow panics in a debug build and wraps in a release build or
@@ -784,7 +790,7 @@ pub func pipeCheckAndMono(
   if gate(opts.pkgLabel, opts.lineOrigins, monoRes.diagnostics) {
     return None
   }
-  Some(value = finishMono(lowerSpecArrays(monoRes.file, specArrays), opts))
+  Some(value = finishMono(lowerSpecArrays(monoRes.file, specArrays, opts.primitiveArrays), opts))
 }
 
 // The monomorphised file as the backend receives it: negated integer
@@ -793,7 +799,7 @@ pub func pipeCheckAndMono(
 func finishMono(file: in SourceFile, opts: in MiddleEndOptions): SourceFile {
   val folded = mapExprsInFile(file, foldNegatedIntLiteral)
   if opts.arraysAsLists {
-    lowerArraysToLists(folded)
+    lowerArraysToLists(folded, opts.primitiveArrays)
   } else {
     folded
   }
@@ -801,10 +807,13 @@ func finishMono(file: in SourceFile, opts: in MiddleEndOptions): SourceFile {
 
 /// `array[N, T]` as a `List[T]` (D167): the fill and copy intrinsics become
 /// loops and every remaining `array[N, T]` type expression becomes `List[T]`.
-func lowerArraysToLists(file: in SourceFile): SourceFile {
+func lowerArraysToLists(file: in SourceFile, primitiveArrays: in Bool): SourceFile {
   val marker: Map[String, TypeExpr] = newMap()
   marker.add(arraysAsListsKey(), TypeExpr(kind = TUnit, span = file.span))
-  TypeAliasResolve.resolveAliasesInFile(marker, lowerArrayIntrinsicsToLists(file))
+  if primitiveArrays {
+    marker.add(primitiveArraysKey(), TypeExpr(kind = TUnit, span = file.span))
+  }
+  TypeAliasResolve.resolveAliasesInFile(marker, lowerArrayIntrinsicsToLists(file, primitiveArrays))
 }
 
 // ─── Unsigned specialisations (#7842) ──────────────────────────────────────
@@ -1263,6 +1272,7 @@ func specArraySitesNonEmpty(sa: in SpecArraySites): Bool {
   sa.arrays.index.count > 0 or sa.arrays.len.count > 0 or sa.arrays.slice.count > 0 or sa.arrays.forIter.count > 0 or
     sa.arrays.copy.count > 0 or
     sa.arrays.zero.count > 0 or
+    sa.arrays.literal.count > 0 or
     sa.arrayEq.count > 0 or
     sa.recordEq.count > 0 or
     sa.wrapEq.count > 0 or
@@ -1288,7 +1298,8 @@ func specArraySitesOf(
       forIter = siteSlice(syms.arrayForSites, p.arrayForSites, usePrior, lo, hi),
       copy = siteSlice(syms.arrayCopySites, p.arrayCopySites, usePrior, lo, hi),
       zero = siteSlice(syms.arrayZeroSites, p.arrayZeroSites, usePrior, lo, hi),
-      ctorZero = siteSlice(syms.arrayCtorZeroArgs, p.arrayCtorZeroArgs, usePrior, lo, hi)
+      ctorZero = siteSlice(syms.arrayCtorZeroArgs, p.arrayCtorZeroArgs, usePrior, lo, hi),
+      literal = siteSlice(syms.arrayLiteralSites, p.arrayLiteralSites, usePrior, lo, hi)
     ),
     arrayEq = siteSlice(syms.arrayEqSites, p.arrayEqSites, usePrior, lo, hi),
     recordEq = siteSlice(syms.recordEqSites, p.recordEqSites, usePrior, lo, hi),
@@ -1366,7 +1377,9 @@ func withArrayLens(file: in SourceFile, lens: in Map[String, Int]): SourceFile {
 // Lowers the array sites a specialisation recorded on that specialised
 // function's body: each function is lowered on its own, because the
 // specialisations of one generic share its source spans.
-func lowerSpecArrays(file: in SourceFile, specArrays: in Map[String, SpecArraySites]): SourceFile {
+func lowerSpecArrays(
+  file: in SourceFile, specArrays: in Map[String, SpecArraySites], primitiveArrays: in Bool
+): SourceFile {
   if specArrays.count == 0 {
     return file
   }
@@ -1385,9 +1398,10 @@ func lowerSpecArrays(file: in SourceFile, specArrays: in Map[String, SpecArraySi
             items = one,
             span = file.span
           )
+          val arraySites = if primitiveArrays { sa.arrays } else { sa.arrays.copy(literal = newMap()) }
           val lowered = lowerArrays(
             lowerRecordEq(withArrayLens(oneFile, sa.lens), sa.recordEq, sa.arrayEq, sa.wrapEq),
-            sa.arrays
+            arraySites
           )
           for li in lowered.items {
             items.add(li)

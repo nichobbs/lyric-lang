@@ -656,9 +656,23 @@ func lowerCall(ctx: in FuncCtx, insns: in List[LInsn], fn: in Expr, args: in Lis
         lowerBuiltinOrStaticCall(ctx, insns, funcName, path, args)
       }
     }
-    case ETypeApp(innerFn, _) -> {
-      // Ignore type args; lower the callee.
-      lowerCall(ctx, insns, innerFn, args)
+    case ETypeApp(innerFn, targs) -> {
+      val intrinsic = match innerFn.kind {
+        case EPath(p) -> if p.segments.count == 1 { p.segments[0] } else { "" }
+        case _ -> ""
+      }
+      match primitiveArrayTypeArg(ctx, targs) {
+        case Some(elem) -> if intrinsic == arrayFillIntrinsic() and args.count == 1 {
+          lowerPrimitiveArrayFill(ctx, insns, elem, targs, args[0])
+        } else if intrinsic == arrayCopyIntrinsic() and args.count == 1 {
+          lowerPrimitiveArrayCopy(ctx, insns, elem, args[0])
+        } else if intrinsic == arrayOfIntrinsic() {
+          lowerPrimitiveArrayOf(ctx, insns, elem, args)
+        } else {
+          lowerCall(ctx, insns, innerFn, args)
+        }
+        case None -> lowerCall(ctx, insns, innerFn, args)
+      }
     }
     case EMember(recv, memberName) -> {
       lowerMethodCall(ctx, insns, recv, memberName, args, methodCallSiteKey(fn))
@@ -1595,6 +1609,130 @@ func returnDescFromMethodDesc(descriptor: String): String {
     i = i + 1
   }
   "V"
+}
+
+// The JVM element type of the single `array[N, T]` type argument of an array
+// intrinsic call when `T` is primitive, so the array is a typed Java array
+// (`int[]`, `float[]`, ...) on this target (#8041).
+func primitiveArrayTypeArg(ctx: in FuncCtx, targs: in List[TypeArg]): Option[JvmType] {
+  if targs.count != 1 {
+    return None
+  }
+  match targs[0] {
+    case TAType(te) -> match typeExprToJvm(te, ctx.pkgName) {
+      case JArray(elem) -> if isJvmPrimitiveElemType(elem) { Some(value = elem) } else { None }
+      case _ -> None
+    }
+    case TAValue(_) -> None
+  }
+}
+
+// The length `N` of an `array[N, T]` type argument after monomorphisation.
+func primitiveArrayLength(targs: in List[TypeArg]): Int {
+  match targs[0] {
+    case TAType(te) -> arrayLengthOfType(te)
+    case TAValue(_) -> panic("Jvm.Codegen: array intrinsic with a value type argument")
+  }
+}
+
+func arrayLengthOfType(te: in TypeExpr): Int {
+  match te.kind {
+    case TParen(inner) -> arrayLengthOfType(inner)
+    case TArray(size, _) -> match size {
+      case TAValue(ve) -> match ve.kind {
+        case ELiteral(lit) -> match lit {
+          case LInt(v, _, _) -> v.toInt()
+          case _ -> panic(
+            "Jvm.Codegen: array length is not an integer literal"
+          )
+        }
+        case _ -> panic(
+          "Jvm.Codegen: array length is not resolved to a literal"
+        )
+      }
+      case TAType(_) -> panic("Jvm.Codegen: array length is a type")
+    }
+    case _ -> panic("Jvm.Codegen: array intrinsic type argument is not an array type")
+  }
+}
+
+// `__lyric_array_fill[array[N, T]](z)`: `newarray` zero-fills, so `z` is only
+// stored when it is not the element's literal zero.
+func lowerPrimitiveArrayFill(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  elem: in JvmType,
+  targs: in List[TypeArg],
+  zArg: in CallArg,
+): JvmType {
+  val arrTy = JArray(elem = elem)
+  insns.add(LIconst(v = primitiveArrayLength(targs)))
+  emitNewarray(insns, elem)
+  val z = callArgExpr(zArg)
+  if not isZeroLiteral(z) {
+    insns.add(LDup)
+    val zTy = lowerExpr(ctx, insns, z)
+    coerceArgTo(insns, zTy, elem)
+    val ps: List[JvmType] = newList()
+    ps.add(arrTy)
+    ps.add(elem)
+    insns.add(LInvokestatic(owner = "java/util/Arrays", name = "fill", params = ps, ret = JVoid))
+  }
+  arrTy
+}
+
+// `__lyric_array_copy[array[N, T]](a)`: a primitive element has no identity,
+// so a shallow `Arrays.copyOf` is the whole value copy.
+func lowerPrimitiveArrayCopy(ctx: in FuncCtx, insns: in List[LInsn], elem: in JvmType, aArg: in CallArg): JvmType {
+  val arrTy = JArray(elem = elem)
+  val aTy = lowerExpr(ctx, insns, callArgExpr(aArg))
+  // A generic record's `array[N, T]` field is an `ArrayList` (see
+  // `makeArrToListHelperFunc`); converting it already makes a fresh array.
+  if isArrayListJvm(aTy) {
+    emitListToPrimArrayJvm(ctx, insns, elem)
+    return arrTy
+  }
+  checkcastToPrimitiveArray(insns, aTy, arrTy)
+  insns.add(LDup)
+  insns.add(LArraylength)
+  val ps: List[JvmType] = newList()
+  ps.add(arrTy)
+  ps.add(JInt)
+  insns.add(LInvokestatic(owner = "java/util/Arrays", name = "copyOf", params = ps, ret = arrTy))
+  arrTy
+}
+
+// `__lyric_array_of[array[N, T]](e0, ..)`: an array literal built in place.
+func lowerPrimitiveArrayOf(ctx: in FuncCtx, insns: in List[LInsn], elem: in JvmType, args: in List[CallArg]): JvmType {
+  insns.add(LIconst(v = args.count))
+  emitNewarray(insns, elem)
+  var i = 0
+  while i < args.count {
+    insns.add(LDup)
+    insns.add(LIconst(v = i))
+    val vTy = lowerExpr(ctx, insns, callArgExpr(args[i]))
+    coerceArgTo(insns, vTy, elem)
+    emitArrayStore(insns, elem)
+    i = i + 1
+  }
+  JArray(elem = elem)
+}
+
+// A value of an erased static type (`Object`, from a generic slot) that is
+// really a primitive array is cast to the array's descriptor before use.
+pub func checkcastToPrimitiveArray(insns: in List[LInsn], fromTy: in JvmType, arrTy: in JvmType): Unit {
+  val isArray = match fromTy { case JArray(_) -> true; case _ -> false }
+  if not isArray {
+    insns.add(LCheckcast(className = typeDescriptor(arrTy)))
+  }
+}
+
+func isZeroLiteral(e: in Expr): Bool {
+  match e.kind {
+    case EParen(inner) -> isZeroLiteral(inner)
+    case ELiteral(lit) -> match lit { case LInt(v, _, _) -> v == 0; case LBool(b) -> not b; case _ -> false }
+    case _ -> false
+  }
 }
 
 // True when `elemTy` is one of the 8 JVM primitive types — a valid
@@ -2699,6 +2837,10 @@ func coerceArgTo(insns: in List[LInsn], fromTy: in JvmType, toTy: in JvmType): U
                 )
               }
             }
+          } else if isJvmPrimitiveElemType(elemTy) {
+            // An erased value (a generic slot, a tuple element, a `List`
+            // element) that is really a primitive `array[N, T]` (#8041).
+            insns.add(LCheckcast(className = typeDescriptor(toTy)))
           }
         }
         case _ -> ()
@@ -2850,11 +2992,42 @@ func coerceArgToCtx(ctx: in FuncCtx, insns: in List[LInsn], fromTy: in JvmType, 
             coerceArgTo(insns, fromTy, toTy)
           }
         }
-        case _ -> coerceArgTo(insns, fromTy, toTy)
+        case _ -> if isJvmPrimitiveElemType(fromElemTy) and isArrayListJvm(toTy) {
+          emitPrimArrayToListJvm(ctx, insns, fromElemTy)
+        } else {
+          coerceArgTo(insns, fromTy, toTy)
+        }
       }
     }
     case _ -> coerceArgTo(insns, fromTy, toTy)
   }
+}
+
+func isArrayListJvm(t: in JvmType): Bool {
+  match t {
+    case JRef(c) -> c == "java/util/ArrayList"
+    case _ -> false
+  }
+}
+
+// A primitive array (top of stack) as a fresh `ArrayList` of its boxed
+// elements, through the package's static helper (#8041).
+func emitPrimArrayToListJvm(ctx: in FuncCtx, insns: in List[LInsn], elem: in JvmType): Unit {
+  val name = arrToListHelperName(elem)
+  val ps: List[JvmType] = newList()
+  ps.add(JArray(elem = elem))
+  insns.add(LInvokestatic(owner = ctx.pkgName, name = name, params = ps, ret = JRef(className = "java/util/ArrayList")))
+  markRuntimeHelper(ctx, name)
+}
+
+// An `ArrayList` (top of stack) as a fresh primitive array of its unboxed
+// elements, through the package's static helper (#8041).
+func emitListToPrimArrayJvm(ctx: in FuncCtx, insns: in List[LInsn], elem: in JvmType): Unit {
+  val name = listToArrHelperName(elem)
+  val ps: List[JvmType] = newList()
+  ps.add(JRef(className = "java/util/ArrayList"))
+  insns.add(LInvokestatic(owner = ctx.pkgName, name = name, params = ps, ret = JArray(elem = elem)))
+  markRuntimeHelper(ctx, name)
 }
 
 // Push a benign default value of `ty` (only reached if a construction call is

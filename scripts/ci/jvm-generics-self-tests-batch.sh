@@ -122,4 +122,6 @@ for t in \
   "$lyric_bin" test --target jvm "$t"
   ran="$ran $t"
 done
+# A numeric `array[N, T]` is a typed Java array that boxes nothing (#8041).
+bash scripts/ci/jvm-typed-arrays-nobox.sh "$lyric_bin"
 echo "JVM generics self-tests ran:$ran" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"

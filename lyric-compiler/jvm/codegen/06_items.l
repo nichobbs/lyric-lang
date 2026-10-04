@@ -6954,6 +6954,257 @@ func makeToCharHelperFunc(): LFunc {
   LFunc(flags = 0x0009, name = "__lyricToChar", params = ps, ret = JChar, insns = insns, maxStack = 4, maxLocals = 2)
 }
 
+// The primitive `array[N, T]` <-> `ArrayList` conversions (#8041).  A
+// numeric `array[N, T]` is a typed Java array, but a generic record's
+// `array[N, T]` field is erased to `ArrayList`, so an array crossing into or
+// out of such a field is converted.  Static helpers keep the conversion loop
+// out of the caller's frame, whatever is on its operand stack.
+pub func arrToListHelperName(elem: in JvmType): String = "__lyricArrToList_" + jvmTypeToDescStr(elem)
+
+pub func listToArrHelperName(elem: in JvmType): String = "__lyricListToArr_" + jvmTypeToDescStr(elem)
+
+pub func primitiveArrayHelperElems(): List[JvmType] {
+  val es: List[JvmType] = newList()
+  es.add(JInt)
+  es.add(JLong)
+  es.add(JFloat)
+  es.add(JDouble)
+  es.add(JBoolean)
+  es.add(JByte)
+  es.add(JChar)
+  es.add(JShort)
+  es
+}
+
+// `static ArrayList __lyricArrToList_<X>(<X>[] a)`: the elements of `a`, boxed.
+func makeArrToListHelperFunc(elem: in JvmType): LFunc {
+  val listCls = "java/util/ArrayList"
+  val insns: List[LInsn] = newList()
+  insns.add(LNew(className = listCls))
+  insns.add(LDup)
+  insns.add(LAload(slot = 0))
+  insns.add(LArraylength)
+  val ctorPs: List[JvmType] = newList()
+  ctorPs.add(JInt)
+  insns.add(LInvokespecial(owner = listCls, name = "<init>", params = ctorPs, ret = JVoid))
+  insns.add(LAstoreAs(slot = 1, className = listCls))
+  insns.add(LIconst(v = 0))
+  insns.add(LIstore(slot = 2))
+  insns.add(LLabel(name = "__a2l_loop"))
+  insns.add(LIload(slot = 2))
+  insns.add(LAload(slot = 0))
+  insns.add(LArraylength)
+  insns.add(LIfIcmpge(label = "__a2l_end"))
+  insns.add(LAload(slot = 1))
+  insns.add(LAload(slot = 0))
+  insns.add(LIload(slot = 2))
+  emitArrayLoad(insns, elem)
+  boxIfNeeded(insns, elem)
+  val addPs: List[JvmType] = newList()
+  addPs.add(JRef(className = "java/lang/Object"))
+  insns.add(LInvokevirtual(owner = listCls, name = "add", params = addPs, ret = JBoolean))
+  insns.add(LPop)
+  insns.add(LIinc(slot = 2, delta = 1))
+  insns.add(LGoto(label = "__a2l_loop"))
+  insns.add(LLabel(name = "__a2l_end"))
+  insns.add(LAload(slot = 1))
+  insns.add(LAreturn)
+  val ps: List[JvmType] = newList()
+  ps.add(JArray(elem = elem))
+  LFunc(
+    flags = 0x0009,
+    name = arrToListHelperName(elem),
+    params = ps,
+    ret = JRef(className = listCls),
+    insns = insns,
+    maxStack = 5,
+    maxLocals = 3
+  )
+}
+
+// `static <X>[] __lyricListToArr_<X>(ArrayList l)`: the elements of `l`, unboxed.
+func makeListToArrHelperFunc(elem: in JvmType): LFunc {
+  val listCls = "java/util/ArrayList"
+  val arrTy = JArray(elem = elem)
+  val insns: List[LInsn] = newList()
+  insns.add(LAload(slot = 0))
+  val sizePs: List[JvmType] = newList()
+  insns.add(LInvokevirtual(owner = listCls, name = "size", params = sizePs, ret = JInt))
+  emitNewarray(insns, elem)
+  insns.add(LAstoreAs(slot = 1, className = typeDescriptor(arrTy)))
+  insns.add(LIconst(v = 0))
+  insns.add(LIstore(slot = 2))
+  insns.add(LLabel(name = "__l2a_loop"))
+  insns.add(LIload(slot = 2))
+  insns.add(LAload(slot = 1))
+  insns.add(LArraylength)
+  insns.add(LIfIcmpge(label = "__l2a_end"))
+  insns.add(LAload(slot = 1))
+  insns.add(LIload(slot = 2))
+  insns.add(LAload(slot = 0))
+  insns.add(LIload(slot = 2))
+  val getPs: List[JvmType] = newList()
+  getPs.add(JInt)
+  insns.add(LInvokevirtual(owner = listCls, name = "get", params = getPs, ret = JRef(className = "java/lang/Object")))
+  coerceArgTo(insns, JRef(className = "java/lang/Object"), elem)
+  emitArrayStore(insns, elem)
+  insns.add(LIinc(slot = 2, delta = 1))
+  insns.add(LGoto(label = "__l2a_loop"))
+  insns.add(LLabel(name = "__l2a_end"))
+  insns.add(LAload(slot = 1))
+  insns.add(LAreturn)
+  val ps: List[JvmType] = newList()
+  ps.add(JRef(className = listCls))
+  LFunc(
+    flags = 0x0009,
+    name = listToArrHelperName(elem),
+    params = ps,
+    ret = arrTy,
+    insns = insns,
+    maxStack = 6,
+    maxLocals = 3
+  )
+}
+
+pub func erasedIndexGetHelperName(): String = "__lyricErasedIndexGet"
+
+pub func erasedIndexSetHelperName(): String = "__lyricErasedIndexSet"
+
+// `static Object __lyricErasedIndexGet(Object r, int i)`: `r[i]` for a receiver
+// whose static type is erased (#8041), dispatching on its runtime class: an
+// `ArrayList` (a `List`, or a non-numeric `array[N, T]`), a slice's
+// `Object[]`, or a numeric `array[N, T]`'s typed Java array, whose element
+// is boxed.  Any other class fails the final `checkcast` loudly.
+func makeErasedIndexGetHelperFunc(): LFunc {
+  val listCls = "java/util/ArrayList"
+  val insns: List[LInsn] = newList()
+  insns.add(LAload(slot = 0))
+  insns.add(LInstanceof(className = "[Ljava/lang/Object;"))
+  insns.add(LIfeq(label = "__eig_prim0"))
+  insns.add(LAload(slot = 0))
+  insns.add(LCheckcast(className = "[Ljava/lang/Object;"))
+  insns.add(LIload(slot = 1))
+  insns.add(LAaload)
+  insns.add(LAreturn)
+  val elems = primitiveArrayHelperElems()
+  var k = 0
+  while k < elems.count {
+    val arrDesc = typeDescriptor(JArray(elem = elems[k]))
+    insns.add(LLabel(name = "__eig_prim" + toString(k)))
+    insns.add(LAload(slot = 0))
+    insns.add(LInstanceof(className = arrDesc))
+    insns.add(LIfeq(label = "__eig_prim" + toString(k + 1)))
+    insns.add(LAload(slot = 0))
+    insns.add(LCheckcast(className = arrDesc))
+    insns.add(LIload(slot = 1))
+    emitArrayLoad(insns, elems[k])
+    boxIfNeeded(insns, elems[k])
+    insns.add(LAreturn)
+    k = k + 1
+  }
+  insns.add(LLabel(name = "__eig_prim" + toString(elems.count)))
+  insns.add(LAload(slot = 0))
+  insns.add(LCheckcast(className = listCls))
+  insns.add(LIload(slot = 1))
+  val getPs: List[JvmType] = newList()
+  getPs.add(JInt)
+  insns.add(LInvokevirtual(owner = listCls, name = "get", params = getPs, ret = JRef(className = "java/lang/Object")))
+  insns.add(LAreturn)
+  val ps: List[JvmType] = newList()
+  ps.add(JRef(className = "java/lang/Object"))
+  ps.add(JInt)
+  LFunc(
+    flags = 0x0009,
+    name = erasedIndexGetHelperName(),
+    params = ps,
+    ret = JRef(className = "java/lang/Object"),
+    insns = insns,
+    maxStack = 4,
+    maxLocals = 2
+  )
+}
+
+// `static void __lyricErasedIndexSet(Object r, int i, Object v)`: the store
+// counterpart of `__lyricErasedIndexGet`.  A numeric element is unboxed
+// through `java.lang.Number`, so a value boxed at a narrower width than the
+// array's element (an `Int` literal written into a `Long` array) stores its
+// numeric value.
+func makeErasedIndexSetHelperFunc(): LFunc {
+  val listCls = "java/util/ArrayList"
+  val insns: List[LInsn] = newList()
+  insns.add(LAload(slot = 0))
+  insns.add(LInstanceof(className = "[Ljava/lang/Object;"))
+  insns.add(LIfeq(label = "__eis_prim0"))
+  insns.add(LAload(slot = 0))
+  insns.add(LCheckcast(className = "[Ljava/lang/Object;"))
+  insns.add(LIload(slot = 1))
+  insns.add(LAload(slot = 2))
+  insns.add(LAastore)
+  insns.add(LReturn)
+  val elems = primitiveArrayHelperElems()
+  var k = 0
+  while k < elems.count {
+    val arrDesc = typeDescriptor(JArray(elem = elems[k]))
+    insns.add(LLabel(name = "__eis_prim" + toString(k)))
+    insns.add(LAload(slot = 0))
+    insns.add(LInstanceof(className = arrDesc))
+    insns.add(LIfeq(label = "__eis_prim" + toString(k + 1)))
+    insns.add(LAload(slot = 0))
+    insns.add(LCheckcast(className = arrDesc))
+    insns.add(LIload(slot = 1))
+    insns.add(LAload(slot = 2))
+    emitUnboxErasedElement(insns, elems[k])
+    emitArrayStore(insns, elems[k])
+    insns.add(LReturn)
+    k = k + 1
+  }
+  insns.add(LLabel(name = "__eis_prim" + toString(elems.count)))
+  insns.add(LAload(slot = 0))
+  insns.add(LCheckcast(className = listCls))
+  insns.add(LIload(slot = 1))
+  insns.add(LAload(slot = 2))
+  emitListSet(insns)
+  insns.add(LReturn)
+  val ps: List[JvmType] = newList()
+  ps.add(JRef(className = "java/lang/Object"))
+  ps.add(JInt)
+  ps.add(JRef(className = "java/lang/Object"))
+  LFunc(
+    flags = 0x0009,
+    name = erasedIndexSetHelperName(),
+    params = ps,
+    ret = JVoid,
+    insns = insns,
+    maxStack = 5,
+    maxLocals = 3
+  )
+}
+
+// Unbox the `Object` on the stack to the primitive array element `elem`.
+func emitUnboxErasedElement(insns: in List[LInsn], elem: in JvmType): Unit {
+  val noPs: List[JvmType] = newList()
+  match elem {
+    case JBoolean -> coerceArgTo(insns, JRef(className = "java/lang/Object"), JBoolean)
+    case JChar -> coerceArgTo(insns, JRef(className = "java/lang/Object"), JChar)
+    case JLong -> {
+      insns.add(LCheckcast(className = "java/lang/Number"))
+      insns.add(LInvokevirtual(owner = "java/lang/Number", name = "longValue", params = noPs, ret = JLong))
+    }
+    case JFloat -> {
+      insns.add(LCheckcast(className = "java/lang/Number"))
+      insns.add(LInvokevirtual(owner = "java/lang/Number", name = "floatValue", params = noPs, ret = JFloat))
+    }
+    case JDouble -> {
+      insns.add(LCheckcast(className = "java/lang/Number"))
+      insns.add(LInvokevirtual(owner = "java/lang/Number", name = "doubleValue", params = noPs, ret = JDouble))
+    }
+    case _ -> {
+      insns.add(LCheckcast(className = "java/lang/Number"))
+      insns.add(LInvokevirtual(owner = "java/lang/Number", name = "intValue", params = noPs, ret = JInt))
+    }
+  }
+}
+
 // `static String __lyricErasedToString(Object o)`: stringify a value whose
 // static type is erased to `Object` (a generic payload, a lambda parameter
 // typed by a type argument).  A boxed `java.lang.Byte` is always a Lyric
@@ -8423,6 +8674,20 @@ pub func codegenPackageWithSigsSeeded(
   }
   if runtimeHelperUsed(usedRuntimeHelpers, "__lyricErasedToString") {
     fns.add(makeErasedToStringHelperFunc())
+  }
+  if runtimeHelperUsed(usedRuntimeHelpers, erasedIndexGetHelperName()) {
+    fns.add(makeErasedIndexGetHelperFunc())
+  }
+  if runtimeHelperUsed(usedRuntimeHelpers, erasedIndexSetHelperName()) {
+    fns.add(makeErasedIndexSetHelperFunc())
+  }
+  for pe in primitiveArrayHelperElems() {
+    if runtimeHelperUsed(usedRuntimeHelpers, arrToListHelperName(pe)) {
+      fns.add(makeArrToListHelperFunc(pe))
+    }
+    if runtimeHelperUsed(usedRuntimeHelpers, listToArrHelperName(pe)) {
+      fns.add(makeListToArrHelperFunc(pe))
+    }
   }
 
   // `__lyricUnwrapOr(Object, Object)Object` — Std.Core's generic

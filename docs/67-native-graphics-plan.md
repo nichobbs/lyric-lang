@@ -186,8 +186,9 @@ matrices and small lookup tables need.
   NAMED range subtype that proves the access (an inline `Int range` annotation
   is not a proof). An integer index of any width is accepted; a non-`Int` one
   is range checked as a `Long`.
-- Lowered to `[N x T]` on native, and to a `List` on MSIL and the JVM
-  (D167).
+- Lowered to `[N x T]` on native, to a `List` on MSIL, and on the JVM to
+  a typed Java array (`float[]`) for a numeric element and an `ArrayList`
+  otherwise (D167, #8041).
 
 **Status: implemented (D167, progress entry `2026-10-02-fixed-arrays`).**
 Bracket-literal construction, zero fill, element writes, copies by the

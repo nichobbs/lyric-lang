@@ -316,7 +316,7 @@ func bump(a: inout array[4, Int], i: in Int) {
 }
 ```
 
-On `--target native` an array of by-value elements (numbers, enums, records with no `var` field, other such arrays) is stored inline with no allocation, so a `Vec3` table or a 4 by 4 matrix inside a by-value record costs nothing to copy beyond its bytes. `--target dotnet` and `--target jvm` store an array as a `List`.
+On `--target native` an array of by-value elements (numbers, enums, records with no `var` field, other such arrays) is stored inline with no allocation, so a `Vec3` table or a 4 by 4 matrix inside a by-value record costs nothing to copy beyond its bytes. `--target dotnet` stores an array as a `List`, which holds numbers unboxed. `--target jvm` stores an array of numbers, `Bool` or `Char` as a Java array of that primitive (`int[]`, `float[]`), so its elements are not boxed either, and any other array as a `List`.
 
 A function can take an array of any length by making the length a value generic parameter. Each call binds `N` to its argument's length, and `N` is an ordinary `Int` constant in the body:
 

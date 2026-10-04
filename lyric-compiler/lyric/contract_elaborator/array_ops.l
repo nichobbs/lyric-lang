@@ -40,6 +40,18 @@ pub record ArraySites {
   copy: Map[String, ArraySite]
   zero: Map[String, Expr]
   ctorZero: Map[String, List[CallArg]]
+  /// The bracket literals typed as arrays, on a backend with typed primitive
+  /// arrays only (empty elsewhere): one of a primitive element becomes
+  /// `arrayOfIntrinsic` (#8041).
+  literal: Map[String, TypeExpr] = newMap()
+}
+
+func arrayLiteralOfPrimitive(te: in TypeExpr): Bool {
+  match te.kind {
+    case TParen(inner) -> arrayLiteralOfPrimitive(inner)
+    case TArray(_, el) -> primitiveArrayElement(el)
+    case _ -> false
+  }
 }
 
 pub func noArraySites(): ArraySites {
@@ -58,7 +70,8 @@ func arraySitesEmpty(sites: in ArraySites): Bool {
   sites.index.count == 0 and sites.len.count == 0 and sites.slice.count == 0 and sites.forIter.count == 0 and
     sites.copy.count == 0 and
     sites.zero.count == 0 and
-    sites.ctorZero.count == 0
+    sites.ctorZero.count == 0 and
+    sites.literal.count == 0
 }
 
 pub func lowerArrays(file: in SourceFile, sites: in ArraySites): SourceFile {
@@ -219,6 +232,19 @@ func rewriteArrayExpr(e: in Expr, sites: in ArraySites): Expr {
         if idxs.count == 1 {
           r = mkExpr(EIndex(receiver = recv, indices = oneExpr(checkedIndex(idxs[0], site, e.span))), e.span)
         }
+      }
+      case None -> ()
+    }
+    case EList(elems) -> match mapGet(sites.literal, key) {
+      case Some(arrTe) -> if arrayLiteralOfPrimitive(arrTe) {
+        val targs: List[TypeArg] = newList()
+        targs.add(TAType(ty = arrTe))
+        val callee = mkExpr(ETypeApp(fn = mkPath(arrayOfIntrinsic(), e.span), args = targs), e.span)
+        val cargs: List[CallArg] = newList()
+        for el in elems {
+          cargs.add(CAPositional(expr = el))
+        }
+        r = mkExpr(ECall(fn = callee, args = cargs), e.span)
       }
       case None -> ()
     }
@@ -568,11 +594,14 @@ func forOverArray(
 /// `List[T]`: the fill and copy intrinsics become loops and the unchecked
 /// marker is dropped.  The caller then rewrites the remaining `array[N, T]`
 /// type expressions with `Lyric.TypeAliasResolve`.
-pub func lowerArrayIntrinsicsToLists(file: in SourceFile): SourceFile {
-  mapFileAndContracts(file, { e: Expr -> rewriteArrayIntrinsic(e) }, { s: Statement -> s })
+/// The fill and copy intrinsics as loops over a `List`; with `keepPrimitive`,
+/// those of an array whose element is a primitive (`primitiveArrayElement`)
+/// stay for a backend with typed primitive arrays (#8041).
+pub func lowerArrayIntrinsicsToLists(file: in SourceFile, keepPrimitive: in Bool): SourceFile {
+  mapFileAndContracts(file, { e: Expr -> rewriteArrayIntrinsic(e, keepPrimitive) }, { s: Statement -> s })
 }
 
-func rewriteArrayIntrinsic(e: in Expr): Expr {
+func rewriteArrayIntrinsic(e: in Expr, keepPrimitive: in Bool): Expr {
   match e.kind {
     case ECall(fn, args) -> {
       val name = match fn.kind {
@@ -589,7 +618,11 @@ func rewriteArrayIntrinsic(e: in Expr): Expr {
       if name == arrayFillIntrinsic() and args.count == 1 {
         return match fn.kind {
           case ETypeApp(_, targs) -> match arrayTypeArg(targs) {
-            case Some(arr) -> fillList(arr, callArgValue(args[0]), e.span)
+            case Some(arr) -> if keepPrimitive and primitiveArrayElement(arr.elem) {
+              e
+            } else {
+              fillList(arr, callArgValue(args[0]), e.span)
+            }
             case None -> e
           }
           case _ -> e
@@ -598,7 +631,11 @@ func rewriteArrayIntrinsic(e: in Expr): Expr {
       if name == arrayCopyIntrinsic() and args.count == 1 {
         return match fn.kind {
           case ETypeApp(_, targs) -> match arrayTypeArg(targs) {
-            case Some(arr) -> copyList(arr, callArgValue(args[0]), e.span)
+            case Some(arr) -> if keepPrimitive and primitiveArrayElement(arr.elem) {
+              e
+            } else {
+              copyList(arr, callArgValue(args[0]), keepPrimitive, e.span)
+            }
             case None -> callArgValue(args[0])
           }
           case _ -> callArgValue(args[0])
@@ -709,7 +746,7 @@ func whileLess(iName: in String, n: in Int, body: in List[Statement], sp: in Spa
 //   { val s: List[T] = a; val d: List[T] = newList()
 //     for x in s { d.add(x) }; d }
 // with each element of a nested array copied in turn.
-func copyList(arr: in ArrayShape, a: in Expr, sp: in Span): Expr {
+func copyList(arr: in ArrayShape, a: in Expr, keepPrimitive: in Bool, sp: in Span): Expr {
   val wsp = syntheticSpan(sp)
   val base = "__lyric_ac_" + toString(sp.startPos.offset) + "_" + toString(sp.endPos.offset) + "_" +
     toString(arrayDepth(arr.elem))
@@ -722,7 +759,17 @@ func copyList(arr: in ArrayShape, a: in Expr, sp: in Span): Expr {
   stmts.add(typedLocal(dName, listTy, callOf("newListWithCapacity", oneExpr(intLit(arr.len, wsp)), wsp), wsp))
   val elemRead = mkExpr(EIndex(receiver = localRef(sName, wsp), indices = oneExpr(localRef(iName, wsp))), wsp)
   val elemCopy = match arrayShapeOf(arr.elem) {
-    case Some(inner) -> copyList(inner, elemRead, sp)
+    // An element array the backend keeps native (#8041) is copied by the
+    // intrinsic, not as a list.
+    case Some(inner) -> if keepPrimitive and primitiveArrayElement(inner.elem) {
+      val targs: List[TypeArg] = newList()
+      targs.add(TAType(ty = arr.elem))
+      val cargs: List[CallArg] = newList()
+      cargs.add(CAPositional(expr = elemRead))
+      mkExpr(ECall(fn = mkExpr(ETypeApp(fn = localRef(arrayCopyIntrinsic(), wsp), args = targs), wsp), args = cargs), wsp)
+    } else {
+      copyList(inner, elemRead, keepPrimitive, sp)
+    }
     case None -> elemRead
   }
   val body: List[Statement] = newList()

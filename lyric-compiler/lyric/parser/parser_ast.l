@@ -1345,6 +1345,33 @@ pub func arrayUncheckedIntrinsic(): String = "__lyric_unchecked"
 /// `List[T]`, for a backend whose arrays are lists.
 pub func arraysAsListsKey(): String = "__lyric_arrays_as_lists"
 
+/// The reserved key that, beside `arraysAsListsKey`, keeps an `array[N, T]`
+/// whose element is a primitive (`primitiveArrayElement`) an array: the JVM
+/// represents it as the matching typed Java array (#8041).
+pub func primitiveArraysKey(): String = "__lyric_primitive_arrays"
+
+/// The intrinsic a backend with typed primitive arrays builds a bracket
+/// literal of an `array[N, T]` with: `__lyric_array_of[array[N, T]](e0, ...)`.
+pub func arrayOfIntrinsic(): String = "__lyric_array_of"
+
+/// Whether `te`, the element type of an `array[N, T]`, is one a JVM array
+/// holds unboxed: `Int`, `Long`, `Float`, `Double`, `Byte`, `Bool`, `Char`,
+/// `UInt`, `ULong`, `Nat`, or an inline range of one of them.
+pub func primitiveArrayElement(te: in TypeExpr): Bool {
+  match te.kind {
+    case TParen(inner) -> primitiveArrayElement(inner)
+    case TRef(p) -> p.segments.count == 1 and primitiveArrayElementName(p.segments[0])
+    case TRefined(u, _) -> u.segments.count == 1 and primitiveArrayElementName(u.segments[0])
+    case _ -> false
+  }
+}
+
+func primitiveArrayElementName(n: in String): Bool {
+  n == "Int" or n == "Long" or n == "Float" or n == "Double" or n == "Byte" or n == "Bool" or n == "Char" or n == "UInt" or
+    n == "ULong" or
+    n == "Nat"
+}
+
 /// The prefix of the keys that give `Lyric.TypeAliasResolve.resolveAliasesInFile`
 /// the resolved length of an `array[N, T]` type expression: the key is the
 /// prefix followed by `recordCopySiteKey` of the type expression and the value
