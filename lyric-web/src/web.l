@@ -116,14 +116,14 @@ func pathGetFullPath(path: in String): String {
     }
     i = i + 1
   }
-  var out = ""
+  var normalized = ""
   for seg in kept {
-    out = out + "/" + seg
+    normalized = normalized + "/" + seg
   }
-  if out.length == 0 {
+  if normalized.length == 0 {
     "/"
   } else {
-    out
+    normalized
   }
 }
 
