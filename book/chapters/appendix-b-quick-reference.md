@@ -718,6 +718,7 @@ Y0006 unknown layer/preset, Y0007 mutable module-level state, Y0008 protected
 | `@body` | handler parameter | Marks the parameter that receives the deserialized HTTP request body |
 | `@cfg(feature = "X")` | any item | Erase item when feature `X` is not active; see chapter 20 §20.7 |
 | `@cfg(any(feature = "X", feature = "Y"))` | any item | Erase unless at least one listed feature is active |
+| `@cfg(all(...))`, `@cfg(not(...))` | any item | Erase unless every operand holds / its operand does not; operands are `feature = "X"`, `target = "X"` or nested compositions |
 | `@delete` / `@get` / `@patch` / `@post` / `@put` | handler function | HTTP method annotation (lyric-web code-first) |
 | `@generate(Json\|Sql\|Proto)` | `exposed record`, `record`, `union`, `interface` | Invoke built-in source generator for the named target |
 | `@generate(Pkg.Name)` | `exposed record`, `record`, `union`, `interface` | Invoke custom source generator from package `Pkg` |

@@ -8192,6 +8192,15 @@ func collectionConstructForExpected(ctx: in Ctx, insns: in List[NInsn], e: in Ex
     case _ -> {
     }
   }
+  // `default()` is the zero value of the expected type: 0, false, null for a
+  // reference (the placeholder a later `out` argument or assignment replaces,
+  // releasing nothing), a zeroed by-value aggregate.
+  if nm == "default" and ctorArgs.count == 0 and not hasFuncOverrideNative(ctx, "default", 0) {
+    match want {
+      case NVoid -> ()
+      case _ -> return Some(value = NVal(ty = want, value = zeroValueOf(want)))
+    }
+  }
   if nm == "newList" or nm == "newListWithCapacity" {
     match listElemOfType(ctx, want) {
       case Some(elem) -> {
