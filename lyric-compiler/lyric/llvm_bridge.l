@@ -577,9 +577,7 @@ func typedInitBlock(ty: in TypeExpr, init: in Expr, sp: in Span): Block {
 // name resolution and the type check are unchanged.
 func hoistModuleValInits(sf: in SourceFile): SourceFile {
   val items: List[Item] = newList()
-  for it in sf.items {
-    items.add(it)
-  }
+  val hoisted: List[Item] = newList()
   for it in sf.items {
     match it.kind {
       case IVal(decl) -> {
@@ -606,17 +604,40 @@ func hoistModuleValInits(sf: in SourceFile): SourceFile {
                     body = Some(value = FBBlock(block = typedInitBlock(ty, decl.init, decl.span))),
                     span = decl.span
                   )
-                  items.add(Item(docComments = noDocs, annotations = noAnns, visibility = None, kind = IFunc(decl = fd), span = it.span))
+                  hoisted.add(Item(docComments = noDocs, annotations = noAnns, visibility = None, kind = IFunc(decl = fd), span = it.span))
+                  // The `val` now just calls its initializer function, so the
+                  // (possibly generic) initializer expression lives only in
+                  // the typed hoisted body.
+                  val segs: List[String] = newList()
+                  segs.add(mvInitFnName(vn))
+                  val noArgs: List[CallArg] = newList()
+                  val callee = Expr(kind = EPath(path = ModulePath(segments = segs, span = decl.span)), span = decl.span)
+                  val callInit = Expr(kind = ECall(fn = callee, args = noArgs), span = decl.span)
+                  val newDecl = ValDecl(pattern = decl.pattern, ty = decl.ty, init = callInit, span = decl.span)
+                  items.add(
+                    Item(
+                      docComments = it.docComments,
+                      annotations = it.annotations,
+                      visibility = it.visibility,
+                      kind = IVal(decl = newDecl),
+                      span = it.span
+                    )
+                  )
+                } else {
+                  items.add(it)
                 }
               }
-              case None -> ()
+              case None -> items.add(it)
             }
           }
-          case _ -> ()
+          case _ -> items.add(it)
         }
       }
-      case _ -> ()
+      case _ -> items.add(it)
     }
+  }
+  for h in hoisted {
+    items.add(h)
   }
   SourceFile(
     moduleDoc = sf.moduleDoc,
