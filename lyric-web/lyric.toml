@@ -40,6 +40,8 @@ default = ["dotnet"]
 dotnet = []
 # Undertow HTTP server backend.
 jvm    = []
+# The same pure-Lyric server over Std.HttpServer's native kernel, on --target native.
+native = []
 
 [project]
 name            = "Lyric.Web"
@@ -54,13 +56,15 @@ output_assembly = "Web.dll"
 # Pub aspect templates for cross-cutting handler concerns.
 "Web.Aspects"     = "src/aspects.l"
 # Extern boundary — exactly one file is compiled per build (selected by feature):
-#   dotnet → rate limiter only (ConcurrentDictionary); Web.serve runs its own
+#   dotnet → rate limiter only; Web.serve runs its own
 #            Std.HttpServer accept loop and never calls into this package.
 #   jvm    → rate limiter (ConcurrentHashMap) *and* the full Undertow HTTP
 #            server; Web.serve's jvm branch delegates entirely to this
 #            package's serve().
 "Web.Kernel.Runtime" = [
   "src/_kernel/net/web_kernel.l",
+  "src/_kernel/net/web_prims.l",
+  "src/_kernel/native/web_prims.l",
   "src/_kernel/jvm/web_kernel.l",
 ]
 

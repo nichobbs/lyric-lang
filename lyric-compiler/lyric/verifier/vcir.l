@@ -632,6 +632,62 @@ func termListEq(xs: in List[Term], ys: in List[Term]): Bool {
 // Free variable collection used to detect capture during substitution.
 // Returns names in insertion order; duplicates are filtered before any
 // membership query via `nameMember`.
+// The function symbol wrapping a term whose source construct has no
+// faithful translation and has already been reported (V0033, #7874).  A
+// goal containing it is failed without reaching the discharger or the
+// solver.  `!` keeps it out of the Lyric identifier space.
+pub func untranslatableMarker(): String {
+  "lyric!untranslatable"
+}
+
+// True when `t` contains a term wrapped by `untranslatableMarker`.
+pub func termIsPoisoned(t: in Term): Bool {
+  match t {
+    case TVar(_, _) -> false
+    case TLit(_, _) -> false
+    case TBuiltin(_, args) -> anyPoisoned(args)
+    case TApp(name, args, _) -> name == untranslatableMarker() or anyPoisoned(args)
+    case TLet(bindings, body) -> {
+      var i = 0
+      while i < bindings.count {
+        if termIsPoisoned(bindings[i].term) {
+          return true
+        }
+        i = i + 1
+      }
+      termIsPoisoned(body)
+    }
+    case TIte(c, a, b) -> termIsPoisoned(c) or termIsPoisoned(a) or termIsPoisoned(b)
+    case TForall(_, triggers, body) -> {
+      var i = 0
+      while i < triggers.count {
+        if anyPoisoned(triggers[i]) {
+          return true
+        }
+        i = i + 1
+      }
+      termIsPoisoned(body)
+    }
+    case TExists(_, body) -> termIsPoisoned(body)
+  }
+}
+
+func anyPoisoned(xs: in List[Term]): Bool {
+  var i = 0
+  while i < xs.count {
+    if termIsPoisoned(xs[i]) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+// True when a hypothesis or the conclusion of `g` is poisoned.
+pub func goalIsPoisoned(g: in Goal): Bool {
+  anyPoisoned(g.hypotheses) or termIsPoisoned(g.conclusion)
+}
+
 pub func freeVarsOfTerm(t: in Term): List[String] {
   val acc: List[String] = newList()
   accumulateFreeVars(t, acc)

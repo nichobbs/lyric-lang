@@ -407,6 +407,28 @@ void lyric_sem_destroy(void* s);
 int32_t lyric_thread_create(int64_t* tid, void* (*start)(void*), void* arg);
 int32_t lyric_thread_join(int64_t tid, void** retval);
 
+/* Start `start(arg)` on a detached thread nobody joins.  The caller retains
+ * `arg` (a Lyric closure) first; the thread releases it after `start`
+ * returns, so a fire-and-forget background task neither leaks its closure
+ * nor needs a join.  Returns 0 on success or an errno value, in which case
+ * the thread never ran and the caller still owns its retain. */
+int32_t lyric_thread_spawn_detached(void* (*start)(void*), void* arg);
+
+/* One process-wide lock for the short critical sections of stdlib kernels that
+ * keep no module state of their own (Std.Task's flags and child lists).  Never
+ * hold it across a blocking call. */
+void lyric_global_lock(void);
+void lyric_global_unlock(void);
+
+/* A per-thread slot holding one retained Lyric object.  Set
+ * retains the new object and releases the previous one (NULL clears it); get
+ * returns the object with a new reference the caller owns (NULL when empty).
+ * `has` is 1 when an object is held.  Std.Task's ambient cancellation token. */
+void lyric_thread_ref_set(void* obj);
+void* lyric_thread_ref_get(void);
+int32_t lyric_thread_ref_has(void);
+void lyric_thread_ref_clear(void);
+
 /* Milliseconds since the Unix epoch (CLOCK_REALTIME). */
 int64_t lyric_epoch_millis(void);
 /* Nanoseconds since the Unix epoch (CLOCK_REALTIME) — the native
@@ -419,6 +441,10 @@ int64_t lyric_monotonic_nanos(void);
 /* Fill buf with n cryptographically secure random bytes.  Returns 0 on
  * success, -1 on failure.  getrandom(2) on Linux, getentropy on macOS. */
 int32_t lyric_secure_random(uint8_t* buf, int64_t n);
+
+/* A fresh list of `n` bytes from the OS entropy source; panics when the
+ * source fails (a broken CSPRNG is not recoverable). */
+LyricList* lyric_secure_random_list(int64_t n);
 
 /* A fresh version-4 (random) UUID as a fresh rc=1 LyricString in the
  * canonical lowercase hyphenated 36-char form — the native Uuid
@@ -908,6 +934,11 @@ int64_t lyric_sock_write(int32_t fd, const uint8_t* buf, int64_t n);
 /* close(2) the fd.  Returns 0 on success, -1 on failure.  No-op on a
  * negative fd. */
 int32_t lyric_sock_close(int32_t fd);
+
+/* The peer's address of a connected socket as "ip:port" ("[ip]:port" for
+ * IPv6), or "" when it cannot be determined (closed fd, unsupported family).
+ * Best effort, for diagnostics. */
+LyricString* lyric_sock_peer_string(int32_t fd);
 
 /* LyricList[Byte] bridging for `Std.TcpHost`'s `hostRead`/`hostWrite`
  * (issue #6103 item C): one 64-bit slot per byte, scalar elements

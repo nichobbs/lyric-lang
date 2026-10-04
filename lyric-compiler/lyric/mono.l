@@ -1037,10 +1037,11 @@ func substExprValue(valueSubst: in Map[String, Expr], expr: in Expr): Expr {
       val newTargs: List[TypeArg] = newList()
       var i = 0
       while i < targs.count {
-        match targs[i] {
-          case TAType(inner) -> newTargs.add(TAType(ty = inner))
-          case TAValue(e) -> newTargs.add(TAValue(expr = substExprValue(valueSubst, e)))
-        }
+        // A bound value generic parameter spelled as a type argument (the
+        // length of a value-generic record's construction, D169) is its
+        // value.
+        val noTypes: Map[String, TypeExpr] = newMap()
+        newTargs.add(substTypeArg(noTypes, valueSubst, targs[i]))
         i = i + 1
       }
       Expr(kind = ETypeApp(fn = substExprValue(valueSubst, fn), args = newTargs), span = s)
@@ -3698,7 +3699,7 @@ func substTypesExpr(subst: in Map[String, TypeExpr], valueSubst: in Map[String, 
       var i = 0
       while i < args.count {
         match args[i] {
-          case TAType(te) -> na.add(TAType(ty = substTypeExpr(subst, valueSubst, te)))
+          case TAType(_) -> na.add(substTypeArg(subst, valueSubst, args[i]))
           case TAValue(e) -> na.add(TAValue(expr = substTypesExpr(subst, valueSubst, e)))
         }
         i = i + 1
@@ -4029,6 +4030,87 @@ pub func unionCtorInferenceDecls(items: in List[Item]): List[FunctionDecl] {
 /// `decl`, a generic function, as the non-generic `specName` with `subst`
 /// and `valueSubst` applied to its signature and its whole body: the
 /// declaration a specialisation is type-checked as (#7842).
+/// A value-generic record's declaration with its value generic parameters
+/// replaced by `valueSubst` (D169): field types, invariants, and each
+/// method's parameters, result, contracts and body.  The record's type
+/// parameters and each method's own generics are kept, so the result is an
+/// ordinary type-generic record named `specName`.
+pub func specializeRecordValues(decl: in RecordDecl, specName: in String, valueSubst: in Map[String, Expr]): RecordDecl {
+  val noTypes: Map[String, TypeExpr] = newMap()
+  val typeParams: List[GenericParam] = newList()
+  match decl.generics {
+    case Some(g) -> {
+      for gp in g.params {
+        match gp {
+          case GPType(_, _) -> typeParams.add(gp)
+          case GPValue(_, _, _) -> ()
+        }
+      }
+    }
+    case None -> ()
+  }
+  val generics: Option[GenericParams] = match decl.generics {
+    case Some(g) -> if typeParams.count > 0 {
+      Some(value = g.copy(params = typeParams))
+    } else {
+      None
+    }
+    case None -> None
+  }
+  val members: List[RecordMember] = newList()
+  for m in decl.members {
+    match m {
+      case RMField(fd) -> members.add(
+        RMField(
+          field = fd.copy(
+            ty = substTypeExpr(noTypes, valueSubst, fd.ty),
+            dflt = match fd.dflt {
+              case Some(d) -> Some(value = substExprValue(valueSubst, d))
+              case None -> None
+            }
+          )
+        )
+      )
+      case RMInvariant(inv) -> members.add(RMInvariant(inv = inv.copy(expr = substExprValue(valueSubst, inv.expr))))
+      case RMFunc(fn) -> members.add(RMFunc(fn = substValueGenericsInMethod(fn, valueSubst)))
+    }
+  }
+  decl.copy(name = specName, generics = generics, members = members)
+}
+
+func substValueGenericsInMethod(fn: in FunctionDecl, valueSubst: in Map[String, Expr]): FunctionDecl {
+  val noTypes: Map[String, TypeExpr] = newMap()
+  val params: List[Param] = newList()
+  for p in fn.params {
+    params.add(
+      p.copy(
+        ty = substTypeExpr(noTypes, valueSubst, p.ty),
+        dflt = match p.dflt { case Some(d) -> Some(value = substExprValue(valueSubst, d)); case None -> None }
+      )
+    )
+  }
+  var ret: Option[TypeExpr] = None
+  match fn.ret {
+    case Some(r) -> {
+      ret = Some(value = substTypeExpr(noTypes, valueSubst, r))
+    }
+    case None -> ()
+  }
+  val contracts: List[ContractClause] = newList()
+  for c in fn.contracts {
+    contracts.add(
+      match c {
+        case CCRequires(e, sp) -> CCRequires(expr = substExprValue(valueSubst, e), span = sp)
+        case CCEnsures(e, sp) -> CCEnsures(expr = substExprValue(valueSubst, e), span = sp)
+        case CCWhen(e, sp) -> CCWhen(expr = substExprValue(valueSubst, e), span = sp)
+        case CCDecreases(e, sp) -> CCDecreases(expr = substExprValue(valueSubst, e), span = sp)
+        case CCRaises(_, _) -> c
+      }
+    )
+  }
+  fn.copy(params = params, ret = ret, contracts = contracts, body = substValueInBody(valueSubst, fn.body))
+}
+
 pub func specializeFuncDecl(
   decl: in FunctionDecl,
   specName: in String,

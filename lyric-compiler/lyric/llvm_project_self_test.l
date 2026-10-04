@@ -145,6 +145,75 @@ test "two-package project: entry package first, imports a sibling function (ASan
 // sibling package's `ImportedPackage` surface — the identical bug fixed on
 // MSIL/JVM in this same PR, mirrored here as a SUGGESTION from `claude-review`
 // asking for native-target coverage to match.
+// Module-level `val`s with non-literal initializers are static globals filled
+// in before `main`: a record with `var` state shared by every function (identity
+// preserved), a generic-initialised map, a sibling package's global read across
+// the package boundary, and a global whose initializer reads another (init order).
+test "module-level val with a non-literal initializer is a shared static global (ASan)" {
+  val pkgs: List[NativeSourcePackage] = newList()
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Glob.App",
+      path = "",
+      source = "package Glob.App\n" + "import Glob.Store\n" + "import Glob.Store as Store\n" + "import Std.Core\n" + "import Std.Collections\n" +
+        "import Std.Console as Console\n" +
+        "record Counter {\n" +
+        "  var n: Int = 0\n" +
+        "  label: String = \"c\" + \"tr\"\n" +
+        "}\n" +
+        "val counter: Counter = Counter()\n" +
+        "val registry: Map[String, Counter] = newMap()\n" +
+        "val derived: Int = base() + 1\n" +
+        "func base(): Int {\n" +
+        "  counter.n + 41\n" +
+        "}\n" +
+        "func bump(): Unit {\n" +
+        "  counter.n = counter.n + 1\n" +
+        "}\n" +
+        "func main(): Int {\n" +
+        "  bump()\n" +
+        "  bump()\n" +
+        "  registry.add(\"a\", counter)\n" +
+        "  bump()\n" +
+        "  match mapGet(registry, \"a\") {\n" +
+        "    case Some(c) -> Console.println(c.label + \"=\" + c.n.toString())\n" +
+        "    case None -> Console.println(\"missing\")\n" +
+        "  }\n" +
+        "  Console.println(\"derived=\" + derived.toString())\n" +
+        "  Console.println(\"store=\" + storeCount().toString())\n" +
+        "  Console.println(Store.banner)\n" +
+        "  Console.println(pick(\"picked\"))\n" +
+        "  0\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Glob.Store",
+      path = "",
+      source = "package Glob.Store\n" + "record Box {\n" + "  var count: Int = 7\n" + "}\n" + "val box: Box = Box()\n" +
+        "pub val banner: String = \"store-banner\"\n" +
+        "pub func pick[T](x: in T): T {\n" +
+        "  x\n" +
+        "}\n" +
+        "pub func storeCount(): Int {\n" +
+        "  box.count = box.count + 1\n" +
+        "  box.count\n" +
+        "}\n"
+    )
+  )
+  val outcome = compileAndRunProject(pkgs)
+  assertEqualInt(outcome.exitCode, 0, "module global project exit code")
+  assertTrue(Str.contains(outcome.stdout, "ctr=3"), "a record global keeps identity and mutations across functions")
+  assertTrue(
+    Str.contains(outcome.stdout, "derived=42"),
+    "a global's initializer ran before main and read another global"
+  )
+  assertTrue(Str.contains(outcome.stdout, "store=8"), "a sibling package's global is shared across calls")
+  assertTrue(Str.contains(outcome.stdout, "store-banner"), "a package-qualified module value resolves")
+  assertTrue(Str.contains(outcome.stdout, "picked"), "a generic function of a sibling package is callable")
+}
+
 test "two-package project: qualified call to an internal sibling-package function resolves (#6580)" {
   val pkgs: List[NativeSourcePackage] = newList()
   pkgs.add(

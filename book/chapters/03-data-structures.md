@@ -316,7 +316,7 @@ func bump(a: inout array[4, Int], i: in Int) {
 }
 ```
 
-On `--target native` an array of by-value elements (numbers, enums, records with no `var` field, other such arrays) is stored inline with no allocation, so a `Vec3` table or a 4 by 4 matrix inside a by-value record costs nothing to copy beyond its bytes. `--target dotnet` and `--target jvm` store an array as a `List`.
+On `--target native` an array of by-value elements (numbers, enums, records with no `var` field, other such arrays) is stored inline with no allocation, so a `Vec3` table or a 4 by 4 matrix inside a by-value record costs nothing to copy beyond its bytes. `--target dotnet` stores an array as a `List`, which holds numbers unboxed. `--target jvm` stores an array of numbers, `Bool` or `Char` as a Java array of that primitive (`int[]`, `float[]`), so its elements are not boxed either, and any other array as a `List`.
 
 A function can take an array of any length by making the length a value generic parameter. Each call binds `N` to its argument's length, and `N` is an ordinary `Int` constant in the body:
 
@@ -343,7 +343,27 @@ total(small)          // N = 3
 total(doubled(big))   // N = 4; doubled returns an array[4, Int]
 ```
 
-Each length is compiled separately, exactly as if you had written it out, so bounds checks, copies and `==` behave as they do for a literal length. Two arguments that disagree about `N`, or an argument that disagrees with an explicit `total[3](a)`, are a compile-time error (T0043). When no argument has the length (`func make[N: Nat](): array[N, Int]`), give it explicitly: `make[4]()`; a bare `make()` is T0110. A record cannot yet size an array field with its own value generic parameter (#8090).
+Each length is compiled separately, exactly as if you had written it out, so bounds checks, copies and `==` behave as they do for a literal length. Two arguments that disagree about `N`, or an argument that disagrees with an explicit `total[3](a)`, are a compile-time error (T0043). When no argument has the length (`func make[N: Nat](): array[N, Int]`), give it explicitly: `make[4]()`; a bare `make()` is T0110. A record can take a length parameter too, which sizes its array fields:
+
+```lyric
+record Ints[N: Nat] {
+  var data: array[N, Int]
+
+  func sum(self: in Ints[N]): Int {
+    var t = 0
+    for x in self.data {
+      t = t + x
+    }
+    t
+  }
+}
+
+val a: array[3, Int] = [1, 2, 3]
+val v = Ints(data = a)       // an Ints[3]: N comes from the field's length
+val z: Ints[5] = Ints()      // N from the type you ask for; data is zero filled
+```
+
+`Ints[3]` and `Ints[5]` are different types, each compiled as its own record, and `N` is an `Int` constant in the methods. Two fields that disagree about `N` are T0043. For now a record with a length parameter can be used only in the package that declares it (T0164), and a union, opaque type or protected type cannot take one (T0160, #8149).
 
 **Slices** are dynamically sized, heap-allocated sequences. They are reference types backed by .NET's `List<T>`.
 

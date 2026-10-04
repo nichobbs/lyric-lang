@@ -101,8 +101,8 @@ pub union HttpError {
 pub func HttpError.message(e: in HttpError): String {
   match e {
     case ConnectionFailed(url, msg) -> "connection failed to " + url + ": " + msg
-    case Timeout(url, ms) -> "timeout after " + ms + "ms to " + url
-    case BadStatus(url, code) -> "HTTP " + code + " from " + url
+    case Timeout(url, ms) -> "timeout after " + ms.toString() + "ms to " + url
+    case BadStatus(url, code) -> "HTTP " + code.toString() + " from " + url
     case InvalidUrl(url) -> "invalid URL: " + url
     case Transport(url, error) -> "I/O error for " + url + ": " + IOError.message(error)
     case ReservedHeader(url, name) -> "header \"" + name + "\" is reserved (set automatically) for request to " + url

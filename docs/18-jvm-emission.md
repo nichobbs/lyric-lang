@@ -2422,7 +2422,7 @@ externs (`decl.isAsync` short-circuits, mirroring MSIL). See D107 in
 | `opaque type T`                  | `final class T`, `@LyricOpaque`, mangled fields      |
 | `union U { case A, case B(...) }`| sealed interface `U`, records `U.A`, `U.B`           |
 | `enum E`                         | JVM `enum E` (UPPER_SNAKE-cased values)              |
-| `array[N, T]`                    | `java.util.ArrayList` (numeric elements are boxed), copied where D167's ownership rule requires; bounds checks are lowered to explicit code by the shared pipeline. Typed `int[]`/`double[]` arrays are tracked in #8041 |
+| `array[N, T]`                    | The typed Java array (`int[]`, `float[]`, `boolean[]`, `char[]`, ...) when `T` is a numeric type, `Bool`, `Char` or a range subtype of one (#8041); `java.util.ArrayList` for any other `T`, and for a generic record's `array[N, T]` field. Copied where D167's ownership rule requires; bounds checks are lowered to explicit code by the shared pipeline |
 | `slice[T]`                       | `java.util.List<T>` (immutable view) — usually `List.copyOf` |
 | `T?`                             | sealed interface lowering of `union {Some(T), None}` |
 | function (`func`)                | `public static` method on `<package>$Funcs`          |

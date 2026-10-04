@@ -783,7 +783,7 @@ test "resolveNativeBenchConfig: a bench defaults to -O2 with no flag or manifest
       assertEqual(cfg.triple, "", "the host triple")
       assertEqualInt(cfg.extraLibs.count, 0, "no extra libraries")
     }
-    case Err(msg) -> assertTrue(false, "unexpected error: " + msg)
+    case Err(e) -> assertTrue(false, "unexpected error: " + e.message)
   }
 }
 
@@ -807,7 +807,7 @@ test "resolveNativeBenchConfig: the manifest's [native] table applies and flags 
       assertEqualInt(cfg.extraLibs.count, 2, "manifest extra_libs")
       assertEqual(cfg.extraLibs[0], "z", "first extra library")
     }
-    case Err(msg) -> assertTrue(false, "unexpected error: " + msg)
+    case Err(e) -> assertTrue(false, "unexpected error: " + e.message)
   }
   match Cli.resolveNativeBenchConfig(Some(value = mfPath), "aarch64-unknown-linux-gnu", "3") {
     case Ok(cfg) -> {
@@ -815,7 +815,7 @@ test "resolveNativeBenchConfig: the manifest's [native] table applies and flags 
       assertEqual(cfg.triple, "aarch64-unknown-linux-gnu", "--triple wins")
       assertEqualInt(cfg.extraLibs.count, 2, "extra_libs still apply")
     }
-    case Err(msg) -> assertTrue(false, "unexpected error: " + msg)
+    case Err(e) -> assertTrue(false, "unexpected error: " + e.message)
   }
 }
 
@@ -823,7 +823,10 @@ test "resolveNativeBenchConfig: a wasm32 triple is rejected" {
   val noMf: Option[String] = None
   match Cli.resolveNativeBenchConfig(noMf, "wasm32-wasi", "") {
     case Ok(_) -> assertTrue(false, "a wasm32 bench cannot run on this machine")
-    case Err(msg) -> assertTrue(Str.contains(msg, "wasm32-wasi"), "the message names the triple")
+    case Err(e) -> {
+      assertTrue(Str.contains(e.message, "wasm32-wasi"), "the message names the triple")
+      assertEqualInt(e.exitCode, 64, "a usage error")
+    }
   }
 }
 

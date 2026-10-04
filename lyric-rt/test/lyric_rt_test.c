@@ -3224,6 +3224,62 @@ static LyricString* rt_str(const char* s) {
     return lyric_string_from_literal((const uint8_t*)s, (int64_t)strlen(s));
 }
 
+/* lyric_thread_spawn_detached runs the entry on its own thread and releases
+ * the caller's retain on `arg` once the entry returns -- no join, no leak. */
+#ifndef __wasi__
+static volatile int detached_ran = 0;
+static void* detached_entry(void* arg) {
+    (void)arg;
+    detached_ran = 1;
+    return NULL;
+}
+
+static void test_thread_spawn_detached(void) {
+    LyricObjectHeader* h = (LyricObjectHeader*)lyric_alloc(sizeof(LyricObjectHeader));
+    atomic_store(&h->rc, 2); /* the creator's reference plus the thread's */
+    lyric_weak_init(h);
+    h->dtor = counting_dtor;
+    dtor_calls = 0;
+    detached_ran = 0;
+    CHECK(lyric_thread_spawn_detached(detached_entry, h) == 0);
+    struct timespec ts = {0, 1000000};
+    for (int i = 0; i < 5000 && atomic_load(&h->rc) != 1; i++) {
+        nanosleep(&ts, NULL);
+    }
+    CHECK(detached_ran == 1);
+    CHECK(atomic_load(&h->rc) == 1);
+    CHECK(dtor_calls == 0);
+    lyric_release(h);
+    CHECK(dtor_calls == 1);
+}
+#endif
+
+/* The per-thread slot retains what it holds, releases the previous object on
+ * replace and on clear, and reports whether it holds one. */
+static void test_thread_ref_slot(void) {
+    LyricObjectHeader* a = (LyricObjectHeader*)lyric_alloc(sizeof(LyricObjectHeader));
+    atomic_store(&a->rc, 1);
+    lyric_weak_init(a);
+    a->dtor = counting_dtor;
+    dtor_calls = 0;
+    CHECK(lyric_thread_ref_has() == 0);
+    lyric_thread_ref_set(a);
+    CHECK(lyric_thread_ref_has() == 1);
+    CHECK(lyric_thread_ref_get() == a);
+    CHECK(atomic_load(&a->rc) == 3);
+    lyric_release(a);
+    CHECK(atomic_load(&a->rc) == 2);
+    lyric_thread_ref_set(a);
+    CHECK(atomic_load(&a->rc) == 2);
+    lyric_thread_ref_clear();
+    CHECK(lyric_thread_ref_has() == 0);
+    CHECK(atomic_load(&a->rc) == 1);
+    lyric_global_lock();
+    lyric_global_unlock();
+    lyric_release(a);
+    CHECK(dtor_calls == 1);
+}
+
 static void test_string_ascii_case_compare(void) {
     CHECK(lyric_string_ascii_case_compare(rt_str("Content-Length"), rt_str("content-length")) == 1);
     CHECK(lyric_string_ascii_case_compare(rt_str("Host"), rt_str("host")) == 1);
@@ -3237,6 +3293,10 @@ static void test_string_ascii_case_compare(void) {
 }
 
 int main(void) {
+#ifndef __wasi__
+    test_thread_spawn_detached();
+#endif
+    test_thread_ref_slot();
     test_string_ascii_case_compare();
     test_alloc_retain_release();
     test_free();

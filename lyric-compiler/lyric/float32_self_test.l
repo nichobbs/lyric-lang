@@ -208,7 +208,10 @@ test "an unsuffixed literal is a Float in a union case argument" {
 }
 
 // The smallest subnormals need one significant digit to round-trip; every
-// target prints that one digit, as .NET does (#7987).
+// target prints that one digit, as .NET does (#7987).  On the JVM, which
+// prints two, `1E-323` (Java `9.9E-324`) and `1E-44` (Java `9.8E-45`) round
+// up across a digit, and `1.5E+20` and `2.5E-300` keep both digits because one
+// does not parse back to the same value.
 test "the smallest subnormals print one digit" {
   assertEqual(toString(1.0e-45f32), "1E-45", "the Float minimum subnormal")
   assertEqual(toString(3.0e-45f32), "3E-45", "twice the Float minimum subnormal")
@@ -216,6 +219,8 @@ test "the smallest subnormals print one digit" {
   assertEqual(toString(5.0e-324), "5E-324", "the Double minimum subnormal")
   assertEqual(toString(1.0e-323), "1E-323", "twice the Double minimum subnormal")
   assertEqual(toString(8.0e-323), "8E-323", "16 times the Double minimum subnormal")
+  assertEqual(toString(1.0e-44f32), "1E-44", "seven times the Float minimum subnormal, rounding up")
+  assertEqual(toString(2.5e-300), "2.5E-300", "a small normal Double keeps its two digits")
   assertEqual(toString(1.5e20), "1.5E+20", "a two-digit mantissa that one digit cannot round-trip")
   assertEqual(toString(1.5e10), "15000000000", "and in fixed notation")
 }

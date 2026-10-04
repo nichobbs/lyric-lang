@@ -92,12 +92,16 @@ for t in \
   lyric-compiler/lyric/byvalue_record_self_test.l \
   lyric-compiler/lyric/inline_union_self_test.l \
   lyric-compiler/lyric/generic_ctor_open_arg_self_test.l \
+  lyric-compiler/lyric/generic_ctor_widening_self_test.l \
   lyric-compiler/lyric/fixed_array_self_test.l \
+  lyric-compiler/lyric/value_generic_record_self_test.l \
   lyric-compiler/lyric/func_default_args_self_test.l \
   lyric-compiler/lyric/method_default_args_self_test.l \
   lyric-compiler/lyric/bench_alloc_self_test.l \
   lyric-compiler/lyric/tuple_expected_type_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_test.l \
+  lyric-compiler/lyric/record_field_closure_self_test.l \
+  lyric-compiler/lyric/explicit_type_args_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_type_self_test.l \
   lyric-compiler/lyric/byte_native_self_test.l \
   lyric-compiler/lyric/extern_cbinding_self_test.l ; do
@@ -114,3 +118,18 @@ LYRIC_BIN="$lyric_bin" bash scripts/ci/fixed-array-e2e.sh native
 LYRIC_BIN="$lyric_bin" bash scripts/ci/bench-vec3-alloc.sh
 # #8031: an inline range type is checked wherever a value reaches it.
 LYRIC_BIN="$lyric_bin" bash scripts/ci/range-refinement-e2e.sh native
+# D169: a value-generic record is usable in its own package, and naming
+# another package's is T0164.
+LYRIC_BIN="$lyric_bin" bash scripts/ci/value-generic-record-e2e.sh native
+# Std.Task, Std.SecureRandom, Std.Json and Std.JsonValue on native (#8135, #7856):
+# the stdlib suites that need no catchable panic.
+for t in \
+  lyric-stdlib/tests/task_native_tests.l \
+  lyric-stdlib/tests/secure_random_native_tests.l \
+  lyric-stdlib/tests/json_native_tests.l \
+  lyric-stdlib/tests/json_value_tests.l ; do
+  echo "=== $t (--target native) ==="
+  "$lyric_bin" test --target native "$t"
+done
+# Std.Parse is a plain program, not a test module.
+"$lyric_bin" run --target native lyric-stdlib/tests/parse_tests.l

@@ -661,7 +661,9 @@ func indexedElemTypeOverride(ctx: in FuncCtx, recv: in Expr, allowMapValueArg: i
       // never covered by this override before this fix either), so stay
       // at the safe "no override" sentinel rather than risk a
       // `ClassCastException` from a half-handled narrowing.
-      case JArray(_) -> return JVoid
+      // A primitive `array[N, T]` element is a typed Java array (#8041),
+      // which `coerceArgTo` narrows with a `checkcast`.
+      case JArray(e) -> return if isJvmPrimitiveElemType(e) { JArray(elem = e) } else { JVoid }
       case JVoid -> ()
       case t -> return t
     }
@@ -2375,9 +2377,15 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
       // `pairs[idx]` on a match-bound `List[YamlPair]` payload).  A precisely-
       // known `HashMap` receiver is left alone — casting it to `ArrayList`
       // would itself throw `ClassCastException` (#1707/m-5).
+      //
+      // An `Object`-typed receiver is not narrowed: it may equally be a typed
+      // Java array (a numeric `array[N, T]`, #8041) or a slice's `Object[]`,
+      // so it is indexed through the package's `__lyricErasedIndexGet` helper,
+      // which dispatches on the runtime class.
+      val erasedRecv = isErasedObject(recvTy0)
       val recvTy = match recvTy0 {
         case JRef(c0) -> {
-          if c0 == "java/lang/String" or c0 == "java/util/ArrayList" or c0 == "java/util/HashMap" {
+          if c0 == "java/lang/String" or c0 == "java/util/ArrayList" or c0 == "java/util/HashMap" or erasedRecv {
             recvTy0
           } else {
             insns.add(LCheckcast(className = "java/util/ArrayList"))
@@ -2385,6 +2393,11 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
           }
         }
         case _ -> recvTy0
+      }
+      if indices.count > 0 and erasedRecv {
+        lowerExpr(ctx, insns, indices[0])
+        emitErasedIndexGetJvm(ctx, insns)
+        return applyIndexedElemOverrideNormalizingSlice(ctx, insns, recv, elemOverride)
       }
       if indices.count > 0 {
         match recvTy {
@@ -2400,6 +2413,31 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
                 insns.add(LBaload)
                 maskByteUnsigned(insns)
                 JByte
+              }
+              // A primitive `array[N, T]` (#8041).
+              case JInt -> {
+                insns.add(LIaload)
+                JInt
+              }
+              case JLong -> {
+                insns.add(LLaload)
+                JLong
+              }
+              case JFloat -> {
+                insns.add(LFaload)
+                JFloat
+              }
+              case JDouble -> {
+                insns.add(LDaload)
+                JDouble
+              }
+              case JBoolean -> {
+                insns.add(LBaload)
+                JBoolean
+              }
+              case JChar -> {
+                insns.add(LCaload)
+                JChar
               }
               case JRef(elemCls) -> {
                 // Preserve the element's reference type (e.g. `File.listFiles()`
@@ -3416,6 +3454,35 @@ func lowerInterpolated(ctx: in FuncCtx, insns: in List[LInsn], segments: in List
   JRef(className = "java/lang/String")
 }
 
+// `recv[i]` on an `Object`-typed receiver, `[recv, i]` on the stack, through
+// the package's `__lyricErasedIndexGet` helper (#8041); leaves the boxed
+// element.
+func emitErasedIndexGetJvm(ctx: in FuncCtx, insns: in List[LInsn]): Unit {
+  val ps: List[JvmType] = newList()
+  ps.add(JRef(className = "java/lang/Object"))
+  ps.add(JInt)
+  insns.add(
+    LInvokestatic(
+      owner = ctx.pkgName,
+      name = erasedIndexGetHelperName(),
+      params = ps,
+      ret = JRef(className = "java/lang/Object")
+    )
+  )
+  markRuntimeHelper(ctx, erasedIndexGetHelperName())
+}
+
+// `recv[i] = v` on an `Object`-typed receiver, `[recv, i, boxed v]` on the
+// stack, through the package's `__lyricErasedIndexSet` helper (#8041).
+func emitErasedIndexSetJvm(ctx: in FuncCtx, insns: in List[LInsn]): Unit {
+  val ps: List[JvmType] = newList()
+  ps.add(JRef(className = "java/lang/Object"))
+  ps.add(JInt)
+  ps.add(JRef(className = "java/lang/Object"))
+  insns.add(LInvokestatic(owner = ctx.pkgName, name = erasedIndexSetHelperName(), params = ps, ret = JVoid))
+  markRuntimeHelper(ctx, erasedIndexSetHelperName())
+}
+
 // Stringify the erased `Object` on the stack through the package's
 // `__lyricErasedToString` helper.
 func emitErasedToStringJvm(ctx: in FuncCtx, insns: in List[LInsn]): Unit {
@@ -4242,6 +4309,15 @@ func narrowGenericFieldRead(
   val args = scrutineeGenericArgs(ctx, recv)
   if pIdx >= args.count {
     return fty
+  }
+  // A primitive `array[N, T]` argument is a typed Java array (#8041).
+  match resolveConcreteTypeExpr(ctx, args[pIdx]) {
+    case JArray(e) -> if isJvmPrimitiveElemType(e) {
+      val arrTy = JArray(elem = e)
+      insns.add(LCheckcast(className = typeDescriptor(arrTy)))
+      return arrTy
+    }
+    case _ -> ()
   }
   val prim = primitiveSlotJvmType(ctx, args[pIdx])
   if isJvmPrimitiveElemType(prim) {

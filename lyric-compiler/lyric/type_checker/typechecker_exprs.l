@@ -1653,7 +1653,7 @@ func collectEqLeaves(
   val u = unrefine(t)
   match u {
     case TyFunction(_, _, _) -> return Some(value = dottedPath(prefix))
-    case TyArray(Some(_), _) -> match buildArrayEqSite(tbl, span, u, false) {
+    case TyArray(Some(_), _, _) -> match buildArrayEqSite(tbl, span, u, false) {
       case Err(bad) -> return Some(value = dottedPath(prefix) + "." + bad)
       case Ok(site) -> {
         arrayLeaves[dottedPath(prefix)] = site
@@ -2222,7 +2222,7 @@ func builtinMember(tbl: in SymbolTable, recvRaw: in Type, name: in String): Opti
       }
       None
     }
-    case TyArray(_, elem) -> {
+    case TyArray(_, elem, _) -> {
       if name == "length" {
         return Some(value = TyPrim(pt = PtInt))
       }
@@ -2535,7 +2535,7 @@ func isNonConvertiblePrimitive(t: in Type): Bool {
 func indexElementType(tbl: in SymbolTable, recvRaw: in Type): Type {
   match unrefine(recvRaw) {
     case TySlice(elem) -> elem
-    case TyArray(_, elem) -> elem
+    case TyArray(_, elem, _) -> elem
     case TyPrim(pt) -> match pt { case PtString -> TyPrim(pt = PtChar); case _ -> TyError }
     case TyUser(tid, _, targs) -> {
       // Keyed on the stdlib collections' identity, not their bare names
@@ -2923,7 +2923,7 @@ func typeIsClosed(t: in Type): Bool {
     case TySelf -> false
     case TyUser(_, _, args) -> typesAreClosed(args)
     case TySlice(e) -> typeIsClosed(e)
-    case TyArray(_, e) -> typeIsClosed(e)
+    case TyArray(_, e, _) -> typeIsClosed(e)
     case TyNullable(inner) -> typeIsClosed(inner)
     case TyTuple(elems) -> typesAreClosed(elems)
     case TyFunction(ps, ret, _) -> typesAreClosed(ps) and typeIsClosed(ret)
@@ -4266,7 +4266,7 @@ func typeExprForRefV(tbl: in SymbolTable, t: in Type, sp: in Span, vars: in Bool
       case Some(te) -> Some(value = TypeExpr(kind = TSlice(element = te), span = sp))
       case None -> None
     }
-    case TyArray(sz, e) -> match sz {
+    case TyArray(sz, e, sv) -> match sz {
       case Some(n) -> match typeExprForRefV(tbl, e, sp, vars) {
         case Some(te) -> {
           val lenLit = mkExpr(ELiteral(lit = LInt(value = n.toLong(), suffix = I32, raw = "")), sp)
@@ -4274,7 +4274,21 @@ func typeExprForRefV(tbl: in SymbolTable, t: in Type, sp: in Span, vars: in Bool
         }
         case None -> None
       }
-      case None -> None
+      // A length that is a value generic parameter is spelled by its name;
+      // each specialisation substitutes the bound length (D169).
+      case None -> if sv.length > 0 {
+        match typeExprForRefV(tbl, e, sp, vars) {
+          case Some(te) -> {
+            val nsegs: List[String] = newList()
+            nsegs.add(sv)
+            val lenTe = TypeExpr(kind = TRef(path = refTypePath(nsegs, sp)), span = sp)
+            Some(value = TypeExpr(kind = TArray(size = TAType(ty = lenTe), element = te), span = sp))
+          }
+          case None -> None
+        }
+      } else {
+        None
+      }
     }
     case TyTuple(elems) -> match typeExprsForRefV(tbl, elems, sp, vars) {
       case Some(tes) -> Some(value = TypeExpr(kind = TTuple(types = tes), span = sp))
@@ -4327,18 +4341,20 @@ func typeExprForRefV(tbl: in SymbolTable, t: in Type, sp: in Span, vars: in Bool
         if args.count == 0 {
           Some(value = TypeExpr(kind = TRef(path = refTypePath(segs, sp)), span = sp))
         } else {
-          match typeExprsForRefV(tbl, args, sp, vars) {
-            case Some(ates) -> {
-              val targs: List[TypeArg] = newList()
-              var ai = 0
-              while ai < ates.count {
-                targs.add(TAType(ty = ates[ai]))
-                ai = ai + 1
+          // A length argument (`TyLen`) is spelled as the literal (D169).
+          val targs: List[TypeArg] = newList()
+          for a in args {
+            match a {
+              case TyLen(n) -> targs.add(
+                TAValue(expr = mkExpr(ELiteral(lit = LInt(value = n.toLong(), suffix = I32, raw = "")), sp))
+              )
+              case _ -> match typeExprForRefV(tbl, a, sp, vars) {
+                case Some(ate) -> targs.add(TAType(ty = ate))
+                case None -> return None
               }
-              Some(value = TypeExpr(kind = TGenericApp(head = refTypePath(segs, sp), args = targs), span = sp))
             }
-            case None -> None
           }
+          Some(value = TypeExpr(kind = TGenericApp(head = refTypePath(segs, sp), args = targs), span = sp))
         }
       }
       case None -> None
@@ -4516,8 +4532,6 @@ func recordWideningSite(tbl: in SymbolTable, target: in Type, src: in Type, e: i
   }
 }
 
-// `recordWideningSite` for an implicit widening at a position every backend
-// already widens signed values at.
 /// Records `e` as a value that must be in the inline range type `slot`
 /// (`Int range 0 ..= 3`), at a position no other pass checks: a record or
 /// union field, a collection element, an argument through a function value
@@ -4655,8 +4669,152 @@ func rangeReceiverName(sc: in Scope, recv: in Expr): String {
   }
 }
 
+// `recordWideningSite` for an implicit widening at a position every backend
+// already widens signed values at.
 func recordUnsignedWidening(tbl: in SymbolTable, target: in Type, src: in Type, e: in Expr): Unit {
   recordWideningSite(tbl, target, src, e, true)
+}
+
+// ── Lossless widening inside a value being built (#7813) ────────────────────
+//
+// A constructor argument of a generic instance (`Some(u)`, `Ok(i)`, a generic
+// record or union case) and a tuple element initialise a slot whose type the
+// expected instantiation fixes, so a scalar there widens like any initialiser
+// (docs/01 §4.1).  The widening is recorded as a conversion site of every
+// chain, signed included: the slot is generic (boxed or reified at the
+// argument's own type) or a tuple element, and no backend widens a scalar
+// there from the operand types.  An existing container value never widens:
+// `Option[UInt]` and `Option[ULong]` stay distinct types.
+// True when `ds` holds an error (warnings aside).  A second, expected-typed
+// pass over a value already checked once reports into a scratch list; if that
+// pass fails, its result type may hold `TyError`, which compares equal to
+// anything, so the caller keeps the first pass's type and lets the ordinary
+// mismatch be reported instead.
+func diagnosticsHaveError(ds: in List[Diagnostic]): Bool {
+  for d in ds {
+    match d.severity {
+      case DiagError -> return true
+      case DiagWarning -> ()
+    }
+  }
+  false
+}
+
+// True when a value of type `src` is a `target` up to lossless numeric
+// widenings of its scalar parts: tuple elements and generic type arguments
+// of the same type.
+func widensOrEquals(target: in Type, src: in Type): Bool {
+  if typeEquiv(target, src) or numericWidensTo(target, src) {
+    return true
+  }
+  match unrefine(target) {
+    case TyTuple(tes) -> match unrefine(src) { case TyTuple(ses) -> typeListsWidenOrEqual(tes, ses); case _ -> false }
+    case TyUser(tid, _, targs) -> match unrefine(src) {
+      case TyUser(sid, _, sargs) -> typeIdEq(tid, sid) and
+        typeListsWidenOrEqual(targs, sargs)
+      case _ -> false
+    }
+    case _ -> false
+  }
+}
+
+func typeListsWidenOrEqual(targets: in List[Type], srcs: in List[Type]): Bool {
+  if targets.count != srcs.count {
+    return false
+  }
+  var i = 0
+  while i < targets.count {
+    if not widensOrEquals(targets[i], srcs[i]) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+// True when `src` differs from `target` only by lossless numeric widenings
+// of its scalar parts (`Option[UInt]` against `Option[ULong]`,
+// `(UInt, Int)` against `(ULong, Int)`).
+func widensStructurally(target: in Type, src: in Type): Bool {
+  not typeEquiv(target, src) and widensOrEquals(target, src)
+}
+
+// The type a constructor argument of `t` takes where `exp` is expected of
+// it: `exp` when `t` widens to it, after recording the widening of `argE`
+// for `Lyric.Mono` to spell out; `t` otherwise.
+func widenedSlotType(tbl: in SymbolTable, exp: in Type, t: in Type, argE: in Expr): Type {
+  if numericWidensTo(exp, t) {
+    match wideningMethod(exp, t) {
+      case Some(_) -> {
+        recordWideningSite(tbl, exp, t, argE, false)
+        return exp
+      }
+      case None -> ()
+    }
+  }
+  t
+}
+
+// The type each argument of a constructor is expected to have when the
+// constructed type is expected at the instantiation `eargs` of its type
+// parameters `gnames`: the declared type of the slot (named `slotNames`,
+// typed `slotTypes`) the argument fills, instantiated.  `TyError` (no
+// expectation) for an argument that fills no slot or whose instantiated
+// slot type is not closed.
+func ctorArgsExpected(
+  args: in List[CallArg],
+  slotNames: in List[String],
+  slotTypes: in List[Type],
+  gnames: in List[String],
+  eargs: in List[Type],
+): List[Type] {
+  val exps: List[Type] = newList()
+  var i = 0
+  while i < args.count {
+    exps.add(TyError)
+    i = i + 1
+  }
+  if eargs.count != gnames.count or slotNames.count != slotTypes.count {
+    return exps
+  }
+  val srcIdx = argIndicesInParamOrder(args, slotNames)
+  var k = 0
+  while k < srcIdx.count {
+    val ai = srcIdx[k]
+    if ai >= 0 and ai < exps.count {
+      val st = substituteTyVars(slotTypes[k], gnames, eargs)
+      if typeIsClosed(st) {
+        exps[ai] = st
+      }
+    }
+    k = k + 1
+  }
+  exps
+}
+
+// Infer each constructor argument against its expected type (`exps`, from
+// `ctorArgsExpected`), widening a scalar argument to it.
+func inferCtorArgsExpected(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  args: in List[CallArg],
+  exps: in List[Type],
+): List[Type] {
+  val tys: List[Type] = newList()
+  var i = 0
+  while i < args.count {
+    val argE = callArgExpr(args[i])
+    val exp = if i < exps.count { exps[i] } else { TyError }
+    if typeIsHole(exp) {
+      tys.add(inferExpr(sc, tbl, sigs, diag, argE))
+    } else {
+      tys.add(widenedSlotType(tbl, exp, inferExprExpected(sc, tbl, sigs, diag, argE, exp), argE))
+    }
+    i = i + 1
+  }
+  tys
 }
 
 // The identity conversion that names `t` when `t` is `UInt` or `ULong`.
@@ -5318,7 +5476,7 @@ func modeNeedsLValue(m: in ParamMode): Bool {
 func isByRefValueType(t: in Type): Bool {
   match unrefine(t) {
     case TyPrim(pt) -> match pt { case PtString -> false; case PtUnit -> false; case PtNever -> false; case _ -> true }
-    case TyArray(_, _) -> true
+    case TyArray(_, _, _) -> true
     case _ -> false
   }
 }
@@ -5341,7 +5499,13 @@ record CtorField {
 func isZeroFillField(t: in Type, dflt: in Option[Expr]): Bool {
   match dflt {
     case Some(_) -> false
-    case None -> match unrefine(t) { case TyArray(Some(_), _) -> true; case _ -> false }
+    // A length that is the type's own value generic parameter is settled,
+    // like a type parameter, once the arguments are known (D169).
+    case None -> match unrefine(t) {
+      case TyArray(Some(_), _, _) -> true
+      case TyArray(None, _, sv) -> sv.length > 0
+      case _ -> false
+    }
   }
 }
 
@@ -5353,6 +5517,75 @@ func ctorIsGeneric(sym: in Symbol): Bool {
     case DKProtected(_, pd) -> match pd.generics { case Some(_) -> true; case None -> false }
     case _ -> false
   }
+}
+
+// The distinct lengths the fields of a construction give the value generic
+// parameter `name` (D169).
+func valueParamLengths(name: in String, fieldTypes: in List[Type], argTypes: in List[Type]): List[Int] {
+  val lens: List[Int] = newList()
+  var i = 0
+  while i < fieldTypes.count and i < argTypes.count {
+    match findGenericInPair(name, fieldTypes[i], argTypes[i]) {
+      case Some(t) -> match t { case TyLen(n) -> if not lens.contains(n) { lens.add(n) }; case _ -> () }
+      case None -> ()
+    }
+    i = i + 1
+  }
+  lens
+}
+
+// Records the value arguments of a value-generic record's construction
+// (D169): a literal length, or the enclosing value generic parameter it is
+// bound to inside a value-generic body.
+func noteValueRecordCtor(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  sym: in Symbol,
+  targs: in List[Type],
+  span: in Span,
+): Unit {
+  val gOpt = match sym.kind {
+    case DKRecord(_, rd) -> rd.generics
+    case DKExposedRec(_, rd) -> rd.generics
+    case _ -> None
+  }
+  val params = match gOpt { case Some(g) -> g.params; case None -> return }
+  if not genericParamsHaveValue(params) {
+    return
+  }
+  reportForeignValueRecordSym(tbl, diag, sym, span)
+  val vargs: List[TypeArg] = newList()
+  var i = 0
+  while i < params.count and i < targs.count {
+    if genericParamIsValue(params[i]) {
+      match targs[i] {
+        case TyLen(n) -> vargs.add(
+          TAValue(expr = mkExpr(ELiteral(lit = LInt(value = n.toLong(), suffix = I32, raw = "")), span))
+        )
+        case TyVar(m) -> {
+          val segs: List[String] = newList()
+          segs.add(m)
+          vargs.add(TAType(ty = TypeExpr(kind = TRef(path = refTypePath(segs, span)), span = span)))
+        }
+        case _ -> return
+      }
+    }
+    i = i + 1
+  }
+  val key = recordCopySiteKey(span)
+  if not tbl.valueRecordCtorSites.containsKey(key) {
+    tbl.valueRecordCtorSites.add(key, vargs)
+  }
+}
+
+// The value generic parameter names of a constructor symbol (D169).
+func ctorValueGenericNames(sym: in Symbol): List[String] {
+  val gOpt = match sym.kind {
+    case DKRecord(_, rd) -> rd.generics
+    case DKExposedRec(_, rd) -> rd.generics
+    case _ -> None
+  }
+  valueGenericNames(gOpt)
 }
 
 func ctorIsOpaque(sym: in Symbol): Bool {
@@ -5517,7 +5750,7 @@ func fieldTypeUsesVar(name: in String, ty: in Type): Bool {
       false
     }
     case TySlice(e) -> fieldTypeUsesVar(name, e)
-    case TyArray(_, e) -> fieldTypeUsesVar(name, e)
+    case TyArray(_, e, sv) -> sv == name or fieldTypeUsesVar(name, e)
     case TyNullable(inner) -> fieldTypeUsesVar(name, inner)
     case TyTuple(elems) -> {
       var i = 0
@@ -5917,6 +6150,13 @@ func collectCtorFieldsFromOpaque(
 // the temporary switch so this is transparent to the caller.
 func collectCtorFields(tbl: in SymbolTable, sym: in Symbol, acc: in List[CtorField]): Bool {
   val ctx = newGenericContext()
+  // A field whose array length is a value generic parameter is zero filled
+  // like one with a literal length (D169), which needs the parameter in
+  // scope to see.
+  val vnames = ctorValueGenericNames(sym)
+  if vnames.count > 0 {
+    gctxPush(ctx, vnames)
+  }
   val scratch: List[Diagnostic] = newList()
   val saved = enterDeclaringScope(tbl, sym)
   val result = match sym.kind {
@@ -6216,6 +6456,28 @@ func inferConstructionExpected(
       }
       case _ -> ()
     }
+    // A value generic parameter two array fields give different lengths
+    // (D169) is T0043, as for a value-generic function's arguments.
+    var vi = 0
+    while vi < gnames.count {
+      val isErr = match targs[vi] { case TyError -> true; case _ -> false }
+      if isErr {
+        val lens = valueParamLengths(gnames[vi], fieldTypes, orderedArgTypes)
+        if lens.count > 1 {
+          diag.add(
+            errorDiagnostic(
+              "T0043",
+              "the length '" + gnames[vi] + "' of '" + sym.name + "' is given as " + toString(lens[0]) + " by one field and " +
+                toString(lens[1]) +
+                " by another",
+              span
+            )
+          )
+          return TyError
+        }
+      }
+      vi = vi + 1
+    }
     // Collect names of parameters that could not be inferred.
     val unresolved: List[String] = newList()
     var gi = 0
@@ -6254,6 +6516,7 @@ func inferConstructionExpected(
       case Some(tid) -> TyUser(id = tid, name = sym.name, args = targs)
       case None -> TyError
     }
+    noteValueRecordCtor(tbl, diag, sym, targs, span)
     // #1485: an opaque type's representation is hidden.
     if ctorIsOpaque(sym) and sym.isImported {
       diag.add(
@@ -7177,7 +7440,7 @@ func caseParentMatchesScrutinee(tbl: in SymbolTable, pid: in TypeId, scrutineeTy
     case TyPrim(_) -> false
     case TyTuple(_) -> false
     case TyFunction(_, _, _) -> false
-    case TyArray(_, _) -> false
+    case TyArray(_, _, _) -> false
     case TySlice(_) -> false
     case _ -> true
   }
@@ -7506,7 +7769,19 @@ func substituteTyVars(t: in Type, names: in List[String], args: in List[Type]): 
       TyUser(id = id, name = name, args = na)
     }
     case TySlice(e) -> TySlice(element = substituteTyVars(e, names, args))
-    case TyArray(sz, e) -> TyArray(size = sz, element = substituteTyVars(e, names, args))
+    case TyArray(sz, e, sv) -> {
+      val elem = substituteTyVars(e, names, args)
+      // A length that is a value generic parameter takes its argument: a
+      // known length (`TyLen`) or another parameter (D169).
+      match sz {
+        case Some(_) -> TyArray(size = sz, element = elem, sizeVar = sv)
+        case None -> match substituteTyVars(TyVar(name = sv), names, args) {
+          case TyLen(n) -> TyArray(size = Some(value = n), element = elem, sizeVar = "")
+          case TyVar(m) -> TyArray(size = None, element = elem, sizeVar = m)
+          case _ -> TyArray(size = None, element = elem, sizeVar = sv)
+        }
+      }
+    }
     case TyNullable(inner) -> TyNullable(inner = substituteTyVars(inner, names, args))
     case TyTuple(elems) -> {
       val ne: List[Type] = newList()
@@ -7548,8 +7823,17 @@ func findGenericInPair(name: in String, paramTy: in Type, argTy: in Type): Optio
       findGenericInPairs(name, pargs, aargs)
     }
     case TySlice(pe) -> match unrefine(argTy) { case TySlice(ae) -> findGenericInPair(name, pe, ae); case _ -> None }
-    case TyArray(_, pe) -> match unrefine(argTy) {
-      case TyArray(_, ae) -> findGenericInPair(name, pe, ae)
+    case TyArray(_, pe, psv) -> match unrefine(argTy) {
+      // A length that is the value generic parameter `name` binds to the
+      // argument's length (D169).
+      case TyArray(asz, ae, asv) -> if psv == name {
+        match asz {
+          case Some(n) -> Some(value = TyLen(n = n))
+          case None -> if asv.length > 0 { Some(value = TyVar(name = asv)) } else { None }
+        }
+      } else {
+        findGenericInPair(name, pe, ae)
+      }
       // A bracket literal (`Box(data = [1, 2])`) is typed as a slice; its
       // element type binds the array's (#8042).  Whether it fits the array
       // is checked against the instantiated field.
@@ -8074,7 +8358,7 @@ func eraseTyVars(t: in Type): Type {
       TyUser(id = id, name = name, args = na)
     }
     case TySlice(e) -> TySlice(element = eraseTyVars(e))
-    case TyArray(sz, e) -> TyArray(size = sz, element = eraseTyVars(e))
+    case TyArray(sz, e, sv) -> TyArray(size = sz, element = eraseTyVars(e), sizeVar = sv)
     case TyNullable(inner) -> TyNullable(inner = eraseTyVars(inner))
     case TyTuple(elems) -> {
       val ne: List[Type] = newList()
@@ -9258,7 +9542,7 @@ func typeIsClosedOver(t: in Type, typeParams: in List[String]): Bool {
     case TySelf -> false
     case TyUser(_, _, args) -> typesAreClosedOver(args, typeParams)
     case TySlice(e) -> typeIsClosedOver(e, typeParams)
-    case TyArray(_, e) -> typeIsClosedOver(e, typeParams)
+    case TyArray(_, e, _) -> typeIsClosedOver(e, typeParams)
     case TyNullable(inner) -> typeIsClosedOver(inner, typeParams)
     case TyTuple(elems) -> typesAreClosedOver(elems, typeParams)
     case TyFunction(ps, ret, _) -> typesAreClosedOver(ps, typeParams) and typeIsClosedOver(ret, typeParams)
@@ -10064,9 +10348,9 @@ func joinOpenTypes(a: in Type, b: in Type): Type {
     }
     case TySlice(ae) -> match b { case TySlice(be) -> TySlice(element = joinOpenTypes(ae, be)); case _ -> a }
     // Arrays of different sizes are different types: only same-sized ones join.
-    case TyArray(asz, ae) -> match b {
-      case TyArray(bsz, be) -> if optIntEq(asz, bsz) {
-        TyArray(size = asz, element = joinOpenTypes(ae, be))
+    case TyArray(asz, ae, asv) -> match b {
+      case TyArray(bsz, be, _) -> if optIntEq(asz, bsz) {
+        TyArray(size = asz, element = joinOpenTypes(ae, be), sizeVar = asv)
       } else {
         a
       }
@@ -10952,7 +11236,7 @@ func typeMentionsGenericInst(t: in Type): Bool {
   match t {
     case TyUser(_, _, args) -> args.count > 0
     case TySlice(e) -> typeMentionsGenericInst(e)
-    case TyArray(_, e) -> typeMentionsGenericInst(e)
+    case TyArray(_, e, _) -> typeMentionsGenericInst(e)
     case TyNullable(inner) -> typeMentionsGenericInst(inner)
     case TyTuple(elems) -> {
       var i = 0
@@ -11589,7 +11873,7 @@ func inferExprCore(
           anyDeferredLambda = true
         } else {
           argTypes.add(inferExpr(sc, tbl, sigs, diag, ae))
-          if argIsCaseCtorCall(tbl, ae) {
+          if argIsCaseCtorCall(tbl, ae) or argIsWideningBuiltValue(tbl, ae) {
             anyCaseCtorArg = true
           }
         }
@@ -11683,8 +11967,23 @@ func inferExprCore(
             }
           } else if argIsLambdaLiteral(dae) or argIsAmbiguousUnionCaseCtor(tbl, dae) or argIsBranchingExpr(dae) {
             argTypes[di] = inferExprExpected(sc, tbl, sigs, diag, dae, expectedArgTys[di])
-          } else if argIsCaseCtorCall(tbl, dae) {
-            argTypes[di] = adoptUnionCaseExpected(tbl, true, argTypes[di], expectedArgTys[di])
+          } else if argIsCaseCtorCall(tbl, dae) or argIsWideningBuiltValue(tbl, dae) {
+            val argExp = expectedArgTys[di]
+            val adopted = adoptUnionCaseExpected(tbl, argIsCaseCtorCall(tbl, dae), argTypes[di], argExp)
+            // A scalar inside a value built in the argument widens to the
+            // parameter's instantiation (#7813); the first pass already
+            // reported the argument's diagnostics.
+            argTypes[di] = if typeIsClosed(argExp) and widensStructurally(argExp, adopted) {
+              val scratch: List[Diagnostic] = newList()
+              val widened = inferExprExpected(sc, tbl, sigs, scratch, dae, argExp)
+              if diagnosticsHaveError(scratch) {
+                adopted
+              } else {
+                widened
+              }
+            } else {
+              adopted
+            }
           }
           di = di + 1
         }
@@ -12053,7 +12352,7 @@ func inferExprCore(
       }
       recordMemberRecvClass(tbl, recv.span, rt)
       match unrefine(rt) {
-        case TyArray(Some(n), _) -> if name == "length" {
+        case TyArray(Some(n), _, _) -> if name == "length" {
           exemptArrayCopy(tbl, recv)
           if not tbl.arrayLenSites.containsKey(recordCopySiteKey(e.span)) {
             tbl.arrayLenSites.add(recordCopySiteKey(e.span), n)
@@ -12063,7 +12362,7 @@ func inferExprCore(
         } else {
           diag.add(arrayNoMember(rt, name, e.span))
         }
-        case TyArray(None, _) -> if not inValueGenericBody(tbl) { diag.add(arrayUnknownLength(rt, e.span)) }
+        case TyArray(None, _, _) -> if not inValueGenericBody(tbl) { diag.add(arrayUnknownLength(rt, e.span)) }
         case _ -> ()
       }
       match distinctMemberType(tbl, diag, rt, name, e.span) {
@@ -12645,6 +12944,52 @@ func argIsListLiteral(e: in Expr): Bool {
 // argument is typed against the field.  A generic record's field is
 // instantiated at the type arguments `argTypes` bind (a literal's own
 // `slice[T]` type binds its element, #8042), or else `expected` gives.
+// `ctorArrayFieldTypes` for a union case constructor: a bracket literal
+// given to a case field of array type is typed against the field, as for a
+// record field (D167).  A field whose type names one of the union's type
+// parameters is left to the call's expected argument types.
+func unionCaseArrayFieldTypes(tbl: in SymbolTable, fn: in Expr, args: in List[CallArg], tys: in List[Type]): List[Type] {
+  val caseSym = match unionCaseSymbolOf(tbl, fn) { case Some(cs) -> cs; case None -> return tys }
+  match caseSym.kind {
+    case DKUnionCase(parentId, uc) -> match parentUnionDeclOf(tbl, parentId) {
+      case Some(decl) -> {
+        val scratch: List[Diagnostic] = newList()
+        val ftypes = unionCaseFieldTypes(tbl, scratch, uc, unionDeclGenericNames(decl), caseSym.originPackage)
+        val names = unionCaseSlotNames(uc)
+        var pos = 0
+        var i = 0
+        while i < args.count {
+          val fi = match args[i] {
+            case CANamed(nm, _, _) -> indexOfName(names, nm)
+            case CAPositional(_) -> {
+              pos = pos + 1
+              pos - 1
+            }
+          }
+          if fi >= 0 and fi < ftypes.count and not typeMentionsTyVar(ftypes[fi]) {
+            tys[i] = ftypes[fi]
+          }
+          i = i + 1
+        }
+        tys
+      }
+      case None -> tys
+    }
+    case _ -> tys
+  }
+}
+
+func indexOfName(names: in List[String], nm: in String): Int {
+  var i = 0
+  while i < names.count {
+    if names[i] == nm {
+      return i
+    }
+    i = i + 1
+  }
+  -1
+}
+
 func ctorArrayFieldTypes(
   tbl: in SymbolTable,
   fn: in Expr,
@@ -12667,7 +13012,10 @@ func ctorArrayFieldTypes(
   if not any {
     return tys
   }
-  val ctorSym = match constructorSymbolOf(tbl, fn) { case Some(sy) -> sy; case None -> return tys }
+  val ctorSym = match constructorSymbolOf(tbl, fn) {
+    case Some(sy) -> sy
+    case None -> return unionCaseArrayFieldTypes(tbl, fn, args, tys)
+  }
   if ctorIsGeneric(ctorSym) {
     return genericCtorArrayFieldTypes(tbl, ctorSym, args, argTypes, expected, tys)
   }
@@ -12742,7 +13090,7 @@ func genericCtorArrayFieldTypes(
         if fieldNames[j] == fieldName {
           val inst = substituteTyVars(fieldTypes[j], gnames, targs)
           match unrefine(inst) {
-            case TyArray(Some(_), el) -> if not typeMentionsTyVar(inst) and not typeIsHole(el) {
+            case TyArray(Some(_), el, _) -> if not typeMentionsTyVar(inst) and not typeIsHole(el) {
               tys[i] = inst
               // The field's own type names a type parameter, so the
               // literal is built through a binding of the instantiated type.
@@ -12766,6 +13114,25 @@ func argIsCaseCtorCall(tbl: in SymbolTable, e: in Expr): Bool {
   match e.kind {
     case EParen(inner) -> argIsCaseCtorCall(tbl, inner)
     case ECall(fn, _) -> match unionCaseSymbolOf(tbl, fn) { case Some(_) -> true; case None -> false }
+    case _ -> false
+  }
+}
+
+// True for a call-argument expression (possibly parenthesised) that builds a
+// value whose scalar parts widen to the parameter's type (#7813): a tuple
+// literal or a generic record construction.  Union-case constructions are
+// `argIsCaseCtorCall`'s.
+func argIsWideningBuiltValue(tbl: in SymbolTable, e: in Expr): Bool {
+  match e.kind {
+    case EParen(inner) -> argIsWideningBuiltValue(tbl, inner)
+    case ETuple(_) -> true
+    case ECall(fn, _) -> match unionCaseSymbolOf(tbl, fn) {
+      case Some(_) -> false
+      case None -> match constructorSymbolOf(tbl, fn) {
+        case Some(sym) -> ctorIsGeneric(sym)
+        case None -> false
+      }
+    }
     case _ -> false
   }
 }
@@ -12808,6 +13175,159 @@ func argIsAmbiguousUnionCaseCtor(tbl: in SymbolTable, e: in Expr): Bool {
       case _ -> false
     }
     case _ -> false
+  }
+}
+
+// The argument types of a generic record construction checked where an
+// instantiation of the record, `expected`, is expected: each argument is
+// checked against its field there, so a scalar widens to it (#7813) and a
+// range type there is checked (#8031), and a bracket literal given to an
+// array field is typed against the field at the instantiation the arguments
+// and `expected` bind (#8042).
+func inferGenericRecordCtorArgsExpected(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  fn: in Expr,
+  ctorSym: in Symbol,
+  cargs: in List[CallArg],
+  expected: in Type,
+): List[Type] {
+  val gnames = ctorGenericNames(ctorSym)
+  val eargs = match unrefine(expected) { case TyUser(_, _, ea) -> ea; case _ -> newList() }
+  val fieldNames = ctorFieldNames(ctorSym)
+  val exps = ctorArgsExpected(cargs, fieldNames, ctorFieldTypes(tbl, ctorSym, gnames), gnames, eargs)
+  val cargTypes = inferCtorArgsExpected(sc, tbl, sigs, diag, cargs, exps)
+  // The construction's own type arguments come from the arguments, so a
+  // field the expected instantiation makes a range type is checked against
+  // it here (#8031).
+  val order = argIndicesInParamOrder(cargs, fieldNames)
+  var k = 0
+  while k < order.count and k < fieldNames.count {
+    val oi = order[k]
+    if oi >= 0 and oi < exps.count {
+      noteRangeSlot(tbl, exps[oi], callArgExpr(cargs[oi]), ctorSym.name + " field " + fieldNames[k])
+    }
+    k = k + 1
+  }
+  val arrTys = ctorArrayFieldTypes(tbl, fn, cargs, cargTypes, expected)
+  var ai = 0
+  while ai < cargs.count and ai < arrTys.count {
+    match arrTys[ai] {
+      case TyError -> ()
+      // A literal already checked against this field type needs no second
+      // pass; one whose field the expectation left open is checked here.
+      case at -> if typeIsHole(exps[ai]) or not typeEquiv(at, exps[ai]) {
+        cargTypes[ai] = inferExprExpected(sc, tbl, sigs, diag, callArgExpr(cargs[ai]), at)
+      }
+    }
+    ai = ai + 1
+  }
+  cargTypes
+}
+
+// A union-case construction (`Some(u)`, `Ok(value = i)`) checked where
+// `expected` is expected: each argument is checked against its field at the
+// expected instantiation of the case's union, so a scalar widens to it
+// (#7813), checked against a range type there (#8031), and the construction
+// is typed at that instantiation when it fits (#7752).
+func inferCaseCtorExpected(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  fn: in Expr,
+  cargs: in List[CallArg],
+  caseSym: in Symbol,
+  span: in Span,
+  expected: in Type,
+): Type {
+  val exps = caseCtorArgsExpected(tbl, caseSym, cargs, expected)
+  val cargTypes = inferCtorArgsExpected(sc, tbl, sigs, diag, cargs, exps)
+  // Before the construction records its own payload sites, so a payload is
+  // checked against a range at the expected instantiation (#8031).
+  noteCaseRangeAgainstExpected(tbl, caseSym, cargs, expected)
+  val caseTy = adoptUnionCaseExpected(
+    tbl,
+    true,
+    inferUnionCaseConstruction(tbl, diag, caseSym, cargs, cargTypes, span, true),
+    expected
+  )
+  recordCtorArgOperandTypes(sc, tbl, fn, cargs, cargTypes, caseTy)
+  caseTy
+}
+
+// A call through a qualified callee (`Result.Ok(...)`, `Pkg.Shape.Circle(...)`)
+// checked where `expected` is expected: a union-case construction adopts the
+// expected instantiation (#7752), its payloads are checked against a range
+// type there (#8031), and one whose arguments widen to their fields there is
+// checked again against them (#7813); the first pass already reported the
+// arguments' diagnostics.
+func inferQualifiedCaseCtorExpected(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  e: in Expr,
+  fn: in Expr,
+  cargs: in List[CallArg],
+  expected: in Type,
+): Type {
+  match unionCaseSymbolOf(tbl, fn) {
+    case Some(caseSym) -> {
+      val actual = adoptUnionCaseExpected(tbl, true, inferExpr(sc, tbl, sigs, diag, e), expected)
+      noteCaseRangeAgainstExpected(tbl, caseSym, cargs, expected)
+      if widensStructurally(expected, actual) {
+        val scratch: List[Diagnostic] = newList()
+        val widened = inferCaseCtorExpected(sc, tbl, sigs, scratch, fn, cargs, caseSym, e.span, expected)
+        if diagnosticsHaveError(scratch) {
+          actual
+        } else {
+          widened
+        }
+      } else {
+        actual
+      }
+    }
+    case None -> adoptUnionCaseExpected(tbl, false, inferExpr(sc, tbl, sigs, diag, e), expected)
+  }
+}
+
+// `ctorArgsExpected` for a union case, when `expected` is a closed
+// instantiation of the case's own union.
+func caseCtorArgsExpected(
+  tbl: in SymbolTable, caseSym: in Symbol, cargs: in List[CallArg], expected: in Type
+): List[Type] {
+  val none: List[Type] = newList()
+  var i = 0
+  while i < cargs.count {
+    none.add(TyError)
+    i = i + 1
+  }
+  if not typeIsClosed(expected) {
+    return none
+  }
+  match caseSym.kind {
+    case DKUnionCase(parentId, uc) -> match unrefine(expected) {
+      case TyUser(eid, _, eargs) -> if typeIdEq(eid, parentId) {
+        match parentUnionDeclOf(tbl, parentId) {
+          case Some(decl) -> {
+            val gnames = unionDeclGenericNames(decl)
+            // Field-type resolution errors are reported by the construction
+            // itself (`inferUnionCaseConstruction`).
+            val scratch: List[Diagnostic] = newList()
+            val ftypes = unionCaseFieldTypes(tbl, scratch, uc, gnames, caseSym.originPackage)
+            ctorArgsExpected(cargs, unionCaseSlotNames(uc), ftypes, gnames, eargs)
+          }
+          case None -> none
+        }
+      } else {
+        none
+      }
+      case _ -> none
+    }
+    case _ -> none
   }
 }
 
@@ -12908,27 +13428,9 @@ pub func inferExprExpected(
     // arm never re-raises it a second time by falling into `inferExpr`.
     case ECall(fn, cargs) -> match fn.kind {
       case EPath(p) -> if expectsGenericRecordCtor(tbl, fn, expected) {
-        val cargTypes: List[Type] = newList()
-        var cri = 0
-        while cri < cargs.count {
-          cargTypes.add(inferExpr(sc, tbl, sigs, diag, callArgExpr(cargs[cri])))
-          cri = cri + 1
-        }
         match constructorSymbolOf(tbl, fn) {
           case Some(ctorSym) -> {
-            // A bracket literal given to an array field is typed against the
-            // field at the instantiation (#8042).
-            val arrTys = ctorArrayFieldTypes(tbl, fn, cargs, cargTypes, expected)
-            var ari = 0
-            while ari < cargs.count {
-              match arrTys[ari] {
-                case TyError -> ()
-                case at -> {
-                  cargTypes[ari] = inferExprExpected(sc, tbl, sigs, diag, callArgExpr(cargs[ari]), at)
-                }
-              }
-              ari = ari + 1
-            }
+            val cargTypes = inferGenericRecordCtorArgsExpected(sc, tbl, sigs, diag, fn, ctorSym, cargs, expected)
             val ctorTy = inferConstructionExpected(tbl, diag, ctorSym, cargs, cargTypes, e.span, expected)
             noteArrayStores(tbl, cargs, cargTypes)
             recordCtorArgOperandTypes(sc, tbl, fn, cargs, cargTypes, ctorTy)
@@ -12939,39 +13441,34 @@ pub func inferExprExpected(
       } else if p.segments.count == 1 {
         val diagCountBefore = diag.count
         match unionCaseSymbolForScrutinee(tbl, diag, fn, expected) {
-          case Some(caseSym) -> {
-            val cargTypes: List[Type] = newList()
-            var ci2 = 0
-            while ci2 < cargs.count {
-              cargTypes.add(inferExpr(sc, tbl, sigs, diag, callArgExpr(cargs[ci2])))
-              ci2 = ci2 + 1
-            }
-            // #7752: typed at the expected instantiation when it fits.
-            val caseTy = adoptUnionCaseExpected(
-              tbl,
-              true,
-              inferUnionCaseConstruction(tbl, diag, caseSym, cargs, cargTypes, e.span, true),
-              expected
-            )
-            noteCaseRangeAgainstExpected(tbl, caseSym, cargs, expected)
-            recordCtorArgOperandTypes(sc, tbl, fn, cargs, cargTypes, caseTy)
-            caseTy
-          }
+          case Some(caseSym) -> inferCaseCtorExpected(sc, tbl, sigs, diag, fn, cargs, caseSym, e.span, expected)
           case None -> if diag.count > diagCountBefore { TyError } else { inferExpr(sc, tbl, sigs, diag, e) }
         }
       } else {
         // #7752: a qualified case constructor (`Result.Ok(...)`,
         // `Pkg.Shape.Circle(...)`) adopts the expected instantiation too.
-        val qualifiedCase = unionCaseSymbolOf(tbl, fn)
-        val isCaseCtor = match qualifiedCase { case Some(_) -> true; case None -> false }
-        val adopted = adoptUnionCaseExpected(tbl, isCaseCtor, inferExpr(sc, tbl, sigs, diag, e), expected)
-        match qualifiedCase {
-          case Some(cs) -> noteCaseRangeAgainstExpected(tbl, cs, cargs, expected)
-          case None -> ()
-        }
-        adopted
+        inferQualifiedCaseCtorExpected(sc, tbl, sigs, diag, e, fn, cargs, expected)
       }
-      case EMember(_, _) -> inferMethodCallExpected(sc, tbl, sigs, diag, e, expected)
+      case EMember(_, _) -> match unionCaseSymbolOf(tbl, fn) {
+        case Some(_) -> inferQualifiedCaseCtorExpected(
+          sc,
+          tbl,
+          sigs,
+          diag,
+          e,
+          fn,
+          cargs,
+          expected
+        )
+        case None -> inferMethodCallExpected(
+          sc,
+          tbl,
+          sigs,
+          diag,
+          e,
+          expected
+        )
+      }
       case _ -> inferExpr(sc, tbl, sigs, diag, e)
     }
     // #7752: an `if`/`match`/brace block in a position with a known expected
@@ -13043,7 +13540,11 @@ pub func inferExprExpected(
         val ts: List[Type] = newList()
         var ti = 0
         while ti < elems.count {
-          ts.add(joinOpenTypes(inferExprExpected(sc, tbl, sigs, diag, elems[ti], ets[ti]), unrefine(ets[ti])))
+          // An element initialises its slot, so a scalar widens to the
+          // element type (#7813).
+          val own = inferExprExpected(sc, tbl, sigs, diag, elems[ti], ets[ti])
+          val widened = if typeIsClosed(ets[ti]) { widenedSlotType(tbl, ets[ti], own, elems[ti]) } else { own }
+          ts.add(joinOpenTypes(widened, unrefine(ets[ti])))
           noteRangeSlot(tbl, ets[ti], elems[ti], "tuple element " + toString(ti + 1))
           ti = ti + 1
         }
@@ -13103,7 +13604,7 @@ pub func inferExprExpected(
       // A bracket literal where an `array[N, T]` is expected builds one: it
       // must have exactly `N` elements, each checked against `T` (D167,
       // T0155).
-      case TyArray(Some(n), elemTy) -> {
+      case TyArray(Some(n), elemTy, _) -> {
         if elems.count != n {
           diag.add(
             errorDiagnostic(
@@ -13132,7 +13633,14 @@ pub func inferExprExpected(
           }
           ai = ai + 1
         }
-        TyArray(size = Some(value = n), element = elemTy)
+        val litKey = recordCopySiteKey(e.span)
+        if not tbl.arrayLiteralSites.containsKey(litKey) {
+          match typeExprForRef(tbl, TyArray(size = Some(value = n), element = elemTy, sizeVar = ""), e.span) {
+            case Some(arrTe) -> tbl.arrayLiteralSites.add(litKey, arrTe)
+            case None -> ()
+          }
+        }
+        TyArray(size = Some(value = n), element = elemTy, sizeVar = "")
       }
       // A bracket literal where a numeric `slice[T]` is expected: each
       // element initialises a `T`, so it widens like an initialiser (docs/01
@@ -13724,6 +14232,10 @@ pub func typeMismatchHint(tbl: in SymbolTable, expected: in Type, actual: in Typ
   if sameName != "" {
     return sameName
   }
+  val widenNote = containerWideningNote(tbl, expected, actual)
+  if widenNote != "" {
+    return widenNote
+  }
   match unrefine(actual) {
     case TySlice(sliceElem) -> match unrefine(expected) {
       case TyUser(eid, eName, eArgs) -> if eArgs.count == 1 and isStdCollectionsHostType(tbl, eid, "List") {
@@ -13756,6 +14268,91 @@ pub func typeMismatchHint(tbl: in SymbolTable, expected: in Type, actual: in Typ
       ""
     }
     case _ -> ""
+  }
+}
+
+// #7813: an existing `Option[UInt]` (or tuple, `Result`, …) value where an
+// `Option[ULong]` is expected.  Its scalars would widen were the value built
+// in place, but a built value is not converted: say so, and how to rebuild
+// it.  "" unless `actual` differs from `expected` only by such widenings.
+func containerWideningNote(tbl: in SymbolTable, expected: in Type, actual: in Type): String {
+  if numericWidensTo(expected, actual) or not widensStructurally(expected, actual) {
+    return ""
+  }
+  val conv = firstWideningMethod(expected, actual)
+  val head = " (implicit numeric widening converts a scalar where a value is built, not the contents of an existing " +
+    renderType(actual) +
+    " value; rebuild it with its contents converted"
+  if conv == "" {
+    return head + ")"
+  }
+  val helper = match unrefine(expected) {
+    case TyUser(eid, _, eargs) -> match unrefine(actual) {
+      case TyUser(_, _, aargs) -> if eargs.count == 1 and isStdCoreMonadType(tbl, eid, "Option") {
+        "mapOption"
+      } else if eargs.count == 2 and aargs.count == 2 and isStdCoreMonadType(tbl, eid, "Result") {
+        if typeEquiv(eargs[0], aargs[0]) {
+          "mapResultErr"
+        } else if typeEquiv(eargs[1], aargs[1]) {
+          "mapResult"
+        } else {
+          ""
+        }
+      } else {
+        ""
+      }
+      case _ -> ""
+    }
+    case _ -> ""
+  }
+  if helper != "" and numericWidensTo(monadPayloadAt(expected, helper), monadPayloadAt(actual, helper)) {
+    head + ", e.g. " + helper + "(value, { x -> x." + conv + "() }))"
+  } else {
+    head + " explicitly with ." + conv + "())"
+  }
+}
+
+// The payload `helper` (`mapOption`, `mapResult`, `mapResultErr`) maps.
+func monadPayloadAt(t: in Type, helper: in String): Type {
+  match unrefine(t) {
+    case TyUser(_, _, targs) -> {
+      val idx = if helper == "mapResultErr" { 1 } else { 0 }
+      if idx < targs.count {
+        targs[idx]
+      } else {
+        TyError
+      }
+    }
+    case _ -> TyError
+  }
+}
+
+// The conversion method of the first scalar widening `src` needs to become
+// `target`, in left-to-right order of their type arguments and tuple
+// elements; "" when there is none.
+func firstWideningMethod(target: in Type, src: in Type): String {
+  if numericWidensTo(target, src) {
+    return match wideningMethod(target, src) { case Some(m) -> m; case None -> "" }
+  }
+  val ts = typePartsOf(target)
+  val ss = typePartsOf(src)
+  var i = 0
+  while i < ts.count and i < ss.count {
+    val m = firstWideningMethod(ts[i], ss[i])
+    if m != "" {
+      return m
+    }
+    i = i + 1
+  }
+  ""
+}
+
+// A tuple's element types or a user type's type arguments.
+func typePartsOf(t: in Type): List[Type] {
+  match unrefine(t) {
+    case TyTuple(es) -> es
+    case TyUser(_, _, targs) -> targs
+    case _ -> newList()
   }
 }
 
@@ -13903,8 +14500,8 @@ func argSatisfiesParam(tbl: in SymbolTable, paramTy: in Type, argTy: in Type): B
   // A parameter `array[N, T]` whose length is a value generic parameter
   // takes an array of any length; the call binds `N` (D167 item 6).
   match unrefine(paramTy) {
-    case TyArray(None, pe) -> match unrefine(argTy) {
-      case TyArray(_, ae) -> return argSatisfiesParam(tbl, pe, ae)
+    case TyArray(None, pe, _) -> match unrefine(argTy) {
+      case TyArray(_, ae, _) -> return argSatisfiesParam(tbl, pe, ae)
       case _ -> ()
     }
     case _ -> ()

@@ -30,6 +30,12 @@ output_assembly = "Ui.dll"
 "Ui.Host.Assets" = "src/host_assets.l"
 "Ui.Host.Web"    = "src/host_web.l"
 "Ui.Kernel.Webview" = "src/_kernel/webview.l"
+# Ui.Kernel.Guard is one package in two files: the managed targets catch a
+# panicking effect, native (no unwinding) runs it directly.
+"Ui.Kernel.Guard" = [
+  "src/_kernel/guard_managed.l",
+  "src/_kernel/guard_native.l",
+]
 "Ui.Host.Desktop"   = "src/host_desktop.l"
 
 [project.tests]
@@ -43,3 +49,9 @@ output_assembly = "Ui.dll"
 "Ui.LazyTests"     = "tests/lazy_tests.l"
 "Ui.GridTests"     = "tests/grid_tests.l"
 "Ui.DesktopTests"  = "tests/desktop_tests.l"
+
+[features]
+default = ["dotnet"]
+dotnet = []   # panics in effects are caught (Ui.Kernel.Guard)
+jvm    = []
+native = []   # no unwinding: an effect runs unguarded

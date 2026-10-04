@@ -1274,3 +1274,747 @@ test "truncating division satisfies its identities symbolically (#7870)" {
     "compound-assignment"
   )
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Signed overflow is checked at the operand's width: 32 bits for `Int`, 64
+// for `Long` (D163, #7871).
+// ─────────────────────────────────────────────────────────────────────────────
+func proveChecked(body: in String): ProofSummary {
+  prove("@proof_required(checked_arithmetic)\npackage C\n" + body)
+}
+
+func assertCheckedDischarged(body: in String, label: in String): Unit {
+  val s = proveChecked(body)
+  assertTrue(summaryTotalCount(s) > 0, label + ": goals generated")
+  assertTrue(not summaryHasErrorDiag(s), label + ": no error diagnostics")
+  assertTrue(not summaryHasFailure(s), label + ": every goal discharged")
+}
+
+func assertCheckedRefuted(body: in String, label: in String): Unit {
+  val s = proveChecked(body)
+  assertTrue(summaryHasCounterexample(s), label + ": the solver finds a counterexample")
+  assertTrue(not summaryHasDiagCode(s, "V0033"), label + ": the obligation is translatable")
+}
+
+test "Int addition overflows past Int.MaxValue, not Long.MaxValue (#7871)" {
+  assertCheckedRefuted("func inc(x: in Int): Int\n{\n  x + 1\n}\n", "int-inc-unconstrained")
+  assertCheckedRefuted("func inc(x: in Int): Int\n  requires: x >= 2147483647\n{\n  x + 1\n}\n", "int-inc-at-max")
+  assertCheckedDischarged("func inc(x: in Int): Int\n  requires: x < 2147483647\n{\n  x + 1\n}\n", "int-inc-below-max")
+  assertCheckedDischarged(
+    "func inc(x: in Long): Long\n  requires: x == 2147483647\n{\n  x + 1\n}\n",
+    "long-inc-past-int-max"
+  )
+  assertCheckedRefuted(
+    "func inc(x: in Long): Long\n  requires: x == 9223372036854775807\n{\n  x + 1\n}\n",
+    "long-inc-at-max"
+  )
+  assertCheckedDischarged(
+    "func inc(x: in Long): Long\n  requires: x < 9223372036854775807\n{\n  x + 1\n}\n",
+    "long-inc-below-max"
+  )
+}
+
+test "Int subtraction, multiplication and negation overflow at Int.MinValue (#7871)" {
+  assertCheckedRefuted("func dec(x: in Int): Int\n  requires: x <= -2147483648\n{\n  x - 1\n}\n", "int-dec-at-min")
+  assertCheckedDischarged("func dec(x: in Int): Int\n  requires: x > -2147483648\n{\n  x - 1\n}\n", "int-dec-above-min")
+  assertCheckedDischarged(
+    "func dec(x: in Long): Long\n  requires: x == -2147483648\n{\n  x - 1\n}\n",
+    "long-dec-past-int-min"
+  )
+  assertCheckedRefuted(
+    "func dec(x: in Long): Long\n  requires: x == -9223372036854775808\n{\n  x - 1\n}\n",
+    "long-dec-at-min"
+  )
+  assertCheckedRefuted("func neg(x: in Int): Int\n{\n  -x\n}\n", "int-neg-of-min")
+  assertCheckedDischarged("func neg(x: in Int): Int\n  requires: x > -2147483648\n{\n  -x\n}\n", "int-neg-above-min")
+  assertCheckedRefuted("func neg(x: in Long): Long\n{\n  -x\n}\n", "long-neg-of-min")
+  assertCheckedDischarged(
+    "func dbl(x: in Int): Int\n  requires: x >= -1073741824 and x <= 1073741823\n{\n  x * 2\n}\n",
+    "int-mul-in-range"
+  )
+  assertCheckedRefuted("func dbl(x: in Int): Int\n  requires: x == 1073741824\n{\n  x * 2\n}\n", "int-mul-past-max")
+  assertCheckedDischarged(
+    "func dbl(x: in Long): Long\n  requires: x == 1073741824\n{\n  x * 2\n}\n",
+    "long-mul-past-int-max"
+  )
+}
+
+test "a binding's initializer and a compound assignment are checked at the binding's width (#7871)" {
+  assertCheckedRefuted("func f(x: in Int): Int\n{\n  val y = x + 1\n  y\n}\n", "val-initializer")
+  assertCheckedDischarged(
+    "func f(x: in Int): Int\n  requires: x < 100\n{\n  val y = x + 1\n  y\n}\n",
+    "val-initializer-bounded"
+  )
+  assertCheckedDischarged(
+    "func f(x: in Int): Long\n  requires: x == 2147483647\n{\n  val y: Long = x\n  y + 1\n}\n",
+    "long-binding-of-int"
+  )
+  assertCheckedRefuted("func f(x: in Int): Int\n{\n  var y = x\n  y += 1\n  y\n}\n", "compound-add")
+  assertCheckedDischarged(
+    "func f(x: in Int): Int\n  requires: x < 2147483647\n{\n  var y = x\n  y += 1\n  y\n}\n",
+    "compound-add-bounded"
+  )
+  assertCheckedRefuted("func f(x: in UInt): UInt\n{\n  var y = x\n  y += 1\n  y\n}\n", "compound-unsigned-wrap")
+}
+
+test "a record field is checked at its declared width (#7871)" {
+  val rec = "record Counter {\n  count: Long\n  small: Int\n}\n"
+  assertCheckedDischarged(
+    rec + "func bump(c: in Counter): Long\n  requires: c.count == 2147483647\n{\n  c.count + 1\n}\n",
+    "long-field"
+  )
+  assertCheckedRefuted(
+    rec + "func bump(c: in Counter): Int\n  requires: c.small == 2147483647\n{\n  c.small + 1\n}\n",
+    "int-field"
+  )
+}
+
+test "Int and Long parameters and callee results lie within their width (#7871)" {
+  assertDischarged(
+    "func f(x: in Int): Bool\n  ensures: result\n{\n  x <= 2147483647 and x >= -2147483648\n}\n",
+    "int-param-width"
+  )
+  assertRefuted("func f(x: in Long): Bool\n  ensures: result\n{\n  x <= 2147483647\n}\n", "long-param-wider")
+  assertDischarged(
+    "func id(x: in Int): Int\n{\n  x\n}\nfunc g(y: in Int): Long\n  ensures: result < 2147483648\n{\n  id(y)\n}\n",
+    "int-callee-result-width"
+  )
+}
+
+test "a binding's initializer discharges its callee's precondition (#7871)" {
+  val pos = "func pos(x: in Int): Int\n  requires: x > 0\n{\n  x\n}\n"
+  assertRefuted(pos + "func f(y: in Int): Int\n{\n  val r = pos(y)\n  r\n}\n", "val-call-precondition")
+  assertDischarged(
+    pos + "func f(y: in Int): Int\n  requires: y > 0\n{\n  val r = pos(y)\n  r\n}\n",
+    "val-call-precondition-met"
+  )
+  assertRefuted(pos + "func f(y: in Int): Int\n{\n  var r = 1\n  r = pos(y)\n  r\n}\n", "assign-call-precondition")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// An untranslatable construct is reported once, and its goal stays failed
+// (#7874).
+// ─────────────────────────────────────────────────────────────────────────────
+func countDiagCode(s: in ProofSummary, code: in String): Int {
+  var n = 0
+  var i = 0
+  while i < s.diagnostics.count {
+    if s.diagnostics[i].code == code {
+      n = n + 1
+    }
+    i = i + 1
+  }
+  n
+}
+
+test "a UInt beside an Int is reported once and its goal fails (#7874)" {
+  val s = provePkg("func m(a: in UInt, i: in Int): Bool\n  ensures: result\n{\n  a < i\n}\n")
+  assertEqualInt(countDiagCode(s, "V0033"), 1, "one V0033 for one mix")
+  assertTrue(summaryHasFailure(s), "the goal is not discharged")
+  assertEqualInt(summaryDischargedCount(s), 0, "nothing is discharged")
+}
+
+test "an untranslatable result range keeps the postcondition failed (#7874)" {
+  val s = provePkg("func c(x: in UInt): UInt range -1 ..= 5\n  ensures: result == x\n{\n  x\n}\n")
+  assertEqualInt(countDiagCode(s, "V0033"), 1, "one V0033 for the bound")
+  assertTrue(summaryHasFailure(s), "the postcondition is not reported discharged")
+}
+
+test "an untranslatable callee contract is reported once across calls (#7874)" {
+  val s = provePkg(
+    "func k(a: in UInt, i: in Int): Bool\n  requires: a < i\n{\n  true\n}\n" +
+      "func u(a: in UInt, i: in Int): Bool\n{\n  k(a, i) and k(a, i)\n}\n"
+  )
+  assertEqualInt(countDiagCode(s, "V0033"), 1, "one V0033 for the contract")
+  assertTrue(summaryHasFailure(s), "the goals that use it are not discharged")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A callee's contract takes each argument at the parameter it names, and an
+// omitted parameter's default (#7873).
+// ─────────────────────────────────────────────────────────────────────────────
+test "named arguments bind by name in the callee's contract (#7873)" {
+  val sub = "func sub(a: in Int, b: in Int): Int\n  ensures: result == a - b\n{\n  a - b\n}\n"
+  assertDischarged(sub + "func g(): Int\n  ensures: result == 7\n{\n  sub(b = 3, a = 10)\n}\n", "reordered-discharge")
+  assertRefuted(sub + "func g(): Int\n  ensures: result == -7\n{\n  sub(b = 3, a = 10)\n}\n", "reordered-refute")
+  assertDischarged(
+    sub + "func g(): Int\n  ensures: result == 7\n{\n  sub(b = 3, 10)\n}\n",
+    "positional-fills-free-slot"
+  )
+  val clamp = "func clamp(x: in Int, lo: in Int, hi: in Int): Int\n  requires: lo <= hi\n" +
+    "  ensures: result >= lo and result <= hi\n{\n  if x < lo { lo } else { if x > hi { hi } else { x } }\n}\n"
+  assertDischarged(
+    clamp + "func g(v: in Int): Int\n  ensures: result >= 0 and result <= 10\n{\n  clamp(hi = 10, lo = 0, x = v)\n}\n",
+    "clamp-discharge"
+  )
+  assertRefuted(
+    clamp + "func g(v: in Int): Int\n  ensures: result >= 0 and result <= 10\n{\n  clamp(hi = 0, lo = 10, x = v)\n}\n",
+    "clamp-precondition-refute"
+  )
+}
+
+test "an omitted parameter takes its default in the callee's contract (#7873)" {
+  val addk = "func addk(x: in Int, k: in Int = 5): Int\n  ensures: result == x + k\n{\n  x + k\n}\n"
+  assertDischarged(addk + "func g(y: in Int): Int\n  ensures: result == y + 5\n{\n  addk(y)\n}\n", "default-discharge")
+  assertRefuted(addk + "func g(y: in Int): Int\n  ensures: result == y\n{\n  addk(y)\n}\n", "default-refute")
+  assertDischarged(
+    addk + "func g(y: in Int): Int\n  ensures: result == y + 2\n{\n  addk(k = 2, x = y)\n}\n",
+    "default-overridden"
+  )
+  val div = "func half(n: in Int, d: in Int = 2): Int\n  requires: d != 0\n{\n  n / d\n}\n"
+  assertDischarged(div + "func g(): Int\n{\n  half(7)\n}\n", "default-meets-precondition")
+  assertRefuted(div + "func g(): Int\n{\n  half(d = 0, n = 7)\n}\n", "named-violates-precondition")
+}
+
+test "record constructor arguments bind by field name, with field defaults (#7873)" {
+  val rec = "record P {\n  x: Int\n  y: Int = 7\n}\n"
+  assertDischarged(
+    rec + "func mk(): P\n  ensures: result.x == 2 and result.y == 1\n{\n  P(y = 1, x = 2)\n}\n",
+    "record-named"
+  )
+  assertRefuted(rec + "func mk(): P\n  ensures: result.x == 1\n{\n  P(y = 1, x = 2)\n}\n", "record-named-refute")
+  assertDischarged(rec + "func mk(): P\n  ensures: result.y == 7\n{\n  P(x = 1)\n}\n", "record-default")
+}
+
+test "a call whose arguments do not match the callee fails closed (#7873)" {
+  val sub = "func sub(a: in Int, b: in Int): Int\n  ensures: result == a - b\n{\n  a - b\n}\n"
+  assertUntranslatable(sub + "func g(): Int\n  ensures: result == 7\n{\n  sub(c = 3, a = 10)\n}\n", "unknown-name")
+  assertUntranslatable(sub + "func g(): Int\n  ensures: result == 7\n{\n  sub(10)\n}\n", "missing-argument")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A named range subtype carries its bound into a proof, and constructing one
+// must establish it (#7872).
+// ─────────────────────────────────────────────────────────────────────────────
+test "a named unsigned range subtype's bound is a hypothesis (#7872)" {
+  val port = "type Port = UInt range 1 ..= 65535\n"
+  assertDischarged(port + "func f(p: in Port): Bool\n  ensures: result\n{\n  p >= 1u32\n}\n", "port-lower")
+  assertDischarged(port + "func f(p: in Port): Bool\n  ensures: result\n{\n  p <= 65535u32\n}\n", "port-upper")
+  assertRefuted(port + "func f(p: in Port): Bool\n  ensures: result\n{\n  p >= 2u32\n}\n", "port-refute")
+  assertDischarged(port + "func v(p: in Port): UInt\n  ensures: result >= 1u32\n{\n  p.value\n}\n", "port-value")
+}
+
+test "a named signed range subtype's bound is a hypothesis (#7872)" {
+  val age = "type Age = Int range 0 ..= 150\n"
+  assertDischarged(age + "func g(a: in Age): Bool\n  ensures: result\n{\n  a <= 150 and a >= 0\n}\n", "age-bounds")
+  assertRefuted(age + "func g(a: in Age): Bool\n  ensures: result\n{\n  a < 150\n}\n", "age-refute")
+  val rec = age + "record Person {\n  age: Age\n}\n"
+  assertDischarged(rec + "func h(p: in Person): Bool\n  ensures: result\n{\n  p.age <= 150\n}\n", "age-field")
+}
+
+test "constructing a named range subtype must establish its bound (#7872)" {
+  val port = "type Port = UInt range 1 ..= 65535\n"
+  assertDischarged(port + "func mk(): Port\n{\n  Port.from(80u32)\n}\n", "port-from-literal")
+  assertRefuted(port + "func mk(): Port\n{\n  Port.from(0u32)\n}\n", "port-from-zero")
+  assertRefuted(port + "func mk(x: in UInt): Port\n{\n  Port.from(x)\n}\n", "port-from-unconstrained")
+  assertDischarged(
+    port + "func mk(x: in UInt): Port\n  requires: x >= 1 and x <= 65535\n{\n  Port.from(x)\n}\n",
+    "port-from-bounded"
+  )
+  val age = "type Age = Int range 0 ..= 150\n"
+  assertDischarged(age + "func mk(): Age\n{\n  Age.from(42)\n}\n", "age-from")
+  assertRefuted(age + "func mk(): Age\n{\n  Age.from(151)\n}\n", "age-from-above")
+  assertRefuted(age + "func mk(x: in Int): Int\n{\n  val a: Age = Age.from(x)\n  a.value\n}\n", "age-from-in-binding")
+  assertDischarged(age + "func pass(a: in Age): Age\n{\n  a\n}\n", "age-result-range")
+}
+
+test "a named range subtype's result and a range-typed var carry their bound (#7872)" {
+  val age = "type Age = Int range 0 ..= 150\n"
+  assertDischarged(
+    age + "func get(): Age\n{\n  Age.from(7)\n}\nfunc user(): Int\n  ensures: result <= 150\n{\n  get()\n}\n",
+    "callee-result-range"
+  )
+  assertDischarged(
+    "func h(y: in UInt): UInt\n  ensures: result <= 10\n{\n  var x: UInt range 0 ..= 10\n  x = y\n  x\n}\n",
+    "uninitialised-var-assigned"
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A method call is its own value: an unmodelled method is an uninterpreted
+// function of its receiver and arguments, a declared one is applied by its
+// contract with a result of its own at each call (#8101).
+// ─────────────────────────────────────────────────────────────────────────────
+func assertFailsClosed(body: in String, code: in String, label: in String): Unit {
+  val s = provePkg(body)
+  assertTrue(summaryHasDiagCode(s, code), label + ": " + code + " reported")
+  assertTrue(summaryHasErrorDiag(s), label + ": the proof fails closed")
+}
+
+test "different unmodelled methods are not equal (#8101)" {
+  val rec = "record P {\n  x: Int\n}\n"
+  assertRefuted(
+    rec + "func f(a: in P, b: in P): Bool\n  ensures: result\n{\n  a.size() == b.length()\n}\n",
+    "different-methods"
+  )
+  assertRefuted(rec + "func f(a: in P): Bool\n  ensures: result\n{\n  a.size() == a.length()\n}\n", "same-receiver")
+  assertRefuted(
+    rec + "func f(a: in P, b: in P): Bool\n  ensures: result\n{\n  a.size() == b.size()\n}\n",
+    "different-receivers"
+  )
+  assertRefuted(rec + "func f(a: in P): Bool\n  ensures: result\n{\n  a.at(1) == a.at(2)\n}\n", "different-arguments")
+  assertRefuted(
+    rec + "func f(a: in P): Bool\n  ensures: result\n{\n  a.span(lo = 1, hi = 2) == a.span(hi = 1, lo = 2)\n}\n",
+    "named-arguments-swapped"
+  )
+}
+
+test "an unmodelled method is a function of its receiver and arguments (#8101)" {
+  val rec = "record P {\n  x: Int\n}\n"
+  assertDischarged(rec + "func f(a: in P): Bool\n  ensures: result\n{\n  a.size() == a.size()\n}\n", "same-call")
+  assertDischarged(
+    rec + "func f(a: in P, b: in P): Bool\n  requires: a == b\n  ensures: result\n{\n  a.at(1) == b.at(1)\n}\n",
+    "equal-receivers"
+  )
+}
+
+test "a declared method is applied by its contract, one result per call (#8101)" {
+  val acc = "record Acc {\n  bal: Int\n}\n" +
+    "func Acc.next(acc: in Acc): Int\n  ensures: result > acc.bal\n{\n  acc.bal + 1\n}\n"
+  assertDischarged(acc + "func g(a: in Acc): Bool\n  ensures: result\n{\n  a.next() > a.bal\n}\n", "contract-used")
+  assertRefuted(acc + "func g(a: in Acc): Bool\n  ensures: result\n{\n  a.next() == a.next()\n}\n", "fresh-per-call")
+  assertRefuted(
+    acc + "func g(a: in Acc, b: in Acc): Bool\n  ensures: result\n{\n  a.next() == b.next()\n}\n",
+    "different-receivers"
+  )
+  val pure = "record Acc {\n  bal: Int\n}\n" + "@pure\nfunc Acc.peek(acc: in Acc): Int = acc.bal\n"
+  assertDischarged(pure + "func g(a: in Acc): Bool\n  ensures: result\n{\n  a.peek() == a.bal\n}\n", "pure-unfold")
+  assertDischarged(
+    pure + "func g(a: in Acc): Bool\n  ensures: result\n{\n  a.peek() == a.peek()\n}\n",
+    "pure-congruent"
+  )
+  val take = "record Acc {\n  bal: Int\n}\n" +
+    "func Acc.take(acc: in Acc, n: in Int): Int\n  requires: n > 0\n{\n  n\n}\n"
+  assertRefuted(take + "func g(a: in Acc): Int\n{\n  a.take(0)\n}\n", "precondition-checked")
+  assertDischarged(take + "func g(a: in Acc): Int\n{\n  a.take(3)\n}\n", "precondition-met")
+  assertDischarged(take + "func g(a: in Acc): Int\n{\n  Acc.take(a, 3)\n}\n", "static-call")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A loop is proved in an arbitrary iteration's state: everything it may
+// change is havocked before the invariant and the condition are assumed,
+// the condition's own obligations hold wherever it is evaluated, and the
+// body's obligations hold under `invariant and cond` (#8102).
+// ─────────────────────────────────────────────────────────────────────────────
+test "an invariant the body breaks is not preserved (#8102)" {
+  assertRefuted(
+    "func f(n: in Int): Int\n{\n  var i = 0\n  while i < n\n    invariant: i >= 0\n  {\n    i = i - 1\n  }\n  i\n}\n",
+    "decrement"
+  )
+  assertDischarged(
+    "func f(n: in Int): Int\n  ensures: result >= 0\n{\n  var i = 0\n  while i < n\n    invariant: i >= 0\n  {\n    i = i + 1\n  }\n  i\n}\n",
+    "increment"
+  )
+  assertRefuted(
+    "func f(n: in Int): Int\n{\n  var i = 0\n  var flag = 0\n  while i < n\n    invariant: flag == 0\n  {\n" +
+      "    if i == 3 {\n      flag = 1\n    }\n    i = i + 1\n  }\n  flag\n}\n",
+    "assigned-in-a-branch"
+  )
+  assertRefuted(
+    "func f(n: in Int): Int\n{\n  var i = 0\n  while i < n\n    invariant: i >= 0\n  {\n" +
+      "    if i > 5 {\n      i = -100\n    } else {\n      i = i + 1\n    }\n  }\n  i\n}\n",
+    "trailing-if"
+  )
+}
+
+test "a loop's exit facts hold only after the loop (#8102)" {
+  assertRefuted(
+    "func f(n: in Int): Int\n  ensures: result == 0\n{\n  var i = 0\n  while i < n\n    invariant: i >= 0\n  {\n" +
+      "    i = i + 1\n  }\n  i\n}\n",
+    "exit-value-unknown"
+  )
+  assertDischarged(
+    "func f(n: in Int): Int\n  requires: n >= 0\n  ensures: result == n\n{\n  var i = 0\n  while i < n\n" +
+      "    invariant: i >= 0 and i <= n\n  {\n    i = i + 1\n  }\n  i\n}\n",
+    "exit-value-from-invariant"
+  )
+}
+
+test "a loop body's obligations hold under the invariant and the condition (#8102)" {
+  val pos = "func pos(x: in Int): Int\n  requires: x > 0\n{\n  x\n}\n"
+  assertDischarged(
+    pos + "func f(n: in Int): Int\n{\n  var i = 0\n  var s = 0\n  while i < n\n    invariant: i >= 0\n  {\n" +
+      "    s = pos(n - i)\n    i = i + 1\n  }\n  s\n}\n",
+    "guarded-by-condition"
+  )
+  assertRefuted(
+    pos + "func f(n: in Int): Int\n{\n  var i = 0\n  var s = 0\n  while i < n\n    invariant: i >= 0\n  {\n" +
+      "    s = pos(i)\n    i = i + 1\n  }\n  s\n}\n",
+    "not-implied"
+  )
+}
+
+test "a loop condition's obligations hold on entry and after every iteration (#8102)" {
+  assertCheckedRefuted(
+    "func f(n: in Int): Int\n{\n  var i = 0\n  while i + 1 < n\n    invariant: i >= 0\n  {\n    i = i + 1\n  }\n  i\n}\n",
+    "condition-overflows"
+  )
+  assertCheckedDischarged(
+    "func f(n: in Int): Int\n  requires: n > 0\n{\n  var i = 0\n  while i + 1 < n\n    invariant: i >= 0 and i < n\n  {\n" +
+      "    i = i + 1\n  }\n  i\n}\n",
+    "condition-bounded"
+  )
+  val pos = "func pos(x: in Int): Int\n  requires: x > 0\n{\n  x\n}\n"
+  assertRefuted(
+    pos +
+      "func f(n: in Int): Int\n{\n  var i = 1\n  while pos(i) < n\n    invariant: i >= 0\n  {\n    i = i + 1\n  }\n  i\n}\n",
+    "condition-precondition"
+  )
+  assertDischarged(
+    pos +
+      "func f(n: in Int): Int\n{\n  var i = 1\n  while pos(i) < n\n    invariant: i >= 1\n  {\n    i = i + 1\n  }\n  i\n}\n",
+    "condition-precondition-met"
+  )
+}
+
+test "a return or a field write in a loop body fails closed (#8102)" {
+  assertFailsClosed(
+    "func f(n: in Int): Int\n  ensures: result > 0\n{\n  var i = 0\n  while i < n\n    invariant: true\n  {\n    return -5\n  }\n  1\n}\n",
+    "V0026",
+    "return-in-body"
+  )
+  assertFailsClosed("record P {\n  var x: Int\n}\nfunc f(p: in P): Int\n{\n  p.x = 1\n  0\n}\n", "V0026", "field-write")
+}
+
+test "a branch's facts stay on that branch (#8102)" {
+  assertRefuted(
+    "func f(x: in Int): Int\n  ensures: result > 0\n{\n  if x > 0 {\n    assert(x > 0)\n  }\n  x\n}\n",
+    "assert-in-branch"
+  )
+  // The loop never exits, so on that path nothing after it runs; the
+  // other path still returns -1.
+  assertRefuted(
+    "func f(x: in Int): Int\n  ensures: result > 0\n{\n  var i = 0\n  if x > 0 {\n    while true\n" +
+      "      invariant: true\n    {\n      i = i + 1\n    }\n  }\n  -1\n}\n",
+    "non-exiting-loop-on-one-path"
+  )
+}
+
+test "an out or inout argument holds a new value after the call (#8102)" {
+  val inc = "func inc(x: inout Int): Unit\n  ensures: x == old(x) + 1\n{\n  x = x + 1\n}\n"
+  assertDischarged(inc, "callee-proved")
+  assertRefuted(
+    "func inc(x: inout Int): Unit\n  ensures: x == old(x)\n{\n  x = x + 1\n}\n",
+    "callee-ensures-the-final-value"
+  )
+  assertRefuted(
+    inc + "func g(): Int\n  ensures: result == 5\n{\n  var a = 5\n  inc(a)\n  a\n}\n",
+    "caller-sees-a-new-value"
+  )
+}
+
+test "a protected entry's invariant holds of the fields it leaves (#8102)" {
+  assertRefuted(
+    "protected type Counter {\n  var n: Int\n  invariant: n >= 0\n  entry bad(): Unit {\n    n = 0 - 1\n  }\n}\n",
+    "entry-breaks-invariant"
+  )
+  assertDischarged(
+    "protected type Counter {\n  var n: Int\n  invariant: n >= 0\n  entry inc(): Unit {\n    n = n + 1\n  }\n}\n",
+    "entry-keeps-invariant"
+  )
+}
+
+test "an if whose branches agree is no tautology unless they are (#8102)" {
+  val p = TBuiltin(
+    op = BOpGt,
+    args = termList2(TVar(name = "x", sort = SInt), TLit(value = VLInt(n = 0i64), sort = SInt))
+  )
+  val c = TVar(name = "c", sort = SBool)
+  val hyps: List[Term] = newList()
+  val syms: List[SymbolDecl] = newList()
+  val g = Goal(
+    hypotheses = hyps,
+    conclusion = TIte(cond = c, thenT = p, elseT = p),
+    symbols = syms,
+    origin = zeroSpan(),
+    kind = GKAssertion,
+    label = "ite-same-arms"
+  )
+  match trivialDischarge(g) {
+    case Some(_) -> assertTrue(false, "ite(c, p, p) is not discharged syntactically")
+    case None -> ()
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A call's own facts never prove its own precondition; calls the verifier
+// cannot follow fail closed (#8102 review).
+// ─────────────────────────────────────────────────────────────────────────────
+func halfDecl(): String {
+  "func half(x: in Int): Int\n  requires: x >= 0\n  ensures: result >= 0 and result <= x\n{\n  0\n}\n"
+}
+
+func assertNotProved(body: in String, label: in String): Unit {
+  val s = provePkg(body)
+  assertTrue(summaryHasFailure(s) or summaryHasErrorDiag(s), label + ": not proved")
+}
+
+test "a loop condition's facts do not prove its own precondition (#8102)" {
+  assertRefuted(
+    halfDecl() + "func f(n: in Int): Int\n{\n  var i = 0\n  while half(n) > i\n    invariant: i >= 0\n  {\n" +
+      "    i = i + 1\n  }\n  i\n}\n",
+    "condition-precondition-from-its-own-postcondition"
+  )
+  assertDischarged(
+    halfDecl() + "func f(n: in Int): Int\n  requires: n >= 0\n{\n  var i = 0\n  while half(n) > i\n" +
+      "    invariant: i >= 0\n  {\n    i = i + 1\n  }\n  i\n}\n",
+    "condition-precondition-from-the-caller"
+  )
+}
+
+test "an invariant's or postcondition's facts do not prove its own preconditions (#8102)" {
+  assertRefuted(
+    halfDecl() + "func f(): Int\n{\n  var i = 5\n  while i > 0\n    invariant: half(i - 5) >= 0 or true\n  {\n" +
+      "    i = i - 1\n  }\n  i\n}\n",
+    "invariant-circular"
+  )
+  assertDischarged(
+    halfDecl() + "func f(): Int\n{\n  var i = 5\n  while i > 0\n    invariant: i >= 0 and i <= 5\n" +
+      "    invariant: half(5 - i) >= 0\n  {\n    i = i - 1\n  }\n  i\n}\n",
+    "invariant-precondition-from-the-invariant"
+  )
+  assertRefuted(halfDecl() + "func g(x: in Int): Bool\n  ensures: half(x) >= 0\n{\n  true\n}\n", "ensures-circular")
+  assertDischarged(
+    halfDecl() + "func g(x: in Int): Bool\n  requires: x >= 0\n  ensures: half(x) >= 0\n{\n  true\n}\n",
+    "ensures-precondition-met"
+  )
+  assertRefuted(halfDecl() + "func g(x: in Int): Int\n{\n  assert(half(x) >= 0)\n  0\n}\n", "assert-circular")
+}
+
+test "two out or inout parameters bound to one variable fail closed (#8102)" {
+  val f = "func f(x: inout Int, y: inout Int): Unit\n  ensures: y == old(y)\n{\n  x = x + 1\n}\n"
+  assertUntranslatable(f + "func g(): Int\n{\n  var a = 5\n  f(a, a)\n  a\n}\n", "aliased")
+  val s = provePkg(f + "func g(): Int\n{\n  var a = 5\n  var b = 6\n  f(a, b)\n  a\n}\n")
+  assertTrue(not summaryHasDiagCode(s, "V0033"), "distinct: no V0033")
+}
+
+test "a parameter default sees no other parameter (#8102)" {
+  assertUntranslatable(
+    "val a: Int = 7\nfunc f(a: in Int, b: in Int = a): Int\n  ensures: result == b\n{\n  b\n}\n" +
+      "func g(): Int\n  ensures: result == 1\n{\n  f(1)\n}\n",
+    "default-names-a-module-value"
+  )
+  assertDischarged(
+    "func f(a: in Int, b: in Int = 3): Int\n  ensures: result == b\n{\n  b\n}\n" +
+      "func g(): Int\n  ensures: result == 3\n{\n  f(1)\n}\n",
+    "literal-default"
+  )
+}
+
+test "a call by qualified path or with type arguments changes its out arguments (#8102)" {
+  val inc = "func inc(x: inout Int): Unit\n{\n  x = x + 1\n}\n"
+  assertNotProved(inc + "func g(): Int\n  ensures: result == 5\n{\n  var a = 5\n  U.inc(a)\n  a\n}\n", "qualified")
+  assertNotProved(
+    "func inc[T](x: inout Int, t: in T): Unit\n{\n  x = x + 1\n}\n" +
+      "func g(): Int\n  ensures: result == 5\n{\n  var a = 5\n  inc[Int](a, 0)\n  a\n}\n",
+    "type-arguments"
+  )
+  val pos = "func pos[T](x: in Int, t: in T): Int\n  requires: x > 0\n{\n  x\n}\n"
+  assertRefuted(pos + "func g(): Int\n{\n  pos[Int](0, 1)\n}\n", "type-arguments-precondition")
+  assertNotProved("func g(): Int\n  ensures: result == 5\n{\n  var a = 5\n  unknownCall(a)\n  a\n}\n", "unresolved")
+  assertDischarged(
+    "func g(): Int\n  ensures: result == 5\n{\n  val a = 5\n  unknownCall(a)\n  a\n}\n",
+    "unresolved-val"
+  )
+  val pos = "func pos(x: in Int): Int\n  requires: x > 0\n{\n  x\n}\n"
+  assertRefuted(pos + "func g(): Int\n{\n  U.pos(0)\n}\n", "qualified-precondition")
+  assertDischarged(pos + "func g(): Int\n{\n  U.pos(3)\n}\n", "qualified-precondition-met")
+}
+
+test "a protected entry calling its type's own member fails closed (#8102)" {
+  assertUntranslatable(
+    "protected type C {\n  var n: Int\n  invariant: n >= 0\n  func bump(): Unit {\n    n = n + 1\n  }\n" +
+      "  entry same(): Unit\n    ensures: n == old(n)\n  {\n    bump()\n  }\n}\n",
+    "member-call"
+  )
+}
+
+test "an expression statement keeps its obligations (#8102)" {
+  val pos = "func pos(x: in Int): Int\n  requires: x > 0\n{\n  x\n}\n"
+  assertRefuted(pos + "func g(): Int\n{\n  (pos(0))\n  1\n}\n", "parenthesized-call")
+  assertRefuted(pos + "func g(): Int\n{\n  pos(0) == 1\n  1\n}\n", "comparison")
+  assertDischarged(pos + "func g(): Int\n{\n  (pos(1))\n  1\n}\n", "met")
+}
+
+test "old of an expression is its value on entry (#8102)" {
+  assertRefuted("func bump(x: inout Int): Unit\n  ensures: x == old(x + 0)\n{\n  x = x + 1\n}\n", "old-expression")
+  assertDischarged(
+    "func bump(x: inout Int): Unit\n  ensures: x == old(x + 0) + 1\n{\n  x = x + 1\n}\n",
+    "old-expression-met"
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A side condition holds only where its subterm is evaluated, and a call
+// nested in a callee's contract brings its precondition to the caller
+// (#8102 second review).
+// ─────────────────────────────────────────────────────────────────────────────
+func posDecl(): String {
+  "@pure\nfunc pos(x: in Int): Int\n  requires: x > 0\n{\n  x\n}\n"
+}
+
+test "a requires assumes a nested call's precondition only where it is evaluated (#8102)" {
+  assertRefuted(
+    posDecl() + "func f(x: in Int): Int\n  requires: x == 0 or pos(x) > 0\n  ensures: result > 0\n{\n  x\n}\n",
+    "short-circuit-or"
+  )
+  assertDischarged(
+    posDecl() + "func f(x: in Int): Int\n  requires: x == 0 or pos(x) > 0\n  ensures: result >= 0\n{\n  x\n}\n" +
+      "func g(): Int\n{\n  f(0)\n}\n",
+    "caller-not-over-strict"
+  )
+  assertDischarged(
+    posDecl() + "func f(x: in Int): Int\n  requires: x != 0 implies pos(x) > 0\n  ensures: result >= 0\n{\n  x\n}\n",
+    "implies-guards"
+  )
+}
+
+test "a call nested in a callee's requires is the caller's obligation (#8102)" {
+  val f = posDecl() + "func f(x: in Int): Int\n  requires: pos(x) > -100\n  ensures: result > 0\n{\n  x\n}\n"
+  assertRefuted(f + "func g(): Int\n{\n  f(-5)\n}\n", "nested-precondition-unmet")
+  assertDischarged(f + "func g(): Int\n  ensures: result > 0\n{\n  f(5)\n}\n", "nested-precondition-met")
+}
+
+test "a single invariant may guard its own call with its left operand (#8102)" {
+  assertDischarged(
+    halfDecl() +
+      "func f(): Int\n{\n  var i = 5\n  while i > 0\n    invariant: i >= 0 and i <= 5 and half(5 - i) >= 0\n  {\n" +
+      "    i = i - 1\n  }\n  i\n}\n",
+    "guarded-invariant"
+  )
+  assertRefuted(
+    halfDecl() + "func f(): Int\n{\n  var i = 5\n  while i > 0\n    invariant: i >= 5 or half(i - 5) >= 0\n  {\n" +
+      "    i = i - 1\n  }\n  i\n}\n",
+    "or-does-not-guard"
+  )
+}
+
+test "self.m() inside a protected entry fails closed (#8102)" {
+  assertUntranslatable(
+    "protected type C {\n  var n: Int\n  invariant: n >= 0\n  func bump(): Unit {\n    n = n + 1\n  }\n" +
+      "  entry same(): Unit\n    ensures: n == old(n)\n  {\n    self.bump()\n  }\n}\n",
+    "self-member-call"
+  )
+}
+
+test "a local binding shadows a file function at a call (#8102)" {
+  val f = "func f(x: in Int): Int\n  ensures: result == x\n{\n  x\n}\n"
+  assertNotProved(f + "func g(): Int\n  ensures: result == 1\n{\n  val f = { x: Int -> 2 }\n  f(1)\n}\n", "shadowed")
+  assertDischarged(f + "func g(): Int\n  ensures: result == 1\n{\n  f(1)\n}\n", "not-shadowed")
+}
+
+test "an untranslatable argument of a computed call keeps its goal failed (#7874)" {
+  val s = provePkg(
+    "func g(u: in UInt, h: in (UInt) -> Int): Int\n  ensures: result == result\n{\n  val r = h(-u)\n  r\n}\n"
+  )
+  assertTrue(summaryHasDiagCode(s, "V0033"), "V0033 reported")
+  assertTrue(summaryHasFailure(s), "a goal stays failed")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Recursion through contracts: a function's own contracts are translated
+// with it on the contract stack, and a function on a contract-call cycle
+// never has its `ensures:` or `@pure` body assumed (#8102 third review).
+// ─────────────────────────────────────────────────────────────────────────────
+test "a contract cycle never assumes its own postcondition (#8102)" {
+  assertRefuted(
+    "@pure\nfunc f(x: in Int): Int\n  ensures: result == f(x) + 1\n{\n  0\n}\n" +
+      "func g(): Int\n  ensures: result == 42\n{\n  val a = f(0)\n  7\n}\n",
+    "self-cycle"
+  )
+  assertRefuted(
+    "@pure\nfunc f(x: in Int): Int\n  ensures: result == g(x)\n{\n  0\n}\n" +
+      "@pure\nfunc g(x: in Int): Int\n  ensures: result == f(x) + 1\n{\n  1\n}\n" +
+      "func h(): Int\n  ensures: result == 42\n{\n  val a = f(0)\n  7\n}\n",
+    "mutual-cycle"
+  )
+}
+
+test "a recursive call inside a requires fails closed (#8102)" {
+  assertUntranslatable(
+    "@pure\nfunc f(x: in Int): Int\n  requires: x < 10 and (f(x + 100) >= 0 or true)\n  ensures: result < -90\n{\n  x\n}\n" +
+      "func g(): Int\n  ensures: result < -90\n{\n  f(5)\n}\n",
+    "recursive-requires"
+  )
+}
+
+test "recursion outside contracts still uses the contract (#8102)" {
+  val fact = "func fact(n: in Int): Int\n  requires: n >= 0\n  ensures: result >= 1\n{\n" +
+    "  if n == 0 {\n    1\n  } else {\n    n * fact(n - 1)\n  }\n}\n"
+  assertDischarged(fact + "func g(): Int\n  ensures: result >= 1\n{\n  fact(3)\n}\n", "factorial")
+  assertRefuted(fact + "func g(): Int\n{\n  fact(-1)\n}\n", "factorial-precondition")
+}
+
+test "a callee's postcondition speaks of the call, not a re-substituted one (#8102)" {
+  val inc = "func inc(n: in Int): Int\n  ensures: result == n + 1\n{\n  n + 1\n}\n"
+  assertDischarged(
+    inc + "func g(n: in Int): Int\n  ensures: result == n + 2\n{\n  inc(n + 1)\n}\n",
+    "argument-names-the-parameter"
+  )
+  assertRefuted(
+    inc + "func g(n: in Int): Int\n  ensures: result == n + 3\n{\n  inc(n + 1)\n}\n",
+    "argument-names-the-parameter-refute"
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A default that reaches its own function, or its own record, is cut like a
+// recursive contract and never recurses without end (#8102 fourth review).
+// ─────────────────────────────────────────────────────────────────────────────
+test "a self-referential parameter default is cut, not unfolded forever (#8102)" {
+  assertNotProved(
+    "@pure\nfunc f(x: in Int, b: in Int = f(0) + 1): Int\n  ensures: result == b\n{\n  b\n}\n" +
+      "func h(): Int\n  ensures: result == 42\n{\n  val a = f(5)\n  7\n}\n",
+    "self-default"
+  )
+  assertNotProved(
+    "@pure\nfunc g(x: in Int): Int\n  ensures: result == f(x) + 1\n{\n  f(x) + 1\n}\n" +
+      "@pure\nfunc f(x: in Int, b: in Int = g(0)): Int\n  ensures: result == b\n{\n  b\n}\n" +
+      "func k(y: in Int): Int\n  ensures: result == 42\n{\n  val a = g(1)\n  7\n}\n",
+    "mutual-default"
+  )
+  assertNotProved(
+    "record P {\n  x: Int = P().x + 1\n}\nfunc h(): Int\n  ensures: result == 42\n{\n  val p = P()\n  7\n}\n",
+    "self-record-default"
+  )
+}
+
+func summaryMentions(s: in ProofSummary, text: in String): Bool {
+  var i = 0
+  while i < s.diagnostics.count {
+    if s.diagnostics[i].message.contains(text) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+test "a call cut at a recursive default is a well-formed query (#8102)" {
+  val selfDefault = provePkg(
+    "@pure\nfunc f(x: in Int, b: in Int = f(0) + 1): Int\n  ensures: result == b\n{\n  b\n}\n" +
+      "func h(): Int\n  ensures: result == 42\n{\n  val a = f(5)\n  7\n}\n"
+  )
+  val mutualDefault = provePkg(
+    "@pure\nfunc g(x: in Int): Int\n  ensures: result == f(x) + 1\n{\n  f(x) + 1\n}\n" +
+      "@pure\nfunc f(x: in Int, b: in Int = g(0)): Int\n  ensures: result == b\n{\n  b\n}\n" +
+      "func k(y: in Int): Int\n  ensures: result == 42\n{\n  val a = g(1)\n  7\n}\n"
+  )
+  assertTrue(summaryHasFailure(selfDefault), "self-default: not proved")
+  assertTrue(summaryHasFailure(mutualDefault), "mutual-default: not proved")
+  assertTrue(not summaryMentions(selfDefault, "unexpected output"), "self-default: no solver error")
+  assertTrue(not summaryMentions(selfDefault, "malformed"), "self-default: a well-formed query")
+  assertTrue(not summaryMentions(mutualDefault, "unexpected output"), "mutual-default: no solver error")
+  assertTrue(not summaryMentions(mutualDefault, "malformed"), "mutual-default: a well-formed query")
+}
+
+test "an unmodelled value used at another sort fails closed before the solver (#8102)" {
+  val s = provePkg(
+    "func f(x: in Int): Int\n  ensures: result == x\n{\n  x\n}\n" +
+      "func g(): Int\n  ensures: result == 1\n{\n  val f = { x: Int -> 2 }\n  f(1)\n}\n"
+  )
+  assertTrue(summaryHasFailure(s), "not proved")
+  assertTrue(summaryHasDiagCode(s, "V0033"), "reported as untranslatable")
+  assertTrue(not summaryMentions(s, "malformed"), "a well-formed query")
+  assertTrue(not summaryMentions(s, "unexpected output"), "no solver error")
+}

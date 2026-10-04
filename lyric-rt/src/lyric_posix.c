@@ -493,6 +493,23 @@ LyricString* lyric_uuid_v4(void) {
     return lyric_string_from_literal((const uint8_t*)out, 36);
 }
 
+LyricList* lyric_secure_random_list(int64_t n) {
+    if (n < 0) {
+        lyric_panic_msg("secure random byte count must not be negative", "lyric_posix.c", __LINE__);
+    }
+    uint8_t* buf = (uint8_t*)malloc(n > 0 ? (size_t)n : 1);
+    if (buf == NULL) {
+        lyric_panic_msg("out of memory drawing secure random bytes", "lyric_posix.c", __LINE__);
+    }
+    if (lyric_secure_random(buf, n) != 0) {
+        free(buf);
+        lyric_panic_msg("cannot draw entropy from the OS", "lyric_posix.c", __LINE__);
+    }
+    LyricList* list = lyric_list_from_bytes(buf, n);
+    free(buf);
+    return list;
+}
+
 int32_t lyric_secure_random(uint8_t* buf, int64_t n) {
 #if defined(__APPLE__) || defined(__wasi__)
     /* getentropy caps each call at 256 bytes. */
@@ -534,4 +551,65 @@ int32_t lyric_thread_create(int64_t* tid, void* (*start)(void*), void* arg) {
 int32_t lyric_thread_join(int64_t tid, void** retval) {
     return (int32_t)pthread_join((pthread_t)(uintptr_t)tid, retval);
 }
+
+typedef struct {
+    void* (*start)(void*);
+    void* arg;
+} lyric_detached_start;
+
+static void* lyric_detached_entry(void* p) {
+    lyric_detached_start s = *(lyric_detached_start*)p;
+    free(p);
+    s.start(s.arg);
+    lyric_release(s.arg);
+    return NULL;
+}
+
+int32_t lyric_thread_spawn_detached(void* (*start)(void*), void* arg) {
+    lyric_detached_start* s = (lyric_detached_start*)malloc(sizeof *s);
+    if (s == NULL) return ENOMEM;
+    s->start = start;
+    s->arg = arg;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    pthread_t t;
+    int rc = pthread_create(&t, &attr, lyric_detached_entry, s);
+    pthread_attr_destroy(&attr);
+    if (rc != 0) free(s);
+    return (int32_t)rc;
+}
+
+static pthread_mutex_t lyric_global_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+void lyric_global_lock(void) {
+    pthread_mutex_lock(&lyric_global_mutex);
+}
+
+void lyric_global_unlock(void) {
+    pthread_mutex_unlock(&lyric_global_mutex);
+}
+
+static _Thread_local void* lyric_tl_ref = NULL;
+
+void lyric_thread_ref_set(void* obj) {
+    void* previous = lyric_tl_ref;
+    if (obj != NULL) lyric_retain(obj);
+    lyric_tl_ref = obj;
+    if (previous != NULL) lyric_release(previous);
+}
+
+void* lyric_thread_ref_get(void) {
+    if (lyric_tl_ref != NULL) lyric_retain(lyric_tl_ref);
+    return lyric_tl_ref;
+}
+
+void lyric_thread_ref_clear(void) {
+    lyric_thread_ref_set(NULL);
+}
+
+int32_t lyric_thread_ref_has(void) {
+    return lyric_tl_ref != NULL ? 1 : 0;
+}
+
 #endif

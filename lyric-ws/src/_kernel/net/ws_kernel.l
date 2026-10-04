@@ -39,9 +39,11 @@
 //! so a ping keepalive and an application `send`/`close` call can never
 //! interleave bytes on the same socket.
 //!
-//! Only active when compiled with feature = "dotnet".
+//! Only active when compiled with feature = "dotnet" or "native". The few
+//! target-specific primitives (locks, the concurrent dictionary, background
+//! threads, sleep) are in `ws_prims.l` (dotnet) and `_kernel/native/ws_prims.l`.
 //! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 @io
 package Ws.Kernel.Net
 
@@ -58,49 +60,12 @@ import Std.TcpHost
 import Ws.Frame
 import Ws.Handshake
 
-extern type ConcurrentDict[K, V] = "System.Collections.Concurrent.ConcurrentDictionary`2"
-
-@externTarget("System.Collections.Concurrent.ConcurrentDictionary`2..ctor")
-func newConcurrentDict[K, V](): ConcurrentDict[K, V] = ()
-
-@externTarget("System.Collections.Concurrent.ConcurrentDictionary`2.TryGetValue")
-func cdTryGetValue[K, V](dict: in ConcurrentDict[K, V], key: in K, value: out V): Bool = ()
-
-@externTarget("System.Collections.Concurrent.ConcurrentDictionary`2.TryAdd")
-func cdTryAdd[K, V](dict: in ConcurrentDict[K, V], key: in K, value: in V): Bool = ()
-
-@externTarget("System.Collections.Concurrent.ConcurrentDictionary`2.TryRemove")
-func cdTryRemove[K, V](dict: in ConcurrentDict[K, V], key: in K, value: out V): Bool = ()
-
-@axiom("System.Threading.Monitor.Enter — acquires an exclusive lock on obj")
-@externStatic
-@externTarget("System.Threading.Monitor.Enter")
-func monitorEnter[T](obj: in T): Unit = ()
-
-@axiom("System.Threading.Monitor.Exit — releases an exclusive lock on obj")
-@externStatic
-@externTarget("System.Threading.Monitor.Exit")
-func monitorExit[T](obj: in T): Unit = ()
-
-// `Task.Run(Action)` gives a background OS thread for the accept loop and
-// each connection's read/ping loops — the same primitive `_kernel/
-// http_server.l` uses, for the same reason (`spawn` is degenerate-
-// synchronous on this target).
-extern type Task = "System.Threading.Tasks.Task"
-
-@externStatic
-@externTarget("System.Threading.Tasks.Task.Run")
-func taskRun(work: in () -> Unit): Task = ()
-
-@externStatic
-@externTarget("System.Threading.Thread.Sleep")
-func threadSleep(ms: in Int): Unit = ()
-
 // ─── Connection registry ──────────────────────────────────────────────────────
 record RegistryMeta {
   var maxMessageSizeBytes: Int = 1024
   var pingIntervalMs: Int = 0
   var openCount: Int = 0
+  lock: WsLock = newWsLock()
   onOpen: Option[(String, String, String, String, Map[String, String]) -> Unit] = None
   onMessage: Option[(String, String, String) -> Unit] = None
   onClose: Option[(String, Int, String) -> Unit] = None
@@ -115,7 +80,7 @@ record RegistryMeta {
 /// zero-init has a well-defined value). `closing` guards against sending a
 /// Close frame twice (once we've sent one, whether app-initiated or as the
 /// echo to a peer-initiated close, no further Close frame is sent).
-/// Doubles as the per-connection write lock (`monitorEnter(state)`): every
+/// Doubles as the per-connection write lock (`lockEnter(state.lock)`): every
 /// write to `conn` — data frames, pings, and the close handshake — holds
 /// this lock for the encode+write, so concurrent writers (the ping-keepalive
 /// task and an application `send`/`close` call) never interleave bytes on
@@ -124,6 +89,7 @@ record ConnState {
   var isOpen: Bool = false
   var closing: Bool = false
   conn: Option[Conn] = None
+  lock: WsLock = newWsLock()
 }
 
 // Locked to allocate sequential registry handles atomically.
@@ -132,6 +98,8 @@ record HandleCounter {
 }
 
 val handleCounter: HandleCounter = HandleCounter()
+
+val handleCounterLock: WsLock = newWsLock()
 
 val registryMap: ConcurrentDict[Int, RegistryMeta] = newConcurrentDict()
 
@@ -197,9 +165,9 @@ func registerConnection(registryHandle: in Int, connectionId: in String, conn: i
   if not cdTryAdd(connMap, key, state) {
     return Err("connection '" + connectionId + "' already registered")
   }
-  monitorEnter(meta)
+  lockEnter(meta.lock)
   defer {
-    monitorExit(meta)
+    lockExit(meta.lock)
   }
   meta.openCount = meta.openCount + 1
   meta.connIds.add(connectionId)
@@ -210,9 +178,9 @@ func registerConnection(registryHandle: in Int, connectionId: in String, conn: i
 // NOT touch the socket or the registry's connIds list). Returns true if the
 // connection was open (caller decrements the registry open count).
 func tryCloseConn(state: in ConnState): Bool {
-  monitorEnter(state)
+  lockEnter(state.lock)
   defer {
-    monitorExit(state)
+    lockExit(state.lock)
   }
   if state.isOpen {
     state.isOpen = false
@@ -224,9 +192,9 @@ func tryCloseConn(state: in ConnState): Bool {
 func decrementOpenCount(handle: in Int): Unit {
   var meta: RegistryMeta = default()
   if cdTryGetValue(registryMap, handle, meta) {
-    monitorEnter(meta)
+    lockEnter(meta.lock)
     defer {
-      monitorExit(meta)
+      lockExit(meta.lock)
     }
     if meta.openCount > 0 {
       meta.openCount = meta.openCount - 1
@@ -237,9 +205,9 @@ func decrementOpenCount(handle: in Int): Unit {
 func removeConnIdFromMeta(handle: in Int, connectionId: in String): Unit {
   var meta: RegistryMeta = default()
   if cdTryGetValue(registryMap, handle, meta) {
-    monitorEnter(meta)
+    lockEnter(meta.lock)
     defer {
-      monitorExit(meta)
+      lockExit(meta.lock)
     }
     var idx = 0 - 1
     var i = 0
@@ -259,9 +227,9 @@ func removeConnIdFromMeta(handle: in Int, connectionId: in String): Unit {
 // lock so `broadcast` iterates a stable snapshot rather than the live
 // (concurrently mutable) list.
 func snapshotConnIds(meta: in RegistryMeta): List[String] {
-  monitorEnter(meta)
+  lockEnter(meta.lock)
   defer {
-    monitorExit(meta)
+    lockExit(meta.lock)
   }
   val copy: List[String] = newList()
   var i = 0
@@ -286,12 +254,9 @@ func invokeOnOpen(
   }
   match meta.onOpen {
     case Some(cb) -> {
-      try {
-        cb(connId, path, query, remoteAddress, headers);
-        ()
-      } catch Exception as e {
-        reportHandlerFailure(handle, connId, "onOpen", e.message);
-        ()
+      match guardOnOpen(cb, connId, path, query, remoteAddress, headers) {
+        case Some(message) -> reportHandlerFailure(handle, connId, "onOpen", message)
+        case None -> ()
       }
     }
     case None -> ()
@@ -305,12 +270,9 @@ func invokeOnMessage(handle: in Int, connId: in String, msgType: in String, data
   }
   match meta.onMessage {
     case Some(cb) -> {
-      try {
-        cb(connId, msgType, data);
-        ()
-      } catch Exception as e {
-        reportHandlerFailure(handle, connId, "onMessage", e.message);
-        ()
+      match guardOnMessage(cb, connId, msgType, data) {
+        case Some(message) -> reportHandlerFailure(handle, connId, "onMessage", message)
+        case None -> ()
       }
     }
     case None -> ()
@@ -324,12 +286,9 @@ func invokeOnClose(handle: in Int, connId: in String, code: in Int, reason: in S
   }
   match meta.onClose {
     case Some(cb) -> {
-      try {
-        cb(connId, code, reason);
-        ()
-      } catch Exception as e {
-        reportHandlerFailure(handle, connId, "onClose", e.message);
-        ()
+      match guardOnClose(cb, connId, code, reason) {
+        case Some(message) -> reportHandlerFailure(handle, connId, "onClose", message)
+        case None -> ()
       }
     }
     case None -> ()
@@ -339,15 +298,25 @@ func invokeOnClose(handle: in Int, connId: in String, code: in Int, reason: in S
 // A handler callback that throws must not end the connection's read loop
 // unobserved: the failure is reported through `onError` and the connection
 // carries on.  An `onError` that throws as well is written to stderr, the
-// only place left to report it.
+// only place left to report it.  (The `guard*` calls, in `ws_prims.l`, turn a
+// thrown failure into a message; on `--target native` there is no unwinding,
+// so a handler's `panic` ends the process, as any native panic does.)
 func reportHandlerFailure(handle: in Int, connId: in String, stage: in String, message: in String): Unit {
   val text = "the " + stage + " handler failed: " + message
-  try {
-    invokeOnError(handle, connId, text);
-    ()
-  } catch Exception as e {
-    Console.error("lyric-ws: connection " + connId + ": " + text + "; the onError handler also failed: " + e.message);
-    ()
+  var meta: RegistryMeta = default()
+  if not cdTryGetValue(registryMap, handle, meta) {
+    return
+  }
+  match meta.onError {
+    case Some(cb) -> {
+      match guardOnError(cb, connId, text) {
+        case Some(second) -> Console.error(
+          "lyric-ws: connection " + connId + ": " + text + "; the onError handler also failed: " + second
+        )
+        case None -> ()
+      }
+    }
+    case None -> ()
   }
 }
 
@@ -373,10 +342,10 @@ pub func createRegistry(maxMessageSizeBytes: in Int, pingIntervalMs: in Int): Re
   if pingIntervalMs < 0 {
     return Err("createRegistry: pingIntervalMs must be >= 0")
   }
-  monitorEnter(handleCounter)
+  lockEnter(handleCounterLock)
   handleCounter.next = handleCounter.next + 1
   val handle: Int = handleCounter.next
-  monitorExit(handleCounter)
+  lockExit(handleCounterLock)
   val meta = RegistryMeta(maxMessageSizeBytes = maxMessageSizeBytes, pingIntervalMs = pingIntervalMs, openCount = 0)
   val _ = cdTryAdd(registryMap, handle, meta)
   Ok(handle)
@@ -386,9 +355,9 @@ pub func createRegistry(maxMessageSizeBytes: in Int, pingIntervalMs: in Int): Re
 // Every outbound frame — data, ping, and close — is written under the
 // connection's own lock so concurrent writers never interleave bytes.
 func writeFrameLocked(state: in ConnState, conn: in Conn, frameBytes: in slice[Byte]): Result[Unit, String] {
-  monitorEnter(state)
+  lockEnter(state.lock)
   defer {
-    monitorExit(state)
+    lockExit(state.lock)
   }
   match hostWrite(conn, frameBytes) {
     case Ok(_) -> Ok(value = ())
@@ -403,9 +372,9 @@ func writeFrameLocked(state: in ConnState, conn: in Conn, frameBytes: in slice[B
 // check-and-write so two racing closers can't both observe "not yet
 // closing".
 func sendCloseIfNotAlready(state: in ConnState, conn: in Conn, code: in Int, reason: in String): Unit {
-  monitorEnter(state)
+  lockEnter(state.lock)
   defer {
-    monitorExit(state)
+    lockExit(state.lock)
   }
   if not state.closing {
     state.closing = true
@@ -600,6 +569,7 @@ func finishConnection(
   removeConnIdFromMeta(handle, connId)
   var removed: ConnState = default()
   val _ = cdTryRemove(connMap, connKey(handle, connId), removed)
+  releaseWsLock(state.lock)
   hostClose(conn)
   if wasOpen {
     invokeOnClose(handle, connId, code, reason)
@@ -667,7 +637,7 @@ func serveUpgraded(
       val remoteAddress = hostRemoteAddress(conn)
       invokeOnOpen(handle, connId, request.path, request.query, remoteAddress, request.headers)
       if pingIntervalMs > 0 {
-        val _ = taskRun({ -> runPingLoop(state, conn, pingIntervalMs) })
+        runBackground({ -> runPingLoop(state, conn, pingIntervalMs) })
       }
       val outcome = runReadLoop(handle, connId, state, conn, maxMessageSizeBytes, leftover)
       finishConnection(handle, connId, state, conn, outcome.code, outcome.reason)
@@ -733,20 +703,16 @@ func wsAcceptLoop(
   while running {
     match hostAccept(transport) {
       case Ok(conn) -> {
-        val _ = taskRun(
+        runBackground(
           { ->
             handleConnection(handle, conn, path, maxMessageSizeBytes, pingIntervalMs, allowedOrigins, sameHostPorts)
           }
         )
       }
-      case Err(e) -> match e {
-        case AcceptFailed(_) -> {
+      case Err(e) -> {
+        if not acceptShouldContinue(e) {
           running = false
         }
-        case BindFailed(_) -> {
-          running = false
-        }
-        case _ -> ()
       }
     }
   }
@@ -779,10 +745,10 @@ pub func startServer(
   match hostListen(resolveBindHost(host), port) {
     case Err(e) -> Err(error = TcpError.message(e))
     case Ok(transport) -> {
-      monitorEnter(handleCounter)
+      lockEnter(handleCounterLock)
       handleCounter.next = handleCounter.next + 1
       val handle: Int = handleCounter.next
-      monitorExit(handleCounter)
+      lockExit(handleCounterLock)
       val meta = RegistryMeta(
         maxMessageSizeBytes = maxMessageSizeBytes,
         pingIntervalMs = pingIntervalMs,
@@ -797,7 +763,7 @@ pub func startServer(
         hostStopListener(transport)
         return Err(error = "registry handle collision (unreachable)")
       }
-      val _ = taskRun(
+      runBackground(
         { ->
           wsAcceptLoop(handle, transport, path, maxMessageSizeBytes, pingIntervalMs, allowedOrigins, sameHostPorts)
         }
@@ -822,10 +788,10 @@ pub func createEndpoint(
 ): Result[Int, String]
   requires: maxMessageSizeBytes >= 1024
 {
-  monitorEnter(handleCounter)
+  lockEnter(handleCounterLock)
   handleCounter.next = handleCounter.next + 1
   val handle: Int = handleCounter.next
-  monitorExit(handleCounter)
+  lockExit(handleCounterLock)
   val noListener: Option[Listener] = None
   val meta = RegistryMeta(
     maxMessageSizeBytes = maxMessageSizeBytes,
@@ -863,7 +829,7 @@ pub func adoptConnection(
   allowedOrigins: in slice[String],
   sameHostPorts: in slice[Int],
 ): Unit {
-  val _ = taskRun(
+  runBackground(
     { -> adoptUpgrade(registryHandle, conn, target, headers, expectedPath, allowedOrigins, sameHostPorts) }
   );
   ()
@@ -990,10 +956,7 @@ record RateEntry {
 }
 
 // Single global lock serialises all rate-limiter mutations.
-record RateLock {
-}
-
-val rateLock: RateLock = RateLock()
+val rateLock: WsLock = newWsLock()
 
 val rateLimitMap: ConcurrentDict[String, RateEntry] = newConcurrentDict()
 
@@ -1004,9 +967,9 @@ pub func checkRateLimit(key: in String, messagesPerMinute: in Int, burstSize: in
   requires: burstSize > 0
 {
   val nowMs = nowEpochMillis()
-  monitorEnter(rateLock)
+  lockEnter(rateLock)
   defer {
-    monitorExit(rateLock)
+    lockExit(rateLock)
   }
 
   val fullBucket = Resilience.newTokenBucket(messagesPerMinute, burstSize, nowMs)

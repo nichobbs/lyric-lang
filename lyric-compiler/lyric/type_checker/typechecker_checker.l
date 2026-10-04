@@ -170,6 +170,8 @@ func extractDerives(anns: in List[Annotation]): List[String] {
           case AAName(nm, _, _) -> result.add(nm)
           case ALiteral(_, _) -> {
           }
+          case AACall(_, _, _) -> {
+          }
         }
         j = j + 1
       }
@@ -1720,7 +1722,7 @@ func substitutesSelf(t: in Type, selfTy: in Type): Type {
     }
     case TyNullable(inner) -> TyNullable(inner = substitutesSelf(inner, selfTy))
     case TySlice(elem) -> TySlice(element = substitutesSelf(elem, selfTy))
-    case TyArray(sz, elem) -> TyArray(size = sz, element = substitutesSelf(elem, selfTy))
+    case TyArray(sz, elem, sv) -> TyArray(size = sz, element = substitutesSelf(elem, selfTy), sizeVar = sv)
     case TyTuple(elems) -> {
       val ne: List[Type] = newList()
       var i = 0
@@ -2201,10 +2203,9 @@ func checkArrayFieldDerives(
   }
 }
 
-// A field of a value-generic type whose array length is one of the type's
-// value generic parameters (`record FixedVec[T, N: Nat] { items: array[N, T] }`)
-// is not supported yet (#8090): each length would need its own specialised
-// type, since a length cannot be a CLR or JVM type parameter.
+// A record's value generic parameter may size its array fields (D169), but a
+// union's, opaque type's or protected type's may not yet (#8149): each length
+// needs its own specialised type, which `Lyric.Mono` builds for records only.
 func checkValueGenericArrayFields(
   diag: in List[Diagnostic],
   typeName: in String,
@@ -2233,7 +2234,7 @@ func reportValueGenericArrayLengths(
           errorDiagnostic(
             "T0160",
             "an array whose length is the value generic parameter '" + p + "' of '" + typeName +
-              "' is not supported yet (#8090); a function's value generic parameter can size an array",
+              "' is supported in a record, not yet in a union, opaque type or protected type (#8149)",
             te.span
           )
         )
@@ -2272,6 +2273,57 @@ func recordFieldTypeExprs(decl: in RecordDecl): List[TypeExpr] {
   for m in decl.members {
     match m {
       case RMField(fd) -> tys.add(fd.ty)
+      case _ -> ()
+    }
+  }
+  tys
+}
+
+// A record method sees the record's value generic parameters as `Int`
+// constants, and its length checks wait for each instance, as in a
+// value-generic function (D169).  The method is checked as if it declared
+// them itself.
+func withOwnerValueGenerics(fn: in FunctionDecl, ownerGenerics: in Option[GenericParams]): FunctionDecl {
+  val owner = match ownerGenerics { case Some(g) -> g.params; case None -> newList() }
+  val params: List[GenericParam] = newList()
+  for p in owner {
+    match p {
+      case GPValue(_, _, _) -> params.add(p)
+      case GPType(_, _) -> ()
+    }
+  }
+  if params.count == 0 {
+    return fn
+  }
+  match fn.generics {
+    case Some(g) -> {
+      for p in g.params {
+        params.add(p)
+      }
+      fn.copy(generics = Some(value = g.copy(params = params)))
+    }
+    case None -> fn.copy(
+      generics = Some(value = GenericParams(params = params, span = fn.span, legacyPrefixForm = false))
+    )
+  }
+}
+
+func opaqueFieldTypeExprs(decl: in OpaqueTypeDecl): List[TypeExpr] {
+  val tys: List[TypeExpr] = newList()
+  for m in decl.members {
+    match m {
+      case OMField(fd) -> tys.add(fd.ty)
+      case _ -> ()
+    }
+  }
+  tys
+}
+
+func protectedFieldTypeExprs(decl: in ProtectedTypeDecl): List[TypeExpr] {
+  val tys: List[TypeExpr] = newList()
+  for m in decl.members {
+    match m {
+      case PMField(pf) -> tys.add(protectedFieldAsFieldDecl(pf).ty)
       case _ -> ()
     }
   }
@@ -3304,7 +3356,17 @@ func checkRecordMemberBodies(
         // the #6173 regression battery (`impl_method_self_test.l`) failing
         // T0020 on a previously-clean bare-name field read/write once body-
         // checking turned on without this.
-        checkFunctionBody(tbl, sigs, diag, fn, sig, fieldLocals, fieldLocals, true, selfTy)
+        checkFunctionBody(
+          tbl,
+          sigs,
+          diag,
+          withOwnerValueGenerics(fn, decl.generics),
+          sig,
+          fieldLocals,
+          fieldLocals,
+          true,
+          selfTy
+        )
       }
       case _ -> {
       }
@@ -3945,7 +4007,6 @@ func checkDeclTypeRefs(tbl: in SymbolTable, diag: in List[Diagnostic], items: in
           recordFieldTypeExprs(decl),
           decl.span
         )
-        checkValueGenericArrayFields(diag, decl.name, decl.generics, recordFieldTypeExprs(decl))
         checkSameArityMethods(diag, decl.name, recordMethodHeads(decl.members))
       }
       case IExposedRec(decl) -> {
@@ -3960,7 +4021,6 @@ func checkDeclTypeRefs(tbl: in SymbolTable, diag: in List[Diagnostic], items: in
           recordFieldTypeExprs(decl),
           decl.span
         )
-        checkValueGenericArrayFields(diag, decl.name, decl.generics, recordFieldTypeExprs(decl))
         checkSameArityMethods(diag, decl.name, recordMethodHeads(decl.members))
       }
       case IUnion(decl) -> {
@@ -3980,8 +4040,14 @@ func checkDeclTypeRefs(tbl: in SymbolTable, diag: in List[Diagnostic], items: in
         checkInterfaceDeclTypes(tbl, diag, decl)
         checkSameArityMethods(diag, decl.name, interfaceMethodHeads(decl.members))
       }
-      case IOpaque(decl) -> checkOpaqueDeclTypes(tbl, diag, decl)
-      case IProtected(decl) -> checkProtectedDeclTypes(tbl, diag, decl)
+      case IOpaque(decl) -> {
+        checkOpaqueDeclTypes(tbl, diag, decl)
+        checkValueGenericArrayFields(diag, decl.name, decl.generics, opaqueFieldTypeExprs(decl))
+      }
+      case IProtected(decl) -> {
+        checkProtectedDeclTypes(tbl, diag, decl)
+        checkValueGenericArrayFields(diag, decl.name, decl.generics, protectedFieldTypeExprs(decl))
+      }
       case ITypeAlias(decl) -> {
         val ctx = declGenericContext(decl.generics)
         val _ = resolveType(tbl, ctx, diag, decl.rhs)

@@ -127,18 +127,26 @@ pub record CodegenUnit {
   // Whether this package's own source file has `import Std.String` in
   // scope (#6588 review follow-up, #6752) — see `Ctx.pkgImportsStdString`.
   importsStdString: Bool
+  // The packages this unit's source file imports (dotted paths), for resolving
+  // a bare function name that several packages declare to the one the caller
+  // imports (`bareSig`).
+  imports: List[String]
   // The type checker's `methodCallArities` for this package's file (empty
   // for a bundled package): see `Ctx.methodCallArities` (#7828).
   methodCallArities: Map[String, Int]
 }
 
-/// A module-level `val`/`const` binding, normalized for native inlining
-/// (#5977). `ty` is the declared type when present (a `const` always has one;
+/// A module-level `val`/`const` binding. A literal initializer is inlined at
+/// each use site (#5977); any other initializer becomes a static global that a
+/// synthesised function (`mvInitFnName`, hoisted by the native bridge before
+/// monomorphisation) fills in before `main` runs. `ty` is the declared type when present (a `const` always has one;
 /// a `val` may not) — used as the expected type when lowering the initializer.
 pub record ModuleValDef {
   name: String
   init: Expr
   ty: Option[TypeExpr]
+  // The declaring package: a non-literal initializer's global is keyed by it.
+  pkg: String
 }
 
 /// Call-registry entry: how a resolvable callee lowers.  `isExternSym`
@@ -377,6 +385,13 @@ record Ctx {
   // `Option[Int]` UFCS form (`Lyric.TypeChecker.stringIndexOfMember`) is
   // never shadowed by the raw `Int`-returning runtime intrinsic.
   pkgImportsStdString: Map[String, Bool]
+  // Bare function keys (`name/arity`) that more than one package declares, with
+  // every declaration in registration order, and the packages each package's
+  // source file imports. `bareSig` resolves such a key to the declaration in an
+  // imported package, as source scoping does, instead of whichever registered
+  // first (`Std.Char.toLower` versus `Std.String.toLower`).
+  sigAlts: Map[String, List[NFuncSig]]
+  pkgImports: Map[String, List[String]]
   // The parameter count of the method each call leaving out a defaulted
   // argument resolved to, keyed `<pkg>|<methodCallSiteKey>` (each unit's
   // `methodCallArities` under its package): a method call looks its
@@ -395,6 +410,12 @@ record Ctx {
   // Module-level `val`/`const` bindings by name (#5977 part 2), for use-site
   // inlining (native has no static-global storage yet).
   moduleVals: Map[String, ModuleValDef]
+  // The static globals referenced so far, in discovery order: each entry is the
+  // IR name of a hoisted initializer function (`mvInitFnName`), its global
+  // being `mv.<name>`, with its type in the parallel `mvInitTys`. Shared by
+  // every function context, like `globals`.
+  mvInits: List[String]
+  mvInitTys: List[NType]
   // Heap-type registries (module-wide, shared across functions).
   recordDefs: Map[String, NRecInfo]
   unionDefs: Map[String, NUnionInfo]
@@ -636,7 +657,37 @@ func exprIsCharTyped(ctx: in Ctx, e: in Expr): Bool {
     // Char vs Int — this backend's ordinary `varTypes`/literal shape
     // already distinguishes (`exprIsStringTyped`).
     case EIndex(recv, _) -> exprIsStringTyped(ctx, recv)
+    // A call to a function declared to return `Char` (`charAtOrReplacement`).
+    case ECall(fn, args) -> callReturnsChar(ctx, fn, args.count)
     case _ -> false
+  }
+}
+
+/// Whether the function a call names is declared to return `Char`: the
+/// call's result is an `NI32` the value alone cannot tell from an `Int`.
+func callReturnsChar(ctx: in Ctx, fn: in Expr, argc: in Int): Bool {
+  val key = callKeyOf(fn, argc)
+  if key.length == 0 {
+    return false
+  }
+  var sigOpt = mapGet(ctx.sigs, ctx.curPkg[0] + "." + key)
+  match sigOpt {
+    case Some(_) -> {
+    }
+    case None -> {
+      sigOpt = mapGet(ctx.sigs, key)
+    }
+  }
+  match sigOpt {
+    case Some(_) -> {
+    }
+    case None -> {
+      sigOpt = bareSig(ctx, key)
+    }
+  }
+  match sigOpt {
+    case Some(sig) -> match sig.retTy { case Some(rt) -> isCharTypeExpr(rt); case None -> false }
+    case None -> false
   }
 }
 
@@ -745,6 +796,10 @@ pub func typeExprToNType(te: in TypeExpr): NType {
       panic("Lyric.LlvmCodegen: generic type '" + n + "' is not yet supported for --target native (Phase N1)")
     }
     case TUnit -> NVoid
+    // `Never` (a function that does not return, `Std.Environment.exitCode`): the
+    // function lowers as a void function; its callers use the call as a
+    // statement, and the body ends in a call that does not return.
+    case TNever -> NVoid
     // A bare `Self` reaching this fallback is always an INTERFACE's own
     // declared method signature (#7585): a record/protected impl method's
     // own `Self` is substituted to the concrete type before it ever reaches
@@ -773,7 +828,25 @@ pub func typeExprToNType(te: in TypeExpr): NType {
       }
       NFnPtr(params = ps, ret = typeExprToNType(retTy))
     }
-    case _ -> panic("Lyric.LlvmCodegen: this type form is not yet supported for --target native (Phase N1)")
+    case _ -> panic(
+      "Lyric.LlvmCodegen: " + typeFormName(te) + " at " + te.span.startPos.line.toString() + ":" +
+        te.span.startPos.column.toString() +
+        " is not yet supported for --target native (Phase N1)"
+    )
+  }
+}
+
+// The user-facing name of a type form `typeExprToNType` cannot lower, for its diagnostic.
+func typeFormName(te: in TypeExpr): String {
+  match te.kind {
+    case TArray(_, _) -> "an array type here"
+    case TSlice(_) -> "a slice type here"
+    case TRefined(_, _) -> "a range-refined type"
+    case TTuple(_) -> "a tuple type here"
+    case TNullable(_) -> "a nullable type (T?)"
+    case TNever -> "the Never type"
+    case TError -> "an erroneous type"
+    case _ -> "this type form"
   }
 }
 
@@ -815,6 +888,19 @@ func typeToN(ctx: in Ctx, te: in TypeExpr): NType {
       match typeToNEnvOpt(ctx, te, emptyNames, emptyTys) {
         case Some(t) -> return t
         case None -> {
+        }
+      }
+      match te.kind {
+        case TGenericApp(gh, _) -> {
+          if lastSeg(gh) != "NativePtr" {
+            panic(
+              "Lyric.LlvmCodegen: generic type '" + lastSeg(gh) + "' (in " + ctx.curPkg[0] + " at line " +
+                te.span.startPos.line.toString() +
+                ") cannot be instantiated for --target native: a field or argument type of it has no native lowering"
+            )
+          }
+        }
+        case _ -> {
         }
       }
       typeExprToNType(te)
@@ -1850,6 +1936,100 @@ func buildSigs(units: in List[CodegenUnit]): Map[String, NFuncSig] {
   sigs
 }
 
+/// The bare keys more than one package declares (see `Ctx.sigAlts`), each with
+/// all its declarations in registration order.
+func buildSigAlts(units: in List[CodegenUnit], sigs: in Map[String, NFuncSig]): Map[String, List[NFuncSig]] {
+  val all: Map[String, List[NFuncSig]] = newMap()
+  for u in units {
+    val names: List[String] = newList()
+    val arities: List[Int] = newList()
+    for fn in u.fns {
+      if not isGenericFn(fn) {
+        names.add(fn.name)
+        arities.add(fn.params.count)
+      }
+    }
+    for ef in u.externs {
+      names.add(ef.name)
+      arities.add(ef.params.count)
+    }
+    var i = 0
+    while i < names.count {
+      val bare = names[i] + "/" + arities[i].toString()
+      match mapGet(sigs, u.pkgName + "." + bare) {
+        case Some(sg) -> {
+          if not all.containsKey(bare) {
+            val fresh: List[NFuncSig] = newList()
+            all.add(bare, fresh)
+          }
+          match mapGet(all, bare) {
+            case Some(lst) -> {
+              var seen = false
+              for prior in lst {
+                if prior.pkg == sg.pkg {
+                  seen = true
+                }
+              }
+              if not seen {
+                lst.add(sg)
+              }
+            }
+            case None -> ()
+          }
+        }
+        case None -> ()
+      }
+      i = i + 1
+    }
+  }
+  val alts: Map[String, List[NFuncSig]] = newMap()
+  for key in mapKeys(all) {
+    match mapGet(all, key) {
+      case Some(lst) -> {
+        if lst.count > 1 {
+          alts.add(key, lst)
+        }
+      }
+      case None -> ()
+    }
+  }
+  alts
+}
+
+func buildPkgImports(units: in List[CodegenUnit]): Map[String, List[String]] {
+  val m: Map[String, List[String]] = newMap()
+  for u in units {
+    if not m.containsKey(u.pkgName) {
+      m.add(u.pkgName, u.imports)
+    }
+  }
+  m
+}
+
+/// A bare function key resolved against the calling package's imports: when
+/// several packages declare it, the declaration in a package the caller
+/// imports wins; otherwise the first registered, as before.
+func bareSig(ctx: in Ctx, key: in String): Option[NFuncSig] {
+  match mapGet(ctx.sigAlts, key) {
+    case None -> mapGet(ctx.sigs, key)
+    case Some(alts) -> {
+      match mapGet(ctx.pkgImports, ctx.curPkg[0]) {
+        case Some(imps) -> {
+          for sg in alts {
+            for p in imps {
+              if p == sg.pkg {
+                return Some(value = sg)
+              }
+            }
+          }
+        }
+        case None -> ()
+      }
+      mapGet(ctx.sigs, key)
+    }
+  }
+}
+
 /// Recursively flattens an `EPath`, or a chain of `EMember`s over an
 /// `EPath` base, into its full dotted segment list at any depth — e.g.
 /// `Pkg.Sub.Type` (always parsed as nested `EMember`s over an `EPath`,
@@ -2173,7 +2353,124 @@ func loadLocal(ctx: in Ctx, insns: in List[NInsn], name: in String): NVal {
 // True iff `e` is a compile-time literal — possibly parenthesized, or a negated
 // numeric literal (`-1`, the common `val MIN: Int = -1` form) — the only
 // module-level initializer form native can inline at a use site (#5977).
-func isLiteralInit(e: in Expr): Bool {
+/// The hoisted function that computes a non-literal module-level `val`'s
+/// initial value (`Lyric.LlvmBridge.hoistModuleValInits` adds it, before
+/// monomorphisation, so generic initializers instantiate like any call).
+pub func mvInitFnName(name: in String): String {
+  "__lyric_mvinit_" + name
+}
+
+// Read a module-level `val` backed by a static global. The first reference
+// registers the global (zero-initialised, with an "initialised" flag) and its
+// initializer; every read first calls the global's `mvensure` function, which
+// runs the initializer on first use. A global whose initializer reads another
+// therefore initializes it first, in whatever order the packages and files
+// declare them (an initializer that depends on itself reads zero). The stored
+// value is owned by the global for the life of the process and loads borrow
+// from it, like a local slot. `lyric_init_module_globals` ensures them all
+// before `main`, so no thread sees one uninitialised.
+func loadModuleGlobal(ctx: in Ctx, insns: in List[NInsn], sig: in NFuncSig): NVal {
+  val ty = retTypeToN(ctx, sig.retTy)
+  val gname = "mv." + sig.irName
+  var known = false
+  for n in ctx.mvInits {
+    if n == sig.irName {
+      known = true
+    }
+  }
+  if not known {
+    ctx.mvInits.add(sig.irName)
+    ctx.mvInitTys.add(ty)
+    ctx.globals.add(
+      NGlobalDef(
+        name = gname,
+        linkage = "internal global",
+        tyStr = nTypeToIrString(ty),
+        initStr = "zeroinitializer",
+        align = 8
+      )
+    )
+    ctx.globals.add(
+      NGlobalDef(
+        name = "mvf." + sig.irName,
+        linkage = "internal global",
+        tyStr = "i1",
+        initStr = "zeroinitializer",
+        align = 1
+      )
+    )
+  }
+  val noEnsureArgs: List[NArg] = newList()
+  insns.add(NCallVoid(fn = NGlobal(name = "mvensure." + sig.irName), args = noEnsureArgs))
+  val dest = freshTmp(ctx)
+  insns.add(NLoad(dest = dest, ty = ty, ptr = NGlobal(name = gname)))
+  NVal(ty = ty, value = NLocal(name = dest))
+}
+
+// The functions behind the module globals: one `mvensure.<init>` per global,
+// which runs the global's initializer the first time it is called (the flag is
+// set before the initializer runs, so a cycle reads zero instead of recursing),
+// and the start-up function that ensures every one before `main`.
+func synthModuleGlobalFns(name: in String, inits: in List[String], tys: in List[NType]): List[NFunc] {
+  val fns: List[NFunc] = newList()
+  val noArgs: List[NArg] = newList()
+  val noParams: List[NParam] = newList()
+  val noAttrs: List[String] = newList()
+  var i = 0
+  while i < inits.count {
+    val flag = NGlobal(name = "mvf." + inits[i])
+    val slot = NGlobal(name = "mv." + inits[i])
+    val body: List[NInsn] = newList()
+    body.add(NLabel(name = "entry"))
+    body.add(NLoad(dest = "done", ty = NI1, ptr = flag))
+    body.add(NCondBr(cond = NLocal(name = "done"), thenLabel = "exit", elseLabel = "run"))
+    body.add(NLabel(name = "run"))
+    body.add(NStore(ty = NI1, value = NLitInt(v = 1i64, ty = NI1), ptr = flag))
+    body.add(NCall(dest = "value", retTy = tys[i], fn = NGlobal(name = inits[i]), args = noArgs))
+    body.add(NStore(ty = tys[i], value = NLocal(name = "value"), ptr = slot))
+    body.add(NBr(label = "exit"))
+    body.add(NLabel(name = "exit"))
+    body.add(NRetVoid)
+    fns.add(
+      NFunc(
+        name = "mvensure." + inits[i],
+        params = noParams,
+        retTy = NVoid,
+        isPublic = false,
+        isExtern = false,
+        body = body,
+        attributes = noAttrs
+      )
+    )
+    i = i + 1
+  }
+  val start: List[NInsn] = newList()
+  start.add(NLabel(name = "entry"))
+  var j = 0
+  while j < inits.count {
+    start.add(NCallVoid(fn = NGlobal(name = "mvensure." + inits[j]), args = noArgs))
+    j = j + 1
+  }
+  start.add(NRetVoid)
+  fns.add(
+    NFunc(
+      name = name,
+      params = noParams,
+      retTy = NVoid,
+      isPublic = false,
+      isExtern = false,
+      body = start,
+      attributes = noAttrs
+    )
+  )
+  fns
+}
+
+// True iff `e` is a compile-time literal — possibly parenthesized, or a negated
+// numeric literal (`-1`, the common `val MIN: Int = -1` form) — the only
+// module-level initializer form native inlines at a use site (#5977); any other
+// initializer becomes a static global.
+pub func isLiteralInit(e: in Expr): Bool {
   match e.kind {
     case ELiteral(_) -> true
     case EParen(inner) -> isLiteralInit(inner)
@@ -2192,6 +2489,10 @@ func isLiteralInit(e: in Expr): Bool {
 // widening literal (e.g. `val N: Long = 5`) constructs at the declared width.
 func lowerModuleVal(ctx: in Ctx, insns: in List[NInsn], mv: in ModuleValDef): NVal {
   if not isLiteralInit(mv.init) {
+    match mapGet(ctx.sigs, mv.pkg + "." + mvInitFnName(mv.name) + "/0") {
+      case Some(sig) -> return loadModuleGlobal(ctx, insns, sig)
+      case None -> ()
+    }
     panic(
       "Lyric.LlvmCodegen: module-level '" + mv.name +
         "' has a non-literal initializer, which is not yet supported for --target native (only literal-initialized module val/const are inlined; #5977)"
@@ -2521,6 +2822,13 @@ func lowerExpr(ctx: in Ctx, insns: in List[NInsn], expr: in Expr): NVal {
       if path.segments.count == 1 {
         return loadLocal(ctx, insns, path.segments[0])
       }
+      // A package-qualified module-level `val`/`const` (`Ui.Host.Assets.runtimeMainJs`):
+      // module values register under `<package>.<name>`.
+      match mapGet(ctx.moduleVals, joined) {
+        case Some(mv) -> return lowerModuleVal(ctx, insns, mv)
+        case None -> {
+        }
+      }
       panic(
         "Lyric.LlvmCodegen: qualified value reference '" + joined +
           "' is not yet supported for --target native (module-level constants are Phase N2+)"
@@ -2547,7 +2855,11 @@ func lowerExpr(ctx: in Ctx, insns: in List[NInsn], expr: in Expr): NVal {
     // `self` in a record-method body is the desugared receiver param.
     case ESelf -> loadLocal(ctx, insns, "self")
     case ELambda(_, _) -> panic(
-      "Lyric.LlvmCodegen: a lambda here has no expected function type; bind it to an annotated val, a typed parameter, or a declared return type"
+      "Lyric.LlvmCodegen: a lambda here has no expected function type; bind it to an annotated val, a typed parameter, or a declared return type (in " +
+        ctx.curPkg[0] +
+        " at line " +
+        expr.span.startPos.line.toString() +
+        ")"
     )
     case ETuple(exprs) -> {
       val elems: List[NVal] = newList()
@@ -2867,7 +3179,7 @@ func lowerBinop(ctx: in Ctx, insns: in List[NInsn], op: in BinOp, lhs: in Expr, 
         b2 = emitToString(ctx, insns, b2)
       }
     }
-    return lowerStringBinop(ctx, insns, op, a2, b2)
+    return lowerStringBinop(ctx, insns, op, a2, b2, line)
   }
   // Unions compare structurally (docs/01 §2.5): same case, equal payloads.
   if op == BEq or op == BNeq {
@@ -2934,9 +3246,14 @@ func isConcatStringifiableNType(t: in NType): Bool {
   }
 }
 
-func lowerStringBinop(ctx: in Ctx, insns: in List[NInsn], op: in BinOp, a: in NVal, b: in NVal): NVal {
+func lowerStringBinop(ctx: in Ctx, insns: in List[NInsn], op: in BinOp, a: in NVal, b: in NVal, line: in Int): NVal {
   if not (isStringNType(a.ty) and isStringNType(b.ty)) {
-    panic("Lyric.LlvmCodegen: mixed String/non-String operands (call .toString() explicitly)")
+    panic(
+      "Lyric.LlvmCodegen: mixed String/non-String operands (call .toString() explicitly) (in " + ctx.curPkg[0] +
+        " at line " +
+        line.toString() +
+        ")"
+    )
   }
   val sTy = lyricStringNType()
   match op {
@@ -4355,6 +4672,25 @@ func lowerCallEx(
           }
         }
         val recvVal = lowerExpr(ctx, insns, receiver)
+        // `r.f(args)` where `f` is a function-typed field of the record `r`:
+        // read the field (a borrow) and call the closure it holds.
+        match recInfoOfType(ctx, recvVal.ty) {
+          case Some(ri) -> {
+            val fieldIdx = recFieldIndex(ri, memberName)
+            if fieldIdx >= 0 {
+              match closureSigOfType(ctx, ri.fieldTys[fieldIdx]) {
+                case Some(cs) -> {
+                  val fieldVal = lowerRecordFieldLoad(ctx, insns, ri, recvVal, memberName)
+                  return lowerClosureCall(ctx, insns, fieldVal, cs, args)
+                }
+                case None -> {
+                }
+              }
+            }
+          }
+          case None -> {
+          }
+        }
         val someRecvExpr: Option[Expr] = Some(value = receiver)
         match lowerScalarMethodCall(ctx, insns, recvVal, memberName, args, line, someRecvExpr) {
           case Some(v) -> return v
@@ -4411,6 +4747,23 @@ func lowerCallEx(
         }
         return constructMap(ctx, insns, kTy, vTy)
       }
+      val explicitTes: List[TypeExpr] = newList()
+      var allTypes = true
+      for ta in targs {
+        match ta {
+          case TAType(inner) -> explicitTes.add(inner)
+          case TAValue(_) -> {
+            allTypes = false
+          }
+        }
+      }
+      if allTypes and tname.length > 0 {
+        match tryLowerExplicitGenericCall(ctx, insns, tname, explicitTes, args, line, wantTask, retWant) {
+          case Some(v) -> return v
+          case None -> {
+          }
+        }
+      }
     }
     case EIndex(ir, idxs) -> {
       // `newList[Long]()` parses as a call on an index expression, not
@@ -4434,6 +4787,17 @@ func lowerCallEx(
         val kTy = typeToN(ctx, exprAsTypeExpr(idxs[0]))
         val vTy = typeToN(ctx, exprAsTypeExpr(idxs[1]))
         return constructMap(ctx, insns, kTy, vTy)
+      }
+      if iname.length > 0 {
+        val idxTes: List[TypeExpr] = newList()
+        for ix in idxs {
+          idxTes.add(exprAsTypeExpr(ix))
+        }
+        match tryLowerExplicitGenericCall(ctx, insns, iname, idxTes, args, line, wantTask, retWant) {
+          case Some(v) -> return v
+          case None -> {
+          }
+        }
       }
     }
     case _ -> {
@@ -4493,7 +4857,15 @@ func lowerCallEx(
   // Static function call through the registry.
   val key = callKeyOf(fnExpr, args.count)
   if key.length == 0 {
-    panic("Lyric.LlvmCodegen: indirect calls are not yet supported for --target native (rest of Phase N2.6)")
+    panic(
+      "Lyric.LlvmCodegen: indirect calls are not yet supported for --target native (rest of Phase N2.6): the callee is a " +
+        describeExprKind(fnExpr.kind) +
+        " expression (in " +
+        ctx.curPkg[0] +
+        " at line " +
+        line.toString() +
+        ")"
+    )
   }
   // Resolution order: self-package qualified, then the key as written,
   // then heap-type constructors (records, union cases, distinct types).
@@ -4505,7 +4877,7 @@ func lowerCallEx(
       sigOpt = Some(value = s)
     }
     case None -> {
-      sigOpt = mapGet(ctx.sigs, key)
+      sigOpt = bareSig(ctx, key)
     }
   }
   match sigOpt {
@@ -4617,7 +4989,7 @@ func tryLowerQualifiedCallee(
     case Some(_) -> {
     }
     case None -> {
-      sigOpt = mapGet(ctx.sigs, key)
+      sigOpt = bareSig(ctx, key)
     }
   }
   match sigOpt {
@@ -5047,7 +5419,7 @@ func lowerUfcsCall(
     case Some(_) -> {
     }
     case None -> {
-      sigOpt = mapGet(ctx.sigs, name + "/" + arity)
+      sigOpt = bareSig(ctx, name + "/" + arity)
     }
   }
   match sigOpt {
@@ -8349,6 +8721,15 @@ func collectionConstructForExpected(ctx: in Ctx, insns: in List[NInsn], e: in Ex
     case _ -> {
     }
   }
+  // `default()` is the zero value of the expected type: 0, false, null for a
+  // reference (the placeholder a later `out` argument or assignment replaces,
+  // releasing nothing), a zeroed by-value aggregate.
+  if nm == "default" and ctorArgs.count == 0 and not hasFuncOverrideNative(ctx, "default", 0) {
+    match want {
+      case NVoid -> ()
+      case _ -> return Some(value = NVal(ty = want, value = zeroValueOf(want)))
+    }
+  }
   if nm == "newList" or nm == "newListWithCapacity" {
     match listElemOfType(ctx, want) {
       case Some(elem) -> {
@@ -9582,6 +9963,11 @@ func lowerGenericRecordConstruct(
     ai = ai + 1
   }
   val rawVals: List[NVal] = newList()
+  // A lambda field is deferred: its function type may mention type
+  // parameters that only the other fields or the expected type bind, so it is
+  // lowered last, against the field's type under those bindings.
+  val deferredLambda: List[Bool] = newList()
+  val fieldExprs: List[Option[Expr]] = newList()
   var fi2 = 0
   while fi2 < fields.count {
     var found2 = 0 - 1
@@ -9592,15 +9978,27 @@ func lowerGenericRecordConstruct(
       }
       aj = aj + 1
     }
+    var fe: Option[Expr] = None
     if found2 >= 0 {
-      rawVals.add(lowerExpr(ctx, insns, argFieldExpr[found2]))
+      fe = Some(value = argFieldExpr[found2])
     } else {
       match fields[fi2].dflt {
-        case Some(d) -> rawVals.add(lowerExpr(ctx, insns, d))
+        case Some(d) -> {
+          fe = Some(value = d)
+        }
         case None -> panic(
           "Lyric.LlvmCodegen: missing field '" + fields[fi2].name + "' constructing record '" + rd.name + "'"
         )
       }
+    }
+    fieldExprs.add(fe)
+    val fexpr = match fe { case Some(x) -> x; case None -> panic("unreachable") }
+    if isLambdaExpr(fexpr) {
+      deferredLambda.add(true)
+      rawVals.add(NVal(ty = NVoid, value = NUndef(ty = NVoid)))
+    } else {
+      deferredLambda.add(false)
+      rawVals.add(lowerExpr(ctx, insns, fexpr))
     }
     fi2 = fi2 + 1
   }
@@ -9613,7 +10011,9 @@ func lowerGenericRecordConstruct(
   val boundTys: List[NType] = newList()
   var ufi = 0
   while ufi < fields.count {
-    unifyTyArg(ctx, fields[ufi].ty, rawVals[ufi].ty, envNames, boundNames, boundTys)
+    if not deferredLambda[ufi] {
+      unifyTyArg(ctx, fields[ufi].ty, rawVals[ufi].ty, envNames, boundNames, boundTys)
+    }
     ufi = ufi + 1
   }
   if boundNames.count < envNames.count {
@@ -9637,6 +10037,22 @@ func lowerGenericRecordConstruct(
       }
       case None -> ()
     }
+  }
+  var dli = 0
+  while dli < fields.count {
+    if deferredLambda[dli] {
+      val lamExpr = match fieldExprs[dli] { case Some(x) -> x; case None -> panic("unreachable") }
+      match typeToNEnvOpt(ctx, fields[dli].ty, boundNames, boundTys) {
+        case Some(want) -> {
+          rawVals[dli] = lowerExprExpecting(ctx, insns, lamExpr, want)
+        }
+        case None -> {
+          rawVals[dli] = lowerExpr(ctx, insns, lamExpr)
+        }
+      }
+      unifyTyArg(ctx, fields[dli].ty, rawVals[dli].ty, envNames, boundNames, boundTys)
+    }
+    dli = dli + 1
   }
   val envTys: List[NType] = newList()
   var pi = 0
@@ -9790,9 +10206,89 @@ func unifyTyArg(
       }
     }
     case TParen(inner) -> unifyTyArg(ctx, inner, argTy, paramNames, boundNames, boundTys)
+    // A function-typed parameter binds from the argument closure's own
+    // signature (`f: () -> T` against a `() -> Int` closure binds `T = Int`).
+    case TFunction(parameters, retTy) -> {
+      match closureSigOfType(ctx, argTy) {
+        case Some(cs) -> {
+          if parameters.count == cs.paramTys.count {
+            var pi = 0
+            while pi < parameters.count {
+              unifyTyArg(ctx, parameters[pi], cs.paramTys[pi], paramNames, boundNames, boundTys)
+              pi = pi + 1
+            }
+          }
+          unifyTyArg(ctx, retTy, cs.retTy, paramNames, boundNames, boundTys)
+        }
+        case None -> ()
+      }
+    }
     case _ -> {
     }
   }
+}
+
+/// A construction of a generic union's case (`AnswerDialog(yes = true)`): its
+/// type arguments may be determined only by where the value is used, so a
+/// generic call takes it after the arguments that do bind them.
+func isGenericCaseCtorExpr(ctx: in Ctx, e: in Expr): Bool {
+  match e.kind {
+    case ECall(fn, _) -> match fn.kind {
+      case EPath(path) -> path.segments.count == 1 and
+        ctx.caseToGenericUnion.containsKey(path.segments[0]) and
+        not ctx.varTypes.containsKey(path.segments[0])
+      case _ -> false
+    }
+    case EParen(inner) -> isGenericCaseCtorExpr(ctx, inner)
+    case _ -> false
+  }
+}
+
+func copyStrings(xs: in List[String]): List[String] {
+  val copy: List[String] = newList()
+  for x in xs {
+    copy.add(x)
+  }
+  copy
+}
+
+func copyNTypes(xs: in List[NType]): List[NType] {
+  val copy: List[NType] = newList()
+  for x in xs {
+    copy.add(x)
+  }
+  copy
+}
+
+/// `name[T1, T2](args)` where `name` is a generic function: the type
+/// arguments bind its type parameters in declaration order.
+func tryLowerExplicitGenericCall(
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  name: in String,
+  targTys: in List[TypeExpr],
+  args: in List[CallArg],
+  line: in Int,
+  wantTask: in Bool,
+  retWant: in Option[NType],
+): Option[NVal] {
+  val key = name + "/" + args.count.toString()
+  val selfKey = ctx.curPkg[0] + "." + key
+  var useKey = ""
+  if ctx.genericFnDefs.containsKey(selfKey) {
+    useKey = selfKey
+  } else if ctx.genericFnDefs.containsKey(key) {
+    useKey = key
+  }
+  if useKey.length == 0 {
+    return None
+  }
+  val tys: List[NType] = newList()
+  for te in targTys {
+    tys.add(typeToN(ctx, te))
+  }
+  val noPre: List[NVal] = newList()
+  Some(value = lowerGenericFnCallWith(ctx, insns, useKey, noPre, args, line, wantTask, retWant, tys))
 }
 
 /// Call a generic function: map arguments to parameters, infer the
@@ -9812,13 +10308,19 @@ func isLambdaExpr(e: in Expr): Bool {
 /// `pi` (lambda placeholders, typed `NVoid`, bind nothing). None when a type
 /// parameter the parameter mentions is still unbound.
 func lambdaParamWant(
-  ctx: in Ctx, fd: in FunctionDecl, pi: in Int, rawVals: in List[NVal], paramNames: in List[String]
+  ctx: in Ctx,
+  fd: in FunctionDecl,
+  pi: in Int,
+  rawVals: in List[NVal],
+  paramNames: in List[String],
+  seedNames: in List[String],
+  seedTys: in List[NType],
 ): Option[NType] {
   if pi >= fd.params.count {
     return None
   }
-  val boundNames: List[String] = newList()
-  val boundTys: List[NType] = newList()
+  val boundNames: List[String] = copyStrings(seedNames)
+  val boundTys: List[NType] = copyNTypes(seedTys)
   var j = 0
   while j < rawVals.count and j < pi {
     match rawVals[j].ty {
@@ -9836,10 +10338,16 @@ func lambdaParamWant(
 /// As `lambdaParamWant`, but binding from every lowered argument (used for
 /// a lambda deferred past the arguments after it).
 func lambdaParamWantAt(
-  ctx: in Ctx, fd: in FunctionDecl, pi: in Int, rawVals: in List[NVal], paramNames: in List[String]
+  ctx: in Ctx,
+  fd: in FunctionDecl,
+  pi: in Int,
+  rawVals: in List[NVal],
+  paramNames: in List[String],
+  seedNames: in List[String],
+  seedTys: in List[NType],
 ): Option[NType] {
-  val boundNames: List[String] = newList()
-  val boundTys: List[NType] = newList()
+  val boundNames: List[String] = copyStrings(seedNames)
+  val boundTys: List[NType] = copyNTypes(seedTys)
   var j = 0
   while j < rawVals.count {
     match rawVals[j].ty {
@@ -9906,6 +10414,24 @@ func lowerGenericFnCall(
   wantTask: in Bool,
   retWant: in Option[NType],
 ): NVal {
+  val noExplicit: List[NType] = newList()
+  lowerGenericFnCallWith(ctx, insns, gkey, preVals, args, line, wantTask, retWant, noExplicit)
+}
+
+/// `lowerGenericFnCall` with the call's explicit type arguments
+/// (`stay[String, NoEffect](m)`): they bind the function's type parameters in
+/// declaration order before any argument or the expected type is consulted.
+func lowerGenericFnCallWith(
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  gkey: in String,
+  preVals: in List[NVal],
+  args: in List[CallArg],
+  line: in Int,
+  wantTask: in Bool,
+  retWant: in Option[NType],
+  explicitTys: in List[NType],
+): NVal {
   val fd = mustGetGenericFn(ctx, gkey)
   val pkg = match mapGet(ctx.genericFnPkg, gkey) { case Some(pk) -> pk; case None -> ctx.curPkg[0] }
   val nParams = fd.params.count
@@ -9949,6 +10475,23 @@ func lowerGenericFnCall(
   val deferredLambdas: List[Int] = newList()
   val deferredLambdaExprs: List[Expr] = newList()
   val fnTyParamNames = genericParamNamesOf(fd.generics)
+  val seedNames: List[String] = newList()
+  val seedTys: List[NType] = newList()
+  if explicitTys.count > 0 {
+    if explicitTys.count != fnTyParamNames.count {
+      panic(
+        "Lyric.LlvmCodegen: generic function '" + fd.name + "' takes " + fnTyParamNames.count.toString() +
+          " type argument(s) but the call passes " +
+          explicitTys.count.toString()
+      )
+    }
+    var sdi = 0
+    while sdi < explicitTys.count {
+      seedNames.add(fnTyParamNames[sdi])
+      seedTys.add(explicitTys[sdi])
+      sdi = sdi + 1
+    }
+  }
   var pi = 0
   while pi < nParams {
     if pi < preVals.count {
@@ -9979,12 +10522,12 @@ func lowerGenericFnCall(
         }
       }
       val ax = argExpr[found]
-      if isLambdaExpr(ax) {
+      if isLambdaExpr(ax) or isGenericCaseCtorExpr(ctx, ax) {
         // A lambda needs its function type before it can be lowered. Take
         // it from the parameter type under the type arguments the earlier
         // arguments bind (`mapForEach(m, { k, v -> ... })`); only when a
         // later argument is needed is the lambda deferred past it (#7282).
-        match lambdaParamWant(ctx, fd, pi, rawVals, fnTyParamNames) {
+        match lambdaParamWant(ctx, fd, pi, rawVals, fnTyParamNames, seedNames, seedTys) {
           case Some(w) -> rawVals.add(lowerExprExpecting(ctx, insns, ax, w))
           case None -> {
             deferredLambdas.add(pi)
@@ -10007,14 +10550,27 @@ func lowerGenericFnCall(
     dli = dli + 1
   }
   var progressed = true
-  while pending.count > 0 and progressed {
+  var retBound = false
+  while pending.count > 0 and (progressed or not retBound) {
+    if not progressed {
+      // Nothing more binds from the arguments: let the expected type of the
+      // call bind the parameters only its return type mentions, then retry.
+      retBound = true
+      match retWant {
+        case Some(w) -> match fd.ret {
+          case Some(rte) -> unifyTyArg(ctx, rte, w, fnTyParamNames, seedNames, seedTys)
+          case None -> ()
+        }
+        case None -> ()
+      }
+    }
     progressed = false
     val still: List[Int] = newList()
     var pk = 0
     while pk < pending.count {
       val di = pending[pk]
       val dpi = deferredLambdas[di]
-      match lambdaParamWantAt(ctx, fd, dpi, rawVals, fnTyParamNames) {
+      match lambdaParamWantAt(ctx, fd, dpi, rawVals, fnTyParamNames, seedNames, seedTys) {
         case Some(w) -> {
           rawVals[dpi] = lowerExprExpecting(ctx, insns, deferredLambdaExprs[di], w)
           progressed = true
@@ -10033,7 +10589,8 @@ func lowerGenericFnCall(
   if pending.count > 0 {
     val dpi = deferredLambdas[pending[0]]
     panic(
-      "Lyric.LlvmCodegen: cannot infer the function type of the lambda passed as parameter '" + fd.params[dpi].name +
+      "Lyric.LlvmCodegen: cannot infer the type of the lambda or case construction passed as parameter '" +
+        fd.params[dpi].name +
         "' of generic function '" +
         fd.name +
         "'; annotate the lambda's parameters or bind it to a typed val"
@@ -10041,8 +10598,8 @@ func lowerGenericFnCall(
   }
   // Infer type args.
   val paramNames = fnTyParamNames
-  val boundNames: List[String] = newList()
-  val boundTys: List[NType] = newList()
+  val boundNames: List[String] = copyStrings(seedNames)
+  val boundTys: List[NType] = copyNTypes(seedTys)
   var pi2 = 0
   while pi2 < nParams {
     unifyTyArg(ctx, fd.params[pi2].ty, rawVals[pi2].ty, paramNames, boundNames, boundTys)
@@ -10525,6 +11082,14 @@ func synthLambdaBody(
   capTys: in List[NType],
 ): NFunc {
   val ctx = freshFnCtx(modCtx, modCtx.curPkg[0], sig.retTy)
+  // The lambda body lowers inside the generic instantiation that contains it,
+  // so a type parameter it names (`val r: View[A] = ...`) resolves the same.
+  var tei = 0
+  while tei < modCtx.fnTyEnvNames.count {
+    ctx.fnTyEnvNames.add(modCtx.fnTyEnvNames[tei])
+    ctx.fnTyEnvTys.add(modCtx.fnTyEnvTys[tei])
+    tei = tei + 1
+  }
   val params: List[NParam] = newList()
   params.add(NParam(name = "env", ty = NPtr(pointee = NI8)))
   val bodyInsns: List[NInsn] = newList()
@@ -12238,7 +12803,12 @@ func emitConstructorTest(
   val ui = match unionInfoOfType(ctx, sv0.ty) {
     case Some(u) -> u
     case None -> panic(
-      "Lyric.LlvmCodegen: constructor pattern '" + joined + "' matched against a non-union value"
+      "Lyric.LlvmCodegen: constructor pattern '" + joined +
+        "' matched against a non-union value (in " +
+        ctx.curPkg[0] +
+        ", scrutinee type " +
+        nTypeToIrString(sv0.ty) +
+        ")"
     )
   }
   // Resolve the case by name within the scrutinee's union: this covers
@@ -13008,7 +13578,7 @@ func combineIndexedAssignValue(
     case AssEq -> BAdd
   }
   if isStringNType(ty) {
-    lowerStringBinop(ctx, insns, binOp, cur, coerceTo(ctx, insns, rhs, ty))
+    lowerStringBinop(ctx, insns, binOp, cur, coerceTo(ctx, insns, rhs, ty), line)
   } else {
     val rhsC = coerceTo(ctx, insns, rhs, ty)
     match ty {
@@ -13164,7 +13734,7 @@ func lowerAssign(
         case AssEq -> BAdd
       }
       if isStringNType(ty) {
-        lowerStringBinop(ctx, insns, binOp, cur, coerceTo(ctx, insns, rhs, ty))
+        lowerStringBinop(ctx, insns, binOp, cur, coerceTo(ctx, insns, rhs, ty), line)
       } else {
         val rhsC = coerceTo(ctx, insns, rhs, ty)
         match ty {
@@ -13234,7 +13804,7 @@ func lowerFieldAssign(
         case AssEq -> BAdd
       }
       if isStringNType(fieldTy) {
-        lowerStringBinop(ctx, insns, binOp, cur, coerceTo(ctx, insns, rhs, fieldTy))
+        lowerStringBinop(ctx, insns, binOp, cur, coerceTo(ctx, insns, rhs, fieldTy), line)
       } else {
         val rhsC = coerceTo(ctx, insns, rhs, fieldTy)
         match fieldTy {
@@ -13354,11 +13924,15 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     globals = mod.globals,
     sigs = mod.sigs,
     pkgImportsStdString = mod.pkgImportsStdString,
+    sigAlts = mod.sigAlts,
+    pkgImports = mod.pkgImports,
     methodCallArities = mod.methodCallArities,
     curPkg = curPkg,
     curOrigin = curOrigin,
     curRet = curRet,
     moduleVals = mod.moduleVals,
+    mvInits = mod.mvInits,
+    mvInitTys = mod.mvInitTys,
     recordDefs = mod.recordDefs,
     unionDefs = mod.unionDefs,
     caseRefs = mod.caseRefs,
@@ -14165,6 +14739,7 @@ func synthCMain(
   userMainIr: in String,
   mainIsAsync: in Bool,
   entryName: in String,
+  initGlobalsIr: in String,
 ): NFunc {
   val p8 = NPtr(pointee = NI8)
   val params: List[NParam] = newList()
@@ -14179,6 +14754,9 @@ func synthCMain(
   argArgs.add(NArg(ty = NPtr(pointee = NPtr(pointee = NI8)), value = NLocal(name = "argv")))
   body.add(NCallVoid(fn = NGlobal(name = "lyric_args_set"), args = argArgs))
   val noArgs: List[NArg] = newList()
+  if initGlobalsIr.length > 0 {
+    body.add(NCallVoid(fn = NGlobal(name = initGlobalsIr), args = noArgs))
+  }
   if mainIsAsync {
     body.add(NCall(dest = "task", retTy = p8, fn = NGlobal(name = userMainIr), args = noArgs))
     body.add(NCallVoid(fn = NGlobal(name = "lyric_task_block_on"), args = arg1(p8, NLocal(name = "task"))))
@@ -14327,11 +14905,15 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     globals = newList(),
     sigs = sigs,
     pkgImportsStdString = pkgImportsStdString,
+    sigAlts = buildSigAlts(units, sigs),
+    pkgImports = buildPkgImports(units),
     methodCallArities = methodCallArities,
     curPkg = newList(),
     curOrigin = newList(),
     curRet = newList(),
     moduleVals = moduleVals,
+    mvInits = newList(),
+    mvInitTys = newList(),
     recordDefs = emptyRecs,
     unionDefs = emptyUnions,
     caseRefs = emptyCases,
@@ -14461,8 +15043,17 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     }
     ui = ui + 1
   }
+  // The globals' ensure functions are referenced by every read, so they are
+  // emitted for a library (no `main`) too.
+  var initGlobalsIr = ""
+  if ctx.mvInits.count > 0 {
+    initGlobalsIr = "lyric_init_module_globals"
+    for gf in synthModuleGlobalFns(initGlobalsIr, ctx.mvInits, ctx.mvInitTys) {
+      fns.add(gf)
+    }
+  }
   if mainIr.length > 0 {
-    fns.add(synthCMain(mainPkg, mainRet, mainIr, mainIsAsync, entryNameForTriple(triple)))
+    fns.add(synthCMain(mainPkg, mainRet, mainIr, mainIsAsync, entryNameForTriple(triple), initGlobalsIr))
   }
   // Coroutine plumbing lands only in async-using modules: the coro
   // intrinsics + scheduler declares, and the resume/destroy wrapper
@@ -14620,6 +15211,15 @@ pub func fileImportsStdString(file: in SourceFile): Bool {
   false
 }
 
+/// The dotted package paths `file` imports.
+pub func fileImportPackages(file: in SourceFile): List[String] {
+  val pkgs: List[String] = newList()
+  for imp in file.imports {
+    pkgs.add(modulePathJoin(imp.path.segments))
+  }
+  pkgs
+}
+
 /// Collect one source file's lowerable items into a CodegenUnit.
 pub func unitOfFile(pkgName: in String, file: in SourceFile): CodegenUnit {
   val fns: List[FunctionDecl] = newList()
@@ -14652,11 +15252,13 @@ pub func unitOfFile(pkgName: in String, file: in SourceFile): CodegenUnit {
       // failing an otherwise-unrelated compile at collection time.
       case IVal(decl) -> {
         match decl.pattern.kind {
-          case PBinding(vn, _) -> moduleVals.add(ModuleValDef(name = vn, init = decl.init, ty = decl.ty))
+          case PBinding(vn, _) -> moduleVals.add(ModuleValDef(name = vn, init = decl.init, ty = decl.ty, pkg = pkgName))
           case _ -> ()
         }
       }
-      case IConst(decl) -> moduleVals.add(ModuleValDef(name = decl.name, init = decl.init, ty = Some(value = decl.ty)))
+      case IConst(decl) -> moduleVals.add(
+        ModuleValDef(name = decl.name, init = decl.init, ty = Some(value = decl.ty), pkg = pkgName)
+      )
       case IRecord(decl) -> {
         records.add(decl)
         collectRecordMethods(pkgName, decl, fns)
@@ -14711,6 +15313,7 @@ pub func unitOfFile(pkgName: in String, file: in SourceFile): CodegenUnit {
     protecteds = protecteds,
     moduleVals = moduleVals,
     importsStdString = fileImportsStdString(file),
+    imports = fileImportPackages(file),
     methodCallArities = newMap()
   )
 }
@@ -15271,7 +15874,10 @@ func cAbiPlanOf(ctx: in Ctx, params: in List[NType], ret: in NType): CAbiPlan {
   val args: List[CArgAbi] = newList()
   val retAbi = cRetAbiOf(ctx, arch, ret)
   // System V register budget: six general and eight SSE argument registers;
-  // an `sret` pointer takes the first general one.
+  // an `sret` pointer takes the first general one.  Only x86-64 needs it: on
+  // AArch64 an aggregate the registers cannot hold still takes the same
+  // coerced form and LLVM places it on the stack, as clang's own lowering
+  // does, and wasm32 has no argument registers.
   var intLeft = 6
   var sseLeft = 8
   match retAbi {
@@ -15966,6 +16572,8 @@ func makeProtectedFieldNames(decl: in ProtectedTypeDecl): Map[String, Bool] {
           case PFImmutable(fd) -> names.add(fd.name, true)
         }
       }
+      case PMEntry(ed) -> names.add("()" + ed.name, true)
+      case PMFunc(fn) -> names.add("()" + fn.name, true)
       case _ -> {
       }
     }
@@ -16026,7 +16634,20 @@ func desugarProtectedExpr(fieldNames: in Map[String, Bool], e: in Expr): Expr {
         }
         i = i + 1
       }
-      return Expr(kind = ECall(fn = desugarProtectedExpr(fieldNames, fn), args = args2), span = e.span)
+      // A bare call to a sibling entry/func becomes `self.m(..)`; the
+      // member's mutex is recursive, so re-entering it from inside the
+      // monitor is the same as MSIL's `Monitor.Enter` re-entry.
+      val callee = match fn.kind {
+        case EPath(cp) -> {
+          if cp.segments.count == 1 and fieldNames.containsKey("()" + cp.segments[0]) and not fieldNames.containsKey(cp.segments[0]) {
+            Expr(kind = EMember(receiver = Expr(kind = ESelf, span = fn.span), memberName = cp.segments[0]), span = fn.span)
+          } else {
+            desugarProtectedExpr(fieldNames, fn)
+          }
+        }
+        case _ -> desugarProtectedExpr(fieldNames, fn)
+      }
+      return Expr(kind = ECall(fn = callee, args = args2), span = e.span)
     }
     case EIndex(receiver, indices) -> {
       val idxs: List[Expr] = newList()

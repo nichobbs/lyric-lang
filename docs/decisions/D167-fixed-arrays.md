@@ -107,6 +107,13 @@ a value generic parameter is T0160 where the type is written.
   filled where its type is declared.
 - Another package's record carries no such default, so a bracket
   literal or value for the field is required there (T0105, #8042).
+- The typed host array item 7 names for the JVM (#8041) shipped in
+  `docs/progress/2026-10-04-jvm-typed-arrays.md`: an array of a numeric,
+  `Bool` or `Char` element is `int[]`, `float[]` and the like there, and
+  any other array stays an `ArrayList`.
+- A record's value generic parameter sizing an array field (#8090) shipped
+  as D169, in `docs/progress/2026-10-04-value-generic-records.md`; the
+  T0160 above now covers only unions, opaque and protected types (#8149).
 
 ## Consequences
 

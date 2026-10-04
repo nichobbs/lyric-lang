@@ -112,6 +112,29 @@ func collectCallKeys(e: in Expr, acc: in List[String]): Unit {
       if key.length > 0 {
         acc.add(key)
       }
+      // `name[T](args)`: a call with explicit type arguments names `name`.
+      match fn.kind {
+        case EIndex(ir, _) -> match ir.kind {
+          case EPath(ip) -> {
+            if ip.segments.count == 1 {
+              acc.add(ip.segments[0] + "/" + args.count.toString())
+            }
+          }
+          case _ -> {
+          }
+        }
+        case ETypeApp(tf, _) -> match tf.kind {
+          case EPath(tp) -> {
+            if tp.segments.count == 1 {
+              acc.add(tp.segments[0] + "/" + args.count.toString())
+            }
+          }
+          case _ -> {
+          }
+        }
+        case _ -> {
+        }
+      }
       // A method-call receiver is an expression too (scalar methods
       // resolve without the registry, so an unresolvable key is fine).
       match fn.kind {
@@ -542,6 +565,143 @@ func stdlibImportClosure(pkg: in String, stdlib: in NativeStdlib): List[Imported
   visible
 }
 
+// `{ val v: T = init; v }`: the declared type sits on a typed local so the
+// monomorphiser infers a generic initializer's type arguments from it
+// (it reads annotated locals, not the function's return type).
+func typedInitBlock(ty: in TypeExpr, init: in Expr, sp: in Span): Block {
+  val name = "__lyric_mvinit_value"
+  val noInner: Option[Pattern] = None
+  val stmts: List[Statement] = newList()
+  stmts.add(
+    Statement(
+      kind = SLocal(
+        binding = LBVal(
+          pat = Pattern(kind = PBinding(name = name, inner = noInner), span = sp),
+          ty = Some(value = ty),
+          init = init
+        )
+      ),
+      span = sp
+    )
+  )
+  val segs: List[String] = newList()
+  segs.add(name)
+  stmts.add(
+    Statement(
+      kind = SExpr(expr = Expr(kind = EPath(path = ModulePath(segments = segs, span = sp)), span = sp)),
+      span = sp
+    )
+  )
+  Block(statements = stmts, span = sp)
+}
+
+/// `file` with `generics` (visible generic functions, as they stood before
+/// monomorphisation) appended, for codegen's own instantiation at a
+/// cross-package call.
+func withGenericItems(file: in SourceFile, generics: in List[Item]): SourceFile {
+  if generics.count == 0 {
+    return file
+  }
+  val items: List[Item] = newList()
+  for it in file.items {
+    items.add(it)
+  }
+  for g in generics {
+    items.add(g)
+  }
+  SourceFile(
+    moduleDoc = file.moduleDoc,
+    fileAnnotations = file.fileAnnotations,
+    packageDecl = file.packageDecl,
+    imports = file.imports,
+    items = items,
+    span = file.span
+  )
+}
+
+// Native stores a module-level `val` with a non-literal initializer in a static
+// global that start-up code fills in (`Lyric.LlvmCodegen.loadModuleGlobal`).
+// That initializer becomes a function, appended here BEFORE type check and
+// monomorphisation so a generic initializer (`val m: Map[Int, V] = newMap()`)
+// is checked and instantiated like any call. Only a `val` with a declared type
+// is hoisted (the function needs a return type); the `val` itself stays so
+// name resolution and the type check are unchanged.
+func hoistModuleValInits(sf: in SourceFile): SourceFile {
+  val items: List[Item] = newList()
+  val hoisted: List[Item] = newList()
+  for it in sf.items {
+    match it.kind {
+      case IVal(decl) -> {
+        match decl.pattern.kind {
+          case PBinding(vn, _) -> {
+            match decl.ty {
+              case Some(ty) -> {
+                if not isLiteralInit(decl.init) {
+                  val noDocs: List[DocComment] = newList()
+                  val noAnns: List[Annotation] = newList()
+                  val noParams: List[Param] = newList()
+                  val noContracts: List[ContractClause] = newList()
+                  val fd = FunctionDecl(
+                    docComments = noDocs,
+                    annotations = noAnns,
+                    visibility = None,
+                    isAsync = false,
+                    name = mvInitFnName(vn),
+                    generics = None,
+                    params = noParams,
+                    ret = Some(value = ty),
+                    whereClause = None,
+                    contracts = noContracts,
+                    body = Some(value = FBBlock(block = typedInitBlock(ty, decl.init, decl.span))),
+                    span = decl.span
+                  )
+                  hoisted.add(
+                    Item(docComments = noDocs, annotations = noAnns, visibility = None, kind = IFunc(decl = fd), span = it.span)
+                  )
+                  // The `val` now just calls its initializer function, so the
+                  // (possibly generic) initializer expression lives only in
+                  // the typed hoisted body.
+                  val segs: List[String] = newList()
+                  segs.add(mvInitFnName(vn))
+                  val noArgs: List[CallArg] = newList()
+                  val callee = Expr(kind = EPath(path = ModulePath(segments = segs, span = decl.span)), span = decl.span)
+                  val callInit = Expr(kind = ECall(fn = callee, args = noArgs), span = decl.span)
+                  val newDecl = ValDecl(pattern = decl.pattern, ty = decl.ty, init = callInit, span = decl.span)
+                  items.add(
+                    Item(
+                      docComments = it.docComments,
+                      annotations = it.annotations,
+                      visibility = it.visibility,
+                      kind = IVal(decl = newDecl),
+                      span = it.span
+                    )
+                  )
+                } else {
+                  items.add(it)
+                }
+              }
+              case None -> items.add(it)
+            }
+          }
+          case _ -> items.add(it)
+        }
+      }
+      case _ -> items.add(it)
+    }
+  }
+  for h in hoisted {
+    items.add(h)
+  }
+  SourceFile(
+    moduleDoc = sf.moduleDoc,
+    fileAnnotations = sf.fileAnnotations,
+    packageDecl = sf.packageDecl,
+    imports = sf.imports,
+    items = items,
+    span = sf.span
+  )
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. Public entry point.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -705,8 +865,16 @@ pub func compileToNativeWithShape(
   // (docs/59 §9.2 divergence flag) instead of an invisible omission.
   val noWires: Map[String, WireExpand.CollectedWireTemplate] = newMap()
   val noConfigs: Map[String, WireExpand.CollectedConfigTemplate] = newMap()
-  val userFile0 = match pipeExpandAndRewrite(shimFile, noWires, noConfigs, false, false, false, path, noOrigins) {
-    case Some(f) -> f
+  // Config-template declarations become `pub record` twins (docs/58 §3); the
+  // collection runs over an alias-rewritten copy, as on the managed targets.
+  WireExpand.collectWireTemplates(
+    Aliases.rewriteFile(shimFile).items,
+    dottedPath(shimFile.packageDecl.path),
+    noWires,
+    noConfigs
+  )
+  val userFile0 = match pipeExpandAndRewrite(shimFile, noWires, noConfigs, true, false, false, path, noOrigins) {
+    case Some(f) -> hoistModuleValInits(f)
     case None -> return false
   }
 
@@ -753,6 +921,7 @@ pub func compileToNativeWithShape(
     checkedSourceOut = optsCheckedOut,
     memberRecvClassesOut = optsRecvOut,
     methodCallAritiesOut = optsCallArities,
+    genericItemsOut = newList(),
     nativeIntrinsics = true
   )
   val userFile = match pipeMiddleEnd(userFile0, importedPkgs, noDeriveImports, noImportedGenFuncs, pipeInterfaceDecls(importedItemsForMono), pipeRecordDecls(importedItemsForMono), noTemplates, opts, None) {
@@ -844,6 +1013,7 @@ pub func compileToNativeWithShape(
   val bodyIndex: Map[String, FunctionDecl] = newMap()
   val pkgOfId: Map[String, String] = newMap()
   indexFileFns(userFile, bodyIndex, pkgOfId)
+  seedImplMethods(userFile, bodyIndex, pkgOfId, reachable, fnWorklist)
   var bi2 = 0
   while bi2 < toBundle.count {
     indexFileFns(toBundle[bi2], bodyIndex, pkgOfId)
@@ -1088,11 +1258,24 @@ pub func compileProjectToNativeWithShape(
     ppi = ppi + 1
   }
 
-  // Pre-typecheck rewrite chain: alias rewrite only, matching the
-  // single-source path (docs/59 §9.2 divergence flag — no wire/config
-  // template expansion or `@stubbable` synthesis on native yet).
+  // Pre-typecheck rewrite chain: alias rewrite and config-template expansion
+  // (a `pub config` template declares a `pub record` twin, docs/58 §3), matching
+  // the single-source path. The native bridge does not synthesise `@stubbable`
+  // stubs yet (docs/59 §9.2 divergence flag). Templates are collected from every
+  // own package, dependencies included (native compiles them from source), over
+  // alias-rewritten copies as on the managed targets.
   val noWires: Map[String, WireExpand.CollectedWireTemplate] = newMap()
   val noConfigs: Map[String, WireExpand.CollectedConfigTemplate] = newMap()
+  var wti = 0
+  while wti < cfgFiles.count {
+    WireExpand.collectWireTemplates(
+      Aliases.rewriteFile(cfgFiles[wti]).items,
+      dottedPath(cfgFiles[wti].packageDecl.path),
+      noWires,
+      noConfigs
+    )
+    wti = wti + 1
+  }
   val ownFiles0: List[SourceFile] = newList()
   var owi = 0
   while owi < cfgFiles.count {
@@ -1100,11 +1283,11 @@ pub func compileProjectToNativeWithShape(
     // for this package's wire/config-template and impl-default-inheritance
     // diagnostics (`packages`/`originsByPkg` are 1:1 by index with
     // `cfgFiles` — no filtering happens between the two loops).
-    val f0 = match pipeExpandAndRewrite(cfgFiles[owi], noWires, noConfigs, false, false, false, nativePkgLabelAt(packages, owi), nativePkgOriginsAt(originsByPkg, owi)) {
+    val f0 = match pipeExpandAndRewrite(cfgFiles[owi], noWires, noConfigs, true, false, false, nativePkgLabelAt(packages, owi), nativePkgOriginsAt(originsByPkg, owi)) {
       case Some(f) -> f
       case None -> return false
     }
-    ownFiles0.add(f0)
+    ownFiles0.add(hoistModuleValInits(f0))
     owi = owi + 1
   }
 
@@ -1174,6 +1357,7 @@ pub func compileProjectToNativeWithShape(
     val optsCheckedOut: List[SourceFile] = newList()
     val optsRecvOut: Map[String, String] = newMap()
     val optsCallArities: Map[String, Int] = newMap()
+    val optsGenericItems: List[Item] = newList()
     val opts = MiddleEndOptions(
       tcFatal = true,
       tcReport = false,
@@ -1186,6 +1370,7 @@ pub func compileProjectToNativeWithShape(
       checkedSourceOut = optsCheckedOut,
       memberRecvClassesOut = optsRecvOut,
       methodCallAritiesOut = optsCallArities,
+      genericItemsOut = optsGenericItems,
       ioForbiddenReason = if mei < packages.count { packages[mei].ioForbiddenReason } else { "" },
       nativeIntrinsics = true
     )
@@ -1193,7 +1378,9 @@ pub func compileProjectToNativeWithShape(
       case Some(f) -> f
       case None -> return false
     }
-    ownFiles.add(checked)
+    // Mono erased the package's visible generic functions; put them back so
+    // codegen can instantiate them for a call from another package.
+    ownFiles.add(withGenericItems(checked, optsGenericItems))
     ownCallArities.add(optsCallArities)
     mei = mei + 1
   }
@@ -1295,6 +1482,7 @@ pub func compileProjectToNativeWithShape(
   var ifi = 0
   while ifi < ownFiles.count {
     indexFileFns(ownFiles[ifi], bodyIndex, pkgOfId)
+    seedImplMethods(ownFiles[ifi], bodyIndex, pkgOfId, reachable, fnWorklist)
     ifi = ifi + 1
   }
   var bi2 = 0
@@ -1513,6 +1701,30 @@ func walkReachableFns(
           // every id in `pkgOfId` is registered with a real package name)
           // falls back to the old bundle-wide behavior rather than risk
           // silently under-including a genuine callee.
+          // The same plain name in several packages: codegen resolves it
+          // against the caller's DIRECT imports, so mark exactly those
+          // candidates (not the whole transitive closure, which would pull
+          // in unrelated packages' host seams).
+          match mapGet(bareTrailing, "=" + raw) {
+            case Some(sameName) -> {
+              val direct: List[String] = match mapGet(pkgImports, curPkg) { case Some(d) -> d; case None -> newList() }
+              for cand in sameName {
+                val candPkg = match mapGet(pkgOfId, cand) { case Some(p) -> p; case None -> "" }
+                var allowed = candPkg == curPkg
+                for dp in direct {
+                  if dp == candPkg {
+                    allowed = true
+                  }
+                }
+                if allowed and not reachable.containsKey(cand) {
+                  reachable.add(cand, true)
+                  fnWorklist.add(cand)
+                }
+              }
+            }
+            case None -> {
+            }
+          }
           match mapGet(bareTrailing, raw) {
             case Some(targets) -> {
               val closure = if curPkg.length == 0 {
@@ -2067,6 +2279,13 @@ func registerFileFns(
         addKey(canonical, id, id)
         addKey(canonical, decl.name + "/" + decl.params.count.toString(), id)
         registerBareTrailingSegment(bareTrailing, decl.name, decl.params.count, id)
+        // A plain function name two packages both declare (`Std.Json.parseJson`
+        // and `Std.Yaml.parseJson`): the walk marks every candidate in the
+        // caller's import closure reachable, so codegen's import-aware
+        // resolution has the right one to pick.
+        if lastDotIndex(decl.name) < 0 {
+          registerBareName(bareTrailing, decl.name, decl.params.count, id)
+        }
       }
       case IExternFunc(decl) -> {
         val id = pkg + "." + decl.name + "/" + decl.params.count.toString()
@@ -2119,9 +2338,77 @@ func registerBareTrailingSegment(
   }
 }
 
+func registerBareName(bareTrailing: in Map[String, List[String]], name: in String, arity: in Int, id: in String): Unit {
+  val key = "=" + name + "/" + arity.toString()
+  match mapGet(bareTrailing, key) {
+    case Some(targets) -> targets.add(id)
+    case None -> {
+      val targets: List[String] = newList()
+      targets.add(id)
+      bareTrailing.add(key, targets)
+    }
+  }
+}
+
 func addKey(m: in Map[String, String], k: in String, v: in String): Unit {
   if not m.containsKey(k) {
     m.add(k, v)
+  }
+}
+
+// An own package's `impl`, record and protected-type method bodies are lowered whole (`unitOf`'s
+// `collectImplMethods`), so what they call must be reachable too: index each
+// method under its lowered name and seed the walk with it. Without this a
+// stdlib function called only from an impl method (`Std.HttpServer.nextContext`
+// from an accept loop's `step`) never reaches the bundle.
+func seedImplMethods(
+  f: in SourceFile,
+  bodyIndex: in Map[String, FunctionDecl],
+  pkgOfId: in Map[String, String],
+  reachable: in Map[String, Bool],
+  fnWorklist: in List[String],
+): Unit {
+  val pkg = dottedPath(f.packageDecl.path)
+  for item in f.items {
+    match item.kind {
+      case IImpl(decl) -> {
+        val methods: List[FunctionDecl] = newList()
+        collectImplMethods(pkg, decl, methods)
+        seedMethodList(pkg, methods, bodyIndex, pkgOfId, reachable, fnWorklist)
+      }
+      case IRecord(decl) -> {
+        val methods: List[FunctionDecl] = newList()
+        collectRecordMethods(pkg, decl, methods)
+        seedMethodList(pkg, methods, bodyIndex, pkgOfId, reachable, fnWorklist)
+      }
+      case IProtected(decl) -> {
+        val methods: List[FunctionDecl] = newList()
+        collectProtectedMethods(pkg, decl, methods)
+        seedMethodList(pkg, methods, bodyIndex, pkgOfId, reachable, fnWorklist)
+      }
+      case _ -> ()
+    }
+  }
+}
+
+func seedMethodList(
+  pkg: in String,
+  methods: in List[FunctionDecl],
+  bodyIndex: in Map[String, FunctionDecl],
+  pkgOfId: in Map[String, String],
+  reachable: in Map[String, Bool],
+  fnWorklist: in List[String],
+): Unit {
+  for fn in methods {
+    val id = pkg + "." + fn.name + "/" + fn.params.count.toString()
+    if not bodyIndex.containsKey(id) {
+      bodyIndex.add(id, fn)
+      pkgOfId.add(id, pkg)
+    }
+    if not reachable.containsKey(id) {
+      reachable.add(id, true)
+      fnWorklist.add(id)
+    }
   }
 }
 
@@ -2183,11 +2470,13 @@ func unitOf(
       }
       case IVal(decl) -> {
         match decl.pattern.kind {
-          case PBinding(vn, _) -> moduleVals.add(ModuleValDef(name = vn, init = decl.init, ty = decl.ty))
+          case PBinding(vn, _) -> moduleVals.add(ModuleValDef(name = vn, init = decl.init, ty = decl.ty, pkg = pkg))
           case _ -> ()
         }
       }
-      case IConst(decl) -> moduleVals.add(ModuleValDef(name = decl.name, init = decl.init, ty = Some(value = decl.ty)))
+      case IConst(decl) -> moduleVals.add(
+        ModuleValDef(name = decl.name, init = decl.init, ty = Some(value = decl.ty), pkg = pkg)
+      )
       case IExternFunc(decl) -> {
         val id = pkg + "." + decl.name + "/" + decl.params.count.toString()
         if lowerAll or reachable.containsKey(id) {
@@ -2263,6 +2552,7 @@ func unitOf(
     protecteds = protecteds,
     moduleVals = moduleVals,
     importsStdString = fileImportsStdString(f),
+    imports = fileImportPackages(f),
     methodCallArities = arities
   )
 }

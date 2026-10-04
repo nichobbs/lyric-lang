@@ -1,0 +1,35 @@
+# examples/native-web/lyric.toml — lyric-web and lyric-ws on --target native.
+#
+# A small HTTP + WebSocket service built into a native executable. It is the
+# end-to-end check for the native backends of lyric-web and lyric-ws
+# (scripts/ci/native-web-smoke.sh builds it, runs it and drives it over HTTP and
+# a raw RFC 6455 client).
+#
+# Build:  lyric build --manifest examples/native-web/lyric.toml --target native -o native-web
+# Run:    ./native-web            # listens on 127.0.0.1:18480
+
+[package]
+name        = "Lyric.NativeWeb"
+version     = "0.1.0"
+description = "HTTP and WebSocket service on the native backend."
+authors     = ["Lyric authors"]
+license     = "Apache-2.0"
+
+[project]
+name            = "Lyric.NativeWeb"
+output          = "single"
+output_assembly = "NativeWeb.dll"
+
+[project.packages]
+"NativeWeb" = "src/main.l"
+
+[features]
+default = ["dotnet"]
+dotnet  = []
+native  = []
+
+[dependencies]
+"Lyric.Web"        = { path = "../../lyric-web" }
+"Lyric.Ws"         = { path = "../../lyric-ws" }
+"Lyric.Auth"       = { path = "../../lyric-auth" }
+"Lyric.Resilience" = { path = "../../lyric-resilience" }

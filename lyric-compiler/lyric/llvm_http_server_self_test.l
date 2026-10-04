@@ -5,7 +5,7 @@
 //! native`) and run, mirroring `llvm_tls_self_test.l`'s and
 //! `llvm_http_client_self_test.l`'s harness shape.
 //!
-//! Thirteen cases:
+//! Sixteen cases (items N-P cover takeConnection, its refusals and chunked responses, after M):
 //!   - item A: a plaintext HTTP/1.1 round trip. A real client
 //!     (`Std.TcpHost.hostConnect`, plain TCP) on the SAME thread as the
 //!     server's own pull loop — a bare TCP `connect` completes into the
@@ -1286,4 +1286,176 @@ test "native Std.HttpServer timeout overrides parse with the same fallback rules
     "}\n"
   val r = compileAndRunNative(src)
   assertEqualInt(r.exitCode, 42, "Std.HttpServer native timeout override parsing (item M, #7268)")
+}
+
+// Shared client helpers for the takeConnection / chunked cases below: a
+// same-thread plain-TCP client (as item A) that reads until `marker` shows up.
+func connHelpersSource(): String {
+  "func joined(parts: in List[String]): String {\n" + "  var s = \"\"\n" + "  var i = 0\n" + "  while i < parts.count {\n" +
+    "    s = s + parts[i]\n" +
+    "    i = i + 1\n" +
+    "  }\n" +
+    "  s\n" +
+    "}\n" +
+    "func readUntil(conn: in Conn, acc: in List[String], marker: in String): Bool {\n" +
+    "  var tries = 0\n" +
+    "  while tries < 400 and not joined(acc).contains(marker) {\n" +
+    "    match hostRead(conn, 4096) {\n" +
+    "      case Ok(b) -> {\n" +
+    "        if b.length == 0 {\n" +
+    "          return joined(acc).contains(marker)\n" +
+    "        }\n" +
+    "        match tryDecodeUtf8(b) {\n" +
+    "          case Some(s) -> acc.add(s)\n" +
+    "          case None -> ()\n" +
+    "        }\n" +
+    "      }\n" +
+    "      case Err(_) -> return joined(acc).contains(marker)\n" +
+    "    }\n" +
+    "    tries = tries + 1\n" +
+    "  }\n" +
+    "  joined(acc).contains(marker)\n" +
+    "}\n"
+}
+
+test "native Std.HttpServer takeConnection hands the connection to its caller and hostRemoteAddress names the peer (item N)" {
+  val src = "package N\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Encoding\n" +
+    "import Std.HttpServer\n" +
+    "import Std.TcpHost\n" +
+    connHelpersSource() +
+    "func main(): Int {\n" +
+    "  val listener = startListener(\"http://127.0.0.1:19732/\")\n" +
+    "  val client = match hostConnect(\"127.0.0.1\", 19732) {\n" +
+    "    case Ok(c) -> c\n" +
+    "    case Err(_) -> return 1\n" +
+    "  }\n" +
+    "  val req = \"GET /up HTTP/1.1\\r\\nHost: x\\r\\nConnection: Upgrade\\r\\nUpgrade: test\\r\\n\\r\\n\"\n" +
+    "  match hostWrite(client, encodeUtf8(req)) {\n" +
+    "    case Ok(_) -> ()\n" +
+    "    case Err(_) -> return 2\n" +
+    "  }\n" +
+    "  val ctx = nextContext(listener)\n" +
+    "  val taken = match takeConnection(ctx) {\n" +
+    "    case Ok(c) -> c\n" +
+    "    case Err(_) -> return 3\n" +
+    "  }\n" +
+    "  if not hostRemoteAddress(taken).startsWith(\"127.0.0.1:\") {\n" +
+    "    return 4\n" +
+    "  }\n" +
+    "  match hostWrite(taken, encodeUtf8(\"HELLO-TAKEN\")) {\n" +
+    "    case Ok(_) -> ()\n" +
+    "    case Err(_) -> return 5\n" +
+    "  }\n" +
+    "  val fromServer: List[String] = newList()\n" +
+    "  if not readUntil(client, fromServer, \"HELLO-TAKEN\") {\n" +
+    "    return 6\n" +
+    "  }\n" +
+    "  match hostWrite(client, encodeUtf8(\"PING-TAKEN\")) {\n" +
+    "    case Ok(_) -> ()\n" +
+    "    case Err(_) -> return 7\n" +
+    "  }\n" +
+    "  val fromClient: List[String] = newList()\n" +
+    "  if not readUntil(taken, fromClient, \"PING-TAKEN\") {\n" +
+    "    return 8\n" +
+    "  }\n" +
+    "  hostClose(taken)\n" +
+    "  hostClose(client)\n" +
+    "  stopListener(listener)\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "Std.HttpServer native takeConnection hand-off (item N)")
+}
+
+test "native Std.HttpServer takeConnection refuses an HTTP/1.0 request and a request with trailing input, leaving the exchange answerable (item O)" {
+  val src = "package O\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Encoding\n" +
+    "import Std.HttpServer\n" +
+    "import Std.TcpHost\n" +
+    connHelpersSource() +
+    "func refused(port: in Int, listener: in HttpListener, request: in String, marker: in String): Bool {\n" +
+    "  val client = match hostConnect(\"127.0.0.1\", port) {\n" +
+    "    case Ok(c) -> c\n" +
+    "    case Err(_) -> return false\n" +
+    "  }\n" +
+    "  match hostWrite(client, encodeUtf8(request)) {\n" +
+    "    case Ok(_) -> ()\n" +
+    "    case Err(_) -> return false\n" +
+    "  }\n" +
+    "  val ctx = nextContext(listener)\n" +
+    "  var ok = false\n" +
+    "  match takeConnection(ctx) {\n" +
+    "    case Ok(_) -> ()\n" +
+    "    case Err(_) -> {\n" +
+    "      ok = true\n" +
+    "    }\n" +
+    "  }\n" +
+    "  respondText(ctx, 200, marker)\n" +
+    "  val acc: List[String] = newList()\n" +
+    "  val got = readUntil(client, acc, marker)\n" +
+    "  hostClose(client)\n" +
+    "  ok and got\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val listener = startListener(\"http://127.0.0.1:19733/\")\n" +
+    "  if not refused(19733, listener, \"GET /a HTTP/1.0\\r\\nHost: x\\r\\n\\r\\n\", \"answered-http10\") {\n" +
+    "    return 1\n" +
+    "  }\n" +
+    "  if not refused(19733, listener, \"GET /b HTTP/1.1\\r\\nHost: x\\r\\n\\r\\nEXTRA-BYTES\", \"answered-trailing\") {\n" +
+    "    return 2\n" +
+    "  }\n" +
+    "  stopListener(listener)\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "Std.HttpServer native takeConnection refusals (item O)")
+}
+
+test "native Std.HttpServer chunked response streams chunks and terminates with the zero chunk (item P)" {
+  val src = "package P\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Encoding\n" +
+    "import Std.HttpServer\n" +
+    "import Std.TcpHost\n" +
+    connHelpersSource() +
+    "func main(): Int {\n" +
+    "  val listener = startListener(\"http://127.0.0.1:19734/\")\n" +
+    "  val client = match hostConnect(\"127.0.0.1\", 19734) {\n" +
+    "    case Ok(c) -> c\n" +
+    "    case Err(_) -> return 1\n" +
+    "  }\n" +
+    "  match hostWrite(client, encodeUtf8(\"GET /s HTTP/1.1\\r\\nHost: x\\r\\nConnection: close\\r\\n\\r\\n\")) {\n" +
+    "    case Ok(_) -> ()\n" +
+    "    case Err(_) -> return 2\n" +
+    "  }\n" +
+    "  val ctx = nextContext(listener)\n" +
+    "  val extra: Map[String, String] = newMap()\n" +
+    "  val stream = beginChunkedResponse(ctx, 200, \"text/plain\", extra)\n" +
+    "  val payload = encodeUtf8(\"helloworld\")\n" +
+    "  match streamWriteChunk(stream, payload, 0, 5) {\n" +
+    "    case Ok(_) -> ()\n" +
+    "    case Err(_) -> return 3\n" +
+    "  }\n" +
+    "  match streamWriteChunk(stream, payload, 5, 5) {\n" +
+    "    case Ok(_) -> ()\n" +
+    "    case Err(_) -> return 4\n" +
+    "  }\n" +
+    "  endChunkedResponse(ctx, stream)\n" +
+    "  val acc: List[String] = newList()\n" +
+    "  if not readUntil(client, acc, \"0\\r\\n\\r\\n\") {\n" +
+    "    return 5\n" +
+    "  }\n" +
+    "  val all = joined(acc)\n" +
+    "  hostClose(client)\n" +
+    "  stopListener(listener)\n" +
+    "  if not all.startsWith(\"HTTP/1.1 200\") {\n" +
+    "    return 6\n" +
+    "  }\n" +
+    "  if not all.contains(\"Transfer-Encoding: chunked\") {\n" +
+    "    return 7\n" +
+    "  }\n" +
+    "  if not all.contains(\"5\\r\\nhello\\r\\n5\\r\\nworld\\r\\n0\\r\\n\\r\\n\") {\n" +
+    "    return 8\n" +
+    "  }\n" +
+    "  42\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "Std.HttpServer native chunked response (item P)")
 }

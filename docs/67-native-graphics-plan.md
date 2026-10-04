@@ -161,7 +161,9 @@ record, directly or in a callback type, follows the platform C ABI on x86-64,
 AArch64 and wasm32 (#8009): the record is coerced into registers, passed as
 `byval` memory, or returned through `sret`, as clang lowers the same C
 prototype, so `WGPUColor` or `SDL_FRect` cross by value. An inline array or
-union in an `extern func` signature is still `N0010`.
+union in an `extern func` signature is still `N0010`, as is a by-value record on
+a Windows triple (the Microsoft x64 and ARM64 C ABIs are not lowered; Windows is
+not a native target yet, §6).
 
 Inline **unions** shipped too (progress entry `2026-10-02-native-inline-unions`):
 a union whose every case payload field is by-value (scalars, enums, distinct
@@ -184,8 +186,9 @@ matrices and small lookup tables need.
   NAMED range subtype that proves the access (an inline `Int range` annotation
   is not a proof). An integer index of any width is accepted; a non-`Int` one
   is range checked as a `Long`.
-- Lowered to `[N x T]` on native, and to a `List` on MSIL and the JVM
-  (D167).
+- Lowered to `[N x T]` on native, to a `List` on MSIL, and on the JVM to
+  a typed Java array (`float[]`) for a numeric element and an `ArrayList`
+  otherwise (D167, #8041).
 
 **Status: implemented (D167, progress entry `2026-10-02-fixed-arrays`).**
 Bracket-literal construction, zero fill, element writes, copies by the
@@ -194,8 +197,13 @@ escaping, is copied; immutable places are never copied), `.length`, `for`,
 `.toSlice()`, `==` and named-range-subtype bounds-check elision work on all
 three targets. On native an array of by-value elements is
 an inline `[N x T]` with no allocation and a by-value record may hold one; any
-other element type is a heap array. Value-generic `N` (D167 item 6) and the C
-an array in an `extern func` signature (N0010: C passes no array by value; pass a `NativePtr` to its first element) are open.
+other element type is a heap array. A value-generic length `N` (D167 item 6)
+sizes a function's array parameters and, since D169, a record's array fields
+(`record Mat[N: Nat] { var m: array[N, Float] }`), each length specialised on
+all three targets; a value-generic record is package-local for now (#8150),
+and unions, opaque and protected types cannot take one yet (#8149). An array
+in an `extern func` signature is open (N0010: C passes no array by value; pass
+a `NativePtr` to its first element).
 
 ### 4.4 `buffer[T]`: contiguous, mutable, value semantics
 

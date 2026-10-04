@@ -118,6 +118,7 @@ for t in \
   lyric-compiler/lyric/cli_copydll_self_test.l \
   lyric-compiler/lyric/cli_publish_self_test.l \
   lyric-compiler/lyric/verifier_self_test.l \
+  lyric-compiler/lyric/verifier_records_self_test.l \
   lyric-compiler/lyric/return_list_literal_self_test.l \
   lyric-compiler/lyric/closure_unannotated_result_self_test.l \
   lyric-compiler/lyric/lambda_field_ctor_arg_self_test.l \
@@ -142,9 +143,12 @@ for t in \
   lyric-compiler/lyric/await_hoist_typed_self_test.l \
   lyric-compiler/lyric/expected_type_propagation_self_test.l \
   lyric-compiler/lyric/generic_ctor_open_arg_self_test.l \
+  lyric-compiler/lyric/generic_ctor_widening_self_test.l \
+  lyric-compiler/lyric/generic_ctor_unsigned_widening_self_test.l \
   lyric-compiler/lyric/overflow_self_test.l \
   lyric-compiler/lyric/overflow_panic_self_test.l \
   lyric-compiler/lyric/fixed_array_self_test.l \
+  lyric-compiler/lyric/value_generic_record_self_test.l \
   lyric-compiler/lyric/fixed_array_panic_self_test.l \
   lyric-compiler/lyric/bench_alloc_self_test.l \
   lyric-compiler/lyric/record_eq_self_test.l \
@@ -247,6 +251,22 @@ if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
   echo "=== scripts/ci/fixed-array-e2e.sh ==="
   LYRIC_BIN="$lyric_bin" bash scripts/ci/fixed-array-e2e.sh dotnet jvm
   ran="$ran fixed-array-e2e"
+fi
+# #8031: a value reaching an inline range type outside its range panics with
+# `RangeViolated`, both targets (Java 21, as above).
+idx=$((idx + 1))
+if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
+  echo "=== scripts/ci/range-refinement-e2e.sh ==="
+  LYRIC_BIN="$lyric_bin" bash scripts/ci/range-refinement-e2e.sh dotnet jvm
+  ran="$ran range-refinement-e2e"
+fi
+# D169: a value-generic record is usable in its own package, and naming
+# another package's is T0164, both targets (Java 21, as above).
+idx=$((idx + 1))
+if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
+  echo "=== scripts/ci/value-generic-record-e2e.sh ==="
+  LYRIC_BIN="$lyric_bin" bash scripts/ci/value-generic-record-e2e.sh dotnet jvm
+  ran="$ran value-generic-record-e2e"
 fi
 # #7858: `println(x)` writes what `toString(x)` returns for records, lists,
 # extern structs and extern objects, on both targets (Java 21, as above).

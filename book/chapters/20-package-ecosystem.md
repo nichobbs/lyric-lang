@@ -190,6 +190,8 @@ pub aspect Logging { … }
 func emitSpan(name: in String): Unit { … }
 ```
 
+A predicate is a single `feature = "X"` or `target = "X"`, or a composition of them with `any(...)` (at least one holds), `all(...)` (every one holds) and `not(...)`, nested to any depth. Every operand is evaluated, so a typo in one is reported even when another already decides the result. A malformed predicate is error `F0012` and keeps the item rather than silently erasing it. Composition is how one kernel file serves two targets: `@cfg(any(feature = "dotnet", feature = "native"))`.
+
 The CLI flags `--features X,Y`, `--no-default-features`, and `--all-features` on `lyric build` / `run` / `test` / `prove` / `publish` choose the **active feature set** for one build. Items whose `@cfg(...)` predicate is false are physically erased from the output — there is no IL, no metadata, and no runtime branch.
 
 ### §20.7.1 Features are publish-time, not consumer-toggleable

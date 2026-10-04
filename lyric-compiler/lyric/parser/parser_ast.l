@@ -52,6 +52,9 @@ pub union AnnotationValue {
 pub union AnnotationArg {
   case AAName(name: String, value: AnnotationValue, span: Span)
   case ABare(name: String, span: Span)
+  /// A nested call-shaped argument, `any(feature = "a", feature = "b")`:
+  /// the head name, its arguments, and the span of the whole call.
+  case AACall(name: String, args: List[AnnotationArg], span: Span)
   case ALiteral(value: AnnotationValue, span: Span)
 }
 
@@ -1342,11 +1345,89 @@ pub func arrayUncheckedIntrinsic(): String = "__lyric_unchecked"
 /// `List[T]`, for a backend whose arrays are lists.
 pub func arraysAsListsKey(): String = "__lyric_arrays_as_lists"
 
+/// The reserved key that, beside `arraysAsListsKey`, keeps an `array[N, T]`
+/// whose element is a primitive (`primitiveArrayElement`) an array: the JVM
+/// represents it as the matching typed Java array (#8041).
+pub func primitiveArraysKey(): String = "__lyric_primitive_arrays"
+
+/// The intrinsic a backend with typed primitive arrays builds a bracket
+/// literal of an `array[N, T]` with: `__lyric_array_of[array[N, T]](e0, ...)`.
+pub func arrayOfIntrinsic(): String = "__lyric_array_of"
+
+/// Whether `te`, the element type of an `array[N, T]`, is one a JVM array
+/// holds unboxed: `Int`, `Long`, `Float`, `Double`, `Byte`, `Bool`, `Char`,
+/// `UInt`, `ULong`, `Nat`, or an inline range of one of them.
+pub func primitiveArrayElement(te: in TypeExpr): Bool {
+  match te.kind {
+    case TParen(inner) -> primitiveArrayElement(inner)
+    case TRef(p) -> p.segments.count == 1 and primitiveArrayElementName(p.segments[0])
+    case TRefined(u, _) -> u.segments.count == 1 and primitiveArrayElementName(u.segments[0])
+    case _ -> false
+  }
+}
+
+func primitiveArrayElementName(n: in String): Bool {
+  n == "Int" or n == "Long" or n == "Float" or n == "Double" or n == "Byte" or n == "Bool" or n == "Char" or n == "UInt" or
+    n == "ULong" or
+    n == "Nat"
+}
+
 /// The prefix of the keys that give `Lyric.TypeAliasResolve.resolveAliasesInFile`
 /// the resolved length of an `array[N, T]` type expression: the key is the
 /// prefix followed by `recordCopySiteKey` of the type expression and the value
 /// an `array[<literal>, ()]` type carrying the length (D167).
 pub func arrayLenMarkerPrefix(): String = "__lyric_alen:"
+
+/// Value-generic records (D169) in `Lyric.TypeAliasResolve`'s alias map:
+/// - `valueRecordMarkerPrefix() + name` marks the record `name`, as a
+///   `name[...]` type whose arguments are a `TAValue` at each value generic
+///   parameter's position and a `TAType` at each type parameter's;
+/// - `valueArgMarkerPrefix() + recordCopySiteKey(span)` gives the length a
+///   constant argument at `span` folds to, as `array[<literal>, ()]`;
+/// - `valueRecordUsePrefix() + specName` is added by the pass for each
+///   specialisation it names, as `name[<lengths>]`.
+/// The pass renames each instance with literal lengths to its
+/// specialisation (`valueRecordSpecName`), and each construction marked
+/// `name[<lengths>](...)` to a construction of it.
+pub func valueRecordMarkerPrefix(): String = "__lyric_vrec:"
+
+pub func valueArgMarkerPrefix(): String = "__lyric_varg:"
+
+pub func valueRecordUsePrefix(): String = "__lyric_vuse:"
+
+/// Whether `name` is a value-generic record's specialisation
+/// (`valueRecordSpecName`): it ends in one or more `__V<digits>` parts.
+pub func isValueRecordSpecName(name: in String): Bool {
+  val at = match name.indexOf("__V") { case Some(k) -> k; case None -> return false }
+  if at == 0 {
+    return false
+  }
+  var i = at
+  while i < name.length {
+    if i + 3 > name.length or name.substring(i, 3) != "__V" {
+      return false
+    }
+    i = i + 3
+    val digitsStart = i
+    while i < name.length and "0123456789".contains(name.substring(i, 1)) {
+      i = i + 1
+    }
+    if i == digitsStart {
+      return false
+    }
+  }
+  true
+}
+
+/// The specialisation of value-generic record `name` at `lengths` (D169):
+/// `FixedVec__V3`, `Grid__V4__V2`.
+pub func valueRecordSpecName(name: in String, lengths: in List[Int]): String {
+  var s = name
+  for n in lengths {
+    s = s + "__V" + toString(n)
+  }
+  s
+}
 
 /// An `array[len, T]` operand whose spelled type the array lowering needs
 /// (a `for` iterable, a `.toSlice()` receiver, a copied place read).
@@ -1643,12 +1724,49 @@ pub func argsWithDefaults(
         toString(skip)
     )
   }
+  val slots: List[Int] = match pairCallArgs(paramNames, skip, args) {
+    case Ok(paired) -> paired
+    case Err(why) -> {
+      unpairableCallArgs(callee, why, paramNames)
+      newList()
+    }
+  }
+  val filled: List[CallArg] = newList()
+  var k = 0
+  while k < total {
+    if slots[k] >= 0 {
+      filled.add(args[slots[k]])
+    } else {
+      match defaults[skip + k] {
+        case Some(d) -> filled.add(CAPositional(expr = d))
+        case None -> unpairableCallArgs(
+          callee,
+          "parameter '" + paramNames[skip + k] + "' has no argument and no default",
+          paramNames
+        )
+      }
+    }
+    k = k + 1
+  }
+  filled
+}
+
+/// Pair a call's arguments with the callee's parameters after the first
+/// `skip`, as the type checker pairs them (`argsWithDefaults`): each named
+/// argument goes to its parameter, then the positional ones fill the free
+/// parameters left to right.  The result holds, for each of those
+/// parameters in order, the index in `args` of its argument, or -1 when the
+/// call leaves it out.  `Err` says why the arguments cannot be paired.  For a
+/// consumer that sees calls the type checker has not accepted (`lyric
+/// prove`, #7873), where `argsWithDefaults` would treat that as a compiler
+/// bug.
+pub func pairCallArgs(paramNames: in List[String], skip: in Int, args: in List[CallArg]): Result[List[Int], String] {
+  val total = paramNames.count - skip
+  if total < 0 {
+    return Err(error = "the parameter list is shorter than its receiver prefix")
+  }
   if args.count > total {
-    unpairableCallArgs(
-      callee,
-      "expected at most " + toString(total) + " argument(s), got " + toString(args.count),
-      paramNames
-    )
+    return Err(error = "expected at most " + toString(total) + " argument(s), got " + toString(args.count))
   }
   val slots: List[Int] = newList()
   var s = 0
@@ -1669,10 +1787,10 @@ pub func argsWithDefaults(
           pi = pi + 1
         }
         if found < 0 {
-          unpairableCallArgs(callee, "no parameter named '" + nm + "'", paramNames)
+          return Err(error = "no parameter named '" + nm + "'")
         }
         if slots[found] >= 0 {
-          unpairableCallArgs(callee, "parameter '" + nm + "' is given more than once", paramNames)
+          return Err(error = "parameter '" + nm + "' is given more than once")
         }
         slots[found] = ai
       }
@@ -1689,7 +1807,7 @@ pub func argsWithDefaults(
           next = next + 1
         }
         if next >= total {
-          unpairableCallArgs(callee, "a positional argument has no free parameter", paramNames)
+          return Err(error = "a positional argument has no free parameter")
         }
         slots[next] = ai
         next = next + 1
@@ -1698,24 +1816,7 @@ pub func argsWithDefaults(
     }
     ai = ai + 1
   }
-  val filled: List[CallArg] = newList()
-  var k = 0
-  while k < total {
-    if slots[k] >= 0 {
-      filled.add(args[slots[k]])
-    } else {
-      match defaults[skip + k] {
-        case Some(d) -> filled.add(CAPositional(expr = d))
-        case None -> unpairableCallArgs(
-          callee,
-          "parameter '" + paramNames[skip + k] + "' has no argument and no default",
-          paramNames
-        )
-      }
-    }
-    k = k + 1
-  }
-  filled
+  Ok(value = slots)
 }
 
 func unpairableCallArgs(callee: in String, why: in String, paramNames: in List[String]): Unit {

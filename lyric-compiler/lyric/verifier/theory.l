@@ -30,6 +30,10 @@ pub union RangeBoundKind {
 pub record SortInfo {
   pub sort: Sort
   pub range: RangeBoundKind
+  // The width of a fixed-width signed integer modelled as the unbounded
+  // `Int` sort: 32 for `Int`, 64 for `Long` and `Nat`, 0 for every other
+  // sort or an integer whose width is not known (#7871).
+  pub intBits: Int = 0
 }
 
 pub func sortInfoNoRange(s: in Sort): SortInfo {
@@ -45,14 +49,14 @@ pub func primitiveSort(name: in String): Option[SortInfo] {
     return Some(value = sortInfoNoRange(SBool))
   }
   if name == "Int" {
-    return Some(value = sortInfoNoRange(SInt))
+    return Some(value = SortInfo(sort = SInt, range = RBKNone, intBits = 32))
   }
   if name == "Long" {
-    return Some(value = sortInfoNoRange(SInt))
+    return Some(value = SortInfo(sort = SInt, range = RBKNone, intBits = 64))
   }
   if name == "Nat" {
     val natRange = RBKClosed(lo = 0i64, hi = 9223372036854775807i64)
-    val natSortInfo = SortInfo(sort = SInt, range = natRange)
+    val natSortInfo = SortInfo(sort = SInt, range = natRange, intBits = 64)
     return Some(value = natSortInfo)
   }
   if name == "UInt" {
@@ -172,10 +176,10 @@ pub func sortOfTypeExpr(t: in TypeExpr): SortInfo {
       val segs = underlying.segments
       val leaf = if segs.count > 0 { segs[segs.count - 1] } else { "" }
       match primitiveSort(leaf) {
-        case Some(si) -> refinedSortInfo(si.sort, range)
+        case Some(si) -> refinedSortInfo(si.sort, si.intBits, range)
         // `Char` (whose literals translate to their code point) and a base
         // the file does not declare are modelled as integers, as before.
-        case None -> refinedSortInfo(SInt, range)
+        case None -> refinedSortInfo(SInt, 0, range)
       }
     }
     case TTuple(elts) -> {
@@ -205,11 +209,12 @@ pub func sortOfTypeExpr(t: in TypeExpr): SortInfo {
   }
 }
 
-// The sort/range of `base range <bound>`.  Only an integer or bitvector
-// base carries a range the verifier can state.
-pub func refinedSortInfo(base: in Sort, range: in RangeBound): SortInfo {
+// The sort/range of `base range <bound>`, where `intBits` is the base's
+// signed width (`SortInfo.intBits`).  Only an integer or bitvector base
+// carries a range the verifier can state.
+pub func refinedSortInfo(base: in Sort, intBits: in Int, range: in RangeBound): SortInfo {
   match base {
-    case SInt -> SortInfo(sort = base, range = constFoldRangeBound(range, base))
+    case SInt -> SortInfo(sort = base, range = constFoldRangeBound(range, base), intBits = intBits)
     case SBitVec(_) -> SortInfo(sort = base, range = constFoldRangeBound(range, base))
     case _ -> SortInfo(
       sort = base,
@@ -440,6 +445,57 @@ pub func rangeObligationsForTerm(v: in Term, info: in SortInfo): Result[List[Ter
 // Generate range-bound hypotheses for a binder of the given sort/range.
 pub func rangeHypotheses(binder: in String, info: in SortInfo): List[Term] {
   rangeHypothesesForTerm(TVar(name = binder, sort = info.sort), info)
+}
+
+// The least and greatest value of a `bits`-wide signed integer (32 or 64).
+pub func signedMinOfBits(bits: in Int): Long {
+  if bits == 32 {
+    -2147483648i64
+  } else {
+    -9223372036854775807i64 - 1i64
+  }
+}
+
+pub func signedMaxOfBits(bits: in Int): Long {
+  if bits == 32 {
+    2147483647i64
+  } else {
+    9223372036854775807i64
+  }
+}
+
+// `MIN <= v <= MAX` for a `bits`-wide signed integer `v` modelled as an
+// unbounded `Int` (#7871).
+pub func signedWidthBounds(v: in Term, bits: in Int): List[Term] {
+  val result: List[Term] = newList()
+  val lo = TLit(value = VLInt(n = signedMinOfBits(bits)), sort = SInt)
+  val hi = TLit(value = VLInt(n = signedMaxOfBits(bits)), sort = SInt)
+  result.add(TBuiltin(op = BOpLte, args = termList2(lo, v)))
+  result.add(TBuiltin(op = BOpLte, args = termList2(v, hi)))
+  result
+}
+
+// The width facts of a value that exists at runtime — a parameter, a
+// protected-type field, a callee's result: an `Int` is within 32 bits and a
+// `Long` within 64, whatever the build profile (#7871).  Empty for every
+// other sort.  A value computed by the body is not covered: its arithmetic
+// is mathematical, and only `@proof_required(checked_arithmetic)` proves it
+// stays in range.
+pub func intWidthHypothesesForTerm(v: in Term, info: in SortInfo): List[Term] {
+  match info.sort {
+    case SInt -> {
+      if info.intBits > 0 {
+        signedWidthBounds(v, info.intBits)
+      } else {
+        val none: List[Term] = newList()
+        none
+      }
+    }
+    case _ -> {
+      val none: List[Term] = newList()
+      none
+    }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

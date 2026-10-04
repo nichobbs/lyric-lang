@@ -280,6 +280,8 @@ extern func rtSockLocalPort(fd: Int): Int = "lyric_sock_local_port"
 
 extern func rtSockClose(fd: Int): Int = "lyric_sock_close"
 
+extern func rtSockPeerString(fd: Int): String = "lyric_sock_peer_string"
+
 // POSIX shutdown(2): interrupts a blocking read/write on `fd` from ANOTHER
 // thread without invalidating the descriptor itself (unlike close(2), which
 // would race a concurrent owner-thread close on the same fd if a stale
@@ -803,6 +805,13 @@ pub func hostClose(c: in Conn): Unit {
     rtTlsFree(c.tlsConnHandle)
   }
   val _ = rtSockClose(c.fd)
+}
+
+/// The peer's address as `"ip:port"` (`"[ip]:port"` for IPv6), or `""` if it
+/// cannot be determined. Best effort, a diagnostic value that is never
+/// load-bearing for protocol correctness (same contract as the dotnet twin).
+pub func hostRemoteAddress(c: in Conn): String {
+  rtSockPeerString(c.fd)
 }
 
 /// The raw file descriptor backing this connection. Exposed for a caller

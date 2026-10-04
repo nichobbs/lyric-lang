@@ -398,7 +398,9 @@ pub func compileToJar(
     checkedSourceOut = optsCheckedOut,
     memberRecvClassesOut = recvClasses,
     methodCallAritiesOut = callArities,
-    arraysAsLists = true
+    genericItemsOut = newList(),
+    arraysAsLists = true,
+    primitiveArrays = true
   )
   val file = match pipeMiddleEnd(file0, importedPkgs, noDeriveImports, allMonoFuncs, pipeInterfaceDecls(importedItems), pipeRecordDecls(importedItems), noTemplates, opts, None) {
     case Some(f) -> pipeCBindingsToFuncs(f)
@@ -553,7 +555,9 @@ func runMiddleEnd(
     checkedSourceOut = checkedOut,
     memberRecvClassesOut = recvClassesOut,
     methodCallAritiesOut = aritiesOut,
+    genericItemsOut = newList(),
     arraysAsLists = true,
+    primitiveArrays = true,
     ioForbiddenReason = ioForbiddenReason
   )
   // `@library` extern funcs become foreign-function downcall methods (D158).
@@ -587,8 +591,10 @@ func resolveTypeAliases(file: in SourceFile): SourceFile {
   TAR.resolveAliasesInFile(BFR.collectFuncAliasTargets(file), file)
 }
 
-// `array[N, T]` is a `List[T]` on this target (D167): the middle end lowers
-// every array operation and type (`MiddleEndOptions.arraysAsLists`), but the
+// `array[N, T]` is a `List[T]` on this target (D167), except that one of a
+// primitive element is the matching typed Java array (#8041): the middle end
+// lowers every array operation and type (`MiddleEndOptions.arraysAsLists`,
+// `primitiveArrays`), but the
 // signature, field, case and constructor registries are built from the parsed
 // file before it runs, so they are built from this copy with the array types
 // already spelled as lists.  The middle end itself is given the original,
@@ -596,6 +602,7 @@ func resolveTypeAliases(file: in SourceFile): SourceFile {
 func arrayTypesAsLists(file: in SourceFile): SourceFile {
   val marker: Map[String, TypeExpr] = newMap()
   marker.add(arraysAsListsKey(), TypeExpr(kind = TUnit, span = file.span))
+  marker.add(primitiveArraysKey(), TypeExpr(kind = TUnit, span = file.span))
   TAR.resolveAliasesInFile(marker, file)
 }
 
@@ -1949,6 +1956,28 @@ func isMonoSpecializedName(name: in String): Bool {
 // specialised copy keeps the generic's parameter defaults, so a call that
 // names its arguments or leaves a defaulted one out pairs as it would
 // against the generic itself (#7846).
+// Registers the records the middle end specialises from a value-generic
+// record (`Ints__V3`, D169): they exist only in the post-mono file, so the
+// registration from the parsed file never saw their methods and fields, and
+// a method call on one fell back to the `()Object` guess.
+func collectValueRecordSpecSigs(
+  file: in SourceFile,
+  into: in Map[String, JvmFuncSig],
+  externSeed: in Map[String, String],
+  ctorReg: in Map[String, String],
+): Unit {
+  val specs: List[Item] = newList()
+  for it in file.items {
+    val name = match it.kind { case IRecord(d) -> d.name; case IExposedRec(d) -> d.name; case _ -> "" }
+    if isValueRecordSpecName(name) {
+      specs.add(it)
+    }
+  }
+  if specs.count > 0 {
+    collectFileSigsSeeded(file.copy(items = specs), into, externSeed, ctorReg)
+  }
+}
+
 func collectMonoSpecializedSigs(
   file: in SourceFile,
   into: in Map[String, JvmFuncSig],
@@ -3466,6 +3495,12 @@ pub func compileProjectToJarBundledWithRestored(
         externSeedForFileCached(f, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache),
         ctorReg
       )
+      collectValueRecordSpecSigs(
+        f,
+        registry,
+        externSeedForFileCached(f, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache),
+        ctorReg
+      )
       // Register weaver-synthesised record fields (`__LyricBModeCallContext`,
       // `__LyricBModeCfg_*`, `__LyricBModeArgs_*`, docs/55/56) from the
       // post-weave file: `caseReg` above was built from the pre-weave
@@ -3605,6 +3640,12 @@ pub func compileProjectToJarBundledWithRestored(
             externSeedForFileCached(ff, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache)
           )
           collectMonoSpecializedSigs(
+            ff,
+            registry,
+            externSeedForFileCached(ff, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache),
+            ctorReg
+          )
+          collectValueRecordSpecSigs(
             ff,
             registry,
             externSeedForFileCached(ff, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache),

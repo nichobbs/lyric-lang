@@ -36,11 +36,11 @@ import Std.Random as Random
 import Std.SecureRandom as SecureRandom
 import Std.Encoding as Enc
 import Std.String
-import Std.HttpServer as HttpServer
 import Std.Task as Task
 import Web
 import Ui.Host.{Instance}
 import Ui.Host.Web as WebHost
+import Ui.Kernel.Guard as Guard
 import Ui.Kernel.Webview as Webview
 
 /// The window and its page server.  `port` 0 picks a free loopback port.
@@ -149,13 +149,7 @@ func freeLoopbackPort(): Result[Int, String] {
 }
 
 func canBind(port: in Int): Bool {
-  try {
-    val l = HttpServer.startListener("http://" + loopback + ":" + port.toString() + "/")
-    HttpServer.stopListener(l)
-    return true
-  } catch Bug as e {
-    return false
-  }
+  Guard.canBindLoopback(loopback, port)
 }
 
 /// The page the window shows first: it polls `probeUrl` until the server

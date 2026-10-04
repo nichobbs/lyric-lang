@@ -852,6 +852,13 @@ pub func annotationArgStr(aa: in AnnotationArg): String {
     case AAName(n, v, _) -> n + " = " + annotationValueStr(v)
     case ABare(n, _) -> n
     case ALiteral(v, _) -> annotationValueStr(v)
+    case AACall(n, inner, _) -> {
+      val parts: List[String] = newList()
+      for x in inner {
+        parts.add(annotationArgStr(x))
+      }
+      n + "(" + joinStrings(parts, ", ") + ")"
+    }
   }
 }
 

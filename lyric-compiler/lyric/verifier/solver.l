@@ -236,7 +236,8 @@ func isTautology(t: in Term): Bool {
     case TBuiltin(BOpImplies, args) -> args.count == 2 and termEq(args[0], args[1])
     case TBuiltin(BOpAnd, args) -> allTautologies(args)
     case TBuiltin(BOpOr, args) -> anyTautology(args)
-    case TIte(_, a, b) -> termEq(a, b) or (isTautology(a) and isTautology(b))
+    // `if c then p else p` is `p`, a tautology only when `p` is (#8102).
+    case TIte(_, a, b) -> isTautology(a) and isTautology(b)
     case _ -> false
   }
 }
@@ -408,9 +409,19 @@ func invokeSolver(binPath: in String, args: in List[String], smtSource: in Strin
     Counterexample(model = captured.stdout)
   } else if firstLine == "unknown" {
     Unknown(reason = pathBaseName(binPath) + " returned unknown")
+  } else if firstLine.startsWith("(error") {
+    // The query itself was malformed: a verifier bug, never a property of
+    // the program.  It stays a failed goal (#8102).
+    Unknown(reason = solverRejectedMarker() + firstLine)
   } else {
     Unknown(reason = pathBaseName(binPath) + " returned unexpected output: " + firstLine)
   }
+}
+
+// Prefixes the reason of an `Unknown` outcome whose query the solver
+// rejected; the rest of the reason is the solver's own text.
+pub func solverRejectedMarker(): String {
+  "solver rejected the query: "
 }
 
 func firstNonEmptyLine(s: in String): String {

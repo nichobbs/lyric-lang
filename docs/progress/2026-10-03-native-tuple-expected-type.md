@@ -43,4 +43,4 @@ lowers a `List` of tuples to the erased `MObject` (docs/59 §3 F10), so neither
 `val ys: List[(Option[Int], Int)] = [(None, 7)]` nor `ys.add((None, 1))` passes
 the tuple type to its elements. The `None` is built as `Option<object>`, and a
 reader throws `InvalidCastException`. Native and JVM handle these programs.
-This needs its own issue; the cross-target test covers `slice` only.
+Tracked in #8092; the cross-target test covers `slice` only.

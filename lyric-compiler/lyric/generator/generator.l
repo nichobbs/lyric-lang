@@ -292,7 +292,7 @@ func fieldTypeJson(src: in String, ty: in TypeExpr): String {
 func annotationJson(src: in String, ann: in Annotation): String {
   val args: List[String] = newList()
   for arg in ann.args {
-    val sp = match arg { case AAName(_, _, s) -> s; case ABare(_, s) -> s; case ALiteral(_, s) -> s }
+    val sp = match arg { case AAName(_, _, s) -> s; case ABare(_, s) -> s; case ALiteral(_, s) -> s; case AACall(_, _, s) -> s }
     args.add(jsonStr(spanText(src, sp)))
   }
   "{\"name\":" + jsonStr(modulePathJoin(ann.name.segments)) + ",\"args\":" + jsonArray(args) + "}"
