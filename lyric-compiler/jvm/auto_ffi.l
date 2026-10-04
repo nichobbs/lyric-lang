@@ -547,7 +547,8 @@ func scoreParamMatch(argDesc: in String, paramDesc: in String, argIsNarrowedSlic
   // primitive-element array descriptor (`[C`/`[B`/etc.) — those interact
   // with `slice[T]`'s own primitive-array codegen/element-type inference
   // in ways this narrow fix doesn't need to touch, and widening them here
-  // regressed `slice_array_abi_self_test.l`.
+  // regressed `slice_array_abi_self_test.l`; a genuine primitive array
+  // reaches `Object` only through the lowest-priority arm further down.
   if paramDesc == "Ljava/lang/Object;" and (argDesc.startsWith("L") or argDesc.startsWith("[L")) {
     return 3
   }
@@ -624,6 +625,14 @@ func scoreParamMatch(argDesc: in String, paramDesc: in String, argIsNarrowedSlic
   // resolves at all, not how the value is later moved.
   if argIsNarrowedSliceErasure and isPrimitiveArrayDesc(argDesc) and paramDesc == "Ljava/lang/Object;" {
     return 3
+  }
+  // A genuine primitive array (a numeric `array[N, T]` is `int[]`/`float[]`/...
+  // on this target, #8041) is an `Object` too, so it is accepted by an
+  // `Object` parameter (`ArrayList.add` of a `List[array[3, Int]]`). Scored
+  // below every other match so an overload taking the array type itself, or
+  // a narrowed slice's arm above, always wins.
+  if isPrimitiveArrayDesc(argDesc) and paramDesc == "Ljava/lang/Object;" {
+    return 1
   }
   // Reference/reference pairs are not classified here: the descriptor strings
   // alone do not carry the class hierarchy.  `scoreParam` (which has the auto-FFI

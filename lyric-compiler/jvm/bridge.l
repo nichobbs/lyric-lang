@@ -398,7 +398,8 @@ pub func compileToJar(
     checkedSourceOut = optsCheckedOut,
     memberRecvClassesOut = recvClasses,
     methodCallAritiesOut = callArities,
-    arraysAsLists = true
+    arraysAsLists = true,
+    primitiveArrays = true
   )
   val file = match pipeMiddleEnd(file0, importedPkgs, noDeriveImports, allMonoFuncs, pipeInterfaceDecls(importedItems), pipeRecordDecls(importedItems), noTemplates, opts, None) {
     case Some(f) -> pipeCBindingsToFuncs(f)
@@ -554,6 +555,7 @@ func runMiddleEnd(
     memberRecvClassesOut = recvClassesOut,
     methodCallAritiesOut = aritiesOut,
     arraysAsLists = true,
+    primitiveArrays = true,
     ioForbiddenReason = ioForbiddenReason
   )
   // `@library` extern funcs become foreign-function downcall methods (D158).
@@ -587,8 +589,10 @@ func resolveTypeAliases(file: in SourceFile): SourceFile {
   TAR.resolveAliasesInFile(BFR.collectFuncAliasTargets(file), file)
 }
 
-// `array[N, T]` is a `List[T]` on this target (D167): the middle end lowers
-// every array operation and type (`MiddleEndOptions.arraysAsLists`), but the
+// `array[N, T]` is a `List[T]` on this target (D167), except that one of a
+// primitive element is the matching typed Java array (#8041): the middle end
+// lowers every array operation and type (`MiddleEndOptions.arraysAsLists`,
+// `primitiveArrays`), but the
 // signature, field, case and constructor registries are built from the parsed
 // file before it runs, so they are built from this copy with the array types
 // already spelled as lists.  The middle end itself is given the original,
@@ -596,6 +600,7 @@ func resolveTypeAliases(file: in SourceFile): SourceFile {
 func arrayTypesAsLists(file: in SourceFile): SourceFile {
   val marker: Map[String, TypeExpr] = newMap()
   marker.add(arraysAsListsKey(), TypeExpr(kind = TUnit, span = file.span))
+  marker.add(primitiveArraysKey(), TypeExpr(kind = TUnit, span = file.span))
   TAR.resolveAliasesInFile(marker, file)
 }
 

@@ -1937,8 +1937,14 @@ pub func typeExprToJvm(te: in TypeExpr, pkgName: in String): JvmType {
     case TNullable(_) -> JRef(className = "java/lang/Object")
     case TTuple(_) -> JRef(className = "java/lang/Object")
     case TFunction(_, _) -> JRef(className = "java/lang/Object")
-    // `array[N, T]` is an `ArrayList` on this target (D167), as `List[T]` is.
-    case TArray(_, _) -> JRef(className = "java/util/ArrayList")
+    // `array[N, T]` is an `ArrayList` on this target (D167), as `List[T]` is,
+    // except that one of a primitive element is the typed Java array
+    // (`int[]`, `float[]`, ...), which holds its elements unboxed (#8041).
+    case TArray(_, element) -> if primitiveArrayElement(element) {
+      JArray(elem = typeExprToJvm(element, pkgName))
+    } else {
+      JRef(className = "java/util/ArrayList")
+    }
     // A range subtype's runtime representation is its underlying primitive
     // (e.g. `Nat range 0 ..= 1000000` is really a `long`, a `Long`-backed
     // range is a `long`) — recurse into the underlying `TRef` rather than

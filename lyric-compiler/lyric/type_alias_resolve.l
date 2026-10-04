@@ -284,7 +284,8 @@ func resolveTypeExprAt(
     }
     case TArray(size, element) -> {
       val element2 = resolveTypeExprAt(aliasTargets, genericNames, element, depth + 1)
-      if aliasTargets.containsKey(arraysAsListsKey()) {
+      val keepArray = aliasTargets.containsKey(primitiveArraysKey()) and primitiveArrayElement(element2)
+      if aliasTargets.containsKey(arraysAsListsKey()) and not keepArray {
         // A backend whose `array[N, T]` is a `List[T]` (D167).
         val segs: List[String] = newList()
         segs.add("List")
