@@ -1944,10 +1944,6 @@ func cTypeOfTy(t: in WitTy): String {
   }
 }
 
-/// The C function a Lyric `@wasmImport` extern calls: it lowers the arguments to
-/// the canonical flat form (a string is borrowed as pointer and length), calls the
-/// real core import, and lifts the result (a string comes back through a return
-/// area the host fills using `cabi_realloc`).
 /// The WIT interface id a host import module is imported under:
 /// `lyric:<first package>/<module>@<version>`.
 func importInterfaceId(pkgs: in List[ComponentPkg], module: in String, version: in String): String {
@@ -1957,7 +1953,9 @@ func importInterfaceId(pkgs: in List[ComponentPkg], module: in String, version: 
 /// The `jco transpile --map` arguments that satisfy every host import of `pkgs`
 /// with a JavaScript module: an `npm:<package>` import with the package itself,
 /// any other with `../<module>.js`, a file the caller writes beside the
-/// component (the bindings directory is a sibling of it).
+/// component (the bindings directory is a sibling of it).  A plain module name
+/// was already checked to be a WIT-safe identifier, so it holds no path
+/// separator.
 pub func jcoMapArgs(pkgs: in List[ComponentPkg], version: in String): List[String] {
   val args: List[String] = newList()
   val seen: Map[String, Bool] = newMap()
@@ -1973,6 +1971,10 @@ pub func jcoMapArgs(pkgs: in List[ComponentPkg], version: in String): List[Strin
   args
 }
 
+/// The C function a Lyric `@wasmImport` extern calls: it lowers the arguments to
+/// the canonical flat form (a string is borrowed as pointer and length), calls the
+/// real core import, and lifts the result (a string comes back through a return
+/// area the host fills using `cabi_realloc`).
 func renderImportWrapper(pkgs: in List[ComponentPkg], h: in HostImport, i: in Int, version: in String): String {
   val l: List[String] = newList()
   val id = importInterfaceId(pkgs, h.module, version)

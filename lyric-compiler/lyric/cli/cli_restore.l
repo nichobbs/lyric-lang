@@ -696,6 +696,8 @@ func cmdAdd(argv: in slice[String]): Int {
 func cmdRestore(argv: in slice[String]): Int {
   var manifestArg: Option[String] = None
   var lockedMode = false
+  var generateShims = false
+  var forceShims = false
 
   var i = 1
   while i < argv.length {
@@ -711,15 +713,42 @@ func cmdRestore(argv: in slice[String]): Int {
     } else if arg == "--locked" {
       lockedMode = true
       i += 1
+    } else if arg == "--generate-npm-shims" {
+      generateShims = true
+      i += 1
+    } else if arg == "--force" {
+      forceShims = true
+      i += 1
     } else {
       printErr("restore: unrecognised flag '" + arg + "'")
       i += 1
     }
   }
+  if forceShims and not generateShims {
+    printErr("restore: --force applies to --generate-npm-shims only")
+    return 1
+  }
 
   val mfPath = match discoverManifest(manifestArg) { case Some(p) -> p; case None -> "lyric.toml" }
 
-  return runRestore(mfPath, lockedMode)
+  val rc = runRestore(mfPath, lockedMode)
+  if rc != 0 or not generateShims {
+    return rc
+  }
+  val mfText = match File.readText(mfPath) {
+    case Ok(text) -> text
+    case Err(e) -> {
+      printErr("restore: " + IOError.message(e))
+      return 1
+    }
+  }
+  match Mf.parseManifest(mfText, mfPath) {
+    case Ok(m) -> generateNpmShims(m, Path.dirname(mfPath), forceShims)
+    case Err(e) -> {
+      printErr("restore: " + Mf.ManifestError.message(e))
+      1
+    }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1111,7 +1140,10 @@ pub func buildNpmPackageJson(npm: in Mf.NpmSection): String {
     deps = deps + "    \"" + jsonEscape(e.name) + "\": \"" + jsonEscape(e.version) + "\""
     i += 1
   }
-  "{\n  \"name\": \"lyric-npm-deps\",\n  \"private\": true,\n  \"dependencies\": {\n" + deps + "\n  }\n}\n"
+  "{\n  \"name\": \"lyric-npm-deps\",\n  \"private\": true,\n  \"lyricManager\": \"" + npm.manager +
+    "\",\n  \"dependencies\": {\n" +
+    deps +
+    "\n  }\n}\n"
 }
 
 /// The argument list for installing the declared packages into `installDir`
