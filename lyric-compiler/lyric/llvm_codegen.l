@@ -755,6 +755,10 @@ pub func typeExprToNType(te: in TypeExpr): NType {
       panic("Lyric.LlvmCodegen: generic type '" + n + "' is not yet supported for --target native (Phase N1)")
     }
     case TUnit -> NVoid
+    // `Never` (a function that does not return, `Std.Environment.exitCode`): the
+    // function lowers as a void function; its callers use the call as a
+    // statement, and the body ends in a call that does not return.
+    case TNever -> NVoid
     // A bare `Self` reaching this fallback is always an INTERFACE's own
     // declared method signature (#7585): a record/protected impl method's
     // own `Self` is substituted to the concrete type before it ever reaches
