@@ -12,7 +12,7 @@ The proof system discharges contracts by handing them to an SMT solver. That sol
 
 - Domain cores with arithmetic invariants: balance arithmetic, conservation properties, range constraints on financial values. These sit squarely in the decidable fragment of linear integer arithmetic, which Z3 handles deterministically and quickly.
 - Data structures with universally quantified correctness properties: a sorted set where every element satisfies an ordering invariant, a BST where left keys are smaller than the root. Z3 handles inductive datatypes with quantifiers over finite structure.
-- Bounded computations with explicit loop invariants: when you can state what holds before and after each iteration, the wp calculus can verify the loop.
+- Bounded computations with explicit loop invariants: when you can state what holds before and after each iteration, the wp calculus can verify the loop. The prover checks the invariant on entry, then reasons about an *arbitrary* iteration — every variable the loop assigns holds an unknown value satisfying the invariant and the condition — and checks that the body re-establishes the invariant. After the loop it knows only the invariant and that the condition is false, so the invariant must say everything the rest of the function needs.
 
 **Less suited to `@proof_required`:**
 
@@ -55,7 +55,7 @@ pub func valueOf(a: in Amount): Cents
 }
 ```
 
-The annotation makes `requires:` and `ensures:` clauses proof obligations as well as runtime checks. `lyric prove` feeds them to the VC generator, which produces SMT formulae the solver must discharge, and fails on any it cannot. `lyric build` does not run the prover, so it still compiles every clause into a runtime check (a quantifier, which has no runtime form, is checked only by `lyric prove`); run `lyric prove` in CI to get the static guarantee.
+The annotation makes `requires:` and `ensures:` clauses proof obligations as well as runtime checks. A range subtype such as `Cents` takes part too: the prover knows that every `Cents` parameter, field and callee result lies in `0 ..= 1_000_000_000_00`, and each `Cents.from(x)` is an obligation that `x` lies in that range, since `from` panics outside it. (`Cents.tryFrom(x)` returns an `Err` instead, so it carries no obligation.) `lyric prove` feeds them to the VC generator, which produces SMT formulae the solver must discharge, and fails on any it cannot. `lyric build` does not run the prover, so it still compiles every clause into a runtime check (a quantifier, which has no runtime form, is checked only by `lyric prove`); run `lyric prove` in CI to get the static guarantee.
 
 There is one new constraint on your call graph: a `@proof_required` package may only call:
 
@@ -106,6 +106,10 @@ The key mechanism that makes module-level proof tractable is the Hoare call rule
 
 1. **Assert** `debit`'s `requires:` at the call site — confirm that the arguments satisfy `debit`'s precondition.
 2. **Assume** `debit`'s `ensures:` after the call — treat the postcondition as an established fact for the rest of the analysis.
+
+In both steps each parameter in the contract stands for the argument passed to it. A named argument goes to the parameter it names, whatever order the call writes it in (`debit(amount = a, from = acct)` binds `from` to `acct`), and a parameter the call leaves out stands for its default value.
+
+A method call works the same way when the file declares the function it runs: `acct.withdraw(n)` on an `Account` reaches `func Account.withdraw(a: in Account, n: in Int)`, with `acct` as its first argument. Each such call has a result of its own, so `acct.next() == acct.next()` is provable only if the contract says so (or the method is `@pure`). A method the file does not declare is an unknown function of its receiver and arguments: the same call twice gives the same value, and nothing else is known about it. An argument passed to an `out` or `inout` parameter holds a new value after the call; in the callee's `ensures:` the parameter means its final value and `old(p)` the value passed in.
 
 This is the deal: you prove each function independently, and at call sites you trust what you proved. The proof for `execute` does not need to know how `debit` works internally; it only needs to know what `debit` promises.
 
@@ -275,9 +279,11 @@ pub func credit(a: in Account, amount: in Amount): Result[Account, AccountError]
 }
 ```
 
-With `checked_arithmetic`, the expression `a.balance + v` inside the `if` condition generates an additional goal: prove that the addition does not overflow `Long.max`. Because `a.balance` is of type `Cents` (range `0 ..= 1_000_000_000_00`) and `v` is also `Cents`, the sum is at most `2_000_000_000_00`, which is well within `Long.max`. Z3 discharges the overflow VC automatically.
+With `checked_arithmetic`, the expression `a.balance + v` inside the `if` condition generates an additional goal: prove that the addition does not overflow `Long.max`. The bound is the operand's own width: an `Int` sum must stay within `Int.max` (2,147,483,647), a `Long` sum within `Long.max`, and an unsigned one must not wrap. Because `a.balance` is of type `Cents` (range `0 ..= 1_000_000_000_00`) and `v` is also `Cents`, the sum is at most `2_000_000_000_00`, which is well within `Long.max`. Z3 discharges the overflow VC automatically.
 
-The modifier is optional because overflow VCs add goals, and goals take time. For non-financial code, the overhead is not worth it. For any package that handles monetary amounts, enabling it provides a static guarantee that arithmetic never wraps — a guarantee runtime checking cannot provide because overflow is not an exception.
+`lyric prove` does not depend on the build profile. It reasons as a debug build behaves: an overflow panics rather than producing a value. Without the modifier, a proof therefore covers only the executions that do not overflow, and a release build, where the same operation wraps, is outside it. With the modifier, overflow is ruled out altogether, so the proof holds whichever profile the program is built with. In either mode an `Int` parameter or callee result is known to lie within the `Int` range, and a `Long` one within the `Long` range.
+
+The modifier is optional because overflow VCs add goals, and goals take time. For non-financial code, the overhead is not worth it. For any package that handles monetary amounts, enabling it provides a static guarantee that arithmetic never wraps — a guarantee runtime checking cannot provide: a debug build panics only once an overflow happens, and a release build wraps silently.
 
 ## Exercises
 

@@ -158,7 +158,7 @@ does not check the call-graph rule.
 | `V0012` | _(planned code, **repurposed**)_ The mode checker now uses `V0012` for `await` inside a `try`/`catch`/`finally` block in an async function (a CLR IL constraint, #2985/#3113), not for the broad "async in proof-required" rejection planned here.  The actual verifier-side rejection of contracts on async/generator functions ships as `V0032` (below, #3298). | — | — |
 | `V0031` | **Retired** in #336.  The self-hosted aspect weaver (`Lyric.Weaver.weaveFile`, ported from `bootstrap/src/Lyric.Emitter/Weaver.fs`) now runs in the verifier driver before VC generation, so proofs discharge against the woven wrapper's composed contracts — not the bare body.  The same-package limitation that previously made the warning incomplete is gone; cross-package aspect detection is still future work (imported aspect annotations don't fire weaving today, mirroring the original `V0031` cross-package gap). | — | — |
 | `V0032` | A `@proof_required` `async func` or `yield`-bearing generator carries a contract clause (`requires:`/`ensures:`).  The WP/SP calculus has no model for suspend/resume control flow — `await`/`yield` has no Term translation and would be coerced to an opaque symbol, so the contract would be checked against an unmodelled body.  `goalsForFunction` rejects such functions before VC generation and emits no goals (rather than vacuous/opaque ones).  A non-contract async function is unaffected.  Effect-aware VC generation is future work (#3298). | error | move the contract to a synchronous core, or mark `@runtime_checked` |
-| `V0033` | A proof obligation cannot be translated into the proof logic faithfully: an integer/bitvector sort mix with no implicit conversion (a `UInt` operand beside an `Int` variable, a negative constant or a constant too wide for an unsigned type, the negation of an unsigned value), or a declared result range whose bound is not an integer literal that fits its base.  The verifier reports the construct (or the goal it reaches after substitution) instead of reasoning about a term that means something else, and neither the trivial discharger nor the solver sees that goal (#7848). | error | add an explicit conversion, or state the bound as a literal of the base type |
+| `V0033` | A proof obligation cannot be translated into the proof logic faithfully: an integer/bitvector sort mix with no implicit conversion (a `UInt` operand beside an `Int` variable, a negative constant or a constant too wide for an unsigned type, the negation of an unsigned value), a declared result range whose bound is not an integer literal that fits its base, or a call whose arguments cannot be paired with the callee's parameters (an unknown parameter name, a parameter given twice, an omitted parameter with no default; #7873).  The verifier reports the construct instead of reasoning about a term that means something else, once: at the construct when VC generation meets it (a construct in a callee's contract is reported once however many calls translate it), or at the goal when substitution first brings the mix together. Every goal the construct reaches stays failed (`unknown`, never `discharged` — an untranslatable result range included), and neither the trivial discharger nor the solver sees it (#7848, #7874). | error | add an explicit conversion, or state the bound as a literal of the base type |
 
 `V0007` defaults to *error* because allowing `unknown` to slide is
 how every academic verifier's user community ends up tolerating
@@ -265,8 +265,8 @@ Lyric.Verifier/
 | Lyric type                | Lyric-VC sort                                | Notes |
 |---------------------------|----------------------------------------------|-------|
 | `Bool`                    | `Bool`                                       | trivial |
-| `Int`, `Long`, `Nat`      | `Int` (mathematical integer)                 | overflow handled separately, see §5.4. `/` and `%` truncate toward zero as at runtime, not SMT-LIB's Euclidean `div`/`mod`: they render as `lyric!tdiv`/`lyric!trem`, which the preamble defines as `(ite (= b 0) (div a 0) (ite (= (>= a 0) (>= b 0)) (div (abs a) (abs b)) (- (div (abs a) (abs b)))))` and `(ite (= b 0) (mod a 0) (- a (* b (lyric!tdiv a b))))`. A zero divisor falls through to the solver's unspecified `div`/`mod`, so division by zero stays unconstrained (#7870) |
-| range subtype `T range a ..= b` | `Int` with implicit `a ≤ x ≤ b` axiom on every binder | preserves identity loss is fine in proof; CLR identity matters only for emission |
+| `Int`, `Long`, `Nat`      | `Int` (mathematical integer)                 | overflow handled separately, see §5.4; a parameter, field or callee result carries its type's 32- or 64-bit bounds as a hypothesis. `/` and `%` truncate toward zero as at runtime, not SMT-LIB's Euclidean `div`/`mod`: they render as `lyric!tdiv`/`lyric!trem`, which the preamble defines as `(ite (= b 0) (div a 0) (ite (= (>= a 0) (>= b 0)) (div (abs a) (abs b)) (- (div (abs a) (abs b)))))` and `(ite (= b 0) (mod a 0) (- a (* b (lyric!tdiv a b))))`. A zero divisor falls through to the solver's unspecified `div`/`mod`, so division by zero stays unconstrained (#7870) |
+| range subtype `T range a ..= b`, named or inline | the base type's sort with an implicit `a ≤ x ≤ b` hypothesis on every parameter, field, callee result, binding and assigned value | preserves identity loss is fine in proof; CLR identity matters only for emission. A named range subtype (`type Port = UInt range 1 ..= 65535`) is its refined underlying type; `Port.from(x)` is the value `x` with the obligation that it lies in the range, `.value` is the identity, and `tryFrom` is uninterpreted (#7872) |
 | `UInt`, `ULong`, `Byte`   | `(_ BitVec n)`                               | bitvector arithmetic, slow but decidable. A `u8`/`u16`/`u32`/`u64` literal is a `(_ bvN n)` constant of its width (a `u64` literal from 2^63 up is its unsigned value, #7839); an unsuffixed literal next to an unsigned operand takes that operand's width. Ordering, `/` and `%` use the unsigned `bvult`/`bvule`/`bvugt`/`bvuge`/`bvudiv`/`bvurem`; `+`, `-`, `*` are `bvadd`/`bvsub`/`bvmul`. A narrower unsigned operand zero-extends along `Byte < UInt < ULong`, and a `Byte` enters the signed chain through `bv2nat`. A range subtype over an unsigned base folds its bounds unsigned. Any other mix of the two sorts (a `UInt` beside an `Int` variable, a negative constant as an unsigned value, an unsigned negation, a bound that does not fit its base) fails closed with `V0033` (#7848) |
 | `Float`, `Double`         | SMT `Real` (mathematical reals)              | sound approximation: avoids IEEE 754 FP theory and its rounding-mode complexity; linear arithmetic over reals is decidable and fast; division emits `/` (Real div) not `div` (integer) |
 | `String`                  | uninterpreted sort with `length: String -> Int`, `==` | content reasoning out of scope |
@@ -278,7 +278,7 @@ Lyric.Verifier/
 | opaque type               | SMT-LIB datatype with one private field       | fields are not exported across packages — the VC generator inlines invariant facts but not the representation |
 | function type             | uninterpreted sort + apply axiom (`@pure` only)| non-`@pure` functions cannot appear as values in contracts |
 | `Result[T, E]`            | the standard Lyric-defined two-arm union; treated as datatype | |
-| protected-type ref        | fields bound as symbolic `Real`/`Int`/… vars | per-entry sequential reasoning via `goalsForProtectedType`; `invariant:` clauses injected as `requires:` hypotheses on each entry; invariant preservation checked via explicit `assert` in the body |
+| protected-type ref        | fields bound as symbolic `Real`/`Int`/… vars | per-entry sequential reasoning via `goalsForProtectedType`; `invariant:` clauses are `requires:` hypotheses on each entry and `ensures:` obligations over the values its `var` fields hold when it returns (#8102) |
 
 Range subtype values lift to `Int` with the bound as a `forall`-
 introduced hypothesis. This is the same trick SPARK uses; it lets
@@ -287,20 +287,40 @@ theory.
 
 ### 5.3 Loops
 
-A loop `while c invariant: ι { S }` desugars to the standard Hoare
-encoding:
+A loop `while c invariant: ι { S }` is proved by the standard Hoare
+rule, in an arbitrary iteration's state (#8102):
 
-> `assert ι (at loop entry)`
-> `havoc all vars modified in S`
-> `assume ι ∧ c`
-> `S`
-> `assert ι (preserved by body)`
-> `assume ι ∧ ¬c`
+> `assert ι` (at loop entry), and `c`'s own obligations under `ι`
+> `havoc` every variable `c` or `S` may change
+> `assume ι`; `assert` `c`'s own obligations (after any iteration)
+> `assume c`; `S`, its obligations proved under `ι ∧ c`
+> `assert ι` (preserved: over the values `S` leaves)
+> `assume ι ∧ ¬c` (the rest of the block)
 
-The VC generator emits three sub-VCs: *establish*, *preserve*,
-*conclude*. Each is reported separately so a failed proof points to
-"the body does not preserve the invariant" rather than the lump
-"the loop is wrong."
+What may change is every variable assigned anywhere in `c` or `S` — in a
+nested `if` or `match` arm, an inner loop, a lambda — and every variable
+passed to an `out`/`inout` parameter of a function the file declares,
+including the receiver of such a method. Each havocked variable is a
+fresh symbol per loop translation (`i!loop12`), never shared with
+another loop or path, and keeps its type's width and range as a fact.
+The preserved invariant is translated with a placeholder for each
+changed variable, which every path through the body replaces with the
+value it leaves (`finishPost`); the same mechanism states an `ensures:`
+over an `out`/`inout` parameter or a protected type's `var` field at the
+function's end, with `old(p)` its entry value.
+
+The body is walked as statements to its end — an `if` or a call in last
+position changes state, it is not the loop's value. A `return` or `?`
+in the body, like `break` and `continue` (#7396), fails closed
+(`V0026`): the invariant says nothing about the value it leaves with.
+The loop's exit facts hold only after the loop, and the facts one branch
+of an `if` establishes hold only under that branch's condition, so a
+loop that never exits on one path proves nothing about another.
+
+The VC generator emits *establish*, *preserve* and the condition's and
+body's own obligations as separate goals, so a failed proof points to
+"the body does not preserve the invariant" rather than the lump "the
+loop is wrong."
 
 `for x in xs invariant: ι { S }` desugars to a `while` where the
 implicit iterator state is `(remaining: slice[T], processed: slice[T])`
@@ -312,20 +332,151 @@ The user-written invariant is conjoined with the implicit
 
 Range subtypes give bounded integers. Plain `Int`/`Long` are
 unbounded mathematical integers in the proof but bounded `Int32`/
-`Int64` at runtime. The mismatch is real and is handled in two
-modes:
+`Int64` at runtime, where `+`, `-`, `*` and unary `-` panic on overflow
+in a `debug` build and wrap in a `release` build (D163). `lyric prove`
+takes no build profile: it reasons with the `debug` (checked) semantics,
+the sound choice for a proof, since a panicking operation never produces
+the value a later obligation is stated over (#7871).
 
-- **`@proof_required(unchecked_arithmetic)`** (default): the prover
-  treats `Int`/`Long` as `Int`. Overflow is the user's problem.
-  Programs that *would* overflow at runtime can still verify; the
-  runtime separately raises `IntegerOverflow`. Documented hazard.
-- **`@proof_required(checked_arithmetic)`**: every arithmetic
-  operation generates an additional VC `result ∈ [Int.min, Int.max]`.
-  Slow but sound. Recommended for safety-critical code (the original
-  Phase 0 audience, `00-overview.md`). On a `UInt`/`ULong`/`Byte`
-  bitvector the VC is that the operation does not wrap: `x <= x + y`
-  for `+`, `y <= x` for `-`, and `y == 0 or (x * y) / y == x` for `*`,
-  all ordered unsigned (#7848).
+- **Width facts, every mode.** A value that exists at runtime holds a
+  value of its type, so the verifier assumes `Int.MinValue <= v <=
+  Int.MaxValue` for each `Int` (and the 64-bit bounds for each `Long`)
+  parameter, protected-type field, callee result and variable a loop
+  havocs. A value the body computes gets no such fact from its type; its
+  arithmetic stays mathematical.
+- **`@proof_required`** (no modifier): arithmetic is mathematical and
+  overflow is not an obligation. A proof is a partial-correctness proof
+  under the `debug` semantics: an execution that overflows panics before
+  the postcondition is reached. It does not cover a `release` build, where
+  the same operation wraps instead.
+- **`@proof_required(checked_arithmetic)`**: every signed `+`, `-`, `*`
+  and unary `-` carries the obligation `Min <= result <= Max` for the
+  operand's own width — 32 bits for `Int`, 64 for `Long` (and `Nat`) — so
+  `2147483647 + 1` on `Int` is refuted while the same sum on `Long` is
+  not. The width comes from the expression's static type: a binding's or
+  field's declared type, a callee's result type, an `i64`/`i32` suffix. An
+  unsuffixed-literal expression is checked as an `Int` unless a literal
+  needs 64 bits; checking a `Long` against the narrower range can fail a
+  proof, never pass a wrong one. A compound assignment (`+=`, `-=`, `*=`)
+  carries the obligation of its operator. On a `UInt`/`ULong`/`Byte`
+  bitvector the obligation is that the operation does not wrap: `x <= x +
+  y` for `+`, `y <= x` for `-`, and `y == 0 or (x * y) / y == x` for `*`,
+  all ordered unsigned (#7848). With no overflow possible, both profiles
+  compute the same values, so a `checked_arithmetic` proof holds for a
+  `release` build too.
+
+At a call the callee's contract is instantiated with the argument each
+parameter receives: named arguments by name, positional ones in order
+into the remaining parameters, an omitted parameter by its default, and a
+record constructor's fields likewise (#7873).
+
+A method call `recv.m(args)` reaches a dot-named `func R.m(self: R, ...)`
+the file declares when `recv` is a value of the file's record (or
+protected type) `R` and `R` declares no method `m` of its own; it is
+applied by that function's contract, the receiver its first argument,
+with a result of its own at each call site unless the method is `@pure`
+— two calls agree only where the contract says so. `R.m(args)` on a type
+name is a call of `func R.m` by path. Any other method call is an
+uninterpreted function of the receiver and the arguments, one function
+per method name, argument shape (a named argument keeps its name) and
+sorts: `a.f() == a.f()` holds by congruence, `a.f() == b.g()` and
+`a.f() == b.f()` do not. Congruence treats the method as a function of
+its receiver and arguments — true of the `@pure` calls a contract may
+make (T0133), and an assumption about an unmodelled method called in a
+body, which mutation through the receiver (the verifier has no heap)
+would break. A call through a computed callee is a fresh
+value. No two distinct values share a symbol: every value the verifier
+introduces — a call result, a havocked variable, an unmodelled
+expression — has a name of its own, with a `!` no Lyric identifier
+contains (#8101).
+
+An argument passed to an `out`/`inout` parameter holds a new, unknown
+value after the call; in the callee's `ensures:` the parameter is its
+value after the call, a symbol of its own, and `old(p)` the argument.
+A write to a record field or element fails closed (`V0026`): a record is
+a reference, and the verifier has no heap to follow its aliases.
+
+The same call's facts never prove its own precondition. A contract
+expression — `requires:`, `ensures:`, a loop `invariant:`, an `assert` —
+translates to its side conditions (callee `requires:`, overflow bounds),
+the facts its evaluation brings (callee `ensures:`) and its value; proving
+it takes `sides ∧ (facts ⇒ value)`, and assuming it gives all three. A
+loop condition's side conditions are guarded by the invariant only, never
+by the condition's own facts, which guard the body and the code after the
+loop.
+
+Calls the verifier cannot follow fail closed or are over-approximated
+(#8102):
+
+- Two `out`/`inout` parameters bound to one variable (`f(a, a)`) fail
+  closed (`V0033`): the callee's proof assumes they do not alias.
+- A parameter default sees no other parameter, only module-level names
+  (docs/01); it is translated with no bindings, and one naming a value the
+  verifier does not model (a module `val`) fails closed (`V0033`).
+- `f[T](args)` is a call of `f`; `P.f(args)` with `P` the file's own
+  package reaches `f` by contract like `f(args)`.
+- A call the verifier cannot resolve may have `out`/`inout` parameters:
+  every argument (or receiver) naming a binding a call may store into — a
+  `var` local, an `out`/`inout` parameter, a protected type's `var` field —
+  holds a new, unknown value afterwards.
+- Inside a protected type, a bare call to one of the type's own members
+  fails closed (`V0033`): its effect on the fields is not modelled.
+- An expression statement of any form keeps its obligations and facts.
+- `old(e)` is `e` evaluated with every name that has an entry snapshot (a
+  parameter, an `out`/`inout` parameter, a protected `var` field) at its
+  entry value.
+
+A side condition, and a fact, holds only where its subterm is evaluated:
+the right operand of `and` and `implies` under the left operand, of `or`
+under its negation, an `if`-expression's branch under its condition (or
+its negation), a match arm under its pattern and the failure of every
+earlier arm (an arm pattern or guard the verifier does not model is an
+unknown condition). This applies both when an obligation is proved — so
+`f(0)` against `requires: x == 0 or pos(x) > 0` need not prove `0 > 0` —
+and when a contract is assumed. A callee's contract is translated at a
+call against the file's functions, so a call nested in its `requires:`
+puts that call's own precondition on the caller.
+
+Recursion through contracts is cut the same way on both sides. A
+function's own `requires:` and `ensures:` are translated with it on the
+contract stack, as its callers translate them, so what it assumes of its
+contract is exactly what they prove. A function reached again inside a
+contract it is unfolding is applied without a second unfolding — no facts
+— and, if it has a `requires:`, fails closed (`V0033`): its precondition
+there cannot be stated. Before goals are generated, the contract-call
+graph (an edge from a function to every function its contracts, or its
+`@pure` body, call) is checked for cycles; a function on a cycle has its
+`requires:` proved at every call but its `ensures:` and `@pure` body never
+assumed, since a cycle (`ensures: result == f(x) + 1`) can make them
+contradictory. Recursion in a body, outside the contracts, is unaffected.
+Parameter and record-field defaults are part of the same picture: a
+call's omitted-parameter defaults are translated with the callee on the
+contract stack and are edges of the contract-call graph, and a record
+field default that constructs its record again fails closed (`V0033`).
+As a backstop, contracts and defaults unfold inside one another at most
+32 deep; past that the call fails closed (`V0033`).
+
+A local binding shadows a file function of the same name: `val f = ...;
+f(x)` is a call through a computed callee (a fresh result, its mutable
+arguments reset). Inside a protected type, `self.m()` fails closed like a
+bare `m()`, as does a method call on any receiver the verifier does not
+model (V0024).
+
+Known limitations, tracked separately: obligations dropped inside
+translated expressions, statement-level `match`, unmodelled operands and
+division by zero (#8107); the early-return path of `?` in a binding
+(#8108); term identity for impure free calls, reassigned function values,
+unbound names and `if`-branch locals (#8109); no heap model, and record
+methods never verified (#8110); a callee's `ensures:` about an
+`out`/`inout` parameter not linked back to the argument (#8111);
+`Float`/`Double` as SMT reals (#8141); expression `match` arm guards and
+unsupported patterns (#8142); `?` in a loop condition and anonymous-range
+assignment (#8143); precision and range gaps (#8103).
+
+Obligations raised inside an expression — a callee's `requires:`, an
+overflow obligation — are proved wherever the expression occurs: an
+expression statement, a returned value, a `val`/`let`/`var` initializer or
+the right-hand side of an assignment (#7871).
 
 A negated integer literal is one signed constant, as
 `foldNegatedIntLiteral` makes it for the backends: `-9223372036854775808`,
@@ -437,6 +588,19 @@ Emission rules:
   user `forall (x: T)` with finite-cardinality `T`.
 - A `(get-model)` is emitted on `sat`. Counterexample extraction
   reads the model.
+- Every uninterpreted function is declared from its applications in
+  the goal's own terms, never from a side list, so none is undeclared;
+  a name applied at two signatures (a call cut at a recursive default
+  with fewer arguments) becomes one function per signature
+  (`f!sig1`, #8102).
+- Before a goal reaches the solver it is checked to be well-sorted: a
+  value the verifier does not model (its own uninterpreted sort) used
+  where an `Int` or a `Bool` is needed fails closed as `V0033`, naming
+  both sorts, instead of becoming an ill-sorted query.
+- A query the solver rejects (`(error ...)`) is a verifier bug, never a
+  property of the program: the goal stays unproved and is reported as an
+  internal verifier error naming the goal, even under
+  `--allow-unverified`, with the solver's text as a detail line.
 
 ### 7.3 Solver budget
 
