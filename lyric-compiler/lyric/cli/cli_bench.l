@@ -28,6 +28,13 @@ pub record NativeBenchConfig {
   extraLibs: List[String]
 }
 
+/// Why the native settings for a bench cannot be resolved, and the exit code:
+/// 1 for a manifest that cannot be read, 64 for a usage error.
+pub record BenchConfigError {
+  message: String
+  exitCode: Int
+}
+
 // Resolves the native settings for a bench: a non-empty `--triple`/`--opt`
 // wins over the manifest's `triple`/`opt_level`, and `extra_libs` comes from
 // the manifest. A benchmark measures optimised code, so the level defaults to
@@ -35,12 +42,12 @@ pub record NativeBenchConfig {
 // rejected: the benchmark runs on this machine.
 pub func resolveNativeBenchConfig(
   manifestPath: in Option[String], cliTriple: in String, cliOpt: in String
-): Result[NativeBenchConfig, String] {
+): Result[NativeBenchConfig, BenchConfigError] {
   var triple = cliTriple
   var opt = cliOpt
   val libs: List[String] = newList()
   match resolveNativeConfig(manifestPath) {
-    case Err(msg) -> return Err(error = msg)
+    case Err(msg) -> return Err(error = BenchConfigError(message = msg, exitCode = 1))
     case Ok(ncOpt) -> match ncOpt {
       case Some(nc) -> {
         if triple == "" {
@@ -58,7 +65,12 @@ pub func resolveNativeBenchConfig(
   }
   if Str.startsWith(triple, "wasm32") {
     return Err(
-      error = "bench: --target native runs the benchmark on this machine, so the triple cannot be '" + triple + "'"
+      error = BenchConfigError(
+        message = "bench: --target native runs the benchmark on this machine, so the triple cannot be '" +
+          triple +
+          "'",
+        exitCode = 64
+      )
     )
   }
   if opt == "" {
@@ -217,12 +229,12 @@ func cmdBench(argv: in slice[String]): Int {
           }
           case None -> {
             printErr("bench: --runs requires an integer")
-            return 1
+            return 64
           }
         }
       } else {
         printErr("bench: --runs requires a value")
-        return 1
+        return 64
       }
     } else if arg == "--warmup" {
       if i + 1 < argv.length {
@@ -237,12 +249,12 @@ func cmdBench(argv: in slice[String]): Int {
           }
           case None -> {
             printErr("bench: --warmup requires an integer")
-            return 1
+            return 64
           }
         }
       } else {
         printErr("bench: --warmup requires a value")
-        return 1
+        return 64
       }
     } else if arg == "--filter" {
       if i + 1 < argv.length {
@@ -250,7 +262,7 @@ func cmdBench(argv: in slice[String]): Int {
         i += 2
       } else {
         printErr("bench: --filter requires a value")
-        return 1
+        return 64
       }
     } else if arg == "--manifest" {
       if i + 1 < argv.length {
@@ -258,7 +270,7 @@ func cmdBench(argv: in slice[String]): Int {
         i += 2
       } else {
         printErr("bench: --manifest requires a path")
-        return 1
+        return 64
       }
     } else if arg == "--triple" {
       if i + 1 < argv.length {
@@ -266,7 +278,7 @@ func cmdBench(argv: in slice[String]): Int {
         i += 2
       } else {
         printErr("bench: --triple requires an argument (an LLVM target triple, e.g. x86_64-unknown-linux-gnu)")
-        return 1
+        return 64
       }
     } else if arg == "--opt" {
       if i + 1 < argv.length {
@@ -278,7 +290,7 @@ func cmdBench(argv: in slice[String]): Int {
         i += 2
       } else {
         printErr("bench: --opt requires an argument (0, 1, 2, 3, or s)")
-        return 1
+        return 64
       }
     } else if arg == "--target" {
       if i + 1 < argv.length {
@@ -291,12 +303,12 @@ func cmdBench(argv: in slice[String]): Int {
           target = Emitter.Native
         } else {
           printErr("bench: --target must be 'dotnet', 'jvm' or 'native'")
-          return 1
+          return 64
         }
         i += 2
       } else {
         printErr("bench: --target requires an argument (dotnet|jvm|native)")
-        return 1
+        return 64
       }
     } else {
       positional.add(arg)
@@ -310,9 +322,9 @@ func cmdBench(argv: in slice[String]): Int {
       case Ok(cfg) -> {
         nativeCfg = cfg
       }
-      case Err(msg) -> {
-        printErr(msg)
-        return 1
+      case Err(e) -> {
+        printErr(e.message)
+        return e.exitCode
       }
     }
     case _ -> if tripleArg != "" or optArg != "" {

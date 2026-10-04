@@ -15588,7 +15588,10 @@ func cAbiPlanOf(ctx: in Ctx, params: in List[NType], ret: in NType): CAbiPlan {
   val args: List[CArgAbi] = newList()
   val retAbi = cRetAbiOf(ctx, arch, ret)
   // System V register budget: six general and eight SSE argument registers;
-  // an `sret` pointer takes the first general one.
+  // an `sret` pointer takes the first general one.  Only x86-64 needs it: on
+  // AArch64 an aggregate the registers cannot hold still takes the same
+  // coerced form and LLVM places it on the stack, as clang's own lowering
+  // does, and wasm32 has no argument registers.
   var intLeft = 6
   var sseLeft = 8
   match retAbi {

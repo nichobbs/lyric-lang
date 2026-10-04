@@ -161,7 +161,9 @@ record, directly or in a callback type, follows the platform C ABI on x86-64,
 AArch64 and wasm32 (#8009): the record is coerced into registers, passed as
 `byval` memory, or returned through `sret`, as clang lowers the same C
 prototype, so `WGPUColor` or `SDL_FRect` cross by value. An inline array or
-union in an `extern func` signature is still `N0010`.
+union in an `extern func` signature is still `N0010`, as is a by-value record on
+a Windows triple (the Microsoft x64 and ARM64 C ABIs are not lowered; Windows is
+not a native target yet, §6).
 
 Inline **unions** shipped too (progress entry `2026-10-02-native-inline-unions`):
 a union whose every case payload field is by-value (scalars, enums, distinct
