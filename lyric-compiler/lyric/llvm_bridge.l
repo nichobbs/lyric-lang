@@ -1870,6 +1870,7 @@ func buildComponent(
   val stem = wasmGlueStem(outputPath)
   val witPath = if witOut.length > 0 { witOut } else { stem + ".wit" }
   if witOut.length > 0 {
+    // A failure here surfaces as the N0013 write error below, with the OS reason.
     match File.createDir(Path.dirname(witOut)) {
       case Ok(_) -> ()
       case Err(_) -> ()

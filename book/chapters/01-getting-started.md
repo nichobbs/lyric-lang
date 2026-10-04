@@ -433,6 +433,7 @@ Core commands you will use constantly:
 | `lyric build <file.l>` | Compile for .NET (default); produce a `.dll` + `.runtimeconfig.json`; prints elapsed time on success |
 | `lyric build --target jvm <file.l>` | Compile for the JVM; produce a runnable `.jar` (no `runtimeconfig.json`) |
 | `lyric build --target native <file.l>` | Compile to a self-contained POSIX executable via the LLVM backend + clang |
+| `lyric build --target native --triple wasm32-wasi --shape module\|component <file.l>` | Compile to WebAssembly: a module with JS glue, or a component with a WIT interface (Chapter 32) |
 | `lyric build` | Build the discovered project (no source arg needed) |
 | `lyric run <file.l>` | Compile and immediately execute a single file |
 | `lyric run` | Build and run the discovered project (no source arg needed) |
