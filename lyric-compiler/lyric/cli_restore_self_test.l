@@ -171,14 +171,49 @@ test "buildNpmPackageJson: one dependency row per entry, escaped" {
 }
 
 test "npmInstallArgs: scripts off, registry only when set" {
-  val plain = Cli.npmInstallArgs("/x/npm", "")
+  val plain = Cli.npmInstallArgs("npm", "/x/npm", "")
   assertEqualInt(plain.count, 6, "no registry flag by default")
   assertEqual(plain[1], "--prefix", "prefix flag")
   assertEqual(plain[2], "/x/npm", "install dir")
   assertEqual(plain[3], "--ignore-scripts", "install hooks never run during restore")
-  val custom = Cli.npmInstallArgs("/x/npm", "https://npm.example.com/")
+  val custom = Cli.npmInstallArgs("npm", "/x/npm", "https://npm.example.com/")
   assertEqualInt(custom.count, 8, "registry adds two arguments")
   assertEqual(custom[7], "https://npm.example.com/", "registry value")
+}
+
+test "npmInstallArgs: pnpm and yarn each point at the install dir and skip install hooks" {
+  val pnpm = Cli.npmInstallArgs("pnpm", "/x/npm", "https://npm.example.com/")
+  assertEqual(pnpm[0], "install", "pnpm subcommand")
+  assertTrue(pnpm.contains("--dir") and pnpm.contains("/x/npm"), "pnpm names the directory")
+  assertTrue(pnpm.contains("--ignore-scripts"), "pnpm skips install hooks")
+  assertTrue(pnpm.contains("--no-frozen-lockfile"), "pnpm does not demand a lockfile under CI")
+  assertTrue(pnpm.contains("--registry") and pnpm.contains("https://npm.example.com/"), "pnpm registry")
+  val yarn = Cli.npmInstallArgs("yarn", "/x/npm", "")
+  assertEqual(yarn[0], "install", "yarn subcommand")
+  assertTrue(yarn.contains("--cwd") and yarn.contains("/x/npm"), "yarn names the directory")
+  assertTrue(yarn.contains("--ignore-scripts") and yarn.contains("--non-interactive"), "yarn skips hooks and prompts")
+  assertFalse(yarn.contains("--registry"), "no registry unless set")
+}
+
+test "npmUndeclaredImports: an npm: import of a package [npm] does not declare is B0064" {
+  val es: List[Mf.NpmEntry] = newList()
+  es.add(npmEntry("declared", "^1"))
+  val sec: Option[Mf.NpmSection] = Some(value = npmSection(es, ""))
+  val srcs: List[String] = newList()
+  srcs.add(
+    "package A\n\n@wasmImport(\"npm:declared\")\nextern func f(a: Int): Int = \"f\"\n\n@wasmImport(\"ui\")\nextern func g(a: Int): Int = \"g\"\n"
+  )
+  srcs.add(
+    "package B\n\n@wasmImport(\"npm:stranger\")\nextern func h(a: Int): Int = \"h\"\n\n@wasmImport(\"npm:stranger\")\nextern func i(a: Int): Int = \"i\"\n"
+  )
+  val problems = Cli.npmUndeclaredImports(sec, srcs)
+  assertEqualInt(problems.count, 1, "one undeclared package, reported once")
+  assertTrue(Str.contains(problems[0], "B0064") and Str.contains(problems[0], "stranger"), "names it: " + problems[0])
+  val none: Option[Mf.NpmSection] = None
+  assertEqualInt(Cli.npmUndeclaredImports(none, srcs).count, 2, "with no [npm] table both packages are undeclared")
+  val plainOnly: List[String] = newList()
+  plainOnly.add("package C\n\n@wasmImport(\"ui\")\nextern func g(a: Int): Int = \"g\"\n")
+  assertEqualInt(Cli.npmUndeclaredImports(none, plainOnly).count, 0, "host modules that are not packages are fine")
 }
 
 test "npmShimFileName: scope folded into the name, no path separators" {
@@ -363,5 +398,85 @@ test "checkNpmShims: a CommonJS export Node cannot scan statically is found on d
   match File.deleteDirRecursive(dir) {
     case Ok(_) -> ()
     case Err(_) -> ()
+  }
+}
+
+func npmManifestWith(dir: in String, deps: in String, options: in String): Mf.Manifest {
+  val text = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[npm]\n" + deps + "\n[npm.options]\n" + options
+  match Mf.parseManifest(text, Path.join(dir, "lyric.toml")) {
+    case Ok(m) -> m
+    case Err(e) -> panic("manifest: " + Mf.ManifestError.message(e))
+  }
+}
+
+func makeFakePackage(dir: in String): String {
+  val pkgDir = Path.join(dir, "fakepkg")
+  match File.createDir(pkgDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create " + pkgDir + ": " + IOError.message(e))
+  }
+  putFile(
+    Path.join(pkgDir, "package.json"),
+    "{ \"name\": \"fakepkg\", \"version\": \"1.0.0\", \"type\": \"module\", \"main\": \"index.js\" }\n"
+  )
+  putFile(Path.join(pkgDir, "index.js"), "export function add(a, b) { return a + b; }\n")
+  pkgDir
+}
+
+func managerRoundTrip(manager: in String): Unit {
+  val dir = npmTempDir()
+  val pkgDir = makeFakePackage(dir)
+  val m = npmManifestWith(dir, "\"fakepkg\" = \"file:" + pkgDir + "\"\n", "manager = \"" + manager + "\"\n")
+  assertTrue(Cli.npmRestoreNeeded(m, dir), manager + ": nothing installed yet")
+  assertEqualInt(Cli.restoreNpmPackages(m, dir), 0, manager + ": restore installs the package")
+  assertFalse(Cli.npmRestoreNeeded(m, dir), manager + ": installed and current")
+  val shim = Path.join(Path.join(dir, "_extern_npm"), "fakepkg.l")
+  putFile(
+    shim,
+    "@axiom(\"from npm fakepkg file:" + pkgDir +
+      "\")\npackage Fakepkg\n\n@wasmImport(\"npm:fakepkg\")\nextern func add(a: Int, b: Int): Int = \"add\"\n"
+  )
+  assertEqualInt(Cli.checkNpmShims(m, dir).count, 0, manager + ": the installed package exports what the shim binds")
+  match File.deleteDirRecursive(dir) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+}
+
+test "restoreNpmPackages: pnpm installs the package and the build checks see its exports" {
+  managerRoundTrip("pnpm")
+}
+
+test "restoreNpmPackages: yarn installs the package and the build checks see its exports" {
+  managerRoundTrip("yarn")
+}
+
+test "npmRestoreNeeded: a changed [npm] table or a missing package asks for a restore" {
+  val dir = npmTempDir()
+  val pkgDir = makeFakePackage(dir)
+  val m = npmManifest(dir, "\"fakepkg\" = \"file:" + pkgDir + "\"\n")
+  assertTrue(Cli.npmRestoreNeeded(m, dir), "nothing installed yet")
+  assertEqualInt(Cli.restoreNpmPackages(m, dir), 0, "restore installs the package")
+  assertFalse(Cli.npmRestoreNeeded(m, dir), "installed and current")
+  val changed = npmManifest(dir, "\"fakepkg\" = \"file:" + pkgDir + "/\"\n")
+  assertTrue(Cli.npmRestoreNeeded(changed, dir), "an edited range no longer matches the install")
+  val installed = Path.join(Path.join(Path.join(Path.join(dir, "target"), "npm"), "node_modules"), "fakepkg")
+  match File.deleteDirRecursive(installed) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+  assertTrue(Cli.npmRestoreNeeded(m, dir), "a package gone from node_modules")
+  val empty = parseNoNpm(dir)
+  assertFalse(Cli.npmRestoreNeeded(empty, dir), "no [npm] table, nothing to restore")
+  match File.deleteDirRecursive(dir) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+}
+
+func parseNoNpm(dir: in String): Mf.Manifest {
+  match Mf.parseManifest("[package]\nname = \"app\"\nversion = \"0.1.0\"\n", Path.join(dir, "lyric.toml")) {
+    case Ok(m) -> m
+    case Err(e) -> panic("manifest: " + Mf.ManifestError.message(e))
   }
 }

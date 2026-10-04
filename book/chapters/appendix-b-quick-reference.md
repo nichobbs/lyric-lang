@@ -1599,9 +1599,10 @@ The first-party UI generators (D151) report their own codes under `X0005`:
 | Code | Meaning |
 |---|---|
 | `B0060` | `lyric restore` could not install the `[npm]` packages: `npm install` exited non-zero or timed out, or a declared package is missing from `target/npm/node_modules/` afterwards. |
-| `B0061` | A wasm32 project build found a package declared in `[npm]` with no shim under `_extern_npm/`; run `lyric restore`. |
+| `B0061` | A wasm32 project build found a package declared in `[npm]` with no shim under `_extern_npm/` (the build's own restore scaffolds one, so this is reported under `--no-restore`); run `lyric restore`. |
 | `B0062` | A shim's `@wasmImport("npm:<package>")` binds a name the installed package does not export (or the package cannot be loaded under `node`); the message lists the exports it has. |
 | `B0063` | A shim in `_extern_npm/` lost its `@axiom("from npm <name> ...")` header; restore will not treat it as the shim for that package. |
+| `B0064` | A project package imports `@wasmImport("npm:<package>")` for a package `[npm]` does not declare. |
 
 ### Bench (B-series)
 

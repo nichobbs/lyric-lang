@@ -159,10 +159,12 @@ An `[npm]` table declares packages the way `[nuget]` does for .NET:
 
 [npm.options]
 registry = "https://registry.npmjs.org/"
+manager = "npm"      # or "pnpm" or "yarn"
 ```
 
 `lyric restore` installs them into `target/npm/node_modules/` with install scripts
-disabled (restoring a dependency never runs its code), and scaffolds a shim file for
+disabled (restoring a dependency never runs its code) using `npm`, or the `pnpm` or
+`yarn` (classic) named by `manager`, and scaffolds a shim file for
 each package under `_extern_npm/`, such as `_extern_npm/node-fetch.l`. A shim is a
 Lyric package whose declarations are host imports from the package, named
 `npm:<package>`:
@@ -191,10 +193,14 @@ How a package reaches your code depends on the shape:
   `npm-aws-sdk-client-s3`). Satisfy it with
   `jco transpile --map lyric:<package>/npm-node-fetch@<version>=node-fetch`.
 
-A wasm32 project build checks the table before compiling: a package with no shim is
-`B0061`, and a shim import naming something the installed package does not export is
-`B0062`, which lists the exports it does have (asked of `node`, so conditional
-`exports` maps and CommonJS packages are judged the way they will load).
+A wasm32 project build first installs the packages itself when one is missing or the
+`[npm]` table has changed (`--no-restore` opts out), then checks the table before
+compiling: a package with no shim is `B0061` (the build's own restore scaffolds one, so
+you see it under `--no-restore`), a shim import naming something the installed package
+does not export is `B0062`, which lists the exports it does have (asked of `node`, so
+conditional `exports` maps and CommonJS packages are judged the way they will load),
+and an `npm:` import of a package `[npm]` does not declare is `B0064`. A module a host
+supplies that is not an NPM package takes a plain name, such as `@wasmImport("ui")`.
 
 ::: note
 **Names.** An NPM name must be lowercase letters, digits and `-._~`, optionally scoped
@@ -218,6 +224,7 @@ same identifier or the same shim file are a manifest error.
 | `B0061` | an `[npm]` package has no shim |
 | `B0062` | a shim binds an export the package does not have |
 | `B0063` | a shim lost its `@axiom("from npm ...")` header |
+| `B0064` | a project imports `npm:<package>` for a package `[npm]` does not declare |
 
 The full table is in Appendix B.
 

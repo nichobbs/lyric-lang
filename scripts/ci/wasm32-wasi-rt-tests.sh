@@ -97,6 +97,8 @@ LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/llvm_wasm32_self_te
 # The browser/JS-host `module` shape runs under node through its generated glue.
 command -v node >/dev/null || { echo "::error::node not found on the runner"; exit 1; }
 LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/llvm_wasm32_module_self_test.l
+# The `[npm]` checks of a wasm32 project build, through the CLI entry point (needs npm).
+LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/cli_wasm_npm_project_self_test.l
 # The `component` shape: WIT + canonical ABI wrappers, componentized by wasm-tools
 # and transpiled by jco to run under node.
 WASM_TOOLS="$wt_dir/wasm-tools" LYRIC_WASI_ADAPTER="$adapter" \

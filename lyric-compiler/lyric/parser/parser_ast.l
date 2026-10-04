@@ -1162,6 +1162,28 @@ pub func someAspectAround(a: in AspectAround): Option[AspectAround] {
 // ─── Reserved compiler annotations ──────────────────────────────────────────
 /// The reserved annotation naming the package a generic function was
 /// declared in.  Its body is specialised into whichever package calls it, so
+/// The first annotation of `anns` whose (single-segment) name is `name`.
+pub func findAnnotation(anns: in List[Annotation], name: in String): Option[Annotation] {
+  for a in anns {
+    if a.name.segments.count == 1 and a.name.segments[0] == name {
+      return Some(value = a)
+    }
+  }
+  None
+}
+
+/// The string of `@name("text")`: `a`'s one argument when it is a string
+/// literal, None when it has none, several, or a non-string one.
+pub func annotationStringArg(a: in Annotation): Option[String] {
+  if a.args.count != 1 {
+    return None
+  }
+  match a.args[0] {
+    case ALiteral(value, _) -> match value { case AVString(s, _) -> Some(value = s); case _ -> None }
+    case _ -> None
+  }
+}
+
 /// `Lyric.Mono` uses the origin to resolve QUALIFIED call sites
 /// (`Pkg.f(...)`, `Pkg.f[T](...)`) to the right declaration, and codegen uses
 /// it to resolve the unqualified names inside a specialised copy against the

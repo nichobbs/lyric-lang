@@ -185,6 +185,9 @@ pub record NpmEntry {
 pub record NpmSection {
   entries: List[NpmEntry]
   registry: String
+  /// `[npm.options] manager`: the package manager `lyric restore` runs
+  /// (`npm`, `pnpm` or `yarn`; default `npm`).
+  manager: String = "npm"
 }
 
 /// `[native]` section (N6.4): defaults for `--target native` builds.
@@ -1707,7 +1710,20 @@ func assembleNpm(entries: in List[Entry]): Result[Option[NpmSection], ManifestEr
       )
     )
   }
-  Ok(value = Some(value = NpmSection(entries = npmEntries, registry = registry)))
+  if hasKey(entries, "npm.options", "manager") and not hasString(entries, "npm.options", "manager") {
+    return Err(error = InvalidField(section = "npm.options", field = "manager", message = "must be a quoted string"))
+  }
+  val manager = unwrapOr(findString(entries, "npm.options", "manager"), "npm")
+  if manager != "npm" and manager != "pnpm" and manager != "yarn" {
+    return Err(
+      error = InvalidField(
+        section = "npm.options",
+        field = "manager",
+        message = "must be \"npm\", \"pnpm\" or \"yarn\", got \"" + manager + "\""
+      )
+    )
+  }
+  Ok(value = Some(value = NpmSection(entries = npmEntries, registry = registry, manager = manager)))
 }
 
 // An `extra_libs` entry becomes a `-l<name>` clang flag; reject an empty

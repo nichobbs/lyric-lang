@@ -37,6 +37,15 @@ if [ ! -x "$lyric_bin" ]; then
   echo "::error::AOT binary not found at $lyric_bin; skipping compiler self-tests"
   exit 1
 fi
+# cli_restore_self_test.l restores an NPM package with each package manager the
+# `[npm.options] manager` setting accepts; npm ships with node, so pin the other
+# two beside it.
+npm_pm_tools="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/npm-package-managers"
+if [ ! -x "$npm_pm_tools/node_modules/.bin/pnpm" ] || [ ! -x "$npm_pm_tools/node_modules/.bin/yarn" ]; then
+  mkdir -p "$npm_pm_tools"
+  npm install --prefix "$npm_pm_tools" --no-audit --no-fund pnpm@10.28.0 yarn@1.22.22 >/dev/null
+fi
+export PATH="$npm_pm_tools/node_modules/.bin:$PATH"
 ran=""
 idx=0
 for t in \

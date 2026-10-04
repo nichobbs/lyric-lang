@@ -1114,17 +1114,32 @@ pub func buildNpmPackageJson(npm: in Mf.NpmSection): String {
   "{\n  \"name\": \"lyric-npm-deps\",\n  \"private\": true,\n  \"dependencies\": {\n" + deps + "\n  }\n}\n"
 }
 
-/// The `npm` argument list for installing the declared packages into
-/// `installDir`.  `--ignore-scripts` keeps a dependency's install hooks from
-/// running arbitrary code during a restore.
-pub func npmInstallArgs(installDir: in String, registry: in String): List[String] {
+/// The argument list for installing the declared packages into `installDir`
+/// with `manager` (`npm`, `pnpm` or `yarn`).  Every manager is told not to run
+/// a dependency's install hooks, which would execute arbitrary code during a
+/// restore, and to use `registry` when one is set.
+pub func npmInstallArgs(manager: in String, installDir: in String, registry: in String): List[String] {
   val args: List[String] = newList()
   args.add("install")
-  args.add("--prefix")
-  args.add(installDir)
-  args.add("--ignore-scripts")
-  args.add("--no-audit")
-  args.add("--no-fund")
+  if manager == "pnpm" {
+    args.add("--dir")
+    args.add(installDir)
+    args.add("--ignore-scripts")
+    // CI sets CI=true, which makes pnpm demand an existing lockfile.
+    args.add("--no-frozen-lockfile")
+  } else if manager == "yarn" {
+    args.add("--cwd")
+    args.add(installDir)
+    args.add("--ignore-scripts")
+    args.add("--non-interactive")
+    args.add("--no-progress")
+  } else {
+    args.add("--prefix")
+    args.add(installDir)
+    args.add("--ignore-scripts")
+    args.add("--no-audit")
+    args.add("--no-fund")
+  }
   if registry != "" {
     args.add("--registry")
     args.add(registry)
@@ -1171,22 +1186,16 @@ pub func npmShimImports(shimSource: in String): List[NpmShimImport] {
   val pr = Parser.parse(shimSource)
   for item in pr.file.items {
     match item.kind {
-      case IExternFunc(d) -> {
-        for a in item.annotations {
-          if a.name.segments.count == 1 and a.name.segments[0] == "wasmImport" and a.args.count == 1 {
-            match a.args[0] {
-              case ALiteral(value, _) -> match value {
-                case AVString(m, _) -> {
-                  if Str.startsWith(m, "npm:") {
-                    found.add(NpmShimImport(pkgName = Str.substring(m, 4), symbol = d.symbol))
-                  }
-                }
-                case _ -> ()
-              }
-              case _ -> ()
+      case IExternFunc(d) -> match Parser.findAnnotation(item.annotations, "wasmImport") {
+        case Some(a) -> match Parser.annotationStringArg(a) {
+          case Some(m) -> {
+            if Str.startsWith(m, "npm:") {
+              found.add(NpmShimImport(pkgName = Str.substring(m, 4), symbol = d.symbol))
             }
           }
+          case None -> ()
         }
+        case None -> ()
       }
       case _ -> ()
     }
@@ -1343,6 +1352,63 @@ pub func checkNpmShims(manifest: in Mf.Manifest, mfDir: in String): List[String]
   npmMissingSymbols(imports, parseNpmProbeOutput(r.stdout))
 }
 
+/// `B0064` messages: the `npm:<package>` imports in `sources` (project package
+/// sources) that name a package `[npm]` does not declare.  A host-supplied
+/// module that is not an NPM package takes a plain module name instead.
+pub func npmUndeclaredImports(npm: in Option[Mf.NpmSection], sources: in List[String]): List[String] {
+  val declared: Map[String, Bool] = newMap()
+  match npm {
+    case Some(n) -> {
+      for e in n.entries {
+        declared.add(e.name, true)
+      }
+    }
+    case None -> ()
+  }
+  val problems: List[String] = newList()
+  val seen: Map[String, Bool] = newMap()
+  for src in sources {
+    if Str.contains(src, "npm:") {
+      for imp in npmShimImports(src) {
+        if not declared.containsKey(imp.pkgName) and not seen.containsKey(imp.pkgName) {
+          seen.add(imp.pkgName, true)
+          problems.add(
+            "error[B0064]: the project imports the NPM package \"" + imp.pkgName + "\" (@wasmImport(\"npm:" + imp.pkgName +
+              "\")) but [npm] does not declare it"
+          )
+        }
+      }
+    }
+  }
+  problems
+}
+
+/// Whether `lyric build` should run the NPM restore first: the declared
+/// packages are not all installed, or the generated `package.json` no longer
+/// matches the `[npm]` table.
+pub func npmRestoreNeeded(manifest: in Mf.Manifest, mfDir: in String): Bool {
+  val npm = match manifest.npm { case Some(n) -> n; case None -> return false }
+  if npm.entries.count == 0 {
+    return false
+  }
+  val installDir = Path.join(Path.join(mfDir, "target"), "npm")
+  match File.readText(Path.join(installDir, "package.json")) {
+    case Err(_) -> return true
+    case Ok(text) -> {
+      if text != buildNpmPackageJson(npm) {
+        return true
+      }
+    }
+  }
+  for e in npm.entries {
+    val installed = Path.join(Path.join(Path.join(installDir, "node_modules"), e.name), "package.json")
+    if not File.fileExists(installed) {
+      return true
+    }
+  }
+  false
+}
+
 /// Install the manifest's `[npm]` packages into `target/npm/node_modules/`
 /// and scaffold a missing shim per package under `_extern_npm/`.  A failed
 /// install or a package absent from `node_modules` afterwards is B0060; a
@@ -1367,19 +1433,19 @@ pub func restoreNpmPackages(manifest: in Mf.Manifest, mfDir: in String): Int {
     }
     case Ok(_) -> ()
   }
-  Console.println("restore: installing NPM packages ...")
+  Console.println("restore: installing NPM packages with " + npm.manager + " ...")
   val captureResult = ProcessCapture.runCaptureWithDiagnosticsTimeout(
-    "npm",
-    npmInstallArgs(installDir, npm.registry),
+    npm.manager,
+    npmInstallArgs(npm.manager, installDir, npm.registry),
     "",
     600000
   )
   if captureResult.timedOut {
-    printErr("restore: B0060: npm install timed out after 600 seconds")
+    printErr("restore: B0060: " + npm.manager + " install timed out after 600 seconds")
     return 1
   }
   if captureResult.exitCode != 0 {
-    printErr("restore: B0060: npm install failed (exit " + toString(captureResult.exitCode) + ")")
+    printErr("restore: B0060: " + npm.manager + " install failed (exit " + toString(captureResult.exitCode) + ")")
     if captureResult.stderr.length > 0 {
       printErr(captureResult.stderr)
     }
@@ -1392,7 +1458,7 @@ pub func restoreNpmPackages(manifest: in Mf.Manifest, mfDir: in String): Int {
     i += 1
     val installed = Path.join(Path.join(Path.join(installDir, "node_modules"), e.name), "package.json")
     if not File.fileExists(installed) {
-      printErr("restore: B0060: npm install finished but \"" + e.name + "\" is not in node_modules")
+      printErr("restore: B0060: " + npm.manager + " install finished but \"" + e.name + "\" is not in node_modules")
       return 1
     }
     val shimPath = Path.join(shimDir, Mf.npmShimFileName(e.name))
