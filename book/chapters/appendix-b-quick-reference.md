@@ -1530,6 +1530,8 @@ span, exactly like `T0120`/`J008`.
 | `N0018` | Generating the `--shape component` shims for a package failed: a `@wasmImport` extern with an unsupported type, a module or import name that is not a WIT identifier (a letter first, then letters, digits, `.`, `-`, `_`), or too many flat parameters. |
 | `N0019` | `@wasmImport` externs conflict in a `--shape component` build: one host function (module and name) declared with different signatures, module or function names that fold to the same WIT name (`ui.log` and `ui-log`), or a module named like an exported package. |
 | `N0020` | An `array[N, T]` reached `--target native` with no native layout: a length the type checker did not resolve to an integer, or an element type with no native lowering (D167). The checker rejects a non-constant length (T0160) first, so this is the backend's own check. |
+| `N0021` | `--wit-out` or `--js-bindings` was given without `--shape component`, or the `--wit-out` path contains `;`. |
+| `N0022` | `--js-bindings` could not run `jco` (`$JCO`, else `PATH`), or `jco transpile` failed. |
 
 ### Custom source generators (X-series)
 
