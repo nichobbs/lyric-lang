@@ -40,7 +40,8 @@ on the lambda, indirect-call, generic-type, mixed-operand and constructor-patter
 ## Known gaps
 
 - `examples/ui-customers` does not yet build natively: `constructor pattern 'EditCustomer'
-  matched against a non-union value` (tracked separately).
+  matched against a non-union value`, and the desktop host needs the external
+  `libwebview` link (tracked in #8155).
 - Condition variables and protected-type `when:` barriers are not available on native
-  (D-N-017), so `Std.Task` waits poll at one-millisecond steps.
+  (D-N-017), so `Std.Task` waits poll at one-millisecond steps (tracked in #8154).
 - `Std.Task` native tests cannot assert panics; `task_tests.l` stays the dotnet/JVM suite.
