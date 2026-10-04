@@ -148,6 +148,19 @@ stack overflow). Defaults are now translated with the callee on the
 contract stack and are edges of the contract-call graph; a record field
 default that constructs its own record fails closed; and contracts and
 defaults unfold at most 32 deep before a call fails closed (V0033).
+A call cut at a recursive default was applied with fewer arguments than
+the callee's declaration, so the SMT query named an undeclared function
+and z3's raw error reached the user. Functions are now declared from
+their applications in each goal's terms, one per signature, and a query
+the solver rejects is reported as an internal verifier error naming the
+goal (still failing closed), with the solver's text as a detail line.
+Goals are also checked to be well-sorted before solving: an unmodelled
+value compared with or used as a value of another sort fails closed as
+V0033 instead of reaching z3 as an ill-sorted query.
+None of the review repros' outputs carries solver error text any more;
+`verifier_self_test.l` has 125 tests and the compiler self-test batch 3325,
+all passing.
+
 `verifier_self_test.l` has 123 tests, all passing; the repros no longer
 crash (`lyric prove` reports the goals unproved), the CI `lyric prove`
 examples and `core_proof.l` still discharge, and the compiler self-test

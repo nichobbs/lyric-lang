@@ -588,6 +588,19 @@ Emission rules:
   user `forall (x: T)` with finite-cardinality `T`.
 - A `(get-model)` is emitted on `sat`. Counterexample extraction
   reads the model.
+- Every uninterpreted function is declared from its applications in
+  the goal's own terms, never from a side list, so none is undeclared;
+  a name applied at two signatures (a call cut at a recursive default
+  with fewer arguments) becomes one function per signature
+  (`f!sig1`, #8102).
+- Before a goal reaches the solver it is checked to be well-sorted: a
+  value the verifier does not model (its own uninterpreted sort) used
+  where an `Int` or a `Bool` is needed fails closed as `V0033`, naming
+  both sorts, instead of becoming an ill-sorted query.
+- A query the solver rejects (`(error ...)`) is a verifier bug, never a
+  property of the program: the goal stays unproved and is reported as an
+  internal verifier error naming the goal, even under
+  `--allow-unverified`, with the solver's text as a detail line.
 
 ### 7.3 Solver budget
 
