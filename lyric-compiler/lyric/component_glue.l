@@ -1025,6 +1025,9 @@ pub record CExport {
 /// real core import with the canonical flat arguments.
 pub record HostImport {
   module: String
+  /// The `@wasmImport` module string as written (`npm:node-fetch`, `ui`);
+  /// `module` is the WIT interface name it becomes.
+  source: String
   name: String
   cSym: String
   params: List[WitField]
@@ -1347,6 +1350,7 @@ func hostImportOf(d: in ExternFuncDecl, rawModule: in String, tbl: in TypeTable)
   Ok(
     value = HostImport(
       module = module,
+      source = rawModule,
       name = d.symbol,
       cSym = "lyric_host_" + module.length.toString() + "_" + sanitizeIdent(module) + "_" +
         d.symbol.length.toString() +
@@ -1920,9 +1924,34 @@ func cTypeOfTy(t: in WitTy): String {
 /// the canonical flat form (a string is borrowed as pointer and length), calls the
 /// real core import, and lifts the result (a string comes back through a return
 /// area the host fills using `cabi_realloc`).
+/// The WIT interface id a host import module is imported under:
+/// `lyric:<first package>/<module>@<version>`.
+func importInterfaceId(pkgs: in List[ComponentPkg], module: in String, version: in String): String {
+  "lyric:" + witName(firstPkgName(pkgs)) + "/" + witName(module) + "@" + version
+}
+
+/// The `jco transpile --map` arguments that satisfy every host import of `pkgs`
+/// with a JavaScript module: an `npm:<package>` import with the package itself,
+/// any other with `../<module>.js`, a file the caller writes beside the
+/// component (the bindings directory is a sibling of it).
+pub func jcoMapArgs(pkgs: in List[ComponentPkg], version: in String): List[String] {
+  val args: List[String] = newList()
+  val seen: Map[String, Bool] = newMap()
+  for h in uniqueImports(pkgs) {
+    val id = importInterfaceId(pkgs, h.module, version)
+    if not seen.containsKey(id) {
+      seen.add(id, true)
+      val target = if Str.startsWith(h.source, "npm:") { Str.substring(h.source, 4) } else { "../" + h.source + ".js" }
+      args.add("--map")
+      args.add(id + "=" + target)
+    }
+  }
+  args
+}
+
 func renderImportWrapper(pkgs: in List[ComponentPkg], h: in HostImport, i: in Int, version: in String): String {
   val l: List[String] = newList()
-  val id = "lyric:" + witName(firstPkgName(pkgs)) + "/" + witName(h.module) + "@" + version
+  val id = importInterfaceId(pkgs, h.module, version)
   val rawName = "lyric_rawimport" + idStr(i)
   val rawParams: List[String] = newList()
   val ownParams: List[String] = newList()

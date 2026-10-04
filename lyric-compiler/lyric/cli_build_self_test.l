@@ -1837,3 +1837,39 @@ test "effectiveWasmVersion: [wasm] version wins, else the [package] version, els
     "a project's [package] version reaches the shape argument"
   )
 }
+
+test "nativeShapeArg: the component output flags ride the shape argument; other shapes ignore them" {
+  assertEqual(Cli.nativeShapeArg(Cli.SComponent, "", false), "component", "no flags")
+  assertEqual(Cli.nativeShapeArg(Cli.SComponent, "out/api.wit", false), "component;wit=out/api.wit", "--wit-out")
+  assertEqual(Cli.nativeShapeArg(Cli.SComponent, "", true), "component;js", "--js-bindings")
+  assertEqual(Cli.nativeShapeArg(Cli.SComponent, "a.wit", true), "component;wit=a.wit;js", "both")
+  assertEqual(Cli.nativeShapeArg(Cli.SModule, "a.wit", true), "module", "the module shape has no such options")
+  assertEqual(Cli.shapeArgBase("component;wit=a.wit;js"), "component", "the base name")
+  assertEqual(Cli.shapeArgBase("module"), "module", "a bare name")
+}
+
+test "wasmOutputFlagError: --wit-out and --js-bindings need --shape component (N0021)" {
+  match Cli.wasmOutputFlagError("", false, Cli.SModule) {
+    case Some(msg) -> assertTrue(false, "no flags, any shape: " + msg)
+    case None -> ()
+  }
+  match Cli.wasmOutputFlagError("a.wit", true, Cli.SComponent) {
+    case Some(msg) -> assertTrue(false, "the component shape accepts both: " + msg)
+    case None -> ()
+  }
+  match Cli.wasmOutputFlagError("a.wit", false, Cli.SModule) {
+    case Some(msg) -> assertTrue(
+      Str.contains(msg, "N0021") and Str.contains(msg, "--shape component"),
+      "module shape: " + msg
+    )
+    case None -> assertTrue(false, "--wit-out with the module shape must be rejected")
+  }
+  match Cli.wasmOutputFlagError("", true, Cli.SModule) {
+    case Some(msg) -> assertTrue(Str.contains(msg, "N0021"), "--js-bindings alone: " + msg)
+    case None -> assertTrue(false, "--js-bindings with the module shape must be rejected")
+  }
+  match Cli.wasmOutputFlagError("a;b.wit", false, Cli.SComponent) {
+    case Some(msg) -> assertTrue(Str.contains(msg, "';'"), "a semicolon in the path: " + msg)
+    case None -> assertTrue(false, "a path with ';' must be rejected")
+  }
+}

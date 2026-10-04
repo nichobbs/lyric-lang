@@ -1356,6 +1356,8 @@ func cmdBuild(argv: in slice[String]): Int {
   var sawStandaloneFlag: Bool = false
   var ridArg: Option[String] = None
   var noRestore: Bool = false
+  var witOutArg: String = ""
+  var jsBindingsFlag: Bool = false
   var watch: Bool = false
   var releaseFromDll: Option[String] = None
   var packageVersionArg: Option[String] = None
@@ -1460,6 +1462,17 @@ func cmdBuild(argv: in slice[String]): Int {
       }
     } else if arg == "--no-restore" {
       noRestore = true
+      i += 1
+    } else if arg == "--wit-out" {
+      if i + 1 < argv.length {
+        witOutArg = argv[i + 1]
+        i += 2
+      } else {
+        printErr("build: --wit-out requires a path")
+        return 1
+      }
+    } else if arg == "--js-bindings" {
+      jsBindingsFlag = true
       i += 1
     } else if arg == "--watch" {
       watch = true
@@ -1753,6 +1766,13 @@ func cmdBuild(argv: in slice[String]): Int {
       }
       case None -> ()
     }
+    match wasmOutputFlagError(witOutArg, jsBindingsFlag, axes.shape) {
+      case Some(msg) -> {
+        printErr(msg)
+        return 1
+      }
+      case None -> ()
+    }
     match watchShapeError(watch, axes.shape) {
       case Some(msg) -> {
         printErr(msg)
@@ -1840,7 +1860,7 @@ func cmdBuild(argv: in slice[String]): Int {
           withProfileDefine(cliDefines, axes.profile),
           tripleArg,
           effOptArgProj,
-          nativeShapeName(axes.shape)
+          nativeShapeArg(axes.shape, witOutArg, jsBindingsFlag)
         )
       }
       case None -> {
@@ -1857,7 +1877,7 @@ func cmdBuild(argv: in slice[String]): Int {
           withProfileDefine(cliDefines, axes.profile),
           tripleArg,
           effOptArgProj,
-          nativeShapeName(axes.shape)
+          nativeShapeArg(axes.shape, witOutArg, jsBindingsFlag)
         )
       }
     }
@@ -1942,6 +1962,13 @@ func cmdBuild(argv: in slice[String]): Int {
   // doc comment. A no-op on Dotnet/Jvm (returns `optArg` unchanged).
   val effOptArg = resolveNativeOptDefault(optArg, manifestArg, target, axes.profile)
 
+  match wasmOutputFlagError(witOutArg, jsBindingsFlag, axes.shape) {
+    case Some(msg) -> {
+      printErr(msg)
+      return 1
+    }
+    case None -> ()
+  }
   match watchShapeError(watch, axes.shape) {
     case Some(msg) -> {
       printErr(msg)
@@ -1980,7 +2007,7 @@ func cmdBuild(argv: in slice[String]): Int {
     noDefaultFeatures,
     allFeatures,
     withProfileDefine(cliDefines, axes.profile),
-    nativeShapeName(axes.shape)
+    nativeShapeArg(axes.shape, witOutArg, jsBindingsFlag)
   )
 }
 
@@ -2004,6 +2031,54 @@ pub func nativeShapeName(shape: in BuildShape): String {
     case SComponent -> "component"
     case _ -> ""
   }
+}
+
+/// The shape argument the native bridge parses, with the component build's
+/// output flags: `component;wit=<path>;js` for `--wit-out <path> --js-bindings`.
+pub func nativeShapeArg(shape: in BuildShape, witOut: in String, jsBindings: in Bool): String {
+  val name = nativeShapeName(shape)
+  if name != "component" {
+    return name
+  }
+  var arg = name
+  if witOut.length > 0 {
+    arg = arg + ";wit=" + witOut
+  }
+  if jsBindings {
+    arg = arg + ";js"
+  }
+  arg
+}
+
+/// The shape name inside a shape argument (`component` of `component;js`).
+pub func shapeArgBase(arg: in String): String {
+  val parts = Str.split(arg, ";")
+  if parts.length > 0 {
+    parts[0]
+  } else {
+    ""
+  }
+}
+
+/// `--wit-out` and `--js-bindings` only mean something for `--shape component`
+/// (`N0021`), and the output path must not contain the `;` the shape argument
+/// separates its options with.
+pub func wasmOutputFlagError(witOut: in String, jsBindings: in Bool, shape: in BuildShape): Option[String] {
+  if witOut.length == 0 and not jsBindings {
+    return None
+  }
+  match shape {
+    case SComponent -> ()
+    case _ -> return Some(
+      value = "error[N0021]: --wit-out and --js-bindings apply to --shape component only (this build's shape is " +
+        shapeName(shape) +
+        ")"
+    )
+  }
+  if Str.contains(witOut, ";") {
+    return Some(value = "error[N0021]: --wit-out path must not contain ';': " + witOut)
+  }
+  None
 }
 
 // Append the well-known `build_profile` define (docs/60 §3.3) for the resolved
@@ -2819,7 +2894,11 @@ pub func buildProjectFromManifest(
   val outPath = match explicitOut {
     case Some(o) -> o
     case None -> {
-      val ext = if wasmShape == "module" or wasmShape == "component" { ".wasm" } else { outputExt(target, buildKind) }
+      val ext = if shapeArgBase(wasmShape) == "module" or shapeArgBase(wasmShape) == "component" {
+        ".wasm"
+      } else {
+        outputExt(target, buildKind)
+      }
       val stem = match proj.outputAssembly { case Some(s) -> s; case None -> proj.name + ext }
       Path.join(Path.join(mfDir, "bin"), stem)
     }

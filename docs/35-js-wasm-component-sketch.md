@@ -326,8 +326,8 @@ rule, and `portable`/`standalone`/`aot` become a diagnostic there. Convenience a
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--wit-out <path>` | `target/wasm/<pkg>.wit` | Where to write the generated WIT file (component shape) |
-| `--js-bindings` | off | Component shape: also run `jco transpile`. The module shape always writes its glue (`<name>.js`, `<name>.d.ts`) next to the `.wasm` (D-progress-1029) |
+| `--wit-out <path>` | beside the component, `<name>.wit` | Where to write the generated WIT file (component shape; shipped, D-progress-1040) |
+| `--js-bindings` | off | Component shape: also run `jco transpile` into `<name>-js/` with a `--map` per host import (`npm:` imports to the package, others to `../<module>.js`); shipped, D-progress-1040. The module shape always writes its glue (`<name>.js`, `<name>.d.ts`) next to the `.wasm` (D-progress-1029) |
 
 `lyric publish` for a wasm shape bundles the `.wasm`, WIT and generated
 bindings as an NPM-compatible tarball.
