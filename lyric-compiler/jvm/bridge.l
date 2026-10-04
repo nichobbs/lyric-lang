@@ -1954,6 +1954,28 @@ func isMonoSpecializedName(name: in String): Bool {
 // specialised copy keeps the generic's parameter defaults, so a call that
 // names its arguments or leaves a defaulted one out pairs as it would
 // against the generic itself (#7846).
+// Registers the records the middle end specialises from a value-generic
+// record (`Ints__V3`, D169): they exist only in the post-mono file, so the
+// registration from the parsed file never saw their methods and fields, and
+// a method call on one fell back to the `()Object` guess.
+func collectValueRecordSpecSigs(
+  file: in SourceFile,
+  into: in Map[String, JvmFuncSig],
+  externSeed: in Map[String, String],
+  ctorReg: in Map[String, String],
+): Unit {
+  val specs: List[Item] = newList()
+  for it in file.items {
+    val name = match it.kind { case IRecord(d) -> d.name; case IExposedRec(d) -> d.name; case _ -> "" }
+    if isValueRecordSpecName(name) {
+      specs.add(it)
+    }
+  }
+  if specs.count > 0 {
+    collectFileSigsSeeded(file.copy(items = specs), into, externSeed, ctorReg)
+  }
+}
+
 func collectMonoSpecializedSigs(
   file: in SourceFile,
   into: in Map[String, JvmFuncSig],
@@ -3471,6 +3493,12 @@ pub func compileProjectToJarBundledWithRestored(
         externSeedForFileCached(f, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache),
         ctorReg
       )
+      collectValueRecordSpecSigs(
+        f,
+        registry,
+        externSeedForFileCached(f, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache),
+        ctorReg
+      )
       // Register weaver-synthesised record fields (`__LyricBModeCallContext`,
       // `__LyricBModeCfg_*`, `__LyricBModeArgs_*`, docs/55/56) from the
       // post-weave file: `caseReg` above was built from the pre-weave
@@ -3610,6 +3638,12 @@ pub func compileProjectToJarBundledWithRestored(
             externSeedForFileCached(ff, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache)
           )
           collectMonoSpecializedSigs(
+            ff,
+            registry,
+            externSeedForFileCached(ff, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache),
+            ctorReg
+          )
+          collectValueRecordSpecSigs(
             ff,
             registry,
             externSeedForFileCached(ff, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache),

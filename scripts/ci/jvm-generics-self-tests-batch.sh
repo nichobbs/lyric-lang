@@ -102,6 +102,7 @@ for t in \
   lyric-compiler/lyric/overflow_self_test.l \
   lyric-compiler/lyric/overflow_panic_self_test.l \
   lyric-compiler/lyric/fixed_array_self_test.l \
+  lyric-compiler/lyric/value_generic_record_self_test.l \
   lyric-compiler/lyric/fixed_array_panic_self_test.l \
   lyric-compiler/lyric/bench_alloc_self_test.l \
   lyric-compiler/lyric/record_eq_self_test.l \

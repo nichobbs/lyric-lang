@@ -93,6 +93,7 @@ for t in \
   lyric-compiler/lyric/inline_union_self_test.l \
   lyric-compiler/lyric/generic_ctor_open_arg_self_test.l \
   lyric-compiler/lyric/fixed_array_self_test.l \
+  lyric-compiler/lyric/value_generic_record_self_test.l \
   lyric-compiler/lyric/func_default_args_self_test.l \
   lyric-compiler/lyric/method_default_args_self_test.l \
   lyric-compiler/lyric/bench_alloc_self_test.l \
@@ -115,3 +116,6 @@ LYRIC_BIN="$lyric_bin" bash scripts/ci/fixed-array-e2e.sh native
 LYRIC_BIN="$lyric_bin" bash scripts/ci/bench-vec3-alloc.sh
 # #8031: an inline range type is checked wherever a value reaches it.
 LYRIC_BIN="$lyric_bin" bash scripts/ci/range-refinement-e2e.sh native
+# D169: a value-generic record is usable in its own package, and naming
+# another package's is T0164.
+LYRIC_BIN="$lyric_bin" bash scripts/ci/value-generic-record-e2e.sh native

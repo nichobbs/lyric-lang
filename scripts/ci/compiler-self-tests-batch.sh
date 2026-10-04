@@ -145,6 +145,7 @@ for t in \
   lyric-compiler/lyric/overflow_self_test.l \
   lyric-compiler/lyric/overflow_panic_self_test.l \
   lyric-compiler/lyric/fixed_array_self_test.l \
+  lyric-compiler/lyric/value_generic_record_self_test.l \
   lyric-compiler/lyric/fixed_array_panic_self_test.l \
   lyric-compiler/lyric/bench_alloc_self_test.l \
   lyric-compiler/lyric/record_eq_self_test.l \
@@ -255,6 +256,14 @@ if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
   echo "=== scripts/ci/range-refinement-e2e.sh ==="
   LYRIC_BIN="$lyric_bin" bash scripts/ci/range-refinement-e2e.sh dotnet jvm
   ran="$ran range-refinement-e2e"
+fi
+# D169: a value-generic record is usable in its own package, and naming
+# another package's is T0164, both targets (Java 21, as above).
+idx=$((idx + 1))
+if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
+  echo "=== scripts/ci/value-generic-record-e2e.sh ==="
+  LYRIC_BIN="$lyric_bin" bash scripts/ci/value-generic-record-e2e.sh dotnet jvm
+  ran="$ran value-generic-record-e2e"
 fi
 # #7858: `println(x)` writes what `toString(x)` returns for records, lists,
 # extern structs and extern objects, on both targets (Java 21, as above).

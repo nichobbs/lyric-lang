@@ -935,7 +935,7 @@ func renderType(cr: in CheckResult, ty: in Type): String {
       }
       s + ") -> " + renderType(cr, ret)
     }
-    case TyArray(sizeOpt, elem) -> {
+    case TyArray(sizeOpt, elem, _) -> {
       match sizeOpt {
         case None -> "array[?, " + renderType(cr, elem) + "]"
         case Some(n) -> "array[" + ("" + n) + ", " + renderType(cr, elem) + "]"
@@ -991,6 +991,7 @@ func renderType(cr: in CheckResult, ty: in Type): String {
       renderType(cr, u) + " range " + left + opBare + right
     }
     case TySelf -> "Self"
+    case TyLen(n) -> toString(n)
     case TyVar(n) -> n
     case TyError -> "<error>"
     case TyException -> "Exception"

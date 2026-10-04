@@ -9962,15 +9962,54 @@ test "a value-generic length no argument gives is T0110" {
   assertEqualInt(diagCount(ecr), 0, "an explicit length (" + diagCodesOf(ecr) + ")")
 }
 
-test "a record's value generic parameter cannot size an array field yet" {
-  val src = "package P\nrecord FixedVec[T, N: Nat] {\n  items: array[N, T]\n}\n"
+test "a record's value generic parameter sizes its array fields" {
+  val src = "package P\nrecord FixedVec[T, N: Nat] {\n  var items: array[N, T]\n  func last(self: in FixedVec[T, N]): T = self.items[N - 1]\n}\nfunc g(): Int {\n  val a: array[3, Int] = [1, 2, 3]\n  val v = FixedVec(items = a)\n  val z: FixedVec[String, 2] = FixedVec(items = [\"a\", \"b\"])\n  v.items.length + v.last()\n}\n"
   val cr = parseCheck(src)
-  assertEqualInt(countDiagCode(cr, "T0160"), 1, "the field is reported (" + diagCodesOf(cr) + ")")
-  assertTrue(Str.contains(diagCodesOf(cr), "#8090"), "the message names the tracking issue")
+  assertEqualInt(diagCount(cr), 0, "a record with a length parameter (" + diagCodesOf(cr) + ")")
+  assertEqualInt(
+    cr.symbols.valueRecordCtorSites.count,
+    2,
+    "each construction's lengths are recorded for the middle end"
+  )
   val nonConst = "package P\nfunc g(): Int {\n  val n = 4\n  var a: array[n, Int]\n  a.length\n}\n"
   assertFalse(
-    Str.contains(diagCodesOf(parseCheck(nonConst)), "#8090"),
-    "a non-constant length is not blamed on records (" + diagCodesOf(parseCheck(nonConst)) + ")"
+    Str.contains(diagCodesOf(parseCheck(nonConst)), "#8149"),
+    "a non-constant length is not blamed on a type's value parameter (" + diagCodesOf(parseCheck(nonConst)) + ")"
+  )
+}
+
+test "an instance's length comes from a field, the expected type or a constant" {
+  val src = "package P\nval Width = 4\nrecord Grid[W: Nat] {\n  var cells: array[W, Int]\n}\nfunc g(): Int {\n  val a: Grid[Width] = Grid()\n  val b: Grid[2] = Grid()\n  a.cells.length + b.cells.length\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "zero filled at the expected length (" + diagCodesOf(cr) + ")")
+  assertEqualInt(cr.symbols.valueTypeArgSites.count, 1, "a constant length argument is recorded with its value")
+  val mismatch = "package P\nrecord Grid[W: Nat] {\n  var cells: array[W, Int]\n}\nfunc g(): Int {\n  val a: array[3, Int] = [1, 2, 3]\n  val b: Grid[4] = Grid(cells = a)\n  0\n}\n"
+  assertTrue(diagCount(parseCheck(mismatch)) > 0, "two instances of different lengths are different types")
+}
+
+test "two fields giving a record's length different values is T0043" {
+  val src = "package P\nrecord Two[N: Nat] {\n  a: array[N, Int]\n  b: array[N, Int]\n}\nfunc g(): Int {\n  val x: array[2, Int] = [1, 2]\n  val y: array[3, Int] = [1, 2, 3]\n  val t = Two(a = x, b = y)\n  0\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0043"), 1, "the conflict is reported (" + diagCodesOf(cr) + ")")
+  assertEqualInt(countDiagCode(cr, "T0110"), 0, "and not as an uninferable parameter")
+}
+
+test "a length argument of the wrong kind is T0163" {
+  val src = "package P\nrecord FixedVec[T, N: Nat] {\n  items: array[N, T]\n}\nfunc f(v: in FixedVec[Int, String]): Int = 0\nfunc g(v: in FixedVec[3, 3]): Int = 0\n"
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0163"), 2, "a type for a length and a length for a type (" + diagCodesOf(cr) + ")")
+}
+
+test "a union's, opaque type's or protected type's value parameter cannot size an array yet" {
+  val u = "package P\nunion Shape[N: Nat] {\n  case Poly(pts: array[N, Float])\n  case Dot\n}\n"
+  val ucr = parseCheck(u)
+  assertEqualInt(countDiagCode(ucr, "T0160"), 1, "the union case field is reported (" + diagCodesOf(ucr) + ")")
+  assertTrue(Str.contains(diagCodesOf(ucr), "#8149"), "the message names the tracking issue")
+  val o = "package P\nopaque type Buf[N: Nat] {\n  bytes: array[N, Byte]\n}\n"
+  assertEqualInt(
+    countDiagCode(parseCheck(o), "T0160"),
+    1,
+    "an opaque type's field (" + diagCodesOf(parseCheck(o)) + ")"
   )
 }
 

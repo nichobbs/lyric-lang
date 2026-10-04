@@ -653,3 +653,20 @@ test "a bracket literal binds a generic record's element type" {
   val s: Tagged[String] = Tagged(data = ["a", "b"], tag = 0)
   assertEqual(s.data[0] + s.data[1], "ab", "Tagged[String] from a String literal")
 }
+
+// An element reached through an erased value (a slice of arrays, a generic
+// result) is read by the element's runtime representation; on the JVM a
+// numeric array there is a typed Java array (#8041).  The write through an
+// erased value is covered by the generic record field test above.
+test "an array reached through a slice or a generic value reads like any array" {
+  val r: array[2, Float] = [1.5, 2.5]
+  val g: array[2, array[2, Float]] = [r, r]
+  val s = g.toSlice()
+  assertTrue(s[1][1] == 2.5, "a Float row through the slice")
+  val b: array[3, Byte] = [200, 1, 255]
+  val p = ident(b)
+  assertEqualInt(p[0].toInt() + p[2].toInt(), 455, "a generic result's elements read unsigned")
+  val flags: array[2, Bool] = [false, true]
+  val fs = [flags, flags]
+  assertTrue(fs[1][1], "a slice of Bool arrays")
+}
