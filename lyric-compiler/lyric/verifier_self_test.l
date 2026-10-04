@@ -2018,3 +2018,109 @@ test "an unmodelled value used at another sort fails closed before the solver (#
   assertTrue(not summaryMentions(s, "malformed"), "a well-formed query")
   assertTrue(not summaryMentions(s, "unexpected output"), "no solver error")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Obligations the verifier used to drop (#8107).
+// ─────────────────────────────────────────────────────────────────────────────
+test "a block used as a value keeps its statements' obligations (#8107)" {
+  val pos = "func pos(x: in Int): Int\n  requires: x > 0\n{\n  x\n}\n"
+  assertRefuted(
+    pos +
+      "func g(c: in Int): Int\n{\n  match c {\n    case 0 -> {\n      val z = pos(0)\n      1\n    }\n    case _ -> 2\n  }\n}\n",
+    "match-arm-block"
+  )
+  assertRefuted(
+    pos + "func g(c: in Bool): Int\n{\n  val r = if c {\n    assert(false)\n    1\n  } else {\n    2\n  }\n  r\n}\n",
+    "if-branch-block-assert"
+  )
+  assertDischarged(
+    "func posId(x: in Int): Int\n  requires: x > 0\n  ensures: result == x\n{\n  x\n}\n" +
+      "func g(c: in Int): Int\n  ensures: result > 0\n{\n  match c {\n    case 0 -> {\n      val z = 5\n      posId(z)\n    }\n" +
+      "    case _ -> 2\n  }\n}\n",
+    "match-arm-block-establishes"
+  )
+  assertDischarged(
+    pos +
+      "func g(c: in Bool): Int\n  ensures: result == 3\n{\n  val r = if c {\n    val k = 1\n    k + 2\n  } else {\n    3\n  }\n  r\n}\n",
+    "block-binding-value"
+  )
+  assertFailsClosed(
+    pos +
+      "func g(c: in Int): Int\n  ensures: result > 0\n{\n  val r = match c {\n    case 0 -> {\n      return -1\n    }\n" +
+      "    case _ -> 2\n  }\n  r\n}\n",
+    "V0033",
+    "return-in-a-value-block"
+  )
+}
+
+test "a statement-level match checks its arms' obligations (#8107)" {
+  val pos = "func pos(x: in Int): Int\n  requires: x > 0\n{\n  x\n}\n"
+  assertRefuted(
+    pos + "func g(c: in Int): Int\n{\n  match c {\n    case 0 -> pos(0)\n    case _ -> 2\n  }\n  1\n}\n",
+    "statement-match"
+  )
+  assertDischarged(
+    pos + "func g(c: in Int): Int\n{\n  match c {\n    case 0 -> pos(1)\n    case _ -> 2\n  }\n  1\n}\n",
+    "statement-match-met"
+  )
+}
+
+test "an unmodelled construct keeps its operands' obligations (#8107)" {
+  val pos = "func pos(x: in Int): Int\n  requires: x > 0\n{\n  x\n}\n"
+  assertRefuted(pos + "func g(xs: in List[Int]): Int\n{\n  val v = xs[pos(0)]\n  1\n}\n", "index-operand")
+  assertRefuted(pos + "func g(): Int\n{\n  val t = (pos(0), 1)\n  1\n}\n", "tuple-operand")
+}
+
+test "integer division and remainder need a non-zero divisor (#8107)" {
+  assertRefuted("func g(x: in Int, y: in Int): Int\n{\n  x / y\n}\n", "div")
+  assertRefuted("func g(x: in Int, y: in Int): Int\n{\n  x % y\n}\n", "mod")
+  assertDischarged("func g(x: in Int, y: in Int): Int\n  requires: y != 0\n{\n  x / y\n}\n", "div-guarded")
+  assertRefuted("func g(x: in UInt, y: in UInt): UInt\n{\n  x / y\n}\n", "unsigned-div")
+  assertRefuted("func g(x: in Int, y: in Int): Int\n{\n  var z = x\n  z /= y\n  z\n}\n", "compound-div")
+  assertCheckedRefuted(
+    "func g(x: in Int, y: in Int): Int\n  requires: y != 0\n{\n  x / y\n}\n",
+    "checked-min-over-minus-one"
+  )
+  assertCheckedDischarged(
+    "func g(x: in Int, y: in Int): Int\n  requires: y > 0\n{\n  x / y\n}\n",
+    "checked-positive-divisor"
+  )
+}
+
+test "a ? in a loop condition fails closed (#8143)" {
+  assertFailsClosed(
+    "func f(n: in Int): Result[Int, String] {\n  Ok(value = n)\n}\nfunc g(n: in Int): Int\n{\n  var i = 0\n  while f(i)? < n\n" +
+      "    invariant: i >= 0\n  {\n    i = i + 1\n  }\n  i\n}\n",
+    "V0026",
+    "question-in-condition"
+  )
+}
+
+func subPair(a: in Int, b: in Int): Int {
+  a - b
+}
+
+func intLitExpr(n: in Long): Expr {
+  Expr(kind = ELiteral(lit = LInt(value = n, suffix = NoIntSuffix, raw = "")), span = zeroSpan())
+}
+
+test "a named argument then a positional one pairs alike in build and prove (#8140)" {
+  // `lyric build` (the type checker and backends, `argsWithDefaults`).
+  assertEqualInt(subPair(b = 3, 10), 7, "build: the positional argument takes the free parameter")
+  // `lyric prove` (`pairCallArgs`).
+  val names: List[String] = newList()
+  names.add("a")
+  names.add("b")
+  val args: List[CallArg] = newList()
+  args.add(CANamed(name = "b", value = intLitExpr(3i64), span = zeroSpan()))
+  args.add(CAPositional(expr = intLitExpr(10i64)))
+  match pairCallArgs(names, 0, args) {
+    case Ok(slots) -> {
+      assertEqualInt(slots[0], 1, "prove: a takes the positional argument")
+      assertEqualInt(slots[1], 0, "prove: b takes the named argument")
+    }
+    case Err(why) -> assertTrue(false, "prove: the arguments pair: " + why)
+  }
+  val sub = "func sub(a: in Int, b: in Int): Int\n  ensures: result == a - b\n{\n  a - b\n}\n"
+  assertDischarged(sub + "func g(): Int\n  ensures: result == 7\n{\n  sub(b = 3, 10)\n}\n", "prove: same result")
+}
