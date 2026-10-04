@@ -1843,3 +1843,70 @@ test "old of an expression is its value on entry (#8102)" {
     "old-expression-met"
   )
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A side condition holds only where its subterm is evaluated, and a call
+// nested in a callee's contract brings its precondition to the caller
+// (#8102 second review).
+// ─────────────────────────────────────────────────────────────────────────────
+func posDecl(): String {
+  "@pure\nfunc pos(x: in Int): Int\n  requires: x > 0\n{\n  x\n}\n"
+}
+
+test "a requires assumes a nested call's precondition only where it is evaluated (#8102)" {
+  assertRefuted(
+    posDecl() + "func f(x: in Int): Int\n  requires: x == 0 or pos(x) > 0\n  ensures: result > 0\n{\n  x\n}\n",
+    "short-circuit-or"
+  )
+  assertDischarged(
+    posDecl() + "func f(x: in Int): Int\n  requires: x == 0 or pos(x) > 0\n  ensures: result >= 0\n{\n  x\n}\n" +
+      "func g(): Int\n{\n  f(0)\n}\n",
+    "caller-not-over-strict"
+  )
+  assertDischarged(
+    posDecl() + "func f(x: in Int): Int\n  requires: x != 0 implies pos(x) > 0\n  ensures: result >= 0\n{\n  x\n}\n",
+    "implies-guards"
+  )
+}
+
+test "a call nested in a callee's requires is the caller's obligation (#8102)" {
+  val f = posDecl() + "func f(x: in Int): Int\n  requires: pos(x) > -100\n  ensures: result > 0\n{\n  x\n}\n"
+  assertRefuted(f + "func g(): Int\n{\n  f(-5)\n}\n", "nested-precondition-unmet")
+  assertDischarged(f + "func g(): Int\n  ensures: result > 0\n{\n  f(5)\n}\n", "nested-precondition-met")
+}
+
+test "a single invariant may guard its own call with its left operand (#8102)" {
+  assertDischarged(
+    halfDecl() +
+      "func f(): Int\n{\n  var i = 5\n  while i > 0\n    invariant: i >= 0 and i <= 5 and half(5 - i) >= 0\n  {\n" +
+      "    i = i - 1\n  }\n  i\n}\n",
+    "guarded-invariant"
+  )
+  assertRefuted(
+    halfDecl() + "func f(): Int\n{\n  var i = 5\n  while i > 0\n    invariant: i >= 5 or half(i - 5) >= 0\n  {\n" +
+      "    i = i - 1\n  }\n  i\n}\n",
+    "or-does-not-guard"
+  )
+}
+
+test "self.m() inside a protected entry fails closed (#8102)" {
+  assertUntranslatable(
+    "protected type C {\n  var n: Int\n  invariant: n >= 0\n  func bump(): Unit {\n    n = n + 1\n  }\n" +
+      "  entry same(): Unit\n    ensures: n == old(n)\n  {\n    self.bump()\n  }\n}\n",
+    "self-member-call"
+  )
+}
+
+test "a local binding shadows a file function at a call (#8102)" {
+  val f = "func f(x: in Int): Int\n  ensures: result == x\n{\n  x\n}\n"
+  assertNotProved(f + "func g(): Int\n  ensures: result == 1\n{\n  val f = { x: Int -> 2 }\n  f(1)\n}\n", "shadowed")
+  assertDischarged(f + "func g(): Int\n  ensures: result == 1\n{\n  f(1)\n}\n", "not-shadowed")
+}
+
+test "an untranslatable argument of a computed call keeps its goal failed (#7874)" {
+  val s = provePkg(
+    "func g(u: in UInt, h: in (UInt) -> Int): Int\n  ensures: result == result\n{\n  val r = h(-u)\n  r\n}\n"
+  )
+  assertTrue(summaryHasDiagCode(s, "V0033"), "V0033 reported")
+  assertTrue(summaryHasFailure(s), "a goal stays failed")
+}

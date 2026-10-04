@@ -56,6 +56,10 @@ pub record VEnv {
   // Inside a protected type's member, the names of its `func`/`entry`
   // members, which a bare call reaches before any top-level function.
   pub protectedMembers: List[String]
+  // The functions whose contract is being translated at a call, innermost
+  // last: a call reaching one of them again inside that contract is not
+  // unfolded a second time (#8102).
+  pub contractStack: List[String]
   // Copy helpers — use explicit names list to avoid iterating Map.keys on a
   // TypeBuilderInstantiation, which generates invalid IL.
 }
@@ -178,6 +182,7 @@ pub func envEmpty(callees: in Map[String, FunctionDecl], symbols: in List[Symbol
   val finals: List[FinalSlot] = newList()
   val mutables: List[String] = newList()
   val protectedMembers: List[String] = newList()
+  val contractStack: List[String] = newList()
   VEnv(
     vars = vars,
     varNames = varNames,
@@ -192,7 +197,8 @@ pub func envEmpty(callees: in Map[String, FunctionDecl], symbols: in List[Symbol
     recordMethods = recordMethods,
     finals = finals,
     mutables = mutables,
-    protectedMembers = protectedMembers
+    protectedMembers = protectedMembers,
+    contractStack = contractStack
   )
 }
 
@@ -227,7 +233,8 @@ pub func envBind(name: in String, info: in SortInfo, env: in VEnv): VEnv {
     recordMethods = env.recordMethods,
     finals = env.finals,
     mutables = env.mutables,
-    protectedMembers = env.protectedMembers
+    protectedMembers = env.protectedMembers,
+    contractStack = env.contractStack
   )
 }
 
@@ -261,7 +268,8 @@ pub func envBindTerm(name: in String, term: in Term, info: in SortInfo, env: in 
     recordMethods = env.recordMethods,
     finals = env.finals,
     mutables = env.mutables,
-    protectedMembers = env.protectedMembers
+    protectedMembers = env.protectedMembers,
+    contractStack = env.contractStack
   )
 }
 
@@ -320,6 +328,22 @@ pub record TranslateResult {
   pub term: Term
   pub sideConds: List[Term]
   pub assumed: List[Term]
+}
+
+// `r` with its side conditions and facts holding only where `g` does: the
+// translation of an operand evaluated only when `g` holds.
+func guardTR(g: in Term, r: in TranslateResult): TranslateResult {
+  TranslateResult(term = r.term, sideConds = guardTerms(g, r.sideConds), assumed = guardTerms(g, r.assumed))
+}
+
+func guardTerms(g: in Term, xs: in List[Term]): List[Term] {
+  val guarded: List[Term] = newList()
+  var i = 0
+  while i < xs.count {
+    guarded.add(mkImplies(g, xs[i]))
+    i = i + 1
+  }
+  guarded
 }
 
 func singleTR(t: in Term): TranslateResult {
@@ -580,7 +604,8 @@ func varlessEnv(env: in VEnv): VEnv {
     recordMethods = env.recordMethods,
     finals = env.finals,
     mutables = env.mutables,
-    protectedMembers = env.protectedMembers
+    protectedMembers = env.protectedMembers,
+    contractStack = env.contractStack
   )
 }
 
@@ -659,6 +684,18 @@ func outArgsAlias(decl: in FunctionDecl, args: in List[CallArg]): String {
   }
 }
 
+// `names` and then `name`, as a new list.
+func termsWithNames(names: in List[String], name: in String): List[String] {
+  val longer: List[String] = newList()
+  var i = 0
+  while i < names.count {
+    longer.add(names[i])
+    i = i + 1
+  }
+  longer.add(name)
+  longer
+}
+
 // Declare the callee `name` once per goal's symbols, however many calls
 // reach it: a second `declare-fun` of one name is an SMT-LIB error.
 func addUserFunOnce(symbols: in List[SymbolDecl], name: in String, paramSorts: in List[Sort], resultSort: in Sort): Unit {
@@ -699,6 +736,19 @@ func translateResolvedCall(
   freshResult: in Bool,
 ): (TranslateResult, List[Diagnostic]) {
   val resultInfo = match decl.ret { case Some(te) -> sortOfTypeExprE(env, te); case None -> unitSortInfo() }
+  // A call reaching a function whose contract is already being unfolded
+  // here (a recursive contract) is that function applied to its
+  // arguments, with no second unfolding.
+  if env.contractStack.contains(decl.name) {
+    val recTerm = TApp(name = name, args = rawArgTerms, retSort = resultInfo.sort)
+    val recTR = TranslateResult(term = recTerm, sideConds = argSides, assumed = argAssumed)
+    val recPair: (TranslateResult, List[Diagnostic]) = (recTR, allArgDiags)
+    return recPair
+  }
+  // The callee's contract is translated against the file's functions, so
+  // a call nested in a `requires:` brings its own precondition into the
+  // caller's obligation (#8102).
+  val contractStack = termsWithNames(env.contractStack, decl.name)
   val resultSort = resultInfo.sort
   val paramSorts: List[Sort] = newList()
   var pi = 0
@@ -720,12 +770,11 @@ func translateResolvedCall(
     innerVarNames.add(decl.params[ii].name)
     ii = ii + 1
   }
-  val emptyCallees: Map[String, FunctionDecl] = newMap()
   val innerEnv = VEnv(
     vars = innerVars,
     varNames = innerVarNames,
     sorts = innerSorts,
-    callees = emptyCallees,
+    callees = env.callees,
     symbols = env.symbols,
     checkedArithmetic = false,
     distincts = env.distincts,
@@ -735,7 +784,8 @@ func translateResolvedCall(
     recordMethods = env.recordMethods,
     finals = env.finals,
     mutables = env.mutables,
-    protectedMembers = env.protectedMembers
+    protectedMembers = env.protectedMembers,
+    contractStack = contractStack
   )
   // A parameter default sees the names declared at module level, never
   // the callee's other parameters (docs/01): it is translated with no
@@ -884,7 +934,7 @@ func translateResolvedCall(
     vars = resultVars2,
     varNames = resultVarNames2,
     sorts = resultSorts2,
-    callees = emptyCallees,
+    callees = env.callees,
     symbols = env.symbols,
     checkedArithmetic = false,
     distincts = env.distincts,
@@ -894,7 +944,8 @@ func translateResolvedCall(
     recordMethods = env.recordMethods,
     finals = env.finals,
     mutables = env.mutables,
-    protectedMembers = env.protectedMembers
+    protectedMembers = env.protectedMembers,
+    contractStack = contractStack
   )
   ci = 0
   while ci < decl.contracts.count {
@@ -923,6 +974,45 @@ func translateResolvedCall(
   val knownCalleeTR = TranslateResult(term = callTerm, sideConds = sc, assumed = asList)
   val knownCalleePair: (TranslateResult, List[Diagnostic]) = (knownCalleeTR, allArgDiags)
   knownCalleePair
+}
+
+// A call through a computed callee — a lambda, a local binding, another
+// call's result: a value of its own at this call site, never one shared
+// with another call (#8101).  The callee expression's and the arguments'
+// obligations and facts still hold.
+func translateComputedCall(
+  env: in VEnv,
+  fn: in Expr,
+  rawArgTerms: in List[Term],
+  argSides: in List[Term],
+  argAssumed: in List[Term],
+  allArgDiags: in List[Diagnostic],
+): (TranslateResult, List[Diagnostic]) {
+  val (fnR, fnDiags) = translateExpr(env, fn)
+  val diags: List[Diagnostic] = newList()
+  appendTermList2(diags, fnDiags)
+  appendTermList2(diags, allArgDiags)
+  val sc: List[Term] = newList()
+  appendTermList(sc, fnR.sideConds)
+  appendTermList(sc, argSides)
+  val asList: List[Term] = newList()
+  appendTermList(asList, fnR.assumed)
+  appendTermList(asList, argAssumed)
+  // An argument reported untranslatable (V0033) keeps the result poisoned,
+  // so a goal built from it stays failed (#7874).
+  val freshCall = freshVar(env, "call", SUninterp(name = "call"))
+  val callVar = if anyPoisoned(rawArgTerms) { poisonTerm(freshCall) } else { freshCall }
+  val callTR = TranslateResult(term = callVar, sideConds = sc, assumed = asList)
+  val callPair: (TranslateResult, List[Diagnostic]) = (callTR, diags)
+  callPair
+}
+
+// A callee that names a local binding, which shadows any file function.
+func localCallee(env: in VEnv, fn: in Expr): Bool {
+  match fn.kind {
+    case EPath(path) -> path.segments.count == 1 and isSome(envLookup(path.segments[0], env))
+    case _ -> false
+  }
 }
 
 // The function a `recv.m(...)` call runs, when this file declares it: a
@@ -1076,6 +1166,37 @@ func translateMethodCall(
   val facts: List[Term] = newList()
   appendTermList(facts, recvR.assumed)
   appendTermList(facts, argAssumed)
+  // `self.m()` inside a protected type reaches the type's own member, as a
+  // bare `m()` does, and a receiver the verifier does not model (V0024)
+  // says nothing of what the call reads or changes: fail closed (#8102).
+  val selfInProtected = match receiver.kind { case ESelf -> env.protectedMembers.count > 0; case _ -> false }
+  var unmodelledReceiver = false
+  var di = 0
+  while di < recvDiags.count {
+    if recvDiags[di].code == "V0024" {
+      unmodelledReceiver = true
+    }
+    di = di + 1
+  }
+  if selfInProtected or unmodelledReceiver {
+    diags.add(
+      untranslatableDiag(
+        if selfInProtected {
+          "a call to '" + methodName + "' on `self`, a member of the enclosing protected type"
+        } else {
+          "a call to '" + methodName + "' on a receiver the verifier does not model"
+        },
+        callSpan
+      )
+    )
+    val selfTR = TranslateResult(
+      term = poisonTerm(freshVar(env, methodName + "!result", SUninterp(name = "call"))),
+      sideConds = sides,
+      assumed = facts
+    )
+    val selfPair: (TranslateResult, List[Diagnostic]) = (selfTR, diags)
+    return selfPair
+  }
   match resolveMethodCallee(env, recvR.term, methodName) {
     case Some(rc) -> {
       val fullArgs: List[CallArg] = newList()
@@ -1279,6 +1400,9 @@ func intBitsOfExpr(env: in VEnv, e: in Expr): Int {
     case ECall(fn, _) -> match fn.kind {
       case EPath(path) -> {
         val name = joinPathSegments(path.segments)
+        if localCallee(env, fn) {
+          return 0
+        }
         match mapGet(env.callees, name) {
           case Some(decl) -> match decl.ret { case Some(te) -> sortOfTypeExprE(env, te).intBits; case None -> 0 }
           case None -> {
@@ -1480,9 +1604,11 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
     case EIf(cond, thenBranch, elseBranchOpt, _) -> {
       val (condR, condDiags) = translateExpr(env, cond)
 
-      val (thenR, thenDiags) = translateEOB(env, thenBranch, e.span)
+      // A branch's side conditions and facts hold when it is taken.
+      val (thenRaw, thenDiags) = translateEOB(env, thenBranch, e.span)
+      val thenR = guardTR(condR.term, thenRaw)
 
-      val (elseR, elseDiags) = match elseBranchOpt {
+      val (elseRaw, elseDiags) = match elseBranchOpt {
         case Some(eb) -> translateEOB(env, eb, e.span)
         case None -> {
           val ed: List[Diagnostic] = newList()
@@ -1491,6 +1617,7 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
         }
       }
 
+      val elseR = guardTR(mkNot(condR.term), elseRaw)
       val branchDiags: List[Diagnostic] = newList()
       val term = match unifyOperands(thenR.term, elseR.term) {
         case Ok(pair) -> TIte(cond = condR.term, thenT = pair.lhs, elseT = pair.rhs)
@@ -1581,7 +1708,16 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
 
     case EBinop(op, lhs, rhs) -> {
       val (lR, lDiags) = translateExpr(env, lhs)
-      val (rR, rDiags) = translateExpr(env, rhs)
+      val (rRaw, rDiags) = translateExpr(env, rhs)
+      // The right operand of `and`, `or` and `implies` is evaluated only
+      // when the left one does not decide the result: its side conditions
+      // and facts hold under that condition alone (#8102).
+      val rR = match builtinOfBinop(op) {
+        case Some(BOpAnd) -> guardTR(lR.term, rRaw)
+        case Some(BOpImplies) -> guardTR(lR.term, rRaw)
+        case Some(BOpOr) -> guardTR(mkNot(lR.term), rRaw)
+        case _ -> rRaw
+      }
       match builtinOfBinop(op) {
         case Some(rawB) -> {
           // Float operands → use real division instead of integer div.
@@ -1681,6 +1817,11 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
         i = i + 1
       }
 
+      // A local binding — a lambda in a `val` — shadows a file function of
+      // the same name: the call goes through the binding (#8102).
+      if localCallee(env, fn) {
+        return translateComputedCall(env, fn, rawArgTerms, argSides, argAssumed, allArgDiags)
+      }
       match fn.kind {
         case EPath(path) -> {
           // Build callee name.
@@ -1853,26 +1994,7 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
               argAssumed,
               allArgDiags
             )
-            case _ -> {
-              // A call through a computed callee — a lambda, another call's
-              // result: a value of its own at this call site, never one
-              // shared with another call (#8101).  The callee expression's
-              // and the arguments' obligations and facts still hold.
-              val (fnR, fnDiags) = translateExpr(env, fn)
-              val diags: List[Diagnostic] = newList()
-              appendTermList2(diags, fnDiags)
-              appendTermList2(diags, allArgDiags)
-              val sc: List[Term] = newList()
-              appendTermList(sc, fnR.sideConds)
-              appendTermList(sc, argSides)
-              val asList: List[Term] = newList()
-              appendTermList(asList, fnR.assumed)
-              appendTermList(asList, argAssumed)
-              val callVar = freshVar(env, "call", SUninterp(name = "call"))
-              val callTR = TranslateResult(term = callVar, sideConds = sc, assumed = asList)
-              val callPair: (TranslateResult, List[Diagnostic]) = (callTR, diags)
-              callPair
-            }
+            case _ -> translateComputedCall(env, fn, rawArgTerms, argSides, argAssumed, allArgDiags)
           }
         }
       }
@@ -2030,7 +2152,8 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
       val allAssumed: List[Term] = newList()
       appendTermList(allAssumed, scrutR.assumed)
 
-      val term = buildMatchIte(env, scrutR.term, arms, 0, allDiags, allSides, allAssumed, e.span)
+      val noReach: List[Term] = newList()
+      val term = buildMatchIte(env, scrutR.term, arms, 0, noReach, allDiags, allSides, allAssumed, e.span)
       val matchTR = TranslateResult(term = term, sideConds = allSides, assumed = allAssumed)
       val matchPair: (TranslateResult, List[Diagnostic]) = (matchTR, allDiags)
       matchPair
@@ -2103,6 +2226,7 @@ func buildMatchIte(
   scrutTerm: in Term,
   arms: in List[MatchArm],
   idx: in Int,
+  reach: in List[Term],
   diagsOut: in List[Diagnostic],
   sidesOut: in List[Term],
   assumedOut: in List[Term],
@@ -2125,7 +2249,10 @@ func buildMatchIte(
     case None -> {
       // Pattern not supported in M4.1 — skip arm.
       diagsOut.add(warningDiagnostic("V0027", "match arm pattern not yet supported in M4.1 verifier", arm.span))
-      buildMatchIte(env, scrutTerm, arms, idx + 1, diagsOut, sidesOut, assumedOut, ctxSpan)
+      // The later arms are reached when this one does not match, under a
+      // condition the verifier cannot state: an unknown.
+      val skippedReach = termsWith(reach, termList1(mkNot(freshVar(env, "arm", SBool))))
+      buildMatchIte(env, scrutTerm, arms, idx + 1, skippedReach, diagsOut, sidesOut, assumedOut, ctxSpan)
     }
     case Some(cond) -> {
       val isUnconditional = isTrueT(cond)
@@ -2140,11 +2267,24 @@ func buildMatchIte(
         armEnv = envBindTerm(bname, bterm, info, armEnv)
         bi = bi + 1
       }
-      val armTerm = translateArmBody(armEnv, arm, diagsOut, sidesOut, assumedOut)
+      // The arm's side conditions and facts hold when it is the arm taken:
+      // no earlier arm matched and its pattern (and guard, which the
+      // verifier does not model, so an unknown) holds (#8102).
+      val armMatches = match arm.guard {
+        case Some(_) -> mkAnd(termList2(cond, freshVar(env, "guard", SBool)))
+        case None -> cond
+      }
+      val armSides: List[Term] = newList()
+      val armAssumed: List[Term] = newList()
+      val armTerm = translateArmBody(armEnv, arm, diagsOut, armSides, armAssumed)
+      val armReach = mkAnd(termsWith(reach, termList1(armMatches)))
+      appendTermList(sidesOut, guardTerms(armReach, armSides))
+      appendTermList(assumedOut, guardTerms(armReach, armAssumed))
       if isUnconditional {
         armTerm
       } else {
-        val restTerm = buildMatchIte(env, scrutTerm, arms, idx + 1, diagsOut, sidesOut, assumedOut, ctxSpan)
+        val restReach = termsWith(reach, termList1(mkNot(armMatches)))
+        val restTerm = buildMatchIte(env, scrutTerm, arms, idx + 1, restReach, diagsOut, sidesOut, assumedOut, ctxSpan)
         TIte(cond = cond, thenT = armTerm, elseT = restTerm)
       }
     }
@@ -3338,6 +3478,10 @@ func effOutArgs(env: in VEnv, fn: in Expr, args: in List[CallArg], eff: in Effec
     }
     case None -> ()
   }
+  if localCallee(env, fn) {
+    effMutableArgs(env, args, eff)
+    return ()
+  }
   match fn.kind {
     case EParen(inner) -> effOutArgs(env, inner, args, eff)
     case EPath(path) -> {
@@ -3525,7 +3669,8 @@ func envWithState(
     recordMethods = env.recordMethods,
     finals = finals,
     mutables = mutables,
-    protectedMembers = protectedMembers
+    protectedMembers = protectedMembers,
+    contractStack = env.contractStack
   )
 }
 
@@ -4066,7 +4211,8 @@ func freshSymbolsEnv(env: in VEnv): VEnv {
     recordMethods = env.recordMethods,
     finals = env.finals,
     mutables = env.mutables,
-    protectedMembers = env.protectedMembers
+    protectedMembers = env.protectedMembers,
+    contractStack = env.contractStack
   )
 }
 
@@ -4547,7 +4693,8 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
     recordMethods = recordMethodsMap,
     finals = env0Init.finals,
     mutables = env0Init.mutables,
-    protectedMembers = env0Init.protectedMembers
+    protectedMembers = env0Init.protectedMembers,
+    contractStack = env0Init.contractStack
   )
 
   val allGoals: List[Goal] = newList()
