@@ -4859,7 +4859,18 @@ func desugarCopiesInItemKind(state: in MonoState, kind: in ItemKind): ItemKind {
             )
           }
           case PMFunc(fn) -> members.add(PMFunc(fn = desugarCopiesInFunc(state, protectedMemberEnvMono(decl, fn.params), fn)))
-          case PMInvariant(_) -> members.add(m)
+          case PMInvariant(inv) -> {
+            val noParams: List[Param] = newList()
+            members.add(
+              PMInvariant(
+                inv = InvariantClause(
+                  expr = rewriteExpr(state, protectedMemberEnvMono(decl, noParams), inv.expr),
+                  span = inv.span,
+                  message = inv.message
+                )
+              )
+            )
+          }
         }
       }
       IProtected(

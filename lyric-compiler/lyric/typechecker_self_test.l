@@ -9974,6 +9974,21 @@ test "a record's value generic parameter cannot size an array field yet" {
   )
 }
 
+test "a protected invariant is type-checked" {
+  val bad = "package P\nprotected type Gauge {\n  var level: Float = 0.1f32\n  invariant: level <= \"x\"\n  entry read(): Float {\n    level\n  }\n}\n"
+  val badCr = parseCheck(bad)
+  assertTrue(diagCount(badCr) > 0, "comparing a Float field with a String is an error (" + diagCodesOf(badCr) + ")")
+  val notBool = "package P\nprotected type Gauge {\n  var level: Int = 1\n  invariant: level + 1\n  entry read(): Int {\n    level\n  }\n}\n"
+  assertEqualInt(
+    countDiagCode(parseCheck(notBool), "T0132"),
+    1,
+    "an invariant that is not Bool (" + diagCodesOf(parseCheck(notBool)) + ")"
+  )
+  val ok = "package P\nprotected type Gauge {\n  var level: Float = 0.1f32\n  invariant: level <= 0.1 and level >= 0.0\n  entry read(): Float {\n    level\n  }\n}\n"
+  val okCr = parseCheck(ok)
+  assertEqualInt(diagCount(okCr), 0, "fields by bare name and Float literals (" + diagCodesOf(okCr) + ")")
+}
+
 test "a protected type's array field follows the zero-fill rule" {
   val ok = "package P\nprotected type T {\n  var hits: array[3, Int]\n}\n"
   val okCr = parseCheck(ok)

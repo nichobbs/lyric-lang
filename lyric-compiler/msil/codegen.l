@@ -5936,6 +5936,20 @@ func listLiteralElemTypeMsil(fctx: in FuncCtx, e: in Expr): MsilType {
     }
     case EParen(inner) -> listLiteralElemTypeMsil(fctx, inner)
     case EPrefix(op, inner) -> match op { case PreNeg -> listLiteralElemTypeMsil(fctx, inner); case _ -> MObject }
+    // A string interpolation, and a `+` with a `String` operand, are `String`
+    // whatever the other parts are: `[pkg + "." + name, name]` is a
+    // `slice[String]`, and its loop variable must be a `string` local.
+    case EInterpolated(_) -> MString
+    case EBinop(op, lhs, rhs) -> match op {
+      case BAdd -> match listLiteralElemTypeMsil(fctx, lhs) {
+        case MString -> MString
+        case _ -> match listLiteralElemTypeMsil(fctx, rhs) {
+          case MString -> MString
+          case _ -> MObject
+        }
+      }
+      case _ -> MObject
+    }
     case _ -> MObject
   }
 }

@@ -206,3 +206,34 @@ test "an unsuffixed literal is a Float in a union case argument" {
   assertTrue(radius(Circle(r = 2.5)) == 2.5f32, "unqualified case")
   assertTrue(radius(Shape.Rect(w = 0.3, h = 1.0)) == 0.3f32, "two fields")
 }
+
+// The smallest subnormals need one significant digit to round-trip; every
+// target prints that one digit, as .NET does (#7987).
+test "the smallest subnormals print one digit" {
+  assertEqual(toString(1.0e-45f32), "1E-45", "the Float minimum subnormal")
+  assertEqual(toString(3.0e-45f32), "3E-45", "twice the Float minimum subnormal")
+  assertEqual(toString(6.0e-45f32), "6E-45", "four times the Float minimum subnormal")
+  assertEqual(toString(5.0e-324), "5E-324", "the Double minimum subnormal")
+  assertEqual(toString(1.0e-323), "1E-323", "twice the Double minimum subnormal")
+  assertEqual(toString(8.0e-323), "8E-323", "16 times the Double minimum subnormal")
+}
+
+protected type Gauge {
+  var level: Float = 0.1f32
+  invariant: level <= 0.1
+  entry read(): Float {
+    level
+  }
+  entry lower(by: in Float) {
+    level = level - by
+  }
+}
+
+// A protected invariant is type-checked like a contract clause, so an
+// unsuffixed literal compared with a Float field is the nearest Float (#7988).
+test "a protected invariant compares a Float field with a Float literal" {
+  val g = Gauge()
+  assertTrue(g.read() == 0.1f32, "the invariant holds at the initial value")
+  g.lower(0.05f32)
+  assertTrue(g.read() < 0.1f32, "and after an entry")
+}
