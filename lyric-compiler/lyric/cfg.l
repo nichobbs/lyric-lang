@@ -96,11 +96,7 @@ func evalCfgPredicate(
           val featName = if argName == "target" { "target." + rawName } else { rawName }
           if argName == "feature" and declared.count > 0 and not listContains(declared, featName) {
             diags.add(
-              warningDiagnostic(
-                "F0013",
-                "feature '" + featName + "' is not declared in the manifest's [features] section",
-                span
-              )
+              warningDiagnostic("F0013", "feature '" + featName + "' is not declared in the manifest's [features] section", span)
             )
           }
           listContains(active, featName)
@@ -136,7 +132,11 @@ func evalCfgPredicate(
           allTrue = false
         }
       }
-      if name == "any" { anyTrue } else { allTrue }
+      if name == "any" {
+        anyTrue
+      } else {
+        allTrue
+      }
     }
     case ABare(_, span) -> {
       diags.add(errorDiagnostic("F0012", malformedMsg, span))
@@ -309,5 +309,29 @@ pub func applyCfgErasure(active: in List[String], declared: in List[String], sf:
 pub func cfgLinesGateFileOut(cfgLines: in String, active: in List[String]): Bool {
   val pr = parse(cfgLines + "\npackage CfgGate\n")
   val noDeclared: List[String] = newList()
-  not classifyAnnotations(active, noDeclared, true, pr.file.fileAnnotations).keep
+  // A predicate that mentions a `target` atom cannot be decided before the
+  // target is known (`not(target = "jvm")` would invert the placeholder), so
+  // it never gates the file out here; per-target erasure decides it later.
+  val decidable: List[Annotation] = newList()
+  for a in pr.file.fileAnnotations {
+    if not (isCfgAnnotation(a) and a.args.count == 1 and predicateMentionsTarget(a.args[0])) {
+      decidable.add(a)
+    }
+  }
+  not classifyAnnotations(active, noDeclared, true, decidable).keep
+}
+
+func predicateMentionsTarget(arg: in AnnotationArg): Bool {
+  match arg {
+    case AAName(argName, _, _) -> argName == "target"
+    case AACall(_, operands, _) -> {
+      for op in operands {
+        if predicateMentionsTarget(op) {
+          return true
+        }
+      }
+      false
+    }
+    case _ -> false
+  }
 }

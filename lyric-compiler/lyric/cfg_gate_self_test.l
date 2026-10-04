@@ -253,3 +253,15 @@ test "a target atom does not gate a file before the target is known" {
   val src = "@cfg(target = \"native\")\npackage P\n"
   assertTrue(not isCfgGatedOut(src, emptyFeatures()), "target = X is left to per-target erasure")
 }
+
+test "a negated or composed target atom does not gate a file before the target is known" {
+  val negated = "@cfg(not(target = \"jvm\"))\npackage P\n"
+  assertTrue(not isCfgGatedOut(negated, emptyFeatures()), "not(target = X) must not erase the file on every target")
+  val composed = "@cfg(not(all(feature = \"a\", target = \"jvm\")))\npackage P\n"
+  assertTrue(
+    not isCfgGatedOut(composed, features1("a")),
+    "a composition containing a target atom is left to per-target erasure"
+  )
+  val mixed = "@cfg(feature = \"a\")\n@cfg(not(target = \"jvm\"))\npackage P\n"
+  assertTrue(isCfgGatedOut(mixed, emptyFeatures()), "a feature-only @cfg on the same file still gates it")
+}
