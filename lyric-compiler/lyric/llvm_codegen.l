@@ -860,6 +860,19 @@ func typeToN(ctx: in Ctx, te: in TypeExpr): NType {
         case None -> {
         }
       }
+      match te.kind {
+        case TGenericApp(gh, _) -> {
+          if lastSeg(gh) != "NativePtr" {
+            panic(
+              "Lyric.LlvmCodegen: generic type '" + lastSeg(gh) + "' (in " + ctx.curPkg[0] + " at line " +
+                te.span.startPos.line.toString() +
+                ") cannot be instantiated for --target native: a field or argument type of it has no native lowering"
+            )
+          }
+        }
+        case _ -> {
+        }
+      }
       typeExprToNType(te)
     }
     case TFunction(_, _) -> {
