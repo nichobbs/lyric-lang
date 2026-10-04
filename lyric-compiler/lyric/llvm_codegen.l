@@ -3931,7 +3931,16 @@ func coerceTo(ctx: in Ctx, insns: in List[NInsn], v: in NVal, want: in NType, at
   // fat pointer here (N3.2) — the type checker inserts no coercion node.
   match ifaceBoxInfoOfType(ctx, want) {
     case Some(info) -> {
-      match recordIrNameOfType(v.ty) {
+      // A by-value record is a struct value, not a pointer (#8010).
+      val implementer: Option[String] = match v.ty {
+        case NStruct(sname, _) -> if Str.startsWith(sname, "__") {
+          None
+        } else {
+          Some(value = sname)
+        }
+        case _ -> recordIrNameOfType(v.ty)
+      }
+      match implementer {
         case Some(rir) -> {
           match mapGet(ctx.ifaceVtables, rir + "|" + info.key) {
             case Some(vtGlobal) -> return buildIfaceBox(ctx, insns, v, info, vtGlobal)
@@ -4081,6 +4090,14 @@ func unboxToSelfSlot(ctx: in Ctx, insns: in List[NInsn], v: in NVal): NVal {
       if isRefNType(v.ty) {
         val dest = freshTmp(ctx)
         insns.add(NBitcast(dest = dest, fromTy = v.ty, value = v.value, toTy = NPtr(pointee = NI8)))
+        NVal(ty = NPtr(pointee = NI8), value = NLocal(name = dest))
+      } else if isBoxedValueNType(v.ty) {
+        // A by-value record: boxed for the call, as the vtable thunk reads
+        // its `Self` parameters out of a box (#8010).
+        val held = boxByValue(ctx, insns, v)
+        registerTemp(ctx, held)
+        val dest = freshTmp(ctx)
+        insns.add(NBitcast(dest = dest, fromTy = held.ty, value = held.value, toTy = NPtr(pointee = NI8)))
         NVal(ty = NPtr(pointee = NI8), value = NLocal(name = dest))
       } else {
         // Neither an interface box nor a ref type — the checker's own
@@ -5256,48 +5273,14 @@ func implTargetPath(te: in TypeExpr): Option[ModulePath] {
 }
 
 /// Fill `heapOnly` (`Ctx.heapOnlyRecs`) with the package-qualified names of
-/// the records that keep the heap form whatever their fields: opaque types and
-/// every `impl I for R` target.  An unqualified target resolves like a type
-/// reference does: the impl's own package first, then the first package
-/// declaring a record of that name.
+/// the records that keep the heap form whatever their fields: opaque types.
+/// An `impl I for R` target is classified like any record: a by-value one is
+/// boxed when it is upcast to the interface (`buildIfaceBox`), and its vtable
+/// slots are thunks that read it out of the box (#8010).
 func fillHeapOnlyRecs(heapOnly: in Map[String, Bool], units: in List[CodegenUnit]): Unit {
-  val declared: Map[String, Bool] = newMap()
-  val firstPkg: Map[String, String] = newMap()
-  for u in units {
-    for rd in u.records {
-      putOnce(declared, u.pkgName + "." + rd.name)
-      if not firstPkg.containsKey(rd.name) {
-        firstPkg.add(rd.name, u.pkgName)
-      }
-    }
-    for ud in u.unions {
-      putOnce(declared, u.pkgName + "." + ud.name)
-      if not firstPkg.containsKey(ud.name) {
-        firstPkg.add(ud.name, u.pkgName)
-      }
-    }
-  }
   for u in units {
     for n in u.opaqueNames {
       putOnce(heapOnly, u.pkgName + "." + n)
-    }
-    for im in u.impls {
-      match implTargetPath(im.target) {
-        case Some(path) -> {
-          if path.segments.count == 1 {
-            val n = path.segments[0]
-            if declared.containsKey(u.pkgName + "." + n) {
-              putOnce(heapOnly, u.pkgName + "." + n)
-            } else if firstPkg.containsKey(n) {
-              putOnce(heapOnly, firstPkg[n] + "." + n)
-            }
-          } else {
-            putOnce(heapOnly, modulePathJoin(path.segments))
-          }
-        }
-        case None -> {
-        }
-      }
     }
   }
 }
@@ -14377,7 +14360,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
   registerInterfaceNames(ctx, units)
   registerHeapTypes(ctx, units, types, fns)
   registerInterfaceTypes(ctx, units, types, fns)
-  registerImplVtables(ctx, units)
+  registerImplVtables(ctx, units, fns)
   registerImplDirectMethods(ctx, units)
   registerProtectedMethods(ctx, units, fns)
   val externDecls: List[NFunc] = newList()
@@ -16623,9 +16606,122 @@ func ifaceVtableInitStr(
   acc + " }"
 }
 
+/// The vtable of a by-value implementer `R` (#8010): an interface value holds
+/// it in a `__box<R>`, so each slot is a thunk taking the box as its erased
+/// `self`.  The thunk reads the record out of the box, does the same for each
+/// `Self` parameter, calls the impl method with the values, and boxes a
+/// `Self` result, which the caller owns.
+func byValueVtableInitStr(
+  ctx: in Ctx,
+  pkg: in String,
+  recordName: in String,
+  ri: in NRecInfo,
+  ifaceName: in String,
+  ii: in NIfaceInfo,
+  fns: in List[NFunc],
+): String {
+  val recTy = recPtrType(ri)
+  val boxTy = byValueBoxType(ctx, recTy)
+  val boxStructTy = match boxTy { case NPtr(pointee) -> pointee; case _ -> panic("unreachable") }
+  val i8p = NPtr(pointee = NI8)
+  var acc = "{ "
+  var i = 0
+  while i < ii.methodNames.count {
+    if i > 0 {
+      acc = acc + ", "
+    }
+    val implIr = pkg + "." + implMethodName(recordName, ifaceName, ii.methodNames[i])
+    val thunkName = implIr + ".vthunk"
+    val body: List[NInsn] = newList()
+    body.add(NLabel(name = "entry"))
+    val params: List[NParam] = newList()
+    params.add(NParam(name = "self", ty = i8p))
+    val implArgs: List[NArg] = newList()
+    implArgs.add(
+      NArg(ty = recTy, value = loadFromByValueBox(ctx, body, NLocal(name = "self"), boxTy, boxStructTy, recTy))
+    )
+    val implParamTys: List[NType] = newList()
+    implParamTys.add(recTy)
+    val thunkParamTys: List[NType] = newList()
+    thunkParamTys.add(i8p)
+    var pi = 0
+    while pi < ii.methodParamTys[i].count {
+      val pty = ii.methodParamTys[i][pi]
+      val pname = "a" + toString(pi)
+      params.add(NParam(name = pname, ty = pty))
+      thunkParamTys.add(pty)
+      if ii.methodParamIsSelf[i][pi] {
+        implArgs.add(NArg(ty = recTy, value = loadFromByValueBox(ctx, body, NLocal(name = pname), boxTy, boxStructTy, recTy)))
+        implParamTys.add(recTy)
+      } else {
+        implArgs.add(NArg(ty = pty, value = NLocal(name = pname)))
+        implParamTys.add(pty)
+      }
+      pi = pi + 1
+    }
+    val retTy = ii.methodRetTys[i]
+    val retIsSelf = ii.methodRetIsSelf[i]
+    val implRetTy = if retIsSelf { recTy } else { retTy }
+    match implRetTy {
+      case NVoid -> {
+        body.add(NCallVoid(fn = NGlobal(name = implIr), args = implArgs))
+        body.add(NRetVoid)
+      }
+      case _ -> {
+        val r = freshTmp(ctx)
+        body.add(NCall(dest = r, retTy = implRetTy, fn = NGlobal(name = implIr), args = implArgs))
+        if retIsSelf {
+          val held = boxByValue(ctx, body, NVal(ty = recTy, value = NLocal(name = r)))
+          val raw = freshTmp(ctx)
+          body.add(NBitcast(dest = raw, fromTy = held.ty, value = held.value, toTy = i8p))
+          body.add(NRet(ty = retTy, value = NLocal(name = raw)))
+        } else {
+          body.add(NRet(ty = retTy, value = NLocal(name = r)))
+        }
+      }
+    }
+    fns.add(
+      NFunc(
+        name = thunkName,
+        params = params,
+        retTy = retTy,
+        isPublic = false,
+        isExtern = false,
+        body = body,
+        attributes = newList()
+      )
+    )
+    val fnTyStr = nTypeToIrString(NFnPtr(params = thunkParamTys, ret = retTy))
+    acc = acc + "i8* bitcast (" + fnTyStr + " @" + quoteIrIdent(thunkName) + " to i8*)"
+    i = i + 1
+  }
+  acc + " }"
+}
+
+// The record a `__box<R>` at `raw` holds, read into a value.
+func loadFromByValueBox(
+  ctx: in Ctx,
+  body: in List[NInsn],
+  raw: in NValue,
+  boxTy: in NType,
+  boxStructTy: in NType,
+  recTy: in NType,
+): NValue {
+  val b = freshTmp(ctx)
+  body.add(NBitcast(dest = b, fromTy = NPtr(pointee = NI8), value = raw, toTy = boxTy))
+  val payload = freshTmp(ctx)
+  val gArgs: List[NArg] = newList()
+  gArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  gArgs.add(NArg(ty = NI32, value = NLitInt(v = arcHeaderSlots.toLong(), ty = NI32)))
+  body.add(NGEP(dest = payload, ty = boxStructTy, ptr = NLocal(name = b), indices = gArgs))
+  val v = freshTmp(ctx)
+  body.add(NLoad(dest = v, ty = recTy, ptr = NLocal(name = payload)))
+  NLocal(name = v)
+}
+
 /// Emit a vtable constant global for every `impl I for R` and record the
 /// `<recordIr>|<ifaceKey>` -> global-name mapping consulted at upcast sites.
-func registerImplVtables(ctx: in Ctx, units: in List[CodegenUnit]): Unit {
+func registerImplVtables(ctx: in Ctx, units: in List[CodegenUnit], fns: in List[NFunc]): Unit {
   var ua = 0
   while ua < units.count {
     val u = units[ua]
@@ -16645,19 +16741,30 @@ func registerImplVtables(ctx: in Ctx, units: in List[CodegenUnit]): Unit {
                 case None -> {
                 }
                 case Some(info) -> {
-                  match mapGet(ctx.recordDefs, recordName) {
+                  // The impl's own package's record of that name before
+                  // the first one declared anywhere.
+                  val target = match mapGet(ctx.recordDefs, u.pkgName + "." + recordName) {
+                    case Some(own) -> Some(value = own)
+                    case None -> mapGet(ctx.recordDefs, recordName)
+                  }
+                  match target {
                     case None -> {
                     }
                     case Some(ri) -> {
                       val selfPtrTy = recPtrType(ri)
                       val gname = ifaceVtableGlobalName(ri.irName, info)
                       if not ctx.ifaceVtables.containsKey(ri.irName + "|" + info.key) {
+                        val initStr = if ri.byValue {
+                          byValueVtableInitStr(ctx, u.pkgName, recordName, ri, ifaceName, info, fns)
+                        } else {
+                          ifaceVtableInitStr(ctx, u.pkgName, recordName, selfPtrTy, ifaceName, info)
+                        }
                         ctx.globals.add(
                           NGlobalDef(
                             name = gname,
                             linkage = "internal constant",
                             tyStr = nTypeToIrString(ifaceVtStructType(info)),
-                            initStr = ifaceVtableInitStr(ctx, u.pkgName, recordName, selfPtrTy, ifaceName, info),
+                            initStr = initStr,
                             align = 8
                           )
                         )
@@ -16759,9 +16866,16 @@ func buildIfaceBox(ctx: in Ctx, insns: in List[NInsn], v: in NVal, ii: in NIface
   val structTy = ifaceBoxStructType(ii)
   val box = emitHeapAlloc(ctx, insns, boxTy, ifaceBoxDtorName(ii))
   // obj slot (ifaceBoxObjSlot): retain then store the erased object pointer.
+  // A by-value record is copied into a fresh `__box<R>` the interface value
+  // owns (#8010); its vtable's thunks read it back out.
   val objI8 = freshTmp(ctx)
-  insns.add(NBitcast(dest = objI8, fromTy = v.ty, value = v.value, toTy = NPtr(pointee = NI8)))
-  insns.add(NCallVoid(fn = NGlobal(name = "lyric_retain"), args = arg1(NPtr(pointee = NI8), NLocal(name = objI8))))
+  if isBoxedValueNType(v.ty) {
+    val held = boxByValue(ctx, insns, v)
+    insns.add(NBitcast(dest = objI8, fromTy = held.ty, value = held.value, toTy = NPtr(pointee = NI8)))
+  } else {
+    insns.add(NBitcast(dest = objI8, fromTy = v.ty, value = v.value, toTy = NPtr(pointee = NI8)))
+    insns.add(NCallVoid(fn = NGlobal(name = "lyric_retain"), args = arg1(NPtr(pointee = NI8), NLocal(name = objI8))))
+  }
   val objSlot = freshTmp(ctx)
   val objArgs: List[NArg] = newList()
   objArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))

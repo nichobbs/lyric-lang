@@ -247,3 +247,62 @@ test "interface ARC: interface stored in a record field under ASan" {
   val r = compileAndRunAsan(src)
   assertEqualInt(r.exitCode, 0, "field-position upcast + box-as-field leak-free")
 }
+
+// ── By-value implementers (#8010) ────────────────────────────────────────────
+// A record with only by-value fields stays a struct value when it implements
+// an interface: an upcast copies it into a `__box<R>` the interface value
+// owns, and each vtable slot is a thunk that reads it back out.  ASan proves
+// every box is freed exactly once.
+func vec3Source(): String {
+  "package T\n" +
+    "interface Show {\n  func sum(): Double\n  func scaled(k: Double): Self\n  func dot(o: Self): Double\n}\n" +
+    "record Vec3 {\n  x: Double\n  y: Double\n  z: Double\n}\n" +
+    "impl Show for Vec3 {\n" +
+    "  func sum(): Double {\n    self.x + self.y + self.z\n  }\n" +
+    "  func scaled(k: Double): Vec3 {\n    Vec3(x = self.x * k, y = self.y * k, z = self.z * k)\n  }\n" +
+    "  func dot(o: Vec3): Double {\n    self.x * o.x + self.y * o.y + self.z * o.z\n  }\n" +
+    "}\n"
+}
+
+test "by-value implementer: methods through the interface under ASan" {
+  val src = vec3Source() + "func total(s: in Show): Double {\n  s.sum()\n}\n" +
+    "func main(): Int {\n  val v = Vec3(x = 1.0, y = 2.0, z = 3.0)\n  (total(v) + v.sum()).toInt() - 12\n}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 0, "6 through Show + 6 directly")
+}
+
+test "by-value implementer: a Self result and a Self argument through the interface under ASan" {
+  val src = vec3Source() + "func twice(s: in Show): Double {\n  val d = s.scaled(2.0)\n  d.sum()\n}\n" +
+    "func selfDot(s: in Show): Double {\n  s.dot(s)\n}\n" +
+    "func main(): Int {\n  val v = Vec3(x = 1.0, y = 2.0, z = 3.0)\n  (twice(v) + selfDot(v)).toInt() - 26\n}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 0, "scaled sum 12 + dot 14")
+}
+
+test "by-value implementer: many upcasts in a loop under ASan" {
+  val src = vec3Source() + "func total(s: in Show): Double {\n  s.sum()\n}\n" + "func main(): Int {\n" +
+    "  var acc: Double = 0.0\n" +
+    "  var i = 0\n" +
+    "  while i < 200 {\n" +
+    "    acc = acc + total(Vec3(x = 1.0, y = 0.0, z = 0.0))\n" +
+    "    i = i + 1\n" +
+    "  }\n" +
+    "  acc.toInt() - 200\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 0, "200 upcasts, each box freed")
+}
+
+test "by-value implementer: an interface value outlives the record it was made from under ASan" {
+  val src = vec3Source() + "record Held {\n  a: Show\n  b: Show\n}\n" + "func make(n: in Double): Show {\n" +
+    "  val v = Vec3(x = n, y = n, z = n)\n" +
+    "  v\n" +
+    "}\n" +
+    "func hold(): Held {\n  Held(a = make(1.0), b = make(2.0))\n}\n" +
+    "func main(): Int {\n" +
+    "  val h = hold()\n" +
+    "  (h.a.sum() + h.b.sum()).toInt() - 9\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 0, "3 + 6 read through boxes held by a record")
+}

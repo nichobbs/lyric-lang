@@ -237,15 +237,17 @@ test "a record with a var field keeps the heap form (D157)" {
   assertTrue(Str.contains(functionBody(ll, "T.make"), "lyric_alloc"), "the constructor allocates")
 }
 
-test "a record that implements an interface keeps the heap form" {
+// An interface implementer stays a value; an upcast boxes it (#8010).
+test "a record that implements an interface stays a value and is boxed at the upcast" {
   val src = "package T\n" + "interface Area {\n  func area(): Int\n}\n" + "record Square {\n  s: Int\n}\n" +
     "impl Area for Square {\n  func area(): Int {\n    self.s * self.s\n  }\n}\n" +
     "func total(a: in Area): Int {\n  a.area()\n}\n" +
     "func main(): Int {\n  total(Square(s = 6))\n}\n"
   val ll = lowerToLl(src)
-  assertTrue(Str.contains(ll, "%T.Square = type { i32, i32, i8*, i32 }"), "the implementer is a heap object")
+  assertTrue(Str.contains(ll, "%T.Square = type { i32 }"), "the implementer is a struct value")
+  assertTrue(Str.contains(ll, "T.Square.Area.area.vthunk"), "its vtable slot is a thunk over the box")
   val r = compileAndRunAsan(src)
-  assertEqualInt(r.exitCode, 36, "interface dispatch over the heap record")
+  assertEqualInt(r.exitCode, 36, "interface dispatch over the boxed value")
 }
 
 test "an opaque type keeps the heap form" {
@@ -656,7 +658,9 @@ test "a package-local union does not collide with another package's enum of the 
   assertEqualInt(r.exitCode, 42, "the union field is read as the union")
 }
 
-test "an impl target only keeps the heap form for its own package's record" {
+// The vtable is built for the impl's own package's record, not a same-named
+// one declared elsewhere (#8010).
+test "an impl target resolves to its own package's record" {
   val lib = "package Lib\n" + "record Sq {\n  s: Int\n}\n"
   val app = "package T\n" + "interface Area {\n  func area(): Int\n}\n" + "record Sq {\n  s: Int\n}\n" +
     "impl Area for Sq {\n  func area(): Int {\n    self.s * self.s\n  }\n}\n" +
@@ -666,8 +670,9 @@ test "an impl target only keeps the heap form for its own package's record" {
   sources.add(app)
   sources.add(lib)
   val ll = lowerBundleToLl(sources)
-  assertTrue(Str.contains(ll, "%T.Sq = type { i32, i32, i8*, i32 }"), "the implementer is a heap object")
+  assertTrue(Str.contains(ll, "%T.Sq = type { i32 }"), "the implementer is a struct value")
   assertTrue(Str.contains(ll, "%Lib.Sq = type { i32 }"), "the unrelated same-named record stays by-value")
+  assertTrue(Str.contains(ll, "ifacevt_T_Sq_"), "the vtable is the implementer's own package's record's")
   val r = runLl(ll)
   assertEqualInt(r.exitCode, 36, "interface dispatch")
 }
