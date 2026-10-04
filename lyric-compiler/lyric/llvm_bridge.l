@@ -112,6 +112,29 @@ func collectCallKeys(e: in Expr, acc: in List[String]): Unit {
       if key.length > 0 {
         acc.add(key)
       }
+      // `name[T](args)`: a call with explicit type arguments names `name`.
+      match fn.kind {
+        case EIndex(ir, _) -> match ir.kind {
+          case EPath(ip) -> {
+            if ip.segments.count == 1 {
+              acc.add(ip.segments[0] + "/" + args.count.toString())
+            }
+          }
+          case _ -> {
+          }
+        }
+        case ETypeApp(tf, _) -> match tf.kind {
+          case EPath(tp) -> {
+            if tp.segments.count == 1 {
+              acc.add(tp.segments[0] + "/" + args.count.toString())
+            }
+          }
+          case _ -> {
+          }
+        }
+        case _ -> {
+        }
+      }
       // A method-call receiver is an expression too (scalar methods
       // resolve without the registry, so an unresolvable key is fine).
       match fn.kind {
@@ -572,6 +595,30 @@ func typedInitBlock(ty: in TypeExpr, init: in Expr, sp: in Span): Block {
   Block(statements = stmts, span = sp)
 }
 
+/// `file` with `generics` (visible generic functions, as they stood before
+/// monomorphisation) appended, for codegen's own instantiation at a
+/// cross-package call.
+func withGenericItems(file: in SourceFile, generics: in List[Item]): SourceFile {
+  if generics.count == 0 {
+    return file
+  }
+  val items: List[Item] = newList()
+  for it in file.items {
+    items.add(it)
+  }
+  for g in generics {
+    items.add(g)
+  }
+  SourceFile(
+    moduleDoc = file.moduleDoc,
+    fileAnnotations = file.fileAnnotations,
+    packageDecl = file.packageDecl,
+    imports = file.imports,
+    items = items,
+    span = file.span
+  )
+}
+
 // Native stores a module-level `val` with a non-literal initializer in a static
 // global that start-up code fills in (`Lyric.LlvmCodegen.loadModuleGlobal`).
 // That initializer becomes a function, appended here BEFORE type check and
@@ -874,6 +921,7 @@ pub func compileToNativeWithShape(
     checkedSourceOut = optsCheckedOut,
     memberRecvClassesOut = optsRecvOut,
     methodCallAritiesOut = optsCallArities,
+    genericItemsOut = newList(),
     nativeIntrinsics = true
   )
   val userFile = match pipeMiddleEnd(userFile0, importedPkgs, noDeriveImports, noImportedGenFuncs, pipeInterfaceDecls(importedItemsForMono), pipeRecordDecls(importedItemsForMono), noTemplates, opts, None) {
@@ -1309,6 +1357,7 @@ pub func compileProjectToNativeWithShape(
     val optsCheckedOut: List[SourceFile] = newList()
     val optsRecvOut: Map[String, String] = newMap()
     val optsCallArities: Map[String, Int] = newMap()
+    val optsGenericItems: List[Item] = newList()
     val opts = MiddleEndOptions(
       tcFatal = true,
       tcReport = false,
@@ -1321,6 +1370,7 @@ pub func compileProjectToNativeWithShape(
       checkedSourceOut = optsCheckedOut,
       memberRecvClassesOut = optsRecvOut,
       methodCallAritiesOut = optsCallArities,
+      genericItemsOut = optsGenericItems,
       ioForbiddenReason = if mei < packages.count { packages[mei].ioForbiddenReason } else { "" },
       nativeIntrinsics = true
     )
@@ -1328,7 +1378,9 @@ pub func compileProjectToNativeWithShape(
       case Some(f) -> f
       case None -> return false
     }
-    ownFiles.add(checked)
+    // Mono erased the package's visible generic functions; put them back so
+    // codegen can instantiate them for a call from another package.
+    ownFiles.add(withGenericItems(checked, optsGenericItems))
     ownCallArities.add(optsCallArities)
     mei = mei + 1
   }
@@ -1649,6 +1701,30 @@ func walkReachableFns(
           // every id in `pkgOfId` is registered with a real package name)
           // falls back to the old bundle-wide behavior rather than risk
           // silently under-including a genuine callee.
+          // The same plain name in several packages: codegen resolves it
+          // against the caller's DIRECT imports, so mark exactly those
+          // candidates (not the whole transitive closure, which would pull
+          // in unrelated packages' host seams).
+          match mapGet(bareTrailing, "=" + raw) {
+            case Some(sameName) -> {
+              val direct: List[String] = match mapGet(pkgImports, curPkg) { case Some(d) -> d; case None -> newList() }
+              for cand in sameName {
+                val candPkg = match mapGet(pkgOfId, cand) { case Some(p) -> p; case None -> "" }
+                var allowed = candPkg == curPkg
+                for dp in direct {
+                  if dp == candPkg {
+                    allowed = true
+                  }
+                }
+                if allowed and not reachable.containsKey(cand) {
+                  reachable.add(cand, true)
+                  fnWorklist.add(cand)
+                }
+              }
+            }
+            case None -> {
+            }
+          }
           match mapGet(bareTrailing, raw) {
             case Some(targets) -> {
               val closure = if curPkg.length == 0 {
@@ -2203,6 +2279,13 @@ func registerFileFns(
         addKey(canonical, id, id)
         addKey(canonical, decl.name + "/" + decl.params.count.toString(), id)
         registerBareTrailingSegment(bareTrailing, decl.name, decl.params.count, id)
+        // A plain function name two packages both declare (`Std.Json.parseJson`
+        // and `Std.Yaml.parseJson`): the walk marks every candidate in the
+        // caller's import closure reachable, so codegen's import-aware
+        // resolution has the right one to pick.
+        if lastDotIndex(decl.name) < 0 {
+          registerBareName(bareTrailing, decl.name, decl.params.count, id)
+        }
       }
       case IExternFunc(decl) -> {
         val id = pkg + "." + decl.name + "/" + decl.params.count.toString()
@@ -2251,6 +2334,18 @@ func registerBareTrailingSegment(
         targets.add(id)
         bareTrailing.add(trailing, targets)
       }
+    }
+  }
+}
+
+func registerBareName(bareTrailing: in Map[String, List[String]], name: in String, arity: in Int, id: in String): Unit {
+  val key = "=" + name + "/" + arity.toString()
+  match mapGet(bareTrailing, key) {
+    case Some(targets) -> targets.add(id)
+    case None -> {
+      val targets: List[String] = newList()
+      targets.add(id)
+      bareTrailing.add(key, targets)
     }
   }
 }

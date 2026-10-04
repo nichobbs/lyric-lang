@@ -13,6 +13,7 @@
 @pure
 package Std.JsonHost
 
+import Std.Core
 import Std.Collections
 
 // brings `List[T]` into scope for the slice readers
@@ -40,6 +41,16 @@ extern type JsonEncodedText = "System.Text.Json.JsonEncodedText"
 // =====================================================================
 @externTarget("System.Text.Json.JsonDocument.Parse")
 pub func hostParseJson(s: in String): JsonDoc = ()
+
+/// `hostParseJson` with a malformed document reported as an error value
+/// (the message of the exception `JsonDocument.Parse` throws).
+pub func hostTryParseJson(s: in String): Result[JsonDoc, String] {
+  try {
+    Ok(value = hostParseJson(s))
+  } catch Bug as b {
+    Err(error = b.message)
+  }
+}
 
 /// Release the unmanaged memory held by a JsonDocument.
 /// `JsonDocument` implements `IDisposable`; calling `Dispose()` immediately

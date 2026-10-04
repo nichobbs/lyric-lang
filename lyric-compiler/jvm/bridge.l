@@ -398,6 +398,7 @@ pub func compileToJar(
     checkedSourceOut = optsCheckedOut,
     memberRecvClassesOut = recvClasses,
     methodCallAritiesOut = callArities,
+    genericItemsOut = newList(),
     arraysAsLists = true,
     primitiveArrays = true
   )
@@ -554,6 +555,7 @@ func runMiddleEnd(
     checkedSourceOut = checkedOut,
     memberRecvClassesOut = recvClassesOut,
     methodCallAritiesOut = aritiesOut,
+    genericItemsOut = newList(),
     arraysAsLists = true,
     primitiveArrays = true,
     ioForbiddenReason = ioForbiddenReason

@@ -118,6 +118,16 @@ The scope model removes the need for that discipline. The structure of the code 
 **Why no "fire and forget"?** Fire-and-forget breaks both of the guarantees you want from structured concurrency. When a scope exits, you want to know all work is done — fire-and-forget means "some work might still be running somewhere." When an error occurs, you want sibling work cancelled — a detached task cannot participate in that. If you genuinely need a background task that outlives the scope — a long-running worker, a background indexer — that is an architectural decision. Model it as a dedicated service object with an explicit lifecycle, not a detached task that slipped out of a scope.
 :::
 
+### `Std.Task` on `--target native`
+
+`Std.Task` (cancellation tokens, `makeScope`/`scopeSpawn`/`awaitAll`, the ambient token and `runWithin`) has the same functions on every target, with these differences on native, which has no exception unwinding:
+
+- A panic in a spawned action or in a `runWithin` closure ends the process; there is no failure for `awaitAll` to rethrow and none for `runWithin` to capture.
+- `throwIfCancelled` panics, as elsewhere, but the panic cannot be caught. `delayWithCancel` instead returns early once its token is cancelled, so a routine cancellation does not end the process: test `isCancelled` afterwards.
+- `delay`, `delayWithCancel` and `awaitAll` block the calling thread and return a finished `Task`. `scopeSpawn` starts the action on its own thread at once, and does not run it at all if the scope was cancelled before the thread got going.
+- The ambient token is per thread, and a child started by `scopeSpawn` inherits its parent's.
+- A closure cannot mutate a captured `var` on native (closures capture by value); share state through a `List` or a record with a `var` field.
+
 ## §10.4 Protected types
 
 Protected types are how Lyric handles shared mutable state. The model comes from Ada: a `protected type` wraps state with structurally-enforced mutual exclusion. There is no way to read or write the state without going through a declared operation.

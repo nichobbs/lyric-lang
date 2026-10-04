@@ -414,6 +414,21 @@ int32_t lyric_thread_join(int64_t tid, void** retval);
  * the thread never ran and the caller still owns its retain. */
 int32_t lyric_thread_spawn_detached(void* (*start)(void*), void* arg);
 
+/* One process-wide lock for the short critical sections of stdlib kernels that
+ * keep no module state of their own (Std.Task's flags and child lists).  Never
+ * hold it across a blocking call. */
+void lyric_global_lock(void);
+void lyric_global_unlock(void);
+
+/* A per-thread slot holding one retained Lyric object.  Set
+ * retains the new object and releases the previous one (NULL clears it); get
+ * returns the object with a new reference the caller owns (NULL when empty).
+ * `has` is 1 when an object is held.  Std.Task's ambient cancellation token. */
+void lyric_thread_ref_set(void* obj);
+void* lyric_thread_ref_get(void);
+int32_t lyric_thread_ref_has(void);
+void lyric_thread_ref_clear(void);
+
 /* Milliseconds since the Unix epoch (CLOCK_REALTIME). */
 int64_t lyric_epoch_millis(void);
 /* Nanoseconds since the Unix epoch (CLOCK_REALTIME) — the native
@@ -426,6 +441,10 @@ int64_t lyric_monotonic_nanos(void);
 /* Fill buf with n cryptographically secure random bytes.  Returns 0 on
  * success, -1 on failure.  getrandom(2) on Linux, getentropy on macOS. */
 int32_t lyric_secure_random(uint8_t* buf, int64_t n);
+
+/* A fresh list of `n` bytes from the OS entropy source; panics when the
+ * source fails (a broken CSPRNG is not recoverable). */
+LyricList* lyric_secure_random_list(int64_t n);
 
 /* A fresh version-4 (random) UUID as a fresh rc=1 LyricString in the
  * canonical lowercase hyphenated 36-char form — the native Uuid

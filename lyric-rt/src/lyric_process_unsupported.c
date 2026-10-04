@@ -157,3 +157,34 @@ int32_t lyric_thread_spawn_detached(void* (*start)(void*), void* arg) {
     (void)start; (void)arg;
     return EAGAIN;
 }
+
+/* wasm32-wasi runs one thread: the global lock has nothing to exclude and the
+ * per-thread slot is a plain static. */
+void lyric_global_lock(void) {
+}
+
+void lyric_global_unlock(void) {
+}
+
+static void* lyric_tl_ref = NULL;
+
+void lyric_thread_ref_set(void* obj) {
+    void* previous = lyric_tl_ref;
+    if (obj != NULL) lyric_retain(obj);
+    lyric_tl_ref = obj;
+    if (previous != NULL) lyric_release(previous);
+}
+
+void* lyric_thread_ref_get(void) {
+    if (lyric_tl_ref != NULL) lyric_retain(lyric_tl_ref);
+    return lyric_tl_ref;
+}
+
+void lyric_thread_ref_clear(void) {
+    lyric_thread_ref_set(NULL);
+}
+
+int32_t lyric_thread_ref_has(void) {
+    return lyric_tl_ref != NULL ? 1 : 0;
+}
+

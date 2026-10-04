@@ -67,6 +67,14 @@ pub func hostParseJson(s: in String): JsonDoc {
   }
 }
 
+/// `hostParseJson` with a malformed document reported as an error value.
+pub func hostTryParseJson(s: in String): Result[JsonDoc, String] {
+  match parseJson(s) {
+    case Ok(v) -> Ok(value = JsonDoc(root = JsonElement(node = v)))
+    case Err(e) -> Err(error = "Std.Json: parse error: " + jsonParseErrMessage(e))
+  }
+}
+
 // Local mirror of `YamlError.message`: a cross-package dot-named function
 // call on a match-bound payload does not yet resolve in the JVM backend's
 // bundled compile, so the message text is built here.

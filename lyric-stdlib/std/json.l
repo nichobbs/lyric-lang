@@ -34,11 +34,7 @@ pub func parseJson(s: in String): JsonDoc {
 /// failure message if parsing throws a host-level exception.
 @stable(since = "1.0")
 pub func tryParseJson(s: in String): Result[JsonDoc, String] {
-  try {
-    Ok(value = hostParseJson(s))
-  } catch Bug as b {
-    Err(error = b.message)
-  }
+  hostTryParseJson(s)
 }
 
 /// Release the unmanaged memory held by a `JsonDoc`.  Call this when you
