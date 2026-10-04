@@ -95,6 +95,30 @@ Each fix has a refute case and a discharge case in `verifier_self_test.l`
 CI `lyric prove` examples and `core_proof.l` still discharge, and the
 compiler self-test batch passes (3309 tests).
 
+## Second review
+
+Three more holes, each confirmed by a program proved and then violated:
+
+- A callee assumed its `requires:`'s nested-call side conditions, while a
+  caller translated that `requires:` without the callee table and never
+  proved them; and the side conditions were assumed even where
+  short-circuiting skipped the call. Callee contracts are now translated at
+  a call against the file's functions (a function reached again inside its
+  own contract is not unfolded twice), and every side condition and fact
+  is guarded by the condition under which its subterm is evaluated (`and`,
+  `or`, `implies`, `if`, match arms), when proving and when assuming.
+- `self.m()` inside a protected entry was an unknown method; it now fails
+  closed like `m()`, and so does a method call on an unmodelled receiver.
+- A local binding shadowing a file function (`val f = { ... }; f(1)`) was
+  ignored; such a call now goes through the binding.
+- A computed call with an untranslatable argument now keeps its goal
+  failed.
+
+`verifier_self_test.l` has 118 tests, all passing; every review repro the
+fixes cover no longer proves, the CI `lyric prove` examples and
+`core_proof.l` still discharge, and the compiler self-test batch passes
+(3318 tests).
+
 Specification: `docs/15-phase-4-proof-plan.md` §5.2–§5.4; book §18.1, §18.4,
 §19.7.
 

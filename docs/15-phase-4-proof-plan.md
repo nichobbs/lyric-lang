@@ -426,6 +426,35 @@ Calls the verifier cannot follow fail closed or are over-approximated
   parameter, an `out`/`inout` parameter, a protected `var` field) at its
   entry value.
 
+A side condition, and a fact, holds only where its subterm is evaluated:
+the right operand of `and` and `implies` under the left operand, of `or`
+under its negation, an `if`-expression's branch under its condition (or
+its negation), a match arm under its pattern and the failure of every
+earlier arm (an arm pattern or guard the verifier does not model is an
+unknown condition). This applies both when an obligation is proved — so
+`f(0)` against `requires: x == 0 or pos(x) > 0` need not prove `0 > 0` —
+and when a contract is assumed. A callee's contract is translated at a
+call against the file's functions, so a call nested in its `requires:`
+puts that call's own precondition on the caller; a function reached again
+inside a contract it is unfolding is applied without a second unfolding.
+
+A local binding shadows a file function of the same name: `val f = ...;
+f(x)` is a call through a computed callee (a fresh result, its mutable
+arguments reset). Inside a protected type, `self.m()` fails closed like a
+bare `m()`, as does a method call on any receiver the verifier does not
+model (V0024).
+
+Known limitations, tracked separately: obligations dropped inside
+translated expressions, statement-level `match`, unmodelled operands and
+division by zero (#8107); the early-return path of `?` in a binding
+(#8108); term identity for impure free calls, reassigned function values,
+unbound names and `if`-branch locals (#8109); no heap model, and record
+methods never verified (#8110); a callee's `ensures:` about an
+`out`/`inout` parameter not linked back to the argument (#8111);
+`Float`/`Double` as SMT reals (#8141); expression `match` arm guards and
+unsupported patterns (#8142); `?` in a loop condition and anonymous-range
+assignment (#8143); precision and range gaps (#8103).
+
 Obligations raised inside an expression — a callee's `requires:`, an
 overflow obligation — are proved wherever the expression occurs: an
 expression statement, a returned value, a `val`/`let`/`var` initializer or
