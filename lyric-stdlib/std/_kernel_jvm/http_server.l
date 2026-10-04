@@ -14,6 +14,14 @@
 //! `requestHeaders` / `urlDecode` / `respondBytesWithHeaders` — are what
 //! lyric-web's static-file and dispatch layers consume).
 //!
+//! The chunked-streaming helpers (`beginChunkedResponse` / `streamWriteChunk` /
+//! `endChunkedResponse`) are provided here too, over the exchange's response
+//! body (declaring a zero length switches `com.sun.net.httpserver` to chunked
+//! transfer encoding).  `takeConnection` is not: the JDK server never exposes
+//! the exchange's socket, so a protocol upgrade on this target is served by
+//! Undertow in `lyric-ws` (`Ws.Kernel.Jvm`), a permanent difference rather than
+//! a gap.
+//!
 //! Pull-model bridge: `HttpServer` is callback-based (`createContext(path,
 //! HttpHandler)` invokes the handler on an executor thread) while this
 //! kernel's contract is pull-based (`nextContext` blocks until a request
@@ -842,13 +850,8 @@ pub func urlDecode(s: in String): String {
 // the JDK's "no response body" marker), writes the body, then closes the
 // exchange — which drains any unread request body and closes both
 // streams, keeping the connection reusable.
-func respondBytesWith(
-  c: in HttpContext,
-  status: in Int,
-  contentType: in String,
-  body: in slice[Byte],
-  headers: in Map[String, String],
-): Unit {
+// Sets the response `Content-Type` and the caller's extra headers on `c`.
+func applyResponseHeaders(c: in HttpContext, contentType: in String, headers: in Map[String, String]): Unit {
   val respHeaders: JHeaders = c.getResponseHeaders()
   respHeaders.set("Content-Type", contentType)
   val names = mapKeys(headers).toArray()
@@ -868,6 +871,16 @@ func respondBytesWith(
     }
     i = i + 1
   }
+}
+
+func respondBytesWith(
+  c: in HttpContext,
+  status: in Int,
+  contentType: in String,
+  body: in slice[Byte],
+  headers: in Map[String, String],
+): Unit {
+  applyResponseHeaders(c, contentType, headers)
   if body.length > 0 {
     c.sendResponseHeaders(status, body.length.toLong())
     val os: JOutputStream = c.getResponseBody()
@@ -907,4 +920,78 @@ pub func respondBytesWithHeaders(
   headers: in Map[String, String],
 ): Unit {
   respondBytesWith(c, status, contentType, body, headers)
+}
+
+// =====================================================================
+// Chunked streaming (the `Std.HttpServer` twin of the dotnet and native
+// helpers of the same names).  `com.sun.net.httpserver` switches an exchange
+// to chunked transfer encoding when the response length is declared as 0.
+// =====================================================================
+/// An open chunked response: the exchange's response body stream.
+pub record HttpChunkedStream {
+  body: JOutputStream
+}
+
+/// Commit status + content-type + extra headers, switch the response into
+/// chunked-transfer-encoding mode, and return the open stream handle to write
+/// chunks to.  No `Content-Length` is set.
+pub func beginChunkedResponse(
+  c: in HttpContext, status: in Int, contentType: in String, headers: in Map[String, String]
+): HttpChunkedStream {
+  if status < 100 or status > 999 {
+    panic("HTTP response status must be a three-digit code (100..999), got " + toString(status))
+  }
+  applyResponseHeaders(c, contentType, headers)
+  sendChunkedHeaders(c, status)
+  HttpChunkedStream(body = c.getResponseBody())
+}
+
+// Tail-position forms: a discarded auto-FFI instance call whose receiver is a
+// parameter emits no invoke on this backend (#5379).
+func sendChunkedHeaders(c: in HttpContext, status: in Int): Unit {
+  c.sendResponseHeaders(status, 0i64)
+}
+
+func writeBodyRange(os: in JOutputStream, bytes: in slice[Byte], offset: in Int, count: in Int): Unit {
+  os.write(bytes, offset, count)
+}
+
+func flushBody(os: in JOutputStream): Unit {
+  os.flush()
+}
+
+func closeBody(os: in JOutputStream): Unit {
+  os.close()
+}
+
+func closeExchange(c: in HttpContext): Unit {
+  c.close()
+}
+
+/// Write `bytes[offset..offset+count)` as one chunk and flush it immediately.
+/// A zero-length write is a no-op.  `Err` surfaces a broken connection.
+pub func streamWriteChunk(
+  s: in HttpChunkedStream, bytes: in slice[Byte], offset: in Int, count: in Int
+): Result[Unit, String] {
+  if count <= 0 {
+    return Ok(value = ())
+  }
+  try {
+    writeBodyRange(s.body, bytes, offset, count)
+    flushBody(s.body)
+    Ok(value = ())
+  } catch Bug as b {
+    Err(error = b.message)
+  }
+}
+
+/// Write the terminating chunk and complete the exchange.  A broken
+/// connection is swallowed: a disconnect mid-stream is routine.
+pub func endChunkedResponse(c: in HttpContext, s: in HttpChunkedStream): Unit {
+  try {
+    closeBody(s.body)
+  } catch Bug as _ {
+    ()
+  }
+  closeExchange(c)
 }

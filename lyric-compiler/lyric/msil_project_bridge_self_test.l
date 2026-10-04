@@ -1054,6 +1054,37 @@ test "same-named private non-literal module vals across packages do not crash MS
   )
 }
 
+// `@cfg(any(...))`, `all(...)` and `not(...)` compose predicates (docs/24 §4.1):
+// a function gated on an inactive composition is erased, one gated on a true
+// composition is kept.
+test "cfg any/all/not composition erases and keeps items in a project build" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "CfgCompose.App",
+      "package CfgCompose.App\n" + "\n" + "@cfg(any(feature = \"never_a\", feature = \"never_b\"))\n" +
+        "func pick(): String { \"any-inactive\" }\n" +
+        "\n" +
+        "@cfg(all(feature = \"never_a\", not(feature = \"never_b\")))\n" +
+        "func pick(): String { \"all-inactive\" }\n" +
+        "\n" +
+        "@cfg(not(any(feature = \"never_a\", feature = \"never_b\")))\n" +
+        "func pick(): String { \"composition-active\" }\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  println(pick())\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("cfg-compose", packages, "CfgCompose")
+  assertEqualInt(result.exitCode, 0, "cfg_compose: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(
+    Str.trim(result.stdout),
+    "composition-active",
+    "cfg_compose: only the active composition's function survives"
+  )
+}
+
 // ─── Cfg-erasure diagnostics via the bridge ───────────────────────────────────
 // F0012 fires for a malformed @cfg (literal argument instead of
 // `feature = "X"`).  The bridge returns false.
