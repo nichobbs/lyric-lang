@@ -2255,6 +2255,13 @@ func registerFileFns(
         addKey(canonical, id, id)
         addKey(canonical, decl.name + "/" + decl.params.count.toString(), id)
         registerBareTrailingSegment(bareTrailing, decl.name, decl.params.count, id)
+        // A plain function name two packages both declare (`Std.Json.parseJson`
+        // and `Std.Yaml.parseJson`): the walk marks every candidate in the
+        // caller's import closure reachable, so codegen's import-aware
+        // resolution has the right one to pick.
+        if lastDotIndex(decl.name) < 0 {
+          registerBareName(bareTrailing, decl.name, decl.params.count, id)
+        }
       }
       case IExternFunc(decl) -> {
         val id = pkg + "." + decl.name + "/" + decl.params.count.toString()
@@ -2303,6 +2310,18 @@ func registerBareTrailingSegment(
         targets.add(id)
         bareTrailing.add(trailing, targets)
       }
+    }
+  }
+}
+
+func registerBareName(bareTrailing: in Map[String, List[String]], name: in String, arity: in Int, id: in String): Unit {
+  val key = name + "/" + arity.toString()
+  match mapGet(bareTrailing, key) {
+    case Some(targets) -> targets.add(id)
+    case None -> {
+      val targets: List[String] = newList()
+      targets.add(id)
+      bareTrailing.add(key, targets)
     }
   }
 }
