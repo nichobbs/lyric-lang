@@ -339,3 +339,29 @@ test "checkNpmShims: B0061 without a shim, B0062 for an export the package lacks
     case Err(_) -> ()
   }
 }
+
+test "checkNpmShims: a CommonJS export Node cannot scan statically is found on default" {
+  val dir = npmTempDir()
+  val pkgDir = Path.join(dir, "cjspkg")
+  match File.createDir(pkgDir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create " + pkgDir + ": " + IOError.message(e))
+  }
+  putFile(
+    Path.join(pkgDir, "package.json"),
+    "{ \"name\": \"cjspkg\", \"version\": \"1.0.0\", \"main\": \"index.js\" }\n"
+  )
+  putFile(Path.join(pkgDir, "index.js"), "const o = {};\no['ad' + 'd'] = (a, b) => a + b;\nmodule.exports = o;\n")
+  val m = npmManifest(dir, "\"cjspkg\" = \"file:" + pkgDir + "\"\n")
+  assertEqualInt(Cli.restoreNpmPackages(m, dir), 0, "restore installs the package")
+  val shim = Path.join(Path.join(dir, "_extern_npm"), "cjspkg.l")
+  val head = "@axiom(\"from npm cjspkg file:" + pkgDir + "\")\npackage Cjspkg\n\n@wasmImport(\"npm:cjspkg\")\n"
+  putFile(shim, head + "extern func add(a: Int, b: Int): Int = \"add\"\n")
+  assertEqualInt(Cli.checkNpmShims(m, dir).count, 0, "an export assigned at runtime is accepted")
+  putFile(shim, head + "extern func nope(a: Int): Int = \"nope\"\n")
+  assertEqualInt(Cli.checkNpmShims(m, dir).count, 1, "an export the package lacks is still B0062")
+  match File.deleteDirRecursive(dir) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+}

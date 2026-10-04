@@ -661,3 +661,33 @@ test "wasm32 module: the .d.ts makes npm: imports optional" {
   assertTrue(Str.contains(dts, "add(a: number, b: number): number;"), "the function is typed: " + dts)
   assertTrue(Str.contains(dts, "options?: LyricInstantiateOptions"), "instantiate needs no options: " + dts)
 }
+
+test "wasm32 module: an npm: package's CommonJS exports that Node cannot scan statically still resolve" {
+  val b = buildModule(npmImportProgram, "wasm32-wasi")
+  assertTrue(b.ok, "the module builds")
+  writeIn(
+    b.dir,
+    "node_modules/fakenpm/package.json",
+    "{ \"name\": \"fakenpm\", \"version\": \"1.0.0\", \"main\": \"index.js\" }\n"
+  )
+  writeIn(
+    b.dir,
+    "node_modules/fakenpm/index.js",
+    "const o = {};\no['ad' + 'd'] = (a, b) => a + b + 2000;\no['sh' + 'out'] = (s) => s.toUpperCase() + '?';\nmodule.exports = o;\n"
+  )
+  writeIn(
+    b.dir,
+    "run.mjs",
+    "import { instantiate } from './prog.js';\nconst m = await instantiate();\nconsole.log('add=' + m.viaNpm(5));\nconsole.log('shout=' + m.shoutNpm('hi'));\n"
+  )
+  val args: List[String] = newList()
+  args.add(Path.join(b.dir, "run.mjs"))
+  match Process.runCapture(Environment.getVarOrDefault("NODE", "node"), args, 120000) {
+    case Err(e) -> panic("node could not be started: " + e)
+    case Ok(r) -> {
+      assertEqualInt(r.exitCode, 0, "node exits cleanly: " + r.stderr)
+      assertTrue(Str.contains(r.stdout, "add=2006\n"), "a dynamically assigned CJS export ran: " + r.stdout)
+      assertTrue(Str.contains(r.stdout, "shout=HI?\n"), "a second one ran: " + r.stdout)
+    }
+  }
+}

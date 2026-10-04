@@ -1225,7 +1225,12 @@ pub func npmProbeScript(): String {
 for (const p of pkgs) {
   try {
     const m = await import(p);
-    console.log(p + '\t' + Object.keys(m).join(','));
+    const names = new Set(Object.keys(m));
+    const d = m.default;
+    if (d !== null && (typeof d === 'object' || typeof d === 'function')) {
+      for (const k of Object.keys(d)) names.add(k);
+    }
+    console.log(p + '\t' + [...names].join(','));
   } catch (e) {
     console.log(p + '\t!' + String(e && e.message).split('\n')[0]);
   }

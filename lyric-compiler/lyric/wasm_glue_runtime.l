@@ -288,7 +288,16 @@ export async function instantiate(source, options = {}) {
   for (const [mod, load] of Object.entries(LYRIC_NPM)) {
     if (hostFns[mod]) continue;
     try {
-      hostFns[mod] = await load();
+      const ns = await load();
+      // A CommonJS package's named exports are only those Node's static scan
+      // finds; the rest live on `default` (module.exports), so look there too.
+      hostFns[mod] = new Proxy(ns, {
+        get(target, key) {
+          if (key in target) return target[key];
+          const dflt = target.default;
+          return dflt !== null && (typeof dflt === 'object' || typeof dflt === 'function') ? dflt[key] : undefined;
+        },
+      });
     } catch (e) {
       throw new Error('cannot load the NPM package behind host import ' + mod + ' (run `lyric restore`, or pass it in options.imports): ' + e.message);
     }
