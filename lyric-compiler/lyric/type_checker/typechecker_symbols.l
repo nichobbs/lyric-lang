@@ -470,6 +470,9 @@ pub record SymbolTable {
   /// statement's span) or of an array-typed field with no default (keyed by
   /// the field declaration's span).
   arrayZeroSites: Map[String, Expr]
+  /// The zero-valued named arguments a record construction leaves out,
+  /// keyed by the construction's span (D167, #8042).
+  arrayCtorZeroArgs: Map[String, List[CallArg]]
   /// Integer arithmetic that can overflow (D163), keyed by span:
   /// `add:<T>` / `sub:<T>` / `mul:<T>` for a binop, `neg:<T>` for unary
   /// minus, `compound:<T>` for `x += y` / `-=` / `*=` (keyed by the
@@ -650,6 +653,7 @@ pub func newSymbolTable(): SymbolTable {
     arrayTypeLens = newMap(),
     arrayLenPkg = newList(),
     arrayZeroSites = newMap(),
+    arrayCtorZeroArgs = newMap(),
     overflowSites = newMap(),
     overflowCompoundTemps = newMap(),
     importRulePkg = newList(),

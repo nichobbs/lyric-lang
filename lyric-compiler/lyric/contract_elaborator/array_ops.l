@@ -39,16 +39,26 @@ pub record ArraySites {
   forIter: Map[String, ArraySite]
   copy: Map[String, ArraySite]
   zero: Map[String, Expr]
+  ctorZero: Map[String, List[CallArg]]
 }
 
 pub func noArraySites(): ArraySites {
-  ArraySites(index = newMap(), len = newMap(), slice = newMap(), forIter = newMap(), copy = newMap(), zero = newMap())
+  ArraySites(
+    index = newMap(),
+    len = newMap(),
+    slice = newMap(),
+    forIter = newMap(),
+    copy = newMap(),
+    zero = newMap(),
+    ctorZero = newMap()
+  )
 }
 
 func arraySitesEmpty(sites: in ArraySites): Bool {
   sites.index.count == 0 and sites.len.count == 0 and sites.slice.count == 0 and sites.forIter.count == 0 and
     sites.copy.count == 0 and
-    sites.zero.count == 0
+    sites.zero.count == 0 and
+    sites.ctorZero.count == 0
 }
 
 pub func lowerArrays(file: in SourceFile, sites: in ArraySites): SourceFile {
@@ -218,16 +228,30 @@ func rewriteArrayExpr(e: in Expr, sites: in ArraySites): Expr {
       }
       case None -> ()
     }
-    case ECall(fn, args) -> match fn.kind {
-      case EMember(recv, name) -> if name == "toSlice" and args.count == 0 {
-        match mapGet(sites.slice, recordCopySiteKey(fn.span)) {
-          case Some(site) -> {
-            r = toSliceOf(recv, site, e.span)
-          }
-          case None -> ()
+    // A construction that leaves out a zero-filled array field passes its
+    // zero (D167, #8042).
+    case ECall(fn, args) -> match mapGet(sites.ctorZero, key) {
+      case Some(zeros) -> {
+        val all: List[CallArg] = newList()
+        for a in args {
+          all.add(a)
         }
+        for z in zeros {
+          all.add(z)
+        }
+        r = mkExpr(ECall(fn = fn, args = all), e.span)
       }
-      case _ -> ()
+      case None -> match fn.kind {
+        case EMember(recv, name) -> if name == "toSlice" and args.count == 0 {
+          match mapGet(sites.slice, recordCopySiteKey(fn.span)) {
+            case Some(site) -> {
+              r = toSliceOf(recv, site, e.span)
+            }
+            case None -> ()
+          }
+        }
+        case _ -> ()
+      }
     }
     case _ -> ()
   }

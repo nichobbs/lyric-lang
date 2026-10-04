@@ -675,7 +675,8 @@ pub func pipeCheckAndMono(
       slice = tcRes.symbols.arraySliceSites,
       forIter = tcRes.symbols.arrayForSites,
       copy = tcRes.symbols.arrayCopySites,
-      zero = tcRes.symbols.arrayZeroSites
+      zero = tcRes.symbols.arrayZeroSites,
+      ctorZero = tcRes.symbols.arrayCtorZeroArgs
     )
   )
   // Integer overflow panics in a debug build and wraps in a release build or
@@ -1286,7 +1287,8 @@ func specArraySitesOf(
       slice = siteSlice(syms.arraySliceSites, p.arraySliceSites, usePrior, lo, hi),
       forIter = siteSlice(syms.arrayForSites, p.arrayForSites, usePrior, lo, hi),
       copy = siteSlice(syms.arrayCopySites, p.arrayCopySites, usePrior, lo, hi),
-      zero = siteSlice(syms.arrayZeroSites, p.arrayZeroSites, usePrior, lo, hi)
+      zero = siteSlice(syms.arrayZeroSites, p.arrayZeroSites, usePrior, lo, hi),
+      ctorZero = siteSlice(syms.arrayCtorZeroArgs, p.arrayCtorZeroArgs, usePrior, lo, hi)
     ),
     arrayEq = siteSlice(syms.arrayEqSites, p.arrayEqSites, usePrior, lo, hi),
     recordEq = siteSlice(syms.recordEqSites, p.recordEqSites, usePrior, lo, hi),

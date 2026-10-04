@@ -5330,6 +5330,19 @@ record CtorField {
   name: String
   ty: Type
   hasDefault: Bool
+  /// An array field with no default: the construction fills an omitted one
+  /// with its zero value (D167), built from the type at the construction.
+  zeroFill: Bool
+}
+
+// A field of type `t` declared without a default is zero filled when it is
+// an array of fixed length.  For a generic record the element type may name
+// a type parameter, so whether it has a zero is settled per construction.
+func isZeroFillField(t: in Type, dflt: in Option[Expr]): Bool {
+  match dflt {
+    case Some(_) -> false
+    case None -> match unrefine(t) { case TyArray(Some(_), _) -> true; case _ -> false }
+  }
 }
 
 func ctorIsGeneric(sym: in Symbol): Bool {
@@ -5832,7 +5845,7 @@ func collectCtorFieldsFromRecord(
   scratch: in List[Diagnostic],
   members: in List[RecordMember],
   acc: in List[CtorField],
-  implicitZero: in Bool,
+  isGeneric: in Bool,
 ): Unit {
   var i = 0
   while i < members.count {
@@ -5845,13 +5858,12 @@ func collectCtorFieldsFromRecord(
             hasDef = true
           }
           case None -> {
-            // An array field with no default is zero filled where its record
-            // is declared; another package's record (whose declaration
-            // carries no such default) needs the field given (D167).
-            hasDef = implicitZero and fieldHasZeroDefault(tbl, t, fd.span)
+            // An array field with no default is zero filled (D167); a generic
+            // record's is settled once its type arguments are known.
+            hasDef = fieldHasZeroDefault(tbl, t, fd.span) or (isGeneric and isZeroFillField(t, fd.dflt))
           }
         }
-        acc.add(CtorField(name = fd.name, ty = t, hasDefault = hasDef))
+        acc.add(CtorField(name = fd.name, ty = t, hasDefault = hasDef, zeroFill = isZeroFillField(t, fd.dflt)))
       }
       case _ -> {
       }
@@ -5866,7 +5878,7 @@ func collectCtorFieldsFromOpaque(
   scratch: in List[Diagnostic],
   members: in List[OpaqueMember],
   acc: in List[CtorField],
-  implicitZero: in Bool,
+  isGeneric: in Bool,
 ): Unit {
   var i = 0
   while i < members.count {
@@ -5879,10 +5891,10 @@ func collectCtorFieldsFromOpaque(
             hasDef = true
           }
           case None -> {
-            hasDef = implicitZero and fieldHasZeroDefault(tbl, t, fd.span)
+            hasDef = fieldHasZeroDefault(tbl, t, fd.span) or (isGeneric and isZeroFillField(t, fd.dflt))
           }
         }
-        acc.add(CtorField(name = fd.name, ty = t, hasDefault = hasDef))
+        acc.add(CtorField(name = fd.name, ty = t, hasDefault = hasDef, zeroFill = isZeroFillField(t, fd.dflt)))
       }
       case _ -> {
       }
@@ -5909,15 +5921,15 @@ func collectCtorFields(tbl: in SymbolTable, sym: in Symbol, acc: in List[CtorFie
   val saved = enterDeclaringScope(tbl, sym)
   val result = match sym.kind {
     case DKRecord(_, rd) -> {
-      collectCtorFieldsFromRecord(tbl, ctx, scratch, rd.members, acc, not sym.isImported)
+      collectCtorFieldsFromRecord(tbl, ctx, scratch, rd.members, acc, ctorIsGeneric(sym))
       true
     }
     case DKExposedRec(_, rd) -> {
-      collectCtorFieldsFromRecord(tbl, ctx, scratch, rd.members, acc, not sym.isImported)
+      collectCtorFieldsFromRecord(tbl, ctx, scratch, rd.members, acc, ctorIsGeneric(sym))
       true
     }
     case DKOpaque(_, od) -> {
-      collectCtorFieldsFromOpaque(tbl, ctx, scratch, od.members, acc, not sym.isImported)
+      collectCtorFieldsFromOpaque(tbl, ctx, scratch, od.members, acc, ctorIsGeneric(sym))
       true
     }
     case DKProtected(_, _) -> {
@@ -5925,9 +5937,10 @@ func collectCtorFields(tbl: in SymbolTable, sym: in Symbol, acc: in List[CtorFie
         val t = resolveType(tbl, ctx, scratch, fd.ty)
         val hasDef = match fd.dflt {
           case Some(_) -> true
-          case None -> not sym.isImported and fieldHasZeroDefault(tbl, t, fd.span)
+          case None -> fieldHasZeroDefault(tbl, t, fd.span) or
+            (ctorIsGeneric(sym) and isZeroFillField(t, fd.dflt))
         }
-        acc.add(CtorField(name = fd.name, ty = t, hasDefault = hasDef))
+        acc.add(CtorField(name = fd.name, ty = t, hasDefault = hasDef, zeroFill = isZeroFillField(t, fd.dflt)))
       }
       true
     }
@@ -6314,6 +6327,15 @@ func inferConstructionExpected(
       }
       i = i + 1
     }
+    noteCtorZeroArgs(
+      tbl,
+      diag,
+      sym,
+      fields,
+      args,
+      span,
+      { name: String, declared: Type -> instantiatedFieldType(fieldNames, fieldTypes, gnames, targs, name, declared) }
+    )
     return inferredTy
   }
   val resultTy = ctorResultType(sym)
@@ -6396,7 +6418,67 @@ func inferConstructionExpected(
     }
     i = i + 1
   }
+  noteCtorZeroArgs(tbl, diag, sym, fields, args, span, { name: String, declared: Type -> declared })
   resultTy
+}
+
+// Record the zero value of each array field the construction at `span`
+// leaves out (D167), for `lowerArrays` to pass as a named argument.  The zero
+// is built from the field's type as the construction sees it: a record from
+// another package carries no default for the field, and a generic record's
+// element type is known only here.  A generic record instantiated at an
+// element type with no zero needs the field given (T0105).
+func noteCtorZeroArgs(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  sym: in Symbol,
+  fields: in List[CtorField],
+  args: in List[CallArg],
+  span: in Span,
+  fieldTypeAt: (String, Type) -> Type,
+): Unit {
+  var positional = 0
+  for a in args {
+    match a {
+      case CAPositional(_) -> {
+        positional = positional + 1
+      }
+      case CANamed(_, _, _) -> ()
+    }
+  }
+  val zsp = Span(startPos = span.startPos, endPos = span.startPos)
+  val zeros: List[CallArg] = newList()
+  var fi = 0
+  while fi < fields.count {
+    val f = fields[fi]
+    var supplied = fi < positional
+    for a in args {
+      match a {
+        case CANamed(nm, _, _) -> if nm == f.name { supplied = true }
+        case CAPositional(_) -> ()
+      }
+    }
+    if f.zeroFill and not supplied {
+      val fty = fieldTypeAt(f.name, f.ty)
+      match zeroExprFor(tbl, fty, zsp, 0) {
+        case Some(z) -> zeros.add(CANamed(name = f.name, value = z, span = zsp))
+        case None -> diag.add(
+          errorDiagnostic(
+            "T0105",
+            "constructor '" + sym.name + "' is missing required field '" + f.name + "': its type " +
+              renderType(fty) +
+              " has no zero value to fill it with",
+            span
+          )
+        )
+      }
+    }
+    fi = fi + 1
+  }
+  val key = recordCopySiteKey(span)
+  if zeros.count > 0 and not tbl.arrayCtorZeroArgs.containsKey(key) {
+    tbl.arrayCtorZeroArgs.add(key, zeros)
+  }
 }
 
 // A QUALIFIED constructor call (`Pkg.Type(...)` or `Pkg.Sub.Type(...)`, the
@@ -7322,7 +7404,7 @@ func collectUnionCaseFields(uc: in UnionCase, acc: in List[CtorField]): Unit {
   var i = 0
   while i < uc.fields.count {
     match uc.fields[i] {
-      case UFNamed(nm, _, _) -> acc.add(CtorField(name = nm, ty = TyError, hasDefault = false))
+      case UFNamed(nm, _, _) -> acc.add(CtorField(name = nm, ty = TyError, hasDefault = false, zeroFill = false))
       case UFPos(_, _) -> {
       }
     }
@@ -7468,6 +7550,10 @@ func findGenericInPair(name: in String, paramTy: in Type, argTy: in Type): Optio
     case TySlice(pe) -> match unrefine(argTy) { case TySlice(ae) -> findGenericInPair(name, pe, ae); case _ -> None }
     case TyArray(_, pe) -> match unrefine(argTy) {
       case TyArray(_, ae) -> findGenericInPair(name, pe, ae)
+      // A bracket literal (`Box(data = [1, 2])`) is typed as a slice; its
+      // element type binds the array's (#8042).  Whether it fits the array
+      // is checked against the instantiated field.
+      case TySlice(ae) -> findGenericInPair(name, pe, ae)
       case _ -> None
     }
     case TyNullable(pi) -> match unrefine(argTy) {
@@ -11494,9 +11580,6 @@ func inferExprCore(
       val argTypes: List[Type] = newList()
       var anyDeferredLambda = false
       var anyCaseCtorArg = false
-      // A bracket literal given to a record field of array type is typed
-      // against the field (D167): the fields are known before the arguments.
-      val ctorFieldTys = ctorArrayFieldTypes(tbl, fn, args)
       var i = 0
       while i < args.count {
         val ae = callArgExpr(args[i])
@@ -11572,6 +11655,10 @@ func inferExprCore(
         }
         case None -> ()
       }
+      // A bracket literal given to a record field of array type is typed
+      // against the field (D167); a generic record's field is instantiated
+      // at what the other arguments, and the literal's elements, bind.
+      val ctorFieldTys = ctorArrayFieldTypes(tbl, fn, args, argTypes, TyError)
       if anyDeferredLambda or anyCaseCtorArg {
         val lambdaSig = match directSig {
           case Some(_) -> directSig
@@ -12555,8 +12642,16 @@ func argIsListLiteral(e: in Expr): Bool {
 // The field type each argument of a record construction `R(...)` initialises,
 // positionally aligned with `args`, for the arguments that are bracket
 // literals given to a field of array type (`TyError` elsewhere): such an
-// argument is typed against the field.
-func ctorArrayFieldTypes(tbl: in SymbolTable, fn: in Expr, args: in List[CallArg]): List[Type] {
+// argument is typed against the field.  A generic record's field is
+// instantiated at the type arguments `argTypes` bind (a literal's own
+// `slice[T]` type binds its element, #8042), or else `expected` gives.
+func ctorArrayFieldTypes(
+  tbl: in SymbolTable,
+  fn: in Expr,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  expected: in Type,
+): List[Type] {
   val tys: List[Type] = newList()
   var any = false
   for a in args {
@@ -12574,7 +12669,7 @@ func ctorArrayFieldTypes(tbl: in SymbolTable, fn: in Expr, args: in List[CallArg
   }
   val ctorSym = match constructorSymbolOf(tbl, fn) { case Some(sy) -> sy; case None -> return tys }
   if ctorIsGeneric(ctorSym) {
-    return tys
+    return genericCtorArrayFieldTypes(tbl, ctorSym, args, argTypes, expected, tys)
   }
   val fields: List[CtorField] = newList()
   if not collectCtorFields(tbl, ctorSym, fields) {
@@ -12596,6 +12691,67 @@ func ctorArrayFieldTypes(tbl: in SymbolTable, fn: in Expr, args: in List[CallArg
           tys[i] = fields[pos].ty
         }
         pos = pos + 1
+      }
+    }
+    i = i + 1
+  }
+  tys
+}
+
+func genericCtorArrayFieldTypes(
+  tbl: in SymbolTable,
+  ctorSym: in Symbol,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  expected: in Type,
+  tys: in List[Type],
+): List[Type] {
+  val gnames = ctorGenericNames(ctorSym)
+  val fieldNames = ctorFieldNames(ctorSym)
+  val fieldTypes = ctorFieldTypes(tbl, ctorSym, gnames)
+  val targs = inferGenericArgs(gnames, fieldTypes, argTypesInFieldOrder(args, argTypes, fieldNames))
+  match unrefine(expected) {
+    case TyUser(eid, _, eargs) -> match symbolTypeIdOpt(ctorSym) {
+      case Some(tid) -> if typeIdEq(eid, tid) and eargs.count == gnames.count {
+        var ei = 0
+        while ei < gnames.count {
+          if typeIsHole(targs[ei]) {
+            targs[ei] = eargs[ei]
+          }
+          ei = ei + 1
+        }
+      }
+      case None -> ()
+    }
+    case _ -> ()
+  }
+  var pos = 0
+  var i = 0
+  while i < args.count {
+    val fieldName = match args[i] {
+      case CANamed(nm, _, _) -> nm
+      case CAPositional(_) -> {
+        val nm = if pos < fieldNames.count { fieldNames[pos] } else { "" }
+        pos = pos + 1
+        nm
+      }
+    }
+    if argIsListLiteral(callArgExpr(args[i])) {
+      var j = 0
+      while j < fieldNames.count and j < fieldTypes.count {
+        if fieldNames[j] == fieldName {
+          val inst = substituteTyVars(fieldTypes[j], gnames, targs)
+          match unrefine(inst) {
+            case TyArray(Some(_), el) -> if not typeMentionsTyVar(inst) and not typeIsHole(el) {
+              tys[i] = inst
+              // The field's own type names a type parameter, so the
+              // literal is built through a binding of the instantiated type.
+              noteArrayLiteralType(tbl, callArgExpr(args[i]), inst)
+            }
+            case _ -> ()
+          }
+        }
+        j = j + 1
       }
     }
     i = i + 1
@@ -12760,6 +12916,19 @@ pub func inferExprExpected(
         }
         match constructorSymbolOf(tbl, fn) {
           case Some(ctorSym) -> {
+            // A bracket literal given to an array field is typed against the
+            // field at the instantiation (#8042).
+            val arrTys = ctorArrayFieldTypes(tbl, fn, cargs, cargTypes, expected)
+            var ari = 0
+            while ari < cargs.count {
+              match arrTys[ari] {
+                case TyError -> ()
+                case at -> {
+                  cargTypes[ari] = inferExprExpected(sc, tbl, sigs, diag, callArgExpr(cargs[ari]), at)
+                }
+              }
+              ari = ari + 1
+            }
             val ctorTy = inferConstructionExpected(tbl, diag, ctorSym, cargs, cargTypes, e.span, expected)
             noteArrayStores(tbl, cargs, cargTypes)
             recordCtorArgOperandTypes(sc, tbl, fn, cargs, cargTypes, ctorTy)

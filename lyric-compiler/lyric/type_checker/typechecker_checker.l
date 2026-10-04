@@ -4431,8 +4431,9 @@ func noteFieldZeroDefaultOf(
   }
   val scratch: List[Diagnostic] = newList()
   val declT = resolveType(tbl, ctx, scratch, fieldTy)
-  // A field whose element type is a type variable has no zero value and is a
-  // required constructor argument, not an error.
+  // A field whose element type is a type variable is zero filled by each
+  // construction that leaves it out, at the instantiated element type
+  // (`noteCtorZeroArgs`), so it is not an error here.
   if typeMentionsTyVar(declT) {
     return
   }

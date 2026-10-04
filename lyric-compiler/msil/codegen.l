@@ -34381,6 +34381,16 @@ func typeExprToMsilG(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in String, g
     // (which already special-cases an `MTypeVar` element, e.g. `!0[]` on the
     // stdlib `List<T>.ToArray()`).
     case TSlice(elem) -> MArray(elemTy = sliceElemMsilG(cctx, elem, pkgName, generics))
+    // `array[N, T]` is a `List[T]` (D167).  A restored generic record's field
+    // is spelled from its contract, unlowered, and its element may be the
+    // record's own parameter: `List<!0>`, as the dependency declared it (#8042).
+    case TArray(_, arrElem) -> {
+      val listSegs: List[String] = newList()
+      listSegs.add("List")
+      val listArgs: List[TypeArg] = newList()
+      listArgs.add(TAType(ty = arrElem))
+      typeExprToMsilGApp(cctx, ModulePath(segments = listSegs, span = te.span), listArgs, pkgName, generics)
+    }
     // A tuple is `object` in every signature, but its tracked element types
     // decide the `castclass`/`unbox.any` each destructured element gets: an
     // element naming the enclosing type's own parameter must be its `!n`, not
