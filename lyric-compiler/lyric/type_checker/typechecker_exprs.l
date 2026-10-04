@@ -4685,6 +4685,21 @@ func recordUnsignedWidening(tbl: in SymbolTable, target: in Type, src: in Type, 
 // argument's own type) or a tuple element, and no backend widens a scalar
 // there from the operand types.  An existing container value never widens:
 // `Option[UInt]` and `Option[ULong]` stay distinct types.
+// True when `ds` holds an error (warnings aside).  A second, expected-typed
+// pass over a value already checked once reports into a scratch list; if that
+// pass fails, its result type may hold `TyError`, which compares equal to
+// anything, so the caller keeps the first pass's type and lets the ordinary
+// mismatch be reported instead.
+func diagnosticsHaveError(ds: in List[Diagnostic]): Bool {
+  for d in ds {
+    match d.severity {
+      case DiagError -> return true
+      case DiagWarning -> ()
+    }
+  }
+  false
+}
+
 // True when a value of type `src` is a `target` up to lossless numeric
 // widenings of its scalar parts: tuple elements and generic type arguments
 // of the same type.
@@ -11960,7 +11975,12 @@ func inferExprCore(
             // reported the argument's diagnostics.
             argTypes[di] = if typeIsClosed(argExp) and widensStructurally(argExp, adopted) {
               val scratch: List[Diagnostic] = newList()
-              inferExprExpected(sc, tbl, sigs, scratch, dae, argExp)
+              val widened = inferExprExpected(sc, tbl, sigs, scratch, dae, argExp)
+              if diagnosticsHaveError(scratch) {
+                adopted
+              } else {
+                widened
+              }
             } else {
               adopted
             }
@@ -13260,7 +13280,12 @@ func inferQualifiedCaseCtorExpected(
       noteCaseRangeAgainstExpected(tbl, caseSym, cargs, expected)
       if widensStructurally(expected, actual) {
         val scratch: List[Diagnostic] = newList()
-        inferCaseCtorExpected(sc, tbl, sigs, scratch, fn, cargs, caseSym, e.span, expected)
+        val widened = inferCaseCtorExpected(sc, tbl, sigs, scratch, fn, cargs, caseSym, e.span, expected)
+        if diagnosticsHaveError(scratch) {
+          actual
+        } else {
+          widened
+        }
       } else {
         actual
       }
