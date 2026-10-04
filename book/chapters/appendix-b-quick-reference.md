@@ -1439,6 +1439,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `W0002` | warning | A `forall`/`exists` in a contract of a runtime-checked package: its domain is a type, so it cannot be evaluated. The top-level `and`-conjunct containing it is skipped at runtime; the clause's other conjuncts are still checked. Put the property in a `@proof_required` package to have it proved. |
 | `W0006` | warning | A `pub` function exposes an **imported nested** host extern type (a CLR FQN containing `+`, e.g. `System.Text.Json.JsonElement+ArrayEnumerator`) in its signature. Nested types are host implementation details meant to stay behind the `_kernel/` FFI boundary. A kernel file that declares the extern type locally is exempt. Fix: wrap the host type in an opaque Lyric type (as `Std.Json` does with `JsonArrayCursor` / `JsonObjectCursor`) instead of exposing it directly. Top-level domain extern types are not flagged. |
 | `W0040` | warning | A `pub func` is left out of the `--shape module` JS glue because a parameter or its result is a type the module shape cannot carry (a record, list or option), or it is generic, overloaded, or takes an `out`/`inout` parameter. The function is still compiled; it just has no JS wrapper. |
+| `W0041` | warning | A `pub async func` is exported from a `--shape component` build as a synchronous WIT function: the wrapper runs its task to completion, sleeping out its timers, so the host call blocks. Use the module shape for a non-blocking, Promise-returning export. |
 
 ### Emitter (E-series)
 

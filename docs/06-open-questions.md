@@ -551,7 +551,7 @@ WASM-target and JS-integration questions (Q-JS-001–Q-JS-009) are maintained in
 `docs/35-js-wasm-component-sketch.md` §13.  They live there because they
 require WASM Component Model domain context to evaluate.  Q-JS-001, Q-JS-003
 and Q-JS-005 are resolved (§13.1, D-progress-1028); Q-JS-004 is resolved
-(D-progress-1036); Q-JS-002 and Q-JS-006–Q-JS-009 remain open (§13.2).
+(D-progress-1036); Q-JS-006 is resolved for v1 (D-progress-1043); Q-JS-002 and Q-JS-007–Q-JS-009 remain open (§13.2).
 
 ---
 
