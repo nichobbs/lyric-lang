@@ -1291,7 +1291,6 @@ pub func compileProjectToNativeWithShape(
   val ownFiles: List[SourceFile] = newList()
   // Each own file's `methodCallAritiesOut` (#7828), parallel to `ownFiles`.
   val ownCallArities: List[Map[String, Int]] = newList()
-  val noImportedGenFuncs: List[FunctionDecl] = newList()
   val noDeriveImports: List[Item] = newList()
   val noTemplates: Map[String, Weaver.CollectedTemplate] = newMap()
   val importedItemsForMono = flattenImportedItems(importedPkgs)
@@ -1324,7 +1323,19 @@ pub func compileProjectToNativeWithShape(
       ioForbiddenReason = if mei < packages.count { packages[mei].ioForbiddenReason } else { "" },
       nativeIntrinsics = true
     )
-    val checked = match pipeMiddleEnd(ownFiles0[mei], importedPkgs, noDeriveImports, noImportedGenFuncs, importedInterfaceDecls, importedRecordDecls, noTemplates, opts, None) {
+    // The project's other packages' generic functions, so a call to one
+    // specialises in the caller (a package's own generics are erased from its
+    // output once they are specialised, leaving nothing for codegen to
+    // instantiate on a cross-package call).
+    val siblingGenFuncs: List[FunctionDecl] = newList()
+    var sgi = 0
+    while sgi < ownFiles0.count {
+      if sgi != mei {
+        pipeAddGenericFuncs(ownFiles0[sgi].items, dottedPath(ownFiles0[sgi].packageDecl.path), false, false, siblingGenFuncs)
+      }
+      sgi = sgi + 1
+    }
+    val checked = match pipeMiddleEnd(ownFiles0[mei], importedPkgs, noDeriveImports, siblingGenFuncs, importedInterfaceDecls, importedRecordDecls, noTemplates, opts, None) {
       case Some(f) -> f
       case None -> return false
     }
