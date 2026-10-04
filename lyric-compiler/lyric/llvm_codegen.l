@@ -2792,6 +2792,13 @@ func lowerExpr(ctx: in Ctx, insns: in List[NInsn], expr: in Expr): NVal {
       if path.segments.count == 1 {
         return loadLocal(ctx, insns, path.segments[0])
       }
+      // A package-qualified module-level `val`/`const` (`Ui.Host.Assets.runtimeMainJs`):
+      // module values register under `<package>.<name>`.
+      match mapGet(ctx.moduleVals, joined) {
+        case Some(mv) -> return lowerModuleVal(ctx, insns, mv)
+        case None -> {
+        }
+      }
       panic(
         "Lyric.LlvmCodegen: qualified value reference '" + joined +
           "' is not yet supported for --target native (module-level constants are Phase N2+)"

@@ -32,8 +32,8 @@ package Ui.Host
 
 import Std.Core
 import Std.Collections
-import Std.Console as Console
 import Std.Task as Tasks
+import Ui.Kernel.Guard as Guard
 import Ui.Core.{View, Step, UiEffect, stay}
 import Ui.Diff.{Patch, toWire}
 import Ui.Html.{renderHtml}
@@ -416,12 +416,7 @@ pub func runEffect[M, Msg, E](
   if isClosed(env) {
     return
   }
-  var reply: Option[Msg] = None
-  try {
-    reply = run(effect)
-  } catch Bug as b {
-    Console.error("lyric-ui: an effect failed: " + b.message)
-  }
+  val reply: Option[Msg] = Guard.guardedEffect(run, effect)
   match reply {
     case Some(msg) -> {
       val m: Msg = msg

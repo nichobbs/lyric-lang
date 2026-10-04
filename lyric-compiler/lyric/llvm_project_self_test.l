@@ -181,6 +181,8 @@ test "module-level val with a non-literal initializer is a shared static global 
         "  }\n" +
         "  Console.println(\"derived=\" + derived.toString())\n" +
         "  Console.println(\"store=\" + storeCount().toString())\n" +
+        "  Console.println(Glob.Store.banner)\n" +
+        "  Console.println(pick(\"picked\"))\n" +
         "  0\n" +
         "}\n"
     )
@@ -190,6 +192,10 @@ test "module-level val with a non-literal initializer is a shared static global 
       name = "Glob.Store",
       path = "",
       source = "package Glob.Store\n" + "record Box {\n" + "  var count: Int = 7\n" + "}\n" + "val box: Box = Box()\n" +
+        "pub val banner: String = \"store-banner\"\n" +
+        "pub func pick[T](x: in T): T {\n" +
+        "  x\n" +
+        "}\n" +
         "pub func storeCount(): Int {\n" +
         "  box.count = box.count + 1\n" +
         "  box.count\n" +
@@ -199,8 +205,13 @@ test "module-level val with a non-literal initializer is a shared static global 
   val outcome = compileAndRunProject(pkgs)
   assertEqualInt(outcome.exitCode, 0, "module global project exit code")
   assertTrue(Str.contains(outcome.stdout, "ctr=3"), "a record global keeps identity and mutations across functions")
-  assertTrue(Str.contains(outcome.stdout, "derived=42"), "a global's initializer ran before main and read another global")
+  assertTrue(
+    Str.contains(outcome.stdout, "derived=42"),
+    "a global's initializer ran before main and read another global"
+  )
   assertTrue(Str.contains(outcome.stdout, "store=8"), "a sibling package's global is shared across calls")
+  assertTrue(Str.contains(outcome.stdout, "store-banner"), "a package-qualified module value resolves")
+  assertTrue(Str.contains(outcome.stdout, "picked"), "a generic function of a sibling package is callable")
 }
 
 test "two-package project: qualified call to an internal sibling-package function resolves (#6580)" {
