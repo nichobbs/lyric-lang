@@ -1254,19 +1254,19 @@ test "signed % takes the dividend's sign (#7870)" {
 
 test "truncating division satisfies its identities symbolically (#7870)" {
   assertDischarged(
-    "func r(a: in Int, b: in Int): Int\n  requires: a < 0 and b != 0\n  ensures: result <= 0\n{\n  a % b\n}\n",
+    "func r(a: in Int, b: in Int): Int\n  requires: a < 0 and b != 0 and b != -1\n  ensures: result <= 0\n{\n  a % b\n}\n",
     "negative-dividend-remainder-is-non-positive"
   )
   assertRefuted(
-    "func r(a: in Int, b: in Int): Int\n  requires: a < 0 and b != 0\n  ensures: result < 0\n{\n  a % b\n}\n",
+    "func r(a: in Int, b: in Int): Int\n  requires: a < 0 and b != 0 and b != -1\n  ensures: result < 0\n{\n  a % b\n}\n",
     "remainder-can-be-zero"
   )
   assertDischarged(
-    "func q(a: in Long, b: in Long): Long\n  requires: b != 0\n  ensures: result == a - b * (a / b)\n{\n  a % b\n}\n",
+    "func q(a: in Long, b: in Long): Long\n  requires: b != 0 and b != -1\n  ensures: result == a - b * (a / b)\n{\n  a % b\n}\n",
     "division-identity"
   )
   assertDischarged(
-    "func n(a: in Long, b: in Long): Long\n  requires: b != 0\n  ensures: result == 0 - (0 - a) / b\n{\n  a / b\n}\n",
+    "func n(a: in Long, b: in Long): Long\n  requires: b != 0 and b != -1\n  ensures: result == 0 - (0 - a) / b\n{\n  a / b\n}\n",
     "negating-the-dividend-negates-the-quotient"
   )
   assertDischarged(
@@ -1461,7 +1461,7 @@ test "an omitted parameter takes its default in the callee's contract (#7873)" {
     addk + "func g(y: in Int): Int\n  ensures: result == y + 2\n{\n  addk(k = 2, x = y)\n}\n",
     "default-overridden"
   )
-  val div = "func half(n: in Int, d: in Int = 2): Int\n  requires: d != 0\n{\n  n / d\n}\n"
+  val div = "func half(n: in Int, d: in Int = 2): Int\n  requires: d > 0\n{\n  n / d\n}\n"
   assertDischarged(div + "func g(): Int\n{\n  half(7)\n}\n", "default-meets-precondition")
   assertRefuted(div + "func g(): Int\n{\n  half(d = 0, n = 7)\n}\n", "named-violates-precondition")
 }
@@ -2017,4 +2017,301 @@ test "an unmodelled value used at another sort fails closed before the solver (#
   assertTrue(summaryHasDiagCode(s, "V0033"), "reported as untranslatable")
   assertTrue(not summaryMentions(s, "malformed"), "a well-formed query")
   assertTrue(not summaryMentions(s, "unexpected output"), "no solver error")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Obligations the verifier used to drop (#8107).
+// ─────────────────────────────────────────────────────────────────────────────
+test "a block used as a value keeps its statements' obligations (#8107)" {
+  val pos = "func pos(x: in Int): Int\n  requires: x > 0\n{\n  x\n}\n"
+  assertRefuted(
+    pos +
+      "func g(c: in Int): Int\n{\n  match c {\n    case 0 -> {\n      val z = pos(0)\n      1\n    }\n    case _ -> 2\n  }\n}\n",
+    "match-arm-block"
+  )
+  assertRefuted(
+    pos + "func g(c: in Bool): Int\n{\n  val r = if c {\n    assert(false)\n    1\n  } else {\n    2\n  }\n  r\n}\n",
+    "if-branch-block-assert"
+  )
+  assertDischarged(
+    "func posId(x: in Int): Int\n  requires: x > 0\n  ensures: result == x\n{\n  x\n}\n" +
+      "func g(c: in Int): Int\n  ensures: result > 0\n{\n  match c {\n    case 0 -> {\n      val z = 5\n      posId(z)\n    }\n" +
+      "    case _ -> 2\n  }\n}\n",
+    "match-arm-block-establishes"
+  )
+  assertDischarged(
+    pos +
+      "func g(c: in Bool): Int\n  ensures: result == 3\n{\n  val r = if c {\n    val k = 1\n    k + 2\n  } else {\n    3\n  }\n  r\n}\n",
+    "block-binding-value"
+  )
+  assertFailsClosed(
+    pos +
+      "func g(c: in Int): Int\n  ensures: result > 0\n{\n  val r = match c {\n    case 0 -> {\n      return -1\n    }\n" +
+      "    case _ -> 2\n  }\n  r\n}\n",
+    "V0033",
+    "return-in-a-value-block"
+  )
+}
+
+test "a statement-level match checks its arms' obligations (#8107)" {
+  val pos = "func pos(x: in Int): Int\n  requires: x > 0\n{\n  x\n}\n"
+  assertRefuted(
+    pos + "func g(c: in Int): Int\n{\n  match c {\n    case 0 -> pos(0)\n    case _ -> 2\n  }\n  1\n}\n",
+    "statement-match"
+  )
+  assertDischarged(
+    pos + "func g(c: in Int): Int\n{\n  match c {\n    case 0 -> pos(1)\n    case _ -> 2\n  }\n  1\n}\n",
+    "statement-match-met"
+  )
+}
+
+test "an unmodelled construct keeps its operands' obligations (#8107)" {
+  val pos = "func pos(x: in Int): Int\n  requires: x > 0\n{\n  x\n}\n"
+  assertRefuted(pos + "func g(xs: in List[Int]): Int\n{\n  val v = xs[pos(0)]\n  1\n}\n", "index-operand")
+  assertRefuted(pos + "func g(): Int\n{\n  val t = (pos(0), 1)\n  1\n}\n", "tuple-operand")
+}
+
+test "integer division and remainder need a non-zero divisor (#8107)" {
+  assertRefuted("func g(x: in Int, y: in Int): Int\n{\n  x / y\n}\n", "div")
+  assertRefuted("func g(x: in Int, y: in Int): Int\n{\n  x % y\n}\n", "mod")
+  assertDischarged("func g(x: in Int, y: in Int): Int\n  requires: y > 0\n{\n  x / y\n}\n", "div-guarded")
+  assertRefuted("func g(x: in UInt, y: in UInt): UInt\n{\n  x / y\n}\n", "unsigned-div")
+  assertRefuted("func g(x: in Int, y: in Int): Int\n{\n  var z = x\n  z /= y\n  z\n}\n", "compound-div")
+  assertCheckedRefuted(
+    "func g(x: in Int, y: in Int): Int\n  requires: y != 0\n{\n  x / y\n}\n",
+    "checked-min-over-minus-one"
+  )
+  assertCheckedDischarged(
+    "func g(x: in Int, y: in Int): Int\n  requires: y > 0\n{\n  x / y\n}\n",
+    "checked-positive-divisor"
+  )
+}
+
+test "a ? in a loop condition fails closed (#8143)" {
+  assertFailsClosed(
+    "func f(n: in Int): Result[Int, String] {\n  Ok(value = n)\n}\nfunc g(n: in Int): Int\n{\n  var i = 0\n  while f(i)? < n\n" +
+      "    invariant: i >= 0\n  {\n    i = i + 1\n  }\n  i\n}\n",
+    "V0026",
+    "question-in-condition"
+  )
+}
+
+func subPair(a: in Int, b: in Int): Int {
+  a - b
+}
+
+func intLitExpr(n: in Long): Expr {
+  Expr(kind = ELiteral(lit = LInt(value = n, suffix = NoIntSuffix, raw = "")), span = zeroSpan())
+}
+
+test "a named argument then a positional one pairs alike in build and prove (#8140)" {
+  // `lyric build` (the type checker and backends, `argsWithDefaults`).
+  assertEqualInt(subPair(b = 3, 10), 7, "build: the positional argument takes the free parameter")
+  // `lyric prove` (`pairCallArgs`).
+  val names: List[String] = newList()
+  names.add("a")
+  names.add("b")
+  val args: List[CallArg] = newList()
+  args.add(CANamed(name = "b", value = intLitExpr(3i64), span = zeroSpan()))
+  args.add(CAPositional(expr = intLitExpr(10i64)))
+  match pairCallArgs(names, 0, args) {
+    case Ok(slots) -> {
+      assertEqualInt(slots[0], 1, "prove: a takes the positional argument")
+      assertEqualInt(slots[1], 0, "prove: b takes the named argument")
+    }
+    case Err(why) -> assertTrue(false, "prove: the arguments pair: " + why)
+  }
+  val sub = "func sub(a: in Int, b: in Int): Int\n  ensures: result == a - b\n{\n  a - b\n}\n"
+  assertDischarged(sub + "func g(): Int\n  ensures: result == 7\n{\n  sub(b = 3, 10)\n}\n", "prove: same result")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Guards, unsupported arms, lambdas, `??` and signed division overflow
+// (#8107 review, #7882).
+// ─────────────────────────────────────────────────────────────────────────────
+func posFn(): String {
+  "func pos(x: in Int): Int\n  requires: x > 0\n{\n  x\n}\n"
+}
+
+test "a match-arm guard is checked and guards its arm (#8107)" {
+  assertRefuted(
+    posFn() + "func f(n: in Int): Int {\n  match n {\n    case k if pos(0) > 0 -> 1\n    case _ -> 2\n  }\n}\n",
+    "guard-precondition"
+  )
+  assertDischarged(
+    posFn() + "func f(n: in Int): Int {\n  match n {\n    case k if k > 0 -> pos(k)\n    case _ -> 2\n  }\n}\n",
+    "guard-establishes-arm"
+  )
+}
+
+test "an arm with an unsupported pattern still has its body checked (#8107)" {
+  assertRefuted(
+    posFn() +
+      "func f(o: in Option[Int]): Int {\n  match o {\n    case Some(v) -> {\n      pos(0)\n    }\n    case _ -> 1\n  }\n}\n",
+    "unsupported-pattern-body"
+  )
+  assertDischarged(
+    posFn() +
+      "func f(o: in Option[Int]): Int {\n  match o {\n    case Some(v) -> {\n      pos(1)\n    }\n    case _ -> 1\n  }\n}\n",
+    "unsupported-pattern-body-met"
+  )
+}
+
+test "a lambda's body is checked for every call (#8107)" {
+  assertRefuted(posFn() + "func f(): Int {\n  val g = { -> pos(0) }\n  g()\n}\n", "lambda-body")
+  assertRefuted(posFn() + "func f(): Int {\n  val g = { x: Int -> pos(x) }\n  g(5)\n}\n", "lambda-parameter-arbitrary")
+  assertDischarged(posFn() + "func f(): Int {\n  val g = { -> pos(1) }\n  g()\n}\n", "lambda-body-met")
+  assertDischarged(
+    posFn() + "func f(): Int {\n  val g = { x: Int -> if x > 0 { pos(x) } else { 1 } }\n  g(5)\n}\n",
+    "lambda-body-guarded"
+  )
+}
+
+test "the right operand of ?? is checked but proves nothing (#8107)" {
+  assertRefuted(posFn() + "func f(o: in Int?): Int {\n  o ?? pos(0)\n}\n", "coalesce-precondition")
+  assertRefuted(
+    "func f(o: in Int?, x: in Int): Int\n  ensures: result <= 100\n{\n" +
+      "  val r = o ?? (if true { val p: Int range 0 ..= 100 = x; p } else { 0 })\n  x\n}\n",
+    "coalesce-fact"
+  )
+  assertDischarged(posFn() + "func f(o: in Int?): Int {\n  o ?? pos(1)\n}\n", "coalesce-met")
+}
+
+test "signed MinValue / -1 and % -1 trap in every mode (#7882)" {
+  assertRefuted("func f(a: in Int, d: in Int): Int\n  requires: d != 0\n{\n  a % d\n}\n", "rem-unchecked")
+  assertRefuted("func f(a: in Int, d: in Int): Int\n  requires: d != 0\n{\n  a / d\n}\n", "div-unchecked")
+  assertRefuted("func f(a: in Long, d: in Long): Long\n  requires: d != 0\n{\n  a % d\n}\n", "rem-long")
+  assertCheckedRefuted("func f(a: in Int, d: in Int): Int\n  requires: d != 0\n{\n  a % d\n}\n", "rem-checked")
+  assertDischarged(
+    "func f(a: in Int, d: in Int): Int\n  requires: d != 0 and (d != -1 or a > -2147483648)\n{\n  a % d\n}\n",
+    "rem-guarded"
+  )
+  assertDischarged("func f(a: in Long, d: in Long): Long\n  requires: d > 0\n{\n  a / d\n}\n", "div-long-positive")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Unknown-width division and sequencing inside an expression (#8107).
+// ─────────────────────────────────────────────────────────────────────────────
+test "a signed division of unknown width excludes both minimums (#8107)" {
+  assertRefuted(
+    "func f(n: in Long): Long\n  requires: n < -2147483648\n{\n  match n {\n    case k -> k / -1\n  }\n}\n",
+    "match-binding-div"
+  )
+  assertRefuted(
+    "func f(n: in Long): Long\n  requires: n < -2147483648\n{\n  match n {\n    case k -> k % -1\n  }\n}\n",
+    "match-binding-rem"
+  )
+  assertDischarged(
+    "func f(n: in Long): Long\n  requires: n < -2147483648\n{\n  match n {\n    case k -> k / 2\n  }\n}\n",
+    "match-binding-div-by-two"
+  )
+}
+
+func zeroDecls(): String {
+  "func pos(x: in Int): Int\n  requires: x > 0\n{\n  x\n}\n" + "func zero(x: inout Int): Bool {\n  x = 0\n  true\n}\n" +
+    "func pair(a: in Bool, b: in Int): Int {\n  b\n}\n"
+}
+
+test "an out or inout argument changes the state for what an expression evaluates next (#8107)" {
+  assertRefuted(
+    zeroDecls() + "func f(): Int {\n  var x = 1\n  val r = if zero(x) { pos(x) } else { 1 }\n  r\n}\n",
+    "if"
+  )
+  assertRefuted(
+    zeroDecls() +
+      "func f(): Int {\n  var x = 1\n  val r = match zero(x) {\n    case true -> pos(x)\n    case _ -> 1\n  }\n  r\n}\n",
+    "match"
+  )
+  assertRefuted(
+    zeroDecls() +
+      "func f(): Int {\n  var x = 1\n  val r = match 3 {\n    case k if zero(x) -> pos(x)\n    case _ -> 1\n  }\n  r\n}\n",
+    "guard"
+  )
+  assertRefuted(zeroDecls() + "func f(): Bool {\n  var x = 1\n  zero(x) and pos(x) > 0\n}\n", "and")
+  assertRefuted(zeroDecls() + "func f(): Int {\n  var x = 1\n  pair(zero(x), pos(x))\n}\n", "sibling-arguments")
+  assertDischarged(
+    zeroDecls() + "func f(): Int {\n  var x = 1\n  val r = if zero(x) { pos(2) } else { 1 }\n  r\n}\n",
+    "if-unaffected"
+  )
+  assertDischarged(zeroDecls() + "func f(): Int {\n  var x = 1\n  pair(zero(x), pos(1))\n}\n", "arguments-unaffected")
+}
+
+test "a lambda capturing a block's var sees what it holds when called (#8107)" {
+  assertRefuted(
+    "func pos(x: in Int): Int\n  requires: x > 0\n{\n  x\n}\nfunc zap(x: inout Int): Unit {\n  x = 0\n}\n" +
+      "func f(c0: in Bool): Int {\n  val r = if c0 {\n    var c = 1\n    val g = { -> pos(c) }\n    zap(c)\n    g()\n  } else {\n    0\n  }\n  5\n}\n",
+    "block-var-capture"
+  )
+}
+
+test "a division with an operand of unknown or distinct width excludes the wider minimum (#8107)" {
+  val bigDecl = "type Big = Long\n"
+  assertRefuted(
+    bigDecl + "func f(b: in Big, d: in Int): Long\n  requires: d == -1 and b.value < -2147483648\n{\n  b.value / d\n}\n",
+    "distinct-value-by-int"
+  )
+  assertRefuted(
+    bigDecl +
+      "func f(v: in Long, d: in Int): Long\n  requires: d == -1 and v < -2147483648\n{\n  Big.from(v).value / d\n}\n",
+    "from-value-by-int"
+  )
+  assertDischarged(
+    bigDecl + "func f(b: in Big, d: in Int): Long\n  requires: d == -1 and b.value > 0\n{\n  b.value / d\n}\n",
+    "distinct-value-positive"
+  )
+}
+
+test "a guard that fails leaves its out or inout arguments changed for later arms (#8107)" {
+  val decls = "func pos(x: in Int): Int\n  requires: x > 0\n{\n  x\n}\n" +
+    "func zeroNo(x: inout Int): Bool {\n  x = 0\n  false\n}\n"
+  assertRefuted(
+    decls +
+      "func f(): Int {\n  var x = 1\n  val r = match 3 {\n    case k if zeroNo(x) -> 1\n    case _ -> pos(x)\n  }\n  r\n}\n",
+    "failed-guard"
+  )
+  assertDischarged(
+    decls +
+      "func f(): Int {\n  var x = 1\n  val r = match 3 {\n    case k if k > 5 -> 1\n    case _ -> pos(x)\n  }\n  r\n}\n",
+    "pure-guard"
+  )
+}
+
+test "a call evaluates its receiver or callee before its arguments, in source order (#8107)" {
+  val recvDecls = zeroDecls() + "record R {\n  v: Int\n}\n" + "func zr(x: inout Int): R {\n  x = 0\n  R(v = 1)\n}\n" +
+    "func R.take(r: in R, n: in Int): Int {\n  n\n}\n"
+  assertRefuted(recvDecls + "func f(): Int {\n  var x = 1\n  zr(x).take(pos(x))\n}\n", "receiver")
+  assertDischarged(recvDecls + "func f(): Int {\n  var x = 1\n  zr(x).take(pos(1))\n}\n", "receiver-unaffected")
+  val pickDecls = zeroDecls() + "func pick(b: in Bool): (Int) -> Int {\n  { n: Int -> n }\n}\n"
+  assertRefuted(pickDecls + "func f(): Int {\n  var x = 1\n  pick(zero(x))(pos(x))\n}\n", "computed-callee")
+  assertDischarged(
+    pickDecls + "func f(): Int {\n  var x = 1\n  pick(zero(x))(pos(1))\n}\n",
+    "computed-callee-unaffected"
+  )
+  val namedDecls = zeroDecls() + "func pair2(a: in Int, b: in Bool): Int {\n  a\n}\n"
+  assertUntranslatable(
+    namedDecls + "func f(): Int {\n  var x = 1\n  pair2(b = zero(x), a = pos(x))\n}\n",
+    "named-reordered"
+  )
+  assertDischarged(
+    namedDecls + "func f(): Int {\n  var x = 1\n  pair2(a = pos(x), b = zero(x))\n}\n",
+    "named-parameter-order"
+  )
+}
+
+test "named arguments out of parameter order fail closed when one changes a variable (#8107)" {
+  val decls = "func pos(x: in Int): Int\n  requires: x > 0\n{\n  x\n}\n" +
+    "func zero(x: inout Int): Int {\n  x = 0\n  0\n}\n" +
+    "func two(a: in Int, b: in Int): Int {\n  a + b\n}\n" +
+    "record Pair {\n  a: Int\n  b: Int\n}\n"
+  assertUntranslatable(decls + "func f(): Int {\n  var x = 1\n  two(b = pos(x), a = zero(x))\n}\n", "call")
+  assertUntranslatable(
+    decls + "func f(): Int {\n  var x = 1\n  val p = Pair(b = pos(x), a = zero(x))\n  1\n}\n",
+    "record"
+  )
+  assertDischarged(
+    decls + "func f(): Int {\n  val x = 1\n  two(b = pos(x), a = pos(2))\n}\n",
+    "reordered-without-effects"
+  )
+  assertRefuted(decls + "func f(): Int {\n  var x = 1\n  two(a = zero(x), b = pos(x))\n}\n", "in-order-with-effects")
+  assertDischarged(decls + "func f(): Int {\n  var x = 1\n  two(a = pos(x), b = zero(x))\n}\n", "in-order-effect-last")
 }

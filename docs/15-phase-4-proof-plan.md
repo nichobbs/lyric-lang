@@ -265,7 +265,7 @@ Lyric.Verifier/
 | Lyric type                | Lyric-VC sort                                | Notes |
 |---------------------------|----------------------------------------------|-------|
 | `Bool`                    | `Bool`                                       | trivial |
-| `Int`, `Long`, `Nat`      | `Int` (mathematical integer)                 | overflow handled separately, see §5.4; a parameter, field or callee result carries its type's 32- or 64-bit bounds as a hypothesis. `/` and `%` truncate toward zero as at runtime, not SMT-LIB's Euclidean `div`/`mod`: they render as `lyric!tdiv`/`lyric!trem`, which the preamble defines as `(ite (= b 0) (div a 0) (ite (= (>= a 0) (>= b 0)) (div (abs a) (abs b)) (- (div (abs a) (abs b)))))` and `(ite (= b 0) (mod a 0) (- a (* b (lyric!tdiv a b))))`. A zero divisor falls through to the solver's unspecified `div`/`mod`, so division by zero stays unconstrained (#7870) |
+| `Int`, `Long`, `Nat`      | `Int` (mathematical integer)                 | overflow handled separately, see §5.4; a parameter, field or callee result carries its type's 32- or 64-bit bounds as a hypothesis. `/` and `%` truncate toward zero as at runtime, not SMT-LIB's Euclidean `div`/`mod`: they render as `lyric!tdiv`/`lyric!trem`, which the preamble defines as `(ite (= b 0) (div a 0) (ite (= (>= a 0) (>= b 0)) (div (abs a) (abs b)) (- (div (abs a) (abs b)))))` and `(ite (= b 0) (mod a 0) (- a (* b (lyric!tdiv a b))))`. A zero divisor falls through to the solver's unspecified `div`/`mod`; the value never matters, because every integer `/` and `%` carries the obligation `divisor != 0` — division by zero panics in every build profile (#7870, #8107) |
 | range subtype `T range a ..= b`, named or inline | the base type's sort with an implicit `a ≤ x ≤ b` hypothesis on every parameter, field, callee result, binding and assigned value | preserves identity loss is fine in proof; CLR identity matters only for emission. A named range subtype (`type Port = UInt range 1 ..= 65535`) is its refined underlying type; `Port.from(x)` is the value `x` with the obligation that it lies in the range, `.value` is the identity, and `tryFrom` is uninterpreted (#7872) |
 | `UInt`, `ULong`, `Byte`   | `(_ BitVec n)`                               | bitvector arithmetic, slow but decidable. A `u8`/`u16`/`u32`/`u64` literal is a `(_ bvN n)` constant of its width (a `u64` literal from 2^63 up is its unsigned value, #7839); an unsuffixed literal next to an unsigned operand takes that operand's width. Ordering, `/` and `%` use the unsigned `bvult`/`bvule`/`bvugt`/`bvuge`/`bvudiv`/`bvurem`; `+`, `-`, `*` are `bvadd`/`bvsub`/`bvmul`. A narrower unsigned operand zero-extends along `Byte < UInt < ULong`, and a `Byte` enters the signed chain through `bv2nat`. A range subtype over an unsigned base folds its bounds unsigned. Any other mix of the two sorts (a `UInt` beside an `Int` variable, a negative constant as an unsigned value, an unsigned negation, a bound that does not fit its base) fails closed with `V0033` (#7848) |
 | `Float`, `Double`         | SMT `Real` (mathematical reals)              | sound approximation: avoids IEEE 754 FP theory and its rounding-mode complexity; linear arithmetic over reals is decidable and fast; division emits `/` (Real div) not `div` (integer) |
@@ -422,6 +422,54 @@ Calls the verifier cannot follow fail closed or are over-approximated
 - Inside a protected type, a bare call to one of the type's own members
   fails closed (`V0033`): its effect on the fields is not modelled.
 - An expression statement of any form keeps its obligations and facts.
+- A block used as a value — an `if`-expression's branch, a match arm, a
+  `{ ... }` expression — runs its statements in order before its last
+  expression gives the value: bindings are visible to the rest of the
+  block, `assert`s are obligations and then facts, and every callee
+  precondition is an obligation. An assignment, a jump (`return`, `break`,
+  `continue`, `throw`, `?`) or a loop inside such a block fails closed
+  (`V0033`) (#8107).
+- An operator or construct the verifier does not model (V0023, V0024) is
+  an unknown value, but the operands and subexpressions it evaluates keep
+  their obligations and facts (#8107).
+- Integer `/` and `%` (and `/=`, `%=`) carry the obligation `divisor != 0`
+  in every mode, and on a signed operand `not (dividend == Min and divisor
+  == -1)` for its width: both trap in every build profile (D163) (#8107,
+  #7882). When the verifier does not know the width, both the 32- and
+  64-bit minimums are excluded. An expression combining operands (an
+  arithmetic operator, the branches of an `if` or `match`) has an unknown
+  width when any operand does — a known `Int` operand does not make a
+  possibly wider one narrow — except an unsuffixed literal, which takes
+  its context's type. A distinct value's `.value` has the distinct type's
+  width and range, `T.from(x)` has `T`'s width, and a match binding of the
+  whole scrutinee carries the scrutinee's width and range. (The `+`, `-`,
+  `*` and negation overflow obligations use the widest known operand, or
+  32 bits when none is known: a result is at least that wide, so this can
+  only make them stricter.)
+- Inside one expression, evaluation order is respected: a call's receiver
+  or computed callee, then its arguments in order, a branch or arm after a condition,
+  scrutinee or guard, the arms after a guard that ran and failed, and the
+  right operand of a binary operator see the state the earlier part
+  leaves — a variable it passed to an `out`/`inout` parameter holds a new
+  value. Index receivers before indices, interpolation segments, and
+  tuple and list elements run left to right as well. A call whose named
+  arguments are written out of parameter order fails closed (V0033) when
+  an argument changes a variable, since that order is not yet settled.
+- A match arm's guard is translated in the arm's bindings: its side
+  conditions and facts hold where the pattern matches and no earlier arm
+  did, and the arm is taken when pattern and guard hold. An arm whose
+  pattern the verifier does not model (V0027) still has its guard and body
+  checked, under an unknown condition and with each binding a value of its
+  own; its value is #8142's open question.
+- A lambda's body is checked for every call: it is walked as a function
+  body, with each parameter a value of its own of its declared sort, each
+  captured `var`/`out`/`inout` binding whatever it holds by then and every
+  other capture at its value where the lambda is made; nothing the body
+  establishes is assumed outside it.
+- The right operand of `??` runs only when the left is null, which is not
+  modelled: its side conditions hold under an unknown condition (so they
+  must hold) and its facts give nothing.
+- A `?` or other jump in a loop condition fails closed (`V0026`) (#8143).
 - `old(e)` is `e` evaluated with every name that has an entry snapshot (a
   parameter, an `out`/`inout` parameter, a protected `var` field) at its
   entry value.
@@ -462,16 +510,14 @@ arguments reset). Inside a protected type, `self.m()` fails closed like a
 bare `m()`, as does a method call on any receiver the verifier does not
 model (V0024).
 
-Known limitations, tracked separately: obligations dropped inside
-translated expressions, statement-level `match`, unmodelled operands and
-division by zero (#8107); the early-return path of `?` in a binding
+Known limitations, tracked separately: the early-return path of `?` in a binding
 (#8108); term identity for impure free calls, reassigned function values,
 unbound names and `if`-branch locals (#8109); no heap model, and record
 methods never verified (#8110); a callee's `ensures:` about an
 `out`/`inout` parameter not linked back to the argument (#8111);
-`Float`/`Double` as SMT reals (#8141); expression `match` arm guards and
-unsupported patterns (#8142); `?` in a loop condition and anonymous-range
-assignment (#8143); precision and range gaps (#8103).
+`Float`/`Double` as SMT reals (#8141); the value of an expression `match`
+arm with an unsupported pattern (#8142); anonymous-range assignment (#8143);
+precision and range gaps (#8103).
 
 Obligations raised inside an expression — a callee's `requires:`, an
 overflow obligation — are proved wherever the expression occurs: an

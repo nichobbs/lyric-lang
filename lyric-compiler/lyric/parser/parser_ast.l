@@ -1705,7 +1705,10 @@ pub func methodCallArity(arities: in Map[String, Int], siteKey: in String, writt
 /// parameter with no default left unsupplied; #7820, #7846), so reaching a
 /// backend with one is a compiler bug, reported by `panic` rather than
 /// lowered as some backend-specific guess.  `callee` names the function the
-/// backend resolved the call to, for that message.
+/// backend resolved the call to, for that message.  A named argument
+/// followed by a positional one (`f(b = 1, 2)`) is accepted: the positional
+/// one takes the first parameter left free.  `lyric prove` pairs through
+/// `pairCallArgs` the same way; `verifier_self_test.l` pins the two together.
 pub func argsWithDefaults(
   callee: in String,
   paramNames: in List[String],
