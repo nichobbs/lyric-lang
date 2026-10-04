@@ -542,6 +542,66 @@ func stdlibImportClosure(pkg: in String, stdlib: in NativeStdlib): List[Imported
   visible
 }
 
+// Native stores a module-level `val` with a non-literal initializer in a static
+// global that start-up code fills in (`Lyric.LlvmCodegen.loadModuleGlobal`).
+// That initializer becomes a function, appended here BEFORE type check and
+// monomorphisation so a generic initializer (`val m: Map[Int, V] = newMap()`)
+// is checked and instantiated like any call. Only a `val` with a declared type
+// is hoisted (the function needs a return type); the `val` itself stays so
+// name resolution and the type check are unchanged.
+func hoistModuleValInits(sf: in SourceFile): SourceFile {
+  val items: List[Item] = newList()
+  for it in sf.items {
+    items.add(it)
+  }
+  for it in sf.items {
+    match it.kind {
+      case IVal(decl) -> {
+        match decl.pattern.kind {
+          case PBinding(vn, _) -> {
+            match decl.ty {
+              case Some(ty) -> {
+                if not isLiteralInit(decl.init) {
+                  val noDocs: List[DocComment] = newList()
+                  val noAnns: List[Annotation] = newList()
+                  val noParams: List[Param] = newList()
+                  val noContracts: List[ContractClause] = newList()
+                  val fd = FunctionDecl(
+                    docComments = noDocs,
+                    annotations = noAnns,
+                    visibility = None,
+                    isAsync = false,
+                    name = mvInitFnName(vn),
+                    generics = None,
+                    params = noParams,
+                    ret = Some(value = ty),
+                    whereClause = None,
+                    contracts = noContracts,
+                    body = Some(value = FBExpr(expr = decl.init)),
+                    span = decl.span
+                  )
+                  items.add(Item(docComments = noDocs, annotations = noAnns, visibility = None, kind = IFunc(decl = fd), span = it.span))
+                }
+              }
+              case None -> ()
+            }
+          }
+          case _ -> ()
+        }
+      }
+      case _ -> ()
+    }
+  }
+  SourceFile(
+    moduleDoc = sf.moduleDoc,
+    fileAnnotations = sf.fileAnnotations,
+    packageDecl = sf.packageDecl,
+    imports = sf.imports,
+    items = items,
+    span = sf.span
+  )
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. Public entry point.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -706,7 +766,7 @@ pub func compileToNativeWithShape(
   val noWires: Map[String, WireExpand.CollectedWireTemplate] = newMap()
   val noConfigs: Map[String, WireExpand.CollectedConfigTemplate] = newMap()
   val userFile0 = match pipeExpandAndRewrite(shimFile, noWires, noConfigs, false, false, false, path, noOrigins) {
-    case Some(f) -> f
+    case Some(f) -> hoistModuleValInits(f)
     case None -> return false
   }
 
@@ -1104,7 +1164,7 @@ pub func compileProjectToNativeWithShape(
       case Some(f) -> f
       case None -> return false
     }
-    ownFiles0.add(f0)
+    ownFiles0.add(hoistModuleValInits(f0))
     owi = owi + 1
   }
 
@@ -2183,11 +2243,11 @@ func unitOf(
       }
       case IVal(decl) -> {
         match decl.pattern.kind {
-          case PBinding(vn, _) -> moduleVals.add(ModuleValDef(name = vn, init = decl.init, ty = decl.ty))
+          case PBinding(vn, _) -> moduleVals.add(ModuleValDef(name = vn, init = decl.init, ty = decl.ty, pkg = pkg))
           case _ -> ()
         }
       }
-      case IConst(decl) -> moduleVals.add(ModuleValDef(name = decl.name, init = decl.init, ty = Some(value = decl.ty)))
+      case IConst(decl) -> moduleVals.add(ModuleValDef(name = decl.name, init = decl.init, ty = Some(value = decl.ty), pkg = pkg))
       case IExternFunc(decl) -> {
         val id = pkg + "." + decl.name + "/" + decl.params.count.toString()
         if lowerAll or reachable.containsKey(id) {

@@ -1,4 +1,4 @@
-//! Web.Kernel.Runtime (dotnet) — pure-Lyric rate limiter for lyric-web.
+//! Web.Kernel.Runtime (dotnet and native) — pure-Lyric rate limiter for lyric-web.
 //!
 //! Replaces the former @externTarget("Lyric.Ws.RateLimitHost.checkRateLimit")
 //! which pointed at a non-existent F# type.  The limiter is
@@ -18,43 +18,24 @@
 //! JVM compile failures #5444/#5458 that already keep `lyric-web`'s test
 //! suite from building on that target).
 //!
-//! All functions are @cfg(feature = "dotnet") so they are erased when
-//! the dotnet feature is not active (e.g. during JVM builds).
+//! The file is compiled for `dotnet` and `native` (the locks and background
+//! threads come from `Ws.Kernel.Net`'s per-target primitives) and erased for
+//! `jvm`.
 //!
 //! See docs/14-native-stdlib-plan.md for the kernel boundary contract.
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 @io
 package Web.Kernel.Runtime
 
 import Std.Console
 import Std.Core
+import Std.Collections
 import Resilience
 import Std.Time
 import Std.HttpServer
 import Web
 import Ws
 import Ws.Kernel.Net as WsNet
-
-extern type ConcurrentDict[K, V] = "System.Collections.Concurrent.ConcurrentDictionary`2"
-
-@externTarget("System.Collections.Concurrent.ConcurrentDictionary`2..ctor")
-func newConcurrentDict[K, V](): ConcurrentDict[K, V] = ()
-
-@externTarget("System.Collections.Concurrent.ConcurrentDictionary`2.TryGetValue")
-func cdTryGetValue[K, V](dict: in ConcurrentDict[K, V], key: in K, value: out V): Bool = ()
-
-@externTarget("System.Collections.Concurrent.ConcurrentDictionary`2.TryAdd")
-func cdTryAdd[K, V](dict: in ConcurrentDict[K, V], key: in K, value: in V): Bool = ()
-
-@axiom("System.Threading.Monitor.Enter — acquires an exclusive lock on obj")
-@externStatic
-@externTarget("System.Threading.Monitor.Enter")
-func monitorEnter[T](obj: in T): Unit = ()
-
-@axiom("System.Threading.Monitor.Exit — releases an exclusive lock on obj")
-@externStatic
-@externTarget("System.Threading.Monitor.Exit")
-func monitorExit[T](obj: in T): Unit = ()
 
 // ─── Rate limiting (token bucket) ────────────────────────────────────────────
 //
@@ -66,12 +47,9 @@ record WebRateEntry {
   var lastRefillMs: Long = 0i64
 }
 
-record WebRateLock {
-}
+val webRateLock: WsNet.WsLock = WsNet.newWsLock()
 
-val webRateLock: WebRateLock = WebRateLock()
-
-val webRateLimitMap: ConcurrentDict[String, WebRateEntry] = newConcurrentDict()
+val webRateLimitMap: Map[String, WebRateEntry] = newMap()
 
 /// Check whether a call from this endpoint is within the rate limit.
 /// Returns true (allow) or false (deny).  State is per-process and
@@ -83,21 +61,18 @@ pub func checkRateLimit(endpoint: in String, requestsPerMinute: in Int, burstSiz
   requires: burstSize > 0
 {
   val nowMs = nowEpochMillis()
-  monitorEnter(webRateLock)
+  WsNet.lockEnter(webRateLock)
   defer {
-    monitorExit(webRateLock)
+    WsNet.lockExit(webRateLock)
   }
 
-  val fullBucket = Resilience.newTokenBucket(requestsPerMinute, burstSize, nowMs)
-  var re: WebRateEntry = default()
-  if not cdTryGetValue(webRateLimitMap, endpoint, re) {
-    val newEntry = WebRateEntry(scaledTokens = fullBucket.scaledTokens, lastRefillMs = fullBucket.lastRefillMs)
-    val _ = cdTryAdd(webRateLimitMap, endpoint, newEntry)
-    var re2: WebRateEntry = default()
-    if cdTryGetValue(webRateLimitMap, endpoint, re2) {
-      re = re2
-    } else {
-      re = newEntry
+  val re = match mapGet(webRateLimitMap, endpoint) {
+    case Some(existing) -> existing
+    case None -> {
+      val fullBucket = Resilience.newTokenBucket(requestsPerMinute, burstSize, nowMs)
+      val created = WebRateEntry(scaledTokens = fullBucket.scaledTokens, lastRefillMs = fullBucket.lastRefillMs)
+      webRateLimitMap.add(endpoint, created)
+      created
     }
   }
 
@@ -113,19 +88,6 @@ pub func checkRateLimit(endpoint: in String, requestsPerMinute: in Int, burstSiz
 }
 
 // ─── Background worker dispatch (#5359) ────────────────────────────────────
-extern type BclTask = "System.Threading.Tasks.Task"
-
-/// `Task.Run(Action)` genuinely runs `action` on a thread-pool thread,
-/// concurrently with the caller — verified directly against this exact
-/// `() -> Unit` shape (a zero-arg, `Unit`-returning closure targets the
-/// non-generic `System.Action`, matched by a real BCL overload). This is
-/// narrower than `Std.Task.scopeSpawn`'s own `Task.Run(Action,
-/// CancellationToken)` binding, separately documented in `_kernel/task.l`
-/// as not invoking its closure on `--target dotnet` — that finding does not
-/// reproduce against the plain one-argument overload this calls.
-@externStatic
-@externTarget("System.Threading.Tasks.Task.Run")
-func taskRunAction(action: in () -> Unit): BclTask = ()
 
 /// Start `worker.tick()` running forever on a background thread-pool task,
 /// once every `intervalMs`. Fire-and-forget: the returned `Task` is
@@ -148,7 +110,7 @@ func taskRunAction(action: in () -> Unit): BclTask = ()
 /// already hardened against (#5261). A failing tick is logged and the
 /// loop keeps going on its next interval.
 pub func startWorkerLoop(intervalMs: in Int, worker: in Web.Worker): Unit {
-  val _ = taskRunAction(
+  WsNet.runBackground(
     { ->
       while true {
         sleepMillis(intervalMs)
@@ -170,7 +132,7 @@ pub func startWorkerLoop(intervalMs: in Int, worker: in Web.Worker): Unit {
 /// is invoked through its interface method, not a captured closure value (see
 /// `startWorkerLoop`).
 pub func spawnRequestJob(job: in Web.RequestJob): Unit {
-  val _ = taskRunAction({ -> job.run() })
+  WsNet.runBackground({ -> job.run() })
 }
 
 // ─── WebSocket upgrade (`Web.addWebSocket`, #7831) ───────────────────────────

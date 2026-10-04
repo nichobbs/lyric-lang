@@ -132,13 +132,17 @@ pub record CodegenUnit {
   methodCallArities: Map[String, Int]
 }
 
-/// A module-level `val`/`const` binding, normalized for native inlining
-/// (#5977). `ty` is the declared type when present (a `const` always has one;
+/// A module-level `val`/`const` binding. A literal initializer is inlined at
+/// each use site (#5977); any other initializer becomes a static global that a
+/// synthesised function (`mvInitFnName`, hoisted by the native bridge before
+/// monomorphisation) fills in before `main` runs. `ty` is the declared type when present (a `const` always has one;
 /// a `val` may not) — used as the expected type when lowering the initializer.
 pub record ModuleValDef {
   name: String
   init: Expr
   ty: Option[TypeExpr]
+  // The declaring package: a non-literal initializer's global is keyed by it.
+  pkg: String
 }
 
 /// Call-registry entry: how a resolvable callee lowers.  `isExternSym`
@@ -385,6 +389,12 @@ record Ctx {
   // Module-level `val`/`const` bindings by name (#5977 part 2), for use-site
   // inlining (native has no static-global storage yet).
   moduleVals: Map[String, ModuleValDef]
+  // The static globals referenced so far, in discovery order: each entry is the
+  // IR name of a hoisted initializer function (`mvInitFnName`), its global
+  // being `mv.<name>`, with its type in the parallel `mvInitTys`. Shared by
+  // every function context, like `globals`.
+  mvInits: List[String]
+  mvInitTys: List[NType]
   // Heap-type registries (module-wide, shared across functions).
   recordDefs: Map[String, NRecInfo]
   unionDefs: Map[String, NUnionInfo]
@@ -2101,7 +2111,98 @@ func loadLocal(ctx: in Ctx, insns: in List[NInsn], name: in String): NVal {
 // True iff `e` is a compile-time literal — possibly parenthesized, or a negated
 // numeric literal (`-1`, the common `val MIN: Int = -1` form) — the only
 // module-level initializer form native can inline at a use site (#5977).
-func isLiteralInit(e: in Expr): Bool {
+/// The hoisted function that computes a non-literal module-level `val`'s
+/// initial value (`Lyric.LlvmBridge.hoistModuleValInits` adds it, before
+/// monomorphisation, so generic initializers instantiate like any call).
+pub func mvInitFnName(name: in String): String {
+  "__lyric_mvinit_" + name
+}
+
+// Read a module-level `val` backed by a static global. The first reference
+// registers the global (zero-initialised) and its initializer for the
+// start-up function `synthInitGlobals` builds; the stored value is owned by
+// the global for the life of the process and loads borrow from it, like a
+// local slot.
+func loadModuleGlobal(ctx: in Ctx, insns: in List[NInsn], sig: in NFuncSig): NVal {
+  val ty = retTypeToN(ctx, sig.retTy)
+  val gname = "mv." + sig.irName
+  var known = false
+  for n in ctx.mvInits {
+    if n == sig.irName {
+      known = true
+    }
+  }
+  if not known {
+    ctx.mvInits.add(sig.irName)
+    ctx.mvInitTys.add(ty)
+    ctx.globals.add(
+      NGlobalDef(
+        name = gname,
+        linkage = "internal global",
+        tyStr = nTypeToIrString(ty),
+        initStr = "zeroinitializer",
+        align = 8
+      )
+    )
+  }
+  val dest = freshTmp(ctx)
+  insns.add(NLoad(dest = dest, ty = ty, ptr = NGlobal(name = gname)))
+  NVal(ty = ty, value = NLocal(name = dest))
+}
+
+// The referenced globals' initializer IR names (and types), ordered for
+// start-up: units last-to-first (the entry package is unit 0, bundled
+// dependencies follow it), each unit's `val`s in declaration order.
+func orderedModuleGlobalInits(ctx: in Ctx, units: in List[CodegenUnit], outIrs: in List[String], outTys: in List[NType]): Unit {
+  var ui = units.count - 1
+  while ui >= 0 {
+    val mvs = units[ui].moduleVals
+    for mv in mvs {
+      match mapGet(ctx.sigs, units[ui].pkgName + "." + mvInitFnName(mv.name) + "/0") {
+        case Some(sig) -> {
+          var idx = 0 - 1
+          var k = 0
+          while k < ctx.mvInits.count {
+            if ctx.mvInits[k] == sig.irName {
+              idx = k
+            }
+            k = k + 1
+          }
+          if idx >= 0 {
+            outIrs.add(ctx.mvInits[idx])
+            outTys.add(ctx.mvInitTys[idx])
+          }
+        }
+        case None -> ()
+      }
+    }
+    ui = ui - 1
+  }
+}
+
+// Start-up function: run each referenced global's initializer and store the
+// result, in the order given. `orderedModuleGlobalInits` supplies declaration
+// order: dependency packages before their dependents, and within a package
+// top to bottom, so a global whose initializer reads another declared earlier
+// sees it already set.
+func synthInitGlobals(name: in String, inits: in List[String], tys: in List[NType]): NFunc {
+  val body: List[NInsn] = newList()
+  body.add(NLabel(name = "entry"))
+  val noArgs: List[NArg] = newList()
+  var i = 0
+  while i < inits.count {
+    val tmp = "g" + i.toString()
+    body.add(NCall(dest = tmp, retTy = tys[i], fn = NGlobal(name = inits[i]), args = noArgs))
+    body.add(NStore(ty = tys[i], value = NLocal(name = tmp), ptr = NGlobal(name = "mv." + inits[i])))
+    i = i + 1
+  }
+  body.add(NRetVoid)
+  val params: List[NParam] = newList()
+  val attrs: List[String] = newList()
+  NFunc(name = name, params = params, retTy = NVoid, isPublic = false, isExtern = false, body = body, attributes = attrs)
+}
+
+pub func isLiteralInit(e: in Expr): Bool {
   match e.kind {
     case ELiteral(_) -> true
     case EParen(inner) -> isLiteralInit(inner)
@@ -2120,6 +2221,10 @@ func isLiteralInit(e: in Expr): Bool {
 // widening literal (e.g. `val N: Long = 5`) constructs at the declared width.
 func lowerModuleVal(ctx: in Ctx, insns: in List[NInsn], mv: in ModuleValDef): NVal {
   if not isLiteralInit(mv.init) {
+    match mapGet(ctx.sigs, mv.pkg + "." + mvInitFnName(mv.name) + "/0") {
+      case Some(sig) -> return loadModuleGlobal(ctx, insns, sig)
+      case None -> ()
+    }
     panic(
       "Lyric.LlvmCodegen: module-level '" + mv.name +
         "' has a non-literal initializer, which is not yet supported for --target native (only literal-initialized module val/const are inlined; #5977)"
@@ -13086,6 +13191,8 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     curOrigin = curOrigin,
     curRet = curRet,
     moduleVals = mod.moduleVals,
+    mvInits = mod.mvInits,
+    mvInitTys = mod.mvInitTys,
     recordDefs = mod.recordDefs,
     unionDefs = mod.unionDefs,
     caseRefs = mod.caseRefs,
@@ -13887,6 +13994,7 @@ func synthCMain(
   userMainIr: in String,
   mainIsAsync: in Bool,
   entryName: in String,
+  initGlobalsIr: in String,
 ): NFunc {
   val p8 = NPtr(pointee = NI8)
   val params: List[NParam] = newList()
@@ -13901,6 +14009,9 @@ func synthCMain(
   argArgs.add(NArg(ty = NPtr(pointee = NPtr(pointee = NI8)), value = NLocal(name = "argv")))
   body.add(NCallVoid(fn = NGlobal(name = "lyric_args_set"), args = argArgs))
   val noArgs: List[NArg] = newList()
+  if initGlobalsIr.length > 0 {
+    body.add(NCallVoid(fn = NGlobal(name = initGlobalsIr), args = noArgs))
+  }
   if mainIsAsync {
     body.add(NCall(dest = "task", retTy = p8, fn = NGlobal(name = userMainIr), args = noArgs))
     body.add(NCallVoid(fn = NGlobal(name = "lyric_task_block_on"), args = arg1(p8, NLocal(name = "task"))))
@@ -14053,6 +14164,8 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     curOrigin = newList(),
     curRet = newList(),
     moduleVals = moduleVals,
+    mvInits = newList(),
+    mvInitTys = newList(),
     recordDefs = emptyRecs,
     unionDefs = emptyUnions,
     caseRefs = emptyCases,
@@ -14183,7 +14296,15 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     ui = ui + 1
   }
   if mainIr.length > 0 {
-    fns.add(synthCMain(mainPkg, mainRet, mainIr, mainIsAsync, entryNameForTriple(triple)))
+    var initGlobalsIr = ""
+    if ctx.mvInits.count > 0 {
+      initGlobalsIr = "lyric_init_module_globals"
+      val orderedIrs: List[String] = newList()
+      val orderedTys: List[NType] = newList()
+      orderedModuleGlobalInits(ctx, units, orderedIrs, orderedTys)
+      fns.add(synthInitGlobals(initGlobalsIr, orderedIrs, orderedTys))
+    }
+    fns.add(synthCMain(mainPkg, mainRet, mainIr, mainIsAsync, entryNameForTriple(triple), initGlobalsIr))
   }
   // Coroutine plumbing lands only in async-using modules: the coro
   // intrinsics + scheduler declares, and the resume/destroy wrapper
@@ -14373,11 +14494,11 @@ pub func unitOfFile(pkgName: in String, file: in SourceFile): CodegenUnit {
       // failing an otherwise-unrelated compile at collection time.
       case IVal(decl) -> {
         match decl.pattern.kind {
-          case PBinding(vn, _) -> moduleVals.add(ModuleValDef(name = vn, init = decl.init, ty = decl.ty))
+          case PBinding(vn, _) -> moduleVals.add(ModuleValDef(name = vn, init = decl.init, ty = decl.ty, pkg = pkgName))
           case _ -> ()
         }
       }
-      case IConst(decl) -> moduleVals.add(ModuleValDef(name = decl.name, init = decl.init, ty = Some(value = decl.ty)))
+      case IConst(decl) -> moduleVals.add(ModuleValDef(name = decl.name, init = decl.init, ty = Some(value = decl.ty), pkg = pkgName))
       case IRecord(decl) -> {
         records.add(decl)
         collectRecordMethods(pkgName, decl, fns)

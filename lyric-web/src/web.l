@@ -89,6 +89,44 @@ import Std.Iter
 @externTarget("System.IO.Path.GetFullPath")
 func pathGetFullPath(path: in String): String = ()
 
+// `--target native`: lexical normalisation, the same contract as
+// `Path.GetFullPath` (no symlink resolution) — a relative path is taken from
+// the working directory, `.` segments and doubled separators vanish, and `..`
+// pops a segment (stopping at the root).
+@cfg(feature = "native")
+func pathGetFullPath(path: in String): String {
+  var absolute = path
+  if not path.startsWith("/") {
+    absolute = Env.currentDirectory() + "/" + path
+  }
+  val kept: List[String] = newList()
+  var segStart = 0
+  var i = 0
+  while i <= absolute.length {
+    if i == absolute.length or absolute.substring(i, 1) == "/" {
+      val seg = absolute.substring(segStart, i - segStart)
+      if seg == ".." {
+        if kept.count > 0 {
+          kept.removeAt(kept.count - 1)
+        }
+      } else if seg.length > 0 and seg != "." {
+        kept.add(seg)
+      }
+      segStart = i + 1
+    }
+    i = i + 1
+  }
+  var out = ""
+  for seg in kept {
+    out = out + "/" + seg
+  }
+  if out.length == 0 {
+    "/"
+  } else {
+    out
+  }
+}
+
 @cfg(feature = "jvm")
 extern type JCanonFile = "java.io.File"
 
@@ -1319,7 +1357,7 @@ pub func dispatch(router: in Router, req: in Request): Response {
 // recommends for aspect-instantiation (RequiresAuth/RateLimit/…), which
 // would otherwise sweep every `StreamingHandler` implementation into
 // row-constrained B'-mode aspects it has no matching fields for (#5993).
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 pub interface StreamingHandler {
   func streamHandle(req: in Request, w: in ResponseWriter): Unit
 }
@@ -1331,7 +1369,7 @@ pub interface StreamingHandler {
 /// (status + headers sent, `Transfer-Encoding: chunked` engaged) on that
 /// first write, and mutating them after that point is a contract
 /// violation, not silent.
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 pub record ResponseWriter {
   ctx: HttpContext
   var status: Int
@@ -1340,7 +1378,7 @@ pub record ResponseWriter {
   var stream: Option[HttpChunkedStream]
 }
 
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 func newResponseWriter(ctx: in HttpContext): ResponseWriter {
   val noHeaders: Map[String, String] = newMap()
   return ResponseWriter(ctx = ctx, status = 200, headers = noHeaders, committed = false, stream = None)
@@ -1348,7 +1386,7 @@ func newResponseWriter(ctx: in HttpContext): ResponseWriter {
 
 /// Set the response status code. Must be called before the first
 /// `writeChunk` (default: 200).
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 pub func writeStatus(w: in ResponseWriter, code: in Int): Unit
   requires: not w.committed
   requires: isValidStatus(code)
@@ -1360,7 +1398,7 @@ pub func writeStatus(w: in ResponseWriter, code: in Int): Unit
 /// "text/event-stream")`. Must be called before the first `writeChunk`.
 /// `Content-Type` is special-cased at commit time (the BCL response type
 /// exposes it as a dedicated property, not a regular header).
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 pub func writeHeader(w: in ResponseWriter, name: in String, value: in String): Unit
   requires: not w.committed
   requires: isHeaderToken(name)
@@ -1375,7 +1413,7 @@ pub func writeHeader(w: in ResponseWriter, name: in String, value: in String): U
 // headers (mutating writeStatus/writeHeader after commit is already
 // rejected by their `requires:` clause, so this only runs once in
 // practice, but writeChunk calls it unconditionally for simplicity).
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 func commitStream(w: in ResponseWriter): HttpChunkedStream {
   match w.stream {
     case Some(s) -> return s
@@ -1410,7 +1448,7 @@ func commitStream(w: in ResponseWriter): HttpChunkedStream {
 /// response (status/headers/chunked mode) on the first call. `Err`
 /// surfaces a broken connection (e.g. the client disconnected) instead of
 /// failing silently — stop producing more output when this returns `Err`.
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 pub func writeChunk(w: in ResponseWriter, data: in String): Result[Unit, String] {
   val s = commitStream(w)
   val bytes = utf8Encode(data)
@@ -1421,7 +1459,7 @@ pub func writeChunk(w: in ResponseWriter, data: in String): Result[Unit, String]
 // empty chunked body) and close the response. Called once per request by
 // the streaming accept loop after the handler returns, regardless of
 // whether the handler itself already stopped writing.
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 func finishStream(w: in ResponseWriter): Unit {
   val s = commitStream(w)
   endChunkedResponse(w.ctx, s)
@@ -1430,7 +1468,7 @@ func finishStream(w: in ResponseWriter): Unit {
 /// A single registered streaming route binding a method + URL pattern to
 /// a `StreamingHandler`. Mirrors `Route`, but kept as a separate table
 /// (see the section header above for why).
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 pub record StreamRoute {
   method: String
   pattern: String
@@ -1441,19 +1479,19 @@ pub record StreamRoute {
 /// `Handler`s. Build one with `emptyStreamingRoutes()` then
 /// `addStreamingGet`/`addStreamingPost`, and pass it to
 /// `serveStreaming`/`startStreaming` alongside a regular `Router`.
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 pub record StreamingRoutes {
   routes: slice[StreamRoute]
 }
 
 /// Empty streaming route table.
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 pub func emptyStreamingRoutes(): StreamingRoutes {
   val noRoutes: slice[StreamRoute] = []
   return StreamingRoutes(routes = noRoutes)
 }
 
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 func addStreamingRoute(
   sr: in StreamingRoutes, method: in String, pattern: in String, handler: in StreamingHandler
 ): StreamingRoutes {
@@ -1462,7 +1500,7 @@ func addStreamingRoute(
 }
 
 /// Register a streaming GET route.
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 pub func addStreamingGet(sr: in StreamingRoutes, pattern: in String, handler: in StreamingHandler): StreamingRoutes
   requires: isValidRoutePattern(pattern)
 {
@@ -1470,7 +1508,7 @@ pub func addStreamingGet(sr: in StreamingRoutes, pattern: in String, handler: in
 }
 
 /// Register a streaming POST route.
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 pub func addStreamingPost(sr: in StreamingRoutes, pattern: in String, handler: in StreamingHandler): StreamingRoutes
   requires: isValidRoutePattern(pattern)
 {
@@ -1482,7 +1520,7 @@ pub func addStreamingPost(sr: in StreamingRoutes, pattern: in String, handler: i
 // finish the stream, and report handled = true. `false` means the
 // caller should fall through to the ordinary `dispatch`/`writeResponse`
 // path.
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 func dispatchStreaming(routes: in slice[StreamRoute], req: in Request, ctx: in HttpContext): Bool {
   var i = 0
   while i < routes.length {
@@ -1518,14 +1556,14 @@ func dispatchStreaming(routes: in slice[StreamRoute], req: in Request, ctx: in H
 // with it. Needed because `StreamingAwareDispatchHandler` (below) has to
 // return *some* `Response` to satisfy `Handler`'s signature so it can
 // run inside the same `MiddlewareChain` regular routes use.
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 func streamedResponseSentinel(): Response {
   val empty: Map[String, String] = newMap()
   val noBytes: slice[Byte] = []
   return Response(status = -1, contentType = "", bodyBytes = noBytes, headers = empty)
 }
 
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 func isStreamedResponse(resp: in Response): Bool {
   return resp.status == -1
 }
@@ -1547,14 +1585,14 @@ func isStreamedResponse(resp: in Response): Bool {
 // already on the wire — this only fixes pre-processing/short-circuiting
 // middleware (which is what provides actual protection); the residual
 // gap is called out in the README.
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 record StreamingAwareDispatchHandler {
   routes: slice[Route]
   streamingRoutes: slice[StreamRoute]
   ctx: HttpContext
 }
 
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 impl Handler for StreamingAwareDispatchHandler {
   func handle(req: in Request): Response {
     if dispatchStreaming(self.streamingRoutes, req, self.ctx) {
@@ -1667,7 +1705,7 @@ pub func parseCorsMaxAge(maxAgeStr: in String, defaultValue: in Int): Int {
 // dotnet kernel — the split here is a server-architecture choice, not a
 // kernel-surface gap).  All five items are therefore dotnet-only; erased
 // for jvm builds by Lyric.Cfg before type-checking.
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 func headerValueOr(rawHeaders: in Map[String, String], name: in String, fallback: in String): String {
   match mapGet(rawHeaders, name) {
     case Some(value) -> return value
@@ -1675,7 +1713,7 @@ func headerValueOr(rawHeaders: in Map[String, String], name: in String, fallback
   }
 }
 
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 func normalizeHeaders(rawHeaders: in Map[String, String]): Map[String, String] {
   val headers: Map[String, String] = newMap()
   val rawNames = mapKeys(rawHeaders).toArray()
@@ -1689,7 +1727,7 @@ func normalizeHeaders(rawHeaders: in Map[String, String]): Map[String, String] {
   return headers
 }
 
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 func buildRequest(ctx: in HttpContext): Request {
   val method = requestMethod(ctx).toUpper()
   val path = requestPath(ctx)
@@ -1710,7 +1748,7 @@ func buildRequest(ctx: in HttpContext): Request {
 // A `GET` to a mounted WebSocket endpoint's path goes to that endpoint
 // (`addWebSocket`), before middleware and route dispatch. Returns whether the
 // request was taken.
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 func serveWebSocketUpgrade(router: in Router, ctx: in HttpContext): Bool {
   if router.webSockets.length == 0 {
     return false
@@ -1727,7 +1765,7 @@ func serveWebSocketUpgrade(router: in Router, ctx: in HttpContext): Bool {
   }
 }
 
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 func writeResponse(ctx: in HttpContext, resp: in Response): Unit {
   val contentType = if resp.contentType.length == 0 { "text/plain" } else { resp.contentType }
   respondBytesWithHeaders(ctx, resp.status, contentType, resp.bodyBytes, resp.headers)
@@ -1737,7 +1775,7 @@ func writeResponse(ctx: in HttpContext, resp: in Response): Unit {
 /// loops (#7997). An interface rather than a closure for the same reason
 /// `Worker` is: a closure-typed value cannot be invoked from inside another
 /// closure on this target, but an interface method can.
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 @stable(since = "0.3")
 pub interface RequestJob {
   func run(): Unit
@@ -1746,7 +1784,7 @@ pub interface RequestJob {
 // Serves one request for `serveStreaming`/`serve`. The per-request `Bug`
 // isolation (#5261, #6222) lives here, inside the task, so a failure on one
 // request still cannot stop the listener or any other in-flight request.
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 record PlainRequestJob {
   router: Router
   streaming: StreamingRoutes
@@ -1754,7 +1792,7 @@ record PlainRequestJob {
   label: String
 }
 
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 impl RequestJob for PlainRequestJob {
   func run(): Unit {
     val ctx = self.ctx
@@ -1786,14 +1824,14 @@ impl RequestJob for PlainRequestJob {
 }
 
 // Serves one request for `serveTls`.
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 record TlsRequestJob {
   router: Router
   ctx: HttpContext
   label: String
 }
 
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 impl RequestJob for TlsRequestJob {
   func run(): Unit {
     val ctx = self.ctx
@@ -1837,7 +1875,7 @@ impl RequestJob for TlsRequestJob {
 /// this keeps the accept-loop/crash-isolation skeleton (#5261) in one
 /// place instead of duplicated across both entry points.
 @stable(since = "0.2")
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 pub func serve(router: in Router, host: in String, port: in Int): Unit
   requires: host.length > 0
   requires: port >= 1
@@ -1975,7 +2013,7 @@ pub func tlsServerConfigFromWebTls(cfg: in WebTls): Result[Std.Tls.TlsServerConf
 /// end-to-end is out of scope here (the transport advertises only `http/1.1`;
 /// the engine's h2 FSM + ALPN wiring are issue #5889).
 @stable(since = "0.3")
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 pub func serveTls(
   router: in Router, host: in String, port: in Int, tls: in Std.Tls.TlsServerConfig
 ): Result[Unit, ServeTlsError]
@@ -2097,7 +2135,7 @@ pub func serveTls(
 /// own header comment — that finding predates an unrelated MSIL fix and no
 /// longer reproduces with a plain `Task.Run(Action)`, verified directly
 /// against this exact call shape).
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 func startWorkers(router: in Router): Unit {
   for w in router.workers {
     HttpKernel.startWorkerLoop(w.intervalMs, w.handler)
@@ -2106,7 +2144,7 @@ func startWorkers(router: in Router): Unit {
 
 /// dotnet-only (see `StreamingHandler`'s doc comment).
 @stable(since = "0.3")
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 pub func serveStreaming(router: in Router, streaming: in StreamingRoutes, host: in String, port: in Int): Unit
   requires: host.length > 0
   requires: port >= 1
@@ -2187,7 +2225,7 @@ pub func start(router: in Router): Unit {
 /// Like `start`, but also serves `streaming`'s routes — see
 /// `serveStreaming`. dotnet-only (see `StreamingHandler`'s doc comment).
 @stable(since = "0.3")
-@cfg(feature = "dotnet")
+@cfg(any(feature = "dotnet", feature = "native"))
 pub func startStreaming(router: in Router, streaming: in StreamingRoutes): Unit {
   val (routerWithCors, host, port) = resolveStartConfig(router)
   serveStreaming(routerWithCors, streaming, host, port)
