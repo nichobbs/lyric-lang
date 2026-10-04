@@ -78,3 +78,9 @@ test "a generic case construction argument takes its type arguments from the cal
     case Raw(_) -> assertTrue(false, "unexpected Raw")
   }
 }
+
+test "explicit type arguments on a stdlib generic bundle it" {
+  val o: Option[Int] = Some(value = 3)
+  assertTrue(isSome[Int](o), "isSome[Int] resolves and runs")
+  assertEqualInt(unwrapOr[Int](o, 0), 3, "unwrapOr[Int]")
+}

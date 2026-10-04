@@ -112,6 +112,29 @@ func collectCallKeys(e: in Expr, acc: in List[String]): Unit {
       if key.length > 0 {
         acc.add(key)
       }
+      // `name[T](args)`: a call with explicit type arguments names `name`.
+      match fn.kind {
+        case EIndex(ir, _) -> match ir.kind {
+          case EPath(ip) -> {
+            if ip.segments.count == 1 {
+              acc.add(ip.segments[0] + "/" + args.count.toString())
+            }
+          }
+          case _ -> {
+          }
+        }
+        case ETypeApp(tf, _) -> match tf.kind {
+          case EPath(tp) -> {
+            if tp.segments.count == 1 {
+              acc.add(tp.segments[0] + "/" + args.count.toString())
+            }
+          }
+          case _ -> {
+          }
+        }
+        case _ -> {
+        }
+      }
       // A method-call receiver is an expression too (scalar methods
       // resolve without the registry, so an unresolvable key is fine).
       match fn.kind {
