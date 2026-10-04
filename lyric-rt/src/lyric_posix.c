@@ -493,6 +493,23 @@ LyricString* lyric_uuid_v4(void) {
     return lyric_string_from_literal((const uint8_t*)out, 36);
 }
 
+LyricList* lyric_secure_random_list(int64_t n) {
+    if (n < 0) {
+        lyric_panic_msg("secure random byte count must not be negative", "lyric_posix.c", __LINE__);
+    }
+    uint8_t* buf = (uint8_t*)malloc(n > 0 ? (size_t)n : 1);
+    if (buf == NULL) {
+        lyric_panic_msg("out of memory drawing secure random bytes", "lyric_posix.c", __LINE__);
+    }
+    if (lyric_secure_random(buf, n) != 0) {
+        free(buf);
+        lyric_panic_msg("cannot draw entropy from the OS", "lyric_posix.c", __LINE__);
+    }
+    LyricList* list = lyric_list_from_bytes(buf, n);
+    free(buf);
+    return list;
+}
+
 int32_t lyric_secure_random(uint8_t* buf, int64_t n) {
 #if defined(__APPLE__) || defined(__wasi__)
     /* getentropy caps each call at 256 bytes. */

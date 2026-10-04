@@ -442,6 +442,10 @@ int64_t lyric_monotonic_nanos(void);
  * success, -1 on failure.  getrandom(2) on Linux, getentropy on macOS. */
 int32_t lyric_secure_random(uint8_t* buf, int64_t n);
 
+/* A fresh list of `n` bytes from the OS entropy source; panics when the
+ * source fails (a broken CSPRNG is not recoverable). */
+LyricList* lyric_secure_random_list(int64_t n);
+
 /* A fresh version-4 (random) UUID as a fresh rc=1 LyricString in the
  * canonical lowercase hyphenated 36-char form — the native Uuid
  * representation (D-N-026).  Panics if the entropy source fails. */
