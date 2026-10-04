@@ -12803,7 +12803,12 @@ func emitConstructorTest(
   val ui = match unionInfoOfType(ctx, sv0.ty) {
     case Some(u) -> u
     case None -> panic(
-      "Lyric.LlvmCodegen: constructor pattern '" + joined + "' matched against a non-union value"
+      "Lyric.LlvmCodegen: constructor pattern '" + joined +
+        "' matched against a non-union value (in " +
+        ctx.curPkg[0] +
+        ", scrutinee type " +
+        nTypeToIrString(sv0.ty) +
+        ")"
     )
   }
   // Resolve the case by name within the scrutinee's union: this covers
