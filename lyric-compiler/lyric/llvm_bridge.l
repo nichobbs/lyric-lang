@@ -954,6 +954,7 @@ pub func compileToNativeWithShape(
   val bodyIndex: Map[String, FunctionDecl] = newMap()
   val pkgOfId: Map[String, String] = newMap()
   indexFileFns(userFile, bodyIndex, pkgOfId)
+  seedImplMethods(userFile, bodyIndex, pkgOfId, reachable, fnWorklist)
   var bi2 = 0
   while bi2 < toBundle.count {
     indexFileFns(toBundle[bi2], bodyIndex, pkgOfId)
@@ -1418,6 +1419,7 @@ pub func compileProjectToNativeWithShape(
   var ifi = 0
   while ifi < ownFiles.count {
     indexFileFns(ownFiles[ifi], bodyIndex, pkgOfId)
+    seedImplMethods(ownFiles[ifi], bodyIndex, pkgOfId, reachable, fnWorklist)
     ifi = ifi + 1
   }
   var bi2 = 0
@@ -2245,6 +2247,41 @@ func registerBareTrailingSegment(
 func addKey(m: in Map[String, String], k: in String, v: in String): Unit {
   if not m.containsKey(k) {
     m.add(k, v)
+  }
+}
+
+// An own package's `impl` method bodies are lowered whole (`unitOf`'s
+// `collectImplMethods`), so what they call must be reachable too: index each
+// method under its lowered name and seed the walk with it. Without this a
+// stdlib function called only from an impl method (`Std.HttpServer.nextContext`
+// from an accept loop's `step`) never reaches the bundle.
+func seedImplMethods(
+  f: in SourceFile,
+  bodyIndex: in Map[String, FunctionDecl],
+  pkgOfId: in Map[String, String],
+  reachable: in Map[String, Bool],
+  fnWorklist: in List[String],
+): Unit {
+  val pkg = dottedPath(f.packageDecl.path)
+  for item in f.items {
+    match item.kind {
+      case IImpl(decl) -> {
+        val methods: List[FunctionDecl] = newList()
+        collectImplMethods(pkg, decl, methods)
+        for fn in methods {
+          val id = pkg + "." + fn.name + "/" + fn.params.count.toString()
+          if not bodyIndex.containsKey(id) {
+            bodyIndex.add(id, fn)
+            pkgOfId.add(id, pkg)
+          }
+          if not reachable.containsKey(id) {
+            reachable.add(id, true)
+            fnWorklist.add(id)
+          }
+        }
+      }
+      case _ -> ()
+    }
   }
 }
 
