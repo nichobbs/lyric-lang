@@ -485,7 +485,8 @@ except at the host edge:
   used.
 - **`component` shape:** `Async[T]` maps to WIT `future<T>` once the
   Component Model async ABI is stable (Q-JS-006). Until then `async func`
-  exports use a callback-style or synchronous-subset lowering with a warning.
+  exports use the synchronous-subset lowering with a `W0041` note (shipped,
+  D-progress-1043): the wrapper drives the scheduler until the task completes.
 
 No separate backend pass is needed (the earlier revision's claim that the
 MSIL/JVM state-machine lowering needed an unrelated WASM pass no longer
@@ -536,9 +537,10 @@ set; decide the registry model before the 20th package.
 map to the same Lyric name. Suffix disambiguator, or hard `lyric restore`
 error?
 
-**Q-JS-006 — WIT async stability.** Gate the `component` async export on the
-Component Model async ABI stabilising, or ship the callback/synchronous
-subset first with a warning?
+**Q-JS-006 — WIT async stability.** *Resolved for v1 in D-progress-1043: the
+synchronous subset ships (an `async func` export is a blocking WIT function,
+with a `W0041` note); `future<T>`/`stream<T>` wait for the Component Model
+async ABI to stabilise.*
 
 **Q-JS-007 — Linear-memory limits.** Default stack size and maximum heap for
 the `module` shape; whether `lyric_alloc` failure traps or returns an error.

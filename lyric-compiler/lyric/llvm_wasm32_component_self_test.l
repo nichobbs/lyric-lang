@@ -1111,3 +1111,95 @@ test "wasm32 component: --js-bindings without jco is N0022, not a crash" {
   assertFalse(ok, "a build that cannot run jco must fail")
   assertTrue(File.fileExists(Path.join(dir, "prog.wasm")), "the component itself was still produced")
 }
+
+val asyncComponentProgram: String = r#"package Probe
+
+import Std.Time
+
+pub async func later(x: Int, ms: Int): Int {
+  Time.sleepMillis(ms)
+  x + 1
+}
+
+pub async func tag(s: String, ms: Int): String {
+  Time.sleepMillis(ms)
+  s + "!"
+}
+
+pub async func immediate(): Int {
+  41
+}
+
+pub async func wide(x: Long): Long {
+  Time.sleepMillis(5)
+  x * 2i64
+}
+
+pub async func pair(n: Int): Option[Int] {
+  Time.sleepMillis(5)
+  if n > 0 {
+    Some(value = n * 2)
+  } else {
+    None
+  }
+}
+
+pub func plain(x: Int): Int {
+  x + 100
+}
+"#
+
+test "wasm32 component: an async export runs to completion inside the call, sleeping out its timers" {
+  val dir = buildComponentOf(asyncComponentProgram)
+  val wasm = Path.join(dir, "prog.wasm")
+  val wit = match File.readText(Path.join(dir, "prog.wit")) { case Ok(t) -> t; case Err(_) -> "" }
+  assertTrue(
+    Str.contains(wit, "later: func(x: s32, ms: s32) -> s32"),
+    "an async export is an ordinary WIT function: " + wit
+  )
+  val vargs: List[String] = newList()
+  vargs.add("validate")
+  vargs.add(wasm)
+  val v = run(envOrPanic("WASM_TOOLS"), vargs)
+  assertTrue(v.exitCode == 0, "wasm-tools validate: " + v.stderr)
+  val outDir = Path.join(dir, "js")
+  val jargs: List[String] = newList()
+  jargs.add("transpile")
+  jargs.add(wasm)
+  jargs.add("-o")
+  jargs.add(outDir)
+  val j = run(envOrPanic("JCO"), jargs)
+  assertTrue(j.exitCode == 0, "jco transpile: " + j.stderr)
+  val lnargs: List[String] = newList()
+  lnargs.add("-s")
+  lnargs.add(envOrPanic("LYRIC_JCO_NODE_MODULES"))
+  lnargs.add(Path.join(dir, "node_modules"))
+  val _ln = run("ln", lnargs)
+  val script = r"import * as m from './js/prog.js';
+const p = m.probe;
+const t0 = performance.now();
+const v = p.later(41, 60);
+const dt = performance.now() - t0;
+console.log('later=' + v + ' waited=' + (dt >= 50));
+console.log('tag=' + p.tag('wörld', 10));
+console.log('immediate=' + p.immediate());
+console.log('wide=' + p.wide(3000000000n));
+console.log('pair=' + p.pair(4) + ',' + p.pair(0));
+console.log('plain=' + p.plain(1));
+"
+  val scriptPath = Path.join(dir, "run.mjs")
+  val _s = File.writeText(scriptPath, script)
+  val nargs: List[String] = newList()
+  nargs.add(scriptPath)
+  val n = run(Environment.getVarOrDefault("NODE", "node"), nargs)
+  assertTrue(n.exitCode == 0, "node: " + n.stderr + n.stdout)
+  assertTrue(
+    Str.contains(n.stdout, "later=42 waited=true"),
+    "the call blocked for its sleep and returned the value: " + n.stdout
+  )
+  assertTrue(Str.contains(n.stdout, "tag=wörld!"), "String argument and result through a task: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "immediate=41"), "an async func that never suspends: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "wide=6000000000"), "Long result: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "pair=8,undefined"), "an Option result through a task: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "plain=101"), "a sync export beside the async ones: " + n.stdout)
+}

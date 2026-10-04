@@ -1712,6 +1712,11 @@ func linkAndEmitNative(
     if isComponent {
       clangArgs.add("-mexec-model=reactor")
       clangArgs.add("-Wl,-z,stack-size=" + shapeStackSize(spec))
+      // An async export is driven by the scheduler entry, which nothing in Lyric
+      // code references, so force its archive member into the link.
+      if componentHasAsync(componentPkgs) {
+        clangArgs.add("-Wl,--undefined=lyric_wasm_poll")
+      }
     }
   } else if triple.length > 0 {
     clangArgs.add("--target=" + triple)
