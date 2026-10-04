@@ -23,6 +23,11 @@ static void* fail_tls(void) {
     return NULL;
 }
 
+LyricString* lyric_sock_peer_string(int32_t fd) {
+    (void)fd;
+    return lyric_string_from_literal((const uint8_t*)"", 0);
+}
+
 int32_t lyric_sock_connect(const char* host, int32_t port) {
     (void)host; (void)port;
     return fail_sock();

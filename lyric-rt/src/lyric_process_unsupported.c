@@ -152,3 +152,8 @@ int32_t lyric_thread_join(int64_t tid, void** retval) {
     (void)tid; (void)retval;
     return ESRCH;
 }
+
+int32_t lyric_thread_spawn_detached(void* (*start)(void*), void* arg) {
+    (void)start; (void)arg;
+    return EAGAIN;
+}

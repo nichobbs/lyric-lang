@@ -534,4 +534,32 @@ int32_t lyric_thread_create(int64_t* tid, void* (*start)(void*), void* arg) {
 int32_t lyric_thread_join(int64_t tid, void** retval) {
     return (int32_t)pthread_join((pthread_t)(uintptr_t)tid, retval);
 }
+
+typedef struct {
+    void* (*start)(void*);
+    void* arg;
+} lyric_detached_start;
+
+static void* lyric_detached_entry(void* p) {
+    lyric_detached_start s = *(lyric_detached_start*)p;
+    free(p);
+    s.start(s.arg);
+    lyric_release(s.arg);
+    return NULL;
+}
+
+int32_t lyric_thread_spawn_detached(void* (*start)(void*), void* arg) {
+    lyric_detached_start* s = (lyric_detached_start*)malloc(sizeof *s);
+    if (s == NULL) return ENOMEM;
+    s->start = start;
+    s->arg = arg;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    pthread_t t;
+    int rc = pthread_create(&t, &attr, lyric_detached_entry, s);
+    pthread_attr_destroy(&attr);
+    if (rc != 0) free(s);
+    return (int32_t)rc;
+}
 #endif

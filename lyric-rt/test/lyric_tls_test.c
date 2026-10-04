@@ -226,6 +226,32 @@ static void test_plain_roundtrip(void) {
     lyric_sock_close(listen_fd);
 }
 
+/* lyric_sock_peer_string reports the connected peer as "ip:port", and "" for
+ * a descriptor it cannot resolve. */
+static void test_sock_peer_string(void) {
+    int listen_fd = lyric_sock_listen("127.0.0.1", 0, 16);
+    CHECK(listen_fd >= 0);
+    int port = lyric_sock_local_port(listen_fd);
+    int client = lyric_sock_connect("127.0.0.1", port);
+    CHECK(client >= 0);
+    int server = lyric_sock_accept(listen_fd);
+    CHECK(server >= 0);
+
+    LyricString* peer = lyric_sock_peer_string(server);
+    char want_prefix[] = "127.0.0.1:";
+    CHECK(lyric_string_len(peer) > (int64_t)strlen(want_prefix));
+    CHECK(memcmp(LYRIC_STRING_DATA(peer), want_prefix, strlen(want_prefix)) == 0);
+    lyric_release(peer);
+
+    LyricString* none = lyric_sock_peer_string(-1);
+    CHECK(lyric_string_len(none) == 0);
+    lyric_release(none);
+
+    lyric_sock_close(server);
+    lyric_sock_close(client);
+    lyric_sock_close(listen_fd);
+}
+
 /* ── Portable accept() interrupt (issue #6806) ────────────────────────── */
 
 /* lyric_sock_accept_interruptible must still accept a real connection
@@ -1106,6 +1132,7 @@ static void test_tls_read_timeout(void) {
 
 int main(void) {
     test_plain_roundtrip();
+    test_sock_peer_string();
     test_alpn_string_null_conn();
     test_sock_bytes_roundtrip();
     test_sock_write_bytes_edge_cases();

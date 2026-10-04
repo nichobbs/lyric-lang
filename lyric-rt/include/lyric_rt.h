@@ -407,6 +407,13 @@ void lyric_sem_destroy(void* s);
 int32_t lyric_thread_create(int64_t* tid, void* (*start)(void*), void* arg);
 int32_t lyric_thread_join(int64_t tid, void** retval);
 
+/* Start `start(arg)` on a detached thread nobody joins.  The caller retains
+ * `arg` (a Lyric closure) first; the thread releases it after `start`
+ * returns, so a fire-and-forget background task neither leaks its closure
+ * nor needs a join.  Returns 0 on success or an errno value, in which case
+ * the thread never ran and the caller still owns its retain. */
+int32_t lyric_thread_spawn_detached(void* (*start)(void*), void* arg);
+
 /* Milliseconds since the Unix epoch (CLOCK_REALTIME). */
 int64_t lyric_epoch_millis(void);
 /* Nanoseconds since the Unix epoch (CLOCK_REALTIME) — the native
@@ -908,6 +915,11 @@ int64_t lyric_sock_write(int32_t fd, const uint8_t* buf, int64_t n);
 /* close(2) the fd.  Returns 0 on success, -1 on failure.  No-op on a
  * negative fd. */
 int32_t lyric_sock_close(int32_t fd);
+
+/* The peer's address of a connected socket as "ip:port" ("[ip]:port" for
+ * IPv6), or "" when it cannot be determined (closed fd, unsupported family).
+ * Best effort, for diagnostics. */
+LyricString* lyric_sock_peer_string(int32_t fd);
 
 /* LyricList[Byte] bridging for `Std.TcpHost`'s `hostRead`/`hostWrite`
  * (issue #6103 item C): one 64-bit slot per byte, scalar elements
