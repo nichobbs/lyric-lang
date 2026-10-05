@@ -3156,7 +3156,18 @@ func checkProtectedMemberBodies(
           selfTy
         )
       }
-      case PMInvariant(inv) -> checkProtectedInvariant(tbl, sigs, diag, inv, ownerGenerics, fieldLocals, selfTy)
+      case PMInvariant(inv) -> {
+        // The invariant sees the type's value generic parameters as `Int`
+        // constants, like a member body does.
+        val invLocals: List[LocalBinding] = newList()
+        for fl in fieldLocals {
+          invLocals.add(fl)
+        }
+        for vp in valueGenericNames(decl.generics) {
+          invLocals.add(LocalBinding(name = vp, ty = TyPrim(pt = PtInt), isMutable = false))
+        }
+        checkProtectedInvariant(tbl, sigs, diag, inv, ownerGenerics, invLocals, selfTy)
+      }
       case _ -> {
       }
     }

@@ -86,3 +86,57 @@ test "a type and a value parameter together" {
   n.put(9i64)
   assertTrue(n.first() == 9i64, "a second instantiation")
 }
+
+// A barrier and an invariant that name `N`: each length has its own copy of
+// both, with the length substituted.
+protected type Mailbox[N: Nat] {
+  var slots: array[N, Int]
+  var used: Int = 0
+  invariant: used >= 0 and used <= N
+  entry put(v: in Int): Unit
+    when: used < N
+  {
+    slots[used] = v
+    used = used + 1
+  }
+  entry take(): Int
+    when: used > 0
+  {
+    used = used - 1
+    slots[used]
+  }
+  func pending(): Int = used
+}
+
+test "a barrier and an invariant name the length" {
+  val a: array[2, Int] = [0, 0]
+  val b: array[3, Int] = [0, 0, 0]
+  val small = Mailbox(slots = a)
+  val big = Mailbox(slots = b)
+  small.put(1)
+  small.put(2)
+  big.put(7)
+  big.put(8)
+  big.put(9)
+  assertEqualInt(small.pending() + big.pending(), 5, "both filled to their own length")
+  assertEqualInt(small.take(), 2, "last in, first out")
+  assertEqualInt(big.take(), 9, "the longer mailbox")
+  assertEqualInt(small.pending() + big.pending(), 3, "after one take each")
+}
+
+func newRing(): Ring[3] {
+  val a: array[3, Int] = [0, 0, 0]
+  Ring(buf = a)
+}
+
+func fillRing(r: in Ring[3], v: in Int): Unit {
+  r.push(v)
+}
+
+test "a function takes and returns an instance of one length" {
+  val r = newRing()
+  fillRing(r, 6)
+  fillRing(r, 7)
+  assertEqualInt(r.total(), 13, "the function's instance is the caller's")
+  assertEqualInt(r.capacity(), 3, "its length")
+}
