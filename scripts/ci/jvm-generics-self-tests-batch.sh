@@ -101,6 +101,7 @@ for t in \
   lyric-compiler/lyric/expected_type_propagation_self_test.l \
   lyric-compiler/lyric/generic_ctor_open_arg_self_test.l \
   lyric-compiler/lyric/generic_ctor_widening_self_test.l \
+  lyric-compiler/lyric/named_arg_eval_order_self_test.l \
   lyric-compiler/lyric/generic_ctor_unsigned_widening_self_test.l \
   lyric-compiler/lyric/overflow_self_test.l \
   lyric-compiler/lyric/overflow_panic_self_test.l \

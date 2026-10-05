@@ -1769,16 +1769,18 @@ func noParamDefaults(n: in Int): List[Option[Expr]] {
   ds
 }
 
-/// The fewest arguments a call to `sig` may write: the parameters before the
-/// trailing run of defaulted ones.
+/// The fewest arguments a call to `sig` may write: its parameters without a
+/// default.  A defaulted parameter may be left out wherever it is, the
+/// arguments after it being named (`mid(a = 1, b = 2)` for
+/// `func mid(a: Int, d: Int = 4, b: Int)`).
 func requiredArgCount(sig: in NFuncSig): Int {
-  var n = sig.paramDefaults.count
-  while n > 0 {
-    match sig.paramDefaults[n - 1] {
-      case Some(_) -> {
-        n = n - 1
+  var n = 0
+  for d in sig.paramDefaults {
+    match d {
+      case Some(_) -> ()
+      case None -> {
+        n = n + 1
       }
-      case None -> return n
     }
   }
   n
@@ -1918,9 +1920,9 @@ func buildSigs(units: in List[CodegenUnit]): Map[String, NFuncSig] {
     }
     ui2 = ui2 + 1
   }
-  // A call that leaves out trailing defaulted parameters writes fewer
-  // arguments than the declaration has: register each function under every
-  // shorter arity it accepts (#7985).  This runs after every exact arity is
+  // A call that leaves out defaulted parameters writes fewer arguments than
+  // the declaration has: register each function under every shorter arity it
+  // accepts (#7985).  This runs after every exact arity is
   // registered, so an overload declared with exactly the written arity wins.
   var di = 0
   while di < defaulted.count {
@@ -3995,31 +3997,12 @@ func bindCallArgs(
 ): Unit {
   val vals: List[NVal] = newList()
   val slots: List[Int] = newList()
+  val argSlot = nativeArgSlots(sig.paramNames, firstSlot, args, sig.irName)
   var i = 0
-  var nextPositional = firstSlot
   while i < args.count {
-    match args[i] {
-      case CAPositional(ex) -> {
-        vals.add(lowerArgAgainst(ctx, insns, sig, ex, nextPositional))
-        slots.add(nextPositional)
-        nextPositional = nextPositional + 1
-      }
-      case CANamed(argName, value, _) -> {
-        var slot = -1
-        var pi = firstSlot
-        while pi < sig.paramNames.count {
-          if sig.paramNames[pi] == argName {
-            slot = pi
-          }
-          pi = pi + 1
-        }
-        if slot < 0 {
-          panic("Lyric.LlvmCodegen: named argument '" + argName + "' does not match a parameter of '" + sig.irName + "'")
-        }
-        vals.add(lowerArgAgainst(ctx, insns, sig, value, slot))
-        slots.add(slot)
-      }
-    }
+    val slot = argSlot[i]
+    vals.add(lowerArgAgainst(ctx, insns, sig, nativeCallArgExpr(args[i]), slot))
+    slots.add(slot)
     i = i + 1
   }
   var pi2 = firstSlot
@@ -8966,6 +8949,41 @@ func lowerNativeByteAccess(ctx: in Ctx, insns: in List[NInsn], name: in String, 
   NVal(ty = NVoid, value = NUndef(ty = NVoid))
 }
 
+/// The parameter each of a call's arguments binds to, indexed into
+/// `paramNames` (whose first `skip` are not among `args`): each named
+/// argument takes the parameter it names, then the positional ones fill the
+/// free parameters left to right, as the type checker pairs them
+/// (`Lyric.Parser.pairCallArgs`).  The checker rejects every call whose
+/// arguments cannot be paired (T0042), so reaching here with one is a
+/// compiler bug.
+func nativeArgSlots(paramNames: in List[String], skip: in Int, args: in List[CallArg], callee: in String): List[Int] {
+  val paired: List[Int] = match pairCallArgs(paramNames, skip, args) {
+    case Ok(p) -> p
+    case Err(why) -> {
+      panic(
+        "Lyric.LlvmCodegen: the arguments of a call to '" + callee +
+          "' cannot be paired with its parameters, which the type checker should have rejected (T0042): " +
+          why
+      )
+      newList()
+    }
+  }
+  val argSlot: List[Int] = newList()
+  var ai = 0
+  while ai < args.count {
+    argSlot.add(-1)
+    ai = ai + 1
+  }
+  var k = 0
+  while k < paired.count {
+    if paired[k] >= 0 {
+      argSlot[paired[k]] = skip + k
+    }
+    k = k + 1
+  }
+  argSlot
+}
+
 func nativeCallArgExpr(a: in CallArg): Expr {
   match a {
     case CAPositional(ex) -> ex
@@ -10436,39 +10454,14 @@ func lowerGenericFnCallWith(
   val pkg = match mapGet(ctx.genericFnPkg, gkey) { case Some(pk) -> pk; case None -> ctx.curPkg[0] }
   val nParams = fd.params.count
   // Map args to parameter slots.
-  val argSlot: List[Int] = newList()
+  val fdParamNames: List[String] = newList()
+  for fp in fd.params {
+    fdParamNames.add(fp.name)
+  }
+  val argSlot = nativeArgSlots(fdParamNames, preVals.count, args, fd.name)
   val argExpr: List[Expr] = newList()
-  var nextPositional = preVals.count
-  var ai = 0
-  while ai < args.count {
-    match args[ai] {
-      case CANamed(name, value, _) -> {
-        var slot = 0 - 1
-        var pj = preVals.count
-        while pj < nParams {
-          if fd.params[pj].name == name {
-            slot = pj
-          }
-          pj = pj + 1
-        }
-        if slot < 0 {
-          panic(
-            "Lyric.LlvmCodegen: named argument '" + name + "' does not match a parameter of generic function '" + fd.name + "'"
-          )
-        }
-        argSlot.add(slot)
-        argExpr.add(value)
-      }
-      case CAPositional(ex) -> {
-        if nextPositional >= nParams {
-          panic("Lyric.LlvmCodegen: too many arguments calling generic function '" + fd.name + "'")
-        }
-        argSlot.add(nextPositional)
-        argExpr.add(ex)
-        nextPositional = nextPositional + 1
-      }
-    }
-    ai = ai + 1
+  for a in args {
+    argExpr.add(nativeCallArgExpr(a))
   }
   // Lower per parameter order.
   val rawVals: List[NVal] = newList()
@@ -15259,7 +15252,13 @@ pub func unitOfFile(pkgName: in String, file: in SourceFile): CodegenUnit {
       case IConst(decl) -> moduleVals.add(
         ModuleValDef(name = decl.name, init = decl.init, ty = Some(value = decl.ty), pkg = pkgName)
       )
+      // An exposed record is a record whose host-visible shape matters only
+      // to a host with reflection (docs/01 §2.10); natively it is a record.
       case IRecord(decl) -> {
+        records.add(decl)
+        collectRecordMethods(pkgName, decl, fns)
+      }
+      case IExposedRec(decl) -> {
         records.add(decl)
         collectRecordMethods(pkgName, decl, fns)
       }
@@ -18357,36 +18356,10 @@ func lowerIfaceDispatch(
   // Written arguments are evaluated in source order, positional ones
   // binding left to right and named ones by name; a parameter the call
   // leaves out then takes the interface member's default (#7985).
+  val argSlots = nativeArgSlots(paramNames, 0, args, "." + ii.methodNames[slot])
   val argExprs: List[Expr] = newList()
-  val argSlots: List[Int] = newList()
-  var nextPositional = 0
   for a in args {
-    match a {
-      case CAPositional(ex) -> {
-        argExprs.add(ex)
-        argSlots.add(nextPositional)
-        nextPositional = nextPositional + 1
-      }
-      case CANamed(argName, value, _) -> {
-        var found = -1
-        var ni = 0
-        while ni < paramNames.count {
-          if paramNames[ni] == argName {
-            found = ni
-          }
-          ni = ni + 1
-        }
-        if found < 0 {
-          panic(
-            "Lyric.LlvmCodegen: named argument '" + argName + "' does not match a parameter of interface method '." +
-              ii.methodNames[slot] +
-              "'"
-          )
-        }
-        argExprs.add(value)
-        argSlots.add(found)
-      }
-    }
+    argExprs.add(nativeCallArgExpr(a))
   }
   val slotVals: List[NVal] = newList()
   val slotFilled: List[Bool] = newList()

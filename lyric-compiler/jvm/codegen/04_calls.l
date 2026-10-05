@@ -3048,8 +3048,9 @@ func pushDefaultValue(insns: in List[LInsn], ty: in JvmType): Unit {
 // = 2, x = 1)`) must be permuted to match.  All-positional calls are returned
 // unchanged (already in declaration order).
 // One entry per FIELD (length always == fields.count): `Some(arg)` when the
-// call site supplied that field — by name if any argument is named, else by
-// position — and `None` when it was omitted (the field's declared default is
+// call site supplied that field — paired as the type checker pairs them, a
+// named argument by name and a positional one into the next free field — and
+// `None` when it was omitted (the field's declared default is
 // used at the construction site).  Padding omitted slots per-field, rather
 // than compacting to only the supplied args, is what keeps `fields[i]` aligned
 // with its own value when a NON-trailing defaulted field is omitted while a
@@ -3083,23 +3084,40 @@ func orderCtorArgsPadded(fields: in List[JvmCaseField], args: in List[CallArg]):
     }
     return result
   }
-  val byName: Map[String, CallArg] = newMap()
-  var j = 0
-  while j < args.count {
-    match args[j] {
-      case CANamed(nm, _, _) -> {
-        if not byName.containsKey(nm) {
-          byName.add(nm, args[j])
-        }
-      }
-      case _ -> ()
-    }
-    j = j + 1
+  // Each named argument takes the field it names, then the positional ones
+  // fill the free fields left to right (`Lyric.Parser.pairCallArgs`, as the
+  // type checker pairs them).
+  val names: List[String] = newList()
+  for fld in fields {
+    names.add(fld.name)
   }
-  var f = 0
-  while f < fields.count {
-    result.add(mapGet(byName, fields[f].name))
-    f = f + 1
+  match pairCallArgs(names, 0, args) {
+    case Ok(slots) -> {
+      for ai in slots {
+        result.add(if ai >= 0 { Some(value = args[ai]) } else { None })
+      }
+    }
+    case Err(_) -> {
+      // Not a pairing the type checker accepts: fill each field by name only.
+      val byName: Map[String, CallArg] = newMap()
+      var j = 0
+      while j < args.count {
+        match args[j] {
+          case CANamed(nm, _, _) -> {
+            if not byName.containsKey(nm) {
+              byName.add(nm, args[j])
+            }
+          }
+          case _ -> ()
+        }
+        j = j + 1
+      }
+      var f = 0
+      while f < fields.count {
+        result.add(mapGet(byName, fields[f].name))
+        f = f + 1
+      }
+    }
   }
   result
 }

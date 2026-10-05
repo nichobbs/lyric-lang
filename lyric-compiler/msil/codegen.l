@@ -4186,9 +4186,11 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
                     cctx.fieldVarIndices.add(caseName + "/field" + toString(fi), gIdx)
                     cctx.fieldSigBytes.add(caseName + "/field" + toString(fi), fSig)
                   }
-                  if not cctx.fieldDeclaredNames.containsKey(caseName + "/field" + toString(fi)) {
-                    cctx.fieldDeclaredNames.add(caseName + "/field" + toString(fi), name)
-                  }
+                }
+                // Every case's named fields, so a construction naming them out
+                // of order stores each into its own field (`fillCtorDefaultArgs`).
+                if not cctx.fieldDeclaredNames.containsKey(caseName + "/field" + toString(fi)) {
+                  cctx.fieldDeclaredNames.add(caseName + "/field" + toString(fi), name)
                 }
                 fieldDefRow = fieldDefRow + 1
               }
@@ -17677,93 +17679,38 @@ func callArgExpr(arg: in CallArg): Expr {
   }
 }
 
-// Reorder a record/union-case constructor's arguments to field-declaration
-// order (#1730).  A named-argument call (`R(c = …, a = …)`) may list fields in
-// any order, but the constructor `newobj` consumes them positionally in
-// declaration order.  Build a complete positional arg list in field-declaration
-// order: named args are matched by name, and fields with no matching arg are
-// filled from `ctorDefaultExprs` (populated by addPackageTokens for fields
-// that carry a `= expr` default).  Returns `args` unchanged when: any arg is
-// positional (already in order), the field-name map is absent (defensive), or
-// a required field has neither a named arg nor a registered default.
+// A record/union-case constructor's arguments in field-declaration order
+// (#1730), with each omitted field filled from its declared default: the
+// constructor `newobj` consumes them positionally.  Arguments pair with the
+// fields as the type checker pairs them (`Lyric.Parser.pairCallArgs`): each
+// named argument goes to the field it names, then the positional ones fill
+// the free fields left to right.  Field names come from `fieldDeclaredNames`
+// and defaults from `ctorDefaultExprs` (both keyed `<ctorKey>/field<pos>`,
+// registered by addPackageTokens).  `args` unchanged when the constructor has
+// no registered field names, or when a field has neither an argument nor a
+// registered default (a field the middle end fills, such as a zero-filled
+// array, D167).
 func fillCtorDefaultArgs(cctx: in CodegenCtx, ctorKey: in String, args: in List[CallArg]): List[CallArg] {
-  // Classify the call site: all-named (or empty), all-positional, or mixed.
-  val nameToArg: Map[String, CallArg] = newMap()
-  var anyNamed = false
-  var anyPositional = false
-  var i = 0
-  while i < args.count {
-    match args[i] {
-      case CANamed(nm, _, _) -> {
-        anyNamed = true
-        if nameToArg.containsKey(nm) {
-          return args
-        }  // dup name — leave as-is
-        nameToArg.add(nm, args[i])
-      }
-      case CAPositional(_) -> {
-        anyPositional = true
-      }
+  val names: List[String] = newList()
+  while cctx.fieldDeclaredNames.containsKey(ctorKey + "/field" + toString(names.count)) {
+    match mapGet(cctx.fieldDeclaredNames, ctorKey + "/field" + toString(names.count)) {
+      case Some(fname) -> names.add(fname)
+      case None -> ()
     }
-    i = i + 1
   }
-  // Mixed positional + named is a rare shape the front-end may not even allow;
-  // leave it untouched rather than guess the intended field mapping.
-  if anyNamed and anyPositional {
+  if names.count == 0 {
     return args
   }
-  // Count total fields by probing fieldDeclaredNames until a key is absent.
-  var totalFields = 0
-  while cctx.fieldDeclaredNames.containsKey(ctorKey + "/field" + toString(totalFields)) {
-    totalFields = totalFields + 1
-  }
-  if totalFields == 0 {
-    return args  // no field-order info — preserve current behaviour
-  }
-  // All-positional call: positional args fill the leading fields in order;
-  // APPEND each trailing omitted field's declared default so the emitted
-  // constructor call has one argument per field (#6146 MSIL sibling —
-  // previously the positional path bailed here and passed too few args,
-  // yielding `InvalidProgramException` at the JIT).  A positional call can
-  // only omit TRAILING fields, so leading positions already line up.
-  if anyPositional {
-    if args.count >= totalFields {
-      return args  // fully (or over-) supplied — nothing to fill
-    }
-    val orderedPos: List[CallArg] = newList()
-    var ap = 0
-    while ap < args.count {
-      orderedPos.add(args[ap])
-      ap = ap + 1
-    }
-    var fpp = args.count
-    while fpp < totalFields {
-      val byPosKeyP = ctorKey + "/field" + toString(fpp)
-      match mapGet(cctx.ctorDefaultExprs, byPosKeyP) {
-        case Some(dflt) -> orderedPos.add(CAPositional(expr = dflt))
-        case None -> return args  // required trailing field with no default — bail
-      }
-      fpp = fpp + 1
-    }
-    return orderedPos
-  }
-  // Reassemble in field-declaration order, injecting defaults for missing fields.
+  val slots: List[Int] = match pairCallArgs(names, 0, args) { case Ok(paired) -> paired; case Err(_) -> return args }
   val ordered: List[CallArg] = newList()
   var fp = 0
-  while fp < totalFields {
-    val byPosKey = ctorKey + "/field" + toString(fp)
-    match mapGet(cctx.fieldDeclaredNames, byPosKey) {
-      case None -> return args  // defensive
-      case Some(fname) -> {
-        match mapGet(nameToArg, fname) {
-          case Some(a) -> ordered.add(a)
-          case None -> {
-            match mapGet(cctx.ctorDefaultExprs, byPosKey) {
-              case Some(dflt) -> ordered.add(CAPositional(expr = dflt))
-              case None -> return args  // required field missing — bail
-            }
-          }
-        }
+  while fp < names.count {
+    if slots[fp] >= 0 {
+      ordered.add(args[slots[fp]])
+    } else {
+      match mapGet(cctx.ctorDefaultExprs, ctorKey + "/field" + toString(fp)) {
+        case Some(dflt) -> ordered.add(CAPositional(expr = dflt))
+        case None -> return args
       }
     }
     fp = fp + 1
@@ -35312,7 +35259,12 @@ func isOptedOutMsil(fn: in FunctionDecl, aspectName: in String): Bool {
       // are accepted; only the leading identifier portion matters.
       var j = 0
       while j < ann.args.count {
-        val argName = match ann.args[j] { case AAName(n, _, _) -> n; case ABare(n, _) -> n; case ALiteral(_, _) -> ""; case AACall(_, _, _) -> "" }
+        val argName = match ann.args[j] {
+          case AAName(n, _, _) -> n
+          case ABare(n, _) -> n
+          case ALiteral(_, _) -> ""
+          case AACall(_, _, _) -> ""
+        }
         if argName == aspectName {
           return true
         }
@@ -46124,11 +46076,32 @@ func registerStdlibFunc(cctx: in CodegenCtx, packageName: in String, hostRefRow:
     cctx.funcRetTypes.add(arityKey, retType)
     cctx.funcParamTypes.add(arityKey, paramTypes)
     cctx.funcParamModes.add(arityKey, fnModes)
+    registerStdlibFuncParamNames(cctx, arityKey, fn)
     if not cctx.funcTokens.containsKey(fqn) {
       cctx.funcTokens.add(fqn, tok)
       cctx.funcRetTypes.add(fqn, retType)
       cctx.funcParamTypes.add(fqn, paramTypes)
       cctx.funcParamModes.add(fqn, fnModes)
+      registerStdlibFuncParamNames(cctx, fqn, fn)
     }
+  }
+}
+
+// The parameter names and defaults of a stdlib function under `key`, as
+// `addPackageTokens` and `registerRestoredFunc` record them, so a call naming
+// its arguments out of parameter order passes each to its own parameter
+// (`funcArgsWithDefaultsMsil`, #8158).
+func registerStdlibFuncParamNames(cctx: in CodegenCtx, key: in String, fn: in FunctionDecl): Unit {
+  var pi = 0
+  while pi < fn.params.count {
+    val pk = key + "/param" + toString(pi)
+    if not cctx.funcParamNames.containsKey(pk) {
+      cctx.funcParamNames.add(pk, fn.params[pi].name)
+    }
+    match fn.params[pi].dflt {
+      case Some(d) -> if not cctx.funcDefaultExprs.containsKey(pk) { cctx.funcDefaultExprs.add(pk, d) }
+      case None -> ()
+    }
+    pi = pi + 1
   }
 }

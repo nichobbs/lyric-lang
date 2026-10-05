@@ -506,3 +506,48 @@ test "a restored generic body's omitted default binds the checker's overload on 
     overloadInGenericLines()
   )
 }
+
+// A call into a restored package evaluates its arguments left to right as
+// written, then the omitted parameters' defaults through the producer's
+// thunks, whatever the parameter order (#8158, D171): the consumer's type
+// checker reads the parameters from the contract and orders the call before
+// any backend lowers it.  The same holds for a restored record's constructor
+// and method.
+func evalOrderLib(): String {
+  "package Rd.Lib\n\n" + "pub func say(s: in String, v: in Int): Int {\n  println(s)\n  v\n}\n\n" +
+    "pub func tr(a: in Int, d: in Int = say(\"d\", 4), b: in Int): Int {\n  a * 100 + d * 10 + b\n}\n\n" +
+    "pub record Pt {\n  x: Int\n  y: Int\n\n" +
+    "  func mix(self: in Pt, a: in Int, b: in Int = say(\"mb\", 5)): Int {\n    self.x + a * 10 + b\n  }\n}\n"
+}
+
+func evalOrderApp(): String {
+  "package Rd.App\n\n" + "import Rd.Lib\n\n" + "func main(): Unit {\n" +
+    "  println(toString(tr(b = say(\"b\", 2), a = say(\"a\", 1))))\n" +
+    "  val p = Pt(y = say(\"y\", 2), x = say(\"x\", 1))\n" +
+    "  println(toString(p.x * 10 + p.y))\n" +
+    "  println(toString(p.mix(a = say(\"ma\", 3))))\n" +
+    "}\n"
+}
+
+func evalOrderLines(): List[String] {
+  val e: List[String] = newList()
+  e.add("b")
+  e.add("a")
+  e.add("d")
+  e.add("142")
+  e.add("y")
+  e.add("x")
+  e.add("12")
+  e.add("ma")
+  e.add("mb")
+  e.add("36")
+  e
+}
+
+test "a restored callee's arguments run in source order, its defaults after them, on dotnet (#8158)" {
+  assertLines("dotnet", runRestored("eval-order", false, evalOrderLib(), evalOrderApp()), evalOrderLines())
+}
+
+test "a restored callee's arguments run in source order, its defaults after them, on the JVM (#8158)" {
+  assertLines("jvm", runRestored("eval-order", true, evalOrderLib(), evalOrderApp()), evalOrderLines())
+}

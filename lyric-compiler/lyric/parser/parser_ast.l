@@ -1592,6 +1592,21 @@ pub record HoistOperandTypeSite {
   startOffset: Int
 }
 
+/// A call whose arguments must be evaluated into temporaries, left to right
+/// as written, before they are passed in parameter order (D171): the
+/// backends evaluate them in parameter order, and here that is observably
+/// different (`callArgsNeedSourceOrder`).  `bound[i]` says whether argument
+/// `i` is evaluated into a temporary; an inert one (`exprIsInert`) and the
+/// place an `out`/`inout` argument names are left in the call.  `bindRecv`
+/// says whether the method call's receiver, which runs before every
+/// argument, is evaluated into one too.  `Lyric.Mono.desugarCheckedFile`
+/// rewrites the call, keyed by `recordCopySiteKey` of its span.
+pub record ArgOrderSite {
+  bound: List[Bool]
+  bindRecv: Bool
+  startOffset: Int
+}
+
 /// The type arguments the type checker resolved for a call to a generic
 /// function, spelled as source, in the order of the callee's `typeParams`.
 /// `Lyric.Mono` infers a call's type arguments from its argument
@@ -1820,6 +1835,62 @@ pub func pairCallArgs(paramNames: in List[String], skip: in Int, args: in List[C
     ai = ai + 1
   }
   Ok(value = slots)
+}
+
+/// Whether evaluating `e` can neither cause an effect nor observe one, so
+/// it gives the same value wherever it runs among a call's arguments
+/// (D171): a literal, a negated literal, a lambda (building a closure runs
+/// none of its body) and a name.  A caller that sees locals decides for
+/// itself whether a single-segment name is a binding that can change.
+pub func exprIsInert(e: in Expr): Bool {
+  match e.kind {
+    case ELiteral(_) -> true
+    case ELambda(_, _) -> true
+    case EPath(_) -> true
+    case EParen(inner) -> exprIsInert(inner)
+    case EPrefix(op, operand) -> match op {
+      case PreNeg -> match operand.kind { case ELiteral(_) -> true; case _ -> false }
+      case _ -> false
+    }
+    case _ -> false
+  }
+}
+
+/// Whether a call must evaluate its explicit arguments into temporaries,
+/// left to right as written, before passing them in parameter order (D171).
+/// `slots` pairs each parameter with its argument (`pairCallArgs`: an index
+/// into the call's `argCount` arguments, or -1 for an omitted parameter),
+/// `argEffect[i]` says whether argument `i` may cause or observe an effect,
+/// and `defaultEffect[k]` whether parameter `k`'s default may.  The backends
+/// evaluate a call's arguments, and the defaults of the omitted parameters,
+/// in parameter order; that differs observably from source order, with every
+/// default after every explicit argument, exactly when two of those effectful
+/// evaluations meet in the other order.
+pub func callArgsNeedSourceOrder(
+  slots: in List[Int],
+  argCount: in Int,
+  argEffect: in List[Bool],
+  defaultEffect: in List[Bool],
+): Bool {
+  var latest = -1
+  var k = 0
+  while k < slots.count {
+    val ai = slots[k]
+    val pos = if ai >= 0 { ai } else { argCount }
+    val effect = if ai >= 0 {
+      ai < argEffect.count and argEffect[ai]
+    } else {
+      k < defaultEffect.count and defaultEffect[k]
+    }
+    if effect {
+      if pos < latest {
+        return true
+      }
+      latest = pos
+    }
+    k = k + 1
+  }
+  false
 }
 
 func unpairableCallArgs(callee: in String, why: in String, paramNames: in List[String]): Unit {

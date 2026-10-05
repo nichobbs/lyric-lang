@@ -2381,6 +2381,11 @@ func seedImplMethods(
         collectRecordMethods(pkg, decl, methods)
         seedMethodList(pkg, methods, bodyIndex, pkgOfId, reachable, fnWorklist)
       }
+      case IExposedRec(decl) -> {
+        val methods: List[FunctionDecl] = newList()
+        collectRecordMethods(pkg, decl, methods)
+        seedMethodList(pkg, methods, bodyIndex, pkgOfId, reachable, fnWorklist)
+      }
       case IProtected(decl) -> {
         val methods: List[FunctionDecl] = newList()
         collectProtectedMethods(pkg, decl, methods)
@@ -2486,6 +2491,14 @@ func unitOf(
         }
       }
       case IRecord(decl) -> {
+        records.add(decl)
+        if lowerAll {
+          collectRecordMethods(pkg, decl, fns)
+        }
+      }
+      // Natively an exposed record is a record (`Lyric.LlvmCodegen`'s
+      // single-package item walk).
+      case IExposedRec(decl) -> {
         records.add(decl)
         if lowerAll {
           collectRecordMethods(pkg, decl, fns)
