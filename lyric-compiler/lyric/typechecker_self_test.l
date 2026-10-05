@@ -13,6 +13,7 @@ import Lyric.AliasRewriter
 import Lyric.Pipeline
 import Lyric.TypeAliasResolve as TAR
 import Lyric.BareFuncRef as BFR
+import Lyric.Weaver as Weaver
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers.
@@ -10372,4 +10373,72 @@ test "assigning an `in` receiver is T0087 (#8179)" {
     "package P\nrecord R {\n  x: Int\n\n  func clear(self: in R): Unit {\n    self = R(x = 0)\n  }\n}\n"
   )
   assertEqualInt(countDiagCode(cr, "T0087"), 1, "self = ... with an `in` receiver: " + diagCodesOf(cr))
+}
+
+test "a module-level binding or a call result is not a writable receiver: T0166 (#8179)" {
+  val modVal = preparedCheck(inoutRecvSrc("val gp = R(x = 1)\nfunc f(): Unit {\n  gp.reset()\n}\n"))
+  assertEqualInt(countDiagCode(modVal, "T0166"), 1, "a module-level val receiver: " + diagCodesOf(modVal))
+  assertTrue(
+    Str.contains(diagMessageFor(modVal, "T0166"), "module-level"),
+    "the message names the module-level binding"
+  )
+  val modUfcs = preparedCheck(inoutRecvSrc("val gp = R(x = 1)\nfunc f(): Unit {\n  R.reset(gp)\n}\n"))
+  assertEqualInt(countDiagCode(modUfcs, "T0166"), 1, "a module-level val through the type: " + diagCodesOf(modUfcs))
+  val callRoot = preparedCheck(
+    inoutRecvSrc(
+      "record H {\n  var r: R\n}\nfunc mk(): H = H(r = R(x = 1))\nfunc f(): Unit {\n  mk().r.reset()\n}\n"
+    )
+  )
+  assertEqualInt(countDiagCode(callRoot, "T0166"), 1, "a field of a call result: " + diagCodesOf(callRoot))
+  val valRoot = preparedCheck(
+    inoutRecvSrc(
+      "record H {\n  var r: R\n}\nfunc f(): Int {\n  val h = H(r = R(x = 1))\n  h.r.reset()\n  h.r.get()\n}\n"
+    )
+  )
+  assertEqualInt(
+    valRoot.diagnostics.count,
+    0,
+    "a field of a `val` local is written through it: " + diagCodesOf(valRoot)
+  )
+}
+
+test "a module-level binding passed to an `inout` parameter is T0085 (#8179)" {
+  val cr = preparedCheck(
+    inoutRecvSrc(
+      "val gp = R(x = 1)\nfunc zap(q: inout R): Unit {\n  q = R(x = 0)\n}\nfunc f(): Unit {\n  zap(gp)\n}\n"
+    )
+  )
+  assertEqualInt(countDiagCode(cr, "T0085"), 1, "a module-level val argument: " + diagCodesOf(cr))
+  assertTrue(Str.contains(diagMessageFor(cr, "T0085"), "module-level"), "the message names the module-level binding")
+}
+
+test "a protected-type member's receiver cannot be `inout`: T0165 (#8179)" {
+  val cr = preparedCheck(
+    "package P\nprotected type Acc {\n  var n: Int\n\n  func bump(self: inout Acc): Unit {\n    n = n + 1\n  }\n}\n"
+  )
+  assertEqualInt(countDiagCode(cr, "T0165"), 1, "protected func: " + diagCodesOf(cr))
+  assertTrue(Str.contains(diagMessageFor(cr, "T0165"), "protected"), "the message names the protected type")
+}
+
+test "a record method with an `inout` receiver is not woven, like any record method (#8179)" {
+  val src = "package P\naspect Trace {\n  matches: name like \"*\"\n  around(call) -> ret {\n    ret = proceed()\n  }\n}\n" +
+    "record R {\n  x: Int\n\n  func reset(self: inout R): Unit {\n    self = R(x = 0)\n  }\n}\nfunc f(): Int = 1\n"
+  val woven = Weaver.weaveFile(pipePrepareForCheck(parse(src).file, false).file)
+  var hoistedTarget = 0
+  var freeTarget = 0
+  for it in woven.items {
+    match it.kind {
+      case IFunc(fd) -> {
+        if fd.name == "R.reset__aspect_target" {
+          hoistedTarget = hoistedTarget + 1
+        }
+        if fd.name == "f__aspect_target" {
+          freeTarget = freeTarget + 1
+        }
+      }
+      case _ -> ()
+    }
+  }
+  assertEqualInt(hoistedTarget, 0, "the hoisted method is not woven")
+  assertEqualInt(freeTarget, 1, "a free function is woven")
 }

@@ -2378,6 +2378,15 @@ func matchesPredicate(m: in AspectMatcher, fn: in FunctionDecl): Bool {
   }
 }
 
+func isHoistedRecordMethod(fn: in FunctionDecl): Bool {
+  for a in fn.annotations {
+    if a.name.segments.count == 1 and a.name.segments[0] == "__lyric_record_method" {
+      return true
+    }
+  }
+  false
+}
+
 func matchesPredicates(matchers: in List[AspectMatcher], fn: in FunctionDecl): Bool {
   // Empty matchers ⇒ library-template aspect with no local match: clause.
   if matchers.count == 0 {
@@ -2741,7 +2750,10 @@ func weaveItemsCore(
       case IAspect(_) -> ()
       case IFunc(fn) -> {
         val matched: List[AspectDecl] = newList()
-        var ai = 0
+        // A record method the middle end hoisted to a dot-named function
+        // (`Lyric.Pipeline.recordMethodMarker`, an `inout` receiver, #8179)
+        // is still a record method, which aspects do not weave.
+        var ai = if isHoistedRecordMethod(fn) { declsForSort.count } else { 0 }
         while ai < declsForSort.count {
           val a = declsForSort[ai]
           if not isOptedOut(fn, a.name) and not nameListContains(a.exceptNames, fn.name) and matchesPredicates(a.matches, fn) {

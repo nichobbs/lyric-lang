@@ -3315,6 +3315,15 @@ func checkReceiverModes(diag: in List[Diagnostic], items: in List[Item]): Unit {
           }
         }
       }
+      case IProtected(d) -> {
+        for m in d.members {
+          match m {
+            case PMEntry(ed) -> checkProtectedReceiver(diag, ed.params, ed.name)
+            case PMFunc(fn) -> checkProtectedReceiver(diag, fn.params, fn.name)
+            case _ -> ()
+          }
+        }
+      }
       case IInterface(d) -> {
         for m in d.members {
           match m {
@@ -3335,6 +3344,26 @@ func checkRecordReceivers(diag: in List[Diagnostic], d: in RecordDecl): Unit {
       case RMFunc(fn) -> checkReceiverParams(diag, fn.params, fn.name, true)
       case _ -> ()
     }
+  }
+}
+
+// A protected type is shared by reference and never replaced: its entries
+// and functions change its fields, under its lock, so a receiver declared
+// `out` or `inout` is T0165.
+func checkProtectedReceiver(diag: in List[Diagnostic], params: in List[Param], name: in String): Unit {
+  if params.count == 0 or params[0].name != "self" {
+    return
+  }
+  match params[0].mode {
+    case PMIn -> ()
+    case _ -> diag.add(
+      errorDiagnostic(
+        "T0165",
+        "the receiver of protected-type member '" + name +
+          "' cannot be `out` or `inout`: a protected object is shared and is never replaced; assign its `var` fields instead",
+        params[0].span
+      )
+    )
   }
 }
 

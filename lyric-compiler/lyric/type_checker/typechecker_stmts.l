@@ -597,7 +597,7 @@ pub func checkStatement(
             diag.add(
               errorDiagnostic(
                 "T0087",
-                "cannot assign `self`: this receiver is `in`; declare it `self: inout` to replace the caller's value",
+                "cannot assign `self`: only a record method or dot-named function whose receiver is declared `self: inout` may replace the caller's value",
                 target.span
               )
             )

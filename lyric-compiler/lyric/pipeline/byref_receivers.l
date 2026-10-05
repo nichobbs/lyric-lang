@@ -60,7 +60,7 @@ pub func hoistByRefReceiverMethods(file: in SourceFile): SourceFile {
         if hoist.count > 0 {
           changed = true
           items.add(it.copy(kind = IRecord(decl = recordWithoutHoisted(d, hoist))))
-          addHoistedByRefMethods(d, hoist, it.visibility, items)
+          addHoistedByRefMethods(file, d, hoist, it.visibility, items)
         } else {
           items.add(it)
         }
@@ -70,7 +70,7 @@ pub func hoistByRefReceiverMethods(file: in SourceFile): SourceFile {
         if hoist.count > 0 {
           changed = true
           items.add(it.copy(kind = IExposedRec(decl = recordWithoutHoisted(d, hoist))))
-          addHoistedByRefMethods(d, hoist, it.visibility, items)
+          addHoistedByRefMethods(file, d, hoist, it.visibility, items)
         } else {
           items.add(it)
         }
@@ -180,6 +180,7 @@ func withSiblingCallsOnSelf(fn: in FunctionDecl, names: in Map[String, Bool], se
 // function takes the record's.  A record without type parameters gives a
 // function without them.
 func addHoistedByRefMethods(
+  file: in SourceFile,
   d: in RecordDecl,
   hoist: in Map[String, Bool],
   recordVis: in Option[Visibility],
@@ -190,9 +191,13 @@ func addHoistedByRefMethods(
     match m {
       case RMFunc(fn0) -> if hoist.containsKey(methodKey(fn0)) {
         val fn = match fn0.visibility { case Some(_) -> fn0; case None -> fn0.copy(visibility = recordVis) }
-        val hoisted0 = hoistMethod(d, members, fn)
+        val hoisted0 = withRecordMethodMarker(hoistMethod(d, members, fn))
         val hoisted = match hoisted0.generics {
-          case Some(gp) -> if gp.params.count == 0 { hoisted0.copy(generics = None) } else { hoisted0 }
+          case Some(gp) -> if gp.params.count == 0 {
+            hoisted0.copy(generics = None)
+          } else {
+            withOwnRecordQualified(file, d.name, hoisted0)
+          }
           case None -> hoisted0
         }
         acc.add(
@@ -207,6 +212,173 @@ func addHoistedByRefMethods(
       }
       case _ -> ()
     }
+  }
+}
+
+// A generic function is specialised into each package that calls it
+// (`Lyric.Mono`), where its body is lowered in the caller's scope, so a
+// hoisted generic method names its own record through the declaring package
+// (`Pkg.Box[T]`, `Pkg.Box(v = v)`): a caller's own `Box` must not capture it
+// (#8179).  Its signature, local and lambda-parameter annotations, and
+// constructor calls are qualified.
+/// The annotation a record method hoisted to a dot-named function carries,
+/// so a pass that treats record methods differently from functions (the
+/// aspect weaver, which leaves record methods unwoven) still sees a method.
+pub func recordMethodMarker(): String = "__lyric_record_method"
+
+func withRecordMethodMarker(fd: in FunctionDecl): FunctionDecl {
+  val anns: List[Annotation] = newList()
+  for a in fd.annotations {
+    anns.add(a)
+  }
+  val segs: List[String] = newList()
+  segs.add(recordMethodMarker())
+  val noArgs: List[AnnotationArg] = newList()
+  anns.add(Annotation(name = ModulePath(segments = segs, span = fd.span), args = noArgs, span = fd.span))
+  fd.copy(annotations = anns)
+}
+
+func withOwnRecordQualified(file: in SourceFile, name: in String, fd: in FunctionDecl): FunctionDecl {
+  val pkgSegs = file.packageDecl.path.segments
+  if pkgSegs.count == 0 {
+    return fd
+  }
+  val params: List[Param] = newList()
+  for p in fd.params {
+    params.add(p.copy(ty = qualifiedOwnType(p.ty, name, pkgSegs)))
+  }
+  val ret = match fd.ret { case Some(r) -> Some(value = qualifiedOwnType(r, name, pkgSegs)); case None -> None }
+  val noDocs: List[DocComment] = newList()
+  val noAnns: List[Annotation] = newList()
+  val item = Item(
+    docComments = noDocs,
+    annotations = noAnns,
+    visibility = fd.visibility,
+    kind = IFunc(decl = fd),
+    span = fd.span
+  )
+  val mapped = mapFileAndContracts(
+    oneItemFile(file, item),
+    { e: Expr ->
+      match e.kind {
+        case ECall(callee, args) -> match callee.kind {
+          case EPath(cp) -> if cp.segments.count == 1 and cp.segments[0] == name {
+            e.copy(
+              kind = ECall(fn = callee.copy(kind = EPath(path = cp.copy(segments = qualifiedSegs(pkgSegs, name)))), args = args)
+            )
+          } else {
+            e
+          }
+          case _ -> e
+        }
+        case ELambda(lps, body) -> {
+          val outPs: List[LambdaParam] = newList()
+          for lp in lps {
+            outPs.add(
+              lp.copy(ty = match lp.ty { case Some(t) -> Some(value = qualifiedOwnType(t, name, pkgSegs)); case None -> None })
+            )
+          }
+          e.copy(kind = ELambda(lambdaParams = outPs, body = body))
+        }
+        case _ -> e
+      }
+    },
+    { st: Statement -> qualifiedOwnLocal(st, name, pkgSegs) }
+  )
+  val body = match mapped.items[0].kind { case IFunc(md) -> md.body; case _ -> fd.body }
+  fd.copy(params = params, ret = ret, body = body)
+}
+
+func qualifiedSegs(pkgSegs: in List[String], name: in String): List[String] {
+  val segs: List[String] = newList()
+  for s in pkgSegs {
+    segs.add(s)
+  }
+  segs.add(name)
+  segs
+}
+
+// A local's annotation, qualified like the signature.
+func qualifiedOwnLocal(st: in Statement, name: in String, pkgSegs: in List[String]): Statement {
+  match st.kind {
+    case SLocal(b) -> match b {
+      case LBVal(pat, ty, init) -> st.copy(
+        kind = SLocal(
+          binding = LBVal(
+            pat = pat,
+            ty = qualifiedOwnTypeOpt(ty, name, pkgSegs),
+            init = init
+          )
+        )
+      )
+      case LBVar(n, ty, init) -> st.copy(
+        kind = SLocal(
+          binding = LBVar(
+            name = n,
+            ty = qualifiedOwnTypeOpt(ty, name, pkgSegs),
+            init = init
+          )
+        )
+      )
+      case LBLet(n, ty, init) -> st.copy(
+        kind = SLocal(
+          binding = LBLet(
+            name = n,
+            ty = qualifiedOwnTypeOpt(ty, name, pkgSegs),
+            init = init
+          )
+        )
+      )
+    }
+    case _ -> st
+  }
+}
+
+func qualifiedOwnTypeOpt(t: in Option[TypeExpr], name: in String, pkgSegs: in List[String]): Option[TypeExpr] {
+  match t {
+    case Some(te) -> Some(value = qualifiedOwnType(te, name, pkgSegs))
+    case None -> None
+  }
+}
+
+func qualifiedOwnType(t: in TypeExpr, name: in String, pkgSegs: in List[String]): TypeExpr {
+  match t.kind {
+    case TRef(p) -> if p.segments.count == 1 and p.segments[0] == name {
+      t.copy(kind = TRef(path = p.copy(segments = qualifiedSegs(pkgSegs, name))))
+    } else {
+      t
+    }
+    case TGenericApp(head, args) -> {
+      val acc: List[TypeArg] = newList()
+      for a in args {
+        acc.add(match a { case TAType(at) -> TAType(ty = qualifiedOwnType(at, name, pkgSegs)); case TAValue(_) -> a })
+      }
+      val qhead = if head.segments.count == 1 and head.segments[0] == name {
+        head.copy(segments = qualifiedSegs(pkgSegs, name))
+      } else {
+        head
+      }
+      t.copy(kind = TGenericApp(head = qhead, args = acc))
+    }
+    case TArray(size, el) -> t.copy(kind = TArray(size = size, element = qualifiedOwnType(el, name, pkgSegs)))
+    case TSlice(el) -> t.copy(kind = TSlice(element = qualifiedOwnType(el, name, pkgSegs)))
+    case TTuple(ts) -> {
+      val acc: List[TypeExpr] = newList()
+      for x in ts {
+        acc.add(qualifiedOwnType(x, name, pkgSegs))
+      }
+      t.copy(kind = TTuple(types = acc))
+    }
+    case TNullable(inner) -> t.copy(kind = TNullable(inner = qualifiedOwnType(inner, name, pkgSegs)))
+    case TParen(inner) -> t.copy(kind = TParen(inner = qualifiedOwnType(inner, name, pkgSegs)))
+    case TFunction(ps, r) -> {
+      val acc: List[TypeExpr] = newList()
+      for x in ps {
+        acc.add(qualifiedOwnType(x, name, pkgSegs))
+      }
+      t.copy(kind = TFunction(parameters = acc, retTy = qualifiedOwnType(r, name, pkgSegs)))
+    }
+    case _ -> t
   }
 }
 

@@ -20,20 +20,39 @@ an ordinary `inout` argument. No backend needed a receiver-specific change.
   (the machinery D173 uses for value-generic records). A remaining method's
   bare call of a hoisted one becomes `self.m()`. Contract metadata, sibling
   packages and restored consumers all see the dot-named function.
-- **Type checker.** A method call or a type-qualified call that resolves to a
-  dot-named function with any `out`/`inout` parameter is recorded
-  (`SymbolTable.byRefDotCallSites`), named through its package when it is
-  another package's non-generic function. Its argument order (D171) is
+- A hoisted method of a generic record names its own record through its
+  package (`XLib.Box[T]`, `XLib.Box(v = v)`) in its signature, annotations
+  and constructor calls, since `Lyric.Mono` specialises it into each calling
+  package, where a caller's own `Box` would otherwise capture the
+  construction. It also carries a marker annotation
+  (`recordMethodMarker`) so the aspect weaver leaves it unwoven like every
+  other record method; before, aspects wove `inout`-receiver methods but not
+  `in` ones.
+- **Type checker.** A method call or a type-qualified call (`T.m(...)` or
+  `Pkg.T.m(...)`) that resolves to a dot-named function with any
+  `out`/`inout` parameter is recorded (`SymbolTable.byRefDotCallSites`),
+  named through its package whenever it is another package's function,
+  generic or not, so `Lyric.Mono`'s qualified-call table picks the
+  declaring package's generic over a caller's same-named function. Method
+  syntax now finds another package's dot-named function past a caller's
+  same-named one (every package's `T.m` is a candidate, the receiver's type
+  decides), and `Pkg.T.m(...)` resolves to the function package `Pkg`
+  declares; before, neither was type-checked, and both miscompiled on
+  dotnet and the JVM. Its argument order (D171) is
   recorded in the rewritten shape, the receiver a by-reference argument, and
   the receiver is no longer recorded as an operand the `?`/`await` hoist
   binds. New diagnostics:
-  - **T0165**: an `out` receiver, or an `inout` receiver on an interface
-    method or `impl` method.
+  - **T0165**: an `out` receiver, an `inout` receiver on an interface
+    method or `impl` method, or an `out`/`inout` receiver on a protected
+    type's entry or function.
   - **T0166**: the receiver of a by-reference receiver is not a writable
-    place (a `val`, an `in` receiver, a call result; an indexed element names
-    #8180).
-  - **T0087** now covers `self = ...` when the receiver is `in` (it was
-    accepted and miscompiled the same way).
+    place (a `val`, an `in` receiver, a module-level binding, a call result,
+    or a field path starting at a module-level binding or a call result; an
+    indexed element names #8180).
+  - **T0085** also covers a module-level binding passed to any `out`/`inout`
+    parameter, which every backend failed on with an internal error.
+  - **T0087** now covers `self = ...` when the receiver is not `inout` (it
+    was accepted and miscompiled the same way).
 - **After type checking** (`rewriteByRefDotCalls`, before the D171
   argument-order rewrite and the `?`/`await` hoists): each recorded call
   becomes a plain call of the function, `Pt.reset(p)`, so the receiver is
@@ -79,13 +98,17 @@ Tests:
 - `inout_receiver_closure_self_test.l` (4 cases; dotnet and JVM): a receiver
   captured by a closure (read and written through the closure), a generic
   captured receiver, and a call inside a lambda.
-- `typechecker_self_test.l`: T0165, T0166 (including the #8180 message) and
-  the `self` T0087.
+- `typechecker_self_test.l`: T0165 (including protected members), T0166
+  (including the #8180 message, module-level and call-result roots), T0085
+  for a module-level argument, the `self` T0087, and an aspect leaving a
+  hoisted method unwoven.
 - `scripts/ci/inout-receiver-e2e.sh` (dotnet, JVM, native): a two-package
   project, and the same application against the library built on its own,
   calling the library's record method and dot-named function with `inout`
   receivers in both forms, a generic record's `inout` method, and generic
-  functions with `inout` parameters.
+  functions with `inout` parameters; and three applications with their own
+  `Box` (with a `set`, without one, and at `String`) calling the library's
+  generic `Box[T].set`.
 
 The self-tests are in `compiler-self-tests-batch.sh`,
 `jvm-generics-self-tests-batch.sh`, the ilverify consumer list, and
@@ -99,6 +122,10 @@ Not covered:
   by reference at all (#8180).
 - Native captures `var`s by value (#7891 item 1), so the closure file does not
   run there.
+- A generic *free* function of another package specialised into a caller
+  still names types in the caller's scope (a same-named caller record
+  captures its constructions); that is the open #7917/#7372 family, not
+  closed here, since only hoisted methods get their own record qualified.
 - A bare field name inside an `in` record method still fails on native
   (N0007, the record-method counterpart of #7637); `inout` methods are not
   affected, since the hoist writes their field uses on `self`.

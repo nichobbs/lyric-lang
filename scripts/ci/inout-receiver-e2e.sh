@@ -9,7 +9,10 @@
 #   - a generic record's `inout` method;
 #   - generic functions of the library with an `inout` parameter (native
 #     instantiates another package's generics itself and passed the value,
-#     not the address, before #8179).
+#     not the address, before #8179);
+#   - an application with its own `Box` (with or without its own `set`)
+#     calling the library's generic `Box[T].set`: the call, and the `Box`
+#     its specialised body constructs, are the library's.
 #
 #   bash scripts/ci/inout-receiver-e2e.sh [dotnet] [jvm] [native]
 # LYRIC_BIN overrides the binary (default: the AOT build for BUILD_CONFIG).
@@ -129,6 +132,90 @@ printf '%s\n' "$app_src" > "$work/restored/app/src/app.l"
 
 # p: (5,6) -> moved 1 (6,7) -> scaled 2 (12,14) -> scaled 2 (24,28) = 268;
 # moved 1 (25,29) = 279; reset = 0; b: 40 then 42; n: 2.
+clash_lib='package XLib
+
+pub record Box[T] {
+  v: T
+
+  func set(self: inout Box[T], v: in T): Unit {
+    self = Box(v = v)
+  }
+}'
+
+write_clash() { # $1=dir $2=app source
+  mkdir -p "$work/$1/src"
+  cat > "$work/$1/lyric.toml" <<'TOML'
+[package]
+name = "XApp"
+version = "0.1.0"
+[project]
+name = "XApp"
+[project.packages]
+"XLib" = "src/lib.l"
+"XApp" = "src/app.l"
+TOML
+  printf '%s\n' "$clash_lib" > "$work/$1/src/lib.l"
+  printf '%s\n' "$2" > "$work/$1/src/app.l"
+}
+
+write_clash clash_method 'package XApp
+
+import Std.Core
+import XLib as XL
+
+record Box {
+  w: Int
+
+  func set(self: inout Box, w: in Int): Unit {
+    self = Box(w = w * 100)
+  }
+}
+
+func main(): Int {
+  var b = XL.Box(v = 1)
+  b.set(9)
+  var mine = Box(w = 1)
+  mine.set(2)
+  println(toString(b.v) + " " + toString(mine.w))
+  0
+}'
+write_clash clash_type 'package XApp
+
+import Std.Core
+import XLib as XL
+
+record Box {
+  w: Int
+}
+
+func main(): Int {
+  var b = XL.Box(v = 1)
+  b.set(9)
+  XL.Box.set(b, b.v + 1)
+  val mine = Box(w = 1)
+  println(toString(b.v) + " " + toString(mine.w))
+  0
+}'
+write_clash clash_string 'package XApp
+
+import Std.Core
+import XLib as XL
+
+record Box {
+  w: Int
+
+  func set(self: inout Box, w: in Int): Unit {
+    self = Box(w = w * 100)
+  }
+}
+
+func main(): Int {
+  var b = XL.Box(v = "a")
+  b.set("z")
+  println(b.v)
+  0
+}'
+
 want="268 279 0 42 2"
 fail=0
 for t in "${targets[@]}"; do
@@ -145,6 +232,16 @@ for t in "${targets[@]}"; do
     printf '%s\n' "$out" | tail -n 5 | sed 's/^/  /'
     fail=1
   fi
+  for clash in "clash_method:9 200" "clash_type:10 1" "clash_string:z"; do
+    name="${clash%%:*}"
+    cwant="${clash#*:}"
+    out="$("$lyric_bin" run --manifest "$work/$name/lyric.toml" --target "$t" 2>&1 | grep -v '^Picked up JAVA_TOOL_OPTIONS')"
+    if [ "$(printf '%s\n' "$out" | tail -n 1)" != "$cwant" ]; then
+      echo "FAIL ($t): '$name' should call the library's generic \`Box[T].set\` and print '$cwant'; got:"
+      printf '%s\n' "$out" | tail -n 5 | sed 's/^/  /'
+      fail=1
+    fi
+  done
 done
 [ "$fail" = 0 ] || exit 1
-echo "inout receivers: called from another package and from a dependency, on: ${targets[*]}"
+echo "inout receivers: called from another package, from a dependency, and past a same-named type of the caller, on: ${targets[*]}"
