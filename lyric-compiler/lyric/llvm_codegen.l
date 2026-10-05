@@ -3543,14 +3543,21 @@ func lowerMember(ctx: in Ctx, insns: in List[NInsn], receiver: in Expr, memberNa
             insns.add(NExtractValue(dest = disc, aggTy = v.ty, agg = v.value, index = 0))
           } else {
             val structTy = match v.ty { case NPtr(pointee) -> pointee; case _ -> panic("unreachable") }
-            val objName = match v.value { case NLocal(n) -> n; case _ -> panic("Lyric.LlvmCodegen: internal - Option receiver is not a local") }
+            val objName = match v.value {
+              case NLocal(n) -> n
+              case _ -> panic("Lyric.LlvmCodegen: internal - Option receiver is not a local")
+            }
             val d2 = loadUnionDisc(ctx, insns, ui, structTy, objName)
             val cmp = freshTmp(ctx)
-            insns.add(NICmp(dest = cmp, pred = IEq, ty = NI32, a = NLocal(name = d2), b = NLitInt(v = caseIdx.toLong(), ty = NI32)))
+            insns.add(
+              NICmp(dest = cmp, pred = IEq, ty = NI32, a = NLocal(name = d2), b = NLitInt(v = caseIdx.toLong(), ty = NI32))
+            )
             return NVal(ty = NI1, value = NLocal(name = cmp))
           }
           val cmp = freshTmp(ctx)
-          insns.add(NICmp(dest = cmp, pred = IEq, ty = NI32, a = NLocal(name = disc), b = NLitInt(v = caseIdx.toLong(), ty = NI32)))
+          insns.add(
+            NICmp(dest = cmp, pred = IEq, ty = NI32, a = NLocal(name = disc), b = NLitInt(v = caseIdx.toLong(), ty = NI32))
+          )
           return NVal(ty = NI1, value = NLocal(name = cmp))
         }
       }
