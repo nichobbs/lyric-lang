@@ -2492,12 +2492,11 @@ func eraseValueRecords(file: in SourceFile, importedPkgs: in List[ImportedPackag
 
 func addValueRecordOnce(it: in Item, decls: in List[Item], names: in Map[String, Bool]): Unit {
   match it.kind {
-    case IProtected(_) -> return
-    case _ -> ()
-  }
-  match valueGenericRecordDecl(it) {
-    case Some(d) -> if not names.containsKey(d.name) { names.add(d.name, true); decls.add(it) }
-    case None -> ()
+    case IProtected(_) -> ()
+    case _ -> match valueGenericRecordDecl(it) {
+      case Some(d) -> if not names.containsKey(d.name) { names.add(d.name, true); decls.add(it) }
+      case None -> ()
+    }
   }
 }
 
