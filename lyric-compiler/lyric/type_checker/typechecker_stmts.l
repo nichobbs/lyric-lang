@@ -373,6 +373,7 @@ pub func checkStatement(
         case None -> {
           val initType = inferExpr(sc, tbl, sigs, diag, init)
           recordLocalFuncType(tbl, init, initType)
+          recordLocalBranchType(tbl, init, initType)
           // A plain name bound to an evidence-free construction is open: its
           // uses fix its type (#7788).
           val openName = match pat.kind {
@@ -431,6 +432,7 @@ pub func checkStatement(
               val t = inferExpr(sc, tbl, sigs, diag, e)
               noteArrayStore(tbl, e, t)
               recordLocalFuncType(tbl, e, t)
+              recordLocalBranchType(tbl, e, t)
               t
             }
           }
@@ -472,6 +474,7 @@ pub func checkStatement(
         case None -> {
           val initType = inferExpr(sc, tbl, sigs, diag, init)
           recordLocalFuncType(tbl, init, initType)
+          recordLocalBranchType(tbl, init, initType)
           val openKey = registerOpenBindingSite(sc, tbl, init, initType)
           scopeAdd(sc, LocalBinding(name = name, ty = initType, isMutable = false, openSite = openKey))
         }

@@ -8881,6 +8881,41 @@ func recordResultTypeAt(tbl: in SymbolTable, t: in Type, sp: in Span): Unit {
   }
 }
 
+// Record the checked type of an unannotated local binding whose initializer
+// is an `if` or `match` expression of a closed generic type (`val r = match
+// o { case Some(x) -> x; case None -> Ok(value = 1) }`), as its annotation
+// (see `SymbolTable.localBindingTypeSites`).  A branch that is a construction
+// fixing only some of the type's arguments (`Ok(...)` says nothing of `E`)
+// takes the rest from the binding's type, which the backends then see: on
+// MSIL, which reifies generics, the branch otherwise built `Result_Ok<int,
+// object>` where the other branch built `Result<int, string>` — unverifiable
+// IL, and a `match` on the value that never recognised it.
+func recordLocalBranchType(tbl: in SymbolTable, init: in Expr, t: in Type): Unit {
+  if isNoSourceSpan(init.span) {
+    return
+  }
+  val branching = match init.kind { case EIf(_, _, _, _) -> true; case EMatch(_, _) -> true; case _ -> false }
+  if not branching {
+    return
+  }
+  match unrefine(t) {
+    case TyUser(_, _, args) -> {
+      if args.count == 0 or not typesAreClosed(args) {
+        return
+      }
+      val key = recordCopySiteKey(init.span)
+      if tbl.localBindingTypeSites.containsKey(key) {
+        return
+      }
+      match typeExprForRef(tbl, t, init.span) {
+        case Some(te) -> tbl.localBindingTypeSites.add(key, te)
+        case None -> ()
+      }
+    }
+    case _ -> ()
+  }
+}
+
 // Record the checked type of an unannotated local binding's function-valued
 // initializer (see `SymbolTable.localBindingTypeSites`).  An async function, one
 // that never returns, and a type with no source spelling (a type parameter,
