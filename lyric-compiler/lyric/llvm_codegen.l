@@ -10215,7 +10215,7 @@ func instantiateProtectedWrapper(
   ctx.moduleFns.add(synthProtectedWrapper(ctx, ri, selfTy, instIr, innerIr, restNames, restTys, retTy))
 }
 
-func isGenericFn(
+func isGenericFn(fn: in FunctionDecl): Bool {
   match fn.generics {
     case Some(_) -> true
     case None -> false
