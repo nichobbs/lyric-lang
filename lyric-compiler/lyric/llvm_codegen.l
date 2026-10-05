@@ -2336,6 +2336,27 @@ func bindLocal(ctx: in Ctx, insns: in List[NInsn], name: in String, v: in NVal):
   }
 }
 
+/// Whether a bare name from `sig`'s package is in scope in the current package:
+/// it is the package's own, or a package the current one imports by name.  A
+/// package imported only as `import X as Alias` is not (its names are written
+/// `Alias.name`).
+func bareNameVisible(ctx: in Ctx, sig: in NFuncSig): Bool {
+  if ctx.curPkg.count > 0 and sig.pkg == ctx.curPkg[0] {
+    return true
+  }
+  match mapGet(ctx.pkgImports, ctx.curPkg[0]) {
+    case Some(imps) -> {
+      for p in imps {
+        if p == sig.pkg {
+          return true
+        }
+      }
+      false
+    }
+    case None -> false
+  }
+}
+
 /// A top-level (non-generic) function named as a value, e.g. `intEq` passed
 /// to a `(Int, Int) -> Bool` parameter: lowered as the closure
 /// `{ (a, b) -> intEq(a, b) }` over the function's own signature, which the
@@ -2377,6 +2398,33 @@ func functionRefAsClosure(ctx: in Ctx, insns: in List[NInsn], name: in String): 
     if not selfByArity.containsKey(ak) {
       found = mapGet(bareByArity, ak)
       matches = matches + 1
+    }
+  }
+  // Another arity from a package this one cannot name bare (an unrelated
+  // package, or one imported only under an alias, whose names are written
+  // `Alias.name`) is not an overload of this name: with it set aside, the
+  // name may still be unambiguous (`run` here and `Desktop.run/2`, #8155).
+  if matches > 1 {
+    var visibleFound: Option[NFuncSig] = None
+    var visibleMatches = 0
+    for ak in mapKeys(selfByArity) {
+      visibleFound = mapGet(selfByArity, ak)
+      visibleMatches = visibleMatches + 1
+    }
+    for ak in mapKeys(bareByArity) {
+      if not selfByArity.containsKey(ak) {
+        match mapGet(bareByArity, ak) {
+          case Some(bsg) -> if bareNameVisible(ctx, bsg) {
+            visibleFound = Some(value = bsg)
+            visibleMatches = visibleMatches + 1
+          }
+          case None -> ()
+        }
+      }
+    }
+    if visibleMatches >= 1 and visibleMatches < matches {
+      found = visibleFound
+      matches = visibleMatches
     }
   }
   if matches > 1 {
@@ -15577,11 +15625,20 @@ pub func fileImportsStdString(file: in SourceFile): Bool {
   false
 }
 
-/// The dotted package paths `file` imports.
+/// The dotted package paths `file` imports, except those imported only under an
+/// alias (their names are not in scope bare).
 pub func fileImportPackages(file: in SourceFile): List[String] {
   val pkgs: List[String] = newList()
   for imp in file.imports {
-    pkgs.add(modulePathJoin(imp.path.segments))
+    // `import X as Alias` with no selector brings in the package under its
+    // alias only: its names are not in scope bare.
+    val aliasOnly = match imp.asAlias {
+      case Some(_) -> match imp.selector { case Some(_) -> false; case None -> true }
+      case None -> false
+    }
+    if not aliasOnly {
+      pkgs.add(modulePathJoin(imp.path.segments))
+    }
   }
   pkgs
 }

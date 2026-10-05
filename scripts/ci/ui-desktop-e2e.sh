@@ -7,9 +7,10 @@
 # session and reported its data grid's viewport, whose effect prints a
 # marker and closes the window (exit status 0).
 #
-# Usage: scripts/ci/ui-desktop-e2e.sh [--target dotnet|jvm]
+# Usage: scripts/ci/ui-desktop-e2e.sh [--target dotnet|jvm|native]
 # The CLI is $LYRIC_CLI_PATH, or the AOT build for $BUILD_CONFIG.  A JVM run
-# needs $LYRIC_MAVEN_RESOLVER (see ui-jvm-suites.sh).  Installs WebKitGTK,
+# needs $LYRIC_MAVEN_RESOLVER (see ui-jvm-suites.sh); a native run needs clang
+# and builds its own lyric_rt.a.  Installs WebKitGTK,
 # Xvfb and the webview library when they are missing (Debian/Ubuntu).
 # ---------------------------------------------------------------------------
 set -euo pipefail
@@ -25,8 +26,8 @@ while [ $# -gt 0 ]; do
   esac
 done
 case "$target" in
-  dotnet|jvm) ;;
-  *) echo "ui-desktop-e2e: --target must be dotnet or jvm, got '$target'" >&2; exit 2 ;;
+  dotnet|jvm|native) ;;
+  *) echo "ui-desktop-e2e: --target must be dotnet, jvm or native, got '$target'" >&2; exit 2 ;;
 esac
 
 BUILD_CONFIG="${BUILD_CONFIG:-Debug}"
@@ -55,6 +56,15 @@ if [ "$target" = "dotnet" ]; then
 fi
 if [ "$target" = "jvm" ]; then
   "$lyric_bin" restore --manifest "$PWD/$manifest"
+fi
+if [ "$target" = "native" ]; then
+  # A private lyric_rt.a: the dev tree's lyric-rt/build may not exist yet or
+  # may be mid-rebuild when a background step links.
+  rt_build_dir="$(mktemp -d)/lyric-rt-build"
+  make -C lyric-rt BUILD="$rt_build_dir" >/dev/null
+  export LYRIC_RT_PATH="$rt_build_dir/lyric_rt.a"
+  # The example application links the same library (#8155).
+  "$lyric_bin" build --manifest examples/ui-customers/lyric.toml --target native
 fi
 "$lyric_bin" build --manifest "$manifest" --target "$target"
 
