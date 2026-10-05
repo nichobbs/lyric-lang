@@ -3522,6 +3522,19 @@ func lowerMember(ctx: in Ctx, insns: in List[NInsn], receiver: in Expr, memberNa
     case None -> {
     }
   }
+  // `opt.isNone` / `opt.isSome` are the property spellings of the
+  // `Std.Core` functions; an Option value carries no such field.
+  if memberName == "isNone" or memberName == "isSome" {
+    val fnKey = memberName + "/1"
+    val stdKey = "Std.Core." + fnKey
+    val useKey = if ctx.genericFnDefs.containsKey(stdKey) { stdKey } else { fnKey }
+    if ctx.genericFnDefs.containsKey(useKey) {
+      val pre: List[NVal] = newList()
+      pre.add(v)
+      val noArgs: List[CallArg] = newList()
+      return lowerGenericFnCall(ctx, insns, useKey, pre, noArgs, 0, false, None)
+    }
+  }
   // Distinct types share their underlying representation, so `.value`
   // is the identity.  Record fields shadow this (checked above).
   if memberName == "value" {
