@@ -69,9 +69,6 @@ pub func resolveType(tbl: in SymbolTable, ctx: in GenericContext, diag: in List[
       // value parameter's position and a type at every other.
       val params = typeHeadGenericParams(tbl, head)
       val anyValue = genericParamsHaveValue(params)
-      if anyValue {
-        reportForeignValueGenericRecord(tbl, diag, head, te.span)
-      }
       val resolvedArgs: List[Type] = newList()
       var i = 0
       while i < argsList.count {
@@ -150,38 +147,6 @@ func arrayLengthIsTypeParam(ctx: in GenericContext, size: in TypeArg): Bool {
       case EPath(path) -> path.segments.count == 1 and gctxIsTypeParam(ctx, path.segments[0])
       case _ -> false
     }
-  }
-}
-
-// A value-generic record is used only in its own package in this slice
-// (D169, #8150): each package would specialise it into its own runtime
-// types.
-func reportForeignValueGenericRecord(
-  tbl: in SymbolTable, diag: in List[Diagnostic], head: in ModulePath, span: in Span
-): Unit {
-  val name = head.segments[head.segments.count - 1]
-  for sym in symTableTryFindAllVisible(tbl, name) {
-    val isRec = match sym.kind { case DKRecord(_, _) -> true; case DKExposedRec(_, _) -> true; case _ -> false }
-    if isRec {
-      reportForeignValueRecordSym(tbl, diag, sym, span)
-      return
-    }
-  }
-}
-
-pub func reportForeignValueRecordSym(
-  tbl: in SymbolTable, diag: in List[Diagnostic], sym: in Symbol, span: in Span
-): Unit {
-  if sym.originPackage.length > 0 and sym.originPackage != symTableScopePkg(tbl) {
-    diag.add(
-      errorDiagnostic(
-        "T0164",
-        "'" + sym.name + "' has a value generic parameter, so it can be used only in its own package '" +
-          sym.originPackage +
-          "' for now (#8150)",
-        span
-      )
-    )
   }
 }
 

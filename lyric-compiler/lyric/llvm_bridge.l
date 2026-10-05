@@ -595,6 +595,91 @@ func typedInitBlock(ty: in TypeExpr, init: in Expr, sp: in Span): Block {
   Block(statements = stmts, span = sp)
 }
 
+/// The value-generic functions of the other packages of the project, which
+/// the middle end specialises at each call (D167, D173): codegen
+/// instantiates other generics itself, but has no value-argument form, so a
+/// method of another package's value-generic record (`Vec.total[N: Nat]`)
+/// is specialised before it.
+func siblingValueGenericFuncs(importedPkgs: in List[ImportedPackage], ownPkg: in String): List[FunctionDecl] {
+  val generics: List[FunctionDecl] = newList()
+  for ip in importedPkgs {
+    if ip.name != ownPkg {
+      pipeAddGenericFuncs(ip.items, ip.name, false, false, generics)
+    }
+  }
+  val valueGenerics: List[FunctionDecl] = newList()
+  for g in generics {
+    if hasValueGenericParam(g.generics) {
+      valueGenerics.add(g)
+    }
+  }
+  valueGenerics
+}
+
+func hasValueGenericParam(g: in Option[GenericParams]): Bool {
+  match g {
+    case Some(gp) -> {
+      for p in gp.params {
+        match p {
+          case GPValue(_, _, _) -> return true
+          case GPType(_, _) -> ()
+        }
+      }
+      false
+    }
+    case None -> false
+  }
+}
+
+/// Adds each specialisation of a value-generic record that one package
+/// made of another package's record to the declaring package's file, once
+/// (D173 item 3): every package then names the one `Pkg.Vec__V3`, and the
+/// declaring package keeps its own specialisation when it made one itself.
+func withForeignValueRecords(files: in List[SourceFile], records: in List[ForeignValueRecord]): Unit {
+  if records.count == 0 {
+    return
+  }
+  var fi = 0
+  while fi < files.count {
+    val f = files[fi]
+    val pkg = dottedPath(f.packageDecl.path)
+    val present: Map[String, Bool] = newMap()
+    for it in f.items {
+      val name = recordItemName(it)
+      if name.length > 0 and not present.containsKey(name) {
+        present.add(name, true)
+      }
+    }
+    val added: List[Item] = newList()
+    for fr in records {
+      val name = recordItemName(fr.item)
+      if fr.pkg == pkg and name.length > 0 and not present.containsKey(name) {
+        present.add(name, true)
+        added.add(fr.item)
+      }
+    }
+    if added.count > 0 {
+      val items: List[Item] = newList()
+      for it in f.items {
+        items.add(it)
+      }
+      for it in added {
+        items.add(it)
+      }
+      files[fi] = f.copy(items = items)
+    }
+    fi = fi + 1
+  }
+}
+
+func recordItemName(it: in Item): String {
+  match it.kind {
+    case IRecord(d) -> d.name
+    case IExposedRec(d) -> d.name
+    case _ -> ""
+  }
+}
+
 /// `file` with `generics` (visible generic functions, as they stood before
 /// monomorphisation) appended, for codegen's own instantiation at a
 /// cross-package call.
@@ -928,6 +1013,7 @@ pub func compileToNativeWithShape(
     memberRecvClassesOut = optsRecvOut,
     methodCallAritiesOut = optsCallArities,
     genericItemsOut = newList(),
+    foreignValueRecordsOut = newList(),
     nativeIntrinsics = true
   )
   val userFile = match pipeMiddleEnd(userFile0, importedPkgs, noDeriveImports, noImportedGenFuncs, pipeInterfaceDecls(importedItemsForMono), pipeRecordDecls(importedItemsForMono), noTemplates, opts, None) {
@@ -1360,12 +1446,12 @@ pub func compileProjectToNativeWithShape(
   val ownFiles: List[SourceFile] = newList()
   // Each own file's `methodCallAritiesOut` (#7828), parallel to `ownFiles`.
   val ownCallArities: List[Map[String, Int]] = newList()
-  val noImportedGenFuncs: List[FunctionDecl] = newList()
   val noDeriveImports: List[Item] = newList()
   val noTemplates: Map[String, Weaver.CollectedTemplate] = newMap()
   val importedItemsForMono = flattenImportedItems(importedPkgs)
   val importedInterfaceDecls = pipeInterfaceDecls(importedItemsForMono)
   val importedRecordDecls = pipeRecordDecls(importedItemsForMono)
+  val foreignRecords: List[ForeignValueRecord] = newList()
   var mei = 0
   while mei < ownFiles0.count {
     // #6824 items 1/2: same label/origins attribution as the parse and
@@ -1379,6 +1465,7 @@ pub func compileProjectToNativeWithShape(
     val optsRecvOut: Map[String, String] = newMap()
     val optsCallArities: Map[String, Int] = newMap()
     val optsGenericItems: List[Item] = newList()
+    val optsForeignRecords: List[ForeignValueRecord] = newList()
     val opts = MiddleEndOptions(
       tcFatal = true,
       tcReport = false,
@@ -1392,10 +1479,12 @@ pub func compileProjectToNativeWithShape(
       memberRecvClassesOut = optsRecvOut,
       methodCallAritiesOut = optsCallArities,
       genericItemsOut = optsGenericItems,
+      foreignValueRecordsOut = optsForeignRecords,
       ioForbiddenReason = if mei < packages.count { packages[mei].ioForbiddenReason } else { "" },
       nativeIntrinsics = true
     )
-    val checked = match pipeMiddleEnd(ownFiles0[mei], importedPkgs, noDeriveImports, noImportedGenFuncs, importedInterfaceDecls, importedRecordDecls, noTemplates, opts, None) {
+    val siblingValueGenerics = siblingValueGenericFuncs(importedPkgs, dottedPath(ownFiles0[mei].packageDecl.path))
+    val checked = match pipeMiddleEnd(ownFiles0[mei], importedPkgs, noDeriveImports, siblingValueGenerics, importedInterfaceDecls, importedRecordDecls, noTemplates, opts, None) {
       case Some(f) -> f
       case None -> return false
     }
@@ -1403,8 +1492,12 @@ pub func compileProjectToNativeWithShape(
     // codegen can instantiate them for a call from another package.
     ownFiles.add(withGenericItems(checked, optsGenericItems))
     ownCallArities.add(optsCallArities)
+    for fr in optsForeignRecords {
+      foreignRecords.add(fr)
+    }
     mei = mei + 1
   }
+  withForeignValueRecords(ownFiles, foreignRecords)
 
   // Transitive stdlib import closure across every own package's imports.
   val toBundle: List[SourceFile] = newList()

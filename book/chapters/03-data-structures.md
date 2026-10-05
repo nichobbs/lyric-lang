@@ -379,7 +379,7 @@ val v = Ints(data = a)       // an Ints[3]: N comes from the field's length
 val z: Ints[5] = Ints()      // N from the type you ask for; data is zero filled
 ```
 
-`Ints[3]` and `Ints[5]` are different types, each compiled as its own record, and `N` is an `Int` constant in the methods. A method can also be declared outside the record as a generic function named after it, and is called the same way:
+`Ints[3]` and `Ints[5]` are different types, and `N` is an `Int` constant in the methods: each method is compiled once per length it is called with. A method is in fact a generic function named after the record, and can also be declared that way, outside it:
 
 ```lyric
 func Ints.first[N: Nat](self: in Ints[N]): Int = self.data[0]
@@ -387,7 +387,16 @@ func Ints.first[N: Nat](self: in Ints[N]): Int = self.data[0]
 val f = v.first()            // or Ints.first(v); compiled for N = 3
 ```
 
-Two fields that disagree about `N` are T0043. For now a record with a length parameter can be used only in the package that declares it (T0164), and a union, opaque type or protected type cannot take one (T0160, #8149).
+Two fields that disagree about `N` are T0043. A union, opaque type or protected type cannot take a length parameter (T0160, #8149).
+
+A record with a length parameter can be used from another package like any other. Its methods are compiled for each length a call uses, in the package that makes the call, so `.length`, bounds checks and copies stay constants there too:
+
+```lyric
+import Shapes            // declares `pub record Ints[N: Nat]` with `func sum`
+
+val v: Ints[3] = Ints()  // one type in every package that names it
+val s = v.sum()
+```
 
 **Slices** are dynamically sized, heap-allocated sequences. They are reference types backed by .NET's `List<T>`.
 

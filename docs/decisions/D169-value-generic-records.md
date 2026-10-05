@@ -79,7 +79,8 @@ is **T0160** where it is declared. This entry settles how it works.
      (`func sum[N: Nat](v: in FixedVec[Int, N])`) is specialised first, and
      then the records it names.
 
-6. **Package-local in this slice.** A value-generic record may be used only
+6. **Package-local in this slice** (SUPERSEDED by D173, which removes T0164
+   and changes item 5 on dotnet and the JVM). A value-generic record may be used only
    in the package that declares it. A use from another package, through an
    import or a restored dependency, is **T0164**.
 

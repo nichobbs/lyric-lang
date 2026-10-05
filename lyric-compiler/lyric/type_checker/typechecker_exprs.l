@@ -5569,7 +5569,6 @@ func noteValueRecordCtor(
   if not genericParamsHaveValue(params) {
     return
   }
-  reportForeignValueRecordSym(tbl, diag, sym, span)
   val vargs: List[TypeArg] = newList()
   var i = 0
   while i < params.count and i < targs.count {
@@ -11244,16 +11243,6 @@ func valueGenericParamsOf(tbl: in SymbolTable, fn: in Expr, argCount: in Int): L
   }
 }
 
-// A call to a value-generic function binds each value generic parameter
-// that sizes an array parameter to the length of the array argument (D167
-// item 6), or to the length the call gives explicitly (`total[3](a)`),
-// records an inferred binding for `Lyric.Mono`, and gives the result type
-// those lengths.  Two arguments binding one parameter to different lengths,
-// or an argument whose length is not the explicit one, is T0043; a parameter
-// neither the arguments nor the call give a length is T0110.
-// `Box.get(b)`: a two-segment path naming a generic dot-named function
-// (#8173), as the single-segment path `Box.get` the function is declared and
-// specialised under, at the same span.
 // The type of a call resolved to the direct signature `sig`: its return
 // type, with value generic parameters bound from the arguments.  A generic
 // dot-named function called through its type (`Box.get(b)`) is recorded for
@@ -11269,7 +11258,7 @@ func directCallType(
   val ret = instantiateReturnType(sig, argTypes)
   match dottedGenericPathCallee(tbl, fn, sig) {
     case Some(dottedFn) -> {
-      recordDottedGenericCallSite(tbl, fn.span, "s:" + dottedPathName(fn))
+      recordDottedGenericCallSite(tbl, fn.span, dottedPathName(fn), false)
       recordGenericCallTypeArgs(tbl, sig, valueGenericParamsOf(tbl, dottedFn, args.count), args, argTypes, fn.span)
       bindValueGenericCall(tbl, diag, dottedFn, args, argTypes, ret)
     }
@@ -11293,6 +11282,9 @@ func scopeHasName(sc: in Scope, name: in String): Bool {
   }
 }
 
+// `Box.get(b)`: a two-segment path naming a generic dot-named function
+// (#8173), as the single-segment path `Box.get` the function is declared and
+// specialised under, at the same span.
 func dottedGenericPathCallee(tbl: in SymbolTable, fn: in Expr, sig: in ResolvedSignature): Option[Expr] {
   if sig.generics.count == 0 {
     return None
@@ -11331,13 +11323,13 @@ func dottedPathName(fn: in Expr): String {
   }
 }
 
-func recordDottedGenericCallSite(tbl: in SymbolTable, sp: in Span, name: in String): Unit {
-  if isNoSourceSpan(sp) or name.length <= 2 {
+func recordDottedGenericCallSite(tbl: in SymbolTable, sp: in Span, name: in String, receiverFirst: in Bool): Unit {
+  if isNoSourceSpan(sp) or name.length == 0 {
     return
   }
   val key = recordCopySiteKey(sp)
   if not tbl.dottedGenericCallSites.containsKey(key) {
-    tbl.dottedGenericCallSites.add(key, name)
+    tbl.dottedGenericCallSites.add(key, DottedGenericCall(name = name, receiverFirst = receiverFirst))
   }
 }
 
@@ -11382,7 +11374,7 @@ func recordDottedGenericMethodCall(
   val recvExpr = match fn.kind { case EMember(r, _) -> r; case _ -> return instRet }
   val tname = match unrefine(recvTy) { case TyUser(_, n, _) -> n; case _ -> return instRet }
   val name = tname + "." + memberName
-  recordDottedGenericCallSite(tbl, fn.span, "m:" + name)
+  recordDottedGenericCallSite(tbl, fn.span, name, true)
   val segs: List[String] = newList()
   segs.add(name)
   val dottedFn = Expr(kind = EPath(path = ModulePath(segments = segs, span = fn.span)), span = fn.span)
@@ -11402,6 +11394,13 @@ func recordDottedGenericMethodCall(
   bindValueGenericCall(tbl, diag, dottedFn, fullArgs, fullArgTypes, instRet)
 }
 
+// A call to a value-generic function binds each value generic parameter
+// that sizes an array parameter to the length of the array argument (D167
+// item 6), or to the length the call gives explicitly (`total[3](a)`),
+// records an inferred binding for `Lyric.Mono`, and gives the result type
+// those lengths.  Two arguments binding one parameter to different lengths,
+// or an argument whose length is not the explicit one, is T0043; a parameter
+// neither the arguments nor the call give a length is T0110.
 func bindValueGenericCall(
   tbl: in SymbolTable,
   diag: in List[Diagnostic],

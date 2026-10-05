@@ -10289,3 +10289,17 @@ test "identical interpolated and if defaults are not T0161 (#8085)" {
   )
   assertEqualInt(countDiagCode(condDiff, "T0161"), 1, "a different if: " + diagCodesOf(condDiff))
 }
+
+// #8173: a call through the type name to a generic dot-named function
+// (`Box.get(b)`) is checked against the function's signature: before, its
+// callee was typed as an error with no diagnostic, so a wrong argument count
+// or type compiled.
+test "a type-qualified call to a generic dot-named function checks its arguments (#8173)" {
+  val decls = "package P\nrecord Box[T] {\n  v: T\n}\nfunc Box.get[T](self: in Box[T]): T = self.v\n"
+  val ok = parseCheck(decls + "func f(): Int = Box.get(Box(v = 1))\n")
+  assertEqualInt(ok.diagnostics.count, 0, "a well-formed call: " + diagCodesOf(ok))
+  val arity = parseCheck(decls + "func f(): Int = Box.get(Box(v = 1), 2, 3)\n")
+  assertEqualInt(countDiagCode(arity, "T0042"), 1, "too many arguments: " + diagCodesOf(arity))
+  val ty = parseCheck(decls + "func f(): String = Box.get(Box(v = 1))\n")
+  assertTrue(ty.diagnostics.count > 0, "the result is an Int: " + diagCodesOf(ty))
+}

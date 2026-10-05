@@ -3737,7 +3737,30 @@ pub func ownAwareExternTypes(file: in SourceFile, externSeed: in Map[String, Str
   }
   val merged = mergeExternSeed(collectExternTypesFromFile(file), mergeExternSeed(collidingOwn, externSeed))
   addCtorImportScope(file, merged)
+  addOwnValueRecords(file, merged)
   merged
+}
+
+// The file's own value-generic records with no type parameter, which are
+// non-generic classes (D173): an instance spelled `Vec[3]` is a generic
+// application, so without this it would erase to `Object` in a signature
+// while the record's own methods and fields name the class.
+func addOwnValueRecords(file: in SourceFile, into: in Map[String, String]): Unit {
+  val pkgDotted = dottedPathOfSegments(file.packageDecl.path.segments)
+  for it in file.items {
+    match it.kind {
+      case IRecord(d) -> addOwnValueRecord(d, pkgDotted, into)
+      case IExposedRec(d) -> addOwnValueRecord(d, pkgDotted, into)
+      case _ -> ()
+    }
+  }
+}
+
+func addOwnValueRecord(decl: in RecordDecl, pkgDotted: in String, into: in Map[String, String]): Unit {
+  val hasParams = match decl.generics { case Some(g) -> g.params.count > 0; case None -> false }
+  if hasParams and not recordIsGenericJvm(decl) and not into.containsKey(decl.name) {
+    into.add(decl.name, pkgDotted + "." + decl.name)
+  }
 }
 
 // Records which constructor names `file`'s imports bring into scope, so a
@@ -5799,8 +5822,8 @@ func collectOriginScopeMarkers(file: in SourceFile, into: in Map[String, String]
   while i < file.items.count {
     val genName = match file.items[i].kind {
       case IUnion(decl) -> match decl.generics { case Some(_) -> decl.name; case None -> "" }
-      case IRecord(decl) -> match decl.generics { case Some(_) -> decl.name; case None -> "" }
-      case IExposedRec(decl) -> match decl.generics { case Some(_) -> decl.name; case None -> "" }
+      case IRecord(decl) -> if recordIsGenericJvm(decl) { decl.name } else { "" }
+      case IExposedRec(decl) -> if recordIsGenericJvm(decl) { decl.name } else { "" }
       case IInterface(decl) -> match decl.generics { case Some(_) -> decl.name; case None -> "" }
       case _ -> ""
     }
@@ -5955,6 +5978,23 @@ func overlayPackageTypesJvm(view: in Map[String, String], externTypes: in Map[St
   }
 }
 
+// A record whose only generic parameters are values (`record Vec[N: Nat]`)
+// is one non-generic class: its value parameters are erased (D173).
+func recordIsGenericJvm(decl: in RecordDecl): Bool {
+  match decl.generics {
+    case Some(g) -> {
+      for p in g.params {
+        match p {
+          case GPType(_, _) -> return true
+          case GPValue(_, _, _) -> ()
+        }
+      }
+      false
+    }
+    case None -> false
+  }
+}
+
 pub func collectFileDeclaredTypeFqns(file: in SourceFile, into: in Map[String, String]): Unit {
   val pkgDotted = dottedPathOfSegments(file.packageDecl.path.segments)
   collectOriginScopeMarkers(file, into)
@@ -5972,25 +6012,15 @@ pub func collectFileDeclaredTypeFqns(file: in SourceFile, into: in Map[String, S
         }
       }
       case IRecord(decl) -> {
-        match decl.generics {
-          case None -> {
-            if not into.containsKey(decl.name) {
-              into.add(decl.name, pkgDotted + "." + decl.name)
-            }
-          }
-          case Some(_) -> ()
+        if not recordIsGenericJvm(decl) and not into.containsKey(decl.name) {
+          into.add(decl.name, pkgDotted + "." + decl.name)
         }
       }
       // #6526: `IExposedRec` carries the identical `RecordDecl` shape as
       // `IRecord` — same FQN registration.
       case IExposedRec(decl) -> {
-        match decl.generics {
-          case None -> {
-            if not into.containsKey(decl.name) {
-              into.add(decl.name, pkgDotted + "." + decl.name)
-            }
-          }
-          case Some(_) -> ()
+        if not recordIsGenericJvm(decl) and not into.containsKey(decl.name) {
+          into.add(decl.name, pkgDotted + "." + decl.name)
         }
       }
       case IProtected(decl) -> {

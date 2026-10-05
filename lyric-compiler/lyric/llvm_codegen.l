@@ -4897,9 +4897,11 @@ func lowerCallEx(
   }
   // A bare call inside a method to a method of the receiver's type is
   // `self.m(args)`, ahead of any free function of that name, as on dotnet
-  // and the JVM (#1722, #7985).
+  // and the JVM (#1722, #7985).  A dot-named function (`Vec.total__V2`, a
+  // specialised method of a value-generic record, D173) is called by its
+  // own name, never as a method of `self`.
   match fnExpr.kind {
-    case EPath(bp) -> if bp.segments.count == 1 {
+    case EPath(bp) -> if bp.segments.count == 1 and not Str.contains(bp.segments[0], ".") {
       match mapGet(ctx.varTypes, "self") {
         case Some(selfTy) -> if receiverHasMethod(ctx, receiverStructName(selfTy), bp.segments[0]) {
           val selfRecv = Expr(kind = ESelf, span = fnExpr.span)

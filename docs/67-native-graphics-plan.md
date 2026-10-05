@@ -199,9 +199,10 @@ three targets. On native an array of by-value elements is
 an inline `[N x T]` with no allocation and a by-value record may hold one; any
 other element type is a heap array. A value-generic length `N` (D167 item 6)
 sizes a function's array parameters and, since D169, a record's array fields
-(`record Mat[N: Nat] { var m: array[N, Float] }`), each length specialised on
-all three targets; a value-generic record is package-local for now (#8150),
-and unions, opaque and protected types cannot take one yet (#8149). An array
+(`record Mat[N: Nat] { var m: array[N, Float] }`), its methods specialised per
+length on all three targets and the record one type on dotnet and the JVM and
+one layout per length on native; such a record may be used from any package
+(D173), and unions, opaque and protected types cannot take one yet (#8149). An array
 in an `extern func` signature is open (N0010: C passes no array by value; pass
 a `NativePtr` to its first element).
 
