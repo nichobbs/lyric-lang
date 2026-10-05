@@ -103,10 +103,12 @@ test "generic, empty and union-holding records" {
   assertTrue(Tagged(shape = Shape.Nothing) == Tagged(shape = Shape.Nothing), "a nullary union field")
 }
 
-test "floating-point fields use IEEE equality" {
+test "a floating-point field is equal when == holds or both are NaN (D172)" {
   val nan = 0.0 / 0.0
-  assertFalse(Sample(v = nan) == Sample(v = nan), "NaN is not equal to itself")
+  assertTrue(Sample(v = nan) == Sample(v = nan), "a NaN field equals a NaN field")
+  assertFalse(Sample(v = nan) == Sample(v = 1.0), "NaN against a number")
   assertTrue(Sample(v = 0.0) == Sample(v = -0.0), "zero equals negative zero")
+  assertFalse(nan == nan, "a bare NaN is still not equal to itself")
 }
 
 test "a mutable record keeps identity unless it derives Equals" {

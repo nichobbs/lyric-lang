@@ -1623,8 +1623,9 @@ pub func buildRecordEqSite(tbl: in SymbolTable, span: in Span, t: in Type, negat
   val levelTypes: Map[String, TypeExpr] = newMap()
   val arrayLeaves: Map[String, ArrayEqSite] = newMap()
   val wrapLeaves: Map[String, EqShape] = newMap()
+  val floatLeaves: Map[String, Bool] = newMap()
   val visiting: List[String] = newList()
-  match collectEqLeaves(tbl, span, t, prefix, paths, levelTypes, arrayLeaves, wrapLeaves, visiting) {
+  match collectEqLeaves(tbl, span, t, prefix, paths, levelTypes, arrayLeaves, wrapLeaves, floatLeaves, visiting) {
     case Some(bad) -> Err(error = bad)
     case None -> Ok(
       value = RecordEqSite(
@@ -1633,7 +1634,8 @@ pub func buildRecordEqSite(tbl: in SymbolTable, span: in Span, t: in Type, negat
         recordType = typeExprForRef(tbl, t, span),
         negate = negate,
         arrayLeaves = arrayLeaves,
-        wrapLeaves = wrapLeaves
+        wrapLeaves = wrapLeaves,
+        floatLeaves = floatLeaves
       )
     )
   }
@@ -1648,6 +1650,7 @@ func collectEqLeaves(
   levelTypes: in Map[String, TypeExpr],
   arrayLeaves: in Map[String, ArrayEqSite],
   wrapLeaves: in Map[String, EqShape],
+  floatLeaves: in Map[String, Bool],
   visiting: in List[String],
 ): Option[String] {
   val u = unrefine(t)
@@ -1688,6 +1691,7 @@ func collectEqLeaves(
             levelTypes,
             arrayLeaves,
             wrapLeaves,
+            floatLeaves,
             visiting
           )
           match bad {
@@ -1709,6 +1713,7 @@ func collectEqLeaves(
           levelTypes,
           arrayLeaves,
           wrapLeaves,
+          floatLeaves,
           visiting
         )
         case None -> ()
@@ -1725,6 +1730,9 @@ func collectEqLeaves(
         wrapLeaves[dottedPath(prefix)] = shape
       }
     }
+  }
+  if isFloatLeafType(u) {
+    floatLeaves[dottedPath(prefix)] = isSingleFloatType(u)
   }
   leaves.add(prefix)
   None

@@ -138,6 +138,11 @@ pub record MonoResult {
   /// specialisation.  `Lyric.Pipeline` re-checks each of these and passes the
   /// conversions the checker records for it back in as `specSites`.
   unsignedSpecs: List[UnsignedSpecRequest]
+  /// Each specialisation binding a type parameter to a named type or a tuple,
+  /// which `==` in its body may compare by structure (D172).  `Lyric.Pipeline`
+  /// re-checks those whose body uses `==`/`!=`, so the comparison is lowered
+  /// as the bound type's.
+  structSpecs: List[UnsignedSpecRequest]
   /// Each specialisation of a generic declared in another package, its body
   /// as it was before its calls were rewritten.  That package's type checker
   /// resolved the body's method calls, so `Lyric.Pipeline` re-checks those
@@ -370,6 +375,7 @@ record MonoState {
   /// innermost last (an empty map for a body with none).
   activeSpecSites: List[Map[String, ArgConversionSite]]
   unsignedSpecs: List[UnsignedSpecRequest]
+  structSpecs: List[UnsignedSpecRequest]
   foreignSpecs: List[UnsignedSpecRequest]
   diags: List[Diagnostic]
 }
@@ -426,6 +432,7 @@ func newMonoState(
     specSites = newMap(),
     activeSpecSites = newList(),
     unsignedSpecs = newList(),
+    structSpecs = newList(),
     foreignSpecs = newList(),
     diags = newList()
   )
@@ -4417,6 +4424,7 @@ pub func desugarCheckedFile(
       rewrites = noRewrites,
       diagnostics = noDiags,
       unsignedSpecs = newList(),
+      structSpecs = newList(),
       foreignSpecs = newList()
     )
   }
@@ -4585,6 +4593,7 @@ pub func desugarCheckedFile(
     rewrites = noRewrites,
     diagnostics = state.diags,
     unsignedSpecs = newList(),
+    structSpecs = newList(),
     foreignSpecs = newList()
   )
 }
@@ -8611,6 +8620,7 @@ pub func monoFileWithLambdaTypes(
       rewrites = emptyRewrites,
       diagnostics = emptyDiags,
       unsignedSpecs = newList(),
+      structSpecs = newList(),
       foreignSpecs = newList()
     )
   }
@@ -8955,7 +8965,8 @@ pub func monoFileWithLambdaTypes(
     val specOrigin = originPkgOf(req.baseDecl.annotations)
     val unsignedSpec = substMentionsUnsignedMono(req.subst) or substMentionsArrayMono(req.subst) or
       req.valueSubst.count > 0
-    if unsignedSpec or specOrigin.length > 0 {
+    val structSpec = not unsignedSpec and substMentionsStructuredMono(req.subst)
+    if unsignedSpec or structSpec or specOrigin.length > 0 {
       val specReq = UnsignedSpecRequest(
         specName = req.specName,
         originPkg = specOrigin,
@@ -8979,6 +8990,9 @@ pub func monoFileWithLambdaTypes(
       )
       if unsignedSpec {
         state.unsignedSpecs.add(specReq)
+      }
+      if structSpec {
+        state.structSpecs.add(specReq)
       }
       if specOrigin.length > 0 {
         state.foreignSpecs.add(specReq)
@@ -9059,6 +9073,7 @@ pub func monoFileWithLambdaTypes(
     rewrites = rewrites,
     diagnostics = state.diags,
     unsignedSpecs = state.unsignedSpecs,
+    structSpecs = state.structSpecs,
     foreignSpecs = state.foreignSpecs
   )
 }
@@ -9117,6 +9132,42 @@ func substMentionsArrayMono(subst: in Map[String, TypeExpr]): Bool {
     }
   }
   false
+}
+
+// True when a type argument of `subst` is or holds a named type other than a
+// scalar, or a tuple: `==` on it may compare by structure (D172).
+func substMentionsStructuredMono(subst: in Map[String, TypeExpr]): Bool {
+  for k in mapKeys(subst) {
+    match mapGet(subst, k) {
+      case Some(te) -> if teMentionsStructuredMono(te) { return true }
+      case None -> ()
+    }
+  }
+  false
+}
+
+func teMentionsStructuredMono(te: in TypeExpr): Bool {
+  match te.kind {
+    case TRef(p) -> not isScalarPathMono(p)
+    case TRefined(p, _) -> not isScalarPathMono(p)
+    case TParen(inner) -> teMentionsStructuredMono(inner)
+    case TGenericApp(_, _) -> true
+    case TTuple(_) -> true
+    case TArray(_, _) -> true
+    case _ -> false
+  }
+}
+
+func isScalarPathMono(p: in ModulePath): Bool {
+  if p.segments.count != 1 {
+    return false
+  }
+  val n = p.segments[0]
+  n == "Int" or n == "Long" or n == "UInt" or n == "ULong" or n == "Nat" or n == "Byte" or n == "Bool" or n == "Char" or
+    n == "String" or
+    n == "Float" or
+    n == "Double" or
+    n == "Unit"
 }
 
 func teMentionsArrayMono(te: in TypeExpr): Bool {

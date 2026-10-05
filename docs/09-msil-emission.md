@@ -249,19 +249,30 @@ scenarios that require explicit layouts, the user must define an
 
 ### 5.3 Equality and hashing
 
-> `==` and `!=` on records are lowered before codegen (D164): field by field for a record with no `var` field or one deriving `Equals`, identity otherwise. The overrides below are what the CLR runtime uses for its own equality (collections, union payloads); emitting them for every such record is tracked in #8003.
+> `==` and `!=` on records are lowered before codegen (D164, D172): field by field for a record with no `var` field or one deriving `Equals`, identity otherwise. The overrides below are what the CLR runtime uses for its own equality (collections, union payloads).
 
-For the CLR's own equality (collections, union payloads), each such record is to carry (#8003):
+For the CLR's own equality, each record that compares field by field, and
+each union case class, carries `Equals(object)` and `GetHashCode()`
+overrides implementing D172's structural equality
+(`buildStructuralEqualityOverridesMsil`):
 
-- `Equals(object)` and `Equals(SelfType)` — field-by-field equality.
-- `GetHashCode()` — combination via `HashCode.Combine`.
-- `==` and `!=` operators.
+- **`Equals`.** An `isinst` against the class (its open self-instantiation
+  for a generic class) checks for null and for the same type or case. Then
+  each field is compared:
+  - an integer, `Bool` or `Char` field with `ceq`;
+  - a `List`-represented field (a `List`, an `array[N, T]` or a tuple) with
+    a loop over `IList`, recursing by the field's static element type;
+  - every other field through
+    `System.Collections.StructuralComparisons.StructuralEqualityComparer`.
+    Under it a boxed `Double`/`Single` uses `Double.Equals` (`NaN` equals
+    itself, `0.0` equals `-0.0`), and a nested record or union uses its own
+    override.
+- **`GetHashCode`.** Folds `h = h*31 + fieldHash` through the same comparer
+  and loops, so equal values hash alike.
 
-For `readonly struct` records the equality is value-equality; for
-`record class` records, the C# `record class` machinery handles it
-identically (the compiler may simply target `record class` syntax
-and let Roslyn-generated semantics apply; for the bootstrap, we emit
-the IL ourselves to avoid Roslyn dependency).
+A mutable record that does not derive `Equals` keeps `Object`'s identity
+equality. With `@derive(Hash)` its `GetHashCode` delegates to the derived
+`T.hash`.
 
 ### 5.4 Construction and `copy`
 

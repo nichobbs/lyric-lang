@@ -1366,25 +1366,42 @@ func hasDeriveMarkerJvm(anns: in List[Annotation], marker: in String): Bool {
   false
 }
 
-// Append `equals(Object): boolean` / `hashCode(): int` overrides to `methods`
-// when `anns` carries `@derive(Equals)` / `@derive(Hash)` on a record, so BCL
-// `HashMap`/`HashSet` key lookup (which dispatches these virtually) is
-// structural rather than identity-based, matching the MSIL
-// `appendDeriveOverridesMsil` behaviour for `Dictionary`/`HashSet` (#1480 on
-// MSIL; docs/44 m-key / #4982 Finding 1 on JVM).  Delegates to the shared
-// `Jvm.Lowering.buildDeriveEqualsFunc`/`buildDeriveHashCodeFunc` builders.
+// Append the `equals(Object)` / `hashCode()` overrides of a record (#1480,
+// D172).  A record that compares field by field (it derives `Equals`, or none
+// of its fields is `var`) gets both, comparing and hashing its fields under
+// structural equality (`Jvm.Lowering.buildStructuralEqualsFunc`), so
+// `HashMap`/`HashSet` keys, `List.contains` and union payloads agree with
+// `==`.  A mutable record keeps identity; with `@derive(Hash)` it gets the
+// structural hash, which identity equality is consistent with.
 func appendDeriveOverridesJvm(
   methods: in List[LFunc],
   className: in String,
   fields: in List[LField],
+  decl: in RecordDecl,
   anns: in List[Annotation],
+  usedRuntimeHelpers: in List[String],
 ): Unit {
-  if hasDeriveMarkerJvm(anns, "Equals") {
+  if recordComparesByFieldsJvm(decl, anns) {
     methods.add(buildDeriveEqualsFunc(className, fields))
-  }
-  if hasDeriveMarkerJvm(anns, "Hash") {
     methods.add(buildDeriveHashCodeFunc(className, fields))
+    markKeyEqHelpers(usedRuntimeHelpers)
+  } else if hasDeriveMarkerJvm(anns, "Hash") {
+    methods.add(buildDeriveHashCodeFunc(className, fields))
+    markKeyEqHelpers(usedRuntimeHelpers)
   }
+}
+
+func recordComparesByFieldsJvm(decl: in RecordDecl, anns: in List[Annotation]): Bool {
+  if hasDeriveMarkerJvm(anns, "Equals") {
+    return true
+  }
+  for m in decl.members {
+    match m {
+      case RMField(fd) -> if fd.isMutable { return false }
+      case _ -> ()
+    }
+  }
+  true
 }
 
 pub func lowerRecord(
@@ -7066,6 +7083,435 @@ func makeListToArrHelperFunc(elem: in JvmType): LFunc {
   )
 }
 
+// `static boolean __lyricKeyEqD(double a, double b)`: D172's structural
+// equality on a `Double` leaf — `a == b`, or both `NaN`.
+func makeKeyEqDoubleHelperFunc(): LFunc {
+  val insns: List[LInsn] = newList()
+  insns.add(LDload(slot = 0))
+  insns.add(LDload(slot = 2))
+  insns.add(LDcmpl)
+  insns.add(LIfne(label = "__ked_ne"))
+  insns.add(LIconst(v = 1))
+  insns.add(LIreturn)
+  insns.add(LLabel(name = "__ked_ne"))
+  insns.add(LDload(slot = 0))
+  insns.add(LDload(slot = 0))
+  insns.add(LDcmpl)
+  insns.add(LIfeq(label = "__ked_f"))
+  insns.add(LDload(slot = 2))
+  insns.add(LDload(slot = 2))
+  insns.add(LDcmpl)
+  insns.add(LIfeq(label = "__ked_f"))
+  insns.add(LIconst(v = 1))
+  insns.add(LIreturn)
+  insns.add(LLabel(name = "__ked_f"))
+  insns.add(LIconst(v = 0))
+  insns.add(LIreturn)
+  val ps: List[JvmType] = newList()
+  ps.add(JDouble)
+  ps.add(JDouble)
+  LFunc(
+    flags = 0x0009,
+    name = keyEqDoubleHelperName(),
+    params = ps,
+    ret = JBoolean,
+    insns = insns,
+    maxStack = 4,
+    maxLocals = 4
+  )
+}
+
+// `static boolean __lyricKeyEqF(float a, float b)`: as `__lyricKeyEqD`.
+func makeKeyEqFloatHelperFunc(): LFunc {
+  val insns: List[LInsn] = newList()
+  insns.add(LFload(slot = 0))
+  insns.add(LFload(slot = 1))
+  insns.add(LFcmpl)
+  insns.add(LIfne(label = "__kef_ne"))
+  insns.add(LIconst(v = 1))
+  insns.add(LIreturn)
+  insns.add(LLabel(name = "__kef_ne"))
+  insns.add(LFload(slot = 0))
+  insns.add(LFload(slot = 0))
+  insns.add(LFcmpl)
+  insns.add(LIfeq(label = "__kef_f"))
+  insns.add(LFload(slot = 1))
+  insns.add(LFload(slot = 1))
+  insns.add(LFcmpl)
+  insns.add(LIfeq(label = "__kef_f"))
+  insns.add(LIconst(v = 1))
+  insns.add(LIreturn)
+  insns.add(LLabel(name = "__kef_f"))
+  insns.add(LIconst(v = 0))
+  insns.add(LIreturn)
+  val ps: List[JvmType] = newList()
+  ps.add(JFloat)
+  ps.add(JFloat)
+  LFunc(
+    flags = 0x0009,
+    name = keyEqFloatHelperName(),
+    params = ps,
+    ret = JBoolean,
+    insns = insns,
+    maxStack = 4,
+    maxLocals = 2
+  )
+}
+
+// The primitive arrays `__lyricKeyEq`/`__lyricKeyHash` hand to
+// `java.util.Arrays`: every typed array but `float[]`/`double[]`, whose
+// elements follow D172's `NaN` and zero rule instead.
+func keyEqArraysElems(): List[JvmType] {
+  val es: List[JvmType] = newList()
+  es.add(JInt)
+  es.add(JLong)
+  es.add(JBoolean)
+  es.add(JByte)
+  es.add(JChar)
+  es.add(JShort)
+  es
+}
+
+// `static boolean __lyricKeyEq(Object a, Object b)`: D172's structural
+// equality on two values whose static type is a reference.  A boxed
+// `Double`/`Float` follows `__lyricKeyEqD`/`__lyricKeyEqF` (`Double.equals`
+// would hold `0.0` and `-0.0` unequal); a `double[]`/`float[]` or an
+// `ArrayList` (an `array[N, T]` of another element type, or a `List`) is
+// compared element by element under the same rules; another typed array
+// through `Arrays.equals`; anything else through its own `equals`, which for
+// a record or union is its structural override.
+func makeKeyEqHelperFunc(owner: in String): LFunc {
+  val objT = JRef(className = "java/lang/Object")
+  val listCls = "java/util/ArrayList"
+  val insns: List[LInsn] = newList()
+  val objPs: List[JvmType] = newList()
+  objPs.add(objT)
+  objPs.add(objT)
+  val noPs: List[JvmType] = newList()
+  val getPs: List[JvmType] = newList()
+  getPs.add(JInt)
+  // Slot 2 (the loop index) is an `int` on every path, so every frame agrees.
+  insns.add(LIconst(v = 0))
+  insns.add(LIstore(slot = 2))
+  insns.add(LAload(slot = 0))
+  insns.add(LAload(slot = 1))
+  insns.add(LIfAcmpne(label = "__ke_ne"))
+  insns.add(LIconst(v = 1))
+  insns.add(LIreturn)
+  insns.add(LLabel(name = "__ke_ne"))
+  insns.add(LAload(slot = 0))
+  insns.add(LIfnull(label = "__ke_f"))
+  insns.add(LAload(slot = 1))
+  insns.add(LIfnull(label = "__ke_f"))
+  // Boxed scalars.
+  emitKeyEqBoxed(insns, owner, "java/lang/Double", "doubleValue", JDouble, keyEqDoubleHelperName(), "__ke_flt")
+  insns.add(LLabel(name = "__ke_flt"))
+  emitKeyEqBoxed(insns, owner, "java/lang/Float", "floatValue", JFloat, keyEqFloatHelperName(), "__ke_darr")
+  // `double[]` / `float[]`, element by element.
+  insns.add(LLabel(name = "__ke_darr"))
+  emitKeyEqFloatArray(insns, owner, JDouble, keyEqDoubleHelperName(), "__ke_d", "__ke_farr")
+  insns.add(LLabel(name = "__ke_farr"))
+  emitKeyEqFloatArray(insns, owner, JFloat, keyEqFloatHelperName(), "__ke_fl", "__ke_list")
+  // `ArrayList`, element by element through this helper.
+  insns.add(LLabel(name = "__ke_list"))
+  insns.add(LAload(slot = 0))
+  insns.add(LInstanceof(className = listCls))
+  insns.add(LIfeq(label = "__ke_prim0"))
+  insns.add(LAload(slot = 1))
+  insns.add(LInstanceof(className = listCls))
+  insns.add(LIfeq(label = "__ke_f"))
+  insns.add(LAload(slot = 0))
+  insns.add(LCheckcast(className = listCls))
+  insns.add(LInvokevirtual(owner = listCls, name = "size", params = noPs, ret = JInt))
+  insns.add(LAload(slot = 1))
+  insns.add(LCheckcast(className = listCls))
+  insns.add(LInvokevirtual(owner = listCls, name = "size", params = noPs, ret = JInt))
+  insns.add(LIfIcmpne(label = "__ke_f"))
+  insns.add(LLabel(name = "__ke_list_loop"))
+  insns.add(LIload(slot = 2))
+  insns.add(LAload(slot = 0))
+  insns.add(LCheckcast(className = listCls))
+  insns.add(LInvokevirtual(owner = listCls, name = "size", params = noPs, ret = JInt))
+  insns.add(LIfIcmpge(label = "__ke_t"))
+  insns.add(LAload(slot = 0))
+  insns.add(LCheckcast(className = listCls))
+  insns.add(LIload(slot = 2))
+  insns.add(LInvokevirtual(owner = listCls, name = "get", params = getPs, ret = objT))
+  insns.add(LAload(slot = 1))
+  insns.add(LCheckcast(className = listCls))
+  insns.add(LIload(slot = 2))
+  insns.add(LInvokevirtual(owner = listCls, name = "get", params = getPs, ret = objT))
+  insns.add(LInvokestatic(owner = owner, name = keyEqHelperName(), params = objPs, ret = JBoolean))
+  insns.add(LIfeq(label = "__ke_f"))
+  insns.add(LIinc(slot = 2, delta = 1))
+  insns.add(LGoto(label = "__ke_list_loop"))
+  // Other typed arrays through `Arrays.equals`.
+  val elems = keyEqArraysElems()
+  var k = 0
+  while k < elems.count {
+    val arrTy = JArray(elem = elems[k])
+    val arrDesc = typeDescriptor(arrTy)
+    insns.add(LLabel(name = "__ke_prim" + toString(k)))
+    insns.add(LAload(slot = 0))
+    insns.add(LInstanceof(className = arrDesc))
+    insns.add(LIfeq(label = "__ke_prim" + toString(k + 1)))
+    insns.add(LAload(slot = 1))
+    insns.add(LInstanceof(className = arrDesc))
+    insns.add(LIfeq(label = "__ke_f"))
+    insns.add(LAload(slot = 0))
+    insns.add(LCheckcast(className = arrDesc))
+    insns.add(LAload(slot = 1))
+    insns.add(LCheckcast(className = arrDesc))
+    val aPs: List[JvmType] = newList()
+    aPs.add(arrTy)
+    aPs.add(arrTy)
+    insns.add(LInvokestatic(owner = "java/util/Arrays", name = "equals", params = aPs, ret = JBoolean))
+    insns.add(LIreturn)
+    k = k + 1
+  }
+  insns.add(LLabel(name = "__ke_prim" + toString(elems.count)))
+  insns.add(LAload(slot = 0))
+  insns.add(LAload(slot = 1))
+  val eqPs: List[JvmType] = newList()
+  eqPs.add(objT)
+  insns.add(LInvokevirtual(owner = "java/lang/Object", name = "equals", params = eqPs, ret = JBoolean))
+  insns.add(LIreturn)
+  insns.add(LLabel(name = "__ke_t"))
+  insns.add(LIconst(v = 1))
+  insns.add(LIreturn)
+  insns.add(LLabel(name = "__ke_f"))
+  insns.add(LIconst(v = 0))
+  insns.add(LIreturn)
+  LFunc(
+    flags = 0x0009,
+    name = keyEqHelperName(),
+    params = objPs,
+    ret = JBoolean,
+    insns = insns,
+    maxStack = 6,
+    maxLocals = 3
+  )
+}
+
+// When `a` (slot 0) is a `boxCls`, return the scalar helper's verdict on it
+// and `b` (slot 1), or false when `b` is not one; otherwise go to `next`.
+func emitKeyEqBoxed(
+  insns: in List[LInsn],
+  owner: in String,
+  boxCls: in String,
+  unboxName: in String,
+  prim: in JvmType,
+  helper: in String,
+  next: in String,
+): Unit {
+  val noPs: List[JvmType] = newList()
+  insns.add(LAload(slot = 0))
+  insns.add(LInstanceof(className = boxCls))
+  insns.add(LIfeq(label = next))
+  insns.add(LAload(slot = 1))
+  insns.add(LInstanceof(className = boxCls))
+  insns.add(LIfeq(label = "__ke_f"))
+  insns.add(LAload(slot = 0))
+  insns.add(LCheckcast(className = boxCls))
+  insns.add(LInvokevirtual(owner = boxCls, name = unboxName, params = noPs, ret = prim))
+  insns.add(LAload(slot = 1))
+  insns.add(LCheckcast(className = boxCls))
+  insns.add(LInvokevirtual(owner = boxCls, name = unboxName, params = noPs, ret = prim))
+  val ps: List[JvmType] = newList()
+  ps.add(prim)
+  ps.add(prim)
+  insns.add(LInvokestatic(owner = owner, name = helper, params = ps, ret = JBoolean))
+  insns.add(LIreturn)
+}
+
+// When `a` (slot 0) is a `<prim>[]`, compare it with `b` (slot 1) element by
+// element through `helper`, using slot 2 as the index; otherwise go to `next`.
+func emitKeyEqFloatArray(
+  insns: in List[LInsn],
+  owner: in String,
+  prim: in JvmType,
+  helper: in String,
+  tag: in String,
+  next: in String,
+): Unit {
+  val arrDesc = typeDescriptor(JArray(elem = prim))
+  insns.add(LAload(slot = 0))
+  insns.add(LInstanceof(className = arrDesc))
+  insns.add(LIfeq(label = next))
+  insns.add(LAload(slot = 1))
+  insns.add(LInstanceof(className = arrDesc))
+  insns.add(LIfeq(label = "__ke_f"))
+  insns.add(LAload(slot = 0))
+  insns.add(LCheckcast(className = arrDesc))
+  insns.add(LArraylength)
+  insns.add(LAload(slot = 1))
+  insns.add(LCheckcast(className = arrDesc))
+  insns.add(LArraylength)
+  insns.add(LIfIcmpne(label = "__ke_f"))
+  insns.add(LLabel(name = tag + "_loop"))
+  insns.add(LIload(slot = 2))
+  insns.add(LAload(slot = 0))
+  insns.add(LCheckcast(className = arrDesc))
+  insns.add(LArraylength)
+  insns.add(LIfIcmpge(label = "__ke_t"))
+  insns.add(LAload(slot = 0))
+  insns.add(LCheckcast(className = arrDesc))
+  insns.add(LIload(slot = 2))
+  emitArrayLoad(insns, prim)
+  insns.add(LAload(slot = 1))
+  insns.add(LCheckcast(className = arrDesc))
+  insns.add(LIload(slot = 2))
+  emitArrayLoad(insns, prim)
+  val ps: List[JvmType] = newList()
+  ps.add(prim)
+  ps.add(prim)
+  insns.add(LInvokestatic(owner = owner, name = helper, params = ps, ret = JBoolean))
+  insns.add(LIfeq(label = "__ke_f"))
+  insns.add(LIinc(slot = 2, delta = 1))
+  insns.add(LGoto(label = tag + "_loop"))
+}
+
+// `static int __lyricKeyHash(Object a)`: a hash consistent with
+// `__lyricKeyEq`.  Null hashes to 0; a boxed or arrayed `Double`/`Float` adds
+// `0.0` before `Double.hashCode`/`Float.hashCode`, so both zeros and every
+// `NaN` hash alike; an `ArrayList` folds `h*31 + hash(e)` over its elements;
+// another typed array goes through `Arrays.hashCode`; anything else through
+// its own `hashCode`.
+func makeKeyHashHelperFunc(owner: in String): LFunc {
+  val objT = JRef(className = "java/lang/Object")
+  val listCls = "java/util/ArrayList"
+  val insns: List[LInsn] = newList()
+  val noPs: List[JvmType] = newList()
+  val objPs: List[JvmType] = newList()
+  objPs.add(objT)
+  val getPs: List[JvmType] = newList()
+  getPs.add(JInt)
+  // Slot 1 (the hash) and slot 2 (the index) are `int` on every path.
+  insns.add(LIconst(v = 1))
+  insns.add(LIstore(slot = 1))
+  insns.add(LIconst(v = 0))
+  insns.add(LIstore(slot = 2))
+  insns.add(LAload(slot = 0))
+  insns.add(LIfnonnull(label = "__kh_dbl"))
+  insns.add(LIconst(v = 0))
+  insns.add(LIreturn)
+  insns.add(LLabel(name = "__kh_dbl"))
+  insns.add(LAload(slot = 0))
+  insns.add(LInstanceof(className = "java/lang/Double"))
+  insns.add(LIfeq(label = "__kh_flt"))
+  insns.add(LAload(slot = 0))
+  insns.add(LCheckcast(className = "java/lang/Double"))
+  insns.add(LInvokevirtual(owner = "java/lang/Double", name = "doubleValue", params = noPs, ret = JDouble))
+  emitKeyHashOfTop(insns, JDouble, owner)
+  insns.add(LIreturn)
+  insns.add(LLabel(name = "__kh_flt"))
+  insns.add(LAload(slot = 0))
+  insns.add(LInstanceof(className = "java/lang/Float"))
+  insns.add(LIfeq(label = "__kh_darr"))
+  insns.add(LAload(slot = 0))
+  insns.add(LCheckcast(className = "java/lang/Float"))
+  insns.add(LInvokevirtual(owner = "java/lang/Float", name = "floatValue", params = noPs, ret = JFloat))
+  emitKeyHashOfTop(insns, JFloat, owner)
+  insns.add(LIreturn)
+  insns.add(LLabel(name = "__kh_darr"))
+  emitKeyHashFloatArray(insns, owner, JDouble, "__kh_d", "__kh_farr")
+  insns.add(LLabel(name = "__kh_farr"))
+  emitKeyHashFloatArray(insns, owner, JFloat, "__kh_fl", "__kh_list")
+  insns.add(LLabel(name = "__kh_list"))
+  insns.add(LAload(slot = 0))
+  insns.add(LInstanceof(className = listCls))
+  insns.add(LIfeq(label = "__kh_prim0"))
+  insns.add(LLabel(name = "__kh_list_loop"))
+  insns.add(LIload(slot = 2))
+  insns.add(LAload(slot = 0))
+  insns.add(LCheckcast(className = listCls))
+  insns.add(LInvokevirtual(owner = listCls, name = "size", params = noPs, ret = JInt))
+  insns.add(LIfIcmpge(label = "__kh_done"))
+  insns.add(LIconst(v = 31))
+  insns.add(LIload(slot = 1))
+  insns.add(LImul)
+  insns.add(LAload(slot = 0))
+  insns.add(LCheckcast(className = listCls))
+  insns.add(LIload(slot = 2))
+  insns.add(LInvokevirtual(owner = listCls, name = "get", params = getPs, ret = objT))
+  insns.add(LInvokestatic(owner = owner, name = keyHashHelperName(), params = objPs, ret = JInt))
+  insns.add(LIadd)
+  insns.add(LIstore(slot = 1))
+  insns.add(LIinc(slot = 2, delta = 1))
+  insns.add(LGoto(label = "__kh_list_loop"))
+  val elems = keyEqArraysElems()
+  var k = 0
+  while k < elems.count {
+    val arrTy = JArray(elem = elems[k])
+    val arrDesc = typeDescriptor(arrTy)
+    insns.add(LLabel(name = "__kh_prim" + toString(k)))
+    insns.add(LAload(slot = 0))
+    insns.add(LInstanceof(className = arrDesc))
+    insns.add(LIfeq(label = "__kh_prim" + toString(k + 1)))
+    insns.add(LAload(slot = 0))
+    insns.add(LCheckcast(className = arrDesc))
+    val aPs: List[JvmType] = newList()
+    aPs.add(arrTy)
+    insns.add(LInvokestatic(owner = "java/util/Arrays", name = "hashCode", params = aPs, ret = JInt))
+    insns.add(LIreturn)
+    k = k + 1
+  }
+  insns.add(LLabel(name = "__kh_prim" + toString(elems.count)))
+  insns.add(LAload(slot = 0))
+  insns.add(LInvokevirtual(owner = "java/lang/Object", name = "hashCode", params = noPs, ret = JInt))
+  insns.add(LIreturn)
+  insns.add(LLabel(name = "__kh_done"))
+  insns.add(LIload(slot = 1))
+  insns.add(LIreturn)
+  LFunc(
+    flags = 0x0009,
+    name = keyHashHelperName(),
+    params = objPs,
+    ret = JInt,
+    insns = insns,
+    maxStack = 6,
+    maxLocals = 3
+  )
+}
+
+// When `a` (slot 0) is a `<prim>[]`, fold its elements' hashes into slot 1
+// and return it; otherwise go to `next`.
+func emitKeyHashFloatArray(
+  insns: in List[LInsn], owner: in String, prim: in JvmType, tag: in String, next: in String
+): Unit {
+  val arrDesc = typeDescriptor(JArray(elem = prim))
+  insns.add(LAload(slot = 0))
+  insns.add(LInstanceof(className = arrDesc))
+  insns.add(LIfeq(label = next))
+  insns.add(LLabel(name = tag + "_loop"))
+  insns.add(LIload(slot = 2))
+  insns.add(LAload(slot = 0))
+  insns.add(LCheckcast(className = arrDesc))
+  insns.add(LArraylength)
+  insns.add(LIfIcmpge(label = "__kh_done"))
+  insns.add(LIconst(v = 31))
+  insns.add(LIload(slot = 1))
+  insns.add(LImul)
+  insns.add(LAload(slot = 0))
+  insns.add(LCheckcast(className = arrDesc))
+  insns.add(LIload(slot = 2))
+  emitArrayLoad(insns, prim)
+  emitKeyHashOfTop(insns, prim, owner)
+  insns.add(LIadd)
+  insns.add(LIstore(slot = 1))
+  insns.add(LIinc(slot = 2, delta = 1))
+  insns.add(LGoto(label = tag + "_loop"))
+}
+
+/// Record that this package's functions class needs the structural-equality
+/// helpers (D172): a record compared field by field or a union case calls
+/// them from its `equals`/`hashCode`.
+func markKeyEqHelpers(used: in List[String]): Unit {
+  if not runtimeHelperUsed(used, keyEqHelperName()) {
+    used.add(keyEqHelperName())
+  }
+}
+
 pub func erasedIndexGetHelperName(): String = "__lyricErasedIndexGet"
 
 pub func erasedToSliceHelperName(): String = "__lyricErasedToSlice"
@@ -8113,7 +8559,7 @@ pub func codegenPackageWithSigsSeeded(
         for fn in implFuncs.toArray() {
           mergedMethods.add(fn)
         }
-        appendDeriveOverridesJvm(mergedMethods, baseRec.className, baseRec.fields, item.annotations)
+        appendDeriveOverridesJvm(mergedMethods, baseRec.className, baseRec.fields, decl, item.annotations, usedRuntimeHelpers)
         items.add(
           LPRecord(
             rec = LRecord(
@@ -8173,7 +8619,7 @@ pub func codegenPackageWithSigsSeeded(
         for fn in implFuncs.toArray() {
           mergedMethods.add(fn)
         }
-        appendDeriveOverridesJvm(mergedMethods, baseRec.className, baseRec.fields, item.annotations)
+        appendDeriveOverridesJvm(mergedMethods, baseRec.className, baseRec.fields, decl, item.annotations, usedRuntimeHelpers)
         items.add(
           LPRecord(
             rec = LRecord(
@@ -8186,6 +8632,7 @@ pub func codegenPackageWithSigsSeeded(
         )
       }
       case IUnion(decl) -> {
+        markKeyEqHelpers(usedRuntimeHelpers)
         items.add(LPSealedUnion(su = lowerUnion(decl, pkgName, externTypes, aliasTargets, localTypeNames)))
       }
       case IConst(_) -> {
@@ -8720,6 +9167,12 @@ pub func codegenPackageWithSigsSeeded(
   }
   if runtimeHelperUsed(usedRuntimeHelpers, erasedToSliceHelperName()) {
     fns.add(makeErasedToSliceHelperFunc())
+  }
+  if runtimeHelperUsed(usedRuntimeHelpers, keyEqHelperName()) {
+    fns.add(makeKeyEqHelperFunc(funcsClass))
+    fns.add(makeKeyHashHelperFunc(funcsClass))
+    fns.add(makeKeyEqDoubleHelperFunc())
+    fns.add(makeKeyEqFloatHelperFunc())
   }
   if runtimeHelperUsed(usedRuntimeHelpers, erasedIndexGetHelperName()) {
     fns.add(makeErasedIndexGetHelperFunc())

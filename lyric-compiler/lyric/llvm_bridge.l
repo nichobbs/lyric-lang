@@ -2454,6 +2454,7 @@ func unitOf(
   val wasmImports: List[WasmImportDecl] = newList()
   val records: List[RecordDecl] = newList()
   val opaqueNames: List[String] = newList()
+  val eqByFields: List[String] = newList()
   val unions: List[UnionDecl] = newList()
   val enums: List[EnumDecl] = newList()
   val distincts: List[DistinctTypeDecl] = newList()
@@ -2492,6 +2493,9 @@ func unitOf(
       }
       case IRecord(decl) -> {
         records.add(decl)
+        if recordComparesByFieldsNative(decl, f.items[i].annotations) {
+          eqByFields.add(decl.name)
+        }
         if lowerAll {
           collectRecordMethods(pkg, decl, fns)
         }
@@ -2557,6 +2561,7 @@ func unitOf(
     wasmImports = wasmImports,
     records = records,
     opaqueNames = opaqueNames,
+    eqByFields = eqByFields,
     unions = unions,
     enums = enums,
     distincts = distincts,

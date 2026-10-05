@@ -1264,6 +1264,10 @@ pub record RecordEqSite {
   /// The leaves of `paths` that are a tuple, union or distinct type holding an
   /// array, keyed by dotted path: compared by their `EqShape`.
   wrapLeaves: Map[String, EqShape]
+  /// The leaves of `paths` that are `Float`/`Double`, keyed by dotted path
+  /// (true for a 32-bit `Float`): equal when `==` holds or both are `NaN`
+  /// (D172).
+  floatLeaves: Map[String, Bool]
 }
 
 /// How `==` compares one element of an array (D167): with the element
@@ -1272,6 +1276,9 @@ pub record RecordEqSite {
 pub union ArrayEqElem {
   case AEPlain
   case AEValue
+  /// A `Float` (`single`) or `Double` element, read through `value` when
+  /// `viaValue` is set: equal when `==` holds or both are `NaN` (D172).
+  case AEFloat(viaValue: Bool, single: Bool)
   case AERecord(site: RecordEqSite)
   case AEArray(site: ArrayEqSite)
   case AEShape(shape: EqShape)
@@ -1282,6 +1289,9 @@ pub union ArrayEqElem {
 /// host's own equality would compare the array by reference.
 pub union EqShape {
   case ESPlain
+  /// A `Float` (`single`) or `Double`: equal when `==` holds or both are
+  /// `NaN` (D172).
+  case ESFloat(single: Bool)
   case ESArray(site: ArrayEqSite)
   case ESRecord(site: RecordEqSite)
   case ESDistinct(inner: EqShape)

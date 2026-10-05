@@ -140,6 +140,13 @@ pub record CodegenCtx {
   tokStringToUpper: Int  // String.ToUpperInvariant(): string
   // Object.Equals(object,object): bool  static (for value-equal string comparisons)
   tokObjectStaticEquals: Int
+  // StructuralComparisons.StructuralEqualityComparer (static getter) and the
+  // non-generic IEqualityComparer's Equals(object,object) / GetHashCode(object):
+  // a record's and a union case's `Equals`/`GetHashCode` compare a reference
+  // field through it, so an array compares element by element (D172).
+  tokStructEqComparer: Int
+  tokEqComparerEquals: Int
+  tokEqComparerHash: Int
   // String.CompareOrdinal(string,string): int32  static — backs the relational
   // operators (`<` / `>` / `<=` / `>=`) on `String` operands.  Without it the
   // relational arms emit a raw `clt` / `cgt`, which compares the two string
@@ -1791,6 +1798,45 @@ pub func newCodegenCtx(
       buildStaticMethodSig(objEqPs, MBool)
     )
 
+  // StructuralComparisons.StructuralEqualityComparer: IEqualityComparer
+  // (static getter) and IEqualityComparer.Equals(object, object) /
+  // GetHashCode(object) (D172).
+  val trStructuralComparisons = ctxAddTypeRef(lctx, "System.Collections", "StructuralComparisons", arCollections)
+  val trIEqualityComparer = ctxAddTypeRef(lctx, "System.Collections", "IEqualityComparer", lctx.arRuntime)
+  val eqCmpTy: MsilType = MClassRef(
+    typeRefCode = tdrTypeRef(trIEqualityComparer),
+    clrFqn = "System.Collections.IEqualityComparer"
+  )
+  val tokStructEqComparer = 0x0A000000 +
+    ctxAddMemberRef(
+      lctx,
+      trStructuralComparisons,
+      "get_StructuralEqualityComparer",
+      "structcmp_get_eq",
+      buildStaticMethodSig(newList(), eqCmpTy)
+    )
+  val eqCmpEqPs: List[MsilType] = newList()
+  eqCmpEqPs.add(MObject)
+  eqCmpEqPs.add(MObject)
+  val tokEqComparerEquals = 0x0A000000 +
+    ctxAddMemberRef(
+      lctx,
+      trIEqualityComparer,
+      "Equals",
+      "eqcmp_equals",
+      buildInstanceMethodSig(eqCmpEqPs, MBool)
+    )
+  val eqCmpHashPs: List[MsilType] = newList()
+  eqCmpHashPs.add(MObject)
+  val tokEqComparerHash = 0x0A000000 +
+    ctxAddMemberRef(
+      lctx,
+      trIEqualityComparer,
+      "GetHashCode",
+      "eqcmp_hash",
+      buildInstanceMethodSig(eqCmpHashPs, MInt)
+    )
+
   // String.CompareOrdinal(string, string): int32  static — lexicographic
   // ordinal comparison for the relational operators on `String` (#2539).
   val strCmpOrdPs: List[MsilType] = newList()
@@ -2277,6 +2323,9 @@ pub func newCodegenCtx(
     tokStringToLower = tokStringToLower,
     tokStringToUpper = tokStringToUpper,
     tokObjectStaticEquals = tokObjectStaticEquals,
+    tokStructEqComparer = tokStructEqComparer,
+    tokEqComparerEquals = tokEqComparerEquals,
+    tokEqComparerHash = tokEqComparerHash,
     tokStringCompareOrdinal = tokStringCompareOrdinal,
     trTask = trTask,
     trTask1 = trTask1,
@@ -3933,20 +3982,19 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
           }
           ni = ni + 1
         }
-        // Reserve MethodDef rows for the synthesised @derive Equals/GetHashCode
-        // overrides (#1480), emitted last by `appendDeriveOverridesMsil`.  The
-        // per-marker `hasDeriveMarkerMsil` checks here MUST stay in lock-step
-        // with the matching emission checks in `appendDeriveOverridesMsil`
-        // (and the mirror site below for protected types) — adding a new
-        // marker requires touching all three.
+        // Reserve MethodDef rows for the synthesised Equals/GetHashCode
+        // overrides (#1480, D172), emitted last by `appendDeriveOverridesMsil`.
+        // The checks here MUST stay in lock-step with the matching emission
+        // checks in `appendDeriveOverridesMsil` and the IExposedRec arm below.
         val recAnns = file.items[i].annotations
-        if hasDeriveMarkerMsil(recAnns, "Equals") {
+        val byFields = recordComparesByFieldsMsil(decl, recAnns)
+        if byFields {
           if not cctx.methodTokens.containsKey(className + "/Equals") {
             cctx.methodTokens.add(className + "/Equals", 0x06000000 + methodDefRow)
           }
           methodDefRow = methodDefRow + 1
         }
-        if hasDeriveMarkerMsil(recAnns, "Hash") {
+        if byFields or hasDeriveMarkerMsil(recAnns, "Hash") {
           if not cctx.methodTokens.containsKey(className + "/GetHashCode") {
             cctx.methodTokens.add(className + "/GetHashCode", 0x06000000 + methodDefRow)
           }
@@ -4102,13 +4150,14 @@ pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in 
         }
         // Reserve rows for synthesised @derive overrides (#1480); see IRecord.
         val recAnnsX = file.items[i].annotations
-        if hasDeriveMarkerMsil(recAnnsX, "Equals") {
+        val byFields = recordComparesByFieldsMsil(decl, recAnnsX)
+        if byFields {
           if not cctx.methodTokens.containsKey(className + "/Equals") {
             cctx.methodTokens.add(className + "/Equals", 0x06000000 + methodDefRow)
           }
           methodDefRow = methodDefRow + 1
         }
-        if hasDeriveMarkerMsil(recAnnsX, "Hash") {
+        if byFields or hasDeriveMarkerMsil(recAnnsX, "Hash") {
           if not cctx.methodTokens.containsKey(className + "/GetHashCode") {
             cctx.methodTokens.add(className + "/GetHashCode", 0x06000000 + methodDefRow)
           }
@@ -35034,23 +35083,38 @@ pub func lowerRecordMsil(cctx: in CodegenCtx, decl: in RecordDecl, pkgName: in S
 // GENERIC nullary case, docs/43 Q-GEN-001) and `Some(x) == Some(y)` for two
 // independently-constructed equal payloads (previously bare
 // `Object.Equals` reference identity, #6120) — then each field is compared
-// via the same `Object.Equals(object,object)` static helper `BEq`'s fallback
-// already uses, boxing first via `boxForUnionEqualityMsil`.
+// as `buildStructuralEqualityOverridesMsil` describes.
 //
 // `GetHashCode`: an FNV-style `h = h*31 + fieldHash` fold seeded with the
 // case's 0-based index (mirrors `Lyric.Derives.synthesizeHashUnion`'s free-
 // function shape, kept in lock-step so a user-derived `@derive(Hash)` union
 // and this always-on override agree), needed alongside `Equals` so
 // `Map`/`HashSet` keys don't violate the hash/equals contract once `Equals`
-// is no longer reference identity.  Matches the existing `hashCode()`
-// builtin's convention (`boxIfNeededMsil` + `callvirt Object.GetHashCode()`,
-// no null guard) rather than inventing a different one for unions.
+// is no longer reference identity.
 func buildUnionCaseEqualityOverridesMsil(
   cctx: in CodegenCtx,
   caseFqn: in String,
   caseFields: in List[MField],
   generics: in List[String],
   caseIndex: in Int,
+): List[MFunc] = buildStructuralEqualityOverridesMsil(cctx, caseFqn, caseFields, generics, caseIndex)
+
+// The `Equals(object)` / `GetHashCode()` overrides of a class compared by
+// structure: a union case (above) or a record that compares field by field
+// (D164, D172), generic or not.  After the `isinst` described above, an
+// integer, `Bool` or `Char` field compares with `ceq`; every other field goes
+// through `StructuralComparisons.StructuralEqualityComparer`, which compares
+// an array element by element, calls a nested record's or union's own
+// `Equals`, and gives a boxed `Float`/`Double` `Double.Equals`, under which
+// `NaN` equals itself and `0.0` equals `-0.0` (D172).  Its `GetHashCode`
+// agrees: all `NaN`s and both zeros hash alike, an array by its elements.
+// The hash folds `h = h*31 + fieldHash` from `seed`.
+func buildStructuralEqualityOverridesMsil(
+  cctx: in CodegenCtx,
+  classFqn: in String,
+  fields: in List[MField],
+  generics: in List[String],
+  seed: in Int,
 ): List[MFunc] {
   val arity = generics.count
   val methods: List[MFunc] = newList()
@@ -35064,24 +35128,46 @@ func buildUnionCaseEqualityOverridesMsil(
       selfTypeArgs.add(MTypeVar(index = gi))
       gi = gi + 1
     }
-    eqInsns.add(MIsinstGeneric(className = caseFqn, typeArgs = selfTypeArgs))
+    eqInsns.add(MIsinstGeneric(className = classFqn, typeArgs = selfTypeArgs))
   } else {
-    eqInsns.add(MIsinstByName(className = caseFqn))
+    eqInsns.add(MIsinstByName(className = classFqn))
   }
   val eqRetFalseL = 0
+  // Slot 0 holds `other` cast to this class; a `List` field's element loop
+  // appends its own locals after it.
+  val eqLocals: List[MsilType] = newList()
+  eqLocals.add(MObject)
+  val eqLabels: List[Int] = newList()
+  eqLabels.add(1)
   eqInsns.add(MStloc(slot = 0))
   eqInsns.add(MLdloc(slot = 0))
   eqInsns.add(MBrFalse(label = eqRetFalseL))
   var fi = 0
-  while fi < caseFields.count {
-    val f = caseFields[fi]
-    eqInsns.add(MLdarg(slot = 0))
-    eqInsns.add(MLdfldSelfOpen(ownerFqn = caseFqn, fieldName = f.name, arity = arity, fieldType = f.fieldType))
-    boxForUnionEqualityMsil(cctx, eqInsns, f.fieldType)
-    eqInsns.add(MLdloc(slot = 0))
-    eqInsns.add(MLdfldSelfOpen(ownerFqn = caseFqn, fieldName = f.name, arity = arity, fieldType = f.fieldType))
-    boxForUnionEqualityMsil(cctx, eqInsns, f.fieldType)
-    eqInsns.add(MCall(methodToken = cctx.tokObjectStaticEquals))
+  while fi < fields.count {
+    val f = fields[fi]
+    if isCeqFieldMsil(f.fieldType) {
+      eqInsns.add(MLdarg(slot = 0))
+      eqInsns.add(MLdfldSelfOpen(ownerFqn = classFqn, fieldName = f.name, arity = arity, fieldType = f.fieldType))
+      eqInsns.add(MLdloc(slot = 0))
+      eqInsns.add(MLdfldSelfOpen(ownerFqn = classFqn, fieldName = f.name, arity = arity, fieldType = f.fieldType))
+      eqInsns.add(MCeq)
+    } else if isListFieldMsil(f.fieldType) {
+      eqInsns.add(MLdarg(slot = 0))
+      eqInsns.add(MLdfldSelfOpen(ownerFqn = classFqn, fieldName = f.name, arity = arity, fieldType = f.fieldType))
+      eqInsns.add(MLdloc(slot = 0))
+      eqInsns.add(MLdfldSelfOpen(ownerFqn = classFqn, fieldName = f.name, arity = arity, fieldType = f.fieldType))
+      emitListKeyEqMsil(cctx, eqInsns, eqLocals, eqLabels, f.fieldType, eqRetFalseL)
+      eqInsns.add(MLdcI4(v = 1))
+    } else {
+      eqInsns.add(MCall(methodToken = cctx.tokStructEqComparer))
+      eqInsns.add(MLdarg(slot = 0))
+      eqInsns.add(MLdfldSelfOpen(ownerFqn = classFqn, fieldName = f.name, arity = arity, fieldType = f.fieldType))
+      boxForUnionEqualityMsil(cctx, eqInsns, f.fieldType)
+      eqInsns.add(MLdloc(slot = 0))
+      eqInsns.add(MLdfldSelfOpen(ownerFqn = classFqn, fieldName = f.name, arity = arity, fieldType = f.fieldType))
+      boxForUnionEqualityMsil(cctx, eqInsns, f.fieldType)
+      eqInsns.add(MCallvirt(methodToken = cctx.tokEqComparerEquals))
+    }
     eqInsns.add(MBrFalse(label = eqRetFalseL))
     fi = fi + 1
   }
@@ -35092,18 +35178,15 @@ func buildUnionCaseEqualityOverridesMsil(
   eqInsns.add(MRet)
   val eqParams: List[MsilType] = newList()
   eqParams.add(MObject)
-  val eqLocals: List[MsilType] = newList()
-  // A bare `MClass(caseFqn)` local-var-sig entry emits `CLASS <TypeDefOrRef>`
+  // A bare `MClass(classFqn)` local-var-sig entry emits `CLASS <TypeDefOrRef>`
   // with NO type arguments (`buildLocalVarSigWithCtx`'s `MClass` arm) — valid
-  // for a non-generic case, but for a generic one that names an incomplete
+  // for a non-generic class, but for a generic one that names an incomplete
   // (uninstantiated) reference to an arity>0 TypeDef, which the CLR loader
   // rejects with `TypeLoadException: Could not load type '<Case>`1'` the
-  // moment the isinst'd local's declared type is consulted (confirmed with a
-  // minimal repro — the record precedent `appendDeriveOverridesMsil` never
-  // hits this because @derive(Equals) is untested on a generic record).  The
-  // local must instead be the CLOSED-BY-`!0..!n` open self-instantiation
-  // (`Case<!0,…>`), matching what a real C# compiler emits for the identical
-  // `obj as Case<T>` pattern inside `Case<T>`'s own method.
+  // moment the isinst'd local's declared type is consulted.  The local must
+  // instead be the CLOSED-BY-`!0..!n` open self-instantiation (`Case<!0,…>`),
+  // matching what a real C# compiler emits for the identical `obj as Case<T>`
+  // pattern inside `Case<T>`'s own method.
   if arity > 0 {
     val eqLocalTypeArgs: List[MsilType] = newList()
     var eli = 0
@@ -35111,9 +35194,9 @@ func buildUnionCaseEqualityOverridesMsil(
       eqLocalTypeArgs.add(MTypeVar(index = eli))
       eli = eli + 1
     }
-    eqLocals.add(MGenericInstByName(headFqn = caseFqn, typeArgs = eqLocalTypeArgs))
+    eqLocals[0] = MGenericInstByName(headFqn = classFqn, typeArgs = eqLocalTypeArgs)
   } else {
-    eqLocals.add(MClass(className = caseFqn))
+    eqLocals[0] = MClass(className = classFqn)
   }
   methods.add(
     MFunc(
@@ -35128,18 +35211,29 @@ func buildUnionCaseEqualityOverridesMsil(
   )
 
   val hInsns: List[MInsn] = newList()
-  hInsns.add(MLdcI4(v = caseIndex))
+  val hLocals: List[MsilType] = newList()
+  hLocals.add(MInt)
+  val hLabels: List[Int] = newList()
+  hLabels.add(0)
+  hInsns.add(MLdcI4(v = seed))
   hInsns.add(MStloc(slot = 0))
   var hi = 0
-  while hi < caseFields.count {
-    val hf = caseFields[hi]
+  while hi < fields.count {
+    val hf = fields[hi]
     hInsns.add(MLdloc(slot = 0))
     hInsns.add(MLdcI4(v = 31))
     hInsns.add(MMul)
-    hInsns.add(MLdarg(slot = 0))
-    hInsns.add(MLdfldSelfOpen(ownerFqn = caseFqn, fieldName = hf.name, arity = arity, fieldType = hf.fieldType))
-    boxForUnionEqualityMsil(cctx, hInsns, hf.fieldType)
-    hInsns.add(MCallvirt(methodToken = cctx.tokObjGetHashCode))
+    if isListFieldMsil(hf.fieldType) {
+      hInsns.add(MLdarg(slot = 0))
+      hInsns.add(MLdfldSelfOpen(ownerFqn = classFqn, fieldName = hf.name, arity = arity, fieldType = hf.fieldType))
+      emitListKeyHashMsil(cctx, hInsns, hLocals, hLabels, hf.fieldType)
+    } else {
+      hInsns.add(MCall(methodToken = cctx.tokStructEqComparer))
+      hInsns.add(MLdarg(slot = 0))
+      hInsns.add(MLdfldSelfOpen(ownerFqn = classFqn, fieldName = hf.name, arity = arity, fieldType = hf.fieldType))
+      boxForUnionEqualityMsil(cctx, hInsns, hf.fieldType)
+      hInsns.add(MCallvirt(methodToken = cctx.tokEqComparerHash))
+    }
     hInsns.add(MAdd)
     hInsns.add(MStloc(slot = 0))
     hi = hi + 1
@@ -35147,8 +35241,6 @@ func buildUnionCaseEqualityOverridesMsil(
   hInsns.add(MLdloc(slot = 0))
   hInsns.add(MRet)
   val hParams: List[MsilType] = newList()
-  val hLocals: List[MsilType] = newList()
-  hLocals.add(MInt)
   methods.add(
     MFunc(
       flags = MDA_PUBLIC + MDA_VIRTUAL + MDA_HIDE_BY_SIG,
@@ -35162,6 +35254,222 @@ func buildUnionCaseEqualityOverridesMsil(
   )
 
   methods
+}
+
+// A `List`-represented field: a `List`, an `array[N, T]`, which dotnet
+// lowers to a `List<T>` (D167), or a tuple, a `List<object>`.  Its
+// `Equals`/`GetHashCode` go element by element, since `List<T>` has neither.
+func isListFieldMsil(t: in MsilType): Bool {
+  match t {
+    case MListOf(_) | MConcreteList(_) | MTuple(_) -> true
+    case _ -> false
+  }
+}
+
+func tupleElemsMsil(t: in MsilType): List[MsilType] {
+  match t {
+    case MTuple(elems) -> elems
+    case _ -> newList()
+  }
+}
+
+func isTupleMsil(t: in MsilType): Bool {
+  match t {
+    case MTuple(_) -> true
+    case _ -> false
+  }
+}
+
+// Push `<list>[index]` (as `object`) for the `IList` in local `slot`.
+func emitIListItemMsil(cctx: in CodegenCtx, insns: in List[MInsn], slot: in Int, index: in Int): Unit {
+  insns.add(MLdloc(slot = slot))
+  insns.add(MLdcI4(v = index))
+  insns.add(MCallvirt(methodToken = cctx.tokIListGetItem))
+}
+
+func listElemMsil(t: in MsilType): MsilType {
+  match t {
+    case MListOf(e) -> e
+    case MConcreteList(e) -> e
+    case _ -> MObject
+  }
+}
+
+func iListLocalTypeMsil(cctx: in CodegenCtx): MsilType = MClassRef(typeRefCode = tdrTypeRef(cctx.tokIListCast - 0x01000000), clrFqn = "System.Collections.IList")
+
+func newLabelIn(labels: in List[Int]): Int {
+  val l = labels[0]
+  labels[0] = l + 1
+  l
+}
+
+func newLocalIn(locals: in List[MsilType], t: in MsilType): Int {
+  locals.add(t)
+  locals.count - 1
+}
+
+// With two `List`-represented values of type `t` on the stack, branch to
+// `fail` unless they hold equal elements, in order, under structural equality
+// (D172): a nested list element by element, anything else through
+// `StructuralEqualityComparer`.  Consumes both values.
+func emitListKeyEqMsil(
+  cctx: in CodegenCtx,
+  insns: in List[MInsn],
+  locals: in List[MsilType],
+  labels: in List[Int],
+  t: in MsilType,
+  fail: in Int,
+): Unit {
+  val listTy = iListLocalTypeMsil(cctx)
+  val lb = newLocalIn(locals, listTy)
+  val la = newLocalIn(locals, listTy)
+  val li = newLocalIn(locals, MInt)
+  insns.add(MCastclass(typeToken = cctx.tokIListCast))
+  insns.add(MStloc(slot = lb))
+  insns.add(MCastclass(typeToken = cctx.tokIListCast))
+  insns.add(MStloc(slot = la))
+  // A tuple's elements have their own static types, compared in order.
+  if isTupleMsil(t) {
+    val elems = tupleElemsMsil(t)
+    var k = 0
+    while k < elems.count {
+      if isListFieldMsil(elems[k]) {
+        emitIListItemMsil(cctx, insns, la, k)
+        emitIListItemMsil(cctx, insns, lb, k)
+        emitListKeyEqMsil(cctx, insns, locals, labels, elems[k], fail)
+      } else {
+        insns.add(MCall(methodToken = cctx.tokStructEqComparer))
+        emitIListItemMsil(cctx, insns, la, k)
+        emitIListItemMsil(cctx, insns, lb, k)
+        insns.add(MCallvirt(methodToken = cctx.tokEqComparerEquals))
+        insns.add(MBrFalse(label = fail))
+      }
+      k = k + 1
+    }
+    return ()
+  }
+  insns.add(MLdloc(slot = la))
+  insns.add(MCallvirt(methodToken = cctx.tokICollGetCount))
+  insns.add(MLdloc(slot = lb))
+  insns.add(MCallvirt(methodToken = cctx.tokICollGetCount))
+  insns.add(MBrNe(label = fail))
+  insns.add(MLdcI4(v = 0))
+  insns.add(MStloc(slot = li))
+  val loop = newLabelIn(labels)
+  val done = newLabelIn(labels)
+  insns.add(MLabel(id = loop))
+  insns.add(MLdloc(slot = li))
+  insns.add(MLdloc(slot = la))
+  insns.add(MCallvirt(methodToken = cctx.tokICollGetCount))
+  insns.add(MBrGe(label = done))
+  val elem = listElemMsil(t)
+  if isListFieldMsil(elem) {
+    insns.add(MLdloc(slot = la))
+    insns.add(MLdloc(slot = li))
+    insns.add(MCallvirt(methodToken = cctx.tokIListGetItem))
+    insns.add(MLdloc(slot = lb))
+    insns.add(MLdloc(slot = li))
+    insns.add(MCallvirt(methodToken = cctx.tokIListGetItem))
+    emitListKeyEqMsil(cctx, insns, locals, labels, elem, fail)
+  } else {
+    insns.add(MCall(methodToken = cctx.tokStructEqComparer))
+    insns.add(MLdloc(slot = la))
+    insns.add(MLdloc(slot = li))
+    insns.add(MCallvirt(methodToken = cctx.tokIListGetItem))
+    insns.add(MLdloc(slot = lb))
+    insns.add(MLdloc(slot = li))
+    insns.add(MCallvirt(methodToken = cctx.tokIListGetItem))
+    insns.add(MCallvirt(methodToken = cctx.tokEqComparerEquals))
+    insns.add(MBrFalse(label = fail))
+  }
+  insns.add(MLdloc(slot = li))
+  insns.add(MLdcI4(v = 1))
+  insns.add(MAdd)
+  insns.add(MStloc(slot = li))
+  insns.add(MBr(label = loop))
+  insns.add(MLabel(id = done))
+}
+
+// Replace the `List`-represented value of type `t` on the stack with a hash
+// consistent with `emitListKeyEqMsil`: `h = h*31 + elementHash` from 1.
+func emitListKeyHashMsil(
+  cctx: in CodegenCtx,
+  insns: in List[MInsn],
+  locals: in List[MsilType],
+  labels: in List[Int],
+  t: in MsilType,
+): Unit {
+  val la = newLocalIn(locals, iListLocalTypeMsil(cctx))
+  val lh = newLocalIn(locals, MInt)
+  val li = newLocalIn(locals, MInt)
+  insns.add(MCastclass(typeToken = cctx.tokIListCast))
+  insns.add(MStloc(slot = la))
+  insns.add(MLdcI4(v = 1))
+  insns.add(MStloc(slot = lh))
+  if isTupleMsil(t) {
+    val elems = tupleElemsMsil(t)
+    var k = 0
+    while k < elems.count {
+      insns.add(MLdloc(slot = lh))
+      insns.add(MLdcI4(v = 31))
+      insns.add(MMul)
+      if isListFieldMsil(elems[k]) {
+        emitIListItemMsil(cctx, insns, la, k)
+        emitListKeyHashMsil(cctx, insns, locals, labels, elems[k])
+      } else {
+        insns.add(MCall(methodToken = cctx.tokStructEqComparer))
+        emitIListItemMsil(cctx, insns, la, k)
+        insns.add(MCallvirt(methodToken = cctx.tokEqComparerHash))
+      }
+      insns.add(MAdd)
+      insns.add(MStloc(slot = lh))
+      k = k + 1
+    }
+    insns.add(MLdloc(slot = lh))
+    return ()
+  }
+  insns.add(MLdcI4(v = 0))
+  insns.add(MStloc(slot = li))
+  val loop = newLabelIn(labels)
+  val done = newLabelIn(labels)
+  insns.add(MLabel(id = loop))
+  insns.add(MLdloc(slot = li))
+  insns.add(MLdloc(slot = la))
+  insns.add(MCallvirt(methodToken = cctx.tokICollGetCount))
+  insns.add(MBrGe(label = done))
+  insns.add(MLdloc(slot = lh))
+  insns.add(MLdcI4(v = 31))
+  insns.add(MMul)
+  val elem = listElemMsil(t)
+  if isListFieldMsil(elem) {
+    insns.add(MLdloc(slot = la))
+    insns.add(MLdloc(slot = li))
+    insns.add(MCallvirt(methodToken = cctx.tokIListGetItem))
+    emitListKeyHashMsil(cctx, insns, locals, labels, elem)
+  } else {
+    insns.add(MCall(methodToken = cctx.tokStructEqComparer))
+    insns.add(MLdloc(slot = la))
+    insns.add(MLdloc(slot = li))
+    insns.add(MCallvirt(methodToken = cctx.tokIListGetItem))
+    insns.add(MCallvirt(methodToken = cctx.tokEqComparerHash))
+  }
+  insns.add(MAdd)
+  insns.add(MStloc(slot = lh))
+  insns.add(MLdloc(slot = li))
+  insns.add(MLdcI4(v = 1))
+  insns.add(MAdd)
+  insns.add(MStloc(slot = li))
+  insns.add(MBr(label = loop))
+  insns.add(MLabel(id = done))
+  insns.add(MLdloc(slot = lh))
+}
+
+// A field `Equals` compares with `ceq`: an integer, `Bool` or `Char`.
+func isCeqFieldMsil(t: in MsilType): Bool {
+  match t {
+    case MInt | MBool | MChar | MLong | MByte -> true
+    case _ -> false
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -42258,17 +42566,41 @@ func hasDeriveMarkerMsil(anns: in List[Annotation], marker: in String): Bool {
   false
 }
 
-// Synthesise the `Object.Equals(object)` / `GetHashCode()` *overrides* on a
-// `@derive(Equals)` / `@derive(Hash)` record so BCL `Map`/`HashSet` key lookup
-// (which dispatches these virtually) is structural rather than identity-based,
-// and `a.Equals(b)` agrees with `a == b` (#1480).  Each override is a thin
-// virtual instance method delegating to the derived free `<Type>.equals(self,
-// other)` / `<Type>.hash(self)` (emitted by `Lyric.Derives`; reachable since
-// #1796).  Appended AFTER any injected impl methods so the MethodDef rows line
-// up with the budget reserved in `addPackageTokens` (one row per `hasDeriveMarkerMsil` hit).
+// Whether a record compares field by field (D164): it derives `Equals`, or
+// none of its fields is `var`.  Such a record gets `Equals`/`GetHashCode`
+// overrides, so host collections and union payloads compare it as `==` does
+// (D172).
+func recordComparesByFieldsMsil(decl: in RecordDecl, anns: in List[Annotation]): Bool {
+  if hasDeriveMarkerMsil(anns, "Equals") {
+    return true
+  }
+  for m in decl.members {
+    match m {
+      case RMField(fd) -> if fd.isMutable { return false }
+      case _ -> ()
+    }
+  }
+  true
+}
+
+// Synthesise the `Object.Equals(object)` / `GetHashCode()` *overrides* of a
+// record, appended AFTER any injected impl methods so the MethodDef rows line
+// up with the budget reserved in `addPackageTokens`.
+//   - A record that compares field by field (`recordComparesByFieldsMsil`)
+//     gets both, comparing and hashing its fields under D172's structural
+//     equality (`buildStructuralEqualityOverridesMsil`), so `Map`/`HashSet`
+//     keys, `List.contains` and union payload comparison agree with `==`
+//     (#1480, #8003).
+//   - A mutable record keeps identity equality; with `@derive(Hash)` its
+//     `GetHashCode` delegates to the derived `<Type>.hash(self)`, which is
+//     consistent with identity.
 // `recordFqn` is the type's dotted FQN (e.g. `Pkg.Point`).
 pub func appendDeriveOverridesMsil(
-  cctx: in CodegenCtx, rec: in MRecord, recordFqn: in String, anns: in List[Annotation]
+  cctx: in CodegenCtx,
+  rec: in MRecord,
+  recordFqn: in String,
+  decl: in RecordDecl,
+  anns: in List[Annotation],
 ): MRecord {
   val methods: List[MFunc] = newList()
   var bi = 0
@@ -42277,50 +42609,11 @@ pub func appendDeriveOverridesMsil(
     bi = bi + 1
   }
 
-  if hasDeriveMarkerMsil(anns, "Equals") {
-    val eqTok = match mapGet(cctx.funcTokens, recordFqn + ".equals") {
-      case Some(t) -> t
-      case None -> panic(
-        "Msil.Codegen: @derive(Equals) record " + recordFqn +
-          " has no synthesised `.equals` token — Lyric.Derives / mono regression (#1796)"
-      )
+  if recordComparesByFieldsMsil(decl, anns) {
+    for m in buildStructuralEqualityOverridesMsil(cctx, recordFqn, rec.fields, rec.generics, 17) {
+      methods.add(m)
     }
-    // bool Equals(object obj) {
-    //   var c = obj as <Record>;       // isinst; stloc 0
-    //   if (c == null) return false;   // brfalse RETFALSE
-    //   return <Record>.equals(this, c);
-    // RETFALSE: return false; }
-    val insns: List[MInsn] = newList()
-    insns.add(MLdarg(slot = 1))  // obj
-    insns.add(MIsinstByName(className = recordFqn))  // obj as <Record>
-    insns.add(MStloc(slot = 0))
-    insns.add(MLdloc(slot = 0))
-    insns.add(MBrFalse(label = 0))
-    insns.add(MLdarg(slot = 0))  // this
-    insns.add(MLdloc(slot = 0))  // c
-    insns.add(MCall(methodToken = eqTok))  // <Record>.equals(this, c): bool
-    insns.add(MRet)
-    insns.add(MLabel(id = 0))
-    insns.add(MLdcI4(v = 0))
-    insns.add(MRet)
-    val eqParams: List[MsilType] = newList()
-    eqParams.add(MObject)
-    val eqLocals: List[MsilType] = newList()
-    eqLocals.add(MClass(className = recordFqn))
-    methods.add(
-      MFunc(
-        flags = MDA_PUBLIC + MDA_VIRTUAL + MDA_HIDE_BY_SIG,
-        name = "Equals",
-        params = eqParams,
-        ret = MBool,
-        insns = insns,
-        maxStack = 8,
-        locals = eqLocals
-      )
-    )
-  }
-
-  if hasDeriveMarkerMsil(anns, "Hash") {
+  } else if hasDeriveMarkerMsil(anns, "Hash") {
     val hashTok = match mapGet(cctx.funcTokens, recordFqn + ".hash") {
       case Some(t) -> t
       case None -> panic(
@@ -42541,13 +42834,13 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
       case IRecord(decl) -> {
         val baseRec = lowerRecordMsil(cctx, decl, pkgName)
         val rec0 = injectImplMethodsIntoRecord(cctx, baseRec, pkgName + "." + decl.name)
-        val rec = appendDeriveOverridesMsil(cctx, rec0, pkgName + "." + decl.name, item.annotations)
+        val rec = appendDeriveOverridesMsil(cctx, rec0, pkgName + "." + decl.name, decl, item.annotations)
         items.add(MPRecord(rec = rec))
       }
       case IExposedRec(decl) -> {
         val baseRec = lowerRecordMsil(cctx, decl, pkgName)
         val rec0 = injectImplMethodsIntoRecord(cctx, baseRec, pkgName + "." + decl.name)
-        val rec = appendDeriveOverridesMsil(cctx, rec0, pkgName + "." + decl.name, item.annotations)
+        val rec = appendDeriveOverridesMsil(cctx, rec0, pkgName + "." + decl.name, decl, item.annotations)
         items.add(MPRecord(rec = rec))
       }
       case IFunc(decl) -> {

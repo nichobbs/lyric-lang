@@ -4677,25 +4677,55 @@ pub record LSealedUnion {
   cases: List[LSealedCase]
 }
 
-// `equals(Object): boolean` for a union case class (#6835/#6120): unions have
-// structural equality by default (language reference §2.4), unconditionally —
-// no `@derive(Equals)` gate the way records have (see
-// `Msil.Codegen.buildUnionCaseEqualityOverridesMsil`'s doc comment for the
-// MSIL twin and why a shared free-function can't be the mechanism here
-// either).  Same skeleton as `buildDeriveEqualsFunc` (same-instance fast
-// path, `instanceof` + cast doubling as the null-and-same-variant check,
-// primitive fields compared with the matching `if_*cmp*` opcode) but differs
-// in exactly the branch that matters for #6120: a reference-typed field
-// (a payload record, `String`, or nested union/`Option`) is compared via the
-// null-safe static `java.util.Objects.equals(Object,Object)`, not bare
-// `if_acmpeq` reference identity — `buildDeriveEqualsFunc`'s own reference
-// fallback IS `if_acmpeq`, which is exactly the #6120 bug shape (two
-// independently-constructed equal payloads compare unequal) and reusing it
-// unmodified here would silently reintroduce that bug for every union whose
-// payload is not a JVM primitive.
-pub func buildUnionCaseEqualsFunc(className: in String, fields: in List[LField]): LFunc {
+// `equals(Object)` / `hashCode()` for a union case class (#6835/#6120):
+// unions have structural equality by default (language reference §2.4), with
+// no `@derive(Equals)` gate.  The hash is seeded with the case's 0-based
+// ordinal (mirrors `Lyric.Derives.synthesizeHashUnion`).
+pub func buildUnionCaseEqualsFunc(className: in String, fields: in List[LField]): LFunc = buildStructuralEqualsFunc(className, fields)
+
+pub func buildUnionCaseHashCodeFunc(className: in String, fields: in List[LField], caseIndex: in Int): LFunc = buildStructuralHashCodeFunc(className, fields, caseIndex)
+
+// The package functions class holding the structural-equality helpers a class
+// in it calls: the class name up to its last `/`.
+pub func keyEqHelperOwner(className: in String): String {
+  var cut = 0 - 1
+  var i = 0
+  while i < className.length {
+    if className.substring(i, 1) == "/" {
+      cut = i
+    }
+    i = i + 1
+  }
+  if cut < 0 {
+    className
+  } else {
+    className.substring(0, cut)
+  }
+}
+
+pub func keyEqHelperName(): String = "__lyricKeyEq"
+
+pub func keyHashHelperName(): String = "__lyricKeyHash"
+
+pub func keyEqDoubleHelperName(): String = "__lyricKeyEqD"
+
+pub func keyEqFloatHelperName(): String = "__lyricKeyEqF"
+
+// `equals(Object): boolean` of a class compared by structure: a record that
+// compares field by field (D164) or a union case.  A same-instance fast path,
+// then an `instanceof` + cast that doubles as the null and same-variant check,
+// then each field under D172's structural equality: an integer, `Bool` or
+// `Char` with `if_icmp`/`lcmp`; a `Float`/`Double` through `__lyricKeyEqF`/
+// `__lyricKeyEqD`, under which `NaN` equals itself and `0.0` equals `-0.0`;
+// any reference (a nested record or union, a `String`, an array, an erased
+// generic value) through `__lyricKeyEq`, which compares an array element by
+// element.  The helpers are static methods of the package's functions class.
+pub func buildStructuralEqualsFunc(className: in String, fields: in List[LField]): LFunc {
+  val owner = keyEqHelperOwner(className)
   val eqInsns: List[LInsn] = newList()
 
+  // Pre-initialize slot 2 (the cast result) so StackMapTable frames at early
+  // branch targets (before slot 2 is assigned) declare it as live.
   eqInsns.add(LAconstNull)
   eqInsns.add(LAstoreAs(slot = 2, className = className))
 
@@ -4719,6 +4749,15 @@ pub func buildUnionCaseEqualsFunc(className: in String, fields: in List[LField])
   eqInsns.add(LCheckcast(className = className))
   eqInsns.add(LAstoreAs(slot = 2, className = className))
 
+  val objPs: List[JvmType] = newList()
+  objPs.add(JRef(className = "java/lang/Object"))
+  objPs.add(JRef(className = "java/lang/Object"))
+  val dPs: List[JvmType] = newList()
+  dPs.add(JDouble)
+  dPs.add(JDouble)
+  val fPs: List[JvmType] = newList()
+  fPs.add(JFloat)
+  fPs.add(JFloat)
   for fld in fields.toArray() {
     val skipLabel = "eq_skip_" + fld.name
     eqInsns.add(LAload(slot = 0))
@@ -4732,22 +4771,20 @@ pub func buildUnionCaseEqualsFunc(className: in String, fields: in List[LField])
       case JChar -> eqInsns.add(LIfIcmpeq(label = skipLabel))
       case JShort -> eqInsns.add(LIfIcmpeq(label = skipLabel))
       case JLong -> {
+        // A `long` is a two-slot primitive; `if_icmp` does not apply (#4993).
         eqInsns.add(LLcmp)
         eqInsns.add(LIfeq(label = skipLabel))
       }
       case JDouble -> {
-        eqInsns.add(LDcmpl)
-        eqInsns.add(LIfeq(label = skipLabel))
+        eqInsns.add(LInvokestatic(owner = owner, name = keyEqDoubleHelperName(), params = dPs, ret = JBoolean))
+        eqInsns.add(LIfne(label = skipLabel))
       }
       case JFloat -> {
-        eqInsns.add(LFcmpl)
-        eqInsns.add(LIfeq(label = skipLabel))
+        eqInsns.add(LInvokestatic(owner = owner, name = keyEqFloatHelperName(), params = fPs, ret = JBoolean))
+        eqInsns.add(LIfne(label = skipLabel))
       }
       case _ -> {
-        val objEqPs: List[JvmType] = newList()
-        objEqPs.add(JRef(className = "java/lang/Object"))
-        objEqPs.add(JRef(className = "java/lang/Object"))
-        eqInsns.add(LInvokestatic(owner = "java/util/Objects", name = "equals", params = objEqPs, ret = JBoolean))
+        eqInsns.add(LInvokestatic(owner = owner, name = keyEqHelperName(), params = objPs, ret = JBoolean))
         eqInsns.add(LIfne(label = skipLabel))
       }
     }
@@ -4766,24 +4803,19 @@ pub func buildUnionCaseEqualsFunc(className: in String, fields: in List[LField])
     params = eqPs,
     ret = JBoolean,
     insns = eqInsns,
-    maxStack = 4,
+    maxStack = 6,
     maxLocals = 3
   )
 }
 
-// `hashCode(): int` for a union case class (#6835/#6120), seeded with the
-// case's 0-based ordinal (mirrors `Lyric.Derives.synthesizeHashUnion`'s
-// free-function shape, and the MSIL override, so a user's `@derive(Hash)`
-// union and this always-on override agree) then folded `h = h*31 +
-// fieldHash`.  Same reasoning as `buildUnionCaseEqualsFunc` above for why the
-// reference-typed-field branch is the null-safe static
-// `java.util.Objects.hashCode(Object)`, not `buildDeriveHashCodeFunc`'s
-// `invokevirtual Object.hashCode()` (which throws NPE on a null field and,
-// more to the point here, is besides the point once every reachable field is
-// already funnelled through the null-safe path for consistency).
-pub func buildUnionCaseHashCodeFunc(className: in String, fields: in List[LField], caseIndex: in Int): LFunc {
+// `hashCode(): int`, consistent with `buildStructuralEqualsFunc`: folds
+// `h = h*31 + fieldHash` from `seed`.  A `Float`/`Double` field adds `0.0`
+// first, so both zeros hash alike (`Double.hashCode` already folds every
+// `NaN` to one); a reference field hashes through `__lyricKeyHash`.
+pub func buildStructuralHashCodeFunc(className: in String, fields: in List[LField], seed: in Int): LFunc {
+  val owner = keyEqHelperOwner(className)
   val hashInsns: List[LInsn] = newList()
-  hashInsns.add(LIconst(v = caseIndex))
+  hashInsns.add(LIconst(v = seed))
   hashInsns.add(LIstore(slot = 1))
 
   for fld in fields.toArray() {
@@ -4792,33 +4824,7 @@ pub func buildUnionCaseHashCodeFunc(className: in String, fields: in List[LField
     hashInsns.add(LImul)
     hashInsns.add(LAload(slot = 0))
     hashInsns.add(LGetfield(owner = className, name = fld.name, t = fld.fieldType))
-    match fld.fieldType {
-      case JInt -> ()
-      case JBoolean -> ()
-      case JByte -> ()
-      case JChar -> ()
-      case JShort -> ()
-      case JLong -> {
-        val hcPs: List[JvmType] = newList()
-        hcPs.add(JLong)
-        hashInsns.add(LInvokestatic(owner = "java/lang/Long", name = "hashCode", params = hcPs, ret = JInt))
-      }
-      case JDouble -> {
-        val hcPs: List[JvmType] = newList()
-        hcPs.add(JDouble)
-        hashInsns.add(LInvokestatic(owner = "java/lang/Double", name = "hashCode", params = hcPs, ret = JInt))
-      }
-      case JFloat -> {
-        val hcPs: List[JvmType] = newList()
-        hcPs.add(JFloat)
-        hashInsns.add(LInvokestatic(owner = "java/lang/Float", name = "hashCode", params = hcPs, ret = JInt))
-      }
-      case _ -> {
-        val hcPs: List[JvmType] = newList()
-        hcPs.add(JRef(className = "java/lang/Object"))
-        hashInsns.add(LInvokestatic(owner = "java/util/Objects", name = "hashCode", params = hcPs, ret = JInt))
-      }
-    }
+    emitKeyHashOfTop(hashInsns, fld.fieldType, owner)
     hashInsns.add(LIadd)
     hashInsns.add(LIstore(slot = 1))
   }
@@ -4832,9 +4838,44 @@ pub func buildUnionCaseHashCodeFunc(className: in String, fields: in List[LField
     params = hashPs,
     ret = JInt,
     insns = hashInsns,
-    maxStack = 4,
+    maxStack = 6,
     maxLocals = 2
   )
+}
+
+// Replace the value of type `t` on the stack with its structural hash.
+pub func emitKeyHashOfTop(insns: in List[LInsn], t: in JvmType, owner: in String): Unit {
+  match t {
+    case JInt -> ()
+    case JBoolean -> ()
+    case JByte -> ()
+    case JChar -> ()
+    case JShort -> ()
+    case JLong -> {
+      val ps: List[JvmType] = newList()
+      ps.add(JLong)
+      insns.add(LInvokestatic(owner = "java/lang/Long", name = "hashCode", params = ps, ret = JInt))
+    }
+    case JDouble -> {
+      insns.add(LDconst(v = 0.0))
+      insns.add(LDadd)
+      val ps: List[JvmType] = newList()
+      ps.add(JDouble)
+      insns.add(LInvokestatic(owner = "java/lang/Double", name = "hashCode", params = ps, ret = JInt))
+    }
+    case JFloat -> {
+      insns.add(LFconst(v = 0.0))
+      insns.add(LFadd)
+      val ps: List[JvmType] = newList()
+      ps.add(JFloat)
+      insns.add(LInvokestatic(owner = "java/lang/Float", name = "hashCode", params = ps, ret = JInt))
+    }
+    case _ -> {
+      val ps: List[JvmType] = newList()
+      ps.add(JRef(className = "java/lang/Object"))
+      insns.add(LInvokestatic(owner = owner, name = keyHashHelperName(), params = ps, ret = JInt))
+    }
+  }
 }
 
 /// Lower one sealed case class: a final class implementing the sealed interface.
@@ -4881,14 +4922,9 @@ func lowerSealedCase(baseName: in String, c: in LSealedCase, ordinal: in Int, po
   val tagPs: List[JvmType] = newList()
   val tagMethod = makeMethodInfo(ACC_PUBLIC, "$tag", buildDescriptor(tagPs, JInt), tagAttrs)
 
-  // Structural `equals(Object)` / `hashCode()` overrides (#6835/#6120):
-  // unions have structural equality by default (language reference §2.4), no
-  // `@derive(Equals)` gate the way records have.  Uses
-  // `buildUnionCaseEqualsFunc`/`buildUnionCaseHashCodeFunc`, NOT the
-  // near-identical `buildDeriveEqualsFunc`/`buildDeriveHashCodeFunc` records
-  // use — those compare a reference-typed field by bare identity
-  // (`if_acmpeq`), which is exactly the #6120 bug shape; see the two
-  // builders' doc comments.
+  // Structural `equals(Object)` / `hashCode()` overrides (#6835/#6120,
+  // D172): unions have structural equality by default (language reference
+  // §2.5), with no `@derive(Equals)` gate.
   val methods: List[MethodInfo] = newList()
   methods.add(ctorMethod)
   methods.add(tagMethod)
@@ -7075,165 +7111,13 @@ pub record LRecordWithDerives {
   deriveHash: Bool
 }
 
-// `equals(Object): boolean` with field-by-field comparison, as a plain
-// `LFunc` — reusable both by `lowerDeriveEquality` below (the standalone
-// B122 self-test path) and by `Jvm.Codegen`'s real record-lowering pipeline
-// for `@derive(Equals)` records (docs/44 m-key, #4982 Finding 1).
-pub func buildDeriveEqualsFunc(className: in String, fields: in List[LField]): LFunc {
-  val eqInsns: List[LInsn] = newList()
+// `equals(Object)` / `hashCode()` of a record that compares field by field,
+// as plain `LFunc`s — reusable both by `lowerDeriveEquality` below (the
+// standalone B122 self-test path) and by `Jvm.Codegen`'s record lowering.
+// See `buildStructuralEqualsFunc`.
+pub func buildDeriveEqualsFunc(className: in String, fields: in List[LField]): LFunc = buildStructuralEqualsFunc(className, fields)
 
-  // Pre-initialize slot 2 (the cast result) so StackMapTable frames at early
-  // branch targets (before slot 2 is assigned) declare it as live.
-  eqInsns.add(LAconstNull)
-  eqInsns.add(LAstoreAs(slot = 2, className = className))
-
-  // if (this == other) return true
-  eqInsns.add(LAload(slot = 0))
-  eqInsns.add(LAload(slot = 1))
-  eqInsns.add(LIfAcmpeq(label = "eq_same"))
-  eqInsns.add(LGoto(label = "eq_check_type"))
-  eqInsns.add(LLabel(name = "eq_same"))
-  eqInsns.add(LIconst(v = 1))
-  eqInsns.add(LIreturn)
-  eqInsns.add(LLabel(name = "eq_check_type"))
-
-  // if (!(other instanceof <className>)) return false
-  eqInsns.add(LAload(slot = 1))
-  eqInsns.add(LInstanceof(className = className))
-  eqInsns.add(LIfne(label = "eq_cast"))
-  eqInsns.add(LIconst(v = 0))
-  eqInsns.add(LIreturn)
-  eqInsns.add(LLabel(name = "eq_cast"))
-
-  // <className> o = (<className>) other; stored in slot 2
-  eqInsns.add(LAload(slot = 1))
-  eqInsns.add(LCheckcast(className = className))
-  eqInsns.add(LAstoreAs(slot = 2, className = className))
-
-  // Compare each field; return false on mismatch
-  for fld in fields.toArray() {
-    val skipLabel = "eq_skip_" + fld.name
-    eqInsns.add(LAload(slot = 0))
-    eqInsns.add(LGetfield(owner = className, name = fld.name, t = fld.fieldType))
-    eqInsns.add(LAload(slot = 2))
-    eqInsns.add(LGetfield(owner = className, name = fld.name, t = fld.fieldType))
-    match fld.fieldType {
-      case JInt -> eqInsns.add(LIfIcmpeq(label = skipLabel))
-      case JBoolean -> eqInsns.add(LIfIcmpeq(label = skipLabel))
-      case JByte -> eqInsns.add(LIfIcmpeq(label = skipLabel))
-      case JChar -> eqInsns.add(LIfIcmpeq(label = skipLabel))
-      case JShort -> eqInsns.add(LIfIcmpeq(label = skipLabel))
-      case JLong -> {
-        // `LIfIcmpeq`/`LIfAcmpeq` both operate on single-slot values; a `long`
-        // is a two-slot primitive and neither opcode applies (#4993).
-        eqInsns.add(LLcmp)
-        eqInsns.add(LIfeq(label = skipLabel))
-      }
-      case JDouble -> {
-        // Two-slot primitive, same hazard as `JLong`.  The "l" (NaN → -1)
-        // variant matches `==`'s IEEE-754 semantics (mirrors `lowerCmp`): a
-        // NaN field is never equal to any value, including another NaN.
-        // This intentionally diverges from Java's `Double.equals()`
-        // convention (`doubleToLongBits`-based, NaN equals NaN) — a record
-        // with a NaN `Double` field used as a `Map` key can never be
-        // retrieved, even by an identical NaN key (#5000).  Consistency with
-        // Lyric's own `==` was chosen over matching the BCL `equals()`
-        // contract, since the override is reachable from plain `==` too via
-        // D-progress-558's `Objects.equals` dispatch.
-        eqInsns.add(LDcmpl)
-        eqInsns.add(LIfeq(label = skipLabel))
-      }
-      case JFloat -> {
-        // Single-slot but NOT reference-typed; `LIfAcmpeq` expects two
-        // references on the stack and would `VerifyError` on a raw `float`.
-        // Same NaN-not-equal tradeoff as `JDouble` above (#5000).
-        eqInsns.add(LFcmpl)
-        eqInsns.add(LIfeq(label = skipLabel))
-      }
-      case _ -> eqInsns.add(LIfAcmpeq(label = skipLabel))
-    }
-    eqInsns.add(LIconst(v = 0))
-    eqInsns.add(LIreturn)
-    eqInsns.add(LLabel(name = skipLabel))
-  }
-  eqInsns.add(LIconst(v = 1))
-  eqInsns.add(LIreturn)
-
-  val eqPs: List[JvmType] = newList()
-  eqPs.add(JRef(className = "java/lang/Object"))
-  LFunc(
-    flags = ACC_PUBLIC,
-    name = "equals",
-    params = eqPs,
-    ret = JBoolean,
-    insns = eqInsns,
-    maxStack = 4,
-    maxLocals = 3
-  )
-}
-
-// `hashCode(): int` — hash = 31 * hash + field_hash for each field, as a
-// plain `LFunc` (reference fields dispatch to `Object.hashCode()`).  Reused
-// the same way as `buildDeriveEqualsFunc` above.
-pub func buildDeriveHashCodeFunc(className: in String, fields: in List[LField]): LFunc {
-  val hashInsns: List[LInsn] = newList()
-  hashInsns.add(LIconst(v = 1))
-  // hash = 1
-  hashInsns.add(LIstore(slot = 1))
-
-  for fld in fields.toArray() {
-    hashInsns.add(LIconst(v = 31))
-    hashInsns.add(LIload(slot = 1))
-    hashInsns.add(LImul)
-    hashInsns.add(LAload(slot = 0))
-    hashInsns.add(LGetfield(owner = className, name = fld.name, t = fld.fieldType))
-    match fld.fieldType {
-      case JInt -> ()
-      case JBoolean -> ()
-      case JByte -> ()
-      case JChar -> ()
-      case JShort -> ()
-      case JLong -> {
-        // `Object.hashCode()` requires a reference receiver; a raw `long` on
-        // the stack would `VerifyError` (#4993).  `Long.hashCode(long): int`
-        // (JDK 8+) computes the hash without boxing.
-        val hcPs: List[JvmType] = newList()
-        hcPs.add(JLong)
-        hashInsns.add(LInvokestatic(owner = "java/lang/Long", name = "hashCode", params = hcPs, ret = JInt))
-      }
-      case JDouble -> {
-        val hcPs: List[JvmType] = newList()
-        hcPs.add(JDouble)
-        hashInsns.add(LInvokestatic(owner = "java/lang/Double", name = "hashCode", params = hcPs, ret = JInt))
-      }
-      case JFloat -> {
-        val hcPs: List[JvmType] = newList()
-        hcPs.add(JFloat)
-        hashInsns.add(LInvokestatic(owner = "java/lang/Float", name = "hashCode", params = hcPs, ret = JInt))
-      }
-      case _ -> {
-        // For reference fields, call .hashCode()
-        val hcPs: List[JvmType] = newList()
-        hashInsns.add(LInvokevirtual(owner = "java/lang/Object", name = "hashCode", params = hcPs, ret = JInt))
-      }
-    }
-    hashInsns.add(LIadd)
-    hashInsns.add(LIstore(slot = 1))
-  }
-  hashInsns.add(LIload(slot = 1))
-  hashInsns.add(LIreturn)
-
-  val hashPs: List[JvmType] = newList()
-  LFunc(
-    flags = ACC_PUBLIC,
-    name = "hashCode",
-    params = hashPs,
-    ret = JInt,
-    insns = hashInsns,
-    maxStack = 4,
-    maxLocals = 2
-  )
-}
+pub func buildDeriveHashCodeFunc(className: in String, fields: in List[LField]): LFunc = buildStructuralHashCodeFunc(className, fields, 17)
 
 /// Lower a record with `@derive(Equals)` and/or `@derive(Hash)`.
 /// Emits `equals(Object): boolean` with field-by-field comparison

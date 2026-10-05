@@ -776,7 +776,19 @@ pub func pipeCheckAndMono(
     opts.nativeIntrinsics,
     opts.methodCallAritiesOut
   )
-  if monoRes0.unsignedSpecs.count == 0 {
+  // A specialisation whose body uses `==`/`!=` on a type parameter bound to
+  // a named type or a tuple is re-checked too, so the comparison is lowered
+  // as the bound type's (D172 item 4).
+  val toRecheck: List[UnsignedSpecRequest] = newList()
+  for us in monoRes0.unsignedSpecs {
+    toRecheck.add(us)
+  }
+  for ss in monoRes0.structSpecs {
+    if specUsesEquality(ss.specDecl) and specOriginAvailable(ss.originPkg, importedPkgs) {
+      toRecheck.add(ss)
+    }
+  }
+  if toRecheck.count == 0 {
     return match finishValueRecords(monoRes0.file, file0, importedPkgs, tcRes, opts) {
       case Some(f) -> Some(value = finishMono(f, opts))
       case None -> None
@@ -788,7 +800,7 @@ pub func pipeCheckAndMono(
   val recheckDiags: List[Diagnostic] = newList()
   val specArrays: Map[String, SpecArraySites] = newMap()
   val specSites = recheckSpecs(
-    monoRes0.unsignedSpecs,
+    toRecheck,
     file0,
     importedPkgs,
     monoGenFuncs,
@@ -1175,6 +1187,45 @@ func specCallsAnyMethod(decl: in FunctionDecl, names: in Map[String, Bool]): Boo
   )
 }
 
+// A generic restored without its source cannot be checked again; its
+// specialisation keeps the comparison it was given.
+func specOriginAvailable(origin: in String, importedPkgs: in List[ImportedPackage]): Bool {
+  if origin == "" {
+    return true
+  }
+  for ip in importedPkgs {
+    if ip.name == origin {
+      return true
+    }
+  }
+  false
+}
+
+func specUsesEquality(decl: in FunctionDecl): Bool {
+  val noDocs: List[DocComment] = newList()
+  val noAnns: List[Annotation] = newList()
+  val noImports: List[ImportDecl] = newList()
+  val items: List[Item] = newList()
+  items.add(funcItem(decl))
+  val f = SourceFile(
+    moduleDoc = noDocs,
+    fileAnnotations = noAnns,
+    packageDecl = PackageDecl(path = ModulePath(segments = newList(), span = decl.span), span = decl.span),
+    imports = noImports,
+    items = items,
+    span = decl.span
+  )
+  anyExprInFile(
+    f,
+    { e: Expr ->
+      match e.kind {
+        case EBinop(op, _, _) -> match op { case BEq -> true; case BNeq -> true; case _ -> false }
+        case _ -> false
+      }
+    }
+  )
+}
+
 func calleeMethodName(callee: in Expr, names: in Map[String, Bool]): Bool {
   match callee.kind {
     case EParen(inner) -> calleeMethodName(inner, names)
@@ -1271,7 +1322,7 @@ func recheckSpecRound(
           "M0007",
           "cannot specialise '" + sp.specName + "': with its type arguments substituted the body does not type-check (" +
             firstError +
-            "), so its operations on UInt/ULong or array values cannot be lowered",
+            "), so its operations on UInt/ULong, array or structured values cannot be lowered",
           sp.callSpan
         )
       )

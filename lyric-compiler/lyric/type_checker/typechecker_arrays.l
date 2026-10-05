@@ -896,8 +896,18 @@ pub func buildArrayEqSite(tbl: in SymbolTable, span: in Span, t: in Type, negate
           }
         } else {
           match distinctFromPath(tbl, el) {
-            case Some(_) -> AEValue
-            case None -> AEPlain
+            case Some(_) -> {
+              val scratch: List[Diagnostic] = newList()
+              match distinctMemberType(tbl, scratch, el, "value", span) {
+                case Some(under) -> if isFloatLeafType(under) {
+                  AEFloat(viaValue = true, single = isSingleFloatType(under))
+                } else {
+                  AEValue
+                }
+                case None -> AEValue
+              }
+            }
+            case None -> if isFloatLeafType(el) { AEFloat(viaValue = false, single = isSingleFloatType(el)) } else { AEPlain }
           }
         }
       }
@@ -962,15 +972,44 @@ pub func recordArrayEq(
 ///
 /// Exact at any depth: every recursive path runs through a named type, which
 /// `seen` visits once, and the rest of a resolved type is a finite tree.
-pub func typeHoldsArray(tbl: in SymbolTable, t: in Type, seen: in List[Int]): Bool {
+pub func typeHoldsArray(tbl: in SymbolTable, t: in Type, seen: in List[Int]): Bool = typeHoldsArrayOr(tbl, t, seen, false)
+
+/// Whether `==` on a value of type `t` must be built from its parts rather
+/// than left to the host: it holds an array, or a `Float`/`Double` that is
+/// equal to itself when `NaN` (D172).
+pub func typeNeedsEqShape(tbl: in SymbolTable, t: in Type): Bool {
+  val seen: List[Int] = newList()
+  typeHoldsArrayOr(tbl, t, seen, true)
+}
+
+/// A 32-bit `Float`.
+pub func isSingleFloatType(t: in Type): Bool {
+  match unrefine(t) {
+    case TyPrim(pt) -> match pt { case PtFloat -> true; case _ -> false }
+    case _ -> false
+  }
+}
+
+/// A `Float` or `Double`.
+pub func isFloatLeafType(t: in Type): Bool {
+  match unrefine(t) {
+    case TyPrim(pt) -> match pt { case PtFloat -> true; case PtDouble -> true; case _ -> false }
+    case _ -> false
+  }
+}
+
+func typeHoldsArrayOr(tbl: in SymbolTable, t: in Type, seen: in List[Int], floats: Bool): Bool {
+  if floats and isFloatLeafType(t) {
+    return true
+  }
   match t {
     case TyArray(_, _, _) -> true
-    case TyRefined(u, _, _, _, _) -> typeHoldsArray(tbl, u, seen)
-    case TyNullable(inner) -> typeHoldsArray(tbl, inner, seen)
-    case TySlice(el) -> typeHoldsArray(tbl, el, seen)
+    case TyRefined(u, _, _, _, _) -> typeHoldsArrayOr(tbl, u, seen, floats)
+    case TyNullable(inner) -> typeHoldsArrayOr(tbl, inner, seen, floats)
+    case TySlice(el) -> typeHoldsArrayOr(tbl, el, seen, floats)
     case TyTuple(elems) -> {
       for el in elems {
-        if typeHoldsArray(tbl, el, seen) {
+        if typeHoldsArrayOr(tbl, el, seen, floats) {
           return true
         }
       }
@@ -978,7 +1017,7 @@ pub func typeHoldsArray(tbl: in SymbolTable, t: in Type, seen: in List[Int]): Bo
     }
     case TyUser(tid, _, args) -> {
       for a in args {
-        if typeHoldsArray(tbl, a, seen) {
+        if typeHoldsArrayOr(tbl, a, seen, floats) {
           return true
         }
       }
@@ -990,12 +1029,12 @@ pub func typeHoldsArray(tbl: in SymbolTable, t: in Type, seen: in List[Int]): Bo
       seen.add(tid.id)
       match symTableTypeSymbolOf(tbl, tid) {
         case Some(sym) -> match sym.kind {
-          case DKRecord(_, _) -> recordFieldsHoldArray(tbl, tid, seen)
-          case DKExposedRec(_, _) -> recordFieldsHoldArray(tbl, tid, seen)
+          case DKRecord(_, _) -> recordFieldsHoldArray(tbl, tid, seen, floats)
+          case DKExposedRec(_, _) -> recordFieldsHoldArray(tbl, tid, seen, floats)
           case DKDistinctType(_, _) -> {
             val scratch: List[Diagnostic] = newList()
             match distinctMemberType(tbl, scratch, t, "value", unknownSpan()) {
-              case Some(under) -> typeHoldsArray(tbl, under, seen)
+              case Some(under) -> typeHoldsArrayOr(tbl, under, seen, floats)
               case None -> false
             }
           }
@@ -1007,7 +1046,7 @@ pub func typeHoldsArray(tbl: in SymbolTable, t: in Type, seen: in List[Int]): Bo
             for c in ud.cases {
               for f in c.fields {
                 val fte = match f { case UFNamed(_, ty, _) -> ty; case UFPos(ty, _) -> ty }
-                if typeHoldsArray(tbl, resolveType(tbl, ctx, scratch, fte), seen) {
+                if typeHoldsArrayOr(tbl, resolveType(tbl, ctx, scratch, fte), seen, floats) {
                   found = true
                 }
               }
@@ -1024,9 +1063,9 @@ pub func typeHoldsArray(tbl: in SymbolTable, t: in Type, seen: in List[Int]): Bo
   }
 }
 
-func recordFieldsHoldArray(tbl: in SymbolTable, tid: in TypeId, seen: in List[Int]): Bool {
+func recordFieldsHoldArray(tbl: in SymbolTable, tid: in TypeId, seen: in List[Int], floats: Bool): Bool {
   for f in fieldsOfRecord(tbl, tid) {
-    if typeHoldsArray(tbl, f.ty, seen) {
+    if typeHoldsArrayOr(tbl, f.ty, seen, floats) {
       return true
     }
   }
@@ -1074,23 +1113,33 @@ func unknownSpan(): Span {
 /// host's equality would compare the array by reference.
 pub func isEqWrapperType(tbl: in SymbolTable, t: in Type): Bool {
   val u = unrefine(t)
-  val kind = match u {
-    case TyTuple(_) -> true
+  match u {
+    // A tuple has no host equality of its own to give a `Float` its `NaN`
+    // rule (D172), so one holding a `Float`/`Double` is compared by shape too.
+    case TyTuple(_) -> typeNeedsEqShape(tbl, u)
     case TyUser(tid, _, _) -> match symTableTypeSymbolOf(tbl, tid) {
       case Some(sym) -> match sym.kind {
-        case DKUnion(_, _) -> true
-        case DKDistinctType(_, _) -> true
+        case DKUnion(_, _) -> {
+          val seen: List[Int] = newList()
+          typeHoldsArray(tbl, u, seen)
+        }
+        case DKDistinctType(_, _) -> {
+          val seen: List[Int] = newList()
+          if typeHoldsArray(tbl, u, seen) {
+            return true
+          }
+          val scratch: List[Diagnostic] = newList()
+          match distinctMemberType(tbl, scratch, u, "value", unknownSpan()) {
+            case Some(under) -> match unrefine(under) { case TyTuple(_) -> typeNeedsEqShape(tbl, under); case _ -> false }
+            case None -> false
+          }
+        }
         case _ -> false
       }
       case None -> false
     }
     case _ -> false
   }
-  if not kind {
-    return false
-  }
-  val seen: List[Int] = newList()
-  typeHoldsArray(tbl, u, seen)
 }
 
 /// The `EqShape` of `t`: how `==` compares a value of that type element by
@@ -1110,9 +1159,11 @@ pub func buildEqShape(tbl: in SymbolTable, span: in Span, t: in Type, depth: in 
 
 func buildEqShapeAt(tbl: in SymbolTable, span: in Span, t: in Type, depth: in Int): Result[EqShape, String] {
   val u = unrefine(t)
-  val seen: List[Int] = newList()
-  if not typeHoldsArray(tbl, u, seen) {
+  if not typeNeedsEqShape(tbl, u) {
     return Ok(value = ESPlain)
+  }
+  if isFloatLeafType(u) {
+    return Ok(value = ESFloat(single = isSingleFloatType(u)))
   }
   if depth > 6 {
     return Err(error = "~")
