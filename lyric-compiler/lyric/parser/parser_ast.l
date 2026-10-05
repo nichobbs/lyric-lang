@@ -1405,29 +1405,12 @@ pub func valueArgMarkerPrefix(): String = "__lyric_varg:"
 
 pub func valueRecordUsePrefix(): String = "__lyric_vuse:"
 
-/// Whether `name` is a value-generic record's specialisation
-/// (`valueRecordSpecName`): it ends in one or more `__V<digits>` parts.
-pub func isValueRecordSpecName(name: in String): Bool {
-  val at = match name.indexOf("__V") { case Some(k) -> k; case None -> return false }
-  if at == 0 {
-    return false
-  }
-  var i = at
-  while i < name.length {
-    if i + 3 > name.length or name.substring(i, 3) != "__V" {
-      return false
-    }
-    i = i + 3
-    val digitsStart = i
-    while i < name.length and "0123456789".contains(name.substring(i, 1)) {
-      i = i + 1
-    }
-    if i == digitsStart {
-      return false
-    }
-  }
-  true
-}
+/// Present in the alias map when the target erases value parameters (D173):
+/// each instance `name[<args>]` becomes `name` over its type arguments only,
+/// and each marked construction a construction of `name`, with no
+/// specialisation.  The marked records may be declared in another package,
+/// so a qualified head is matched by its last segment.
+pub func valueRecordEraseKey(): String = "__lyric_verase"
 
 /// The specialisation of value-generic record `name` at `lengths` (D169):
 /// `FixedVec__V3`, `Grid__V4__V2`.

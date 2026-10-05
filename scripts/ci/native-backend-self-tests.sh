@@ -121,8 +121,8 @@ LYRIC_BIN="$lyric_bin" bash scripts/ci/fixed-array-e2e.sh native
 LYRIC_BIN="$lyric_bin" bash scripts/ci/bench-vec3-alloc.sh
 # #8031: an inline range type is checked wherever a value reaches it.
 LYRIC_BIN="$lyric_bin" bash scripts/ci/range-refinement-e2e.sh native
-# D169: a value-generic record is usable in its own package, and naming
-# another package's is T0164.
+# D169, D173: a value-generic record is usable in its own package and from
+# another.
 LYRIC_BIN="$lyric_bin" bash scripts/ci/value-generic-record-e2e.sh native
 # Std.Task, Std.SecureRandom, Std.Json and Std.JsonValue on native (#8135, #7856):
 # the stdlib suites that need no catchable panic.

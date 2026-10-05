@@ -3353,6 +3353,37 @@ func inferMemberTE(state: in MonoState, env: in Map[String, TypeExpr], recv: in 
   }
 }
 
+// A record's generic parameters bound to an instance's arguments, by
+// position: a type parameter to its type, a value parameter (D169) to its
+// length, whether a literal or another value parameter's name.
+func bindRecordArgsMono(
+  generics: in Option[GenericParams],
+  recordArgs: in List[TypeArg],
+  subst: in Map[String, TypeExpr],
+  valueSubst: in Map[String, Expr],
+): Unit {
+  val ps = match generics { case Some(g) -> g.params; case None -> return }
+  if ps.count != recordArgs.count {
+    return
+  }
+  var i = 0
+  while i < ps.count {
+    match ps[i] {
+      case GPType(n, _) -> match recordArgs[i] { case TAType(te) -> subst.add(n, te); case TAValue(_) -> () }
+      case GPValue(n, _, _) -> match recordArgs[i] {
+        case TAValue(e) -> valueSubst.add(n, e)
+        case TAType(te) -> match te.kind {
+          case TRef(p) -> if p.segments.count == 1 {
+            valueSubst.add(n, singleSegPathExpr(p.segments[0], te.span))
+          }
+          case _ -> ()
+        }
+      }
+    }
+    i = i + 1
+  }
+}
+
 // Walk a same-package record decl's fields for one named `field`.
 // `recordArgs` is the receiver's concrete type-argument list (empty
 // when the record has no generic parameters).  The looked-up field's
@@ -3366,19 +3397,9 @@ func lookupFieldTE(
   match recOpt {
     case None -> None
     case Some(rdecl) -> {
-      val typeParams = extractTypeParamNames(rdecl.generics)
       val subst: Map[String, TypeExpr] = newMap()
       val valueSubst: Map[String, Expr] = newMap()
-      if typeParams.count == recordArgs.count {
-        var i = 0
-        while i < typeParams.count {
-          match recordArgs[i] {
-            case TAType(te) -> subst.add(typeParams[i], te)
-            case TAValue(_) -> ()
-          }
-          i = i + 1
-        }
-      }
+      bindRecordArgsMono(rdecl.generics, recordArgs, subst, valueSubst)
       var i = 0
       while i < rdecl.members.count {
         match rdecl.members[i] {
@@ -5482,6 +5503,199 @@ func annotateLambdaParamsMono(state: in MonoState, lparams: in List[LambdaParam]
   }
 }
 
+// A method call `recv.m(args)` on a record whose `m` is a generic function
+// named after it (`func Ints.sum[N: Nat](self: in Ints[N])`, D173): the
+// function's name.  The type checker rewrites such calls in the file it
+// checks (#8173); a generic body from another package, or one specialised
+// here, reaches this pass with the method spelling still in place.
+func dottedGenericMethodMono(state: in MonoState, env: in Map[String, TypeExpr], fn: in Expr): Option[String] {
+  val recv = match fn.kind { case EMember(r, _) -> r; case _ -> return None }
+  val m = match fn.kind { case EMember(_, mn) -> mn; case _ -> return None }
+  val head = match inferExprTE(state, env, recv) { case Some(te) -> typeHeadNameMono(te); case None -> return None }
+  if head.length == 0 {
+    return None
+  }
+  val name = head + "." + m
+  if not state.genDecls.containsKey(name) {
+    return None
+  }
+  match mapGet(state.recordDecls, head) {
+    case Some(rd) -> {
+      for mem in rd.members {
+        match mem {
+          case RMFunc(own) -> if own.name == m { return None }
+          case _ -> ()
+        }
+      }
+    }
+    case None -> ()
+  }
+  Some(value = name)
+}
+
+func typeHeadNameMono(te: in TypeExpr): String {
+  match te.kind {
+    case TRef(p) -> if p.segments.count > 0 { p.segments[p.segments.count - 1] } else { "" }
+    case TGenericApp(h, _) -> if h.segments.count > 0 { h.segments[h.segments.count - 1] } else { "" }
+    case TParen(inner) -> typeHeadNameMono(inner)
+    case _ -> ""
+  }
+}
+
+// A call through the type name, `Ints.sum(v)`, of a generic function named
+// after a record (#8173): the function's name.  As with
+// `dottedGenericMethodMono`, a generic body from another package keeps this
+// spelling, which the type checker rewrites only in the file it checks.
+func typeQualifiedGenericMono(state: in MonoState, env: in Map[String, TypeExpr], fn: in Expr): Option[String] {
+  val name = match fn.kind {
+    case EMember(r, m) -> match r.kind {
+      case EPath(p) -> if p.segments.count == 1 and not env.containsKey(p.segments[0]) {
+        p.segments[0] + "." + m
+      } else {
+        ""
+      }
+      case _ -> ""
+    }
+    case EPath(p) -> if p.segments.count == 2 and not env.containsKey(p.segments[0]) {
+      p.segments[0] + "." + p.segments[1]
+    } else {
+      ""
+    }
+    case _ -> ""
+  }
+  if name.length > 0 and state.genDecls.containsKey(name) {
+    Some(value = name)
+  } else {
+    None
+  }
+}
+
+// `recv.m(args)` as `name(recv, args)`, the callee keeping the member's span.
+func receiverFirstCallMono(fn: in Expr, name: in String, args: in List[CallArg], s: in Span): Expr {
+  val recv = match fn.kind { case EMember(r, _) -> r; case _ -> fn }
+  val all: List[CallArg] = newList()
+  all.add(CAPositional(expr = recv))
+  for a in args {
+    all.add(a)
+  }
+  Expr(kind = ECall(fn = singleSegPathExpr(name, fn.span), args = all), span = s)
+}
+
+// Value generic parameters the type checker recorded no length for, bound
+// from the arguments' type expressions where they spell the length as a
+// literal: an `array[3, Int]` argument for an `array[N, Int]` parameter, or
+// an `Ints[3]` for an `Ints[N]`.  This is how a call inside a specialised
+// generic body (whose lengths are literals once specialised) or inside a
+// generic from another package binds its lengths.
+func inferValueArgsMono(
+  state: in MonoState,
+  env: in Map[String, TypeExpr],
+  decl: in FunctionDecl,
+  valueParams: in List[String],
+  args: in List[CallArg],
+  acc: in Map[String, Expr],
+): Unit {
+  var i = 0
+  while i < args.count and i < decl.params.count {
+    match args[i] {
+      case CAPositional(a) -> match inferExprTE(state, env, a) {
+        case Some(argTe) -> bindValueArgsTE(decl.params[i].ty, argTe, valueParams, acc)
+        case None -> ()
+      }
+      case CANamed(_, _, _) -> ()
+    }
+    i = i + 1
+  }
+}
+
+func bindValueArgsTE(
+  paramTe: in TypeExpr, argTe: in TypeExpr, valueParams: in List[String], acc: in Map[String, Expr]
+): Unit {
+  match paramTe.kind {
+    case TParen(inner) -> bindValueArgsTE(inner, argTe, valueParams, acc)
+    case TArray(psize, pel) -> match argTe.kind {
+      case TArray(asize, ael) -> {
+        bindValueArgTA(psize, asize, valueParams, acc)
+        bindValueArgsTE(pel, ael, valueParams, acc)
+      }
+      case _ -> ()
+    }
+    case TSlice(pel) -> match argTe.kind {
+      case TSlice(ael) -> bindValueArgsTE(pel, ael, valueParams, acc)
+      case _ -> ()
+    }
+    case TTuple(pts) -> match argTe.kind {
+      case TTuple(ats) -> bindValueArgsTEList(pts, ats, valueParams, acc)
+      case _ -> ()
+    }
+    case TGenericApp(_, pargs) -> match argTe.kind {
+      case TGenericApp(_, aargs) -> if pargs.count == aargs.count {
+        var i = 0
+        while i < pargs.count {
+          bindValueArgTA(pargs[i], aargs[i], valueParams, acc)
+          i = i + 1
+        }
+      }
+      case _ -> ()
+    }
+    case _ -> ()
+  }
+}
+
+func bindValueArgsTEList(
+  pts: in List[TypeExpr],
+  ats: in List[TypeExpr],
+  valueParams: in List[String],
+  acc: in Map[String, Expr],
+): Unit {
+  if pts.count != ats.count {
+    return
+  }
+  var i = 0
+  while i < pts.count {
+    bindValueArgsTE(pts[i], ats[i], valueParams, acc)
+    i = i + 1
+  }
+}
+
+// One type argument position: a parameter spelled as a value parameter's
+// name against an integer literal binds it; two type expressions recurse.
+func bindValueArgTA(p: in TypeArg, a: in TypeArg, valueParams: in List[String], acc: in Map[String, Expr]): Unit {
+  val pname = match p {
+    case TAType(pt) -> match pt.kind {
+      case TRef(pp) -> if pp.segments.count == 1 { pp.segments[0] } else { "" }
+      case _ -> ""
+    }
+    case TAValue(pe) -> match pe.kind {
+      case EPath(pp) -> if pp.segments.count == 1 { pp.segments[0] } else { "" }
+      case _ -> ""
+    }
+  }
+  if pname.length > 0 and valueParams.contains(pname) {
+    if not acc.containsKey(pname) {
+      match integerLiteralArgMono(a) {
+        case Some(lit) -> acc.add(pname, lit)
+        case None -> ()
+      }
+    }
+    return
+  }
+  match p {
+    case TAType(pt) -> match a { case TAType(at) -> bindValueArgsTE(pt, at, valueParams, acc); case TAValue(_) -> () }
+    case TAValue(_) -> ()
+  }
+}
+
+func integerLiteralArgMono(a: in TypeArg): Option[Expr] {
+  match a {
+    case TAValue(e) -> match e.kind {
+      case ELiteral(lit) -> match lit { case LInt(_, _, _) -> Some(value = e); case _ -> None }
+      case _ -> None
+    }
+    case TAType(_) -> None
+  }
+}
+
 // The value generic parameters the type checker bound for the call whose
 // callee is at `calleeSpan` from its array arguments' lengths (D167 item 6),
 // as integer literals; empty when it bound none of `valueParams`.
@@ -6762,6 +6976,14 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
     //     where the user already wrote the type arguments inline (#349
     //     called out that `ETypeApp` was pass-through before).
     case ECall(fn, args) -> {
+      match dottedGenericMethodMono(state, env, fn) {
+        case Some(direct) -> return rewriteExpr(state, env, receiverFirstCallMono(fn, direct, args, s))
+        case None -> ()
+      }
+      match typeQualifiedGenericMono(state, env, fn) {
+        case Some(direct) -> return rewriteExpr(state, env, Expr(kind = ECall(fn = singleSegPathExpr(direct, fn.span), args = args), span = s))
+        case None -> ()
+      }
       match fn.kind {
         case EMember(copyRecv, copyName) -> if copyName == "copy" {
           val ownCopySite: Option[RecordCopySite] = if ownSites { mapGet(state.copySites, recordCopySiteKey(s)) } else { None }
@@ -6934,6 +7156,9 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
                 // lengths the type checker read off this call's arguments
                 // (D167 item 6); otherwise they need an explicit `f[N]`.
                 val checkedValues = checkedValueArgsMono(state, valueParams, fn.span)
+                if checkedValues.count < valueParams.count {
+                  inferValueArgsMono(state, env, baseDecl, valueParams, args, checkedValues)
+                }
                 val valuesBound = valueParams.count == 0 or checkedValues.count == valueParams.count
                 if (typeParams.count > 0 or valueParams.count > 0) and valuesBound and args.count <= baseDecl.params.count {
                   if genDeclResolvesForCallSite(state, env, fname, args, baseDecl) {

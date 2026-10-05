@@ -5569,7 +5569,6 @@ func noteValueRecordCtor(
   if not genericParamsHaveValue(params) {
     return
   }
-  reportForeignValueRecordSym(tbl, diag, sym, span)
   val vargs: List[TypeArg] = newList()
   var i = 0
   while i < params.count and i < targs.count {

@@ -225,6 +225,9 @@ func valueRecordRef(
   args: in List[TypeArg],
   origArgs: in List[TypeArg],
 ): Option[TypeExprKind] {
+  if aliasTargets.containsKey(valueRecordEraseKey()) {
+    return erasedValueRecordRef(aliasTargets, head, args)
+  }
   if head.segments.count != 1 {
     return None
   }
@@ -260,9 +263,44 @@ func valueRecordRef(
   }
 }
 
+// A value-generic record's instance with its value arguments dropped, on a
+// target that erases them (D173): `Ints[3]` is `Ints`, `FixedVec[T, 3]` is
+// `FixedVec[T]`.
+func erasedValueRecordRef(
+  aliasTargets: in Map[String, TypeExpr], head: in ModulePath, args: in List[TypeArg]
+): Option[TypeExprKind] {
+  if head.segments.count == 0 {
+    return None
+  }
+  val kinds = match mapGet(aliasTargets, valueRecordMarkerPrefix() + head.segments[head.segments.count - 1]) {
+    case Some(m) -> match m.kind { case TGenericApp(_, ks) -> ks; case _ -> return None }
+    case None -> return None
+  }
+  if kinds.count != args.count {
+    return None
+  }
+  val typeArgs: List[TypeArg] = newList()
+  var i = 0
+  while i < args.count {
+    match kinds[i] {
+      case TAValue(_) -> ()
+      case TAType(_) -> typeArgs.add(args[i])
+    }
+    i = i + 1
+  }
+  if typeArgs.count == 0 {
+    Some(value = TRef(path = head))
+  } else {
+    Some(value = TGenericApp(head = head, args = typeArgs))
+  }
+}
+
 // A construction the middle end marked with its instance's lengths
 // (`FixedVec[3](...)`), as a construction of the specialisation (D169).
 func valueRecordCtor(aliasTargets: in Map[String, TypeExpr], fn: in Expr, args: in List[TypeArg]): Option[ExprKind] {
+  if aliasTargets.containsKey(valueRecordEraseKey()) {
+    return erasedValueRecordCtor(aliasTargets, fn, args)
+  }
   val fnPath = match fn.kind {
     case EPath(p) -> if p.segments.count == 1 { p } else { return None }
     case _ -> return None
@@ -285,6 +323,39 @@ func valueRecordCtor(aliasTargets: in Map[String, TypeExpr], fn: in Expr, args: 
   val specSegs: List[String] = newList()
   specSegs.add(spec)
   Some(value = EPath(path = ModulePath(segments = specSegs, span = fnSpan)))
+}
+
+// A construction of a value-generic record on a target that erases value
+// parameters (D173): the middle end's length marks (`Ints[3](...)`) are
+// dropped, and type arguments written with the lengths are kept.
+func erasedValueRecordCtor(
+  aliasTargets: in Map[String, TypeExpr], fn: in Expr, args: in List[TypeArg]
+): Option[ExprKind] {
+  val p = match fn.kind { case EPath(fp) -> fp; case _ -> return None }
+  if p.segments.count == 0 {
+    return None
+  }
+  val kinds = match mapGet(aliasTargets, valueRecordMarkerPrefix() + p.segments[p.segments.count - 1]) {
+    case Some(m) -> match m.kind { case TGenericApp(_, ks) -> ks; case _ -> return None }
+    case None -> return None
+  }
+  if kinds.count != args.count {
+    return Some(value = fn.kind)
+  }
+  val typeArgs: List[TypeArg] = newList()
+  var i = 0
+  while i < args.count {
+    match kinds[i] {
+      case TAValue(_) -> ()
+      case TAType(_) -> typeArgs.add(args[i])
+    }
+    i = i + 1
+  }
+  if typeArgs.count == 0 {
+    Some(value = fn.kind)
+  } else {
+    Some(value = ETypeApp(fn = fn, args = typeArgs))
+  }
 }
 
 func valueArgLength(aliasTargets: in Map[String, TypeExpr], arg: in TypeArg, orig: in TypeArg): Option[Int] {

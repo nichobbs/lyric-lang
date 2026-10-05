@@ -8277,6 +8277,43 @@ func isUnsignedTypeExprMsil(te: in TypeExpr): Bool {
   }
 }
 
+/// A value-generic record's instance (`Vec[3]`, D169) names the record's
+/// one CLR type with its value arguments erased (D173): `Vec`, or
+/// `FixedVec<T>` for `FixedVec[T, 3]`.  The middle end erases them in the
+/// file it lowers; a signature read from another package's contract still
+/// spells them.
+func withoutValueTypeArgsMsil(te: in TypeExpr): TypeExpr {
+  match te.kind {
+    case TGenericApp(head, args) -> {
+      var anyValue = false
+      for a in args {
+        match a {
+          case TAValue(_) -> {
+            anyValue = true
+          }
+          case TAType(_) -> ()
+        }
+      }
+      if not anyValue {
+        return te
+      }
+      val kept: List[TypeArg] = newList()
+      for a in args {
+        match a {
+          case TAType(_) -> kept.add(a)
+          case TAValue(_) -> ()
+        }
+      }
+      if kept.count == 0 {
+        te.copy(kind = TRef(path = head))
+      } else {
+        te.copy(kind = TGenericApp(head = head, args = kept))
+      }
+    }
+    case _ -> te
+  }
+}
+
 pub func typeExprToMsilBodyCtx(cctx: in CodegenCtx, fctx: in FuncCtx, te: in TypeExpr): MsilType {
   // #7695: a generic record/union method's own reified type parameters
   // (`fctx.reifiedGenerics`) take priority over `fctx.generics` (a generic
@@ -8295,7 +8332,8 @@ pub func typeExprToMsilBodyCtx(cctx: in CodegenCtx, fctx: in FuncCtx, te: in Typ
 }
 
 // type references via the codegen context (#1183 codegen port).
-pub func typeExprToMsilCtx(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in String): MsilType {
+pub func typeExprToMsilCtx(cctx: in CodegenCtx, te0: in TypeExpr, pkgName: in String): MsilType {
+  val te = withoutValueTypeArgsMsil(te0)
   match te.kind {
     case TUnit -> MVoid
     case TNever -> MVoid
@@ -34395,7 +34433,8 @@ func memberTypeExprToMsil(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Stri
   }
 }
 
-func typeExprToMsilG(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in String, generics: in List[String]): MsilType {
+func typeExprToMsilG(cctx: in CodegenCtx, te0: in TypeExpr, pkgName: in String, generics: in List[String]): MsilType {
+  val te = withoutValueTypeArgsMsil(te0)
   match te.kind {
     case TRef(path) -> {
       val seg = lastSegmentMsil(path)
@@ -34650,8 +34689,9 @@ func isGenericTypeVar(te: in TypeExpr, generics: in List[String]): Bool {
 // Non-type-variable annotations delegate to the legacy context-aware lowering
 // so a generic function over concrete types is unaffected.
 func typeExprToMsilGenBody(
-  cctx: in CodegenCtx, te: in TypeExpr, pkgName: in String, generics: in List[String]
+  cctx: in CodegenCtx, te0: in TypeExpr, pkgName: in String, generics: in List[String]
 ): MsilType {
+  val te = withoutValueTypeArgsMsil(te0)
   match te.kind {
     case TRef(_) -> {
       if isGenericTypeVar(te, generics) {
@@ -34802,7 +34842,10 @@ func typeExprToMsilGenBody(
 // array ops on it, so the `object[]` shape would be a lie that buys nothing.
 // Non-type-variable annotations delegate to the legacy (erasure) signature
 // lowering, preserving every existing signature byte.
-func typeExprToMsilGenSig(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in String, generics: in List[String]): MsilType {
+func typeExprToMsilGenSig(
+  cctx: in CodegenCtx, te0: in TypeExpr, pkgName: in String, generics: in List[String]
+): MsilType {
+  val te = withoutValueTypeArgsMsil(te0)
   match te.kind {
     case TRef(_) -> {
       if isGenericTypeVar(te, generics) {
@@ -46072,17 +46115,23 @@ func registerStdlibRecordLikeType(
   // For generic records (MapEntry[K, V], etc.), build a type-parameter index
   // so buildGenericCaseCtorTok can emit TypeSpec-based newobj (#3512).
   val recTypeParamVarIdx: Map[String, Int] = newMap()
+  // A value generic parameter (D169) is erased from the CLR type (D173), so
+  // only type parameters count toward its arity and `!n` indices.
   val recGenericArity = match decl.generics {
     case Some(gps) -> {
       var rgi = 0
+      var typeIdx = 0
       while rgi < gps.params.count {
         match gps.params[rgi] {
-          case GPType(tpName, _) -> recTypeParamVarIdx.add(tpName, rgi)
+          case GPType(tpName, _) -> {
+            recTypeParamVarIdx.add(tpName, typeIdx)
+            typeIdx = typeIdx + 1
+          }
           case _ -> ()
         }
         rgi = rgi + 1
       }
-      gps.params.count
+      typeIdx
     }
     case None -> 0
   }

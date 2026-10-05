@@ -101,6 +101,12 @@ pub record PackageFeatureSet {
   declared: List[String]
 }
 
+/// A specialisation of a value-generic record declared in package `pkg`.
+pub record ForeignValueRecord {
+  pkg: String
+  item: Item
+}
+
 pub record MiddleEndOptions {
   tcFatal: Bool
   tcReport: Bool
@@ -150,6 +156,12 @@ pub record MiddleEndOptions {
   /// appends them to the package's output so another package of the project
   /// can call them.  Other backends pass a list and ignore it.
   genericItemsOut: List[Item]
+  /// Receives, on native, each specialisation of another package's
+  /// value-generic record this package uses (D173 item 3), with the package
+  /// that declares the record.  The bridge adds it to that package's output
+  /// once, so every package shares one `Vec__V3`.  Other backends erase the
+  /// value parameters instead; they pass a list and ignore it.
+  foreignValueRecordsOut: List[ForeignValueRecord]
   /// Why this package may not do I/O, from the manifest's `[layers]`
   /// (docs/65 §5, D149): "layer 'logic'" for a package in a layer whose
   /// rule does not allow `io`, "" otherwise.  A package-level `@pure` has
@@ -247,7 +259,7 @@ pub func pipeParseAndErase(
   // feature set (not the synthetic target pseudo-feature cfg adds).
   val biFile = BD.synthesizeBuildInfo(cfgRes.file, targetName, activeFeatures, definesWk)
   val arrayImports = withArrayImports(biFile, source)
-  Some(value = markWrappingArith(arrayImports, definesWk))
+  Some(value = hoistValueRecordMethods(markWrappingArith(arrayImports, definesWk)))
 }
 
 /// A file that spells an `array[N, T]` type may need `Std.Collections` after
@@ -896,6 +908,10 @@ pub record SpecArraySites {
   /// The resolved lengths of the function's `array[N, T]` type expressions
   /// whose `N` is not a literal.
   lens: Map[String, Int]
+  /// Each construction of a value-generic record with the lengths it binds
+  /// (D169): a generic from another package reaches this file with none of
+  /// its constructions marked.
+  valueCtors: Map[String, List[TypeArg]]
 }
 
 // A specialisation binding a type parameter to `UInt`/`ULong` or to an array
@@ -1347,7 +1363,8 @@ func specArraySitesNonEmpty(sa: in SpecArraySites): Bool {
     sa.arrayEq.count > 0 or
     sa.recordEq.count > 0 or
     sa.wrapEq.count > 0 or
-    sa.lens.count > 0
+    sa.lens.count > 0 or
+    sa.valueCtors.count > 0
 }
 
 func specArraySitesOf(
@@ -1375,7 +1392,8 @@ func specArraySitesOf(
     arrayEq = siteSlice(syms.arrayEqSites, p.arrayEqSites, usePrior, lo, hi),
     recordEq = siteSlice(syms.recordEqSites, p.recordEqSites, usePrior, lo, hi),
     wrapEq = siteSlice(syms.wrapEqSites, p.wrapEqSites, usePrior, lo, hi),
-    lens = siteSlice(syms.arrayTypeLens, p.arrayTypeLens, usePrior, fnLo, fnHi)
+    lens = siteSlice(syms.arrayTypeLens, p.arrayTypeLens, usePrior, fnLo, fnHi),
+    valueCtors = siteSlice(syms.valueRecordCtorSites, p.valueRecordCtorSites, usePrior, lo, hi)
   )
 }
 
@@ -1471,7 +1489,12 @@ func lowerSpecArrays(
           )
           val arraySites = if primitiveArrays { sa.arrays } else { sa.arrays.copy(literal = newMap()) }
           val lowered = lowerArrays(
-            lowerRecordEq(withArrayLens(oneFile, sa.lens), sa.recordEq, sa.arrayEq, sa.wrapEq),
+            lowerRecordEq(
+              markValueRecordCtors(withArrayLens(oneFile, sa.lens), sa.valueCtors),
+              sa.recordEq,
+              sa.arrayEq,
+              sa.wrapEq
+            ),
             arraySites
           )
           for li in lowered.items {
@@ -1577,7 +1600,7 @@ func markValueRecordCtors(file: in SourceFile, sites: in Map[String, List[TypeAr
   )
 }
 
-func valueGenericRecordDecl(it: in Item): Option[RecordDecl] {
+pub func valueGenericRecordDecl(it: in Item): Option[RecordDecl] {
   val dOpt = match it.kind {
     case IRecord(d) -> Some(value = d)
     case IExposedRec(d) -> Some(value = d)
@@ -1730,23 +1753,48 @@ func recordItemLike(it: in Item, d: in RecordDecl): Item {
 // instance with a reference to its specialisation.  `specsOut` receives the
 // specialisations made.
 func specialiseValueRecords(
-  file: in SourceFile, constArgs: in Map[String, Int], specsOut: in List[ValueRecordSpec]
+  file: in SourceFile,
+  constArgs: in Map[String, Int],
+  specsOut: in List[ValueRecordSpec],
+  importedPkgs: in List[ImportedPackage],
+  foreignOut: in List[ForeignValueRecord],
 ): SourceFile {
   val decls: Map[String, RecordDecl] = newMap()
   val declItems: Map[String, Item] = newMap()
+  val markerItems: List[Item] = newList()
   for it in file.items {
     match valueGenericRecordDecl(it) {
       case Some(d) -> {
         decls.add(d.name, d)
         declItems.add(d.name, it)
+        markerItems.add(it)
       }
       case None -> ()
+    }
+  }
+  // Another package's records, by the package that declares them; the pool
+  // also holds this package's own items, which are already above.
+  val foreignPkg: Map[String, String] = newMap()
+  val ownPkg = modulePathJoin(file.packageDecl.path.segments)
+  for ip in importedPkgs {
+    if ip.name != ownPkg {
+      for it in ip.items {
+        match valueGenericRecordDecl(it) {
+          case Some(d) -> if not decls.containsKey(d.name) {
+            decls.add(d.name, d)
+            declItems.add(d.name, it)
+            markerItems.add(it)
+            foreignPkg.add(d.name, ip.name)
+          }
+          case None -> ()
+        }
+      }
     }
   }
   if decls.count == 0 {
     return file
   }
-  val markers = valueRecordMarkers(file.items, constArgs, file.span)
+  val markers = valueRecordMarkers(markerItems, constArgs, file.span)
   val renamed = TypeAliasResolve.resolveAliasesInFile(markers, file)
   // A specialisation's fields and methods may name further instances, so
   // specialise until no new one appears.
@@ -1776,6 +1824,20 @@ func specialiseValueRecords(
       }
     }
     pending = newValueRecordSpecs(markers, decls, done)
+  }
+  // Another package's specialisations belong to that package (D173 item 3).
+  for name in mapKeys(foreignPkg) {
+    match mapGet(foreignPkg, name) {
+      case Some(pkg) -> match mapGet(specItems, name) {
+        case Some(sis) -> {
+          for si in sis {
+            foreignOut.add(ForeignValueRecord(pkg = pkg, item = si))
+          }
+        }
+        case None -> ()
+      }
+      case None -> ()
+    }
   }
   // Each record is replaced, in place, by its specialisations.
   val items: List[Item] = newList()
@@ -1953,6 +2015,68 @@ func lowerValueRecordSpecs(
   file.copy(items = items)
 }
 
+// On a target whose `array[N, T]` carries no length (dotnet and the JVM),
+// a value-generic record is one runtime type with its value parameters
+// erased (D173 item 1): the record declared here loses them, and every
+// instance of it or of one imported, `Ints[3]` or `FixedVec[T, 3]`, names
+// the erased record.  Its methods are already value-generic functions
+// specialised per length (`hoistValueRecordMethods`).
+func eraseValueRecords(file: in SourceFile, importedPkgs: in List[ImportedPackage]): SourceFile {
+  // The pool of imported packages also holds this package's own items.
+  val decls: List[Item] = newList()
+  val names: Map[String, Bool] = newMap()
+  for it in file.items {
+    addValueRecordOnce(it, decls, names)
+  }
+  for ip in importedPkgs {
+    for it in ip.items {
+      addValueRecordOnce(it, decls, names)
+    }
+  }
+  if decls.count == 0 {
+    return file
+  }
+  val noConstArgs: Map[String, Int] = newMap()
+  val markers = valueRecordMarkers(decls, noConstArgs, file.span)
+  markers.add(valueRecordEraseKey(), TypeExpr(kind = TUnit, span = file.span))
+  val renamed = TypeAliasResolve.resolveAliasesInFile(markers, file)
+  val items: List[Item] = newList()
+  for it in renamed.items {
+    match valueGenericRecordDecl(it) {
+      case Some(d) -> items.add(recordItemLike(it, d.copy(generics = withoutValueGenerics(d.generics))))
+      case None -> items.add(it)
+    }
+  }
+  renamed.copy(items = items)
+}
+
+func addValueRecordOnce(it: in Item, decls: in List[Item], names: in Map[String, Bool]): Unit {
+  match valueGenericRecordDecl(it) {
+    case Some(d) -> if not names.containsKey(d.name) { names.add(d.name, true); decls.add(it) }
+    case None -> ()
+  }
+}
+
+func withoutValueGenerics(g: in Option[GenericParams]): Option[GenericParams] {
+  match g {
+    case Some(gp) -> {
+      val kept: List[GenericParam] = newList()
+      for p in gp.params {
+        match p {
+          case GPType(_, _) -> kept.add(p)
+          case GPValue(_, _, _) -> ()
+        }
+      }
+      if kept.count == 0 {
+        None
+      } else {
+        Some(value = gp.copy(params = kept))
+      }
+    }
+    case None -> None
+  }
+}
+
 // Specialises the value-generic records in the monomorphised `file` and
 // lowers the array operations in their methods (D169).  `None` when a
 // specialisation does not type-check.
@@ -1963,8 +2087,17 @@ func finishValueRecords(
   tcRes: in CheckResult,
   opts: in MiddleEndOptions,
 ): Option[SourceFile] {
+  if opts.arraysAsLists {
+    return Some(value = eraseValueRecords(file, importedPkgs))
+  }
   val specs: List[ValueRecordSpec] = newList()
-  val specialised = specialiseValueRecords(file, tcRes.symbols.valueTypeArgSites, specs)
+  val specialised = specialiseValueRecords(
+    file,
+    tcRes.symbols.valueTypeArgSites,
+    specs,
+    importedPkgs,
+    opts.foreignValueRecordsOut
+  )
   val diags: List[Diagnostic] = newList()
   val lowered = lowerValueRecordSpecs(
     specialised,

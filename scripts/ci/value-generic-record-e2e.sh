@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# value-generic-record-e2e.sh: a value-generic record (D169) is usable only in
-# its own package for now (#8150).  A two-package project:
-#   - positive: the library uses its own `Vec[N: Nat]` behind a public
-#     function, which the application calls; it builds and prints the sum;
-#   - negative: the application names the library's record, which is T0164.
+# value-generic-record-e2e.sh: a value-generic record (D169) is usable from
+# any package (D173).  A two-package project:
+#   - the library uses its own `Vec[N: Nat]` behind a public function, which
+#     the application calls; it builds and prints the sum;
+#   - the application builds the library's record at two lengths, calls its
+#     methods (one calling another), passes an instance to a library function
+#     taking `Vec[3]`, takes one back from a function returning `Vec[2]`, and
+#     zero fills one from its type; it builds and prints each result;
+#   - the same application against the library as a separately built
+#     dependency, read through its contract metadata.
 # And single-file programs every target rejects: an instance where another
 # length is expected (T0060), two fields giving one length different values
 # (T0043), and a type where a length is expected (T0163).
@@ -47,16 +52,27 @@ pub record Vec[N: Nat] {
 
   func total(self: in Vec[N]): Int {
     var t = 0
-    for x in self.items {
+    for x in items {
       t = t + x
     }
     t
   }
+
+  func size(self: in Vec[N]): Int = N
+
+  func doubled(self: in Vec[N]): Int = total() * 2
 }
 
 pub func sumOfThree(a: in Int, b: in Int, c: in Int): Int {
   val xs: array[3, Int] = [a, b, c]
   Vec(items = xs).total()
+}
+
+pub func sum3(v: in Vec[3]): Int = v.total()
+
+pub func makePair(a: in Int, b: in Int): Vec[2] {
+  val xs: array[2, Int] = [a, b]
+  Vec(items = xs)
 }
 EOF
   printf '%s\n' "$2" > "$work/$1/src/app.l"
@@ -78,9 +94,43 @@ import VgLib
 
 func main(): Int {
   val xs: array[2, Int] = [4, 5]
-  println(toString(Vec(items = xs).total()))
+  val v = Vec(items = xs)
+  val ys: array[3, Int] = [1, 2, 3]
+  val p = makePair(7, 8)
+  val z: Vec[4] = Vec()
+  println(toString(v.total()) + " " + toString(v.doubled()) + " " + toString(Vec.size(v)))
+  println(toString(sum3(Vec(items = ys))) + " " + toString(p.total()) + " " + toString(z.size() + z.total()))
   0
 }'
+
+# The library as its own project, and the application depending on it.
+mkdir -p "$work/restored/lib/src" "$work/restored/app/src"
+cat > "$work/restored/lib/lyric.toml" <<'TOML'
+[package]
+name = "Vg.Lib"
+version = "0.1.0"
+[project]
+name = "Vg.Lib"
+output = "single"
+output_assembly = "VgLib.dll"
+[project.packages]
+"VgLib" = "src/lib.l"
+TOML
+cp "$work/foreign/src/lib.l" "$work/restored/lib/src/lib.l"
+cat > "$work/restored/app/lyric.toml" <<'TOML'
+[package]
+name = "Vg.App"
+version = "0.1.0"
+[project]
+name = "Vg.App"
+output = "single"
+output_assembly = "VgApp.dll"
+[project.packages]
+"VgApp" = "src/app.l"
+[dependencies]
+"Vg.Lib" = { path = "../lib" }
+TOML
+cp "$work/foreign/src/app.l" "$work/restored/app/src/app.l"
 
 write_neg() { # $1=name $2=program body after the record
   cat > "$work/$1.l" <<EOF
@@ -130,13 +180,19 @@ for t in "${targets[@]}"; do
     printf '%s\n' "$out" | tail -n 5 | sed 's/^/  /'
     fail=1
   fi
-  out="$("$lyric_bin" build --manifest "$work/foreign/lyric.toml" --target "$t" 2>&1)"
-  code=$?
-  if [ "$code" = 0 ] || ! grep -q 'T0164' <<<"$out"; then
-    echo "FAIL ($t): naming another package's value-generic record should be T0164; exit $code:"
+  out="$("$lyric_bin" run --manifest "$work/foreign/lyric.toml" --target "$t" 2>&1 | grep -v '^Picked up JAVA_TOOL_OPTIONS')"
+  if [ "$(printf '%s\n' "$out" | tail -n 2 | tr '\n' '|')" != "9 18 2|6 15 4|" ]; then
+    echo "FAIL ($t): using the library's value-generic record from the application should print '9 18 2' and '6 15 4'; got:"
+    printf '%s\n' "$out" | tail -n 5 | sed 's/^/  /'
+    fail=1
+  fi
+  "$lyric_bin" build --manifest "$work/restored/lib/lyric.toml" >/dev/null 2>&1
+  out="$("$lyric_bin" run --manifest "$work/restored/app/lyric.toml" --target "$t" 2>&1 | grep -v '^Picked up JAVA_TOOL_OPTIONS')"
+  if [ "$(printf '%s\n' "$out" | tail -n 2 | tr '\n' '|')" != "9 18 2|6 15 4|" ]; then
+    echo "FAIL ($t): using the value-generic record of a dependency built on its own should print '9 18 2' and '6 15 4'; got:"
     printf '%s\n' "$out" | tail -n 5 | sed 's/^/  /'
     fail=1
   fi
 done
 [ "$fail" = 0 ] || exit 1
-echo "value-generic records: package-local use builds and runs, a foreign use is T0164, and T0060/T0043/T0163 are reported, on: ${targets[*]}"
+echo "value-generic records: used in their own package, from another and from a dependency, and T0060/T0043/T0163 are reported, on: ${targets[*]}"

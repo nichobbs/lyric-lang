@@ -1,7 +1,8 @@
 //! Value-generic records (D169, #8090): a record's `N: Nat` parameter sizes
 //! its array fields.  Each length a program uses is a separate type, built,
 //! read, written, compared and given to methods like a record with a literal
-//! length.  Run on dotnet, the JVM and native.
+//! length; its methods are value-generic functions named after it (D173).
+//! Run on dotnet, the JVM and native.
 @test_module
 package Lyric.ValueGenericRecordSelfTest
 
@@ -41,6 +42,22 @@ record Pair[N: Nat] {
   var right: Ints[N]
 
   func total(self: in Pair[N]): Int = self.left.sum() + self.right.sum() + N
+}
+
+record Shaded[N: Nat] {
+  var data: array[N, Int]
+  size: Int = 7
+
+  func shadowed(self: in Shaded[N]): Int {
+    val size = 1
+    size + data.length
+  }
+
+  func viaField(self: in Shaded[N]): Int = size + N
+
+  func twice(self: in Shaded[N]): Int = viaField() * 2
+
+  func same(self: in Shaded[N]): Self = self
 }
 
 val Width = 4
@@ -123,4 +140,12 @@ test "a field whose type is another instance is specialised with it" {
   val b: array[2, Int] = [3, 4]
   val p = Pair(left = Ints(data = a), right = Ints(data = b))
   assertEqualInt(p.total(), 12, "both halves and the length")
+}
+
+test "a method reads fields and calls methods without self, and names Self" {
+  val s: Shaded[3] = Shaded()
+  assertEqualInt(s.shadowed(), 4, "a local shadows the field of its name")
+  assertEqualInt(s.viaField(), 10, "a bare field read")
+  assertEqualInt(s.twice(), 20, "a bare call of another method")
+  assertEqualInt(s.same().size, 7, "Self is the instance type")
 }

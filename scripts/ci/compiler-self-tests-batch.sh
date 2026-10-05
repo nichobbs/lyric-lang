@@ -264,8 +264,8 @@ if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
   LYRIC_BIN="$lyric_bin" bash scripts/ci/range-refinement-e2e.sh dotnet jvm
   ran="$ran range-refinement-e2e"
 fi
-# D169: a value-generic record is usable in its own package, and naming
-# another package's is T0164, both targets (Java 21, as above).
+# D169, D173: a value-generic record is usable in its own package and from
+# another, both targets (Java 21, as above).
 idx=$((idx + 1))
 if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
   echo "=== scripts/ci/value-generic-record-e2e.sh ==="

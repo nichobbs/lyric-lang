@@ -313,6 +313,7 @@ pub func compileToMsilWithVersion(
     memberRecvClassesOut = singleFileOptsRecvOut,
     methodCallAritiesOut = singleFileCallArities,
     genericItemsOut = newList(),
+    foreignValueRecordsOut = newList(),
     arraysAsLists = true
   )
   val file = match pipeCheckAndMono(file0, importedPkgs, noDeriveImports, allMonoFuncs, stdlibIfaces, stdlibRecs, singleFileOpts) {
@@ -1128,6 +1129,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
       memberRecvClassesOut = projOptsRecvOut,
       methodCallAritiesOut = projCallArities,
       genericItemsOut = newList(),
+      foreignValueRecordsOut = newList(),
       arraysAsLists = true,
       ioForbiddenReason = pp.ioForbiddenReason
     )
@@ -2115,7 +2117,10 @@ func segmentsToString(segments: in List[String]): String {
 // as written, so an item whose declaration mentions an array type is taken
 // from `preMono` instead: a restored consumer then sees `array[3, Int]`, and
 // lowers it to the same `List` the DLL's member takes (#8042).
-func withGenericFuncsForContract(preMono: in SourceFile, postMono: in SourceFile): SourceFile {
+func withGenericFuncsForContract(preMono: in SourceFile, postMono0: in SourceFile): SourceFile {
+  // A value-generic record is emitted with its value parameters erased
+  // (D173); its contract keeps them, so another package can name `Ints[3]`.
+  val postMono = withValueRecordsAsWritten(preMono, postMono0)
   val items: List[Item] = newList()
   val postFuncNames: Map[String, Bool] = newMap()
   val arrayItems: Map[String, Item] = newMap()
