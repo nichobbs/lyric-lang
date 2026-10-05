@@ -156,26 +156,8 @@ func unshadowMonadSort(distincts: in Map[String, TypeExpr], s: in Sort): Sort {
 // by a whole-package import outside `Std.*`, whose contents are not known
 // here.
 func monadNameShadowed(file: in SourceFile, name: in String): Bool {
-  var i = 0
-  while i < file.items.count {
-    val declared = match file.items[i].kind {
-      case ITypeAlias(d) -> d.name
-      case IDistinctType(d) -> d.name
-      case IRecord(d) -> d.name
-      case IExposedRec(d) -> d.name
-      case IUnion(d) -> d.name
-      case IEnum(d) -> d.name
-      case IOpaque(d) -> d.name
-      case IProtected(d) -> d.name
-      case IInterface(d) -> d.name
-      case IExternType(d) -> d.name
-      case IConfig(d) -> d.name
-      case _ -> ""
-    }
-    if declared == name {
-      return true
-    }
-    i = i + 1
+  if declaredTypeNames(file).contains(name) {
+    return true
   }
   var j = 0
   while j < file.imports.count {
@@ -6259,7 +6241,21 @@ func addDatatypeField(
 // composed contracts (§5 of docs/26-aspects.md).  IAspect items have
 // already been dropped, so the verifier sees the body the runtime
 // executes.  The V0031 same-package warning is therefore retired.
+// With nothing known of the package's other files, a type named `Result`
+// or `Option` may be declared there (#8108).
 pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[Goal], List[Diagnostic]) {
+  val none: List[String] = newList()
+  goalsForFileInScope(file, level, false, none)
+}
+
+// `siblingsKnown` says `siblingTypeNames` are all the top-level type names
+// the package's other files declare.
+pub func goalsForFileInScope(
+  file: in SourceFile,
+  level: in VerificationLevel,
+  siblingsKnown: in Bool,
+  siblingTypeNames: in List[String],
+): (List[Goal], List[Diagnostic]) {
   if not vlIsProofRequired(level) {
     val noGoals: List[Goal] = newList()
     val noDiags: List[Diagnostic] = newList()
@@ -6363,7 +6359,7 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
   var mi = 0
   while mi < 2 {
     val monadName = if mi == 0 { "Result" } else { "Option" }
-    if monadNameShadowed(file, monadName) {
+    if monadNameShadowed(file, monadName) or not siblingsKnown or siblingTypeNames.contains(monadName) {
       distinctMap.add(shadowedMonadKey(monadName), TypeExpr(kind = TUnit, span = file.packageDecl.path.span))
     }
     mi = mi + 1
@@ -6812,4 +6808,31 @@ func monadCall(name: in String, args: in List[CallArg], terms: in List[Term]): O
 func noPins(): List[Bool] {
   val none: List[Bool] = newList()
   none
+}
+
+// The top-level type names a file declares.
+pub func declaredTypeNames(file: in SourceFile): List[String] {
+  val names: List[String] = newList()
+  var i = 0
+  while i < file.items.count {
+    val declared = match file.items[i].kind {
+      case ITypeAlias(d) -> d.name
+      case IDistinctType(d) -> d.name
+      case IRecord(d) -> d.name
+      case IExposedRec(d) -> d.name
+      case IUnion(d) -> d.name
+      case IEnum(d) -> d.name
+      case IOpaque(d) -> d.name
+      case IProtected(d) -> d.name
+      case IInterface(d) -> d.name
+      case IExternType(d) -> d.name
+      case IConfig(d) -> d.name
+      case _ -> ""
+    }
+    if declared.length > 0 {
+      names.add(declared)
+    }
+    i = i + 1
+  }
+  names
 }

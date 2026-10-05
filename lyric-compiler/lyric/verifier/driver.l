@@ -13,6 +13,9 @@ import Lyric.Lexer
 import Lyric.Parser
 import Lyric.ModeChecker
 import Lyric.Weaver
+import Std.File as File
+import Std.Directory as Dir
+import Std.Path as FsPath
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Result types.
@@ -171,7 +174,89 @@ pub func proveSource(source: in String): ProofSummary {
   proveSourceWithOptions(source, false)
 }
 
+// The other files of the package being proved, as far as the verifier needs
+// them: the top-level type names they declare (#8108).  `known` false means
+// they could not all be seen, and every name is assumed declared there.
+pub record PackageScope {
+  pub known: Bool
+  pub typeNames: List[String]
+}
+
+pub func unknownPackageScope(): PackageScope {
+  val none: List[String] = newList()
+  PackageScope(known = false, typeNames = none)
+}
+
+pub func packageScopeOf(typeNames: in List[String]): PackageScope {
+  PackageScope(known = true, typeNames = typeNames)
+}
+
+// A source file's package and the top-level type names it declares;
+// `parsed` false when it does not parse.
+pub record PackageTypes {
+  pub packageName: String
+  pub typeNames: List[String]
+  pub parsed: Bool
+}
+
+pub func packageTypesOfSource(source: in String): PackageTypes {
+  val parsed = parse(source)
+  if hasFatalDiag(parsed.diagnostics) {
+    val none: List[String] = newList()
+    return PackageTypes(packageName = "", typeNames = none, parsed = false)
+  }
+  PackageTypes(
+    packageName = joinPathSegments(parsed.file.packageDecl.path.segments),
+    typeNames = declaredTypeNames(parsed.file),
+    parsed = true
+  )
+}
+
+// The scope of the file at `path` whose text is `source`: the type names
+// the other `.l` files beside it that declare the same package declare.  A
+// sibling that cannot be listed, read or parsed makes the scope unknown.
+pub func siblingPackageScope(path: in String, source: in String): PackageScope {
+  val own = packageTypesOfSource(source)
+  if not own.parsed {
+    return unknownPackageScope()
+  }
+  val dir = FsPath.dirname(path)
+  val ownName = FsPath.basename(path)
+  val files = match Dir.enumerateFiles(dir) { case Ok(fs) -> fs; case Err(_) -> { return unknownPackageScope() } }
+  val names: List[String] = newList()
+  var i = 0
+  while i < files.length {
+    val base = FsPath.basename(files[i])
+    if base != ownName and FsPath.extension(base) == ".l" {
+      val text = match File.readText(FsPath.join(dir, base)) {
+        case Ok(t) -> t
+        case Err(_) -> {
+          return unknownPackageScope()
+        }
+      }
+      val sib = packageTypesOfSource(text)
+      if not sib.parsed {
+        return unknownPackageScope()
+      }
+      if sib.packageName == own.packageName {
+        var k = 0
+        while k < sib.typeNames.count {
+          names.add(sib.typeNames[k])
+          k = k + 1
+        }
+      }
+    }
+    i = i + 1
+  }
+  packageScopeOf(names)
+}
+
+// Without a scope, the package's other files are unknown.
 pub func proveSourceWithOptions(source: in String, allowUnverified: in Bool): ProofSummary {
+  proveSourceInScope(source, allowUnverified, unknownPackageScope())
+}
+
+pub func proveSourceInScope(source: in String, allowUnverified: in Bool, pkgScope: in PackageScope): ProofSummary {
   // 1. Parse.
   val parsed = parse(source)
   val parseDiags = parsed.diagnostics
@@ -226,7 +311,7 @@ pub func proveSourceWithOptions(source: in String, allowUnverified: in Bool): Pr
   }
 
   // 5. VC generation against the woven file.
-  val (goals, vcDiags) = goalsForFile(wovenFile, level)
+  val (goals, vcDiags) = goalsForFileInScope(wovenFile, level, pkgScope.known, pkgScope.typeNames)
 
   val modeFatal = hasFatalDiag(modeDiags)
   if modeFatal {

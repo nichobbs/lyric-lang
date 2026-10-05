@@ -52,8 +52,10 @@ func makeGoalFalseConclusion(): Goal {
   )
 }
 
+// An in-memory file is its package's only file.
 func prove(src: in String): ProofSummary {
-  proveSource(src)
+  val noSiblings: List[String] = newList()
+  proveSourceInScope(src, false, packageScopeOf(noSiblings))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2491,4 +2493,23 @@ test "Ok, Err and Some with their field named (#8108)" {
     "func f(n: in Int): Option[Int]\n  ensures: result.isSome implies result.value == n\n{\n  Some(value = n)\n}\n",
     "named-some"
   )
+}
+
+test "a type the package's other files declare blocks the Result/Option model (#8108)" {
+  val src = "@proof_required\npackage U\nfunc f(n: in Int): Result[Int, String]\n  ensures: result.isOk\n{\n  Ok(n)\n}\n"
+  val others: List[String] = newList()
+  others.add("Helper")
+  val unrelated = proveSourceInScope(src, false, packageScopeOf(others))
+  assertTrue(
+    not summaryHasErrorDiag(unrelated) and not summaryHasFailure(unrelated),
+    "an unrelated sibling type: proved"
+  )
+  val shadowing: List[String] = newList()
+  shadowing.add("Result")
+  val shadowed = proveSourceInScope(src, false, packageScopeOf(shadowing))
+  assertTrue(summaryHasErrorDiag(shadowed) or summaryHasFailure(shadowed), "a sibling `Result`: not proved")
+  val unknown = proveSourceInScope(src, false, unknownPackageScope())
+  assertTrue(summaryHasErrorDiag(unknown) or summaryHasFailure(unknown), "unknown siblings: not proved")
+  val legacy = proveSource(src)
+  assertTrue(summaryHasErrorDiag(legacy) or summaryHasFailure(legacy), "the scope-less entry point: not proved")
 }

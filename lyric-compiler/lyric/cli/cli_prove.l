@@ -122,6 +122,41 @@ func cmdProve(argv: in slice[String]): Int {
       printErr("prove: no source files found in project")
       return 1
     }
+    // Each package's top-level type names across all its files, so a file
+    // is proved knowing what its siblings declare (#8108).  A file that
+    // cannot be read or parsed leaves every package's scope unknown.
+    val packageTypes: Map[String, List[String]] = newMap()
+    var scopesKnown = true
+    var si = 0
+    while si < sourcePaths.count {
+      match File.readText(sourcePaths[si]) {
+        case Ok(text) -> {
+          val pt = Verifier.packageTypesOfSource(text)
+          if pt.parsed {
+            if not packageTypes.containsKey(pt.packageName) {
+              val fresh: List[String] = newList()
+              packageTypes.add(pt.packageName, fresh)
+            }
+            match mapGet(packageTypes, pt.packageName) {
+              case Some(acc) -> {
+                var ti = 0
+                while ti < pt.typeNames.count {
+                  acc.add(pt.typeNames[ti])
+                  ti = ti + 1
+                }
+              }
+              case None -> ()
+            }
+          } else {
+            scopesKnown = false
+          }
+        }
+        case Err(_) -> {
+          scopesKnown = false
+        }
+      }
+      si += 1
+    }
     var totalGoals = 0
     var totalDischarged = 0
     var anyError = false
@@ -137,7 +172,16 @@ func cmdProve(argv: in slice[String]): Int {
           continue
         }
       }
-      val summary = Verifier.proveSourceWithOptions(source, allowUnverified)
+      val pkgName = Verifier.packageTypesOfSource(source).packageName
+      val pkgScope = match mapGet(packageTypes, pkgName) {
+        case Some(names) -> if scopesKnown {
+          Verifier.packageScopeOf(names)
+        } else {
+          Verifier.unknownPackageScope()
+        }
+        case None -> Verifier.unknownPackageScope()
+      }
+      val summary = Verifier.proveSourceInScope(source, allowUnverified, pkgScope)
       for d in summary.diagnostics.toArray() {
         printDiag(d)
       }
@@ -177,7 +221,7 @@ func cmdProve(argv: in slice[String]): Int {
     }
   }
 
-  val summary = Verifier.proveSourceWithOptions(source, allowUnverified)
+  val summary = Verifier.proveSourceInScope(source, allowUnverified, Verifier.siblingPackageScope(sourcePath, source))
 
   if explain {
     val total = Verifier.summaryTotalCount(summary)

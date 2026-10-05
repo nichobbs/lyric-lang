@@ -724,7 +724,8 @@ func analyzeAndStore(state: in LspState, uri: in String, text: in String): List[
   }
 
   // Run verifier (allow-unverified so unknowns become warnings, not errors).
-  val proofResult = proveSourceWithOptions(text, true)
+  // The document's package siblings are read from disk (#8108).
+  val proofResult = proveSourceInScope(text, true, siblingPackageScope(uriToPath(uri), text))
   var pi = 0
   while pi < proofResult.diagnostics.count {
     val d = proofResult.diagnostics[pi]
