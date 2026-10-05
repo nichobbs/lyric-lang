@@ -4349,22 +4349,71 @@ func lowerArgAgainst(ctx: in Ctx, insns: in List[NInsn], sig: in NFuncSig, ex: i
   lowerExprExpecting(ctx, insns, ex, sigTypeToN(ctx, sig, sig.paramTys[slot]))
 }
 
-/// The address of an `out`/`inout` call argument (N9.6). The type checker
-/// (`typechecker_exprs.l::argIsValidByRefTarget`) already rejects a
-/// non-l-value argument at an `out`/`inout` parameter, but it is
-/// deliberately conservative — it *accepts* any `EMember`/`EIndex` shape as
-/// a "potential l-value" without deciding whether the native backend can
-/// actually compute its address.  This function covers the two shapes
-/// verified safe: a bare local (its `ctx.varSlots` entry already IS a
-/// pointer to its storage, whether that local is a plain `alloca` or
-/// itself an aliased `out`/`inout` parameter — see `lowerFunctionEnv`) and
-/// a record field access (a GEP off the record's heap pointer, exactly
-/// `lowerFieldAssign`'s addressing). Anything else (an index/element
-/// expression, a qualified module path, …) is a loud, named diagnostic —
-/// never a silent miscompile — pending its own verified addressing scheme.
+/// The address of an `out`/`inout` call argument (N9.6), tagged with the
+/// callee's declared type `declTy`.  #6813: the type checker's
+/// `argSatisfiesParam` applies `widenArithmetic` uniformly across every
+/// parameter mode, so an `Int` local type-checks against an `inout Long`
+/// parameter — but a by-ref argument forwards the place's OWN storage
+/// pointer as-is (Rule 5: the callee never copies).  A width/kind mismatch
+/// between that storage and `declTy` would alias an i32 through an i64
+/// pointer, so it fails loudly here instead of miscompiling.
 func lowerByRefArg(ctx: in Ctx, insns: in List[NInsn], ex: in Expr, declTy: in NType): NVal {
+  val place = lowerByRefPlace(ctx, insns, ex)
+  val actualTy = match place.ty { case NPtr(pointee) -> pointee; case t -> t }
+  if nTypeToIrString(actualTy) != nTypeToIrString(declTy) {
+    panic(
+      "Lyric.LlvmCodegen: out/inout argument '" + byRefPlaceLabel(ex) + "' has type '" + nTypeToIrString(actualTy) +
+        "' but the parameter declares 'inout/out " +
+        nTypeToIrString(declTy) +
+        "' — a by-ref argument's type must match the parameter's declared type exactly for --target native " +
+        "(no numeric widening across an out/inout boundary, since the callee aliases the caller's " +
+        "storage directly rather than copying a widened value)"
+    )
+  }
+  NVal(ty = NPtr(pointee = declTy), value = place.value)
+}
+
+func isByRefMode(m: in ParamMode): Bool {
+  match m {
+    case PMIn -> false
+    case _ -> true
+  }
+}
+
+/// A by-reference argument's value type: the pointee of its address.
+func byRefPointeeOf(m: in ParamMode, t: in NType): NType {
+  if not isByRefMode(m) {
+    return t
+  }
+  match t {
+    case NPtr(pointee) -> pointee
+    case _ -> t
+  }
+}
+
+func byRefPlaceLabel(ex: in Expr): String {
   match ex.kind {
-    case EParen(inner) -> lowerByRefArg(ctx, insns, inner, declTy)
+    case EParen(inner) -> byRefPlaceLabel(inner)
+    case EPath(path) -> modulePathJoin(path.segments)
+    case EMember(_, fieldName) -> "." + fieldName
+    case _ -> "?"
+  }
+}
+
+/// The address of an `out`/`inout` place, typed as a pointer to the place's
+/// own storage type: a bare local (its `ctx.varSlots` entry already IS a
+/// pointer to its storage, whether that local is a plain `alloca` or itself
+/// an aliased `out`/`inout` parameter — see `lowerFunctionEnv`) or a record
+/// field access (a GEP off the record's heap pointer, exactly
+/// `lowerFieldAssign`'s addressing).  The type checker
+/// (`typechecker_exprs.l::argIsValidByRefTarget`) accepts any
+/// `EMember`/`EIndex` as a potential l-value; anything else here (an
+/// index/element expression, a qualified module path, …) is a loud, named
+/// diagnostic — never a silent miscompile — pending its own verified
+/// addressing scheme.
+func lowerByRefPlace(ctx: in Ctx, insns: in List[NInsn], ex: in Expr): NVal {
+  match ex.kind {
+    case EParen(inner) -> lowerByRefPlace(ctx, insns, inner)
     case EPath(path) -> {
       if path.segments.count == 1 {
         val name = path.segments[0]
@@ -4375,34 +4424,11 @@ func lowerByRefArg(ctx: in Ctx, insns: in List[NInsn], ex: in Expr, declTy: in N
               "' is not a local variable or parameter — module-level bindings are not yet supported as out/inout arguments for --target native"
           )
         }
-        // #6813: the type checker's `argSatisfiesParam` applies
-        // `widenArithmetic` uniformly across every parameter mode, so an
-        // `Int` local type-checks against an `inout Long` parameter — but
-        // a by-ref argument forwards the local's OWN alloca pointer
-        // as-is (Rule 5: the callee never copies), tagged with the
-        // CALLEE's declared type below. A width/kind mismatch between
-        // the local's actual storage and `declTy` would alias an i32
-        // alloca through an i64 pointer (or similarly mismatched struct
-        // pointer types) — silently wrong at runtime if `clang` even
-        // accepts the mismatched-pointee GEP/load/store in the emitted
-        // `.ll`. Fail loudly here instead, matching #6812's "loud
-        // diagnostic, never silent miscompile" policy for every other
-        // out/inout scope cut.
         val actualTy = match mapGet(ctx.varTypes, name) {
           case Some(t) -> t
           case None -> panic("Lyric.LlvmCodegen: no type recorded for out/inout argument '" + name + "'")
         }
-        if nTypeToIrString(actualTy) != nTypeToIrString(declTy) {
-          panic(
-            "Lyric.LlvmCodegen: out/inout argument '" + name + "' has type '" + nTypeToIrString(actualTy) +
-              "' but the parameter declares 'inout/out " +
-              nTypeToIrString(declTy) +
-              "' — a by-ref argument's type must match the parameter's declared type exactly for --target native " +
-              "(no numeric widening across an out/inout boundary, since the callee aliases the caller's " +
-              "storage directly rather than copying a widened value)"
-          )
-        }
-        return NVal(ty = NPtr(pointee = declTy), value = NLocal(name = slot))
+        return NVal(ty = NPtr(pointee = actualTy), value = NLocal(name = slot))
       }
       panic(
         "Lyric.LlvmCodegen: out/inout argument '" + modulePathJoin(path.segments) +
@@ -4429,19 +4455,6 @@ func lowerByRefArg(ctx: in Ctx, insns: in List[NInsn], ex: in Expr, declTy: in N
         )
       }
       val fieldTy = ri.fieldTys[idx]
-      // #6813: same widening hazard as the bare-local branch above — a
-      // narrower/differently-kinded field type must not alias through
-      // the callee's declared by-ref pointer type.
-      if nTypeToIrString(fieldTy) != nTypeToIrString(declTy) {
-        panic(
-          "Lyric.LlvmCodegen: out/inout argument '." + fieldName + "' has type '" + nTypeToIrString(fieldTy) +
-            "' but the parameter declares 'inout/out " +
-            nTypeToIrString(declTy) +
-            "' — a by-ref argument's type must match the parameter's declared type exactly for --target native " +
-            "(no numeric widening across an out/inout boundary, since the callee aliases the caller's " +
-            "storage directly rather than copying a widened value)"
-        )
-      }
       val structTy = match obj.ty { case NPtr(pointee) -> pointee; case _ -> panic("unreachable") }
       val fieldPtr = freshTmp(ctx)
       val fArgs: List[NArg] = newList()
@@ -10912,6 +10925,11 @@ func lowerGenericFnCallWith(
             rawVals.add(NVal(ty = NVoid, value = NUndef(ty = NVoid)))
           }
         }
+      } else if isByRefMode(fd.params[pi].mode) {
+        // An `out`/`inout` argument is its place's address, never a copy of
+        // its value (#8179): the instantiation takes a pointer there, as a
+        // non-generic function does (`lowerArgAgainst`).
+        rawVals.add(lowerByRefPlace(ctx, insns, ax))
       } else {
         rawVals.add(lowerExpr(ctx, insns, ax))
       }
@@ -10979,7 +10997,8 @@ func lowerGenericFnCallWith(
   val boundTys: List[NType] = copyNTypes(seedTys)
   var pi2 = 0
   while pi2 < nParams {
-    unifyTyArg(ctx, fd.params[pi2].ty, rawVals[pi2].ty, paramNames, boundNames, boundTys)
+    val argTy = if pi2 >= preVals.count { byRefPointeeOf(fd.params[pi2].mode, rawVals[pi2].ty) } else { rawVals[pi2].ty }
+    unifyTyArg(ctx, fd.params[pi2].ty, argTy, paramNames, boundNames, boundTys)
     pi2 = pi2 + 1
   }
   // A type parameter that appears only in the return type (`plistEmpty[T]():
@@ -11015,7 +11034,9 @@ func lowerGenericFnCallWith(
     var pt = 0
     while pt < nParams {
       match typeToNEnvOpt(ctx, fd.params[pt].ty, paramNames, envTys) {
-        case Some(t) -> paramTys.add(t)
+        case Some(t) -> paramTys.add(
+          if pt >= preVals.count and isByRefMode(fd.params[pt].mode) { NPtr(pointee = t) } else { t }
+        )
         case None -> panic(
           "Lyric.LlvmCodegen: cannot lower parameter type of generic function '" + fd.name +
             "' for --target native"
@@ -11049,8 +11070,23 @@ func lowerGenericFnCallWith(
   val callArgs: List[NArg] = newList()
   var ci = 0
   while ci < rawVals.count {
-    val cv = coerceTo(ctx, insns, rawVals[ci], inst.paramTys[ci])
-    callArgs.add(NArg(ty = inst.paramTys[ci], value = cv.value))
+    if ci >= preVals.count and isByRefMode(fd.params[ci].mode) {
+      // The callee aliases the place's storage, so its type must match the
+      // instantiated parameter exactly (#6813: no widening through a pointer).
+      if nTypeToIrString(rawVals[ci].ty) != nTypeToIrString(inst.paramTys[ci]) {
+        panic(
+          "Lyric.LlvmCodegen: out/inout argument of generic function '" + fd.name + "' has type '" +
+            nTypeToIrString(rawVals[ci].ty) +
+            "' but the instantiated parameter is '" +
+            nTypeToIrString(inst.paramTys[ci]) +
+            "'; a by-ref argument's type must match its parameter exactly for --target native"
+        )
+      }
+      callArgs.add(NArg(ty = inst.paramTys[ci], value = rawVals[ci].value))
+    } else {
+      val cv = coerceTo(ctx, insns, rawVals[ci], inst.paramTys[ci])
+      callArgs.add(NArg(ty = inst.paramTys[ci], value = cv.value))
+    }
     ci = ci + 1
   }
   if inst.isAsync {

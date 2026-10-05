@@ -1689,14 +1689,20 @@ func collectDeriveFreeSigs(
     match file.items[i].kind {
       case IFunc(decl) -> {
         if isDeriveFreeName(decl.name) or isRangeCheckerName(decl.name) {
-          val params: List[JvmType] = newList()
+          // An `out`/`inout` parameter is a holder array with its mode
+          // recorded, as for any function (#1763): a dot-named function
+          // `Lyric.Mono` specialised (`Box.put__Int`, #8179) is first
+          // registered here, and its call site wraps the holder by the mode.
+          val noTypeParams: List[String] = newList()
+          val params = holderAwareParamTypes(decl.params, owner, false, noTypeParams, externTypes)
           val paramNames: List[String] = newList()
           val paramDefaults: List[Option[Expr]] = newList()
+          val paramModes: List[ParamMode] = newList()
           var pi = 0
           while pi < decl.params.count {
-            params.add(typeExprToJvmExtern(decl.params[pi].ty, owner, externTypes))
             paramNames.add(decl.params[pi].name)
             paramDefaults.add(decl.params[pi].dflt)
+            paramModes.add(decl.params[pi].mode)
             pi = pi + 1
           }
           val ret = match decl.ret { case Some(te) -> typeExprToJvmExtern(te, owner, externTypes); case None -> JVoid }
@@ -1706,7 +1712,7 @@ func collectDeriveFreeSigs(
             ret = ret,
             paramNames = paramNames,
             paramDefaults = paramDefaults,
-            paramModes = newList(),
+            paramModes = paramModes,
             isIface = false,
             // Eagerly resolved against the DECLARING file's own package/extern
             // scope (`Jvm.Codegen.eagerlyResolveGenericArg`), exactly like the

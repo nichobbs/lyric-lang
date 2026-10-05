@@ -10303,3 +10303,73 @@ test "a type-qualified call to a generic dot-named function checks its arguments
   val ty = parseCheck(decls + "func f(): String = Box.get(Box(v = 1))\n")
   assertTrue(ty.diagnostics.count > 0, "the result is an Int: " + diagCodesOf(ty))
 }
+
+// #8179: a method's receiver is `in` or `inout`.  The build's pre-check
+// rewrites (`pipePrepareForCheck`) turn a record method with an `inout`
+// receiver into the dot-named function it stands for, so these sources are
+// checked as the build checks them.
+func preparedCheck(src: in String): CheckResult {
+  check(pipePrepareForCheck(parse(src).file, false).file)
+}
+
+func inoutRecvSrc(body: in String): String {
+  "package P\nrecord R {\n  x: Int\n\n  func reset(self: inout R): Unit {\n    self = R(x = 0)\n  }\n\n" +
+    "  func get(self: in R): Int = x\n}\n" +
+    body
+}
+
+test "a well-formed `inout` receiver checks clean (#8179)" {
+  val cr = preparedCheck(
+    inoutRecvSrc(
+      "record H {\n  var r: R\n}\nfunc f(q: inout R): Int {\n  var p = R(x = 1)\n  p.reset()\n  R.reset(p)\n" +
+        "  var h = H(r = p)\n  h.r.reset()\n  q.reset()\n  p.get() + h.r.get()\n}\n"
+    )
+  )
+  assertEqualInt(cr.diagnostics.count, 0, "no diagnostics: " + diagCodesOf(cr))
+}
+
+test "an `out` receiver is T0165 (#8179)" {
+  val rec = preparedCheck(
+    "package P\nrecord R {\n  x: Int\n\n  func init(self: out R): Unit {\n    self = R(x = 0)\n  }\n}\n"
+  )
+  assertEqualInt(countDiagCode(rec, "T0165"), 1, "record method: " + diagCodesOf(rec))
+  val dotted = preparedCheck(
+    "package P\nrecord R {\n  x: Int\n}\nfunc R.init(self: out R): Unit {\n  self = R(x = 0)\n}\n"
+  )
+  assertEqualInt(countDiagCode(dotted, "T0165"), 1, "dot-named function: " + diagCodesOf(dotted))
+}
+
+test "an interface or impl method's receiver cannot be `inout`: T0165 (#8179)" {
+  val iface = preparedCheck("package P\ninterface I {\n  func m(self: inout Self): Unit\n}\n")
+  assertEqualInt(countDiagCode(iface, "T0165"), 1, "interface signature: " + diagCodesOf(iface))
+  val implCr = preparedCheck(
+    "package P\ninterface I {\n  func m(self: in Self): Unit\n}\nrecord R {\n  x: Int\n}\n" +
+      "impl I for R {\n  func m(self: inout R): Unit {\n    ()\n  }\n}\n"
+  )
+  assertTrue(hasDiagCode(implCr, "T0165"), "impl method: " + diagCodesOf(implCr))
+}
+
+test "the receiver of an `inout` method must be a writable place: T0166 (#8179)" {
+  val immutable = preparedCheck(inoutRecvSrc("func f(): Unit {\n  val p = R(x = 1)\n  p.reset()\n}\n"))
+  assertEqualInt(countDiagCode(immutable, "T0166"), 1, "a `val` receiver: " + diagCodesOf(immutable))
+  assertTrue(Str.contains(diagMessageFor(immutable, "T0166"), "declare it `var`"), "the message says how to fix it")
+  val ufcs = preparedCheck(inoutRecvSrc("func f(): Unit {\n  val p = R(x = 1)\n  R.reset(p)\n}\n"))
+  assertEqualInt(countDiagCode(ufcs, "T0166"), 1, "a `val` receiver through the type: " + diagCodesOf(ufcs))
+  val temp = preparedCheck(inoutRecvSrc("func mk(): R = R(x = 1)\nfunc f(): Unit {\n  mk().reset()\n}\n"))
+  assertEqualInt(countDiagCode(temp, "T0166"), 1, "a call result: " + diagCodesOf(temp))
+  val inSelf = preparedCheck(
+    "package P\nrecord R {\n  x: Int\n\n  func reset(self: inout R): Unit {\n    self = R(x = 0)\n  }\n\n" +
+      "  func clear(self: in R): Unit {\n    self.reset()\n  }\n}\n"
+  )
+  assertEqualInt(countDiagCode(inSelf, "T0166"), 1, "an `in` receiver passed on: " + diagCodesOf(inSelf))
+  val elem = preparedCheck(inoutRecvSrc("func f(): Unit {\n  var xs = [R(x = 1)]\n  xs[0].reset()\n}\n"))
+  assertEqualInt(countDiagCode(elem, "T0166"), 1, "an indexed element: " + diagCodesOf(elem))
+  assertTrue(Str.contains(diagMessageFor(elem, "T0166"), "#8180"), "the indexed-element message names #8180")
+}
+
+test "assigning an `in` receiver is T0087 (#8179)" {
+  val cr = preparedCheck(
+    "package P\nrecord R {\n  x: Int\n\n  func clear(self: in R): Unit {\n    self = R(x = 0)\n  }\n}\n"
+  )
+  assertEqualInt(countDiagCode(cr, "T0087"), 1, "self = ... with an `in` receiver: " + diagCodesOf(cr))
+}

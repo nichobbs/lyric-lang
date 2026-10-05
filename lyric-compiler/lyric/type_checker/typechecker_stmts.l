@@ -588,6 +588,21 @@ pub func checkStatement(
             }
           }
         }
+        // `self = …` replaces the receiver, which only an `inout` receiver
+        // may do (#8179); an `in` receiver is the caller's value, not its
+        // place.
+        case ESelf -> {
+          val selfMutable = match scopeTryFind(sc, "self") { case Some(b) -> b.isMutable; case None -> false }
+          if not selfMutable {
+            diag.add(
+              errorDiagnostic(
+                "T0087",
+                "cannot assign `self`: this receiver is `in`; declare it `self: inout` to replace the caller's value",
+                target.span
+              )
+            )
+          }
+        }
         case _ -> {
         }
       }

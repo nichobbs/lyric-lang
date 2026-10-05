@@ -3296,6 +3296,77 @@ func recordSelfType(tbl: in SymbolTable, decl: in RecordDecl, ownerGenerics: in 
   }
 }
 
+// T0165 (#8179): a method's receiver is `in` or `inout`.  An `out`
+// receiver would be a method called on a value that does not exist yet.  An
+// interface method's receiver, and so an `impl` method's, is `in`: a call
+// through an interface value passes that value, and has no place of the
+// implementing type to assign.
+func checkReceiverModes(diag: in List[Diagnostic], items: in List[Item]): Unit {
+  for it in items {
+    match it.kind {
+      case IFunc(fd) -> checkReceiverParams(diag, fd.params, fd.name, true)
+      case IRecord(d) -> checkRecordReceivers(diag, d)
+      case IExposedRec(d) -> checkRecordReceivers(diag, d)
+      case IImpl(d) -> {
+        for m in d.members {
+          match m {
+            case IMplFunc(fn) -> checkReceiverParams(diag, fn.params, fn.name, false)
+            case _ -> ()
+          }
+        }
+      }
+      case IInterface(d) -> {
+        for m in d.members {
+          match m {
+            case IMSig(sig) -> checkReceiverParams(diag, sig.params, sig.name, false)
+            case IMFunc(fn) -> checkReceiverParams(diag, fn.params, fn.name, false)
+            case _ -> ()
+          }
+        }
+      }
+      case _ -> ()
+    }
+  }
+}
+
+func checkRecordReceivers(diag: in List[Diagnostic], d: in RecordDecl): Unit {
+  for m in d.members {
+    match m {
+      case RMFunc(fn) -> checkReceiverParams(diag, fn.params, fn.name, true)
+      case _ -> ()
+    }
+  }
+}
+
+func checkReceiverParams(
+  diag: in List[Diagnostic], params: in List[Param], name: in String, inoutAllowed: in Bool
+): Unit {
+  if params.count == 0 or params[0].name != "self" {
+    return
+  }
+  match params[0].mode {
+    case PMOut -> diag.add(
+      errorDiagnostic(
+        "T0165",
+        "the receiver of '" + name +
+          "' cannot be `out`: a method is called on an existing value; declare it `self: inout` to replace that value, or return the new value",
+        params[0].span
+      )
+    )
+    case PMInout -> if not inoutAllowed {
+      diag.add(
+        errorDiagnostic(
+          "T0165",
+          "the receiver of interface method '" + name +
+            "' cannot be `inout`: a call through an interface value cannot assign the caller's variable; declare it `self: in Self`, or make it a method of the record",
+          params[0].span
+        )
+      )
+    }
+    case PMIn -> ()
+  }
+}
+
 func checkRecordMemberBodies(
   tbl: in SymbolTable,
   sigs: in Map[String, ResolvedSignature],
@@ -5302,6 +5373,8 @@ func checkWithImportedPackagesCore(
   if validateDecls {
     checkDeclTypeRefs(tbl, diag, file.items)
   }
+
+  checkReceiverModes(diag, file.items)
 
   // T5: check user function bodies.
   var m = 0

@@ -168,6 +168,19 @@ pub record DottedGenericCall {
   receiverFirst: Bool
 }
 
+/// A call of a dot-named function with an `out`/`inout` parameter (#8179,
+/// #8183), written as a method call (`p.m(x)`, `receiverFirst`) or through
+/// its type (`T.m(p, x)`): the function's name (`T.m`), and the package that
+/// declares it when that is another package and the function is not generic
+/// ("" otherwise).  `Lyric.Pipeline` rewrites the call into a plain call of
+/// the function, so the receiver is an ordinary argument and an `out`/`inout`
+/// one is passed by reference.
+pub record ByRefDotCall {
+  name: String
+  receiverFirst: Bool
+  originPkg: String
+}
+
 /// A construction of a case of a union with value generic parameters
 /// (#8149): the union, and the value arguments of the instance it builds, in
 /// parameter order, as a literal length or the name of an enclosing value
@@ -364,6 +377,9 @@ pub record SymbolTable {
   /// `Lyric.Pipeline` rewrites such a call into a plain call of the
   /// function, which `Lyric.Mono` specialises (#8173).
   dottedGenericCallSites: Map[String, DottedGenericCall]
+  /// Each call of a dot-named function with an `out`/`inout` parameter,
+  /// keyed by `recordCopySiteKey` of the callee's span (#8179).
+  byRefDotCallSites: Map[String, ByRefDotCall]
   /// The types each lambda's unannotated parameters took from the function
   /// type it was checked against, keyed by `recordCopySiteKey` of the lambda's
   /// span (see `Lyric.Parser.LambdaParamTypesSite`, #7865).
@@ -673,6 +689,7 @@ pub func newSymbolTable(): SymbolTable {
     lambdaReturnFrames = newList(),
     genericCallTypeArgSites = newMap(),
     dottedGenericCallSites = newMap(),
+    byRefDotCallSites = newMap(),
     lambdaParamTypeSites = newMap(),
     moduleValTypes = newMap(),
     generatorCallSites = newMap(),

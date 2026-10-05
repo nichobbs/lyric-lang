@@ -11558,6 +11558,21 @@ func dottedGenericPathCallee(tbl: in SymbolTable, fn: in Expr, sig: in ResolvedS
   None
 }
 
+// True when `fn` names a dot-named function through its type (`T.m`).
+func dottedFuncCallee(tbl: in SymbolTable, fn: in Expr): Bool {
+  val name = dottedPathName(fn)
+  if name.length == 0 {
+    return false
+  }
+  for sym in symTableTryFindAll(tbl, name) {
+    match sym.kind {
+      case DKFunc(_) -> return true
+      case _ -> ()
+    }
+  }
+  false
+}
+
 // `Box.get` for a callee written `Box.get`, as a two-segment path or a
 // member of the type name; "" otherwise.
 func dottedPathName(fn: in Expr): String {
@@ -11582,6 +11597,108 @@ func recordDottedGenericCallSite(tbl: in SymbolTable, sp: in Span, name: in Stri
   val key = recordCopySiteKey(sp)
   if not tbl.dottedGenericCallSites.containsKey(key) {
     tbl.dottedGenericCallSites.add(key, DottedGenericCall(name = name, receiverFirst = receiverFirst))
+  }
+}
+
+// The full signature of a method call resolved to a dot-named function that
+// takes something by reference (#8179): the call is rewritten into a plain
+// call of the function.  None for any other call.
+func byRefDotFullSig(methodPick: in Option[MethodCallPick], fn: in Expr): Option[ResolvedSignature] {
+  match fn.kind {
+    case EMember(_, _) -> ()
+    case _ -> return None
+  }
+  match methodPick {
+    case Some(mp) -> match mp.fullSig {
+      case Some(fullS) -> if sigHasByRefParam(fullS) { Some(value = fullS) } else { None }
+      case None -> None
+    }
+    case None -> None
+  }
+}
+
+func isByRefDotPick(methodPick: in Option[MethodCallPick], fn: in Expr): Bool {
+  match byRefDotFullSig(methodPick, fn) {
+    case Some(_) -> true
+    case None -> false
+  }
+}
+
+// True when some parameter of `sig` is `out` or `inout`.
+func sigHasByRefParam(sig: in ResolvedSignature): Bool {
+  for p in sig.params {
+    if modeNeedsLValue(p.mode) {
+      return true
+    }
+  }
+  false
+}
+
+// A call of the dot-named function `name` (`fullSig`, receiver included) that
+// passes something by reference is recorded for rewriting into a plain call
+// of the function (#8179, #8183): a backend lowers a method call's receiver
+// as a value, and a plain call's `out`/`inout` arguments as places.
+func recordByRefDotCall(
+  tbl: in SymbolTable,
+  sp: in Span,
+  name: in String,
+  fullSig: in ResolvedSignature,
+  receiverFirst: in Bool,
+): Unit {
+  if isNoSourceSpan(sp) or name.length == 0 or not sigHasByRefParam(fullSig) {
+    return
+  }
+  val key = recordCopySiteKey(sp)
+  if tbl.byRefDotCallSites.containsKey(key) {
+    tbl.byRefDotCallSites.remove(key)
+  }
+  val foreign = fullSig.originPackage.length > 0 and fullSig.originPackage != symTableScopePkg(tbl)
+  val origin = if foreign and fullSig.generics.count == 0 { fullSig.originPackage } else { "" }
+  tbl.byRefDotCallSites.add(key, ByRefDotCall(name = name, receiverFirst = receiverFirst, originPkg = origin))
+}
+
+// The receiver of a call that takes it by reference (`self: inout T`, or any
+// `out`/`inout` first parameter called with method syntax) is the place the
+// callee writes: a `var`, an `out`/`inout` parameter (`self` among them), or
+// a field of one (T0166).  An indexed element cannot be passed by reference
+// yet (#8180).
+func checkByRefReceiver(sc: in Scope, diag: in List[Diagnostic], recv: in Expr, method: in String, sp: in Span): Unit {
+  val problem = byRefReceiverProblem(sc, recv)
+  if problem.length > 0 {
+    diag.add(
+      errorDiagnostic(
+        "T0166",
+        "the receiver of '" + method + "' is passed by reference (`inout`), so it must be a place the call can write: " +
+          problem,
+        sp
+      )
+    )
+  }
+}
+
+// Why `recv` is not a writable place, or "" when it is.
+func byRefReceiverProblem(sc: in Scope, recv: in Expr): String {
+  match recv.kind {
+    case EParen(inner) -> byRefReceiverProblem(sc, inner)
+    case EPath(p) -> if p.segments.count == 1 {
+      match scopeTryFind(sc, p.segments[0]) {
+        case Some(b) -> if b.isMutable { "" } else { "'" + p.segments[0] + "' is immutable; declare it `var`" }
+        case None -> ""
+      }
+    } else {
+      ""
+    }
+    case ESelf -> match scopeTryFind(sc, "self") {
+      case Some(b) -> if b.isMutable {
+        ""
+      } else {
+        "this method's own receiver `self` is `in`; declare it `self: inout`"
+      }
+      case None -> "this method's own receiver `self` is `in`; declare it `self: inout`"
+    }
+    case EMember(_, _) -> ""
+    case EIndex(_, _) -> "an indexed element cannot be passed by reference yet (#8180); copy it into a `var`, call the method, and store it back"
+    case _ -> "a value that is not a variable or field cannot be written; bind it to a `var` first"
   }
 }
 
@@ -12610,7 +12727,9 @@ func inferExprCore(
       // is hoisted too (#7850).  A receiver whose own type is open
       // takes it from the method's receiver parameter, instantiated from the
       // other arguments or the type expected of the result (#7844).
-      if isMemberCallee and callArgsHaveHoistHazard(args) {
+      // A receiver passed by reference is a place the call keeps, like a
+      // by-reference argument (#8179): never hoisted into a temporary.
+      if isMemberCallee and callArgsHaveHoistHazard(args) and not isByRefDotPick(methodPick, fn) {
         match fn.kind {
           case EMember(hoistRecv, _) -> match memberRecvTy {
             case Some(hoistRecvTy) -> {
@@ -12716,6 +12835,9 @@ func inferExprCore(
           // Instantiate a generic return type from the argument types (#1488
           // category B) so `unwrapOr(opt, 0): T` yields `Int`, not `TyVar("T")`.
           val instRet = directCallType(tbl, diag, fn, sig, args, argTypes)
+          if dottedFuncCallee(tbl, fn) {
+            recordByRefDotCall(tbl, fn.span, dottedPathName(fn), sig, false)
+          }
           // A generic call's result type is evidence for `Lyric.Mono` where
           // it cannot infer the call's type arguments itself (#7865).
           if sig.generics.count > 0 {
@@ -12783,7 +12905,36 @@ func inferExprCore(
                       recordHoistedCallArgs(sc, tbl, args, argTypes, mpExpected)
                     }
                     if mpNamed or mpHazard {
-                      recordSigArgOrderSite(sc, tbl, e.span, fn, args, argTypes, mp.sig, mpExpected, memberRecvTy)
+                      match byRefDotFullSig(methodPick, fn) {
+                        // The call becomes `T.m(recv, args)` (#8179), so its
+                        // argument order is recorded in that shape, the
+                        // receiver a by-reference argument.
+                        case Some(fullS) -> {
+                          val fullArgs: List[CallArg] = newList()
+                          val fullArgTypes: List[Type] = newList()
+                          val fullExpected: List[Type] = newList()
+                          match fn.kind {
+                            case EMember(fr, _) -> fullArgs.add(CAPositional(expr = fr))
+                            case _ -> ()
+                          }
+                          fullArgTypes.add(match memberRecvTy { case Some(frt) -> frt; case None -> TyError })
+                          fullExpected.add(TyError)
+                          for a in args {
+                            fullArgs.add(a)
+                          }
+                          for at in argTypes {
+                            fullArgTypes.add(at)
+                          }
+                          for xt in mpExpected {
+                            fullExpected.add(xt)
+                          }
+                          val noSegs: List[String] = newList()
+                          val plainCallee = Expr(kind = EPath(path = ModulePath(segments = noSegs, span = fn.span)), span = fn.span)
+                          val noRecvTy: Option[Type] = None
+                          recordSigArgOrderSite(sc, tbl, e.span, plainCallee, fullArgs, fullArgTypes, fullS, fullExpected, noRecvTy)
+                        }
+                        case None -> recordSigArgOrderSite(sc, tbl, e.span, fn, args, argTypes, mp.sig, mpExpected, memberRecvTy)
+                      }
                     }
                   }
                   checkBoundsSatisfied(tbl, diag, mp.sig, argTypes, e.span)
@@ -12796,6 +12947,27 @@ func inferExprCore(
                   }
                   match mp.fullSig {
                     case Some(fullS) -> {
+                      match fn.kind {
+                        case EMember(byRecv, _) -> {
+                          match memberRecvTy {
+                            case Some(byRt) -> match unrefine(byRt) {
+                              case TyUser(_, byTname, _) -> recordByRefDotCall(
+                                tbl,
+                                fn.span,
+                                byTname + "." + memberName,
+                                fullS,
+                                true
+                              )
+                              case _ -> ()
+                            }
+                            case None -> ()
+                          }
+                          if fullS.params.count > 0 and modeNeedsLValue(fullS.params[0].mode) {
+                            checkByRefReceiver(sc, diag, byRecv, memberName, e.span)
+                          }
+                        }
+                        case _ -> ()
+                      }
                       val extArgs: List[Type] = newList()
                       match memberRecvTy {
                         case Some(rt4) -> extArgs.add(rt4)
@@ -14583,7 +14755,12 @@ func checkPairedCallArgs(
       // #1487 (§5.2): a value-type `out`/`inout` argument must be a
       // writable l-value (reference-type by-ref params are mutated in
       // place — see `isByRefValueType`).
-      if modeNeedsLValue(p.mode) and isByRefValueType(p.ty) and not argIsValidByRefTarget(sc, callArgExpr(args[ai])) {
+      // A by-reference receiver written as an argument (`T.m(p)`, or a
+      // function whose first parameter is `self: inout T`) is held to the
+      // receiver rule of a method call, whatever its type (#8179).
+      if k == 0 and p.name == "self" and modeNeedsLValue(p.mode) {
+        checkByRefReceiver(sc, diag, callArgExpr(args[ai]), "self", span)
+      } else if modeNeedsLValue(p.mode) and isByRefValueType(p.ty) and not argIsValidByRefTarget(sc, callArgExpr(args[ai])) {
         diag.add(
           errorDiagnostic(
             "T0085",
