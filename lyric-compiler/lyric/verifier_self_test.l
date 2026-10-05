@@ -2648,3 +2648,91 @@ test "a binding declared in a branch stays in the branch (#8109)" {
     "branch-value"
   )
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// `@pure` is trusted, and congruent only over arguments whose value is all a
+// call can read: a closure, a function from elsewhere, a collection or a
+// protected object may give two calls with one term different results.  A
+// call site's own result varies with a quantifier's bound variable, and
+// function values are never compared (#8109 review).
+// ─────────────────────────────────────────────────────────────────────────────
+test "a @pure call over a closure, a collection or a protected object is its own (#8109)" {
+  val app = "@pure\nfunc app(g: in (Int) -> Int, x: in Int): Int = g(x)\n"
+  assertRefuted(
+    app + "func f(): Bool\n  ensures: result\n{\n  var t = 0\n  val l = { (x: Int) -> x + t }\n  val a = app(l, 1)\n" +
+      "  t = 5\n  val b = app(l, 1)\n  a == b\n}\n",
+    "closure-argument"
+  )
+  assertRefuted(
+    "@pure\nfunc call0(g: in () -> Long): Long = g()\n" +
+      "func f(): Bool\n  ensures: result\n{\n  val a = call0(monotonicNanos)\n  val b = call0(monotonicNanos)\n  a == b\n}\n",
+    "undeclared-function-argument"
+  )
+  assertRefuted(
+    "@pure\nfunc probe(xs: in List[Int]): Int = xs.count\n" +
+      "func f(): Bool\n  ensures: result\n{\n  val xs: List[Int] = newList()\n  val a = probe(xs)\n  xs.add(1)\n" +
+      "  val b = probe(xs)\n  a == b\n}\n",
+    "list-argument"
+  )
+  assertRefuted(
+    "pub protected type Counter {\n  var n: Int\n  pub entry next(): Int {\n    n = n + 1\n    n\n  }\n}\n" +
+      "@pure\nfunc peek(c: in Counter): Int = c.next()\n" +
+      "func f(c: in Counter): Bool\n  ensures: result\n{\n  peek(c) == peek(c)\n}\n",
+    "protected-argument"
+  )
+  // `read`'s two-statement body is not unfolded, so only congruence could
+  // make the two calls equal.
+  assertRefuted(
+    "record Cell {\n  var v: Int\n}\n@pure\nfunc read(c: in Cell): Int {\n  val w = c.v\n  w\n}\n" +
+      "func f(c: in Cell): Bool\n  ensures: result\n{\n  read(c) == read(c)\n}\n",
+    "mutable-record-argument"
+  )
+  assertDischarged(
+    "@pure\nfunc sq(x: in Int, s: in String): Int = x * x\nfunc f(x: in Int, s: in String): Bool\n  ensures: result\n{\n" +
+      "  sq(x, s) == sq(x, s)\n}\n",
+    "value-arguments"
+  )
+  val pt = "record Pt {\n  x: Int\n  y: Int\n}\nrecord Seg {\n  a: Pt\n  b: Pt\n}\nenum Dir {\n  case N\n  case S\n}\n" +
+    "@pure\nfunc len(s: in Seg, d: in Dir): Int = s.b.x - s.a.x\n"
+  assertDischarged(
+    pt + "func f(s: in Seg, d: in Dir): Bool\n  ensures: result\n{\n  len(s, d) == len(s, d)\n}\n",
+    "immutable-record-and-enum-arguments"
+  )
+  assertDischarged(
+    app + "@pure\nfunc inc(x: in Int): Int = x + 1\n" +
+      "func f(x: in Int): Bool\n  ensures: result\n{\n  app(inc, x) == app(inc, x)\n}\n",
+    "pure-function-argument"
+  )
+  assertRefuted(
+    app + "func inc(x: in Int): Int {\n  x + 1\n}\n" +
+      "func f(x: in Int): Bool\n  ensures: result\n{\n  app(inc, x) == app(inc, x)\n}\n",
+    "impure-function-argument"
+  )
+}
+
+test "a call's own result varies with a quantifier's bound variable (#8109)" {
+  assertNotProved(
+    tickDecl() + "func f(x: in Int): Bool\n  ensures: exists (i: Int) tick(i) == i + 1\n{\n  true\n}\n",
+    "impure-call-under-exists"
+  )
+  assertNotProved(
+    "func f(x: in Int): Bool\n  ensures: exists (i: Int) next(i) == i + 1\n{\n  true\n}\n",
+    "undeclared-call-under-exists"
+  )
+  assertNotProved(
+    "type Small = Int range 0 ..= 10\nfunc tick(x: in Small): Small {\n  if x == 10 { 0 } else { Small.from(x.toInt() + 1) }\n}\n" +
+      "func f(x: in Int): Bool\n  ensures: exists (i: Small) tick(i) == i\n{\n  true\n}\n",
+    "range-call-under-exists"
+  )
+}
+
+test "two function values are never compared (#8109)" {
+  assertUntranslatable(
+    oneTwoDecls() + "func f(): Bool\n  ensures: result\n{\n  val h = one\n  val k = one\n  h == k\n}\n",
+    "same-function-equal"
+  )
+  assertUntranslatable(
+    oneTwoDecls() + "func f(): Bool\n  ensures: result\n{\n  val h = one\n  val k = two\n  h != k\n}\n",
+    "different-functions-unequal"
+  )
+}

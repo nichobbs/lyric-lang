@@ -63,9 +63,38 @@ not model is still an uninterpreted function of its receiver and
 arguments, so `xs.count` before and after `xs.add(1)` is one term — the
 verifier has no heap model of mutation through a receiver.
 
-Verified by four new `verifier_self_test.l` tests (a refuted and a
-discharged case for each item), the verifier and records self-tests, the
+Verified by seven new `verifier_self_test.l` tests (refuted and
+discharged cases for each item and for each review finding), the
+verifier and records self-tests, the
 CI `lyric prove` examples, `core_proof.l`, `scripts/ci/prove-package-scope.sh`
 and the compiler self-test batch.
+
+## Review follow-up
+
+The review found the congruence still unsound where the arguments do not
+determine what a `@pure` callee reads, and the untranslatable-body change
+had made it reachable: `app(l, 1)` with `l` a closure over a `var` that
+changes between the calls, `call0(monotonicNanos)`, `probe(xs)` before and
+after `xs.add(1)`, and a `@pure` read of a protected object were all
+proved equal, and differ at runtime.
+
+- `@pure` is trusted, and now congruent only when every argument is a
+  value `==` sees all of (`allValueDetermined`): a primitive, `String`,
+  `Unit`, a tuple or standard `Result`/`Option` of such values, an enum
+  the file declares, a non-generic record or union whose fields are all
+  immutable and of such types (`fileValueTypes`, held in
+  `VEnv.valueTypes`), or a `@pure` function of the file named as a value.
+  A closure, a function from elsewhere, a `List`/`Map`/`Set`, a slice, a
+  protected or opaque object, a record with a `var` field, or an
+  unmodelled value gives the call a result of its own.
+- A call site's own result (`callSiteResult`) is now an uninterpreted
+  function of its own applied to the arguments, not a constant, so under
+  a quantifier it varies with the bound variable: `exists i. tick(i) ==
+  i + 1` is no longer proved by taking `i` from one fixed result. The
+  same holds for undeclared and computed callees.
+- `==` and `!=` between function values fail closed (V0033): a .NET
+  delegate compares its method and target and a JVM lambda its
+  reference, so `val h = one; val k = one; h == k` is true on one target
+  and false on the other.
 
 Specification: `docs/15-phase-4-proof-plan.md` §5.2, §5.4.

@@ -276,7 +276,7 @@ Lyric.Verifier/
 | `slice[T]` of compile-time-bounded length | array sort with separate length | length axiom asserts `0 ≤ length ≤ N` |
 | `slice[T]` unbounded      | uninterpreted sort + length function          | `forall` over its elements requires explicit bound (§4.2 §11) |
 | opaque type               | SMT-LIB datatype with one private field       | fields are not exported across packages — the VC generator inlines invariant facts but not the representation |
-| function type             | uninterpreted sort `Function`                | a function the file declares, named as a value, is one symbol per function; a call through a binding holding one is a call of that function, otherwise a fresh result (#8109) |
+| function type             | uninterpreted sort `Function`                | a function the file declares, named as a value, is one symbol per function; a call through a binding holding one is a call of that function, otherwise the call site's own result; `==`/`!=` on function values fail closed (#8109) |
 | `Result[T, E]`            | the standard Lyric-defined two-arm union; treated as datatype | |
 | protected-type ref        | fields bound as symbolic `Real`/`Int`/… vars | per-entry sequential reasoning via `goalsForProtectedType`; `invariant:` clauses are `requires:` hypotheses on each entry and `ensures:` obligations over the values its `var` fields hold when it returns (#8102) |
 
@@ -372,24 +372,39 @@ record constructor's fields likewise (#7873).
 
 Two values the program can tell apart never share a term (#8109):
 
-- A free or static call of a function the file declares is the callee
-  applied to its arguments only when the callee is `@pure` — two calls
-  with equal arguments are then equal. Any other callee's result is a
-  value of its own at each call site, so `f(x) == f(x)` is not provable
-  for a counter or a random source; its `ensures:` still says what the
-  result is. A `@pure` body the verifier cannot translate faithfully
-  (V0033) is not assumed, and the call keeps its congruence and contract.
+- `@pure` is trusted, not checked: the verifier believes a `@pure`
+  function computes its result from its arguments alone. A call of a
+  function the file declares — free, static or method — is the callee
+  applied to its arguments only when the callee is `@pure` and every
+  argument is a value `==` sees all of: a `Bool`, integer, bitvector,
+  `Float`/`Double` or `String`; `Unit`, a tuple, or the standard
+  `Result`/`Option` of such values; an enum the file declares, or a
+  non-generic record or union the file declares whose fields are all
+  immutable and of such types; or a function the file declares `@pure`,
+  named as a value. Two such calls with equal arguments are equal. Any
+  other call's result belongs to its call site: an uninterpreted function
+  of its own applied to the arguments, so two call sites never share a
+  result — `f(x) == f(x)` is not provable for a counter or a random
+  source, nor for a `@pure` function passed a closure whose captured
+  variable changed, a `List` that grew, or a protected object — and
+  under a quantifier the result varies with the bound variable. The
+  callee's `ensures:` still says what the result is. A `@pure` body the
+  verifier cannot translate faithfully (V0033, or a value not of the
+  result's sort) is not assumed, and the call keeps its contract.
   `@pure` is read from the declaration in the file being proved; `lyric
   prove` does not read other packages' contract metadata, so a callee
   declared elsewhere (another file, another package, the standard
-  library) is not known to be pure and its result is a value of its own
-  at each call, in a body or a contract alike.
+  library) is not known to be pure, and each of its call sites has a
+  result of its own, in a body or a contract alike.
 - A function the file declares, named as a value (`val h = sq`), is one
-  value per function. A call through a binding that holds one calls that
-  function, as it holds it at the call: after `h = other` the call is
-  `other`'s. A binding holding anything else — a lambda, a parameter, a
-  value a loop has havocked — is called as a computed callee, a fresh
-  result.
+  symbol per function, which says which function a call through the
+  binding reaches: as the binding holds it at the call, so after
+  `h = other` the call is `other`'s. A binding holding anything else — a
+  lambda, a parameter, a value a loop has havocked — is called as a
+  computed callee, a result of the call site's own. Whether two function
+  values are equal is not modelled (a .NET delegate compares its method
+  and target, a JVM lambda its reference): `==` and `!=` on function
+  values fail closed (V0033).
 - Every binding has a value of its own. Each name a destructuring `val`
   pattern binds is a fresh unknown (the verifier does not take values
   apart), so the same name in two patterns never denotes one value. A

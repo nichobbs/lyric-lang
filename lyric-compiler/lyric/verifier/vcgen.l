@@ -65,6 +65,11 @@ pub record VEnv {
   // `ensures:` and body are never assumed at a call: a cycle can make them
   // contradictory (#8102).
   pub cyclic: List[String]
+  // The types this file declares whose values are fully determined by what
+  // `==` compares: enums, and records and unions every field of which is
+  // immutable and of such a type.  A `@pure` call over arguments of these
+  // types (and of the primitive value types) is congruent (#8109).
+  pub valueTypes: Map[String, Bool]
   // Copy helpers — use explicit names list to avoid iterating Map.keys on a
   // TypeBuilderInstantiation, which generates invalid IL.
 }
@@ -275,6 +280,7 @@ pub func envEmpty(callees: in Map[String, FunctionDecl], symbols: in List[Symbol
   val protectedMembers: List[String] = newList()
   val contractStack: List[String] = newList()
   val cyclic: List[String] = newList()
+  val valueTypes: Map[String, Bool] = newMap()
   VEnv(
     vars = vars,
     varNames = varNames,
@@ -291,7 +297,8 @@ pub func envEmpty(callees: in Map[String, FunctionDecl], symbols: in List[Symbol
     mutables = mutables,
     protectedMembers = protectedMembers,
     contractStack = contractStack,
-    cyclic = cyclic
+    cyclic = cyclic,
+    valueTypes = valueTypes
   )
 }
 
@@ -328,7 +335,8 @@ pub func envBind(name: in String, info: in SortInfo, env: in VEnv): VEnv {
     mutables = env.mutables,
     protectedMembers = env.protectedMembers,
     contractStack = env.contractStack,
-    cyclic = env.cyclic
+    cyclic = env.cyclic,
+    valueTypes = env.valueTypes
   )
 }
 
@@ -364,7 +372,8 @@ pub func envBindTerm(name: in String, term: in Term, info: in SortInfo, env: in 
     mutables = env.mutables,
     protectedMembers = env.protectedMembers,
     contractStack = env.contractStack,
-    cyclic = env.cyclic
+    cyclic = env.cyclic,
+    valueTypes = env.valueTypes
   )
 }
 
@@ -485,7 +494,8 @@ func envUnbind(name: in String, env: in VEnv): VEnv {
     mutables = env.mutables,
     protectedMembers = env.protectedMembers,
     contractStack = env.contractStack,
-    cyclic = env.cyclic
+    cyclic = env.cyclic,
+    valueTypes = env.valueTypes
   )
 }
 
@@ -890,7 +900,8 @@ func varlessEnv(env: in VEnv): VEnv {
     mutables = env.mutables,
     protectedMembers = env.protectedMembers,
     contractStack = env.contractStack,
-    cyclic = env.cyclic
+    cyclic = env.cyclic,
+    valueTypes = env.valueTypes
   )
 }
 
@@ -1160,7 +1171,8 @@ func translateResolvedCall(
     mutables = env.mutables,
     protectedMembers = env.protectedMembers,
     contractStack = contractStack,
-    cyclic = env.cyclic
+    cyclic = env.cyclic,
+    valueTypes = env.valueTypes
   )
   // A parameter default sees the names declared at module level, never
   // the callee's other parameters (docs/01): it is translated with no
@@ -1348,7 +1360,8 @@ func translateResolvedCall(
     mutables = env.mutables,
     protectedMembers = env.protectedMembers,
     contractStack = contractStack,
-    cyclic = env.cyclic
+    cyclic = env.cyclic,
+    valueTypes = env.valueTypes
   )
   ci = 0
   while ci < decl.contracts.count {
@@ -1381,23 +1394,195 @@ func translateResolvedCall(
   knownCalleePair
 }
 
-// The value a call of `decl` returns: the callee applied to `argTerms` when
-// it is `@pure`, so equal arguments give equal results; otherwise a value
-// of its own, as two calls of a counter or a random source differ (#8109).
-// An argument reported untranslatable (V0033) keeps it poisoned (#7874).
+// The value a call of `decl` returns.  A `@pure` callee — `@pure` is
+// trusted, not checked — whose arguments are all values that determine
+// what it can compute is the callee applied to them, so equal arguments
+// give equal results.  Any other call's result is its own call site's
+// (`callSiteResult`): two calls of a counter or a random source differ, as
+// do two calls of a `@pure` function passed a closure, a list, or a
+// protected object whose state changed in between (#8109).
 func callResultTerm(
   env: in VEnv, name: in String, decl: in FunctionDecl, argTerms: in List[Term], resultSort: in Sort
 ): Term {
-  if isPure(decl) {
+  if isPure(decl) and allValueDetermined(env, argTerms) {
     TApp(name = name, args = argTerms, retSort = resultSort)
   } else {
-    val fresh = freshVar(env, name + "!result", resultSort)
-    if anyPoisoned(argTerms) {
-      poisonTerm(fresh)
-    } else {
-      fresh
+    callSiteResult(env, name, argTerms, resultSort)
+  }
+}
+
+// The result of one call site that is not known to be a function of its
+// arguments alone: a function of its own, applied to the arguments, so it
+// varies with a quantifier's bound variable they mention and is never
+// shared with another call site.  An argument reported untranslatable
+// (V0033) keeps it poisoned (#7874).
+func callSiteResult(env: in VEnv, name: in String, argTerms: in List[Term], resultSort: in Sort): Term {
+  val siteName = freshName(env, name + "!result")
+  val t = if argTerms.count == 0 {
+    TVar(name = siteName, sort = resultSort)
+  } else {
+    TApp(name = siteName, args = argTerms, retSort = resultSort)
+  }
+  if anyPoisoned(argTerms) {
+    poisonTerm(t)
+  } else {
+    t
+  }
+}
+
+// Whether every argument is a value `==` sees all of: one of a value sort
+// (`isValueSort`), or a function the file declares `@pure`, named.  A
+// closure, a function from elsewhere, a collection, a protected object or
+// any value the verifier does not model may behave differently between two
+// calls with the same term.
+func allValueDetermined(env: in VEnv, argTerms: in List[Term]): Bool {
+  var i = 0
+  while i < argTerms.count {
+    if not valueDetermined(env, argTerms[i]) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+func valueDetermined(env: in VEnv, t: in Term): Bool {
+  match t {
+    case TVar(n, _) -> {
+      val prefix = functionRefPrefix()
+      if n.startsWith(prefix) {
+        return match mapGet(env.callees, n.substring(prefix.length, n.length - prefix.length)) {
+          case Some(decl) -> isPure(decl)
+          case None -> false
+        }
+      }
+    }
+    case _ -> ()
+  }
+  isValueSort(env.valueTypes, env.distincts, sortOf(t), 0)
+}
+
+// Whether a value of `s` is all `==` compares: a primitive, `String`,
+// `Unit`, a tuple, `Result` or `Option` of such values, or a type of the
+// file's that `fileValueTypes` lists.  `List`, `Map`, `Set`, slices,
+// protected and opaque types, functions and anything unmodelled are not.
+func isValueSort(valueTypes: in Map[String, Bool], distincts: in Map[String, TypeExpr], s: in Sort, depth: in Int): Bool {
+  if depth > 16 {
+    return false
+  }
+  match s {
+    case SBool -> true
+    case SInt -> true
+    case SBitVec(_) -> true
+    case SFloat32 -> true
+    case SFloat64 -> true
+    case SString -> true
+    case SDatatype(name, args) -> {
+      val stdMonad = (name == "Result" or name == "Option") and not distincts.containsKey(shadowedMonadKey(name))
+      if name == "Unit" or name == "Tuple" or stdMonad {
+        var i = 0
+        while i < args.count {
+          if not isValueSort(valueTypes, distincts, args[i], depth + 1) {
+            return false
+          }
+          i = i + 1
+        }
+        true
+      } else {
+        args.count == 0 and valueTypes.containsKey(name)
+      }
+    }
+    case _ -> false
+  }
+}
+
+// The non-generic enums, records and unions `file` declares whose values
+// are what `==` compares: every field immutable and of a value sort
+// (`isValueSort`), resolved to a fixed point so a record of records
+// qualifies.
+func fileValueTypes(file: in SourceFile, distincts: in Map[String, TypeExpr]): Map[String, Bool] {
+  val valueTypes: Map[String, Bool] = newMap()
+  val candidates: List[String] = newList()
+  val candidateFields: List[List[TypeExpr]] = newList()
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IEnum(d) -> {
+        if not valueTypes.containsKey(d.name) {
+          valueTypes.add(d.name, true)
+        }
+      }
+      case IRecord(d) -> {
+        if isNone(d.generics) {
+          val tys: List[TypeExpr] = newList()
+          var mutable = false
+          var mi = 0
+          while mi < d.members.count {
+            match d.members[mi] {
+              case RMField(fld) -> {
+                if fld.isMutable {
+                  mutable = true
+                }
+                tys.add(fld.ty)
+              }
+              case _ -> ()
+            }
+            mi = mi + 1
+          }
+          if not mutable {
+            candidates.add(d.name)
+            candidateFields.add(tys)
+          }
+        }
+      }
+      case IUnion(d) -> {
+        if isNone(d.generics) {
+          val tys: List[TypeExpr] = newList()
+          var ci = 0
+          while ci < d.cases.count {
+            var fi = 0
+            while fi < d.cases[ci].fields.count {
+              match d.cases[ci].fields[fi] {
+                case UFNamed(_, ty, _) -> tys.add(ty)
+                case UFPos(ty, _) -> tys.add(ty)
+              }
+              fi = fi + 1
+            }
+            ci = ci + 1
+          }
+          candidates.add(d.name)
+          candidateFields.add(tys)
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  var changed = true
+  while changed {
+    changed = false
+    var ci = 0
+    while ci < candidates.count {
+      val name = candidates[ci]
+      if not valueTypes.containsKey(name) {
+        val tys = candidateFields[ci]
+        var allValues = true
+        var ti = 0
+        while ti < tys.count {
+          if not isValueSort(valueTypes, distincts, sortOfTypeExprWith(distincts, tys[ti]).sort, 0) {
+            allValues = false
+          }
+          ti = ti + 1
+        }
+        if allValues {
+          valueTypes.add(name, true)
+          changed = true
+        }
+      }
+      ci = ci + 1
     }
   }
+  valueTypes
 }
 
 // A call through a computed callee — a lambda, a local binding, another
@@ -1424,8 +1609,7 @@ func translateComputedCall(
   appendTermList(asList, argAssumed)
   // An argument reported untranslatable (V0033) keeps the result poisoned,
   // so a goal built from it stays failed (#7874).
-  val freshCall = freshVar(env, "call", SUninterp(name = "call"))
-  val callVar = if anyPoisoned(rawArgTerms) { poisonTerm(freshCall) } else { freshCall }
+  val callVar = callSiteResult(env, "call", rawArgTerms, SUninterp(name = "call"))
   val callTR = TranslateResult(term = callVar, sideConds = sc, assumed = asList)
   val callPair: (TranslateResult, List[Diagnostic]) = (callTR, diags)
   callPair
@@ -1435,6 +1619,15 @@ func translateComputedCall(
 // where no binding shadows it (`functionRefTerm`).
 func functionRefPrefix(): String {
   "fn!"
+}
+
+// The sorts of function values: a declared function's type, a function
+// named as a value, a lambda.
+func isFunctionSort(s: in Sort): Bool {
+  match s {
+    case SUninterp(n) -> n == "Function" or n == "lambda"
+    case _ -> false
+  }
 }
 
 func functionRefTerm(name: in String): Term {
@@ -2338,6 +2531,17 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
           } else {
             termList2(lR.term, rR.term)
           }
+          // Whether two function values are equal depends on the target —
+          // a delegate compares its method and target on .NET, a JVM lambda
+          // by reference — so it is not modelled (#8109).
+          match b {
+            case BOpEq | BOpNeq -> {
+              if isFunctionSort(sortOf(lR.term)) or isFunctionSort(sortOf(rR.term)) {
+                sortDiags.add(untranslatableDiag("an equality between function values", e.span))
+              }
+            }
+            case _ -> ()
+          }
           val term = if sortDiags.count > 0 { poisonTerm(TBuiltin(op = b, args = args)) } else { TBuiltin(op = b, args = args) }
           val sc: List[Term] = newList()
           appendTermList(sc, lR.sideConds)
@@ -2614,9 +2818,7 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
               // Whether it is `@pure` is not known here, so its result is
               // a value of its own at this call site: two calls of it are
               // never taken for equal (#8109).
-              val callNameSort = SUninterp(name = "call." + name)
-              val freshCall = freshVar(env, name + "!result", callNameSort)
-              val t = if anyPoisoned(rawArgTerms) { poisonTerm(freshCall) } else { freshCall }
+              val t = callSiteResult(env, name, rawArgTerms, SUninterp(name = "call." + name))
               val sc: List[Term] = newList()
               appendTermList(sc, argSides)
               val asList: List[Term] = newList()
@@ -5609,7 +5811,8 @@ func envInOwnContract(env: in VEnv, name: in String): VEnv {
     mutables = env.mutables,
     protectedMembers = env.protectedMembers,
     contractStack = termsWithNames(env.contractStack, name),
-    cyclic = env.cyclic
+    cyclic = env.cyclic,
+    valueTypes = env.valueTypes
   )
 }
 
@@ -5637,7 +5840,8 @@ func envWithState(
     mutables = mutables,
     protectedMembers = protectedMembers,
     contractStack = env.contractStack,
-    cyclic = env.cyclic
+    cyclic = env.cyclic,
+    valueTypes = env.valueTypes
   )
 }
 
@@ -6366,7 +6570,8 @@ func freshSymbolsEnv(env: in VEnv): VEnv {
     mutables = env.mutables,
     protectedMembers = env.protectedMembers,
     contractStack = env.contractStack,
-    cyclic = env.cyclic
+    cyclic = env.cyclic,
+    valueTypes = env.valueTypes
   )
 }
 
@@ -6865,6 +7070,7 @@ pub func goalsForFileInScope(
   // Build env0 carrying the distinct-type alias map collected above (#3853).
   val env0Init = envEmpty(callees, sharedSymbols, checkedArith)
   val cyclicNames = contractCycles(env0Init, calleeDecls, recordNames, recordDefaultsMap)
+  val valueTypesMap = fileValueTypes(file, distinctMap)
   val env0 = VEnv(
     vars = env0Init.vars,
     varNames = env0Init.varNames,
@@ -6881,7 +7087,8 @@ pub func goalsForFileInScope(
     mutables = env0Init.mutables,
     protectedMembers = env0Init.protectedMembers,
     contractStack = env0Init.contractStack,
-    cyclic = cyclicNames
+    cyclic = cyclicNames,
+    valueTypes = valueTypesMap
   )
 
   val allGoals: List[Goal] = newList()
