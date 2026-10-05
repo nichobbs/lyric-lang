@@ -12,12 +12,21 @@ not modelled either, so every postcondition that used them failed closed.
   declares, the file imports by name, or it may import through a
   whole-package import outside `Std.*` is an ordinary uninterpreted type,
   and generic types are now declared as uninterpreted sorts of their arity.
-  `lyric prove --manifest` passes each file its package's type names across
-  all its files; `lyric prove <file>` and the LSP read the sibling `.l`
-  files declaring the same package, and a sibling that cannot be read or
-  parsed, or a caller with no scope, counts both names as declared.
-  `scripts/ci/prove-package-scope.sh` (CI, with
-  `examples/prove-package-scope/`) checks both modes. `Ok`, `Err`, `Some` and
+  The package is the build's own file set: `Lyric.Discovery.projectEntryFiles`
+  now computes a manifest entry's files (explicit list, or the entry's
+  directory read recursively, whatever each file's `package` line) for
+  both `lyric build` and `lyric prove`. `lyric prove --manifest` takes each
+  entry's type names over that set; `lyric prove <file>` and the LSP use
+  the entry of the nearest manifest that contains the file, or else every
+  `.l` file under its directory, recursively. A file that cannot be read
+  or parsed, an entry that cannot be listed, a broken manifest, a custom
+  `@generate(X.Y)` anywhere in the set (the build appends its output, which
+  prove does not run), or a caller with no scope counts both names as
+  declared. `scripts/ci/prove-package-scope.sh` (CI, with
+  `examples/prove-package-scope/`) checks a sibling in the same directory,
+  in a subdirectory, with another `package` line and in an explicit file
+  list, each in both modes and requiring the V0033, plus a control that
+  proves. `Ok`, `Err`, `Some` and
   `None` take their type where they meet a typed slot (a return, an
   annotated binding, an argument, the other operand of `==`, both branches
   of an `if`), positionally or with their field named (`Ok(value = v)`);

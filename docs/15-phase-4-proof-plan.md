@@ -501,12 +501,21 @@ Calls the verifier cannot follow fail closed or are over-approximated
   file of its package, declares a type of that name, the file imports one
   by name or alias, or it imports a whole package outside `Std.*`, the name
   is an ordinary uninterpreted type (a generic type is an uninterpreted
-  sort of its arity). `lyric prove --manifest` collects every package's
-  top-level type names across its files; `lyric prove <file>` and the LSP
-  read the `.l` files beside the file that declare its package. A caller
-  that cannot see the other files (`proveSource`, `proveSourceWithOptions`,
-  a sibling that cannot be read or parsed) treats both names as declared
-  there. `Ok(v)`, `Err(e)`, `Some(v)` and `None` take their type
+  sort of its arity). "Its package" is the build's: the files
+  `Lyric.Discovery.projectEntryFiles` gives for the `[project.packages]`
+  (or `[project.tests]`) entry containing the file — an explicit list in
+  order, or every `.l` file under the entry's directory, recursively,
+  whatever their `package` line — which `lyric build` merges too.
+  `lyric prove --manifest` takes each entry's type names over exactly that
+  set; `lyric prove <file>` and the LSP find the nearest manifest and the
+  entry containing the file, or, with neither, take every `.l` file under
+  the file's directory, recursively (an over-approximation; a subdirectory
+  with its own `lyric.toml` is another project). The scope is unknown —
+  both names counted as declared — when any of those files cannot be read
+  or parsed, an entry cannot be fully listed, the manifest is broken, any
+  of them carries a custom `@generate(X.Y)` (whose output the build adds
+  before merging, and `lyric prove` does not run), or a caller passes none
+  (`proveSource`, `proveSourceWithOptions`). `Ok(v)`, `Err(e)`, `Some(v)` and `None` take their type
   where they meet a typed slot (a return, an annotated binding, an
   argument, the other operand of `==`), written positionally or with their
   field named (`Ok(value = v)`, `Err(error = e)`); a value of another sort
