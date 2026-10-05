@@ -10234,7 +10234,11 @@ func lowerGenericRecordConstruct(
     }
     fieldExprs.add(fe)
     val fexpr = match fe { case Some(x) -> x; case None -> panic("unreachable") }
-    if isLambdaExpr(fexpr) {
+    // A field default whose type is built from the type parameters
+    // (`var item: Option[T] = None`) is lowered like a lambda: after the
+    // parameters are bound, against the field's type (#7864).
+    val deferDefault = found2 < 0 and not isBareTypeParamRef(fields[fi2].ty, genericParamNamesOf(rd.generics))
+    if isLambdaExpr(fexpr) or deferDefault {
       deferredLambda.add(true)
       rawVals.add(NVal(ty = NVoid, value = NUndef(ty = NVoid)))
     } else {
@@ -10592,6 +10596,14 @@ func tryLowerExplicitGenericCall(
 /// type-argument tuple from the argument types, instantiate the
 /// function (lowered once per tuple, cached), and emit the call.
 /// `preVals` are already-lowered leading arguments (the UFCS receiver).
+func isBareTypeParamRef(te: in TypeExpr, names: in List[String]): Bool {
+  match te.kind {
+    case TRef(path) -> path.segments.count == 1 and envIndexOf(names, path.segments[0]) >= 0
+    case TParen(inner) -> isBareTypeParamRef(inner, names)
+    case _ -> false
+  }
+}
+
 func isLambdaExpr(e: in Expr): Bool {
   match e.kind {
     case ELambda(_, _) -> true
