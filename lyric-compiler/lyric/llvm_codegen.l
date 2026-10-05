@@ -1058,13 +1058,36 @@ func lookupHeapType(ctx: in Ctx, joined: in String, bare: in String): Option[NTy
     case None -> {
     }
   }
-  match mapGet(ctx.recordDefs, bare) {
-    case Some(ri) -> return Some(value = recPtrType(ri))
+  match mapGet(ctx.unionDefs, joined) {
+    case Some(ui) -> return Some(value = unionPtrType(ui))
     case None -> {
     }
   }
-  match mapGet(ctx.unionDefs, joined) {
-    case Some(ui) -> return Some(value = unionPtrType(ui))
+  // A bare name the own package does not declare: prefer the declaration in
+  // a package the caller imports over the first-registered same-named type
+  // elsewhere in the bundle (`Customers.Routes.Route` vs `Web.Route`, #8155).
+  if ctx.curPkg.count > 0 {
+    match mapGet(ctx.pkgImports, ctx.curPkg[0]) {
+      case Some(imps) -> {
+        for p in imps {
+          match mapGet(ctx.recordDefs, p + "." + bare) {
+            case Some(ri) -> return Some(value = recPtrType(ri))
+            case None -> {
+            }
+          }
+          match mapGet(ctx.unionDefs, p + "." + bare) {
+            case Some(ui) -> return Some(value = unionPtrType(ui))
+            case None -> {
+            }
+          }
+        }
+      }
+      case None -> {
+      }
+    }
+  }
+  match mapGet(ctx.recordDefs, bare) {
+    case Some(ri) -> return Some(value = recPtrType(ri))
     case None -> {
     }
   }
@@ -1176,6 +1199,27 @@ func registerVarEnumTypeFromOpt(ctx: in Ctx, name: in String, tyOpt: in Option[T
 
 func distinctUnderlying(di: in NDistinctInfo): NType {
   di.underlying
+}
+
+/// `te`, a type written in `sig`'s declaration, resolved as `sig`'s own package:
+/// a bare `Model` there names that package's `Model`, not a same-named type the
+/// caller's package happens to import (#8155).
+func sigTypeToN(ctx: in Ctx, sig: in NFuncSig, te: in TypeExpr): NType {
+  if ctx.curPkg.count == 0 or ctx.curPkg[0] == sig.pkg {
+    return typeToN(ctx, te)
+  }
+  val callerPkg = ctx.curPkg[0]
+  ctx.curPkg[0] = sig.pkg
+  val t = typeToN(ctx, te)
+  ctx.curPkg[0] = callerPkg
+  t
+}
+
+func sigRetTypeToN(ctx: in Ctx, sig: in NFuncSig): NType {
+  match sig.retTy {
+    case Some(te) -> sigTypeToN(ctx, sig, te)
+    case None -> NVoid
+  }
 }
 
 func retTypeToN(ctx: in Ctx, ret: in Option[TypeExpr]): NType {
@@ -2372,7 +2416,7 @@ pub func mvInitFnName(name: in String): String {
 // from it, like a local slot. `lyric_init_module_globals` ensures them all
 // before `main`, so no thread sees one uninitialised.
 func loadModuleGlobal(ctx: in Ctx, insns: in List[NInsn], sig: in NFuncSig): NVal {
-  val ty = retTypeToN(ctx, sig.retTy)
+  val ty = sigRetTypeToN(ctx, sig)
   val gname = "mv." + sig.irName
   var known = false
   for n in ctx.mvInits {
@@ -3975,7 +4019,7 @@ func lowerCallArgsWithReceiver(
     )
   }
   val ordered: List[NArg] = newList()
-  val recvTy = typeToN(ctx, sig.paramTys[0])
+  val recvTy = sigTypeToN(ctx, sig, sig.paramTys[0])
   val rv = coerceTo(ctx, insns, recv, recvTy)
   ordered.add(NArg(ty = recvTy, value = rv.value))
   bindCallArgs(ctx, insns, sig, args, 1, ordered)
@@ -4062,7 +4106,7 @@ func isByRefParam(ctx: in Ctx, sig: in NFuncSig, slot: Int): Bool {
   if not isByRefMode {
     return false
   }
-  match typeToN(ctx, sig.paramTys[slot]) {
+  match sigTypeToN(ctx, sig, sig.paramTys[slot]) {
     case NVoid -> false
     case _ -> true
   }
@@ -4073,7 +4117,7 @@ func isByRefParam(ctx: in Ctx, sig: in NFuncSig, slot: Int): Bool {
 /// the declared type itself for `in` (see `lowerFunctionEnv`'s matching
 /// callee-side lowering).
 func paramArgNType(ctx: in Ctx, sig: in NFuncSig, slot: Int): NType {
-  val base = typeToN(ctx, sig.paramTys[slot])
+  val base = sigTypeToN(ctx, sig, sig.paramTys[slot])
   if isByRefParam(ctx, sig, slot) {
     NPtr(pointee = base)
   } else {
@@ -4092,17 +4136,17 @@ func paramArgNType(ctx: in Ctx, sig: in NFuncSig, slot: Int): NType {
 /// the argument expression's ADDRESS instead of its value.
 func lowerArgAgainst(ctx: in Ctx, insns: in List[NInsn], sig: in NFuncSig, ex: in Expr, slot: Int): NVal {
   if isByRefParam(ctx, sig, slot) {
-    return lowerByRefArg(ctx, insns, ex, typeToN(ctx, sig.paramTys[slot]))
+    return lowerByRefArg(ctx, insns, ex, sigTypeToN(ctx, sig, sig.paramTys[slot]))
   }
   if sig.isExternSym {
     if isFunctionTypeExpr(sig.paramTys[slot]) {
       return lowerExprExpecting(ctx, insns, ex, externCallbackClosureWant(ctx, sig.paramTys[slot]))
     }
-    if isBytePtrNType(typeToN(ctx, sig.paramTys[slot])) {
+    if isBytePtrNType(sigTypeToN(ctx, sig, sig.paramTys[slot])) {
       return lowerExpr(ctx, insns, ex)
     }
   }
-  lowerExprExpecting(ctx, insns, ex, typeToN(ctx, sig.paramTys[slot]))
+  lowerExprExpecting(ctx, insns, ex, sigTypeToN(ctx, sig, sig.paramTys[slot]))
 }
 
 /// The address of an `out`/`inout` call argument (N9.6). The type checker
@@ -4917,9 +4961,9 @@ func lowerResolvedSigCall(
     }
   }
   if sig.isAsync {
-    return emitAsyncCall(ctx, insns, sig.irName, callArgs, retTypeToN(ctx, sig.retTy), wantTask)
+    return emitAsyncCall(ctx, insns, sig.irName, callArgs, sigRetTypeToN(ctx, sig), wantTask)
   }
-  val retTy = retTypeToN(ctx, sig.retTy)
+  val retTy = sigRetTypeToN(ctx, sig)
   if sig.isExternSym and cAbiArch(ctx.abiTriple).length > 0 and cAbiNeeded(callArgs, retTy) {
     return cAbiExternCall(ctx, insns, sig.irName, callArgs, retTy)
   }
@@ -5437,9 +5481,9 @@ func lowerUfcsCall(
     return emitAsyncSleep(ctx, insns, callArgs)
   }
   if sig.isAsync {
-    return emitAsyncCall(ctx, insns, sig.irName, callArgs, retTypeToN(ctx, sig.retTy), wantTask)
+    return emitAsyncCall(ctx, insns, sig.irName, callArgs, sigRetTypeToN(ctx, sig), wantTask)
   }
-  val retTy = retTypeToN(ctx, sig.retTy)
+  val retTy = sigRetTypeToN(ctx, sig)
   if sig.isExternSym and cAbiArch(ctx.abiTriple).length > 0 and cAbiNeeded(callArgs, retTy) {
     return cAbiExternCall(ctx, insns, sig.irName, callArgs, retTy)
   }
@@ -8307,7 +8351,7 @@ func emitAsyncRunCapture(ctx: in Ctx, insns: in List[NInsn], sig: in NFuncSig, c
   val asig = mustLeafSig(mapGet(ctx.sigs, "Std.ProcessCaptureHost.hostRunCaptureListAsync/4"))
   val projSig = mustLeafSig(mapGet(ctx.sigs, "Std.Process.projectResult/1"))
   val rawTy = retTypeToN(ctx, asig.retTy)
-  val targetTy = retTypeToN(ctx, sig.retTy)
+  val targetTy = sigRetTypeToN(ctx, sig)
   if isNoneUnion(unionInfoOfType(ctx, rawTy)) or isNoneUnion(unionInfoOfType(ctx, targetTy)) {
     return None
   }
@@ -10065,7 +10109,14 @@ func lowerGenericRecordConstruct(
           rawVals[dli] = lowerExprExpecting(ctx, insns, lamExpr, want)
         }
         case None -> {
-          rawVals[dli] = lowerExpr(ctx, insns, lamExpr)
+          match fnRefLambdaWant(ctx, lamExpr) {
+            case Some(w) -> {
+              rawVals[dli] = lowerExprExpecting(ctx, insns, lamExpr, w)
+            }
+            case None -> {
+              rawVals[dli] = lowerExpr(ctx, insns, lamExpr)
+            }
+          }
         }
       }
       unifyTyArg(ctx, fields[dli].ty, rawVals[dli].ty, envNames, boundNames, boundTys)
@@ -10093,6 +10144,47 @@ func lowerGenericRecordConstruct(
     )
   }
   lowerRecordConstructVals(ctx, insns, ri, rawVals)
+}
+
+/// The closure type of a function value `Lyric.Mono` desugared to
+/// `{ __fnref_p0: T0, ... -> Pkg.f(__fnref_p0, ...) }` (D-progress-963): the
+/// parameters are annotated and the return type is the callee's declared one,
+/// so the closure type is known even where no expected type reaches the lambda
+/// (a generic record's fields that nothing else binds, #8155). None for any
+/// other lambda.
+func fnRefLambdaWant(ctx: in Ctx, e: in Expr): Option[NType] {
+  match e.kind {
+    case ELambda(lps, body) -> {
+      if body.statements.count != 1 {
+        return None
+      }
+      val callee = match body.statements[0].kind {
+        case SExpr(inner) -> match inner.kind { case ECall(fn, _) -> fn; case _ -> return None }
+        case _ -> return None
+      }
+      val segs = match callee.kind { case EPath(p) -> p.segments; case _ -> return None }
+      val sig = match mapGet(ctx.sigs, modulePathJoin(segs) + "/" + lps.count.toString()) {
+        case Some(sg) -> sg
+        case None -> return None
+      }
+      if sig.paramTys.count != lps.count {
+        return None
+      }
+      // The callee's own types name its package's declarations (`Model` in
+      // `Customers.List.Logic` is not `Customers.Edit.Logic`'s), so resolve
+      // them as that package.
+      val callerPkg = ctx.curPkg[0]
+      ctx.curPkg[0] = sig.pkg
+      val pTys: List[NType] = newList()
+      for te in sig.paramTys {
+        pTys.add(typeToN(ctx, te))
+      }
+      val retTy = match sig.retTy { case Some(te) -> typeToN(ctx, te); case None -> NVoid }
+      ctx.curPkg[0] = callerPkg
+      Some(value = closureNType(ctx, pTys, retTy))
+    }
+    case _ -> None
+  }
 }
 
 func isGenericFn(fn: in FunctionDecl): Bool {

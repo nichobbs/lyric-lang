@@ -155,7 +155,8 @@ test "module-level val with a non-literal initializer is a shared static global 
     NativeSourcePackage(
       name = "Glob.App",
       path = "",
-      source = "package Glob.App\n" + "import Glob.Store\n" + "import Glob.Store as Store\n" + "import Std.Core\n" + "import Std.Collections\n" +
+      source = "package Glob.App\n" + "import Glob.Store\n" + "import Glob.Store as Store\n" + "import Std.Core\n" +
+        "import Std.Collections\n" +
         "import Std.Console as Console\n" +
         "record Counter {\n" +
         "  var n: Int = 0\n" +
@@ -771,4 +772,104 @@ test "two packages with a same-named record and different field layouts resolve 
     112,
     "5 (Proj7B.A.Rec, 1 field) + 107 (Proj7B.B.Rec, 2 fields: 100+7) = 112 -- no cross-package layout aliasing"
   )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Same bare type name across packages (#8155, `examples/ui-customers`).
+//
+// Three resolution paths used to pick the first-registered same-named type
+// bundle-wide instead of the one the code means:
+//   1. a bare type name the package imports (`Route`, a union in `Reg.Routes`)
+//      while another package (`Reg.Web`) declares a record of that name;
+//   2. a function's own declared parameter/return types (`Model` in
+//      `Reg.A.Logic`) resolved in the CALLER's package, which imports a
+//      different `Model` (`Reg.B.Logic`);
+//   3. a cross-package function value passed to a generic record's
+//      constructor, where no other field binds the record's type parameter
+//      so the closure type must come from the callee's own signature.
+// `Reg.A.Logic.Model` has one field and `Reg.B.Logic.Model` two, so a layout
+// alias reads wrong data rather than returning a plausible constant.
+// ─────────────────────────────────────────────────────────────────────────────
+test "same-named types across packages: imported union beats a bundle-first record, callee signature types resolve in their own package (#8155)" {
+  val pkgs: List[NativeSourcePackage] = newList()
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Reg.App",
+      path = "",
+      source = "package Reg.App\n" + "import Reg.Routes.{Route, Home, Item}\n" + "import Reg.Gen.{Prog, apply}\n" +
+        "import Reg.A.Logic as AL\n" +
+        "import Reg.B.Logic as BL\n" +
+        "func code(r: in Route): Int {\n" +
+        "  match r {\n" +
+        "    case Home -> 1\n" +
+        "    case Item(id) -> id\n" +
+        "  }\n" +
+        "}\n" +
+        "func main(): Int {\n" +
+        "  val pa = Prog(step = AL.update)\n" +
+        "  val ma = apply(pa, AL.init(), 5)\n" +
+        "  val pb = Prog(step = BL.update)\n" +
+        "  val mb = apply(pb, BL.init(), 5)\n" +
+        "  code(Item(id = 3)) + AL.read(ma) + BL.read(mb)\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Reg.Web",
+      path = "",
+      source = "package Reg.Web\n" + "pub record Route {\n" + "  path: String\n" + "}\n"
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Reg.Routes",
+      path = "",
+      source = "package Reg.Routes\n" + "pub union Route {\n" + "  case Home\n" + "  case Item(id: Int)\n" + "}\n"
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Reg.Gen",
+      path = "",
+      source = "package Reg.Gen\n" + "pub record Prog[M] {\n" + "  step: (M, Int) -> M\n" + "}\n" +
+        "pub func apply[M](p: in Prog[M], m: in M, d: in Int): M {\n" +
+        "  val f = p.step\n" +
+        "  f(m, d)\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Reg.A.Logic",
+      path = "",
+      source = "package Reg.A.Logic\n" + "pub record Model {\n" + "  a: Int\n" + "}\n" + "pub func init(): Model {\n" +
+        "  Model(a = 1)\n" +
+        "}\n" +
+        "pub func update(m: in Model, d: in Int): Model {\n" +
+        "  Model(a = m.a + d)\n" +
+        "}\n" +
+        "pub func read(m: in Model): Int {\n" +
+        "  m.a\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Reg.B.Logic",
+      path = "",
+      source = "package Reg.B.Logic\n" + "pub record Model {\n" + "  a: Int\n" + "  b: Int\n" + "}\n" +
+        "pub func init(): Model {\n" +
+        "  Model(a = 10, b = 20)\n" +
+        "}\n" +
+        "pub func update(m: in Model, d: in Int): Model {\n" +
+        "  Model(a = m.a + d, b = m.b)\n" +
+        "}\n" +
+        "pub func read(m: in Model): Int {\n" +
+        "  m.a + m.b\n" +
+        "}\n"
+    )
+  )
+  val outcome = compileAndRunProject(pkgs)
+  assertEqualInt(outcome.exitCode, 44, "3 (Reg.Routes.Item) + 6 (Reg.A.Logic: 1+5) + 35 (Reg.B.Logic: 15+20) = 44")
 }
