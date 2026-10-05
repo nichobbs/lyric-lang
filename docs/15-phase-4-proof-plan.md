@@ -447,14 +447,16 @@ Calls the verifier cannot follow fail closed or are over-approximated
   32 bits when none is known: a result is at least that wide, so this can
   only make them stricter.)
 - Inside one expression, evaluation order is respected: a call's receiver
-  or computed callee, then its arguments in order, a branch or arm after a condition,
+  or computed callee, then its arguments as written — named and positional
+  alike, whatever the parameter order (D171) — then the omitted
+  parameters' defaults, a branch or arm after a condition,
   scrutinee or guard, the arms after a guard that ran and failed, and the
   right operand of a binary operator see the state the earlier part
   leaves — a variable it passed to an `out`/`inout` parameter holds a new
   value. Index receivers before indices, interpolation segments, and
-  tuple and list elements run left to right as well. A call whose named
-  arguments are written out of parameter order fails closed (V0033) when
-  an argument changes a variable, since that order is not yet settled.
+  tuple and list elements run left to right as well. The values then pass
+  to the parameters by `Lyric.Parser.pairCallArgs`, as in the type checker
+  and every backend.
 - A match arm's guard is translated in the arm's bindings: its side
   conditions and facts hold where the pattern matches and no earlier arm
   did, and the arm is taken when pattern and guard hold. An arm whose
@@ -470,6 +472,64 @@ Calls the verifier cannot follow fail closed or are over-approximated
   modelled: its side conditions hold under an unknown condition (so they
   must hold) and its facts give nothing.
 - A `?` or other jump in a loop condition fails closed (`V0026`) (#8143).
+- `e?` splits the path where it runs (#8108). Where `e` is an `Err`/`None`
+  the function returns `Err(e.error)` or `None` at its own result type, as
+  `Lyric.Propagate` lowers it, and its `ensures:` must hold for that
+  result: a caller assumes the postcondition of every value a function
+  returns, although the runtime does not check it on this exit (D174). Otherwise the path goes on with the payload, and
+  facts from the callee's `ensures:` (`result.isOk implies result.value >
+  0`) hold of it — for the postcondition; a side goal (a later callee's
+  `requires:`, an `assert`) does not see earlier facts yet (#8103 item 1).
+  A statement's `?`s are first given bindings of their own
+  in evaluation order, with everything evaluated before a `?` bound before
+  it too, so a callee's precondition or an `out`/`inout` change before a
+  `?` is checked on both paths and one after it only on the success path.
+  A place an `out`/`inout` parameter or a method receiver uses stays the
+  variable itself, never a copy, so the call's write lands on it; if an
+  operand hoisted ahead of the call changes that variable, the call fails
+  closed (`V0033`).
+  This covers bindings, expression statements, assignments, `return`, a
+  statement `if`'s condition and branches, and call arguments, receivers
+  and operands. A `?` that runs only conditionally within its statement (a
+  branch of an `if` or `match` expression, the right operand of `and`,
+  `or`, `implies` or `??`, a lambda, a block used as a value), on a value
+  the verifier cannot see is a `Result` or `Option` (an unresolved
+  callee), or whose error type differs from the function's fails closed
+  (`V0033`); in a loop body or condition it fails closed (`V0026`).
+- `Result[T, E]` and `Option[T]` are the SMT datatypes `Lyric!Result` and
+  `Lyric!Option` — the standard library's only: where the file, or another
+  file of its package, declares a type of that name, the file imports one
+  by name or alias, or it imports a whole package outside `Std.*`, the name
+  is an ordinary uninterpreted type (a generic type is an uninterpreted
+  sort of its arity). "Its package" is the build's: the files
+  `Lyric.Discovery.projectEntryFiles` gives for the `[project.packages]`
+  (or `[project.tests]`) entry containing the file — an explicit list in
+  order, or every `.l` file under the entry's directory, recursively,
+  whatever their `package` line — which `lyric build` merges too.
+  `lyric prove --manifest` takes each entry's type names over exactly that
+  set, and warns about an entry file outside the manifest's tree. A
+  single-file proof (`lyric prove <file>`, the LSP) is relative to the
+  builds the file's ancestor manifests define: every `lyric.toml` from the
+  file's directory up is read, and the files of every entry of any of them
+  that contains the file are united; with none, every `.l` file under the
+  file's directory, recursively (an over-approximation; a subdirectory with
+  its own `lyric.toml` is another project). A manifest that lists files
+  outside its own tree cannot be found from such a file: prove that
+  package with `--manifest` (D174). Paths are matched case-insensitively,
+  which only adds files; symbolic links are not resolved (Std has no
+  canonical-path call). The scope is unknown — both names counted as
+  declared — when any of those files cannot be read or parsed, a
+  containing entry cannot be fully listed, an ancestor manifest is broken,
+  any of them carries a custom `@generate(X.Y)` (whose output the build
+  adds before merging, and `lyric prove` does not run), or a caller passes
+  none (`proveSource`, `proveSourceWithOptions`). `Ok(v)`, `Err(e)`, `Some(v)` and `None` take their type
+  where they meet a typed slot (a return, an annotated binding, an
+  argument, the other operand of `==`), written positionally or with their
+  field named (`Ok(value = v)`, `Err(error = e)`); a value of another sort
+  at such a slot fails closed (`V0033`); `.isOk`, `.isErr`, `.isSome`,
+  `.isNone` and `isOk(r)`-style calls are case tests, and `.value` and
+  `.error` read the payload with the obligation that the value is that
+  case, since reading the other case's payload traps (#8108).
 - `old(e)` is `e` evaluated with every name that has an entry snapshot (a
   parameter, an `out`/`inout` parameter, a protected `var` field) at its
   entry value.
@@ -510,8 +570,7 @@ arguments reset). Inside a protected type, `self.m()` fails closed like a
 bare `m()`, as does a method call on any receiver the verifier does not
 model (V0024).
 
-Known limitations, tracked separately: the early-return path of `?` in a binding
-(#8108); term identity for impure free calls, reassigned function values,
+Known limitations, tracked separately: term identity for impure free calls, reassigned function values,
 unbound names and `if`-branch locals (#8109); no heap model, and record
 methods never verified (#8110); a callee's `ensures:` about an
 `out`/`inout` parameter not linked back to the argument (#8111);

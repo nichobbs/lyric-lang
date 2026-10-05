@@ -1,0 +1,11 @@
+[package]
+name = "ProveScopeShadow"
+version = "0.1.0"
+
+[project]
+name = "ProveScopeShadow"
+output = "single"
+output_assembly = "ProveScopeShadow.dll"
+
+[project.packages]
+"P" = "src/p"

@@ -52,8 +52,10 @@ func makeGoalFalseConclusion(): Goal {
   )
 }
 
+// An in-memory file is its package's only file.
 func prove(src: in String): ProofSummary {
-  proveSource(src)
+  val noSiblings: List[String] = newList()
+  proveSourceInScope(src, false, packageScopeOf(noSiblings))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2288,30 +2290,226 @@ test "a call evaluates its receiver or callee before its arguments, in source or
     "computed-callee-unaffected"
   )
   val namedDecls = zeroDecls() + "func pair2(a: in Int, b: in Bool): Int {\n  a\n}\n"
-  assertUntranslatable(
-    namedDecls + "func f(): Int {\n  var x = 1\n  pair2(b = zero(x), a = pos(x))\n}\n",
-    "named-reordered"
-  )
+  assertRefuted(namedDecls + "func f(): Int {\n  var x = 1\n  pair2(b = zero(x), a = pos(x))\n}\n", "named-reordered")
   assertDischarged(
     namedDecls + "func f(): Int {\n  var x = 1\n  pair2(a = pos(x), b = zero(x))\n}\n",
     "named-parameter-order"
   )
 }
 
-test "named arguments out of parameter order fail closed when one changes a variable (#8107)" {
+test "named arguments run in source order and pass in parameter order (D171)" {
   val decls = "func pos(x: in Int): Int\n  requires: x > 0\n{\n  x\n}\n" +
     "func zero(x: inout Int): Int {\n  x = 0\n  0\n}\n" +
     "func two(a: in Int, b: in Int): Int {\n  a + b\n}\n" +
-    "record Pair {\n  a: Int\n  b: Int\n}\n"
-  assertUntranslatable(decls + "func f(): Int {\n  var x = 1\n  two(b = pos(x), a = zero(x))\n}\n", "call")
-  assertUntranslatable(
+    "func sub(a: in Int, b: in Int): Int\n  ensures: result == a - b\n{\n  a - b\n}\n" +
+    "record Pair {\n  a: Int\n  b: Int\n}\n" +
+    "func q(x: inout Int): Result[Int, String] {\n  x = 0\n  Ok(1)\n}\n"
+  // In parameter order `zero(x)` would run first and `pos(x)` fail.
+  assertDischarged(decls + "func f(): Int {\n  var x = 1\n  two(b = pos(x), a = zero(x))\n}\n", "call-source-order")
+  assertRefuted(decls + "func f(): Int {\n  var x = 1\n  two(b = zero(x), a = pos(x))\n}\n", "call-effect-first")
+  assertDischarged(
     decls + "func f(): Int {\n  var x = 1\n  val p = Pair(b = pos(x), a = zero(x))\n  1\n}\n",
-    "record"
+    "record-source-order"
+  )
+  assertRefuted(
+    decls + "func f(): Int {\n  var x = 1\n  val p = Pair(b = zero(x), a = pos(x))\n  1\n}\n",
+    "record-effect-first"
   )
   assertDischarged(
-    decls + "func f(): Int {\n  val x = 1\n  two(b = pos(x), a = pos(2))\n}\n",
-    "reordered-without-effects"
+    decls + "func f(): Result[Int, String] {\n  var x = 1\n  Ok(two(b = pos(x), a = q(x)?))\n}\n",
+    "propagate-source-order"
   )
-  assertRefuted(decls + "func f(): Int {\n  var x = 1\n  two(a = zero(x), b = pos(x))\n}\n", "in-order-with-effects")
-  assertDischarged(decls + "func f(): Int {\n  var x = 1\n  two(a = pos(x), b = zero(x))\n}\n", "in-order-effect-last")
+  assertRefuted(
+    decls + "func f(): Result[Int, String] {\n  var x = 1\n  Ok(two(b = q(x)?, a = pos(x)))\n}\n",
+    "propagate-effect-first"
+  )
+  // The values still reach their parameters by name.
+  assertDischarged(decls + "func f(): Int\n  ensures: result == 4\n{\n  sub(b = 1, a = 5)\n}\n", "pairs-by-name")
+  assertRefuted(decls + "func f(): Int\n  ensures: result == -4\n{\n  sub(b = 1, a = 5)\n}\n", "pairs-by-name-refuted")
+}
+
+func gResult(ens: in String): String {
+  "func g(n: in Int): Result[Int, String]\n" + ens +
+    "{\n  if n > 0 {\n    Ok(n)\n  } else {\n    Err(\"neg\")\n  }\n}\n"
+}
+
+func assertUnsupported(body: in String, label: in String): Unit {
+  val s = provePkg(body)
+  assertTrue(summaryHasDiagCode(s, "V0026"), label + ": V0026 reported")
+  assertTrue(summaryHasErrorDiag(s), label + ": the proof fails closed")
+}
+
+test "a `?` returns the error early, where the postcondition must hold too (#8108)" {
+  assertRefuted(
+    gResult("") + "func f(n: in Int): Result[Int, String]\n  ensures: result.isOk\n{\n  val x = g(n)?\n  Ok(x)\n}\n",
+    "is-ok-refuted"
+  )
+  assertDischarged(
+    gResult("  ensures: result.isOk implies result.value > 0\n") +
+      "func f(n: in Int): Result[Int, String]\n  ensures: result.isOk implies result.value > 1\n{\n  val x = g(n)?\n  Ok(x + 1)\n}\n",
+    "both-paths-discharged"
+  )
+  assertRefuted(
+    gResult("") +
+      "func f(n: in Int): Result[Int, String]\n  ensures: result.isOk implies result.value > 1\n{\n  val x = g(n)?\n  Ok(x + 1)\n}\n",
+    "payload-needs-callee-ensures"
+  )
+  assertRefuted(
+    gResult("  ensures: result.isErr implies n <= 0\n") +
+      "func f(n: in Int): Result[Int, String]\n  ensures: result.isErr implies n < 0\n{\n  val x = g(n)?\n  Ok(x)\n}\n",
+    "error-path-only"
+  )
+  assertDischarged(
+    "func g(n: in Int): Result[Int, String]\n  ensures: result.isErr implies n < 0\n{\n  if n >= 0 {\n    Ok(n)\n  } else {\n    Err(\"neg\")\n  }\n}\n" +
+      "func f(n: in Int): Result[Int, String]\n  ensures: result.isErr implies n < 0\n{\n  val x = g(n)?\n  Ok(x)\n}\n",
+    "error-path-holds"
+  )
+}
+
+test "a `?` on an Option returns None early (#8108)" {
+  val first = "func first(n: in Int): Option[Int]\n  ensures: result.isSome implies result.value > 0\n{\n  if n > 0 {\n    Some(n)\n  } else {\n    None\n  }\n}\n"
+  assertDischarged(
+    first +
+      "func f(n: in Int): Option[Int]\n  ensures: result.isSome implies result.value > 1\n{\n  val x = first(n)?\n  Some(x + 1)\n}\n",
+    "option-both-paths"
+  )
+  assertRefuted(
+    first + "func f(n: in Int): Option[Int]\n  ensures: result.isSome\n{\n  val x = first(n)?\n  Some(x)\n}\n",
+    "option-is-some"
+  )
+}
+
+test "a `?` splits the path where it runs in its statement (#8108)" {
+  val ens = "  ensures: result.isOk implies result.value > 0\n"
+  val g = gResult(ens)
+  assertDischarged(
+    g + "func f(n: in Int): Result[Int, String]\n" + ens + "{\n  var y = 1\n  y = g(n)?\n  Ok(y)\n}\n",
+    "assignment"
+  )
+  assertDischarged(
+    g + "func f(n: in Int): Result[Int, String]\n" + ens + "{\n  return Ok(g(n)?)\n}\n",
+    "return-argument"
+  )
+  assertRefuted(
+    g + "func f(n: in Int): Result[Int, String]\n  ensures: result.isOk\n{\n  g(n)?\n  Ok(1)\n}\n",
+    "expression-statement"
+  )
+  assertRefuted(
+    g +
+      "func f(n: in Int): Result[Int, String]\n  ensures: result.isOk\n{\n  if g(n)? > 5 {\n    Ok(1)\n  } else {\n    Ok(2)\n  }\n}\n",
+    "if-condition"
+  )
+  assertDischarged(
+    g + "func f(n: in Int, c: in Bool): Result[Int, String]\n" + ens +
+      "{\n  if c {\n    val x = g(n)?\n    return Ok(x)\n  }\n  Ok(1)\n}\n",
+    "statement-if-branch"
+  )
+}
+
+test "a `?` in an argument runs in evaluation order (#8108)" {
+  val decls = "func pos(x: in Int): Int\n  requires: x > 0\n{\n  x\n}\n" +
+    "func q(x: inout Int): Result[Int, String] {\n  x = 0\n  Ok(1)\n}\n" +
+    "func pair(a: in Int, b: in Int): Int {\n  a + b\n}\n"
+  assertRefuted(
+    decls + "func f(): Result[Int, String] {\n  var x = 1\n  Ok(pair(q(x)?, pos(x)))\n}\n",
+    "propagate-first"
+  )
+  assertDischarged(
+    decls + "func f(): Result[Int, String] {\n  var x = 1\n  Ok(pair(pos(x), q(x)?))\n}\n",
+    "propagate-last"
+  )
+}
+
+test "a `?` the verifier cannot split at fails closed (#8108)" {
+  val g = gResult("")
+  assertUntranslatable(
+    g + "func f(n: in Int, c: in Bool): Result[Int, String] {\n  val y = if c { g(n)? } else { 0 }\n  Ok(y)\n}\n",
+    "if-branch"
+  )
+  assertUntranslatable(
+    g + "func f(n: in Int, c: in Bool): Result[Int, String] {\n  val y = c and g(n)? > 0\n  Ok(1)\n}\n",
+    "short-circuit"
+  )
+  assertUntranslatable(
+    "func f(n: in Int): Result[Int, String] {\n  val x = mystery(n)?\n  Ok(x)\n}\n",
+    "unresolved-callee"
+  )
+  assertUntranslatable(
+    "func h(n: in Int): Result[Int, Int] {\n  Ok(n)\n}\n" +
+      "func f(n: in Int): Result[Int, String] {\n  val x = h(n)?\n  Ok(x)\n}\n",
+    "error-conversion"
+  )
+  assertUnsupported(
+    g +
+      "func f(n: in Int): Result[Int, String] {\n  var i = 0\n  while i < n\n    invariant: i >= 0\n  {\n    val x = g(i)?\n    i = i + 1\n  }\n  Ok(i)\n}\n",
+    "loop-body"
+  )
+}
+
+test "a type named Result or Option other than the standard library's is not modelled as one (#8108)" {
+  val shadow = "record Option[T] {\n  isSome: Bool\n  value: T\n}\n" +
+    "func f(o: in Option[Int], p: in Option[Int]): Bool\n  ensures: result\n{\n  o.isSome or p.isSome or o == p\n}\n"
+  assertNotProved(shadow, "declared-option")
+  val g = "func g(n: in Int): Result[Int, String] {\n  Ok(n)\n}\n" +
+    "func f(n: in Int): Result[Int, String]\n  ensures: result.isOk\n{\n  g(n)\n}\n"
+  assertNotProved("import Elsewhere\n" + g, "whole-package-import")
+  assertNotProved("import Elsewhere.{Result}\n" + g, "imported-by-name")
+  assertDischarged(
+    "import Std.Collections\nfunc f(n: in Int): Result[Int, String]\n  ensures: result.isOk\n{\n  Ok(n)\n}\n",
+    "std-import"
+  )
+}
+
+test "an out or inout argument before a `?` is the variable itself, never a copy (#8108)" {
+  val decls = "func zap(a: inout Int, b: in Int): Unit {\n  a = 0\n}\n" +
+    "func g(): Result[Int, String] {\n  Ok(5)\n}\n" +
+    "func h(x: inout Int): Result[Int, String] {\n  x = 7\n  Ok(1)\n}\n"
+  assertRefuted(
+    decls +
+      "func f(): Result[Int, String]\n  ensures: result.isOk implies result.value == 1\n{\n  var x = 1\n  zap(x, g()?)\n  Ok(x)\n}\n",
+    "write-reaches-variable"
+  )
+  assertDischarged(
+    decls +
+      "func f(): Result[Int, String]\n  ensures: result.isOk implies result.value == 1\n{\n  var x = 1\n  val y = x\n  zap(x, g()?)\n  Ok(y)\n}\n",
+    "copy-taken-before-unaffected"
+  )
+  assertUntranslatable(
+    decls + "func f(): Result[Int, String] {\n  var x = 1\n  zap(x, h(x)?)\n  Ok(x)\n}\n",
+    "later-operand-changes-place"
+  )
+}
+
+test "Ok, Err and Some with their field named (#8108)" {
+  assertDischarged(
+    "func f(n: in Int): Result[Int, String]\n  ensures: result.isOk implies result.value == n\n{\n  if n > 0 {\n    Ok(value = n)\n  } else {\n    Err(error = \"neg\")\n  }\n}\n",
+    "named-result"
+  )
+  assertRefuted(
+    "func f(n: in Int): Result[Int, String]\n  ensures: result.isOk\n{\n  if n > 0 {\n    Ok(value = n)\n  } else {\n    Err(error = \"neg\")\n  }\n}\n",
+    "named-err-refuted"
+  )
+  assertDischarged(
+    "func f(n: in Int): Option[Int]\n  ensures: result.isSome implies result.value == n\n{\n  Some(value = n)\n}\n",
+    "named-some"
+  )
+}
+
+test "a type the package's other files declare blocks the Result/Option model (#8108)" {
+  val src = "@proof_required\npackage U\nfunc f(n: in Int): Result[Int, String]\n  ensures: result.isOk\n{\n  Ok(n)\n}\n"
+  val others: List[String] = newList()
+  others.add("Helper")
+  val unrelated = proveSourceInScope(src, false, packageScopeOf(others))
+  assertTrue(
+    not summaryHasErrorDiag(unrelated) and not summaryHasFailure(unrelated),
+    "an unrelated sibling type: proved"
+  )
+  val shadowing: List[String] = newList()
+  shadowing.add("Result")
+  val shadowed = proveSourceInScope(src, false, packageScopeOf(shadowing))
+  assertTrue(summaryHasErrorDiag(shadowed) or summaryHasFailure(shadowed), "a sibling `Result`: not proved")
+  val unknown = proveSourceInScope(src, false, unknownPackageScope())
+  assertTrue(summaryHasErrorDiag(unknown) or summaryHasFailure(unknown), "unknown siblings: not proved")
+  val legacy = proveSource(src)
+  assertTrue(summaryHasErrorDiag(legacy) or summaryHasFailure(legacy), "the scope-less entry point: not proved")
 }

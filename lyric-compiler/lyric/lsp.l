@@ -36,6 +36,7 @@ import Lyric.TypeChecker
 import Lyric.Pipeline
 import Lyric.ModeChecker
 import Lyric.Verifier
+import Lyric.Discovery as Disc
 import Lyric.Version as Ver
 import Lyric.Fmt
 import Msil.MetadataReader as Mdr
@@ -724,7 +725,13 @@ func analyzeAndStore(state: in LspState, uri: in String, text: in String): List[
   }
 
   // Run verifier (allow-unverified so unknowns become warnings, not errors).
-  val proofResult = proveSourceWithOptions(text, true)
+  // The document's package siblings are read from disk (#8108).
+  val docPath = uriToPath(uri)
+  val proofResult = proveSourceInScope(
+    text,
+    true,
+    scopeFromPackageFiles(Disc.packageFilesForSource(docPath), Disc.normalizePath(docPath), text)
+  )
   var pi = 0
   while pi < proofResult.diagnostics.count {
     val d = proofResult.diagnostics[pi]

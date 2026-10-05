@@ -301,6 +301,9 @@ jobs:
             "$lyric_bin" prove "examples/$ex.l" > /tmp/"$ex".prove.log 2>&1 \
               && echo "PASS" || { echo "FAIL"; tail -20 /tmp/"$ex".prove.log; exit 1; }
           done
+          # A sibling file's `Result`/`Option` is not the standard
+          # library's, in both modes (#8108).
+          LYRIC_BIN="$lyric_bin" bash scripts/ci/prove-package-scope.sh
 
       # Band 5 invariant guardrail (#3067): assert that no stage-1 DLL carries
       # an AssemblyRef entry for Lyric.Emitter or FSharp.Core.  These were

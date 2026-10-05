@@ -120,7 +120,11 @@ pub func parseModel(modelText: in String): List[CounterexampleBinding] {
           allValue = allValue + valueParts[k]
           k = k + 1
         }
-        result.add(CounterexampleBinding(name = bindName, sort = bindSort, value = allValue))
+        // The renderer's `Result`/`Option` sort-instance witnesses are not
+        // program values (#8108).
+        if not bindName.startsWith("lyric!inst!") {
+          result.add(CounterexampleBinding(name = bindName, sort = bindSort, value = allValue))
+        }
         i = j
       } else {
         i = i + 1

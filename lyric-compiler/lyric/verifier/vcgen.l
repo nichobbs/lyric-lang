@@ -117,6 +117,92 @@ pub func sortOfTypeExprWith(distincts: in Map[String, TypeExpr], te: in TypeExpr
 
 // Bounded like `resolveDistinct`, against a cyclic chain of range subtypes.
 func sortOfTypeExprDepth(distincts: in Map[String, TypeExpr], te: in TypeExpr, depth: in Int): SortInfo {
+  val si = sortOfTypeExprDepthRaw(distincts, te, depth)
+  if distincts.containsKey(shadowedMonadKey("Result")) or distincts.containsKey(shadowedMonadKey("Option")) {
+    SortInfo(sort = unshadowMonadSort(distincts, si.sort), range = si.range, intBits = si.intBits)
+  } else {
+    si
+  }
+}
+
+// `Result` and `Option` are the standard library's datatypes only where no
+// other type of that name can be in scope (#8108).  `goalsForFile` marks a
+// name the file declares, or may import from a package other than `Std.*`,
+// with this key in the distinct-type map; its sorts are then an ordinary
+// uninterpreted type, never `Lyric!Result`/`Lyric!Option`.
+func shadowedMonadKey(name: in String): String {
+  "!shadowed." + name
+}
+
+func unshadowMonadSort(distincts: in Map[String, TypeExpr], s: in Sort): Sort {
+  match s {
+    case SDatatype(name, args) -> {
+      val newArgs: List[Sort] = newList()
+      var i = 0
+      while i < args.count {
+        newArgs.add(unshadowMonadSort(distincts, args[i]))
+        i = i + 1
+      }
+      val shadowed = (isResultSort(s) or isOptionSort(s)) and distincts.containsKey(shadowedMonadKey(name))
+      SDatatype(name = if shadowed { name + "!user" } else { name }, args = newArgs)
+    }
+    case SSlice(e) -> SSlice(element = unshadowMonadSort(distincts, e))
+    case _ -> s
+  }
+}
+
+// Whether a type named `name` other than the standard library's may be in
+// scope in `file`: declared there, imported by name or alias, or brought in
+// by a whole-package import outside `Std.*`, whose contents are not known
+// here.
+func monadNameShadowed(file: in SourceFile, name: in String): Bool {
+  if declaredTypeNames(file).contains(name) {
+    return true
+  }
+  var j = 0
+  while j < file.imports.count {
+    val imp = file.imports[j]
+    match imp.asAlias {
+      case Some(a) -> {
+        if a == name {
+          return true
+        }
+      }
+      case None -> ()
+    }
+    match imp.selector {
+      case Some(sel) -> {
+        val items: List[ImportItem] = match sel {
+          case ISSingle(item) -> {
+            val one: List[ImportItem] = newList()
+            one.add(item)
+            one
+          }
+          case ISGroup(group) -> group
+        }
+        var k = 0
+        while k < items.count {
+          val visible = match items[k].asAlias { case Some(a) -> a; case None -> items[k].name }
+          if visible == name {
+            return true
+          }
+          k = k + 1
+        }
+      }
+      case None -> {
+        val segs = imp.path.segments
+        val isStd = segs.count > 0 and segs[0] == "Std"
+        if not isStd and not isSome(imp.asAlias) {
+          return true
+        }
+      }
+    }
+    j = j + 1
+  }
+  false
+}
+
+func sortOfTypeExprDepthRaw(distincts: in Map[String, TypeExpr], te: in TypeExpr, depth: in Int): SortInfo {
   val resolved = resolveDistinct(distincts, te)
   match resolved.kind {
     // A range over a distinct alias (`Cents range 0 ..= 100` with `type
@@ -1122,140 +1208,6 @@ func translateComputedCall(
   callPair
 }
 
-// The parameter names of the function or record a call reaches, in
-// order, when the verifier can tell; `None` otherwise.
-func calleeParamNames(env: in VEnv, fn: in Expr): Option[List[String]] {
-  val names: List[String] = newList()
-  match fn.kind {
-    case EPath(path) -> {
-      if localCallee(env, fn) {
-        return None
-      }
-      val name = joinPathSegments(path.segments)
-      match mapGet(env.callees, name) {
-        case Some(decl) -> {
-          var i = 0
-          while i < decl.params.count {
-            names.add(decl.params[i].name)
-            i = i + 1
-          }
-          return Some(value = names)
-        }
-        case None -> ()
-      }
-      match findRecordFields(env, name) {
-        case Some(fields) -> {
-          val prefix = name + "__"
-          var i = 0
-          while i < fields.count {
-            val fname = fields[i].name
-            names.add(if fname.startsWith(prefix) { fname.substring(prefix.length, fname.length - prefix.length) } else { fname })
-            i = i + 1
-          }
-          Some(value = names)
-        }
-        case None -> None
-      }
-    }
-    case EMember(receiver, methodName) -> {
-      // A static `T.m` takes its arguments from the first parameter; a
-      // method's first parameter is its receiver.
-      var skip = 0
-      val resolved: Option[ResolvedCallee] = match resolveStaticCallee(env, receiver, methodName) {
-        case Some(rc) -> Some(value = rc)
-        case None -> {
-          skip = 1
-          match staticSortOfExpr(env, receiver) {
-            case Some(srt) -> resolveMethodCallee(env, TVar(name = "self", sort = srt), methodName)
-            case None -> None
-          }
-        }
-      }
-      match resolved {
-        case Some(rc) -> {
-          var i = skip
-          while i < rc.decl.params.count {
-            names.add(rc.decl.params[i].name)
-            i = i + 1
-          }
-          Some(value = names)
-        }
-        case None -> None
-      }
-    }
-    case _ -> None
-  }
-}
-
-// Whether a call's arguments, as written, reach their parameters out of
-// order: a named argument for an earlier parameter after one for a later.
-// With the parameters unknown, any two arguments one of which is named may
-// be.
-func namedArgsReordered(env: in VEnv, fn: in Expr, args: in List[CallArg]): Bool {
-  var named = 0
-  var i = 0
-  while i < args.count {
-    match args[i] {
-      case CANamed(_, _, _) -> {
-        named = named + 1
-      }
-      case CAPositional(_) -> ()
-    }
-    i = i + 1
-  }
-  if named == 0 {
-    return false
-  }
-  match calleeParamNames(env, fn) {
-    case Some(params) -> {
-      var last = -1
-      var j = 0
-      while j < args.count {
-        val slot = match args[j] { case CAPositional(_) -> j; case CANamed(argName, _, _) -> indexOfName(params, argName) }
-        if slot < 0 or slot < last {
-          return true
-        }
-        last = slot
-        j = j + 1
-      }
-      false
-    }
-    case None -> args.count >= 2
-  }
-}
-
-func indexOfName(names: in List[String], name: in String): Int {
-  var i = 0
-  while i < names.count {
-    if names[i] == name {
-      return i
-    }
-    i = i + 1
-  }
-  -1
-}
-
-// Whether any argument passes a variable to an `out`/`inout` parameter.
-func anyArgChangesState(env: in VEnv, args: in List[CallArg]): Bool {
-  var i = 0
-  while i < args.count {
-    val argExpr = match args[i] { case CANamed(_, v, _) -> v; case CAPositional(v) -> v }
-    if effectsOfExpr(env, argExpr).outArgs.count > 0 {
-      return true
-    }
-    i = i + 1
-  }
-  false
-}
-
-// A callee as the source spells it, for a diagnostic.
-func calleeDisplayName(fn: in Expr): String {
-  match qualifiedPathOf(fn) {
-    case Some(segs) -> joinPathSegments(segs)
-    case None -> match fn.kind { case EMember(_, m) -> m; case _ -> "a computed function" }
-  }
-}
-
 // A callee that names a local binding, which shadows any file function.
 func localCallee(env: in VEnv, fn: in Expr): Bool {
   match fn.kind {
@@ -1898,6 +1850,11 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
         match envLookup(name, env) {
           case Some(t) -> (singleTR(t), diags)
           case None -> {
+            if name == "None" {
+              val noArgs: List[Term] = newList()
+              val nonePair: (TranslateResult, List[Diagnostic]) = (singleTR(mkPendingCtor("None", noArgs)), diags)
+              return nonePair
+            }
             val uSort = SUninterp(name = name)
             val t = TVar(name = name, sort = uSort)
             val ePair: (TranslateResult, List[Diagnostic]) = (singleTR(t), diags)
@@ -2205,20 +2162,9 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
         argEnv = afterArg.env
         i = i + 1
       }
-      // Named arguments out of parameter order run in an order the language
-      // does not settle yet (as written, or by parameter): with an argument
-      // that changes a variable, either could break the other, so fail
-      // closed (#8107).
-      if namedArgsReordered(env, fn, args) and anyArgChangesState(env, args) {
-        allArgDiags.add(
-          untranslatableDiag(
-            "the call to '" + calleeDisplayName(fn) + "': the evaluation order of named arguments written out of " +
-              "parameter order is not modelled when an argument changes a variable",
-            e.span
-          )
-        )
-        argSides.add(poisonTerm(falseT()))
-      }
+      // Arguments run as written, positional and named alike, and pair with
+      // the parameters by `pairArgTerms`; omitted parameters' defaults,
+      // which read no local, after them (D171).
 
       // A local binding — a lambda in a `val` — shadows a file function of
       // the same name: the call goes through the binding (#8102).
@@ -2352,6 +2298,15 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
               // the unknown-callee branch below emits a TApp with sort
               // SUninterp("call.UserId") which z3 then refuses to use in
               // arithmetic (#3853).
+              // `Ok(v)`, `isOk(r)`, … of the standard library (#8108).
+              match monadCall(name, args, rawArgTerms) {
+                case Some(mt) -> {
+                  val monadTR = TranslateResult(term = mt, sideConds = argSides, assumed = argAssumed)
+                  val monadPair: (TranslateResult, List[Diagnostic]) = (monadTR, allArgDiags)
+                  return monadPair
+                }
+                case None -> ()
+              }
               if env.distincts.containsKey(name) and rawArgTerms.count == 1 {
                 return translateDistinctConstruction(
                   env,
@@ -2508,6 +2463,20 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
       // Otherwise fall back to an uninterpreted `$field.<memberName>` symbol
       // — the SMT renderer will declare it as a uninterpreted function (#3843).
       val recvSort = sortOf(rR.term)
+      // `.isOk`, `.value`, … of a `Result` or `Option` (#8108).
+      match monadMember(rR.term, memberName) {
+        case Some(acc) -> {
+          val accSides: List[Term] = newList()
+          appendTermList(accSides, rR.sideConds)
+          appendTermList(accSides, acc.sides)
+          val accFacts: List[Term] = newList()
+          appendTermList(accFacts, rR.assumed)
+          val accTR = TranslateResult(term = acc.term, sideConds = accSides, assumed = accFacts)
+          val accPair: (TranslateResult, List[Diagnostic]) = (accTR, rDiags)
+          return accPair
+        }
+        case None -> ()
+      }
       val recvRecName: String = match recvSort { case SDatatype(rName, _) -> rName; case _ -> "" }
       val recordFieldHit: Option[Sort] = if recvRecName.length > 0 {
         findRecordFieldSort(env, recvRecName, memberName)
@@ -2593,6 +2562,23 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
     case EUnsafe(blk) -> translateBlockValue(env, blk, e.span)
 
     case ELambda(params, body) -> translateLambda(env, params, body, e.span)
+
+    // A `?` the statement walk did not split (one inside a block used as a
+    // value, or a contract): its early return is not modelled, so it fails
+    // closed (#8108).
+    case EPropagate(inner) -> {
+      val (iR, iDiags) = translateExpr(env, inner)
+      val pDiags: List[Diagnostic] = newList()
+      appendTermList2(pDiags, iDiags)
+      pDiags.add(untranslatableDiag("a `?` whose early return the verifier cannot split the path at here", e.span))
+      val pTR = TranslateResult(
+        term = poisonTerm(freshVar(env, "propagate", SUninterp(name = "propagate"))),
+        sideConds = iR.sideConds,
+        assumed = iR.assumed
+      )
+      val pPair: (TranslateResult, List[Diagnostic]) = (pTR, pDiags)
+      pPair
+    }
 
     case _ -> {
       val diags: List[Diagnostic] = newList()
@@ -3308,6 +3294,12 @@ func mergeWpResults(a: in WpResult, b: in WpResult, wp: in Term): WpResult {
 // ─────────────────────────────────────────────────────────────────────────────
 // WP over a single expression (for FBExpr), the value the path ends with.
 func wpExpr(env: in VEnv, resultSort: in SortInfo, postcond: in Term, e: in Expr): WpResult {
+  // A value with a `?` in it is a statement whose `?`s split the path.
+  if exprHasPropagate(e) {
+    val asStmts: List[Statement] = newList()
+    asStmts.add(Statement(kind = SExpr(expr = e), span = e.span))
+    return wpWalk(env, resultSort, postcond, asStmts, 0)
+  }
   // An assignment nested in the expression is something `translateExpr`
   // cannot follow; fail closed rather than prove the postcondition of the
   // wrong state (#8102).
@@ -3395,6 +3387,38 @@ func wpWalk(env: in VEnv, resultSort: in SortInfo, postcond: in Term, stmts: in 
     emptyWpResult(finishPost(env, postcond, unitTerm()))
   } else {
     val st = stmts[idx]
+    // A `?` splits the path where it runs (#8108).
+    match propagateBindingOf(st) {
+      case Some(pb) -> {
+        return wpBindPropagate(env, resultSort, postcond, stmts, idx, pb, st.span)
+      }
+      case None -> ()
+    }
+    match hoistPropagates(env, st) {
+      case Some(h) -> {
+        if h.reason.length > 0 {
+          val failDiags: List[Diagnostic] = newList()
+          failDiags.add(untranslatableDiag(h.reason, st.span))
+          val noGoals: List[SideGoal] = newList()
+          val noFacts: List[Term] = newList()
+          return WpResult(wp = falseT(), sideGoals = noGoals, assumed = noFacts, diags = failDiags)
+        }
+        val spliced: List[Statement] = newList()
+        var si = 0
+        while si < idx {
+          spliced.add(stmts[si])
+          si = si + 1
+        }
+        appendStmtList(spliced, h.stmts)
+        si = idx + 1
+        while si < stmts.count {
+          spliced.add(stmts[si])
+          si = si + 1
+        }
+        return wpWalk(env, resultSort, postcond, spliced, idx)
+      }
+      case None -> ()
+    }
     match st.kind {
       case SReturn(Some(e)) -> {
         wpExpr(env, resultSort, postcond, e)
@@ -3745,6 +3769,673 @@ func wpBindInit(
   appendTermList2(di, initDiags)
   appendTermList2(di, inner.diags)
   WpResult(wp = inner.wp, sideGoals = sg, assumed = asList, diags = di)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §9a. Error propagation: `?` (#8108).
+// ─────────────────────────────────────────────────────────────────────────────
+// `e?` splits the path.  When `e` is an `Err`/`None` the function returns
+// it there — `Err(e.error)` or `None` at the function's own result type, as
+// `Lyric.Propagate` lowers it — and its `ensures:` must hold for that
+// result; otherwise the path goes on with `e`'s payload.  A statement's
+// `?`s are first given bindings of their own, in evaluation order
+// (`hoistPropagates`): `val q = e?`, with everything evaluated before it
+// bound before it too, so each split happens where the program would take
+// it.  A `?` that runs only conditionally within its statement — in a
+// branch of an `if` or `match` expression, the right operand of `and`,
+// `or`, `implies` or `??`, a lambda — is not split and fails closed.
+// A `val`/`var`/`let` binding of a name to `e?` with no `?` in `e`.
+record PropagateBinding {
+  name: String
+  ty: Option[TypeExpr]
+  inner: Expr
+  mutable: Bool
+}
+
+func propagateBindingOf(st: in Statement): Option[PropagateBinding] {
+  match st.kind {
+    case SLocal(binding) -> match binding {
+      case LBVal(pat, ty, init) -> match pat.kind {
+        case PBinding(n, None) -> propagateBindingParts(
+          n,
+          ty,
+          init,
+          false
+        )
+        case _ -> None
+      }
+      case LBLet(n, ty, init) -> propagateBindingParts(n, ty, init, false)
+      case LBVar(n, ty, Some(init)) -> propagateBindingParts(n, ty, init, true)
+      case LBVar(_, _, None) -> None
+    }
+    case _ -> None
+  }
+}
+
+func propagateBindingParts(
+  name: in String, ty: in Option[TypeExpr], init: in Expr, mutable: in Bool
+): Option[PropagateBinding] {
+  match init.kind {
+    case EPropagate(inner) -> {
+      if exprHasPropagate(inner) {
+        None
+      } else {
+        Some(value = PropagateBinding(name = name, ty = ty, inner = inner, mutable = mutable))
+      }
+    }
+    case EParen(x) -> propagateBindingParts(name, ty, x, mutable)
+    case _ -> None
+  }
+}
+
+// `name = inner?`, then the rest of the block — on the path where `inner`
+// is `Ok`/`Some`.
+func wpBindPropagate(
+  env: in VEnv,
+  resultSort: in SortInfo,
+  postcond: in Term,
+  stmts: in List[Statement],
+  idx: in Int,
+  pb: in PropagateBinding,
+  sp: in Span,
+): WpResult {
+  if effectsOfExpr(env, pb.inner).assigned.count > 0 {
+    return unsupportedWp("an assignment inside an expression", pb.inner.span)
+  }
+  val (innerR, innerDiags) = translateExpr(env, pb.inner)
+  val t = innerR.term
+  val innerSort = sortOf(t)
+  val fnSort = resultSort.sort
+  var reason = ""
+  var okCond = trueT()
+  var payload = t
+  var exitValue = t
+  if isResultSort(innerSort) {
+    if not isResultSort(fnSort) {
+      reason = "a `?` on a Result in a function that does not return a Result"
+    } else if smtRenderSort(monadArgSort(innerSort, 1)) != smtRenderSort(monadArgSort(fnSort, 1)) {
+      reason = "a `?` that converts its error from " + sortDisplay(monadArgSort(innerSort, 1)) + " to " +
+        sortDisplay(monadArgSort(fnSort, 1))
+    } else {
+      okCond = mkIsOk(t)
+      payload = mkResultValue(t)
+      exitValue = mkMonadCtor("Err", termList1(mkResultError(t)), fnSort)
+    }
+  } else if isOptionSort(innerSort) {
+    if not isOptionSort(fnSort) {
+      reason = "a `?` on an Option in a function that does not return an Option"
+    } else {
+      okCond = mkIsSome(t)
+      payload = mkOptionValue(t)
+      val noArgs: List[Term] = newList()
+      exitValue = mkMonadCtor("None", noArgs, fnSort)
+    }
+  } else {
+    reason = "a `?` on a value the verifier does not know to be a Result or an Option (" + sortDisplay(innerSort) + ")"
+  }
+  if reason.length > 0 {
+    val failDiags: List[Diagnostic] = newList()
+    appendTermList2(failDiags, innerDiags)
+    failDiags.add(untranslatableDiag(reason, sp))
+    val noGoals: List[SideGoal] = newList()
+    val noFacts: List[Term] = newList()
+    return WpResult(wp = falseT(), sideGoals = noGoals, assumed = noFacts, diags = failDiags)
+  }
+  // The callee has returned on both paths: what it passed out has changed.
+  val after = havocOutArgs(env, pb.inner)
+  val info = match pb.ty {
+    case Some(te) -> sortOfTypeExprE(env, te)
+    case None -> SortInfo(sort = sortOf(payload), range = RBKNone)
+  }
+  val boundTerm = match pb.ty {
+    case Some(_) -> coerceTermAt(payload, info.sort, pb.inner.span, innerDiags)
+    case None -> payload
+  }
+  val env2 = envSetMutable(envBindTerm(pb.name, boundTerm, info, after.env), pb.name, pb.mutable)
+  val rest = wpWalk(env2, resultSort, postcond, stmts, idx + 1)
+  // The early return: the function's postcondition of `Err(error)`/`None`.
+  val exitWp = finishPost(after.env, postcond, exitValue)
+  val sg: List[SideGoal] = newList()
+  if termIsPoisoned(t) {
+    sg.add(SideGoal(term = poisonTerm(falseT()), kind = GKAssertion, span = pb.inner.span))
+  }
+  var i = 0
+  while i < innerR.sideConds.count {
+    sg.add(SideGoal(term = innerR.sideConds[i], kind = GKAssertion, span = pb.inner.span))
+    i = i + 1
+  }
+  guardSideGoals(rest.sideGoals, termList1(okCond), sg)
+  val asList: List[Term] = newList()
+  appendTermList(asList, innerR.assumed)
+  appendTermList(asList, after.hyps)
+  appendTermList(asList, guardTerms(okCond, rangeHypothesesForTerm(boundTerm, info)))
+  appendTermList(asList, guardTerms(okCond, rest.assumed))
+  val di: List[Diagnostic] = newList()
+  appendTermList2(di, innerDiags)
+  appendTermList2(di, rest.diags)
+  val wp = mkAnd(termList2(mkImplies(okCond, rest.wp), mkImplies(mkNot(okCond), exitWp)))
+  WpResult(wp = wp, sideGoals = sg, assumed = asList, diags = di)
+}
+
+// A statement rewritten so its `?`s are bindings of their own: the
+// statements to walk in its place, or why it cannot be (`reason`).
+record Hoisted {
+  stmts: List[Statement]
+  reason: String
+}
+
+// The bindings a statement's `?`s are hoisted into, in order.
+record HoistCtx {
+  env: VEnv
+  prefix: List[Statement]
+}
+
+// `st` with its `?`s hoisted, or `None` when it has none this pass splits
+// (a loop's are left to the loop, which fails closed on them).
+func hoistPropagates(env: in VEnv, st: in Statement): Option[Hoisted] {
+  if not stmtOwnsPropagate(st) {
+    return None
+  }
+  val pre: List[Statement] = newList()
+  val ctx = HoistCtx(env = env, prefix = pre)
+  val rebuilt: Result[StatementKind, String] = match st.kind {
+    case SLocal(binding) -> match binding {
+      case LBVal(pat, ty, init) -> match hoistExpr(ctx, init) {
+        case Ok(x) -> Ok(
+          value = SLocal(
+            binding = LBVal(
+              pat = pat,
+              ty = ty,
+              init = x
+            )
+          )
+        )
+        case Err(r) -> Err(
+          error = r
+        )
+      }
+      case LBLet(n, ty, init) -> match hoistExpr(ctx, init) {
+        case Ok(x) -> Ok(
+          value = SLocal(
+            binding = LBLet(
+              name = n,
+              ty = ty,
+              init = x
+            )
+          )
+        )
+        case Err(r) -> Err(
+          error = r
+        )
+      }
+      case LBVar(n, ty, Some(init)) -> match hoistExpr(ctx, init) {
+        case Ok(x) -> Ok(
+          value = SLocal(
+            binding = LBVar(
+              name = n,
+              ty = ty,
+              init = Some(
+                value = x
+              )
+            )
+          )
+        )
+        case Err(r) -> Err(
+          error = r
+        )
+      }
+      case LBVar(_, _, None) -> Err(
+        error = "a `?` in an uninitialized binding"
+      )
+    }
+    case SAssign(target, op, value) -> match hoistAssign(ctx, target, op, value) {
+      case Ok(v) -> Ok(
+        value = SAssign(
+          target = target,
+          op = op,
+          value = v
+        )
+      )
+      case Err(r) -> Err(error = r)
+    }
+    case SReturn(Some(e)) -> match hoistExpr(ctx, e) {
+      case Ok(x) -> Ok(
+        value = SReturn(
+          value = Some(
+            value = x
+          )
+        )
+      )
+      case Err(r) -> Err(error = r)
+    }
+    case SExpr(e) -> match e.kind {
+      // A statement `if` walks its branches as statements, which split
+      // their own `?`s; only its condition is this statement's.
+      case EIf(cond, thenBranch, elseBranch, thenForm) -> match hoistExpr(ctx, cond) {
+        case Ok(c2) -> Ok(
+          value = SExpr(
+            expr = Expr(
+              kind = EIf(
+                cond = c2,
+                thenBranch = thenBranch,
+                elseBranch = elseBranch,
+                thenForm = thenForm
+              ),
+              span = e.span
+            )
+          )
+        )
+        case Err(r) -> Err(
+          error = r
+        )
+      }
+      case EAssign(target, op, value) -> match hoistAssign(ctx, target, op, value) {
+        case Ok(v) -> Ok(
+          value = SExpr(
+            expr = Expr(
+              kind = EAssign(
+                target = target,
+                op = op,
+                value = v
+              ),
+              span = e.span
+            )
+          )
+        )
+        case Err(r) -> Err(
+          error = r
+        )
+      }
+      case _ -> match hoistExpr(ctx, e) {
+        case Ok(x) -> Ok(
+          value = SExpr(expr = x)
+        )
+        case Err(r) -> Err(error = r)
+      }
+    }
+    case _ -> Err(
+      error = "a `?` in a statement the verifier does not split at"
+    )
+  }
+  match rebuilt {
+    case Ok(kind) -> {
+      val outList: List[Statement] = newList()
+      appendStmtList(outList, ctx.prefix)
+      outList.add(Statement(kind = kind, span = st.span))
+      Some(value = Hoisted(stmts = outList, reason = ""))
+    }
+    case Err(r) -> {
+      val noStmts: List[Statement] = newList()
+      Some(value = Hoisted(stmts = noStmts, reason = r))
+    }
+  }
+}
+
+// Whether `st` evaluates a `?` itself, unconditionally: in a binding's
+// initializer, an assignment, a `return`, an expression statement, or a
+// statement `if`'s condition (its branches are statements of their own).
+// A loop's `?`s are the loop's, which fails closed on them.
+func stmtOwnsPropagate(st: in Statement): Bool {
+  match st.kind {
+    case SLocal(binding) -> match binding {
+      case LBVal(_, _, init) -> exprHasPropagate(init)
+      case LBLet(_, _, init) -> exprHasPropagate(init)
+      case LBVar(_, _, Some(init)) -> exprHasPropagate(init)
+      case LBVar(_, _, None) -> false
+    }
+    case SAssign(target, _, value) -> exprHasPropagate(target) or exprHasPropagate(value)
+    case SReturn(Some(e)) -> exprHasPropagate(e)
+    case SExpr(e) -> match tryExtractIf(e) {
+      case Some(triple) -> exprHasPropagate(triple.cond)
+      case None -> exprHasPropagate(e)
+    }
+    case _ -> false
+  }
+}
+
+// The value of `target op= value` with its `?`s hoisted.  A compound
+// assignment reads its target before the value runs, so a value that
+// changes the target's variable cannot be hoisted ahead of that read.
+func hoistAssign(ctx: in HoistCtx, target: in Expr, op: in AssignOp, value: in Expr): Result[Expr, String] {
+  if exprHasPropagate(target) {
+    return Err(error = "a `?` in the target of an assignment")
+  }
+  val compound = match op { case AssEq -> false; case _ -> true }
+  if compound {
+    match rootVarOf(target) {
+      case Some(root) -> {
+        if effectsOfExpr(ctx.env, value).outArgs.contains(root) {
+          return Err(error = "a `?` in a compound assignment whose value changes '" + root + "'")
+        }
+      }
+      case None -> ()
+    }
+  }
+  hoistExpr(ctx, value)
+}
+
+func pathExprOf(name: in String, sp: in Span): Expr {
+  val segs: List[String] = newList()
+  segs.add(name)
+  Expr(kind = EPath(path = ModulePath(segments = segs, span = sp)), span = sp)
+}
+
+func bindingStmt(name: in String, init: in Expr): Statement {
+  val pat = Pattern(kind = PBinding(name = name, inner = None), span = init.span)
+  Statement(kind = SLocal(binding = LBVal(pat = pat, ty = None, init = init)), span = init.span)
+}
+
+// `e` with each `?` in it, and everything evaluated before one, moved
+// into `ctx.prefix` as bindings in evaluation order.
+func hoistExpr(ctx: in HoistCtx, e: in Expr): Result[Expr, String] {
+  if not exprHasPropagate(e) {
+    return Ok(value = e)
+  }
+  match e.kind {
+    case EPropagate(inner) -> match hoistExpr(ctx, inner) {
+      case Ok(x) -> {
+        val name = freshName(ctx.env, "q")
+        ctx.prefix.add(bindingStmt(name, Expr(kind = EPropagate(inner = x), span = e.span)))
+        Ok(value = pathExprOf(name, e.span))
+      }
+      case Err(r) -> Err(error = r)
+    }
+    case EParen(inner) -> match hoistExpr(ctx, inner) {
+      case Ok(x) -> Ok(value = Expr(kind = EParen(inner = x), span = e.span))
+      case Err(r) -> Err(error = r)
+    }
+    case EPrefix(op, operand) -> match hoistExpr(ctx, operand) {
+      case Ok(x) -> Ok(value = Expr(kind = EPrefix(op = op, operand = x), span = e.span))
+      case Err(r) -> Err(error = r)
+    }
+    case EMember(receiver, memberName) -> match hoistExpr(ctx, receiver) {
+      case Ok(x) -> Ok(
+        value = Expr(
+          kind = EMember(
+            receiver = x,
+            memberName = memberName
+          ),
+          span = e.span
+        )
+      )
+      case Err(r) -> Err(error = r)
+    }
+    case EBinop(op, lhs, rhs) -> {
+      val shortCircuit = match op { case BAnd | BOr | BImplies | BCoalesce -> true; case _ -> false }
+      if shortCircuit and exprHasPropagate(rhs) {
+        return Err(error = "a `?` in the right operand of `and`, `or`, `implies` or `??`, which runs only conditionally")
+      }
+      val ops: List[Expr] = newList()
+      ops.add(lhs)
+      ops.add(rhs)
+      match hoistOperands(ctx, ops, noPins()) {
+        case Ok(xs) -> Ok(value = Expr(kind = EBinop(op = op, lhs = xs[0], rhs = xs[1]), span = e.span))
+        case Err(r) -> Err(error = r)
+      }
+    }
+    case ECall(fn, args) -> hoistCall(ctx, e, fn, args)
+    case ETuple(exprs) -> match hoistOperands(ctx, exprs, noPins()) {
+      case Ok(xs) -> Ok(value = Expr(kind = ETuple(exprs = xs), span = e.span))
+      case Err(r) -> Err(error = r)
+    }
+    case EList(exprs) -> match hoistOperands(ctx, exprs, noPins()) {
+      case Ok(xs) -> Ok(value = Expr(kind = EList(exprs = xs), span = e.span))
+      case Err(r) -> Err(error = r)
+    }
+    case EIndex(receiver, indices) -> {
+      val ops: List[Expr] = newList()
+      ops.add(receiver)
+      appendExprList(ops, indices)
+      match hoistOperands(ctx, ops, noPins()) {
+        case Ok(xs) -> {
+          val newIndices: List[Expr] = newList()
+          var i = 1
+          while i < xs.count {
+            newIndices.add(xs[i])
+            i = i + 1
+          }
+          Ok(value = Expr(kind = EIndex(receiver = xs[0], indices = newIndices), span = e.span))
+        }
+        case Err(r) -> Err(error = r)
+      }
+    }
+    case EInterpolated(segments) -> {
+      val ops: List[Expr] = newList()
+      var i = 0
+      while i < segments.count {
+        match segments[i] {
+          case ISExpr(x) -> ops.add(x)
+          case ISText(_, _) -> ()
+        }
+        i = i + 1
+      }
+      match hoistOperands(ctx, ops, noPins()) {
+        case Ok(xs) -> {
+          val newSegs: List[InterpolatedSegment] = newList()
+          var k = 0
+          var j = 0
+          while j < segments.count {
+            match segments[j] {
+              case ISExpr(_) -> {
+                newSegs.add(ISExpr(expr = xs[k]))
+                k = k + 1
+              }
+              case ISText(text, tsp) -> newSegs.add(ISText(text = text, span = tsp))
+            }
+            j = j + 1
+          }
+          Ok(value = Expr(kind = EInterpolated(segments = newSegs), span = e.span))
+        }
+        case Err(r) -> Err(error = r)
+      }
+    }
+    case EIf(cond, thenBranch, elseBranch, thenForm) -> {
+      val inElse = match elseBranch { case Some(eb) -> eobHasPropagate(eb); case None -> false }
+      if eobHasPropagate(thenBranch) or inElse {
+        return Err(error = "a `?` in a branch of an `if` expression, which runs only conditionally")
+      }
+      match hoistExpr(ctx, cond) {
+        case Ok(c2) -> Ok(
+          value = Expr(
+            kind = EIf(
+              cond = c2,
+              thenBranch = thenBranch,
+              elseBranch = elseBranch,
+              thenForm = thenForm
+            ),
+            span = e.span
+          )
+        )
+        case Err(r) -> Err(error = r)
+      }
+    }
+    case EMatch(scrutinee, arms) -> {
+      var ai = 0
+      while ai < arms.count {
+        val inGuard = match arms[ai].guard { case Some(g) -> exprHasPropagate(g); case None -> false }
+        if inGuard or eobHasPropagate(arms[ai].body) {
+          return Err(error = "a `?` in an arm of a `match` expression, which runs only conditionally")
+        }
+        ai = ai + 1
+      }
+      match hoistExpr(ctx, scrutinee) {
+        case Ok(s2) -> Ok(value = Expr(kind = EMatch(scrutinee = s2, arms = arms), span = e.span))
+        case Err(r) -> Err(error = r)
+      }
+    }
+    case ELambda(_, _) -> Err(error = "a `?` inside a lambda")
+    case EBlock(_) -> Err(error = "a `?` inside a block used as a value")
+    case EUnsafe(_) -> Err(error = "a `?` inside an `unsafe` block used as a value")
+    case _ -> Err(error = "a `?` inside an expression the verifier does not split at")
+  }
+}
+
+// `ops`, evaluated left to right, with the `?`s in them hoisted: every
+// operand before the last one holding a `?` is bound first, so it is still
+// evaluated before that `?` runs.  A literal, or a `val` the code cannot
+// change, reads the same wherever it is evaluated and stays in place, as
+// does an operand `pinned` marks: a place the call writes or reads in
+// place — an `out`/`inout` argument, a method's receiver — which must stay
+// the variable itself, never a copy (D171).
+func hoistOperands(ctx: in HoistCtx, ops: in List[Expr], pinned: in List[Bool]): Result[List[Expr], String] {
+  var last = -1
+  var i = 0
+  while i < ops.count {
+    if exprHasPropagate(ops[i]) {
+      last = i
+    }
+    i = i + 1
+  }
+  val outList: List[Expr] = newList()
+  i = 0
+  while i < ops.count {
+    if i < last {
+      match hoistExpr(ctx, ops[i]) {
+        case Ok(x) -> outList.add(if i < pinned.count and pinned[i] { x } else { spillOperand(ctx, x) })
+        case Err(r) -> {
+          return Err(error = r)
+        }
+      }
+    } else if i == last {
+      match hoistExpr(ctx, ops[i]) {
+        case Ok(x) -> outList.add(x)
+        case Err(r) -> {
+          return Err(error = r)
+        }
+      }
+    } else {
+      outList.add(ops[i])
+    }
+    i = i + 1
+  }
+  Ok(value = outList)
+}
+
+func spillOperand(ctx: in HoistCtx, x: in Expr): Expr {
+  if operandIsStable(ctx.env, x) {
+    x
+  } else {
+    val name = freshName(ctx.env, "s")
+    ctx.prefix.add(bindingStmt(name, x))
+    pathExprOf(name, x.span)
+  }
+}
+
+func operandIsStable(env: in VEnv, x: in Expr): Bool {
+  match x.kind {
+    case ELiteral(_) -> true
+    case EParen(inner) -> operandIsStable(env, inner)
+    case EPrefix(op, operand) -> match op { case PreNeg -> operandIsStable(env, operand); case _ -> false }
+    case EPath(path) -> path.segments.count == 1 and isSome(envLookup(path.segments[0], env)) and
+      not env.mutables.contains(path.segments[0])
+    case _ -> false
+  }
+}
+
+// A call: its callee — a method's receiver, or a computed function — runs
+// first, then its arguments as written, named ones included (D171); the
+// hoisted arguments keep their names, so they still pair by name.
+func hoistCall(ctx: in HoistCtx, e: in Expr, fn: in Expr, args: in List[CallArg]): Result[Expr, String] {
+  val argExprs: List[Expr] = newList()
+  var i = 0
+  while i < args.count {
+    argExprs.add(match args[i] { case CANamed(_, v, _) -> v; case CAPositional(v) -> v })
+    i = i + 1
+  }
+  // What the callee position evaluates, if anything.
+  val calleeOperand: Option[Expr] = match fn.kind {
+    case EPath(_) -> None
+    case ETypeApp(_, _) -> None
+    case EMember(receiver, methodName) -> {
+      if isSome(resolveStaticCallee(ctx.env, receiver, methodName)) or isSome(distinctFromCallee(ctx.env, fn)) {
+        None
+      } else {
+        match qualifiedPathOf(receiver) {
+          case Some(segs) -> if isSome(envLookup(segs[0], ctx.env)) { Some(value = receiver) } else { None }
+          case None -> Some(value = receiver)
+        }
+      }
+    }
+    case _ -> Some(value = fn)
+  }
+  val ops: List[Expr] = newList()
+  val pinned: List[Bool] = newList()
+  // The variables this call itself writes through its `out`/`inout`
+  // parameters and receiver (every mutable one, for a callee it does not
+  // resolve).
+  val ownEff = emptyEffects()
+  effOutArgs(ctx.env, fn, args, ownEff)
+  match calleeOperand {
+    case Some(c) -> {
+      ops.add(c)
+      pinned.add(isSome(rootVarOf(c)))
+    }
+    case None -> ()
+  }
+  var pi = 0
+  while pi < argExprs.count {
+    ops.add(argExprs[pi])
+    pinned.add(match rootVarOf(argExprs[pi]) { case Some(n) -> ownEff.outArgs.contains(n); case None -> false })
+    pi = pi + 1
+  }
+  // A place stays where it is, but the operands up to the last `?` run
+  // before the call: one that changes the place's variable would then run
+  // before the place is used, so fail closed.
+  var lastProp = -1
+  var li = 0
+  while li < ops.count {
+    if exprHasPropagate(ops[li]) {
+      lastProp = li
+    }
+    li = li + 1
+  }
+  var ki = 0
+  while ki < ops.count {
+    if pinned[ki] {
+      match rootVarOf(ops[ki]) {
+        case Some(n) -> {
+          var kj = ki + 1
+          while kj <= lastProp {
+            if effectsOfExpr(ctx.env, ops[kj]).outArgs.contains(n) {
+              return Err(
+                error = "a `?` in an argument that changes '" + n +
+                  "', which an earlier operand of the same call uses in place"
+              )
+            }
+            kj = kj + 1
+          }
+        }
+        case None -> ()
+      }
+    }
+    ki = ki + 1
+  }
+  val hoisted = match hoistOperands(ctx, ops, pinned) { case Ok(xs) -> xs; case Err(r) -> { return Err(error = r) } }
+  val offset = if isSome(calleeOperand) { 1 } else { 0 }
+  val newFn: Expr = match calleeOperand {
+    case Some(_) -> match fn.kind {
+      case EMember(_, methodName) -> Expr(
+        kind = EMember(
+          receiver = hoisted[0],
+          memberName = methodName
+        ),
+        span = fn.span
+      )
+      case _ -> hoisted[0]
+    }
+    case None -> fn
+  }
+  val newArgs: List[CallArg] = newList()
+  var j = 0
+  while j < args.count {
+    val v = hoisted[j + offset]
+    match args[j] {
+      case CANamed(n, _, nsp) -> newArgs.add(CANamed(name = n, value = v, span = nsp))
+      case CAPositional(_) -> newArgs.add(CAPositional(expr = v))
+    }
+    j = j + 1
+  }
+  Ok(value = Expr(kind = ECall(fn = newFn, args = newArgs), span = e.span))
 }
 
 // `x = v` / `x op= v`, then the rest of the block.  Only a variable is a
@@ -4807,6 +5498,192 @@ func eobContainsYield(eob: in ExprOrBlock): Bool {
   }
 }
 
+// Whether code contains a `?` anywhere, a lambda's body included (#8108).
+func blockHasPropagate(blk: in Block): Bool {
+  var i = 0
+  while i < blk.statements.count {
+    if stmtHasPropagate(blk.statements[i]) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+func stmtHasPropagate(s: in Statement): Bool {
+  match s.kind {
+    case SLocal(binding) -> {
+      match binding {
+        case LBVal(_, _, init) -> exprHasPropagate(init)
+        case LBLet(_, _, init) -> exprHasPropagate(init)
+        case LBVar(_, _, Some(init)) -> exprHasPropagate(init)
+        case LBVar(_, _, None) -> false
+      }
+    }
+    case SAssign(target, _, value) -> exprHasPropagate(target) or exprHasPropagate(value)
+    case SReturn(Some(e)) -> exprHasPropagate(e)
+    case SReturn(None) -> false
+    case SThrow(e) -> exprHasPropagate(e)
+    case STry(body, catches, finally_) -> {
+      if blockHasPropagate(body) {
+        return true
+      }
+      var ci = 0
+      while ci < catches.count {
+        if blockHasPropagate(catches[ci].body) {
+          return true
+        }
+        ci = ci + 1
+      }
+      match finally_ {
+        case Some(fb) -> blockHasPropagate(fb)
+        case None -> false
+      }
+    }
+    case SDefer(body) -> blockHasPropagate(body)
+    case SScope(_, body) -> blockHasPropagate(body)
+    case SFor(_, _, iter, body) -> exprHasPropagate(iter) or blockHasPropagate(body)
+    case SWhile(_, cond, body) -> exprHasPropagate(cond) or blockHasPropagate(body)
+    case SLoop(_, body) -> blockHasPropagate(body)
+    case SInvariant(e) -> exprHasPropagate(e)
+    case SExpr(e) -> exprHasPropagate(e)
+    case SRule(lhs, rhs) -> exprHasPropagate(lhs) or exprHasPropagate(rhs)
+    case _ -> false
+  }
+}
+
+func exprHasPropagate(e: in Expr): Bool {
+  match e.kind {
+    case EPropagate(_) -> true
+    case EYield(inner) -> exprHasPropagate(inner)
+    case EParen(inner) -> exprHasPropagate(inner)
+    case EAwait(inner) -> exprHasPropagate(inner)
+    case ESpawn(inner) -> exprHasPropagate(inner)
+    case ETry(inner) -> exprHasPropagate(inner)
+    case EOld(inner) -> exprHasPropagate(inner)
+    case EBlock(blk) -> blockHasPropagate(blk)
+    case EUnsafe(blk) -> blockHasPropagate(blk)
+    case EPrefix(_, operand) -> exprHasPropagate(operand)
+    case EBinop(_, lhs, rhs) -> exprHasPropagate(lhs) or exprHasPropagate(rhs)
+    case EMember(receiver, _) -> exprHasPropagate(receiver)
+    case ETypeApp(fn, _) -> exprHasPropagate(fn)
+    case EAssign(target, _, value) -> exprHasPropagate(target) or exprHasPropagate(value)
+    case ECall(fn, args) -> {
+      if exprHasPropagate(fn) {
+        return true
+      }
+      var i = 0
+      while i < args.count {
+        val argExpr = match args[i] { case CANamed(_, v, _) -> v; case CAPositional(expr) -> expr }
+        if exprHasPropagate(argExpr) {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case EIndex(receiver, indices) -> {
+      if exprHasPropagate(receiver) {
+        return true
+      }
+      var i = 0
+      while i < indices.count {
+        if exprHasPropagate(indices[i]) {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case ETuple(exprs) -> {
+      var i = 0
+      while i < exprs.count {
+        if exprHasPropagate(exprs[i]) {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case EList(exprs) -> {
+      var i = 0
+      while i < exprs.count {
+        if exprHasPropagate(exprs[i]) {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case EInterpolated(segments) -> {
+      var i = 0
+      while i < segments.count {
+        match segments[i] {
+          case ISExpr(x) -> {
+            if exprHasPropagate(x) {
+              return true
+            }
+          }
+          case ISText(_, _) -> ()
+        }
+        i = i + 1
+      }
+      false
+    }
+    case ERange(bound) -> {
+      match bound {
+        case RBClosed(lo, hi) -> exprHasPropagate(lo) or exprHasPropagate(hi)
+        case RBHalfOpen(lo, hi, _) -> exprHasPropagate(lo) or exprHasPropagate(hi)
+        case RBLowerOpen(hi) -> exprHasPropagate(hi)
+        case RBUpperOpen(lo) -> exprHasPropagate(lo)
+      }
+    }
+    case EForall(_, whereExpr, body) -> {
+      val inWhere = match whereExpr { case Some(w) -> exprHasPropagate(w); case None -> false }
+      inWhere or exprHasPropagate(body)
+    }
+    case EExists(_, whereExpr, body) -> {
+      val inWhere = match whereExpr { case Some(w) -> exprHasPropagate(w); case None -> false }
+      inWhere or exprHasPropagate(body)
+    }
+    case ELambda(_, body) -> blockHasPropagate(body)
+    case EIf(cond, thenBranch, elseBranch, _) -> {
+      if exprHasPropagate(cond) {
+        return true
+      }
+      if eobHasPropagate(thenBranch) {
+        return true
+      }
+      match elseBranch {
+        case Some(eb) -> eobHasPropagate(eb)
+        case None -> false
+      }
+    }
+    case EMatch(scrutinee, arms) -> {
+      if exprHasPropagate(scrutinee) {
+        return true
+      }
+      var i = 0
+      while i < arms.count {
+        val inGuard = match arms[i].guard { case Some(g) -> exprHasPropagate(g); case None -> false }
+        if inGuard or eobHasPropagate(arms[i].body) {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case _ -> false
+  }
+}
+
+func eobHasPropagate(eob: in ExprOrBlock): Bool {
+  match eob {
+    case EOBExpr(x) -> exprHasPropagate(x)
+    case EOBBlock(blk) -> blockHasPropagate(blk)
+  }
+}
+
 pub func goalsForFunction(env0: in VEnv, decl: in FunctionDecl): (List[Goal], List[Diagnostic]) {
   val noExtraHyps: List[Term] = newList()
   goalsForFunctionWithExtraHyps(env0, decl, noExtraHyps)
@@ -5364,7 +6241,21 @@ func addDatatypeField(
 // composed contracts (§5 of docs/26-aspects.md).  IAspect items have
 // already been dropped, so the verifier sees the body the runtime
 // executes.  The V0031 same-package warning is therefore retired.
+// With nothing known of the package's other files, a type named `Result`
+// or `Option` may be declared there (#8108).
 pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[Goal], List[Diagnostic]) {
+  val none: List[String] = newList()
+  goalsForFileInScope(file, level, false, none)
+}
+
+// `siblingsKnown` says `siblingTypeNames` are all the top-level type names
+// the package's other files declare.
+pub func goalsForFileInScope(
+  file: in SourceFile,
+  level: in VerificationLevel,
+  siblingsKnown: in Bool,
+  siblingTypeNames: in List[String],
+): (List[Goal], List[Diagnostic]) {
   if not vlIsProofRequired(level) {
     val noGoals: List[Goal] = newList()
     val noDiags: List[Diagnostic] = newList()
@@ -5463,6 +6354,15 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
       case _ -> ()
     }
     dti0 = dti0 + 1
+  }
+
+  var mi = 0
+  while mi < 2 {
+    val monadName = if mi == 0 { "Result" } else { "Option" }
+    if monadNameShadowed(file, monadName) or not siblingsKnown or siblingTypeNames.contains(monadName) {
+      distinctMap.add(shadowedMonadKey(monadName), TypeExpr(kind = TUnit, span = file.packageDecl.path.span))
+    }
+    mi = mi + 1
   }
 
   val fieldInfosMap: Map[String, SortInfo] = newMap()
@@ -5795,4 +6695,144 @@ func dedupeDiagnostics(diags: in List[Diagnostic]): List[Diagnostic] {
 
 func spanKey(sp: in Span): String {
   intToString(sp.startPos.offset) + "-" + intToString(sp.endPos.offset)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// `Result` and `Option` values (#8108).
+// ─────────────────────────────────────────────────────────────────────────────
+record MonadAccess {
+  term: Term
+  sides: List[Term]
+}
+
+// `r.isOk`, `r.isErr`, `r.value`, `r.error`, `o.isSome`, `o.isNone`,
+// `o.value`.  Reading the payload of the other case traps, so `.value` and
+// `.error` carry the obligation that the value is that case.
+func monadMember(r: in Term, member: in String): Option[MonadAccess] {
+  val sides: List[Term] = newList()
+  val s = sortOf(r)
+  val ctor = pendingCtorName(r)
+  if ctor.length > 0 {
+    val args = pendingCtorArgs(r)
+    if member == "isOk" and (ctor == "Ok" or ctor == "Err") {
+      return Some(value = MonadAccess(term = boolLit(ctor == "Ok"), sides = sides))
+    }
+    if member == "isErr" and (ctor == "Ok" or ctor == "Err") {
+      return Some(value = MonadAccess(term = boolLit(ctor == "Err"), sides = sides))
+    }
+    if member == "isSome" and (ctor == "Some" or ctor == "None") {
+      return Some(value = MonadAccess(term = boolLit(ctor == "Some"), sides = sides))
+    }
+    if member == "isNone" and (ctor == "Some" or ctor == "None") {
+      return Some(value = MonadAccess(term = boolLit(ctor == "None"), sides = sides))
+    }
+    if member == "value" and (ctor == "Ok" or ctor == "Some") and args.count == 1 {
+      return Some(value = MonadAccess(term = args[0], sides = sides))
+    }
+    if member == "error" and ctor == "Err" and args.count == 1 {
+      return Some(value = MonadAccess(term = args[0], sides = sides))
+    }
+    return None
+  }
+  if isResultSort(s) {
+    if member == "isOk" {
+      return Some(value = MonadAccess(term = mkIsOk(r), sides = sides))
+    }
+    if member == "isErr" {
+      return Some(value = MonadAccess(term = mkNot(mkIsOk(r)), sides = sides))
+    }
+    if member == "value" {
+      sides.add(mkIsOk(r))
+      return Some(value = MonadAccess(term = mkResultValue(r), sides = sides))
+    }
+    if member == "error" {
+      sides.add(mkNot(mkIsOk(r)))
+      return Some(value = MonadAccess(term = mkResultError(r), sides = sides))
+    }
+    return None
+  }
+  if isOptionSort(s) {
+    if member == "isSome" {
+      return Some(value = MonadAccess(term = mkIsSome(r), sides = sides))
+    }
+    if member == "isNone" {
+      return Some(value = MonadAccess(term = mkNot(mkIsSome(r)), sides = sides))
+    }
+    if member == "value" {
+      sides.add(mkIsSome(r))
+      return Some(value = MonadAccess(term = mkOptionValue(r), sides = sides))
+    }
+    return None
+  }
+  None
+}
+
+func boolLit(b: in Bool): Term {
+  if b {
+    trueT()
+  } else {
+    falseT()
+  }
+}
+
+// A call the file does not declare to one of `Std.Core`'s constructors or
+// case tests: `Ok(v)`, `Err(e)`, `Some(v)` — positional, or named by the
+// case's field, `Ok(value = v)`, `Err(error = e)` — and `isOk(r)`,
+// `isErr(r)`, `isSome(o)`, `isNone(o)`.
+func monadCall(name: in String, args: in List[CallArg], terms: in List[Term]): Option[Term] {
+  if args.count != 1 or terms.count != 1 {
+    return None
+  }
+  val field = if name == "Err" { "error" } else { "value" }
+  val fits = match args[0] {
+    case CANamed(argName, _, _) -> (name == "Ok" or name == "Err" or name == "Some") and argName == field
+    case CAPositional(_) -> true
+  }
+  if not fits {
+    return None
+  }
+  val t = terms[0]
+  if name == "Ok" or name == "Err" or name == "Some" {
+    return Some(value = mkPendingCtor(name, termList1(t)))
+  }
+  if name == "isOk" or name == "isErr" or name == "isSome" or name == "isNone" {
+    match monadMember(t, name) {
+      case Some(acc) -> Some(value = acc.term)
+      case None -> None
+    }
+  } else {
+    None
+  }
+}
+
+func noPins(): List[Bool] {
+  val none: List[Bool] = newList()
+  none
+}
+
+// The top-level type names a file declares.
+pub func declaredTypeNames(file: in SourceFile): List[String] {
+  val names: List[String] = newList()
+  var i = 0
+  while i < file.items.count {
+    val declared = match file.items[i].kind {
+      case ITypeAlias(d) -> d.name
+      case IDistinctType(d) -> d.name
+      case IRecord(d) -> d.name
+      case IExposedRec(d) -> d.name
+      case IUnion(d) -> d.name
+      case IEnum(d) -> d.name
+      case IOpaque(d) -> d.name
+      case IProtected(d) -> d.name
+      case IInterface(d) -> d.name
+      case IExternType(d) -> d.name
+      case IConfig(d) -> d.name
+      case _ -> ""
+    }
+    if declared.length > 0 {
+      names.add(declared)
+    }
+    i = i + 1
+  }
+  names
 }

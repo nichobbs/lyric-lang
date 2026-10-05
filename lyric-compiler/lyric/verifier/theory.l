@@ -621,6 +621,16 @@ func sortWord(s: in Sort): String {
 // taking its context's type, a lossless widening).  Sorts that are not
 // integers or bitvectors are left unchanged — the solver reports those.
 pub func coerceToSort(t: in Term, target: in Sort): Result[Term, String] {
+  // A constructor of `Result`/`Option` written before its type was known
+  // takes the slot's type here (#8108).
+  if isResultSort(target) or isOptionSort(target) {
+    match coerceMonadTerm(t, target) {
+      case Some(r) -> {
+        return r
+      }
+      case None -> ()
+    }
+  }
   val src = sortOf(t)
   match target {
     case SBitVec(w) -> {
@@ -670,6 +680,34 @@ pub record OperandPair {
 pub func unifyOperands(a: in Term, b: in Term): Result[OperandPair, String] {
   val sa = sortOf(a)
   val sb = sortOf(b)
+  // `r == None`, `if c { Ok(1) } else { r }`: a pending constructor takes
+  // the other operand's `Result`/`Option` sort (#8108).
+  if isResultSort(sb) or isOptionSort(sb) {
+    match coerceMonadTerm(a, sb) {
+      case Some(r) -> match r {
+        case Ok(a2) -> {
+          return Ok(value = OperandPair(lhs = a2, rhs = b))
+        }
+        case Err(reason) -> {
+          return Err(error = reason)
+        }
+      }
+      case None -> ()
+    }
+  }
+  if isResultSort(sa) or isOptionSort(sa) {
+    match coerceMonadTerm(b, sa) {
+      case Some(r) -> match r {
+        case Ok(b2) -> {
+          return Ok(value = OperandPair(lhs = a, rhs = b2))
+        }
+        case Err(reason) -> {
+          return Err(error = reason)
+        }
+      }
+      case None -> ()
+    }
+  }
   match sa {
     case SBitVec(wa) -> {
       match sb {
@@ -829,5 +867,60 @@ func isBitVecTerm(t: in Term): Bool {
   match sortOf(t) {
     case SBitVec(_) -> true
     case _ -> false
+  }
+}
+
+// `t` at `target`, a `Result` or `Option` sort, when `t` is a pending
+// constructor or a choice between values one of which is: `None` when
+// there is nothing to convert.  A constructor of the other type, or a
+// payload that does not convert, is an error.
+func coerceMonadTerm(t: in Term, target: in Sort): Option[Result[Term, String]] {
+  val ctor = pendingCtorName(t)
+  if ctor.length > 0 {
+    val wantResult = isResultSort(target)
+    val fits = if wantResult { ctor == "Ok" or ctor == "Err" } else { ctor == "Some" or ctor == "None" }
+    if not fits {
+      return Some(value = Err(error = "`" + ctor + "` is used where a " + sortDisplay(target) + " value is expected"))
+    }
+    val args = pendingCtorArgs(t)
+    val converted: List[Term] = newList()
+    if args.count == 1 {
+      val slot = if ctor == "Err" { monadArgSort(target, 1) } else { monadArgSort(target, 0) }
+      match coerceToSort(args[0], slot) {
+        case Ok(v) -> converted.add(v)
+        case Err(reason) -> {
+          return Some(value = Err(error = reason))
+        }
+      }
+    }
+    return Some(value = Ok(value = mkMonadCtor(ctor, converted, target)))
+  }
+  match t {
+    case TIte(c, a, b) -> {
+      val ca = coerceMonadTerm(a, target)
+      val cb = coerceMonadTerm(b, target)
+      if isNone(ca) and isNone(cb) {
+        return None
+      }
+      val a2 = match ca { case Some(r) -> r; case None -> Ok(value = a) }
+      val b2 = match cb { case Some(r) -> r; case None -> Ok(value = b) }
+      match a2 {
+        case Ok(at) -> match b2 {
+          case Ok(bt) -> Some(value = Ok(value = TIte(cond = c, thenT = at, elseT = bt)))
+          case Err(reason) -> Some(value = Err(error = reason))
+        }
+        case Err(reason) -> Some(value = Err(error = reason))
+      }
+    }
+    // Any other value must already be of the slot's type: a value the
+    // verifier does not see as one (an unmodelled call) is not modelled
+    // there, so it fails closed rather than reach the solver ill-sorted.
+    case _ -> {
+      if smtRenderSort(sortOf(t)) == smtRenderSort(target) {
+        None
+      } else {
+        Some(value = Err(error = "a value the verifier does not model as a " + sortDisplay(target) + " is used as one"))
+      }
+    }
   }
 }

@@ -1,0 +1,11 @@
+[package]
+name = "ProveScopeOtherpkg"
+version = "0.1.0"
+
+[project]
+name = "ProveScopeOtherpkg"
+output = "single"
+output_assembly = "ProveScopeOtherpkg.dll"
+
+[project.packages]
+"P" = "src/p"
