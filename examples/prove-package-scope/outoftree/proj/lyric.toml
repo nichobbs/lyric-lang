@@ -1,0 +1,11 @@
+[package]
+name = "ProveScopeOutoftree"
+version = "0.1.0"
+
+[project]
+name = "ProveScopeOutoftree"
+output = "single"
+output_assembly = "ProveScopeOutoftree.dll"
+
+[project.packages]
+"P" = ["src/a_types.l", "../shared/b_logic.l"]

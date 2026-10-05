@@ -146,7 +146,7 @@ func cmdProve(argv: in slice[String]): Int {
           continue
         }
       }
-      val pkgScope = match mapGet(fileScopes, Disc.normalizePath(sp)) {
+      val pkgScope = match mapGet(fileScopes, Disc.pathKey(sp)) {
         case Some(fs) -> fs
         case None -> Verifier.unknownPackageScope()
       }
@@ -312,8 +312,8 @@ func cmdProve(argv: in slice[String]): Int {
 
 // The scope of every file of the project at `mfPath`: for each
 // `[project.packages]` and `[project.tests]` entry, the type names declared
-// across exactly the files the build merges for it, keyed by normalized
-// path.  A file in two entries gets their union.
+// across exactly the files the build merges for it, keyed by
+// `Lyric.Discovery.pathKey`.  A file in two entries gets their union.
 func projectFileScopes(mfPath: in String): Map[String, Verifier.PackageScope] {
   val scopes: Map[String, Verifier.PackageScope] = newMap()
   val mf = match File.readText(mfPath) {
@@ -339,7 +339,19 @@ func projectFileScopes(mfPath: in String): Map[String, Verifier.PackageScope] {
     }
     val complete = ef.problems.count == 0 and ef.emptyDir.length == 0
     val entryScope = if complete { Verifier.scopeOfFiles(files, "") } else { Verifier.unknownPackageScope() }
+    // A file outside the manifest's tree cannot find this manifest from
+    // where it is: a single-file proof of it does not see this package.
+    val treeKey = Disc.pathKey(mfDir) + "/"
     for f in files.toArray() {
+      if not Str.startsWith(Disc.pathKey(f), treeKey) {
+        printErr(
+          "prove: warning: package '" + entry.name + "' lists " + f + ", outside " + mfDir +
+            "; a single-file `lyric prove` of that file does not see this package (prove it with --manifest)"
+        )
+      }
+    }
+    for fileKey in files.toArray() {
+      val f = Disc.pathKey(fileKey)
       val merged = match mapGet(scopes, f) {
         case None -> entryScope
         case Some(prev) -> {

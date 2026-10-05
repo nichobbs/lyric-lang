@@ -259,81 +259,107 @@ pub func normalizePath(path: in String): String {
   }
 }
 
+/// `path` as `normalizePath` gives it, lower-cased: two spellings of one
+/// file on a case-insensitive filesystem share a key, and on a
+/// case-sensitive one a collision only puts more files in a package, which
+/// is conservative.  Symbolic links are not resolved (Std has no
+/// canonical-path call yet): a file reached through one is not matched to
+/// its target's spelling.
+pub func pathKey(path: in String): String {
+  Str.toLower(normalizePath(path))
+}
+
 /// The files the package of the source file at `sourcePath` is built from,
-/// normalized: the files of the `[project.packages]`/`[project.tests]`
-/// entry of the nearest manifest that contains it, or — with no manifest,
-/// or no entry containing it — every `.l` file under its directory,
-/// recursively, whatever its `package` line (an over-approximation),
-/// except under a subdirectory that is a project of its own.
-/// `None` when the set cannot be known: a broken manifest, an entry that
-/// cannot be fully listed, an unlistable directory.
+/// normalized: a single-file proof holds relative to the builds its
+/// ancestor manifests define.  Every `lyric.toml` from the file's directory
+/// up to the filesystem root is read, and the files of each
+/// `[project.packages]`/`[project.tests]` entry of any of them that contains
+/// the file are united.  With no such entry, the file's only builds are a
+/// standalone one or one a manifest outside its tree defines (which cannot
+/// be found from the file — prove that package with `--manifest`), and the
+/// set is every `.l` file under its directory, recursively, whatever its
+/// `package` line (an over-approximation), except under a subdirectory that
+/// is a project of its own.  `None` when the set cannot be known: a broken
+/// ancestor manifest, a containing entry that cannot be fully listed, an
+/// unlistable directory.
 pub func packageFilesForSource(sourcePath: in String): Option[List[String]] {
   val own = normalizePath(sourcePath)
+  val ownKey = pathKey(own)
   val dir = Path.dirname(own)
-  match findNearestManifestDetailed(dir) {
-    case FoundBrokenManifest(_, _) -> {
-      return None
-    }
-    case FoundManifest(mfPath) -> {
-      val mf = match File.readText(mfPath) {
-        case Ok(text) -> match Mf.parseManifest(text, mfPath) { case Ok(m) -> m; case Err(_) -> { return None } }
-        case Err(_) -> {
-          return None
-        }
-      }
-      match mf.project {
-        case Some(proj) -> {
-          val mfDir = Path.dirname(mfPath)
-          val entries: List[Mf.PackageEntry] = newList()
-          for e in proj.packages.toArray() {
-            entries.add(e)
-          }
-          for e in proj.tests.toArray() {
-            entries.add(e)
-          }
-          var found = false
-          var incomplete = false
-          val files: List[String] = newList()
-          for entry in entries.toArray() {
-            val ef = projectEntryFiles(entry, mfDir)
-            var contains = false
-            for p in ef.paths.toArray() {
-              if normalizePath(p) == own {
-                contains = true
-              }
+  val files: List[String] = newList()
+  var found = false
+  var current = dir
+  var walking = true
+  while walking {
+    val tomlPath = Path.join(current, "lyric.toml")
+    if File.fileExists(tomlPath) {
+      val text = match File.readText(tomlPath) { case Ok(t) -> t; case Err(_) -> { return None } }
+      match Mf.parseManifest(text, tomlPath) {
+        case Ok(mf) -> match mf.project {
+          case Some(proj) -> {
+            val mfDir = Path.dirname(tomlPath)
+            val entries: List[Mf.PackageEntry] = newList()
+            for e in proj.packages.toArray() {
+              entries.add(e)
             }
-            if contains {
-              found = true
-              if ef.problems.count > 0 or ef.emptyDir.length > 0 {
-                incomplete = true
-              }
+            for e in proj.tests.toArray() {
+              entries.add(e)
+            }
+            for entry in entries.toArray() {
+              val ef = projectEntryFiles(entry, mfDir)
+              var contains = false
               for p in ef.paths.toArray() {
-                files.add(normalizePath(p))
+                if pathKey(p) == ownKey {
+                  contains = true
+                }
+              }
+              if contains {
+                if ef.problems.count > 0 or ef.emptyDir.length > 0 {
+                  return None
+                }
+                found = true
+                for p in ef.paths.toArray() {
+                  files.add(normalizePath(p))
+                }
               }
             }
           }
-          if found {
-            if incomplete {
+          case None -> ()
+        }
+        case Err(e) -> match e {
+          // A `[workspace]` root with no `[package]` is not broken
+          // (`findNearestManifestDetailed`): it defines no package entry.
+          case MissingField(_, _) -> {
+            if Mf.textHasPackageSection(text) {
               return None
             }
-            return Some(value = files)
+          }
+          case _ -> {
+            return None
           }
         }
-        case None -> ()
       }
     }
-    case NoManifestFound -> ()
+    val parent = Path.dirname(current)
+    if parent == current or parent == "." {
+      walking = false
+    } else {
+      current = parent
+    }
+  }
+  if found {
+    return Some(value = files)
   }
   match File.listFilesRecursive(dir) {
     case Ok(fs) -> {
-      val files: List[String] = newList()
+      val scanned: List[String] = newList()
       for f in fs.toArray() {
         val nf = normalizePath(f)
         if Str.endsWith(nf, ".l") and not insideNestedProject(nf, dir) {
-          files.add(nf)
+          scanned.add(nf)
         }
       }
-      Some(value = files)
+      Some(value = scanned)
     }
     case Err(_) -> None
   }

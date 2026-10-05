@@ -1,0 +1,11 @@
+[package]
+name = "ProveScopeNestedmanifest"
+version = "0.1.0"
+
+[project]
+name = "ProveScopeNestedmanifest"
+output = "single"
+output_assembly = "ProveScopeNestedmanifest.dll"
+
+[project.packages]
+"P" = "src/p"
