@@ -1738,6 +1738,7 @@ pub func valueGenericRecordDecl(it: in Item): Option[RecordDecl] {
     case IExposedRec(d) -> Some(value = d)
     case IOpaque(od) -> if od.hasBody { Some(value = opaqueAsRecord(od)) } else { None }
     case IUnion(ud) -> Some(value = unionAsRecord(ud))
+    case IProtected(pd) -> Some(value = protectedAsRecord(pd))
     case _ -> None
   }
   match dOpt {
@@ -1746,6 +1747,20 @@ pub func valueGenericRecordDecl(it: in Item): Option[RecordDecl] {
       case None -> None
     }
     case None -> None
+  }
+}
+
+/// `valueGenericRecordDecl`, or only a protected type's when `protectedOnly`:
+/// on a target that erases value parameters a protected type is still
+/// specialised per length, as its members read the lengths by name (#8149).
+func valueGenericDeclFor(it: in Item, protectedOnly: in Bool): Option[RecordDecl] {
+  if protectedOnly {
+    match it.kind {
+      case IProtected(_) -> valueGenericRecordDecl(it)
+      case _ -> None
+    }
+  } else {
+    valueGenericRecordDecl(it)
   }
 }
 
@@ -1858,7 +1873,12 @@ func newValueRecordSpecs(
 // A record item with its methods as signatures, so checking a file that
 // holds it records nothing inside them.
 func recordSignatureOnly(it: in Item): Item {
-  val decl = match it.kind { case IRecord(d) -> d; case IExposedRec(d) -> d; case _ -> return it }
+  val decl = match it.kind {
+    case IRecord(d) -> d
+    case IExposedRec(d) -> d
+    case IProtected(pd) -> protectedAsRecord(pd)
+    case _ -> return it
+  }
   val members: List[RecordMember] = newList()
   for m in decl.members {
     match m {
@@ -1880,6 +1900,7 @@ func recordItemLike(it: in Item, d: in RecordDecl): Item {
     case IExposedRec(_) -> it.copy(kind = IExposedRec(decl = d), span = it.span)
     case IOpaque(od) -> it.copy(kind = IOpaque(decl = recordAsOpaque(od, d)), span = it.span)
     case IUnion(ud) -> it.copy(kind = IUnion(decl = recordAsUnion(ud, d)), span = it.span)
+    case IProtected(pd) -> it.copy(kind = IProtected(decl = recordAsProtected(pd, d)), span = it.span)
     case _ -> it.copy(kind = IRecord(decl = d), span = it.span)
   }
 }
@@ -1943,6 +1964,188 @@ func recordAsUnion(like: in UnionDecl, d: in RecordDecl): UnionDecl {
   like.copy(name = d.name, generics = d.generics, whereClause = d.whereClause, cases = cases)
 }
 
+// A protected type as a record, so the value-generic record passes specialise
+// it (#8149): its fields are the record's, its invariants too, and each entry
+// or func is a method of the record (an entry is told by a marker annotation
+// so `recordAsProtected` can put it back).  A protected type's members keep
+// their bare field names and their lock, so unlike a record's methods they
+// are not hoisted: the type is specialised whole, per length, on every
+// target.
+func protectedMarker(name: in String, sp: in Span): Annotation {
+  val segs: List[String] = newList()
+  segs.add(name)
+  val noArgs: List[AnnotationArg] = newList()
+  Annotation(name = ModulePath(segments = segs, span = sp), args = noArgs, span = sp)
+}
+
+func protectedAsRecord(pd: in ProtectedTypeDecl): RecordDecl {
+  val members: List[RecordMember] = newList()
+  for m in pd.members {
+    match m {
+      case PMField(pf) -> match pf {
+        case PFVar(name, ty, init, docs, anns, sp) -> {
+          val tagged: List[Annotation] = newList()
+          for a in anns {
+            tagged.add(a)
+          }
+          tagged.add(protectedMarker("__pf_var", sp))
+          members.add(
+            RMField(
+              field = FieldDecl(
+                docComments = docs,
+                annotations = tagged,
+                visibility = None,
+                isMutable = true,
+                name = name,
+                ty = ty,
+                dflt = init,
+                span = sp
+              )
+            )
+          )
+        }
+        case PFLet(name, ty, init, docs, anns, sp) -> {
+          val tagged: List[Annotation] = newList()
+          for a in anns {
+            tagged.add(a)
+          }
+          tagged.add(protectedMarker("__pf_let", sp))
+          members.add(
+            RMField(
+              field = FieldDecl(
+                docComments = docs,
+                annotations = tagged,
+                visibility = None,
+                isMutable = false,
+                name = name,
+                ty = ty,
+                dflt = init,
+                span = sp
+              )
+            )
+          )
+        }
+        case PFImmutable(fd) -> members.add(RMField(field = fd))
+      }
+      case PMInvariant(inv) -> members.add(RMInvariant(inv = inv))
+      case PMEntry(ed) -> {
+        val tagged: List[Annotation] = newList()
+        for a in ed.annotations {
+          tagged.add(a)
+        }
+        tagged.add(protectedMarker("__pm_entry", ed.span))
+        members.add(
+          RMFunc(
+            fn = FunctionDecl(
+              docComments = ed.docComments,
+              annotations = tagged,
+              visibility = ed.visibility,
+              isAsync = false,
+              name = ed.name,
+              generics = None,
+              params = ed.params,
+              ret = ed.ret,
+              whereClause = None,
+              contracts = ed.contracts,
+              body = Some(value = ed.body),
+              span = ed.span
+            )
+          )
+        )
+      }
+      case PMFunc(fn) -> members.add(RMFunc(fn = fn))
+    }
+  }
+  RecordDecl(name = pd.name, generics = pd.generics, whereClause = pd.whereClause, members = members, span = pd.span)
+}
+
+func annotationsWithout(anns: in List[Annotation], name: in String): List[Annotation] {
+  val kept: List[Annotation] = newList()
+  for a in anns {
+    if not (a.name.segments.count == 1 and a.name.segments[0] == name) {
+      kept.add(a)
+    }
+  }
+  kept
+}
+
+func hasAnnotationNamedPipe(anns: in List[Annotation], name: in String): Bool {
+  for a in anns {
+    if a.name.segments.count == 1 and a.name.segments[0] == name {
+      return true
+    }
+  }
+  false
+}
+
+// `like` with the name, generic parameters and members of `d`, a record view
+// of it (`protectedAsRecord`) that has been specialised.
+func recordAsProtected(like: in ProtectedTypeDecl, d: in RecordDecl): ProtectedTypeDecl {
+  val members: List[ProtectedMember] = newList()
+  for m in d.members {
+    match m {
+      case RMField(fd) -> {
+        if hasAnnotationNamedPipe(fd.annotations, "__pf_var") {
+          members.add(
+            PMField(
+              field = PFVar(
+                name = fd.name,
+                ty = fd.ty,
+                init = fd.dflt,
+                docComments = fd.docComments,
+                annotations = annotationsWithout(fd.annotations, "__pf_var"),
+                span = fd.span
+              )
+            )
+          )
+        } else if hasAnnotationNamedPipe(fd.annotations, "__pf_let") {
+          members.add(
+            PMField(
+              field = PFLet(
+                name = fd.name,
+                ty = fd.ty,
+                init = fd.dflt,
+                docComments = fd.docComments,
+                annotations = annotationsWithout(fd.annotations, "__pf_let"),
+                span = fd.span
+              )
+            )
+          )
+        } else {
+          members.add(PMField(field = PFImmutable(field = fd)))
+        }
+      }
+      case RMInvariant(inv) -> members.add(PMInvariant(inv = inv))
+      case RMFunc(fn) -> {
+        if hasAnnotationNamedPipe(fn.annotations, "__pm_entry") {
+          val body = match fn.body {
+            case Some(b) -> b
+            case None -> FBBlock(block = Block(statements = newList(), span = fn.span))
+          }
+          members.add(
+            PMEntry(
+              entryDecl = EntryDecl(
+                docComments = fn.docComments,
+                annotations = annotationsWithout(fn.annotations, "__pm_entry"),
+                visibility = fn.visibility,
+                name = fn.name,
+                params = fn.params,
+                ret = fn.ret,
+                contracts = fn.contracts,
+                body = body,
+                span = fn.span
+              )
+            )
+          )
+        } else {
+          members.add(PMFunc(fn = fn))
+        }
+      }
+    }
+  }
+  like.copy(name = d.name, generics = d.generics, whereClause = d.whereClause, members = members)
+}
+
 func opaqueAsRecord(od: in OpaqueTypeDecl): RecordDecl {
   val members: List[RecordMember] = newList()
   for m in od.members {
@@ -1978,12 +2181,13 @@ func specialiseValueRecords(
   specsOut: in List[ValueRecordSpec],
   importedPkgs: in List[ImportedPackage],
   foreignOut: in List[ForeignValueRecord],
+  protectedOnly: in Bool,
 ): SourceFile {
   val decls: Map[String, RecordDecl] = newMap()
   val declItems: Map[String, Item] = newMap()
   val markerItems: List[Item] = newList()
   for it in file.items {
-    match valueGenericRecordDecl(it) {
+    match valueGenericDeclFor(it, protectedOnly) {
       case Some(d) -> {
         decls.add(d.name, d)
         declItems.add(d.name, it)
@@ -1999,7 +2203,7 @@ func specialiseValueRecords(
   for ip in importedPkgs {
     if ip.name != ownPkg {
       for it in ip.items {
-        match valueGenericRecordDecl(it) {
+        match valueGenericDeclFor(it, protectedOnly) {
           case Some(d) -> if not decls.containsKey(d.name) {
             decls.add(d.name, d)
             declItems.add(d.name, it)
@@ -2062,7 +2266,7 @@ func specialiseValueRecords(
   // Each record is replaced, in place, by its specialisations.
   val items: List[Item] = newList()
   for it in renamed.items {
-    match valueGenericRecordDecl(it) {
+    match valueGenericDeclFor(it, protectedOnly) {
       case Some(d) -> match mapGet(specItems, d.name) {
         case Some(sis) -> {
           for si in sis {
@@ -2092,6 +2296,7 @@ func lowerValueRecordSpecs(
   known: in SymbolTable,
   opts: in MiddleEndOptions,
   diags: in List[Diagnostic],
+  protectedOnly: in Bool,
 ): SourceFile {
   if specs.count == 0 {
     return file
@@ -2103,7 +2308,14 @@ func lowerValueRecordSpecs(
       case None -> ()
     }
   }
-  val markers = valueRecordMarkers(file0.items, constArgs, file0.span)
+  val markedItems: List[Item] = newList()
+  for it in file0.items {
+    match valueGenericDeclFor(it, protectedOnly) {
+      case Some(_) -> markedItems.add(it)
+      case None -> ()
+    }
+  }
+  val markers = valueRecordMarkers(markedItems, constArgs, file0.span)
   // Every specialisation, from the records' source, in full and as
   // signatures: a round checks some with their method bodies while the
   // others, which they may name, are signatures.
@@ -2217,7 +2429,12 @@ func lowerValueRecordSpecs(
   }
   val items: List[Item] = newList()
   for it in file.items {
-    val name = match it.kind { case IRecord(d) -> d.name; case IExposedRec(d) -> d.name; case _ -> "" }
+    val name = match it.kind {
+      case IRecord(d) -> d.name
+      case IExposedRec(d) -> d.name
+      case IProtected(d) -> d.name
+      case _ -> ""
+    }
     match mapGet(specArrays, name) {
       case Some(sa) -> {
         val arraySites = if opts.primitiveArrays { sa.arrays } else { sa.arrays.copy(literal = newMap()) }
@@ -2262,15 +2479,22 @@ func eraseValueRecords(file: in SourceFile, importedPkgs: in List[ImportedPackag
   val renamed = TypeAliasResolve.resolveAliasesInFile(markers, file)
   val items: List[Item] = newList()
   for it in renamed.items {
-    match valueGenericRecordDecl(it) {
-      case Some(d) -> items.add(recordItemLike(it, d.copy(generics = withoutValueGenerics(d.generics))))
-      case None -> items.add(it)
+    match it.kind {
+      case IProtected(_) -> items.add(it)
+      case _ -> match valueGenericRecordDecl(it) {
+        case Some(d) -> items.add(recordItemLike(it, d.copy(generics = withoutValueGenerics(d.generics))))
+        case None -> items.add(it)
+      }
     }
   }
   renamed.copy(items = items)
 }
 
 func addValueRecordOnce(it: in Item, decls: in List[Item], names: in Map[String, Bool]): Unit {
+  match it.kind {
+    case IProtected(_) -> return
+    case _ -> ()
+  }
   match valueGenericRecordDecl(it) {
     case Some(d) -> if not names.containsKey(d.name) { names.add(d.name, true); decls.add(it) }
     case None -> ()
@@ -2307,16 +2531,18 @@ func finishValueRecords(
   tcRes: in CheckResult,
   opts: in MiddleEndOptions,
 ): Option[SourceFile] {
-  if opts.arraysAsLists {
-    return Some(value = eraseValueRecords(file, importedPkgs))
-  }
+  // A target that erases value parameters still specialises a protected type
+  // per length (#8149), after the records are erased.
+  val protectedOnly = opts.arraysAsLists
+  val base = if protectedOnly { eraseValueRecords(file, importedPkgs) } else { file }
   val specs: List[ValueRecordSpec] = newList()
   val specialised = specialiseValueRecords(
-    file,
+    base,
     tcRes.symbols.valueTypeArgSites,
     specs,
     importedPkgs,
-    opts.foreignValueRecordsOut
+    opts.foreignValueRecordsOut,
+    protectedOnly
   )
   val diags: List[Diagnostic] = newList()
   val lowered = lowerValueRecordSpecs(
@@ -2327,7 +2553,8 @@ func finishValueRecords(
     importedPkgs,
     tcRes.symbols,
     opts,
-    diags
+    diags,
+    protectedOnly
   )
   if gate(opts.pkgLabel, opts.lineOrigins, diags) {
     return None
