@@ -1413,9 +1413,8 @@ func translateResolvedCall(
   appendTermList(asList, argAssumed)
   appendTermList(asList, postConds)
   appendTermList(asList, pureUnfold)
-  appendTermList(asList, intWidthHypothesesForTerm(callTerm, resultInfo))
   // The callee proves its result is in its declared range (#7872).
-  appendTermList(asList, rangeHypothesesForTerm(callTerm, resultInfo))
+  appendTermList(asList, valueFactsForTerm(callTerm, resultInfo))
   val knownCalleeTR = TranslateResult(term = callTerm, sideConds = sc, assumed = asList)
   val knownCalleePair: (TranslateResult, List[Diagnostic]) = (knownCalleeTR, allArgDiags)
   knownCalleePair
@@ -3323,86 +3322,9 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
       }
     }
 
-    case EForall(binders, whereExprOpt, body) -> {
-      var envAcc = env
-      val sortBinders: List[SortBinder] = newList()
-      var i = 0
-      while i < binders.count {
-        val b = binders[i]
-        val info = sortOfTypeExprE(env, b.ty)
-        envAcc = envBind(b.name, info, envAcc)
-        sortBinders.add(SortBinder(name = b.name, sort = info.sort))
-        i = i + 1
-      }
-      val (bodyR, bodyDiags) = translateExpr(envAcc, body)
-      val (whereTermOpt, whereDiags) = match whereExprOpt {
-        case Some(w) -> {
-          val (wR, wD) = translateExpr(envAcc, w)
-          val forallWherePair: (Option[Term], List[Diagnostic]) = (Some(value = wR.term), wD)
-          forallWherePair
-        }
-        case None -> {
-          val wd: List[Diagnostic] = newList()
-          val forallNonePair: (Option[Term], List[Diagnostic]) = (None, wd)
-          forallNonePair
-        }
-      }
-      val inner = match whereTermOpt { case Some(wt) -> mkImplies(wt, bodyR.term); case None -> bodyR.term }
-      val emptyTriggers: List[List[Term]] = newList()
-      val t = TForall(binders = sortBinders, triggers = emptyTriggers, body = inner)
-      val allDiags: List[Diagnostic] = newList()
-      appendTermList2(allDiags, bodyDiags)
-      appendTermList2(allDiags, whereDiags)
-      val sc: List[Term] = newList()
-      val asList: List[Term] = newList()
-      val forallTR = TranslateResult(term = t, sideConds = sc, assumed = asList)
-      val forallPair: (TranslateResult, List[Diagnostic]) = (forallTR, allDiags)
-      forallPair
-    }
+    case EForall(binders, whereExprOpt, body) -> translateQuantifier(env, binders, whereExprOpt, body, true)
 
-    case EExists(binders, whereExprOpt, body) -> {
-      var envAcc = env
-      val sortBinders: List[SortBinder] = newList()
-      var i = 0
-      while i < binders.count {
-        val b = binders[i]
-        val info = sortOfTypeExprE(env, b.ty)
-        envAcc = envBind(b.name, info, envAcc)
-        sortBinders.add(SortBinder(name = b.name, sort = info.sort))
-        i = i + 1
-      }
-      val (bodyR, bodyDiags) = translateExpr(envAcc, body)
-      val (whereTermOpt, whereDiags) = match whereExprOpt {
-        case Some(w) -> {
-          val (wR, wD) = translateExpr(envAcc, w)
-          val existsWherePair: (Option[Term], List[Diagnostic]) = (Some(value = wR.term), wD)
-          existsWherePair
-        }
-        case None -> {
-          val wd: List[Diagnostic] = newList()
-          val existsNonePair: (Option[Term], List[Diagnostic]) = (None, wd)
-          existsNonePair
-        }
-      }
-      val inner = match whereTermOpt {
-        case Some(wt) -> {
-          val parts: List[Term] = newList()
-          parts.add(wt)
-          parts.add(bodyR.term)
-          mkAnd(parts)
-        }
-        case None -> bodyR.term
-      }
-      val t = TExists(binders = sortBinders, body = inner)
-      val allDiags: List[Diagnostic] = newList()
-      appendTermList2(allDiags, bodyDiags)
-      appendTermList2(allDiags, whereDiags)
-      val sc: List[Term] = newList()
-      val asList: List[Term] = newList()
-      val existsTR = TranslateResult(term = t, sideConds = sc, assumed = asList)
-      val existsPair: (TranslateResult, List[Diagnostic]) = (existsTR, allDiags)
-      existsPair
-    }
+    case EExists(binders, whereExprOpt, body) -> translateQuantifier(env, binders, whereExprOpt, body, false)
 
     case EMember(receiver, memberName) -> {
       val (rR, rDiags) = translateExpr(env, receiver)
@@ -3455,10 +3377,7 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
       // type (#7871, #7872).
       match recordFieldHit {
         case Some(_) -> match mapGet(env.fieldInfos, recvRecName + "__" + memberName) {
-          case Some(fi) -> {
-            appendTermList(asList, rangeHypothesesForTerm(t, fi))
-            appendTermList(asList, intWidthHypothesesForTerm(t, fi))
-          }
+          case Some(fi) -> appendTermList(asList, valueFactsForTerm(t, fi))
           case None -> ()
         }
         case None -> ()
@@ -3654,7 +3573,7 @@ func translateBlockValue(env: in VEnv, blk: in Block, sp: in Span): (TranslateRe
                   case None -> SortInfo(sort = SInt, range = RBKNone)
                 }
                 val initial = freshVar(env, bb.name, info.sort)
-                appendTermList(facts, rangeHypothesesForTerm(initial, info))
+                appendTermList(facts, valueFactsForTerm(initial, info))
                 cur = envSetMutable(envBindTerm(bb.name, initial, info, cur), bb.name, bb.mutable)
               }
             }
@@ -3723,6 +3642,66 @@ func blockValueFailsClosed(
   failedPair
 }
 
+// `forall`/`exists`: each bound variable ranges over the values of its
+// declared type, the values a parameter of that type can hold — so the
+// quantifier is `forall x. facts(x) and where implies body` or `exists x.
+// facts(x) and where and body`, with `facts` a parameter's range and width
+// (#8214).  Without them an `exists` over a range subtype would be
+// witnessed by a value outside the range, and a `forall` would be checked
+// against values the type cannot hold.  Each bound variable is a name of
+// its own, so a term the body reads from an enclosing binding of the same
+// source name is never captured by it.
+func translateQuantifier(
+  env: in VEnv,
+  binders: in List[PropertyBinder],
+  whereExprOpt: in Option[Expr],
+  body: in Expr,
+  isForall: in Bool,
+): (TranslateResult, List[Diagnostic]) {
+  var envAcc = env
+  val sortBinders: List[SortBinder] = newList()
+  val domain: List[Term] = newList()
+  var i = 0
+  while i < binders.count {
+    val b = binders[i]
+    val info = sortOfTypeExprE(env, b.ty)
+    val boundName = freshName(env, b.name)
+    val bound = TVar(name = boundName, sort = info.sort)
+    envAcc = envSetMutable(envBindTerm(b.name, bound, info, envAcc), b.name, false)
+    sortBinders.add(SortBinder(name = boundName, sort = info.sort))
+    appendTermList(domain, valueFactsForTerm(bound, info))
+    i = i + 1
+  }
+  val allDiags: List[Diagnostic] = newList()
+  val (bodyR, bodyDiags) = translateExpr(envAcc, body)
+  val guards: List[Term] = newList()
+  appendTermList(guards, domain)
+  match whereExprOpt {
+    case Some(w) -> {
+      val (wR, wD) = translateExpr(envAcc, w)
+      appendTermList2(allDiags, wD)
+      guards.add(wR.term)
+    }
+    case None -> ()
+  }
+  appendTermList2(allDiags, bodyDiags)
+  val t = if isForall {
+    val emptyTriggers: List[List[Term]] = newList()
+    val inner = if guards.count == 0 { bodyR.term } else { mkImplies(mkAnd(guards), bodyR.term) }
+    TForall(binders = sortBinders, triggers = emptyTriggers, body = inner)
+  } else {
+    val parts: List[Term] = newList()
+    appendTermList(parts, guards)
+    parts.add(bodyR.term)
+    TExists(binders = sortBinders, body = mkAnd(parts))
+  }
+  val sc: List[Term] = newList()
+  val asList: List[Term] = newList()
+  val quantTR = TranslateResult(term = t, sideConds = sc, assumed = asList)
+  val quantPair: (TranslateResult, List[Diagnostic]) = (quantTR, allDiags)
+  quantPair
+}
+
 // A lambda: its value is unknown, but its body may run whenever it is
 // called, so the body's obligations must hold for every call — each
 // parameter a value of its own of its declared sort, each captured
@@ -3747,8 +3726,7 @@ func translateLambda(
       case None -> SortInfo(sort = SUninterp(name = "lambdaparam"), range = RBKNone)
     }
     val pVar = freshVar(env, p.name, info.sort)
-    appendTermList(inside, intWidthHypothesesForTerm(pVar, info))
-    appendTermList(inside, rangeHypothesesForTerm(pVar, info))
+    appendTermList(inside, valueFactsForTerm(pVar, info))
     lambdaEnv = envSetMutable(envBindTerm(p.name, pVar, info, lambdaEnv), p.name, false)
     pi = pi + 1
   }
@@ -4715,7 +4693,7 @@ func wpLocal(
       val env2 = envSetMutable(envDeclare(name, initial, info, env), name, true)
       val inner = wpWalk(env2, resultSort, postcond, stmts, idx + 1)
       val asList: List[Term] = newList()
-      appendTermList(asList, rangeHypothesesForTerm(initial, info))
+      appendTermList(asList, valueFactsForTerm(initial, info))
       appendTermList(asList, inner.assumed)
       WpResult(wp = inner.wp, sideGoals = inner.sideGoals, assumed = asList, diags = inner.diags)
     }
@@ -6211,8 +6189,7 @@ func havocVars(env: in VEnv, names: in List[String], tag: in String): Havoc {
       case Some(vinfo) -> {
         val t = freshVar(env, vname + "!" + tag, vinfo.sort)
         envH = envBindTerm(vname, t, vinfo, envH)
-        appendTermList(hyps, intWidthHypothesesForTerm(t, vinfo))
-        appendTermList(hyps, rangeHypothesesForTerm(t, vinfo))
+        appendTermList(hyps, valueFactsForTerm(t, vinfo))
       }
       // A name with no binding here is declared inside the code itself.
       case None -> ()
@@ -6812,9 +6789,7 @@ pub func goalsForFunctionWithState(
     val info = sortOfTypeExprE(env0, p.ty)
     val passedOut = match p.mode { case PMIn -> false; case _ -> true }
     envWithParams = envSetMutable(envBind(p.name, info, envWithParams), p.name, passedOut)
-    val hyps = rangeHypotheses(p.name, info)
-    appendTermList(paramHyps, hyps)
-    appendTermList(paramHyps, intWidthHypothesesForTerm(TVar(name = p.name, sort = info.sort), info))
+    appendTermList(paramHyps, valueFactsForTerm(TVar(name = p.name, sort = info.sort), info))
     i = i + 1
   }
 
@@ -7161,8 +7136,7 @@ func goalsForProtectedEntry(
               args1.add(selfTerm)
               val fTerm = TApp(name = protName + "__" + fname, args = args1, retSort = fInfo.sort)
               fnEnv = envBindTerm(fname, fTerm, fInfo, fnEnv)
-              appendTermList(fieldRangeHyps, rangeHypothesesForTerm(fTerm, fInfo))
-              appendTermList(fieldRangeHyps, intWidthHypothesesForTerm(fTerm, fInfo))
+              appendTermList(fieldRangeHyps, valueFactsForTerm(fTerm, fInfo))
             }
             case PFLet(fname, fty, _, _, _, _) -> {
               val fInfo = sortOfTypeExprE(env0, fty)
@@ -7170,8 +7144,7 @@ func goalsForProtectedEntry(
               args2.add(selfTerm)
               val fTerm = TApp(name = protName + "__" + fname, args = args2, retSort = fInfo.sort)
               fnEnv = envBindTerm(fname, fTerm, fInfo, fnEnv)
-              appendTermList(fieldRangeHyps, rangeHypothesesForTerm(fTerm, fInfo))
-              appendTermList(fieldRangeHyps, intWidthHypothesesForTerm(fTerm, fInfo))
+              appendTermList(fieldRangeHyps, valueFactsForTerm(fTerm, fInfo))
             }
             case PFImmutable(fd) -> {
               val fInfo = sortOfTypeExprE(env0, fd.ty)
@@ -7179,8 +7152,7 @@ func goalsForProtectedEntry(
               args3.add(selfTerm)
               val fTerm = TApp(name = protName + "__" + fd.name, args = args3, retSort = fInfo.sort)
               fnEnv = envBindTerm(fd.name, fTerm, fInfo, fnEnv)
-              appendTermList(fieldRangeHyps, rangeHypothesesForTerm(fTerm, fInfo))
-              appendTermList(fieldRangeHyps, intWidthHypothesesForTerm(fTerm, fInfo))
+              appendTermList(fieldRangeHyps, valueFactsForTerm(fTerm, fInfo))
             }
           }
         }
@@ -7271,6 +7243,51 @@ func goalsForProtectedMembers(
       }
     }
     mi = mi + 1
+  }
+}
+
+// Register each non-generic type alias whose right-hand side is a scalar —
+// a primitive, an inline range (`alias Pct = Int range 0 ..= 100`), a
+// distinct or range subtype, or another such alias — under its name, so a
+// value declared with the alias has the sort, width and range of what it
+// names: a quantifier over `alias S = Small` ranges over `Small` (#8214).
+// An alias of a record, union or other named type is left as it was: its
+// name is not a distinct type's, which `S(x)` would otherwise construct.
+func registerScalarAliases(file: in SourceFile, distinctMap: in Map[String, TypeExpr]): Unit {
+  var changed = true
+  var pass = 0
+  while changed and pass < 16 {
+    changed = false
+    var i = 0
+    while i < file.items.count {
+      match file.items[i].kind {
+        case ITypeAlias(ad) -> {
+          val isGeneric = match ad.generics { case Some(_) -> true; case None -> false }
+          if not isGeneric and not distinctMap.containsKey(ad.name) and aliasNamesScalar(distinctMap, ad.rhs) {
+            distinctMap.add(ad.name, ad.rhs)
+            changed = true
+          }
+        }
+        case _ -> ()
+      }
+      i = i + 1
+    }
+    pass = pass + 1
+  }
+}
+
+func aliasNamesScalar(distinctMap: in Map[String, TypeExpr], te: in TypeExpr): Bool {
+  match te.kind {
+    case TRefined(_, _) -> true
+    case TRef(path) -> {
+      if path.segments.count == 1 {
+        val name = path.segments[0]
+        isSome(primitiveSort(name)) or distinctMap.containsKey(name)
+      } else {
+        false
+      }
+    }
+    case _ -> false
   }
 }
 
@@ -7444,6 +7461,7 @@ pub func goalsForFileInScope(
     }
     dti0 = dti0 + 1
   }
+  registerScalarAliases(file, distinctMap)
 
   var mi = 0
   while mi < 2 {

@@ -2733,6 +2733,102 @@ test "a call's own result varies with a quantifier's bound variable (#8109)" {
   )
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// A quantifier's bound variable ranges over the values of its declared type,
+// with the range and width a parameter of that type has: an `exists` is
+// witnessed only by such a value, and a `forall` holds of each of them
+// (#8214).
+// ─────────────────────────────────────────────────────────────────────────────
+func smallDecl(): String {
+  "type Small = Int range 0 ..= 10\n"
+}
+
+func quantSrc(decls: in String, claim: in String): String {
+  decls + "func f(): Bool\n  ensures: " + claim + "\n{\n  true\n}\n"
+}
+
+test "a quantifier ranges over a range subtype's values (#8214)" {
+  assertRefuted(quantSrc(smallDecl(), "exists (i: Small) i == 70"), "exists-witness-outside-the-range")
+  assertDischarged(quantSrc(smallDecl(), "exists (i: Small) i == 7"), "exists-witness-inside-the-range")
+  assertDischarged(quantSrc(smallDecl(), "forall (i: Small) i <= 10"), "forall-within-the-range")
+  assertRefuted(quantSrc(smallDecl(), "forall (i: Small) i <= 5"), "forall-narrower-than-the-range")
+  assertDischarged(
+    quantSrc(smallDecl(), "forall (i: Small) where i > 8 { i == 9 or i == 10 }"),
+    "forall-where-within-the-range"
+  )
+  assertRefuted(quantSrc(smallDecl(), "exists (i: Small) where i > 3 { i == 11 }"), "exists-where-outside-the-range")
+  assertDischarged(
+    quantSrc(smallDecl(), "forall (i: Small) exists (j: Small) j == 10 - i"),
+    "nested-quantifiers-within-the-range"
+  )
+  assertRefuted(
+    quantSrc(smallDecl(), "forall (i: Small) exists (j: Small) j == i + 1"),
+    "nested-quantifiers-past-the-range"
+  )
+  val longs = "type Big = Long range -5000000000 ..= 5000000000\n"
+  assertDischarged(quantSrc(longs, "exists (i: Big) i == -5000000000"), "long-range-lower-bound")
+  assertRefuted(quantSrc(longs, "exists (i: Big) i == 5000000001"), "long-range-past-the-upper-bound")
+}
+
+test "a quantifier over an unsigned type ranges over its unsigned values (#8214)" {
+  val port = "type Port = UInt range 1 ..= 65535\n"
+  assertDischarged(quantSrc(port, "forall (p: Port) p >= 1u32 and p <= 65535u32"), "uint-range-subtype")
+  assertRefuted(quantSrc(port, "exists (p: Port) p == 0u32"), "uint-range-subtype-below")
+  assertRefuted(quantSrc(port, "exists (p: Port) p == 70000u32"), "uint-range-subtype-above")
+  val wide = "type Wide = ULong range 10 ..= 18446744073709551615u64\n"
+  assertDischarged(quantSrc(wide, "forall (w: Wide) w >= 10u64"), "ulong-range-subtype")
+  assertRefuted(quantSrc(wide, "exists (w: Wide) w == 9u64"), "ulong-range-subtype-below")
+  assertDischarged(quantSrc("", "forall (b: Byte) b <= 255u8"), "byte-is-at-most-255")
+  assertRefuted(quantSrc("", "exists (b: Byte) b > 255u8"), "no-byte-above-255")
+  val digit = "type Digit = Byte range 0 ..= 9\n"
+  assertDischarged(quantSrc(digit, "forall (d: Digit) d <= 9u8"), "byte-range-subtype")
+  assertRefuted(quantSrc(digit, "exists (d: Digit) d == 10u8"), "byte-range-subtype-above")
+}
+
+test "a quantifier over a distinct type or alias of a range subtype keeps its range (#8214)" {
+  val score = smallDecl() + "type Score = Small\n"
+  assertDischarged(quantSrc(score, "forall (s: Score) s >= 0 and s <= 10"), "distinct-over-range")
+  assertRefuted(quantSrc(score, "exists (s: Score) s == 11"), "distinct-over-range-past-the-range")
+  val aliased = smallDecl() + "alias S = Small\nalias T = S\n"
+  assertDischarged(quantSrc(aliased, "forall (i: T) i <= 10"), "alias-of-alias-of-range")
+  assertRefuted(quantSrc(aliased, "exists (i: S) i == 70"), "alias-of-range-past-the-range")
+  val inline = "alias Pct = Int range 0 ..= 100\n"
+  assertDischarged(quantSrc(inline, "forall (p: Pct) p <= 100"), "alias-of-inline-range")
+  assertRefuted(quantSrc(inline, "exists (p: Pct) p == 101"), "alias-of-inline-range-past-the-range")
+  val grade = smallDecl() + "type Score = Small\ntype Grade = Score\n"
+  assertDischarged(quantSrc(grade, "forall (g: Grade) g <= 10"), "distinct-over-distinct-over-range")
+  assertRefuted(quantSrc(grade, "exists (g: Grade) g == -1"), "distinct-over-distinct-past-the-range")
+  assertDischarged(quantSrc("", "forall (i: Int range 2 ..= 5) i >= 2 and i <= 5"), "inline-range-binder")
+  assertRefuted(quantSrc("", "exists (i: Int range 2 ..= 5) i == 7"), "inline-range-binder-past-the-range")
+  val cents = "type Cents = Int\n"
+  assertDischarged(quantSrc(cents, "forall (c: Cents) c <= 2147483647"), "distinct-int-has-its-width")
+  assertRefuted(quantSrc(cents, "exists (c: Cents) c == 3000000000"), "distinct-int-past-its-width")
+}
+
+test "a quantifier over Char ranges over BMP scalar values (#8214)" {
+  assertDischarged(quantSrc("", "forall (c: Char) c >= '\\u{0}' and c <= '\\u{FFFF}'"), "char-is-bmp")
+  assertRefuted(quantSrc("", "exists (c: Char) c > '\\u{D7FF}' and c < '\\u{E000}'"), "no-surrogate-char")
+  assertDischarged(quantSrc("", "exists (c: Char) c == 'a'"), "char-witness")
+  assertDischarged(
+    "func f(c: in Char): Bool\n  ensures: result\n{\n  c != '\\u{0}' or c == '\\u{0}'\n}\n",
+    "char-parameter-equality"
+  )
+}
+
+test "a bound variable never captures an enclosing binding of its name (#8214)" {
+  // `old(n)` is the parameter, 50: no `Small` equals it.
+  assertRefuted(
+    smallDecl() +
+      "func f(n: in Int): Bool\n  requires: n == 50\n  ensures: exists (n: Small) old(n) == n\n{\n  true\n}\n",
+    "binder-shadowing-a-parameter"
+  )
+  assertDischarged(
+    smallDecl() +
+      "func f(n: in Int): Bool\n  requires: n == 50\n  ensures: forall (n: Small) old(n) > n\n{\n  true\n}\n",
+    "binder-shadowing-a-parameter-forall"
+  )
+}
+
 test "two function values are never compared (#8109)" {
   assertUntranslatable(
     oneTwoDecls() + "func f(): Bool\n  ensures: result\n{\n  val h = one\n  val k = one\n  h == k\n}\n",

@@ -19,6 +19,9 @@ pub union RangeBoundKind {
   case RBKUpperBound(hi: Long)
   // No upper bound — emit only `lo <= v`.  Models AST `lo..` (`RBUpperOpen`).
   case RBKLowerBound(lo: Long)
+  // A `Char`: a BMP scalar value, `0 ..= 65535` outside the surrogate range
+  // `55296 ..= 57343` (docs/01 §2.1), modelled as its code point.
+  case RBKBmpScalar
   case RBKNone
   // A declared bound the verifier cannot translate faithfully: a bound that
   // is not an integer literal, a negative or over-wide bound on an unsigned
@@ -67,6 +70,10 @@ pub func primitiveSort(name: in String): Option[SortInfo] {
   }
   if name == "Byte" {
     return Some(value = sortInfoNoRange(SBitVec(width = 8)))
+  }
+  // A `Char` is its code point, as a `Char` literal is (#8214).
+  if name == "Char" {
+    return Some(value = SortInfo(sort = SInt, range = RBKBmpScalar))
   }
   if name == "Float" {
     return Some(value = sortInfoNoRange(SFloat32))
@@ -426,6 +433,13 @@ pub func rangeHypothesesForTerm(v: in Term, info: in SortInfo): List[Term] {
     case RBKLowerBound(lo) -> {
       result.add(TBuiltin(op = BOpLte, args = termList2(intLitOfSort(lo, s), v)))
     }
+    case RBKBmpScalar -> {
+      result.add(TBuiltin(op = BOpLte, args = termList2(intLitOfSort(0i64, s), v)))
+      result.add(TBuiltin(op = BOpLte, args = termList2(v, intLitOfSort(65535i64, s))))
+      val belowSurrogates = TBuiltin(op = BOpLt, args = termList2(v, intLitOfSort(55296i64, s)))
+      val aboveSurrogates = TBuiltin(op = BOpLt, args = termList2(intLitOfSort(57343i64, s), v))
+      result.add(mkOr(termList2(belowSurrogates, aboveSurrogates)))
+    }
   }
   result
 }
@@ -495,6 +509,24 @@ pub func intWidthHypothesesForTerm(v: in Term, info: in SortInfo): List[Term] {
       none
     }
   }
+}
+
+// What is known of a value of a declared type that the verifier does not
+// otherwise determine — a parameter, a quantifier's bound variable, a
+// variable after code that may change it, a callee's result, a field read:
+// it is a value of its type, so it lies in the type's range (#7872) and, for
+// an `Int`/`Long`, within its width (#7871).  Every such value takes its
+// facts from here, so a quantifier ranges over the values a parameter of the
+// same type can hold (#8214).
+pub func valueFactsForTerm(v: in Term, info: in SortInfo): List[Term] {
+  val facts = rangeHypothesesForTerm(v, info)
+  val width = intWidthHypothesesForTerm(v, info)
+  var i = 0
+  while i < width.count {
+    facts.add(width[i])
+    i = i + 1
+  }
+  facts
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
