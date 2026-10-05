@@ -13,7 +13,6 @@ protected type Ring[N: Nat] {
   var buf: array[N, Int]
   var next: Int = 0
   var filled: Int = 0
-
   entry push(v: in Int): Unit {
     buf[next] = v
     next = (next + 1) % N
@@ -21,11 +20,8 @@ protected type Ring[N: Nat] {
       filled = filled + 1
     }
   }
-
   func capacity(): Int = N
-
   func length(): Int = buf.length
-
   func total(): Int {
     var t = 0
     for x in buf {
@@ -33,21 +29,17 @@ protected type Ring[N: Nat] {
     }
     t
   }
-
   func count(): Int = filled
 }
 
 protected type Slots[T, N: Nat] {
   var items: array[N, T]
   var used: Int = 0
-
   entry put(v: in T): Unit {
     items[used] = v
     used = used + 1
   }
-
   func first(): T = items[0]
-
   func size(): Int = N
 }
 

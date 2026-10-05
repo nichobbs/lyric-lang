@@ -10040,7 +10040,11 @@ test "a union's, opaque type's or protected type's value parameter sizes an arra
   val pcr = parseCheck(p)
   assertEqualInt(pcr.diagnostics.count, 0, "a protected type's field and member (" + diagCodesOf(pcr) + ")")
   val pubP = "package P\npub protected type Ring[N: Nat] {\n  var slots: array[N, Int]\n  entry size(): Int {\n    0\n  }\n}\n"
-  assertEqualInt(countDiagCode(parseCheck(pubP), "T0166"), 1, "a pub protected type with a length (" + diagCodesOf(parseCheck(pubP)) + ")")
+  assertEqualInt(
+    countDiagCode(parseCheck(pubP), "T0166"),
+    1,
+    "a pub protected type with a length (" + diagCodesOf(parseCheck(pubP)) + ")"
+  )
 }
 
 test "a protected invariant is type-checked" {
