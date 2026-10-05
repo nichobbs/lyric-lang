@@ -56,9 +56,13 @@
   build strips `package` and `import` lines and parses the concatenated
   bodies, so a file with no `package` line is part of the package. Such
   a file is parsed again under a `package` line and contributes its
-  types; if it still does not parse, the siblings are unknown. A file
-  that does not parse and whose `package` line names another package is
-  skipped, because its body fails any build it is in. This keeps
+  types; if it still does not parse, the siblings are unknown. In the
+  directory-tree fallback (no manifest entry contains the file, so its
+  build is the file alone) a file that does not parse and whose `package`
+  line names another package is skipped. In a manifest entry, whose build
+  merges every file whatever its `package` line, any unparseable file
+  makes the siblings unknown. The per-file reading assumes the build
+  merges parsed files (#8234). This keeps
   `examples/agent/*.l` (packages `Examples`, `Examples.Contracts`,
   `Examples.Di`, `Examples.Tests`, none of which parse) from making every
   CI prove example fail closed. Any other unparseable file makes the

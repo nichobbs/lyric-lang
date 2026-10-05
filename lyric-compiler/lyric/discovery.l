@@ -269,6 +269,12 @@ pub func pathKey(path: in String): String {
   Str.toLower(normalizePath(path))
 }
 
+/// The files of a package as `packageFileSetForSource` finds them.
+pub record PackageFileSet {
+  pub files: List[String]
+  pub fromManifest: Bool
+}
+
 /// The files the package of the source file at `sourcePath` is built from,
 /// normalized: a single-file proof holds relative to the builds its
 /// ancestor manifests define.  Every `lyric.toml` from the file's directory
@@ -281,8 +287,10 @@ pub func pathKey(path: in String): String {
 /// `package` line (an over-approximation), except under a subdirectory that
 /// is a project of its own.  `None` when the set cannot be known: a broken
 /// ancestor manifest, a containing entry that cannot be fully listed, an
-/// unlistable directory.
-pub func packageFilesForSource(sourcePath: in String): Option[List[String]] {
+/// unlistable directory.  `fromManifest` says the files are a manifest
+/// entry's, which its build merges whatever their `package` lines, rather
+/// than the directory-tree fallback, whose own build is the file alone.
+pub func packageFileSetForSource(sourcePath: in String): Option[PackageFileSet] {
   val own = normalizePath(sourcePath)
   val ownKey = pathKey(own)
   val dir = Path.dirname(own)
@@ -348,7 +356,7 @@ pub func packageFilesForSource(sourcePath: in String): Option[List[String]] {
     }
   }
   if found {
-    return Some(value = files)
+    return Some(value = PackageFileSet(files = files, fromManifest = true))
   }
   match File.listFilesRecursive(dir) {
     case Ok(fs) -> {
@@ -359,7 +367,7 @@ pub func packageFilesForSource(sourcePath: in String): Option[List[String]] {
           scanned.add(nf)
         }
       }
-      Some(value = scanned)
+      Some(value = PackageFileSet(files = scanned, fromManifest = false))
     }
     case Err(_) -> None
   }

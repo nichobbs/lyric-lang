@@ -250,18 +250,24 @@ func hasCustomGenerator(file: in SourceFile): Bool {
 // it, normalized as `ownPath` is; the file itself is read from `ownSource`,
 // not disk): the type names every file declares (`scopeOfSources`).  An
 // unknown file set (`None`) or an own file that does not parse or carries a
-// custom generator makes it unknown.  `lyric prove <file>` and the LSP take
-// the set from `Lyric.Discovery.packageFilesForSource`, the build's own
-// (#8108).
+// custom generator makes it unknown.  `fromManifest` says the set is a
+// manifest entry's, whose build merges every file whatever its `package`
+// line; otherwise it is the directory-tree fallback, whose own build is the
+// file alone, and a file of another package that does not parse is no part
+// of it.  `lyric prove <file>` and the LSP take the set from
+// `Lyric.Discovery.packageFileSetForSource`, the build's own (#8108).
 pub func scopeFromPackageFiles(
-  packageFiles: in Option[List[String]], ownPath: in String, ownSource: in String
+  packageFiles: in Option[List[String]],
+  fromManifest: in Bool,
+  ownPath: in String,
+  ownSource: in String,
 ): PackageScope {
   val files = match packageFiles { case Some(fs) -> fs; case None -> { return unknownPackageScope() } }
   val own = packageTypesOfSource(ownSource)
   if not own.parsed or own.customGenerator {
     return unknownPackageScope()
   }
-  scopeOfFilesIn(files, ownPath, own.packageName)
+  scopeOfFilesIn(files, ownPath, if fromManifest { "" } else { own.packageName })
 }
 
 // The type names every file of `files` but `skipPath` declares, as
@@ -289,18 +295,19 @@ func scopeOfFilesIn(files: in List[String], skipPath: in String, ownPackage: in 
 // A package build does not parse its files one by one: it strips each
 // file's `package` and `import` lines, concatenates the bodies and parses
 // the result (`Lyric.Emitter.mergePackageSources`), so a file with no
-// `package` line is part of it and its declarations are live (#8214).  Each
-// file is classified the way the build would treat it:
+// `package` line is part of it and its declarations are live (#8214).  The
+// per-file reading here equals that merge once the build merges at the AST
+// level (#8234).  Each file is classified the way the build would treat it:
 //   * one that parses contributes the types it declares;
 //   * one with no `package` line that does not parse alone is parsed again
 //     under a `package` line, as the build reads it, and contributes its
 //     types, or makes the scope unknown when it still does not parse;
-//   * one whose `package` line names another package than `ownPackage` and
-//     that does not parse is skipped: its body fails any build it is part
-//     of, and a single-file set holds every `.l` file under the directory,
-//     whatever its package;
-//   * any other file that does not parse — one of this package, or of a
-//     package not known (`ownPackage` "") — makes the scope unknown.
+//   * when `ownPackage` is given (the directory-tree fallback, whose build
+//     is the proved file alone), one whose `package` line names another
+//     package and that does not parse is skipped;
+//   * any other file that does not parse makes the scope unknown — in a
+//     manifest entry (`ownPackage` "") every file is merged into the build,
+//     whatever its `package` line.
 // A custom generator anywhere makes it unknown: its generated code may
 // declare any type.
 pub func scopeOfSources(sources: in List[String], ownPackage: in String): PackageScope {

@@ -342,9 +342,16 @@ package. A file that parses contributes the types it declares; one with
 no `package` line that does not parse alone is parsed again under one, as
 the build reads it, and makes the scope unknown if it still does not
 parse; one whose `package` line names another package and that does not
-parse is skipped, since its body fails any build it is part of (the
-single-file set is every `.l` file under the directory, whatever its
-package); any other file that does not parse makes the scope unknown.
+parse is skipped only in the directory-tree fallback (no manifest entry
+contains the file, so its own build is the file alone and the set, every
+`.l` file under the directory whatever its package, is an
+over-approximation); in a manifest entry, whose build merges every file
+whatever its `package` line, and for any other file, one that does not
+parse makes the scope unknown. Reading each file on its own equals the
+build's merge only once the merge works on parsed files rather than
+stripped text (#8234): until then a text merge that drops `@` header
+lines can turn a file's commented-out or annotation-swallowed
+declarations into live code the per-file reading does not see.
 
 ### 5.3 Loops
 

@@ -2907,6 +2907,15 @@ test "a sibling file is read the way the package build reads it (#8214)" {
     not scopeOf1("package Elsewhere\nrecord R {\n  val x: Int\n}\n", "").known,
     "an unparseable file, own package unknown"
   )
+  // A manifest entry's build merges every file whatever its `package` line
+  // (`ownPackage` ""): an unparseable file naming another package is merged.
+  val broken = "@runtime_checked(((\npackage Elsewhere\npub union Option[T] {\n  case Some(value: T)\n  case None\n  case Other\n}\n"
+  val inEntry = scopeOf1(broken, "")
+  assertTrue(not inEntry.known, "a manifest entry's unparseable file of another package")
+  val opt = "@proof_required\npackage U\nfunc g(n: in Int): Option[Int]\n  ensures: result.isSome\n{\n  Some(n)\n}\n"
+  val viaEntry = proveSourceInScope(opt, false, inEntry)
+  assertTrue(summaryHasErrorDiag(viaEntry) or summaryHasFailure(viaEntry), "the Option model is not trusted beside it")
+  assertTrue(scopeOf1(broken, "U").known, "the directory fallback skips it")
   assertEqual(headerPackageName("//! doc\n@proof_required\npackage A.B\nfunc f(): Unit {}\n"), "A.B", "header package")
   assertEqual(headerPackageName("pub type C = Int\npackage A\n"), "", "no header package")
 }
