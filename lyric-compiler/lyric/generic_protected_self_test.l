@@ -9,7 +9,10 @@
 //! like a record's: the type arguments are inferred from the field
 //! arguments or taken from the expected type.
 //!
-//! Runs on both targets in CI (`lyric test` and `lyric test --target jvm`).
+//! On `--target native` each instantiation is its own heap layout with a
+//! generic lock/unlock wrapper (D176).
+//!
+//! Runs on all three targets in CI (`lyric test`, `--target jvm`, `--target native`).
 //! Concurrent exclusion and `when:` barriers on a generic protected type are
 //! covered by `protected_exclusion_dotnet_self_test.l` /
 //! `protected_exclusion_jvm_self_test.l`.

@@ -166,39 +166,17 @@ test "protected type ARC: ref field + mutex buffer are torn down cleanly under A
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Generic protected types (#7864): a named diagnostic at the declaration.
+// Generic protected types (#7864): one layout and one set of wrappers per
+// instantiation, ASan-clean (the destructor frees each mutex buffer).
 // ─────────────────────────────────────────────────────────────────────────────
-val genericProtectedSrc: String = "package T\n" + "protected type Cell[V] {\n" + "  var value: V\n" + "  func get(): V {\n" + "    value\n" + "  }\n" + "}\n" + "func main(): Int { 0 }\n"
-
-test "a generic protected type reports N0008 at its declaration" {
-  val pr = parse(genericProtectedSrc)
-  assertTrue(pr.diagnostics.count == 0, "source parses cleanly")
-  val units: List[CodegenUnit] = newList()
-  units.add(unitOfFile("T", pr.file))
-  val diags = nativeGenericProtectedDiagnostics(units)
-  assertTrue(diags.count == 1, "one diagnostic for the one generic protected type")
-  val d = diags[0]
-  assertEqual(d.code, "N0008", "the diagnostic carries the N0008 code")
-  assertEqualInt(d.span.startPos.line, 2, "the diagnostic points at the declaration")
-  assertTrue(Str.contains(d.message, "T.Cell"), "the diagnostic names the type")
-  assertTrue(Str.contains(d.message, "#7864"), "the diagnostic names the tracking issue")
-}
-
-test "a non-generic protected type reports no N0008" {
-  val pr = parse(
-    "package T\nprotected type Tally {\n  var n: Int\n  entry bump() {\n    n = n + 1\n  }\n}\nfunc main(): Int { 0 }\n"
-  )
-  val units: List[CodegenUnit] = newList()
-  units.add(unitOfFile("T", pr.file))
-  assertEqualInt(nativeGenericProtectedDiagnostics(units).count, 0, "no diagnostic")
-}
-
-test "a generic protected type fails the native build cleanly, before codegen" {
-  val dir = Path.join(tempBase(), "lyric-n34-generic-protected")
-  val _ = File.createDir(dir)
-  val stem = Path.join(dir, "t_" + Uuid.uuidToString(Uuid.newUuid()))
-  val noStdlib: List[NativeStdlibFile] = newList()
-  val noFlags: List[String] = newList()
-  val ok = compileToNativeWithFlags(genericProtectedSrc, stem, noStdlib, "", "0", noFlags, newList(), "", true)
-  assertTrue(not ok, "the build fails (Bool false), not an unhandled exception")
+test "a generic protected type is instantiated per type argument under ASan" {
+  val src = "package T\n" +
+    "protected type Cell[V] {\n  var value: V\n  var writes: Int = 0\n  entry set(v: in V) {\n    value = v\n    writes = writes + 1\n  }\n  func get(): V {\n    value\n  }\n  func count(): Int = writes\n}\n" +
+    "func main(): Int {\n" +
+    "  var sum = 0\n  var i = 0\n" +
+    "  while i < 30 {\n    val c = Cell(value = 0)\n    c.set(i)\n    val s: Cell[String] = Cell(value = \"a\")\n    s.set(\"b\" + \"c\")\n    if s.get() == \"bc\" {\n      sum = sum + c.get() + c.count()\n    }\n    i = i + 1\n  }\n" +
+    "  sum - 465\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 0, "30 Int and String cells leak-free; sum(i + 1) == 465")
 }
