@@ -833,6 +833,7 @@ pub union MInsn {
   case MLdelemI8                       // ldelem.i8  — int64 array element (long[])
   case MLdelemR8                       // ldelem.r8  — float64 array element (double[])
   case MLdelemR4                       // ldelem.r4  — float32 array element (float[])
+  case MLdelema(typeToken: Int)        // ldelema — managed pointer to an array element (`T&`)
   case MLdftn(methodToken: Int)        // ldftn — load function pointer (ELEMENT_TYPE_I on stack)
 
   // Exception-handling instructions and meta-instruction
@@ -2738,6 +2739,7 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
     case MThrow -> emitThrow(mb)
     case MLdlen -> emitLdlen(mb)
     case MLdelemRef -> emitLdelem_Ref(mb)
+    case MLdelema(tok) -> emitLdelema(mb, tok)
     case MLdelemU1 -> emitLdelem_U1(mb)
     case MLdelemU2 -> emitLdelem_U2(mb)
     case MLdelemI4 -> emitLdelem_I4(mb)

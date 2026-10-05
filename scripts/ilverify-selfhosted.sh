@@ -228,6 +228,7 @@ SELF_TESTS=(
   lyric-compiler/lyric/async_match_suspend_self_test.l
   lyric-compiler/lyric/method_default_args_self_test.l
   lyric-compiler/lyric/generator_closure_var_capture_self_test.l
+  lyric-compiler/lyric/closure_captured_var_byref_self_test.l
   lyric-compiler/lyric/erased_receiver_narrowing_self_test.l
   lyric-compiler/lyric/erased_receiver_narrowing_dotnet_self_test.l
   lyric-compiler/lyric/impl_generic_target_self_test.l

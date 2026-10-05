@@ -7314,7 +7314,9 @@ func emitLoadVarMsil(fctx: in FuncCtx, insns: in List[MInsn], slot: in Int): Uni
 // `argElem` when that is a class — is stored back to the argument's own
 // location.  `kind` 0 = a local/by-value-param slot, 1 = a forwarded byref
 // slot (store through its pointer), 2 = a field of the receiver saved in
-// `recvSlot`.
+// `recvSlot`, 3 = element 0 of a closure-captured `var`'s heap cell, whose
+// reference is saved in `recvSlot` and whose logical element type is
+// `argElem` (#8189).
 record ByrefWriteBackMsil {
   kind: Int
   slot: Int
@@ -7425,6 +7427,10 @@ func emitByrefArgCheckedMsil(
     case Some(pt) -> match pt { case MByRef(inner) -> Some(value = inner); case _ -> Some(value = pt) }
     case None -> None
   }
+  // A `var` captured by a closure lives in a heap cell, not in its slot.
+  if emitCellByrefArgMsil(cctx, fctx, insns, argExpr, paramElem, pending) {
+    return ()
+  }
   // A field argument: lower the receiver once, then pass the field's own
   // address or, on a type mismatch, a temp copied back through the saved
   // receiver.
@@ -7504,13 +7510,105 @@ func emitByrefArgCheckedMsil(
   }
 }
 
+// Push a closure-captured `var`'s heap cell (#1479 v2) and return its logical
+// element type, or None when `name` is not such a variable.  The lookup order
+// is the one an `EPath` read uses (`lowerExprMsil`): a cell hoisted in this
+// function, then a plain slot (a local that shadows nothing captured), then a
+// cell captured into the enclosing lambda's closure class.
+func emitCapturedCellRefMsil(fctx: in FuncCtx, insns: in List[MInsn], name: in String): Option[MsilType] {
+  match mapGet(fctx.hoistedCellSlot, name) {
+    case Some(cellSlot) -> {
+      emitLoadVarMsil(fctx, insns, cellSlot)
+      return Some(value = match mapGet(fctx.hoistedCellType, name) { case Some(t) -> t; case None -> MObject })
+    }
+    case None -> ()
+  }
+  if fctx.slots.containsKey(name) or not nameListContains(fctx.captureCellNames, name) {
+    return None
+  }
+  match mapGet(fctx.captureNameToIndex, name) {
+    case Some(capIdx) -> match mapGet(fctx.types, "__caps") {
+      case Some(MClass(closureClassName)) -> {
+        emitLoadVarMsil(fctx, insns, 0)
+        insns.add(MLdfldByName(ownerFqn = closureClassName, fieldName = "__f" + toString(capIdx)))
+        Some(value = match mapGet(fctx.captureNameToType, name) { case Some(t) -> t; case None -> MObject })
+      }
+      case _ -> panic(
+        "Msil.Codegen ICE: captured name '" + name +
+          "' has a captureNameToIndex entry but __caps is not a closure class (#7525 invariant violated)"
+      )
+    }
+    case None -> None
+  }
+}
+
+// An `out`/`inout` argument naming a `var` that a closure captures (#8189).
+// The variable lives in element 0 of a one-element heap cell shared with the
+// closure, so its slot holds the cell reference, not the value: the address
+// passed must be the element's (`ldelema`), which makes the callee's writes
+// visible to the closure as they happen.  A cell whose storage element type
+// is not the parameter's pointee (an `object` cell for a record, union or
+// collection, `cellStorageElemTyMsil`) cannot be aliased by a `T&`, since
+// managed pointers are invariant; the value goes through a temp of the
+// pointee type that is stored back into the cell after the call, the
+// copy-in/copy-out `emitByrefArgCheckedMsil` uses for any such mismatch.
+// Returns false, emitting nothing, when the argument is not a captured `var`.
+func emitCellByrefArgMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  argExpr: in Expr,
+  paramElem: in Option[MsilType],
+  pending: in List[ByrefWriteBackMsil],
+): Bool {
+  val name = match argExpr.kind { case EPath(path) -> lastSegmentMsil(path); case _ -> "" }
+  if name == "" {
+    return false
+  }
+  val elemTy = match emitCapturedCellRefMsil(fctx, insns, name) { case Some(t) -> t; case None -> return false }
+  val storageTy = cellStorageElemTyMsil(elemTy)
+  val pe = match paramElem { case Some(t) -> t; case None -> elemTy }
+  if storageTy == pe {
+    insns.add(MLdcI4(v = 0))
+    match arrayElemTokenOpt(cctx, storageTy) {
+      case Some(tok) -> insns.add(MLdelema(typeToken = tok))
+      case None -> panic("Msil.Codegen: hoisted-var cell storage type has no array element token (invariant violation)")
+    }
+    return true
+  }
+  val cellSlot = allocSlotMsil(fctx, "__byref_cell_" + toString(fctx.slotTicker.count), cellArrayTyMsil(elemTy))
+  emitStoreSlot(insns, cellSlot, fctx.paramCount)
+  val tempSlot = allocSlotMsil(fctx, "__byref_tmp_" + toString(fctx.slotTicker.count), pe)
+  emitLoadSlot(insns, cellSlot, fctx.paramCount)
+  insns.add(MLdcI4(v = 0))
+  emitCellElemLoadMsil(cctx, insns, elemTy)
+  narrowToClassMsil(insns, pe)
+  emitStoreSlot(insns, tempSlot, fctx.paramCount)
+  insns.add(MLdloca(slot = tempSlot - fctx.paramCount))
+  pending.add(
+    ByrefWriteBackMsil(kind = 3, slot = -1, tempSlot = tempSlot, argElem = elemTy, recvSlot = cellSlot, fieldTok = 0)
+  )
+  true
+}
+
 // Store each pending temp back into its argument (`emitByrefArgCheckedMsil`).
 // Stack-neutral, so it runs after the call with the result still on the stack.
-func emitByrefWriteBacksMsil(fctx: in FuncCtx, insns: in List[MInsn], pending: in List[ByrefWriteBackMsil]): Unit {
+func emitByrefWriteBacksMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  pending: in List[ByrefWriteBackMsil],
+): Unit {
   var i = 0
   while i < pending.count {
     val wb = pending[i]
-    if wb.kind == 2 {
+    if wb.kind == 3 {
+      emitLoadSlot(insns, wb.recvSlot, fctx.paramCount)
+      insns.add(MLdcI4(v = 0))
+      emitLoadSlot(insns, wb.tempSlot, fctx.paramCount)
+      narrowToClassMsil(insns, wb.argElem)
+      emitCellElemStoreMsil(cctx, insns, wb.argElem)
+    } else if wb.kind == 2 {
       emitLoadSlot(insns, wb.recvSlot, fctx.paramCount)
       emitLoadSlot(insns, wb.tempSlot, fctx.paramCount)
       narrowToClassMsil(insns, wb.argElem)
@@ -20235,7 +20333,7 @@ func lowerBuiltinOrStaticCallMsil(
                     }
                   }
                   insns.add(MCall(methodToken = tok))
-                  emitByrefWriteBacksMsil(fctx, insns, byrefPending)
+                  emitByrefWriteBacksMsil(cctx, fctx, insns, byrefPending)
                   match mapGet(cctx.funcRetTypes, tokKey) {
                     case Some(rt) -> rt
                     case None -> MObject
@@ -20300,7 +20398,7 @@ func lowerBuiltinOrStaticCallMsil(
                 si = si + 1
               }
               insns.add(MCallvirt(methodToken = sibTok))
-              emitByrefWriteBacksMsil(fctx, insns, sibByrefPending)
+              emitByrefWriteBacksMsil(cctx, fctx, insns, sibByrefPending)
               // A bare sibling call to a `Self`-returning method narrows
               // against the enclosing method's own class (#6434/#6435,
               // mirroring JVM's #6431/#6437 bare-sibling narrowing) — for a
@@ -21420,7 +21518,7 @@ func lowerMethodCallMsil(
             i = i + 1
           }
           insns.add(MCallvirt(methodToken = tok))
-          emitByrefWriteBacksMsil(fctx, insns, byrefPending)
+          emitByrefWriteBacksMsil(cctx, fctx, insns, byrefPending)
           // Report the method's real declared return type so callers — most
           // importantly a `match` scrutinee — track the actual union/record
           // type rather than `object`.  Tracking `object` made union pattern
@@ -21539,7 +21637,7 @@ func lowerMethodCallMsil(
             retType = openRetTy
           )
         )
-        emitByrefWriteBacksMsil(fctx, insns, byrefPendingG)
+        emitByrefWriteBacksMsil(cctx, fctx, insns, byrefPendingG)
         // A `Self`-declared return narrows to the receiver's own CLOSED
         // instantiation (#6443 review): `func withV(self: in Box[T], v: T):
         // Self` called on a `Box[Int]` yields a `Box[Int]` — the generic
@@ -25267,6 +25365,7 @@ func insnStackDelta(insn: in MInsn): Int {
     case MLdelemI8 -> -1
     case MLdelemR8 -> -1
     case MLdelemR4 -> -1
+    case MLdelema(_) -> -1
     case MLdftn(_) -> 1
     case MLeave(_) -> 0
     case MEndfinally -> 0
