@@ -748,12 +748,16 @@ pub func pipeCheckAndMono(
 
   val noSpecSites: Map[String, Map[String, ArgConversionSite]] = newMap()
   val lambdaTypes = funcValueLambdaTypes(valueSites)
-  val derivedLens0 = markValueRecordCtors(
-    withArrayLens(
-      rewriteDottedGenericCalls(derived, tcRes.symbols.dottedGenericCallSites),
-      tcRes.symbols.arrayTypeLens
+  val noUnionSites: Map[String, ValueUnionCtorSite] = newMap()
+  val derivedLens0 = markValueUnionCtors(
+    markValueRecordCtors(
+      withArrayLens(
+        rewriteDottedGenericCalls(derived, tcRes.symbols.dottedGenericCallSites),
+        tcRes.symbols.arrayTypeLens
+      ),
+      tcRes.symbols.valueRecordCtorSites
     ),
-    tcRes.symbols.valueRecordCtorSites
+    if opts.arraysAsLists { noUnionSites } else { tcRes.symbols.valueUnionCtorSites }
   )
   val derivedLens = if opts.nativeIntrinsics {
     spellLambdaGenericCallTypeArgs(derivedLens0, tcRes.symbols.genericCallTypeArgSites)
@@ -850,7 +854,7 @@ pub func pipeCheckAndMono(
   if gate(opts.pkgLabel, opts.lineOrigins, monoRes.diagnostics) {
     return None
   }
-  match finishValueRecords(lowerSpecArrays(monoRes.file, specArrays, opts.primitiveArrays), file0, importedPkgs, tcRes, opts) {
+  match finishValueRecords(lowerSpecArrays(monoRes.file, specArrays, opts.primitiveArrays, not opts.arraysAsLists), file0, importedPkgs, tcRes, opts) {
     case Some(f) -> Some(value = finishMono(f, opts))
     case None -> None
   }
@@ -917,6 +921,9 @@ pub record SpecArraySites {
   /// (D169): a generic from another package reaches this file with none of
   /// its constructions marked.
   valueCtors: Map[String, List[TypeArg]]
+  /// Each construction of a case of a union with value generic parameters,
+  /// for a target with one union per length (#8149).
+  valueUnionCtors: Map[String, ValueUnionCtorSite]
 }
 
 // A specialisation binding a type parameter to `UInt`/`ULong` or to an array
@@ -1369,7 +1376,8 @@ func specArraySitesNonEmpty(sa: in SpecArraySites): Bool {
     sa.recordEq.count > 0 or
     sa.wrapEq.count > 0 or
     sa.lens.count > 0 or
-    sa.valueCtors.count > 0
+    sa.valueCtors.count > 0 or
+    sa.valueUnionCtors.count > 0
 }
 
 func specArraySitesOf(
@@ -1398,7 +1406,8 @@ func specArraySitesOf(
     recordEq = siteSlice(syms.recordEqSites, p.recordEqSites, usePrior, lo, hi),
     wrapEq = siteSlice(syms.wrapEqSites, p.wrapEqSites, usePrior, lo, hi),
     lens = siteSlice(syms.arrayTypeLens, p.arrayTypeLens, usePrior, fnLo, fnHi),
-    valueCtors = siteSlice(syms.valueRecordCtorSites, p.valueRecordCtorSites, usePrior, lo, hi)
+    valueCtors = siteSlice(syms.valueRecordCtorSites, p.valueRecordCtorSites, usePrior, lo, hi),
+    valueUnionCtors = siteSlice(syms.valueUnionCtorSites, p.valueUnionCtorSites, usePrior, lo, hi)
   )
 }
 
@@ -1472,7 +1481,10 @@ func withArrayLens(file: in SourceFile, lens: in Map[String, Int]): SourceFile {
 // function's body: each function is lowered on its own, because the
 // specialisations of one generic share its source spans.
 func lowerSpecArrays(
-  file: in SourceFile, specArrays: in Map[String, SpecArraySites], primitiveArrays: in Bool
+  file: in SourceFile,
+  specArrays: in Map[String, SpecArraySites],
+  primitiveArrays: in Bool,
+  unionPerLength: in Bool,
 ): SourceFile {
   if specArrays.count == 0 {
     return file
@@ -1495,7 +1507,10 @@ func lowerSpecArrays(
           val arraySites = if primitiveArrays { sa.arrays } else { sa.arrays.copy(literal = newMap()) }
           val lowered = lowerArrays(
             lowerRecordEq(
-              markValueRecordCtors(withArrayLens(oneFile, sa.lens), sa.valueCtors),
+              markValueUnionCtors(
+                markValueRecordCtors(withArrayLens(oneFile, sa.lens), sa.valueCtors),
+                if unionPerLength { sa.valueUnionCtors } else { noUnionCtorSites() }
+              ),
               sa.recordEq,
               sa.arrayEq,
               sa.wrapEq
@@ -1624,6 +1639,55 @@ func rewriteDottedGenericCalls(file: in SourceFile, sites: in Map[String, Dotted
 // ─────────────────────────────────────────────────────────────────────────────
 // Value-generic records (D169).
 // ─────────────────────────────────────────────────────────────────────────────
+// On a target with one union per length (native), each construction of a
+// case of a union with value generic parameters, and each reference to a
+// case with no fields, is spelled with its union and lengths before
+// monomorphisation (`Shape.Poly[3](pts = a)`); `specialiseValueRecords` makes
+// it a construction of the specialisation's case (`Shape__V3.Poly(pts = a)`),
+// since every specialisation has the same case names (#8149).
+func markValueUnionCtors(file: in SourceFile, sites: in Map[String, ValueUnionCtorSite]): SourceFile {
+  if sites.count == 0 {
+    return file
+  }
+  mapExprsInFile(
+    file,
+    { e: Expr ->
+      match mapGet(sites, recordCopySiteKey(e.span)) {
+        case Some(site) -> match e.kind {
+          case ECall(fn, args) -> match valueUnionCaseRef(fn, site) {
+            case Some(m) -> Expr(
+              kind = ECall(fn = m, args = args),
+              span = e.span
+            )
+            case None -> e
+          }
+          case EPath(_) -> match valueUnionCaseRef(e, site) { case Some(m) -> m; case None -> e }
+          case EMember(_, _) -> match valueUnionCaseRef(e, site) { case Some(m) -> m; case None -> e }
+          case _ -> e
+        }
+        case None -> e
+      }
+    }
+  )
+}
+
+func valueUnionCaseRef(fn: in Expr, site: in ValueUnionCtorSite): Option[Expr] {
+  val caseName = match fn.kind {
+    case EPath(p) -> p.segments[p.segments.count - 1]
+    case EMember(_, m) -> m
+    case _ -> return None
+  }
+  val segs: List[String] = newList()
+  segs.add(site.unionName)
+  segs.add(caseName)
+  val path = Expr(kind = EPath(path = ModulePath(segments = segs, span = fn.span)), span = fn.span)
+  Some(value = Expr(kind = ETypeApp(fn = path, args = site.lengths), span = fn.span))
+}
+
+func noUnionCtorSites(): Map[String, ValueUnionCtorSite] {
+  newMap()
+}
+
 // Before monomorphisation each construction of a value-generic record is
 // spelled with its instance's lengths (`Ints[3](data = a)`, or `Ints[N]()`
 // inside a value-generic body, which `Lyric.Mono` makes concrete in each
@@ -1663,10 +1727,17 @@ func markValueRecordCtors(file: in SourceFile, sites: in Map[String, List[TypeAr
   )
 }
 
+/// A record, exposed record, opaque type or union with value generic
+/// parameters, as a record: an opaque type's fields and invariants are a
+/// record's, a union's case fields are its fields in order, and
+/// `recordItemLike` puts a specialised or erased one back as what it was
+/// (#8149).
 pub func valueGenericRecordDecl(it: in Item): Option[RecordDecl] {
   val dOpt = match it.kind {
     case IRecord(d) -> Some(value = d)
     case IExposedRec(d) -> Some(value = d)
+    case IOpaque(od) -> if od.hasBody { Some(value = opaqueAsRecord(od)) } else { None }
+    case IUnion(ud) -> Some(value = unionAsRecord(ud))
     case _ -> None
   }
   match dOpt {
@@ -1807,8 +1878,94 @@ func oneItemFile(file: in SourceFile, it: in Item): SourceFile {
 func recordItemLike(it: in Item, d: in RecordDecl): Item {
   match it.kind {
     case IExposedRec(_) -> it.copy(kind = IExposedRec(decl = d), span = it.span)
+    case IOpaque(od) -> it.copy(kind = IOpaque(decl = recordAsOpaque(od, d)), span = it.span)
+    case IUnion(ud) -> it.copy(kind = IUnion(decl = recordAsUnion(ud, d)), span = it.span)
     case _ -> it.copy(kind = IRecord(decl = d), span = it.span)
   }
+}
+
+// A union's case fields, in order, as a record's fields: specialising or
+// erasing a union changes only its name, generic parameters and field types.
+func unionAsRecord(ud: in UnionDecl): RecordDecl {
+  val members: List[RecordMember] = newList()
+  val noAnnotations: List[Annotation] = newList()
+  val noDocs: List[DocComment] = newList()
+  for c in ud.cases {
+    var i = 0
+    for f in c.fields {
+      val ty = match f { case UFNamed(_, t, _) -> t; case UFPos(t, _) -> t }
+      val sp = match f { case UFNamed(_, _, fsp) -> fsp; case UFPos(_, fsp) -> fsp }
+      members.add(
+        RMField(
+          field = FieldDecl(
+            docComments = noDocs,
+            annotations = noAnnotations,
+            visibility = None,
+            isMutable = false,
+            name = c.name + "." + toString(i),
+            ty = ty,
+            dflt = None,
+            span = sp
+          )
+        )
+      )
+      i = i + 1
+    }
+  }
+  RecordDecl(name = ud.name, generics = ud.generics, whereClause = ud.whereClause, members = members, span = ud.span)
+}
+
+// `like` with the name, generic parameters and field types of `d`, a record
+// view of it (`unionAsRecord`) that has been specialised or erased.
+func recordAsUnion(like: in UnionDecl, d: in RecordDecl): UnionDecl {
+  val tys: List[TypeExpr] = newList()
+  for m in d.members {
+    match m {
+      case RMField(f) -> tys.add(f.ty)
+      case _ -> ()
+    }
+  }
+  val cases: List[UnionCase] = newList()
+  var k = 0
+  for c in like.cases {
+    val fields: List[UnionField] = newList()
+    for f in c.fields {
+      fields.add(
+        match f {
+          case UFNamed(nm, _, fsp) -> UFNamed(name = nm, ty = tys[k], span = fsp)
+          case UFPos(_, fsp) -> UFPos(ty = tys[k], span = fsp)
+        }
+      )
+      k = k + 1
+    }
+    cases.add(c.copy(fields = fields))
+  }
+  like.copy(name = d.name, generics = d.generics, whereClause = d.whereClause, cases = cases)
+}
+
+func opaqueAsRecord(od: in OpaqueTypeDecl): RecordDecl {
+  val members: List[RecordMember] = newList()
+  for m in od.members {
+    match m {
+      case OMField(f) -> members.add(RMField(field = f))
+      case OMInvariant(inv) -> members.add(RMInvariant(inv = inv))
+    }
+  }
+  RecordDecl(name = od.name, generics = od.generics, whereClause = od.whereClause, members = members, span = od.span)
+}
+
+// `like` with the name, generic parameters and members of `d`, a record view
+// of it that has been specialised or erased.
+func recordAsOpaque(like: in OpaqueTypeDecl, d: in RecordDecl): OpaqueTypeDecl {
+  val members: List[OpaqueMember] = newList()
+  for m in d.members {
+    match m {
+      case RMField(f) -> members.add(OMField(field = f))
+      case RMInvariant(inv) -> members.add(OMInvariant(inv = inv))
+      case RMFunc(_) -> ()
+    }
+  }
+  like.copy(name = d.name, generics = d.generics, whereClause = d.whereClause, members = members)
 }
 
 // Every specialisation of the value-generic records in `file` (D169),
@@ -2079,10 +2236,10 @@ func lowerValueRecordSpecs(
 }
 
 // On a target whose `array[N, T]` carries no length (dotnet and the JVM),
-// a value-generic record is one runtime type with its value parameters
-// erased (D173 item 1): the record declared here loses them, and every
-// instance of it or of one imported, `Ints[3]` or `FixedVec[T, 3]`, names
-// the erased record.  Its methods are already value-generic functions
+// a value-generic record or union is one runtime type with its value
+// parameters erased (D173 item 1, #8149): the type declared here loses them,
+// and every instance of it or of one imported, `Ints[3]` or `FixedVec[T, 3]`,
+// names the erased type.  Its methods are already value-generic functions
 // specialised per length (`hoistValueRecordMethods`).
 func eraseValueRecords(file: in SourceFile, importedPkgs: in List[ImportedPackage]): SourceFile {
   // The pool of imported packages also holds this package's own items.

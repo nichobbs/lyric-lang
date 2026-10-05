@@ -47,7 +47,11 @@ pub func hoistValueRecordMethods(file: in SourceFile): SourceFile {
 }
 
 func recordHasValueGenerics(d: in RecordDecl): Bool {
-  match d.generics {
+  genericsHaveValue(d.generics)
+}
+
+func genericsHaveValue(generics: in Option[GenericParams]): Bool {
+  match generics {
     case Some(gp) -> {
       for p in gp.params {
         match p {
@@ -711,6 +715,7 @@ func contractShapeKey(it: in Item): String {
     case IRecord(d) -> "r:" + d.name
     case IExposedRec(d) -> "x:" + d.name
     case IUnion(d) -> "u:" + d.name
+    case IOpaque(d) -> "o:" + d.name
     case _ -> ""
   }
 }
@@ -737,9 +742,14 @@ func itemAsWritten(pre: in Item, post: in Item): Item {
       case IFunc(d) -> post.copy(kind = IFunc(decl = funcTypesAsWritten(pd, d)))
       case _ -> post
     }
-    case IUnion(pd) -> match post.kind {
-      case IUnion(d) -> post.copy(kind = IUnion(decl = unionTypesAsWritten(pd, d)))
-      case _ -> post
+    case IOpaque(pd) -> if genericsHaveValue(pd.generics) { pre } else { post }
+    case IUnion(pd) -> if genericsHaveValue(pd.generics) {
+      pre
+    } else {
+      match post.kind {
+        case IUnion(d) -> post.copy(kind = IUnion(decl = unionTypesAsWritten(pd, d)))
+        case _ -> post
+      }
     }
     case _ -> post
   }

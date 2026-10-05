@@ -10091,25 +10091,23 @@ func lowerGenericCaseConstruct(
     fi2 = fi2 + 1
   }
   val envNames = genericParamNamesOf(ud.generics)
+  // Each parameter binds from the field types that mention it, structurally
+  // (`items: array[2, T]` binds `T` from the array's element), as a generic
+  // call's arguments do.
+  val boundNames: List[String] = newList()
+  val boundTys: List[NType] = newList()
+  var fj = 0
+  while fj < cd.fields.count {
+    unifyTyArg(ctx, unionFieldTy(cd.fields[fj]), rawVals[fj].ty, envNames, boundNames, boundTys)
+    fj = fj + 1
+  }
   val envTys: List[NType] = newList()
   var pi = 0
   while pi < envNames.count {
-    var found = false
-    var fj = 0
-    while fj < cd.fields.count {
-      if not found {
-        match unionFieldTy(cd.fields[fj]).kind {
-          case TRef(path) -> {
-            if path.segments.count == 1 and path.segments[0] == envNames[pi] {
-              envTys.add(rawVals[fj].ty)
-              found = true
-            }
-          }
-          case _ -> {
-          }
-        }
-      }
-      fj = fj + 1
+    val bi = envIndexOf(boundNames, envNames[pi])
+    val found = bi >= 0
+    if found {
+      envTys.add(boundTys[bi])
     }
     if not found {
       panic(

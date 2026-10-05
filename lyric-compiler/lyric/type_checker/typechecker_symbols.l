@@ -168,6 +168,15 @@ pub record DottedGenericCall {
   receiverFirst: Bool
 }
 
+/// A construction of a case of a union with value generic parameters
+/// (#8149): the union, and the value arguments of the instance it builds, in
+/// parameter order, as a literal length or the name of an enclosing value
+/// generic parameter.
+pub record ValueUnionCtorSite {
+  unionName: String
+  lengths: List[TypeArg]
+}
+
 @stable(since = "0.1")
 pub record SymbolTable {
   symbols: List[Symbol]
@@ -506,6 +515,11 @@ pub record SymbolTable {
   /// parameter.  The middle end spells them on the call before
   /// monomorphisation, so a specialised body's constructions are concrete.
   valueRecordCtorSites: Map[String, List[TypeArg]]
+  /// Each construction of a case of a union with value generic parameters,
+  /// keyed by the construction's span, at the instance it is typed as
+  /// (#8149).  Native specialises such a union per length, so the middle end
+  /// names the specialisation on each construction.
+  valueUnionCtorSites: Map[String, ValueUnionCtorSite]
   /// A value-generic record's length argument written as a constant
   /// (`Grid[Width, 2]`), keyed by the argument's span: its value.
   valueTypeArgSites: Map[String, Int]
@@ -695,6 +709,7 @@ pub func newSymbolTable(): SymbolTable {
     arrayCtorZeroArgs = newMap(),
     arrayLiteralSites = newMap(),
     valueRecordCtorSites = newMap(),
+    valueUnionCtorSites = newMap(),
     valueTypeArgSites = newMap(),
     overflowSites = newMap(),
     overflowCompoundTemps = newMap(),

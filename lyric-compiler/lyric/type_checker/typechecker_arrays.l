@@ -1072,6 +1072,37 @@ func recordFieldsHoldArray(tbl: in SymbolTable, tid: in TypeId, seen: in List[In
   false
 }
 
+/// Whether `t` mentions a generic parameter: a type variable, or a value
+/// generic parameter that is an array's length (`array[N, Int]`, D169).
+pub func typeMentionsGenericParam(t: in Type): Bool {
+  match t {
+    case TyArray(sz, el, sv) -> match sz {
+      case None -> sv.length > 0 or typeMentionsGenericParam(el)
+      case Some(_) -> typeMentionsGenericParam(el)
+    }
+    case TyRefined(u, _, _, _, _) -> typeMentionsGenericParam(u)
+    case TyNullable(inner) -> typeMentionsGenericParam(inner)
+    case TySlice(el) -> typeMentionsGenericParam(el)
+    case TyTuple(elems) -> {
+      for el in elems {
+        if typeMentionsGenericParam(el) {
+          return true
+        }
+      }
+      false
+    }
+    case TyUser(_, _, args) -> {
+      for a in args {
+        if typeMentionsGenericParam(a) {
+          return true
+        }
+      }
+      false
+    }
+    case _ -> typeMentionsTyVar(t)
+  }
+}
+
 /// Whether `t` mentions a type variable anywhere.
 pub func typeMentionsTyVar(t: in Type): Bool {
   match t {

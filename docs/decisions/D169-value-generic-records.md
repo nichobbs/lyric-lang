@@ -22,7 +22,8 @@ is **T0160** where it is declared. This entry settles how it works.
    inside a tuple or a generic argument) and may be used as a value in the
    record's methods and invariants, where it is the instance's length.
    Unions, opaque types and protected types keep **T0160** for now; their
-   value parameters are a follow-up (#8149).
+   value parameters are a follow-up (#8149). (Unions and opaque types:
+   SUPERSEDED by D175.)
 
 2. **The type.** `FixedVec[Int, 3]` names an instance. Each argument must
    be of its parameter's kind:

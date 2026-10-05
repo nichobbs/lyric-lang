@@ -2,6 +2,8 @@
 //! its array fields.  Each length a program uses is a separate type, built,
 //! read, written, compared and given to methods like a record with a literal
 //! length; its methods are value-generic functions named after it (D173).
+//! An opaque type and a union take a length parameter in the same way
+//! (#8149).
 //! Run on dotnet, the JVM and native.
 @test_module
 package Lyric.ValueGenericRecordSelfTest
@@ -58,6 +60,70 @@ record Shaded[N: Nat] {
   func twice(self: in Shaded[N]): Int = viaField() * 2
 
   func same(self: in Shaded[N]): Self = self
+}
+
+opaque type Window[N: Nat] {
+  var cells: array[N, Int]
+}
+
+func Window.total[N: Nat](self: in Window[N]): Int {
+  var t = 0
+  for c in self.cells {
+    t = t + c
+  }
+  t
+}
+
+func Window.width[N: Nat](self: in Window[N]): Int = self.cells.length
+
+func makeWindow(a: in Int, b: in Int, c: in Int): Window[3] {
+  val xs: array[3, Int] = [a, b, c]
+  Window(cells = xs)
+}
+
+func blankWindow[N: Nat](): Window[N] = Window()
+
+union Shape[N: Nat] {
+  case Poly(pts: array[N, Int])
+  case Named(names: array[N, String], tag: Int)
+  case Empty
+}
+
+union Tagged[T, N: Nat] {
+  case Many(items: array[N, T])
+  case One(item: T)
+}
+
+func Shape.size[N: Nat](self: in Shape[N]): Int {
+  match self {
+    case Poly(p) -> p.length
+    case Named(ns, _) -> ns.length
+    case Empty -> 0
+  }
+}
+
+func polySum[N: Nat](s: in Shape[N]): Int {
+  match s {
+    case Shape.Poly(p) -> {
+      var t = 0
+      for x in p {
+        t = t + x
+      }
+      t
+    }
+    case _ -> -1
+  }
+}
+
+func wrapPoly[N: Nat](xs: in array[N, Int]): Shape[N] = Poly(pts = xs)
+
+func emptyShape[N: Nat](): Shape[N] = Shape.Empty
+
+func taggedCount[T, N: Nat](t: in Tagged[T, N]): Int {
+  match t {
+    case Many(items) -> items.length
+    case One(_) -> 1
+  }
 }
 
 val Width = 4
@@ -148,4 +214,44 @@ test "a method reads fields and calls methods without self, and names Self" {
   assertEqualInt(s.viaField(), 10, "a bare field read")
   assertEqualInt(s.twice(), 20, "a bare call of another method")
   assertEqualInt(s.same().size, 7, "Self is the instance type")
+}
+
+test "an opaque type takes a length parameter like a record" {
+  val w = makeWindow(1, 2, 3)
+  assertEqualInt(w.total(), 6, "built at length 3")
+  assertEqualInt(w.width(), 3, "its array has the instance length")
+  val b: Window[5] = blankWindow[5]()
+  assertEqualInt(b.width() + b.total(), 5, "zero filled from the type")
+}
+
+test "a union's length parameter sizes its case fields" {
+  val a: array[3, Int] = [1, 2, 3]
+  val s = Poly(pts = a)
+  assertEqualInt(s.size(), 3, "a case built at length 3")
+  assertEqualInt(polySum(s), 6, "read through a qualified pattern")
+  val b: array[2, Int] = [4, 5]
+  val s2 = wrapPoly(b)
+  assertEqualInt(polySum(s2) * 10 + s2.size(), 92, "built in a value-generic function at length 2")
+  val e: Shape[3] = Empty
+  assertEqualInt(e.size() + polySum(e), -1, "a case with no fields, at the expected length")
+  val e4 = emptyShape[4]()
+  assertEqualInt(e4.size(), 0, "a qualified case with no fields in a value-generic function")
+  val ns: array[2, String] = ["x", "y"]
+  val n = Named(names = ns, tag = 7)
+  match n {
+    case Named(got, tag) -> assertEqual(got[1] + tag.toString(), "y7", "a heap element array")
+    case _ -> assertTrue(false, "Named expected")
+  }
+  assertEqualInt(n.size(), 2, "its length")
+}
+
+test "a union with a type and a length parameter" {
+  val ns: array[2, String] = ["p", "q"]
+  val m = Many(items = ns)
+  assertEqualInt(taggedCount(m), 2, "a case sized by the length")
+  val o: Tagged[Int, 4] = One(item = 9)
+  match o {
+    case One(v) -> assertEqualInt(v + taggedCount(o), 10, "a case of the type parameter")
+    case Many(_) -> assertTrue(false, "One expected")
+  }
 }

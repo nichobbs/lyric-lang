@@ -2206,9 +2206,10 @@ func checkArrayFieldDerives(
   }
 }
 
-// A record's value generic parameter may size its array fields (D169), but a
-// union's, opaque type's or protected type's may not yet (#8149): each length
-// needs its own specialised type, which `Lyric.Mono` builds for records only.
+// A record's, opaque type's or union's value generic parameter may size its
+// array fields (D169, #8149), but a protected type's may not yet: each length
+// needs its own layout on native, and native has no generic protected types
+// (#7864).
 func checkValueGenericArrayFields(
   diag: in List[Diagnostic],
   typeName: in String,
@@ -2237,7 +2238,7 @@ func reportValueGenericArrayLengths(
           errorDiagnostic(
             "T0160",
             "an array whose length is the value generic parameter '" + p + "' of '" + typeName +
-              "' is supported in a record, not yet in a union, opaque type or protected type (#8149)",
+              "' is supported in a record, opaque type or union, not yet in a protected type (#7864)",
             te.span
           )
         )
@@ -4037,7 +4038,6 @@ func checkDeclTypeRefs(tbl: in SymbolTable, diag: in List[Diagnostic], items: in
           unionFieldTypeExprs(decl),
           decl.span
         )
-        checkValueGenericArrayFields(diag, decl.name, decl.generics, unionFieldTypeExprs(decl))
       }
       case IInterface(decl) -> {
         checkInterfaceDeclTypes(tbl, diag, decl)
@@ -4045,7 +4045,6 @@ func checkDeclTypeRefs(tbl: in SymbolTable, diag: in List[Diagnostic], items: in
       }
       case IOpaque(decl) -> {
         checkOpaqueDeclTypes(tbl, diag, decl)
-        checkValueGenericArrayFields(diag, decl.name, decl.generics, opaqueFieldTypeExprs(decl))
       }
       case IProtected(decl) -> {
         checkProtectedDeclTypes(tbl, diag, decl)
