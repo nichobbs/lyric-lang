@@ -276,7 +276,7 @@ Lyric.Verifier/
 | `slice[T]` of compile-time-bounded length | array sort with separate length | length axiom asserts `0 ≤ length ≤ N` |
 | `slice[T]` unbounded      | uninterpreted sort + length function          | `forall` over its elements requires explicit bound (§4.2 §11) |
 | opaque type               | SMT-LIB datatype with one private field       | fields are not exported across packages — the VC generator inlines invariant facts but not the representation |
-| function type             | uninterpreted sort + apply axiom (`@pure` only)| non-`@pure` functions cannot appear as values in contracts |
+| function type             | uninterpreted sort `Function`                | a function the file declares, named as a value, is one symbol per function; a call through a binding holding one is a call of that function, otherwise a fresh result (#8109) |
 | `Result[T, E]`            | the standard Lyric-defined two-arm union; treated as datatype | |
 | protected-type ref        | fields bound as symbolic `Real`/`Int`/… vars | per-entry sequential reasoning via `goalsForProtectedType`; `invariant:` clauses are `requires:` hypotheses on each entry and `ensures:` obligations over the values its `var` fields hold when it returns (#8102) |
 
@@ -369,6 +369,40 @@ At a call the callee's contract is instantiated with the argument each
 parameter receives: named arguments by name, positional ones in order
 into the remaining parameters, an omitted parameter by its default, and a
 record constructor's fields likewise (#7873).
+
+Two values the program can tell apart never share a term (#8109):
+
+- A free or static call of a function the file declares is the callee
+  applied to its arguments only when the callee is `@pure` — two calls
+  with equal arguments are then equal. Any other callee's result is a
+  value of its own at each call site, so `f(x) == f(x)` is not provable
+  for a counter or a random source; its `ensures:` still says what the
+  result is. A `@pure` body the verifier cannot translate faithfully
+  (V0033) is not assumed, and the call keeps its congruence and contract.
+  `@pure` is read from the declaration in the file being proved; `lyric
+  prove` does not read other packages' contract metadata, so a callee
+  declared elsewhere (another file, another package, the standard
+  library) is not known to be pure and its result is a value of its own
+  at each call, in a body or a contract alike.
+- A function the file declares, named as a value (`val h = sq`), is one
+  value per function. A call through a binding that holds one calls that
+  function, as it holds it at the call: after `h = other` the call is
+  `other`'s. A binding holding anything else — a lambda, a parameter, a
+  value a loop has havocked — is called as a computed callee, a fresh
+  result.
+- Every binding has a value of its own. Each name a destructuring `val`
+  pattern binds is a fresh unknown (the verifier does not take values
+  apart), so the same name in two patterns never denotes one value. A
+  name no binding declares is module-level, where a `val` never changes;
+  it is the symbol `global!<name>`, apart from any parameter or binding
+  spelt the same. An assignment to such a name fails closed (V0026).
+- An `if` statement's branches, and function, lambda and loop bodies,
+  are scopes. The walk appends the rest of the block to each branch, so
+  a branch ends with a marker that restores every binding it shadowed
+  (or unbinds a name it introduced), with its value and mutability as of
+  the shadowing. While an `out`/`inout` parameter or a loop-changed
+  variable is shadowed, the postcondition's placeholder for it reads the
+  shadowed binding, which cannot change meanwhile.
 
 A method call `recv.m(args)` reaches a dot-named `func R.m(self: R, ...)`
 the file declares when `recv` is a value of the file's record (or
@@ -565,13 +599,13 @@ As a backstop, contracts and defaults unfold inside one another at most
 32 deep; past that the call fails closed (`V0033`).
 
 A local binding shadows a file function of the same name: `val f = ...;
-f(x)` is a call through a computed callee (a fresh result, its mutable
-arguments reset). Inside a protected type, `self.m()` fails closed like a
+f(x)` is a call through the binding — of the file function it holds, if
+it holds one by name, otherwise a computed callee (a fresh result, its
+mutable arguments reset). Inside a protected type, `self.m()` fails closed like a
 bare `m()`, as does a method call on any receiver the verifier does not
 model (V0024).
 
-Known limitations, tracked separately: term identity for impure free calls, reassigned function values,
-unbound names and `if`-branch locals (#8109); no heap model, and record
+Known limitations, tracked separately: no heap model, and record
 methods never verified (#8110); a callee's `ensures:` about an
 `out`/`inout` parameter not linked back to the argument (#8111);
 `Float`/`Double` as SMT reals (#8141); the value of an expression `match`

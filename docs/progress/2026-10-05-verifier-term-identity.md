@@ -1,0 +1,71 @@
+# Verifier: distinct values never share a term (#8109)
+
+`lyric prove` gave two values the program can tell apart the same SMT
+term in four places, so it proved claims a run violates. Each is now a
+value of its own, or keeps its precision where the identity is real.
+
+- **Calls of functions that are not `@pure`.** A free or static call of a
+  function the file declares was the callee applied to its arguments, so
+  `tick(x) == tick(x)` was proved for a counter. `translateResolvedCall`
+  now applies the callee only when it is `@pure`; any other call's result
+  is a fresh value at its call site (`callResultTerm`), with the callee's
+  `ensures:` still assumed about it. This is the mechanism method calls
+  got in #8101, now used by every resolved call. A callee the file does
+  not declare (another file's, another package's, the standard library's)
+  was keyed by name and arguments; `lyric prove` does not read other
+  packages' contract metadata, so its purity is unknown and its result is
+  fresh too. A `@pure` body the verifier cannot translate faithfully (V0033,
+  or a value not of the result's sort) used to fail every goal that
+  called it; it is now simply not assumed, and the call keeps its
+  congruence and contract.
+- **Function-valued bindings.** A function the file declares, named as a
+  value, is one symbol per function (`fn!<name>`, sort `Function`). A call
+  through a binding that holds one is a call of that function as the
+  binding holds it at the call, so `var h = one; h(1)` and, after
+  `h = two`, `h(1)` are `one(1)` and `two(1)`. Anything else a binding
+  holds is a computed callee with a fresh result. A function bound by a
+  destructuring pattern used to be called by its name, so two patterns
+  binding `h` to different functions gave `h(1)` one term.
+- **Unbound names and destructuring.** `val (a, b) = p` bound the value to
+  a shared `?pat` and left `a` and `b` unbound, so each became a variable
+  named after its identifier, and `a` from two patterns was one value.
+  Each name a destructuring pattern binds is now a fresh `!`-named unknown.
+  A name no binding declares is module-level (a `val`, which never
+  changes) and is the symbol `global!<name>`, apart from a parameter or
+  binding spelt the same; an assignment to such a name fails closed
+  (V0026).
+- **Locals leaking out of `if` branches.** `wpIfStmt` walks each branch
+  followed by the rest of the block, so `val t` declared in a branch
+  shadowed the outer `t` for the rest of the function. Branches, and
+  function, lambda and loop bodies, are now scopes (`envEnterScope`,
+  `envDeclare`, `envExitScope`): the first declaration of a name in a
+  scope saves the binding it shadows, with its mutability, and a marker
+  statement at the branch's end restores it. A postcondition placeholder
+  for an `out`/`inout` parameter or a loop-changed variable reads the
+  saved binding while the variable is shadowed.
+
+Each refuted case was confirmed against a run: `tick(1) == tick(1)` and
+the same through `val h = tick` are `false`; two destructured functions
+`inc`/`triple` called through `h` differ; two destructured `a`s from
+`(1, 0)` and `(2, 0)` differ; and the branch-shadowing function returns
+the outer `t`, `5`, where the old encoding proved `7`.
+
+`examples/rbac/src/policy.l`'s `dominanceTransitive` relied on two calls
+of the unannotated `roleLevel` being equal. `roleLevel` is pure, so it is
+now marked `@pure`. Its enum-`match` body is not translatable, which no
+longer fails its callers, so the example now proves 11 of 13 obligations
+(10 before): `noEscalation` no longer fails on `hasPermission`'s body, and
+`adminHoldsAll` and `guestIsRestricted` still fail, as before, on the
+enum matches the verifier does not model.
+
+Not changed, and tracked in #8110: a call of a method the verifier does
+not model is still an uninterpreted function of its receiver and
+arguments, so `xs.count` before and after `xs.add(1)` is one term — the
+verifier has no heap model of mutation through a receiver.
+
+Verified by four new `verifier_self_test.l` tests (a refuted and a
+discharged case for each item), the verifier and records self-tests, the
+CI `lyric prove` examples, `core_proof.l`, `scripts/ci/prove-package-scope.sh`
+and the compiler self-test batch.
+
+Specification: `docs/15-phase-4-proof-plan.md` §5.2, §5.4.

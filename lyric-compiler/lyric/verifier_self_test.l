@@ -2513,3 +2513,138 @@ test "a type the package's other files declare blocks the Result/Option model (#
   val legacy = proveSource(src)
   assertTrue(summaryHasErrorDiag(legacy) or summaryHasFailure(legacy), "the scope-less entry point: not proved")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Two values the program can tell apart never share a term: a call of a
+// function that is not `@pure` is a value of its own, a function-valued
+// binding calls the function it holds now, every binding has a name of its
+// own, and a branch's bindings stay in the branch (#8109).
+// ─────────────────────────────────────────────────────────────────────────────
+func tickDecl(): String {
+  "func tick(x: in Int): Int {\n  x\n}\n"
+}
+
+func oneTwoDecls(): String {
+  "@pure\nfunc one(x: in Int): Int = 1\n@pure\nfunc two(x: in Int): Int = 2\n"
+}
+
+test "a call of a function that is not @pure is a value of its own (#8109)" {
+  assertRefuted(tickDecl() + "func f(x: in Int): Bool\n  ensures: result\n{\n  tick(x) == tick(x)\n}\n", "impure-call")
+  assertRefuted(
+    tickDecl() + "func f(x: in Int): Bool\n  ensures: result\n{\n  val a = tick(x)\n  val b = tick(x)\n  a == b\n}\n",
+    "impure-call-bound"
+  )
+  assertRefuted("func f(x: in Int): Bool\n  ensures: result\n{\n  next(x) == next(x)\n}\n", "undeclared-callee")
+  assertRefuted(
+    "record R {\n  v: Int\n}\nfunc R.bump(r: in R): Int {\n  r.v\n}\n" +
+      "func f(r: in R): Bool\n  ensures: result\n{\n  R.bump(r) == R.bump(r)\n}\n",
+    "impure-static-call"
+  )
+  assertDischarged(
+    "@pure\nfunc sq(x: in Int): Int = x * x\nfunc f(x: in Int): Bool\n  ensures: result\n{\n  sq(x) == sq(x)\n}\n",
+    "pure-congruent"
+  )
+  assertDischarged(
+    "@pure\nfunc sq(x: in Int): Int = x * x\nfunc f(x: in Int, y: in Int): Bool\n  requires: x == y\n  ensures: result\n{\n  sq(x) == sq(y)\n}\n",
+    "pure-equal-arguments"
+  )
+  assertDischarged(
+    "func inc(x: in Int): Int\n  ensures: result == x + 1\n{\n  x + 1\n}\n" +
+      "func f(x: in Int): Bool\n  ensures: result\n{\n  inc(x) == inc(x)\n}\n",
+    "contract-decides"
+  )
+  // A `@pure` callee whose body the verifier cannot translate is still one
+  // value per argument list; its body is simply not assumed.
+  val level = "enum Tier {\n  case Low\n  case High\n}\n@pure\nfunc level(t: in Tier): Int {\n  match t {\n" +
+    "    case Tier.Low -> 1\n    case Tier.High -> 2\n  }\n}\n"
+  assertDischarged(
+    level +
+      "func f(a: in Tier, b: in Tier): Bool\n  requires: level(a) >= level(b)\n  ensures: result\n{\n  level(a) >= level(b)\n}\n",
+    "pure-untranslatable-body"
+  )
+  assertRefuted(level + "func f(a: in Tier): Bool\n  ensures: result\n{\n  level(a) == 1\n}\n", "pure-body-not-assumed")
+}
+
+test "a function-valued binding calls the function it holds now (#8109)" {
+  assertRefuted(
+    tickDecl() + "func f(x: in Int): Bool\n  ensures: result\n{\n  val h = tick\n  h(x) == h(x)\n}\n",
+    "impure-binding"
+  )
+  assertRefuted(
+    "func f(p: in ((Int) -> Int, Int), q: in ((Int) -> Int, Int)): Bool\n  ensures: result\n{\n" +
+      "  val (h, u) = p\n  val a = h(1)\n  val (h, w) = q\n  val b = h(1)\n  a == b\n}\n",
+    "pattern-bound-callees"
+  )
+  assertRefuted(
+    oneTwoDecls() +
+      "func f(): Bool\n  ensures: result\n{\n  var h = one\n  val a = h(1)\n  h = two\n  val b = h(1)\n  a == b\n}\n",
+    "reassigned-binding"
+  )
+  assertDischarged(
+    oneTwoDecls() +
+      "func f(): Bool\n  ensures: result\n{\n  var h = one\n  val a = h(1)\n  h = two\n  val b = h(1)\n  a == 1 and b == 2\n}\n",
+    "current-function"
+  )
+  assertDischarged(
+    oneTwoDecls() +
+      "func f(x: in Int): Bool\n  ensures: result\n{\n  val h = one\n  h(x) == h(x) and h(x) == one(x)\n}\n",
+    "unreassigned-binding"
+  )
+  assertNotProved(
+    oneTwoDecls() +
+      "func f(n: in Int): Bool\n  ensures: result\n{\n  var h = one\n  var i = 0\n  while i < n\n    invariant: i >= 0\n  {\n" +
+      "    h = two\n    i = i + 1\n  }\n  h(1) == 1\n}\n",
+    "loop-havocked-binding"
+  )
+}
+
+test "every binding names a value of its own (#8109)" {
+  assertRefuted(
+    "func f(p: in (Int, Int), q: in (Int, Int)): Bool\n  ensures: result\n{\n" +
+      "  val (a, u) = p\n  val x = a\n  val (a, w) = q\n  x == a\n}\n",
+    "pattern-names-in-two-scopes"
+  )
+  assertRefuted(
+    "func f(p: in (Int, Int)): Bool\n  ensures: result\n{\n  val (a, b) = p\n  a == b\n}\n",
+    "pattern-names-distinct"
+  )
+  assertDischarged(
+    "func f(p: in (Int, Int)): Bool\n  ensures: result\n{\n  val (a, b) = p\n  a == a\n}\n",
+    "pattern-name-is-itself"
+  )
+  assertDischarged("val limit = 10\nfunc f(): Bool\n  ensures: result\n{\n  limit == limit\n}\n", "module-level-name")
+  assertUnsupported("func f(): Unit {\n  limit = 3\n}\n", "assign-undeclared")
+}
+
+func branchLeakSrc(ens: in String): String {
+  "func f(c: in Bool): Int\n  ensures: " + ens +
+    "\n{\n  val t = 5\n  if c {\n    val t = 7\n    assert(t == 7)\n  }\n  t\n}\n"
+}
+
+func branchVarSrc(ens: in String): String {
+  "func f(c: in Bool): Int\n  ensures: " + ens +
+    "\n{\n  var t = 5\n  if c {\n    t = 6\n    val t = 7\n    assert(t == 7)\n" +
+    "  } else {\n    var t = 9\n    t = 10\n  }\n  t\n}\n"
+}
+
+func branchOutSrc(ens: in String): String {
+  "func f(c: in Bool, p: out Int): Unit\n  ensures: " + ens +
+    "\n{\n  p = 1\n  if c {\n    val p = 2\n    assert(p == 2)\n  }\n}\n"
+}
+
+test "a binding declared in a branch stays in the branch (#8109)" {
+  assertRefuted(branchLeakSrc("c implies result == 7"), "branch-local-leak")
+  assertDischarged(branchLeakSrc("result == 5"), "outer-binding-after-branch")
+  assertDischarged(branchVarSrc("(c implies result == 6) and (not c implies result == 5)"), "assigned-before-shadow")
+  assertRefuted(branchVarSrc("not c implies result == 10"), "else-local-leak")
+  assertDischarged(branchOutSrc("p == 1"), "shadowed-out-parameter")
+  assertRefuted(branchOutSrc("c implies p == 2"), "out-parameter-shadow-leak")
+  assertDischarged(
+    "func f(c: in Bool): Int\n  ensures: result == 3\n{\n  val n = 3\n  if c {\n    val m = 4\n    assert(m == 4)\n  }\n  n\n}\n",
+    "new-name-in-branch"
+  )
+  assertDischarged(
+    "func f(c: in Bool): Int\n  ensures: c implies result == 7\n{\n  if c {\n    val t = 7\n    t\n  } else {\n    0\n  }\n}\n",
+    "branch-value"
+  )
+}

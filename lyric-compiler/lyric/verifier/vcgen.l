@@ -417,6 +417,195 @@ func freshVar(env: in VEnv, base: in String, srt: in Sort): Term {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// §1a. Block scopes (#8109).
+// ─────────────────────────────────────────────────────────────────────────────
+// The walk flattens an `if` statement: each branch is walked followed by the
+// rest of the enclosing block (`wpIfStmt`).  A binding a branch declares
+// must not reach that rest, so each branch — like a function, lambda or loop
+// body — is a scope.  The first time a scope declares a name, the binding it
+// shadows (or that there was none) is saved under a hidden key, and the
+// scope's end, a marker statement after the branch, restores it.  The
+// hidden keys hold `!`, which no Lyric identifier does.  While a variable a
+// postcondition speaks of (`env.finals`) is shadowed it cannot change, so
+// its placeholder reads the saved binding meanwhile.
+func scopeCurrentKey(): String {
+  "!scope"
+}
+
+func scopeSavedKey(scopeId: in String, name: in String): String {
+  "!saved!" + scopeId + "!" + name
+}
+
+func scopeSavedMutableKey(scopeId: in String, name: in String): String {
+  "!savedmut!" + scopeId + "!" + name
+}
+
+func scopeParentKey(scopeId: in String): String {
+  "!parent!" + scopeId
+}
+
+func scopeAbsentName(): String {
+  "!absent"
+}
+
+// The scope declarations in `env` go to, or "" outside every scope.
+func currentScopeId(env: in VEnv): String {
+  match envLookup(scopeCurrentKey(), env) {
+    case Some(t) -> match t { case TVar(id, _) -> id; case _ -> "" }
+    case None -> ""
+  }
+}
+
+// `env` with `name` unbound.
+func envUnbind(name: in String, env: in VEnv): VEnv {
+  if not env.vars.containsKey(name) {
+    return env
+  }
+  val names: List[String] = newList()
+  var i = 0
+  while i < env.varNames.count {
+    if env.varNames[i] != name {
+      names.add(env.varNames[i])
+    }
+    i = i + 1
+  }
+  VEnv(
+    vars = copyVarMap(env.vars, names),
+    varNames = names,
+    sorts = copySortMap(env.sorts, names),
+    callees = env.callees,
+    symbols = env.symbols,
+    checkedArithmetic = env.checkedArithmetic,
+    distincts = env.distincts,
+    fieldInfos = env.fieldInfos,
+    recordDefaults = env.recordDefaults,
+    fresh = env.fresh,
+    recordMethods = env.recordMethods,
+    finals = env.finals,
+    mutables = env.mutables,
+    protectedMembers = env.protectedMembers,
+    contractStack = env.contractStack,
+    cyclic = env.cyclic
+  )
+}
+
+// `finals` with each placeholder that reads `from` reading `to` instead.
+func retargetFinals(finals: in List[FinalSlot], from: in String, to: in String): List[FinalSlot] {
+  val moved: List[FinalSlot] = newList()
+  var i = 0
+  while i < finals.count {
+    val slot = finals[i]
+    moved.add(if slot.varName == from { FinalSlot(varName = to, placeholder = slot.placeholder) } else { slot })
+    i = i + 1
+  }
+  moved
+}
+
+// A new scope, `scopeId`, inside the current one.
+func envEnterScope(env: in VEnv, scopeId: in String): VEnv {
+  val marker = TVar(name = scopeId, sort = SBool)
+  val parent = match envLookup(scopeCurrentKey(), env) {
+    case Some(t) -> envBindTerm(scopeParentKey(scopeId), t, unitSortInfo(), env)
+    case None -> env
+  }
+  envBindTerm(scopeCurrentKey(), marker, unitSortInfo(), parent)
+}
+
+// `env` with `name` declared anew as `term`: a `val`, `var` or `let`, or a
+// name a destructuring pattern binds.  An assignment is `envBindTerm`.
+func envDeclare(name: in String, term: in Term, info: in SortInfo, env: in VEnv): VEnv {
+  val scopeId = currentScopeId(env)
+  var declEnv = env
+  if scopeId.length > 0 {
+    val savedKey = scopeSavedKey(scopeId, name)
+    if not env.vars.containsKey(savedKey) {
+      match envLookup(name, env) {
+        case Some(outer) -> {
+          val outerInfo = match envLookupSort(name, env) { case Some(si) -> si; case None -> info }
+          declEnv = envBindTerm(savedKey, outer, outerInfo, declEnv)
+          if env.mutables.contains(name) {
+            declEnv = envBindTerm(scopeSavedMutableKey(scopeId, name), trueT(), unitSortInfo(), declEnv)
+          }
+        }
+        case None -> {
+          declEnv = envBindTerm(savedKey, TVar(name = scopeAbsentName(), sort = SBool), unitSortInfo(), declEnv)
+        }
+      }
+      declEnv = envWithFinals(declEnv, retargetFinals(declEnv.finals, name, savedKey))
+    }
+  }
+  envBindTerm(name, term, info, declEnv)
+}
+
+// `env` at the end of scope `scopeId`: each name it declared is bound as it
+// was before, or unbound again, and the enclosing scope is current.
+func envExitScope(env: in VEnv, scopeId: in String): VEnv {
+  val prefix = "!saved!" + scopeId + "!"
+  var outEnv = env
+  var i = 0
+  while i < env.varNames.count {
+    val key = env.varNames[i]
+    if key.startsWith(prefix) {
+      val name = key.substring(prefix.length, key.length - prefix.length)
+      val mutKey = scopeSavedMutableKey(scopeId, name)
+      val wasMutable = env.vars.containsKey(mutKey)
+      match envLookup(key, env) {
+        case Some(saved) -> {
+          val absent = match saved { case TVar(n, _) -> n == scopeAbsentName(); case _ -> false }
+          if absent {
+            outEnv = envSetMutable(envUnbind(name, outEnv), name, false)
+          } else {
+            val savedInfo = match envLookupSort(key, env) { case Some(si) -> si; case None -> unitSortInfo() }
+            outEnv = envSetMutable(envBindTerm(name, saved, savedInfo, outEnv), name, wasMutable)
+          }
+        }
+        case None -> ()
+      }
+      outEnv = envUnbind(mutKey, envUnbind(key, outEnv))
+      outEnv = envWithFinals(outEnv, retargetFinals(outEnv.finals, key, name))
+    }
+    i = i + 1
+  }
+  match envLookup(scopeParentKey(scopeId), env) {
+    case Some(parent) -> envBindTerm(
+      scopeCurrentKey(),
+      parent,
+      unitSortInfo(),
+      envUnbind(scopeParentKey(scopeId), outEnv)
+    )
+    case None -> envUnbind(scopeCurrentKey(), outEnv)
+  }
+}
+
+// The statement that ends scope `scopeId` where the walk reaches it.  Its
+// path's first segment holds `!`, so no source statement is one.
+func scopeEndStmt(scopeId: in String, sp: in Span): Statement {
+  val segs: List[String] = newList()
+  segs.add("!scope-end")
+  segs.add(scopeId)
+  Statement(
+    kind = SExpr(expr = Expr(kind = EPath(path = ModulePath(segments = segs, span = sp)), span = sp)),
+    span = sp
+  )
+}
+
+func scopeEndOf(st: in Statement): Option[String] {
+  match st.kind {
+    case SExpr(x) -> match x.kind {
+      case EPath(path) -> {
+        if path.segments.count == 2 and path.segments[0] == "!scope-end" {
+          Some(value = path.segments[1])
+        } else {
+          None
+        }
+      }
+      case _ -> None
+    }
+    case _ -> None
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // §2. Translation result.
 // ─────────────────────────────────────────────────────────────────────────────
 pub record TranslateResult {
@@ -871,11 +1060,12 @@ func addUserFunOnce(symbols: in List[SymbolDecl], name: in String, paramSorts: i
 
 // A call to a function this file declares, by the Hoare call rule: its
 // `requires:` are side conditions at the arguments, its `ensures:` and its
-// result's range and width are facts about the result.  The result is the
-// callee applied to its arguments, or — for a method call (`freshResult`)
-// on a callee that is not `@pure` — a value of its own at this call site,
-// so two calls agree only where the contract says so (#8101).  An `out` or
-// `inout` parameter's `ensures:` speak of its value after the call, a
+// result's range and width are facts about the result.  The result of a
+// `@pure` callee is the callee applied to its arguments, so two calls with
+// equal arguments are equal; any other callee's — a free call, a method
+// call, a static call alike — is a value of its own at this call site, so
+// two calls agree only where the contract says so (#8101, #8109).  An `out`
+// or `inout` parameter's `ensures:` speak of its value after the call, a
 // value of its own; `old(p)` is the argument (#8102).
 func translateResolvedCall(
   env: in VEnv,
@@ -888,7 +1078,6 @@ func translateResolvedCall(
   argSides: in List[Term],
   argAssumed: in List[Term],
   allArgDiags: in List[Diagnostic],
-  freshResult: in Bool,
 ): (TranslateResult, List[Diagnostic]) {
   val resultInfo = match decl.ret { case Some(te) -> sortOfTypeExprE(env, te); case None -> unitSortInfo() }
   // A backstop on how deep contracts and defaults unfold into one
@@ -910,7 +1099,7 @@ func translateResolvedCall(
   // here, which unfolding it again cannot state: a callee with a
   // `requires:` fails closed (#8102).
   if env.contractStack.contains(decl.name) {
-    val recTerm = TApp(name = name, args = rawArgTerms, retSort = resultInfo.sort)
+    val recTerm = callResultTerm(env, name, decl, rawArgTerms, resultInfo.sort)
     if hasRequires(decl) {
       allArgDiags.add(
         untranslatableDiag(
@@ -1006,11 +1195,7 @@ func translateResolvedCall(
     allArgDiags
   )
   val argTerms = paired.terms
-  val rawCallTerm = if freshResult and not isPure(decl) {
-    TVar(name = freshName(env, name + "!result"), sort = resultSort)
-  } else {
-    TApp(name = name, args = argTerms, retSort = resultSort)
-  }
+  val rawCallTerm = callResultTerm(env, name, decl, argTerms, resultSort)
   // Two `out`/`inout` parameters bound to one variable alias each other,
   // which the callee's proof assumes they do not: fail closed (#8102).
   val aliased = outArgsAlias(decl, args)
@@ -1055,10 +1240,29 @@ func translateResolvedCall(
         }
         match bodyExprOpt {
           case Some(bodyExpr) -> {
-            val (bodyR, bodyDiags) = translateExpr(innerEnv, bodyExpr)
-            keepUntranslatableDiags(bodyDiags, allArgDiags)
-            val bodySubst = substTerm(paramSubst, paramSubstNames, bodyR.term)
-            pureUnfold.add(TBuiltin(op = BOpEq, args = termList2(callTerm, bodySubst)))
+            val (bodyR, _) = translateExpr(innerEnv, bodyExpr)
+            // A body the verifier cannot translate faithfully (V0033), or
+            // whose value is not of the result's sort, is not assumed: the
+            // call is still the callee applied to its arguments, equal for
+            // equal arguments, with its contract.  Leaving out a fact never
+            // proves anything false (#8109).
+            if not termIsPoisoned(bodyR.term) {
+              match coerceToSort(bodyR.term, resultSort) {
+                case Ok(bodyAtSort) -> {
+                  val bodySubst = substTerm(paramSubst, paramSubstNames, bodyAtSort)
+                  val unfold = TBuiltin(op = BOpEq, args = termList2(callTerm, bodySubst))
+                  match reconcileTermSorts(unfold) {
+                    case Ok(well) -> {
+                      if sortProblem(well, SBool).length == 0 {
+                        pureUnfold.add(well)
+                      }
+                    }
+                    case Err(_) -> ()
+                  }
+                }
+                case Err(_) -> ()
+              }
+            }
           }
           case None -> {
           }
@@ -1177,6 +1381,25 @@ func translateResolvedCall(
   knownCalleePair
 }
 
+// The value a call of `decl` returns: the callee applied to `argTerms` when
+// it is `@pure`, so equal arguments give equal results; otherwise a value
+// of its own, as two calls of a counter or a random source differ (#8109).
+// An argument reported untranslatable (V0033) keeps it poisoned (#7874).
+func callResultTerm(
+  env: in VEnv, name: in String, decl: in FunctionDecl, argTerms: in List[Term], resultSort: in Sort
+): Term {
+  if isPure(decl) {
+    TApp(name = name, args = argTerms, retSort = resultSort)
+  } else {
+    val fresh = freshVar(env, name + "!result", resultSort)
+    if anyPoisoned(argTerms) {
+      poisonTerm(fresh)
+    } else {
+      fresh
+    }
+  }
+}
+
 // A call through a computed callee — a lambda, a local binding, another
 // call's result: a value of its own at this call site, never one shared
 // with another call (#8101).  The callee expression's and the arguments'
@@ -1206,6 +1429,44 @@ func translateComputedCall(
   val callTR = TranslateResult(term = callVar, sideConds = sc, assumed = asList)
   val callPair: (TranslateResult, List[Diagnostic]) = (callTR, diags)
   callPair
+}
+
+// The function a value names when it is one this file declares, named
+// where no binding shadows it (`functionRefTerm`).
+func functionRefPrefix(): String {
+  "fn!"
+}
+
+func functionRefTerm(name: in String): Term {
+  TVar(name = functionRefPrefix() + name, sort = SUninterp(name = "Function"))
+}
+
+// The function a callee binding holds now, when it holds one this file
+// declares by name (`val h = sq`): never a lambda, a parameter or a value
+// a loop or a call has given it, which are values of their own.
+func boundFunctionOf(env: in VEnv, fn: in Expr): Option[FunctionDecl] {
+  match fn.kind {
+    case EPath(path) -> {
+      if path.segments.count != 1 {
+        return None
+      }
+      match envLookup(path.segments[0], env) {
+        case Some(t) -> match t {
+          case TVar(n, _) -> {
+            val prefix = functionRefPrefix()
+            if n.startsWith(prefix) {
+              mapGet(env.callees, n.substring(prefix.length, n.length - prefix.length))
+            } else {
+              None
+            }
+          }
+          case _ -> None
+        }
+        case None -> None
+      }
+    }
+    case _ -> None
+  }
 }
 
 // A callee that names a local binding, which shadows any file function.
@@ -1351,8 +1612,7 @@ func translateMethodCall(
         callSpan,
         argSides,
         argAssumed,
-        allArgDiags,
-        false
+        allArgDiags
       )
     }
     case None -> ()
@@ -1413,7 +1673,7 @@ func translateMethodCall(
         fullSpans.add(argSpans[i])
         i = i + 1
       }
-      translateResolvedCall(env, rc.name, rc.decl, fullArgs, fullTerms, fullSpans, callSpan, sides, facts, diags, true)
+      translateResolvedCall(env, rc.name, rc.decl, fullArgs, fullTerms, fullSpans, callSpan, sides, facts, diags)
     }
     case None -> {
       val ufArgs: List[Term] = newList()
@@ -1855,8 +2115,19 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
               val nonePair: (TranslateResult, List[Diagnostic]) = (singleTR(mkPendingCtor("None", noArgs)), diags)
               return nonePair
             }
+            // A function this file declares, named as a value: one value
+            // per function, of the sort function-typed values have.
+            if env.callees.containsKey(name) and not isSome(findRecordFields(env, name)) {
+              val fnPair: (TranslateResult, List[Diagnostic]) = (singleTR(functionRefTerm(name)), diags)
+              return fnPair
+            }
+            // No binding the walk tracks declares the name — every local,
+            // parameter and pattern binding has one — so it is declared at
+            // module level, where a `val` never changes: one name is one
+            // value.  `global!` keeps it apart from a parameter or binding
+            // spelt the same in another scope (#8109).
             val uSort = SUninterp(name = name)
-            val t = TVar(name = name, sort = uSort)
+            val t = TVar(name = "global!" + name, sort = uSort)
             val ePair: (TranslateResult, List[Diagnostic]) = (singleTR(t), diags)
             ePair
           }
@@ -2167,8 +2438,28 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
       // which read no local, after them (D171).
 
       // A local binding — a lambda in a `val` — shadows a file function of
-      // the same name: the call goes through the binding (#8102).
+      // the same name: the call goes through the binding (#8102).  One
+      // that holds a function this file declares, as it does here, calls
+      // that function: its current value, so a reassigned binding calls
+      // the function it was last given (#8109).
       if localCallee(env, fn) {
+        match boundFunctionOf(env, fn) {
+          case Some(decl) -> {
+            return translateResolvedCall(
+              env,
+              decl.name,
+              decl,
+              args,
+              rawArgTerms,
+              argSpans,
+              e.span,
+              argSides,
+              argAssumed,
+              allArgDiags
+            )
+          }
+          case None -> ()
+        }
         return translateComputedCall(env, fn, rawArgTerms, argSides, argAssumed, allArgDiags)
       }
       match fn.kind {
@@ -2286,8 +2577,7 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
                 e.span,
                 argSides,
                 argAssumed,
-                allArgDiags,
-                false
+                allArgDiags
               )
             }
             case None -> {
@@ -2319,9 +2609,14 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
                   allArgDiags
                 )
               }
-              // Unknown callee — emit TApp with uninterpreted sort.
+              // A callee this file does not declare — another file's or
+              // package's function, or one the verifier does not model.
+              // Whether it is `@pure` is not known here, so its result is
+              // a value of its own at this call site: two calls of it are
+              // never taken for equal (#8109).
               val callNameSort = SUninterp(name = "call." + name)
-              val t = TApp(name = name, args = rawArgTerms, retSort = callNameSort)
+              val freshCall = freshVar(env, name + "!result", callNameSort)
+              val t = if anyPoisoned(rawArgTerms) { poisonTerm(freshCall) } else { freshCall }
               val sc: List[Term] = newList()
               appendTermList(sc, argSides)
               val asList: List[Term] = newList()
@@ -3336,8 +3631,9 @@ pub func wpBody(env: in VEnv, resultSort: in SortInfo, postcond: in Term, body: 
   }
 }
 
+// A function's or a lambda's body: a scope of its own (#8109).
 pub func wpBlock(env: in VEnv, resultSort: in SortInfo, postcond: in Term, stmts: in List[Statement]): WpResult {
-  wpWalk(env, resultSort, postcond, stmts, 0)
+  wpWalk(envEnterScope(env, freshName(env, "scope")), resultSort, postcond, stmts, 0)
 }
 
 // The rest of the block after an expression statement or binding whose
@@ -3387,6 +3683,14 @@ func wpWalk(env: in VEnv, resultSort: in SortInfo, postcond: in Term, stmts: in 
     emptyWpResult(finishPost(env, postcond, unitTerm()))
   } else {
     val st = stmts[idx]
+    // The end of a branch's scope: its bindings give way to the ones they
+    // shadowed (#8109).
+    match scopeEndOf(st) {
+      case Some(scopeId) -> {
+        return wpWalk(envExitScope(env, scopeId), resultSort, postcond, stmts, idx + 1)
+      }
+      case None -> ()
+    }
     // A `?` splits the path where it runs (#8108).
     match propagateBindingOf(st) {
       case Some(pb) -> {
@@ -3599,17 +3903,26 @@ func wpIfStmt(
     ri = ri + 1
   }
 
-  // Append rest to each branch.
+  // Append rest to each branch.  Each branch is a scope, ended before the
+  // rest so a binding it declares never reaches the rest (#8109).  With no
+  // rest the branch ends the block and its last expression is the block's
+  // value: nothing follows it to end the scope for.
+  val thenScope = freshName(env, "scope")
+  val elseScope = freshName(env, "scope")
   val thenFull: List[Statement] = newList()
   appendStmtList(thenFull, thenStmts)
-  appendStmtList(thenFull, rest)
   val elseFull: List[Statement] = newList()
   appendStmtList(elseFull, elseStmts)
+  if rest.count > 0 {
+    thenFull.add(scopeEndStmt(thenScope, sp))
+    elseFull.add(scopeEndStmt(elseScope, sp))
+  }
+  appendStmtList(thenFull, rest)
   appendStmtList(elseFull, rest)
 
   val afterCond = havocOutArgs(env, cond)
-  val thenR = wpWalk(afterCond.env, resultSort, postcond, thenFull, 0)
-  val elseR = wpWalk(afterCond.env, resultSort, postcond, elseFull, 0)
+  val thenR = wpWalk(envEnterScope(afterCond.env, thenScope), resultSort, postcond, thenFull, 0)
+  val elseR = wpWalk(envEnterScope(afterCond.env, elseScope), resultSort, postcond, elseFull, 0)
 
   val notCond = mkNot(condR.term)
   // Guard branch side goals by their branch condition.
@@ -3688,12 +4001,53 @@ func wpLocal(
   sp: in Span,
 ): WpResult {
   match binding {
-    case LBVal(pat, ty, init) -> {
-      val name = match pat.kind { case PBinding(n, _) -> n; case _ -> "?pat" }
-      wpBindInit(env, resultSort, postcond, stmts, idx, name, ty, init, false)
+    case LBVal(pat, ty, init) -> match simpleBindingName(pat) {
+      case Some(name) -> wpBindInit(
+        env,
+        resultSort,
+        postcond,
+        stmts,
+        idx,
+        name,
+        ty,
+        init,
+        false,
+        noPatternBinders()
+      )
+      case None -> {
+        // A destructuring pattern: the value is bound to a name of its
+        // own, and each name the pattern binds to a value of its own —
+        // the verifier does not model taking a value apart, and two
+        // patterns' names must never share a value (#8109).
+        val binders: List[String] = newList()
+        collectPatternBinders(pat.kind, binders)
+        wpBindInit(env, resultSort, postcond, stmts, idx, freshName(env, "pattern"), ty, init, false, binders)
+      }
     }
-    case LBLet(name, ty, init) -> wpBindInit(env, resultSort, postcond, stmts, idx, name, ty, init, false)
-    case LBVar(name, ty, Some(init)) -> wpBindInit(env, resultSort, postcond, stmts, idx, name, ty, init, true)
+    case LBLet(name, ty, init) -> wpBindInit(
+      env,
+      resultSort,
+      postcond,
+      stmts,
+      idx,
+      name,
+      ty,
+      init,
+      false,
+      noPatternBinders()
+    )
+    case LBVar(name, ty, Some(init)) -> wpBindInit(
+      env,
+      resultSort,
+      postcond,
+      stmts,
+      idx,
+      name,
+      ty,
+      init,
+      true,
+      noPatternBinders()
+    )
     case LBVar(name, ty, None) -> {
       // Uninitialized var — bind to a fresh symbolic value of its declared
       // sort (an unannotated one is an integer, as before).  Its declared
@@ -3702,7 +4056,7 @@ func wpLocal(
       // The value is one of its own: the source name may be bound again
       // elsewhere in the function (#8102).
       val initial = freshVar(env, name, info.sort)
-      val env2 = envSetMutable(envBindTerm(name, initial, info, env), name, true)
+      val env2 = envSetMutable(envDeclare(name, initial, info, env), name, true)
       val inner = wpWalk(env2, resultSort, postcond, stmts, idx + 1)
       val asList: List[Term] = newList()
       appendTermList(asList, rangeHypothesesForTerm(initial, info))
@@ -3712,9 +4066,25 @@ func wpLocal(
   }
 }
 
+// The name a `val` pattern binds when it binds the whole value to one.
+func simpleBindingName(pat: in Pattern): Option[String] {
+  match pat.kind {
+    case PBinding(n, None) -> Some(value = n)
+    case PParen(inner) -> simpleBindingName(inner)
+    case _ -> None
+  }
+}
+
+func noPatternBinders(): List[String] {
+  val none: List[String] = newList()
+  none
+}
+
 // `val`/`let`/`var name[: ty] = init`, then the rest of the block.  The
 // initializer's side conditions — a callee's `requires:`, an overflow
 // obligation — are side goals like an expression statement's (#7871).
+// `patternBinders` are the names a destructuring pattern binds, each a
+// value of its own.
 func wpBindInit(
   env: in VEnv,
   resultSort: in SortInfo,
@@ -3725,6 +4095,7 @@ func wpBindInit(
   ty: in Option[TypeExpr],
   init: in Expr,
   mutable: in Bool,
+  patternBinders: in List[String],
 ): WpResult {
   if effectsOfExpr(env, init).assigned.count > 0 {
     return unsupportedWp("an assignment inside an expression", init.span)
@@ -3744,7 +4115,14 @@ func wpBindInit(
   }
   // The initializer's `out`/`inout` arguments change before the binding.
   val after = havocOutArgs(env, init)
-  val env2 = envSetMutable(envBindTerm(name, boundTerm, info, after.env), name, mutable)
+  var env2 = envSetMutable(envDeclare(name, boundTerm, info, after.env), name, mutable)
+  var pbi = 0
+  while pbi < patternBinders.count {
+    val binder = patternBinders[pbi]
+    val binderInfo = SortInfo(sort = SUninterp(name = "binding"), range = RBKNone)
+    env2 = envSetMutable(envDeclare(binder, freshVar(env, binder, binderInfo.sort), binderInfo, env2), binder, false)
+    pbi = pbi + 1
+  }
   val inner = wpWalk(env2, resultSort, postcond, stmts, idx + 1)
   val sg: List[SideGoal] = newList()
   if termIsPoisoned(initR.term) {
@@ -3891,7 +4269,7 @@ func wpBindPropagate(
     case Some(_) -> coerceTermAt(payload, info.sort, pb.inner.span, innerDiags)
     case None -> payload
   }
-  val env2 = envSetMutable(envBindTerm(pb.name, boundTerm, info, after.env), pb.name, pb.mutable)
+  val env2 = envSetMutable(envDeclare(pb.name, boundTerm, info, after.env), pb.name, pb.mutable)
   val rest = wpWalk(env2, resultSort, postcond, stmts, idx + 1)
   // The early return: the function's postcondition of `Err(error)`/`None`.
   val exitWp = finishPost(after.env, postcond, exitValue)
@@ -4461,6 +4839,11 @@ func wpAssign(
   if name.length == 0 {
     return unsupportedWp("an assignment to a field or an element", target.span)
   }
+  // A name no binding declares is a module-level `val`, which no assignment
+  // reaches; one the walk lost track of must not be given a value (#8109).
+  if not isSome(envLookup(name, env)) {
+    return unsupportedWp("an assignment to '" + name + "', which no binding the verifier tracks declares", target.span)
+  }
   if effectsOfExpr(env, value).assigned.count > 0 {
     return unsupportedWp("an assignment inside an expression", value.span)
   }
@@ -4472,7 +4855,7 @@ func wpAssign(
   val rawCombined = match op {
     case AssEq -> rhsR.term
     case _ -> {
-      val existing = match envLookup(name, env) { case Some(t) -> t; case None -> TVar(name = name, sort = SInt) }
+      val existing = match envLookup(name, env) { case Some(t) -> t; case None -> freshVar(env, name, SInt) }
       val bin = match op {
         case AssPlus -> BOpAdd
         case AssMinus -> BOpSub
@@ -4712,7 +5095,10 @@ func wpWhile(
     val bodyStmts: List[Statement] = newList()
     appendStmtList(bodyStmts, realStmts)
     bodyStmts.add(Statement(kind = SExpr(expr = Expr(kind = ELiteral(lit = LUnit), span = body.span)), span = body.span))
-    val bodyWp = wpWalk(envWithFinals(afterCond.env, finals), resultSort, preservePost, bodyStmts, 0)
+    // The body is a scope of its own: a binding it declares shadows a
+    // variable the invariant speaks of only inside it (#8109).
+    val bodyEnv = envEnterScope(envWithFinals(afterCond.env, finals), freshName(env, "scope"))
+    val bodyWp = wpWalk(bodyEnv, resultSort, preservePost, bodyStmts, 0)
     appendTermList2(di, bodyWp.diags)
     val preserveHyps = termsWith(bodyHyps, bodyWp.assumed)
     sg.add(SideGoal(term = mkImplies(mkAnd(preserveHyps), bodyWp.wp), kind = GKLoopPreserve, span = sp))
