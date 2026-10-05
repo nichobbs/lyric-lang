@@ -358,6 +358,20 @@ extern func hostGreet(name: String): String = "greet"
 @wasmImport("math")
 extern func hostHalf(x: Double): Double = "half"
 
+@wasmImport("math")
+extern func hostNot(b: Bool): Bool = "not"
+
+@wasmImport("math")
+extern func hostNext(b: Byte): Byte = "next"
+
+pub func flip(b: Bool): Bool {
+  hostNot(b)
+}
+
+pub func bump(b: Byte): Byte {
+  hostNext(b)
+}
+
 pub func go(n: Int): Int {
   hostLog("go called")
   hostAdd(n, 40)
@@ -413,13 +427,19 @@ export const add = (a, b) => a + b;
 export const greet = (n) => 'hi ' + n;
 "
   )
-  val _m = File.writeText(Path.join(dir, "math.js"), r"export const half = (x) => x / 2;
-")
+  val _m = File.writeText(
+    Path.join(dir, "math.js"),
+    r"export const half = (x) => x / 2;
+export const not = (b) => !b;
+export const next = (b) => (b + 1) & 255;
+"
+  )
   val script = r"import * as m from './js/prog.js';
 const p = m.probe;
 console.log('go=' + p.go(2) + ' logged=' + globalThis.__logged);
 console.log('hello=' + p.hello('wörld ☃'));
 console.log('halve=' + p.halve(5));
+console.log('flip=' + p.flip(true) + ',' + p.flip(false) + ' bump=' + p.bump(41) + ',' + p.bump(255));
 "
   val scriptPath = Path.join(dir, "run.mjs")
   val _s = File.writeText(scriptPath, script)
@@ -427,6 +447,7 @@ console.log('halve=' + p.halve(5));
   nargs.add(scriptPath)
   val n = run(Environment.getVarOrDefault("NODE", "node"), nargs)
   assertTrue(n.exitCode == 0, "node: " + n.stderr + n.stdout)
+  assertTrue(Str.contains(n.stdout, "flip=false,true bump=42,0"), "Bool and Byte through an import: " + n.stdout)
   assertTrue(Str.contains(n.stdout, "go=42 logged=go called"), "host call and Unit import: " + n.stdout)
   assertTrue(Str.contains(n.stdout, "hello=hi wörld ☃!"), "string in and out through an import: " + n.stdout)
   assertTrue(Str.contains(n.stdout, "halve=2.5"), "Double through a second import module: " + n.stdout)
@@ -625,14 +646,14 @@ test "wasm32 component: host imports with unsupported shapes are rejected" {
       r#"package Probe
 
 @wasmImport("ui")
-extern func flag(b: Bool): Unit = "flag"
+extern func flag(b: List[Int]): Unit = "flag"
 
 pub func go(): Unit {
-  flag(true)
+  flag(newList())
 }
 "#
     ),
-    "a Bool parameter is not carried across a host import"
+    "a List parameter is not carried across a host import"
   )
   assertFalse(
     componentBuildOk(

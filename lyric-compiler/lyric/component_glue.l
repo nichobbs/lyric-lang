@@ -1342,7 +1342,7 @@ func withoutWasmImport(anns: in List[Annotation]): List[Annotation] {
   r
 }
 
-/// A scalar or `String` host-import type (`Bool` and `Byte` are not carried).
+/// A scalar or `String` host-import type.
 func importTy(te: in TypeExpr, tbl: in TypeTable): Result[WitTy, String] {
   match resolveValueTy(te, tbl, 0) {
     case Err(e) -> failTy(e)
@@ -1352,7 +1352,11 @@ func importTy(te: in TypeExpr, tbl: in TypeTable): Result[WitTy, String] {
       case WFloat -> okTy(t)
       case WDouble -> okTy(t)
       case WString -> okTy(t)
-      case _ -> failTy("a host import parameter or result must be Int, Long, Float, Double or String")
+      case WBool -> okTy(t)
+      case WByte -> okTy(t)
+      case _ -> failTy(
+        "a host import parameter or result must be Int, Long, Bool, Byte, Float, Double or String"
+      )
     }
   }
 }
@@ -2037,7 +2041,18 @@ func cTypeOfTy(t: in WitTy): String {
     case WFloat -> "float"
     case WDouble -> "double"
     case WString -> "void*"
+    case WBool -> "_Bool"
+    case WByte -> "uint8_t"
     case _ -> "void"
+  }
+}
+
+/// The C type the core import itself declares: Bool and Byte travel as `i32`.
+func cRawTypeOfTy(t: in WitTy): String {
+  match t {
+    case WBool -> "int32_t"
+    case WByte -> "int32_t"
+    case _ -> cTypeOfTy(t)
   }
 }
 
@@ -2091,7 +2106,7 @@ func renderImportWrapper(pkgs: in List[ComponentPkg], h: in HostImport, i: in In
         callArgs.add("lyric_wasm_string_len(" + a + ")")
       }
       case t -> {
-        rawParams.add(cTypeOfTy(t))
+        rawParams.add(cRawTypeOfTy(t))
         callArgs.add(a)
       }
     }
@@ -2101,7 +2116,7 @@ func renderImportWrapper(pkgs: in List[ComponentPkg], h: in HostImport, i: in In
   if isStr {
     rawParams.add("int32_t")
   }
-  val rawRet = if isStr { "void" } else { cTypeOfTy(h.ret) }
+  val rawRet = if isStr { "void" } else { cRawTypeOfTy(h.ret) }
   l.add("__attribute__((import_module(\"" + id + "\"), import_name(\"" + witName(h.name) + "\")))")
   l.add(
     "extern " + rawRet + " " + rawName + "(" +
@@ -2118,7 +2133,12 @@ func renderImportWrapper(pkgs: in List[ComponentPkg], h: in HostImport, i: in In
   } else if isUnit(h.ret) {
     l.add("  " + rawName + "(" + Str.joinList(", ", callArgs) + ");")
   } else {
-    l.add("  return " + rawName + "(" + Str.joinList(", ", callArgs) + ");")
+    val call = rawName + "(" + Str.joinList(", ", callArgs) + ")"
+    l.add(
+      "  return " +
+        (match h.ret { case WBool -> "(_Bool)(" + call + " != 0)"; case WByte -> "(uint8_t)" + call; case _ -> call }) +
+        ";"
+    )
   }
   l.add("}")
   l.add("")
