@@ -9339,6 +9339,61 @@ func castObjectToMsil(cctx: in CodegenCtx, insns: in List[MInsn], ty: in MsilTyp
   }
 }
 
+// The locals `emitObjectToSliceArrayMsil` allocates.
+func sliceNarrowSlotsMsil(): Int = 4
+
+// Narrow an `object` on the stack to the `slice[e]` slot type `e[]` (#8147).
+// A slice is a genuine `e[]` when it was built where a slice was expected, but
+// a `List`-backed one where it was not (#2539: a bracket literal in a tuple).
+// A slice is never written through (§2), so the `List` case is copied into a
+// fresh `e[]`.  An element type with no array token keeps its `List<object>`
+// representation, so the value is left as it is.
+func emitObjectToSliceArrayMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], e: in MsilType): Unit {
+  val arrTok = match sliceArraySpecTokenOpt(cctx, e) { case Some(t) -> t; case None -> return () }
+  val elemTok = match arrayElemTokenOpt(cctx, e) { case Some(t) -> t; case None -> return () }
+  val n = toString(fctx.slotTicker.count)
+  val objSlot = allocSlotMsil(fctx, "__s2a_o_" + n, MObject)
+  val arrSlot = allocSlotMsil(fctx, "__s2a_a_" + n, MArray(elemTy = e))
+  val cntSlot = allocSlotMsil(fctx, "__s2a_n_" + n, MInt)
+  val idxSlot = allocSlotMsil(fctx, "__s2a_i_" + n, MInt)
+  val loop = freshLabelMsil(fctx)
+  val done = freshLabelMsil(fctx)
+  emitStoreSlot(insns, objSlot, fctx.paramCount)
+  emitLoadSlot(insns, objSlot, fctx.paramCount)
+  insns.add(MIsinst(typeToken = arrTok))
+  emitStoreSlot(insns, arrSlot, fctx.paramCount)
+  emitLoadSlot(insns, arrSlot, fctx.paramCount)
+  insns.add(MBrTrue(label = done))
+  emitLoadSlot(insns, objSlot, fctx.paramCount)
+  insns.add(MCastclass(typeToken = cctx.tokIListCast))
+  insns.add(MCallvirt(methodToken = cctx.tokICollGetCount))
+  emitStoreSlot(insns, cntSlot, fctx.paramCount)
+  emitLoadSlot(insns, cntSlot, fctx.paramCount)
+  insns.add(MNewarr(typeToken = elemTok))
+  emitStoreSlot(insns, arrSlot, fctx.paramCount)
+  insns.add(MLdcI4(v = 0))
+  emitStoreSlot(insns, idxSlot, fctx.paramCount)
+  insns.add(MLabel(id = loop))
+  emitLoadSlot(insns, idxSlot, fctx.paramCount)
+  emitLoadSlot(insns, cntSlot, fctx.paramCount)
+  insns.add(MBrGe(label = done))
+  emitLoadSlot(insns, arrSlot, fctx.paramCount)
+  emitLoadSlot(insns, idxSlot, fctx.paramCount)
+  emitLoadSlot(insns, objSlot, fctx.paramCount)
+  insns.add(MCastclass(typeToken = cctx.tokIListCast))
+  emitLoadSlot(insns, idxSlot, fctx.paramCount)
+  insns.add(MCallvirt(methodToken = cctx.tokIListGetItem))
+  castObjectToMsil(cctx, insns, e)
+  emitArrayElemStoreMsil(insns, e, elemTok)
+  emitLoadSlot(insns, idxSlot, fctx.paramCount)
+  insns.add(MLdcI4(v = 1))
+  insns.add(MAdd)
+  emitStoreSlot(insns, idxSlot, fctx.paramCount)
+  insns.add(MBr(label = loop))
+  insns.add(MLabel(id = done))
+  emitLoadSlot(insns, arrSlot, fctx.paramCount)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §4b. Concrete collection support.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -15929,12 +15984,13 @@ func patternTestSlotsUpperBoundMsil(pat: in Pattern): Int {
         0
       }
     }
-    // One `__tuptest_` element slot per position.
+    // One `__tuptest_` element slot per position, plus the slots narrowing a
+    // slice element takes (`emitObjectToSliceArrayMsil`).
     case PTuple(elems) -> {
       var n = 0
       var i = 0
       while i < elems.count {
-        n = n + 1 + patternTestSlotsUpperBoundMsil(elems[i])
+        n = n + 1 + sliceNarrowSlotsMsil() + patternTestSlotsUpperBoundMsil(elems[i])
         i = i + 1
       }
       n
@@ -16001,12 +16057,13 @@ func patternBindSlotsUpperBoundMsil(pat: in Pattern): Int {
       }
       n
     }
-    // One `__tup_` element slot per position.
+    // One `__tup_` element slot per position, plus the slots narrowing a
+    // slice element takes (`emitObjectToSliceArrayMsil`).
     case PTuple(elems) -> {
       var n = 0
       var i = 0
       while i < elems.count {
-        n = n + 1 + patternBindSlotsUpperBoundMsil(elems[i])
+        n = n + 1 + sliceNarrowSlotsMsil() + patternBindSlotsUpperBoundMsil(elems[i])
         i = i + 1
       }
       n
@@ -16647,6 +16704,7 @@ func lowerPatternTestMsil(
           }
           case MTuple(_) -> {
           }
+          case MArray(e) -> emitObjectToSliceArrayMsil(cctx, fctx, insns, e)
           case _ -> castObjectToMsil(cctx, insns, ptElemTy)
         }
         val ptElemSlot = allocSlotMsil(fctx, "__tuptest_" + toString(pti) + "_" + toString(fctx.slotTicker.count), ptElemTy)
@@ -17476,6 +17534,7 @@ func lowerPatternBindMsil(
         match ptElemTy {
           case MObject -> ()
           case MTuple(_) -> ()
+          case MArray(e) -> emitObjectToSliceArrayMsil(cctx, fctx, insns, e)
           case _ -> castObjectToMsil(cctx, insns, ptElemTy)
         }
         val ptElemSlot = allocSlotMsil(fctx, "__tup_" + toString(pti) + "_" + toString(fctx.slotTicker.count), ptElemTy)

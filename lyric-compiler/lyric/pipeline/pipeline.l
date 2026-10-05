@@ -1737,8 +1737,9 @@ func lowerValueRecordSpecs(
     }
   }
   val markers = valueRecordMarkers(file0.items, constArgs, file0.span)
-  // Every specialisation, from the records' source: one is checked with its
-  // method bodies while the others, which it may name, are signatures.
+  // Every specialisation, from the records' source, in full and as
+  // signatures: a round checks some with their method bodies while the
+  // others, which they may name, are signatures.
   val rawSpecItems: Map[String, Item] = newMap()
   for vs in specs {
     match mapGet(rawDecls, vs.recordName) {
@@ -1755,56 +1756,93 @@ func lowerValueRecordSpecs(
       case None -> ()
     }
   }
+  // One check per round: a round holds at most one specialisation of each
+  // record, since those share the record's source spans, so every round
+  // attributes each diagnostic and array site to one specialisation.  The
+  // file's own items are signatures in every round, built once.
+  val baseItems: List[Item] = newList()
+  for it in file0.items {
+    baseItems.add(signatureOnlyItem(it))
+  }
+  val sigSpecItems: Map[String, Item] = newMap()
+  for k in mapKeys(rawSpecItems) {
+    match mapGet(rawSpecItems, k) {
+      case Some(it) -> sigSpecItems.add(k, recordSignatureOnly(it))
+      case None -> ()
+    }
+  }
   val specArrays: Map[String, SpecArraySites] = newMap()
+  var pending: List[ValueRecordSpec] = newList()
   for vs in specs {
-    match mapGet(rawSpecItems, vs.spec) {
-      case Some(rawSpecItem) -> {
-        val items: List[Item] = newList()
-        for it in file0.items {
-          items.add(signatureOnlyItem(it))
-        }
-        for other in specs {
-          if other.spec != vs.spec {
-            match mapGet(rawSpecItems, other.spec) {
-              case Some(oi) -> items.add(recordSignatureOnly(oi))
-              case None -> ()
+    if rawSpecItems.containsKey(vs.spec) {
+      pending.add(vs)
+    }
+  }
+  while pending.count > 0 {
+    val round: List[ValueRecordSpec] = newList()
+    val rest: List[ValueRecordSpec] = newList()
+    val roundRecords: List[String] = newList()
+    for vs in pending {
+      if roundRecords.contains(vs.recordName) {
+        rest.add(vs)
+      } else {
+        round.add(vs)
+        roundRecords.add(vs.recordName)
+      }
+    }
+    pending = rest
+    val roundSpecs: List[String] = newList()
+    for vs in round {
+      roundSpecs.add(vs.spec)
+    }
+    val items: List[Item] = newList()
+    for it in baseItems {
+      items.add(it)
+    }
+    for vs in specs {
+      val src = if roundSpecs.contains(vs.spec) { rawSpecItems } else { sigSpecItems }
+      match mapGet(src, vs.spec) {
+        case Some(it) -> items.add(it)
+        case None -> ()
+      }
+    }
+    val checkFile = file0.copy(items = items)
+    val res = if opts.nativeIntrinsics {
+      checkWithImportedPackagesForNative(checkFile, importedPkgs)
+    } else {
+      checkWithImportedPackages(checkFile, importedPkgs)
+    }
+    for vs in round {
+      match mapGet(rawSpecItems, vs.spec) {
+        case Some(rawSpecItem) -> {
+          val lo = rawSpecItem.span.startPos.offset
+          val hi = rawSpecItem.span.endPos.offset
+          var firstError = ""
+          for d in res.diagnostics {
+            if d.severity == DiagError and d.span.startPos.offset >= lo and d.span.endPos.offset <= hi and firstError == "" {
+              firstError = d.code + " " + d.message
+            }
+          }
+          if firstError != "" {
+            diags.add(
+              errorDiagnostic(
+                "M0007",
+                "cannot specialise '" + vs.recordName + "' as '" + vs.spec +
+                  "': with its lengths substituted its methods do not type-check (" +
+                  firstError +
+                  ")",
+                rawSpecItem.span
+              )
+            )
+          } else {
+            val sa = specArraySitesOf(res.symbols, Some(value = known), lo, hi, lo, hi)
+            if specArraySitesNonEmpty(sa) {
+              specArrays.add(vs.spec, sa)
             }
           }
         }
-        items.add(rawSpecItem)
-        val checkFile = file0.copy(items = items)
-        val res = if opts.nativeIntrinsics {
-          checkWithImportedPackagesForNative(checkFile, importedPkgs)
-        } else {
-          checkWithImportedPackages(checkFile, importedPkgs)
-        }
-        val lo = rawSpecItem.span.startPos.offset
-        val hi = rawSpecItem.span.endPos.offset
-        var firstError = ""
-        for d in res.diagnostics {
-          if d.severity == DiagError and d.span.startPos.offset >= lo and d.span.endPos.offset <= hi and firstError == "" {
-            firstError = d.code + " " + d.message
-          }
-        }
-        if firstError != "" {
-          diags.add(
-            errorDiagnostic(
-              "M0007",
-              "cannot specialise '" + vs.recordName + "' as '" + vs.spec +
-                "': with its lengths substituted its methods do not type-check (" +
-                firstError +
-                ")",
-              rawSpecItem.span
-            )
-          )
-        } else {
-          val sa = specArraySitesOf(res.symbols, Some(value = known), lo, hi, lo, hi)
-          if specArraySitesNonEmpty(sa) {
-            specArrays.add(vs.spec, sa)
-          }
-        }
+        case None -> ()
       }
-      case None -> ()
     }
   }
   if specArrays.count == 0 {
