@@ -470,6 +470,34 @@ Calls the verifier cannot follow fail closed or are over-approximated
   modelled: its side conditions hold under an unknown condition (so they
   must hold) and its facts give nothing.
 - A `?` or other jump in a loop condition fails closed (`V0026`) (#8143).
+- `e?` splits the path where it runs (#8108). Where `e` is an `Err`/`None`
+  the function returns `Err(e.error)` or `None` at its own result type, as
+  `Lyric.Propagate` lowers it, and its `ensures:` must hold for that
+  result: a caller assumes the postcondition of every value a function
+  returns, although the runtime does not check it on this exit (language
+  reference §ensures). Otherwise the path goes on with the payload, and
+  facts from the callee's `ensures:` (`result.isOk implies result.value >
+  0`) hold of it — for the postcondition; a side goal (a later callee's
+  `requires:`, an `assert`) does not see earlier facts yet (#8103 item 1).
+  A statement's `?`s are first given bindings of their own
+  in evaluation order, with everything evaluated before a `?` bound before
+  it too, so a callee's precondition or an `out`/`inout` change before a
+  `?` is checked on both paths and one after it only on the success path.
+  This covers bindings, expression statements, assignments, `return`, a
+  statement `if`'s condition and branches, and call arguments, receivers
+  and operands. A `?` that runs only conditionally within its statement (a
+  branch of an `if` or `match` expression, the right operand of `and`,
+  `or`, `implies` or `??`, a lambda, a block used as a value), on a value
+  the verifier cannot see is a `Result` or `Option` (an unresolved
+  callee), or whose error type differs from the function's fails closed
+  (`V0033`); in a loop body or condition it fails closed (`V0026`).
+- `Result[T, E]` and `Option[T]` are the SMT datatypes `Lyric!Result` and
+  `Lyric!Option`. `Ok(v)`, `Err(e)`, `Some(v)` and `None` take their type
+  where they meet a typed slot (a return, an annotated binding, an
+  argument, the other operand of `==`); `.isOk`, `.isErr`, `.isSome`,
+  `.isNone` and `isOk(r)`-style calls are case tests, and `.value` and
+  `.error` read the payload with the obligation that the value is that
+  case, since reading the other case's payload traps (#8108).
 - `old(e)` is `e` evaluated with every name that has an entry snapshot (a
   parameter, an `out`/`inout` parameter, a protected `var` field) at its
   entry value.
@@ -510,8 +538,7 @@ arguments reset). Inside a protected type, `self.m()` fails closed like a
 bare `m()`, as does a method call on any receiver the verifier does not
 model (V0024).
 
-Known limitations, tracked separately: the early-return path of `?` in a binding
-(#8108); term identity for impure free calls, reassigned function values,
+Known limitations, tracked separately: term identity for impure free calls, reassigned function values,
 unbound names and `if`-branch locals (#8109); no heap model, and record
 methods never verified (#8110); a callee's `ensures:` about an
 `out`/`inout` parameter not linked back to the argument (#8111);
