@@ -210,3 +210,74 @@ test "a runWithin closure inherits the caller's ambient token" {
   }
   restoreToken(previous)
 }
+
+// The waits block on a condition instead of polling: a wake-up comes from the
+// event (a cancel, a child finishing) or from the earliest deadline involved.
+test "delayWithCancel ends at the token's own deadline when that comes first" {
+  val tok = sourceToken(makeCancelSourceTimeout(100))
+  val start = monotonicNanos()
+  val r = await delayWithCancel(5000, tok)
+  val elapsedMs = (monotonicNanos() - start) / 1000000i64
+  assertTrue(elapsedMs >= 80i64, "it waited for the deadline (elapsed=" + toString(elapsedMs) + "ms)")
+  assertTrue(elapsedMs < 2000i64, "it did not wait out the 5 s delay (elapsed=" + toString(elapsedMs) + "ms)")
+  assertTrue(isCancelled(tok), "the deadline has passed")
+}
+
+test "cancelSource from another thread wakes a delayWithCancel that is blocked" {
+  val s = makeScope()
+  val src = makeCancelSource()
+  val tok = sourceToken(src)
+  scopeSpawn(s, { -> sleepMillis(100); cancelSource(src) })
+  val start = monotonicNanos()
+  val r = await delayWithCancel(10000, tok)
+  val elapsedMs = (monotonicNanos() - start) / 1000000i64
+  val j = await awaitAll(s)
+  assertTrue(isCancelled(tok), "the token was cancelled")
+  assertTrue(elapsedMs >= 80i64, "the delay waited for the cancel (elapsed=" + toString(elapsedMs) + "ms)")
+  assertTrue(elapsedMs < 3000i64, "the cancel woke the delay long before 10 s (elapsed=" + toString(elapsedMs) + "ms)")
+}
+
+test "awaitAll blocks until a slow child finishes, and a second awaitAll returns at once" {
+  val s = makeScope()
+  val done: List[Int] = newList()
+  scopeSpawn(s, { -> sleepMillis(150); done.add(1) })
+  val start = monotonicNanos()
+  val j = await awaitAll(s)
+  val elapsedMs = (monotonicNanos() - start) / 1000000i64
+  assertTrue(elapsedMs >= 120i64, "awaitAll waited for the child (elapsed=" + toString(elapsedMs) + "ms)")
+  assertEqualInt(done.count, 1, "the child ran to completion before awaitAll returned")
+  val again = monotonicNanos()
+  val k = await awaitAll(s)
+  assertTrue((monotonicNanos() - again) / 1000000i64 < 100i64, "a finished child does not delay a second awaitAll")
+}
+
+test "several threads can await the same scope" {
+  val s = makeScope()
+  val finished: List[Int] = newList()
+  scopeSpawn(s, { -> sleepMillis(150); finished.add(1) })
+  val waiters = makeScope()
+  scopeSpawn(waiters, { -> val a = await awaitAll(s); finished.add(2) })
+  scopeSpawn(waiters, { -> val b = await awaitAll(s); finished.add(3) })
+  val w = await awaitAll(waiters)
+  val j = await awaitAll(s)
+  assertEqualInt(finished.count, 3, "the child and both waiters completed")
+  assertEqualInt(finished[0], 1, "the child finished before either waiter returned")
+}
+
+test "runActionWithin returns as soon as the action finishes, not at the budget" {
+  val start = monotonicNanos()
+  val ok = runActionWithin({ -> sleepMillis(100) }, 10000)
+  val elapsedMs = (monotonicNanos() - start) / 1000000i64
+  assertTrue(ok, "an action that finishes in time reports true")
+  assertTrue(elapsedMs >= 80i64, "it waited for the action (elapsed=" + toString(elapsedMs) + "ms)")
+  assertTrue(elapsedMs < 3000i64, "it did not wait out the 10 s budget (elapsed=" + toString(elapsedMs) + "ms)")
+}
+
+test "runActionWithin gives up at its budget when the action overruns" {
+  val start = monotonicNanos()
+  val ok = runActionWithin({ -> sleepMillis(1500) }, 100)
+  val elapsedMs = (monotonicNanos() - start) / 1000000i64
+  assertFalse(ok, "an overrunning action reports false")
+  assertTrue(elapsedMs >= 80i64, "it waited for the budget (elapsed=" + toString(elapsedMs) + "ms)")
+  assertTrue(elapsedMs < 1400i64, "it did not wait for the action (elapsed=" + toString(elapsedMs) + "ms)")
+}

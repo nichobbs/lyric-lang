@@ -1627,6 +1627,206 @@ static void test_semaphore(void) {
 }
 #endif /* !__wasi__ */
 
+#ifndef __wasi__
+/* Condition variables: a flag guarded by a mutex slot and a condition. */
+typedef struct {
+    void* mutex;
+    void* cond;
+    int flag;
+    volatile int woke;
+} cond_ctx_t;
+
+static void* cond_waiter(void* arg) {
+    cond_ctx_t* ctx = (cond_ctx_t*)arg;
+    lyric_mutex_lock(ctx->mutex);
+    while (!ctx->flag) {
+        lyric_cond_wait(ctx->cond, ctx->mutex);
+    }
+    lyric_mutex_unlock(ctx->mutex);
+    __atomic_add_fetch(&ctx->woke, 1, __ATOMIC_SEQ_CST);
+    return NULL;
+}
+
+static void sleep_ms(long ms) {
+    struct timespec ts = {ms / 1000, (ms % 1000) * 1000 * 1000};
+    nanosleep(&ts, NULL);
+}
+
+static void test_condition_variable(void) {
+    char mu[256];
+    char cv[256];
+    CHECK(lyric_cond_size() > 0 && lyric_cond_size() <= (int32_t)sizeof(cv));
+    CHECK(lyric_mutex_size() <= (int32_t)sizeof(mu));
+    lyric_mutex_init(mu);
+    lyric_cond_init(cv);
+
+    /* A timed wait with nobody to signal it times out after about its timeout
+     * (not early, not far late) and holds the mutex again on return. */
+    lyric_mutex_lock(mu);
+    int64_t t0 = lyric_monotonic_nanos();
+    CHECK(lyric_cond_timedwait(cv, mu, 60 * 1000000LL) == 0);
+    int64_t waited = lyric_monotonic_nanos() - t0;
+    CHECK(waited >= 55 * 1000000LL);
+    CHECK(waited < 2000 * 1000000LL);
+    /* A non-positive timeout does not block. */
+    CHECK(lyric_cond_timedwait(cv, mu, 0) == 0);
+    CHECK(lyric_cond_timedwait(cv, mu, -5) == 0);
+    lyric_mutex_unlock(mu);
+
+    /* broadcast wakes every waiter; none finishes before the flag is set. */
+    cond_ctx_t ctx;
+    ctx.mutex = mu;
+    ctx.cond = cv;
+    ctx.flag = 0;
+    ctx.woke = 0;
+    pthread_t tids[3];
+    for (int i = 0; i < 3; i++) {
+        CHECK(pthread_create(&tids[i], NULL, cond_waiter, &ctx) == 0);
+    }
+    sleep_ms(50);
+    CHECK(__atomic_load_n(&ctx.woke, __ATOMIC_SEQ_CST) == 0);
+    lyric_mutex_lock(mu);
+    ctx.flag = 1;
+    lyric_cond_broadcast(cv);
+    lyric_mutex_unlock(mu);
+    for (int i = 0; i < 3; i++) {
+        CHECK(pthread_join(tids[i], NULL) == 0);
+    }
+    CHECK(ctx.woke == 3);
+
+    /* signal wakes a timed waiter before its timeout, reporting 1. */
+    lyric_mutex_lock(mu);
+    ctx.flag = 0;
+    lyric_mutex_unlock(mu);
+    pthread_t sig;
+    CHECK(pthread_create(&sig, NULL, cond_waiter, &ctx) == 0);
+    sleep_ms(50);
+    lyric_mutex_lock(mu);
+    ctx.flag = 1;
+    lyric_cond_signal(cv);
+    lyric_mutex_unlock(mu);
+    CHECK(pthread_join(sig, NULL) == 0);
+    CHECK(ctx.woke == 4);
+
+    lyric_cond_destroy(cv);
+    lyric_mutex_destroy(mu);
+}
+
+/* The mutex slot is a reentrant monitor: a protected type's `when:` barrier
+ * waits on it with lyric_mutex_wait, releasing every nested level. */
+typedef struct {
+    void* mon;
+    int state;
+    volatile int released;
+} monitor_ctx_t;
+
+static void* monitor_waiter(void* arg) {
+    monitor_ctx_t* ctx = (monitor_ctx_t*)arg;
+    lyric_mutex_lock(ctx->mon);
+    lyric_mutex_lock(ctx->mon); /* a member calling a sibling: depth 2 */
+    while (ctx->state == 0) {
+        lyric_mutex_wait(ctx->mon);
+    }
+    /* Back at depth 2: two unlocks release it. */
+    lyric_mutex_unlock(ctx->mon);
+    lyric_mutex_unlock(ctx->mon);
+    __atomic_store_n(&ctx->released, 1, __ATOMIC_SEQ_CST);
+    return NULL;
+}
+
+static void test_monitor(void) {
+    char mon[256];
+    CHECK(lyric_mutex_size() <= (int32_t)sizeof(mon));
+    lyric_mutex_init(mon);
+
+    /* Reentrant on one thread. */
+    lyric_mutex_lock(mon);
+    lyric_mutex_lock(mon);
+    lyric_mutex_lock(mon);
+    lyric_mutex_unlock(mon);
+    lyric_mutex_unlock(mon);
+    lyric_mutex_unlock(mon);
+
+    /* A waiter holding two levels waits; the notifier can take the lock
+     * (every level was released), change state and wake it; the waiter
+     * returns holding both levels again. */
+    monitor_ctx_t ctx;
+    ctx.mon = mon;
+    ctx.state = 0;
+    ctx.released = 0;
+    pthread_t tid;
+    CHECK(pthread_create(&tid, NULL, monitor_waiter, &ctx) == 0);
+    sleep_ms(80);
+    CHECK(__atomic_load_n(&ctx.released, __ATOMIC_SEQ_CST) == 0);
+    lyric_mutex_lock(mon); /* would block forever if the waiter kept a level */
+    ctx.state = 1;
+    lyric_mutex_notify_all(mon);
+    lyric_mutex_unlock(mon);
+    CHECK(pthread_join(tid, NULL) == 0);
+    CHECK(ctx.released == 1);
+
+    /* The lock is free again for a thread that never held it. */
+    lyric_mutex_lock(mon);
+    lyric_mutex_unlock(mon);
+    lyric_mutex_destroy(mon);
+}
+
+/* The global condition shares the global lock: a waiter holding it releases
+ * it while blocked, so another thread can take it, change state and wake it. */
+static volatile int global_flag = 0;
+static volatile int global_timed_result = -1;
+
+static void* global_waiter(void* arg) {
+    (void)arg;
+    lyric_global_lock();
+    while (!global_flag) {
+        lyric_global_cond_wait();
+    }
+    lyric_global_unlock();
+    return NULL;
+}
+
+static void* global_timed_waiter(void* arg) {
+    (void)arg;
+    lyric_global_lock();
+    int r = 0;
+    while (!global_flag && r == 0) {
+        r = lyric_global_cond_timedwait(5000LL * 1000000LL);
+    }
+    global_timed_result = r;
+    lyric_global_unlock();
+    return NULL;
+}
+
+static void test_global_condition(void) {
+    /* Timeout path: nothing signals, the wait returns 0 near its timeout and
+     * the global lock is held again afterwards. */
+    lyric_global_lock();
+    int64_t t0 = lyric_monotonic_nanos();
+    CHECK(lyric_global_cond_timedwait(40 * 1000000LL) == 0);
+    CHECK(lyric_monotonic_nanos() - t0 >= 35 * 1000000LL);
+    lyric_global_unlock();
+
+    /* Wake path: untimed and timed waiters both leave once the flag is set
+     * and broadcast, long before the timed one's 5 s timeout. */
+    global_flag = 0;
+    pthread_t a;
+    pthread_t b;
+    CHECK(pthread_create(&a, NULL, global_waiter, NULL) == 0);
+    CHECK(pthread_create(&b, NULL, global_timed_waiter, NULL) == 0);
+    sleep_ms(50);
+    int64_t t1 = lyric_monotonic_nanos();
+    lyric_global_lock();
+    global_flag = 1;
+    lyric_global_cond_broadcast();
+    lyric_global_unlock();
+    CHECK(pthread_join(a, NULL) == 0);
+    CHECK(pthread_join(b, NULL) == 0);
+    CHECK(lyric_monotonic_nanos() - t1 < 2000 * 1000000LL);
+    CHECK(global_timed_result == 1);
+}
+#endif /* !__wasi__ */
+
 static void test_uuid_v4(void) {
     /* Canonical lowercase hyphenated form with the RFC 4122 version-4
      * and variant-10 marker positions, distinct across calls. */
@@ -3347,6 +3547,9 @@ int main(void) {
     test_posix();
 #ifndef __wasi__
     test_semaphore();
+    test_condition_variable();
+    test_monitor();
+    test_global_condition();
 #endif
     test_ok_variants();
     test_uuid_v4();

@@ -376,6 +376,16 @@ void lyric_mutex_lock(void* m);
 void lyric_mutex_unlock(void* m);
 void lyric_mutex_destroy(void* m);
 
+/* The slot is a monitor (reentrant lock plus the condition a `when:` barrier
+ * waits on).  lyric_mutex_wait, called with the lock held, releases it at
+ * every level, blocks until another thread calls lyric_mutex_notify_all, and
+ * reacquires it at the same depth; it may wake spuriously, so a barrier is
+ * re-tested in a loop.  lyric_mutex_notify_all wakes every waiter and needs
+ * the lock held.  On wasm32-wasi a wait panics (no other thread could make
+ * the barrier true) and a notify does nothing. */
+void lyric_mutex_wait(void* m);
+void lyric_mutex_notify_all(void* m);
+
 /* sizeof(the counting-semaphore struct) for the running platform (a
  * pthread_mutex_t + pthread_cond_t + int32 count — POSIX unnamed
  * semaphores, sem_init, are not implemented on macOS).  Mirrors
@@ -399,6 +409,38 @@ int32_t lyric_sem_trywait(void* s);
 void lyric_sem_post(void* s);
 
 void lyric_sem_destroy(void* s);
+
+/* Condition variables.  `c` points at a buffer of at least lyric_cond_size()
+ * bytes; `m` is a mutex slot set up by lyric_mutex_init that the caller holds
+ * (a wait releases every nested level and restores the depth).
+ * A wait atomically releases `m`, blocks until signalled, and reacquires `m`
+ * before returning; it may wake spuriously, so a caller re-tests its
+ * predicate in a loop.  lyric_cond_timedwait gives up after `timeout_ns`
+ * nanoseconds of the monotonic clock (a negative or zero timeout does not
+ * block) and returns 1 when it was woken, 0 when it timed out; either way `m`
+ * is held again on return.  lyric_cond_signal wakes one waiter and
+ * lyric_cond_broadcast all of them; neither needs `m` held.  On wasm32-wasi
+ * (one thread) nothing can signal: a wait panics and a timed wait sleeps out
+ * its timeout and returns 0. */
+int32_t lyric_cond_size(void);
+void lyric_cond_init(void* c);
+void lyric_cond_wait(void* c, void* m);
+int32_t lyric_cond_timedwait(void* c, void* m, int64_t timeout_ns);
+void lyric_cond_signal(void* c);
+void lyric_cond_broadcast(void* c);
+void lyric_cond_destroy(void* c);
+
+/* One process-wide condition variable paired with the lock behind
+ * lyric_global_lock/unlock, for state a module guards with that lock and
+ * cannot give a lock of its own (a bundled stdlib package has no module
+ * state).  The caller holds the global lock; the wait releases it while
+ * blocked and reacquires it, with the same spurious-wakeup and timeout
+ * contract as lyric_cond_wait / lyric_cond_timedwait.  Every waiter shares
+ * the one condition, so a state change wakes them all (broadcast) and each
+ * re-tests its own predicate. */
+void lyric_global_cond_wait(void);
+int32_t lyric_global_cond_timedwait(int64_t timeout_ns);
+void lyric_global_cond_broadcast(void);
 
 /* Thread spawn/join with fixed-width handles (pthread_t is 32-bit on wasm32,
  * where wasi-libc has no threads at all: the unsupported twin fails every
