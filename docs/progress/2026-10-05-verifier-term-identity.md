@@ -63,7 +63,7 @@ not model is still an uninterpreted function of its receiver and
 arguments, so `xs.count` before and after `xs.add(1)` is one term — the
 verifier has no heap model of mutation through a receiver.
 
-Verified by seven new `verifier_self_test.l` tests (refuted and
+Verified by nine new `verifier_self_test.l` tests (refuted and
 discharged cases for each item and for each review finding), the
 verifier and records self-tests, the
 CI `lyric prove` examples, `core_proof.l`, `scripts/ci/prove-package-scope.sh`
@@ -96,5 +96,27 @@ proved equal, and differ at runtime.
   delegate compares its method and target and a JVM lambda its
   reference, so `val h = one; val k = one; h == k` is true on one target
   and false on the other.
+
+A second review found two more:
+
+- The built-in tuple sort was named `Tuple`, so a user `record Tuple {
+  xs: List[Int] }` was taken for a value and a `@pure` call over it was
+  congruent across `t.xs.add(1)`. The built-in sorts are now
+  `Lyric!Unit` and `Lyric!Tuple<n>` (one per arity, now declared to the
+  solver, which a tuple-sorted goal previously was not), and a file
+  that declares or imports by name a type spelt like a primitive fails
+  closed (V0033). The sorts of a record's fields (`xs: List[Int]`) are
+  now declared to the solver too; a goal over such a record used to be
+  a malformed query (V0007). `examples/ledger/src/accounting.l` now
+  proves 7 of 7 obligations (4 before): `makeDebit`, `makeCredit` and
+  `balancePreservation` failed only on the undeclared `AccountKind`
+  field sort.
+- Function-value equality was refused only for a top-level function or
+  lambda. It is now refused for any operand that may hold a function:
+  through `Option`/`Result`, tuples, records, unions, opaque types and
+  aliases, and for values of unknown type — an imported name used as a
+  value (`val h = monotonicNanos; h == k`), an unannotated lambda
+  parameter. A module-level `val`/`const` with a declared type now has
+  that type instead of an unknown one.
 
 Specification: `docs/15-phase-4-proof-plan.md` §5.2, §5.4.

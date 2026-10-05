@@ -403,8 +403,20 @@ Two values the program can tell apart never share a term (#8109):
   lambda, a parameter, a value a loop has havocked — is called as a
   computed callee, a result of the call site's own. Whether two function
   values are equal is not modelled (a .NET delegate compares its method
-  and target, a JVM lambda its reference): `==` and `!=` on function
-  values fail closed (V0033).
+  and target, a JVM lambda its reference, and one function named twice
+  may be two objects): `==` and `!=` fail closed (V0033) when either
+  operand may hold a function — a function or lambda, an `Option`,
+  `Result`, tuple, record, union or opaque type with a function
+  anywhere in it (through an alias too), an opaque type whose fields are
+  not visible, an unannotated lambda parameter, or a module-level name
+  with no declared type, whose type the verifier does not know. A
+  module-level `val` or `const` with a declared type is a value of that
+  type.
+- The built-in `Unit` and tuple sorts have names no source type can take
+  (`Lyric!Unit`, `Lyric!Tuple<n>`), so a user `record Tuple` is a
+  datatype of its own. A type the file declares or imports by name with
+  a primitive's name (`record Unit`, `record Int`) would be read as the
+  primitive, so such a file fails closed (V0033).
 - Every binding has a value of its own. Each name a destructuring `val`
   pattern binds is a fresh unknown (the verifier does not take values
   apart), so the same name in two patterns never denotes one value. A

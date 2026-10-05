@@ -28,6 +28,27 @@ pub union Sort {
   case SUninterp(name: String)
 }
 
+// The built-in `Unit` and tuple sorts, under names no source type can take
+// (`!` never occurs in a Lyric identifier): a user `record Tuple` or
+// `record Unit` is a datatype of its own, never one of these (#8109).
+pub func unitSortName(): String {
+  "Lyric!Unit"
+}
+
+// One per arity, so tuples of different sizes are different sorts.
+pub func tupleSortName(arity: in Int): String {
+  "Lyric!Tuple" + intToString(arity)
+}
+
+pub func isTupleSortName(name: in String): Bool {
+  name.startsWith("Lyric!Tuple")
+}
+
+pub func unitSort(): Sort {
+  val args: List[Sort] = newList()
+  SDatatype(name = unitSortName(), args = args)
+}
+
 pub func sortDisplay(s: in Sort): String {
   match s {
     case SBool -> "Bool"

@@ -726,11 +726,7 @@ func translateLit(lit: in Literal): Term {
     case LTripleString(s) -> TLit(value = VLString(s = s), sort = SString)
     case LRawString(s) -> TLit(value = VLString(s = s), sort = SString)
     case LChar(cp) -> TLit(value = VLInt(n = cp.toLong()), sort = SInt)
-    case LUnit -> {
-      val args: List[Sort] = newList()
-      val unitDt = SDatatype(name = "Unit", args = args)
-      TLit(value = VLUnit, sort = unitDt)
-    }
+    case LUnit -> TLit(value = VLUnit, sort = unitSort())
   }
 }
 
@@ -1479,7 +1475,7 @@ func isValueSort(valueTypes: in Map[String, Bool], distincts: in Map[String, Typ
     case SString -> true
     case SDatatype(name, args) -> {
       val stdMonad = (name == "Result" or name == "Option") and not distincts.containsKey(shadowedMonadKey(name))
-      if name == "Unit" or name == "Tuple" or stdMonad {
+      if name == unitSortName() or isTupleSortName(name) or stdMonad {
         var i = 0
         while i < args.count {
           if not isValueSort(valueTypes, distincts, args[i], depth + 1) {
@@ -1494,6 +1490,47 @@ func isValueSort(valueTypes: in Map[String, Bool], distincts: in Map[String, Typ
     }
     case _ -> false
   }
+}
+
+// The type `file` declares, or imports by name, that is spelt like a
+// primitive (`Int`, `String`, `Unit`, ...), or "".
+func shadowedPrimitiveName(file: in SourceFile): String {
+  val names = declaredTypeNames(file)
+  var j = 0
+  while j < file.imports.count {
+    val imp = file.imports[j]
+    match imp.asAlias {
+      case Some(a) -> names.add(a)
+      case None -> ()
+    }
+    match imp.selector {
+      case Some(sel) -> {
+        val items: List[ImportItem] = match sel {
+          case ISSingle(item) -> {
+            val one: List[ImportItem] = newList()
+            one.add(item)
+            one
+          }
+          case ISGroup(group) -> group
+        }
+        var k = 0
+        while k < items.count {
+          names.add(match items[k].asAlias { case Some(a) -> a; case None -> items[k].name })
+          k = k + 1
+        }
+      }
+      case None -> ()
+    }
+    j = j + 1
+  }
+  var i = 0
+  while i < names.count {
+    if isSome(primitiveSort(names[i])) {
+      return names[i]
+    }
+    i = i + 1
+  }
+  ""
 }
 
 // The non-generic enums, records and unions `file` declares whose values
@@ -1582,7 +1619,209 @@ func fileValueTypes(file: in SourceFile, distincts: in Map[String, TypeExpr]): M
       ci = ci + 1
     }
   }
+  addFunctionHolders(file, valueTypes)
   valueTypes
+}
+
+// The key under which `valueTypes` records that values of the file's type
+// `name` may hold a function value.
+func holdsFunctionKey(name: in String): String {
+  "!holdsfn!" + name
+}
+
+// Record each type the file declares whose values may hold a function: a
+// record, union or opaque type with a field of a function type, or of a
+// type that holds one, an alias or distinct type of such a type, and an
+// opaque type whose
+// fields are not visible — resolved to a fixed point.
+func addFunctionHolders(file: in SourceFile, valueTypes: in Map[String, Bool]): Unit {
+  val names: List[String] = newList()
+  val fieldTypes: List[List[TypeExpr]] = newList()
+  var i = 0
+  while i < file.items.count {
+    val tys: List[TypeExpr] = newList()
+    var name = ""
+    match file.items[i].kind {
+      case IRecord(d) -> {
+        name = d.name
+        appendRecordFieldTypes(d, tys)
+      }
+      case IExposedRec(d) -> {
+        name = d.name
+        appendRecordFieldTypes(d, tys)
+      }
+      case IUnion(d) -> {
+        name = d.name
+        var ci = 0
+        while ci < d.cases.count {
+          var fi = 0
+          while fi < d.cases[ci].fields.count {
+            match d.cases[ci].fields[fi] {
+              case UFNamed(_, ty, _) -> tys.add(ty)
+              case UFPos(ty, _) -> tys.add(ty)
+            }
+            fi = fi + 1
+          }
+          ci = ci + 1
+        }
+      }
+      case IOpaque(d) -> {
+        name = d.name
+        if not d.hasBody {
+          valueTypes.add(holdsFunctionKey(d.name), true)
+        }
+        var mi = 0
+        while mi < d.members.count {
+          match d.members[mi] {
+            case OMField(fld) -> tys.add(fld.ty)
+            case _ -> ()
+          }
+          mi = mi + 1
+        }
+      }
+      case ITypeAlias(d) -> {
+        name = d.name
+        tys.add(d.rhs)
+      }
+      case IDistinctType(d) -> {
+        name = d.name
+        tys.add(distinctRepresentation(d))
+      }
+      case _ -> ()
+    }
+    if name.length > 0 {
+      names.add(name)
+      fieldTypes.add(tys)
+    }
+    i = i + 1
+  }
+  var changed = true
+  while changed {
+    changed = false
+    var ni = 0
+    while ni < names.count {
+      val key = holdsFunctionKey(names[ni])
+      if not valueTypes.containsKey(key) {
+        val tys = fieldTypes[ni]
+        var ti = 0
+        var holds = false
+        while ti < tys.count {
+          if typeMentionsFunction(valueTypes, tys[ti], 0) {
+            holds = true
+          }
+          ti = ti + 1
+        }
+        if holds {
+          valueTypes.add(key, true)
+          changed = true
+        }
+      }
+      ni = ni + 1
+    }
+  }
+}
+
+func appendRecordFieldTypes(d: in RecordDecl, tys: in List[TypeExpr]): Unit {
+  var mi = 0
+  while mi < d.members.count {
+    match d.members[mi] {
+      case RMField(fld) -> tys.add(fld.ty)
+      case _ -> ()
+    }
+    mi = mi + 1
+  }
+}
+
+// Whether a type spells a function type anywhere in it, or names a type of
+// the file's that holds one.
+func typeMentionsFunction(valueTypes: in Map[String, Bool], te: in TypeExpr, depth: in Int): Bool {
+  if depth > 32 {
+    return true
+  }
+  match te.kind {
+    case TFunction(_, _) -> true
+    case TRef(path) -> valueTypes.containsKey(holdsFunctionKey(joinPathSegments(path.segments)))
+    case TGenericApp(head, args) -> {
+      if valueTypes.containsKey(holdsFunctionKey(joinPathSegments(head.segments))) {
+        return true
+      }
+      var i = 0
+      while i < args.count {
+        match args[i] {
+          case TAType(t) -> {
+            if typeMentionsFunction(valueTypes, t, depth + 1) {
+              return true
+            }
+          }
+          case _ -> ()
+        }
+        i = i + 1
+      }
+      false
+    }
+    case TArray(_, elt) -> typeMentionsFunction(valueTypes, elt, depth + 1)
+    case TSlice(elt) -> typeMentionsFunction(valueTypes, elt, depth + 1)
+    case TTuple(elts) -> {
+      var i = 0
+      while i < elts.count {
+        if typeMentionsFunction(valueTypes, elts[i], depth + 1) {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case TNullable(inner) -> typeMentionsFunction(valueTypes, inner, depth + 1)
+    case TParen(inner) -> typeMentionsFunction(valueTypes, inner, depth + 1)
+    case _ -> false
+  }
+}
+
+// Whether two values compared with `==` may hold a function value, whose
+// equality the verifier does not model: a delegate compares its method and
+// target on .NET, a lambda its reference on the JVM, and one function named
+// twice may be two objects.  A value of a sort the verifier does not know —
+// a module-level name with no declared type, an unannotated lambda
+// parameter — may be one too (#8109).
+func mayHoldFunction(env: in VEnv, t: in Term): Bool {
+  if sortMayHoldFunction(env.valueTypes, sortOf(t), 0) {
+    return true
+  }
+  if pendingCtorName(t).length > 0 {
+    val args = pendingCtorArgs(t)
+    var i = 0
+    while i < args.count {
+      if mayHoldFunction(env, args[i]) {
+        return true
+      }
+      i = i + 1
+    }
+  }
+  false
+}
+
+func sortMayHoldFunction(valueTypes: in Map[String, Bool], s: in Sort, depth: in Int): Bool {
+  if depth > 32 {
+    return true
+  }
+  match s {
+    case SUninterp(n) -> n == "Function" or n == "lambda" or n == "lambdaparam" or n.startsWith("global!")
+    case SDatatype(n, args) -> {
+      if valueTypes.containsKey(holdsFunctionKey(n)) {
+        return true
+      }
+      var i = 0
+      while i < args.count {
+        if sortMayHoldFunction(valueTypes, args[i], depth + 1) {
+          return true
+        }
+        i = i + 1
+      }
+      false
+    }
+    case SSlice(e) -> sortMayHoldFunction(valueTypes, e, depth + 1)
+    case _ -> false
+  }
 }
 
 // A call through a computed callee — a lambda, a local binding, another
@@ -1621,13 +1860,10 @@ func functionRefPrefix(): String {
   "fn!"
 }
 
-// The sorts of function values: a declared function's type, a function
-// named as a value, a lambda.
-func isFunctionSort(s: in Sort): Bool {
-  match s {
-    case SUninterp(n) -> n == "Function" or n == "lambda"
-    case _ -> false
-  }
+// The key under which the distinct-type map holds the declared type of a
+// module-level `val` or `const` of this file.
+func globalTypeKey(name: in String): String {
+  "!global." + name
 }
 
 func functionRefTerm(name: in String): Term {
@@ -1960,15 +2196,11 @@ func unsignedOverflowSideConds(op: in Builtin, x: in Term, y: in Term, product: 
 }
 
 func unitTerm(): Term {
-  val args: List[Sort] = newList()
-  val unitDt2 = SDatatype(name = "Unit", args = args)
-  TLit(value = VLUnit, sort = unitDt2)
+  TLit(value = VLUnit, sort = unitSort())
 }
 
 func unitSortInfo(): SortInfo {
-  val args: List[Sort] = newList()
-  val unitSort = SDatatype(name = "Unit", args = args)
-  sortInfoNoRange(unitSort)
+  sortInfoNoRange(unitSort())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2319,7 +2551,10 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
             // module level, where a `val` never changes: one name is one
             // value.  `global!` keeps it apart from a parameter or binding
             // spelt the same in another scope (#8109).
-            val uSort = SUninterp(name = name)
+            val uSort = match mapGet(env.distincts, globalTypeKey(name)) {
+              case Some(te) -> sortOfTypeExprE(env, te).sort
+              case None -> SUninterp(name = "global!" + name)
+            }
             val t = TVar(name = "global!" + name, sort = uSort)
             val ePair: (TranslateResult, List[Diagnostic]) = (singleTR(t), diags)
             ePair
@@ -2531,13 +2766,13 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
           } else {
             termList2(lR.term, rR.term)
           }
-          // Whether two function values are equal depends on the target —
-          // a delegate compares its method and target on .NET, a JVM lambda
-          // by reference — so it is not modelled (#8109).
+          // Whether two function values are equal depends on the target and
+          // on how often the function was named, so it is not modelled
+          // (`mayHoldFunction`, #8109).
           match b {
             case BOpEq | BOpNeq -> {
-              if isFunctionSort(sortOf(lR.term)) or isFunctionSort(sortOf(rR.term)) {
-                sortDiags.add(untranslatableDiag("an equality between function values", e.span))
+              if mayHoldFunction(env, lR.term) or mayHoldFunction(env, rR.term) {
+                sortDiags.add(untranslatableDiag("an equality between values that may hold a function", e.span))
               }
             }
             case _ -> ()
@@ -6852,6 +7087,21 @@ pub func goalsForFileInScope(
     val noDiags: List[Diagnostic] = newList()
     return (noGoals, noDiags)
   }
+  // A type spelt like a primitive reaches the verifier as the primitive —
+  // `record Unit { xs: List[Int] }` as `Unit`, a value — so nothing about
+  // its values can be trusted: the file fails closed (#8109).
+  val shadowedPrimitive = shadowedPrimitiveName(file)
+  if shadowedPrimitive.length > 0 {
+    val noGoals: List[Goal] = newList()
+    val shadowDiags: List[Diagnostic] = newList()
+    shadowDiags.add(
+      untranslatableDiag(
+        "a type named `" + shadowedPrimitive + "`, which the verifier would take for the primitive of that name",
+        file.packageDecl.path.span
+      )
+    )
+    return (noGoals, shadowDiags)
+  }
 
   // Build callee table from file's IFunc and protected-type PMFunc items.
   // A function is reachable by its name and by its name qualified with
@@ -7070,6 +7320,31 @@ pub func goalsForFileInScope(
   // Build env0 carrying the distinct-type alias map collected above (#3853).
   val env0Init = envEmpty(callees, sharedSymbols, checkedArith)
   val cyclicNames = contractCycles(env0Init, calleeDecls, recordNames, recordDefaultsMap)
+  // A module-level `val` or `const` with a declared type is a value of that
+  // type; any other module-level name's type is unknown (#8109).
+  var gi = 0
+  while gi < file.items.count {
+    match file.items[gi].kind {
+      case IConst(cd) -> {
+        if not distinctMap.containsKey(globalTypeKey(cd.name)) {
+          distinctMap.add(globalTypeKey(cd.name), cd.ty)
+        }
+      }
+      case IVal(vd) -> match vd.ty {
+        case Some(vty) -> match simpleBindingName(vd.pattern) {
+          case Some(vn) -> {
+            if not distinctMap.containsKey(globalTypeKey(vn)) {
+              distinctMap.add(globalTypeKey(vn), vty)
+            }
+          }
+          case None -> ()
+        }
+        case None -> ()
+      }
+      case _ -> ()
+    }
+    gi = gi + 1
+  }
   val valueTypesMap = fileValueTypes(file, distinctMap)
   val env0 = VEnv(
     vars = env0Init.vars,

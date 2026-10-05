@@ -2612,7 +2612,14 @@ test "every binding names a value of its own (#8109)" {
     "func f(p: in (Int, Int)): Bool\n  ensures: result\n{\n  val (a, b) = p\n  a == a\n}\n",
     "pattern-name-is-itself"
   )
-  assertDischarged("val limit = 10\nfunc f(): Bool\n  ensures: result\n{\n  limit == limit\n}\n", "module-level-name")
+  assertDischarged(
+    "val limit: Int = 10\nfunc f(): Bool\n  ensures: result\n{\n  limit == limit\n}\n",
+    "module-level-name"
+  )
+  assertDischarged(
+    "val limit: Int = 10\nfunc f(x: in Int): Bool\n  requires: x == limit\n  ensures: result\n{\n  x + 1 == limit + 1\n}\n",
+    "module-level-name-typed"
+  )
   assertUnsupported("func f(): Unit {\n  limit = 3\n}\n", "assign-undeclared")
 }
 
@@ -2734,5 +2741,65 @@ test "two function values are never compared (#8109)" {
   assertUntranslatable(
     oneTwoDecls() + "func f(): Bool\n  ensures: result\n{\n  val h = one\n  val k = two\n  h != k\n}\n",
     "different-functions-unequal"
+  )
+}
+
+test "a source type named like a built-in sort is never the built-in (#8109)" {
+  assertRefuted(
+    "record Tuple {\n  xs: List[Int]\n}\n@pure\nfunc size(t: in Tuple): Int {\n  val n = t.xs.count\n  n\n}\n" +
+      "func f(t: in Tuple): Bool\n  ensures: result\n{\n  val a = size(t)\n  t.xs.add(1)\n  val b = size(t)\n  a == b\n}\n",
+    "record-named-tuple-with-a-list"
+  )
+  assertRefuted(
+    "record Tuple {\n  var n: Int\n}\n@pure\nfunc size(t: in Tuple): Int {\n  val k = t.n\n  k\n}\n" +
+      "func f(t: in Tuple): Bool\n  ensures: result\n{\n  size(t) == size(t)\n}\n",
+    "record-named-tuple"
+  )
+  assertUntranslatable(
+    "record Unit {\n  xs: List[Int]\n}\nfunc f(u: in Unit): Bool\n  ensures: result\n{\n  true\n}\n",
+    "record-named-unit"
+  )
+  assertDischarged(
+    "@pure\nfunc fst(p: in (Int, Int)): Int\n{\n  val q = p\n  0\n}\n" +
+      "func f(p: in (Int, Int)): Bool\n  ensures: result\n{\n  fst(p) == fst(p)\n}\n",
+    "builtin-tuple-is-a-value"
+  )
+}
+
+test "values that may hold a function are never compared (#8109)" {
+  val one = "@pure\nfunc one(x: in Int): Int = 1\n"
+  assertUntranslatable(
+    "func f(): Bool\n  ensures: result\n{\n  val h = monotonicNanos\n  val k = monotonicNanos\n  h == k\n}\n",
+    "imported-function-value"
+  )
+  assertUntranslatable(
+    one + "func g(): Bool\n  ensures: result\n{\n  val a: Option[(Int) -> Int] = Some(one)\n" +
+      "  val b: Option[(Int) -> Int] = Some(one)\n  a == b\n}\n",
+    "function-in-option"
+  )
+  assertUntranslatable(
+    one + "func g(): Bool\n  ensures: result\n{\n  Some(one) == Some(one)\n}\n",
+    "function-in-pending-option"
+  )
+  assertUntranslatable(
+    one + "record Handler {\n  run: (Int) -> Int\n}\nfunc g(): Bool\n  ensures: result\n{\n" +
+      "  Handler(run = one) == Handler(run = one)\n}\n",
+    "function-in-record"
+  )
+  assertUntranslatable(
+    "alias F = (Int) -> Int\nrecord Box {\n  f: F\n}\nfunc g(a: in Box, b: in Box): Bool\n  ensures: result\n{\n  a == b\n}\n",
+    "function-through-alias"
+  )
+  assertUntranslatable(
+    "type G = (Int) -> Int\nrecord Box {\n  g: G\n}\nfunc g(a: in Box, b: in Box): Bool\n  ensures: result\n{\n  a == b\n}\n",
+    "function-through-distinct-type"
+  )
+  assertNotProved(
+    one + "func g2(): Bool\n  ensures: result\n{\n  val a = (1, one)\n  val b = (1, one)\n  a == b\n}\n",
+    "function-in-tuple"
+  )
+  assertDischarged(
+    "record Pt {\n  x: Int\n}\nfunc g(a: in Pt): Bool\n  ensures: result\n{\n  Some(a) == Some(a)\n}\n",
+    "value-in-option"
   )
 }
