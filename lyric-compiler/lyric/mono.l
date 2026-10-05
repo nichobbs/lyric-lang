@@ -5152,6 +5152,24 @@ func funcValueCallMono(
 // zero-width span, which no span-keyed site names, so the read is never
 // rewritten as the argument itself was; the receiver's keeps the receiver's
 // span, which the backends key its class by.
+//
+// An element of an array passed to an `out`/`inout` parameter (`site.elemCopy`,
+// #8180) has no address on every target (an array is a `List` on dotnet and
+// the JVM), so it is passed the way the JVM passes any place, by copy in and
+// copy out:
+//
+//   {
+//     val __lyric_ao_<n>_x0 = i()      // its computed indices, in source order
+//     ...                               // the other arguments, in source order
+//     var __lyric_ao_<n>_e0: T = a[__lyric_ao_<n>_x0]
+//     val __lyric_ao_<n>_v = f(__lyric_ao_<n>_e0, ...)
+//     a[__lyric_ao_<n>_x0] = __lyric_ao_<n>_e0
+//     __lyric_ao_<n>_v
+//   }
+//
+// The array is never copied: the element is read from and stored into the
+// place itself.  A `Unit` call keeps no value, and a `Never` call stores
+// nothing back.
 func argOrderCallMono(
   state: in MonoState,
   env: in Map[String, TypeExpr],
@@ -5179,6 +5197,9 @@ func argOrderCallMono(
     case _ -> ()
   }
   val callArgs: List[CallArg] = newList()
+  val elemPlaces: List[Expr] = newList()
+  val elemTemps: List[String] = newList()
+  val elemArgIdx: List[Int] = newList()
   var i = 0
   while i < args.count {
     if i < site.bound.count and site.bound[i] {
@@ -5194,10 +5215,19 @@ func argOrderCallMono(
       )
     } else if i < site.byRef.count and site.byRef[i] {
       val place = bindPlaceIndicesMono(state, env, callArgExpr(args[i]), base, stmts)
+      val passed = if i < site.elemCopy.count and site.elemCopy[i] {
+        val tmp = base + "_e" + toString(i)
+        elemPlaces.add(rewriteExpr(state, env, place))
+        elemTemps.add(tmp)
+        elemArgIdx.add(i)
+        singleSegPathExpr(tmp, Span(startPos = place.span.startPos, endPos = place.span.startPos))
+      } else {
+        place
+      }
       callArgs.add(
         match args[i] {
-          case CANamed(nm, _, asp) -> CANamed(name = nm, value = place, span = asp)
-          case CAPositional(_) -> CAPositional(expr = place)
+          case CANamed(nm, _, asp) -> CANamed(name = nm, value = passed, span = asp)
+          case CAPositional(_) -> CAPositional(expr = passed)
         }
       )
     } else {
@@ -5205,8 +5235,49 @@ func argOrderCallMono(
     }
     i = i + 1
   }
+  // Each element passed by reference is copied into a `var` the call writes,
+  // after every argument has run, and stored back after the call (#8180).
+  var ei = 0
+  while ei < elemPlaces.count {
+    val ai = elemArgIdx[ei]
+    val ety: Option[TypeExpr] = if ai < site.elemTyped.count and site.elemTyped[ai] {
+      Some(value = site.elemTypes[ai])
+    } else {
+      None
+    }
+    stmts.add(
+      Statement(
+        kind = SLocal(binding = LBVar(name = elemTemps[ei], ty = ety, init = Some(value = elemPlaces[ei]))),
+        span = Span(startPos = sp.startPos, endPos = sp.startPos)
+      )
+    )
+    ei = ei + 1
+  }
   val call = rewriteExpr(state, env, Expr(kind = ECall(fn = fn, args = callArgs), span = sp))
-  stmts.add(Statement(kind = SExpr(expr = call), span = sp))
+  if elemPlaces.count == 0 or site.resultKind == 2 {
+    stmts.add(Statement(kind = SExpr(expr = call), span = sp))
+    return Expr(kind = EBlock(block = Block(statements = stmts, span = sp)), span = sp)
+  }
+  val resultName = base + "_v"
+  if site.resultKind == 1 {
+    stmts.add(Statement(kind = SExpr(expr = call), span = sp))
+  } else {
+    stmts.add(copyTypedValStmtMono(resultName, None, call, sp))
+  }
+  ei = 0
+  while ei < elemPlaces.count {
+    val wsp = Span(startPos = sp.startPos, endPos = sp.startPos)
+    stmts.add(
+      Statement(
+        kind = SAssign(target = elemPlaces[ei], op = AssEq, value = singleSegPathExpr(elemTemps[ei], wsp)),
+        span = wsp
+      )
+    )
+    ei = ei + 1
+  }
+  if site.resultKind == 0 {
+    stmts.add(Statement(kind = SExpr(expr = singleSegPathExpr(resultName, sp)), span = sp))
+  }
   Expr(kind = EBlock(block = Block(statements = stmts, span = sp)), span = sp)
 }
 

@@ -11199,6 +11199,16 @@ func callArgsHaveNamed(args: in List[CallArg]): Bool {
 // variable, field or element.  Here the arguments run into temporaries in
 // source order instead, the place stays in the call, and the call itself no
 // longer has an argument the hoists need to move.
+//
+// A call that passes an element of an array (`a[i]`, `r.a[i][j]`) to an
+// `out`/`inout` parameter is recorded too (#8180): every argument that is
+// not inert runs into a temporary in source order, the element's computed
+// indices at its own turn, and then the element is copied into a temporary
+// that the call writes and that is stored back into the element after it,
+// so each index runs once and the write lands on the element on every
+// target.  The copy is made after every argument has run, as the JVM fills
+// the holder of any `out`/`inout` place; `resultTy` is the call's result
+// type, which says whether the call's value is kept across the store.
 func recordArgOrderSite(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -11211,13 +11221,15 @@ func recordArgOrderSite(
   byRef: in List[Bool],
   expected: in List[Type],
   recvTy: in Option[Type],
+  resultTy: in Type,
 ): Unit {
   if sc.contractDepth.count > 0 {
     return
   }
   val named = callArgsHaveNamed(args)
   val hazard = callArgsHaveHoistHazard(args)
-  if not named and not hazard {
+  val anyElem = callArgsHaveElementPlace(args)
+  if not named and not hazard and not anyElem {
     return
   }
   val slots: List[Int] = match pairCallArgs(slotNames, 0, args) { case Ok(paired) -> paired; case Err(_) -> return }
@@ -11235,18 +11247,25 @@ func recordArgOrderSite(
     k = k + 1
   }
   val bound: List[Bool] = newList()
+  val elemCopy: List[Bool] = newList()
   var placeByRef = false
+  var hasElem = false
   i = 0
   while i < args.count {
     val ae = callArgExpr(args[i])
     if argByRef[i] and argIsPlace(ae) {
       placeByRef = true
     }
+    val isElem = argByRef[i] and argIsElementPlace(ae)
+    if isElem {
+      hasElem = true
+    }
+    elemCopy.add(isElem)
     bound.add(if argByRef[i] { not argIsPlace(ae) } else { not argIsInert(sc, ae) })
     i = i + 1
   }
   val reordered = named and callArgsNeedSourceOrder(slots, args.count, bound, defaultEffect)
-  if not reordered and not (hazard and placeByRef) {
+  if not reordered and not (hazard and placeByRef) and not hasElem {
     return
   }
   // Written in parameter order, the call needs temporaries only up to the
@@ -11255,7 +11274,7 @@ func recordArgOrderSite(
   // (`bindPlaceIndicesMono`), whichever comes later: the arguments after
   // both run after them either way, while an argument left in the call
   // before such an index would run after it.
-  if not reordered {
+  if not reordered and not hasElem {
     var lastNeed = -1
     i = 0
     while i < args.count {
@@ -11295,9 +11314,44 @@ func recordArgOrderSite(
   if tbl.argOrderSites.containsKey(key) {
     tbl.argOrderSites.remove(key)
   }
+  val elemTypes: List[TypeExpr] = newList()
+  val elemTyped: List[Bool] = newList()
+  i = 0
+  while i < args.count {
+    val ae = callArgExpr(args[i])
+    val te: Option[TypeExpr] = if elemCopy[i] and i < argTypes.count {
+      typeExprForOpenBinding(tbl, argTypes[i], ae.span, sc.genericNames)
+    } else {
+      None
+    }
+    match te {
+      case Some(t) -> {
+        elemTypes.add(t)
+        elemTyped.add(true)
+      }
+      case None -> {
+        elemTypes.add(TypeExpr(kind = TUnit, span = ae.span))
+        elemTyped.add(false)
+      }
+    }
+    i = i + 1
+  }
+  val resultKind = match unrefine(resultTy) {
+    case TyPrim(pt) -> match pt { case PtUnit -> 1; case PtNever -> 2; case _ -> 0 }
+    case _ -> 0
+  }
   tbl.argOrderSites.add(
     key,
-    ArgOrderSite(bound = bound, byRef = argByRef, bindRecv = bindRecv, startOffset = callSpan.startPos.offset)
+    ArgOrderSite(
+      bound = bound,
+      byRef = argByRef,
+      bindRecv = bindRecv,
+      startOffset = callSpan.startPos.offset,
+      elemCopy = elemCopy,
+      elemTypes = elemTypes,
+      elemTyped = elemTyped,
+      resultKind = resultKind
+    )
   )
 }
 
@@ -11322,7 +11376,7 @@ func recordSigArgOrderSite(
     defaultEffect.add(p.hasDefault and not p.defaultInert)
     byRef.add(modeNeedsLValue(p.mode))
   }
-  recordArgOrderSite(sc, tbl, callSpan, fn, args, argTypes, names, defaultEffect, byRef, expected, recvTy)
+  recordArgOrderSite(sc, tbl, callSpan, fn, args, argTypes, names, defaultEffect, byRef, expected, recvTy, sig.returnTy)
 }
 
 // `recordArgOrderSite` for the construction `fn(args)` of `ctorTy`: a
@@ -11366,7 +11420,7 @@ func recordCtorArgOrderSite(
     case None -> newList()
   }
   val noRecv: Option[Type] = None
-  recordArgOrderSite(sc, tbl, callSpan, fn, args, argTypes, names, defaultEffect, byRef, expected, noRecv)
+  recordArgOrderSite(sc, tbl, callSpan, fn, args, argTypes, names, defaultEffect, byRef, expected, noRecv, ctorTy)
 }
 
 // The construction `fn(args)` of `ctorTy`: each argument is expected to have
@@ -11731,11 +11785,18 @@ func recordByRefDotCall(
 
 // The receiver of a call that takes it by reference (`self: inout T`, or any
 // `out`/`inout` first parameter called with method syntax) is the place the
-// callee writes: a `var`, an `out`/`inout` parameter (`self` among them), or
-// a field of one (T0166).  An indexed element cannot be passed by reference
-// yet (#8180).
-func checkByRefReceiver(sc: in Scope, diag: in List[Diagnostic], recv: in Expr, method: in String, sp: in Span): Unit {
-  val problem = byRefReceiverProblem(sc, recv)
+// callee writes: a `var`, an `out`/`inout` parameter (`self` among them), a
+// field of one, or an element of an array that is one (T0166).
+func checkByRefReceiver(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  recv: in Expr,
+  method: in String,
+  sp: in Span,
+): Unit {
+  val problem = byRefReceiverProblem(sc, tbl, sigs, recv)
   if problem.length > 0 {
     diag.add(
       errorDiagnostic(
@@ -11750,9 +11811,11 @@ func checkByRefReceiver(sc: in Scope, diag: in List[Diagnostic], recv: in Expr, 
 }
 
 // Why `recv` is not a writable place, or "" when it is.
-func byRefReceiverProblem(sc: in Scope, recv: in Expr): String {
+func byRefReceiverProblem(
+  sc: in Scope, tbl: in SymbolTable, sigs: in Map[String, ResolvedSignature], recv: in Expr
+): String {
   match recv.kind {
-    case EParen(inner) -> byRefReceiverProblem(sc, inner)
+    case EParen(inner) -> byRefReceiverProblem(sc, tbl, sigs, inner)
     case EPath(p) -> if p.segments.count == 1 {
       match scopeTryFind(sc, p.segments[0]) {
         case Some(b) -> if b.isMutable { "" } else { "'" + p.segments[0] + "' is immutable; declare it `var`" }
@@ -11770,8 +11833,68 @@ func byRefReceiverProblem(sc: in Scope, recv: in Expr): String {
       case None -> "this method's own receiver `self` is `in`; declare it `self: inout`"
     }
     case EMember(base, _) -> fieldPathRootProblem(sc, base)
-    case EIndex(_, _) -> "an indexed element cannot be passed by reference yet (#8180); copy it into a `var`, call the method, and store it back"
+    case EIndex(arr, _) -> {
+      val problem = elementByRefProblem(sc, tbl, sigs, recv)
+      if problem.length > 0 {
+        problem
+      } else if arrayPlaceWritable(sc, tbl, sigs, arr) {
+        ""
+      } else {
+        "an array element is written through a `var` local, an `out`/`inout` parameter or a `var` field, and this array is none of them"
+      }
+    }
     case _ -> "a value that is not a variable or field cannot be written; bind it to a `var` first"
+  }
+}
+
+// Why the element `e` (`c[i]`) cannot be passed to an `out`/`inout` parameter,
+// or "" when it can or `e` is not an element.  An element of an
+// `array[N, T]` is a place (whether its array may be written is T0157's
+// business); an element of a `List`, `Map`, slice, `String` or extern type is
+// not one (docs/01 §2.7): the call is lowered as a copy into a temporary and
+// a store back into the element (`Lyric.Mono.argOrderCallMono`), and a host
+// collection may change length or key set while the callee runs.
+func elementByRefProblem(sc: in Scope, tbl: in SymbolTable, sigs: in Map[String, ResolvedSignature], e: in Expr): String {
+  match peelParens(e).kind {
+    case EIndex(recv, _) -> {
+      val scratch: List[Diagnostic] = newList()
+      val rt = inferExpr(sc, tbl, sigs, scratch, recv)
+      match unrefine(rt) {
+        case TyError -> ""
+        case TyArray(_, _, _) -> ""
+        case _ -> "an element of " + renderType(rt) +
+          " is not a place a call can write by reference (only an element of an `array[N, T]` is); copy it into a `var`, pass that, and store it back"
+      }
+    }
+    case _ -> ""
+  }
+}
+
+// Whether `e` is an element of a place (`a[i]`, `r.a[i][j]`): passed to an
+// `out`/`inout` parameter, it is copied into a temporary the call writes and
+// stored back after the call (`Lyric.Mono.argOrderCallMono`, #8180).
+func argIsElementPlace(e: in Expr): Bool {
+  match peelParens(e).kind {
+    case EIndex(_, _) -> argIsPlace(e)
+    case _ -> false
+  }
+}
+
+// Whether some argument is an element of a place.
+func callArgsHaveElementPlace(args: in List[CallArg]): Bool {
+  for a in args {
+    if argIsElementPlace(callArgExpr(a)) {
+      return true
+    }
+  }
+  false
+}
+
+// Whether a method call's receiver is an element of a place (`xs[i].m()`).
+func calleeReceiverIsElementPlace(fn: in Expr): Bool {
+  match fn.kind {
+    case EMember(recv, _) -> argIsElementPlace(recv)
+    case _ -> false
   }
 }
 
@@ -12913,7 +13036,7 @@ func inferExprCore(
           }
           checkContractCallPure(sc, diag, sig, fn, e.span)
           checkCallArgsAgainstSig(sc, tbl, sigs, diag, sig, args, argTypes, e.span)
-          if callArgsHaveNamed(args) or callArgsHaveHoistHazard(args) {
+          if callArgsHaveNamed(args) or callArgsHaveHoistHazard(args) or callArgsHaveElementPlace(args) {
             recordSigArgOrderSite(
               sc,
               tbl,
@@ -13004,7 +13127,8 @@ func inferExprCore(
                   checkCallArgsAgainstSig(sc, tbl, sigs, diag, mp.sig, args, argTypes, e.span)
                   val mpHazard = callArgsHaveHoistHazard(args)
                   val mpNamed = callArgsHaveNamed(args)
-                  if mpHazard or mpNamed {
+                  val mpElem = callArgsHaveElementPlace(args) or calleeReceiverIsElementPlace(fn)
+                  if mpHazard or mpNamed or mpElem {
                     val mpExpected = match mp.fullSig {
                       case Some(fullS) -> match memberRecvTy {
                         case Some(_) -> sigExpectedArgTypes(fullS, memberRecvTy, args, argTypes)
@@ -13015,7 +13139,7 @@ func inferExprCore(
                     if mpHazard {
                       recordHoistedCallArgs(sc, tbl, args, argTypes, mpExpected)
                     }
-                    if mpNamed or mpHazard {
+                    if mpNamed or mpHazard or mpElem {
                       match byRefDotFullSig(methodPick, fn) {
                         // The call becomes `T.m(recv, args)` (#8179), so its
                         // argument order is recorded in that shape, the
@@ -13074,7 +13198,7 @@ func inferExprCore(
                             case None -> ()
                           }
                           if fullS.params.count > 0 and modeNeedsLValue(fullS.params[0].mode) {
-                            checkByRefReceiver(sc, diag, byRecv, memberName, e.span)
+                            checkByRefReceiver(sc, tbl, sigs, diag, byRecv, memberName, e.span)
                           }
                         }
                         case _ -> ()
@@ -14870,7 +14994,16 @@ func checkPairedCallArgs(
       // function whose first parameter is `self: inout T`) is held to the
       // receiver rule of a method call, whatever its type (#8179).
       if k == 0 and p.name == "self" and modeNeedsLValue(p.mode) {
-        checkByRefReceiver(sc, diag, callArgExpr(args[ai]), "self", span)
+        checkByRefReceiver(sc, tbl, sigs, diag, callArgExpr(args[ai]), "self", span)
+      } else if modeNeedsLValue(p.mode) and elementByRefProblem(sc, tbl, sigs, callArgExpr(args[ai])).length > 0 {
+        diag.add(
+          errorDiagnostic(
+            "T0085",
+            "argument for `out`/`inout` parameter '" + p.name + "' must be a mutable l-value: " +
+              elementByRefProblem(sc, tbl, sigs, callArgExpr(args[ai])),
+            span
+          )
+        )
       } else if modeNeedsLValue(p.mode) and byRefArgModuleProblem(sc, callArgExpr(args[ai])).length > 0 {
         diag.add(
           errorDiagnostic(
