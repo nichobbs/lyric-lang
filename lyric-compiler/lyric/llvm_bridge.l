@@ -815,11 +815,13 @@ func shapeStackSize(spec: in ShapeSpec): String {
 /// For `--shape component`: append the generated canonical-ABI shims to the
 /// package's AST and record its exports in `pkgs`; any other shape passes the
 /// file through.  Reports the shims' `W0040` notes and an internal failure.
-func shimForComponent(file: in SourceFile, shape: in String, pkgs: in List[ComponentPkg]): Option[SourceFile] {
+func shimForComponent(
+  file: in SourceFile, shape: in String, pkgs: in List[ComponentPkg], peers: in List[SourceFile]
+): Option[SourceFile] {
   if parseShapeSpec(shape).base != "component" {
     return Some(value = file)
   }
-  val r = componentRewriteFile(file)
+  val r = componentRewriteFile(file, peers)
   for n in r.info.notes {
     Console.error(n)
   }
@@ -857,7 +859,11 @@ pub func compileToNativeWithShape(
     case None -> return false
   }
   val componentPkgs: List[ComponentPkg] = newList()
-  val shimFile = match shimForComponent(cfgFile, shape, componentPkgs) { case Some(f) -> f; case None -> return false }
+  val noPeers: List[SourceFile] = newList()
+  val shimFile = match shimForComponent(cfgFile, shape, componentPkgs, noPeers) {
+    case Some(f) -> f
+    case None -> return false
+  }
 
   // Pre-typecheck rewrite chain: alias rewrite only.  The native bridge
   // does not expand docs/58 wire/config templates or synthesise
@@ -1253,9 +1259,24 @@ pub func compileProjectToNativeWithShape(
       case Some(f) -> f
       case None -> return false
     }
-    val shimFile = match shimForComponent(cfgFile, shape, componentPkgs) { case Some(f) -> f; case None -> return false }
-    cfgFiles.add(shimFile)
+    cfgFiles.add(cfgFile)
     ppi = ppi + 1
+  }
+  // The component shims of one package may name another package's `pub` types, so
+  // they are generated once every own package is parsed (docs/35 W4, cross-package
+  // types).  Other shapes pass the files through.
+  val parsedPeers: List[SourceFile] = newList()
+  for pf in cfgFiles {
+    parsedPeers.add(pf)
+  }
+  var shi = 0
+  while shi < parsedPeers.count {
+    val shimFile = match shimForComponent(parsedPeers[shi], shape, componentPkgs, parsedPeers) {
+      case Some(f) -> f
+      case None -> return false
+    }
+    cfgFiles[shi] = shimFile
+    shi = shi + 1
   }
 
   // Pre-typecheck rewrite chain: alias rewrite and config-template expansion

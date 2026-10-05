@@ -673,6 +673,25 @@ pub func go(): Unit {
     ),
     "an empty module name is malformed"
   )
+  assertFalse(
+    componentBuildOk(
+      r#"package Probe
+
+record Point {
+  x: Int
+  y: Int
+}
+
+@wasmImport("ui")
+extern func point(p: Point): Point = "point"
+
+pub func go(): Int {
+  point(Point(x = 1, y = 2)).x
+}
+"#
+    ),
+    "a host function named like a type of its own interface is a WIT name clash"
+  )
 }
 
 test "wasm32 component: externs binding one host function share a single import" {
@@ -1472,6 +1491,240 @@ console.log('loop=' + [1, 2, 3].map((i) => p.firstIt(['x'.repeat(i * 1000)]).len
   assertTrue(Str.contains(n.stdout, "pair=[7,\"n7\"]"), "a tuple result: " + n.stdout)
   assertTrue(Str.contains(n.stdout, "many=171"), "parameters spilled into memory: " + n.stdout)
   assertTrue(Str.contains(n.stdout, "loop=1000,2000,3000"), "repeated calls free what they allocate: " + n.stdout)
+}
+
+func projectComponent(pkgs: in List[NativeSourcePackage]): String {
+  val _w = envOrPanic("WASI_SDK_PATH")
+  val stdlib = findStdlibSourcesNative()
+  val dir = Path.join(
+    Environment.getVarOrDefault("TMPDIR", "/tmp"),
+    "lyric-wasm32-component-xpkg-" + Uuid.uuidToString(Uuid.newUuid())
+  )
+  val _d = File.createDir(dir)
+  val flags: List[String] = newList()
+  val noFeatures: List[String] = newList()
+  val noOrigins: List[DiagUtil.PackageLineOrigins] = newList()
+  val ok = compileProjectToNativeWithShape(
+    pkgs,
+    Path.join(dir, "prog.wasm"),
+    stdlib,
+    "wasm32-wasi",
+    "2",
+    flags,
+    newList(),
+    noFeatures,
+    noFeatures,
+    "",
+    noOrigins,
+    true,
+    "component"
+  )
+  if not ok {
+    panic("wasm32 component project compilation failed")
+  }
+  dir
+}
+
+test "wasm32 component: an export may name a type another package of the project declares" {
+  val pkgs: List[NativeSourcePackage] = newList()
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Proj.Model",
+      path = "",
+      source = r"package Proj.Model
+
+import Std.Collections
+
+pub record Line {
+  sku: String
+  qty: Int
+}
+
+pub enum Currency {
+  case Usd
+  case Eur
+}
+
+pub union Status {
+  case Open
+  case Paid(amount: Long)
+  case Failed(reason: String)
+}
+
+pub record Invoice {
+  id: Int
+  lines: List[Line]
+  currency: Currency
+  status: Status
+}
+"
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Proj.Api",
+      path = "",
+      source = r#"package Proj.Api
+
+import Std.Collections
+
+import Proj.Model
+
+pub func mk(id: Int): Invoice {
+  val ls: List[Line] = newList()
+  ls.add(Line(sku = "a", qty = 2))
+  ls.add(Line(sku = "b", qty = 3))
+  Invoice(id = id, lines = ls, currency = Usd, status = Open)
+}
+
+pub func total(i: Invoice): Int {
+  var t = 0
+  for l in i.lines {
+    t = t + l.qty
+  }
+  t
+}
+
+pub func pay(i: Invoice, amount: Long): Invoice {
+  Invoice(id = i.id, lines = i.lines, currency = i.currency, status = Paid(amount = amount))
+}
+
+pub func flip(c: Currency): Currency {
+  match c {
+    case Usd -> Eur
+    case Eur -> Usd
+  }
+}
+"#
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Proj.Reports",
+      path = "",
+      source = r#"package Proj.Reports
+
+import Std.Collections
+
+import Proj.Model as M
+
+pub func describe(i: M.Invoice): String {
+  match i.status {
+    case M.Status.Open -> "open"
+    case M.Status.Paid(a) -> "paid"
+    case M.Status.Failed(r) -> r
+  }
+}
+
+pub func failed(reason: String): M.Status {
+  M.Status.Failed(reason = reason)
+}
+
+pub func currencies(): List[M.Currency] {
+  val acc: List[M.Currency] = newList()
+  acc.add(M.Currency.Usd)
+  acc.add(M.Currency.Eur)
+  acc
+}
+"#
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Proj.Lines",
+      path = "",
+      source = r"package Proj.Lines
+
+import Std.Collections
+
+import Proj.Model.{Line as L}
+
+pub func count(ls: List[L]): Int {
+  ls.count
+}
+
+pub func first(ls: List[L]): Option[L] {
+  if ls.count > 0 {
+    Some(value = ls[0])
+  } else {
+    None
+  }
+}
+"
+    )
+  )
+  val dir = projectComponent(pkgs)
+  val wasm = Path.join(dir, "prog.wasm")
+  val wit = match File.readText(Path.join(dir, "prog.wit")) { case Ok(t) -> t; case Err(_) -> "" }
+  assertTrue(
+    Str.contains(wit, "interface proj-api {") and Str.contains(wit, "interface proj-reports {") and
+      Str.contains(wit, "interface proj-lines {"),
+    "an interface per exporting package: " + wit
+  )
+  assertTrue(
+    Str.contains(wit, "total: func(i: invoice) -> s32"),
+    "a type of another package appears under its own name: " + wit
+  )
+  assertFalse(Str.contains(wit, "proj-model"), "the declaring package is not an interface of its own: " + wit)
+  val vargs: List[String] = newList()
+  vargs.add("validate")
+  vargs.add(wasm)
+  val v = run(envOrPanic("WASM_TOOLS"), vargs)
+  assertTrue(v.exitCode == 0, "wasm-tools validate: " + v.stderr)
+  val outDir = Path.join(dir, "js")
+  val jargs: List[String] = newList()
+  jargs.add("transpile")
+  jargs.add(wasm)
+  jargs.add("-o")
+  jargs.add(outDir)
+  val j = run(envOrPanic("JCO"), jargs)
+  assertTrue(j.exitCode == 0, "jco transpile: " + j.stderr)
+  val lnargs: List[String] = newList()
+  lnargs.add("-s")
+  lnargs.add(envOrPanic("LYRIC_JCO_NODE_MODULES"))
+  lnargs.add(Path.join(dir, "node_modules"))
+  val _ln = run("ln", lnargs)
+  val script = r"import * as m from './js/prog.js';
+const show = (v) => JSON.stringify(v, (k, x) => typeof x === 'bigint' ? Number(x) : x);
+const api = m.projApi;
+const inv = api.mk(7);
+console.log('mk=' + show(inv));
+console.log('total=' + api.total(inv));
+const paid = api.pay(inv, 99n);
+console.log('pay=' + show(paid.status));
+console.log('flip=' + api.flip('usd') + ',' + api.flip('eur'));
+console.log('describe=' + m.projReports.describe(inv) + ',' + m.projReports.describe(paid) + ',' + m.projReports.describe({ ...inv, status: m.projReports.failed('nope') }));
+console.log('currencies=' + show(m.projReports.currencies()));
+console.log('count=' + m.projLines.count(inv.lines) + ' first=' + show(m.projLines.first(inv.lines)) + ' none=' + show(m.projLines.first([])));
+"
+  val scriptPath = Path.join(dir, "run.mjs")
+  val _s = File.writeText(scriptPath, script)
+  val nargs: List[String] = newList()
+  nargs.add(scriptPath)
+  val n = run(Environment.getVarOrDefault("NODE", "node"), nargs)
+  assertTrue(n.exitCode == 0, "node: " + n.stderr + n.stdout)
+  assertTrue(
+    Str.contains(
+      n.stdout,
+      "mk={\"id\":7,\"lines\":[{\"sku\":\"a\",\"qty\":2},{\"sku\":\"b\",\"qty\":3}],\"currency\":\"usd\",\"status\":{\"tag\":\"open\"}}"
+    ),
+    "a record of another package, with its nested record, enum and union: " + n.stdout
+  )
+  assertTrue(Str.contains(n.stdout, "total=5"), "a record of another package as a parameter: " + n.stdout)
+  assertTrue(
+    Str.contains(n.stdout, "pay={\"tag\":\"paid\",\"val\":99}"),
+    "a union case built from a bare name: " + n.stdout
+  )
+  assertTrue(Str.contains(n.stdout, "flip=eur,usd"), "an enum of another package: " + n.stdout)
+  assertTrue(
+    Str.contains(n.stdout, "describe=open,paid,nope"),
+    "types named through an alias and matched with qualified cases: " + n.stdout
+  )
+  assertTrue(Str.contains(n.stdout, "currencies=[\"usd\",\"eur\"]"), "a list of another package's enum: " + n.stdout)
+  assertTrue(
+    Str.contains(n.stdout, "count=2 first={\"sku\":\"a\",\"qty\":2} none=undefined"),
+    "a renamed selective import: " + n.stdout
+  )
 }
 
 test "wasm32 component: tuples cross the boundary as WIT tuples, nested in lists, options, records and results" {

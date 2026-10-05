@@ -121,6 +121,15 @@ writes `hello.wasm`, a component, and `hello.wit`, the interface generated from 
 | a union | `variant` |
 | an enum | `enum` |
 
+A signature may also name a `pub` type of another package of the same project, written any
+way Lyric allows (`import Model` and a bare `Invoice`, `import Model as M` and `M.Invoice`,
+`import Model.{Invoice as Inv}`, or the full `Proj.Model.Invoice`). The WIT interface of the
+exporting package declares its own copy of the type under the simple name (`invoice`); the
+declaring package gets no interface of its own unless it exports functions itself. Two
+different types that would both become one WIT name in an interface keep the function out of
+the component with a `W0040` note. Types from the standard library or a restored package are
+not carried.
+
 An `async func` export is an ordinary WIT function: the wrapper runs its task to
 completion before returning, sleeping out any `Std.Time.sleepMillis` the task waits on, so
 the host call blocks for that long (the build prints `W0041` as a reminder). A module-shape
@@ -280,8 +289,6 @@ The full table is in Appendix B.
 
 The tracked work is in issues #8117 (component shape) and #8118 (NPM). Today:
 
-- a component export cannot name a type from
-  another Lyric package;
 - an NPM import cannot return a `Promise`;
 - the browser has no `fetch`-backed `Std.Http`.
 
