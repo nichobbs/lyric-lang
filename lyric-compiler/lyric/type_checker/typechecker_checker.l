@@ -2862,7 +2862,7 @@ func checkOpaqueDeclTypes(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
 
 // A protected type's value generic parameter makes the declaration specialised
 // per length, whole and in the package that uses it (#8149), so for now the
-// type is not shared across packages: T0166 on a `pub` one.
+// type is not shared across packages: T0168 on a `pub` one.
 func checkProtectedValueGenericVisibility(
   diag: in List[Diagnostic],
   decl: in ProtectedTypeDecl,
@@ -2874,7 +2874,7 @@ func checkProtectedValueGenericVisibility(
   match vis {
     case Some(VisPub(_)) -> diag.add(
       errorDiagnostic(
-        "T0166",
+        "T0168",
         "the protected type '" + decl.name +
           "' has a value generic parameter, so each length is specialised in the package that uses it and the type cannot be pub yet (#8149)",
         decl.span
