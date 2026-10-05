@@ -32,10 +32,13 @@ Probing every case on dotnet and the JVM gave the same picture:
 - **Tuples.** A tuple holding a `Float`/`Double` is compared by shape, as
   one holding an array already was.
 - **Generic `==`.** `Lyric.Mono` reports each specialisation that binds a
-  type parameter to a named type or a tuple (`MonoResult.structSpecs`). The
-  pipeline re-checks those whose body uses `==`/`!=`, and lowers the record,
-  array and shape comparisons the re-check records, as it already did for
-  `UInt` and array specialisations.
+  type parameter to a named type or a tuple (`MonoResult.structSpecs`). For a
+  generic declared in the same package, the pipeline re-checks those whose
+  body uses `==`/`!=`, and lowers the record, array and shape comparisons the
+  re-check records, as it already did for `UInt` and array specialisations.
+  A generic from another package is checked in that package's scope, where
+  the consumer's type is not visible, so it is not re-checked. Its `==`
+  reaches the type's own structural `Equals`/`equals` instead.
 - **Derived functions.** `Lyric.Derives` gives a derived `T.equals` the same
   float rule, and a derived `T.hash` hashes `f + 0.0` for a float field.
 

@@ -86,9 +86,15 @@ differs from itself.
    union, is #8170.
 
 4. **Generic `==`.** A `==` in a generic body that `Lyric.Mono`
-   specialises to a type compared by structure is lowered as that type's
-   `==`. The specialisation is checked again, as one binding `UInt` or an
-   array type already is.
+   specialises to a type compared by structure compares as that type's
+   `==`.
+   - For a generic declared in the same package, the specialisation is
+     checked again, as one binding `UInt` or an array type already is, and
+     the comparison is lowered.
+   - A generic from another package is checked in that package's scope,
+     where the consumer's type is not visible. So its `==` reaches the
+     bound type's own structural equality from item 3 on dotnet and the
+     JVM, and native's structural comparison.
 
 5. **Native collections.** `--target native` keeps **N0007** for a `Map`
    or `Set` key that is not a `String` or a scalar. `List.contains` and

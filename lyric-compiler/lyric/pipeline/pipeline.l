@@ -783,8 +783,11 @@ pub func pipeCheckAndMono(
   for us in monoRes0.unsignedSpecs {
     toRecheck.add(us)
   }
+  // A generic from another package is checked in that package's scope,
+  // where a type this package binds it to is not visible; its `==` reaches
+  // the bound type's own structural equality (D172 item 3) instead.
   for ss in monoRes0.structSpecs {
-    if specUsesEquality(ss.specDecl) and specOriginAvailable(ss.originPkg, importedPkgs) {
+    if ss.originPkg == "" and specUsesEquality(ss.specDecl) {
       toRecheck.add(ss)
     }
   }
@@ -1185,20 +1188,6 @@ func specCallsAnyMethod(decl: in FunctionDecl, names: in Map[String, Bool]): Boo
     f,
     { e: Expr -> match e.kind { case ECall(callee, _) -> calleeMethodName(callee, names); case _ -> false } }
   )
-}
-
-// A generic restored without its source cannot be checked again; its
-// specialisation keeps the comparison it was given.
-func specOriginAvailable(origin: in String, importedPkgs: in List[ImportedPackage]): Bool {
-  if origin == "" {
-    return true
-  }
-  for ip in importedPkgs {
-    if ip.name == origin {
-      return true
-    }
-  }
-  false
 }
 
 func specUsesEquality(decl: in FunctionDecl): Bool {
