@@ -3530,7 +3530,10 @@ func buildHolderArrays(
     val cellSlot = if hRecvSlot[k] >= 0 {
       0 - 1
     } else {
-      match mapGet(ctx.hoistedCellSlot, name) { case Some(cs) -> cs; case None -> 0 - 1 }
+      match mapGet(ctx.hoistedCellSlot, name) {
+        case Some(cs) -> cs
+        case None -> 0 - 1
+      }
     }
     if cellSlot >= 0 {
       prepareCellHolderArg(ctx, insns, name, cellSlot, elemTy)
@@ -3558,30 +3561,30 @@ func buildHolderFromPlace(
   hRecvSlot: in List[Int],
   hRecvCls: in List[String],
 ): Unit {
-    // holder := new [elemTy](1); holder[0] := <current value of the place>
-    emitNewHolder(insns, elemTy)
-    insns.add(LDup)
-    insns.add(LIconst(v = 0))
-    if hRecvSlot[k] >= 0 {
-      val cls = hRecvCls[k]
-      val fty = match recordFieldType(ctx, cls, name) {
-        case Some(t) -> t
-        case None -> JRef(className = "java/lang/Object")
-      }
-      emitLoad(insns, hRecvSlot[k], JRef(className = cls))
-      emitFieldLoadOpaqueAware(ctx, insns, cls, name, fty)
-      coerceArgToCtx(ctx, insns, fty, elemTy)
-    } else {
-      match lookupSlot(ctx, name) {
-        case Some(srcSlot) -> {
-          val srcTy = match lookupType(ctx, name) { case Some(t) -> t; case None -> elemTy }
-          emitLoad(insns, srcSlot, srcTy)
-          coerceArgToCtx(ctx, insns, srcTy, elemTy)
-        }
-        case None -> panic("Jvm.Codegen: out/inout argument '" + name + "' to '" + calleeLabel + "' lost its local")
-      }
+  // holder := new [elemTy](1); holder[0] := <current value of the place>
+  emitNewHolder(insns, elemTy)
+  insns.add(LDup)
+  insns.add(LIconst(v = 0))
+  if hRecvSlot[k] >= 0 {
+    val cls = hRecvCls[k]
+    val fty = match recordFieldType(ctx, cls, name) {
+      case Some(t) -> t
+      case None -> JRef(className = "java/lang/Object")
     }
-    emitHolderElemStore(insns, elemTy)
+    emitLoad(insns, hRecvSlot[k], JRef(className = cls))
+    emitFieldLoadOpaqueAware(ctx, insns, cls, name, fty)
+    coerceArgToCtx(ctx, insns, fty, elemTy)
+  } else {
+    match lookupSlot(ctx, name) {
+      case Some(srcSlot) -> {
+        val srcTy = match lookupType(ctx, name) { case Some(t) -> t; case None -> elemTy }
+        emitLoad(insns, srcSlot, srcTy)
+        coerceArgToCtx(ctx, insns, srcTy, elemTy)
+      }
+      case None -> panic("Jvm.Codegen: out/inout argument '" + name + "' to '" + calleeLabel + "' lost its local")
+    }
+  }
+  emitHolderElemStore(insns, elemTy)
 }
 
 // Lower the by-value argument `arg` for parameter `pi` into a fresh temp slot
@@ -3720,11 +3723,7 @@ func cellAliasesHolder(ctx: in FuncCtx, name: in String, elemTy: in JvmType): Bo
 // a `String` or record cell) the holder is a fresh array pre-filled from the
 // cell, and `writeBackHolderArg` copies the result back into the cell.
 func prepareCellHolderArg(
-  ctx: in FuncCtx,
-  insns: in List[LInsn],
-  name: in String,
-  cellSlot: in Int,
-  elemTy: in JvmType,
+  ctx: in FuncCtx, insns: in List[LInsn], name: in String, cellSlot: in Int, elemTy: in JvmType
 ): Unit {
   val cellElemTy = match mapGet(ctx.hoistedCellType, name) { case Some(t) -> t; case None -> elemTy }
   val cellType = JArray(elem = cellElemTy)
