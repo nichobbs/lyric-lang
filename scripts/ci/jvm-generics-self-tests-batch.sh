@@ -69,6 +69,7 @@ for t in \
   lyric-compiler/lyric/inout_self_param_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_test.l \
   lyric-compiler/lyric/generic_protected_self_test.l \
+  lyric-compiler/lyric/generic_opaque_self_test.l \
   lyric-compiler/lyric/config_block_no_env_import_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_contracts_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_type_self_test.l \
