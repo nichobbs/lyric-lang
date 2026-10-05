@@ -1,4 +1,4 @@
-# D172 — `lyric prove` checks the postcondition on the `?` exit
+# D173 — `lyric prove` checks the postcondition on the `?` exit
 
 **Status:** accepted, implemented (#8108)
 

@@ -23,7 +23,7 @@ not modelled either, so every postcondition that used them failed closed.
   else every `.l` file under its directory, recursively (nested projects
   excluded). Paths match case-insensitively; symbolic links are not
   resolved. A manifest listing files outside its own tree cannot be found
-  from such a file; prove that package with `--manifest` (D172). A file that cannot be read
+  from such a file; prove that package with `--manifest` (D173). A file that cannot be read
   or parsed, an entry that cannot be listed, a broken manifest, a custom
   `@generate(X.Y)` anywhere in the set (the build appends its output, which
   prove does not run), or a caller with no scope counts both names as
@@ -43,7 +43,7 @@ not modelled either, so every postcondition that used them failed closed.
   function returns `Err(e.error)` or `None` at its own result type, as
   `Lyric.Propagate` lowers it, and its postcondition must hold for that
   result: a caller assumes the postcondition of every value a function
-  returns, though the runtime does not check it on this exit (D172). On the other path the binding is the payload, and the callee's
+  returns, though the runtime does not check it on this exit (D173). On the other path the binding is the payload, and the callee's
   `ensures:` about it (`result.isOk implies result.value > 0`) is a fact
   for the postcondition. Side goals (a later `requires:`, an `assert`)
   still see no earlier facts; that is #8103 item 1.
