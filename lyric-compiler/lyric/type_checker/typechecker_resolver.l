@@ -150,8 +150,8 @@ func arrayLengthIsTypeParam(ctx: in GenericContext, size: in TypeArg): Bool {
   }
 }
 
-// The generic parameters of the record a type head names, when it is a
-// record or exposed record; empty otherwise.  Lets `resolveType` tell a value
+// The generic parameters of the type a head names, when it is a record,
+// exposed record, opaque type or union; empty otherwise.  Lets `resolveType` tell a value
 // parameter's position from a type parameter's (D169).
 func typeHeadGenericParams(tbl: in SymbolTable, head: in ModulePath): List[GenericParam] {
   val none: List[GenericParam] = newList()
@@ -163,6 +163,8 @@ func typeHeadGenericParams(tbl: in SymbolTable, head: in ModulePath): List[Gener
     val gOpt = match sym.kind {
       case DKRecord(_, rd) -> rd.generics
       case DKExposedRec(_, rd) -> rd.generics
+      case DKOpaque(_, od) -> od.generics
+      case DKUnion(_, ud) -> ud.generics
       case _ -> None
     }
     match gOpt {

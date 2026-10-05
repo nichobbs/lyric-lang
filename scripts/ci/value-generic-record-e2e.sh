@@ -7,7 +7,8 @@
 #   - the application builds the library's record at two lengths, calls its
 #     methods (one calling another), passes an instance to a library function
 #     taking `Vec[3]`, takes one back from a function returning `Vec[2]`, and
-#     zero fills one from its type; it builds and prints each result;
+#     zero fills one from its type, and holds and sums the library's
+#     value-generic opaque type (#8149); it builds and prints each result;
 #   - the same application against the library as a separately built
 #     dependency, read through its contract metadata.
 # And single-file programs every target rejects: an instance where another
@@ -74,6 +75,49 @@ pub func makePair(a: in Int, b: in Int): Vec[2] {
   val xs: array[2, Int] = [a, b]
   Vec(items = xs)
 }
+
+pub opaque type Win[N: Nat] {
+  var cells: array[N, Int]
+}
+
+pub func Win.sum[N: Nat](self: in Win[N]): Int {
+  var t = 0
+  for c in self.cells {
+    t = t + c
+  }
+  t
+}
+
+pub func makeWin(a: in Int, b: in Int): Win[2] {
+  val xs: array[2, Int] = [a, b]
+  Win(cells = xs)
+}
+
+pub func winTotal(w: in Win[2]): Int = w.sum()
+
+pub union Path[N: Nat] {
+  case Stops(ids: array[N, Int])
+  case Closed
+}
+
+pub func Path.count[N: Nat](self: in Path[N]): Int {
+  match self {
+    case Stops(ids) -> ids.length
+    case Closed -> 0
+  }
+}
+
+pub func route(a: in Int, b: in Int, c: in Int): Path[3] {
+  val xs: array[3, Int] = [a, b, c]
+  Stops(ids = xs)
+}
+
+pub func firstStop(p: in Path[3]): Int {
+  match p {
+    case Stops(ids) -> ids[0]
+    case Closed -> -1
+  }
+}
 EOF
   printf '%s\n' "$2" > "$work/$1/src/app.l"
 }
@@ -100,6 +144,13 @@ func main(): Int {
   val z: Vec[4] = Vec()
   println(toString(v.total()) + " " + toString(v.doubled()) + " " + toString(Vec.size(v)))
   println(toString(sum3(Vec(items = ys))) + " " + toString(p.total()) + " " + toString(z.size() + z.total()))
+  val w: Win[2] = makeWin(3, 4)
+  println(toString(w.sum() + makeWin(1, 1).sum()))
+  val r = route(5, 6, 7)
+  val stops: array[2, Int] = [1, 2]
+  val q = Stops(ids = stops)
+  val c: Path[3] = Closed
+  println(toString(firstStop(r) * 100 + r.count() * 10 + q.count() + firstStop(c)))
   0
 }'
 
@@ -130,7 +181,12 @@ output_assembly = "VgApp.dll"
 [dependencies]
 "Vg.Lib" = { path = "../lib" }
 TOML
-cp "$work/foreign/src/app.l" "$work/restored/app/src/app.l"
+# A specialisation of the library's generic `Win.sum` reads the opaque
+# type's representation, which is private to its assembly on dotnet
+# (#8187), so against the built library the application sums through the
+# library's own non-generic function.
+sed 's/w.sum() + makeWin(1, 1).sum()/winTotal(w) + winTotal(makeWin(1, 1))/' \
+  "$work/foreign/src/app.l" > "$work/restored/app/src/app.l"
 
 write_neg() { # $1=name $2=program body after the record
   cat > "$work/$1.l" <<EOF
@@ -181,15 +237,15 @@ for t in "${targets[@]}"; do
     fail=1
   fi
   out="$("$lyric_bin" run --manifest "$work/foreign/lyric.toml" --target "$t" 2>&1 | grep -v '^Picked up JAVA_TOOL_OPTIONS')"
-  if [ "$(printf '%s\n' "$out" | tail -n 2 | tr '\n' '|')" != "9 18 2|6 15 4|" ]; then
-    echo "FAIL ($t): using the library's value-generic record from the application should print '9 18 2' and '6 15 4'; got:"
+  if [ "$(printf '%s\n' "$out" | tail -n 4 | tr '\n' '|')" != "9 18 2|6 15 4|9|531|" ]; then
+    echo "FAIL ($t): using the library's value-generic record from the application should print '9 18 2', '6 15 4', '9' and '531'; got:"
     printf '%s\n' "$out" | tail -n 5 | sed 's/^/  /'
     fail=1
   fi
   "$lyric_bin" build --manifest "$work/restored/lib/lyric.toml" >/dev/null 2>&1
   out="$("$lyric_bin" run --manifest "$work/restored/app/lyric.toml" --target "$t" 2>&1 | grep -v '^Picked up JAVA_TOOL_OPTIONS')"
-  if [ "$(printf '%s\n' "$out" | tail -n 2 | tr '\n' '|')" != "9 18 2|6 15 4|" ]; then
-    echo "FAIL ($t): using the value-generic record of a dependency built on its own should print '9 18 2' and '6 15 4'; got:"
+  if [ "$(printf '%s\n' "$out" | tail -n 4 | tr '\n' '|')" != "9 18 2|6 15 4|9|531|" ]; then
+    echo "FAIL ($t): using the value-generic record of a dependency built on its own should print '9 18 2', '6 15 4', '9' and '531'; got:"
     printf '%s\n' "$out" | tail -n 5 | sed 's/^/  /'
     fail=1
   fi

@@ -3741,25 +3741,33 @@ pub func ownAwareExternTypes(file: in SourceFile, externSeed: in Map[String, Str
   merged
 }
 
-// The file's own value-generic records with no type parameter, which are
-// non-generic classes (D173): an instance spelled `Vec[3]` is a generic
-// application, so without this it would erase to `Object` in a signature
-// while the record's own methods and fields name the class.
+// The file's own value-generic records, opaque types and unions with no type
+// parameter, which are non-generic classes (D173): an instance spelled
+// `Vec[3]` is a generic application, so without this it would erase to
+// `Object` in a signature while the type's own methods and fields name the
+// class.
 func addOwnValueRecords(file: in SourceFile, into: in Map[String, String]): Unit {
   val pkgDotted = dottedPathOfSegments(file.packageDecl.path.segments)
   for it in file.items {
     match it.kind {
-      case IRecord(d) -> addOwnValueRecord(d, pkgDotted, into)
-      case IExposedRec(d) -> addOwnValueRecord(d, pkgDotted, into)
+      case IRecord(d) -> addOwnValueRecord(d.name, d.generics, pkgDotted, into)
+      case IExposedRec(d) -> addOwnValueRecord(d.name, d.generics, pkgDotted, into)
+      case IOpaque(d) -> if d.hasBody { addOwnValueRecord(d.name, d.generics, pkgDotted, into) }
+      case IUnion(d) -> addOwnValueRecord(d.name, d.generics, pkgDotted, into)
       case _ -> ()
     }
   }
 }
 
-func addOwnValueRecord(decl: in RecordDecl, pkgDotted: in String, into: in Map[String, String]): Unit {
-  val hasParams = match decl.generics { case Some(g) -> g.params.count > 0; case None -> false }
-  if hasParams and not recordIsGenericJvm(decl) and not into.containsKey(decl.name) {
-    into.add(decl.name, pkgDotted + "." + decl.name)
+func addOwnValueRecord(
+  name: in String,
+  generics: in Option[GenericParams],
+  pkgDotted: in String,
+  into: in Map[String, String],
+): Unit {
+  val hasParams = match generics { case Some(g) -> g.params.count > 0; case None -> false }
+  if hasParams and not genericsHaveTypeParamJvm(generics) and not into.containsKey(name) {
+    into.add(name, pkgDotted + "." + name)
   }
 }
 
@@ -5821,7 +5829,7 @@ func collectOriginScopeMarkers(file: in SourceFile, into: in Map[String, String]
   var i = 0
   while i < file.items.count {
     val genName = match file.items[i].kind {
-      case IUnion(decl) -> match decl.generics { case Some(_) -> decl.name; case None -> "" }
+      case IUnion(decl) -> if genericsHaveTypeParamJvm(decl.generics) { decl.name } else { "" }
       case IRecord(decl) -> if recordIsGenericJvm(decl) { decl.name } else { "" }
       case IExposedRec(decl) -> if recordIsGenericJvm(decl) { decl.name } else { "" }
       case IInterface(decl) -> match decl.generics { case Some(_) -> decl.name; case None -> "" }
@@ -5981,7 +5989,11 @@ func overlayPackageTypesJvm(view: in Map[String, String], externTypes: in Map[St
 // A record whose only generic parameters are values (`record Vec[N: Nat]`)
 // is one non-generic class: its value parameters are erased (D173).
 func recordIsGenericJvm(decl: in RecordDecl): Bool {
-  match decl.generics {
+  genericsHaveTypeParamJvm(decl.generics)
+}
+
+func genericsHaveTypeParamJvm(generics: in Option[GenericParams]): Bool {
+  match generics {
     case Some(g) -> {
       for p in g.params {
         match p {
@@ -6001,14 +6013,11 @@ pub func collectFileDeclaredTypeFqns(file: in SourceFile, into: in Map[String, S
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
+      // A union whose only generic parameters are values is one
+      // non-generic class (#8149).
       case IUnion(decl) -> {
-        match decl.generics {
-          case None -> {
-            if not into.containsKey(decl.name) {
-              into.add(decl.name, pkgDotted + "." + decl.name)
-            }
-          }
-          case Some(_) -> ()
+        if not genericsHaveTypeParamJvm(decl.generics) and not into.containsKey(decl.name) {
+          into.add(decl.name, pkgDotted + "." + decl.name)
         }
       }
       case IRecord(decl) -> {
@@ -6034,13 +6043,15 @@ pub func collectFileDeclaredTypeFqns(file: in SourceFile, into: in Map[String, S
         }
       }
       case IOpaque(decl) -> {
-        match decl.generics {
-          case None -> {
-            if decl.hasBody and not into.containsKey(decl.name) {
-              into.add(decl.name, pkgDotted + "." + decl.name)
-            }
-          }
-          case Some(_) -> ()
+        if decl.hasBody and not genericsHaveTypeParamJvm(decl.generics) and not into.containsKey(decl.name) {
+          into.add(decl.name, pkgDotted + "." + decl.name)
+        }
+        // An opaque type's fields are private, read through `$<name>()`
+        // accessors; another package reads them when it specialises one of
+        // this package's generic functions (D173), so it must know the class
+        // is opaque.  Seeded bundle-wide as `<Pkg>.~opaque~<Name>`.
+        if decl.hasBody and not into.containsKey("~opaque~" + decl.name) {
+          into.add("~opaque~" + decl.name, pkgDotted + "." + decl.name)
         }
       }
       case IInterface(decl) -> {
@@ -6466,6 +6477,25 @@ pub func collectFileValsExtern(
       case _ -> ()
     }
     i = i + 1
+  }
+}
+
+// The opaque classes of other packages of the bundle (`~opaque~` keys of
+// `collectFileDeclaredTypeFqns`), whose fields a specialised copy of one of
+// their generic functions reads.
+func addSeededOpaqueClasses(externTypes: in Map[String, String], into: in Map[String, Bool]): Unit {
+  for k in mapKeys(externTypes) {
+    if String.indexOfRaw(k, "~opaque~") >= 0 {
+      match mapGet(externTypes, k) {
+        case Some(fqn) -> {
+          val cls = fqn.replace(".", "/")
+          if not into.containsKey(cls) {
+            into.add(cls, true)
+          }
+        }
+        case None -> ()
+      }
+    }
   }
 }
 
@@ -8343,6 +8373,7 @@ pub func codegenPackageWithSigsSeeded(
   // route through the `$<name>()` accessor methods instead of a direct getfield.
   val opaqueTypes: Map[String, Bool] = newMap()
   collectFileOpaque(file, pkgName, opaqueTypes)
+  addSeededOpaqueClasses(externTypes, opaqueTypes)
 
   val fns: List[LFunc] = newList()
   val items: List[LPackageItem] = newList()

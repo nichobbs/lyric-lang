@@ -387,7 +387,19 @@ func Ints.first[N: Nat](self: in Ints[N]): Int = self.data[0]
 val f = v.first()            // or Ints.first(v); compiled for N = 3
 ```
 
-Two fields that disagree about `N` are T0043. A union, opaque type or protected type cannot take a length parameter (T0160, #8149).
+Two fields that disagree about `N` are T0043. An opaque type takes a length parameter the same way; since its fields are private to its package, its methods are declared there as generic functions named after it (`func Window.total[N: Nat](self: in Window[N]): Int`). So does a union, whose case constructions bind `N` from their arrays or from the type you ask for:
+
+```lyric
+union Shape[N: Nat] {
+  case Poly(pts: array[N, Int])
+  case Empty
+}
+
+val p = Poly(pts = a)        // a Shape[3]
+val e: Shape[3] = Empty
+```
+
+A protected type cannot take a length parameter yet (T0160, #7864).
 
 A record with a length parameter can be used from another package like any other. Its methods are compiled for each length a call uses, in the package that makes the call, so `.length`, bounds checks and copies stay constants there too:
 

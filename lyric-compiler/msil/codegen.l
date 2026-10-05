@@ -45824,19 +45824,25 @@ func registerStdlibTypeItemMembers(cctx: in CodegenCtx, packageName: in String, 
       // fields whose type is a generic parameter (e.g. `value: T` on
       // `Option_Some<T>`) get the correct FIELD+VAR(n) signature blob
       // rather than the incorrect FIELD+Object blob.
+      // A value generic parameter is erased from the CLR type (#8149), so
+      // only type parameters count toward its arity and `!n` indices.
       val typeParamVarIdx: Map[String, Int] = newMap()
       val unionTypeParamCount = match decl.generics {
         case Some(gps) -> {
           var gi = 0
+          var typeIdx = 0
           while gi < gps.params.count {
             match gps.params[gi] {
-              case GPType(tpName, _) -> typeParamVarIdx.add(tpName, gi)
+              case GPType(tpName, _) -> {
+                typeParamVarIdx.add(tpName, typeIdx)
+                typeIdx = typeIdx + 1
+              }
               case _ -> {
               }
             }
             gi = gi + 1
           }
-          gps.params.count
+          typeIdx
         }
         case None -> 0
       }

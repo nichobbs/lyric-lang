@@ -676,6 +676,8 @@ func recordItemName(it: in Item): String {
   match it.kind {
     case IRecord(d) -> d.name
     case IExposedRec(d) -> d.name
+    case IOpaque(d) -> d.name
+    case IUnion(d) -> d.name
     case _ -> ""
   }
 }

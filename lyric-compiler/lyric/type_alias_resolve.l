@@ -296,13 +296,15 @@ func erasedValueRecordRef(
 }
 
 // A construction the middle end marked with its instance's lengths
-// (`FixedVec[3](...)`), as a construction of the specialisation (D169).
+// (`FixedVec[3](...)`), as a construction of the specialisation (D169).  A
+// union case is marked through its union (`Shape.Poly[3](...)` is
+// `Shape__V3.Poly(...)`, #8149).
 func valueRecordCtor(aliasTargets: in Map[String, TypeExpr], fn: in Expr, args: in List[TypeArg]): Option[ExprKind] {
   if aliasTargets.containsKey(valueRecordEraseKey()) {
     return erasedValueRecordCtor(aliasTargets, fn, args)
   }
   val fnPath = match fn.kind {
-    case EPath(p) -> if p.segments.count == 1 { p } else { return None }
+    case EPath(p) -> if p.segments.count == 1 or p.segments.count == 2 { p } else { return None }
     case _ -> return None
   }
   val name = fnPath.segments[0]
@@ -322,7 +324,25 @@ func valueRecordCtor(aliasTargets: in Map[String, TypeExpr], fn: in Expr, args: 
   val spec = noteValueRecordUse(aliasTargets, ModulePath(segments = segs, span = fnSpan), name, lengths)
   val specSegs: List[String] = newList()
   specSegs.add(spec)
+  if fnPath.segments.count == 2 {
+    specSegs.add(fnPath.segments[1])
+  }
   Some(value = EPath(path = ModulePath(segments = specSegs, span = fnSpan)))
+}
+
+// A case pattern qualified by a value-generic union (`Shape.Poly(p)`) where
+// each length is its own union (`Shape__V3`): the case alone, which the
+// scrutinee's type resolves (#8149).
+func valueUnionPatternHead(aliasTargets: in Map[String, TypeExpr], head: in ModulePath): ModulePath {
+  if aliasTargets.containsKey(valueRecordEraseKey()) or head.segments.count < 2 {
+    return head
+  }
+  if not aliasTargets.containsKey(valueRecordMarkerPrefix() + head.segments[head.segments.count - 2]) {
+    return head
+  }
+  val segs: List[String] = newList()
+  segs.add(head.segments[head.segments.count - 1])
+  ModulePath(segments = segs, span = head.span)
 }
 
 // A construction of a value-generic record on a target that erases value
@@ -654,7 +674,7 @@ func resolvePatternAt(
         ps.add(resolvePatternAt(aliasTargets, genericNames, args[i], depth))
         i = i + 1
       }
-      PConstructor(head = head, args = ps)
+      PConstructor(head = valueUnionPatternHead(aliasTargets, head), args = ps)
     }
     case PRecord(head, fields, ignoreRest) -> {
       val fs: List[RecordPatternField] = newList()
@@ -672,7 +692,7 @@ func resolvePatternAt(
         )
         i = i + 1
       }
-      PRecord(head = head, fields = fs, ignoreRest = ignoreRest)
+      PRecord(head = valueUnionPatternHead(aliasTargets, head), fields = fs, ignoreRest = ignoreRest)
     }
     case PTuple(patterns) -> {
       val ps: List[Pattern] = newList()

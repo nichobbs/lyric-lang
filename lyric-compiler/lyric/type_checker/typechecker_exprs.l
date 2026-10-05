@@ -2696,6 +2696,40 @@ func fieldsOfRecordInstantiated(tbl: in SymbolTable, tid: in TypeId, targs: in L
   result
 }
 
+// A field of an opaque type declared in this package, instantiated against
+// the receiver's arguments: its representation is visible here, so a read
+// is typed like a record field's, `array[N, Int]` at the instance's length
+// included (#8149).  Outside its package the type has no readable fields.
+func ownOpaqueFieldType(tbl: in SymbolTable, tid: in TypeId, targs: in List[Type], name: in String): Option[Type] {
+  var i = 0
+  while i < tbl.symbols.count {
+    match tbl.symbols[i].kind {
+      case DKOpaque(did, od) -> if typeIdEq(did, tid) and not tbl.symbols[i].isImported {
+        return opaqueFieldTypeOf(tbl, od, targs, name)
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  None
+}
+
+func opaqueFieldTypeOf(tbl: in SymbolTable, od: in OpaqueTypeDecl, targs: in List[Type], name: in String): Option[Type] {
+  val gnames = extractGenericNames(od.generics)
+  val ctx = newGenericContext()
+  gctxPush(ctx, gnames)
+  val scratch: List[Diagnostic] = newList()
+  for m in od.members {
+    match m {
+      case OMField(fd) -> if fd.name == name {
+        return Some(value = eraseTyVars(substituteTyVars(resolveType(tbl, ctx, scratch, fd.ty), gnames, targs)))
+      }
+      case OMInvariant(_) -> ()
+    }
+  }
+  None
+}
+
 func extractRecordFields(tbl: in SymbolTable, rd: in RecordDecl, result: in List[FieldEntry]): Unit {
   val ctx = newGenericContext()
   // Register the record's own type params so a `value: T` field resolves to
@@ -3283,6 +3317,10 @@ func inferMemberBase(tbl: in SymbolTable, recvRaw: in Type, name: in String): Ty
           return fs[i].ty
         }
         i = i + 1
+      }
+      match ownOpaqueFieldType(tbl, tid, targs, name) {
+        case Some(ot) -> return ot
+        case None -> ()
       }
       // Builtin members on nominal receivers (`List.toArray`/`count`, #2126)
       // — consulted after fields so a same-named user field wins.
@@ -5563,12 +5601,24 @@ func noteValueRecordCtor(
   val gOpt = match sym.kind {
     case DKRecord(_, rd) -> rd.generics
     case DKExposedRec(_, rd) -> rd.generics
+    case DKOpaque(_, od) -> od.generics
     case _ -> None
   }
   val params = match gOpt { case Some(g) -> g.params; case None -> return }
   if not genericParamsHaveValue(params) {
     return
   }
+  val vargs = match valueArgsOfInstance(params, targs, span) { case Some(v) -> v; case None -> return }
+  val key = recordCopySiteKey(span)
+  if not tbl.valueRecordCtorSites.containsKey(key) {
+    tbl.valueRecordCtorSites.add(key, vargs)
+  }
+}
+
+// The value arguments of an instance at its value generic parameters, in
+// order: a literal length, or the enclosing value generic parameter it is
+// bound to inside a value-generic body.  `None` when one is not known.
+func valueArgsOfInstance(params: in List[GenericParam], targs: in List[Type], span: in Span): Option[List[TypeArg]] {
   val vargs: List[TypeArg] = newList()
   var i = 0
   while i < params.count and i < targs.count {
@@ -5582,14 +5632,70 @@ func noteValueRecordCtor(
           segs.add(m)
           vargs.add(TAType(ty = TypeExpr(kind = TRef(path = refTypePath(segs, span)), span = span)))
         }
-        case _ -> return
+        case _ -> return None
       }
     }
     i = i + 1
   }
-  val key = recordCopySiteKey(span)
-  if not tbl.valueRecordCtorSites.containsKey(key) {
-    tbl.valueRecordCtorSites.add(key, vargs)
+  if i < params.count {
+    return None
+  }
+  Some(value = vargs)
+}
+
+// Records a construction of a case of a union with value generic parameters
+// at the instance `ty` it is typed as (#8149).  `replace` lets the typing
+// against an expected type win over the construction's own inference.
+// Whether `ty` is such an instance with every length known.
+func noteValueUnionCtor(tbl: in SymbolTable, ty: in Type, span: in Span, replace: in Bool): Bool {
+  match unrefine(ty) {
+    case TyUser(id, _, targs) -> match parentUnionDeclOf(tbl, id) {
+      case Some(decl) -> {
+        val params = match decl.generics { case Some(g) -> g.params; case None -> return false }
+        if not genericParamsHaveValue(params) {
+          return false
+        }
+        match valueArgsOfInstance(params, targs, span) {
+          case Some(vargs) -> {
+            val key = recordCopySiteKey(span)
+            if replace or not tbl.valueUnionCtorSites.containsKey(key) {
+              tbl.valueUnionCtorSites.remove(key)
+              tbl.valueUnionCtorSites.add(key, ValueUnionCtorSite(unionName = decl.name, lengths = vargs))
+            }
+            true
+          }
+          case None -> false
+        }
+      }
+      case None -> false
+    }
+    case _ -> false
+  }
+}
+
+// A union case construction, or a reference to a case with no fields,
+// typed where `expected` is expected: recorded at its type, or at `expected`
+// when its own type leaves a length open (`val s: Shape[3] = Empty`).
+func noteValueUnionCaseExpected(sc: in Scope, tbl: in SymbolTable, e: in Expr, actual: in Type, expected: in Type): Unit {
+  val fn = match e.kind {
+    case ECall(f, _) -> f
+    case EPath(p) -> if p.segments.count == 1 and scopeHasName(sc, p.segments[0]) { return } else { e }
+    case EMember(_, _) -> e
+    case _ -> return
+  }
+  match unionCaseSymbolOf(tbl, fn) {
+    case Some(caseSym) -> if not noteValueUnionCtor(tbl, actual, e.span, true) {
+      match caseSym.kind {
+        case DKUnionCase(parentId, _) -> match unrefine(expected) {
+          case TyUser(eid, _, _) -> if typeIdEq(parentId, eid) {
+            val _ = noteValueUnionCtor(tbl, expected, e.span, true)
+          }
+          case _ -> ()
+        }
+        case _ -> ()
+      }
+    }
+    case None -> ()
   }
 }
 
@@ -5598,6 +5704,7 @@ func ctorValueGenericNames(sym: in Symbol): List[String] {
   val gOpt = match sym.kind {
     case DKRecord(_, rd) -> rd.generics
     case DKExposedRec(_, rd) -> rd.generics
+    case DKOpaque(_, od) -> od.generics
     case _ -> None
   }
   valueGenericNames(gOpt)
@@ -7746,7 +7853,9 @@ func inferUnionCaseConstruction(
         val orderedArgTypes = argTypesInFieldOrder(args, argTypes, unionCaseSlotNames(uc))
         val targs = inferGenericArgs(gnames, ftypes, orderedArgTypes)
         recordCaseFieldWidenings(tbl, uc, ftypes, gnames, targs, args, argTypes)
-        TyUser(id = parentId, name = decl.name, args = targs)
+        val caseTy = TyUser(id = parentId, name = decl.name, args = targs)
+        val _ = noteValueUnionCtor(tbl, caseTy, span, false)
+        caseTy
       }
       case None -> TyError
     }
@@ -13385,7 +13494,8 @@ func argIsListLiteral(e: in Expr): Bool {
 // `ctorArrayFieldTypes` for a union case constructor: a bracket literal
 // given to a case field of array type is typed against the field, as for a
 // record field (D167).  A field whose type names one of the union's type
-// parameters is left to the call's expected argument types.
+// parameters, or is sized by one of its value parameters, is left to the
+// call's expected argument types.
 func unionCaseArrayFieldTypes(tbl: in SymbolTable, fn: in Expr, args: in List[CallArg], tys: in List[Type]): List[Type] {
   val caseSym = match unionCaseSymbolOf(tbl, fn) { case Some(cs) -> cs; case None -> return tys }
   match caseSym.kind {
@@ -13404,7 +13514,7 @@ func unionCaseArrayFieldTypes(tbl: in SymbolTable, fn: in Expr, args: in List[Ca
               pos - 1
             }
           }
-          if fi >= 0 and fi < ftypes.count and not typeMentionsTyVar(ftypes[fi]) {
+          if fi >= 0 and fi < ftypes.count and not typeMentionsGenericParam(ftypes[fi]) {
             tys[i] = ftypes[fi]
           }
           i = i + 1
@@ -13829,6 +13939,19 @@ func inferMethodCallExpected(
 // (#7752); every other expression shape — and any unusable expectation —
 // defers to plain `inferExpr`.
 pub func inferExprExpected(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  e: in Expr,
+  expected: in Type,
+): Type {
+  val t = inferExprExpectedCore(sc, tbl, sigs, diag, e, expected)
+  noteValueUnionCaseExpected(sc, tbl, e, t, expected)
+  t
+}
+
+func inferExprExpectedCore(
   sc: in Scope,
   tbl: in SymbolTable,
   sigs: in Map[String, ResolvedSignature],
