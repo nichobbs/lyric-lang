@@ -28,7 +28,10 @@ pub func smtRenderSort(s: in Sort): String {
       } else if args.count == 0 {
         name
       } else {
-        var output = "(" + name
+        // The standard library's `Result` and `Option` are the preamble's
+        // datatypes, under names no source type can take (#8108).
+        val head = if isResultSort(s) or isOptionSort(s) { "Lyric!" + name } else { name }
+        var output = "(" + head
         var i = 0
         while i < args.count {
           output = output + " " + smtRenderSort(args[i])
@@ -319,8 +322,10 @@ pub func smtRenderTerm(t: in Term): String {
         output + ")"
       }
     }
-    case TApp(name, args, _) -> {
-      if args.count == 0 {
+    case TApp(name, args, retSort) -> {
+      if isMonadFunction(name) {
+        smtRenderMonadApp(name, args, retSort)
+      } else if args.count == 0 {
         smtSanitize(name)
       } else {
         var output = "(" + smtSanitize(name)
@@ -535,7 +540,41 @@ func smtRenderSymbol(sym: in SymbolDecl): String {
 // ─────────────────────────────────────────────────────────────────────────────
 pub func smtRenderPreamble(): String {
   "(set-logic ALL)\n(set-option :produce-models true)\n(declare-datatypes ((Unit 0)) (((unit))))\n" +
+    smtMonadDatatypes() +
     smtTruncDivDefinitions()
+}
+
+// `Result[T, E]` and `Option[T]` (#8108).
+func smtMonadDatatypes(): String {
+  "(declare-datatypes ((Lyric!Option 1) (Lyric!Result 2)) " +
+    "((par (T) ((Option!None) (Option!Some (Option!value T)))) " +
+    "(par (T E) ((Result!Ok (Result!value T)) (Result!Err (Result!error E))))))\n"
+}
+
+// An application of one of the preamble's `Result`/`Option` functions: a
+// case test is `(_ is C)`, and a constructor is qualified by its sort,
+// which its arguments alone do not fix.
+func smtRenderMonadApp(name: in String, args: in List[Term], retSort: in Sort): String {
+  var argText = ""
+  var i = 0
+  while i < args.count {
+    argText = argText + " " + smtRenderTerm(args[i])
+    i = i + 1
+  }
+  if name == "Result!isOk" {
+    "((_ is Result!Ok)" + argText + ")"
+  } else if name == "Option!isSome" {
+    "((_ is Option!Some)" + argText + ")"
+  } else if name == "Result!Ok" or name == "Result!Err" or name == "Option!Some" or name == "Option!None" {
+    val qualified = "(as " + name + " " + smtRenderSort(retSort) + ")"
+    if args.count == 0 {
+      qualified
+    } else {
+      "(" + qualified + argText + ")"
+    }
+  } else {
+    "(" + name + argText + ")"
+  }
 }
 
 // True for sort names that are already declared by the SMT-LIB theory or by
@@ -621,7 +660,7 @@ func collectFromTerm(
         i = i + 1
       }
       val sanitized = smtSanitize(name)
-      if not knownFuncs.containsKey(sanitized) and not seenFuncs.containsKey(sanitized) {
+      if not isMonadFunction(name) and not knownFuncs.containsKey(sanitized) and not seenFuncs.containsKey(sanitized) {
         seenFuncs.add(sanitized, true)
         val paramSorts: List[Sort] = newList()
         var j = 0
@@ -726,7 +765,7 @@ func renameApps(
     case TBuiltin(op, args) -> TBuiltin(op = op, args = renameAppList(args, datatypeFuncs, firstSig, renamed, counts))
     case TApp(name, args, retSort) -> {
       val newArgs = renameAppList(args, datatypeFuncs, firstSig, renamed, counts)
-      if datatypeFuncs.containsKey(name) {
+      if datatypeFuncs.containsKey(name) or isMonadFunction(name) {
         TApp(name = name, args = newArgs, retSort = retSort)
       } else {
         val sig = appSignature(newArgs, retSort)
@@ -932,6 +971,18 @@ pub func smtRenderGoal(g: in Goal): String {
     k = k + 1
   }
 
+  // z3 resolves a qualified constructor of a parametric datatype, such as
+  // `(as Result!Ok (Lyric!Result Int String))`, only at a sort instance it
+  // has already seen: name each `Result`/`Option` instance first (#8108).
+  val monadSorts: List[Sort] = newList()
+  val monadSeen: Map[String, Bool] = newMap()
+  collectMonadSortsInTerm(claim, monadSeen, monadSorts)
+  k = 0
+  while k < monadSorts.count {
+    output = output + "(declare-const lyric!inst!" + intToString(k) + " " + smtRenderSort(monadSorts[k]) + ")\n"
+    k = k + 1
+  }
+
   // Collect free variables and emit declare-const.
   val freeVarList = collectFreeVars(claim)
   i = 0
@@ -960,4 +1011,75 @@ func isDigit(c: in Char): Bool {
 
 func charToString(c: in Char): String {
   c.toString()
+}
+
+// Every `Result`/`Option` sort instance a term uses, nested ones first.
+func collectMonadSortsInTerm(t: in Term, seen: in Map[String, Bool], outSorts: in List[Sort]): Unit {
+  match t {
+    case TVar(_, srt) -> collectMonadSortsInSort(srt, seen, outSorts)
+    case TLit(_, srt) -> collectMonadSortsInSort(srt, seen, outSorts)
+    case TBuiltin(_, args) -> collectMonadSortsInTerms(args, seen, outSorts)
+    case TApp(_, args, retSort) -> {
+      collectMonadSortsInTerms(args, seen, outSorts)
+      collectMonadSortsInSort(retSort, seen, outSorts)
+    }
+    case TLet(bindings, body) -> {
+      var i = 0
+      while i < bindings.count {
+        collectMonadSortsInTerm(bindings[i].term, seen, outSorts)
+        i = i + 1
+      }
+      collectMonadSortsInTerm(body, seen, outSorts)
+    }
+    case TIte(c, a, b) -> {
+      collectMonadSortsInTerm(c, seen, outSorts)
+      collectMonadSortsInTerm(a, seen, outSorts)
+      collectMonadSortsInTerm(b, seen, outSorts)
+    }
+    case TForall(binders, _, body) -> {
+      var i = 0
+      while i < binders.count {
+        collectMonadSortsInSort(binders[i].sort, seen, outSorts)
+        i = i + 1
+      }
+      collectMonadSortsInTerm(body, seen, outSorts)
+    }
+    case TExists(binders, body) -> {
+      var i = 0
+      while i < binders.count {
+        collectMonadSortsInSort(binders[i].sort, seen, outSorts)
+        i = i + 1
+      }
+      collectMonadSortsInTerm(body, seen, outSorts)
+    }
+  }
+}
+
+func collectMonadSortsInTerms(ts: in List[Term], seen: in Map[String, Bool], outSorts: in List[Sort]): Unit {
+  var i = 0
+  while i < ts.count {
+    collectMonadSortsInTerm(ts[i], seen, outSorts)
+    i = i + 1
+  }
+}
+
+func collectMonadSortsInSort(srt: in Sort, seen: in Map[String, Bool], outSorts: in List[Sort]): Unit {
+  match srt {
+    case SDatatype(_, args) -> {
+      var i = 0
+      while i < args.count {
+        collectMonadSortsInSort(args[i], seen, outSorts)
+        i = i + 1
+      }
+      if isResultSort(srt) or isOptionSort(srt) {
+        val key = smtRenderSort(srt)
+        if not seen.containsKey(key) {
+          seen.add(key, true)
+          outSorts.add(srt)
+        }
+      }
+    }
+    case SSlice(e) -> collectMonadSortsInSort(e, seen, outSorts)
+    case _ -> ()
+  }
 }

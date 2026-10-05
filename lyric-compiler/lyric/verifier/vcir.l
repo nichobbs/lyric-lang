@@ -1442,3 +1442,103 @@ pub func fitsUnsignedWidth(n: in Long, width: in Int): Bool {
 pub func doubleToString(f: in Double): String {
   f.toString()
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The standard library's `Result[T, E]` and `Option[T]` (#8108).
+// ─────────────────────────────────────────────────────────────────────────────
+// Both are SMT datatypes the preamble declares (`Lyric!Result`,
+// `Lyric!Option`): constructors `Result!Ok`/`Result!Err` and
+// `Option!Some`/`Option!None`, selectors `Result!value`, `Result!error` and
+// `Option!value`, and the case tests `Result!isOk` and `Option!isSome`.
+pub func isResultSort(s: in Sort): Bool {
+  match s {
+    case SDatatype(name, args) -> name == "Result" and args.count == 2
+    case _ -> false
+  }
+}
+
+pub func isOptionSort(s: in Sort): Bool {
+  match s {
+    case SDatatype(name, args) -> name == "Option" and args.count == 1
+    case _ -> false
+  }
+}
+
+// The `i`-th type argument of a `Result` or `Option` sort.
+pub func monadArgSort(s: in Sort, i: in Int): Sort {
+  match s {
+    case SDatatype(_, args) -> if i < args.count { args[i] } else { SUninterp(name = "monadarg") }
+    case _ -> SUninterp(name = "monadarg")
+  }
+}
+
+// The functions of the two datatypes, which the preamble declares and the
+// renderer spells itself.
+pub func isMonadFunction(name: in String): Bool {
+  name == "Result!isOk" or name == "Option!isSome" or name == "Result!Ok" or name == "Result!Err" or
+    name == "Option!Some" or
+    name == "Option!None" or
+    name == "Result!value" or
+    name == "Result!error" or
+    name == "Option!value"
+}
+
+pub func mkIsOk(r: in Term): Term {
+  TApp(name = "Result!isOk", args = termList1(r), retSort = SBool)
+}
+
+pub func mkIsSome(o: in Term): Term {
+  TApp(name = "Option!isSome", args = termList1(o), retSort = SBool)
+}
+
+pub func mkResultValue(r: in Term): Term {
+  TApp(name = "Result!value", args = termList1(r), retSort = monadArgSort(sortOf(r), 0))
+}
+
+pub func mkResultError(r: in Term): Term {
+  TApp(name = "Result!error", args = termList1(r), retSort = monadArgSort(sortOf(r), 1))
+}
+
+pub func mkOptionValue(o: in Term): Term {
+  TApp(name = "Option!value", args = termList1(o), retSort = monadArgSort(sortOf(o), 0))
+}
+
+// `Ok(v)`, `Err(e)`, `Some(v)` and `None` at `s`, a `Result` or `Option`
+// sort.
+pub func mkMonadCtor(ctor: in String, args: in List[Term], s: in Sort): Term {
+  val prefix = if isResultSort(s) { "Result!" } else { "Option!" }
+  TApp(name = prefix + ctor, args = args, retSort = s)
+}
+
+// A constructor written in the source before its type is known: `Ok(v)`
+// says nothing of the error type.  It takes its sort where the value meets
+// a typed slot — a return, an annotated binding, an argument, the other
+// operand of `==` (`coerceToSort`).  One that never does stays an
+// uninterpreted value.
+pub func mkPendingCtor(ctor: in String, args: in List[Term]): Term {
+  TApp(name = "ctor!" + ctor, args = args, retSort = SUninterp(name = "ctor." + ctor))
+}
+
+// `Ok`, `Err`, `Some` or `None` for a pending constructor; "" otherwise.
+pub func pendingCtorName(t: in Term): String {
+  match t {
+    case TApp(name, _, _) -> {
+      if name == "ctor!Ok" or name == "ctor!Err" or name == "ctor!Some" or name == "ctor!None" {
+        name.substring(5, name.length - 5)
+      } else {
+        ""
+      }
+    }
+    case _ -> ""
+  }
+}
+
+pub func pendingCtorArgs(t: in Term): List[Term] {
+  match t {
+    case TApp(_, args, _) -> args
+    case _ -> {
+      val none: List[Term] = newList()
+      none
+    }
+  }
+}
