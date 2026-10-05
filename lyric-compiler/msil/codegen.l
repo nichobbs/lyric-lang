@@ -20007,10 +20007,17 @@ func lowerBuiltinOrStaticCallMsil(
             popCollExpect(fctx)
             castObjectToDelegateMsil(cctx, insns, loweredC, innerHint)
             narrowObjectToDeclaredTypeMsil(cctx, insns, loweredC, innerHint)
-            widenIntToLongMsil(insns, loweredC, innerHint)
-            // Report the widened type, so `widenGenericCtorArgsMsil` does not
-            // convert the argument a second time.
-            widenedIntToLongTyMsil(loweredC, innerHint)
+            // A generic opaque type's type-parameter field is an erased
+            // `object` slot (#8187): a value-type argument is boxed into it.
+            if cctx.erasedOpaqueFqns.containsKey(ctorKey) and isValueType(loweredC) {
+              boxIfNeededMsil(cctx, insns, loweredC)
+              MObject
+            } else {
+              widenIntToLongMsil(insns, loweredC, innerHint)
+              // Report the widened type, so `widenGenericCtorArgsMsil` does not
+              // convert the argument a second time.
+              widenedIntToLongTyMsil(loweredC, innerHint)
+            }
           }
           argTypes.add(at)
           argEnds.add(insns.count)
