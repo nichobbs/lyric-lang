@@ -585,11 +585,11 @@ func isBuiltinSortName(name: in String): Bool {
     name == "Array"
 }
 
-// Walk a sort, collecting every uninterpreted-sort name (SDatatype with no
-// type-args, and SUninterp) into `seen`/`out`.  Generic SDatatype arity > 0
-// is recursively walked into args, but its head name is not collected — the
-// few cases that hit this path (Option/Tuple/Array) are already declared by
-// the preamble.
+// Walk a sort, collecting every uninterpreted sort into `seen`/`out` as
+// `<name> <arity>`: an SDatatype the goal does not declare and SUninterp.
+// A generic type is an uninterpreted sort of its arity, applied to its
+// arguments; the standard library's `Result`/`Option` are the preamble's
+// datatypes (#8108).
 func collectSortNames(s: in Sort, seen: in Map[String, Bool], outList: in List[String]): Unit {
   match s {
     case SBool -> ()
@@ -602,13 +602,18 @@ func collectSortNames(s: in Sort, seen: in Map[String, Bool], outList: in List[S
       if args.count == 0 {
         if not isBuiltinSortName(name) and not seen.containsKey(name) {
           seen.add(name, true)
-          outList.add(name)
+          outList.add(name + " 0")
         }
       } else {
         var i = 0
         while i < args.count {
           collectSortNames(args[i], seen, outList)
           i = i + 1
+        }
+        val preambleDatatype = isResultSort(s) or isOptionSort(s)
+        if not preambleDatatype and not isBuiltinSortName(name) and not seen.containsKey(name) {
+          seen.add(name, true)
+          outList.add(name + " " + intToString(args.count))
         }
       }
     }
@@ -617,7 +622,7 @@ func collectSortNames(s: in Sort, seen: in Map[String, Bool], outList: in List[S
       val sanitized = smtSanitize(name)
       if not isBuiltinSortName(sanitized) and not seen.containsKey(sanitized) {
         seen.add(sanitized, true)
-        outList.add(sanitized)
+        outList.add(sanitized + " 0")
       }
     }
   }
@@ -934,7 +939,7 @@ pub func smtRenderGoal(g: in Goal): String {
   // Emit (declare-sort X 0) for each unknown sort name.
   var k = 0
   while k < outSorts.count {
-    output = output + "(declare-sort " + outSorts[k] + " 0)\n"
+    output = output + "(declare-sort " + outSorts[k] + ")\n"
     k = k + 1
   }
 

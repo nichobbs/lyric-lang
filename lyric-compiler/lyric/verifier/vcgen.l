@@ -117,6 +117,110 @@ pub func sortOfTypeExprWith(distincts: in Map[String, TypeExpr], te: in TypeExpr
 
 // Bounded like `resolveDistinct`, against a cyclic chain of range subtypes.
 func sortOfTypeExprDepth(distincts: in Map[String, TypeExpr], te: in TypeExpr, depth: in Int): SortInfo {
+  val si = sortOfTypeExprDepthRaw(distincts, te, depth)
+  if distincts.containsKey(shadowedMonadKey("Result")) or distincts.containsKey(shadowedMonadKey("Option")) {
+    SortInfo(sort = unshadowMonadSort(distincts, si.sort), range = si.range, intBits = si.intBits)
+  } else {
+    si
+  }
+}
+
+// `Result` and `Option` are the standard library's datatypes only where no
+// other type of that name can be in scope (#8108).  `goalsForFile` marks a
+// name the file declares, or may import from a package other than `Std.*`,
+// with this key in the distinct-type map; its sorts are then an ordinary
+// uninterpreted type, never `Lyric!Result`/`Lyric!Option`.
+func shadowedMonadKey(name: in String): String {
+  "!shadowed." + name
+}
+
+func unshadowMonadSort(distincts: in Map[String, TypeExpr], s: in Sort): Sort {
+  match s {
+    case SDatatype(name, args) -> {
+      val newArgs: List[Sort] = newList()
+      var i = 0
+      while i < args.count {
+        newArgs.add(unshadowMonadSort(distincts, args[i]))
+        i = i + 1
+      }
+      val shadowed = (isResultSort(s) or isOptionSort(s)) and distincts.containsKey(shadowedMonadKey(name))
+      SDatatype(name = if shadowed { name + "!user" } else { name }, args = newArgs)
+    }
+    case SSlice(e) -> SSlice(element = unshadowMonadSort(distincts, e))
+    case _ -> s
+  }
+}
+
+// Whether a type named `name` other than the standard library's may be in
+// scope in `file`: declared there, imported by name or alias, or brought in
+// by a whole-package import outside `Std.*`, whose contents are not known
+// here.
+func monadNameShadowed(file: in SourceFile, name: in String): Bool {
+  var i = 0
+  while i < file.items.count {
+    val declared = match file.items[i].kind {
+      case ITypeAlias(d) -> d.name
+      case IDistinctType(d) -> d.name
+      case IRecord(d) -> d.name
+      case IExposedRec(d) -> d.name
+      case IUnion(d) -> d.name
+      case IEnum(d) -> d.name
+      case IOpaque(d) -> d.name
+      case IProtected(d) -> d.name
+      case IInterface(d) -> d.name
+      case IExternType(d) -> d.name
+      case IConfig(d) -> d.name
+      case _ -> ""
+    }
+    if declared == name {
+      return true
+    }
+    i = i + 1
+  }
+  var j = 0
+  while j < file.imports.count {
+    val imp = file.imports[j]
+    match imp.asAlias {
+      case Some(a) -> {
+        if a == name {
+          return true
+        }
+      }
+      case None -> ()
+    }
+    match imp.selector {
+      case Some(sel) -> {
+        val items: List[ImportItem] = match sel {
+          case ISSingle(item) -> {
+            val one: List[ImportItem] = newList()
+            one.add(item)
+            one
+          }
+          case ISGroup(group) -> group
+        }
+        var k = 0
+        while k < items.count {
+          val visible = match items[k].asAlias { case Some(a) -> a; case None -> items[k].name }
+          if visible == name {
+            return true
+          }
+          k = k + 1
+        }
+      }
+      case None -> {
+        val segs = imp.path.segments
+        val isStd = segs.count > 0 and segs[0] == "Std"
+        if not isStd and not isSome(imp.asAlias) {
+          return true
+        }
+      }
+    }
+    j = j + 1
+  }
+  false
+}
+
+func sortOfTypeExprDepthRaw(distincts: in Map[String, TypeExpr], te: in TypeExpr, depth: in Int): SortInfo {
   val resolved = resolveDistinct(distincts, te)
   match resolved.kind {
     // A range over a distinct alias (`Cents range 0 ..= 100` with `type
@@ -4082,17 +4186,17 @@ func hoistExpr(ctx: in HoistCtx, e: in Expr): Result[Expr, String] {
       val ops: List[Expr] = newList()
       ops.add(lhs)
       ops.add(rhs)
-      match hoistOperands(ctx, ops, -1) {
+      match hoistOperands(ctx, ops, noPins()) {
         case Ok(xs) -> Ok(value = Expr(kind = EBinop(op = op, lhs = xs[0], rhs = xs[1]), span = e.span))
         case Err(r) -> Err(error = r)
       }
     }
     case ECall(fn, args) -> hoistCall(ctx, e, fn, args)
-    case ETuple(exprs) -> match hoistOperands(ctx, exprs, -1) {
+    case ETuple(exprs) -> match hoistOperands(ctx, exprs, noPins()) {
       case Ok(xs) -> Ok(value = Expr(kind = ETuple(exprs = xs), span = e.span))
       case Err(r) -> Err(error = r)
     }
-    case EList(exprs) -> match hoistOperands(ctx, exprs, -1) {
+    case EList(exprs) -> match hoistOperands(ctx, exprs, noPins()) {
       case Ok(xs) -> Ok(value = Expr(kind = EList(exprs = xs), span = e.span))
       case Err(r) -> Err(error = r)
     }
@@ -4100,7 +4204,7 @@ func hoistExpr(ctx: in HoistCtx, e: in Expr): Result[Expr, String] {
       val ops: List[Expr] = newList()
       ops.add(receiver)
       appendExprList(ops, indices)
-      match hoistOperands(ctx, ops, -1) {
+      match hoistOperands(ctx, ops, noPins()) {
         case Ok(xs) -> {
           val newIndices: List[Expr] = newList()
           var i = 1
@@ -4123,7 +4227,7 @@ func hoistExpr(ctx: in HoistCtx, e: in Expr): Result[Expr, String] {
         }
         i = i + 1
       }
-      match hoistOperands(ctx, ops, -1) {
+      match hoistOperands(ctx, ops, noPins()) {
         case Ok(xs) -> {
           val newSegs: List[InterpolatedSegment] = newList()
           var k = 0
@@ -4188,9 +4292,10 @@ func hoistExpr(ctx: in HoistCtx, e: in Expr): Result[Expr, String] {
 // operand before the last one holding a `?` is bound first, so it is still
 // evaluated before that `?` runs.  A literal, or a `val` the code cannot
 // change, reads the same wherever it is evaluated and stays in place, as
-// does the operand at `pinned` (a method's receiver variable, which the
-// method must see itself).
-func hoistOperands(ctx: in HoistCtx, ops: in List[Expr], pinned: in Int): Result[List[Expr], String] {
+// does an operand `pinned` marks: a place the call writes or reads in
+// place — an `out`/`inout` argument, a method's receiver — which must stay
+// the variable itself, never a copy (D171).
+func hoistOperands(ctx: in HoistCtx, ops: in List[Expr], pinned: in List[Bool]): Result[List[Expr], String] {
   var last = -1
   var i = 0
   while i < ops.count {
@@ -4204,7 +4309,7 @@ func hoistOperands(ctx: in HoistCtx, ops: in List[Expr], pinned: in Int): Result
   while i < ops.count {
     if i < last {
       match hoistExpr(ctx, ops[i]) {
-        case Ok(x) -> outList.add(if i == pinned { x } else { spillOperand(ctx, x) })
+        case Ok(x) -> outList.add(if i < pinned.count and pinned[i] { x } else { spillOperand(ctx, x) })
         case Err(r) -> {
           return Err(error = r)
         }
@@ -4250,14 +4355,9 @@ func operandIsStable(env: in VEnv, x: in Expr): Bool {
 // hoisted arguments keep their names, so they still pair by name.
 func hoistCall(ctx: in HoistCtx, e: in Expr, fn: in Expr, args: in List[CallArg]): Result[Expr, String] {
   val argExprs: List[Expr] = newList()
-  var anyArgPropagate = false
   var i = 0
   while i < args.count {
-    val a = match args[i] { case CANamed(_, v, _) -> v; case CAPositional(v) -> v }
-    argExprs.add(a)
-    if exprHasPropagate(a) {
-      anyArgPropagate = true
-    }
+    argExprs.add(match args[i] { case CANamed(_, v, _) -> v; case CAPositional(v) -> v })
     i = i + 1
   }
   // What the callee position evaluates, if anything.
@@ -4277,35 +4377,56 @@ func hoistCall(ctx: in HoistCtx, e: in Expr, fn: in Expr, args: in List[CallArg]
     case _ -> Some(value = fn)
   }
   val ops: List[Expr] = newList()
+  val pinned: List[Bool] = newList()
+  // The variables this call itself writes through its `out`/`inout`
+  // parameters and receiver (every mutable one, for a callee it does not
+  // resolve).
+  val ownEff = emptyEffects()
+  effOutArgs(ctx.env, fn, args, ownEff)
   match calleeOperand {
     case Some(c) -> {
-      // A receiver variable stays in place, so the method sees the variable
-      // itself; an argument that changes it would run before it is read.
-      match c.kind {
-        case EPath(path) -> {
-          if path.segments.count == 1 and anyArgPropagate {
-            var ai = 0
-            while ai < argExprs.count {
-              if effectsOfExpr(ctx.env, argExprs[ai]).outArgs.contains(path.segments[0]) {
-                return Err(error = "a `?` among the arguments of a method on '" + path.segments[0] + "', which an argument changes")
-              }
-              ai = ai + 1
-            }
-          }
-        }
-        case _ -> ()
-      }
       ops.add(c)
+      pinned.add(isSome(rootVarOf(c)))
     }
     case None -> ()
   }
-  appendExprList(ops, argExprs)
-  val pinned = match calleeOperand {
-    case Some(c) -> match c.kind {
-      case EPath(path) -> if path.segments.count == 1 { 0 } else { -1 }
-      case _ -> -1
+  var pi = 0
+  while pi < argExprs.count {
+    ops.add(argExprs[pi])
+    pinned.add(match rootVarOf(argExprs[pi]) { case Some(n) -> ownEff.outArgs.contains(n); case None -> false })
+    pi = pi + 1
+  }
+  // A place stays where it is, but the operands up to the last `?` run
+  // before the call: one that changes the place's variable would then run
+  // before the place is used, so fail closed.
+  var lastProp = -1
+  var li = 0
+  while li < ops.count {
+    if exprHasPropagate(ops[li]) {
+      lastProp = li
     }
-    case None -> -1
+    li = li + 1
+  }
+  var ki = 0
+  while ki < ops.count {
+    if pinned[ki] {
+      match rootVarOf(ops[ki]) {
+        case Some(n) -> {
+          var kj = ki + 1
+          while kj <= lastProp {
+            if effectsOfExpr(ctx.env, ops[kj]).outArgs.contains(n) {
+              return Err(
+                error = "a `?` in an argument that changes '" + n +
+                  "', which an earlier operand of the same call uses in place"
+              )
+            }
+            kj = kj + 1
+          }
+        }
+        case None -> ()
+      }
+    }
+    ki = ki + 1
   }
   val hoisted = match hoistOperands(ctx, ops, pinned) { case Ok(xs) -> xs; case Err(r) -> { return Err(error = r) } }
   val offset = if isSome(calleeOperand) { 1 } else { 0 }
@@ -6239,6 +6360,15 @@ pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[G
     dti0 = dti0 + 1
   }
 
+  var mi = 0
+  while mi < 2 {
+    val monadName = if mi == 0 { "Result" } else { "Option" }
+    if monadNameShadowed(file, monadName) {
+      distinctMap.add(shadowedMonadKey(monadName), TypeExpr(kind = TUnit, span = file.packageDecl.path.span))
+    }
+    mi = mi + 1
+  }
+
   val fieldInfosMap: Map[String, SortInfo] = newMap()
   val recordDefaultsMap: Map[String, List[Option[Expr]]] = newMap()
   val recordNames: List[String] = newList()
@@ -6650,17 +6780,20 @@ func boolLit(b: in Bool): Term {
 }
 
 // A call the file does not declare to one of `Std.Core`'s constructors or
-// case tests: `Ok(v)`, `Err(e)`, `Some(v)`, `isOk(r)`, `isErr(r)`,
-// `isSome(o)`, `isNone(o)`.
+// case tests: `Ok(v)`, `Err(e)`, `Some(v)` — positional, or named by the
+// case's field, `Ok(value = v)`, `Err(error = e)` — and `isOk(r)`,
+// `isErr(r)`, `isSome(o)`, `isNone(o)`.
 func monadCall(name: in String, args: in List[CallArg], terms: in List[Term]): Option[Term] {
   if args.count != 1 or terms.count != 1 {
     return None
   }
-  match args[0] {
-    case CANamed(_, _, _) -> {
-      return None
-    }
-    case CAPositional(_) -> ()
+  val field = if name == "Err" { "error" } else { "value" }
+  val fits = match args[0] {
+    case CANamed(argName, _, _) -> (name == "Ok" or name == "Err" or name == "Some") and argName == field
+    case CAPositional(_) -> true
+  }
+  if not fits {
+    return None
   }
   val t = terms[0]
   if name == "Ok" or name == "Err" or name == "Some" {
@@ -6674,4 +6807,9 @@ func monadCall(name: in String, args: in List[CallArg], terms: in List[Term]): O
   } else {
     None
   }
+}
+
+func noPins(): List[Bool] {
+  val none: List[Bool] = newList()
+  none
 }

@@ -912,6 +912,15 @@ func coerceMonadTerm(t: in Term, target: in Sort): Option[Result[Term, String]] 
         case Err(reason) -> Some(value = Err(error = reason))
       }
     }
-    case _ -> None
+    // Any other value must already be of the slot's type: a value the
+    // verifier does not see as one (an unmodelled call) is not modelled
+    // there, so it fails closed rather than reach the solver ill-sorted.
+    case _ -> {
+      if smtRenderSort(sortOf(t)) == smtRenderSort(target) {
+        None
+      } else {
+        Some(value = Err(error = "a value the verifier does not model as a " + sortDisplay(target) + " is used as one"))
+      }
+    }
   }
 }

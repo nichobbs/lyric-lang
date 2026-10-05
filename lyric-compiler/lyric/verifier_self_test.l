@@ -2443,3 +2443,52 @@ test "a `?` the verifier cannot split at fails closed (#8108)" {
     "loop-body"
   )
 }
+
+test "a type named Result or Option other than the standard library's is not modelled as one (#8108)" {
+  val shadow = "record Option[T] {\n  isSome: Bool\n  value: T\n}\n" +
+    "func f(o: in Option[Int], p: in Option[Int]): Bool\n  ensures: result\n{\n  o.isSome or p.isSome or o == p\n}\n"
+  assertNotProved(shadow, "declared-option")
+  val g = "func g(n: in Int): Result[Int, String] {\n  Ok(n)\n}\n" +
+    "func f(n: in Int): Result[Int, String]\n  ensures: result.isOk\n{\n  g(n)\n}\n"
+  assertNotProved("import Elsewhere\n" + g, "whole-package-import")
+  assertNotProved("import Elsewhere.{Result}\n" + g, "imported-by-name")
+  assertDischarged(
+    "import Std.Collections\nfunc f(n: in Int): Result[Int, String]\n  ensures: result.isOk\n{\n  Ok(n)\n}\n",
+    "std-import"
+  )
+}
+
+test "an out or inout argument before a `?` is the variable itself, never a copy (#8108)" {
+  val decls = "func zap(a: inout Int, b: in Int): Unit {\n  a = 0\n}\n" +
+    "func g(): Result[Int, String] {\n  Ok(5)\n}\n" +
+    "func h(x: inout Int): Result[Int, String] {\n  x = 7\n  Ok(1)\n}\n"
+  assertRefuted(
+    decls +
+      "func f(): Result[Int, String]\n  ensures: result.isOk implies result.value == 1\n{\n  var x = 1\n  zap(x, g()?)\n  Ok(x)\n}\n",
+    "write-reaches-variable"
+  )
+  assertDischarged(
+    decls +
+      "func f(): Result[Int, String]\n  ensures: result.isOk implies result.value == 1\n{\n  var x = 1\n  val y = x\n  zap(x, g()?)\n  Ok(y)\n}\n",
+    "copy-taken-before-unaffected"
+  )
+  assertUntranslatable(
+    decls + "func f(): Result[Int, String] {\n  var x = 1\n  zap(x, h(x)?)\n  Ok(x)\n}\n",
+    "later-operand-changes-place"
+  )
+}
+
+test "Ok, Err and Some with their field named (#8108)" {
+  assertDischarged(
+    "func f(n: in Int): Result[Int, String]\n  ensures: result.isOk implies result.value == n\n{\n  if n > 0 {\n    Ok(value = n)\n  } else {\n    Err(error = \"neg\")\n  }\n}\n",
+    "named-result"
+  )
+  assertRefuted(
+    "func f(n: in Int): Result[Int, String]\n  ensures: result.isOk\n{\n  if n > 0 {\n    Ok(value = n)\n  } else {\n    Err(error = \"neg\")\n  }\n}\n",
+    "named-err-refuted"
+  )
+  assertDischarged(
+    "func f(n: in Int): Option[Int]\n  ensures: result.isSome implies result.value == n\n{\n  Some(value = n)\n}\n",
+    "named-some"
+  )
+}
