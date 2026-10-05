@@ -507,15 +507,22 @@ Calls the verifier cannot follow fail closed or are over-approximated
   order, or every `.l` file under the entry's directory, recursively,
   whatever their `package` line — which `lyric build` merges too.
   `lyric prove --manifest` takes each entry's type names over exactly that
-  set; `lyric prove <file>` and the LSP find the nearest manifest and the
-  entry containing the file, or, with neither, take every `.l` file under
-  the file's directory, recursively (an over-approximation; a subdirectory
-  with its own `lyric.toml` is another project). The scope is unknown —
-  both names counted as declared — when any of those files cannot be read
-  or parsed, an entry cannot be fully listed, the manifest is broken, any
-  of them carries a custom `@generate(X.Y)` (whose output the build adds
-  before merging, and `lyric prove` does not run), or a caller passes none
-  (`proveSource`, `proveSourceWithOptions`). `Ok(v)`, `Err(e)`, `Some(v)` and `None` take their type
+  set, and warns about an entry file outside the manifest's tree. A
+  single-file proof (`lyric prove <file>`, the LSP) is relative to the
+  builds the file's ancestor manifests define: every `lyric.toml` from the
+  file's directory up is read, and the files of every entry of any of them
+  that contains the file are united; with none, every `.l` file under the
+  file's directory, recursively (an over-approximation; a subdirectory with
+  its own `lyric.toml` is another project). A manifest that lists files
+  outside its own tree cannot be found from such a file: prove that
+  package with `--manifest` (D172). Paths are matched case-insensitively,
+  which only adds files; symbolic links are not resolved (Std has no
+  canonical-path call). The scope is unknown — both names counted as
+  declared — when any of those files cannot be read or parsed, a
+  containing entry cannot be fully listed, an ancestor manifest is broken,
+  any of them carries a custom `@generate(X.Y)` (whose output the build
+  adds before merging, and `lyric prove` does not run), or a caller passes
+  none (`proveSource`, `proveSourceWithOptions`). `Ok(v)`, `Err(e)`, `Some(v)` and `None` take their type
   where they meet a typed slot (a return, an annotated binding, an
   argument, the other operand of `==`), written positionally or with their
   field named (`Ok(value = v)`, `Err(error = e)`); a value of another sort

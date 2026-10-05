@@ -37,7 +37,12 @@ property proved of the caller would not hold of the program.
 - docs/01 states that `lyric prove` checks the postcondition statically on
   the `?` exit.
 - docs/15 §5.4 describes the path split; the verifier models `Result` and
-  `Option` as SMT datatypes for it (#8108).
+  `Option` as SMT datatypes for it (#8108). They are the standard library's
+  only where no other type of that name can be in the file's package, and
+  the package is the build's file set. A single-file proof is relative to
+  the file's ancestor manifests: prove a package whose manifest lists
+  files outside its own tree with `--manifest`, which warns about such a
+  file.
 - Runtime-checked and proof-required code can differ on a postcondition
   that is false only on a `?` exit: the program runs without a
   `PostconditionViolated`, and `lyric prove` reports the goal as failed.

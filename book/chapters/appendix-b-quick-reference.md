@@ -1203,6 +1203,9 @@ lyric prove --verbose <file.l>         # print each goal's SMT query and solver 
 lyric prove                            # project mode: prove every [project.packages] source file
 lyric prove --manifest <lyric.toml>    # project mode: override manifest discovery
                                        # (--json and --explain --goal N require explicit source file)
+                                       # a single-file proof is relative to the file's ancestor
+                                       # manifests; prove a package whose manifest lists files
+                                       # outside its own tree with --manifest
 
 # Benchmarking  (see chapter 28)
 lyric bench <file.l>                   # compile and run @bench_module timing harness

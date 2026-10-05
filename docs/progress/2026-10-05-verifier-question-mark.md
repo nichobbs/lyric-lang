@@ -16,17 +16,23 @@ not modelled either, so every postcondition that used them failed closed.
   now computes a manifest entry's files (explicit list, or the entry's
   directory read recursively, whatever each file's `package` line) for
   both `lyric build` and `lyric prove`. `lyric prove --manifest` takes each
-  entry's type names over that set; `lyric prove <file>` and the LSP use
-  the entry of the nearest manifest that contains the file, or else every
-  `.l` file under its directory, recursively. A file that cannot be read
+  entry's type names over that set and warns about an entry file outside
+  the manifest's tree. A single-file proof (`lyric prove <file>`, the LSP)
+  is relative to the builds the file's ancestor manifests define: the files
+  of every entry of every ancestor `lyric.toml` that contains the file, or
+  else every `.l` file under its directory, recursively (nested projects
+  excluded). Paths match case-insensitively; symbolic links are not
+  resolved. A manifest listing files outside its own tree cannot be found
+  from such a file; prove that package with `--manifest` (D172). A file that cannot be read
   or parsed, an entry that cannot be listed, a broken manifest, a custom
   `@generate(X.Y)` anywhere in the set (the build appends its output, which
   prove does not run), or a caller with no scope counts both names as
   declared. `scripts/ci/prove-package-scope.sh` (CI, with
   `examples/prove-package-scope/`) checks a sibling in the same directory,
-  in a subdirectory, with another `package` line and in an explicit file
-  list, each in both modes and requiring the V0033, plus a control that
-  proves. `Ok`, `Err`, `Some` and
+  in a subdirectory, with another `package` line, in an explicit file list
+  and behind a nested project's manifest, each in both modes and requiring
+  the V0033; an out-of-tree file list under `--manifest` (with its
+  warning); and a control that proves. `Ok`, `Err`, `Some` and
   `None` take their type where they meet a typed slot (a return, an
   annotated binding, an argument, the other operand of `==`, both branches
   of an `if`), positionally or with their field named (`Ok(value = v)`);

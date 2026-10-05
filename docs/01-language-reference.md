@@ -2842,7 +2842,7 @@ is fixed. The watch loop runs in the CLI process (always the .NET host).
 
 ### 13.3 Verifier
 
-`lyric prove [<source.l>]` runs the SMT-backed verifier on `@proof_required` modules. Reports unverified obligations with counterexamples.
+`lyric prove [<source.l>]` runs the SMT-backed verifier on `@proof_required` modules. Reports unverified obligations with counterexamples. A single-file proof is relative to the file's ancestor manifests: prove a package whose manifest lists files outside its own tree with `--manifest`. With no source file it proves every file of the discovered (or `--manifest`) project, each against its own `[project.packages]` entry, and warns about an entry file outside the manifest's tree (D172).
 
 **Project mode.** When invoked with no source file, `lyric prove` discovers the nearest `lyric.toml` and proves contracts in every `[project.packages]` source file. Pass `--manifest <lyric.toml>` to override discovery. The flags `--json` and `--explain --goal N` require an explicit source file.
 
