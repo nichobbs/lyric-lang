@@ -5191,6 +5191,9 @@ func checkWithImportedPackagesCore(
   val tbl = newSymbolTable()
   val ctr = newTypeIdCounter()
   registerNativeIntrinsicTypes(tbl, ctr, nativeIntrinsics)
+  if nativeIntrinsics {
+    tbl.spellTypeVarsInLocalFuncs.add(true)
+  }
 
   // A destructuring module-level `val` binds each of its names (#7763).  The
   // compile pipeline has already desugared the file it passes here (so its

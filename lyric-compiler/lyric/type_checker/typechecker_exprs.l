@@ -8918,8 +8918,9 @@ func recordLocalBranchType(tbl: in SymbolTable, init: in Expr, t: in Type): Unit
 
 // Record the checked type of an unannotated local binding's function-valued
 // initializer (see `SymbolTable.localBindingTypeSites`).  An async function, one
-// that never returns, and a type with no source spelling (a type parameter,
-// an error) stay unrecorded: the binding keeps its inferred-only form.
+// that never returns, and a type with no source spelling (an error, or a type
+// parameter unless the backend lowers generic bodies itself) stay unrecorded:
+// the binding keeps its inferred-only form.
 func recordLocalFuncType(tbl: in SymbolTable, init: in Expr, t: in Type): Unit {
   if isNoSourceSpan(init.span) {
     return
@@ -8937,7 +8938,12 @@ func recordLocalFuncType(tbl: in SymbolTable, init: in Expr, t: in Type): Unit {
       if tbl.localBindingTypeSites.containsKey(key) {
         return
       }
-      match typeExprForRef(tbl, t, init.span) {
+      val spelled = if tbl.spellTypeVarsInLocalFuncs.count > 0 {
+        typeExprForRefWithVars(tbl, t, init.span)
+      } else {
+        typeExprForRef(tbl, t, init.span)
+      }
+      match spelled {
         case Some(te) -> tbl.localBindingTypeSites.add(key, te)
         case None -> ()
       }
