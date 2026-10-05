@@ -771,6 +771,12 @@ pub record CodegenCtx {
   // than erasing to `MObject`; construction / field / match sites route through
   // the by-name generic instructions accordingly.
   genericTypeArity: Map[String, Int]
+  // FQNs of generic opaque types (#8187).  An opaque type is emitted as a
+  // non-generic sealed class whose type-parameter fields are `object`, so every
+  // instantiation of it (`Opq[Int]`) is that one erased class.  A reference to
+  // an instantiation, in this assembly or a consumer's, lowers to `MObject`,
+  // matching the declaring assembly's signatures.
+  erasedOpaqueFqns: Map[String, Bool]
   // Constructor parameter MSIL types (in declaration order) for an in-bundle
   // generic record (#2362).  Key = the record FQN (e.g. "Pkg.Box"); value = the
   // field types in VAR form (e.g. [MTypeVar(0)] for `Box(value: T)`, or
@@ -2377,6 +2383,7 @@ pub func newCodegenCtx(
     typeScopeOrigin = newList(),
     caseTypeParamCount = newMap(),
     genericTypeArity = newMap(),
+    erasedOpaqueFqns = newMap(),
     genericCtorParams = newMap(),
     restoredArtifacts = restoredArtifacts,
     nugetAssemblyPaths = nugetAssemblyPaths,
@@ -3396,8 +3403,13 @@ pub func preRegisterPackageTypeNames(cctx: in CodegenCtx, file: in SourceFile, p
       case IExposedRec(decl) -> preRegisterGenericTypeName(cctx, decl.name, pkgName, genericNamesOf(decl.generics).count)
       case IUnion(decl) -> preRegisterGenericTypeName(cctx, decl.name, pkgName, genericNamesOf(decl.generics).count)
       case IInterface(decl) -> registerTypeFqnCandidate(cctx, decl.name, pkgName + "." + decl.name)
-      case IOpaque(decl) -> if decl.hasBody and hasAnnotationMsil(decl.annotations, "projectable") {
-        registerTypeFqnCandidate(cctx, decl.name + "View", pkgName + "." + decl.name + "View")
+      case IOpaque(decl) -> {
+        if genericNamesOf(decl.generics).count > 0 and not cctx.erasedOpaqueFqns.containsKey(pkgName + "." + decl.name) {
+          cctx.erasedOpaqueFqns.add(pkgName + "." + decl.name, true)
+        }
+        if decl.hasBody and hasAnnotationMsil(decl.annotations, "projectable") {
+          registerTypeFqnCandidate(cctx, decl.name + "View", pkgName + "." + decl.name + "View")
+        }
       }
       case IDistinctType(decl) -> registerTypeFqnCandidate(cctx, decl.name, pkgName + "." + decl.name)
       case IProtected(decl) -> preRegisterGenericTypeName(cctx, decl.name, pkgName, genericNamesOf(decl.generics).count)
@@ -8783,6 +8795,9 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te0: in TypeExpr, pkgName: in St
         // In-bundle generic type (#2362): `Box[Int]` resolves to a by-name
         // GENERICINST over the in-bundle TypeDef (resolved at lowering), checked
         // BEFORE the cross-assembly `ffiTypeRefs` path so an in-bundle head wins.
+        if cctx.erasedOpaqueFqns.containsKey(headFqn) {
+          return MObject
+        }
         match mapGet(cctx.genericTypeArity, headFqn) {
           case Some(arity) -> {
             val inBundleArgs: List[MsilType] = newList()
@@ -45414,6 +45429,11 @@ func registerRestoredMembers(cctx: in CodegenCtx, art: in SynthesisedArtifact, s
         registerRestoredInterface(cctx, art.packageName, decl)
       }
       case IDistinctType(decl) -> registerRestoredDistinct(cctx, art.packageName, decl)
+      case IOpaque(decl) -> {
+        if genericNamesOf(decl.generics).count > 0 and not cctx.erasedOpaqueFqns.containsKey(art.packageName + "." + decl.name) {
+          cctx.erasedOpaqueFqns.add(art.packageName + "." + decl.name, true)
+        }
+      }
       case IEnum(decl) -> {
         // Restored enums use the same ordinal-int model as in-bundle ones
         // (#3196): the type name maps signature positions to I4 and each
