@@ -8,10 +8,16 @@ not modelled either, so every postcondition that used them failed closed.
 
 - **`Result[T, E]` and `Option[T]`** are SMT datatypes (`Lyric!Result`,
   `Lyric!Option`, declared in the query preamble) — only the standard
-  library's: a type of that name the file declares, imports by name, or
-  may import through a whole-package import outside `Std.*` is an ordinary
-  uninterpreted type, and generic types are now declared as uninterpreted
-  sorts of their arity. `Ok`, `Err`, `Some` and
+  library's: a type of that name the file or another file of its package
+  declares, the file imports by name, or it may import through a
+  whole-package import outside `Std.*` is an ordinary uninterpreted type,
+  and generic types are now declared as uninterpreted sorts of their arity.
+  `lyric prove --manifest` passes each file its package's type names across
+  all its files; `lyric prove <file>` and the LSP read the sibling `.l`
+  files declaring the same package, and a sibling that cannot be read or
+  parsed, or a caller with no scope, counts both names as declared.
+  `scripts/ci/prove-package-scope.sh` (CI, with
+  `examples/prove-package-scope/`) checks both modes. `Ok`, `Err`, `Some` and
   `None` take their type where they meet a typed slot (a return, an
   annotated binding, an argument, the other operand of `==`, both branches
   of an `if`), positionally or with their field named (`Ok(value = v)`);
@@ -48,8 +54,8 @@ not modelled either, so every postcondition that used them failed closed.
   whose error type differs from the function's is V0033; in a loop body or
   condition it stays V0026.
 
-Verified by `lyric-compiler/lyric/verifier_self_test.l` (151 tests; new
+Verified by `lyric-compiler/lyric/verifier_self_test.l` (152 tests; new
 refute and discharge cases for the error path, the success payload, an
 `Option`, each statement form, argument order and every fail-closed case),
 the CI `lyric prove` examples and `core_proof.l`, the earlier review repros
-(no regression), and the compiler self-test batch (3418 tests).
+(no regression), and the compiler self-test batch (3419 tests).

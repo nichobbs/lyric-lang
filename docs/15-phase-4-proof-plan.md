@@ -497,10 +497,16 @@ Calls the verifier cannot follow fail closed or are over-approximated
   callee), or whose error type differs from the function's fails closed
   (`V0033`); in a loop body or condition it fails closed (`V0026`).
 - `Result[T, E]` and `Option[T]` are the SMT datatypes `Lyric!Result` and
-  `Lyric!Option` — the standard library's only: where the file declares a
-  type of that name, imports one by name or alias, or imports a whole
-  package outside `Std.*`, the name is an ordinary uninterpreted type
-  (a generic type is an uninterpreted sort of its arity). `Ok(v)`, `Err(e)`, `Some(v)` and `None` take their type
+  `Lyric!Option` — the standard library's only: where the file, or another
+  file of its package, declares a type of that name, the file imports one
+  by name or alias, or it imports a whole package outside `Std.*`, the name
+  is an ordinary uninterpreted type (a generic type is an uninterpreted
+  sort of its arity). `lyric prove --manifest` collects every package's
+  top-level type names across its files; `lyric prove <file>` and the LSP
+  read the `.l` files beside the file that declare its package. A caller
+  that cannot see the other files (`proveSource`, `proveSourceWithOptions`,
+  a sibling that cannot be read or parsed) treats both names as declared
+  there. `Ok(v)`, `Err(e)`, `Some(v)` and `None` take their type
   where they meet a typed slot (a return, an annotated binding, an
   argument, the other operand of `==`), written positionally or with their
   field named (`Ok(value = v)`, `Err(error = e)`); a value of another sort
