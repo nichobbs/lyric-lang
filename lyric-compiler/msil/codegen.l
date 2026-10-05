@@ -445,8 +445,9 @@ pub record CodegenCtx {
   // `object[]` because the declaring function passes the variable to an
   // erased `inout Self` parameter (`FuncCtx.objectCellNames`, #8204).
   lambdaObjectCells: Map[String, List[String]]
-  // `<method>#<i>` (and `<method>`) for every method whose receiver-less
-  // parameter `i` is an `out`/`inout` `Self`: that parameter keeps the
+  // `<owner>/<method>#<i>` for every method whose receiver-less parameter
+  // `i` is an `out`/`inout` `Self`, `<owner>` being the declaring class or
+  // interface FQN without its arity suffix: that parameter keeps the
   // interface slot's erased `object&` ABI (#7783), which only an `object[]`
   // cell can alias (#8204).  Filled by `registerMethodParamModes`.
   erasedSelfByrefMethods: Map[String, Bool]
@@ -2508,14 +2509,13 @@ func registerMethodParamModes(cctx: in CodegenCtx, key: in String, params: in Li
     val rest = key.substring(slash + 1, key.length - slash - 1)
     val slash2 = String.indexOfRaw(rest, "/")
     val methodName = if slash2 >= 0 { rest.substring(0, slash2) } else { rest }
+    val ownerKey = stripGenericArity(key.substring(0, slash))
     var pi = 0
     while pi < params.count {
       if isByrefMode(params[pi].mode) and isSelfTypeExprMsil(params[pi].ty) {
-        if not cctx.erasedSelfByrefMethods.containsKey(methodName + "#" + toString(pi)) {
-          cctx.erasedSelfByrefMethods.add(methodName + "#" + toString(pi), true)
-        }
-        if not cctx.erasedSelfByrefMethods.containsKey(methodName) {
-          cctx.erasedSelfByrefMethods.add(methodName, true)
+        val ek = ownerKey + "/" + methodName + "#" + toString(pi)
+        if not cctx.erasedSelfByrefMethods.containsKey(ek) {
+          cctx.erasedSelfByrefMethods.add(ek, true)
         }
       }
       pi = pi + 1
@@ -32027,17 +32027,15 @@ func synthesizeAsyncSmPhaseBMsil(
   // This MoveNext lowers an `async func` body: auto-FFI Task returns unwrap
   // synchronously (see FuncCtx.asyncFuncFlag).
   mnFctx.asyncFuncFlag.add(1)
-  // By-reference closure capture pre-pass (#1479 v2): same collection the
-  // plain-func path runs, so lambda-captured `var`s take the heap-cell path
-  // here too.  `countSmFieldsMsil` already models this set (it passes the
-  // same collection into countPromotedLocalsStmt), so the emit side MUST
-  // agree or the SM FieldDef budget desyncs.
-  match decl.body {
-    case Some(FBBlock(hvBlk)) -> collectInLambdaNamesBlock(hvBlk, mnFctx.hoistedVarNames)
-    case Some(FBExpr(hvE)) -> collectInLambdaNamesExpr(hvE, mnFctx.hoistedVarNames)
-    case None -> {
-    }
-  }
+  // By-reference closure capture pre-pass (#1479 v2): the same entry point
+  // the plain-func and generator paths run, so lambda-captured `var`s take
+  // the heap-cell path here too, shaped by the same erased-`inout Self`
+  // decision (#8204).  `countSmFieldsMsil` already models the hoisted set (it
+  // passes the same collection into countPromotedLocalsStmt), so the emit
+  // side MUST agree or the SM FieldDef budget desyncs; a cell's shape does
+  // not change the count, and its promoted field takes the cell's own type
+  // at the declaration (`finishHoistedCellMsil`).
+  runClosureCapturePrePassMsil(cctx, mnFctx, decl.params, decl.body)
   mnFctx.slotTicker.add(0)  // reserve slot 0 for 'this' arg
 
   // Pre-allocate labels
@@ -32809,7 +32807,7 @@ func synthesizeGeneratorMsil(
   // hit the not-hoisted invariant panic.  The resulting cell local is an
   // ordinary body local, so the yield save/restore below carries the cell
   // reference (not its value) across resumptions.
-  runClosureCapturePrePassMsil(cctx, mnFctx, decl.body)
+  runClosureCapturePrePassMsil(cctx, mnFctx, decl.params, decl.body)
 
   // Pre-allocate labels.
   val tryStartL = freshLabelMsil(mnFctx)
@@ -33936,7 +33934,7 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
   // `runClosureCapturePrePassMsil` — #7690): collect every name used inside a
   // lambda in this body.  A `var` local in this set is hoisted to a heap cell
   // at its declaration so the closure shares the mutable location.
-  runClosureCapturePrePassMsil(cctx, fctx, decl.body)
+  runClosureCapturePrePassMsil(cctx, fctx, decl.params, decl.body)
 
   // Reserve the function epilogue label up-front so a `return` inside a
   // protected region can `leave` to it (see SReturn / #1477).  The epilogue
@@ -34459,7 +34457,7 @@ pub func lowerImplMethodMsil(
   // top-level functions and lifted lambdas, but an impl method never did,
   // so a closure inside one that mutated a captured `var` hit the
   // `hoistedVarNames`-miss invariant panic.
-  runClosureCapturePrePassMsil(cctx, fctx, decl.body)
+  runClosureCapturePrePassMsil(cctx, fctx, implRealParams, decl.body)
 
   // Reserve the epilogue label so a `return` inside a protected region can
   // `leave` to it (see SReturn / #1477).
@@ -34629,7 +34627,7 @@ pub func lowerRecordMethodMsil(
   // `runClosureCapturePrePassMsil`.  A record in-body method never ran this,
   // so a closure inside one that mutated a captured `var` hit the
   // `hoistedVarNames`-miss invariant panic (the original #7690 repro).
-  runClosureCapturePrePassMsil(cctx, fctx, decl.body)
+  runClosureCapturePrePassMsil(cctx, fctx, realParams, decl.body)
 
   fctx.epilogueLabel = freshLabelMsil(fctx)
 
@@ -37026,7 +37024,7 @@ func lowerProtectedMsil(
         // captured `var` hit the `hoistedVarNames`-miss invariant panic.  Runs
         // against the desugared body (post field-reference rewrite) since that
         // is the exact AST `lowerBlockExprMsil`/`lowerExprMsil` below lower.
-        runClosureCapturePrePassMsil(cctx, entryFctx, Some(value = desugaredEntryBody))
+        runClosureCapturePrePassMsil(cctx, entryFctx, edParams, Some(value = desugaredEntryBody))
         val entryInsns: List[MInsn] = newList()
 
         // Monitor.Enter(this): acquire the per-instance lock.
@@ -38741,45 +38739,274 @@ func collectInLambdaNamesStmt(s: in Statement, acc: in List[String]): Unit {
   }
 }
 
+// Every local-binding statement in a body, lambda bodies included, for
+// `collectRecvTypesMsil` (#8204).
+func collectLocalBindingsExprMsil(e: in Expr, acc: in List[Statement]): Unit {
+  match e.kind {
+    case ELambda(_, body) -> {
+      collectLocalBindingsBlockMsil(body, acc)
+    }
+    case ECall(fn, args) -> {
+      collectLocalBindingsExprMsil(fn, acc)
+      var ai = 0
+      while ai < args.count {
+        match args[ai] {
+          case CAPositional(ex) -> {
+            collectLocalBindingsExprMsil(ex, acc)
+          }
+          case CANamed(_, ex, _) -> {
+            collectLocalBindingsExprMsil(ex, acc)
+          }
+        }
+        ai = ai + 1
+      }
+    }
+    case EBinop(_, lhs, rhs) -> {
+      collectLocalBindingsExprMsil(lhs, acc)
+      collectLocalBindingsExprMsil(rhs, acc)
+    }
+    case EPrefix(_, operand) -> {
+      collectLocalBindingsExprMsil(operand, acc)
+    }
+    case EParen(inner) -> {
+      collectLocalBindingsExprMsil(inner, acc)
+    }
+    case EMember(recv, _) -> {
+      collectLocalBindingsExprMsil(recv, acc)
+    }
+    case EIf(cond, thenB, elseOpt, _) -> {
+      collectLocalBindingsExprMsil(cond, acc)
+      collectLocalBindingsOrdBlockMsil(thenB, acc)
+      match elseOpt {
+        case Some(eb) -> collectLocalBindingsOrdBlockMsil(eb, acc)
+        case None -> {
+        }
+      }
+    }
+    case EBlock(block) -> {
+      collectLocalBindingsBlockMsil(block, acc)
+    }
+    case EUnsafe(block) -> {
+      collectLocalBindingsBlockMsil(block, acc)
+    }
+    case EMatch(scr, arms) -> {
+      collectLocalBindingsExprMsil(scr, acc)
+      var ai = 0
+      while ai < arms.count {
+        match arms[ai].guard {
+          case Some(guardExpr) -> {
+            collectLocalBindingsExprMsil(guardExpr, acc)
+          }
+          case None -> {
+          }
+        }
+        collectLocalBindingsOrdBlockMsil(arms[ai].body, acc)
+        ai = ai + 1
+      }
+    }
+    case EList(exprs) -> {
+      var ei = 0
+      while ei < exprs.count {
+        collectLocalBindingsExprMsil(exprs[ei], acc)
+        ei = ei + 1
+      }
+    }
+    case ETuple(exprs) -> {
+      var ei = 0
+      while ei < exprs.count {
+        collectLocalBindingsExprMsil(exprs[ei], acc)
+        ei = ei + 1
+      }
+    }
+    case EIndex(recv, indices) -> {
+      collectLocalBindingsExprMsil(recv, acc)
+      var ii = 0
+      while ii < indices.count {
+        collectLocalBindingsExprMsil(indices[ii], acc)
+        ii = ii + 1
+      }
+    }
+    case EAwait(inner) -> {
+      collectLocalBindingsExprMsil(inner, acc)
+    }
+    case EYield(inner) -> {
+      collectLocalBindingsExprMsil(inner, acc)
+    }
+    case ESpawn(inner) -> {
+      collectLocalBindingsExprMsil(inner, acc)
+    }
+    case ETry(inner) -> {
+      collectLocalBindingsExprMsil(inner, acc)
+    }
+    case EPropagate(inner) -> {
+      collectLocalBindingsExprMsil(inner, acc)
+    }
+    case EAssign(target, _, v) -> {
+      collectLocalBindingsExprMsil(target, acc)
+      collectLocalBindingsExprMsil(v, acc)
+    }
+    case EInterpolated(segs) -> {
+      var si = 0
+      while si < segs.count {
+        match segs[si] {
+          case ISExpr(ex) -> {
+            collectLocalBindingsExprMsil(ex, acc)
+          }
+          case _ -> {
+          }
+        }
+        si = si + 1
+      }
+    }
+    case ETypeApp(fn, _) -> {
+      collectLocalBindingsExprMsil(fn, acc)
+    }
+    case _ -> {
+    }
+  }
+}
+
+func collectLocalBindingsOrdBlockMsil(ob: in ExprOrBlock, acc: in List[Statement]): Unit {
+  match ob {
+    case EOBExpr(ex) -> {
+      collectLocalBindingsExprMsil(ex, acc)
+    }
+    case EOBBlock(blk) -> {
+      collectLocalBindingsBlockMsil(blk, acc)
+    }
+  }
+}
+
+func collectLocalBindingsBlockMsil(b: in Block, acc: in List[Statement]): Unit {
+  var i = 0
+  while i < b.statements.count {
+    collectLocalBindingsStmtMsil(b.statements[i], acc)
+    i = i + 1
+  }
+}
+
+func collectLocalBindingsStmtMsil(s: in Statement, acc: in List[Statement]): Unit {
+  match s.kind {
+    case SLocal(binding) -> {
+      acc.add(s)
+      collectLocalBindingsInitMsil(binding, acc)
+    }
+    case SAssign(target, _, v) -> {
+      collectLocalBindingsExprMsil(target, acc)
+      collectLocalBindingsExprMsil(v, acc)
+    }
+    case SReturn(valOpt) -> match valOpt { case Some(e) -> { collectLocalBindingsExprMsil(e, acc) }; case None -> {  } }
+    case SExpr(e) -> {
+      collectLocalBindingsExprMsil(e, acc)
+    }
+    case SThrow(e) -> {
+      collectLocalBindingsExprMsil(e, acc)
+    }
+    case SWhile(_, cond, body) -> {
+      collectLocalBindingsExprMsil(cond, acc)
+      collectLocalBindingsBlockMsil(body, acc)
+    }
+    case SFor(_, _, iter, body) -> {
+      collectLocalBindingsExprMsil(iter, acc)
+      collectLocalBindingsBlockMsil(body, acc)
+    }
+    case SLoop(_, body) -> {
+      collectLocalBindingsBlockMsil(body, acc)
+    }
+    case SScope(_, body) -> {
+      collectLocalBindingsBlockMsil(body, acc)
+    }
+    case SDefer(body) -> {
+      collectLocalBindingsBlockMsil(body, acc)
+    }
+    case STry(body, catches, finally_) -> {
+      collectLocalBindingsBlockMsil(body, acc)
+      var ci = 0
+      while ci < catches.count {
+        collectLocalBindingsBlockMsil(catches[ci].body, acc)
+        ci = ci + 1
+      }
+      match finally_ {
+        case Some(fb) -> {
+          collectLocalBindingsBlockMsil(fb, acc)
+        }
+        case None -> {
+        }
+      }
+    }
+    case SInvariant(e) -> {
+      collectLocalBindingsExprMsil(e, acc)
+    }
+    case SRule(lhs, rhs) -> {
+      collectLocalBindingsExprMsil(lhs, acc)
+      collectLocalBindingsExprMsil(rhs, acc)
+    }
+    case _ -> {
+    }
+  }
+}
+
+// The initialiser of a local binding, walked for nested bindings.
+func collectLocalBindingsInitMsil(binding: in LocalBinding, acc: in List[Statement]): Unit {
+  match binding {
+    case LBVal(_, _, init) -> {
+      collectLocalBindingsExprMsil(init, acc)
+    }
+    case LBLet(_, _, init) -> {
+      collectLocalBindingsExprMsil(init, acc)
+    }
+    case LBVar(_, _, initOpt) -> match initOpt {
+      case Some(init) -> {
+        collectLocalBindingsExprMsil(init, acc)
+      }
+      case None -> {
+      }
+    }
+  }
+}
+
 // Pre-pass (#8204): the hoisted `vars` this body passes to an erased
 // `inout Self` / `out Self` parameter (`cctx.erasedSelfByrefMethods`), which
 // is an `object&` in the callee's signature.  Only an `object[]` cell's
 // element can be that pointer, so each such variable keeps an `object[]` cell
 // (`FuncCtx.objectCellNames`) instead of the typed `MCellArray` its type
 // would get.  Lambda bodies are walked too: a by-reference call there reaches
-// the same cell.  The match is by method name and argument position, so a
-// variable passed to a same-named method of another type is kept `object[]`
-// as well; that costs only the aliasing of a typed `inout` argument, which
-// then goes through a temp (`emitCellByrefArgMsil`).
+// the same cell.  The callee is the method of the receiver's static type
+// (`recvTypes`, from `collectRecvTypesMsil`), so a same-named method of
+// another type with a typed `inout` does not count.  A receiver whose type
+// the pre-pass cannot name (a call result, a pattern binding, a lambda
+// parameter) leaves the cell typed: the call is then valid IL through the
+// copy-in/copy-out temp of `emitCellByrefArgMsil`, and a closure write made
+// during that call is lost.
 func markErasedSelfByrefArgsMsil(
   cctx: in CodegenCtx,
   fn: in Expr,
   args: in List[CallArg],
   vars: in List[String],
+  recvTypes: in Map[String, String],
   acc: in List[String],
 ): Unit {
   // `recv.m(args)`, or the UFCS form `m(recv, args)` whose first argument is
   // the receiver.
   val methodName = match fn.kind {
     case EMember(_, m) -> m
-    case EPath(path) -> lastSegmentMsil(path)
+    case EPath(path) -> if path.segments.count == 1 { lastSegmentMsil(path) } else { return () }
     case _ -> return ()
   }
   val receiverArgs = match fn.kind { case EPath(_) -> 1; case _ -> 0 }
-  if not cctx.erasedSelfByrefMethods.containsKey(methodName) {
+  val recvExpr = match fn.kind {
+    case EMember(recv, _) -> recv
+    case _ -> if args.count > 0 { callArgExpr(args[0]) } else { return () }
+  }
+  val ownerKey = recvOwnerKeyMsil(recvExpr, recvTypes)
+  if ownerKey == "" {
     return ()
   }
   var ai = receiverArgs
   while ai < args.count {
-    val argExpr = callArgExpr(args[ai])
     val positional = match args[ai] { case CAPositional(_) -> true; case _ -> false }
-    val erased = if positional {
-      cctx.erasedSelfByrefMethods.containsKey(methodName + "#" + toString(ai - receiverArgs))
-    } else {
-      true
-    }
-    if erased {
-      match argExpr.kind {
+    if positional and cctx.erasedSelfByrefMethods.containsKey(ownerKey + "/" + methodName + "#" + toString(ai - receiverArgs)) {
+      match callArgExpr(args[ai]).kind {
         case EPath(path) -> {
           val name = lastSegmentMsil(path)
           if path.segments.count == 1 and nameListContains(vars, name) {
@@ -38793,117 +39020,273 @@ func markErasedSelfByrefArgsMsil(
   }
 }
 
-func collectErasedSelfByrefArgsExpr(cctx: in CodegenCtx, e: in Expr, vars: in List[String], acc: in List[String]): Unit {
+// The owner key (`erasedSelfByrefMethods`) of a call receiver: a bare name
+// or `self` whose static type `recvTypes` records; "" when unknown.
+func recvOwnerKeyMsil(recv: in Expr, recvTypes: in Map[String, String]): String {
+  match recv.kind {
+    case EPath(path) -> if path.segments.count == 1 {
+      match mapGet(recvTypes, lastSegmentMsil(path)) {
+        case Some(k) -> k
+        case None -> ""
+      }
+    } else {
+      ""
+    }
+    case ESelf -> match mapGet(recvTypes, "self") { case Some(k) -> k; case None -> "" }
+    case EParen(inner) -> recvOwnerKeyMsil(inner, recvTypes)
+    case _ -> ""
+  }
+}
+
+// The owner key of a static type: the class, interface or generic head FQN
+// without its arity suffix; "" for any other type.
+func ownerKeyOfMsilType(t: in MsilType): String {
+  match t {
+    case MClass(fqn) -> stripGenericArity(fqn)
+    case MClassRef(_, fqn) -> stripGenericArity(fqn)
+    case MGenericInst(_, head, _) -> stripGenericArity(head)
+    case MGenericInstByName(head, _) -> stripGenericArity(head)
+    case _ -> ""
+  }
+}
+
+// Record `name`'s owner key, or mark the name ambiguous ("") when two
+// bindings of it in one body disagree.
+func recordRecvTypeMsil(recvTypes: in Map[String, String], name: in String, key: in String): Unit {
+  match mapGet(recvTypes, name) {
+    case Some(prev) -> if prev != key { recvTypes.remove(name); recvTypes.add(name, "") }
+    case None -> recvTypes.add(name, key)
+  }
+}
+
+// The static types the pre-pass can name without lowering the body: each
+// parameter (as already registered in `fctx.types`, else from its
+// annotation) and each local binding with an annotation or a record / class
+// constructor call as its initialiser.  Bindings anywhere in the body count
+// (a name bound twice to different types is ambiguous), lambda bodies too.
+func collectRecvTypesMsil(
+  cctx: in CodegenCtx, fctx: in FuncCtx, params: in List[Param], body: in Option[FunctionBody]
+): Map[String, String] {
+  val recvTypes: Map[String, String] = newMap()
+  var pi = 0
+  while pi < params.count {
+    val pn = params[pi].name
+    val pty = match mapGet(fctx.types, pn) {
+      case Some(t) -> t
+      case None -> typeExprToMsilBodyCtx(cctx, fctx, params[pi].ty)
+    }
+    val key = ownerKeyOfMsilType(pty)
+    if key.length > 0 {
+      recordRecvTypeMsil(recvTypes, pn, key)
+    }
+    pi = pi + 1
+  }
+  if not recvTypes.containsKey("self") {
+    match mapGet(fctx.types, "self") {
+      case Some(st) -> {
+        val sk = ownerKeyOfMsilType(st)
+        if sk.length > 0 {
+          recordRecvTypeMsil(recvTypes, "self", sk)
+        }
+      }
+      case None -> ()
+    }
+  }
+  val bindings: List[Statement] = newList()
+  match body {
+    case Some(FBBlock(blk)) -> collectLocalBindingsBlockMsil(blk, bindings)
+    case _ -> ()
+  }
+  var bi = 0
+  while bi < bindings.count {
+    match bindings[bi].kind {
+      case SLocal(binding) -> {
+        // A destructuring `val` binds names of types this pass cannot see.
+        val names: List[String] = newList()
+        val simple = match binding {
+          case LBVal(pat, _, _) -> match pat.kind {
+            case PBinding(n, _) -> {
+              names.add(n)
+              true
+            }
+            case _ -> {
+              collectBoundNamesPattern(pat, names)
+              false
+            }
+          }
+          case LBLet(n, _, _) -> {
+            names.add(n)
+            true
+          }
+          case LBVar(n, _, _) -> {
+            names.add(n)
+            true
+          }
+        }
+        val tyOpt = match binding { case LBVal(_, t, _) -> t; case LBLet(_, t, _) -> t; case LBVar(_, t, _) -> t }
+        val initOpt = match binding {
+          case LBVal(_, _, i) -> Some(value = i)
+          case LBLet(_, _, i) -> Some(value = i)
+          case LBVar(_, _, io) -> io
+        }
+        val key = if not simple {
+          ""
+        } else {
+          match tyOpt {
+            case Some(te) -> ownerKeyOfMsilType(typeExprToMsilBodyCtx(cctx, fctx, te))
+            case None -> match initOpt { case Some(init) -> ctorOwnerKeyMsil(cctx, fctx, init); case None -> "" }
+          }
+        }
+        var ni = 0
+        while ni < names.count {
+          recordRecvTypeMsil(recvTypes, names[ni], key)
+          ni = ni + 1
+        }
+      }
+      case _ -> ()
+    }
+    bi = bi + 1
+  }
+  recvTypes
+}
+
+// The owner key of a constructor call `T(...)` / `T[A](...)` naming a
+// declared type; "" for any other initialiser.
+func ctorOwnerKeyMsil(cctx: in CodegenCtx, fctx: in FuncCtx, init: in Expr): String {
+  match init.kind {
+    case ECall(fn, _) -> {
+      val callee = match fn.kind { case ETypeApp(inner, _) -> inner; case _ -> fn }
+      match callee.kind {
+        case EPath(path) -> if path.segments.count == 1 and cctx.typeFqnCandidates.containsKey(lastSegmentMsil(path)) {
+          stripGenericArity(resolveTypeFqn(cctx, fctx.pkgName, lastSegmentMsil(path)))
+        } else {
+          ""
+        }
+        case _ -> ""
+      }
+    }
+    case EParen(inner) -> ctorOwnerKeyMsil(cctx, fctx, inner)
+    case _ -> ""
+  }
+}
+
+func collectErasedSelfByrefArgsExpr(
+  cctx: in CodegenCtx,
+  e: in Expr,
+  vars: in List[String],
+  recvTypes: in Map[String, String],
+  acc: in List[String],
+): Unit {
   match e.kind {
     case ELambda(_, body) -> {
-      collectErasedSelfByrefArgsBlock(cctx, body, vars, acc)
+      collectErasedSelfByrefArgsBlock(cctx, body, vars, recvTypes, acc)
     }
     case ECall(fn, args) -> {
-      markErasedSelfByrefArgsMsil(cctx, fn, args, vars, acc)
-      collectErasedSelfByrefArgsExpr(cctx, fn, vars, acc)
+      markErasedSelfByrefArgsMsil(cctx, fn, args, vars, recvTypes, acc)
+      collectErasedSelfByrefArgsExpr(cctx, fn, vars, recvTypes, acc)
       var ai = 0
       while ai < args.count {
         match args[ai] {
           case CAPositional(ex) -> {
-            collectErasedSelfByrefArgsExpr(cctx, ex, vars, acc)
+            collectErasedSelfByrefArgsExpr(cctx, ex, vars, recvTypes, acc)
           }
           case CANamed(_, ex, _) -> {
-            collectErasedSelfByrefArgsExpr(cctx, ex, vars, acc)
+            collectErasedSelfByrefArgsExpr(cctx, ex, vars, recvTypes, acc)
           }
         }
         ai = ai + 1
       }
     }
     case EBinop(_, lhs, rhs) -> {
-      collectErasedSelfByrefArgsExpr(cctx, lhs, vars, acc)
-      collectErasedSelfByrefArgsExpr(cctx, rhs, vars, acc)
+      collectErasedSelfByrefArgsExpr(cctx, lhs, vars, recvTypes, acc)
+      collectErasedSelfByrefArgsExpr(cctx, rhs, vars, recvTypes, acc)
     }
     case EPrefix(_, operand) -> {
-      collectErasedSelfByrefArgsExpr(cctx, operand, vars, acc)
+      collectErasedSelfByrefArgsExpr(cctx, operand, vars, recvTypes, acc)
     }
     case EParen(inner) -> {
-      collectErasedSelfByrefArgsExpr(cctx, inner, vars, acc)
+      collectErasedSelfByrefArgsExpr(cctx, inner, vars, recvTypes, acc)
     }
     case EMember(recv, _) -> {
-      collectErasedSelfByrefArgsExpr(cctx, recv, vars, acc)
+      collectErasedSelfByrefArgsExpr(cctx, recv, vars, recvTypes, acc)
     }
     case EIf(cond, thenB, elseOpt, _) -> {
-      collectErasedSelfByrefArgsExpr(cctx, cond, vars, acc)
-      collectErasedSelfByrefArgsOrdBlock(cctx, thenB, vars, acc)
+      collectErasedSelfByrefArgsExpr(cctx, cond, vars, recvTypes, acc)
+      collectErasedSelfByrefArgsOrdBlock(cctx, thenB, vars, recvTypes, acc)
       match elseOpt {
-        case Some(eb) -> collectErasedSelfByrefArgsOrdBlock(cctx, eb, vars, acc)
+        case Some(eb) -> collectErasedSelfByrefArgsOrdBlock(cctx, eb, vars, recvTypes, acc)
         case None -> {
         }
       }
     }
     case EBlock(block) -> {
-      collectErasedSelfByrefArgsBlock(cctx, block, vars, acc)
+      collectErasedSelfByrefArgsBlock(cctx, block, vars, recvTypes, acc)
     }
     case EUnsafe(block) -> {
-      collectErasedSelfByrefArgsBlock(cctx, block, vars, acc)
+      collectErasedSelfByrefArgsBlock(cctx, block, vars, recvTypes, acc)
     }
     case EMatch(scr, arms) -> {
-      collectErasedSelfByrefArgsExpr(cctx, scr, vars, acc)
+      collectErasedSelfByrefArgsExpr(cctx, scr, vars, recvTypes, acc)
       var ai = 0
       while ai < arms.count {
         match arms[ai].guard {
           case Some(guardExpr) -> {
-            collectErasedSelfByrefArgsExpr(cctx, guardExpr, vars, acc)
+            collectErasedSelfByrefArgsExpr(cctx, guardExpr, vars, recvTypes, acc)
           }
           case None -> {
           }
         }
-        collectErasedSelfByrefArgsOrdBlock(cctx, arms[ai].body, vars, acc)
+        collectErasedSelfByrefArgsOrdBlock(cctx, arms[ai].body, vars, recvTypes, acc)
         ai = ai + 1
       }
     }
     case EList(exprs) -> {
       var ei = 0
       while ei < exprs.count {
-        collectErasedSelfByrefArgsExpr(cctx, exprs[ei], vars, acc)
+        collectErasedSelfByrefArgsExpr(cctx, exprs[ei], vars, recvTypes, acc)
         ei = ei + 1
       }
     }
     case ETuple(exprs) -> {
       var ei = 0
       while ei < exprs.count {
-        collectErasedSelfByrefArgsExpr(cctx, exprs[ei], vars, acc)
+        collectErasedSelfByrefArgsExpr(cctx, exprs[ei], vars, recvTypes, acc)
         ei = ei + 1
       }
     }
     case EIndex(recv, indices) -> {
-      collectErasedSelfByrefArgsExpr(cctx, recv, vars, acc)
+      collectErasedSelfByrefArgsExpr(cctx, recv, vars, recvTypes, acc)
       var ii = 0
       while ii < indices.count {
-        collectErasedSelfByrefArgsExpr(cctx, indices[ii], vars, acc)
+        collectErasedSelfByrefArgsExpr(cctx, indices[ii], vars, recvTypes, acc)
         ii = ii + 1
       }
     }
     case EAwait(inner) -> {
-      collectErasedSelfByrefArgsExpr(cctx, inner, vars, acc)
+      collectErasedSelfByrefArgsExpr(cctx, inner, vars, recvTypes, acc)
     }
     case EYield(inner) -> {
-      collectErasedSelfByrefArgsExpr(cctx, inner, vars, acc)
+      collectErasedSelfByrefArgsExpr(cctx, inner, vars, recvTypes, acc)
     }
     case ESpawn(inner) -> {
-      collectErasedSelfByrefArgsExpr(cctx, inner, vars, acc)
+      collectErasedSelfByrefArgsExpr(cctx, inner, vars, recvTypes, acc)
     }
     case ETry(inner) -> {
-      collectErasedSelfByrefArgsExpr(cctx, inner, vars, acc)
+      collectErasedSelfByrefArgsExpr(cctx, inner, vars, recvTypes, acc)
     }
     case EPropagate(inner) -> {
-      collectErasedSelfByrefArgsExpr(cctx, inner, vars, acc)
+      collectErasedSelfByrefArgsExpr(cctx, inner, vars, recvTypes, acc)
     }
     case EAssign(target, _, v) -> {
-      collectErasedSelfByrefArgsExpr(cctx, target, vars, acc)
-      collectErasedSelfByrefArgsExpr(cctx, v, vars, acc)
+      collectErasedSelfByrefArgsExpr(cctx, target, vars, recvTypes, acc)
+      collectErasedSelfByrefArgsExpr(cctx, v, vars, recvTypes, acc)
     }
     case EInterpolated(segs) -> {
       var si = 0
       while si < segs.count {
         match segs[si] {
           case ISExpr(ex) -> {
-            collectErasedSelfByrefArgsExpr(cctx, ex, vars, acc)
+            collectErasedSelfByrefArgsExpr(cctx, ex, vars, recvTypes, acc)
           }
           case _ -> {
           }
@@ -38912,7 +39295,7 @@ func collectErasedSelfByrefArgsExpr(cctx: in CodegenCtx, e: in Expr, vars: in Li
       }
     }
     case ETypeApp(fn, _) -> {
-      collectErasedSelfByrefArgsExpr(cctx, fn, vars, acc)
+      collectErasedSelfByrefArgsExpr(cctx, fn, vars, recvTypes, acc)
     }
     case _ -> {
     }
@@ -38923,102 +39306,111 @@ func collectErasedSelfByrefArgsOrdBlock(
   cctx: in CodegenCtx,
   ob: in ExprOrBlock,
   vars: in List[String],
+  recvTypes: in Map[String, String],
   acc: in List[String],
 ): Unit {
   match ob {
     case EOBExpr(ex) -> {
-      collectErasedSelfByrefArgsExpr(cctx, ex, vars, acc)
+      collectErasedSelfByrefArgsExpr(cctx, ex, vars, recvTypes, acc)
     }
     case EOBBlock(blk) -> {
-      collectErasedSelfByrefArgsBlock(cctx, blk, vars, acc)
+      collectErasedSelfByrefArgsBlock(cctx, blk, vars, recvTypes, acc)
     }
   }
 }
 
 func collectErasedSelfByrefArgsBlock(
-  cctx: in CodegenCtx, b: in Block, vars: in List[String], acc: in List[String]
+  cctx: in CodegenCtx,
+  b: in Block,
+  vars: in List[String],
+  recvTypes: in Map[String, String],
+  acc: in List[String],
 ): Unit {
   var i = 0
   while i < b.statements.count {
-    collectErasedSelfByrefArgsStmt(cctx, b.statements[i], vars, acc)
+    collectErasedSelfByrefArgsStmt(cctx, b.statements[i], vars, recvTypes, acc)
     i = i + 1
   }
 }
 
 func collectErasedSelfByrefArgsStmt(
-  cctx: in CodegenCtx, s: in Statement, vars: in List[String], acc: in List[String]
+  cctx: in CodegenCtx,
+  s: in Statement,
+  vars: in List[String],
+  recvTypes: in Map[String, String],
+  acc: in List[String],
 ): Unit {
   match s.kind {
     case SLocal(binding) -> match binding {
       case LBVal(_, _, init) -> {
-        collectErasedSelfByrefArgsExpr(cctx, init, vars, acc)
+        collectErasedSelfByrefArgsExpr(cctx, init, vars, recvTypes, acc)
       }
       case LBLet(_, _, init) -> {
-        collectErasedSelfByrefArgsExpr(cctx, init, vars, acc)
+        collectErasedSelfByrefArgsExpr(cctx, init, vars, recvTypes, acc)
       }
       case LBVar(_, _, initOpt) -> match initOpt {
         case Some(init) -> {
-          collectErasedSelfByrefArgsExpr(cctx, init, vars, acc)
+          collectErasedSelfByrefArgsExpr(cctx, init, vars, recvTypes, acc)
         }
         case None -> {
         }
       }
     }
     case SAssign(target, _, v) -> {
-      collectErasedSelfByrefArgsExpr(cctx, target, vars, acc)
-      collectErasedSelfByrefArgsExpr(cctx, v, vars, acc)
+      collectErasedSelfByrefArgsExpr(cctx, target, vars, recvTypes, acc)
+      collectErasedSelfByrefArgsExpr(cctx, v, vars, recvTypes, acc)
     }
     case SReturn(valOpt) -> match valOpt {
       case Some(e) -> {
-        collectErasedSelfByrefArgsExpr(cctx, e, vars, acc)
+        collectErasedSelfByrefArgsExpr(cctx, e, vars, recvTypes, acc)
       }
       case None -> {
       }
     }
     case SExpr(e) -> {
-      collectErasedSelfByrefArgsExpr(cctx, e, vars, acc)
+      collectErasedSelfByrefArgsExpr(cctx, e, vars, recvTypes, acc)
     }
     case SThrow(e) -> {
-      collectErasedSelfByrefArgsExpr(cctx, e, vars, acc)
+      collectErasedSelfByrefArgsExpr(cctx, e, vars, recvTypes, acc)
     }
     case SWhile(_, cond, body) -> {
-      collectErasedSelfByrefArgsExpr(cctx, cond, vars, acc)
-      collectErasedSelfByrefArgsBlock(cctx, body, vars, acc)
+      collectErasedSelfByrefArgsExpr(cctx, cond, vars, recvTypes, acc)
+      collectErasedSelfByrefArgsBlock(cctx, body, vars, recvTypes, acc)
     }
     case SFor(_, _, iter, body) -> {
-      collectErasedSelfByrefArgsExpr(cctx, iter, vars, acc)
-      collectErasedSelfByrefArgsBlock(cctx, body, vars, acc)
+      collectErasedSelfByrefArgsExpr(cctx, iter, vars, recvTypes, acc)
+      collectErasedSelfByrefArgsBlock(cctx, body, vars, recvTypes, acc)
     }
     case SLoop(_, body) -> {
-      collectErasedSelfByrefArgsBlock(cctx, body, vars, acc)
+      collectErasedSelfByrefArgsBlock(cctx, body, vars, recvTypes, acc)
     }
     case SScope(_, body) -> {
-      collectErasedSelfByrefArgsBlock(cctx, body, vars, acc)
+      collectErasedSelfByrefArgsBlock(cctx, body, vars, recvTypes, acc)
     }
     case SDefer(body) -> {
-      collectErasedSelfByrefArgsBlock(cctx, body, vars, acc)
+      collectErasedSelfByrefArgsBlock(cctx, body, vars, recvTypes, acc)
     }
     case STry(body, catches, finally_) -> {
-      collectErasedSelfByrefArgsBlock(cctx, body, vars, acc)
+      collectErasedSelfByrefArgsBlock(cctx, body, vars, recvTypes, acc)
       var ci = 0
       while ci < catches.count {
-        collectErasedSelfByrefArgsBlock(cctx, catches[ci].body, vars, acc)
+        collectErasedSelfByrefArgsBlock(cctx, catches[ci].body, vars, recvTypes, acc)
         ci = ci + 1
       }
       match finally_ {
         case Some(fb) -> {
-          collectErasedSelfByrefArgsBlock(cctx, fb, vars, acc)
+          collectErasedSelfByrefArgsBlock(cctx, fb, vars, recvTypes, acc)
         }
         case None -> {
         }
       }
     }
     case SInvariant(e) -> {
-      collectErasedSelfByrefArgsExpr(cctx, e, vars, acc)
+      collectErasedSelfByrefArgsExpr(cctx, e, vars, recvTypes, acc)
     }
     case SRule(lhs, rhs) -> {
-      collectErasedSelfByrefArgsExpr(cctx, lhs, vars, acc)
-      collectErasedSelfByrefArgsExpr(cctx, rhs, vars, acc)
+      collectErasedSelfByrefArgsExpr(cctx, lhs, vars, recvTypes, acc)
+      collectErasedSelfByrefArgsExpr(cctx, rhs, vars, recvTypes, acc)
     }
     case _ -> {
     }
@@ -39037,18 +39429,34 @@ func collectErasedSelfByrefArgsStmt(
 // `FBBlock`/`FBExpr` match (#1479 v2 originally only wired this into
 // `lowerFuncMsilScoped`, missing `lowerImplMethodMsil`/`lowerRecordMethodMsil`
 // and the protected-type entry path entirely).
-func runClosureCapturePrePassMsil(cctx: in CodegenCtx, fctx: in FuncCtx, body: in Option[FunctionBody]): Unit {
+func runClosureCapturePrePassMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  params: in List[Param],
+  body: in Option[FunctionBody],
+): Unit {
   match body {
-    case Some(FBBlock(blk)) -> {
-      collectInLambdaNamesBlock(blk, fctx.hoistedVarNames)
-      collectErasedSelfByrefArgsBlock(cctx, blk, fctx.hoistedVarNames, fctx.objectCellNames)
-    }
-    case Some(FBExpr(e)) -> {
-      collectInLambdaNamesExpr(e, fctx.hoistedVarNames)
-      collectErasedSelfByrefArgsExpr(cctx, e, fctx.hoistedVarNames, fctx.objectCellNames)
-    }
-    case None -> {
-    }
+    case Some(FBBlock(blk)) -> collectInLambdaNamesBlock(blk, fctx.hoistedVarNames)
+    case Some(FBExpr(e)) -> collectInLambdaNamesExpr(e, fctx.hoistedVarNames)
+    case None -> ()
+  }
+  val recvTypes = collectRecvTypesMsil(cctx, fctx, params, body)
+  match body {
+    case Some(FBBlock(blk)) -> collectErasedSelfByrefArgsBlock(
+      cctx,
+      blk,
+      fctx.hoistedVarNames,
+      recvTypes,
+      fctx.objectCellNames
+    )
+    case Some(FBExpr(e)) -> collectErasedSelfByrefArgsExpr(
+      cctx,
+      e,
+      fctx.hoistedVarNames,
+      recvTypes,
+      fctx.objectCellNames
+    )
+    case None -> ()
   }
 }
 

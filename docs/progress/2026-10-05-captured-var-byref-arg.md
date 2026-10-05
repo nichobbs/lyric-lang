@@ -31,18 +31,25 @@ result into the slot holding the cell (`VerifyError`).
   shape from `cellArrayTyMsil`.
 - **Erased `inout Self`** (#8204): an `out`/`inout Self` parameter keeps the
   interface slot's `object&` ABI (#7783), and only an `object[]` cell's
-  element can be an `object&`. A pre-pass over each body
-  (`collectErasedSelfByrefArgsBlock`, run with the closure-capture pre-pass)
-  finds the captured variables passed to such a parameter, matched by
-  method name and argument position from `registerMethodParamModes`, and
-  keeps their cells `object[]` (`FuncCtx.objectCellNames`, carried into
-  each lambda through `lambdaObjectCells`). The typed `Self&` ABI was not
+  element can be an `object&`. The closure-capture pre-pass, one entry point
+  for plain functions, async state machines and generators
+  (`runClosureCapturePrePassMsil`), finds the captured variables passed to
+  such a parameter and keeps their cells `object[]`
+  (`FuncCtx.objectCellNames`, carried into each lambda through
+  `lambdaObjectCells`). The callee is the method of the receiver's static
+  type, `<owner>/<method>#<position>` against the parameters
+  `registerMethodParamModes` records; an interface-typed receiver counts
+  when the interface method erases `Self`, a concrete type with a typed
+  `inout` of the same name does not. The pre-pass names a receiver's type
+  from a parameter, `self`, an annotated local, or a local initialised by a
+  constructor call (`collectRecvTypesMsil`). A receiver it cannot name (a
+  call result, a pattern binding, a lambda parameter) leaves the cell
+  typed: the call stays valid IL through the copy-in/copy-out temp, and a
+  closure write made during it is lost. The typed `Self&` ABI was not
   taken: an interface slot cannot name the implementing type, so it would
   need an `object&` bridge per impl method, which has the same aliasing
-  problem in reverse. The cost of the pre-pass is that a variable passed to
-  both an erased `inout Self` and a typed `inout` parameter goes through a
-  temp at the typed call. A same-named method of another type also counts,
-  so the match errs towards keeping `object[]`.
+  problem in reverse. A variable passed both to an erased `inout Self` and
+  to a typed `inout` parameter goes through a temp at the typed call.
 - **Generic receiver** (#8182, dotnet): the call-site MemberRef of a method
   on a generic record now declares an `out`/`inout` parameter as `!0&`. The
   argument is passed at the receiver's instantiation (`Holder[Int].put(x,
@@ -67,7 +74,7 @@ caller's copy:
   `Object[]`: an `inout T` method of a generic record at a primitive
   instantiation (`Holder[Int].put`).
 
-Tests: `closure_captured_var_byref_self_test.l` (27 cases, dotnet and JVM,
+Tests: `closure_captured_var_byref_self_test.l` (29 cases, dotnet and JVM,
 in `compiler-self-tests-batch.sh`, `jvm-generics-self-tests-batch.sh` and
 the ilverify consumer list). It covers `inout` and `out`; `Int`, `Long`,
 `String`, `Bool`, a record, a union, `Option`, `Result`, a generic record,
@@ -75,8 +82,9 @@ the ilverify consumer list). It covers `inout` and `out`; `Int`, `Long`,
 closure read of the callee's write; two closures over one variable; a
 by-reference argument inside a lambda, a nested lambda, and on a
 lambda-local `var`; generic callees; a generic record's `inout T` method;
-an erased `inout Self` parameter, alone and next to a typed `inout`; and
-an argument after a `?`. The `f(x, g()?)` form is left to #8171.
+an erased `inout Self` parameter, alone, inside an `async func`, and next
+to a typed `inout`; a same-named method with a typed `inout`; and an
+argument after a `?`. The `f(x, g()?)` form is left to #8171.
 
 Not covered:
 

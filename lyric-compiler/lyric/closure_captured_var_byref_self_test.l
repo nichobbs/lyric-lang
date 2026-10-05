@@ -72,6 +72,30 @@ impl Swapper for Cell {
   }
 }
 
+// A same-named method with a typed `inout`: only the receiver's type tells
+// it from `Swapper.takeFrom`.
+record Other {
+  k: Int
+
+  func takeFrom(self: in Other, x: inout Cell, w: in () -> Unit): Unit {
+    w()
+  }
+}
+
+async func asyncHelper(): Int {
+  1
+}
+
+async func asyncSwap(): Int {
+  val s = Cell(n = 0)
+  var c = Cell(n = 1)
+  val w = { -> c = Cell(n = 5) }
+  val k = await asyncHelper()
+  s.takeFrom(c, w)
+  val k2 = await asyncHelper()
+  c.n + k + k2 - 2
+}
+
 func setCell(c: inout Cell, n: in Int): Unit {
   c = Cell(n = n)
 }
@@ -497,4 +521,17 @@ test "captured record passed to both an erased `inout Self` and a typed `inout`"
   s.takeFrom(c, w)
   val afterSelf: Int = f()
   assertEqualInt(afterSelf, 8, "closure write during the erased call")
+}
+
+test "captured record passed to an erased `inout Self` inside an async func" {
+  val r: Int = await asyncSwap()
+  assertEqualInt(r, 5, "closure write during the call, across awaits")
+}
+
+test "a same-named method with a typed `inout` keeps the typed cell's aliasing" {
+  val o = Other(k = 0)
+  var c = Cell(n = 1)
+  val w = { -> c = Cell(n = 5) }
+  o.takeFrom(c, w)
+  assertEqualInt(c.n, 5, "closure write during the typed call")
 }
