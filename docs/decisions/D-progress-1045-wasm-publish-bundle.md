@@ -16,7 +16,7 @@
    `<stem>-js/` when `--js-bindings` produced it (`main`/`types` then point into it); a
    component bundle without bindings is valid for consumers who run `jco` themselves.
 5. The NPM name is the package name lowercased with characters outside `a-z 0-9 . - _` turned
-   into `-`; a name NPM rejects is an error. `[npm]` rows become `dependencies`, so the
+   into `-`; a name NPM rejects is an error. Scoped names (`@scope/name`) are not produced: the `@` and `/` become `-`. `[npm]` rows become `dependencies`, so the
    consumer installs what the `npm:` host imports reach. `description`, `license` and
    `repository` come from `[package]`. `--package-version` and `-o` apply as for NuGet.
 6. The tarball is produced with the system `tar`; there is no pure-Lyric tar writer.

@@ -96,12 +96,16 @@ pub func buildPublishNuspec(
 /// outside `a-z 0-9 . - _` replaced by `-`.  NPM rejects an empty name, one
 /// starting with `.` or `_`, and one longer than 214 characters.
 pub func npmPackageName(name: in String): Result[String, String] {
-  val lower = Str.toLower(name)
+  val upperTable = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+  val lowerTable = "abcdefghijklmnopqrstuvwxyz"
   var cleaned = ""
   var i = 0
-  while i < lower.length {
-    val c = Str.substring(lower, i, 1)
-    if Str.contains("abcdefghijklmnopqrstuvwxyz0123456789._-", c) {
+  while i < name.length {
+    val c = Str.substring(name, i, 1)
+    val upperAt = Str.indexOfRaw(upperTable, c)
+    if upperAt >= 0 {
+      cleaned = cleaned + Str.substring(lowerTable, upperAt, 1)
+    } else if Str.contains("abcdefghijklmnopqrstuvwxyz0123456789._-", c) {
       cleaned = cleaned + c
     } else {
       cleaned = cleaned + "-"
