@@ -2879,6 +2879,38 @@ test "a type named like a primitive in another file or package is not the primit
   )
 }
 
+func scopeOf1(sibling: in String, ownPackage: in String): PackageScope {
+  val sources: List[String] = newList()
+  sources.add(sibling)
+  scopeOfSources(sources, ownPackage)
+}
+
+test "a sibling file is read the way the package build reads it (#8214)" {
+  val src = "@proof_required\npackage U\nfunc f(c: in Char): Bool\n  ensures: result\n{\n  c <= '\\u{FFFF}'\n}\n"
+  // The build merges a file with no `package` line into the package.
+  val headerless = scopeOf1("pub type Char = Int range 0 ..= 100000\n", "U")
+  assertTrue(headerless.known and headerless.typeNames.contains("Char"), "a header-less sibling's types are read")
+  assertTrue(summaryHasDiagCode(proveSourceInScope(src, false, headerless), "V0033"), "a header-less sibling `Char`")
+  val opt = scopeOf1("pub union Result {\n  case A\n  case B\n}\n", "U")
+  val res = "@proof_required\npackage U\nfunc g(n: in Int): Result[Int, String]\n  ensures: result.isOk\n{\n  Ok(n)\n}\n"
+  val viaHeaderless = proveSourceInScope(res, false, opt)
+  assertTrue(summaryHasErrorDiag(viaHeaderless) or summaryHasFailure(viaHeaderless), "a header-less sibling `Result`")
+  // A file of another package that does not parse is in no build of this
+  // one that succeeds.
+  val other = scopeOf1("package Elsewhere\nrecord R {\n  val x: Int\n}\n", "U")
+  assertTrue(other.known, "another package's unparseable file is skipped")
+  val alone = proveSourceInScope(src, false, other)
+  assertTrue(not summaryHasErrorDiag(alone) and not summaryHasFailure(alone), "the primitive `Char` beside it: proved")
+  assertTrue(not scopeOf1("package U\nrecord R {\n  val x: Int\n}\n", "U").known, "this package's unparseable file")
+  assertTrue(not scopeOf1("record R {\n  val x: Int\n}\n", "U").known, "an unparseable header-less file")
+  assertTrue(
+    not scopeOf1("package Elsewhere\nrecord R {\n  val x: Int\n}\n", "").known,
+    "an unparseable file, own package unknown"
+  )
+  assertEqual(headerPackageName("//! doc\n@proof_required\npackage A.B\nfunc f(): Unit {}\n"), "A.B", "header package")
+  assertEqual(headerPackageName("pub type C = Int\npackage A\n"), "", "no header package")
+}
+
 test "an uninitialized variable is not assumed in its range (#8214)" {
   assertRefuted(
     "func f(): Bool\n  ensures: result\n{\n  var y: Int range 5 ..= 10\n  y >= 5\n}\n",

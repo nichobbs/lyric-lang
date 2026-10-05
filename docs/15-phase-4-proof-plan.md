@@ -335,10 +335,16 @@ that declares or imports such a type by name already did (#8109); so does
 a file whose package's other files are not all known (a file set that
 cannot be listed, a file that cannot be read, or a custom generator, whose
 generated code may declare any type), since any of them may declare one
-(#8214). A file that does not parse declares nothing a proof depends on:
-in the package's build it fails the build, and outside it (the
-single-file set is every `.l` file under the directory) it is not in the
-package.
+(#8214). The other files are read the way the package build reads them:
+the build strips each file's `package` and `import` lines and parses the
+concatenated bodies, so a file with no `package` line is part of the
+package. A file that parses contributes the types it declares; one with
+no `package` line that does not parse alone is parsed again under one, as
+the build reads it, and makes the scope unknown if it still does not
+parse; one whose `package` line names another package and that does not
+parse is skipped, since its body fails any build it is part of (the
+single-file set is every `.l` file under the directory, whatever its
+package); any other file that does not parse makes the scope unknown.
 
 ### 5.3 Loops
 

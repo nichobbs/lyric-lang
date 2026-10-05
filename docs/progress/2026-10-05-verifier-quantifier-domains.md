@@ -52,13 +52,19 @@
   another file of the package (`enum Char` in a sibling) was taken for
   the primitive. The sibling type names `lyric prove` already collects
   (#8108) now count, and a file whose siblings are not all known fails
-  closed. A sibling that does not parse no longer makes the siblings
-  unknown, because it declares nothing a proof depends on. If it is in
-  the package's build, the build fails. If it is not, it is outside the
-  package: the single-file set is every `.l` file under the directory.
-  Without this, `examples/agent/*.l` (which do not parse) made every CI
-  prove example fail closed. Only a single-segment name is a primitive,
-  so `Other.Char` is package `Other`'s type.
+  closed. Siblings are read the way the package build reads them. The
+  build strips `package` and `import` lines and parses the concatenated
+  bodies, so a file with no `package` line is part of the package. Such
+  a file is parsed again under a `package` line and contributes its
+  types; if it still does not parse, the siblings are unknown. A file
+  that does not parse and whose `package` line names another package is
+  skipped, because its body fails any build it is in. This keeps
+  `examples/agent/*.l` (packages `Examples`, `Examples.Contracts`,
+  `Examples.Di`, `Examples.Tests`, none of which parse) from making every
+  CI prove example fail closed. Any other unparseable file makes the
+  siblings unknown. The `Result`/`Option` guard (#8108) reads the same
+  scope. Only a single-segment name is a primitive, so `Other.Char` is
+  package `Other`'s type.
 - **Uninitialized `var`s.** `var y: Int range 5 ..= 10` was assumed in
   its range, but read before any assignment it holds 0, so `y >= 5` was
   proved and fails at runtime. It now carries only its width.
@@ -100,7 +106,8 @@ Tests in `verifier_self_test.l`:
 - **Type parameters named like file-level types.** The pigeonhole proof
   fails.
 - **Sibling and qualified primitive names.** Unknown siblings fail
-  closed.
+  closed, and a header-less sibling declaring `Char` or `Result` is
+  read.
 - **Uninitialized `var`s.** Refuted.
 
 `verifier_records_self_test.l` now proves with an empty known scope (an
