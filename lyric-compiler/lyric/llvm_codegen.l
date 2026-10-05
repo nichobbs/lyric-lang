@@ -3383,32 +3383,28 @@ func lowerMember(ctx: in Ctx, insns: in List[NInsn], receiver: in Expr, memberNa
   // `Color.Red` / `MaybeStr.Nothing` parse as member access on a type
   // path, not a multi-segment EPath: resolve enum cases and nullary
   // union cases before treating the receiver as a value.
-  if isPackagePathExpr(ctx, receiver) {
-    match receiver.kind {
-      case EPath(rpath) -> {
-        val joined = modulePathJoin(rpath.segments) + "." + memberName
-        match mapGet(ctx.enumDefs, joined) {
-          case Some(idx) -> return NVal(ty = NI32, value = NLitInt(v = idx.toLong(), ty = NI32))
-          case None -> {
-          }
-        }
-        match mapGet(ctx.caseRefs, joined) {
-          case Some(cref) -> {
-            val ui = match mapGet(ctx.unionDefs, cref.unionKey) {
-              case Some(u) -> u
-              case None -> panic("Lyric.LlvmCodegen: internal — case '" + joined + "' references unregistered union")
-            }
-            if ui.cases[cref.caseIdx].fieldNames.count > 0 {
-              panic("Lyric.LlvmCodegen: union case '" + joined + "' requires arguments")
-            }
-            val noArgs: List[CallArg] = newList()
-            return lowerUnionConstruct(ctx, insns, ui, cref.caseIdx, noArgs)
-          }
-          case None -> {
-          }
-        }
+  val memberRecvSegs = packageQualifiedMemberSegs(ctx, receiver)
+  if isPackagePathExpr(ctx, receiver) or memberRecvSegs.count > 0 {
+    val rsegs = match receiver.kind { case EPath(rpath) -> rpath.segments; case _ -> memberRecvSegs }
+    val joined = modulePathJoin(rsegs) + "." + memberName
+    match mapGet(ctx.enumDefs, joined) {
+      case Some(idx) -> return NVal(ty = NI32, value = NLitInt(v = idx.toLong(), ty = NI32))
+      case None -> {
       }
-      case _ -> {
+    }
+    match mapGet(ctx.caseRefs, joined) {
+      case Some(cref) -> {
+        val ui = match mapGet(ctx.unionDefs, cref.unionKey) {
+          case Some(u) -> u
+          case None -> panic("Lyric.LlvmCodegen: internal — case '" + joined + "' references unregistered union")
+        }
+        if ui.cases[cref.caseIdx].fieldNames.count > 0 {
+          panic("Lyric.LlvmCodegen: union case '" + joined + "' requires arguments")
+        }
+        val noArgs: List[CallArg] = newList()
+        return lowerUnionConstruct(ctx, insns, ui, cref.caseIdx, noArgs)
+      }
+      case None -> {
       }
     }
   }
@@ -3965,6 +3961,32 @@ func lowerPositionalArg(ctx: in Ctx, insns: in List[NInsn], args: in List[CallAr
   match args[idx] {
     case CAPositional(ex) -> lowerExpr(ctx, insns, ex)
     case CANamed(_, value, _) -> lowerExpr(ctx, insns, value)
+  }
+}
+
+/// The segments of a member receiver that is a package-qualified type path written
+/// as nested member accesses (`Proj.Model.Currency` in `Proj.Model.Currency.Usd`),
+/// or empty when the receiver is a value: its head is a local, a module-level
+/// `val`/`const`, or the chain contains anything but names.  A flat `EPath` is
+/// left to `isPackagePathExpr`.
+func packageQualifiedMemberSegs(ctx: in Ctx, e: in Expr): List[String] {
+  val none: List[String] = newList()
+  match e.kind {
+    case EMember(_, _) -> match flattenMemberPathSegs(e) {
+      case None -> none
+      case Some(segs) -> {
+        val head = segs[0]
+        if ctx.varTypes.containsKey(head) {
+          return none
+        }
+        val selfKey = if ctx.curPkg.count > 0 { ctx.curPkg[0] + "." + head } else { head }
+        if ctx.moduleVals.containsKey(selfKey) or ctx.moduleVals.containsKey(head) {
+          return none
+        }
+        segs
+      }
+    }
+    case _ -> none
   }
 }
 

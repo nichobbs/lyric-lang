@@ -212,25 +212,110 @@ func isPrim(t: in WitTy): Bool {
 }
 
 // ─── Resolving Lyric types ───────────────────────────────────────────────────
-record TypeTable {
+/// Another package of the project, as far as the type resolver needs it.
+record PeerPkg {
+  pkg: String
   records: List[RecordDecl]
   unions: List[UnionDecl]
   enums: List[EnumDecl]
+  /// The names of its `pub` (or `internal`) types: the ones another package may name.
+  pubs: List[String]
+  imports: List[ImportDecl]
 }
 
-func tableOf(file: in SourceFile): TypeTable {
+/// The types a package declares, plus what it can reach: `qual` is "" for the
+/// package being shimmed and "<package>." for a peer resolved on its behalf, so
+/// a foreign type's name carries its declaring package.
+record TypeTable {
+  pkg: String
+  qual: String
+  records: List[RecordDecl]
+  unions: List[UnionDecl]
+  enums: List[EnumDecl]
+  pubs: List[String]
+  imports: List[ImportDecl]
+  peers: List[PeerPkg]
+}
+
+func isVisibleOutside(v: in Option[Visibility]): Bool {
+  match v {
+    case Some(_) -> true
+    case None -> false
+  }
+}
+
+func peerOf(file: in SourceFile): PeerPkg {
   val records: List[RecordDecl] = newList()
   val unions: List[UnionDecl] = newList()
   val enums: List[EnumDecl] = newList()
+  val pubs: List[String] = newList()
   for it in file.items {
     match it.kind {
-      case IRecord(d) -> records.add(d)
-      case IUnion(d) -> unions.add(d)
-      case IEnum(d) -> enums.add(d)
+      case IRecord(d) -> {
+        records.add(d)
+        if isVisibleOutside(it.visibility) {
+          pubs.add(d.name)
+        }
+      }
+      case IUnion(d) -> {
+        unions.add(d)
+        if isVisibleOutside(it.visibility) {
+          pubs.add(d.name)
+        }
+      }
+      case IEnum(d) -> {
+        enums.add(d)
+        if isVisibleOutside(it.visibility) {
+          pubs.add(d.name)
+        }
+      }
       case _ -> ()
     }
   }
-  TypeTable(records = records, unions = unions, enums = enums)
+  PeerPkg(pkg = pkgNameOf(file), records = records, unions = unions, enums = enums, pubs = pubs, imports = file.imports)
+}
+
+/// The table of `file`, which can also name the `pub` types of `peers` (the
+/// other packages of the project) through its imports.
+func tableOf(file: in SourceFile, peers: in List[SourceFile]): TypeTable {
+  val own = peerOf(file)
+  val others: List[PeerPkg] = newList()
+  for f in peers {
+    if pkgNameOf(f) != own.pkg {
+      others.add(peerOf(f))
+    }
+  }
+  TypeTable(
+    pkg = own.pkg,
+    qual = "",
+    records = own.records,
+    unions = own.unions,
+    enums = own.enums,
+    pubs = own.pubs,
+    imports = own.imports,
+    peers = others
+  )
+}
+
+/// The table a peer's own types resolve in: its declarations, its imports, and the
+/// other peers it may reach.
+func tableOfPeer(peer: in PeerPkg, tbl: in TypeTable): TypeTable {
+  val others: List[PeerPkg] = newList()
+  for q in tbl.peers {
+    if q.pkg != peer.pkg {
+      others.add(q)
+    }
+  }
+  TypeTable(
+    pkg = peer.pkg,
+    qual = peer.pkg + ".",
+    records = peer.records,
+    unions = peer.unions,
+    enums = peer.enums,
+    pubs = peer.pubs,
+    imports = peer.imports,
+    peers = others
+  )
 }
 
 func hasGenerics(g: in Option[GenericParams]): Bool {
@@ -288,10 +373,10 @@ func resolveTy(te: in TypeExpr, tbl: in TypeTable, depth: in Int): Result[WitTy,
       okTy(WTuple(elems = elems))
     }
     case TRef(path) -> {
-      if path.segments.count != 1 {
-        return failTy("a qualified type name is not resolvable here")
+      if path.segments.count == 1 {
+        return resolveName(path.segments[0], tbl, depth)
       }
-      resolveName(path.segments[0], tbl, depth)
+      resolveQualified(path.segments, tbl, depth)
     }
     case TGenericApp(head, args) -> {
       if head.segments.count != 1 {
@@ -353,6 +438,33 @@ func resolveName(name: in String, tbl: in TypeTable, depth: in Int): Result[WitT
     case "Unit" -> return okTy(WUnit)
     case _ -> ()
   }
+  if declaresType(name, tbl) {
+    return resolveDeclared(name, tbl, depth)
+  }
+  resolveImportedBare(name, tbl, depth)
+}
+
+func declaresType(name: in String, tbl: in TypeTable): Bool {
+  for d in tbl.records {
+    if d.name == name {
+      return true
+    }
+  }
+  for d in tbl.unions {
+    if d.name == name {
+      return true
+    }
+  }
+  for d in tbl.enums {
+    if d.name == name {
+      return true
+    }
+  }
+  false
+}
+
+/// A type `tbl` declares itself (its name carries `tbl.qual`).
+func resolveDeclared(name: in String, tbl: in TypeTable, depth: in Int): Result[WitTy, String] {
   for d in tbl.records {
     if d.name == name {
       return resolveRecord(d, tbl, depth)
@@ -372,10 +484,142 @@ func resolveName(name: in String, tbl: in TypeTable, depth: in Int): Result[WitT
       if names.count > 256 {
         return failTy("enum " + name + " has more than 256 cases")
       }
-      return okTy(WEnum(name = name, cases = names))
+      return okTy(WEnum(name = tbl.qual + name, cases = names))
     }
   }
   failTy("the type " + name + " is not a record, union or enum of this package")
+}
+
+func importedPkgName(im: in ImportDecl): String {
+  Str.joinList(".", im.path.segments)
+}
+
+func peerNamed(pkg: in String, tbl: in TypeTable): Option[PeerPkg] {
+  for q in tbl.peers {
+    if q.pkg == pkg {
+      return Some(value = q)
+    }
+  }
+  None
+}
+
+/// A type of another project package, reached through the `pub` check and the
+/// peer's own scope.
+func resolveInPeer(peer: in PeerPkg, name: in String, tbl: in TypeTable, depth: in Int): Result[WitTy, String] {
+  var isPub = false
+  for n in peer.pubs {
+    if n == name {
+      isPub = true
+    }
+  }
+  if not isPub {
+    return failTy("the type " + name + " of package " + peer.pkg + " is not pub")
+  }
+  resolveDeclared(name, tableOfPeer(peer, tbl), depth)
+}
+
+/// A bare type name brought in by an `import` of another project package: the whole
+/// package, or a selected (possibly renamed) name.
+func resolveImportedBare(name: in String, tbl: in TypeTable, depth: in Int): Result[WitTy, String] {
+  var found: Option[PeerPkg] = None
+  var foundName = ""
+  var count = 0
+  for im in tbl.imports {
+    if not im.isExtern {
+      match peerNamed(importedPkgName(im), tbl) {
+        case None -> ()
+        case Some(peer) -> match im.selector {
+          case None -> {
+            if isNone(im.asAlias) {
+              for n in peer.pubs {
+                if n == name {
+                  found = Some(value = peer)
+                  foundName = name
+                  count = count + 1
+                }
+              }
+            }
+          }
+          case Some(sel) -> {
+            val items: List[ImportItem] = newList()
+            match sel {
+              case ISSingle(item) -> items.add(item)
+              case ISGroup(group) -> {
+                for item in group {
+                  items.add(item)
+                }
+              }
+            }
+            for item in items {
+              val bare = match item.asAlias { case Some(a) -> a; case None -> item.name }
+              if bare == name {
+                found = Some(value = peer)
+                foundName = item.name
+                count = count + 1
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  if count > 1 {
+    return failTy("the type name " + name + " is imported from more than one package")
+  }
+  match found {
+    case Some(peer) -> resolveInPeer(peer, foundName, tbl, depth)
+    case None -> failTy(
+      "the type " + name +
+        " is not a record, union or enum of this package or of a project package it imports"
+    )
+  }
+}
+
+/// `Pkg.Type`, `Alias.Type` or `Last.Type`: the qualifier names this package or an
+/// imported project package.
+func resolveQualified(segments: in List[String], tbl: in TypeTable, depth: in Int): Result[WitTy, String] {
+  val last = segments[segments.count - 1]
+  val head: List[String] = newList()
+  var si = 0
+  while si < segments.count - 1 {
+    head.add(segments[si])
+    si = si + 1
+  }
+  val qualifier = Str.joinList(".", head)
+  if qualifier == tbl.pkg and tbl.qual.length == 0 {
+    if declaresType(last, tbl) {
+      return resolveDeclared(last, tbl, depth)
+    }
+    return failTy("the type " + last + " is not declared by package " + tbl.pkg)
+  }
+  var hit: Option[PeerPkg] = None
+  var count = 0
+  for im in tbl.imports {
+    if not im.isExtern {
+      match peerNamed(importedPkgName(im), tbl) {
+        case None -> ()
+        case Some(peer) -> {
+          val viaAlias = match im.asAlias { case Some(a) -> a == qualifier; case None -> false }
+          val viaPath = isNone(im.asAlias) and
+            (peer.pkg == qualifier or im.path.segments[im.path.segments.count - 1] == qualifier)
+          if viaAlias or viaPath {
+            hit = Some(value = peer)
+            count = count + 1
+          }
+        }
+      }
+    }
+  }
+  if count > 1 {
+    return failTy("the qualifier " + qualifier + " names more than one imported package")
+  }
+  match hit {
+    case Some(peer) -> resolveInPeer(peer, last, tbl, depth)
+    case None -> failTy(
+      "a qualified type name is resolvable only through an import of a project package: " + qualifier + "." +
+        last
+    )
+  }
 }
 
 func resolveRecord(d: in RecordDecl, tbl: in TypeTable, depth: in Int): Result[WitTy, String] {
@@ -395,7 +639,7 @@ func resolveRecord(d: in RecordDecl, tbl: in TypeTable, depth: in Int): Result[W
   if fields.count == 0 {
     return failTy("the record " + d.name + " has no fields")
   }
-  okTy(WRecord(name = d.name, fields = fields))
+  okTy(WRecord(name = tbl.qual + d.name, fields = fields))
 }
 
 func resolveUnion(d: in UnionDecl, tbl: in TypeTable, depth: in Int): Result[WitTy, String] {
@@ -419,7 +663,7 @@ func resolveUnion(d: in UnionDecl, tbl: in TypeTable, depth: in Int): Result[Wit
   if cases.count == 0 or cases.count > 256 {
     return failTy("the union " + d.name + " must have between 1 and 256 cases")
   }
-  okTy(WVariant(name = d.name, cases = cases))
+  okTy(WVariant(name = tbl.qual + d.name, cases = cases))
 }
 
 // ─── Canonical ABI layout ────────────────────────────────────────────────────
@@ -755,6 +999,17 @@ func lowerFlatStmt(g: in Gen, t: in WitTy, v: in String): String {
   }
 }
 
+/// What precedes a union case's name: nothing for a union of this package, the
+/// union's package-qualified name for one of another package (a bare case name is
+/// not visible through a package import).
+func caseQualifier(unionName: in String): String {
+  if Str.contains(unionName, ".") {
+    unionName + "."
+  } else {
+    ""
+  }
+}
+
 /// The pattern that matches case `i` of the sum type `t`, binding its payload to `x`.
 func armPattern(t: in WitTy, i: in Int): String {
   match t {
@@ -768,12 +1023,13 @@ func armPattern(t: in WitTy, i: in Int): String {
         head + "(x)"
       }
     }
-    case WVariant(_, cases) -> {
+    case WVariant(vname, cases) -> {
       val c = cases[i]
+      val head = caseQualifier(vname) + c.name
       if isUnit(c.payload) {
-        c.name
+        head
       } else {
-        c.name + "(x)"
+        head + "(x)"
       }
     }
     case _ -> "_"
@@ -793,14 +1049,15 @@ func armBuild(t: in WitTy, i: in Int, x: in String): String {
         "Err(error = " + arg + ")"
       }
     }
-    case WVariant(_, cases) -> {
+    case WVariant(vname, cases) -> {
       val c = cases[i]
+      val head = caseQualifier(vname) + c.name
       if isUnit(c.payload) {
-        c.name
+        head
       } else if c.fieldName.length > 0 {
-        c.name + "(" + c.fieldName + " = " + x + ")"
+        head + "(" + c.fieldName + " = " + x + ")"
       } else {
-        c.name + "(" + x + ")"
+        head + "(" + x + ")"
       }
     }
     case _ -> ""
@@ -1564,9 +1821,9 @@ func emitImageImport(g: in Gen, h: in HostImport, vis: in Option[Visibility], na
 
 /// Add the generated shims to `file` and describe its exports.  An export the
 /// component ABI cannot carry gets a `W0040` note and is left out.
-pub func componentRewriteFile(file: in SourceFile): ComponentRewrite {
+pub func componentRewriteFile(file: in SourceFile, peers: in List[SourceFile]): ComponentRewrite {
   val pkg = pkgNameOf(file)
-  val tbl = tableOf(file)
+  val tbl = tableOf(file, peers)
   val g = newGen()
   val exports: List[CExport] = newList()
   val defs: List[WitTy] = newList()
@@ -1610,7 +1867,7 @@ pub func componentRewriteFile(file: in SourceFile): ComponentRewrite {
     match it.kind {
       case IFunc(d) -> {
         if isPubDecl(d) and d.name != "main" {
-          var why = exportBlocker(d, tbl)
+          var why = exportBlocker(d, tbl, defs)
           if why.length == 0 {
             for ex in exports {
               if witName(ex.jsName) == witName(d.name) {
@@ -1749,7 +2006,7 @@ pub func componentRewriteFile(file: in SourceFile): ComponentRewrite {
 }
 
 /// Why `d` cannot be a component export, or "".
-func exportBlocker(d: in FunctionDecl, tbl: in TypeTable): String {
+func exportBlocker(d: in FunctionDecl, tbl: in TypeTable, have: in List[WitTy]): String {
   if hasGenerics(d.generics) {
     return "it is generic"
   }
@@ -1779,21 +2036,43 @@ func exportBlocker(d: in FunctionDecl, tbl: in TypeTable): String {
       case Err(e) -> return "parameter '" + p.name + "': " + e
     }
   }
+  val mine: List[WitTy] = newList()
+  for p in d.params {
+    match resolveValueTy(p.ty, tbl, 0) {
+      case Ok(t) -> collectDefs(t, mine)
+      case Err(_) -> ()
+    }
+  }
   match d.ret {
     case None -> ()
-    case Some(te) -> match resolveTy(te, tbl, 0) { case Ok(_) -> (); case Err(e) -> return "its result: " + e }
+    case Some(te) -> match resolveTy(te, tbl, 0) {
+      case Ok(t) -> collectDefs(t, mine)
+      case Err(e) -> return "its result: " + e
+    }
+  }
+  for t in mine {
+    if witName(tyName(t)) == wn {
+      return "its WIT name collides with the type " + tyName(t) + " it uses (functions and types share one WIT namespace)"
+    }
+    for q in have {
+      if tyKey(q) != tyKey(t) and witName(tyName(q)) == witName(tyName(t)) {
+        return "the types " + qualifiedTyName(q) + " and " + qualifiedTyName(t) + " both become the WIT type " +
+          witName(tyName(t)) +
+          " (the interface can declare one)"
+      }
+    }
   }
   ""
 }
 
 // ─── WIT ─────────────────────────────────────────────────────────────────────
-/// The host imports of `pkgs` with a repeated (module, name) kept once: two
-/// externs binding the same host function share one WIT function and one C
-/// wrapper.
-/// Identity of a host function: the literal (module, name) pair, length-prefixed
-/// so no two distinct pairs share a key.
 /// The declared name of a named WIT type, "" for any other.
 func tyName(t: in WitTy): String {
+  simpleTyName(qualifiedTyName(t))
+}
+
+/// The declared name with its package path when it comes from another package.
+func qualifiedTyName(t: in WitTy): String {
   match t {
     case WRecord(name, _) -> name
     case WVariant(name, _) -> name
@@ -1802,10 +2081,23 @@ func tyName(t: in WitTy): String {
   }
 }
 
+/// A type's name without the package path of the project package declaring it.
+func simpleTyName(name: in String): String {
+  match Str.lastIndexOf(name, ".") {
+    case Some(i) -> Str.substring(name, i + 1)
+    case None -> name
+  }
+}
+
+/// Identity of a host function: the literal (module, name) pair, length-prefixed
+/// so no two distinct pairs share a key.
 func importKey(h: in HostImport): String {
   h.module.length.toString() + ":" + h.module + h.name
 }
 
+/// The host imports of `pkgs` with a repeated (module, name) kept once: two
+/// externs binding the same host function share one WIT function and one C
+/// wrapper.
 func uniqueImports(pkgs: in List[ComponentPkg]): List[HostImport] {
   val r: List[HostImport] = newList()
   for p in pkgs {
@@ -1970,9 +2262,9 @@ func witRef(t: in WitTy): String {
         "result<" + witRef(ok) + ", " + witRef(err) + ">"
       }
     }
-    case WRecord(name, _) -> witName(name)
-    case WVariant(name, _) -> witName(name)
-    case WEnum(name, _) -> witName(name)
+    case WRecord(name, _) -> witName(simpleTyName(name))
+    case WVariant(name, _) -> witName(simpleTyName(name))
+    case WEnum(name, _) -> witName(simpleTyName(name))
   }
 }
 
@@ -1983,7 +2275,7 @@ func witDef(t: in WitTy): String {
       for f in fields {
         fs.add("    " + witName(f.name) + ": " + witRef(f.ty))
       }
-      "  record " + witName(name) + " {\n" + Str.joinList(",\n", fs) + "\n  }"
+      "  record " + witName(simpleTyName(name)) + " {\n" + Str.joinList(",\n", fs) + "\n  }"
     }
     case WVariant(name, cases) -> {
       val cs: List[String] = newList()
@@ -1994,14 +2286,14 @@ func witDef(t: in WitTy): String {
           cs.add("    " + witName(c.name) + "(" + witRef(c.payload) + ")")
         }
       }
-      "  variant " + witName(name) + " {\n" + Str.joinList(",\n", cs) + "\n  }"
+      "  variant " + witName(simpleTyName(name)) + " {\n" + Str.joinList(",\n", cs) + "\n  }"
     }
     case WEnum(name, cases) -> {
       val cs: List[String] = newList()
       for c in cases {
         cs.add("    " + witName(c))
       }
-      "  enum " + witName(name) + " {\n" + Str.joinList(",\n", cs) + "\n  }"
+      "  enum " + witName(simpleTyName(name)) + " {\n" + Str.joinList(",\n", cs) + "\n  }"
     }
     case _ -> ""
   }
@@ -2430,6 +2722,9 @@ func renderImageImportWrapper(pkgs: in List[ComponentPkg], h: in HostImport, i: 
         ";"
     )
   } else if mode == "area" and not retInArea {
+    // The one flat slot lands at the start of the area and the Lyric side reads it
+    // back at the value's own memory width (a byte for an enum); the two agree on
+    // little-endian wasm32, and the area is at least 8 bytes.
     val store = match retKinds[0] {
       case "i32" -> "lyric_cabi_store_i32"
       case "i64" -> "lyric_cabi_store_i64"
