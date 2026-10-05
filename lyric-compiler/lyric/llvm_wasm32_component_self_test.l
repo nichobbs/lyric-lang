@@ -645,15 +645,19 @@ test "wasm32 component: host imports with unsupported shapes are rejected" {
     componentBuildOk(
       r#"package Probe
 
+record Box[T] {
+  value: T
+}
+
 @wasmImport("ui")
-extern func flag(b: List[Int]): Unit = "flag"
+extern func flag(b: Box[Int]): Unit = "flag"
 
 pub func go(): Unit {
-  flag(newList())
+  flag(Box(value = 1))
 }
 "#
     ),
-    "a List parameter is not carried across a host import"
+    "a generic record has no WIT equivalent, so it is not carried across a host import"
   )
   assertFalse(
     componentBuildOk(
@@ -668,20 +672,6 @@ pub func go(): Unit {
 "#
     ),
     "an empty module name is malformed"
-  )
-  assertFalse(
-    componentBuildOk(
-      r#"package Probe
-
-@wasmImport("ui")
-extern func wide(a: Int, b: Int, c: Int, d: Int, e: Int, f: Int, g: Int, h: Int, i: Int, j: Int, k: Int, l: Int, m: Int, n: Int, o: Int, p: Int, q: Int): Unit = "wide"
-
-pub func go(): Unit {
-  wide(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17)
-}
-"#
-    ),
-    "more than 16 flat parameters is rejected"
   )
 }
 
@@ -1273,6 +1263,216 @@ pub func divmod(a: Int, b: Int): Result[(Int, Int), String] {
   }
 }
 "#
+
+val imageImportProgram: String = r#"package Probe
+
+record Point {
+  x: Int
+  y: Int
+}
+
+record Person {
+  name: String
+  age: Int
+  tags: List[String]
+  home: Option[Point]
+}
+
+enum Color {
+  case Red
+  case Green
+  case Blue
+}
+
+union Shape {
+  case Square(side: Double)
+  case Big(count: Long)
+  case Label(text: String)
+  case Small(amount: Float)
+  case Empty
+}
+
+@wasmImport("geo")
+extern func hostSwap(p: Point): Point = "swap"
+
+@wasmImport("geo")
+extern func hostOlder(p: Person): Person = "older"
+
+@wasmImport("geo")
+extern func hostFirst(xs: List[String]): Option[String] = "first"
+
+@wasmImport("geo")
+extern func hostSafeDiv(a: Int, b: Int): Result[Int, String] = "safe-div"
+
+@wasmImport("geo")
+extern func hostNext(c: Color): Color = "next-color"
+
+@wasmImport("geo")
+extern func hostGrow(s: Shape): Shape = "grow"
+
+@wasmImport("geo")
+extern func hostNote(p: Point): Unit = "note"
+
+@wasmImport("geo")
+extern func hostTag(s: String, p: Point): String = "tag"
+
+@wasmImport("geo")
+extern func hostPair(n: Int): (Int, String) = "pair"
+
+@wasmImport("geo")
+extern func hostMany(a: Int, b: Int, c: Int, d: Int, e: Int, f: Int, g: Int, h: Int, i: Int, j: Int, k: Int, l: Int, m: Int, n: Int, o: Int, p: Int, q: Int, r: Int): Int = "many"
+
+@wasmImport("geo")
+extern func hostLast(): String = "last-note"
+
+pub func swapIt(p: Point): Point {
+  hostSwap(p)
+}
+
+pub func olderIt(p: Person): Person {
+  hostOlder(p)
+}
+
+pub func firstIt(xs: List[String]): Option[String] {
+  hostFirst(xs)
+}
+
+pub func divIt(a: Int, b: Int): Result[Int, String] {
+  hostSafeDiv(a, b)
+}
+
+pub func nextIt(c: Color): Color {
+  hostNext(c)
+}
+
+pub func growIt(s: Shape): Shape {
+  hostGrow(s)
+}
+
+pub func noteIt(p: Point): String {
+  hostNote(p)
+  hostLast()
+}
+
+pub func tagIt(s: String, p: Point): String {
+  hostTag(s, p)
+}
+
+pub func pairIt(n: Int): (Int, String) {
+  hostPair(n)
+}
+
+pub func manyIt(): Int {
+  hostMany(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18)
+}
+"#
+
+test "wasm32 component: records, options, results, lists, enums, variants and tuples cross a host import" {
+  val dir = buildComponentOf(imageImportProgram)
+  val wasm = Path.join(dir, "prog.wasm")
+  val wit = match File.readText(Path.join(dir, "prog.wit")) { case Ok(t) -> t; case Err(_) -> "" }
+  assertTrue(
+    Str.contains(wit, "interface geo {") and Str.contains(wit, "record point {"),
+    "the import interface declares the types its signatures use: " + wit
+  )
+  assertTrue(Str.contains(wit, "swap: func(p: point) -> point"), "a record parameter and result in the import: " + wit)
+  val vargs: List[String] = newList()
+  vargs.add("validate")
+  vargs.add(wasm)
+  val v = run(envOrPanic("WASM_TOOLS"), vargs)
+  assertTrue(v.exitCode == 0, "wasm-tools validate: " + v.stderr)
+  val outDir = Path.join(dir, "js")
+  val jargs: List[String] = newList()
+  jargs.add("transpile")
+  jargs.add(wasm)
+  jargs.add("-o")
+  jargs.add(outDir)
+  jargs.add("--map")
+  jargs.add("lyric:probe/geo@0.1.0=../geo.js")
+  val j = run(envOrPanic("JCO"), jargs)
+  assertTrue(j.exitCode == 0, "jco transpile: " + j.stderr)
+  val lnargs: List[String] = newList()
+  lnargs.add("-s")
+  lnargs.add(envOrPanic("LYRIC_JCO_NODE_MODULES"))
+  lnargs.add(Path.join(dir, "node_modules"))
+  val _ln = run("ln", lnargs)
+  val _g = File.writeText(
+    Path.join(dir, "geo.js"),
+    r"let last = '';
+export const swap = (p) => ({ x: p.y, y: p.x });
+export const older = (p) => ({ name: p.name, age: p.age + 1, tags: [...p.tags, 'host'], home: p.home ? { x: p.home.x + 1, y: p.home.y } : undefined });
+export const first = (xs) => (xs.length > 0 ? xs[0] : undefined);
+export const safeDiv = (a, b) => { if (b === 0) { throw { payload: 'divide by zero' }; } return Math.trunc(a / b); };
+export const nextColor = (c) => ({ red: 'green', green: 'blue', blue: 'red' })[c];
+export const grow = (s) => {
+  switch (s.tag) {
+    case 'square': return { tag: 'square', val: s.val * 2 };
+    case 'big': return { tag: 'big', val: s.val + 1n };
+    case 'label': return { tag: 'label', val: s.val + '!' };
+    case 'small': return { tag: 'small', val: s.val / 2 };
+    default: return { tag: 'empty' };
+  }
+};
+export const note = (p) => { last = 'noted ' + p.x + ',' + p.y; };
+export const lastNote = () => last;
+export const tag = (s, p) => s + '@' + p.x + ',' + p.y;
+export const pair = (n) => [n, 'n' + n];
+export const many = (...xs) => xs.reduce((a, b) => a + b, 0);
+"
+  )
+  val script = r"import * as m from './js/prog.js';
+const p = m.probe;
+const show = (v) => JSON.stringify(v, (k, x) => typeof x === 'bigint' ? Number(x) : x);
+console.log('swap=' + show(p.swapIt({ x: 1, y: 2 })));
+const per = { name: 'ann', age: 30, tags: ['a', 'b'], home: { x: 5, y: 6 } };
+console.log('older=' + show(p.olderIt(per)));
+console.log('olderNoHome=' + show(p.olderIt({ name: 'bo', age: 1, tags: [], home: undefined })));
+console.log('first=' + show(p.firstIt(['x', 'y'])) + ' none=' + show(p.firstIt([])));
+console.log('div=' + show(p.divIt(10, 3)));
+try { p.divIt(1, 0); console.log('divErr=none'); } catch (e) { console.log('divErr=' + show(e.payload ?? e)); }
+console.log('color=' + p.nextIt('red') + ',' + p.nextIt('blue'));
+console.log('grow=' + [{ tag: 'square', val: 1.5 }, { tag: 'big', val: 7n }, { tag: 'label', val: 'hi' }, { tag: 'small', val: 3 }, { tag: 'empty' }].map((s) => show(p.growIt(s))).join(';'));
+console.log('note=' + p.noteIt({ x: 3, y: 4 }));
+console.log('tag=' + p.tagIt('wörld ☃', { x: 9, y: 8 }));
+console.log('pair=' + show(p.pairIt(7)));
+console.log('many=' + p.manyIt());
+console.log('loop=' + [1, 2, 3].map((i) => p.firstIt(['x'.repeat(i * 1000)]).length).join(','));
+"
+  val scriptPath = Path.join(dir, "run.mjs")
+  val _s = File.writeText(scriptPath, script)
+  val nargs: List[String] = newList()
+  nargs.add(scriptPath)
+  val n = run(Environment.getVarOrDefault("NODE", "node"), nargs)
+  assertTrue(n.exitCode == 0, "node: " + n.stderr + n.stdout)
+  assertTrue(Str.contains(n.stdout, "swap={\"x\":2,\"y\":1}"), "a record both ways: " + n.stdout)
+  assertTrue(
+    Str.contains(
+      n.stdout,
+      "older={\"name\":\"ann\",\"age\":31,\"tags\":[\"a\",\"b\",\"host\"],\"home\":{\"x\":6,\"y\":6}}"
+    ),
+    "a record holding a string, a list and an option of a record: " + n.stdout
+  )
+  assertTrue(
+    Str.contains(n.stdout, "olderNoHome={\"name\":\"bo\",\"age\":2,\"tags\":[\"host\"]}"),
+    "the none side of an option: " + n.stdout
+  )
+  assertTrue(Str.contains(n.stdout, "first=\"x\" none=undefined"), "a list in, an option out: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "div=3"), "the ok side of a result: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "divErr=\"divide by zero\""), "the error side of a result: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "color=green,red"), "an enum both ways: " + n.stdout)
+  assertTrue(
+    Str.contains(
+      n.stdout,
+      "grow={\"tag\":\"square\",\"val\":3};{\"tag\":\"big\",\"val\":8};{\"tag\":\"label\",\"val\":\"hi!\"};{\"tag\":\"small\",\"val\":1.5};{\"tag\":\"empty\"}"
+    ),
+    "a variant whose payloads join f64, i64, i32 and f32 slots: " + n.stdout
+  )
+  assertTrue(Str.contains(n.stdout, "note=noted 3,4"), "a record into a Unit import: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "tag=wörld ☃@9,8"), "a string and a record together: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "pair=[7,\"n7\"]"), "a tuple result: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "many=171"), "parameters spilled into memory: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "loop=1000,2000,3000"), "repeated calls free what they allocate: " + n.stdout)
+}
 
 test "wasm32 component: tuples cross the boundary as WIT tuples, nested in lists, options, records and results" {
   val dir = buildComponentOf(tupleProgram)

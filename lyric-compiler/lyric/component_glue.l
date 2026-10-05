@@ -1120,6 +1120,11 @@ pub record HostImport {
   cSym: String
   params: List[WitField]
   ret: WitTy
+  /// True when the signature needs more than the scalar-and-string fast path:
+  /// the extern is replaced by a generated Lyric function that stores the
+  /// arguments into a memory image, calls `cSym(image, returnArea)`, and
+  /// loads the result from the return area (see `emitImageImport`).
+  viaImage: Bool
 }
 
 pub record ComponentPkg {
@@ -1344,21 +1349,45 @@ func withoutWasmImport(anns: in List[Annotation]): List[Annotation] {
 
 /// A scalar or `String` host-import type.
 func importTy(te: in TypeExpr, tbl: in TypeTable): Result[WitTy, String] {
-  match resolveValueTy(te, tbl, 0) {
-    case Err(e) -> failTy(e)
-    case Ok(t) -> match t {
-      case WInt -> okTy(t)
-      case WLong -> okTy(t)
-      case WFloat -> okTy(t)
-      case WDouble -> okTy(t)
-      case WString -> okTy(t)
-      case WBool -> okTy(t)
-      case WByte -> okTy(t)
-      case _ -> failTy(
-        "a host import parameter or result must be Int, Long, Bool, Byte, Float, Double or String"
-      )
-    }
+  resolveValueTy(te, tbl, 0)
+}
+
+/// True for the types the scalar-and-string fast path of a host import carries.
+func isFastScalar(t: in WitTy): Bool {
+  match t {
+    case WInt -> true
+    case WLong -> true
+    case WFloat -> true
+    case WDouble -> true
+    case WBool -> true
+    case WByte -> true
+    case _ -> false
   }
+}
+
+func isFastParam(t: in WitTy): Bool {
+  match t {
+    case WString -> true
+    case _ -> isFastScalar(t)
+  }
+}
+
+/// Whether a host import has to go through the memory image: a compound
+/// parameter or result, or more than 16 flat core parameters.
+func importNeedsImage(params: in List[WitField], ret: in WitTy): Bool {
+  var width = 0
+  for p in params {
+    if not isFastParam(p.ty) {
+      return true
+    }
+    width = width + flatOf(p.ty).count
+  }
+  val retFast = match ret { case WUnit -> true; case WString -> true; case _ -> isFastScalar(ret) }
+  if not retFast {
+    return true
+  }
+  val retSlot = match ret { case WString -> 1; case _ -> 0 }
+  width + retSlot > 16
 }
 
 /// The WIT interface name a `@wasmImport` module string becomes.  An
@@ -1409,14 +1438,10 @@ func hostImportOf(d: in ExternFuncDecl, rawModule: in String, tbl: in TypeTable)
     )
   }
   val params: List[WitField] = newList()
-  var width = 0
   for p in d.params {
     match importTy(p.ty, tbl) {
       case Err(e) -> return Err(error = "@wasmImport extern func " + d.name + ", parameter " + p.name + ": " + e)
-      case Ok(t) -> {
-        params.add(WitField(name = p.name, ty = t))
-        width = width + flatOf(t).count
-      }
+      case Ok(t) -> params.add(WitField(name = p.name, ty = t))
     }
   }
   val ret = match d.ret {
@@ -1432,10 +1457,6 @@ func hostImportOf(d: in ExternFuncDecl, rawModule: in String, tbl: in TypeTable)
       }
     }
   }
-  val retSlot = match ret { case WString -> 1; case _ -> 0 }
-  if width + retSlot > 16 {
-    return Err(error = "@wasmImport extern func " + d.name + " has more than 16 flat core parameters")
-  }
   Ok(
     value = HostImport(
       module = module,
@@ -1446,9 +1467,99 @@ func hostImportOf(d: in ExternFuncDecl, rawModule: in String, tbl: in TypeTable)
         "_" +
         sanitizeIdent(d.symbol),
       params = params,
-      ret = ret
+      ret = ret,
+      viaImage = importNeedsImage(params, ret)
     )
   )
+}
+
+/// The Lyric visibility modifier (with a trailing space) of an extern item.
+func visPrefix(v: in Option[Visibility]): String {
+  match v {
+    case Some(VisPub(_)) -> "pub "
+    case Some(VisInternal(_)) -> "internal "
+    case None -> ""
+  }
+}
+
+/// How the raw core call of an image import returns: "unit" (nothing), "scalar"
+/// (one of the fast-path scalars, returned by the C wrapper) or "area" (a string
+/// or compound value the host writes through a return pointer).
+func imageRetMode(ret: in WitTy): String {
+  match ret {
+    case WUnit -> "unit"
+    case _ -> if isFastScalar(ret) { "scalar" } else { "area" }
+  }
+}
+
+func imageRawName(h: in HostImport): String {
+  "cabiRaw_" + h.cSym
+}
+
+/// The Lyric side of an image import: the raw extern bound to the generated C
+/// wrapper `cSym(image, area)`, and a function with the extern's own name and
+/// signature that stores the arguments into a memory image (the canonical layout
+/// of a tuple of the parameters), calls the wrapper, releases what it allocated,
+/// and loads the result from the return area.
+func emitImageImport(g: in Gen, h: in HostImport, vis: in Option[Visibility], name: in String): String {
+  val lines: List[String] = newList()
+  val mode = imageRetMode(h.ret)
+  val rawRet = if mode == "scalar" { lyricTy(h.ret) } else { "Unit" }
+  lines.add("extern func " + imageRawName(h) + "(img: Int, area: Int): " + rawRet + " = \"" + h.cSym + "\"")
+  val sig: List[String] = newList()
+  for f in h.params {
+    sig.add(f.name + ": " + lyricTy(f.ty))
+  }
+  lines.add(visPrefix(vis) + "func " + name + "(" + Str.joinList(", ", sig) + "): " + lyricTy(h.ret) + " {")
+  var size = 0
+  var align = 1
+  for p in h.params {
+    size = alignUp(size, alignOf(p.ty)) + sizeOf(p.ty)
+    align = maxInt(align, alignOf(p.ty))
+  }
+  size = alignUp(size, align)
+  if h.params.count > 0 {
+    lines.add("  val cabiImg = cabiAlloc(" + idStr(maxInt(size, 1)) + ", " + idStr(align) + ")")
+    var i = 0
+    while i < h.params.count {
+      lines.add("  " + storeStmt(g, h.params[i].ty, "cabiImg + " + idStr(fieldOffset(h.params, i)), h.params[i].name))
+      i = i + 1
+    }
+  } else {
+    lines.add("  val cabiImg = 0")
+  }
+  val areaSize = maxInt(sizeOf(h.ret), 8)
+  val areaAlign = alignOf(h.ret)
+  if mode == "area" {
+    lines.add("  val cabiArea = cabiRetArea(" + idStr(areaSize) + ", " + idStr(areaAlign) + ")")
+  } else {
+    lines.add("  val cabiArea = 0")
+  }
+  val call = imageRawName(h) + "(cabiImg, cabiArea)"
+  if mode == "scalar" {
+    lines.add("  val cabiR = " + call)
+  } else {
+    lines.add("  " + call)
+  }
+  if h.params.count > 0 {
+    var i = 0
+    while i < h.params.count {
+      if needsFree(h.params[i].ty) {
+        lines.add("  " + freeStmt(g, h.params[i].ty, "cabiImg + " + idStr(fieldOffset(h.params, i))))
+      }
+      i = i + 1
+    }
+    lines.add("  cabiFree(cabiImg, " + idStr(maxInt(size, 1)) + ", " + idStr(align) + ")")
+  }
+  if mode == "area" {
+    lines.add("  val cabiX = " + loadExpr(g, h.ret, "cabiArea"))
+    lines.add("  cabiFree(cabiArea, " + idStr(areaSize) + ", " + idStr(areaAlign) + ")")
+    lines.add("  cabiX")
+  } else if mode == "scalar" {
+    lines.add("  cabiR")
+  }
+  lines.add("}")
+  Str.joinList("\n", lines)
 }
 
 /// Add the generated shims to `file` and describe its exports.  An export the
@@ -1475,17 +1586,21 @@ pub func componentRewriteFile(file: in SourceFile): ComponentRewrite {
             }
             case Ok(h) -> {
               imports.add(h)
-              baseItems.add(
-                Item(
-                  docComments = it.docComments,
-                  annotations = withoutWasmImport(it.annotations),
-                  visibility = it.visibility,
-                  kind = IExternFunc(
-                    decl = ExternFuncDecl(name = d.name, params = d.params, ret = d.ret, symbol = h.cSym, span = d.span)
-                  ),
-                  span = it.span
+              if h.viaImage {
+                bodies.add(emitImageImport(g, h, it.visibility, d.name))
+              } else {
+                baseItems.add(
+                  Item(
+                    docComments = it.docComments,
+                    annotations = withoutWasmImport(it.annotations),
+                    visibility = it.visibility,
+                    kind = IExternFunc(
+                      decl = ExternFuncDecl(name = d.name, params = d.params, ret = d.ret, symbol = h.cSym, span = d.span)
+                    ),
+                    span = it.span
+                  )
                 )
-              )
+              }
             }
           }
         }
@@ -1569,7 +1684,13 @@ pub func componentRewriteFile(file: in SourceFile): ComponentRewrite {
   if exports.count == 0 and imports.count == 0 {
     return ComponentRewrite(file = file, info = info, error = "")
   }
-  if exports.count == 0 {
+  var hasImage = false
+  for h in imports {
+    if h.viaImage {
+      hasImage = true
+    }
+  }
+  if exports.count == 0 and not hasImage {
     val importOnly = SourceFile(
       moduleDoc = file.moduleDoc,
       fileAnnotations = file.fileAnnotations,
@@ -1671,6 +1792,16 @@ func exportBlocker(d: in FunctionDecl, tbl: in TypeTable): String {
 /// wrapper.
 /// Identity of a host function: the literal (module, name) pair, length-prefixed
 /// so no two distinct pairs share a key.
+/// The declared name of a named WIT type, "" for any other.
+func tyName(t: in WitTy): String {
+  match t {
+    case WRecord(name, _) -> name
+    case WVariant(name, _) -> name
+    case WEnum(name, _) -> name
+    case _ -> ""
+  }
+}
+
 func importKey(h: in HostImport): String {
   h.module.length.toString() + ":" + h.module + h.name
 }
@@ -1718,6 +1849,30 @@ pub func importConflict(pkgs: in List[ComponentPkg]): String {
     }
   }
   val uniq = uniqueImports(pkgs)
+  for m in importModules(pkgs) {
+    val seenDefs: List[WitTy] = newList()
+    for p in pkgs {
+      for h in p.imports {
+        if h.module == m {
+          val mine: List[WitTy] = newList()
+          for f in h.params {
+            collectDefs(f.ty, mine)
+          }
+          collectDefs(h.ret, mine)
+          for d in mine {
+            for q in seenDefs {
+              if tyKey(q) == tyKey(d) and witDef(q) != witDef(d) {
+                return "the host imports of " + m + " use two different types named " + tyName(d) + " (the interface can declare one)"
+              }
+            }
+          }
+          for d in mine {
+            seenDefs.add(d)
+          }
+        }
+      }
+    }
+  }
   var i = 0
   while i < uniq.count {
     var j = i + 1
@@ -1736,6 +1891,12 @@ pub func importConflict(pkgs: in List[ComponentPkg]): String {
           "; rename one"
       }
       j = j + 1
+    }
+    for d in importDefs(pkgs, uniq[i].module) {
+      if witName(tyName(d)) == witName(uniq[i].name) {
+        return "the host import " + uniq[i].module + "." + uniq[i].name + " has the same WIT name as the type " + tyName(d) +
+          " its interface declares (functions and types share one WIT namespace)"
+      }
     }
     for p in exportingPkgs(pkgs) {
       if witName(p.pkg) == witName(uniq[i].module) {
@@ -1765,6 +1926,20 @@ func importModules(pkgs: in List[ComponentPkg]): List[String] {
     }
   }
   r
+}
+
+/// The named WIT types the imports of `module` use, dependencies first, each once.
+func importDefs(pkgs: in List[ComponentPkg], module: in String): List[WitTy] {
+  val defs: List[WitTy] = newList()
+  for h in uniqueImports(pkgs) {
+    if h.module == module {
+      for f in h.params {
+        collectDefs(f.ty, defs)
+      }
+      collectDefs(h.ret, defs)
+    }
+  }
+  defs
 }
 
 func witRef(t: in WitTy): String {
@@ -1871,6 +2046,9 @@ pub func renderWit(pkgs: in List[ComponentPkg], version: in String, world: in St
   parts.add("package " + witPackageName(pkgs, version) + ";\n")
   for m in importModules(pkgs) {
     val ilines: List[String] = newList()
+    for d in importDefs(pkgs, m) {
+      ilines.add(witDef(d))
+    }
     for h in uniqueImports(pkgs) {
       if h.module == m {
         val ps: List[String] = newList()
@@ -1968,6 +2146,8 @@ func cabiRuntime(hasAsync: in Bool): String {
     "double lyric_cabi_next_f64(void) { uint64_t b = cabi_slots[cabi_cursor++]; double d; memcpy(&d, &b, 8); return d; }"
   )
   l.add("void lyric_cabi_skip(int32_t n) { cabi_cursor += n; }")
+  l.add("static inline uint32_t cabi_bits_f32(float f) { uint32_t b; memcpy(&b, &f, 4); return b; }")
+  l.add("static inline uint64_t cabi_bits_f64(double d) { uint64_t b; memcpy(&b, &d, 8); return b; }")
   l.add("int32_t lyric_cabi_load_u8(int32_t p) { return *(uint8_t*)CABI_ADDR(p); }")
   l.add("int32_t lyric_cabi_load_i32(int32_t p) { int32_t v; memcpy(&v, CABI_ADDR(p), 4); return v; }")
   l.add("int64_t lyric_cabi_load_i64(int32_t p) { int64_t v; memcpy(&v, CABI_ADDR(p), 8); return v; }")
@@ -2083,11 +2263,196 @@ pub func jcoMapArgs(pkgs: in List[ComponentPkg], version: in String): List[Strin
   args
 }
 
+/// The C type of a core flat slot kind.
+func cTypeOfKind(kind: in String): String {
+  match kind {
+    case "i32" -> "int32_t"
+    case "i64" -> "int64_t"
+    case "f32" -> "float"
+    case _ -> "double"
+  }
+}
+
+/// `expr`, a flat slot of kind `from`, widened or reinterpreted to the joined
+/// slot kind `to` the way the canonical ABI coerces a variant payload.
+func coerceSlot(expr: in String, from: in String, to: in String): String {
+  if from == to {
+    return expr
+  }
+  if to == "i32" {
+    return "(int32_t)cabi_bits_f32(" + expr + ")"
+  }
+  match from {
+    case "i32" -> "(int64_t)(uint32_t)(" + expr + ")"
+    case "f32" -> "(int64_t)cabi_bits_f32(" + expr + ")"
+    case _ -> "(int64_t)cabi_bits_f64(" + expr + ")"
+  }
+}
+
+func zeroOfKind(kind: in String): String {
+  match kind {
+    case "i32" -> "((int32_t)0)"
+    case "i64" -> "((int64_t)0)"
+    case "f32" -> "0.0f"
+    case _ -> "0.0"
+  }
+}
+
+/// C expressions, one per flat slot of `t`, reading the value of `t` stored in
+/// memory at the C expression `p` (an `int32_t` address).  Each expression has
+/// the C type of its slot kind.
+func slotExprs(t: in WitTy, p: in String): List[String] {
+  val r: List[String] = newList()
+  match t {
+    case WBool -> r.add("(int32_t)lyric_cabi_load_u8(" + p + ")")
+    case WByte -> r.add("(int32_t)lyric_cabi_load_u8(" + p + ")")
+    case WEnum(_, _) -> r.add("(int32_t)lyric_cabi_load_u8(" + p + ")")
+    case WInt -> r.add("lyric_cabi_load_i32(" + p + ")")
+    case WLong -> r.add("lyric_cabi_load_i64(" + p + ")")
+    case WFloat -> r.add("lyric_cabi_load_f32(" + p + ")")
+    case WDouble -> r.add("lyric_cabi_load_f64(" + p + ")")
+    case WUnit -> ()
+    case WString -> {
+      r.add("lyric_cabi_load_i32(" + p + ")")
+      r.add("lyric_cabi_load_i32((" + p + ") + 4)")
+    }
+    case WList(_) -> {
+      r.add("lyric_cabi_load_i32(" + p + ")")
+      r.add("lyric_cabi_load_i32((" + p + ") + 4)")
+    }
+    case WTuple(elems) -> {
+      val fields = tupleFields(elems)
+      var i = 0
+      while i < fields.count {
+        for e in slotExprs(fields[i].ty, "(" + p + ") + " + idStr(fieldOffset(fields, i))) {
+          r.add(e)
+        }
+        i = i + 1
+      }
+    }
+    case WRecord(_, fields) -> {
+      var i = 0
+      while i < fields.count {
+        for e in slotExprs(fields[i].ty, "(" + p + ") + " + idStr(fieldOffset(fields, i))) {
+          r.add(e)
+        }
+        i = i + 1
+      }
+    }
+    case _ -> {
+      val disc = "lyric_cabi_load_u8(" + p + ")"
+      r.add("(int32_t)" + disc)
+      val joined = joinedPayloadFlat(t)
+      val tys = caseTys(t)
+      val payloadAt = "(" + p + ") + " + idStr(payloadOffset(t))
+      val perCase: List[List[String]] = newList()
+      for ct in tys {
+        perCase.add(slotExprs(ct, payloadAt))
+      }
+      var j = 0
+      while j < joined.count {
+        var chain = zeroOfKind(joined[j])
+        var ci = tys.count - 1
+        while ci >= 0 {
+          val kinds = flatOf(tys[ci])
+          if j < kinds.count {
+            chain = "(" + disc + " == " + idStr(ci) + " ? " + coerceSlot(perCase[ci][j], kinds[j], joined[j]) + " : " + chain +
+              ")"
+          }
+          ci = ci - 1
+        }
+        r.add(chain)
+        j = j + 1
+      }
+    }
+  }
+  r
+}
+
+/// The C wrapper of an image import: `cSym(image, area)` reads the flat core
+/// arguments out of the image (or passes the image itself when the parameters
+/// spill), calls the core import, and either returns a scalar result or leaves
+/// the result in `area`.
+func renderImageImportWrapper(pkgs: in List[ComponentPkg], h: in HostImport, i: in Int, version: in String): String {
+  val l: List[String] = newList()
+  val id = importInterfaceId(pkgs, h.module, version)
+  val rawName = "lyric_rawimport" + idStr(i)
+  val rawParams: List[String] = newList()
+  val callArgs: List[String] = newList()
+  var total = 0
+  for p in h.params {
+    total = total + flatOf(p.ty).count
+  }
+  if total > 16 {
+    rawParams.add("int32_t")
+    callArgs.add("img")
+  } else {
+    var pi = 0
+    while pi < h.params.count {
+      val kinds = flatOf(h.params[pi].ty)
+      val exprs = slotExprs(h.params[pi].ty, "img + " + idStr(fieldOffset(h.params, pi)))
+      var k = 0
+      while k < kinds.count {
+        rawParams.add(cTypeOfKind(kinds[k]))
+        callArgs.add(exprs[k])
+        k = k + 1
+      }
+      pi = pi + 1
+    }
+  }
+  val mode = imageRetMode(h.ret)
+  val retKinds = flatOf(h.ret)
+  val retInArea = mode == "area" and retKinds.count > 1
+  if retInArea {
+    rawParams.add("int32_t")
+    callArgs.add("area")
+  }
+  val rawRet = if mode == "unit" or retInArea {
+    "void"
+  } else if mode == "scalar" {
+    cRawTypeOfTy(h.ret)
+  } else {
+    cTypeOfKind(retKinds[0])
+  }
+  l.add("__attribute__((import_module(\"" + id + "\"), import_name(\"" + witName(h.name) + "\")))")
+  l.add(
+    "extern " + rawRet + " " + rawName + "(" +
+      (if rawParams.count == 0 { "void" } else { Str.joinList(", ", rawParams) }) +
+      ");"
+  )
+  val call = rawName + "(" + Str.joinList(", ", callArgs) + ")"
+  val retC = if mode == "scalar" { cTypeOfTy(h.ret) } else { "void" }
+  l.add(retC + " " + h.cSym + "(int32_t img, int32_t area) {")
+  if mode == "scalar" {
+    l.add(
+      "  return " +
+        (match h.ret { case WBool -> "(_Bool)(" + call + " != 0)"; case WByte -> "(uint8_t)" + call; case _ -> call }) +
+        ";"
+    )
+  } else if mode == "area" and not retInArea {
+    val store = match retKinds[0] {
+      case "i32" -> "lyric_cabi_store_i32"
+      case "i64" -> "lyric_cabi_store_i64"
+      case "f32" -> "lyric_cabi_store_f32"
+      case _ -> "lyric_cabi_store_f64"
+    }
+    l.add("  " + store + "(area, " + call + ");")
+  } else {
+    l.add("  " + call + ";")
+  }
+  l.add("}")
+  l.add("")
+  Str.joinList("\n", l)
+}
+
 /// The C function a Lyric `@wasmImport` extern calls: it lowers the arguments to
 /// the canonical flat form (a string is borrowed as pointer and length), calls the
 /// real core import, and lifts the result (a string comes back through a return
 /// area the host fills using `cabi_realloc`).
 func renderImportWrapper(pkgs: in List[ComponentPkg], h: in HostImport, i: in Int, version: in String): String {
+  if h.viaImage {
+    return renderImageImportWrapper(pkgs, h, i, version)
+  }
   val l: List[String] = newList()
   val id = importInterfaceId(pkgs, h.module, version)
   val rawName = "lyric_rawimport" + idStr(i)

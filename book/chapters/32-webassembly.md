@@ -149,6 +149,13 @@ with a JavaScript module. With `--js-bindings` that module is `ui.js` beside the
 component (`jco --map lyric:<package>/ui@<version>=../ui.js`); by hand, map it wherever
 you keep it.
 
+In the component shape a host import may take and return the same types an export can:
+your own records, enums and unions, `Option`, `Result`, `List` and tuples, nested freely.
+The WIT interface for the module declares the types its signatures use, and the host sees
+ordinary JavaScript values (an object for a record, `undefined` for a `None`, a thrown
+`{ payload }` for the `Err` of a `Result`). The module shape carries scalars and `String`
+only.
+
 ## The `[wasm]` table
 
 ```toml
@@ -275,9 +282,7 @@ The tracked work is in issues #8117 (component shape) and #8118 (NPM). Today:
 
 - a component export cannot name a type from
   another Lyric package;
-- a component host import carries `Int`, `Long`, `Bool`, `Byte`, `Float`, `Double`,
-  `String` and `Unit` only (no records yet), and an NPM import cannot return a
-  `Promise`;
+- an NPM import cannot return a `Promise`;
 - the browser has no `fetch`-backed `Std.Http`.
 
 ::: sidebar
