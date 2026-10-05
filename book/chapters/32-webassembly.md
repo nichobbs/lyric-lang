@@ -233,6 +233,21 @@ as `@scope/name`. Each maps to a Lyric package identifier (`node-fetch` is
 same identifier or the same shim file are a manifest error.
 :::
 
+## Packing for NPM
+
+```sh
+lyric build --target native --triple wasm32-wasi --shape component --js-bindings
+lyric publish --wasm
+npm publish bin/npm/<name>-<version>.tgz
+```
+
+`lyric publish --wasm` packs the build you already made as an NPM tarball: the `.wasm`
+and its glue and declarations (module shape), or the `.wasm`, the WIT and, when you built
+with `--js-bindings`, the `jco` output (component shape). The shape is read from the files
+beside the `.wasm`. The generated `package.json` carries your `[package]` description,
+license and repository, and turns every `[npm]` row into a dependency. `--wasm-file`
+names a `.wasm` elsewhere and `-o` the output directory. It does not push; NPM does that.
+
 ## Diagnostics
 
 | Code | Meaning |
@@ -263,8 +278,7 @@ The tracked work is in issues #8117 (component shape) and #8118 (NPM). Today:
 - a component host import carries `Int`, `Long`, `Bool`, `Byte`, `Float`, `Double`,
   `String` and `Unit` only (no records yet), and an NPM import cannot return a
   `Promise`;
-- the browser has no `fetch`-backed `Std.Http`;
-- `lyric publish` does not yet bundle a wasm artifact.
+- the browser has no `fetch`-backed `Std.Http`.
 
 ::: sidebar
 **Why the native backend and not .NET?** The first design compiled through .NET's WASI
