@@ -2535,7 +2535,6 @@ func finishValueRecords(
   val protectedOnly = opts.arraysAsLists
   val base = if protectedOnly { eraseValueRecords(file, importedPkgs) } else { file }
   val specs: List[ValueRecordSpec] = newList()
-  val foreignBefore = opts.foreignValueRecordsOut.count
   val specialised = specialiseValueRecords(
     base,
     tcRes.symbols.valueTypeArgSites,
@@ -2545,25 +2544,6 @@ func finishValueRecords(
     protectedOnly
   )
   val diags: List[Diagnostic] = newList()
-  // A protected type is specialised in the package that declares it: another
-  // package naming it at a length is rejected rather than placing its
-  // members in that package (#8149).
-  var fi = foreignBefore
-  while fi < opts.foreignValueRecordsOut.count {
-    val fr = opts.foreignValueRecordsOut[fi]
-    match fr.item.kind {
-      case IProtected(pd) -> diags.add(
-        errorDiagnostic(
-          "M0008",
-          "the protected type '" + pd.name + "' of package '" + fr.pkg +
-            "' takes a length, so it is specialised only where its package uses it; to use another length, construct it in that package (#8149)",
-          file0.span
-        )
-      )
-      case _ -> ()
-    }
-    fi = fi + 1
-  }
   val lowered = lowerValueRecordSpecs(
     specialised,
     file0,

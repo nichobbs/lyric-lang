@@ -2860,6 +2860,30 @@ func checkOpaqueDeclTypes(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
   }
 }
 
+// A protected type's value generic parameter makes the declaration specialised
+// per length, whole and in the package that uses it (#8149), so for now the
+// type is not shared across packages: T0166 on a `pub` one.
+func checkProtectedValueGenericVisibility(
+  diag: in List[Diagnostic],
+  decl: in ProtectedTypeDecl,
+  vis: in Option[Visibility],
+): Unit {
+  if valueGenericNames(decl.generics).count == 0 {
+    return
+  }
+  match vis {
+    case Some(VisPub(_)) -> diag.add(
+      errorDiagnostic(
+        "T0166",
+        "the protected type '" + decl.name +
+          "' has a value generic parameter, so each length is specialised in the package that uses it and the type cannot be pub yet (#8149)",
+        decl.span
+      )
+    )
+    case _ -> ()
+  }
+}
+
 func checkProtectedDeclTypes(tbl: in SymbolTable, diag: in List[Diagnostic], decl: in ProtectedTypeDecl): Unit {
   val ctx = declGenericContext(decl.generics)
   var i = 0
@@ -3068,7 +3092,15 @@ func checkProtectedMemberBodies(
           span = entryDecl.span
         )
         checkFunctionBody(
-          tbl, sigs, diag, withOwnerValueGenerics(fn, decl.generics), sig, fieldLocals, fieldLocals, true, selfTy
+          tbl,
+          sigs,
+          diag,
+          withOwnerValueGenerics(fn, decl.generics),
+          sig,
+          fieldLocals,
+          fieldLocals,
+          true,
+          selfTy
         )
       }
       case PMFunc(fn) -> {
@@ -3113,7 +3145,15 @@ func checkProtectedMemberBodies(
           isExternFunc = sig0.isExternFunc
         )
         checkFunctionBody(
-          tbl, sigs, diag, withOwnerValueGenerics(fn, decl.generics), sig, fieldLocals, fieldLocals, true, selfTy
+          tbl,
+          sigs,
+          diag,
+          withOwnerValueGenerics(fn, decl.generics),
+          sig,
+          fieldLocals,
+          fieldLocals,
+          true,
+          selfTy
         )
       }
       case PMInvariant(inv) -> checkProtectedInvariant(tbl, sigs, diag, inv, ownerGenerics, fieldLocals, selfTy)
@@ -3975,6 +4015,7 @@ func checkDeclTypeRefs(tbl: in SymbolTable, diag: in List[Diagnostic], items: in
       }
       case IProtected(decl) -> {
         checkProtectedDeclTypes(tbl, diag, decl)
+        checkProtectedValueGenericVisibility(diag, decl, items[i].visibility)
       }
       case ITypeAlias(decl) -> {
         val ctx = declGenericContext(decl.generics)

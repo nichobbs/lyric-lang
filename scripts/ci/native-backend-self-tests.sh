@@ -96,6 +96,7 @@ for t in \
   lyric-compiler/lyric/named_arg_eval_order_self_test.l \
   lyric-compiler/lyric/fixed_array_self_test.l \
   lyric-compiler/lyric/value_generic_record_self_test.l \
+  lyric-compiler/lyric/value_generic_protected_self_test.l \
   lyric-compiler/lyric/dotted_generic_func_self_test.l \
   lyric-compiler/lyric/structural_equality_self_test.l \
   lyric-compiler/lyric/func_default_args_self_test.l \
