@@ -52,6 +52,30 @@ record Holder[T] {
   }
 }
 
+interface Swapper {
+  func takeFrom(self: in Self, other: inout Self, w: in () -> Unit): Unit
+  func giveTo(self: in Self, other: inout Self): Unit
+}
+
+record Cell {
+  n: Int
+}
+
+// `other: inout Self` keeps the interface slot's erased `object&` ABI.
+impl Swapper for Cell {
+  func takeFrom(self: in Self, other: inout Self, w: in () -> Unit): Unit {
+    w()
+  }
+
+  func giveTo(self: in Self, other: inout Self): Unit {
+    other = Cell(n = 6)
+  }
+}
+
+func setCell(c: inout Cell, n: in Int): Unit {
+  c = Cell(n = n)
+}
+
 func area(s: in Shape): Int {
   match s {
     case Circle(r) -> r
@@ -446,4 +470,31 @@ test "captured var passed to a generic record's `inout T` method (#8182)" {
   hb.put(b, Box(n = 5))
   val seenB: Int = fb()
   assertEqualInt(seenB, 5, "captured record after put")
+}
+
+test "captured record passed to an erased `inout Self` parameter (#8204)" {
+  val s = Cell(n = 0)
+  var c = Cell(n = 1)
+  val w = { -> c = Cell(n = 5) }
+  s.takeFrom(c, w)
+  assertEqualInt(c.n, 5, "closure write during the call")
+  var d = Cell(n = 1)
+  val f = { -> d.n }
+  s.giveTo(d)
+  val seen: Int = f()
+  assertEqualInt(d.n, 6, "callee write")
+  assertEqualInt(seen, 6, "closure read after the callee write")
+}
+
+test "captured record passed to both an erased `inout Self` and a typed `inout`" {
+  val s = Cell(n = 0)
+  var c = Cell(n = 1)
+  val f = { -> c.n }
+  setCell(c, 3)
+  val afterTyped: Int = f()
+  assertEqualInt(afterTyped, 3, "after the typed call")
+  val w = { -> c = Cell(n = 8) }
+  s.takeFrom(c, w)
+  val afterSelf: Int = f()
+  assertEqualInt(afterSelf, 8, "closure write during the erased call")
 }

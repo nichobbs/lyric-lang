@@ -1,4 +1,4 @@
-# A closure-captured `var` passed as an `out`/`inout` argument (#8189, #8199, #8182)
+# A closure-captured `var` passed as an `out`/`inout` argument (#8189, #8199, #8182, #8204)
 
 A `var` that a closure captures is hoisted to a one-element heap cell that
 the closure and the enclosing scope share (docs/01 §5.4), so its slot holds
@@ -29,6 +29,20 @@ result into the slot holding the cell (`VerifyError`).
   TypeSpec resolved at lowering. Every cell site (declaration, reads,
   writes, closure-class fields, async state-machine promotion) takes its
   shape from `cellArrayTyMsil`.
+- **Erased `inout Self`** (#8204): an `out`/`inout Self` parameter keeps the
+  interface slot's `object&` ABI (#7783), and only an `object[]` cell's
+  element can be an `object&`. A pre-pass over each body
+  (`collectErasedSelfByrefArgsBlock`, run with the closure-capture pre-pass)
+  finds the captured variables passed to such a parameter, matched by
+  method name and argument position from `registerMethodParamModes`, and
+  keeps their cells `object[]` (`FuncCtx.objectCellNames`, carried into
+  each lambda through `lambdaObjectCells`). The typed `Self&` ABI was not
+  taken: an interface slot cannot name the implementing type, so it would
+  need an `object&` bridge per impl method, which has the same aliasing
+  problem in reverse. The cost of the pre-pass is that a variable passed to
+  both an erased `inout Self` and a typed `inout` parameter goes through a
+  temp at the typed call. A same-named method of another type also counts,
+  so the match errs towards keeping `object[]`.
 - **Generic receiver** (#8182, dotnet): the call-site MemberRef of a method
   on a generic record now declares an `out`/`inout` parameter as `!0&`. The
   argument is passed at the receiver's instantiation (`Holder[Int].put(x,
@@ -47,13 +61,13 @@ caller's copy:
 
 - dotnet: a variable whose type names a type parameter, inside a generic
   record or union method. A closure class is never generic, so the cell is
-  `object[]`. The same applies to an erased `inout Self` parameter
-  (`object&`) given a typed class cell.
+  `object[]`. The same applies to a variable passed to both an erased
+  `inout Self` and a typed `inout` parameter, at the typed call.
 - JVM: a primitive variable passed to a parameter the JVM erases to
   `Object[]`: an `inout T` method of a generic record at a primitive
   instantiation (`Holder[Int].put`).
 
-Tests: `closure_captured_var_byref_self_test.l` (25 cases, dotnet and JVM,
+Tests: `closure_captured_var_byref_self_test.l` (27 cases, dotnet and JVM,
 in `compiler-self-tests-batch.sh`, `jvm-generics-self-tests-batch.sh` and
 the ilverify consumer list). It covers `inout` and `out`; `Int`, `Long`,
 `String`, `Bool`, a record, a union, `Option`, `Result`, a generic record,
@@ -61,7 +75,8 @@ the ilverify consumer list). It covers `inout` and `out`; `Int`, `Long`,
 closure read of the callee's write; two closures over one variable; a
 by-reference argument inside a lambda, a nested lambda, and on a
 lambda-local `var`; generic callees; a generic record's `inout T` method;
-and an argument after a `?`. The `f(x, g()?)` form is left to #8171.
+an erased `inout Self` parameter, alone and next to a typed `inout`; and
+an argument after a `?`. The `f(x, g()?)` form is left to #8171.
 
 Not covered:
 
