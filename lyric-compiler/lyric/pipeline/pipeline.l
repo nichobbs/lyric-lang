@@ -1521,7 +1521,7 @@ func lowerSpecArrays(
 // function (`Box.get(b)`, one path segment), which `Lyric.Mono` specialises
 // like any generic call (#8173).  The callee keeps its span, under which the
 // checker recorded the call's type and value arguments.
-func rewriteDottedGenericCalls(file: in SourceFile, sites: in Map[String, String]): SourceFile {
+func rewriteDottedGenericCalls(file: in SourceFile, sites: in Map[String, DottedGenericCall]): SourceFile {
   if sites.count == 0 {
     return file
   }
@@ -1532,9 +1532,9 @@ func rewriteDottedGenericCalls(file: in SourceFile, sites: in Map[String, String
         case ECall(fn, args) -> match mapGet(sites, recordCopySiteKey(fn.span)) {
           case Some(site) -> {
             val segs: List[String] = newList()
-            segs.add(site.substring(2, site.length - 2))
+            segs.add(site.name)
             val target = Expr(kind = EPath(path = ModulePath(segments = segs, span = fn.span)), span = fn.span)
-            if site.startsWith("m:") {
+            if site.receiverFirst {
               match fn.kind {
                 case EMember(recv, _) -> {
                   val fullArgs: List[CallArg] = newList()

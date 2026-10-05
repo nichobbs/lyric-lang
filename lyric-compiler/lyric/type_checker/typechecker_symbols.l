@@ -160,6 +160,14 @@ pub record MutableModuleVal {
   what: String
 }
 
+/// A call to a generic dot-named function: the function's name, and whether
+/// it was written as a method call, whose receiver becomes the first
+/// argument (`b.get()`), rather than through the type (`Box.get(b)`).
+pub record DottedGenericCall {
+  name: String
+  receiverFirst: Bool
+}
+
 @stable(since = "0.1")
 pub record SymbolTable {
   symbols: List[Symbol]
@@ -338,12 +346,10 @@ pub record SymbolTable {
   genericCallTypeArgSites: Map[String, GenericCallTypeArgsSite]
   /// Each call to a generic dot-named function (`func Box.get[T](self: in
   /// Box[T])`), written as a method call (`b.get()`) or through its type
-  /// (`Box.get(b)`), keyed by `recordCopySiteKey` of the callee's span: the
-  /// function's name, prefixed `m:` for a method call (whose receiver becomes
-  /// the first argument) or `s:` for a call through the type.
-  /// `Lyric.Pipeline` rewrites such a call into a plain call of that name,
-  /// which `Lyric.Mono` specialises (#8173).
-  dottedGenericCallSites: Map[String, String]
+  /// (`Box.get(b)`), keyed by `recordCopySiteKey` of the callee's span.
+  /// `Lyric.Pipeline` rewrites such a call into a plain call of the
+  /// function, which `Lyric.Mono` specialises (#8173).
+  dottedGenericCallSites: Map[String, DottedGenericCall]
   /// The types each lambda's unannotated parameters took from the function
   /// type it was checked against, keyed by `recordCopySiteKey` of the lambda's
   /// span (see `Lyric.Parser.LambdaParamTypesSite`, #7865).
