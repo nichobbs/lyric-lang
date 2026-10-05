@@ -229,6 +229,10 @@ record NIfaceInfo {
   methodNames: List[String]
   methodParamTys: List[List[NType]]
   methodRetTys: List[NType]
+  // `Some(declared result type)` for an `async` method, whose vtable slot
+  // returns the task handle (`i8*`, recorded in `methodRetTys`); `None` for a
+  // synchronous one.  A call site unwraps the task like any async call.
+  methodAsyncElem: List[Option[NType]]
   methodRetIsSelf: List[Bool]
   methodParamIsSelf: List[List[Bool]]
   // Each method's parameter names and defaults, binding a call's named and
@@ -958,6 +962,47 @@ func typeToN(ctx: in Ctx, te: in TypeExpr): NType {
     case TRefined(under, _) -> typeToN(ctx, TypeExpr(kind = TRef(path = under), span = te.span))
     case _ -> typeExprToNType(te)
   }
+}
+
+/// `typeToN` / `typeToNOpt` for a type written inside a declaration of package
+/// `pkg`: a bare name there is that package's own, not a same-named type of
+/// another package (`Customers.List.Logic.Status` vs `Customers.Edit.Logic`'s,
+/// #8155).  Registration runs on the module-wide context, whose current
+/// package is not the declaring one.
+func typeToNIn(ctx: in Ctx, pkg: in String, te: in TypeExpr): NType {
+  val had = ctx.curPkg.count > 0
+  var saved = ""
+  if had {
+    saved = ctx.curPkg[0]
+    ctx.curPkg[0] = pkg
+  } else {
+    ctx.curPkg.add(pkg)
+  }
+  val t = typeToN(ctx, te)
+  if had {
+    ctx.curPkg[0] = saved
+  } else {
+    ctx.curPkg.clear()
+  }
+  t
+}
+
+func typeToNOptIn(ctx: in Ctx, pkg: in String, te: in TypeExpr): Option[NType] {
+  val had = ctx.curPkg.count > 0
+  var saved = ""
+  if had {
+    saved = ctx.curPkg[0]
+    ctx.curPkg[0] = pkg
+  } else {
+    ctx.curPkg.add(pkg)
+  }
+  val t = typeToNOpt(ctx, te)
+  if had {
+    ctx.curPkg[0] = saved
+  } else {
+    ctx.curPkg.clear()
+  }
+  t
 }
 
 /// Non-panicking variant of `typeToN`, used when registering bundled
@@ -2060,6 +2105,32 @@ func buildPkgImports(units: in List[CodegenUnit]): Map[String, List[String]] {
   m
 }
 
+/// The `genericFnDefs` key of a generic function a package this one imports
+/// declares under `key`, when `sig` (found by the bare name) is from a package
+/// that is neither this one nor imported by it: the caller cannot be naming
+/// `sig`.  None otherwise.
+func shadowingImportedGenericKey(ctx: in Ctx, sig: in NFuncSig, key: in String): Option[String] {
+  if ctx.curPkg.count == 0 or sig.pkg == ctx.curPkg[0] {
+    return None
+  }
+  match mapGet(ctx.pkgImports, ctx.curPkg[0]) {
+    case Some(imps) -> {
+      for p in imps {
+        if p == sig.pkg {
+          return None
+        }
+      }
+      for p in imps {
+        if ctx.genericFnDefs.containsKey(p + "." + key) {
+          return Some(value = p + "." + key)
+        }
+      }
+      None
+    }
+    case None -> None
+  }
+}
+
 /// A bare function key resolved against the calling package's imports: when
 /// several packages declare it, the declaration in a package the caller
 /// imports wins; otherwise the first registered, as before.
@@ -2852,7 +2923,9 @@ func lowerExpr(ctx: in Ctx, insns: in List[NInsn], expr: in Expr): NVal {
         }
       }
       // Nullary union case (`None`, `Option.None`) constructs an instance.
-      match mapGet(ctx.caseRefs, joined) {
+      // The own package's union wins over a same-named one registered first
+      // (`Status.Loading` in two packages, #8155).
+      match curPkgQualifiedGet(ctx, ctx.caseRefs, joined) {
         case Some(cref) -> {
           val ui = match mapGet(ctx.unionDefs, cref.unionKey) {
             case Some(u) -> u
@@ -2870,7 +2943,11 @@ func lowerExpr(ctx: in Ctx, insns: in List[NInsn], expr: in Expr): NVal {
       if ctx.caseToGenericUnion.containsKey(joined) and not ctx.varTypes.containsKey(joined) {
         panic(
           "Lyric.LlvmCodegen: cannot infer the type arguments of generic union case '" + joined +
-            "' here; annotate the binding, return type, or parameter it flows into"
+            "' here; annotate the binding, return type, or parameter it flows into (in " +
+            ctx.curPkg[0] +
+            " at line " +
+            expr.span.startPos.line.toString() +
+            ")"
         )
       }
       if path.segments.count == 1 {
@@ -3392,7 +3469,7 @@ func lowerMember(ctx: in Ctx, insns: in List[NInsn], receiver: in Expr, memberNa
       case None -> {
       }
     }
-    match mapGet(ctx.caseRefs, joined) {
+    match curPkgQualifiedGet(ctx, ctx.caseRefs, joined) {
       case Some(cref) -> {
         val ui = match mapGet(ctx.unionDefs, cref.unionKey) {
           case Some(u) -> u
@@ -4763,11 +4840,15 @@ func lowerCallEx(
     case ETypeApp(tfn, targs) -> {
       // Explicit collection constructors: newList[Int]() / newMap[K, V]().
       var tname = ""
+      // The callee's dotted path, for a package-qualified generic function
+      // (`Pkg.Sub.wrap[Int](...)`).
+      var gname = ""
       match tfn.kind {
         case EPath(tp) -> {
           if tp.segments.count == 1 {
             tname = tp.segments[0]
           }
+          gname = modulePathJoin(tp.segments)
         }
         case _ -> {
         }
@@ -4814,8 +4895,8 @@ func lowerCallEx(
           }
         }
       }
-      if allTypes and tname.length > 0 {
-        match tryLowerExplicitGenericCall(ctx, insns, tname, explicitTes, args, line, wantTask, retWant) {
+      if allTypes and gname.length > 0 {
+        match tryLowerExplicitGenericCall(ctx, insns, gname, explicitTes, args, line, wantTask, retWant) {
           case Some(v) -> return v
           case None -> {
           }
@@ -4937,6 +5018,21 @@ func lowerCallEx(
     }
     case None -> {
       sigOpt = bareSig(ctx, key)
+    }
+  }
+  // A bare name no import of this package makes visible as a non-generic
+  // function, while an import declares it generic, means the imported generic
+  // (`Ui.Widgets.field[Msg]`, not `Ui.Html`'s unrelated `field`, #8155).
+  match sigOpt {
+    case Some(sg) -> match shadowingImportedGenericKey(ctx, sg, key) {
+      case Some(gk) -> {
+        val noPre0: List[NVal] = newList()
+        return lowerGenericFnCall(ctx, insns, gk, noPre0, args, line, wantTask, retWant)
+      }
+      case None -> {
+      }
+    }
+    case None -> {
     }
   }
   match sigOpt {
@@ -5171,6 +5267,22 @@ func curPkgQualifiedGet[T](ctx: in Ctx, m: in Map[String, T], bareOrDotted: in S
       case None -> {
       }
     }
+    // A name the own package does not declare: a package it imports wins over
+    // a same-named declaration registered first elsewhere (`RetryClicked` in
+    // two screens' `Msg`, #8155).
+    match mapGet(ctx.pkgImports, ctx.curPkg[0]) {
+      case Some(imps) -> {
+        for p in imps {
+          match mapGet(m, p + "." + bareOrDotted) {
+            case Some(v) -> return Some(value = v)
+            case None -> {
+            }
+          }
+        }
+      }
+      case None -> {
+      }
+    }
   }
   mapGet(m, bareOrDotted)
 }
@@ -5356,11 +5468,11 @@ func lowerUfcsCall(
     case Some(info) -> {
       val slot = ifaceMethodSlot(info, name)
       if slot >= 0 {
-        return lowerIfaceDispatch(ctx, insns, recv, info, slot, args)
+        return lowerIfaceDispatch(ctx, insns, recv, info, slot, args, wantTask)
       }
       panic(
         "Lyric.LlvmCodegen: interface method '." + name + "' on '" + info.key +
-          "' is not yet lowerable for --target native — only non-generic abstract interface methods dispatch through the vtable; default and generic interface methods are deferred (N3.2). (Self-returning and Self-parameter interface methods ARE supported, #7585.)"
+          "' is not yet lowerable for --target native — only non-generic abstract interface methods dispatch through the vtable; default-generic and generic interface methods are deferred (N3.2). (Self-returning and Self-parameter interface methods ARE supported, #7585.)"
       )
     }
     case None -> {
@@ -7434,12 +7546,12 @@ func registerRecordLayout(
   var i = 0
   while i < fields.count {
     names.add(fields[i].name)
-    match typeToNOpt(ctx, fields[i].ty) {
+    match typeToNOptIn(ctx, pkg, fields[i].ty) {
       case Some(t) -> tys.add(t)
       case None -> {
         if strict {
           // Panicking path for the precise field-type message.
-          tys.add(typeToN(ctx, fields[i].ty))
+          tys.add(typeToNIn(ctx, pkg, fields[i].ty))
         } else {
           unregisterRecStub(ctx, irName, irName)
           unregisterRecStub(ctx, rd.name, irName)
@@ -7525,11 +7637,11 @@ func registerUnionLayout(
     var fi = 0
     while fi < cd.fields.count {
       names.add(unionFieldName(cd.fields[fi], fi))
-      match typeToNOpt(ctx, unionFieldTy(cd.fields[fi])) {
+      match typeToNOptIn(ctx, pkg, unionFieldTy(cd.fields[fi])) {
         case Some(t) -> tys.add(t)
         case None -> {
           if strict {
-            tys.add(typeToN(ctx, unionFieldTy(cd.fields[fi])))
+            tys.add(typeToNIn(ctx, pkg, unionFieldTy(cd.fields[fi])))
           } else {
             unregisterUnionStub(ctx, irName, irName)
             unregisterUnionStub(ctx, ud.name, irName)
@@ -10386,6 +10498,9 @@ func isGenericCaseCtorExpr(ctx: in Ctx, e: in Expr): Bool {
         not ctx.varTypes.containsKey(path.segments[0])
       case _ -> false
     }
+    // A bare nullary case (`None`) needs the parameter's type just the same.
+    case EPath(path) -> path.segments.count == 1 and ctx.caseToGenericUnion.containsKey(path.segments[0]) and
+      not ctx.varTypes.containsKey(path.segments[0])
     case EParen(inner) -> isGenericCaseCtorExpr(ctx, inner)
     case _ -> false
   }
@@ -15852,7 +15967,7 @@ pub func nativeSelfShapeDiagnostics(units: in List[CodegenUnit]): List[Diagnosti
         }
         case None -> {
           val qualified = u.pkgName + "." + idecl.name
-          val sigs = nonGenericSyncSigs(idecl)
+          val sigs = nonGenericVtableSigs(idecl)
           var mi = 0
           while mi < sigs.count {
             val sig = sigs[mi]
@@ -17216,11 +17331,11 @@ func registerProtectedLayout(
   var i = 0
   while i < fields.count {
     names.add(fields[i].name)
-    match typeToNOpt(ctx, fields[i].ty) {
+    match typeToNOptIn(ctx, pkg, fields[i].ty) {
       case Some(t) -> tys.add(t)
       case None -> {
         if strict {
-          tys.add(typeToN(ctx, fields[i].ty))
+          tys.add(typeToNIn(ctx, pkg, fields[i].ty))
         } else {
           unregisterRecStub(ctx, irName, irName)
           unregisterRecStub(ctx, pd.name, irName)
@@ -17737,8 +17852,8 @@ func implMethodToFn(recordName: in String, ifaceName: in String, fn: in Function
 }
 
 /// Collect an `impl` block's methods as self-receiving functions (mirrors
-/// `collectRecordMethods`).  Generic impls / generic or async methods and
-/// impls for non-record targets are skipped here and rejected at use.
+/// `collectRecordMethods`).  Generic impls / generic methods and impls for
+/// non-record targets are skipped here and rejected at use.
 pub func collectImplMethods(pkgName: in String, decl: in ImplDecl, fns: in List[FunctionDecl]): Unit {
   match decl.generics {
     case Some(_) -> {
@@ -17757,9 +17872,7 @@ pub func collectImplMethods(pkgName: in String, decl: in ImplDecl, fns: in List[
           case Some(_) -> {
           }
           case None -> {
-            if not fn.isAsync {
-              fns.add(implMethodToFn(recordName, ifaceName, fn))
-            }
+            fns.add(implMethodToFn(recordName, ifaceName, fn))
           }
         }
       }
@@ -17942,8 +18055,7 @@ func synthIfaceBoxDtor(ctx: in Ctx, ii: in NIfaceInfo): NFunc {
 
 /// The ordered subset of `idecl.members` that the native backend's vtable
 /// layout covers: non-generic `IMSig` signatures and default methods
-/// (`IMFunc`), with any explicit `self` parameter dropped, skipping async methods
-/// (async interface dispatch is unimplemented on this backend) and any
+/// (`IMFunc`), with any explicit `self` parameter dropped, skipping any
 /// method with its own generics (MVAR is unbuildable, docs/43 Q-GEN-002).
 /// `registerInterfaceNames` (phase A, method-name list) and
 /// `registerInterfaceTypes` (phase B, param/return types + vtable field
@@ -17951,7 +18063,7 @@ func synthIfaceBoxDtor(ctx: in Ctx, ii: in NIfaceInfo): NFunc {
 /// slot at index `i` in phase A's `methodNames` must be the same method as
 /// index `i` in phase B's `methodParamTys`/`methodRetTys`, so any drift
 /// between the two filters would silently misalign a slot.
-func nonGenericSyncSigs(idecl: in InterfaceDecl): List[FunctionSig] {
+func nonGenericVtableSigs(idecl: in InterfaceDecl): List[FunctionSig] {
   val sigs: List[FunctionSig] = newList()
   var mi = 0
   while mi < idecl.members.count {
@@ -17961,9 +18073,7 @@ func nonGenericSyncSigs(idecl: in InterfaceDecl): List[FunctionSig] {
           case Some(_) -> {
           }
           case None -> {
-            if not sig.isAsync {
-              sigs.add(sig.copy(params = withoutExplicitSelf(sig.params)))
-            }
+            sigs.add(sig.copy(params = withoutExplicitSelf(sig.params)))
           }
         }
       }
@@ -17975,21 +18085,19 @@ func nonGenericSyncSigs(idecl: in InterfaceDecl): List[FunctionSig] {
           case Some(_) -> {
           }
           case None -> {
-            if not fn.isAsync {
-              sigs.add(
-                FunctionSig(
-                  docComments = fn.docComments,
-                  isAsync = false,
-                  name = fn.name,
-                  generics = None,
-                  params = withoutExplicitSelf(fn.params),
-                  ret = fn.ret,
-                  whereClause = None,
-                  contracts = fn.contracts,
-                  span = fn.span
-                )
+            sigs.add(
+              FunctionSig(
+                docComments = fn.docComments,
+                isAsync = fn.isAsync,
+                name = fn.name,
+                generics = None,
+                params = withoutExplicitSelf(fn.params),
+                ret = fn.ret,
+                whereClause = None,
+                contracts = fn.contracts,
+                span = fn.span
               )
-            }
+            )
           }
         }
       }
@@ -18018,7 +18126,7 @@ func registerInterfaceNames(ctx: in Ctx, units: in List[CodegenUnit]): Unit {
         case None -> {
           val qualified = u.pkgName + "." + idecl.name
           val mangled = mangleIfaceName(qualified)
-          val sigs = nonGenericSyncSigs(idecl)
+          val sigs = nonGenericVtableSigs(idecl)
           val mnames: List[String] = newList()
           val mretSelf: List[Bool] = newList()
           val mparamSelf: List[List[Bool]] = newList()
@@ -18078,6 +18186,7 @@ func registerInterfaceNames(ctx: in Ctx, units: in List[CodegenUnit]): Unit {
             methodNames = mnames,
             methodParamTys = newList(),
             methodRetTys = newList(),
+            methodAsyncElem = newList(),
             methodRetIsSelf = mretSelf,
             methodParamIsSelf = mparamSelf,
             methodParamNames = mparamNames,
@@ -18115,7 +18224,8 @@ func registerInterfaceTypes(
           }
           val pTys: List[List[NType]] = newList()
           val rTys: List[NType] = newList()
-          val sigs = nonGenericSyncSigs(idecl)
+          val asyncElems: List[Option[NType]] = newList()
+          val sigs = nonGenericVtableSigs(idecl)
           var mi = 0
           while mi < sigs.count {
             val sig = sigs[mi]
@@ -18126,7 +18236,13 @@ func registerInterfaceTypes(
               pi = pi + 1
             }
             pTys.add(ps)
-            rTys.add(retTypeToN(ctx, sig.ret))
+            if sig.isAsync {
+              rTys.add(NPtr(pointee = NI8))
+              asyncElems.add(Some(value = retTypeToN(ctx, sig.ret)))
+            } else {
+              rTys.add(retTypeToN(ctx, sig.ret))
+              asyncElems.add(None)
+            }
             mi = mi + 1
           }
           val info = NIfaceInfo(
@@ -18136,6 +18252,7 @@ func registerInterfaceTypes(
             methodNames = pre.methodNames,
             methodParamTys = pTys,
             methodRetTys = rTys,
+            methodAsyncElem = asyncElems,
             methodRetIsSelf = pre.methodRetIsSelf,
             methodParamIsSelf = pre.methodParamIsSelf,
             methodParamNames = pre.methodParamNames,
@@ -18550,6 +18667,7 @@ func lowerIfaceDispatch(
   ii: in NIfaceInfo,
   slot: in Int,
   args: in List[CallArg],
+  wantTask: in Bool,
 ): NVal {
   val structTy = ifaceBoxStructType(ii)
   // Load obj (index 2).
@@ -18647,6 +18765,25 @@ func lowerIfaceDispatch(
   while ci < paramTys.count {
     callArgs.add(NArg(ty = paramTys[ci], value = slotVals[ci].value))
     ci = ci + 1
+  }
+  match ii.methodAsyncElem[slot] {
+    case Some(elem) -> {
+      // An `async` method: the slot returns the task handle, unwrapped here
+      // exactly as at a direct async call.
+      val taskDest = freshTmp(ctx)
+      insns.add(NCall(dest = taskDest, retTy = retTy, fn = NLocal(name = fnTyped), args = callArgs))
+      val tty = taskNType(ctx, elem)
+      val taskCast = freshTmp(ctx)
+      insns.add(NBitcast(dest = taskCast, fromTy = retTy, value = NLocal(name = taskDest), toTy = tty))
+      val taskV = NVal(ty = tty, value = NLocal(name = taskCast))
+      registerTemp(ctx, taskV)
+      if wantTask {
+        return taskV
+      }
+      return unwrapTask(ctx, insns, taskV, elem)
+    }
+    case None -> {
+    }
   }
   match retTy {
     case NVoid -> {

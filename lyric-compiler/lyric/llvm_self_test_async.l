@@ -754,3 +754,30 @@ test "async runCaptureWithInput redirects through the async seam" {
   val r = compileAndRunBundled(src)
   assertEqualInt(r.exitCode, 42, "stdin content round-trips through the coroutine's nonblocking capture op")
 }
+
+// Async interface methods dispatch through the vtable: the slot returns the
+// task handle and the call site unwraps it like any async call (#8155).
+test "async interface method: dispatched through the vtable from a sync caller" {
+  val src = "package T\n" + "interface Fetcher {\n  async func get(id: in Int): Int\n}\n" +
+    "record Base {\n  b: Int\n}\n" +
+    "impl Fetcher for Base {\n  async func get(id: in Int): Int {\n    self.b + id\n  }\n}\n" +
+    "func fetch(f: in Fetcher, id: in Int): Int {\n  f.get(id)\n}\n" +
+    "func main(): Int {\n  val f: Fetcher = Base(b = 40)\n  fetch(f, 2)\n}\n"
+  val r = compileAndRun(src)
+  assertEqualInt(r.exitCode, 42, "an async interface method returns its impl's value: 40 + 2")
+}
+
+test "async interface method: awaited inside an async caller, mixed with a sync method (ASan)" {
+  val src = "package T\n" + "interface Store {\n  func base(): Int\n  async func load(id: in Int): String\n}\n" +
+    "record Mem {\n  b: Int\n}\n" +
+    "impl Store for Mem {\n  func base(): Int {\n    self.b\n  }\n" +
+    "  async func load(id: in Int): String {\n    \"item-\" + id.toString()\n  }\n}\n" +
+    "async func run(s: in Store): Int {\n  val name = await s.load(7)\n  if name == \"item-7\" {\n    s.base() + 2\n  } else {\n    1\n  }\n}\n" +
+    "func main(): Int {\n  val s: Store = Mem(b = 40)\n  await run(s)\n}\n"
+  val r = compileAndRun(src)
+  assertEqualInt(
+    r.exitCode,
+    42,
+    "an async-caller awaits a String-returning async interface method, then calls a sync one"
+  )
+}

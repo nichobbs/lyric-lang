@@ -873,3 +873,269 @@ test "same-named types across packages: imported union beats a bundle-first reco
   val outcome = compileAndRunProject(pkgs)
   assertEqualInt(outcome.exitCode, 44, "3 (Reg.Routes.Item) + 6 (Reg.A.Logic: 1+5) + 35 (Reg.B.Logic: 15+20) = 44")
 }
+
+// A type parameter only a lambda argument's result determines (`wrap[M]`'s
+// `M`, bound by `f: (Int) -> M`) is inferred: the checker's inferred type
+// arguments are written onto the call before native codegen, so neither the
+// qualified nor the bare spelling of a cross-package call is uninferable
+// (#8155, `Ui.Forms.formFields`'s `Msg`).
+test "cross-package generic call whose type parameter only a lambda's result binds, bare name (#8155)" {
+  val pkgs: List[NativeSourcePackage] = newList()
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Lam.App",
+      path = "",
+      source = "package Lam.App\n" + "import Lam.Lib.{wrap}\n" + "func mk(n: in Int): Int {\n  n + 1\n}\n" +
+        "func name(n: in Int): String {\n  \"n\" + n.toString()\n}\n" +
+        "func main(): Int {\n" +
+        "  val a = wrap(20, { n: Int -> mk(n) })\n" +
+        "  val b = wrap(20, { n: Int -> name(n) })\n" +
+        "  a + b.length\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Lam.Lib",
+      path = "",
+      source = "package Lam.Lib\n" + "pub func wrap[M](x: in Int, f: in (Int) -> M): M {\n  f(x)\n}\n"
+    )
+  )
+  val outcome = compileAndRunProject(pkgs)
+  assertEqualInt(outcome.exitCode, 24, "21 (Int result) + 3 (\"n20\".length) = 24")
+}
+
+test "cross-package generic call whose type parameter only a lambda's result binds, package-qualified (#8155)" {
+  val pkgs: List[NativeSourcePackage] = newList()
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Lam2.App",
+      path = "",
+      source = "package Lam2.App\n" + "import Lam2.Lib\n" + "func mk(n: in Int): Int {\n  n + 1\n}\n" +
+        "func name(n: in Int): String {\n  \"n\" + n.toString()\n}\n" +
+        "func main(): Int {\n" +
+        "  val a = Lam2.Lib.wrap(20, { n: Int -> mk(n) })\n" +
+        "  val b = Lam2.Lib.wrap(20, { n: Int -> name(n) })\n" +
+        "  a + b.length\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Lam2.Lib",
+      path = "",
+      source = "package Lam2.Lib\n" + "pub func wrap[M](x: in Int, f: in (Int) -> M): M {\n  f(x)\n}\n"
+    )
+  )
+  val outcome = compileAndRunProject(pkgs)
+  assertEqualInt(outcome.exitCode, 24, "21 (Int result) + 3 (\"n20\".length) = 24")
+}
+
+// An unannotated lambda local inside a generic function whose result is the
+// function's own type parameter (`Ui.Forms.fieldViewAt`'s `{ s: String ->
+// onEdit(name, s) }`): the checker records the local's type with the type
+// variable spelled by name so native can type the lambda in each
+// instantiation (#8155).
+test "generic function with an unannotated lambda local returning its type parameter (#8155)" {
+  val pkgs: List[NativeSourcePackage] = newList()
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Lam3.App",
+      path = "",
+      source = "package Lam3.App\n" + "import Lam3.Lib.{viaLocal}\n" + "func main(): Int {\n" +
+        "  val n = viaLocal({ s: String -> s.length }, \"abcd\")\n" +
+        "  val t = viaLocal({ s: String -> s + \"!\" }, \"ab\")\n" +
+        "  n + t.length\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Lam3.Lib",
+      path = "",
+      source = "package Lam3.Lib\n" + "pub func viaLocal[M](f: in (String) -> M, s: in String): M {\n" +
+        "  val g = { t: String -> f(t) }\n" +
+        "  g(s)\n" +
+        "}\n"
+    )
+  )
+  val outcome = compileAndRunProject(pkgs)
+  assertEqualInt(outcome.exitCode, 7, "4 (\"abcd\".length) + 3 (\"ab!\".length) = 7")
+}
+
+// A bare call resolves to what the package imports, not to an unrelated
+// same-named, same-arity function of a package it does not import that
+// happened to register first (`Ui.Widgets.field[Msg]` vs `Ui.Html`'s private
+// `field`, #8155).
+test "a bare call to an imported generic is not captured by another package's same-named function (#8155)" {
+  val pkgs: List[NativeSourcePackage] = newList()
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Z.Html",
+      path = "",
+      source = "package Z.Html\n" + "func field(a: in Bool, b: in Bool, c: in Bool): Int {\n  1\n}\n" +
+        "pub func useField(): Int {\n  field(true, false, true)\n}\n"
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Z.Widgets",
+      path = "",
+      source = "package Z.Widgets\n" + "pub func field[T](label: in String, n: in Int, v: in T): T {\n  v\n}\n"
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Z.App",
+      path = "",
+      source = "package Z.App\n" + "import Z.Widgets.{field}\n" + "func main(): Int {\n  field(\"a\", 1, 41) + 1\n}\n"
+    )
+  )
+  val outcome = compileAndRunProject(pkgs)
+  assertEqualInt(outcome.exitCode, 42, "Z.Widgets.field[Int](\"a\", 1, 41) + 1 = 42")
+}
+
+// `Type.Case` for a nullary union case resolves to the own package's union
+// when another package declares a same-named union (`Status.Loading` in the
+// edit and the list screens of `examples/ui-customers`, #8155).  `Y.B.Status`
+// puts `Loading` at a different discriminant than `Y.A.Status`, so a
+// cross-package alias builds the wrong case or fails to type-check.
+test "a nullary Type.Case resolves to the own package's same-named union (#8155)" {
+  val pkgs: List[NativeSourcePackage] = newList()
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Y.A",
+      path = "",
+      source = "package Y.A\n" + "pub union Status {\n  case Loading\n  case Ready(n: Int)\n}\n" +
+        "pub func code(): Int {\n" +
+        "  val s = Status.Loading\n" +
+        "  match s {\n    case Loading -> 3\n    case Ready(n) -> n\n  }\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Y.B",
+      path = "",
+      source = "package Y.B\n" + "pub union Status {\n  case Idle\n  case Loading\n  case Ready(n: Int, m: Int)\n}\n" +
+        "pub func code(): Int {\n" +
+        "  val s = Status.Loading\n" +
+        "  match s {\n    case Idle -> 100\n    case Loading -> 7\n    case Ready(n, m) -> n + m\n  }\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Y.App",
+      path = "",
+      source = "package Y.App\n" + "import Y.A\n" + "import Y.B\n" +
+        "func main(): Int {\n  Y.A.code() + Y.B.code()\n}\n"
+    )
+  )
+  val outcome = compileAndRunProject(pkgs)
+  assertEqualInt(outcome.exitCode, 10, "3 (Y.A.Status.Loading) + 7 (Y.B.Status.Loading) = 10")
+}
+
+// A record field whose type is a bare name resolves in the DECLARING package:
+// two packages' `Model.status: Status` name two different unions
+// (`Customers.Edit.Logic` and `Customers.List.Logic`, #8155).
+test "record fields typed by a same-named union resolve in the declaring package (#8155)" {
+  val pkgs: List[NativeSourcePackage] = newList()
+  pkgs.add(
+    NativeSourcePackage(
+      name = "W.A",
+      path = "",
+      source = "package W.A\n" + "pub union Status {\n  case Loading\n  case Ready\n}\n" +
+        "pub record Model {\n  status: Status\n}\n" +
+        "pub func start(): Model {\n  Model(status = Status.Loading)\n}\n" +
+        "pub func code(m: in Model): Int {\n  match m.status {\n    case Loading -> 3\n    case Ready -> 4\n  }\n}\n"
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "W.B",
+      path = "",
+      source = "package W.B\n" + "pub union Status {\n  case Idle\n  case Loading\n  case Ready(n: Int)\n}\n" +
+        "pub record Model {\n  status: Status\n}\n" +
+        "pub func start(): Model {\n  Model(status = Status.Loading)\n}\n" +
+        "pub func code(m: in Model): Int {\n  match m.status {\n    case Idle -> 100\n    case Loading -> 7\n    case Ready(n) -> n\n  }\n}\n"
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "W.App",
+      path = "",
+      source = "package W.App\n" + "import W.A\n" + "import W.B\n" +
+        "func main(): Int {\n  W.A.code(W.A.start()) + W.B.code(W.B.start())\n}\n"
+    )
+  )
+  val outcome = compileAndRunProject(pkgs)
+  assertEqualInt(outcome.exitCode, 10, "3 (W.A) + 7 (W.B) = 10")
+}
+
+// A bare union case name (`RetryClicked`) resolves to the case of the union a
+// package IMPORTS, not to a same-named case of another package's union that
+// registered first (the edit and list screens' `Msg`, #8155).
+test "a bare union case name resolves to the imported package's union (#8155)" {
+  val pkgs: List[NativeSourcePackage] = newList()
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Q.B",
+      path = "",
+      source = "package Q.B\n" + "pub union Msg {\n  case Other\n  case Retry\n}\n"
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Q.A",
+      path = "",
+      source = "package Q.A\n" + "pub union Msg {\n  case Retry\n  case Go(n: Int)\n}\n" +
+        "pub func pick[T](x: in T): T {\n  x\n}\n"
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Q.App",
+      path = "",
+      source = "package Q.App\n" + "import Q.A.{Msg, Retry, Go, pick}\n" + "func main(): Int {\n" +
+        "  val m = pick(Retry)\n" +
+        "  match m {\n    case Retry -> 5\n    case Go(n) -> n\n  }\n" +
+        "}\n"
+    )
+  )
+  val outcome = compileAndRunProject(pkgs)
+  assertEqualInt(outcome.exitCode, 5, "the imported Q.A.Msg.Retry, not Q.B.Msg.Retry")
+}
+
+// A bare `None` passed to a generic function's `Option[M]` parameter takes
+// `M` from an earlier argument (`Widgets.gridRow(cells, None)`, #8155).
+test "a bare None argument takes its type from an earlier argument of the generic call (#8155)" {
+  val pkgs: List[NativeSourcePackage] = newList()
+  pkgs.add(
+    NativeSourcePackage(
+      name = "N.Lib",
+      path = "",
+      source = "package N.Lib\n" + "import Std.Core\n" + "import Std.Collections\n" +
+        "pub union View[M] {\n  case Leaf(label: String)\n  case Node(n: Int)\n}\n" +
+        "pub func row[M](cells: in List[View[M]], onClick: in Option[M]): View[M] {\n  Leaf(label = \"r\")\n}\n" +
+        "pub func keyed[M](k: in String, v: in View[M]): View[M] {\n  v\n}\n"
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "N.App",
+      path = "",
+      source = "package N.App\n" + "import Std.Core\n" + "import Std.Collections\n" + "import N.Lib\n" +
+        "import N.Lib.{row}\n" +
+        "union Msg {\n  case Go\n}\n" +
+        "func build(): View[Msg] {\n" +
+        "  val cells: List[View[Msg]] = newList()\n" +
+        "  val first = row(cells, None)\n" +
+        "  N.Lib.keyed(\"b\", N.Lib.row(cells, None))\n" +
+        "}\n" +
+        "func main(): Int {\n  match build() {\n    case Leaf(l) -> 3\n    case Node(n) -> n\n  }\n}\n"
+    )
+  )
+  val outcome = compileAndRunProject(pkgs)
+  assertEqualInt(outcome.exitCode, 3, "the Leaf built by N.Lib.row")
+}

@@ -305,6 +305,11 @@ pub record SymbolTable {
   /// initializer is, keyed by the literal's span; Mono binds it to an
   /// annotated local (#7863).
   localBindingTypeSites: Map[String, TypeExpr]
+  /// One element once the check is for a backend that lowers a generic body
+  /// itself (native): an unannotated function-valued local's recorded type
+  /// then spells the enclosing function's type variables by name, so the
+  /// backend can type the lambda there.
+  spellTypeVarsInLocalFuncs: List[Bool]
   /// Each open binding, keyed by `recordCopySiteKey` of its initializer's
   /// span (see `OpenBindingSite`, #7788); a tuple literal matched directly,
   /// by its own span; a name a pattern binds to a sub-tuple holding open
@@ -643,6 +648,7 @@ pub func newSymbolTable(): SymbolTable {
     argConversionSites = newMap(),
     callResultTypes = newMap(),
     localBindingTypeSites = newMap(),
+    spellTypeVarsInLocalFuncs = newList(),
     openBindingSites = newMap(),
     funcValueCallSites = newMap(),
     tuplePatternBindingSites = newMap(),

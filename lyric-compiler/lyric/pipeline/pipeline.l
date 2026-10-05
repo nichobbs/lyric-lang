@@ -748,13 +748,18 @@ pub func pipeCheckAndMono(
 
   val noSpecSites: Map[String, Map[String, ArgConversionSite]] = newMap()
   val lambdaTypes = funcValueLambdaTypes(valueSites)
-  val derivedLens = markValueRecordCtors(
+  val derivedLens0 = markValueRecordCtors(
     withArrayLens(
       rewriteDottedGenericCalls(derived, tcRes.symbols.dottedGenericCallSites),
       tcRes.symbols.arrayTypeLens
     ),
     tcRes.symbols.valueRecordCtorSites
   )
+  val derivedLens = if opts.nativeIntrinsics {
+    spellLambdaGenericCallTypeArgs(derivedLens0, tcRes.symbols.genericCallTypeArgSites)
+  } else {
+    derivedLens0
+  }
   for gi in derivedLens.items {
     match gi.kind {
       case IFunc(gd) -> {
@@ -1514,6 +1519,64 @@ func lowerSpecArrays(
     items = items,
     span = file.span
   )
+}
+
+// A generic call with a lambda argument is written with the type arguments
+// the type checker inferred for it (`wrap[Int](41, { n: Int -> n + 1 })`).
+// The native backend types a lambda from its parameter's function type under
+// the type arguments the other arguments bind, so a type parameter only the
+// lambda's own result determines would otherwise be uninferable.  Only a
+// call whose every type argument is closed and unambiguous was recorded.
+func spellLambdaGenericCallTypeArgs(file: in SourceFile, sites: in Map[String, GenericCallTypeArgsSite]): SourceFile {
+  if sites.count == 0 {
+    return file
+  }
+  mapExprsInFile(
+    file,
+    { e: Expr ->
+      match e.kind {
+        case ECall(fn, args) -> match fn.kind {
+          case EPath(_) -> {
+            var hasLambda = false
+            for a in args {
+              match a {
+                case CAPositional(ex) -> if isLambdaArg(ex) { hasLambda = true }
+                case CANamed(_, value, _) -> if isLambdaArg(value) { hasLambda = true }
+              }
+            }
+            if not hasLambda {
+              e
+            } else {
+              match mapGet(sites, recordCopySiteKey(fn.span)) {
+                case Some(site) -> {
+                  if site.conflicting or site.typeArgs.count == 0 {
+                    e
+                  } else {
+                    val targs: List[TypeArg] = newList()
+                    for te in site.typeArgs {
+                      targs.add(TAType(ty = te))
+                    }
+                    Expr(kind = ECall(fn = Expr(kind = ETypeApp(fn = fn, args = targs), span = fn.span), args = args), span = e.span)
+                  }
+                }
+                case None -> e
+              }
+            }
+          }
+          case _ -> e
+        }
+        case _ -> e
+      }
+    }
+  )
+}
+
+func isLambdaArg(e: in Expr): Bool {
+  match e.kind {
+    case ELambda(_, _) -> true
+    case EParen(inner) -> isLambdaArg(inner)
+    case _ -> false
+  }
 }
 
 // A call to a generic dot-named function written as a method call
