@@ -771,12 +771,11 @@ pub record CodegenCtx {
   // than erasing to `MObject`; construction / field / match sites route through
   // the by-name generic instructions accordingly.
   genericTypeArity: Map[String, Int]
-  // FQNs of generic opaque types (#8187).  An opaque type is emitted as a
-  // non-generic sealed class whose type-parameter fields are `object`, so every
-  // instantiation of it (`Opq[Int]`) is that one erased class.  A reference to
-  // an instantiation, in this assembly or a consumer's, lowers to `MObject`,
-  // matching the declaring assembly's signatures.
-  erasedOpaqueFqns: Map[String, Bool]
+  // FQNs of the generic opaque types lowered as generic classes (#8187): a
+  // generic, non-projectable `opaque type` is rewritten to the equivalent
+  // generic record before codegen (`reifyGenericOpaquesMsil`) so it shares the
+  // record's reified-generic machinery, with internal instead of public fields.
+  reifiedOpaqueFqns: Map[String, Bool]
   // Constructor parameter MSIL types (in declaration order) for an in-bundle
   // generic record (#2362).  Key = the record FQN (e.g. "Pkg.Box"); value = the
   // field types in VAR form (e.g. [MTypeVar(0)] for `Box(value: T)`, or
@@ -2383,7 +2382,7 @@ pub func newCodegenCtx(
     typeScopeOrigin = newList(),
     caseTypeParamCount = newMap(),
     genericTypeArity = newMap(),
-    erasedOpaqueFqns = newMap(),
+    reifiedOpaqueFqns = newMap(),
     genericCtorParams = newMap(),
     restoredArtifacts = restoredArtifacts,
     nugetAssemblyPaths = nugetAssemblyPaths,
@@ -3394,7 +3393,8 @@ func mergeImportListMsil(into: in Map[String, List[String]], pkgName: in String,
 /// unregistered head and erased that return to `object` (D-progress-950).
 /// Registering the same names in the same order keeps every first-wins
 /// resolution identical; `addPackageTokens` re-registers them idempotently.
-pub func preRegisterPackageTypeNames(cctx: in CodegenCtx, file: in SourceFile, pkgName: in String): Unit {
+pub func preRegisterPackageTypeNames(cctx: in CodegenCtx, file0: in SourceFile, pkgName: in String): Unit {
+  val file = reifyGenericOpaquesMsil(cctx, file0, pkgName)
   recordPackageImportsMsil(cctx, pkgName, file.imports)
   var i = 0
   while i < file.items.count {
@@ -3403,13 +3403,8 @@ pub func preRegisterPackageTypeNames(cctx: in CodegenCtx, file: in SourceFile, p
       case IExposedRec(decl) -> preRegisterGenericTypeName(cctx, decl.name, pkgName, genericNamesOf(decl.generics).count)
       case IUnion(decl) -> preRegisterGenericTypeName(cctx, decl.name, pkgName, genericNamesOf(decl.generics).count)
       case IInterface(decl) -> registerTypeFqnCandidate(cctx, decl.name, pkgName + "." + decl.name)
-      case IOpaque(decl) -> {
-        if genericNamesOf(decl.generics).count > 0 and not cctx.erasedOpaqueFqns.containsKey(pkgName + "." + decl.name) {
-          cctx.erasedOpaqueFqns.add(pkgName + "." + decl.name, true)
-        }
-        if decl.hasBody and hasAnnotationMsil(decl.annotations, "projectable") {
-          registerTypeFqnCandidate(cctx, decl.name + "View", pkgName + "." + decl.name + "View")
-        }
+      case IOpaque(decl) -> if decl.hasBody and hasAnnotationMsil(decl.annotations, "projectable") {
+        registerTypeFqnCandidate(cctx, decl.name + "View", pkgName + "." + decl.name + "View")
       }
       case IDistinctType(decl) -> registerTypeFqnCandidate(cctx, decl.name, pkgName + "." + decl.name)
       case IProtected(decl) -> preRegisterGenericTypeName(cctx, decl.name, pkgName, genericNamesOf(decl.generics).count)
@@ -3640,7 +3635,8 @@ func typeExprMentionsNamesMsil(te: in TypeExpr, names: in List[String]): Bool {
   }
 }
 
-pub func addPackageTokens(cctx: in CodegenCtx, file: in SourceFile, pkgName: in String): Unit {
+pub func addPackageTokens(cctx: in CodegenCtx, file0: in SourceFile, pkgName: in String): Unit {
+  val file = reifyGenericOpaquesMsil(cctx, file0, pkgName)
   // Collect IExternType names so auto-FFI call interception can resolve them.
   scanExternTypesMsil(cctx, file)
 
@@ -8795,9 +8791,6 @@ pub func typeExprToMsilCtx(cctx: in CodegenCtx, te0: in TypeExpr, pkgName: in St
         // In-bundle generic type (#2362): `Box[Int]` resolves to a by-name
         // GENERICINST over the in-bundle TypeDef (resolved at lowering), checked
         // BEFORE the cross-assembly `ffiTypeRefs` path so an in-bundle head wins.
-        if cctx.erasedOpaqueFqns.containsKey(headFqn) {
-          return MObject
-        }
         match mapGet(cctx.genericTypeArity, headFqn) {
           case Some(arity) -> {
             val inBundleArgs: List[MsilType] = newList()
@@ -20007,17 +20000,10 @@ func lowerBuiltinOrStaticCallMsil(
             popCollExpect(fctx)
             castObjectToDelegateMsil(cctx, insns, loweredC, innerHint)
             narrowObjectToDeclaredTypeMsil(cctx, insns, loweredC, innerHint)
-            // A generic opaque type's type-parameter field is an erased
-            // `object` slot (#8187): a value-type argument is boxed into it.
-            if cctx.erasedOpaqueFqns.containsKey(ctorKey) and isValueType(loweredC) {
-              boxIfNeededMsil(cctx, insns, loweredC)
-              MObject
-            } else {
-              widenIntToLongMsil(insns, loweredC, innerHint)
-              // Report the widened type, so `widenGenericCtorArgsMsil` does not
-              // convert the argument a second time.
-              widenedIntToLongTyMsil(loweredC, innerHint)
-            }
+            widenIntToLongMsil(insns, loweredC, innerHint)
+            // Report the widened type, so `widenGenericCtorArgsMsil` does not
+            // convert the argument a second time.
+            widenedIntToLongTyMsil(loweredC, innerHint)
           }
           argTypes.add(at)
           argEnds.add(insns.count)
@@ -35405,6 +35391,92 @@ func synthesizeClosureClassMsil(
   closure
 }
 
+/// A generic, non-projectable `opaque type` with a body lowers as the equivalent
+/// generic record (#8187): the record machinery already reifies type parameters
+/// (GenericParam rows, `!n` fields, TypeSpec-parented members, docs/43) and
+/// opaque types had no equivalent, so every instantiation shared one erased
+/// class whose `T` fields were `object`.  The fields stay internal
+/// (`lowerRecordMsil`'s output is patched by `opaqueRecordFieldFlagsMsil`).  The
+/// rewritten FQNs are recorded in `reifiedOpaqueFqns`.
+pub func reifyGenericOpaquesMsil(cctx: in CodegenCtx, file: in SourceFile, pkgName: in String): SourceFile {
+  var any = false
+  for it in file.items {
+    match it.kind {
+      case IOpaque(d) -> if isReifiableOpaqueMsil(d) {
+        any = true
+      }
+      case _ -> ()
+    }
+  }
+  if not any {
+    return file
+  }
+  val items: List[Item] = newList()
+  for it in file.items {
+    match it.kind {
+      case IOpaque(d) -> {
+        if isReifiableOpaqueMsil(d) {
+          val members: List[RecordMember] = newList()
+          for m in d.members {
+            match m {
+              case OMField(f) -> members.add(RMField(field = f))
+              case OMInvariant(inv) -> members.add(RMInvariant(inv = inv))
+            }
+          }
+          val rd = RecordDecl(name = d.name, generics = d.generics, whereClause = d.whereClause, members = members, span = d.span)
+          if not cctx.reifiedOpaqueFqns.containsKey(pkgName + "." + d.name) {
+            cctx.reifiedOpaqueFqns.add(pkgName + "." + d.name, true)
+          }
+          items.add(
+            Item(
+              docComments = it.docComments,
+              annotations = it.annotations,
+              visibility = it.visibility,
+              kind = IRecord(decl = rd),
+              span = it.span
+            )
+          )
+        } else {
+          items.add(it)
+        }
+      }
+      case _ -> items.add(it)
+    }
+  }
+  SourceFile(
+    moduleDoc = file.moduleDoc,
+    fileAnnotations = file.fileAnnotations,
+    packageDecl = file.packageDecl,
+    imports = file.imports,
+    items = items,
+    span = file.span
+  )
+}
+
+func isReifiableOpaqueMsil(d: in OpaqueTypeDecl): Bool {
+  d.hasBody and genericNamesOf(d.generics).count > 0 and not hasAnnotationMsil(d.annotations, "projectable")
+}
+
+/// A reified opaque type's fields are internal to the declaring assembly.
+func opaqueRecordFieldFlagsMsil(cctx: in CodegenCtx, rec: in MRecord): MRecord {
+  if not cctx.reifiedOpaqueFqns.containsKey(rec.className) {
+    return rec
+  }
+  val fields: List[MField] = newList()
+  for f in rec.fields {
+    fields.add(MField(flags = FDA_ASSEMBLY, name = f.name, fieldType = f.fieldType))
+  }
+  MRecord(
+    className = rec.className,
+    namespace = rec.namespace,
+    baseClass = rec.baseClass,
+    fields = fields,
+    methods = rec.methods,
+    useDefaultCtor = rec.useDefaultCtor,
+    generics = rec.generics
+  )
+}
+
 pub func lowerRecordMsil(cctx: in CodegenCtx, decl: in RecordDecl, pkgName: in String): MRecord {
   val className = pkgName + "." + decl.name
   val generics = genericNamesOf(decl.generics)
@@ -43859,9 +43931,10 @@ func deriveConfigEnvVarName(pkgName: in String, blockName: in String, fieldName:
 
 // The caller must subsequently call `lowerMPackageWithCtx(pkg, cctx.lctx, entryToken)`
 // to emit the PE bytes.
-pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
-  val pkgSegs = file.packageDecl.path.segments
+pub func codegenMPackage(file0: in SourceFile, cctx: in CodegenCtx): MPackage {
+  val pkgSegs = file0.packageDecl.path.segments
   val pkgName = joinSegsMsil(pkgSegs, ".")
+  val file = reifyGenericOpaquesMsil(cctx, file0, pkgName)
 
   // Reset the lambda counter so each package's ELambda lookup walks from
   // `__lambda_0` (matching the per-package `liftLambdasMsil` numbering).
@@ -43946,7 +44019,7 @@ pub func codegenMPackage(file: in SourceFile, cctx: in CodegenCtx): MPackage {
     alignLambdaTickerMsil(cctx, lambdaBases, i)
     match item.kind {
       case IRecord(decl) -> {
-        val baseRec = lowerRecordMsil(cctx, decl, pkgName)
+        val baseRec = opaqueRecordFieldFlagsMsil(cctx, lowerRecordMsil(cctx, decl, pkgName))
         val rec0 = injectImplMethodsIntoRecord(cctx, baseRec, pkgName + "." + decl.name)
         val rec = appendDeriveOverridesMsil(cctx, rec0, pkgName + "." + decl.name, decl, item.annotations)
         items.add(MPRecord(rec = rec))
@@ -44837,6 +44910,13 @@ func registerRestoredDistinct(cctx: in CodegenCtx, packageName: in String, decl:
 
 func registerRestoredRecordFields(cctx: in CodegenCtx, packageName: in String, rec: in RecordDecl): Unit {
   val className = packageName + "." + rec.name
+  // A restored opaque type's fields are internal to its declaring assembly
+  // (#8187): registering a MemberRef for one would compile to a read that
+  // faults at run time, so it stays unregistered and a read of it from
+  // another package is rejected at compile time.
+  if cctx.reifiedOpaqueFqns.containsKey(className) {
+    return
+  }
   val typeRefRow = lookupRestoredTypeRefRow(cctx, packageName, rec.name)
   if typeRefRow == 0 {
     return
@@ -45413,7 +45493,7 @@ func registerRestoredMembers(cctx: in CodegenCtx, art: in SynthesisedArtifact, s
     case Some(ri) -> Mdr.imageTaskReturningFuncs(ri, art.packageName)
     case None -> noTaskFuncs
   }
-  val items = art.source.items
+  val items = reifyGenericOpaquesMsil(cctx, art.source, art.packageName).items
   var i = 0
   while i < items.count {
     match items[i].kind {
@@ -45436,11 +45516,6 @@ func registerRestoredMembers(cctx: in CodegenCtx, art: in SynthesisedArtifact, s
         registerRestoredInterface(cctx, art.packageName, decl)
       }
       case IDistinctType(decl) -> registerRestoredDistinct(cctx, art.packageName, decl)
-      case IOpaque(decl) -> {
-        if genericNamesOf(decl.generics).count > 0 and not cctx.erasedOpaqueFqns.containsKey(art.packageName + "." + decl.name) {
-          cctx.erasedOpaqueFqns.add(art.packageName + "." + decl.name, true)
-        }
-      }
       case IEnum(decl) -> {
         // Restored enums use the same ordinal-int model as in-bundle ones
         // (#3196): the type name maps signature positions to I4 and each
