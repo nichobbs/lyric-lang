@@ -8,7 +8,9 @@
 #   - the application builds an `Opq[Int]` through the library and reads it
 #     through the wrapper: it builds and prints 3;
 #   - the application calling the generic `get` itself would specialise a body
-#     that reads the type's internal field, which the build rejects as T0165.
+#     that reads the type's internal field, which the build rejects as T0165;
+#   - the same two packages in one project share an assembly, so the direct
+#     call builds and prints 3.
 #
 #   bash scripts/ci/generic-opaque-restored-e2e.sh
 # LYRIC_BIN overrides the binary (default: the AOT build for BUILD_CONFIG).
@@ -98,6 +100,26 @@ EOF
 out="$("$lyric_bin" build --manifest "$work/app/lyric.toml" 2>&1)"
 if ! echo "$out" | grep -q 'error\[T0165\]'; then
   echo "FAIL: a specialisation reading the restored opaque type's field: expected T0165, got:"; echo "$out"; fail=1
+fi
+
+# The same two packages in ONE project share an assembly, so a specialisation
+# in the application of the library's generic function reads the field.
+mkdir -p "$work/bundle/src"
+cat > "$work/bundle/lyric.toml" <<'TOML'
+[package]
+name = "Og.B"
+version = "0.1.0"
+[project]
+name = "Og.B"
+[project.packages]
+"OgLib" = "src/lib.l"
+"OgApp" = "src/app.l"
+TOML
+cp "$work/lib/src/lib.l" "$work/bundle/src/lib.l"
+cp "$work/app/src/app.l" "$work/bundle/src/app.l"
+out="$("$lyric_bin" run --manifest "$work/bundle/lyric.toml" 2>&1)"
+if [ "$(echo "$out" | tail -1)" != "3" ]; then
+  echo "FAIL: generic opaque type across packages of one project: expected 3, got:"; echo "$out"; fail=1
 fi
 
 [ "$fail" -eq 0 ] && echo "generic opaque types from a restored dependency: ok"
