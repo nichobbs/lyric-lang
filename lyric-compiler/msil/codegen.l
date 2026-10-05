@@ -11833,6 +11833,16 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                   }
                 }
               } else {
+                if cctx.reifiedOpaqueFqns.containsKey(stripGenericArity(fqn)) {
+                  // A restored generic opaque type's representation is internal to
+                  // its declaring assembly (#8187), so a specialisation compiled
+                  // here cannot read it.  Self-tagged like T0121.
+                  panic(
+                    "error[T0165] " + toString(recv.span.startPos.line) + ":" + toString(recv.span.startPos.column) +
+                      ": field '" + memberName + "' of the opaque type '" + stripGenericArity(fqn) +
+                      "' is not accessible here: the type comes from a separately built package, whose opaque representation is not visible to a generic function specialised in this package. Call it through a non-generic function in the declaring package."
+                  )
+                }
                 insns.add(MPop)
                 MObject
               }
@@ -35402,9 +35412,7 @@ pub func reifyGenericOpaquesMsil(cctx: in CodegenCtx, file: in SourceFile, pkgNa
   var any = false
   for it in file.items {
     match it.kind {
-      case IOpaque(d) -> if isReifiableOpaqueMsil(d) {
-        any = true
-      }
+      case IOpaque(d) -> if isReifiableOpaqueMsil(d) { any = true }
       case _ -> ()
     }
   }
@@ -35423,7 +35431,13 @@ pub func reifyGenericOpaquesMsil(cctx: in CodegenCtx, file: in SourceFile, pkgNa
               case OMInvariant(inv) -> members.add(RMInvariant(inv = inv))
             }
           }
-          val rd = RecordDecl(name = d.name, generics = d.generics, whereClause = d.whereClause, members = members, span = d.span)
+          val rd = RecordDecl(
+            name = d.name,
+            generics = d.generics,
+            whereClause = d.whereClause,
+            members = members,
+            span = d.span
+          )
           if not cctx.reifiedOpaqueFqns.containsKey(pkgName + "." + d.name) {
             cctx.reifiedOpaqueFqns.add(pkgName + "." + d.name, true)
           }
