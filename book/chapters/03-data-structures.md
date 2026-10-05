@@ -379,7 +379,15 @@ val v = Ints(data = a)       // an Ints[3]: N comes from the field's length
 val z: Ints[5] = Ints()      // N from the type you ask for; data is zero filled
 ```
 
-`Ints[3]` and `Ints[5]` are different types, each compiled as its own record, and `N` is an `Int` constant in the methods. Two fields that disagree about `N` are T0043. For now a record with a length parameter can be used only in the package that declares it (T0164), and a union, opaque type or protected type cannot take one (T0160, #8149).
+`Ints[3]` and `Ints[5]` are different types, each compiled as its own record, and `N` is an `Int` constant in the methods. A method can also be declared outside the record as a generic function named after it, and is called the same way:
+
+```lyric
+func Ints.first[N: Nat](self: in Ints[N]): Int = self.data[0]
+
+val f = v.first()            // or Ints.first(v); compiled for N = 3
+```
+
+Two fields that disagree about `N` are T0043. For now a record with a length parameter can be used only in the package that declares it (T0164), and a union, opaque type or protected type cannot take one (T0160, #8149).
 
 **Slices** are dynamically sized, heap-allocated sequences. They are reference types backed by .NET's `List<T>`.
 

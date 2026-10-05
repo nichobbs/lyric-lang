@@ -1959,7 +1959,10 @@ func isMonoSpecializedName(name: in String): Bool {
 // Registers the records the middle end specialises from a value-generic
 // record (`Ints__V3`, D169): they exist only in the post-mono file, so the
 // registration from the parsed file never saw their methods and fields, and
-// a method call on one fell back to the `()Object` guess.
+// a method call on one fell back to the `()Object` guess.  A non-generic
+// function whose signature names one (`func total(v: in Ints[3])`) is
+// re-registered too: the parsed file spelled the type `Ints[3]`, which
+// erased to `Object`, while the method is emitted over `Ints__V3`.
 func collectValueRecordSpecSigs(
   file: in SourceFile,
   into: in Map[String, JvmFuncSig],
@@ -1968,13 +1971,94 @@ func collectValueRecordSpecSigs(
 ): Unit {
   val specs: List[Item] = newList()
   for it in file.items {
-    val name = match it.kind { case IRecord(d) -> d.name; case IExposedRec(d) -> d.name; case _ -> "" }
-    if isValueRecordSpecName(name) {
-      specs.add(it)
+    match it.kind {
+      case IRecord(d) -> if isValueRecordSpecName(d.name) { specs.add(it) }
+      case IExposedRec(d) -> if isValueRecordSpecName(d.name) { specs.add(it) }
+      case IFunc(fd) -> if funcSigNamesValueRecordSpec(fd) { specs.add(it) }
+      case _ -> ()
     }
   }
-  if specs.count > 0 {
-    collectFileSigsSeeded(file.copy(items = specs), into, externSeed, ctorReg)
+  if specs.count == 0 {
+    return
+  }
+  // Registration is first-wins, and the parsed file already registered
+  // those functions with the erased descriptor, so these entries replace it.
+  val fresh: Map[String, JvmFuncSig] = newMap()
+  collectFileSigsSeeded(file.copy(items = specs), fresh, externSeed, ctorReg)
+  for k in mapKeys(fresh) {
+    match mapGet(fresh, k) {
+      case Some(sig) -> match mapGet(into, k) {
+        case Some(prev) -> if sameJvmOverload(prev, sig) { into.remove(k); into.add(k, sig) }
+        case None -> into.add(k, sig)
+      }
+      case None -> ()
+    }
+  }
+}
+
+// A bare name may key another overload of the same name, which keeps it.
+func sameJvmOverload(a: in JvmFuncSig, b: in JvmFuncSig): Bool {
+  a.owner == b.owner and a.params.count == b.params.count and a.jvmMethodName == b.jvmMethodName
+}
+
+func funcSigNamesValueRecordSpec(fd: in FunctionDecl): Bool {
+  match fd.generics {
+    case Some(_) -> return false
+    case None -> ()
+  }
+  for p in fd.params {
+    if typeExprNamesValueRecordSpec(p.ty) {
+      return true
+    }
+  }
+  match fd.ret {
+    case Some(r) -> typeExprNamesValueRecordSpec(r)
+    case None -> false
+  }
+}
+
+func typeArgNamesValueRecordSpec(a: in TypeArg): Bool {
+  match a {
+    case TAType(t) -> typeExprNamesValueRecordSpec(t)
+    case TAValue(_) -> false
+  }
+}
+
+func typeExprNamesValueRecordSpec(te: in TypeExpr): Bool {
+  match te.kind {
+    case TRef(p) -> p.segments.count > 0 and isValueRecordSpecName(p.segments[p.segments.count - 1])
+    case TGenericApp(head, args) -> {
+      if head.segments.count > 0 and isValueRecordSpecName(head.segments[head.segments.count - 1]) {
+        return true
+      }
+      for a in args {
+        if typeArgNamesValueRecordSpec(a) {
+          return true
+        }
+      }
+      false
+    }
+    case TArray(_, el) -> typeExprNamesValueRecordSpec(el)
+    case TSlice(el) -> typeExprNamesValueRecordSpec(el)
+    case TTuple(ts) -> {
+      for t in ts {
+        if typeExprNamesValueRecordSpec(t) {
+          return true
+        }
+      }
+      false
+    }
+    case TNullable(inner) -> typeExprNamesValueRecordSpec(inner)
+    case TParen(inner) -> typeExprNamesValueRecordSpec(inner)
+    case TFunction(ps, r) -> {
+      for t in ps {
+        if typeExprNamesValueRecordSpec(t) {
+          return true
+        }
+      }
+      typeExprNamesValueRecordSpec(r)
+    }
+    case _ -> false
   }
 }
 
