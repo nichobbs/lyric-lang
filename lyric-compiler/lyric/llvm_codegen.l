@@ -18048,10 +18048,18 @@ func registerProtectedMember(
   )
   addSig(ctx.sigs, pkg + "." + methodName + "/" + arity.toString(), sig)
   addSig(ctx.sigs, methodName + "/" + arity.toString(), sig)
+  // Also under the receiver's own type name, which a call on a concrete
+  // receiver resolves first, so two protected types sharing a member name
+  // (the specialisations of one value-generic type, #8149) each reach their
+  // own member.
+  addSig(ctx.sigs, pkg + "." + pd.name + "." + methodName + "/" + arity.toString(), sig)
+  addSig(ctx.sigs, pd.name + "." + methodName + "/" + arity.toString(), sig)
   var shorter = requiredArgCount(sig)
   while shorter < arity {
     addSig(ctx.sigs, pkg + "." + methodName + "/" + shorter.toString(), sig)
     addSig(ctx.sigs, methodName + "/" + shorter.toString(), sig)
+    addSig(ctx.sigs, pkg + "." + pd.name + "." + methodName + "/" + shorter.toString(), sig)
+    addSig(ctx.sigs, pd.name + "." + methodName + "/" + shorter.toString(), sig)
     shorter = shorter + 1
   }
   val retTyN = retTypeToN(ctx, sRet)

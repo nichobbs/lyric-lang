@@ -1946,6 +1946,20 @@ func isMonoSpecializedName(name: in String): Bool {
   Str.contains(name, "__")
 }
 
+// `file` with only its protected types: what `collectFileSigsSeeded` is run
+// over again after the middle end, to register the per-length specialisations
+// of a value-generic protected type (#8149).
+func protectedTypesOnly(file: in SourceFile): SourceFile {
+  val items: List[Item] = newList()
+  for it in file.items {
+    match it.kind {
+      case IProtected(_) -> items.add(it)
+      case _ -> ()
+    }
+  }
+  file.copy(items = items)
+}
+
 // Register the sigs of monomorphizer-specialised functions (`mapKeys__String__Int`,
 // `unwrapOr__Int`, …) from the POST-mono file, patching the registry built from
 // the pre-middle-end sources (#3229).  Mono runs inside `runMiddleEnd`, after
@@ -3478,6 +3492,15 @@ pub func compileProjectToJarBundledWithRestored(
         externSeedForFileCached(f, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache),
         ctorReg
       )
+      // A protected type the middle end specialised per length (`Ring__V3`,
+      // #8149) is absent from the pre-middle-end registry: register the
+      // post-mono file's protected types so calls on them resolve.
+      collectFileSigsSeeded(
+        protectedTypesOnly(f),
+        registry,
+        externSeedForFileCached(f, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache),
+        ctorReg
+      )
       // Register weaver-synthesised record fields (`__LyricBModeCallContext`,
       // `__LyricBModeCfg_*`, `__LyricBModeArgs_*`, docs/55/56) from the
       // post-weave file: `caseReg` above was built from the pre-weave
@@ -3618,6 +3641,12 @@ pub func compileProjectToJarBundledWithRestored(
           )
           collectMonoSpecializedSigs(
             ff,
+            registry,
+            externSeedForFileCached(ff, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache),
+            ctorReg
+          )
+          collectFileSigsSeeded(
+            protectedTypesOnly(ff),
             registry,
             externSeedForFileCached(ff, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache),
             ctorReg
