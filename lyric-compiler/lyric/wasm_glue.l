@@ -284,7 +284,23 @@ pub func collectWasmExportsOfShaped(units: in List[CodegenUnit], ownUnits: in In
     }
     u = u + 1
   }
+  // A stdlib kernel twin may declare host imports of its own (the module-shape
+  // `Std.HttpHost` declares `std.http.fetch`); the glue must wire them although
+  // the program did not write them.  Component builds never load such twins.
+  if not perPackage {
+    var su = ownUnits
+    while su < units.count {
+      collectUnitImports(units[su], imports, importErrors)
+      su = su + 1
+    }
+  }
   WasmExportSet(imports = imports, importErrors = importErrors, exports = exports, notes = notes, hasMain = hasMain)
+}
+
+/// Host-import modules whose functions the generated glue implements itself;
+/// the host may still override any of them through `options.imports`.
+pub func isBuiltinHostModule(module: in String): Bool {
+  module == "std.http"
 }
 
 func jsString(s: in String): String {
@@ -466,7 +482,7 @@ pub func renderGlueTypes(set: in WasmExportSet): String {
           fns.add("    " + tsPropName(other.name) + "(" + Str.joinList(", ", ps) + "): " + tsType(other.ret) + ";")
         }
       }
-      val optional = if npmPackageOfModule(imp.module).length > 0 { "?" } else { "" }
+      val optional = if npmPackageOfModule(imp.module).length > 0 or isBuiltinHostModule(imp.module) { "?" } else { "" }
       if optional.length == 0 {
         requiredHost = requiredHost + 1
       }

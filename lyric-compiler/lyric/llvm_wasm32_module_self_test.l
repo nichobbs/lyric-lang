@@ -36,7 +36,7 @@ func buildModule(source: in String, triple: in String): ModuleBuild {
   if Environment.getVarOrDefault("WASI_SDK_PATH", "").length == 0 {
     panic("WASI_SDK_PATH is not set: run scripts/ci/wasm32-wasi-rt-tests.sh or point it at a wasi-sdk install")
   }
-  val stdlib = findStdlibSourcesNative()
+  val stdlib = findStdlibSourcesNativeForShape("module")
   if stdlib.count == 0 {
     panic("native stdlib sources not found (run from the repo root or set LYRIC_STD_PATH)")
   }
@@ -872,4 +872,191 @@ test "wasm32 module: an npm: package's CommonJS exports that Node cannot scan st
       assertTrue(Str.contains(r.stdout, "shout=HI?\n"), "a second one ran: " + r.stdout)
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Std.Http over the host's fetch (docs/35 Q-JS-008, D-progress-1049).
+// ---------------------------------------------------------------------------
+val httpProgram: String = r#"package Probe
+
+import Std.Core
+import Std.Http
+import Std.Errors
+import Std.HttpHost as HostHttp
+
+func show(e: HttpError): String {
+  "err: " + HttpError.message(e)
+}
+
+pub async func fetchText(url: String): String {
+  match await getAsync(url) {
+    case Ok(resp) -> {
+      val ct = match HttpResponse.header(resp, "content-type") { case Some(v) -> v; case None -> "-" }
+      match await HttpResponse.bodyText(resp) {
+        case Ok(t) -> "status=" + HttpResponse.statusCode(resp).toString() + " ct=" + ct + " body=" + t
+        case Err(_) -> "body unreadable"
+      }
+    }
+    case Err(e) -> show(e)
+  }
+}
+
+pub async func postText(url: String, body: String): String {
+  match await postAsync(url, body) {
+    case Ok(resp) -> {
+      match await HttpResponse.bodyText(resp) {
+        case Ok(t) -> "status=" + HttpResponse.statusCode(resp).toString() + " body=" + t
+        case Err(_) -> "body unreadable"
+      }
+    }
+    case Err(e) -> show(e)
+  }
+}
+
+pub async func postJsonWithHeader(url: String, json: String): String {
+  match Url.tryFrom(url) {
+    case Err(e) -> show(e)
+    case Ok(u) -> {
+      val base = withJsonBody(request(POST, u), json)
+      match withHeader(base, "X-Probe", "yes") {
+        case Err(e) -> show(e)
+        case Ok(req) -> {
+          match await sendAsync(req) {
+            case Ok(resp) -> {
+              match await HttpResponse.bodyText(resp) {
+                case Ok(t) -> "status=" + HttpResponse.statusCode(resp).toString() + " body=" + t
+                case Err(_) -> "body unreadable"
+              }
+            }
+            case Err(e) -> show(e)
+          }
+        }
+      }
+    }
+  }
+}
+
+pub async func noRedirects(url: String): String {
+  match await HostHttp.hostGetSafe(HostHttp.hostClientNoRedirects(), url) {
+    case Ok(resp) -> "status=" + HostHttp.hostStatusCode(resp).toString()
+    case Err(msg) -> "err: " + msg
+  }
+}
+
+pub async func unixClient(): String {
+  match await HostHttp.hostGetSafe(HostHttp.hostClientWithUnixSocket("/var/run/docker.sock"), "http://localhost/version") {
+    case Ok(_) -> "unexpected success"
+    case Err(msg) -> "err: " + msg
+  }
+}
+
+pub func tlsSupported(): Bool {
+  tlsConfigSupported()
+}
+"#
+
+test "wasm32 module: Std.Http requests go through the host fetch and read the response" {
+  val r = runNode(
+    httpProgram,
+    r#"import { instantiate } from './prog.js';
+const seen = [];
+globalThis.fetch = async (url, init) => {
+  seen.push(init.method + ' ' + url + ' ' + init.redirect + ' ' + (init.body === undefined ? '-' : init.body) + ' ' + init.headers.get('content-type') + ' ' + init.headers.get('x-probe'));
+  if (url.endsWith('/big')) {
+    return new Response(new Uint8Array(11 * 1024 * 1024), { status: 200 });
+  }
+  if (url.endsWith('/redirect')) {
+    return { type: 'opaqueredirect', status: 0, headers: new Headers(), body: null };
+  }
+  if (url.endsWith('/down')) throw new TypeError('network down');
+  return new Response('hello ' + url.split('/').pop(), { status: url.endsWith('/missing') ? 404 : 200, headers: { 'Content-Type': 'text/x-probe' } });
+};
+const m = await instantiate();
+console.log('get=' + await m.fetchText('http://h.test/a'));
+console.log('missing=' + await m.fetchText('http://h.test/missing'));
+console.log('post=' + await m.postText('http://h.test/p', 'payload'));
+console.log('json=' + await m.postJsonWithHeader('http://h.test/j', '{"a":1}'));
+console.log('down=' + await m.fetchText('http://h.test/down'));
+console.log('big=' + await m.fetchText('http://h.test/big'));
+console.log('noredir=' + await m.noRedirects('http://h.test/redirect'));
+console.log('seen=' + seen.join(' | '));
+"#
+  )
+  assertEqualInt(r.exitCode, 0, "node exits cleanly: " + r.stderr)
+  assertTrue(
+    Str.contains(r.stdout, "get=status=200 ct=text/x-probe body=hello a\n"),
+    "a GET reads status, header, body: " + r.stdout
+  )
+  assertTrue(
+    Str.contains(r.stdout, "missing=status=404 ct=text/x-probe body=hello missing\n"),
+    "a 404 is a response: " + r.stdout
+  )
+  assertTrue(Str.contains(r.stdout, "post=status=200 body=hello p\n"), "a POST: " + r.stdout)
+  assertTrue(Str.contains(r.stdout, "json=status=200 body=hello j\n"), "a JSON POST with a custom header: " + r.stdout)
+  assertTrue(
+    Str.contains(r.stdout, "down=err: connection failed to http://h.test/down: network down\n"),
+    "a network failure is a typed ConnectionFailed: " + r.stdout
+  )
+  assertTrue(
+    Str.contains(r.stdout, "big=err: connection failed to http://h.test/big: "),
+    "an oversized body is an error: " + r.stdout
+  )
+  assertTrue(Str.contains(r.stdout, "noredir=err: "), "a hidden redirect is an error: " + r.stdout)
+  assertTrue(Str.contains(r.stdout, "GET http://h.test/a follow - null null"), "GET sends no body: " + r.stdout)
+  assertTrue(
+    Str.contains(r.stdout, "POST http://h.test/p follow payload text/plain"),
+    "text POST body and content type: " + r.stdout
+  )
+  assertTrue(
+    Str.contains(r.stdout, "POST http://h.test/j follow {\"a\":1} application/json yes"),
+    "JSON POST with header: " + r.stdout
+  )
+  assertTrue(
+    Str.contains(r.stdout, "GET http://h.test/redirect manual"),
+    "no-redirect clients use manual redirects: " + r.stdout
+  )
+}
+
+test "wasm32 module: Unix sockets fail loudly at request time and TLS configuration is reported unsupported" {
+  val r = runNode(
+    httpProgram,
+    r"import { instantiate } from './prog.js';
+let calls = 0;
+globalThis.fetch = async () => { calls++; return new Response('x'); };
+const m = await instantiate();
+console.log('supported=' + m.tlsSupported());
+console.log('unix=' + await m.unixClient());
+console.log('fetchCalls=' + calls);
+"
+  )
+  assertEqualInt(r.exitCode, 0, "node exits cleanly: " + r.stderr)
+  assertTrue(Str.contains(r.stdout, "supported=false\n"), "tlsConfigSupported reports false: " + r.stdout)
+  assertTrue(Str.contains(r.stdout, "unix=err: "), "a Unix-socket client fails the request: " + r.stdout)
+  assertTrue(Str.contains(r.stdout, "fetchCalls=0\n"), "the request never reached fetch: " + r.stdout)
+}
+
+test "wasm32 module: options.imports replaces the built-in std.http.fetch" {
+  val r = runNode(
+    httpProgram,
+    r"import { instantiate } from './prog.js';
+globalThis.fetch = async () => { throw new Error('global fetch must not be used'); };
+const m = await instantiate(undefined, { imports: { 'std.http': {
+  fetch: async (method, url) => 'ok\n201\nx-stub: 1\n\n' + Buffer.from('stubbed ' + method + ' ' + url).toString('base64'),
+} } });
+console.log('stub=' + await m.fetchText('http://h.test/z'));
+"
+  )
+  assertEqualInt(r.exitCode, 0, "node exits cleanly: " + r.stderr)
+  assertTrue(
+    Str.contains(r.stdout, "stub=status=201 ct=- body=stubbed GET http://h.test/z\n"),
+    "the override answers: " + r.stdout
+  )
+}
+
+test "wasm32 module: the .d.ts makes the std.http host module optional" {
+  val b = buildModule(httpProgram, "wasm32-wasi")
+  assertTrue(b.ok, "the module builds")
+  val dts = readGenerated(b.dir, "prog.d.ts")
+  assertTrue(Str.contains(dts, "\"std.http\"?: {"), "std.http is an optional override: " + dts)
+  assertTrue(Str.contains(dts, "  imports?:"), "the options need no imports: " + dts)
 }
