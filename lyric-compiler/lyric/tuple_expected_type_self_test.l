@@ -166,3 +166,29 @@ test "tuples holding None in a record field and a union payload" {
   }
   assertEqualInt(t, 6, "union payload")
 }
+
+func sliceSum(xs: in slice[Int]): Int {
+  var t = 0
+  for x in xs {
+    t = t + x
+  }
+  t
+}
+
+func sliceAndCount(): (slice[Int], Int) = ([1, 2, 3], 3)
+
+// A bracket literal that is a tuple component is a slice; binding it out of
+// the tuple reads it as one on every target (#8147: the JVM built it as an
+// `ArrayList` and bound it to an `Object[]` local unconverted).
+test "a slice component bound out of a tuple" {
+  val t = ([5, 6], 7)
+  match t {
+    case (a, n) -> assertEqualInt(a[0] + n, 12, "index the bound slice")
+  }
+  val (xs, count) = sliceAndCount()
+  assertEqualInt(sliceSum(xs) + count, 9, "a returned tuple's slice passed on")
+  val named = (["a", "b"], 1)
+  match named {
+    case (ns, k) -> assertEqual(ns[k], "b", "a String slice component")
+  }
+}

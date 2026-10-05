@@ -7068,6 +7068,47 @@ func makeListToArrHelperFunc(elem: in JvmType): LFunc {
 
 pub func erasedIndexGetHelperName(): String = "__lyricErasedIndexGet"
 
+pub func erasedToSliceHelperName(): String = "__lyricErasedToSlice"
+
+// `static Object[] __lyricErasedToSlice(Object v)`: a slice from a value
+// whose static type is erased (#8147).  A slice is an `Object[]`; a bracket
+// literal built where nothing expected a slice of it (a tuple element) is an
+// `ArrayList`, copied out with `toArray()`.  Anything else fails the final
+// `checkcast` loudly.
+func makeErasedToSliceHelperFunc(): LFunc {
+  val insns: List[LInsn] = newList()
+  insns.add(LAload(slot = 0))
+  insns.add(LInstanceof(className = "java/util/ArrayList"))
+  insns.add(LIfeq(label = "__ets_arr"))
+  insns.add(LAload(slot = 0))
+  insns.add(LCheckcast(className = "java/util/ArrayList"))
+  val noPs: List[JvmType] = newList()
+  insns.add(
+    LInvokevirtual(
+      owner = "java/util/ArrayList",
+      name = "toArray",
+      params = noPs,
+      ret = JArray(elem = JRef(className = "java/lang/Object"))
+    )
+  )
+  insns.add(LAreturn)
+  insns.add(LLabel(name = "__ets_arr"))
+  insns.add(LAload(slot = 0))
+  insns.add(LCheckcast(className = "[Ljava/lang/Object;"))
+  insns.add(LAreturn)
+  val ps: List[JvmType] = newList()
+  ps.add(JRef(className = "java/lang/Object"))
+  LFunc(
+    flags = 0x0009,
+    name = erasedToSliceHelperName(),
+    params = ps,
+    ret = JArray(elem = JRef(className = "java/lang/Object")),
+    insns = insns,
+    maxStack = 2,
+    maxLocals = 1
+  )
+}
+
 pub func erasedIndexSetHelperName(): String = "__lyricErasedIndexSet"
 
 // `static Object __lyricErasedIndexGet(Object r, int i)`: `r[i]` for a receiver
@@ -8674,6 +8715,9 @@ pub func codegenPackageWithSigsSeeded(
   }
   if runtimeHelperUsed(usedRuntimeHelpers, "__lyricErasedToString") {
     fns.add(makeErasedToStringHelperFunc())
+  }
+  if runtimeHelperUsed(usedRuntimeHelpers, erasedToSliceHelperName()) {
+    fns.add(makeErasedToSliceHelperFunc())
   }
   if runtimeHelperUsed(usedRuntimeHelpers, erasedIndexGetHelperName()) {
     fns.add(makeErasedIndexGetHelperFunc())

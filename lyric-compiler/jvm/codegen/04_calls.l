@@ -2921,6 +2921,13 @@ func emitNarrowObjectArrayRef(ctx: in FuncCtx, insns: in List[LInsn], elemCls: i
 //     it is already an array.
 // Delegates to `coerceArgTo` for every other shape.
 func coerceArgToCtx(ctx: in FuncCtx, insns: in List[LInsn], fromTy: in JvmType, toTy: in JvmType): Unit {
+  // An erased value reaching a slice slot may be the `Object[]` a slice is,
+  // or the `ArrayList` a bracket literal built where no slice was expected
+  // of it (a tuple element, #8147); the package's helper converts either.
+  if isErasedObject(fromTy) and isObjectSliceJvm(toTy) {
+    emitErasedToSliceJvm(ctx, insns)
+    return
+  }
   match fromTy {
     case JRef(fromCls) -> {
       if fromCls == "java/util/ArrayList" {
@@ -3001,6 +3008,30 @@ func coerceArgToCtx(ctx: in FuncCtx, insns: in List[LInsn], fromTy: in JvmType, 
     }
     case _ -> coerceArgTo(insns, fromTy, toTy)
   }
+}
+
+func isObjectSliceJvm(t: in JvmType): Bool {
+  match t {
+    case JArray(e) -> match e {
+      case JRef(c) -> c == "java/lang/Object"
+      case _ -> false
+    }
+    case _ -> false
+  }
+}
+
+func emitErasedToSliceJvm(ctx: in FuncCtx, insns: in List[LInsn]): Unit {
+  val ps: List[JvmType] = newList()
+  ps.add(JRef(className = "java/lang/Object"))
+  insns.add(
+    LInvokestatic(
+      owner = ctx.pkgName,
+      name = erasedToSliceHelperName(),
+      params = ps,
+      ret = JArray(elem = JRef(className = "java/lang/Object"))
+    )
+  )
+  markRuntimeHelper(ctx, erasedToSliceHelperName())
 }
 
 func isArrayListJvm(t: in JvmType): Bool {
