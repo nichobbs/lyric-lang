@@ -1274,7 +1274,14 @@ above covers, for a callee in a restored package, and for record,
 exposed-record, opaque, protected-type and union-case constructors, and it
 matches `.copy` (§2.4) and the `?`/`await` operand hoists (§4.5, §7). An
 `out`/`inout` argument denotes its place, which the callee reads and writes
-when it runs.
+when it runs; the place is never copied, so `zap(x, g()?)` for
+`zap(a: inout Int, b: in Int)` writes `x` itself. An index inside such a
+place, or inside a method receiver that is a place (`i()` in
+`xs[i()].m(...)`), runs exactly once, at the place's position in source
+order. When a `?` or `await` argument
+exits or suspends before the call, the arguments written before it have
+run and the callee has not, so an `out`/`inout` place is not written
+(#8171).
 
 The default comes from the declaration the call **statically** resolves
 through. A call on an interface-typed value (`sh.area()` where `sh: Shape`)

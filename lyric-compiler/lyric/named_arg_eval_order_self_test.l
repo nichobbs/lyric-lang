@@ -469,3 +469,207 @@ test "a copy's fields run in source order" {
   assertEqualInt(p.a * 10 + p.b, 12, "value")
   assertEqual(since(t0), "b,a", "order")
 }
+
+// ─── Places passed by reference beside ? and await (#8171) ─────────────────
+// The `?` and `await` hoists bind every operand evaluated before the argument
+// that holds one to a fresh local.  A local bound to the place an `out` or
+// `inout` argument names is a copy, so the callee wrote the copy and the
+// caller's variable, field or element kept its value.  The place now stays
+// in the call and the other arguments run in source order before it.
+func noteErr(s: in String): Result[Int, String] {
+  trace.add(s)
+  Err(error = "failed at " + s)
+}
+
+func setTo(x: inout Int, v: in Int): Unit {
+  x = v
+}
+
+func putOut(x: out Int, v: in Int): Unit {
+  x = v
+}
+
+func addBoth(x: inout Int, a: in Int, b: in Int): Unit {
+  x = x + a * 10 + b
+}
+
+record Cell {
+  var v: Int
+}
+
+record Adder {
+  base: Int
+
+  func addInto(self: in Adder, x: inout Int, v: in Int): Unit {
+    x = x + self.base + v
+  }
+}
+
+func mkAdder(base: in Int): Adder {
+  trace.add("recv")
+  Adder(base = base)
+}
+
+func at(s: in String, i: in Int): Int {
+  trace.add(s)
+  i
+}
+
+func inoutBeforePropagate(): Result[Int, String] {
+  var x = 1
+  setTo(x, noteOk("v", 7)?)
+  Ok(value = x)
+}
+
+func outBeforePropagate(): Result[Int, String] {
+  var x = 0
+  putOut(x, noteOk("v", 4)?)
+  Ok(value = x)
+}
+
+func fieldBeforePropagate(): Result[Int, String] {
+  var c = Cell(v = 1)
+  setTo(c.v, noteOk("v", 9)?)
+  Ok(value = c.v)
+}
+
+func inoutBetweenPropagates(): Result[Int, String] {
+  var x = 1
+  addBoth(x, note("a", 2), noteOk("b", 3)?)
+  Ok(value = x)
+}
+
+func namedInoutAfterPropagate(): Result[Int, String] {
+  var x = 1
+  setTo(v = noteOk("v", 6)?, x = x)
+  Ok(value = x)
+}
+
+func namedInoutBeforePropagate(): Result[Int, String] {
+  var x = 1
+  addBoth(b = noteOk("b", 3)?, x = x, a = note("a", 2))
+  Ok(value = x)
+}
+
+func receiverBeforePropagate(): Result[Int, String] {
+  var x = 1
+  mkAdder(100).addInto(x, noteOk("v", 5)?)
+  val ad = Adder(base = 10)
+  ad.addInto(x, noteOk("w", 2)?)
+  Ok(value = x)
+}
+
+func indexedReceiverBeforePropagate(): Result[Int, String] {
+  val adders: List[Adder] = newList()
+  adders.add(Adder(base = 10))
+  adders.add(Adder(base = 20))
+  var x = 1
+  adders[at("i", 1)].addInto(x, noteOk("v", 3)?)
+  Ok(value = x)
+}
+
+func errAfterInout(x: inout Int): Result[Int, String] {
+  addBoth(x, note("a", 2), noteErr("e")?)
+  Ok(value = x)
+}
+
+func errBeforeNamedInout(x: inout Int): Result[Int, String] {
+  setTo(v = noteErr("e")?, x = x)
+  Ok(value = x)
+}
+
+async func inoutBeforeAwait(): Int {
+  var x = 1
+  setTo(x, await noteAsync("v", 8))
+  var c = Cell(v = 1)
+  addBoth(c.v, note("a", 2), await noteAsync("b", 3))
+  x * 100 + c.v
+}
+
+test "an inout argument before a ? argument is written, not a copy of it" {
+  val t0 = trace.count
+  match inoutBeforePropagate() {
+    case Ok(v) -> assertEqualInt(v, 7, "the variable was written")
+    case Err(e) -> assertTrue(false, "unexpected error " + e)
+  }
+  assertEqual(since(t0), "v", "order")
+  val t1 = trace.count
+  match inoutBetweenPropagates() {
+    case Ok(v) -> assertEqualInt(v, 24, "the variable was updated")
+    case Err(e) -> assertTrue(false, "unexpected error " + e)
+  }
+  assertEqual(since(t1), "a,b", "the arguments run in source order")
+}
+
+test "an out argument before a ? argument is written" {
+  match outBeforePropagate() {
+    case Ok(v) -> assertEqualInt(v, 4, "the variable was written")
+    case Err(e) -> assertTrue(false, "unexpected error " + e)
+  }
+}
+
+test "a field passed inout before a ? argument is written" {
+  match fieldBeforePropagate() {
+    case Ok(v) -> assertEqualInt(v, 9, "the field was written")
+    case Err(e) -> assertTrue(false, "unexpected error " + e)
+  }
+}
+
+test "a named inout argument beside a ? argument is written in either order" {
+  match namedInoutAfterPropagate() {
+    case Ok(v) -> assertEqualInt(v, 6, "written after the ? argument")
+    case Err(e) -> assertTrue(false, "unexpected error " + e)
+  }
+  val t1 = trace.count
+  match namedInoutBeforePropagate() {
+    case Ok(v) -> assertEqualInt(v, 24, "updated beside reordered arguments")
+    case Err(e) -> assertTrue(false, "unexpected error " + e)
+  }
+  assertEqual(since(t1), "b,a", "the arguments run in source order")
+}
+
+test "a method's receiver runs first and its inout argument is written" {
+  val t0 = trace.count
+  match receiverBeforePropagate() {
+    case Ok(v) -> assertEqualInt(v, 118, "both calls wrote the variable")
+    case Err(e) -> assertTrue(false, "unexpected error " + e)
+  }
+  assertEqual(since(t0), "recv,v,w", "order")
+  val t1 = trace.count
+  match indexedReceiverBeforePropagate() {
+    case Ok(v) -> assertEqualInt(v, 24, "the element's method wrote the variable")
+    case Err(e) -> assertTrue(false, "unexpected error " + e)
+  }
+  assertEqual(since(t1), "i,v", "the receiver's index runs once, first")
+}
+
+test "a ? that fails before the call leaves the inout argument unwritten" {
+  val t0 = trace.count
+  var x = 1
+  match errAfterInout(x) {
+    case Ok(_) -> assertTrue(false, "expected the error")
+    case Err(e) -> assertEqual(e, "failed at e", "the error propagated")
+  }
+  assertEqualInt(x, 1, "the call never ran")
+  assertEqual(since(t0), "a,e", "the arguments before the ? ran")
+  match errBeforeNamedInout(x) {
+    case Ok(_) -> assertTrue(false, "expected the error")
+    case Err(e) -> assertEqual(e, "failed at e", "the error propagated")
+  }
+  assertEqualInt(x, 1, "the reordered call never ran")
+}
+
+test "an inout argument before an await argument is written" {
+  val t0 = trace.count
+  assertEqualInt(await inoutBeforeAwait(), 824, "the variable and the field were written")
+  assertEqual(since(t0), "v,a,b", "order")
+}
+
+test "a receiver element's index runs once, before the reordered arguments" {
+  val accs: List[Acc] = newList()
+  accs.add(Acc(n = 100))
+  val t0 = trace.count
+  val r = accs[at("i", 0)].mix(b = note("b", 2), a = note("a", 1))
+  assertEqualInt(r, 112, "value")
+  assertEqual(since(t0), "i,b,a", "order")
+}

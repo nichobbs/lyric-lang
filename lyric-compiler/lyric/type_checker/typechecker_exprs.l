@@ -11120,6 +11120,15 @@ func callArgsHaveNamed(args: in List[CallArg]): Bool {
 // `expected[i]` the type argument `i` is expected to have.  `recvTy` is the
 // type of a method call's receiver.  A call in a contract clause calls only
 // `@pure` functions, whose order is unobservable, and is left alone.
+//
+// A call that passes a place to an `out`/`inout` parameter and has a `?` or
+// `await` in an argument is recorded too, in whatever order its arguments
+// are written (#8171).  The `?` and `await` hoists bind every operand
+// evaluated before such an argument to a fresh local, and a local bound to
+// the place is a copy: the callee would write the copy, never the caller's
+// variable, field or element.  Here the arguments run into temporaries in
+// source order instead, the place stays in the call, and the call itself no
+// longer has an argument the hoists need to move.
 func recordArgOrderSite(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -11133,7 +11142,12 @@ func recordArgOrderSite(
   expected: in List[Type],
   recvTy: in Option[Type],
 ): Unit {
-  if sc.contractDepth.count > 0 or not callArgsHaveNamed(args) {
+  if sc.contractDepth.count > 0 {
+    return
+  }
+  val named = callArgsHaveNamed(args)
+  val hazard = callArgsHaveHoistHazard(args)
+  if not named and not hazard {
     return
   }
   val slots: List[Int] = match pairCallArgs(slotNames, 0, args) { case Ok(paired) -> paired; case Err(_) -> return }
@@ -11151,13 +11165,18 @@ func recordArgOrderSite(
     k = k + 1
   }
   val bound: List[Bool] = newList()
+  var placeByRef = false
   i = 0
   while i < args.count {
     val ae = callArgExpr(args[i])
+    if argByRef[i] and argIsPlace(ae) {
+      placeByRef = true
+    }
     bound.add(if argByRef[i] { not argIsPlace(ae) } else { not argIsInert(sc, ae) })
     i = i + 1
   }
-  if not callArgsNeedSourceOrder(slots, args.count, bound, defaultEffect) {
+  val hoistedPlace = hazard and placeByRef
+  if not hoistedPlace and not (named and callArgsNeedSourceOrder(slots, args.count, bound, defaultEffect)) {
     return
   }
   i = 0
@@ -12581,7 +12600,7 @@ func inferExprCore(
           }
           checkContractCallPure(sc, diag, sig, fn, e.span)
           checkCallArgsAgainstSig(sc, tbl, sigs, diag, sig, args, argTypes, e.span)
-          if callArgsHaveNamed(args) {
+          if callArgsHaveNamed(args) or callArgsHaveHoistHazard(args) {
             recordSigArgOrderSite(
               sc,
               tbl,
@@ -12680,7 +12699,7 @@ func inferExprCore(
                     if mpHazard {
                       recordHoistedCallArgs(sc, tbl, args, argTypes, mpExpected)
                     }
-                    if mpNamed {
+                    if mpNamed or mpHazard {
                       recordSigArgOrderSite(sc, tbl, e.span, fn, args, argTypes, mp.sig, mpExpected, memberRecvTy)
                     }
                   }
