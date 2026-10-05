@@ -1184,6 +1184,33 @@ pub func annotationStringArg(a: in Annotation): Option[String] {
   }
 }
 
+/// The leading string literal of `@name("text", flag, ...)`: `a`'s first argument
+/// when it is a string literal, None when it has none or a non-string one.
+pub func annotationLeadingString(a: in Annotation): Option[String] {
+  if a.args.count == 0 {
+    return None
+  }
+  match a.args[0] {
+    case ALiteral(value, _) -> match value { case AVString(s, _) -> Some(value = s); case _ -> None }
+    case _ -> None
+  }
+}
+
+/// The bare flags that follow the leading argument of `@name("text", flag, ...)`.
+/// Any other trailing argument is spelled "?" so a caller can reject it.
+pub func annotationTrailingFlags(a: in Annotation): List[String] {
+  val flags: List[String] = newList()
+  var i = 1
+  while i < a.args.count {
+    match a.args[i] {
+      case ABare(n, _) -> flags.add(n)
+      case _ -> flags.add("?")
+    }
+    i = i + 1
+  }
+  flags
+}
+
 // ─── Reserved compiler annotations ──────────────────────────────────────────
 /// The reserved annotation naming the package a generic function was
 /// declared in.  Its body is specialised into whichever package calls it, so

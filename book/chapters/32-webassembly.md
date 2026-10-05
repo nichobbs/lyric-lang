@@ -99,6 +99,37 @@ and so on). A missing import is an error at `instantiate` that names every missi
 function, and the `.d.ts` types the `imports` option. `@wasmImport` outside a
 `--shape module` or `--shape component` build is `N0015`.
 
+### Host functions that return a promise
+
+Add `promise` to the annotation when the host function finishes later, as `fetch` does:
+
+```lyric
+@wasmImport("net", promise)
+extern func fetchText(url: String): String = "fetch-text"
+
+pub async func load(url: String): String {
+  fetchText(url) + "!"
+}
+```
+
+```js
+const lyric = await instantiate(undefined, {
+  imports: { net: { 'fetch-text': (url) => fetch(url).then((r) => r.text()) } },
+});
+console.log(await lyric.load('https://example.com/'));
+```
+
+The extern keeps its plain result type. A call from an `async func` suspends that task
+until the promise settles and lets other tasks run meanwhile, exactly like calling any
+other async function; `spawn` inside a `scope` starts several at once. The host function
+may return a promise or an ordinary value, and the `.d.ts` types it as `Promise<T> | T`.
+If the promise rejects, the Lyric code waiting on it panics with
+`host import failed: <message>`, so a host that wants a recoverable failure resolves to a
+status value instead. Calling a promise import from a synchronous function aborts with a
+message telling you to make the caller `async`, because the host can only finish the
+operation after that call returns. The component shape does not support promise imports
+(the Component Model async ABI is not stable).
+
 ## Publishing a library: the component shape
 
 ```sh
@@ -290,7 +321,7 @@ The full table is in Appendix B.
 The tracked work is in issues #8117 (component shape) and #8118 (NPM). Today:
 
 - an NPM import cannot return a `Promise`;
-- the browser has no `fetch`-backed `Std.Http`.
+- `Std.Http` has no `fetch`-backed browser twin yet (a promise import covers calling `fetch` yourself), and `Std.File` has no browser behaviour beyond its clean error.
 
 ::: sidebar
 **Why the native backend and not .NET?** The first design compiled through .NET's WASI

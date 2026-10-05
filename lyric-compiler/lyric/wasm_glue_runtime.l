@@ -316,6 +316,9 @@ export async function instantiate(source, options = {}) {
     if (!imports[imp.module]) imports[imp.module] = {};
     imports[imp.module][imp.name] = (...wasmArgs) => {
       const decoded = imp.params.map((kind, i) => liftHostArg(kind, wasmArgs[i]));
+      if (imp.ret.startsWith('Task:')) {
+        return startHostTask(imp.ret.slice(5), () => fn(...decoded));
+      }
       return lowerHostResult(imp.ret, fn(...decoded));
     };
   }
@@ -449,28 +452,93 @@ export async function instantiate(source, options = {}) {
     }
   };
 
-  // Drive the scheduler from host timers until `task` completes.
+  // Drive the scheduler from host timers until `task` completes.  A call that is
+  // waiting on a host operation (poll returns -2) has no timer: finishing the
+  // operation re-runs every active step through `kickScheduler`.
+  const activeSteps = new Set();
+  const kickScheduler = () => {
+    if (activeSteps.size === 0) {
+      // No exported call is waiting, but a detached task may still be ready.
+      try { raw.lyric_wasm_poll(); } catch (e) { console.error(e); }
+      return;
+    }
+    for (const step of [...activeSteps]) step();
+  };
   const settle = (task, kind, resolve, reject) => {
+    let timer = null;
+    const done = () => {
+      activeSteps.delete(step);
+      if (timer !== null) { clearTimeout(timer); timer = null; }
+    };
     const step = () => {
+      if (timer !== null) { clearTimeout(timer); timer = null; }
       try {
-        const wait = raw.lyric_wasm_poll();
+        const wait = Number(raw.lyric_wasm_poll());
         if (raw.lyric_task_is_complete(task)) {
+          done();
           try {
             resolve(liftSlot(kind, raw.lyric_task_result(task)));
           } finally {
             raw.lyric_wasm_release(task);
           }
+        } else if (wait === -2) {
+          // Waiting on a host operation: its completion calls kickScheduler.
         } else if (wait < 0) {
+          done();
           reject(new Error('deadlock: the async call can never complete (no ready tasks, no timers)'));
         } else {
-          setTimeout(step, Number(wait));
+          timer = setTimeout(step, wait);
         }
       } catch (e) {
+        done();
         reject(e);
       }
     };
+    activeSteps.add(step);
     step();
   };
+
+  // A host import that returns `Task[T]`: hand the wasm caller a pending task,
+  // run the host function, and finish the task from its promise.  A rejection
+  // fails the task, which panics the awaiting Lyric code with the message.
+  function finishHostTask(task, kind, value) {
+    switch (kind) {
+      case 'Unit': raw.lyric_wasm_host_finish_i32(task, 0); break;
+      case 'Int': raw.lyric_wasm_host_finish_i32(task, value | 0); break;
+      case 'Byte': raw.lyric_wasm_host_finish_i32(task, value & 0xff); break;
+      case 'Bool': raw.lyric_wasm_host_finish_i32(task, value ? 1 : 0); break;
+      case 'Long': raw.lyric_wasm_host_finish_i64(task, BigInt.asIntN(64, BigInt(value))); break;
+      case 'Float': raw.lyric_wasm_host_finish_f32(task, Math.fround(value)); break;
+      case 'Double': raw.lyric_wasm_host_finish_f64(task, +value); break;
+      case 'String': raw.lyric_wasm_host_finish_string(task, newString(String(value))); break;
+      default: throw new Error('unsupported host task result kind ' + kind);
+    }
+  }
+  function failHostTask(task, error) {
+    const text = error && error.message ? error.message : String(error);
+    raw.lyric_wasm_host_fail(task, newString('host import failed: ' + text));
+  }
+  function startHostTask(kind, call) {
+    const task = raw.lyric_wasm_host_task_new();
+    let promise;
+    try {
+      promise = Promise.resolve(call());
+    } catch (e) {
+      promise = Promise.reject(e);
+    }
+    promise.then((value) => {
+      try {
+        finishHostTask(task, kind, value);
+      } catch (e) {
+        failHostTask(task, e);
+      }
+      kickScheduler();
+    }, (error) => {
+      failHostTask(task, error);
+      kickScheduler();
+    });
+    return task;
+  }
 
   for (const ex of LYRIC_EXPORTS) {
     const fn = raw[ex.wasm];

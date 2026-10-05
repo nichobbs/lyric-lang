@@ -223,10 +223,11 @@ func collectUnitImports(unit: in CodegenUnit, imports: in List[WasmImport], erro
       names.add(ef.params[pi].name)
       pi = pi + 1
     }
-    val ret = match ef.ret { case Some(t) -> kindOf(t); case None -> "Unit" }
-    if ret.length == 0 {
+    val plainRet = match ef.ret { case Some(t) -> kindOf(t); case None -> "Unit" }
+    if plainRet.length == 0 {
       ok = false
     }
+    val ret = if wasmImportIsPromise(unit.wasmImports, ef.symbol) { "Task:" + plainRet } else { plainRet }
     if ok {
       imports.add(WasmImport(module = module, name = ef.symbol, paramNames = names, params = params, ret = ret))
     } else {
@@ -390,12 +391,38 @@ pub func renderGlueModule(set: in WasmExportSet, wasmFileName: in String): Strin
 }
 
 func tsType(kind: in String): String {
+  if Str.startsWith(kind, "Task:") {
+    return "Promise<" + tsType(Str.substring(kind, 5)) + "> | " + tsType(Str.substring(kind, 5))
+  }
   match kind {
     case "Long" -> "bigint"
     case "Bool" -> "boolean"
     case "String" -> "string"
     case "Unit" -> "void"
     case _ -> "number"
+  }
+}
+
+/// A TypeScript property name: bare when it is a plain identifier, else quoted
+/// (a host import may be named `fetch-text`).
+func tsPropName(name: in String): String {
+  val letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_$"
+  val digits = "0123456789"
+  var plain = name.length > 0
+  var i = 0
+  while i < name.length {
+    val c = Str.substring(name, i, 1)
+    val isLetter = Str.contains(letters, c)
+    val isDigit = Str.contains(digits, c)
+    if not (isLetter or (isDigit and i > 0)) {
+      plain = false
+    }
+    i = i + 1
+  }
+  if plain {
+    name
+  } else {
+    jsString(name)
   }
 }
 
@@ -436,7 +463,7 @@ pub func renderGlueTypes(set: in WasmExportSet): String {
             ps.add(other.paramNames[pi] + ": " + tsType(other.params[pi]))
             pi = pi + 1
           }
-          fns.add("    " + other.name + "(" + Str.joinList(", ", ps) + "): " + tsType(other.ret) + ";")
+          fns.add("    " + tsPropName(other.name) + "(" + Str.joinList(", ", ps) + "): " + tsType(other.ret) + ";")
         }
       }
       val optional = if npmPackageOfModule(imp.module).length > 0 { "?" } else { "" }

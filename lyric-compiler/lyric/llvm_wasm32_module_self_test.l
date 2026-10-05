@@ -483,6 +483,166 @@ console.log('log=' + log.join('|'));
   assertTrue(Str.contains(r.stdout, "log=one|two\n"), "Unit import in another module: " + r.stdout)
 }
 
+val asyncImportProgram: String = r#"package Probe
+
+@wasmImport("net", promise)
+extern func fetchText(url: String): String = "fetch-text"
+
+@wasmImport("net", promise)
+extern func slowAdd(a: Int, b: Int): Int = "slow-add"
+
+@wasmImport("net", promise)
+extern func slowBig(x: Long): Long = "slow-big"
+
+@wasmImport("net", promise)
+extern func slowHalf(x: Double): Double = "slow-half"
+
+@wasmImport("net", promise)
+extern func slowThird(x: Float): Float = "slow-third"
+
+@wasmImport("net", promise)
+extern func slowNot(b: Bool): Bool = "slow-not"
+
+@wasmImport("net", promise)
+extern func slowNext(b: Byte): Byte = "slow-next"
+
+@wasmImport("net", promise)
+extern func ping(): Unit = "ping"
+
+@wasmImport("net", promise)
+extern func boom(): Int = "boom"
+
+pub async func load(url: String): String {
+  fetchText(url) + "!"
+}
+
+pub async func sum(a: Int, b: Int): Int {
+  val x = slowAdd(a, b)
+  slowAdd(x, 10)
+}
+
+pub async func both(): Int {
+  var total = 0
+  scope {
+    val a = spawn slowAdd(1, 1)
+    val b = spawn slowAdd(2, 2)
+    total = (await a) + (await b)
+  }
+  total
+}
+
+pub async func kinds(): String {
+  val big = slowBig(21i64)
+  val half = slowHalf(5.0)
+  val third = slowThird(3.0)
+  val flag = slowNot(true)
+  val next = slowNext(255)
+  ping()
+  big.toString() + "," + half.toString() + "," + third.toString() + "," + flag.toString() + "," + next.toString()
+}
+
+pub async func failing(): Int {
+  boom()
+}
+
+pub func syncCall(): Int {
+  slowAdd(1, 2)
+}
+"#
+
+val asyncImportHost: String = r"{
+  'fetch-text': (u) => new Promise((r) => setTimeout(() => r('body of ' + u), 20)),
+  'slow-add': (a, b) => new Promise((r) => setTimeout(() => r(a + b), 10)),
+  'slow-big': async (x) => x * 2n,
+  'slow-half': (x) => Promise.resolve(x / 2),
+  'slow-third': async (x) => x / 3,
+  'slow-not': (b) => Promise.resolve(!b),
+  'slow-next': async (b) => (b + 1) & 255,
+  'ping': async () => { globalThis.pinged = true; },
+  'boom': () => Promise.reject(new Error('nope')),
+}"
+
+test "wasm32 module: a host import returning a Task is awaited by async Lyric code and finished by the promise" {
+  val r = runNode(
+    asyncImportProgram,
+    r"import { instantiate } from './prog.js';
+const m = await instantiate(undefined, { imports: { net: " +
+      asyncImportHost +
+      r" } });
+console.log('load=' + await m.load('u'));
+console.log('sum=' + await m.sum(1, 2));
+console.log('both=' + await m.both());
+console.log('kinds=' + await m.kinds() + ' pinged=' + globalThis.pinged);
+const started = Date.now();
+const results = await Promise.all([m.sum(1, 1), m.sum(2, 2), m.load('v'), m.both()]);
+console.log('concurrent=' + results.join('|'));
+console.log('overlapped=' + (Date.now() - started < 120));
+"
+  )
+  assertEqualInt(r.exitCode, 0, "node exits cleanly: " + r.stderr)
+  assertTrue(Str.contains(r.stdout, "load=body of u!\n"), "a String result through a promise: " + r.stdout)
+  assertTrue(Str.contains(r.stdout, "sum=13\n"), "two awaits in a row: " + r.stdout)
+  assertTrue(Str.contains(r.stdout, "both=6\n"), "two operations outstanding at once: " + r.stdout)
+  assertTrue(
+    Str.contains(r.stdout, "kinds=42,2.5,1,false,0 pinged=true\n"),
+    "Long, Double, Float, Bool, Byte and Unit results: " + r.stdout
+  )
+  assertTrue(
+    Str.contains(r.stdout, "concurrent=12|14|body of v!|6\n"),
+    "calls interleave on one scheduler: " + r.stdout
+  )
+  assertTrue(
+    Str.contains(r.stdout, "overlapped=true\n"),
+    "the host operations overlap rather than run in turn: " + r.stdout
+  )
+}
+
+test "wasm32 module: a rejected host promise panics the awaiting code with its message" {
+  val r = runNode(
+    asyncImportProgram,
+    r"import { instantiate } from './prog.js';
+const errs = [];
+const m = await instantiate(undefined, { stderr: (t) => errs.push(t), imports: { net: " +
+      asyncImportHost +
+      r" } });
+try { await m.failing(); console.log('failing=resolved'); } catch (e) { console.log('failing=rejected'); }
+console.log('stderr=' + errs.join(''));
+"
+  )
+  assertEqualInt(r.exitCode, 0, "node exits cleanly: " + r.stderr)
+  assertTrue(Str.contains(r.stdout, "failing=rejected\n"), "the export's promise rejects: " + r.stdout)
+  assertTrue(
+    Str.contains(r.stdout, "host import failed: nope"),
+    "the host's message reaches the stderr hook: " + r.stdout
+  )
+}
+
+test "wasm32 module: calling a promise host import from a synchronous export says to make the caller async" {
+  val r = runNode(
+    asyncImportProgram,
+    r"import { instantiate } from './prog.js';
+const errs = [];
+const m = await instantiate(undefined, { stderr: (t) => errs.push(t), imports: { net: " +
+      asyncImportHost +
+      r" } });
+try { m.syncCall(); console.log('sync=returned'); } catch (e) { console.log('sync=trapped'); }
+console.log('stderr=' + errs.join(''));
+"
+  )
+  assertEqualInt(r.exitCode, 0, "node exits cleanly: " + r.stderr)
+  assertTrue(Str.contains(r.stdout, "sync=trapped\n"), "the synchronous call traps: " + r.stdout)
+  assertTrue(Str.contains(r.stdout, "make the caller an async func"), "with a message that names the fix: " + r.stdout)
+}
+
+test "wasm32 module: the .d.ts types an async host import as a promise or a value" {
+  val b = buildModule(asyncImportProgram, "wasm32-wasi")
+  assertTrue(b.ok, "the module builds")
+  val dts = readGenerated(b.dir, "prog.d.ts")
+  assertTrue(Str.contains(dts, "\"fetch-text\"(url: string): Promise<string> | string;"), "String task: " + dts)
+  assertTrue(Str.contains(dts, "\"slow-big\"(x: bigint): Promise<bigint> | bigint;"), "Long task: " + dts)
+  assertTrue(Str.contains(dts, "ping(): Promise<void> | void;"), "Unit task: " + dts)
+}
+
 test "wasm32 module: a missing host import is reported by name at instantiate" {
   val r = runNode(
     hostImportProgram,

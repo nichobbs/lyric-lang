@@ -1219,7 +1219,7 @@ pub func npmShimImports(shimSource: in String): List[NpmShimImport] {
   for item in pr.file.items {
     match item.kind {
       case IExternFunc(d) -> match Parser.findAnnotation(item.annotations, "wasmImport") {
-        case Some(a) -> match Parser.annotationStringArg(a) {
+        case Some(a) -> match Parser.annotationLeadingString(a) {
           case Some(m) -> {
             if Str.startsWith(m, "npm:") {
               found.add(NpmShimImport(pkgName = Str.substring(m, 4), symbol = d.symbol))

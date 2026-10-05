@@ -1587,10 +1587,26 @@ func sanitizeIdent(s: in String): String {
 
 /// The `@wasmImport` module string of `anns`: None when absent, Some("") when
 /// the annotation is malformed.
+/// `@wasmImport("module", promise)`: the host function returns a Promise the
+/// importing code waits for.
+func wasmImportHasPromise(anns: in List[Annotation]): Bool {
+  match findAnnotation(anns, "wasmImport") {
+    case None -> false
+    case Some(a) -> {
+      for flag in annotationTrailingFlags(a) {
+        if flag == "promise" {
+          return true
+        }
+      }
+      false
+    }
+  }
+}
+
 func wasmImportModuleOf(anns: in List[Annotation]): Option[String] {
   match findAnnotation(anns, "wasmImport") {
     case None -> None
-    case Some(a) -> match annotationStringArg(a) { case Some(m) -> Some(value = m); case None -> Some(value = "") }
+    case Some(a) -> match annotationLeadingString(a) { case Some(m) -> Some(value = m); case None -> Some(value = "") }
   }
 }
 
@@ -1836,27 +1852,38 @@ pub func componentRewriteFile(file: in SourceFile, peers: in List[SourceFile]): 
       case IExternFunc(d) -> {
         match wasmImportModuleOf(it.annotations) {
           case None -> baseItems.add(it)
-          case Some(m) -> match hostImportOf(d, m, tbl) {
-            case Err(e) -> {
+          case Some(m) -> {
+            if wasmImportHasPromise(it.annotations) {
               val info0 = ComponentPkg(pkg = pkg, exports = exports, defs = defs, notes = notes, imports = imports)
-              return ComponentRewrite(file = file, info = info0, error = e)
+              return ComponentRewrite(
+                file = file,
+                info = info0,
+                error = "@wasmImport extern func " + d.name +
+                  " is marked promise: a host import the importing code waits for is available in the --shape module build only (the Component Model async ABI is not stable, docs/35 Q-JS-006)"
+              )
             }
-            case Ok(h) -> {
-              imports.add(h)
-              if h.viaImage {
-                bodies.add(emitImageImport(g, h, it.visibility, d.name))
-              } else {
-                baseItems.add(
-                  Item(
-                    docComments = it.docComments,
-                    annotations = withoutWasmImport(it.annotations),
-                    visibility = it.visibility,
-                    kind = IExternFunc(
-                      decl = ExternFuncDecl(name = d.name, params = d.params, ret = d.ret, symbol = h.cSym, span = d.span)
-                    ),
-                    span = it.span
+            match hostImportOf(d, m, tbl) {
+              case Err(e) -> {
+                val info0 = ComponentPkg(pkg = pkg, exports = exports, defs = defs, notes = notes, imports = imports)
+                return ComponentRewrite(file = file, info = info0, error = e)
+              }
+              case Ok(h) -> {
+                imports.add(h)
+                if h.viaImage {
+                  bodies.add(emitImageImport(g, h, it.visibility, d.name))
+                } else {
+                  baseItems.add(
+                    Item(
+                      docComments = it.docComments,
+                      annotations = withoutWasmImport(it.annotations),
+                      visibility = it.visibility,
+                      kind = IExternFunc(
+                        decl = ExternFuncDecl(name = d.name, params = d.params, ret = d.ret, symbol = h.cSym, span = d.span)
+                      ),
+                      span = it.span
+                    )
                   )
-                )
+                }
               }
             }
           }

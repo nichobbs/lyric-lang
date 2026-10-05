@@ -3424,6 +3424,96 @@ static LyricString* rt_str(const char* s) {
     return lyric_string_from_literal((const uint8_t*)s, (int64_t)strlen(s));
 }
 
+/* Host-finished tasks (docs/35 section 11): a task the host completes later wakes
+ * the coroutine awaiting it, polling reports "waiting on the host" instead of a
+ * deadlock until then, and a failed one panics the reader with the message. */
+static void test_host_task_wakes_waiter(void) {
+    LyricTask* host = lyric_host_task_new();
+    FakeCoro dep = {0};
+    dep.task = host; /* body_await_dep reads dep->task */
+    FakeCoro w = {0};
+    w.body = body_await_dep;
+    w.dep = &dep;
+    LyricTask* tw = fake_call(&w);
+    CHECK(!lyric_task_is_complete(tw));
+    CHECK(lyric_host_tasks_pending() == 1);
+    /* Nothing is ready or sleeping, but the host owes a result: -2, not -1. */
+    CHECK(lyric_sched_poll() == -2);
+    lyric_host_task_finish(host, 41, 0);
+    CHECK(lyric_host_tasks_pending() == 0);
+    CHECK(lyric_task_is_complete(host));
+    CHECK(lyric_task_result(host) == 41);
+    CHECK(lyric_sched_poll() == -1); /* the waiter ran and completed */
+    CHECK(lyric_task_is_complete(tw));
+    CHECK(lyric_task_result(tw) == 42);
+    lyric_release(tw);
+    lyric_release(host); /* the caller's ref; the host's was spent finishing */
+}
+
+static void test_host_task_string_result_released(void) {
+    LyricTask* host = lyric_host_task_new();
+    lyric_host_task_finish(host, (int64_t)(intptr_t)rt_str("from the host"), 1);
+    LyricString* got = (LyricString*)(intptr_t)lyric_task_result(host);
+    CHECK(lyric_string_len(got) == 13);
+    lyric_release(host); /* the task's dtor releases the String it owns */
+}
+
+static void test_host_task_already_complete_when_awaited(void) {
+    /* The host may finish before anything awaits: the await sees a complete task. */
+    LyricTask* host = lyric_host_task_new();
+    lyric_host_task_finish(host, 5, 0);
+    FakeCoro dep = {0};
+    dep.task = host;
+    FakeCoro w = {0};
+    w.body = body_await_dep;
+    w.dep = &dep;
+    LyricTask* tw = fake_call(&w);
+    CHECK(lyric_task_is_complete(tw));
+    CHECK(lyric_task_result(tw) == 6);
+    lyric_release(tw);
+    lyric_release(host);
+}
+
+#ifndef __wasi__
+static void test_host_task_fail_panics_reader(void) {
+    pid_t pid = fork();
+    CHECK(pid >= 0);
+    if (pid == 0) {
+        if (!freopen("/dev/null", "w", stderr)) _exit(9);
+        LyricTask* host = lyric_host_task_new();
+        lyric_host_task_fail(host, rt_str("host import failed: nope"));
+        (void)lyric_task_result(host); /* panics with the host's message */
+        _exit(0);                      /* not reached */
+    }
+    int status = 0;
+    CHECK(waitpid(pid, &status, 0) == pid);
+    CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
+}
+
+static void test_host_task_block_on_in_sync_call_aborts(void) {
+    /* Awaiting a host operation from a synchronous call can never finish: the
+     * host runs only after the call returns.  The runtime aborts with a message
+     * saying so rather than spinning. */
+    pid_t pid = fork();
+    CHECK(pid >= 0);
+    if (pid == 0) {
+        if (!freopen("/dev/null", "w", stderr)) _exit(9);
+        LyricTask* host = lyric_host_task_new();
+        FakeCoro dep = {0};
+        dep.task = host;
+        FakeCoro w = {0};
+        w.body = body_await_dep;
+        w.dep = &dep;
+        LyricTask* tw = fake_call(&w);
+        lyric_task_block_on(tw);
+        _exit(0); /* not reached */
+    }
+    int status = 0;
+    CHECK(waitpid(pid, &status, 0) == pid);
+    CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
+}
+#endif /* !__wasi__ */
+
 /* lyric_thread_spawn_detached runs the entry on its own thread and releases
  * the caller's retain on `arg` once the entry returns -- no join, no leak. */
 #ifndef __wasi__
@@ -3647,11 +3737,16 @@ int main(void) {
     test_async_interleave();
     test_async_await_chain();
     test_async_multi_waiters();
+    test_host_task_wakes_waiter();
+    test_host_task_string_result_released();
+    test_host_task_already_complete_when_awaited();
 #ifndef __wasi__
     test_async_sleep_saturates();
 #endif
 #ifndef __wasi__
     test_async_deadlock_aborts();
+    test_host_task_fail_panics_reader();
+    test_host_task_block_on_in_sync_call_aborts();
 #endif
     if (failures == 0) {
         printf("lyric_rt_test: all tests passed\n");
