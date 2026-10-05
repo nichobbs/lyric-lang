@@ -10592,10 +10592,6 @@ func tryLowerExplicitGenericCall(
   Some(value = lowerGenericFnCallWith(ctx, insns, useKey, noPre, args, line, wantTask, retWant, tys))
 }
 
-/// Call a generic function: map arguments to parameters, infer the
-/// type-argument tuple from the argument types, instantiate the
-/// function (lowered once per tuple, cached), and emit the call.
-/// `preVals` are already-lowered leading arguments (the UFCS receiver).
 func isBareTypeParamRef(te: in TypeExpr, names: in List[String]): Bool {
   match te.kind {
     case TRef(path) -> path.segments.count == 1 and envIndexOf(names, path.segments[0]) >= 0
@@ -10604,6 +10600,10 @@ func isBareTypeParamRef(te: in TypeExpr, names: in List[String]): Bool {
   }
 }
 
+/// Call a generic function: map arguments to parameters, infer the
+/// type-argument tuple from the argument types, instantiate the
+/// function (lowered once per tuple, cached), and emit the call.
+/// `preVals` are already-lowered leading arguments (the UFCS receiver).
 func isLambdaExpr(e: in Expr): Bool {
   match e.kind {
     case ELambda(_, _) -> true
