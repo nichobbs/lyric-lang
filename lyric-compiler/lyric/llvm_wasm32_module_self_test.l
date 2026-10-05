@@ -98,7 +98,7 @@ func runNodeWithFakeNpm(source: in String, script: in String): Process.ProcessRe
   writeIn(
     b.dir,
     "node_modules/fakenpm/index.js",
-    "export function add(a, b) { return a + b + 1000; }\nexport function shout(s) { return s.toUpperCase() + '!'; }\n"
+    "export function add(a, b) { return a + b + 1000; }\nexport function shout(s) { return s.toUpperCase() + '!'; }\nexport async function slowAdd(a, b) { return a + b + 2000; }\n"
   )
   writeIn(b.dir, "run.mjs", script)
   val node = Environment.getVarOrDefault("NODE", "node")
@@ -778,6 +778,28 @@ console.log('shout=' + m.shoutNpm('hi'));
   assertEqualInt(r.exitCode, 0, "node exits cleanly: " + r.stderr)
   assertTrue(Str.contains(r.stdout, "add=1006\n"), "the package function ran: " + r.stdout)
   assertTrue(Str.contains(r.stdout, "shout=HI!\n"), "String through the package: " + r.stdout)
+}
+
+val npmPromiseProgram: String = r#"package Probe
+
+@wasmImport("npm:fakenpm", promise)
+extern func npmSlowAdd(a: Int, b: Int): Int = "slowAdd"
+
+pub async func viaNpmAsync(x: Int): Int {
+  npmSlowAdd(x, 1)
+}
+"#
+
+test "wasm32 module: an npm: promise import awaits the package's async function" {
+  val r = runNodeWithFakeNpm(
+    npmPromiseProgram,
+    r"import { instantiate } from './prog.js';
+const m = await instantiate();
+console.log('slow=' + await m.viaNpmAsync(5));
+"
+  )
+  assertEqualInt(r.exitCode, 0, "node exits cleanly: " + r.stderr)
+  assertTrue(Str.contains(r.stdout, "slow=2006\n"), "the package's promise settled into the waiting task: " + r.stdout)
 }
 
 test "wasm32 module: options.imports overrides an npm: package" {

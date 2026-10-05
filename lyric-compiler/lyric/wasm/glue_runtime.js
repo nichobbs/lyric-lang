@@ -523,7 +523,8 @@ export async function instantiate(source, options = {}) {
       try {
         finishHostTask(task, kind, value);
       } catch (e) {
-        failHostTask(task, e);
+        // Only fail a task the finish call did not already complete.
+        if (!raw.lyric_task_is_complete(task)) failHostTask(task, e);
       }
       kickScheduler();
     }, (error) => {
