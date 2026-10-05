@@ -2535,26 +2535,7 @@ pub func stagedMavenClasspath(stagingDir: in String): List[String] {
 // This workaround can be retired once stage-2 self-hosting lands (cli.l
 // compiled exclusively by the self-hosted compiler).  Tracking: #2592 slice 4.
 func sortFileList(xs: in List[String]): List[String] {
-  val remaining: List[String] = newList()
-  var c = 0
-  while c < xs.count {
-    remaining.add(xs[c])
-    c = c + 1
-  }
-  val sorted: List[String] = newList()
-  while remaining.count > 0 {
-    var bestIdx = 0
-    var k = 1
-    while k < remaining.count {
-      if remaining[k] < remaining[bestIdx] {
-        bestIdx = k
-      }
-      k = k + 1
-    }
-    sorted.add(remaining[bestIdx])
-    remaining.removeAt(bestIdx)
-  }
-  sorted
+  Disc.sortPaths(xs)
 }
 
 /// Sources plus their on-disk paths, parallel by index, as read by
@@ -2584,99 +2565,33 @@ func readProjectPackageSources(
   val pkgSources: List[String] = newList()
   val pkgPaths: List[String] = newList()
   var hadFatal = false
-  if pkgEntry.paths.count > 0 {
-    // Explicit file list (TOML array form): read each named file in order.
-    var fi = 0
-    while fi < pkgEntry.paths.count {
-      val absFile = if Path.isAbsolute(pkgEntry.paths[fi]) {
-        pkgEntry.paths[fi]
-      } else {
-        Path.join(mfDir, pkgEntry.paths[fi])
-      }
-      match File.readText(absFile) {
-        case Ok(raw) -> {
-          match runSourceGenerators(raw, absFile, genMf, gens) {
-            case Some(t) -> {
-              pkgSources.add(t)
-              pkgPaths.add(absFile)
-            }
-            case None -> {
-              hadFatal = true
-            }
+  // The entry's file set is `Lyric.Discovery`'s, which `lyric prove` shares.
+  val entryFiles = Disc.projectEntryFiles(pkgEntry, mfDir)
+  for problem in entryFiles.problems.toArray() {
+    printErr("build: package '" + pkgEntry.name + "': " + problem)
+    hadFatal = true
+  }
+  if entryFiles.emptyDir.length > 0 {
+    printErr("build: package '" + pkgEntry.name + "': no .l files found in " + entryFiles.emptyDir)
+    hadFatal = true
+  }
+  for f in entryFiles.paths.toArray() {
+    match File.readText(f) {
+      case Ok(raw) -> {
+        match runSourceGenerators(raw, f, genMf, gens) {
+          case Some(t) -> {
+            pkgSources.add(t)
+            pkgPaths.add(f)
+          }
+          case None -> {
+            hadFatal = true
           }
         }
-        case Err(e) -> {
-          printErr("build: package '" + pkgEntry.name + "': " + IOError.message(e))
-          hadFatal = true
-        }
       }
-      fi += 1
-    }
-  } else {
-    val abs = if Path.isAbsolute(pkgEntry.path) { pkgEntry.path } else { Path.join(mfDir, pkgEntry.path) }
-    if File.fileExists(abs) {
-      // Single .l file: read it directly, then run custom generators.
-      match File.readText(abs) {
-        case Ok(raw) -> {
-          match runSourceGenerators(raw, abs, genMf, gens) {
-            case Some(t) -> {
-              pkgSources.add(t)
-              pkgPaths.add(abs)
-            }
-            case None -> {
-              hadFatal = true
-            }
-          }
-        }
-        case Err(e) -> {
-          printErr("build: package '" + pkgEntry.name + "': " + IOError.message(e))
-          hadFatal = true
-        }
-      }
-    } else if File.dirExists(abs) {
-      // Directory: collect all .l files recursively, sorted for determinism.
-      val allFiles = match File.listFilesRecursive(abs) {
-        case Ok(fs) -> fs
-        case Err(e) -> {
-          printErr("build: package '" + pkgEntry.name + "': " + IOError.message(e))
-          hadFatal = true
-          newList()
-        }
-      }
-      val lFiles: List[String] = newList()
-      for f in allFiles.toArray() {
-        if Str.endsWith(f, ".l") {
-          lFiles.add(f)
-        }
-      }
-      if lFiles.count == 0 {
-        printErr("build: package '" + pkgEntry.name + "': no .l files found in " + abs)
+      case Err(e) -> {
+        printErr("build: package '" + pkgEntry.name + "': " + IOError.message(e))
         hadFatal = true
-      } else {
-        val sorted = sortFileList(lFiles)
-        for f in sorted {
-          match File.readText(f) {
-            case Ok(raw) -> {
-              match runSourceGenerators(raw, f, genMf, gens) {
-                case Some(t) -> {
-                  pkgSources.add(t)
-                  pkgPaths.add(f)
-                }
-                case None -> {
-                  hadFatal = true
-                }
-              }
-            }
-            case Err(e) -> {
-              printErr("build: package '" + pkgEntry.name + "': " + IOError.message(e))
-              hadFatal = true
-            }
-          }
-        }
       }
-    } else {
-      printErr("build: package '" + pkgEntry.name + "': path not found: " + abs)
-      hadFatal = true
     }
   }
   if hadFatal {
@@ -3267,51 +3182,19 @@ func collectProjectSourcePaths(mfPath: in String): (List[String], Bool) {
   var pi = 0
   while pi < proj.packages.count {
     val pkgEntry = proj.packages[pi]
-    if pkgEntry.paths.count > 0 {
-      // Explicit file list (TOML array form): add each named file, checked
-      // for existence for parity with the single-path/directory branch below
-      // (silently watching a non-existent file wastes an LSP/watch handle
-      // and gives no diagnostic — #4526).
-      var fi = 0
-      while fi < pkgEntry.paths.count {
-        val absFile = if Path.isAbsolute(pkgEntry.paths[fi]) {
-          pkgEntry.paths[fi]
-        } else {
-          Path.join(mfDir, pkgEntry.paths[fi])
-        }
-        if File.fileExists(absFile) {
-          paths.add(absFile)
-        } else {
-          printErr("package '" + pkgEntry.name + "': path not found: " + absFile)
-          hadFatal = true
-        }
-        fi += 1
-      }
-    } else {
-      val abs = if Path.isAbsolute(pkgEntry.path) { pkgEntry.path } else { Path.join(mfDir, pkgEntry.path) }
-      if File.fileExists(abs) {
-        paths.add(abs)
-      } else if File.dirExists(abs) {
-        val allFiles = match File.listFilesRecursive(abs) {
-          case Ok(fs) -> fs
-          case Err(e) -> {
-            printErr("package '" + pkgEntry.name + "': " + IOError.message(e))
-            hadFatal = true
-            newList()
-          }
-        }
-        val lFiles: List[String] = newList()
-        for f in allFiles.toArray() {
-          if Str.endsWith(f, ".l") {
-            lFiles.add(f)
-          }
-        }
-        val sorted = sortFileList(lFiles)
-        for f in sorted {
-          paths.add(f)
-        }
+    val entryFiles = Disc.projectEntryFiles(pkgEntry, mfDir)
+    for problem in entryFiles.problems.toArray() {
+      printErr("package '" + pkgEntry.name + "': " + problem)
+      hadFatal = true
+    }
+    // An explicit file is checked for existence, for parity with the
+    // directory form (silently watching a non-existent file wastes an
+    // LSP/watch handle and gives no diagnostic — #4526).
+    for f in entryFiles.paths.toArray() {
+      if pkgEntry.paths.count == 0 or File.fileExists(f) {
+        paths.add(f)
       } else {
-        printErr("package '" + pkgEntry.name + "': path not found: " + abs)
+        printErr("package '" + pkgEntry.name + "': path not found: " + f)
         hadFatal = true
       }
     }

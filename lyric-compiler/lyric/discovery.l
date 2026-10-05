@@ -13,10 +13,13 @@
 package Lyric.Discovery
 
 import Std.Core
+import Std.Collections
 import Std.String as Str
 // before Path so Path.join/2 wins over Str.join (overload resolution)
 import Std.File as File
 import Std.Path as Path
+import Std.Environment as Env
+import Std.Errors
 import Lyric.Manifest as Mf
 
 /// Outcome of `findNearestManifestDetailed`'s upward walk.  Distinguishes
@@ -136,4 +139,219 @@ pub func findNearestManifest(startDir: in String): Option[String] {
     case FoundBrokenManifest(_, _) -> None
     case NoManifestFound -> None
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The files of a package
+// ─────────────────────────────────────────────────────────────────────────────
+/// The source files a `[project.packages]` (or `[project.tests]`) entry
+/// compiles, as the build reads them: an explicit list in its order, a
+/// single file, or every `.l` file under a directory, recursively, sorted.
+/// `problems` says why the set is incomplete (no prefix; each caller adds
+/// its own); `emptyDir` names a directory entry that yielded no `.l` file,
+/// which the build reports and a listing command tolerates.  `lyric build` and `lyric prove` both take an entry's files
+/// from here, so they cannot disagree on what a package is (#8108).
+pub record EntryFiles {
+  paths: List[String]
+  problems: List[String]
+  emptyDir: String
+}
+
+pub func projectEntryFiles(pkgEntry: in Mf.PackageEntry, mfDir: in String): EntryFiles {
+  val paths: List[String] = newList()
+  val problems: List[String] = newList()
+  if pkgEntry.paths.count > 0 {
+    var fi = 0
+    while fi < pkgEntry.paths.count {
+      paths.add(if Path.isAbsolute(pkgEntry.paths[fi]) { pkgEntry.paths[fi] } else { Path.join(mfDir, pkgEntry.paths[fi]) })
+      fi = fi + 1
+    }
+    return EntryFiles(paths = paths, problems = problems, emptyDir = "")
+  }
+  val abs = if Path.isAbsolute(pkgEntry.path) { pkgEntry.path } else { Path.join(mfDir, pkgEntry.path) }
+  var emptyDir = ""
+  if File.fileExists(abs) {
+    paths.add(abs)
+  } else if File.dirExists(abs) {
+    match File.listFilesRecursive(abs) {
+      case Ok(fs) -> {
+        val lFiles: List[String] = newList()
+        for f in fs.toArray() {
+          if Str.endsWith(f, ".l") {
+            lFiles.add(f)
+          }
+        }
+        if lFiles.count == 0 {
+          emptyDir = abs
+        }
+        for f in sortPaths(lFiles) {
+          paths.add(f)
+        }
+      }
+      case Err(e) -> {
+        problems.add(IOError.message(e))
+        emptyDir = abs
+      }
+    }
+  } else {
+    problems.add("path not found: " + abs)
+  }
+  EntryFiles(paths = paths, problems = problems, emptyDir = emptyDir)
+}
+
+/// `xs` in ascending order.
+pub func sortPaths(xs: in List[String]): List[String] {
+  val remaining: List[String] = newList()
+  var c = 0
+  while c < xs.count {
+    remaining.add(xs[c])
+    c = c + 1
+  }
+  val sorted: List[String] = newList()
+  while remaining.count > 0 {
+    var bestIdx = 0
+    var k = 1
+    while k < remaining.count {
+      if remaining[k] < remaining[bestIdx] {
+        bestIdx = k
+      }
+      k = k + 1
+    }
+    sorted.add(remaining[bestIdx])
+    remaining.removeAt(bestIdx)
+  }
+  sorted
+}
+
+/// `path` absolute, with `.` and `..` segments resolved, for comparing two
+/// spellings of one file.
+pub func normalizePath(path: in String): String {
+  val absPath = if Path.isAbsolute(path) { path } else { Path.join(Env.currentDirectory(), path) }
+  val unified = Str.replace(absPath, "\\", "/")
+  val parts = Str.split(unified, "/")
+  val kept: List[String] = newList()
+  var i = 0
+  while i < parts.length {
+    val seg = parts[i]
+    if seg == ".." {
+      if kept.count > 0 {
+        kept.removeAt(kept.count - 1)
+      }
+    } else if seg != "." and seg != "" {
+      kept.add(seg)
+    }
+    i = i + 1
+  }
+  val absolute = Str.startsWith(unified, "/")
+  var joined = ""
+  var j = 0
+  while j < kept.count {
+    if j > 0 or absolute {
+      joined = joined + "/"
+    }
+    joined = joined + kept[j]
+    j = j + 1
+  }
+  if joined == "" and absolute {
+    "/"
+  } else {
+    joined
+  }
+}
+
+/// The files the package of the source file at `sourcePath` is built from,
+/// normalized: the files of the `[project.packages]`/`[project.tests]`
+/// entry of the nearest manifest that contains it, or — with no manifest,
+/// or no entry containing it — every `.l` file under its directory,
+/// recursively, whatever its `package` line (an over-approximation),
+/// except under a subdirectory that is a project of its own.
+/// `None` when the set cannot be known: a broken manifest, an entry that
+/// cannot be fully listed, an unlistable directory.
+pub func packageFilesForSource(sourcePath: in String): Option[List[String]] {
+  val own = normalizePath(sourcePath)
+  val dir = Path.dirname(own)
+  match findNearestManifestDetailed(dir) {
+    case FoundBrokenManifest(_, _) -> {
+      return None
+    }
+    case FoundManifest(mfPath) -> {
+      val mf = match File.readText(mfPath) {
+        case Ok(text) -> match Mf.parseManifest(text, mfPath) { case Ok(m) -> m; case Err(_) -> { return None } }
+        case Err(_) -> {
+          return None
+        }
+      }
+      match mf.project {
+        case Some(proj) -> {
+          val mfDir = Path.dirname(mfPath)
+          val entries: List[Mf.PackageEntry] = newList()
+          for e in proj.packages.toArray() {
+            entries.add(e)
+          }
+          for e in proj.tests.toArray() {
+            entries.add(e)
+          }
+          var found = false
+          var incomplete = false
+          val files: List[String] = newList()
+          for entry in entries.toArray() {
+            val ef = projectEntryFiles(entry, mfDir)
+            var contains = false
+            for p in ef.paths.toArray() {
+              if normalizePath(p) == own {
+                contains = true
+              }
+            }
+            if contains {
+              found = true
+              if ef.problems.count > 0 or ef.emptyDir.length > 0 {
+                incomplete = true
+              }
+              for p in ef.paths.toArray() {
+                files.add(normalizePath(p))
+              }
+            }
+          }
+          if found {
+            if incomplete {
+              return None
+            }
+            return Some(value = files)
+          }
+        }
+        case None -> ()
+      }
+    }
+    case NoManifestFound -> ()
+  }
+  match File.listFilesRecursive(dir) {
+    case Ok(fs) -> {
+      val files: List[String] = newList()
+      for f in fs.toArray() {
+        val nf = normalizePath(f)
+        if Str.endsWith(nf, ".l") and not insideNestedProject(nf, dir) {
+          files.add(nf)
+        }
+      }
+      Some(value = files)
+    }
+    case Err(_) -> None
+  }
+}
+
+// Whether `file` lies in a subdirectory of `root` that has a lyric.toml of
+// its own: another project, never part of a build of a file in `root`.
+func insideNestedProject(file: in String, root: in String): Bool {
+  var d = Path.dirname(file)
+  while d.length > root.length {
+    if File.fileExists(Path.join(d, "lyric.toml")) {
+      return true
+    }
+    val parent = Path.dirname(d)
+    if parent == d {
+      return false
+    }
+    d = parent
+  }
+  false
 }

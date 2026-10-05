@@ -110,53 +110,27 @@ func cmdProve(argv: in slice[String]): Int {
       printErr("prove: --explain requires a source file")
       return 1
     }
+    var projectMfPath = ""
     val sourcePaths = match resolveProjectSources(manifestArg) {
       case ProjSourcesMissingManifest -> {
         printErr("prove: missing source file and no lyric.toml found")
         return 1
       }
       case ProjSourcesFatal -> return 1
-      case ProjSourcesFound(_, paths) -> paths
+      case ProjSourcesFound(mfp, paths) -> {
+        projectMfPath = mfp
+        paths
+      }
     }
     if sourcePaths.count == 0 {
       printErr("prove: no source files found in project")
       return 1
     }
-    // Each package's top-level type names across all its files, so a file
-    // is proved knowing what its siblings declare (#8108).  A file that
-    // cannot be read or parsed leaves every package's scope unknown.
-    val packageTypes: Map[String, List[String]] = newMap()
-    var scopesKnown = true
-    var si = 0
-    while si < sourcePaths.count {
-      match File.readText(sourcePaths[si]) {
-        case Ok(text) -> {
-          val pt = Verifier.packageTypesOfSource(text)
-          if pt.parsed {
-            if not packageTypes.containsKey(pt.packageName) {
-              val fresh: List[String] = newList()
-              packageTypes.add(pt.packageName, fresh)
-            }
-            match mapGet(packageTypes, pt.packageName) {
-              case Some(acc) -> {
-                var ti = 0
-                while ti < pt.typeNames.count {
-                  acc.add(pt.typeNames[ti])
-                  ti = ti + 1
-                }
-              }
-              case None -> ()
-            }
-          } else {
-            scopesKnown = false
-          }
-        }
-        case Err(_) -> {
-          scopesKnown = false
-        }
-      }
-      si += 1
-    }
+    // Each `[project.packages]` entry's scope over exactly the files the
+    // build merges for it (`Lyric.Discovery.projectEntryFiles`), keyed by
+    // normalized path; a file in no entry, or in an entry whose files
+    // cannot all be read, parsed or listed, has an unknown scope (#8108).
+    val fileScopes = projectFileScopes(projectMfPath)
     var totalGoals = 0
     var totalDischarged = 0
     var anyError = false
@@ -172,13 +146,8 @@ func cmdProve(argv: in slice[String]): Int {
           continue
         }
       }
-      val pkgName = Verifier.packageTypesOfSource(source).packageName
-      val pkgScope = match mapGet(packageTypes, pkgName) {
-        case Some(names) -> if scopesKnown {
-          Verifier.packageScopeOf(names)
-        } else {
-          Verifier.unknownPackageScope()
-        }
+      val pkgScope = match mapGet(fileScopes, Disc.normalizePath(sp)) {
+        case Some(fs) -> fs
         case None -> Verifier.unknownPackageScope()
       }
       val summary = Verifier.proveSourceInScope(source, allowUnverified, pkgScope)
@@ -221,7 +190,14 @@ func cmdProve(argv: in slice[String]): Int {
     }
   }
 
-  val summary = Verifier.proveSourceInScope(source, allowUnverified, Verifier.siblingPackageScope(sourcePath, source))
+  // The file's package is the build's: its manifest entry's files, or its
+  // directory tree (#8108).
+  val fileScope = Verifier.scopeFromPackageFiles(
+    Disc.packageFilesForSource(sourcePath),
+    Disc.normalizePath(sourcePath),
+    source
+  )
+  val summary = Verifier.proveSourceInScope(source, allowUnverified, fileScope)
 
   if explain {
     val total = Verifier.summaryTotalCount(summary)
@@ -332,4 +308,60 @@ func cmdProve(argv: in slice[String]): Int {
   } else {
     0
   }
+}
+
+// The scope of every file of the project at `mfPath`: for each
+// `[project.packages]` and `[project.tests]` entry, the type names declared
+// across exactly the files the build merges for it, keyed by normalized
+// path.  A file in two entries gets their union.
+func projectFileScopes(mfPath: in String): Map[String, Verifier.PackageScope] {
+  val scopes: Map[String, Verifier.PackageScope] = newMap()
+  val mf = match File.readText(mfPath) {
+    case Ok(text) -> match Mf.parseManifest(text, mfPath) { case Ok(m) -> m; case Err(_) -> { return scopes } }
+    case Err(_) -> {
+      return scopes
+    }
+  }
+  val proj = match mf.project { case Some(p) -> p; case None -> { return scopes } }
+  val mfDir = Path.dirname(mfPath)
+  val entries: List[Mf.PackageEntry] = newList()
+  for e in proj.packages.toArray() {
+    entries.add(e)
+  }
+  for e in proj.tests.toArray() {
+    entries.add(e)
+  }
+  for entry in entries.toArray() {
+    val ef = Disc.projectEntryFiles(entry, mfDir)
+    val files: List[String] = newList()
+    for p in ef.paths.toArray() {
+      files.add(Disc.normalizePath(p))
+    }
+    val complete = ef.problems.count == 0 and ef.emptyDir.length == 0
+    val entryScope = if complete { Verifier.scopeOfFiles(files, "") } else { Verifier.unknownPackageScope() }
+    for f in files.toArray() {
+      val merged = match mapGet(scopes, f) {
+        case None -> entryScope
+        case Some(prev) -> {
+          if prev.known and entryScope.known {
+            val both: List[String] = newList()
+            for n in prev.typeNames.toArray() {
+              both.add(n)
+            }
+            for n in entryScope.typeNames.toArray() {
+              both.add(n)
+            }
+            Verifier.packageScopeOf(both)
+          } else {
+            Verifier.unknownPackageScope()
+          }
+        }
+      }
+      if scopes.containsKey(f) {
+        val dropped = scopes.remove(f)
+      }
+      scopes.add(f, merged)
+    }
+  }
+  scopes
 }

@@ -1,0 +1,11 @@
+[package]
+name = "ProveScopeFilelist"
+version = "0.1.0"
+
+[project]
+name = "ProveScopeFilelist"
+output = "single"
+output_assembly = "ProveScopeFilelist.dll"
+
+[project.packages]
+"P" = ["src/x/a_types.l", "src/y/b_logic.l"]

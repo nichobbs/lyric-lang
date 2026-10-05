@@ -14,8 +14,7 @@ import Lyric.Parser
 import Lyric.ModeChecker
 import Lyric.Weaver
 import Std.File as File
-import Std.Directory as Dir
-import Std.Path as FsPath
+import Std.String as Str
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Result types.
@@ -192,11 +191,14 @@ pub func packageScopeOf(typeNames: in List[String]): PackageScope {
 }
 
 // A source file's package and the top-level type names it declares;
-// `parsed` false when it does not parse.
+// `parsed` false when it does not parse.  `customGenerator` says it carries
+// a custom `@generate(X.Y)`, whose generated code — appended before the
+// build merges the package — may declare any type.
 pub record PackageTypes {
   pub packageName: String
   pub typeNames: List[String]
   pub parsed: Bool
+  pub customGenerator: Bool = false
 }
 
 pub func packageTypesOfSource(source: in String): PackageTypes {
@@ -208,42 +210,75 @@ pub func packageTypesOfSource(source: in String): PackageTypes {
   PackageTypes(
     packageName = joinPathSegments(parsed.file.packageDecl.path.segments),
     typeNames = declaredTypeNames(parsed.file),
-    parsed = true
+    parsed = true,
+    customGenerator = hasCustomGenerator(parsed.file)
   )
 }
 
-// The scope of the file at `path` whose text is `source`: the type names
-// the other `.l` files beside it that declare the same package declare.  A
-// sibling that cannot be listed, read or parsed makes the scope unknown.
-pub func siblingPackageScope(path: in String, source: in String): PackageScope {
-  val own = packageTypesOfSource(source)
-  if not own.parsed {
+// Whether an item carries `@generate(X.Y)`: a custom generator, run by the
+// build (`Lyric.Generator`).  The built-in `@generate(Json)`-style derives
+// add functions, never a type.
+func hasCustomGenerator(file: in SourceFile): Bool {
+  var i = 0
+  while i < file.items.count {
+    val anns = file.items[i].annotations
+    var k = 0
+    while k < anns.count {
+      val ann = anns[k]
+      if joinPathSegments(ann.name.segments) == "generate" {
+        var ai = 0
+        while ai < ann.args.count {
+          match ann.args[ai] {
+            case ABare(name, _) -> {
+              if Str.contains(name, ".") {
+                return true
+              }
+            }
+            case _ -> ()
+          }
+          ai = ai + 1
+        }
+      }
+      k = k + 1
+    }
+    i = i + 1
+  }
+  false
+}
+
+// The scope of a file of a package built from `packageFiles` (every file of
+// it, normalized as `ownPath` is; the file itself is read from `ownSource`,
+// not disk): the type names every file declares.  A file that cannot be read
+// or parsed, or a custom generator in any of them, makes it unknown; so does
+// an unknown file set (`None`).  `lyric prove <file>` and the LSP take the
+// set from `Lyric.Discovery.packageFilesForSource`, the build's own (#8108).
+pub func scopeFromPackageFiles(
+  packageFiles: in Option[List[String]], ownPath: in String, ownSource: in String
+): PackageScope {
+  val files = match packageFiles { case Some(fs) -> fs; case None -> { return unknownPackageScope() } }
+  val own = packageTypesOfSource(ownSource)
+  if not own.parsed or own.customGenerator {
     return unknownPackageScope()
   }
-  val dir = FsPath.dirname(path)
-  val ownName = FsPath.basename(path)
-  val files = match Dir.enumerateFiles(dir) { case Ok(fs) -> fs; case Err(_) -> { return unknownPackageScope() } }
+  scopeOfFiles(files, ownPath)
+}
+
+// The type names every file of `files` but `skipPath` declares; unknown
+// when one cannot be read or parsed, or carries a custom generator.
+pub func scopeOfFiles(files: in List[String], skipPath: in String): PackageScope {
   val names: List[String] = newList()
   var i = 0
-  while i < files.length {
-    val base = FsPath.basename(files[i])
-    if base != ownName and FsPath.extension(base) == ".l" {
-      val text = match File.readText(FsPath.join(dir, base)) {
-        case Ok(t) -> t
-        case Err(_) -> {
-          return unknownPackageScope()
-        }
-      }
-      val sib = packageTypesOfSource(text)
-      if not sib.parsed {
+  while i < files.count {
+    if files[i] != skipPath {
+      val text = match File.readText(files[i]) { case Ok(t) -> t; case Err(_) -> { return unknownPackageScope() } }
+      val pt = packageTypesOfSource(text)
+      if not pt.parsed or pt.customGenerator {
         return unknownPackageScope()
       }
-      if sib.packageName == own.packageName {
-        var k = 0
-        while k < sib.typeNames.count {
-          names.add(sib.typeNames[k])
-          k = k + 1
-        }
+      var k = 0
+      while k < pt.typeNames.count {
+        names.add(pt.typeNames[k])
+        k = k + 1
       }
     }
     i = i + 1
