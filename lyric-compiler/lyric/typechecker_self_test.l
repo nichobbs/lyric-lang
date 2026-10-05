@@ -10442,3 +10442,9 @@ test "a record method with an `inout` receiver is not woven, like any record met
   assertEqualInt(hoistedTarget, 0, "the hoisted method is not woven")
   assertEqualInt(freeTarget, 1, "a free function is woven")
 }
+
+test "a field of a module-level binding is a receiver place, as it is an argument (#8179)" {
+  val decls = "record H {\n  var r: R\n}\nval gh = H(r = R(x = 5))\nfunc zap(q: inout R): Unit {\n  q = R(x = 0)\n}\n"
+  val cr = preparedCheck(inoutRecvSrc(decls + "func f(): Unit {\n  zap(gh.r)\n  gh.r.reset()\n  R.reset(gh.r)\n}\n"))
+  assertEqualInt(cr.diagnostics.count, 0, "argument, method and type-qualified forms: " + diagCodesOf(cr))
+}

@@ -12,7 +12,11 @@
 #     not the address, before #8179);
 #   - an application with its own `Box` (with or without its own `set`)
 #     calling the library's generic `Box[T].set`: the call, and the `Box`
-#     its specialised body constructs, are the library's.
+#     its specialised body constructs, are the library's;
+#   - the same for a generic dot-named function with an `in` receiver
+#     (`Box.peek[T]`), with method syntax and through the type and its
+#     package (`AL.Box.peek(g)`, `ALib.Box.peek(g)`), beside a caller's own
+#     `Box.peek` and with none.
 #
 #   bash scripts/ci/inout-receiver-e2e.sh [dotnet] [jvm] [native]
 # LYRIC_BIN overrides the binary (default: the AOT build for BUILD_CONFIG).
@@ -216,6 +220,62 @@ func main(): Int {
   0
 }'
 
+peek_lib='package ALib
+
+pub record Box[T] {
+  v: T
+
+  func get(self: in Box[T]): T = self.v
+}
+
+pub func Box.peek[T](self: in Box[T]): T = self.v'
+
+write_peek() { # $1=dir $2=app source
+  mkdir -p "$work/$1/src"
+  cat > "$work/$1/lyric.toml" <<'TOML'
+[package]
+name = "PApp"
+version = "0.1.0"
+[project]
+name = "PApp"
+[project.packages]
+"ALib" = "src/a.l"
+"PApp" = "src/app.l"
+TOML
+  printf '%s\n' "$peek_lib" > "$work/$1/src/a.l"
+  printf '%s\n' "$2" > "$work/$1/src/app.l"
+}
+
+write_peek peek_clash 'package PApp
+
+import Std.Core
+import ALib as AL
+
+record Box {
+  w: Int
+
+  func get(self: in Box): Int = self.w + 1
+}
+
+func Box.peek(self: in Box): Int = self.w + 2
+
+func main(): Int {
+  val g = AL.Box(v = "s")
+  val m = Box(w = 1)
+  println(g.get() + " " + g.peek() + " " + AL.Box.peek(g) + " " + ALib.Box.peek(g) + " " + toString(m.get()) + " " + toString(m.peek()) + " " + toString(Box.peek(m)))
+  0
+}'
+write_peek peek_noclash 'package PApp
+
+import Std.Core
+import ALib as AL
+
+func main(): Int {
+  val g = AL.Box(v = "s")
+  println(g.peek() + " " + AL.Box.peek(g) + " " + ALib.Box.peek(g))
+  0
+}'
+
 want="268 279 0 42 2"
 fail=0
 for t in "${targets[@]}"; do
@@ -232,12 +292,12 @@ for t in "${targets[@]}"; do
     printf '%s\n' "$out" | tail -n 5 | sed 's/^/  /'
     fail=1
   fi
-  for clash in "clash_method:9 200" "clash_type:10 1" "clash_string:z"; do
+  for clash in "clash_method:9 200" "clash_type:10 1" "clash_string:z" "peek_clash:s s s s 2 3 3" "peek_noclash:s s s"; do
     name="${clash%%:*}"
     cwant="${clash#*:}"
     out="$("$lyric_bin" run --manifest "$work/$name/lyric.toml" --target "$t" 2>&1 | grep -v '^Picked up JAVA_TOOL_OPTIONS')"
     if [ "$(printf '%s\n' "$out" | tail -n 1)" != "$cwant" ]; then
-      echo "FAIL ($t): '$name' should call the library's generic \`Box[T].set\` and print '$cwant'; got:"
+      echo "FAIL ($t): '$name' should call the library's generic \`Box[T]\` functions and print '$cwant'; got:"
       printf '%s\n' "$out" | tail -n 5 | sed 's/^/  /'
       fail=1
     fi

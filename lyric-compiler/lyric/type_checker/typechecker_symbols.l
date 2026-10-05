@@ -166,6 +166,10 @@ pub record MutableModuleVal {
 pub record DottedGenericCall {
   name: String
   receiverFirst: Bool
+  /// The declaring package when it is not the calling one, so the call is
+  /// written through it and a caller's same-named function or type cannot
+  /// capture it (#8179); "" for the calling package's own function.
+  originPkg: String
 }
 
 /// A call of a dot-named function with an `out`/`inout` parameter (#8179,

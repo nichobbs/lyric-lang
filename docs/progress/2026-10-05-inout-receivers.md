@@ -38,7 +38,11 @@ an ordinary `inout` argument. No backend needed a receiver-specific change.
   same-named one (every package's `T.m` is a candidate, the receiver's type
   decides), and `Pkg.T.m(...)` resolves to the function package `Pkg`
   declares; before, neither was type-checked, and both miscompiled on
-  dotnet and the JVM. Its argument order (D171) is
+  dotnet and the JVM. The #8173 rewrite of a generic dot-named call with
+  no by-reference parameter (`g.peek()`, `AL.Box.peek(g)`) is named through
+  the declaring package the same way: a caller's own `Box.peek` captured it
+  (InvalidCast on dotnet, ClassCast on the JVM, N0007 on native), and the
+  package-qualified form was unresolved. Its argument order (D171) is
   recorded in the rewritten shape, the receiver a by-reference argument, and
   the receiver is no longer recorded as an operand the `?`/`await` hoist
   binds. New diagnostics:
@@ -47,8 +51,9 @@ an ordinary `inout` argument. No backend needed a receiver-specific change.
     type's entry or function.
   - **T0166**: the receiver of a by-reference receiver is not a writable
     place (a `val`, an `in` receiver, a module-level binding, a call result,
-    or a field path starting at a module-level binding or a call result; an
-    indexed element names #8180).
+    or a field path starting at a call result; an indexed element names
+    #8180). A field path starting at a module-level binding is accepted, as
+    it is for an `out`/`inout` argument: only the field is passed.
   - **T0085** also covers a module-level binding passed to any `out`/`inout`
     parameter, which every backend failed on with an internal error.
   - **T0087** now covers `self = ...` when the receiver is not `inout` (it
@@ -108,7 +113,9 @@ Tests:
   receivers in both forms, a generic record's `inout` method, and generic
   functions with `inout` parameters; and three applications with their own
   `Box` (with a `set`, without one, and at `String`) calling the library's
-  generic `Box[T].set`.
+  generic `Box[T].set`, and two calling the library's generic `in`
+  function `Box.peek[T]` with method syntax and through its package, beside
+  and without a caller's own `Box.peek`.
 
 The self-tests are in `compiler-self-tests-batch.sh`,
 `jvm-generics-self-tests-batch.sh`, the ilverify consumer list, and

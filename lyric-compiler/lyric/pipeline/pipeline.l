@@ -1620,7 +1620,15 @@ func rewriteDottedGenericCalls(file: in SourceFile, sites: in Map[String, Dotted
       match e.kind {
         case ECall(fn, args) -> match mapGet(sites, recordCopySiteKey(fn.span)) {
           case Some(site) -> {
+            // Another package's function is called through that package
+            // (#8179): `Lyric.Mono` specialises it from there, never a
+            // same-named function of this package.
             val segs: List[String] = newList()
+            if site.originPkg.length > 0 {
+              for seg in dottedSegments(site.originPkg) {
+                segs.add(seg)
+              }
+            }
             segs.add(site.name)
             val target = Expr(kind = EPath(path = ModulePath(segments = segs, span = fn.span)), span = fn.span)
             if site.receiverFirst {

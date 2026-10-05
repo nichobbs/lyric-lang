@@ -11520,7 +11520,7 @@ func directCallType(
   val ret = instantiateReturnType(sig, argTypes)
   match dottedGenericPathCallee(tbl, fn, sig) {
     case Some(dottedFn) -> {
-      recordDottedGenericCallSite(tbl, fn.span, dottedPathName(fn), false)
+      recordDottedGenericCallSite(tbl, fn.span, dottedCalleeName(fn, sig), false, sig)
       recordGenericCallTypeArgs(tbl, sig, valueGenericParamsOf(tbl, dottedFn, args.count), args, argTypes, fn.span)
       bindValueGenericCall(tbl, diag, dottedFn, args, argTypes, ret)
     }
@@ -11551,7 +11551,7 @@ func dottedGenericPathCallee(tbl: in SymbolTable, fn: in Expr, sig: in ResolvedS
   if sig.generics.count == 0 {
     return None
   }
-  val name = dottedPathName(fn)
+  val name = dottedCalleeName(fn, sig)
   if name.length == 0 {
     return None
   }
@@ -11581,6 +11581,28 @@ func dottedFuncCallee(tbl: in SymbolTable, fn: in Expr): Bool {
     }
   }
   false
+}
+
+// `T.m` for a call of the dot-named function `sig` written through its type,
+// `T.m` or `Pkg.T.m` where `Pkg` is the package declaring it; "" otherwise
+// (a package-qualified free function `Pkg.Sub.f` included).
+func dottedCalleeName(fn: in Expr, sig: in ResolvedSignature): String {
+  val segs: List[String] = newList()
+  if not calleeSegments(fn, segs) or segs.count < 2 {
+    return ""
+  }
+  if segs.count > 2 {
+    val pkgSegs: List[String] = newList()
+    var i = 0
+    while i < segs.count - 2 {
+      pkgSegs.add(segs[i])
+      i = i + 1
+    }
+    if modulePathJoin(pkgSegs) != sig.originPackage {
+      return ""
+    }
+  }
+  segs[segs.count - 2] + "." + segs[segs.count - 1]
 }
 
 // `T.m` for a callee written through its type, `T.m` or package-qualified
@@ -11623,13 +11645,21 @@ func dottedPathName(fn: in Expr): String {
   }
 }
 
-func recordDottedGenericCallSite(tbl: in SymbolTable, sp: in Span, name: in String, receiverFirst: in Bool): Unit {
+func recordDottedGenericCallSite(
+  tbl: in SymbolTable,
+  sp: in Span,
+  name: in String,
+  receiverFirst: in Bool,
+  sig: in ResolvedSignature,
+): Unit {
   if isNoSourceSpan(sp) or name.length == 0 {
     return
   }
   val key = recordCopySiteKey(sp)
   if not tbl.dottedGenericCallSites.containsKey(key) and not tbl.byRefDotCallSites.containsKey(key) {
-    tbl.dottedGenericCallSites.add(key, DottedGenericCall(name = name, receiverFirst = receiverFirst))
+    val foreign = sig.originPackage.length > 0 and sig.originPackage != symTableScopePkg(tbl)
+    val origin = if foreign { sig.originPackage } else { "" }
+    tbl.dottedGenericCallSites.add(key, DottedGenericCall(name = name, receiverFirst = receiverFirst, originPkg = origin))
   }
 }
 
@@ -11744,19 +11774,13 @@ func byRefReceiverProblem(sc: in Scope, recv: in Expr): String {
 }
 
 // A field written by reference belongs to an object the caller holds: the
-// path must start at a local, a parameter or `self` (whatever its mode: the
-// field, not the binding, is written), or at an element of one.
+// path must start at a named binding (a local, a parameter, `self` or a
+// module-level value, whatever its mode: the field, not the binding, is
+// written, as for an `out`/`inout` argument), or at an element of one.
 func fieldPathRootProblem(sc: in Scope, base: in Expr): String {
   match base.kind {
     case EParen(inner) -> fieldPathRootProblem(sc, inner)
-    case EPath(p) -> if p.segments.count == 1 {
-      match scopeTryFind(sc, p.segments[0]) {
-        case Some(_) -> ""
-        case None -> moduleBindingProblem(p.segments[0])
-      }
-    } else {
-      moduleBindingProblem(modulePathJoin(p.segments))
-    }
+    case EPath(_) -> ""
     case ESelf -> ""
     case EMember(inner, _) -> fieldPathRootProblem(sc, inner)
     case EIndex(inner, _) -> fieldPathRootProblem(sc, inner)
@@ -11828,7 +11852,7 @@ func recordDottedGenericMethodCall(
   val recvExpr = match fn.kind { case EMember(r, _) -> r; case _ -> return instRet }
   val tname = match unrefine(recvTy) { case TyUser(_, n, _) -> n; case _ -> return instRet }
   val name = tname + "." + memberName
-  recordDottedGenericCallSite(tbl, fn.span, name, true)
+  recordDottedGenericCallSite(tbl, fn.span, name, true, fullSig)
   val segs: List[String] = newList()
   segs.add(name)
   val dottedFn = Expr(kind = EPath(path = ModulePath(segments = segs, span = fn.span)), span = fn.span)

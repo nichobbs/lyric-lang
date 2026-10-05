@@ -122,7 +122,7 @@ p.moveBy(3, 4)       // p is now Point(x = 4, y = 6)
 Point.moveBy(p, 1, 1) // the same method called through its type
 ```
 
-The receiver is passed by reference, so it must be a place the call can write: a `var`, an `out`/`inout` parameter, or a field path starting at a local or parameter (`holder.point.moveBy(1, 1)`). A `val`, a module-level `val`, a call result or another expression is rejected (`T0166`), and so is an indexed element (`points[0].moveBy(1, 1)`) for now; copy the element into a `var`, call the method, and store it back. The receiver is evaluated first, before the arguments, and is never copied, even next to a `?` or `await`.
+The receiver is passed by reference, so it must be a place the call can write: a `var`, an `out`/`inout` parameter, or a field path starting at a named binding (`holder.point.moveBy(1, 1)`). A `val`, a module-level `val`, a call result or another expression is rejected (`T0166`), and so is an indexed element (`points[0].moveBy(1, 1)`) for now; copy the element into a `var`, call the method, and store it back. The receiver is evaluated first, before the arguments, and is never copied, even next to a `?` or `await`.
 
 Only `in` and `inout` receivers exist. An `out` receiver is rejected (`T0165`), and so is an `inout` receiver on an interface method or an `impl` method (a call through an interface value has no variable of the implementing type to assign) or on a protected type's member (a protected object is shared, never replaced). Assigning `self` in a method whose receiver is `in` is `T0087`.
 
