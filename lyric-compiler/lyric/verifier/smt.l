@@ -23,9 +23,7 @@ pub func smtRenderSort(s: in Sort): String {
     case SFloat64 -> "Real"
     case SString -> "String"
     case SDatatype(name, args) -> {
-      if name == "Unit" and args.count == 0 {
-        "Unit"
-      } else if args.count == 0 {
+      if args.count == 0 {
         name
       } else {
         // The standard library's `Result` and `Option` are the preamble's
@@ -218,7 +216,7 @@ func smtRenderLit(lit: in Lit): String {
     case VLBitVec(bits, w) -> "(_ bv" + unsignedLongToString(bits) + " " + intToString(w) + ")"
     case VLFloat(f) -> smtRenderFloat(f)
     case VLString(s) -> "\"" + s.replace("\"", "\"\"") + "\""
-    case VLUnit -> "unit"
+    case VLUnit -> "Lyric!unit"
   }
 }
 
@@ -539,7 +537,7 @@ func smtRenderSymbol(sym: in SymbolDecl): String {
 // §5. Goal rendering (standalone file).
 // ─────────────────────────────────────────────────────────────────────────────
 pub func smtRenderPreamble(): String {
-  "(set-logic ALL)\n(set-option :produce-models true)\n(declare-datatypes ((Unit 0)) (((unit))))\n" +
+  "(set-logic ALL)\n(set-option :produce-models true)\n(declare-datatypes ((Lyric!Unit 0)) (((Lyric!unit))))\n" +
     smtMonadDatatypes() +
     smtTruncDivDefinitions()
 }
@@ -580,8 +578,7 @@ func smtRenderMonadApp(name: in String, args: in List[Term], retSort: in Sort): 
 // True for sort names that are already declared by the SMT-LIB theory or by
 // the verifier's preamble — never re-declare them.
 func isBuiltinSortName(name: in String): Bool {
-  name == "Bool" or name == "Int" or name == "Real" or name == "String" or name == "Unit" or name == "Tuple" or
-    name == "Option" or
+  name == "Bool" or name == "Int" or name == "Real" or name == "String" or name == unitSortName() or name == "Option" or
     name == "Array"
 }
 
@@ -918,7 +915,8 @@ pub func smtRenderGoal(g: in Goal): String {
     sd = sd + 1
   }
   // Include declared symbols in the sort-collection scan so a callee's
-  // param/result sort gets declared.
+  // param/result sort, and a record field's (`xs: List[Int]`), gets
+  // declared.
   var sj = 0
   while sj < g.symbols.count {
     match g.symbols[sj] {
@@ -930,7 +928,17 @@ pub func smtRenderGoal(g: in Goal): String {
         }
         collectSortNames(rSort, seenSorts, outSorts)
       }
-      case DeclDatatype(_, _) -> ()
+      case DeclDatatype(_, dtCtors) -> {
+        var ci = 0
+        while ci < dtCtors.count {
+          var fi = 0
+          while fi < dtCtors[ci].fields.count {
+            collectSortNames(dtCtors[ci].fields[fi].sort, seenSorts, outSorts)
+            fi = fi + 1
+          }
+          ci = ci + 1
+        }
+      }
     }
     sj = sj + 1
   }

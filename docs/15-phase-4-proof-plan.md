@@ -276,7 +276,7 @@ Lyric.Verifier/
 | `slice[T]` of compile-time-bounded length | array sort with separate length | length axiom asserts `0 ≤ length ≤ N` |
 | `slice[T]` unbounded      | uninterpreted sort + length function          | `forall` over its elements requires explicit bound (§4.2 §11) |
 | opaque type               | SMT-LIB datatype with one private field       | fields are not exported across packages — the VC generator inlines invariant facts but not the representation |
-| function type             | uninterpreted sort + apply axiom (`@pure` only)| non-`@pure` functions cannot appear as values in contracts |
+| function type             | uninterpreted sort `Function`                | a function the file declares, named as a value, is one symbol per function; a call through a binding holding one is a call of that function, otherwise the call site's own result; `==`/`!=` on function values fail closed (#8109) |
 | `Result[T, E]`            | the standard Lyric-defined two-arm union; treated as datatype | |
 | protected-type ref        | fields bound as symbolic `Real`/`Int`/… vars | per-entry sequential reasoning via `goalsForProtectedType`; `invariant:` clauses are `requires:` hypotheses on each entry and `ensures:` obligations over the values its `var` fields hold when it returns (#8102) |
 
@@ -369,6 +369,78 @@ At a call the callee's contract is instantiated with the argument each
 parameter receives: named arguments by name, positional ones in order
 into the remaining parameters, an omitted parameter by its default, and a
 record constructor's fields likewise (#7873).
+
+Two values the program can tell apart never share a term (#8109):
+
+- `@pure` is trusted, not checked: the verifier believes a `@pure`
+  function computes its result from its arguments alone. A call of a
+  function the file declares — free, static or method — is the callee
+  applied to its arguments only when the callee is `@pure` and every
+  argument is a value `==` sees all of: a `Bool`, integer, bitvector,
+  `Float`/`Double` or `String`; `Unit`, a tuple, or the standard
+  `Result`/`Option` of such values; an enum the file declares, or a
+  non-generic record or union the file declares whose fields are all
+  immutable and of such types; or a function the file declares `@pure`,
+  named as a value. Two such calls with equal arguments are equal. Any
+  other call's result belongs to its call site: an uninterpreted function
+  of its own applied to the arguments, so two call sites never share a
+  result — `f(x) == f(x)` is not provable for a counter or a random
+  source, nor for a `@pure` function passed a closure whose captured
+  variable changed, a `List` that grew, or a protected object — and
+  under a quantifier the result varies with the bound variable. The
+  callee's `ensures:` still says what the result is. A `@pure` body the
+  verifier cannot translate faithfully (V0033, or a value not of the
+  result's sort) is not assumed, and the call keeps its contract.
+  `@pure` is read from the declaration in the file being proved; `lyric
+  prove` does not read other packages' contract metadata, so a callee
+  declared elsewhere (another file, another package, the standard
+  library) is not known to be pure, and each of its call sites has a
+  result of its own, in a body or a contract alike.
+- A function the file declares, named as a value (`val h = sq`), is one
+  symbol per function, which says which function a call through the
+  binding reaches: as the binding holds it at the call, so after
+  `h = other` the call is `other`'s. A binding holding anything else — a
+  lambda, a parameter, a value a loop has havocked — is called as a
+  computed callee, a result of the call site's own. Whether two function
+  values are equal is not modelled (a .NET delegate compares its method
+  and target, a JVM lambda its reference, and one function named twice
+  may be two objects).
+- `==` and `!=` are the solver's equality only where that is the
+  runtime's on every target: primitives and `String`; `Unit`, tuples and
+  the standard `Result`/`Option` of such values; enums; and the file's
+  non-generic unions and records that compare field by field (D164,
+  D172) — a record with no `var` field, or one that derives `Equals` —
+  whose fields are all such values (a recursive record included). Any
+  other operand fails closed (V0033): a function or lambda, a mutable
+  record that keeps identity, a protected, opaque, interface or extern
+  value, a host collection, a generic record, an alias, an unannotated
+  lambda parameter, a qualified path, or a module-level name with no
+  declared type. A module-level `val` or `const` with a declared type is
+  a value of that type. Inside a generic, `==` over its own type
+  parameter is an opaque equivalence — whatever `==` its binding has, it
+  is reflexive, symmetric and transitive, as the solver's equality is —
+  so `ensures: result == x` on `func identity[T]` still proves. Where a
+  call instantiates such a contract, each `==` in it is checked again
+  over the argument terms, and fails closed (V0033) if they are not
+  modelled values: `same(one, one)` against `requires: a == b` does.
+- The built-in `Unit` and tuple sorts have names no source type can take
+  (`Lyric!Unit`, `Lyric!Tuple<n>`), so a user `record Tuple` is a
+  datatype of its own. A type the file declares or imports by name with
+  a primitive's name (`record Unit`, `record Int`) would be read as the
+  primitive, so such a file fails closed (V0033).
+- Every binding has a value of its own. Each name a destructuring `val`
+  pattern binds is a fresh unknown (the verifier does not take values
+  apart), so the same name in two patterns never denotes one value. A
+  name no binding declares is module-level, where a `val` never changes;
+  it is the symbol `global!<name>`, apart from any parameter or binding
+  spelt the same. An assignment to such a name fails closed (V0026).
+- An `if` statement's branches, and function, lambda and loop bodies,
+  are scopes. The walk appends the rest of the block to each branch, so
+  a branch ends with a marker that restores every binding it shadowed
+  (or unbinds a name it introduced), with its value and mutability as of
+  the shadowing. While an `out`/`inout` parameter or a loop-changed
+  variable is shadowed, the postcondition's placeholder for it reads the
+  shadowed binding, which cannot change meanwhile.
 
 A method call `recv.m(args)` reaches a dot-named `func R.m(self: R, ...)`
 the file declares when `recv` is a value of the file's record (or
@@ -565,13 +637,13 @@ As a backstop, contracts and defaults unfold inside one another at most
 32 deep; past that the call fails closed (`V0033`).
 
 A local binding shadows a file function of the same name: `val f = ...;
-f(x)` is a call through a computed callee (a fresh result, its mutable
-arguments reset). Inside a protected type, `self.m()` fails closed like a
+f(x)` is a call through the binding — of the file function it holds, if
+it holds one by name, otherwise a computed callee (a fresh result, its
+mutable arguments reset). Inside a protected type, `self.m()` fails closed like a
 bare `m()`, as does a method call on any receiver the verifier does not
 model (V0024).
 
-Known limitations, tracked separately: term identity for impure free calls, reassigned function values,
-unbound names and `if`-branch locals (#8109); no heap model, and record
+Known limitations, tracked separately: no heap model, and record
 methods never verified (#8110); a callee's `ensures:` about an
 `out`/`inout` parameter not linked back to the argument (#8111);
 `Float`/`Double` as SMT reals (#8141); the value of an expression `match`

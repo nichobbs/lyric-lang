@@ -78,8 +78,7 @@ pub func primitiveSort(name: in String): Option[SortInfo] {
     return Some(value = sortInfoNoRange(SString))
   }
   if name == "Unit" {
-    val args: List[Sort] = newList()
-    return Some(value = sortInfoNoRange(SDatatype(name = "Unit", args = args)))
+    return Some(value = sortInfoNoRange(unitSort()))
   }
   None
 }
@@ -189,7 +188,7 @@ pub func sortOfTypeExpr(t: in TypeExpr): SortInfo {
         sorts.add(sortOfTypeExpr(elts[i]).sort)
         i = i + 1
       }
-      sortInfoNoRange(SDatatype(name = "Tuple", args = sorts))
+      sortInfoNoRange(SDatatype(name = tupleSortName(sorts.count), args = sorts))
     }
     case TNullable(inner) -> {
       val inner2 = sortOfTypeExpr(inner).sort
@@ -200,7 +199,7 @@ pub func sortOfTypeExpr(t: in TypeExpr): SortInfo {
     case TFunction(_, _) -> sortInfoNoRange(SUninterp(name = "Function"))
     case TUnit -> {
       val args: List[Sort] = newList()
-      sortInfoNoRange(SDatatype(name = "Unit", args = args))
+      sortInfoNoRange(unitSort())
     }
     case TSelf -> sortInfoNoRange(SUninterp(name = "Self"))
     case TNever -> sortInfoNoRange(SUninterp(name = "Never"))

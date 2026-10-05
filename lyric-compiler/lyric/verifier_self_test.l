@@ -2513,3 +2513,343 @@ test "a type the package's other files declare blocks the Result/Option model (#
   val legacy = proveSource(src)
   assertTrue(summaryHasErrorDiag(legacy) or summaryHasFailure(legacy), "the scope-less entry point: not proved")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Two values the program can tell apart never share a term: a call of a
+// function that is not `@pure` is a value of its own, a function-valued
+// binding calls the function it holds now, every binding has a name of its
+// own, and a branch's bindings stay in the branch (#8109).
+// ─────────────────────────────────────────────────────────────────────────────
+func tickDecl(): String {
+  "func tick(x: in Int): Int {\n  x\n}\n"
+}
+
+func oneTwoDecls(): String {
+  "@pure\nfunc one(x: in Int): Int = 1\n@pure\nfunc two(x: in Int): Int = 2\n"
+}
+
+test "a call of a function that is not @pure is a value of its own (#8109)" {
+  assertRefuted(tickDecl() + "func f(x: in Int): Bool\n  ensures: result\n{\n  tick(x) == tick(x)\n}\n", "impure-call")
+  assertRefuted(
+    tickDecl() + "func f(x: in Int): Bool\n  ensures: result\n{\n  val a = tick(x)\n  val b = tick(x)\n  a == b\n}\n",
+    "impure-call-bound"
+  )
+  assertRefuted("func f(x: in Int): Bool\n  ensures: result\n{\n  next(x) == next(x)\n}\n", "undeclared-callee")
+  assertRefuted(
+    "record R {\n  v: Int\n}\nfunc R.bump(r: in R): Int {\n  r.v\n}\n" +
+      "func f(r: in R): Bool\n  ensures: result\n{\n  R.bump(r) == R.bump(r)\n}\n",
+    "impure-static-call"
+  )
+  assertDischarged(
+    "@pure\nfunc sq(x: in Int): Int = x * x\nfunc f(x: in Int): Bool\n  ensures: result\n{\n  sq(x) == sq(x)\n}\n",
+    "pure-congruent"
+  )
+  assertDischarged(
+    "@pure\nfunc sq(x: in Int): Int = x * x\nfunc f(x: in Int, y: in Int): Bool\n  requires: x == y\n  ensures: result\n{\n  sq(x) == sq(y)\n}\n",
+    "pure-equal-arguments"
+  )
+  assertDischarged(
+    "func inc(x: in Int): Int\n  ensures: result == x + 1\n{\n  x + 1\n}\n" +
+      "func f(x: in Int): Bool\n  ensures: result\n{\n  inc(x) == inc(x)\n}\n",
+    "contract-decides"
+  )
+  // A `@pure` callee whose body the verifier cannot translate is still one
+  // value per argument list; its body is simply not assumed.
+  val level = "enum Tier {\n  case Low\n  case High\n}\n@pure\nfunc level(t: in Tier): Int {\n  match t {\n" +
+    "    case Tier.Low -> 1\n    case Tier.High -> 2\n  }\n}\n"
+  assertDischarged(
+    level +
+      "func f(a: in Tier, b: in Tier): Bool\n  requires: level(a) >= level(b)\n  ensures: result\n{\n  level(a) >= level(b)\n}\n",
+    "pure-untranslatable-body"
+  )
+  assertRefuted(level + "func f(a: in Tier): Bool\n  ensures: result\n{\n  level(a) == 1\n}\n", "pure-body-not-assumed")
+}
+
+test "a function-valued binding calls the function it holds now (#8109)" {
+  assertRefuted(
+    tickDecl() + "func f(x: in Int): Bool\n  ensures: result\n{\n  val h = tick\n  h(x) == h(x)\n}\n",
+    "impure-binding"
+  )
+  assertRefuted(
+    "func f(p: in ((Int) -> Int, Int), q: in ((Int) -> Int, Int)): Bool\n  ensures: result\n{\n" +
+      "  val (h, u) = p\n  val a = h(1)\n  val (h, w) = q\n  val b = h(1)\n  a == b\n}\n",
+    "pattern-bound-callees"
+  )
+  assertRefuted(
+    oneTwoDecls() +
+      "func f(): Bool\n  ensures: result\n{\n  var h = one\n  val a = h(1)\n  h = two\n  val b = h(1)\n  a == b\n}\n",
+    "reassigned-binding"
+  )
+  assertDischarged(
+    oneTwoDecls() +
+      "func f(): Bool\n  ensures: result\n{\n  var h = one\n  val a = h(1)\n  h = two\n  val b = h(1)\n  a == 1 and b == 2\n}\n",
+    "current-function"
+  )
+  assertDischarged(
+    oneTwoDecls() +
+      "func f(x: in Int): Bool\n  ensures: result\n{\n  val h = one\n  h(x) == h(x) and h(x) == one(x)\n}\n",
+    "unreassigned-binding"
+  )
+  assertNotProved(
+    oneTwoDecls() +
+      "func f(n: in Int): Bool\n  ensures: result\n{\n  var h = one\n  var i = 0\n  while i < n\n    invariant: i >= 0\n  {\n" +
+      "    h = two\n    i = i + 1\n  }\n  h(1) == 1\n}\n",
+    "loop-havocked-binding"
+  )
+}
+
+test "every binding names a value of its own (#8109)" {
+  assertRefuted(
+    "func f(p: in (Int, Int), q: in (Int, Int)): Bool\n  ensures: result\n{\n" +
+      "  val (a, u) = p\n  val x = a\n  val (a, w) = q\n  x == a\n}\n",
+    "pattern-names-in-two-scopes"
+  )
+  assertRefuted(
+    "func f(p: in (Int, Int)): Bool\n  ensures: result\n{\n  val (a, b) = p\n  a == b\n}\n",
+    "pattern-names-distinct"
+  )
+  assertDischarged(
+    "func f(p: in (Int, Int)): Bool\n  ensures: result\n{\n  val (a, b) = p\n  a == a\n}\n",
+    "pattern-name-is-itself"
+  )
+  assertDischarged(
+    "val limit: Int = 10\nfunc f(): Bool\n  ensures: result\n{\n  limit == limit\n}\n",
+    "module-level-name"
+  )
+  assertDischarged(
+    "val limit: Int = 10\nfunc f(x: in Int): Bool\n  requires: x == limit\n  ensures: result\n{\n  x + 1 == limit + 1\n}\n",
+    "module-level-name-typed"
+  )
+  assertUnsupported("func f(): Unit {\n  limit = 3\n}\n", "assign-undeclared")
+}
+
+func branchLeakSrc(ens: in String): String {
+  "func f(c: in Bool): Int\n  ensures: " + ens +
+    "\n{\n  val t = 5\n  if c {\n    val t = 7\n    assert(t == 7)\n  }\n  t\n}\n"
+}
+
+func branchVarSrc(ens: in String): String {
+  "func f(c: in Bool): Int\n  ensures: " + ens +
+    "\n{\n  var t = 5\n  if c {\n    t = 6\n    val t = 7\n    assert(t == 7)\n" +
+    "  } else {\n    var t = 9\n    t = 10\n  }\n  t\n}\n"
+}
+
+func branchOutSrc(ens: in String): String {
+  "func f(c: in Bool, p: out Int): Unit\n  ensures: " + ens +
+    "\n{\n  p = 1\n  if c {\n    val p = 2\n    assert(p == 2)\n  }\n}\n"
+}
+
+test "a binding declared in a branch stays in the branch (#8109)" {
+  assertRefuted(branchLeakSrc("c implies result == 7"), "branch-local-leak")
+  assertDischarged(branchLeakSrc("result == 5"), "outer-binding-after-branch")
+  assertDischarged(branchVarSrc("(c implies result == 6) and (not c implies result == 5)"), "assigned-before-shadow")
+  assertRefuted(branchVarSrc("not c implies result == 10"), "else-local-leak")
+  assertDischarged(branchOutSrc("p == 1"), "shadowed-out-parameter")
+  assertRefuted(branchOutSrc("c implies p == 2"), "out-parameter-shadow-leak")
+  assertDischarged(
+    "func f(c: in Bool): Int\n  ensures: result == 3\n{\n  val n = 3\n  if c {\n    val m = 4\n    assert(m == 4)\n  }\n  n\n}\n",
+    "new-name-in-branch"
+  )
+  assertDischarged(
+    "func f(c: in Bool): Int\n  ensures: c implies result == 7\n{\n  if c {\n    val t = 7\n    t\n  } else {\n    0\n  }\n}\n",
+    "branch-value"
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// `@pure` is trusted, and congruent only over arguments whose value is all a
+// call can read: a closure, a function from elsewhere, a collection or a
+// protected object may give two calls with one term different results.  A
+// call site's own result varies with a quantifier's bound variable, and
+// function values are never compared (#8109 review).
+// ─────────────────────────────────────────────────────────────────────────────
+test "a @pure call over a closure, a collection or a protected object is its own (#8109)" {
+  val app = "@pure\nfunc app(g: in (Int) -> Int, x: in Int): Int = g(x)\n"
+  assertRefuted(
+    app + "func f(): Bool\n  ensures: result\n{\n  var t = 0\n  val l = { (x: Int) -> x + t }\n  val a = app(l, 1)\n" +
+      "  t = 5\n  val b = app(l, 1)\n  a == b\n}\n",
+    "closure-argument"
+  )
+  assertRefuted(
+    "@pure\nfunc call0(g: in () -> Long): Long = g()\n" +
+      "func f(): Bool\n  ensures: result\n{\n  val a = call0(monotonicNanos)\n  val b = call0(monotonicNanos)\n  a == b\n}\n",
+    "undeclared-function-argument"
+  )
+  assertRefuted(
+    "@pure\nfunc probe(xs: in List[Int]): Int = xs.count\n" +
+      "func f(): Bool\n  ensures: result\n{\n  val xs: List[Int] = newList()\n  val a = probe(xs)\n  xs.add(1)\n" +
+      "  val b = probe(xs)\n  a == b\n}\n",
+    "list-argument"
+  )
+  assertRefuted(
+    "pub protected type Counter {\n  var n: Int\n  pub entry next(): Int {\n    n = n + 1\n    n\n  }\n}\n" +
+      "@pure\nfunc peek(c: in Counter): Int = c.next()\n" +
+      "func f(c: in Counter): Bool\n  ensures: result\n{\n  peek(c) == peek(c)\n}\n",
+    "protected-argument"
+  )
+  // `read`'s two-statement body is not unfolded, so only congruence could
+  // make the two calls equal.
+  assertRefuted(
+    "record Cell {\n  var v: Int\n}\n@pure\nfunc read(c: in Cell): Int {\n  val w = c.v\n  w\n}\n" +
+      "func f(c: in Cell): Bool\n  ensures: result\n{\n  read(c) == read(c)\n}\n",
+    "mutable-record-argument"
+  )
+  assertDischarged(
+    "@pure\nfunc sq(x: in Int, s: in String): Int = x * x\nfunc f(x: in Int, s: in String): Bool\n  ensures: result\n{\n" +
+      "  sq(x, s) == sq(x, s)\n}\n",
+    "value-arguments"
+  )
+  val pt = "record Pt {\n  x: Int\n  y: Int\n}\nrecord Seg {\n  a: Pt\n  b: Pt\n}\nenum Dir {\n  case N\n  case S\n}\n" +
+    "@pure\nfunc len(s: in Seg, d: in Dir): Int = s.b.x - s.a.x\n"
+  assertDischarged(
+    pt + "func f(s: in Seg, d: in Dir): Bool\n  ensures: result\n{\n  len(s, d) == len(s, d)\n}\n",
+    "immutable-record-and-enum-arguments"
+  )
+  assertDischarged(
+    app + "@pure\nfunc inc(x: in Int): Int = x + 1\n" +
+      "func f(x: in Int): Bool\n  ensures: result\n{\n  app(inc, x) == app(inc, x)\n}\n",
+    "pure-function-argument"
+  )
+  assertRefuted(
+    app + "func inc(x: in Int): Int {\n  x + 1\n}\n" +
+      "func f(x: in Int): Bool\n  ensures: result\n{\n  app(inc, x) == app(inc, x)\n}\n",
+    "impure-function-argument"
+  )
+}
+
+test "a call's own result varies with a quantifier's bound variable (#8109)" {
+  assertNotProved(
+    tickDecl() + "func f(x: in Int): Bool\n  ensures: exists (i: Int) tick(i) == i + 1\n{\n  true\n}\n",
+    "impure-call-under-exists"
+  )
+  assertNotProved(
+    "func f(x: in Int): Bool\n  ensures: exists (i: Int) next(i) == i + 1\n{\n  true\n}\n",
+    "undeclared-call-under-exists"
+  )
+  assertNotProved(
+    "type Small = Int range 0 ..= 10\nfunc tick(x: in Small): Small {\n  if x == 10 { 0 } else { Small.from(x.toInt() + 1) }\n}\n" +
+      "func f(x: in Int): Bool\n  ensures: exists (i: Small) tick(i) == i\n{\n  true\n}\n",
+    "range-call-under-exists"
+  )
+}
+
+test "two function values are never compared (#8109)" {
+  assertUntranslatable(
+    oneTwoDecls() + "func f(): Bool\n  ensures: result\n{\n  val h = one\n  val k = one\n  h == k\n}\n",
+    "same-function-equal"
+  )
+  assertUntranslatable(
+    oneTwoDecls() + "func f(): Bool\n  ensures: result\n{\n  val h = one\n  val k = two\n  h != k\n}\n",
+    "different-functions-unequal"
+  )
+}
+
+test "a source type named like a built-in sort is never the built-in (#8109)" {
+  assertRefuted(
+    "record Tuple {\n  xs: List[Int]\n}\n@pure\nfunc size(t: in Tuple): Int {\n  val n = t.xs.count\n  n\n}\n" +
+      "func f(t: in Tuple): Bool\n  ensures: result\n{\n  val a = size(t)\n  t.xs.add(1)\n  val b = size(t)\n  a == b\n}\n",
+    "record-named-tuple-with-a-list"
+  )
+  assertRefuted(
+    "record Tuple {\n  var n: Int\n}\n@pure\nfunc size(t: in Tuple): Int {\n  val k = t.n\n  k\n}\n" +
+      "func f(t: in Tuple): Bool\n  ensures: result\n{\n  size(t) == size(t)\n}\n",
+    "record-named-tuple"
+  )
+  assertUntranslatable(
+    "record Unit {\n  xs: List[Int]\n}\nfunc f(u: in Unit): Bool\n  ensures: result\n{\n  true\n}\n",
+    "record-named-unit"
+  )
+  assertDischarged(
+    "@pure\nfunc fst(p: in (Int, Int)): Int\n{\n  val q = p\n  0\n}\n" +
+      "func f(p: in (Int, Int)): Bool\n  ensures: result\n{\n  fst(p) == fst(p)\n}\n",
+    "builtin-tuple-is-a-value"
+  )
+}
+
+test "values that may hold a function are never compared (#8109)" {
+  val one = "@pure\nfunc one(x: in Int): Int = 1\n"
+  assertUntranslatable(
+    "func f(): Bool\n  ensures: result\n{\n  val h = monotonicNanos\n  val k = monotonicNanos\n  h == k\n}\n",
+    "imported-function-value"
+  )
+  assertUntranslatable(
+    one + "func g(): Bool\n  ensures: result\n{\n  val a: Option[(Int) -> Int] = Some(one)\n" +
+      "  val b: Option[(Int) -> Int] = Some(one)\n  a == b\n}\n",
+    "function-in-option"
+  )
+  assertUntranslatable(
+    one + "func g(): Bool\n  ensures: result\n{\n  Some(one) == Some(one)\n}\n",
+    "function-in-pending-option"
+  )
+  assertUntranslatable(
+    one + "record Handler {\n  run: (Int) -> Int\n}\nfunc g(): Bool\n  ensures: result\n{\n" +
+      "  Handler(run = one) == Handler(run = one)\n}\n",
+    "function-in-record"
+  )
+  assertUntranslatable(
+    "alias F = (Int) -> Int\nrecord Box {\n  f: F\n}\nfunc g(a: in Box, b: in Box): Bool\n  ensures: result\n{\n  a == b\n}\n",
+    "function-through-alias"
+  )
+  assertUntranslatable(
+    "type G = (Int) -> Int\nrecord Box {\n  g: G\n}\nfunc g(a: in Box, b: in Box): Bool\n  ensures: result\n{\n  a == b\n}\n",
+    "function-through-distinct-type"
+  )
+  assertNotProved(
+    one + "func g2(): Bool\n  ensures: result\n{\n  val a = (1, one)\n  val b = (1, one)\n  a == b\n}\n",
+    "function-in-tuple"
+  )
+  assertDischarged(
+    "record Pt {\n  x: Int\n}\nfunc g(a: in Pt): Bool\n  ensures: result\n{\n  Some(a) == Some(a)\n}\n",
+    "value-in-option"
+  )
+}
+
+test "an equality that compares by identity or over a type parameter fails closed (#8109)" {
+  val cell = "record Cell {\n  var v: Int\n}\n"
+  assertUntranslatable(
+    cell + "func f(): Bool\n  ensures: result\n{\n  val a = Cell(v = 1)\n  val b = Cell(v = 1)\n  a == b\n}\n",
+    "mutable-record"
+  )
+  assertUntranslatable(
+    cell + "union U {\n  case A(c: Cell)\n  case B\n}\n" +
+      "func f(): Bool\n  ensures: result\n{\n  val a = U.A(c = Cell(v = 1))\n  val b = U.A(c = Cell(v = 1))\n  a == b\n}\n",
+    "mutable-record-in-union"
+  )
+  assertUntranslatable(
+    "pub protected type Counter {\n  var n: Int\n  pub entry next(): Int {\n    n = n + 1\n    n\n  }\n}\n" +
+      "func f(a: in Counter, b: in Counter): Bool\n  ensures: result\n{\n  a == b\n}\n",
+    "protected-object"
+  )
+  assertUntranslatable(
+    "@pure\nfunc one(x: in Int): Int = 1\nfunc same[T](a: in T, b: in T): Bool\n  requires: a == b\n  ensures: result\n{\n  a == b\n}\n" +
+      "func f(): Bool\n  ensures: result\n{\n  same(one, one)\n}\n",
+    "type-parameter"
+  )
+  assertDischarged(
+    "func ident[T](x: in T): T\n  ensures: result == x\n{\n  x\n}\n" +
+      "func same[T](a: in T, b: in T): Bool\n  requires: a == b\n  ensures: result\n{\n  a == b\n}\n" +
+      "func f(): Bool\n  ensures: result\n{\n  same(1, 1)\n}\n",
+    "type-parameter-opaque-equivalence"
+  )
+  // A generic record is not modelled: its construction is a call the
+  // verifier does not resolve, a value of its own.
+  assertNotProved(
+    "@pure\nfunc one(x: in Int): Int = 1\nrecord Box[T] {\n  v: T\n}\n" +
+      "func f(): Bool\n  ensures: result\n{\n  val a = Box(v = one)\n  val b = Box(v = one)\n  a == b\n}\n",
+    "generic-record"
+  )
+  assertUntranslatable(
+    "interface Shape {\n  func area(): Int\n}\nfunc f(a: in Shape, b: in Shape): Bool\n  ensures: result\n{\n  a == b\n}\n",
+    "interface-value"
+  )
+  assertDischarged(
+    "@derive(Equals)\nrecord Cell {\n  var v: Int\n}\n" +
+      "func f(): Bool\n  ensures: result\n{\n  val a = Cell(v = 1)\n  val b = Cell(v = 1)\n  a == b\n}\n",
+    "mutable-record-deriving-equals"
+  )
+  assertDischarged(
+    "record P {\n  x: Int\n  s: String\n}\nunion U {\n  case A(p: P)\n  case B\n}\n" +
+      "func f(): Bool\n  ensures: result\n{\n  P(x = 1, s = \"a\") == P(x = 1, s = \"a\") and U.A(p = P(x = 1, s = \"a\")) == U.A(p = P(x = 1, s = \"a\"))\n}\n",
+    "value-record-and-union"
+  )
+}

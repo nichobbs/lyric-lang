@@ -79,6 +79,8 @@ pub func permissionLabel(p: in Permission): String {
 
 // ─── Permission lattice ───────────────────────────────────────────────────────
 /// Numeric level of a role in the hierarchy.  Higher = more privileged.
+/// `@pure`: a proof may take two calls with the same role to be equal.
+@pure
 pub func roleLevel(r: in Role): Int {
   match r {
     case Role.Guest -> 1

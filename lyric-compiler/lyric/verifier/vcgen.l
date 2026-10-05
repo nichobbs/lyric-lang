@@ -65,6 +65,16 @@ pub record VEnv {
   // `ensures:` and body are never assumed at a call: a cycle can make them
   // contradictory (#8102).
   pub cyclic: List[String]
+  // The types this file declares whose values are fully determined by what
+  // `==` compares: enums, and records and unions every field of which is
+  // immutable and of such a type.  A `@pure` call over arguments of these
+  // types (and of the primitive value types) is congruent (#8109).
+  pub valueTypes: Map[String, Bool]
+  // The type parameters of the generic whose body or contract is being
+  // translated.  `==` over one is an opaque equivalence there; a contract
+  // instantiated at a call is checked again over the argument terms
+  // (#8109).
+  pub typeParams: List[String]
   // Copy helpers — use explicit names list to avoid iterating Map.keys on a
   // TypeBuilderInstantiation, which generates invalid IL.
 }
@@ -275,6 +285,8 @@ pub func envEmpty(callees: in Map[String, FunctionDecl], symbols: in List[Symbol
   val protectedMembers: List[String] = newList()
   val contractStack: List[String] = newList()
   val cyclic: List[String] = newList()
+  val valueTypes: Map[String, Bool] = newMap()
+  val typeParams: List[String] = newList()
   VEnv(
     vars = vars,
     varNames = varNames,
@@ -291,7 +303,9 @@ pub func envEmpty(callees: in Map[String, FunctionDecl], symbols: in List[Symbol
     mutables = mutables,
     protectedMembers = protectedMembers,
     contractStack = contractStack,
-    cyclic = cyclic
+    cyclic = cyclic,
+    valueTypes = valueTypes,
+    typeParams = typeParams
   )
 }
 
@@ -328,7 +342,9 @@ pub func envBind(name: in String, info: in SortInfo, env: in VEnv): VEnv {
     mutables = env.mutables,
     protectedMembers = env.protectedMembers,
     contractStack = env.contractStack,
-    cyclic = env.cyclic
+    cyclic = env.cyclic,
+    valueTypes = env.valueTypes,
+    typeParams = env.typeParams
   )
 }
 
@@ -364,7 +380,9 @@ pub func envBindTerm(name: in String, term: in Term, info: in SortInfo, env: in 
     mutables = env.mutables,
     protectedMembers = env.protectedMembers,
     contractStack = env.contractStack,
-    cyclic = env.cyclic
+    cyclic = env.cyclic,
+    valueTypes = env.valueTypes,
+    typeParams = env.typeParams
   )
 }
 
@@ -414,6 +432,197 @@ func envAtEntry(env: in VEnv): VEnv {
 // An unconstrained value of `srt` with a name of its own.
 func freshVar(env: in VEnv, base: in String, srt: in Sort): Term {
   TVar(name = freshName(env, base), sort = srt)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §1a. Block scopes (#8109).
+// ─────────────────────────────────────────────────────────────────────────────
+// The walk flattens an `if` statement: each branch is walked followed by the
+// rest of the enclosing block (`wpIfStmt`).  A binding a branch declares
+// must not reach that rest, so each branch — like a function, lambda or loop
+// body — is a scope.  The first time a scope declares a name, the binding it
+// shadows (or that there was none) is saved under a hidden key, and the
+// scope's end, a marker statement after the branch, restores it.  The
+// hidden keys hold `!`, which no Lyric identifier does.  While a variable a
+// postcondition speaks of (`env.finals`) is shadowed it cannot change, so
+// its placeholder reads the saved binding meanwhile.
+func scopeCurrentKey(): String {
+  "!scope"
+}
+
+func scopeSavedKey(scopeId: in String, name: in String): String {
+  "!saved!" + scopeId + "!" + name
+}
+
+func scopeSavedMutableKey(scopeId: in String, name: in String): String {
+  "!savedmut!" + scopeId + "!" + name
+}
+
+func scopeParentKey(scopeId: in String): String {
+  "!parent!" + scopeId
+}
+
+func scopeAbsentName(): String {
+  "!absent"
+}
+
+// The scope declarations in `env` go to, or "" outside every scope.
+func currentScopeId(env: in VEnv): String {
+  match envLookup(scopeCurrentKey(), env) {
+    case Some(t) -> match t { case TVar(id, _) -> id; case _ -> "" }
+    case None -> ""
+  }
+}
+
+// `env` with `name` unbound.
+func envUnbind(name: in String, env: in VEnv): VEnv {
+  if not env.vars.containsKey(name) {
+    return env
+  }
+  val names: List[String] = newList()
+  var i = 0
+  while i < env.varNames.count {
+    if env.varNames[i] != name {
+      names.add(env.varNames[i])
+    }
+    i = i + 1
+  }
+  VEnv(
+    vars = copyVarMap(env.vars, names),
+    varNames = names,
+    sorts = copySortMap(env.sorts, names),
+    callees = env.callees,
+    symbols = env.symbols,
+    checkedArithmetic = env.checkedArithmetic,
+    distincts = env.distincts,
+    fieldInfos = env.fieldInfos,
+    recordDefaults = env.recordDefaults,
+    fresh = env.fresh,
+    recordMethods = env.recordMethods,
+    finals = env.finals,
+    mutables = env.mutables,
+    protectedMembers = env.protectedMembers,
+    contractStack = env.contractStack,
+    cyclic = env.cyclic,
+    valueTypes = env.valueTypes,
+    typeParams = env.typeParams
+  )
+}
+
+// `finals` with each placeholder that reads `from` reading `to` instead.
+func retargetFinals(finals: in List[FinalSlot], from: in String, to: in String): List[FinalSlot] {
+  val moved: List[FinalSlot] = newList()
+  var i = 0
+  while i < finals.count {
+    val slot = finals[i]
+    moved.add(if slot.varName == from { FinalSlot(varName = to, placeholder = slot.placeholder) } else { slot })
+    i = i + 1
+  }
+  moved
+}
+
+// A new scope, `scopeId`, inside the current one.
+func envEnterScope(env: in VEnv, scopeId: in String): VEnv {
+  val marker = TVar(name = scopeId, sort = SBool)
+  val parent = match envLookup(scopeCurrentKey(), env) {
+    case Some(t) -> envBindTerm(scopeParentKey(scopeId), t, unitSortInfo(), env)
+    case None -> env
+  }
+  envBindTerm(scopeCurrentKey(), marker, unitSortInfo(), parent)
+}
+
+// `env` with `name` declared anew as `term`: a `val`, `var` or `let`, or a
+// name a destructuring pattern binds.  An assignment is `envBindTerm`.
+func envDeclare(name: in String, term: in Term, info: in SortInfo, env: in VEnv): VEnv {
+  val scopeId = currentScopeId(env)
+  var declEnv = env
+  if scopeId.length > 0 {
+    val savedKey = scopeSavedKey(scopeId, name)
+    if not env.vars.containsKey(savedKey) {
+      match envLookup(name, env) {
+        case Some(outer) -> {
+          val outerInfo = match envLookupSort(name, env) { case Some(si) -> si; case None -> info }
+          declEnv = envBindTerm(savedKey, outer, outerInfo, declEnv)
+          if env.mutables.contains(name) {
+            declEnv = envBindTerm(scopeSavedMutableKey(scopeId, name), trueT(), unitSortInfo(), declEnv)
+          }
+        }
+        case None -> {
+          declEnv = envBindTerm(savedKey, TVar(name = scopeAbsentName(), sort = SBool), unitSortInfo(), declEnv)
+        }
+      }
+      declEnv = envWithFinals(declEnv, retargetFinals(declEnv.finals, name, savedKey))
+    }
+  }
+  envBindTerm(name, term, info, declEnv)
+}
+
+// `env` at the end of scope `scopeId`: each name it declared is bound as it
+// was before, or unbound again, and the enclosing scope is current.
+func envExitScope(env: in VEnv, scopeId: in String): VEnv {
+  val prefix = "!saved!" + scopeId + "!"
+  var outEnv = env
+  var i = 0
+  while i < env.varNames.count {
+    val key = env.varNames[i]
+    if key.startsWith(prefix) {
+      val name = key.substring(prefix.length, key.length - prefix.length)
+      val mutKey = scopeSavedMutableKey(scopeId, name)
+      val wasMutable = env.vars.containsKey(mutKey)
+      match envLookup(key, env) {
+        case Some(saved) -> {
+          val absent = match saved { case TVar(n, _) -> n == scopeAbsentName(); case _ -> false }
+          if absent {
+            outEnv = envSetMutable(envUnbind(name, outEnv), name, false)
+          } else {
+            val savedInfo = match envLookupSort(key, env) { case Some(si) -> si; case None -> unitSortInfo() }
+            outEnv = envSetMutable(envBindTerm(name, saved, savedInfo, outEnv), name, wasMutable)
+          }
+        }
+        case None -> ()
+      }
+      outEnv = envUnbind(mutKey, envUnbind(key, outEnv))
+      outEnv = envWithFinals(outEnv, retargetFinals(outEnv.finals, key, name))
+    }
+    i = i + 1
+  }
+  match envLookup(scopeParentKey(scopeId), env) {
+    case Some(parent) -> envBindTerm(
+      scopeCurrentKey(),
+      parent,
+      unitSortInfo(),
+      envUnbind(scopeParentKey(scopeId), outEnv)
+    )
+    case None -> envUnbind(scopeCurrentKey(), outEnv)
+  }
+}
+
+// The statement that ends scope `scopeId` where the walk reaches it.  Its
+// path's first segment holds `!`, so no source statement is one.
+func scopeEndStmt(scopeId: in String, sp: in Span): Statement {
+  val segs: List[String] = newList()
+  segs.add("!scope-end")
+  segs.add(scopeId)
+  Statement(
+    kind = SExpr(expr = Expr(kind = EPath(path = ModulePath(segments = segs, span = sp)), span = sp)),
+    span = sp
+  )
+}
+
+func scopeEndOf(st: in Statement): Option[String] {
+  match st.kind {
+    case SExpr(x) -> match x.kind {
+      case EPath(path) -> {
+        if path.segments.count == 2 and path.segments[0] == "!scope-end" {
+          Some(value = path.segments[1])
+        } else {
+          None
+        }
+      }
+      case _ -> None
+    }
+    case _ -> None
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -527,11 +736,7 @@ func translateLit(lit: in Literal): Term {
     case LTripleString(s) -> TLit(value = VLString(s = s), sort = SString)
     case LRawString(s) -> TLit(value = VLString(s = s), sort = SString)
     case LChar(cp) -> TLit(value = VLInt(n = cp.toLong()), sort = SInt)
-    case LUnit -> {
-      val args: List[Sort] = newList()
-      val unitDt = SDatatype(name = "Unit", args = args)
-      TLit(value = VLUnit, sort = unitDt)
-    }
+    case LUnit -> TLit(value = VLUnit, sort = unitSort())
   }
 }
 
@@ -701,7 +906,9 @@ func varlessEnv(env: in VEnv): VEnv {
     mutables = env.mutables,
     protectedMembers = env.protectedMembers,
     contractStack = env.contractStack,
-    cyclic = env.cyclic
+    cyclic = env.cyclic,
+    valueTypes = env.valueTypes,
+    typeParams = env.typeParams
   )
 }
 
@@ -871,11 +1078,12 @@ func addUserFunOnce(symbols: in List[SymbolDecl], name: in String, paramSorts: i
 
 // A call to a function this file declares, by the Hoare call rule: its
 // `requires:` are side conditions at the arguments, its `ensures:` and its
-// result's range and width are facts about the result.  The result is the
-// callee applied to its arguments, or — for a method call (`freshResult`)
-// on a callee that is not `@pure` — a value of its own at this call site,
-// so two calls agree only where the contract says so (#8101).  An `out` or
-// `inout` parameter's `ensures:` speak of its value after the call, a
+// result's range and width are facts about the result.  The result of a
+// `@pure` callee is the callee applied to its arguments, so two calls with
+// equal arguments are equal; any other callee's — a free call, a method
+// call, a static call alike — is a value of its own at this call site, so
+// two calls agree only where the contract says so (#8101, #8109).  An `out`
+// or `inout` parameter's `ensures:` speak of its value after the call, a
 // value of its own; `old(p)` is the argument (#8102).
 func translateResolvedCall(
   env: in VEnv,
@@ -888,7 +1096,6 @@ func translateResolvedCall(
   argSides: in List[Term],
   argAssumed: in List[Term],
   allArgDiags: in List[Diagnostic],
-  freshResult: in Bool,
 ): (TranslateResult, List[Diagnostic]) {
   val resultInfo = match decl.ret { case Some(te) -> sortOfTypeExprE(env, te); case None -> unitSortInfo() }
   // A backstop on how deep contracts and defaults unfold into one
@@ -910,7 +1117,7 @@ func translateResolvedCall(
   // here, which unfolding it again cannot state: a callee with a
   // `requires:` fails closed (#8102).
   if env.contractStack.contains(decl.name) {
-    val recTerm = TApp(name = name, args = rawArgTerms, retSort = resultInfo.sort)
+    val recTerm = callResultTerm(env, name, decl, rawArgTerms, resultInfo.sort)
     if hasRequires(decl) {
       allArgDiags.add(
         untranslatableDiag(
@@ -971,7 +1178,9 @@ func translateResolvedCall(
     mutables = env.mutables,
     protectedMembers = env.protectedMembers,
     contractStack = contractStack,
-    cyclic = env.cyclic
+    cyclic = env.cyclic,
+    valueTypes = env.valueTypes,
+    typeParams = typeParamNames(decl)
   )
   // A parameter default sees the names declared at module level, never
   // the callee's other parameters (docs/01): it is translated with no
@@ -1006,11 +1215,7 @@ func translateResolvedCall(
     allArgDiags
   )
   val argTerms = paired.terms
-  val rawCallTerm = if freshResult and not isPure(decl) {
-    TVar(name = freshName(env, name + "!result"), sort = resultSort)
-  } else {
-    TApp(name = name, args = argTerms, retSort = resultSort)
-  }
+  val rawCallTerm = callResultTerm(env, name, decl, argTerms, resultSort)
   // Two `out`/`inout` parameters bound to one variable alias each other,
   // which the callee's proof assumes they do not: fail closed (#8102).
   val aliased = outArgsAlias(decl, args)
@@ -1055,10 +1260,31 @@ func translateResolvedCall(
         }
         match bodyExprOpt {
           case Some(bodyExpr) -> {
-            val (bodyR, bodyDiags) = translateExpr(innerEnv, bodyExpr)
-            keepUntranslatableDiags(bodyDiags, allArgDiags)
-            val bodySubst = substTerm(paramSubst, paramSubstNames, bodyR.term)
-            pureUnfold.add(TBuiltin(op = BOpEq, args = termList2(callTerm, bodySubst)))
+            val (bodyR, _) = translateExpr(innerEnv, bodyExpr)
+            // A body the verifier cannot translate faithfully (V0033), or
+            // whose value is not of the result's sort, is not assumed: the
+            // call is still the callee applied to its arguments, equal for
+            // equal arguments, with its contract.  Leaving out a fact never
+            // proves anything false (#8109).
+            if not termIsPoisoned(bodyR.term) {
+              match coerceToSort(bodyR.term, resultSort) {
+                case Ok(bodyAtSort) -> {
+                  val bodySubst = substTerm(paramSubst, paramSubstNames, bodyAtSort)
+                  val unfold = TBuiltin(op = BOpEq, args = termList2(callTerm, bodySubst))
+                  match reconcileTermSorts(unfold) {
+                    case Ok(well) -> {
+                      if sortProblem(well, SBool).length == 0 {
+                        if not unmodelledEquality(env, well) {
+                          pureUnfold.add(well)
+                        }
+                      }
+                    }
+                    case Err(_) -> ()
+                  }
+                }
+                case Err(_) -> ()
+              }
+            }
           }
           case None -> {
           }
@@ -1077,7 +1303,15 @@ func translateResolvedCall(
       case CCRequires(pre, _) -> {
         val preParts = translateContractParts(innerEnv, pre)
         keepUntranslatableDiags(preParts.diags, allArgDiags)
-        preConds.add(substTerm(paramSubst, paramSubstNames, partsObligation(preParts)))
+        preConds.add(
+          checkInstantiated(
+            env,
+            substTerm(paramSubst, paramSubstNames, partsObligation(preParts)),
+            decl.name,
+            callSpan,
+            allArgDiags
+          )
+        )
       }
       case _ -> {
       }
@@ -1144,7 +1378,9 @@ func translateResolvedCall(
     mutables = env.mutables,
     protectedMembers = env.protectedMembers,
     contractStack = contractStack,
-    cyclic = env.cyclic
+    cyclic = env.cyclic,
+    valueTypes = env.valueTypes,
+    typeParams = typeParamNames(decl)
   )
   ci = 0
   while ci < decl.contracts.count {
@@ -1153,7 +1389,15 @@ func translateResolvedCall(
         if not cyclicCallee {
           val postParts = translateContractParts(resultEnv, post)
           keepUntranslatableDiags(postParts.diags, allArgDiags)
-          postConds.add(substTerm(postSubst, postSubstNames, mkAnd(partsHyps(postParts))))
+          postConds.add(
+            checkInstantiated(
+              env,
+              substTerm(postSubst, postSubstNames, mkAnd(partsHyps(postParts))),
+              decl.name,
+              callSpan,
+              allArgDiags
+            )
+          )
         }
       }
       case _ -> {
@@ -1175,6 +1419,591 @@ func translateResolvedCall(
   val knownCalleeTR = TranslateResult(term = callTerm, sideConds = sc, assumed = asList)
   val knownCalleePair: (TranslateResult, List[Diagnostic]) = (knownCalleeTR, allArgDiags)
   knownCalleePair
+}
+
+// A callee's contract clause instantiated at a call, failing closed (V0033)
+// when an `==` in it, over a type parameter in the callee, compares here
+// values whose equality the verifier does not model (#8109).
+func checkInstantiated(env: in VEnv, t: in Term, callee: in String, sp: in Span, diags: in List[Diagnostic]): Term {
+  if unmodelledEquality(env, t) {
+    diags.add(
+      untranslatableDiag(
+        "the contract of '" + callee +
+          "' compares, at this call, values that may be or hold a function, compare by identity, or be of a type the verifier does not know",
+        sp
+      )
+    )
+    poisonTerm(t)
+  } else {
+    t
+  }
+}
+
+// The value a call of `decl` returns.  A `@pure` callee — `@pure` is
+// trusted, not checked — whose arguments are all values that determine
+// what it can compute is the callee applied to them, so equal arguments
+// give equal results.  Any other call's result is its own call site's
+// (`callSiteResult`): two calls of a counter or a random source differ, as
+// do two calls of a `@pure` function passed a closure, a list, or a
+// protected object whose state changed in between (#8109).
+func callResultTerm(
+  env: in VEnv, name: in String, decl: in FunctionDecl, argTerms: in List[Term], resultSort: in Sort
+): Term {
+  if isPure(decl) and allValueDetermined(env, argTerms) {
+    TApp(name = name, args = argTerms, retSort = resultSort)
+  } else {
+    callSiteResult(env, name, argTerms, resultSort)
+  }
+}
+
+// The result of one call site that is not known to be a function of its
+// arguments alone: a function of its own, applied to the arguments, so it
+// varies with a quantifier's bound variable they mention and is never
+// shared with another call site.  An argument reported untranslatable
+// (V0033) keeps it poisoned (#7874).
+func callSiteResult(env: in VEnv, name: in String, argTerms: in List[Term], resultSort: in Sort): Term {
+  val siteName = freshName(env, name + "!result")
+  val t = if argTerms.count == 0 {
+    TVar(name = siteName, sort = resultSort)
+  } else {
+    TApp(name = siteName, args = argTerms, retSort = resultSort)
+  }
+  if anyPoisoned(argTerms) {
+    poisonTerm(t)
+  } else {
+    t
+  }
+}
+
+// Whether every argument is a value `==` sees all of: one of a value sort
+// (`isValueSort`), or a function the file declares `@pure`, named.  A
+// closure, a function from elsewhere, a collection, a protected object or
+// any value the verifier does not model may behave differently between two
+// calls with the same term.
+func allValueDetermined(env: in VEnv, argTerms: in List[Term]): Bool {
+  var i = 0
+  while i < argTerms.count {
+    if not valueDetermined(env, argTerms[i]) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+func valueDetermined(env: in VEnv, t: in Term): Bool {
+  match t {
+    case TVar(n, _) -> {
+      val prefix = functionRefPrefix()
+      if n.startsWith(prefix) {
+        return match mapGet(env.callees, n.substring(prefix.length, n.length - prefix.length)) {
+          case Some(decl) -> isPure(decl)
+          case None -> false
+        }
+      }
+    }
+    case _ -> ()
+  }
+  isValueSort(env.valueTypes, env.distincts, sortOf(t), 0)
+}
+
+// Whether a value of `s` is all `==` compares: a primitive, `String`,
+// `Unit`, a tuple, `Result` or `Option` of such values, or a type of the
+// file's that `fileValueTypes` lists.  `List`, `Map`, `Set`, slices,
+// protected and opaque types, functions and anything unmodelled are not.
+func isValueSort(valueTypes: in Map[String, Bool], distincts: in Map[String, TypeExpr], s: in Sort, depth: in Int): Bool {
+  if depth > 16 {
+    return false
+  }
+  match s {
+    case SBool -> true
+    case SInt -> true
+    case SBitVec(_) -> true
+    case SFloat32 -> true
+    case SFloat64 -> true
+    case SString -> true
+    case SDatatype(name, args) -> {
+      val stdMonad = (name == "Result" or name == "Option") and not distincts.containsKey(shadowedMonadKey(name))
+      if name == unitSortName() or isTupleSortName(name) or stdMonad {
+        var i = 0
+        while i < args.count {
+          if not isValueSort(valueTypes, distincts, args[i], depth + 1) {
+            return false
+          }
+          i = i + 1
+        }
+        true
+      } else {
+        args.count == 0 and valueTypes.containsKey(name)
+      }
+    }
+    case _ -> false
+  }
+}
+
+// The type `file` declares, or imports by name, that is spelt like a
+// primitive (`Int`, `String`, `Unit`, ...), or "".
+func shadowedPrimitiveName(file: in SourceFile): String {
+  val names = declaredTypeNames(file)
+  var j = 0
+  while j < file.imports.count {
+    val imp = file.imports[j]
+    match imp.asAlias {
+      case Some(a) -> names.add(a)
+      case None -> ()
+    }
+    match imp.selector {
+      case Some(sel) -> {
+        val items: List[ImportItem] = match sel {
+          case ISSingle(item) -> {
+            val one: List[ImportItem] = newList()
+            one.add(item)
+            one
+          }
+          case ISGroup(group) -> group
+        }
+        var k = 0
+        while k < items.count {
+          names.add(match items[k].asAlias { case Some(a) -> a; case None -> items[k].name })
+          k = k + 1
+        }
+      }
+      case None -> ()
+    }
+    j = j + 1
+  }
+  var i = 0
+  while i < names.count {
+    if isSome(primitiveSort(names[i])) {
+      return names[i]
+    }
+    i = i + 1
+  }
+  ""
+}
+
+// The non-generic enums, records and unions `file` declares whose values
+// are what `==` compares: every field immutable and of a value sort
+// (`isValueSort`), resolved to a fixed point so a record of records
+// qualifies.
+func fileValueTypes(file: in SourceFile, distincts: in Map[String, TypeExpr]): Map[String, Bool] {
+  val valueTypes: Map[String, Bool] = newMap()
+  val candidates: List[String] = newList()
+  val candidateFields: List[List[TypeExpr]] = newList()
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IEnum(d) -> {
+        if not valueTypes.containsKey(d.name) {
+          valueTypes.add(d.name, true)
+        }
+      }
+      case IRecord(d) -> {
+        if isNone(d.generics) {
+          val tys: List[TypeExpr] = newList()
+          var mutable = false
+          var mi = 0
+          while mi < d.members.count {
+            match d.members[mi] {
+              case RMField(fld) -> {
+                if fld.isMutable {
+                  mutable = true
+                }
+                tys.add(fld.ty)
+              }
+              case _ -> ()
+            }
+            mi = mi + 1
+          }
+          if not mutable {
+            candidates.add(d.name)
+            candidateFields.add(tys)
+          }
+        }
+      }
+      case IUnion(d) -> {
+        if isNone(d.generics) {
+          val tys: List[TypeExpr] = newList()
+          var ci = 0
+          while ci < d.cases.count {
+            var fi = 0
+            while fi < d.cases[ci].fields.count {
+              match d.cases[ci].fields[fi] {
+                case UFNamed(_, ty, _) -> tys.add(ty)
+                case UFPos(ty, _) -> tys.add(ty)
+              }
+              fi = fi + 1
+            }
+            ci = ci + 1
+          }
+          candidates.add(d.name)
+          candidateFields.add(tys)
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  var changed = true
+  while changed {
+    changed = false
+    var ci = 0
+    while ci < candidates.count {
+      val name = candidates[ci]
+      if not valueTypes.containsKey(name) {
+        val tys = candidateFields[ci]
+        var allValues = true
+        var ti = 0
+        while ti < tys.count {
+          if not isValueSort(valueTypes, distincts, sortOfTypeExprWith(distincts, tys[ti]).sort, 0) {
+            allValues = false
+          }
+          ti = ti + 1
+        }
+        if allValues {
+          valueTypes.add(name, true)
+          changed = true
+        }
+      }
+      ci = ci + 1
+    }
+  }
+  addStructuralEqualityTypes(file, distincts, valueTypes)
+  var ui = 0
+  while ui < file.items.count {
+    match file.items[ui].kind {
+      case IUnion(d) -> {
+        if not valueTypes.containsKey(unionKey(d.name)) {
+          valueTypes.add(unionKey(d.name), true)
+        }
+      }
+      case _ -> ()
+    }
+    ui = ui + 1
+  }
+  valueTypes
+}
+
+func noTypeParams(): List[String] {
+  val none: List[String] = newList()
+  none
+}
+
+// The names of `decl`'s type parameters.
+func typeParamNames(decl: in FunctionDecl): List[String] {
+  val names: List[String] = newList()
+  match decl.generics {
+    case Some(gp) -> {
+      var i = 0
+      while i < gp.params.count {
+        match gp.params[i] {
+          case GPType(n, _) -> names.add(n)
+          case _ -> ()
+        }
+        i = i + 1
+      }
+    }
+    case None -> ()
+  }
+  names
+}
+
+// Whether `t` holds an `==` or `!=` whose operands the verifier's equality
+// does not model in `env` (`equalityModelled`): a callee's contract over a
+// type parameter, instantiated with an argument such as a function value.
+func unmodelledEquality(env: in VEnv, t: in Term): Bool {
+  match t {
+    case TVar(_, _) -> false
+    case TLit(_, _) -> false
+    case TBuiltin(op, args) -> {
+      val isEq = match op { case BOpEq | BOpNeq -> true; case _ -> false }
+      if isEq and args.count == 2 and (not equalityModelled(env, args[0]) or not equalityModelled(env, args[1])) {
+        return true
+      }
+      anyUnmodelledEquality(env, args)
+    }
+    case TApp(_, args, _) -> anyUnmodelledEquality(env, args)
+    case TLet(bs, body) -> {
+      var i = 0
+      while i < bs.count {
+        if unmodelledEquality(env, bs[i].term) {
+          return true
+        }
+        i = i + 1
+      }
+      unmodelledEquality(env, body)
+    }
+    case TIte(c, a, b) -> unmodelledEquality(env, c) or unmodelledEquality(env, a) or unmodelledEquality(env, b)
+    case TForall(_, _, body) -> unmodelledEquality(env, body)
+    case TExists(_, body) -> unmodelledEquality(env, body)
+  }
+}
+
+func anyUnmodelledEquality(env: in VEnv, ts: in List[Term]): Bool {
+  var i = 0
+  while i < ts.count {
+    if unmodelledEquality(env, ts[i]) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+// The key under which `valueTypes` records that the file declares the union
+// `name`.
+func unionKey(name: in String): String {
+  "!union!" + name
+}
+
+// The key under which `valueTypes` records that `==` on the file's type
+// `name` compares field by field (or case and payload, for a union) on
+// every target, so the verifier's datatype equality is the runtime's.
+func structuralEqualityKey(name: in String): String {
+  "!structeq!" + name
+}
+
+// Whether `anns` hold `@derive(Equals)`.
+func derivesEquals(anns: in List[Annotation]): Bool {
+  var i = 0
+  while i < anns.count {
+    val ann = anns[i]
+    if ann.name.segments.count == 1 and ann.name.segments[0] == "derive" {
+      var j = 0
+      while j < ann.args.count {
+        val named = match ann.args[j] { case ABare(nm, _) -> nm; case AAName(nm, _, _) -> nm; case _ -> "" }
+        if named == "Equals" {
+          return true
+        }
+        j = j + 1
+      }
+    }
+    i = i + 1
+  }
+  false
+}
+
+// Record each type the file declares whose `==` is structural (D164,
+// D172) and over leaves the verifier models (`equalityModelledSort`),
+// resolved to a fixed point: an enum; a non-generic union; a non-generic
+// record with no `var` field, or one that derives `Equals`.  A record with
+// a `var` field that does not derive `Equals` compares by identity; a
+// generic type, a protected, opaque, interface or extern type, an alias,
+// and a type with a function-typed field are never listed.  The fixed
+// point is the greatest one, so a recursive record (`next: Option[Node]`)
+// is listed when its other fields allow.
+func addStructuralEqualityTypes(
+  file: in SourceFile,
+  distincts: in Map[String, TypeExpr],
+  valueTypes: in Map[String, Bool],
+): Unit {
+  val names: List[String] = newList()
+  val fieldTypes: List[List[TypeExpr]] = newList()
+  var i = 0
+  while i < file.items.count {
+    val anns = file.items[i].annotations
+    match file.items[i].kind {
+      case IEnum(d) -> {
+        if not valueTypes.containsKey(structuralEqualityKey(d.name)) {
+          valueTypes.add(structuralEqualityKey(d.name), true)
+        }
+      }
+      case IRecord(d) -> {
+        if isNone(d.generics) and (not recordHasVarField(d) or derivesEquals(anns)) {
+          names.add(d.name)
+          fieldTypes.add(recordFieldTypes(d))
+        }
+      }
+      case IExposedRec(d) -> {
+        if isNone(d.generics) and (not recordHasVarField(d) or derivesEquals(anns)) {
+          names.add(d.name)
+          fieldTypes.add(recordFieldTypes(d))
+        }
+      }
+      case IUnion(d) -> {
+        if isNone(d.generics) {
+          val tys: List[TypeExpr] = newList()
+          var ci = 0
+          while ci < d.cases.count {
+            var fi = 0
+            while fi < d.cases[ci].fields.count {
+              match d.cases[ci].fields[fi] {
+                case UFNamed(_, ty, _) -> tys.add(ty)
+                case UFPos(ty, _) -> tys.add(ty)
+              }
+              fi = fi + 1
+            }
+            ci = ci + 1
+          }
+          names.add(d.name)
+          fieldTypes.add(tys)
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  val alive: List[Bool] = newList()
+  var ai = 0
+  while ai < names.count {
+    alive.add(true)
+    ai = ai + 1
+  }
+  var changed = true
+  while changed {
+    changed = false
+    // The enums, and every candidate not yet ruled out.
+    val assumed: Map[String, Bool] = newMap()
+    var ki = 0
+    while ki < file.items.count {
+      match file.items[ki].kind {
+        case IEnum(d) -> {
+          if not assumed.containsKey(structuralEqualityKey(d.name)) {
+            assumed.add(structuralEqualityKey(d.name), true)
+          }
+        }
+        case _ -> ()
+      }
+      ki = ki + 1
+    }
+    var ni = 0
+    while ni < names.count {
+      if alive[ni] and not assumed.containsKey(structuralEqualityKey(names[ni])) {
+        assumed.add(structuralEqualityKey(names[ni]), true)
+      }
+      ni = ni + 1
+    }
+    ni = 0
+    while ni < names.count {
+      if alive[ni] {
+        val tys = fieldTypes[ni]
+        var ti = 0
+        while ti < tys.count {
+          if alive[ni] and not equalityModelledSort(assumed, noTypeParams(), sortOfTypeExprWith(distincts, tys[ti]).sort, 0) {
+            alive[ni] = false
+            changed = true
+          }
+          ti = ti + 1
+        }
+      }
+      ni = ni + 1
+    }
+  }
+  var ni = 0
+  while ni < names.count {
+    if alive[ni] and not valueTypes.containsKey(structuralEqualityKey(names[ni])) {
+      valueTypes.add(structuralEqualityKey(names[ni]), true)
+    }
+    ni = ni + 1
+  }
+}
+
+func recordHasVarField(d: in RecordDecl): Bool {
+  var mi = 0
+  while mi < d.members.count {
+    match d.members[mi] {
+      case RMField(fld) -> {
+        if fld.isMutable {
+          return true
+        }
+      }
+      case _ -> ()
+    }
+    mi = mi + 1
+  }
+  false
+}
+
+func recordFieldTypes(d: in RecordDecl): List[TypeExpr] {
+  val tys: List[TypeExpr] = newList()
+  var mi = 0
+  while mi < d.members.count {
+    match d.members[mi] {
+      case RMField(fld) -> tys.add(fld.ty)
+      case _ -> ()
+    }
+    mi = mi + 1
+  }
+  tys
+}
+
+// Whether `==` between two values like `t` means what the verifier's
+// equality says on every target.  It does not where a value may be or
+// hold a function (a delegate compares its method and target on .NET, a
+// lambda its reference on the JVM, and one function named twice may be two
+// objects), where `==` is identity (a mutable record, a protected object),
+// where the type is a generic parameter, a host collection or a type whose
+// equality differs between targets, or where the type is not known — a
+// module-level name with no declared type, a qualified path, an unannotated
+// lambda parameter (#8109).
+// A type parameter of the generic being translated (`env.typeParams`) is
+// an opaque equivalence: whatever `==` on its binding is — structural,
+// identity, a delegate's — it is reflexive, symmetric and transitive, as
+// the solver's equality is.  (`Float`/`Double` are reals throughout,
+// #8141.)  What a call binds it to is checked where the contract is
+// instantiated (`unmodelledEquality`).
+func equalityModelled(env: in VEnv, t: in Term): Bool {
+  if pendingCtorName(t).length > 0 {
+    val args = pendingCtorArgs(t)
+    var i = 0
+    while i < args.count {
+      if not equalityModelled(env, args[i]) {
+        return false
+      }
+      i = i + 1
+    }
+    return true
+  }
+  equalityModelledSort(env.valueTypes, env.typeParams, sortOf(t), 0)
+}
+
+func allEqualityModelled(env: in VEnv, ts: in List[Term]): Bool {
+  var i = 0
+  while i < ts.count {
+    if not equalityModelled(env, ts[i]) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+func equalityModelledSort(
+  valueTypes: in Map[String, Bool], typeParams: in List[String], s: in Sort, depth: in Int
+): Bool {
+  if depth > 32 {
+    return false
+  }
+  match s {
+    case SBool -> true
+    case SInt -> true
+    case SBitVec(_) -> true
+    case SFloat32 -> true
+    case SFloat64 -> true
+    case SString -> true
+    case SDatatype(n, args) -> {
+      if n == unitSortName() {
+        return true
+      }
+      if isTupleSortName(n) or isResultSort(s) or isOptionSort(s) {
+        var i = 0
+        while i < args.count {
+          if not equalityModelledSort(valueTypes, typeParams, args[i], depth + 1) {
+            return false
+          }
+          i = i + 1
+        }
+        return true
+      }
+      args.count == 0 and (valueTypes.containsKey(structuralEqualityKey(n)) or typeParams.contains(n))
+    }
+    case SSlice(e) -> equalityModelledSort(valueTypes, typeParams, e, depth + 1)
+    // A value the verifier does not model is a symbol of its own — one
+    // evaluation's — or the result of a method it does not model (#8110);
+    // only the symbols named after the source, which one name evaluated
+    // twice would share, have an unknown type.
+    case SUninterp(n) -> not (n == "Function" or n == "lambda" or n == "lambdaparam" or n == "path" or n.startsWith("global!"))
+  }
 }
 
 // A call through a computed callee — a lambda, a local binding, another
@@ -1201,11 +2030,54 @@ func translateComputedCall(
   appendTermList(asList, argAssumed)
   // An argument reported untranslatable (V0033) keeps the result poisoned,
   // so a goal built from it stays failed (#7874).
-  val freshCall = freshVar(env, "call", SUninterp(name = "call"))
-  val callVar = if anyPoisoned(rawArgTerms) { poisonTerm(freshCall) } else { freshCall }
+  val callVar = callSiteResult(env, "call", rawArgTerms, SUninterp(name = "call"))
   val callTR = TranslateResult(term = callVar, sideConds = sc, assumed = asList)
   val callPair: (TranslateResult, List[Diagnostic]) = (callTR, diags)
   callPair
+}
+
+// The function a value names when it is one this file declares, named
+// where no binding shadows it (`functionRefTerm`).
+func functionRefPrefix(): String {
+  "fn!"
+}
+
+// The key under which the distinct-type map holds the declared type of a
+// module-level `val` or `const` of this file.
+func globalTypeKey(name: in String): String {
+  "!global." + name
+}
+
+func functionRefTerm(name: in String): Term {
+  TVar(name = functionRefPrefix() + name, sort = SUninterp(name = "Function"))
+}
+
+// The function a callee binding holds now, when it holds one this file
+// declares by name (`val h = sq`): never a lambda, a parameter or a value
+// a loop or a call has given it, which are values of their own.
+func boundFunctionOf(env: in VEnv, fn: in Expr): Option[FunctionDecl] {
+  match fn.kind {
+    case EPath(path) -> {
+      if path.segments.count != 1 {
+        return None
+      }
+      match envLookup(path.segments[0], env) {
+        case Some(t) -> match t {
+          case TVar(n, _) -> {
+            val prefix = functionRefPrefix()
+            if n.startsWith(prefix) {
+              mapGet(env.callees, n.substring(prefix.length, n.length - prefix.length))
+            } else {
+              None
+            }
+          }
+          case _ -> None
+        }
+        case None -> None
+      }
+    }
+    case _ -> None
+  }
 }
 
 // A callee that names a local binding, which shadows any file function.
@@ -1351,11 +2223,43 @@ func translateMethodCall(
         callSpan,
         argSides,
         argAssumed,
-        allArgDiags,
-        false
+        allArgDiags
       )
     }
     case None -> ()
+  }
+  // `U.C(args)` for a union `U` the file declares builds case `C`: a
+  // value of `U`, so `==` on it is `U`'s.  When `U` compares by structure
+  // over modelled payloads (`equalityModelledSort`), equal arguments build
+  // equal values; otherwise each construction is a value of its own — a
+  // payload may compare by identity (#8109).
+  match receiver.kind {
+    case EPath(upath) -> {
+      if upath.segments.count == 1 and env.valueTypes.containsKey(unionKey(upath.segments[0])) and not isSome(envLookup(upath.segments[0], env)) {
+        val unionName = upath.segments[0]
+        val noArgs: List[Sort] = newList()
+        val unionSort = SDatatype(name = unionName, args = noArgs)
+        var caseName = "case!" + unionName + "!" + methodName
+        var ci = 0
+        while ci < args.count {
+          caseName = caseName + match args[ci] { case CANamed(argName, _, _) -> "!n!" + argName; case CAPositional(_) -> "!p" }
+          ci = ci + 1
+        }
+        val caseTerm = if equalityModelledSort(env.valueTypes, env.typeParams, unionSort, 0) and allEqualityModelled(env, rawArgTerms) {
+          TApp(name = caseName, args = rawArgTerms, retSort = unionSort)
+        } else {
+          callSiteResult(env, caseName, rawArgTerms, unionSort)
+        }
+        val caseTR = TranslateResult(
+          term = if anyPoisoned(rawArgTerms) { poisonTerm(caseTerm) } else { caseTerm },
+          sideConds = argSides,
+          assumed = argAssumed
+        )
+        val casePair: (TranslateResult, List[Diagnostic]) = (caseTR, allArgDiags)
+        return casePair
+      }
+    }
+    case _ -> ()
   }
   val (recvR, recvDiags) = translateExpr(env, receiver)
   val diags: List[Diagnostic] = newList()
@@ -1413,7 +2317,7 @@ func translateMethodCall(
         fullSpans.add(argSpans[i])
         i = i + 1
       }
-      translateResolvedCall(env, rc.name, rc.decl, fullArgs, fullTerms, fullSpans, callSpan, sides, facts, diags, true)
+      translateResolvedCall(env, rc.name, rc.decl, fullArgs, fullTerms, fullSpans, callSpan, sides, facts, diags)
     }
     case None -> {
       val ufArgs: List[Term] = newList()
@@ -1507,15 +2411,11 @@ func unsignedOverflowSideConds(op: in Builtin, x: in Term, y: in Term, product: 
 }
 
 func unitTerm(): Term {
-  val args: List[Sort] = newList()
-  val unitDt2 = SDatatype(name = "Unit", args = args)
-  TLit(value = VLUnit, sort = unitDt2)
+  TLit(value = VLUnit, sort = unitSort())
 }
 
 func unitSortInfo(): SortInfo {
-  val args: List[Sort] = newList()
-  val unitSort = SDatatype(name = "Unit", args = args)
-  sortInfoNoRange(unitSort)
+  sortInfoNoRange(unitSort())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1855,8 +2755,22 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
               val nonePair: (TranslateResult, List[Diagnostic]) = (singleTR(mkPendingCtor("None", noArgs)), diags)
               return nonePair
             }
-            val uSort = SUninterp(name = name)
-            val t = TVar(name = name, sort = uSort)
+            // A function this file declares, named as a value: one value
+            // per function, of the sort function-typed values have.
+            if env.callees.containsKey(name) and not isSome(findRecordFields(env, name)) {
+              val fnPair: (TranslateResult, List[Diagnostic]) = (singleTR(functionRefTerm(name)), diags)
+              return fnPair
+            }
+            // No binding the walk tracks declares the name — every local,
+            // parameter and pattern binding has one — so it is declared at
+            // module level, where a `val` never changes: one name is one
+            // value.  `global!` keeps it apart from a parameter or binding
+            // spelt the same in another scope (#8109).
+            val uSort = match mapGet(env.distincts, globalTypeKey(name)) {
+              case Some(te) -> sortOfTypeExprE(env, te).sort
+              case None -> SUninterp(name = "global!" + name)
+            }
+            val t = TVar(name = "global!" + name, sort = uSort)
             val ePair: (TranslateResult, List[Diagnostic]) = (singleTR(t), diags)
             ePair
           }
@@ -2067,6 +2981,21 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
           } else {
             termList2(lR.term, rR.term)
           }
+          // `==` the verifier's equality does not model faithfully on every
+          // target fails closed (`equalityModelled`, #8109).
+          match b {
+            case BOpEq | BOpNeq -> {
+              if not equalityModelled(env, lR.term) or not equalityModelled(env, rR.term) {
+                sortDiags.add(
+                  untranslatableDiag(
+                    "an equality between values that may be or hold a function, compare by identity, or be of a type the verifier does not know",
+                    e.span
+                  )
+                )
+              }
+            }
+            case _ -> ()
+          }
           val term = if sortDiags.count > 0 { poisonTerm(TBuiltin(op = b, args = args)) } else { TBuiltin(op = b, args = args) }
           val sc: List[Term] = newList()
           appendTermList(sc, lR.sideConds)
@@ -2167,8 +3096,28 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
       // which read no local, after them (D171).
 
       // A local binding — a lambda in a `val` — shadows a file function of
-      // the same name: the call goes through the binding (#8102).
+      // the same name: the call goes through the binding (#8102).  One
+      // that holds a function this file declares, as it does here, calls
+      // that function: its current value, so a reassigned binding calls
+      // the function it was last given (#8109).
       if localCallee(env, fn) {
+        match boundFunctionOf(env, fn) {
+          case Some(decl) -> {
+            return translateResolvedCall(
+              env,
+              decl.name,
+              decl,
+              args,
+              rawArgTerms,
+              argSpans,
+              e.span,
+              argSides,
+              argAssumed,
+              allArgDiags
+            )
+          }
+          case None -> ()
+        }
         return translateComputedCall(env, fn, rawArgTerms, argSides, argAssumed, allArgDiags)
       }
       match fn.kind {
@@ -2286,8 +3235,7 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
                 e.span,
                 argSides,
                 argAssumed,
-                allArgDiags,
-                false
+                allArgDiags
               )
             }
             case None -> {
@@ -2319,9 +3267,12 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
                   allArgDiags
                 )
               }
-              // Unknown callee — emit TApp with uninterpreted sort.
-              val callNameSort = SUninterp(name = "call." + name)
-              val t = TApp(name = name, args = rawArgTerms, retSort = callNameSort)
+              // A callee this file does not declare — another file's or
+              // package's function, or one the verifier does not model.
+              // Whether it is `@pure` is not known here, so its result is
+              // a value of its own at this call site: two calls of it are
+              // never taken for equal (#8109).
+              val t = callSiteResult(env, name, rawArgTerms, SUninterp(name = "call." + name))
               val sc: List[Term] = newList()
               appendTermList(sc, argSides)
               val asList: List[Term] = newList()
@@ -3336,8 +4287,9 @@ pub func wpBody(env: in VEnv, resultSort: in SortInfo, postcond: in Term, body: 
   }
 }
 
+// A function's or a lambda's body: a scope of its own (#8109).
 pub func wpBlock(env: in VEnv, resultSort: in SortInfo, postcond: in Term, stmts: in List[Statement]): WpResult {
-  wpWalk(env, resultSort, postcond, stmts, 0)
+  wpWalk(envEnterScope(env, freshName(env, "scope")), resultSort, postcond, stmts, 0)
 }
 
 // The rest of the block after an expression statement or binding whose
@@ -3387,6 +4339,14 @@ func wpWalk(env: in VEnv, resultSort: in SortInfo, postcond: in Term, stmts: in 
     emptyWpResult(finishPost(env, postcond, unitTerm()))
   } else {
     val st = stmts[idx]
+    // The end of a branch's scope: its bindings give way to the ones they
+    // shadowed (#8109).
+    match scopeEndOf(st) {
+      case Some(scopeId) -> {
+        return wpWalk(envExitScope(env, scopeId), resultSort, postcond, stmts, idx + 1)
+      }
+      case None -> ()
+    }
     // A `?` splits the path where it runs (#8108).
     match propagateBindingOf(st) {
       case Some(pb) -> {
@@ -3599,17 +4559,26 @@ func wpIfStmt(
     ri = ri + 1
   }
 
-  // Append rest to each branch.
+  // Append rest to each branch.  Each branch is a scope, ended before the
+  // rest so a binding it declares never reaches the rest (#8109).  With no
+  // rest the branch ends the block and its last expression is the block's
+  // value: nothing follows it to end the scope for.
+  val thenScope = freshName(env, "scope")
+  val elseScope = freshName(env, "scope")
   val thenFull: List[Statement] = newList()
   appendStmtList(thenFull, thenStmts)
-  appendStmtList(thenFull, rest)
   val elseFull: List[Statement] = newList()
   appendStmtList(elseFull, elseStmts)
+  if rest.count > 0 {
+    thenFull.add(scopeEndStmt(thenScope, sp))
+    elseFull.add(scopeEndStmt(elseScope, sp))
+  }
+  appendStmtList(thenFull, rest)
   appendStmtList(elseFull, rest)
 
   val afterCond = havocOutArgs(env, cond)
-  val thenR = wpWalk(afterCond.env, resultSort, postcond, thenFull, 0)
-  val elseR = wpWalk(afterCond.env, resultSort, postcond, elseFull, 0)
+  val thenR = wpWalk(envEnterScope(afterCond.env, thenScope), resultSort, postcond, thenFull, 0)
+  val elseR = wpWalk(envEnterScope(afterCond.env, elseScope), resultSort, postcond, elseFull, 0)
 
   val notCond = mkNot(condR.term)
   // Guard branch side goals by their branch condition.
@@ -3688,12 +4657,53 @@ func wpLocal(
   sp: in Span,
 ): WpResult {
   match binding {
-    case LBVal(pat, ty, init) -> {
-      val name = match pat.kind { case PBinding(n, _) -> n; case _ -> "?pat" }
-      wpBindInit(env, resultSort, postcond, stmts, idx, name, ty, init, false)
+    case LBVal(pat, ty, init) -> match simpleBindingName(pat) {
+      case Some(name) -> wpBindInit(
+        env,
+        resultSort,
+        postcond,
+        stmts,
+        idx,
+        name,
+        ty,
+        init,
+        false,
+        noPatternBinders()
+      )
+      case None -> {
+        // A destructuring pattern: the value is bound to a name of its
+        // own, and each name the pattern binds to a value of its own —
+        // the verifier does not model taking a value apart, and two
+        // patterns' names must never share a value (#8109).
+        val binders: List[String] = newList()
+        collectPatternBinders(pat.kind, binders)
+        wpBindInit(env, resultSort, postcond, stmts, idx, freshName(env, "pattern"), ty, init, false, binders)
+      }
     }
-    case LBLet(name, ty, init) -> wpBindInit(env, resultSort, postcond, stmts, idx, name, ty, init, false)
-    case LBVar(name, ty, Some(init)) -> wpBindInit(env, resultSort, postcond, stmts, idx, name, ty, init, true)
+    case LBLet(name, ty, init) -> wpBindInit(
+      env,
+      resultSort,
+      postcond,
+      stmts,
+      idx,
+      name,
+      ty,
+      init,
+      false,
+      noPatternBinders()
+    )
+    case LBVar(name, ty, Some(init)) -> wpBindInit(
+      env,
+      resultSort,
+      postcond,
+      stmts,
+      idx,
+      name,
+      ty,
+      init,
+      true,
+      noPatternBinders()
+    )
     case LBVar(name, ty, None) -> {
       // Uninitialized var — bind to a fresh symbolic value of its declared
       // sort (an unannotated one is an integer, as before).  Its declared
@@ -3702,7 +4712,7 @@ func wpLocal(
       // The value is one of its own: the source name may be bound again
       // elsewhere in the function (#8102).
       val initial = freshVar(env, name, info.sort)
-      val env2 = envSetMutable(envBindTerm(name, initial, info, env), name, true)
+      val env2 = envSetMutable(envDeclare(name, initial, info, env), name, true)
       val inner = wpWalk(env2, resultSort, postcond, stmts, idx + 1)
       val asList: List[Term] = newList()
       appendTermList(asList, rangeHypothesesForTerm(initial, info))
@@ -3712,9 +4722,25 @@ func wpLocal(
   }
 }
 
+// The name a `val` pattern binds when it binds the whole value to one.
+func simpleBindingName(pat: in Pattern): Option[String] {
+  match pat.kind {
+    case PBinding(n, None) -> Some(value = n)
+    case PParen(inner) -> simpleBindingName(inner)
+    case _ -> None
+  }
+}
+
+func noPatternBinders(): List[String] {
+  val none: List[String] = newList()
+  none
+}
+
 // `val`/`let`/`var name[: ty] = init`, then the rest of the block.  The
 // initializer's side conditions — a callee's `requires:`, an overflow
 // obligation — are side goals like an expression statement's (#7871).
+// `patternBinders` are the names a destructuring pattern binds, each a
+// value of its own.
 func wpBindInit(
   env: in VEnv,
   resultSort: in SortInfo,
@@ -3725,6 +4751,7 @@ func wpBindInit(
   ty: in Option[TypeExpr],
   init: in Expr,
   mutable: in Bool,
+  patternBinders: in List[String],
 ): WpResult {
   if effectsOfExpr(env, init).assigned.count > 0 {
     return unsupportedWp("an assignment inside an expression", init.span)
@@ -3744,7 +4771,14 @@ func wpBindInit(
   }
   // The initializer's `out`/`inout` arguments change before the binding.
   val after = havocOutArgs(env, init)
-  val env2 = envSetMutable(envBindTerm(name, boundTerm, info, after.env), name, mutable)
+  var env2 = envSetMutable(envDeclare(name, boundTerm, info, after.env), name, mutable)
+  var pbi = 0
+  while pbi < patternBinders.count {
+    val binder = patternBinders[pbi]
+    val binderInfo = SortInfo(sort = SUninterp(name = "binding"), range = RBKNone)
+    env2 = envSetMutable(envDeclare(binder, freshVar(env, binder, binderInfo.sort), binderInfo, env2), binder, false)
+    pbi = pbi + 1
+  }
   val inner = wpWalk(env2, resultSort, postcond, stmts, idx + 1)
   val sg: List[SideGoal] = newList()
   if termIsPoisoned(initR.term) {
@@ -3891,7 +4925,7 @@ func wpBindPropagate(
     case Some(_) -> coerceTermAt(payload, info.sort, pb.inner.span, innerDiags)
     case None -> payload
   }
-  val env2 = envSetMutable(envBindTerm(pb.name, boundTerm, info, after.env), pb.name, pb.mutable)
+  val env2 = envSetMutable(envDeclare(pb.name, boundTerm, info, after.env), pb.name, pb.mutable)
   val rest = wpWalk(env2, resultSort, postcond, stmts, idx + 1)
   // The early return: the function's postcondition of `Err(error)`/`None`.
   val exitWp = finishPost(after.env, postcond, exitValue)
@@ -4461,6 +5495,11 @@ func wpAssign(
   if name.length == 0 {
     return unsupportedWp("an assignment to a field or an element", target.span)
   }
+  // A name no binding declares is a module-level `val`, which no assignment
+  // reaches; one the walk lost track of must not be given a value (#8109).
+  if not isSome(envLookup(name, env)) {
+    return unsupportedWp("an assignment to '" + name + "', which no binding the verifier tracks declares", target.span)
+  }
   if effectsOfExpr(env, value).assigned.count > 0 {
     return unsupportedWp("an assignment inside an expression", value.span)
   }
@@ -4472,7 +5511,7 @@ func wpAssign(
   val rawCombined = match op {
     case AssEq -> rhsR.term
     case _ -> {
-      val existing = match envLookup(name, env) { case Some(t) -> t; case None -> TVar(name = name, sort = SInt) }
+      val existing = match envLookup(name, env) { case Some(t) -> t; case None -> freshVar(env, name, SInt) }
       val bin = match op {
         case AssPlus -> BOpAdd
         case AssMinus -> BOpSub
@@ -4712,7 +5751,10 @@ func wpWhile(
     val bodyStmts: List[Statement] = newList()
     appendStmtList(bodyStmts, realStmts)
     bodyStmts.add(Statement(kind = SExpr(expr = Expr(kind = ELiteral(lit = LUnit), span = body.span)), span = body.span))
-    val bodyWp = wpWalk(envWithFinals(afterCond.env, finals), resultSort, preservePost, bodyStmts, 0)
+    // The body is a scope of its own: a binding it declares shadows a
+    // variable the invariant speaks of only inside it (#8109).
+    val bodyEnv = envEnterScope(envWithFinals(afterCond.env, finals), freshName(env, "scope"))
+    val bodyWp = wpWalk(bodyEnv, resultSort, preservePost, bodyStmts, 0)
     appendTermList2(di, bodyWp.diags)
     val preserveHyps = termsWith(bodyHyps, bodyWp.assumed)
     sg.add(SideGoal(term = mkImplies(mkAnd(preserveHyps), bodyWp.wp), kind = GKLoopPreserve, span = sp))
@@ -5223,7 +6265,34 @@ func envInOwnContract(env: in VEnv, name: in String): VEnv {
     mutables = env.mutables,
     protectedMembers = env.protectedMembers,
     contractStack = termsWithNames(env.contractStack, name),
-    cyclic = env.cyclic
+    cyclic = env.cyclic,
+    valueTypes = env.valueTypes,
+    typeParams = env.typeParams
+  )
+}
+
+// `env` translating the body and contract of a generic with type
+// parameters `names`.
+func envWithTypeParams(env: in VEnv, names: in List[String]): VEnv {
+  VEnv(
+    vars = env.vars,
+    varNames = env.varNames,
+    sorts = env.sorts,
+    callees = env.callees,
+    symbols = env.symbols,
+    checkedArithmetic = env.checkedArithmetic,
+    distincts = env.distincts,
+    fieldInfos = env.fieldInfos,
+    recordDefaults = env.recordDefaults,
+    fresh = env.fresh,
+    recordMethods = env.recordMethods,
+    finals = env.finals,
+    mutables = env.mutables,
+    protectedMembers = env.protectedMembers,
+    contractStack = env.contractStack,
+    cyclic = env.cyclic,
+    valueTypes = env.valueTypes,
+    typeParams = names
   )
 }
 
@@ -5251,7 +6320,9 @@ func envWithState(
     mutables = mutables,
     protectedMembers = protectedMembers,
     contractStack = env.contractStack,
-    cyclic = env.cyclic
+    cyclic = env.cyclic,
+    valueTypes = env.valueTypes,
+    typeParams = env.typeParams
   )
 }
 
@@ -5706,11 +6777,12 @@ pub func goalsForFunctionWithExtraHyps(
 // body may change: an `ensures:` speaks of their values when the function
 // returns, and `old(n)` of their values on entry (#8102).
 pub func goalsForFunctionWithState(
-  env0: in VEnv,
+  envIn: in VEnv,
   decl: in FunctionDecl,
   extraHyps: in List[Term],
   stateVars: in List[String],
 ): (List[Goal], List[Diagnostic]) {
+  val env0 = envWithTypeParams(envIn, typeParamNames(decl))
   // Soundness guard: WP/SP has no suspend/resume model; reject contract-bearing async/yield rather than opaquing (#3298).
   if decl.contracts.count > 0 and (decl.isAsync or funcBodyContainsYield(decl)) {
     val asyncDiags: List[Diagnostic] = newList()
@@ -5980,7 +7052,9 @@ func freshSymbolsEnv(env: in VEnv): VEnv {
     mutables = env.mutables,
     protectedMembers = env.protectedMembers,
     contractStack = env.contractStack,
-    cyclic = env.cyclic
+    cyclic = env.cyclic,
+    valueTypes = env.valueTypes,
+    typeParams = env.typeParams
   )
 }
 
@@ -6261,6 +7335,21 @@ pub func goalsForFileInScope(
     val noDiags: List[Diagnostic] = newList()
     return (noGoals, noDiags)
   }
+  // A type spelt like a primitive reaches the verifier as the primitive —
+  // `record Unit { xs: List[Int] }` as `Unit`, a value — so nothing about
+  // its values can be trusted: the file fails closed (#8109).
+  val shadowedPrimitive = shadowedPrimitiveName(file)
+  if shadowedPrimitive.length > 0 {
+    val noGoals: List[Goal] = newList()
+    val shadowDiags: List[Diagnostic] = newList()
+    shadowDiags.add(
+      untranslatableDiag(
+        "a type named `" + shadowedPrimitive + "`, which the verifier would take for the primitive of that name",
+        file.packageDecl.path.span
+      )
+    )
+    return (noGoals, shadowDiags)
+  }
 
   // Build callee table from file's IFunc and protected-type PMFunc items.
   // A function is reachable by its name and by its name qualified with
@@ -6479,6 +7568,32 @@ pub func goalsForFileInScope(
   // Build env0 carrying the distinct-type alias map collected above (#3853).
   val env0Init = envEmpty(callees, sharedSymbols, checkedArith)
   val cyclicNames = contractCycles(env0Init, calleeDecls, recordNames, recordDefaultsMap)
+  // A module-level `val` or `const` with a declared type is a value of that
+  // type; any other module-level name's type is unknown (#8109).
+  var gi = 0
+  while gi < file.items.count {
+    match file.items[gi].kind {
+      case IConst(cd) -> {
+        if not distinctMap.containsKey(globalTypeKey(cd.name)) {
+          distinctMap.add(globalTypeKey(cd.name), cd.ty)
+        }
+      }
+      case IVal(vd) -> match vd.ty {
+        case Some(vty) -> match simpleBindingName(vd.pattern) {
+          case Some(vn) -> {
+            if not distinctMap.containsKey(globalTypeKey(vn)) {
+              distinctMap.add(globalTypeKey(vn), vty)
+            }
+          }
+          case None -> ()
+        }
+        case None -> ()
+      }
+      case _ -> ()
+    }
+    gi = gi + 1
+  }
+  val valueTypesMap = fileValueTypes(file, distinctMap)
   val env0 = VEnv(
     vars = env0Init.vars,
     varNames = env0Init.varNames,
@@ -6495,7 +7610,9 @@ pub func goalsForFileInScope(
     mutables = env0Init.mutables,
     protectedMembers = env0Init.protectedMembers,
     contractStack = env0Init.contractStack,
-    cyclic = cyclicNames
+    cyclic = cyclicNames,
+    valueTypes = valueTypesMap,
+    typeParams = env0Init.typeParams
   )
 
   val allGoals: List[Goal] = newList()
