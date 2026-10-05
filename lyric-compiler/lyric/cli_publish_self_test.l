@@ -29,6 +29,7 @@ package Lyric.CliPublishSelfTest
 import Std.Core
 import Std.Testing
 import Lyric.Cli as Cli
+import Lyric.Manifest as Mf
 
 // ─── shouldRetryRestore: NU1102 retries through the max attempt ──────────
 test "shouldRetryRestore: NU1102 in stdout retries on attempt 1" {
@@ -269,6 +270,68 @@ test "buildPublishNuspec: emits manifest authors as a comma-separated escaped li
     "authors joined by comma, escaped, not replaced by the id"
   )
   assertFalse(strContains(ns, "<authors>Lyric.OTel</authors>"), "id is not used when authors are declared")
+}
+
+test "npmPackageName: lowercases and replaces characters NPM rejects" {
+  match Cli.npmPackageName("Lyric.My Pkg") {
+    case Ok(n) -> assertTrue(n == "lyric.my-pkg", "uppercase lowered, space replaced: " + n)
+    case Err(e) -> assertTrue(false, "unexpected error: " + e)
+  }
+}
+
+test "npmPackageName: rejects a leading dot or underscore" {
+  match Cli.npmPackageName("_hidden") {
+    case Ok(_) -> assertTrue(false, "a leading underscore must be rejected")
+    case Err(e) -> assertTrue(strContains(e, "must not start"), "names the rule: " + e)
+  }
+  match Cli.npmPackageName(".hidden") {
+    case Ok(_) -> assertTrue(false, "a leading dot must be rejected")
+    case Err(_) -> ()
+  }
+}
+
+test "buildWasmPackageJson: module shape lists glue and declarations" {
+  val none: Option[Mf.NpmSection] = None
+  val noRepo: Option[String] = None
+  val json = Cli.buildWasmPackageJson("calc", "1.2.3", "A \"calc\"", "MIT", noRepo, "module", "calc", false, none)
+  assertTrue(strContains(json, "\"name\": \"calc\""), "name")
+  assertTrue(strContains(json, "\"version\": \"1.2.3\""), "version")
+  assertTrue(strContains(json, "\"description\": \"A \\\"calc\\\"\""), "description escaped")
+  assertTrue(strContains(json, "\"main\": \"calc.js\""), "main is the glue")
+  assertTrue(strContains(json, "\"types\": \"calc.d.ts\""), "types is the declarations")
+  assertTrue(strContains(json, "\"files\": [\"calc.wasm\", \"calc.js\", \"calc.d.ts\"]"), "files")
+  assertFalse(strContains(json, "dependencies"), "no [npm] table, no dependencies")
+}
+
+test "buildWasmPackageJson: component with bindings points main at the jco output" {
+  val npm: Option[Mf.NpmSection] = Some(
+    value = Mf.NpmSection(
+      entries = oneNpmEntry("node-fetch", "^3", "NodeFetch"),
+      registry = "",
+      manager = "npm"
+    )
+  )
+  val repo: Option[String] = Some(value = "https://example.com/r.git")
+  val json = Cli.buildWasmPackageJson("calc", "0.1.0", "", "", repo, "component", "calc", true, npm)
+  assertTrue(strContains(json, "\"main\": \"calc-js/calc.js\""), "main")
+  assertTrue(strContains(json, "\"files\": [\"calc.wasm\", \"calc.wit\", \"calc-js\"]"), "files")
+  assertTrue(strContains(json, "\"repository\": \"https://example.com/r.git\""), "repository")
+  assertTrue(strContains(json, "\"node-fetch\": \"^3\""), "[npm] row becomes a dependency")
+  assertFalse(strContains(json, "\"description\""), "empty description omitted")
+}
+
+test "buildWasmPackageJson: component without bindings has no main" {
+  val none: Option[Mf.NpmSection] = None
+  val noRepo: Option[String] = None
+  val json = Cli.buildWasmPackageJson("calc", "0.1.0", "", "", noRepo, "component", "calc", false, none)
+  assertFalse(strContains(json, "\"main\""), "no bindings, no main")
+  assertTrue(strContains(json, "\"files\": [\"calc.wasm\", \"calc.wit\"]"), "files")
+}
+
+func oneNpmEntry(name: in String, version: in String, ident: in String): List[Mf.NpmEntry] {
+  val l: List[Mf.NpmEntry] = newList()
+  l.add(Mf.NpmEntry(name = name, version = version, ident = ident))
+  l
 }
 
 func strContains(haystack: in String, needle: in String): Bool {

@@ -1269,6 +1269,8 @@ lyric publish --package-version <ver>  # override the NuGet <version>, .nupkg fi
                                        # cross-library <dependency> versions in the nuspec; also stamps
                                        # Lyric.Contract.* metadata resources embedded in the DLL;
                                        # used by publish pipelines to stamp the git release version
+lyric publish --wasm                   # pack the built wasm32 module/component as an NPM tarball
+                                       # (--wasm-file <path>, -o <dir>); then `npm publish <tgz>`
 lyric search <query>                   # search the registry for matching packages
 
 # Interactive REPL

@@ -3015,6 +3015,8 @@ A `@bench` function whose signature does not match `func name(): Unit` passes th
 - `--skip-duplicate` silently succeeds if a package with the same name and version already exists on the registry.
 - `--package-version <ver>` overrides the `version` field from `lyric.toml` for the emitted NuGet `<version>`, the `.nupkg` filename, and all cross-library workspace dependency `<dependency>` versions in the generated `.nuspec`. In automated publish pipelines, use this alongside `lyric build --package-version <ver>` (a separate preceding step) so the `Lyric.Contract.*` metadata resource embedded in the DLL and the NuGet package version both carry the same release tag version.
 
+- `--wasm [--wasm-file <path>] [-o <dir>]` packs a `--target native --triple wasm32-wasi` build (`--shape module` or `component`) as an NPM tarball `<name>-<version>.tgz` instead of a NuGet package: the `.wasm`, its glue and declarations (module) or WIT and `jco` bindings (component), and a `package.json` whose `dependencies` are the `[npm]` rows. It does not push; run `npm publish <tgz>` (D-progress-1045).
+
   `lyric publish` packs from a hand-authored `.nuspec`: dependencies are emitted as `<dependency>` metadata rather than `<PackageReference>` items, so they are never restored at pack time. This is what lets an interdependent set of packages publish in a single run without a tier-N library failing `NU1102` against a sibling that NuGet.org has not yet indexed.
 
 ---

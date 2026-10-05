@@ -89,6 +89,326 @@ pub func buildPublishNuspec(
   nuspec
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// wasm32 publish bundle (docs/35 section 8.1)
+// ─────────────────────────────────────────────────────────────────────────────
+/// The NPM package name for a Lyric package: lowercased, with every character
+/// outside `a-z 0-9 . - _` replaced by `-`.  NPM rejects an empty name, one
+/// starting with `.` or `_`, and one longer than 214 characters.
+pub func npmPackageName(name: in String): Result[String, String] {
+  val lower = Str.toLower(name)
+  var cleaned = ""
+  var i = 0
+  while i < lower.length {
+    val c = Str.substring(lower, i, 1)
+    if Str.contains("abcdefghijklmnopqrstuvwxyz0123456789._-", c) {
+      cleaned = cleaned + c
+    } else {
+      cleaned = cleaned + "-"
+    }
+    i += 1
+  }
+  if cleaned.length == 0 or cleaned.length > 214 {
+    return Err(error = "package name '" + name + "' cannot be an NPM package name (1 to 214 characters)")
+  }
+  if Str.startsWith(cleaned, ".") or Str.startsWith(cleaned, "_") {
+    return Err(error = "package name '" + name + "' cannot be an NPM package name (must not start with '.' or '_')")
+  }
+  Ok(value = cleaned)
+}
+
+/// The `package.json` of a wasm publish bundle.  `kind` is `"module"` (JS glue
+/// `<stem>.js` and `<stem>.d.ts` beside the `.wasm`) or `"component"` (the
+/// `.wasm` and its `.wit`, plus the `jco` bindings in `<stem>-js/` when
+/// `hasBindings`).  `[npm]` rows become `dependencies`, so the consumer's
+/// package manager installs what the `npm:` host imports reach.
+pub func buildWasmPackageJson(
+  npmName: in String,
+  version: in String,
+  description: in String,
+  license: in String,
+  repository: in Option[String],
+  kind: in String,
+  stem: in String,
+  hasBindings: in Bool,
+  npm: in Option[Mf.NpmSection],
+): String {
+  val files: List[String] = newList()
+  files.add(stem + ".wasm")
+  var main = ""
+  var types = ""
+  if kind == "module" {
+    files.add(stem + ".js")
+    files.add(stem + ".d.ts")
+    main = stem + ".js"
+    types = stem + ".d.ts"
+  } else {
+    files.add(stem + ".wit")
+    if hasBindings {
+      files.add(stem + "-js")
+      main = stem + "-js/" + stem + ".js"
+      types = stem + "-js/" + stem + ".d.ts"
+    }
+  }
+  var json = "{\n  \"name\": \"" + jsonEscape(npmName) + "\",\n  \"version\": \"" + jsonEscape(version) + "\""
+  if description.length > 0 {
+    json = json + ",\n  \"description\": \"" + jsonEscape(description) + "\""
+  }
+  if license.length > 0 {
+    json = json + ",\n  \"license\": \"" + jsonEscape(license) + "\""
+  }
+  match repository {
+    case Some(r) -> {
+      json = json + ",\n  \"repository\": \"" + jsonEscape(r) + "\""
+    }
+    case None -> ()
+  }
+  json = json + ",\n  \"type\": \"module\""
+  if main.length > 0 {
+    json = json + ",\n  \"main\": \"" + jsonEscape(main) + "\""
+  }
+  if types.length > 0 {
+    json = json + ",\n  \"types\": \"" + jsonEscape(types) + "\""
+  }
+  json = json + ",\n  \"files\": ["
+  var fi = 0
+  while fi < files.count {
+    if fi > 0 {
+      json = json + ", "
+    }
+    json = json + "\"" + jsonEscape(files[fi]) + "\""
+    fi += 1
+  }
+  json = json + "]"
+  match npm {
+    case Some(n) -> if n.entries.count > 0 {
+      json = json + ",\n  \"dependencies\": {\n"
+      var ni = 0
+      while ni < n.entries.count {
+        if ni > 0 {
+          json = json + ",\n"
+        }
+        json = json + "    \"" + jsonEscape(n.entries[ni].name) + "\": \"" + jsonEscape(n.entries[ni].version) + "\""
+        ni += 1
+      }
+      json = json + "\n  }"
+    }
+    case None -> ()
+  }
+  json + "\n}\n"
+}
+
+/// Copy one file byte for byte.
+func copyBundleFile(src: in String, dst: in String): Result[Unit, String] {
+  match File.readBytes(src) {
+    case Err(e) -> Err(error = "cannot read " + src + ": " + IOError.message(e))
+    case Ok(bytes) -> match File.writeBytes(dst, bytes) {
+      case Err(e) -> Err(error = "cannot write " + dst + ": " + IOError.message(e))
+      case Ok(_) -> Ok(value = ())
+    }
+  }
+}
+
+/// `lyric publish --wasm`: stage the built `.wasm` and its sidecars and pack
+/// them as `<name>-<version>.tgz`, the tarball `npm publish` accepts.
+func publishWasmBundle(
+  manifest: in Mf.Manifest,
+  mfDir: in String,
+  version: in String,
+  wasmOverride: in Option[String],
+  outputDir: in Option[String],
+): Int {
+  val pkg: Mf.PackageSection = manifest.packageSection
+  val npmName = match npmPackageName(pkg.name) {
+    case Ok(n) -> n
+    case Err(e) -> {
+      printErr("publish: " + e)
+      return 1
+    }
+  }
+  val wasmPath = match wasmOverride {
+    case Some(w) -> w
+    case None -> {
+      val fileName = match manifest.project {
+        case Some(proj) -> match proj.outputAssembly {
+          case Some(asm) -> asm
+          case None -> pkg.name + ".wasm"
+        }
+        case None -> pkg.name + ".wasm"
+      }
+      Path.join(Path.join(mfDir, "bin"), fileName)
+    }
+  }
+  if not Str.endsWith(wasmPath, ".wasm") {
+    printErr("publish: --wasm-file must name a .wasm file: " + wasmPath)
+    return 1
+  }
+  if not File.fileExists(wasmPath) {
+    printErr(
+      "publish: wasm output not found: " + wasmPath + " - run `lyric build --shape module` or `--shape component` first"
+    )
+    return 1
+  }
+  val stemPath = Str.substring(wasmPath, 0, wasmPath.length - 5)
+  val stem = Path.basename(stemPath)
+  val srcDir = Path.dirname(wasmPath)
+  val witPath = stemPath + ".wit"
+  val jsPath = stemPath + ".js"
+  val bindingsDir = stemPath + "-js"
+  val isComponent = File.fileExists(witPath)
+  val isModule = File.fileExists(jsPath) and File.fileExists(stemPath + ".d.ts")
+  if isComponent and isModule {
+    printErr(
+      "publish: both " + stem + ".wit and " + stem + ".js sit beside " + wasmPath +
+        " - remove the stale one so the shape is unambiguous"
+    )
+    return 1
+  }
+  if not isComponent and not isModule {
+    printErr(
+      "publish: neither " + stem + ".wit (component) nor " + stem + ".js with " + stem + ".d.ts (module) sits beside " +
+        wasmPath +
+        " - rebuild with `--shape module` or `--shape component`"
+    )
+    return 1
+  }
+  val kind = if isComponent { "component" } else { "module" }
+  val hasBindings = isComponent and File.dirExists(bindingsDir)
+
+  val outDir = match outputDir { case Some(d) -> d; case None -> Path.join(Path.join(mfDir, "bin"), "npm") }
+  val stageRoot = Path.join(outDir, npmName + "-" + version + "-stage")
+  val stageDir = Path.join(stageRoot, "package")
+  if File.dirExists(stageRoot) {
+    match File.deleteDirRecursive(stageRoot) {
+      case Ok(_) -> ()
+      case Err(e) -> {
+        printErr("publish: cannot clear " + stageRoot + ": " + IOError.message(e))
+        return 1
+      }
+    }
+  }
+  match File.createDir(stageDir) {
+    case Ok(_) -> ()
+    case Err(e) -> {
+      printErr("publish: cannot create " + stageDir + ": " + IOError.message(e))
+      return 1
+    }
+  }
+
+  val copies: List[String] = newList()
+  copies.add(stem + ".wasm")
+  if isComponent {
+    copies.add(stem + ".wit")
+  } else {
+    copies.add(stem + ".js")
+    copies.add(stem + ".d.ts")
+  }
+  var ci = 0
+  while ci < copies.count {
+    match copyBundleFile(Path.join(srcDir, copies[ci]), Path.join(stageDir, copies[ci])) {
+      case Ok(_) -> ()
+      case Err(e) -> {
+        printErr("publish: " + e)
+        return 1
+      }
+    }
+    ci += 1
+  }
+  if hasBindings {
+    val destBindings = Path.join(stageDir, stem + "-js")
+    match File.createDir(destBindings) {
+      case Ok(_) -> ()
+      case Err(e) -> {
+        printErr("publish: cannot create " + destBindings + ": " + IOError.message(e))
+        return 1
+      }
+    }
+    val absSrc = if Path.isAbsolute(bindingsDir) {
+      bindingsDir
+    } else {
+      Path.join(Environment.currentDirectory(), bindingsDir)
+    }
+    val listed = match File.listFilesRecursive(bindingsDir) {
+      case Ok(l) -> l
+      case Err(e) -> {
+        printErr("publish: cannot list " + bindingsDir + ": " + IOError.message(e))
+        return 1
+      }
+    }
+    var li = 0
+    while li < listed.count {
+      val f = listed[li]
+      val rel = if Str.startsWith(f, absSrc) {
+        Str.substring(f, absSrc.length + 1)
+      } else if Str.startsWith(f, bindingsDir) {
+        Str.substring(f, bindingsDir.length + 1)
+      } else {
+        Path.basename(f)
+      }
+      val dst = Path.join(destBindings, rel)
+      match File.createDir(Path.dirname(dst)) {
+        case Ok(_) -> ()
+        case Err(e) -> {
+          printErr("publish: cannot create " + Path.dirname(dst) + ": " + IOError.message(e))
+          return 1
+        }
+      }
+      match copyBundleFile(f, dst) {
+        case Ok(_) -> ()
+        case Err(e) -> {
+          printErr("publish: " + e)
+          return 1
+        }
+      }
+      li += 1
+    }
+  }
+
+  val packageJson = buildWasmPackageJson(
+    npmName,
+    version,
+    pkg.description,
+    pkg.license,
+    pkg.repository,
+    kind,
+    stem,
+    hasBindings,
+    manifest.npm
+  )
+  match File.writeText(Path.join(stageDir, "package.json"), packageJson) {
+    case Ok(_) -> ()
+    case Err(e) -> {
+      printErr("publish: cannot write package.json: " + IOError.message(e))
+      return 1
+    }
+  }
+
+  val tarball = Path.join(outDir, npmName + "-" + version + ".tgz")
+  val tarArgs: List[String] = newList()
+  tarArgs.add("-czf")
+  tarArgs.add(tarball)
+  tarArgs.add("-C")
+  tarArgs.add(stageRoot)
+  tarArgs.add("package")
+  val tarExit = match Process.run("tar", tarArgs) {
+    case Ok(code) -> code
+    case Err(e) -> {
+      printErr("publish: tar failed: " + IOError.message(e))
+      return 1
+    }
+  }
+  match File.deleteDirRecursive(stageRoot) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+  if tarExit != 0 {
+    printErr("publish: tar exited with " + toString(tarExit))
+    return tarExit
+  }
+  Console.println("publish: packed " + kind + " bundle " + tarball + " (publish with `npm publish " + tarball + "`)")
+  0
+}
+
 func cmdPublish(argv: in slice[String]): Int {
   var manifestArg: Option[String] = None
   var dllOverride: Option[String] = None
@@ -97,6 +417,8 @@ func cmdPublish(argv: in slice[String]): Int {
   var apiKey: Option[String] = None
   var skipDuplicate = false
   var packageVersionArg: Option[String] = None
+  var wasmMode = false
+  var wasmFileArg: Option[String] = None
 
   var i = 1
   while i < argv.length {
@@ -139,6 +461,17 @@ func cmdPublish(argv: in slice[String]): Int {
         i += 2
       } else {
         printErr("publish: --api-key requires an argument")
+        return 1
+      }
+    } else if arg == "--wasm" {
+      wasmMode = true
+      i += 1
+    } else if arg == "--wasm-file" {
+      if i + 1 < argv.length {
+        wasmFileArg = Some(value = argv[i + 1])
+        i += 2
+      } else {
+        printErr("publish: --wasm-file requires an argument")
         return 1
       }
     } else if arg == "--skip-duplicate" {
@@ -215,6 +548,16 @@ func cmdPublish(argv: in slice[String]): Int {
   val pkg: Mf.PackageSection = manifest.packageSection
   val effectiveVersion = match packageVersionArg { case Some(v) -> v; case None -> pkg.version }
   val mfDir = Path.dirname(mfPath)
+  if wasmMode {
+    return publishWasmBundle(manifest, mfDir, effectiveVersion, wasmFileArg, outputDir)
+  }
+  match wasmFileArg {
+    case Some(_) -> {
+      printErr("publish: --wasm-file applies to --wasm only")
+      return 1
+    }
+    case None -> ()
+  }
   val dllPath = match dllOverride {
     case Some(d) -> d
     case None -> {
