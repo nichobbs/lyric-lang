@@ -7002,17 +7002,7 @@ func registerHeapTypes(
     while pdi < u.protecteds.count {
       val pd = u.protecteds[pdi]
       match pd.generics {
-        case Some(_) -> {
-          // Generic protected types (#7830) lower on MSIL/JVM only;
-          // per-instantiation native layouts are #7864 (D-N-017).
-          // `nativeGenericProtectedDiagnostics` reports this as N0008
-          // before codegen; this is the fallback for a direct caller.
-          panic(
-            "Lyric.LlvmCodegen: [N0008] " + genericProtectedMessage(pd.name) + " (at " + pd.span.startPos.line.toString() + ":" +
-              pd.span.startPos.column.toString() +
-              ")"
-          )
-        }
+        case Some(_) -> registerGenericProtected(ctx, u.pkgName, pd)
         case None -> {
           val emptyNames: List[String] = newList()
           val emptyTys: List[NType] = newList()
@@ -7542,6 +7532,91 @@ func registerGenericRecord(ctx: in Ctx, pkg: in String, rd: in RecordDecl): Unit
     }
   }
   registerGenericRecordMethods(ctx, pkg, rd)
+}
+
+/// A generic protected type (#7864) monomorphises like a generic record: its
+/// user fields register as a synthetic generic record (so type resolution,
+/// instantiation and inference reuse the record path), flagged in
+/// `protectedRecNames` so each instantiation gains the trailing `__mutex`
+/// field and the mutex-tearing destructor.  Each member registers as a
+/// generic wrapper (body-less; `instantiateProtectedWrapper` hand-builds its
+/// lock/unlock `NFunc` per instantiation) over the generic `.__inner`
+/// function `collectProtectedMethods` produced.
+func registerGenericProtected(ctx: in Ctx, pkg: in String, pd: in ProtectedTypeDecl): Unit {
+  val members: List[RecordMember] = newList()
+  for f in protFieldsOf(pd) {
+    members.add(RMField(field = f))
+  }
+  val rd = RecordDecl(name = pd.name, generics = pd.generics, whereClause = pd.whereClause, members = members, span = pd.span)
+  registerGenericRecord(ctx, pkg, rd)
+  for k in [pkg + "." + pd.name, pd.name] {
+    if not ctx.protectedRecNames.containsKey(k) {
+      ctx.protectedRecNames.add(k, true)
+    }
+  }
+  val selfTe = protectedSelfTypeExpr(pd, pd.span)
+  for m in pd.members {
+    match m {
+      case PMEntry(ed) -> registerGenericProtectedWrapper(ctx, pkg, pd, ed.name, ed.params, ed.ret, ed.span, selfTe)
+      case PMFunc(fn) -> {
+        match fn.generics {
+          case Some(_) -> ()
+          case None -> {
+            if not fn.isAsync {
+              registerGenericProtectedWrapper(ctx, pkg, pd, fn.name, fn.params, fn.ret, fn.span, selfTe)
+            }
+          }
+        }
+      }
+      case _ -> ()
+    }
+  }
+}
+
+func registerGenericProtectedWrapper(
+  ctx: in Ctx,
+  pkg: in String,
+  pd: in ProtectedTypeDecl,
+  methodName: in String,
+  memberParams: in List[Param],
+  ret: in Option[TypeExpr],
+  span: in Span,
+  selfTe: in TypeExpr,
+): Unit {
+  val params: List[Param] = newList()
+  params.add(protectedSelfParam(pd, span))
+  for p in memberParams {
+    match p.mode {
+      case PMIn -> ()
+      case _ -> panic(
+        "Lyric.LlvmCodegen: protected type '" + pd.name + "' method '" + methodName + "' declares '" + p.name +
+          "' as out/inout, which is not yet supported for --target native on protected-type methods"
+      )
+    }
+    params.add(p.copy(ty = substSelfWith(p.ty, selfTe)))
+  }
+  val sRet = match ret { case Some(r) -> Some(value = substSelfWith(r, selfTe)); case None -> None }
+  val wrapper = FunctionDecl(
+    docComments = newList(),
+    annotations = newList(),
+    visibility = None,
+    isAsync = false,
+    name = pd.name + "." + methodName,
+    generics = pd.generics,
+    params = params,
+    ret = sRet,
+    whereClause = None,
+    contracts = newList(),
+    body = None,
+    span = span
+  )
+  val akey = "." + methodName + "/" + params.count.toString()
+  for k in [pkg + "." + pd.name + akey, pd.name + akey] {
+    if not ctx.genericFnDefs.containsKey(k) {
+      ctx.genericFnDefs.add(k, wrapper)
+      ctx.genericFnPkg.add(k, pkg)
+    }
+  }
 }
 
 // A generic record's methods are generic functions over the record's type
@@ -9772,7 +9847,15 @@ func instantiateGenericRecordOpt(ctx: in Ctx, gkey: in String, argTys: in List[N
     dflts.add(fields[i].dflt)
     i = i + 1
   }
-  val byValue = genericRecordByValue(ctx, gkey, rd, tys)
+  val isProt = ctx.protectedRecNames.containsKey(gkey)
+  if isProt {
+    names.add("__mutex")
+    tys.add(NPtr(pointee = NI8))
+    val noDflt: Option[Expr] = None
+    dflts.add(noDflt)
+    ctx.protectedRecNames.add(instName, true)
+  }
+  val byValue = not isProt and genericRecordByValue(ctx, gkey, rd, tys)
   val ri = NRecInfo(irName = instName, fieldNames = names, fieldTys = tys, fieldDefaults = dflts, byValue = byValue)
   ctx.recordDefs.remove(instName)
   ctx.recordDefs.add(instName, ri)
@@ -9790,7 +9873,9 @@ func instantiateGenericRecordOpt(ctx: in Ctx, gkey: in String, argTys: in List[N
     fi = fi + 1
   }
   ctx.moduleTypeDefs.add(NTypeDefn(name = instName, fields = defnFields))
-  if recHasRefFields(ri) {
+  if isProt {
+    ctx.moduleFns.add(synthProtectedDtor(ctx, ri))
+  } else if recHasRefFields(ri) {
     ctx.moduleFns.add(synthRecordDtor(ctx, ri))
   }
   Some(value = ri)
@@ -10074,10 +10159,63 @@ func lowerGenericRecordConstruct(
         "' for --target native (a field type is not yet lowerable)"
     )
   }
+  if ctx.protectedRecNames.containsKey(ri.irName) {
+    val mutexBuf = emitMutexBuffer(ctx, insns)
+    rawVals.add(NVal(ty = NPtr(pointee = NI8), value = NLocal(name = mutexBuf)))
+    return lowerProtectedConstructVals(ctx, insns, ri, rawVals)
+  }
   lowerRecordConstructVals(ctx, insns, ri, rawVals)
 }
 
-func isGenericFn(fn: in FunctionDecl): Bool {
+/// Whether `fd` is a generic protected type's body-less member wrapper
+/// (`registerGenericProtectedWrapper`).
+func isProtectedWrapperDecl(ctx: in Ctx, pkg: in String, fd: in FunctionDecl): Bool {
+  match fd.body {
+    case Some(_) -> return false
+    case None -> ()
+  }
+  val dot = lastDotIndex(fd.name)
+  dot > 0 and ctx.protectedRecNames.containsKey(pkg + "." + Str.substring(fd.name, 0, dot))
+}
+
+/// Instantiate one member of a generic protected type: the `.__inner` body
+/// function lowered under the type arguments, and the hand-built lock/unlock
+/// wrapper around it (`synthProtectedWrapper`, shared with the non-generic
+/// path).  The wrapper and inner share one signature.
+func instantiateProtectedWrapper(
+  ctx: in Ctx,
+  pkg: in String,
+  fd: in FunctionDecl,
+  instIr: in String,
+  paramNames: in List[String],
+  envTys: in List[NType],
+  paramTys: in List[NType],
+  retTy: in NType,
+): Unit {
+  val innerKey = pkg + "." + fd.name + ".__inner/" + fd.params.count.toString()
+  val innerFd = mustGetGenericFn(ctx, innerKey)
+  val innerIr = instIrName(pkg + "." + innerFd.name + "." + fd.params.count.toString(), envTys)
+  if not ctx.fnInstCache.containsKey(innerIr) {
+    ctx.fnInstCache.add(innerIr, NFnInst(irName = innerIr, paramTys = paramTys, retTy = retTy, isAsync = false))
+    ctx.moduleFns.add(lowerFunctionEnv(ctx, pkg, innerFd, innerIr, paramNames, envTys))
+  }
+  val selfTy = paramTys[0]
+  val ri = match mapGet(ctx.recordDefs, receiverStructName(selfTy)) {
+    case Some(r) -> r
+    case None -> panic("Lyric.LlvmCodegen: internal — protected instantiation '" + receiverStructName(selfTy) + "' not registered")
+  }
+  val restNames: List[String] = newList()
+  val restTys: List[NType] = newList()
+  var i = 1
+  while i < fd.params.count {
+    restNames.add(fd.params[i].name)
+    restTys.add(paramTys[i])
+    i = i + 1
+  }
+  ctx.moduleFns.add(synthProtectedWrapper(ctx, ri, selfTy, instIr, innerIr, restNames, restTys, retTy))
+}
+
+func isGenericFn(
   match fn.generics {
     case Some(_) -> true
     case None -> false
@@ -10663,7 +10801,11 @@ func lowerGenericFnCallWith(
       }
     }
     ctx.fnInstCache.add(instIr, NFnInst(irName = instIr, paramTys = paramTys, retTy = instRet, isAsync = fd.isAsync))
-    ctx.moduleFns.add(lowerFunctionEnv(ctx, pkg, fd, instIr, paramNames, envTys))
+    if isProtectedWrapperDecl(ctx, pkg, fd) {
+      instantiateProtectedWrapper(ctx, pkg, fd, instIr, paramNames, envTys, paramTys, instRet)
+    } else {
+      ctx.moduleFns.add(lowerFunctionEnv(ctx, pkg, fd, instIr, paramNames, envTys))
+    }
   }
   val inst = match mapGet(ctx.fnInstCache, instIr) {
     case Some(fi) -> fi
@@ -16400,29 +16542,6 @@ pub func nativeByValueExternDiagnostics(units: in List[CodegenUnit], triple: in 
   diags
 }
 
-/// Message for `N0008`: a generic protected type on `--target native`.
-func genericProtectedMessage(name: in String): String {
-  "generic protected type '" + name +
-    "' is not yet supported for --target native (#7864); declare it without type parameters or build for --target dotnet / jvm"
-}
-
-/// Pre-pass (#7886): every generic `protected type` in `units` as an `N0008`
-/// diagnostic at its declaration.  `Lyric.LlvmBridge` runs it before codegen,
-/// beside `nativeSelfShapeDiagnostics`, so the build stops with a normal
-/// `error[N0008] file:line:col: ...` line.
-pub func nativeGenericProtectedDiagnostics(units: in List[CodegenUnit]): List[Diagnostic] {
-  val diags: List[Diagnostic] = newList()
-  for u in units {
-    for pd in u.protecteds {
-      match pd.generics {
-        case Some(_) -> diags.add(errorDiagnostic("N0008", genericProtectedMessage(u.pkgName + "." + pd.name), pd.span))
-        case None -> ()
-      }
-    }
-  }
-  diags
-}
-
 func substSelfInType(te: in TypeExpr, recordName: in String): TypeExpr {
   match te.kind {
     case TSelf -> selfTypeRef(recordName, te.span)
@@ -16432,6 +16551,12 @@ func substSelfInType(te: in TypeExpr, recordName: in String): TypeExpr {
 }
 
 func substSelfInFn(fn: in FunctionDecl, recordName: in String): FunctionDecl {
+  substSelfInFnWith(fn, selfTypeRef(recordName, fn.span))
+}
+
+/// `substSelfInFn` with an arbitrary replacement for `Self` (a generic
+/// protected type's `Self` is `Cell[T]`, not the bare name).
+func substSelfInFnWith(fn: in FunctionDecl, replacement: in TypeExpr): FunctionDecl {
   val newParams: List[Param] = newList()
   var i = 0
   while i < fn.params.count {
@@ -16441,7 +16566,7 @@ func substSelfInFn(fn: in FunctionDecl, recordName: in String): FunctionDecl {
         mode = p.mode,
         modeExplicit = p.modeExplicit,
         name = p.name,
-        ty = substSelfInType(p.ty, recordName),
+        ty = substSelfWith(p.ty, replacement),
         dflt = p.dflt,
         annotations = p.annotations,
         span = p.span
@@ -16453,7 +16578,7 @@ func substSelfInFn(fn: in FunctionDecl, recordName: in String): FunctionDecl {
   var newRet: Option[TypeExpr] = None
   match fn.ret {
     case Some(r) -> {
-      newRet = Some(value = substSelfInType(r, recordName))
+      newRet = Some(value = substSelfWith(r, replacement))
     }
     case None -> {
     }
@@ -16835,11 +16960,37 @@ func protectedSelfParam(pd: in ProtectedTypeDecl, span: in Span): Param {
     mode = PMIn,
     modeExplicit = false,
     name = "self",
-    ty = selfTypeRef(pd.name, span),
+    ty = protectedSelfTypeExpr(pd, span),
     dflt = None,
     annotations = newList(),
     span = span
   )
+}
+
+/// `Self` for a protected type: its bare name, or `Name[T, ...]` over its own
+/// type parameters when it is generic.
+func protectedSelfTypeExpr(pd: in ProtectedTypeDecl, span: in Span): TypeExpr {
+  match pd.generics {
+    case None -> selfTypeRef(pd.name, span)
+    case Some(g) -> {
+      val args: List[TypeArg] = newList()
+      for gp in g.params {
+        match gp {
+          case GPType(n, sp) -> {
+            val segs: List[String] = newList()
+            segs.add(n)
+            args.add(TAType(ty = TypeExpr(kind = TRef(path = ModulePath(segments = segs, span = sp)), span = sp)))
+          }
+          case GPValue(_, _, _) -> panic(
+            "Lyric.LlvmCodegen: protected type '" + pd.name + "' has a value generic parameter, which --target native does not support"
+          )
+        }
+      }
+      val headSegs: List[String] = newList()
+      headSegs.add(pd.name)
+      TypeExpr(kind = TGenericApp(head = ModulePath(segments = headSegs, span = span), args = args), span = span)
+    }
+  }
 }
 
 /// Collect a protected type's entries/funcs as self-receiving "inner"
@@ -16850,13 +17001,6 @@ func protectedSelfParam(pd: in ProtectedTypeDecl, span: in Span): Param {
 /// is built directly as an NFunc by `registerProtectedMethods`, once the
 /// type's NRecInfo (and so its mutex field index) is registered.
 pub func collectProtectedMethods(pkgName: in String, decl: in ProtectedTypeDecl, fns: in List[FunctionDecl]): Unit {
-  match decl.generics {
-    case Some(_) -> {
-      return
-    }
-    case None -> {
-    }
-  }
   val fieldNames = makeProtectedFieldNames(decl)
   var i = 0
   while i < decl.members.count {
@@ -16884,7 +17028,7 @@ pub func collectProtectedMethods(pkgName: in String, decl: in ProtectedTypeDecl,
               visibility = None,
               isAsync = false,
               name = decl.name + "." + ed.name + ".__inner",
-              generics = None,
+              generics = decl.generics,
               params = params,
               ret = ed.ret,
               whereClause = None,
@@ -16892,7 +17036,7 @@ pub func collectProtectedMethods(pkgName: in String, decl: in ProtectedTypeDecl,
               body = Some(value = desugarProtectedFuncBody(fieldNames, ed.body)),
               span = ed.span
             ),
-            decl.name
+            protectedSelfTypeExpr(decl, ed.span)
           )
         )
       }
@@ -16922,7 +17066,7 @@ pub func collectProtectedMethods(pkgName: in String, decl: in ProtectedTypeDecl,
                     visibility = fn.visibility,
                     isAsync = fn.isAsync,
                     name = decl.name + "." + fn.name + ".__inner",
-                    generics = fn.generics,
+                    generics = decl.generics,
                     params = params,
                     ret = fn.ret,
                     whereClause = fn.whereClause,
@@ -16930,7 +17074,7 @@ pub func collectProtectedMethods(pkgName: in String, decl: in ProtectedTypeDecl,
                     body = newBody,
                     span = fn.span
                   ),
-                  decl.name
+                  protectedSelfTypeExpr(decl, fn.span)
                 )
               )
             }
@@ -17076,6 +17220,21 @@ func lowerProtectedConstructArgs(ctx: in Ctx, insns: in List[NInsn], ri: in NRec
     i = i + 1
   }
   val userVals = resolveFieldArgs(ctx, insns, "protected type '" + ri.irName + "'", userNames, userTys, userDflts, args)
+  val mutexBuf = emitMutexBuffer(ctx, insns)
+  val allVals: List[NVal] = newList()
+  var vi = 0
+  while vi < userVals.count {
+    allVals.add(userVals[vi])
+    vi = vi + 1
+  }
+  allVals.add(NVal(ty = NPtr(pointee = NI8), value = NLocal(name = mutexBuf)))
+  lowerProtectedConstructVals(ctx, insns, ri, allVals)
+}
+
+/// Allocate and initialise a protected object's runtime-sized mutex buffer
+/// (`lyric_mutex_size` -> `lyric_alloc` -> `lyric_mutex_init`); returns the
+/// local naming the buffer.
+func emitMutexBuffer(ctx: in Ctx, insns: in List[NInsn]): String {
   val sizeI32 = freshTmp(ctx)
   val noArgs: List[NArg] = newList()
   insns.add(NCall(dest = sizeI32, retTy = NI32, fn = NGlobal(name = "lyric_mutex_size"), args = noArgs))
@@ -17093,14 +17252,7 @@ func lowerProtectedConstructArgs(ctx: in Ctx, insns: in List[NInsn], ri: in NRec
   insns.add(
     NCallVoid(fn = NGlobal(name = "lyric_mutex_init"), args = arg1(NPtr(pointee = NI8), NLocal(name = mutexBuf)))
   )
-  val allVals: List[NVal] = newList()
-  var vi = 0
-  while vi < userVals.count {
-    allVals.add(userVals[vi])
-    vi = vi + 1
-  }
-  allVals.add(NVal(ty = NPtr(pointee = NI8), value = NLocal(name = mutexBuf)))
-  lowerProtectedConstructVals(ctx, insns, ri, allVals)
+  mutexBuf
 }
 
 /// Build the heap object from pre-lowered field values (including the

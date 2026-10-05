@@ -181,7 +181,7 @@ val name: Cell[String] = Cell(value = "")
 count.set(1)
 ```
 
-Generic protected types work on `--target dotnet` and `--target jvm`; `--target native` rejects them at build time for now (#7864).
+Generic protected types work on every target; `--target native` monomorphises one layout and one set of lock wrappers per instantiation (#7864).
 
 A protected type can implement an interface. The methods of an `impl` for a protected type become locked members of the type, so they run one at a time with every other member, see the fields directly, and wake barrier waiters:
 

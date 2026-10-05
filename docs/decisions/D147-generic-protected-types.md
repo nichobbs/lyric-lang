@@ -61,3 +61,5 @@ change keeps only its regression tests.
 
 `Ui.Host` can hold per-session state in a protected cell (F-10), and
 concurrent effects (#7835) can use a generic protected queue.
+
+**Update (D-progress-1045):** item 4 is superseded: native now monomorphises generic protected types per instantiation and no longer reports N0008.

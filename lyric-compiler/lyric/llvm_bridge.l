@@ -1810,10 +1810,6 @@ func linkAndEmitNative(
   if DiagUtil.diagReportAndAbort(nativeSelfShapeDiagnostics(units)) {
     return false
   }
-  // #7886: a generic protected type has no native layout yet (#7864).
-  if DiagUtil.diagReportAndAbort(nativeGenericProtectedDiagnostics(units)) {
-    return false
-  }
   // Resolve the target triple before codegen (the datalayout depends
   // on it, as does how a by-value record crosses the C boundary).
   var effTriple = normalizeNativeTriple(triple)
