@@ -139,18 +139,18 @@ pub func buildWasmPackageJson(
 ): String {
   val files: List[String] = newList()
   files.add(stem + ".wasm")
-  var main = ""
+  var entryFile = ""
   var types = ""
   if kind == "module" {
     files.add(stem + ".js")
     files.add(stem + ".d.ts")
-    main = stem + ".js"
+    entryFile = stem + ".js"
     types = stem + ".d.ts"
   } else {
     files.add(stem + ".wit")
     if hasBindings {
       files.add(stem + "-js")
-      main = stem + "-js/" + stem + ".js"
+      entryFile = stem + "-js/" + stem + ".js"
       types = stem + "-js/" + stem + ".d.ts"
     }
   }
@@ -168,8 +168,8 @@ pub func buildWasmPackageJson(
     case None -> ()
   }
   json = json + ",\n  \"type\": \"module\""
-  if main.length > 0 {
-    json = json + ",\n  \"main\": \"" + jsonEscape(main) + "\""
+  if entryFile.length > 0 {
+    json = json + ",\n  \"main\": \"" + jsonEscape(entryFile) + "\""
   }
   if types.length > 0 {
     json = json + ",\n  \"types\": \"" + jsonEscape(types) + "\""
