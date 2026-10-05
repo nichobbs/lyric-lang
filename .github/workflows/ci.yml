@@ -2800,6 +2800,12 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/native-web-smoke.sh
 
+      # lyric-ui's desktop host on --target native: a real webview window
+      # under Xvfb (docs/65 U5, #7990).
+      - name: Native desktop host smoke
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/ui-desktop-e2e.sh --target native
+
       # docs/35 W2: lyric-rt cross-compiled for wasm32-wasi (pinned wasi-sdk),
       # C unit tests run under a pinned wasmtime, then llvm_wasm32_self_test.l
       # compiles and runs real Lyric programs for wasm32-wasi under wasmtime.

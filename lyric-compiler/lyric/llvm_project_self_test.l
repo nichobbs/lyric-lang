@@ -1206,3 +1206,28 @@ test "a func that opens a barrier wakes an entry and a func waiting on it (ASan,
   val outcome = compileAndRunProject(pkgs)
   assertEqualInt(outcome.exitCode, 27, "the entry that calls a barrier entry (nested lock) ran twice, the func saw 7")
 }
+
+// A function value naming the package's own function is not made ambiguous by
+// a same-named function of another arity in a package imported only under an
+// alias (`run` in the desktop probe, `Ui.Host.Desktop.run/2`, #8155).
+test "a function value is not an overload of a same-named function in an alias-imported package (#8155)" {
+  val pkgs: List[NativeSourcePackage] = newList()
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Fv.App",
+      path = "",
+      source = "package Fv.App\n" + "import Fv.Lib as L\n" + "func run(n: in Int): Int {\n  n + 40\n}\n" +
+        "func apply(f: in (Int) -> Int, x: in Int): Int {\n  f(x)\n}\n" +
+        "func main(): Int {\n  apply(run, 2) + L.run(0, 0)\n}\n"
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Fv.Lib",
+      path = "",
+      source = "package Fv.Lib\n" + "pub func run(a: in Int, b: in Int): Int {\n  a + b\n}\n"
+    )
+  )
+  val outcome = compileAndRunProject(pkgs)
+  assertEqualInt(outcome.exitCode, 42, "the package's own run/1 as a value: 42 + L.run(0, 0) = 42")
+}

@@ -612,9 +612,10 @@ func main(): Unit {
 - An in-process channel (`webview_bind`/`webview_eval`) would save the
   loopback hop; it needs C callbacks on the managed targets and is not
   required for correctness.
-- Native: the host is the web host, so it follows `lyric-web` and `lyric-ws`
-  to the native target (and native generic protected types, #7864), tracked
-  in #7990. A renderer that draws natively is docs/67 G10 (#7949).
+- Native: the host is the web host, which follows `lyric-web` and `lyric-ws`
+  to the native target, and runs there: `examples/ui-customers` builds with
+  `--target native`, and the desktop probe opens a real window under Xvfb in CI
+  (#7990, #8155). A renderer that draws natively is docs/67 G10 (#7949).
 
 ### 10.3 The TypeScript runtime
 
@@ -923,7 +924,7 @@ custom properties (design tokens) with light and dark sets.
 | U2 | Server-driven web host (`Ui.Host`) + TS runtime; example runs in a browser | Implemented (MSIL, JVM); host and runtime covered by `lyric test` and `node --test`, and the example by a Playwright browser test on both targets (#7836) |
 | U3 | `[layers]` compiler feature, stdlib `@pure`/`@io` classification, `Y000x` diagnostics | Implemented (D149, every target); `examples/ui-customers` builds under the `ui` preset |
 | U4 | `@generate(Forms.Derive)` and `@generate(Ui.Routes)` | Implemented (D151); request schema 2; the example derives its form and routes on both targets |
-| U5 | Desktop webview host | Implemented on MSIL and JVM (D162, over D158/D161): a webview window on the loopback web host, tested in a real window under Xvfb on both targets; native follows `lyric-web`/`lyric-ws` to native (§10.2) |
+| U5 | Desktop webview host | Implemented on MSIL and JVM (D162, over D158/D161): a webview window on the loopback web host, tested in a real window under Xvfb on both targets; also implemented on native over `libwebview` (`-lwebview`), tested the same way (#7990, #8155) |
 | U6 | Data grid, `Lazy`, SSR first paint | Implemented on both targets: SSR first paint (D152), `Lazy` (D153), the data grid (D154) |
 | U7 | Client WASM host | Depends on `docs/35` |
 

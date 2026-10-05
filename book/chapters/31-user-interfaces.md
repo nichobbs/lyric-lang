@@ -726,4 +726,6 @@ the language reference §9.4.
 The library, the forms helpers and the example build and pass their tests
 on both `--target dotnet` and `--target jvm`. The web host serves browsers
 from either runtime, and the desktop host opens its window from either.
-The native target does not run `lyric-ui` yet.
+The native target runs it too: `lyric build --target native` links the example
+and the desktop probe, and the desktop host needs the same `libwebview` as on the
+other targets (the install script above).
