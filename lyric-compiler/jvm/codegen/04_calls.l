@@ -3525,30 +3525,21 @@ func buildHolderArrays(
   while k < hArgIdx.count {
     val elemTy = hElemTy[k]
     val name = hBackName[k]
-    // holder := new [elemTy](1); holder[0] := <current value of the place>
-    emitNewHolder(insns, elemTy)
-    insns.add(LDup)
-    insns.add(LIconst(v = 0))
-    if hRecvSlot[k] >= 0 {
-      val cls = hRecvCls[k]
-      val fty = match recordFieldType(ctx, cls, name) {
-        case Some(t) -> t
-        case None -> JRef(className = "java/lang/Object")
-      }
-      emitLoad(insns, hRecvSlot[k], JRef(className = cls))
-      emitFieldLoadOpaqueAware(ctx, insns, cls, name, fty)
-      coerceArgToCtx(ctx, insns, fty, elemTy)
+    // A closure-captured `var` (#8189): its slot holds its heap cell, which
+    // `prepareCellHolderArg` passes as the holder itself, or copies into one.
+    val cellSlot = if hRecvSlot[k] >= 0 {
+      0 - 1
     } else {
-      match lookupSlot(ctx, name) {
-        case Some(srcSlot) -> {
-          val srcTy = match lookupType(ctx, name) { case Some(t) -> t; case None -> elemTy }
-          emitLoad(insns, srcSlot, srcTy)
-          coerceArgToCtx(ctx, insns, srcTy, elemTy)
-        }
-        case None -> panic("Jvm.Codegen: out/inout argument '" + name + "' to '" + calleeLabel + "' lost its local")
+      match mapGet(ctx.hoistedCellSlot, name) {
+        case Some(cs) -> cs
+        case None -> 0 - 1
       }
     }
-    emitHolderElemStore(insns, elemTy)
+    if cellSlot >= 0 {
+      prepareCellHolderArg(ctx, insns, name, cellSlot, elemTy)
+    } else {
+      buildHolderFromPlace(ctx, insns, calleeLabel, k, elemTy, name, hRecvSlot, hRecvCls)
+    }
     // Stash the array reference in a temp slot, typed precisely so the
     // StackMapTable verifies the later aload + element load.
     val tmpSlot = allocSlot(ctx, "__holderarg$" + calleeLabel + "$" + toString(hArgIdx[k]), holderArrayType(elemTy))
@@ -3556,6 +3547,44 @@ func buildHolderArrays(
     hTempSlot.add(tmpSlot)
     k = k + 1
   }
+}
+
+// Push a fresh single-element holder for place `k`, filled with the place's
+// current value: a field through its saved receiver, or a plain local.
+func buildHolderFromPlace(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  calleeLabel: in String,
+  k: in Int,
+  elemTy: in JvmType,
+  name: in String,
+  hRecvSlot: in List[Int],
+  hRecvCls: in List[String],
+): Unit {
+  // holder := new [elemTy](1); holder[0] := <current value of the place>
+  emitNewHolder(insns, elemTy)
+  insns.add(LDup)
+  insns.add(LIconst(v = 0))
+  if hRecvSlot[k] >= 0 {
+    val cls = hRecvCls[k]
+    val fty = match recordFieldType(ctx, cls, name) {
+      case Some(t) -> t
+      case None -> JRef(className = "java/lang/Object")
+    }
+    emitLoad(insns, hRecvSlot[k], JRef(className = cls))
+    emitFieldLoadOpaqueAware(ctx, insns, cls, name, fty)
+    coerceArgToCtx(ctx, insns, fty, elemTy)
+  } else {
+    match lookupSlot(ctx, name) {
+      case Some(srcSlot) -> {
+        val srcTy = match lookupType(ctx, name) { case Some(t) -> t; case None -> elemTy }
+        emitLoad(insns, srcSlot, srcTy)
+        coerceArgToCtx(ctx, insns, srcTy, elemTy)
+      }
+      case None -> panic("Jvm.Codegen: out/inout argument '" + name + "' to '" + calleeLabel + "' lost its local")
+    }
+  }
+  emitHolderElemStore(insns, elemTy)
 }
 
 // Lower the by-value argument `arg` for parameter `pi` into a fresh temp slot
@@ -3661,6 +3690,57 @@ func pushHolderCallArgs(
   }
 }
 
+// True when the heap cell (epic #1877 Stage 2) of the closure-captured `var` `name`
+// can itself be passed as the holder array of an `out`/`inout` parameter of
+// element type `elemTy` (#8189): both are single-element arrays, so when the
+// element types agree the callee's holder IS the variable's storage, and each
+// write the callee makes (`emitStoreLocalWriteThrough`) is visible to the
+// closures sharing the cell as it happens.  A reference-typed cell also
+// serves an erased `Object[]` holder (a generic record type, or a type
+// parameter, in the callee's signature, #8199): JVM arrays are covariant, so
+// a `Gen[]` cell is an `Object[]`, and the callee only stores values of the
+// variable's own type into it.  A primitive cell (`int[]`) cannot be an
+// `Object[]`; that shape alone keeps the copy-in/copy-out of
+// `prepareCellHolderArg`.
+func cellAliasesHolder(ctx: in FuncCtx, name: in String, elemTy: in JvmType): Bool {
+  match mapGet(ctx.hoistedCellType, name) {
+    case Some(cellElemTy) -> {
+      if cellElemTy == elemTy {
+        return true
+      }
+      val holderIsObject = match elemTy { case JRef(cls) -> cls == "java/lang/Object"; case _ -> false }
+      val cellIsRef = match cellElemTy { case JRef(_) -> true; case JArray(_) -> true; case _ -> false }
+      holderIsObject and cellIsRef
+    }
+    case None -> false
+  }
+}
+
+// Push the holder array for an `out`/`inout` argument naming the
+// closure-captured `var` `name`, whose slot holds its heap cell, not its value
+// (#8189).  The cell is passed as the holder when `cellAliasesHolder`; when
+// the element types differ (an erased generic parameter's `Object` holder for
+// a `String` or record cell) the holder is a fresh array pre-filled from the
+// cell, and `writeBackHolderArg` copies the result back into the cell.
+func prepareCellHolderArg(
+  ctx: in FuncCtx, insns: in List[LInsn], name: in String, cellSlot: in Int, elemTy: in JvmType
+): Unit {
+  val cellElemTy = match mapGet(ctx.hoistedCellType, name) { case Some(t) -> t; case None -> elemTy }
+  val cellType = JArray(elem = cellElemTy)
+  if cellAliasesHolder(ctx, name, elemTy) {
+    emitLoad(insns, cellSlot, cellType)
+    return
+  }
+  emitNewHolder(insns, elemTy)
+  insns.add(LDup)
+  insns.add(LIconst(v = 0))
+  emitLoad(insns, cellSlot, cellType)
+  insns.add(LIconst(v = 0))
+  emitArrayLoad(insns, cellElemTy)
+  coerceArgToCtx(ctx, insns, cellElemTy, elemTy)
+  emitHolderElemStore(insns, elemTy)
+}
+
 // Convert a genuine reference array (top of stack, e.g. the `Object[]` a
 // `slice[T]` value is passed as at a call boundary) into a fresh `ArrayList`
 // wrapping its elements, via `new ArrayList(Arrays.asList(arr))`.  Needs a
@@ -3747,6 +3827,28 @@ func writeBackHolderArg(
     coerceHolderWriteBack(ctx, insns, elemTy, fty, name + "$" + toString(ts))
     emitFieldStoreOpaqueAware(ctx, insns, recvCls, name, fty)
     return
+  }
+  match mapGet(ctx.hoistedCellSlot, name) {
+    case Some(cellSlot) -> {
+      // A closure-captured `var` (#8189): nothing to copy when its cell was
+      // the holder; otherwise store the holder's element into the cell.
+      if not cellAliasesHolder(ctx, name, elemTy) {
+        val cellElemTy = match mapGet(ctx.hoistedCellType, name) { case Some(t) -> t; case None -> elemTy }
+        val cellType = JArray(elem = cellElemTy)
+        val vSlot = allocSlot(ctx, "__holder_wb_cell$" + name + "$" + toString(ts), cellElemTy)
+        insns.add(LAload(slot = ts))
+        insns.add(LIconst(v = 0))
+        emitHolderElemLoad(insns, elemTy)
+        coerceHolderWriteBack(ctx, insns, elemTy, cellElemTy, name + "$" + toString(ts))
+        emitStore(insns, vSlot, cellElemTy)
+        emitLoad(insns, cellSlot, cellType)
+        insns.add(LIconst(v = 0))
+        emitLoad(insns, vSlot, cellElemTy)
+        emitArrayStore(insns, cellElemTy)
+      }
+      return
+    }
+    case None -> ()
   }
   match lookupSlot(ctx, name) {
     case Some(destSlot) -> {

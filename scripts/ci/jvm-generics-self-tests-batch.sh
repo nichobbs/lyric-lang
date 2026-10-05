@@ -4,7 +4,8 @@
 # covering erased/generic-parameter and cross-package-type resolution gaps
 # in `Jvm.Codegen`/`Jvm.Bridge`, plus the JVM half of dual-target runtime
 # tests whose dotnet half runs in `compiler-self-tests-batch.sh` (e.g.
-# closure_var_capture_self_test.l, #7460; the protected-type interface impl
+# closure_var_capture_self_test.l, #7460;
+# closure_captured_var_byref_self_test.l, #8189; the protected-type interface impl
 # tests, #7457; bare_func_ref_self_test.l, #7586; async_generator_self_test.l,
 # #7720; compiler_bugs_3502_3505_3547_self_test.l, #7752;
 # erased_slot_widen_self_test.l, #7782; list_insert_self_test.l, #7797;
@@ -57,6 +58,7 @@ for t in \
   lyric-compiler/lyric/closure_unannotated_result_self_test.l \
   lyric-compiler/lyric/lambda_field_ctor_arg_self_test.l \
   lyric-compiler/lyric/closure_var_capture_self_test.l \
+  lyric-compiler/lyric/closure_captured_var_byref_self_test.l \
   lyric-compiler/lyric/method_closure_var_capture_self_test.l \
   lyric-compiler/lyric/nested_lambda_var_capture_self_test.l \
   lyric-compiler/lyric/generic_record_var_field_self_test.l \

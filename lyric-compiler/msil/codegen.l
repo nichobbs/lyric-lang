@@ -441,6 +441,18 @@ pub record CodegenCtx {
   // `cellStorageElemTyMsil`).  Captures absent from this list are by-value
   // copies.
   lambdaCaptureCells: Map[String, List[String]]
+  // The subset of each lambda's `lambdaCaptureCells` whose cell is an
+  // `object[]` because the declaring function passes the variable to an
+  // erased `inout Self` parameter (`FuncCtx.objectCellNames`, #8204).
+  lambdaObjectCells: Map[String, List[String]]
+  // `<owner>/<method>#<i>` for every method whose receiver-less parameter
+  // `i` is an `out`/`inout` `Self`, `<owner>` being the declaring class or
+  // interface FQN without its arity suffix, and `*` standing for any owner
+  // (a receiver of unknown type); `<owner>/<method>` without a position for
+  // named arguments.  That parameter keeps the interface slot's erased
+  // `object&` ABI (#7783), which only an `object[]` cell can alias (#8204).
+  // Filled by `registerMethodParamModes`.
+  erasedSelfByrefMethods: Map[String, Bool]
   // Declared return types of the function-typed captures of each lambda
   // (keyed like lambdaCaptureNames; inner key = capture name), copied from
   // the enclosing function's `funcValRetTypes` at the capture site so a call
@@ -2279,6 +2291,8 @@ pub func newCodegenCtx(
     lambdaGenerics = newMap(),
     lambdaCaptureTypes = newMap(),
     lambdaCaptureCells = newMap(),
+    lambdaObjectCells = newMap(),
+    erasedSelfByrefMethods = newMap(),
     lambdaCaptureFuncRetTypes = newMap(),
     lambdaClosureClasses = newMap(),
     lambdaClosureRecordList = newList(),
@@ -2492,6 +2506,35 @@ func registerMethodParamTypes(cctx: in CodegenCtx, keyBase: in String, params: i
 // `lowerMethodCallMsil` can emit a byref (managed pointer) load for `out`/
 // `inout` arguments — paralleling `registerMethodParamTypes` (#1955).
 func registerMethodParamModes(cctx: in CodegenCtx, key: in String, params: in List[Param]): Unit {
+  val slash = String.indexOfRaw(key, "/")
+  if slash >= 0 {
+    val rest = key.substring(slash + 1, key.length - slash - 1)
+    val slash2 = String.indexOfRaw(rest, "/")
+    val methodName = if slash2 >= 0 { rest.substring(0, slash2) } else { rest }
+    val ownerKey = stripGenericArity(key.substring(0, slash))
+    var pi = 0
+    while pi < params.count {
+      if isByrefMode(params[pi].mode) and isSelfTypeExprMsil(params[pi].ty) {
+        // The owner-qualified key decides a call whose receiver type the
+        // pre-pass knows; the `*` key, by method name alone, one whose
+        // receiver type it does not (`markErasedSelfByrefArgsMsil`).  The
+        // keys without a position serve named arguments.
+        val keys: List[String] = newList()
+        keys.add(ownerKey + "/" + methodName + "#" + toString(pi))
+        keys.add("*/" + methodName + "#" + toString(pi))
+        keys.add(ownerKey + "/" + methodName)
+        keys.add("*/" + methodName)
+        var ki = 0
+        while ki < keys.count {
+          if not cctx.erasedSelfByrefMethods.containsKey(keys[ki]) {
+            cctx.erasedSelfByrefMethods.add(keys[ki], true)
+          }
+          ki = ki + 1
+        }
+      }
+      pi = pi + 1
+    }
+  }
   if not cctx.methodParamModes.containsKey(key) {
     cctx.methodParamModes.add(key, paramModesOf(params))
   }
@@ -6249,6 +6292,13 @@ pub record FuncCtx {
   // Reads load the cell then element 0 (`emitCellElemLoadMsil`); writes store
   // element 0 (`emitCellAssignMsil`).
   captureCellNames: List[String]
+  // Hoisted or captured cell names whose cell stays an `object[]` although
+  // the type would get a typed `MCellArray` (`cellUsesTypedArrayMsil`): the
+  // function passes the variable to an erased `inout Self` parameter, an
+  // `object&` that only an `object[]` element can alias (#8204).  Decided
+  // before the body is lowered (`collectErasedSelfByrefArgsBlock`), and
+  // handed to each lambda capturing such a cell (`lambdaObjectCells`).
+  objectCellNames: List[String]
   // Phase B.1 async SM context.  Empty except when synthesiseAsyncSmPhaseBMsil
   // is lowering the MoveNext body (singleton then).  The EAwait handler checks
   // this to switch from the blocking shim to the real suspend/resume protocol.
@@ -6783,20 +6833,14 @@ pub func finishHoistedCellMsil(
 ): Unit {
   val valueSlot = allocSlotMsil(fctx, "__cell_init_" + toString(fctx.slotTicker.count), elemTy)
   emitStoreSlot(insns, valueSlot, fctx.paramCount)
-  val storageTy = cellStorageElemTyMsil(elemTy)
-  val storageTok = match arrayElemTokenOpt(cctx, storageTy) {
-    case Some(t) -> t
-    case None -> panic(
-      "Msil.Codegen: hoisted-var cell storage type has no array element token (invariant violation)"
-    )
-  }
-  insns.add(MLdcI4(v = 1))
-  insns.add(MNewarr(typeToken = storageTok))
+  val objCell = cellObjMsil(fctx, name)
+  emitNewCellMsil(cctx, insns, elemTy, objCell)
   insns.add(MDup)
   insns.add(MLdcI4(v = 0))
+  emitCellElemAddrMsil(insns, elemTy, objCell)
   emitLoadSlot(insns, valueSlot, fctx.paramCount)
-  emitCellElemStoreMsil(cctx, insns, elemTy)
-  val cellTy = cellArrayTyMsil(elemTy)
+  emitCellElemStoreMsil(cctx, insns, elemTy, objCell)
+  val cellTy = cellArrayTyMsil(elemTy, objCell)
   val cellSlot = allocSlotMsil(fctx, name, cellTy)
   emitStoreSlot(insns, cellSlot, fctx.paramCount)
   fctx.mutableLocals.add(name)
@@ -7314,7 +7358,9 @@ func emitLoadVarMsil(fctx: in FuncCtx, insns: in List[MInsn], slot: in Int): Uni
 // `argElem` when that is a class — is stored back to the argument's own
 // location.  `kind` 0 = a local/by-value-param slot, 1 = a forwarded byref
 // slot (store through its pointer), 2 = a field of the receiver saved in
-// `recvSlot`.
+// `recvSlot`, 3 = element 0 of a closure-captured `var`'s heap cell, whose
+// reference is saved in `recvSlot` and whose logical element type is
+// `argElem` (#8189), 4 = the same for a cell forced to `object[]` (#8204).
 record ByrefWriteBackMsil {
   kind: Int
   slot: Int
@@ -7425,6 +7471,10 @@ func emitByrefArgCheckedMsil(
     case Some(pt) -> match pt { case MByRef(inner) -> Some(value = inner); case _ -> Some(value = pt) }
     case None -> None
   }
+  // A `var` captured by a closure lives in a heap cell, not in its slot.
+  if emitCellByrefArgMsil(cctx, fctx, insns, argExpr, paramElem, pending) {
+    return ()
+  }
   // A field argument: lower the receiver once, then pass the field's own
   // address or, on a type mismatch, a temp copied back through the saved
   // receiver.
@@ -7504,13 +7554,170 @@ func emitByrefArgCheckedMsil(
   }
 }
 
+// Push a closure-captured `var`'s heap cell (#1479 v2) and return its logical
+// element type, or None when `name` is not such a variable.  The lookup order
+// is the one an `EPath` read uses (`lowerExprMsil`): a cell hoisted in this
+// function, then a plain slot (a local that shadows nothing captured), then a
+// cell captured into the enclosing lambda's closure class.
+func emitCapturedCellRefMsil(fctx: in FuncCtx, insns: in List[MInsn], name: in String): Option[MsilType] {
+  match mapGet(fctx.hoistedCellSlot, name) {
+    case Some(cellSlot) -> {
+      emitLoadVarMsil(fctx, insns, cellSlot)
+      return Some(value = match mapGet(fctx.hoistedCellType, name) { case Some(t) -> t; case None -> MObject })
+    }
+    case None -> ()
+  }
+  if fctx.slots.containsKey(name) or not nameListContains(fctx.captureCellNames, name) {
+    return None
+  }
+  match mapGet(fctx.captureNameToIndex, name) {
+    case Some(capIdx) -> match mapGet(fctx.types, "__caps") {
+      case Some(MClass(closureClassName)) -> {
+        emitLoadVarMsil(fctx, insns, 0)
+        insns.add(MLdfldByName(ownerFqn = closureClassName, fieldName = "__f" + toString(capIdx)))
+        Some(value = match mapGet(fctx.captureNameToType, name) { case Some(t) -> t; case None -> MObject })
+      }
+      case _ -> panic(
+        "Msil.Codegen ICE: captured name '" + name +
+          "' has a captureNameToIndex entry but __caps is not a closure class (#7525 invariant violated)"
+      )
+    }
+    case None -> None
+  }
+}
+
+// An `out`/`inout` argument naming a `var` that a closure captures (#8189).
+// The variable lives in element 0 of a one-element heap cell shared with the
+// closure, so its slot holds the cell reference, not the value: the address
+// passed must be the element's (`ldelema`), which makes the callee's writes
+// visible to the closure as they happen.  A cell whose storage element type
+// is not the parameter's pointee cannot be aliased by a `T&`, since managed
+// pointers are invariant; the value goes through a temp of the pointee type
+// that is stored back into the cell after the call, the copy-in/copy-out
+// `emitByrefArgCheckedMsil` uses for any such mismatch.  The cells are shaped
+// so that this happens only where no cell can serve both: a variable whose
+// type names a type parameter (its cell is `object[]`, #7695) passed at that
+// type, and a variable both passed to an erased `inout Self` (`object&`,
+// which fixes an `object[]` cell, #8204) and to a typed parameter.
+// Returns false, emitting nothing, when the argument is not a captured `var`.
+func emitCellByrefArgMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  argExpr: in Expr,
+  paramElem: in Option[MsilType],
+  pending: in List[ByrefWriteBackMsil],
+): Bool {
+  val name = match argExpr.kind { case EPath(path) -> lastSegmentMsil(path); case _ -> "" }
+  if name == "" {
+    return false
+  }
+  val elemTy = match emitCapturedCellRefMsil(fctx, insns, name) { case Some(t) -> t; case None -> return false }
+  val objCell = cellObjMsil(fctx, name)
+  val storageTy = cellStorageElemTyMsil(elemTy, objCell)
+  val pe = match paramElem { case Some(t) -> t; case None -> elemTy }
+  if sameClrTypeMsil(storageTy, pe) or (storageTy == MObject and byrefPointeeIsObjectMsil(pe)) {
+    insns.add(MLdcI4(v = 0))
+    if cellTypedMsil(elemTy, objCell) {
+      insns.add(MLdelemaCell(elemTy = elemTy))
+      return true
+    }
+    match arrayElemTokenOpt(cctx, storageTy) {
+      case Some(tok) -> insns.add(MLdelema(typeToken = tok))
+      case None -> panic("Msil.Codegen: hoisted-var cell storage type has no array element token (invariant violation)")
+    }
+    return true
+  }
+  val cellSlot = allocSlotMsil(
+    fctx,
+    "__byref_cell_" + toString(fctx.slotTicker.count),
+    cellArrayTyMsil(elemTy, objCell)
+  )
+  emitStoreSlot(insns, cellSlot, fctx.paramCount)
+  val tempSlot = allocSlotMsil(fctx, "__byref_tmp_" + toString(fctx.slotTicker.count), pe)
+  emitLoadSlot(insns, cellSlot, fctx.paramCount)
+  insns.add(MLdcI4(v = 0))
+  emitCellElemLoadMsil(cctx, insns, elemTy, objCell)
+  narrowToClassMsil(insns, pe)
+  emitStoreSlot(insns, tempSlot, fctx.paramCount)
+  insns.add(MLdloca(slot = tempSlot - fctx.paramCount))
+  pending.add(
+    ByrefWriteBackMsil(
+      kind = if objCell { 4 } else { 3 },
+      slot = -1,
+      tempSlot = tempSlot,
+      argElem = elemTy,
+      recvSlot = cellSlot,
+      fieldTok = 0
+    )
+  )
+  true
+}
+
+// True when `a` and `b` name the same CLR type, so an `a&` is an `b&`.  The
+// codegen tracks one closed generic as either `MGenericInst` (a TypeRef code)
+// or `MGenericInstByName` (an arity-suffixed head resolved at lowering), and a
+// class as `MClass` or `MClassRef`, depending on where the type came from: a
+// cell's element type follows its initialiser, a parameter's its annotation.
+func sameClrTypeMsil(a: in MsilType, b: in MsilType): Bool {
+  clrTypeKeyMsil(a) == clrTypeKeyMsil(b)
+}
+
+func clrTypeKeyMsil(t: in MsilType): String {
+  match t {
+    case MClass(fqn) -> "C" + stripGenericArity(fqn) + ";"
+    case MClassRef(_, fqn) -> "C" + stripGenericArity(fqn) + ";"
+    case MGenericInst(_, head, args) -> "G" + stripGenericArity(head) + "<" + clrTypeListKeyMsil(args) + ">"
+    case MGenericInstByName(head, args) -> "G" + stripGenericArity(head) + "<" + clrTypeListKeyMsil(args) + ">"
+    case MValueTypeGenericInst(_, head, args) -> "VG" + stripGenericArity(head) + "<" + clrTypeListKeyMsil(args) + ">"
+    case MArray(e) -> "[" + clrTypeKeyMsil(e) + "]"
+    case MConcreteList(e) -> "CLIST[" + clrTypeKeyMsil(e) + "]"
+    case MConcreteMap(k, v) -> "CMAP[" + clrTypeKeyMsil(k) + "," + clrTypeKeyMsil(v) + "]"
+    case _ -> msilTypeKey(t)
+  }
+}
+
+func clrTypeListKeyMsil(tys: in List[MsilType]): String {
+  var key = ""
+  var i = 0
+  while i < tys.count {
+    key = key + clrTypeKeyMsil(tys[i]) + ","
+    i = i + 1
+  }
+  key
+}
+
+// True when an `out`/`inout` parameter of pointee `t` is an `object&` in the
+// callee's signature: the legacy `object`-represented `List`/`Map`/`Set` and
+// tuple shapes encode as `object` (`elementTypeByte`), so an `object` cell's
+// element aliases such a parameter directly.
+func byrefPointeeIsObjectMsil(t: in MsilType): Bool {
+  match t {
+    case MObject | MListOf(_) | MMapOf(_, _) | MSetOf(_) | MTuple(_) -> true
+    case _ -> false
+  }
+}
+
 // Store each pending temp back into its argument (`emitByrefArgCheckedMsil`).
 // Stack-neutral, so it runs after the call with the result still on the stack.
-func emitByrefWriteBacksMsil(fctx: in FuncCtx, insns: in List[MInsn], pending: in List[ByrefWriteBackMsil]): Unit {
+func emitByrefWriteBacksMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  pending: in List[ByrefWriteBackMsil],
+): Unit {
   var i = 0
   while i < pending.count {
     val wb = pending[i]
-    if wb.kind == 2 {
+    if wb.kind == 3 or wb.kind == 4 {
+      val wbObjCell = wb.kind == 4
+      emitLoadSlot(insns, wb.recvSlot, fctx.paramCount)
+      insns.add(MLdcI4(v = 0))
+      emitCellElemAddrMsil(insns, wb.argElem, wbObjCell)
+      emitLoadSlot(insns, wb.tempSlot, fctx.paramCount)
+      narrowToClassMsil(insns, wb.argElem)
+      emitCellElemStoreMsil(cctx, insns, wb.argElem, wbObjCell)
+    } else if wb.kind == 2 {
       emitLoadSlot(insns, wb.recvSlot, fctx.paramCount)
       emitLoadSlot(insns, wb.tempSlot, fctx.paramCount)
       narrowToClassMsil(insns, wb.argElem)
@@ -9316,30 +9523,128 @@ func canUseTypedArrayLoad(ty: in MsilType): Bool {
   }
 }
 
-// A hoisted-`var` heap cell (#1479 v2) is always a one-element CLI array.  Its
-// storage element type is the logical element type itself for the scalar /
-// `String` / `Object` types `canUseTypedArrayLoad` accepts (no boxing), and
-// `object` for every other type (records, unions, slices, collections, generic
-// instantiations), whose value is boxed on store and cast back on load.  Every
-// cell site — declaration (`finishHoistedCellMsil`), reads, writes
-// (`emitCellAssignMsil`) and the closure-class field (`synthesizeClosureClassMsil`)
-// — derives the cell's shape from this one function, so they cannot disagree.
-func cellStorageElemTyMsil(elemTy: in MsilType): MsilType {
-  if canUseTypedArrayLoad(elemTy) {
+// A hoisted-`var` heap cell (#1479 v2) is always a one-element CLI array whose
+// element type is the variable's own type, so an `out`/`inout` argument can
+// pass the element's address and the closure sees the callee's writes
+// (#8189, #8199).  The scalar / `String` / `Object` types
+// `canUseTypedArrayLoad` accepts use their primitive array token; a closed
+// record, union, generic instantiation, concrete collection, value type or
+// primitive-element slice is an `MCellArray` (`cellUsesTypedArrayMsil`).
+// Only a type that names a type parameter (a closure class is never generic,
+// so its field cannot name `!0`, #7695) or encodes as `object` anyway (a
+// legacy `List<object>`-backed `List`/`Map`/`Set`/tuple, or a slice of
+// records, #6322) keeps an `object` cell, whose value is boxed on store and
+// cast back on load.  Every cell site — declaration (`finishHoistedCellMsil`),
+// reads, writes (`emitCellAssignMsil`), by-reference arguments
+// (`emitCellByrefArgMsil`) and the closure-class field
+// (`synthesizeClosureClassMsil`) — derives the cell's shape from these
+// functions, so they cannot disagree.  `objCell` is the variable's entry in
+// `FuncCtx.objectCellNames`: a variable passed to an erased `inout Self`
+// parameter keeps an `object[]` cell whatever its type (#8204).
+func cellStorageElemTyMsil(elemTy: in MsilType, objCell: in Bool): MsilType {
+  if canUseTypedArrayLoad(elemTy) or cellTypedMsil(elemTy, objCell) {
     elemTy
   } else {
     MObject
   }
 }
 
+// True when this variable's cell is an `MCellArray`.
+func cellTypedMsil(elemTy: in MsilType, objCell: in Bool): Bool {
+  not objCell and cellUsesTypedArrayMsil(elemTy)
+}
+
+// Whether `name`'s cell is forced to `object[]` (`FuncCtx.objectCellNames`).
+func cellObjMsil(fctx: in FuncCtx, name: in String): Bool {
+  nameListContains(fctx.objectCellNames, name)
+}
+
+// True when `elemTy`'s cell is an `MCellArray`: a type with no primitive array
+// token that names no type parameter and does not encode as `object`.
+func cellUsesTypedArrayMsil(elemTy: in MsilType): Bool {
+  if canUseTypedArrayLoad(elemTy) or msilTypeHasDanglingTypeVarMsil(elemTy) or msilTypeHasMethodTypeVarMsil(elemTy) {
+    return false
+  }
+  match elemTy {
+    case MClass(_) | MClassRef(_, _) | MValueTypeRef(_, _) -> true
+    case MGenericInst(_, _, _) | MGenericInstByName(_, _) | MValueTypeGenericInst(_, _, _) -> true
+    case MConcreteList(_) | MConcreteMap(_, _) -> true
+    case MArray(e) -> msilArrayElemHasRealToken(e)
+    case _ -> false
+  }
+}
+
+// True when `t` names a generic METHOD type parameter (`!!n`) anywhere.
+func msilTypeHasMethodTypeVarMsil(t: in MsilType): Bool {
+  match t {
+    case MMethodTypeVar(_) -> true
+    case MArray(e) -> msilTypeHasMethodTypeVarMsil(e)
+    case MByRef(e) -> msilTypeHasMethodTypeVarMsil(e)
+    case MCellArray(e) -> msilTypeHasMethodTypeVarMsil(e)
+    case MGenericInst(_, _, tas) -> msilTypeListHasMethodTypeVarMsil(tas)
+    case MValueTypeGenericInst(_, _, tas) -> msilTypeListHasMethodTypeVarMsil(tas)
+    case MGenericInstByName(_, tas) -> msilTypeListHasMethodTypeVarMsil(tas)
+    case MConcreteList(e) -> msilTypeHasMethodTypeVarMsil(e)
+    case MConcreteMap(k, v) -> msilTypeHasMethodTypeVarMsil(k) or msilTypeHasMethodTypeVarMsil(v)
+    case MListOf(e) -> msilTypeHasMethodTypeVarMsil(e)
+    case MMapOf(k, v) -> msilTypeHasMethodTypeVarMsil(k) or msilTypeHasMethodTypeVarMsil(v)
+    case MSetOf(e) -> msilTypeHasMethodTypeVarMsil(e)
+    case MTuple(elems) -> msilTypeListHasMethodTypeVarMsil(elems)
+    case _ -> false
+  }
+}
+
+func msilTypeListHasMethodTypeVarMsil(tys: in List[MsilType]): Bool {
+  var i = 0
+  while i < tys.count {
+    if msilTypeHasMethodTypeVarMsil(tys[i]) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
 // The declared type of a cell reference (a local slot or closure field).
-func cellArrayTyMsil(elemTy: in MsilType): MsilType {
-  MArray(elemTy = cellStorageElemTyMsil(elemTy))
+func cellArrayTyMsil(elemTy: in MsilType, objCell: in Bool): MsilType {
+  if cellTypedMsil(elemTy, objCell) {
+    MCellArray(elemTy = elemTy)
+  } else {
+    MArray(elemTy = cellStorageElemTyMsil(elemTy, objCell))
+  }
+}
+
+// Push a new one-element cell for `elemTy` (no element written yet).
+func emitNewCellMsil(cctx: in CodegenCtx, insns: in List[MInsn], elemTy: in MsilType, objCell: in Bool): Unit {
+  insns.add(MLdcI4(v = 1))
+  if cellTypedMsil(elemTy, objCell) {
+    insns.add(MNewarrCell(elemTy = elemTy))
+    return ()
+  }
+  match arrayElemTokenOpt(cctx, cellStorageElemTyMsil(elemTy, objCell)) {
+    case Some(tok) -> insns.add(MNewarr(typeToken = tok))
+    case None -> panic("Msil.Codegen: hoisted-var cell storage type has no array element token (invariant violation)")
+  }
+}
+
+// With `(cell, 0)` on the stack, push what `emitCellElemStoreMsil` stores
+// through after the value is pushed: the element's address (`ldelema`) for an
+// `MCellArray` cell, which is written with `stobj`; nothing for a primitive or
+// `object` cell, which is written with `stelem`.  Every store is the sequence
+// `cell, 0, emitCellElemAddrMsil, value, emitCellElemStoreMsil`.
+func emitCellElemAddrMsil(insns: in List[MInsn], elemTy: in MsilType, objCell: in Bool): Unit {
+  if cellTypedMsil(elemTy, objCell) {
+    insns.add(MLdelemaCell(elemTy = elemTy))
+  }
 }
 
 // With `(cell, 0)` on the stack, load element 0 as the logical `elemTy`.
-func emitCellElemLoadMsil(cctx: in CodegenCtx, insns: in List[MInsn], elemTy: in MsilType): Unit {
-  val storageTy = cellStorageElemTyMsil(elemTy)
+func emitCellElemLoadMsil(cctx: in CodegenCtx, insns: in List[MInsn], elemTy: in MsilType, objCell: in Bool): Unit {
+  if cellTypedMsil(elemTy, objCell) {
+    insns.add(MLdelemCell(elemTy = elemTy))
+    return ()
+  }
+  val storageTy = cellStorageElemTyMsil(elemTy, objCell)
   emitTypedLdelemMsil(insns, storageTy)
   if storageTy != elemTy {
     // A `slice[T]` whose element has an array token is statically a CLI
@@ -9353,10 +9658,14 @@ func emitCellElemLoadMsil(cctx: in CodegenCtx, insns: in List[MInsn], elemTy: in
   }
 }
 
-// With `(cell, 0, value)` on the stack (`value` typed as the logical
-// `elemTy`), store it into element 0.
-func emitCellElemStoreMsil(cctx: in CodegenCtx, insns: in List[MInsn], elemTy: in MsilType): Unit {
-  val storageTy = cellStorageElemTyMsil(elemTy)
+// With `(cell, 0, emitCellElemAddrMsil, value)` on the stack (`value` typed as
+// the logical `elemTy`), store it into element 0.
+func emitCellElemStoreMsil(cctx: in CodegenCtx, insns: in List[MInsn], elemTy: in MsilType, objCell: in Bool): Unit {
+  if cellTypedMsil(elemTy, objCell) {
+    insns.add(MStobjCell(elemTy = elemTy))
+    return ()
+  }
+  val storageTy = cellStorageElemTyMsil(elemTy, objCell)
   if storageTy != elemTy {
     boxIfNeededMsil(cctx, insns, elemTy)
   }
@@ -10851,7 +11160,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           val elemTy = match mapGet(fctx.hoistedCellType, name) { case Some(t) -> t; case None -> MObject }
           emitLoadVarMsil(fctx, insns, cellSlot)
           insns.add(MLdcI4(v = 0))
-          emitCellElemLoadMsil(cctx, insns, elemTy)
+          emitCellElemLoadMsil(cctx, insns, elemTy, cellObjMsil(fctx, name))
           return elemTy
         }
         case None -> {
@@ -10898,7 +11207,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                   val capTy = match mapGet(fctx.captureNameToType, name) { case Some(t) -> t; case None -> MObject }
                   if nameListContains(fctx.captureCellNames, name) {
                     insns.add(MLdcI4(v = 0))
-                    emitCellElemLoadMsil(cctx, insns, capTy)
+                    emitCellElemLoadMsil(cctx, insns, capTy, cellObjMsil(fctx, name))
                   } else {
                     // Non-cell capture field is already typed as capTy, no
                     // cast/unbox needed. #7695: `capTy` here is this LIFTED
@@ -12514,6 +12823,15 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
         cctx.lambdaCaptureNames.add(lambdaKey, caps)
         cctx.lambdaCaptureTypes.add(lambdaKey, capTypes)
         cctx.lambdaCaptureCells.add(lambdaKey, capCells)
+        val capObjCells: List[String] = newList()
+        var coi = 0
+        while coi < capCells.count {
+          if cellObjMsil(fctx, capCells[coi]) {
+            capObjCells.add(capCells[coi])
+          }
+          coi = coi + 1
+        }
+        cctx.lambdaObjectCells.add(lambdaKey, capObjCells)
         val capRetTys: Map[String, MsilType] = newMap()
         var cri = 0
         while cri < caps.count {
@@ -12527,7 +12845,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
         // Synthesize closure class (#1877 Phase 1): emit a __Closure_<i> record with
         // typed fields for captures instead of object[] array. Store in context for
         // emission to the module's TypeDef table and use in delegate instantiation.
-        val closureClass = synthesizeClosureClassMsil(cctx, lname, fctx.pkgName, idx, caps, capTypes, capCells)
+        val closureClass = synthesizeClosureClassMsil(cctx, lname, fctx.pkgName, idx, caps, capTypes, capCells, capObjCells)
         cctx.lambdaClosureClasses.add(lambdaKey, closureClass)
         cctx.lambdaClosureRecordList.add(closureClass)
       }
@@ -14118,6 +14436,7 @@ func emitCellAssignMsil(
   isCapture: in Bool,
   idx: in Int,
   elemTy: in MsilType,
+  objCell: in Bool,
   op: in AssignOp,
   value: in Expr,
 ): Unit {
@@ -14125,6 +14444,7 @@ func emitCellAssignMsil(
     case AssEq -> {
       emitCellLoadMsil(fctx, insns, isCapture, idx)
       insns.add(MLdcI4(v = 0))
+      emitCellElemAddrMsil(insns, elemTy, objCell)
       // Same construction hints a plain-slot assignment pushes, so a bare
       // `None` / `newList()` assigned to the cell builds the element type.
       val vTy = lowerAssignValueAtMsil(cctx, fctx, insns, value, elemTy)
@@ -14132,20 +14452,21 @@ func emitCellAssignMsil(
         coerceCallArgMsil(cctx, insns, vTy, elemTy)
       }
       widenIntToLongMsil(insns, vTy, elemTy)
-      emitCellElemStoreMsil(cctx, insns, elemTy)
+      emitCellElemStoreMsil(cctx, insns, elemTy, objCell)
     }
     case _ -> {
       // Read, combine, stash in a temp, then reload the cell and store.
       emitCellLoadMsil(fctx, insns, isCapture, idx)
       insns.add(MLdcI4(v = 0))
-      emitCellElemLoadMsil(cctx, insns, elemTy)
+      emitCellElemLoadMsil(cctx, insns, elemTy, objCell)
       emitCompoundCombineMsil(cctx, fctx, insns, op, elemTy, value)
       val tempSlot = allocSlotMsil(fctx, "__cell_temp_" + toString(fctx.slotTicker.count), elemTy)
       emitStoreSlot(insns, tempSlot, fctx.paramCount)
       emitCellLoadMsil(fctx, insns, isCapture, idx)
       insns.add(MLdcI4(v = 0))
+      emitCellElemAddrMsil(insns, elemTy, objCell)
       emitLoadSlot(insns, tempSlot, fctx.paramCount)
-      emitCellElemStoreMsil(cctx, insns, elemTy)
+      emitCellElemStoreMsil(cctx, insns, elemTy, objCell)
     }
   }
 }
@@ -14191,7 +14512,7 @@ func lowerAssignExprMsil(
       match mapGet(fctx.hoistedCellSlot, name) {
         case Some(cellSlot) -> {
           val elemTy = match mapGet(fctx.hoistedCellType, name) { case Some(t) -> t; case None -> MObject }
-          emitCellAssignMsil(cctx, fctx, insns, false, cellSlot, elemTy, op, value)
+          emitCellAssignMsil(cctx, fctx, insns, false, cellSlot, elemTy, cellObjMsil(fctx, name), op, value)
           return MVoid
         }
         case None -> {
@@ -14289,7 +14610,7 @@ func lowerAssignExprMsil(
             case Some(capIdx) -> {
               if nameListContains(fctx.captureCellNames, name) {
                 val capTy = match mapGet(fctx.captureNameToType, name) { case Some(t) -> t; case None -> MObject }
-                emitCellAssignMsil(cctx, fctx, insns, true, capIdx, capTy, op, value)
+                emitCellAssignMsil(cctx, fctx, insns, true, capIdx, capTy, cellObjMsil(fctx, name), op, value)
                 return MVoid
               }
             }
@@ -17073,6 +17394,7 @@ func msilTypeHasDanglingTypeVarMsil(t: in MsilType): Bool {
     case MTypeVar(_) -> true
     case MArray(e) -> msilTypeHasDanglingTypeVarMsil(e)
     case MByRef(e) -> msilTypeHasDanglingTypeVarMsil(e)
+    case MCellArray(e) -> msilTypeHasDanglingTypeVarMsil(e)
     case MGenericInst(_, _, tas) -> msilTypeListHasDanglingTypeVarMsil(tas)
     case MValueTypeGenericInst(_, _, tas) -> msilTypeListHasDanglingTypeVarMsil(tas)
     case MGenericInstByName(_, tas) -> msilTypeListHasDanglingTypeVarMsil(tas)
@@ -20235,7 +20557,7 @@ func lowerBuiltinOrStaticCallMsil(
                     }
                   }
                   insns.add(MCall(methodToken = tok))
-                  emitByrefWriteBacksMsil(fctx, insns, byrefPending)
+                  emitByrefWriteBacksMsil(cctx, fctx, insns, byrefPending)
                   match mapGet(cctx.funcRetTypes, tokKey) {
                     case Some(rt) -> rt
                     case None -> MObject
@@ -20300,7 +20622,7 @@ func lowerBuiltinOrStaticCallMsil(
                 si = si + 1
               }
               insns.add(MCallvirt(methodToken = sibTok))
-              emitByrefWriteBacksMsil(fctx, insns, sibByrefPending)
+              emitByrefWriteBacksMsil(cctx, fctx, insns, sibByrefPending)
               // A bare sibling call to a `Self`-returning method narrows
               // against the enclosing method's own class (#6434/#6435,
               // mirroring JVM's #6431/#6437 bare-sibling narrowing) — for a
@@ -21420,7 +21742,7 @@ func lowerMethodCallMsil(
             i = i + 1
           }
           insns.add(MCallvirt(methodToken = tok))
-          emitByrefWriteBacksMsil(fctx, insns, byrefPending)
+          emitByrefWriteBacksMsil(cctx, fctx, insns, byrefPending)
           // Report the method's real declared return type so callers — most
           // importantly a `match` scrutinee — track the actual union/record
           // type rather than `object`.  Tracking `object` made union pattern
@@ -21510,10 +21832,22 @@ func lowerMethodCallMsil(
             case Some(pt) -> pt
             case None -> MObject
           }
-          openParamTypes.add(openParamTy)
           val isByrefArgG = if gi < methodModesG.count { isByrefMode(methodModesG[gi]) } else { false }
+          // The MemberRef signature must match the MethodDef's, where an
+          // `out`/`inout` parameter is a managed pointer `!0&` (#8182).
+          openParamTypes.add(if isByrefArgG { MByRef(inner = openParamTy) } else { openParamTy })
           if isByrefArgG {
-            emitByrefArgCheckedMsil(cctx, fctx, insns, callArgExpr(gargs[gi]), Some(value = openParamTy), byrefPendingG)
+            // The argument is passed at THIS instantiation's pointee type: a
+            // temp or cell element typed by the open `!0` would name a type
+            // parameter the (non-generic) caller does not have (#8189 review).
+            emitByrefArgCheckedMsil(
+              cctx,
+              fctx,
+              insns,
+              callArgExpr(gargs[gi]),
+              Some(value = substituteTypeVarsMsil(openParamTy, typeArgs)),
+              byrefPendingG
+            )
           } else {
             pushCollExpect(fctx, openParamTy)
             val aTyG = lowerCallArgMsil(cctx, fctx, insns, gargs[gi])
@@ -21539,7 +21873,7 @@ func lowerMethodCallMsil(
             retType = openRetTy
           )
         )
-        emitByrefWriteBacksMsil(fctx, insns, byrefPendingG)
+        emitByrefWriteBacksMsil(cctx, fctx, insns, byrefPendingG)
         // A `Self`-declared return narrows to the receiver's own CLOSED
         // instantiation (#6443 review): `func withV(self: in Box[T], v: T):
         // Self` called on a `Box[Int]` yields a `Box[Int]` — the generic
@@ -25038,6 +25372,7 @@ func makeFuncCtxMsil(
   val hoistedCellSlot: Map[String, Int] = newMap()
   val hoistedCellType: Map[String, MsilType] = newMap()
   val captureCellNames: List[String] = newList()
+  val objectCellNames: List[String] = newList()
   FuncCtx(
     pkgName = pkgName,
     className = className,
@@ -25072,6 +25407,7 @@ func makeFuncCtxMsil(
     hoistedCellSlot = hoistedCellSlot,
     hoistedCellType = hoistedCellType,
     captureCellNames = captureCellNames,
+    objectCellNames = objectCellNames,
     phaseBCtx = newList(),
     lazyGenCtx = newList(),
     asyncFuncFlag = newList(),
@@ -25267,6 +25603,11 @@ func insnStackDelta(insn: in MInsn): Int {
     case MLdelemI8 -> -1
     case MLdelemR8 -> -1
     case MLdelemR4 -> -1
+    case MLdelema(_) -> -1
+    case MNewarrCell(_) -> 0
+    case MLdelemCell(_) -> -1
+    case MLdelemaCell(_) -> -1
+    case MStobjCell(_) -> -2
     case MLdftn(_) -> 1
     case MLeave(_) -> 0
     case MEndfinally -> 0
@@ -25956,6 +26297,7 @@ func msilTypeKeyStr(t: in MsilType): String {
     case MByte -> "u1"
     case MNativeInt -> "nint"
     case MArray(elem) -> "arr_" + msilTypeKeyStr(elem)
+    case MCellArray(elem) -> "cell_" + msilTypeKeyStr(elem)
     case MClass(name) -> "cls_" + name
     case MClassRef(_, fqn) -> "clsref_" + fqn
     case MValueTypeRef(_, fqn) -> "vt_" + fqn
@@ -31699,17 +32041,15 @@ func synthesizeAsyncSmPhaseBMsil(
   // This MoveNext lowers an `async func` body: auto-FFI Task returns unwrap
   // synchronously (see FuncCtx.asyncFuncFlag).
   mnFctx.asyncFuncFlag.add(1)
-  // By-reference closure capture pre-pass (#1479 v2): same collection the
-  // plain-func path runs, so lambda-captured `var`s take the heap-cell path
-  // here too.  `countSmFieldsMsil` already models this set (it passes the
-  // same collection into countPromotedLocalsStmt), so the emit side MUST
-  // agree or the SM FieldDef budget desyncs.
-  match decl.body {
-    case Some(FBBlock(hvBlk)) -> collectInLambdaNamesBlock(hvBlk, mnFctx.hoistedVarNames)
-    case Some(FBExpr(hvE)) -> collectInLambdaNamesExpr(hvE, mnFctx.hoistedVarNames)
-    case None -> {
-    }
-  }
+  // By-reference closure capture pre-pass (#1479 v2): the same entry point
+  // the plain-func and generator paths run, so lambda-captured `var`s take
+  // the heap-cell path here too, shaped by the same erased-`inout Self`
+  // decision (#8204).  `countSmFieldsMsil` already models the hoisted set (it
+  // passes the same collection into countPromotedLocalsStmt), so the emit
+  // side MUST agree or the SM FieldDef budget desyncs; a cell's shape does
+  // not change the count, and its promoted field takes the cell's own type
+  // at the declaration (`finishHoistedCellMsil`).
+  runClosureCapturePrePassMsil(cctx, mnFctx, decl.params, decl.body)
   mnFctx.slotTicker.add(0)  // reserve slot 0 for 'this' arg
 
   // Pre-allocate labels
@@ -32481,7 +32821,7 @@ func synthesizeGeneratorMsil(
   // hit the not-hoisted invariant panic.  The resulting cell local is an
   // ordinary body local, so the yield save/restore below carries the cell
   // reference (not its value) across resumptions.
-  runClosureCapturePrePassMsil(mnFctx, decl.body)
+  runClosureCapturePrePassMsil(cctx, mnFctx, decl.params, decl.body)
 
   // Pre-allocate labels.
   val tryStartL = freshLabelMsil(mnFctx)
@@ -33446,6 +33786,10 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
       case Some(c) -> c
       case None -> newList()
     }
+    val capObjCells = match mapGet(cctx.lambdaObjectCells, qualifiedLambdaName) {
+      case Some(c) -> c
+      case None -> newList()
+    }
     var cni = 0
     while cni < lambdaCaps.count {
       fctx.captureNameToIndex.add(lambdaCaps[cni], cni)
@@ -33482,6 +33826,9 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
       // A by-reference capture: `__caps[cni]` or `__caps.__fi` holds the hoisted `var`'s cell.
       if nameListContains(capCells, lambdaCaps[cni]) {
         fctx.captureCellNames.add(lambdaCaps[cni])
+      }
+      if nameListContains(capObjCells, lambdaCaps[cni]) {
+        fctx.objectCellNames.add(lambdaCaps[cni])
       }
       cni = cni + 1
     }
@@ -33601,7 +33948,7 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
   // `runClosureCapturePrePassMsil` — #7690): collect every name used inside a
   // lambda in this body.  A `var` local in this set is hoisted to a heap cell
   // at its declaration so the closure shares the mutable location.
-  runClosureCapturePrePassMsil(fctx, decl.body)
+  runClosureCapturePrePassMsil(cctx, fctx, decl.params, decl.body)
 
   // Reserve the function epilogue label up-front so a `return` inside a
   // protected region can `leave` to it (see SReturn / #1477).  The epilogue
@@ -34124,7 +34471,7 @@ pub func lowerImplMethodMsil(
   // top-level functions and lifted lambdas, but an impl method never did,
   // so a closure inside one that mutated a captured `var` hit the
   // `hoistedVarNames`-miss invariant panic.
-  runClosureCapturePrePassMsil(fctx, decl.body)
+  runClosureCapturePrePassMsil(cctx, fctx, implRealParams, decl.body)
 
   // Reserve the epilogue label so a `return` inside a protected region can
   // `leave` to it (see SReturn / #1477).
@@ -34294,7 +34641,7 @@ pub func lowerRecordMethodMsil(
   // `runClosureCapturePrePassMsil`.  A record in-body method never ran this,
   // so a closure inside one that mutated a captured `var` hit the
   // `hoistedVarNames`-miss invariant panic (the original #7690 repro).
-  runClosureCapturePrePassMsil(fctx, decl.body)
+  runClosureCapturePrePassMsil(cctx, fctx, realParams, decl.body)
 
   fctx.epilogueLabel = freshLabelMsil(fctx)
 
@@ -34983,6 +35330,7 @@ func synthesizeClosureClassMsil(
   capNames: in List[String],
   capTypes: in List[MsilType],
   capCells: in List[String],
+  capObjCells: in List[String],
 ): MRecord {
   val closureClassName = pkgName + ".__Closure_" + toString(lambdaIdx)
   val fields: List[MField] = newList()
@@ -34992,7 +35340,7 @@ func synthesizeClosureClassMsil(
     val capName = capNames[fi]
     val isCell = nameListContains(capCells, capName)
     val fieldType = if isCell {
-      cellArrayTyMsil(if fi < capTypes.count { capTypes[fi] } else { MObject })
+      cellArrayTyMsil(if fi < capTypes.count { capTypes[fi] } else { MObject }, nameListContains(capObjCells, capName))
     } else {
       val rawTy = if fi < capTypes.count { capTypes[fi] } else { MObject }
       // #7695: a BY-VALUE capture of a real (open) generic type parameter
@@ -36690,7 +37038,7 @@ func lowerProtectedMsil(
         // captured `var` hit the `hoistedVarNames`-miss invariant panic.  Runs
         // against the desugared body (post field-reference rewrite) since that
         // is the exact AST `lowerBlockExprMsil`/`lowerExprMsil` below lower.
-        runClosureCapturePrePassMsil(entryFctx, Some(value = desugaredEntryBody))
+        runClosureCapturePrePassMsil(cctx, entryFctx, edParams, Some(value = desugaredEntryBody))
         val entryInsns: List[MInsn] = newList()
 
         // Monitor.Enter(this): acquire the per-instance lock.
@@ -38405,6 +38753,689 @@ func collectInLambdaNamesStmt(s: in Statement, acc: in List[String]): Unit {
   }
 }
 
+// Every local-binding statement in a body, lambda bodies included, for
+// `collectRecvTypesMsil` (#8204).
+func collectLocalBindingsExprMsil(e: in Expr, acc: in List[Statement]): Unit {
+  match e.kind {
+    case ELambda(_, body) -> {
+      collectLocalBindingsBlockMsil(body, acc)
+    }
+    case ECall(fn, args) -> {
+      collectLocalBindingsExprMsil(fn, acc)
+      var ai = 0
+      while ai < args.count {
+        match args[ai] {
+          case CAPositional(ex) -> {
+            collectLocalBindingsExprMsil(ex, acc)
+          }
+          case CANamed(_, ex, _) -> {
+            collectLocalBindingsExprMsil(ex, acc)
+          }
+        }
+        ai = ai + 1
+      }
+    }
+    case EBinop(_, lhs, rhs) -> {
+      collectLocalBindingsExprMsil(lhs, acc)
+      collectLocalBindingsExprMsil(rhs, acc)
+    }
+    case EPrefix(_, operand) -> {
+      collectLocalBindingsExprMsil(operand, acc)
+    }
+    case EParen(inner) -> {
+      collectLocalBindingsExprMsil(inner, acc)
+    }
+    case EMember(recv, _) -> {
+      collectLocalBindingsExprMsil(recv, acc)
+    }
+    case EIf(cond, thenB, elseOpt, _) -> {
+      collectLocalBindingsExprMsil(cond, acc)
+      collectLocalBindingsOrdBlockMsil(thenB, acc)
+      match elseOpt {
+        case Some(eb) -> collectLocalBindingsOrdBlockMsil(eb, acc)
+        case None -> {
+        }
+      }
+    }
+    case EBlock(block) -> {
+      collectLocalBindingsBlockMsil(block, acc)
+    }
+    case EUnsafe(block) -> {
+      collectLocalBindingsBlockMsil(block, acc)
+    }
+    case EMatch(scr, arms) -> {
+      collectLocalBindingsExprMsil(scr, acc)
+      var ai = 0
+      while ai < arms.count {
+        match arms[ai].guard {
+          case Some(guardExpr) -> {
+            collectLocalBindingsExprMsil(guardExpr, acc)
+          }
+          case None -> {
+          }
+        }
+        collectLocalBindingsOrdBlockMsil(arms[ai].body, acc)
+        ai = ai + 1
+      }
+    }
+    case EList(exprs) -> {
+      var ei = 0
+      while ei < exprs.count {
+        collectLocalBindingsExprMsil(exprs[ei], acc)
+        ei = ei + 1
+      }
+    }
+    case ETuple(exprs) -> {
+      var ei = 0
+      while ei < exprs.count {
+        collectLocalBindingsExprMsil(exprs[ei], acc)
+        ei = ei + 1
+      }
+    }
+    case EIndex(recv, indices) -> {
+      collectLocalBindingsExprMsil(recv, acc)
+      var ii = 0
+      while ii < indices.count {
+        collectLocalBindingsExprMsil(indices[ii], acc)
+        ii = ii + 1
+      }
+    }
+    case EAwait(inner) -> {
+      collectLocalBindingsExprMsil(inner, acc)
+    }
+    case EYield(inner) -> {
+      collectLocalBindingsExprMsil(inner, acc)
+    }
+    case ESpawn(inner) -> {
+      collectLocalBindingsExprMsil(inner, acc)
+    }
+    case ETry(inner) -> {
+      collectLocalBindingsExprMsil(inner, acc)
+    }
+    case EPropagate(inner) -> {
+      collectLocalBindingsExprMsil(inner, acc)
+    }
+    case EAssign(target, _, v) -> {
+      collectLocalBindingsExprMsil(target, acc)
+      collectLocalBindingsExprMsil(v, acc)
+    }
+    case EInterpolated(segs) -> {
+      var si = 0
+      while si < segs.count {
+        match segs[si] {
+          case ISExpr(ex) -> {
+            collectLocalBindingsExprMsil(ex, acc)
+          }
+          case _ -> {
+          }
+        }
+        si = si + 1
+      }
+    }
+    case ETypeApp(fn, _) -> {
+      collectLocalBindingsExprMsil(fn, acc)
+    }
+    case _ -> {
+    }
+  }
+}
+
+func collectLocalBindingsOrdBlockMsil(ob: in ExprOrBlock, acc: in List[Statement]): Unit {
+  match ob {
+    case EOBExpr(ex) -> {
+      collectLocalBindingsExprMsil(ex, acc)
+    }
+    case EOBBlock(blk) -> {
+      collectLocalBindingsBlockMsil(blk, acc)
+    }
+  }
+}
+
+func collectLocalBindingsBlockMsil(b: in Block, acc: in List[Statement]): Unit {
+  var i = 0
+  while i < b.statements.count {
+    collectLocalBindingsStmtMsil(b.statements[i], acc)
+    i = i + 1
+  }
+}
+
+func collectLocalBindingsStmtMsil(s: in Statement, acc: in List[Statement]): Unit {
+  match s.kind {
+    case SLocal(binding) -> {
+      acc.add(s)
+      collectLocalBindingsInitMsil(binding, acc)
+    }
+    case SAssign(target, _, v) -> {
+      collectLocalBindingsExprMsil(target, acc)
+      collectLocalBindingsExprMsil(v, acc)
+    }
+    case SReturn(valOpt) -> match valOpt { case Some(e) -> { collectLocalBindingsExprMsil(e, acc) }; case None -> {  } }
+    case SExpr(e) -> {
+      collectLocalBindingsExprMsil(e, acc)
+    }
+    case SThrow(e) -> {
+      collectLocalBindingsExprMsil(e, acc)
+    }
+    case SWhile(_, cond, body) -> {
+      collectLocalBindingsExprMsil(cond, acc)
+      collectLocalBindingsBlockMsil(body, acc)
+    }
+    case SFor(_, _, iter, body) -> {
+      collectLocalBindingsExprMsil(iter, acc)
+      collectLocalBindingsBlockMsil(body, acc)
+    }
+    case SLoop(_, body) -> {
+      collectLocalBindingsBlockMsil(body, acc)
+    }
+    case SScope(_, body) -> {
+      collectLocalBindingsBlockMsil(body, acc)
+    }
+    case SDefer(body) -> {
+      collectLocalBindingsBlockMsil(body, acc)
+    }
+    case STry(body, catches, finally_) -> {
+      collectLocalBindingsBlockMsil(body, acc)
+      var ci = 0
+      while ci < catches.count {
+        collectLocalBindingsBlockMsil(catches[ci].body, acc)
+        ci = ci + 1
+      }
+      match finally_ {
+        case Some(fb) -> {
+          collectLocalBindingsBlockMsil(fb, acc)
+        }
+        case None -> {
+        }
+      }
+    }
+    case SInvariant(e) -> {
+      collectLocalBindingsExprMsil(e, acc)
+    }
+    case SRule(lhs, rhs) -> {
+      collectLocalBindingsExprMsil(lhs, acc)
+      collectLocalBindingsExprMsil(rhs, acc)
+    }
+    case _ -> {
+    }
+  }
+}
+
+// The initialiser of a local binding, walked for nested bindings.
+func collectLocalBindingsInitMsil(binding: in LocalBinding, acc: in List[Statement]): Unit {
+  match binding {
+    case LBVal(_, _, init) -> {
+      collectLocalBindingsExprMsil(init, acc)
+    }
+    case LBLet(_, _, init) -> {
+      collectLocalBindingsExprMsil(init, acc)
+    }
+    case LBVar(_, _, initOpt) -> match initOpt {
+      case Some(init) -> {
+        collectLocalBindingsExprMsil(init, acc)
+      }
+      case None -> {
+      }
+    }
+  }
+}
+
+// Pre-pass (#8204): the hoisted `vars` this body passes to an erased
+// `inout Self` / `out Self` parameter (`cctx.erasedSelfByrefMethods`), which
+// is an `object&` in the callee's signature.  Only an `object[]` cell's
+// element can be that pointer, so each such variable keeps an `object[]` cell
+// (`FuncCtx.objectCellNames`) instead of the typed `MCellArray` its type
+// would get.  Lambda bodies are walked too: a by-reference call there reaches
+// the same cell.  The callee is the method of the receiver's static type
+// (`recvTypes`, from `collectRecvTypesMsil`), so a same-named method of
+// another type with a typed `inout` does not count.  The pre-pass runs
+// before the body is lowered, with no type-checked expression types, so a
+// receiver whose type it cannot name (a call result, a field, a pattern
+// binding, a lambda parameter) is matched by method name and position
+// alone: any method of that name with an erased `inout Self` there counts.
+// That errs towards `object[]`, so an erased call always aliases; the cost
+// falls only on a same-named typed `inout` call with such a receiver, which
+// then copies in and out through `emitCellByrefArgMsil`'s temp.
+func markErasedSelfByrefArgsMsil(
+  cctx: in CodegenCtx,
+  fn: in Expr,
+  args: in List[CallArg],
+  vars: in List[String],
+  recvTypes: in Map[String, String],
+  acc: in List[String],
+): Unit {
+  // `recv.m(args)`, or the UFCS form `m(recv, args)` whose first argument is
+  // the receiver.
+  val methodName = match fn.kind {
+    case EMember(_, m) -> m
+    case EPath(path) -> if path.segments.count == 1 { lastSegmentMsil(path) } else { return () }
+    case _ -> return ()
+  }
+  val receiverArgs = match fn.kind { case EPath(_) -> 1; case _ -> 0 }
+  val recvExpr = match fn.kind {
+    case EMember(recv, _) -> recv
+    case _ -> if args.count > 0 { callArgExpr(args[0]) } else { return () }
+  }
+  // A receiver of unknown type falls back to the method name alone.
+  val known = recvOwnerKeyMsil(recvExpr, recvTypes)
+  val ownerKey = if known.length > 0 { known } else { "*" }
+  var ai = receiverArgs
+  while ai < args.count {
+    val erasedKey = match args[ai] {
+      case CAPositional(_) -> ownerKey + "/" + methodName + "#" + toString(ai - receiverArgs)
+      case _ -> ownerKey + "/" + methodName
+    }
+    if cctx.erasedSelfByrefMethods.containsKey(erasedKey) {
+      match callArgExpr(args[ai]).kind {
+        case EPath(path) -> {
+          val name = lastSegmentMsil(path)
+          if path.segments.count == 1 and nameListContains(vars, name) {
+            addNameOnce(acc, name)
+          }
+        }
+        case _ -> ()
+      }
+    }
+    ai = ai + 1
+  }
+}
+
+// The owner key (`erasedSelfByrefMethods`) of a call receiver: a bare name
+// or `self` whose static type `recvTypes` records; "" when unknown.
+func recvOwnerKeyMsil(recv: in Expr, recvTypes: in Map[String, String]): String {
+  match recv.kind {
+    case EPath(path) -> if path.segments.count == 1 {
+      match mapGet(recvTypes, lastSegmentMsil(path)) {
+        case Some(k) -> k
+        case None -> ""
+      }
+    } else {
+      ""
+    }
+    case ESelf -> match mapGet(recvTypes, "self") { case Some(k) -> k; case None -> "" }
+    case EParen(inner) -> recvOwnerKeyMsil(inner, recvTypes)
+    case _ -> ""
+  }
+}
+
+// The owner key of a static type: the class, interface or generic head FQN
+// without its arity suffix; "" for any other type.
+func ownerKeyOfMsilType(t: in MsilType): String {
+  match t {
+    case MClass(fqn) -> stripGenericArity(fqn)
+    case MClassRef(_, fqn) -> stripGenericArity(fqn)
+    case MGenericInst(_, head, _) -> stripGenericArity(head)
+    case MGenericInstByName(head, _) -> stripGenericArity(head)
+    case _ -> ""
+  }
+}
+
+// Record `name`'s owner key, or mark the name ambiguous ("") when two
+// bindings of it in one body disagree.
+func recordRecvTypeMsil(recvTypes: in Map[String, String], name: in String, key: in String): Unit {
+  match mapGet(recvTypes, name) {
+    case Some(prev) -> if prev != key { recvTypes.remove(name); recvTypes.add(name, "") }
+    case None -> recvTypes.add(name, key)
+  }
+}
+
+// The static types the pre-pass can name without lowering the body: each
+// parameter (as already registered in `fctx.types`, else from its
+// annotation) and each local binding with an annotation or a record / class
+// constructor call as its initialiser.  Bindings anywhere in the body count
+// (a name bound twice to different types is ambiguous), lambda bodies too.
+func collectRecvTypesMsil(
+  cctx: in CodegenCtx, fctx: in FuncCtx, params: in List[Param], body: in Option[FunctionBody]
+): Map[String, String] {
+  val recvTypes: Map[String, String] = newMap()
+  var pi = 0
+  while pi < params.count {
+    val pn = params[pi].name
+    val pty = match mapGet(fctx.types, pn) {
+      case Some(t) -> t
+      case None -> typeExprToMsilBodyCtx(cctx, fctx, params[pi].ty)
+    }
+    val key = ownerKeyOfMsilType(pty)
+    if key.length > 0 {
+      recordRecvTypeMsil(recvTypes, pn, key)
+    }
+    pi = pi + 1
+  }
+  if not recvTypes.containsKey("self") {
+    match mapGet(fctx.types, "self") {
+      case Some(st) -> {
+        val sk = ownerKeyOfMsilType(st)
+        if sk.length > 0 {
+          recordRecvTypeMsil(recvTypes, "self", sk)
+        }
+      }
+      case None -> ()
+    }
+  }
+  val bindings: List[Statement] = newList()
+  match body {
+    case Some(FBBlock(blk)) -> collectLocalBindingsBlockMsil(blk, bindings)
+    case _ -> ()
+  }
+  var bi = 0
+  while bi < bindings.count {
+    match bindings[bi].kind {
+      case SLocal(binding) -> {
+        // A destructuring `val` binds names of types this pass cannot see.
+        val names: List[String] = newList()
+        val simple = match binding {
+          case LBVal(pat, _, _) -> match pat.kind {
+            case PBinding(n, _) -> {
+              names.add(n)
+              true
+            }
+            case _ -> {
+              collectBoundNamesPattern(pat, names)
+              false
+            }
+          }
+          case LBLet(n, _, _) -> {
+            names.add(n)
+            true
+          }
+          case LBVar(n, _, _) -> {
+            names.add(n)
+            true
+          }
+        }
+        val tyOpt = match binding { case LBVal(_, t, _) -> t; case LBLet(_, t, _) -> t; case LBVar(_, t, _) -> t }
+        val initOpt = match binding {
+          case LBVal(_, _, i) -> Some(value = i)
+          case LBLet(_, _, i) -> Some(value = i)
+          case LBVar(_, _, io) -> io
+        }
+        val key = if not simple {
+          ""
+        } else {
+          match tyOpt {
+            case Some(te) -> ownerKeyOfMsilType(typeExprToMsilBodyCtx(cctx, fctx, te))
+            case None -> match initOpt { case Some(init) -> ctorOwnerKeyMsil(cctx, fctx, init); case None -> "" }
+          }
+        }
+        var ni = 0
+        while ni < names.count {
+          recordRecvTypeMsil(recvTypes, names[ni], key)
+          ni = ni + 1
+        }
+      }
+      case _ -> ()
+    }
+    bi = bi + 1
+  }
+  recvTypes
+}
+
+// The owner key of a constructor call `T(...)` / `T[A](...)` naming a
+// declared type; "" for any other initialiser.
+func ctorOwnerKeyMsil(cctx: in CodegenCtx, fctx: in FuncCtx, init: in Expr): String {
+  match init.kind {
+    case ECall(fn, _) -> {
+      val callee = match fn.kind { case ETypeApp(inner, _) -> inner; case _ -> fn }
+      match callee.kind {
+        case EPath(path) -> if path.segments.count == 1 and cctx.typeFqnCandidates.containsKey(lastSegmentMsil(path)) {
+          stripGenericArity(resolveTypeFqn(cctx, fctx.pkgName, lastSegmentMsil(path)))
+        } else {
+          ""
+        }
+        case _ -> ""
+      }
+    }
+    case EParen(inner) -> ctorOwnerKeyMsil(cctx, fctx, inner)
+    case _ -> ""
+  }
+}
+
+func collectErasedSelfByrefArgsExpr(
+  cctx: in CodegenCtx,
+  e: in Expr,
+  vars: in List[String],
+  recvTypes: in Map[String, String],
+  acc: in List[String],
+): Unit {
+  match e.kind {
+    case ELambda(_, body) -> {
+      collectErasedSelfByrefArgsBlock(cctx, body, vars, recvTypes, acc)
+    }
+    case ECall(fn, args) -> {
+      markErasedSelfByrefArgsMsil(cctx, fn, args, vars, recvTypes, acc)
+      collectErasedSelfByrefArgsExpr(cctx, fn, vars, recvTypes, acc)
+      var ai = 0
+      while ai < args.count {
+        match args[ai] {
+          case CAPositional(ex) -> {
+            collectErasedSelfByrefArgsExpr(cctx, ex, vars, recvTypes, acc)
+          }
+          case CANamed(_, ex, _) -> {
+            collectErasedSelfByrefArgsExpr(cctx, ex, vars, recvTypes, acc)
+          }
+        }
+        ai = ai + 1
+      }
+    }
+    case EBinop(_, lhs, rhs) -> {
+      collectErasedSelfByrefArgsExpr(cctx, lhs, vars, recvTypes, acc)
+      collectErasedSelfByrefArgsExpr(cctx, rhs, vars, recvTypes, acc)
+    }
+    case EPrefix(_, operand) -> {
+      collectErasedSelfByrefArgsExpr(cctx, operand, vars, recvTypes, acc)
+    }
+    case EParen(inner) -> {
+      collectErasedSelfByrefArgsExpr(cctx, inner, vars, recvTypes, acc)
+    }
+    case EMember(recv, _) -> {
+      collectErasedSelfByrefArgsExpr(cctx, recv, vars, recvTypes, acc)
+    }
+    case EIf(cond, thenB, elseOpt, _) -> {
+      collectErasedSelfByrefArgsExpr(cctx, cond, vars, recvTypes, acc)
+      collectErasedSelfByrefArgsOrdBlock(cctx, thenB, vars, recvTypes, acc)
+      match elseOpt {
+        case Some(eb) -> collectErasedSelfByrefArgsOrdBlock(cctx, eb, vars, recvTypes, acc)
+        case None -> {
+        }
+      }
+    }
+    case EBlock(block) -> {
+      collectErasedSelfByrefArgsBlock(cctx, block, vars, recvTypes, acc)
+    }
+    case EUnsafe(block) -> {
+      collectErasedSelfByrefArgsBlock(cctx, block, vars, recvTypes, acc)
+    }
+    case EMatch(scr, arms) -> {
+      collectErasedSelfByrefArgsExpr(cctx, scr, vars, recvTypes, acc)
+      var ai = 0
+      while ai < arms.count {
+        match arms[ai].guard {
+          case Some(guardExpr) -> {
+            collectErasedSelfByrefArgsExpr(cctx, guardExpr, vars, recvTypes, acc)
+          }
+          case None -> {
+          }
+        }
+        collectErasedSelfByrefArgsOrdBlock(cctx, arms[ai].body, vars, recvTypes, acc)
+        ai = ai + 1
+      }
+    }
+    case EList(exprs) -> {
+      var ei = 0
+      while ei < exprs.count {
+        collectErasedSelfByrefArgsExpr(cctx, exprs[ei], vars, recvTypes, acc)
+        ei = ei + 1
+      }
+    }
+    case ETuple(exprs) -> {
+      var ei = 0
+      while ei < exprs.count {
+        collectErasedSelfByrefArgsExpr(cctx, exprs[ei], vars, recvTypes, acc)
+        ei = ei + 1
+      }
+    }
+    case EIndex(recv, indices) -> {
+      collectErasedSelfByrefArgsExpr(cctx, recv, vars, recvTypes, acc)
+      var ii = 0
+      while ii < indices.count {
+        collectErasedSelfByrefArgsExpr(cctx, indices[ii], vars, recvTypes, acc)
+        ii = ii + 1
+      }
+    }
+    case EAwait(inner) -> {
+      collectErasedSelfByrefArgsExpr(cctx, inner, vars, recvTypes, acc)
+    }
+    case EYield(inner) -> {
+      collectErasedSelfByrefArgsExpr(cctx, inner, vars, recvTypes, acc)
+    }
+    case ESpawn(inner) -> {
+      collectErasedSelfByrefArgsExpr(cctx, inner, vars, recvTypes, acc)
+    }
+    case ETry(inner) -> {
+      collectErasedSelfByrefArgsExpr(cctx, inner, vars, recvTypes, acc)
+    }
+    case EPropagate(inner) -> {
+      collectErasedSelfByrefArgsExpr(cctx, inner, vars, recvTypes, acc)
+    }
+    case EAssign(target, _, v) -> {
+      collectErasedSelfByrefArgsExpr(cctx, target, vars, recvTypes, acc)
+      collectErasedSelfByrefArgsExpr(cctx, v, vars, recvTypes, acc)
+    }
+    case EInterpolated(segs) -> {
+      var si = 0
+      while si < segs.count {
+        match segs[si] {
+          case ISExpr(ex) -> {
+            collectErasedSelfByrefArgsExpr(cctx, ex, vars, recvTypes, acc)
+          }
+          case _ -> {
+          }
+        }
+        si = si + 1
+      }
+    }
+    case ETypeApp(fn, _) -> {
+      collectErasedSelfByrefArgsExpr(cctx, fn, vars, recvTypes, acc)
+    }
+    case _ -> {
+    }
+  }
+}
+
+func collectErasedSelfByrefArgsOrdBlock(
+  cctx: in CodegenCtx,
+  ob: in ExprOrBlock,
+  vars: in List[String],
+  recvTypes: in Map[String, String],
+  acc: in List[String],
+): Unit {
+  match ob {
+    case EOBExpr(ex) -> {
+      collectErasedSelfByrefArgsExpr(cctx, ex, vars, recvTypes, acc)
+    }
+    case EOBBlock(blk) -> {
+      collectErasedSelfByrefArgsBlock(cctx, blk, vars, recvTypes, acc)
+    }
+  }
+}
+
+func collectErasedSelfByrefArgsBlock(
+  cctx: in CodegenCtx,
+  b: in Block,
+  vars: in List[String],
+  recvTypes: in Map[String, String],
+  acc: in List[String],
+): Unit {
+  var i = 0
+  while i < b.statements.count {
+    collectErasedSelfByrefArgsStmt(cctx, b.statements[i], vars, recvTypes, acc)
+    i = i + 1
+  }
+}
+
+func collectErasedSelfByrefArgsStmt(
+  cctx: in CodegenCtx,
+  s: in Statement,
+  vars: in List[String],
+  recvTypes: in Map[String, String],
+  acc: in List[String],
+): Unit {
+  match s.kind {
+    case SLocal(binding) -> match binding {
+      case LBVal(_, _, init) -> {
+        collectErasedSelfByrefArgsExpr(cctx, init, vars, recvTypes, acc)
+      }
+      case LBLet(_, _, init) -> {
+        collectErasedSelfByrefArgsExpr(cctx, init, vars, recvTypes, acc)
+      }
+      case LBVar(_, _, initOpt) -> match initOpt {
+        case Some(init) -> {
+          collectErasedSelfByrefArgsExpr(cctx, init, vars, recvTypes, acc)
+        }
+        case None -> {
+        }
+      }
+    }
+    case SAssign(target, _, v) -> {
+      collectErasedSelfByrefArgsExpr(cctx, target, vars, recvTypes, acc)
+      collectErasedSelfByrefArgsExpr(cctx, v, vars, recvTypes, acc)
+    }
+    case SReturn(valOpt) -> match valOpt {
+      case Some(e) -> {
+        collectErasedSelfByrefArgsExpr(cctx, e, vars, recvTypes, acc)
+      }
+      case None -> {
+      }
+    }
+    case SExpr(e) -> {
+      collectErasedSelfByrefArgsExpr(cctx, e, vars, recvTypes, acc)
+    }
+    case SThrow(e) -> {
+      collectErasedSelfByrefArgsExpr(cctx, e, vars, recvTypes, acc)
+    }
+    case SWhile(_, cond, body) -> {
+      collectErasedSelfByrefArgsExpr(cctx, cond, vars, recvTypes, acc)
+      collectErasedSelfByrefArgsBlock(cctx, body, vars, recvTypes, acc)
+    }
+    case SFor(_, _, iter, body) -> {
+      collectErasedSelfByrefArgsExpr(cctx, iter, vars, recvTypes, acc)
+      collectErasedSelfByrefArgsBlock(cctx, body, vars, recvTypes, acc)
+    }
+    case SLoop(_, body) -> {
+      collectErasedSelfByrefArgsBlock(cctx, body, vars, recvTypes, acc)
+    }
+    case SScope(_, body) -> {
+      collectErasedSelfByrefArgsBlock(cctx, body, vars, recvTypes, acc)
+    }
+    case SDefer(body) -> {
+      collectErasedSelfByrefArgsBlock(cctx, body, vars, recvTypes, acc)
+    }
+    case STry(body, catches, finally_) -> {
+      collectErasedSelfByrefArgsBlock(cctx, body, vars, recvTypes, acc)
+      var ci = 0
+      while ci < catches.count {
+        collectErasedSelfByrefArgsBlock(cctx, catches[ci].body, vars, recvTypes, acc)
+        ci = ci + 1
+      }
+      match finally_ {
+        case Some(fb) -> {
+          collectErasedSelfByrefArgsBlock(cctx, fb, vars, recvTypes, acc)
+        }
+        case None -> {
+        }
+      }
+    }
+    case SInvariant(e) -> {
+      collectErasedSelfByrefArgsExpr(cctx, e, vars, recvTypes, acc)
+    }
+    case SRule(lhs, rhs) -> {
+      collectErasedSelfByrefArgsExpr(cctx, lhs, vars, recvTypes, acc)
+      collectErasedSelfByrefArgsExpr(cctx, rhs, vars, recvTypes, acc)
+    }
+    case _ -> {
+    }
+  }
+}
+
 // Shared by-reference closure capture pre-pass entry point (#7690): every
 // codegen path that builds a `FuncCtx` for a body containing statements
 // (top-level/lifted-lambda functions via `lowerFuncMsilScoped`, record
@@ -38417,16 +39448,34 @@ func collectInLambdaNamesStmt(s: in Statement, acc: in List[String]): Unit {
 // `FBBlock`/`FBExpr` match (#1479 v2 originally only wired this into
 // `lowerFuncMsilScoped`, missing `lowerImplMethodMsil`/`lowerRecordMethodMsil`
 // and the protected-type entry path entirely).
-func runClosureCapturePrePassMsil(fctx: in FuncCtx, body: in Option[FunctionBody]): Unit {
+func runClosureCapturePrePassMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  params: in List[Param],
+  body: in Option[FunctionBody],
+): Unit {
   match body {
-    case Some(FBBlock(blk)) -> {
-      collectInLambdaNamesBlock(blk, fctx.hoistedVarNames)
-    }
-    case Some(FBExpr(e)) -> {
-      collectInLambdaNamesExpr(e, fctx.hoistedVarNames)
-    }
-    case None -> {
-    }
+    case Some(FBBlock(blk)) -> collectInLambdaNamesBlock(blk, fctx.hoistedVarNames)
+    case Some(FBExpr(e)) -> collectInLambdaNamesExpr(e, fctx.hoistedVarNames)
+    case None -> ()
+  }
+  val recvTypes = collectRecvTypesMsil(cctx, fctx, params, body)
+  match body {
+    case Some(FBBlock(blk)) -> collectErasedSelfByrefArgsBlock(
+      cctx,
+      blk,
+      fctx.hoistedVarNames,
+      recvTypes,
+      fctx.objectCellNames
+    )
+    case Some(FBExpr(e)) -> collectErasedSelfByrefArgsExpr(
+      cctx,
+      e,
+      fctx.hoistedVarNames,
+      recvTypes,
+      fctx.objectCellNames
+    )
+    case None -> ()
   }
 }
 
