@@ -62,7 +62,7 @@ order, not only those up to the last `?`/`await`. Diagnostics:
 **Semantics.** Because the element is copied in and out, a write the callee
 makes to it is seen through the array only once the call returns, and if one
 element is passed twice the later argument's store is kept. This is the same
-on every target; docs/01 §2.7 and §5.2 say so.
+on every target; docs/01 §2.7 and §5.2 say so, and D179 records the choice, its rationale and its consequences.
 
 **Tests.** New `inout_array_element_self_test.l` (17 cases on dotnet, the
 JVM and native: `inout` and `out`, two elements of one array, a call's value
