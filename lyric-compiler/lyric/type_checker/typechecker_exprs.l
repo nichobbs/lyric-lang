@@ -5612,6 +5612,7 @@ func noteValueRecordCtor(
     case DKRecord(_, rd) -> rd.generics
     case DKExposedRec(_, rd) -> rd.generics
     case DKOpaque(_, od) -> od.generics
+    case DKProtected(_, pd) -> pd.generics
     case _ -> None
   }
   val params = match gOpt { case Some(g) -> g.params; case None -> return }
@@ -5715,6 +5716,7 @@ func ctorValueGenericNames(sym: in Symbol): List[String] {
     case DKRecord(_, rd) -> rd.generics
     case DKExposedRec(_, rd) -> rd.generics
     case DKOpaque(_, od) -> od.generics
+    case DKProtected(_, pd) -> pd.generics
     case _ -> None
   }
   valueGenericNames(gOpt)

@@ -399,7 +399,7 @@ val p = Poly(pts = a)        // a Shape[3]
 val e: Shape[3] = Empty
 ```
 
-A protected type cannot take a length parameter yet (T0160, #7864).
+A protected type takes a length parameter too (`protected type Ring[N: Nat] { var buf: array[N, Int] ... }`). Each length a program uses is its own type with its own members, specialised whole with `N` replaced by the length, so its entries and funcs read `N` and the field arrays by bare name. For now such a type cannot be `pub` (T0166): it is used in the package that declares it, on every target (#8149).
 
 A record with a length parameter can be used from another package like any other. Its methods are compiled for each length a call uses, in the package that makes the call, so `.length`, bounds checks and copies stay constants there too:
 

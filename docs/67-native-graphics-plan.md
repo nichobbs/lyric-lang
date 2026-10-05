@@ -203,7 +203,8 @@ sizes a function's array parameters and, since D169, a record's array fields
 length on all three targets and the record one type on dotnet and the JVM and
 one layout per length on native; such a record may be used from any package
 (D173). Opaque types and unions take one the same way (D175); protected
-types cannot yet (#7864). An array
+types too, specialised whole per length on every target and for now used in
+their own package only (D178). An array
 in an `extern func` signature is open (N0010: C passes no array by value; pass
 a `NativePtr` to its first element).
 

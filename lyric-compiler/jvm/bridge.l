@@ -1952,6 +1952,118 @@ func isMonoSpecializedName(name: in String): Bool {
   Str.contains(name, "__")
 }
 
+// Whether `te` names one of `names`, at the head of a type or in its arguments.
+func typeExprMentionsAny(te: in TypeExpr, names: in List[String]): Bool {
+  match te.kind {
+    case TRef(path) -> path.segments.count > 0 and names.contains(path.segments[path.segments.count - 1])
+    case TGenericApp(head, targs) -> {
+      if head.segments.count > 0 and names.contains(head.segments[head.segments.count - 1]) {
+        return true
+      }
+      for ta in targs {
+        match ta {
+          case TAType(t) -> if typeExprMentionsAny(t, names) { return true }
+          case _ -> ()
+        }
+      }
+      false
+    }
+    case TParen(inner) -> typeExprMentionsAny(inner, names)
+    case TNullable(inner) -> typeExprMentionsAny(inner, names)
+    case TSlice(elem) -> typeExprMentionsAny(elem, names)
+    case TArray(_, elem) -> typeExprMentionsAny(elem, names)
+    case TTuple(tys) -> {
+      for t in tys {
+        if typeExprMentionsAny(t, names) {
+          return true
+        }
+      }
+      false
+    }
+    case TFunction(ps, r) -> {
+      for t in ps {
+        if typeExprMentionsAny(t, names) {
+          return true
+        }
+      }
+      typeExprMentionsAny(r, names)
+    }
+    case _ -> false
+  }
+}
+
+// A function whose signature names a protected type the middle end specialised
+// per length (`Ring[3]` became `Ring__V3`, #8149) is registered from the
+// pre-middle-end file with a type no class carries, so its call sites guess a
+// descriptor that does not exist.  Registers it again from the post-mono file,
+// replacing the stale entries.
+func collectProtectedSpecFuncSigs(
+  file: in SourceFile,
+  into: in Map[String, JvmFuncSig],
+  externSeed: in Map[String, String],
+  ctorReg: in Map[String, String],
+): Unit {
+  val specNames: List[String] = newList()
+  for it in file.items {
+    match it.kind {
+      case IProtected(d) -> if Str.contains(d.name, "__V") { specNames.add(d.name) }
+      case _ -> ()
+    }
+  }
+  if specNames.count == 0 {
+    return
+  }
+  val items: List[Item] = newList()
+  for it in file.items {
+    match it.kind {
+      case IProtected(_) -> items.add(it)
+      case IFunc(fd) -> {
+        var mentions = false
+        for p in fd.params {
+          if typeExprMentionsAny(p.ty, specNames) {
+            mentions = true
+          }
+        }
+        match fd.ret {
+          case Some(r) -> if typeExprMentionsAny(r, specNames) { mentions = true }
+          case None -> ()
+        }
+        if mentions {
+          items.add(it)
+        }
+      }
+      case _ -> ()
+    }
+  }
+  val fresh: Map[String, JvmFuncSig] = newMap()
+  collectFileSigsSeeded(file.copy(items = items), fresh, externSeed, ctorReg)
+  for k in mapKeys(fresh) {
+    match mapGet(fresh, k) {
+      case Some(sig) -> {
+        if into.containsKey(k) {
+          into.remove(k)
+        }
+        into.add(k, sig)
+      }
+      case None -> ()
+    }
+  }
+}
+
+// `file` with only its protected types: what `collectFileSigsSeeded` is run
+// over again after the middle end, to register the per-length specialisations
+// of a value-generic protected type (#8149).
+func protectedTypesOnly(file: in SourceFile): SourceFile {
+  val items: List[Item] = newList()
+  for it in file.items {
+    match it.kind {
+      case IProtected(_) -> items.add(it)
+      case _ -> ()
+    }
+  }
+  file.copy(items = items)
+}
+
 // Register the sigs of monomorphizer-specialised functions (`mapKeys__String__Int`,
 // `unwrapOr__Int`, …) from the POST-mono file, patching the registry built from
 // the pre-middle-end sources (#3229).  Mono runs inside `runMiddleEnd`, after
@@ -3484,6 +3596,21 @@ pub func compileProjectToJarBundledWithRestored(
         externSeedForFileCached(f, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache),
         ctorReg
       )
+      // A protected type the middle end specialised per length (`Ring__V3`,
+      // #8149) is absent from the pre-middle-end registry: register the
+      // post-mono file's protected types so calls on them resolve.
+      collectFileSigsSeeded(
+        protectedTypesOnly(f),
+        registry,
+        externSeedForFileCached(f, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache),
+        ctorReg
+      )
+      collectProtectedSpecFuncSigs(
+        f,
+        registry,
+        externSeedForFileCached(f, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache),
+        ctorReg
+      )
       // Register weaver-synthesised record fields (`__LyricBModeCallContext`,
       // `__LyricBModeCfg_*`, `__LyricBModeArgs_*`, docs/55/56) from the
       // post-weave file: `caseReg` above was built from the pre-weave
@@ -3623,6 +3750,18 @@ pub func compileProjectToJarBundledWithRestored(
             externSeedForFileCached(ff, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache)
           )
           collectMonoSpecializedSigs(
+            ff,
+            registry,
+            externSeedForFileCached(ff, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache),
+            ctorReg
+          )
+          collectFileSigsSeeded(
+            protectedTypesOnly(ff),
+            registry,
+            externSeedForFileCached(ff, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache),
+            ctorReg
+          )
+          collectProtectedSpecFuncSigs(
             ff,
             registry,
             externSeedForFileCached(ff, extPkgNames, extPkgMaps, pkgImportNames, externSeedCache),

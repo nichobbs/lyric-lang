@@ -2206,72 +2206,6 @@ func checkArrayFieldDerives(
   }
 }
 
-// A record's, opaque type's or union's value generic parameter may size its
-// array fields (D169, #8149), but a protected type's may not yet: each length
-// needs its own layout on native, and native has no generic protected types
-// (#7864).
-func checkValueGenericArrayFields(
-  diag: in List[Diagnostic],
-  typeName: in String,
-  generics: in Option[GenericParams],
-  fieldTypes: in List[TypeExpr],
-): Unit {
-  val vps = valueGenericNames(generics)
-  if vps.count == 0 {
-    return
-  }
-  for ft in fieldTypes {
-    reportValueGenericArrayLengths(diag, typeName, vps, ft)
-  }
-}
-
-func reportValueGenericArrayLengths(
-  diag: in List[Diagnostic],
-  typeName: in String,
-  vps: in List[String],
-  te: in TypeExpr,
-): Unit {
-  match te.kind {
-    case TArray(size, elem) -> {
-      match arrayLengthParam(size, vps) {
-        case Some(p) -> diag.add(
-          errorDiagnostic(
-            "T0160",
-            "an array whose length is the value generic parameter '" + p + "' of '" + typeName +
-              "' is supported in a record, opaque type or union, not yet in a protected type (#7864)",
-            te.span
-          )
-        )
-        case None -> ()
-      }
-      reportValueGenericArrayLengths(diag, typeName, vps, elem)
-    }
-    case TSlice(elem) -> reportValueGenericArrayLengths(diag, typeName, vps, elem)
-    case TNullable(inner) -> reportValueGenericArrayLengths(diag, typeName, vps, inner)
-    case TParen(inner) -> reportValueGenericArrayLengths(diag, typeName, vps, inner)
-    case TTuple(tys) -> {
-      for t in tys {
-        reportValueGenericArrayLengths(diag, typeName, vps, t)
-      }
-    }
-    case TGenericApp(_, targs) -> {
-      for ta in targs {
-        match ta {
-          case TAType(t) -> reportValueGenericArrayLengths(diag, typeName, vps, t)
-          case TAValue(_) -> ()
-        }
-      }
-    }
-    case TFunction(ps, r) -> {
-      for t in ps {
-        reportValueGenericArrayLengths(diag, typeName, vps, t)
-      }
-      reportValueGenericArrayLengths(diag, typeName, vps, r)
-    }
-    case _ -> ()
-  }
-}
-
 func recordFieldTypeExprs(decl: in RecordDecl): List[TypeExpr] {
   val tys: List[TypeExpr] = newList()
   for m in decl.members {
@@ -2317,17 +2251,6 @@ func opaqueFieldTypeExprs(decl: in OpaqueTypeDecl): List[TypeExpr] {
   for m in decl.members {
     match m {
       case OMField(fd) -> tys.add(fd.ty)
-      case _ -> ()
-    }
-  }
-  tys
-}
-
-func protectedFieldTypeExprs(decl: in ProtectedTypeDecl): List[TypeExpr] {
-  val tys: List[TypeExpr] = newList()
-  for m in decl.members {
-    match m {
-      case PMField(pf) -> tys.add(protectedFieldAsFieldDecl(pf).ty)
       case _ -> ()
     }
   }
@@ -2937,6 +2860,30 @@ func checkOpaqueDeclTypes(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
   }
 }
 
+// A protected type's value generic parameter makes the declaration specialised
+// per length, whole and in the package that uses it (#8149), so for now the
+// type is not shared across packages: T0166 on a `pub` one.
+func checkProtectedValueGenericVisibility(
+  diag: in List[Diagnostic],
+  decl: in ProtectedTypeDecl,
+  vis: in Option[Visibility],
+): Unit {
+  if valueGenericNames(decl.generics).count == 0 {
+    return
+  }
+  match vis {
+    case Some(VisPub(_)) -> diag.add(
+      errorDiagnostic(
+        "T0166",
+        "the protected type '" + decl.name +
+          "' has a value generic parameter, so each length is specialised in the package that uses it and the type cannot be pub yet (#8149)",
+        decl.span
+      )
+    )
+    case _ -> ()
+  }
+}
+
 func checkProtectedDeclTypes(tbl: in SymbolTable, diag: in List[Diagnostic], decl: in ProtectedTypeDecl): Unit {
   val ctx = declGenericContext(decl.generics)
   var i = 0
@@ -3144,7 +3091,17 @@ func checkProtectedMemberBodies(
           body = syntheticBody,
           span = entryDecl.span
         )
-        checkFunctionBody(tbl, sigs, diag, fn, sig, fieldLocals, fieldLocals, true, selfTy)
+        checkFunctionBody(
+          tbl,
+          sigs,
+          diag,
+          withOwnerValueGenerics(fn, decl.generics),
+          sig,
+          fieldLocals,
+          fieldLocals,
+          true,
+          selfTy
+        )
       }
       case PMFunc(fn) -> {
         val ownFnGenerics = extractGenericNames(fn.generics)
@@ -3187,9 +3144,30 @@ func checkProtectedMemberBodies(
           isEntry = sig0.isEntry,
           isExternFunc = sig0.isExternFunc
         )
-        checkFunctionBody(tbl, sigs, diag, fn, sig, fieldLocals, fieldLocals, true, selfTy)
+        checkFunctionBody(
+          tbl,
+          sigs,
+          diag,
+          withOwnerValueGenerics(fn, decl.generics),
+          sig,
+          fieldLocals,
+          fieldLocals,
+          true,
+          selfTy
+        )
       }
-      case PMInvariant(inv) -> checkProtectedInvariant(tbl, sigs, diag, inv, ownerGenerics, fieldLocals, selfTy)
+      case PMInvariant(inv) -> {
+        // The invariant sees the type's value generic parameters as `Int`
+        // constants, like a member body does.
+        val invLocals: List[LocalBinding] = newList()
+        for fl in fieldLocals {
+          invLocals.add(fl)
+        }
+        for vp in valueGenericNames(decl.generics) {
+          invLocals.add(LocalBinding(name = vp, ty = TyPrim(pt = PtInt), isMutable = false))
+        }
+        checkProtectedInvariant(tbl, sigs, diag, inv, ownerGenerics, invLocals, selfTy)
+      }
       case _ -> {
       }
     }
@@ -4148,7 +4126,7 @@ func checkDeclTypeRefs(tbl: in SymbolTable, diag: in List[Diagnostic], items: in
       }
       case IProtected(decl) -> {
         checkProtectedDeclTypes(tbl, diag, decl)
-        checkValueGenericArrayFields(diag, decl.name, decl.generics, protectedFieldTypeExprs(decl))
+        checkProtectedValueGenericVisibility(diag, decl, items[i].visibility)
       }
       case ITypeAlias(decl) -> {
         val ctx = declGenericContext(decl.generics)
