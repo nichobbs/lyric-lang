@@ -484,6 +484,10 @@ Calls the verifier cannot follow fail closed or are over-approximated
   in evaluation order, with everything evaluated before a `?` bound before
   it too, so a callee's precondition or an `out`/`inout` change before a
   `?` is checked on both paths and one after it only on the success path.
+  A place an `out`/`inout` parameter or a method receiver uses stays the
+  variable itself, never a copy, so the call's write lands on it; if an
+  operand hoisted ahead of the call changes that variable, the call fails
+  closed (`V0033`).
   This covers bindings, expression statements, assignments, `return`, a
   statement `if`'s condition and branches, and call arguments, receivers
   and operands. A `?` that runs only conditionally within its statement (a
@@ -493,9 +497,14 @@ Calls the verifier cannot follow fail closed or are over-approximated
   callee), or whose error type differs from the function's fails closed
   (`V0033`); in a loop body or condition it fails closed (`V0026`).
 - `Result[T, E]` and `Option[T]` are the SMT datatypes `Lyric!Result` and
-  `Lyric!Option`. `Ok(v)`, `Err(e)`, `Some(v)` and `None` take their type
+  `Lyric!Option` — the standard library's only: where the file declares a
+  type of that name, imports one by name or alias, or imports a whole
+  package outside `Std.*`, the name is an ordinary uninterpreted type
+  (a generic type is an uninterpreted sort of its arity). `Ok(v)`, `Err(e)`, `Some(v)` and `None` take their type
   where they meet a typed slot (a return, an annotated binding, an
-  argument, the other operand of `==`); `.isOk`, `.isErr`, `.isSome`,
+  argument, the other operand of `==`), written positionally or with their
+  field named (`Ok(value = v)`, `Err(error = e)`); a value of another sort
+  at such a slot fails closed (`V0033`); `.isOk`, `.isErr`, `.isSome`,
   `.isNone` and `isOk(r)`-style calls are case tests, and `.value` and
   `.error` read the payload with the obligation that the value is that
   case, since reading the other case's payload traps (#8108).

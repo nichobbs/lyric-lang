@@ -7,10 +7,15 @@ proved. `.isOk`, `.value` and the other `Result`/`Option` accessors were
 not modelled either, so every postcondition that used them failed closed.
 
 - **`Result[T, E]` and `Option[T]`** are SMT datatypes (`Lyric!Result`,
-  `Lyric!Option`, declared in the query preamble). `Ok`, `Err`, `Some` and
+  `Lyric!Option`, declared in the query preamble) — only the standard
+  library's: a type of that name the file declares, imports by name, or
+  may import through a whole-package import outside `Std.*` is an ordinary
+  uninterpreted type, and generic types are now declared as uninterpreted
+  sorts of their arity. `Ok`, `Err`, `Some` and
   `None` take their type where they meet a typed slot (a return, an
   annotated binding, an argument, the other operand of `==`, both branches
-  of an `if`). `.isOk`, `.isErr`, `.isSome`, `.isNone` and the
+  of an `if`), positionally or with their field named (`Ok(value = v)`);
+  a value of another sort at such a slot fails closed. `.isOk`, `.isErr`, `.isSome`, `.isNone` and the
   `isOk(r)`-style calls are case tests; `.value` and `.error` read the
   payload, with the obligation that the value is that case.
 - **`?` splits the path** where it runs. On the `Err`/`None` path the
@@ -27,7 +32,10 @@ not modelled either, so every postcondition that used them failed closed.
   `?` is checked on both paths and one after it only on the success path.
   This covers bindings, expression statements, assignments, `return`, a
   statement `if`'s condition and branches, `assert`, and call arguments,
-  receivers and operands.
+  receivers and operands. An `out`/`inout` argument or a receiver before a
+  `?` stays the variable itself, so the call's write lands on it; one that
+  an operand hoisted ahead of the call changes fails closed. (The compiler
+  copies such an argument today; that miscompile is tracked separately.)
 - **Argument order (D171)**: arguments are translated as written, named
   and positional alike, and pass to the parameters by
   `Lyric.Parser.pairCallArgs`; the interim V0033 for named arguments
@@ -40,8 +48,8 @@ not modelled either, so every postcondition that used them failed closed.
   whose error type differs from the function's is V0033; in a loop body or
   condition it stays V0026.
 
-Verified by `lyric-compiler/lyric/verifier_self_test.l` (148 tests; new
+Verified by `lyric-compiler/lyric/verifier_self_test.l` (151 tests; new
 refute and discharge cases for the error path, the success payload, an
 `Option`, each statement form, argument order and every fail-closed case),
 the CI `lyric prove` examples and `core_proof.l`, the earlier review repros
-(no regression), and the compiler self-test batch (3415 tests).
+(no regression), and the compiler self-test batch (3418 tests).
