@@ -39,10 +39,12 @@ property proved of the caller would not hold of the program.
 - docs/15 §5.4 describes the path split; the verifier models `Result` and
   `Option` as SMT datatypes for it (#8108). They are the standard library's
   only where no other type of that name can be in the file's package, and
-  the package is the build's file set. A single-file proof is relative to
-  the file's ancestor manifests: prove a package whose manifest lists
-  files outside its own tree with `--manifest`, which warns about such a
-  file.
+  the package is the build's file set. A single-file proof holds for a
+  standalone build of the file and for the builds its ancestor manifests
+  define. It does not see a manifest outside the file's tree that lists
+  the file, and it does not resolve symbolic links or filename
+  normalisation; prove such a package with `--manifest`, which warns
+  about an entry file outside the manifest's tree.
 - Runtime-checked and proof-required code can differ on a postcondition
   that is false only on a `?` exit: the program runs without a
   `PostconditionViolated`, and `lyric prove` reports the goal as failed.
