@@ -3012,10 +3012,7 @@ func coerceArgToCtx(ctx: in FuncCtx, insns: in List[LInsn], fromTy: in JvmType, 
 
 func isObjectSliceJvm(t: in JvmType): Bool {
   match t {
-    case JArray(e) -> match e {
-      case JRef(c) -> c == "java/lang/Object"
-      case _ -> false
-    }
+    case JArray(e) -> match e { case JRef(c) -> c == "java/lang/Object"; case _ -> false }
     case _ -> false
   }
 }
