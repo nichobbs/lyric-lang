@@ -34,13 +34,16 @@ reference (`zap(c.v, g()?)`).
   `await` binds no argument after the last one holding the hazard or the
   last by-reference place with a computed index, whichever is later, so
   `f3(ok()?, note(), cells[at()].v)` still runs `ok`, `note`, `at` in that
-  order (the JVM had run `at` before `note`).
+  order (the JVM had run `at` before `note`). Only a by-reference place
+  left in the call has its indices evaluated into temporaries
+  (`ArgOrderSite.byRef`); a by-value argument left in the call keeps its
+  index inline, in its own turn.
 - Affected hoists: the `?` hoist and the `await` hoist (one engine). Not
   affected: the `.copy` lowering (its receiver and arguments are never passed
   by reference) and the backends, which only pair arguments and keep no
   temporaries of their own; the D171 rewrite already left by-reference places
   in the call.
-- Tests: thirteen cases in `named_arg_eval_order_self_test.l` (dotnet, JVM,
+- Tests: fourteen cases in `named_arg_eval_order_self_test.l` (dotnet, JVM,
   native): an `inout` variable, an `out` variable and a field before `?`, a
   named `inout` argument on either side of a `?`, a computed, a variable and
   an indexed receiver, the failing-`?` path for a positional and a reordered
@@ -49,7 +52,8 @@ reference (`zap(c.v, g()?)`).
   reordered call, and `newList()`, `None`, lambdas, slice literals and an
   `Int` widened to `Long` bound before a `?` or `await`, an indexed place
   after a `?` and a later argument, and an argument after a `?` that reads
-  the place the `?`'s call changed.
+  the place the `?`'s call changed, and a by-value element after a `?` and
+  a later argument.
 - Not covered: an array element passed as an `out`/`inout` argument
   (`zap(arr[i], v)`) is accepted by the type checker but no backend lowers it
   yet, independent of `?`; `self: inout` receivers are accepted but do not

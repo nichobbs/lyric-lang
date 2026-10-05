@@ -804,3 +804,24 @@ test "an argument after a ? reads the place the ? changed" {
   }
   assertEqual(since(t1), "a,incr", "named order")
 }
+
+func setThree(v: in Int, c: in Int, r: in Int, x: inout Int): Unit {
+  x = v * 100 + c * 10 + r
+}
+
+func byValueIndexAfterPropagate(nums: in List[Int]): Result[Int, String] {
+  var x = 0
+  setThree(noteOk("v", 1)?, note("c", 2), nums[at("i", 0)], x)
+  Ok(value = x)
+}
+
+test "a by-value element after a ? keeps its index in its own turn" {
+  val nums: List[Int] = newList()
+  nums.add(3)
+  val t0 = trace.count
+  match byValueIndexAfterPropagate(nums) {
+    case Ok(v) -> assertEqualInt(v, 123, "value")
+    case Err(e) -> assertTrue(false, "unexpected error " + e)
+  }
+  assertEqual(since(t0), "v,c,i", "order")
+}

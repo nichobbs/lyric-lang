@@ -5138,13 +5138,15 @@ func funcValueCallMono(
 // The arguments keep their names and positions, so every backend pairs them
 // with the parameters as before and passes them in parameter order, filling
 // each omitted parameter from its default after all of them.  An argument
-// the site leaves in the call (an inert one, or the place an `out`/`inout`
-// argument names) gives the same value wherever it runs, except for the
-// index operands of a place (`a[i()]`, `r.xs[j()]`): each is evaluated into
-// a temporary at the place's position in source order, so it runs once and
-// in order while the place itself (its root and the path to it) is still
-// passed by reference (#8171).  A receiver that is a place is left in the
-// call the same way, with its index operands evaluated first.  A temporary for an
+// the site leaves in the call is an inert one, the place an `out`/`inout`
+// argument names, or one written after every argument that needs a
+// temporary, which runs in its own turn anyway (`recordArgOrderSite`).  The
+// index operands of a by-reference place (`a[i()]`, `r.xs[j()]`) are
+// evaluated into temporaries at the place's position in source order, so
+// each runs once and in order while the place itself (its root and the path
+// to it) is still passed by reference (#8171); a by-value argument left in
+// the call keeps its indices inline.  A receiver that is a place is left in
+// the call the same way, with its index operands evaluated first.  A temporary for an
 // operand whose type the checker recorded (`hoistOperandTypedMono`) takes that
 // type as its annotation.  An argument's temporary is read through a
 // zero-width span, which no span-keyed site names, so the read is never
@@ -5190,7 +5192,7 @@ func argOrderCallMono(
           case CAPositional(_) -> CAPositional(expr = read)
         }
       )
-    } else {
+    } else if i < site.byRef.count and site.byRef[i] {
       val place = bindPlaceIndicesMono(state, env, callArgExpr(args[i]), base, stmts)
       callArgs.add(
         match args[i] {
@@ -5198,6 +5200,8 @@ func argOrderCallMono(
           case CAPositional(_) -> CAPositional(expr = place)
         }
       )
+    } else {
+      callArgs.add(args[i])
     }
     i = i + 1
   }

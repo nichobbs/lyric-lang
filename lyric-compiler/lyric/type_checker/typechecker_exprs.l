@@ -11283,7 +11283,10 @@ func recordArgOrderSite(
   if tbl.argOrderSites.containsKey(key) {
     tbl.argOrderSites.remove(key)
   }
-  tbl.argOrderSites.add(key, ArgOrderSite(bound = bound, bindRecv = bindRecv, startOffset = callSpan.startPos.offset))
+  tbl.argOrderSites.add(
+    key,
+    ArgOrderSite(bound = bound, byRef = argByRef, bindRecv = bindRecv, startOffset = callSpan.startPos.offset)
+  )
 }
 
 // `recordArgOrderSite` for a call to `sig`, whose parameters the arguments
