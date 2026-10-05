@@ -476,7 +476,7 @@ Calls the verifier cannot follow fail closed or are over-approximated
   the function returns `Err(e.error)` or `None` at its own result type, as
   `Lyric.Propagate` lowers it, and its `ensures:` must hold for that
   result: a caller assumes the postcondition of every value a function
-  returns, although the runtime does not check it on this exit (D173). Otherwise the path goes on with the payload, and
+  returns, although the runtime does not check it on this exit (D174). Otherwise the path goes on with the payload, and
   facts from the callee's `ensures:` (`result.isOk implies result.value >
   0`) hold of it — for the postcondition; a side goal (a later callee's
   `requires:`, an `assert`) does not see earlier facts yet (#8103 item 1).
@@ -515,7 +515,7 @@ Calls the verifier cannot follow fail closed or are over-approximated
   file's directory, recursively (an over-approximation; a subdirectory with
   its own `lyric.toml` is another project). A manifest that lists files
   outside its own tree cannot be found from such a file: prove that
-  package with `--manifest` (D173). Paths are matched case-insensitively,
+  package with `--manifest` (D174). Paths are matched case-insensitively,
   which only adds files; symbolic links are not resolved (Std has no
   canonical-path call). The scope is unknown — both names counted as
   declared — when any of those files cannot be read or parsed, a
