@@ -2078,6 +2078,27 @@ func hasAnnotationNamedPipe(anns: in List[Annotation], name: in String): Bool {
   false
 }
 
+// The body given an entry that has none, in the signature-only copy of a
+// specialisation (`recordSignatureOnly`): `panic("")` type-checks against any
+// return type and records no array operation.
+func signatureOnlyEntryBody(sp: in Span): FunctionBody {
+  val segs: List[String] = newList()
+  segs.add("panic")
+  val msg = Expr(kind = ELiteral(lit = LString(text = "")), span = sp)
+  val args: List[CallArg] = newList()
+  args.add(CAPositional(expr = msg))
+  val call = Expr(
+    kind = ECall(
+      fn = Expr(kind = EPath(path = ModulePath(segments = segs, span = sp)), span = sp),
+      args = args
+    ),
+    span = sp
+  )
+  val stmts: List[Statement] = newList()
+  stmts.add(Statement(kind = SExpr(expr = call), span = sp))
+  FBBlock(block = Block(statements = stmts, span = sp))
+}
+
 // `like` with the name, generic parameters and members of `d`, a record view
 // of it (`protectedAsRecord`) that has been specialised.
 func recordAsProtected(like: in ProtectedTypeDecl, d: in RecordDecl): ProtectedTypeDecl {
@@ -2118,10 +2139,7 @@ func recordAsProtected(like: in ProtectedTypeDecl, d: in RecordDecl): ProtectedT
       case RMInvariant(inv) -> members.add(PMInvariant(inv = inv))
       case RMFunc(fn) -> {
         if hasAnnotationNamedPipe(fn.annotations, "__pm_entry") {
-          val body = match fn.body {
-            case Some(b) -> b
-            case None -> FBBlock(block = Block(statements = newList(), span = fn.span))
-          }
+          val body = match fn.body { case Some(b) -> b; case None -> signatureOnlyEntryBody(fn.span) }
           members.add(
             PMEntry(
               entryDecl = EntryDecl(
