@@ -686,7 +686,7 @@ typedef struct LyricTask {
     void* coro_handle;        /* LLVM coro frame; destroyed by the dtor  */
     int32_t state;            /* RUNNING/SLEEPING/WAITING/READY/COMPLETE */
     int64_t result;           /* 64-bit slot, valid when COMPLETE        */
-    int32_t result_is_ref;    /* 0 scalar, 1 strong ref, 2 weak ref (#5545) */
+    int32_t result_is_ref;    /* 0 scalar, 1 strong ref, 2 weak ref (#5545), 3 failed host task (result is the message String) */
     int64_t wake_deadline_ns; /* monotonic deadline while SLEEPING       */
     struct LyricTask* waiters; /* tasks parked on this task's completion */
     struct LyricTask* next;    /* intrusive link (ready/sleeper/waiter)  */
@@ -705,8 +705,23 @@ void       lyric_async_sleep(LyricTask* t, int64_t ms);
 /* Drive the scheduler until `root` completes (sync-context await). */
 void       lyric_task_block_on(LyricTask* root);
 /* Run every ready task without blocking (host-driven event loops).  Returns -1
- * when nothing is ready or sleeping, else ns until the earliest sleeper wakes. */
+ * when nothing is ready, sleeping or waiting on the host, -2 when the only
+ * thing left is an operation the host has yet to finish (see lyric_host_task_*),
+ * else ns until the earliest sleeper wakes. */
 int64_t    lyric_sched_poll(void);
+
+/* Operations the host finishes (docs/35 section 11, the wasm `module` shape): a
+ * pending task a host import hands back, which Lyric code awaits like any other
+ * task.  `lyric_host_task_new` returns a task with TWO refs (one for the caller
+ * to hand on, one the host keeps); `lyric_host_task_finish` stores the result
+ * (same ownership rule as lyric_task_complete), wakes the waiters and drops the
+ * host's ref.  `lyric_host_task_fail` finishes it with an error message instead:
+ * reading the result of a failed task panics with that message.  Both panic on a
+ * task that is not pending. */
+LyricTask* lyric_host_task_new(void);
+void       lyric_host_task_finish(LyricTask* t, int64_t result, int32_t result_is_ref);
+void       lyric_host_task_fail(LyricTask* t, LyricString* message);
+int64_t    lyric_host_tasks_pending(void);
 /* The task whose frame is executing (codegen reads it inside bodies). */
 LyricTask* lyric_current_task(void);
 void       lyric_set_current_task(LyricTask* t);

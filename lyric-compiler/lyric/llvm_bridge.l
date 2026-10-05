@@ -2325,13 +2325,30 @@ func appendWasmModuleLinkArgs(clangArgs: in List[String], set: in WasmExportSet,
     }
     ei = ei + 1
   }
-  // An async export needs the scheduler entry and the task accessors the glue
-  // polls with; a module without one never links the scheduler.
-  if anyAsync {
+  // An async export, or a host import returning a `Task[T]`, needs the scheduler
+  // entry and the task accessors the glue polls with; a module with neither never
+  // links the scheduler.  A host import also needs the helpers that finish the
+  // pending task it hands back.
+  var anyAsyncImport = false
+  for imp in set.imports {
+    if Str.startsWith(imp.ret, "Task:") {
+      anyAsyncImport = true
+    }
+  }
+  if anyAsync or anyAsyncImport {
     val asyncHelpers: List[String] = newList()
     asyncHelpers.add("lyric_wasm_poll")
     asyncHelpers.add("lyric_task_is_complete")
     asyncHelpers.add("lyric_task_result")
+    if anyAsyncImport {
+      asyncHelpers.add("lyric_wasm_host_task_new")
+      asyncHelpers.add("lyric_wasm_host_finish_i32")
+      asyncHelpers.add("lyric_wasm_host_finish_i64")
+      asyncHelpers.add("lyric_wasm_host_finish_f32")
+      asyncHelpers.add("lyric_wasm_host_finish_f64")
+      asyncHelpers.add("lyric_wasm_host_finish_string")
+      asyncHelpers.add("lyric_wasm_host_fail")
+    }
     var ai = 0
     while ai < asyncHelpers.count {
       clangArgs.add("-Wl,--undefined=" + asyncHelpers[ai])

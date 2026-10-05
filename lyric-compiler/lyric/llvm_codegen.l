@@ -85,6 +85,9 @@ pub record WasmImportDecl {
   module: String
   /// Why the `@wasmImport` annotation is unusable, or "" when it is well formed.
   problem: String
+  /// `@wasmImport("module", promise)`: the host function may return a Promise,
+  /// and a call suspends the calling task until it settles (docs/35 section 11).
+  isPromise: Bool
 }
 
 pub record CodegenUnit {
@@ -2009,7 +2012,7 @@ func buildSigs(units: in List[CodegenUnit]): Map[String, NFuncSig] {
         paramDefaults = noParamDefaults(ef.params.count),
         retTy = ef.ret,
         isExternSym = true,
-        isAsync = false
+        isAsync = wasmImportIsPromise(u.wasmImports, ef.symbol)
       )
       addSig(sigs, u.pkgName + "." + ef.name + "/" + arity.toString(), sig)
       addSig(sigs, ef.name + "/" + arity.toString(), sig)
@@ -15510,11 +15513,13 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
           val attrs: List[String] = newList()
           attrs.add("\"wasm-import-module\"=\"" + importModule + "\"")
           attrs.add("\"wasm-import-name\"=\"" + ef.symbol + "\"")
+          // A promise import hands back the pending task, awaited like an async call.
+          val declRet = if wasmImportIsPromise(u.wasmImports, ef.symbol) { NPtr(pointee = NI8) } else { plain.retTy }
           externDecls.add(
             NFunc(
               name = llName,
               params = plain.params,
-              retTy = plain.retTy,
+              retTy = declRet,
               isPublic = plain.isPublic,
               isExtern = plain.isExtern,
               body = plain.body,
@@ -15881,19 +15886,43 @@ pub func addWasmImport(imports: in List[WasmImportDecl], symbol: in String, anns
     case None -> ()
     case Some(a) -> {
       var module = ""
-      var problem = "it needs exactly one string literal argument, the module name"
-      match annotationStringArg(a) {
+      var problem = "it needs a string literal first argument, the module name"
+      var isPromise = false
+      match annotationLeadingString(a) {
         case Some(m) -> {
           module = m
           problem = wasmImportModuleProblem(m)
         }
         case None -> ()
       }
+      for flag in annotationTrailingFlags(a) {
+        if flag == "promise" {
+          isPromise = true
+        } else if problem.length == 0 {
+          problem = "the only flag after the module name is `promise`, not `" + flag + "`"
+        }
+      }
       imports.add(
-        WasmImportDecl(symbol = symbol, module = if problem.length == 0 { module } else { "" }, problem = problem)
+        WasmImportDecl(
+          symbol = symbol,
+          module = if problem.length == 0 { module } else { "" },
+          problem = problem,
+          isPromise = problem.length == 0 and isPromise
+        )
       )
     }
   }
+}
+
+/// Whether the host function behind `symbol` may return a Promise the caller
+/// waits for (`@wasmImport("module", promise)`).
+pub func wasmImportIsPromise(imports: in List[WasmImportDecl], symbol: in String): Bool {
+  for w in imports {
+    if w.symbol == symbol {
+      return w.isPromise
+    }
+  }
+  false
 }
 
 /// The LLVM symbol an extern is declared and called under.  A wasm import keeps

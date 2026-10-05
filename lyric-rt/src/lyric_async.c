@@ -58,6 +58,7 @@ enum {
     LYRIC_TASK_WAITING = 2,
     LYRIC_TASK_READY = 3,
     LYRIC_TASK_COMPLETE = 4,
+    LYRIC_TASK_HOST = 5, /* pending on the host; in no queue (lyric_host_task_new) */
 };
 
 /* Scheduler queues (single-threaded — no locking). */
@@ -65,6 +66,7 @@ static LyricTask* g_ready_head = NULL;
 static LyricTask* g_ready_tail = NULL;
 static LyricTask* g_sleepers = NULL; /* singly linked, deadline-ascending */
 static LyricTask* g_current = NULL;  /* task whose frame is executing */
+static int64_t g_host_pending = 0;   /* host tasks created and not yet finished */
 
 static void lyric_task_dtor(void* obj) {
     LyricTask* t = (LyricTask*)obj;
@@ -75,7 +77,7 @@ static void lyric_task_dtor(void* obj) {
     /* Tri-state result ownership (#5545): 0 scalar, 1 strong ref, 2 weak
      * ref — a weak task result must release via the weak-count variant
      * so it never keeps its target strongly alive. */
-    if (t->result_is_ref == 1) {
+    if (t->result_is_ref == 1 || t->result_is_ref == 3) {
         lyric_release((void*)(intptr_t)t->result);
     } else if (t->result_is_ref == 2) {
         lyric_weak_release((void*)(intptr_t)t->result);
@@ -106,6 +108,11 @@ int32_t lyric_task_is_complete(LyricTask* t) {
 int64_t lyric_task_result(LyricTask* t) {
     if (t->state != LYRIC_TASK_COMPLETE) {
         lyric_panic_msg("await read on an incomplete task (scheduler bug)", "lyric_async.c", __LINE__);
+    }
+    if (t->result_is_ref == 3) {
+        /* A host operation that failed: the message is the host's own. */
+        lyric_panic_msg((const char*)LYRIC_STRING_DATA((LyricString*)(intptr_t)t->result), "host operation",
+                        __LINE__);
     }
     return t->result;
 }
@@ -171,6 +178,47 @@ void lyric_task_complete(LyricTask* t, int64_t result, int32_t result_is_ref) {
     if (had_sched_ref) {
         lyric_release(t);
     }
+}
+
+/* ── Host-finished tasks (docs/35 section 11) ────────────────────────── */
+
+LyricTask* lyric_host_task_new(void) {
+    LyricTask* t = lyric_task_new(NULL);
+    t->state = LYRIC_TASK_HOST;
+    lyric_retain(t); /* the host's ref, dropped by finish/fail */
+    g_host_pending++;
+    return t;
+}
+
+/* Complete a pending host task and wake what awaits it. */
+static void host_task_settle(LyricTask* t, int64_t result, int32_t result_is_ref) {
+    if (t->state != LYRIC_TASK_HOST) {
+        lyric_panic_msg("host task finished twice, or is not a host task", "lyric_async.c", __LINE__);
+    }
+    t->result = result;
+    t->result_is_ref = result_is_ref;
+    t->state = LYRIC_TASK_COMPLETE;
+    g_host_pending--;
+    LyricTask* w = t->waiters;
+    t->waiters = NULL;
+    while (w) {
+        LyricTask* next = w->next;
+        ready_push(w); /* the waiter keeps the sched ref it took when it parked */
+        w = next;
+    }
+    lyric_release(t); /* the host's ref */
+}
+
+void lyric_host_task_finish(LyricTask* t, int64_t result, int32_t result_is_ref) {
+    host_task_settle(t, result, result_is_ref);
+}
+
+void lyric_host_task_fail(LyricTask* t, LyricString* message) {
+    host_task_settle(t, (int64_t)(intptr_t)message, 3);
+}
+
+int64_t lyric_host_tasks_pending(void) {
+    return g_host_pending;
 }
 
 /* Register the currently-RUNNING task as awaiting `dep`; the caller
@@ -264,6 +312,12 @@ void lyric_task_block_on(LyricTask* root) {
             continue;
         }
         if (next_deadline < 0) {
+            if (g_host_pending > 0) {
+                lyric_panic_msg(
+                    "awaiting a host operation inside a synchronous call: the host cannot finish it until this call "
+                    "returns, so make the caller an async func",
+                    "lyric_async.c", __LINE__);
+            }
             lyric_panic_msg("deadlock: awaited task can never complete (no ready tasks, no timers)", "lyric_async.c",
                             __LINE__);
         }
@@ -280,7 +334,8 @@ void lyric_task_block_on(LyricTask* root) {
 
 /* Run every ready task (waking expired sleepers) until none is runnable, without
  * ever blocking, for hosts that own the event loop (the wasm `module` shape,
- * docs/35 §11).  Returns -1 when no task is READY or SLEEPING, else the
+ * docs/35 §11).  Returns -1 when no task is READY or SLEEPING and no host
+ * operation is pending, -2 when none is but a host operation is, else the
  * nanoseconds until the earliest sleeper wakes (0 when one is already due). */
 int64_t lyric_sched_poll(void) {
     for (;;) {
@@ -294,7 +349,7 @@ int64_t lyric_sched_poll(void) {
             continue;
         }
         if (next_deadline < 0) {
-            return -1;
+            return g_host_pending > 0 ? -2 : -1;
         }
         int64_t wait_ns = next_deadline - lyric_monotonic_nanos();
         return wait_ns > 0 ? wait_ns : 0;

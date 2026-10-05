@@ -663,6 +663,20 @@ pub func go(): Unit {
     componentBuildOk(
       r#"package Probe
 
+@wasmImport("net", promise)
+extern func fetchText(url: String): String = "fetch-text"
+
+pub async func go(): String {
+  fetchText("u")
+}
+"#
+    ),
+    "a promise host import is available in the module shape only"
+  )
+  assertFalse(
+    componentBuildOk(
+      r#"package Probe
+
 @wasmImport("")
 extern func bad(n: Int): Unit = "bad"
 
