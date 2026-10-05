@@ -11126,6 +11126,38 @@ func argIsPlace(e: in Expr): Bool {
   }
 }
 
+// Whether the place `e` has an index that is not a literal (`xs[i()]`,
+// `r.xs[j].v`): `Lyric.Mono.bindPlaceIndicesMono` evaluates each such index
+// into a temporary at the place's position.
+func placeHasComputedIndex(e: in Expr): Bool {
+  match e.kind {
+    case EParen(inner) -> placeHasComputedIndex(inner)
+    case EMember(recv, _) -> placeHasComputedIndex(recv)
+    case EIndex(recv, indices) -> {
+      for ix in indices {
+        if not exprIsLiteralIndex(ix) {
+          return true
+        }
+      }
+      placeHasComputedIndex(recv)
+    }
+    case _ -> false
+  }
+}
+
+// A literal or a negated literal, which `bindPlaceIndicesMono` leaves in place.
+func exprIsLiteralIndex(e: in Expr): Bool {
+  match e.kind {
+    case ELiteral(_) -> true
+    case EParen(inner) -> exprIsLiteralIndex(inner)
+    case EPrefix(op, operand) -> match op {
+      case PreNeg -> match operand.kind { case ELiteral(_) -> true; case _ -> false }
+      case _ -> false
+    }
+    case _ -> false
+  }
+}
+
 // Whether any argument of a call is named: only then can its arguments be
 // written out of parameter order.
 func callArgsHaveNamed(args: in List[CallArg]): Bool {
@@ -11206,18 +11238,22 @@ func recordArgOrderSite(
     return
   }
   // Written in parameter order, the call needs temporaries only up to the
-  // last argument holding a `?` or `await`: the arguments after it run after
-  // it either way.
+  // last argument holding a `?` or `await`, or the last by-reference place
+  // with an index the rewrite evaluates into a temporary
+  // (`bindPlaceIndicesMono`), whichever comes later: the arguments after
+  // both run after them either way, while an argument left in the call
+  // before such an index would run after it.
   if not reordered {
-    var lastHazard = -1
+    var lastNeed = -1
     i = 0
     while i < args.count {
-      if HoistEngine.exprHasHoistHazard(callArgExpr(args[i])) {
-        lastHazard = i
+      val ae = callArgExpr(args[i])
+      if HoistEngine.exprHasHoistHazard(ae) or (argByRef[i] and placeHasComputedIndex(ae)) {
+        lastNeed = i
       }
       i = i + 1
     }
-    i = lastHazard + 1
+    i = lastNeed + 1
     while i < args.count {
       bound[i] = false
       i = i + 1

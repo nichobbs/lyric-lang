@@ -746,3 +746,61 @@ test "operands bound before a ? or await keep their expected types" {
   }
   assertEqual(await operandsBeforeAwait(), "102056/4", "await value")
 }
+
+// ─── A place's index after a ? runs in its own turn ──────────────────────────
+func setFrom(v: in Int, c: in Int, x: inout Int): Unit {
+  x = v * 10 + c
+}
+
+func addFour(a: in Int, x: inout Int, v: in Int, c: in Int): Unit {
+  x = x + a * 1000 + v * 10 + c
+}
+
+func incr(x: inout Int): Result[Int, String] {
+  trace.add("incr")
+  x = x + 1
+  Ok(value = x * 10)
+}
+
+func indexedPlaceAfterPropagate(cells: in List[Cell]): Result[Int, String] {
+  setFrom(noteOk("v", 1)?, note("c", 2), cells[at("i", 0)].v)
+  Ok(value = cells[0].v)
+}
+
+func readAfterInoutPropagate(): Result[Int, String] {
+  var x = 1
+  addFour(note("a", 1), x, incr(x)?, x)
+  Ok(value = x)
+}
+
+func namedReadAfterInoutPropagate(): Result[Int, String] {
+  var x = 1
+  addFour(a = note("a", 1), x = x, v = incr(x)?, c = x)
+  Ok(value = x)
+}
+
+test "an inout place's index runs after the arguments written before it" {
+  val cells: List[Cell] = newList()
+  cells.add(Cell(v = 0))
+  val t0 = trace.count
+  match indexedPlaceAfterPropagate(cells) {
+    case Ok(v) -> assertEqualInt(v, 12, "the element's field was written")
+    case Err(e) -> assertTrue(false, "unexpected error " + e)
+  }
+  assertEqual(since(t0), "v,c,i", "order")
+}
+
+test "an argument after a ? reads the place the ? changed" {
+  val t0 = trace.count
+  match readAfterInoutPropagate() {
+    case Ok(v) -> assertEqualInt(v, 1204, "positional")
+    case Err(e) -> assertTrue(false, "unexpected error " + e)
+  }
+  assertEqual(since(t0), "a,incr", "positional order")
+  val t1 = trace.count
+  match namedReadAfterInoutPropagate() {
+    case Ok(v) -> assertEqualInt(v, 1204, "named")
+    case Err(e) -> assertTrue(false, "unexpected error " + e)
+  }
+  assertEqual(since(t1), "a,incr", "named order")
+}
