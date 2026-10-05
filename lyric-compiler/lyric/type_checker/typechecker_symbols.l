@@ -336,6 +336,14 @@ pub record SymbolTable {
   /// arguments are all closed, keyed by `recordCopySiteKey` of the callee's span
   /// (see `Lyric.Parser.GenericCallTypeArgsSite`, #7865).
   genericCallTypeArgSites: Map[String, GenericCallTypeArgsSite]
+  /// Each call to a generic dot-named function (`func Box.get[T](self: in
+  /// Box[T])`), written as a method call (`b.get()`) or through its type
+  /// (`Box.get(b)`), keyed by `recordCopySiteKey` of the callee's span: the
+  /// function's name, prefixed `m:` for a method call (whose receiver becomes
+  /// the first argument) or `s:` for a call through the type.
+  /// `Lyric.Pipeline` rewrites such a call into a plain call of that name,
+  /// which `Lyric.Mono` specialises (#8173).
+  dottedGenericCallSites: Map[String, String]
   /// The types each lambda's unannotated parameters took from the function
   /// type it was checked against, keyed by `recordCopySiteKey` of the lambda's
   /// span (see `Lyric.Parser.LambdaParamTypesSite`, #7865).
@@ -638,6 +646,7 @@ pub func newSymbolTable(): SymbolTable {
     methodCallResultExpected = newMap(),
     lambdaReturnFrames = newList(),
     genericCallTypeArgSites = newMap(),
+    dottedGenericCallSites = newMap(),
     lambdaParamTypeSites = newMap(),
     moduleValTypes = newMap(),
     generatorCallSites = newMap(),

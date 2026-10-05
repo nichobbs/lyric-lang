@@ -3633,6 +3633,18 @@ func writeBackHolderArg(
   }
 }
 
+// The classfile name a static call to `funcName` invokes.  A dot-named
+// function's name, its specialisations' included (`Box.get__Int`, #8173), is
+// the `TypeName$member` its registration recorded (#7501): JVMS §4.2.2
+// forbids a `.` in a method name.
+func staticCallJvmName(sig: in JvmFuncSig, funcName: in String): String {
+  if funcName.contains(".") and sig.jvmMethodName.length > 0 {
+    sig.jvmMethodName
+  } else {
+    funcName
+  }
+}
+
 func lowerStaticCallWithHolders(
   ctx: in FuncCtx,
   insns: in List[LInsn],
@@ -3717,7 +3729,9 @@ func lowerStaticCallWithHolders(
     }
     ai = ai + 1
   }
-  insns.add(LInvokestatic(owner = sig.owner, name = funcName, params = sig.params, ret = sig.ret))
+  insns.add(
+    LInvokestatic(owner = sig.owner, name = staticCallJvmName(sig, funcName), params = sig.params, ret = sig.ret)
+  )
   // Copy each holder's element 0 back into its target (caller local or
   // field-access receiver, #3628).
   var ri = 0
@@ -4027,7 +4041,9 @@ func lowerGenericStaticCallBoxingByType(
     }
     li = li + 1
   }
-  insns.add(LInvokestatic(owner = sig.owner, name = funcName, params = sig.params, ret = sig.ret))
+  insns.add(
+    LInvokestatic(owner = sig.owner, name = staticCallJvmName(sig, funcName), params = sig.params, ret = sig.ret)
+  )
   narrowStaticCallResult(ctx, insns, sig)
 }
 
@@ -4246,7 +4262,9 @@ func lowerGeneralStaticCall(
           emitLoad(insns, argSlots[li], lTy)
           li = li + 1
         }
-        insns.add(LInvokestatic(owner = sig.owner, name = funcName, params = sig.params, ret = sig.ret))
+        insns.add(
+          LInvokestatic(owner = sig.owner, name = staticCallJvmName(sig, funcName), params = sig.params, ret = sig.ret)
+        )
         return narrowStaticCallResult(ctx, insns, sig)
       }
       var ai = 0
@@ -4267,7 +4285,9 @@ func lowerGeneralStaticCall(
         }
         ai = ai + 1
       }
-      insns.add(LInvokestatic(owner = sig.owner, name = funcName, params = sig.params, ret = sig.ret))
+      insns.add(
+        LInvokestatic(owner = sig.owner, name = staticCallJvmName(sig, funcName), params = sig.params, ret = sig.ret)
+      )
       return narrowStaticCallResult(ctx, insns, sig)
     }
     case None -> ()

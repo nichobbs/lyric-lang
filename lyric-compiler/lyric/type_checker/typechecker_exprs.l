@@ -11251,6 +11251,157 @@ func valueGenericParamsOf(tbl: in SymbolTable, fn: in Expr, argCount: in Int): L
 // those lengths.  Two arguments binding one parameter to different lengths,
 // or an argument whose length is not the explicit one, is T0043; a parameter
 // neither the arguments nor the call give a length is T0110.
+// `Box.get(b)`: a two-segment path naming a generic dot-named function
+// (#8173), as the single-segment path `Box.get` the function is declared and
+// specialised under, at the same span.
+// The type of a call resolved to the direct signature `sig`: its return
+// type, with value generic parameters bound from the arguments.  A generic
+// dot-named function called through its type (`Box.get(b)`) is recorded for
+// specialisation under its full name (#8173).
+func directCallType(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  fn: in Expr,
+  sig: in ResolvedSignature,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+): Type {
+  val ret = instantiateReturnType(sig, argTypes)
+  match dottedGenericPathCallee(tbl, fn, sig) {
+    case Some(dottedFn) -> {
+      recordDottedGenericCallSite(tbl, fn.span, "s:" + dottedPathName(fn))
+      recordGenericCallTypeArgs(tbl, sig, valueGenericParamsOf(tbl, dottedFn, args.count), args, argTypes, fn.span)
+      bindValueGenericCall(tbl, diag, dottedFn, args, argTypes, ret)
+    }
+    case None -> bindValueGenericCall(tbl, diag, fn, args, argTypes, ret)
+  }
+}
+
+func dottedSigLookup(
+  sigs: in Map[String, ResolvedSignature], dotted: in String, arity: in Int
+): Option[ResolvedSignature] {
+  match mapGet(sigs, dotted + "/" + toString(arity)) {
+    case Some(ds) -> Some(value = ds)
+    case None -> mapGet(sigs, dotted)
+  }
+}
+
+func scopeHasName(sc: in Scope, name: in String): Bool {
+  match scopeTryFind(sc, name) {
+    case Some(_) -> true
+    case None -> false
+  }
+}
+
+func dottedGenericPathCallee(tbl: in SymbolTable, fn: in Expr, sig: in ResolvedSignature): Option[Expr] {
+  if sig.generics.count == 0 {
+    return None
+  }
+  val name = dottedPathName(fn)
+  if name.length == 0 {
+    return None
+  }
+  for sym in symTableTryFindAll(tbl, name) {
+    match sym.kind {
+      case DKFunc(_) -> {
+        val segs: List[String] = newList()
+        segs.add(name)
+        return Some(value = Expr(kind = EPath(path = ModulePath(segments = segs, span = fn.span)), span = fn.span))
+      }
+      case _ -> ()
+    }
+  }
+  None
+}
+
+// `Box.get` for a callee written `Box.get`, as a two-segment path or a
+// member of the type name; "" otherwise.
+func dottedPathName(fn: in Expr): String {
+  match fn.kind {
+    case EPath(p) -> if p.segments.count == 2 { p.segments[0] + "." + p.segments[1] } else { "" }
+    case EMember(recv, member) -> match recv.kind {
+      case EPath(rp) -> if rp.segments.count == 1 {
+        rp.segments[0] + "." + member
+      } else {
+        ""
+      }
+      case _ -> ""
+    }
+    case _ -> ""
+  }
+}
+
+func recordDottedGenericCallSite(tbl: in SymbolTable, sp: in Span, name: in String): Unit {
+  if isNoSourceSpan(sp) or name.length <= 2 {
+    return
+  }
+  val key = recordCopySiteKey(sp)
+  if not tbl.dottedGenericCallSites.containsKey(key) {
+    tbl.dottedGenericCallSites.add(key, name)
+  }
+}
+
+// The type of `recv.m(args)` resolved to the dot-named function `T.m`: its
+// return type instantiated from the receiver and arguments, with a generic
+// function's call recorded for specialisation (#8173).
+func dottedMethodCallType(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  fn: in Expr,
+  recvTy: in Option[Type],
+  memberName: in String,
+  args: in List[CallArg],
+  fullArgTypes: in List[Type],
+  fullSig: in ResolvedSignature,
+): Type {
+  val dotRet = instantiateReturnType(fullSig, fullArgTypes)
+  if fullSig.generics.count == 0 {
+    return dotRet
+  }
+  match recvTy {
+    case Some(rt) -> recordDottedGenericMethodCall(tbl, diag, fn, rt, memberName, args, fullArgTypes, fullSig, dotRet)
+    case None -> dotRet
+  }
+}
+
+// `b.get()` resolved to a generic dot-named function `Box.get` (#8173): the
+// call is recorded for rewriting into `Box.get(b)`, and the function's value
+// parameters are bound from the receiver and arguments as that call binds
+// them, giving the call its type.
+func recordDottedGenericMethodCall(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  fn: in Expr,
+  recvTy: in Type,
+  memberName: in String,
+  args: in List[CallArg],
+  fullArgTypes: in List[Type],
+  fullSig: in ResolvedSignature,
+  instRet: in Type,
+): Type {
+  val recvExpr = match fn.kind { case EMember(r, _) -> r; case _ -> return instRet }
+  val tname = match unrefine(recvTy) { case TyUser(_, n, _) -> n; case _ -> return instRet }
+  val name = tname + "." + memberName
+  recordDottedGenericCallSite(tbl, fn.span, "m:" + name)
+  val segs: List[String] = newList()
+  segs.add(name)
+  val dottedFn = Expr(kind = EPath(path = ModulePath(segments = segs, span = fn.span)), span = fn.span)
+  val fullArgs: List[CallArg] = newList()
+  fullArgs.add(CAPositional(expr = recvExpr))
+  for a in args {
+    fullArgs.add(a)
+  }
+  recordGenericCallTypeArgs(
+    tbl,
+    fullSig,
+    valueGenericParamsOf(tbl, dottedFn, fullArgs.count),
+    fullArgs,
+    fullArgTypes,
+    fn.span
+  )
+  bindValueGenericCall(tbl, diag, dottedFn, fullArgs, fullArgTypes, instRet)
+}
+
 func bindValueGenericCall(
   tbl: in SymbolTable,
   diag: in List[Diagnostic],
@@ -12313,7 +12464,7 @@ func inferExprCore(
           checkBoundsSatisfied(tbl, diag, sig, argTypes, e.span)
           // Instantiate a generic return type from the argument types (#1488
           // category B) so `unwrapOr(opt, 0): T` yields `Int`, not `TyVar("T")`.
-          val instRet = bindValueGenericCall(tbl, diag, fn, args, argTypes, instantiateReturnType(sig, argTypes))
+          val instRet = directCallType(tbl, diag, fn, sig, args, argTypes)
           // A generic call's result type is evidence for `Lyric.Mono` where
           // it cannot infer the call's type arguments itself (#7865).
           if sig.generics.count > 0 {
@@ -12404,7 +12555,7 @@ func inferExprCore(
                         extArgs.add(argTypes[xi])
                         xi = xi + 1
                       }
-                      instantiateReturnType(fullS, extArgs)
+                      dottedMethodCallType(tbl, diag, fn, memberRecvTy, memberName, args, extArgs, fullS)
                     }
                     case None -> instantiateReturnType(mp.sig, argTypes)
                   }
@@ -12642,9 +12793,18 @@ func inferExprCore(
     // read has the concrete receiver type — a record-body method passing
     // `self` to a sibling UFCS function (`evictKey(self, key)`) must match
     // that function's concrete parameter type, not an opaque `Self` that
-    // T0043 rejects.  Interface default-method bodies and other lenient
-    // contexts keep the pre-existing `TySelf`.
-    case ESelf -> if sc.selfChecked { sc.selfType } else { TySelf }
+    // T0043 rejects.  A free function whose first parameter is `self` (the
+    // UFCS method form, D037) reads that parameter's declared type, so
+    // `self.field` is typed like any other parameter's field.  Interface
+    // default-method bodies and other lenient contexts keep `TySelf`.
+    case ESelf -> if sc.selfChecked {
+      sc.selfType
+    } else {
+      match scopeTryFind(sc, "self") {
+        case Some(b) -> b.ty
+        case None -> TySelf
+      }
+    }
     // `result` in an `ensures:` clause has the enclosing function's declared
     // return type, carried on the scope (D081).
     // `result` is a contextual keyword (codegen.l:2833 agrees): a user-declared
@@ -14944,6 +15104,23 @@ func findDirectSig(
   argTypes: in List[Type],
 ): Option[ResolvedSignature] {
   match fn.kind {
+    // `Box.get(b)`: a dot-named function called through its type name
+    // (#8173).  The receiver names a type, not a value in scope.
+    case EMember(recv, member) -> {
+      val typeName = match recv.kind {
+        case EPath(rp) -> if rp.segments.count == 1 and startsUppercase(rp.segments[0]) {
+          rp.segments[0]
+        } else {
+          ""
+        }
+        case _ -> ""
+      }
+      if typeName.length == 0 or scopeHasName(sc, typeName) {
+        return None
+      }
+      val dotted = typeName + "." + member
+      dottedSigLookup(sigs, dotted, arity)
+    }
     case EPath(path) -> {
       if path.segments.count == 0 {
         return None
@@ -14968,6 +15145,15 @@ func findDirectSig(
         }
       }
       val arityKey = name + "/" + toString(arity)
+      // `Box.get(b)`: a dot-named function called through its type (#8173),
+      // registered under its full dotted name.
+      if path.segments.count == 2 {
+        val dotted = path.segments[0] + "." + name
+        match mapGet(sigs, dotted + "/" + toString(arity)) {
+          case Some(ds) -> return Some(value = ds)
+          case None -> match mapGet(sigs, dotted) { case Some(ds2) -> return Some(value = ds2); case None -> () }
+        }
+      }
       // Qualified call (e.g. the alias-rewritten `Std.RegexSafe.tryCompile`):
       // the leading segments name the declaring package.  Prefer the same-arity
       // candidate whose `originPackage` matches, disambiguating two same-name /

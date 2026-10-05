@@ -1331,6 +1331,15 @@ holds inside a generic function of another package (in the same build or a
 restored dependency) once it is specialised for a call: its method calls
 bind as the type checker resolved them in the package that declares it.
 
+A dot-named function may be generic, over type parameters and over value
+parameters (§2.11): `func Box.get[T](self: in Box[T]): T` and
+`func Ints.sum[N: Nat](self: in Ints[N]): Int`. Both call forms, the method
+call `b.get()` and the type-qualified call `Box.get(b)`, infer its arguments
+from the call and are specialised per instantiation like any generic
+function call, on every target (#8173). Inside the body, as in any function
+whose first parameter is named `self`, `self` has the parameter's declared
+type, so `self.data` on an `Ints[N]` is an `array[N, Int]`.
+
 Field-style access `x.name` (no call parens) to a name that exists **only**
 as a D037 dot-named (UFCS) function — never as a real record/union field — is
 a compile error (**T0116**), naming the receiver type and the call-syntax

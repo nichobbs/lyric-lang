@@ -150,6 +150,7 @@ for t in \
   lyric-compiler/lyric/overflow_panic_self_test.l \
   lyric-compiler/lyric/fixed_array_self_test.l \
   lyric-compiler/lyric/value_generic_record_self_test.l \
+  lyric-compiler/lyric/dotted_generic_func_self_test.l \
   lyric-compiler/lyric/structural_equality_self_test.l \
   lyric-compiler/lyric/structural_equality_collections_self_test.l \
   lyric-compiler/lyric/fixed_array_panic_self_test.l \

@@ -737,7 +737,10 @@ pub func pipeCheckAndMono(
   val noSpecSites: Map[String, Map[String, ArgConversionSite]] = newMap()
   val lambdaTypes = funcValueLambdaTypes(valueSites)
   val derivedLens = markValueRecordCtors(
-    withArrayLens(derived, tcRes.symbols.arrayTypeLens),
+    withArrayLens(
+      rewriteDottedGenericCalls(derived, tcRes.symbols.dottedGenericCallSites),
+      tcRes.symbols.arrayTypeLens
+    ),
     tcRes.symbols.valueRecordCtorSites
   )
   for gi in derivedLens.items {
@@ -1487,6 +1490,48 @@ func lowerSpecArrays(
     imports = file.imports,
     items = items,
     span = file.span
+  )
+}
+
+// A call to a generic dot-named function written as a method call
+// (`b.get()`) or through its type (`Box.get(b)`) becomes a plain call of the
+// function (`Box.get(b)`, one path segment), which `Lyric.Mono` specialises
+// like any generic call (#8173).  The callee keeps its span, under which the
+// checker recorded the call's type and value arguments.
+func rewriteDottedGenericCalls(file: in SourceFile, sites: in Map[String, String]): SourceFile {
+  if sites.count == 0 {
+    return file
+  }
+  mapExprsInFile(
+    file,
+    { e: Expr ->
+      match e.kind {
+        case ECall(fn, args) -> match mapGet(sites, recordCopySiteKey(fn.span)) {
+          case Some(site) -> {
+            val segs: List[String] = newList()
+            segs.add(site.substring(2, site.length - 2))
+            val target = Expr(kind = EPath(path = ModulePath(segments = segs, span = fn.span)), span = fn.span)
+            if site.startsWith("m:") {
+              match fn.kind {
+                case EMember(recv, _) -> {
+                  val fullArgs: List[CallArg] = newList()
+                  fullArgs.add(CAPositional(expr = recv))
+                  for a in args {
+                    fullArgs.add(a)
+                  }
+                  Expr(kind = ECall(fn = target, args = fullArgs), span = e.span)
+                }
+                case _ -> e
+              }
+            } else {
+              Expr(kind = ECall(fn = target, args = args), span = e.span)
+            }
+          }
+          case None -> e
+        }
+        case _ -> e
+      }
+    }
   )
 }
 
