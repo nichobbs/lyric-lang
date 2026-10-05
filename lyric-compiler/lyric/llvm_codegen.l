@@ -10078,7 +10078,7 @@ func lowerGenericRecordConstruct(
     }
     fieldExprs.add(fe)
     val fexpr = match fe { case Some(x) -> x; case None -> panic("unreachable") }
-    if isLambdaExpr(fexpr) {
+    if isLambdaExpr(fexpr) or isGenericCaseCtorExpr(ctx, fexpr) or isNullaryGenericCaseExpr(ctx, fexpr) {
       deferredLambda.add(true)
       rawVals.add(NVal(ty = NVoid, value = NUndef(ty = NVoid)))
     } else {
@@ -10369,6 +10369,18 @@ func unifyTyArg(
 /// A construction of a generic union's case (`AnswerDialog(yes = true)`): its
 /// type arguments may be determined only by where the value is used, so a
 /// generic call takes it after the arguments that do bind them.
+/// A bare nullary case of a generic union (`None`), which names no type
+/// argument of its own.
+func isNullaryGenericCaseExpr(ctx: in Ctx, e: in Expr): Bool {
+  match e.kind {
+    case EPath(path) -> path.segments.count == 1 and
+      ctx.caseToGenericUnion.containsKey(path.segments[0]) and
+      not ctx.varTypes.containsKey(path.segments[0])
+    case EParen(inner) -> isNullaryGenericCaseExpr(ctx, inner)
+    case _ -> false
+  }
+}
+
 func isGenericCaseCtorExpr(ctx: in Ctx, e: in Expr): Bool {
   match e.kind {
     case ECall(fn, _) -> match fn.kind {
