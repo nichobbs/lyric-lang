@@ -6783,17 +6783,10 @@ pub func finishHoistedCellMsil(
 ): Unit {
   val valueSlot = allocSlotMsil(fctx, "__cell_init_" + toString(fctx.slotTicker.count), elemTy)
   emitStoreSlot(insns, valueSlot, fctx.paramCount)
-  val storageTy = cellStorageElemTyMsil(elemTy)
-  val storageTok = match arrayElemTokenOpt(cctx, storageTy) {
-    case Some(t) -> t
-    case None -> panic(
-      "Msil.Codegen: hoisted-var cell storage type has no array element token (invariant violation)"
-    )
-  }
-  insns.add(MLdcI4(v = 1))
-  insns.add(MNewarr(typeToken = storageTok))
+  emitNewCellMsil(cctx, insns, elemTy)
   insns.add(MDup)
   insns.add(MLdcI4(v = 0))
+  emitCellElemAddrMsil(insns, elemTy)
   emitLoadSlot(insns, valueSlot, fctx.paramCount)
   emitCellElemStoreMsil(cctx, insns, elemTy)
   val cellTy = cellArrayTyMsil(elemTy)
@@ -7568,8 +7561,12 @@ func emitCellByrefArgMsil(
   val elemTy = match emitCapturedCellRefMsil(fctx, insns, name) { case Some(t) -> t; case None -> return false }
   val storageTy = cellStorageElemTyMsil(elemTy)
   val pe = match paramElem { case Some(t) -> t; case None -> elemTy }
-  if storageTy == pe {
+  if sameClrTypeMsil(storageTy, pe) or (storageTy == MObject and byrefPointeeIsObjectMsil(pe)) {
     insns.add(MLdcI4(v = 0))
+    if cellUsesTypedArrayMsil(elemTy) {
+      insns.add(MLdelemaCell(elemTy = elemTy))
+      return true
+    }
     match arrayElemTokenOpt(cctx, storageTy) {
       case Some(tok) -> insns.add(MLdelema(typeToken = tok))
       case None -> panic("Msil.Codegen: hoisted-var cell storage type has no array element token (invariant violation)")
@@ -7591,6 +7588,50 @@ func emitCellByrefArgMsil(
   true
 }
 
+// True when `a` and `b` name the same CLR type, so an `a&` is an `b&`.  The
+// codegen tracks one closed generic as either `MGenericInst` (a TypeRef code)
+// or `MGenericInstByName` (an arity-suffixed head resolved at lowering), and a
+// class as `MClass` or `MClassRef`, depending on where the type came from: a
+// cell's element type follows its initialiser, a parameter's its annotation.
+func sameClrTypeMsil(a: in MsilType, b: in MsilType): Bool {
+  clrTypeKeyMsil(a) == clrTypeKeyMsil(b)
+}
+
+func clrTypeKeyMsil(t: in MsilType): String {
+  match t {
+    case MClass(fqn) -> "C" + stripGenericArity(fqn) + ";"
+    case MClassRef(_, fqn) -> "C" + stripGenericArity(fqn) + ";"
+    case MGenericInst(_, head, args) -> "G" + stripGenericArity(head) + "<" + clrTypeListKeyMsil(args) + ">"
+    case MGenericInstByName(head, args) -> "G" + stripGenericArity(head) + "<" + clrTypeListKeyMsil(args) + ">"
+    case MValueTypeGenericInst(_, head, args) -> "VG" + stripGenericArity(head) + "<" + clrTypeListKeyMsil(args) + ">"
+    case MArray(e) -> "[" + clrTypeKeyMsil(e) + "]"
+    case MConcreteList(e) -> "CLIST[" + clrTypeKeyMsil(e) + "]"
+    case MConcreteMap(k, v) -> "CMAP[" + clrTypeKeyMsil(k) + "," + clrTypeKeyMsil(v) + "]"
+    case _ -> msilTypeKey(t)
+  }
+}
+
+func clrTypeListKeyMsil(tys: in List[MsilType]): String {
+  var key = ""
+  var i = 0
+  while i < tys.count {
+    key = key + clrTypeKeyMsil(tys[i]) + ","
+    i = i + 1
+  }
+  key
+}
+
+// True when an `out`/`inout` parameter of pointee `t` is an `object&` in the
+// callee's signature: the legacy `object`-represented `List`/`Map`/`Set` and
+// tuple shapes encode as `object` (`elementTypeByte`), so an `object` cell's
+// element aliases such a parameter directly.
+func byrefPointeeIsObjectMsil(t: in MsilType): Bool {
+  match t {
+    case MObject | MListOf(_) | MMapOf(_, _) | MSetOf(_) | MTuple(_) -> true
+    case _ -> false
+  }
+}
+
 // Store each pending temp back into its argument (`emitByrefArgCheckedMsil`).
 // Stack-neutral, so it runs after the call with the result still on the stack.
 func emitByrefWriteBacksMsil(
@@ -7605,6 +7646,7 @@ func emitByrefWriteBacksMsil(
     if wb.kind == 3 {
       emitLoadSlot(insns, wb.recvSlot, fctx.paramCount)
       insns.add(MLdcI4(v = 0))
+      emitCellElemAddrMsil(insns, wb.argElem)
       emitLoadSlot(insns, wb.tempSlot, fctx.paramCount)
       narrowToClassMsil(insns, wb.argElem)
       emitCellElemStoreMsil(cctx, insns, wb.argElem)
@@ -9414,29 +9456,115 @@ func canUseTypedArrayLoad(ty: in MsilType): Bool {
   }
 }
 
-// A hoisted-`var` heap cell (#1479 v2) is always a one-element CLI array.  Its
-// storage element type is the logical element type itself for the scalar /
-// `String` / `Object` types `canUseTypedArrayLoad` accepts (no boxing), and
-// `object` for every other type (records, unions, slices, collections, generic
-// instantiations), whose value is boxed on store and cast back on load.  Every
-// cell site — declaration (`finishHoistedCellMsil`), reads, writes
-// (`emitCellAssignMsil`) and the closure-class field (`synthesizeClosureClassMsil`)
-// — derives the cell's shape from this one function, so they cannot disagree.
+// A hoisted-`var` heap cell (#1479 v2) is always a one-element CLI array whose
+// element type is the variable's own type, so an `out`/`inout` argument can
+// pass the element's address and the closure sees the callee's writes
+// (#8189, #8199).  The scalar / `String` / `Object` types
+// `canUseTypedArrayLoad` accepts use their primitive array token; a closed
+// record, union, generic instantiation, concrete collection, value type or
+// primitive-element slice is an `MCellArray` (`cellUsesTypedArrayMsil`).
+// Only a type that names a type parameter (a closure class is never generic,
+// so its field cannot name `!0`, #7695) or encodes as `object` anyway (a
+// legacy `List<object>`-backed `List`/`Map`/`Set`/tuple, or a slice of
+// records, #6322) keeps an `object` cell, whose value is boxed on store and
+// cast back on load.  Every cell site — declaration (`finishHoistedCellMsil`),
+// reads, writes (`emitCellAssignMsil`), by-reference arguments
+// (`emitCellByrefArgMsil`) and the closure-class field
+// (`synthesizeClosureClassMsil`) — derives the cell's shape from these
+// functions, so they cannot disagree.
 func cellStorageElemTyMsil(elemTy: in MsilType): MsilType {
-  if canUseTypedArrayLoad(elemTy) {
+  if canUseTypedArrayLoad(elemTy) or cellUsesTypedArrayMsil(elemTy) {
     elemTy
   } else {
     MObject
   }
 }
 
+// True when `elemTy`'s cell is an `MCellArray`: a type with no primitive array
+// token that names no type parameter and does not encode as `object`.
+func cellUsesTypedArrayMsil(elemTy: in MsilType): Bool {
+  if canUseTypedArrayLoad(elemTy) or msilTypeHasDanglingTypeVarMsil(elemTy) or msilTypeHasMethodTypeVarMsil(elemTy) {
+    return false
+  }
+  match elemTy {
+    case MClass(_) | MClassRef(_, _) | MValueTypeRef(_, _) -> true
+    case MGenericInst(_, _, _) | MGenericInstByName(_, _) | MValueTypeGenericInst(_, _, _) -> true
+    case MConcreteList(_) | MConcreteMap(_, _) -> true
+    case MArray(e) -> msilArrayElemHasRealToken(e)
+    case _ -> false
+  }
+}
+
+// True when `t` names a generic METHOD type parameter (`!!n`) anywhere.
+func msilTypeHasMethodTypeVarMsil(t: in MsilType): Bool {
+  match t {
+    case MMethodTypeVar(_) -> true
+    case MArray(e) -> msilTypeHasMethodTypeVarMsil(e)
+    case MByRef(e) -> msilTypeHasMethodTypeVarMsil(e)
+    case MCellArray(e) -> msilTypeHasMethodTypeVarMsil(e)
+    case MGenericInst(_, _, tas) -> msilTypeListHasMethodTypeVarMsil(tas)
+    case MValueTypeGenericInst(_, _, tas) -> msilTypeListHasMethodTypeVarMsil(tas)
+    case MGenericInstByName(_, tas) -> msilTypeListHasMethodTypeVarMsil(tas)
+    case MConcreteList(e) -> msilTypeHasMethodTypeVarMsil(e)
+    case MConcreteMap(k, v) -> msilTypeHasMethodTypeVarMsil(k) or msilTypeHasMethodTypeVarMsil(v)
+    case MListOf(e) -> msilTypeHasMethodTypeVarMsil(e)
+    case MMapOf(k, v) -> msilTypeHasMethodTypeVarMsil(k) or msilTypeHasMethodTypeVarMsil(v)
+    case MSetOf(e) -> msilTypeHasMethodTypeVarMsil(e)
+    case MTuple(elems) -> msilTypeListHasMethodTypeVarMsil(elems)
+    case _ -> false
+  }
+}
+
+func msilTypeListHasMethodTypeVarMsil(tys: in List[MsilType]): Bool {
+  var i = 0
+  while i < tys.count {
+    if msilTypeHasMethodTypeVarMsil(tys[i]) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
 // The declared type of a cell reference (a local slot or closure field).
 func cellArrayTyMsil(elemTy: in MsilType): MsilType {
-  MArray(elemTy = cellStorageElemTyMsil(elemTy))
+  if cellUsesTypedArrayMsil(elemTy) {
+    MCellArray(elemTy = elemTy)
+  } else {
+    MArray(elemTy = cellStorageElemTyMsil(elemTy))
+  }
+}
+
+// Push a new one-element cell for `elemTy` (no element written yet).
+func emitNewCellMsil(cctx: in CodegenCtx, insns: in List[MInsn], elemTy: in MsilType): Unit {
+  insns.add(MLdcI4(v = 1))
+  if cellUsesTypedArrayMsil(elemTy) {
+    insns.add(MNewarrCell(elemTy = elemTy))
+    return ()
+  }
+  match arrayElemTokenOpt(cctx, cellStorageElemTyMsil(elemTy)) {
+    case Some(tok) -> insns.add(MNewarr(typeToken = tok))
+    case None -> panic("Msil.Codegen: hoisted-var cell storage type has no array element token (invariant violation)")
+  }
+}
+
+// With `(cell, 0)` on the stack, push what `emitCellElemStoreMsil` stores
+// through after the value is pushed: the element's address (`ldelema`) for an
+// `MCellArray` cell, which is written with `stobj`; nothing for a primitive or
+// `object` cell, which is written with `stelem`.  Every store is the sequence
+// `cell, 0, emitCellElemAddrMsil, value, emitCellElemStoreMsil`.
+func emitCellElemAddrMsil(insns: in List[MInsn], elemTy: in MsilType): Unit {
+  if cellUsesTypedArrayMsil(elemTy) {
+    insns.add(MLdelemaCell(elemTy = elemTy))
+  }
 }
 
 // With `(cell, 0)` on the stack, load element 0 as the logical `elemTy`.
 func emitCellElemLoadMsil(cctx: in CodegenCtx, insns: in List[MInsn], elemTy: in MsilType): Unit {
+  if cellUsesTypedArrayMsil(elemTy) {
+    insns.add(MLdelemCell(elemTy = elemTy))
+    return ()
+  }
   val storageTy = cellStorageElemTyMsil(elemTy)
   emitTypedLdelemMsil(insns, storageTy)
   if storageTy != elemTy {
@@ -9451,9 +9579,13 @@ func emitCellElemLoadMsil(cctx: in CodegenCtx, insns: in List[MInsn], elemTy: in
   }
 }
 
-// With `(cell, 0, value)` on the stack (`value` typed as the logical
-// `elemTy`), store it into element 0.
+// With `(cell, 0, emitCellElemAddrMsil, value)` on the stack (`value` typed as
+// the logical `elemTy`), store it into element 0.
 func emitCellElemStoreMsil(cctx: in CodegenCtx, insns: in List[MInsn], elemTy: in MsilType): Unit {
+  if cellUsesTypedArrayMsil(elemTy) {
+    insns.add(MStobjCell(elemTy = elemTy))
+    return ()
+  }
   val storageTy = cellStorageElemTyMsil(elemTy)
   if storageTy != elemTy {
     boxIfNeededMsil(cctx, insns, elemTy)
@@ -14223,6 +14355,7 @@ func emitCellAssignMsil(
     case AssEq -> {
       emitCellLoadMsil(fctx, insns, isCapture, idx)
       insns.add(MLdcI4(v = 0))
+      emitCellElemAddrMsil(insns, elemTy)
       // Same construction hints a plain-slot assignment pushes, so a bare
       // `None` / `newList()` assigned to the cell builds the element type.
       val vTy = lowerAssignValueAtMsil(cctx, fctx, insns, value, elemTy)
@@ -14242,6 +14375,7 @@ func emitCellAssignMsil(
       emitStoreSlot(insns, tempSlot, fctx.paramCount)
       emitCellLoadMsil(fctx, insns, isCapture, idx)
       insns.add(MLdcI4(v = 0))
+      emitCellElemAddrMsil(insns, elemTy)
       emitLoadSlot(insns, tempSlot, fctx.paramCount)
       emitCellElemStoreMsil(cctx, insns, elemTy)
     }
@@ -17171,6 +17305,7 @@ func msilTypeHasDanglingTypeVarMsil(t: in MsilType): Bool {
     case MTypeVar(_) -> true
     case MArray(e) -> msilTypeHasDanglingTypeVarMsil(e)
     case MByRef(e) -> msilTypeHasDanglingTypeVarMsil(e)
+    case MCellArray(e) -> msilTypeHasDanglingTypeVarMsil(e)
     case MGenericInst(_, _, tas) -> msilTypeListHasDanglingTypeVarMsil(tas)
     case MValueTypeGenericInst(_, _, tas) -> msilTypeListHasDanglingTypeVarMsil(tas)
     case MGenericInstByName(_, tas) -> msilTypeListHasDanglingTypeVarMsil(tas)
@@ -21608,10 +21743,22 @@ func lowerMethodCallMsil(
             case Some(pt) -> pt
             case None -> MObject
           }
-          openParamTypes.add(openParamTy)
           val isByrefArgG = if gi < methodModesG.count { isByrefMode(methodModesG[gi]) } else { false }
+          // The MemberRef signature must match the MethodDef's, where an
+          // `out`/`inout` parameter is a managed pointer `!0&` (#8182).
+          openParamTypes.add(if isByrefArgG { MByRef(inner = openParamTy) } else { openParamTy })
           if isByrefArgG {
-            emitByrefArgCheckedMsil(cctx, fctx, insns, callArgExpr(gargs[gi]), Some(value = openParamTy), byrefPendingG)
+            // The argument is passed at THIS instantiation's pointee type: a
+            // temp or cell element typed by the open `!0` would name a type
+            // parameter the (non-generic) caller does not have (#8189 review).
+            emitByrefArgCheckedMsil(
+              cctx,
+              fctx,
+              insns,
+              callArgExpr(gargs[gi]),
+              Some(value = substituteTypeVarsMsil(openParamTy, typeArgs)),
+              byrefPendingG
+            )
           } else {
             pushCollExpect(fctx, openParamTy)
             val aTyG = lowerCallArgMsil(cctx, fctx, insns, gargs[gi])
@@ -25366,6 +25513,10 @@ func insnStackDelta(insn: in MInsn): Int {
     case MLdelemR8 -> -1
     case MLdelemR4 -> -1
     case MLdelema(_) -> -1
+    case MNewarrCell(_) -> 0
+    case MLdelemCell(_) -> -1
+    case MLdelemaCell(_) -> -1
+    case MStobjCell(_) -> -2
     case MLdftn(_) -> 1
     case MLeave(_) -> 0
     case MEndfinally -> 0
@@ -26055,6 +26206,7 @@ func msilTypeKeyStr(t: in MsilType): String {
     case MByte -> "u1"
     case MNativeInt -> "nint"
     case MArray(elem) -> "arr_" + msilTypeKeyStr(elem)
+    case MCellArray(elem) -> "cell_" + msilTypeKeyStr(elem)
     case MClass(name) -> "cls_" + name
     case MClassRef(_, fqn) -> "clsref_" + fqn
     case MValueTypeRef(_, fqn) -> "vt_" + fqn

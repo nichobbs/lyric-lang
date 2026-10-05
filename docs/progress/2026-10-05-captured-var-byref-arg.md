@@ -1,4 +1,4 @@
-# A closure-captured `var` passed as an `out`/`inout` argument (#8189)
+# A closure-captured `var` passed as an `out`/`inout` argument (#8189, #8199, #8182)
 
 A `var` that a closure captures is hoisted to a one-element heap cell that
 the closure and the enclosing scope share (docs/01 §5.4), so its slot holds
@@ -9,41 +9,63 @@ cell reference as the `T&`, so the callee's write corrupted memory
 result into the slot holding the cell (`VerifyError`).
 
 - **dotnet** (`Msil.Codegen.emitCellByrefArgMsil`): the argument is the
-  cell's element. When the cell's storage type is the parameter's pointee
-  (`Int`, `Long`, `Double`, `Float`, `Bool`, `Char`, `Byte`, `String`), the
-  call passes `ldelema` on element 0, so the closure sees each write while
-  the callee is still running. A cell stored as `object` (a record, union,
-  collection or generic instantiation, per `cellStorageElemTyMsil`) cannot
-  be aliased by a `T&`, because managed pointers are invariant. Its value
-  goes through a temp that is stored back into the cell after the call,
-  the copy-in/copy-out `emitByrefArgCheckedMsil` already uses for an
-  erased `Self` pointer. The lookup follows an `EPath` read: a cell hoisted
-  in this function, then a plain slot, then a cell captured into the
-  lambda's closure class. That covers a captured `var` passed by reference
-  from inside a lambda and from a nested one. New `MLdelema` instruction.
+  cell's element, passed with `ldelema`, so the closure sees each write the
+  callee makes during the call, and the callee sees each write the closure
+  makes. The lookup follows an `EPath` read: a cell hoisted in this
+  function, then a plain slot, then a cell captured into the lambda's
+  closure class. That covers a by-reference argument inside a lambda and a
+  nested lambda. The cell's element type and the parameter's pointee are
+  compared as CLR types (`sameClrTypeMsil`), because one closed generic can
+  be tracked as `MGenericInst` or `MGenericInstByName`.
+- **Typed cells** (#8199): a captured record, union, closed generic
+  (`Option`, `Result`, an in-bundle generic record), concrete `List`/`Map`,
+  value type or primitive-element slice used to live in an `object[]` cell,
+  which no `T&` can point into. That made the argument a copy-in/copy-out
+  temp, and a closure's write during the call was lost. Such a cell is now
+  an `MCellArray`, a genuine `T[]`. Its signature is SZARRAY of the element
+  type in every position. It is created with `newarr`, read with `ldelem`,
+  and written with `ldelema` + `stobj` (new `MNewarrCell`/`MLdelemCell`/
+  `MLdelemaCell`/`MStobjCell`), with the element's TypeDef, TypeRef or
+  TypeSpec resolved at lowering. Every cell site (declaration, reads,
+  writes, closure-class fields, async state-machine promotion) takes its
+  shape from `cellArrayTyMsil`.
+- **Generic receiver** (#8182, dotnet): the call-site MemberRef of a method
+  on a generic record now declares an `out`/`inout` parameter as `!0&`. The
+  argument is passed at the receiver's instantiation (`Holder[Int].put(x,
+  ...)` passes an `int32&`), so no local of the open `!0` is allocated in a
+  non-generic caller.
 - **JVM** (`Jvm.Codegen.prepareCellHolderArg`): a cell and an `out`/`inout`
-  holder are both single-element arrays. When their element types agree,
-  the cell itself is passed as the holder, and the callee's write-through
-  (`emitStoreLocalWriteThrough`) lands in the shared storage. Otherwise (an
-  erased generic parameter's `Object` holder), the holder is filled from the
-  cell, and `writeBackHolderArg` copies its element back into the cell.
+  holder are both single-element arrays. The cell itself is passed as the
+  holder when the element types agree, or when the holder is an erased
+  `Object[]` and the cell holds a reference type (JVM arrays are
+  covariant). The callee's write-through then lands in the shared storage.
 
-Tests: `closure_captured_var_byref_self_test.l` (15 cases, dotnet and JVM,
+Two shapes keep a copy-in/copy-out temp, because no managed pointer or
+holder can alias the cell. In both, the value is right after the call, but
+a closure that reads or writes the variable during the call sees the
+caller's copy:
+
+- dotnet: a variable whose type names a type parameter, inside a generic
+  record or union method. A closure class is never generic, so the cell is
+  `object[]`. The same applies to an erased `inout Self` parameter
+  (`object&`) given a typed class cell.
+- JVM: a primitive variable passed to a parameter the JVM erases to
+  `Object[]`: an `inout T` method of a generic record at a primitive
+  instantiation (`Holder[Int].put`).
+
+Tests: `closure_captured_var_byref_self_test.l` (25 cases, dotnet and JVM,
 in `compiler-self-tests-batch.sh`, `jvm-generics-self-tests-batch.sh` and
-the ilverify consumer list). Cases: `inout` and `out`, `Int`, `Long`,
-`String`, `Bool` and a record; two closures over one variable; a mutation
-through the closure before and after the call; the callee calling the
-closure mid-call; a by-reference argument inside a lambda, a nested lambda,
-and on a lambda-local `var`; a generic callee; and an argument after a `?`.
-The `f(x, g()?)` form is left to #8171, which spills the `inout` argument.
+the ilverify consumer list). It covers `inout` and `out`; `Int`, `Long`,
+`String`, `Bool`, a record, a union, `Option`, `Result`, a generic record,
+`List` and a slice, each with a closure write during the call and a
+closure read of the callee's write; two closures over one variable; a
+by-reference argument inside a lambda, a nested lambda, and on a
+lambda-local `var`; generic callees; a generic record's `inout T` method;
+and an argument after a `?`. The `f(x, g()?)` form is left to #8171.
 
 Not covered:
 
-- **Native** still captures `var`s by value, so the closure keeps a stale
-  copy. Boxing captured `var`s there is #7891 item 1.
-- **Callee-side reads on the JVM.** A holder parameter is copied into a
-  local on entry. A callee that calls a closure which writes the caller's
-  variable, then reads its own parameter, sees the entry value on the JVM
-  and the new value on dotnet.
-- **A lambda inside the callee that captures an `inout` parameter** captures
-  the value, on both targets.
+- **Native** still captures `var`s by value (#7891 item 1), and the
+  generic-receiver call still crashes there (#8182 stays open for native).
+- **Callee side:** a lambda capturing its own function's `inout` parameter
+  (#8197), and the JVM's entry copy of an `inout` parameter (#8198).

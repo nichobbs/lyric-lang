@@ -13,7 +13,10 @@
 //! slot holding the cell (`VerifyError`).  The argument now denotes the
 //! cell's element: `ldelema` on dotnet, and on the JVM the cell itself is
 //! passed as the callee's holder array, so the closure sees each write the
-//! callee makes while the call is still running.
+//! callee makes while the call is still running, and the callee's caller sees
+//! each write the closure makes.  On dotnet that holds for every type because
+//! a captured record, union, generic or collection `var` has a cell of its own
+//! type, not an `object[]` (#8199); the generic-receiver case is #8182.
 //!
 //! Every closure-call result is bound with an explicit annotation to stay
 //! clear of the unrelated MSIL unannotated-closure-result bug (#7711).
@@ -30,6 +33,118 @@ import Std.Testing
 
 record Box {
   var n: Int
+}
+
+union Shape {
+  case Circle(r: Int)
+  case Square(s: Int)
+}
+
+record Gen[T] {
+  v: T
+}
+
+record Holder[T] {
+  tag: Int
+
+  func put(self: in Holder[T], x: inout T, v: in T): Unit {
+    x = v
+  }
+}
+
+func area(s: in Shape): Int {
+  match s {
+    case Circle(r) -> r
+    case Square(q) -> q * 100
+  }
+}
+
+func optVal(o: in Option[Int]): Int {
+  match o {
+    case Some(v) -> v
+    case None -> 0
+  }
+}
+
+func resVal(r: in Result[Int, String]): Int {
+  match r {
+    case Ok(v) -> v
+    case Err(_) -> -1
+  }
+}
+
+// Runs the closure, which rebinds the caller's variable, during the call.
+func touchBox(b: inout Box, w: in () -> Unit): Unit {
+  w()
+}
+
+func touchShape(s: inout Shape, w: in () -> Unit): Unit {
+  w()
+}
+
+func touchOpt(o: inout Option[Int], w: in () -> Unit): Unit {
+  w()
+}
+
+func touchRes(r: inout Result[Int, String], w: in () -> Unit): Unit {
+  w()
+}
+
+func touchGen(g: inout Gen[Int], w: in () -> Unit): Unit {
+  w()
+}
+
+func touchList(xs: inout List[Int], w: in () -> Unit): Unit {
+  w()
+}
+
+func touchSlice(xs: inout slice[Int], w: in () -> Unit): Unit {
+  w()
+}
+
+// Writes the argument, then reads it back through the closure during the call.
+func setBoxRead(b: inout Box, f: in () -> Int): Int {
+  b = Box(n = 9)
+  f()
+}
+
+func setStrRead(s: inout String, f: in () -> String): String {
+  s = "new"
+  f()
+}
+
+func setShapeRead(s: inout Shape, f: in () -> Int): Int {
+  s = Square(s = 3)
+  f()
+}
+
+func setOptRead(o: inout Option[Int], f: in () -> Int): Int {
+  o = Some(8)
+  f()
+}
+
+func setResRead(r: inout Result[Int, String], f: in () -> Int): Int {
+  r = Ok(4)
+  f()
+}
+
+func setGenRead(g: inout Gen[Int], f: in () -> Int): Int {
+  g = Gen(v = 6)
+  f()
+}
+
+func setListRead(xs: inout List[Int], f: in () -> Int): Int {
+  val ys: List[Int] = newList()
+  ys.add(1)
+  ys.add(2)
+  ys.add(3)
+  xs = ys
+  f()
+}
+
+func setSliceRead(xs: inout slice[Int], f: in () -> Int): Int {
+  xs = [7, 7, 7, 7]
+  f()
 }
 
 func setTo(x: inout Int, v: in Int): Unit {
@@ -230,4 +345,105 @@ test "captured var passed by ref after a `?` argument" {
     case Ok(v) -> assertEqualInt(v, 606, "x and f() after setFrom(okInt(6)?, x)")
     case Err(e) -> assertTrue(false, "unexpected Err: " + e)
   }
+}
+
+test "captured record: a closure's write during the call is kept (#8199)" {
+  var b = Box(n = 1)
+  val w = { -> b = Box(n = 5) }
+  touchBox(b, w)
+  assertEqualInt(b.n, 5, "b.n after the closure rebinds it during the call")
+}
+
+test "captured record: the closure sees the callee's write during the call (#8199)" {
+  var b = Box(n = 1)
+  val f = { -> b.n }
+  val seen: Int = setBoxRead(b, f)
+  assertEqualInt(seen, 9, "closure read inside the callee")
+  assertEqualInt(b.n, 9, "b.n after the call")
+}
+
+test "captured String: the closure sees the callee's write during the call" {
+  var s = "old"
+  val f = { -> s }
+  val seen: String = setStrRead(s, f)
+  assertEqual(seen, "new", "closure read inside the callee")
+  assertEqual(s, "new", "s after the call")
+}
+
+test "captured union var aliases the callee's parameter" {
+  var s: Shape = Circle(r = 1)
+  val w = { -> s = Circle(r = 2) }
+  touchShape(s, w)
+  assertEqualInt(area(s), 2, "closure write during the call")
+  val f = { -> area(s) }
+  val seen: Int = setShapeRead(s, f)
+  assertEqualInt(seen, 300, "closure read inside the callee")
+}
+
+test "captured Option var aliases the callee's parameter" {
+  var o: Option[Int] = None
+  val w = { -> o = Some(5) }
+  touchOpt(o, w)
+  assertEqualInt(optVal(o), 5, "closure write during the call")
+  val f = { -> optVal(o) }
+  val seen: Int = setOptRead(o, f)
+  assertEqualInt(seen, 8, "closure read inside the callee")
+}
+
+test "captured Result var aliases the callee's parameter" {
+  var r: Result[Int, String] = Err("x")
+  val w = { -> r = Ok(3) }
+  touchRes(r, w)
+  assertEqualInt(resVal(r), 3, "closure write during the call")
+  val f = { -> resVal(r) }
+  val seen: Int = setResRead(r, f)
+  assertEqualInt(seen, 4, "closure read inside the callee")
+}
+
+test "captured generic record var aliases the callee's parameter" {
+  var g = Gen(v = 1)
+  val w = { -> g = Gen(v = 2) }
+  touchGen(g, w)
+  assertEqualInt(g.v, 2, "closure write during the call")
+  val f = { -> g.v }
+  val seen: Int = setGenRead(g, f)
+  assertEqualInt(seen, 6, "closure read inside the callee")
+}
+
+test "captured List var aliases the callee's parameter" {
+  var xs: List[Int] = newList()
+  touchList(xs, { -> xs.add(4) })
+  assertEqualInt(xs.count, 1, "closure write during the call")
+  val f = { -> xs.count }
+  val seen: Int = setListRead(xs, f)
+  assertEqualInt(seen, 3, "closure read inside the callee")
+}
+
+test "captured slice var aliases the callee's parameter" {
+  var sl: slice[Int] = [1]
+  val w = { -> sl = [1, 2] }
+  touchSlice(sl, w)
+  assertEqualInt(sl.length, 2, "closure write during the call")
+  val f = { -> sl.length }
+  val seen: Int = setSliceRead(sl, f)
+  assertEqualInt(seen, 4, "closure read inside the callee")
+}
+
+test "captured var passed to a generic record's `inout T` method (#8182)" {
+  val h: Holder[Int] = Holder(tag = 0)
+  var x = 1
+  val f = { -> x }
+  h.put(x, 42)
+  val seen: Int = f()
+  assertEqualInt(x, 42, "x after put")
+  assertEqualInt(seen, 42, "f() after put")
+  var y = 1
+  h.put(y, 7)
+  assertEqualInt(y, 7, "uncaptured y after put")
+  val hb: Holder[Box] = Holder(tag = 0)
+  var b = Box(n = 1)
+  val fb = { -> b.n }
+  hb.put(b, Box(n = 5))
+  val seenB: Int = fb()
+  assertEqualInt(seenB, 5, "captured record after put")
 }

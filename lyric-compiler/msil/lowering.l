@@ -180,6 +180,16 @@ pub union MsilType {
   // element type instead of leaving it as `object`, which desynced the verifier
   // ("found object expected List<X>/Option/Result") at tuple binding sites.
   case MTuple(elems: List[MsilType])
+  // The one-element heap cell of a closure-captured `var` (#1479 v2) whose
+  // element type has no primitive array token: a record, union, closed
+  // generic, concrete collection or value type (#8199).  Always a genuine
+  // CLI `elemTy[]` built by `newarr` over the element's TypeDef/TypeRef or
+  // TypeSpec, so every signature position encodes SZARRAY + the element
+  // type, never the degraded `object` an `MArray` slice of the same element
+  // gets (#6322).  Elements are read with `ldelem`, and written through
+  // `ldelema` + `stobj`, so `ldelema` also yields the `elemTy&` an
+  // `out`/`inout` parameter takes and the cell is aliased, not copied.
+  case MCellArray(elemTy: MsilType)
 }
 
 // True when `e` gets a genuine ELEMENT_TYPE array-element encoding — i.e. the
@@ -300,6 +310,7 @@ pub func elementTypeByte(t: in MsilType): Int {
     case MConcreteMap(_, _) -> 0x15  // GENERICINST prefix; full Dictionary`2<k,v> via bufMsilType
     case MByte -> 0x05  // ELEMENT_TYPE_U1
     case MArray(_) -> 0x1D  // ELEMENT_TYPE_SZARRAY prefix; element follows (bufMsilType)
+    case MCellArray(_) -> 0x1D  // ELEMENT_TYPE_SZARRAY prefix; element follows (bufMsilType)
     case MValueTypeRef(_, _) -> 0x11  // ELEMENT_TYPE_VALUETYPE prefix; TypeRef follows (bufMsilType)
     case MClassRef(_, _) -> 0x12  // ELEMENT_TYPE_CLASS prefix; TypeRef follows (bufMsilType)
     case MByRef(_) -> 0x10  // ELEMENT_TYPE_BYREF prefix; pointee follows (bufMsilType)
@@ -416,6 +427,10 @@ pub func bufMsilType(w: in ByteWriter, t: in MsilType): Unit {
     case MByRef(inner) -> {
       bufU1(w, 0x10)   // ELEMENT_TYPE_BYREF (out/inout parameter)
       bufMsilType(w, inner)
+    }
+    case MCellArray(elem) -> {
+      bufU1(w, 0x1D)   // ELEMENT_TYPE_SZARRAY
+      bufMsilType(w, elem)
     }
     case MGenericInst(typeRefCode, _, typeArgs) -> {
       bufU1(w, 0x15)   // ELEMENT_TYPE_GENERICINST
@@ -834,6 +849,14 @@ pub union MInsn {
   case MLdelemR8                       // ldelem.r8  — float64 array element (double[])
   case MLdelemR4                       // ldelem.r4  — float32 array element (float[])
   case MLdelema(typeToken: Int)        // ldelema — managed pointer to an array element (`T&`)
+  // Element access on an `MCellArray` cell (#8199), with the element's
+  // type token resolved at lowering (`cellElemTypeTokenWithCtx`), after
+  // every TypeDef row exists: `newarr`, `ldelem`, `ldelema` and the `stobj`
+  // that stores through the `ldelema` pointer.
+  case MNewarrCell(elemTy: MsilType)
+  case MLdelemCell(elemTy: MsilType)
+  case MLdelemaCell(elemTy: MsilType)
+  case MStobjCell(elemTy: MsilType)
   case MLdftn(methodToken: Int)        // ldftn — load function pointer (ELEMENT_TYPE_I on stack)
 
   // Exception-handling instructions and meta-instruction
@@ -1784,6 +1807,30 @@ func reencodeDeferredTypeSpecs(ctx: in LoweringCtx): Unit {
   }
 }
 
+// The type token of an `MCellArray` cell's element (#8199): the TypeDef or
+// TypeRef of a named class, and otherwise a TypeSpec over the element's
+// context-aware encoding — the same `bufMsilTypeWithCtx` bytes the cell's own
+// SZARRAY signature and an `out`/`inout` parameter's pointee use, so the
+// `ldelema` result is exactly the `elemTy&` the callee declares.
+pub func cellElemTypeTokenWithCtx(ctx: in LoweringCtx, elemTy: in MsilType): Int {
+  match elemTy {
+    case MClass(name) -> {
+      val defRow = findTypeDefRowByName(ctx, name)
+      if defRow > 0 {
+        return 0x02000000 + defRow
+      }
+      val refRow = findTypeRefRowByName(ctx, name)
+      if refRow > 0 {
+        return 0x01000000 + refRow
+      }
+    }
+    case _ -> ()
+  }
+  val w = bufNew()
+  bufMsilTypeWithCtx(w, elemTy, ctx)
+  0x1B000000 + ctxAddTypeSpec(ctx, "ts_cell_elem_" + msilTypeKey(elemTy), bufToList(w))
+}
+
 pub func ctxAddTypeSpec(ctx: in LoweringCtx, sigKey: in String, sigBytes: in List[Byte]): Int {
   match mapGet(ctx.typeSpecRowByKey, sigKey) {
     case Some(row) -> row
@@ -1979,6 +2026,7 @@ pub func msilTypeKey(t: in MsilType): String {
       key + ">"
     }
     case MByRef(inner) -> "BY" + msilTypeKey(inner) + ";"
+    case MCellArray(e) -> "CELL[" + msilTypeKey(e) + "]"
     case MIAsyncEnumerable(e) -> "IAE[" + msilTypeKey(e) + "]"
     case MExternEnumerable(e) -> "EE[" + msilTypeKey(e) + "]"
     case MGenericInstByName(headFqn, typeArgs) -> {
@@ -2077,6 +2125,10 @@ func bufMsilTypeWithCtx(w: in ByteWriter, t: in MsilType, ctx: in LoweringCtx): 
       // ("The signature is incorrect" at type load).  See #2360.
       bufU1(w, 0x10)
       bufMsilTypeWithCtx(w, inner, ctx)
+    }
+    case MCellArray(elem) -> {
+      bufU1(w, 0x1D)  // ELEMENT_TYPE_SZARRAY
+      bufMsilTypeWithCtx(w, elem, ctx)
     }
     case MGenericInst(typeRefCode, _, typeArgs) -> {
       bufU1(w, 0x15)  // ELEMENT_TYPE_GENERICINST
@@ -2740,6 +2792,10 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
     case MLdlen -> emitLdlen(mb)
     case MLdelemRef -> emitLdelem_Ref(mb)
     case MLdelema(tok) -> emitLdelema(mb, tok)
+    case MNewarrCell(elemTy) -> emitNewarr(mb, cellElemTypeTokenWithCtx(ctx, elemTy))
+    case MLdelemCell(elemTy) -> mbEmit(mb, iLdelem(cellElemTypeTokenWithCtx(ctx, elemTy)))
+    case MLdelemaCell(elemTy) -> emitLdelema(mb, cellElemTypeTokenWithCtx(ctx, elemTy))
+    case MStobjCell(elemTy) -> mbEmit(mb, iStobj(cellElemTypeTokenWithCtx(ctx, elemTy)))
     case MLdelemU1 -> emitLdelem_U1(mb)
     case MLdelemU2 -> emitLdelem_U2(mb)
     case MLdelemI4 -> emitLdelem_I4(mb)
@@ -2947,6 +3003,7 @@ func buildLocalVarSig(locals: in List[MsilType]): List[Byte] {
       // prefix AND the index byte together.
       case MTypeVar(_) -> bufMsilType(w, locals[i])
       case MMethodTypeVar(_) -> bufMsilType(w, locals[i])
+      case MCellArray(_) -> bufMsilType(w, locals[i])
       case other -> bufU1(w, elementTypeByte(other))
     }
     i = i + 1
@@ -3036,6 +3093,7 @@ func buildLocalVarSigWithCtx(locals: in List[MsilType], ctx: in LoweringCtx): Li
       // See the matching comment in `buildLocalVarSig` (#7525).
       case MTypeVar(_) -> bufMsilType(w, locals[i])
       case MMethodTypeVar(_) -> bufMsilType(w, locals[i])
+      case MCellArray(_) -> bufMsilTypeWithCtx(w, locals[i], ctx)
       case other -> bufU1(w, elementTypeByte(other))
     }
     i = i + 1

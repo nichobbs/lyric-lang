@@ -3692,10 +3692,23 @@ func pushHolderCallArgs(
 // element type `elemTy` (#8189): both are single-element arrays, so when the
 // element types agree the callee's holder IS the variable's storage, and each
 // write the callee makes (`emitStoreLocalWriteThrough`) is visible to the
-// closures sharing the cell as it happens.
+// closures sharing the cell as it happens.  A reference-typed cell also
+// serves an erased `Object[]` holder (a generic record type, or a type
+// parameter, in the callee's signature, #8199): JVM arrays are covariant, so
+// a `Gen[]` cell is an `Object[]`, and the callee only stores values of the
+// variable's own type into it.  A primitive cell (`int[]`) cannot be an
+// `Object[]`; that shape alone keeps the copy-in/copy-out of
+// `prepareCellHolderArg`.
 func cellAliasesHolder(ctx: in FuncCtx, name: in String, elemTy: in JvmType): Bool {
   match mapGet(ctx.hoistedCellType, name) {
-    case Some(cellElemTy) -> cellElemTy == elemTy
+    case Some(cellElemTy) -> {
+      if cellElemTy == elemTy {
+        return true
+      }
+      val holderIsObject = match elemTy { case JRef(cls) -> cls == "java/lang/Object"; case _ -> false }
+      val cellIsRef = match cellElemTy { case JRef(_) -> true; case JArray(_) -> true; case _ -> false }
+      holderIsObject and cellIsRef
+    }
     case None -> false
   }
 }
