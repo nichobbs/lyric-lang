@@ -1592,10 +1592,15 @@ pub record HoistOperandTypeSite {
 /// `i` is evaluated into a temporary; an inert one (`exprIsInert`) and the
 /// place an `out`/`inout` argument names are left in the call.  `bindRecv`
 /// says whether the method call's receiver, which runs before every
-/// argument, is evaluated into one too.  `Lyric.Mono.desugarCheckedFile`
-/// rewrites the call, keyed by `recordCopySiteKey` of its span.
+/// argument, is evaluated into one too.  `byRef[i]` says whether argument `i`
+/// is passed to an `out`/`inout` parameter: the computed indices of such a
+/// place left in the call are evaluated into temporaries at its position,
+/// while a by-value argument left in the call runs there whole (#8171).
+/// `Lyric.Mono.desugarCheckedFile` rewrites the call, keyed by
+/// `recordCopySiteKey` of its span.
 pub record ArgOrderSite {
   bound: List[Bool]
+  byRef: List[Bool]
   bindRecv: Bool
   startOffset: Int
 }

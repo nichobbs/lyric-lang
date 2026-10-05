@@ -5138,8 +5138,15 @@ func funcValueCallMono(
 // The arguments keep their names and positions, so every backend pairs them
 // with the parameters as before and passes them in parameter order, filling
 // each omitted parameter from its default after all of them.  An argument
-// the site leaves in the call (an inert one, or the place an `out`/`inout`
-// argument names) gives the same value wherever it runs.  A temporary for an
+// the site leaves in the call is an inert one, the place an `out`/`inout`
+// argument names, or one written after every argument that needs a
+// temporary, which runs in its own turn anyway (`recordArgOrderSite`).  The
+// index operands of a by-reference place (`a[i()]`, `r.xs[j()]`) are
+// evaluated into temporaries at the place's position in source order, so
+// each runs once and in order while the place itself (its root and the path
+// to it) is still passed by reference (#8171); a by-value argument left in
+// the call keeps its indices inline.  A receiver that is a place is left in
+// the call the same way, with its index operands evaluated first.  A temporary for an
 // operand whose type the checker recorded (`hoistOperandTypedMono`) takes that
 // type as its annotation.  An argument's temporary is read through a
 // zero-width span, which no span-keyed site names, so the read is never
@@ -5158,15 +5165,18 @@ func argOrderCallMono(
   val base = "__lyric_ao_" + toString(id)
   val stmts: List[Statement] = newList()
   var fn = callee
-  if site.bindRecv {
-    match callee.kind {
-      case EMember(recv, mname) -> {
-        val rname = base + "_r"
-        stmts.add(copyTypedValStmtMono(rname, inferExprTE(state, env, recv), rewriteExpr(state, env, recv), recv.span))
-        fn = Expr(kind = EMember(receiver = singleSegPathExpr(rname, recv.span), memberName = mname), span = callee.span)
-      }
-      case _ -> ()
+  match callee.kind {
+    case EMember(recv, mname) -> if site.bindRecv {
+      val rname = base + "_r"
+      stmts.add(copyTypedValStmtMono(rname, inferExprTE(state, env, recv), rewriteExpr(state, env, recv), recv.span))
+      fn = Expr(kind = EMember(receiver = singleSegPathExpr(rname, recv.span), memberName = mname), span = callee.span)
+    } else {
+      fn = Expr(
+        kind = EMember(receiver = bindPlaceIndicesMono(state, env, recv, base, stmts), memberName = mname),
+        span = callee.span
+      )
     }
+    case _ -> ()
   }
   val callArgs: List[CallArg] = newList()
   var i = 0
@@ -5182,6 +5192,14 @@ func argOrderCallMono(
           case CAPositional(_) -> CAPositional(expr = read)
         }
       )
+    } else if i < site.byRef.count and site.byRef[i] {
+      val place = bindPlaceIndicesMono(state, env, callArgExpr(args[i]), base, stmts)
+      callArgs.add(
+        match args[i] {
+          case CANamed(nm, _, asp) -> CANamed(name = nm, value = place, span = asp)
+          case CAPositional(_) -> CAPositional(expr = place)
+        }
+      )
     } else {
       callArgs.add(args[i])
     }
@@ -5190,6 +5208,81 @@ func argOrderCallMono(
   val call = rewriteExpr(state, env, Expr(kind = ECall(fn = fn, args = callArgs), span = sp))
   stmts.add(Statement(kind = SExpr(expr = call), span = sp))
   Expr(kind = EBlock(block = Block(statements = stmts, span = sp)), span = sp)
+}
+
+// `e` with each index operand of the place it names (`a[i()]`, `r.xs[j()]`,
+// `m[i()][j()]`) evaluated into a fresh temporary appended to `stmts`, in
+// evaluation order (the outer place's operands before its own indices); the
+// root and the field path are kept, so the result still denotes the same
+// place (#8171).  A literal index runs nowhere and stays.  An expression that
+// is not a place (`argIsPlace`'s shapes: a name or `self`, then fields and
+// elements of one) is returned unchanged.  The temporary is read through a
+// zero-width span, as an argument's is, and the place keeps its own span,
+// which the array lowering keys an element access by.
+func bindPlaceIndicesMono(
+  state: in MonoState,
+  env: in Map[String, TypeExpr],
+  e: in Expr,
+  base: in String,
+  stmts: in List[Statement],
+): Expr {
+  if not exprIsPlaceMono(e) {
+    return e
+  }
+  match e.kind {
+    case EParen(inner) -> Expr(
+      kind = EParen(inner = bindPlaceIndicesMono(state, env, inner, base, stmts)),
+      span = e.span
+    )
+    case EMember(recv, name) -> Expr(
+      kind = EMember(
+        receiver = bindPlaceIndicesMono(state, env, recv, base, stmts),
+        memberName = name
+      ),
+      span = e.span
+    )
+    case EIndex(recv, indices) -> {
+      val recv2 = bindPlaceIndicesMono(state, env, recv, base, stmts)
+      val idx2: List[Expr] = newList()
+      for ix in indices {
+        if exprIsLiteralMono(ix) {
+          idx2.add(ix)
+        } else {
+          val tmp = base + "_x" + toString(stmts.count)
+          stmts.add(argOrderValStmtMono(tmp, rewriteExpr(state, env, ix), ix.span))
+          idx2.add(singleSegPathExpr(tmp, Span(startPos = ix.span.startPos, endPos = ix.span.startPos)))
+        }
+      }
+      Expr(kind = EIndex(receiver = recv2, indices = idx2), span = e.span)
+    }
+    case _ -> e
+  }
+}
+
+// Whether `e` names a place: a name or `self`, or a field or element of one
+// (the type checker's `argIsPlace`).
+func exprIsPlaceMono(e: in Expr): Bool {
+  match e.kind {
+    case EPath(_) -> true
+    case ESelf -> true
+    case EParen(inner) -> exprIsPlaceMono(inner)
+    case EMember(recv, _) -> exprIsPlaceMono(recv)
+    case EIndex(recv, _) -> exprIsPlaceMono(recv)
+    case _ -> false
+  }
+}
+
+// A literal, or a negated one: the same value wherever it is evaluated.
+func exprIsLiteralMono(e: in Expr): Bool {
+  match e.kind {
+    case ELiteral(_) -> true
+    case EParen(inner) -> exprIsLiteralMono(inner)
+    case EPrefix(op, operand) -> match op {
+      case PreNeg -> match operand.kind { case ELiteral(_) -> true; case _ -> false }
+      case _ -> false
+    }
+    case _ -> false
+  }
 }
 
 // `val <name> = init`, or `val <name>: T = x` when `init` is the

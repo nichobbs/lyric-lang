@@ -272,7 +272,12 @@ func hzPath(name: in String, sp: in Span): Expr {
 
 // Bind `e` to a fresh `val` appended to `acc` and return a path expression
 // reading it. Literals are returned unchanged — re-evaluating a literal
-// after the hoisted hazards is identical and binding it is pure noise.
+// after the hoisted hazards is identical and binding it is pure noise. So
+// are lambdas: building a closure runs none of its body and its captures
+// share their variables, so it gives the same value after the hazards, and
+// it keeps the function type its position expects, which a bare local of
+// it has no annotation for (the type checker records no type for either,
+// `exprIsHoistExempt`; #8171).
 //
 // An operand that ends in a typed local (`{ …; val n: T = init; n }`, the
 // shape `Lyric.Mono.desugarCheckedFile` gives an operand the type checker
@@ -284,6 +289,7 @@ func hzPath(name: in String, sp: in Span): Expr {
 func hzBind(cfg: in HoistConfig, e: in Expr, acc: in List[Statement], st: in HoistState): Expr {
   match e.kind {
     case ELiteral(_) -> e
+    case ELambda(_, _) -> e
     case _ -> {
       val name = hzFresh(cfg, st)
       val noInner: Option[Pattern] = None

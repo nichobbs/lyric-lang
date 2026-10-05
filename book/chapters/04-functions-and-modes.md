@@ -201,6 +201,8 @@ func demoOrder(): Unit {
 
 Record and union-case constructors follow the same order, as `.copy` does.
 
+An `out` or `inout` argument passes the variable or field itself, never a copy of it, even when a later argument uses `?` or `await`: in `setTo(x, parse(s)?)`, where `setTo` takes `x: inout Int`, the callee writes `x`. If the `?` returns early, the call never happens, so `x` is left as it was.
+
 A default belongs to the declaration the call resolves through. Calling a method on an interface-typed value uses the interface's defaults; calling it on the concrete type uses the `impl` method's. Declare the same default in both places if the two calls should behave alike; the compiler warns (`T0161`) at an `impl` method parameter whose default differs from the interface's, or where only one of the two has a default.
 
 Defaults work the same when the function comes from a precompiled dependency: the library compiles each default of its public functions and methods, and your call runs that compiled default, even when it reads one of the library's private values. The one exception is a parameter whose type is one of the function's (or its type's) type parameters, such as `items: in List[T] = newList()`: outside the library such an argument must be passed.

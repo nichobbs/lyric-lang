@@ -10736,6 +10736,24 @@ func hoistTupleElemTypes(t: in Type, n: in Int): List[Type] {
   holes
 }
 
+// Whether `e` is a bracket list literal, through parentheses.
+func exprIsListLiteral(e: in Expr): Bool {
+  match e.kind {
+    case EList(_) -> true
+    case EParen(inner) -> exprIsListLiteral(inner)
+    case _ -> false
+  }
+}
+
+// Whether `t` is the stdlib `List[T]` a bracket literal is built as when it
+// is expected (the test `inferExprExpected`'s `EList` arm makes).
+func expectsStdList(tbl: in SymbolTable, t: in Type): Bool {
+  match t {
+    case TyUser(id, _, args) -> args.count == 1 and isStdCollectionsHostType(tbl, id, "List")
+    case _ -> false
+  }
+}
+
 // Record the type of one hoisted operand `e`: `own` with its holes filled
 // from `expected`, when that is a closed generic instantiation.
 func recordHoistOperandType(sc: in Scope, tbl: in SymbolTable, e: in Expr, own: in Type, expected: in Type): Unit {
@@ -10745,7 +10763,11 @@ func recordHoistOperandType(sc: in Scope, tbl: in SymbolTable, e: in Expr, own: 
 }
 
 // `recordHoistOperandType` once `e` is known to be bound by the hoist; `t`
-// may name `typeParams`, the enclosing function's type parameters.
+// may name `typeParams`, the enclosing function's type parameters.  A
+// bracket literal where a `List[T]` is expected is built as that list, not
+// as the slice it types as on its own (`inferExprExpected`'s `EList` arm), so
+// its local takes the list type: left to its own type it would be built as
+// an array and then passed where a list is read (#8171).
 func recordHoistOperandTypeOver(
   tbl: in SymbolTable,
   typeParams: in List[String],
@@ -10754,7 +10776,11 @@ func recordHoistOperandTypeOver(
   expected: in Type,
 ): Unit {
   val sp = e.span
-  val t = joinOpenTypes(own, unrefine(expected))
+  val t = if exprIsListLiteral(e) and expectsStdList(tbl, unrefine(expected)) {
+    unrefine(expected)
+  } else {
+    joinOpenTypes(own, unrefine(expected))
+  }
   if not typeMentionsGenericInst(t) or not typeIsClosedOver(t, typeParams) {
     return
   }
@@ -11100,6 +11126,38 @@ func argIsPlace(e: in Expr): Bool {
   }
 }
 
+// Whether the place `e` has an index that is not a literal (`xs[i()]`,
+// `r.xs[j].v`): `Lyric.Mono.bindPlaceIndicesMono` evaluates each such index
+// into a temporary at the place's position.
+func placeHasComputedIndex(e: in Expr): Bool {
+  match e.kind {
+    case EParen(inner) -> placeHasComputedIndex(inner)
+    case EMember(recv, _) -> placeHasComputedIndex(recv)
+    case EIndex(recv, indices) -> {
+      for ix in indices {
+        if not exprIsLiteralIndex(ix) {
+          return true
+        }
+      }
+      placeHasComputedIndex(recv)
+    }
+    case _ -> false
+  }
+}
+
+// A literal or a negated literal, which `bindPlaceIndicesMono` leaves in place.
+func exprIsLiteralIndex(e: in Expr): Bool {
+  match e.kind {
+    case ELiteral(_) -> true
+    case EParen(inner) -> exprIsLiteralIndex(inner)
+    case EPrefix(op, operand) -> match op {
+      case PreNeg -> match operand.kind { case ELiteral(_) -> true; case _ -> false }
+      case _ -> false
+    }
+    case _ -> false
+  }
+}
+
 // Whether any argument of a call is named: only then can its arguments be
 // written out of parameter order.
 func callArgsHaveNamed(args: in List[CallArg]): Bool {
@@ -11120,6 +11178,15 @@ func callArgsHaveNamed(args: in List[CallArg]): Bool {
 // `expected[i]` the type argument `i` is expected to have.  `recvTy` is the
 // type of a method call's receiver.  A call in a contract clause calls only
 // `@pure` functions, whose order is unobservable, and is left alone.
+//
+// A call that passes a place to an `out`/`inout` parameter and has a `?` or
+// `await` in an argument is recorded too, in whatever order its arguments
+// are written (#8171).  The `?` and `await` hoists bind every operand
+// evaluated before such an argument to a fresh local, and a local bound to
+// the place is a copy: the callee would write the copy, never the caller's
+// variable, field or element.  Here the arguments run into temporaries in
+// source order instead, the place stays in the call, and the call itself no
+// longer has an argument the hoists need to move.
 func recordArgOrderSite(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -11133,7 +11200,12 @@ func recordArgOrderSite(
   expected: in List[Type],
   recvTy: in Option[Type],
 ): Unit {
-  if sc.contractDepth.count > 0 or not callArgsHaveNamed(args) {
+  if sc.contractDepth.count > 0 {
+    return
+  }
+  val named = callArgsHaveNamed(args)
+  val hazard = callArgsHaveHoistHazard(args)
+  if not named and not hazard {
     return
   }
   val slots: List[Int] = match pairCallArgs(slotNames, 0, args) { case Ok(paired) -> paired; case Err(_) -> return }
@@ -11151,14 +11223,41 @@ func recordArgOrderSite(
     k = k + 1
   }
   val bound: List[Bool] = newList()
+  var placeByRef = false
   i = 0
   while i < args.count {
     val ae = callArgExpr(args[i])
+    if argByRef[i] and argIsPlace(ae) {
+      placeByRef = true
+    }
     bound.add(if argByRef[i] { not argIsPlace(ae) } else { not argIsInert(sc, ae) })
     i = i + 1
   }
-  if not callArgsNeedSourceOrder(slots, args.count, bound, defaultEffect) {
+  val reordered = named and callArgsNeedSourceOrder(slots, args.count, bound, defaultEffect)
+  if not reordered and not (hazard and placeByRef) {
     return
+  }
+  // Written in parameter order, the call needs temporaries only up to the
+  // last argument holding a `?` or `await`, or the last by-reference place
+  // with an index the rewrite evaluates into a temporary
+  // (`bindPlaceIndicesMono`), whichever comes later: the arguments after
+  // both run after them either way, while an argument left in the call
+  // before such an index would run after it.
+  if not reordered {
+    var lastNeed = -1
+    i = 0
+    while i < args.count {
+      val ae = callArgExpr(args[i])
+      if HoistEngine.exprHasHoistHazard(ae) or (argByRef[i] and placeHasComputedIndex(ae)) {
+        lastNeed = i
+      }
+      i = i + 1
+    }
+    i = lastNeed + 1
+    while i < args.count {
+      bound[i] = false
+      i = i + 1
+    }
   }
   i = 0
   while i < args.count {
@@ -11184,7 +11283,10 @@ func recordArgOrderSite(
   if tbl.argOrderSites.containsKey(key) {
     tbl.argOrderSites.remove(key)
   }
-  tbl.argOrderSites.add(key, ArgOrderSite(bound = bound, bindRecv = bindRecv, startOffset = callSpan.startPos.offset))
+  tbl.argOrderSites.add(
+    key,
+    ArgOrderSite(bound = bound, byRef = argByRef, bindRecv = bindRecv, startOffset = callSpan.startPos.offset)
+  )
 }
 
 // `recordArgOrderSite` for a call to `sig`, whose parameters the arguments
@@ -12581,7 +12683,7 @@ func inferExprCore(
           }
           checkContractCallPure(sc, diag, sig, fn, e.span)
           checkCallArgsAgainstSig(sc, tbl, sigs, diag, sig, args, argTypes, e.span)
-          if callArgsHaveNamed(args) {
+          if callArgsHaveNamed(args) or callArgsHaveHoistHazard(args) {
             recordSigArgOrderSite(
               sc,
               tbl,
@@ -12680,7 +12782,7 @@ func inferExprCore(
                     if mpHazard {
                       recordHoistedCallArgs(sc, tbl, args, argTypes, mpExpected)
                     }
-                    if mpNamed {
+                    if mpNamed or mpHazard {
                       recordSigArgOrderSite(sc, tbl, e.span, fn, args, argTypes, mp.sig, mpExpected, memberRecvTy)
                     }
                   }

@@ -3437,19 +3437,22 @@ func anyHolderMode(modes: in List[ParamMode]): Bool {
 // array is passed in that argument position, and after the call the callee's
 // write to `holder[0]` is copied back into the caller's local.
 //
-// Build order: holder arrays are materialised into temp slots *before* the
-// argument-push loop so the post-call readback can reach them, then the loop
-// pushes either the temp (holder arg) or the lowered value (by-value arg) in
-// declaration order.  `callArgs` is already reordered/defaulted to match
-// `sig.params`.
-// Pre-build one holder argument's single-element array into a temp slot and
-// record it in the parallel bookkeeping lists.  An assignable local reads its
-// current value into `holder[0]`; a field access `obj.field` (#3628, JVM
-// analog of MSIL #3547) stashes the lowered receiver in its own temp slot,
-// reads the field into `holder[0]`, and records the receiver slot + class so
-// `writeBackHolderArg` can `putfield` the updated value.  `hRecvSlot` is -1
-// (and `hRecvCls` "") for the local case.
-func prepareHolderArg(
+// Evaluation order (D171, #8171): the arguments are evaluated once each, in
+// order, a place's object path included — `prepareHolderPlace` lowers a
+// field-access argument's receiver (`cells[at(0)]` in `cells[at(0)].v`) into
+// a temp slot at the argument's own turn, and every by-value argument is
+// lowered into a temp slot at its turn.  Only then are the holder arrays
+// built (`buildHolderArrays`), each reading its place's value as it stands
+// just before the call, since the callee reads and writes the place itself.
+// The push loop then reloads the temps in declaration order.  `callArgs` is
+// already reordered/defaulted to match `sig.params`.
+// Record one holder argument's place in the parallel bookkeeping lists.  An
+// assignable local needs nothing evaluated; a field access `obj.field`
+// (#3628, JVM analog of MSIL #3547) lowers its receiver into its own temp
+// slot and records the slot + class, which the holder is filled from and
+// `writeBackHolderArg` `putfield`s through.  `hRecvSlot` is -1 (and
+// `hRecvCls` "") for the local case.
+func prepareHolderPlace(
   ctx: in FuncCtx,
   insns: in List[LInsn],
   calleeLabel: in String,
@@ -3457,7 +3460,6 @@ func prepareHolderArg(
   argExpr: in Expr,
   elemTy: in JvmType,
   hArgIdx: in List[Int],
-  hTempSlot: in List[Int],
   hElemTy: in List[JvmType],
   hBackName: in List[String],
   hRecvSlot: in List[Int],
@@ -3466,21 +3468,8 @@ func prepareHolderArg(
   val name = pathExprName(argExpr)
   if name != "" {
     match lookupSlot(ctx, name) {
-      case Some(srcSlot) -> {
-        val srcTy = match lookupType(ctx, name) { case Some(t) -> t; case None -> elemTy }
-        // holder := new [elemTy](1); holder[0] := <current value of `name`>
-        emitNewHolder(insns, elemTy)
-        insns.add(LDup)
-        insns.add(LIconst(v = 0))
-        emitLoad(insns, srcSlot, srcTy)
-        coerceArgToCtx(ctx, insns, srcTy, elemTy)
-        emitHolderElemStore(insns, elemTy)
-        // Stash the array reference in a temp slot, typed precisely so the
-        // StackMapTable verifies the later aload + element load.
-        val tmpSlot = allocSlot(ctx, "__holderarg$" + calleeLabel + "$" + toString(bi), holderArrayType(elemTy))
-        insns.add(LAstoreAs(slot = tmpSlot, className = holderArrayDescriptor(elemTy)))
+      case Some(_) -> {
         hArgIdx.add(bi)
-        hTempSlot.add(tmpSlot)
         hElemTy.add(elemTy)
         hBackName.add(name)
         hRecvSlot.add(0 - 1)
@@ -3500,21 +3489,7 @@ func prepareHolderArg(
         case JRef(cls) -> {
           val rSlot = allocSlot(ctx, "__holderrecv$" + calleeLabel + "$" + toString(bi), JRef(className = cls))
           insns.add(LAstoreAs(slot = rSlot, className = cls))
-          val fty = match recordFieldType(ctx, cls, fieldName) {
-            case Some(t) -> t
-            case None -> JRef(className = "java/lang/Object")
-          }
-          emitNewHolder(insns, elemTy)
-          insns.add(LDup)
-          insns.add(LIconst(v = 0))
-          emitLoad(insns, rSlot, JRef(className = cls))
-          emitFieldLoadOpaqueAware(ctx, insns, cls, fieldName, fty)
-          coerceArgToCtx(ctx, insns, fty, elemTy)
-          emitHolderElemStore(insns, elemTy)
-          val tmpSlot = allocSlot(ctx, "__holderarg$" + calleeLabel + "$" + toString(bi), holderArrayType(elemTy))
-          insns.add(LAstoreAs(slot = tmpSlot, className = holderArrayDescriptor(elemTy)))
           hArgIdx.add(bi)
-          hTempSlot.add(tmpSlot)
           hElemTy.add(elemTy)
           hBackName.add(fieldName)
           hRecvSlot.add(rSlot)
@@ -3530,6 +3505,159 @@ func prepareHolderArg(
       "Jvm.Codegen: out/inout argument " + toString(bi) + " to '" + calleeLabel +
         "' is not an assignable variable or field (the mode checker should have rejected this)"
     )
+  }
+}
+
+// Build each recorded place's single-element holder array, filled with the
+// place's current value, into a temp slot appended to `hTempSlot`.
+func buildHolderArrays(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  calleeLabel: in String,
+  hArgIdx: in List[Int],
+  hElemTy: in List[JvmType],
+  hBackName: in List[String],
+  hRecvSlot: in List[Int],
+  hRecvCls: in List[String],
+  hTempSlot: in List[Int],
+): Unit {
+  var k = 0
+  while k < hArgIdx.count {
+    val elemTy = hElemTy[k]
+    val name = hBackName[k]
+    // holder := new [elemTy](1); holder[0] := <current value of the place>
+    emitNewHolder(insns, elemTy)
+    insns.add(LDup)
+    insns.add(LIconst(v = 0))
+    if hRecvSlot[k] >= 0 {
+      val cls = hRecvCls[k]
+      val fty = match recordFieldType(ctx, cls, name) {
+        case Some(t) -> t
+        case None -> JRef(className = "java/lang/Object")
+      }
+      emitLoad(insns, hRecvSlot[k], JRef(className = cls))
+      emitFieldLoadOpaqueAware(ctx, insns, cls, name, fty)
+      coerceArgToCtx(ctx, insns, fty, elemTy)
+    } else {
+      match lookupSlot(ctx, name) {
+        case Some(srcSlot) -> {
+          val srcTy = match lookupType(ctx, name) { case Some(t) -> t; case None -> elemTy }
+          emitLoad(insns, srcSlot, srcTy)
+          coerceArgToCtx(ctx, insns, srcTy, elemTy)
+        }
+        case None -> panic("Jvm.Codegen: out/inout argument '" + name + "' to '" + calleeLabel + "' lost its local")
+      }
+    }
+    emitHolderElemStore(insns, elemTy)
+    // Stash the array reference in a temp slot, typed precisely so the
+    // StackMapTable verifies the later aload + element load.
+    val tmpSlot = allocSlot(ctx, "__holderarg$" + calleeLabel + "$" + toString(hArgIdx[k]), holderArrayType(elemTy))
+    insns.add(LAstoreAs(slot = tmpSlot, className = holderArrayDescriptor(elemTy)))
+    hTempSlot.add(tmpSlot)
+    k = k + 1
+  }
+}
+
+// Lower the by-value argument `arg` for parameter `pi` into a fresh temp slot
+// and record it in `bvIdx`/`bvSlots`.  `boxPrimArrays` applies the byte-array
+// boxing coercion, which branches; branch targets require an empty operand
+// stack (see the slice-shaped-param stash in `lowerGeneralStaticCall`), so
+// only the static form, which has nothing stacked, asks for it.
+func stashByValueArg(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  sig: in JvmFuncSig,
+  pi: in Int,
+  arg: in CallArg,
+  boxPrimArrays: Bool,
+  bvIdx: in List[Int],
+  bvSlots: in List[Int],
+): Unit {
+  val aTy = lowerCallArg(ctx, insns, arg)
+  var slotTy = aTy
+  if pi < sig.params.count {
+    if boxPrimArrays and isPrimitiveArrayToObjectArray(aTy, sig.params[pi]) {
+      match aTy {
+        case JArray(fe) -> emitBoxPrimitiveArray(ctx, insns, fe)
+        case _ -> ()
+      }
+    } else {
+      coerceArgToCtx(ctx, insns, aTy, sig.params[pi])
+    }
+    slotTy = sig.params[pi]
+  }
+  val s = allocSlot(ctx, "__hbv_" + freshLabel(ctx), slotTy)
+  emitStore(insns, s, slotTy)
+  bvSlots.add(s)
+  bvIdx.add(pi)
+}
+
+// Evaluate every argument of a holder call in order (holder places and
+// by-value temps), then build the holder arrays.  `boxPrimArrays` is
+// `stashByValueArg`'s.
+func lowerHolderCallArgs(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  calleeLabel: in String,
+  sig: in JvmFuncSig,
+  callArgs: in List[CallArg],
+  boxPrimArrays: Bool,
+  hArgIdx: in List[Int],
+  hTempSlot: in List[Int],
+  hElemTy: in List[JvmType],
+  hBackName: in List[String],
+  hRecvSlot: in List[Int],
+  hRecvCls: in List[String],
+  bvIdx: in List[Int],
+  bvSlots: in List[Int],
+): Unit {
+  var bi = 0
+  while bi < callArgs.count {
+    val isHolder = if bi < sig.paramModes.count { isHolderMode(sig.paramModes[bi]) } else { false }
+    if isHolder {
+      val elemTy = match sig.params[bi] { case JArray(el) -> el; case other -> other }
+      prepareHolderPlace(
+        ctx,
+        insns,
+        calleeLabel,
+        bi,
+        callArgExpr(callArgs[bi]),
+        elemTy,
+        hArgIdx,
+        hElemTy,
+        hBackName,
+        hRecvSlot,
+        hRecvCls
+      )
+    } else {
+      stashByValueArg(ctx, insns, sig, bi, callArgs[bi], boxPrimArrays, bvIdx, bvSlots)
+    }
+    bi = bi + 1
+  }
+  buildHolderArrays(ctx, insns, calleeLabel, hArgIdx, hElemTy, hBackName, hRecvSlot, hRecvCls, hTempSlot)
+}
+
+// Push a holder call's prepared arguments in declaration order.
+func pushHolderCallArgs(
+  insns: in List[LInsn],
+  sig: in JvmFuncSig,
+  argCount: in Int,
+  hArgIdx: in List[Int],
+  hTempSlot: in List[Int],
+  bvIdx: in List[Int],
+  bvSlots: in List[Int],
+): Unit {
+  var ai = 0
+  while ai < argCount {
+    val isHolder = if ai < sig.paramModes.count { isHolderMode(sig.paramModes[ai]) } else { false }
+    if isHolder {
+      insns.add(LAload(slot = holderTempSlotFor(hArgIdx, hTempSlot, ai)))
+    } else {
+      val bs = holderTempSlotFor(bvIdx, bvSlots, ai)
+      val lTy = if ai < sig.params.count { sig.params[ai] } else { JRef(className = "java/lang/Object") }
+      emitLoad(insns, bs, lTy)
+    }
+    ai = ai + 1
   }
 }
 
@@ -3652,83 +3780,35 @@ func lowerStaticCallWithHolders(
   sig: in JvmFuncSig,
   callArgs: in List[CallArg],
 ): JvmType {
-  // Pre-build each holder argument's array into a temp slot.  Parallel lists
-  // (index into callArgs, temp slot, element type, write-back local name or
-  // field name + receiver slot/class) rather than a record-valued map,
-  // matching the bootstrap-safe style used elsewhere in this file.
+  // Parallel lists (index into callArgs, temp slot, element type, write-back
+  // local name or field name + receiver slot/class) rather than a
+  // record-valued map, matching the bootstrap-safe style used elsewhere in
+  // this file.
   val hArgIdx: List[Int] = newList()
   val hTempSlot: List[Int] = newList()
   val hElemTy: List[JvmType] = newList()
   val hBackName: List[String] = newList()
   val hRecvSlot: List[Int] = newList()
   val hRecvCls: List[String] = newList()
-  var bi = 0
-  while bi < callArgs.count {
-    val isHolder = if bi < sig.paramModes.count { isHolderMode(sig.paramModes[bi]) } else { false }
-    if isHolder {
-      val elemTy = match sig.params[bi] { case JArray(el) -> el; case other -> other }
-      prepareHolderArg(
-        ctx,
-        insns,
-        funcName,
-        bi,
-        callArgExpr(callArgs[bi]),
-        elemTy,
-        hArgIdx,
-        hTempSlot,
-        hElemTy,
-        hBackName,
-        hRecvSlot,
-        hRecvCls
-      )
-    }
-    bi = bi + 1
-  }
-  // Pre-lower every by-value argument into a temp slot: a byte-array boxing
-  // coercion branches, and branch targets require an empty operand stack
-  // (see the slice-shaped-param stash in `lowerGeneralStaticCall`).  Holder
-  // args already live in temps, so the push loop below is branch-free.
   val bvSlots: List[Int] = newList()
   val bvIdx: List[Int] = newList()
-  var pvi = 0
-  while pvi < callArgs.count {
-    val isHolderPre = if pvi < sig.paramModes.count { isHolderMode(sig.paramModes[pvi]) } else { false }
-    if not isHolderPre {
-      val aTy = lowerCallArg(ctx, insns, callArgs[pvi])
-      var slotTy = aTy
-      if pvi < sig.params.count {
-        if isPrimitiveArrayToObjectArray(aTy, sig.params[pvi]) {
-          match aTy {
-            case JArray(fe) -> emitBoxPrimitiveArray(ctx, insns, fe)
-            case _ -> ()
-          }
-        } else {
-          coerceArgToCtx(ctx, insns, aTy, sig.params[pvi])
-        }
-        slotTy = sig.params[pvi]
-      }
-      val s = allocSlot(ctx, "__hbv_" + freshLabel(ctx), slotTy)
-      emitStore(insns, s, slotTy)
-      bvSlots.add(s)
-      bvIdx.add(pvi)
-    }
-    pvi = pvi + 1
-  }
-  // Push arguments in declaration order: a holder arg reloads its prepared temp
-  // array; a by-value arg reloads its pre-lowered temp.
-  var ai = 0
-  while ai < callArgs.count {
-    val isHolder = if ai < sig.paramModes.count { isHolderMode(sig.paramModes[ai]) } else { false }
-    if isHolder {
-      val ts = holderTempSlotFor(hArgIdx, hTempSlot, ai)
-      insns.add(LAload(slot = ts))
-    } else {
-      val bs = holderTempSlotFor(bvIdx, bvSlots, ai)
-      val lTy = if ai < sig.params.count { sig.params[ai] } else { JRef(className = "java/lang/Object") }
-      emitLoad(insns, bs, lTy)
-    }
-    ai = ai + 1
-  }
+  lowerHolderCallArgs(
+    ctx,
+    insns,
+    funcName,
+    sig,
+    callArgs,
+    true,
+    hArgIdx,
+    hTempSlot,
+    hElemTy,
+    hBackName,
+    hRecvSlot,
+    hRecvCls,
+    bvIdx,
+    bvSlots
+  )
+  pushHolderCallArgs(insns, sig, callArgs.count, hArgIdx, hTempSlot, bvIdx, bvSlots)
   insns.add(
     LInvokestatic(owner = sig.owner, name = staticCallJvmName(sig, funcName), params = sig.params, ret = sig.ret)
   )
@@ -3810,42 +3890,25 @@ func lowerVirtualCallWithHolders(
   val hBackName: List[String] = newList()
   val hRecvSlot: List[Int] = newList()
   val hRecvCls: List[String] = newList()
-  var bi = 0
-  while bi < args.count {
-    val isHolder = if bi < sig.paramModes.count { isHolderMode(sig.paramModes[bi]) } else { false }
-    if isHolder {
-      val elemTy = match sig.params[bi] { case JArray(el) -> el; case other -> other }
-      prepareHolderArg(
-        ctx,
-        insns,
-        owner + "." + methodName,
-        bi,
-        callArgExpr(args[bi]),
-        elemTy,
-        hArgIdx,
-        hTempSlot,
-        hElemTy,
-        hBackName,
-        hRecvSlot,
-        hRecvCls
-      )
-    }
-    bi = bi + 1
-  }
-  var ai = 0
-  while ai < args.count {
-    val isHolder = if ai < sig.paramModes.count { isHolderMode(sig.paramModes[ai]) } else { false }
-    if isHolder {
-      val ts = holderTempSlotFor(hArgIdx, hTempSlot, ai)
-      insns.add(LAload(slot = ts))
-    } else {
-      val aTy = lowerCallArg(ctx, insns, args[ai])
-      if ai < sig.params.count {
-        coerceArgToCtx(ctx, insns, aTy, sig.params[ai])
-      }
-    }
-    ai = ai + 1
-  }
+  val bvSlots: List[Int] = newList()
+  val bvIdx: List[Int] = newList()
+  lowerHolderCallArgs(
+    ctx,
+    insns,
+    owner + "." + methodName,
+    sig,
+    args,
+    false,
+    hArgIdx,
+    hTempSlot,
+    hElemTy,
+    hBackName,
+    hRecvSlot,
+    hRecvCls,
+    bvIdx,
+    bvSlots
+  )
+  pushHolderCallArgs(insns, sig, args.count, hArgIdx, hTempSlot, bvIdx, bvSlots)
   // A `Self` return narrows against the dispatch class exactly as the
   // non-holder path does (#6431/#6437) — the checkcast must land right
   // after the invoke, while the return value is top-of-stack, BEFORE the
