@@ -440,14 +440,49 @@ func equalsExprForFields(fields: in List[FieldDecl]): Expr {
   if fields.count == 0 {
     return mkExpr(ELiteral(lit = LBool(value = true)), sp())
   }
-  var cmp = binop(BEq, memberOf(pathExpr("self"), fields[0].name), memberOf(pathExpr("other"), fields[0].name))
+  var cmp = fieldEqExpr(fields[0])
   var i = 1
   while i < fields.count {
-    val next = binop(BEq, memberOf(pathExpr("self"), fields[i].name), memberOf(pathExpr("other"), fields[i].name))
-    cmp = binop(BAnd, cmp, next)
+    cmp = binop(BAnd, cmp, fieldEqExpr(fields[i]))
     i = i + 1
   }
   cmp
+}
+
+// `self.f == other.f`; a `Float`/`Double` field is also equal when both are
+// `NaN`, as structural equality is (D172).
+func fieldEqExpr(fd: in FieldDecl): Expr = valueEqExpr(memberOf(pathExpr("self"), fd.name), memberOf(pathExpr("other"), fd.name), fd.ty)
+
+func unionFieldTypeExpr(f: in UnionField): TypeExpr {
+  match f {
+    case UFNamed(_, ty, _) -> ty
+    case UFPos(ty, _) -> ty
+  }
+}
+
+func valueEqExpr(a: in Expr, b: in Expr, ty: in TypeExpr): Expr {
+  if isFloatTypeExpr(ty) {
+    val bothNan = binop(BAnd, binop(BNeq, a, a), binop(BNeq, b, b))
+    mkExpr(EParen(inner = binop(BOr, binop(BEq, a, b), mkExpr(EParen(inner = bothNan), sp()))), sp())
+  } else {
+    binop(BEq, a, b)
+  }
+}
+
+func isFloat32TypeExpr(te: in TypeExpr): Bool {
+  match te.kind {
+    case TRef(p) -> p.segments.count == 1 and p.segments[0] == "Float"
+    case TParen(inner) -> isFloat32TypeExpr(inner)
+    case _ -> false
+  }
+}
+
+func isFloatTypeExpr(te: in TypeExpr): Bool {
+  match te.kind {
+    case TRef(p) -> p.segments.count == 1 and (p.segments[0] == "Float" or p.segments[0] == "Double")
+    case TParen(inner) -> isFloatTypeExpr(inner)
+    case _ -> false
+  }
 }
 
 // `TypeName.equals(self: in TypeName, other: in TypeName): Bool`
@@ -485,7 +520,15 @@ func hashBodyForFields(fields: in List[FieldDecl]): Block {
   var i = 0
   while i < fields.count {
     val fieldVal = memberOf(pathExpr("self"), fields[i].name)
-    val hc = call1("hashCode", fieldVal)
+    // `-0.0 + 0.0` is `0.0`, so a field holding either zero hashes alike, as
+    // `equals` holds them equal (D172).
+    val hashed = if isFloatTypeExpr(fields[i].ty) {
+      val sfx = if isFloat32TypeExpr(fields[i].ty) { F32 } else { F64 }
+      binop(BAdd, fieldVal, mkExpr(ELiteral(lit = LFloat(value = 0.0, suffix = sfx, raw = "")), sp()))
+    } else {
+      fieldVal
+    }
+    val hc = call1("hashCode", hashed)
     val h31 = binop(BMul, pathExpr("h"), longLitOf(31i64))
     val next = binop(BAdd, h31, hc)
     stmts.add(stmtAssign(pathExpr("h"), next))
@@ -1139,10 +1182,10 @@ func synthesizeEqualsUnion(typeName: in String, decl: in UnionDecl, vis: in Opti
     val eqExpr = if selfNames.count == 0 {
       boolLit(true)
     } else {
-      var acc = binop(BEq, pathExpr(selfNames[0]), pathExpr(otherNames[0]))
+      var acc = valueEqExpr(pathExpr(selfNames[0]), pathExpr(otherNames[0]), unionFieldTypeExpr(c.fields[0]))
       var fi = 1
       while fi < selfNames.count {
-        val next = binop(BEq, pathExpr(selfNames[fi]), pathExpr(otherNames[fi]))
+        val next = valueEqExpr(pathExpr(selfNames[fi]), pathExpr(otherNames[fi]), unionFieldTypeExpr(c.fields[fi]))
         acc = binop(BAnd, acc, next)
         fi = fi + 1
       }

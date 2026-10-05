@@ -13,7 +13,8 @@
 # expected_type_propagation_self_test.l, #7855;
 # generic_ctor_open_arg_self_test.l, #7844; the generic_ctor_*widening
 # self-tests, #7813; the overflow self-tests,
-# D163; record_eq_self_test.l, D164; task_shadow_self_test.l, D166),
+# D163; record_eq_self_test.l, D164; task_shadow_self_test.l, D166;
+# the structural_equality self-tests, D172),
 # through one
 # `lyric test`
 # invocation per file.
@@ -107,6 +108,8 @@ for t in \
   lyric-compiler/lyric/overflow_panic_self_test.l \
   lyric-compiler/lyric/fixed_array_self_test.l \
   lyric-compiler/lyric/value_generic_record_self_test.l \
+  lyric-compiler/lyric/structural_equality_self_test.l \
+  lyric-compiler/lyric/structural_equality_collections_self_test.l \
   lyric-compiler/lyric/fixed_array_panic_self_test.l \
   lyric-compiler/lyric/bench_alloc_self_test.l \
   lyric-compiler/lyric/record_eq_self_test.l \

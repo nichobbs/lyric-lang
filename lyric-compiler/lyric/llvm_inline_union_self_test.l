@@ -595,7 +595,7 @@ test "the wasm32 layout of an inline union and a record holding one" {
   assertTrue(Str.contains(ll, "%T.Holder = type { %\"T.Opt<i64>\", i32 }"), "the holder embeds it")
 }
 
-test "NaN payloads compare unequal under x == x for heap and inline unions alike" {
+test "NaN payloads compare equal under x == x for heap and inline unions alike (D172)" {
   val src = "package T\n" + "union Inl {\n  case V(d: Double)\n  case Z\n}\n" +
     "union Hp {\n  case V(d: Double, s: String)\n  case Z\n}\n" +
     "func main(): Int {\n" +
@@ -610,7 +610,7 @@ test "NaN payloads compare unequal under x == x for heap and inline unions alike
     "  r\n" +
     "}\n"
   val r = compileAndRunAsan(src)
-  assertEqualInt(r.exitCode, 100, "only the non-NaN comparison is equal")
+  assertEqualInt(r.exitCode, 111, "a NaN payload equals itself, as on dotnet and the JVM")
 }
 
 test "classification is the same in a multi-package bundle" {

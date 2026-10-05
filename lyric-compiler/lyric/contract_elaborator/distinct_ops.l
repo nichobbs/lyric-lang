@@ -310,6 +310,7 @@ func eqShapeExpr(shape: in EqShape, a: in Expr, b: in Expr, sp: in Span, tag: in
   val base = "__lyric_ws_" + tag + toString(sp.startPos.offset) + "_" + toString(sp.endPos.offset)
   match shape {
     case ESPlain -> mkExpr(EBinop(op = BEq, lhs = a, rhs = b), wsp)
+    case ESFloat(single) -> floatEqExpr(a, b, single, base + "_f", wsp)
     case ESArray(site) -> arrayEqBlock(site, a, b, sp, tag)
     case ESRecord(site) -> recordEqBlock(site, a, b, sp, tag)
     case ESDistinct(inner) -> eqShapeExpr(inner, valueOf(a), valueOf(b), sp, tag + "d")
@@ -358,6 +359,37 @@ func eqShapeExpr(shape: in EqShape, a: in Expr, b: in Expr, sp: in Span, tag: in
   }
 }
 
+// Two `Float`/`Double` leaves of a structured value are equal when `==`
+// holds or both are `NaN` (D172), so the value is equal to itself.  Each is
+// bound to a temporary of its type, so a backend that reads a tuple element
+// or union payload as an erased value compares the numbers, not the boxes.
+//   { val a: Double = <a>; val b: Double = <b>; a == b or (a != a and b != b) }
+func floatEqExpr(a: in Expr, b: in Expr, single: Bool, name: in String, sp: in Span): Expr {
+  val ty = TypeExpr(
+    kind = TRef(path = ModulePath(segments = oneStr(if single { "Float" } else { "Double" }), span = sp)),
+    span = sp
+  )
+  val aName = name + "_a"
+  val bName = name + "_b"
+  val stmts: List[Statement] = newList()
+  stmts.add(typedVal(aName, Some(value = ty), a, sp))
+  stmts.add(typedVal(bName, Some(value = ty), b, sp))
+  val la = localPath(aName, sp)
+  val lb = localPath(bName, sp)
+  val same = mkExpr(EParen(inner = mkExpr(EBinop(op = BEq, lhs = la, rhs = lb), sp)), sp)
+  val aNan = mkExpr(EBinop(op = BNeq, lhs = la, rhs = la), sp)
+  val bNan = mkExpr(EBinop(op = BNeq, lhs = lb, rhs = lb), sp)
+  val bothNan = mkExpr(EParen(inner = mkExpr(EBinop(op = BAnd, lhs = aNan, rhs = bNan), sp)), sp)
+  stmts.add(mkStmt(SExpr(expr = mkExpr(EBinop(op = BOr, lhs = same, rhs = bothNan), sp)), sp))
+  mkExpr(EBlock(block = Block(statements = stmts, span = sp)), sp)
+}
+
+func oneStr(x: in String): List[String] {
+  val xs: List[String] = newList()
+  xs.add(x)
+  xs
+}
+
 func oneArm(arm: in MatchArm): List[MatchArm] {
   val arms: List[MatchArm] = newList()
   arms.add(arm)
@@ -387,7 +419,16 @@ func recordEqBlock(site: in RecordEqSite, lhs: in Expr, rhs: in Expr, sp: in Spa
       case Some(arr) -> arrayEqBlock(arr, lhsLeaf, rhsLeaf, sp, tag + "f" + toString(leafNo) + "_")
       case None -> match mapGet(site.wrapLeaves, dottedLeaf(path)) {
         case Some(sh) -> eqShapeExpr(sh, lhsLeaf, rhsLeaf, sp, tag + "f" + toString(leafNo) + "_")
-        case None -> mkExpr(EBinop(op = BEq, lhs = lhsLeaf, rhs = rhsLeaf), wsp)
+        case None -> match mapGet(site.floatLeaves, dottedLeaf(path)) {
+          case Some(single) -> floatEqExpr(
+            lhsLeaf,
+            rhsLeaf,
+            single,
+            base + "_f" + toString(leafNo),
+            wsp
+          )
+          case None -> mkExpr(EBinop(op = BEq, lhs = lhsLeaf, rhs = rhsLeaf), wsp)
+        }
       }
     }
     cmp = if first { leaf } else { mkExpr(EBinop(op = BAnd, lhs = cmp, rhs = leaf), wsp) }
@@ -453,6 +494,11 @@ func arrayEqBlock(site: in ArrayEqSite, lhs: in Expr, rhs: in Expr, sp: in Span,
   val same: Expr = match site.elem {
     case AEPlain -> mkExpr(EBinop(op = BEq, lhs = le, rhs = re), wsp)
     case AEValue -> mkExpr(EBinop(op = BEq, lhs = valueOf(le), rhs = valueOf(re)), wsp)
+    case AEFloat(viaValue, single) -> if viaValue {
+      floatEqExpr(valueOf(le), valueOf(re), single, base + "_f", wsp)
+    } else {
+      floatEqExpr(le, re, single, base + "_f", wsp)
+    }
     case AERecord(rs) -> recordEqBlock(rs, le, re, sp, tag + "e_")
     case AEArray(inner) -> arrayEqBlock(inner, le, re, sp, tag + "e_")
     case AEShape(sh) -> eqShapeExpr(sh, le, re, sp, tag + "e_")

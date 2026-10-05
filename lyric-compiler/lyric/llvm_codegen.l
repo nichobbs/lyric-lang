@@ -103,6 +103,10 @@ pub record CodegenUnit {
   // Names of the `records` that were declared `opaque type`: they keep the
   // heap form (docs/67 §4.2) even when every field is by-value.
   opaqueNames: List[String]
+  // Names of the `records` that compare field by field (no `var` field, or
+  // `@derive(Equals)`): a heap one gets a synthesised equality function, so
+  // a union payload or array element compares it by structure (D172).
+  eqByFields: List[String]
   unions: List[UnionDecl]
   enums: List[EnumDecl]
   distincts: List[DistinctTypeDecl]
@@ -437,6 +441,10 @@ record Ctx {
   // Union equality functions already synthesised (or being synthesised),
   // by union IR name.
   unionEqFns: Map[String, Bool]
+  // Heap records that compare field by field (D172), by IR name, and their
+  // equality functions already synthesised.
+  heapValueRecords: Map[String, Bool]
+  recordEqFns: Map[String, Bool]
   // Generic functions (N3.1): declarations by call key, instantiation
   // cache, and reverse instantiation metadata for unification.
   genericFnDefs: Map[String, FunctionDecl]
@@ -7145,7 +7153,12 @@ func registerHeapTypes(
       match rd.generics {
         case Some(_) -> {
         }
-        case None -> registerRecordLayout(ctx, u.pkgName, rd, typeDefs, fns, strict)
+        case None -> {
+          registerRecordLayout(ctx, u.pkgName, rd, typeDefs, fns, strict)
+          if listContains(u.eqByFields, rd.name) and not listContains(u.opaqueNames, rd.name) {
+            ctx.heapValueRecords[u.pkgName + "." + rd.name] = true
+          }
+        }
       }
       ri = ri + 1
     }
@@ -11846,8 +11859,8 @@ func ensureUnionEq(ctx: in Ctx, ui: in NUnionInfo): String {
 
 /// `i1 Union.eq(i8* a, i8* b)`: the same instance, or the same case with
 /// each payload field equal by its own type's `==` (a `String` by its text,
-/// a union structurally, a float by IEEE rules, any other reference by
-/// identity).
+/// a union or by-value record structurally, a float by `==` or both `NaN`
+/// (D172), any other reference by identity).
 func synthUnionEq(mctx: in Ctx, ui: in NUnionInfo): NFunc {
   // A function-level view of the module ctx: it owns the stack slots an inline
   // union field's comparison spills into, hoisted to the entry block below.
@@ -11866,8 +11879,8 @@ func synthUnionEq(mctx: in Ctx, ui: in NUnionInfo): NFunc {
   val trueL = "eq.true"
   val falseL = "eq.false"
   val sameL = "eq.cmp"
-  // No same-instance shortcut: equality is structural (IEEE) for heap and inline
-  // unions alike, so `x == x` with a NaN payload is false for both.
+  // Equality is structural for heap and inline unions alike, under D172's
+  // rule for a `Float`/`Double` payload, so `x == x` holds for both.
   body.add(NBr(label = sameL))
   body.add(NLabel(name = sameL))
   body.add(NBitcast(dest = "oa", fromTy = NPtr(pointee = NI8), value = NLocal(name = "ra"), toTy = objTy))
@@ -12065,8 +12078,18 @@ func emitValueEqN(ctx: in Ctx, body: in List[NInsn], t: in NType, a: in String, 
     return dest
   }
   match t {
+    // A `Float`/`Double` inside a structured value is equal when `==` holds
+    // or both are `NaN` (D172); `une x, x` is true exactly for a `NaN`.
     case NDouble | NFloat -> {
-      body.add(NFCmp(dest = dest, pred = FOeq, ty = t, a = NLocal(name = a), b = NLocal(name = b)))
+      val same = freshTmp(ctx)
+      body.add(NFCmp(dest = same, pred = FOeq, ty = t, a = NLocal(name = a), b = NLocal(name = b)))
+      val aNan = freshTmp(ctx)
+      body.add(NFCmp(dest = aNan, pred = FUne, ty = t, a = NLocal(name = a), b = NLocal(name = a)))
+      val bNan = freshTmp(ctx)
+      body.add(NFCmp(dest = bNan, pred = FUne, ty = t, a = NLocal(name = b), b = NLocal(name = b)))
+      val both = freshTmp(ctx)
+      body.add(NAnd(dest = both, ty = NI1, a = NLocal(name = aNan), b = NLocal(name = bNan)))
+      body.add(NOr(dest = dest, ty = NI1, a = NLocal(name = same), b = NLocal(name = both)))
       return dest
     }
     case _ -> ()
@@ -12106,8 +12129,111 @@ func emitValueEqN(ctx: in Ctx, body: in List[NInsn], t: in NType, a: in String, 
   if isByValueStructNType(t) {
     return emitStructEq(ctx, body, t, NLocal(name = a), NLocal(name = b))
   }
+  // A heap record that compares field by field goes through its equality
+  // function; a mutable one keeps identity (D164, D172).
+  match recInfoOfType(ctx, t) {
+    case Some(ri) -> if not ri.byValue and ctx.heapValueRecords.containsKey(ri.irName) {
+      val fnName = ensureRecordEq(ctx, ri)
+      val ra = freshTmp(ctx)
+      body.add(NBitcast(dest = ra, fromTy = t, value = NLocal(name = a), toTy = NPtr(pointee = NI8)))
+      val rb = freshTmp(ctx)
+      body.add(NBitcast(dest = rb, fromTy = t, value = NLocal(name = b), toTy = NPtr(pointee = NI8)))
+      val args: List[NArg] = newList()
+      args.add(NArg(ty = NPtr(pointee = NI8), value = NLocal(name = ra)))
+      args.add(NArg(ty = NPtr(pointee = NI8), value = NLocal(name = rb)))
+      body.add(NCall(dest = dest, retTy = NI1, fn = NGlobal(name = fnName), args = args))
+      return dest
+    }
+    case None -> ()
+  }
   body.add(NICmp(dest = dest, pred = IEq, ty = t, a = NLocal(name = a), b = NLocal(name = b)))
   dest
+}
+
+/// The name of heap record `ri`'s equality function, synthesising it into
+/// the module on first use (registered first, so a record reaching itself
+/// through a union field refers to it recursively).
+func ensureRecordEq(ctx: in Ctx, ri: in NRecInfo): String {
+  val fnName = ri.irName + ".eq"
+  if not ctx.recordEqFns.containsKey(ri.irName) {
+    ctx.recordEqFns.add(ri.irName, true)
+    ctx.moduleFns.add(synthRecordEq(ctx, ri))
+  }
+  fnName
+}
+
+/// `i1 Record.eq(i8* a, i8* b)` for a heap record that compares field by
+/// field: every field equal under `emitValueEqN`'s rules.
+func synthRecordEq(mctx: in Ctx, ri: in NRecInfo): NFunc {
+  val ctx = freshFnCtx(mctx, mctx.mainPkg, NI1)
+  val body: List[NInsn] = newList()
+  body.add(NLabel(name = "entry"))
+  val objTy = recPtrType(ri)
+  val falseL = "eq.false"
+  body.add(NBitcast(dest = "oa", fromTy = NPtr(pointee = NI8), value = NLocal(name = "ra"), toTy = objTy))
+  body.add(NBitcast(dest = "ob", fromTy = NPtr(pointee = NI8), value = NLocal(name = "rb"), toTy = objTy))
+  var fi = 0
+  while fi < ri.fieldTys.count {
+    val fty = ri.fieldTys[fi]
+    if not isVoidNType(fty) {
+      val va = lowerRecordFieldLoad(ctx, body, ri, NVal(ty = objTy, value = NLocal(name = "oa")), ri.fieldNames[fi])
+      val vb = lowerRecordFieldLoad(ctx, body, ri, NVal(ty = objTy, value = NLocal(name = "ob")), ri.fieldNames[fi])
+      val eq = emitValueEqN(ctx, body, fty, localNameOf(va), localNameOf(vb))
+      val nextL = "eq.f" + fi.toString()
+      body.add(NCondBr(cond = NLocal(name = eq), thenLabel = nextL, elseLabel = falseL))
+      body.add(NLabel(name = nextL))
+    }
+    fi = fi + 1
+  }
+  body.add(NRet(ty = NI1, value = NLitInt(v = 1i64, ty = NI1)))
+  body.add(NLabel(name = falseL))
+  body.add(NRet(ty = NI1, value = NLitInt(v = 0i64, ty = NI1)))
+  val params: List[NParam] = newList()
+  params.add(NParam(name = "ra", ty = NPtr(pointee = NI8)))
+  params.add(NParam(name = "rb", ty = NPtr(pointee = NI8)))
+  val attrs: List[String] = newList()
+  val finalBody: List[NInsn] = newList()
+  finalBody.add(NLabel(name = "entry"))
+  appendInsns(finalBody, ctx.allocas)
+  var bi = 1
+  while bi < body.count {
+    finalBody.add(body[bi])
+    bi = bi + 1
+  }
+  NFunc(
+    name = ri.irName + ".eq",
+    params = params,
+    retTy = NI1,
+    isPublic = false,
+    isExtern = false,
+    body = finalBody,
+    attributes = attrs
+  )
+}
+
+// The local a field load produced (`lowerRecordFieldLoad` always loads into
+// a fresh local for a non-Unit field).
+func localNameOf(v: in NVal): String {
+  match v.value {
+    case NLocal(n) -> n
+    case _ -> panic("Lyric.LlvmCodegen: internal — a record field load did not produce a local")
+  }
+}
+
+/// Whether a record compares field by field (D164): it derives `Equals`, or
+/// none of its fields is `var`.
+pub func recordComparesByFieldsNative(decl: in RecordDecl, anns: in List[Annotation]): Bool {
+  for a in anns {
+    if a.name.segments.count == 1 and a.name.segments[0] == "derive" {
+      for arg in a.args {
+        match arg {
+          case ABare(n, _) -> if n == "Equals" { return true }
+          case _ -> ()
+        }
+      }
+    }
+  }
+  not recordHasVarField(decl)
 }
 
 // ── Construction ─────────────────────────────────────────────────────────────
@@ -14030,6 +14156,8 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     moduleTypeDefs = mod.moduleTypeDefs,
     moduleFns = mod.moduleFns,
     unionEqFns = mod.unionEqFns,
+    heapValueRecords = mod.heapValueRecords,
+    recordEqFns = mod.recordEqFns,
     genericFnDefs = mod.genericFnDefs,
     genericFnPkg = mod.genericFnPkg,
     fnInstCache = mod.fnInstCache,
@@ -15011,6 +15139,8 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     moduleTypeDefs = newList(),
     moduleFns = newList(),
     unionEqFns = newMap(),
+    heapValueRecords = newMap(),
+    recordEqFns = newMap(),
     genericFnDefs = emptyGenFns,
     genericFnPkg = emptyGenFnPkg,
     fnInstCache = emptyFnInsts,
@@ -15313,6 +15443,7 @@ pub func unitOfFile(pkgName: in String, file: in SourceFile): CodegenUnit {
   val wasmImports: List[WasmImportDecl] = newList()
   val records: List[RecordDecl] = newList()
   val opaqueNames: List[String] = newList()
+  val eqByFields: List[String] = newList()
   val unions: List[UnionDecl] = newList()
   val enums: List[EnumDecl] = newList()
   val distincts: List[DistinctTypeDecl] = newList()
@@ -15348,6 +15479,9 @@ pub func unitOfFile(pkgName: in String, file: in SourceFile): CodegenUnit {
       // to a host with reflection (docs/01 §2.10); natively it is a record.
       case IRecord(decl) -> {
         records.add(decl)
+        if recordComparesByFieldsNative(decl, file.items[i].annotations) {
+          eqByFields.add(decl.name)
+        }
         collectRecordMethods(pkgName, decl, fns)
       }
       case IExposedRec(decl) -> {
@@ -15396,6 +15530,7 @@ pub func unitOfFile(pkgName: in String, file: in SourceFile): CodegenUnit {
     wasmImports = wasmImports,
     records = records,
     opaqueNames = opaqueNames,
+    eqByFields = eqByFields,
     unions = unions,
     enums = enums,
     distincts = distincts,

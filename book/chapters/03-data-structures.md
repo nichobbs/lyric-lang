@@ -45,7 +45,23 @@ Arguments to `.copy` must be named, each naming a real field at most once, with 
 
 **Function-typed fields.** A record can hold functions, and calling one looks like a method call: given `record Handler { apply: (Int) -> Int }`, `h.apply(2)` runs the function stored in `apply`. This is a convenient way to describe a program as data (an `update` and a `view` function, say) and pass it around as one value.
 
-**Structural equality.** A record with no `var` field is a value, so `==` and `!=` compare it field by field: `Point(x = 1.0, y = 2.0) == Point(x = 1.0, y = 2.0)` is `true`, with no annotation needed. A field that is itself such a record is compared by its fields, a distinct type by its underlying value, and every other field with its own type's `==` (a `String` by its text, a union structurally, a `Double` by IEEE rules, so a `NaN` field never compares equal). A record with a function-typed field has no `==` (**T0153**).
+**Structural equality.** A record with no `var` field is a value, so `==` and `!=` compare it field by field: `Point(x = 1.0, y = 2.0) == Point(x = 1.0, y = 2.0)` is `true`, with no annotation needed. A field that is itself such a record is compared by its fields, a distinct type by its underlying value, and every other field with its own type's `==` (a `String` by its text, a union structurally). A `Double` or `Float` field is equal when `==` holds or both are `NaN`, so `0.0` equals `-0.0` and a record holding a `NaN` equals itself, while `==` on a bare `Double` stays IEEE. A record with a function-typed field has no `==` (**T0153**).
+
+The same equality is used wherever a record is compared, not just by `==`:
+
+- as a `Map` or `Set` key and by `List.contains`/`indexOf`;
+- inside a union payload (`Some(p) == Some(q)`);
+- through a type parameter (`func same[T](a: in T, b: in T): Bool = a == b`).
+
+On dotnet and the JVM every such record gets matching `Equals`/`hashCode` overrides, so a key built separately is found:
+
+```lyric
+val seen: Map[Point, String] = newMap()
+seen.add(Point(x = 1.0, y = 2.0), "origin-ish")
+seen.containsKey(Point(x = 1.0, y = 2.0))   // true
+```
+
+A record with a `var` field keeps identity, as a key too, unless it derives `Equals`. Native `Map` keys must still be a `String` or a scalar (#8167).
 
 A record with a `var` field has identity (see "Values and mutable records" in the reference): `==` asks whether two bindings refer to the same instance. Deriving `Equals` gives it field-by-field `==` instead:
 
