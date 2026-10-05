@@ -290,6 +290,15 @@ void lyric_mutex_destroy(void* m) {
     (void)m;
 }
 
+void lyric_mutex_wait(void* m) {
+    (void)m;
+    lyric_panic_msg("a `when:` barrier is false and no other thread can make it true", "lyric_posix.c", __LINE__);
+}
+
+void lyric_mutex_notify_all(void* m) {
+    (void)m;
+}
+
 typedef struct {
     int32_t count;
 } lyric_sem_t;
@@ -326,38 +335,142 @@ void lyric_sem_destroy(void* s) {
     (void)s;
 }
 
-#else
-int32_t lyric_mutex_size(void) {
-    return (int32_t)sizeof(pthread_mutex_t);
+typedef struct {
+    int32_t unused;
+} lyric_wasm_cond_t;
+
+int32_t lyric_cond_size(void) {
+    return (int32_t)sizeof(lyric_wasm_cond_t);
 }
 
-/* Recursive: a protected type's member may call a sibling member, which
- * takes the same instance lock again (docs/01 §7.5; the CLR Monitor and JVM
- * object monitors are reentrant too).  A default mutex deadlocked there. */
+void lyric_cond_init(void* c) {
+    ((lyric_wasm_cond_t*)c)->unused = 0;
+}
+
+void lyric_cond_wait(void* c, void* m) {
+    (void)c;
+    (void)m;
+    lyric_panic_msg("wait on a condition no other thread can signal", "lyric_posix.c", __LINE__);
+}
+
+int32_t lyric_cond_timedwait(void* c, void* m, int64_t timeout_ns) {
+    (void)c;
+    (void)m;
+    if (timeout_ns > 0) {
+        struct timespec ts;
+        ts.tv_sec = (time_t)(timeout_ns / 1000000000LL);
+        ts.tv_nsec = (long)(timeout_ns % 1000000000LL);
+        nanosleep(&ts, 0);
+    }
+    return 0;
+}
+
+void lyric_cond_signal(void* c) {
+    (void)c;
+}
+
+void lyric_cond_broadcast(void* c) {
+    (void)c;
+}
+
+void lyric_cond_destroy(void* c) {
+    (void)c;
+}
+
+#else
+/* A protected type's lock is a monitor: a mutex, the condition its `when:`
+ * barriers wait on, and who holds it and how deeply.  It is reentrant (a
+ * member may call a sibling member, which takes the same instance lock again,
+ * docs/01 §7.5; the CLR Monitor and JVM object monitors are reentrant too),
+ * and a wait releases EVERY level at once and restores the depth on return,
+ * which a pthread recursive mutex cannot do (pthread_cond_wait releases a
+ * single level).  `owner` and `depth` are read without the mutex only to ask
+ * "does this thread already hold it?", which no other thread can make true. */
+typedef struct {
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+    pthread_t owner;
+    int32_t depth;
+} lyric_monitor_t;
+
+int32_t lyric_mutex_size(void) {
+    return (int32_t)sizeof(lyric_monitor_t);
+}
+
 void lyric_mutex_init(void* m) {
-    pthread_mutexattr_t attr;
-    if (pthread_mutexattr_init(&attr) != 0 ||
-        pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE) != 0 ||
-        pthread_mutex_init((pthread_mutex_t*)m, &attr) != 0) {
+    lyric_monitor_t* mon = (lyric_monitor_t*)m;
+    if (pthread_mutex_init(&mon->mutex, 0) != 0) {
         lyric_panic_msg("pthread_mutex_init failed", "lyric_posix.c", __LINE__);
     }
-    pthread_mutexattr_destroy(&attr);
+    if (pthread_cond_init(&mon->cond, 0) != 0) {
+        lyric_panic_msg("pthread_cond_init failed", "lyric_posix.c", __LINE__);
+    }
+    mon->depth = 0;
+}
+
+static int lyric_monitor_held_by_me(lyric_monitor_t* mon) {
+    return __atomic_load_n(&mon->depth, __ATOMIC_RELAXED) > 0 && pthread_equal(mon->owner, pthread_self());
 }
 
 void lyric_mutex_lock(void* m) {
-    if (pthread_mutex_lock((pthread_mutex_t*)m) != 0) {
+    lyric_monitor_t* mon = (lyric_monitor_t*)m;
+    if (lyric_monitor_held_by_me(mon)) {
+        mon->depth += 1;
+        return;
+    }
+    if (pthread_mutex_lock(&mon->mutex) != 0) {
         lyric_panic_msg("pthread_mutex_lock failed", "lyric_posix.c", __LINE__);
     }
+    mon->owner = pthread_self();
+    __atomic_store_n(&mon->depth, 1, __ATOMIC_RELAXED);
 }
 
 void lyric_mutex_unlock(void* m) {
-    if (pthread_mutex_unlock((pthread_mutex_t*)m) != 0) {
+    lyric_monitor_t* mon = (lyric_monitor_t*)m;
+    if (!lyric_monitor_held_by_me(mon)) {
+        lyric_panic_msg("unlock of a lock that is not held", "lyric_posix.c", __LINE__);
+    }
+    if (mon->depth > 1) {
+        mon->depth -= 1;
+        return;
+    }
+    __atomic_store_n(&mon->depth, 0, __ATOMIC_RELAXED);
+    if (pthread_mutex_unlock(&mon->mutex) != 0) {
         lyric_panic_msg("pthread_mutex_unlock failed", "lyric_posix.c", __LINE__);
     }
 }
 
 void lyric_mutex_destroy(void* m) {
-    pthread_mutex_destroy((pthread_mutex_t*)m);
+    lyric_monitor_t* mon = (lyric_monitor_t*)m;
+    pthread_cond_destroy(&mon->cond);
+    pthread_mutex_destroy(&mon->mutex);
+}
+
+/* Release every level, wait, and take them all back.  The wait is the single
+ * atomic release-and-block of pthread_cond_wait, so a notify between the
+ * caller's test of its barrier and the wait is not lost. */
+void lyric_mutex_wait(void* m) {
+    lyric_monitor_t* mon = (lyric_monitor_t*)m;
+    if (!lyric_monitor_held_by_me(mon)) {
+        lyric_panic_msg("wait on a lock that is not held", "lyric_posix.c", __LINE__);
+    }
+    int32_t saved = mon->depth;
+    __atomic_store_n(&mon->depth, 0, __ATOMIC_RELAXED);
+    if (pthread_cond_wait(&mon->cond, &mon->mutex) != 0) {
+        lyric_panic_msg("pthread_cond_wait failed", "lyric_posix.c", __LINE__);
+    }
+    mon->owner = pthread_self();
+    __atomic_store_n(&mon->depth, saved, __ATOMIC_RELAXED);
+}
+
+void lyric_mutex_notify_all(void* m) {
+    lyric_monitor_t* mon = (lyric_monitor_t*)m;
+    if (!lyric_monitor_held_by_me(mon)) {
+        lyric_panic_msg("notify on a lock that is not held", "lyric_posix.c", __LINE__);
+    }
+    if (pthread_cond_broadcast(&mon->cond) != 0) {
+        lyric_panic_msg("pthread_cond_broadcast failed", "lyric_posix.c", __LINE__);
+    }
 }
 
 /* Counting semaphore: a mutex + condvar + count, rather than POSIX
@@ -443,6 +556,108 @@ void lyric_sem_destroy(void* s) {
     lyric_sem_t* sem = (lyric_sem_t*)s;
     pthread_cond_destroy(&sem->cond);
     pthread_mutex_destroy(&sem->mutex);
+}
+
+/* Condition variables (see lyric_rt.h).  Timed waits run on the monotonic
+ * clock, so a wall-clock step cannot cut one short or stretch it: glibc and
+ * musl take the clock as a condattr, macOS has no such attribute but offers a
+ * relative-timeout wait. */
+static void lyric_cond_init_raw(pthread_cond_t* cv) {
+    pthread_condattr_t attr;
+    if (pthread_condattr_init(&attr) != 0) {
+        lyric_panic_msg("pthread_condattr_init failed", "lyric_posix.c", __LINE__);
+    }
+#if !defined(__APPLE__)
+    if (pthread_condattr_setclock(&attr, CLOCK_MONOTONIC) != 0) {
+        lyric_panic_msg("pthread_condattr_setclock failed", "lyric_posix.c", __LINE__);
+    }
+#endif
+    if (pthread_cond_init(cv, &attr) != 0) {
+        lyric_panic_msg("pthread_cond_init failed", "lyric_posix.c", __LINE__);
+    }
+    pthread_condattr_destroy(&attr);
+}
+
+static void lyric_cond_wait_raw(pthread_cond_t* cv, pthread_mutex_t* mu) {
+    if (pthread_cond_wait(cv, mu) != 0) {
+        lyric_panic_msg("pthread_cond_wait failed", "lyric_posix.c", __LINE__);
+    }
+}
+
+static int32_t lyric_cond_timedwait_raw(pthread_cond_t* cv, pthread_mutex_t* mu, int64_t timeout_ns) {
+    if (timeout_ns <= 0) {
+        return 0;
+    }
+    int rc;
+#if defined(__APPLE__)
+    struct timespec rel;
+    rel.tv_sec = (time_t)(timeout_ns / 1000000000LL);
+    rel.tv_nsec = (long)(timeout_ns % 1000000000LL);
+    rc = pthread_cond_timedwait_relative_np(cv, mu, &rel);
+#else
+    struct timespec abs;
+    clock_gettime(CLOCK_MONOTONIC, &abs);
+    int64_t nsec = (int64_t)abs.tv_nsec + timeout_ns % 1000000000LL;
+    abs.tv_sec += (time_t)(timeout_ns / 1000000000LL + nsec / 1000000000LL);
+    abs.tv_nsec = (long)(nsec % 1000000000LL);
+    rc = pthread_cond_timedwait(cv, mu, &abs);
+#endif
+    if (rc == ETIMEDOUT) {
+        return 0;
+    }
+    if (rc != 0) {
+        lyric_panic_msg("pthread_cond_timedwait failed", "lyric_posix.c", __LINE__);
+    }
+    return 1;
+}
+
+int32_t lyric_cond_size(void) {
+    return (int32_t)sizeof(pthread_cond_t);
+}
+
+void lyric_cond_init(void* c) {
+    lyric_cond_init_raw((pthread_cond_t*)c);
+}
+
+void lyric_cond_wait(void* c, void* m) {
+    lyric_monitor_t* mon = (lyric_monitor_t*)m;
+    if (!lyric_monitor_held_by_me(mon)) {
+        lyric_panic_msg("wait on a lock that is not held", "lyric_posix.c", __LINE__);
+    }
+    int32_t saved = mon->depth;
+    __atomic_store_n(&mon->depth, 0, __ATOMIC_RELAXED);
+    lyric_cond_wait_raw((pthread_cond_t*)c, &mon->mutex);
+    mon->owner = pthread_self();
+    __atomic_store_n(&mon->depth, saved, __ATOMIC_RELAXED);
+}
+
+int32_t lyric_cond_timedwait(void* c, void* m, int64_t timeout_ns) {
+    lyric_monitor_t* mon = (lyric_monitor_t*)m;
+    if (!lyric_monitor_held_by_me(mon)) {
+        lyric_panic_msg("wait on a lock that is not held", "lyric_posix.c", __LINE__);
+    }
+    int32_t saved = mon->depth;
+    __atomic_store_n(&mon->depth, 0, __ATOMIC_RELAXED);
+    int32_t woke = lyric_cond_timedwait_raw((pthread_cond_t*)c, &mon->mutex, timeout_ns);
+    mon->owner = pthread_self();
+    __atomic_store_n(&mon->depth, saved, __ATOMIC_RELAXED);
+    return woke;
+}
+
+void lyric_cond_signal(void* c) {
+    if (pthread_cond_signal((pthread_cond_t*)c) != 0) {
+        lyric_panic_msg("pthread_cond_signal failed", "lyric_posix.c", __LINE__);
+    }
+}
+
+void lyric_cond_broadcast(void* c) {
+    if (pthread_cond_broadcast((pthread_cond_t*)c) != 0) {
+        lyric_panic_msg("pthread_cond_broadcast failed", "lyric_posix.c", __LINE__);
+    }
+}
+
+void lyric_cond_destroy(void* c) {
+    pthread_cond_destroy((pthread_cond_t*)c);
 }
 
 #endif /* __wasi__ */
@@ -588,6 +803,28 @@ void lyric_global_lock(void) {
 
 void lyric_global_unlock(void) {
     pthread_mutex_unlock(&lyric_global_mutex);
+}
+
+static pthread_cond_t lyric_global_cond_var;
+static pthread_once_t lyric_global_cond_once = PTHREAD_ONCE_INIT;
+
+static void lyric_global_cond_setup(void) {
+    lyric_cond_init_raw(&lyric_global_cond_var);
+}
+
+void lyric_global_cond_wait(void) {
+    pthread_once(&lyric_global_cond_once, lyric_global_cond_setup);
+    lyric_cond_wait_raw(&lyric_global_cond_var, &lyric_global_mutex);
+}
+
+int32_t lyric_global_cond_timedwait(int64_t timeout_ns) {
+    pthread_once(&lyric_global_cond_once, lyric_global_cond_setup);
+    return lyric_cond_timedwait_raw(&lyric_global_cond_var, &lyric_global_mutex, timeout_ns);
+}
+
+void lyric_global_cond_broadcast(void) {
+    pthread_once(&lyric_global_cond_once, lyric_global_cond_setup);
+    pthread_cond_broadcast(&lyric_global_cond_var);
 }
 
 static _Thread_local void* lyric_tl_ref = NULL;

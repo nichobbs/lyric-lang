@@ -18,10 +18,12 @@
 //!     `delayWithCancel` and `awaitAll` block the calling thread and return a
 //!     finished `Task`, and `scopeAdd` is a no-op.  `scopeSpawn` is the
 //!     concurrency primitive: it starts the action on its own thread at once.
-//!   - **No module state in a bundled stdlib package**, and no condition
-//!     variables: every flag and child list is guarded by lyric-rt's one global
-//!     lock (`lyric_global_lock`, held only for a read or a write) and waits poll
-//!     at one-millisecond steps.
+//!   - **No module state in a bundled stdlib package**, so every flag and child
+//!     list is guarded by lyric-rt's one global lock (`lyric_global_lock`), and
+//!     every wait blocks on lyric-rt's one global condition variable paired with
+//!     it (`lyric_global_cond_*`).  A state change (a job finishing, a source
+//!     cancelled) broadcasts the condition; each waiter re-tests its own
+//!     predicate, and a timed wait gives up at its deadline.  Nothing polls.
 //!   - **Deadlines are lazy.**  `makeCancelSourceTimeout` stores a monotonic
 //!     deadline that `isCancelled` compares against; no timer thread exists.
 //!   - **The ambient token is per thread** (a lyric-rt thread slot).  A child
@@ -29,7 +31,7 @@
 //!     `AsyncLocal` flows into `Task.Run` on .NET.
 //!
 //! Only `Std.Task` should import this.
-@axiom("lyric_global_lock/unlock, lyric_thread_ref_*, lyric_thread_spawn_detached and lyric_monotonic_nanos (lyric-rt) conform to their documented contracts; lyric_retain/lyric_release are the ARC primitives")
+@axiom("lyric_global_lock/unlock, lyric_global_cond_*, lyric_thread_ref_*, lyric_thread_spawn_detached and lyric_monotonic_nanos (lyric-rt) conform to their documented contracts; lyric_retain/lyric_release are the ARC primitives")
 @runtime_checked
 @io
 package Std.Task
@@ -41,6 +43,12 @@ import Std.TimeHost
 extern func rtGlobalLock(): Unit = "lyric_global_lock"
 
 extern func rtGlobalUnlock(): Unit = "lyric_global_unlock"
+
+extern func rtGlobalCondWait(): Unit = "lyric_global_cond_wait"
+
+extern func rtGlobalCondTimedWait(timeoutNanos: Long): Int = "lyric_global_cond_timedwait"
+
+extern func rtGlobalCondBroadcast(): Unit = "lyric_global_cond_broadcast"
 
 extern func rtThreadRefSet(obj: CancellationTokenSource): Unit = "lyric_thread_ref_set"
 
@@ -97,6 +105,7 @@ pub func sourceToken(source: in CancellationTokenSource): CancellationToken {
 pub func cancelSource(source: in CancellationTokenSource): Unit {
   rtGlobalLock()
   source.cancelled = true
+  rtGlobalCondBroadcast()
   rtGlobalUnlock()
 }
 
@@ -148,14 +157,33 @@ pub func delay(ms: in Int): Task {
   Task(done = true)
 }
 
-/// Sleep for `ms` milliseconds in 20 ms steps, returning early once `token` is
-/// cancelled (callers check `isCancelled` afterwards).
+/// Sleep for `ms` milliseconds, returning as soon as `token` is cancelled
+/// (callers check `isCancelled` afterwards).  The wait ends at the earlier of
+/// the delay and the token's own deadline; `cancelSource` wakes it at once.
 pub func delayWithCancel(ms: in Int, token: in CancellationToken): Task {
-  var remaining = ms
-  while remaining > 0 and not isCancelled(token) {
-    val step = if remaining < 20 { remaining } else { 20 }
-    hostSleepMillis(step)
-    remaining = remaining - step
+  match token.source {
+    case None -> hostSleepMillis(ms)
+    case Some(src) -> {
+      val endNanos = rtMonotonicNanos() + ms.toLong() * 1000000i64
+      rtGlobalLock()
+      var done = false
+      while not done {
+        val now = rtMonotonicNanos()
+        var wait = endNanos - now
+        if src.deadlineNanos > 0i64 {
+          val toDeadline = src.deadlineNanos - now
+          if toDeadline < wait {
+            wait = toDeadline
+          }
+        }
+        if wait <= 0i64 or src.cancelled {
+          done = true
+        } else {
+          val _ = rtGlobalCondTimedWait(wait)
+        }
+      }
+      rtGlobalUnlock()
+    }
   }
   Task(done = true)
 }
@@ -181,23 +209,19 @@ func startThread(work: in () -> Unit): Unit {
   }
 }
 
-func jobFinished(job: in Job): Bool {
-  rtGlobalLock()
-  val f = job.finished
-  rtGlobalUnlock()
-  f
-}
-
 func markFinished(job: in Job): Unit {
   rtGlobalLock()
   job.finished = true
+  rtGlobalCondBroadcast()
   rtGlobalUnlock()
 }
 
 func waitFinished(job: in Job): Unit {
-  while not jobFinished(job) {
-    hostSleepMillis(1)
+  rtGlobalLock()
+  while not job.finished {
+    rtGlobalCondWait()
   }
+  rtGlobalUnlock()
 }
 
 // =====================================================================
@@ -337,10 +361,15 @@ pub func runActionWithin(action: in () -> Unit, timeoutMs: in Int): Bool
   val inherited = currentToken()
   startThread({ -> val previous = installToken(inherited); action(); restoreToken(previous); markFinished(job) })
   val deadline = rtMonotonicNanos() + timeoutMs.toLong() * 1000000i64
-  while not jobFinished(job) and rtMonotonicNanos() - deadline < 0i64 {
-    hostSleepMillis(1)
+  rtGlobalLock()
+  var left = deadline - rtMonotonicNanos()
+  while not job.finished and left > 0i64 {
+    val _ = rtGlobalCondTimedWait(left)
+    left = deadline - rtMonotonicNanos()
   }
-  jobFinished(job)
+  val finished = job.finished
+  rtGlobalUnlock()
+  finished
 }
 
 /// Run `f` on its own thread and wait at most `timeoutMs` milliseconds:

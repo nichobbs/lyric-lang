@@ -4756,7 +4756,7 @@ func lowerCallEx(
           }
         }
         if n == "__lyric_protected_wait" or n == "__lyric_protected_notify" {
-          panic("Lyric.LlvmCodegen: protected-type `when:` barriers are not yet supported for --target native (D-N-017)")
+          return lowerProtectedBarrierCall(ctx, insns, n == "__lyric_protected_wait")
         }
         if n == "assert" and args.count >= 1 {
           val cond = lowerPositionalArg(ctx, insns, args, 0)
@@ -11071,6 +11071,18 @@ func fvExpr(ctx: in Ctx, e: in Expr, bound: in List[String], free: in List[Strin
       fvExpr(ctx, value, bound, free, assigned)
     }
     case EBlock(block) -> fvBlock(ctx, block, bound, free, assigned)
+    case EUnsafe(block) -> fvBlock(ctx, block, bound, free, assigned)
+    // A name used only under `await`, `spawn`, `yield` or `try` is still a
+    // capture of the enclosing lambda.
+    case EAwait(inner) -> fvExpr(ctx, inner, bound, free, assigned)
+    case ESpawn(inner) -> fvExpr(ctx, inner, bound, free, assigned)
+    case EYield(inner) -> fvExpr(ctx, inner, bound, free, assigned)
+    case ETry(inner) -> fvExpr(ctx, inner, bound, free, assigned)
+    case ESelf -> {
+      if ctx.varTypes.containsKey("self") and not namesContains(bound, "self") and not namesContains(free, "self") {
+        free.add("self")
+      }
+    }
     case _ -> {
     }
   }
@@ -14925,6 +14937,8 @@ func runtimeDecls(): List[NFunc] {
   decls.add(mkDecl1("lyric_mutex_lock", NVoid, p8))
   decls.add(mkDecl1("lyric_mutex_unlock", NVoid, p8))
   decls.add(mkDecl1("lyric_mutex_destroy", NVoid, p8))
+  decls.add(mkDecl1("lyric_mutex_wait", NVoid, p8))
+  decls.add(mkDecl1("lyric_mutex_notify_all", NVoid, p8))
   decls.add(mkDecl1("lyric_free", NVoid, p8))
   decls
 }
@@ -17422,6 +17436,44 @@ func synthProtectedDtor(ctx: in Ctx, ri: in NRecInfo): NFunc {
     body = body,
     attributes = attrs
   )
+}
+
+/// `__lyric_protected_wait()` / `__lyric_protected_notify()`, which the contract
+/// elaborator puts in a protected type's members for its `when:` barriers
+/// (`while not (barrier) { wait }` and `defer { notify }`).  They act on the
+/// receiver's own lock buffer, which is a monitor (`lyric_mutex_wait` releases
+/// every nested level and blocks; `lyric_mutex_notify_all` wakes the waiters).
+func lowerProtectedBarrierCall(ctx: in Ctx, insns: in List[NInsn], isWait: in Bool): NVal {
+  if not ctx.varTypes.containsKey("self") {
+    panic("Lyric.LlvmCodegen: a `when:` barrier belongs to a protected type's member (no `self` here)")
+  }
+  val selfV = loadLocal(ctx, insns, "self")
+  val structTy = match selfV.ty {
+    case NPtr(pointee) -> pointee
+    case _ -> panic("Lyric.LlvmCodegen: a `when:` barrier's receiver is not a protected type")
+  }
+  val recName = match structTy {
+    case NStruct(nm, _) -> nm
+    case _ -> panic("Lyric.LlvmCodegen: a `when:` barrier's receiver is not a protected type")
+  }
+  val ri = match mapGet(ctx.recordDefs, recName) {
+    case Some(r) -> r
+    case None -> panic("Lyric.LlvmCodegen: a `when:` barrier's receiver is not a protected type")
+  }
+  if not ctx.protectedRecNames.containsKey(ri.irName) {
+    panic("Lyric.LlvmCodegen: a `when:` barrier's receiver '" + ri.irName + "' is not a protected type")
+  }
+  val mutexIdx = ri.fieldTys.count - 1
+  val fieldPtr = freshTmp(ctx)
+  val idxArgs: List[NArg] = newList()
+  idxArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  idxArgs.add(NArg(ty = NI32, value = NLitInt(v = (arcHeaderSlots + mutexIdx).toLong(), ty = NI32)))
+  insns.add(NGEP(dest = fieldPtr, ty = structTy, ptr = selfV.value, indices = idxArgs))
+  val mutexVal = freshTmp(ctx)
+  insns.add(NLoad(dest = mutexVal, ty = NPtr(pointee = NI8), ptr = NLocal(name = fieldPtr)))
+  val fnName = if isWait { "lyric_mutex_wait" } else { "lyric_mutex_notify_all" }
+  insns.add(NCallVoid(fn = NGlobal(name = fnName), args = arg1(NPtr(pointee = NI8), NLocal(name = mutexVal))))
+  NVal(ty = NVoid, value = NUndef(ty = NVoid))
 }
 
 /// Construct a protected type from call-site args: resolves the user

@@ -781,3 +781,12 @@ test "async interface method: awaited inside an async caller, mixed with a sync 
     "an async-caller awaits a String-returning async interface method, then calls a sync one"
   )
 }
+
+// A name a lambda uses only under `await` is captured by it: the capture
+// analysis walked every expression kind but `await` and `spawn` (#8154).
+test "a lambda captures a name used only inside an await" {
+  val src = "package T\n" + "async func plusOne(n: in Int): Int {\n  return n + 1\n}\n" +
+    "func main(): Int {\n  val k = 41\n  val f: () -> Int = { -> await plusOne(k) }\n  f()\n}\n"
+  val r = compileAndRun(src)
+  assertEqualInt(r.exitCode, 42, "the lambda captured k, used only under await: 41 + 1")
+}

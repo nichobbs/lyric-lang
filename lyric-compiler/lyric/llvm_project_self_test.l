@@ -1139,3 +1139,70 @@ test "a bare None argument takes its type from an earlier argument of the generi
   val outcome = compileAndRunProject(pkgs)
   assertEqualInt(outcome.exitCode, 3, "the Leaf built by N.Lib.row")
 }
+
+// Protected-type `when:` barriers on native (#8154): the contract elaborator
+// rewrites a barrier into `while not (barrier) { wait }` plus a `notify` on
+// every member's exit, and the instance's lock buffer is a monitor those two
+// calls act on.  Real threads come from `Std.Task`.
+test "when: barriers hand values between two threads, one slot at a time (ASan, #8154)" {
+  val pkgs: List[NativeSourcePackage] = newList()
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Bar.App",
+      path = "",
+      source = "package Bar.App\n" + "import Std.Core\n" + "import Std.Task\n" + "protected type Slot {\n" +
+        "  var full: Bool = false\n" +
+        "  var item: Int = 0\n" +
+        "  var sum: Int = 0\n" +
+        "  entry put(x: in Int): Unit\n    when: not full\n  {\n    item = x\n    full = true\n  }\n" +
+        "  entry take(): Int\n    when: full\n  {\n    full = false\n    item\n  }\n" +
+        "  entry add(x: in Int): Unit {\n    sum = sum + x\n  }\n" +
+        "  func total(): Int = sum\n" +
+        "}\n" +
+        "func main(): Int {\n" +
+        "  val s = Slot()\n" +
+        "  val sc = makeScope()\n" +
+        "  scopeSpawn(\n    sc,\n    { ->\n      var i = 1\n      while i <= 200 {\n        s.put(i)\n        i = i + 1\n      }\n    }\n  )\n" +
+        "  scopeSpawn(\n    sc,\n    { ->\n      var j = 0\n      while j < 200 {\n        s.add(s.take())\n        j = j + 1\n      }\n    }\n  )\n" +
+        "  val r = await awaitAll(sc)\n" +
+        "  s.total() - 20100 + 7\n" +
+        "}\n"
+    )
+  )
+  val outcome = compileAndRunProject(pkgs)
+  assertEqualInt(outcome.exitCode, 7, "every one of 200 items delivered exactly once: total 20100")
+}
+
+test "a func that opens a barrier wakes an entry and a func waiting on it (ASan, #8154)" {
+  val pkgs: List[NativeSourcePackage] = newList()
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Gate.App",
+      path = "",
+      source = "package Gate.App\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Task\n" +
+        "import Std.Time\n" +
+        "protected type Gate {\n" +
+        "  var isOpen: Bool = false\n" +
+        "  var passed: Int = 0\n" +
+        "  entry pass(): Unit\n    when: isOpen\n  {\n    passed = passed + 1\n  }\n" +
+        "  func peekOpen(): Int\n    when: isOpen\n  {\n    7\n  }\n" +
+        "  func open(): Unit {\n    isOpen = true\n  }\n" +
+        "  func passedCount(): Int = passed\n" +
+        "  entry passTwice(): Unit {\n    pass()\n    pass()\n  }\n" +
+        "}\n" +
+        "func main(): Int {\n" +
+        "  val g = Gate()\n" +
+        "  val sc = makeScope()\n" +
+        "  val seen: List[Int] = newList()\n" +
+        "  scopeSpawn(sc, { -> g.passTwice() })\n" +
+        "  scopeSpawn(\n    sc,\n    { ->\n      val v = g.peekOpen()\n      seen.add(v)\n    }\n  )\n" +
+        "  sleepMillis(100)\n" +
+        "  g.open()\n" +
+        "  val r = await awaitAll(sc)\n" +
+        "  g.passedCount() * 10 + seen[0]\n" +
+        "}\n"
+    )
+  )
+  val outcome = compileAndRunProject(pkgs)
+  assertEqualInt(outcome.exitCode, 27, "the entry that calls a barrier entry (nested lock) ran twice, the func saw 7")
+}
