@@ -447,14 +447,16 @@ Calls the verifier cannot follow fail closed or are over-approximated
   32 bits when none is known: a result is at least that wide, so this can
   only make them stricter.)
 - Inside one expression, evaluation order is respected: a call's receiver
-  or computed callee, then its arguments in order, a branch or arm after a condition,
+  or computed callee, then its arguments as written — named and positional
+  alike, whatever the parameter order (D171) — then the omitted
+  parameters' defaults, a branch or arm after a condition,
   scrutinee or guard, the arms after a guard that ran and failed, and the
   right operand of a binary operator see the state the earlier part
   leaves — a variable it passed to an `out`/`inout` parameter holds a new
   value. Index receivers before indices, interpolation segments, and
-  tuple and list elements run left to right as well. A call whose named
-  arguments are written out of parameter order fails closed (V0033) when
-  an argument changes a variable, since that order is not yet settled.
+  tuple and list elements run left to right as well. The values then pass
+  to the parameters by `Lyric.Parser.pairCallArgs`, as in the type checker
+  and every backend.
 - A match arm's guard is translated in the arm's bindings: its side
   conditions and facts hold where the pattern matches and no earlier arm
   did, and the arm is taken when pattern and guard hold. An arm whose
@@ -474,8 +476,7 @@ Calls the verifier cannot follow fail closed or are over-approximated
   the function returns `Err(e.error)` or `None` at its own result type, as
   `Lyric.Propagate` lowers it, and its `ensures:` must hold for that
   result: a caller assumes the postcondition of every value a function
-  returns, although the runtime does not check it on this exit (language
-  reference §ensures). Otherwise the path goes on with the payload, and
+  returns, although the runtime does not check it on this exit (D172). Otherwise the path goes on with the payload, and
   facts from the callee's `ensures:` (`result.isOk implies result.value >
   0`) hold of it — for the postcondition; a side goal (a later callee's
   `requires:`, an `assert`) does not see earlier facts yet (#8103 item 1).

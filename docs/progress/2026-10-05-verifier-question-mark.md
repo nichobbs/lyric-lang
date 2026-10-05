@@ -16,8 +16,8 @@ not modelled either, so every postcondition that used them failed closed.
 - **`?` splits the path** where it runs. On the `Err`/`None` path the
   function returns `Err(e.error)` or `None` at its own result type, as
   `Lyric.Propagate` lowers it, and its postcondition must hold for that
-  result (a caller assumes the postcondition of every value a function
-  returns). On the other path the binding is the payload, and the callee's
+  result: a caller assumes the postcondition of every value a function
+  returns, though the runtime does not check it on this exit (D172). On the other path the binding is the payload, and the callee's
   `ensures:` about it (`result.isOk implies result.value > 0`) is a fact
   for the postcondition. Side goals (a later `requires:`, an `assert`)
   still see no earlier facts; that is #8103 item 1.
@@ -28,6 +28,11 @@ not modelled either, so every postcondition that used them failed closed.
   This covers bindings, expression statements, assignments, `return`, a
   statement `if`'s condition and branches, `assert`, and call arguments,
   receivers and operands.
+- **Argument order (D171)**: arguments are translated as written, named
+  and positional alike, and pass to the parameters by
+  `Lyric.Parser.pairCallArgs`; the interim V0033 for named arguments
+  written out of parameter order with an `out`/`inout` effect (#8107) is
+  gone, and a `?` among such arguments splits like any other.
 - **Fails closed**: a `?` that runs only conditionally within its
   statement (an `if`/`match` expression's branch, the right operand of
   `and`/`or`/`implies`/`??`, a lambda, a block used as a value), on a
@@ -39,4 +44,4 @@ Verified by `lyric-compiler/lyric/verifier_self_test.l` (148 tests; new
 refute and discharge cases for the error path, the success payload, an
 `Option`, each statement form, argument order and every fail-closed case),
 the CI `lyric prove` examples and `core_proof.l`, the earlier review repros
-(no regression), and the compiler self-test batch (3392 tests).
+(no regression), and the compiler self-test batch (3415 tests).
