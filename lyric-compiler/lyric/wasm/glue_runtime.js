@@ -89,6 +89,68 @@ function lineSink(write) {
  *                console.error per line); stdin() returns a string,
  *                Uint8Array or null for end of input.
  */
+const HTTP_BODY_LIMIT = 10 * 1024 * 1024;
+
+// The default `std.http.fetch` (the host import behind the module-shape
+// `Std.Http` kernel): request fields in, one reply String out.  Every failure,
+// including a body over the size cap, is an `error` reply and never a rejection,
+// because a rejected host promise panics the awaiting Lyric code.
+async function defaultStdHttpFetch(method, url, headerLines, contentType, body, hasBody, followRedirects) {
+  try {
+    if (typeof fetch !== 'function') return 'error\nthis host has no global fetch (pass options.imports["std.http"].fetch)';
+    const headers = new Headers();
+    for (const line of headerLines.split('\n')) {
+      const colon = line.indexOf(':');
+      if (colon > 0) headers.append(line.slice(0, colon), line.slice(colon + 1).trim());
+    }
+    if (hasBody && contentType.length > 0) headers.set('Content-Type', contentType);
+    const response = await fetch(url, {
+      method,
+      headers,
+      body: hasBody ? body : undefined,
+      redirect: followRedirects ? 'follow' : 'manual',
+    });
+    if (response.type === 'opaqueredirect') {
+      return 'error\nthe request was redirected and redirects are disabled (a browser hides the redirect response)';
+    }
+    const chunks = [];
+    let total = 0;
+    if (response.body) {
+      const reader = response.body.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.length;
+        if (total > HTTP_BODY_LIMIT) {
+          await reader.cancel();
+          return 'error\nthe response body exceeds the ' + HTTP_BODY_LIMIT + " byte limit";
+        }
+        chunks.push(value);
+      }
+    }
+    const bytes = new Uint8Array(total);
+    let at = 0;
+    for (const c of chunks) {
+      bytes.set(c, at);
+      at += c.length;
+    }
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    }
+    let head = 'ok\n' + response.status + '\n';
+    response.headers.forEach((value, name) => {
+      head += name + ': ' + value.replace(/[\r\n]+/g, ' ') + '\n';
+    });
+    return head + '\n' + btoa(binary);
+  } catch (e) {
+    return 'error\n' + (e && e.message ? e.message : String(e));
+  }
+}
+
+// Host-import modules the glue implements itself; `options.imports` overrides any member.
+const BUILTIN_HOST = { 'std.http': { fetch: defaultStdHttpFetch } };
+
 export async function instantiate(source, options = {}) {
   const module = await loadModule(source);
   const sinks = {
@@ -276,6 +338,9 @@ export async function instantiate(source, options = {}) {
   // wrappers lower and lift around it.  Names not declared that way are raw wasm
   // imports and pass through unchanged.
   const hostFns = Object.assign({}, options.imports || {});
+  for (const [mod, members] of Object.entries(BUILTIN_HOST)) {
+    hostFns[mod] = Object.assign({}, members, hostFns[mod] || {});
+  }
   // Host imports from an NPM package (`@wasmImport("npm:<package>")`) are
   // satisfied by importing the package unless the caller supplies the module.
   for (const [mod, load] of Object.entries(LYRIC_NPM)) {
