@@ -2288,32 +2288,42 @@ test "a call evaluates its receiver or callee before its arguments, in source or
     "computed-callee-unaffected"
   )
   val namedDecls = zeroDecls() + "func pair2(a: in Int, b: in Bool): Int {\n  a\n}\n"
-  assertUntranslatable(
-    namedDecls + "func f(): Int {\n  var x = 1\n  pair2(b = zero(x), a = pos(x))\n}\n",
-    "named-reordered"
-  )
+  assertRefuted(namedDecls + "func f(): Int {\n  var x = 1\n  pair2(b = zero(x), a = pos(x))\n}\n", "named-reordered")
   assertDischarged(
     namedDecls + "func f(): Int {\n  var x = 1\n  pair2(a = pos(x), b = zero(x))\n}\n",
     "named-parameter-order"
   )
 }
 
-test "named arguments out of parameter order fail closed when one changes a variable (#8107)" {
+test "named arguments run in source order and pass in parameter order (D171)" {
   val decls = "func pos(x: in Int): Int\n  requires: x > 0\n{\n  x\n}\n" +
     "func zero(x: inout Int): Int {\n  x = 0\n  0\n}\n" +
     "func two(a: in Int, b: in Int): Int {\n  a + b\n}\n" +
-    "record Pair {\n  a: Int\n  b: Int\n}\n"
-  assertUntranslatable(decls + "func f(): Int {\n  var x = 1\n  two(b = pos(x), a = zero(x))\n}\n", "call")
-  assertUntranslatable(
+    "func sub(a: in Int, b: in Int): Int\n  ensures: result == a - b\n{\n  a - b\n}\n" +
+    "record Pair {\n  a: Int\n  b: Int\n}\n" +
+    "func q(x: inout Int): Result[Int, String] {\n  x = 0\n  Ok(1)\n}\n"
+  // In parameter order `zero(x)` would run first and `pos(x)` fail.
+  assertDischarged(decls + "func f(): Int {\n  var x = 1\n  two(b = pos(x), a = zero(x))\n}\n", "call-source-order")
+  assertRefuted(decls + "func f(): Int {\n  var x = 1\n  two(b = zero(x), a = pos(x))\n}\n", "call-effect-first")
+  assertDischarged(
     decls + "func f(): Int {\n  var x = 1\n  val p = Pair(b = pos(x), a = zero(x))\n  1\n}\n",
-    "record"
+    "record-source-order"
+  )
+  assertRefuted(
+    decls + "func f(): Int {\n  var x = 1\n  val p = Pair(b = zero(x), a = pos(x))\n  1\n}\n",
+    "record-effect-first"
   )
   assertDischarged(
-    decls + "func f(): Int {\n  val x = 1\n  two(b = pos(x), a = pos(2))\n}\n",
-    "reordered-without-effects"
+    decls + "func f(): Result[Int, String] {\n  var x = 1\n  Ok(two(b = pos(x), a = q(x)?))\n}\n",
+    "propagate-source-order"
   )
-  assertRefuted(decls + "func f(): Int {\n  var x = 1\n  two(a = zero(x), b = pos(x))\n}\n", "in-order-with-effects")
-  assertDischarged(decls + "func f(): Int {\n  var x = 1\n  two(a = pos(x), b = zero(x))\n}\n", "in-order-effect-last")
+  assertRefuted(
+    decls + "func f(): Result[Int, String] {\n  var x = 1\n  Ok(two(b = q(x)?, a = pos(x)))\n}\n",
+    "propagate-effect-first"
+  )
+  // The values still reach their parameters by name.
+  assertDischarged(decls + "func f(): Int\n  ensures: result == 4\n{\n  sub(b = 1, a = 5)\n}\n", "pairs-by-name")
+  assertRefuted(decls + "func f(): Int\n  ensures: result == -4\n{\n  sub(b = 1, a = 5)\n}\n", "pairs-by-name-refuted")
 }
 
 func gResult(ens: in String): String {
