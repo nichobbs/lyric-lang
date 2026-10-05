@@ -94,6 +94,7 @@ for t in \
   lyric-compiler/lyric/generic_ctor_open_arg_self_test.l \
   lyric-compiler/lyric/generic_ctor_widening_self_test.l \
   lyric-compiler/lyric/named_arg_eval_order_self_test.l \
+  lyric-compiler/lyric/inout_receiver_self_test.l \
   lyric-compiler/lyric/fixed_array_self_test.l \
   lyric-compiler/lyric/value_generic_record_self_test.l \
   lyric-compiler/lyric/dotted_generic_func_self_test.l \
@@ -125,6 +126,8 @@ LYRIC_BIN="$lyric_bin" bash scripts/ci/range-refinement-e2e.sh native
 # D169, D173: a value-generic record is usable in its own package and from
 # another.
 LYRIC_BIN="$lyric_bin" bash scripts/ci/value-generic-record-e2e.sh native
+# #8179: `inout` receivers and generic `inout` parameters across packages.
+LYRIC_BIN="$lyric_bin" bash scripts/ci/inout-receiver-e2e.sh native
 # Std.Task, Std.SecureRandom, Std.Json and Std.JsonValue on native (#8135, #7856):
 # the stdlib suites that need no catchable panic.
 for t in \

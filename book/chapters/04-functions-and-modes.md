@@ -103,6 +103,29 @@ func swap(xs: inout slice[Int], i: Int, j: Int) {
 }
 ```
 
+### `inout` receivers
+
+A method's receiver is its first parameter, `self`, and takes a mode like any other. With `self: inout T` the method can replace the value it was called on, which is how you "mutate" a record that has no `var` fields:
+
+```lyric
+record Point {
+  x: Int
+  y: Int
+
+  func moveBy(self: inout Point, dx: Int, dy: Int) {
+    self = Point(x = x + dx, y = y + dy)
+  }
+}
+
+var p = Point(x = 1, y = 2)
+p.moveBy(3, 4)       // p is now Point(x = 4, y = 6)
+Point.moveBy(p, 1, 1) // the same method called through its type
+```
+
+The receiver is passed by reference, so it must be a place the call can write: a `var`, an `out`/`inout` parameter, or a field path starting at a named binding (`holder.point.moveBy(1, 1)`). A `val`, a module-level `val`, a call result or another expression is rejected (`T0166`), and so is an indexed element (`points[0].moveBy(1, 1)`) for now; copy the element into a `var`, call the method, and store it back. The receiver is evaluated first, before the arguments, and is never copied, even next to a `?` or `await`.
+
+Only `in` and `inout` receivers exist. An `out` receiver is rejected (`T0165`), and so is an `inout` receiver on an interface method or an `impl` method (a call through an interface value has no variable of the implementing type to assign) or on a protected type's member (a protected object is shared, never replaced). Assigning `self` in a method whose receiver is `in` is `T0087`.
+
 ### A note on async functions
 
 Async functions cannot have `out` or `inout` parameters that cross `await` points. If you need to return multiple values from an async function, use a tuple or a record. The reason is subtle but practical: `inout` uses reference semantics, and a reference to a caller's variable across an await point would alias across concurrent operations.

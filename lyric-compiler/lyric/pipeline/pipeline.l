@@ -541,7 +541,9 @@ pub func pipePrepareForCheck(file: in SourceFile, runStubbable: in Bool): CheckR
   if hasErrorDiagnostic(diags) {
     return CheckReadyFile(file = file, diagnostics = diags)
   }
-  var f = Aliases.rewriteFile(mvRes.file)
+  // Record-body methods with an `inout` receiver become dot-named functions
+  // (#8179) before anything indexes the items.
+  var f = Aliases.rewriteFile(hoistByRefReceiverMethods(mvRes.file))
   if runStubbable {
     f = Stubbable.stubbableRewriteFile(f)
   }
@@ -628,8 +630,13 @@ pub func pipeCheckAndMono(
   // identify exactly one expression each (D-progress-948, 962, 963).
   val valueSites = funcValueSites(tcRes.symbols)
   val noListLiteralSites: Map[String, ListLiteralTypeSite] = newMap()
+  // A call that passes a receiver or argument by reference to a dot-named
+  // function becomes a plain call of it (#8179, #8183) before anything binds
+  // a call's operands (the D171 argument-order rewrite, the `?`/`await`
+  // hoists), so the receiver is an argument the call keeps as a place.
+  val byRefCalls = rewriteByRefDotCalls(file0, tcRes.symbols.byRefDotCallSites)
   val copyRes = pipeDesugarChecked(
-    file0,
+    byRefCalls,
     tcRes,
     valueSites,
     if opts.bindListLiteralTypes { tcRes.symbols.listLiteralTypeSites } else { noListLiteralSites }
@@ -744,7 +751,9 @@ pub func pipeCheckAndMono(
     return None
   }
 
-  val derived = deriveFileWithImports(propRes.file, deriveImports)
+  // An `inout` receiver becomes an ordinary parameter (#8179) before the
+  // package's generic functions are exported to its siblings and mono.
+  val derived = deriveFileWithImports(renameByRefReceivers(propRes.file), deriveImports)
 
   val noSpecSites: Map[String, Map[String, ArgConversionSite]] = newMap()
   val lambdaTypes = funcValueLambdaTypes(valueSites)
@@ -864,7 +873,9 @@ pub func pipeCheckAndMono(
 // literals folded, and on a target that represents `array[N, T]` as a
 // `List[T]` (D167), the array intrinsics and types lowered to lists.
 func finishMono(file: in SourceFile, opts: in MiddleEndOptions): SourceFile {
-  val folded = mapExprsInFile(file, foldNegatedIntLiteral)
+  // Again after mono: a function with an `inout` receiver specialised from
+  // a restored package's generic body arrives with its `self` (#8179).
+  val folded = mapExprsInFile(renameByRefReceivers(file), foldNegatedIntLiteral)
   if opts.arraysAsLists {
     lowerArraysToLists(folded, opts.primitiveArrays)
   } else {
@@ -1609,7 +1620,15 @@ func rewriteDottedGenericCalls(file: in SourceFile, sites: in Map[String, Dotted
       match e.kind {
         case ECall(fn, args) -> match mapGet(sites, recordCopySiteKey(fn.span)) {
           case Some(site) -> {
+            // Another package's function is called through that package
+            // (#8179): `Lyric.Mono` specialises it from there, never a
+            // same-named function of this package.
             val segs: List[String] = newList()
+            if site.originPkg.length > 0 {
+              for seg in dottedSegments(site.originPkg) {
+                segs.add(seg)
+              }
+            }
             segs.add(site.name)
             val target = Expr(kind = EPath(path = ModulePath(segments = segs, span = fn.span)), span = fn.span)
             if site.receiverFirst {

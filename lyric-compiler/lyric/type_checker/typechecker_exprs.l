@@ -3646,6 +3646,16 @@ func dotNamedCandidatesFor(
         acc.add(over[i])
         i = i + 1
       }
+      // Every package's `T.m` of this arity, generic ones included: the
+      // slots above keep the first registered, which may be another
+      // package's same-named type's function (a caller's own `Box.set`
+      // beside a library's generic `Box[T].set`, #8179); the receiver test
+      // below keeps the one declared on the receiver's type.
+      for c in gatherOverloadCandidates(sigs, byNameSigKey(key)) {
+        if c.params.count == argc + 1 {
+          acc.add(c)
+        }
+      }
     }
     case _ -> {
     }
@@ -11510,7 +11520,7 @@ func directCallType(
   val ret = instantiateReturnType(sig, argTypes)
   match dottedGenericPathCallee(tbl, fn, sig) {
     case Some(dottedFn) -> {
-      recordDottedGenericCallSite(tbl, fn.span, dottedPathName(fn), false)
+      recordDottedGenericCallSite(tbl, fn.span, dottedCalleeName(fn, sig), false, sig)
       recordGenericCallTypeArgs(tbl, sig, valueGenericParamsOf(tbl, dottedFn, args.count), args, argTypes, fn.span)
       bindValueGenericCall(tbl, diag, dottedFn, args, argTypes, ret)
     }
@@ -11541,7 +11551,7 @@ func dottedGenericPathCallee(tbl: in SymbolTable, fn: in Expr, sig: in ResolvedS
   if sig.generics.count == 0 {
     return None
   }
-  val name = dottedPathName(fn)
+  val name = dottedCalleeName(fn, sig)
   if name.length == 0 {
     return None
   }
@@ -11556,6 +11566,66 @@ func dottedGenericPathCallee(tbl: in SymbolTable, fn: in Expr, sig: in ResolvedS
     }
   }
   None
+}
+
+// True when `fn` names a dot-named function through its type (`T.m`).
+func dottedFuncCallee(tbl: in SymbolTable, fn: in Expr): Bool {
+  val name = qualifiedDottedName(fn)
+  if name.length == 0 {
+    return false
+  }
+  for sym in symTableTryFindAll(tbl, name) {
+    match sym.kind {
+      case DKFunc(_) -> return true
+      case _ -> ()
+    }
+  }
+  false
+}
+
+// `T.m` for a call of the dot-named function `sig` written through its type,
+// `T.m` or `Pkg.T.m` where `Pkg` is the package declaring it; "" otherwise
+// (a package-qualified free function `Pkg.Sub.f` included).
+func dottedCalleeName(fn: in Expr, sig: in ResolvedSignature): String {
+  val segs: List[String] = newList()
+  if not calleeSegments(fn, segs) or segs.count < 2 {
+    return ""
+  }
+  if segs.count > 2 {
+    val pkgSegs: List[String] = newList()
+    var i = 0
+    while i < segs.count - 2 {
+      pkgSegs.add(segs[i])
+      i = i + 1
+    }
+    if modulePathJoin(pkgSegs) != sig.originPackage {
+      return ""
+    }
+  }
+  segs[segs.count - 2] + "." + segs[segs.count - 1]
+}
+
+// `T.m` for a callee written through its type, `T.m` or package-qualified
+// `Pkg.T.m`, as a path or a member chain; "" otherwise.
+func qualifiedDottedName(fn: in Expr): String {
+  val segs: List[String] = newList()
+  if not calleeSegments(fn, segs) or segs.count < 2 {
+    return ""
+  }
+  segs[segs.count - 2] + "." + segs[segs.count - 1]
+}
+
+func calleeSegments(e: in Expr, acc: in List[String]): Bool {
+  match e.kind {
+    case EPath(p) -> {
+      for sg in p.segments {
+        acc.add(sg)
+      }
+      true
+    }
+    case EMember(recv, member) -> if calleeSegments(recv, acc) { acc.add(member); true } else { false }
+    case _ -> false
+  }
 }
 
 // `Box.get` for a callee written `Box.get`, as a two-segment path or a
@@ -11575,13 +11645,169 @@ func dottedPathName(fn: in Expr): String {
   }
 }
 
-func recordDottedGenericCallSite(tbl: in SymbolTable, sp: in Span, name: in String, receiverFirst: in Bool): Unit {
+func recordDottedGenericCallSite(
+  tbl: in SymbolTable,
+  sp: in Span,
+  name: in String,
+  receiverFirst: in Bool,
+  sig: in ResolvedSignature,
+): Unit {
   if isNoSourceSpan(sp) or name.length == 0 {
     return
   }
   val key = recordCopySiteKey(sp)
-  if not tbl.dottedGenericCallSites.containsKey(key) {
-    tbl.dottedGenericCallSites.add(key, DottedGenericCall(name = name, receiverFirst = receiverFirst))
+  if not tbl.dottedGenericCallSites.containsKey(key) and not tbl.byRefDotCallSites.containsKey(key) {
+    val foreign = sig.originPackage.length > 0 and sig.originPackage != symTableScopePkg(tbl)
+    val origin = if foreign { sig.originPackage } else { "" }
+    tbl.dottedGenericCallSites.add(key, DottedGenericCall(name = name, receiverFirst = receiverFirst, originPkg = origin))
+  }
+}
+
+// The full signature of a method call resolved to a dot-named function that
+// takes something by reference (#8179): the call is rewritten into a plain
+// call of the function.  None for any other call.
+func byRefDotFullSig(methodPick: in Option[MethodCallPick], fn: in Expr): Option[ResolvedSignature] {
+  match fn.kind {
+    case EMember(_, _) -> ()
+    case _ -> return None
+  }
+  match methodPick {
+    case Some(mp) -> match mp.fullSig {
+      case Some(fullS) -> if sigHasByRefParam(fullS) { Some(value = fullS) } else { None }
+      case None -> None
+    }
+    case None -> None
+  }
+}
+
+func isByRefDotPick(methodPick: in Option[MethodCallPick], fn: in Expr): Bool {
+  match byRefDotFullSig(methodPick, fn) {
+    case Some(_) -> true
+    case None -> false
+  }
+}
+
+// True when some parameter of `sig` is `out` or `inout`.
+func sigHasByRefParam(sig: in ResolvedSignature): Bool {
+  for p in sig.params {
+    if modeNeedsLValue(p.mode) {
+      return true
+    }
+  }
+  false
+}
+
+// A call of the dot-named function `name` (`fullSig`, receiver included) that
+// passes something by reference is recorded for rewriting into a plain call
+// of the function (#8179, #8183): a backend lowers a method call's receiver
+// as a value, and a plain call's `out`/`inout` arguments as places.
+func recordByRefDotCall(
+  tbl: in SymbolTable,
+  sp: in Span,
+  name: in String,
+  fullSig: in ResolvedSignature,
+  receiverFirst: in Bool,
+): Unit {
+  if isNoSourceSpan(sp) or name.length == 0 or not sigHasByRefParam(fullSig) {
+    return
+  }
+  val key = recordCopySiteKey(sp)
+  if tbl.byRefDotCallSites.containsKey(key) {
+    tbl.byRefDotCallSites.remove(key)
+  }
+  // Another package's function is named through its package, generic or
+  // not: a generic one is specialised here, and a same-named function or
+  // type of this package must not capture the call (#8179).  The call is no
+  // longer a generic dot-named call to rewrite bare (#8173).
+  val foreign = fullSig.originPackage.length > 0 and fullSig.originPackage != symTableScopePkg(tbl)
+  val origin = if foreign { fullSig.originPackage } else { "" }
+  tbl.byRefDotCallSites.add(key, ByRefDotCall(name = name, receiverFirst = receiverFirst, originPkg = origin))
+  if tbl.dottedGenericCallSites.containsKey(key) {
+    tbl.dottedGenericCallSites.remove(key)
+  }
+}
+
+// The receiver of a call that takes it by reference (`self: inout T`, or any
+// `out`/`inout` first parameter called with method syntax) is the place the
+// callee writes: a `var`, an `out`/`inout` parameter (`self` among them), or
+// a field of one (T0166).  An indexed element cannot be passed by reference
+// yet (#8180).
+func checkByRefReceiver(sc: in Scope, diag: in List[Diagnostic], recv: in Expr, method: in String, sp: in Span): Unit {
+  val problem = byRefReceiverProblem(sc, recv)
+  if problem.length > 0 {
+    diag.add(
+      errorDiagnostic(
+        "T0166",
+        (if method == "self" { "the `self` argument" } else { "the receiver of '" + method + "'" }) +
+          " is passed by reference (`inout`), so it must be a place the call can write: " +
+          problem,
+        sp
+      )
+    )
+  }
+}
+
+// Why `recv` is not a writable place, or "" when it is.
+func byRefReceiverProblem(sc: in Scope, recv: in Expr): String {
+  match recv.kind {
+    case EParen(inner) -> byRefReceiverProblem(sc, inner)
+    case EPath(p) -> if p.segments.count == 1 {
+      match scopeTryFind(sc, p.segments[0]) {
+        case Some(b) -> if b.isMutable { "" } else { "'" + p.segments[0] + "' is immutable; declare it `var`" }
+        case None -> moduleBindingProblem(p.segments[0])
+      }
+    } else {
+      moduleBindingProblem(modulePathJoin(p.segments))
+    }
+    case ESelf -> match scopeTryFind(sc, "self") {
+      case Some(b) -> if b.isMutable {
+        ""
+      } else {
+        "this method's own receiver `self` is `in`; declare it `self: inout`"
+      }
+      case None -> "this method's own receiver `self` is `in`; declare it `self: inout`"
+    }
+    case EMember(base, _) -> fieldPathRootProblem(sc, base)
+    case EIndex(_, _) -> "an indexed element cannot be passed by reference yet (#8180); copy it into a `var`, call the method, and store it back"
+    case _ -> "a value that is not a variable or field cannot be written; bind it to a `var` first"
+  }
+}
+
+// A field written by reference belongs to an object the caller holds: the
+// path must start at a named binding (a local, a parameter, `self` or a
+// module-level value, whatever its mode: the field, not the binding, is
+// written, as for an `out`/`inout` argument), or at an element of one.
+func fieldPathRootProblem(sc: in Scope, base: in Expr): String {
+  match base.kind {
+    case EParen(inner) -> fieldPathRootProblem(sc, inner)
+    case EPath(_) -> ""
+    case ESelf -> ""
+    case EMember(inner, _) -> fieldPathRootProblem(sc, inner)
+    case EIndex(inner, _) -> fieldPathRootProblem(sc, inner)
+    case _ -> "the field path starts at a value that is not a variable (a call result); bind it to a `val` or `var` first"
+  }
+}
+
+func moduleBindingProblem(name: in String): String {
+  "'" + name +
+    "' is not a local variable or parameter, and a module-level binding cannot be passed by reference; copy it into a `var` first"
+}
+
+// An `out`/`inout` argument that names a module-level binding, or a qualified
+// one, has no place a call can write (#8179): no backend passes it by
+// reference.  "" for any other argument.
+func byRefArgModuleProblem(sc: in Scope, arg: in Expr): String {
+  match arg.kind {
+    case EParen(inner) -> byRefArgModuleProblem(sc, inner)
+    case EPath(p) -> if p.segments.count == 1 {
+      match scopeTryFind(sc, p.segments[0]) {
+        case Some(_) -> ""
+        case None -> moduleBindingProblem(p.segments[0])
+      }
+    } else {
+      moduleBindingProblem(modulePathJoin(p.segments))
+    }
+    case _ -> ""
   }
 }
 
@@ -11626,7 +11852,7 @@ func recordDottedGenericMethodCall(
   val recvExpr = match fn.kind { case EMember(r, _) -> r; case _ -> return instRet }
   val tname = match unrefine(recvTy) { case TyUser(_, n, _) -> n; case _ -> return instRet }
   val name = tname + "." + memberName
-  recordDottedGenericCallSite(tbl, fn.span, name, true)
+  recordDottedGenericCallSite(tbl, fn.span, name, true, fullSig)
   val segs: List[String] = newList()
   segs.add(name)
   val dottedFn = Expr(kind = EPath(path = ModulePath(segments = segs, span = fn.span)), span = fn.span)
@@ -12610,7 +12836,9 @@ func inferExprCore(
       // is hoisted too (#7850).  A receiver whose own type is open
       // takes it from the method's receiver parameter, instantiated from the
       // other arguments or the type expected of the result (#7844).
-      if isMemberCallee and callArgsHaveHoistHazard(args) {
+      // A receiver passed by reference is a place the call keeps, like a
+      // by-reference argument (#8179): never hoisted into a temporary.
+      if isMemberCallee and callArgsHaveHoistHazard(args) and not isByRefDotPick(methodPick, fn) {
         match fn.kind {
           case EMember(hoistRecv, _) -> match memberRecvTy {
             case Some(hoistRecvTy) -> {
@@ -12716,6 +12944,9 @@ func inferExprCore(
           // Instantiate a generic return type from the argument types (#1488
           // category B) so `unwrapOr(opt, 0): T` yields `Int`, not `TyVar("T")`.
           val instRet = directCallType(tbl, diag, fn, sig, args, argTypes)
+          if dottedFuncCallee(tbl, fn) {
+            recordByRefDotCall(tbl, fn.span, qualifiedDottedName(fn), sig, false)
+          }
           // A generic call's result type is evidence for `Lyric.Mono` where
           // it cannot infer the call's type arguments itself (#7865).
           if sig.generics.count > 0 {
@@ -12783,7 +13014,36 @@ func inferExprCore(
                       recordHoistedCallArgs(sc, tbl, args, argTypes, mpExpected)
                     }
                     if mpNamed or mpHazard {
-                      recordSigArgOrderSite(sc, tbl, e.span, fn, args, argTypes, mp.sig, mpExpected, memberRecvTy)
+                      match byRefDotFullSig(methodPick, fn) {
+                        // The call becomes `T.m(recv, args)` (#8179), so its
+                        // argument order is recorded in that shape, the
+                        // receiver a by-reference argument.
+                        case Some(fullS) -> {
+                          val fullArgs: List[CallArg] = newList()
+                          val fullArgTypes: List[Type] = newList()
+                          val fullExpected: List[Type] = newList()
+                          match fn.kind {
+                            case EMember(fr, _) -> fullArgs.add(CAPositional(expr = fr))
+                            case _ -> ()
+                          }
+                          fullArgTypes.add(match memberRecvTy { case Some(frt) -> frt; case None -> TyError })
+                          fullExpected.add(TyError)
+                          for a in args {
+                            fullArgs.add(a)
+                          }
+                          for at in argTypes {
+                            fullArgTypes.add(at)
+                          }
+                          for xt in mpExpected {
+                            fullExpected.add(xt)
+                          }
+                          val noSegs: List[String] = newList()
+                          val plainCallee = Expr(kind = EPath(path = ModulePath(segments = noSegs, span = fn.span)), span = fn.span)
+                          val noRecvTy: Option[Type] = None
+                          recordSigArgOrderSite(sc, tbl, e.span, plainCallee, fullArgs, fullArgTypes, fullS, fullExpected, noRecvTy)
+                        }
+                        case None -> recordSigArgOrderSite(sc, tbl, e.span, fn, args, argTypes, mp.sig, mpExpected, memberRecvTy)
+                      }
                     }
                   }
                   checkBoundsSatisfied(tbl, diag, mp.sig, argTypes, e.span)
@@ -12796,6 +13056,27 @@ func inferExprCore(
                   }
                   match mp.fullSig {
                     case Some(fullS) -> {
+                      match fn.kind {
+                        case EMember(byRecv, _) -> {
+                          match memberRecvTy {
+                            case Some(byRt) -> match unrefine(byRt) {
+                              case TyUser(_, byTname, _) -> recordByRefDotCall(
+                                tbl,
+                                fn.span,
+                                byTname + "." + memberName,
+                                fullS,
+                                true
+                              )
+                              case _ -> ()
+                            }
+                            case None -> ()
+                          }
+                          if fullS.params.count > 0 and modeNeedsLValue(fullS.params[0].mode) {
+                            checkByRefReceiver(sc, diag, byRecv, memberName, e.span)
+                          }
+                        }
+                        case _ -> ()
+                      }
                       val extArgs: List[Type] = newList()
                       match memberRecvTy {
                         case Some(rt4) -> extArgs.add(rt4)
@@ -14583,7 +14864,21 @@ func checkPairedCallArgs(
       // #1487 (§5.2): a value-type `out`/`inout` argument must be a
       // writable l-value (reference-type by-ref params are mutated in
       // place — see `isByRefValueType`).
-      if modeNeedsLValue(p.mode) and isByRefValueType(p.ty) and not argIsValidByRefTarget(sc, callArgExpr(args[ai])) {
+      // A by-reference receiver written as an argument (`T.m(p)`, or a
+      // function whose first parameter is `self: inout T`) is held to the
+      // receiver rule of a method call, whatever its type (#8179).
+      if k == 0 and p.name == "self" and modeNeedsLValue(p.mode) {
+        checkByRefReceiver(sc, diag, callArgExpr(args[ai]), "self", span)
+      } else if modeNeedsLValue(p.mode) and byRefArgModuleProblem(sc, callArgExpr(args[ai])).length > 0 {
+        diag.add(
+          errorDiagnostic(
+            "T0085",
+            "argument for `out`/`inout` parameter '" + p.name + "' must be a mutable l-value: " +
+              byRefArgModuleProblem(sc, callArgExpr(args[ai])),
+            span
+          )
+        )
+      } else if modeNeedsLValue(p.mode) and isByRefValueType(p.ty) and not argIsValidByRefTarget(sc, callArgExpr(args[ai])) {
         diag.add(
           errorDiagnostic(
             "T0085",
@@ -15360,6 +15655,28 @@ func qualifiedCallCandidates(
   acc
 }
 
+// The dot-named function `T.m` declared by the package the leading
+// segments of `Pkg.T.m` name, taking `arity` arguments.
+func packageDottedSig(
+  sigs: in Map[String, ResolvedSignature], segs: in List[String], arity: in Int
+): Option[ResolvedSignature] {
+  val n = segs.count
+  val dotted = segs[n - 2] + "." + segs[n - 1]
+  val pkgSegs: List[String] = newList()
+  var i = 0
+  while i < n - 2 {
+    pkgSegs.add(segs[i])
+    i = i + 1
+  }
+  val pkg = modulePathJoin(pkgSegs)
+  for c in gatherOverloadCandidates(sigs, byNameSigKey(dotted)) {
+    if c.originPackage == pkg and arity <= c.params.count and arity >= minRequiredParams(c) {
+      return Some(value = c)
+    }
+  }
+  None
+}
+
 func findDirectSig(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -15372,6 +15689,21 @@ func findDirectSig(
     // `Box.get(b)`: a dot-named function called through its type name
     // (#8173).  The receiver names a type, not a value in scope.
     case EMember(recv, member) -> {
+      // `Pkg.Box.get(b)`, the type named through its package (#8179).
+      match recv.kind {
+        case EPath(qp) -> if qp.segments.count >= 2 and startsUppercase(qp.segments[qp.segments.count - 1]) and not scopeHasName(sc, qp.segments[0]) {
+          val qsegs: List[String] = newList()
+          for qs in qp.segments {
+            qsegs.add(qs)
+          }
+          qsegs.add(member)
+          match packageDottedSig(sigs, qsegs, arity) {
+            case Some(pds) -> return Some(value = pds)
+            case None -> ()
+          }
+        }
+        case _ -> ()
+      }
       val typeName = match recv.kind {
         case EPath(rp) -> if rp.segments.count == 1 and startsUppercase(rp.segments[0]) {
           rp.segments[0]
@@ -15417,6 +15749,14 @@ func findDirectSig(
         match mapGet(sigs, dotted + "/" + toString(arity)) {
           case Some(ds) -> return Some(value = ds)
           case None -> match mapGet(sigs, dotted) { case Some(ds2) -> return Some(value = ds2); case None -> () }
+        }
+      }
+      // `Pkg.Box.get(b)`: the same through the type's package (#8179), the
+      // function `Box.get` that package declares.
+      if path.segments.count >= 3 {
+        match packageDottedSig(sigs, path.segments, arity) {
+          case Some(pds) -> return Some(value = pds)
+          case None -> ()
         }
       }
       // Qualified call (e.g. the alias-rewritten `Std.RegexSafe.tryCompile`):

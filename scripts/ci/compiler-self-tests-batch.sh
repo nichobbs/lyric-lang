@@ -125,6 +125,8 @@ for t in \
   lyric-compiler/lyric/closure_correctness_self_test.l \
   lyric-compiler/lyric/closure_var_capture_self_test.l \
   lyric-compiler/lyric/closure_captured_var_byref_self_test.l \
+  lyric-compiler/lyric/inout_receiver_self_test.l \
+  lyric-compiler/lyric/inout_receiver_closure_self_test.l \
   lyric-compiler/lyric/compiler_bugs_3502_3505_3547_self_test.l \
   lyric-compiler/lyric/method_closure_var_capture_self_test.l \
   lyric-compiler/lyric/nested_lambda_var_capture_self_test.l \
@@ -273,6 +275,14 @@ if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
   echo "=== scripts/ci/value-generic-record-e2e.sh ==="
   LYRIC_BIN="$lyric_bin" bash scripts/ci/value-generic-record-e2e.sh dotnet jvm
   ran="$ran value-generic-record-e2e"
+fi
+# #8179: a sibling package's or a dependency's `inout` receivers, both
+# targets (Java 21, as above).
+idx=$((idx + 1))
+if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
+  echo "=== scripts/ci/inout-receiver-e2e.sh ==="
+  LYRIC_BIN="$lyric_bin" bash scripts/ci/inout-receiver-e2e.sh dotnet jvm
+  ran="$ran inout-receiver-e2e"
 fi
 # #7858: `println(x)` writes what `toString(x)` returns for records, lists,
 # extern structs and extern objects, on both targets (Java 21, as above).
