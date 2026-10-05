@@ -10736,6 +10736,24 @@ func hoistTupleElemTypes(t: in Type, n: in Int): List[Type] {
   holes
 }
 
+// Whether `e` is a bracket list literal, through parentheses.
+func exprIsListLiteral(e: in Expr): Bool {
+  match e.kind {
+    case EList(_) -> true
+    case EParen(inner) -> exprIsListLiteral(inner)
+    case _ -> false
+  }
+}
+
+// Whether `t` is the stdlib `List[T]` a bracket literal is built as when it
+// is expected (the test `inferExprExpected`'s `EList` arm makes).
+func expectsStdList(tbl: in SymbolTable, t: in Type): Bool {
+  match t {
+    case TyUser(id, _, args) -> args.count == 1 and isStdCollectionsHostType(tbl, id, "List")
+    case _ -> false
+  }
+}
+
 // Record the type of one hoisted operand `e`: `own` with its holes filled
 // from `expected`, when that is a closed generic instantiation.
 func recordHoistOperandType(sc: in Scope, tbl: in SymbolTable, e: in Expr, own: in Type, expected: in Type): Unit {
@@ -10745,7 +10763,11 @@ func recordHoistOperandType(sc: in Scope, tbl: in SymbolTable, e: in Expr, own: 
 }
 
 // `recordHoistOperandType` once `e` is known to be bound by the hoist; `t`
-// may name `typeParams`, the enclosing function's type parameters.
+// may name `typeParams`, the enclosing function's type parameters.  A
+// bracket literal where a `List[T]` is expected is built as that list, not
+// as the slice it types as on its own (`inferExprExpected`'s `EList` arm), so
+// its local takes the list type: left to its own type it would be built as
+// an array and then passed where a list is read (#8171).
 func recordHoistOperandTypeOver(
   tbl: in SymbolTable,
   typeParams: in List[String],
@@ -10754,7 +10776,11 @@ func recordHoistOperandTypeOver(
   expected: in Type,
 ): Unit {
   val sp = e.span
-  val t = joinOpenTypes(own, unrefine(expected))
+  val t = if exprIsListLiteral(e) and expectsStdList(tbl, unrefine(expected)) {
+    unrefine(expected)
+  } else {
+    joinOpenTypes(own, unrefine(expected))
+  }
   if not typeMentionsGenericInst(t) or not typeIsClosedOver(t, typeParams) {
     return
   }
@@ -11175,9 +11201,27 @@ func recordArgOrderSite(
     bound.add(if argByRef[i] { not argIsPlace(ae) } else { not argIsInert(sc, ae) })
     i = i + 1
   }
-  val hoistedPlace = hazard and placeByRef
-  if not hoistedPlace and not (named and callArgsNeedSourceOrder(slots, args.count, bound, defaultEffect)) {
+  val reordered = named and callArgsNeedSourceOrder(slots, args.count, bound, defaultEffect)
+  if not reordered and not (hazard and placeByRef) {
     return
+  }
+  // Written in parameter order, the call needs temporaries only up to the
+  // last argument holding a `?` or `await`: the arguments after it run after
+  // it either way.
+  if not reordered {
+    var lastHazard = -1
+    i = 0
+    while i < args.count {
+      if HoistEngine.exprHasHoistHazard(callArgExpr(args[i])) {
+        lastHazard = i
+      }
+      i = i + 1
+    }
+    i = lastHazard + 1
+    while i < args.count {
+      bound[i] = false
+      i = i + 1
+    }
   }
   i = 0
   while i < args.count {

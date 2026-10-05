@@ -23,17 +23,28 @@ reference (`zap(c.v, g()?)`).
   (`accs[i()].mix(b = ..., a = ...)`), into temporaries at the place's
   position, so each runs once and in source order. Before, `accs[i()]`'s index
   ran after the reordered arguments.
+- An operand bound to a temporary keeps the type its position expects: a
+  bracket literal passed where a `List[T]` is expected is recorded at that
+  list type (`recordHoistOperandTypeOver`), so its temporary is a list, not
+  an array read as one. This crashed on dotnet (`InvalidCastException`) and
+  the JVM (`VerifyError`) through the D171 named-argument rewrite and the
+  `?`/`await` hoist before this change too. The hoist no longer binds a
+  lambda to a temporary (an unannotated local lost its function type on
+  native). A call recorded only for a by-reference place beside a `?` or
+  `await` binds no argument after the last one holding the hazard.
 - Affected hoists: the `?` hoist and the `await` hoist (one engine). Not
   affected: the `.copy` lowering (its receiver and arguments are never passed
   by reference) and the backends, which only pair arguments and keep no
   temporaries of their own; the D171 rewrite already left by-reference places
   in the call.
-- Tests: eight cases in `named_arg_eval_order_self_test.l` (dotnet, JVM,
+- Tests: eleven cases in `named_arg_eval_order_self_test.l` (dotnet, JVM,
   native): an `inout` variable, an `out` variable and a field before `?`, a
   named `inout` argument on either side of a `?`, a computed, a variable and
   an indexed receiver, the failing-`?` path for a positional and a reordered
   call, an `inout` variable and field before `await`, and a receiver element's
-  index under a reordered call.
+  index under a reordered call, a list literal after a `?` and in a
+  reordered call, and `newList()`, `None`, lambdas, slice literals and an
+  `Int` widened to `Long` bound before a `?` or `await`.
 - Not covered: an array element passed as an `out`/`inout` argument
   (`zap(arr[i], v)`) is accepted by the type checker but no backend lowers it
   yet, independent of `?`; `self: inout` receivers are accepted but do not

@@ -673,3 +673,76 @@ test "a receiver element's index runs once, before the reordered arguments" {
   assertEqualInt(r, 112, "value")
   assertEqual(since(t0), "i,b,a", "order")
 }
+
+// ─── Operands bound to temporaries keep the type their position expects ─────
+// A bracket literal passed where a `List[T]` is expected is built as that
+// list; bound to a temporary (by the D171 rewrite or by the `?`/`await`
+// hoist) it was built as an array and then read as a list.  A lambda,
+// `newList()`, `None`, a slice literal and an `Int` widened to `Long` are
+// covered beside it (#8171).
+func fillAfter(v: in Int, x: inout Int, xs: in List[Int]): Unit {
+  x = x + v * 10 + xs.count * 100
+}
+
+func fillBefore(x: inout Int, v: in Int, xs: in List[Int]): Unit {
+  x = x + v * 10 + xs.count * 100
+}
+
+func listed(v: in Int, w: in Int, xs: in List[Int]): Int {
+  v * 10 + w + xs.count * 100
+}
+
+func summary(xs: in List[Int], o: in Option[Int], f: in (Int) -> Int, s: in slice[Int], w: in Long, v: in Int): String {
+  val extra = match o { case Some(q) -> q; case None -> 50 }
+  toString(xs.count * 1000 + extra + f(v) + s.length * 100000) + "/" + toString(w)
+}
+
+func listAfterPropagate(): Result[Int, String] {
+  var x = 1
+  fillAfter(noteOk("v", 3)?, x, [1, 2])
+  Ok(value = x)
+}
+
+func listAfterInoutAndPropagate(): Result[Int, String] {
+  var x = 1
+  fillBefore(x, noteOk("v", 3)?, [1, 2])
+  Ok(value = x)
+}
+
+func operandsBeforePropagate(): Result[String, String] {
+  val a = summary(newList(), None, { n -> n * 2 }, [9], 5, noteOk("v", 3)?)
+  val b = summary([1, 2], Some(value = 7), { n -> n + 1 }, [8, 9], 6, noteOk("w", 3)?)
+  Ok(value = a + " " + b)
+}
+
+async func operandsBeforeAwait(): String {
+  summary([1, 2], None, { n -> n * 3 }, [7], 4, await noteAsync("v", 2))
+}
+
+test "a list literal after a ? beside an inout argument stays a list" {
+  match listAfterPropagate() {
+    case Ok(v) -> assertEqualInt(v, 231, "after the ? argument")
+    case Err(e) -> assertTrue(false, "unexpected error " + e)
+  }
+  match listAfterInoutAndPropagate() {
+    case Ok(v) -> assertEqualInt(v, 231, "after the inout and ? arguments")
+    case Err(e) -> assertTrue(false, "unexpected error " + e)
+  }
+}
+
+test "a list literal bound by a reordered call stays a list" {
+  val t0 = trace.count
+  var x = 1
+  fillAfter(xs = [1, 2], v = note("v", 3), x = x)
+  assertEqualInt(x, 231, "with an inout argument")
+  assertEqualInt(listed(xs = [1, 2], w = note("w", 1), v = note("v", 3)), 231, "without one")
+  assertEqual(since(t0), "v,w,v", "order")
+}
+
+test "operands bound before a ? or await keep their expected types" {
+  match operandsBeforePropagate() {
+    case Ok(s) -> assertEqual(s, "100056/5 202011/6", "values")
+    case Err(e) -> assertTrue(false, "unexpected error " + e)
+  }
+  assertEqual(await operandsBeforeAwait(), "102056/4", "await value")
+}
