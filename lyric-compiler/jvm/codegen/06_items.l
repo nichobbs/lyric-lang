@@ -7073,8 +7073,10 @@ pub func erasedToSliceHelperName(): String = "__lyricErasedToSlice"
 // `static Object[] __lyricErasedToSlice(Object v)`: a slice from a value
 // whose static type is erased (#8147).  A slice is an `Object[]`; a bracket
 // literal built where nothing expected a slice of it (a tuple element) is an
-// `ArrayList`, copied out with `toArray()`.  Anything else fails the final
-// `checkcast` loudly.
+// `ArrayList`, copied out with `toArray()`.  The copy does not alias the
+// list, which is sound because a slice read out of an immutable tuple is
+// never written back through.  Anything else fails the final `checkcast`
+// loudly.
 func makeErasedToSliceHelperFunc(): LFunc {
   val insns: List[LInsn] = newList()
   insns.add(LAload(slot = 0))
