@@ -17021,7 +17021,7 @@ pub func collectProtectedMethods(pkgName: in String, decl: in ProtectedTypeDecl,
         // type, not a bare `TSelf` (which only the INTERFACE's own erased
         // vtable slot signature should ever see).
         fns.add(
-          substSelfInFn(
+          substSelfInFnWith(
             FunctionDecl(
               docComments = ed.docComments,
               annotations = ed.annotations,
@@ -17059,7 +17059,7 @@ pub func collectProtectedMethods(pkgName: in String, decl: in ProtectedTypeDecl,
               }
               // #7585: same `Self` substitution as the `PMEntry` arm above.
               fns.add(
-                substSelfInFn(
+                substSelfInFnWith(
                   FunctionDecl(
                     docComments = fn.docComments,
                     annotations = fn.annotations,
