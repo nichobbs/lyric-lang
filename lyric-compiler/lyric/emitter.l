@@ -660,6 +660,14 @@ pub func stdlibSourcesFromCompiledBundleJvm(): List[String] {
 // Each file keeps its path: the bridge type-checks the bundled packages,
 // and an error in one names the file (#7933).
 pub func findStdlibSourcesNative(): List[LlvmBridge.NativeStdlibFile] {
+  findStdlibSourcesNativeForShape("")
+}
+
+// As `findStdlibSourcesNative`, for an output `shape` (the `--shape` spec).  The
+// wasm32 `module` shape runs in a JS host, so `_kernel_wasm_module/<module>.l`
+// (browser-host twins such as the fetch-backed `Std.HttpHost`) wins over
+// `_kernel_native/<module>.l` by basename.
+pub func findStdlibSourcesNativeForShape(shape: in String): List[LlvmBridge.NativeStdlibFile] {
   val files: List[LlvmBridge.NativeStdlibFile] = newList()
   var stdlibDir = ""
   val envOverride = Environment.getVarOrDefault("LYRIC_STD_PATH", "")
@@ -678,7 +686,15 @@ pub func findStdlibSourcesNative(): List[LlvmBridge.NativeStdlibFile] {
   val texts: List[String] = newList()
   val paths: List[String] = newList()
   val noExclude: List[String] = newList()
-  collectLyricFileTexts(Path.join(stdlibDir, "_kernel_native"), noExclude, false, texts, paths)
+  val shapeBase = Str.split(shape, ";")[0]
+  if shapeBase == "module" {
+    collectLyricFileTexts(Path.join(stdlibDir, "_kernel_wasm_module"), noExclude, false, texts, paths)
+  }
+  val moduleBasenames: List[String] = newList()
+  for p in paths {
+    moduleBasenames.add(Path.basename(p))
+  }
+  collectLyricFileTexts(Path.join(stdlibDir, "_kernel_native"), moduleBasenames, false, texts, paths)
   val nativeBasenames: List[String] = newList()
   for p in paths {
     nativeBasenames.add(Path.basename(p))
@@ -3182,7 +3198,7 @@ func emitNativeInProcess(
   extraLibs: in List[String],
   shape: in String,
 ): EmitResult {
-  val stdlibFiles = findStdlibSourcesNative()
+  val stdlibFiles = findStdlibSourcesNativeForShape(shape)
   // `[native].extra_libs` (N6.4) become `-l<name>` clang flags, threaded
   // through the existing extra-clang-flags slot on compileToNativeWithFlags.
   val clangFlags: List[String] = newList()
@@ -3339,7 +3355,7 @@ pub func emitNativeProjectWithShape(
     }
     pi = pi + 1
   }
-  val stdlibFiles = findStdlibSourcesNative()
+  val stdlibFiles = findStdlibSourcesNativeForShape(shape)
   val clangFlags: List[String] = newList()
   for lib in extraLibs {
     clangFlags.add("-l" + lib)

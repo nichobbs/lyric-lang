@@ -321,7 +321,9 @@ The full table is in Appendix B.
 The tracked work is in issues #8117 (component shape) and #8118 (NPM). Today:
 
 - an NPM import cannot return a `Promise`;
-- `Std.Http` has no `fetch`-backed browser twin yet (a promise import covers calling `fetch` yourself), and `Std.File` has no browser behaviour beyond its clean error.
+- `Std.File` has no browser behaviour beyond its clean error.
+
+`Std.Http` works in the module shape: requests go through the host's `fetch` (or the function you pass as `imports['std.http'].fetch`). TLS options (`withCaCertificate`, `withMinTlsVersion`, `withInsecureSkipVerify`, ...) and Unix sockets are not available in a browser, so a client that uses them fails every request with `ConnectionFailed` rather than ignoring the option; `tlsConfigSupported()` is `false`. HTTP version pins have no effect and `negotiatedVersion` reports HTTP/1.1.
 
 ::: sidebar
 **Why the native backend and not .NET?** The first design compiled through .NET's WASI
