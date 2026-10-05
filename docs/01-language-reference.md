@@ -469,7 +469,7 @@ An `opaque` declaration in the type's package specifies its existence; the body 
 
 Inside the package, the opaque type is an ordinary record. Authoring functions provide controlled construction and access.
 
-An opaque type may declare type parameters (`opaque type Opq[T] { v: T }`). On `--target dotnet` a generic opaque type is a generic class, like a generic record, with fields internal to the declaring assembly (#8187, D177). A generic function from a separately built package that is specialised in another package over such a type cannot read its fields, which is **T0165** at the access; call it through a non-generic function in the declaring package.
+An opaque type may declare type parameters (`opaque type Opq[T] { v: T }`). On `--target dotnet` a generic opaque type is a generic class, like a generic record, with fields internal to the declaring assembly (#8187, D177). A generic function from a separately built package that is specialised in another package over such a type cannot read its fields, which is **T0167** at the access; call it through a non-generic function in the declaring package.
 
 ### 2.9 Projectable opaque types
 

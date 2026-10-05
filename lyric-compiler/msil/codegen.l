@@ -11838,7 +11838,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                   // its declaring assembly (#8187), so a specialisation compiled
                   // here cannot read it.  Self-tagged like T0121.
                   panic(
-                    "error[T0165] " + toString(recv.span.startPos.line) + ":" + toString(recv.span.startPos.column) + ": field '" +
+                    "error[T0167] " + toString(recv.span.startPos.line) + ":" + toString(recv.span.startPos.column) + ": field '" +
                       memberName +
                       "' of the opaque type '" +
                       stripGenericArity(fqn) +
@@ -44926,6 +44926,8 @@ func registerRestoredDistinct(cctx: in CodegenCtx, packageName: in String, decl:
 
 func registerRestoredRecordFields(cctx: in CodegenCtx, packageName: in String, rec: in RecordDecl): Unit {
   val className = packageName + "." + rec.name
+  // `reifiedOpaqueFqns` is filled by `reifyGenericOpaquesMsil`, which
+  // `registerRestoredMembers` runs over the artifact first.
   // A restored opaque type's fields are internal to its declaring assembly
   // (#8187): registering a MemberRef for one would compile to a read that
   // faults at run time, so it stays unregistered and a read of it from

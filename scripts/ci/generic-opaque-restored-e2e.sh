@@ -8,7 +8,7 @@
 #   - the application builds an `Opq[Int]` through the library and reads it
 #     through the wrapper: it builds and prints 3;
 #   - the application calling the generic `get` itself would specialise a body
-#     that reads the type's internal field, which the build rejects as T0165;
+#     that reads the type's internal field, which the build rejects as T0167;
 #   - the same two packages in one project share an assembly, so the direct
 #     call builds and prints 3.
 #
@@ -98,8 +98,8 @@ func main(): Int {
 }
 EOF
 out="$("$lyric_bin" build --manifest "$work/app/lyric.toml" 2>&1)"
-if ! echo "$out" | grep -q 'error\[T0165\]'; then
-  echo "FAIL: a specialisation reading the restored opaque type's field: expected T0165, got:"; echo "$out"; fail=1
+if ! echo "$out" | grep -q 'error\[T0167\]'; then
+  echo "FAIL: a specialisation reading the restored opaque type's field: expected T0167, got:"; echo "$out"; fail=1
 fi
 
 # The same two packages in ONE project share an assembly, so a specialisation
