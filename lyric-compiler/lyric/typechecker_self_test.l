@@ -10029,7 +10029,7 @@ test "a length argument of the wrong kind is T0163" {
   assertEqualInt(countDiagCode(cr, "T0163"), 2, "a type for a length and a length for a type (" + diagCodesOf(cr) + ")")
 }
 
-test "a union's or opaque type's value parameter sizes an array; a protected type's cannot yet" {
+test "a union's, opaque type's or protected type's value parameter sizes an array" {
   val u = "package P\nunion Shape[N: Nat] {\n  case Poly(pts: array[N, Float])\n  case Dot\n}\nfunc f(s: in Shape[3]): Int = 0\nfunc g(): Int {\n  val a: array[2, Float] = [1.0, 2.0]\n  f(Poly(pts = a))\n}\n"
   val ucr = parseCheck(u)
   assertEqualInt(countDiagCode(ucr, "T0160"), 0, "a union case field (" + diagCodesOf(ucr) + ")")
@@ -10038,8 +10038,7 @@ test "a union's or opaque type's value parameter sizes an array; a protected typ
   assertEqualInt(parseCheck(o).diagnostics.count, 0, "an opaque type's field (" + diagCodesOf(parseCheck(o)) + ")")
   val p = "package P\nprotected type Ring[N: Nat] {\n  var slots: array[N, Int]\n  entry size(): Int {\n    0\n  }\n}\n"
   val pcr = parseCheck(p)
-  assertEqualInt(countDiagCode(pcr, "T0160"), 1, "a protected type's field (" + diagCodesOf(pcr) + ")")
-  assertTrue(Str.contains(diagCodesOf(pcr), "#7864"), "the message names the tracking issue")
+  assertEqualInt(pcr.diagnostics.count, 0, "a protected type's field and member (" + diagCodesOf(pcr) + ")")
 }
 
 test "a protected invariant is type-checked" {
