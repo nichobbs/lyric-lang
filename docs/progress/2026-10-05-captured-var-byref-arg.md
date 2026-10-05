@@ -40,12 +40,16 @@ result into the slot holding the cell (`VerifyError`).
   type, `<owner>/<method>#<position>` against the parameters
   `registerMethodParamModes` records; an interface-typed receiver counts
   when the interface method erases `Self`, a concrete type with a typed
-  `inout` of the same name does not. The pre-pass names a receiver's type
-  from a parameter, `self`, an annotated local, or a local initialised by a
-  constructor call (`collectRecvTypesMsil`). A receiver it cannot name (a
-  call result, a pattern binding, a lambda parameter) leaves the cell
-  typed: the call stays valid IL through the copy-in/copy-out temp, and a
-  closure write made during it is lost. The typed `Self&` ABI was not
+  `inout` of the same name does not. The pre-pass runs before the body is
+  lowered and has no type-checked expression types, so it names a
+  receiver's type only from a parameter, `self`, an annotated local, or a
+  local initialised by a constructor call (`collectRecvTypesMsil`). A
+  receiver it cannot name (a factory call's result, a field, a lambda
+  parameter, a call expression) is matched by method name and position
+  alone, the conservative rule: the erased call always aliases, and the
+  cost falls only on a same-named typed `inout` call with such a receiver,
+  which then copies in and out through a temp, so a closure write made
+  during it is lost. The typed `Self&` ABI was not
   taken: an interface slot cannot name the implementing type, so it would
   need an `object&` bridge per impl method, which has the same aliasing
   problem in reverse. A variable passed both to an erased `inout Self` and
@@ -74,7 +78,7 @@ caller's copy:
   `Object[]`: an `inout T` method of a generic record at a primitive
   instantiation (`Holder[Int].put`).
 
-Tests: `closure_captured_var_byref_self_test.l` (29 cases, dotnet and JVM,
+Tests: `closure_captured_var_byref_self_test.l` (33 cases, dotnet and JVM,
 in `compiler-self-tests-batch.sh`, `jvm-generics-self-tests-batch.sh` and
 the ilverify consumer list). It covers `inout` and `out`; `Int`, `Long`,
 `String`, `Bool`, a record, a union, `Option`, `Result`, a generic record,
@@ -82,8 +86,9 @@ the ilverify consumer list). It covers `inout` and `out`; `Int`, `Long`,
 closure read of the callee's write; two closures over one variable; a
 by-reference argument inside a lambda, a nested lambda, and on a
 lambda-local `var`; generic callees; a generic record's `inout T` method;
-an erased `inout Self` parameter, alone, inside an `async func`, and next
-to a typed `inout`; a same-named method with a typed `inout`; and an
+an erased `inout Self` parameter, alone, inside an `async func`, on a
+factory-call, field, lambda-parameter and call-expression receiver, and
+next to a typed `inout`; a same-named method with a typed `inout`; and an
 argument after a `?`. The `f(x, g()?)` form is left to #8171.
 
 Not covered:

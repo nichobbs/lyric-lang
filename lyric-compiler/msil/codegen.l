@@ -447,9 +447,11 @@ pub record CodegenCtx {
   lambdaObjectCells: Map[String, List[String]]
   // `<owner>/<method>#<i>` for every method whose receiver-less parameter
   // `i` is an `out`/`inout` `Self`, `<owner>` being the declaring class or
-  // interface FQN without its arity suffix: that parameter keeps the
-  // interface slot's erased `object&` ABI (#7783), which only an `object[]`
-  // cell can alias (#8204).  Filled by `registerMethodParamModes`.
+  // interface FQN without its arity suffix, and `*` standing for any owner
+  // (a receiver of unknown type); `<owner>/<method>` without a position for
+  // named arguments.  That parameter keeps the interface slot's erased
+  // `object&` ABI (#7783), which only an `object[]` cell can alias (#8204).
+  // Filled by `registerMethodParamModes`.
   erasedSelfByrefMethods: Map[String, Bool]
   // Declared return types of the function-typed captures of each lambda
   // (keyed like lambdaCaptureNames; inner key = capture name), copied from
@@ -2513,9 +2515,21 @@ func registerMethodParamModes(cctx: in CodegenCtx, key: in String, params: in Li
     var pi = 0
     while pi < params.count {
       if isByrefMode(params[pi].mode) and isSelfTypeExprMsil(params[pi].ty) {
-        val ek = ownerKey + "/" + methodName + "#" + toString(pi)
-        if not cctx.erasedSelfByrefMethods.containsKey(ek) {
-          cctx.erasedSelfByrefMethods.add(ek, true)
+        // The owner-qualified key decides a call whose receiver type the
+        // pre-pass knows; the `*` key, by method name alone, one whose
+        // receiver type it does not (`markErasedSelfByrefArgsMsil`).  The
+        // keys without a position serve named arguments.
+        val keys: List[String] = newList()
+        keys.add(ownerKey + "/" + methodName + "#" + toString(pi))
+        keys.add("*/" + methodName + "#" + toString(pi))
+        keys.add(ownerKey + "/" + methodName)
+        keys.add("*/" + methodName)
+        var ki = 0
+        while ki < keys.count {
+          if not cctx.erasedSelfByrefMethods.containsKey(keys[ki]) {
+            cctx.erasedSelfByrefMethods.add(keys[ki], true)
+          }
+          ki = ki + 1
         }
       }
       pi = pi + 1
@@ -38973,11 +38987,14 @@ func collectLocalBindingsInitMsil(binding: in LocalBinding, acc: in List[Stateme
 // would get.  Lambda bodies are walked too: a by-reference call there reaches
 // the same cell.  The callee is the method of the receiver's static type
 // (`recvTypes`, from `collectRecvTypesMsil`), so a same-named method of
-// another type with a typed `inout` does not count.  A receiver whose type
-// the pre-pass cannot name (a call result, a pattern binding, a lambda
-// parameter) leaves the cell typed: the call is then valid IL through the
-// copy-in/copy-out temp of `emitCellByrefArgMsil`, and a closure write made
-// during that call is lost.
+// another type with a typed `inout` does not count.  The pre-pass runs
+// before the body is lowered, with no type-checked expression types, so a
+// receiver whose type it cannot name (a call result, a field, a pattern
+// binding, a lambda parameter) is matched by method name and position
+// alone: any method of that name with an erased `inout Self` there counts.
+// That errs towards `object[]`, so an erased call always aliases; the cost
+// falls only on a same-named typed `inout` call with such a receiver, which
+// then copies in and out through `emitCellByrefArgMsil`'s temp.
 func markErasedSelfByrefArgsMsil(
   cctx: in CodegenCtx,
   fn: in Expr,
@@ -38998,14 +39015,16 @@ func markErasedSelfByrefArgsMsil(
     case EMember(recv, _) -> recv
     case _ -> if args.count > 0 { callArgExpr(args[0]) } else { return () }
   }
-  val ownerKey = recvOwnerKeyMsil(recvExpr, recvTypes)
-  if ownerKey == "" {
-    return ()
-  }
+  // A receiver of unknown type falls back to the method name alone.
+  val known = recvOwnerKeyMsil(recvExpr, recvTypes)
+  val ownerKey = if known.length > 0 { known } else { "*" }
   var ai = receiverArgs
   while ai < args.count {
-    val positional = match args[ai] { case CAPositional(_) -> true; case _ -> false }
-    if positional and cctx.erasedSelfByrefMethods.containsKey(ownerKey + "/" + methodName + "#" + toString(ai - receiverArgs)) {
+    val erasedKey = match args[ai] {
+      case CAPositional(_) -> ownerKey + "/" + methodName + "#" + toString(ai - receiverArgs)
+      case _ -> ownerKey + "/" + methodName
+    }
+    if cctx.erasedSelfByrefMethods.containsKey(erasedKey) {
       match callArgExpr(args[ai]).kind {
         case EPath(path) -> {
           val name = lastSegmentMsil(path)

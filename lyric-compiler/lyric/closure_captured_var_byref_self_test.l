@@ -96,6 +96,14 @@ async func asyncSwap(): Int {
   c.n + k + k2 - 2
 }
 
+func mkCell(n: in Int): Cell {
+  Cell(n = n)
+}
+
+record CellHolder {
+  s: Cell
+}
+
 func setCell(c: inout Cell, n: in Int): Unit {
   c = Cell(n = n)
 }
@@ -534,4 +542,35 @@ test "a same-named method with a typed `inout` keeps the typed cell's aliasing" 
   val w = { -> c = Cell(n = 5) }
   o.takeFrom(c, w)
   assertEqualInt(c.n, 5, "closure write during the typed call")
+}
+
+test "erased `inout Self` call on a receiver bound to a factory call's result" {
+  val s = mkCell(0)
+  var c = Cell(n = 1)
+  val w = { -> c = Cell(n = 5) }
+  s.takeFrom(c, w)
+  assertEqualInt(c.n, 5, "closure write during the call")
+}
+
+test "erased `inout Self` call on a field receiver" {
+  val h = CellHolder(s = Cell(n = 0))
+  var c = Cell(n = 1)
+  val w = { -> c = Cell(n = 6) }
+  h.s.takeFrom(c, w)
+  assertEqualInt(c.n, 6, "closure write during the call")
+}
+
+test "erased `inout Self` call on a lambda-parameter receiver" {
+  var c = Cell(n = 1)
+  val w = { -> c = Cell(n = 7) }
+  val f = { s: Cell -> s.takeFrom(c, w) }
+  f(Cell(n = 0))
+  assertEqualInt(c.n, 7, "closure write during the call")
+}
+
+test "erased `inout Self` call on a call-expression receiver" {
+  var c = Cell(n = 1)
+  val w = { -> c = Cell(n = 8) }
+  mkCell(0).takeFrom(c, w)
+  assertEqualInt(c.n, 8, "closure write during the call")
 }
