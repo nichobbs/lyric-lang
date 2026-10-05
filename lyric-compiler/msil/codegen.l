@@ -29146,16 +29146,6 @@ func blockContainsAwaitMsil(block: in Block): Bool {
   false
 }
 
-func funcBodyContainsAwaitMsil(decl: in FunctionDecl): Bool {
-  match decl.body {
-    case Some(body) -> match body {
-      case FBBlock(blk) -> blockContainsAwaitMsil(blk)
-      case FBExpr(e) -> exprContainsAwaitMsil(e)
-    }
-    case None -> false
-  }
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // §9b. IAsyncStateMachine synthesis for user-defined `async func`.
 //
@@ -29163,7 +29153,7 @@ func funcBodyContainsAwaitMsil(decl: in FunctionDecl): Bool {
 // `synthesizeAsyncSmPhaseBMsil` (below): its MoveNext wraps the body in
 // try/catch so a panic before the first suspension is recorded on the task
 // builder rather than thrown out of `Start` (#8105).
-// ─────────────────────────────────────────────────────────────────────────────
+//
 // Phase B.1 async SM helpers — GetAwaiter / IsCompleted / GetResult / pre-scan
 // ─────────────────────────────────────────────────────────────────────────────
 // Get the T from Task<T> (or MVoid for plain Task).
@@ -35312,7 +35302,12 @@ func isOptedOutMsil(fn: in FunctionDecl, aspectName: in String): Bool {
       // are accepted; only the leading identifier portion matters.
       var j = 0
       while j < ann.args.count {
-        val argName = match ann.args[j] { case AAName(n, _, _) -> n; case ABare(n, _) -> n; case ALiteral(_, _) -> ""; case AACall(_, _, _) -> "" }
+        val argName = match ann.args[j] {
+          case AAName(n, _, _) -> n
+          case ABare(n, _) -> n
+          case ALiteral(_, _) -> ""
+          case AACall(_, _, _) -> ""
+        }
         if argName == aspectName {
           return true
         }
