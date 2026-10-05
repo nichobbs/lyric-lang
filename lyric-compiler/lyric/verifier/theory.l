@@ -19,9 +19,6 @@ pub union RangeBoundKind {
   case RBKUpperBound(hi: Long)
   // No upper bound — emit only `lo <= v`.  Models AST `lo..` (`RBUpperOpen`).
   case RBKLowerBound(lo: Long)
-  // A `Char`: a BMP scalar value, `0 ..= 65535` outside the surrogate range
-  // `55296 ..= 57343` (docs/01 §2.1), modelled as its code point.
-  case RBKBmpScalar
   case RBKNone
   // A declared bound the verifier cannot translate faithfully: a bound that
   // is not an integer literal, a negative or over-wide bound on an unsigned
@@ -71,9 +68,11 @@ pub func primitiveSort(name: in String): Option[SortInfo] {
   if name == "Byte" {
     return Some(value = sortInfoNoRange(SBitVec(width = 8)))
   }
-  // A `Char` is its code point, as a `Char` literal is (#8214).
+  // A `Char` is its code point, as a `Char` literal is: a UTF-16 code unit,
+  // `0 ..= 65535`, on every target.  It is not assumed to be outside the
+  // surrogate range — a `Char` an extern returns is not checked (#8214).
   if name == "Char" {
-    return Some(value = SortInfo(sort = SInt, range = RBKBmpScalar))
+    return Some(value = SortInfo(sort = SInt, range = RBKClosed(lo = 0i64, hi = 65535i64)))
   }
   if name == "Float" {
     return Some(value = sortInfoNoRange(SFloat32))
@@ -140,6 +139,15 @@ pub func intLitOfSort(n: in Long, s: in Sort): Term {
 // Map a TypeExpr to a SortInfo.  Falls back to an uninterpreted sort for
 // unknown types (M4.1 limitation).
 pub func sortOfTypeExpr(t: in TypeExpr): SortInfo {
+  val none: List[String] = newList()
+  sortOfTypeExprShadowed(t, none)
+}
+
+// `sortOfTypeExpr` where each of `typeParams` names a type parameter in
+// scope: a value of it is of an uninterpreted sort of its own, never the
+// primitive spelt the same (#8214).  Only a single-segment name is a
+// primitive; `Other.Char` is the type `Char` of package `Other`.
+pub func sortOfTypeExprShadowed(t: in TypeExpr, typeParams: in List[String]): SortInfo {
   match t.kind {
     case TRef(path) -> {
       val segs = path.segments
@@ -147,8 +155,8 @@ pub func sortOfTypeExpr(t: in TypeExpr): SortInfo {
         val emptyArgs: List[Sort] = newList()
         return sortInfoNoRange(SDatatype(name = "?", args = emptyArgs))
       }
-      val leaf = segs[segs.count - 1]
-      match primitiveSort(leaf) {
+      val primitive = if segs.count == 1 and not typeParams.contains(segs[0]) { primitiveSort(segs[0]) } else { None }
+      match primitive {
         case Some(si) -> si
         case None -> {
           val emptyArgs: List[Sort] = newList()
@@ -163,7 +171,7 @@ pub func sortOfTypeExpr(t: in TypeExpr): SortInfo {
       var i = 0
       while i < args.count {
         match args[i] {
-          case TAType(te) -> argSorts.add(sortOfTypeExpr(te).sort)
+          case TAType(te) -> argSorts.add(sortOfTypeExprShadowed(te, typeParams).sort)
           case TAValue(_) -> {
           }
         }
@@ -173,10 +181,10 @@ pub func sortOfTypeExpr(t: in TypeExpr): SortInfo {
       sortInfoNoRange(SDatatype(name = qualifiedDatatypeName(segs), args = argSorts))
     }
     case TArray(_, elt) -> {
-      sortInfoNoRange(SSlice(element = sortOfTypeExpr(elt).sort))
+      sortInfoNoRange(SSlice(element = sortOfTypeExprShadowed(elt, typeParams).sort))
     }
     case TSlice(elt) -> {
-      sortInfoNoRange(SSlice(element = sortOfTypeExpr(elt).sort))
+      sortInfoNoRange(SSlice(element = sortOfTypeExprShadowed(elt, typeParams).sort))
     }
     case TRefined(underlying, range) -> {
       val segs = underlying.segments
@@ -192,13 +200,13 @@ pub func sortOfTypeExpr(t: in TypeExpr): SortInfo {
       val sorts: List[Sort] = newList()
       var i = 0
       while i < elts.count {
-        sorts.add(sortOfTypeExpr(elts[i]).sort)
+        sorts.add(sortOfTypeExprShadowed(elts[i], typeParams).sort)
         i = i + 1
       }
       sortInfoNoRange(SDatatype(name = tupleSortName(sorts.count), args = sorts))
     }
     case TNullable(inner) -> {
-      val inner2 = sortOfTypeExpr(inner).sort
+      val inner2 = sortOfTypeExprShadowed(inner, typeParams).sort
       val args: List[Sort] = newList()
       args.add(inner2)
       sortInfoNoRange(SDatatype(name = "Option", args = args))
@@ -210,7 +218,7 @@ pub func sortOfTypeExpr(t: in TypeExpr): SortInfo {
     }
     case TSelf -> sortInfoNoRange(SUninterp(name = "Self"))
     case TNever -> sortInfoNoRange(SUninterp(name = "Never"))
-    case TParen(inner) -> sortOfTypeExpr(inner)
+    case TParen(inner) -> sortOfTypeExprShadowed(inner, typeParams)
     case TError -> sortInfoNoRange(SUninterp(name = "Error"))
   }
 }
@@ -432,13 +440,6 @@ pub func rangeHypothesesForTerm(v: in Term, info: in SortInfo): List[Term] {
     }
     case RBKLowerBound(lo) -> {
       result.add(TBuiltin(op = BOpLte, args = termList2(intLitOfSort(lo, s), v)))
-    }
-    case RBKBmpScalar -> {
-      result.add(TBuiltin(op = BOpLte, args = termList2(intLitOfSort(0i64, s), v)))
-      result.add(TBuiltin(op = BOpLte, args = termList2(v, intLitOfSort(65535i64, s))))
-      val belowSurrogates = TBuiltin(op = BOpLt, args = termList2(v, intLitOfSort(55296i64, s)))
-      val aboveSurrogates = TBuiltin(op = BOpLt, args = termList2(intLitOfSort(57343i64, s), v))
-      result.add(mkOr(termList2(belowSurrogates, aboveSurrogates)))
     }
   }
   result

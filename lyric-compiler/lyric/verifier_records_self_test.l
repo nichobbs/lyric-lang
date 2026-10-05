@@ -19,11 +19,14 @@
 package Lyric.VerifierRecordsSelfTest
 
 import Std.Core
+import Std.Collections
 import Std.Testing
 import Lyric.Verifier
 
+// An in-memory file is its package's only file.
 func proveOk(src: in String): Bool {
-  val summary = proveSource(src)
+  val noSiblings: List[String] = newList()
+  val summary = proveSourceInScope(src, false, packageScopeOf(noSiblings))
   // Every goal discharged AND no error-severity diagnostics.
   if summary.results.count == 0 {
     return false

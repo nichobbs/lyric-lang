@@ -264,7 +264,12 @@ pub func scopeFromPackageFiles(
 }
 
 // The type names every file of `files` but `skipPath` declares; unknown
-// when one cannot be read or parsed, or carries a custom generator.
+// when one cannot be read or carries a custom generator, whose generated
+// code may declare any type.  A file that does not parse declares nothing
+// a proof depends on: if it is part of the package's build the build fails
+// and there is no program to prove anything of, and if it is not (the
+// single-file set is every `.l` file under the directory, whatever its
+// package) it declares nothing in the package (#8214).
 pub func scopeOfFiles(files: in List[String], skipPath: in String): PackageScope {
   val names: List[String] = newList()
   var i = 0
@@ -272,7 +277,7 @@ pub func scopeOfFiles(files: in List[String], skipPath: in String): PackageScope
     if files[i] != skipPath {
       val text = match File.readText(files[i]) { case Ok(t) -> t; case Err(_) -> { return unknownPackageScope() } }
       val pt = packageTypesOfSource(text)
-      if not pt.parsed or pt.customGenerator {
+      if pt.customGenerator {
         return unknownPackageScope()
       }
       var k = 0

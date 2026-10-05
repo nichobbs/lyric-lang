@@ -2805,27 +2805,97 @@ test "a quantifier over a distinct type or alias of a range subtype keeps its ra
   assertRefuted(quantSrc(cents, "exists (c: Cents) c == 3000000000"), "distinct-int-past-its-width")
 }
 
-test "a quantifier over Char ranges over BMP scalar values (#8214)" {
-  assertDischarged(quantSrc("", "forall (c: Char) c >= '\\u{0}' and c <= '\\u{FFFF}'"), "char-is-bmp")
-  assertRefuted(quantSrc("", "exists (c: Char) c > '\\u{D7FF}' and c < '\\u{E000}'"), "no-surrogate-char")
+test "a quantifier over Char ranges over UTF-16 code units (#8214)" {
+  assertDischarged(quantSrc("", "forall (c: Char) c >= '\\u{0}' and c <= '\\u{FFFF}'"), "char-is-a-code-unit")
+  assertRefuted(quantSrc("", "exists (c: Char) c > '\\u{FFFF}'"), "no-char-above-ffff")
   assertDischarged(quantSrc("", "exists (c: Char) c == 'a'"), "char-witness")
+  // A `Char` an extern returns is not checked, so it may be a surrogate.
+  assertRefuted(quantSrc("", "forall (c: Char) c <= '\\u{D7FF}' or c >= '\\u{E000}'"), "char-may-be-a-surrogate")
+  assertRefuted(
+    "func f(c: in Char): Bool\n  ensures: result\n{\n  c <= '\\u{D7FF}' or c >= '\\u{E000}'\n}\n",
+    "char-parameter-may-be-a-surrogate"
+  )
   assertDischarged(
     "func f(c: in Char): Bool\n  ensures: result\n{\n  c != '\\u{0}' or c == '\\u{0}'\n}\n",
     "char-parameter-equality"
   )
 }
 
-test "a bound variable never captures an enclosing binding of its name (#8214)" {
-  // `old(n)` is the parameter, 50: no `Small` equals it.
-  assertRefuted(
+test "a bound variable shadows an enclosing binding of its name (#8214)" {
+  assertDischarged(
+    smallDecl() + "func f(n: in Int): Bool\n  requires: n == 50\n  ensures: forall (n: Small) n <= 10\n{\n  true\n}\n",
+    "binder-shadowing-a-parameter"
+  )
+  // The type checker reads `old(n)` as the bound variable, the verifier's
+  // snapshot as the parameter: it fails closed.
+  assertUntranslatable(
     smallDecl() +
       "func f(n: in Int): Bool\n  requires: n == 50\n  ensures: exists (n: Small) old(n) == n\n{\n  true\n}\n",
-    "binder-shadowing-a-parameter"
+    "old-of-a-bound-name"
+  )
+  assertUntranslatable(
+    smallDecl() +
+      "func bump(n: inout Small): Unit\n  requires: n == 5\n  ensures: forall (n: Small) old(n) == 5\n{\n  n = Small.from(6)\n}\n",
+    "old-of-a-bound-inout-name"
   )
   assertDischarged(
     smallDecl() +
-      "func f(n: in Int): Bool\n  requires: n == 50\n  ensures: forall (n: Small) old(n) > n\n{\n  true\n}\n",
-    "binder-shadowing-a-parameter-forall"
+      "func bump(n: inout Small): Unit\n  requires: n == 5\n  ensures: forall (m: Small) old(n) == 5\n{\n  n = Small.from(6)\n}\n",
+    "old-under-another-binder"
+  )
+}
+
+test "a type parameter is never the file's type of that name (#8214)" {
+  val pigeon = "func pigeon[Bit](a: in Bit, b: in Bit, c: in Bit): Bool\n  where Bit: Equals\n  ensures: result\n{\n" +
+    "  a == b or b == c or a == c\n}\n"
+  assertNotProved("alias Bit = Int range 0 ..= 1\n" + pigeon, "type-parameter-named-like-an-alias")
+  assertNotProved("type Bit = Int range 0 ..= 1\n" + pigeon, "type-parameter-named-like-a-range-subtype")
+  assertNotProved(
+    "type Bit = Int range 0 ..= 1\nfunc pick[Bit](a: in Bit): Bit = a\n" +
+      "func f(x: in Int): Bool\n  ensures: result\n{\n  pick(x) <= 1\n}\n",
+    "callee-result-of-a-type-parameter"
+  )
+  assertDischarged(
+    smallDecl() + "func keep[T](a: in T, s: in Small): Small\n  ensures: result <= 10\n{\n  s\n}\n",
+    "file-type-beside-a-type-parameter"
+  )
+}
+
+test "a type named like a primitive in another file or package is not the primitive (#8214)" {
+  val src = "@proof_required\npackage U\nfunc third(c: in Char, e: in Char): Bool\n  ensures: exists (d: Char) d != c and d != e\n{\n  true\n}\n"
+  val sibling: List[String] = newList()
+  sibling.add("Char")
+  assertTrue(summaryHasDiagCode(proveSourceInScope(src, false, packageScopeOf(sibling)), "V0033"), "a sibling `Char`")
+  val sibInt: List[String] = newList()
+  sibInt.add("Int")
+  assertTrue(summaryHasDiagCode(proveSourceInScope(src, false, packageScopeOf(sibInt)), "V0033"), "a sibling `Int`")
+  assertTrue(summaryHasDiagCode(proveSourceInScope(src, false, unknownPackageScope()), "V0033"), "unknown siblings")
+  val none: List[String] = newList()
+  val alone = proveSourceInScope(src, false, packageScopeOf(none))
+  assertTrue(not summaryHasErrorDiag(alone) and not summaryHasFailure(alone), "the primitive `Char`: proved")
+  assertNotProved(
+    "import Other\nfunc third(c: in Other.Char, e: in Other.Char): Bool\n  ensures: exists (d: Other.Char) d != c and d != e\n{\n  true\n}\n",
+    "qualified-char"
+  )
+}
+
+test "an uninitialized variable is not assumed in its range (#8214)" {
+  assertRefuted(
+    "func f(): Bool\n  ensures: result\n{\n  var y: Int range 5 ..= 10\n  y >= 5\n}\n",
+    "uninitialized-inline-range"
+  )
+  assertRefuted(
+    "type R = Int range 5 ..= 10\nfunc f(): Bool\n  ensures: result\n{\n  var y: R\n  y >= 5\n}\n",
+    "uninitialized-range-subtype"
+  )
+  assertRefuted(
+    "func f(c: in Bool): Bool\n  ensures: result\n{\n  val ok = if c {\n    var y: Int range 5 ..= 10\n    y >= 5\n  } else {\n" +
+      "    true\n  }\n  ok\n}\n",
+    "uninitialized-in-a-branch-value"
+  )
+  assertDischarged(
+    "func f(): Bool\n  ensures: result\n{\n  var y: Int range 5 ..= 10\n  y = 7\n  y >= 5\n}\n",
+    "assigned-before-read"
   )
 }
 
