@@ -70,6 +70,11 @@ pub record VEnv {
   // immutable and of such a type.  A `@pure` call over arguments of these
   // types (and of the primitive value types) is congruent (#8109).
   pub valueTypes: Map[String, Bool]
+  // The type parameters of the generic whose body or contract is being
+  // translated.  `==` over one is an opaque equivalence there; a contract
+  // instantiated at a call is checked again over the argument terms
+  // (#8109).
+  pub typeParams: List[String]
   // Copy helpers — use explicit names list to avoid iterating Map.keys on a
   // TypeBuilderInstantiation, which generates invalid IL.
 }
@@ -281,6 +286,7 @@ pub func envEmpty(callees: in Map[String, FunctionDecl], symbols: in List[Symbol
   val contractStack: List[String] = newList()
   val cyclic: List[String] = newList()
   val valueTypes: Map[String, Bool] = newMap()
+  val typeParams: List[String] = newList()
   VEnv(
     vars = vars,
     varNames = varNames,
@@ -298,7 +304,8 @@ pub func envEmpty(callees: in Map[String, FunctionDecl], symbols: in List[Symbol
     protectedMembers = protectedMembers,
     contractStack = contractStack,
     cyclic = cyclic,
-    valueTypes = valueTypes
+    valueTypes = valueTypes,
+    typeParams = typeParams
   )
 }
 
@@ -336,7 +343,8 @@ pub func envBind(name: in String, info: in SortInfo, env: in VEnv): VEnv {
     protectedMembers = env.protectedMembers,
     contractStack = env.contractStack,
     cyclic = env.cyclic,
-    valueTypes = env.valueTypes
+    valueTypes = env.valueTypes,
+    typeParams = env.typeParams
   )
 }
 
@@ -373,7 +381,8 @@ pub func envBindTerm(name: in String, term: in Term, info: in SortInfo, env: in 
     protectedMembers = env.protectedMembers,
     contractStack = env.contractStack,
     cyclic = env.cyclic,
-    valueTypes = env.valueTypes
+    valueTypes = env.valueTypes,
+    typeParams = env.typeParams
   )
 }
 
@@ -495,7 +504,8 @@ func envUnbind(name: in String, env: in VEnv): VEnv {
     protectedMembers = env.protectedMembers,
     contractStack = env.contractStack,
     cyclic = env.cyclic,
-    valueTypes = env.valueTypes
+    valueTypes = env.valueTypes,
+    typeParams = env.typeParams
   )
 }
 
@@ -897,7 +907,8 @@ func varlessEnv(env: in VEnv): VEnv {
     protectedMembers = env.protectedMembers,
     contractStack = env.contractStack,
     cyclic = env.cyclic,
-    valueTypes = env.valueTypes
+    valueTypes = env.valueTypes,
+    typeParams = env.typeParams
   )
 }
 
@@ -1168,7 +1179,8 @@ func translateResolvedCall(
     protectedMembers = env.protectedMembers,
     contractStack = contractStack,
     cyclic = env.cyclic,
-    valueTypes = env.valueTypes
+    valueTypes = env.valueTypes,
+    typeParams = typeParamNames(decl)
   )
   // A parameter default sees the names declared at module level, never
   // the callee's other parameters (docs/01): it is translated with no
@@ -1262,7 +1274,9 @@ func translateResolvedCall(
                   match reconcileTermSorts(unfold) {
                     case Ok(well) -> {
                       if sortProblem(well, SBool).length == 0 {
-                        pureUnfold.add(well)
+                        if not unmodelledEquality(env, well) {
+                          pureUnfold.add(well)
+                        }
                       }
                     }
                     case Err(_) -> ()
@@ -1289,7 +1303,15 @@ func translateResolvedCall(
       case CCRequires(pre, _) -> {
         val preParts = translateContractParts(innerEnv, pre)
         keepUntranslatableDiags(preParts.diags, allArgDiags)
-        preConds.add(substTerm(paramSubst, paramSubstNames, partsObligation(preParts)))
+        preConds.add(
+          checkInstantiated(
+            env,
+            substTerm(paramSubst, paramSubstNames, partsObligation(preParts)),
+            decl.name,
+            callSpan,
+            allArgDiags
+          )
+        )
       }
       case _ -> {
       }
@@ -1357,7 +1379,8 @@ func translateResolvedCall(
     protectedMembers = env.protectedMembers,
     contractStack = contractStack,
     cyclic = env.cyclic,
-    valueTypes = env.valueTypes
+    valueTypes = env.valueTypes,
+    typeParams = typeParamNames(decl)
   )
   ci = 0
   while ci < decl.contracts.count {
@@ -1366,7 +1389,15 @@ func translateResolvedCall(
         if not cyclicCallee {
           val postParts = translateContractParts(resultEnv, post)
           keepUntranslatableDiags(postParts.diags, allArgDiags)
-          postConds.add(substTerm(postSubst, postSubstNames, mkAnd(partsHyps(postParts))))
+          postConds.add(
+            checkInstantiated(
+              env,
+              substTerm(postSubst, postSubstNames, mkAnd(partsHyps(postParts))),
+              decl.name,
+              callSpan,
+              allArgDiags
+            )
+          )
         }
       }
       case _ -> {
@@ -1388,6 +1419,24 @@ func translateResolvedCall(
   val knownCalleeTR = TranslateResult(term = callTerm, sideConds = sc, assumed = asList)
   val knownCalleePair: (TranslateResult, List[Diagnostic]) = (knownCalleeTR, allArgDiags)
   knownCalleePair
+}
+
+// A callee's contract clause instantiated at a call, failing closed (V0033)
+// when an `==` in it, over a type parameter in the callee, compares here
+// values whose equality the verifier does not model (#8109).
+func checkInstantiated(env: in VEnv, t: in Term, callee: in String, sp: in Span, diags: in List[Diagnostic]): Term {
+  if unmodelledEquality(env, t) {
+    diags.add(
+      untranslatableDiag(
+        "the contract of '" + callee +
+          "' compares, at this call, values that may be or hold a function, compare by identity, or be of a type the verifier does not know",
+        sp
+      )
+    )
+    poisonTerm(t)
+  } else {
+    t
+  }
 }
 
 // The value a call of `decl` returns.  A `@pure` callee — `@pure` is
@@ -1619,109 +1668,254 @@ func fileValueTypes(file: in SourceFile, distincts: in Map[String, TypeExpr]): M
       ci = ci + 1
     }
   }
-  addFunctionHolders(file, valueTypes)
+  addStructuralEqualityTypes(file, distincts, valueTypes)
+  var ui = 0
+  while ui < file.items.count {
+    match file.items[ui].kind {
+      case IUnion(d) -> {
+        if not valueTypes.containsKey(unionKey(d.name)) {
+          valueTypes.add(unionKey(d.name), true)
+        }
+      }
+      case _ -> ()
+    }
+    ui = ui + 1
+  }
   valueTypes
 }
 
-// The key under which `valueTypes` records that values of the file's type
-// `name` may hold a function value.
-func holdsFunctionKey(name: in String): String {
-  "!holdsfn!" + name
+func noTypeParams(): List[String] {
+  val none: List[String] = newList()
+  none
 }
 
-// Record each type the file declares whose values may hold a function: a
-// record, union or opaque type with a field of a function type, or of a
-// type that holds one, an alias or distinct type of such a type, and an
-// opaque type whose
-// fields are not visible — resolved to a fixed point.
-func addFunctionHolders(file: in SourceFile, valueTypes: in Map[String, Bool]): Unit {
+// The names of `decl`'s type parameters.
+func typeParamNames(decl: in FunctionDecl): List[String] {
+  val names: List[String] = newList()
+  match decl.generics {
+    case Some(gp) -> {
+      var i = 0
+      while i < gp.params.count {
+        match gp.params[i] {
+          case GPType(n, _) -> names.add(n)
+          case _ -> ()
+        }
+        i = i + 1
+      }
+    }
+    case None -> ()
+  }
+  names
+}
+
+// Whether `t` holds an `==` or `!=` whose operands the verifier's equality
+// does not model in `env` (`equalityModelled`): a callee's contract over a
+// type parameter, instantiated with an argument such as a function value.
+func unmodelledEquality(env: in VEnv, t: in Term): Bool {
+  match t {
+    case TVar(_, _) -> false
+    case TLit(_, _) -> false
+    case TBuiltin(op, args) -> {
+      val isEq = match op { case BOpEq | BOpNeq -> true; case _ -> false }
+      if isEq and args.count == 2 and (not equalityModelled(env, args[0]) or not equalityModelled(env, args[1])) {
+        return true
+      }
+      anyUnmodelledEquality(env, args)
+    }
+    case TApp(_, args, _) -> anyUnmodelledEquality(env, args)
+    case TLet(bs, body) -> {
+      var i = 0
+      while i < bs.count {
+        if unmodelledEquality(env, bs[i].term) {
+          return true
+        }
+        i = i + 1
+      }
+      unmodelledEquality(env, body)
+    }
+    case TIte(c, a, b) -> unmodelledEquality(env, c) or unmodelledEquality(env, a) or unmodelledEquality(env, b)
+    case TForall(_, _, body) -> unmodelledEquality(env, body)
+    case TExists(_, body) -> unmodelledEquality(env, body)
+  }
+}
+
+func anyUnmodelledEquality(env: in VEnv, ts: in List[Term]): Bool {
+  var i = 0
+  while i < ts.count {
+    if unmodelledEquality(env, ts[i]) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+// The key under which `valueTypes` records that the file declares the union
+// `name`.
+func unionKey(name: in String): String {
+  "!union!" + name
+}
+
+// The key under which `valueTypes` records that `==` on the file's type
+// `name` compares field by field (or case and payload, for a union) on
+// every target, so the verifier's datatype equality is the runtime's.
+func structuralEqualityKey(name: in String): String {
+  "!structeq!" + name
+}
+
+// Whether `anns` hold `@derive(Equals)`.
+func derivesEquals(anns: in List[Annotation]): Bool {
+  var i = 0
+  while i < anns.count {
+    val ann = anns[i]
+    if ann.name.segments.count == 1 and ann.name.segments[0] == "derive" {
+      var j = 0
+      while j < ann.args.count {
+        val named = match ann.args[j] { case ABare(nm, _) -> nm; case AAName(nm, _, _) -> nm; case _ -> "" }
+        if named == "Equals" {
+          return true
+        }
+        j = j + 1
+      }
+    }
+    i = i + 1
+  }
+  false
+}
+
+// Record each type the file declares whose `==` is structural (D164,
+// D172) and over leaves the verifier models (`equalityModelledSort`),
+// resolved to a fixed point: an enum; a non-generic union; a non-generic
+// record with no `var` field, or one that derives `Equals`.  A record with
+// a `var` field that does not derive `Equals` compares by identity; a
+// generic type, a protected, opaque, interface or extern type, an alias,
+// and a type with a function-typed field are never listed.  The fixed
+// point is the greatest one, so a recursive record (`next: Option[Node]`)
+// is listed when its other fields allow.
+func addStructuralEqualityTypes(
+  file: in SourceFile,
+  distincts: in Map[String, TypeExpr],
+  valueTypes: in Map[String, Bool],
+): Unit {
   val names: List[String] = newList()
   val fieldTypes: List[List[TypeExpr]] = newList()
   var i = 0
   while i < file.items.count {
-    val tys: List[TypeExpr] = newList()
-    var name = ""
+    val anns = file.items[i].annotations
     match file.items[i].kind {
+      case IEnum(d) -> {
+        if not valueTypes.containsKey(structuralEqualityKey(d.name)) {
+          valueTypes.add(structuralEqualityKey(d.name), true)
+        }
+      }
       case IRecord(d) -> {
-        name = d.name
-        appendRecordFieldTypes(d, tys)
+        if isNone(d.generics) and (not recordHasVarField(d) or derivesEquals(anns)) {
+          names.add(d.name)
+          fieldTypes.add(recordFieldTypes(d))
+        }
       }
       case IExposedRec(d) -> {
-        name = d.name
-        appendRecordFieldTypes(d, tys)
+        if isNone(d.generics) and (not recordHasVarField(d) or derivesEquals(anns)) {
+          names.add(d.name)
+          fieldTypes.add(recordFieldTypes(d))
+        }
       }
       case IUnion(d) -> {
-        name = d.name
-        var ci = 0
-        while ci < d.cases.count {
-          var fi = 0
-          while fi < d.cases[ci].fields.count {
-            match d.cases[ci].fields[fi] {
-              case UFNamed(_, ty, _) -> tys.add(ty)
-              case UFPos(ty, _) -> tys.add(ty)
+        if isNone(d.generics) {
+          val tys: List[TypeExpr] = newList()
+          var ci = 0
+          while ci < d.cases.count {
+            var fi = 0
+            while fi < d.cases[ci].fields.count {
+              match d.cases[ci].fields[fi] {
+                case UFNamed(_, ty, _) -> tys.add(ty)
+                case UFPos(ty, _) -> tys.add(ty)
+              }
+              fi = fi + 1
             }
-            fi = fi + 1
+            ci = ci + 1
           }
-          ci = ci + 1
+          names.add(d.name)
+          fieldTypes.add(tys)
         }
-      }
-      case IOpaque(d) -> {
-        name = d.name
-        if not d.hasBody {
-          valueTypes.add(holdsFunctionKey(d.name), true)
-        }
-        var mi = 0
-        while mi < d.members.count {
-          match d.members[mi] {
-            case OMField(fld) -> tys.add(fld.ty)
-            case _ -> ()
-          }
-          mi = mi + 1
-        }
-      }
-      case ITypeAlias(d) -> {
-        name = d.name
-        tys.add(d.rhs)
-      }
-      case IDistinctType(d) -> {
-        name = d.name
-        tys.add(distinctRepresentation(d))
       }
       case _ -> ()
     }
-    if name.length > 0 {
-      names.add(name)
-      fieldTypes.add(tys)
-    }
     i = i + 1
+  }
+  val alive: List[Bool] = newList()
+  var ai = 0
+  while ai < names.count {
+    alive.add(true)
+    ai = ai + 1
   }
   var changed = true
   while changed {
     changed = false
+    // The enums, and every candidate not yet ruled out.
+    val assumed: Map[String, Bool] = newMap()
+    var ki = 0
+    while ki < file.items.count {
+      match file.items[ki].kind {
+        case IEnum(d) -> {
+          if not assumed.containsKey(structuralEqualityKey(d.name)) {
+            assumed.add(structuralEqualityKey(d.name), true)
+          }
+        }
+        case _ -> ()
+      }
+      ki = ki + 1
+    }
     var ni = 0
     while ni < names.count {
-      val key = holdsFunctionKey(names[ni])
-      if not valueTypes.containsKey(key) {
+      if alive[ni] and not assumed.containsKey(structuralEqualityKey(names[ni])) {
+        assumed.add(structuralEqualityKey(names[ni]), true)
+      }
+      ni = ni + 1
+    }
+    ni = 0
+    while ni < names.count {
+      if alive[ni] {
         val tys = fieldTypes[ni]
         var ti = 0
-        var holds = false
         while ti < tys.count {
-          if typeMentionsFunction(valueTypes, tys[ti], 0) {
-            holds = true
+          if alive[ni] and not equalityModelledSort(assumed, noTypeParams(), sortOfTypeExprWith(distincts, tys[ti]).sort, 0) {
+            alive[ni] = false
+            changed = true
           }
           ti = ti + 1
-        }
-        if holds {
-          valueTypes.add(key, true)
-          changed = true
         }
       }
       ni = ni + 1
     }
   }
+  var ni = 0
+  while ni < names.count {
+    if alive[ni] and not valueTypes.containsKey(structuralEqualityKey(names[ni])) {
+      valueTypes.add(structuralEqualityKey(names[ni]), true)
+    }
+    ni = ni + 1
+  }
 }
 
-func appendRecordFieldTypes(d: in RecordDecl, tys: in List[TypeExpr]): Unit {
+func recordHasVarField(d: in RecordDecl): Bool {
+  var mi = 0
+  while mi < d.members.count {
+    match d.members[mi] {
+      case RMField(fld) -> {
+        if fld.isMutable {
+          return true
+        }
+      }
+      case _ -> ()
+    }
+    mi = mi + 1
+  }
+  false
+}
+
+func recordFieldTypes(d: in RecordDecl): List[TypeExpr] {
+  val tys: List[TypeExpr] = newList()
   var mi = 0
   while mi < d.members.count {
     match d.members[mi] {
@@ -1730,97 +1924,85 @@ func appendRecordFieldTypes(d: in RecordDecl, tys: in List[TypeExpr]): Unit {
     }
     mi = mi + 1
   }
+  tys
 }
 
-// Whether a type spells a function type anywhere in it, or names a type of
-// the file's that holds one.
-func typeMentionsFunction(valueTypes: in Map[String, Bool], te: in TypeExpr, depth: in Int): Bool {
-  if depth > 32 {
-    return true
-  }
-  match te.kind {
-    case TFunction(_, _) -> true
-    case TRef(path) -> valueTypes.containsKey(holdsFunctionKey(joinPathSegments(path.segments)))
-    case TGenericApp(head, args) -> {
-      if valueTypes.containsKey(holdsFunctionKey(joinPathSegments(head.segments))) {
-        return true
-      }
-      var i = 0
-      while i < args.count {
-        match args[i] {
-          case TAType(t) -> {
-            if typeMentionsFunction(valueTypes, t, depth + 1) {
-              return true
-            }
-          }
-          case _ -> ()
-        }
-        i = i + 1
-      }
-      false
-    }
-    case TArray(_, elt) -> typeMentionsFunction(valueTypes, elt, depth + 1)
-    case TSlice(elt) -> typeMentionsFunction(valueTypes, elt, depth + 1)
-    case TTuple(elts) -> {
-      var i = 0
-      while i < elts.count {
-        if typeMentionsFunction(valueTypes, elts[i], depth + 1) {
-          return true
-        }
-        i = i + 1
-      }
-      false
-    }
-    case TNullable(inner) -> typeMentionsFunction(valueTypes, inner, depth + 1)
-    case TParen(inner) -> typeMentionsFunction(valueTypes, inner, depth + 1)
-    case _ -> false
-  }
-}
-
-// Whether two values compared with `==` may hold a function value, whose
-// equality the verifier does not model: a delegate compares its method and
-// target on .NET, a lambda its reference on the JVM, and one function named
-// twice may be two objects.  A value of a sort the verifier does not know —
-// a module-level name with no declared type, an unannotated lambda
-// parameter — may be one too (#8109).
-func mayHoldFunction(env: in VEnv, t: in Term): Bool {
-  if sortMayHoldFunction(env.valueTypes, sortOf(t), 0) {
-    return true
-  }
+// Whether `==` between two values like `t` means what the verifier's
+// equality says on every target.  It does not where a value may be or
+// hold a function (a delegate compares its method and target on .NET, a
+// lambda its reference on the JVM, and one function named twice may be two
+// objects), where `==` is identity (a mutable record, a protected object),
+// where the type is a generic parameter, a host collection or a type whose
+// equality differs between targets, or where the type is not known — a
+// module-level name with no declared type, a qualified path, an unannotated
+// lambda parameter (#8109).
+// A type parameter of the generic being translated (`env.typeParams`) is
+// an opaque equivalence: whatever `==` on its binding is — structural,
+// identity, a delegate's — it is reflexive, symmetric and transitive, as
+// the solver's equality is.  (`Float`/`Double` are reals throughout,
+// #8141.)  What a call binds it to is checked where the contract is
+// instantiated (`unmodelledEquality`).
+func equalityModelled(env: in VEnv, t: in Term): Bool {
   if pendingCtorName(t).length > 0 {
     val args = pendingCtorArgs(t)
     var i = 0
     while i < args.count {
-      if mayHoldFunction(env, args[i]) {
-        return true
+      if not equalityModelled(env, args[i]) {
+        return false
       }
       i = i + 1
     }
-  }
-  false
-}
-
-func sortMayHoldFunction(valueTypes: in Map[String, Bool], s: in Sort, depth: in Int): Bool {
-  if depth > 32 {
     return true
   }
+  equalityModelledSort(env.valueTypes, env.typeParams, sortOf(t), 0)
+}
+
+func allEqualityModelled(env: in VEnv, ts: in List[Term]): Bool {
+  var i = 0
+  while i < ts.count {
+    if not equalityModelled(env, ts[i]) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+func equalityModelledSort(
+  valueTypes: in Map[String, Bool], typeParams: in List[String], s: in Sort, depth: in Int
+): Bool {
+  if depth > 32 {
+    return false
+  }
   match s {
-    case SUninterp(n) -> n == "Function" or n == "lambda" or n == "lambdaparam" or n.startsWith("global!")
+    case SBool -> true
+    case SInt -> true
+    case SBitVec(_) -> true
+    case SFloat32 -> true
+    case SFloat64 -> true
+    case SString -> true
     case SDatatype(n, args) -> {
-      if valueTypes.containsKey(holdsFunctionKey(n)) {
+      if n == unitSortName() {
         return true
       }
-      var i = 0
-      while i < args.count {
-        if sortMayHoldFunction(valueTypes, args[i], depth + 1) {
-          return true
+      if isTupleSortName(n) or isResultSort(s) or isOptionSort(s) {
+        var i = 0
+        while i < args.count {
+          if not equalityModelledSort(valueTypes, typeParams, args[i], depth + 1) {
+            return false
+          }
+          i = i + 1
         }
-        i = i + 1
+        return true
       }
-      false
+      args.count == 0 and (valueTypes.containsKey(structuralEqualityKey(n)) or typeParams.contains(n))
     }
-    case SSlice(e) -> sortMayHoldFunction(valueTypes, e, depth + 1)
-    case _ -> false
+    case SSlice(e) -> equalityModelledSort(valueTypes, typeParams, e, depth + 1)
+    // A value the verifier does not model is a symbol of its own — one
+    // evaluation's — or the result of a method it does not model (#8110);
+    // only the symbols named after the source, which one name evaluated
+    // twice would share, have an unknown type.
+    case SUninterp(n) -> not (n == "Function" or n == "lambda" or n == "lambdaparam" or n == "path" or n.startsWith("global!"))
   }
 }
 
@@ -2045,6 +2227,39 @@ func translateMethodCall(
       )
     }
     case None -> ()
+  }
+  // `U.C(args)` for a union `U` the file declares builds case `C`: a
+  // value of `U`, so `==` on it is `U`'s.  When `U` compares by structure
+  // over modelled payloads (`equalityModelledSort`), equal arguments build
+  // equal values; otherwise each construction is a value of its own — a
+  // payload may compare by identity (#8109).
+  match receiver.kind {
+    case EPath(upath) -> {
+      if upath.segments.count == 1 and env.valueTypes.containsKey(unionKey(upath.segments[0])) and not isSome(envLookup(upath.segments[0], env)) {
+        val unionName = upath.segments[0]
+        val noArgs: List[Sort] = newList()
+        val unionSort = SDatatype(name = unionName, args = noArgs)
+        var caseName = "case!" + unionName + "!" + methodName
+        var ci = 0
+        while ci < args.count {
+          caseName = caseName + match args[ci] { case CANamed(argName, _, _) -> "!n!" + argName; case CAPositional(_) -> "!p" }
+          ci = ci + 1
+        }
+        val caseTerm = if equalityModelledSort(env.valueTypes, env.typeParams, unionSort, 0) and allEqualityModelled(env, rawArgTerms) {
+          TApp(name = caseName, args = rawArgTerms, retSort = unionSort)
+        } else {
+          callSiteResult(env, caseName, rawArgTerms, unionSort)
+        }
+        val caseTR = TranslateResult(
+          term = if anyPoisoned(rawArgTerms) { poisonTerm(caseTerm) } else { caseTerm },
+          sideConds = argSides,
+          assumed = argAssumed
+        )
+        val casePair: (TranslateResult, List[Diagnostic]) = (caseTR, allArgDiags)
+        return casePair
+      }
+    }
+    case _ -> ()
   }
   val (recvR, recvDiags) = translateExpr(env, receiver)
   val diags: List[Diagnostic] = newList()
@@ -2766,13 +2981,17 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
           } else {
             termList2(lR.term, rR.term)
           }
-          // Whether two function values are equal depends on the target and
-          // on how often the function was named, so it is not modelled
-          // (`mayHoldFunction`, #8109).
+          // `==` the verifier's equality does not model faithfully on every
+          // target fails closed (`equalityModelled`, #8109).
           match b {
             case BOpEq | BOpNeq -> {
-              if mayHoldFunction(env, lR.term) or mayHoldFunction(env, rR.term) {
-                sortDiags.add(untranslatableDiag("an equality between values that may hold a function", e.span))
+              if not equalityModelled(env, lR.term) or not equalityModelled(env, rR.term) {
+                sortDiags.add(
+                  untranslatableDiag(
+                    "an equality between values that may be or hold a function, compare by identity, or be of a type the verifier does not know",
+                    e.span
+                  )
+                )
               }
             }
             case _ -> ()
@@ -6047,7 +6266,33 @@ func envInOwnContract(env: in VEnv, name: in String): VEnv {
     protectedMembers = env.protectedMembers,
     contractStack = termsWithNames(env.contractStack, name),
     cyclic = env.cyclic,
-    valueTypes = env.valueTypes
+    valueTypes = env.valueTypes,
+    typeParams = env.typeParams
+  )
+}
+
+// `env` translating the body and contract of a generic with type
+// parameters `names`.
+func envWithTypeParams(env: in VEnv, names: in List[String]): VEnv {
+  VEnv(
+    vars = env.vars,
+    varNames = env.varNames,
+    sorts = env.sorts,
+    callees = env.callees,
+    symbols = env.symbols,
+    checkedArithmetic = env.checkedArithmetic,
+    distincts = env.distincts,
+    fieldInfos = env.fieldInfos,
+    recordDefaults = env.recordDefaults,
+    fresh = env.fresh,
+    recordMethods = env.recordMethods,
+    finals = env.finals,
+    mutables = env.mutables,
+    protectedMembers = env.protectedMembers,
+    contractStack = env.contractStack,
+    cyclic = env.cyclic,
+    valueTypes = env.valueTypes,
+    typeParams = names
   )
 }
 
@@ -6076,7 +6321,8 @@ func envWithState(
     protectedMembers = protectedMembers,
     contractStack = env.contractStack,
     cyclic = env.cyclic,
-    valueTypes = env.valueTypes
+    valueTypes = env.valueTypes,
+    typeParams = env.typeParams
   )
 }
 
@@ -6531,11 +6777,12 @@ pub func goalsForFunctionWithExtraHyps(
 // body may change: an `ensures:` speaks of their values when the function
 // returns, and `old(n)` of their values on entry (#8102).
 pub func goalsForFunctionWithState(
-  env0: in VEnv,
+  envIn: in VEnv,
   decl: in FunctionDecl,
   extraHyps: in List[Term],
   stateVars: in List[String],
 ): (List[Goal], List[Diagnostic]) {
+  val env0 = envWithTypeParams(envIn, typeParamNames(decl))
   // Soundness guard: WP/SP has no suspend/resume model; reject contract-bearing async/yield rather than opaquing (#3298).
   if decl.contracts.count > 0 and (decl.isAsync or funcBodyContainsYield(decl)) {
     val asyncDiags: List[Diagnostic] = newList()
@@ -6806,7 +7053,8 @@ func freshSymbolsEnv(env: in VEnv): VEnv {
     protectedMembers = env.protectedMembers,
     contractStack = env.contractStack,
     cyclic = env.cyclic,
-    valueTypes = env.valueTypes
+    valueTypes = env.valueTypes,
+    typeParams = env.typeParams
   )
 }
 
@@ -7363,7 +7611,8 @@ pub func goalsForFileInScope(
     protectedMembers = env0Init.protectedMembers,
     contractStack = env0Init.contractStack,
     cyclic = cyclicNames,
-    valueTypes = valueTypesMap
+    valueTypes = valueTypesMap,
+    typeParams = env0Init.typeParams
   )
 
   val allGoals: List[Goal] = newList()

@@ -2803,3 +2803,53 @@ test "values that may hold a function are never compared (#8109)" {
     "value-in-option"
   )
 }
+
+test "an equality that compares by identity or over a type parameter fails closed (#8109)" {
+  val cell = "record Cell {\n  var v: Int\n}\n"
+  assertUntranslatable(
+    cell + "func f(): Bool\n  ensures: result\n{\n  val a = Cell(v = 1)\n  val b = Cell(v = 1)\n  a == b\n}\n",
+    "mutable-record"
+  )
+  assertUntranslatable(
+    cell + "union U {\n  case A(c: Cell)\n  case B\n}\n" +
+      "func f(): Bool\n  ensures: result\n{\n  val a = U.A(c = Cell(v = 1))\n  val b = U.A(c = Cell(v = 1))\n  a == b\n}\n",
+    "mutable-record-in-union"
+  )
+  assertUntranslatable(
+    "pub protected type Counter {\n  var n: Int\n  pub entry next(): Int {\n    n = n + 1\n    n\n  }\n}\n" +
+      "func f(a: in Counter, b: in Counter): Bool\n  ensures: result\n{\n  a == b\n}\n",
+    "protected-object"
+  )
+  assertUntranslatable(
+    "@pure\nfunc one(x: in Int): Int = 1\nfunc same[T](a: in T, b: in T): Bool\n  requires: a == b\n  ensures: result\n{\n  a == b\n}\n" +
+      "func f(): Bool\n  ensures: result\n{\n  same(one, one)\n}\n",
+    "type-parameter"
+  )
+  assertDischarged(
+    "func ident[T](x: in T): T\n  ensures: result == x\n{\n  x\n}\n" +
+      "func same[T](a: in T, b: in T): Bool\n  requires: a == b\n  ensures: result\n{\n  a == b\n}\n" +
+      "func f(): Bool\n  ensures: result\n{\n  same(1, 1)\n}\n",
+    "type-parameter-opaque-equivalence"
+  )
+  // A generic record is not modelled: its construction is a call the
+  // verifier does not resolve, a value of its own.
+  assertNotProved(
+    "@pure\nfunc one(x: in Int): Int = 1\nrecord Box[T] {\n  v: T\n}\n" +
+      "func f(): Bool\n  ensures: result\n{\n  val a = Box(v = one)\n  val b = Box(v = one)\n  a == b\n}\n",
+    "generic-record"
+  )
+  assertUntranslatable(
+    "interface Shape {\n  func area(): Int\n}\nfunc f(a: in Shape, b: in Shape): Bool\n  ensures: result\n{\n  a == b\n}\n",
+    "interface-value"
+  )
+  assertDischarged(
+    "@derive(Equals)\nrecord Cell {\n  var v: Int\n}\n" +
+      "func f(): Bool\n  ensures: result\n{\n  val a = Cell(v = 1)\n  val b = Cell(v = 1)\n  a == b\n}\n",
+    "mutable-record-deriving-equals"
+  )
+  assertDischarged(
+    "record P {\n  x: Int\n  s: String\n}\nunion U {\n  case A(p: P)\n  case B\n}\n" +
+      "func f(): Bool\n  ensures: result\n{\n  P(x = 1, s = \"a\") == P(x = 1, s = \"a\") and U.A(p = P(x = 1, s = \"a\")) == U.A(p = P(x = 1, s = \"a\"))\n}\n",
+    "value-record-and-union"
+  )
+}

@@ -404,14 +404,25 @@ Two values the program can tell apart never share a term (#8109):
   computed callee, a result of the call site's own. Whether two function
   values are equal is not modelled (a .NET delegate compares its method
   and target, a JVM lambda its reference, and one function named twice
-  may be two objects): `==` and `!=` fail closed (V0033) when either
-  operand may hold a function — a function or lambda, an `Option`,
-  `Result`, tuple, record, union or opaque type with a function
-  anywhere in it (through an alias too), an opaque type whose fields are
-  not visible, an unannotated lambda parameter, or a module-level name
-  with no declared type, whose type the verifier does not know. A
-  module-level `val` or `const` with a declared type is a value of that
-  type.
+  may be two objects).
+- `==` and `!=` are the solver's equality only where that is the
+  runtime's on every target: primitives and `String`; `Unit`, tuples and
+  the standard `Result`/`Option` of such values; enums; and the file's
+  non-generic unions and records that compare field by field (D164,
+  D172) — a record with no `var` field, or one that derives `Equals` —
+  whose fields are all such values (a recursive record included). Any
+  other operand fails closed (V0033): a function or lambda, a mutable
+  record that keeps identity, a protected, opaque, interface or extern
+  value, a host collection, a generic record, an alias, an unannotated
+  lambda parameter, a qualified path, or a module-level name with no
+  declared type. A module-level `val` or `const` with a declared type is
+  a value of that type. Inside a generic, `==` over its own type
+  parameter is an opaque equivalence — whatever `==` its binding has, it
+  is reflexive, symmetric and transitive, as the solver's equality is —
+  so `ensures: result == x` on `func identity[T]` still proves. Where a
+  call instantiates such a contract, each `==` in it is checked again
+  over the argument terms, and fails closed (V0033) if they are not
+  modelled values: `same(one, one)` against `requires: a == b` does.
 - The built-in `Unit` and tuple sorts have names no source type can take
   (`Lyric!Unit`, `Lyric!Tuple<n>`), so a user `record Tuple` is a
   datatype of its own. A type the file declares or imports by name with

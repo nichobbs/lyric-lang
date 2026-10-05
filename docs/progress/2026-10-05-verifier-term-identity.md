@@ -63,7 +63,7 @@ not model is still an uninterpreted function of its receiver and
 arguments, so `xs.count` before and after `xs.add(1)` is one term — the
 verifier has no heap model of mutation through a receiver.
 
-Verified by nine new `verifier_self_test.l` tests (refuted and
+Verified by eleven new `verifier_self_test.l` tests (refuted and
 discharged cases for each item and for each review finding), the
 verifier and records self-tests, the
 CI `lyric prove` examples, `core_proof.l`, `scripts/ci/prove-package-scope.sh`
@@ -118,5 +118,29 @@ A second review found two more:
   value (`val h = monotonicNanos; h == k`), an unannotated lambda
   parameter. A module-level `val`/`const` with a declared type now has
   that type instead of an unknown one.
+
+A third review found `==` modelled as structural where it is identity at
+runtime: `Cell(v = 1) == Cell(v = 1)` for a record with a `var` field
+(D164 item 2), directly or inside a union payload, was proved. And `==`
+on a generic parameter `T` was taken as safe, so `same(one, one)` with
+`requires: a == b` was proved though it fails on the JVM. `==`/`!=` are
+now modelled only over a whitelist (`equalityModelled`): primitives,
+`String`, `Unit`, tuples and standard `Result`/`Option` of such values,
+enums, and the file's non-generic unions and records that compare field
+by field (no `var` field, or `@derive(Equals)`) over such values, as a
+greatest fixed point so a recursive record qualifies. Everything else —
+mutable records, protected, opaque, interface and extern types, host
+collections, generic records, functions, and values of unknown type —
+fails closed (V0033). Inside a generic, `==` over its own type parameter
+stays an opaque equivalence (so `core_proof.l`'s `identity[T]`
+contracts still prove); where a call instantiates the generic's
+contract, each `==` in it is checked again over the argument terms
+(`checkInstantiated`), so `same(one, one)` fails closed. A union case
+built with `U.C(args)` was an unmodelled method call, a function of its
+arguments, so two `U.A(c = Cell(v = 1))` were one value; it is now a value
+of `U`, congruent in its arguments only when `U` compares by structure
+over modelled payloads. `scripts/ci/prove-package-scope.sh` accepts the
+equality V0033 as well as the field-read one as evidence that a
+sibling's `Option` is not modelled as the standard library's.
 
 Specification: `docs/15-phase-4-proof-plan.md` §5.2, §5.4.

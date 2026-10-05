@@ -13,8 +13,10 @@ root="$(cd "$(dirname "$0")/../.." && pwd)/examples/prove-package-scope"
 log="$(mktemp)"
 trap 'rm -f "$log"' EXIT
 
-# `rejected` also requires the V0033 that says the sibling's type is not
-# modelled as the standard library's, not just a failing exit.
+# `rejected` also requires a V0033 that comes from the sibling's type not
+# being modelled as the standard library's, not just a failing exit: its
+# field read, or the `==` on it, which the verifier compares only for types
+# it knows (#8109).
 expect() {
   local want="$1" label="$2"; shift 2
   local rc=0
@@ -23,7 +25,7 @@ expect() {
     echo "FAIL: $label: expected the proof to go through"; cat "$log"; exit 1
   fi
   if [ "$want" = rejected ]; then
-    if [ "$rc" -eq 0 ] || ! grep -q "V0033 error .*a value the verifier does not model (sort field.isSome)" "$log"; then
+    if [ "$rc" -eq 0 ] || ! grep -Eq "V0033 error .*(a value the verifier does not model \(sort field\.isSome\)|an equality between values that may be or hold a function, compare by identity, or be of a type the verifier does not know)" "$log"; then
       echo "FAIL: $label: expected V0033 for the sibling's Option"; cat "$log"; exit 1
     fi
   fi
