@@ -160,7 +160,7 @@ test "same-package inout mutation of a plain opaque type's mutable slice field (
 // #5937 review follow-up (#6944): an opaque type's mutable field passed
 // DIRECTLY as an out/inout call argument (`bumpInout(h.count)`) rather than
 // assigned (`h.count = ...`) takes a completely separate codegen path —
-// `Jvm.Codegen.prepareHolderArg`/`writeBackHolderArg` (04_calls.l), which
+// `Jvm.Codegen.buildHolderArrays`/`writeBackHolderArg` (04_calls.l), which
 // read/write the field with raw, unmangled-name `LGetfield`/`LPutfield`
 // unconditionally. For an opaque receiver the real backing field is named
 // `$count` (mangled) and, when immutable, `final` — the same two problems

@@ -825,3 +825,47 @@ test "a by-value element after a ? keeps its index in its own turn" {
   }
   assertEqual(since(t0), "v,c,i", "order")
 }
+
+// ─── By-reference places with no ? or await run in their own turn ───────────
+// A call that passes a field of an element by reference runs each argument
+// in order, the place's own path included, on every backend; the JVM built
+// its holders, evaluating the place's path, before the earlier arguments.
+record Shelf {
+  cell: Cell
+}
+
+func putLast(v: in Int, c: in Int, x: out Int): Unit {
+  x = v * 10 + c
+}
+
+test "an element's field passed inout runs after the arguments before it" {
+  val cells: List[Cell] = newList()
+  cells.add(Cell(v = 0))
+  val t0 = trace.count
+  setFrom(note("v", 1), note("c", 2), cells[at("i", 0)].v)
+  assertEqualInt(cells[0].v, 12, "inout value")
+  assertEqual(since(t0), "v,c,i", "inout order")
+  val t1 = trace.count
+  putLast(note("v", 3), note("c", 4), cells[at("i", 0)].v)
+  assertEqualInt(cells[0].v, 34, "out value")
+  assertEqual(since(t1), "v,c,i", "out order")
+}
+
+test "a nested field path passed inout runs in its own turn" {
+  val shelves: List[Shelf] = newList()
+  shelves.add(Shelf(cell = Cell(v = 0)))
+  val t0 = trace.count
+  setFrom(note("v", 5), note("c", 6), shelves[at("i", 0)].cell.v)
+  assertEqualInt(shelves[0].cell.v, 56, "value")
+  assertEqual(since(t0), "v,c,i", "order")
+}
+
+test "a computed receiver runs before its by-reference and by-value arguments" {
+  val adders: List[Adder] = newList()
+  adders.add(Adder(base = 100))
+  var x = 0
+  val t0 = trace.count
+  adders[at("r", 0)].addInto(x, note("a", 5))
+  assertEqualInt(x, 105, "value")
+  assertEqual(since(t0), "r,a", "order")
+}

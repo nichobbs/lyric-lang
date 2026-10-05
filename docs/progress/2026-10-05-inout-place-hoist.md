@@ -38,23 +38,35 @@ reference (`zap(c.v, g()?)`).
   left in the call has its indices evaluated into temporaries
   (`ArgOrderSite.byRef`); a by-value argument left in the call keeps its
   index inline, in its own turn.
+- JVM: a call with an `out`/`inout` parameter built its holder arrays,
+  evaluating each place's object path (`cells[at(0)]` in `cells[at(0)].v`),
+  before any by-value argument, so `f3(note(), note(), cells[at()].v)` ran
+  `at` first even with no `?`. `lowerStaticCallWithHolders` and
+  `lowerVirtualCallWithHolders` now evaluate every argument in order, the
+  place's path at its own turn, and build the holders from the evaluated
+  places just before the call.
 - Affected hoists: the `?` hoist and the `await` hoist (one engine). Not
   affected: the `.copy` lowering (its receiver and arguments are never passed
   by reference) and the backends, which only pair arguments and keep no
   temporaries of their own; the D171 rewrite already left by-reference places
   in the call.
-- Tests: fourteen cases in `named_arg_eval_order_self_test.l` (dotnet, JVM,
-  native): an `inout` variable, an `out` variable and a field before `?`, a
-  named `inout` argument on either side of a `?`, a computed, a variable and
-  an indexed receiver, the failing-`?` path for a positional and a reordered
-  call, an `inout` variable and field before `await`, and a receiver element's
-  index under a reordered call, a list literal after a `?` and in a
-  reordered call, and `newList()`, `None`, lambdas, slice literals and an
-  `Int` widened to `Long` bound before a `?` or `await`, an indexed place
-  after a `?` and a later argument, and an argument after a `?` that reads
-  the place the `?`'s call changed, and a by-value element after a `?` and
-  a later argument.
+- Tests: seventeen cases in `named_arg_eval_order_self_test.l` (dotnet, JVM,
+  native):
+  - an `inout` variable, an `out` variable and a field before `?`, and a named
+    `inout` argument on either side of a `?`;
+  - computed, variable and indexed receivers, and a receiver element's index
+    under a reordered call;
+  - the failing-`?` path for a positional and a reordered call;
+  - an `inout` variable and field before `await`;
+  - a list literal after a `?` and in a reordered call, and `newList()`,
+    `None`, lambdas, slice literals and an `Int` widened to `Long` bound before
+    a `?` or `await`;
+  - an indexed place, and a by-value element, after a `?` and a later
+    argument, and an argument after a `?` that reads the place the `?`'s call
+    changed;
+  - with no `?`, an element's field passed `inout` and `out`, a nested field
+    path, and a computed receiver.
 - Not covered: an array element passed as an `out`/`inout` argument
   (`zap(arr[i], v)`) is accepted by the type checker but no backend lowers it
-  yet, independent of `?`; `self: inout` receivers are accepted but do not
-  write back.
+  yet, independent of `?` (#8180); `self: inout` receivers are accepted but do
+  not write back (#8179).
