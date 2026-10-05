@@ -3522,17 +3522,39 @@ func lowerMember(ctx: in Ctx, insns: in List[NInsn], receiver: in Expr, memberNa
     case None -> {
     }
   }
-  // `opt.isNone` / `opt.isSome` are the property spellings of the
-  // `Std.Core` functions; an Option value carries no such field.
+  // `opt.isNone` / `opt.isSome` are property spellings of the `Std.Core`
+  // functions; an Option value carries no such field, so test its
+  // discriminant directly.
   if memberName == "isNone" or memberName == "isSome" {
-    val fnKey = memberName + "/1"
-    val stdKey = "Std.Core." + fnKey
-    val useKey = if ctx.genericFnDefs.containsKey(stdKey) { stdKey } else { fnKey }
-    if ctx.genericFnDefs.containsKey(useKey) {
-      val pre: List[NVal] = newList()
-      pre.add(v)
-      val noArgs: List[CallArg] = newList()
-      return lowerGenericFnCall(ctx, insns, useKey, pre, noArgs, 0, false, None)
+    match unionInfoOfType(ctx, v.ty) {
+      case Some(ui) -> {
+        val wantCase = if memberName == "isNone" { "None" } else { "Some" }
+        var caseIdx = 0 - 1
+        var ci = 0
+        while ci < ui.cases.count {
+          if ui.cases[ci].name == wantCase {
+            caseIdx = ci
+          }
+          ci = ci + 1
+        }
+        if caseIdx >= 0 and ui.cases.count == 2 {
+          val disc = freshTmp(ctx)
+          if ui.inline {
+            insns.add(NExtractValue(dest = disc, aggTy = v.ty, agg = v.value, index = 0))
+          } else {
+            val structTy = match v.ty { case NPtr(pointee) -> pointee; case _ -> panic("unreachable") }
+            val objName = match v.value { case NLocal(n) -> n; case _ -> panic("Lyric.LlvmCodegen: internal - Option receiver is not a local") }
+            val d2 = loadUnionDisc(ctx, insns, ui, structTy, objName)
+            val cmp = freshTmp(ctx)
+            insns.add(NICmp(dest = cmp, pred = IEq, ty = NI32, a = NLocal(name = d2), b = NLitInt(v = caseIdx.toLong(), ty = NI32)))
+            return NVal(ty = NI1, value = NLocal(name = cmp))
+          }
+          val cmp = freshTmp(ctx)
+          insns.add(NICmp(dest = cmp, pred = IEq, ty = NI32, a = NLocal(name = disc), b = NLitInt(v = caseIdx.toLong(), ty = NI32)))
+          return NVal(ty = NI1, value = NLocal(name = cmp))
+        }
+      }
+      case None -> ()
     }
   }
   // Distinct types share their underlying representation, so `.value`
