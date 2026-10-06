@@ -194,6 +194,16 @@ pub record ValueUnionCtorSite {
   lengths: List[TypeArg]
 }
 
+/// A `?` operand that fixes no success type (see
+/// `SymbolTable.openPropagateOperands`): the operand, the enclosing function's
+/// own monad instantiation it takes when nothing consuming it gives it a
+/// success type, and that function's type parameters.
+pub record OpenPropagateOperand {
+  operand: Expr
+  fallback: Type
+  typeParams: List[String]
+}
+
 @stable(since = "0.1")
 pub record SymbolTable {
   symbols: List[Symbol]
@@ -353,11 +363,25 @@ pub record SymbolTable {
   /// `Lyric.Parser.ListLiteralTypeSite`, #7818).
   listLiteralTypeSites: Map[String, ListLiteralTypeSite]
   /// Each operand evaluated before an `await` or a `?` in the same
-  /// expression whose type is a generic instantiation, and each argument of
-  /// a generic constructor that leaves its own type open (#7844), keyed by
-  /// `recordCopySiteKey` of the operand's span (see
+  /// expression whose type is a generic instantiation, each argument of
+  /// a generic constructor that leaves its own type open (#7844), and each
+  /// operand of `?` built at an instantiation its context would otherwise
+  /// give it (#8181), keyed by `recordCopySiteKey` of the operand's span (see
   /// `Lyric.Parser.HoistOperandTypeSite`, #7823).
   hoistOperandTypeSites: Map[String, HoistOperandTypeSite]
+  /// Each `?` operand that fixes no success type (`Err(error = x)?`,
+  /// `None?`) and has none expected yet, keyed like `hoistOperandTypeSites`:
+  /// what consumes the value gives it one (#8181).
+  openPropagateOperands: Map[String, OpenPropagateOperand]
+  /// The never-taken instantiation each operand left in
+  /// `openPropagateOperands` takes on a native build, keyed like
+  /// `hoistOperandTypeSites` (see `collectPropagateFallbacks`, #8181).
+  propagateFallbackSites: Map[String, HoistOperandTypeSite]
+  /// Each `?` whose operand's error type widens to the enclosing function's
+  /// (`Int` into a `Result[_, Long]`), keyed by `recordCopySiteKey` of the
+  /// `?` expression's span: the conversion method (`toLong`) the lowering
+  /// applies to the re-wrapped error (#8181).
+  propagateErrWidenings: Map[String, PropagateErrWidening]
   /// Each call whose arguments must be evaluated into temporaries to run in
   /// source order (D171), keyed by `recordCopySiteKey` of the call's span
   /// (see `Lyric.Parser.ArgOrderSite`).
@@ -688,6 +712,9 @@ pub func newSymbolTable(): SymbolTable {
     tuplePatternBindingSites = newMap(),
     listLiteralTypeSites = newMap(),
     hoistOperandTypeSites = newMap(),
+    openPropagateOperands = newMap(),
+    propagateFallbackSites = newMap(),
+    propagateErrWidenings = newMap(),
     argOrderSites = newMap(),
     methodCallResultExpected = newMap(),
     lambdaReturnFrames = newList(),

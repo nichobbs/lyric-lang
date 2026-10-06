@@ -15,6 +15,8 @@
 # generic_ctor_open_arg_self_test.l, #7844; the generic_ctor_*widening
 # self-tests, #7813; the overflow self-tests,
 # D163; record_eq_self_test.l, D164; task_shadow_self_test.l, D166;
+# propagate_ctor_operand_self_test.l and propagate_ctor_operand_try_self_test.l,
+# #8181;
 # the structural_equality self-tests, D172),
 # through one
 # `lyric test`
@@ -63,6 +65,8 @@ for t in \
   lyric-compiler/lyric/inout_receiver_closure_self_test.l \
   lyric-compiler/lyric/inout_array_element_self_test.l \
   lyric-compiler/lyric/dot_named_byref_self_test.l \
+  lyric-compiler/lyric/propagate_ctor_operand_self_test.l \
+  lyric-compiler/lyric/propagate_ctor_operand_try_self_test.l \
   lyric-compiler/lyric/inout_array_element_try_self_test.l \
   lyric-compiler/lyric/method_closure_var_capture_self_test.l \
   lyric-compiler/lyric/nested_lambda_var_capture_self_test.l \

@@ -7,6 +7,7 @@ import Std.Core
 import Std.Collections
 import Std.String as Str
 import Std.Testing
+import Std.Time as Time
 import Lyric.Parser
 import Lyric.TypeChecker
 import Lyric.AliasRewriter
@@ -3791,6 +3792,301 @@ test "a hoisted receiver whose type nothing fixes is T0154 (#7844)" {
   val noAwait = decls + "func f(): Int {\n  emptyBox().size(5)\n}\n"
   val noAwaitCr = checkWithImportedPackages(parse(noAwait).file, stdCollectionsHostPackages())
   assertEqualInt(countDiagCode(noAwaitCr, "T0154"), 0, "no await, nothing hoisted: no T0154")
+}
+
+// #8181: the native-only fallback type offered for the operand starting at
+// `operandText` in `src` (`SymbolTable.propagateFallbackSites`), or "".
+func fallbackOperandType(cr: in CheckResult, src: in String, operandText: in String): String {
+  val start = Str.indexOfRaw(src, operandText)
+  if start < 0 {
+    return ""
+  }
+  for k in mapKeys(cr.symbols.propagateFallbackSites) {
+    match mapGet(cr.symbols.propagateFallbackSites, k) {
+      case Some(site) -> if site.startOffset == start { return site.rendered }
+      case None -> ()
+    }
+  }
+  ""
+}
+
+// #8181: the type recorded for the operand starting at `operandText` in
+// `src` (`SymbolTable.hoistOperandTypeSites`), or "" when none is.
+func recordedOperandType(cr: in CheckResult, src: in String, operandText: in String): String {
+  val start = Str.indexOfRaw(src, operandText)
+  if start < 0 {
+    return ""
+  }
+  for k in mapKeys(cr.symbols.hoistOperandTypeSites) {
+    match mapGet(cr.symbols.hoistOperandTypeSites, k) {
+      case Some(site) -> if site.startOffset == start { return site.rendered }
+      case None -> ()
+    }
+  }
+  ""
+}
+
+// #8181: the operand of `?` has the enclosing function's error type and the
+// success type its position takes, so a construction that would otherwise be
+// built at an instantiation inferred from its context is recorded with it.
+test "a `?` operand built from context records its type (#8181)" {
+  val monads = "union Result[T, E] { case Ok(value: T); case Err(error: E) }\n" +
+    "union Option[T] { case Some(value: T); case None }\n"
+  val okSrc = "package P\n" + monads + "func two(a: in String, b: in String): Int { a.length + b.length }\n" +
+    "func f(): Result[Int, String] {\n  val n = two(\"a\", Ok(value = \"bb\")?)\n  Ok(value = n)\n}\n"
+  val okCr = parseCheck(okSrc)
+  assertEqualInt(diagCount(okCr), 0, "Ok operand: clean (" + diagCodesOf(okCr) + ")")
+  assertEqual(recordedOperandType(okCr, okSrc, "Ok(value = \"bb\")"), "Result[String, String]", "Ok operand")
+
+  val errSrc = "package P\n" + monads +
+    "func f(): Result[Int, String] {\n  val s: String = Err(error = \"x\")?\n  Ok(value = s.length)\n}\n"
+  val errCr = parseCheck(errSrc)
+  assertEqualInt(diagCount(errCr), 0, "Err operand: clean (" + diagCodesOf(errCr) + ")")
+  assertEqual(
+    recordedOperandType(errCr, errSrc, "Err(error = \"x\")"),
+    "Result[String, String]",
+    "the position gives T"
+  )
+
+  val someSrc = "package P\n" + monads +
+    "func f(): Option[Int] {\n  val s = Some(value = \"abc\")?\n  Some(value = s.length)\n}\n"
+  val someCr = parseCheck(someSrc)
+  assertEqualInt(diagCount(someCr), 0, "Some operand: clean (" + diagCodesOf(someCr) + ")")
+  assertEqual(recordedOperandType(someCr, someSrc, "Some(value = \"abc\")"), "Option[String]", "closed Some operand")
+
+  val noneSrc = "package P\n" + monads +
+    "func f(): Option[Int] {\n  val s: String = None?\n  Some(value = s.length)\n}\n"
+  val noneCr = parseCheck(noneSrc)
+  assertEqualInt(diagCount(noneCr), 0, "None operand: clean (" + diagCodesOf(noneCr) + ")")
+  assertEqual(recordedOperandType(noneCr, noneSrc, "None?"), "Option[String]", "the position gives T")
+
+  val genSrc = "package P\n" + monads +
+    "func f[T](x: in T): Result[T, String] {\n  val m = Ok(value = 1)?\n  Ok(value = x)\n}\n"
+  val genCr = parseCheck(genSrc)
+  assertEqualInt(diagCount(genCr), 0, "generic function: clean (" + diagCodesOf(genCr) + ")")
+  assertEqual(recordedOperandType(genCr, genSrc, "Ok(value = 1)"), "Result[Int, String]", "generic function")
+
+  // An arm that fixes no success type takes the type the arms join to.
+  val armSrc = "package P\n" + monads +
+    "func f(n: in Int): Result[Int, String] {\n  val s = match n {\n    case 0 -> Err(error = \"z\")?\n" +
+    "    case _ -> \"many\"\n  }\n  Ok(value = s.length)\n}\n"
+  val armCr = parseCheck(armSrc)
+  assertEqualInt(diagCount(armCr), 0, "match arm: clean (" + diagCodesOf(armCr) + ")")
+  assertEqual(
+    recordedOperandType(armCr, armSrc, "Err(error = \"z\")"),
+    "Result[String, String]",
+    "the arms' join gives T"
+  )
+
+  // Nothing gives a statement its success type: none is recorded (the value
+  // is never produced).
+  val stmtSrc = "package P\n" + monads +
+    "func f(c: in Bool): Result[Int, String] {\n  if c {\n    Err(error = \"q\")?\n  }\n" +
+    "  Ok(value = 1)\n}\n"
+  val stmtCr = parseCheck(stmtSrc)
+  assertEqualInt(diagCount(stmtCr), 0, "statement: clean (" + diagCodesOf(stmtCr) + ")")
+  assertEqual(recordedOperandType(stmtCr, stmtSrc, "Err(error = \"q\")"), "", "a statement: not recorded")
+
+  // A call's result has its declared type: nothing to record.
+  val callSrc = "package P\n" + monads + "func g(): Result[String, String] { Ok(value = \"s\") }\n" +
+    "func f(): Result[Int, String] {\n  val s = g()?\n  Ok(value = s.length)\n}\n"
+  val callCr = parseCheck(callSrc)
+  assertEqualInt(diagCount(callCr), 0, "call operand: clean (" + diagCodesOf(callCr) + ")")
+  assertEqual(recordedOperandType(callCr, callSrc, "g()?"), "", "a call operand is not recorded")
+}
+
+// #8181: an `if`/`match` operand whose first branch fixes no success type
+// takes it from the later branch; an operand that fixes none takes the type
+// of the position consuming it.
+test "a `?` operand's open success type comes from its branches or its consumer (#8181)" {
+  val monads = "union Result[T, E] { case Ok(value: T); case Err(error: E) }\n" +
+    "union Option[T] { case Some(value: T); case None }\n"
+  val ifSrc = "package P\n" + monads + "func f(c: in Bool): Result[Int, String] {\n" +
+    "  val s = (if c { Err(error = \"z\") } else { Ok(value = \"abc\") })?\n  Ok(value = s.length)\n}\n"
+  val ifCr = parseCheck(ifSrc)
+  assertEqualInt(diagCount(ifCr), 0, "Err-first if: clean (" + diagCodesOf(ifCr) + ")")
+  assertEqual(recordedOperandType(ifCr, ifSrc, "(if c"), "Result[String, String]", "the later branch gives T")
+
+  val noneSrc = "package P\n" + monads + "func f(c: in Bool): Option[Int] {\n" +
+    "  val s = (match c { case true -> None; case false -> Some(value = \"abc\") })?\n  Some(value = s.length)\n}\n"
+  val noneCr = parseCheck(noneSrc)
+  assertEqualInt(diagCount(noneCr), 0, "None-first match: clean (" + diagCodesOf(noneCr) + ")")
+  assertEqual(recordedOperandType(noneCr, noneSrc, "(match c"), "Option[String]", "the later arm gives T")
+
+  val argSrc = "package P\n" + monads + "func two(a: in String, b: in String): Int { a.length + b.length }\n" +
+    "func f(): Result[Int, String] {\n  Ok(value = two(\"a\", Err(error = \"q\")?))\n}\n"
+  val argCr = parseCheck(argSrc)
+  assertEqualInt(diagCount(argCr), 0, "call argument: clean (" + diagCodesOf(argCr) + ")")
+  assertEqual(
+    recordedOperandType(argCr, argSrc, "Err(error = \"q\")"),
+    "Result[String, String]",
+    "the parameter gives T"
+  )
+
+  val fieldSrc = "package P\n" + monads + "record Label { text: String }\n" +
+    "func f(): Result[Int, String] {\n  val l = Label(text = Err(error = \"q\")?)\n  Ok(value = l.text.length)\n}\n"
+  val fieldCr = parseCheck(fieldSrc)
+  assertEqualInt(diagCount(fieldCr), 0, "record field: clean (" + diagCodesOf(fieldCr) + ")")
+  assertEqual(
+    recordedOperandType(fieldCr, fieldSrc, "Err(error = \"q\")"),
+    "Result[String, String]",
+    "the field gives T"
+  )
+
+  val binSrc = "package P\n" + monads + "func f(): Result[Int, String] {\n" +
+    "  if Err(error = \"q\")? == \"s\" { return Ok(value = 1) }\n  Ok(value = 0)\n}\n"
+  val binCr = parseCheck(binSrc)
+  assertEqualInt(diagCount(binCr), 0, "binary operand: clean (" + diagCodesOf(binCr) + ")")
+  assertEqual(
+    recordedOperandType(binCr, binSrc, "Err(error = \"q\")"),
+    "Result[String, String]",
+    "the other operand gives T"
+  )
+
+  val discardSrc = "package P\n" + monads + "func f(c: in Bool): Result[Int, String] {\n" +
+    "  if c {\n    val _ = Err(error = \"q\")?\n  }\n  Ok(value = 1)\n}\n"
+  val discardCr = parseCheck(discardSrc)
+  assertEqualInt(diagCount(discardCr), 0, "val _: clean (" + diagCodesOf(discardCr) + ")")
+  assertEqual(recordedOperandType(discardCr, discardSrc, "Err(error = \"q\")"), "", "discarded: not recorded")
+}
+
+// #8181: an operand that fixes no success type, where nothing gives it one,
+// never yields a value and is accepted with no recorded type (no guess); a
+// native check gives it the enclosing function's own instantiation.  A
+// generic parameter takes the type the call's expected result binds.
+test "a `?` operand nothing gives a success type is not guessed (#8181)" {
+  val monads = "union Result[T, E] { case Ok(value: T); case Err(error: E) }\n" +
+    "union Option[T] { case Some(value: T); case None }\n"
+  val tupSrc = "package P\n" + monads + "func f(): Result[Int, String] {\n" +
+    "  val (s, n) = (Err(error = \"t\")?, 1)\n  Ok(value = n)\n}\n"
+  val tupCr = parseCheck(tupSrc)
+  assertEqualInt(diagCount(tupCr), 0, "a tuple element: clean (" + diagCodesOf(tupCr) + ")")
+  assertEqual(recordedOperandType(tupCr, tupSrc, "Err(error = \"t\")"), "", "a tuple element: not recorded")
+  assertEqual(fallbackOperandType(tupCr, tupSrc, "Err(error = \"t\")"), "Result[Int, String]", "the native fallback")
+  val bindSrc = "package P\n" + monads + "func f(): Option[Int] {\n  val s = None?\n  Some(value = 1)\n}\n"
+  val bindCr = parseCheck(bindSrc)
+  assertEqualInt(diagCount(bindCr), 0, "an unannotated binding: clean (" + diagCodesOf(bindCr) + ")")
+  assertEqual(recordedOperandType(bindCr, bindSrc, "None?"), "", "an unannotated binding: not recorded")
+  val genSrc = "package P\n" + monads + "func gen[T](x: in T): T { x }\n" +
+    "func f(): Result[Int, String] {\n  val s: String = gen(Err(error = \"g\")?)\n  Ok(value = s.length)\n}\n"
+  val genCr = parseCheck(genSrc)
+  assertEqualInt(diagCount(genCr), 0, "a generic argument: clean (" + diagCodesOf(genCr) + ")")
+  assertEqual(
+    recordedOperandType(genCr, genSrc, "Err(error = \"g\")"),
+    "Result[String, String]",
+    "the expected result binds the generic parameter"
+  )
+  val nestedSrc = "package P\n" + monads + "func id[T](x: in T): T { x }\nfunc lenOf(s: in String): Int { s.length }\n" +
+    "func f(): Result[Int, String] {\n  Ok(value = lenOf(id(Err(error = \"n\")?)))\n}\n"
+  val nestedCr = parseCheck(nestedSrc)
+  assertEqualInt(diagCount(nestedCr), 0, "a nested generic argument: clean (" + diagCodesOf(nestedCr) + ")")
+  assertEqual(
+    recordedOperandType(nestedCr, nestedSrc, "Err(error = \"n\")"),
+    "Result[String, String]",
+    "the outer parameter binds the inner generic call's result"
+  )
+  val openGenSrc = "package P\n" + monads + "func id[T](x: in T): T { x }\n" +
+    "func f(): Result[Int, String] {\n  val s = id(Err(error = \"o\")?)\n  Ok(value = 1)\n}\n"
+  val openGenCr = parseCheck(openGenSrc)
+  assertEqualInt(diagCount(openGenCr), 0, "an open generic argument: clean (" + diagCodesOf(openGenCr) + ")")
+  assertEqual(
+    recordedOperandType(openGenCr, openGenSrc, "Err(error = \"o\")"),
+    "",
+    "an open generic argument: not recorded"
+  )
+  assertEqual(
+    fallbackOperandType(openGenCr, openGenSrc, "Err(error = \"o\")"),
+    "",
+    "an open generic argument: no fallback"
+  )
+}
+
+// #8181: a nest of calls around a `?` is checked once, not once per
+// enclosing call: depth 20 checks in time linear in the depth (it took
+// minutes when each level re-checked its argument).
+func nestedPassSource(depth: in Int, operand: in String, genericPass: in Bool): String {
+  var open = ""
+  var close = ""
+  var i = 0
+  while i < depth {
+    open = open + "pass("
+    close = close + ")"
+    i = i + 1
+  }
+  val passDecl = if genericPass {
+    "func pass[T](x: in T): T { x }\n"
+  } else {
+    "func pass(s: in String): String { s }\n"
+  }
+  "package P\n" + "union Result[T, E] { case Ok(value: T); case Err(error: E) }\n" + passDecl +
+    "func f(r: in Result[String, String]): Result[Int, String] {\n  val s: String = " +
+    open +
+    operand +
+    close +
+    "\n  Ok(value = s.length)\n}\n"
+}
+
+test "a `?` nested in depth-20 calls checks in linear time (#8181)" {
+  val start = Time.nowEpochMillis()
+  val srcs: List[String] = newList()
+  srcs.add(nestedPassSource(20, "r?", false))
+  srcs.add(nestedPassSource(20, "Err(error = \"e\")?", false))
+  srcs.add(nestedPassSource(20, "r?", true))
+  srcs.add(nestedPassSource(20, "Err(error = \"e\")?", true))
+  for src in srcs {
+    val cr = parseCheck(src)
+    assertEqualInt(diagCount(cr), 0, "a depth-20 nest: clean (" + diagCodesOf(cr) + ")")
+  }
+  val genErr = nestedPassSource(20, "Err(error = \"e\")?", true)
+  assertEqual(
+    recordedOperandType(parseCheck(genErr), genErr, "Err(error = \"e\")"),
+    "Result[String, String]",
+    "the expected result reaches the innermost generic call"
+  )
+  val elapsed = Time.nowEpochMillis() - start
+  assertTrue(elapsed < 30000i64, "depth-20 nests checked in " + toString(elapsed) + " ms")
+}
+
+// #8181: `?` re-wraps the operand's error in the function's `Err`, so the
+// operand must be of the function's monad, with an error type assignable to
+// the function's; one that widens is converted.
+test "a `?` operand of another error type or monad is T0169 (#8181)" {
+  val monads = "union Result[T, E] { case Ok(value: T); case Err(error: E) }\n" +
+    "union Option[T] { case Some(value: T); case None }\n"
+  val errSrc = "package P\n" + monads +
+    "func f(): Result[Int, String] {\n  val x: Int = Err(error = 5)?\n  Ok(value = x)\n}\n"
+  val errCr = parseCheck(errSrc)
+  assertEqualInt(
+    countDiagCode(errCr, "T0169"),
+    1,
+    "Err of Int in a Result[_, String] function (" + diagCodesOf(errCr) + ")"
+  )
+  val callSrc = "package P\n" + monads + "func g(): Result[Int, Int] { Ok(value = 1) }\n" +
+    "func f(): Result[Int, String] {\n  val x = g()?\n  Ok(value = x)\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(callSrc), "T0169"), 1, "a call's Result of another error type")
+  val monadSrc = "package P\n" + monads + "func g(): Option[Int] { Some(value = 1) }\n" +
+    "func f(): Result[Int, String] {\n  val x = g()?\n  Ok(value = x)\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(monadSrc), "T0169"), 1, "an Option in a Result function")
+  val sameSrc = "package P\n" + monads + "func g(): Result[String, String] { Ok(value = \"s\") }\n" +
+    "func f(): Result[Int, String] {\n  val x = g()?\n  Ok(value = x.length)\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(sameSrc), "T0169"), 0, "the same error type")
+  val genSrc = "package P\n" + monads +
+    "func f[E](r: in Result[Int, E]): Result[Int, E] {\n  val x = r?\n  Ok(value = x)\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(genSrc), "T0169"), 0, "the function's own type parameter")
+  val wideSrc = "package P\n" + monads +
+    "func f(): Result[Int, Long] {\n  val s: String = Err(error = 5)?\n  Ok(value = s.length)\n}\n"
+  val wideCr = parseCheck(wideSrc)
+  assertEqualInt(countDiagCode(wideCr, "T0169"), 0, "an error type that widens (" + diagCodesOf(wideCr) + ")")
+  var widening = ""
+  for k in mapKeys(wideCr.symbols.propagateErrWidenings) {
+    match mapGet(wideCr.symbols.propagateErrWidenings, k) {
+      case Some(w) -> {
+        widening = w.method
+      }
+      case None -> ()
+    }
+  }
+  assertEqual(widening, "toLong", "the re-wrapped error is converted")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

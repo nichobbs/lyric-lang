@@ -1612,6 +1612,16 @@ pub record HoistOperandTypeSite {
   startOffset: Int
 }
 
+/// A `?` whose operand's error type widens to the enclosing function's
+/// (`Int` into a `Result[_, Long]`, #8181): `Lyric.Propagate` binds the
+/// operand's error to a local of type `fromType` and re-wraps
+/// `<local>.<method>()`, so every backend converts a value of a known type
+/// (the JVM reads an erased payload as `fromType` first).
+pub record PropagateErrWidening {
+  method: String
+  fromType: TypeExpr
+}
+
 /// A call whose arguments must be evaluated into temporaries, left to right
 /// as written, before they are passed in parameter order (D171): the
 /// backends evaluate them in parameter order, and here that is observably
