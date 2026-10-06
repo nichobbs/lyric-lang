@@ -93,6 +93,17 @@ increment(counter)   // counter is now 1
 increment(counter)   // counter is now 2
 ```
 
+An element of a fixed-length array is a place too, when the array is a `var`, an `out`/`inout` parameter or a `var` field:
+
+```lyric
+var scores: array[3, Int] = [10, 20, 30]
+increment(scores[1])          // scores is now [10, 21, 30]
+var i = 2
+increment(scores[i])          // scores is now [10, 21, 31]
+```
+
+The index is evaluated once, in its turn among the arguments. The element is passed by copy in and copy out: it is read into a temporary once every argument has been evaluated, the function works on the temporary, and the temporary is stored back into the element when the call returns. The array itself is never copied. An element of a `List`, a `Map` or a slice is not a place you can pass this way (`T0085`): copy it into a `var`, pass that, and store it back.
+
 A practical example — sorting a slice in place:
 
 ```lyric
@@ -122,7 +133,7 @@ p.moveBy(3, 4)       // p is now Point(x = 4, y = 6)
 Point.moveBy(p, 1, 1) // the same method called through its type
 ```
 
-The receiver is passed by reference, so it must be a place the call can write: a `var`, an `out`/`inout` parameter, or a field path starting at a named binding (`holder.point.moveBy(1, 1)`). A `val`, a module-level `val`, a call result or another expression is rejected (`T0166`), and so is an indexed element (`points[0].moveBy(1, 1)`) for now; copy the element into a `var`, call the method, and store it back. The receiver is evaluated first, before the arguments, and is never copied, even next to a `?` or `await`.
+The receiver is passed by reference, so it must be a place the call can write: a `var`, an `out`/`inout` parameter, or a field path starting at a named binding (`holder.point.moveBy(1, 1)`). An element of an array that is such a place works as well (`points[i].moveBy(1, 1)` for a `var points: array[3, Point]`), passed by copy in and copy out like any array element argument. A `val`, a module-level `val`, a call result, an element of a `List`, `Map` or slice, or another expression is rejected (`T0166`); copy such a value into a `var`, call the method, and store it back. The receiver is evaluated first, before the arguments, and is never copied, even next to a `?` or `await`.
 
 Only `in` and `inout` receivers exist. An `out` receiver is rejected (`T0165`), and so is an `inout` receiver on an interface method or an `impl` method (a call through an interface value has no variable of the implementing type to assign) or on a protected type's member (a protected object is shared, never replaced). Assigning `self` in a method whose receiver is `in` is `T0087`.
 

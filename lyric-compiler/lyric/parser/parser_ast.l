@@ -1623,6 +1623,16 @@ pub record HoistOperandTypeSite {
 /// is passed to an `out`/`inout` parameter: the computed indices of such a
 /// place left in the call are evaluated into temporaries at its position,
 /// while a by-value argument left in the call runs there whole (#8171).
+/// `elemCopy[i]` says whether argument `i` is an element of an array passed
+/// to an `out`/`inout` parameter (#8180): it is copied into a temporary,
+/// typed `elemTypes[i]` when `elemTyped[i]`, after every argument has run,
+/// the call writes the temporary, and the temporary is stored back into the
+/// element after the call.  `resultKind` is the call's result: 0 a value,
+/// kept in a temporary across the store, 1 `Unit`, 2 `Never` (no store).
+/// The temporary is annotated with `resultType`'s one entry, when it has one
+/// (a generic
+/// instantiation, which a backend with reified generics cannot recover from
+/// the call alone, #7823).
 /// `Lyric.Mono.desugarCheckedFile` rewrites the call, keyed by
 /// `recordCopySiteKey` of its span.
 pub record ArgOrderSite {
@@ -1630,6 +1640,11 @@ pub record ArgOrderSite {
   byRef: List[Bool]
   bindRecv: Bool
   startOffset: Int
+  elemCopy: List[Bool] = newList()
+  elemTypes: List[TypeExpr] = newList()
+  elemTyped: List[Bool] = newList()
+  resultKind: Int = 0
+  resultType: List[TypeExpr] = newList()
 }
 
 /// The type arguments the type checker resolved for a call to a generic

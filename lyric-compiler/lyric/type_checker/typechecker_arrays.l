@@ -547,9 +547,9 @@ pub func checkArrayElementWrite(
 }
 
 /// T0157 for an array passed as an `inout`/`out` argument: the callee writes
-/// the caller's storage, so the argument must be a writable variable or field.
-/// An element of an array passed that way is written like `a[i] = v`, so its
-/// array must be a writable place.
+/// the caller's storage, so the argument must be a writable variable, field
+/// or element of an array (#8180).  An element of an array passed that way is
+/// written like `a[i] = v`, so its array must be a writable place.
 pub func checkArrayByRefArg(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -563,12 +563,20 @@ pub func checkArrayByRefArg(
     checkArrayElementWrite(sc, tbl, sigs, diag, arg)
     return
   }
-  val plain = match peelParens(arg).kind { case EPath(_) -> true; case EMember(_, _) -> true; case _ -> false }
+  val plain = match peelParens(arg).kind {
+    case EPath(_) -> true
+    case EMember(_, _) -> true
+    case EIndex(recv, _) -> {
+      val scratch: List[Diagnostic] = newList()
+      isArrayType(inferExpr(sc, tbl, sigs, scratch, recv))
+    }
+    case _ -> false
+  }
   if not plain or not arrayPlaceWritable(sc, tbl, sigs, arg) {
     diag.add(
       errorDiagnostic(
         "T0157",
-        "an `out`/`inout` array argument must be a writable variable or field (a `var` local, an `out`/`inout` parameter or a `var` field), not an element or an expression",
+        "an `out`/`inout` array argument must be a writable variable, field or array element (a `var` local, an `out`/`inout` parameter, a `var` field, or an element of an array that is one), not a collection element or an expression",
         span
       )
     )

@@ -9839,8 +9839,17 @@ test "an array is indexed by an integer or an integer range subtype (T0158)" {
 test "a collection element is not a writable array place (T0157)" {
   val list = "package P\nfunc f(xs: in slice[array[2, Int]]) {\n  xs[0][1] = 5\n}\n"
   assertEqualInt(countDiagCode(parseCheck(list), "T0157"), 1, "an element of a slice of arrays")
+  // An element of a writable array is a place (#8180); one of an `in` array is not.
   val byRef = "package P\nfunc g(p: inout array[2, Int]) {\n  p[0] = 1\n}\nfunc f(xs: inout array[2, array[2, Int]]) {\n  g(xs[0])\n}\n"
-  assertEqualInt(countDiagCode(parseCheck(byRef), "T0157"), 1, "an element is not a variable or field argument")
+  assertEqualInt(
+    diagCount(parseCheck(byRef)),
+    0,
+    "an element of a writable array (" + diagCodesOf(parseCheck(byRef)) + ")"
+  )
+  val inElem = "package P\nfunc g(p: inout array[2, Int]) {\n  p[0] = 1\n}\nfunc f(xs: in array[2, array[2, Int]]) {\n  g(xs[0])\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(inElem), "T0157"), 1, "an element of an `in` array")
+  val sliceElem = "package P\nfunc g(p: inout array[2, Int]) {\n  p[0] = 1\n}\nfunc f(xs: in slice[array[2, Int]]) {\n  g(xs[0])\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(sliceElem), "T0157"), 1, "an element of a slice of arrays")
   val okInout = "package P\nrecord R { var a: array[2, Int] }\nfunc g(p: inout array[2, Int]) {\n  p[0] = 1\n}\nfunc f(r: in R, q: inout array[2, Int]) {\n  g(r.a)\n  g(q)\n}\n"
   assertEqualInt(
     diagCount(parseCheck(okInout)),
@@ -10369,8 +10378,53 @@ test "the receiver of an `inout` method must be a writable place: T0166 (#8179)"
   )
   assertEqualInt(countDiagCode(inSelf, "T0166"), 1, "an `in` receiver passed on: " + diagCodesOf(inSelf))
   val elem = preparedCheck(inoutRecvSrc("func f(): Unit {\n  var xs = [R(x = 1)]\n  xs[0].reset()\n}\n"))
-  assertEqualInt(countDiagCode(elem, "T0166"), 1, "an indexed element: " + diagCodesOf(elem))
-  assertTrue(Str.contains(diagMessageFor(elem, "T0166"), "#8180"), "the indexed-element message names #8180")
+  assertEqualInt(countDiagCode(elem, "T0166"), 1, "a slice element: " + diagCodesOf(elem))
+  assertTrue(
+    Str.contains(diagMessageFor(elem, "T0166"), "only an element of an `array[N, T]`"),
+    "the message says which elements are places"
+  )
+  val valArr = preparedCheck(inoutRecvSrc("func f(): Unit {\n  val xs: array[1, R] = [R(x = 1)]\n  xs[0].reset()\n}\n"))
+  assertEqualInt(countDiagCode(valArr, "T0166"), 1, "an element of a `val` array: " + diagCodesOf(valArr))
+}
+
+// #8180: an element of an array is a place, so it may be passed to an
+// `out`/`inout` parameter or be an `inout` receiver when its array may be
+// written; an element of a `List`, `Map` or slice is not a place (docs/01
+// §2.7) and is T0085 (T0166 as a receiver).
+test "an array element passed by reference checks clean (#8180)" {
+  val cr = preparedCheck(
+    inoutRecvSrc(
+      "record H {\n  var a: array[2, Int]\n}\nfunc zap(x: inout Int): Unit {\n  x = 0\n}\n" +
+        "func put(x: out Int): Unit {\n  x = 1\n}\nfunc row(r: inout array[2, Int]): Unit {\n  r[0] = 5\n}\n" +
+        "func f(q: inout array[2, Int]): Unit {\n  var xs: array[2, R] = [R(x = 1), R(x = 2)]\n  xs[1].reset()\n" +
+        "  R.reset(xs[0])\n  var a: array[3, Int] = [1, 2, 3]\n  zap(a[1])\n  put(a[2])\n  zap(q[0])\n" +
+        "  var h = H(a = [1, 2])\n  zap(h.a[1])\n  var m: array[2, array[2, Int]] = [[1, 2], [3, 4]]\n  zap(m[1][0])\n" +
+        "  row(m[0])\n}\n"
+    )
+  )
+  assertEqualInt(cr.diagnostics.count, 0, "no diagnostics: " + diagCodesOf(cr))
+}
+
+test "an element of a List, Map or slice passed by reference is T0085 (#8180)" {
+  val pre = "package P\nimport Std.CollectionsHost\nfunc zap(x: inout Int): Unit {\n  x = 0\n}\n"
+  val list = checkWithImportedPackages(
+    parse(pre + "func f(xs: in List[Int]): Unit {\n  zap(xs[0])\n}\n").file,
+    stdCollectionsHostPackages()
+  )
+  assertEqualInt(countDiagCode(list, "T0085"), 1, "a List element: " + diagCodesOf(list))
+  assertTrue(
+    Str.contains(diagMessageFor(list, "T0085"), "only an element of an `array[N, T]`"),
+    "the message says which elements are places"
+  )
+  val map = checkWithImportedPackages(
+    parse(pre + "func f(m: in Map[String, Int]): Unit {\n  zap(m[\"a\"])\n}\n").file,
+    stdCollectionsHostPackages()
+  )
+  assertEqualInt(countDiagCode(map, "T0085"), 1, "a Map value: " + diagCodesOf(map))
+  val slice = parseCheck(pre + "func f(): Unit {\n  var s = [1, 2]\n  zap(s[0])\n}\n")
+  assertEqualInt(countDiagCode(slice, "T0085"), 1, "a slice element: " + diagCodesOf(slice))
+  val valArr = parseCheck(pre + "func f(): Unit {\n  val a: array[2, Int] = [1, 2]\n  zap(a[0])\n}\n")
+  assertEqualInt(countDiagCode(valArr, "T0157"), 1, "an element of a `val` array: " + diagCodesOf(valArr))
 }
 
 test "assigning an `in` receiver is T0087 (#8179)" {

@@ -95,6 +95,7 @@ for t in \
   lyric-compiler/lyric/generic_ctor_widening_self_test.l \
   lyric-compiler/lyric/named_arg_eval_order_self_test.l \
   lyric-compiler/lyric/inout_receiver_self_test.l \
+  lyric-compiler/lyric/inout_array_element_self_test.l \
   lyric-compiler/lyric/fixed_array_self_test.l \
   lyric-compiler/lyric/value_generic_record_self_test.l \
   lyric-compiler/lyric/value_generic_protected_self_test.l \

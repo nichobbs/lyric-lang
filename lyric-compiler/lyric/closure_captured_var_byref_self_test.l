@@ -574,3 +574,34 @@ test "erased `inout Self` call on a call-expression receiver" {
   mkCell(0).takeFrom(c, w)
   assertEqualInt(c.n, 8, "closure write during the call")
 }
+
+// ─── An element of a captured array (#8180) ────────────────────────────────
+// An element of an array passed to an `out`/`inout` parameter is copied into
+// a temporary the call writes and stored back into the element when the call
+// returns (docs/01 §2.7), here into the array the closure shares.
+test "an element of a captured array passed by reference writes the shared array (#8180)" {
+  var a: array[3, Int] = [1, 2, 3]
+  val read = { -> a[1] }
+  setTo(a[1], 42)
+  val seen: Int = read()
+  assertEqualInt(seen, 42, "the closure sees the write")
+  val write = { v: Int -> setTo(a[2], v) }
+  write(77)
+  assertEqualInt(a[2], 77, "a call inside the closure writes the captured array")
+  var k = 0
+  produce(a[k], 9)
+  assertEqualInt(a[0], 9, "an out element with a computed index")
+}
+
+test "an element of a captured array is copied in and out around the call (#8180)" {
+  var a: array[2, Int] = [1, 2]
+  val readFirst = { -> a[0] }
+  val during: Int = setThenRead(a[0], 5, readFirst)
+  assertEqualInt(during, 1, "the element is stored back when the call returns")
+  assertEqualInt(a[0], 5, "and then holds the callee's value")
+  val writeOther = { -> a[1] = 20; a[1] }
+  val other: Int = setThenRead(a[0], 6, writeOther)
+  assertEqualInt(other, 20, "the closure wrote another element during the call")
+  assertEqualInt(a[1], 20, "that write is kept")
+  assertEqualInt(a[0], 6, "the element passed is written")
+}
