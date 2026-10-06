@@ -5251,7 +5251,10 @@ func argOrderCallMono(
     // An element that is an array is copied in (D167, D179): the read of a
     // writable place escapes into the temporary, so the callee must not
     // write the caller's row while the call runs.  The store back needs no
-    // copy: the temporary is dead after it.
+    // copy: the temporary is dead after it.  The element type is the checked
+    // type of the argument, so a row is always seen as an array here.  An
+    // element of type `T` in generic code is not copied; the callee cannot
+    // write into a `T` in place, only replace it, so no row is shared.
     val copyIn = copyArrayFieldRead(elemPlaces[ei], ety, Span(startPos = sp.startPos, endPos = sp.startPos))
     stmts.add(
       Statement(

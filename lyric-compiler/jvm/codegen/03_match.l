@@ -865,7 +865,10 @@ func scrutineeGenericArgs(ctx: in FuncCtx, scrutinee: in Expr): List[TypeExpr] {
 }
 
 // The generic arguments of a block's trailing expression: a local the block
-// itself binds is resolved from its annotation or its initializer.
+// itself binds is resolved from its annotation or its initializer.  The
+// search stops at the nearest binding of the name, whatever its kind, so a
+// later `var` or `let` that shadows an earlier `val` is never read through the
+// `val`; only a `val` is resolved, the others give no arguments.
 func blockTrailingGenericArgs(ctx: in FuncCtx, blk: in Block): List[TypeExpr] {
   val n = blk.statements.count
   if n == 0 {
@@ -900,7 +903,8 @@ func blockTrailingGenericArgs(ctx: in FuncCtx, blk: in Block): List[TypeExpr] {
           }
           case _ -> ()
         }
-        case _ -> ()
+        case LBVar(nm, _, _) -> if nm == local { return newList() }
+        case LBLet(nm, _, _) -> if nm == local { return newList() }
       }
       case _ -> ()
     }
