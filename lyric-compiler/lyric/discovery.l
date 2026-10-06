@@ -204,12 +204,14 @@ pub func projectEntryFiles(pkgEntry: in Mf.PackageEntry, mfDir: in String, proj:
   EntryFiles(paths = paths, problems = problems, emptyDir = emptyDir)
 }
 
-// The paths (normalized keys) that entries of `proj` other than `pkgEntry`
-// name strictly inside `dir`: directories and files alike.
+// The paths (normalized, case kept) that entries of `proj` other than
+// `pkgEntry` name strictly inside `dir`: directories and files alike.  Not
+// `pathKey`: folding case here would take files out of a package, so on a
+// case-sensitive filesystem a sibling differing only in case would be lost.
 func otherEntriesWithin(
   pkgEntry: in Mf.PackageEntry, mfDir: in String, proj: in Mf.ProjectSection, dir: in String
 ): List[String] {
-  val dirKey = pathKey(dir) + "/"
+  val dirKey = normalizePath(dir) + "/"
   val claimed: List[String] = newList()
   val entries: List[Mf.PackageEntry] = newList()
   for e in proj.packages.toArray() {
@@ -230,7 +232,7 @@ func otherEntriesWithin(
         ps.add(e.path)
       }
       for p in ps.toArray() {
-        val key = pathKey(if Path.isAbsolute(p) { p } else { Path.join(mfDir, p) })
+        val key = normalizePath(if Path.isAbsolute(p) { p } else { Path.join(mfDir, p) })
         if Str.startsWith(key, dirKey) {
           claimed.add(key)
         }
@@ -240,9 +242,9 @@ func otherEntriesWithin(
   claimed
 }
 
-// Whether `file` is, or lies under, one of the `claimed` path keys.
+// Whether `file` is, or lies under, one of the `claimed` paths.
 func claimedByOther(file: in String, claimed: in List[String]): Bool {
-  val key = pathKey(file)
+  val key = normalizePath(file)
   for c in claimed.toArray() {
     if key == c or Str.startsWith(key, c + "/") {
       return true
@@ -314,7 +316,8 @@ pub func normalizePath(path: in String): String {
 /// `path` as `normalizePath` gives it, lower-cased: two spellings of one
 /// file on a case-insensitive filesystem share a key, and on a
 /// case-sensitive one a collision only puts more files in a package, which
-/// is conservative.  Symbolic links are not resolved (Std has no
+/// is conservative.  Use it only where a match adds files; where a match
+/// removes them (`otherEntriesWithin`), compare `normalizePath` exactly.  Symbolic links are not resolved (Std has no
 /// canonical-path call yet): a file reached through one is not matched to
 /// its target's spelling.
 pub func pathKey(path: in String): String {
