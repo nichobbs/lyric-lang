@@ -68,6 +68,7 @@ for t in \
   lyric-compiler/lyric/alias_impl_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_test.l \
   lyric-compiler/lyric/generic_protected_self_test.l \
+  lyric-compiler/lyric/generic_opaque_self_test.l \
   lyric-compiler/lyric/config_block_no_env_import_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_contracts_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_type_self_test.l \
@@ -287,6 +288,13 @@ if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
   echo "=== scripts/ci/inout-receiver-e2e.sh ==="
   LYRIC_BIN="$lyric_bin" bash scripts/ci/inout-receiver-e2e.sh dotnet jvm
   ran="$ran inout-receiver-e2e"
+fi
+# #8187: a generic opaque type from a separately built dependency.
+idx=$((idx + 1))
+if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
+  echo "=== scripts/ci/generic-opaque-restored-e2e.sh ==="
+  LYRIC_BIN="$lyric_bin" bash scripts/ci/generic-opaque-restored-e2e.sh
+  ran="$ran generic-opaque-restored-e2e"
 fi
 # #7858: `println(x)` writes what `toString(x)` returns for records, lists,
 # extern structs and extern objects, on both targets (Java 21, as above).
