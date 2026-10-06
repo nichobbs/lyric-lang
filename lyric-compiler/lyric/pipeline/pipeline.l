@@ -215,7 +215,7 @@ func gate(pkgLabel: in String, origins: in List[DiagUtil.MergedLineOrigin], diag
 /// single-file build.
 ///
 /// `origins` (#6282) is a multi-file package's per-merged-line provenance
-/// table (`Lyric.Emitter.mergePackageSourcesWithOrigins`); empty for every
+/// table (`Lyric.PackageMerge.mergePackageFiles`); empty for every
 /// single-file build, resolving every diagnostic straight to `label`.
 pub func pipeParseAndErase(
   source: in String,

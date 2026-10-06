@@ -1017,6 +1017,30 @@ func resolveDepDllPath(tomlPath: in String, ext: in String): Result[DepDllInfo, 
   Ok(value = DepDllInfo(dllPath = Path.join(binDir, dllName), pkgName = pkgName))
 }
 
+// Add a library package's files to `sources` / `paths`.  Files of a package
+// of several files all go to the build: its package merge parses each one,
+// holds it to the package, and drops a file whose file-level `@cfg` is off
+// for the build's features (`Lyric.PackageMerge`, #8234).  A package of one
+// file is compiled as written, so a file gated off by its `@cfg` is replaced
+// by an empty package that sibling imports still resolve to.
+func addPackageFiles(
+  files: in List[CfgGate.CfgGateFile],
+  pkgName: in String,
+  activeFeatures: in List[String],
+  sources: in List[String],
+  paths: in List[String],
+): Unit {
+  if files.count == 1 and CfgGate.isCfgGatedOut(files[0].contents, activeFeatures) {
+    sources.add(CfgGate.emptyPackageStub(pkgName))
+    paths.add(files[0].path)
+    return
+  }
+  for f in files {
+    sources.add(f.contents)
+    paths.add(f.path)
+  }
+}
+
 func cmdTestManifest(
   mfPath: in String,
   filterArg: in Option[String],
@@ -1196,15 +1220,12 @@ func cmdTestManifest(
   while pi < proj.packages.count {
     val pkgEntry = proj.packages[pi]
     val pkgSources: List[String] = newList()
-    // Set only by the single-file-package branch below, where the real
-    // absolute path is already resolved as `abs` (mirrors the #6609 fix
-    // just below for the test package itself); left "" for the directory
-    // and explicit-file-list branches, which genuinely don't track a
-    // single per-package path here.
-    var singleFilePkgPath = ""
+    // Each source's real path, parallel to `pkgSources` (#6694, #8234).
+    val pkgPaths: List[String] = newList()
     if pkgEntry.paths.count > 0 {
-      // Explicit file list (TOML array form): read each named file and assemble
-      // them with CfgGate so per-file @cfg erasure works the same as for dir packages.
+      // Explicit file list (TOML array form): every named file goes to the
+      // build, whose package merge parses each one and drops a file whose
+      // file-level @cfg is off (`Lyric.PackageMerge`), as for a dir package.
       val fileEntries: List[CfgGate.CfgGateFile] = newList()
       var readFailed = false
       var fi = 0
@@ -1231,17 +1252,11 @@ func cmdTestManifest(
         fi += 1
       }
       if not readFailed {
-        val assembly = CfgGate.assembleDirectoryPackageSources(fileEntries, pkgEntry.name, activeFeatures)
-        var ai = 0
-        while ai < assembly.sources.count {
-          pkgSources.add(assembly.sources[ai])
-          ai += 1
-        }
+        addPackageFiles(fileEntries, pkgEntry.name, activeFeatures, pkgSources, pkgPaths)
       }
     } else {
       val abs = if Path.isAbsolute(pkgEntry.path) { pkgEntry.path } else { Path.join(mfDir, pkgEntry.path) }
       if File.fileExists(abs) {
-        singleFilePkgPath = abs
         match File.readText(abs) {
           case Ok(raw) -> {
             val t = match runSourceGenerators(raw, abs, genMf, gens) { case Some(g) -> g; case None -> { hadFatal = true; raw } }
@@ -1253,6 +1268,7 @@ func cmdTestManifest(
             } else {
               pkgSources.add(t)
             }
+            pkgPaths.add(abs)
           }
           case Err(e) -> {
             printErr("test: package '" + pkgEntry.name + "': " + IOError.message(e))
@@ -1278,11 +1294,7 @@ func cmdTestManifest(
           printErr("test: package '" + pkgEntry.name + "': no .l files found in " + abs)
           hadFatal = true
         } else {
-          // Read every file first, then hand the (path, contents) list to
-          // CfgGate so the assembly logic adds at most one empty-package
-          // stub when every file is gated — preventing the duplicate-
-          // `package` declaration bug from #1124 when two or more files
-          // in a directory package are each gated out.
+          // Read every file first, then hand them all to the build together.
           val fileEntries: List[CfgGate.CfgGateFile] = newList()
           val sorted = sortFileList(lFiles)
           var readFailed = false
@@ -1308,12 +1320,7 @@ func cmdTestManifest(
           // of a clear "read failed" error.  `hadFatal` is already set; downstream
           // packages skip importing this one.
           if not readFailed {
-            val assembly = CfgGate.assembleDirectoryPackageSources(fileEntries, pkgEntry.name, activeFeatures)
-            var ai = 0
-            while ai < assembly.sources.count {
-              pkgSources.add(assembly.sources[ai])
-              ai += 1
-            }
+            addPackageFiles(fileEntries, pkgEntry.name, activeFeatures, pkgSources, pkgPaths)
           }
         }
       } else {
@@ -1322,20 +1329,7 @@ func cmdTestManifest(
       }
     }  // end else (single-file/directory path)
     if pkgSources.count > 0 {
-      // The directory and explicit-file-list branches above (and
-      // compiler-DLL-linked test packages, #2364 Stage 5) don't currently
-      // track per-file paths through this reader; "" (unknown) is correct
-      // and safe there — no attribution rather than a guessed one. The
-      // single-file branch DOES know its real path (`singleFilePkgPath`,
-      // set above) and always produces exactly one source, so it gets
-      // real attribution instead of "" (#6694).
-      val libPaths: List[String] = newList()
-      var lpi = 0
-      while lpi < pkgSources.count {
-        libPaths.add(singleFilePkgPath)
-        lpi += 1
-      }
-      libPkgs.add(Emitter.ProjectPackage(name = pkgEntry.name, sources = pkgSources, paths = libPaths))
+      libPkgs.add(Emitter.ProjectPackage(name = pkgEntry.name, sources = pkgSources, paths = pkgPaths))
     }
     pi += 1
   }

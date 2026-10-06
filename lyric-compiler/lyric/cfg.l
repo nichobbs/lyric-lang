@@ -301,19 +301,35 @@ pub func applyCfgErasure(active: in List[String], declared: in List[String], sf:
 /// Whether the file-level `@cfg(...)` lines in `cfgLines` (one annotation per
 /// line, as written before `package`) erase the whole file against `active`.
 /// For the callers that gate a source file by text before it is parsed (the
-/// multi-file package merge, the test runner): the real predicate grammar
+/// test runner; the multi-file package merge holds a parse and calls
+/// `fileAnnotationsGateFileOut`): the real predicate grammar
 /// (`feature`, `any`/`all`/`not`) is evaluated rather than a prefix match. A
 /// `target = "X"` atom counts as active here, since the target is not known
 /// yet and per-target erasure runs after the merge; a malformed predicate keeps
 /// the file, like `applyCfgErasure`.
 pub func cfgLinesGateFileOut(cfgLines: in String, active: in List[String]): Bool {
   val pr = parse(cfgLines + "\npackage CfgGate\n")
+  fileAnnotationsGateFileOut(pr.file.fileAnnotations, active)
+}
+
+/// The `F0012` / `F0013` diagnostics of the file-level `@cfg` annotations in
+/// `fileAnnotations`, against the manifest's `declared` features (`F0013` is
+/// off when `declared` is empty).  For the multi-file package merge, whose
+/// merged unit carries no file-level `@cfg` for `applyCfgErasure` to check.
+pub func fileCfgDiagnostics(declared: in List[String], fileAnnotations: in List[Annotation]): List[Diagnostic] {
+  classifyAnnotations(declared, declared, true, fileAnnotations).diagnostics
+}
+
+/// `cfgLinesGateFileOut` over a parsed file's own `fileAnnotations`: the
+/// same decision, for a caller that already holds the parse (the multi-file
+/// package merge, `Lyric.PackageMerge`).
+pub func fileAnnotationsGateFileOut(fileAnnotations: in List[Annotation], active: in List[String]): Bool {
   val noDeclared: List[String] = newList()
   // A predicate that mentions a `target` atom cannot be decided before the
   // target is known (`not(target = "jvm")` would invert the placeholder), so
   // it never gates the file out here; per-target erasure decides it later.
   val decidable: List[Annotation] = newList()
-  for a in pr.file.fileAnnotations {
+  for a in fileAnnotations {
     if not (isCfgAnnotation(a) and a.args.count == 1 and predicateMentionsTarget(a.args[0])) {
       decidable.add(a)
     }

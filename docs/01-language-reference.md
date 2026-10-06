@@ -1823,6 +1823,8 @@ A package corresponds to a directory. All `.l` files in the directory share the 
 package Account
 ```
 
+A package of several files is compiled as the union of its files' own parses (docs/19, #8234). Each file must parse on its own; its diagnostics name its own path and position. A file whose `package` declaration names another package is **B0013**; a file with items and no `package` declaration is **P0020**, as for any file; a file holding only comments contributes nothing. The package's imports are the union of its files' imports. Its file-level annotations are the union of its files' file-level annotations, an annotation written in several files counting once; a file that writes none takes the package's. Two files that declare different verification levels (§6.4), or the same annotation with different arguments, are **B0014**; `@pure` in one file and `@io` in another is **Y0009** (§9.4). A file-level `@cfg` is the exception: it gates its own file only, and a file it turns off contributes no item or import (its other file-level annotations still describe the package). Comments in a file's header are comments: a `/* ... */` there hides what it holds wherever its delimiters sit, annotation lines included.
+
 Sub-packages live in subdirectories: `account/` is package `Account`, `account/internal/` is package `Account.Internal`.
 
 ### 9.2 Imports

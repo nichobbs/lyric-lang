@@ -20,7 +20,7 @@
 //! to erase every `@cfg(feature = ...)`-gated item unconditionally,
 //! ignoring the caller's real `activeFeatures`); a genuinely multi-file
 //! `[project.packages]` entry through `Emitter.emitNativeProject`'s own
-//! `mergePackageSources` call (every other case here calls
+//! `Lyric.PackageMerge` call (every other case here calls
 //! `compileProjectToNativeWithFlags` directly with one file per package,
 //! bypassing the merge step); the manifest's `[package].version` being
 //! injected as the well-known `version` define (#6821 —
@@ -415,7 +415,7 @@ test "a function value whose name has a local and an imported overload at differ
 }
 
 test "a genuinely multi-file [project.packages] entry merges through Emitter.emitNativeProject" {
-  // Exercises the `Emitter.emitNativeProject` -> `mergePackageSources` path
+  // Exercises the `Emitter.emitNativeProject` -> `Lyric.PackageMerge` path
   // directly (every other case in this file calls
   // `LlvmBridge.compileProjectToNativeWithFlags` with one file per
   // `NativeSourcePackage`, bypassing the merge step entirely) — the same

@@ -8,7 +8,8 @@
 //! The heuristic is intentionally lightweight (no full lex/parse) but it
 //! must not produce false positives on text that happens to look like an
 //! annotation while sitting inside a line comment.  See `isCfgGatedOut`
-//! and `assembleDirectoryPackageSources` for the contracts.
+//! for the contract.  A package of several files is gated file by file on
+//! the files' parses by the package merge (`Lyric.PackageMerge`, #8234).
 //!
 //! Extracted from `Lyric.Cli` (#1124) so the dedup + comment-aware
 //! behaviour is testable from a self-test consumer rather than coupled
@@ -74,64 +75,9 @@ pub func isCfgGatedOut(source: in String, activeFeatures: in List[String]): Bool
   }
 }
 
-/// A single (path, contents) pair input to
-/// `assembleDirectoryPackageSources`.  Plain record because the
-/// stdlib has no general tuple type.
+/// A file of a test-runner library package: its path and its contents.
+/// Plain record because the stdlib has no general tuple type.
 pub record CfgGateFile {
   path: String
   contents: String
-}
-
-/// Result of assembling a directory package's source files with
-/// `@cfg`-gated files filtered out.  When every file in the directory
-/// is gated, `sources` carries a single `package <name>\n` stub so
-/// downstream imports still resolve.  When some files survive, gated
-/// files are dropped entirely (no per-file stub) so the merged source
-/// has exactly one `package` declaration — fixing #1124.
-pub record DirPackageAssembly {
-  /// The source texts to feed into the emitter for this package, in
-  /// the same order the input files were sorted.
-  sources: List[String]
-  /// Paths of files that were filtered out because of an inactive
-  /// `@cfg` feature.  Empty when nothing was gated.
-  gatedFiles: List[String]
-}
-
-/// Assemble the source list for a directory package, dropping any file
-/// that is entirely gated by an inactive `@cfg` feature.  If every file
-/// is gated, returns a single-element list with the empty-package stub
-/// so sibling packages that `import` this one still resolve to a valid
-/// (empty) assembly.
-///
-/// `filesAndContents` is a list of (path, source) pairs in the order
-/// the caller wants them concatenated — typically alphabetical for
-/// determinism.  `pkgName` is the declared package name used in the
-/// stub.
-@pure
-@stable(since = "0.1")
-pub func assembleDirectoryPackageSources(
-  filesAndContents: in List[CfgGateFile],
-  pkgName: in String,
-  activeFeatures: in List[String],
-): DirPackageAssembly {
-  val keptSources: List[String] = newList()
-  val gatedFiles: List[String] = newList()
-
-  var i = 0
-  while i < filesAndContents.count {
-    val item = filesAndContents[i]
-    if isCfgGatedOut(item.contents, activeFeatures) {
-      gatedFiles.add(item.path)
-    } else {
-      keptSources.add(item.contents)
-    }
-    i = i + 1
-  }
-
-  if keptSources.count == 0 and gatedFiles.count > 0 {
-    // Every file was gated — emit one stub so imports resolve.
-    keptSources.add(emptyPackageStub(pkgName))
-  }
-
-  DirPackageAssembly(sources = keptSources, gatedFiles = gatedFiles)
 }

@@ -20,6 +20,16 @@ package Account
 
 Both files are part of the `Account` package. They can see each other's declarations as freely as if they were a single file. There is no `internal` keyword or `friend` mechanism — if you are in the same package, you have full access.
 
+The compiler builds such a package from each file's own parse, so each file has to stand on its own:
+
+- Every file parses by itself, and its errors are reported against that file's path and line.
+- Every file declares the package it belongs to. A file that declares another package is `B0013`; a file with no `package` line is `P0020`. A file holding only comments adds nothing.
+- The package's imports are the imports of all its files together.
+- File-level annotations such as `@runtime_checked`, `@proof_required`, `@io` or `@test_module` describe the whole package. Write them on one file or on several; files that write them must agree. Two different verification levels, or one annotation written with different arguments, is `B0014`; `@pure` in one file and `@io` in another is `Y0009`.
+- `@cfg` is the exception: a file-level `@cfg` gates only its own file. A file it turns off adds no declarations or imports; its other file-level annotations still describe the package.
+
+Comments in a file's header stay comments. A `/* ... */` around old declarations keeps them out of the build, wherever its delimiters sit.
+
 Sub-packages live in subdirectories. A file in `account/internal/` declares `package Account.Internal`. From the compiler's point of view `Account` and `Account.Internal` are separate packages with no special relationship to each other — the name hierarchy is a convention, not a visibility rule. If you want `Account.Internal` to be truly internal, simply don't re-export anything from it.
 
 File names are not meaningful to the compiler. You can name a file anything you like; what matters is the `package` declaration. `lyric fmt` enforces the convention that the file name matches the package name in lowercase, but the compiler itself doesn't care.

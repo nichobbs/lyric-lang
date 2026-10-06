@@ -34,7 +34,8 @@ expect() {
 
 # shadow: a sibling in the same directory; nested: in a subdirectory of the
 # package directory; otherpkg: a file of the entry with another `package`
-# line; filelist: an explicit file list across directories.
+# line (a build rejects it, B0013; a proof still counts it, conservatively);
+# filelist: an explicit file list across directories.
 for case in shadow:src/p/b_logic.l nested:src/p/b_logic.l otherpkg:src/p/b_logic.l filelist:src/y/b_logic.l; do
   dir="${case%%:*}"
   file="${case#*:}"

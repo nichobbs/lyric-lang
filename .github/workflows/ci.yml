@@ -956,8 +956,7 @@ jobs:
       # CfgGate self-test — exercises `Lyric.CfgGate` via native `lyric test`.
       # Compiler-package imports are resolved by linking the stage-1 bundle
       # DLLs (#2364); no `LYRIC_LOAD_COMPILER=1` recompile.  Covers #1123
-      # (comment-aware @cfg detection) and #1124 (single stub for all-gated
-      # directory packages).
+      # (comment-aware @cfg detection).
       - name: CfgGate self-test (native lyric test)
         if: ${{ !cancelled() }}
         background: true

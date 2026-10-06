@@ -1,8 +1,10 @@
 //! cfg_gate_self_test.l — exercises Lyric.CfgGate via the native
 //! `@test_module` test runner.
 //!
-//! Covers #1123 (comment-aware detection) and #1124 (single stub for
-//! multi-file directory packages where some or all files are gated out).
+//! Covers #1123 (comment-aware detection).  #1124's multi-file assembly (one
+//! stub when every file of a directory package is gated out) moved into the
+//! package merge, which gates each file on its parse (`Lyric.PackageMerge`,
+//! #8234; `package_merge_self_test.l`).
 //!
 //! Runs in CI via:
 //!
@@ -36,47 +38,6 @@ func features2(a: in String, b: in String): List[String] {
   xs.add(a)
   xs.add(b)
   xs
-}
-
-// Concatenate sources the same way the test runner does (no separator —
-// each file already ends with its own newline run).
-func concatAll(xs: in List[String]): String {
-  var s = ""
-  var i = 0
-  while i < xs.count {
-    s = s + xs[i]
-    i += 1
-  }
-  s
-}
-
-// Count the number of `package <name>` declarations anchored at the
-// start of a physical line in a concatenated source.  Used to verify
-// #1124's "exactly one declaration" invariant after the assembly step.
-func countPackageDecls(src: in String, pkgName: in String): Int {
-  val needle = "package " + pkgName
-  var count = 0
-  // Leading occurrence at offset 0.
-  if src.length >= needle.length and src.substring(0, needle.length) == needle {
-    count = count + 1
-  }
-  // Internal occurrences anchored at \n.
-  var i = 0
-  while i + needle.length < src.length {
-    if src[i] == '\n' {
-      val chunk = src.substring(i + 1, needle.length)
-      if chunk == needle {
-        count = count + 1
-      }
-    }
-    i = i + 1
-  }
-  count
-}
-
-func mkFile(p: in String, txt: in String): CfgGateFile {
-  val f = CfgGateFile(path = p, contents = txt)
-  f
 }
 
 // ---------------------------------------------------------------------------
@@ -143,98 +104,6 @@ test "isCfgGatedOut: active @cfgs followed by inactive @cfg → gated" {
   // walking past the actives to find the inactive that actually gates.
   val src = "@cfg(feature = \"a\")\n" + "@cfg(feature = \"b\")\n" + "@cfg(feature = \"missing\")\n" + "package Foo\n"
   assertTrue(isCfgGatedOut(src, features2("a", "b")), "active @cfgs followed by inactive @cfg → gated")
-}
-
-// ---------------------------------------------------------------------------
-// #1124 — directory assembly produces at most one `package` declaration
-// ---------------------------------------------------------------------------
-test "assembleDirectoryPackageSources: no gating → both sources kept" {
-  val files: List[CfgGateFile] = newList()
-  files.add(mkFile("a.l", "package Foo\nfunc a(): Unit {}\n"))
-  files.add(mkFile("b.l", "package Foo\nfunc b(): Unit {}\n"))
-  val asm = assembleDirectoryPackageSources(files, "Foo", emptyFeatures())
-  assertEqualInt(asm.sources.count, 2, "no gating → both sources kept")
-  assertEqualInt(asm.gatedFiles.count, 0, "no gating → no gated files reported")
-  val merged = concatAll(asm.sources)
-  assertEqualInt(
-    countPackageDecls(merged, "Foo"),
-    2,
-    "merged sources should carry both real `package Foo` declarations"
-  )
-}
-
-test "assembleDirectoryPackageSources: all-gated → exactly one stub" {
-  // Both files in the directory are gated by the same inactive feature.
-  // Old behaviour: emitted two `package Foo` stubs (the #1124 bug).
-  // New behaviour: emits exactly ONE stub.
-  val gated = "@cfg(feature = \"redis\")\npackage Foo\nfunc a(): Unit {}\n"
-  val files: List[CfgGateFile] = newList()
-  files.add(mkFile("a.l", gated))
-  files.add(mkFile("b.l", gated))
-  val asm = assembleDirectoryPackageSources(files, "Foo", emptyFeatures())
-  assertEqualInt(asm.sources.count, 1, "all-gated → exactly one stub source")
-  assertEqualInt(asm.gatedFiles.count, 2, "both files reported as gated")
-  val merged = concatAll(asm.sources)
-  assertEqualInt(
-    countPackageDecls(merged, "Foo"),
-    1,
-    "all-gated → exactly one `package Foo` declaration in the stub (#1124)"
-  )
-}
-
-test "assembleDirectoryPackageSources: partial-gated → no stub added" {
-  // One gated, one kept: the kept file already carries its own
-  // `package Foo` declaration, so no stub is needed.  Old behaviour
-  // added a stub for the gated file producing TWO `package Foo`
-  // declarations.  New behaviour skips the gated file entirely.
-  val gated = "@cfg(feature = \"redis\")\npackage Foo\nfunc a(): Unit {}\n"
-  val live = "package Foo\nfunc b(): Unit {}\n"
-  val files: List[CfgGateFile] = newList()
-  files.add(mkFile("a.l", gated))
-  files.add(mkFile("b.l", live))
-  val asm = assembleDirectoryPackageSources(files, "Foo", emptyFeatures())
-  assertEqualInt(asm.sources.count, 1, "partial-gated → only live source kept")
-  assertEqualInt(asm.gatedFiles.count, 1, "one file reported as gated")
-  assertEqual(asm.gatedFiles[0], "a.l", "gated file path is reported")
-  val merged = concatAll(asm.sources)
-  assertEqualInt(countPackageDecls(merged, "Foo"), 1, "partial-gated → exactly one `package Foo` declaration (#1124)")
-}
-
-test "assembleDirectoryPackageSources: 2 live + 1 gated → 2 decls" {
-  // Three files: two live, one gated.  Both live files carry their own
-  // `package Foo`; the assembler must produce two sources containing
-  // two declarations total, never adding a stub for the gated entry.
-  val gated = "@cfg(feature = \"redis\")\npackage Foo\nfunc a(): Unit {}\n"
-  val liveB = "package Foo\nfunc b(): Unit {}\n"
-  val liveC = "package Foo\nfunc c(): Unit {}\n"
-  val files: List[CfgGateFile] = newList()
-  files.add(mkFile("a.l", gated))
-  files.add(mkFile("b.l", liveB))
-  files.add(mkFile("c.l", liveC))
-  val asm = assembleDirectoryPackageSources(files, "Foo", emptyFeatures())
-  assertEqualInt(asm.sources.count, 2, "partial-gated (1 of 3) → two live sources kept, no stub")
-  assertEqualInt(asm.gatedFiles.count, 1, "one file reported as gated")
-  val merged = concatAll(asm.sources)
-  assertEqualInt(countPackageDecls(merged, "Foo"), 2, "partial-gated → exactly the live `package Foo` declarations")
-}
-
-test "assembleDirectoryPackageSources: active feature → both files kept" {
-  // A file gated by `redis` is kept when `redis` is active.
-  val gated = "@cfg(feature = \"redis\")\npackage Foo\nfunc a(): Unit {}\n"
-  val live = "package Foo\nfunc b(): Unit {}\n"
-  val files: List[CfgGateFile] = newList()
-  files.add(mkFile("a.l", gated))
-  files.add(mkFile("b.l", live))
-  val asm = assembleDirectoryPackageSources(files, "Foo", features1("redis"))
-  assertEqualInt(asm.sources.count, 2, "active feature → both files kept")
-  assertEqualInt(asm.gatedFiles.count, 0, "no files gated when feature active")
-}
-
-test "assembleDirectoryPackageSources: empty input → no sources, no stub" {
-  val files: List[CfgGateFile] = newList()
-  val asm = assembleDirectoryPackageSources(files, "Foo", emptyFeatures())
-  assertEqualInt(asm.sources.count, 0, "no input files → no sources and no stub (caller is expected to error earlier)")
-  assertEqualInt(asm.gatedFiles.count, 0, "no input → no gated files")
 }
 
 test "any/all/not compositions gate a whole file" {

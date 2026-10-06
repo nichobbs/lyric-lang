@@ -1608,6 +1608,15 @@ The first-party UI generators (D151) report their own codes under `X0005`:
 | `V0033` | error | A proof obligation cannot be translated faithfully — an unsigned (`UInt`/`ULong`) operand beside a signed variable, a negative or too-wide constant used as an unsigned value, an unsigned negation, or a result range bound that is not a fitting literal. Add an explicit conversion or write the bound as a literal of the base type |
 | `V0034` | error | (mode checker) `spawn` outside a `scope { }`. A spawned task must not outlive its scope, so every `spawn` sits lexically inside one in the same function or lambda body (D165, docs/68 §4). Wrap the `spawn` and its `await` in `scope { ... }` |
 
+### Multi-file package diagnostics (B001x)
+
+Reported against the file at fault (`<path>: error[B0013] line:col: ...`) before any backend runs; see docs/19.
+
+| Code | Meaning |
+|---|---|
+| `B0013` | A file of a package declares another package (every file of a package declares that package). |
+| `B0014` | Two files of a package disagree on a file-level annotation: different verification levels (`@runtime_checked`, `@proof_required`, `@axiom`), or one annotation with different arguments. (`@pure` in one file and `@io` in another is `Y0009`.) |
+
 ### NPM restore diagnostics (B006x)
 
 | Code | Meaning |
