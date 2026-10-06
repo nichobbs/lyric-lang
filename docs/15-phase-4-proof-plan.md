@@ -266,8 +266,9 @@ Lyric.Verifier/
 |---------------------------|----------------------------------------------|-------|
 | `Bool`                    | `Bool`                                       | trivial |
 | `Int`, `Long`, `Nat`      | `Int` (mathematical integer)                 | overflow handled separately, see §5.4; a parameter, field or callee result carries its type's 32- or 64-bit bounds as a hypothesis. `/` and `%` truncate toward zero as at runtime, not SMT-LIB's Euclidean `div`/`mod`: they render as `lyric!tdiv`/`lyric!trem`, which the preamble defines as `(ite (= b 0) (div a 0) (ite (= (>= a 0) (>= b 0)) (div (abs a) (abs b)) (- (div (abs a) (abs b)))))` and `(ite (= b 0) (mod a 0) (- a (* b (lyric!tdiv a b))))`. A zero divisor falls through to the solver's unspecified `div`/`mod`; the value never matters, because every integer `/` and `%` carries the obligation `divisor != 0` — division by zero panics in every build profile (#7870, #8107) |
-| range subtype `T range a ..= b`, named or inline | the base type's sort with an implicit `a ≤ x ≤ b` hypothesis on every parameter, field, callee result, binding and assigned value | preserves identity loss is fine in proof; CLR identity matters only for emission. A named range subtype (`type Port = UInt range 1 ..= 65535`) is its refined underlying type; `Port.from(x)` is the value `x` with the obligation that it lies in the range, `.value` is the identity, and `tryFrom` is uninterpreted (#7872) |
+| range subtype `T range a ..= b`, named or inline | the base type's sort with an implicit `a ≤ x ≤ b` hypothesis on every parameter, field, callee result, binding and assigned value, and on every `forall`/`exists` bound variable (below) | preserves identity loss is fine in proof; CLR identity matters only for emission. A named range subtype (`type Port = UInt range 1 ..= 65535`) is its refined underlying type; `Port.from(x)` is the value `x` with the obligation that it lies in the range, `.value` is the identity, and `tryFrom` is uninterpreted (#7872) |
 | `UInt`, `ULong`, `Byte`   | `(_ BitVec n)`                               | bitvector arithmetic, slow but decidable. A `u8`/`u16`/`u32`/`u64` literal is a `(_ bvN n)` constant of its width (a `u64` literal from 2^63 up is its unsigned value, #7839); an unsuffixed literal next to an unsigned operand takes that operand's width. Ordering, `/` and `%` use the unsigned `bvult`/`bvule`/`bvugt`/`bvuge`/`bvudiv`/`bvurem`; `+`, `-`, `*` are `bvadd`/`bvsub`/`bvmul`. A narrower unsigned operand zero-extends along `Byte < UInt < ULong`, and a `Byte` enters the signed chain through `bv2nat`. A range subtype over an unsigned base folds its bounds unsigned. Any other mix of the two sorts (a `UInt` beside an `Int` variable, a negative constant as an unsigned value, an unsigned negation, a bound that does not fit its base) fails closed with `V0033` (#7848) |
+| `Char`                    | `Int` (its code point)                       | a `Char` literal is its code point; every `Char` value carries `0 ≤ c ≤ 65535`, the UTF-16 code-unit range every target guarantees, wherever a range subtype carries its range, so `==` and ordering on `Char` are the integer ones. It is not assumed to lie outside the surrogate range: a `Char` an extern returns (`System.Convert.ToChar`, `Character.highSurrogate`) is not checked (#8214) |
 | `Float`, `Double`         | SMT `Real` (mathematical reals)              | sound approximation: avoids IEEE 754 FP theory and its rounding-mode complexity; linear arithmetic over reals is decidable and fast; division emits `/` (Real div) not `div` (integer) |
 | `String`                  | uninterpreted sort with `length: String -> Int`, `==` | content reasoning out of scope |
 | record                    | SMT-LIB datatype                             | one constructor, fields as selectors |
@@ -284,6 +285,73 @@ Range subtype values lift to `Int` with the bound as a `forall`-
 introduced hypothesis. This is the same trick SPARK uses; it lets
 the solver carry the bound through arithmetic without a special
 theory.
+
+The facts a value of a declared type carries — its range, and for an
+`Int`/`Long` its width — come from one function, `valueFactsForTerm`
+(`verifier/theory.l`), for every value the verifier does not otherwise
+determine: a parameter, a quantifier's bound variable, a variable after
+code that may change it (a loop, an `out`/`inout` argument, a lambda's
+captures), a lambda parameter, a callee's result and a field read. A
+computed value (a binding's initializer, an assigned value) carries its
+declared range but not its width: its arithmetic is mathematical in the
+proof, so only `checked_arithmetic` proves it fits. An uninitialized
+`var` carries its width only: read before any assignment it holds its
+type's zero, which need not lie in its declared range.
+
+A quantifier ranges over the values of its bound variables' types
+(#8214). `forall (x: T) P` is `forall x. facts_T(x) ⇒ P` and
+`exists (x: T) P` is `exists x. facts_T(x) ∧ P`, with a `where` clause
+conjoined to the facts, so an `exists` over a range subtype is witnessed
+only by a value in the range, and a `forall` over one is not checked
+against values outside it. Each bound variable is a solver name of its
+own (`i!q!7`), so a term the body reads from an enclosing binding spelt
+the same is never captured by it. An `old(...)` whose operand reads a name
+an enclosing quantifier binds (`old(n)` inside `exists (n: Small)` in a
+function with a parameter `n`) fails closed with `V0033`: the type
+checker reads it as the bound variable, the verifier's entry snapshot as
+the parameter. A
+type's facts reach the bound variable through distinct types
+(`type Score = Small`), type aliases of a scalar (`alias S = Small`,
+`alias Pct = Int range 0 ..= 100`, chains of them), chains of distinct
+types (`type Grade = Score`) and inline ranges (`forall (i: Int range 2
+..= 5)`). A range subtype over a distinct or range subtype, or over
+`Char`, is rejected by the type checker (`T0091`), so no value needs the
+intersection of two declared ranges. `UInt`, `ULong` and `Byte` bound variables are
+bitvectors, non-negative by construction. A bound variable over plain
+`Int`, `Long`, `Nat`, `UInt`, `ULong`, `Float`, `Double` or `String` is
+rejected before proof (`V0006`).
+
+A type is resolved in the scope it is written in. A function's type
+parameters shadow every file-level type spelt the same, so in
+`func f[Bit](a: in Bit)` beside `alias Bit = Int range 0 ..= 1` the
+parameter is of an uninterpreted sort of its own, and a callee's
+parameter and result types are resolved against the callee's type
+parameters, never the caller's. A distinct type's or alias's right-hand
+side is written at module level and resolved there. Only a
+single-segment name is a primitive: `Other.Char` is package `Other`'s
+type. A file whose package declares, in any file, a type named like a
+primitive (`Int`, `Char`, `Unit`, ...) fails closed with `V0033`, as one
+that declares or imports such a type by name already did (#8109); so does
+a file whose package's other files are not all known (a file set that
+cannot be listed, a file that cannot be read, or a custom generator, whose
+generated code may declare any type), since any of them may declare one
+(#8214). The other files are read the way the package build reads them:
+the build strips each file's `package` and `import` lines and parses the
+concatenated bodies, so a file with no `package` line is part of the
+package. A file that parses contributes the types it declares; one with
+no `package` line that does not parse alone is parsed again under one, as
+the build reads it, and makes the scope unknown if it still does not
+parse; one whose `package` line names another package and that does not
+parse is skipped only in the directory-tree fallback (no manifest entry
+contains the file, so its own build is the file alone and the set, every
+`.l` file under the directory whatever its package, is an
+over-approximation); in a manifest entry, whose build merges every file
+whatever its `package` line, and for any other file, one that does not
+parse makes the scope unknown. Reading each file on its own equals the
+build's merge only once the merge works on parsed files rather than
+stripped text (#8234): until then a text merge that drops `@` header
+lines can turn a file's commented-out or annotation-swallowed
+declarations into live code the per-file reading does not see.
 
 ### 5.3 Loops
 

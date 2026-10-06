@@ -248,42 +248,124 @@ func hasCustomGenerator(file: in SourceFile): Bool {
 
 // The scope of a file of a package built from `packageFiles` (every file of
 // it, normalized as `ownPath` is; the file itself is read from `ownSource`,
-// not disk): the type names every file declares.  A file that cannot be read
-// or parsed, or a custom generator in any of them, makes it unknown; so does
-// an unknown file set (`None`).  `lyric prove <file>` and the LSP take the
-// set from `Lyric.Discovery.packageFilesForSource`, the build's own (#8108).
+// not disk): the type names every file declares (`scopeOfSources`).  An
+// unknown file set (`None`) or an own file that does not parse or carries a
+// custom generator makes it unknown.  `fromManifest` says the set is a
+// manifest entry's, whose build merges every file whatever its `package`
+// line; otherwise it is the directory-tree fallback, whose own build is the
+// file alone, and a file of another package that does not parse is no part
+// of it.  `lyric prove <file>` and the LSP take the set from
+// `Lyric.Discovery.packageFileSetForSource`, the build's own (#8108).
 pub func scopeFromPackageFiles(
-  packageFiles: in Option[List[String]], ownPath: in String, ownSource: in String
+  packageFiles: in Option[List[String]],
+  fromManifest: in Bool,
+  ownPath: in String,
+  ownSource: in String,
 ): PackageScope {
   val files = match packageFiles { case Some(fs) -> fs; case None -> { return unknownPackageScope() } }
   val own = packageTypesOfSource(ownSource)
   if not own.parsed or own.customGenerator {
     return unknownPackageScope()
   }
-  scopeOfFiles(files, ownPath)
+  scopeOfFilesIn(files, ownPath, if fromManifest { "" } else { own.packageName })
 }
 
-// The type names every file of `files` but `skipPath` declares; unknown
-// when one cannot be read or parsed, or carries a custom generator.
+// The type names every file of `files` but `skipPath` declares, as
+// `scopeOfSources` classifies them; unknown when one cannot be read.
 pub func scopeOfFiles(files: in List[String], skipPath: in String): PackageScope {
-  val names: List[String] = newList()
+  scopeOfFilesIn(files, skipPath, "")
+}
+
+func scopeOfFilesIn(files: in List[String], skipPath: in String, ownPackage: in String): PackageScope {
+  val sources: List[String] = newList()
   var i = 0
   while i < files.count {
     if files[i] != skipPath {
-      val text = match File.readText(files[i]) { case Ok(t) -> t; case Err(_) -> { return unknownPackageScope() } }
-      val pt = packageTypesOfSource(text)
-      if not pt.parsed or pt.customGenerator {
-        return unknownPackageScope()
-      }
-      var k = 0
-      while k < pt.typeNames.count {
-        names.add(pt.typeNames[k])
-        k = k + 1
+      match File.readText(files[i]) {
+        case Ok(t) -> sources.add(t)
+        case Err(_) -> return unknownPackageScope()
       }
     }
     i = i + 1
   }
+  scopeOfSources(sources, ownPackage)
+}
+
+// The type names the other files of a package declare, from their texts.
+// A package build does not parse its files one by one: it strips each
+// file's `package` and `import` lines, concatenates the bodies and parses
+// the result (`Lyric.Emitter.mergePackageSources`), so a file with no
+// `package` line is part of it and its declarations are live (#8214).  The
+// per-file reading here equals that merge once the build merges at the AST
+// level (#8234).  Each file is classified the way the build would treat it:
+//   * one that parses contributes the types it declares;
+//   * one with no `package` line that does not parse alone is parsed again
+//     under a `package` line, as the build reads it, and contributes its
+//     types, or makes the scope unknown when it still does not parse;
+//   * when `ownPackage` is given (the directory-tree fallback, whose build
+//     is the proved file alone), one whose `package` line names another
+//     package and that does not parse is skipped;
+//   * any other file that does not parse makes the scope unknown — in a
+//     manifest entry (`ownPackage` "") every file is merged into the build,
+//     whatever its `package` line.
+// A custom generator anywhere makes it unknown: its generated code may
+// declare any type.
+pub func scopeOfSources(sources: in List[String], ownPackage: in String): PackageScope {
+  val names: List[String] = newList()
+  var i = 0
+  while i < sources.count {
+    val src = sources[i]
+    var pt = packageTypesOfSource(src)
+    if not pt.parsed {
+      val header = headerPackageName(src)
+      if header.length == 0 {
+        pt = packageTypesOfSource("package LyricSiblingWithoutHeader\n" + src)
+        if not pt.parsed {
+          return unknownPackageScope()
+        }
+      } else if ownPackage.length > 0 and header != ownPackage {
+        i = i + 1
+        continue
+      } else {
+        return unknownPackageScope()
+      }
+    }
+    if pt.customGenerator {
+      return unknownPackageScope()
+    }
+    var k = 0
+    while k < pt.typeNames.count {
+      names.add(pt.typeNames[k])
+      k = k + 1
+    }
+    i = i + 1
+  }
   packageScopeOf(names)
+}
+
+// The package a file's `package` line names, or "" when its header has
+// none.  The header is what precedes the first item: blank lines,
+// comments, file-level annotations and the `package` line itself.
+pub func headerPackageName(source: in String): String {
+  val lines = Str.split(source, "\n")
+  var inBlock = false
+  var i = 0
+  while i < lines.length {
+    val line = Str.trim(lines[i])
+    if inBlock {
+      if Str.contains(line, "*/") {
+        inBlock = false
+      }
+    } else if Str.startsWith(line, "/*") {
+      inBlock = not Str.contains(line, "*/")
+    } else if Str.startsWith(line, "package ") {
+      return Str.trim(line.substring(8, line.length - 8))
+    } else if not (line.length == 0 or Str.startsWith(line, "//") or Str.startsWith(line, "@")) {
+      return ""
+    }
+    i = i + 1
+  }
+  ""
 }
 
 // Without a scope, the package's other files are unknown.

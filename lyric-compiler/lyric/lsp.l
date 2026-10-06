@@ -727,11 +727,17 @@ func analyzeAndStore(state: in LspState, uri: in String, text: in String): List[
   // Run verifier (allow-unverified so unknowns become warnings, not errors).
   // The document's package siblings are read from disk (#8108).
   val docPath = uriToPath(uri)
-  val proofResult = proveSourceInScope(
-    text,
-    true,
-    scopeFromPackageFiles(Disc.packageFilesForSource(docPath), Disc.normalizePath(docPath), text)
-  )
+  val fileSet = Disc.packageFileSetForSource(docPath)
+  val docScope = match fileSet {
+    case Some(fs) -> scopeFromPackageFiles(
+      Some(value = fs.files),
+      fs.fromManifest,
+      Disc.normalizePath(docPath),
+      text
+    )
+    case None -> unknownPackageScope()
+  }
+  val proofResult = proveSourceInScope(text, true, docScope)
   var pi = 0
   while pi < proofResult.diagnostics.count {
     val d = proofResult.diagnostics[pi]

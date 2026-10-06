@@ -2733,6 +2733,213 @@ test "a call's own result varies with a quantifier's bound variable (#8109)" {
   )
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// A quantifier's bound variable ranges over the values of its declared type,
+// with the range and width a parameter of that type has: an `exists` is
+// witnessed only by such a value, and a `forall` holds of each of them
+// (#8214).
+// ─────────────────────────────────────────────────────────────────────────────
+func smallDecl(): String {
+  "type Small = Int range 0 ..= 10\n"
+}
+
+func quantSrc(decls: in String, claim: in String): String {
+  decls + "func f(): Bool\n  ensures: " + claim + "\n{\n  true\n}\n"
+}
+
+test "a quantifier ranges over a range subtype's values (#8214)" {
+  assertRefuted(quantSrc(smallDecl(), "exists (i: Small) i == 70"), "exists-witness-outside-the-range")
+  assertDischarged(quantSrc(smallDecl(), "exists (i: Small) i == 7"), "exists-witness-inside-the-range")
+  assertDischarged(quantSrc(smallDecl(), "forall (i: Small) i <= 10"), "forall-within-the-range")
+  assertRefuted(quantSrc(smallDecl(), "forall (i: Small) i <= 5"), "forall-narrower-than-the-range")
+  assertDischarged(
+    quantSrc(smallDecl(), "forall (i: Small) where i > 8 { i == 9 or i == 10 }"),
+    "forall-where-within-the-range"
+  )
+  assertRefuted(quantSrc(smallDecl(), "exists (i: Small) where i > 3 { i == 11 }"), "exists-where-outside-the-range")
+  assertDischarged(
+    quantSrc(smallDecl(), "forall (i: Small) exists (j: Small) j == 10 - i"),
+    "nested-quantifiers-within-the-range"
+  )
+  assertRefuted(
+    quantSrc(smallDecl(), "forall (i: Small) exists (j: Small) j == i + 1"),
+    "nested-quantifiers-past-the-range"
+  )
+  val longs = "type Big = Long range -5000000000 ..= 5000000000\n"
+  assertDischarged(quantSrc(longs, "exists (i: Big) i == -5000000000"), "long-range-lower-bound")
+  assertRefuted(quantSrc(longs, "exists (i: Big) i == 5000000001"), "long-range-past-the-upper-bound")
+}
+
+test "a quantifier over an unsigned type ranges over its unsigned values (#8214)" {
+  val port = "type Port = UInt range 1 ..= 65535\n"
+  assertDischarged(quantSrc(port, "forall (p: Port) p >= 1u32 and p <= 65535u32"), "uint-range-subtype")
+  assertRefuted(quantSrc(port, "exists (p: Port) p == 0u32"), "uint-range-subtype-below")
+  assertRefuted(quantSrc(port, "exists (p: Port) p == 70000u32"), "uint-range-subtype-above")
+  val wide = "type Wide = ULong range 10 ..= 18446744073709551615u64\n"
+  assertDischarged(quantSrc(wide, "forall (w: Wide) w >= 10u64"), "ulong-range-subtype")
+  assertRefuted(quantSrc(wide, "exists (w: Wide) w == 9u64"), "ulong-range-subtype-below")
+  assertDischarged(quantSrc("", "forall (b: Byte) b <= 255u8"), "byte-is-at-most-255")
+  assertRefuted(quantSrc("", "exists (b: Byte) b > 255u8"), "no-byte-above-255")
+  val digit = "type Digit = Byte range 0 ..= 9\n"
+  assertDischarged(quantSrc(digit, "forall (d: Digit) d <= 9u8"), "byte-range-subtype")
+  assertRefuted(quantSrc(digit, "exists (d: Digit) d == 10u8"), "byte-range-subtype-above")
+}
+
+test "a quantifier over a distinct type or alias of a range subtype keeps its range (#8214)" {
+  val score = smallDecl() + "type Score = Small\n"
+  assertDischarged(quantSrc(score, "forall (s: Score) s >= 0 and s <= 10"), "distinct-over-range")
+  assertRefuted(quantSrc(score, "exists (s: Score) s == 11"), "distinct-over-range-past-the-range")
+  val aliased = smallDecl() + "alias S = Small\nalias T = S\n"
+  assertDischarged(quantSrc(aliased, "forall (i: T) i <= 10"), "alias-of-alias-of-range")
+  assertRefuted(quantSrc(aliased, "exists (i: S) i == 70"), "alias-of-range-past-the-range")
+  val inline = "alias Pct = Int range 0 ..= 100\n"
+  assertDischarged(quantSrc(inline, "forall (p: Pct) p <= 100"), "alias-of-inline-range")
+  assertRefuted(quantSrc(inline, "exists (p: Pct) p == 101"), "alias-of-inline-range-past-the-range")
+  val grade = smallDecl() + "type Score = Small\ntype Grade = Score\n"
+  assertDischarged(quantSrc(grade, "forall (g: Grade) g <= 10"), "distinct-over-distinct-over-range")
+  assertRefuted(quantSrc(grade, "exists (g: Grade) g == -1"), "distinct-over-distinct-past-the-range")
+  assertDischarged(quantSrc("", "forall (i: Int range 2 ..= 5) i >= 2 and i <= 5"), "inline-range-binder")
+  assertRefuted(quantSrc("", "exists (i: Int range 2 ..= 5) i == 7"), "inline-range-binder-past-the-range")
+  val cents = "type Cents = Int\n"
+  assertDischarged(quantSrc(cents, "forall (c: Cents) c <= 2147483647"), "distinct-int-has-its-width")
+  assertRefuted(quantSrc(cents, "exists (c: Cents) c == 3000000000"), "distinct-int-past-its-width")
+}
+
+test "a quantifier over Char ranges over UTF-16 code units (#8214)" {
+  assertDischarged(quantSrc("", "forall (c: Char) c >= '\\u{0}' and c <= '\\u{FFFF}'"), "char-is-a-code-unit")
+  assertRefuted(quantSrc("", "exists (c: Char) c > '\\u{FFFF}'"), "no-char-above-ffff")
+  assertDischarged(quantSrc("", "exists (c: Char) c == 'a'"), "char-witness")
+  // A `Char` an extern returns is not checked, so it may be a surrogate.
+  assertRefuted(quantSrc("", "forall (c: Char) c <= '\\u{D7FF}' or c >= '\\u{E000}'"), "char-may-be-a-surrogate")
+  assertRefuted(
+    "func f(c: in Char): Bool\n  ensures: result\n{\n  c <= '\\u{D7FF}' or c >= '\\u{E000}'\n}\n",
+    "char-parameter-may-be-a-surrogate"
+  )
+  assertDischarged(
+    "func f(c: in Char): Bool\n  ensures: result\n{\n  c != '\\u{0}' or c == '\\u{0}'\n}\n",
+    "char-parameter-equality"
+  )
+}
+
+test "a bound variable shadows an enclosing binding of its name (#8214)" {
+  assertDischarged(
+    smallDecl() + "func f(n: in Int): Bool\n  requires: n == 50\n  ensures: forall (n: Small) n <= 10\n{\n  true\n}\n",
+    "binder-shadowing-a-parameter"
+  )
+  // The type checker reads `old(n)` as the bound variable, the verifier's
+  // snapshot as the parameter: it fails closed.
+  assertUntranslatable(
+    smallDecl() +
+      "func f(n: in Int): Bool\n  requires: n == 50\n  ensures: exists (n: Small) old(n) == n\n{\n  true\n}\n",
+    "old-of-a-bound-name"
+  )
+  assertUntranslatable(
+    smallDecl() +
+      "func bump(n: inout Small): Unit\n  requires: n == 5\n  ensures: forall (n: Small) old(n) == 5\n{\n  n = Small.from(6)\n}\n",
+    "old-of-a-bound-inout-name"
+  )
+  assertDischarged(
+    smallDecl() +
+      "func bump(n: inout Small): Unit\n  requires: n == 5\n  ensures: forall (m: Small) old(n) == 5\n{\n  n = Small.from(6)\n}\n",
+    "old-under-another-binder"
+  )
+}
+
+test "a type parameter is never the file's type of that name (#8214)" {
+  val pigeon = "func pigeon[Bit](a: in Bit, b: in Bit, c: in Bit): Bool\n  where Bit: Equals\n  ensures: result\n{\n" +
+    "  a == b or b == c or a == c\n}\n"
+  assertNotProved("alias Bit = Int range 0 ..= 1\n" + pigeon, "type-parameter-named-like-an-alias")
+  assertNotProved("type Bit = Int range 0 ..= 1\n" + pigeon, "type-parameter-named-like-a-range-subtype")
+  assertNotProved(
+    "type Bit = Int range 0 ..= 1\nfunc pick[Bit](a: in Bit): Bit = a\n" +
+      "func f(x: in Int): Bool\n  ensures: result\n{\n  pick(x) <= 1\n}\n",
+    "callee-result-of-a-type-parameter"
+  )
+  assertDischarged(
+    smallDecl() + "func keep[T](a: in T, s: in Small): Small\n  ensures: result <= 10\n{\n  s\n}\n",
+    "file-type-beside-a-type-parameter"
+  )
+}
+
+test "a type named like a primitive in another file or package is not the primitive (#8214)" {
+  val src = "@proof_required\npackage U\nfunc third(c: in Char, e: in Char): Bool\n  ensures: exists (d: Char) d != c and d != e\n{\n  true\n}\n"
+  val sibling: List[String] = newList()
+  sibling.add("Char")
+  assertTrue(summaryHasDiagCode(proveSourceInScope(src, false, packageScopeOf(sibling)), "V0033"), "a sibling `Char`")
+  val sibInt: List[String] = newList()
+  sibInt.add("Int")
+  assertTrue(summaryHasDiagCode(proveSourceInScope(src, false, packageScopeOf(sibInt)), "V0033"), "a sibling `Int`")
+  assertTrue(summaryHasDiagCode(proveSourceInScope(src, false, unknownPackageScope()), "V0033"), "unknown siblings")
+  val none: List[String] = newList()
+  val alone = proveSourceInScope(src, false, packageScopeOf(none))
+  assertTrue(not summaryHasErrorDiag(alone) and not summaryHasFailure(alone), "the primitive `Char`: proved")
+  assertNotProved(
+    "import Other\nfunc third(c: in Other.Char, e: in Other.Char): Bool\n  ensures: exists (d: Other.Char) d != c and d != e\n{\n  true\n}\n",
+    "qualified-char"
+  )
+}
+
+func scopeOf1(sibling: in String, ownPackage: in String): PackageScope {
+  val sources: List[String] = newList()
+  sources.add(sibling)
+  scopeOfSources(sources, ownPackage)
+}
+
+test "a sibling file is read the way the package build reads it (#8214)" {
+  val src = "@proof_required\npackage U\nfunc f(c: in Char): Bool\n  ensures: result\n{\n  c <= '\\u{FFFF}'\n}\n"
+  // The build merges a file with no `package` line into the package.
+  val headerless = scopeOf1("pub type Char = Int range 0 ..= 100000\n", "U")
+  assertTrue(headerless.known and headerless.typeNames.contains("Char"), "a header-less sibling's types are read")
+  assertTrue(summaryHasDiagCode(proveSourceInScope(src, false, headerless), "V0033"), "a header-less sibling `Char`")
+  val opt = scopeOf1("pub union Result {\n  case A\n  case B\n}\n", "U")
+  val res = "@proof_required\npackage U\nfunc g(n: in Int): Result[Int, String]\n  ensures: result.isOk\n{\n  Ok(n)\n}\n"
+  val viaHeaderless = proveSourceInScope(res, false, opt)
+  assertTrue(summaryHasErrorDiag(viaHeaderless) or summaryHasFailure(viaHeaderless), "a header-less sibling `Result`")
+  // A file of another package that does not parse is in no build of this
+  // one that succeeds.
+  val other = scopeOf1("package Elsewhere\nrecord R {\n  val x: Int\n}\n", "U")
+  assertTrue(other.known, "another package's unparseable file is skipped")
+  val alone = proveSourceInScope(src, false, other)
+  assertTrue(not summaryHasErrorDiag(alone) and not summaryHasFailure(alone), "the primitive `Char` beside it: proved")
+  assertTrue(not scopeOf1("package U\nrecord R {\n  val x: Int\n}\n", "U").known, "this package's unparseable file")
+  assertTrue(not scopeOf1("record R {\n  val x: Int\n}\n", "U").known, "an unparseable header-less file")
+  assertTrue(
+    not scopeOf1("package Elsewhere\nrecord R {\n  val x: Int\n}\n", "").known,
+    "an unparseable file, own package unknown"
+  )
+  // A manifest entry's build merges every file whatever its `package` line
+  // (`ownPackage` ""): an unparseable file naming another package is merged.
+  val broken = "@runtime_checked(((\npackage Elsewhere\npub union Option[T] {\n  case Some(value: T)\n  case None\n  case Other\n}\n"
+  val inEntry = scopeOf1(broken, "")
+  assertTrue(not inEntry.known, "a manifest entry's unparseable file of another package")
+  val opt = "@proof_required\npackage U\nfunc g(n: in Int): Option[Int]\n  ensures: result.isSome\n{\n  Some(n)\n}\n"
+  val viaEntry = proveSourceInScope(opt, false, inEntry)
+  assertTrue(summaryHasErrorDiag(viaEntry) or summaryHasFailure(viaEntry), "the Option model is not trusted beside it")
+  assertTrue(scopeOf1(broken, "U").known, "the directory fallback skips it")
+  assertEqual(headerPackageName("//! doc\n@proof_required\npackage A.B\nfunc f(): Unit {}\n"), "A.B", "header package")
+  assertEqual(headerPackageName("pub type C = Int\npackage A\n"), "", "no header package")
+}
+
+test "an uninitialized variable is not assumed in its range (#8214)" {
+  assertRefuted(
+    "func f(): Bool\n  ensures: result\n{\n  var y: Int range 5 ..= 10\n  y >= 5\n}\n",
+    "uninitialized-inline-range"
+  )
+  assertRefuted(
+    "type R = Int range 5 ..= 10\nfunc f(): Bool\n  ensures: result\n{\n  var y: R\n  y >= 5\n}\n",
+    "uninitialized-range-subtype"
+  )
+  assertRefuted(
+    "func f(c: in Bool): Bool\n  ensures: result\n{\n  val ok = if c {\n    var y: Int range 5 ..= 10\n    y >= 5\n  } else {\n" +
+      "    true\n  }\n  ok\n}\n",
+    "uninitialized-in-a-branch-value"
+  )
+  assertDischarged(
+    "func f(): Bool\n  ensures: result\n{\n  var y: Int range 5 ..= 10\n  y = 7\n  y >= 5\n}\n",
+    "assigned-before-read"
+  )
+}
+
 test "two function values are never compared (#8109)" {
   assertUntranslatable(
     oneTwoDecls() + "func f(): Bool\n  ensures: result\n{\n  val h = one\n  val k = one\n  h == k\n}\n",

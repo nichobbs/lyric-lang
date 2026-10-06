@@ -192,11 +192,15 @@ func cmdProve(argv: in slice[String]): Int {
 
   // The file's package is the build's: its manifest entry's files, or its
   // directory tree (#8108).
-  val fileScope = Verifier.scopeFromPackageFiles(
-    Disc.packageFilesForSource(sourcePath),
-    Disc.normalizePath(sourcePath),
-    source
-  )
+  val fileScope = match Disc.packageFileSetForSource(sourcePath) {
+    case Some(fs) -> Verifier.scopeFromPackageFiles(
+      Some(value = fs.files),
+      fs.fromManifest,
+      Disc.normalizePath(sourcePath),
+      source
+    )
+    case None -> Verifier.unknownPackageScope()
+  }
   val summary = Verifier.proveSourceInScope(source, allowUnverified, fileScope)
 
   if explain {
