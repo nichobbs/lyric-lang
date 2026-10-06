@@ -17509,11 +17509,14 @@ pub func collectProtectedMethods(pkgName: in String, decl: in ProtectedTypeDecl,
   while i < decl.members.count {
     match decl.members[i] {
       case PMEntry(ed) -> {
+        // An explicit `self` receiver (D037 spelling, as an impl method
+        // moved into the type writes it) is the implicit one prepended here.
+        val ownParams = withoutExplicitSelf(ed.params)
         val params: List[Param] = newList()
         params.add(protectedSelfParam(decl, ed.span))
         var pi = 0
-        while pi < ed.params.count {
-          params.add(ed.params[pi])
+        while pi < ownParams.count {
+          params.add(ownParams[pi])
           pi = pi + 1
         }
         // #7585: an entry's own `Self`-typed params/return (e.g. `other: in
@@ -17549,11 +17552,12 @@ pub func collectProtectedMethods(pkgName: in String, decl: in ProtectedTypeDecl,
           }
           case None -> {
             if not fn.isAsync {
+              val ownParams = withoutExplicitSelf(fn.params)
               val params: List[Param] = newList()
               params.add(protectedSelfParam(decl, fn.span))
               var pi = 0
-              while pi < fn.params.count {
-                params.add(fn.params[pi])
+              while pi < ownParams.count {
+                params.add(ownParams[pi])
                 pi = pi + 1
               }
               val newBody = match fn.body {
@@ -17692,7 +17696,7 @@ func addGenericProtectedMember(
       span = sp
     )
   )
-  for p in mparams {
+  for p in withoutExplicitSelf(mparams) {
     params.add(p.copy(ty = substSelfWith(p.ty, selfTe)))
   }
   val ret = match mret { case Some(r) -> Some(value = substSelfWith(r, selfTe)); case None -> None }
@@ -18093,10 +18097,13 @@ func registerProtectedMember(
   // not a bare `TSelf` (which only the INTERFACE's own erased vtable slot
   // signature should ever see — that erasure is `typeExprToNType`'s
   // `TSelf` arm, D-progress-1016).
+  // An explicit `self` receiver is the wrapper's own `self` (as in
+  // `collectProtectedMethods`).
+  val ownParams = withoutExplicitSelf(params)
   val sParams: List[Param] = newList()
   var spi = 0
-  while spi < params.count {
-    val p = params[spi]
+  while spi < ownParams.count {
+    val p = ownParams[spi]
     sParams.add(
       Param(
         mode = p.mode,
@@ -18111,25 +18118,6 @@ func registerProtectedMember(
     spi = spi + 1
   }
   val sRet = match ret { case Some(r) -> Some(value = substSelfInType(r, pd.name)); case None -> None }
-  // Protected-type entry/method params are forwarded verbatim by the
-  // hand-built lock/unlock wrapper below (no per-param slot machinery,
-  // unlike `lowerFunctionEnv`); threading a by-ref pointer through that
-  // shape is unverified, so reject loudly rather than risk a silent
-  // ABI mismatch between the wrapper and the inner function (N9.6 scope
-  // cut — no shipped `protected type` method uses `out`/`inout` today).
-  var mci = 0
-  while mci < sParams.count {
-    match sParams[mci].mode {
-      case PMIn -> {
-      }
-      case _ -> panic(
-        "Lyric.LlvmCodegen: protected type '" + pd.name + "' method '" + methodName + "' declares '" +
-          sParams[mci].name +
-          "' as out/inout, which is not yet supported for --target native on protected-type methods"
-      )
-    }
-    mci = mci + 1
-  }
   val arity = 1 + sParams.count
   val wrapperIrName = pkg + "." + pd.name + "." + methodName
   val innerIrName = pkg + "." + pd.name + "." + methodName + ".__inner"
@@ -18146,7 +18134,7 @@ func registerProtectedMember(
   while i < sParams.count {
     sigParamTys.add(sParams[i].ty)
     sigParamNames.add(sParams[i].name)
-    sigParamModes.add(PMIn)
+    sigParamModes.add(sParams[i].mode)
     sigParamDefaults.add(sParams[i].dflt)
     i = i + 1
   }
@@ -18182,7 +18170,15 @@ func registerProtectedMember(
   val paramNamesN: List[String] = newList()
   var j = 0
   while j < sParams.count {
-    paramTysN.add(typeToN(ctx, sParams[j].ty))
+    // An `out`/`inout` parameter is a pointer, as in `lowerFunctionEnv`
+    // (the inner function's own lowering): the wrapper forwards it, so the
+    // inner function writes through the forwarded pointer under the lock.
+    // That pointer may be a call-site temporary (an array element, D179),
+    // stored to the caller's place after the call returns (#8184).  A `Unit`
+    // one carries no address.
+    val pty = typeToN(ctx, sParams[j].ty)
+    val byRef = isByRefMode(sParams[j].mode) and match pty { case NVoid -> false; case _ -> true }
+    paramTysN.add(if byRef { NPtr(pointee = pty) } else { pty })
     paramNamesN.add(sParams[j].name)
     j = j + 1
   }
@@ -18190,9 +18186,9 @@ func registerProtectedMember(
 }
 
 /// Hand-built wrapper body: GEP+load the mutex field, lock, call the
-/// inner function (forwarding self and every param unchanged — a plain
-/// forward, not a borrow/ownership transfer, so no extra retain is
-/// needed), unlock, return.
+/// inner function (forwarding self and every param unchanged, an
+/// `out`/`inout` parameter's pointer included — a plain forward, not a
+/// borrow/ownership transfer, so no extra retain is needed), unlock, return.
 func synthProtectedWrapper(
   ctx: in Ctx,
   ri: in NRecInfo,

@@ -1895,7 +1895,8 @@ cuts (loud diagnostics, never a silent miscompile):** `out`/`inout` on an
 `extern func` C-ABI declaration (use `NativePtr[T]` instead — no
 `_kernel_native/` file uses this shape); `out`/`inout` on a `protected
 type` method (its hand-built lock/unlock wrapper forwards params by name,
-not by address — unverified, no shipped consumer); `out`/`inout` on an
+not by address — unverified, no shipped consumer; lifted by #8184, which
+forwards the pointer through the wrapper); `out`/`inout` on an
 async function's parameter (a suspended coroutine cannot safely hold a
 pointer into caller-frame storage across a suspend point); a by-ref
 argument that is an index/element expression (`xs[0]`) or a qualified

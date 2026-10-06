@@ -3475,10 +3475,29 @@ func prepareHolderPlace(
         hRecvSlot.add(0 - 1)
         hRecvCls.add("")
       }
-      case None -> panic(
-        "Jvm.Codegen: out/inout argument '" + name + "' to '" + calleeLabel +
-          "' is not a local or parameter (the mode checker should have rejected this)"
-      )
+      case None -> {
+        // A bare field of the receiver inside an instance method (a
+        // protected-type member passing its own field on, #8184) is the
+        // place `this.<name>`, written back through `this` like `self.<name>`.
+        val fieldCls = match ctx.selfClass {
+          case Some(cls) -> match selfFieldType(ctx, name) { case Some(_) -> cls; case None -> "" }
+          case None -> ""
+        }
+        if fieldCls.length == 0 {
+          panic(
+            "Jvm.Codegen: out/inout argument '" + name + "' to '" + calleeLabel +
+              "' is not a local, parameter or field of the receiver (the mode checker should have rejected this)"
+          )
+        }
+        val rSlot = allocSlot(ctx, "__holderrecv$" + calleeLabel + "$" + toString(bi), JRef(className = fieldCls))
+        insns.add(LAload(slot = 0))
+        insns.add(LAstoreAs(slot = rSlot, className = fieldCls))
+        hArgIdx.add(bi)
+        hElemTy.add(elemTy)
+        hBackName.add(name)
+        hRecvSlot.add(rSlot)
+        hRecvCls.add(fieldCls)
+      }
     }
     return
   }

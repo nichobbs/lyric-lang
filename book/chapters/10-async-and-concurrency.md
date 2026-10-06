@@ -204,6 +204,32 @@ impl Counter for Tally {
 
 Code that holds a `Counter` gets the lock without knowing a protected type is behind it. The impl must live in the same package as the protected type, and an impl method cannot reuse the name of one of the type's own `entry` or `func` members, or of a method in another impl for the same type (T0136). Its signature may freely mention `Self` (`func merge(other: in Self): Int`, `func fresh(): Self`) on `--target dotnet` and `--target jvm`: the moved entry keeps `Self` unsubstituted, so both targets erase it exactly as they erase the interface slot, and a call result narrows back to the concrete type. `--target native` supports a bare `Self` the same way, erased to a pointer-width raw pointer at the interface slot and substituted to the concrete type in the moved entry; `Self` nested inside a generic type argument (`List[Self]`) is a separate, still-unsupported native shape, rejected with `N0006` (see appendix B) before codegen runs rather than lowered silently.
 
+Members take `out` and `inout` parameters like any other function. The caller passes its variable, field or array element; the member reads and writes the parameter while it holds the lock, and the caller's place has the final value when the call returns:
+
+```lyric
+protected type Account {
+  var balance: Int = 0
+
+  entry withdraw(amount: in Int, taken: out Int): Bool {
+    if amount > balance {
+      taken = 0
+      return false
+    }
+    balance = balance - amount
+    taken = amount
+    true
+  }
+}
+
+val acct = Account(balance = 80)
+var got = 0
+if acct.withdraw(50, got) {
+  println("took " + toString(got))
+}
+```
+
+This works on `--target dotnet`, `--target jvm` and `--target native`, for entries, funcs, barrier entries and the methods of an `impl` for the type, including a call made through the interface. Storing the result into the caller's place is not part of the locked operation, so a variable or field that several threads pass in needs its own protection. Shared state belongs inside the protected object, where only its members can reach it.
+
 Here is the token-bucket rate limiter from the worked examples. The `acquire` entry shows the barrier pattern in a realistic setting:
 
 ```lyric

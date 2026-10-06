@@ -782,6 +782,10 @@ pub union MInsn {
   // TypeSpec/MemberRef construction exactly; only the emitted opcode
   // differs (`stfld` instead of `ldfld`).
   case MStfldGeneric(baseClassName: String, typeArgs: List[MsilType], fieldName: String, fieldMsilType: MsilType)
+  // ldflda analog of MLdfldGeneric: the address of a field of a generic
+  // instantiation, for an `out`/`inout` argument that is such a field (a
+  // generic record's or protected type's own field through `self`, #8184).
+  case MLdfldaGeneric(baseClassName: String, typeArgs: List[MsilType], fieldName: String, fieldMsilType: MsilType)
   // callvirt on an instance method of a generic type instantiation (#6442).
   // Mirrors `MLdfldGeneric`'s TypeSpec/MemberRef construction exactly, but
   // for a method instead of a field: ECMA-335 §III.4.21 forbids a bare
@@ -2320,6 +2324,56 @@ func buildMethodSpec2ArgBlobWithCtx(ctx: in LoweringCtx, arg0: in MsilType, smFq
 
 // ── Method body lowering ──────────────────────────────────────────────────────
 // Lower one MInsn to opcode bytes in `mb`.
+// The token of field `fieldName` of a closed generic instantiation
+// `baseName<typeArgs>`: a TypeSpec-parented MemberRef whose FieldSig is the
+// field's OPEN declared type, so it byte-matches the FieldDef (#4870/#6231).
+// Parented by the in-bundle TypeDef when there is one, else a restored
+// TypeRef.  `op` (`ldfld`, `stfld`, `ldflda`) keys the TypeSpec and
+// MemberRef rows and names the instruction in the error.
+func genericFieldTokenMsil(
+  ctx: in LoweringCtx,
+  op: in String,
+  baseName: in String,
+  typeArgs: in List[MsilType],
+  fieldName: in String,
+  fieldMsilType: in MsilType,
+): Int {
+  val fieldSig = buildFieldSigWithCtx(fieldMsilType, ctx)
+  var taKey = ""
+  var tai = 0
+  while tai < typeArgs.count {
+    taKey = taKey + msilTypeKey(typeArgs[tai])
+    taKey = taKey + ","
+    tai = tai + 1
+  }
+  val defRow = findTypeDefRowByName(ctx, baseName)
+  if defRow > 0 {
+    val tsRow = ctxAddTypeSpec(
+      ctx,
+      "typespec_" + op + "_def_" + baseName + "_" + taKey,
+      buildGenericInstBlobWithCtx(ctx, tdrTypeDef(defRow), typeArgs)
+    )
+    val mrKey = "mr_" + op + "_def_" + baseName + "_" + taKey + "_" + fieldName
+    return 0x0A000000 + ctxAddMemberRefForTypeSpec(ctx, tsRow, fieldName, mrKey, fieldSig)
+  }
+  val refRow = findTypeRefRowByName(ctx, baseName)
+  if refRow > 0 {
+    val tsRow = ctxAddTypeSpec(
+      ctx,
+      "typespec_" + op + "_ref_" + baseName + "_" + taKey,
+      buildGenericInstBlobWithCtx(ctx, tdrTypeRef(refRow), typeArgs)
+    )
+    val mrKey = "mr_" + op + "_ref_" + baseName + "_" + taKey + "_" + fieldName
+    return 0x0A000000 + ctxAddMemberRefForTypeSpec(ctx, tsRow, fieldName, mrKey, fieldSig)
+  }
+  // Emitting no instruction would leave the operands on the stack, a stack
+  // imbalance that surfaces as InvalidProgramException far from the cause.
+  panic(
+    "Msil.Lowering: generic " + op + " could not resolve TypeDef/TypeRef for '" + baseName + "' (field '" + fieldName +
+      "') — check for a missing restored-package registration"
+  )
+}
+
 pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Unit {
   match insn {
     case MLabel(id) -> mbMarkLabel(mb, id)
@@ -2549,96 +2603,19 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
       emitCastclass(mb, tok)
     }
     case MLdfldGeneric(baseName, typeArgs, fieldName, fieldMsilType) -> {
-      // Build a closed GENERICINST TypeSpec and a TypeSpec-parented MemberRef,
-      // then emit `ldfld MemberRef`.  Deferred to Phase 5 so all TypeDefs are
-      // present and the type arg can be encoded as CLASS TypeDef[N] rather than
-      // falling back to ELEMENT_TYPE_OBJECT.  The FIELD signature blob is ALSO
-      // built here (not at codegen Phase 3) for the same reason — a nested
-      // in-bundle generic head in `fieldMsilType` (e.g. `Box`1<!0>` for a
-      // `left: Box[T]` case field) needs a resolvable TypeDef row too
-      // (#4870/#6231).
-      val fieldSig = buildFieldSigWithCtx(fieldMsilType, ctx)
-      var taKey = ""
-      var tai = 0
-      while tai < typeArgs.count {
-        taKey = taKey + msilTypeKey(typeArgs[tai])
-        taKey = taKey + ","
-        tai = tai + 1
-      }
-      val defRow = findTypeDefRowByName(ctx, baseName)
-      val tok = if defRow > 0 {
-        val codedIdx = tdrTypeDef(defRow)
-        val tsKey = "typespec_ldfld_def_" + baseName + "_" + taKey
-        val blob = buildGenericInstBlobWithCtx(ctx, codedIdx, typeArgs)
-        val tsRow = ctxAddTypeSpec(ctx, tsKey, blob)
-        val mrKey = "mr_ldfld_def_" + baseName + "_" + taKey + "_" + fieldName
-        val mrRow = ctxAddMemberRefForTypeSpec(ctx, tsRow, fieldName, mrKey, fieldSig)
-        0x0A000000 + mrRow
-      } else {
-        val refRow = findTypeRefRowByName(ctx, baseName)
-        if refRow > 0 {
-          val codedIdx = tdrTypeRef(refRow)
-          val tsKey = "typespec_ldfld_ref_" + baseName + "_" + taKey
-          val blob = buildGenericInstBlobWithCtx(ctx, codedIdx, typeArgs)
-          val tsRow = ctxAddTypeSpec(ctx, tsKey, blob)
-          val mrKey = "mr_ldfld_ref_" + baseName + "_" + taKey + "_" + fieldName
-          val mrRow = ctxAddMemberRefForTypeSpec(ctx, tsRow, fieldName, mrKey, fieldSig)
-          0x0A000000 + mrRow
-        } else {
-          // Emitting NO instruction here left the receiver on the stack — a
-          // stack imbalance that surfaced as InvalidProgramException far from
-          // the cause.  Fail loudly at the cause instead, like the sibling
-          // `MLdfldByName` arm.
-          panic(
-            "Msil.Lowering: MLdfldGeneric could not resolve TypeDef/TypeRef for '" + baseName + "' (field '" + fieldName +
-              "') — check for a missing restored-package registration"
-          )
-        }
-      }
-      emitLdfld(mb, tok)
+      // Built at Phase 5 so all TypeDefs are present and a type argument (or
+      // a nested in-bundle generic head in `fieldMsilType`, e.g. `Box`1<!0>`
+      // for a `left: Box[T]` case field) encodes as CLASS TypeDef[N] rather
+      // than falling back to ELEMENT_TYPE_OBJECT (#4870/#6231).
+      emitLdfld(mb, genericFieldTokenMsil(ctx, "ldfld", baseName, typeArgs, fieldName, fieldMsilType))
     }
     case MStfldGeneric(baseName, typeArgs, fieldName, fieldMsilType) -> {
-      // stfld analog of MLdfldGeneric (#7663) — identical TypeSpec/MemberRef
-      // construction, only the emitted opcode differs.  See the case
-      // declaration's comment for why this exists.
-      val fieldSigS = buildFieldSigWithCtx(fieldMsilType, ctx)
-      var taKeyS = ""
-      var taiS = 0
-      while taiS < typeArgs.count {
-        taKeyS = taKeyS + msilTypeKey(typeArgs[taiS])
-        taKeyS = taKeyS + ","
-        taiS = taiS + 1
-      }
-      val defRowS = findTypeDefRowByName(ctx, baseName)
-      val tokS = if defRowS > 0 {
-        val codedIdxS = tdrTypeDef(defRowS)
-        val tsKeyS = "typespec_stfld_def_" + baseName + "_" + taKeyS
-        val blobS = buildGenericInstBlobWithCtx(ctx, codedIdxS, typeArgs)
-        val tsRowS = ctxAddTypeSpec(ctx, tsKeyS, blobS)
-        val mrKeyS = "mr_stfld_def_" + baseName + "_" + taKeyS + "_" + fieldName
-        val mrRowS = ctxAddMemberRefForTypeSpec(ctx, tsRowS, fieldName, mrKeyS, fieldSigS)
-        0x0A000000 + mrRowS
-      } else {
-        val refRowS = findTypeRefRowByName(ctx, baseName)
-        if refRowS > 0 {
-          val codedIdxS = tdrTypeRef(refRowS)
-          val tsKeyS = "typespec_stfld_ref_" + baseName + "_" + taKeyS
-          val blobS = buildGenericInstBlobWithCtx(ctx, codedIdxS, typeArgs)
-          val tsRowS = ctxAddTypeSpec(ctx, tsKeyS, blobS)
-          val mrKeyS = "mr_stfld_ref_" + baseName + "_" + taKeyS + "_" + fieldName
-          val mrRowS = ctxAddMemberRefForTypeSpec(ctx, tsRowS, fieldName, mrKeyS, fieldSigS)
-          0x0A000000 + mrRowS
-        } else {
-          // Same rationale as `MLdfldGeneric`'s panic arm: emitting no
-          // instruction here would leave a mismatched stack, so fail loudly
-          // at the cause instead of producing unverifiable IL.
-          panic(
-            "Msil.Lowering: MStfldGeneric could not resolve TypeDef/TypeRef for '" + baseName + "' (field '" + fieldName +
-              "') — check for a missing restored-package registration"
-          )
-        }
-      }
-      emitStfld(mb, tokS)
+      // stfld analog of MLdfldGeneric (#7663).  See the case declaration's
+      // comment for why this exists.
+      emitStfld(mb, genericFieldTokenMsil(ctx, "stfld", baseName, typeArgs, fieldName, fieldMsilType))
+    }
+    case MLdfldaGeneric(baseName, typeArgs, fieldName, fieldMsilType) -> {
+      emitLdflda(mb, genericFieldTokenMsil(ctx, "ldflda", baseName, typeArgs, fieldName, fieldMsilType))
     }
     case MCallvirtGeneric(baseName, typeArgs, methodName, paramTypes, retType) -> {
       // Build a closed GENERICINST TypeSpec and a TypeSpec-parented MemberRef,

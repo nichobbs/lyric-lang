@@ -309,8 +309,9 @@ them explicitly with `NativeWeak[T]`, whose `upgrade()` returns
 > distinct types (range-checked), and tuples; full pattern matching;
 > non-generic interfaces (`impl I for Record` dispatches through a
 > per-interface vtable on an interface-typed receiver, and resolves
-> directly on a concrete record receiver too) and non-generic protected types (`entry`/`func`
-> members lock a mutex around a desugared inner body); generic records,
+> directly on a concrete record receiver too) and protected types, generic
+> ones included (`entry`/`func` members lock a monitor around a desugared
+> inner body, and take `out`/`inout` parameters); generic records,
 > unions, and functions (via call-site monomorphization); closures
 > (by-value captures); and
 > `NativeWeak[T]`; and `List[T]`/`Map[K, V]` with `for` loops, indexing,
@@ -345,12 +346,12 @@ them explicitly with `NativeWeak[T]`, whose `upgrade()` returns
 > closure passed for a C callback has the callback's signature minus its
 > trailing `NativePtr[Byte]` userdata parameter. Constructs not yet lowered fail
 > the build with a diagnostic naming the construct rather than
-> miscompiling: interface default/generic methods, generic protected
-> types, `@projectable opaque type` (`N0101` — no `<Name>View` twin codegen
-> on native yet; the opaque type itself lowers fine without `@projectable`),
+> miscompiling: generic interface methods, `@projectable opaque
+> type` (`N0101` — no `<Name>View` twin codegen on native yet; the opaque
+> type itself lowers fine without `@projectable`),
 > `Set[T]`, async generators (`yield`
-> inside `async func`), a `defer` that must run during
-> a `panic`, and manifest (multi-package) native builds. (List literals
+> inside `async func`), and a `defer` that must run during
+> a `panic`. (List literals
 > and module-level `val` now lower — #5977 — so `--define` /
 > `@build_const` / `Std.BuildInfo` work on native single-file builds.)
 
