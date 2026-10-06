@@ -95,8 +95,12 @@ record OffsetRange {
 /// build's target, `dotnet` / `jvm` / `native`) decide each file's file-level
 /// `@cfg`.  `declaredFeatures` is the manifest's `[features]`, for F0013
 /// (none: no F0013).  A package of one file is returned as written: its own
-/// parse in the backend reports on it with exact positions.  Its header is
-/// still read, so a file that declares another package is B0013 here too.
+/// parse in the backend reports on it with exact positions.  When
+/// `nameFromManifest` (the name is a manifest entry's, not read from the
+/// source), its header is still read, so a file that declares another
+/// package is B0013 here too.  A package of several files always comes from
+/// a manifest entry or a tree's package grouping, so its files are always
+/// held to `packageName`.
 pub func mergePackageFiles(
   packageName: in String,
   sources: in List[String],
@@ -104,6 +108,7 @@ pub func mergePackageFiles(
   activeFeatures: in List[String],
   declaredFeatures: in List[String],
   targetName: in String,
+  nameFromManifest: in Bool,
 ): PackageMergeResult {
   val noOrigins: List[DiagUtil.MergedLineOrigin] = newList()
   val diags: List[MergeDiagnostic] = newList()
@@ -111,7 +116,7 @@ pub func mergePackageFiles(
     return PackageMergeResult(source = "", origins = noOrigins, diagnostics = diags)
   }
   if sources.count == 1 {
-    val declared = scanHeader(sources[0]).packageName
+    val declared = if nameFromManifest { scanHeader(sources[0]).packageName } else { "" }
     if declared.length > 0 and declared != packageName {
       val path = if paths.count > 0 { paths[0] } else { "" }
       val lexed = lexedPackage(normaliseNewlines(sources[0]))
@@ -873,32 +878,13 @@ pub record HeaderScan {
 
 pub func scanHeader(source: in String): HeaderScan {
   val noImports: List[String] = newList()
-  val none = HeaderScan(packageName = "", imports = noImports)
   val s = normaliseNewlines(source)
-  var pos = 0
-  var name = ""
-  while name.length == 0 {
-    pos = skipTrivia(s, pos)
-    if pos < 0 or pos >= s.length {
-      return none
-    }
-    if s.substring(pos, 1) == "@" {
-      pos = skipAnnotation(s, pos)
-      if pos < 0 {
-        return none
-      }
-    } else if keywordAt(s, pos, "package") {
-      val pathStart = skipBlanks(s, pos + 7)
-      val pathStop = pathEnd(s, pathStart)
-      if pathStop == pathStart {
-        return none
-      }
-      name = s.substring(pathStart, pathStop - pathStart)
-      pos = pathStop
-    } else {
-      return none
-    }
+  val at = packageAt(s)
+  if at.stop < 0 {
+    return HeaderScan(packageName = "", imports = noImports)
   }
+  val name = at.name
+  var pos = at.stop
   val imports: List[String] = newList()
   var scanning = true
   while scanning {
@@ -918,6 +904,54 @@ pub func scanHeader(source: in String): HeaderScan {
     }
   }
   HeaderScan(packageName = name, imports = imports)
+}
+
+// Where a header's `package` declaration ends: its path, and the offset
+// just past it (-1 when the header does not reach one).
+record PackageAt {
+  name: String
+  stop: Int
+}
+
+func packageAt(s: in String): PackageAt {
+  val none = PackageAt(name = "", stop = -1)
+  var pos = 0
+  while true {
+    pos = skipTrivia(s, pos)
+    if pos < 0 or pos >= s.length {
+      return none
+    }
+    if s.substring(pos, 1) == "@" {
+      pos = skipAnnotation(s, pos)
+      if pos < 0 {
+        return none
+      }
+    } else if keywordAt(s, pos, "package") {
+      val pathStart = skipBlanks(s, pos + 7)
+      val pathStop = pathEnd(s, pathStart)
+      if pathStop == pathStart {
+        return none
+      }
+      return PackageAt(name = s.substring(pathStart, pathStop - pathStart), stop = pathStop)
+    } else {
+      return none
+    }
+  }
+  none
+}
+
+/// `source` (newlines normalised) up to the end of its `package`
+/// declaration: module docs, comments, file-level annotations and the
+/// declaration, without imports or items, found as `scanHeader` finds it.
+/// "" when the header does not reach a `package` declaration.
+pub func headerThroughPackage(source: in String): String {
+  val s = normaliseNewlines(source)
+  val at = packageAt(s)
+  if at.stop < 0 {
+    ""
+  } else {
+    s.substring(0, at.stop) + "\n"
+  }
 }
 
 // Past white space and comments from `pos`; -1 inside an unterminated block

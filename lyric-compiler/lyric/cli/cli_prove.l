@@ -336,7 +336,7 @@ func projectFileScopes(mfPath: in String): Map[String, Verifier.PackageScope] {
     entries.add(e)
   }
   for entry in entries.toArray() {
-    val ef = Disc.projectEntryFiles(entry, mfDir)
+    val ef = Disc.projectEntryFiles(entry, mfDir, proj)
     val files: List[String] = newList()
     for p in ef.paths.toArray() {
       files.add(Disc.normalizePath(p))

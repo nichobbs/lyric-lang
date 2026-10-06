@@ -30,6 +30,7 @@ import Std.String as Str
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Manifest
+import Lyric.PackageMerge as PM
 
 /// One project source file, parsed.  A package may span several files.
 pub record LayerPackage {
@@ -720,22 +721,13 @@ func checkAsyncItem(rule: in LayerRule, p: in LayerPackage, item: in Item, diags
   }
 }
 
-// The text of `source` up to the end of its `package` line: module docs,
-// comments, file annotations and the package declaration, without the
-// imports and items.  "" when no `package` line is found.
+// The text of `source` up to the end of its `package` declaration: module
+// docs, comments, file annotations and the declaration, without the imports
+// and items.  "" when no `package` declaration is found.  Read as the
+// package merge reads a header, so a `package` line inside a comment is not
+// the declaration.
 func headerText(source: in String): String {
-  val lines = Str.split(source, "\n")
-  var acc = ""
-  var i = 0
-  while i < lines.length {
-    val line = lines[i]
-    acc = acc + line + "\n"
-    if Str.startsWith(Str.trim(line), "package ") {
-      return acc
-    }
-    i = i + 1
-  }
-  ""
+  PM.headerThroughPackage(source)
 }
 
 /// A package's name and class, "pure", "io" or "".

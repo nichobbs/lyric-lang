@@ -17,6 +17,7 @@ import Lyric.Lexer
 import Lyric.Workspace as Ws
 import Lyric.Discovery as Disc
 import Lyric.Release as Release
+import Lyric.PackageMerge as PM
 import Lyric.Generator as Generator
 import Lyric.Emitter as Emitter
 import Lyric.AppHost as AppHost
@@ -595,38 +596,31 @@ func loadManifestForSingleFileBuild(
   }
 }
 
-// The dotted package names `source` imports, in first-appearance order.
-// A text scan over lines beginning with `import ` (the same idiom as
-// `Release.packageNameOf`), taking the dotted path token, dropping any
-// `as Alias` suffix and inline comment, and skipping `import extern`
-// (an FFI form, not a package reference).
+// The dotted package names `source` imports, in first-appearance order, from
+// its header's import declarations (`Lyric.PackageMerge.scanHeader`: comments
+// and annotations skipped), dropping any selector group and `as Alias`, and
+// skipping `import extern` and `pub use` (not package references to build).
 func importedPackageNames(source: in String): List[String] {
   val names: List[String] = newList()
-  val lines = Str.split(source, "\n")
-  var i = 0
-  while i < lines.length {
-    val line = Str.trim(lines[i])
-    if Str.startsWith(line, "import ") {
-      var rest = Str.trim(Str.substring(line, 7, Str.length(line) - 7))
-      match Str.indexOf(rest, "//") {
-        case Some(ci) -> {
-          rest = Str.trim(Str.substring(rest, 0, ci))
-        }
-        case None -> ()
-      }
+  for decl in PM.scanHeader(source).imports {
+    if Str.startsWith(decl, "import ") {
+      var rest = Str.trim(Str.substring(decl, 7, Str.length(decl) - 7))
       match Str.indexOf(rest, " ") {
         case Some(si) -> {
           rest = Str.substring(rest, 0, si)
         }
         case None -> ()
       }
-      if rest.length > 0 and rest != "extern" {
-        if not stringListContains(names, rest) {
-          names.add(rest)
+      match Str.indexOf(rest, ".{") {
+        case Some(gi) -> {
+          rest = Str.substring(rest, 0, gi)
         }
+        case None -> ()
+      }
+      if rest.length > 0 and rest != "extern" and not stringListContains(names, rest) {
+        names.add(rest)
       }
     }
-    i += 1
   }
   names
 }
@@ -679,13 +673,15 @@ func collectImportedOwnPackages(
     while pi < proj.packages.count {
       val pkgEntry = proj.packages[pi]
       if stringListContains(needed, pkgEntry.name) and not stringListContains(included, pkgEntry.name) and not isReservedHeadPackage(pkgEntry.name) {
-        match readProjectPackageSources(pkgEntry, mfDir, mfPath, genMf, gens) {
+        match readProjectPackageSources(pkgEntry, proj, mfDir, mfPath, genMf, gens) {
           case Some(pkgRead) -> {
             val pkgSources = pkgRead.sources
             included.add(pkgEntry.name)
             changed = true
             if pkgSources.count > 0 {
-              result.add(Emitter.ProjectPackage(name = pkgEntry.name, sources = pkgSources, paths = pkgRead.paths))
+              result.add(
+                Emitter.ProjectPackage(name = pkgEntry.name, sources = pkgSources, paths = pkgRead.paths, nameFromManifest = true)
+              )
               var si = 0
               while si < pkgSources.count {
                 val innerNames = importedPackageNames(pkgSources[si])
@@ -2336,14 +2332,12 @@ func buildReleaseProject(
           }
         }
       } else if File.dirExists(abs) {
-        val allFiles = match File.listFilesRecursive(abs) {
-          case Ok(fs) -> fs
-          case Err(e) -> {
-            printErr("build: package '" + pkgEntry.name + "': " + IOError.message(e))
-            return 1
-          }
+        val entryFiles = Disc.projectEntryFiles(pkgEntry, mfDir, proj)
+        for problem in entryFiles.problems.toArray() {
+          printErr("build: package '" + pkgEntry.name + "': " + problem)
+          return 1
         }
-        for f in allFiles.toArray() {
+        for f in entryFiles.paths.toArray() {
           if Str.endsWith(f, ".l") {
             match File.readText(f) {
               case Ok(raw) -> {
@@ -2556,6 +2550,7 @@ pub record PkgSourceRead {
 // `SourceFile` attribution all the way to the backends.
 func readProjectPackageSources(
   pkgEntry: in Mf.PackageEntry,
+  proj: in Mf.ProjectSection,
   mfDir: in String,
   mfPath: in String,
   genMf: in Option[Mf.Manifest],
@@ -2565,7 +2560,7 @@ func readProjectPackageSources(
   val pkgPaths: List[String] = newList()
   var hadFatal = false
   // The entry's file set is `Lyric.Discovery`'s, which `lyric prove` shares.
-  val entryFiles = Disc.projectEntryFiles(pkgEntry, mfDir)
+  val entryFiles = Disc.projectEntryFiles(pkgEntry, mfDir, proj)
   for problem in entryFiles.problems.toArray() {
     printErr("build: package '" + pkgEntry.name + "': " + problem)
     hadFatal = true
@@ -2852,10 +2847,17 @@ pub func buildProjectFromManifest(
   while pi < proj.packages.count {
     val pkgEntry = proj.packages[pi]
     if not pkgEntry.testOnly {
-      match readProjectPackageSources(pkgEntry, mfDir, mfPath, Some(value = manifest), gens) {
+      match readProjectPackageSources(pkgEntry, proj, mfDir, mfPath, Some(value = manifest), gens) {
         case Some(pkgRead) -> {
           if pkgRead.sources.count > 0 {
-            pkgs.add(Emitter.ProjectPackage(name = pkgEntry.name, sources = pkgRead.sources, paths = pkgRead.paths))
+            pkgs.add(
+              Emitter.ProjectPackage(
+                name = pkgEntry.name,
+                sources = pkgRead.sources,
+                paths = pkgRead.paths,
+                nameFromManifest = true
+              )
+            )
           }
         }
         case None -> {
@@ -3181,7 +3183,7 @@ func collectProjectSourcePaths(mfPath: in String): (List[String], Bool) {
   var pi = 0
   while pi < proj.packages.count {
     val pkgEntry = proj.packages[pi]
-    val entryFiles = Disc.projectEntryFiles(pkgEntry, mfDir)
+    val entryFiles = Disc.projectEntryFiles(pkgEntry, mfDir, proj)
     for problem in entryFiles.problems.toArray() {
       printErr("package '" + pkgEntry.name + "': " + problem)
       hadFatal = true

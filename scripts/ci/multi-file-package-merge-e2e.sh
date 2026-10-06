@@ -16,7 +16,11 @@
 #   - files that disagree on the verification level are B0014;
 #   - a file-level `@cfg(target = ...)` keeps each target's own file only;
 #   - an import alias two files bind to different packages is B0012;
-#   - a package of one file that declares another package is B0013.
+#   - a package of one file that declares another package is B0013;
+#   - a sub-package whose directory is inside its parent's builds as its own
+#     package, and a plain subdirectory's files stay in the parent;
+#   - a single file built beside a manifest is named by its real `package`
+#     declaration (one behind a block comment, one on a one-line header).
 #
 #   bash scripts/ci/multi-file-package-merge-e2e.sh [dotnet] [jvm] [native]
 # LYRIC_BIN overrides the binary (default: the AOT build for BUILD_CONFIG).
@@ -76,6 +80,18 @@ runs() {
   fi
   rc=0
   got="$(cd "$dir" && "$lyric_bin" run --manifest lyric.toml --target "$target" 2>"$work/err")" || rc=$?
+  got="$(printf '%s\n' "$got" | grep -v '^built ' || true)"
+  if [ "$rc" -ne 0 ] || [ "$got" != "$want" ]; then
+    echo "FAIL [$target] $label: expected '$want', got '$got' (exit $rc)"; cat "$work/err"; fail=1; return
+  fi
+  echo "PASS [$target] $label"
+}
+
+# runs_file <label> <dir> <file> <target> <expected stdout>: a single-file
+# `lyric run` from inside <dir> (which may hold a lyric.toml).
+runs_file() {
+  local label="$1" dir="$2" file="$3" target="$4" want="$5" got rc=0
+  got="$(cd "$dir" && "$lyric_bin" run "$file" --target "$target" 2>"$work/err")" || rc=$?
   got="$(printf '%s\n' "$got" | grep -v '^built ' || true)"
   if [ "$rc" -ne 0 ] || [ "$got" != "$want" ]; then
     echo "FAIL [$target] $label: expected '$want', got '$got' (exit $rc)"; cat "$work/err"; fail=1; return
@@ -228,6 +244,39 @@ EOF
   printf 'package Elsewhere\n\nfunc main(): Unit {\n  println("x")\n}\n' > "$d/src/a_main.l"
   rejected "a one-file package declaring another package" "$d" "$target" \
     "src/a_main\.l: error\[B0013\] 1:9: this file declares package Elsewhere, but it is a file of package Mf"
+
+  # A sub-package nested in its parent's directory is its own entry; a plain
+  # subdirectory's files belong to the parent.
+  d="$(project subpkg)"
+  cat > "$d/lyric.toml" <<'TOML'
+[package]
+name = "Acc"
+version = "0.1.0"
+
+[project]
+name = "Acc"
+output = "single"
+output_assembly = "Mf.dll"
+
+[project.packages]
+"Account" = "src/account"
+"Account.Internal" = "src/account/internal"
+TOML
+  mkdir -p "$d/src/account/internal" "$d/src/account/more"
+  printf 'package Account\nimport Account.Internal\n\nfunc main(): Unit {\n  println(toString(Account.Internal.k() + two()))\n}\n' > "$d/src/account/a.l"
+  printf 'package Account\n\npub func two(): Int {\n  2\n}\n' > "$d/src/account/more/b.l"
+  printf 'package Account.Internal\n\npub func k(): Int {\n  9\n}\n' > "$d/src/account/internal/k.l"
+  runs "a sub-package nested in its parent's directory" "$d" "$target" "11"
+
+  # Single files beside a manifest that contributes features: each is named
+  # by its real package declaration.
+  d="$work/beside"
+  rm -rf "$d"; mkdir -p "$d"
+  printf '[package]\nname = "Beside"\nversion = "0.1.0"\n\n[features]\ndefault = []\nextra = []\n' > "$d/lyric.toml"
+  printf '/*\npackage Old\n*/\npackage Mf\nfunc main(): Unit {\n  println("ok")\n}\n' > "$d/a.l"
+  printf 'package Mf; func main(): Unit { println("ok2") }\n' > "$d/b.l"
+  runs_file "a single file whose header comment names another package" "$d" a.l "$target" "ok"
+  runs_file "a single file with a one-line header" "$d" b.l "$target" "ok2"
 done
 
 if [ "$fail" -ne 0 ]; then

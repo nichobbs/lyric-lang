@@ -34,6 +34,7 @@ import Std.Process as Process
 import Std.ProcessCapture as PC
 import Std.Environment as Environment
 import Jvm.NativeImage as NI
+import Lyric.PackageMerge as PM
 
 // Release target selector.  `buildRelease` is target-agnostic; each arm owns
 // its toolchain invocation so adding the GraalVM path later does not touch the
@@ -54,22 +55,11 @@ func releaseErr(message: in String): Unit {
   Console.error("release: " + message)
 }
 
-/// Extract the `package X` name from Lyric source text — the first line that
-/// begins with `package `.  Returns "" if absent.
+/// The package `source` declares, read from its header with comments and
+/// annotations skipped (`Lyric.PackageMerge.scanHeader`).  Returns "" if
+/// absent.
 pub func packageNameOf(source: in String): String {
-  val lines = Str.split(source, "\n")
-  var i = 0
-  while i < lines.length {
-    val line = Str.trim(lines[i])
-    if Str.startsWith(line, "package ") {
-      val raw = Str.trim(Str.substring(line, 8, Str.length(line) - 8))
-      // Strip any inline // comment from the package name so that a line
-      // like `package Demo // entry point` yields "Demo", not "Demo // entry point".
-      return match Str.indexOf(raw, "//") { case Some(idx) -> Str.trim(Str.substring(raw, 0, idx)); case None -> raw }
-    }
-    i += 1
-  }
-  ""
+  PM.scanHeader(source).packageName
 }
 
 // Whether `source` declares a zero-argument `main` — the only form the
@@ -318,7 +308,10 @@ func parseSdkPacksDir(assetsJson: in String): Option[String] {
     case Some(graphPath) -> {
       match Str.lastIndexOf(graphPath, "/sdk/") {
         case Some(idx) -> Some(value = Str.substring(graphPath, 0, idx) + "/packs")
-        case None -> match Str.lastIndexOf(graphPath, "\\sdk\\") { case Some(idx) -> Some(value = Str.substring(graphPath, 0, idx) + "\\packs"); case None -> None }
+        case None -> match Str.lastIndexOf(graphPath, "\\sdk\\") {
+          case Some(idx) -> Some(value = Str.substring(graphPath, 0, idx) + "\\packs")
+          case None -> None
+        }
       }
     }
   }
@@ -404,7 +397,9 @@ func resolveIlcPaths(
       error = "ILC binary ('ilc') not found. Probed paths:\n" + "  - NuGet cache: " + nugetIlc + "\n" +
         (
           match packsOpt {
-            case Some(packsDir) -> "  - SDK pack 1: " + optPathOrNotAttempted(packIlc1Opt) + "\n  - SDK pack 2: " + optPathOrNotAttempted(packIlc2Opt)
+            case Some(packsDir) -> "  - SDK pack 1: " + optPathOrNotAttempted(packIlc1Opt) +
+              "\n  - SDK pack 2: " +
+              optPathOrNotAttempted(packIlc2Opt)
             case None -> packsNotFoundHint()
           }
         )
@@ -464,7 +459,9 @@ func resolveIlcPaths(
         "\n" +
         (
           match packsOpt {
-            case Some(packsDir) -> "  - SDK pack 1: " + optPathOrNotAttempted(packNativeAot1Opt) + "\n  - SDK pack 2: " + optPathOrNotAttempted(packNativeAot2Opt)
+            case Some(packsDir) -> "  - SDK pack 1: " + optPathOrNotAttempted(packNativeAot1Opt) +
+              "\n  - SDK pack 2: " +
+              optPathOrNotAttempted(packNativeAot2Opt)
             case None -> packsNotFoundHint()
           }
         )

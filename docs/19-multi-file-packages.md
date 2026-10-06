@@ -26,7 +26,8 @@ directory. Each file:
 
 - Declares the same `package <Head>.<…>` at the top: the package its
   manifest entry names. A file that names another package is `B0013`,
-  in a package of one file too. A file with items, file-level
+  in a package of one file too (a single file built on its own, with no
+  manifest entry naming it, is named by its own declaration). A file with items, file-level
   annotations or imports but no `package` declaration is `P0020`. A file
   holding only comments contributes nothing.
 - Parses on its own. Its parse diagnostics are reported against its own
@@ -36,15 +37,21 @@ directory. Each file:
   to the merged package symbol table.
 - May carry file-level annotations, which are the package's (§4 step 4a).
 
-Subdirectories continue to be sub-packages, as they are today.
-`lyric-compiler/lyric/lexer/` would still be the package
-`Lyric.Lexer`; the **files** inside it are merged.
+Subdirectories continue to be sub-packages: a subdirectory that is
+another `[project.packages]` / `[project.tests]` entry's path is that
+entry's package, and the parent entry's directory leaves it out (as it
+leaves out a file another entry lists). A subdirectory that is no entry
+of its own holds more files of the parent package, which declare the
+parent's package (`B0013` otherwise); a build never merges another
+entry's files.
 
 ## 3. Finding a package's files
 
 A project build takes a package's files from its `[project.packages]`
-entry: a directory (every `.l` file under it, sorted), one file, or an
-explicit list. The stdlib and compiler per-package builds group their
+entry (`Lyric.Discovery.projectEntryFiles`, shared by `lyric build`,
+`lyric test` and `lyric prove`): a directory (every `.l` file under it,
+sorted, except under another entry's path), one file, or an explicit
+list. The stdlib and compiler per-package builds group their
 trees' files by the package each file declares. No build looks a package
 up by file name, so the single-file versus directory layout conflict the
 original plan reserved `B0010` for cannot arise, and `B0010` is not
@@ -64,7 +71,9 @@ builds one compilation unit per package from the files' parses:
    another) is `B0012 — import alias A names Std.Math here but Std.Core
    at <file>:<line>`, reported against the later file; the files share
    one scope, so an alias names one package. The same alias for the same
-   package in two files is one import.
+   package in two files is one import. A renamed selective import bound
+   two ways (`import Std.Math.{absInt as f}` in one file,
+   `{maxPairInt as f}` in another) is the type checker's `T0148`.
 3. **File-level annotations** are package-wide: the merged package
    carries the union of its files' file-level annotations, an annotation
    written in several files kept once, and a file that writes none takes
@@ -97,8 +106,8 @@ builds one compilation unit per package from the files' parses:
    error `T0001`, reported against the later file's own path and line;
    the merge raises no separate `B0011`.
 
-A package of one file is compiled as written (its header is still read
-for `B0013`). Every build path uses the merge: `lyric build` and
+A package of one file is compiled as written (when a manifest entry
+names it, its header is still read for `B0013`). Every build path uses the merge: `lyric build` and
 `lyric test` on every target (`Lyric.Emitter.emitProject`,
 `emitNativeProject`; a dependency compiled from source is merged once
 and the weaver reads that unit), and the per-package builds of the stdlib

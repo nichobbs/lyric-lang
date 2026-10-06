@@ -15,9 +15,17 @@ The merge now lives in `Lyric.PackageMerge`
 - Every file must parse on its own; its parse diagnostics are reported
   against its own path and position and stop the build.
 - Every file must declare the package its manifest entry names: another
-  package is the new `B0013`, in a package of one file too (also for a file
-  whose header does not parse, from the first `package` declaration among
-  its tokens). A file with items, file-level annotations or imports and no
+  package is the new `B0013`, in a package of one file too when a manifest
+  entry names it (also for a file whose header does not parse, from the
+  first `package` declaration among its tokens). A single file built on its
+  own is named by its own declaration, read with comments skipped; the
+  line scans that named it (`Release.packageNameOf`, the test runner's,
+  `importedPackageNames`, the layers header read) all read the header that
+  way now.
+- A directory entry leaves out a subdirectory that is another entry's path
+  (a sub-package) and a file another entry lists, in `lyric build`,
+  `lyric test` and `lyric prove` alike (`Lyric.Discovery.projectEntryFiles`);
+  a plain subdirectory still holds more files of the entry. A file with items, file-level annotations or imports and no
   `package` declaration is `P0020`; a file of comments only contributes
   nothing.
 - The merged unit is the files' united file-level annotations, one
@@ -28,7 +36,8 @@ The merge now lives in `Lyric.PackageMerge`
   with the token blanked. Lines that held only header tokens are dropped,
   so a well-formed package merges to exactly the text it did before.
 - An import alias that two files bind to different packages is `B0012`:
-  the files share one scope.
+  the files share one scope. (A renamed selective import bound two ways is
+  the checker's `T0148`.)
 - File-level annotations are package-wide: an annotation written in several
   files counts once, and a file that writes none takes the package's. Files
   that declare different verification levels, or one annotation with
@@ -62,10 +71,10 @@ package and its tests are removed. `lyric prove` proves one file at a time
 and needs no merged unit. Module docs of a multi-file package are still
 dropped (docs/19 §5, #8246). Decision: D180.
 
-Verified: `package_merge_self_test.l` (22 cases) and
+Verified: `package_merge_self_test.l` (24 cases) and
 `scripts/ci/multi-file-package-merge-e2e.sh` on dotnet, JVM and native
 (both #8234 repros rejected, a header block comment stays a comment,
-target-gated files, B0012 / B0013 / B0014 / P0020 against the right file
+target-gated files, a nested sub-package, single files beside a manifest, B0012 / B0013 / B0014 / P0020 against the right file
 and line); the whole compiler and stdlib
 closure emitted through `--internal-perpackage-build` is byte-identical to
 main's over the same sources (130 DLLs), as are 13 ecosystem libraries'

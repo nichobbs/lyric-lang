@@ -19,6 +19,7 @@ import Lyric.TestSynth as TestSynth
 import Lyric.Repl as Repl
 import Lyric.Discovery as Disc
 import Lyric.Parser as Parser
+import Lyric.Release as Release
 import Lyric.Cfg as Cfg
 import Lyric.Workspace as Ws
 import Lyric.JacocoCobertura as Jc
@@ -33,20 +34,12 @@ func cmdRepl(argv: in slice[String]): Int {
 // ─────────────────────────────────────────────────────────────────────────────
 // §11c. Test command
 // ─────────────────────────────────────────────────────────────────────────────
-// First `package <name>` declaration in `src` (skipping annotations/comments),
-// or "" if none.  Used to wrap a single `@test_module` file as a `ProjectPackage`
-// when linking compiler DLLs (#2364 Stage 5).
+// The package `src` declares (`Lyric.Release.packageNameOf`: its header,
+// comments and annotations skipped), or "" if none.  Used to wrap a single
+// `@test_module` file as a `ProjectPackage` when linking compiler DLLs
+// (#2364 Stage 5).
 func firstPackageNameOf(src: in String): String {
-  val lines = Str.split(src, "\n")
-  var i = 0
-  while i < lines.length {
-    val t = Str.trim(lines[i])
-    if Str.startsWith(t, "package ") {
-      return Str.trim(Str.substring(t, 8, t.length - 8))
-    }
-    i = i + 1
-  }
-  ""
+  Release.packageNameOf(src)
 }
 
 // Emit a single-file `@test_module` (no compiler-DLL linking), routed
@@ -1113,11 +1106,8 @@ func cmdTestManifest(
         if File.fileExists(abs) {
           scanPaths.add(abs)
         } else if File.dirExists(abs) {
-          val allFiles = match File.listFilesRecursive(abs) { case Ok(fs) -> fs; case Err(_) -> newList() }
-          for f in allFiles.toArray() {
-            if Str.endsWith(f, ".l") {
-              scanPaths.add(f)
-            }
+          for f in Disc.projectEntryFiles(pkgEntry, mfDir, proj).paths.toArray() {
+            scanPaths.add(f)
           }
         }
       }
@@ -1287,20 +1277,14 @@ func cmdTestManifest(
           }
         }
       } else if File.dirExists(abs) {
-        val allFiles = match File.listFilesRecursive(abs) {
-          case Ok(fs) -> fs
-          case Err(e) -> {
-            printErr("test: package '" + pkgEntry.name + "': " + IOError.message(e))
-            hadFatal = true
-            newList()
-          }
+        // The entry's file set is `Lyric.Discovery`'s, as `lyric build`'s:
+        // a subdirectory that is another entry's path is that entry's.
+        val entryFiles = Disc.projectEntryFiles(pkgEntry, mfDir, proj)
+        for problem in entryFiles.problems.toArray() {
+          printErr("test: package '" + pkgEntry.name + "': " + problem)
+          hadFatal = true
         }
-        val lFiles: List[String] = newList()
-        for f in allFiles.toArray() {
-          if Str.endsWith(f, ".l") {
-            lFiles.add(f)
-          }
-        }
+        val lFiles = entryFiles.paths
         if lFiles.count == 0 {
           printErr("test: package '" + pkgEntry.name + "': no .l files found in " + abs)
           hadFatal = true
@@ -1340,7 +1324,9 @@ func cmdTestManifest(
       }
     }  // end else (single-file/directory path)
     if pkgSources.count > 0 {
-      libPkgs.add(Emitter.ProjectPackage(name = pkgEntry.name, sources = pkgSources, paths = pkgPaths))
+      libPkgs.add(
+        Emitter.ProjectPackage(name = pkgEntry.name, sources = pkgSources, paths = pkgPaths, nameFromManifest = true)
+      )
     }
     pi += 1
   }
@@ -1625,7 +1611,9 @@ func cmdTestManifest(
                           }
                         }
                         if srcList.count > 0 {
-                          depTemplatePkgsList.add(Emitter.ProjectPackage(name = pkgEntry.name, sources = srcList, paths = srcPathList))
+                          depTemplatePkgsList.add(
+                            Emitter.ProjectPackage(name = pkgEntry.name, sources = srcList, paths = srcPathList, nameFromManifest = true)
+                          )
                         }
                         pki += 1
                       }
@@ -1876,7 +1864,9 @@ func cmdTestManifest(
     // manifest-relative whenever the manifest names the test with a
     // relative path.
     testPaths.add(abs)
-    allPkgs.add(Emitter.ProjectPackage(name = testEntry.name, sources = testSrcs, paths = testPaths))
+    allPkgs.add(
+      Emitter.ProjectPackage(name = testEntry.name, sources = testSrcs, paths = testPaths, nameFromManifest = true)
+    )
     var si = 0
     while si < libPkgs.count {
       allPkgs.add(libPkgs[si])

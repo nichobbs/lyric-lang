@@ -324,7 +324,9 @@ func collectDepTemplateSources(
                   }
                 }
                 if srcList.count > 0 {
-                  depTemplatePkgsList.add(Emitter.ProjectPackage(name = pkgEntry.name, sources = srcList, paths = pathList))
+                  depTemplatePkgsList.add(
+                    Emitter.ProjectPackage(name = pkgEntry.name, sources = srcList, paths = pathList, nameFromManifest = true)
+                  )
                 }
                 pki += 1
               }
@@ -1305,7 +1307,9 @@ pub func resolveManifestDependencies(
                           }
                         }
                         if srcList.count > 0 {
-                          depTemplatePkgsList.add(Emitter.ProjectPackage(name = pkgEntry.name, sources = srcList, paths = pathList))
+                          depTemplatePkgsList.add(
+                            Emitter.ProjectPackage(name = pkgEntry.name, sources = srcList, paths = pathList, nameFromManifest = true)
+                          )
                         }
                         pki += 1
                       }

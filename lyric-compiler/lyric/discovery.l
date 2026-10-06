@@ -147,6 +147,10 @@ pub func findNearestManifest(startDir: in String): Option[String] {
 /// The source files a `[project.packages]` (or `[project.tests]`) entry
 /// compiles, as the build reads them: an explicit list in its order, a
 /// single file, or every `.l` file under a directory, recursively, sorted.
+/// A directory entry leaves out what another entry of `proj` names inside
+/// it: a subdirectory that is another entry's path is that entry's package
+/// (a sub-package, docs/01 §9.1), and a file another entry lists is that
+/// entry's.
 /// `problems` says why the set is incomplete (no prefix; each caller adds
 /// its own); `emptyDir` names a directory entry that yielded no `.l` file,
 /// which the build reports and a listing command tolerates.  `lyric build` and `lyric prove` both take an entry's files
@@ -157,7 +161,7 @@ pub record EntryFiles {
   emptyDir: String
 }
 
-pub func projectEntryFiles(pkgEntry: in Mf.PackageEntry, mfDir: in String): EntryFiles {
+pub func projectEntryFiles(pkgEntry: in Mf.PackageEntry, mfDir: in String, proj: in Mf.ProjectSection): EntryFiles {
   val paths: List[String] = newList()
   val problems: List[String] = newList()
   if pkgEntry.paths.count > 0 {
@@ -175,9 +179,10 @@ pub func projectEntryFiles(pkgEntry: in Mf.PackageEntry, mfDir: in String): Entr
   } else if File.dirExists(abs) {
     match File.listFilesRecursive(abs) {
       case Ok(fs) -> {
+        val claimed = otherEntriesWithin(pkgEntry, mfDir, proj, abs)
         val lFiles: List[String] = newList()
         for f in fs.toArray() {
-          if Str.endsWith(f, ".l") {
+          if Str.endsWith(f, ".l") and not claimedByOther(f, claimed) {
             lFiles.add(f)
           }
         }
@@ -197,6 +202,53 @@ pub func projectEntryFiles(pkgEntry: in Mf.PackageEntry, mfDir: in String): Entr
     problems.add("path not found: " + abs)
   }
   EntryFiles(paths = paths, problems = problems, emptyDir = emptyDir)
+}
+
+// The paths (normalized keys) that entries of `proj` other than `pkgEntry`
+// name strictly inside `dir`: directories and files alike.
+func otherEntriesWithin(
+  pkgEntry: in Mf.PackageEntry, mfDir: in String, proj: in Mf.ProjectSection, dir: in String
+): List[String] {
+  val dirKey = pathKey(dir) + "/"
+  val claimed: List[String] = newList()
+  val entries: List[Mf.PackageEntry] = newList()
+  for e in proj.packages.toArray() {
+    entries.add(e)
+  }
+  for e in proj.tests.toArray() {
+    entries.add(e)
+  }
+  for e in entries.toArray() {
+    val same = e.name == pkgEntry.name and e.path == pkgEntry.path and e.paths.count == pkgEntry.paths.count
+    if not same {
+      val ps: List[String] = newList()
+      if e.paths.count > 0 {
+        for p in e.paths.toArray() {
+          ps.add(p)
+        }
+      } else {
+        ps.add(e.path)
+      }
+      for p in ps.toArray() {
+        val key = pathKey(if Path.isAbsolute(p) { p } else { Path.join(mfDir, p) })
+        if Str.startsWith(key, dirKey) {
+          claimed.add(key)
+        }
+      }
+    }
+  }
+  claimed
+}
+
+// Whether `file` is, or lies under, one of the `claimed` path keys.
+func claimedByOther(file: in String, claimed: in List[String]): Bool {
+  val key = pathKey(file)
+  for c in claimed.toArray() {
+    if key == c or Str.startsWith(key, c + "/") {
+      return true
+    }
+  }
+  false
 }
 
 /// `xs` in ascending order.
@@ -314,7 +366,7 @@ pub func packageFileSetForSource(sourcePath: in String): Option[PackageFileSet] 
               entries.add(e)
             }
             for entry in entries.toArray() {
-              val ef = projectEntryFiles(entry, mfDir)
+              val ef = projectEntryFiles(entry, mfDir, proj)
               var contains = false
               for p in ef.paths.toArray() {
                 if pathKey(p) == ownKey {

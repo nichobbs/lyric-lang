@@ -147,6 +147,10 @@ pub record ProjectPackage {
   /// (docs/65 §5, D149), e.g. "layer 'logic'"; "" when it may.  Passed to
   /// `Lyric.Pipeline.MiddleEndOptions.ioForbiddenReason` by every backend.
   ioForbiddenReason: String = ""
+  /// Whether `name` is a manifest entry's key, so even a one-file package is
+  /// held to it (B0013); false when the caller took the name from the
+  /// source itself.
+  nameFromManifest: Bool = false
 }
 
 pub record EmitProjectRequest {
@@ -2055,7 +2059,15 @@ func mergeProjectPackage(
   declaredFeatures: in List[String],
   targetName: in String,
 ): MergedProjectPackage {
-  val res = PM.mergePackageFiles(pkg.name, pkg.sources, pkg.paths, activeFeatures, declaredFeatures, targetName)
+  val res = PM.mergePackageFiles(
+    pkg.name,
+    pkg.sources,
+    pkg.paths,
+    activeFeatures,
+    declaredFeatures,
+    targetName,
+    pkg.nameFromManifest
+  )
   val failed = reportMergeDiagnostics(pkg.name, res)
   if pkg.sources.count <= 1 {
     return MergedProjectPackage(pkg = pkg, origins = res.origins, failed = failed)
@@ -2069,7 +2081,8 @@ func mergeProjectPackage(
       name = pkg.name,
       sources = merged,
       paths = mergedPaths,
-      ioForbiddenReason = pkg.ioForbiddenReason
+      ioForbiddenReason = pkg.ioForbiddenReason,
+      nameFromManifest = pkg.nameFromManifest
     ),
     origins = res.origins,
     failed = failed
@@ -3016,7 +3029,15 @@ pub func emitNativeProjectWithShape(
     val depFeatures = depPackageFeaturesFor(packageFeatures, pkg.name)
     val pkgActive = match depFeatures { case Some(pf) -> pf.active; case None -> activeFeatures }
     val pkgDeclared = match depFeatures { case Some(pf) -> pf.declared; case None -> declaredFeatures }
-    val mergedRes = PM.mergePackageFiles(pkg.name, pkg.sources, pkg.paths, pkgActive, pkgDeclared, "native")
+    val mergedRes = PM.mergePackageFiles(
+      pkg.name,
+      pkg.sources,
+      pkg.paths,
+      pkgActive,
+      pkgDeclared,
+      "native",
+      pkg.nameFromManifest
+    )
     if reportMergeDiagnostics(pkg.name, mergedRes) {
       mergeFailed = true
     }

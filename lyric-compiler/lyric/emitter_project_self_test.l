@@ -1707,7 +1707,7 @@ test "multi-file merge strips header lines only and keeps line origins" {
   paths.add("a.l")
   paths.add("b.l")
   val none: List[String] = newList()
-  val merged = PM.mergePackageFiles("P", sources, paths, none, none, "dotnet")
+  val merged = PM.mergePackageFiles("P", sources, paths, none, none, "dotnet", true)
   assertEqualInt(merged.diagnostics.count, 0, "two well-formed files merge cleanly")
   val lines = Str.split(merged.source, "\n")
   var coreImports = 0
