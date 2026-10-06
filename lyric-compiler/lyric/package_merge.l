@@ -19,7 +19,8 @@
 //! as comments, so a `/* ... */` that hides declarations stays a comment.
 //!
 //! A file whose file-level `@cfg` is false for the active features
-//! contributes no item and no import (`Lyric.Cfg.fileAnnotationsGateFileOut`).
+//! contributes no item and no import; the build's target decides its
+//! `target = "X"` atoms.
 //! The files' other file-level annotations are package-wide, whatever their
 //! `@cfg`: they are united, a repeated one is kept once, and two files that
 //! disagree are an error (B0014; Y0009 for `@pure` against `@io`).
@@ -64,6 +65,10 @@ pub record PackageMergeResult {
 record HeaderPiece {
   name: String
   key: String
+  /// An import's alias (`import A.B as X`), "" for none and for annotations.
+  aliasName: String
+  /// What an import's alias names: its path, `extern`-marked.
+  aliasTarget: String
   text: String
   fileIndex: Int
   path: String
@@ -86,27 +91,35 @@ record OffsetRange {
 
 /// Merge the files of package `packageName`.  `sources` holds the files' text
 /// in the package's order and `paths` their paths, parallel by index (a
-/// missing or "" path is unknown).  `activeFeatures` decides each file's
-/// file-level `@cfg`; a `target` atom counts as active, since the target
-/// erases later.  `declaredFeatures` is the manifest's `[features]`, for
-/// F0013 (none: no F0013).  A package of one file is returned as written, unparsed: its
-/// own parse in the backend reports on it with exact positions.
+/// missing or "" path is unknown).  `activeFeatures` and `targetName` (the
+/// build's target, `dotnet` / `jvm` / `native`) decide each file's file-level
+/// `@cfg`.  `declaredFeatures` is the manifest's `[features]`, for F0013
+/// (none: no F0013).  A package of one file is returned as written: its own
+/// parse in the backend reports on it with exact positions.  Its header is
+/// still read, so a file that declares another package is B0013 here too.
 pub func mergePackageFiles(
   packageName: in String,
   sources: in List[String],
   paths: in List[String],
   activeFeatures: in List[String],
   declaredFeatures: in List[String],
+  targetName: in String,
 ): PackageMergeResult {
   val noOrigins: List[DiagUtil.MergedLineOrigin] = newList()
-  val noDiags: List[MergeDiagnostic] = newList()
+  val diags: List[MergeDiagnostic] = newList()
   if sources.count == 0 {
-    return PackageMergeResult(source = "", origins = noOrigins, diagnostics = noDiags)
+    return PackageMergeResult(source = "", origins = noOrigins, diagnostics = diags)
   }
   if sources.count == 1 {
-    return PackageMergeResult(source = sources[0], origins = noOrigins, diagnostics = noDiags)
+    val declared = scanHeader(sources[0]).packageName
+    if declared.length > 0 and declared != packageName {
+      val path = if paths.count > 0 { paths[0] } else { "" }
+      val lexed = lexedPackage(normaliseNewlines(sources[0]))
+      diags.add(MergeDiagnostic(path = path, diag = packageMismatch(declared, packageName, lexed.span)))
+    }
+    return PackageMergeResult(source = sources[0], origins = noOrigins, diagnostics = diags)
   }
-  mergeFiles(packageName, sources, paths, activeFeatures, declaredFeatures, true)
+  mergeFiles(packageName, sources, paths, activeFeatures, declaredFeatures, targetName, true)
 }
 
 /// `mergePackageFiles` for the packages the compiler discovers in its own
@@ -114,10 +127,44 @@ pub func mergePackageFiles(
 /// builds): a package of one file is rebuilt in the merged shape too, and no
 /// origins are computed.
 pub func mergeDiscoveredPackage(
-  packageName: in String, sources: in List[String], paths: in List[String]
+  packageName: in String,
+  sources: in List[String],
+  paths: in List[String],
+  targetName: in String,
 ): PackageMergeResult {
   val noFeatures: List[String] = newList()
-  mergeFiles(packageName, sources, paths, noFeatures, noFeatures, false)
+  mergeFiles(packageName, sources, paths, noFeatures, noFeatures, targetName, false)
+}
+
+func packageMismatch(declared: in String, packageName: in String, sp: in Span): Diagnostic {
+  errorDiagnostic(
+    "B0013",
+    "this file declares package " + declared + ", but it is a file of package " + packageName +
+      "; every file of a package declares that package",
+    sp
+  )
+}
+
+// Whether a file's file-level `@cfg` turns it off for the build's features
+// and target (`target = "X"` atoms decide against `targetName`).
+func fileGatedOut(anns: in List[Annotation], activeFeatures: in List[String], targetName: in String): Bool {
+  val noDeclared: List[String] = newList()
+  Cfg.isFileCfgGatedOut(Cfg.withTargetFeature(activeFeatures, targetName), noDeclared, anns)
+}
+
+/// The file-level annotations that change how the whole merged unit is
+/// parsed or compiled, so every file of a package must agree on each of
+/// them (B0014): `@contract_source` (block braces, `Lyric.Parser`), the
+/// wrapping-arithmetic marker (`Lyric.Pipeline.wrappingArithMarker`),
+/// `@test_module` and `@bench_module` (the unit is a test or benchmark
+/// module).
+pub func unitModeAnnotations(): List[String] {
+  val xs: List[String] = newList()
+  xs.add(contractSourceAnnotationName())
+  xs.add("__lyric_wrapping_arith")
+  xs.add("test_module")
+  xs.add("bench_module")
+  xs
 }
 
 /// Whether `r` holds an error: its `source` must then not be compiled.
@@ -144,9 +191,15 @@ func mergeFiles(
   paths: in List[String],
   activeFeatures: in List[String],
   declaredFeatures: in List[String],
+  targetName: in String,
   withOrigins: Bool,
 ): PackageMergeResult {
   val diags: List[MergeDiagnostic] = newList()
+  // Per file that declares the package: its path, its package span, and the
+  // unit-mode annotations it carries (for the agreement check below).
+  val modePaths: List[String] = newList()
+  val modeSpans: List[Span] = newList()
+  val modeNames: List[String] = newList()
   val annotations: List[HeaderPiece] = newList()
   val imports: List[HeaderPiece] = newList()
   var bodies = ""
@@ -176,17 +229,31 @@ func mergeFiles(
     }
     if declaredPkg.name.length > 0 and declaredPkg.name != packageName {
       usable = false
+      diags.add(MergeDiagnostic(path = path, diag = packageMismatch(declaredPkg.name, packageName, declaredPkg.span)))
+    }
+    // Annotations or imports with no package declaration after them: the
+    // parser reports P0020 only when items follow.
+    if usable and declaredPkg.name.length == 0 and (pr.file.fileAnnotations.count > 0 or pr.file.imports.count > 0) {
+      usable = false
+      val at = if pr.file.fileAnnotations.count > 0 { pr.file.fileAnnotations[0].span } else { pr.file.imports[0].span }
       diags.add(
         MergeDiagnostic(
           path = path,
-          diag = errorDiagnostic(
-            "B0013",
-            "this file declares package " + declaredPkg.name + ", but it is a file of package " + packageName +
-              "; every file of a package declares that package",
-            declaredPkg.span
-          )
+          diag = errorDiagnostic("P0020", "expected 'package' declaration at the head of the file", at)
         )
       )
+    }
+    if usable and declaredPkg.name.length > 0 {
+      var names = ""
+      for a in pr.file.fileAnnotations {
+        val n = annotationName(a)
+        if unitModeAnnotations().contains(n) and not Str.contains(names, "|" + n + "|") {
+          names = names + "|" + n + "|"
+        }
+      }
+      modePaths.add(path)
+      modeSpans.add(pr.file.packageDecl.span)
+      modeNames.add(names)
     }
     if usable {
       for d in Cfg.fileCfgDiagnostics(declaredFeatures, pr.file.fileAnnotations) {
@@ -198,13 +265,20 @@ func mergeFiles(
     if usable {
       for a in pr.file.fileAnnotations {
         if not isCfg(a) {
-          addAnnotation(annotations, pieceOf(text, annotationName(a), annotationKey(a), a.span, i, path), packageName, diags)
+          addAnnotation(
+            annotations,
+            pieceOf(text, annotationName(a), annotationKey(a), "", "", a.span, i, path),
+            packageName,
+            diags
+          )
         }
       }
     }
-    if usable and not Cfg.fileAnnotationsGateFileOut(pr.file.fileAnnotations, activeFeatures) {
+    if usable and not fileGatedOut(pr.file.fileAnnotations, activeFeatures, targetName) {
       for d in pr.file.imports {
-        addImport(imports, pieceOf(text, "", importKey(d), d.span, i, path))
+        val aliasName = match d.asAlias { case Some(al) -> al; case None -> "" }
+        val aliasTarget = (if d.isExtern { "extern " } else { "" }) + modulePathJoin(d.path.segments)
+        addImport(imports, pieceOf(text, "", importKey(d), aliasName, aliasTarget, d.span, i, path), diags)
       }
       val body = fileBody(text, pr.file, path, withOrigins)
       // A file whose items are empty adds no line of its own unless an earlier
@@ -227,6 +301,8 @@ func mergeFiles(
     }
     i = i + 1
   }
+
+  checkUnitModes(modePaths, modeSpans, modeNames, diags)
 
   val preambleLines: List[String] = newList()
   val origins: List[DiagUtil.MergedLineOrigin] = newList()
@@ -308,11 +384,20 @@ func annotationName(a: in Annotation): String {
 }
 
 func pieceOf(
-  text: in String, name: in String, key: in String, sp: in Span, fileIndex: in Int, path: in String
+  text: in String,
+  name: in String,
+  key: in String,
+  aliasName: in String,
+  aliasTarget: in String,
+  sp: in Span,
+  fileIndex: in Int,
+  path: in String,
 ): HeaderPiece {
   HeaderPiece(
     name = name,
     key = key,
+    aliasName = aliasName,
+    aliasTarget = aliasTarget,
     text = text.substring(sp.startPos.offset, sp.endPos.offset - sp.startPos.offset),
     fileIndex = fileIndex,
     path = path,
@@ -397,13 +482,73 @@ func addAnnotation(
   acc.add(p)
 }
 
-func addImport(acc: in List[HeaderPiece], p: in HeaderPiece): Unit {
+// Add `p` to the package's imports unless an equal one is already there.  An
+// alias another file binds to a different package is B0012: the merged unit
+// has one scope for both files.
+func addImport(acc: in List[HeaderPiece], p: in HeaderPiece, diags: in List[MergeDiagnostic]): Unit {
   for q in acc {
+    if p.aliasName.length > 0 and q.aliasName == p.aliasName and q.aliasTarget != p.aliasTarget and q.fileIndex != p.fileIndex {
+      diags.add(
+        MergeDiagnostic(
+          path = p.path,
+          diag = errorDiagnostic(
+            "B0012",
+            "import alias " + p.aliasName + " names " + p.aliasTarget + " here but " + q.aliasTarget + " at " +
+              whereWritten(q) +
+              "; the files of a package share their imports, so an alias names one package",
+            spanAt(p)
+          )
+        )
+      )
+      return
+    }
     if q.key == p.key {
       return
     }
   }
   acc.add(p)
+}
+
+// Every file of a package carries the same unit-mode annotations
+// (`unitModeAnnotations`): one that some files carry and others do not would
+// change how the others are parsed or compiled.
+func checkUnitModes(
+  paths: in List[String],
+  spans: in List[Span],
+  names: in List[String],
+  diags: in List[MergeDiagnostic],
+): Unit {
+  for mode in unitModeAnnotations() {
+    val tag = "|" + mode + "|"
+    var withIdx = -1
+    var i = 0
+    while i < names.count {
+      if withIdx < 0 and Str.contains(names[i], tag) {
+        withIdx = i
+      }
+      i = i + 1
+    }
+    if withIdx >= 0 {
+      var j = 0
+      while j < names.count {
+        if not Str.contains(names[j], tag) {
+          val other = if paths[withIdx].length > 0 { paths[withIdx] } else { "another file of the package" }
+          diags.add(
+            MergeDiagnostic(
+              path = paths[j],
+              diag = errorDiagnostic(
+                "B0014",
+                "this file is not @" + mode + ", but " + other + " is; @" + mode +
+                  " applies to the whole package, so every file of the package carries it or none does",
+                spans[j]
+              )
+            )
+          )
+        }
+        j = j + 1
+      }
+    }
+  }
 }
 
 func spanAt(p: in HeaderPiece): Span {

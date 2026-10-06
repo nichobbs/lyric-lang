@@ -13,7 +13,10 @@
 #   - a file whose header does not parse (`otherpkg`) is reported against its
 #     own path, with B0013 for the other package its tokens name;
 #   - a file with no `package` declaration is P0020, against its own path;
-#   - files that disagree on the verification level are B0014.
+#   - files that disagree on the verification level are B0014;
+#   - a file-level `@cfg(target = ...)` keeps each target's own file only;
+#   - an import alias two files bind to different packages is B0012;
+#   - a package of one file that declares another package is B0013.
 #
 #   bash scripts/ci/multi-file-package-merge-e2e.sh [dotnet] [jvm] [native]
 # LYRIC_BIN overrides the binary (default: the AOT build for BUILD_CONFIG).
@@ -203,6 +206,28 @@ EOF
   printf 'package Mf\n\nfunc main(): Unit {\n  println("x")\n}\n' > "$d/src/a_main.l"
   printf '// helpers\npub func f(): Int {\n  1\n}\n' > "$d/src/b_bare.l"
   rejected "a file with no package declaration" "$d" "$target" "src/b_bare\.l: error\[P0020\] 2:1: "
+
+  # One file per target, chosen by a file-level `@cfg(target = ...)`.
+  d="$(project targets)"
+  printf 'package Mf\n\nfunc main(): Unit {\n  println(toString(which()))\n}\n' > "$d/src/a_main.l"
+  printf '@cfg(target = "dotnet")\npackage Mf\n\nfunc which(): Int {\n  1\n}\n' > "$d/src/b_dotnet.l"
+  printf '@cfg(target = "jvm")\npackage Mf\n\nfunc which(): Int {\n  2\n}\n' > "$d/src/c_jvm.l"
+  printf '@cfg(target = "native")\npackage Mf\n\nfunc which(): Int {\n  3\n}\n' > "$d/src/d_native.l"
+  case "$target" in dotnet) want=1 ;; jvm) want=2 ;; native) want=3 ;; esac
+  runs "a file-level @cfg(target) picks the target's file" "$d" "$target" "$want"
+
+  # One alias, two packages.
+  d="$(project alias)"
+  printf 'package Mf\nimport Std.String as X\n\nfunc main(): Unit {\n  println(X.toUpper("x"))\n}\n' > "$d/src/a_main.l"
+  printf 'package Mf\nimport Std.Math as X\n\npub func other(): Int {\n  1\n}\n' > "$d/src/b_other.l"
+  rejected "an alias bound to two packages" "$d" "$target" \
+    "src/b_other\.l: error\[B0012\] 2:1: import alias X names Std\.Math here but Std\.String at .*a_main\.l:2"
+
+  # A package of one file that declares another package.
+  d="$(project single)"
+  printf 'package Elsewhere\n\nfunc main(): Unit {\n  println("x")\n}\n' > "$d/src/a_main.l"
+  rejected "a one-file package declaring another package" "$d" "$target" \
+    "src/a_main\.l: error\[B0013\] 1:9: this file declares package Elsewhere, but it is a file of package Mf"
 done
 
 if [ "$fail" -ne 0 ]; then

@@ -281,7 +281,6 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/auto_ffi_self_test.l \
 	lyric-compiler/lyric/bitwise_self_test.l \
 	lyric-compiler/lyric/block_shadow_self_test.l \
-	lyric-compiler/lyric/cfg_gate_self_test.l \
 	lyric-compiler/lyric/cfg_self_test.l \
 	lyric-compiler/lyric/cfg_single_file_self_test.l \
 	lyric-compiler/lyric/class_encoding_self_test.l \

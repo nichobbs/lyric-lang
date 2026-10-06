@@ -20,7 +20,6 @@ import Lyric.Release as Release
 import Lyric.Generator as Generator
 import Lyric.Emitter as Emitter
 import Lyric.AppHost as AppHost
-import Lyric.CfgGate as CfgGate
 import Std.Sort as Sort
 import Std.Time as Time
 import Std.Format as Format

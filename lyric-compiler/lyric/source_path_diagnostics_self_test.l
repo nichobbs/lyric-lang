@@ -614,7 +614,8 @@ test "single-file project package (one entry in [project.packages]): a parse err
     "name = \"MfSingle\"\n" +
     "\n" +
     "[project.packages]\n" +
-    "\"MfSingle\" = [\"src/a.l\"]\n" +
+    // The entry names the package `brokenSource()` declares (B0013 otherwise).
+    "\"Bad\" = [\"src/a.l\"]\n" +
     "\n" +
     "[dependencies]\n" +
     "Std = \"*\"\n"

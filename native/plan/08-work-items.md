@@ -1937,7 +1937,7 @@ N own packages, each fully lowered, plus the reachability-gated bundled
 stdlib closure — mirroring the dotnet/jvm project bridges'
 "own-packages-see-each-other" cross-registration, `Jvm.Bridge`'s #6024
 precedent), `Lyric.Emitter.emitNativeProject` (merges multi-file packages
-via the existing `mergePackageSources`, resolves the native stdlib
+via `Lyric.PackageMerge.mergePackageFiles` (#8234), resolves the native stdlib
 sources, dispatches into the bridge), and
 `Lyric.Cli.buildProjectFromManifest`'s native branch (resolves `[native]`
 triple/opt-level/extra-libs from the manifest, calls `emitNativeProject`

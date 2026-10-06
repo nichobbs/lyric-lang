@@ -1614,8 +1614,9 @@ Reported against the file at fault (`<path>: error[B0013] line:col: ...`) before
 
 | Code | Meaning |
 |---|---|
-| `B0013` | A file of a package declares another package (every file of a package declares that package). |
-| `B0014` | Two files of a package disagree on a file-level annotation: different verification levels (`@runtime_checked`, `@proof_required`, `@axiom`), or one annotation with different arguments. (`@pure` in one file and `@io` in another is `Y0009`.) |
+| `B0012` | Two files of a package bind one import alias to different packages; the files share their imports, so an alias names one package. |
+| `B0013` | A file of a package declares another package than its manifest entry names (in a package of one file too). |
+| `B0014` | Two files of a package disagree on a file-level annotation: different verification levels (`@runtime_checked`, `@proof_required`, `@axiom`), one annotation with different arguments, or one of `@test_module` / `@bench_module` / `@contract_source` that some files carry and others do not. (`@pure` in one file and `@io` in another is `Y0009`.) |
 
 ### NPM restore diagnostics (B006x)
 

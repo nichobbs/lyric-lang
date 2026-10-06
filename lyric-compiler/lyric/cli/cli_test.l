@@ -18,7 +18,7 @@ import Lyric.Pipeline as Pipe
 import Lyric.TestSynth as TestSynth
 import Lyric.Repl as Repl
 import Lyric.Discovery as Disc
-import Lyric.CfgGate as CfgGate
+import Lyric.Parser as Parser
 import Lyric.Cfg as Cfg
 import Lyric.Workspace as Ws
 import Lyric.JacocoCobertura as Jc
@@ -987,10 +987,6 @@ func cmdTest(argv: in slice[String]): Int {
   }
 }
 
-// isCfgGatedOut and the directory-package assembly helpers moved to
-// `Lyric.CfgGate` (#1123, #1124) so they're independently testable and
-// the duplicate-`package`-declaration bug for multi-file directory
-// packages is fixed at the assembly level.
 // Resolve the output DLL path and package name for a local-path dependency
 // from its lyric.toml path and target file extension.  Both the pre-build
 // topo loop and the post-build resolve loop share this derivation.
@@ -1017,21 +1013,36 @@ func resolveDepDllPath(tomlPath: in String, ext: in String): Result[DepDllInfo, 
   Ok(value = DepDllInfo(dllPath = Path.join(binDir, dllName), pkgName = pkgName))
 }
 
+// A file of a library package: its path and contents.
+record LibFile {
+  path: String
+  contents: String
+}
+
+// Whether `source`'s file-level `@cfg` turns it off for `activeWithTarget`
+// (the build's features plus its `target.<name>` pseudo-feature), decided on
+// its parse, so a `@cfg` inside a comment is no annotation.
+func fileCfgGatedOut(source: in String, activeWithTarget: in List[String]): Bool {
+  val noDeclared: List[String] = newList()
+  Cfg.isFileCfgGatedOut(activeWithTarget, noDeclared, Parser.parse(source).file.fileAnnotations)
+}
+
 // Add a library package's files to `sources` / `paths`.  Files of a package
 // of several files all go to the build: its package merge parses each one,
 // holds it to the package, and drops a file whose file-level `@cfg` is off
-// for the build's features (`Lyric.PackageMerge`, #8234).  A package of one
-// file is compiled as written, so a file gated off by its `@cfg` is replaced
-// by an empty package that sibling imports still resolve to.
+// for the build's features and target (`Lyric.PackageMerge`, #8234).  A
+// package of one file is compiled as written, so a file gated off by its
+// `@cfg` is replaced by an empty package that sibling imports still resolve
+// to.
 func addPackageFiles(
-  files: in List[CfgGate.CfgGateFile],
+  files: in List[LibFile],
   pkgName: in String,
-  activeFeatures: in List[String],
+  activeWithTarget: in List[String],
   sources: in List[String],
   paths: in List[String],
 ): Unit {
-  if files.count == 1 and CfgGate.isCfgGatedOut(files[0].contents, activeFeatures) {
-    sources.add(CfgGate.emptyPackageStub(pkgName))
+  if files.count == 1 and fileCfgGatedOut(files[0].contents, activeWithTarget) {
+    sources.add("package " + pkgName + "\n")
     paths.add(files[0].path)
     return
   }
@@ -1226,7 +1237,7 @@ func cmdTestManifest(
       // Explicit file list (TOML array form): every named file goes to the
       // build, whose package merge parses each one and drops a file whose
       // file-level @cfg is off (`Lyric.PackageMerge`), as for a dir package.
-      val fileEntries: List[CfgGate.CfgGateFile] = newList()
+      val fileEntries: List[LibFile] = newList()
       var readFailed = false
       var fi = 0
       while fi < pkgEntry.paths.count {
@@ -1237,7 +1248,7 @@ func cmdTestManifest(
         }
         match File.readText(absFile) {
           case Ok(raw) -> match runSourceGenerators(raw, absFile, genMf, gens) {
-            case Some(t) -> fileEntries.add(CfgGate.CfgGateFile(path = absFile, contents = t))
+            case Some(t) -> fileEntries.add(LibFile(path = absFile, contents = t))
             case None -> {
               hadFatal = true
               readFailed = true
@@ -1252,7 +1263,7 @@ func cmdTestManifest(
         fi += 1
       }
       if not readFailed {
-        addPackageFiles(fileEntries, pkgEntry.name, activeFeatures, pkgSources, pkgPaths)
+        addPackageFiles(fileEntries, pkgEntry.name, cfgActiveWithTarget, pkgSources, pkgPaths)
       }
     } else {
       val abs = if Path.isAbsolute(pkgEntry.path) { pkgEntry.path } else { Path.join(mfDir, pkgEntry.path) }
@@ -1260,11 +1271,11 @@ func cmdTestManifest(
         match File.readText(abs) {
           case Ok(raw) -> {
             val t = match runSourceGenerators(raw, abs, genMf, gens) { case Some(g) -> g; case None -> { hadFatal = true; raw } }
-            if CfgGate.isCfgGatedOut(t, activeFeatures) {
+            if fileCfgGatedOut(t, cfgActiveWithTarget) {
               // Package is gated by an inactive feature: substitute an empty stub
               // so that imports of this package from sibling packages resolve, while
               // the @cfg-gated items in those packages are properly elided.
-              pkgSources.add(CfgGate.emptyPackageStub(pkgEntry.name))
+              pkgSources.add("package " + pkgEntry.name + "\n")
             } else {
               pkgSources.add(t)
             }
@@ -1295,13 +1306,13 @@ func cmdTestManifest(
           hadFatal = true
         } else {
           // Read every file first, then hand them all to the build together.
-          val fileEntries: List[CfgGate.CfgGateFile] = newList()
+          val fileEntries: List[LibFile] = newList()
           val sorted = sortFileList(lFiles)
           var readFailed = false
           for f in sorted {
             match File.readText(f) {
               case Ok(raw) -> match runSourceGenerators(raw, f, genMf, gens) {
-                case Some(t) -> fileEntries.add(CfgGate.CfgGateFile(path = f, contents = t))
+                case Some(t) -> fileEntries.add(LibFile(path = f, contents = t))
                 case None -> {
                   hadFatal = true
                   readFailed = true
@@ -1320,7 +1331,7 @@ func cmdTestManifest(
           // of a clear "read failed" error.  `hadFatal` is already set; downstream
           // packages skip importing this one.
           if not readFailed {
-            addPackageFiles(fileEntries, pkgEntry.name, activeFeatures, pkgSources, pkgPaths)
+            addPackageFiles(fileEntries, pkgEntry.name, cfgActiveWithTarget, pkgSources, pkgPaths)
           }
         }
       } else {

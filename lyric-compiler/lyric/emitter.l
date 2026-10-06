@@ -1200,7 +1200,7 @@ func loadCompilerPayloads(compilerDir: in String, testSource: in String): Discov
   while ni < ordered.count {
     val name = ordered[ni]
     val ridx = indexOfString(reg.names, name)
-    val merged = PM.mergeDiscoveredPackage(name, reg.sources[ridx], reg.paths[ridx])
+    val merged = PM.mergeDiscoveredPackage(name, reg.sources[ridx], reg.paths[ridx], "dotnet")
     if reportMergeDiagnostics(name, merged) {
       failed = true
     } else {
@@ -1438,7 +1438,7 @@ func loadStdlibPayloads(stdlibDir: in String, entrySource: in String): Discovere
   while ni < ordered.count {
     val name = ordered[ni]
     val ridx = indexOfString(regNames, name)
-    val merged = PM.mergeDiscoveredPackage(name, regSources[ridx], regPaths[ridx])
+    val merged = PM.mergeDiscoveredPackage(name, regSources[ridx], regPaths[ridx], "dotnet")
     if reportMergeDiagnostics(name, merged) {
       failed = true
     } else {
@@ -2029,6 +2029,53 @@ func failResultWith(msg: in String, extra: in List[Diagnostic]): EmitResult {
   res
 }
 
+// `target` as the name its `@cfg(target = ...)` atoms use.
+func compileTargetName(target: in CompileTarget): String {
+  match target {
+    case Dotnet -> "dotnet"
+    case Jvm -> "jvm"
+    case Native -> "native"
+  }
+}
+
+// One package of a project build, merged into one compilation unit.
+record MergedProjectPackage {
+  pkg: ProjectPackage
+  origins: List[DiagUtil.MergedLineOrigin]
+  failed: Bool
+}
+
+// Merge `pkg`'s files (`Lyric.PackageMerge`) and print the merge's
+// diagnostics.  A merged package of several files has no single on-disk path
+// (its `origins` attribute each line instead, #6282); a package of one file
+// keeps its own.
+func mergeProjectPackage(
+  pkg: in ProjectPackage,
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
+  targetName: in String,
+): MergedProjectPackage {
+  val res = PM.mergePackageFiles(pkg.name, pkg.sources, pkg.paths, activeFeatures, declaredFeatures, targetName)
+  val failed = reportMergeDiagnostics(pkg.name, res)
+  if pkg.sources.count <= 1 {
+    return MergedProjectPackage(pkg = pkg, origins = res.origins, failed = failed)
+  }
+  val merged: List[String] = newList()
+  merged.add(res.source)
+  val mergedPaths: List[String] = newList()
+  mergedPaths.add("")
+  MergedProjectPackage(
+    pkg = ProjectPackage(
+      name = pkg.name,
+      sources = merged,
+      paths = mergedPaths,
+      ioForbiddenReason = pkg.ioForbiddenReason
+    ),
+    origins = res.origins,
+    failed = failed
+  )
+}
+
 /// Compile a multi-package project to a single bundled DLL or JAR.
 ///
 /// `--target dotnet` runs IN-PROCESS via
@@ -2064,54 +2111,47 @@ pub func emitProject(req: in EmitProjectRequest): EmitResult {
   // their real on-disk file and line instead of falling back to the bare
   // package name.
   val pkgOrigins: List[DiagUtil.PackageLineOrigins] = newList()
+  val targetName = compileTargetName(req.target)
   var mergeFailed = false
-  var mi = 0
-  while mi < req.packages.count {
-    val pkg = req.packages[mi]
-    if pkg.sources.count > 1 {
-      val pkgFeatures = featuresForPackage(req, pkg.name)
-      val mergedRes = PM.mergePackageFiles(pkg.name, pkg.sources, pkg.paths, pkgFeatures.active, pkgFeatures.declared)
-      if reportMergeDiagnostics(pkg.name, mergedRes) {
-        mergeFailed = true
-      }
-      val merged: List[String] = newList()
-      merged.add(mergedRes.source)
-      // No single on-disk path names the merged unit as a whole (it may
-      // draw from several files) — `mergedRes.origins` carries the real
-      // per-line attribution instead (#6282).
-      val mergedPaths: List[String] = newList()
-      mergedPaths.add("")
-      mergedPkgs.add(
-        ProjectPackage(name = pkg.name, sources = merged, paths = mergedPaths, ioForbiddenReason = pkg.ioForbiddenReason)
-      )
-      pkgOrigins.add(DiagUtil.PackageLineOrigins(origins = mergedRes.origins))
-    } else {
-      mergedPkgs.add(pkg)
-      pkgOrigins.add(DiagUtil.PackageLineOrigins(origins = newList()))
+  for pkg in req.packages {
+    val pkgFeatures = featuresForPackage(req, pkg.name)
+    val m = mergeProjectPackage(pkg, pkgFeatures.active, pkgFeatures.declared, targetName)
+    if m.failed {
+      mergeFailed = true
     }
-    mi = mi + 1
+    mergedPkgs.add(m.pkg)
+    pkgOrigins.add(DiagUtil.PackageLineOrigins(origins = m.origins))
   }
-  // The dependency packages whose aspect templates the weaver reads (#3498)
-  // are merged the same way, gated by the request's active features as
-  // before.  A dependency's `@cfg` names the dependency's own features, so
-  // this manifest's `[features]` is no F0013 guard for them.
+  // The dependency packages whose aspect templates the weaver reads (#3498).
+  // On the JVM and native targets a dependency is also one of
+  // `req.packages`; it is merged once and the weaver reads the unit the
+  // backend compiles.  Otherwise it is merged with its own features when the
+  // request carries them (a dependency's `@cfg` names the dependency's
+  // features, so this manifest's `[features]` is no F0013 guard for it).
   val mergedDepTemplates: List[ProjectPackage] = newList()
-  val noDeclared: List[String] = newList()
   for dep in req.depTemplateSrcs {
-    if dep.sources.count > 1 {
-      val depRes = PM.mergePackageFiles(dep.name, dep.sources, dep.paths, req.activeFeatures, noDeclared)
-      if reportMergeDiagnostics(dep.name, depRes) {
+    var reused = false
+    for done in mergedPkgs {
+      if not reused and done.name == dep.name {
+        mergedDepTemplates.add(done)
+        reused = true
+      }
+    }
+    if not reused {
+      val noDeclared: List[String] = newList()
+      var depActive = req.activeFeatures
+      var depDeclared = noDeclared
+      for pf in req.packageFeatures {
+        if pf.packageName == dep.name {
+          depActive = pf.active
+          depDeclared = pf.declared
+        }
+      }
+      val m = mergeProjectPackage(dep, depActive, depDeclared, targetName)
+      if m.failed {
         mergeFailed = true
       }
-      val depMerged: List[String] = newList()
-      depMerged.add(depRes.source)
-      val depPaths: List[String] = newList()
-      depPaths.add("")
-      mergedDepTemplates.add(
-        ProjectPackage(name = dep.name, sources = depMerged, paths = depPaths, ioForbiddenReason = dep.ioForbiddenReason)
-      )
-    } else {
-      mergedDepTemplates.add(dep)
+      mergedDepTemplates.add(m.pkg)
     }
   }
   if mergeFailed {
@@ -2976,7 +3016,7 @@ pub func emitNativeProjectWithShape(
     val depFeatures = depPackageFeaturesFor(packageFeatures, pkg.name)
     val pkgActive = match depFeatures { case Some(pf) -> pf.active; case None -> activeFeatures }
     val pkgDeclared = match depFeatures { case Some(pf) -> pf.declared; case None -> declaredFeatures }
-    val mergedRes = PM.mergePackageFiles(pkg.name, pkg.sources, pkg.paths, pkgActive, pkgDeclared)
+    val mergedRes = PM.mergePackageFiles(pkg.name, pkg.sources, pkg.paths, pkgActive, pkgDeclared, "native")
     if reportMergeDiagnostics(pkg.name, mergedRes) {
       mergeFailed = true
     }

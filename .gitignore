@@ -120,3 +120,6 @@ worktrees/
 .worktrees/
 # scripts/bootstrap.sh's filtered seed manifest (removed after each run).
 lyric-stdlib/.lyric.seed.toml
+
+# `lyric bench` build output
+.lyric-bench/
