@@ -421,17 +421,18 @@ test "single-file dotnet build routed through the project path (nearby [features
 }
 
 // #6282 regression coverage: a multi-file [project.packages] entry whose
-// SECOND file carries a parse error. Before this fix, `mergePackageSources`
+// SECOND file carries a parse error. Before #6282, the package merge
 // textually concatenated every file's body into one synthetic blob before
 // parsing, so `Position.line` was relative to that blob, not to any file on
 // disk — the diagnostic named a line number that did not exist in `b.l` at
 // all (the issue's own repro: a 6-line file reported as "line 18") and
-// never named a file, only the bare package name. `mergePackageSourcesWithOrigins`
-// (`Lyric.Emitter`) now records, for every line of the merged blob, which
-// on-disk file and original line it came from; `Lyric.DiagnosticUtil
-// .diagFormatWithOrigin` consults that table when rendering a diagnostic
-// instead of the merged blob's own numbering, so this asserts the actual
-// file AND the actual line — not just the package label.
+// never named a file, only the bare package name. The merge now parses each
+// file on its own first (`Lyric.PackageMerge`, #8234), so a file that does not
+// parse is reported against its own path and position, and it records, for
+// every line of the merged unit, which on-disk file and original line it came
+// from (`Lyric.DiagnosticUtil.diagFormatWithOrigin` consults that table for
+// the later phases), so this asserts the actual file AND the actual line —
+// not just the package label.
 test "multi-file project package: a parse error in the second file names that file and its real line (#6282)" {
   val dir = freshTempDir("mf")
   defer {
@@ -588,7 +589,7 @@ test "multi-file project package: a type error in the second file names that fil
 }
 
 // #6282's "Acceptance" bullet: single-file packages must be entirely
-// unaffected by the multi-file origin machinery — `mergePackageSourcesWithOrigins`
+// unaffected by the multi-file origin machinery — `Lyric.PackageMerge.mergePackageFiles`
 // returns early with an empty origins list at `sources.count == 1`, so this
 // asserts the plain single-file project-routed case still reports the real
 // path with no behaviour change (mirrors the #6610 test above, but through
@@ -613,7 +614,8 @@ test "single-file project package (one entry in [project.packages]): a parse err
     "name = \"MfSingle\"\n" +
     "\n" +
     "[project.packages]\n" +
-    "\"MfSingle\" = [\"src/a.l\"]\n" +
+    // The entry names the package `brokenSource()` declares (B0013 otherwise).
+    "\"Bad\" = [\"src/a.l\"]\n" +
     "\n" +
     "[dependencies]\n" +
     "Std = \"*\"\n"

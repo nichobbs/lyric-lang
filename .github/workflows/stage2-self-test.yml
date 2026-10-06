@@ -187,7 +187,6 @@ jobs:
             lyric-compiler/lyric/fmt_self_test.l \
             lyric-compiler/lyric/verifier_self_test.l \
             lyric-compiler/lyric/weaver_self_test.l \
-            lyric-compiler/lyric/cfg_gate_self_test.l \
             lyric-compiler/lyric/bitwise_self_test.l \
             lyric-compiler/lyric/aspect_weave_self_test.l \
             lyric-compiler/lyric/pattern_lowering_self_test.l ; do

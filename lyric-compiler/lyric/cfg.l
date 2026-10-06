@@ -82,9 +82,8 @@ func evalCfgPredicate(
       }
       match value {
         case AVString(rawName, _) -> {
-          // A caller that evaluates before the target is known (the multi-file
-          // package merge) treats every `target = "X"` as active; the real
-          // per-target erasure runs later.
+          // A caller that only wants the predicate's diagnostics
+          // (`fileCfgDiagnostics`) treats every `target = "X"` as active.
           if argName == "target" and assumeTargets {
             return true
           }
@@ -298,40 +297,10 @@ pub func applyCfgErasure(active: in List[String], declared: in List[String], sf:
   CfgErasureResult(file = filtered, diagnostics = allDiags)
 }
 
-/// Whether the file-level `@cfg(...)` lines in `cfgLines` (one annotation per
-/// line, as written before `package`) erase the whole file against `active`.
-/// For the callers that gate a source file by text before it is parsed (the
-/// multi-file package merge, the test runner): the real predicate grammar
-/// (`feature`, `any`/`all`/`not`) is evaluated rather than a prefix match. A
-/// `target = "X"` atom counts as active here, since the target is not known
-/// yet and per-target erasure runs after the merge; a malformed predicate keeps
-/// the file, like `applyCfgErasure`.
-pub func cfgLinesGateFileOut(cfgLines: in String, active: in List[String]): Bool {
-  val pr = parse(cfgLines + "\npackage CfgGate\n")
-  val noDeclared: List[String] = newList()
-  // A predicate that mentions a `target` atom cannot be decided before the
-  // target is known (`not(target = "jvm")` would invert the placeholder), so
-  // it never gates the file out here; per-target erasure decides it later.
-  val decidable: List[Annotation] = newList()
-  for a in pr.file.fileAnnotations {
-    if not (isCfgAnnotation(a) and a.args.count == 1 and predicateMentionsTarget(a.args[0])) {
-      decidable.add(a)
-    }
-  }
-  not classifyAnnotations(active, noDeclared, true, decidable).keep
-}
-
-func predicateMentionsTarget(arg: in AnnotationArg): Bool {
-  match arg {
-    case AAName(argName, _, _) -> argName == "target"
-    case AACall(_, operands, _) -> {
-      for op in operands {
-        if predicateMentionsTarget(op) {
-          return true
-        }
-      }
-      false
-    }
-    case _ -> false
-  }
+/// The `F0012` / `F0013` diagnostics of the file-level `@cfg` annotations in
+/// `fileAnnotations`, against the manifest's `declared` features (`F0013` is
+/// off when `declared` is empty).  For the multi-file package merge, whose
+/// merged unit carries no file-level `@cfg` for `applyCfgErasure` to check.
+pub func fileCfgDiagnostics(declared: in List[String], fileAnnotations: in List[Annotation]): List[Diagnostic] {
+  classifyAnnotations(declared, declared, true, fileAnnotations).diagnostics
 }

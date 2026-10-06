@@ -59,6 +59,7 @@ for t in \
   lyric-compiler/lyric/module_val_destructure_self_test.l \
   lyric-compiler/lyric/cfg_self_test.l \
   lyric-compiler/lyric/cfg_single_file_self_test.l \
+  lyric-compiler/lyric/package_merge_self_test.l \
   lyric-compiler/lyric/lint_self_test.l \
   lyric-compiler/lyric/build_defines_self_test.l \
   lyric-compiler/lyric/derives_self_test.l \
@@ -294,6 +295,15 @@ if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
   echo "=== scripts/ci/println-stringify-e2e.sh ==="
   LYRIC_BIN="$lyric_bin" bash scripts/ci/println-stringify-e2e.sh
   ran="$ran println-stringify-e2e"
+fi
+# #8234: a package of several files builds from its files' own parses (a
+# header block comment stays a comment; a file of another package is B0013),
+# both targets (Java 21, as above).
+idx=$((idx + 1))
+if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
+  echo "=== scripts/ci/multi-file-package-merge-e2e.sh ==="
+  LYRIC_BIN="$lyric_bin" bash scripts/ci/multi-file-package-merge-e2e.sh dotnet jvm
+  ran="$ran multi-file-package-merge-e2e"
 fi
 if [[ -z "$ran" ]]; then
   echo "::error::shard ${SHARD_K}/${SHARD_N} selected no files" >&2

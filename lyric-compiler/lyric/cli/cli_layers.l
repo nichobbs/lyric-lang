@@ -99,7 +99,8 @@ func checkProjectLayers(
         name = pkg.name,
         sources = pkg.sources,
         paths = pkg.paths,
-        ioForbiddenReason = unwrapOr(mapGet(reasons, pkg.name), "")
+        ioForbiddenReason = unwrapOr(mapGet(reasons, pkg.name), ""),
+        nameFromManifest = pkg.nameFromManifest
       )
     )
   }

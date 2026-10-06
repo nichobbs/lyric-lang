@@ -76,6 +76,11 @@ test "packageNameOf: inline comment stripped from package line" {
   assertEqual(Release.packageNameOf("package Demo // entry point\n"), "Demo", "inline comment stripped")
 }
 
+test "packageNameOf: a package line inside a comment, and a one-line header (#8234)" {
+  assertEqual(Release.packageNameOf("/*\npackage Old\n*/\npackage Mf\n"), "Mf", "commented-out package line")
+  assertEqual(Release.packageNameOf("package Mf; func main(): Unit { }\n"), "Mf", "one-line header")
+}
+
 test "declaresEntryMain: func main() inside a triple-quoted string is not an entry (#3215)" {
   val src = "package P\nval readme = \"\"\"\nfunc main()\n\"\"\"\n"
   assertTrue(not Release.declaresEntryMain(src), "func main() inside a triple-quoted literal is documentation")

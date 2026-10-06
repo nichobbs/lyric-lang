@@ -154,8 +154,8 @@ deferred to Phase 3 by design.
 |---|---|---|
 | Supply-chain integrity — `lyric.lock` SHA-512 populated + verified (`--locked`): `Std.HashHost` (`SHA512.HashData` + `Convert.ToHexString`) + `Std.Hash` (`sha512OfBytes`, `sha512OfFile`); CLI restore writes digest for every dep (path/workspace/git on `lyric.toml`, registry on `.nupkg` post `dotnet restore` honouring `NUGET_PACKAGES`); four-way mismatch matrix in `--locked` mode | **Shipped** (PR #804) | #738 |
 | M5.1 stage 1 — self-hosted lexer (subset; co-resident with self-test) | **Shipped** | D-progress-093 |
-| M5.1 stage 2a — multi-file packages | **Shipped** | D-progress-094 |
-| M5.1 stage 2a' — B0010 / B0011 / B0012 multi-file conflict diagnostics | **Shipped** | D-progress-095 |
+| M5.1 stage 2a — multi-file packages | **Shipped**; merged from the files' parses since #8234 (B0013 / B0014) | D-progress-094, D180 |
+| M5.1 stage 2a' — B0010 / B0011 / B0012 multi-file conflict diagnostics | **Shipped** in the removed F# emitter. The self-hosted compiler raises B0012 (#8234); a duplicate across files is T0001; B0010 cannot arise (docs/19 §3) | D-progress-095, D180 |
 | M5.1 stage 2b — split lexer into reusable `Lyric.Lexer` library | **Shipped** (PR #127) | D-progress-095 |
 | M5.1 stage 2b' — codegen polish: EIf merge-balance + tuple/field TypeBuilder paths | **Shipped** (PR #127) | D-progress-095 |
 | M5.1 stage 2c.1 — `internal` visibility tier (parser + AST + contract metadata exclusion) | **Shipped** (PR #129) | D-progress-096 |

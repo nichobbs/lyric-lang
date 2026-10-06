@@ -175,7 +175,7 @@ always compiles the whole reachable world from source, the same way
 `[project.packages]` (§3, this document's core subject) now works
 identically for native as of #6809 — `Lyric.Emitter.emitNativeProject`
 resolves the SAME `pkgs: List[ProjectPackage]` list §4 below describes,
-merged the same way (`mergePackageSources`), through
+merged the same way (`Lyric.PackageMerge.mergePackageFiles`, #8234), through
 `Lyric.LlvmBridge.compileProjectToNativeWithFlags` instead of
 `Msil.Bridge`/`Jvm.Bridge`. Cross-project `[dependencies]` (§3.1) are
 NOT yet resolved for native — tracked as a follow-up in issue #6815 item

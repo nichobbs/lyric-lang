@@ -56,6 +56,7 @@ import Lyric.ContractMeta as Meta
 import Lyric.RestoredPackages as RP
 import Lyric.DiagnosticUtil as DiagUtil
 import Lyric.Pipeline as Pipe
+import Lyric.PackageMerge as PM
 import Msil.Bridge as MsilBridge
 import Jvm.Bridge as JvmBridge
 import Lyric.LlvmBridge as LlvmBridge
@@ -123,8 +124,9 @@ pub record CompilerClosureResult {
 
 /// Per-package source feed for `emitProject`.  Each package's `sources` list
 /// holds the `.l` file contents in deterministic order; `emitProject` merges
-/// a multi-file package into one compilation unit (single `package` line,
-/// union of import preambles, header-stripped bodies — #2575) before
+/// a multi-file package into one compilation unit from the files' own parses
+/// (`Lyric.PackageMerge`: one `package` line, the union of the files'
+/// annotations and imports, then each file's items — #2575, #8234) before
 /// dispatching to a backend.
 pub record ProjectPackage {
   name: String
@@ -133,11 +135,11 @@ pub record ProjectPackage {
   /// §9.7). "" marks an unknown/synthetic source (ad-hoc compiles, tests).
   /// A `ProjectPackage` with `sources.count > 1` is a genuinely multi-file
   /// package; `paths` for those is conventionally `[""]` once
-  /// `mergePackageSources`/`mergePackageSourcesWithOrigins` has collapsed
+  /// `Lyric.PackageMerge.mergePackageFiles` has collapsed
   /// the files into one blob — no single on-disk path names the merged
   /// blob as a whole. `emitProject`'s pre-merge carries the real per-file
-  /// attribution separately instead, via `mergePackageSourcesWithOrigins`'s
-  /// `MergedPackageSource.origins` table (#6282/D-progress-868) — `paths`
+  /// attribution separately instead, via `mergePackageFiles`'s
+  /// `PackageMergeResult.origins` table (#6282/D-progress-868) — `paths`
   /// alone was never extended to cover the multi-file case, but the
   /// merged package is no longer unattributed.
   paths: List[String]
@@ -145,6 +147,10 @@ pub record ProjectPackage {
   /// (docs/65 §5, D149), e.g. "layer 'logic'"; "" when it may.  Passed to
   /// `Lyric.Pipeline.MiddleEndOptions.ioForbiddenReason` by every backend.
   ioForbiddenReason: String = ""
+  /// Whether `name` is a manifest entry's key, so even a one-file package is
+  /// held to it (B0013); false when the caller took the name from the
+  /// source itself.
+  nameFromManifest: Bool = false
 }
 
 pub record EmitProjectRequest {
@@ -881,144 +887,17 @@ func writeTempSource(source: in String, assemblyName: in String): Result[String,
 // ─────────────────────────────────────────────────────────────────────────────
 // §3b. LYRIC_LOAD_COMPILER helpers
 // ─────────────────────────────────────────────────────────────────────────────
-// Scan `source` for the first line that starts with "package " and return
-// the declared package name.  Returns "" if no such line is found.
-// Used by `emitMsilInProcess` (LYRIC_LOAD_COMPILER=1) to build the correct
-// `ProjectPackagePayload` name when the declared package name differs from
-// the CLI-chosen assembly stem (`stem = stemOf(basename, 2)`).
+// The package `source` declares, read from its header (`Lyric.PackageMerge.
+// scanHeader`); "" when it declares none.  Used where only a file's package
+// is needed: grouping the stdlib and compiler trees' files into packages, and
+// naming a single-source build's package.
 func extractPackageName(source: in String): String {
-  val prefix = "package "
-  val lines = splitHeader(source).headerLines
-  var i = 0
-  while i < lines.count {
-    val line = lines[i]
-    if line.length > prefix.length and Str.startsWith(line, prefix) {
-      return line.substring(prefix.length, line.length - prefix.length)
-    }
-    i = i + 1
-  }
-  ""
+  PM.scanHeader(source).packageName
 }
 
-// Return `source` with every line beginning with "package " or "import "
-// removed.  Used to strip the redundant preamble from files 2-N when
-// merging a multi-file package (e.g. `Lyric.Parser`'s five `.l` files)
-// into a single source string for the bridge.
-// Extract file-level annotation lines (the `@...` lines that appear before
-// the `package` declaration) from a Lyric source file.  These are stripped by
-// `stripPackageAndImports` so they don't dangle mid-concatenation; they must
-// be re-added to the reconstructed payload header so the mode checker sees the
-// correct verification level (e.g. `@axiom` for kernel packages).
-func extractFileLevelAnnotations(source: in String): String {
-  val lines: List[String] = newList()
-  val header = splitHeader(source).headerLines
-  var i = 0
-  while i < header.count {
-    val line = header[i]
-    if Str.startsWith(line, "package ") {
-      return Str.joinList("\n", lines)
-    }
-    if Str.startsWith(line, "@") {
-      lines.add(line)
-    }
-    i = i + 1
-  }
-  Str.joinList("\n", lines)
-}
-
-// A source file split at the end of its header (`SourceFile`, docs/grammar.ebnf):
-// `headerLines` are the lines up to and including the last `import`, in
-// order, and `bodyStart` is the offset of the first item line (-1 when the
-// file has none).  `package` and `import` lines can only occur in the header,
-// so the helpers below never scan an item body line by line: on a large file
-// that per-line pass (and re-joining every line) dominated a multi-package
-// build.  A body line that merely starts with `import ` inside a multi-line
-// string is also left alone.
-record HeaderSplit {
-  headerLines: List[String]
-  bodyStart: Int
-}
-
-func splitHeader(source: in String): HeaderSplit {
-  val lines: List[String] = newList()
-  var lineStart = 0
-  var pos = 0
-  var seenPackage = false
-  var inBlockComment = false
-  while pos <= source.length {
-    val atEnd = pos == source.length
-    val isNewline = not atEnd and source.substring(pos, 1) == "\n"
-    if atEnd or isNewline {
-      val lineLen = pos - lineStart
-      val line = if lineLen > 0 { source.substring(lineStart, lineLen) } else { "" }
-      val trimmed = Str.trim(line)
-      var inHeader = true
-      if inBlockComment {
-        if Str.contains(trimmed, "*/") {
-          inBlockComment = false
-        }
-      } else if seenPackage {
-        if Str.startsWith(trimmed, "/*") {
-          inBlockComment = not Str.contains(trimmed, "*/")
-        } else if not (trimmed.length == 0 or Str.startsWith(trimmed, "//") or Str.startsWith(trimmed, "import ") or Str.startsWith(trimmed, "pub use ")) {
-          inHeader = false
-        }
-      } else if Str.startsWith(line, "package ") {
-        seenPackage = true
-      }
-      if not inHeader {
-        return HeaderSplit(headerLines = lines, bodyStart = lineStart)
-      }
-      lines.add(line)
-      lineStart = pos + 1
-    }
-    pos = pos + 1
-  }
-  HeaderSplit(headerLines = lines, bodyStart = -1)
-}
-
-// Whether header line `line` is dropped when a file's body is merged into a
-// multi-file package: `package` / `import` lines (each file re-declares
-// them) and `//!` module-doc lines.  A multi-file package's bodies are
-// concatenated into one source; a `//!` is only valid *before* `package`, so
-// any `//!` left in a stripped body would land mid-stream once concatenated
-// and parse as `P0040` "expected an item declaration".  The on-disk files
-// keep their `//!`; only this in-memory concatenation drops it.
-//
-// The same applies to a **file-level annotation** before `package`
-// (`@runtime_checked`, `@proof_required`, …): it annotates the module, so
-// once `package` is stripped it would dangle and parse as `P0040`.
-// Item-level annotations (after `package`) must be kept, so only `@` lines
-// seen *before* the package decl are dropped.
-func headerLineDropped(line: in String, seenPackage: in Bool): Bool {
-  Str.startsWith(line, "package ") or Str.startsWith(line, "import ") or Str.startsWith(line, "//!") or
-    (not seenPackage and Str.startsWith(line, "@"))
-}
-
-func stripPackageAndImports(source: in String): String {
-  val split = splitHeader(source)
-  val kept: List[String] = newList()
-  var seenPackage = false
-  var i = 0
-  while i < split.headerLines.count {
-    val line = split.headerLines[i]
-    if not headerLineDropped(line, seenPackage) {
-      kept.add(line)
-    }
-    if Str.startsWith(line, "package ") {
-      seenPackage = true
-    }
-    i = i + 1
-  }
-  if split.bodyStart >= 0 {
-    kept.add(source.substring(split.bodyStart, source.length - split.bodyStart))
-  }
-  Str.joinList("\n", kept)
-}
-
-// Given an `import ...` line, return the imported package path (the
-// segment before any ` as <alias>` suffix).  Returns "" for any line
-// that is not an import.  E.g. `import Lyric.ContractMeta as Meta` ->
+// Given an `import ...` declaration, return the imported package path (the
+// segment before any ` as <alias>` suffix).  Returns "" for anything that is
+// not an import.  E.g. `import Lyric.ContractMeta as Meta` ->
 // "Lyric.ContractMeta"; `import Std.Core` -> "Std.Core".
 func importLinePackage(line: in String): String {
   val trimmed = Str.trim(line)
@@ -1029,7 +908,7 @@ func importLinePackage(line: in String): String {
   val pfxLen = prefix.length
   val rest = Str.trim(trimmed.substring(pfxLen, trimmed.length - pfxLen))
   // The package path is the first whitespace-delimited token; an ` as
-  // <alias>` clause (or a trailing comment) follows a space.
+  // <alias>` clause follows a space.
   val parts = Str.split(rest, " ")
   if parts.length == 0 {
     return ""
@@ -1037,10 +916,10 @@ func importLinePackage(line: in String): String {
   Str.trim(parts[0])
 }
 
-// The alias an `import ... as X` line binds, or "" for the bare form.
+// The alias an `import ... as X` declaration binds, or "" for the bare form.
 // Used so import dedup keys on (package, alias): two files importing the
 // same module under different aliases each keep their form (#2699) while
-// byte-duplicate import lines still collapse to one.
+// duplicate imports still collapse to one.
 func importLineAlias(line: in String): String {
   val trimmed = Str.trim(line)
   val parts = Str.split(trimmed, " as ")
@@ -1050,24 +929,19 @@ func importLineAlias(line: in String): String {
   Str.trim(parts[parts.length - 1])
 }
 
-// Append every distinct `import ...` line in `source` to `acc`,
-// deduplicating by the (module path, alias) pair.  Byte-duplicate import
-// lines collapse to one, while `import Std.Core` and `import Std.Core as C`
-// are distinct binding forms that both survive — each contributing file's
-// alias references stay resolvable in the merged preamble (#2699).
+// Append every distinct import `source`'s header declares to `acc`,
+// deduplicating by the (module path, alias) pair: `import Std.Core` and
+// `import Std.Core as C` are distinct binding forms and both survive (#2699).
+// For computing a package's import closure from its files; the merge itself
+// unites the parsed imports (`Lyric.PackageMerge`).
 func collectImportLines(source: in String, acc: in List[String]) {
-  val lines = splitHeader(source).headerLines
+  val decls = PM.scanHeader(source).imports
   var i = 0
-  while i < lines.count {
-    val line = lines[i]
-    val trimmed = Str.trim(line)
-    if Str.startsWith(trimmed, "import ") {
-      // Dedup on the (package, alias) pair: identical import lines collapse,
-      // but `import Std.Core` and `import Std.Core as C` are distinct binding
-      // forms and must BOTH survive — dropping the aliased form breaks every
-      // `C.foo` reference in the file that wrote it (#2699).
-      val pkg = importLinePackage(trimmed)
-      val aliasName = importLineAlias(trimmed)
+  while i < decls.count {
+    val decl = Str.trim(decls[i])
+    if Str.startsWith(decl, "import ") {
+      val pkg = importLinePackage(decl)
+      val aliasName = importLineAlias(decl)
       var seen = false
       var j = 0
       while j < acc.count {
@@ -1077,7 +951,7 @@ func collectImportLines(source: in String, acc: in List[String]) {
         j = j + 1
       }
       if not seen {
-        acc.add(trimmed)
+        acc.add(decl)
       }
     }
     i = i + 1
@@ -1096,278 +970,29 @@ func indexOfString(list: in List[String], s: in String): Int {
   -1
 }
 
-// Merge a package's source files into ONE valid compilation unit: the first
-// file's file-level annotations + a single `package` declaration, the union
-// of every file's `import` lines, then each file's body with its
-// `package` / `import` / `//!` preamble stripped.  This is the same shape
-// `loadCompilerPayloads` / `loadStdlibPayloads` produce in their payload
-// pass — without it, file 2's `package` line lands mid-unit and the parser
-// rejects the bundle with a P0040 cascade (#2575).  A single source is
-// returned verbatim so its diagnostics keep exact line numbers.
-// Like extractFileLevelAnnotations but excludes @cfg(...) lines.  File-level
-// @cfg annotations are per-file gates and must NOT propagate to the merged
-// package header — mergePackageSources applies them per-file via
-// fileIsCfgErasedByFeatures instead.  Non-cfg module-level annotations like
-// @runtime_checked or @proof_required from sources[0] ARE kept in the header
-// because they annotate the whole merged package.
-func extractNonCfgFileLevelAnnotations(source: in String): String {
-  val lines: List[String] = newList()
-  var lineStart = 0
-  var pos = 0
-  var done = false
-  while pos <= source.length and not done {
-    val atEnd = pos == source.length
-    val isNewline = not atEnd and source.substring(pos, 1) == "\n"
-    if atEnd or isNewline {
-      val lineLen = pos - lineStart
-      val line = if lineLen > 0 { source.substring(lineStart, lineLen) } else { "" }
-      if Str.startsWith(line, "package ") {
-        done = true
-      } else if Str.startsWith(line, "@") and not Str.startsWith(line, "@cfg(") {
-        lines.add(line)
-      }
-      lineStart = pos + 1
-    }
-    pos = pos + 1
+// Print a package merge's diagnostics (`Lyric.PackageMerge`) to stderr, each
+// against its own file, and return whether any is an error.
+func reportMergeDiagnostics(packageName: in String, r: in PM.PackageMergeResult): Bool {
+  for d in r.diagnostics {
+    Console.error(PM.mergeDiagnosticText(packageName, d))
   }
-  Str.joinList("\n", lines)
+  PM.mergeHasErrors(r)
 }
 
-// Remove every space and tab character from `s`.  Used to normalise
-// `@cfg(...)` annotation spacing before prefix-matching (#4525) — feature
-// names are plain identifiers, so stripping whitespace throughout the
-// annotation text cannot merge two distinct feature names together.
-func stripSpacesAndTabs(s: in String): String {
-  var result = ""
-  var i = 0
-  while i < s.length {
-    val ch = s.substring(i, 1)
-    if ch != " " and ch != "\t" {
-      result = result + ch
-    }
-    i = i + 1
+// The single compilation unit of a package `emitProject` has already merged
+// (`emitProject` merges every package of more than one file, and the
+// dependency packages in `depTemplateSrcs`, before dispatching).
+func unitSource(pkg: in ProjectPackage): String {
+  if pkg.sources.count > 1 {
+    panic(
+      "Lyric.Emitter: package '" + pkg.name + "' reached a backend unmerged; emitProject merges every multi-file package"
+    )
   }
-  result
-}
-
-// Returns true if the source file's file-level @cfg(...) annotations erase it
-// against activeFeatures (any predicate Lyric.Cfg understands: feature = "X",
-// any/all/not compositions; a target atom counts as active here).  Used by mergePackageSources to skip bodies of
-// cfg-erased files so their items don't appear ungated in the merged unit.
-//
-// Matching is whitespace-tolerant: `@cfg(feature="X")`, `@cfg( feature = "X" )`,
-// and the canonical formatter spacing `@cfg(feature = "X")` are all recognised
-// (spaces/tabs are stripped before prefix-matching), so a hand-written or
-// externally-generated file with different spacing conventions doesn't
-// silently skip erasure (#4525).
-func fileIsCfgErasedByFeatures(source: in String, activeFeatures: in List[String]): Bool {
-  val ann = extractFileLevelAnnotations(source)
-  if Str.length(ann) == 0 {
-    return false
+  if pkg.sources.count == 1 {
+    pkg.sources[0]
+  } else {
+    ""
   }
-  val cfgLines: List[String] = newList()
-  for line in Str.split(ann, "\n") {
-    if Str.startsWith(stripSpacesAndTabs(Str.trim(line)), "@cfg(") {
-      cfgLines.add(line)
-    }
-  }
-  if cfgLines.count == 0 {
-    return false
-  }
-  Cfg.cfgLinesGateFileOut(Str.joinList("\n", cfgLines), activeFeatures)
-}
-
-// Merge `sources` into a single compilation unit string.  When `sources`
-// has a single entry it is returned verbatim (fast path).  For multiple
-// files:
-//
-//   * Non-@cfg file-level annotations (e.g. @runtime_checked) from
-//     sources[0] are kept in the merged header.
-//   * @cfg(feature = "X") file-level annotations are handled per-file:
-//     any file whose file-level @cfg is not satisfied by `activeFeatures`
-//     is skipped entirely (its items must not appear in the merged unit).
-//     This matches the semantics of Lyric.Cfg.applyCfgErasure operating on
-//     the SourceFile.fileAnnotations field — an erased file contributes
-//     zero declarations and must not suppress sibling files' declarations.
-//   * Import lines are deduplicated across all surviving files.
-//   * Bodies (items) from all surviving files are concatenated.
-//
-// `declaredFeatures` is accepted for API symmetry but unused here; the
-// per-file F0013 typo warning is emitted by applyCfgErasure in the bridge.
-func mergePackageSources(
-  fallbackName: in String,
-  sources: in List[String],
-  activeFeatures: in List[String],
-  declaredFeatures: in List[String],
-): String {
-  if sources.count == 0 {
-    return ""
-  }
-  if sources.count == 1 {
-    return sources[0]
-  }
-  val declared = extractPackageName(sources[0])
-  val name = if Str.length(declared) > 0 { declared } else { fallbackName }
-  val ann = extractNonCfgFileLevelAnnotations(sources[0])
-  val imports: List[String] = newList()
-  var bodies = ""
-  var i = 0
-  while i < sources.count {
-    val src = sources[i]
-    if not fileIsCfgErasedByFeatures(src, activeFeatures) {
-      collectImportLines(src, imports)
-      val body = stripPackageAndImports(src)
-      bodies = if Str.length(bodies) == 0 { body } else { bodies + "\n" + body }
-    }
-    i = i + 1
-  }
-  val header = if Str.length(ann) > 0 { ann + "\n" + "package " + name + "\n" } else { "package " + name + "\n" }
-  header + Str.joinList("\n", imports) + "\n" + bodies
-}
-
-// Like `stripPackageAndImports`, but also appends one `MergedLineOrigin`
-// per KEPT line to `originsOut`, parallel to the returned text's own
-// lines (#6282): `path` is the file's (possibly empty) on-disk source
-// path, and `originalLine` is the 1-based line number the kept line
-// occupied in `source` itself — the SAME line it will keep once `parse`
-// lexes the file standalone, since only whole lines are ever dropped
-// here (never split, reordered, or merged).
-func stripPackageAndImportsWithLines(
-  source: in String, path: in String, originsOut: in List[DiagUtil.MergedLineOrigin]
-): String {
-  val split = splitHeader(source)
-  val kept: List[String] = newList()
-  var seenPackage = false
-  var i = 0
-  while i < split.headerLines.count {
-    val line = split.headerLines[i]
-    if not headerLineDropped(line, seenPackage) {
-      kept.add(line)
-      originsOut.add(DiagUtil.MergedLineOrigin(path = path, originalLine = i + 1))
-    }
-    if Str.startsWith(line, "package ") {
-      seenPackage = true
-    }
-    i = i + 1
-  }
-  if split.bodyStart >= 0 {
-    kept.add(source.substring(split.bodyStart, source.length - split.bodyStart))
-    var lineNo = split.headerLines.count + 1
-    originsOut.add(DiagUtil.MergedLineOrigin(path = path, originalLine = lineNo))
-    var pos = split.bodyStart
-    while pos < source.length {
-      if source.substring(pos, 1) == "\n" {
-        lineNo = lineNo + 1
-        originsOut.add(DiagUtil.MergedLineOrigin(path = path, originalLine = lineNo))
-      }
-      pos = pos + 1
-    }
-  }
-  Str.joinList("\n", kept)
-}
-
-/// A multi-file package's merged source, alongside a per-merged-line
-/// provenance table (#6282/#6284): `origins[n - 1]` names the real on-disk
-/// file and line that merged line `n` (1-based) came from.  A line that
-/// belongs to the synthesized `package`/import prelude — or to a
-/// "\n"-join boundary the merge inserted after a `@cfg`-erased or
-/// otherwise empty file — carries `path = ""`, since no single file owns
-/// it.
-pub record MergedPackageSource {
-  source: String
-  origins: List[DiagUtil.MergedLineOrigin]
-}
-
-/// Like `mergePackageSources`, but also returns the per-merged-line
-/// provenance table described on `MergedPackageSource` (#6282).  `paths`
-/// is `sources`' parallel on-disk path list ("" for a source with no
-/// known path); a shorter or empty `paths` list is treated as every entry
-/// unknown, matching `mergePackageSources`'s callers.
-///
-/// Diagnostic rendering (`Lyric.DiagnosticUtil.diagFormatWithOrigin`)
-/// consults this table instead of the merged blob's own line numbering,
-/// which is meaningless to a reader — it exists only so every file in the
-/// package can type-check against the others' declarations in one pass.
-pub func mergePackageSourcesWithOrigins(
-  fallbackName: in String,
-  sources: in List[String],
-  paths: in List[String],
-  activeFeatures: in List[String],
-  declaredFeatures: in List[String],
-): MergedPackageSource {
-  val noOrigins: List[DiagUtil.MergedLineOrigin] = newList()
-  if sources.count == 0 {
-    return MergedPackageSource(source = "", origins = noOrigins)
-  }
-  if sources.count == 1 {
-    return MergedPackageSource(source = sources[0], origins = noOrigins)
-  }
-  val declared = extractPackageName(sources[0])
-  val name = if Str.length(declared) > 0 { declared } else { fallbackName }
-  val ann = extractNonCfgFileLevelAnnotations(sources[0])
-  val imports: List[String] = newList()
-  var bodies = ""
-  val bodyOrigins: List[DiagUtil.MergedLineOrigin] = newList()
-  var i = 0
-  while i < sources.count {
-    val src = sources[i]
-    val srcPath = if i < paths.count { paths[i] } else { "" }
-    if not fileIsCfgErasedByFeatures(src, activeFeatures) {
-      collectImportLines(src, imports)
-      val fileOrigins: List[DiagUtil.MergedLineOrigin] = newList()
-      val body = stripPackageAndImportsWithLines(src, srcPath, fileOrigins)
-      if Str.length(bodies) == 0 {
-        bodies = body
-      } else {
-        bodies = bodies + "\n" + body
-        // `bodies + "\n" + body` only inserts a genuinely NEW line (with
-        // no origin of its own) when `body` itself is empty — a
-        // non-empty `body`'s own first line absorbs the join directly.
-        if fileOrigins.count == 0 {
-          bodyOrigins.add(DiagUtil.MergedLineOrigin(path = "", originalLine = 0))
-        }
-      }
-      var oi = 0
-      while oi < fileOrigins.count {
-        bodyOrigins.add(fileOrigins[oi])
-        oi = oi + 1
-      }
-    }
-    i = i + 1
-  }
-  val header = if Str.length(ann) > 0 { ann + "\n" + "package " + name + "\n" } else { "package " + name + "\n" }
-  val headerText = header + Str.joinList("\n", imports) + "\n"
-  val allOrigins: List[DiagUtil.MergedLineOrigin] = newList()
-  var hi = 0
-  val headerLineCount = countLinesInText(headerText)
-  while hi < headerLineCount {
-    allOrigins.add(DiagUtil.MergedLineOrigin(path = "", originalLine = 0))
-    hi = hi + 1
-  }
-  var bi2 = 0
-  while bi2 < bodyOrigins.count {
-    allOrigins.add(bodyOrigins[bi2])
-    bi2 = bi2 + 1
-  }
-  MergedPackageSource(source = headerText + bodies, origins = allOrigins)
-}
-
-// Number of lines `text` occupies when concatenated directly onto more
-// text below it — i.e. the 1-based line number of the first character
-// AFTER `text` (assuming `text` itself starts at line 1), which is
-// exactly the count of "\n" bytes in `text` (a `text` that itself ends
-// with "\n", as `headerText` above always does, contributes no partial
-// trailing line to count separately).
-func countLinesInText(text: in String): Int {
-  var count = 0
-  var i = 0
-  while i < text.length {
-    if text.substring(i, 1) == "\n" {
-      count = count + 1
-    }
-    i = i + 1
-  }
-  count
 }
 
 // True when `pkg` is one of the self-hosted compiler namespaces that
@@ -1383,29 +1008,29 @@ func isCompilerPackage(pkg: in String): Bool {
 
 // The self-hosted compiler packages discovered under a `lyric-compiler/`
 // root, as parallel lists indexed by package: `names[i]`'s raw file
-// sources, its merged import lines, and its file-level annotation.
+// sources, their paths, and the union of their import declarations.
 record CompilerRegistry {
   names: List[String]
   sources: List[List[String]]
+  paths: List[List[String]]
   imports: List[List[String]]
-  annotations: List[String]
 }
 
 // Scan every compiler package under `compilerDir`.  Returns an empty
 // registry if the directory cannot be read or `Lyric.Lexer` is absent.
 func scanCompilerRegistry(compilerDir: in String): CompilerRegistry {
-  val emptyReg = CompilerRegistry(names = newList(), sources = newList(), imports = newList(), annotations = newList())
+  val emptyReg = CompilerRegistry(names = newList(), sources = newList(), paths = newList(), imports = newList())
   val files = match File.listFilesRecursive(compilerDir) { case Ok(fs) -> fs; case Err(_) -> return emptyReg }
 
   // Group each package's source files (sorted for determinism) into
-  // parallel lists: name, raw file sources, the union of import lines, and
-  // the file-level verification annotation (from the first file).  Bodies
-  // are NOT stripped here: only the closure's packages are ever
-  // materialised, and the scan covers the whole compiler tree.
+  // parallel lists: name, raw file sources, their paths, and the union of
+  // their imports.  Files are NOT parsed here: only the closure's packages
+  // are ever materialised (`loadCompilerPayloads` merges them through their
+  // parses), and the scan covers the whole compiler tree.
   val regNames: List[String] = newList()
   val regSources: List[List[String]] = newList()
+  val regPaths: List[List[String]] = newList()
   val regImports: List[List[String]] = newList()
-  val regAnnotations: List[String] = newList()
 
   val sortedFiles = sortStrings(files)
   var fi = 0
@@ -1432,12 +1057,14 @@ func scanCompilerRegistry(compilerDir: in String): CompilerRegistry {
       regNames.add(pkg)
       val srcs: List[String] = newList()
       regSources.add(srcs)
+      val srcPaths: List[String] = newList()
+      regPaths.add(srcPaths)
       val imps: List[String] = newList()
       regImports.add(imps)
-      regAnnotations.add(extractFileLevelAnnotations(src))
       idx = regNames.count - 1
     }
     regSources[idx].add(src)
+    regPaths[idx].add(path)
     collectImportLines(src, regImports[idx])
   }
 
@@ -1446,7 +1073,7 @@ func scanCompilerRegistry(compilerDir: in String): CompilerRegistry {
   if indexOfString(regNames, "Lyric.Lexer") < 0 {
     return emptyReg
   }
-  CompilerRegistry(names = regNames, sources = regSources, imports = regImports, annotations = regAnnotations)
+  CompilerRegistry(names = regNames, sources = regSources, paths = regPaths, imports = regImports)
 }
 
 // The import-closure of `testSource` over `reg`, in dependency order.
@@ -1545,45 +1172,47 @@ func orderedCompilerClosure(reg: in CompilerRegistry, testSource: in String): Li
   ordered
 }
 
+// The packages a per-package build compiles, in dependency order, each merged
+// into one compilation unit; `failed` when a package's files do not merge
+// (the merge's diagnostics are already on stderr).
+record DiscoveredPayloads {
+  payloads: List[MsilBridge.ProjectPackagePayload]
+  failed: Bool
+}
+
 // Discover the self-hosted compiler packages under `compilerDir` and
 // return `ProjectPackagePayload` entries for exactly the import-closure
 // of `testSource` — the packages it `import`s, plus their transitive
 // compiler-package dependencies.  Each package's several source files
-// are merged into one payload (union of import preambles + each file
-// body with its `package`/`import` lines stripped), so a multi-file
-// package such as `Lyric.Parser` or `Lyric.TypeChecker` resolves
-// without any hand-maintained file list.
+// are merged into one payload through their parses
+// (`Lyric.PackageMerge.mergeDiscoveredPackage`), so a multi-file package
+// such as `Lyric.Parser` or `Lyric.TypeChecker` resolves without any
+// hand-maintained file list.
 //
 // `*_self_test.l` / `*_ci_test.l` files are excluded from discovery
 // (they are programs, not library packages, and the module under test
-// is added separately by the caller).  Returns an empty list if the
+// is added separately by the caller).  Returns no payloads if the
 // directory cannot be read or `Lyric.Lexer` is absent.
-func loadCompilerPayloads(compilerDir: in String, testSource: in String): List[MsilBridge.ProjectPackagePayload] {
+func loadCompilerPayloads(compilerDir: in String, testSource: in String): DiscoveredPayloads {
   val reg = scanCompilerRegistry(compilerDir)
   val ordered = orderedCompilerClosure(reg, testSource)
 
-  // Materialise a payload per package in dependency order — optional
-  // file-level annotation, `package <name>`, import preamble, bodies.
+  // Materialise a payload per package in dependency order.
   val payloads: List[MsilBridge.ProjectPackagePayload] = newList()
+  var failed = false
   var ni = 0
   while ni < ordered.count {
     val name = ordered[ni]
     val ridx = indexOfString(reg.names, name)
-    val ann = reg.annotations[ridx]
-    val header = if Str.length(ann) > 0 { ann + "\n" + "package " + name + "\n" } else { "package " + name + "\n" }
-    val srcs = reg.sources[ridx]
-    var bodies = ""
-    var si = 0
-    while si < srcs.count {
-      val body = stripPackageAndImports(srcs[si])
-      bodies = if Str.length(bodies) == 0 { body } else { bodies + "\n" + body }
-      si = si + 1
+    val merged = PM.mergeDiscoveredPackage(name, reg.sources[ridx], reg.paths[ridx], "dotnet")
+    if reportMergeDiagnostics(name, merged) {
+      failed = true
+    } else {
+      payloads.add(MsilBridge.ProjectPackagePayload(name = name, source = merged.source))
     }
-    val combined = header + Str.joinList("\n", reg.imports[ridx]) + "\n" + bodies
-    payloads.add(MsilBridge.ProjectPackagePayload(name = name, source = combined))
     ni = ni + 1
   }
-  payloads
+  DiscoveredPayloads(payloads = payloads, failed = failed)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1658,7 +1287,8 @@ pub func locateStdlibDir(): String {
 // Discover the `Std.*` packages under `stdlibDir` and return
 // `ProjectPackagePayload` entries for exactly the import-closure of
 // `entrySource`, in dependency order.  Mirrors `loadCompilerPayloads` but for
-// stdlib: multi-file packages are merged by their declared `package` name.
+// stdlib: files are grouped by their declared `package` name and each package is
+// merged through its files' parses (`Lyric.PackageMerge.mergeDiscoveredPackage`).
 //
 // .NET-only: the JVM-only kernel files (`_kernel_jvm/`, `_kernel/jvm*.l`) are
 // dropped so they don't collide with their `_kernel/` counterparts.  Per-package
@@ -1667,14 +1297,17 @@ pub func locateStdlibDir(): String {
 // function only ever runs for `--target dotnet` — no target parameter is
 // threaded.  When JVM per-package emit is implemented, the kernel selection here
 // must become target-aware (skip `_kernel/`, keep `_kernel_jvm/`).
-func loadStdlibPayloads(stdlibDir: in String, entrySource: in String): List[MsilBridge.ProjectPackagePayload] {
+func loadStdlibPayloads(stdlibDir: in String, entrySource: in String): DiscoveredPayloads {
   val empty: List[MsilBridge.ProjectPackagePayload] = newList()
-  val files = match File.listFilesRecursive(stdlibDir) { case Ok(fs) -> fs; case Err(_) -> return empty }
+  val files = match File.listFilesRecursive(stdlibDir) {
+    case Ok(fs) -> fs
+    case Err(_) -> return DiscoveredPayloads(payloads = empty, failed = false)
+  }
 
   val regNames: List[String] = newList()
-  val regBodies: List[String] = newList()
+  val regSources: List[List[String]] = newList()
+  val regPaths: List[List[String]] = newList()
   val regImports: List[List[String]] = newList()
-  val regAnnotations: List[String] = newList()
 
   val sortedFiles = sortStrings(files)
   var fi = 0
@@ -1708,15 +1341,16 @@ func loadStdlibPayloads(stdlibDir: in String, entrySource: in String): List[Msil
     var idx = indexOfString(regNames, pkg)
     if idx < 0 {
       regNames.add(pkg)
-      regBodies.add("")
+      val srcs: List[String] = newList()
+      regSources.add(srcs)
+      val srcPaths: List[String] = newList()
+      regPaths.add(srcPaths)
       val imps: List[String] = newList()
       regImports.add(imps)
-      regAnnotations.add(extractFileLevelAnnotations(src))
       idx = regNames.count - 1
     }
-    val body = stripPackageAndImports(src)
-    val prior = regBodies[idx]
-    regBodies[idx] = if Str.length(prior) == 0 { body } else { prior + "\n" + body }
+    regSources[idx].add(src)
+    regPaths[idx].add(path)
     collectImportLines(src, regImports[idx])
   }
 
@@ -1803,17 +1437,20 @@ func loadStdlibPayloads(stdlibDir: in String, entrySource: in String): List[Msil
   }
 
   val payloads: List[MsilBridge.ProjectPackagePayload] = newList()
+  var failed = false
   var ni = 0
   while ni < ordered.count {
     val name = ordered[ni]
     val ridx = indexOfString(regNames, name)
-    val ann = regAnnotations[ridx]
-    val header = if Str.length(ann) > 0 { ann + "\n" + "package " + name + "\n" } else { "package " + name + "\n" }
-    val combined = header + Str.joinList("\n", regImports[ridx]) + "\n" + regBodies[ridx]
-    payloads.add(MsilBridge.ProjectPackagePayload(name = name, source = combined))
+    val merged = PM.mergeDiscoveredPackage(name, regSources[ridx], regPaths[ridx], "dotnet")
+    if reportMergeDiagnostics(name, merged) {
+      failed = true
+    } else {
+      payloads.add(MsilBridge.ProjectPackagePayload(name = name, source = merged.source))
+    }
     ni = ni + 1
   }
-  payloads
+  DiscoveredPayloads(payloads = payloads, failed = failed)
 }
 
 // Locate the self-hosted compiler tree (`lyric-compiler/lyric`) the same way
@@ -1969,15 +1606,22 @@ pub func emitPerPackageClosure(entrySource: in String, outDir: in String, target
   val compilerPayloads: List[MsilBridge.ProjectPackagePayload] = newList()
   if compilerDir.length > 0 {
     val cps = loadCompilerPayloads(compilerDir, entrySource)
+    if cps.failed {
+      return failResult("per-package emit: a compiler package's files do not merge (see stderr)")
+    }
     var cpi = 0
-    while cpi < cps.count {
-      compilerPayloads.add(cps[cpi])
+    while cpi < cps.payloads.count {
+      compilerPayloads.add(cps.payloads[cpi])
       cpi = cpi + 1
     }
   }
 
   // Stdlib closure, widened to cover the compiler packages' own Std imports.
-  val stdlibPayloads = loadStdlibPayloads(stdlibDir, stdlibEntryImports(entrySource, compilerPayloads))
+  val stdlibLoad = loadStdlibPayloads(stdlibDir, stdlibEntryImports(entrySource, compilerPayloads))
+  if stdlibLoad.failed {
+    return failResult("per-package emit: a stdlib package's files do not merge (see stderr)")
+  }
+  val stdlibPayloads = stdlibLoad.payloads
   if stdlibPayloads.count == 0 and compilerPayloads.count == 0 {
     return failResult("per-package emit: no Std.* or compiler packages in the import closure")
   }
@@ -2107,7 +1751,11 @@ pub func emitCompilerBundle(entrySource: in String, outPath: in String, target: 
   if compilerDir.length == 0 {
     return failResult("compiler bundle emit: could not locate the compiler source tree")
   }
-  val payloads = loadCompilerPayloads(compilerDir, entrySource)
+  val loaded = loadCompilerPayloads(compilerDir, entrySource)
+  if loaded.failed {
+    return failResult("compiler bundle emit: a compiler package's files do not merge (see stderr)")
+  }
+  val payloads = loaded.payloads
   if payloads.count == 0 {
     return failResult("compiler bundle emit: no compiler packages in the entry's import closure")
   }
@@ -2385,6 +2033,62 @@ func failResultWith(msg: in String, extra: in List[Diagnostic]): EmitResult {
   res
 }
 
+// `target` as the name its `@cfg(target = ...)` atoms use.
+func compileTargetName(target: in CompileTarget): String {
+  match target {
+    case Dotnet -> "dotnet"
+    case Jvm -> "jvm"
+    case Native -> "native"
+  }
+}
+
+// One package of a project build, merged into one compilation unit.
+record MergedProjectPackage {
+  pkg: ProjectPackage
+  origins: List[DiagUtil.MergedLineOrigin]
+  failed: Bool
+}
+
+// Merge `pkg`'s files (`Lyric.PackageMerge`) and print the merge's
+// diagnostics.  A merged package of several files has no single on-disk path
+// (its `origins` attribute each line instead, #6282); a package of one file
+// keeps its own.
+func mergeProjectPackage(
+  pkg: in ProjectPackage,
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
+  targetName: in String,
+): MergedProjectPackage {
+  val res = PM.mergePackageFiles(
+    pkg.name,
+    pkg.sources,
+    pkg.paths,
+    activeFeatures,
+    declaredFeatures,
+    targetName,
+    pkg.nameFromManifest
+  )
+  val failed = reportMergeDiagnostics(pkg.name, res)
+  if pkg.sources.count <= 1 {
+    return MergedProjectPackage(pkg = pkg, origins = res.origins, failed = failed)
+  }
+  val merged: List[String] = newList()
+  merged.add(res.source)
+  val mergedPaths: List[String] = newList()
+  mergedPaths.add("")
+  MergedProjectPackage(
+    pkg = ProjectPackage(
+      name = pkg.name,
+      sources = merged,
+      paths = mergedPaths,
+      ioForbiddenReason = pkg.ioForbiddenReason,
+      nameFromManifest = pkg.nameFromManifest
+    ),
+    origins = res.origins,
+    failed = failed
+  )
+}
+
 /// Compile a multi-package project to a single bundled DLL or JAR.
 ///
 /// `--target dotnet` runs IN-PROCESS via
@@ -2407,47 +2111,64 @@ pub func emitProject(req: in EmitProjectRequest): EmitResult {
   }
 
   // Merge every multi-file package into a single compilation unit before
-  // target dispatch.  Both backends require one valid unit per package;
-  // a raw concatenation leaves file 2's `package` / `import` header lines
-  // mid-unit and the parser rejects the bundle with a P0040 cascade
-  // (#2575 — multi-file directory-form `[project.packages]` entries).
+  // target dispatch: every backend compiles one unit per package (#2575).
+  // The merge works from each file's own parse (`Lyric.PackageMerge`, #8234):
+  // a file that does not parse, or that declares another package, fails the
+  // build here, against its own path and position.
   val mergedPkgs: List[ProjectPackage] = newList()
   // Per-package merged-line provenance (#6282/#6284), parallel to
   // `mergedPkgs` by index: `pkgOrigins[i]` is empty for a single-file
   // package (its real path already survives the merge below via
   // `paths[0]`) and non-empty for a genuinely multi-file package, letting
-  // diagnostic rendering resolve the merged blob's line numbers back to
+  // diagnostic rendering resolve the merged unit's line numbers back to
   // their real on-disk file and line instead of falling back to the bare
   // package name.
   val pkgOrigins: List[DiagUtil.PackageLineOrigins] = newList()
-  var mi = 0
-  while mi < req.packages.count {
-    val pkg = req.packages[mi]
-    if pkg.sources.count > 1 {
-      val pkgFeatures = featuresForPackage(req, pkg.name)
-      val mergedRes = mergePackageSourcesWithOrigins(
-        pkg.name,
-        pkg.sources,
-        pkg.paths,
-        pkgFeatures.active,
-        pkgFeatures.declared
-      )
-      val merged: List[String] = newList()
-      merged.add(mergedRes.source)
-      // No single on-disk path names the merged blob as a whole (it may
-      // draw from several files) — `mergedRes.origins` carries the real
-      // per-line attribution instead (#6282).
-      val mergedPaths: List[String] = newList()
-      mergedPaths.add("")
-      mergedPkgs.add(
-        ProjectPackage(name = pkg.name, sources = merged, paths = mergedPaths, ioForbiddenReason = pkg.ioForbiddenReason)
-      )
-      pkgOrigins.add(DiagUtil.PackageLineOrigins(origins = mergedRes.origins))
-    } else {
-      mergedPkgs.add(pkg)
-      pkgOrigins.add(DiagUtil.PackageLineOrigins(origins = newList()))
+  val targetName = compileTargetName(req.target)
+  var mergeFailed = false
+  for pkg in req.packages {
+    val pkgFeatures = featuresForPackage(req, pkg.name)
+    val m = mergeProjectPackage(pkg, pkgFeatures.active, pkgFeatures.declared, targetName)
+    if m.failed {
+      mergeFailed = true
     }
-    mi = mi + 1
+    mergedPkgs.add(m.pkg)
+    pkgOrigins.add(DiagUtil.PackageLineOrigins(origins = m.origins))
+  }
+  // The dependency packages whose aspect templates the weaver reads (#3498).
+  // On the JVM and native targets a dependency is also one of
+  // `req.packages`; it is merged once and the weaver reads the unit the
+  // backend compiles.  Otherwise it is merged with its own features when the
+  // request carries them (a dependency's `@cfg` names the dependency's
+  // features, so this manifest's `[features]` is no F0013 guard for it).
+  val mergedDepTemplates: List[ProjectPackage] = newList()
+  for dep in req.depTemplateSrcs {
+    var reused = false
+    for done in mergedPkgs {
+      if not reused and done.name == dep.name {
+        mergedDepTemplates.add(done)
+        reused = true
+      }
+    }
+    if not reused {
+      val noDeclared: List[String] = newList()
+      var depActive = req.activeFeatures
+      var depDeclared = noDeclared
+      for pf in req.packageFeatures {
+        if pf.packageName == dep.name {
+          depActive = pf.active
+          depDeclared = pf.declared
+        }
+      }
+      val m = mergeProjectPackage(dep, depActive, depDeclared, targetName)
+      if m.failed {
+        mergeFailed = true
+      }
+      mergedDepTemplates.add(m.pkg)
+    }
+  }
+  if mergeFailed {
+    return failResult("project build failed: a package's files do not merge into one package (see stderr)")
   }
   val mergedReq = EmitProjectRequest(
     packages = mergedPkgs,
@@ -2458,7 +2179,7 @@ pub func emitProject(req: in EmitProjectRequest): EmitResult {
     activeFeatures = req.activeFeatures,
     declaredFeatures = req.declaredFeatures,
     packageVersion = req.packageVersion,
-    depTemplateSrcs = req.depTemplateSrcs,
+    depTemplateSrcs = mergedDepTemplates,
     nugetAssemblyPaths = req.nugetAssemblyPaths,
     defines = req.defines,
     packageFeatures = req.packageFeatures,
@@ -2624,10 +2345,8 @@ func siblingTypeDecls(arts: in List[RP.RestoredArtifact], selfPkg: in String): L
 
 // In-process project emit — direct call into `Msil.Bridge.compileProjectToMsil`
 // (#1183 Phase 4).  Sources arrive pre-merged by `emitProject` (one valid
-// compilation unit per package, #2575); `mergePackageSources` here is a
-// verbatim pass-through for that single source and a header-stripping merge
-// for any caller that bypasses the pre-merge.  Diagnostics from the bridge
-// land on stderr (same path as `compileToMsil`).
+// compilation unit per package, #2575, #8234), dependency templates included.
+// Diagnostics from the bridge land on stderr (same path as `compileToMsil`).
 func emitProjectInProcess(req: in EmitProjectRequest, pkgOrigins: in List[DiagUtil.PackageLineOrigins]): EmitResult {
   val payloads: List[MsilBridge.ProjectPackagePayload] = newList()
   // #6610: parallel on-disk source path per package, matching
@@ -2643,7 +2362,7 @@ func emitProjectInProcess(req: in EmitProjectRequest, pkgOrigins: in List[DiagUt
     payloads.add(
       MsilBridge.ProjectPackagePayload(
         name = pkg.name,
-        source = mergePackageSources(pkg.name, pkg.sources, req.activeFeatures, req.declaredFeatures),
+        source = unitSource(pkg),
         ioForbiddenReason = pkg.ioForbiddenReason
       )
     )
@@ -2717,7 +2436,7 @@ func emitProjectInProcess(req: in EmitProjectRequest, pkgOrigins: in List[DiagUt
     depTemplatePkgs.add(
       MsilBridge.ProjectPackagePayload(
         name = pkg.name,
-        source = mergePackageSources(pkg.name, pkg.sources, req.activeFeatures, req.declaredFeatures),
+        source = unitSource(pkg),
         ioForbiddenReason = pkg.ioForbiddenReason
       )
     )
@@ -2979,7 +2698,7 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest, pkgOrigins: in List[Dia
   var dtpi = 0
   while dtpi < req.depTemplateSrcs.count {
     val dtPkg = req.depTemplateSrcs[dtpi]
-    val mergedSrc = mergePackageSources(dtPkg.name, dtPkg.sources, req.activeFeatures, req.declaredFeatures)
+    val mergedSrc = unitSource(dtPkg)
     depTemplateNames.add(mergedSrc)
     dtpi = dtpi + 1
   }
@@ -3046,7 +2765,7 @@ func emitProjectJvmInProcess(req: in EmitProjectRequest, pkgOrigins: in List[Dia
       val mp = req.packages[mpi]
       val mpFeatures = featuresForPackage(req, mp.name)
       pkgFeatures.add(mpFeatures)
-      pkgSrcs.add(mergePackageSources(mp.name, mp.sources, mpFeatures.active, mpFeatures.declared))
+      pkgSrcs.add(unitSource(mp))
       // A single-file package's real path survives the merge (fast path,
       // #6282's genuinely-multi-file case has no single path — see
       // `emitProject`'s `mergedPaths` comment).
@@ -3229,7 +2948,7 @@ func emitNativeInProcess(
 /// manifest declaration order; the entry point is auto-detected by
 /// `fileHasTopLevelMain` regardless of position (see that function's own
 /// doc comment).  Each multi-file package's sources are merged into one
-/// compilation unit via `mergePackageSources` first — mirroring
+/// compilation unit via `Lyric.PackageMerge.mergePackageFiles` first — mirroring
 /// `emitProject`'s own pre-dispatch merge step, INCLUDING its
 /// `activeFeatures`/`declaredFeatures` `@cfg(feature = ...)` gating
 /// (#6818) — since the native bridge (like the MSIL/JVM bridges) expects
@@ -3298,46 +3017,48 @@ pub func emitNativeProjectWithShape(
   val nativePkgs: List[LlvmBridge.NativeSourcePackage] = newList()
   // Per-package merged-line provenance (#6824 item 1), parallel to
   // `nativePkgs` by index — mirroring `emitProject`'s identical
-  // `pkgOrigins`/`mergePackageSourcesWithOrigins` construction above: empty
+  // `pkgOrigins`/`Lyric.PackageMerge.mergePackageFiles` construction: empty
   // for a single-file package (its real path survives directly via
   // `NativeSourcePackage.path`) and non-empty for a genuinely multi-file
   // package.
   val nativeOrigins: List[DiagUtil.PackageLineOrigins] = newList()
+  var mergeFailed = false
   var pi = 0
   while pi < pkgs.count {
     val pkg = pkgs[pi]
     val depFeatures = depPackageFeaturesFor(packageFeatures, pkg.name)
     val pkgActive = match depFeatures { case Some(pf) -> pf.active; case None -> activeFeatures }
     val pkgDeclared = match depFeatures { case Some(pf) -> pf.declared; case None -> declaredFeatures }
-    if pkg.sources.count > 1 {
-      val mergedRes = mergePackageSourcesWithOrigins(pkg.name, pkg.sources, pkg.paths, pkgActive, pkgDeclared)
-      // No single on-disk path names the merged blob as a whole —
-      // `mergedRes.origins` carries the real per-line attribution instead.
-      nativePkgs.add(
-        LlvmBridge.NativeSourcePackage(
-          name = pkg.name,
-          source = mergedRes.source,
-          path = "",
-          ioForbiddenReason = pkg.ioForbiddenReason,
-          features = depFeatures
-        )
-      )
-      nativeOrigins.add(DiagUtil.PackageLineOrigins(origins = mergedRes.origins))
-    } else {
-      val merged = mergePackageSources(pkg.name, pkg.sources, pkgActive, pkgDeclared)
-      val pkgPath = if pkg.paths.count > 0 { pkg.paths[0] } else { "" }
-      nativePkgs.add(
-        LlvmBridge.NativeSourcePackage(
-          name = pkg.name,
-          source = merged,
-          path = pkgPath,
-          ioForbiddenReason = pkg.ioForbiddenReason,
-          features = depFeatures
-        )
-      )
-      nativeOrigins.add(DiagUtil.PackageLineOrigins(origins = newList()))
+    val mergedRes = PM.mergePackageFiles(
+      pkg.name,
+      pkg.sources,
+      pkg.paths,
+      pkgActive,
+      pkgDeclared,
+      "native",
+      pkg.nameFromManifest
+    )
+    if reportMergeDiagnostics(pkg.name, mergedRes) {
+      mergeFailed = true
     }
+    // A merged multi-file package has no single on-disk path —
+    // `mergedRes.origins` carries the real per-line attribution instead; a
+    // single-file package keeps its own path.
+    val pkgPath = if pkg.sources.count == 1 and pkg.paths.count > 0 { pkg.paths[0] } else { "" }
+    nativePkgs.add(
+      LlvmBridge.NativeSourcePackage(
+        name = pkg.name,
+        source = mergedRes.source,
+        path = pkgPath,
+        ioForbiddenReason = pkg.ioForbiddenReason,
+        features = depFeatures
+      )
+    )
+    nativeOrigins.add(DiagUtil.PackageLineOrigins(origins = mergedRes.origins))
     pi = pi + 1
+  }
+  if mergeFailed {
+    return failResult("native project build failed: a package's files do not merge into one package (see stderr)")
   }
   val stdlibFiles = findStdlibSourcesNative()
   val clangFlags: List[String] = newList()
@@ -3458,7 +3179,11 @@ func emitMsilInProcess(req: in EmitRequest): EmitResult {
       )
     }
     if compilerDir.length > 0 {
-      val compilerPayloads = loadCompilerPayloads(compilerDir, req.source)
+      val compilerLoad = loadCompilerPayloads(compilerDir, req.source)
+      if compilerLoad.failed {
+        return failResult("LYRIC_LOAD_COMPILER=1: a compiler package's files do not merge (see stderr)")
+      }
+      val compilerPayloads = compilerLoad.payloads
       if compilerPayloads.count == 0 {
         Console.error(
           "LYRIC_LOAD_COMPILER=1: no compiler packages loaded from '" + compilerDir +

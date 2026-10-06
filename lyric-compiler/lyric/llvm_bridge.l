@@ -1142,7 +1142,7 @@ pub func compileToNativeWithShape(
 // ─────────────────────────────────────────────────────────────────────────────
 /// One own-package's pre-merged source for a native project build.
 /// `Lyric.Emitter.emitNativeProject` merges a multi-file package's sources
-/// into one compilation unit (the same `mergePackageSources` step the
+/// into one compilation unit (the same `Lyric.PackageMerge` step the
 /// MSIL/JVM project bridges use) before constructing these, so by the time a
 /// package reaches here it is always exactly one valid `package` unit.
 ///

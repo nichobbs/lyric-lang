@@ -33,6 +33,7 @@ import Std.Testing
 import Std.Uuid
 import Std.Environment as Environment
 import Lyric.Emitter as Emitter
+import Lyric.PackageMerge as PM
 import Lyric.Parser as Parser
 import Lyric.ImplDefaults as ImplDefaults
 import Lyric.Pipeline as Pipe
@@ -154,7 +155,7 @@ func runEmitProjectWithFeatures(
 }
 
 // JVM counterpart of `runEmitProjectOpts` (#3253): `emitProject` merges
-// multi-file packages via `mergePackageSources` BEFORE dispatching on
+// multi-file packages via `Lyric.PackageMerge` BEFORE dispatching on
 // `req.target` (see `Lyric.Emitter.emitProject`), so the merge itself is
 // target-agnostic — but only the `--target dotnet` path above was ever
 // exercised by a runtime test. Routes through `emitProjectJvmInProcess`
@@ -821,8 +822,8 @@ test "cfg erasure file-level erases entire file" {
   assertEqual(Str.trim(result.stdout), "survived", "cfg_erasure_file_level: stdout matches expected")
 }
 
-// Multi-source package + file-level `@cfg`: `mergePackageSources` only calls
-// `fileIsCfgErasedByFeatures` on the `sources.count > 1` path (the
+// Multi-source package + file-level `@cfg`: `Lyric.PackageMerge` only gates a
+// file by its file-level `@cfg` on the `sources.count > 1` path (the
 // `sources.count == 1` fast path returns the lone source verbatim), so a
 // single-source erasure test never exercises this branch.  Both files
 // declare a same-named function so an erasure regression (the gated file's
@@ -1691,10 +1692,11 @@ test "compilerClosureDllPaths: a bundle that covers the whole closure is used, n
   )
 }
 
-// Merging a multi-file package strips only each file's header `package` /
-// `import` / `//!` lines; item bodies are carried over verbatim, so a body
-// line that merely starts with `import ` (here inside a multi-line string)
-// survives, and every merged body line still maps back to its file and line.
+// Merging a multi-file package removes only each file's header tokens
+// (`//!`, file-level annotations, `package`, imports); item bodies are carried
+// over verbatim, so a body line that merely starts with `import ` (here inside
+// a multi-line string) survives, and every merged body line still maps back
+// to its file and line (#8234).
 test "multi-file merge strips header lines only and keeps line origins" {
   val srcA = "//! doc\n@runtime_checked\npackage P\nimport Std.Core\n\n// note\nfunc a(): String {\n  \"\"\"\nimport not.a.decl\n\"\"\"\n}\n"
   val srcB = "package P\nimport Std.Core\nimport Std.String as Str\nfunc b(): Int { 1 }\n"
@@ -1705,7 +1707,8 @@ test "multi-file merge strips header lines only and keeps line origins" {
   paths.add("a.l")
   paths.add("b.l")
   val none: List[String] = newList()
-  val merged = Emitter.mergePackageSourcesWithOrigins("P", sources, paths, none, none)
+  val merged = PM.mergePackageFiles("P", sources, paths, none, none, "dotnet", true)
+  assertEqualInt(merged.diagnostics.count, 0, "two well-formed files merge cleanly")
   val lines = Str.split(merged.source, "\n")
   var coreImports = 0
   var aliasImports = 0

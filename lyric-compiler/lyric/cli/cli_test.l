@@ -18,7 +18,8 @@ import Lyric.Pipeline as Pipe
 import Lyric.TestSynth as TestSynth
 import Lyric.Repl as Repl
 import Lyric.Discovery as Disc
-import Lyric.CfgGate as CfgGate
+import Lyric.Parser as Parser
+import Lyric.Release as Release
 import Lyric.Cfg as Cfg
 import Lyric.Workspace as Ws
 import Lyric.JacocoCobertura as Jc
@@ -33,20 +34,12 @@ func cmdRepl(argv: in slice[String]): Int {
 // ─────────────────────────────────────────────────────────────────────────────
 // §11c. Test command
 // ─────────────────────────────────────────────────────────────────────────────
-// First `package <name>` declaration in `src` (skipping annotations/comments),
-// or "" if none.  Used to wrap a single `@test_module` file as a `ProjectPackage`
-// when linking compiler DLLs (#2364 Stage 5).
+// The package `src` declares (`Lyric.Release.packageNameOf`: its header,
+// comments and annotations skipped), or "" if none.  Used to wrap a single
+// `@test_module` file as a `ProjectPackage` when linking compiler DLLs
+// (#2364 Stage 5).
 func firstPackageNameOf(src: in String): String {
-  val lines = Str.split(src, "\n")
-  var i = 0
-  while i < lines.length {
-    val t = Str.trim(lines[i])
-    if Str.startsWith(t, "package ") {
-      return Str.trim(Str.substring(t, 8, t.length - 8))
-    }
-    i = i + 1
-  }
-  ""
+  Release.packageNameOf(src)
 }
 
 // Emit a single-file `@test_module` (no compiler-DLL linking), routed
@@ -987,10 +980,6 @@ func cmdTest(argv: in slice[String]): Int {
   }
 }
 
-// isCfgGatedOut and the directory-package assembly helpers moved to
-// `Lyric.CfgGate` (#1123, #1124) so they're independently testable and
-// the duplicate-`package`-declaration bug for multi-file directory
-// packages is fixed at the assembly level.
 // Resolve the output DLL path and package name for a local-path dependency
 // from its lyric.toml path and target file extension.  Both the pre-build
 // topo loop and the post-build resolve loop share this derivation.
@@ -1015,6 +1004,45 @@ func resolveDepDllPath(tomlPath: in String, ext: in String): Result[DepDllInfo, 
   }
   val binDir = Path.join(Path.dirname(tomlPath), "bin")
   Ok(value = DepDllInfo(dllPath = Path.join(binDir, dllName), pkgName = pkgName))
+}
+
+// A file of a library package: its path and contents.
+record LibFile {
+  path: String
+  contents: String
+}
+
+// Whether `source`'s file-level `@cfg` turns it off for `activeWithTarget`
+// (the build's features plus its `target.<name>` pseudo-feature), decided on
+// its parse, so a `@cfg` inside a comment is no annotation.
+func fileCfgGatedOut(source: in String, activeWithTarget: in List[String]): Bool {
+  val noDeclared: List[String] = newList()
+  Cfg.isFileCfgGatedOut(activeWithTarget, noDeclared, Parser.parse(source).file.fileAnnotations)
+}
+
+// Add a library package's files to `sources` / `paths`.  Files of a package
+// of several files all go to the build: its package merge parses each one,
+// holds it to the package, and drops a file whose file-level `@cfg` is off
+// for the build's features and target (`Lyric.PackageMerge`, #8234).  A
+// package of one file is compiled as written, so a file gated off by its
+// `@cfg` is replaced by an empty package that sibling imports still resolve
+// to.
+func addPackageFiles(
+  files: in List[LibFile],
+  pkgName: in String,
+  activeWithTarget: in List[String],
+  sources: in List[String],
+  paths: in List[String],
+): Unit {
+  if files.count == 1 and fileCfgGatedOut(files[0].contents, activeWithTarget) {
+    sources.add("package " + pkgName + "\n")
+    paths.add(files[0].path)
+    return
+  }
+  for f in files {
+    sources.add(f.contents)
+    paths.add(f.path)
+  }
 }
 
 func cmdTestManifest(
@@ -1078,11 +1106,8 @@ func cmdTestManifest(
         if File.fileExists(abs) {
           scanPaths.add(abs)
         } else if File.dirExists(abs) {
-          val allFiles = match File.listFilesRecursive(abs) { case Ok(fs) -> fs; case Err(_) -> newList() }
-          for f in allFiles.toArray() {
-            if Str.endsWith(f, ".l") {
-              scanPaths.add(f)
-            }
+          for f in Disc.projectEntryFiles(pkgEntry, mfDir, proj).paths.toArray() {
+            scanPaths.add(f)
           }
         }
       }
@@ -1196,16 +1221,13 @@ func cmdTestManifest(
   while pi < proj.packages.count {
     val pkgEntry = proj.packages[pi]
     val pkgSources: List[String] = newList()
-    // Set only by the single-file-package branch below, where the real
-    // absolute path is already resolved as `abs` (mirrors the #6609 fix
-    // just below for the test package itself); left "" for the directory
-    // and explicit-file-list branches, which genuinely don't track a
-    // single per-package path here.
-    var singleFilePkgPath = ""
+    // Each source's real path, parallel to `pkgSources` (#6694, #8234).
+    val pkgPaths: List[String] = newList()
     if pkgEntry.paths.count > 0 {
-      // Explicit file list (TOML array form): read each named file and assemble
-      // them with CfgGate so per-file @cfg erasure works the same as for dir packages.
-      val fileEntries: List[CfgGate.CfgGateFile] = newList()
+      // Explicit file list (TOML array form): every named file goes to the
+      // build, whose package merge parses each one and drops a file whose
+      // file-level @cfg is off (`Lyric.PackageMerge`), as for a dir package.
+      val fileEntries: List[LibFile] = newList()
       var readFailed = false
       var fi = 0
       while fi < pkgEntry.paths.count {
@@ -1216,7 +1238,7 @@ func cmdTestManifest(
         }
         match File.readText(absFile) {
           case Ok(raw) -> match runSourceGenerators(raw, absFile, genMf, gens) {
-            case Some(t) -> fileEntries.add(CfgGate.CfgGateFile(path = absFile, contents = t))
+            case Some(t) -> fileEntries.add(LibFile(path = absFile, contents = t))
             case None -> {
               hadFatal = true
               readFailed = true
@@ -1231,28 +1253,23 @@ func cmdTestManifest(
         fi += 1
       }
       if not readFailed {
-        val assembly = CfgGate.assembleDirectoryPackageSources(fileEntries, pkgEntry.name, activeFeatures)
-        var ai = 0
-        while ai < assembly.sources.count {
-          pkgSources.add(assembly.sources[ai])
-          ai += 1
-        }
+        addPackageFiles(fileEntries, pkgEntry.name, cfgActiveWithTarget, pkgSources, pkgPaths)
       }
     } else {
       val abs = if Path.isAbsolute(pkgEntry.path) { pkgEntry.path } else { Path.join(mfDir, pkgEntry.path) }
       if File.fileExists(abs) {
-        singleFilePkgPath = abs
         match File.readText(abs) {
           case Ok(raw) -> {
             val t = match runSourceGenerators(raw, abs, genMf, gens) { case Some(g) -> g; case None -> { hadFatal = true; raw } }
-            if CfgGate.isCfgGatedOut(t, activeFeatures) {
+            if fileCfgGatedOut(t, cfgActiveWithTarget) {
               // Package is gated by an inactive feature: substitute an empty stub
               // so that imports of this package from sibling packages resolve, while
               // the @cfg-gated items in those packages are properly elided.
-              pkgSources.add(CfgGate.emptyPackageStub(pkgEntry.name))
+              pkgSources.add("package " + pkgEntry.name + "\n")
             } else {
               pkgSources.add(t)
             }
+            pkgPaths.add(abs)
           }
           case Err(e) -> {
             printErr("test: package '" + pkgEntry.name + "': " + IOError.message(e))
@@ -1260,36 +1277,26 @@ func cmdTestManifest(
           }
         }
       } else if File.dirExists(abs) {
-        val allFiles = match File.listFilesRecursive(abs) {
-          case Ok(fs) -> fs
-          case Err(e) -> {
-            printErr("test: package '" + pkgEntry.name + "': " + IOError.message(e))
-            hadFatal = true
-            newList()
-          }
+        // The entry's file set is `Lyric.Discovery`'s, as `lyric build`'s:
+        // a subdirectory that is another entry's path is that entry's.
+        val entryFiles = Disc.projectEntryFiles(pkgEntry, mfDir, proj)
+        for problem in entryFiles.problems.toArray() {
+          printErr("test: package '" + pkgEntry.name + "': " + problem)
+          hadFatal = true
         }
-        val lFiles: List[String] = newList()
-        for f in allFiles.toArray() {
-          if Str.endsWith(f, ".l") {
-            lFiles.add(f)
-          }
-        }
+        val lFiles = entryFiles.paths
         if lFiles.count == 0 {
           printErr("test: package '" + pkgEntry.name + "': no .l files found in " + abs)
           hadFatal = true
         } else {
-          // Read every file first, then hand the (path, contents) list to
-          // CfgGate so the assembly logic adds at most one empty-package
-          // stub when every file is gated — preventing the duplicate-
-          // `package` declaration bug from #1124 when two or more files
-          // in a directory package are each gated out.
-          val fileEntries: List[CfgGate.CfgGateFile] = newList()
+          // Read every file first, then hand them all to the build together.
+          val fileEntries: List[LibFile] = newList()
           val sorted = sortFileList(lFiles)
           var readFailed = false
           for f in sorted {
             match File.readText(f) {
               case Ok(raw) -> match runSourceGenerators(raw, f, genMf, gens) {
-                case Some(t) -> fileEntries.add(CfgGate.CfgGateFile(path = f, contents = t))
+                case Some(t) -> fileEntries.add(LibFile(path = f, contents = t))
                 case None -> {
                   hadFatal = true
                   readFailed = true
@@ -1308,12 +1315,7 @@ func cmdTestManifest(
           // of a clear "read failed" error.  `hadFatal` is already set; downstream
           // packages skip importing this one.
           if not readFailed {
-            val assembly = CfgGate.assembleDirectoryPackageSources(fileEntries, pkgEntry.name, activeFeatures)
-            var ai = 0
-            while ai < assembly.sources.count {
-              pkgSources.add(assembly.sources[ai])
-              ai += 1
-            }
+            addPackageFiles(fileEntries, pkgEntry.name, cfgActiveWithTarget, pkgSources, pkgPaths)
           }
         }
       } else {
@@ -1322,20 +1324,9 @@ func cmdTestManifest(
       }
     }  // end else (single-file/directory path)
     if pkgSources.count > 0 {
-      // The directory and explicit-file-list branches above (and
-      // compiler-DLL-linked test packages, #2364 Stage 5) don't currently
-      // track per-file paths through this reader; "" (unknown) is correct
-      // and safe there — no attribution rather than a guessed one. The
-      // single-file branch DOES know its real path (`singleFilePkgPath`,
-      // set above) and always produces exactly one source, so it gets
-      // real attribution instead of "" (#6694).
-      val libPaths: List[String] = newList()
-      var lpi = 0
-      while lpi < pkgSources.count {
-        libPaths.add(singleFilePkgPath)
-        lpi += 1
-      }
-      libPkgs.add(Emitter.ProjectPackage(name = pkgEntry.name, sources = pkgSources, paths = libPaths))
+      libPkgs.add(
+        Emitter.ProjectPackage(name = pkgEntry.name, sources = pkgSources, paths = pkgPaths, nameFromManifest = true)
+      )
     }
     pi += 1
   }
@@ -1620,7 +1611,9 @@ func cmdTestManifest(
                           }
                         }
                         if srcList.count > 0 {
-                          depTemplatePkgsList.add(Emitter.ProjectPackage(name = pkgEntry.name, sources = srcList, paths = srcPathList))
+                          depTemplatePkgsList.add(
+                            Emitter.ProjectPackage(name = pkgEntry.name, sources = srcList, paths = srcPathList, nameFromManifest = true)
+                          )
                         }
                         pki += 1
                       }
@@ -1871,7 +1864,9 @@ func cmdTestManifest(
     // manifest-relative whenever the manifest names the test with a
     // relative path.
     testPaths.add(abs)
-    allPkgs.add(Emitter.ProjectPackage(name = testEntry.name, sources = testSrcs, paths = testPaths))
+    allPkgs.add(
+      Emitter.ProjectPackage(name = testEntry.name, sources = testSrcs, paths = testPaths, nameFromManifest = true)
+    )
     var si = 0
     while si < libPkgs.count {
       allPkgs.add(libPkgs[si])

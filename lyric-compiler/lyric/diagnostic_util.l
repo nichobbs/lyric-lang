@@ -83,7 +83,7 @@ pub func diagReport(diags: in List[Diagnostic]): Unit {
 }
 
 /// Per-merged-line provenance for a multi-file package (#6282/#6284).
-/// `mergePackageSourcesWithOrigins` (`Lyric.Emitter`) returns one entry per
+/// `Lyric.PackageMerge.mergePackageFiles` returns one entry per
 /// line of its merged blob: `origins[n - 1]` describes 1-based merged line
 /// `n`.  A line that belongs to the synthesized `package`/`import` prelude
 /// (no single file owns it) carries `path = ""`.  Every merged multi-file

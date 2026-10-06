@@ -1,5 +1,7 @@
-//! The build merges every file of a manifest entry whatever its `package`
-//! line: this `Option` is in scope in `b_logic.l` (#8108).
+//! A file of entry P that declares another package.  The build rejects it
+//! (B0013, #8234); `lyric prove` still counts its types in P's scope, so
+//! this `Option` is not taken for the standard library's in `b_logic.l`
+//! (#8108).
 package Q
 
 record Option[T] {

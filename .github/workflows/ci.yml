@@ -953,22 +953,11 @@ jobs:
       # The `scripts/ci/compiler-self-tests-batch.sh` corpus runs in
       # its own sharded `compiler-self-tests-core` job (it was ~59 of this
       # job's ~88 min, run sequentially behind the batch-1 barrier).
-      # CfgGate self-test — exercises `Lyric.CfgGate` via native `lyric test`.
-      # Compiler-package imports are resolved by linking the stage-1 bundle
-      # DLLs (#2364); no `LYRIC_LOAD_COMPILER=1` recompile.  Covers #1123
-      # (comment-aware @cfg detection) and #1124 (single stub for all-gated
-      # directory packages).
-      - name: CfgGate self-test (native lyric test)
-        if: ${{ !cancelled() }}
-        background: true
-        working-directory: ${{ github.workspace }}
-        run: bash scripts/ci-retry-on-signal.sh bash scripts/ci/self-test.sh lyric-compiler/lyric/cfg_gate_self_test.l
-
       # JaCoCo -> Cobertura converter self-test (docs/03-decision-log.md D135,
       # #5294) — exercises `Lyric.JacocoCobertura` (the pure-Lyric XML
       # translator backing `lyric test --target jvm --coverage`) via native
-      # `lyric test`.  Same linking shape as CfgGate above (compiler-package
-      # import resolved by linking the stage-1 bundle DLLs; no
+      # `lyric test`.  Its compiler-package
+      # import is resolved by linking the stage-1 bundle DLLs (no
       # `LYRIC_LOAD_COMPILER=1`).  9 cases against a byte-for-byte real
       # JaCoCo 0.8.12 report captured from an actual instrumented run.
       - name: JaCoCo/Cobertura converter self-test (native lyric test)

@@ -671,6 +671,13 @@ existing `stripPackageAndImports`-style line loop) and cheaper to consult (an
 O(1) array index at the diagnostic-print site, no need to know which item a
 diagnostic is "about").
 
+**Superseded in part by #8234 (D180).** The merge now parses each file on its
+own first (`Lyric.PackageMerge.mergePackageFiles`, replacing
+`mergePackageSources` / `mergePackageSourcesWithOrigins` and their
+line-prefix stripping): the per-merged-line provenance table above is kept,
+built from each file's parse spans rather than a line loop, and now also
+covers the merged header's annotation and import lines.
+
 `Lyric.Pipeline.gate` (and `MiddleEndOptions.lineOrigins`, `pipeParseAndErase`'s
 `origins` parameter, `pipeWeave`'s `origins` parameter) thread this table
 through every diagnostic-reporting call already made along the shared
