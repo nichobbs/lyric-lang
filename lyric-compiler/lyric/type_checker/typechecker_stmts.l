@@ -758,6 +758,7 @@ pub func checkStatement(
 
     case SWhile(_, cond, body) -> {
       val condT = inferExpr(sc, tbl, sigs, diag, cond)
+      resolvePropagateOperand(sc, tbl, cond, TyPrim(pt = PtBool))
       if not typeEquiv(condT, TyPrim(pt = PtBool)) {
         diag.add(errorDiagnostic("T0066", "while-condition must be Bool (got " + renderType(condT) + ")", stmt.span))
       }
@@ -1653,6 +1654,7 @@ func checkBoolClause(
 ): Unit {
   sc.contractDepth.add(0)
   val t = inferExpr(sc, tbl, sigs, diag, e)
+  resolvePropagateOperand(sc, tbl, e, TyPrim(pt = PtBool))
   sc.contractDepth.removeAt(sc.contractDepth.count - 1)
   if not typeEquiv(t, TyPrim(pt = PtBool)) {
     diag.add(errorDiagnostic("T0132", "a " + kind + ": clause must be Bool (got " + renderType(t) + ")", sp))

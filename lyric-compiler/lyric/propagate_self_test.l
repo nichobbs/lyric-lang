@@ -355,6 +355,37 @@ test "F0045: does not fire for implicit-await ? outside any try in an async func
   )
 }
 
+// #8181: the type checker binds a `?` operand built from context to a typed
+// local, `{ val __lyric_ho_<n>: T = e; __lyric_ho_<n> }`, before this pass
+// runs.  Whether the operand awaits, or is safe inside a protected region, is
+// still `e`'s: F0045 looks through the typed local.  (`@contract_source` makes
+// the arrow-less brace a block, the shape `Lyric.Mono` produces, rather than
+// the zero-parameter lambda it is in hand-written source.)
+test "F0045: fires for a typed-local operand wrapping an if in a try body (#8181)" {
+  val src = "@contract_source\npackage P\n" + "async func f(c: in Bool): Result[Int, String] {\n  try {\n" +
+    "    val s = { val __lyric_ho_0: Result[String, String] = if c { Ok(\"a\") } else { Err(\"b\") }; __lyric_ho_0 }?\n" +
+    "    Ok(s.length)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
+  val result = lowerPropagateFile(parse(src).file, true)
+  assertTrue(propHasDiag(result.diagnostics, "F0045"), "the wrapped if is as risky as a bare one")
+}
+
+test "F0045: fires for a typed-local operand wrapping a call in a try body (#8181)" {
+  val src = "@contract_source\npackage P\n" + asyncMayFailSrc +
+    "async func f(n: in Int): Result[Int, String] {\n  try {\n" +
+    "    val x = { val __lyric_ho_0: Result[Int, String] = mayFail(n); __lyric_ho_0 }?\n" +
+    "    Ok(x)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
+  val result = lowerPropagateFile(parse(src).file, true)
+  assertTrue(propHasDiag(result.diagnostics, "F0045"), "the wrapped async call is still flagged")
+}
+
+test "F0045: does not fire for a typed-local operand wrapping a constructor in a try body (#8181)" {
+  val src = "@contract_source\npackage P\n" + "async func f(): Result[Int, String] {\n  try {\n" +
+    "    val s = { val __lyric_ho_0: Result[String, String] = Ok(\"a\"); __lyric_ho_0 }?\n" +
+    "    Ok(s.length)\n  } catch Bug as b {\n    Err(b.message)\n  }\n}\n"
+  val result = lowerPropagateFile(parse(src).file, true)
+  assertFalse(propHasDiag(result.diagnostics, "F0045"), "a wrapped constructor is as safe as a bare one")
+}
+
 test "F0045: does not fire for implicit-await ? in a try body when the enclosing function is NOT async" {
   // A plain (non-async) function's implicit await lowers to a blocking
   // `GetAwaiter().GetResult()` shim, not a suspend/resume state machine —

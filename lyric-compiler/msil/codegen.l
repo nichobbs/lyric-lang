@@ -46624,6 +46624,52 @@ func widenGenericCtorArgsMsil(
   }
 }
 
+// Whether a construction's context type `ctxTy` for a type-parameter slot
+// cannot hold the value an argument pins that slot to, `argTy`: two different
+// scalars where the argument does not widen to the context (`Bool` and `Int`,
+// `Long` and `Int`), a reference type where the context is a scalar, or a
+// scalar where the context is `String` (`String` and `Int` either way).  The
+// context then describes some other value — the enclosing function's
+// declared return type borrowed for a bare `Ok(...)`/`Some(...)` that is not
+// the function's result (`val r = Some(value = "four")` in an `Option[Int]`
+// function, #8181) — and building the case at it stores the argument into a
+// slot of the wrong type.  A context of another reference type keeps it: it
+// may be a supertype the argument is stored as (#3502), or an interface a
+// scalar is boxed as.
+func ctxSlotCannotHoldArgMsil(argTy: in MsilType, ctxTy: in MsilType): Bool {
+  if argTy == MObject or ctxTy == MObject or argTy == ctxTy {
+    return false
+  }
+  val argScalar = isScalarSlotMsil(argTy)
+  if isScalarSlotMsil(ctxTy) {
+    if argScalar {
+      not isWiderPrimMsil(argTy, ctxTy)
+    } else {
+      isReferenceSlotMsil(argTy)
+    }
+  } else {
+    argScalar and ctxTy == MString
+  }
+}
+
+func isScalarSlotMsil(t: in MsilType): Bool {
+  match t {
+    case MInt | MLong | MDouble | MFloat | MBool | MChar | MByte -> true
+    case _ -> false
+  }
+}
+
+// A type whose values are always object references, never a scalar.
+func isReferenceSlotMsil(t: in MsilType): Bool {
+  match t {
+    case MString -> true
+    case MClass(_) -> true
+    case MGenericInst(_, _, _) -> true
+    case MGenericInstByName(_, _) -> true
+    case _ -> false
+  }
+}
+
 // Returns 1 (and emits the newobj) when `ctorKey` is a registered in-bundle
 // generic record; 0 otherwise (so the caller falls back to the plain path).
 func buildInBundleGenericCtorTok(
@@ -46686,7 +46732,7 @@ func buildInBundleGenericCtorTok(
           case MGenericInst(_, _, _) -> true
           case _ -> false
         }
-        if ctxIsGenericInst and argFoundTy != MObject {
+        if (ctxIsGenericInst and argFoundTy != MObject) or ctxSlotCannotHoldArgMsil(argFoundTy, ctxTy) {
           foundTy = argFoundTy
         } else {
           foundTy = ctxTy
@@ -46754,7 +46800,7 @@ func buildGenericCaseCtorTok(
           case MGenericInst(_, _, _) -> true
           case _ -> false
         }
-        if ctxIsGenericInst and argFoundTy != MObject {
+        if (ctxIsGenericInst and argFoundTy != MObject) or ctxSlotCannotHoldArgMsil(argFoundTy, ctxTy) {
           foundTy = argFoundTy
         } else {
           foundTy = ctxTy

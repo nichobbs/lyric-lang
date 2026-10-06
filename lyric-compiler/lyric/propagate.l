@@ -180,6 +180,10 @@ record PropState {
   // `EAwait`, so it awaits in place (docs/01 §7.1).  Empty on a target whose
   // lowering already awaits a direct call itself; constant for the file.
   asyncCallSites: Map[String, Bool]
+  // #8181: span keys of the `?` expressions whose operand's error type widens
+  // to the enclosing function's (`SymbolTable.propagateErrWidenings`), to
+  // the conversion method the re-wrapped error takes (`toLong`).
+  errWidenings: Map[String, PropagateErrWidening]
 }
 
 func newPropState(
@@ -188,6 +192,7 @@ func newPropState(
   syncFuncNames: in Map[String, Bool],
   awaitInTryIsHazard: Bool,
   asyncCallSites: in Map[String, Bool],
+  errWidenings: in Map[String, PropagateErrWidening],
 ): PropState {
   val noSiblings: Map[String, Bool] = newMap()
   val noSyncSiblings: Map[String, Bool] = newMap()
@@ -204,7 +209,8 @@ func newPropState(
     curFnAsync = false,
     inTry = false,
     awaitInTryIsHazard = awaitInTryIsHazard,
-    asyncCallSites = asyncCallSites
+    asyncCallSites = asyncCallSites,
+    errWidenings = errWidenings
   )
 }
 
@@ -244,7 +250,8 @@ func stateForFn(st: in PropState, name: in String, isAsync: Bool, params: in Lis
     curFnAsync = isAsync,
     inTry = false,
     awaitInTryIsHazard = st.awaitInTryIsHazard,
-    asyncCallSites = st.asyncCallSites
+    asyncCallSites = st.asyncCallSites,
+    errWidenings = st.errWidenings
   )
 }
 
@@ -271,7 +278,8 @@ func stateForContainerMembers(
     curFnAsync = st.curFnAsync,
     inTry = st.inTry,
     awaitInTryIsHazard = st.awaitInTryIsHazard,
-    asyncCallSites = st.asyncCallSites
+    asyncCallSites = st.asyncCallSites,
+    errWidenings = st.errWidenings
   )
 }
 
@@ -292,7 +300,8 @@ func stateInTry(st: in PropState): PropState {
     curFnAsync = st.curFnAsync,
     inTry = true,
     awaitInTryIsHazard = st.awaitInTryIsHazard,
-    asyncCallSites = st.asyncCallSites
+    asyncCallSites = st.asyncCallSites,
+    errWidenings = st.errWidenings
   )
 }
 
@@ -325,7 +334,8 @@ func stateForLambda(st: in PropState): PropState {
     curFnAsync = st.curFnAsync,
     inTry = false,
     awaitInTryIsHazard = st.awaitInTryIsHazard,
-    asyncCallSites = st.asyncCallSites
+    asyncCallSites = st.asyncCallSites,
+    errWidenings = st.errWidenings
   )
 }
 
@@ -445,10 +455,61 @@ func implicitAwaitScrutinee(inner: in Expr, sp: in Span, st: in PropState): Expr
 }
 
 func isAlreadyAwaitedExpr(e: in Expr): Bool {
+  match typedOperandInit(e) {
+    case Some(init) -> return isAlreadyAwaitedExpr(init)
+    case None -> ()
+  }
   match e.kind {
     case EParen(paren) -> isAlreadyAwaitedExpr(paren)
     case EAwait(_) -> true
     case _ -> false
+  }
+}
+
+// The value an operand the type checker typed (#7823, #8181) is bound from:
+// `Lyric.Mono.desugarCheckedFile` turns such an operand `e` into
+// `{ val __lyric_ho_<n>: T = e; __lyric_ho_<n> }`, which evaluates exactly
+// `e`, so whether it awaits or is safe inside a protected region is `e`'s.
+func typedOperandInit(e: in Expr): Option[Expr] {
+  val blk = match e.kind { case EBlock(b) -> b; case _ -> return None }
+  if blk.statements.count != 2 {
+    return None
+  }
+  val tailName = match blk.statements[1].kind {
+    case SExpr(tail) -> match tail.kind {
+      case EPath(p) -> if p.segments.count == 1 {
+        p.segments[0]
+      } else {
+        return None
+      }
+      case _ -> return None
+    }
+    case _ -> return None
+  }
+  val prefix = "__lyric_ho_"
+  if tailName.length <= prefix.length or tailName.substring(0, prefix.length) != prefix {
+    return None
+  }
+  match blk.statements[0].kind {
+    case SLocal(binding) -> match binding {
+      case LBVal(pat, tyOpt, init) -> match pat.kind {
+        case PBinding(bn, None) -> if bn == tailName and isSomeTypeExpr(tyOpt) {
+          Some(value = init)
+        } else {
+          None
+        }
+        case _ -> None
+      }
+      case _ -> None
+    }
+    case _ -> None
+  }
+}
+
+func isSomeTypeExpr(t: in Option[TypeExpr]): Bool {
+  match t {
+    case Some(_) -> true
+    case None -> false
   }
 }
 
@@ -525,6 +586,10 @@ func blockEndsInTry(blk: in Block): Bool {
 }
 
 func isRiskyTryCallScrutinee(inner: in Expr, st: in PropState): Bool {
+  match typedOperandInit(inner) {
+    case Some(init) -> return isRiskyTryCallScrutinee(init, st)
+    case None -> ()
+  }
   match inner.kind {
     case EParen(paren) -> isRiskyTryCallScrutinee(paren, st)
     case ECall(fn, args) -> {
@@ -579,7 +644,7 @@ func isRiskyTryCallScrutinee(inner: in Expr, st: in PropState): Bool {
 }
 
 // `match (await inner) { case Ok(v) -> v; case Err(x) -> { return Err(x) } }`
-func buildResultMatch(inner: in Expr, sp: in Span, st: in PropState): Expr {
+func buildResultMatch(inner: in Expr, sp: in Span, widening: in Option[PropagateErrWidening], st: in PropState): Expr {
   val vName = "__lyric_prop_v" + freshSuffix(st)
   val eName = "__lyric_prop_e" + freshSuffix(st)
 
@@ -588,9 +653,33 @@ func buildResultMatch(inner: in Expr, sp: in Span, st: in PropState): Expr {
   val okArm = MatchArm(pattern = okPat, guard = None, body = okBody, span = sp)
 
   val errPat = mkPat(PConstructor(head = mkPath("Err", sp), args = bindArg(eName, sp)), sp)
-  val errCall = mkExpr(ECall(fn = pathExpr("Err", sp), args = posArg(pathExpr(eName, sp))), sp)
-  val errRet = mkStmt(SReturn(value = Some(value = errCall)), sp)
-  val errBody: ExprOrBlock = EOBBlock(block = singleStmtBlock(errRet, sp))
+  // An error that widens to the function's error type is bound at its own
+  // type and converted (#8181).
+  val errStmts: List[Statement] = newList()
+  val errValue = match widening {
+    case Some(w) -> {
+      val wName = "__lyric_prop_w" + freshSuffix(st)
+      val noInner: Option[Pattern] = None
+      errStmts.add(
+        mkStmt(
+          SLocal(
+            binding = LBVal(
+              pat = mkPat(PBinding(name = wName, inner = noInner), sp),
+              ty = Some(value = w.fromType),
+              init = pathExpr(eName, sp)
+            )
+          ),
+          sp
+        )
+      )
+      val noArgs: List[CallArg] = newList()
+      mkExpr(ECall(fn = mkExpr(EMember(receiver = pathExpr(wName, sp), memberName = w.method), sp), args = noArgs), sp)
+    }
+    case None -> pathExpr(eName, sp)
+  }
+  val errCall = mkExpr(ECall(fn = pathExpr("Err", sp), args = posArg(errValue)), sp)
+  errStmts.add(mkStmt(SReturn(value = Some(value = errCall)), sp))
+  val errBody: ExprOrBlock = EOBBlock(block = Block(statements = errStmts, span = sp))
   val errArm = MatchArm(pattern = errPat, guard = None, body = errBody, span = sp)
 
   val arms: List[MatchArm] = newList()
@@ -816,7 +905,7 @@ func rewriteExpr(e: in Expr, kind: in PropKind, st: in PropState): Expr {
       // `?` awaits a direct async-call operand itself (`implicitAwaitScrutinee`).
       val inner2 = rewriteOperandCall(inner, kind, st)
       match kind {
-        case PropResult -> buildResultMatch(inner2, e.span, st)
+        case PropResult -> buildResultMatch(inner2, e.span, mapGet(st.errWidenings, recordCopySiteKey(e.span)), st)
         case PropOption -> buildOptionMatch(inner2, e.span, st)
         case PropInLambda -> {
           st.diagnostics.add(
@@ -1457,6 +1546,21 @@ pub func lowerPropagateFileWithAsyncCalls(
   awaitInTryIsHazard: Bool,
   asyncCallSites: in Map[String, Bool],
 ): PropagateResult {
+  val noWidenings: Map[String, PropagateErrWidening] = newMap()
+  lowerPropagateFileWithSites(file, extraRecords, awaitInTryIsHazard, asyncCallSites, noWidenings)
+}
+
+// As `lowerPropagateFileWithAsyncCalls`, also converting the re-wrapped error
+// of each `?` in `errWidenings` (the type checker's
+// `SymbolTable.propagateErrWidenings`, #8181) to the enclosing function's
+// error type.
+pub func lowerPropagateFileWithSites(
+  file: in SourceFile,
+  extraRecords: in List[RecordDecl],
+  awaitInTryIsHazard: Bool,
+  asyncCallSites: in Map[String, Bool],
+  errWidenings: in Map[String, PropagateErrWidening],
+): PropagateResult {
   // #6448: hoist every qualifying `?` (operand-position, stacked-context)
   // into fresh `val` bindings FIRST, before the `?` -> match rewrite below —
   // see §2b's module doc.  Every hoisted `?` lands as a statement-level
@@ -1485,7 +1589,7 @@ pub func lowerPropagateFileWithAsyncCalls(
     }
     ai = ai + 1
   }
-  val st = newPropState(diags, aliases, syncFuncNames, awaitInTryIsHazard, asyncCallSites)
+  val st = newPropState(diags, aliases, syncFuncNames, awaitInTryIsHazard, asyncCallSites, errWidenings)
   val newItems: List[Item] = newList()
   var i = 0
   while i < hoisted.items.count {

@@ -3147,8 +3147,11 @@ func unifyBranchTypes(a: in Type, b: in Type, span: in Span, diag: in List[Diagn
     )
     return TyError
   }
+  // Each branch may leave a different type argument open (`if c { Err(error
+  // = "z") } else { Ok(value = "abc") }`): the join takes each from whichever
+  // branch fixes it (#8181).
   if typeEquiv(a, b) {
-    a
+    joinOpenTypes(a, b)
   } else {
     match mergeIntWiden(a, b) {
       case Some(t) -> t
@@ -5478,6 +5481,480 @@ func propagateUnwrap(t: in Type): Type {
       }
     }
     case _ -> TyError
+  }
+}
+
+// `e?` (docs/01 §4.5) unwraps the operand to its success type (`Result[T,
+// E]`/`Option[T]` -> `T`); the `Lyric.Propagate` pass owns the lowering and
+// F0020.  `expected` is the type the `?` expression's own position expects,
+// or `TyError`.
+//
+// The lowering matches on the operand and re-wraps its failure as the
+// enclosing function's, so the operand must be of the function's monad, its
+// error type must be assignable to the function's (T0169), and its success type is what
+// the position takes.  An operand the backend would otherwise build at an
+// instantiation it infers from context — a bare `Ok(...)`/`Err(...)`/
+// `Some(...)`/`None`, possibly behind an `if`/`match`/block — or one whose
+// own type leaves a slot open is recorded with its closed type, so
+// `Lyric.Mono.desugarCheckedFile` binds it to a local annotated with that
+// type before the lowering (#8181).  Without that, a backend with reified
+// generics built `Ok(value = "bb")` in a `Result[Int, String]` function at
+// `Result<int, string>` (the function's own instantiation) and the match read
+// a `string` payload as an `int`.
+//
+// An operand that fixes no success type (`Err(error = x)?`, `None?`) where
+// the position expects none is left open (`SymbolTable.openPropagateOperands`)
+// until what consumes the value fixes it: a call argument's parameter
+// (instantiated, for a generic one, from the type expected of the call's
+// result), a record field, `Bool` for a condition, the other operand of a
+// binary operator, or the type the branches of an `if`/`match` join to
+// (`resolvePropagateOperand`).  Such an operand can never be `Ok`/`Some`, so
+// the `?` never yields a value; one that nothing fixes is handled by
+// `closeOpenPropagateOperands`.
+func inferPropagate(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  e: in Expr,
+  inner: in Expr,
+  expected: in Type,
+): Type {
+  val own = inferExpr(sc, tbl, sigs, diag, inner)
+  checkPropagateMonad(sc, tbl, diag, own, e, inner.span)
+  val closed = joinOpenTypes(own, propagateOperandContext(own, sc.returnTy, unrefine(expected)))
+  val ownOpen = not typeIsClosedOver(own, sc.genericNames)
+  val takesContext = propagateOperandTakesContext(tbl, sc, inner)
+  val key = recordCopySiteKey(inner.span)
+  if typeIsClosedOver(closed, sc.genericNames) and (ownOpen or takesContext) {
+    if ownOpen {
+      // A local of an open type (`val r = Ok(value = 1)`) takes the closed
+      // type as its annotation (#7788).
+      noteExpectedFlow(sc, tbl, inner, closed)
+    }
+    if hoistBindsOperand(sc, inner) {
+      if tbl.openPropagateOperands.containsKey(key) {
+        tbl.openPropagateOperands.remove(key)
+      }
+      recordHoistOperandTypeOver(tbl, sc.genericNames, inner, closed, TyError)
+    }
+  } else if takesContext and hoistBindsOperand(sc, inner) {
+    if not tbl.hoistOperandTypeSites.containsKey(key) and not tbl.openPropagateOperands.containsKey(key) {
+      val fallback = joinOpenTypes(closed, propagateOperandContext(own, sc.returnTy, propagateUnwrap(sc.returnTy)))
+      tbl.openPropagateOperands.add(
+        key,
+        OpenPropagateOperand(operand = inner, fallback = fallback, typeParams = sc.genericNames)
+      )
+    }
+  }
+  propagateUnwrap(closed)
+}
+
+// T0169: the operand of `?` must be of the enclosing function's monad, with an
+// error type assignable to the function's error type — the lowering re-wraps
+// the operand's error in the function's `Err` (or returns `None`), docs/01
+// §4.5.  An error type that widens to the function's (`Int` to `Long`) is
+// recorded in `SymbolTable.propagateErrWidenings`, so the lowering converts
+// it.  A function returning neither `Result` nor `Option` is the lowering's
+// F0020.
+func checkPropagateMonad(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  own: in Type,
+  e: in Expr,
+  sp: in Span,
+): Unit {
+  val ret = unrefine(sc.returnTy)
+  val retName = match ret { case TyUser(_, n, _) -> n; case _ -> return }
+  if retName != "Result" and retName != "Option" {
+    return
+  }
+  match unrefine(own) {
+    case TyUser(oid, oname, oargs) -> {
+      if oname != "Result" and oname != "Option" {
+        return
+      }
+      match ret {
+        case TyUser(rid, _, rargs) -> {
+          if oname != retName {
+            diag.add(
+              errorDiagnostic(
+                "T0169",
+                "this `?` operand is " + articleFor(oname) + " " + oname + ", but the enclosing function returns " +
+                  renderType(ret) +
+                  "; `?` propagates the operand's failure as the function's result, so the operand " +
+                  "must be " +
+                  articleFor(retName) +
+                  " " +
+                  retName +
+                  " too",
+                sp
+              )
+            )
+            return
+          }
+          if oname == "Result" and typeIdEq(oid, rid) and oargs.count == 2 and rargs.count == 2 {
+            val ownErr = oargs[1]
+            if typeIsClosedOver(ownErr, sc.genericNames) {
+              if not argSatisfiesParam(tbl, rargs[1], ownErr) {
+                diag.add(
+                  errorDiagnostic(
+                    "T0169",
+                    "the error type of this `?` operand, " + renderType(ownErr) + ", is not assignable to the " +
+                      "enclosing function's error type " +
+                      renderType(rargs[1]) +
+                      " (the function returns " +
+                      renderType(ret) +
+                      "); `?` re-wraps the operand's error in the function's `Err`",
+                    sp
+                  )
+                )
+              } else if numericWidensTo(rargs[1], ownErr) {
+                match wideningMethod(rargs[1], ownErr) {
+                  case Some(m) -> match typeExprForRef(tbl, ownErr, e.span) {
+                    case Some(fromTe) -> {
+                      val wkey = recordCopySiteKey(e.span)
+                      if not tbl.propagateErrWidenings.containsKey(wkey) {
+                        tbl.propagateErrWidenings.add(wkey, PropagateErrWidening(method = m, fromType = fromTe))
+                      }
+                    }
+                    case None -> ()
+                  }
+                  case None -> ()
+                }
+              }
+            }
+          }
+        }
+        case _ -> ()
+      }
+    }
+    case _ -> ()
+  }
+}
+
+func articleFor(name: in String): String {
+  if name == "Option" {
+    "an"
+  } else {
+    "a"
+  }
+}
+
+// Give the open operand of the `?` expression `e` (through parentheses) the
+// success type `succ`, when `succ` closes it (see `inferPropagate`).
+pub func resolvePropagateOperand(sc: in Scope, tbl: in SymbolTable, e: in Expr, succ: in Type): Unit {
+  match e.kind {
+    case EParen(inner) -> resolvePropagateOperand(sc, tbl, inner, succ)
+    case EPropagate(inner) -> {
+      val key = recordCopySiteKey(inner.span)
+      if not tbl.openPropagateOperands.containsKey(key) {
+        return
+      }
+      recordPropagateOperandType(
+        tbl,
+        key,
+        inner,
+        propagateOperandContext(sc.returnTy, sc.returnTy, unrefine(succ)),
+        sc.genericNames
+      )
+    }
+    case _ -> ()
+  }
+}
+
+// A `?` operand still open once the file is checked never yields a value
+// (see `inferPropagate`), so no type is recorded for it: the JVM erases the
+// success type and the dotnet backend builds a construction with no type
+// expected of it at the enclosing function's instantiation, as for any such
+// construction.  The native backend builds every construction at a closed
+// instantiation (D-N-010: full monomorphization), so each such operand's
+// fallback — the enclosing function's own instantiation, which types only the
+// success path the `?` never takes — is offered in
+// `SymbolTable.propagateFallbackSites`, which the middle end binds only for a
+// native build (`MiddleEndOptions.nativeIntrinsics`).  An operand that is an
+// argument of a generic call has none: there it would instantiate the callee.
+pub func collectPropagateFallbacks(tbl: in SymbolTable): Unit {
+  for k in mapKeys(tbl.openPropagateOperands) {
+    match mapGet(tbl.openPropagateOperands, k) {
+      case Some(op) -> {
+        val t = op.fallback
+        if typeIsClosedOver(t, op.typeParams) and typeMentionsGenericInst(t) and not tbl.hoistOperandTypeSites.containsKey(k) and not tbl.propagateFallbackSites.containsKey(k) {
+          match typeExprForOpenBinding(tbl, t, op.operand.span, op.typeParams) {
+            case Some(te) -> tbl.propagateFallbackSites.add(
+              k,
+              HoistOperandTypeSite(
+                operandType = te,
+                rendered = renderType(t),
+                conflicting = false,
+                startOffset = op.operand.span.startPos.offset
+              )
+            )
+            case None -> ()
+          }
+        }
+      }
+      case None -> ()
+    }
+  }
+}
+
+// The open `?` argument `e` of a generic call gets no fallback (see
+// `collectPropagateFallbacks`).
+func dropPropagateFallback(tbl: in SymbolTable, e: in Expr): Unit {
+  match e.kind {
+    case EParen(inner) -> dropPropagateFallback(tbl, inner)
+    case EPropagate(inner) -> {
+      val key = recordCopySiteKey(inner.span)
+      match mapGet(tbl.openPropagateOperands, key) {
+        case Some(op) -> {
+          tbl.openPropagateOperands.remove(key)
+          tbl.openPropagateOperands.add(
+            key,
+            OpenPropagateOperand(operand = op.operand, fallback = TyError, typeParams = op.typeParams)
+          )
+        }
+        case None -> ()
+      }
+    }
+    case _ -> ()
+  }
+}
+
+// Record the closed type `t` for the open `?` operand `operand` keyed `key`.
+func recordPropagateOperandType(
+  tbl: in SymbolTable,
+  key: in String,
+  operand: in Expr,
+  t: in Type,
+  typeParams: in List[String],
+): Unit {
+  if typeIsClosedOver(t, typeParams) and typeMentionsGenericInst(t) {
+    match typeExprForOpenBinding(tbl, t, operand.span, typeParams) {
+      case Some(_) -> {
+        tbl.openPropagateOperands.remove(key)
+        recordHoistOperandTypeOver(tbl, typeParams, operand, t, TyError)
+      }
+      case None -> ()
+    }
+  }
+}
+
+// The type a `?` operand of type `own` has in a function returning `ret`:
+// the function's own monad, with the function's error type and `succ` (the
+// type the `?` expression's position expects, or `TyError`) as the success
+// type.  `TyError` when the operand is not of the function's monad (the
+// lowering's F0020 and the match's own checks report that).
+func propagateOperandContext(own: in Type, ret: in Type, succ: in Type): Type {
+  match unrefine(own) {
+    case TyUser(oid, oname, oargs) -> match unrefine(ret) {
+      case TyUser(rid, _, rargs) -> {
+        val isMonad = (oname == "Result" and oargs.count == 2) or (oname == "Option" and oargs.count == 1)
+        if not isMonad or not typeIdEq(oid, rid) or rargs.count != oargs.count {
+          return TyError
+        }
+        val args: List[Type] = newList()
+        args.add(succ)
+        var i = 1
+        while i < rargs.count {
+          args.add(rargs[i])
+          i = i + 1
+        }
+        TyUser(id = oid, name = oname, args = args)
+      }
+      case _ -> TyError
+    }
+    case _ -> TyError
+  }
+}
+
+// Whether a `?` operand is built at an instantiation a backend infers from
+// its context: a union-case construction (`Ok(...)`, `Std.Core.Some(...)`,
+// a bare `None`), or an `if`/`match`/block a branch of which produces one.
+func propagateOperandTakesContext(tbl: in SymbolTable, sc: in Scope, e: in Expr): Bool {
+  match e.kind {
+    case EParen(inner) -> propagateOperandTakesContext(tbl, sc, inner)
+    case EIf(_, thenBranch, elseBranch, _) -> {
+      if branchTakesContext(tbl, sc, thenBranch) {
+        return true
+      }
+      match elseBranch {
+        case Some(eb) -> branchTakesContext(tbl, sc, eb)
+        case None -> false
+      }
+    }
+    case EMatch(_, arms) -> {
+      for arm in arms {
+        if branchTakesContext(tbl, sc, arm.body) {
+          return true
+        }
+      }
+      false
+    }
+    case EBlock(blk) -> match blockValueExpr(blk) {
+      case Some(v) -> propagateOperandTakesContext(tbl, sc, v)
+      case None -> false
+    }
+    case ECall(fn, _) -> match unionCaseSymbolOf(tbl, fn) { case Some(_) -> true; case None -> false }
+    case EPath(p) -> if p.segments.count == 1 and isSomeBinding(scopeTryFind(sc, p.segments[0])) {
+      false
+    } else {
+      match unionCaseSymbolOf(tbl, e) {
+        case Some(_) -> true
+        case None -> false
+      }
+    }
+    case _ -> false
+  }
+}
+
+func branchTakesContext(tbl: in SymbolTable, sc: in Scope, b: in ExprOrBlock): Bool {
+  match branchValueExpr(b) {
+    case Some(v) -> propagateOperandTakesContext(tbl, sc, v)
+    case None -> false
+  }
+}
+
+func isSomeBinding(b: in Option[LocalBinding]): Bool {
+  match b {
+    case Some(_) -> true
+    case None -> false
+  }
+}
+
+// The type the generic parameter taking argument `ai` of a call to `sig` has
+// once `sig`'s type parameters are bound from `resultExpected`, the type
+// expected of the call's result; `fallback` when that binds nothing.
+func genericArgFromResultExpected(
+  sig: in ResolvedSignature,
+  args: in List[CallArg],
+  ai: in Int,
+  fallback: in Type,
+  resultExpected: in Type,
+): Type {
+  if sig.generics.count == 0 or typeIsHole(resultExpected) {
+    return fallback
+  }
+  val paramNames: List[String] = newList()
+  for p in sig.params {
+    paramNames.add(p.name)
+  }
+  if args.count > sig.params.count {
+    return fallback
+  }
+  val srcIdx = argIndicesInParamOrder(args, paramNames)
+  val retTys: List[Type] = newList()
+  retTys.add(sig.returnTy)
+  val expTys: List[Type] = newList()
+  expTys.add(resultExpected)
+  val targs = inferGenericArgsDeep(sig.generics, retTys, expTys)
+  var k = 0
+  while k < srcIdx.count {
+    if srcIdx[k] == ai {
+      return substituteTyVars(sig.params[k].ty, sig.generics, targs)
+    }
+    k = k + 1
+  }
+  fallback
+}
+
+func callHasPropagateArg(tbl: in SymbolTable, args: in List[CallArg]): Bool {
+  for a in args {
+    val ae = callArgExpr(a)
+    if argIsPropagate(ae) or argIsPropagateCall(tbl, ae) {
+      return true
+    }
+  }
+  false
+}
+
+// Give each open `?` argument of the call `e` — directly, or in a nested such
+// call — the success type its parameter has once the callee's type
+// parameters are bound from `resultExpected`, the type expected of `e`'s
+// result (#8181).  A walk over the already-checked call, not a second check
+// of it, so a nest of calls costs time linear in its depth.
+func resolvePropagateCallArgs(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  e: in Expr,
+  resultExpected: in Type,
+): Unit {
+  if tbl.openPropagateOperands.count == 0 or not typeIsClosedOver(resultExpected, sc.genericNames) {
+    return
+  }
+  match e.kind {
+    case EParen(inner) -> resolvePropagateCallArgs(sc, tbl, sigs, inner, resultExpected)
+    case ECall(fn, cargs) -> {
+      val holes: List[Type] = newList()
+      for a in cargs {
+        holes.add(TyError)
+      }
+      match findDirectSig(sc, tbl, sigs, fn, cargs.count, holes) {
+        case Some(sig) -> {
+          // The callee's type arguments, bound from the expected result, are
+          // recorded for `Lyric.Mono` when the arguments left them open.
+          match fn.kind {
+            case EPath(_) -> if sig.generics.count > 0 {
+              val boundArgTys: List[Type] = newList()
+              var bi = 0
+              while bi < cargs.count {
+                boundArgTys.add(genericArgFromResultExpected(sig, cargs, bi, TyError, resultExpected))
+                bi = bi + 1
+              }
+              recordGenericCallTypeArgs(tbl, sig, valueGenericParamsOf(tbl, fn, cargs.count), cargs, boundArgTys, fn.span)
+            }
+            case _ -> ()
+          }
+          var ai = 0
+          while ai < cargs.count {
+            val ae = callArgExpr(cargs[ai])
+            if argIsPropagate(ae) or argIsPropagateCall(tbl, ae) {
+              val pTy = genericArgFromResultExpected(sig, cargs, ai, TyError, resultExpected)
+              if argIsPropagate(ae) {
+                resolvePropagateOperand(sc, tbl, ae, pTy)
+              } else {
+                resolvePropagateCallArgs(sc, tbl, sigs, ae, pTy)
+              }
+            }
+            ai = ai + 1
+          }
+        }
+        case None -> ()
+      }
+    }
+    case _ -> ()
+  }
+}
+
+// Whether a call argument is a call (not a union-case construction) holding a
+// `?` argument, directly or in a nested such call.
+func argIsPropagateCall(tbl: in SymbolTable, e: in Expr): Bool {
+  match e.kind {
+    case EParen(inner) -> argIsPropagateCall(tbl, inner)
+    case ECall(fn, cargs) -> {
+      if argIsCaseCtorCall(tbl, e) {
+        return false
+      }
+      for a in cargs {
+        val ae = callArgExpr(a)
+        if argIsPropagate(ae) or argIsPropagateCall(tbl, ae) {
+          return true
+        }
+      }
+      false
+    }
+    case _ -> false
+  }
+}
+
+// Whether a call argument is a `?` expression, through parentheses.
+func argIsPropagate(e: in Expr): Bool {
+  match e.kind {
+    case EParen(inner) -> argIsPropagate(inner)
+    case EPropagate(_) -> true
+    case _ -> false
   }
 }
 
@@ -8759,6 +9236,7 @@ func inferIfExpr(
   tailExpected: in Type,
 ): Type {
   val condT = inferExpr(sc, tbl, sigs, diag, cond)
+  resolvePropagateOperand(sc, tbl, cond, TyPrim(pt = PtBool))
   match condT {
     case TyError -> {
     }
@@ -8804,7 +9282,10 @@ func inferIfExpr(
           case None -> ()
         }
       }
-      unifyBranchTypes(tt, et, e.span, diag, isValuePosition)
+      val joined = unifyBranchTypes(tt, et, e.span, diag, isValuePosition)
+      closePropagateBranch(sc, tbl, thenBranch, joined, isValuePosition)
+      closePropagateBranch(sc, tbl, eb, joined, isValuePosition)
+      joined
     }
   }
 }
@@ -8887,6 +9368,7 @@ func inferMatchExpr(
     match arms[ai].guard {
       case Some(g) -> {
         val guardT = inferExpr(sc, tbl, sigs, diag, g)
+        resolvePropagateOperand(sc, tbl, g, TyPrim(pt = PtBool))
         match guardT {
           case TyError -> {
           }
@@ -8937,7 +9419,25 @@ func inferMatchExpr(
     acc = unifyBranchTypes(acc, armTypes[ui], armSpans[ui], diag, isValuePosition)
     ui = ui + 1
   }
+  for arm in arms {
+    closePropagateBranch(sc, tbl, arm.body, acc, isValuePosition)
+  }
   acc
+}
+
+// A branch of a consumed `if`/`match` whose value is `e?` with an open
+// operand (`Err(error = x)?`, `None?`) takes, as its success type, the type
+// the branches join to (#8181).
+func closePropagateBranch(
+  sc: in Scope, tbl: in SymbolTable, b: in ExprOrBlock, joined: in Type, consumed: in Bool
+): Unit {
+  if not consumed {
+    return
+  }
+  match branchValueExpr(b) {
+    case Some(ve) -> resolvePropagateOperand(sc, tbl, ve, joined)
+    case None -> ()
+  }
 }
 
 pub func inferExpr(
@@ -12497,6 +12997,10 @@ func inferExprCore(
 
     case EPrefix(op, inner) -> {
       val it = inferExpr(sc, tbl, sigs, diag, inner)
+      match op {
+        case PreNot -> resolvePropagateOperand(sc, tbl, inner, TyPrim(pt = PtBool))
+        case _ -> ()
+      }
       // `-2147483648` is `Int.MinValue`: its operand alone is too large for
       // `Int` (so it typed `Long`), but the negated value fits (#7346).
       match unsuffixedIntLiteralValue(e) {
@@ -12531,6 +13035,9 @@ func inferExprCore(
       // / `someLong + 1` type-check without a `0i64` suffix (#2514).
       val lt = adoptFloatLiteralType(tbl, l, adoptIntLiteralType(l, lt0, rt0), rt0)
       val rt = adoptFloatLiteralType(tbl, r, adoptIntLiteralType(r, rt0, lt0), lt0)
+      // An operand `e?` that fixes no success type takes the other operand's.
+      resolvePropagateOperand(sc, tbl, l, rt)
+      resolvePropagateOperand(sc, tbl, r, lt)
       // A `UInt` operand beside a `ULong` one zero-extends (#7350, #7382);
       // spelling it `.toULong()` keeps every backend from having to recover
       // the operand's signedness from its shape (#7805).
@@ -12880,9 +13387,18 @@ func inferExprCore(
       val argTypes: List[Type] = newList()
       var anyDeferredLambda = false
       var anyCaseCtorArg = false
+      var anyPropagateArg = false
       var i = 0
       while i < args.count {
         val ae = callArgExpr(args[i])
+        if argIsPropagate(ae) {
+          anyPropagateArg = true
+        }
+        // A call holding a `?` argument may take its success type from this
+        // call's parameter once the signature is known (#8181).
+        if argIsPropagateCall(tbl, ae) {
+          anyPropagateArg = true
+        }
         if argIsLambdaLiteral(ae) or argIsAmbiguousUnionCaseCtor(tbl, ae) or argIsBranchingExpr(ae) or argIsListLiteral(ae) {
           val scratch: List[Diagnostic] = newList()
           argTypes.add(inferExpr(sc, tbl, sigs, scratch, ae))
@@ -12959,7 +13475,7 @@ func inferExprCore(
       // against the field (D167); a generic record's field is instantiated
       // at what the other arguments, and the literal's elements, bind.
       val ctorFieldTys = ctorArrayFieldTypes(tbl, fn, args, argTypes, TyError)
-      if anyDeferredLambda or anyCaseCtorArg {
+      if anyDeferredLambda or anyCaseCtorArg or anyPropagateArg {
         val lambdaSig = match directSig {
           case Some(_) -> directSig
           case None -> match methodPick { case Some(mp0) -> Some(value = mp0.sig); case None -> None }
@@ -12971,6 +13487,58 @@ func inferExprCore(
         var di = 0
         while di < args.count {
           val dae = callArgExpr(args[di])
+          // An argument `e?` whose operand fixes no success type takes its
+          // parameter's (#8181), a generic one instantiated from the type
+          // expected of the call's result when the arguments leave it open;
+          // a call holding such an argument is checked against it.
+          if argIsPropagate(dae) or argIsPropagateCall(tbl, dae) {
+            val pExp = expectedArgTys[di]
+            val argExp = if typeIsClosedOver(pExp, sc.genericNames) {
+              pExp
+            } else {
+              match lambdaSig {
+                case Some(psig) -> genericArgFromResultExpected(
+                  psig,
+                  args,
+                  di,
+                  pExp,
+                  match mapGet(tbl.methodCallResultExpected, recordCopySiteKey(e.span)) {
+                    case Some(rx) -> rx
+                    case None -> TyError
+                  }
+                )
+                case None -> pExp
+              }
+            }
+            if argIsPropagate(dae) {
+              resolvePropagateOperand(sc, tbl, dae, argExp)
+              // Left open, it must not instantiate a generic callee at the
+              // enclosing function's success type.
+              val genericCallee = match lambdaSig { case Some(gs) -> gs.generics.count > 0; case None -> false }
+              if genericCallee and not typeIsClosedOver(argExp, sc.genericNames) {
+                dropPropagateFallback(tbl, dae)
+              }
+            } else {
+              resolvePropagateCallArgs(sc, tbl, sigs, dae, argExp)
+            }
+            // This call's own type arguments, when only its expected result
+            // binds them.
+            match lambdaSig {
+              case Some(osig) -> match fn.kind {
+                case EPath(_) -> if osig.generics.count > 0 and not typeIsClosedOver(pExp, sc.genericNames) and typeIsClosedOver(argExp, sc.genericNames) {
+                  val boundArgTys: List[Type] = newList()
+                  var bi = 0
+                  while bi < args.count {
+                    boundArgTys.add(if bi == di { argExp } else { argTypes[bi] })
+                    bi = bi + 1
+                  }
+                  recordGenericCallTypeArgs(tbl, osig, valueGenericParamsOf(tbl, fn, args.count), args, boundArgTys, fn.span)
+                }
+                case _ -> ()
+              }
+              case None -> ()
+            }
+          }
           if argIsListLiteral(dae) {
             // Typed against the parameter or field only when that is an
             // array (D167); a `List` or `slice` parameter keeps the plain
@@ -13468,11 +14036,7 @@ func inferExprCore(
       memberTy
     }
 
-    case EPropagate(inner) -> {
-      // `e?` unwraps the operand to its success type (`Result[T,E]`/`Option[T]` -> `T`); the `Lyric.Propagate` pass owns the lowering and F0020.
-      val it = inferExpr(sc, tbl, sigs, diag, inner)
-      propagateUnwrap(it)
-    }
+    case EPropagate(inner) -> inferPropagate(sc, tbl, sigs, diag, e, inner, TyError)
 
     // `await t` on a `Task[R]` handle yields `R`; any other operand keeps its
     // own type (a direct async call is already its result, docs/01 §7.1).
@@ -14559,7 +15123,15 @@ func inferExprExpectedCore(
         val diagCountBefore = diag.count
         match unionCaseSymbolForScrutinee(tbl, diag, fn, expected) {
           case Some(caseSym) -> inferCaseCtorExpected(sc, tbl, sigs, diag, fn, cargs, caseSym, e.span, expected)
-          case None -> if diag.count > diagCountBefore { TyError } else { inferExpr(sc, tbl, sigs, diag, e) }
+          case None -> if diag.count > diagCountBefore {
+            TyError
+          } else if callHasPropagateArg(tbl, cargs) {
+            // A `?` argument that fixes no success type may take it from a
+            // generic parameter the expected result binds (#8181).
+            inferMethodCallExpected(sc, tbl, sigs, diag, e, expected)
+          } else {
+            inferExpr(sc, tbl, sigs, diag, e)
+          }
         }
       } else {
         // #7752: a qualified case constructor (`Result.Ok(...)`,
@@ -14609,6 +15181,7 @@ func inferExprExpectedCore(
       expected
     )
     case EMatch(scrutinee, arms) -> inferMatchExpr(sc, tbl, sigs, diag, e, scrutinee, arms, true, expected)
+    case EPropagate(inner) -> inferPropagate(sc, tbl, sigs, diag, e, inner, expected)
     case EBlock(blk) -> checkBlock(
       sc,
       tbl,

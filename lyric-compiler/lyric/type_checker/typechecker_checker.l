@@ -5449,6 +5449,8 @@ func checkWithImportedPackagesCore(
   // The uses of each open local binding fix its annotation (#7788).
   resolveOpenBindingSites(tbl)
   reportUnspellableArrayCopies(tbl, diag)
+  // A `?` operand whose success type nothing fixed (#8181).
+  collectPropagateFallbacks(tbl)
 
   CheckResult(file = file, symbols = tbl, sigs = sigs, diagnostics = diag)
 }

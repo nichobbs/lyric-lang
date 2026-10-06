@@ -639,7 +639,14 @@ pub func pipeCheckAndMono(
     byRefCalls,
     tcRes,
     valueSites,
-    if opts.bindListLiteralTypes { tcRes.symbols.listLiteralTypeSites } else { noListLiteralSites }
+    if opts.bindListLiteralTypes { tcRes.symbols.listLiteralTypeSites } else { noListLiteralSites },
+    // A native build also binds each never-producing `?` operand nothing
+    // typed at the enclosing function's instantiation (#8181).
+    if opts.nativeIntrinsics {
+      withPropagateFallbacks(tcRes.symbols.hoistOperandTypeSites, tcRes.symbols.propagateFallbackSites)
+    } else {
+      tcRes.symbols.hoistOperandTypeSites
+    }
   )
   if gate(opts.pkgLabel, opts.lineOrigins, copyRes.diagnostics) {
     return None
@@ -746,7 +753,13 @@ pub func pipeCheckAndMono(
   // cross-package records, not just same-file ones. `opts.awaitInTryIsHazard`
   // (#7198) gates whether F0045's guard fires on this target.
   val asyncCalls: Map[String, Bool] = if opts.awaitAsyncCalls { tcRes.symbols.asyncCallSites } else { newMap() }
-  val propRes = lowerPropagateFileWithAsyncCalls(elaborated, monoRecordDecls, opts.awaitInTryIsHazard, asyncCalls)
+  val propRes = lowerPropagateFileWithSites(
+    elaborated,
+    monoRecordDecls,
+    opts.awaitInTryIsHazard,
+    asyncCalls,
+    tcRes.symbols.propagateErrWidenings
+  )
   if gate(opts.pkgLabel, opts.lineOrigins, propRes.diagnostics) {
     return None
   }
@@ -2956,6 +2969,7 @@ pub func pipeDesugarChecked(
   tcRes: in CheckResult,
   valueSites: in Map[String, FuncRefSite],
   listLiteralSites: in Map[String, ListLiteralTypeSite],
+  hoistOperandSites: in Map[String, HoistOperandTypeSite],
 ): MonoResult {
   desugarCheckedFile(
     annotateModuleVals(file0, tcRes.symbols.moduleValTypes),
@@ -2966,9 +2980,32 @@ pub func pipeDesugarChecked(
     tcRes.symbols.funcValueCallSites,
     tcRes.symbols.tuplePatternBindingSites,
     listLiteralSites,
-    tcRes.symbols.hoistOperandTypeSites,
+    hoistOperandSites,
     tcRes.symbols.argOrderSites
   )
+}
+
+/// `sites` with each of `fallbacks` whose key it does not already hold.
+func withPropagateFallbacks(
+  sites: in Map[String, HoistOperandTypeSite], fallbacks: in Map[String, HoistOperandTypeSite]
+): Map[String, HoistOperandTypeSite] {
+  if fallbacks.count == 0 {
+    return sites
+  }
+  val merged: Map[String, HoistOperandTypeSite] = newMap()
+  for k in mapKeys(sites) {
+    match mapGet(sites, k) {
+      case Some(v) -> merged.add(k, v)
+      case None -> ()
+    }
+  }
+  for k in mapKeys(fallbacks) {
+    match mapGet(fallbacks, k) {
+      case Some(v) -> if not merged.containsKey(k) { merged.add(k, v) }
+      case None -> ()
+    }
+  }
+  merged
 }
 
 /// `file0`'s declarations with their defaults as the middle end will leave
@@ -2982,7 +3019,7 @@ pub func pipeCheckedDefaults(file0: in SourceFile, importedPkgs: in List[Importe
   // Only the JVM bundle calls this, and the JVM never binds list literals
   // to their checked type (`MiddleEndOptions.bindListLiteralTypes`).
   val noListLiteralSites: Map[String, ListLiteralTypeSite] = newMap()
-  pipeDesugarChecked(file0, tcRes, funcValueSites(tcRes.symbols), noListLiteralSites).file
+  pipeDesugarChecked(file0, tcRes, funcValueSites(tcRes.symbols), noListLiteralSites, tcRes.symbols.hoistOperandTypeSites).file
 }
 
 /// True when `file` declares a parameter or field default anywhere: on a

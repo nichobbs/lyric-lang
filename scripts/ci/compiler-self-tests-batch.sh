@@ -131,6 +131,8 @@ for t in \
   lyric-compiler/lyric/inout_receiver_closure_self_test.l \
   lyric-compiler/lyric/inout_array_element_self_test.l \
   lyric-compiler/lyric/dot_named_byref_self_test.l \
+  lyric-compiler/lyric/propagate_ctor_operand_self_test.l \
+  lyric-compiler/lyric/propagate_ctor_operand_try_self_test.l \
   lyric-compiler/lyric/inout_array_element_try_self_test.l \
   lyric-compiler/lyric/compiler_bugs_3502_3505_3547_self_test.l \
   lyric-compiler/lyric/method_closure_var_capture_self_test.l \
