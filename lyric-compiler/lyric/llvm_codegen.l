@@ -238,6 +238,15 @@ record NIfaceInfo {
   methodAsyncElem: List[Option[NType]]
   methodRetIsSelf: List[Bool]
   methodParamIsSelf: List[List[Bool]]
+  // True for each `out`/`inout` parameter of a representable type other
+  // than a bare `Self` (#8183): its slot in `methodParamTys` is a pointer to
+  // the declared type, and a call through the interface passes the
+  // argument's place, as a direct call does (`isByRefParam`).
+  methodParamByRef: List[List[Bool]]
+  // True for each `out`/`inout` bare `Self` parameter.  Its slot keeps the
+  // erased `i8*` shape; a call through the interface is rejected (see
+  // `lowerIfaceDispatch`), while a direct call of the impl method is not.
+  methodParamSelfByRef: List[List[Bool]]
   // Each method's parameter names and defaults, binding a call's named and
   // omitted arguments (#7985).
   methodParamNames: List[List[String]]
@@ -4221,6 +4230,9 @@ func lowerCallArgsWithReceiver(
   val ordered: List[NArg] = newList()
   val recvTy = sigTypeToN(ctx, sig, sig.paramTys[0])
   val rv = coerceTo(ctx, insns, recv, recvTy)
+  if not sig.isExternSym and not isByRefParam(ctx, sig, 0) and sigHasByRefParam(ctx, sig) {
+    pinBorrowForByRefCall(ctx, insns, NVal(ty = recvTy, value = rv.value))
+  }
   ordered.add(NArg(ty = recvTy, value = rv.value))
   bindCallArgs(ctx, insns, sig, args, 1, ordered)
   ordered
@@ -4241,6 +4253,7 @@ func bindCallArgs(
 ): Unit {
   val vals: List[NVal] = newList()
   val slots: List[Int] = newList()
+  val anyByRef = sigHasByRefParam(ctx, sig)
   val argSlot = nativeArgSlots(sig.paramNames, firstSlot, args, sig.irName)
   var i = 0
   while i < args.count {
@@ -4293,8 +4306,38 @@ func bindCallArgs(
     } else {
       coerceTo(ctx, insns, vals[found], declTy)
     }
+    if anyByRef and not sig.isExternSym and not isByRefParam(ctx, sig, pi2) {
+      pinBorrowForByRefCall(ctx, insns, NVal(ty = declTy, value = v.value))
+    }
     ordered.add(NArg(ty = declTy, value = v.value))
     pi2 = pi2 + 1
+  }
+}
+
+/// True when some parameter of `sig` is passed by reference (`isByRefParam`).
+func sigHasByRefParam(ctx: in Ctx, sig: in NFuncSig): Bool {
+  var i = 0
+  while i < sig.paramTys.count {
+    if isByRefParam(ctx, sig, i) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+/// A reference argument passed `in` (a borrow, 04-arc-design.md Rule 5) to a
+/// call that also passes a place by reference is retained for the call and
+/// released with the statement's temps.  The same value can be both: in
+/// `swap(k, k)` or `k.swapWith(k)` the callee's write to the by-reference
+/// place releases the value the borrow still points at, so without the
+/// retain the borrow dangles for the rest of the call (#8183).  No-op for a
+/// scalar, a by-value record, or a path with no temp scope (module-level
+/// initialisers, which cannot pass a place by reference, T0085).
+func pinBorrowForByRefCall(ctx: in Ctx, insns: in List[NInsn], v: in NVal): Unit {
+  if isRefNType(v.ty) and ctx.tempScopes.count > 0 {
+    emitRetain(ctx, insns, v)
+    registerTemp(ctx, v)
   }
 }
 
@@ -4400,6 +4443,23 @@ func byRefPlaceLabel(ex: in Expr): String {
   }
 }
 
+/// The infix of a closure body's local copy of a captured variable's value
+/// (`synthLambdaBody`): `<name>.cap.<n>`.  An identifier has no `.`, so no
+/// other slot carries it.
+func captureSlotMarker(): String = ".cap."
+
+/// `N0024` (#7891): a variable a closure captures, passed by reference from
+/// inside the closure.  Native captures a `var` by value, so the closure body
+/// holds a borrowed copy of the value: passing that copy's cell would let the
+/// callee release a value the closure's environment still owns, and the
+/// write would never reach the variable.  Rejected at the argument until
+/// captured variables share one cell.
+func capturedByRefArgMessage(name: in String): String {
+  "'" + name + "' is a variable this closure captures, which --target native cannot pass to an out/inout " +
+    "parameter yet: native closures capture a variable's value, not the variable (#7891), so the call would " +
+    "write a copy the variable never sees; pass a local of the closure, or call outside the closure"
+}
+
 /// The address of an `out`/`inout` place, typed as a pointer to the place's
 /// own storage type: a bare local (its `ctx.varSlots` entry already IS a
 /// pointer to its storage, whether that local is a plain `alloca` or itself
@@ -4407,10 +4467,12 @@ func byRefPlaceLabel(ex: in Expr): String {
 /// field access (a GEP off the record's heap pointer, exactly
 /// `lowerFieldAssign`'s addressing).  The type checker
 /// (`typechecker_exprs.l::argIsValidByRefTarget`) accepts any
-/// `EMember`/`EIndex` as a potential l-value; anything else here (an
-/// index/element expression, a qualified module path, …) is a loud, named
-/// diagnostic — never a silent miscompile — pending its own verified
-/// addressing scheme.
+/// `EMember`/`EIndex` as a potential l-value.  An element of an array
+/// never reaches here: `Lyric.Mono.argOrderCallMono` passes a temporary it
+/// copies in and out (D179), and an element of a `List`, `Map` or slice is
+/// not a place (T0085).  Anything else (a qualified module path, an index
+/// expression in code that skipped the middle end, …) is a loud, named
+/// diagnostic, never a silent miscompile.
 func lowerByRefPlace(ctx: in Ctx, insns: in List[NInsn], ex: in Expr): NVal {
   match ex.kind {
     case EParen(inner) -> lowerByRefPlace(ctx, insns, inner)
@@ -4422,6 +4484,12 @@ func lowerByRefPlace(ctx: in Ctx, insns: in List[NInsn], ex: in Expr): NVal {
           case None -> panic(
             "Lyric.LlvmCodegen: out/inout argument '" + name +
               "' is not a local variable or parameter — module-level bindings are not yet supported as out/inout arguments for --target native"
+          )
+        }
+        if Str.contains(slot, captureSlotMarker()) {
+          panic(
+            "error[N0024] " + ex.span.startPos.line.toString() + ":" + ex.span.startPos.column.toString() + ": " +
+              capturedByRefArgMessage(name)
           )
         }
         val actualTy = match mapGet(ctx.varTypes, name) {
@@ -4464,7 +4532,7 @@ func lowerByRefPlace(ctx: in Ctx, insns: in List[NInsn], ex: in Expr): NVal {
       NVal(ty = NPtr(pointee = fieldTy), value = NLocal(name = fieldPtr))
     }
     case _ -> panic(
-      "Lyric.LlvmCodegen: this out/inout argument shape is not yet supported for --target native (only a local variable/parameter or a record field access is; index/element expressions and other l-value forms are not yet supported)"
+      "Lyric.LlvmCodegen: --target native cannot pass this expression to an out/inout parameter: only a local variable, a parameter or a record field can be passed by reference here (an array element is passed through a temporary copy that is stored back after the call, D179, and an element of a List, Map or slice cannot be passed by reference at all, T0085)"
     )
   }
 }
@@ -11068,6 +11136,14 @@ func lowerGenericFnCallWith(
     case None -> panic("Lyric.LlvmCodegen: internal — missing fn instantiation '" + instIr + "'")
   }
   val callArgs: List[NArg] = newList()
+  var anyByRef = false
+  var bri = preVals.count
+  while bri < rawVals.count {
+    if isByRefMode(fd.params[bri].mode) {
+      anyByRef = true
+    }
+    bri = bri + 1
+  }
   var ci = 0
   while ci < rawVals.count {
     if ci >= preVals.count and isByRefMode(fd.params[ci].mode) {
@@ -11085,6 +11161,9 @@ func lowerGenericFnCallWith(
       callArgs.add(NArg(ty = inst.paramTys[ci], value = rawVals[ci].value))
     } else {
       val cv = coerceTo(ctx, insns, rawVals[ci], inst.paramTys[ci])
+      if anyByRef {
+        pinBorrowForByRefCall(ctx, insns, NVal(ty = inst.paramTys[ci], value = cv.value))
+      }
       callArgs.add(NArg(ty = inst.paramTys[ci], value = cv.value))
     }
     ci = ci + 1
@@ -11538,7 +11617,7 @@ func synthLambdaBody(
     bodyInsns.add(NGEP(dest = capPtr, ty = structTy, ptr = NLocal(name = "self.env"), indices = gArgs))
     val capVal = freshTmp(ctx)
     bodyInsns.add(NLoad(dest = capVal, ty = capTys[ci], ptr = NLocal(name = capPtr)))
-    val slot = free[ci] + ".cap." + freshTmp(ctx)
+    val slot = free[ci] + captureSlotMarker() + freshTmp(ctx)
     ctx.allocas.add(NAlloca(dest = slot, ty = capTys[ci]))
     bodyInsns.add(NStore(ty = capTys[ci], value = NLocal(name = capVal), ptr = NLocal(name = slot)))
     ctx.varSlots.add(free[ci], slot)
@@ -18632,6 +18711,8 @@ func registerInterfaceNames(ctx: in Ctx, units: in List[CodegenUnit]): Unit {
             methodAsyncElem = newList(),
             methodRetIsSelf = mretSelf,
             methodParamIsSelf = mparamSelf,
+            methodParamByRef = newList(),
+            methodParamSelfByRef = newList(),
             methodParamNames = mparamNames,
             methodParamDefaults = mparamDefaults
           )
@@ -18666,6 +18747,8 @@ func registerInterfaceTypes(
             case None -> panic("Lyric.LlvmCodegen: interface '" + qualified + "' lost between registration phases")
           }
           val pTys: List[List[NType]] = newList()
+          val pByRef: List[List[Bool]] = newList()
+          val pSelfByRef: List[List[Bool]] = newList()
           val rTys: List[NType] = newList()
           val asyncElems: List[Option[NType]] = newList()
           val sigs = nonGenericVtableSigs(idecl)
@@ -18673,12 +18756,22 @@ func registerInterfaceTypes(
           while mi < sigs.count {
             val sig = sigs[mi]
             val ps: List[NType] = newList()
+            val byRef: List[Bool] = newList()
+            val selfByRef: List[Bool] = newList()
             var pi = 0
             while pi < sig.params.count {
-              ps.add(typeToN(ctx, sig.params[pi].ty))
+              val pty = typeToN(ctx, sig.params[pi].ty)
+              val modeByRef = isByRefMode(sig.params[pi].mode) and match pty { case NVoid -> false; case _ -> true }
+              val isSelf = pre.methodParamIsSelf[mi][pi]
+              val isRef = modeByRef and not isSelf
+              ps.add(if isRef { NPtr(pointee = pty) } else { pty })
+              byRef.add(isRef)
+              selfByRef.add(modeByRef and isSelf)
               pi = pi + 1
             }
             pTys.add(ps)
+            pByRef.add(byRef)
+            pSelfByRef.add(selfByRef)
             if sig.isAsync {
               rTys.add(NPtr(pointee = NI8))
               asyncElems.add(Some(value = retTypeToN(ctx, sig.ret)))
@@ -18698,6 +18791,8 @@ func registerInterfaceTypes(
             methodAsyncElem = asyncElems,
             methodRetIsSelf = pre.methodRetIsSelf,
             methodParamIsSelf = pre.methodParamIsSelf,
+            methodParamByRef = pByRef,
+            methodParamSelfByRef = pSelfByRef,
             methodParamNames = pre.methodParamNames,
             methodParamDefaults = pre.methodParamDefaults
           )
@@ -18788,14 +18883,26 @@ func byValueVtableInitStr(
     }
     val implIr = pkg + "." + implMethodName(recordName, ifaceName, ii.methodNames[i])
     val thunkName = implIr + ".vthunk"
+    // A method with an `out`/`inout` `Self` parameter is never called
+    // through this slot (`rejectSelfByRefThroughIface`, N0023): its impl
+    // takes that parameter as a pointer to the record, which the erased
+    // slot cannot carry, so the thunk only traps.
+    var selfByRefSlot = false
+    for sbr in ii.methodParamSelfByRef[i] {
+      if sbr {
+        selfByRefSlot = true
+      }
+    }
     val body: List[NInsn] = newList()
     body.add(NLabel(name = "entry"))
     val params: List[NParam] = newList()
     params.add(NParam(name = "self", ty = i8p))
     val implArgs: List[NArg] = newList()
-    implArgs.add(
-      NArg(ty = recTy, value = loadFromByValueBox(ctx, body, NLocal(name = "self"), boxTy, boxStructTy, recTy))
-    )
+    if not selfByRefSlot {
+      implArgs.add(
+        NArg(ty = recTy, value = loadFromByValueBox(ctx, body, NLocal(name = "self"), boxTy, boxStructTy, recTy))
+      )
+    }
     val implParamTys: List[NType] = newList()
     implParamTys.add(recTy)
     val thunkParamTys: List[NType] = newList()
@@ -18806,33 +18913,39 @@ func byValueVtableInitStr(
       val pname = "a" + toString(pi)
       params.add(NParam(name = pname, ty = pty))
       thunkParamTys.add(pty)
-      if ii.methodParamIsSelf[i][pi] {
-        implArgs.add(NArg(ty = recTy, value = loadFromByValueBox(ctx, body, NLocal(name = pname), boxTy, boxStructTy, recTy)))
-        implParamTys.add(recTy)
-      } else {
-        implArgs.add(NArg(ty = pty, value = NLocal(name = pname)))
-        implParamTys.add(pty)
+      if not selfByRefSlot {
+        if ii.methodParamIsSelf[i][pi] {
+          implArgs.add(NArg(ty = recTy, value = loadFromByValueBox(ctx, body, NLocal(name = pname), boxTy, boxStructTy, recTy)))
+          implParamTys.add(recTy)
+        } else {
+          implArgs.add(NArg(ty = pty, value = NLocal(name = pname)))
+          implParamTys.add(pty)
+        }
       }
       pi = pi + 1
     }
     val retTy = ii.methodRetTys[i]
     val retIsSelf = ii.methodRetIsSelf[i]
     val implRetTy = if retIsSelf { recTy } else { retTy }
-    match implRetTy {
-      case NVoid -> {
-        body.add(NCallVoid(fn = NGlobal(name = implIr), args = implArgs))
-        body.add(NRetVoid)
-      }
-      case _ -> {
-        val r = freshTmp(ctx)
-        body.add(NCall(dest = r, retTy = implRetTy, fn = NGlobal(name = implIr), args = implArgs))
-        if retIsSelf {
-          val held = boxByValue(ctx, body, NVal(ty = recTy, value = NLocal(name = r)))
-          val raw = freshTmp(ctx)
-          body.add(NBitcast(dest = raw, fromTy = held.ty, value = held.value, toTy = i8p))
-          body.add(NRet(ty = retTy, value = NLocal(name = raw)))
-        } else {
-          body.add(NRet(ty = retTy, value = NLocal(name = r)))
+    if selfByRefSlot {
+      body.add(NUnreachable)
+    } else {
+      match implRetTy {
+        case NVoid -> {
+          body.add(NCallVoid(fn = NGlobal(name = implIr), args = implArgs))
+          body.add(NRetVoid)
+        }
+        case _ -> {
+          val r = freshTmp(ctx)
+          body.add(NCall(dest = r, retTy = implRetTy, fn = NGlobal(name = implIr), args = implArgs))
+          if retIsSelf {
+            val held = boxByValue(ctx, body, NVal(ty = recTy, value = NLocal(name = r)))
+            val raw = freshTmp(ctx)
+            body.add(NBitcast(dest = raw, fromTy = held.ty, value = held.value, toTy = i8p))
+            body.add(NRet(ty = retTy, value = NLocal(name = raw)))
+          } else {
+            body.add(NRet(ty = retTy, value = NLocal(name = r)))
+          }
         }
       }
     }
@@ -19091,13 +19204,78 @@ func reboxErasedSelfResult(ctx: in Ctx, insns: in List[NInsn], ii: in NIfaceInfo
   boxVal
 }
 
-/// One interface call argument, lowered against its parameter: a bare `Self`
+/// One interface call argument, lowered against its parameter: an
+/// `out`/`inout` parameter takes the argument's place (#8183), a bare `Self`
 /// parameter unboxes explicitly (#7618), every other one coerces.
-func lowerIfaceArgAt(ctx: in Ctx, insns: in List[NInsn], ex: in Expr, pt: in NType, isSelf: in Bool): NVal {
-  if isSelf {
-    return unboxToSelfSlot(ctx, insns, lowerExpr(ctx, insns, ex))
+func lowerIfaceArgAt(
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  ex: in Expr,
+  pt: in NType,
+  isSelf: in Bool,
+  byRef: in Bool,
+  pin: in Bool,
+): NVal {
+  if byRef {
+    return lowerByRefArg(ctx, insns, ex, match pt { case NPtr(pointee) -> pointee; case _ -> pt })
   }
-  coerceTo(ctx, insns, lowerExprExpecting(ctx, insns, ex, pt), pt)
+  if isSelf {
+    // Pinned before unboxing: the erased `i8*` is not itself a reference
+    // the ARC protocol tracks, the interface box or record it came from is.
+    val sv = lowerExpr(ctx, insns, ex)
+    if pin {
+      pinBorrowForByRefCall(ctx, insns, sv)
+    }
+    return unboxToSelfSlot(ctx, insns, sv)
+  }
+  val cv = coerceTo(ctx, insns, lowerExprExpecting(ctx, insns, ex, pt), pt)
+  if pin {
+    pinBorrowForByRefCall(ctx, insns, cv)
+  }
+  cv
+}
+
+/// The message of `N0023`: an `out`/`inout` `Self` parameter in a call
+/// through an interface value (#8252).
+pub func selfByRefThroughIfaceMessage(methodName: in String, paramName: in String): String {
+  "interface method '." + methodName + "' takes its parameter '" + paramName +
+    "' as out/inout 'Self', which a call through an interface value cannot pass on --target native yet (#8252): " +
+    "the interface value would have to be unboxed into a place the implementing method writes and boxed again " +
+    "after the call; call the method on the implementing type instead"
+}
+
+/// `N0023` (#8252): a call through an interface value of a method with an
+/// `out`/`inout` `Self` parameter.  Its slot keeps the erased `Self` shape,
+/// so the call is rejected at the argument for that parameter rather than
+/// passing an object where the implementing method writes through a
+/// pointer.  Only the call through the interface is rejected: the receiver's
+/// static type decides, which a pre-pass over the untyped declarations
+/// cannot see, and the same method called on the implementing type is fine.
+func rejectSelfByRefThroughIface(ii: in NIfaceInfo, slot: in Int, argSlots: in List[Int], argExprs: in List[Expr]): Unit {
+  val selfByRef = ii.methodParamSelfByRef[slot]
+  var pi = 0
+  while pi < selfByRef.count {
+    if selfByRef[pi] {
+      val msg = selfByRefThroughIfaceMessage(ii.methodNames[slot], ii.methodParamNames[slot][pi])
+      var ai = 0
+      while ai < argSlots.count {
+        if argSlots[ai] == pi {
+          val sp = argExprs[ai].span
+          panic("error[N0023] " + sp.startPos.line.toString() + ":" + sp.startPos.column.toString() + ": " + msg)
+        }
+        ai = ai + 1
+      }
+      match ii.methodParamDefaults[slot][pi] {
+        case Some(dex) -> panic(
+          "error[N0023] " + dex.span.startPos.line.toString() + ":" + dex.span.startPos.column.toString() +
+            ": " +
+            msg
+        )
+        case None -> panic("error[N0023]: " + msg)
+      }
+    }
+    pi = pi + 1
+  }
 }
 
 /// Dispatch an interface method call: load `obj` and the vtable pointer,
@@ -19163,6 +19341,7 @@ func lowerIfaceDispatch(
   // a genuine `NativePtr[Byte]` parameter, which erases to the SAME `i8*`
   // but must coerce (and, on a mismatch, fail) through the ordinary path.
   val paramIsSelf = ii.methodParamIsSelf[slot]
+  val paramByRef = ii.methodParamByRef[slot]
   val paramNames = ii.methodParamNames[slot]
   val paramDefaults = ii.methodParamDefaults[slot]
   // Written arguments are evaluated in source order, positional ones
@@ -19173,6 +19352,18 @@ func lowerIfaceDispatch(
   for a in args {
     argExprs.add(nativeCallArgExpr(a))
   }
+  rejectSelfByRefThroughIface(ii, slot, argSlots, argExprs)
+  var anyByRef = false
+  for br in paramByRef {
+    if br {
+      anyByRef = true
+    }
+  }
+  // The receiver's box is a borrow too: `k.swapWith(k)` must not free it
+  // when the method writes `k`.
+  if anyByRef {
+    pinBorrowForByRefCall(ctx, insns, recv)
+  }
   val slotVals: List[NVal] = newList()
   val slotFilled: List[Bool] = newList()
   for pt in paramTys {
@@ -19182,7 +19373,7 @@ func lowerIfaceDispatch(
   var ai = 0
   while ai < argExprs.count {
     val ps = argSlots[ai]
-    slotVals[ps] = lowerIfaceArgAt(ctx, insns, argExprs[ai], paramTys[ps], paramIsSelf[ps])
+    slotVals[ps] = lowerIfaceArgAt(ctx, insns, argExprs[ai], paramTys[ps], paramIsSelf[ps], paramByRef[ps], anyByRef)
     slotFilled[ps] = true
     ai = ai + 1
   }
@@ -19191,7 +19382,7 @@ func lowerIfaceDispatch(
     if not slotFilled[di] {
       match paramDefaults[di] {
         case Some(dex) -> {
-          slotVals[di] = lowerIfaceArgAt(ctx, insns, dex, paramTys[di], paramIsSelf[di])
+          slotVals[di] = lowerIfaceArgAt(ctx, insns, dex, paramTys[di], paramIsSelf[di], paramByRef[di], anyByRef)
         }
         case None -> panic(
           "Lyric.LlvmCodegen: no argument bound for parameter '" + paramNames[di] + "' of interface method '." +

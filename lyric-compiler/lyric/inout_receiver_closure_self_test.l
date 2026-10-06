@@ -4,10 +4,12 @@
 //!
 //! The call passes the captured variable's shared cell by reference (#8189),
 //! so the closure sees the method's write and the caller sees the write of a
-//! method the closure calls.  `--target native` still captures a `var` by
-//! value (#7891 item 1), so this file is not run there; the rest of the
-//! `inout`-receiver coverage, native included, is
-//! `inout_receiver_self_test.l`.
+//! method the closure calls.  The same holds for a captured `var` passed to
+//! an `out`/`inout` parameter of a dot-named method (#8183).  `--target
+//! native` captures a `var` by value (#7891 item 1) and rejects passing a
+//! captured variable by reference (N0024), so this file is not run there; the rest of the `inout`-receiver coverage, native
+//! included, is `inout_receiver_self_test.l`, and of dot-named methods'
+//! by-reference arguments `dot_named_byref_self_test.l`.
 //!
 //!   lyric test --target dotnet lyric-compiler/lyric/inout_receiver_closure_self_test.l
 //!   lyric test --target jvm    lyric-compiler/lyric/inout_receiver_closure_self_test.l
@@ -50,6 +52,12 @@ record Box[T] {
   }
 }
 
+// A dot-named method taking an argument by reference (#8183).
+func Pt.spread(self: in Pt, lo: out Int, hi: inout Int): Unit {
+  lo = self.x
+  hi = hi + self.y
+}
+
 test "a receiver captured by a closure" {
   var p = Pt(x = 3, y = 4)
   val read = { -> p.sum() }
@@ -82,4 +90,21 @@ test "an `inout` receiver call inside a lambda on a lambda-local `var`" {
   val f = { -> var p = Pt(x = 1, y = 1); p.moved(2); p.sum() }
   val r: Int = f()
   assertEqualInt(r, 6, "result")
+}
+
+test "a dot-named method's out/inout arguments captured by a closure" {
+  val p = Pt(x = 3, y = 4)
+  var lo = 0
+  var hi = 10
+  val f = { -> p.spread(lo, hi) }
+  f()
+  assertEqualInt(lo, 3, "out, method syntax in the closure")
+  assertEqualInt(hi, 14, "inout, method syntax in the closure")
+  val g = { -> Pt.spread(p, hi = hi, lo = lo) }
+  g()
+  assertEqualInt(hi, 18, "inout, through the type, named, in the closure")
+  val read = { -> hi }
+  p.spread(lo, hi)
+  val seen: Int = read()
+  assertEqualInt(seen, 22, "the closure reads the call's write")
 }

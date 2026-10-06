@@ -137,6 +137,8 @@ The receiver is passed by reference, so it must be a place the call can write: a
 
 Only `in` and `inout` receivers exist. An `out` receiver is rejected (`T0165`), and so is an `inout` receiver on an interface method or an `impl` method (a call through an interface value has no variable of the implementing type to assign) or on a protected type's member (a protected object is shared, never replaced). Assigning `self` in a method whose receiver is `in` is `T0087`.
 
+A method's other parameters keep their modes however it is called. Given `func Acc.into(self: in Acc, x: inout Int, j: in Int)`, `a.into(y, 3)` writes `y` exactly as `Acc.into(a, y, 3)` does, with positional or named arguments, and an `out`/`inout` parameter of an interface method is passed by reference through an interface value too. On `--target native`, an `out`/`inout` `Self` parameter cannot yet be passed through an interface value (`N0023`, #8252); call the method on the implementing type instead. Native also cannot yet pass a variable a closure captures to an `out`/`inout` parameter from inside the closure (`N0024`, #7891), since its closures capture the variable's value; pass a variable declared in the closure, or make the call outside it.
+
 ### A note on async functions
 
 Async functions cannot have `out` or `inout` parameters that cross `await` points. If you need to return multiple values from an async function, use a tuple or a record. The reason is subtle but practical: `inout` uses reference semantics, and a reference to a caller's variable across an await point would alias across concurrent operations.

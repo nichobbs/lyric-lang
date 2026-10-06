@@ -1544,6 +1544,8 @@ span, exactly like `T0120`/`J008`.
 | `N0020` | An `array[N, T]` reached `--target native` with no native layout: a length the type checker did not resolve to an integer, or an element type with no native lowering (D167). The checker rejects a non-constant length (T0160) first, so this is the backend's own check. |
 | `N0021` | `--wit-out` or `--js-bindings` was given without `--shape component`, or the `--wit-out` path contains `;`. |
 | `N0022` | `--js-bindings` could not run `jco` (`$JCO`, else `PATH`), or `jco transpile` failed. |
+| `N0023` | A call through an interface value passes an argument to an `out`/`inout` `Self` parameter of the interface method, on `--target native` (#8252). The interface value would have to be unboxed into a place the implementing method writes and boxed again after the call, which native does not lower yet. Call the method on the implementing type (`a.swapWith(b)` with `a: A`), where it works. Reported at the argument. |
+| `N0024` | A variable a closure captures is passed to an `out`/`inout` parameter from inside the closure, on `--target native` (#7891). Native closures capture a variable's value rather than the variable, so the call would write a copy the variable never sees. Pass a variable declared inside the closure, or make the call outside it; a field of a captured record (`h.n`) can be passed. Reported at the argument. |
 
 ### Custom source generators (X-series)
 

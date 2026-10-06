@@ -10,6 +10,9 @@
 #   - generic functions of the library with an `inout` parameter (native
 #     instantiates another package's generics itself and passed the value,
 #     not the address, before #8179);
+#   - dot-named functions with an `in` receiver and an `inout`/`out`
+#     argument (#8183), generic or not, with method syntax and through the
+#     type and its package;
 #   - an application with its own `Box` (with or without its own `set`)
 #     calling the library's generic `Box[T].set`: the call, and the `Box`
 #     its specialised body constructs, are the library's;
@@ -69,6 +72,23 @@ pub func putBox[T](q: inout Box[T], v: in T): Unit {
 
 pub func countUp[T](n: inout Int, tag: in T): Unit {
   n = n + 1
+}
+
+pub record Acc {
+  n: Int
+}
+
+pub func Acc.into(self: in Acc, x: inout Int, j: in Int): Unit {
+  x = self.n + j
+}
+
+pub func Acc.setOut(self: in Acc, x: out Int, j: in Int): Int {
+  x = self.n * j
+  x + 1
+}
+
+pub func Box.take[T](self: in Box[T], x: inout T): Unit {
+  x = self.v
 }'
 
 app_src='package IrApp
@@ -90,7 +110,18 @@ func main(): Int {
   putBox(b, b.v + 2)
   var n = 1
   countUp(n, "t")
-  println(toString(beforeReset) + " " + toString(afterMove) + " " + toString(p.x + p.y) + " " + toString(b.v) + " " + toString(n))
+  val a = Acc(n = 100)
+  var y = 0
+  a.into(y, 3)
+  Acc.into(a, j = y + 1, x = y)
+  var w = 0
+  val r = a.setOut(w, 2) + 1
+  IrLib.Acc.into(a, w, 5)
+  var t = 0
+  b.take(t)
+  var s = ""
+  Box.take(Box(v = "q"), s)
+  println(toString(beforeReset) + " " + toString(afterMove) + " " + toString(p.x + p.y) + " " + toString(b.v) + " " + toString(n) + " " + toString(y) + " " + toString(r) + " " + toString(w) + " " + toString(t) + " " + s)
   0
 }'
 
@@ -135,7 +166,9 @@ printf '%s\n' "$lib_src" > "$work/restored/lib/src/lib.l"
 printf '%s\n' "$app_src" > "$work/restored/app/src/app.l"
 
 # p: (5,6) -> moved 1 (6,7) -> scaled 2 (12,14) -> scaled 2 (24,28) = 268;
-# moved 1 (25,29) = 279; reset = 0; b: 40 then 42; n: 2.
+# moved 1 (25,29) = 279; reset = 0; b: 40 then 42; n: 2.  A dot-named
+# method's `inout`/`out` arguments (#8183): y = 103, then 100 + 104 = 204;
+# w = 200, r = 202, then w = 105; t takes b.v (42); s takes "q".
 clash_lib='package XLib
 
 pub record Box[T] {
@@ -276,7 +309,7 @@ func main(): Int {
   0
 }'
 
-want="268 279 0 42 2"
+want="268 279 0 42 2 204 202 105 42 q"
 fail=0
 for t in "${targets[@]}"; do
   out="$("$lyric_bin" run --manifest "$work/proj/lyric.toml" --target "$t" 2>&1 | grep -v '^Picked up JAVA_TOOL_OPTIONS')"

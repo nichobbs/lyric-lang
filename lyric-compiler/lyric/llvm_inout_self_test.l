@@ -44,9 +44,24 @@
 //!     uses pervasively;
 //!   - an `inout` argument that is a nested record FIELD access
 //!     (`o.inner.count`), not a bare local;
-//!   - a loud, named diagnostic (never a silent miscompile) for an
-//!     unsupported by-ref argument shape (a list-index expression) —
-//!     the documented N9.6 scope cut.
+//!   - a loud, named diagnostic (never a silent miscompile) for a by-ref
+//!     argument codegen does not address (a list-index expression; an
+//!     array element is copied in and out by the middle end, D179, and
+//!     a `List` element is not a place, T0085);
+//!   - `out`/`inout` `String` and record parameters of an interface
+//!     method called through the interface, on a heap implementer and a
+//!     by-value one (through its vtable thunk), under ASan (#8183);
+//!   - one value passed both as a borrowed `in` argument or receiver and
+//!     as the by-ref place of the same call (`swap(k, k)`, `k.swapD(k)`,
+//!     `k.swapI(k)` through an interface, a generic `swapG(k, k)`): the
+//!     borrow is retained for the call, so the callee's write cannot free
+//!     what it still reads, under ASan;
+//!   - `N0023` (#8252), positioned at the argument, for an `out`/`inout`
+//!     `Self` parameter in a call through an interface value;
+//!   - `N0024` (#7891), positioned at the argument, for a variable a
+//!     closure captures passed by reference from inside the closure (a
+//!     closure-local variable, and a field of a captured record, still
+//!     work).
 //!
 //! Deferred (out of scope for this slice — loud diagnostics, not silent
 //! miscompiles): `out`/`inout` on an `extern func` C-ABI declaration;
@@ -54,8 +69,7 @@
 //! wrapper does not thread by-ref pointers); `out`/`inout` on an async
 //! function's parameter (a suspended coroutine cannot safely hold a
 //! pointer into caller-frame storage across a suspend point); a by-ref
-//! argument that is an index/element expression or a qualified
-//! module-level path.
+//! argument that is a qualified module-level path.
 //!
 //! Requires `clang` on PATH and a built runtime (`make -C lyric-rt`).
 //! Run via native `lyric test` with LYRIC_LOAD_COMPILER=1:
@@ -329,7 +343,7 @@ test "an index-expression out/inout argument is a loud diagnostic, not a miscomp
     "}\n"
   assertPanicsWith(
     "index-expression inout argument",
-    "out/inout argument shape is not yet supported",
+    "cannot pass this expression to an out/inout parameter",
     { -> codegenOnly(src) }
   )
 }
@@ -382,4 +396,173 @@ test "a record field passed to a mismatched-type inout parameter is a loud diagn
     "must match the parameter's declared type exactly",
     { -> codegenOnly(src) }
   )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Interface methods with by-ref parameters, and a borrow aliasing the by-ref
+// place of the same call (#8183).
+// ─────────────────────────────────────────────────────────────────────────────
+test "out/inout String and record parameters through an interface, heap and by-value implementers (ASan)" {
+  val src = "package T\n" + "record Tag {\n  var s: String\n}\n" + "record Pt {\n  x: Int\n  y: Int\n}\n" +
+    "record Heap {\n  var n: Int\n  name: String\n}\n" +
+    "interface Sink {\n" +
+    "  func fill(self: in Self, k: out Int, s: inout String, t: inout Tag): Int\n" +
+    "}\n" +
+    "impl Sink for Heap {\n" +
+    "  func fill(self: in Self, k: out Int, s: inout String, t: inout Tag): Int {\n" +
+    "    k = self.n\n" +
+    "    s = s + self.name\n" +
+    "    t = Tag(s = t.s + \"h\")\n" +
+    "    self.n * 2\n" +
+    "  }\n" +
+    "}\n" +
+    "impl Sink for Pt {\n" +
+    "  func fill(self: in Self, k: out Int, s: inout String, t: inout Tag): Int {\n" +
+    "    k = self.y\n" +
+    "    s = s + \"p\"\n" +
+    "    t.s = t.s + \"v\"\n" +
+    "    self.x + self.y\n" +
+    "  }\n" +
+    "}\n" +
+    "func via(z: in Sink, s: inout String, t: inout Tag): Int {\n" +
+    "  var k = 0\n" +
+    "  val r = z.fill(k, s, t)\n" +
+    "  r * 100 + k\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  var s = \"a\"\n" +
+    "  var t = Tag(s = \"t\")\n" +
+    "  var total = 0\n" +
+    "  var i = 0\n" +
+    "  while i < 50 {\n" +
+    "    total = total + via(Heap(n = 1, name = \"q\" + \"r\"), s, t) + via(Pt(x = 2, y = 3), s, t)\n" +
+    "    i = i + 1\n" +
+    "  }\n" +
+    "  if total == 50 * (201 + 503) and s.length == 1 + 50 * 3 and t.s.length == 1 + 50 * 2 {\n" +
+    "    0\n" +
+    "  } else {\n" +
+    "    1\n" +
+    "  }\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 0, "the interface call writes the caller's places, leak-free (ASan)")
+}
+
+func aliasSource(call: in String): String {
+  "package T\n" + "record C {\n  tag: String\n}\n" + "interface Sink {\n" +
+    "  func swapI(self: in Self, other: inout Sink): Int\n" +
+    "}\n" +
+    "impl Sink for C {\n" +
+    "  func swapI(self: in Self, other: inout Sink): Int {\n" +
+    "    other = C(tag = \"new\" + \"!\")\n" +
+    "    self.tag.length\n" +
+    "  }\n" +
+    "}\n" +
+    "func C.swapD(self: in C, other: inout C): Int {\n" +
+    "  other = C(tag = \"new\" + \"!\")\n" +
+    "  self.tag.length\n" +
+    "}\n" +
+    "func swapF(a: in C, other: inout C): Int {\n" +
+    "  other = C(tag = \"new\" + \"!\")\n" +
+    "  a.tag.length\n" +
+    "}\n" +
+    "func swapG[T](a: in T, other: inout T, fresh: in T): T {\n" +
+    "  other = fresh\n" +
+    "  a\n" +
+    "}\n" +
+    "func mk(): Sink {\n  C(tag = \"orig\" + \"!!\")\n}\n" +
+    "func main(): Int {\n" +
+    call +
+    "}\n"
+}
+
+test "a borrow that is also the by-ref place of the same call stays alive (ASan)" {
+  val plain = aliasSource(
+    "  var k = C(tag = \"orig\" + \"!!\")\n  val n = swapF(k, k)\n  if n == 6 and k.tag == \"new!\" { 0 } else { 1 }\n"
+  )
+  assertEqualInt(compileAndRunAsan(plain).exitCode, 0, "swapF(k, k)")
+  val dotted = aliasSource(
+    "  var k = C(tag = \"orig\" + \"!!\")\n  val n = k.swapD(k)\n  if n == 6 and k.tag == \"new!\" { 0 } else { 1 }\n"
+  )
+  assertEqualInt(compileAndRunAsan(dotted).exitCode, 0, "k.swapD(k)")
+  val viaIface = aliasSource("  var k: Sink = mk()\n  val n = k.swapI(k)\n  if n == 6 { 0 } else { 1 }\n")
+  assertEqualInt(compileAndRunAsan(viaIface).exitCode, 0, "k.swapI(k) through the interface")
+  val viaGeneric = aliasSource(
+    "  var k = C(tag = \"orig\" + \"!!\")\n  val r = swapG(k, k, C(tag = \"new\" + \"!\"))\n  if r.tag == \"orig!!\" and k.tag == \"new!\" { 0 } else { 1 }\n"
+  )
+  assertEqualInt(compileAndRunAsan(viaGeneric).exitCode, 0, "swapG(k, k, ...)")
+}
+
+test "an out/inout Self parameter through an interface value is N0023 at the argument (#8252)" {
+  val src = "package T\n" + "interface Sw {\n  func swapWith(self: in Self, other: inout Self): Unit\n}\n" +
+    "record A {\n  n: Int\n}\n" +
+    "impl Sw for A {\n" +
+    "  func swapWith(self: in Self, other: inout Self): Unit {\n" +
+    "    other = A(n = self.n + other.n)\n" +
+    "  }\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val k: Sw = A(n = 1)\n" +
+    "  var o: Sw = A(n = 2)\n" +
+    "  k.swapWith(o)\n" +
+    "  0\n" +
+    "}\n"
+  assertPanicsWith("inout Self through an interface", "error[N0023] 16:14:", { -> codegenOnly(src) })
+  val direct = "package T\n" + "interface Sw {\n  func swapWith(self: in Self, other: inout Self): Unit\n}\n" +
+    "record A {\n  n: Int\n}\n" +
+    "impl Sw for A {\n" +
+    "  func swapWith(self: in Self, other: inout Self): Unit {\n" +
+    "    other = A(n = self.n + other.n)\n" +
+    "  }\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val k = A(n = 1)\n" +
+    "  var o = A(n = 2)\n" +
+    "  k.swapWith(o)\n" +
+    "  o.n\n" +
+    "}\n"
+  assertEqualInt(compileAndRunAsan(direct).exitCode, 3, "the same call on the implementing type")
+  val outNamed = "package T\n" + "interface Sw {\n  func mk(self: in Self, j: in Int, other: out Self): Unit\n}\n" +
+    "record H {\n  var n: Int\n}\n" +
+    "impl Sw for H {\n" +
+    "  func mk(self: in Self, j: in Int, other: out Self): Unit {\n" +
+    "    other = H(n = self.n + j)\n" +
+    "  }\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val k: Sw = H(n = 1)\n" +
+    "  var o: Sw = H(n = 2)\n" +
+    "  k.mk(other = o, j = 3)\n" +
+    "  0\n" +
+    "}\n"
+  assertPanicsWith("out Self, named, heap implementer", "error[N0023] 16:16:", { -> codegenOnly(outNamed) })
+}
+
+test "a captured variable passed by reference inside a closure is N0024 at the argument (#7891)" {
+  val src = "package T\n" + "func incr(x: inout Int): Unit {\n" + "  x = x + 1\n" + "}\n" + "func main(): Int {\n" +
+    "  var k = 1\n" +
+    "  val f: () -> Unit = { -> incr(k) }\n" +
+    "  f()\n" +
+    "  k\n" +
+    "}\n"
+  assertPanicsWith("captured Int", "error[N0024] 7:33:", { -> codegenOnly(src) })
+  val rec = "package T\n" + "record C {\n  t: String\n}\n" + "func reset(x: inout C): Unit {\n" +
+    "  x = C(t = \"new\" + \"!\")\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  var k = C(t = \"orig\" + \"!\")\n" +
+    "  val f: () -> Unit = { -> reset(k) }\n" +
+    "  f()\n" +
+    "  0\n" +
+    "}\n"
+  assertPanicsWith("captured record", "error[N0024] 10:34:", { -> codegenOnly(rec) })
+  val fine = "package T\n" + "record H {\n  var n: Int\n}\n" + "func incr(x: inout Int): Unit {\n" + "  x = x + 1\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val h = H(n = 1)\n" +
+    "  val f: () -> Int = { -> var j = 10; incr(j); incr(h.n); j }\n" +
+    "  val r = f()\n" +
+    "  r + h.n\n" +
+    "}\n"
+  assertEqualInt(compileAndRunAsan(fine).exitCode, 13, "a closure-local variable and a captured record's field")
 }
