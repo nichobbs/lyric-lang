@@ -38,7 +38,18 @@ way the JVM passes any place: copy in, copy out. `Lyric.Mono.argOrderCallMono`
 - The array is never copied: the element is read from and stored into the
   place itself, at any depth (`m[i][j]`, `r.a[i]`, an element of an `inout`
   array parameter, an element of a captured array).
-- A `Unit` call keeps no value and a `Never` call stores nothing back.
+- An element that is itself an array (a row) is copied into the temporary
+  with `__lyric_array_copy` (D167). Before review it was bound uncopied: the
+  temporary shared the row's storage, so the callee's writes were visible
+  through the array during the call, survived a panic, and a row passed
+  twice was aliased.
+- A `Unit` call keeps no value and a `Never` call stores nothing back. A
+  call whose value is a generic instantiation (`List[Long]`, `Option[T]`)
+  keeps it in a temporary annotated with the checker's instantiated return
+  type (`ArgOrderSite.resultType`, #7823). The JVM's generic-argument
+  recovery (`scrutineeGenericArgs`) now also reads a block's trailing local,
+  so `val l = f(a[0])` keeps `l`'s element type; before, the JVM read a
+  `List[Long]` element as an `Integer` (ClassCastException).
 - A field of an element (`cells[i].v`) was already a field place and is
   unchanged.
 
@@ -64,15 +75,20 @@ makes to it is seen through the array only once the call returns, and if one
 element is passed twice the later argument's store is kept. This is the same
 on every target; docs/01 §2.7 and §5.2 say so, and D179 records the choice, its rationale and its consequences.
 
-**Tests.** New `inout_array_element_self_test.l` (17 cases on dotnet, the
-JVM and native: `inout` and `out`, two elements of one array, a call's value
+**Tests.** New `inout_array_element_self_test.l` (19 cases on dotnet, the
+JVM and native, including rows passed with their whole array, a row passed
+twice, and calls returning `List[Long]`, `Option[Long]` and generic
+instantiations; also `inout` and `out`, two elements of one array, a call's value
 across the store, computed-index order with a trace, named arguments, an
 index beside `?` and `await`, an element of a field, a field of an element,
 nested elements, an array-typed element, an element as an `inout` receiver,
 an element of an `inout` array parameter, `String`, `Option` and
 generic-parameter elements, a `Long` index, a call propagated with `?`,
 returned, or `Never`), wired into the compiler, JVM-generics and native
-batches and the ilverify consumer list.
+batches and the ilverify consumer list. New
+`inout_array_element_try_self_test.l` (2 cases, dotnet and JVM; native has
+no `try`, D-N-003) checks that a panicking callee leaves an element and a row
+unchanged.
 `closure_captured_var_byref_self_test.l` gains two cases for an element of a
 captured array (dotnet, JVM; native still captures a `var` by value, #7891).
 `typechecker_self_test.l` covers the accepted forms, the T0085 cases (`List`,
@@ -82,4 +98,7 @@ element and an element of a `val` array as receivers.
 **Not covered here.** Pre-existing, independent of elements: a call through
 an interface value with an `inout` parameter segfaults on native (#8185), and
 an `async` function's `inout` parameter is never written back on dotnet,
-for a local as for an element (#8229).
+for a local as for an element (#8229). Found while testing and filed: on
+the JVM, `+` on two elements of a nested `array[2, array[2, String]]` is
+erased to `Object` (J008, #8237); on native, a generic `inout T` bound by a
+literal rejects a `Byte` argument (N0007, #8238).

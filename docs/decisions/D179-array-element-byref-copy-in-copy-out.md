@@ -16,7 +16,7 @@ A variable place passed by reference aliases the variable: dotnet passes its add
 
 1. **An element is passed by copy in and copy out, on every target.** At the call, the element's computed indices run once, at the argument's turn in source order (D171). Every other argument then runs, also in source order. The element is then read into a temporary, the callee reads and writes the temporary, and the temporary is stored back into the element when the call returns. The same holds for an element that is an `inout` receiver.
 
-2. **The array itself is never copied.** The element is read from, and stored back into, the place itself, at any depth (`m[i][j]`, `r.a[i]`, an element of an `inout` array parameter, or an element of a captured array).
+2. **The array itself is never copied.** The element is read from, and stored back into, the place itself, at any depth (`m[i][j]`, `r.a[i]`, an element of an `inout` array parameter, or an element of a captured array). An element that is itself an array (a row of `array[2, array[3, Int]]`) is copied into the temporary as any array read into a `var` is (D167). The callee therefore works on its own row, on every target and whether the row's elements are by-value or heap values.
 
 3. **When nothing is stored back.** A call that panics stores nothing back, and neither does a call that a `?` in an argument skips. A `Never` call stores nothing back. A `Unit` call keeps no value across the store.
 
@@ -39,10 +39,10 @@ Copy in and copy out is the one lowering that every target implements identicall
 
 ## Consequences
 
-- **An aliasing argument.** If one element is passed twice (`swap(a[0], a[0])`), each argument has its own temporary, and the temporaries are stored back in argument order. The later argument's store is kept. If an element and the whole array are both passed (`f(a[0], a)`, with the array `in`), the array argument is a copy anyway (D167). With the array `inout`, the element's store lands after the callee's writes through the array parameter, overwriting that one element.
+- **An aliasing argument.** If one element is passed twice (`swap(a[0], a[0])`), each argument has its own temporary, and the temporaries are stored back in argument order. The later argument's store is kept. The same holds for a row passed twice (`two(n[0], n[0])`), since each temporary is a copy of the row. If an element and the whole array are both passed (`f(a[0], a)`, with the array `in`), the array argument is a copy anyway (D167). With the array `inout`, the element's store lands after the callee's writes through the array parameter, overwriting that one element.
 
-- **A closure that reads the array during the call.** A closure that reads `a[i]` while the callee runs sees the element's value from before the call. A closure that writes `a[i]` during the call has that write overwritten by the store back. A write to any other element is kept. Variable places differ here: a captured `var` passed by reference is aliased on dotnet and the JVM (#8189), so the closure sees the callee's writes as they happen.
+- **A closure that reads the array during the call.** A closure that reads `a[i]` while the callee runs sees the element's value from before the call. A closure that writes `a[i]` during the call has that write overwritten by the store back. A write to any other element is kept. A closure that assigns the whole array during the call (`a = other`) has its new array keep the callee's result in that one element: the store back writes the place `a[i]` as it stands when the call returns, not the array that was there when the call began. Variable places differ here: a captured `var` passed by reference is aliased on dotnet and the JVM (#8189), so the closure sees the callee's writes as they happen.
 
 - **Async callees.** The store back runs when the call returns its task, not when an `await` of it completes. #8229 tracks `async` functions with `out`/`inout` parameters on dotnet, which today lose the write even for a local; native rejects such functions (N0007).
 
-- **Tests.** `inout_array_element_self_test.l` covers dotnet, the JVM and native. `closure_captured_var_byref_self_test.l` covers the captured-array cases on dotnet and the JVM.
+- **Tests.** `inout_array_element_self_test.l` covers dotnet, the JVM and native. `inout_array_element_try_self_test.l` covers a panicking callee on dotnet and the JVM (native has no `try`). `closure_captured_var_byref_self_test.l` covers the captured-array cases on dotnet and the JVM.

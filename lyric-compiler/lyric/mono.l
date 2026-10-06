@@ -5168,8 +5168,11 @@ func funcValueCallMono(
 //   }
 //
 // The array is never copied: the element is read from and stored into the
-// place itself.  A `Unit` call keeps no value, and a `Never` call stores
-// nothing back.
+// place itself.  An element that is itself an array is copied into the
+// temporary (`__lyric_array_copy`), so the callee writes its own row, as
+// D179 requires.  A `Unit` call keeps no value, and a `Never` call stores
+// nothing back.  The value of a call whose result is a generic
+// instantiation is kept in a temporary annotated with it (#7823).
 func argOrderCallMono(
   state: in MonoState,
   env: in Map[String, TypeExpr],
@@ -5245,9 +5248,14 @@ func argOrderCallMono(
     } else {
       None
     }
+    // An element that is an array is copied in (D167, D179): the read of a
+    // writable place escapes into the temporary, so the callee must not
+    // write the caller's row while the call runs.  The store back needs no
+    // copy: the temporary is dead after it.
+    val copyIn = copyArrayFieldRead(elemPlaces[ei], ety, Span(startPos = sp.startPos, endPos = sp.startPos))
     stmts.add(
       Statement(
-        kind = SLocal(binding = LBVar(name = elemTemps[ei], ty = ety, init = Some(value = elemPlaces[ei]))),
+        kind = SLocal(binding = LBVar(name = elemTemps[ei], ty = ety, init = Some(value = copyIn))),
         span = Span(startPos = sp.startPos, endPos = sp.startPos)
       )
     )
@@ -5262,7 +5270,8 @@ func argOrderCallMono(
   if site.resultKind == 1 {
     stmts.add(Statement(kind = SExpr(expr = call), span = sp))
   } else {
-    stmts.add(copyTypedValStmtMono(resultName, None, call, sp))
+    val resultTy: Option[TypeExpr] = if site.resultType.count > 0 { Some(value = site.resultType[0]) } else { None }
+    stmts.add(copyTypedValStmtMono(resultName, resultTy, call, sp))
   }
   ei = 0
   while ei < elemPlaces.count {

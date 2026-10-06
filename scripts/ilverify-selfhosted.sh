@@ -232,6 +232,7 @@ SELF_TESTS=(
   lyric-compiler/lyric/inout_receiver_self_test.l
   lyric-compiler/lyric/inout_receiver_closure_self_test.l
   lyric-compiler/lyric/inout_array_element_self_test.l
+  lyric-compiler/lyric/inout_array_element_try_self_test.l
   lyric-compiler/lyric/erased_receiver_narrowing_self_test.l
   lyric-compiler/lyric/erased_receiver_narrowing_dotnet_self_test.l
   lyric-compiler/lyric/impl_generic_target_self_test.l

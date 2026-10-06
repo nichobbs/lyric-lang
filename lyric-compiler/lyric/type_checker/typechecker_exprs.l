@@ -11208,7 +11208,10 @@ func callArgsHaveNamed(args: in List[CallArg]): Bool {
 // so each index runs once and the write lands on the element on every
 // target.  The copy is made after every argument has run, as the JVM fills
 // the holder of any `out`/`inout` place; `resultTy` is the call's result
-// type, which says whether the call's value is kept across the store.
+// type, which says whether the call's value is kept across the store and is
+// the annotation of the temporary that keeps it when it is a generic
+// instantiation (#7823).  `resultIsTask` is set for an `async` or generator
+// callee, whose call yields its task or sequence rather than `resultTy`.
 func recordArgOrderSite(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -11222,6 +11225,7 @@ func recordArgOrderSite(
   expected: in List[Type],
   recvTy: in Option[Type],
   resultTy: in Type,
+  resultIsTask: in Bool,
 ): Unit {
   if sc.contractDepth.count > 0 {
     return
@@ -11336,9 +11340,23 @@ func recordArgOrderSite(
     }
     i = i + 1
   }
-  val resultKind = match unrefine(resultTy) {
-    case TyPrim(pt) -> match pt { case PtUnit -> 1; case PtNever -> 2; case _ -> 0 }
-    case _ -> 0
+  val resultKind = if resultIsTask {
+    0
+  } else {
+    match unrefine(resultTy) {
+      case TyPrim(pt) -> match pt { case PtUnit -> 1; case PtNever -> 2; case _ -> 0 }
+      case _ -> 0
+    }
+  }
+  val resultTe: Option[TypeExpr] = if hasElem and not resultIsTask and typeMentionsGenericInst(resultTy) and typeIsClosedOver(resultTy, sc.genericNames) {
+    typeExprForOpenBinding(tbl, resultTy, callSpan, sc.genericNames)
+  } else {
+    None
+  }
+  val resultTypes: List[TypeExpr] = newList()
+  match resultTe {
+    case Some(t) -> resultTypes.add(t)
+    case None -> ()
   }
   tbl.argOrderSites.add(
     key,
@@ -11350,7 +11368,8 @@ func recordArgOrderSite(
       elemCopy = elemCopy,
       elemTypes = elemTypes,
       elemTyped = elemTyped,
-      resultKind = resultKind
+      resultKind = resultKind,
+      resultType = resultTypes
     )
   )
 }
@@ -11376,7 +11395,21 @@ func recordSigArgOrderSite(
     defaultEffect.add(p.hasDefault and not p.defaultInert)
     byRef.add(modeNeedsLValue(p.mode))
   }
-  recordArgOrderSite(sc, tbl, callSpan, fn, args, argTypes, names, defaultEffect, byRef, expected, recvTy, sig.returnTy)
+  recordArgOrderSite(
+    sc,
+    tbl,
+    callSpan,
+    fn,
+    args,
+    argTypes,
+    names,
+    defaultEffect,
+    byRef,
+    expected,
+    recvTy,
+    instantiateReturnType(sig, argTypes),
+    sig.isAsync or sig.isGenerator
+  )
 }
 
 // `recordArgOrderSite` for the construction `fn(args)` of `ctorTy`: a
@@ -11420,7 +11453,21 @@ func recordCtorArgOrderSite(
     case None -> newList()
   }
   val noRecv: Option[Type] = None
-  recordArgOrderSite(sc, tbl, callSpan, fn, args, argTypes, names, defaultEffect, byRef, expected, noRecv, ctorTy)
+  recordArgOrderSite(
+    sc,
+    tbl,
+    callSpan,
+    fn,
+    args,
+    argTypes,
+    names,
+    defaultEffect,
+    byRef,
+    expected,
+    noRecv,
+    ctorTy,
+    false
+  )
 }
 
 // The construction `fn(args)` of `ctorTy`: each argument is expected to have

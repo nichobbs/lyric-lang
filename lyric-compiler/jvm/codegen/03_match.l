@@ -854,8 +854,59 @@ func scrutineeGenericArgs(ctx: in FuncCtx, scrutinee: in Expr): List[TypeExpr] {
     // `ECall` case above, which resolves a METHOD-CALL receiver's return
     // type, not a plain field read.
     case EMember(recv, memberName) -> fieldGenericArgsOf(ctx, recv, memberName)
+    // A block's value is its trailing expression.  The middle end binds a
+    // call's operands in a block (the D171 argument-order rewrite, the
+    // copy in and out of an array element passed by reference, D179) and
+    // ends it with the call or with a local holding its value; that local is
+    // out of scope once the block is lowered, so its binding is read here.
+    case EBlock(blk) -> blockTrailingGenericArgs(ctx, blk)
     case _ -> newList()
   }
+}
+
+// The generic arguments of a block's trailing expression: a local the block
+// itself binds is resolved from its annotation or its initializer.
+func blockTrailingGenericArgs(ctx: in FuncCtx, blk: in Block): List[TypeExpr] {
+  val n = blk.statements.count
+  if n == 0 {
+    return newList()
+  }
+  val tail = match blk.statements[n - 1].kind { case SExpr(e) -> e; case _ -> return newList() }
+  val local = match tail.kind {
+    case EPath(path) -> if path.segments.count == 1 { path.segments[0] } else { "" }
+    case _ -> ""
+  }
+  if local == "" {
+    return scrutineeGenericArgs(ctx, tail)
+  }
+  var i = n - 2
+  while i >= 0 {
+    match blk.statements[i].kind {
+      case SLocal(binding) -> match binding {
+        case LBVal(pat, tyOpt, init) -> match pat.kind {
+          case PBinding(nm, _) -> if nm == local {
+            val fromInit = scrutineeGenericArgs(ctx, init)
+            if fromInit.count > 0 {
+              return fromInit
+            }
+            return match tyOpt {
+              case Some(te) -> eagerlyResolveGenericArgs(
+                annotationGenericArgsFiltered(te, ctx.typeParams),
+                ctx.pkgName,
+                ctx.externTypes
+              )
+              case None -> newList()
+            }
+          }
+          case _ -> ()
+        }
+        case _ -> ()
+      }
+      case _ -> ()
+    }
+    i = i - 1
+  }
+  scrutineeGenericArgs(ctx, tail)
 }
 
 // The (possibly parenthesised) type arguments of an explicit `TGenericApp`

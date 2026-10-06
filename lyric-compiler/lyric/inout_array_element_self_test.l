@@ -9,7 +9,8 @@
 //! writes and stores it back into the element after the call
 //! (`Lyric.Mono.argOrderCallMono`): the array is never copied, each computed
 //! index runs once, in source order (D171), and the copy is made after every
-//! argument has run, as the JVM fills the holder of any `out`/`inout` place.
+//! argument has run, as the JVM fills the holder of any `out`/`inout` place
+//! (D179).  An element that is itself an array is copied into the temporary.
 //!
 //!   lyric test --target dotnet lyric-compiler/lyric/inout_array_element_self_test.l
 //!   lyric test --target jvm    lyric-compiler/lyric/inout_array_element_self_test.l
@@ -323,6 +324,90 @@ test "an element of an element, and an array element passed as an array" {
   assertEqualInt(rows[1][0], 5, "the row was written")
   assertEqualInt(rows[1][1], 6, "the whole row")
   assertEqualInt(rows[0][0], 0, "the other row untouched")
+}
+
+// A row read into the temporary is copied (D179), so the callee's row and the
+// caller's array never share storage during the call.
+func peekRow(r: inout array[2, Int], m: inout array[2, array[2, Int]]): Int {
+  r[0] = 7
+  val seen = m[0][0]
+  m[0][1] = 55
+  seen * 100 + r[1]
+}
+
+func peekStrRow(r: inout array[2, String], m: inout array[2, array[2, String]]): String {
+  r[0] = "R"
+  val seen: String = m[0][0]
+  m[0][1] = "M"
+  seen + r[1]
+}
+
+func twoRows(r: inout array[2, Int], s: inout array[2, Int]): Unit {
+  r[0] = 1
+  s[1] = 2
+}
+
+test "a row passed by reference is the callee's own copy" {
+  var q: array[2, array[2, Int]] = [[0, 0], [0, 0]]
+  assertEqualInt(peekRow(q[0], q), 0, "neither the row nor the array sees the other's write during the call")
+  assertEqualInt(q[0][0], 7, "the row is stored back")
+  assertEqualInt(q[0][1], 0, "the store back replaces the array's write to that row")
+  var s: array[2, array[2, String]] = [["a", "b"], ["c", "d"]]
+  assertEqual(peekStrRow(s[0], s), "ab", "a row of heap values is copied too")
+  assertEqual(s[0][0], "R", "the String row is stored back")
+  assertEqual(s[0][1], "b", "the store back replaces the array's write to that row")
+  var n: array[2, array[2, Int]] = [[0, 0], [0, 0]]
+  twoRows(n[0], n[0])
+  assertEqualInt(n[0][0], 0, "one row passed twice: the later argument's store is kept")
+  assertEqualInt(n[0][1], 2, "the later argument's write")
+  var keep: array[2, array[2, Int]] = [[0, 0], [0, 0]]
+  val saved = keep[1]
+  twoRows(keep[1], keep[0])
+  assertEqualInt(saved[0], 0, "an earlier copy of the row is not written")
+  assertEqualInt(keep[1][0], 1, "the row was written")
+}
+
+func listOf(x: inout Long): List[Long] {
+  val l: List[Long] = newList()
+  l.add(x)
+  x = 3
+  l
+}
+
+func takeOpt[T](x: inout T, nv: in T): Option[T] {
+  val p = x
+  x = nv
+  Some(value = p)
+}
+
+func takeList[T](x: inout T, nv: in T): List[T] {
+  val l: List[T] = newList()
+  l.add(x)
+  x = nv
+  l
+}
+
+test "a call whose value is a generic instantiation keeps its type" {
+  var a: array[2, Long] = [7, 8]
+  val l = listOf(a[0])
+  assertTrue(l[0] == 7, "a List[Long] result")
+  assertTrue(a[0] == 3, "the element was written")
+  match takeOpt(a[1], 9) {
+    case Some(p) -> assertTrue(p == 8, "an Option[Long] result")
+    case None -> assertTrue(false, "the call returned None")
+  }
+  assertTrue(a[1] == 9, "the element was written")
+  val o = takeOpt(a[0], 5)
+  match o {
+    case Some(p) -> assertTrue(p == 3, "an Option[Long] result bound to a val")
+    case None -> assertTrue(false, "the call returned None")
+  }
+  var d: array[2, Double] = [1.5, 2.0]
+  val ld = takeList(d[0], 3.0)
+  assertTrue(ld[0] == 1.5 and d[0] == 3.0, "a List[Double] result")
+  var b: array[2, Byte] = [1u8, 2u8]
+  val lb = takeList(b[1], 3u8)
+  assertEqualInt(lb[0].toInt(), 2, "a List[Byte] result")
 }
 
 test "an array that is copied keeps its own elements" {

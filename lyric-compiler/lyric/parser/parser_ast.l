@@ -1629,6 +1629,10 @@ pub record HoistOperandTypeSite {
 /// the call writes the temporary, and the temporary is stored back into the
 /// element after the call.  `resultKind` is the call's result: 0 a value,
 /// kept in a temporary across the store, 1 `Unit`, 2 `Never` (no store).
+/// The temporary is annotated with `resultType`'s one entry, when it has one
+/// (a generic
+/// instantiation, which a backend with reified generics cannot recover from
+/// the call alone, #7823).
 /// `Lyric.Mono.desugarCheckedFile` rewrites the call, keyed by
 /// `recordCopySiteKey` of its span.
 pub record ArgOrderSite {
@@ -1640,6 +1644,7 @@ pub record ArgOrderSite {
   elemTypes: List[TypeExpr] = newList()
   elemTyped: List[Bool] = newList()
   resultKind: Int = 0
+  resultType: List[TypeExpr] = newList()
 }
 
 /// The type arguments the type checker resolved for a call to a generic
