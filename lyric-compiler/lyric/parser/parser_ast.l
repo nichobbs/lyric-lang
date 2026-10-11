@@ -1645,12 +1645,19 @@ pub record TuplePatternBindingSite {
 /// annotated with this type (#7818).  `rendered` identifies the type; a
 /// literal also checked where a `List` is expected, or two checked literals
 /// sharing one source position (synthesized code) with different types, are
-/// `conflicting` and left as written.
+/// `conflicting` and left as written.  A literal that is an element of
+/// another bracket literal whose elements are slices (`[[1], [5, 6]]` as a
+/// `List[slice[Int]]`) is recorded too, at its slice type, with
+/// `shapeRequired` set: the enclosing literal says nothing of its elements'
+/// shape where it is built, so a backend that builds a bracket literal as a
+/// list until its position says otherwise (the JVM) binds such a literal
+/// even when it binds no other (#8192).
 pub record ListLiteralTypeSite {
   literalType: TypeExpr
   rendered: String
   conflicting: Bool
   startOffset: Int
+  shapeRequired: Bool
 }
 
 /// An operand evaluated before an `await` or a `?` in the same expression,

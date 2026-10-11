@@ -11098,11 +11098,47 @@ func joinOpenTypeLists(xs: in List[Type], ys: in List[Type]): List[Type] {
 // substitutes when it specialises the body; a type the join leaves open
 // (`[None, None]`) is left as written.
 func recordListLiteralType(sc: in Scope, tbl: in SymbolTable, lit: in Expr, t: in Type): Unit {
+  if not typeMentionsGenericInst(t) {
+    return
+  }
+  recordListLiteralSite(sc, tbl, lit, t, false)
+}
+
+// Record a bracket literal `elem` that is an element of another bracket
+// literal whose elements are expected to have type `elemTy`, when that is a
+// slice: the literal is built as that slice, which the enclosing literal does
+// not say where it is built (#8192).
+func recordSliceShapedElement(sc: in Scope, tbl: in SymbolTable, elem: in Expr, elemTy: in Type): Unit {
+  match unrefine(elemTy) {
+    case TySlice(_) -> match bracketLiteralOf(elem) {
+      case Some(lit) -> recordListLiteralSite(sc, tbl, lit, unrefine(elemTy), true)
+      case None -> ()
+    }
+    case _ -> ()
+  }
+}
+
+// The bracket literal `e` is, under any parentheses.
+func bracketLiteralOf(e: in Expr): Option[Expr] {
+  match e.kind {
+    case EParen(inner) -> bracketLiteralOf(inner)
+    case EList(_) -> Some(value = e)
+    case _ -> None
+  }
+}
+
+// Record the list literal `lit` in `SymbolTable.listLiteralTypeSites` at the
+// type `t`, which may name the enclosing function's type parameters
+// (`Lyric.Mono` substitutes them when it specialises the body); a type the
+// join leaves open (`[None, None]`) is left as written.  `shapeRequired`
+// marks a literal whose position alone fixes its shape
+// (`recordSliceShapedElement`).
+func recordListLiteralSite(sc: in Scope, tbl: in SymbolTable, lit: in Expr, t: in Type, shapeRequired: in Bool): Unit {
   val sp = lit.span
   if isNoSourceSpan(sp) or sp.endPos.offset <= sp.startPos.offset {
     return
   }
-  if not typeMentionsGenericInst(t) or not typeIsClosedOver(t, sc.genericNames) {
+  if not typeIsClosedOver(t, sc.genericNames) {
     return
   }
   match typeExprForOpenBinding(tbl, t, sp, sc.genericNames) {
@@ -11110,8 +11146,22 @@ func recordListLiteralType(sc: in Scope, tbl: in SymbolTable, lit: in Expr, t: i
       val key = recordCopySiteKey(sp)
       val rendered = renderType(t)
       match mapGet(tbl.listLiteralTypeSites, key) {
-        case Some(prev) -> if prev.rendered != rendered and not prev.conflicting {
+        case Some(prev) -> if prev.conflicting {
+          ()
+        } else if prev.rendered != rendered {
           markListLiteralConflicting(tbl, key, prev.literalType, prev.rendered, prev.startOffset)
+        } else if shapeRequired and not prev.shapeRequired {
+          tbl.listLiteralTypeSites.remove(key)
+          tbl.listLiteralTypeSites.add(
+            key,
+            ListLiteralTypeSite(
+              literalType = prev.literalType,
+              rendered = prev.rendered,
+              conflicting = false,
+              startOffset = prev.startOffset,
+              shapeRequired = true
+            )
+          )
         }
         case None -> tbl.listLiteralTypeSites.add(
           key,
@@ -11119,7 +11169,8 @@ func recordListLiteralType(sc: in Scope, tbl: in SymbolTable, lit: in Expr, t: i
             literalType = te,
             rendered = rendered,
             conflicting = false,
-            startOffset = sp.startPos.offset
+            startOffset = sp.startPos.offset,
+            shapeRequired = shapeRequired
           )
         )
       }
@@ -11158,7 +11209,13 @@ func markListLiteralConflicting(
   }
   tbl.listLiteralTypeSites.add(
     key,
-    ListLiteralTypeSite(literalType = te, rendered = rendered, conflicting = true, startOffset = startOffset)
+    ListLiteralTypeSite(
+      literalType = te,
+      rendered = rendered,
+      conflicting = true,
+      startOffset = startOffset,
+      shapeRequired = false
+    )
   )
 }
 
@@ -11715,6 +11772,88 @@ func callArgsHaveHoistHazard(args: in List[CallArg]): Bool {
   false
 }
 
+// A bracket literal argument where its parameter is a stdlib `List` types
+// (and is built) as that `List` (docs/01 §2.7), with its elements checked
+// against the `List`'s element type, so an element that is itself a literal
+// takes the shape that type gives it (#8192).  A generic callee's parameter
+// is instantiated from the other arguments only: the literal's own type, a
+// slice, would contradict the `List` another argument binds a type parameter
+// to (`pick(base, [1, 2])`, #8191) and binds nothing in a `List[T]`
+// (`size([1, 2, 3])`, #8193).  A type parameter they leave open takes the
+// literal's own element type.  A literal whose elements do not fit keeps its
+// own type, for the call's check to report.
+func adoptListLiteralArgs(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  sig: in ResolvedSignature,
+): Unit {
+  if sig.isExternFunc {
+    return
+  }
+  var any = false
+  val masked: List[Type] = newList()
+  var i = 0
+  while i < args.count and i < argTypes.count {
+    if argIsListLiteral(callArgExpr(args[i])) {
+      any = true
+      masked.add(TyError)
+    } else {
+      masked.add(argTypes[i])
+    }
+    i = i + 1
+  }
+  if not any {
+    return
+  }
+  val expected = sigExpectedArgTypes(sig, None, args, masked)
+  var j = 0
+  while j < args.count and j < argTypes.count and j < expected.count {
+    val ae = callArgExpr(args[j])
+    if argIsListLiteral(ae) {
+      argTypes[j] = adoptedListLiteralType(sc, tbl, sigs, ae, argTypes[j], expected[j])
+    }
+    j = j + 1
+  }
+}
+
+// The type of the bracket literal `lit`, of checked type `own`, passed where
+// `expected` is expected (a parameter or a field): when that is a stdlib
+// `List`, the literal checked against it, its element type the expected one
+// or, where that is open, the literal's own; otherwise, or when an element
+// does not fit, `own`.
+func adoptedListLiteralType(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  lit: in Expr,
+  own: in Type,
+  expected: in Type,
+): Type {
+  match unrefine(expected) {
+    case TyUser(lid, lname, largs) -> if largs.count == 1 and isStdCollectionsHostType(tbl, lid, "List") {
+      val elemArgs: List[Type] = newList()
+      elemArgs.add(shapedElemType(collectionElemType(tbl, unrefine(own)), largs[0]))
+      val target = TyUser(id = lid, name = lname, args = elemArgs)
+      if not typeIsClosedOver(target, sc.genericNames) {
+        return own
+      }
+      val scratch: List[Diagnostic] = newList()
+      val adopted = inferExprExpected(sc, tbl, sigs, scratch, lit, target)
+      if diagnosticsHaveError(scratch) {
+        own
+      } else {
+        adopted
+      }
+    } else {
+      own
+    }
+    case _ -> own
+  }
+}
+
 func recordHoistedCallArgs(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -12115,7 +12254,10 @@ func recordCtorArgOrderSite(
 // reified generics builds a generic constructor's arguments before it has
 // chosen the constructor's instantiation, so with no type around the
 // construction (`val h = Holder(value = None, fallback = 5)`) the `None` was
-// an `Option<object>` stored in an `Option<int>` field.
+// an `Option<object>` stored in an `Option<int>` field.  A bracket literal
+// is recorded at the shape its field gives it for the same reason: the field
+// of a generic record is `List<T>` there, so `GBox(items = [1, 2])` was built
+// as an `int[]` (#8193).
 func recordCtorArgOperandTypes(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -12126,7 +12268,8 @@ func recordCtorArgOperandTypes(
 ): Unit {
   val hazard = callArgsHaveHoistHazard(args)
   val openArg = ctorHasOpenArg(sc, args, argTypes, ctorTy)
-  if not hazard and not openArg {
+  val literalArg = ctorHasLiteralArg(sc, args, ctorTy)
+  if not hazard and not openArg and not literalArg {
     return
   }
   match ctorArgExpectedTypes(tbl, fn, args, ctorTy) {
@@ -12134,11 +12277,12 @@ func recordCtorArgOperandTypes(
       if hazard {
         recordHoistedCallArgs(sc, tbl, args, argTypes, expected)
       }
-      if openArg {
+      if openArg or literalArg {
         var i = 0
         while i < args.count and i < argTypes.count and i < expected.count {
           val ae = callArgExpr(args[i])
-          if not typeIsClosedOver(argTypes[i], sc.genericNames) and hoistBindsOperand(sc, ae) {
+          val unbound = openArg and not typeIsClosedOver(argTypes[i], sc.genericNames)
+          if (unbound or (literalArg and argIsListLiteral(ae))) and hoistBindsOperand(sc, ae) {
             recordHoistOperandTypeOver(tbl, sc.genericNames, ae, argTypes[i], expected[i])
           }
           i = i + 1
@@ -12147,6 +12291,20 @@ func recordCtorArgOperandTypes(
     }
     case None -> ()
   }
+}
+
+// Whether the construction of `ctorTy`, a closed generic instantiation,
+// takes a bracket literal argument.
+func ctorHasLiteralArg(sc: in Scope, args: in List[CallArg], ctorTy: in Type): Bool {
+  if not typeMentionsGenericInst(ctorTy) or not typeIsClosedOver(ctorTy, sc.genericNames) {
+    return false
+  }
+  for a in args {
+    if argIsListLiteral(callArgExpr(a)) {
+      return true
+    }
+  }
+  false
 }
 
 // Whether the construction of `ctorTy`, a closed generic instantiation,
@@ -13811,6 +13969,7 @@ func inferExprCore(
       // against the field (D167); a generic record's field is instantiated
       // at what the other arguments, and the literal's elements, bind.
       val ctorFieldTys = ctorArrayFieldTypes(tbl, fn, args, argTypes, TyError)
+      val ctorListFieldTys = genericCtorListFieldTypes(tbl, fn, args, argTypes)
       if anyDeferredLambda or anyCaseCtorArg or anyPropagateArg {
         val lambdaSig = match directSig {
           case Some(_) -> directSig
@@ -13885,6 +14044,15 @@ func inferExprCore(
             } else {
               inferExpr(sc, tbl, sigs, diag, dae)
             }
+            // A record's or union case's `List` field takes the literal as
+            // that `List`, as a call's parameter does (`adoptListLiteralArgs`).
+            val listFieldTy = match ctorFieldTys[di] { case TyError -> ctorListFieldTys[di]; case ft -> ft }
+            match listFieldTy {
+              case TyError -> ()
+              case ft -> {
+                argTypes[di] = adoptedListLiteralType(sc, tbl, sigs, dae, argTypes[di], ft)
+              }
+            }
           } else if argIsLambdaLiteral(dae) or argIsAmbiguousUnionCaseCtor(tbl, dae) or argIsBranchingExpr(dae) {
             argTypes[di] = inferExprExpected(sc, tbl, sigs, diag, dae, expectedArgTys[di])
           } else if argIsCaseCtorCall(tbl, dae) or argIsWideningBuiltValue(tbl, dae) {
@@ -13906,6 +14074,13 @@ func inferExprCore(
             }
           }
           di = di + 1
+        }
+      }
+      match directSig {
+        case Some(lsig) -> adoptListLiteralArgs(sc, tbl, sigs, args, argTypes, lsig)
+        case None -> match methodPick {
+          case Some(lmp) -> adoptListLiteralArgs(sc, tbl, sigs, args, argTypes, lmp.sig)
+          case None -> ()
         }
       }
       // A receiver evaluated before an argument holding an `await` or a `?`
@@ -15054,6 +15229,56 @@ func ctorArrayFieldTypes(
   tys
 }
 
+// The `List` field type of a generic record that each bracket literal
+// argument initialises, positionally aligned with `args` (`TyError`
+// elsewhere), instantiated from the other arguments: a literal's own type,
+// a slice, binds nothing in a `List[T]` field and contradicts the `List`
+// another argument binds a bare `T` to.  A type parameter they leave open is
+// a hole, which `adoptedListLiteralType` fills from the literal's elements.
+func genericCtorListFieldTypes(
+  tbl: in SymbolTable, fn: in Expr, args: in List[CallArg], argTypes: in List[Type]
+): List[Type] {
+  val tys: List[Type] = newList()
+  val masked: List[Type] = newList()
+  var any = false
+  var k = 0
+  while k < args.count {
+    tys.add(TyError)
+    if argIsListLiteral(callArgExpr(args[k])) {
+      any = true
+      masked.add(TyError)
+    } else {
+      masked.add(if k < argTypes.count { argTypes[k] } else { TyError })
+    }
+    k = k + 1
+  }
+  if not any {
+    return tys
+  }
+  val ctorSym = match constructorSymbolOf(tbl, fn) { case Some(sy) -> sy; case None -> return tys }
+  if not ctorIsGeneric(ctorSym) {
+    return tys
+  }
+  val gnames = ctorGenericNames(ctorSym)
+  val fieldNames = ctorFieldNames(ctorSym)
+  val fieldTypes = ctorFieldTypes(tbl, ctorSym, gnames)
+  val targs = inferGenericArgs(gnames, fieldTypes, argTypesInFieldOrder(args, masked, fieldNames))
+  val order = argIndicesInParamOrder(args, fieldNames)
+  var j = 0
+  while j < order.count and j < fieldTypes.count {
+    val ai = order[j]
+    if ai >= 0 and ai < args.count and argIsListLiteral(callArgExpr(args[ai])) {
+      val inst = substituteTyVars(fieldTypes[j], gnames, targs)
+      match unrefine(inst) {
+        case TyUser(lid, _, largs) -> if largs.count == 1 and isStdCollectionsHostType(tbl, lid, "List") { tys[ai] = inst }
+        case _ -> ()
+      }
+    }
+    j = j + 1
+  }
+  tys
+}
+
 func genericCtorArrayFieldTypes(
   tbl: in SymbolTable,
   ctorSym: in Symbol,
@@ -15609,6 +15834,7 @@ func inferExprExpectedCore(
           var li = 0
           while li < elems.count {
             val et = inferExprExpected(sc, tbl, sigs, diag, elems[li], elemTy)
+            recordSliceShapedElement(sc, tbl, elems[li], elemTy)
             elemOwn.add(et)
             elemAt.add(elemTy)
             recordWideningSite(tbl, elemTy, et, elems[li], false)
@@ -15649,6 +15875,7 @@ func inferExprExpectedCore(
         var ai = 0
         while ai < elems.count {
           val et = inferExprExpected(sc, tbl, sigs, diag, elems[ai], elemTy)
+          recordSliceShapedElement(sc, tbl, elems[ai], elemTy)
           recordWideningSite(tbl, elemTy, et, elems[ai], false)
           noteRangeSlot(tbl, elemTy, elems[ai], "element")
           if not argSatisfiesParam(tbl, elemTy, et) {
@@ -15675,11 +15902,14 @@ func inferExprExpectedCore(
       // A bracket literal where a numeric `slice[T]` is expected: each
       // element initialises a `T`, so it widens like an initialiser (docs/01
       // §4.1, #7805) instead of fixing the literal's element type to the
-      // first element's own type.
-      case TySlice(elemTy) -> if isNumericPrimType(elemTy) and elems.count > 0 {
+      // first element's own type.  A slice of slices checks each element
+      // against the inner slice type too, so an element literal is built as
+      // one (#8192).
+      case TySlice(elemTy) -> if (isNumericPrimType(elemTy) or isSliceType(elemTy)) and elems.count > 0 {
         var si = 0
         while si < elems.count {
           val et = inferExprExpected(sc, tbl, sigs, diag, elems[si], elemTy)
+          recordSliceShapedElement(sc, tbl, elems[si], elemTy)
           recordWideningSite(tbl, elemTy, et, elems[si], false)
           if not argSatisfiesParam(tbl, elemTy, et) {
             diag.add(

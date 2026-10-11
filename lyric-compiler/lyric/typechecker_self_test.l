@@ -3895,6 +3895,62 @@ test "a `?` operand built from context records its type (#8181)" {
   assertEqual(recordedOperandType(callCr, callSrc, "g()?"), "", "a call operand is not recorded")
 }
 
+// #8192: the `slice[T]` type recorded for the bracket literal starting at
+// `litText` in `src` whose position alone fixes its shape
+// (`ListLiteralTypeSite.shapeRequired`), or "" when none is.
+func shapedListLiteralType(cr: in CheckResult, src: in String, litText: in String): String {
+  val start = Str.indexOfRaw(src, litText)
+  if start < 0 {
+    return ""
+  }
+  for k in mapKeys(cr.symbols.listLiteralTypeSites) {
+    match mapGet(cr.symbols.listLiteralTypeSites, k) {
+      case Some(site) -> if site.startOffset == start and site.shapeRequired and not site.conflicting {
+        return site.rendered
+      }
+      case None -> ()
+    }
+  }
+  ""
+}
+
+// #8191, #8192, #8193: a bracket literal argument where a `List` is expected
+// is that `List`, a generic callee's type parameters bound by the other
+// arguments; the literals inside a `List[slice[Int]]` are recorded as slices.
+test "a bracket literal argument for a List parameter types as that List (#8191, #8192, #8193)" {
+  val monads = "union Result[T, E] { case Ok(value: T); case Err(error: E) }\n"
+  val defs = "package P\nimport Std.CollectionsHost\n" + monads + "func g(): Result[Int, String] { Ok(value = 1) }\n"
+  val src = defs + "func size[T](xs: in List[T]): Int { 0 }\n" + "func f(): Int { size([1, 2, 3]) }\n"
+  val cr = checkWithImportedPackages(parse(src).file, stdCollectionsHostPackages())
+  assertEqualInt(diagCount(cr), 0, "List[T]: clean (" + diagCodesOf(cr) + ")")
+  val keys = mapKeys(cr.symbols.genericCallTypeArgSites)
+  assertEqualInt(keys.count, 1, "the call's type arguments are recorded")
+  match mapGet(cr.symbols.genericCallTypeArgSites, keys[0]) {
+    case Some(site) -> assertEqual(typeExprText(site.typeArgs[0]), "Int", "T is bound to Int by the literal's elements")
+    case None -> assertTrue(false, "site present")
+  }
+
+  val pickSrc = defs + "func pick[T](a: in T, b: in T, v: in Int): Int { v }\n" +
+    "func h(base: in List[Int]): Result[Int, String] {\n" +
+    "  Ok(value = pick(base, [1, 2], g()?))\n}\n"
+  val pickCr = checkWithImportedPackages(parse(pickSrc).file, stdCollectionsHostPackages())
+  assertEqualInt(diagCount(pickCr), 0, "bare T beside a List: clean (" + diagCodesOf(pickCr) + ")")
+  assertEqual(recordedOperandType(pickCr, pickSrc, "[1, 2]"), "List[Int]", "the hoisted literal is the List")
+
+  val nestSrc = defs + "func count(xs: in List[slice[Int]]): Int { 0 }\n" + "func k(): Int { count([[1], [5, 6]]) }\n" +
+    "func m(): List[slice[Long]] { [[7], [8, 9]] }\n"
+  val nestCr = checkWithImportedPackages(parse(nestSrc).file, stdCollectionsHostPackages())
+  assertEqualInt(diagCount(nestCr), 0, "List of slices: clean (" + diagCodesOf(nestCr) + ")")
+  assertEqual(shapedListLiteralType(nestCr, nestSrc, "[5, 6]"), "slice[Int]", "an element literal of an argument")
+  assertEqual(shapedListLiteralType(nestCr, nestSrc, "[8, 9]"), "slice[Long]", "an element literal of a return")
+  assertEqual(shapedListLiteralType(nestCr, nestSrc, "[[1], [5, 6]]"), "", "the List literal itself is not recorded")
+
+  val boxSrc = defs + "record GBox[T] { items: List[T] }\n" +
+    "func n(): Int {\n  val b = GBox(items = [1, 2])\n  0\n}\n"
+  val boxCr = checkWithImportedPackages(parse(boxSrc).file, stdCollectionsHostPackages())
+  assertEqualInt(diagCount(boxCr), 0, "generic record List field: clean (" + diagCodesOf(boxCr) + ")")
+}
+
 // #8190: a literal bound to a temporary ahead of a `?` is recorded at the
 // shape its position gives it (an array, a widened slice, a tuple holding an
 // array, a branch whose value is one), whatever its element type; an operand

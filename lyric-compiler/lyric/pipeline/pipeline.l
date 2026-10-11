@@ -121,7 +121,8 @@ pub record MiddleEndOptions {
   /// instantiation and to read the elements back at it.  The JVM erases
   /// generics: its literal is an `ArrayList` of erased elements whatever
   /// their instantiation, and the element types it needs it recovers from the
-  /// literal itself.
+  /// literal itself.  Every backend binds a literal whose position alone
+  /// fixes its shape (`ListLiteralTypeSite.shapeRequired`, #8192).
   bindListLiteralTypes: Bool
   /// Whether a direct call to an `async func` must be turned into an
   /// explicit `await` before lowering (#7838): true for MSIL, whose `async
@@ -639,7 +640,6 @@ pub func pipeCheckAndMono(
   // while the type checker's span keys still
   // identify exactly one expression each (D-progress-948, 962, 963).
   val valueSites = funcValueSites(tcRes.symbols)
-  val noListLiteralSites: Map[String, ListLiteralTypeSite] = newMap()
   // A call that passes a receiver or argument by reference to a dot-named
   // function becomes a plain call of it (#8179, #8183) before anything binds
   // a call's operands (the D171 argument-order rewrite, the `?`/`await`
@@ -649,7 +649,11 @@ pub func pipeCheckAndMono(
     byRefCalls,
     tcRes,
     valueSites,
-    if opts.bindListLiteralTypes { tcRes.symbols.listLiteralTypeSites } else { noListLiteralSites },
+    if opts.bindListLiteralTypes {
+      tcRes.symbols.listLiteralTypeSites
+    } else {
+      shapeRequiredListLiteralSites(tcRes.symbols.listLiteralTypeSites)
+    },
     // A native build also binds each never-producing `?` operand nothing
     // typed at the enclosing function's instantiation (#8181).
     if opts.nativeIntrinsics {
@@ -3169,10 +3173,24 @@ func withPropagateFallbacks(
 /// dropped: the package's real middle end reports them.
 pub func pipeCheckedDefaults(file0: in SourceFile, importedPkgs: in List[ImportedPackage]): SourceFile {
   val tcRes = checkWithImportedPackages(file0, importedPkgs)
-  // Only the JVM bundle calls this, and the JVM never binds list literals
-  // to their checked type (`MiddleEndOptions.bindListLiteralTypes`).
-  val noListLiteralSites: Map[String, ListLiteralTypeSite] = newMap()
-  pipeDesugarChecked(file0, tcRes, funcValueSites(tcRes.symbols), noListLiteralSites, tcRes.symbols.hoistOperandTypeSites).file
+  // Only the JVM bundle calls this, and the JVM binds only the list literals
+  // whose shape their position alone fixes
+  // (`MiddleEndOptions.bindListLiteralTypes`).
+  pipeDesugarChecked(file0, tcRes, funcValueSites(tcRes.symbols), shapeRequiredListLiteralSites(tcRes.symbols.listLiteralTypeSites), tcRes.symbols.hoistOperandTypeSites).file
+}
+
+/// The sites of `sites` whose literal's position alone fixes its shape
+/// (`ListLiteralTypeSite.shapeRequired`): a backend that binds no other list
+/// literal to its checked type still binds these (#8192).
+pub func shapeRequiredListLiteralSites(sites: in Map[String, ListLiteralTypeSite]): Map[String, ListLiteralTypeSite] {
+  val kept: Map[String, ListLiteralTypeSite] = newMap()
+  for k in mapKeys(sites) {
+    match mapGet(sites, k) {
+      case Some(v) -> if v.shapeRequired and not v.conflicting { kept.add(k, v) }
+      case None -> ()
+    }
+  }
+  kept
 }
 
 /// True when `file` declares a parameter or field default anywhere: on a
