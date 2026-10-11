@@ -772,6 +772,16 @@ pub func hoistPropagateFile(file: in SourceFile, extraRecords: in List[RecordDec
   hoistFile(propagateHoistConfig(), file, extraRecords)
 }
 
+// `hoistPropagateFile` that leaves the callees the type checker resolved as
+// functions under explicit type arguments in their calls (#8279).
+pub func hoistPropagateFileWithTypeArgCallees(
+  file: in SourceFile,
+  extraRecords: in List[RecordDecl],
+  typeArgCallees: in Map[String, Bool],
+): SourceFile {
+  hoistFileWithTypeArgCallees(propagateHoistConfig(), file, extraRecords, typeArgCallees)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. Monad classification from a declared return type.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1561,13 +1571,35 @@ pub func lowerPropagateFileWithSites(
   asyncCallSites: in Map[String, Bool],
   errWidenings: in Map[String, PropagateErrWidening],
 ): PropagateResult {
+  val noTypeArgCallees: Map[String, Bool] = newMap()
+  lowerPropagateFileWithTypeArgCallees(
+    file,
+    extraRecords,
+    awaitInTryIsHazard,
+    asyncCallSites,
+    errWidenings,
+    noTypeArgCallees
+  )
+}
+
+// `lowerPropagateFileWithSites` given the callees the type checker resolved
+// as functions under explicit type arguments (`SymbolTable.typeArgCalleeSites`,
+// #8279), which the hoist leaves in their calls.
+pub func lowerPropagateFileWithTypeArgCallees(
+  file: in SourceFile,
+  extraRecords: in List[RecordDecl],
+  awaitInTryIsHazard: Bool,
+  asyncCallSites: in Map[String, Bool],
+  errWidenings: in Map[String, PropagateErrWidening],
+  typeArgCallees: in Map[String, Bool],
+): PropagateResult {
   // #6448: hoist every qualifying `?` (operand-position, stacked-context)
   // into fresh `val` bindings FIRST, before the `?` -> match rewrite below —
   // see §2b's module doc.  Every hoisted `?` lands as a statement-level
   // initializer, the shape the rewrite below already turns into safely
   // compiling IL on both targets.  A no-op (returns `file` unchanged) when
   // nothing in the file qualifies.
-  val hoisted = hoistPropagateFile(file, extraRecords)
+  val hoisted = hoistPropagateFileWithTypeArgCallees(file, extraRecords, typeArgCallees)
   val diags: List[Diagnostic] = newList()
   val aliases: Map[String, TypeExpr] = newMap()
   val syncFuncNames: Map[String, Bool] = newMap()

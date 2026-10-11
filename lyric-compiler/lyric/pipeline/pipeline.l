@@ -150,6 +150,11 @@ pub record MiddleEndOptions {
   /// a method's overloads up by this count, so the call binds to the
   /// overload the checker resolved (#7828).
   methodCallAritiesOut: Map[String, Int]
+  /// Receives the type checker's `typeArgCalleeSites` for the file: the
+  /// callees written as a generic function under explicit type arguments
+  /// (`f[Int](...)`), which the `?` and `await` hoists leave in their calls
+  /// (#8279).  The caller passes it to `pipeWeave` for the `await` hoist.
+  typeArgCalleesOut: Map[String, Bool]
   /// Receives every visible (`pub` or `internal`) generic function with a
   /// body, as it stands just before monomorphisation, which erases them from
   /// the file.  A backend that instantiates generics itself at the call (native)
@@ -753,12 +758,18 @@ pub func pipeCheckAndMono(
   // cross-package records, not just same-file ones. `opts.awaitInTryIsHazard`
   // (#7198) gates whether F0045's guard fires on this target.
   val asyncCalls: Map[String, Bool] = if opts.awaitAsyncCalls { tcRes.symbols.asyncCallSites } else { newMap() }
-  val propRes = lowerPropagateFileWithSites(
+  for tk in mapKeys(tcRes.symbols.typeArgCalleeSites) {
+    if not opts.typeArgCalleesOut.containsKey(tk) {
+      opts.typeArgCalleesOut.add(tk, true)
+    }
+  }
+  val propRes = lowerPropagateFileWithTypeArgCallees(
     elaborated,
     monoRecordDecls,
     opts.awaitInTryIsHazard,
     asyncCalls,
-    tcRes.symbols.propagateErrWidenings
+    tcRes.symbols.propagateErrWidenings,
+    tcRes.symbols.typeArgCalleeSites
   )
   if gate(opts.pkgLabel, opts.lineOrigins, propRes.diagnostics) {
     return None
@@ -2832,6 +2843,10 @@ func isSignedIntSuffix(sfx: in IntSuffix): Bool {
 /// `HoistEngine` invocation so an `impl` block's target type resolves its
 /// own fields even when declared outside `file`; an `impl` targeting a
 /// record declared in this SAME file already resolves without it.
+///
+/// `typeArgCallees` is the type checker's `typeArgCalleeSites` for `file`
+/// (`MiddleEndOptions.typeArgCalleesOut`): callees under explicit type
+/// arguments, which the await hoist leaves in their calls (#8279).
 pub func pipeWeave(
   file: in SourceFile,
   templates: in Map[String, Weaver.CollectedTemplate],
@@ -2839,6 +2854,7 @@ pub func pipeWeave(
   pkgLabel: in String,
   origins: in List[DiagUtil.MergedLineOrigin],
   extraRecordDecls: in List[RecordDecl],
+  typeArgCallees: in Map[String, Bool],
   contractsEnabled: in Bool = true,
 ): Option[SourceFile] {
   // @proof_required modules always enable contracts: proof obligations must not be user-disableable (#7732)
@@ -2854,7 +2870,7 @@ pub func pipeWeave(
   // After weaving, so advice spliced in from another package is lowered too;
   // before the await hoist, which must see the tree codegen sees.
   val formatted = mapExprsInFile(weaveRes.file, lowerFormatBuiltin)
-  Some(value = AwaitHoist.hoistAwaitsFile(formatted, extraRecordDecls))
+  Some(value = AwaitHoist.hoistAwaitsFileWithTypeArgCallees(formatted, extraRecordDecls, typeArgCallees))
 }
 
 /// `formatN(template, a1, ..., aN)` becomes
@@ -3150,6 +3166,7 @@ pub func pipeMiddleEnd(
       opts.pkgLabel,
       opts.lineOrigins,
       monoRecordDecls,
+      opts.typeArgCalleesOut,
       opts.contractsEnabled
     )
     case None -> None

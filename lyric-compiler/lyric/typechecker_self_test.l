@@ -3938,6 +3938,18 @@ test "a literal its position shapes records that shape ahead of a `?` (#8190)" {
   val taCr = parseCheck(taSrc)
   assertEqualInt(diagCount(taCr), 0, "explicit type arguments: clean (" + diagCodesOf(taCr) + ")")
   assertEqual(recordedOperandType(taCr, taSrc, "[7, 8]"), "array[2, Long]", "explicit type argument")
+  assertEqualInt(taCr.symbols.typeArgCalleeSites.count, 1, "the callee under type arguments is recorded")
+
+  // An index of a value is not a type application, whether the value is a
+  // parameter or a module-level `val`.
+  val ixSrc = defs + "func inc(x: in Int): Int { x + 1 }\n" + "val table: array[2, (Int) -> Int] = [inc, inc]\n" +
+    "func viaParam(fs: in array[2, (Int) -> Int]): Result[Int, String] {\n" +
+    "  Ok(value = fs[0](g()?))\n}\n" +
+    "func viaVal(): Result[Int, String] {\n" +
+    "  Ok(value = table[1](g()?))\n}\n"
+  val ixCr = parseCheck(ixSrc)
+  assertEqualInt(diagCount(ixCr), 0, "indexed values: clean (" + diagCodesOf(ixCr) + ")")
+  assertEqualInt(ixCr.symbols.typeArgCalleeSites.count, 0, "an indexed value is not recorded")
 }
 
 // #8181: an `if`/`match` operand whose first branch fixes no success type

@@ -1014,6 +1014,7 @@ pub func compileToNativeWithShape(
     checkedSourceOut = optsCheckedOut,
     memberRecvClassesOut = optsRecvOut,
     methodCallAritiesOut = optsCallArities,
+    typeArgCalleesOut = newMap(),
     genericItemsOut = newList(),
     foreignValueRecordsOut = newList(),
     nativeIntrinsics = true
@@ -1480,6 +1481,7 @@ pub func compileProjectToNativeWithShape(
       checkedSourceOut = optsCheckedOut,
       memberRecvClassesOut = optsRecvOut,
       methodCallAritiesOut = optsCallArities,
+      typeArgCalleesOut = newMap(),
       genericItemsOut = optsGenericItems,
       foreignValueRecordsOut = optsForeignRecords,
       ioForbiddenReason = if mei < packages.count { packages[mei].ioForbiddenReason } else { "" },

@@ -318,6 +318,15 @@ if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
   LYRIC_BIN="$lyric_bin" bash scripts/ci/multi-file-package-merge-e2e.sh dotnet jvm
   ran="$ran multi-file-package-merge-e2e"
 fi
+# #8279: an indexed callee beside `?` and `await` named from another package
+# (a `pub val` list of functions, and a generic function under explicit type
+# arguments), both targets (Java 21, as above).
+idx=$((idx + 1))
+if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
+  echo "=== scripts/ci/hoisted-callee-cross-package-e2e.sh ==="
+  LYRIC_BIN="$lyric_bin" bash scripts/ci/hoisted-callee-cross-package-e2e.sh dotnet jvm
+  ran="$ran hoisted-callee-cross-package-e2e"
+fi
 if [[ -z "$ran" ]]; then
   echo "::error::shard ${SHARD_K}/${SHARD_N} selected no files" >&2
   exit 1

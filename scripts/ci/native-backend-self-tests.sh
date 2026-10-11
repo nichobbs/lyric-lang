@@ -136,6 +136,8 @@ LYRIC_BIN="$lyric_bin" bash scripts/ci/range-refinement-e2e.sh native
 LYRIC_BIN="$lyric_bin" bash scripts/ci/value-generic-record-e2e.sh native
 # #8179: `inout` receivers and generic `inout` parameters across packages.
 LYRIC_BIN="$lyric_bin" bash scripts/ci/inout-receiver-e2e.sh native
+# #8279: indexed callees beside `?` and `await` named from another package.
+LYRIC_BIN="$lyric_bin" bash scripts/ci/hoisted-callee-cross-package-e2e.sh native
 # Std.Task, Std.SecureRandom, Std.Json and Std.JsonValue on native (#8135, #7856):
 # the stdlib suites that need no catchable panic.
 for t in \

@@ -300,6 +300,7 @@ pub func compileToMsilWithVersion(
   val singleFileOptsCheckedOut: List[SourceFile] = newList()
   val singleFileOptsRecvOut: Map[String, String] = newMap()
   val singleFileCallArities: Map[String, Int] = newMap()
+  val singleFileTypeArgCallees: Map[String, Bool] = newMap()
   val singleFileOpts = MiddleEndOptions(
     tcFatal = true,
     tcReport = false,
@@ -312,6 +313,7 @@ pub func compileToMsilWithVersion(
     checkedSourceOut = singleFileOptsCheckedOut,
     memberRecvClassesOut = singleFileOptsRecvOut,
     methodCallAritiesOut = singleFileCallArities,
+    typeArgCalleesOut = singleFileTypeArgCallees,
     genericItemsOut = newList(),
     foreignValueRecordsOut = newList(),
     arraysAsLists = true
@@ -397,7 +399,7 @@ pub func compileToMsilWithVersion(
   // #7496: the A0047 row-type check resolves type names against the same
   // stdlib packages the type checker saw.
   val weaveTypeIndex = pipeTypeOwnerIndex(importedPkgs)
-  val weavedFile = match pipeWeave(file, singleFileTemplates, weaveTypeIndex, path, noWeaveOrigins, stdlibRecs, singleFileOpts.contractsEnabled) {
+  val weavedFile = match pipeWeave(file, singleFileTemplates, weaveTypeIndex, path, noWeaveOrigins, stdlibRecs, singleFileTypeArgCallees, singleFileOpts.contractsEnabled) {
     case Some(f) -> f
     case None -> return false
   }
@@ -1091,6 +1093,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   val perPkgFiles: List[SourceFile] = newList()
   // Each package's `methodCallAritiesOut` (#7828), parallel to `perPkgFiles`.
   val perPkgCallArities: List[Map[String, Int]] = newList()
+  val perPkgTypeArgCallees: List[Map[String, Bool]] = newList()
   // The type-checked, `.copy`-desugared file per package: contract metadata
   // takes generic bodies from it (see `MiddleEndOptions.checkedSourceOut`).
   val perPkgChecked: List[SourceFile] = newList()
@@ -1116,6 +1119,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     val projOptsCheckedOut: List[SourceFile] = newList()
     val projOptsRecvOut: Map[String, String] = newMap()
     val projCallArities: Map[String, Int] = newMap()
+    val projTypeArgCallees: Map[String, Bool] = newMap()
     val projOpts = MiddleEndOptions(
       tcFatal = true,
       tcReport = false,
@@ -1128,6 +1132,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
       checkedSourceOut = projOptsCheckedOut,
       memberRecvClassesOut = projOptsRecvOut,
       methodCallAritiesOut = projCallArities,
+      typeArgCalleesOut = projTypeArgCallees,
       genericItemsOut = newList(),
       foreignValueRecordsOut = newList(),
       arraysAsLists = true,
@@ -1140,6 +1145,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
 
     perPkgFiles.add(monoFile)
     perPkgCallArities.add(projCallArities)
+    perPkgTypeArgCallees.add(projTypeArgCallees)
     perPkgChecked.add(if projOptsCheckedOut.count > 0 { projOptsCheckedOut[0] } else { pp.file })
     perPkgNames.add(pp.name)
 
@@ -1354,7 +1360,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
     // so a bundle package's `impl` block targeting a record declared in a
     // DIFFERENT package resolves its target's own fields in the
     // await-hoist.
-    val weaved = match pipeWeave(perPkgFiles[li], allTemplates, weaveTypeIndex, parsedPkgs[li].label, parsedPkgs[li].origins, allImportedRecordDecls, contractsEnabled) {
+    val weaved = match pipeWeave(perPkgFiles[li], allTemplates, weaveTypeIndex, parsedPkgs[li].label, parsedPkgs[li].origins, allImportedRecordDecls, perPkgTypeArgCallees[li], contractsEnabled) {
       case Some(f) -> f
       case None -> return false
     }

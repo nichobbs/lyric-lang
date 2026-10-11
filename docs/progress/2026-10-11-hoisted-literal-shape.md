@@ -45,13 +45,17 @@ primitives is built with (`[ok(3)?, 4]` failed with `J008`, "reference
 in source, which the parser leaves as an index of the function's name
 (`id2[Int](5, ok(1)?)` failed with `T0115` on dotnet, `J008` on the JVM and
 `N0007` on native). A type application of a name is now bound only when the
-name is a reassignable local, as a bare name is, and an index of a name that
-binds no value in the function or file (`hzPathNamesValue`: not a local, a
-parameter, an implicit-receiver field or a module-level `val`) is read as type
-arguments, as the type checker reads it (`calleeIsFuncValue`), and left in the
-call. An index of a value (`fs[i](ok(2)?)`) is still bound before the
-arguments, so it runs first (`hzStackedCallee` keeps that behaviour for every
-other callee).
+name is a reassignable local, as a bare name is. For the source form, the
+type checker records each indexed callee it resolves as a generic function
+under type arguments (`SymbolTable.typeArgCalleeSites`: the name binds no
+local, receiver field, `val`, `const`, wire or config of any package, and
+names a function with one generic parameter per index), and both hoists
+leave exactly those in their calls: the `?` hoist reads the record directly,
+and the `await` hoist, which runs after `Lyric.Mono`, gets it through
+`MiddleEndOptions.typeArgCalleesOut` and `pipeWeave`. Every other indexed
+callee, including an element of another package's `pub val` used
+unqualified (`fns[i](a, ok(4)?)`), is still bound before the arguments, so
+its index runs first.
 
 The type checker gives a call under explicit type arguments no direct
 signature, so it recorded nothing for its arguments: a literal bound ahead of
@@ -79,4 +83,10 @@ with a `?` in an inner literal, and a tuple holding an array; an `if` and a
 the compiler, JVM-generics and native batches and the `ilverify` list.
 `typechecker_self_test.l` checks the recorded types directly, including
 `array[2, T]` in a generic function, `array[2, Long]` under an explicit type
-argument, and that a call operand of array type is not recorded.
+argument, which callees are recorded as under type arguments (not an index
+of a parameter or of a module-level `val`), and that a call operand of array
+type is not recorded. `scripts/ci/hoisted-callee-cross-package-e2e.sh` (in the
+compiler and native batches; dotnet, JVM, native) calls an element of another
+package's `pub val` list of functions and that package's generic function
+under explicit type arguments, beside a `?` and an `await`, as a sibling
+package and as a restored dependency, checking the evaluation order.

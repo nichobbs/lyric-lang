@@ -12191,6 +12191,56 @@ func sigExpectedArgTypes(
   expected
 }
 
+// Record the callee `fn` of a call in `typeArgCalleeSites` when it is a
+// generic function under explicit type arguments written as an index of its
+// name (`firstOf[Int]`): the name binds no value here (a local, a field of
+// the implicit receiver, or a `val`, `const`, wire or config of any package)
+// and resolves to a function with one generic parameter per index (#8279).
+func recordTypeArgCallee(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  fn: in Expr,
+  arity: in Int,
+  argTypes: in List[Type],
+): Unit {
+  val inner = match fn.kind { case EIndex(i, _) -> i; case _ -> return }
+  val count = match fn.kind { case EIndex(_, ixs) -> ixs.count; case _ -> return }
+  val path = match inner.kind { case EPath(p) -> p; case _ -> return }
+  if path.segments.count == 0 or isNoSourceSpan(fn.span) {
+    return
+  }
+  val head = path.segments[0]
+  if scopeHasName(sc, head) or sc.selfFields.containsKey(head) {
+    return
+  }
+  val name = path.segments[path.segments.count - 1]
+  for sym in symTableTryFindAll(tbl, name) {
+    if symbolIsValue(sym) {
+      return
+    }
+  }
+  match findDirectSig(sc, tbl, sigs, inner, arity, argTypes) {
+    case Some(sig) -> if sig.generics.count == count {
+      val key = recordCopySiteKey(fn.span)
+      if not tbl.typeArgCalleeSites.containsKey(key) {
+        tbl.typeArgCalleeSites.add(key, true)
+      }
+    }
+    case None -> ()
+  }
+}
+
+func symbolIsValue(sym: in Symbol): Bool {
+  match sym.kind {
+    case DKVal(_) -> true
+    case DKConst(_) -> true
+    case DKWire(_) -> true
+    case DKConfig(_) -> true
+    case _ -> false
+  }
+}
+
 // A call to a generic function under explicit type arguments
 // (`firstOf[Int](xs, ok(1)?)`, which the parser leaves as an index of the
 // function's name) has no direct signature, so its arguments are checked
@@ -13655,6 +13705,7 @@ func inferExprCore(
       val explicitValueGenericTy = checkExplicitValueGenericCall(sc, tbl, sigs, diag, fn, args, argTypes, e.span)
       // Try direct-sig lookup first.
       val directSig = findDirectSig(sc, tbl, sigs, fn, args.count, argTypes)
+      recordTypeArgCallee(sc, tbl, sigs, fn, args.count, argTypes)
       // A4: method-space resolution for a member callee — consulted only when
       // neither a direct signature nor a field/builtin member type resolved
       // (a function-typed FIELD keeps winning over a same-named method).
