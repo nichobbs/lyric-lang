@@ -7126,6 +7126,10 @@ func materializeBoxedElemMsil(cctx: in CodegenCtx, insns: in List[MInsn], elemTy
     // TypeSpec unboxes one and is a checked cast for a reference (#8205).
     case MTypeVar(_) -> castObjectToMsil(cctx, insns, elemTy)
     case MMethodTypeVar(_) -> castObjectToMsil(cctx, insns, elemTy)
+    // A concrete `List`/`Map` result is cast to its closed type like a
+    // generic instantiation's.
+    case MConcreteList(_) -> castObjectToMsil(cctx, insns, elemTy)
+    case MConcreteMap(_, _) -> castObjectToMsil(cctx, insns, elemTy)
     case _ -> {
       if isValueType(elemTy) {
         insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, elemTy)))
@@ -7181,7 +7185,7 @@ func coerceTrailingToRetMsil(
     // unverifiable IL.
     case _ -> match valTy {
       case MVoid -> pushDefaultValueMsil(cctx, fctx, insns, retTy)
-      case _ -> narrowObjectToDeclaredTypeMsil(cctx, insns, valTy, retTy)
+      case _ -> coerceObjectToSlotMsil(cctx, insns, valTy, retTy)
     }
   }
 }
@@ -8740,6 +8744,28 @@ func withoutValueTypeArgsMsil(te: in TypeExpr): TypeExpr {
   }
 }
 
+// Add each of `names` not in `reified` (and not yet listed) to the names
+// `typeExprToMsilCtx` erases to `object` (`cctx.pbGenerics`); the count added,
+// for `popErasedGenericNamesMsil`.
+func pushErasedGenericNamesMsil(cctx: in CodegenCtx, names: in List[String], reified: in List[String]): Int {
+  var added = 0
+  for n in names {
+    if not nameListContains(reified, n) and not nameListContains(cctx.pbGenerics, n) {
+      cctx.pbGenerics.add(n)
+      added = added + 1
+    }
+  }
+  added
+}
+
+func popErasedGenericNamesMsil(cctx: in CodegenCtx, added: in Int): Unit {
+  var i = 0
+  while i < added {
+    cctx.pbGenerics.removeAt(cctx.pbGenerics.count - 1)
+    i = i + 1
+  }
+}
+
 pub func typeExprToMsilBodyCtx(cctx: in CodegenCtx, fctx: in FuncCtx, te: in TypeExpr): MsilType {
   // #7695: a generic record/union method's own reified type parameters
   // (`fctx.reifiedGenerics`) take priority over `fctx.generics` (a generic
@@ -8749,7 +8775,12 @@ pub func typeExprToMsilBodyCtx(cctx: in CodegenCtx, fctx: in FuncCtx, te: in Typ
   // real `MTypeVar` VAR form via `typeExprToMsilG`, matching the method's
   // own signature and `self.<field>` reads.
   if fctx.reifiedGenerics.count > 0 {
-    typeExprToMsilG(cctx, te, fctx.pkgName, fctx.reifiedGenerics)
+    // A member's own type parameters (`func map[U]` in `Box[T]`) are erased
+    // like a generic function's, beside the type's reified ones.
+    val added = pushErasedGenericNamesMsil(cctx, fctx.generics, fctx.reifiedGenerics)
+    val t = typeExprToMsilG(cctx, te, fctx.pkgName, fctx.reifiedGenerics)
+    popErasedGenericNamesMsil(cctx, added)
+    t
   } else if fctx.generics.count > 0 {
     typeExprToMsilGenBody(cctx, te, fctx.pkgName, fctx.generics)
   } else {
@@ -9757,8 +9788,7 @@ func canUseTypedArrayLoad(ty: in MsilType): Bool {
 // `canUseTypedArrayLoad` accepts use their primitive array token; a closed
 // record, union, generic instantiation, concrete collection, value type or
 // primitive-element slice is an `MCellArray` (`cellUsesTypedArrayMsil`).
-// Only a type that names a type parameter (a closure class the package class
-// hosts is not generic, so its field cannot name `!0`, #7695) or encodes as
+// Only a type that names a method type parameter or encodes as
 // `object` anyway (a legacy `List<object>`-backed `List`/`Map`/`Set`/tuple, or
 // a slice of records, #6322) keeps an `object` cell, whose value is boxed on
 // store and cast back on load.  Every cell site — declaration (`finishHoistedCellMsil`),
@@ -9787,12 +9817,16 @@ func cellObjMsil(fctx: in FuncCtx, name: in String): Bool {
 }
 
 // True when `elemTy`'s cell is an `MCellArray`: a type with no primitive array
-// token that names no type parameter and does not encode as `object`.
+// token that names no method type parameter and does not encode as `object`.
+// A type parameter of the enclosing type (`!0`) is in scope wherever such a
+// cell lives: the type's own members and the closure classes generic over
+// its parameters that host their lambdas (#8284).
 func cellUsesTypedArrayMsil(elemTy: in MsilType): Bool {
-  if canUseTypedArrayLoad(elemTy) or msilTypeHasDanglingTypeVarMsil(elemTy) or msilTypeHasMethodTypeVarMsil(elemTy) {
+  if canUseTypedArrayLoad(elemTy) or msilTypeHasMethodTypeVarMsil(elemTy) {
     return false
   }
   match elemTy {
+    case MTypeVar(_) -> true
     case MClass(_) | MClassRef(_, _) | MValueTypeRef(_, _) -> true
     case MGenericInst(_, _, _) | MGenericInstByName(_, _) | MValueTypeGenericInst(_, _, _) -> true
     case MConcreteList(_) | MConcreteMap(_, _) -> true
@@ -14433,6 +14467,25 @@ func lowerIfExprMsil(
       // reconciliation below (#6475).
       val thenTerm = endsWithReturnMsil(thenInsns) or armEndsInLoopJumpMsil(thenInsns)
       val elseTerm = endsWithReturnMsil(elseInsns) or armEndsInLoopJumpMsil(elseInsns)
+      // A branch known only as `object` beside one of a type parameter or
+      // value type unboxes to it, as a `match` arm does (`unboxObjectArmsMsil`).
+      if not thenTerm and not elseTerm {
+        val brBufs: List[List[MInsn]] = newList()
+        brBufs.add(thenInsns)
+        brBufs.add(elseInsns)
+        val brTys: List[MsilType] = newList()
+        brTys.add(thenTy)
+        brTys.add(elseTy)
+        val brRets: List[Bool] = newList()
+        brRets.add(false)
+        brRets.add(false)
+        val brJoined = if thenTy == MVoid or elseTy == MVoid { MVoid } else { thenTy }
+        val brTy = unboxObjectArmsMsil(cctx, brBufs, brTys, brRets, brJoined)
+        if brTy != brJoined {
+          thenTy = brTy
+          elseTy = brTy
+        }
+      }
 
       // Emit the then block.
       var ti = 0
@@ -14804,7 +14857,7 @@ func lowerAssignExprMsil(
                   popCollExpect(fctx)
                   restoreHintTyArgs(fctx, savedH)
                   // #7752: see `narrowObjectToDeclaredTypeMsil`.
-                  narrowObjectToDeclaredTypeMsil(cctx, insns, byrefValTy, elemTy)
+                  coerceObjectToSlotMsil(cctx, insns, byrefValTy, elemTy)
                   widenIntToLongMsil(insns, byrefValTy, elemTy)
                 }
                 case Some(arith) -> {
@@ -14837,7 +14890,7 @@ func lowerAssignExprMsil(
               // #7752: an `if`/`match` over different concrete classes yields a
               // verifier-`object` value; narrow it to the local's declared
               // class/interface (`narrowObjectToDeclaredTypeMsil`).
-              narrowObjectToDeclaredTypeMsil(cctx, insns, assignValTy, ty)
+              coerceObjectToSlotMsil(cctx, insns, assignValTy, ty)
               widenIntToLongMsil(insns, assignValTy, ty)
               emitByteSlotNarrowMsil(fctx, insns, slot)
               emitStoreSlot(insns, slot, fctx.paramCount)
@@ -14898,7 +14951,7 @@ func lowerAssignExprMsil(
                 insns.add(MLdarg(slot = 0))
                 val selfFldValTy = lowerAssignValueAtMsil(cctx, fctx, insns, value, fldTy)
                 // #7752: see `narrowObjectToDeclaredTypeMsil`.
-                narrowObjectToDeclaredTypeMsil(cctx, insns, selfFldValTy, fldTy)
+                coerceObjectToSlotMsil(cctx, insns, selfFldValTy, fldTy)
                 widenIntToLongMsil(insns, selfFldValTy, fldTy)
                 insns.add(MStfld(fieldToken = fldTok))
               }
@@ -14934,7 +14987,7 @@ func lowerAssignExprMsil(
             case AssEq -> {
               val resultValTy = lowerAssignValueAtMsil(cctx, fctx, insns, value, ty)
               // #7752: see `narrowObjectToDeclaredTypeMsil`.
-              narrowObjectToDeclaredTypeMsil(cctx, insns, resultValTy, ty)
+              coerceObjectToSlotMsil(cctx, insns, resultValTy, ty)
               widenIntToLongMsil(insns, resultValTy, ty)
               emitByteSlotNarrowMsil(fctx, insns, slot)
               emitStoreSlot(insns, slot, fctx.paramCount)
@@ -15000,7 +15053,7 @@ func lowerAssignExprMsil(
                   val fldTyA = match mapGet(cctx.fieldMsilTypes, key) { case Some(t) -> t; case None -> MObject }
                   val fldValTy = lowerAssignValueAtMsil(cctx, fctx, insns, value, fldTyA)
                   // #7752: see `narrowObjectToDeclaredTypeMsil`.
-                  narrowObjectToDeclaredTypeMsil(cctx, insns, fldValTy, fldTyA)
+                  coerceObjectToSlotMsil(cctx, insns, fldValTy, fldTyA)
                   widenIntToLongMsil(insns, fldValTy, fldTyA)
                   insns.add(MStfld(fieldToken = tok))
                 }
@@ -16071,7 +16124,11 @@ func lowerMatchExprMsil(
     }
     av = av + 1
   }
-  val resultTy: MsilType = if not sawFall { MVoid } else if anyVoid { MVoid } else { fallJoinTy }
+  val joinedTy: MsilType = if not sawFall { MVoid } else if anyVoid { MVoid } else { fallJoinTy }
+  // Arms that agree on a type to unbox to, beside arms whose value is only
+  // known as `object` (a closure call's result whose type the checker left
+  // unknown, #7671), all yield that type: the `object` arms unbox to it.
+  val resultTy = unboxObjectArmsMsil(cctx, armBuffers, armTys, armRets, joinedTy)
 
   // Pass 2: splice each arm's buffer in order, normalising the stack depth.
   var k = 0
@@ -16116,6 +16173,55 @@ func lowerMatchExprMsil(
     insns.add(MLabel(id = afterL))
   }
   resultTy
+}
+
+// The join type of a value-producing `match`'s or `if`'s fall-through arms
+// (`armRets[i]` false) when some arms yield `object` and the others agree on
+// a type parameter or value type: that type, with an `unbox.any` appended to
+// each `object` arm's buffer.  `joined` otherwise.  A value only known as
+// `object` there is the other arms' type, boxed.
+func unboxObjectArmsMsil(
+  cctx: in CodegenCtx,
+  buffers: in List[List[MInsn]],
+  tys: in List[MsilType],
+  rets: in List[Bool],
+  joined: in MsilType,
+): MsilType {
+  if joined == MVoid {
+    return joined
+  }
+  var target: Option[MsilType] = None
+  var anyObject = false
+  var i = 0
+  while i < tys.count {
+    if not rets[i] {
+      match tys[i] {
+        case MObject -> {
+          anyObject = true
+        }
+        case t -> match target {
+          case Some(prev) -> if not sameClrTypeMsil(prev, t) { return joined }
+          case None -> if objectNeedsUnboxToMsil(t) { target = Some(value = t) } else { return joined }
+        }
+      }
+    }
+    i = i + 1
+  }
+  match target {
+    case Some(t) -> if anyObject {
+      var j = 0
+      while j < tys.count {
+        if not rets[j] and tys[j] == MObject {
+          castObjectToMsil(cctx, buffers[j], t)
+        }
+        j = j + 1
+      }
+      t
+    } else {
+      joined
+    }
+    case None -> joined
+  }
 }
 
 // Given a list of union-case FQN candidates that share the same simple
@@ -19136,6 +19242,35 @@ func narrowObjectToDeclaredTypeMsil(
   }
 }
 
+// Convert a value the verifier knows only as `object` to the type of the
+// return, local or field it is stored into.  A value whose static type the
+// codegen could not track (a closure call's result whose type the type
+// checker left unknown, such as a field read through a type parameter or a
+// pattern variable of one, #7671) is the declared type's boxed form: a type
+// parameter or a value type is unboxed (`unbox.any`), every other declared
+// type is narrowed as `narrowObjectToDeclaredTypeMsil` narrows it.  Only for
+// sinks whose caller has not converted the value already.
+func coerceObjectToSlotMsil(cctx: in CodegenCtx, insns: in List[MInsn], fromTy: in MsilType, toTy: in MsilType): Unit {
+  match fromTy {
+    case MObject -> if objectNeedsUnboxToMsil(toTy) {
+      castObjectToMsil(cctx, insns, toTy)
+    } else {
+      narrowObjectToDeclaredTypeMsil(cctx, insns, fromTy, toTy)
+    }
+    case _ -> narrowObjectToDeclaredTypeMsil(cctx, insns, fromTy, toTy)
+  }
+}
+
+// True when an `object` holding a value of type `t` is a box that must be
+// unboxed: `t` is a value type or a type parameter.
+func objectNeedsUnboxToMsil(t: in MsilType): Bool {
+  match t {
+    case MTypeVar(_) -> true
+    case MMethodTypeVar(_) -> true
+    case _ -> isValueType(t)
+  }
+}
+
 // Widen a 32-bit integer on the stack (`Int`, `Byte`, `Char` — e.g. an
 // integer literal, which lowers to `ldc.i4`) with `conv.i8` when it lands in a
 // `Long` slot, parameter or field; storing an `int32` there is unverifiable IL
@@ -19262,6 +19397,10 @@ func coerceCallArgMsil(cctx: in CodegenCtx, insns: in List[MInsn], fromTy: in Ms
       // generic instantiations), so no 0x01000000 tag is added here.
       case MValueTypeRef(_, _) -> insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, toTy)))
       case MValueTypeGenericInst(_, _, _) -> insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, toTy)))
+      // A type parameter may be a value type: `unbox.any` on its VAR/MVAR
+      // TypeSpec (#7671).
+      case MTypeVar(_) -> castObjectToMsil(cctx, insns, toTy)
+      case MMethodTypeVar(_) -> castObjectToMsil(cctx, insns, toTy)
       // A reference target: `castObjectToDelegateMsil` owns `Func` delegate
       // targets and `narrowObjectToDeclaredTypeMsil` every other one (it
       // skips host types, delegates included), so at most one cast is emitted.
@@ -34812,6 +34951,8 @@ pub func lowerImplMethodMsil(
   // A generic target binds `self` and body annotations exactly as
   // `lowerRecordMethodMsil` does for the type's own methods (#7704).
   bindGenericSelfMsil(fctx, targetTypeName, generics)
+  // The method's own type parameters erase to `object`.
+  fctx.generics = genericNamesOf(decl.generics)
 
   val insns: List[MInsn] = newList()
 
@@ -34989,6 +35130,9 @@ pub func lowerRecordMethodMsil(
   fctx.originPkg = originPkgOf(decl.annotations)
   fctx.bareSelfFields = bareSelfFieldsMsil(decl.annotations)
   bindGenericSelfMsil(fctx, targetTypeName, generics)
+  // The method's own type parameters erase to `object` (a method is not a
+  // CLR generic method).
+  fctx.generics = genericNamesOf(decl.generics)
 
   val insns: List[MInsn] = newList()
 

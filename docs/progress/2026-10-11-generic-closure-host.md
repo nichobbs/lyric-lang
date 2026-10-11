@@ -1,4 +1,4 @@
-# Lambdas in generic contexts on dotnet: generic closure classes (#8284, #7792, #8205, #8292)
+# Lambdas in generic contexts on dotnet: generic closure classes (#8284, #7792, #8205, #8292, #7671)
 
 On `--target dotnet` every lambda was lifted to a static method of the
 non-generic package class, where the type parameters of the member that built
@@ -44,14 +44,29 @@ What changed:
   parameters (`{ x: T -> x }` in a generic record method was T0010 on every
   target); on the JVM such a parameter erases to `Object`.
 
-Still open: #7671's unannotated form.  The checker types a field read
-through a type parameter (`box.value` for `box: MyBox[T]`) as unknown, its
-deliberate leniency for bounded type parameters (`eraseTyVars`), so an
-unannotated closure that returns one has no recorded type and dotnet still
-returns its `object` result unnarrowed.  Annotating the closure
-(`val get: () -> T = { -> box.value }`) works on every target.
+- Where the checker cannot name a closure's result type (it types a field
+  read through a type parameter, `box.value` for `box: MyBox[T]`, and a
+  pattern variable of one as unknown, `eraseTyVars`), the call's `object`
+  result is converted where it lands: a return (`coerceTrailingToRetMsil`),
+  an annotated binding or argument (`coerceCallArgMsil`), an assignment to a
+  local or field (`coerceObjectToSlotMsil`), and the join of `match` arms or
+  `if` branches whose other arms yield a type parameter or value type
+  (`unboxObjectArmsMsil`), all unbox it.  That closes #7671's unannotated
+  form, a closure capturing a pattern-bound `T`, a closure reading
+  `self.inner.value`, and a lambda in an interface default reading `self`
+  (which also returned garbage on a non-generic implementer).  A closure
+  returning a concrete `List`/`Map` is cast to it.  On native such an
+  unannotated closure is rejected at compile time (N0007), as before.
+- A record or `impl` method's own type parameters (`func map[U]`) erase to
+  `object` in its body on dotnet, beside the type's reified ones, so
+  `{ x: U -> x }` and an unannotated closure local no longer name a bogus
+  `Pkg.U` class (W0003).  On the JVM they erase to `Object` in the method's
+  descriptor and body, which fixes `NoClassDefFoundError: Pkg/U` for such a
+  lambda parameter and for an unannotated closure in such a method (#8298).
+- A captured `var` of a type parameter now uses a typed `!0[]` cell, since
+  every place it lives is generic over that parameter.
 
-Verified by `generic_closure_self_test.l` (8 cases, value- and reference-type
+Verified by `generic_closure_self_test.l` (13 cases, value- and reference-type
 instantiations, on dotnet, JVM and native, wired into the compiler, JVM
 generics and native batches and `scripts/ilverify-selfhosted.sh`) and
 `self_fields_self_test.l` (rewritten to check that receiver reads inside such

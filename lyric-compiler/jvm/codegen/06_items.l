@@ -1780,12 +1780,28 @@ func stripLeadingSelfParam(params: in List[Param]): List[Param] {
 // `Object` in param/return descriptors so the emitted method byte-matches the
 // registered `<class>#<method>` sig, applying the J4 erased-generics
 // boxing/checkcast that `coerceArgTo` already performs on the tail value.
+// A member's type parameters for erasure: its type's (`typeParams`) and
+// its own (`func map[U]`), which a JVM method erases to `Object` as it does
+// the type's.
+func withOwnGenericsJvm(typeParams: in List[String], own: in Option[GenericParams]): List[String] {
+  val all: List[String] = newList()
+  for t in typeParams {
+    all.add(t)
+  }
+  for g in genericParamNames(own) {
+    if not all.contains(g) {
+      all.add(g)
+    }
+  }
+  all
+}
+
 func lowerRecordMethod(
   className: in String,
   fn: in FunctionDecl,
   body: in FunctionBody,
   pkgName: in String,
-  typeParams: in List[String],
+  recordTypeParams: in List[String],
   funcSigs: in Map[String, JvmFuncSig],
   caseFields: in Map[String, List[JvmCaseField]],
   ctors: in Map[String, String],
@@ -1798,6 +1814,9 @@ func lowerRecordMethod(
   usedRuntimeHelpers: in List[String],
   importsStdString: in Bool,
 ): LFunc {
+  // The method's own type parameters (`func map[U]`) erase to `Object` like
+  // the record's (`withOwnGenericsJvm`).
+  val typeParams = withOwnGenericsJvm(recordTypeParams, fn.generics)
   // Extern/import-resolving on ret + params (#5610): the registered
   // `<class>#<method>` sig (`registerInstanceSigErased`, #5051) resolves
   // through the declaring file's `externTypes`, so the EMITTED descriptor must
@@ -2021,8 +2040,10 @@ func lowerImplMethod(
   // Box[T]`, #7704): they erase to `Object` in the descriptor and in body
   // annotations (`FuncCtx.typeParams`) exactly as in `lowerRecordMethod`.
   // Empty for a non-generic target and an interface default method.
-  typeParams: in List[String],
+  implTypeParams: in List[String],
 ): LFunc {
+  // The method's own type parameters erase too (`withOwnGenericsJvm`).
+  val typeParams = withOwnGenericsJvm(implTypeParams, fn.generics)
   val body = match fn.body {
     case Some(b) -> b
     case None -> panic(
@@ -4328,7 +4349,16 @@ pub func collectFileSigsSeeded(
         while mi < decl.members.count {
           match decl.members[mi] {
             case RMFunc(fn) -> {
-              registerInstanceSigErased(into, recClass, fn.name, fn.params, fn.ret, owner, recTps, externTypes)
+              registerInstanceSigErased(
+                into,
+                recClass,
+                fn.name,
+                fn.params,
+                fn.ret,
+                owner,
+                withOwnGenericsJvm(recTps, fn.generics),
+                externTypes
+              )
             }
             case RMField(f) -> {
               registerFieldElemSig(into, recClass, f.name, f.ty, owner, recTps, externTypes, ctorReg, localRecordNames)
@@ -4351,7 +4381,16 @@ pub func collectFileSigsSeeded(
         while mi < decl.members.count {
           match decl.members[mi] {
             case RMFunc(fn) -> {
-              registerInstanceSigErased(into, recClass, fn.name, fn.params, fn.ret, owner, recTps, externTypes)
+              registerInstanceSigErased(
+                into,
+                recClass,
+                fn.name,
+                fn.params,
+                fn.ret,
+                owner,
+                withOwnGenericsJvm(recTps, fn.generics),
+                externTypes
+              )
             }
             case RMField(f) -> {
               registerFieldElemSig(into, recClass, f.name, f.ty, owner, recTps, externTypes, ctorReg, localRecordNames)
@@ -4528,7 +4567,16 @@ pub func collectFileSigsSeeded(
               if isExternIfaceReg {
                 registerInstanceSigImplExtern(into, tgtClass, fn.name, fn.params, fn.ret, owner, externTypes)
               } else {
-                registerInstanceSigErased(into, tgtClass, fn.name, fn.params, fn.ret, owner, implTps, externTypes)
+                registerInstanceSigErased(
+                  into,
+                  tgtClass,
+                  fn.name,
+                  fn.params,
+                  fn.ret,
+                  owner,
+                  withOwnGenericsJvm(implTps, fn.generics),
+                  externTypes
+                )
               }
             }
             case IMplAssoc(_) -> ()
