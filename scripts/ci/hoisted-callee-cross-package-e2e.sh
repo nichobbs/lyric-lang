@@ -10,7 +10,7 @@
 #     unqualified, called with a `?` and with an `await` argument: the index
 #     runs before the arguments (JVM and native; on dotnet a function value
 #     read from a module-level `val` by index and bound ahead of a `?` is
-#     invalid IL, a separate defect tracked on its own);
+#     invalid IL, tracked in #8283);
 #   - the library's generic function under explicit type arguments, with an
 #     array literal before a `?` and before an `await` argument, also against
 #     the library built on its own (a restored dependency, read through its
