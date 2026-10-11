@@ -3895,6 +3895,31 @@ test "a `?` operand built from context records its type (#8181)" {
   assertEqual(recordedOperandType(callCr, callSrc, "g()?"), "", "a call operand is not recorded")
 }
 
+// #8190: a literal bound to a temporary ahead of a `?` is recorded at the
+// shape its position gives it (an array, a widened slice, a tuple holding an
+// array, a branch whose value is one), whatever its element type; an operand
+// that is no such literal is left to its own type.  A tuple's elements are
+// bound one by one, so its annotation is the position of the first two.
+test "a literal its position shapes records that shape ahead of a `?` (#8190)" {
+  val monads = "union Result[T, E] { case Ok(value: T); case Err(error: E) }\n"
+  val defs = "package P\n" + monads + "func g(): Result[Int, String] { Ok(value = 1) }\n" +
+    "func arr(xs: in array[2, Int], v: in Int): Int { xs[0] + v }\n" +
+    "func mk(): array[2, Int] { [1, 2] }\n"
+  val src = defs + "func f(c: in Bool): Result[Int, String] {\n" + "  val a = arr([7, 8], g()?)\n" +
+    "  val b: (slice[Long], Int) = ([3, 4], g()?)\n" +
+    "  val d: ((array[2, Int], Int), Int) = (([5, 6], 9), g()?)\n" +
+    "  val e = arr(if c { [1, 1] } else { [2, 2] }, g()?)\n" +
+    "  val h = arr(mk(), g()?)\n" +
+    "  Ok(value = a + e + h)\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "clean (" + diagCodesOf(cr) + ")")
+  assertEqual(recordedOperandType(cr, src, "[7, 8]"), "array[2, Int]", "array literal")
+  assertEqual(recordedOperandType(cr, src, "[3, 4]"), "slice[Long]", "widened slice literal")
+  assertEqual(recordedOperandType(cr, src, "([5, 6], 9)"), "(array[2, Int], Int)", "tuple holding an array literal")
+  assertEqual(recordedOperandType(cr, src, "if c"), "array[2, Int]", "if whose value is an array literal")
+  assertEqual(recordedOperandType(cr, src, "mk()"), "", "a call operand is not recorded")
+}
+
 // #8181: an `if`/`match` operand whose first branch fixes no success type
 // takes it from the later branch; an operand that fixes none takes the type
 // of the position consuming it.

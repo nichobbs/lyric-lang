@@ -511,6 +511,19 @@ func hzIsNameLikeSafe(st: in HoistState, e: in Expr): Bool {
   hzIsNameLike(e) and not hzNameLikeMutable(st, e)
 }
 
+// A callee expression evaluated before its arguments: its own hazards are
+// hoisted, and it is bound when an argument (the last hazardous one is
+// `last`) holds a hazard, so it is not left on the stack across it.
+func hzStackedCallee(cfg: in HoistConfig, fn: in Expr, last: in Int, acc: in List[Statement], st: in HoistState): Expr {
+  if hzHasHazard(cfg, fn) {
+    hzBind(cfg, hzHoistSpine(cfg, fn, acc, st), acc, st)
+  } else if last >= 0 {
+    hzBind(cfg, fn, acc, st)
+  } else {
+    fn
+  }
+}
+
 // An assignment whose target is a member or index write stacks its receiver
 // (and index operands) on MSIL BEFORE the value evaluates — the target's
 // codegen pushes them with no spill-and-reload — so a top-level hazard in
@@ -1050,15 +1063,21 @@ func hzHoistSpine(cfg: in HoistConfig, e: in Expr, acc: in List[Statement], st: 
             fn
           }
         }
-        case _ -> {
-          if hzHasHazard(cfg, fn) {
-            hzBind(cfg, hzHoistSpine(cfg, fn, acc, st), acc, st)
-          } else if last >= 0 {
+        // A type application of a name (`f[Int](...)`, and the
+        // `__lyric_array_of[array[N, T]](...)` intrinsic a JVM array literal
+        // is built with) names its function as a bare name does, so it is
+        // bound only when that name is a reassignable local.  The intrinsic
+        // is no value at all: bound to a local, it left the JVM a reference
+        // to nothing (#8190).
+        case ETypeApp(inner, _) -> match inner.kind {
+          case EPath(_) -> if last >= 0 and not hzIsNameLikeSafe(st, inner) {
             hzBind(cfg, fn, acc, st)
           } else {
             fn
           }
+          case _ -> hzStackedCallee(cfg, fn, last, acc, st)
         }
+        case _ -> hzStackedCallee(cfg, fn, last, acc, st)
       }
       val newArgs: List[CallArg] = newList()
       var i = 0

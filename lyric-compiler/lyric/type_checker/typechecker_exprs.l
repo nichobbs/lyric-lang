@@ -11248,21 +11248,124 @@ func hoistTupleElemTypes(t: in Type, n: in Int): List[Type] {
   holes
 }
 
-// Whether `e` is a bracket list literal, through parentheses.
-func exprIsListLiteral(e: in Expr): Bool {
+// The type a hoisted operand `e` is built at when its value is a literal
+// whose runtime shape the expected type decides rather than its elements: a
+// bracket literal where an `array[N, T]`, a `List[T]` or a `slice[T]` is
+// expected (`inferExprExpected`'s `EList` arm builds it as that, D167), a
+// tuple literal holding one, or an `if`, `match` or block whose value is one.
+// `None` when `e` is no such literal.  `own` is the operand's checked type
+// and `expected` the type of the position it is passed to.
+func shapedOperandType(tbl: in SymbolTable, e: in Expr, own: in Type, expected: in Type): Option[Type] {
   match e.kind {
-    case EList(_) -> true
-    case EParen(inner) -> exprIsListLiteral(inner)
-    case _ -> false
+    case EParen(inner) -> shapedOperandType(tbl, inner, own, expected)
+    case EList(_) -> shapedCollectionType(tbl, own, unrefine(expected))
+    case ETuple(elems) -> match unrefine(expected) {
+      case TyTuple(ets) -> {
+        if ets.count != elems.count {
+          return None
+        }
+        val owns = hoistTupleElemTypes(unrefine(own), elems.count)
+        val ts: List[Type] = newList()
+        var any = false
+        var i = 0
+        while i < elems.count {
+          match shapedOperandType(tbl, elems[i], owns[i], ets[i]) {
+            case Some(t) -> {
+              any = true
+              ts.add(t)
+            }
+            case None -> ts.add(joinOpenTypes(owns[i], unrefine(ets[i])))
+          }
+          i = i + 1
+        }
+        if any {
+          Some(value = TyTuple(elems = ts))
+        } else {
+          None
+        }
+      }
+      case _ -> None
+    }
+    case EIf(_, thenBranch, elseBranch, _) -> match shapedBranchType(tbl, thenBranch, own, expected) {
+      case Some(t) -> Some(value = t)
+      case None -> match elseBranch {
+        case Some(eb) -> shapedBranchType(tbl, eb, own, expected)
+        case None -> None
+      }
+    }
+    case EMatch(_, arms) -> {
+      for arm in arms {
+        match shapedBranchType(tbl, arm.body, own, expected) {
+          case Some(t) -> return Some(value = t)
+          case None -> ()
+        }
+      }
+      None
+    }
+    case EBlock(blk) -> shapedBranchType(tbl, EOBBlock(block = blk), own, expected)
+    case EUnsafe(blk) -> shapedBranchType(tbl, EOBBlock(block = blk), own, expected)
+    case _ -> None
   }
 }
 
-// Whether `t` is the stdlib `List[T]` a bracket literal is built as when it
-// is expected (the test `inferExprExpected`'s `EList` arm makes).
-func expectsStdList(tbl: in SymbolTable, t: in Type): Bool {
+func shapedBranchType(tbl: in SymbolTable, b: in ExprOrBlock, own: in Type, expected: in Type): Option[Type] {
+  match branchValueExpr(b) {
+    case Some(ve) -> shapedOperandType(tbl, ve, own, expected)
+    case None -> None
+  }
+}
+
+// The collection type a bracket literal of checked type `own` is built as
+// where `expected` is expected of it, or `None` when `expected` leaves the
+// literal its own shape.  The element type is `expected`'s, which each
+// element is widened to (`List[Long]` from `[1, 2]`), or `own`'s where
+// `expected`'s is open; an array whose length is a value parameter is not
+// built from a literal (T0155).
+func shapedCollectionType(tbl: in SymbolTable, own: in Type, expected: in Type): Option[Type] {
+  val ownElem = collectionElemType(tbl, unrefine(own))
+  match expected {
+    case TyArray(sz, et, _) -> match sz {
+      case Some(n) -> Some(
+        value = TyArray(
+          size = Some(value = n),
+          element = shapedElemType(ownElem, et),
+          sizeVar = ""
+        )
+      )
+      case None -> None
+    }
+    case TySlice(et) -> Some(value = TySlice(element = shapedElemType(ownElem, et)))
+    case TyUser(id, name, args) -> if args.count == 1 and isStdCollectionsHostType(tbl, id, "List") {
+      val elemArgs: List[Type] = newList()
+      elemArgs.add(shapedElemType(ownElem, args[0]))
+      Some(value = TyUser(id = id, name = name, args = elemArgs))
+    } else {
+      None
+    }
+    case _ -> None
+  }
+}
+
+func shapedElemType(ownElem: in Type, expectedElem: in Type): Type {
+  if typeIsClosed(expectedElem) {
+    expectedElem
+  } else {
+    joinOpenTypes(ownElem, expectedElem)
+  }
+}
+
+// The element type of an array, slice or stdlib `List[T]`; `TyError` (a
+// hole) for any other type.
+func collectionElemType(tbl: in SymbolTable, t: in Type): Type {
   match t {
-    case TyUser(id, _, args) -> args.count == 1 and isStdCollectionsHostType(tbl, id, "List")
-    case _ -> false
+    case TyArray(_, et, _) -> et
+    case TySlice(et) -> et
+    case TyUser(id, _, args) -> if args.count == 1 and isStdCollectionsHostType(tbl, id, "List") {
+      args[0]
+    } else {
+      TyError
+    }
+    case _ -> TyError
   }
 }
 
@@ -11275,11 +11378,13 @@ func recordHoistOperandType(sc: in Scope, tbl: in SymbolTable, e: in Expr, own: 
 }
 
 // `recordHoistOperandType` once `e` is known to be bound by the hoist; `t`
-// may name `typeParams`, the enclosing function's type parameters.  A
-// bracket literal where a `List[T]` is expected is built as that list, not
-// as the slice it types as on its own (`inferExprExpected`'s `EList` arm), so
-// its local takes the list type: left to its own type it would be built as
-// an array and then passed where a list is read (#8171).
+// may name `typeParams`, the enclosing function's type parameters.  An
+// operand whose value is a literal the expected type shapes
+// (`shapedOperandType`) is recorded at that shape whatever its element type:
+// its local, typed from the literal alone, would be built as the slice a
+// bracket literal is on its own and then passed where an array or a list is
+// read (#8171, #8190).  Any other operand is recorded only at a closed
+// generic instantiation, the one type its value alone does not give.
 func recordHoistOperandTypeOver(
   tbl: in SymbolTable,
   typeParams: in List[String],
@@ -11288,12 +11393,10 @@ func recordHoistOperandTypeOver(
   expected: in Type,
 ): Unit {
   val sp = e.span
-  val t = if exprIsListLiteral(e) and expectsStdList(tbl, unrefine(expected)) {
-    unrefine(expected)
-  } else {
-    joinOpenTypes(own, unrefine(expected))
-  }
-  if not typeMentionsGenericInst(t) or not typeIsClosedOver(t, typeParams) {
+  val shaped = shapedOperandType(tbl, e, own, expected)
+  val t = match shaped { case Some(st) -> st; case None -> joinOpenTypes(own, unrefine(expected)) }
+  val shapeDecides = match shaped { case Some(_) -> true; case None -> false }
+  if not (shapeDecides or typeMentionsGenericInst(t)) or not typeIsClosedOver(t, typeParams) {
     return
   }
   match typeExprForOpenBinding(tbl, t, sp, typeParams) {
