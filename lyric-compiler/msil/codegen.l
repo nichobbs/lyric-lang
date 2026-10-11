@@ -15129,6 +15129,7 @@ func lowerAssignExprMsil(
             match op {
               case AssEq -> {
                 val genFldValTy = lowerAssignValueAtMsil(cctx, fctx, insns, value, concreteTy)
+                coerceObjectToSlotMsil(cctx, insns, genFldValTy, concreteTy)
                 widenIntToLongMsil(insns, genFldValTy, concreteTy)
                 insns.add(MStfldGeneric(baseClassName = headFqn, typeArgs = typeArgs, fieldName = memberName, fieldMsilType = fMTy))
               }
@@ -15174,6 +15175,7 @@ func lowerAssignExprMsil(
             match op {
               case AssEq -> {
                 val genFldValTy = lowerAssignValueAtMsil(cctx, fctx, insns, value, concreteTy)
+                coerceObjectToSlotMsil(cctx, insns, genFldValTy, concreteTy)
                 widenIntToLongMsil(insns, genFldValTy, concreteTy)
                 insns.add(MStfldGeneric(baseClassName = fqn, typeArgs = typeArgs, fieldName = memberName, fieldMsilType = fMTy))
               }
@@ -19373,7 +19375,15 @@ func collSlotArgMsil(
   slotTy: in MsilType,
   recvTy: in MsilType,
 ): MsilType {
-  val t = widenPrimToSlotMsil(insns, argTy, slotTy)
+  // An `object` argument for a type-parameter or value-type slot (a closure
+  // result whose type the checker left unknown, #7671) is that type, boxed.
+  val unboxed = if argTy == MObject and objectNeedsUnboxToMsil(slotTy) {
+    castObjectToMsil(cctx, insns, slotTy)
+    slotTy
+  } else {
+    argTy
+  }
+  val t = widenPrimToSlotMsil(insns, unboxed, slotTy)
   collBoxIfNeeded(cctx, insns, t, recvTy)
   t
 }
@@ -22153,6 +22163,9 @@ func lowerMethodCallMsil(
               // is invalid IL (#1784).  A missing registry entry falls back to the
               // conservative box-if-value behaviour.
               val paramIsValue = isValueType(paramTy)
+              // An `object` argument for a value-type parameter (a closure
+              // result whose type the checker left unknown, #7671) is unboxed.
+              coerceObjectToSlotMsil(cctx, insns, aTy, paramTy)
               if not paramIsValue {
                 boxIfNeededMsil(cctx, insns, aTy)
               }
@@ -22201,6 +22214,9 @@ func lowerMethodCallMsil(
                 // Free-function param 0 is `self` (already on the stack); arg i maps to param i+1.
                 val paramIsValue = if (i + 1) < funcParamList.count { isValueType(funcParamList[i + 1]) } else { false }
                 val aTy = lowerCallArgMsil(cctx, fctx, insns, dargs[i])
+                if (i + 1) < funcParamList.count {
+                  coerceObjectToSlotMsil(cctx, insns, aTy, funcParamList[i + 1])
+                }
                 if not paramIsValue {
                   boxIfNeededMsil(cctx, insns, aTy)
                 }
@@ -22271,6 +22287,10 @@ func lowerMethodCallMsil(
             pushCollExpect(fctx, openParamTy)
             val aTyG = lowerCallArgMsil(cctx, fctx, insns, gargs[gi])
             popCollExpect(fctx)
+            // An `object` argument (a closure result whose type the checker
+            // left unknown, #7671) is converted to this instantiation's
+            // parameter type.
+            coerceObjectToSlotMsil(cctx, insns, aTyG, substituteTypeVarsMsil(openParamTy, typeArgs))
             // A VAR-form parameter's runtime representation (boxed vs.
             // unboxed) depends entirely on THIS call's instantiation, exactly
             // like a generic ctor's field arguments (`buildInBundleGenericCtorTok`
@@ -22523,7 +22543,8 @@ func lowerMethodCallMsil(
       collSlotArgMsil(cctx, insns, aTy, addArgSlotTy, recvTy)
       // An `object`-typed argument (an element read off an erased slice, a
       // closure result) added to a concrete `List<Foo>` is narrowed to the
-      // element type the closed `Add(!0)` expects (#7755).
+      // element type the closed `Add(!0)` expects (#7755); one stored as a
+      // type parameter or value type was unboxed by `collSlotArgMsil`.
       match elemAddTy {
         case Some(e) -> narrowObjectToDeclaredTypeMsil(cctx, insns, aTy, e)
         case None -> ()
@@ -47064,6 +47085,12 @@ func widenGenericCtorArgsMsil(
     if ix >= 0 and ix < typeArgs.count and i < argEnds.count {
       val conv: List[MInsn] = newList()
       widenPrimToSlotMsil(conv, argTypes[i], typeArgs[ix])
+      // An `object` argument (a closure result whose type the checker left
+      // unknown, #7671) for a slot instantiated at a type parameter or value
+      // type is unboxed to it.
+      if argTypes[i] == MObject and objectNeedsUnboxToMsil(typeArgs[ix]) {
+        castObjectToMsil(cctx, conv, typeArgs[ix])
+      }
       if conv.count > 0 {
         spliceInsnsMsil(insns, argEnds[i], conv)
       }

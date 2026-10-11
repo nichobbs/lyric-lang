@@ -12,7 +12,7 @@
 //! `!0..!n`; the type checker spells the type of a function-valued local and
 //! of a callee in a type parameter's name, so the call's result is unboxed to
 //! it.  Where the checker cannot name the result's type, the `object` result is
-//! unboxed where it is returned, stored or joined with a value of a type
+//! unboxed where it is returned, passed, stored or joined with a value of a type
 //! parameter or value type.
 //!
 //! Most cases run with a value-type and a reference-type instantiation.  The
@@ -270,6 +270,114 @@ impl Getter for Plain {
   func raw(): Int = n
 }
 
+// Every place an unknown-typed closure result lands (R1): arguments of a
+// generic record's own methods, collection operations, union-case and
+// record construction, field, index and map stores.
+@cfg(not(target = "native"))
+record Taker {
+  base: Int
+  func take(self: in Taker, x: in Int): Int = x + base
+}
+
+@cfg(not(target = "native"))
+record Sinks[T] {
+  inner: MyBox[T]
+  func idT(self: in Sinks[T], x: in T): T = x
+  func bareCall(self: in Sinks[T]): T {
+    val g = { -> inner.value }
+    idT(g())
+  }
+  func selfCall(self: in Sinks[T]): T {
+    val g = { -> inner.value }
+    self.idT(g())
+  }
+  func listAdd(self: in Sinks[T]): T {
+    val g = { -> inner.value }
+    val xs: List[T] = newList()
+    xs.add(g())
+    xs[0]
+  }
+  func listContains(self: in Sinks[T]): Bool {
+    val g = { -> inner.value }
+    val xs: List[T] = newList()
+    xs.add(inner.value)
+    xs.contains(g())
+  }
+  func listIndexStore(self: in Sinks[T]): T {
+    val g = { -> inner.value }
+    val xs: List[T] = newList()
+    xs.add(inner.value)
+    xs[0] = g()
+    xs[0]
+  }
+  func mapAdd(self: in Sinks[T]): T {
+    val g = { -> inner.value }
+    val m: Map[String, T] = newMap()
+    m.add("k", g())
+    match mapGet(m, "k") {
+      case Some(v) -> v
+      case None -> inner.value
+    }
+  }
+  func mapIndexStore(self: in Sinks[T]): T {
+    val g = { -> inner.value }
+    val m: Map[String, T] = newMap()
+    m["k"] = g()
+    match mapGet(m, "k") {
+      case Some(v) -> v
+      case None -> inner.value
+    }
+  }
+  func someCtor(self: in Sinks[T]): T {
+    val g = { -> inner.value }
+    val o: Option[T] = Some(value = g())
+    match o {
+      case Some(v) -> v
+      case None -> inner.value
+    }
+  }
+  func recordCtor(self: in Sinks[T]): T {
+    val g = { -> inner.value }
+    val b = MyBox(value = g())
+    b.value
+  }
+  func fieldStore(self: in Sinks[T]): T {
+    val g = { -> inner.value }
+    inner.value = g()
+    inner.value
+  }
+  func tupleElem(self: in Sinks[T]): T {
+    val g = { -> inner.value }
+    val t = (g(), 1)
+    val (x, y) = t
+    x
+  }
+  func equal(self: in Sinks[T]): Bool {
+    val g = { -> inner.value }
+    g() == inner.value
+  }
+  func methodArg(self: in Sinks[T], t: in Taker, b: in MyBox[Int]): Int {
+    val g = { -> b.value }
+    t.take(g())
+  }
+}
+
+@cfg(not(target = "native"))
+func idG[T](x: in T): T = x
+
+@cfg(not(target = "native"))
+func genSinks[T](b: in MyBox[T], c: in MyBox[T]): T {
+  val g = { -> b.value }
+  val xs: List[T] = newList()
+  xs.add(g())
+  val o: Option[T] = Some(value = g())
+  c.value = g()
+  match o {
+    case Some(v) -> if xs.count == 1 { idG(v) } else { c.value }
+    case None -> c.value
+  }
+}
+
 func readViaTypedClosure[T](seed: in T): T {
   val box = MyBox(value = seed)
   val get: () -> T = { -> box.value }
@@ -407,4 +515,29 @@ test "a lambda names a method's own type parameter" {
 test "a lambda in an interface default method reads the receiver" {
   val p = Plain(n = 8)
   assertEqualInt(p.viaLamSelf(), 9, "self.raw()")
+}
+
+@cfg(not(target = "native"))
+test "an unknown-typed closure result reaches every sink" {
+  val w: Sinks[Int] = Sinks(inner = MyBox(value = 5))
+  assertEqualInt(w.bareCall(), 5, "sibling method")
+  assertEqualInt(w.selfCall(), 5, "self method")
+  assertEqualInt(w.listAdd(), 5, "List.add")
+  assertTrue(w.listContains(), "List.contains")
+  assertEqualInt(w.listIndexStore(), 5, "list index store")
+  assertEqualInt(w.mapAdd(), 5, "Map.add")
+  assertEqualInt(w.mapIndexStore(), 5, "map index store")
+  assertEqualInt(w.someCtor(), 5, "Some")
+  assertEqualInt(w.recordCtor(), 5, "record construction")
+  assertEqualInt(w.fieldStore(), 5, "field store")
+  assertEqualInt(w.tupleElem(), 5, "tuple element")
+  assertTrue(w.equal(), "equality")
+  assertEqualInt(w.methodArg(Taker(base = 1), MyBox(value = 4)), 5, "non-generic method argument")
+  assertEqualInt(genSinks(MyBox(value = 7), MyBox(value = 1)), 7, "generic function")
+  val ws: Sinks[String] = Sinks(inner = MyBox(value = "s"))
+  assertEqual(ws.bareCall(), "s", "String sibling method")
+  assertEqual(ws.listAdd(), "s", "String List.add")
+  assertEqual(ws.someCtor(), "s", "String Some")
+  assertEqual(ws.fieldStore(), "s", "String field store")
+  assertEqual(genSinks(MyBox(value = "g"), MyBox(value = "h")), "g", "String generic function")
 }

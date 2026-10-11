@@ -47,11 +47,16 @@ What changed:
 - Where the checker cannot name a closure's result type (it types a field
   read through a type parameter, `box.value` for `box: MyBox[T]`, and a
   pattern variable of one as unknown, `eraseTyVars`), the call's `object`
-  result is converted where it lands: a return (`coerceTrailingToRetMsil`),
-  an annotated binding or argument (`coerceCallArgMsil`), an assignment to a
-  local or field (`coerceObjectToSlotMsil`), and the join of `match` arms or
-  `if` branches whose other arms yield a type parameter or value type
-  (`unboxObjectArmsMsil`), all unbox it.  That closes #7671's unannotated
+  result is converted where it lands: a return (`coerceTrailingToRetMsil`);
+  an annotated binding, a free function's argument or an array or index
+  store (`coerceCallArgMsil`); an assignment to a local or field, a generic
+  record's own field included, and an argument of a method of a generic or
+  non-generic receiver (`coerceObjectToSlotMsil`); a collection operation's
+  element, key or value (`collSlotArgMsil`); a generic record or union case
+  constructed at a type parameter or value type
+  (`widenGenericCtorArgsMsil`); and the join of `match` arms or `if`
+  branches whose other arms yield a type parameter or value type
+  (`unboxObjectArmsMsil`).  Each unboxes it.  That closes #7671's unannotated
   form, a closure capturing a pattern-bound `T`, a closure reading
   `self.inner.value`, and a lambda in an interface default reading `self`
   (which also returned garbage on a non-generic implementer).  A closure
@@ -66,7 +71,7 @@ What changed:
 - A captured `var` of a type parameter now uses a typed `!0[]` cell, since
   every place it lives is generic over that parameter.
 
-Verified by `generic_closure_self_test.l` (13 cases, value- and reference-type
+Verified by `generic_closure_self_test.l` (14 cases, value- and reference-type
 instantiations, on dotnet, JVM and native, wired into the compiler, JVM
 generics and native batches and `scripts/ilverify-selfhosted.sh`) and
 `self_fields_self_test.l` (rewritten to check that receiver reads inside such
