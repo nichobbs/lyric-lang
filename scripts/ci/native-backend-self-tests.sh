@@ -100,6 +100,7 @@ for t in \
   lyric-compiler/lyric/protected_byref_self_test.l \
   lyric-compiler/lyric/hoisted_literal_shape_self_test.l \
   lyric-compiler/lyric/member_local_shadow_self_test.l \
+  lyric-compiler/lyric/closure_shadow_self_test.l \
   lyric-compiler/lyric/inout_self_param_self_test.l \
   lyric-compiler/lyric/propagate_ctor_operand_self_test.l \
   lyric-compiler/lyric/fixed_array_self_test.l \

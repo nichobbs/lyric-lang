@@ -2468,6 +2468,39 @@ test "brace lambda with a parenthesised typed parameter list round-trips" {
   assertTrue(Str.contains(format(parse(bare)), "{ a: String, b: Int -> a }"), "the bare spelling stays bare")
 }
 
+test "a brace lambda's empty parenthesised parameter list formats as the bare arrow" {
+  // `{ () -> e }` and `{ -> e }` parse to the same parameterless lambda; the
+  // formatter writes `{ -> e }`, and the loss-check used to refuse that as a
+  // dropped `(` `)` (#8200), so no file using the parenthesised spelling
+  // could be formatted.
+  val inline = "package P\n\nfunc main(): Unit {\n  val f = { () -> 1 }\n  println(toString(f()))\n}\n"
+  val c = formatSourceChecked(inline)
+  assertTrue(fmtCheckIsOk(c), "inline empty parens: round-trips, not refused")
+  val once = format(parse(inline))
+  assertTrue(Str.contains(once, "val f = { -> 1 }"), "inline empty parens: canonical bare arrow")
+  assertEqual(once, format(parse(once)), "inline empty parens: idempotent")
+  val multi = "package P\n\nfunc f(): Unit {\n  val g = { () ->\n    println(\"a\")\n    println(\"b\")\n  }\n}\n"
+  assertTrue(fmtCheckIsOk(formatSourceChecked(multi)), "multi-line empty parens: round-trips")
+  assertTrue(Str.contains(format(parse(multi)), "val g = { -> println("), "multi-line empty parens: canonical opener")
+  val arg = "package P\n\nval r = orElse(Some(value = 42), { () -> Some(value = 99) })\n"
+  assertTrue(fmtCheckIsOk(formatSourceChecked(arg)), "empty parens in a call argument: round-trips")
+  // A paren-arrow lambda keeps its `()`, also as the first statement of a
+  // block: only a brace lambda's own empty list is canonicalised.
+  val arrow = "package P\n\nval h = () -> 5\n"
+  assertTrue(Str.contains(format(parse(arrow)), "val h = () -> 5"), "a paren-arrow lambda keeps its parentheses")
+  val inBlock = "package P\n\nfunc pick(k: in Bool): () -> Int {\n  if k { () -> 1 } else { () -> 2 }\n}\n"
+  assertTrue(fmtCheckIsOk(formatSourceChecked(inBlock)), "paren-arrow lambdas in blocks: round-trips")
+  val inBlockOut = format(parse(inBlock))
+  assertTrue(Str.contains(inBlockOut, "() -> 1"), "a block's paren-arrow lambda keeps its parentheses")
+  assertTrue(Str.contains(inBlockOut, "() -> 2"), "the else block's paren-arrow lambda keeps its parentheses")
+}
+
+test "the loss-check still refuses a dropped empty parameter list outside a brace lambda" {
+  assertTrue(structuralSequenceDiff("val h = () -> 5", "val h = -> 5") != "", "paren-arrow lambda")
+  assertTrue(structuralSequenceDiff("f({ () -> 5 })", "f({ -> 5 })") == "", "brace lambda")
+  assertTrue(structuralSequenceDiff("f({ (a) -> 5 })", "f({ a -> 5 })") != "", "a non-empty list stays")
+}
+
 test "width driven long paren-arrow lambda body breaks after the arrow without adding braces" {
   // Mirrors "width driven long lambda body" above, but for the
   // paren-arrow spelling: the multi-line layout must still never

@@ -2911,6 +2911,7 @@ The bootstrap formatter works directly from the parsed AST; it does not require 
 - Opening brace `{` is inline when there are no contract or where clauses; on its own line when they are present.
 - One blank line between top-level items.
 - Contract clauses (`requires:`, `ensures:`, `invariant:`) each on their own line, indented 2 spaces under the function signature.
+- A brace lambda with no parameters is written `{ -> e }`; the equivalent `{ () -> e }` is rewritten to it. A non-empty parameter list keeps the spelling it was written in, with or without parentheses.
 - Trailing newline; no trailing whitespace per line.
 
 **Project mode.** `lyric fmt` with no source file discovers the nearest `lyric.toml` and operates over every `[project.packages]` source. Pass `--manifest <lyric.toml>` to override discovery. Behaviour depends on flags: the default is a **dry-run** (lists files that would change without writing them); `--write` applies changes in place; `--check` is the silent CI gate.

@@ -229,6 +229,7 @@ SELF_TESTS=(
   lyric-compiler/lyric/method_default_args_self_test.l
   lyric-compiler/lyric/generator_closure_var_capture_self_test.l
   lyric-compiler/lyric/closure_captured_var_byref_self_test.l
+  lyric-compiler/lyric/closure_shadow_self_test.l
   lyric-compiler/lyric/inout_receiver_self_test.l
   lyric-compiler/lyric/inout_receiver_closure_self_test.l
   lyric-compiler/lyric/inout_array_element_self_test.l

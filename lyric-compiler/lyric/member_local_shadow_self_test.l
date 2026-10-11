@@ -232,6 +232,20 @@ record Tally {
   }
 }
 
+// A record method's lambda reads a field by its bare name when it runs (#8202:
+// dotnet refused the bare name inside the lifted lambda with T0115, and the
+// JVM read the field's value from when the lambda was made).
+record Live {
+  var n: Int
+
+  func readLater(self: in Live): Int {
+    val f = { -> n }
+    self.n = 30
+    val r: Int = f()
+    r
+  }
+}
+
 interface Sized {
   func size(): Int
   func shadowed(): Int
@@ -517,6 +531,8 @@ test "impl and dot-named methods" {
 test "a lambda reads the field when it runs" {
   val c = Counter()
   assertEqualInt(c.liveCapture(), 11, "field written after the lambda was made")
+  val l = Live(n = 0)
+  assertEqualInt(l.readLater(), 30, "record method: field written after the lambda was made")
 }
 
 test "a protected invariant reads the field, not a parameter of its name" {
