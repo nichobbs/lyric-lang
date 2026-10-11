@@ -19,7 +19,10 @@
 //! in the file, for every `IMFunc` member of `Iface` (also declared in
 //! this file — see the scope note below) that the impl does not already
 //! provide, append a verbatim copy of the interface method's
-//! `FunctionDecl` as a new `IMplFunc` impl member. No `Self` substitution
+//! `FunctionDecl` as a new `IMplFunc` impl member, marked with the reserved
+//! `__lyric_inherited_default` annotation (the body was written against the
+//! interface, so the target's fields are not in its scope: a bare name in it
+//! never means one of them, #8264). No `Self` substitution
 //! is needed in the synthesis itself: the copied member becomes a real
 //! part of the `impl` block, so the EXISTING per-impl `Self` resolution
 //! machinery (`registerParamsMsil`'s `selfTypeName` threading, D-progress-
@@ -160,7 +163,10 @@ func withInheritedDefaults(
         val nsKey = targetName + "/" + fn.name
         val blocked = overridden.containsKey(nsKey) or conflicted.containsKey(nsKey)
         if not implProvidesMethod(decl, fn.name) and not blocked {
-          newMembers.add(IMplFunc(fn = fn))
+          // Marked, so the target's fields stay out of the copy's scope
+          // (`inheritedDefaultAnnotationName`, #8264).
+          val marked = withMarkerAnnotation(fn.annotations, inheritedDefaultAnnotationName(), fn.span)
+          newMembers.add(IMplFunc(fn = fn.copy(annotations = marked)))
           changed = true
         }
       }

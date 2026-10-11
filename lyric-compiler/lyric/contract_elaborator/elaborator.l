@@ -80,6 +80,7 @@ import Std.String as Str
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.Fmt as Fmt
+import Lyric.SelfFields as SelfFields
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Annotation predicates.
@@ -2304,9 +2305,113 @@ func exprOrBlockHasInvariant(eb: in ExprOrBlock): Bool {
   }
 }
 
+/// What a member's own contract clauses see by bare name (#8264): its
+/// type's `fields`, and `cases`, the bare `match`-arm patterns the type
+/// checker resolved as union or enum cases (`SymbolTable.casePatternSites`).  The first `inherited` clauses of the member's
+/// contract list come from its interface, whose scope holds no field, and are
+/// left as written.
+record SelfScope {
+  fields: Map[String, Bool]
+  cases: Map[String, Bool]
+  inherited: Int
+}
+
+func noSelfScope(): SelfScope {
+  val noFields: Map[String, Bool] = newMap()
+  val noCases: Map[String, Bool] = newMap()
+  SelfScope(fields = noFields, cases = noCases, inherited = 0)
+}
+
+// `contracts` with each own clause's bare field references written
+// `self.<name>`: an `ensures:` assert lands at a return site, where a body
+// local may shadow the field the clause names.
+func resolveOwnClauses(
+  contracts: in List[ContractClause], selfScope: in SelfScope, params: in List[Param]
+): List[ContractClause] {
+  if selfScope.fields.count == 0 {
+    return contracts
+  }
+  val acc: List[ContractClause] = newList()
+  var i = 0
+  while i < contracts.count {
+    val c = contracts[i]
+    if i < selfScope.inherited {
+      acc.add(c)
+    } else {
+      acc.add(
+        match c {
+          case CCRequires(e, sp) -> CCRequires(
+            expr = SelfFields.resolveSelfFieldsInExpr(
+              selfScope.fields,
+              selfScope.cases,
+              params,
+              e
+            ),
+            span = sp
+          )
+          case CCEnsures(e, sp) -> CCEnsures(
+            expr = SelfFields.resolveSelfFieldsInExpr(selfScope.fields, selfScope.cases, params, e),
+            span = sp
+          )
+          case CCWhen(e, sp) -> CCWhen(
+            expr = SelfFields.resolveSelfFieldsInExpr(selfScope.fields, selfScope.cases, params, e),
+            span = sp
+          )
+          case other -> other
+        }
+      )
+    }
+    i = i + 1
+  }
+  acc
+}
+
+// `resolved`'s expressions with `written`'s messages, so a violation quotes
+// the clause as the author wrote it.  Both lists are collected from the same
+// clauses, in the same order.
+func withWrittenMessages(resolved: in List[SpannedExpr], written: in List[SpannedExpr]): List[SpannedExpr] {
+  val acc: List[SpannedExpr] = newList()
+  var i = 0
+  while i < resolved.count {
+    acc.add(SpannedExpr(expr = resolved[i].expr, span = resolved[i].span, message = written[i].message))
+    i = i + 1
+  }
+  acc
+}
+
+// The reserved annotation `mergeProtectedImpls` puts on an `impl` method it
+// moves into a protected type, carrying how many of the moved entry's
+// clauses its interface contributed (they come first).
+func inheritedClausesAnnotationName(): String {
+  "__lyric_inherited_clauses"
+}
+
+func inheritedClauseCount(anns: in List[Annotation]): Int {
+  for a in anns {
+    if a.name.segments.count == 1 and a.name.segments[0] == inheritedClausesAnnotationName() and a.args.count == 1 {
+      match a.args[0] {
+        case ALiteral(v, _) -> match v { case AVInt(n, _) -> return n.toInt(); case _ -> () }
+        case _ -> ()
+      }
+    }
+  }
+  0
+}
+
+// `scope` for the member annotated `anns`: an inherited interface default
+// sees no field, and an `impl` method moved into a protected type keeps its
+// interface's clauses out of the fields' reach.
+func memberScope(selfScope: in SelfScope, anns: in List[Annotation]): SelfScope {
+  if SelfFields.isInheritedDefault(anns) {
+    return noSelfScope()
+  }
+  selfScope.copy(inherited = inheritedClauseCount(anns))
+}
+
 func elaborateFunctionBody(
   contracts: in List[ContractClause],
   typeInvariants: in List[InvariantClause],
+  selfScope: in SelfScope,
   params: in List[Param],
   ret: in Option[TypeExpr],
   owner: in String,
@@ -2326,9 +2431,10 @@ func elaborateFunctionBody(
   // protected-type invariants). Only user-level requires:/ensures: are gated
   // by contractsEnabled; system checks (ranges, type invariants) always run.
   val paramRanges = paramRangeChecks(params, owner)
-  val declaredRequires = collectRequires(contracts, owner)
+  val resolved = resolveOwnClauses(contracts, selfScope, params)
+  val declaredRequires = withWrittenMessages(collectRequires(resolved, owner), collectRequires(contracts, owner))
   val retRanges = returnRangeChecks(ret, owner)
-  val declaredEnsures = collectEnsures(contracts, owner)
+  val declaredEnsures = withWrittenMessages(collectEnsures(resolved, owner), collectEnsures(contracts, owner))
 
   // Build combined ensures lists for the old() rewrite pass, separating
   // system-level checks (always run) from user-level clauses (gated by contractsEnabled).
@@ -2347,12 +2453,15 @@ func elaborateFunctionBody(
     allEnsures.add(retRanges[rri])
     rri = rri + 1
   }
+  val noParams: List[Param] = newList()
   var ti = 0
   while ti < typeInvariants.count {
     val inv = typeInvariants[ti]
     allEnsures.add(
       SpannedExpr(
-        expr = inv.expr,
+        // An invariant is about the type's state: a parameter of a field's
+        // name does not hide the field from it.
+        expr = SelfFields.resolveSelfFieldsInExpr(selfScope.fields, selfScope.cases, noParams, inv.expr),
         span = inv.span,
         message = violationMessage("InvariantViolated", owner, "invariant", inv.expr)
       )
@@ -2792,6 +2901,14 @@ pub func elaborateFunction(fn: in FunctionDecl): FunctionDecl {
 /// `elaborateFunction`, naming the function `owner` in contract-violation
 /// messages (e.g. `Std.String.repeat`, `Box.scaled`).
 pub func elaborateFunctionOwned(fn: in FunctionDecl, owner: in String, contractsEnabled: in Bool = true): FunctionDecl {
+  elaborateMember(fn, owner, contractsEnabled, noSelfScope())
+}
+
+/// `elaborateFunctionOwned` for a member of a type whose own contract
+/// clauses see `scope` by bare name.
+func elaborateMember(
+  fn: in FunctionDecl, owner: in String, contractsEnabled: in Bool, selfScope: in SelfScope
+): FunctionDecl {
   // @axiom functions have no body — nothing to elaborate.
   if functionIsAxiom(fn) {
     return fn
@@ -2829,6 +2946,7 @@ pub func elaborateFunctionOwned(fn: in FunctionDecl, owner: in String, contracts
         block = elaborateFunctionBody(
           fn.contracts,
           newList(),
+          selfScope,
           fn.params,
           fn.ret,
           owner,
@@ -2842,6 +2960,7 @@ pub func elaborateFunctionOwned(fn: in FunctionDecl, owner: in String, contracts
         block = elaborateFunctionBody(
           fn.contracts,
           newList(),
+          selfScope,
           fn.params,
           fn.ret,
           owner,
@@ -2926,7 +3045,7 @@ func intrinsicCallStmt(name: in String, sp: in Span): Statement {
   mkStmt(SExpr(expr = mkExpr(ECall(fn = mkPath(name, sp), args = args), sp)), sp)
 }
 
-func applyBarrierProtocol(m: in ProtectedMember, anyBarrier: in Bool): ProtectedMember {
+func applyBarrierProtocol(m: in ProtectedMember, anyBarrier: in Bool, selfScope: in SelfScope): ProtectedMember {
   if not anyBarrier {
     return m
   }
@@ -2940,7 +3059,17 @@ func applyBarrierProtocol(m: in ProtectedMember, anyBarrier: in Bool): Protected
         params = ed.params,
         ret = ed.ret,
         contracts = ed.contracts,
-        body = FBBlock(block = barrierWrappedBody(ed.contracts, ed.body, ed.span)),
+        body = FBBlock(
+          block = barrierWrappedBody(
+            resolveOwnClauses(
+              ed.contracts,
+              memberScope(selfScope, ed.annotations),
+              ed.params
+            ),
+            ed.body,
+            ed.span
+          )
+        ),
         span = ed.span
       )
     )
@@ -2960,7 +3089,14 @@ func applyBarrierProtocol(m: in ProtectedMember, anyBarrier: in Bool): Protected
           body = Some(
             value = FBBlock(
               block = barrierWrappedBody(
-                fn.contracts,
+                resolveOwnClauses(
+                  fn.contracts,
+                  memberScope(
+                    selfScope,
+                    fn.annotations
+                  ),
+                  fn.params
+                ),
                 body,
                 fn.span
               )
@@ -3015,12 +3151,14 @@ func barrierWrappedBody(contracts: in List[ContractClause], body: in FunctionBod
 func elaborateProtectedMember(
   m: in ProtectedMember,
   invariants: in List[InvariantClause],
+  selfScope: in SelfScope,
   typeName: in String,
   contractsEnabled: in Bool = true,
 ): ProtectedMember {
   match m {
     case PMEntry(ed) -> {
       val owner = typeName + "." + ed.name
+      val entryScope = memberScope(selfScope, ed.annotations)
       val hasReq = collectRequires(ed.contracts, owner).count > 0
       val hasEns = collectEnsures(ed.contracts, owner).count > 0 or invariants.count > 0
       val hasInv = entryBodyHasInvariant(ed.body)
@@ -3038,6 +3176,7 @@ func elaborateProtectedMember(
             block = elaborateFunctionBody(
               ed.contracts,
               invariants,
+              entryScope,
               ed.params,
               ed.ret,
               owner,
@@ -3051,6 +3190,7 @@ func elaborateProtectedMember(
             block = elaborateFunctionBody(
               ed.contracts,
               invariants,
+              entryScope,
               ed.params,
               ed.ret,
               owner,
@@ -3076,7 +3216,14 @@ func elaborateProtectedMember(
         )
       }
     }
-    case PMFunc(fn) -> PMFunc(fn = elaborateFunctionOwned(fn, typeName + "." + fn.name, contractsEnabled))
+    case PMFunc(fn) -> PMFunc(
+      fn = elaborateMember(
+        fn,
+        typeName + "." + fn.name,
+        contractsEnabled,
+        memberScope(selfScope, fn.annotations)
+      )
+    )
     case other -> other
   }
 }
@@ -3202,10 +3349,11 @@ func elaborateFunctionWith(
   fn: in FunctionDecl,
   extra: in List[ContractClause],
   owner: in String,
-  contractsEnabled: in Bool = true,
+  contractsEnabled: in Bool,
+  selfScope: in SelfScope,
 ): FunctionDecl {
   if extra.count == 0 {
-    return elaborateFunctionOwned(fn, owner, contractsEnabled)
+    return elaborateMember(fn, owner, contractsEnabled, selfScope)
   }
   val merged: List[ContractClause] = newList()
   var i = 0
@@ -3218,7 +3366,7 @@ func elaborateFunctionWith(
     merged.add(fn.contracts[j])
     j = j + 1
   }
-  val acc = elaborateFunctionOwned(withContracts(fn, merged), owner, contractsEnabled)
+  val acc = elaborateMember(withContracts(fn, merged), owner, contractsEnabled, selfScope.copy(inherited = extra.count))
   withContracts(acc, fn.contracts)
 }
 
@@ -3248,14 +3396,25 @@ func qualify(pkg: in String, name: in String): String {
   }
 }
 
-func elaborateRecordDecl(decl: in RecordDecl, pkg: in String, contractsEnabled: in Bool = true): RecordDecl {
+func elaborateRecordDecl(
+  decl: in RecordDecl,
+  cases: in Map[String, Bool],
+  pkg: in String,
+  contractsEnabled: in Bool = true,
+): RecordDecl {
+  val selfScope = SelfScope(fields = SelfFields.recordFieldNames(decl.members), cases = cases, inherited = 0)
   val members: List[RecordMember] = newList()
   var i = 0
   while i < decl.members.count {
     match decl.members[i] {
       case RMFunc(fn) -> members.add(
         RMFunc(
-          fn = elaborateFunctionOwned(fn, qualify(pkg, decl.name + "." + fn.name), contractsEnabled)
+          fn = elaborateMember(
+            fn,
+            qualify(pkg, decl.name + "." + fn.name),
+            contractsEnabled,
+            selfScope
+          )
         )
       )
       case other -> members.add(other)
@@ -3274,9 +3433,16 @@ func elaborateRecordDecl(decl: in RecordDecl, pkg: in String, contractsEnabled: 
 func elaborateImplDecl(
   decl: in ImplDecl,
   ifaces: in Map[String, InterfaceDecl],
+  typeFields: in Map[String, Map[String, Bool]],
+  cases: in Map[String, Bool],
   pkg: in String,
   contractsEnabled: in Bool = true,
 ): ImplDecl {
+  val implScope = SelfScope(
+    fields = SelfFields.implTargetFieldNames(typeFields, decl.target),
+    cases = cases,
+    inherited = 0
+  )
   val segs = decl.iface.head.segments
   val ifaceOpt: Option[InterfaceDecl] = if segs.count == 0 { None } else { mapGet(ifaces, segs[segs.count - 1]) }
   val members: List[ImplMember] = newList()
@@ -3293,7 +3459,13 @@ func elaborateImplDecl(
         }
         members.add(
           IMplFunc(
-            fn = elaborateFunctionWith(fn, extra, qualify(pkg, Fmt.typeStr(decl.target) + "." + fn.name), contractsEnabled)
+            fn = elaborateFunctionWith(
+              fn,
+              extra,
+              qualify(pkg, Fmt.typeStr(decl.target) + "." + fn.name),
+              contractsEnabled,
+              memberScope(implScope, fn.annotations)
+            )
           )
         )
       }
@@ -3322,12 +3494,20 @@ func withKind(it: in Item, kind: in ItemKind): Item {
 }
 
 func elaborateItem(
-  it: in Item, ifaces: in Map[String, InterfaceDecl], pkg: in String, contractsEnabled: in Bool = true
+  it: in Item,
+  ifaces: in Map[String, InterfaceDecl],
+  typeFields: in Map[String, Map[String, Bool]],
+  cases: in Map[String, Bool],
+  pkg: in String,
+  contractsEnabled: in Bool = true,
 ): Item {
   match it.kind {
-    case IRecord(decl) -> withKind(it, IRecord(decl = elaborateRecordDecl(decl, pkg, contractsEnabled)))
-    case IExposedRec(decl) -> withKind(it, IExposedRec(decl = elaborateRecordDecl(decl, pkg, contractsEnabled)))
-    case IImpl(decl) -> withKind(it, IImpl(decl = elaborateImplDecl(decl, ifaces, pkg, contractsEnabled)))
+    case IRecord(decl) -> withKind(it, IRecord(decl = elaborateRecordDecl(decl, cases, pkg, contractsEnabled)))
+    case IExposedRec(decl) -> withKind(it, IExposedRec(decl = elaborateRecordDecl(decl, cases, pkg, contractsEnabled)))
+    case IImpl(decl) -> withKind(
+      it,
+      IImpl(decl = elaborateImplDecl(decl, ifaces, typeFields, cases, pkg, contractsEnabled))
+    )
     case IFunc(fn) -> Item(
       docComments = it.docComments,
       annotations = it.annotations,
@@ -3347,11 +3527,14 @@ func elaborateItem(
         mi = mi + 1
       }
       val anyBarrier = protectedHasBarrier(decl.members)
+      val selfScope = SelfScope(fields = SelfFields.protectedFieldNames(decl.members), cases = cases, inherited = 0)
       val newMembers: List[ProtectedMember] = newList()
       mi = 0
       while mi < decl.members.count {
-        val withBarriers = applyBarrierProtocol(decl.members[mi], anyBarrier)
-        newMembers.add(elaborateProtectedMember(withBarriers, invariants, qualify(pkg, decl.name), contractsEnabled))
+        val withBarriers = applyBarrierProtocol(decl.members[mi], anyBarrier, selfScope)
+        newMembers.add(
+          elaborateProtectedMember(withBarriers, invariants, selfScope, qualify(pkg, decl.name), contractsEnabled)
+        )
         mi = mi + 1
       }
       Item(
@@ -3400,6 +3583,24 @@ pub func elaborateFileWithInterfaces(
   importedIfaces: in List[InterfaceDecl],
   contractsEnabled: in Bool = true,
 ): SourceFile {
+  val noRecords: List[RecordDecl] = newList()
+  val noCases: Map[String, Bool] = newMap()
+  elaborateFileWithTypes(file, importedIfaces, noRecords, noCases, contractsEnabled)
+}
+
+/// `elaborateFileWithInterfaces`, additionally given the records declared
+/// in other files and packages (`importedRecords`), so an `impl` method's
+/// contract can name its target's fields by bare name when that target is
+/// declared elsewhere, and the bare `match`-arm patterns the type checker
+/// resolved as cases (`caseSites`, `SymbolTable.casePatternSites`), which
+/// bind nothing (#8264).
+pub func elaborateFileWithTypes(
+  file: in SourceFile,
+  importedIfaces: in List[InterfaceDecl],
+  importedRecords: in List[RecordDecl],
+  caseSites: in Map[String, Bool],
+  contractsEnabled: in Bool = true,
+): SourceFile {
   // A `while` whose condition is a compile-time `true` spelled other than
   // the literal is folded to it first, so the loop is classified exactly
   // like `while true` (#7764).
@@ -3413,9 +3614,20 @@ pub func elaborateFileWithInterfaces(
   // still carries. #7457: impl methods for a protected type become its locked entries.
   val effectiveContractsEnabled = if isProofRequired(canonFile.fileAnnotations) { true } else { contractsEnabled }
   val items = mergeProtectedImpls(canonFile.items, ifaces)
+  val typeFields = SelfFields.typeFieldIndex(canonFile, importedRecords)
+  val cases = caseSites
   var i = 0
   while i < items.count {
-    newItems.add(elaborateItem(items[i], ifaces, Fmt.pathStr(canonFile.packageDecl.path), effectiveContractsEnabled))
+    newItems.add(
+      elaborateItem(
+        items[i],
+        ifaces,
+        typeFields,
+        cases,
+        Fmt.pathStr(canonFile.packageDecl.path),
+        effectiveContractsEnabled
+      )
+    )
     i = i + 1
   }
   SourceFile(

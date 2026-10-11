@@ -676,7 +676,7 @@ func indexedElemTypeOverride(ctx: in FuncCtx, recv: in Expr, allowMapValueArg: i
         // with implicit self) — resolve through the same field-element
         // registry the explicit `self.mws[i]` spelling uses (#5444).
         match ctx.selfClass {
-          case Some(sc) -> fieldElemOverride(ctx, sc, p.segments[0])
+          case Some(sc) -> if ctx.bareSelfFields { fieldElemOverride(ctx, sc, p.segments[0]) } else { JVoid }
           case None -> JVoid
         }
       } else {
@@ -1763,6 +1763,21 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
 
     // ── Member access ─────────────────────────────────────────────────────
     case EMember(recv, memberName) -> {
+      // A bare field read the middle end spelled `self.<field>` (#8264)
+      // lowers as the bare read always has.
+      match implicitSelfFieldTypeJvm(ctx, recv, memberName) {
+        case Some(fty) -> {
+          val selfCls = match ctx.selfClass { case Some(c) -> c; case None -> "" }
+          insns.add(LAload(slot = 0))
+          insns.add(LGetfield(owner = selfCls, name = memberName, t = fty))
+          match fty {
+            case JByte -> maskByteUnsigned(insns)
+            case _ -> ()
+          }
+          return fty
+        }
+        case None -> ()
+      }
       // Static-field read on an extern type (`JSystem.out`, `Duration.ZERO`):
       // when the receiver is a bare extern-type name (and not shadowed by a
       // local), resolve the member as a public static FIELD from JDK metadata

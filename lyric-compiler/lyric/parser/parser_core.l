@@ -579,6 +579,21 @@ func parseAnnotationArg(st: inout ParseState): AnnotationArg {
   }
 }
 
+/// P0346: an annotation name the compiler reserves for its own markers
+/// (`reservedAnnotationPrefix`), written on a declaration or named by an
+/// aspect's `annotated:` matcher (#8264).
+func rejectReservedAnnotationName(st: inout ParseState, name: in String, sp: in Span): Unit {
+  if name.startsWith(reservedAnnotationPrefix()) {
+    emitErr(
+      st,
+      "P0346",
+      "annotation names beginning with '" + reservedAnnotationPrefix() + "' are reserved for the compiler; '@" + name +
+        "' cannot be written in source",
+      sp
+    )
+  }
+}
+
 pub func parseAnnotation(st: inout ParseState): Option[Annotation] {
   if not isPunct(peekToken(st), At) {
     None
@@ -586,6 +601,9 @@ pub func parseAnnotation(st: inout ParseState): Option[Annotation] {
     cstStart(st, SkAnnotation)
     val atTok = advance(st)
     val name = parseModulePath(st)
+    if name.segments.count > 0 {
+      rejectReservedAnnotationName(st, name.segments[0], name.span)
+    }
     val args: List[AnnotationArg] = newList()
     var endSpan = name.span
     if isPunct(peekToken(st), LParen) {

@@ -740,6 +740,17 @@ pub record FuncCtx {
   // on `cls` when the name is one of `cls`'s fields (registered in `caseFields`).
   // None for static functions, where bare unknown names fall back as before.
   selfClass: Option[String]
+  // False in a member body `Lyric.SelfFields` resolved, or an inherited
+  // interface default: every field reference there is already `self.<name>`
+  // and a bare name is a binding or a module-level name, never a field of
+  // the receiver (#8264).  True elsewhere, where a bare name falls back to
+  // the receiver's field (`selfFieldType`).
+  var bareSelfFields: Bool
+  // True while a `val` or `for` pattern is bound (`lowerBindingPattern`).
+  // Such a pattern always binds its names — the type checker's `bindPattern`
+  // never reads a bare name there as a case — so a name that happens to match
+  // a union case or enum variant still gets its slot (#8264).
+  var bindingPattern: Bool
   // Module-level `val NAME` declarations of the host package: name → JVM type.
   // A bare reference to such a name lowers to `getstatic <hostClass>.<name>`
   // (the `public static final` field emitted by `lowerFuncsToClass`).  The
@@ -1206,11 +1217,23 @@ pub func recordFieldType(ctx: in FuncCtx, cls: in String, fieldName: in String):
   }
 }
 
+/// Whether a bare name in the member annotated `anns` may fall back to a
+/// field of the receiver (`FuncCtx.bareSelfFields`, #8264).
+pub func bareSelfFieldsJvm(anns: in List[Annotation]): Bool {
+  not hasMarkerAnnotation(anns, selfResolvedAnnotationName()) and
+    not hasMarkerAnnotation(anns, inheritedDefaultAnnotationName())
+}
+
 // When the current function is an instance method (`ctx.selfClass` is set),
 // resolve the JVM type of a field named `name` on the receiver class — used to
 // lower a bare field reference / assignment inside a protected-type entry to a
-// `getfield`/`putfield` on `this`.  `None` for static functions or non-fields.
+// `getfield`/`putfield` on `this`.  `None` for static functions, non-fields,
+// and a body whose field references are already explicit
+// (`FuncCtx.bareSelfFields`).
 pub func selfFieldType(ctx: in FuncCtx, name: in String): Option[JvmType] {
+  if not ctx.bareSelfFields {
+    return None
+  }
   match ctx.selfClass {
     case Some(cls) -> recordFieldType(ctx, cls, name)
     case None -> None

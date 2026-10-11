@@ -637,6 +637,15 @@ func lowerExternTargetBody(decl: in FunctionDecl, ctx: in FuncCtx, insns: in Lis
 // §5j. Builtin and general call lowering.
 // ─────────────────────────────────────────────────────────────────────────────
 func lowerCall(ctx: in FuncCtx, insns: in List[LInsn], fn: in Expr, args: in List[CallArg]): JvmType {
+  // A bare call of a function-typed field the middle end spelled
+  // `self.<field>(args)` (#8264) lowers as the bare call always has.
+  match fn.kind {
+    case EMember(recv, name) -> match implicitSelfFieldTypeJvm(ctx, recv, name) {
+      case Some(_) -> return lowerSelfFieldLambdaInvoke(ctx, insns, name, args)
+      case None -> ()
+    }
+    case _ -> ()
+  }
   // Resolve the function name from the callee expression.
   match fn.kind {
     case EPath(path) -> {
@@ -932,7 +941,7 @@ func lowerSelfFieldLambdaInvoke(
     case Some(cls) -> cls
     case None -> panic("lowerSelfFieldLambdaInvoke: no enclosing instance for '" + name + "'")
   }
-  val fty = match selfFieldType(ctx, name) {
+  val fty = match recordFieldType(ctx, owner, name) {
     case Some(t) -> t
     case None -> panic("lowerSelfFieldLambdaInvoke: '" + name + "' is not a field of " + owner)
   }

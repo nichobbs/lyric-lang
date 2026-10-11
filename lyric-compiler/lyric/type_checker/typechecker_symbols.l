@@ -416,6 +416,11 @@ pub record SymbolTable {
   /// Each call of a dot-named function with an `out`/`inout` parameter,
   /// keyed by `recordCopySiteKey` of the callee's span (#8179).
   byRefDotCallSites: Map[String, ByRefDotCall]
+  /// Each bare identifier pattern in a `match` arm that names a union or
+  /// enum case rather than binding a name, keyed by `recordCopySiteKey` of
+  /// the pattern's span.  `Lyric.SelfFields` reads it: such a pattern hides
+  /// no field of a member's type (#8264).
+  casePatternSites: Map[String, Bool]
   /// The types each lambda's unannotated parameters took from the function
   /// type it was checked against, keyed by `recordCopySiteKey` of the lambda's
   /// span (see `Lyric.Parser.LambdaParamTypesSite`, #7865).
@@ -730,6 +735,7 @@ pub func newSymbolTable(): SymbolTable {
     genericCallTypeArgSites = newMap(),
     dottedGenericCallSites = newMap(),
     byRefDotCallSites = newMap(),
+    casePatternSites = newMap(),
     lambdaParamTypeSites = newMap(),
     moduleValTypes = newMap(),
     generatorCallSites = newMap(),

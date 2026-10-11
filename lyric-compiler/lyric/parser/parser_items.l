@@ -2951,6 +2951,7 @@ func parseOneMatchPredicate(st: inout ParseState): Option[AspectMatcher] {
             case TIdent(n) -> {
               val sp = peekSpan(st)
               val _ = advance(st)
+              rejectReservedAnnotationName(st, n, sp)
               Some(value = AMAnnotated(annotName = n, span = sp))
             }
             case _ -> {

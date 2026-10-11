@@ -51,6 +51,24 @@ func protectedImplTarget(decl: in ImplDecl, protectedNames: in Map[String, Bool]
   }
 }
 
+// `anns` noting that the first `n` clauses of the moved entry come from its
+// interface (`inheritedClauseCount`), whose scope holds no field (#8264).
+func withInheritedClauseCount(anns: in List[Annotation], n: in Int, sp: in Span): List[Annotation] {
+  if n == 0 {
+    return anns
+  }
+  val acc: List[Annotation] = newList()
+  for a in anns {
+    acc.add(a)
+  }
+  val segs: List[String] = newList()
+  segs.add(inheritedClausesAnnotationName())
+  val args: List[AnnotationArg] = newList()
+  args.add(ALiteral(value = AVInt(value = n.toLong(), span = sp), span = sp))
+  acc.add(Annotation(name = ModulePath(segments = segs, span = sp), args = args, span = sp))
+  acc
+}
+
 func implMethodAsEntry(fn: in FunctionDecl, body: in FunctionBody, extra: in List[ContractClause]): EntryDecl {
   val contracts: List[ContractClause] = newList()
   var c = 0
@@ -65,7 +83,7 @@ func implMethodAsEntry(fn: in FunctionDecl, body: in FunctionBody, extra: in Lis
   }
   EntryDecl(
     docComments = fn.docComments,
-    annotations = fn.annotations,
+    annotations = withInheritedClauseCount(fn.annotations, extra.count, fn.span),
     visibility = fn.visibility,
     name = fn.name,
     params = fn.params,

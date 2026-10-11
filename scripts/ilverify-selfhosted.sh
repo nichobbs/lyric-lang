@@ -238,6 +238,8 @@ SELF_TESTS=(
   lyric-compiler/lyric/dot_named_byref_self_test.l
   lyric-compiler/lyric/protected_byref_self_test.l
   lyric-compiler/lyric/hoisted_literal_shape_self_test.l
+  lyric-compiler/lyric/member_local_shadow_self_test.l
+  lyric-compiler/lyric/member_local_shadow_panics_self_test.l
   lyric-compiler/lyric/erased_receiver_narrowing_self_test.l
   lyric-compiler/lyric/erased_receiver_narrowing_dotnet_self_test.l
   lyric-compiler/lyric/impl_generic_target_self_test.l

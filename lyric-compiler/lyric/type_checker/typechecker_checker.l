@@ -3988,7 +3988,15 @@ func checkImplMemberBodies(
           isEntry = sig0.isEntry,
           isExternFunc = sig0.isExternFunc
         )
-        checkFunctionBody(tbl, sigs, diag, fn, sig, fieldLocals, fieldLocals, true, selfTy)
+        // An inherited interface default (`Lyric.ImplDefaults`) was written
+        // against the interface, which has no fields: none of the target's
+        // fields is in its scope by bare name (#8264).
+        val bareFieldLocals: List[LocalBinding] = if hasMarkerAnnotation(fn.annotations, inheritedDefaultAnnotationName()) {
+          newList()
+        } else {
+          fieldLocals
+        }
+        checkFunctionBody(tbl, sigs, diag, fn, sig, bareFieldLocals, fieldLocals, true, selfTy)
       }
       case _ -> {
       }

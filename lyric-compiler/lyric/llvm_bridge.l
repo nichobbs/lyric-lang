@@ -47,6 +47,7 @@ import Lyric.WireExpand as WireExpand
 import Lyric.Mono
 import Lyric.Derives
 import Lyric.Pipeline
+import Lyric.SelfFields as SelfFields
 import Lyric.DiagnosticUtil as DiagUtil
 import Lyric.LlvmTypes
 import Lyric.LlvmIr
@@ -2576,8 +2577,13 @@ func indexFileFns(f: in SourceFile, bodyIndex: in Map[String, FunctionDecl], pkg
 // bundled-package record methods are a Phase N5 follow-up (calling one
 // panics with a resolution message today).
 func unitOf(
-  f: in SourceFile, reachable: in Map[String, Bool], lowerAll: in Bool, arities: in Map[String, Int]
+  f0: in SourceFile, reachable: in Map[String, Bool], lowerAll: in Bool, arities: in Map[String, Int]
 ): CodegenUnit {
+  // A member body's bare field references as `self.<name>` (#8264), as
+  // `unitOfFile` does; a no-op for a file the middle end processed.
+  val noRecords: List[RecordDecl] = newList()
+  val noCases: Map[String, Bool] = newMap()
+  val f = SelfFields.resolveSelfFieldsInFile(f0, noRecords, noCases)
   val pkg = dottedPath(f.packageDecl.path)
   val fns: List[FunctionDecl] = newList()
   val externs: List[ExternFuncDecl] = newList()

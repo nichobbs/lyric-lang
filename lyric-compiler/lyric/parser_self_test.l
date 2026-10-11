@@ -2537,6 +2537,31 @@ test "an invariant's same-line @message is recorded" {
   assertTrue(invs[1].message.isNone, "no message on the second; the next line's @label belongs to the field")
 }
 
+test "a reserved compiler annotation in source is P0346 (#8264)" {
+  val resolved = parse(
+    "package P\nrecord R {\n  n: Int\n  @__lyric_self_resolved\n  func get(): Int {\n    n\n  }\n}\n"
+  )
+  assertTrue(hasDiagCode(resolved, "P0346"), "@__lyric_self_resolved")
+  val inherited = parse("package P\nimpl I for R {\n  @__lyric_inherited_default\n  func f(): Int = 1\n}\n")
+  assertTrue(hasDiagCode(inherited, "P0346"), "@__lyric_inherited_default")
+  val clauses = parse("package P\nprotected type T {\n  @__lyric_inherited_clauses(1)\n  entry e(): Unit {\n  }\n}\n")
+  assertTrue(hasDiagCode(clauses, "P0346"), "@__lyric_inherited_clauses(1)")
+  val ordinary = parse("package P\n@pure\nfunc f(): Int = 1\n")
+  assertTrue(not hasDiagCode(ordinary, "P0346"), "an ordinary annotation")
+}
+
+test "an aspect matcher naming a reserved compiler annotation is P0346 (#8264)" {
+  val reserved = parse(
+    "package P\naspect Log {\n  matches: annotated: @__lyric_self_resolved\n  around(call) {\n    call.proceed()\n  }\n}\n"
+  )
+  assertTrue(hasDiagCode(reserved, "P0346"), "annotated: @__lyric_self_resolved")
+  val ordinary = parse(
+    "package P\naspect Log {\n  matches: annotated: @traced\n  around(call) {\n    call.proceed()\n  }\n}\n"
+  )
+  assertTrue(not hasDiagCode(ordinary, "P0346"), "annotated: @traced")
+  assertEqualInt(diagCount(ordinary), 0, "the ordinary aspect parses cleanly")
+}
+
 test "anything but one @message string after an invariant is P0345" {
   val other = parse("package P\nrecord R {\n  x: Int\n  invariant: x > 0 @label(\"X\")\n}\n")
   assertTrue(hasDiagCode(other, "P0345"), "another annotation")
