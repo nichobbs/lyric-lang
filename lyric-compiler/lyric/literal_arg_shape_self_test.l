@@ -11,8 +11,9 @@
 //! inside a `List[slice[Int]]` is a slice: the JVM built it as an
 //! `ArrayList` and read it as an array (ClassCastException, #8192).  The
 //! cases cover a call argument, a binding, a record and a union case field, a
-//! return, a slice and an array of slices, a generic callee, a generic record
-//! and a generic callee called from a generic function.
+//! return, a slice and an array of slices (as a binding, a field and an
+//! argument), a method's argument, a generic callee, a generic record and
+//! union case, and a generic callee called from a generic function.
 //!
 //!   lyric test --target dotnet lyric-compiler/lyric/literal_arg_shape_self_test.l
 //!   lyric test --target jvm    lyric-compiler/lyric/literal_arg_shape_self_test.l
@@ -37,6 +38,50 @@ union Shape {
 
 record GBox[T] {
   items: List[T]
+}
+
+union Bag[T] {
+  case Full(items: List[T])
+  case Empty
+}
+
+record Table {
+  cells: slice[slice[Int]]
+}
+
+record Pt {
+  xs: List[Int]
+
+  func plus(self: in Pt, ys: in List[Int]): Int {
+    self.xs.count + ys[1]
+  }
+}
+
+func Pt.addAll(self: in Pt, ys: in List[Int]): Int {
+  self.xs.count * 10 + ys.count
+}
+
+func Pt.sizeOf[T](self: in Pt, ys: in List[T]): Int {
+  ys.count
+}
+
+func bagLen[T](b: in Bag[T]): Int {
+  match b {
+    case Full(items) -> items.count
+    case Empty -> 0
+  }
+}
+
+func cellWidth(cells: in slice[slice[Int]]): Int {
+  cells[1].length
+}
+
+func countSome[T](xs: in List[Option[T]]): Int {
+  xs.count
+}
+
+func optionsOf[T](x: in T): Int {
+  countSome([Some(value = x), None])
 }
 
 func count(xs: in List[slice[Int]]): Int {
@@ -129,6 +174,15 @@ test "a slice and an array of slices (#8192)" {
   assertEqualInt(a[1].length, 3, "array of slices")
   val ls: List[slice[Long]] = [[1], [5, 6]]
   assertTrue(ls[1][1] == 6i64, "widened element")
+  assertEqualInt(Table(cells = [[1], [5, 6, 7]]).cells[1].length, 3, "slice of slices field")
+  assertEqualInt(cellWidth([[1], [5, 6]]), 2, "slice of slices argument")
+}
+
+test "a method's List parameter takes a literal as that List" {
+  val p = Pt(xs = [1])
+  assertEqualInt(p.addAll([1, 2]), 12, "dot-named method")
+  assertEqualInt(p.plus([1, 2]), 3, "method in the record")
+  assertEqualInt(p.sizeOf(["a", "b", "c"]), 3, "generic method")
 }
 
 test "a literal for a generic List[T] parameter (#8193)" {
@@ -138,6 +192,8 @@ test "a literal for a generic List[T] parameter (#8193)" {
   assertEqualInt(GBox(items = [1, 2, 3]).items.count, 3, "generic record field")
   val b: GBox[Int] = GBox(items = [1, 2])
   assertEqualInt(b.items[1], 2, "generic record field, annotated")
+  assertEqualInt(bagLen(Full(items = [1, 2, 3, 4])), 4, "generic union case field")
+  assertEqualInt(optionsOf(5), 2, "List[Option[T]] inside a generic function")
 }
 
 test "a literal beside a List at a bare T is that List (#8191)" {

@@ -3951,6 +3951,36 @@ test "a bracket literal argument for a List parameter types as that List (#8191,
   assertEqualInt(diagCount(boxCr), 0, "generic record List field: clean (" + diagCodesOf(boxCr) + ")")
 }
 
+// #8191, #8193: a literal that does not fit the parameter the other
+// arguments (and the literals before it) instantiate is T0043 (T0104 for a
+// field), and two arguments binding one type parameter to unrelated types
+// are T0043; a numeric binding that widens, and a literal at an unbound
+// bare `T`, are not.
+test "conflicting type-parameter bindings across arguments are reported (#8191, #8193)" {
+  val defs = "package P\nimport Std.CollectionsHost\n" + "func k[T](xs: in List[T], ys: in List[T]): Int { 0 }\n" +
+    "func f[T](xs: in List[T], y: in T): Int { 0 }\n" +
+    "func pick[T](a: in T, b: in T): Int { 0 }\n" +
+    "record Two[T] { a: List[T]\n b: List[T] }\n"
+  val lits = defs + "func g(base: in List[String]): Int { k([1], [\"s\"]) + f([\"a\"], 1) + pick(base, [1, 2]) }\n"
+  val litsCr = checkWithImportedPackages(parse(lits).file, stdCollectionsHostPackages())
+  assertEqualInt(countDiagCode(litsCr, "T0043"), 3, "each mismatched literal is T0043 (" + diagCodesOf(litsCr) + ")")
+  assertTrue(diagMessagesContain(litsCr, "is List[Int] here"), "the message names the instantiated parameter")
+  val vals = defs + "func h(a: in List[Int], c: in List[String]): Int { k(a, c) }\n"
+  val valsCr = checkWithImportedPackages(parse(vals).file, stdCollectionsHostPackages())
+  assertEqualInt(countDiagCode(valsCr, "T0043"), 1, "values binding T to Int and String (" + diagCodesOf(valsCr) + ")")
+  assertTrue(diagMessagesContain(valsCr, "binds type parameter 'T' to Int"), "the message names both bindings")
+  val ctor = defs + "func m(): Int {\n  val t = Two(a = [1], b = [\"s\"])\n  0\n}\n"
+  val ctorCr = checkWithImportedPackages(parse(ctor).file, stdCollectionsHostPackages())
+  assertTrue(
+    hasDiagCode(ctorCr, "T0104"),
+    "a generic record's field literal that does not fit is T0104 (" + diagCodesOf(ctorCr) + ")"
+  )
+  val ok = defs +
+    "func w(a: in List[Long], n: in Int, l: in Long): Int { k(a, [1, 2]) + pick(n, l) + pick([1], [2, 3]) }\n"
+  val okCr = checkWithImportedPackages(parse(ok).file, stdCollectionsHostPackages())
+  assertEqualInt(diagCount(okCr), 0, "widening bindings and unbound literals are clean (" + diagCodesOf(okCr) + ")")
+}
+
 // #8190: a literal bound to a temporary ahead of a `?` is recorded at the
 // shape its position gives it (an array, a widened slice, a tuple holding an
 // array, a branch whose value is one), whatever its element type; an operand

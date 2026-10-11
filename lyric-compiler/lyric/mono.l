@@ -2897,7 +2897,7 @@ func partialUnifyCtorArg(
               val innerSubst: Map[String, TypeExpr] = newMap()
               var k = 0
               while k < ctorArgs.count and k < ctorDecl.params.count {
-                match inferExprTE(state, env, callArgExpr(ctorArgs[k])) {
+                match argTEForParamMono(state, env, callArgExpr(ctorArgs[k]), ctorDecl.params[k].ty) {
                   case Some(argTE) -> unifyTE(innerParams, ctorDecl.params[k].ty, argTE, innerSubst)
                   case None -> ()
                 }
@@ -2965,7 +2965,7 @@ func candidateArgsCompatible(
   var conflict = false
   var i = 0
   while i < cand.params.count and i < args.count {
-    match inferExprTE(state, env, callArgExpr(args[i])) {
+    match argTEForParamMono(state, env, callArgExpr(args[i]), cand.params[i].ty) {
       case Some(argTE) -> {
         if teKeysEqual(argTE, cand.params[i].ty) {
           matchCount = matchCount + 1
