@@ -12388,9 +12388,9 @@ func recordCtorArgOrderSite(
 // chosen the constructor's instantiation, so with no type around the
 // construction (`val h = Holder(value = None, fallback = 5)`) the `None` was
 // an `Option<object>` stored in an `Option<int>` field.  A bracket literal
-// typed as a `List` is recorded at it for the same reason: a generic record's
-// field is `List<T>` there, so `GBox(items = [1, 2])` was built as an
-// `int[]` (#8193).
+// whose field is a `List` is recorded at the field's instantiated type for
+// the same reason: a generic record's field is `List<T>` there, so
+// `GBox(items = [1, 2])` was built as an `int[]` (#8193).
 func recordCtorArgOperandTypes(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -12399,23 +12399,26 @@ func recordCtorArgOperandTypes(
   argTypes: in List[Type],
   ctorTy: in Type,
 ): Unit {
-  var li = 0
-  while li < args.count and li < argTypes.count {
-    val le = callArgExpr(args[li])
-    if argIsListLiteral(le) and isStdListType(tbl, argTypes[li]) and hoistBindsOperand(sc, le) {
-      recordHoistOperandTypeOver(tbl, sc.genericNames, le, argTypes[li], argTypes[li])
-    }
-    li = li + 1
-  }
   val hazard = callArgsHaveHoistHazard(args)
   val openArg = ctorHasOpenArg(sc, args, argTypes, ctorTy)
-  if not hazard and not openArg {
+  val literalArg = ctorHasListLiteralArg(args)
+  if not hazard and not openArg and not literalArg {
     return
   }
   match ctorArgExpectedTypes(tbl, fn, args, ctorTy) {
     case Some(expected) -> {
       if hazard {
         recordHoistedCallArgs(sc, tbl, args, argTypes, expected)
+      }
+      if literalArg {
+        var li = 0
+        while li < args.count and li < argTypes.count and li < expected.count {
+          val le = callArgExpr(args[li])
+          if argIsListLiteral(le) and isStdListType(tbl, expected[li]) and hoistBindsOperand(sc, le) {
+            recordHoistOperandTypeOver(tbl, sc.genericNames, le, argTypes[li], expected[li])
+          }
+          li = li + 1
+        }
       }
       if openArg {
         var i = 0
@@ -12430,6 +12433,16 @@ func recordCtorArgOperandTypes(
     }
     case None -> ()
   }
+}
+
+// Whether a construction takes a bracket literal argument.
+func ctorHasListLiteralArg(args: in List[CallArg]): Bool {
+  for a in args {
+    if argIsListLiteral(callArgExpr(a)) {
+      return true
+    }
+  }
+  false
 }
 
 // Whether the construction of `ctorTy`, a closed generic instantiation,
@@ -16257,7 +16270,7 @@ func checkCallArgsAgainstSig(
     reportUnpairedCallArgs(diag, sig, args, paramNames, srcIdx, span)
     checkPairedCallArgs(sc, tbl, sigs, diag, sig, args, argTypes, srcIdx, span)
     if sig.generics.count > 0 and not sig.isExternFunc {
-      reportGenericBindingConflicts(sc, tbl, diag, sig, args, argTypes, srcIdx, span)
+      reportGenericBindingConflicts(sc, tbl, diag, sig, args, argTypes, srcIdx)
     }
   }
 }
@@ -16294,7 +16307,6 @@ func reportGenericBindingConflicts(
   args: in List[CallArg],
   argTypes: in List[Type],
   srcIdx: in List[Int],
-  span: in Span,
 ): Unit {
   for g in sig.generics {
     var bound: Type = TyError
@@ -16318,7 +16330,7 @@ func reportGenericBindingConflicts(
                     toString(ai + 1) +
                     " binds it to " +
                     renderType(v),
-                  span
+                  callArgExpr(args[ai]).span
                 )
               )
               reported = true

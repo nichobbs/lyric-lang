@@ -3969,6 +3969,14 @@ test "conflicting type-parameter bindings across arguments are reported (#8191, 
   val valsCr = checkWithImportedPackages(parse(vals).file, stdCollectionsHostPackages())
   assertEqualInt(countDiagCode(valsCr, "T0043"), 1, "values binding T to Int and String (" + diagCodesOf(valsCr) + ")")
   assertTrue(diagMessagesContain(valsCr, "binds type parameter 'T' to Int"), "the message names both bindings")
+  match valsCr.diagnostics.count {
+    case 0 -> assertTrue(false, "a diagnostic")
+    case _ -> assertEqualInt(
+      valsCr.diagnostics[0].span.startPos.offset,
+      Str.indexOfRaw(vals, "k(a, c)") + 5,
+      "the diagnostic is on the conflicting argument"
+    )
+  }
   val ctor = defs + "func m(): Int {\n  val t = Two(a = [1], b = [\"s\"])\n  0\n}\n"
   val ctorCr = checkWithImportedPackages(parse(ctor).file, stdCollectionsHostPackages())
   assertTrue(

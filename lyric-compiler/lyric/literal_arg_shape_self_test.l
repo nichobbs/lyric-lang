@@ -65,6 +65,12 @@ func Pt.sizeOf[T](self: in Pt, ys: in List[T]): Int {
   ys.count
 }
 
+// The construction is the function's value, so it is checked against the
+// return type and its field literal is a `List[T]` of the caller's `T`.
+func boxOf[T](x: in T): GBox[T] {
+  GBox(items = [x, x])
+}
+
 func bagLen[T](b: in Bag[T]): Int {
   match b {
     case Full(items) -> items.count
@@ -193,6 +199,9 @@ test "a literal for a generic List[T] parameter (#8193)" {
   val b: GBox[Int] = GBox(items = [1, 2])
   assertEqualInt(b.items[1], 2, "generic record field, annotated")
   assertEqualInt(bagLen(Full(items = [1, 2, 3, 4])), 4, "generic union case field")
+  assertEqualInt(boxOf(5).items[1], 5, "generic function's record, value T")
+  assertEqual(boxOf("a").items[1], "a", "generic function's record, reference T")
+  assertEqualInt(boxOf([1, 2, 3]).items[0].length, 3, "generic function's record, slice T")
   assertEqualInt(optionsOf(5), 2, "List[Option[T]] inside a generic function")
 }
 

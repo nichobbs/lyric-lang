@@ -52,11 +52,13 @@ build an element from the outer literal's type, which they see.
   `hoistOperandTypeSites`, so `Lyric.Mono` binds it to a local of that type
   and every backend builds it as the `List` even where it does not see the
   parameter (a method's, `p.addAll([1, 2])` threw on dotnet; a generic
-  record's field). `recordCtorArgOperandTypes` does the same for a
-  construction checked against an expected type.
+  record's field). `recordCtorArgOperandTypes` records a construction's literal
+  at its field's instantiated `List` type the same way, including one checked
+  against an expected type such as a generic function's return
+  (`GBox(items = [x, x])` in `func boxOf[T](x: in T): GBox[T]`).
 - `reportGenericBindingConflicts` (type checker): two arguments binding one
   type parameter of a generic function to types neither of which satisfies
-  or widens to the other are **T0043**. `k(a, c)` with `a: List[Int]` and
+  or widens to the other are **T0043**, reported on the second argument. `k(a, c)` with `a: List[Int]` and
   `c: List[String]` compiled and crashed at run time; nothing compared the
   bindings.
 - `recordSliceShapedElement` (type checker): a bracket literal that is an
