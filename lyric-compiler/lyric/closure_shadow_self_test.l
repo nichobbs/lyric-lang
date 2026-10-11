@@ -10,6 +10,13 @@
 //! block-scope undo log as the slot map: a new binding hides the enclosing cell
 //! and the block's exit brings it back.
 //!
+//! The async cases suspend for real (`Std.Task.delay`).  dotnet's async state
+//! machine kept each local across a suspension in a field named after the
+//! local, so a shadowing binding shared its enclosing binding's field and a
+//! resume reloaded only the first one's slot: a plain nested shadow with no
+//! lambda at all came back wrong, and a shadowing captured `var` threw
+//! `NullReferenceException`.  The fields are now keyed by slot.
+//!
 //! Every case reads a captured variable only through values that agree on all
 //! three targets: native closures capture a `var`'s value rather than the
 //! variable (#7891), so no case calls a lambda after writing a variable it
@@ -24,6 +31,7 @@
 package Lyric.ClosureShadowSelfTest
 
 import Std.Core
+import Std.Task
 import Std.Testing
 
 // A runtime-evaluated condition the codegen cannot fold away, so the shadowing
@@ -191,6 +199,87 @@ func outerWriteAfterShadow(): Int {
   before * 100 + x
 }
 
+async func susp(): Unit {
+  await Std.Task.delay(10);
+  ()
+}
+
+// A plain nested shadow, no lambda, with suspensions inside and after the block.
+async func asyncPlainShadow(): Int {
+  var x = 1
+  var r = 0
+  if cond(1) {
+    var x = 10
+    await susp()
+    x = x + 5
+    r = x
+  }
+  await susp()
+  x = x + 2
+  r * 100 + x
+}
+
+// Shadowing captured `var`s, suspended only after the block.
+async func asyncCellShadowAwaitAfter(): Int {
+  var x = 1
+  val f = { -> x }
+  val before: Int = f()
+  var r = 0
+  if cond(1) {
+    var x = 10
+    x = x + 5
+    val g = { -> x }
+    r = g()
+  }
+  await susp()
+  x = x + 2
+  r * 100 + before * 10 + x
+}
+
+// Shadowing captured `var`s, suspended inside the block with both cells live.
+async func asyncCellShadowAwaitInside(): Int {
+  var x = 1
+  val f = { -> x }
+  val before: Int = f()
+  var r = 0
+  if cond(1) {
+    var x = 10
+    x = x + 5
+    val g = { -> x }
+    await susp()
+    r = g() + x
+  }
+  x = x + 2
+  r * 100 + before * 10 + x
+}
+
+// A captured `var` that exists only inside the block, live across a suspension.
+async func asyncInnerCellOnly(): Int {
+  var r = 0
+  if cond(1) {
+    var y = 10
+    val g = { -> y }
+    await susp()
+    r = g() + y
+  }
+  r
+}
+
+// A plain `val` shadowing a captured `var`, then a suspension after the block.
+async func asyncValShadowsCell(): Int {
+  var x = 1
+  val f = { -> x }
+  val before: Int = f()
+  var r = 0
+  if cond(1) {
+    val x = 9
+    r = x
+  }
+  await susp()
+  x = x + 2
+  r * 100 + before * 10 + x
+}
+
 test "a nested var shadows a captured var" {
   assertEqualInt(innerVarShadowsCapturedVar(), 511, "inner 5, lambda 1, outer 1")
 }
@@ -229,4 +318,24 @@ test "a captured var shadowed by one of another type" {
 
 test "the enclosing var is written after the block" {
   assertEqualInt(outerWriteAfterShadow(), 111, "lambda before 1, outer 11")
+}
+
+test "a plain nested shadow survives a real suspension" {
+  assertEqualInt(await asyncPlainShadow(), 1503, "inner 15, outer 3")
+}
+
+test "shadowing captured vars survive a suspension after the block" {
+  assertEqualInt(await asyncCellShadowAwaitAfter(), 1513, "inner 15, lambda before 1, outer 3")
+}
+
+test "shadowing captured vars survive a suspension inside the block" {
+  assertEqualInt(await asyncCellShadowAwaitInside(), 3013, "inner 15 + 15, lambda before 1, outer 3")
+}
+
+test "a block's own captured var survives a suspension" {
+  assertEqualInt(await asyncInnerCellOnly(), 20, "lambda 10 + direct 10")
+}
+
+test "a val shadowing a captured var, then a suspension" {
+  assertEqualInt(await asyncValShadowsCell(), 913, "inner 9, lambda before 1, outer 3")
 }

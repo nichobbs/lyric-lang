@@ -736,11 +736,12 @@ func codeTokens(source: in String): List[String] {
 /// `{ () -> e }` and `{ -> e }` parse to the same `ELambda` with no
 /// parameters, and the formatter writes the canonical `{ -> e }` (#8200).  The
 /// pair is dropped only directly between a `{` and a `->`, so a non-empty
-/// parameter list, a paren-arrow lambda `() -> e` and a unit `()` value all
-/// still compare token by token.  Applied to both sides of the comparison: a
-/// `{ () -> e }` that opens a block holding a paren-arrow lambda reads the same
-/// either way, and the formatter keeps those parentheses (the re-parse check
-/// would refuse `{ -> e }` there).
+/// parameter list, and a paren-arrow lambda `() -> e` or unit `()` anywhere
+/// else, still compare token by token.  The one other place the pattern occurs
+/// is a block whose first statement is a paren-arrow lambda,
+/// `if c { () -> e }`: there the check no longer sees the `()`, but the
+/// printer, which works from the AST, writes a paren-arrow lambda's `()`
+/// back, so the output keeps them.
 func dropEmptyLambdaParens(toks: in List[String]): List[String] {
   val acc: List[String] = newList()
   var i = 0

@@ -6171,7 +6171,7 @@ pub record PhaseBCtx {
   // `emitPhaseBAwait` reads the current list when emitting each resume label so
   // every local defined before that await point is reloaded on the resume path.
   smFields: List[MField]  // reference to the SM class field list
-  promotedLocalNames: List[String]  // val name → SM field "__local_<name>"
+  promotedLocalNames: List[String]  // SM field name, `slotAwaitFieldKeyMsil(slot)` (#8201)
   promotedLocalSlots: List[Int]  // local-relative slot index (slot - paramCount)
   promotedLocalTypes: List[MsilType]
   // type of the promoted local (parallel)
@@ -6934,6 +6934,30 @@ pub func rollbackFuncCtxSlotsSinceMsil(fctx: in FuncCtx, preSlotCount: in Int): 
   while fctx.locals.count > targetLocalsCount {
     fctx.locals.removeAt(fctx.locals.count - 1)
   }
+  // State-machine fields promoted for the discarded slots: the re-lowering
+  // reuses those slot numbers, possibly at other types (#8201).
+  if fctx.phaseBCtx.count > 0 {
+    val pbc = fctx.phaseBCtx[0]
+    var pi = pbc.promotedLocalSlots.count - 1
+    while pi >= 0 {
+      if pbc.promotedLocalSlots[pi] >= targetLocalsCount {
+        val fld = pbc.promotedLocalNames[pi]
+        pbc.promotedLocalNames.removeAt(pi)
+        pbc.promotedLocalSlots.removeAt(pi)
+        pbc.promotedLocalTypes.removeAt(pi)
+        var fi = pbc.smFields.count - 1
+        while fi >= 0 {
+          if pbc.smFields[fi].name == fld {
+            pbc.smFields.removeAt(fi)
+            fi = -1
+          } else {
+            fi = fi - 1
+          }
+        }
+      }
+      pi = pi - 1
+    }
+  }
 }
 
 // Build a hoisted-`var` heap cell (#1479 v2) from the initial value on the
@@ -6979,7 +7003,7 @@ pub func finishHoistedCellMsil(
   // round trip (counted by the matching hoisted-var arm in
   // countPromotedLocalsStmt).
   if fctx.phaseBCtx.count > 0 {
-    phaseBRegisterAndSyncLocal(fctx.phaseBCtx[0], insns, name, cellTy, cellSlot - fctx.paramCount)
+    phaseBRegisterAndSyncLocal(fctx.phaseBCtx[0], insns, cellTy, cellSlot - fctx.paramCount)
   }
 }
 
@@ -13780,7 +13804,7 @@ func lowerBinopMsil(
           val saddLhsLocalIdx = saddLhsSlot - fctx.paramCount
           insns.add(MStloc(slot = saddLhsLocalIdx))
           if fctx.phaseBCtx.count > 0 and exprContainsAwaitMsil(rhs) {
-            phaseBRegisterAndSyncLocal(fctx.phaseBCtx[0], insns, saddName, MString, saddLhsLocalIdx)
+            phaseBRegisterAndSyncLocal(fctx.phaseBCtx[0], insns, MString, saddLhsLocalIdx)
           }
           val saddRhsRaw = lowerExprMsil(cctx, fctx, insns, rhs)
           val saddRhsDistinctUnsigned = distinctUnsignedMsil(cctx, saddRhsRaw)
@@ -14788,7 +14812,7 @@ func lowerAssignExprMsil(
               emitByteSlotNarrowMsil(fctx, insns, slot)
               emitStoreSlot(insns, slot, fctx.paramCount)
               if fctx.phaseBCtx.count > 0 {
-                phaseBSyncLocalIfPromoted(fctx.phaseBCtx[0], insns, name, slot - fctx.paramCount)
+                phaseBSyncLocalIfPromoted(fctx.phaseBCtx[0], insns, slot - fctx.paramCount)
               }
             }
             case _ -> {
@@ -14803,7 +14827,7 @@ func lowerAssignExprMsil(
               emitCompoundCombineMsil(cctx, fctx, insns, op, combineTy, value)
               emitStoreSlot(insns, slot, fctx.paramCount)
               if fctx.phaseBCtx.count > 0 {
-                phaseBSyncLocalIfPromoted(fctx.phaseBCtx[0], insns, name, slot - fctx.paramCount)
+                phaseBSyncLocalIfPromoted(fctx.phaseBCtx[0], insns, slot - fctx.paramCount)
               }
             }
           }
@@ -23032,10 +23056,10 @@ func forCollectionKeepsStateAcrossAwaitMsil(fctx: in FuncCtx, body: in Block): B
   fctx.phaseBCtx.count > 0 and blockContainsAwaitMsil(body)
 }
 
-// The promoted-local key of a codegen temporary or pattern binding kept in a
-// state-machine field by IL slot rather than by name (`for` loops, #7766;
-// `match` arms, #7816): each such binding has a slot of its own, so two
-// bindings of one name at different types get distinct fields.
+// The state-machine field that keeps a local across a suspension, keyed by
+// IL slot rather than by name (`for` loops, #7766; `match` arms, #7816; every
+// other local, #8201): each binding has a slot of its own, so two bindings of
+// one name, at different types or in nested scopes, get distinct fields.
 func slotAwaitFieldKeyMsil(localIdx: in Int): String {
   "__slot_" + toString(localIdx)
 }
@@ -23052,7 +23076,7 @@ func keepForTempAcrossAwaitMsil(
 ): Unit {
   if keep {
     val localIdx = slot - fctx.paramCount
-    phaseBRegisterAndSyncLocal(fctx.phaseBCtx[0], insns, slotAwaitFieldKeyMsil(localIdx), ty, localIdx)
+    phaseBRegisterAndSyncLocal(fctx.phaseBCtx[0], insns, ty, localIdx)
     kept.add(slot)
   }
 }
@@ -23061,7 +23085,7 @@ func keepForTempAcrossAwaitMsil(
 func syncForTempAcrossAwaitMsil(fctx: in FuncCtx, insns: in List[MInsn], keep: in Bool, slot: in Int): Unit {
   if keep {
     val localIdx = slot - fctx.paramCount
-    phaseBSyncLocalIfPromoted(fctx.phaseBCtx[0], insns, slotAwaitFieldKeyMsil(localIdx), localIdx)
+    phaseBSyncLocalIfPromoted(fctx.phaseBCtx[0], insns, localIdx)
   }
 }
 
@@ -23079,7 +23103,7 @@ func keepPatternBindsAcrossAwaitMsil(fctx: in FuncCtx, insns: in List[MInsn], ke
         case Some(slot) -> {
           val ty = match mapGet(fctx.types, names[i]) { case Some(t) -> t; case None -> MObject }
           val localIdx = slot - fctx.paramCount
-          phaseBRegisterAndSyncLocal(fctx.phaseBCtx[0], insns, slotAwaitFieldKeyMsil(localIdx), ty, localIdx)
+          phaseBRegisterAndSyncLocal(fctx.phaseBCtx[0], insns, ty, localIdx)
         }
         case None -> ()
       }
@@ -24522,7 +24546,7 @@ func lowerStmtKindMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           // survives suspension.  emitPhaseBAwait reloads all registered locals at
           // each resume label.
           if fctx.phaseBCtx.count > 0 {
-            phaseBRegisterAndSyncLocal(fctx.phaseBCtx[0], insns, name, ty, slot - fctx.paramCount)
+            phaseBRegisterAndSyncLocal(fctx.phaseBCtx[0], insns, ty, slot - fctx.paramCount)
           }
         }
         case LBVar(name, tyOpt, initOpt) -> {
@@ -24595,7 +24619,7 @@ func lowerStmtKindMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                 // #5511 fallback: see the matching LBLet comment above.
                 registerFieldFuncValTypesMsil(cctx, fctx, name, init)
                 if fctx.phaseBCtx.count > 0 {
-                  phaseBRegisterAndSyncLocal(fctx.phaseBCtx[0], insns, name, ty, slot - fctx.paramCount)
+                  phaseBRegisterAndSyncLocal(fctx.phaseBCtx[0], insns, ty, slot - fctx.paramCount)
                 }
               }
             }
@@ -24619,7 +24643,7 @@ func lowerStmtKindMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                   emitStoreSlot(insns, slot, fctx.paramCount)
                 }
                 if fctx.phaseBCtx.count > 0 and ty != MVoid {
-                  phaseBRegisterAndSyncLocal(fctx.phaseBCtx[0], insns, name, ty, slot - fctx.paramCount)
+                  phaseBRegisterAndSyncLocal(fctx.phaseBCtx[0], insns, ty, slot - fctx.paramCount)
                 }
               }
             }
@@ -31376,29 +31400,25 @@ func countPromotedLocalsStmt(
           // never put in heap cells when captured by lambdas — they are closed
           // over by value — so the original binding still needs an SM field to
           // survive suspension regardless of whether it appears in hoistedNms.
-          if not nameListContains(seen, name) {
-            seen.add(name)
-          }
+          // Fields are keyed by slot (#8201), so every binding counts, not every
+          // distinct name.
+          seen.add(name)
           countPromotedLocalsExpr(cctx, pkgName, hoistedNms, init, seen)
         }
         case LBVar(name, tyOpt, initOpt) -> {
           // A hoisted (lambda-captured) `var` gets ONE promoted field too —
-          // the heap-cell REFERENCE (`finishHoistedCellMsil` registers it via
-          // phaseBRegisterAndSyncLocal under the same `__local_<name>` key a
-          // plain `var` uses), so the cell pointer survives suspension.
+          // the heap-cell REFERENCE (`finishHoistedCellMsil` registers its
+          // slot via phaseBRegisterAndSyncLocal, as a plain `var` does), so
+          // the cell pointer survives suspension.  One per binding (#8201).
           match initOpt {
             case Some(init) -> {
-              if not nameListContains(seen, name) {
-                seen.add(name)
-              }
+              seen.add(name)
               countPromotedLocalsExpr(cctx, pkgName, hoistedNms, init, seen)
             }
             case None -> {
               val ty = match tyOpt { case Some(te) -> typeExprToMsilCtx(cctx, te, pkgName); case None -> MInt }
               if ty != MVoid {
-                if not nameListContains(seen, name) {
-                  seen.add(name)
-                }
+                seen.add(name)
               }
             }
           }
@@ -31406,8 +31426,15 @@ func countPromotedLocalsStmt(
         case LBVal(cplPat, _, init) -> {
           // #6249: LBVal bindings are promoted at lowering (see the LBVal
           // arm's phaseBPromotePatBindsMsil call), so the field-row budget
-          // must count them here exactly like LBLet/LBVar.
-          countPatBindNamesMsil(cplPat, seen)
+          // must count them here exactly like LBLet/LBVar: one per binding
+          // (#8201), deduplicated only within the pattern.
+          val patNames: List[String] = newList()
+          countPatBindNamesMsil(cplPat, patNames)
+          var pni = 0
+          while pni < patNames.count {
+            seen.add(patNames[pni])
+            pni = pni + 1
+          }
           countPromotedLocalsExpr(cctx, pkgName, hoistedNms, init, seen)
         }
       }
@@ -31419,7 +31446,12 @@ func countPromotedLocalsStmt(
         case None -> ()
       }
     }
-    case SAssign(_, _, v) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, v, seen)
+    // The target too: an element place's index can hold a binding (the
+    // array-bounds check's `__lyric_ai_*`, D167), lowered at the store.
+    case SAssign(t, _, v) -> {
+      countPromotedLocalsExpr(cctx, pkgName, hoistedNms, t, seen)
+      countPromotedLocalsExpr(cctx, pkgName, hoistedNms, v, seen)
+    }
     case SThrow(e) -> countPromotedLocalsExpr(cctx, pkgName, hoistedNms, e, seen)
     case SWhile(_, cond, body) -> {
       countPromotedLocalsExpr(cctx, pkgName, hoistedNms, cond, seen)
@@ -31642,8 +31674,8 @@ func countSpillsStmt(stmt: in Statement): Int {
 // of body content (a zero-param, zero-local generator with only bare `yield`
 // statements still hoists exactly 1 local, `__gen_ex`).
 //
-// Unlike `countSmFieldsMsil`'s SM path (which promotes locals BY NAME, once
-// per distinct name, into a shared field), generator hoisting is a
+// Like `countSmFieldsMsil`'s SM path (which promotes each binding into a
+// field keyed by its slot, #8201), generator hoisting is a
 // post-lowering scan of every `MLdloc`/`MStloc` slot index touched anywhere
 // in the lowered `MoveNext` body — so it is OCCURRENCE-based: two sibling
 // `var i` declarations in different branches get two distinct hoisted
@@ -31953,7 +31985,7 @@ func phaseBPromotePatBindsMsil(pbc: in PhaseBCtx, fctx: in FuncCtx, insns: in Li
       match mapGet(fctx.slots, name) {
         case Some(slot) -> {
           val ty = match mapGet(fctx.types, name) { case Some(t) -> t; case None -> MObject }
-          phaseBRegisterAndSyncLocal(pbc, insns, name, ty, slot - fctx.paramCount)
+          phaseBRegisterAndSyncLocal(pbc, insns, ty, slot - fctx.paramCount)
         }
         case None -> ()
       }
@@ -31987,7 +32019,7 @@ func phaseBPromotePatBindsMsil(pbc: in PhaseBCtx, fctx: in FuncCtx, insns: in Li
             match mapGet(fctx.slots, nm) {
               case Some(slot2) -> {
                 val ty2 = match mapGet(fctx.types, nm) { case Some(t2) -> t2; case None -> MObject }
-                phaseBRegisterAndSyncLocal(pbc, insns, nm, ty2, slot2 - fctx.paramCount)
+                phaseBRegisterAndSyncLocal(pbc, insns, ty2, slot2 - fctx.paramCount)
               }
               case None -> ()
             }
@@ -32003,25 +32035,18 @@ func phaseBPromotePatBindsMsil(pbc: in PhaseBCtx, fctx: in FuncCtx, insns: in Li
 // Register a local as a promoted SM field (first time only) and emit a store
 // from the local slot to the SM field.  Called from LBLet and LBVar handlers
 // inside a Phase B.1 MoveNext context.
-func phaseBRegisterAndSyncLocal(
-  pbc: in PhaseBCtx,
-  insns: in List[MInsn],
-  name: in String,
-  ty: in MsilType,
-  localIdx: in Int,
-): Unit {
-  val fldName = "__local_" + name
-  var alreadyReg = false
-  var chk = 0
-  while chk < pbc.promotedLocalNames.count {
-    if pbc.promotedLocalNames[chk] == name {
-      alreadyReg = true
-      chk = pbc.promotedLocalNames.count
-    }
-    chk = chk + 1
-  }
-  if not alreadyReg {
-    pbc.promotedLocalNames.add(name)
+//
+// The field is keyed by the local's IL slot, never by its source name
+// (#8201): every binding has a slot of its own, so a nested block's binding
+// that shadows an enclosing one of the same name (a plain local, a `val`, or
+// a closure-captured `var`'s heap cell) keeps its own field, and each resume
+// reloads every binding into its own slot.  Keying by name stored both into
+// one field (even at different types: an `int[]` cell and an `Int`) and
+// reloaded only the first binding's slot on resume.
+func phaseBRegisterAndSyncLocal(pbc: in PhaseBCtx, insns: in List[MInsn], ty: in MsilType, localIdx: in Int): Unit {
+  val fldName = slotAwaitFieldKeyMsil(localIdx)
+  if not intListContainsMsil(pbc.promotedLocalSlots, localIdx) {
+    pbc.promotedLocalNames.add(fldName)
     pbc.promotedLocalSlots.add(localIdx)
     pbc.promotedLocalTypes.add(ty)
     pbc.smFields.add(MField(flags = FDA_PUBLIC, name = fldName, fieldType = ty))
@@ -32031,14 +32056,25 @@ func phaseBRegisterAndSyncLocal(
   insns.add(MStfldByName(ownerFqn = pbc.smFqn, fieldName = fldName))
 }
 
+func intListContainsMsil(xs: in List[Int], x: in Int): Bool {
+  var i = 0
+  while i < xs.count {
+    if xs[i] == x {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
 // Sync an already-promoted local's slot value back to its SM field.  Called
 // after each assignment to a `var` local that was registered by
 // phaseBRegisterAndSyncLocal.
-func phaseBSyncLocalIfPromoted(pbc: in PhaseBCtx, insns: in List[MInsn], name: in String, localIdx: in Int): Unit {
-  if nameListContains(pbc.promotedLocalNames, name) {
+func phaseBSyncLocalIfPromoted(pbc: in PhaseBCtx, insns: in List[MInsn], localIdx: in Int): Unit {
+  if intListContainsMsil(pbc.promotedLocalSlots, localIdx) {
     insns.add(MLdarg(slot = 0))
     insns.add(MLdloc(slot = localIdx))
-    insns.add(MStfldByName(ownerFqn = pbc.smFqn, fieldName = "__local_" + name))
+    insns.add(MStfldByName(ownerFqn = pbc.smFqn, fieldName = slotAwaitFieldKeyMsil(localIdx)))
   }
 }
 
@@ -32051,7 +32087,7 @@ func phaseBSpillToLocal(pbc: in PhaseBCtx, fctx: in FuncCtx, insns: in List[MIns
   val slot = allocSlotMsil(fctx, name, ty)
   val localIdx = slot - fctx.paramCount
   insns.add(MStloc(slot = localIdx))
-  phaseBRegisterAndSyncLocal(pbc, insns, name, ty, localIdx)
+  phaseBRegisterAndSyncLocal(pbc, insns, ty, localIdx)
   localIdx
 }
 
@@ -32154,7 +32190,7 @@ func emitPhaseBAwait(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn
   var plReloadIdx = 0
   while plReloadIdx < pbc.promotedLocalNames.count {
     insns.add(MLdarg(slot = 0))
-    insns.add(MLdfldByName(ownerFqn = pbc.smFqn, fieldName = "__local_" + pbc.promotedLocalNames[plReloadIdx]))
+    insns.add(MLdfldByName(ownerFqn = pbc.smFqn, fieldName = pbc.promotedLocalNames[plReloadIdx]))
     insns.add(MStloc(slot = pbc.promotedLocalSlots[plReloadIdx]))
     plReloadIdx = plReloadIdx + 1
   }

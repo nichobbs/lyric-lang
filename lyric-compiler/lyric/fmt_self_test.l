@@ -2484,10 +2484,15 @@ test "a brace lambda's empty parenthesised parameter list formats as the bare ar
   assertTrue(Str.contains(format(parse(multi)), "val g = { -> println("), "multi-line empty parens: canonical opener")
   val arg = "package P\n\nval r = orElse(Some(value = 42), { () -> Some(value = 99) })\n"
   assertTrue(fmtCheckIsOk(formatSourceChecked(arg)), "empty parens in a call argument: round-trips")
-  // A block holding a paren-arrow lambda keeps its `()`: only a brace
-  // lambda's own empty list is canonicalised.
+  // A paren-arrow lambda keeps its `()`, also as the first statement of a
+  // block: only a brace lambda's own empty list is canonicalised.
   val arrow = "package P\n\nval h = () -> 5\n"
   assertTrue(Str.contains(format(parse(arrow)), "val h = () -> 5"), "a paren-arrow lambda keeps its parentheses")
+  val inBlock = "package P\n\nfunc pick(k: in Bool): () -> Int {\n  if k { () -> 1 } else { () -> 2 }\n}\n"
+  assertTrue(fmtCheckIsOk(formatSourceChecked(inBlock)), "paren-arrow lambdas in blocks: round-trips")
+  val inBlockOut = format(parse(inBlock))
+  assertTrue(Str.contains(inBlockOut, "() -> 1"), "a block's paren-arrow lambda keeps its parentheses")
+  assertTrue(Str.contains(inBlockOut, "() -> 2"), "the else block's paren-arrow lambda keeps its parentheses")
 }
 
 test "the loss-check still refuses a dropped empty parameter list outside a brace lambda" {

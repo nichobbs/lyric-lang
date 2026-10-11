@@ -31,11 +31,29 @@ way (`"mut"` entries), so a shadowing `val` captured by a lambda no longer
 trips that check on its enclosing `var`'s name.  Native captures a value and
 was already correct.
 
-Tests: `lyric-compiler/lyric/closure_shadow_self_test.l` (10 cases: the
+The same name-keying broke dotnet `async` functions across a real suspension.
+The async state machine kept each local in a field named `__local_<name>`, so
+a nested binding and the enclosing one of the same name shared one field (even
+at different types, an `int[]` cell and an `Int`) and a resume reloaded only
+the first binding's slot.  A plain nested shadow with no lambda already came
+back wrong before this change (`var x = 1; if c { var x = 10; await …; x = x
++ 5 }; await …; x + 2` gave 507 for 1503); with the cell fix the captured
+shapes would have joined it silently instead of failing to compile.  Promoted
+locals are now keyed by IL slot (`slotAwaitFieldKeyMsil`, already used for
+`for` and `match` bindings) in `phaseBRegisterAndSyncLocal` and
+`phaseBSyncLocalIfPromoted`; the field-row prediction (`countPromotedLocalsStmt`)
+counts every binding instead of every distinct name (and now walks an
+assignment's target, whose element index can hold the array bounds check's
+binding), and
+`rollbackFuncCtxSlotsSinceMsil` drops the fields of the slots it discards.
+The JVM and native were already correct.
+
+Tests: `lyric-compiler/lyric/closure_shadow_self_test.l` (15 cases: the
 issue's two repros, a captured shadow of a captured `var`, a `val` shadow read
 directly and through a lambda, sibling and two-level nesting, a loop body, `for`
-and match-arm bindings, a shadow of another type, and a write to the enclosing
-`var` after the block), on all three targets: `compiler-self-tests-batch.sh`,
+and match-arm bindings, a shadow of another type, a write to the enclosing
+`var` after the block, and five cases that suspend for real inside or after a
+shadowing block, plain and captured), on all three targets: `compiler-self-tests-batch.sh`,
 `jvm-generics-self-tests-batch.sh`, `native-backend-self-tests.sh`, and
 `ilverify-selfhosted.sh`.
 
