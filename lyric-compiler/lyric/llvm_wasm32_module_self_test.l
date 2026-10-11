@@ -1105,11 +1105,11 @@ pub func statOk(path: String): Bool {
 pub func listIt(path: String): String {
   match F.listFiles(path) {
     case Ok(names) -> {
-      var out = ""
+      var acc = ""
       for n in names {
-        out = out + n + ";"
+        acc = acc + n + ";"
       }
-      out
+      acc
     }
     case Err(_) -> "<err>"
   }
