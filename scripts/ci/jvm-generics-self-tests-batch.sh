@@ -61,6 +61,7 @@ for t in \
   lyric-compiler/lyric/lambda_field_ctor_arg_self_test.l \
   lyric-compiler/lyric/closure_var_capture_self_test.l \
   lyric-compiler/lyric/closure_captured_var_byref_self_test.l \
+  lyric-compiler/lyric/closure_shadow_self_test.l \
   lyric-compiler/lyric/inout_receiver_self_test.l \
   lyric-compiler/lyric/inout_receiver_closure_self_test.l \
   lyric-compiler/lyric/inout_array_element_self_test.l \

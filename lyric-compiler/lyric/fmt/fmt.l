@@ -611,6 +611,8 @@ pub func isFormattedSource(source: in String): Bool {
 //      commas, statement-end, and EOF) must be IDENTICAL — so a dropped
 //      `pub`, a dropped `requires:` clause, a mangled `\u{…}` escape, or
 //      an inserted `{ }` block that rescopes a binding is all refused.
+//      The one spelling the formatter canonicalises is a brace lambda's
+//      empty parameter list, `{ () -> e }` to `{ -> e }` (#8200).
 //
 // `lyric fmt --write` routes through this so it can never silently change
 // a file's meaning: on any failure it refuses to overwrite and reports
@@ -726,6 +728,31 @@ func codeTokens(source: in String): List[String] {
       }
     }
     i = i + 1
+  }
+  dropEmptyLambdaParens(acc)
+}
+
+/// `toks` without the `(` `)` of every brace lambda's empty parameter list:
+/// `{ () -> e }` and `{ -> e }` parse to the same `ELambda` with no
+/// parameters, and the formatter writes the canonical `{ -> e }` (#8200).  The
+/// pair is dropped only directly between a `{` and a `->`, so a non-empty
+/// parameter list, a paren-arrow lambda `() -> e` and a unit `()` value all
+/// still compare token by token.  Applied to both sides of the comparison: a
+/// `{ () -> e }` that opens a block holding a paren-arrow lambda reads the same
+/// either way, and the formatter keeps those parentheses (the re-parse check
+/// would refuse `{ -> e }` there).
+func dropEmptyLambdaParens(toks: in List[String]): List[String] {
+  val acc: List[String] = newList()
+  var i = 0
+  while i < toks.count {
+    val emptyHead = toks[i] == "(" and i > 0 and toks[i - 1] == "{" and i + 2 < toks.count and toks[i + 1] == ")" and
+      toks[i + 2] == "->"
+    if emptyHead {
+      i = i + 2
+    } else {
+      acc.add(toks[i])
+      i = i + 1
+    }
   }
   acc
 }

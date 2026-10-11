@@ -6458,6 +6458,20 @@ pub record FuncCtx {
 //               `priorEnumTy` carries the restore value (`None` = the name had
 //               no enum-type mapping before this block), `priorSlot`/`priorType`
 //               are unused.
+//   "cell"    — a `hoistedCellSlot`/`hoistedCellType` rebind (#8201): a nested
+//               block's binding of a name an enclosing closure-captured `var`
+//               hoisted to a heap cell.  `priorSlot` is the enclosing cell's
+//               slot and `priorType` its element type (`None` = the name had no
+//               cell before), `priorEnumTy` is unused.  Without it the cell
+//               maps were keyed by bare name for the whole function, so a
+//               shadowing captured `var` crashed `Map.add`, and a shadowing
+//               plain binding read the enclosing cell instead of its own slot.
+//   "mut"     — a `mutableLocals` rebind (#8201): `priorSlot` is `Some(1)` when
+//               the enclosing binding of the name was a `var` and `None` when
+//               it was not (or there was none); the other fields are unused.
+//               Keeps a shadowing `val` captured by a closure from tripping
+//               the "captured `var` was not hoisted" check on its enclosing
+//               `var`'s name.
 pub record ScopeUndoMsil {
   name: String
   kind: String
@@ -6524,6 +6538,66 @@ pub func recordScopeUndoMsil(fctx: in FuncCtx, name: in String): Unit {
   )
 }
 
+// A new binding of `name` hides any enclosing closure-captured `var`'s heap
+// cell of that name (#8201): every read and write looks the cell map up before
+// the slot map, so a stale entry would route the new binding's accesses to the
+// enclosing cell.  Logs the enclosing cell so `exitBlockScopeMsil` restores it,
+// then drops it; a binding that is itself a hoisted `var` re-adds its own cell
+// in `finishHoistedCellMsil`.
+func hideHoistedCellMsil(fctx: in FuncCtx, name: in String): Unit {
+  match mapGet(fctx.hoistedCellSlot, name) {
+    case Some(priorCell) -> {
+      fctx.scopeUndoMsil.add(
+        ScopeUndoMsil(
+          name = name,
+          kind = "cell",
+          priorSlot = Some(value = priorCell),
+          priorType = mapGet(fctx.hoistedCellType, name),
+          priorEnumTy = None
+        )
+      )
+      fctx.hoistedCellSlot.remove(name)
+      if fctx.hoistedCellType.containsKey(name) {
+        fctx.hoistedCellType.remove(name)
+      }
+    }
+    case None -> ()
+  }
+}
+
+// A new binding of `name` is not a `var` until its declaration says so (#8201):
+// drop the name from `mutableLocals`, logging whether an enclosing binding of it
+// was a `var` so `exitBlockScopeMsil` restores that.
+func hideMutableLocalMsil(fctx: in FuncCtx, name: in String): Unit {
+  if nameListContains(fctx.mutableLocals, name) {
+    fctx.scopeUndoMsil.add(
+      ScopeUndoMsil(name = name, kind = "mut", priorSlot = Some(value = 1), priorType = None, priorEnumTy = None)
+    )
+    removeNameAllMsil(fctx.mutableLocals, name)
+  }
+}
+
+// Mark the binding of `name` just allocated as a `var`, logged so the mark is
+// dropped when the current block exits (#8201).
+func markMutableLocalMsil(fctx: in FuncCtx, name: in String): Unit {
+  if not nameListContains(fctx.mutableLocals, name) {
+    fctx.scopeUndoMsil.add(
+      ScopeUndoMsil(name = name, kind = "mut", priorSlot = None, priorType = None, priorEnumTy = None)
+    )
+    fctx.mutableLocals.add(name)
+  }
+}
+
+func removeNameAllMsil(names: in List[String], name: in String): Unit {
+  var i = names.count - 1
+  while i >= 0 {
+    if names[i] == name {
+      names.removeAt(i)
+    }
+    i = i - 1
+  }
+}
+
 // Record `name`'s current `varEnumTypes` mapping (if any) on the scope undo log
 // BEFORE `registerVarEnumTypeMsil` rebinds it, so `exitBlockScopeMsil` can
 // restore the enclosing enum-type mapping an inner block's same-named
@@ -6565,6 +6639,29 @@ pub func exitBlockScopeMsil(fctx: in FuncCtx, bs: in BlockScopeMsil): Unit {
         }
         match u.priorEnumTy {
           case Some(e) -> fctx.varEnumTypes.add(u.name, e)
+          case None -> ()
+        }
+      }
+      case "mut" -> {
+        removeNameAllMsil(fctx.mutableLocals, u.name)
+        match u.priorSlot {
+          case Some(_) -> fctx.mutableLocals.add(u.name)
+          case None -> ()
+        }
+      }
+      case "cell" -> {
+        if fctx.hoistedCellSlot.containsKey(u.name) {
+          fctx.hoistedCellSlot.remove(u.name)
+        }
+        if fctx.hoistedCellType.containsKey(u.name) {
+          fctx.hoistedCellType.remove(u.name)
+        }
+        match u.priorSlot {
+          case Some(s) -> fctx.hoistedCellSlot.add(u.name, s)
+          case None -> ()
+        }
+        match u.priorType {
+          case Some(t) -> fctx.hoistedCellType.add(u.name, t)
           case None -> ()
         }
       }
@@ -6751,6 +6848,8 @@ pub func allocSlotMsil(fctx: in FuncCtx, name: in String, ty: in MsilType): Int 
   // Log `name`'s prior binding so an enclosing scope's mapping is restored when
   // the current block exits (general shadowing fix, #5191).
   recordScopeUndoMsil(fctx, name)
+  hideHoistedCellMsil(fctx, name)
+  hideMutableLocalMsil(fctx, name)
   match mapGet(fctx.slots, name) {
     case Some(existing) -> {
       val existingTy = match mapGet(fctx.types, name) { case Some(t) -> t; case None -> ty }
@@ -6866,7 +6965,12 @@ pub func finishHoistedCellMsil(
   val cellTy = cellArrayTyMsil(elemTy, objCell)
   val cellSlot = allocSlotMsil(fctx, name, cellTy)
   emitStoreSlot(insns, cellSlot, fctx.paramCount)
-  fctx.mutableLocals.add(name)
+  markMutableLocalMsil(fctx, name)
+  // `allocSlotMsil` above hid any enclosing cell of this name; log that this
+  // block's cell is new so `exitBlockScopeMsil` drops it (#8201).
+  fctx.scopeUndoMsil.add(
+    ScopeUndoMsil(name = name, kind = "cell", priorSlot = None, priorType = None, priorEnumTy = None)
+  )
   fctx.hoistedCellSlot.add(name, cellSlot)
   fctx.hoistedCellType.add(name, elemTy)
   // Inside an async SM MoveNext the cell REFERENCE must survive suspension
@@ -24487,7 +24591,7 @@ func lowerStmtKindMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                 markByteSlotMsil(fctx, slot, isByteAnnotationMsil(tyOpt))
                 emitByteSlotNarrowMsil(fctx, insns, slot)
                 emitStoreSlot(insns, slot, fctx.paramCount)
-                fctx.mutableLocals.add(name)
+                markMutableLocalMsil(fctx, name)
                 // #5511 fallback: see the matching LBLet comment above.
                 registerFieldFuncValTypesMsil(cctx, fctx, name, init)
                 if fctx.phaseBCtx.count > 0 {
@@ -24504,7 +24608,7 @@ func lowerStmtKindMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                 finishHoistedCellMsil(cctx, fctx, insns, name, ty)
               } else {
                 val slot = allocSlotMsil(fctx, name, ty)
-                fctx.mutableLocals.add(name)
+                markMutableLocalMsil(fctx, name)
                 // The declared type's own default — `ldnull` for a reference
                 // type, `initobj` for a struct or a real type parameter
                 // (#7525, #7692), the zero of the right width for a numeric.

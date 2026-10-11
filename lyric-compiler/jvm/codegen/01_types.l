@@ -995,10 +995,18 @@ pub record FuncCtx {
 // already does.  The slot ticker is NOT rolled back: inner slots stay allocated
 // (dead after the block) so a slot never carries two verifier types across the
 // method's single uniform StackMapTable frame.
+//
+// `priorCellSlot`/`priorCellType` carry the name's `hoistedCellSlot`/
+// `hoistedCellType` entry (#8201): a closure-captured `var` lives in a heap
+// cell keyed by bare name, and every read and write looks that map up before
+// the slot map, so a nested block's binding of the same name must hide the
+// enclosing cell and the block's exit must bring it back.
 pub record ScopeUndo {
   name: String
   priorSlot: Option[Int]
   priorType: Option[JvmType]
+  priorCellSlot: Option[Int]
+  priorCellType: Option[JvmType]
 }
 
 // #6759: `varGenericArgs`' own change-log entry — see
@@ -1044,11 +1052,29 @@ pub func recordVarGenericArgsScopeUndo(ctx: in FuncCtx, name: in String): Unit {
 
 // Record `name`'s current slot/type binding on the scope undo log BEFORE
 // `allocSlot` rebinds it, so `exitBlockScope` can restore the enclosing binding
-// (or drop the name if it was newly introduced in the block).
+// (or drop the name if it was newly introduced in the block).  The new binding
+// hides any enclosing heap cell of the name; a binding that is itself a hoisted
+// `var` adds its own cell after `allocSlot` returns (#8201).
 pub func recordScopeUndo(ctx: in FuncCtx, name: in String): Unit {
   val priorSlot: Option[Int] = mapGet(ctx.slots, name)
   val priorType: Option[JvmType] = mapGet(ctx.types, name)
-  ctx.scopeUndo.add(ScopeUndo(name = name, priorSlot = priorSlot, priorType = priorType))
+  val priorCellSlot: Option[Int] = mapGet(ctx.hoistedCellSlot, name)
+  val priorCellType: Option[JvmType] = mapGet(ctx.hoistedCellType, name)
+  ctx.scopeUndo.add(
+    ScopeUndo(
+      name = name,
+      priorSlot = priorSlot,
+      priorType = priorType,
+      priorCellSlot = priorCellSlot,
+      priorCellType = priorCellType
+    )
+  )
+  if ctx.hoistedCellSlot.containsKey(name) {
+    ctx.hoistedCellSlot.remove(name)
+  }
+  if ctx.hoistedCellType.containsKey(name) {
+    ctx.hoistedCellType.remove(name)
+  }
 }
 
 // Exit a nested lexical scope: replay the undo log back to the block's entry mark
@@ -1069,6 +1095,20 @@ pub func exitBlockScope(ctx: in FuncCtx, bs: in BlockScope): Unit {
     }
     match u.priorType {
       case Some(t) -> ctx.types.add(u.name, t)
+      case None -> ()
+    }
+    if ctx.hoistedCellSlot.containsKey(u.name) {
+      ctx.hoistedCellSlot.remove(u.name)
+    }
+    match u.priorCellSlot {
+      case Some(cs) -> ctx.hoistedCellSlot.add(u.name, cs)
+      case None -> ()
+    }
+    if ctx.hoistedCellType.containsKey(u.name) {
+      ctx.hoistedCellType.remove(u.name)
+    }
+    match u.priorCellType {
+      case Some(ct) -> ctx.hoistedCellType.add(u.name, ct)
       case None -> ()
     }
   }
