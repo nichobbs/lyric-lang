@@ -61,15 +61,18 @@
 //!   - `N0024` (#7891), positioned at the argument, for a variable a
 //!     closure captures passed by reference from inside the closure (a
 //!     closure-local variable, and a field of a captured record, still
-//!     work).
+//!     work);
+//!   - `out`/`inout` `String` and record parameters of protected-type
+//!     entries, funcs and interface impls, and a protected object passed
+//!     as the by-ref place of its own entry (`c.replace(c)`: the receiver
+//!     is retained for the call, so the wrapper's unlock never reads freed
+//!     memory), under ASan (#8184).
 //!
 //! Deferred (out of scope for this slice — loud diagnostics, not silent
 //! miscompiles): `out`/`inout` on an `extern func` C-ABI declaration;
-//! `out`/`inout` on a `protected type` method (the hand-built lock/unlock
-//! wrapper does not thread by-ref pointers); `out`/`inout` on an async
-//! function's parameter (a suspended coroutine cannot safely hold a
-//! pointer into caller-frame storage across a suspend point); a by-ref
-//! argument that is a qualified module-level path.
+//! `out`/`inout` on an async function's parameter (a suspended coroutine
+//! cannot safely hold a pointer into caller-frame storage across a suspend
+//! point); a by-ref argument that is a qualified module-level path.
 //!
 //! Requires `clang` on PATH and a built runtime (`make -C lyric-rt`).
 //! Run via native `lyric test` with LYRIC_LOAD_COMPILER=1:
@@ -565,4 +568,74 @@ test "a captured variable passed by reference inside a closure is N0024 at the a
     "  r + h.n\n" +
     "}\n"
   assertEqualInt(compileAndRunAsan(fine).exitCode, 13, "a closure-local variable and a captured record's field")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// `out`/`inout` parameters of protected-type members (#8184): the lock
+// wrapper forwards the place's pointer to the inner body.
+// ─────────────────────────────────────────────────────────────────────────────
+// This harness runs codegen without the middle end, so the source is written
+// in the shape the contract elaborator gives an `impl` for a protected type:
+// its methods moved into the type as entries (the explicit `self` included)
+// and the impl left empty (#7457).  `protected_byref_self_test.l` runs the
+// written-out form on every target.
+test "out/inout heap arguments to protected entries, funcs and interface impls (ASan)" {
+  val src = "package T\n" + "record Tag {\n  var s: String\n}\n" + "interface Sink {\n" +
+    "  func fill(self: in Self, k: out Int, s: inout String, t: inout Tag): Int\n" +
+    "}\n" +
+    "protected type Box {\n" +
+    "  var name: String = \"b\"\n" +
+    "  var n: Int = 0\n" +
+    "  entry swap(s: inout String, t: out Tag): Unit {\n" +
+    "    val prev = name\n" +
+    "    name = s + \"!\"\n" +
+    "    s = prev\n" +
+    "    t = Tag(s = name + \"t\")\n" +
+    "  }\n" +
+    "  func peek(s: out String, t: inout Tag): Int {\n" +
+    "    s = name + \"?\"\n" +
+    "    t.s = t.s + \"p\"\n" +
+    "    n\n" +
+    "  }\n" +
+    "  entry replace(other: inout Box): Unit {\n" +
+    "    other = Box(name = \"fresh\" + \"!\")\n" +
+    "    n = n + 1\n" +
+    "  }\n" +
+    "  entry fill(self: in Self, k: out Int, s: inout String, t: inout Tag): Int {\n" +
+    "    n = n + 1\n" +
+    "    k = n\n" +
+    "    s = s + \"f\"\n" +
+    "    t = Tag(s = t.s + \"h\")\n" +
+    "    n * 2\n" +
+    "  }\n" +
+    "}\n" +
+    "impl Sink for Box {\n" +
+    "}\n" +
+    "func via(z: in Sink, s: inout String, t: inout Tag): Int {\n" +
+    "  var k = 0\n" +
+    "  val r = z.fill(k, s, t)\n" +
+    "  r + k\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val b = Box()\n" +
+    "  var s = \"x\" + \"y\"\n" +
+    "  var t = Tag(s = \"t\")\n" +
+    "  var sum = 0\n" +
+    "  var i = 0\n" +
+    "  while i < 50 {\n" +
+    "    b.swap(s, t)\n" +
+    "    var p = \"\"\n" +
+    "    sum = sum + b.peek(p, t) + p.length\n" +
+    "    sum = sum + via(b, s, t)\n" +
+    "    i = i + 1\n" +
+    "  }\n" +
+    "  var c = Box(name = \"self\" + \"!\")\n" +
+    "  c.replace(c)\n" +
+    "  var q = \"\"\n" +
+    "  var u = Tag(s = \"\")\n" +
+    "  c.peek(q, u)\n" +
+    "  if sum > 0 and s.length > 0 and t.s.length > 0 and q == \"fresh!?\" { 0 } else { 1 }\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 0, "each member writes the caller's places, leak-free (ASan)")
 }

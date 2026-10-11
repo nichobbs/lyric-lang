@@ -7369,21 +7369,28 @@ func emitLoadVarMsil(fctx: in FuncCtx, insns: in List[MInsn], slot: in Int): Uni
 // `recvSlot`, 3 = element 0 of a closure-captured `var`'s heap cell, whose
 // reference is saved in `recvSlot` and whose logical element type is
 // `argElem` (#8189), 4 = the same for a cell forced to `object[]` (#8204).
+// `fieldStore` is kind 2's store instruction (`ByrefFieldMsil.store`).
 record ByrefWriteBackMsil {
   kind: Int
   slot: Int
   tempSlot: Int
   argElem: MsilType
   recvSlot: Int
-  fieldTok: Int
+  fieldStore: MInsn
 }
 
 // The receiver of an `out`/`inout` field argument (`obj.field`), lowered onto
-// the stack, with the field's FieldDef token and its `fieldTokens` key.
+// the stack, with the field's `fieldTokens` key and the instructions that
+// load, store and take the address of the field on that receiver: plain
+// FieldDef-token forms on a class, TypeSpec-parented MemberRef forms on a
+// generic instantiation (a generic record's or protected type's own field
+// through `self`, #8184).
 record ByrefFieldMsil {
   recvTy: MsilType
   key: String
-  tok: Int
+  load: MInsn
+  store: MInsn
+  addr: MInsn
 }
 
 func lowerByrefFieldReceiverMsil(
@@ -7398,13 +7405,47 @@ func lowerByrefFieldReceiverMsil(
     case MClass(cls) -> {
       val key = cls + "/" + memberName
       match mapGet(cctx.fieldTokens, key) {
-        case Some(tok) -> ByrefFieldMsil(recvTy = recvTy, key = key, tok = tok)
+        case Some(tok) -> ByrefFieldMsil(
+          recvTy = recvTy,
+          key = key,
+          load = MLdfld(fieldToken = tok),
+          store = MStfld(fieldToken = tok),
+          addr = MLdflda(fieldToken = tok)
+        )
         case None -> panic(
           "Msil.Codegen: out/inout field argument '" + memberName + "' not found in fieldTokens for class '" +
             cls +
             "'"
         )
       }
+    }
+    // A field of a generic instantiation — `self.f` (or a bare `f`) inside a
+    // generic record's or protected type's own member, where `self` is the
+    // open self-instantiation, or a field of a closed instantiation.  The
+    // field is reached through a TypeSpec-parented MemberRef whose FieldSig
+    // is the field's OPEN declared type, as the read path does (#2362).
+    case MGenericInstByName(fqn, typeArgs) -> {
+      val key = stripGenericArity(fqn) + "/" + memberName
+      if not cctx.fieldSigBytes.containsKey(key) {
+        panic("Msil.Codegen: out/inout field argument '" + memberName + "' not found on generic type '" + fqn + "'")
+      }
+      val vi = match mapGet(cctx.fieldVarIndices, key) { case Some(v) -> v; case None -> -1 }
+      val fMTy: MsilType = if vi >= 0 {
+        MTypeVar(index = vi)
+      } else {
+        match mapGet(cctx.fieldMsilTypes, key) {
+          case Some(t) -> t
+          case None -> MObject
+        }
+      }
+      insns.add(MCastclassGeneric(className = fqn, typeArgs = typeArgs))
+      ByrefFieldMsil(
+        recvTy = recvTy,
+        key = key,
+        load = MLdfldGeneric(baseClassName = fqn, typeArgs = typeArgs, fieldName = memberName, fieldMsilType = fMTy),
+        store = MStfldGeneric(baseClassName = fqn, typeArgs = typeArgs, fieldName = memberName, fieldMsilType = fMTy),
+        addr = MLdfldaGeneric(baseClassName = fqn, typeArgs = typeArgs, fieldName = memberName, fieldMsilType = fMTy)
+      )
     }
     // Lyric records are always emitted as MSIL reference types (MClass); a
     // value-type receiver (e.g. a future Lyric struct) is not yet possible here.
@@ -7496,7 +7537,7 @@ func emitByrefArgCheckedMsil(
           emitStoreSlot(insns, recvSlot, fctx.paramCount)
           val tempSlot = allocSlotMsil(fctx, "__byref_tmp_" + toString(fctx.slotTicker.count), pe)
           emitLoadSlot(insns, recvSlot, fctx.paramCount)
-          insns.add(MLdfld(fieldToken = fld.tok))
+          insns.add(fld.load)
           narrowToClassMsil(insns, pe)
           emitStoreSlot(insns, tempSlot, fctx.paramCount)
           insns.add(MLdloca(slot = tempSlot - fctx.paramCount))
@@ -7507,11 +7548,11 @@ func emitByrefArgCheckedMsil(
               tempSlot = tempSlot,
               argElem = fldTy,
               recvSlot = recvSlot,
-              fieldTok = fld.tok
+              fieldStore = fld.store
             )
           )
         } else {
-          insns.add(MLdflda(fieldToken = fld.tok))
+          insns.add(fld.addr)
         }
         return ()
       }
@@ -7554,7 +7595,7 @@ func emitByrefArgCheckedMsil(
           tempSlot = tempSlot,
           argElem = st,
           recvSlot = -1,
-          fieldTok = 0
+          fieldStore = MNop
         )
       )
     }
@@ -7656,7 +7697,7 @@ func emitCellByrefArgMsil(
       tempSlot = tempSlot,
       argElem = elemTy,
       recvSlot = cellSlot,
-      fieldTok = 0
+      fieldStore = MNop
     )
   )
   true
@@ -7729,7 +7770,7 @@ func emitByrefWriteBacksMsil(
       emitLoadSlot(insns, wb.recvSlot, fctx.paramCount)
       emitLoadSlot(insns, wb.tempSlot, fctx.paramCount)
       narrowToClassMsil(insns, wb.argElem)
-      insns.add(MStfld(fieldToken = wb.fieldTok))
+      insns.add(wb.fieldStore)
     } else if wb.kind == 1 {
       insns.add(MLdarg(slot = wb.slot))
       emitLoadSlot(insns, wb.tempSlot, fctx.paramCount)
@@ -7777,7 +7818,7 @@ func emitByrefArgMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIns
       // out/inout argument is a field access (e.g. `self.field`).  Load the
       // receiver address then use ldflda to get a managed pointer to the field.
       val fld = lowerByrefFieldReceiverMsil(cctx, fctx, insns, recv, memberName)
-      insns.add(MLdflda(fieldToken = fld.tok))
+      insns.add(fld.addr)
     }
     case _ -> panic("Msil.Codegen: out/inout argument must be an assignable variable (path or field access)")
   }
@@ -25602,6 +25643,7 @@ func insnStackDelta(insn: in MInsn): Int {
     case MDictOp(op, _, _) -> dictOpStackDelta(op)
     case MLdfldGeneric(_, _, _, _) -> 0
     case MStfldGeneric(_, _, _, _) -> -2
+    case MLdfldaGeneric(_, _, _, _) -> 0
     case MCallvirtGeneric(_, _, _, _, _) -> 1
     case MNewobjGenericCase(_, _, _) -> 1
     case MNewobjGenericByName(_, _, _) -> 1
@@ -37299,7 +37341,10 @@ func lowerProtectedMsil(
           MFunc(
             flags = MDA_PUBLIC + MDA_VIRTUAL + MDA_HIDE_BY_SIG,
             name = ed.name,
-            params = pTypes,
+            // `out`/`inout` parameters are managed pointers, as in
+            // `lowerImplMethodMsil`: the caller passes the place's address
+            // and an interface slot's signature carries the by-ref (#8184).
+            params = byrefWrapSigTypes(edParams, pTypes),
             ret = retTy,
             insns = entryInsns,
             maxStack = computeMaxStackMsil(entryInsns),
