@@ -7134,7 +7134,10 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
   if ownSites and state.hoistOperandTypeSites.count > 0 {
     val hoistKey = recordCopySiteKey(s)
     match mapGet(state.hoistOperandTypeSites, hoistKey) {
-      case Some(site) -> {
+      // A site applies only to an expression of the kind it was recorded
+      // for: synthesized code can give the expressions inside one the same
+      // span (see `HoistOperandTypeSite.operandKind`).
+      case Some(site) -> if site.operandKind == exprKindTag(expr) {
         state.hoistOperandTypeSites.remove(hoistKey)
         return hoistOperandTypedMono(state, site, rewriteExpr(state, env, expr), s)
       }

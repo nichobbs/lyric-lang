@@ -99,3 +99,16 @@ mismatched literals (`k([1], ["s"])`, `f(["a"], 1)`, `pick(base, [1, 2])`)
 are T0043, a generic record's mismatched field literal T0104, two values
 binding `T` to `Int` and `String` T0043, and that a widening binding and
 literals at an unbound bare `T` stay clean.
+
+**Synthesized spans.** Recording an adopted literal in
+`hoistOperandTypeSites` exposed that those sites are keyed by span alone.
+The synthesized `buildInfo()` accessor (docs/60 §9.2) gives its
+`BuildInfo(...)` call and the call's `features` list literal the same span
+(the file's), so `Lyric.Mono` bound the call, the first expression it met at
+that span, to a `List[String]` local, and the JVM cast the record to an
+`ArrayList` (`scripts/ci/buildinfo-project-version-define.sh`). A
+`HoistOperandTypeSite` now carries its operand's `exprKindTag`; Mono applies
+a site only to an expression of that kind, and two sites recorded for one
+span at different kinds are conflicting. `typechecker_self_test.l` desugars
+the synthesized accessor and checks that the call is left as written and the
+literal bound.

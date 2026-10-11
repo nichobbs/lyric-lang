@@ -15,6 +15,7 @@ import Lyric.Pipeline
 import Lyric.TypeAliasResolve as TAR
 import Lyric.BareFuncRef as BFR
 import Lyric.Weaver as Weaver
+import Lyric.BuildDefines as BD
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers.
@@ -3987,6 +3988,75 @@ test "conflicting type-parameter bindings across arguments are reported (#8191, 
     "func w(a: in List[Long], n: in Int, l: in Long): Int { k(a, [1, 2]) + pick(n, l) + pick([1], [2, 3]) }\n"
   val okCr = checkWithImportedPackages(parse(ok).file, stdCollectionsHostPackages())
   assertEqualInt(diagCount(okCr), 0, "widening bindings and unbound literals are clean (" + diagCodesOf(okCr) + ")")
+}
+
+// The returned value of the synthesized `buildInfo()` accessor, and its
+// `features` argument, after `Lyric.Mono.desugarCheckedFile`.
+func buildInfoReturnKinds(file: in SourceFile): String {
+  for it in file.items {
+    match it.kind {
+      case IFunc(d) -> if d.name == "buildInfo" {
+        match d.body {
+          case Some(FBBlock(blk)) -> match blk.statements[0].kind {
+            case SReturn(Some(v)) -> {
+              return exprKindTag(v) + " " + featuresArgKind(v)
+            }
+            case _ -> ()
+          }
+          case _ -> ()
+        }
+      }
+      case _ -> ()
+    }
+  }
+  ""
+}
+
+func featuresArgKind(call: in Expr): String {
+  val cargs = match call.kind { case ECall(_, cs) -> cs; case _ -> return "" }
+  for a in cargs {
+    match a {
+      case CANamed(nm, av, _) -> if nm == "features" { return exprKindTag(av) }
+      case _ -> ()
+    }
+  }
+  ""
+}
+
+// Synthesized code gives one span to an expression and the expressions in
+// it: the `buildInfo()` accessor's `BuildInfo(...)` call and its `features`
+// list literal share the file's span.  The literal's recorded type binds the
+// literal, never the call (the JVM cast the record to an `ArrayList`).
+test "a site recorded for a synthesized literal binds only the literal" {
+  val bi = parse(
+    "package Std.BuildInfo\nimport Std.CollectionsHost\npub union Option[T] {\n  case Some(value: T)\n  case None\n}\n" +
+      "pub record BuildInfo {\n  version: String\n  target: String\n" +
+      "  profile: String\n  gitHash: Option[String]\n  buildTimestamp: Option[String]\n  features: List[String]\n}\n"
+  )
+  val pkgs = stdCollectionsHostPackages()
+  pkgs.add(
+    ImportedPackage(
+      name = "Std.BuildInfo",
+      items = bi.file.items,
+      imports = collectImportNames(bi.file.imports),
+      wholeImports = collectWholeImportNames(bi.file.imports)
+    )
+  )
+  val features: List[String] = newList()
+  features.add("fast")
+  val noDefines: List[BD.Define] = newList()
+  val app = parse("package App\nimport Std.CollectionsHost\nimport Std.BuildInfo\nfunc main(): Unit { }\n")
+  val synthesized = BD.synthesizeBuildInfo(app.file, "jvm", features, noDefines)
+  val cr = checkWithImportedPackages(synthesized, pkgs)
+  assertEqualInt(diagCount(cr), 0, "clean (" + diagCodesOf(cr) + ")")
+  val desugared = pipeDesugarChecked(
+    synthesized,
+    cr,
+    funcValueSites(cr.symbols),
+    cr.symbols.listLiteralTypeSites,
+    cr.symbols.hoistOperandTypeSites
+  )
+  assertEqual(buildInfoReturnKinds(desugared.file), "ECall EBlock", "the call is left as written, the literal bound")
 }
 
 // #8190: a literal bound to a temporary ahead of a `?` is recorded at the

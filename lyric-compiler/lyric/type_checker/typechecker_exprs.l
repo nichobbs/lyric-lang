@@ -5688,7 +5688,8 @@ pub func collectPropagateFallbacks(tbl: in SymbolTable): Unit {
                 operandType = te,
                 rendered = renderType(t),
                 conflicting = false,
-                startOffset = op.operand.span.startPos.offset
+                startOffset = op.operand.span.startPos.offset,
+                operandKind = exprKindTag(op.operand)
               )
             )
             case None -> ()
@@ -11496,7 +11497,7 @@ func recordHoistOperandTypeOver(
       val key = recordCopySiteKey(sp)
       val rendered = renderType(t)
       match mapGet(tbl.hoistOperandTypeSites, key) {
-        case Some(prev) -> if prev.rendered != rendered and not prev.conflicting {
+        case Some(prev) -> if (prev.rendered != rendered or prev.operandKind != exprKindTag(e)) and not prev.conflicting {
           tbl.hoistOperandTypeSites.remove(key)
           tbl.hoistOperandTypeSites.add(
             key,
@@ -11504,7 +11505,8 @@ func recordHoistOperandTypeOver(
               operandType = prev.operandType,
               rendered = prev.rendered,
               conflicting = true,
-              startOffset = prev.startOffset
+              startOffset = prev.startOffset,
+              operandKind = prev.operandKind
             )
           )
         }
@@ -11514,7 +11516,8 @@ func recordHoistOperandTypeOver(
             operandType = te,
             rendered = rendered,
             conflicting = false,
-            startOffset = sp.startPos.offset
+            startOffset = sp.startPos.offset,
+            operandKind = exprKindTag(e)
           )
         )
       }
