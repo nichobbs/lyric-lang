@@ -1212,6 +1212,13 @@ pub func annotationTrailingFlags(a: in Annotation): List[String] {
 }
 
 // ─── Reserved compiler annotations ──────────────────────────────────────────
+/// The prefix of every annotation name the compiler reserves for the markers
+/// its own passes attach (`__lyric_origin`, `__lyric_self_resolved`, ...).
+/// Source cannot spell one (P0346): each changes how a body is compiled.
+pub func reservedAnnotationPrefix(): String {
+  "__lyric_"
+}
+
 /// The reserved annotation naming the package a generic function was
 /// declared in.  Its body is specialised into whichever package calls it, so
 /// `Lyric.Mono` uses the origin to resolve QUALIFIED call sites
@@ -1221,6 +1228,60 @@ pub func annotationTrailingFlags(a: in Annotation): List[String] {
 /// (D-progress-946).
 pub func originAnnotationName(): String {
   "__lyric_origin"
+}
+
+/// The reserved annotation `Lyric.SelfFields` puts on a member body whose
+/// field references it wrote as `self.<name>` (#8264).  Every bare name left
+/// in such a body is a binding of the body or a module-level name, so codegen
+/// does not fall back to the receiver's fields for it.
+pub func selfResolvedAnnotationName(): String {
+  "__lyric_self_resolved"
+}
+
+/// True when `e` is the implicit receiver `Lyric.SelfFields` wrote in place
+/// of a bare field reference (`count` read as `self.count`, #8264): a `self`
+/// with an empty span.  A `self` the author wrote spans its four characters,
+/// so the two never mix.  Passes that treat the two spellings differently
+/// (the mode checker's V0015 does not check a bare field write) read it.
+pub func isImplicitSelf(e: in Expr): Bool {
+  match e.kind {
+    case ESelf -> e.span.endPos.offset == e.span.startPos.offset
+    case _ -> false
+  }
+}
+
+/// The reserved annotation `Lyric.ImplDefaults` puts on the copy of an
+/// interface default method it adds to an `impl`.  The copy's body was
+/// written against the interface, which has no fields, so the target's fields
+/// are not in its scope (#8264).
+pub func inheritedDefaultAnnotationName(): String {
+  "__lyric_inherited_default"
+}
+
+/// True when `anns` holds the reserved marker annotation `name`.
+pub func hasMarkerAnnotation(anns: in List[Annotation], name: in String): Bool {
+  for a in anns {
+    if a.name.segments.count == 1 and a.name.segments[0] == name {
+      return true
+    }
+  }
+  false
+}
+
+/// `anns` with the reserved marker annotation `name` added once.
+pub func withMarkerAnnotation(anns: in List[Annotation], name: in String, sp: in Span): List[Annotation] {
+  if hasMarkerAnnotation(anns, name) {
+    return anns
+  }
+  val acc: List[Annotation] = newList()
+  for a in anns {
+    acc.add(a)
+  }
+  val segs: List[String] = newList()
+  segs.add(name)
+  val noArgs: List[AnnotationArg] = newList()
+  acc.add(Annotation(name = ModulePath(segments = segs, span = sp), args = noArgs, span = sp))
+  acc
 }
 
 /// The origin package recorded by `Lyric.Mono.withOriginPkgMono`, or "".

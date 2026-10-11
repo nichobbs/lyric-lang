@@ -10899,3 +10899,18 @@ test "a field of a module-level binding is a receiver place, as it is an argumen
   val cr = preparedCheck(inoutRecvSrc(decls + "func f(): Unit {\n  zap(gh.r)\n  gh.r.reset()\n  R.reset(gh.r)\n}\n"))
   assertEqualInt(cr.diagnostics.count, 0, "argument, method and type-qualified forms: " + diagCodesOf(cr))
 }
+
+// A name in a `val` destructure binds at the case field's type, even when it
+// is spelled like a case of an enum in scope (#8264); it used to bind as
+// `TyError`, which silenced every diagnostic that involved it.
+test "a val constructor pattern binds its names at the case's field types (#8264)" {
+  val decls = "package P\nenum Color {\n  case red\n  case green\n}\nunion Pair {\n  case Only(n: Int, c: Color)\n}\n"
+  val caseNamed = parseCheck(
+    decls + "func f(p: in Pair): Int {\n  val Only(n, red) = p\n  val s: String = red\n  n\n}\n"
+  )
+  assertTrue(hasDiagCode(caseNamed, "T0060"), "a case-named binding is the Color field: " + diagCodesOf(caseNamed))
+  val plain = parseCheck(decls + "func f(p: in Pair): Int {\n  val Only(n, c) = p\n  val s: String = n\n  0\n}\n")
+  assertTrue(hasDiagCode(plain, "T0060"), "an ordinary binding is the Int field")
+  val ok = parseCheck(decls + "func f(p: in Pair): Color {\n  val Only(n, red) = p\n  val m: Int = n\n  red\n}\n")
+  assertEqualInt(diagCount(ok), 0, "well-typed uses of both bindings: " + diagCodesOf(ok))
+}

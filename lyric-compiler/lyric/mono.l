@@ -1966,13 +1966,9 @@ func inferExprTE(state: in MonoState, env: in Map[String, TypeExpr], expr: in Ex
     case ESpawn(_) -> spawnHandleTEMono(state, expr)
     // A field read Mono cannot resolve itself (a restored package's record)
     // falls back to the type checker's recorded type, as a call does (#7441).
-    case EMember(recv, name) -> match inferMemberTE(state, env, recv, name) {
+    case EMember(recv, name) -> match inferSelfMemberTE(env, recv, name) {
       case Some(te) -> Some(value = te)
-      case None -> if state.callResultTypes.count > 0 and state.originScope[state.originScope.count - 1] == "" {
-        mapGet(state.callResultTypes, recordCopySiteKey(expr.span))
-      } else {
-        None
-      }
+      case None -> inferMemberOrRecordedTE(state, env, expr, recv, name)
     }
     // `self` in an impl / interface method body — its type is seeded into
     // `env` under the reserved "self" key by the Phase-2 IImpl / IInterface
@@ -8581,21 +8577,44 @@ func rewriteFuncBody(
   newBody
 }
 
-// Reconstruct a method `FunctionDecl` with its body rewritten (generic call
-// sites specialised), preserving every other field.  Shared by the Phase-2
-// `IImpl` / `IInterface` arms so impl and interface default-method bodies get
-// the same generic-call rewriting as free functions (#1727).
+// A protected field read through `self` (`protectedMemberEnvMono`).
+func inferSelfMemberTE(env: in Map[String, TypeExpr], recv: in Expr, name: in String): Option[TypeExpr] {
+  match recv.kind {
+    case ESelf -> mapGet(env, selfFieldKeyMono(name))
+    case _ -> None
+  }
+}
+
+func inferMemberOrRecordedTE(
+  state: in MonoState,
+  env: in Map[String, TypeExpr],
+  expr: in Expr,
+  recv: in Expr,
+  name: in String,
+): Option[TypeExpr] {
+  match inferMemberTE(state, env, recv, name) {
+    case Some(te) -> Some(value = te)
+    case None -> if state.callResultTypes.count > 0 and state.originScope[state.originScope.count - 1] == "" {
+      mapGet(state.callResultTypes, recordCopySiteKey(expr.span))
+    } else {
+      None
+    }
+  }
+}
+
 // A protected member's scope: its parameters, then every protected field a
-// parameter does not shadow.
+// parameter does not shadow.  Each field is also keyed `self.<name>`, so a
+// field read written through `self` — as `Lyric.SelfFields` writes a
+// contract clause's bare field (#8264) — types too.
 func protectedMemberEnvMono(decl: in ProtectedTypeDecl, params: in List[Param]): Map[String, TypeExpr] {
   val env = seedEnvFromParams(params)
   var i = 0
   while i < decl.members.count {
     match decl.members[i] {
       case PMField(pf) -> match pf {
-        case PFVar(nm, ty, _, _, _, _) -> if not env.containsKey(nm) { env.add(nm, ty) }
-        case PFLet(nm, ty, _, _, _, _) -> if not env.containsKey(nm) { env.add(nm, ty) }
-        case PFImmutable(fd) -> if not env.containsKey(fd.name) { env.add(fd.name, fd.ty) }
+        case PFVar(nm, ty, _, _, _, _) -> addProtectedFieldEnvMono(env, nm, ty)
+        case PFLet(nm, ty, _, _, _, _) -> addProtectedFieldEnvMono(env, nm, ty)
+        case PFImmutable(fd) -> addProtectedFieldEnvMono(env, fd.name, fd.ty)
       }
       case _ -> ()
     }
@@ -8604,6 +8623,26 @@ func protectedMemberEnvMono(decl: in ProtectedTypeDecl, params: in List[Param]):
   env
 }
 
+func addProtectedFieldEnvMono(env: in Map[String, TypeExpr], name: in String, ty: in TypeExpr): Unit {
+  if not env.containsKey(name) {
+    env.add(name, ty)
+  }
+  val selfKey = selfFieldKeyMono(name)
+  if not env.containsKey(selfKey) {
+    env.add(selfKey, ty)
+  }
+}
+
+// The `env` key of a protected field read through `self`; `.` never occurs
+// in a binding name, so it cannot collide with one.
+func selfFieldKeyMono(name: in String): String {
+  "self." + name
+}
+
+// Reconstruct a method `FunctionDecl` with its body rewritten (generic call
+// sites specialised), preserving every other field.  Shared by the Phase-2
+// `IImpl` / `IInterface` arms so impl and interface default-method bodies get
+// the same generic-call rewriting as free functions (#1727).
 func rewriteMethodDecl(state: in MonoState, env: in Map[String, TypeExpr], fn: in FunctionDecl): FunctionDecl {
   val newBody = rewriteFuncBodyWithRet(state, env, fn.body, fn.ret)
   FunctionDecl(

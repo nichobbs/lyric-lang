@@ -69,6 +69,7 @@ import Lyric.Lexer
 import Lyric.Parser
 import Lyric.LlvmTypes
 import Lyric.LlvmIr
+import Lyric.SelfFields as SelfFields
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Codegen inputs and cross-package call registry.
@@ -13703,6 +13704,25 @@ func bindTuplePattern(ctx: in Ctx, insns: in List[NInsn], v: in NVal, patterns: 
   }
 }
 
+/// Bind a destructuring `val` whose pattern is a union-case constructor
+/// (`val Only(n, c) = p`).  The type checker accepts it only when it matches
+/// every value of the initializer (T0146), so the failure path is a backstop
+/// trap.  A bare sub-pattern always binds, even one spelled like a case
+/// (`emitConstructorTest` never reads one as a case, #8264).
+func bindConstructorValPattern(ctx: in Ctx, insns: in List[NInsn], v: in NVal, pat: in Pattern, line: in Int): Unit {
+  pinInlineUnion(ctx, insns, v)
+  val okL = freshLabel(ctx, "val.ok")
+  val failL = freshLabel(ctx, "val.fail")
+  val bindNames: List[String] = newList()
+  val bindVals: List[NVal] = newList()
+  emitPatternTest(ctx, insns, v, pat, okL, failL, bindNames, bindVals, nonEnumScrutHint)
+  insns.add(NLabel(name = failL))
+  emitPanicRaw(ctx, insns, "destructuring val: the initializer did not match the pattern", line)
+  insns.add(NUnreachable)
+  insns.add(NLabel(name = okL))
+  applyPatternBinds(ctx, insns, bindNames, bindVals)
+}
+
 /// Bind pattern names as arm-scoped locals.  Bindings borrow from the
 /// scrutinee (alive for the whole match), so `bindLocal`'s
 /// retain-borrow rule keeps ownership sound if the arm rebinds or the
@@ -13881,6 +13901,13 @@ func lowerStmt(ctx: in Ctx, insns: in List[NInsn], stmt: in Statement): Unit {
             case PWildcard -> {
             }
             case PTuple(patterns) -> bindTuplePattern(ctx, insns, v, patterns)
+            case PConstructor(_, _) -> bindConstructorValPattern(ctx, insns, v, pat, stmt.span.startPos.line)
+            case PParen(_) -> {
+              match stripPattern(pat).kind {
+                case PConstructor(_, _) -> bindConstructorValPattern(ctx, insns, v, stripPattern(pat), stmt.span.startPos.line)
+                case _ -> panic("Lyric.LlvmCodegen: this destructuring val pattern is not yet supported for --target native")
+              }
+            }
             case _ -> panic("Lyric.LlvmCodegen: this destructuring val pattern is not yet supported for --target native")
           }
         }
@@ -15854,8 +15881,14 @@ pub func fileImportPackages(file: in SourceFile): List[String] {
   pkgs
 }
 
-/// Collect one source file's lowerable items into a CodegenUnit.
-pub func unitOfFile(pkgName: in String, file: in SourceFile): CodegenUnit {
+/// Collect one source file's lowerable items into a CodegenUnit.  A member
+/// body's bare field references are written `self.<name>` first
+/// (`Lyric.SelfFields`, #8264).  The middle end has already done so for a
+/// file it processed; this covers a caller that lowers a file directly.
+pub func unitOfFile(pkgName: in String, file0: in SourceFile): CodegenUnit {
+  val noRecords: List[RecordDecl] = newList()
+  val noCases: Map[String, Bool] = newMap()
+  val file = SelfFields.resolveSelfFieldsInFile(file0, noRecords, noCases)
   val fns: List[FunctionDecl] = newList()
   val externs: List[ExternFuncDecl] = newList()
   val nativeLibs: List[String] = newList()
@@ -17138,9 +17171,9 @@ func substSelfInFn(fn: in FunctionDecl, recordName: in String): FunctionDecl {
 // mutually exclusive (an Ada-style monitor); native has no built-in
 // monitor primitive (unlike MSIL's `Monitor.Enter(this)`/try/finally or a
 // JVM `ReentrantLock` field), so each member lowers to TWO functions:
-//   - an "inner" function: the desugared body (bare field references
-//     rewritten to `self.field`, mirroring the MSIL emitter's
-//     `desugarProtectedFuncBody`), lowered through the normal
+//   - an "inner" function: the body with its bare field references and
+//     bare sibling-member calls written on `self` (`Lyric.SelfFields`,
+//     under the type checker's scoping, #8264), lowered through the normal
 //     FunctionDecl -> NFunc pipeline like any record/impl method.
 //   - a hand-built "wrapper" NFunc: GEP+load the mutex pointer, call
 //     lyric_mutex_lock, call the inner function, call lyric_mutex_unlock,
@@ -17204,275 +17237,6 @@ func protFieldsOf(decl: in ProtectedTypeDecl): List[FieldDecl] {
   fields
 }
 
-/// The set of field names declared on a protected type, used to rewrite
-/// bare references (`n = n + 1`) to `self.n` in entry/func bodies.
-func makeProtectedFieldNames(decl: in ProtectedTypeDecl): Map[String, Bool] {
-  val names: Map[String, Bool] = newMap()
-  var i = 0
-  while i < decl.members.count {
-    match decl.members[i] {
-      case PMField(pf) -> {
-        match pf {
-          case PFVar(name, _, _, _, _, _) -> names.add(name, true)
-          case PFLet(name, _, _, _, _, _) -> names.add(name, true)
-          case PFImmutable(fd) -> names.add(fd.name, true)
-        }
-      }
-      case PMEntry(ed) -> names.add("()" + ed.name, true)
-      case PMFunc(fn) -> names.add("()" + fn.name, true)
-      case _ -> {
-      }
-    }
-    i = i + 1
-  }
-  names
-}
-
-// ── Protected-body desugaring: bare field refs -> self.field ────────────────
-// Mirrors the MSIL emitter's `desugarProtectedExpr`/`desugarProtectedStmt`
-// (lyric-compiler/msil/codegen.l) — same shared AST, same rewrite.
-// Recurses into every expression/statement form native can encounter in a
-// body, including forms native itself does not yet lower (e.g. try/loop):
-// harmless to visit, since those panic during lowering regardless.
-func desugarProtectedExpr(fieldNames: in Map[String, Bool], e: in Expr): Expr {
-  match e.kind {
-    case EPath(path) -> {
-      if path.segments.count == 1 {
-        val name = path.segments[0]
-        if fieldNames.containsKey(name) {
-          val selfExpr = Expr(kind = ESelf, span = e.span)
-          return Expr(kind = EMember(receiver = selfExpr, memberName = name), span = e.span)
-        }
-      }
-      return e
-    }
-    case EMember(receiver, memberName) -> {
-      return Expr(
-        kind = EMember(receiver = desugarProtectedExpr(fieldNames, receiver), memberName = memberName),
-        span = e.span
-      )
-    }
-    case EBinop(op, lhs, rhs) -> {
-      return Expr(
-        kind = EBinop(
-          op = op,
-          lhs = desugarProtectedExpr(fieldNames, lhs),
-          rhs = desugarProtectedExpr(fieldNames, rhs)
-        ),
-        span = e.span
-      )
-    }
-    case EPrefix(op, operand) -> {
-      return Expr(kind = EPrefix(op = op, operand = desugarProtectedExpr(fieldNames, operand)), span = e.span)
-    }
-    case EParen(inner) -> {
-      return Expr(kind = EParen(inner = desugarProtectedExpr(fieldNames, inner)), span = e.span)
-    }
-    case ECall(fn, args) -> {
-      val args2: List[CallArg] = newList()
-      var i = 0
-      while i < args.count {
-        match args[i] {
-          case CAPositional(expr) -> args2.add(CAPositional(expr = desugarProtectedExpr(fieldNames, expr)))
-          case CANamed(name, value, span) -> {
-            args2.add(CANamed(name = name, value = desugarProtectedExpr(fieldNames, value), span = span))
-          }
-        }
-        i = i + 1
-      }
-      // A bare call to a sibling entry/func becomes `self.m(..)`; the
-      // member's mutex is recursive, so re-entering it from inside the
-      // monitor is the same as MSIL's `Monitor.Enter` re-entry.
-      val callee = match fn.kind {
-        case EPath(cp) -> {
-          if cp.segments.count == 1 and fieldNames.containsKey("()" + cp.segments[0]) and not fieldNames.containsKey(cp.segments[0]) {
-            Expr(kind = EMember(receiver = Expr(kind = ESelf, span = fn.span), memberName = cp.segments[0]), span = fn.span)
-          } else {
-            desugarProtectedExpr(fieldNames, fn)
-          }
-        }
-        case _ -> desugarProtectedExpr(fieldNames, fn)
-      }
-      return Expr(kind = ECall(fn = callee, args = args2), span = e.span)
-    }
-    case EIndex(receiver, indices) -> {
-      val idxs: List[Expr] = newList()
-      var i = 0
-      while i < indices.count {
-        idxs.add(desugarProtectedExpr(fieldNames, indices[i]))
-        i = i + 1
-      }
-      return Expr(kind = EIndex(receiver = desugarProtectedExpr(fieldNames, receiver), indices = idxs), span = e.span)
-    }
-    case EIf(cond, thenBranch, elseBranch, thenForm) -> {
-      val then2 = match thenBranch {
-        case EOBExpr(expr) -> EOBExpr(expr = desugarProtectedExpr(fieldNames, expr))
-        case EOBBlock(block) -> EOBBlock(block = desugarProtectedBlock(fieldNames, block))
-      }
-      val else2 = match elseBranch {
-        case Some(eob) -> {
-          match eob {
-            case EOBExpr(expr) -> Some(value = EOBExpr(expr = desugarProtectedExpr(fieldNames, expr)))
-            case EOBBlock(block) -> Some(value = EOBBlock(block = desugarProtectedBlock(fieldNames, block)))
-          }
-        }
-        case None -> None
-      }
-      return Expr(
-        kind = EIf(
-          cond = desugarProtectedExpr(fieldNames, cond),
-          thenBranch = then2,
-          elseBranch = else2,
-          thenForm = thenForm
-        ),
-        span = e.span
-      )
-    }
-    case EMatch(scrutinee, arms) -> {
-      val arms2: List[MatchArm] = newList()
-      var i = 0
-      while i < arms.count {
-        val arm = arms[i]
-        val g = match arm.guard { case Some(x) -> Some(value = desugarProtectedExpr(fieldNames, x)); case None -> None }
-        val body2 = match arm.body {
-          case EOBExpr(expr) -> EOBExpr(expr = desugarProtectedExpr(fieldNames, expr))
-          case EOBBlock(block) -> EOBBlock(block = desugarProtectedBlock(fieldNames, block))
-        }
-        arms2.add(MatchArm(pattern = arm.pattern, guard = g, body = body2, span = arm.span))
-        i = i + 1
-      }
-      return Expr(kind = EMatch(scrutinee = desugarProtectedExpr(fieldNames, scrutinee), arms = arms2), span = e.span)
-    }
-    case EBlock(block) -> return Expr(kind = EBlock(block = desugarProtectedBlock(fieldNames, block)), span = e.span)
-    case EPropagate(inner) -> {
-      return Expr(kind = EPropagate(inner = desugarProtectedExpr(fieldNames, inner)), span = e.span)
-    }
-    case EAssign(target, op, value) -> {
-      return Expr(
-        kind = EAssign(
-          target = desugarProtectedExpr(fieldNames, target),
-          op = op,
-          value = desugarProtectedExpr(fieldNames, value)
-        ),
-        span = e.span
-      )
-    }
-    case ETuple(exprs) -> {
-      val xs: List[Expr] = newList()
-      var i = 0
-      while i < exprs.count {
-        xs.add(desugarProtectedExpr(fieldNames, exprs[i]))
-        i = i + 1
-      }
-      return Expr(kind = ETuple(exprs = xs), span = e.span)
-    }
-    case EList(exprs) -> {
-      val xs: List[Expr] = newList()
-      var i = 0
-      while i < exprs.count {
-        xs.add(desugarProtectedExpr(fieldNames, exprs[i]))
-        i = i + 1
-      }
-      return Expr(kind = EList(exprs = xs), span = e.span)
-    }
-    case ELambda(lambdaParams, body) -> {
-      return Expr(
-        kind = ELambda(lambdaParams = lambdaParams, body = desugarProtectedBlock(fieldNames, body)),
-        span = e.span
-      )
-    }
-    case EAwait(inner) -> {
-      return Expr(kind = EAwait(inner = desugarProtectedExpr(fieldNames, inner)), span = e.span)
-    }
-    case ESpawn(inner) -> {
-      return Expr(kind = ESpawn(inner = desugarProtectedExpr(fieldNames, inner)), span = e.span)
-    }
-    case _ -> return e
-  }
-  return e
-}
-
-func desugarProtectedBlock(fieldNames: in Map[String, Bool], block: in Block): Block {
-  val ss: List[Statement] = newList()
-  var i = 0
-  while i < block.statements.count {
-    ss.add(desugarProtectedStmt(fieldNames, block.statements[i]))
-    i = i + 1
-  }
-  Block(statements = ss, span = block.span)
-}
-
-func desugarProtectedStmt(fieldNames: in Map[String, Bool], s: in Statement): Statement {
-  match s.kind {
-    case SExpr(expr) -> return Statement(kind = SExpr(expr = desugarProtectedExpr(fieldNames, expr)), span = s.span)
-    case SAssign(target, op, value) -> {
-      return Statement(
-        kind = SAssign(
-          target = desugarProtectedExpr(fieldNames, target),
-          op = op,
-          value = desugarProtectedExpr(fieldNames, value)
-        ),
-        span = s.span
-      )
-    }
-    case SReturn(value) -> {
-      val v = match value { case Some(e) -> Some(value = desugarProtectedExpr(fieldNames, e)); case None -> None }
-      return Statement(kind = SReturn(value = v), span = s.span)
-    }
-    case SLocal(binding) -> {
-      match binding {
-        case LBVal(pat, ty, init) -> {
-          return Statement(
-            kind = SLocal(binding = LBVal(pat = pat, ty = ty, init = desugarProtectedExpr(fieldNames, init))),
-            span = s.span
-          )
-        }
-        case LBVar(name, ty, init) -> {
-          val v = match init { case Some(e) -> Some(value = desugarProtectedExpr(fieldNames, e)); case None -> None }
-          return Statement(kind = SLocal(binding = LBVar(name = name, ty = ty, init = v)), span = s.span)
-        }
-        case LBLet(name, ty, init) -> {
-          return Statement(
-            kind = SLocal(binding = LBLet(name = name, ty = ty, init = desugarProtectedExpr(fieldNames, init))),
-            span = s.span
-          )
-        }
-      }
-    }
-    case SWhile(label, cond, body) -> {
-      return Statement(
-        kind = SWhile(
-          label = label,
-          cond = desugarProtectedExpr(fieldNames, cond),
-          body = desugarProtectedBlock(fieldNames, body)
-        ),
-        span = s.span
-      )
-    }
-    case SFor(label, pat, iter, body) -> {
-      return Statement(
-        kind = SFor(
-          label = label,
-          pat = pat,
-          iter = desugarProtectedExpr(fieldNames, iter),
-          body = desugarProtectedBlock(fieldNames, body)
-        ),
-        span = s.span
-      )
-    }
-    case _ -> return s
-  }
-  return s
-}
-
-func desugarProtectedFuncBody(fieldNames: in Map[String, Bool], body: in FunctionBody): FunctionBody {
-  match body {
-    case FBExpr(expr) -> return FBExpr(expr = desugarProtectedExpr(fieldNames, expr))
-    case FBBlock(block) -> return FBBlock(block = desugarProtectedBlock(fieldNames, block))
-  }
-  return body
-}
-
 /// The implicit `self: in <ProtectedType>` receiver injected as the first
 /// parameter of every entry/func's inner function (entries/funcs parse
 /// without an explicit receiver, unlike record/impl methods — D037).
@@ -17490,11 +17254,12 @@ func protectedSelfParam(pd: in ProtectedTypeDecl, span: in Span): Param {
 
 /// Collect a protected type's entries/funcs as self-receiving "inner"
 /// functions (mirrors `collectRecordMethods`/`collectImplMethods`): each
-/// gets the implicit self param prepended, its body desugared (bare field
-/// refs -> self.field), and a collision-free `<Type>.<method>.__inner`
-/// name.  The lock/unlock wrapper that UFCS call sites actually resolve to
-/// is built directly as an NFunc by `registerProtectedMethods`, once the
-/// type's NRecInfo (and so its mutex field index) is registered.
+/// gets the implicit self param prepended, its body's bare field references
+/// and sibling-member calls written on `self`, and a collision-free
+/// `<Type>.<method>.__inner` name.  The lock/unlock wrapper that UFCS call
+/// sites actually resolve to is built directly as an NFunc by
+/// `registerProtectedMethods`, once the type's NRecInfo (and so its mutex
+/// field index) is registered.
 pub func collectProtectedMethods(pkgName: in String, decl: in ProtectedTypeDecl, fns: in List[FunctionDecl]): Unit {
   match decl.generics {
     case Some(gp) -> {
@@ -17504,7 +17269,8 @@ pub func collectProtectedMethods(pkgName: in String, decl: in ProtectedTypeDecl,
     case None -> {
     }
   }
-  val fieldNames = makeProtectedFieldNames(decl)
+  val fieldNames = SelfFields.protectedFieldNames(decl.members)
+  val methodNames = SelfFields.protectedMethodNames(decl.members)
   var i = 0
   while i < decl.members.count {
     match decl.members[i] {
@@ -17539,7 +17305,7 @@ pub func collectProtectedMethods(pkgName: in String, decl: in ProtectedTypeDecl,
               ret = ed.ret,
               whereClause = None,
               contracts = newList(),
-              body = Some(value = desugarProtectedFuncBody(fieldNames, ed.body)),
+              body = Some(value = SelfFields.resolveUnmarkedBody(fieldNames, methodNames, ed.annotations, ed.params, ed.body)),
               span = ed.span
             ),
             decl.name
@@ -17561,7 +17327,15 @@ pub func collectProtectedMethods(pkgName: in String, decl: in ProtectedTypeDecl,
                 pi = pi + 1
               }
               val newBody = match fn.body {
-                case Some(b) -> Some(value = desugarProtectedFuncBody(fieldNames, b))
+                case Some(b) -> Some(
+                  value = SelfFields.resolveUnmarkedBody(
+                    fieldNames,
+                    methodNames,
+                    fn.annotations,
+                    fn.params,
+                    b
+                  )
+                )
                 case None -> None
               }
               // #7585: same `Self` substitution as the `PMEntry` arm above.
@@ -17619,7 +17393,8 @@ func collectGenericProtectedMethods(decl: in ProtectedTypeDecl, gp: in GenericPa
     kind = TGenericApp(head = ModulePath(segments = headSegs, span = decl.span), args = selfArgs),
     span = decl.span
   )
-  val fieldNames = makeProtectedFieldNames(decl)
+  val fieldNames = SelfFields.protectedFieldNames(decl.members)
+  val methodNames = SelfFields.protectedMethodNames(decl.members)
   for m in decl.members {
     match m {
       case PMEntry(ed) -> addGenericProtectedMember(
@@ -17633,7 +17408,7 @@ func collectGenericProtectedMethods(decl: in ProtectedTypeDecl, gp: in GenericPa
         ed.params,
         ed.ret,
         newList(),
-        desugarProtectedFuncBody(fieldNames, ed.body),
+        SelfFields.resolveUnmarkedBody(fieldNames, methodNames, ed.annotations, ed.params, ed.body),
         ed.span,
         fns
       )
@@ -17654,7 +17429,7 @@ func collectGenericProtectedMethods(decl: in ProtectedTypeDecl, gp: in GenericPa
                   fn.params,
                   fn.ret,
                   fn.contracts,
-                  desugarProtectedFuncBody(fieldNames, b),
+                  SelfFields.resolveUnmarkedBody(fieldNames, methodNames, fn.annotations, fn.params, b),
                   fn.span,
                   fns
                 )

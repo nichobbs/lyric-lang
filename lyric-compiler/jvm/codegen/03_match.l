@@ -76,7 +76,9 @@ func receiverClassOf(ctx: in FuncCtx, recv: in Expr): Option[String] {
         None
       }
     }
-    case ESelf -> ctx.selfClass
+    // A bare field reference the middle end spelled `self.<field>` (#8264)
+    // resolves as the bare name always has: to no class.
+    case ESelf -> if isImplicitSelf(recv) { None } else { ctx.selfClass }
     case EMember(inner, fieldName) -> {
       match receiverClassOf(ctx, inner) {
         case Some(cls) -> fieldClassOf(ctx, cls, fieldName)
@@ -2725,6 +2727,23 @@ func bindCaseField(
   }
 }
 
+// Bind a `val` or `for` pattern from the value in `scrutSlot`: every bare
+// name in it is a binding (`FuncCtx.bindingPattern`), unlike a `match` arm's
+// pattern.
+func lowerBindingPattern(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  pat: in Pattern,
+  scrutSlot: in Int,
+  scrutTy: in JvmType,
+  scrutTypeArgs: in List[TypeExpr],
+): Unit {
+  val saved = ctx.bindingPattern
+  ctx.bindingPattern = true
+  lowerPatternBind(ctx, insns, pat, scrutSlot, scrutTy, scrutTypeArgs)
+  ctx.bindingPattern = saved
+}
+
 // Bind pattern variables after a successful match.
 //
 // `scrutTypeArgs` carries the scrutinee's generic instantiation arguments (e.g.
@@ -2759,7 +2778,9 @@ func lowerPatternBind(
           // scrutinee's union (`casePatternScrutTyJvm`) is one even when no
           // constructor of that name is in scope here.
           val isCheckedCase = ctx.externTypes.containsKey("~recv~" + recordCopySiteKey(pat.span))
-          val isCase = if isCheckedCase {
+          val isCase = if ctx.bindingPattern {
+            false
+          } else if isCheckedCase {
             true
           } else {
             match ctorClassFor(ctx, name) {
@@ -2767,7 +2788,8 @@ func lowerPatternBind(
               case None -> false
             }
           }
-          val isEnumCase = match enumPatternClass(ctx, scrutTy, name) { case Some(_) -> true; case None -> false }
+          val isEnumCase = not ctx.bindingPattern and
+            match enumPatternClass(ctx, scrutTy, name) { case Some(_) -> true; case None -> false }
           if not isCase and not isEnumCase {
             emitLoad(insns, scrutSlot, scrutTy)
             val bindSlot = allocSlot(ctx, name, scrutTy)

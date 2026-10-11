@@ -10,7 +10,17 @@ import Lyric.Parser
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Pattern binding.
 // ─────────────────────────────────────────────────────────────────────────────
-func bindPattern(sc: in Scope, pat: in Pattern, ty: in Type): Unit {
+// Bind the names a `val` or `for` pattern introduces.  Every name binds, even
+// one spelled like a case (#8264); a constructor or record pattern's names take
+// the case's or record's field types (`bindPatternTyped` in binding-only mode,
+// whose diagnostics `checkLocalValPattern` already owns).
+func bindPattern(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  pat: in Pattern,
+  ty: in Type,
+): Unit {
   match pat.kind {
     case PBinding(name, innerOpt) -> {
       if name != "_" {
@@ -19,7 +29,7 @@ func bindPattern(sc: in Scope, pat: in Pattern, ty: in Type): Unit {
       match innerOpt {
         case None -> {
         }
-        case Some(inner) -> bindPattern(sc, inner, ty)
+        case Some(inner) -> bindPattern(sc, tbl, sigs, inner, ty)
       }
     }
     case PWildcard -> {
@@ -29,36 +39,25 @@ func bindPattern(sc: in Scope, pat: in Pattern, ty: in Type): Unit {
       var i = 0
       while i < patterns.count {
         val et = if i < telems.count { telems[i] } else { TyError }
-        bindPattern(sc, patterns[i], et)
+        bindPattern(sc, tbl, sigs, patterns[i], et)
         i = i + 1
       }
     }
-    case PConstructor(_, args) -> {
-      var i = 0
-      while i < args.count {
-        bindPattern(sc, args[i], TyError)
-        i = i + 1
-      }
+    case PConstructor(_, _) -> {
+      val owned: List[Diagnostic] = newList()
+      bindPatternTyped(sc, tbl, sigs, owned, pat, ty, true)
     }
     case POr(patterns) -> {
       if patterns.count > 0 {
-        bindPattern(sc, patterns[0], ty)
+        bindPattern(sc, tbl, sigs, patterns[0], ty)
       }
     }
     case PParen(inner) -> {
-      bindPattern(sc, inner, ty)
+      bindPattern(sc, tbl, sigs, inner, ty)
     }
-    case PRecord(_, fields, _) -> {
-      // Field types are TyError here because bindPattern has no tbl access; the
-      // typed path (bindPatternTyped in typechecker_exprs.l) resolves real field types.
-      var i = 0
-      while i < fields.count {
-        match fields[i] {
-          case RPFNamed(_, p, _) -> bindPattern(sc, p, TyError)
-          case RPFShort(nm, _) -> scopeAdd(sc, LocalBinding(name = nm, ty = TyError, isMutable = false))
-        }
-        i = i + 1
-      }
+    case PRecord(_, _, _) -> {
+      val owned: List[Diagnostic] = newList()
+      bindPatternTyped(sc, tbl, sigs, owned, pat, ty, true)
     }
     case _ -> {
     }
@@ -388,7 +387,7 @@ pub func checkStatement(
           if openKey != "" {
             scopeAdd(sc, LocalBinding(name = openName, ty = initType, isMutable = false, openSite = openKey))
           } else {
-            bindPattern(sc, pat, bindTy)
+            bindPattern(sc, tbl, sigs, pat, bindTy)
             // A destructuring of an open tuple, a literal or a local, binds
             // each name at an open element open to it (#7855).
             if openName == "" {
@@ -420,7 +419,7 @@ pub func checkStatement(
           recordUnsignedWidening(tbl, declT, initType, init)
           checkRefinedLiteralBound(declT, init, diag)
           val bindTy = if checkLocalValPattern(tbl, diag, pat, declT) { TyError } else { declT }
-          bindPattern(sc, pat, bindTy)
+          bindPattern(sc, tbl, sigs, pat, bindTy)
           recordTuplePatternBindings(tbl, pat, bindTy, false, sc.genericNames)
         }
       }
@@ -746,7 +745,7 @@ pub func checkStatement(
       // a generic function) to the lenient wildcard: `TyVar` passes `typeEquiv`
       // but not `isNumericType`, so binding it raw would trip false T0030s on
       // arithmetic the where-bounds make valid.
-      bindPattern(sc, pat, eraseTyVars(elemType))
+      bindPattern(sc, tbl, sigs, pat, eraseTyVars(elemType))
       // A generator's elements reach the loop through an erased iterator
       // (`java.util.Iterator.next()` on the JVM), so the loop variable itself
       // is recorded like a tuple element: `Lyric.Mono` binds it through a

@@ -70,6 +70,7 @@ import Lyric.WireExpand as WireExpand
 import Lyric.Mono
 import Lyric.Derives
 import Lyric.Weaver as Weaver
+import Lyric.SelfFields as SelfFields
 import Lyric.DiagnosticUtil as DiagUtil
 
 /// Per-file middle-end knobs.  `tcFatal` gates the build on type-check
@@ -189,6 +190,10 @@ pub record MiddleEndOptions {
   /// intrinsics, for a backend that has typed primitive arrays (the JVM,
   /// #8041).
   primitiveArrays: Bool = false
+  /// Whether a lambda in a member of a type with type parameters may not read
+  /// the receiver (F0048, #8284): MSIL lifts a lambda into a method of the
+  /// non-generic package class, where those parameters do not exist.
+  genericReceiverLambdasUnsupported: Bool = false
 }
 
 // Report `diags` (package-labelled when `pkgLabel` is non-empty, further
@@ -748,7 +753,26 @@ pub func pipeCheckAndMono(
   if not vlIsProofRequired(mcRes.level) {
     val _ = gate(opts.pkgLabel, opts.lineOrigins, runtimeQuantifierWarnings(checked))
   }
-  val elaborated = elaborateFileWithInterfaces(checked, monoIfaceDecls, opts.contractsEnabled)
+  // A member body's bare field references become `self.<name>` under the
+  // type checker's scoping, so no backend decides between a local and a
+  // field itself (#8264).  Before the elaborator, which resolves each
+  // member's own contract clauses itself and inserts its interface's clauses,
+  // whose bare names no field may capture.
+  val caseSites = tcRes.symbols.casePatternSites
+  val selfResolved = SelfFields.resolveSelfFieldsInFile(checked, monoRecordDecls, caseSites)
+  // After the resolution, so a bare field read is the `self` it reads.
+  if opts.genericReceiverLambdasUnsupported {
+    if gate(opts.pkgLabel, opts.lineOrigins, genericReceiverLambdaDiagnostics(selfResolved)) {
+      return None
+    }
+  }
+  val elaborated = elaborateFileWithTypes(
+    selfResolved,
+    monoIfaceDecls,
+    monoRecordDecls,
+    caseSites,
+    opts.contractsEnabled
+  )
 
   // Lower `?` error-propagation into match-unwrap + early-return (#1475).
   // Runs after the elaborator so a propagated Err/None short-circuit is not
@@ -2817,6 +2841,119 @@ func isSignedIntSuffix(sfx: in IntSuffix): Bool {
     case I64 -> true
     case _ -> false
   }
+}
+
+/// F0048 for each lambda in a member of a type with type parameters (a
+/// generic record, `impl` target or protected type) that reads the receiver:
+/// `self`, or a field by bare name, which `Lyric.SelfFields` has written as
+/// `self.<field>` (#8284).  A backend that lifts a lambda into a method
+/// outside the type, where the type's parameters do not exist, cannot name
+/// the receiver's class there.  A lambda nested in one already reported is
+/// not reported again.
+pub func genericReceiverLambdaDiagnostics(file: in SourceFile): List[Diagnostic] {
+  val genericMembers: List[Item] = newList()
+  for it in file.items {
+    val isGeneric = match it.kind {
+      case IRecord(decl) -> hasTypeParams(decl.generics)
+      case IExposedRec(decl) -> hasTypeParams(decl.generics)
+      case IProtected(decl) -> hasTypeParams(decl.generics)
+      case IImpl(decl) -> hasTypeParams(decl.generics) or targetHasTypeArgs(decl.target)
+      case _ -> false
+    }
+    if isGeneric {
+      genericMembers.add(it)
+    }
+  }
+  val spans: List[Span] = newList()
+  val owners: List[String] = newList()
+  val genericFile = file.copy(items = genericMembers)
+  val _ = mapExprsInFile(genericFile, { e: Expr -> noteReceiverLambda(e, spans) })
+  val diags: List[Diagnostic] = newList()
+  var i = 0
+  while i < spans.count {
+    if not spanInsideAnother(spans, i) {
+      diags.add(
+        errorDiagnostic(
+          "F0048",
+          "this lambda reads the receiver (`self`, or one of its fields by bare name) of a type with type parameters, which --target dotnet does not support yet (#8284); read the field into a local before the lambda (`val n = n`) and use that local in the lambda",
+          spans[i]
+        )
+      )
+    }
+    i = i + 1
+  }
+  diags
+}
+
+func hasTypeParams(gp: in Option[GenericParams]): Bool {
+  match gp {
+    case Some(g) -> {
+      for p in g.params {
+        match p {
+          case GPType(_, _) -> return true
+          case _ -> ()
+        }
+      }
+      false
+    }
+    case None -> false
+  }
+}
+
+func targetHasTypeArgs(target: in TypeExpr): Bool {
+  match target.kind {
+    case TGenericApp(_, args) -> {
+      for a in args {
+        match a {
+          case TAType(_) -> return true
+          case _ -> ()
+        }
+      }
+      false
+    }
+    case _ -> false
+  }
+}
+
+// Records `e`'s span in `spans` when `e` is a lambda whose body reads `self`.
+func noteReceiverLambda(e: in Expr, spans: in List[Span]): Expr {
+  match e.kind {
+    case ELambda(_, body) -> {
+      val seen: List[Bool] = newList()
+      val _ = mapBlock(body, { x: Expr -> noteSelf(x, seen) })
+      if seen.count > 0 {
+        spans.add(e.span)
+      }
+    }
+    case _ -> ()
+  }
+  e
+}
+
+func noteSelf(x: in Expr, seen: in List[Bool]): Expr {
+  match x.kind {
+    case ESelf -> seen.add(true)
+    case _ -> ()
+  }
+  x
+}
+
+// True when `spans[i]` lies inside another of `spans`.
+func spanInsideAnother(spans: in List[Span], i: in Int): Bool {
+  var j = 0
+  while j < spans.count {
+    if j != i {
+      val outer = spans[j]
+      val inner = spans[i]
+      val contains = outer.startPos.offset <= inner.startPos.offset and inner.endPos.offset <= outer.endPos.offset
+      val same = outer.startPos.offset == inner.startPos.offset and outer.endPos.offset == inner.endPos.offset
+      if contains and not same {
+        return true
+      }
+    }
+    j = j + 1
+  }
+  false
 }
 
 /// Aspect weaving — after mono, before codegen, on every target.  Resolves

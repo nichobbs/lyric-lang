@@ -8995,6 +8995,10 @@ func eraseTyVars(t: in Type): Type {
   }
 }
 
+// Bind the names `pat` introduces, each at its type within `ty`.
+// `bindingOnly`: `pat` is (part of) a `val` or `for` pattern, which always
+// binds its names; only a `match` arm's bare name can be a nullary case
+// (recorded in `casePatternSites`, #8264).
 func bindPatternTyped(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -9002,6 +9006,7 @@ func bindPatternTyped(
   diag: in List[Diagnostic],
   pat: in Pattern,
   ty: in Type,
+  bindingOnly: in Bool = false,
 ): Unit {
   match pat.kind {
     case PBinding(name, inner) -> {
@@ -9022,7 +9027,7 @@ func bindPatternTyped(
         )
       }
       if name != "_" {
-        if isConstructorPatternName(tbl, name) or scrutineeHasCaseNamed(tbl, ty, name) {
+        if not bindingOnly and (isConstructorPatternName(tbl, name) or scrutineeHasCaseNamed(tbl, ty, name)) {
           // #6287: a bare nullary-case pattern (`case Halt ->`, no parens)
           // ambiguous across imported packages must be qualified — UNLESS
           // the scrutinee is a known concrete type (`TyUser`).  Matching
@@ -9036,6 +9041,7 @@ func bindPatternTyped(
             val _ = checkBareNameAmbiguity(tbl, diag, name, pat.span)
           }
           checkBareCasePatternScrutinee(tbl, diag, name, ty, pat.span)
+          recordCasePatternSite(tbl, pat.span)
           if scrutineeHasCaseNamed(tbl, ty, name) {
             recordCasePatternUnion(tbl, pat.span, ty)
           }
@@ -9046,7 +9052,7 @@ func bindPatternTyped(
       match inner {
         case None -> {
         }
-        case Some(p) -> bindPatternTyped(sc, tbl, sigs, diag, p, ty)
+        case Some(p) -> bindPatternTyped(sc, tbl, sigs, diag, p, ty, bindingOnly)
       }
     }
     case PWildcard -> {
@@ -9067,7 +9073,7 @@ func bindPatternTyped(
       var i = 0
       while i < args.count {
         val at = if i < ftypes.count { ftypes[i] } else { TyError }
-        bindPatternTyped(sc, tbl, sigs, diag, args[i], at)
+        bindPatternTyped(sc, tbl, sigs, diag, args[i], at, bindingOnly)
         i = i + 1
       }
     }
@@ -9076,7 +9082,7 @@ func bindPatternTyped(
       var i = 0
       while i < patterns.count {
         val et = if i < elems.count { elems[i] } else { TyError }
-        bindPatternTyped(sc, tbl, sigs, diag, patterns[i], et)
+        bindPatternTyped(sc, tbl, sigs, diag, patterns[i], et, bindingOnly)
         i = i + 1
       }
     }
@@ -9097,7 +9103,15 @@ func bindPatternTyped(
       var i = 0
       while i < fields.count {
         match fields[i] {
-          case RPFNamed(fname, p, _) -> bindPatternTyped(sc, tbl, sigs, diag, p, fieldEntryType(recFields, fname))
+          case RPFNamed(fname, p, _) -> bindPatternTyped(
+            sc,
+            tbl,
+            sigs,
+            diag,
+            p,
+            fieldEntryType(recFields, fname),
+            bindingOnly
+          )
           case RPFShort(nm, _) -> scopeAdd(sc, LocalBinding(name = nm, ty = fieldEntryType(recFields, nm), isMutable = false))
         }
         i = i + 1
@@ -9109,19 +9123,19 @@ func bindPatternTyped(
       // diagnostics discarded, only so the case patterns they hold record the
       // union they match (`recordCasePatternUnion`).
       if patterns.count > 0 {
-        bindPatternTyped(sc, tbl, sigs, diag, patterns[0], ty)
+        bindPatternTyped(sc, tbl, sigs, diag, patterns[0], ty, bindingOnly)
       }
       var oi = 1
       while oi < patterns.count {
         val altDiag: List[Diagnostic] = newList()
         scopePush(sc)
-        bindPatternTyped(sc, tbl, sigs, altDiag, patterns[oi], ty)
+        bindPatternTyped(sc, tbl, sigs, altDiag, patterns[oi], ty, bindingOnly)
         scopePop(sc)
         oi = oi + 1
       }
     }
     case PParen(inner) -> {
-      bindPatternTyped(sc, tbl, sigs, diag, inner, ty)
+      bindPatternTyped(sc, tbl, sigs, diag, inner, ty, bindingOnly)
     }
     case PTypeTest(inner, tyExpr) -> {
       // `case x is T ->` narrows the scrutinee to `T`, so the inner pattern (and
@@ -9129,7 +9143,7 @@ func bindPatternTyped(
       // against the tested type rather than the wider scrutinee type.
       val ctx = newGenericContext()
       val testTy = resolveType(tbl, ctx, diag, tyExpr)
-      bindPatternTyped(sc, tbl, sigs, diag, inner, testTy)
+      bindPatternTyped(sc, tbl, sigs, diag, inner, testTy, bindingOnly)
     }
     case PRange(lo, _, hi, _) -> {
       if isUnsignedPatternScrutinee(ty) {
@@ -13188,6 +13202,18 @@ func distinctMemberType(
 // without it a bare case name (`Some`, `None`) resolves by name through the
 // enclosing package first and picks a same-named case of a local union over
 // the scrutinee's own (#7761).
+// Notes that the bare identifier pattern spanning `sp` names a case and binds
+// nothing (`SymbolTable.casePatternSites`).
+func recordCasePatternSite(tbl: in SymbolTable, sp: in Span): Unit {
+  if isNoSourceSpan(sp) or sp.endPos.offset <= sp.startPos.offset {
+    return
+  }
+  val key = recordCopySiteKey(sp)
+  if not tbl.casePatternSites.containsKey(key) {
+    tbl.casePatternSites.add(key, true)
+  }
+}
+
 func recordCasePatternUnion(tbl: in SymbolTable, sp: in Span, ty: in Type): Unit {
   if isNoSourceSpan(sp) or sp.endPos.offset <= sp.startPos.offset {
     return

@@ -183,6 +183,82 @@ func emitFieldLoadOpaqueAware(
   }
 }
 
+// `name = value` (or a compound op) on the receiver's field `name`, of type
+// `fty`, in an instance method: `this` is pushed only after the right-hand
+// side, so no receiver is live across it.  A bare field write, and one the
+// middle end spelled `self.<name>` (#8264), lower this way.
+func lowerSelfFieldAssignJvm(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  name: in String,
+  fty: in JvmType,
+  op: in AssignOp,
+  value: in Expr,
+): Unit {
+  val selfCls = match ctx.selfClass { case Some(c) -> c; case None -> "" }
+  // The RHS is lowered against an EMPTY operand stack in both arms
+  // — `this` (slot 0, stable) is pushed only AFTER the RHS, and for
+  // a compound op the current field value is read into a temp
+  // first.  This is the implicit-self (`impl` method / protected-
+  // type entry) sibling of the `EMember` path's #5936 fix: a bare
+  // self-field reassign whose RHS reads the same field inline
+  // (`buf = buf.slice(0, n)` inside an `impl` method) lowers to an
+  // internal conditional branch (the inlined bounds check), and
+  // evaluating it with `this` still live broke the "operand stack
+  // empty at every branch target" StackMapTable invariant →
+  // `VerifyError: Inconsistent stackmap frames` (#6168).
+  match op {
+    case AssEq -> {
+      val vTy = lowerAssignValue(ctx, insns, value, fty)
+      val vSlot = allocSlot(ctx, "__sfassign_v_" + freshLabel(ctx), vTy)
+      emitStore(insns, vSlot, vTy)
+      insns.add(LAload(slot = 0))
+      emitLoad(insns, vSlot, vTy)
+      // Receiver-aware coercion: a `[B` flowing into a
+      // `slice[Byte]`-typed receiver field needs the boxing loop,
+      // which requires an empty stack under the reloaded value —
+      // guaranteed now that both operands come from slots
+      // (#5609 item 2).
+      coerceValueToUnderReceiver(ctx, insns, JRef(className = selfCls), vTy, fty)
+      emitFieldStoreOpaqueAware(ctx, insns, selfCls, name, fty)
+    }
+    case _ -> {
+      insns.add(LAload(slot = 0))
+      emitFieldLoadOpaqueAware(ctx, insns, selfCls, name, fty)
+      val curSlot = allocSlot(ctx, "__sfassign_cur_" + freshLabel(ctx), fty)
+      emitStore(insns, curSlot, fty)
+      val vTy = lowerExpr(ctx, insns, value)
+      val vSlot = allocSlot(ctx, "__sfassign_v_" + freshLabel(ctx), vTy)
+      emitStore(insns, vSlot, vTy)
+      emitLoad(insns, curSlot, fty)
+      emitLoad(insns, vSlot, vTy)
+      emitCompoundCombineJvm(ctx, insns, op, fty, vTy, spellsUnsigned(value))
+      val combSlot = allocSlot(ctx, "__sfassign_comb_" + freshLabel(ctx), fty)
+      emitStore(insns, combSlot, fty)
+      insns.add(LAload(slot = 0))
+      emitLoad(insns, combSlot, fty)
+      emitFieldStoreOpaqueAware(ctx, insns, selfCls, name, fty)
+    }
+  }
+}
+
+// The type of `recv.fieldName` when `recv` is the implicit receiver of a bare
+// field reference (`isImplicitSelf`) in an instance method whose receiver is
+// `this` (not a capture in a closure body) and `fieldName` is its field.
+func implicitSelfFieldTypeJvm(ctx: in FuncCtx, recv: in Expr, fieldName: in String): Option[JvmType] {
+  if not isImplicitSelf(recv) {
+    return None
+  }
+  match lookupSlot(ctx, "self") {
+    case Some(_) -> return None
+    case None -> ()
+  }
+  match ctx.selfClass {
+    case Some(cls) -> recordFieldType(ctx, cls, fieldName)
+    case None -> None
+  }
+}
+
 func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op: in AssignOp, value: in Expr): JvmType {
   match target.kind {
     case EPath(path) -> {
@@ -281,51 +357,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
           // so without this the store was silently dropped (J3 M-3).
           match selfFieldType(ctx, name) {
             case Some(fty) -> {
-              val selfCls = match ctx.selfClass { case Some(c) -> c; case None -> "" }
-              // The RHS is lowered against an EMPTY operand stack in both arms
-              // — `this` (slot 0, stable) is pushed only AFTER the RHS, and for
-              // a compound op the current field value is read into a temp
-              // first.  This is the implicit-self (`impl` method / protected-
-              // type entry) sibling of the `EMember` path's #5936 fix: a bare
-              // self-field reassign whose RHS reads the same field inline
-              // (`buf = buf.slice(0, n)` inside an `impl` method) lowers to an
-              // internal conditional branch (the inlined bounds check), and
-              // evaluating it with `this` still live broke the "operand stack
-              // empty at every branch target" StackMapTable invariant →
-              // `VerifyError: Inconsistent stackmap frames` (#6168).
-              match op {
-                case AssEq -> {
-                  val vTy = lowerAssignValue(ctx, insns, value, fty)
-                  val vSlot = allocSlot(ctx, "__sfassign_v_" + freshLabel(ctx), vTy)
-                  emitStore(insns, vSlot, vTy)
-                  insns.add(LAload(slot = 0))
-                  emitLoad(insns, vSlot, vTy)
-                  // Receiver-aware coercion: a `[B` flowing into a
-                  // `slice[Byte]`-typed receiver field needs the boxing loop,
-                  // which requires an empty stack under the reloaded value —
-                  // guaranteed now that both operands come from slots
-                  // (#5609 item 2).
-                  coerceValueToUnderReceiver(ctx, insns, JRef(className = selfCls), vTy, fty)
-                  emitFieldStoreOpaqueAware(ctx, insns, selfCls, name, fty)
-                }
-                case _ -> {
-                  insns.add(LAload(slot = 0))
-                  emitFieldLoadOpaqueAware(ctx, insns, selfCls, name, fty)
-                  val curSlot = allocSlot(ctx, "__sfassign_cur_" + freshLabel(ctx), fty)
-                  emitStore(insns, curSlot, fty)
-                  val vTy = lowerExpr(ctx, insns, value)
-                  val vSlot = allocSlot(ctx, "__sfassign_v_" + freshLabel(ctx), vTy)
-                  emitStore(insns, vSlot, vTy)
-                  emitLoad(insns, curSlot, fty)
-                  emitLoad(insns, vSlot, vTy)
-                  emitCompoundCombineJvm(ctx, insns, op, fty, vTy, spellsUnsigned(value))
-                  val combSlot = allocSlot(ctx, "__sfassign_comb_" + freshLabel(ctx), fty)
-                  emitStore(insns, combSlot, fty)
-                  insns.add(LAload(slot = 0))
-                  emitLoad(insns, combSlot, fty)
-                  emitFieldStoreOpaqueAware(ctx, insns, selfCls, name, fty)
-                }
-              }
+              lowerSelfFieldAssignJvm(ctx, insns, name, fty, op, value)
               JVoid
             }
             case None -> {
@@ -352,6 +384,15 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
       lowerAssignExpr(ctx, insns, pathTarget, op, value)
     }
     case EMember(recv, fieldName) -> {
+      // A bare field write the middle end spelled `self.<field>` (#8264)
+      // lowers as the bare write always has.
+      match implicitSelfFieldTypeJvm(ctx, recv, fieldName) {
+        case Some(fty) -> {
+          lowerSelfFieldAssignJvm(ctx, insns, fieldName, fty, op, value)
+          return JVoid
+        }
+        case None -> ()
+      }
       // Record / opaque field assignment: `recv.field = e` → load receiver, eval
       // (and coerce) RHS, `putfield owner.field:desc`.  Compound ops
       // (`recv.field += e`) read the current field value, combine, and store.
@@ -1130,7 +1171,7 @@ func emitCountingForJvm(
   // the outer name→slot mapping must be restored when the loop ends — pattern
   // binds bypass `lowerBlock`'s bracket (which only covers the body block).
   val loopScope = enterBlockScope(ctx)
-  lowerPatternBind(ctx, insns, pat, iSlot, loTy, newList())
+  lowerBindingPattern(ctx, insns, pat, iSlot, loTy, newList())
 
   ctx.loopBreak.add(endL)
   ctx.loopCont.add(contL)
@@ -1767,7 +1808,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
               // Loop-variable bind is a per-loop lexical scope — see
               // `emitCountingForJvm` (#5191 follow-up).
               val forScopeA = enterBlockScope(ctx)
-              lowerPatternBind(ctx, insns, pat, elemSlotA, elemTyA, newList())
+              lowerBindingPattern(ctx, insns, pat, elemSlotA, elemTyA, newList())
               // #2854: `continue` targets the index-increment point (`contLA`), not
               // the loop top, so the loop variable still advances; `break` targets
               // `endLA`.  `loopDeferDepth` captures the entry depth so a body `defer`
@@ -1862,7 +1903,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
               // Loop-variable bind is a per-loop lexical scope — see
               // `emitCountingForJvm` (#5191 follow-up).
               val forScopeB = enterBlockScope(ctx)
-              lowerPatternBind(ctx, insns, pat, elemSlotB, elemTyB, newList())
+              lowerBindingPattern(ctx, insns, pat, elemSlotB, elemTyB, newList())
               // #2854: `continue` targets the loop top (`loopLB`, which re-checks
               // hasNext()); `break` targets `endLB`.  `loopDeferDepth` captures the
               // entry depth so a body `defer` replays on both before the jump.
@@ -2039,18 +2080,18 @@ func lowerLocalPatBind(
             coerceArgTo(insns, objTy, declaredElemTy)
             val typedSlot = allocSlot(ctx, "__tupelemty_" + toString(pti) + "_" + freshLabel(ctx), declaredElemTy)
             emitStore(insns, typedSlot, declaredElemTy)
-            lowerPatternBind(ctx, insns, patterns[pti], typedSlot, declaredElemTy, newList())
+            lowerBindingPattern(ctx, insns, patterns[pti], typedSlot, declaredElemTy, newList())
             pti = pti + 1
           }
         }
-        case None -> lowerPatternBind(ctx, insns, pat, tmpSlot, initTy, newList())
+        case None -> lowerBindingPattern(ctx, insns, pat, tmpSlot, initTy, newList())
       }
     }
     case _ -> {
       // Complex pattern: store to a temp slot then bind.
       val tmpSlot = allocSlot(ctx, "__tmp_" + freshLabel(ctx), initTy)
       emitStore(insns, tmpSlot, initTy)
-      lowerPatternBind(ctx, insns, pat, tmpSlot, initTy, newList())
+      lowerBindingPattern(ctx, insns, pat, tmpSlot, initTy, newList())
     }
   }
 }

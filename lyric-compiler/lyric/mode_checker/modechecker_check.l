@@ -2926,9 +2926,16 @@ func checkFieldWriteTarget(ctx: in FieldWriteCtx, target: in Expr): Unit {
         // NOT handled here — see the note below), `self` is a keyword, never a
         // shadowable local name, so this receiver is unambiguous.
         case ESelf -> {
-          match ctx.selfType {
-            case Some(recordName) -> checkFieldMutability(ctx, recordName, fieldName, "self", target.span)
-            case None -> markFieldNameUnsafeToLock(ctx.unsafeFieldNames, fieldName)
+          if isImplicitSelf(recv) {
+            // A bare field write the middle end spelled `self.<field>`
+            // (#8264): V0015 never checked it, so it is unsafe to lock, as
+            // the bare `EPath` arm below decides.
+            markFieldNameUnsafeToLock(ctx.unsafeFieldNames, fieldName)
+          } else {
+            match ctx.selfType {
+              case Some(recordName) -> checkFieldMutability(ctx, recordName, fieldName, "self", target.span)
+              case None -> markFieldNameUnsafeToLock(ctx.unsafeFieldNames, fieldName)
+            }
           }
         }
         // #6596: any other receiver shape — a nested chain (`c.inner.n = 1`),

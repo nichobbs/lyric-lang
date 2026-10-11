@@ -81,6 +81,8 @@ func makeFuncCtx(
     loopLabelIndex = newMap(),
     deferRanSlots = deferRanSlots,
     selfClass = None,
+    bareSelfFields = true,
+    bindingPattern = false,
     moduleVals = moduleVals,
     configFieldTypes = configFieldTypes,
     opaqueTypes = opaqueTypes,
@@ -148,6 +150,8 @@ func withWireBinding(ctx: in FuncCtx, wireClassName: in String, wireBindingTypes
     loopLabelIndex = ctx.loopLabelIndex,
     deferRanSlots = ctx.deferRanSlots,
     selfClass = ctx.selfClass,
+    bareSelfFields = ctx.bareSelfFields,
+    bindingPattern = false,
     moduleVals = ctx.moduleVals,
     configFieldTypes = ctx.configFieldTypes,
     opaqueTypes = ctx.opaqueTypes,
@@ -225,6 +229,8 @@ func makeFuncCtxForGenerator(
     loopLabelIndex = newMap(),
     deferRanSlots = deferRanSlots,
     selfClass = None,
+    bareSelfFields = true,
+    bindingPattern = false,
     moduleVals = moduleVals,
     configFieldTypes = configFieldTypes,
     opaqueTypes = opaqueTypes,
@@ -309,6 +315,8 @@ func makeFuncCtxInstance(
     loopLabelIndex = newMap(),
     deferRanSlots = deferRanSlots,
     selfClass = Some(value = className),
+    bareSelfFields = true,
+    bindingPattern = false,
     moduleVals = moduleVals,
     configFieldTypes = configFieldTypes,
     opaqueTypes = opaqueTypes,
@@ -1678,6 +1686,7 @@ func lowerProtectedMethod(
   params: in List[Param],
   retOpt: in Option[TypeExpr],
   body: in FunctionBody,
+  anns: in List[Annotation],
   pkgName: in String,
   funcSigs: in Map[String, JvmFuncSig],
   caseFields: in Map[String, List[JvmCaseField]],
@@ -1719,6 +1728,7 @@ func lowerProtectedMethod(
     importsStdString,
     typeParams
   )
+  ctxSelf.bareSelfFields = bareSelfFieldsJvm(anns)
   val insns: List[LInsn] = newList()
   // An explicit `self: in <ProtectedType>` receiver param (D037 spelling)
   // maps to the implicit `this` at slot 0 — it must not consume a real JVM
@@ -1815,6 +1825,7 @@ func lowerRecordMethod(
     importsStdString,
     typeParams
   )
+  ctxSelf.bareSelfFields = bareSelfFieldsJvm(fn.annotations)
   val insns: List[LInsn] = newList()
   val filteredParams = stripLeadingSelfParam(fn.params)
   val paramTypes = holderAwareParamTypes(filteredParams, pkgName, true, typeParams, externTypes)
@@ -2051,6 +2062,7 @@ func lowerImplMethod(
     importsStdString,
     typeParams
   )
+  ctxSelf.bareSelfFields = bareSelfFieldsJvm(fn.annotations)
   val insns: List[LInsn] = newList()
   // An explicit `self: in <Target>` receiver (D037) must not become a real
   // JVM parameter: slot 0 is already `this` (the body's `self` lowers via
@@ -2147,6 +2159,7 @@ func buildProtected(
             ed.params,
             ed.ret,
             ed.body,
+            ed.annotations,
             pkgName,
             funcSigs,
             caseFields,
@@ -2174,6 +2187,7 @@ func buildProtected(
                 fn.params,
                 fn.ret,
                 b,
+                fn.annotations,
                 pkgName,
                 funcSigs,
                 caseFields,
