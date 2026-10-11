@@ -79,6 +79,15 @@ Once you have annotated a module, run the verifier:
 lyric prove money.l
 ```
 
+`lyric prove` type-checks the program first, the way `lyric build` does, and proves nothing about a program the type checker rejects: a proof of an ill-typed program would mean nothing. A file is checked with every project whose `lyric.toml` lists it, or alone when none does. On a type error it prints the type checker's diagnostics, says that no proof obligation was attempted, and exits 1:
+
+```
+money.l: error[T0032] 14:13: equality operands must have the same type (got Cents and Int)
+prove: money.l does not type-check; no proof obligation was attempted
+```
+
+With `--json` the same diagnostics fill the document's `diagnostics` array, and `goals` is empty.
+
 When all obligations discharge:
 
 ```
@@ -200,7 +209,7 @@ Output:
 }
 ```
 
-The `outcome` field is `"discharged"`, `"counterexample"`, or `"unknown"`. A CI gate that fails if `counterexamples > 0` or `unknown > 0` ensures that every proof obligation is affirmatively discharged before a merge. The `"model"` field, when present, contains the counterexample bindings in the same format the human-readable output shows.
+Each diagnostic object carries `code`, `severity`, `message`, `line`, `col`, and the `file` it is in. The `outcome` field is `"discharged"`, `"counterexample"`, or `"unknown"`. A CI gate that fails if `counterexamples > 0` or `unknown > 0` ensures that every proof obligation is affirmatively discharged before a merge. The `"model"` field, when present, contains the counterexample bindings in the same format the human-readable output shows.
 
 ## §18.6 `@axiom` boundaries in `@proof_required` packages
 

@@ -1194,7 +1194,7 @@ lyric doc --manifest <lyric.toml>      # project mode: override manifest discove
 lyric doc -o <dir>                     # write docs to <dir> (default: docs/ beside manifest)
 
 # Verification
-lyric prove <file.l>                   # run SMT verifier on @proof_required modules
+lyric prove <file.l>                   # type-check, then run SMT verifier on @proof_required modules
 lyric prove --allow-unverified <file.l> # downgrade V0007 (unknown) from error to warning
 lyric prove --explain --goal N <file.l> # show the VC IR for goal N
 lyric prove --json <file.l>            # machine-readable output

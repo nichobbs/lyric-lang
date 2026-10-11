@@ -214,19 +214,7 @@ pub func compileToMsilWithVersion(
   val stdlibPkgs = collectStdlibPackages(stdlibSources)
   // Group stdlib items by package so each resolves against its own decls,
   // fixing the same-name cross-package type collision (#1488 category D).
-  val importedPkgs: List[ImportedPackage] = newList()
-  var spi = 0
-  while spi < stdlibPkgs.count {
-    importedPkgs.add(
-      ImportedPackage(
-        name = stdlibPkgs[spi].name,
-        items = stdlibPkgs[spi].items,
-        imports = stdlibPkgs[spi].imports,
-        wholeImports = stdlibPkgs[spi].wholeImports
-      )
-    )
-    spi = spi + 1
-  }
+  val importedPkgs = stdlibImportedPackages(stdlibPkgs)
 
   // Pre-typecheck rewrite chain (`Lyric.Pipeline` owns the order): docs/58
   // wire-template expansion FIRST (so an include alias's qualified access
@@ -782,185 +770,21 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   // emit a real `call <memberref>` instruction instead of the
   // `MObject` fall-through that produced `InvalidProgramException`
   // at runtime.
-  val stdlibPkgs = collectStdlibPackages(stdlibSources)
-  // Always-in-scope items (stdlib + restored-dep types), grouped by declaring
-  // package for scope-aware resolution.  Per-package import filtering (#1378)
-  // applies only to in-bundle user packages below; stdlib / restored-dep refs
-  // are wired via the codegen-side token tables, kept in sync with this view.
-  val baseImportedPkgs: List[ImportedPackage] = newList()
-  var sbi = 0
-  while sbi < stdlibPkgs.count {
-    baseImportedPkgs.add(
-      ImportedPackage(
-        name = stdlibPkgs[sbi].name,
-        items = stdlibPkgs[sbi].items,
-        imports = stdlibPkgs[sbi].imports,
-        wholeImports = stdlibPkgs[sbi].wholeImports
-      )
-    )
-    sbi = sbi + 1
+  val noLocated: List[DiagUtil.LocatedDiagnostic] = newList()
+  val fe = match projectFrontEnd(packages, stdlibSources, activeFeatures, declaredFeatures, restoredArtifacts, packageVersion, depTemplatePkgs, defines, paths, originsByPkg, false, noLocated) {
+    case Some(f) -> f
+    case None -> return false
   }
-  var ri0 = 0
-  while ri0 < restoredArtifacts.count {
-    val rItems: List[Item] = newList()
-    pipeAddCrossPackageItems(restoredArtifacts[ri0].source, rItems)
-    baseImportedPkgs.add(
-      ImportedPackage(
-        name = segmentsToString(restoredArtifacts[ri0].source.packageDecl.path.segments),
-        items = rItems,
-        imports = pipeRestoredImportNames(restoredArtifacts[ri0].source, restoredArtifacts[ri0].contract.imports),
-        wholeImports = pipeRestoredWholeImportNames(
-          restoredArtifacts[ri0].source,
-          restoredArtifacts[ri0].contract.wholeImports
-        )
-      )
-    )
-    ri0 = ri0 + 1
-  }
-
-  // Phase 1a: parse + cfg-erase + alias-rewrite every user package
-  // up front so we can build a per-package items map before any
-  // typecheck runs.  Doing this in a separate pass over a fresh pass
-  // over the input means each user package's typecheck only sees
-  // items from packages it actually `import`s (transitively), instead
-  // of every earlier-in-the-list package's items.  See #1378's
-  // "per-package symbol tables" recommendation; the old flat
-  // accumulation was a known gap tracked as #1195.
-  val parsedPkgs: List[ParsedUserPkg] = newList()
-  // User `--define`s merged beneath the auto-injected well-known `version`
-  // (docs/60 §9.2, M1d): the manifest's `[package].version` is the fallback and
-  // any `--define version=…` wins (decodeDefines last-wins, #5852 phase C).
-  // Hoisted out of the per-package loop since it never varies (#5906).
-  val projDefines = BD.decodeDefines(BD.withWellKnownDefines(packageVersion, defines))
-  var pi = 0
-  while pi < packages.count {
-    val pkg = packages[pi]
-    // #6610: prefer the real on-disk source path for diagnostic
-    // attribution when the caller supplied one (a single-file build
-    // routed through this project path by a nearby `lyric.toml`, or any
-    // other single-path project package); fall back to the package name
-    // — the previous behaviour — when the path is unknown.
-    val pkgLabel = if pi < paths.count and paths[pi].length > 0 { paths[pi] } else { pkg.name }
-    val pkgOrigins: List[DiagUtil.MergedLineOrigin] = if pi < originsByPkg.count {
-      originsByPkg[pi].origins
-    } else {
-      newList()
-    }
-    val erased = match pipeParseAndErase(pkg.source, "dotnet", activeFeatures, declaredFeatures, projDefines, pkgLabel, pkgOrigins) {
-      case Some(f) -> f
-      case None -> return false
-    }
-    parsedPkgs.add(
-      ParsedUserPkg(
-        name = pkg.name,
-        file = erased,
-        label = pkgLabel,
-        origins = pkgOrigins,
-        ioForbiddenReason = pkg.ioForbiddenReason
-      )
-    )
-    pi = pi + 1
-  }
-
-  // docs/58 (D121): collect wire/config templates across every in-bundle
-  // package and every path-dependency source package, then expand each
-  // in-bundle package's docs/58 constructs (config-template
-  // materialisation, contributes[T] lists, wire-template inclusion) before
-  // anything indexes or typechecks the items.  Expansion runs BEFORE the
-  // alias/stubbable rewrites so an include alias's qualified access
-  // (`Core.router`) is consumed by the expander rather than collapsed by
-  // the import-alias rewriter when the alias name matches an imported
-  // package's last segment.
-  // #6505: collect from ALIAS-REWRITTEN copies — collection-only (the
-  // rewritten file is discarded; pipeExpandAndRewrite later re-rewrites the
-  // originals): a deliberate, correctness-neutral duplicate pass; revisit
-  // only if template-heavy builds surface in compile-time profiling.
-  // (The docs/58 analog of the
-  // D-progress-781 aspect-template fix) so a template body's references
-  // through the SOURCE file's import aliases (`WebPkg.foo` under
-  // `import Web as WebPkg`, tail-segment `Console.error` under
-  // `import Std.Console`) splice into consumers fully qualified — the
-  // consumer's own later alias rewrite runs with the CONSUMER's import
-  // table and cannot resolve the library's aliases.  Safe against the
-  // ordering concern the expansion-first pipeline comment documents:
-  // `rewriteWireDecl` (#6316) already excludes every `WMInclude`
-  // alias/binding name from the table and never rewrites the include
-  // path itself, so include-alias qualified accesses inside template
-  // bodies are preserved for the expander.  The files EXPANDED below stay
-  // the un-rewritten originals — only the collected template decls are
-  // taken from the rewritten copies.
-  val weWires: Map[String, WireExpand.CollectedWireTemplate] = newMap()
-  val weConfigs: Map[String, WireExpand.CollectedConfigTemplate] = newMap()
-  var wti = 0
-  while wti < parsedPkgs.count {
-    val wpp: ParsedUserPkg = parsedPkgs[wti]
-    WireExpand.collectWireTemplates(Aliases.rewriteFile(wpp.file).items, wpp.name, weWires, weConfigs)
-    wti = wti + 1
-  }
-  var wtd = 0
-  while wtd < depTemplatePkgs.count {
-    val wdtPkg = depTemplatePkgs[wtd]
-    val wdtParseRes = parse(wdtPkg.source)
-    WireExpand.collectWireTemplates(Aliases.rewriteFile(wdtParseRes.file).items, wdtPkg.name, weWires, weConfigs)
-    wtd = wtd + 1
-  }
-  var wei = 0
-  while wei < parsedPkgs.count {
-    val wep: ParsedUserPkg = parsedPkgs[wei]
-    val rewritten0 = match pipeExpandAndRewrite(wep.file, weWires, weConfigs, true, true, false, wep.label, wep.origins) {
-      case Some(f) -> f
-      case None -> return false
-    }
-    // After template expansion, matching the JVM bridge — see the
-    // single-file pipeline's placement comment.
-    val rewritten = resolveTypeAliasesMsil(rewritten0)
-    parsedPkgs[wei] = ParsedUserPkg(
-      name = wep.name,
-      file = rewritten,
-      label = wep.label,
-      origins = wep.origins,
-      ioForbiddenReason = wep.ioForbiddenReason
-    )
-    wei = wei + 1
-  }
-
-  // Phase 1b: index each in-bundle package by name so the per-package
-  // import filter can look its items up by `import <pkgName>` segment.
-  // Item lists are extracted via `pipeAddCrossPackageItemsProject` (#6580):
-  // these are the user's OWN project's sibling packages, so `internal` must
-  // be visible alongside `pub`, unlike the pub-only rule that governs a
-  // restored cross-project dependency or a bundled stdlib DLL.
-  val inBundleItems: Map[String, List[Item]] = newMap()
-  val inBundleImports: Map[String, List[ImportDecl]] = newMap()
-  var bi = 0
-  while bi < parsedPkgs.count {
-    val pp: ParsedUserPkg = parsedPkgs[bi]
-    val items: List[Item] = newList()
-    pipeAddCrossPackageItemsProject(pp.file, items)
-    inBundleItems.add(pp.name, items)
-    inBundleImports.add(pp.name, pp.file.imports)
-    bi = bi + 1
-  }
+  val stdlibPkgs = fe.stdlibPkgs
+  val baseImportedPkgs = fe.baseImportedPkgs
+  val parsedPkgs = fe.parsedPkgs
+  val inBundleItems = fe.inBundleItems
+  val inBundleImports = fe.inBundleImports
+  val baseNames = fe.baseNames
 
   // Phase 2: typecheck + mode-check + elaborate + derive + mono per
   // package, using a per-package grouped imports view filtered by the
   // package's declared imports.
-  //
-  // Build a set of stdlib package names so `perPackageImportedPackages` can
-  // skip adding in-bundle items for packages that are already fully
-  // represented in `baseImportedPkgs`.  Without this guard, a stdlib self-build
-  // (where `packages` and `stdlibSources` contain the same files) would
-  // register every Std.* type twice with distinct TypeIds, corrupting the
-  // type-variable resolution for subsequent packages and causing spurious
-  // T0033 diagnostics on `var i = 0; while i < n { … }` loops.  (#1435)
-  val baseNames: Map[String, Bool] = newMap()
-  var bn = 0
-  while bn < stdlibPkgs.count {
-    if not baseNames.containsKey(stdlibPkgs[bn].name) {
-      baseNames.add(stdlibPkgs[bn].name, true)
-    }
-    bn = bn + 1
-  }
   // Stdlib pure-Lyric generic `pub func`s, fed to each package's monomorphizer
   // so cross-assembly generic calls (`mapGet`, `unwrapOr`, …) specialise into
   // the consumer bundle instead of erasing their return to `object` (#1727).
@@ -1479,6 +1303,332 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   val bytes = lowerMPackagesWithCtx(mpkgs, cctx.lctx, entryToken)
 
   writeBytesAtomic(outputPath, bytes)
+}
+
+/// The type checker's verdict on one source file, as `compileToMsilWithVersion`
+/// would reach it, without compiling anything: every diagnostic of the
+/// passes up to and including the type check, attributed to `path`, and
+/// never printed.  The passes before the type check stop at the first error
+/// (#8227).
+pub func checkSourceTypes(
+  source: in String, stdlibSources: in List[String], defines: in List[String], path: in String
+): List[DiagUtil.LocatedDiagnostic] {
+  val located: List[DiagUtil.LocatedDiagnostic] = newList()
+  val noFeatures: List[String] = newList()
+  val noOrigins: List[DiagUtil.MergedLineOrigin] = newList()
+  val cfgFile = match frontEndParse(true, source, noFeatures, noFeatures, BD.decodeDefines(defines), path, noOrigins, located) {
+    case Some(f) -> f
+    case None -> return located
+  }
+  val weWires: Map[String, WireExpand.CollectedWireTemplate] = newMap()
+  val weConfigs: Map[String, WireExpand.CollectedConfigTemplate] = newMap()
+  WireExpand.collectWireTemplates(
+    cfgFile.items,
+    segmentsToString(cfgFile.packageDecl.path.segments),
+    weWires,
+    weConfigs
+  )
+  val rewritten = match frontEndExpand(true, cfgFile, weWires, weConfigs, path, noOrigins, located) {
+    case Some(f) -> f
+    case None -> return located
+  }
+  val tc = checkWithImportedPackages(
+    resolveTypeAliasesMsil(rewritten),
+    stdlibImportedPackages(collectStdlibPackages(stdlibSources))
+  )
+  val _ = DiagUtil.diagLocateAll(path, noOrigins, tc.diagnostics, located)
+  located
+}
+
+/// Each standard-library package as the type checker imports it.
+func stdlibImportedPackages(stdlibPkgs: in List[StdlibPkg]): List[ImportedPackage] {
+  val importedPkgs: List[ImportedPackage] = newList()
+  for sp in stdlibPkgs {
+    importedPkgs.add(
+      ImportedPackage(name = sp.name, items = sp.items, imports = sp.imports, wholeImports = sp.wholeImports)
+    )
+  }
+  importedPkgs
+}
+
+/// A project's packages parsed, `@cfg`-erased, template-expanded and
+/// rewritten for the type checker, with what they import: the front of
+/// `compileProjectToMsilWithRestoredAndVersionDiag`, shared with
+/// `checkProjectTypes`.
+record ProjectFrontEnd {
+  stdlibPkgs: List[StdlibPkg]
+  baseImportedPkgs: List[ImportedPackage]
+  parsedPkgs: List[ParsedUserPkg]
+  inBundleItems: Map[String, List[Item]]
+  inBundleImports: Map[String, List[ImportDecl]]
+  baseNames: Map[String, Bool]
+}
+
+/// The project front end.  With `collect`, each pass's diagnostics are
+/// attributed and appended to `located` instead of printed.  None after an
+/// error.
+func projectFrontEnd(
+  packages: in List[ProjectPackagePayload],
+  stdlibSources: in List[String],
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
+  restoredArtifacts: in List[SynthesisedArtifact],
+  packageVersion: in String,
+  depTemplatePkgs: in List[ProjectPackagePayload],
+  defines: in List[String],
+  paths: in List[String],
+  originsByPkg: in List[DiagUtil.PackageLineOrigins],
+  collect: in Bool,
+  located: in List[DiagUtil.LocatedDiagnostic],
+): Option[ProjectFrontEnd] {
+  val stdlibPkgs = collectStdlibPackages(stdlibSources)
+  // Always-in-scope items (stdlib + restored-dep types), grouped by declaring
+  // package for scope-aware resolution.  Per-package import filtering (#1378)
+  // applies only to in-bundle user packages below; stdlib / restored-dep refs
+  // are wired via the codegen-side token tables, kept in sync with this view.
+  val baseImportedPkgs = stdlibImportedPackages(stdlibPkgs)
+  var ri0 = 0
+  while ri0 < restoredArtifacts.count {
+    val rItems: List[Item] = newList()
+    pipeAddCrossPackageItems(restoredArtifacts[ri0].source, rItems)
+    baseImportedPkgs.add(
+      ImportedPackage(
+        name = segmentsToString(restoredArtifacts[ri0].source.packageDecl.path.segments),
+        items = rItems,
+        imports = pipeRestoredImportNames(restoredArtifacts[ri0].source, restoredArtifacts[ri0].contract.imports),
+        wholeImports = pipeRestoredWholeImportNames(
+          restoredArtifacts[ri0].source,
+          restoredArtifacts[ri0].contract.wholeImports
+        )
+      )
+    )
+    ri0 = ri0 + 1
+  }
+
+  // Phase 1a: parse + cfg-erase + alias-rewrite every user package
+  // up front so we can build a per-package items map before any
+  // typecheck runs.  Doing this in a separate pass over a fresh pass
+  // over the input means each user package's typecheck only sees
+  // items from packages it actually `import`s (transitively), instead
+  // of every earlier-in-the-list package's items.  See #1378's
+  // "per-package symbol tables" recommendation; the old flat
+  // accumulation was a known gap tracked as #1195.
+  val parsedPkgs: List[ParsedUserPkg] = newList()
+  // User `--define`s merged beneath the auto-injected well-known `version`
+  // (docs/60 §9.2, M1d): the manifest's `[package].version` is the fallback and
+  // any `--define version=…` wins (decodeDefines last-wins, #5852 phase C).
+  // Hoisted out of the per-package loop since it never varies (#5906).
+  val projDefines = BD.decodeDefines(BD.withWellKnownDefines(packageVersion, defines))
+  var pi = 0
+  while pi < packages.count {
+    val pkg = packages[pi]
+    // #6610: prefer the real on-disk source path for diagnostic
+    // attribution when the caller supplied one (a single-file build
+    // routed through this project path by a nearby `lyric.toml`, or any
+    // other single-path project package); fall back to the package name
+    // — the previous behaviour — when the path is unknown.
+    val pkgLabel = if pi < paths.count and paths[pi].length > 0 { paths[pi] } else { pkg.name }
+    val pkgOrigins: List[DiagUtil.MergedLineOrigin] = if pi < originsByPkg.count {
+      originsByPkg[pi].origins
+    } else {
+      newList()
+    }
+    val erased = match frontEndParse(collect, pkg.source, activeFeatures, declaredFeatures, projDefines, pkgLabel, pkgOrigins, located) {
+      case Some(f) -> f
+      case None -> return None
+    }
+    parsedPkgs.add(
+      ParsedUserPkg(
+        name = pkg.name,
+        file = erased,
+        label = pkgLabel,
+        origins = pkgOrigins,
+        ioForbiddenReason = pkg.ioForbiddenReason
+      )
+    )
+    pi = pi + 1
+  }
+
+  // docs/58 (D121): collect wire/config templates across every in-bundle
+  // package and every path-dependency source package, then expand each
+  // in-bundle package's docs/58 constructs (config-template
+  // materialisation, contributes[T] lists, wire-template inclusion) before
+  // anything indexes or typechecks the items.  Expansion runs BEFORE the
+  // alias/stubbable rewrites so an include alias's qualified access
+  // (`Core.router`) is consumed by the expander rather than collapsed by
+  // the import-alias rewriter when the alias name matches an imported
+  // package's last segment.
+  // #6505: collect from ALIAS-REWRITTEN copies — collection-only (the
+  // rewritten file is discarded; pipeExpandAndRewrite later re-rewrites the
+  // originals): a deliberate, correctness-neutral duplicate pass; revisit
+  // only if template-heavy builds surface in compile-time profiling.
+  // (The docs/58 analog of the
+  // D-progress-781 aspect-template fix) so a template body's references
+  // through the SOURCE file's import aliases (`WebPkg.foo` under
+  // `import Web as WebPkg`, tail-segment `Console.error` under
+  // `import Std.Console`) splice into consumers fully qualified — the
+  // consumer's own later alias rewrite runs with the CONSUMER's import
+  // table and cannot resolve the library's aliases.  Safe against the
+  // ordering concern the expansion-first pipeline comment documents:
+  // `rewriteWireDecl` (#6316) already excludes every `WMInclude`
+  // alias/binding name from the table and never rewrites the include
+  // path itself, so include-alias qualified accesses inside template
+  // bodies are preserved for the expander.  The files EXPANDED below stay
+  // the un-rewritten originals — only the collected template decls are
+  // taken from the rewritten copies.
+  val weWires: Map[String, WireExpand.CollectedWireTemplate] = newMap()
+  val weConfigs: Map[String, WireExpand.CollectedConfigTemplate] = newMap()
+  var wti = 0
+  while wti < parsedPkgs.count {
+    val wpp: ParsedUserPkg = parsedPkgs[wti]
+    WireExpand.collectWireTemplates(Aliases.rewriteFile(wpp.file).items, wpp.name, weWires, weConfigs)
+    wti = wti + 1
+  }
+  var wtd = 0
+  while wtd < depTemplatePkgs.count {
+    val wdtPkg = depTemplatePkgs[wtd]
+    val wdtParseRes = parse(wdtPkg.source)
+    WireExpand.collectWireTemplates(Aliases.rewriteFile(wdtParseRes.file).items, wdtPkg.name, weWires, weConfigs)
+    wtd = wtd + 1
+  }
+  var wei = 0
+  while wei < parsedPkgs.count {
+    val wep: ParsedUserPkg = parsedPkgs[wei]
+    val rewritten0 = match frontEndExpand(collect, wep.file, weWires, weConfigs, wep.label, wep.origins, located) {
+      case Some(f) -> f
+      case None -> return None
+    }
+    // After template expansion, matching the JVM bridge — see the
+    // single-file pipeline's placement comment.
+    val rewritten = resolveTypeAliasesMsil(rewritten0)
+    parsedPkgs[wei] = ParsedUserPkg(
+      name = wep.name,
+      file = rewritten,
+      label = wep.label,
+      origins = wep.origins,
+      ioForbiddenReason = wep.ioForbiddenReason
+    )
+    wei = wei + 1
+  }
+
+  // Phase 1b: index each in-bundle package by name so the per-package
+  // import filter can look its items up by `import <pkgName>` segment.
+  // Item lists are extracted via `pipeAddCrossPackageItemsProject` (#6580):
+  // these are the user's OWN project's sibling packages, so `internal` must
+  // be visible alongside `pub`, unlike the pub-only rule that governs a
+  // restored cross-project dependency or a bundled stdlib DLL.
+  val inBundleItems: Map[String, List[Item]] = newMap()
+  val inBundleImports: Map[String, List[ImportDecl]] = newMap()
+  var bi = 0
+  while bi < parsedPkgs.count {
+    val pp: ParsedUserPkg = parsedPkgs[bi]
+    val items: List[Item] = newList()
+    pipeAddCrossPackageItemsProject(pp.file, items)
+    inBundleItems.add(pp.name, items)
+    inBundleImports.add(pp.name, pp.file.imports)
+    bi = bi + 1
+  }
+
+  // A set of stdlib package names so `perPackageImportedPackages` can
+  // skip adding in-bundle items for packages that are already fully
+  // represented in `baseImportedPkgs`.  Without this guard, a stdlib self-build
+  // (where `packages` and `stdlibSources` contain the same files) would
+  // register every Std.* type twice with distinct TypeIds, corrupting the
+  // type-variable resolution for subsequent packages and causing spurious
+  // T0033 diagnostics on `var i = 0; while i < n { … }` loops.  (#1435)
+  val baseNames: Map[String, Bool] = newMap()
+  var bn = 0
+  while bn < stdlibPkgs.count {
+    if not baseNames.containsKey(stdlibPkgs[bn].name) {
+      baseNames.add(stdlibPkgs[bn].name, true)
+    }
+    bn = bn + 1
+  }
+  Some(
+    value = ProjectFrontEnd(
+      stdlibPkgs = stdlibPkgs,
+      baseImportedPkgs = baseImportedPkgs,
+      parsedPkgs = parsedPkgs,
+      inBundleItems = inBundleItems,
+      inBundleImports = inBundleImports,
+      baseNames = baseNames
+    )
+  )
+}
+
+// `pipeParseAndErase`, or with `collect` its diagnostics attributed into
+// `located` instead of printed.
+func frontEndParse(
+  collect: in Bool,
+  source: in String,
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
+  defines: in List[BD.Define],
+  label: in String,
+  origins: in List[DiagUtil.MergedLineOrigin],
+  located: in List[DiagUtil.LocatedDiagnostic],
+): Option[SourceFile] {
+  if not collect {
+    return pipeParseAndErase(source, "dotnet", activeFeatures, declaredFeatures, defines, label, origins)
+  }
+  val r = pipeParseAndEraseCollect(source, "dotnet", activeFeatures, declaredFeatures, defines)
+  if DiagUtil.diagLocateAll(label, origins, r.diagnostics, located) {
+    return None
+  }
+  Some(value = r.file)
+}
+
+// `pipeExpandAndRewrite` with wire expansion and `@stubbable` synthesis (the
+// MSIL paths inject no weave imports), or with `collect` its diagnostics
+// attributed into `located` instead of printed.
+func frontEndExpand(
+  collect: in Bool,
+  file: in SourceFile,
+  weWires: in Map[String, WireExpand.CollectedWireTemplate],
+  weConfigs: in Map[String, WireExpand.CollectedConfigTemplate],
+  label: in String,
+  origins: in List[DiagUtil.MergedLineOrigin],
+  located: in List[DiagUtil.LocatedDiagnostic],
+): Option[SourceFile] {
+  if not collect {
+    return pipeExpandAndRewrite(file, weWires, weConfigs, true, true, false, label, origins)
+  }
+  val r = pipeExpandAndRewriteCollect(file, weWires, weConfigs, true, true, false)
+  if DiagUtil.diagLocateAll(label, origins, r.diagnostics, located) {
+    return None
+  }
+  Some(value = r.file)
+}
+
+/// The type checker's verdict on a project, as `compileProjectToMsilWithRestoredAndVersionDiag`
+/// would reach it, without compiling anything: every diagnostic of the
+/// passes up to and including the type check, attributed to its file, and
+/// never printed.  The passes before the type check stop at the first
+/// error; every package is type-checked (#8227).
+pub func checkProjectTypes(
+  packages: in List[ProjectPackagePayload],
+  stdlibSources: in List[String],
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
+  restoredArtifacts: in List[SynthesisedArtifact],
+  packageVersion: in String,
+  depTemplatePkgs: in List[ProjectPackagePayload],
+  defines: in List[String],
+  paths: in List[String],
+  originsByPkg: in List[DiagUtil.PackageLineOrigins],
+): List[DiagUtil.LocatedDiagnostic] {
+  val located: List[DiagUtil.LocatedDiagnostic] = newList()
+  match projectFrontEnd(packages, stdlibSources, activeFeatures, declaredFeatures, restoredArtifacts, packageVersion, depTemplatePkgs, defines, paths, originsByPkg, true, located) {
+    case None -> ()
+    case Some(fe) -> {
+      val importedPkgs = perPackageImportedPackages(fe.baseImportedPkgs, fe.inBundleItems, fe.inBundleImports, fe.baseNames)
+      for pp in fe.parsedPkgs {
+        val tc = checkWithImportedPackages(pp.file, importedPkgs)
+        val _ = DiagUtil.diagLocateAll(pp.label, pp.origins, tc.diagnostics, located)
+      }
+    }
+  }
+  located
 }
 
 /// Tab-encoded variant of `compileProjectToMsil` for reflection-based

@@ -347,11 +347,56 @@ pub record PackageFileSet {
 /// than the directory-tree fallback, whose own build is the file alone.
 pub func packageFileSetForSource(sourcePath: in String): Option[PackageFileSet] {
   val own = normalizePath(sourcePath)
-  val ownKey = pathKey(own)
   val dir = Path.dirname(own)
+  val entries = match containingEntries(own) { case Some(es) -> es; case None -> return None }
   val files: List[String] = newList()
-  var found = false
-  var current = dir
+  val found = entries.count > 0
+  for e in entries {
+    for p in e.files {
+      files.add(p)
+    }
+  }
+  if found {
+    return Some(value = PackageFileSet(files = files, fromManifest = true))
+  }
+  match File.listFilesRecursive(dir) {
+    case Ok(fs) -> {
+      val scanned: List[String] = newList()
+      for f in fs.toArray() {
+        val nf = normalizePath(f)
+        if Str.endsWith(nf, ".l") and not insideNestedProject(nf, dir) {
+          scanned.add(nf)
+        }
+      }
+      Some(value = PackageFileSet(files = scanned, fromManifest = false))
+    }
+    case Err(_) -> None
+  }
+}
+
+/// A `[project.packages]` or `[project.tests]` entry of the manifest at
+/// `manifestPath` that contains a given file, with the entry's files,
+/// normalized.
+pub record ContainingEntry {
+  pub manifestPath: String
+  pub entryName: String
+  pub isTests: Bool
+  pub files: List[String]
+}
+
+/// Every entry of every `lyric.toml` from the directory of the source file
+/// at `sourcePath` up to the filesystem root that contains the file: the
+/// packages its builds compile it in.  Empty when no manifest lists it.
+/// `None` when that cannot be known: a broken ancestor manifest, or a
+/// containing entry that cannot be fully listed.
+pub func entriesContainingSource(sourcePath: in String): Option[List[ContainingEntry]] {
+  containingEntries(normalizePath(sourcePath))
+}
+
+func containingEntries(own: in String): Option[List[ContainingEntry]] {
+  val ownKey = pathKey(own)
+  val found: List[ContainingEntry] = newList()
+  var current = Path.dirname(own)
   var walking = true
   while walking {
     val tomlPath = Path.join(current, "lyric.toml")
@@ -365,10 +410,13 @@ pub func packageFileSetForSource(sourcePath: in String): Option[PackageFileSet] 
             for e in proj.packages.toArray() {
               entries.add(e)
             }
+            val firstTests = entries.count
             for e in proj.tests.toArray() {
               entries.add(e)
             }
-            for entry in entries.toArray() {
+            var ei = 0
+            while ei < entries.count {
+              val entry = entries[ei]
               val ef = projectEntryFiles(entry, mfDir, proj)
               var contains = false
               for p in ef.paths.toArray() {
@@ -380,11 +428,13 @@ pub func packageFileSetForSource(sourcePath: in String): Option[PackageFileSet] 
                 if ef.problems.count > 0 or ef.emptyDir.length > 0 {
                   return None
                 }
-                found = true
+                val files: List[String] = newList()
                 for p in ef.paths.toArray() {
                   files.add(normalizePath(p))
                 }
+                found.add(ContainingEntry(manifestPath = tomlPath, entryName = entry.name, isTests = ei >= firstTests, files = files))
               }
+              ei = ei + 1
             }
           }
           case None -> ()
@@ -410,22 +460,7 @@ pub func packageFileSetForSource(sourcePath: in String): Option[PackageFileSet] 
       current = parent
     }
   }
-  if found {
-    return Some(value = PackageFileSet(files = files, fromManifest = true))
-  }
-  match File.listFilesRecursive(dir) {
-    case Ok(fs) -> {
-      val scanned: List[String] = newList()
-      for f in fs.toArray() {
-        val nf = normalizePath(f)
-        if Str.endsWith(nf, ".l") and not insideNestedProject(nf, dir) {
-          scanned.add(nf)
-        }
-      }
-      Some(value = PackageFileSet(files = scanned, fromManifest = false))
-    }
-    case Err(_) -> None
-  }
+  Some(value = found)
 }
 
 // Whether `file` lies in a subdirectory of `root` that has a lyric.toml of

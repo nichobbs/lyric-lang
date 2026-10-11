@@ -3773,6 +3773,16 @@ func blockValueFailsClosed(
 // against values the type cannot hold.  Each bound variable is a name of
 // its own, so a term the body reads from an enclosing binding of the same
 // source name is never captured by it.
+//
+// The `where` clause and the body are evaluated for each value of the
+// domain — an `exists` too, which may try every one before it finds a
+// witness — so their side conditions (a callee's `requires:`, a divisor
+// that must not be zero, a selector's variant) are obligations under the
+// same binders: `forall x. dom(x) implies side(x)` for the `where` clause,
+// `forall x. dom(x) and where(x) implies side(x)` for the body (#8223).
+// The facts their evaluation brings are not kept: a call's result that does
+// not vary with the bound variable would make them claims about every value
+// of the domain at once.
 func translateQuantifier(
   env: in VEnv,
   binders: in List[PropertyBinder],
@@ -3798,15 +3808,18 @@ func translateQuantifier(
   val (bodyR, bodyDiags) = translateExpr(envAcc, body)
   val guards: List[Term] = newList()
   appendTermList(guards, domain)
+  val sc: List[Term] = newList()
   match whereExprOpt {
     case Some(w) -> {
       val (wR, wD) = translateExpr(envAcc, w)
       appendTermList2(allDiags, wD)
+      quantifySides(sortBinders, guards, wR.sideConds, sc)
       guards.add(wR.term)
     }
     case None -> ()
   }
   appendTermList2(allDiags, bodyDiags)
+  quantifySides(sortBinders, guards, bodyR.sideConds, sc)
   val t = if isForall {
     val emptyTriggers: List[List[Term]] = newList()
     val inner = if guards.count == 0 { bodyR.term } else { mkImplies(mkAnd(guards), bodyR.term) }
@@ -3817,11 +3830,25 @@ func translateQuantifier(
     parts.add(bodyR.term)
     TExists(binders = sortBinders, body = mkAnd(parts))
   }
-  val sc: List[Term] = newList()
   val asList: List[Term] = newList()
   val quantTR = TranslateResult(term = t, sideConds = sc, assumed = asList)
   val quantPair: (TranslateResult, List[Diagnostic]) = (quantTR, allDiags)
   quantPair
+}
+
+// Each of `sides` stated for every value of `binders` where `guards` hold,
+// appended to `dst`.  The guards are copied: the caller goes on adding to
+// its list, which a conjunction would otherwise share.
+func quantifySides(binders: in List[SortBinder], guards: in List[Term], sides: in List[Term], dst: in List[Term]): Unit {
+  val noTriggers: List[List[Term]] = newList()
+  val held: List[Term] = newList()
+  appendTermList(held, guards)
+  var i = 0
+  while i < sides.count {
+    val inner = if held.count == 0 { sides[i] } else { mkImplies(mkAnd(held), sides[i]) }
+    dst.add(TForall(binders = binders, triggers = noTriggers, body = inner))
+    i = i + 1
+  }
 }
 
 // A lambda: its value is unknown, but its body may run whenever it is

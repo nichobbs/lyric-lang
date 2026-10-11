@@ -1,0 +1,11 @@
+[package]
+name = "ProveTypeCheckProject"
+version = "0.1.0"
+
+[project]
+name = "ProveTypeCheckProject"
+output = "single"
+output_assembly = "ProveTypeCheckProject.dll"
+
+[project.packages]
+"P" = "src/p"

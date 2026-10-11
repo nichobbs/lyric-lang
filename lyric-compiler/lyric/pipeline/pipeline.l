@@ -233,9 +233,28 @@ pub func pipeParseAndErase(
   label: in String,
   origins: in List[DiagUtil.MergedLineOrigin],
 ): Option[SourceFile] {
-  val parseResult = parse(source)
-  if gate(label, origins, parseResult.diagnostics) {
+  val r = pipeParseAndEraseCollect(source, targetName, activeFeatures, declaredFeatures, defines)
+  if gate(label, origins, r.diagnostics) {
     return None
+  }
+  Some(value = r.file)
+}
+
+/// `pipeParseAndErase` for a caller that reports the diagnostics itself:
+/// they are returned, not printed.  The passes stop at the first that
+/// reports an error; the file is meaningful only when none did.
+pub func pipeParseAndEraseCollect(
+  source: in String,
+  targetName: in String,
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
+  defines: in List[BD.Define],
+): CheckReadyFile {
+  val diags: List[Diagnostic] = newList()
+  val parseResult = parse(source)
+  appendDiagnostics(diags, parseResult.diagnostics)
+  if hasErrorDiagnostic(diags) {
+    return CheckReadyFile(file = parseResult.file, diagnostics = diags)
   }
   // Auto-inject the well-known `target` define (docs/60 §3.3) as a fallback
   // beneath the already-decoded user/manifest defines: `pipeParseAndErase` is
@@ -253,12 +272,14 @@ pub func pipeParseAndErase(
   // predicates cannot observe a define. Both are pure SourceFile -> SourceFile
   // AST transforms; substitution only ever inserts String-literal nodes.
   val bdRes = BD.applyBuildDefines(definesWk, parseResult.file)
-  if gate(label, origins, bdRes.diagnostics) {
-    return None
+  appendDiagnostics(diags, bdRes.diagnostics)
+  if hasErrorDiagnostic(diags) {
+    return CheckReadyFile(file = bdRes.file, diagnostics = diags)
   }
   val cfgRes = Cfg.applyCfgErasure(Cfg.withTargetFeature(activeFeatures, targetName), declaredFeatures, bdRes.file)
-  if gate(label, origins, cfgRes.diagnostics) {
-    return None
+  appendDiagnostics(diags, cfgRes.diagnostics)
+  if hasErrorDiagnostic(diags) {
+    return CheckReadyFile(file = cfgRes.file, diagnostics = diags)
   }
   // Std.BuildInfo synthesis (docs/60 §9.2): if the file imports Std.BuildInfo,
   // append the per-build `buildInfo()` accessor. Runs after @cfg erasure so the
@@ -266,7 +287,13 @@ pub func pipeParseAndErase(
   // feature set (not the synthetic target pseudo-feature cfg adds).
   val biFile = BD.synthesizeBuildInfo(cfgRes.file, targetName, activeFeatures, definesWk)
   val arrayImports = withArrayImports(biFile, source)
-  Some(value = hoistValueRecordMethods(markWrappingArith(arrayImports, definesWk)))
+  CheckReadyFile(file = hoistValueRecordMethods(markWrappingArith(arrayImports, definesWk)), diagnostics = diags)
+}
+
+func appendDiagnostics(dst: in List[Diagnostic], src: in List[Diagnostic]): Unit {
+  for d in src {
+    dst.add(d)
+  }
 }
 
 /// A file that spells an `array[N, T]` type may need `Std.Collections` after
@@ -390,23 +417,44 @@ pub func pipeExpandAndRewrite(
   label: in String,
   origins: in List[DiagUtil.MergedLineOrigin],
 ): Option[SourceFile] {
+  val r = pipeExpandAndRewriteCollect(file, weWires, weConfigs, runWireExpand, runStubbable, injectWeave)
+  if gate(label, origins, r.diagnostics) {
+    return None
+  }
+  Some(value = r.file)
+}
+
+/// `pipeExpandAndRewrite` for a caller that reports the diagnostics itself:
+/// they are returned, not printed.  The file is meaningful only when none is
+/// an error.
+pub func pipeExpandAndRewriteCollect(
+  file: in SourceFile,
+  weWires: in Map[String, WireExpand.CollectedWireTemplate],
+  weConfigs: in Map[String, WireExpand.CollectedConfigTemplate],
+  runWireExpand: in Bool,
+  runStubbable: in Bool,
+  injectWeave: in Bool,
+): CheckReadyFile {
+  val diags: List[Diagnostic] = newList()
   var f: SourceFile = file
   if runWireExpand {
     val weRes = WireExpand.expandFile(f, weWires, weConfigs)
-    if gate(label, origins, weRes.diagnostics) {
-      return None
+    appendDiagnostics(diags, weRes.diagnostics)
+    if hasErrorDiagnostic(diags) {
+      return CheckReadyFile(file = f, diagnostics = diags)
     }
     f = weRes.file
   }
   val prep = pipePrepareForCheck(f, runStubbable)
-  if gate(label, origins, prep.diagnostics) {
-    return None
+  appendDiagnostics(diags, prep.diagnostics)
+  if hasErrorDiagnostic(diags) {
+    return CheckReadyFile(file = f, diagnostics = diags)
   }
   f = prep.file
   if injectWeave {
     f = Weaver.injectWeaveImports(f)
   }
-  Some(value = f)
+  CheckReadyFile(file = f, diagnostics = diags)
 }
 
 /// A file after the rewrites that run between parse and type check, and

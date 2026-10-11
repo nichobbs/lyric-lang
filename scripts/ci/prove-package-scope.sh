@@ -24,6 +24,13 @@ expect() {
   if [ "$want" = proved ] && [ "$rc" -ne 0 ]; then
     echo "FAIL: $label: expected the proof to go through"; cat "$log"; exit 1
   fi
+  # `unbuildable`: the build rejects the package (B0013), so prove refuses
+  # it before proving anything (#8227).
+  if [ "$want" = unbuildable ]; then
+    if [ "$rc" -eq 0 ] || ! grep -q "error\[B0013\]" "$log" || ! grep -q "no proof obligation was attempted" "$log"; then
+      echo "FAIL: $label: expected the build's B0013 and no proof"; cat "$log"; exit 1
+    fi
+  fi
   if [ "$want" = rejected ]; then
     if [ "$rc" -eq 0 ] || ! grep -Eq "V0033 error .*(a value the verifier does not model \(sort field\.isSome\)|an equality between values that may be or hold a function, compare by identity, or be of a type the verifier does not know)" "$log"; then
       echo "FAIL: $label: expected V0033 for the sibling's Option"; cat "$log"; exit 1
@@ -33,15 +40,18 @@ expect() {
 }
 
 # shadow: a sibling in the same directory; nested: in a subdirectory of the
-# package directory; otherpkg: a file of the entry with another `package`
-# line (a build rejects it, B0013; a proof still counts it, conservatively);
-# filelist: an explicit file list across directories.
-for case in shadow:src/p/b_logic.l nested:src/p/b_logic.l otherpkg:src/p/b_logic.l filelist:src/y/b_logic.l; do
+# package directory; filelist: an explicit file list across directories.
+for case in shadow:src/p/b_logic.l nested:src/p/b_logic.l filelist:src/y/b_logic.l; do
   dir="${case%%:*}"
   file="${case#*:}"
   expect rejected "$dir, single file" "$lyric_bin" prove "$root/$dir/$file"
   expect rejected "$dir, --manifest" "$lyric_bin" prove --manifest "$root/$dir/lyric.toml"
 done
+# otherpkg: a file of the entry with another `package` line.  The build
+# rejects the package (B0013), and so does prove, which proves nothing of a
+# program that does not build (#8227).
+expect unbuildable "otherpkg, single file" "$lyric_bin" prove "$root/otherpkg/src/p/b_logic.l"
+expect unbuildable "otherpkg, --manifest" "$lyric_bin" prove --manifest "$root/otherpkg/lyric.toml"
 # nestedmanifest: the package directory holds a project of its own, which
 # the outer build still merges; found through the outer ancestor manifest.
 expect rejected "nestedmanifest, single file" "$lyric_bin" prove "$root/nestedmanifest/src/p/inner/b_logic.l"

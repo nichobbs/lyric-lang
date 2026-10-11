@@ -2805,6 +2805,41 @@ test "a quantifier over a distinct type or alias of a range subtype keeps its ra
   assertRefuted(quantSrc(cents, "exists (c: Cents) c == 3000000000"), "distinct-int-past-its-width")
 }
 
+// The `where` clause and the body of a quantifier run for each value of its
+// domain, so their side conditions are obligations for every such value:
+// none is dropped (#8223).
+func invDecl(): String {
+  "@pure\nfunc inv(x: in Byte): Byte\n  requires: x != 0u8\n{\n  100u8 / x\n}\n"
+}
+
+test "a quantifier's side conditions hold for every value of its domain (#8223)" {
+  assertRefuted(quantSrc(invDecl(), "forall (k: Byte) inv(k) == inv(k)"), "precondition-under-forall")
+  assertDischarged(quantSrc(invDecl(), "forall (k: Byte) where k != 0u8 { inv(k) == inv(k) }"), "guarded-precondition")
+  assertRefuted(quantSrc(invDecl(), "exists (k: Byte) inv(k) == 100u8"), "precondition-under-exists")
+  assertDischarged(quantSrc(invDecl(), "exists (k: Byte) where k > 0u8 { inv(k) == inv(k) }"), "guarded-exists")
+  assertRefuted(quantSrc("", "forall (k: Byte) 10u8 / k >= 0u8"), "division-by-the-binder")
+  assertDischarged(quantSrc("", "forall (k: Byte) where k > 0u8 { 10u8 / k >= 0u8 }"), "guarded-division")
+  assertRefuted(quantSrc("", "exists (k: Byte) 10u8 / k == 10u8"), "division-under-exists")
+  assertRefuted(quantSrc("", "forall (k: Byte) where 10u8 / k > 0u8 { true }"), "division-in-the-where-clause")
+  assertDischarged(quantSrc("", "forall (k: Byte) where k > 0u8 and 10u8 / k > 0u8 { true }"), "guarded-where-clause")
+  assertRefuted(quantSrc(smallDecl(), "forall (i: Small) forall (k: Byte) 10u8 / k >= 0u8"), "nested-quantifiers")
+  assertDischarged(
+    quantSrc(smallDecl(), "forall (i: Small) forall (k: Byte) where k > 0u8 { 10u8 / k >= 0u8 }"),
+    "guarded-nested-quantifiers"
+  )
+  // A side condition that does not depend on the bound variable still must
+  // hold wherever the body runs.
+  assertRefuted(
+    invDecl() + "func f(z: in Byte): Bool\n  ensures: forall (k: Small) inv(z) == inv(z)\n{\n  true\n}\n" + smallDecl(),
+    "binder-independent-precondition"
+  )
+  assertDischarged(
+    invDecl() + smallDecl() +
+      "func f(z: in Byte): Bool\n  requires: z > 0u8\n  ensures: forall (k: Small) inv(z) == inv(z)\n{\n  true\n}\n",
+    "binder-independent-precondition-held"
+  )
+}
+
 test "a quantifier over Char ranges over UTF-16 code units (#8214)" {
   assertDischarged(quantSrc("", "forall (c: Char) c >= '\\u{0}' and c <= '\\u{FFFF}'"), "char-is-a-code-unit")
   assertRefuted(quantSrc("", "exists (c: Char) c > '\\u{FFFF}'"), "no-char-above-ffff")

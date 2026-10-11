@@ -373,6 +373,16 @@ pub func proveSourceWithOptions(source: in String, allowUnverified: in Bool): Pr
   proveSourceInScope(source, allowUnverified, unknownPackageScope())
 }
 
+/// The verification level `source` declares, as `proveSourceInScope` reads
+/// it; `@runtime_checked` when the source does not parse.
+pub func sourceVerificationLevel(source: in String): VerificationLevel {
+  val parsed = parse(source)
+  if hasFatalDiag(parsed.diagnostics) {
+    return VLRuntimeChecked
+  }
+  checkFile(parsed.file).level
+}
+
 pub func proveSourceInScope(source: in String, allowUnverified: in Bool, pkgScope: in PackageScope): ProofSummary {
   // 1. Parse.
   val parsed = parse(source)

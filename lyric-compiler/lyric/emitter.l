@@ -2075,7 +2075,33 @@ func mergeProjectPackage(
   declaredFeatures: in List[String],
   targetName: in String,
 ): MergedProjectPackage {
-  val res = PM.mergePackageFiles(
+  val res = mergeUnit(pkg, activeFeatures, declaredFeatures, targetName)
+  mergedFrom(pkg, res, reportMergeDiagnostics(pkg.name, res))
+}
+
+// `mergeProjectPackage` with the merge's diagnostics attributed into
+// `located` instead of printed.
+func mergeProjectPackageInto(
+  pkg: in ProjectPackage,
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
+  targetName: in String,
+  located: in List[DiagUtil.LocatedDiagnostic],
+): MergedProjectPackage {
+  val res = mergeUnit(pkg, activeFeatures, declaredFeatures, targetName)
+  for d in res.diagnostics {
+    located.add(DiagUtil.LocatedDiagnostic(path = if d.path.length > 0 { d.path } else { pkg.name }, diagnostic = d.diag))
+  }
+  mergedFrom(pkg, res, PM.mergeHasErrors(res))
+}
+
+func mergeUnit(
+  pkg: in ProjectPackage,
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
+  targetName: in String,
+): PM.PackageMergeResult {
+  PM.mergePackageFiles(
     pkg.name,
     pkg.sources,
     pkg.paths,
@@ -2084,7 +2110,9 @@ func mergeProjectPackage(
     targetName,
     pkg.nameFromManifest
   )
-  val failed = reportMergeDiagnostics(pkg.name, res)
+}
+
+func mergedFrom(pkg: in ProjectPackage, res: in PM.PackageMergeResult, failed: in Bool): MergedProjectPackage {
   if pkg.sources.count <= 1 {
     return MergedProjectPackage(pkg = pkg, origins = res.origins, failed = failed)
   }
@@ -2105,32 +2133,23 @@ func mergeProjectPackage(
   )
 }
 
-/// Compile a multi-package project to a single bundled DLL or JAR.
-///
-/// `--target dotnet` runs IN-PROCESS via
-/// `Msil.Bridge.compileProjectToMsilWithRestoredAndVersion`.  Restored
-/// dependencies (loaded + synthesised in `emitProjectInProcess`),
-/// active feature flags, and manifest-threaded `[package].version` all
-/// flow through the in-process path.  No F# emitter shellout.
-///
-/// `--target jvm` still shells out to `lyric --internal-project-build`
-/// because the self-hosted JVM bridge has no project-level entry point
-/// yet.  Will retire when the JVM in-process bridge lands.
-@stable(since = "0.1")
-pub func emitProject(req: in EmitProjectRequest): EmitResult {
-  val outDir = Path.dirname(req.outputPath)
-  if Str.isNotEmpty(outDir) {
-    match File.createDir(outDir) {
-      case Ok(_) -> ()
-      case Err(_) -> ()
-    }
-  }
+// A request's packages and dependency template packages, each merged into
+// one compilation unit, with the per-line provenance of each package
+// (parallel to `packages`).  The merge diagnostics are printed, or with
+// `collect` attributed into `located`.
+record MergedRequest {
+  packages: List[ProjectPackage]
+  origins: List[DiagUtil.PackageLineOrigins]
+  depTemplates: List[ProjectPackage]
+  failed: Bool
+}
 
-  // Merge every multi-file package into a single compilation unit before
-  // target dispatch: every backend compiles one unit per package (#2575).
-  // The merge works from each file's own parse (`Lyric.PackageMerge`, #8234):
-  // a file that does not parse, or that declares another package, fails the
-  // build here, against its own path and position.
+func mergeRequest(
+  req: in EmitProjectRequest,
+  targetName: in String,
+  collect: in Bool,
+  located: in List[DiagUtil.LocatedDiagnostic],
+): MergedRequest {
   val mergedPkgs: List[ProjectPackage] = newList()
   // Per-package merged-line provenance (#6282/#6284), parallel to
   // `mergedPkgs` by index: `pkgOrigins[i]` is empty for a single-file
@@ -2140,11 +2159,14 @@ pub func emitProject(req: in EmitProjectRequest): EmitResult {
   // their real on-disk file and line instead of falling back to the bare
   // package name.
   val pkgOrigins: List[DiagUtil.PackageLineOrigins] = newList()
-  val targetName = compileTargetName(req.target)
   var mergeFailed = false
   for pkg in req.packages {
     val pkgFeatures = featuresForPackage(req, pkg.name)
-    val m = mergeProjectPackage(pkg, pkgFeatures.active, pkgFeatures.declared, targetName)
+    val m = if collect {
+      mergeProjectPackageInto(pkg, pkgFeatures.active, pkgFeatures.declared, targetName, located)
+    } else {
+      mergeProjectPackage(pkg, pkgFeatures.active, pkgFeatures.declared, targetName)
+    }
     if m.failed {
       mergeFailed = true
     }
@@ -2176,16 +2198,55 @@ pub func emitProject(req: in EmitProjectRequest): EmitResult {
           depDeclared = pf.declared
         }
       }
-      val m = mergeProjectPackage(dep, depActive, depDeclared, targetName)
+      val m = if collect {
+        mergeProjectPackageInto(dep, depActive, depDeclared, targetName, located)
+      } else {
+        mergeProjectPackage(dep, depActive, depDeclared, targetName)
+      }
       if m.failed {
         mergeFailed = true
       }
       mergedDepTemplates.add(m.pkg)
     }
   }
-  if mergeFailed {
+  MergedRequest(packages = mergedPkgs, origins = pkgOrigins, depTemplates = mergedDepTemplates, failed = mergeFailed)
+}
+
+/// Compile a multi-package project to a single bundled DLL or JAR.
+///
+/// `--target dotnet` runs IN-PROCESS via
+/// `Msil.Bridge.compileProjectToMsilWithRestoredAndVersion`.  Restored
+/// dependencies (loaded + synthesised in `emitProjectInProcess`),
+/// active feature flags, and manifest-threaded `[package].version` all
+/// flow through the in-process path.  No F# emitter shellout.
+///
+/// `--target jvm` still shells out to `lyric --internal-project-build`
+/// because the self-hosted JVM bridge has no project-level entry point
+/// yet.  Will retire when the JVM in-process bridge lands.
+@stable(since = "0.1")
+pub func emitProject(req: in EmitProjectRequest): EmitResult {
+  val outDir = Path.dirname(req.outputPath)
+  if Str.isNotEmpty(outDir) {
+    match File.createDir(outDir) {
+      case Ok(_) -> ()
+      case Err(_) -> ()
+    }
+  }
+
+  // Merge every multi-file package into a single compilation unit before
+  // target dispatch: every backend compiles one unit per package (#2575).
+  // The merge works from each file's own parse (`Lyric.PackageMerge`, #8234):
+  // a file that does not parse, or that declares another package, fails the
+  // build here, against its own path and position.
+  val targetName = compileTargetName(req.target)
+  val noLocated: List[DiagUtil.LocatedDiagnostic] = newList()
+  val merged = mergeRequest(req, targetName, false, noLocated)
+  if merged.failed {
     return failResult("project build failed: a package's files do not merge into one package (see stderr)")
   }
+  val mergedPkgs = merged.packages
+  val pkgOrigins = merged.origins
+  val mergedDepTemplates = merged.depTemplates
   val mergedReq = EmitProjectRequest(
     packages = mergedPkgs,
     assemblyName = req.assemblyName,
@@ -2363,18 +2424,10 @@ func siblingTypeDecls(arts: in List[RP.RestoredArtifact], selfPkg: in String): L
 // (#1183 Phase 4).  Sources arrive pre-merged by `emitProject` (one valid
 // compilation unit per package, #2575, #8234), dependency templates included.
 // Diagnostics from the bridge land on stderr (same path as `compileToMsil`).
-func emitProjectInProcess(req: in EmitProjectRequest, pkgOrigins: in List[DiagUtil.PackageLineOrigins]): EmitResult {
+// Each merged package as the MSIL bridge takes it.
+func msilPayloads(pkgs: in List[ProjectPackage]): List[MsilBridge.ProjectPackagePayload] {
   val payloads: List[MsilBridge.ProjectPackagePayload] = newList()
-  // #6610: parallel on-disk source path per package, matching
-  // `emitProjectJvmInProcess`'s `pkgPaths` — a single-file package's real
-  // path survives `emitProject`'s pre-merge (its `mergedPaths` comment);
-  // a genuinely multi-file package has no single path (see there), so ""
-  // falls through to `Msil.Bridge`'s package-name label fallback — unless
-  // `pkgOrigins` (#6282) resolves individual lines back to their real file.
-  val sourcePaths: List[String] = newList()
-  var pi = 0
-  while pi < req.packages.count {
-    val pkg = req.packages[pi]
+  for pkg in pkgs {
     payloads.add(
       MsilBridge.ProjectPackagePayload(
         name = pkg.name,
@@ -2382,50 +2435,43 @@ func emitProjectInProcess(req: in EmitProjectRequest, pkgOrigins: in List[DiagUt
         ioForbiddenReason = pkg.ioForbiddenReason
       )
     )
-    sourcePaths.add(if pkg.sources.count == 1 and pkg.paths.count == 1 { pkg.paths[0] } else { "" })
-    pi += 1
   }
-  // Auto-resolve `lyric-stdlib/std/*.l` at runtime so the in-process bridge
-  // sees Std.Core / Std.Collections / etc. types at typecheck.  Without
-  // this the typechecker rejects user code that imports `Std.Core`
-  // (T0010 / T0020 on `Result`, `Option`, `Ok`, `None`, …) and the
-  // codegen falls back to obj-typed handling, which silently miscompiles
-  // cross-package union dispatch (#1140-style).  Mirrors the F# bootstrap
-  // `Lyric.Cli.SelfHostedBridge.findStdlibSources` helper.
-  val stdlibSources = findStdlibSources()
+  payloads
+}
 
-  // Load + synthesise each restored-dependency DLL.  `restoredDllPaths`
-  // entries are "depName\tdllPath"; only the dllPath portion matters
-  // for the in-process loader (the leading depName is informational).
-  // Load / synthesise failures (DllMissing, NoContractResource,
-  // MalformedContract, SynthesisDiagnostics) bubble up as a single
-  // `EmitResult` failure — the previous behaviour of silently falling
-  // back to the F# `--internal-project-build` subprocess was retired
-  // once slice 3 (#1372) proved the self-hosted bridge round-trips
-  // restored deps end-to-end.
+// The on-disk path of each merged package of one file, "" for one merged
+// from several.
+func unitPaths(pkgs: in List[ProjectPackage]): List[String] {
+  val paths: List[String] = newList()
+  for pkg in pkgs {
+    paths.add(if pkg.sources.count == 1 and pkg.paths.count == 1 { pkg.paths[0] } else { "" })
+  }
+  paths
+}
+
+// Load + synthesise each restored-dependency DLL.  `restoredDllPaths`
+// entries are "depName\tdllPath"; only the dllPath portion matters
+// for the in-process loader (the leading depName is informational).
+// A load or synthesis failure (DllMissing, NoContractResource,
+// MalformedContract, SynthesisDiagnostics) is the error message.
+func loadRestoredArtifacts(restoredDllPaths: in List[String]): Result[List[RP.SynthesisedArtifact], String] {
   // Pass 1: load every restored DLL into its `RestoredArtifact`s (a
   // bundled DLL yields one per contained package).  Defer synthesis so
   // we can first gather the union of all packages' type declarations —
   // the cross-DLL preamble.
   val allArts: List[RP.RestoredArtifact] = newList()
-  var ri = 0
-  while ri < req.restoredDllPaths.count {
-    val depEntry = req.restoredDllPaths[ri]
+  for depEntry in restoredDllPaths {
     val tabPos = Str.indexOfRaw(depEntry, "\t")
     val dllPath = if tabPos >= 0 { depEntry.substring(tabPos + 1, depEntry.length - tabPos - 1) } else { depEntry }
     match RP.loadRestoredPackage(dllPath) {
-      case Err(e) -> return failResult("restored dep '" + dllPath + "' failed to load: " + RP.errorMessage(e))
+      case Err(e) -> return Err(error = "restored dep '" + dllPath + "' failed to load: " + RP.errorMessage(e))
       case Ok(arts) -> {
-        var ai = 0
-        while ai < arts.count {
-          allArts.add(arts[ai])
-          ai = ai + 1
+        for a in arts {
+          allArts.add(a)
         }
       }
     }
-    ri = ri + 1
   }
-
   // Pass 2: synthesise each artifact, supplying the type declarations of
   // every OTHER restored package as a validation preamble so a signature
   // that names a sibling's type (e.g. `Lyric.ModeChecker.checkFile(file:
@@ -2434,30 +2480,96 @@ func emitProjectInProcess(req: in EmitProjectRequest, pkgOrigins: in List[DiagUt
   // (synthesiseArtifact strips the preamble), so the bundle's item pool
   // registers each type exactly once.
   val restoredArtifacts: List[RP.SynthesisedArtifact] = newList()
-  var si2 = 0
-  while si2 < allArts.count {
-    val art = allArts[si2]
+  for art in allArts {
     val preamble = siblingTypeDecls(allArts, art.packageName)
     match RP.synthesiseArtifact(art, preamble) {
-      case Err(e) -> return failResult("restored dep '" + art.dllPath + "' failed to synthesise: " + RP.errorMessage(e))
+      case Err(e) -> return Err(error = "restored dep '" + art.dllPath + "' failed to synthesise: " + RP.errorMessage(e))
       case Ok(syn) -> restoredArtifacts.add(syn)
     }
-    si2 = si2 + 1
   }
+  Ok(value = restoredArtifacts)
+}
 
-  val depTemplatePkgs: List[MsilBridge.ProjectPackagePayload] = newList()
-  var dtpi = 0
-  while dtpi < req.depTemplateSrcs.count {
-    val pkg = req.depTemplateSrcs[dtpi]
-    depTemplatePkgs.add(
-      MsilBridge.ProjectPackagePayload(
-        name = pkg.name,
-        source = unitSource(pkg),
-        ioForbiddenReason = pkg.ioForbiddenReason
-      )
-    )
-    dtpi = dtpi + 1
+/// What the type checker says of a project, as a `--target dotnet`
+/// `emitProject` of `req` would reach it, without compiling anything: every
+/// diagnostic of the passes up to and including the type check (the merge
+/// of each package's files, parse, `@cfg` erasure, template expansion, the
+/// rewrites, the check), attributed to its file and never printed.  For a
+/// caller that must not act on a program the type checker rejects (`lyric
+/// prove`, #8227).  `req.target` and `req.outputPath` are not used.
+pub func typeCheckProject(req: in EmitProjectRequest): List[DiagUtil.LocatedDiagnostic] {
+  val located: List[DiagUtil.LocatedDiagnostic] = newList()
+  val merged = mergeRequest(req, compileTargetName(Dotnet), true, located)
+  if merged.failed {
+    return located
   }
+  val restoredArtifacts = match loadRestoredArtifacts(req.restoredDllPaths) {
+    case Ok(arts) -> arts
+    case Err(msg) -> {
+      located.add(
+        DiagUtil.LocatedDiagnostic(path = "", diagnostic = errorDiagnostic("B0001", msg, pointSpan(initialPosition())))
+      )
+      return located
+    }
+  }
+  try {
+    val checked = MsilBridge.checkProjectTypes(
+      msilPayloads(merged.packages),
+      findStdlibSources(),
+      req.activeFeatures,
+      req.declaredFeatures,
+      restoredArtifacts,
+      req.packageVersion,
+      msilPayloads(merged.depTemplates),
+      req.defines,
+      unitPaths(merged.packages),
+      merged.origins
+    )
+    for d in checked {
+      located.add(d)
+    }
+  } catch Bug as b {
+    located.add(DiagUtil.LocatedDiagnostic(path = "", diagnostic = msilBridgePanicDiagnostic(b.message)))
+  }
+  located
+}
+
+/// What the type checker says of the single source `req.source`, as a
+/// `--target dotnet` `emit` of `req` would reach it, without compiling
+/// anything (see `typeCheckProject`).  Every diagnostic is attributed to
+/// `req.path`.  `req.target` and `req.outputPath` are not used.
+pub func typeCheckSource(req: in EmitRequest): List[DiagUtil.LocatedDiagnostic] {
+  try {
+    MsilBridge.checkSourceTypes(req.source, findStdlibSources(), req.defines, req.path)
+  } catch Bug as b {
+    val located: List[DiagUtil.LocatedDiagnostic] = newList()
+    located.add(DiagUtil.LocatedDiagnostic(path = req.path, diagnostic = msilBridgePanicDiagnostic(b.message)))
+    located
+  }
+}
+
+func emitProjectInProcess(req: in EmitProjectRequest, pkgOrigins: in List[DiagUtil.PackageLineOrigins]): EmitResult {
+  val payloads = msilPayloads(req.packages)
+  // #6610: parallel on-disk source path per package, matching
+  // `emitProjectJvmInProcess`'s `pkgPaths` — a single-file package's real
+  // path survives `emitProject`'s pre-merge (its `mergedPaths` comment);
+  // a genuinely multi-file package has no single path (see there), so ""
+  // falls through to `Msil.Bridge`'s package-name label fallback — unless
+  // `pkgOrigins` (#6282) resolves individual lines back to their real file.
+  val sourcePaths = unitPaths(req.packages)
+  // Auto-resolve `lyric-stdlib/std/*.l` at runtime so the in-process bridge
+  // sees Std.Core / Std.Collections / etc. types at typecheck.  Without
+  // this the typechecker rejects user code that imports `Std.Core`
+  // (T0010 / T0020 on `Result`, `Option`, `Ok`, `None`, …) and the
+  // codegen falls back to obj-typed handling, which silently miscompiles
+  // cross-package union dispatch (#1140-style).  Mirrors the F# bootstrap
+  // `Lyric.Cli.SelfHostedBridge.findStdlibSources` helper.
+  val stdlibSources = findStdlibSources()
+  val restoredArtifacts = match loadRestoredArtifacts(req.restoredDllPaths) {
+    case Ok(arts) -> arts
+    case Err(msg) -> return failResult(msg)
+  }
+  val depTemplatePkgs = msilPayloads(req.depTemplateSrcs)
 
   val panicDiags: List[Diagnostic] = newList()
   val ok = try {

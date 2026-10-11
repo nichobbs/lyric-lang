@@ -96,6 +96,15 @@ The `forall (y: T)` here is not iterated at runtime — in `@proof_required` mod
 
 `exists` works analogously. It becomes an existential formula for the SMT solver, which can discharge it by finding a witness. `exists (x: T) where xs.contains(x) and x > threshold` translates to "there is an element in `xs` greater than `threshold`," which Z3 can verify or refute for integer-typed collections.
 
+A quantifier's body is evaluated for every value of its domain, so whatever the body requires must hold for each of them. A call's `requires:`, a divisor that must not be zero, and a payload selector's variant are obligations for every bound value the `where` clause admits, in an `exists` as in a `forall`:
+
+```lyric
+ensures: forall (k: Byte) 10u8 / k >= 0u8                       // refuted: k may be 0
+ensures: forall (k: Byte) where k > 0u8 { 10u8 / k >= 0u8 }     // proved
+```
+
+The `where` clause is the place to exclude the values the body cannot handle.
+
 The practical advice: write `forall` and `exists` freely in `@proof_required` mode for integer-typed collections and bounded ranges. Be cautious with string domains — check whether the goals discharge before relying on them. For floating-point (`Float`, `Double`) the prover maps values to mathematical reals, which is sound for inequality and arithmetic reasoning; see §19.8.
 
 ## §19.3 The sorted set example
