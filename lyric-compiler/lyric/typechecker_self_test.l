@@ -15,6 +15,7 @@ import Lyric.Pipeline
 import Lyric.TypeAliasResolve as TAR
 import Lyric.BareFuncRef as BFR
 import Lyric.Weaver as Weaver
+import Lyric.BuildDefines as BD
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers.
@@ -3893,6 +3894,169 @@ test "a `?` operand built from context records its type (#8181)" {
   val callCr = parseCheck(callSrc)
   assertEqualInt(diagCount(callCr), 0, "call operand: clean (" + diagCodesOf(callCr) + ")")
   assertEqual(recordedOperandType(callCr, callSrc, "g()?"), "", "a call operand is not recorded")
+}
+
+// #8192: the `slice[T]` type recorded for the bracket literal starting at
+// `litText` in `src` whose position alone fixes its shape
+// (`ListLiteralTypeSite.shapeRequired`), or "" when none is.
+func shapedListLiteralType(cr: in CheckResult, src: in String, litText: in String): String {
+  val start = Str.indexOfRaw(src, litText)
+  if start < 0 {
+    return ""
+  }
+  for k in mapKeys(cr.symbols.listLiteralTypeSites) {
+    match mapGet(cr.symbols.listLiteralTypeSites, k) {
+      case Some(site) -> if site.startOffset == start and site.shapeRequired and not site.conflicting {
+        return site.rendered
+      }
+      case None -> ()
+    }
+  }
+  ""
+}
+
+// #8191, #8192, #8193: a bracket literal argument where a `List` is expected
+// is that `List`, a generic callee's type parameters bound by the other
+// arguments; the literals inside a `List[slice[Int]]` are recorded as slices.
+test "a bracket literal argument for a List parameter types as that List (#8191, #8192, #8193)" {
+  val monads = "union Result[T, E] { case Ok(value: T); case Err(error: E) }\n"
+  val defs = "package P\nimport Std.CollectionsHost\n" + monads + "func g(): Result[Int, String] { Ok(value = 1) }\n"
+  val src = defs + "func size[T](xs: in List[T]): Int { 0 }\n" + "func f(): Int { size([1, 2, 3]) }\n"
+  val cr = checkWithImportedPackages(parse(src).file, stdCollectionsHostPackages())
+  assertEqualInt(diagCount(cr), 0, "List[T]: clean (" + diagCodesOf(cr) + ")")
+  val keys = mapKeys(cr.symbols.genericCallTypeArgSites)
+  assertEqualInt(keys.count, 1, "the call's type arguments are recorded")
+  match mapGet(cr.symbols.genericCallTypeArgSites, keys[0]) {
+    case Some(site) -> assertEqual(typeExprText(site.typeArgs[0]), "Int", "T is bound to Int by the literal's elements")
+    case None -> assertTrue(false, "site present")
+  }
+
+  val pickSrc = defs + "func pick[T](a: in T, b: in T, v: in Int): Int { v }\n" +
+    "func h(base: in List[Int]): Result[Int, String] {\n" +
+    "  Ok(value = pick(base, [1, 2], g()?))\n}\n"
+  val pickCr = checkWithImportedPackages(parse(pickSrc).file, stdCollectionsHostPackages())
+  assertEqualInt(diagCount(pickCr), 0, "bare T beside a List: clean (" + diagCodesOf(pickCr) + ")")
+  assertEqual(recordedOperandType(pickCr, pickSrc, "[1, 2]"), "List[Int]", "the hoisted literal is the List")
+
+  val nestSrc = defs + "func count(xs: in List[slice[Int]]): Int { 0 }\n" + "func k(): Int { count([[1], [5, 6]]) }\n" +
+    "func m(): List[slice[Long]] { [[7], [8, 9]] }\n"
+  val nestCr = checkWithImportedPackages(parse(nestSrc).file, stdCollectionsHostPackages())
+  assertEqualInt(diagCount(nestCr), 0, "List of slices: clean (" + diagCodesOf(nestCr) + ")")
+  assertEqual(shapedListLiteralType(nestCr, nestSrc, "[5, 6]"), "slice[Int]", "an element literal of an argument")
+  assertEqual(shapedListLiteralType(nestCr, nestSrc, "[8, 9]"), "slice[Long]", "an element literal of a return")
+  assertEqual(shapedListLiteralType(nestCr, nestSrc, "[[1], [5, 6]]"), "", "the List literal itself is not recorded")
+
+  val boxSrc = defs + "record GBox[T] { items: List[T] }\n" +
+    "func n(): Int {\n  val b = GBox(items = [1, 2])\n  0\n}\n"
+  val boxCr = checkWithImportedPackages(parse(boxSrc).file, stdCollectionsHostPackages())
+  assertEqualInt(diagCount(boxCr), 0, "generic record List field: clean (" + diagCodesOf(boxCr) + ")")
+}
+
+// #8191, #8193: a literal that does not fit the parameter the other
+// arguments (and the literals before it) instantiate is T0043 (T0104 for a
+// field), and two arguments binding one type parameter to unrelated types
+// are T0043; a numeric binding that widens, and a literal at an unbound
+// bare `T`, are not.
+test "conflicting type-parameter bindings across arguments are reported (#8191, #8193)" {
+  val defs = "package P\nimport Std.CollectionsHost\n" + "func k[T](xs: in List[T], ys: in List[T]): Int { 0 }\n" +
+    "func f[T](xs: in List[T], y: in T): Int { 0 }\n" +
+    "func pick[T](a: in T, b: in T): Int { 0 }\n" +
+    "record Two[T] { a: List[T]\n b: List[T] }\n"
+  val lits = defs + "func g(base: in List[String]): Int { k([1], [\"s\"]) + f([\"a\"], 1) + pick(base, [1, 2]) }\n"
+  val litsCr = checkWithImportedPackages(parse(lits).file, stdCollectionsHostPackages())
+  assertEqualInt(countDiagCode(litsCr, "T0043"), 3, "each mismatched literal is T0043 (" + diagCodesOf(litsCr) + ")")
+  assertTrue(diagMessagesContain(litsCr, "is List[Int] here"), "the message names the instantiated parameter")
+  val vals = defs + "func h(a: in List[Int], c: in List[String]): Int { k(a, c) }\n"
+  val valsCr = checkWithImportedPackages(parse(vals).file, stdCollectionsHostPackages())
+  assertEqualInt(countDiagCode(valsCr, "T0043"), 1, "values binding T to Int and String (" + diagCodesOf(valsCr) + ")")
+  assertTrue(diagMessagesContain(valsCr, "binds type parameter 'T' to Int"), "the message names both bindings")
+  match valsCr.diagnostics.count {
+    case 0 -> assertTrue(false, "a diagnostic")
+    case _ -> assertEqualInt(
+      valsCr.diagnostics[0].span.startPos.offset,
+      Str.indexOfRaw(vals, "k(a, c)") + 5,
+      "the diagnostic is on the conflicting argument"
+    )
+  }
+  val ctor = defs + "func m(): Int {\n  val t = Two(a = [1], b = [\"s\"])\n  0\n}\n"
+  val ctorCr = checkWithImportedPackages(parse(ctor).file, stdCollectionsHostPackages())
+  assertTrue(
+    hasDiagCode(ctorCr, "T0104"),
+    "a generic record's field literal that does not fit is T0104 (" + diagCodesOf(ctorCr) + ")"
+  )
+  val ok = defs +
+    "func w(a: in List[Long], n: in Int, l: in Long): Int { k(a, [1, 2]) + pick(n, l) + pick([1], [2, 3]) }\n"
+  val okCr = checkWithImportedPackages(parse(ok).file, stdCollectionsHostPackages())
+  assertEqualInt(diagCount(okCr), 0, "widening bindings and unbound literals are clean (" + diagCodesOf(okCr) + ")")
+}
+
+// The returned value of the synthesized `buildInfo()` accessor, and its
+// `features` argument, after `Lyric.Mono.desugarCheckedFile`.
+func buildInfoReturnKinds(file: in SourceFile): String {
+  for it in file.items {
+    match it.kind {
+      case IFunc(d) -> if d.name == "buildInfo" {
+        match d.body {
+          case Some(FBBlock(blk)) -> match blk.statements[0].kind {
+            case SReturn(Some(v)) -> {
+              return exprKindTag(v) + " " + featuresArgKind(v)
+            }
+            case _ -> ()
+          }
+          case _ -> ()
+        }
+      }
+      case _ -> ()
+    }
+  }
+  ""
+}
+
+func featuresArgKind(call: in Expr): String {
+  val cargs = match call.kind { case ECall(_, cs) -> cs; case _ -> return "" }
+  for a in cargs {
+    match a {
+      case CANamed(nm, av, _) -> if nm == "features" { return exprKindTag(av) }
+      case _ -> ()
+    }
+  }
+  ""
+}
+
+// Synthesized code gives one span to an expression and the expressions in
+// it: the `buildInfo()` accessor's `BuildInfo(...)` call and its `features`
+// list literal share the file's span.  The literal's recorded type binds the
+// literal, never the call (the JVM cast the record to an `ArrayList`).
+test "a site recorded for a synthesized literal binds only the literal" {
+  val bi = parse(
+    "package Std.BuildInfo\nimport Std.CollectionsHost\npub union Option[T] {\n  case Some(value: T)\n  case None\n}\n" +
+      "pub record BuildInfo {\n  version: String\n  target: String\n" +
+      "  profile: String\n  gitHash: Option[String]\n  buildTimestamp: Option[String]\n  features: List[String]\n}\n"
+  )
+  val pkgs = stdCollectionsHostPackages()
+  pkgs.add(
+    ImportedPackage(
+      name = "Std.BuildInfo",
+      items = bi.file.items,
+      imports = collectImportNames(bi.file.imports),
+      wholeImports = collectWholeImportNames(bi.file.imports)
+    )
+  )
+  val features: List[String] = newList()
+  features.add("fast")
+  val noDefines: List[BD.Define] = newList()
+  val app = parse("package App\nimport Std.CollectionsHost\nimport Std.BuildInfo\nfunc main(): Unit { }\n")
+  val synthesized = BD.synthesizeBuildInfo(app.file, "jvm", features, noDefines)
+  val cr = checkWithImportedPackages(synthesized, pkgs)
+  assertEqualInt(diagCount(cr), 0, "clean (" + diagCodesOf(cr) + ")")
+  val desugared = pipeDesugarChecked(
+    synthesized,
+    cr,
+    funcValueSites(cr.symbols),
+    cr.symbols.listLiteralTypeSites,
+    cr.symbols.hoistOperandTypeSites
+  )
+  assertEqual(buildInfoReturnKinds(desugared.file), "ECall EBlock", "the call is left as written, the literal bound")
 }
 
 // #8190: a literal bound to a temporary ahead of a `?` is recorded at the

@@ -15,7 +15,10 @@
 //! method call, a record's and a union case's fields, a generic callee (with
 //! explicit type arguments, and inside a generic function), an indexed
 //! callee, nested literals, a tuple holding one, an `if` and a `match` whose
-//! value is one, and the failing-`?` path.
+//! value is one, and the failing-`?` path.  A literal for a generic callee's
+//! bare `T` beside a `List` is that `List` (#8191), one for a `List[T]`
+//! binds `T` (#8193), and the slices inside a `List[slice[Int]]` literal stay
+//! slices (#8192).
 //!
 //!   lyric test --target dotnet lyric-compiler/lyric/hoisted_literal_shape_self_test.l
 //!   lyric test --target jvm    lyric-compiler/lyric/hoisted_literal_shape_self_test.l
@@ -349,6 +352,57 @@ async func firstGenericAwait[T](x: in T, y: in T): T {
   firstOf([x, y], await later(1))
 }
 
+func pickLast[T](a: in T, b: in T, v: in Int): T {
+  b
+}
+
+func pickFirst[T](a: in T, b: in T, v: in Int): T {
+  a
+}
+
+func countAt[T](xs: in List[T], v: in Int): Int {
+  xs.count * 10 + v
+}
+
+func sliceRows(xs: in List[slice[Int]], v: in Int): Int {
+  xs.count * 100 + xs[1].length * 10 + v
+}
+
+// The issue's repro: the literal is a `List[Int]`, the `T` the first
+// argument binds, not the slice its elements alone give it.
+func genericBesideListBeforeTry(): Result[Int, String] {
+  val base: List[Int] = newList()
+  Ok(value = pickLast(base, [1, 2], ok(5)?).count * 10 + pickLast(base, [1, 2], ok(5)?)[1])
+}
+
+func genericBeforeListBeforeTry(): Result[Int, String] {
+  val base: List[Int] = newList()
+  val r = pickFirst([7, 8], base, ok(5)?)
+  Ok(value = r.count * 10 + r[1])
+}
+
+func genericListBeforeTry(): Result[Int, String] {
+  Ok(value = countAt([7, 8, 9], ok(4)?))
+}
+
+func listOfSlicesBeforeTry(): Result[Int, String] {
+  Ok(value = sliceRows([[1], [5, 6]], ok(3)?))
+}
+
+async func genericBesideListBeforeAwait(): Int {
+  val base: List[Int] = newList()
+  val r = pickLast(base, [1, 2], await later(5))
+  r.count * 10 + r[1]
+}
+
+async func genericListBeforeAwait(): Int {
+  countAt([7, 8, 9], await later(4))
+}
+
+async func listOfSlicesBeforeAwait(): Int {
+  sliceRows([[1], [5, 6]], await later(3))
+}
+
 func expectOk(r: in Result[Int, String], want: in Int, label: in String): Unit {
   match r {
     case Ok(v) -> assertEqualInt(v, want, label)
@@ -489,4 +543,14 @@ test "literals before an await argument" {
   assertEqualInt(await genericBeforeAwait(), 8, "generic")
   assertEqualInt(await typeArgsBeforeAwait(), 58, "explicit type arguments")
   assertEqualInt(await firstGenericAwait(3, 4), 4, "inside a generic function")
+}
+
+test "a literal for a generic callee's List beside a ? or an await" {
+  expectOk(genericBesideListBeforeTry(), 22, "bare T beside a List")
+  expectOk(genericBeforeListBeforeTry(), 28, "bare T before a List")
+  expectOk(genericListBeforeTry(), 34, "List[T]")
+  expectOk(listOfSlicesBeforeTry(), 223, "List of slices")
+  assertEqualInt(await genericBesideListBeforeAwait(), 22, "bare T beside a List, await")
+  assertEqualInt(await genericListBeforeAwait(), 34, "List[T], await")
+  assertEqualInt(await listOfSlicesBeforeAwait(), 223, "List of slices, await")
 }

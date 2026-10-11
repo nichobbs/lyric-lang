@@ -23,6 +23,13 @@ pub func isArrayType(t: in Type): Bool {
   }
 }
 
+func isSliceType(t: in Type): Bool {
+  match unrefine(t) {
+    case TySlice(_) -> true
+    case _ -> false
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Place reads and copies.
 //

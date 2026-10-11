@@ -431,6 +431,14 @@ for x in xs { println("${x}") } // iteration
 
 There is no in-place mutation. `append` and `concat` produce new slices.
 
+A bracket literal is a slice unless its position expects something else. Where a `List[T]` is expected (a binding's annotation, a parameter, a field or the return type), the same literal builds that `List` directly. A generic function's parameter counts too: `size([1, 2, 3])` with `size[T](xs: List[T])` binds `T` to `Int`, and `pick(base, [1, 2])` with `pick[T](a: T, b: T)` and `base: List[Int]` passes a `List[Int]`. The literals inside such a literal get the shape of its element type, so `[[1], [5, 6]]` passed as a `List[slice[Int]]` is a `List` holding two slices:
+
+```lyric
+func widths(rows: in List[slice[Int]]): Int { rows[1].length }
+
+val w = widths([[1], [5, 6]])    // 2
+```
+
 **Bounds checking and range subtypes.** Array and slice indexing is bounds-checked at runtime; an index outside `0 ..< N` panics with `index <i> out of range for array[<N>]`. But if the index is a literal in range, or its type is a named range subtype whose range statically proves the access is in bounds, the compiler elides the check entirely, in every build and on every target (an inline `Int range 0 ..= 3` annotation is not a proof, since it is not enforced on every path):
 
 ```lyric

@@ -1645,12 +1645,19 @@ pub record TuplePatternBindingSite {
 /// annotated with this type (#7818).  `rendered` identifies the type; a
 /// literal also checked where a `List` is expected, or two checked literals
 /// sharing one source position (synthesized code) with different types, are
-/// `conflicting` and left as written.
+/// `conflicting` and left as written.  A literal that is an element of
+/// another bracket literal whose elements are slices (`[[1], [5, 6]]` as a
+/// `List[slice[Int]]`) is recorded too, at its slice type, with
+/// `shapeRequired` set: the enclosing literal says nothing of its elements'
+/// shape where it is built, so a backend that builds a bracket literal as a
+/// list until its position says otherwise (the JVM) binds such a literal
+/// even when it binds no other (#8192).
 pub record ListLiteralTypeSite {
   literalType: TypeExpr
   rendered: String
   conflicting: Bool
   startOffset: Int
+  shapeRequired: Bool
 }
 
 /// An operand evaluated before an `await` or a `?` in the same expression,
@@ -1666,11 +1673,56 @@ pub record ListLiteralTypeSite {
 /// generics builds it before choosing the constructor's instantiation
 /// (#7844).  Two checks of one source position with different types
 /// (synthesized code) are `conflicting` and left as written.
+///
+/// `operandKind` is the operand's `exprKindTag`: synthesized code can give
+/// one span to an expression and the expressions inside it (the
+/// `buildInfo()` accessor gives its `BuildInfo(...)` call and the call's
+/// `features` list literal the file's span), so a site applies only to an
+/// expression of the kind it was recorded for, and two recorded for one
+/// span at different kinds are `conflicting`.
 pub record HoistOperandTypeSite {
   operandType: TypeExpr
   rendered: String
   conflicting: Bool
   startOffset: Int
+  operandKind: String
+}
+
+/// The name of `e`'s expression form (`"EList"`, `"ECall"`, ...), which
+/// tells apart expressions that share one span (see `HoistOperandTypeSite`).
+pub func exprKindTag(e: in Expr): String {
+  match e.kind {
+    case ELiteral(_) -> "ELiteral"
+    case EInterpolated(_) -> "EInterpolated"
+    case EPath(_) -> "EPath"
+    case EParen(_) -> "EParen"
+    case ETuple(_) -> "ETuple"
+    case EList(_) -> "EList"
+    case EIf(_, _, _, _) -> "EIf"
+    case EMatch(_, _) -> "EMatch"
+    case EAwait(_) -> "EAwait"
+    case EYield(_) -> "EYield"
+    case ESpawn(_) -> "ESpawn"
+    case ETry(_) -> "ETry"
+    case EOld(_) -> "EOld"
+    case EForall(_, _, _) -> "EForall"
+    case EExists(_, _, _) -> "EExists"
+    case ESelf -> "ESelf"
+    case EResult -> "EResult"
+    case ELambda(_, _) -> "ELambda"
+    case ECall(_, _) -> "ECall"
+    case ETypeApp(_, _) -> "ETypeApp"
+    case EIndex(_, _) -> "EIndex"
+    case EMember(_, _) -> "EMember"
+    case EPropagate(_) -> "EPropagate"
+    case EPrefix(_, _) -> "EPrefix"
+    case EBinop(_, _, _) -> "EBinop"
+    case ERange(_) -> "ERange"
+    case EAssign(_, _, _) -> "EAssign"
+    case EBlock(_) -> "EBlock"
+    case EUnsafe(_) -> "EUnsafe"
+    case EError -> "EError"
+  }
 }
 
 /// A `?` whose operand's error type widens to the enclosing function's

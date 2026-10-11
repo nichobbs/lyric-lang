@@ -2448,7 +2448,7 @@ func substMethodRetTE(
       if methodParams.count > 0 {
         var ai = 0
         while ai < args.count and ai < params.count {
-          match inferExprTE(state, env, callArgExpr(args[ai])) {
+          match argTEForParamMono(state, env, callArgExpr(args[ai]), params[ai].ty) {
             case Some(argTE) -> unifyArgMono(methodParams, params[ai].ty, argTE, subst, bareBound)
             case None -> ()
           }
@@ -2897,7 +2897,7 @@ func partialUnifyCtorArg(
               val innerSubst: Map[String, TypeExpr] = newMap()
               var k = 0
               while k < ctorArgs.count and k < ctorDecl.params.count {
-                match inferExprTE(state, env, callArgExpr(ctorArgs[k])) {
+                match argTEForParamMono(state, env, callArgExpr(ctorArgs[k]), ctorDecl.params[k].ty) {
                   case Some(argTE) -> unifyTE(innerParams, ctorDecl.params[k].ty, argTE, innerSubst)
                   case None -> ()
                 }
@@ -2965,7 +2965,7 @@ func candidateArgsCompatible(
   var conflict = false
   var i = 0
   while i < cand.params.count and i < args.count {
-    match inferExprTE(state, env, callArgExpr(args[i])) {
+    match argTEForParamMono(state, env, callArgExpr(args[i]), cand.params[i].ty) {
       case Some(argTE) -> {
         if teKeysEqual(argTE, cand.params[i].ty) {
           matchCount = matchCount + 1
@@ -3236,7 +3236,7 @@ func inferReturnFromName(
                   if handled {
                     evidenced = true
                   } else {
-                    match inferExprTE(state, env, callArgExpr(args[i])) {
+                    match argTEForParamMono(state, env, callArgExpr(args[i]), decl.params[i].ty) {
                       case Some(argTE) -> {
                         unifyArgMono(typeParams, decl.params[i].ty, argTE, subst, bareBound)
                         evidenced = true
@@ -6081,7 +6081,7 @@ func markArgsExpectedMono(
     // type; its own inferred type may still mention that generic's type
     // variables, so it is never evidence here.
     if not isGenericCallExprMono(state, argE) {
-      match inferExprTE(state, env, argE) {
+      match argTEForParamMono(state, env, argE, callee.params[j].ty) {
         case Some(argTE) -> if not teMentionsTypeParam(typeParams, argTE) {
           unifyArgMono(typeParams, callee.params[j].ty, argTE, subst, bareBound)
         }
@@ -6118,6 +6118,39 @@ func isGenericCallExprMono(state: in MonoState, e: in Expr): Bool {
       case _ -> false
     }
     case _ -> false
+  }
+}
+
+// The type the call argument `argE` gives a parameter of type `paramTE`
+// when inferring the callee's type arguments: its own type, except that a
+// bracket literal passed where a `List` is expected is built as that `List`
+// (docs/01 §2.7), so `size([1, 2, 3])` binds `T` in `size[T](xs: List[T])`
+// to `Int` (#8193).  The type checker accepted such a call only where the
+// parameter is the stdlib `List`.
+func argTEForParamMono(
+  state: in MonoState, env: in Map[String, TypeExpr], argE: in Expr, paramTE: in TypeExpr
+): Option[TypeExpr] {
+  val own = inferExprTE(state, env, argE)
+  val isLiteral = match stripExprParens(argE).kind { case EList(_) -> true; case _ -> false }
+  if not isLiteral {
+    return own
+  }
+  match own {
+    case Some(te) -> match te.kind {
+      case TSlice(elemTE) -> match paramTE.kind {
+        case TGenericApp(head, _) -> match listElemTEMono(paramTE) {
+          case Some(_) -> {
+            val targs: List[TypeArg] = newList()
+            targs.add(TAType(ty = elemTE))
+            Some(value = TypeExpr(kind = TGenericApp(head = head, args = targs), span = te.span))
+          }
+          case None -> own
+        }
+        case _ -> own
+      }
+      case _ -> own
+    }
+    case None -> None
   }
 }
 
@@ -7101,7 +7134,10 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
   if ownSites and state.hoistOperandTypeSites.count > 0 {
     val hoistKey = recordCopySiteKey(s)
     match mapGet(state.hoistOperandTypeSites, hoistKey) {
-      case Some(site) -> {
+      // A site applies only to an expression of the kind it was recorded
+      // for: synthesized code can give the expressions inside one the same
+      // span (see `HoistOperandTypeSite.operandKind`).
+      case Some(site) -> if site.operandKind == exprKindTag(expr) {
         state.hoistOperandTypeSites.remove(hoistKey)
         return hoistOperandTypedMono(state, site, rewriteExpr(state, env, expr), s)
       }
@@ -7369,7 +7405,7 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
                           if handled {
                             evidenced = true
                           } else {
-                            match inferExprTE(state, env, callArgExpr(args[i])) {
+                            match argTEForParamMono(state, env, callArgExpr(args[i]), baseDecl.params[i].ty) {
                               case Some(argTE) -> {
                                 unifyArgMono(typeParams, baseDecl.params[i].ty, argTE, subst, bareBound)
                                 evidenced = true
@@ -7541,7 +7577,7 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
                   val qBareBound: Map[String, Bool] = newMap()
                   var qi = 0
                   while qi < args.count and qi < qBaseDecl.params.count {
-                    match inferExprTE(state, env, callArgExpr(args[qi])) {
+                    match argTEForParamMono(state, env, callArgExpr(args[qi]), qBaseDecl.params[qi].ty) {
                       case Some(qArgTE) -> unifyArgMono(qTypeParams, qBaseDecl.params[qi].ty, qArgTE, qSubst, qBareBound)
                       case None -> ()
                     }
