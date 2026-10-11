@@ -12193,9 +12193,10 @@ func sigExpectedArgTypes(
 
 // Record the callee `fn` of a call in `typeArgCalleeSites` when it is a
 // generic function under explicit type arguments written as an index of its
-// name (`firstOf[Int]`): the name binds no value here (a local, a field of
-// the implicit receiver, or a `val`, `const`, wire or config of any package)
-// and resolves to a function with one generic parameter per index (#8279).
+// name (`firstOf[Int]`): the name is not a local or a field of the implicit
+// receiver, the symbol it resolves to here (`calleeHeadSymbol`) is not a
+// `val`, `const`, wire or config, and it names a function with one generic
+// parameter per index (#8279).
 func recordTypeArgCallee(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -12214,11 +12215,9 @@ func recordTypeArgCallee(
   if scopeHasName(sc, head) or sc.selfFields.containsKey(head) {
     return
   }
-  val name = path.segments[path.segments.count - 1]
-  for sym in symTableTryFindAll(tbl, name) {
-    if symbolIsValue(sym) {
-      return
-    }
+  match calleeHeadSymbol(tbl, path) {
+    case Some(sym) -> if symbolIsValue(sym) { return }
+    case None -> ()
   }
   match findDirectSig(sc, tbl, sigs, inner, arity, argTypes) {
     case Some(sig) -> if sig.generics.count == count {
@@ -12229,6 +12228,29 @@ func recordTypeArgCallee(
     }
     case None -> ()
   }
+}
+
+// The symbol the path `p` names where it is written, as a reference to it
+// resolves: under a package qualifier (`Lib.fns`) that package's declaration
+// of the name, otherwise the bare name under the current package and its
+// imports (`symTableTryFindOne`), never a package the file does not import.
+func calleeHeadSymbol(tbl: in SymbolTable, p: in ModulePath): Option[Symbol] {
+  val name = p.segments[p.segments.count - 1]
+  if p.segments.count > 1 {
+    val prefix: List[String] = newList()
+    var i = 0
+    while i < p.segments.count - 1 {
+      prefix.add(p.segments[i])
+      i = i + 1
+    }
+    val qual = modulePathJoin(prefix)
+    for sym in symTableTryFindAll(tbl, name) {
+      if sym.originPackage == qual {
+        return Some(value = sym)
+      }
+    }
+  }
+  symTableTryFindOne(tbl, name)
 }
 
 func symbolIsValue(sym: in Symbol): Bool {

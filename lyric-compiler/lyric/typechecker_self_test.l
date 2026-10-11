@@ -3950,6 +3950,45 @@ test "a literal its position shapes records that shape ahead of a `?` (#8190)" {
   val ixCr = parseCheck(ixSrc)
   assertEqualInt(diagCount(ixCr), 0, "indexed values: clean (" + diagCodesOf(ixCr) + ")")
   assertEqualInt(ixCr.symbols.typeArgCalleeSites.count, 0, "an indexed value is not recorded")
+
+  // The callee's name resolves as written: a `val` of a package the file
+  // does not import does not hide the file's own generic function, and an
+  // imported `val` is a value.
+  val lib2 = parse("package Lib2\npub val pick: Int = 1\n")
+  val lib = parse(
+    "package Lib\npub func inc(x: in Int): Int { x + 1 }\npub val fns: array[2, (Int) -> Int] = [inc, inc]\n"
+  )
+  val pkgs: List[ImportedPackage] = newList()
+  pkgs.add(
+    ImportedPackage(
+      name = "Lib2",
+      items = lib2.file.items,
+      imports = collectImportNames(lib2.file.imports),
+      wholeImports = collectWholeImportNames(lib2.file.imports)
+    )
+  )
+  pkgs.add(
+    ImportedPackage(
+      name = "Lib",
+      items = lib.file.items,
+      imports = collectImportNames(lib.file.imports),
+      wholeImports = collectWholeImportNames(lib.file.imports)
+    )
+  )
+  val ownSrc = "package App\n" + monads + "func g(): Result[Int, String] { Ok(value = 1) }\n" +
+    "func pick[T](xs: in array[2, T], v: in Int): T { xs[v] }\n" +
+    "func k(): Result[Int, String] {\n" +
+    "  val q = pick[Int]([7, 8], g()?)\n" +
+    "  Ok(value = 0)\n}\n"
+  val ownCr = checkWithImportedPackages(parse(ownSrc).file, pkgs)
+  assertEqualInt(diagCount(ownCr), 0, "own generic beside an unimported val: clean (" + diagCodesOf(ownCr) + ")")
+  assertEqualInt(ownCr.symbols.typeArgCalleeSites.count, 1, "an unimported package's val does not hide the function")
+  val impSrc = "package App\nimport Lib\n" + monads + "func g(): Result[Int, String] { Ok(value = 1) }\n" +
+    "func k(): Result[Int, String] {\n" +
+    "  Ok(value = fns[1](g()?))\n}\n"
+  val impCr = checkWithImportedPackages(parse(impSrc).file, pkgs)
+  assertEqualInt(diagCount(impCr), 0, "imported val: clean (" + diagCodesOf(impCr) + ")")
+  assertEqualInt(impCr.symbols.typeArgCalleeSites.count, 0, "an imported val is a value")
 }
 
 // #8181: an `if`/`match` operand whose first branch fixes no success type

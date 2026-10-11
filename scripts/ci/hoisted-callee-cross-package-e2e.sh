@@ -15,7 +15,10 @@
 #     array literal before a `?` and before an `await` argument, also against
 #     the library built on its own (a restored dependency, read through its
 #     contract metadata; a `pub val` with a computed initializer does not
-#     cross that boundary, docs/45).
+#     cross that boundary, docs/45);
+#   - the application's own generic function under explicit type arguments
+#     while a package it does not import declares a `pub val` of the same
+#     name: the name means the function, so it stays in its call.
 #
 #   bash scripts/ci/hoisted-callee-cross-package-e2e.sh [dotnet] [jvm] [native]
 # LYRIC_BIN overrides the binary (default: the AOT build for BUILD_CONFIG).
@@ -144,6 +147,45 @@ TOML
 }
 write_project vals "$vals_src"
 write_project targs "$targs_src"
+mkdir -p "$work/unimported/src"
+cat > "$work/unimported/lyric.toml" <<'TOML'
+[package]
+name = "HcOwn"
+version = "0.1.0"
+[project]
+name = "HcOwn"
+[project.packages]
+"HcOther" = "src/other.l"
+"HcOwn" = "src/app.l"
+TOML
+cat > "$work/unimported/src/other.l" <<'LYRIC'
+package HcOther
+
+pub val pick: Int = 1
+
+pub func usePick(): Int = pick
+LYRIC
+cat > "$work/unimported/src/app.l" <<'LYRIC'
+package HcOwn
+
+import Std.Core
+
+func ok(v: in Int): Result[Int, String] = Ok(value = v)
+
+func pick[T](xs: in array[2, T], v: in Int): T = xs[v]
+
+func viaTry(): Result[Int, String] {
+  Ok(value = pick[Int]([7, 8], ok(1)?))
+}
+
+func main(): Int {
+  match viaTry() {
+    case Ok(v) -> println(toString(v))
+    case Err(e) -> println("err " + e)
+  }
+  0
+}
+LYRIC
 mkdir -p "$work/restored/lib/src" "$work/restored/app/src"
 cat > "$work/restored/lib/lyric.toml" <<'TOML'
 [package]
@@ -192,6 +234,7 @@ for t in "${targets[@]}"; do
     check "$t" "$work/vals/lyric.toml" "$vals_want" "an element of a sibling package's pub val list of functions"
   fi
   check "$t" "$work/targs/lyric.toml" "$targs_want" "a sibling package's generic function under explicit type arguments"
+  check "$t" "$work/unimported/lyric.toml" "8" "the application's own generic function, beside an unimported package's pub val of its name,"
   "$lyric_bin" build --manifest "$work/restored/lib/lyric.toml" --target "$t" >/dev/null 2>&1
   check "$t" "$work/restored/app/lyric.toml" "$targs_want" "a dependency's generic function under explicit type arguments"
 done
