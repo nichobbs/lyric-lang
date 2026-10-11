@@ -79,15 +79,575 @@ function lineSink(write) {
   };
 }
 
+// ---- in-memory virtual filesystem ----
+// The module's one preopened directory ("/", fd 3) is backed by this tree, so
+// `Std.File` / `Std.Directory` (wasi-libc over the path_* / fd_* imports) work
+// with no host filesystem.  `options.files` seeds it and `lyric.files` reads it back.
+
+const ERRNO_EXIST = 20;
+const ERRNO_INVAL = 28;
+const ERRNO_ISDIR = 31;
+const ERRNO_NOENT = 44;
+const ERRNO_NOSPC = 51;
+const ERRNO_NOTDIR = 54;
+const ERRNO_NOTEMPTY = 55;
+const ERRNO_NOTCAPABLE = 76;
+const FILETYPE_CHAR = 2;
+const FILETYPE_DIR = 3;
+const FILETYPE_REG = 4;
+const RIGHT_FD_READ = 2n;
+const RIGHT_FD_WRITE = 64n;
+const OFLAG_CREAT = 1;
+const OFLAG_DIRECTORY = 2;
+const OFLAG_EXCL = 4;
+const OFLAG_TRUNC = 8;
+const FDFLAG_APPEND = 1;
+const FSTFLAG_ATIM = 1;
+const FSTFLAG_ATIM_NOW = 2;
+const FSTFLAG_MTIM = 4;
+const FSTFLAG_MTIM_NOW = 8;
+const FS_MAX_FILE = 1 << 30;
+const FIRST_FILE_FD = 4;
+const PREOPEN_FD = 3;
+
+const utf8Decoder = new TextDecoder();
+
+function fsNowNs() {
+  return BigInt(Date.now()) * 1000000n;
+}
+
+/** Copy `data` (string, ArrayBuffer or typed array) into a fresh Uint8Array. */
+function toFileBytes(data) {
+  if (typeof data === 'string') return utf8Encoder.encode(data);
+  if (data instanceof ArrayBuffer) return new Uint8Array(data.slice(0));
+  if (ArrayBuffer.isView(data)) {
+    return new Uint8Array(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
+  }
+  throw new TypeError('file contents must be a string, an ArrayBuffer or a typed array');
+}
+
+class FsError extends Error {
+  constructor(code, path) {
+    super(code + ': ' + path);
+    this.name = 'FsError';
+    this.code = code;
+    this.path = path;
+  }
+}
+
+class MemoryFs {
+  constructor(seed) {
+    this.nextIno = 1n;
+    this.root = this.newNode('dir', null);
+    this.root.parent = this.root;
+    this.fds = new Map();
+    this.fds.set(PREOPEN_FD, { node: this.root, dir: true, preopen: '/', pos: 0, canRead: false, canWrite: false, append: false });
+    if (seed !== undefined && seed !== null) {
+      const entries = seed instanceof Map ? seed.entries() : Object.entries(seed);
+      for (const [path, data] of entries) {
+        if (path.endsWith('/')) this.mkdirs(path);
+        else this.writeFile(path, data);
+      }
+    }
+  }
+
+  newNode(type, parent) {
+    const t = fsNowNs();
+    const node = { type, ino: this.nextIno++, parent, atime: t, mtime: t, ctime: t };
+    if (type === 'dir') node.children = new Map();
+    else { node.data = new Uint8Array(0); node.size = 0; }
+    return node;
+  }
+
+  touch(node) {
+    node.mtime = fsNowNs();
+  }
+
+  // Walk `path` from the directory `base`.  Resolves to the final component's
+  // parent directory and name, plus the node if it exists.  A `..` that would
+  // leave the preopened root is not capable, as in a real WASI host.
+  resolve(base, path) {
+    if (path.length === 0) return { errno: ERRNO_NOENT };
+    if (path.startsWith('/')) return { errno: ERRNO_NOTCAPABLE };
+    const mustDir = path.endsWith('/');
+    const parts = path.split('/').filter((p) => p !== '' && p !== '.');
+    let dir = base;
+    if (parts.length === 0) return { node: dir, parent: dir.parent, name: null, mustDir };
+    for (let i = 0; i < parts.length - 1; i++) {
+      if (parts[i] === '..') {
+        if (dir === this.root) return { errno: ERRNO_NOTCAPABLE };
+        dir = dir.parent;
+        continue;
+      }
+      const next = dir.children.get(parts[i]);
+      if (!next) return { errno: ERRNO_NOENT };
+      if (next.type !== 'dir') return { errno: ERRNO_NOTDIR };
+      dir = next;
+    }
+    const name = parts[parts.length - 1];
+    if (name === '..') {
+      if (dir === this.root) return { errno: ERRNO_NOTCAPABLE };
+      return { node: dir.parent, parent: dir.parent.parent, name: null, mustDir };
+    }
+    return { node: dir.children.get(name) || null, parent: dir, name, mustDir };
+  }
+
+  ensureCapacity(node, n) {
+    if (n > FS_MAX_FILE) return ERRNO_NOSPC;
+    if (node.data.length < n) {
+      const grown = new Uint8Array(Math.min(FS_MAX_FILE, Math.max(n, node.data.length * 2, 64)));
+      grown.set(node.data.subarray(0, node.size));
+      node.data = grown;
+    }
+    return 0;
+  }
+
+  writeAt(node, pos, src) {
+    const end = pos + src.length;
+    const err = this.ensureCapacity(node, end);
+    if (err) return err;
+    if (pos > node.size) node.data.fill(0, node.size, pos);
+    node.data.set(src, pos);
+    if (end > node.size) node.size = end;
+    this.touch(node);
+    return 0;
+  }
+
+  truncate(node, n) {
+    const err = this.ensureCapacity(node, n);
+    if (err) return err;
+    if (n > node.size) node.data.fill(0, node.size, n);
+    node.size = n;
+    this.touch(node);
+    return 0;
+  }
+
+  allocFd(entry) {
+    let fd = FIRST_FILE_FD;
+    while (this.fds.has(fd)) fd++;
+    this.fds.set(fd, entry);
+    return fd;
+  }
+
+  // ---- host-side API (what `lyric.files` exposes); paths are rooted at "/" ----
+
+  hostParts(path) {
+    const parts = String(path).split('/').filter((p) => p !== '' && p !== '.');
+    if (parts.includes('..')) throw new FsError('EINVAL', path);
+    return parts;
+  }
+
+  hostNode(path) {
+    let node = this.root;
+    for (const p of this.hostParts(path)) {
+      if (node.type !== 'dir') return null;
+      node = node.children.get(p);
+      if (!node) return null;
+    }
+    return node;
+  }
+
+  mkdirs(path) {
+    let dir = this.root;
+    for (const p of this.hostParts(path)) {
+      let next = dir.children.get(p);
+      if (!next) {
+        next = this.newNode('dir', dir);
+        dir.children.set(p, next);
+      } else if (next.type !== 'dir') {
+        throw new FsError('ENOTDIR', path);
+      }
+      dir = next;
+    }
+    return dir;
+  }
+
+  writeFile(path, data) {
+    const bytes = toFileBytes(data);
+    const parts = this.hostParts(path);
+    if (parts.length === 0) throw new FsError('EISDIR', path);
+    const dir = this.mkdirs(parts.slice(0, -1).join('/'));
+    const name = parts[parts.length - 1];
+    let node = dir.children.get(name);
+    if (node && node.type === 'dir') throw new FsError('EISDIR', path);
+    if (!node) {
+      node = this.newNode('file', dir);
+      dir.children.set(name, node);
+    }
+    if (bytes.length > FS_MAX_FILE) throw new FsError('ENOSPC', path);
+    node.data = bytes;
+    node.size = bytes.length;
+    this.touch(node);
+  }
+
+  readFile(path) {
+    const node = this.hostNode(path);
+    if (!node || node.type !== 'file') return undefined;
+    return node.data.slice(0, node.size);
+  }
+
+  listDir(path) {
+    const node = this.hostNode(path);
+    if (!node || node.type !== 'dir') return undefined;
+    return Array.from(node.children.keys());
+  }
+
+  snapshot() {
+    const out = {};
+    const walk = (dir, prefix) => {
+      for (const [name, node] of dir.children) {
+        if (node.type === 'dir') walk(node, prefix + name + '/');
+        else out[prefix + name] = node.data.slice(0, node.size);
+      }
+    };
+    walk(this.root, '/');
+    return out;
+  }
+
+  api() {
+    return {
+      read: (path) => this.readFile(path),
+      readText: (path) => {
+        const b = this.readFile(path);
+        return b === undefined ? undefined : utf8Decoder.decode(b);
+      },
+      write: (path, data) => this.writeFile(path, data),
+      mkdir: (path) => { this.mkdirs(path); },
+      list: (path = '/') => this.listDir(path),
+      exists: (path) => this.hostNode(path) !== null,
+      snapshot: () => this.snapshot(),
+    };
+  }
+}
+
+// The WASI preview1 file calls over `fs`, for descriptors above stdio.
+function fsWasiImports(fs, view, bytes) {
+  const readPath = (ptr, len) => utf8Decoder.decode(bytes().subarray(ptr, ptr + len));
+  const iovList = (iovs, n) => {
+    const dv = view();
+    const list = [];
+    for (let i = 0; i < n; i++) list.push([dv.getUint32(iovs + i * 8, true), dv.getUint32(iovs + i * 8 + 4, true)]);
+    return list;
+  };
+  const writeStat = (ptr, node) => {
+    const dv = view();
+    bytes().fill(0, ptr, ptr + 64);
+    dv.setBigUint64(ptr + 8, node.ino, true);
+    dv.setUint8(ptr + 16, node.type === 'dir' ? FILETYPE_DIR : FILETYPE_REG);
+    dv.setBigUint64(ptr + 24, 1n, true);
+    dv.setBigUint64(ptr + 32, BigInt(node.type === 'file' ? node.size : 0), true);
+    dv.setBigUint64(ptr + 40, node.atime, true);
+    dv.setBigUint64(ptr + 48, node.mtime, true);
+    dv.setBigUint64(ptr + 56, node.ctime, true);
+  };
+  const dirOf = (fd) => {
+    const f = fs.fds.get(fd);
+    return f && f.dir ? f : null;
+  };
+  const applyTimes = (node, atim, mtim, flags) => {
+    const now = fsNowNs();
+    if (flags & FSTFLAG_ATIM) node.atime = BigInt.asUintN(64, atim);
+    else if (flags & FSTFLAG_ATIM_NOW) node.atime = now;
+    if (flags & FSTFLAG_MTIM) node.mtime = BigInt.asUintN(64, mtim);
+    else if (flags & FSTFLAG_MTIM_NOW) node.mtime = now;
+  };
+  const transfer = (f, iovs, n, pos, write) => {
+    const mem = bytes();
+    let done = 0;
+    for (const [ptr, len] of iovList(iovs, n)) {
+      if (write) {
+        const err = fs.writeAt(f.node, pos + done, mem.slice(ptr, ptr + len));
+        if (err) return { errno: err, done };
+        done += len;
+      } else {
+        const take = Math.max(0, Math.min(len, f.node.size - (pos + done)));
+        mem.set(f.node.data.subarray(pos + done, pos + done + take), ptr);
+        done += take;
+        if (take < len) break;
+      }
+    }
+    return { errno: 0, done };
+  };
+
+  return {
+    fd_prestat_get(fd, ptr) {
+      const f = fs.fds.get(fd);
+      if (!f || f.preopen === undefined) return ERRNO_BADF;
+      view().setUint8(ptr, 0);
+      view().setUint32(ptr + 4, utf8Encoder.encode(f.preopen).length, true);
+      return 0;
+    },
+    fd_prestat_dir_name(fd, ptr, len) {
+      const f = fs.fds.get(fd);
+      if (!f || f.preopen === undefined) return ERRNO_BADF;
+      bytes().set(utf8Encoder.encode(f.preopen).subarray(0, len), ptr);
+      return 0;
+    },
+    fd_write(fd, iovs, n, outPtr) {
+      const f = fs.fds.get(fd);
+      if (!f || !f.canWrite) return f && f.dir ? ERRNO_ISDIR : ERRNO_BADF;
+      const r = transfer(f, iovs, n, f.append ? f.node.size : f.pos, true);
+      f.pos = (f.append ? f.node.size : f.pos + r.done);
+      view().setUint32(outPtr, r.done, true);
+      return r.errno;
+    },
+    fd_read(fd, iovs, n, outPtr) {
+      const f = fs.fds.get(fd);
+      if (!f || !f.canRead) return f && f.dir ? ERRNO_ISDIR : ERRNO_BADF;
+      const r = transfer(f, iovs, n, f.pos, false);
+      f.pos += r.done;
+      view().setUint32(outPtr, r.done, true);
+      return r.errno;
+    },
+    fd_pwrite(fd, iovs, n, offset, outPtr) {
+      const f = fs.fds.get(fd);
+      if (!f || !f.canWrite) return f && f.dir ? ERRNO_ISDIR : ERRNO_BADF;
+      const r = transfer(f, iovs, n, Number(offset), true);
+      view().setUint32(outPtr, r.done, true);
+      return r.errno;
+    },
+    fd_pread(fd, iovs, n, offset, outPtr) {
+      const f = fs.fds.get(fd);
+      if (!f || !f.canRead) return f && f.dir ? ERRNO_ISDIR : ERRNO_BADF;
+      const r = transfer(f, iovs, n, Number(offset), false);
+      view().setUint32(outPtr, r.done, true);
+      return r.errno;
+    },
+    fd_seek(fd, offset, whence, outPtr) {
+      const f = fs.fds.get(fd);
+      if (!f) return ERRNO_BADF;
+      if (f.dir) return ERRNO_ISDIR;
+      const base = whence === 0 ? 0 : whence === 1 ? f.pos : whence === 2 ? f.node.size : -1;
+      if (base < 0) return ERRNO_INVAL;
+      const target = BigInt(base) + offset;
+      if (target < 0n || target > BigInt(FS_MAX_FILE)) return ERRNO_INVAL;
+      f.pos = Number(target);
+      view().setBigUint64(outPtr, target, true);
+      return 0;
+    },
+    fd_tell(fd, outPtr) {
+      const f = fs.fds.get(fd);
+      if (!f) return ERRNO_BADF;
+      view().setBigUint64(outPtr, BigInt(f.pos), true);
+      return 0;
+    },
+    fd_close(fd) {
+      return fs.fds.delete(fd) ? 0 : ERRNO_BADF;
+    },
+    fd_renumber(from, to) {
+      const f = fs.fds.get(from);
+      if (!f || !fs.fds.has(to)) return ERRNO_BADF;
+      fs.fds.set(to, f);
+      if (from !== to) fs.fds.delete(from);
+      return 0;
+    },
+    fd_sync(fd) { return fs.fds.has(fd) ? 0 : ERRNO_BADF; },
+    fd_datasync(fd) { return fs.fds.has(fd) ? 0 : ERRNO_BADF; },
+    fd_advise(fd) { return fs.fds.has(fd) ? 0 : ERRNO_BADF; },
+    fd_allocate(fd, offset, len) {
+      const f = fs.fds.get(fd);
+      if (!f || f.dir || !f.canWrite) return ERRNO_BADF;
+      const end = Number(offset + len);
+      return end > f.node.size ? fs.truncate(f.node, end) : 0;
+    },
+    fd_fdstat_get(fd, ptr) {
+      const f = fs.fds.get(fd);
+      if (!f) return ERRNO_BADF;
+      const dv = view();
+      bytes().fill(0, ptr, ptr + 24);
+      dv.setUint8(ptr, f.dir ? FILETYPE_DIR : FILETYPE_REG);
+      dv.setUint16(ptr + 2, f.append ? FDFLAG_APPEND : 0, true);
+      dv.setBigUint64(ptr + 8, 0xffffffffffffffffn, true);
+      dv.setBigUint64(ptr + 16, 0xffffffffffffffffn, true);
+      return 0;
+    },
+    fd_fdstat_set_flags(fd, flags) {
+      const f = fs.fds.get(fd);
+      if (!f) return ERRNO_BADF;
+      f.append = (flags & FDFLAG_APPEND) !== 0;
+      return 0;
+    },
+    fd_filestat_get(fd, ptr) {
+      if (fd <= 2) {
+        bytes().fill(0, ptr, ptr + 64);
+        view().setUint8(ptr + 16, FILETYPE_CHAR);
+        return 0;
+      }
+      const f = fs.fds.get(fd);
+      if (!f) return ERRNO_BADF;
+      writeStat(ptr, f.node);
+      return 0;
+    },
+    fd_filestat_set_size(fd, size) {
+      const f = fs.fds.get(fd);
+      if (!f) return ERRNO_BADF;
+      if (f.dir) return ERRNO_ISDIR;
+      if (!f.canWrite) return ERRNO_BADF;
+      if (size < 0n || size > BigInt(FS_MAX_FILE)) return ERRNO_INVAL;
+      return fs.truncate(f.node, Number(size));
+    },
+    fd_filestat_set_times(fd, atim, mtim, flags) {
+      const f = fs.fds.get(fd);
+      if (!f) return ERRNO_BADF;
+      applyTimes(f.node, atim, mtim, flags);
+      return 0;
+    },
+    fd_readdir(fd, buf, bufLen, cookie, usedPtr) {
+      const f = fs.fds.get(fd);
+      if (!f) return ERRNO_BADF;
+      if (!f.dir) return ERRNO_NOTDIR;
+      const dir = f.node;
+      const names = ['.', '..', ...dir.children.keys()];
+      const mem = bytes();
+      let used = 0;
+      for (let i = Number(cookie); i < names.length && used < bufLen; i++) {
+        const name = names[i];
+        const child = name === '.' ? dir : name === '..' ? dir.parent : dir.children.get(name);
+        const enc = utf8Encoder.encode(name);
+        const entry = new Uint8Array(24 + enc.length);
+        const edv = new DataView(entry.buffer);
+        edv.setBigUint64(0, BigInt(i + 1), true);
+        edv.setBigUint64(8, child.ino, true);
+        edv.setUint32(16, enc.length, true);
+        edv.setUint8(20, child.type === 'dir' ? FILETYPE_DIR : FILETYPE_REG);
+        entry.set(enc, 24);
+        const take = Math.min(entry.length, bufLen - used);
+        mem.set(entry.subarray(0, take), buf + used);
+        used += take;
+      }
+      view().setUint32(usedPtr, used, true);
+      return 0;
+    },
+    path_open(dirFd, dirFlags, pathPtr, pathLen, oflags, rightsBase, rightsInheriting, fdFlags, outPtr) {
+      const base = dirOf(dirFd);
+      if (!base) return ERRNO_BADF;
+      const r = fs.resolve(base.node, readPath(pathPtr, pathLen));
+      if (r.errno) return r.errno;
+      const wantsWrite = (rightsBase & RIGHT_FD_WRITE) !== 0n || (oflags & OFLAG_TRUNC) !== 0;
+      let node = r.node;
+      if (node) {
+        if ((oflags & OFLAG_CREAT) && (oflags & OFLAG_EXCL)) return ERRNO_EXIST;
+        if ((oflags & OFLAG_DIRECTORY) && node.type !== 'dir') return ERRNO_NOTDIR;
+        if (node.type === 'file' && r.mustDir) return ERRNO_NOTDIR;
+        if (node.type === 'dir' && wantsWrite) return ERRNO_ISDIR;
+        if (node.type === 'file' && (oflags & OFLAG_TRUNC)) fs.truncate(node, 0);
+      } else {
+        if (!(oflags & OFLAG_CREAT)) return ERRNO_NOENT;
+        if (r.name === null || (oflags & OFLAG_DIRECTORY) || r.mustDir) return ERRNO_INVAL;
+        node = fs.newNode('file', r.parent);
+        r.parent.children.set(r.name, node);
+        fs.touch(r.parent);
+      }
+      const fd = fs.allocFd({
+        node,
+        dir: node.type === 'dir',
+        pos: 0,
+        canRead: (rightsBase & RIGHT_FD_READ) !== 0n,
+        canWrite: node.type === 'file' && (rightsBase & RIGHT_FD_WRITE) !== 0n,
+        append: (fdFlags & FDFLAG_APPEND) !== 0,
+      });
+      view().setUint32(outPtr, fd, true);
+      return 0;
+    },
+    path_create_directory(dirFd, pathPtr, pathLen) {
+      const base = dirOf(dirFd);
+      if (!base) return ERRNO_BADF;
+      const r = fs.resolve(base.node, readPath(pathPtr, pathLen));
+      if (r.errno) return r.errno;
+      if (r.node) return ERRNO_EXIST;
+      if (r.name === null) return ERRNO_INVAL;
+      r.parent.children.set(r.name, fs.newNode('dir', r.parent));
+      fs.touch(r.parent);
+      return 0;
+    },
+    path_remove_directory(dirFd, pathPtr, pathLen) {
+      const base = dirOf(dirFd);
+      if (!base) return ERRNO_BADF;
+      const r = fs.resolve(base.node, readPath(pathPtr, pathLen));
+      if (r.errno) return r.errno;
+      if (!r.node) return ERRNO_NOENT;
+      if (r.node.type !== 'dir') return ERRNO_NOTDIR;
+      if (r.name === null || r.node === fs.root) return ERRNO_INVAL;
+      if (r.node.children.size > 0) return ERRNO_NOTEMPTY;
+      r.parent.children.delete(r.name);
+      fs.touch(r.parent);
+      return 0;
+    },
+    path_unlink_file(dirFd, pathPtr, pathLen) {
+      const base = dirOf(dirFd);
+      if (!base) return ERRNO_BADF;
+      const r = fs.resolve(base.node, readPath(pathPtr, pathLen));
+      if (r.errno) return r.errno;
+      if (!r.node) return ERRNO_NOENT;
+      if (r.node.type === 'dir') return ERRNO_ISDIR;
+      if (r.mustDir) return ERRNO_NOTDIR;
+      r.parent.children.delete(r.name);
+      fs.touch(r.parent);
+      return 0;
+    },
+    path_rename(oldFd, oldPtr, oldLen, newFd, newPtr, newLen) {
+      const oldBase = dirOf(oldFd);
+      const newBase = dirOf(newFd);
+      if (!oldBase || !newBase) return ERRNO_BADF;
+      const from = fs.resolve(oldBase.node, readPath(oldPtr, oldLen));
+      if (from.errno) return from.errno;
+      const to = fs.resolve(newBase.node, readPath(newPtr, newLen));
+      if (to.errno) return to.errno;
+      if (!from.node) return ERRNO_NOENT;
+      if (from.name === null || to.name === null || from.node === fs.root) return ERRNO_INVAL;
+      if (to.node === from.node) return 0;
+      if (from.node.type === 'file' && (from.mustDir || to.mustDir)) return ERRNO_NOTDIR;
+      for (let up = to.parent; ; up = up.parent) {
+        if (up === from.node) return ERRNO_INVAL;
+        if (up === fs.root) break;
+      }
+      if (to.node) {
+        if (from.node.type === 'file' && to.node.type === 'dir') return ERRNO_ISDIR;
+        if (from.node.type === 'dir' && to.node.type !== 'dir') return ERRNO_NOTDIR;
+        if (to.node.type === 'dir' && to.node.children.size > 0) return ERRNO_NOTEMPTY;
+      }
+      from.parent.children.delete(from.name);
+      to.parent.children.set(to.name, from.node);
+      from.node.parent = to.parent;
+      fs.touch(from.parent);
+      fs.touch(to.parent);
+      return 0;
+    },
+    path_filestat_get(dirFd, flags, pathPtr, pathLen, outPtr) {
+      const base = dirOf(dirFd);
+      if (!base) return ERRNO_BADF;
+      const r = fs.resolve(base.node, readPath(pathPtr, pathLen));
+      if (r.errno) return r.errno;
+      if (!r.node) return ERRNO_NOENT;
+      if (r.mustDir && r.node.type !== 'dir') return ERRNO_NOTDIR;
+      writeStat(outPtr, r.node);
+      return 0;
+    },
+    path_filestat_set_times(dirFd, flags, pathPtr, pathLen, atim, mtim, fstFlags) {
+      const base = dirOf(dirFd);
+      if (!base) return ERRNO_BADF;
+      const r = fs.resolve(base.node, readPath(pathPtr, pathLen));
+      if (r.errno) return r.errno;
+      if (!r.node) return ERRNO_NOENT;
+      applyTimes(r.node, atim, mtim, fstFlags);
+      return 0;
+    },
+  };
+}
+
 /**
  * Instantiate a Lyric module.
  *
  * @param source  ArrayBuffer, URL, Response (or promise of one) or a
  *                WebAssembly.Module; defaults to the `.wasm` next to this file.
- * @param options { stdout, stderr, stdin, args, env, imports }
+ * @param options { stdout, stderr, stdin, args, env, files, imports }
  *                stdout/stderr receive raw text chunks (default: console.log /
  *                console.error per line); stdin() returns a string,
  *                Uint8Array or null for end of input.
+ *                files seeds the in-memory filesystem behind the preopened "/"
+ *                ({ "/path": string | Uint8Array } or a Map); the instance's
+ *                `files` member reads it back (read, readText, write, mkdir,
+ *                list, exists, snapshot).
  */
 const HTTP_BODY_LIMIT = 10 * 1024 * 1024;
 
@@ -163,6 +723,8 @@ export async function instantiate(source, options = {}) {
   let stdinBuffer = new Uint8Array(0);
   const view = () => new DataView(memory.buffer);
   const bytes = () => new Uint8Array(memory.buffer);
+  const memfs = new MemoryFs(options.files);
+  const fsw = fsWasiImports(memfs, view, bytes);
 
   function stringList(items) {
     const encoded = items.map((s) => utf8Encoder.encode(s + '\0'));
@@ -222,6 +784,7 @@ export async function instantiate(source, options = {}) {
       return 0;
     },
     fd_write(fd, iovs, iovsLen, writtenPtr) {
+      if (fd > 2) return fsw.fd_write(fd, iovs, iovsLen, writtenPtr);
       const sink = sinks[fd];
       if (!sink) return ERRNO_BADF;
       const dv = view();
@@ -238,6 +801,7 @@ export async function instantiate(source, options = {}) {
       return 0;
     },
     fd_read(fd, iovs, iovsLen, readPtr) {
+      if (fd > 2) return fsw.fd_read(fd, iovs, iovsLen, readPtr);
       if (fd !== 0) return ERRNO_BADF;
       const dv = view();
       const mem = bytes();
@@ -260,25 +824,19 @@ export async function instantiate(source, options = {}) {
       return 0;
     },
     fd_close(fd) {
-      return fd <= 2 ? 0 : ERRNO_BADF;
+      return fd <= 2 ? 0 : fsw.fd_close(fd);
     },
-    fd_seek(fd) {
-      return fd <= 2 ? ERRNO_SPIPE : ERRNO_BADF;
+    fd_seek(fd, offset, whence, outPtr) {
+      return fd <= 2 ? ERRNO_SPIPE : fsw.fd_seek(fd, offset, whence, outPtr);
     },
     fd_fdstat_get(fd, ptr) {
-      if (fd > 2) return ERRNO_BADF;
+      if (fd > 2) return fsw.fd_fdstat_get(fd, ptr);
       const dv = view();
       dv.setUint8(ptr, 2); // filetype: character device
       dv.setUint16(ptr + 2, 0, true);
       dv.setBigUint64(ptr + 8, 0xffffffffffffffffn, true);
       dv.setBigUint64(ptr + 16, 0xffffffffffffffffn, true);
       return 0;
-    },
-    fd_prestat_get() {
-      return ERRNO_BADF;
-    },
-    fd_prestat_dir_name() {
-      return ERRNO_BADF;
     },
     // Only clock subscriptions are supported (that is what nanosleep and the
     // scheduler's idle wait use).  A blocking wait cannot yield to the event
@@ -324,6 +882,11 @@ export async function instantiate(source, options = {}) {
       throw new LyricExit(code);
     },
   };
+
+  // The stdio-aware calls above delegate to the filesystem for fds past 2; the rest are only about files.
+  for (const [name, fn] of Object.entries(fsw)) {
+    if (!(name in wasi)) wasi[name] = fn;
+  }
 
   const imports = {};
   for (const imp of WebAssembly.Module.imports(module)) {
@@ -482,7 +1045,7 @@ export async function instantiate(source, options = {}) {
     }
   };
 
-  const lyric = { raw, memory, flush() { sinks[1].flush(); sinks[2].flush(); } };
+  const lyric = { raw, memory, files: memfs.api(), flush() { sinks[1].flush(); sinks[2].flush(); } };
 
   // A finished task's 64-bit result slot, decoded the way the native backend
   // stored it (Int sign-extended, Float in the low 32 bits, Double as its bits,

@@ -321,7 +321,21 @@ The full table is in Appendix B.
 The tracked work is in issues #8117 (component shape) and #8118 (NPM). Today:
 
 - an NPM import cannot return a `Promise`;
-- `Std.File` has no browser behaviour beyond its clean error.
+- the filesystem is in memory only: nothing is read from or written to a real disk, and a `component` build uses the host's own WASI filesystem instead.
+
+`Std.File` and `Std.Directory` work in the module shape on an in-memory filesystem. The program sees one preopened directory, `/`, which starts empty. Seed it with `options.files` (an object or a `Map` from path to a string, `Uint8Array` or `ArrayBuffer`; a path ending in `/` makes an empty directory), and read it back through the instance's `files` member:
+
+```js
+const m = await instantiate(undefined, { files: { '/config/app.json': '{"debug":true}' } });
+m.run();
+m.files.readText('/out/report.txt');   // string, or undefined if missing
+m.files.read('/out/report.bin');       // Uint8Array copy, or undefined
+m.files.list('/out');                  // names, or undefined
+m.files.write('/in/late.txt', 'hi');   // creates parent directories
+m.files.snapshot();                    // { '/out/report.txt': Uint8Array, ... } for every file
+```
+
+Open, read, write, append, seek, truncate, rename, remove, directory listing and `stat` (size, type, modified time) all work. Paths cannot leave `/`, there are no symbolic links, and a file is capped at 1 GiB. The contents live only as long as the instance. `files` is a reserved export name, like `run` and `memory`.
 
 `Std.Http` works in the module shape: requests go through the host's `fetch` (or the function you pass as `imports['std.http'].fetch`). TLS options (`withCaCertificate`, `withMinTlsVersion`, `withInsecureSkipVerify`, ...) and Unix sockets are not available in a browser, so a client that uses them fails every request with `ConnectionFailed` rather than ignoring the option; `tlsConfigSupported()` is `false`. HTTP version pins have no effect and `negotiatedVersion` reports HTTP/1.1.
 

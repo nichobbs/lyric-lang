@@ -1060,3 +1060,100 @@ test "wasm32 module: the .d.ts makes the std.http host module optional" {
   assertTrue(Str.contains(dts, "\"std.http\"?: {"), "std.http is an optional override: " + dts)
   assertTrue(Str.contains(dts, "  imports?:"), "the options need no imports: " + dts)
 }
+
+val fileProgram: String = r#"package Probe
+
+import Std.Core
+import Std.Collections
+import Std.File as F
+
+pub func readIt(path: String): String {
+  match F.readText(path) {
+    case Ok(t) -> t
+    case Err(_) -> "<missing>"
+  }
+}
+
+pub func saveIt(path: String, text: String): Bool {
+  match F.writeText(path, text) {
+    case Ok(_) -> true
+    case Err(_) -> false
+  }
+}
+
+pub func makeDir(path: String): Bool {
+  match F.createDir(path) {
+    case Ok(_) -> true
+    case Err(_) -> false
+  }
+}
+
+pub func removeIt(path: String): Bool {
+  match F.deleteFile(path) {
+    case Ok(_) -> true
+    case Err(_) -> false
+  }
+}
+
+pub func statOk(path: String): Bool {
+  match F.stat(path) {
+    case Ok(_) -> true
+    case Err(_) -> false
+  }
+}
+
+pub func listIt(path: String): String {
+  match F.listFiles(path) {
+    case Ok(names) -> {
+      var acc = ""
+      for n in names {
+        acc = acc + n + ";"
+      }
+      acc
+    }
+    case Err(_) -> "<err>"
+  }
+}
+"#
+
+test "wasm32 module: Std.File runs on the in-memory filesystem seeded by options.files and read back through files" {
+  val r = runNode(
+    fileProgram,
+    r"import { instantiate } from './prog.js';
+const m = await instantiate(undefined, { files: { '/seed/in.txt': 'from the host' } });
+console.log('seed=' + m.readIt('/seed/in.txt'));
+console.log('missing=' + m.readIt('/seed/nope.txt'));
+console.log('mkdir=' + m.makeDir('/out'));
+console.log('save=' + m.saveIt('/out/new.txt', 'guest wrote this'));
+console.log('back=' + m.readIt('/out/new.txt'));
+console.log('host=' + m.files.readText('/out/new.txt'));
+m.files.write('/out/late.txt', 'host wrote this');
+console.log('late=' + m.readIt('/out/late.txt'));
+console.log('list=' + m.listIt('/out'));
+console.log('stat=' + m.statOk('/out/new.txt') + ' ' + m.statOk('/out/none.txt'));
+console.log('del=' + m.removeIt('/out/new.txt') + ' ' + m.files.exists('/out/new.txt'));
+console.log('snapshot=' + Object.keys(m.files.snapshot()).sort().join(','));
+"
+  )
+  assertEqualInt(r.exitCode, 0, "node exits cleanly: " + r.stderr)
+  assertTrue(Str.contains(r.stdout, "seed=from the host\n"), "the seeded file reads: " + r.stdout)
+  assertTrue(Str.contains(r.stdout, "missing=<missing>\n"), "a missing file is an Err: " + r.stdout)
+  assertTrue(Str.contains(r.stdout, "mkdir=true\n"), "createDir works: " + r.stdout)
+  assertTrue(Str.contains(r.stdout, "save=true\n"), "writeText works: " + r.stdout)
+  assertTrue(Str.contains(r.stdout, "back=guest wrote this\n"), "the guest reads its own write: " + r.stdout)
+  assertTrue(Str.contains(r.stdout, "host=guest wrote this\n"), "the host reads the guest's write: " + r.stdout)
+  assertTrue(Str.contains(r.stdout, "late=host wrote this\n"), "the guest reads a host write: " + r.stdout)
+  assertTrue(Str.contains(r.stdout, "new.txt;"), "listFiles sees the guest file: " + r.stdout)
+  assertTrue(Str.contains(r.stdout, "late.txt;"), "listFiles sees the host file: " + r.stdout)
+  assertTrue(Str.contains(r.stdout, "stat=true false\n"), "stat finds only the existing file: " + r.stdout)
+  assertTrue(Str.contains(r.stdout, "del=true false\n"), "deleteFile removes it for the host too: " + r.stdout)
+  assertTrue(Str.contains(r.stdout, "snapshot=/out/late.txt,/seed/in.txt\n"), "snapshot lists what is left: " + r.stdout)
+}
+
+test "wasm32 module: the .d.ts types options.files and the files member" {
+  val b = buildModule(fileProgram, "wasm32-wasi")
+  assertTrue(b.ok, "the module builds")
+  val dts = readGenerated(b.dir, "prog.d.ts")
+  assertTrue(Str.contains(dts, "files?: Record<string, LyricFileData | null>"), "options.files is typed: " + dts)
+  assertTrue(Str.contains(dts, "readonly files: LyricFiles;"), "the files member is typed: " + dts)
+}

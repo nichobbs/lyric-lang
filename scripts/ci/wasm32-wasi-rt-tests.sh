@@ -94,6 +94,8 @@ fi
 export WASI_SDK_PATH="$wasi_dir" WASMTIME="$wasmtime_dir/wasmtime"
 export LYRIC_RT_WASM32_PATH="$PWD/lyric-rt/build-wasm32-wasi/lyric_rt.a"
 LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/llvm_wasm32_self_test.l
+# The in-memory WASI filesystem behind the module shape's preopened root (no toolchain needed).
+node --test lyric-compiler/lyric/wasm/memfs_test.mjs
 # The browser/JS-host `module` shape runs under node through its generated glue.
 command -v node >/dev/null || { echo "::error::node not found on the runner"; exit 1; }
 LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/llvm_wasm32_module_self_test.l
