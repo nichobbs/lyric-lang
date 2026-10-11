@@ -316,8 +316,7 @@ pub func compileToMsilWithVersion(
     typeArgCalleesOut = singleFileTypeArgCallees,
     genericItemsOut = newList(),
     foreignValueRecordsOut = newList(),
-    arraysAsLists = true,
-    genericReceiverLambdasUnsupported = true
+    arraysAsLists = true
   )
   val file = match pipeCheckAndMono(file0, importedPkgs, noDeriveImports, allMonoFuncs, stdlibIfaces, stdlibRecs, singleFileOpts) {
     case Some(f) -> f
@@ -1137,8 +1136,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
       genericItemsOut = newList(),
       foreignValueRecordsOut = newList(),
       arraysAsLists = true,
-      ioForbiddenReason = pp.ioForbiddenReason,
-      genericReceiverLambdasUnsupported = true
+      ioForbiddenReason = pp.ioForbiddenReason
     )
     val monoFile = match pipeCheckAndMono(pp.file, importedPkgs, importedItems, allImportedGenFuncs, allImportedIfaceDecls, allImportedRecordDecls, projOpts) {
       case Some(f) -> f

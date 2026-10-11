@@ -466,6 +466,13 @@ pub record CodegenCtx {
   // Parallel list of closure records in synthesis order (for emission to module).
   // Maintained in sync with lambdaClosureClasses.add() calls.
   lambdaClosureRecordList: List[MRecord]
+  // Each lambda hosted by a generic closure class (#8284), keyed like
+  // `lambdaClosureClasses`, with the type parameters the class declares
+  // (`closureHostGenericsMsil`).  Such a lambda is an instance method of its
+  // closure class, instantiated at the enclosing `!0..!n` where it is built.
+  lambdaHostGenerics: Map[String, List[String]]
+  // Each hosted closure class, by its CLR name (`closureClassHeadMsil`).
+  closureRecordsByHead: Map[String, MRecord]
   // Counter (length-as-value, mirroring nextFieldDefRow/nextMethodDefRow):
   // how many entries of lambdaClosureRecordList have already been drained
   // by drainLambdaClosureRecordsMsil.  Guards against draining the same
@@ -2302,6 +2309,8 @@ pub func newCodegenCtx(
     lambdaCaptureFuncRetTypes = newMap(),
     lambdaClosureClasses = newMap(),
     lambdaClosureRecordList = newList(),
+    lambdaHostGenerics = newMap(),
+    closureRecordsByHead = newMap(),
     lambdaClosureEmittedCount = newList(),
     lambdaClosureCtorTokens = newMap(),
     constValues = newMap(),
@@ -5022,11 +5031,18 @@ pub func addPackageTokens(cctx: in CodegenCtx, file0: in SourceFile, pkgName: in
         // Arity-qualified key (#1536) so same-name overloads don't collide on the bare FQN; bare FQN kept as a first-wins alias.
         val arityKey = fqn + "/" + toString(decl.params.count)
         val funcTok = 0x06000000 + methodDefRow
-        if not cctx.funcTokens.containsKey(arityKey) {
-          cctx.funcTokens.add(arityKey, funcTok)
-        }
-        if not cctx.funcTokens.containsKey(fqn) {
-          cctx.funcTokens.add(fqn, funcTok)
+        // A lambda hosted by a generic closure class (#8284) is a method of
+        // that class, not of the package class: it takes no row here.
+        val closureHost = closureHostGenericsMsil(decl.annotations)
+        if closureHost.count > 0 {
+          cctx.lambdaHostGenerics.add(fqn, closureHost)
+        } else {
+          if not cctx.funcTokens.containsKey(arityKey) {
+            cctx.funcTokens.add(arityKey, funcTok)
+          }
+          if not cctx.funcTokens.containsKey(fqn) {
+            cctx.funcTokens.add(fqn, funcTok)
+          }
         }
         // Record the first `main()` we see as the bundle entry point.  Later
         // packages' `main()` (if any) are recorded as regular functions but
@@ -5393,7 +5409,9 @@ pub func addPackageTokens(cctx: in CodegenCtx, file0: in SourceFile, pkgName: in
           cctx.funcParamModes.add(fqn, paramModes)
         }
         exitTypeScopeOriginMsil(cctx)
-        methodDefRow = methodDefRow + 1
+        if closureHost.count == 0 {
+          methodDefRow = methodDefRow + 1
+        }
       }
       // IWire emits `<Wire>_bootstrap` plus one `<Wire>_<name>` accessor per
       // exposed binding in MPFuncs (#5021).  Reserve the MethodDef rows in
@@ -6368,9 +6386,10 @@ pub record FuncCtx {
   // correct — only body-local annotations were missed). Set by
   // `bindGenericSelfMsil` for `lowerRecordMethodMsil` and, for an impl on a
   // generic target (`impl[T] I for Box[T]`, #7704), `lowerImplMethodMsil`;
-  // empty everywhere else (top-level functions, lambdas — a lifted lambda sits
-  // on the non-generic package class, so the enclosing type's `T` erases to
-  // `object` there through `generics`, see `lambdaGenerics` — generators).
+  // for a lambda in such a member, set by `lowerFuncMsilScoped` to the
+  // parameters of its generic closure class (`lambdaHostGenerics`, #8284);
+  // empty everywhere else (top-level functions and their lambdas,
+  // generators).
   var reifiedGenerics: List[String]
   // Cross-package enum case-name collision fix (#5995).  A Lyric enum lowers
   // to a bare Int ordinal (no distinguishing CLR type), so two in-bundle
@@ -7102,6 +7121,11 @@ func materializeBoxedElemMsil(cctx: in CodegenCtx, insns: in List[MInsn], elemTy
         typeArgs = normalizeCastTyArgsMsil(typeArgs)
       )
     )
+    // A type parameter (`!0` of the enclosing type, `!!0` of the method) may
+    // be instantiated with a value type: `unbox.any` on its VAR/MVAR
+    // TypeSpec unboxes one and is a checked cast for a reference (#8205).
+    case MTypeVar(_) -> castObjectToMsil(cctx, insns, elemTy)
+    case MMethodTypeVar(_) -> castObjectToMsil(cctx, insns, elemTy)
     case _ -> {
       if isValueType(elemTy) {
         insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, elemTy)))
@@ -7143,6 +7167,10 @@ func coerceTrailingToRetMsil(
       }
       case MString -> {
       }
+      // A type-parameter value (a hosted lambda returning its `T`, #8284)
+      // boxes through its VAR/MVAR TypeSpec, a no-op for a reference.
+      case MTypeVar(_) -> boxIfNeededMsil(cctx, insns, valTy)
+      case MMethodTypeVar(_) -> boxIfNeededMsil(cctx, insns, valTy)
       case _ -> if isValueType(valTy) { boxIfNeededMsil(cctx, insns, valTy) }
     }
     // An `object`-typed value returned from a function that declares a
@@ -7753,7 +7781,9 @@ func emitByrefArgCheckedMsil(
 // is the one an `EPath` read uses (`lowerExprMsil`): a cell hoisted in this
 // function, then a plain slot (a local that shadows nothing captured), then a
 // cell captured into the enclosing lambda's closure class.
-func emitCapturedCellRefMsil(fctx: in FuncCtx, insns: in List[MInsn], name: in String): Option[MsilType] {
+func emitCapturedCellRefMsil(
+  cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], name: in String
+): Option[MsilType] {
   match mapGet(fctx.hoistedCellSlot, name) {
     case Some(cellSlot) -> {
       emitLoadVarMsil(fctx, insns, cellSlot)
@@ -7765,16 +7795,9 @@ func emitCapturedCellRefMsil(fctx: in FuncCtx, insns: in List[MInsn], name: in S
     return None
   }
   match mapGet(fctx.captureNameToIndex, name) {
-    case Some(capIdx) -> match mapGet(fctx.types, "__caps") {
-      case Some(MClass(closureClassName)) -> {
-        emitLoadVarMsil(fctx, insns, 0)
-        insns.add(MLdfldByName(ownerFqn = closureClassName, fieldName = "__f" + toString(capIdx)))
-        Some(value = match mapGet(fctx.captureNameToType, name) { case Some(t) -> t; case None -> MObject })
-      }
-      case _ -> panic(
-        "Msil.Codegen ICE: captured name '" + name +
-          "' has a captureNameToIndex entry but __caps is not a closure class (#7525 invariant violated)"
-      )
+    case Some(capIdx) -> {
+      emitCapsFieldLoadMsil(cctx, fctx, insns, capIdx, name)
+      Some(value = match mapGet(fctx.captureNameToType, name) { case Some(t) -> t; case None -> MObject })
     }
     case None -> None
   }
@@ -7806,7 +7829,7 @@ func emitCellByrefArgMsil(
   if name == "" {
     return false
   }
-  val elemTy = match emitCapturedCellRefMsil(fctx, insns, name) { case Some(t) -> t; case None -> return false }
+  val elemTy = match emitCapturedCellRefMsil(cctx, fctx, insns, name) { case Some(t) -> t; case None -> return false }
   val objCell = cellObjMsil(fctx, name)
   val storageTy = cellStorageElemTyMsil(elemTy, objCell)
   val pe = match paramElem { case Some(t) -> t; case None -> elemTy }
@@ -9513,6 +9536,14 @@ func boxIfNeededMsil(cctx: in CodegenCtx, insns: in List[MInsn], ty: in MsilType
       val tsRow = ctxAddTypeSpec(cctx.lctx, "ts_box_if_needed_var_" + toString(idx), blob)
       insns.add(MBox(typeToken = 0x1B000000 + tsRow))
     }
+    case MMethodTypeVar(idx) -> {
+      val w = bufNew()
+      bufU1(w, 0x1E)  // ELEMENT_TYPE_MVAR
+      bufU1(w, idx)
+      val blob = bufToList(w)
+      val tsRow = ctxAddTypeSpec(cctx.lctx, "ts_box_if_needed_mvar_" + toString(idx), blob)
+      insns.add(MBox(typeToken = 0x1B000000 + tsRow))
+    }
     case _ -> if isValueType(ty) { insns.add(MBox(typeToken = boxTypeRef(cctx, ty))) }
   }
 }
@@ -9726,11 +9757,11 @@ func canUseTypedArrayLoad(ty: in MsilType): Bool {
 // `canUseTypedArrayLoad` accepts use their primitive array token; a closed
 // record, union, generic instantiation, concrete collection, value type or
 // primitive-element slice is an `MCellArray` (`cellUsesTypedArrayMsil`).
-// Only a type that names a type parameter (a closure class is never generic,
-// so its field cannot name `!0`, #7695) or encodes as `object` anyway (a
-// legacy `List<object>`-backed `List`/`Map`/`Set`/tuple, or a slice of
-// records, #6322) keeps an `object` cell, whose value is boxed on store and
-// cast back on load.  Every cell site — declaration (`finishHoistedCellMsil`),
+// Only a type that names a type parameter (a closure class the package class
+// hosts is not generic, so its field cannot name `!0`, #7695) or encodes as
+// `object` anyway (a legacy `List<object>`-backed `List`/`Map`/`Set`/tuple, or
+// a slice of records, #6322) keeps an `object` cell, whose value is boxed on
+// store and cast back on load.  Every cell site — declaration (`finishHoistedCellMsil`),
 // reads, writes (`emitCellAssignMsil`), by-reference arguments
 // (`emitCellByrefArgMsil`) and the closure-class field
 // (`synthesizeClosureClassMsil`) — derives the cell's shape from these
@@ -9900,6 +9931,14 @@ func castObjectToMsil(cctx: in CodegenCtx, insns: in List[MInsn], ty: in MsilTyp
       bufU1(w, idx)
       val blob = bufToList(w)
       val tsRow = ctxAddTypeSpec(cctx.lctx, "ts_cast_obj_var_" + toString(idx), blob)
+      insns.add(MUnboxAny(typeToken = 0x1B000000 + tsRow))
+    }
+    case MMethodTypeVar(idx) -> {
+      val w = bufNew()
+      bufU1(w, 0x1E)  // ELEMENT_TYPE_MVAR
+      bufU1(w, idx)
+      val blob = bufToList(w)
+      val tsRow = ctxAddTypeSpec(cctx.lctx, "ts_cast_obj_mvar_" + toString(idx), blob)
       insns.add(MUnboxAny(typeToken = 0x1B000000 + tsRow))
     }
     case _ -> if isValueType(ty) {
@@ -11394,34 +11433,17 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           // instance.
           match mapGet(fctx.captureNameToIndex, name) {
             case Some(capIdx) -> {
-              val capsType = match mapGet(fctx.types, "__caps") { case Some(t) -> t; case None -> MObject }
-              match capsType {
-                case MClass(closureClassName) -> {
-                  emitLoadVarMsil(fctx, insns, 0)
-                  val fieldName = "__f" + toString(capIdx)
-                  insns.add(MLdfldByName(ownerFqn = closureClassName, fieldName = fieldName))
-                  val capTy = match mapGet(fctx.captureNameToType, name) { case Some(t) -> t; case None -> MObject }
-                  if nameListContains(fctx.captureCellNames, name) {
-                    insns.add(MLdcI4(v = 0))
-                    emitCellElemLoadMsil(cctx, insns, capTy, cellObjMsil(fctx, name))
-                  } else {
-                    // Non-cell capture field is already typed as capTy, no
-                    // cast/unbox needed. #7695: `capTy` here is this LIFTED
-                    // LAMBDA's own (already-erased) `captureNameToType`
-                    // entry — never a bare `MTypeVar` — so no `!0` narrowing
-                    // is needed or valid inside a lambda body; see the
-                    // erasure at its population site (`lowerFuncMsil`'s
-                    // capture-registration loop) for why.
-                  }
-                  return capTy
-                }
-                case _ -> {
-                  panic(
-                    "Msil.Codegen ICE: captured name '" + name +
-                      "' has a captureNameToIndex entry but __caps is not a closure class (#7525 invariant violated)"
-                  )
-                }
+              emitCapsFieldLoadMsil(cctx, fctx, insns, capIdx, name)
+              val capTy = match mapGet(fctx.captureNameToType, name) { case Some(t) -> t; case None -> MObject }
+              if nameListContains(fctx.captureCellNames, name) {
+                insns.add(MLdcI4(v = 0))
+                emitCellElemLoadMsil(cctx, insns, capTy, cellObjMsil(fctx, name))
               }
+              // A by-value capture's field is typed `capTy` itself: the
+              // capture's type, or `object` for one naming a type parameter
+              // in a lambda the package class hosts (#7695), which has no
+              // `!0` to narrow to.
+              return capTy
             }
             case None -> {
             }
@@ -12840,21 +12862,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
       // param, not `this`, and verify as invalid IL).
       match mapGet(fctx.captureNameToIndex, "self") {
         case Some(capIdx) -> {
-          val capsType = match mapGet(fctx.types, "__caps") { case Some(t) -> t; case None -> MObject }
-          match capsType {
-            case MClass(closureClassName) -> {
-              emitLoadVarMsil(fctx, insns, 0)
-              insns.add(MLdfldByName(ownerFqn = closureClassName, fieldName = "__f" + toString(capIdx)))
-            }
-            case _ -> {
-              // Unreachable (#7525): see the matching EPath-capture comment
-              // above — `fctx.captureNameToIndex` holding "self" guarantees
-              // `__caps` is a closure class.
-              panic(
-                "Msil.Codegen ICE: 'self' has a captureNameToIndex entry but __caps is not a closure class (#7525 invariant violated)"
-              )
-            }
-          }
+          emitCapsFieldLoadMsil(cctx, fctx, insns, capIdx, "self")
           match mapGet(fctx.captureNameToType, "self") {
             case Some(t) -> t
             case None -> MObject
@@ -12917,6 +12925,20 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
       // computes the capture set (free idents ∩ enclosing slots); their types
       // come from the enclosing scope.
       val caps = lambdaCaptureNamesMsil(fctx, lparams, lbody)
+      // A lambda in a member of a type with type parameters is hosted by a
+      // closure class generic over them (#8284): `liftLambdasMsil` marked it,
+      // and the class is instantiated here at this member's own `!0..!n`.
+      val hostKey = fctx.pkgName + ".__lambda_" + toString(cctx.lambdaTicker.count)
+      val hostGenerics = match mapGet(cctx.lambdaHostGenerics, hostKey) { case Some(g) -> g; case None -> newList() }
+      if not sameNameListMsil(hostGenerics, fctx.reifiedGenerics) {
+        panic(
+          "Msil.Codegen ICE: lambda '" + hostKey + "' is lifted for the type parameters [" + joinSegsMsil(hostGenerics, ", ") +
+            "] but is built where [" +
+            joinSegsMsil(fctx.reifiedGenerics, ", ") +
+            "] are in scope (#8284 invariant violated)"
+        )
+      }
+      val hosted = hostGenerics.count > 0
       // Capture types (parallel to `caps`) and the subset captured by reference.
       // A captured `var` was hoisted to a heap cell at its declaration (#1479 v2,
       // pre-pass): its capture is the cell itself (by reference, element type =
@@ -12955,18 +12977,20 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               // fallback) — its captured field type is the receiver's
               // concrete class instead.
               if cn == "self" {
-                // A generic receiver (`Box[T]`'s `self`) has no form in the
-                // lifted lambda, a static method of the non-generic package
-                // class where the type's parameters do not exist.  The middle
-                // end rejects such a lambda first (F0048, #8284); reaching
-                // here means it did not run.
+                // A generic receiver (`Box[T]`'s `self`) is its open
+                // instantiation, which a hosted lambda's closure class names
+                // with its own parameters (#8284).
                 if selfIsGenericInstMsil(fctx) {
-                  panic(
-                    "Msil.Codegen ICE: a lambda in a member of the generic type '" + fctx.className +
-                      "' reads the receiver; Lyric.Pipeline's F0048 check (#8284) should have rejected it"
-                  )
+                  if not hosted {
+                    panic(
+                      "Msil.Codegen ICE: a lambda in a member of the generic type '" + fctx.className +
+                        "' reads the receiver but is not hosted by a generic closure class (#8284 invariant violated)"
+                    )
+                  }
+                  capTypes.add(match mapGet(fctx.types, "self") { case Some(t) -> t; case None -> MObject })
+                } else {
+                  capTypes.add(MClass(className = fctx.className))
                 }
-                capTypes.add(MClass(className = fctx.className))
               } else {
                 capTypes.add(match mapGet(fctx.types, cn) { case Some(t) -> t; case None -> MObject })
               }
@@ -13028,29 +13052,24 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
       // silent cross-package delegate corruption (#5363).  Mirrors the same
       // fix already applied to `lambdaExternDelegateParamTypes` for #5309.
       val lambdaKey = fctx.pkgName + "." + lname
-      // The lifted `__lambda_*` is a static method of the non-generic package
-      // class, so the enclosing generic type's own parameters
-      // (`fctx.reifiedGenerics`, `!0` in the enclosing method) have no VAR
-      // form there: a body annotation naming one erases to `object` like a
-      // generic function's own parameter does — the same erasure its captured
-      // values already get in the closure class (#7695, #7705).
+      // A generic function's own parameters (`fctx.generics`) erase to
+      // `object` in its lambdas as in its body.  The enclosing type's
+      // parameters (`fctx.reifiedGenerics`) are the hosting closure class's
+      // own `!0..!n` (`lambdaHostGenerics`), so they are not listed here.
       val lambdaGenericNames: List[String] = newList()
       var lgi = 0
       while lgi < fctx.generics.count {
-        lambdaGenericNames.add(fctx.generics[lgi])
-        lgi = lgi + 1
-      }
-      lgi = 0
-      while lgi < fctx.reifiedGenerics.count {
-        if not nameListContains(lambdaGenericNames, fctx.reifiedGenerics[lgi]) {
-          lambdaGenericNames.add(fctx.reifiedGenerics[lgi])
+        if not nameListContains(hostGenerics, fctx.generics[lgi]) {
+          lambdaGenericNames.add(fctx.generics[lgi])
         }
         lgi = lgi + 1
       }
       cctx.lambdaGenerics.add(lambdaKey, lambdaGenericNames)
       // Record the capture set so lowerFuncMsil's `__lambda_*` path prepends the
-      // `object[] __caps` parameter and resolves captured reads (#1479).
-      if caps.count > 0 {
+      // `object[] __caps` parameter and resolves captured reads (#1479).  A
+      // hosted lambda always has a closure class: it is the instance its body
+      // runs on, captures or not.
+      if caps.count > 0 or hosted {
         cctx.lambdaCaptureNames.add(lambdaKey, caps)
         cctx.lambdaCaptureTypes.add(lambdaKey, capTypes)
         cctx.lambdaCaptureCells.add(lambdaKey, capCells)
@@ -13076,11 +13095,23 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
         // Synthesize closure class (#1877 Phase 1): emit a __Closure_<i> record with
         // typed fields for captures instead of object[] array. Store in context for
         // emission to the module's TypeDef table and use in delegate instantiation.
-        val closureClass = synthesizeClosureClassMsil(cctx, lname, fctx.pkgName, idx, caps, capTypes, capCells, capObjCells)
+        val closureClass = synthesizeClosureClassMsil(
+          cctx,
+          lname,
+          fctx.pkgName,
+          idx,
+          caps,
+          capTypes,
+          capCells,
+          capObjCells,
+          hostGenerics
+        )
         cctx.lambdaClosureClasses.add(lambdaKey, closureClass)
         cctx.lambdaClosureRecordList.add(closureClass)
       }
-      match mapGet(cctx.funcTokens, lambdaKey) {
+      // A hosted lambda is reached through its closure class's
+      // instantiation, not a package-class MethodDef token.
+      match (if hosted { Some(value = 0) } else { mapGet(cctx.funcTokens, lambdaKey) }) {
         case Some(tok) -> {
           // Determine delegate type based on lambda return type.
           // Lambdas that return void use System.Action; those with non-void returns use System.Func.
@@ -13164,7 +13195,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           // Each capturing lambda gets a synthesized __Closure_<i> record with typed fields
           // for each capture (#1877 Phase 2).  Non-capturing lambdas still use null.
 
-          if caps.count > 0 {
+          if caps.count > 0 or hosted {
             // Phase 2: Instantiate the closure class with typed fields.
             // The closure class is synthesized and registered in cctx.lambdaClosureClasses
             // during the ELambda type-checking pass above (lines 6224-6229).
@@ -13174,7 +13205,8 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                 // Create closure instance via parameterless constructor.
                 // MNewobjByName resolves the .ctor by name during lowering (after TypeDef table is built)
                 // — the same pattern used by async SM and generator SM synthesis.
-                insns.add(MNewobjByName(className = closureClassFqn))
+                // A hosted closure class is built at the enclosing `!0..!n`.
+                emitClosureNewobjMsil(insns, closureRecord)
                 // Store each capture in the closure class fields using MStfldByName
                 var capStI = 0
                 while capStI < caps.count {
@@ -13188,20 +13220,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                     // closure class unconditionally (#1877 Phase 2 / D113), so
                     // the parent's __caps is always MClass(...) here (#7525).
                     match mapGet(fctx.captureNameToIndex, capName) {
-                      case Some(parentIdx) -> {
-                        emitLoadVarMsil(fctx, insns, 0)
-                        match mapGet(fctx.types, "__caps") {
-                          case Some(MClass(parentClosureClass)) -> {
-                            insns.add(MLdfldByName(ownerFqn = parentClosureClass, fieldName = "__f" + toString(parentIdx)))
-                          }
-                          case _ -> {
-                            panic(
-                              "Msil.Codegen ICE: parent capture '" + capName +
-                                "' has a captureNameToIndex entry but __caps is not a closure class (#7525 invariant violated)"
-                            )
-                          }
-                        }
-                      }
+                      case Some(parentIdx) -> emitCapsFieldLoadMsil(cctx, fctx, insns, parentIdx, capName)
                       case None -> panic("Msil.Codegen ICE: capture '" + capName + "' found in captureNameToIndex but mapGet failed")
                     }
                   } else if nameListContains(capCells, capName) {
@@ -13231,15 +13250,16 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                         val capLocalTy = match mapGet(fctx.types, capName) { case Some(t) -> t; case None -> MObject }
                         // Also a type that mentions one (#7704): a value-type
                         // instantiation needs the box; a reference type has
-                        // none to add.
-                        if msilTypeHasDanglingTypeVarMsil(capLocalTy) {
+                        // none to add.  A hosted closure class's field keeps
+                        // the type itself (#8284).
+                        if not hosted and msilTypeHasDanglingTypeVarMsil(capLocalTy) {
                           boxIfNeededMsil(cctx, insns, capLocalTy)
                         }
                       }
                       case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.slots")
                     }
                   }
-                  insns.add(MStfldByName(ownerFqn = closureClassFqn, fieldName = fieldName))
+                  emitClosureFieldStoreMsil(insns, closureRecord, capStI)
                   capStI = capStI + 1
                 }
               }
@@ -13251,7 +13271,25 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             // Non-capturing lambda: delegate target is null (static method).
             insns.add(MLdNull)
           }
-          insns.add(MLdftn(methodToken = tok))
+          if hosted {
+            match mapGet(cctx.lambdaClosureClasses, lambdaKey) {
+              case Some(closureRecord) -> {
+                val sig = lambdaMethodSigMsil(cctx, lambdaKey, nparams)
+                insns.add(
+                  MLdftnGeneric(
+                    baseClassName = closureClassHeadMsil(closureRecord),
+                    typeArgs = openTypeArgsMsil(closureRecord.generics.count),
+                    methodName = lname,
+                    paramTypes = sig.params,
+                    retType = sig.ret
+                  )
+                )
+              }
+              case None -> panic("Msil.Codegen ICE: hosted lambda '" + lambdaKey + "' has no closure class (#8284)")
+            }
+          } else {
+            insns.add(MLdftn(methodToken = tok))
+          }
           insns.add(MNewobj(ctorToken = ctorTok))
           MObject
         }
@@ -14638,19 +14676,11 @@ func lowerStmtsExprFromMsil(
 // captured into the closure-class instance (`isCapture=true`, `idx`=capture
 // index) — every capturing lambda gets a closure class unconditionally
 // (#1877 Phase 2 / D113), so `__caps` is always `MClass(...)` here (#7525).
-func emitCellLoadMsil(fctx: in FuncCtx, insns: in List[MInsn], isCapture: in Bool, idx: in Int): Unit {
+func emitCellLoadMsil(
+  cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], isCapture: in Bool, idx: in Int
+): Unit {
   if isCapture {
-    val capsType = match mapGet(fctx.types, "__caps") { case Some(t) -> t; case None -> MObject }
-    match capsType {
-      case MClass(closureClassName) -> {
-        emitLoadVarMsil(fctx, insns, 0)
-        val fieldName = "__f" + toString(idx)
-        insns.add(MLdfldByName(ownerFqn = closureClassName, fieldName = fieldName))
-      }
-      case _ -> {
-        panic("Msil.Codegen ICE: a captured hoisted-var cell's __caps is not a closure class (#7525 invariant violated)")
-      }
-    }
+    emitCapsFieldLoadMsil(cctx, fctx, insns, idx, "a hoisted cell")
   } else {
     emitLoadVarMsil(fctx, insns, idx)
   }
@@ -14673,7 +14703,7 @@ func emitCellAssignMsil(
 ): Unit {
   match op {
     case AssEq -> {
-      emitCellLoadMsil(fctx, insns, isCapture, idx)
+      emitCellLoadMsil(cctx, fctx, insns, isCapture, idx)
       insns.add(MLdcI4(v = 0))
       emitCellElemAddrMsil(insns, elemTy, objCell)
       // Same construction hints a plain-slot assignment pushes, so a bare
@@ -14687,13 +14717,13 @@ func emitCellAssignMsil(
     }
     case _ -> {
       // Read, combine, stash in a temp, then reload the cell and store.
-      emitCellLoadMsil(fctx, insns, isCapture, idx)
+      emitCellLoadMsil(cctx, fctx, insns, isCapture, idx)
       insns.add(MLdcI4(v = 0))
       emitCellElemLoadMsil(cctx, insns, elemTy, objCell)
       emitCompoundCombineMsil(cctx, fctx, insns, op, elemTy, value)
       val tempSlot = allocSlotMsil(fctx, "__cell_temp_" + toString(fctx.slotTicker.count), elemTy)
       emitStoreSlot(insns, tempSlot, fctx.paramCount)
-      emitCellLoadMsil(fctx, insns, isCapture, idx)
+      emitCellLoadMsil(cctx, fctx, insns, isCapture, idx)
       insns.add(MLdcI4(v = 0))
       emitCellElemAddrMsil(insns, elemTy, objCell)
       emitLoadSlot(insns, tempSlot, fctx.paramCount)
@@ -24518,12 +24548,12 @@ func lowerStmtKindMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                   match funcTe.kind {
                     case TFunction(paramTes, retTe) -> {
                       if not fctx.funcValRetTypes.containsKey(name) {
-                        fctx.funcValRetTypes.add(name, typeExprToMsilCtx(cctx, retTe, fctx.pkgName))
+                        fctx.funcValRetTypes.add(name, typeExprToMsilBodyCtx(cctx, fctx, retTe))
                         // Also track parameter types for typed invoke ABI (#1877 Phase 3)
                         val paramMsilTys: List[MsilType] = newList()
                         var pi = 0
                         while pi < paramTes.count {
-                          paramMsilTys.add(typeExprToMsilCtx(cctx, paramTes[pi], fctx.pkgName))
+                          paramMsilTys.add(typeExprToMsilBodyCtx(cctx, fctx, paramTes[pi]))
                           pi = pi + 1
                         }
                         fctx.funcValParamTypes.add(name, paramMsilTys)
@@ -24559,11 +24589,11 @@ func lowerStmtKindMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                   match funcTe.kind {
                     case TFunction(paramTes, retTe) -> {
                       if not fctx.funcValRetTypes.containsKey(name) {
-                        fctx.funcValRetTypes.add(name, typeExprToMsilCtx(cctx, retTe, fctx.pkgName))
+                        fctx.funcValRetTypes.add(name, typeExprToMsilBodyCtx(cctx, fctx, retTe))
                         val paramMsilTys: List[MsilType] = newList()
                         var pi = 0
                         while pi < paramTes.count {
-                          paramMsilTys.add(typeExprToMsilCtx(cctx, paramTes[pi], fctx.pkgName))
+                          paramMsilTys.add(typeExprToMsilBodyCtx(cctx, fctx, paramTes[pi]))
                           pi = pi + 1
                         }
                         fctx.funcValParamTypes.add(name, paramMsilTys)
@@ -24951,11 +24981,11 @@ func lowerLocalPatBindMsil(
                   match funcTe.kind {
                     case TFunction(paramTes, retTe) -> {
                       if not fctx.funcValRetTypes.containsKey(name) {
-                        fctx.funcValRetTypes.add(name, typeExprToMsilCtx(cctx, retTe, fctx.pkgName))
+                        fctx.funcValRetTypes.add(name, typeExprToMsilBodyCtx(cctx, fctx, retTe))
                         val paramMsilTys: List[MsilType] = newList()
                         var pi = 0
                         while pi < paramTes.count {
-                          paramMsilTys.add(typeExprToMsilCtx(cctx, paramTes[pi], fctx.pkgName))
+                          paramMsilTys.add(typeExprToMsilBodyCtx(cctx, fctx, paramTes[pi]))
                           pi = pi + 1
                         }
                         fctx.funcValParamTypes.add(name, paramMsilTys)
@@ -25863,6 +25893,7 @@ func insnStackDelta(insn: in MInsn): Int {
     case MLdelemaCell(_) -> -1
     case MStobjCell(_) -> -2
     case MLdftn(_) -> 1
+    case MLdftnGeneric(_, _, _, _, _) -> 1
     case MLeave(_) -> 0
     case MEndfinally -> 0
     case MEHClause(_, _, _, _, _, _) -> 0
@@ -33986,7 +34017,16 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
     case None -> newList()
   }
   val hasCaps = lambdaCaps.count > 0
-  val effectiveParamCount = if hasCaps { decl.params.count + 1 } else { decl.params.count }
+  // A lambda hosted by a generic closure class (#8284) is an instance method
+  // of it: slot 0 is the closure instance, captures or not, and the type's
+  // parameters are the class's own `!0..!n`.
+  val hostGenerics = match mapGet(cctx.lambdaHostGenerics, qualifiedLambdaName) {
+    case Some(g) -> g
+    case None -> newList()
+  }
+  val hosted = hostGenerics.count > 0
+  val hasCapsSlot = hasCaps or hosted
+  val effectiveParamCount = if hasCapsSlot { decl.params.count + 1 } else { decl.params.count }
   // #6511: a lifted lambda passed directly to a function-typed parameter
   // inherits that parameter's declared RETURN type as its logical return
   // (class shapes only — the physical signature stays the uniform boxed
@@ -34008,6 +34048,7 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
   }
   val fctx = makeFuncCtxMsil(pkgName, className, decl.name, effectiveParamCount, lambdaLogicalRetTy)
   fctx.generics = fnGenerics
+  fctx.reifiedGenerics = hostGenerics
   // #5995: this function's own declared return enum type (if any), so a bare
   // `return Http11` (or an implicit tail-return) resolves against the RIGHT
   // enum instead of whichever same-named-case enum happened to register
@@ -34029,7 +34070,7 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
   // Reserve slot 0 for `__caps`, the closure-class instance carrying this
   // lambda's captures (#1479, #1877 Phase 2). Register each captured name's
   // field index + logical type so EPath reads resolve correctly.
-  if hasCaps {
+  if hasCapsSlot {
     val capsSlot = fctx.slotTicker.count
     fctx.slots.add("__caps", capsSlot)
     // `hasCaps` (lambdaCaps.count > 0) is derived from `cctx.lambdaCaptureNames`,
@@ -34039,7 +34080,7 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
     // `object[] __caps` array fallback was removed (#7525); a panic replaces it.
     match mapGet(cctx.lambdaClosureClasses, qualifiedLambdaName) {
       case Some(closureRecord) -> {
-        fctx.types.add("__caps", MClass(className = closureRecord.className))
+        fctx.types.add("__caps", closureSelfTypeMsil(closureRecord))
       }
       case None -> {
         panic(
@@ -34088,7 +34129,9 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
       // The same holds for any type that MENTIONS a type parameter, such as
       // the open instantiation `Box`1<!0>` a captured `Self` parameter of an
       // impl for a generic type is tracked as (#7704).
-      val capTy = if msilTypeHasDanglingTypeVarMsil(rawCapTy) { MObject } else { rawCapTy }
+      // A hosted lambda's closure class declares the type's parameters, so
+      // its captures keep their types (#8284).
+      val capTy = if not hosted and msilTypeHasDanglingTypeVarMsil(rawCapTy) { MObject } else { rawCapTy }
       fctx.captureNameToType.add(lambdaCaps[cni], capTy)
       // A by-reference capture: `__caps[cni]` or `__caps.__fi` holds the hoisted `var`'s cell.
       if nameListContains(capCells, lambdaCaps[cni]) {
@@ -34138,7 +34181,9 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
     // type propagated from the call site (#1939); the signature stays `object`.
     // A generic-function `slice[T]` / bare-`T` param tracks as the erased
     // List-backed form (#2557) so the body uses the non-generic IList path.
-    val annotTy = if fnGenerics.count > 0 {
+    val annotTy = if hosted {
+      typeExprToMsilBodyCtx(cctx, fctx, p.ty)
+    } else if fnGenerics.count > 0 {
       typeExprToMsilGenBody(cctx, p.ty, pkgName, fnGenerics)
     } else {
       typeExprToMsilCtx(cctx, p.ty, pkgName)
@@ -34190,7 +34235,10 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
       case Some(funcTe) -> {
         match funcTe.kind {
           case TFunction(_, retTe) -> {
-            fctx.funcValRetTypes.add(p.name, typeExprToMsilCtx(cctx, retTe, pkgName))
+            fctx.funcValRetTypes.add(
+              p.name,
+              if hosted { typeExprToMsilBodyCtx(cctx, fctx, retTe) } else { typeExprToMsilCtx(cctx, retTe, pkgName) }
+            )
           }
           case _ -> {
           }
@@ -34333,8 +34381,9 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
   // and are unboxed on use, not in the signature.
   val paramTypes: List[MsilType] = newList()
   // Capturing lambda: the leading `__caps` (closed-over target) is the
-  // method's first parameter (#1479, #1877 Phase 2).
-  if hasCaps {
+  // method's first parameter (#1479, #1877 Phase 2).  A hosted lambda's
+  // closure instance is the implicit `this` instead.
+  if hasCaps and not hosted {
     // See the matching `fctx.types.add("__caps", ...)` comment above (#7525):
     // a closure class always exists whenever `hasCaps` is true.
     match mapGet(cctx.lambdaClosureClasses, qualifiedLambdaName) {
@@ -34404,9 +34453,20 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
     pi2 = pi2 + 1
   }
 
+  if hosted {
+    // The `ldftn` MemberRef at the construction site carries the same
+    // signature (`lambdaMethodSigMsil`).
+    val sig = lambdaMethodSigMsil(cctx, qualifiedLambdaName, decl.params.count)
+    if clrTypeListKeyMsil(sig.params) != clrTypeListKeyMsil(paramTypes) or not sameClrTypeMsil(sig.ret, retTy) {
+      panic(
+        "Msil.Codegen ICE: hosted lambda '" + qualifiedLambdaName + "' signature disagrees with its ldftn reference (#8284)"
+      )
+    }
+  }
   MFunc(
-    flags = 0x0016,
-    // Public | Static | HideBySig
+    flags = if hosted { MDA_PUBLIC + MDA_HIDE_BY_SIG } else { 0x0016 },
+    // Public | Static | HideBySig (an instance method of its closure class
+    // when hosted)
     name = decl.name,
     params = byrefWrapSigTypes(decl.params, paramTypes),
     ret = retTy,
@@ -34519,11 +34579,12 @@ func registerParamsMsil(
       case Some(funcTe) -> {
         match funcTe.kind {
           case TFunction(paramTes, retTe) -> {
-            fctx.funcValRetTypes.add(p.name, typeExprToMsilCtx(cctx, retTe, pkgName))
+            // A type parameter of the member's type is its `!n` (#8205).
+            fctx.funcValRetTypes.add(p.name, typeExprToMsilBodyCtx(cctx, fctx, retTe))
             val paramMsilTys: List[MsilType] = newList()
             var pjj = 0
             while pjj < paramTes.count {
-              paramMsilTys.add(typeExprToMsilCtx(cctx, paramTes[pjj], pkgName))
+              paramMsilTys.add(typeExprToMsilBodyCtx(cctx, fctx, paramTes[pjj]))
               pjj = pjj + 1
             }
             fctx.funcValParamTypes.add(p.name, paramMsilTys)
@@ -35616,6 +35677,159 @@ func recordFieldMsilType(cctx: in CodegenCtx, te: in TypeExpr, pkgName: in Strin
   }
 }
 
+// True when `a` and `b` list the same names in the same order.
+func sameNameListMsil(a: in List[String], b: in List[String]): Bool {
+  if a.count != b.count {
+    return false
+  }
+  var i = 0
+  while i < a.count {
+    if a[i] != b[i] {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+// `[!0, ..., !(n-1)]`: a generic type's own parameters, or the enclosing
+// member's, at which a hosted closure class is instantiated (#8284).
+func openTypeArgsMsil(n: in Int): List[MsilType] {
+  val args: List[MsilType] = newList()
+  var i = 0
+  while i < n {
+    args.add(MTypeVar(index = i))
+    i = i + 1
+  }
+  args
+}
+
+// The CLR name of a closure class: its FQN, with the arity suffix
+// `lowerMRecord` gives a generic TypeDef when the class is hosted (#8284).
+func closureClassHeadMsil(closure: in MRecord): String {
+  if closure.generics.count > 0 {
+    genericBacktickFqn(closure.className, closure.generics.count)
+  } else {
+    closure.className
+  }
+}
+
+// The open instantiation a hosted lambda's body sees its closure class as
+// (`__Closure_<i>`<k><!0..>`), or the plain class.
+func closureSelfTypeMsil(closure: in MRecord): MsilType {
+  if closure.generics.count > 0 {
+    MGenericInstByName(headFqn = closureClassHeadMsil(closure), typeArgs = openTypeArgsMsil(closure.generics.count))
+  } else {
+    MClass(className = closure.className)
+  }
+}
+
+// `newobj` a closure class's no-argument constructor; a hosted class at the
+// enclosing `!0..!n`.
+func emitClosureNewobjMsil(insns: in List[MInsn], closure: in MRecord): Unit {
+  if closure.generics.count > 0 {
+    insns.add(
+      MNewobjGenericByName(
+        headFqn = closureClassHeadMsil(closure),
+        typeArgs = openTypeArgsMsil(closure.generics.count),
+        ctorParams = newList()
+      )
+    )
+  } else {
+    insns.add(MNewobjByName(className = closure.className))
+  }
+}
+
+// `stfld` the closure field `__f<idx>`.  A hosted class's field is reached
+// through its open instantiation's TypeSpec, as a generic record's is.
+func emitClosureFieldStoreMsil(insns: in List[MInsn], closure: in MRecord, idx: in Int): Unit {
+  val fieldName = "__f" + toString(idx)
+  if closure.generics.count > 0 {
+    insns.add(
+      MStfldGeneric(
+        baseClassName = closureClassHeadMsil(closure),
+        typeArgs = openTypeArgsMsil(closure.generics.count),
+        fieldName = fieldName,
+        fieldMsilType = closureFieldTypeMsil(closure, fieldName)
+      )
+    )
+  } else {
+    insns.add(MStfldByName(ownerFqn = closure.className, fieldName = fieldName))
+  }
+}
+
+func closureFieldTypeMsil(closure: in MRecord, fieldName: in String): MsilType {
+  for f in closure.fields {
+    if f.name == fieldName {
+      return f.fieldType
+    }
+  }
+  panic("Msil.Codegen ICE: closure class '" + closure.className + "' has no field '" + fieldName + "'")
+}
+
+// Push the capture `__f<idx>` of the closure instance a lifted lambda runs on
+// (slot 0, `__caps`).  `what` names the capture for the invariant message.
+func emitCapsFieldLoadMsil(
+  cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], idx: in Int, what: in String
+): Unit {
+  val fieldName = "__f" + toString(idx)
+  match mapGet(fctx.types, "__caps") {
+    case Some(MClass(closureClassName)) -> {
+      emitLoadVarMsil(fctx, insns, 0)
+      insns.add(MLdfldByName(ownerFqn = closureClassName, fieldName = fieldName))
+    }
+    case Some(MGenericInstByName(headFqn, typeArgs)) -> {
+      match mapGet(cctx.closureRecordsByHead, headFqn) {
+        case Some(closure) -> {
+          emitLoadVarMsil(fctx, insns, 0)
+          insns.add(
+            MLdfldGeneric(
+              baseClassName = headFqn,
+              typeArgs = typeArgs,
+              fieldName = fieldName,
+              fieldMsilType = closureFieldTypeMsil(closure, fieldName)
+            )
+          )
+        }
+        case None -> panic("Msil.Codegen ICE: '" + headFqn + "' is not a synthesised closure class (#8284)")
+      }
+    }
+    case _ -> panic(
+      "Msil.Codegen ICE: capture '" + what +
+        "' has a captureNameToIndex entry but __caps is not a closure class (#7525 invariant violated)"
+    )
+  }
+}
+
+// The signature of a lifted lambda's method: `object` parameters and result
+// (the uniform `Func` ABI, #1877), a real delegate's parameter and result
+// types for a lambda passed to an `@externTarget` function's function-typed
+// parameter (#3923), and `void` for one built as an `Action` (#7520).  The
+// method itself (`lowerFuncMsilScoped`) and a hosted lambda's `ldftn`
+// MemberRef (#8284) both take it from here, so they cannot disagree.
+record LambdaSigMsil {
+  params: List[MsilType]
+  ret: MsilType
+}
+
+func lambdaMethodSigMsil(cctx: in CodegenCtx, lambdaKey: in String, nparams: in Int): LambdaSigMsil {
+  val externParamTys = match mapGet(cctx.lambdaExternDelegateParamTypes, lambdaKey) {
+    case Some(ts) -> ts
+    case None -> newList()
+  }
+  val params: List[MsilType] = newList()
+  var i = 0
+  while i < nparams {
+    params.add(if i < externParamTys.count { externParamTys[i] } else { MObject })
+    i = i + 1
+  }
+  val ret = match mapGet(cctx.lambdaExternDelegateRetType, lambdaKey) {
+    case Some(rt) -> rt
+    case None -> if lambdaReturnsVoidMsil(cctx, lambdaKey) { MVoid } else { MObject }
+  }
+  LambdaSigMsil(params = params, ret = ret)
+}
+
 // Synthesize a __Closure_<i> record for a capturing lambda (Stage 1, #1877).
 // Creates one public field per captured variable with its original type.
 // The record is stored in cctx.lambdaClosureClasses for later registration.
@@ -35628,8 +35842,10 @@ func synthesizeClosureClassMsil(
   capTypes: in List[MsilType],
   capCells: in List[String],
   capObjCells: in List[String],
+  hostGenerics: in List[String],
 ): MRecord {
   val closureClassName = pkgName + ".__Closure_" + toString(lambdaIdx)
+  val hosted = hostGenerics.count > 0
   val fields: List[MField] = newList()
   var fi = 0
   while fi < capNames.count {
@@ -35657,8 +35873,10 @@ func synthesizeClosureClassMsil(
       // use `!0` at all (it has no enclosing generic TypeDef).  A type that
       // merely MENTIONS a type parameter (`Box`1<!0>`, a captured `Self`
       // parameter of an impl for a generic type, #7704) is just as
-      // unrepresentable here, so it erases too.
-      if msilTypeHasDanglingTypeVarMsil(rawTy) {
+      // unrepresentable here, so it erases too.  A hosted closure class
+      // declares the enclosing type's parameters, so there the field keeps
+      // its type (#8284).
+      if not hosted and msilTypeHasDanglingTypeVarMsil(rawTy) {
         MObject
       } else {
         rawTy
@@ -35675,8 +35893,11 @@ func synthesizeClosureClassMsil(
     methods = newList(),
     useDefaultCtor = true,
     // Phase 2: Emit a public parameterless ctor for closure instantiation
-    generics = newList()
+    generics = hostGenerics
   )
+  if hosted {
+    cctx.closureRecordsByHead.add(closureClassHeadMsil(closure), closure)
+  }
   closure
 }
 
@@ -40505,11 +40726,73 @@ func withLiftedLambdaOriginMsil(item: in Item, origin: in String): Item {
   }
 }
 
+// The annotation marking a lifted lambda as hosted by a generic closure
+// class (#8284): its arguments name the type parameters the class declares.
+func closureHostAnnotationNameMsil(): String = "__lyric_closure_host"
+
+// The type parameters a lambda lifted out of `item` is hosted over: those of a
+// member of a type with type parameters, in the order the member's own
+// lowering binds them as `!0..!n` (`bindGenericSelfMsil` through
+// `lowerRecordMsil`, `collectImplEntriesMsil` and `lowerProtectedMsil`).
+// Such a lambda's body names the type's parameters and its receiver, which
+// exist only in a class generic over them, so it becomes an instance method
+// of a closure class declaring the same parameters (#8284, #7792, #8205).
+// Empty for every other item: its lambdas stay static methods of the package
+// class.
+func closureHostGenericsOfItemMsil(item: in Item): List[String] {
+  match item.kind {
+    case IRecord(decl) -> genericNamesOf(decl.generics)
+    case IExposedRec(decl) -> genericNamesOf(decl.generics)
+    case IImpl(decl) -> implTargetGenericsMsil(decl)
+    case IProtected(decl) -> genericNamesOf(decl.generics)
+    case _ -> newList()
+  }
+}
+
+// `item` (a lifted lambda) annotated as hosted over `generics`.
+func withClosureHostMsil(item: in Item, generics: in List[String]): Item {
+  match item.kind {
+    case IFunc(fd) -> {
+      val anns: List[Annotation] = newList()
+      for a in fd.annotations {
+        anns.add(a)
+      }
+      val segs: List[String] = newList()
+      segs.add(closureHostAnnotationNameMsil())
+      val args: List[AnnotationArg] = newList()
+      for g in generics {
+        args.add(ALiteral(value = AVString(value = g, span = fd.span), span = fd.span))
+      }
+      anns.add(Annotation(name = ModulePath(segments = segs, span = fd.span), args = args, span = fd.span))
+      item.copy(kind = IFunc(decl = fd.copy(annotations = anns)))
+    }
+    case _ -> item
+  }
+}
+
+// The type parameters a lifted lambda is hosted over (`withClosureHostMsil`),
+// or an empty list for a lambda hosted by the package class.
+func closureHostGenericsMsil(anns: in List[Annotation]): List[String] {
+  val names: List[String] = newList()
+  for a in anns {
+    if a.name.segments.count == 1 and a.name.segments[0] == closureHostAnnotationNameMsil() {
+      for arg in a.args {
+        match arg {
+          case ALiteral(v, _) -> match v { case AVString(str, _) -> names.add(str); case _ -> () }
+          case _ -> ()
+        }
+      }
+    }
+  }
+  names
+}
+
 pub func liftLambdasMsil(file: in SourceFile): SourceFile {
   val ticker: List[Int] = newList()
   val synths: List[Item] = newList()
   val deferred: List[Block] = newList()
   val synthOrigins: List[String] = newList()
+  val synthHosts: List[List[String]] = newList()
 
   // Walk every top-level item's body, collecting direct lambdas.
   // Each ELambda body is pushed to `deferred` rather than recursed into.
@@ -40520,6 +40803,10 @@ pub func liftLambdasMsil(file: in SourceFile): SourceFile {
     // keeps that package's type scope (D-progress-967).
     val itemOrigin = match file.items[i].kind { case IFunc(fd) -> originPkgOf(fd.annotations); case _ -> "" }
     tagLiftedLambdaOriginsMsil(synthOrigins, synths.count, itemOrigin)
+    val itemHost = closureHostGenericsOfItemMsil(file.items[i])
+    while synthHosts.count < synths.count {
+      synthHosts.add(itemHost)
+    }
     i = i + 1
   }
 
@@ -40536,6 +40823,11 @@ pub func liftLambdasMsil(file: in SourceFile): SourceFile {
       si = si + 1
     }
     tagLiftedLambdaOriginsMsil(synthOrigins, synths.count, if di < synthOrigins.count { synthOrigins[di] } else { "" })
+    // A lambda nested in a hosted lambda is hosted over the same parameters.
+    val parentHost = if di < synthHosts.count { synthHosts[di] } else { newList() }
+    while synthHosts.count < synths.count {
+      synthHosts.add(parentHost)
+    }
     di = di + 1
   }
 
@@ -40554,7 +40846,9 @@ pub func liftLambdasMsil(file: in SourceFile): SourceFile {
   var k = 0
   while k < synths.count {
     val origin = if k < synthOrigins.count { synthOrigins[k] } else { "" }
-    newItems.add(if origin.length > 0 { withLiftedLambdaOriginMsil(synths[k], origin) } else { synths[k] })
+    val withOrigin = if origin.length > 0 { withLiftedLambdaOriginMsil(synths[k], origin) } else { synths[k] }
+    val host = if k < synthHosts.count { synthHosts[k] } else { newList() }
+    newItems.add(if host.count > 0 { withClosureHostMsil(withOrigin, host) } else { withOrigin })
     k = k + 1
   }
 
@@ -44059,6 +44353,18 @@ pub func codegenMPackage(file0: in SourceFile, cctx: in CodegenCtx): MPackage {
           synthesizeGeneratorMsil(cctx, decl, pkgName, items, fns)
         } else if isPinvokeFuncMsil(decl) {
           fns.add(pinvokeFuncMsil(cctx, decl, pkgName))
+        } else if closureHostGenericsMsil(decl.annotations).count > 0 {
+          // A hosted lambda is an instance method of its generic closure
+          // class (#8284), registered where the lambda is built, which is
+          // lowered before the lambda's own lifted item.
+          val lambdaKey = pkgName + "." + decl.name
+          match mapGet(cctx.lambdaClosureClasses, lambdaKey) {
+            case Some(closure) -> closure.methods.add(lowerFuncMsil(cctx, decl, pkgName))
+            case None -> panic(
+              "Msil.Codegen ICE: hosted lambda '" + lambdaKey +
+                "' is lowered before the closure class it is built with (#8284)"
+            )
+          }
         } else {
           fns.add(lowerFuncMsil(cctx, decl, pkgName))
         }

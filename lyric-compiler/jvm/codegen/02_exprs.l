@@ -5229,8 +5229,9 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
   var pi = 0
   while pi < lparams.count {
     val lp = lparams[pi]
+    // A parameter typed by an enclosing type parameter erases to `Object`.
     val pty = match lp.ty {
-      case Some(te) -> typeExprToJvmExtern(te, ctx.pkgName, ctx.externTypes)
+      case Some(te) -> typeExprToJvmErasedExtern(te, ctx.pkgName, ctx.typeParams, ctx.externTypes)
       case None -> JRef(className = "java/lang/Object")
     }
     val pslot = allocSlot(bodyCtx, lp.name, pty)

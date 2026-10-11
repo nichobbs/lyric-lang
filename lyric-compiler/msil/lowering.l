@@ -862,6 +862,12 @@ pub union MInsn {
   case MLdelemaCell(elemTy: MsilType)
   case MStobjCell(elemTy: MsilType)
   case MLdftn(methodToken: Int)        // ldftn — load function pointer (ELEMENT_TYPE_I on stack)
+  // ldftn on an instance method of a generic type instantiation: a lambda
+  // hosted by a generic closure class (#8284), built at the enclosing
+  // method's own `!0..!n`.  The TypeSpec and the TypeSpec-parented MemberRef
+  // are built at lowering, as `MCallvirtGeneric`'s are; `paramTypes`/`retType`
+  // are the method's declared (open) signature.
+  case MLdftnGeneric(baseClassName: String, typeArgs: List[MsilType], methodName: String, paramTypes: List[MsilType], retType: MsilType)
 
   // Exception-handling instructions and meta-instruction
   case MLeave(label: Int)              // leave — exit protected region (clears stack, branches)
@@ -2780,6 +2786,26 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
     case MLdelemR8 -> emitLdelem_R8(mb)
     case MLdelemR4 -> emitLdelem_R4(mb)
     case MLdftn(tok) -> emitLdftn(mb, tok)
+    case MLdftnGeneric(baseName, typeArgs, methodName, paramTypes, retType) -> {
+      val defRow = findTypeDefRowByName(ctx, baseName)
+      if defRow == 0 {
+        panic(
+          "Msil.Lowering: MLdftnGeneric could not resolve the TypeDef for '" + baseName + "' (method '" + methodName + "')"
+        )
+      }
+      var taKey = ""
+      for ta in typeArgs {
+        taKey = taKey + msilTypeKey(ta) + ","
+      }
+      val tsRow = ctxAddTypeSpec(
+        ctx,
+        "typespec_ldftn_def_" + baseName + "_" + taKey,
+        buildGenericInstBlobWithCtx(ctx, tdrTypeDef(defRow), typeArgs)
+      )
+      val mrKey = "mr_ldftn_def_" + baseName + "_" + taKey + "_" + methodName + "@" + toString(paramTypes.count)
+      val sig = buildInstanceMethodSigWithCtx(paramTypes, retType, ctx)
+      emitLdftn(mb, 0x0A000000 + ctxAddMemberRefForTypeSpec(ctx, tsRow, methodName, mrKey, sig))
+    }
     case MLeave(lbl) -> emitLeave(mb, lbl)
     case MEndfinally -> emitEndfinally(mb)
     case MEHClause(f, ts, te, hs, he, ct) -> mbAddEHClause(
