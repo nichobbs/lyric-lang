@@ -79,11 +79,11 @@ Once you have annotated a module, run the verifier:
 lyric prove money.l
 ```
 
-`lyric prove` type-checks the program first, the way `lyric build` does, and proves nothing about a program the type checker rejects: a proof of an ill-typed program would mean nothing. A file is checked with every project whose `lyric.toml` lists it, or alone when none does. On a type error it prints the type checker's diagnostics, says that no proof obligation was attempted, and exits 1:
+`lyric prove` type-checks the program first, the way `lyric build` does, and proves nothing about a program the build rejects: a proof of an ill-typed program would mean nothing. A file is checked with its own package and the project packages it imports, in every project whose `lyric.toml` lists it, or alone when none does. The check is the build's for the flags you pass: `--target`, `--features`, `--no-default-features`, `--all-features` and `--define` work as they do for `lyric build`, so a package gated to the JVM is proved with `lyric prove --target jvm`. When a checked package imports a dependency, the dependency must already be restored or built. On a type error `lyric prove` prints the type checker's diagnostics, says that no proof obligation was attempted, and exits 1:
 
 ```
 money.l: error[T0032] 14:13: equality operands must have the same type (got Cents and Int)
-prove: money.l does not type-check; no proof obligation was attempted
+prove: money.l fails the build's checks; no proof obligation was attempted
 ```
 
 With `--json` the same diagnostics fill the document's `diagnostics` array, and `goals` is empty.

@@ -771,7 +771,7 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
   // `MObject` fall-through that produced `InvalidProgramException`
   // at runtime.
   val noLocated: List[DiagUtil.LocatedDiagnostic] = newList()
-  val fe = match projectFrontEnd(packages, stdlibSources, activeFeatures, declaredFeatures, restoredArtifacts, packageVersion, depTemplatePkgs, defines, paths, originsByPkg, false, noLocated) {
+  val fe = match projectFrontEnd(packages, stdlibSources, activeFeatures, declaredFeatures, restoredArtifacts, packageVersion, depTemplatePkgs, defines, paths, originsByPkg, "dotnet", false, noLocated) {
     case Some(f) -> f
     case None -> return false
   }
@@ -1311,12 +1311,16 @@ pub func compileProjectToMsilWithRestoredAndVersionDiag(
 /// never printed.  The passes before the type check stop at the first error
 /// (#8227).
 pub func checkSourceTypes(
-  source: in String, stdlibSources: in List[String], defines: in List[String], path: in String
+  source: in String,
+  stdlibSources: in List[String],
+  defines: in List[String],
+  path: in String,
+  targetName: in String,
 ): List[DiagUtil.LocatedDiagnostic] {
   val located: List[DiagUtil.LocatedDiagnostic] = newList()
   val noFeatures: List[String] = newList()
   val noOrigins: List[DiagUtil.MergedLineOrigin] = newList()
-  val cfgFile = match frontEndParse(true, source, noFeatures, noFeatures, BD.decodeDefines(defines), path, noOrigins, located) {
+  val cfgFile = match frontEndParse(true, targetName, source, noFeatures, noFeatures, BD.decodeDefines(defines), path, noOrigins, located) {
     case Some(f) -> f
     case None -> return located
   }
@@ -1332,12 +1336,46 @@ pub func checkSourceTypes(
     case Some(f) -> f
     case None -> return located
   }
-  val tc = checkWithImportedPackages(
+  val _ = pipeCheckFront(
     resolveTypeAliasesMsil(rewritten),
-    stdlibImportedPackages(collectStdlibPackages(stdlibSources))
+    stdlibImportedPackages(collectStdlibPackages(stdlibSources)),
+    checkOptions(targetName, path, noOrigins, ""),
+    collectDiagnostics(located)
   )
-  val _ = DiagUtil.diagLocateAll(path, noOrigins, tc.diagnostics, located)
   located
+}
+
+// The middle-end options a build for `targetName` checks a package with, as
+// far as the passes up to the mode check read them.
+func checkOptions(
+  targetName: in String,
+  label: in String,
+  origins: in List[DiagUtil.MergedLineOrigin],
+  ioForbiddenReason: in String,
+): MiddleEndOptions {
+  val onJvm = targetName == "jvm"
+  val onNative = targetName == "native"
+  MiddleEndOptions(
+    tcFatal = true,
+    tcReport = false,
+    pkgLabel = label,
+    lineOrigins = origins,
+    awaitInTryIsHazard = not onJvm,
+    bindListLiteralTypes = not onJvm,
+    awaitAsyncCalls = not onJvm and not onNative,
+    contractsEnabled = true,
+    checkedSourceOut = newList(),
+    memberRecvClassesOut = newMap(),
+    methodCallAritiesOut = newMap(),
+    typeArgCalleesOut = newMap(),
+    genericItemsOut = newList(),
+    foreignValueRecordsOut = newList(),
+    ioForbiddenReason = ioForbiddenReason,
+    nativeIntrinsics = onNative,
+    arraysAsLists = not onNative,
+    primitiveArrays = onJvm,
+    genericReceiverLambdasUnsupported = not onJvm and not onNative
+  )
 }
 
 /// Each standard-library package as the type checker imports it.
@@ -1378,6 +1416,7 @@ func projectFrontEnd(
   defines: in List[String],
   paths: in List[String],
   originsByPkg: in List[DiagUtil.PackageLineOrigins],
+  targetName: in String,
   collect: in Bool,
   located: in List[DiagUtil.LocatedDiagnostic],
 ): Option[ProjectFrontEnd] {
@@ -1433,7 +1472,7 @@ func projectFrontEnd(
     } else {
       newList()
     }
-    val erased = match frontEndParse(collect, pkg.source, activeFeatures, declaredFeatures, projDefines, pkgLabel, pkgOrigins, located) {
+    val erased = match frontEndParse(collect, targetName, pkg.source, activeFeatures, declaredFeatures, projDefines, pkgLabel, pkgOrigins, located) {
       case Some(f) -> f
       case None -> return None
     }
@@ -1560,6 +1599,7 @@ func projectFrontEnd(
 // `located` instead of printed.
 func frontEndParse(
   collect: in Bool,
+  targetName: in String,
   source: in String,
   activeFeatures: in List[String],
   declaredFeatures: in List[String],
@@ -1569,9 +1609,9 @@ func frontEndParse(
   located: in List[DiagUtil.LocatedDiagnostic],
 ): Option[SourceFile] {
   if not collect {
-    return pipeParseAndErase(source, "dotnet", activeFeatures, declaredFeatures, defines, label, origins)
+    return pipeParseAndErase(source, targetName, activeFeatures, declaredFeatures, defines, label, origins)
   }
-  val r = pipeParseAndEraseCollect(source, "dotnet", activeFeatures, declaredFeatures, defines)
+  val r = pipeParseAndEraseCollect(source, targetName, activeFeatures, declaredFeatures, defines)
   if DiagUtil.diagLocateAll(label, origins, r.diagnostics, located) {
     return None
   }
@@ -1600,11 +1640,12 @@ func frontEndExpand(
   Some(value = r.file)
 }
 
-/// The type checker's verdict on a project, as `compileProjectToMsilWithRestoredAndVersionDiag`
-/// would reach it, without compiling anything: every diagnostic of the
-/// passes up to and including the type check, attributed to its file, and
-/// never printed.  The passes before the type check stop at the first
-/// error; every package is type-checked (#8227).
+/// What a build for `targetName` ("dotnet", "jvm" or "native") rejects a
+/// project for, up to and including the mode check, as
+/// `compileProjectToMsilWithRestoredAndVersionDiag` does for dotnet, without
+/// compiling anything: every diagnostic of those passes, attributed to its
+/// file, and never printed.  The passes before the type check stop at the
+/// first error; every package is checked (#8227).
 pub func checkProjectTypes(
   packages: in List[ProjectPackagePayload],
   stdlibSources: in List[String],
@@ -1616,15 +1657,20 @@ pub func checkProjectTypes(
   defines: in List[String],
   paths: in List[String],
   originsByPkg: in List[DiagUtil.PackageLineOrigins],
+  targetName: in String,
 ): List[DiagUtil.LocatedDiagnostic] {
   val located: List[DiagUtil.LocatedDiagnostic] = newList()
-  match projectFrontEnd(packages, stdlibSources, activeFeatures, declaredFeatures, restoredArtifacts, packageVersion, depTemplatePkgs, defines, paths, originsByPkg, true, located) {
+  match projectFrontEnd(packages, stdlibSources, activeFeatures, declaredFeatures, restoredArtifacts, packageVersion, depTemplatePkgs, defines, paths, originsByPkg, targetName, true, located) {
     case None -> ()
     case Some(fe) -> {
       val importedPkgs = perPackageImportedPackages(fe.baseImportedPkgs, fe.inBundleItems, fe.inBundleImports, fe.baseNames)
       for pp in fe.parsedPkgs {
-        val tc = checkWithImportedPackages(pp.file, importedPkgs)
-        val _ = DiagUtil.diagLocateAll(pp.label, pp.origins, tc.diagnostics, located)
+        val _ = pipeCheckFront(
+          pp.file,
+          importedPkgs,
+          checkOptions(targetName, pp.label, pp.origins, pp.ioForbiddenReason),
+          collectDiagnostics(located)
+        )
       }
     }
   }

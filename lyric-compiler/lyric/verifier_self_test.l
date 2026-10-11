@@ -2840,6 +2840,51 @@ test "a quantifier's side conditions hold for every value of its domain (#8223)"
   )
 }
 
+test "a side condition may rely on what is evaluated before it (#8223)" {
+  val nz = "@pure\nfunc nz(x: in Byte): Byte\n  ensures: result != 0u8\n{\n  1u8\n}\n"
+  assertDischarged(quantSrc(invDecl() + nz, "forall (k: Byte) inv(nz(k)) >= 0u8"), "argument-ensures-under-forall")
+  assertDischarged(quantSrc(invDecl() + nz, "inv(nz(7u8)) >= 0u8"), "argument-ensures")
+  assertDischarged(quantSrc(nz, "forall (k: Byte) 10u8 / nz(k) >= 0u8"), "divisor-ensures-under-forall")
+  // A call's own `ensures:` never proves its own `requires:` (#8102).
+  val selfish = "@pure\nfunc sf(x: in Byte): Byte\n  requires: x != 0u8\n  ensures: x != 0u8\n{\n  x\n}\n"
+  assertRefuted(quantSrc(selfish, "forall (k: Byte) sf(k) >= 0u8"), "own-ensures-under-forall")
+}
+
+// A function whose only `requires:` is `clause` and whose postcondition is
+// false of its body: proved only if the precondition is assumed vacuously.
+func vacuousSrc(clause: in String): String {
+  "func g(): Int\n  requires: " + clause + "\n  ensures: result == 42\n{\n  0\n}\n"
+}
+
+// A `requires:` clause's side conditions are the caller's to meet (#8102),
+// but a clause no argument can meet would make every proof of the function
+// vacuous: it is reported, plain or under a quantifier (#8223).
+test "a precondition no argument can evaluate is reported (#8223)" {
+  assertRefuted(invDecl() + vacuousSrc("inv(0u8) >= 0u8"), "plain-precondition-side")
+  assertRefuted(invDecl() + vacuousSrc("forall (k: Byte) inv(k) >= 0u8"), "quantified-precondition-side")
+  assertRefuted(vacuousSrc("10 / 0 == 0"), "division-in-a-precondition")
+  assertRefuted(
+    invDecl() +
+      "func h(z: in Byte): Byte\n  requires: z == 0u8\n  requires: inv(z) >= 0u8\n  ensures: result == 7u8\n{\n  z\n}\n",
+    "contradicted-by-an-earlier-clause"
+  )
+  // Some argument evaluates these: the callers meet the side conditions.
+  assertDischarged(
+    invDecl() +
+      "func h(z: in Byte): Byte\n  requires: z != 0u8\n  requires: inv(z) >= 0u8\n  ensures: result == z\n{\n  z\n}\n",
+    "earlier-clause-guards-a-later-one"
+  )
+  assertDischarged(
+    invDecl() + "func h(z: in Byte): Byte\n  requires: inv(z) >= 0u8\n  ensures: result == z\n{\n  z\n}\n",
+    "partial-precondition"
+  )
+  assertRefuted(
+    invDecl() + "func h(z: in Byte): Byte\n  requires: inv(z) >= 0u8\n  ensures: result == z\n{\n  z\n}\n" +
+      "func k(): Byte\n{\n  h(0u8)\n}\n",
+    "partial-precondition-unmet-by-a-caller"
+  )
+}
+
 test "a quantifier over Char ranges over UTF-16 code units (#8214)" {
   assertDischarged(quantSrc("", "forall (c: Char) c >= '\\u{0}' and c <= '\\u{FFFF}'"), "char-is-a-code-unit")
   assertRefuted(quantSrc("", "exists (c: Char) c > '\\u{FFFF}'"), "no-char-above-ffff")

@@ -10,6 +10,7 @@ import Std.Environment as Environment
 import Std.Json as Json
 import Lyric.Manifest as Mf
 import Lyric.Lexer
+import Lyric.Parser as Parser
 import Lyric.ModeChecker as MC
 import Lyric.Verifier as Verifier
 import Lyric.Discovery as Disc
@@ -56,6 +57,13 @@ func cmdProve(argv: in slice[String]): Int {
   var explainGoal: Option[Int] = None
   var manifestArg: Option[String] = None
   val positional: List[String] = newList()
+  // The build the proof's type check mirrors (#8227): its target, features
+  // and defines, as `lyric build` takes them.
+  var target: Emitter.CompileTarget = Emitter.Dotnet
+  val cliFeatures: List[String] = newList()
+  var noDefaultFeatures = false
+  var allFeatures = false
+  val cliDefines: List[String] = newList()
 
   var i = 1
   while i < argv.length {
@@ -96,11 +104,78 @@ func cmdProve(argv: in slice[String]): Int {
         printErr("prove: --manifest requires a path")
         return 1
       }
+    } else if arg == "--target" {
+      if i + 1 < argv.length {
+        val t = argv[i + 1]
+        if t == "dotnet" {
+          target = Emitter.Dotnet
+        } else if t == "jvm" {
+          target = Emitter.Jvm
+        } else if t == "native" {
+          target = Emitter.Native
+        } else {
+          printErr("prove: --target must be 'dotnet', 'jvm' or 'native', got: " + t)
+          return 1
+        }
+        i += 2
+      } else {
+        printErr("prove: --target requires an argument (dotnet, jvm or native)")
+        return 1
+      }
+    } else if arg == "--features" {
+      if i + 1 < argv.length {
+        // Comma-separated, whitespace-trimmed; empty entries dropped.
+        for piece in Str.split(argv[i + 1], ",") {
+          val trimmed = Str.trim(piece)
+          if Str.length(trimmed) > 0 {
+            cliFeatures.add(trimmed)
+          }
+        }
+        i += 2
+      } else {
+        printErr("prove: --features requires a comma-separated list")
+        return 1
+      }
+    } else if arg == "--no-default-features" {
+      noDefaultFeatures = true
+      i += 1
+    } else if arg == "--all-features" {
+      allFeatures = true
+      i += 1
+    } else if arg == "--define" {
+      if i + 1 < argv.length {
+        val kv = argv[i + 1]
+        match Str.indexOf(kv, "=") {
+          case Some(eq) -> {
+            if eq == 0 {
+              printErr("prove: --define requires KEY=VALUE (empty key): " + kv)
+              return 1
+            }
+            cliDefines.add(kv)
+          }
+          case None -> {
+            printErr("prove: --define requires KEY=VALUE, got: " + kv)
+            return 1
+          }
+        }
+        i += 2
+      } else {
+        printErr("prove: --define requires a KEY=VALUE argument")
+        return 1
+      }
     } else {
       positional.add(arg)
       i += 1
     }
   }
+
+  val buildSettings = ProveBuild(
+    target = target,
+    cliFeatures = cliFeatures,
+    noDefaultFeatures = noDefaultFeatures,
+    allFeatures = allFeatures,
+    defines = cliDefines
+  )
 
   // Project-mode: no explicit source file — discover or use --manifest.
   // --json and --explain are file-specific and require an explicit source.
@@ -129,9 +204,10 @@ func cmdProve(argv: in slice[String]): Int {
       printErr("prove: no source files found in project")
       return 1
     }
-    // A proof of a program the type checker rejects means nothing (#8227).
+    // A proof of a program the build rejects means nothing (#8227).
     val noTestEntries: List[String] = newList()
-    if not reportProveTypeCheck(typeCheckManifestForProve(projectMfPath, noTestEntries), projectMfPath) {
+    val everyPackage: Option[List[String]] = None
+    if not reportProveTypeCheck(typeCheckManifestForProve(projectMfPath, noTestEntries, everyPackage, buildSettings), projectMfPath) {
       return 1
     }
     // Each `[project.packages]` entry's scope over exactly the files the
@@ -201,7 +277,7 @@ func cmdProve(argv: in slice[String]): Int {
   // A proof of a program the type checker rejects means nothing: the file
   // is type-checked as every build that compiles it checks it, and nothing
   // is proved unless it passes (#8227).
-  val typeCheck = typeCheckForProveFile(sourcePath, source)
+  val typeCheck = typeCheckForProveFile(sourcePath, source, buildSettings)
   if jsonOutput and not typeCheck.ok {
     Console.print(
       proveJson(sourcePath, MC.vlDisplay(Verifier.sourceVerificationLevel(source)), "", typeCheck.diagnostics, 0, 0)
@@ -414,15 +490,28 @@ func reportProveTypeCheck(tc: in ProveTypeCheck, subject: in String): Bool {
     printErr(DiagUtil.diagFormatLocated(d))
   }
   if not tc.ok {
-    printErr("prove: " + subject + " does not type-check; no proof obligation was attempted")
+    printErr("prove: " + subject + " fails the build's checks; no proof obligation was attempted")
   }
   tc.ok
 }
 
-// The source file at `sourcePath` type-checked as each build that compiles
-// it checks it: within each project whose manifest lists it, or alone, as
-// `lyric build <file>` does, when no manifest lists it.
-func typeCheckForProveFile(sourcePath: in String, source: in String): ProveTypeCheck {
+// The build a proof's type check mirrors: `lyric build`'s `--target`,
+// `--features`, `--no-default-features`, `--all-features` and `--define`.
+// No manifest key declares a default target, so it is dotnet unless
+// `--target` says otherwise, as for `lyric build`.
+record ProveBuild {
+  target: Emitter.CompileTarget
+  cliFeatures: List[String]
+  noDefaultFeatures: Bool
+  allFeatures: Bool
+  defines: List[String]
+}
+
+// The source file at `sourcePath` checked as each build that compiles it
+// checks it: within each project whose manifest lists it, its own package
+// and the packages it imports, or alone, as `lyric build <file>` does, when
+// no manifest lists it.
+func typeCheckForProveFile(sourcePath: in String, source: in String, build: in ProveBuild): ProveTypeCheck {
   val entries = match Disc.entriesContainingSource(sourcePath) {
     case Some(es) -> es
     case None -> return proveLoadFailure(
@@ -435,16 +524,17 @@ func typeCheckForProveFile(sourcePath: in String, source: in String): ProveTypeC
       source = source,
       assemblyName = stemOf(Path.basename(sourcePath), 2),
       outputPath = "",
-      target = Emitter.Dotnet,
+      target = build.target,
       packageVersion = "",
-      defines = newList(),
+      defines = build.defines,
       path = sourcePath,
       contractsEnabled = true
     )
     return proveTypeCheckOf(Emitter.typeCheckSource(req))
   }
-  // Each manifest once, with the `[project.tests]` entries that list the
-  // file (a proof of a test file checks it with its project).
+  // Each manifest once, with its entries that list the file: the packages
+  // checked there are theirs and what they import.  A `[project.tests]`
+  // entry is checked only when it lists the file.
   val manifests: List[String] = newList()
   for e in entries {
     if not stringListContains(manifests, e.manifestPath) {
@@ -454,12 +544,16 @@ func typeCheckForProveFile(sourcePath: in String, source: in String): ProveTypeC
   val all: List[DiagUtil.LocatedDiagnostic] = newList()
   for mfPath in manifests {
     val tests: List[String] = newList()
+    val focus: List[String] = newList()
     for e in entries {
-      if e.manifestPath == mfPath and e.isTests {
-        tests.add(e.entryName)
+      if e.manifestPath == mfPath {
+        focus.add(e.entryName)
+        if e.isTests {
+          tests.add(e.entryName)
+        }
       }
     }
-    val one = typeCheckManifestForProve(mfPath, tests)
+    val one = typeCheckManifestForProve(mfPath, tests, Some(value = focus), build)
     for d in one.diagnostics {
       all.add(d)
     }
@@ -470,13 +564,50 @@ func typeCheckForProveFile(sourcePath: in String, source: in String): ProveTypeC
   proveTypeCheckOf(all)
 }
 
-// The project at `mfPath` type-checked as `lyric build` checks it, without
-// compiling it: every `[project.packages]` entry (a proof covers the
-// `test_only` ones too) and the `[project.tests]` entries named in
-// `testEntries`, against the project's dependencies as resolved for a
-// `--target dotnet` build.  No dependency is restored: run `lyric restore`
-// (or `lyric build`) first.
-func typeCheckManifestForProve(mfPath: in String, testEntries: in List[String]): ProveTypeCheck {
+// A project entry and the packages its files import.
+record ProveEntry {
+  pkgEntry: Mf.PackageEntry
+  imports: List[String]
+}
+
+// The packages the files of `entry` import, by dotted name: not the
+// `import extern` ones, which name host types, nor a file that cannot be
+// read or parsed, which the check itself reports.
+func entryImports(entry: in Mf.PackageEntry, mfDir: in String, proj: in Mf.ProjectSection): List[String] {
+  val names: List[String] = newList()
+  for path in Disc.projectEntryFiles(entry, mfDir, proj).paths {
+    match File.readText(path) {
+      case Ok(text) -> {
+        for imp in Parser.parse(text).file.imports {
+          if not imp.isExtern {
+            val name = Str.joinList(".", imp.path.segments)
+            if not stringListContains(names, name) {
+              names.add(name)
+            }
+          }
+        }
+      }
+      case Err(_) -> ()
+    }
+  }
+  names
+}
+
+// The project at `mfPath` checked as `lyric build` for `build.target` checks
+// it, without compiling it: the entries named in `focus` and every project
+// package they import, directly or not (with `focus` None, every
+// `[project.packages]` entry, `test_only` ones included, since a proof covers
+// them), plus the `[project.tests]` entries named in `testEntries`.  The
+// project's dependencies are resolved only when one of those packages
+// imports a package that is neither the standard library's nor the
+// project's, and then each must be built or restored: a proof never restores
+// or builds one, so an unbuilt dependency stops it, as it does a build.
+func typeCheckManifestForProve(
+  mfPath: in String,
+  testEntries: in List[String],
+  focus: in Option[List[String]],
+  build: in ProveBuild,
+): ProveTypeCheck {
   val mfText = match File.readText(mfPath) {
     case Ok(t) -> t
     case Err(e) -> return proveLoadFailure(mfPath, "cannot read the manifest: " + IOError.message(e))
@@ -490,56 +621,142 @@ func typeCheckManifestForProve(mfPath: in String, testEntries: in List[String]):
     case None -> return proveLoadFailure(mfPath, "the manifest has no [project] section")
   }
   val mfDir = Path.dirname(mfPath)
-  val noCliFeatures: List[String] = newList()
   val (activeFeatures, mfDeclared) = resolveManifestFeatures(
     mfText,
     mfPath,
-    noCliFeatures,
-    false,
-    false,
-    Emitter.Dotnet
+    build.cliFeatures,
+    build.noDefaultFeatures,
+    build.allFeatures,
+    build.target
   )
-  val entries: List[Mf.PackageEntry] = newList()
+  val candidates: List[ProveEntry] = newList()
   for e in proj.packages.toArray() {
-    entries.add(e)
+    candidates.add(ProveEntry(pkgEntry = e, imports = entryImports(e, mfDir, proj)))
   }
   for e in proj.tests.toArray() {
     if stringListContains(testEntries, e.name) {
-      entries.add(e)
+      candidates.add(ProveEntry(pkgEntry = e, imports = entryImports(e, mfDir, proj)))
     }
+  }
+  val projectNames: List[String] = newList()
+  for c in candidates {
+    projectNames.add(c.pkgEntry.name)
+  }
+  // The import closure of the focus entries over the project's packages.
+  val chosen: List[String] = newList()
+  match focus {
+    case Some(names) -> {
+      for n in names {
+        if not stringListContains(chosen, n) {
+          chosen.add(n)
+        }
+      }
+    }
+    case None -> {
+      for e in proj.packages.toArray() {
+        chosen.add(e.name)
+      }
+    }
+  }
+  for n in testEntries {
+    if not stringListContains(chosen, n) {
+      chosen.add(n)
+    }
+  }
+  var needsDeps = false
+  var ci = 0
+  while ci < chosen.count {
+    for c in candidates {
+      if c.pkgEntry.name == chosen[ci] {
+        for imp in c.imports {
+          if stringListContains(projectNames, imp) {
+            if not stringListContains(chosen, imp) {
+              chosen.add(imp)
+            }
+          } else if imp != "Std" and not Str.startsWith(imp, "Std.") {
+            needsDeps = true
+          }
+        }
+      }
+    }
+    ci = ci + 1
   }
   val gens = resolveGenerators(manifest, mfPath)
   val pkgs: List[Emitter.ProjectPackage] = newList()
-  for entry in entries {
-    match readProjectPackageSources(entry, proj, mfDir, mfPath, Some(value = manifest), gens) {
-      case Some(read) -> {
-        if read.sources.count > 0 {
-          pkgs.add(
-            Emitter.ProjectPackage(name = entry.name, sources = read.sources, paths = read.paths, nameFromManifest = true)
-          )
+  for c in candidates {
+    if stringListContains(chosen, c.pkgEntry.name) {
+      match readProjectPackageSourcesAs("prove", c.pkgEntry, proj, mfDir, mfPath, Some(value = manifest), gens) {
+        case Some(read) -> {
+          if read.sources.count > 0 {
+            pkgs.add(
+              Emitter.ProjectPackage(name = c.pkgEntry.name, sources = read.sources, paths = read.paths, nameFromManifest = true)
+            )
+          }
         }
+        case None -> return proveLoadFailure(mfPath, "package '" + c.pkgEntry.name + "' cannot be read")
       }
-      case None -> return proveLoadFailure(mfPath, "package '" + entry.name + "' cannot be read")
     }
   }
-  val resolved = resolveManifestDependencies(manifest, mfPath, Emitter.Dotnet, noCliFeatures, false)
-  if resolved.hadWorkspaceError or resolved.hadUnsupportedDep {
-    return proveLoadFailure(mfPath, "the project's dependencies cannot be resolved")
+  val restoredDlls: List[String] = newList()
+  val depSrcs: List[Emitter.ProjectPackage] = newList()
+  val nugetPaths: List[String] = newList()
+  var depFeatures = Emitter.noPackageFeatures()
+  if needsDeps {
+    if lockNeedsRestore(mfPath, manifest) {
+      return proveLoadFailure(
+        mfPath,
+        "the project's dependencies are not restored (lyric.lock is missing or out of date); run `lyric restore` or `lyric build` first"
+      )
+    }
+    val resolved = resolveManifestDependenciesAs(
+      "prove",
+      manifest,
+      mfPath,
+      build.target,
+      build.cliFeatures,
+      build.noDefaultFeatures
+    )
+    if resolved.hadWorkspaceError or resolved.hadUnsupportedDep or resolved.hadUnbuiltLocalDep {
+      return proveLoadFailure(
+        mfPath,
+        "a dependency of the project is not built or cannot be used (see above); run `lyric restore` or `lyric build` first"
+      )
+    }
+    for d in resolved.restoredDlls {
+      restoredDlls.add(d)
+    }
+    for d in resolved.depTemplateSrcs {
+      depSrcs.add(d)
+    }
+    for d in resolved.nugetThirdPartyPaths {
+      nugetPaths.add(d)
+    }
+    depFeatures = resolved.depPackageFeatures
   }
-  val noCliDefines: List[String] = newList()
+  // `[layers]` give each package its I/O rule, as for a build.
+  val layered = match checkProjectLayers(manifest, mfPath, pkgs, depSrcs, restoredDlls, build.target, activeFeatures, mfDeclared) {
+    case Some(l) -> l
+    case None -> return proveLoadFailure(mfPath, "the project breaks its [layers] rules (see above)")
+  }
+  // A dependency is compiled from its source on the JVM and native targets.
+  if compilesDepsFromSource(build.target) {
+    for d in depSrcs {
+      layered.add(d)
+    }
+  }
   val req = Emitter.EmitProjectRequest(
-    packages = pkgs,
+    packages = layered,
     assemblyName = proj.name,
     outputPath = "",
-    target = Emitter.Dotnet,
-    restoredDllPaths = resolved.restoredDlls,
+    target = build.target,
+    restoredDllPaths = restoredDlls,
     activeFeatures = activeFeatures,
     declaredFeatures = mfDeclared,
     packageVersion = manifest.packageSection.version,
-    depTemplateSrcs = resolved.depTemplateSrcs,
-    nugetAssemblyPaths = resolved.nugetThirdPartyPaths,
-    defines = BD.withManifestDefines(Mf.getManifestBuildDefines(manifest), noCliDefines),
-    packageFeatures = resolved.depPackageFeatures,
+    depTemplateSrcs = depSrcs,
+    nugetAssemblyPaths = nugetPaths,
+    defines = BD.withManifestDefines(Mf.getManifestBuildDefines(manifest), build.defines),
+    packageFeatures = depFeatures,
     contractsEnabled = match manifest.contracts { case Some(cs) -> cs.enabled; case None -> true }
   )
   proveTypeCheckOf(Emitter.typeCheckProject(req))

@@ -737,6 +737,10 @@ func analyzeAndStore(state: in LspState, uri: in String, text: in String): List[
     )
     case None -> unknownPackageScope()
   }
+  // Unlike `lyric prove`, which proves nothing of a program the build
+  // rejects (#8227), this proves the document whatever its check says: the
+  // server's check does not load the standard library, so it reports a type
+  // error for every `Std` name and cannot gate the proof (#8304).
   val proofResult = proveSourceInScope(text, true, docScope)
   var pi = 0
   while pi < proofResult.diagnostics.count {

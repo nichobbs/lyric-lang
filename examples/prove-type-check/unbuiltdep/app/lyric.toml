@@ -1,0 +1,14 @@
+[package]
+name = "ProveTypeCheckApp"
+version = "0.1.0"
+
+[project]
+name = "ProveTypeCheckApp"
+output = "single"
+output_assembly = "ProveTypeCheckApp.dll"
+
+[project.packages]
+"App" = "src/app.l"
+
+[dependencies]
+"Mylib" = { path = "../lib" }

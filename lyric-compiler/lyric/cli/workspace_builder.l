@@ -1150,6 +1150,19 @@ pub func resolveManifestDependencies(
   cliFeatures: in List[String],
   noDefaultFeatures: in Bool,
 ): ResolvedManifestDeps {
+  resolveManifestDependenciesAs("build", manifest, mfPath, target, cliFeatures, noDefaultFeatures)
+}
+
+/// `resolveManifestDependencies` for the command `cmd` (`"build"`,
+/// `"prove"`), which prefixes the messages it prints.
+pub func resolveManifestDependenciesAs(
+  cmd: in String,
+  manifest: in Mf.Manifest,
+  mfPath: in String,
+  target: in Emitter.CompileTarget,
+  cliFeatures: in List[String],
+  noDefaultFeatures: in Bool,
+): ResolvedManifestDeps {
   val mfDir = Path.dirname(mfPath)
   val restoredDlls: List[String] = newList()
   val depTemplatePkgsList: List[Emitter.ProjectPackage] = newList()
@@ -1241,7 +1254,7 @@ pub func resolveManifestDependencies(
                       collectTransitiveDepDlls(depDir, wsCtxOpt, seenDeps, restoredDlls)
                     }
                   } else if dllMatters {
-                    printErr("build: " + Release.localDepNotBuiltMessage(dep.name, dllPath, depToml))
+                    printErr(cmd + ": " + Release.localDepNotBuiltMessage(dep.name, dllPath, depToml))
                     hadUnbuiltLocalDep = true
                   }
                   // Collect source files from this path dependency so the weaver can
@@ -1283,7 +1296,7 @@ pub func resolveManifestDependencies(
                                 pathList.add(srcPath)
                               }
                               case Err(e) -> {
-                                printErr("build: dep '" + dep.name + "': cannot read source '" + srcPath + "': " + IOError.message(e))
+                                printErr(cmd + ": dep '" + dep.name + "': cannot read source '" + srcPath + "': " + IOError.message(e))
                                 if not dllMatters {
                                   hadUnbuiltLocalDep = true
                                 }
@@ -1299,7 +1312,7 @@ pub func resolveManifestDependencies(
                               pathList.add(srcPath)
                             }
                             case Err(e) -> {
-                              printErr("build: dep '" + dep.name + "': cannot read source '" + srcPath + "': " + IOError.message(e))
+                              printErr(cmd + ": dep '" + dep.name + "': cannot read source '" + srcPath + "': " + IOError.message(e))
                               if not dllMatters {
                                 hadUnbuiltLocalDep = true
                               }
@@ -1318,19 +1331,19 @@ pub func resolveManifestDependencies(
                   }
                 }
                 case Err(e) -> {
-                  printErr("build: local dep '" + dep.name + "': malformed lyric.toml: " + Mf.ManifestError.message(e))
+                  printErr(cmd + ": local dep '" + dep.name + "': malformed lyric.toml: " + Mf.ManifestError.message(e))
                   hadUnbuiltLocalDep = true
                 }
               }
             }
             case Err(e) -> {
-              printErr("build: local dep '" + dep.name + "': cannot read " + depToml + ": " + IOError.message(e))
+              printErr(cmd + ": local dep '" + dep.name + "': cannot read " + depToml + ": " + IOError.message(e))
               hadUnbuiltLocalDep = true
             }
           }
         } else {
           printErr(
-            "build: local dep '" + dep.name + "' — no lyric.toml found at '" + depToml +
+            cmd + ": local dep '" + dep.name + "' — no lyric.toml found at '" + depToml +
               "'; check the path = \"...\" entry in your lyric.toml"
           )
           hadUnbuiltLocalDep = true

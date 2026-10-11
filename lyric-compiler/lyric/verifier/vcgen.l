@@ -730,6 +730,22 @@ func guardTerms(g: in Term, xs: in List[Term]): List[Term] {
   guarded
 }
 
+// `sides`, each stated where `facts` hold: the side conditions of what is
+// evaluated after the code that brought `facts`.  Each side condition in a
+// `TranslateResult` already holds under the facts of everything evaluated
+// before it in the same expression, so the flat list keeps evaluation order
+// (`side_1 and (fact_1 implies side_2) and ...`).  A call's own facts never
+// guard its own precondition (#8102): they are brought after it is checked.
+// The facts are copied, since a conjunction shares the list it is given.
+func afterFacts(facts: in List[Term], sides: in List[Term]): List[Term] {
+  if facts.count == 0 {
+    return sides
+  }
+  val held: List[Term] = newList()
+  appendTermList(held, facts)
+  guardTerms(mkAnd(held), sides)
+}
+
 func singleTR(t: in Term): TranslateResult {
   val sc: List[Term] = newList()
   val asList: List[Term] = newList()
@@ -1488,7 +1504,8 @@ func translateResolvedCall(
 
   val sc: List[Term] = newList()
   appendTermList(sc, argSides)
-  appendTermList(sc, preConds)
+  // The precondition is checked once the arguments are evaluated.
+  appendTermList(sc, afterFacts(argAssumed, preConds))
   val asList: List[Term] = newList()
   appendTermList(asList, argAssumed)
   appendTermList(asList, postConds)
@@ -2352,7 +2369,8 @@ func translateMethodCall(
   appendTermList2(diags, allArgDiags)
   val sides: List[Term] = newList()
   appendTermList(sides, recvR.sideConds)
-  appendTermList(sides, argSides)
+  // The arguments run after the receiver.
+  appendTermList(sides, afterFacts(recvR.assumed, argSides))
   val facts: List[Term] = newList()
   appendTermList(facts, recvR.assumed)
   appendTermList(facts, argAssumed)
@@ -2454,7 +2472,7 @@ func translateDistinctConstruction(
   appendTermList(sc, argSides)
   val term = match rangeObligationsForTerm(value, info) {
     case Ok(obligations) -> {
-      appendTermList(sc, obligations)
+      appendTermList(sc, afterFacts(argAssumed, obligations))
       value
     }
     case Err(reason) -> {
@@ -3118,10 +3136,13 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
           val term = if sortDiags.count > 0 { poisonTerm(TBuiltin(op = b, args = args)) } else { TBuiltin(op = b, args = args) }
           val sc: List[Term] = newList()
           appendTermList(sc, lR.sideConds)
-          appendTermList(sc, rR.sideConds)
+          appendTermList(sc, afterFacts(lR.assumed, rR.sideConds))
+          // The operation's own side conditions are checked once both
+          // operands are evaluated.
+          val ownSides: List[Term] = newList()
           // Integer division and remainder by zero panic in every build
           // profile: the divisor must be non-zero (#8107).
-          appendTermList(sc, divisorSideConds(b, args, intBitsOfExpr(env, e)))
+          appendTermList(ownSides, divisorSideConds(b, args, intBitsOfExpr(env, e)))
           // @proof_required(checked_arithmetic): overflow side conditions.
           // A signed result must stay inside its type's width — 32 bits
           // for `Int`, 64 for `Long` — since an overflow panics in a debug
@@ -3130,12 +3151,12 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
             match sortOf(args[0]) {
               case SInt -> {
                 match b {
-                  case BOpAdd | BOpSub | BOpMul -> appendTermList(sc, signedWidthBounds(term, overflowBitsOfExpr(env, e)))
+                  case BOpAdd | BOpSub | BOpMul -> appendTermList(ownSides, signedWidthBounds(term, overflowBitsOfExpr(env, e)))
                   case _ -> {
                   }
                 }
               }
-              case SBitVec(w) -> appendTermList(sc, unsignedOverflowSideConds(b, args[0], args[1], term, w))
+              case SBitVec(w) -> appendTermList(ownSides, unsignedOverflowSideConds(b, args[0], args[1], term, w))
               case _ -> {
               }
             }
@@ -3143,6 +3164,7 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
           val asList: List[Term] = newList()
           appendTermList(asList, lR.assumed)
           appendTermList(asList, rR.assumed)
+          appendTermList(sc, afterFacts(asList, ownSides))
           val allDiags: List[Diagnostic] = newList()
           appendTermList2(allDiags, lDiags)
           appendTermList2(allDiags, rDiags)
@@ -3202,7 +3224,7 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
         val (ar, ad) = translateExpr(argEnv, argExpr)
         rawArgTerms.add(ar.term)
         argSpans.add(argExpr.span)
-        appendTermList(argSides, ar.sideConds)
+        appendTermList(argSides, afterFacts(argAssumed, ar.sideConds))
         appendTermList(argAssumed, ar.assumed)
         appendTermList2(allArgDiags, ad)
         val afterArg = havocOutArgs(argEnv, argExpr)
@@ -6976,14 +6998,33 @@ pub func goalsForFunctionWithState(
 
   // Translate requires clauses.
   // A precondition is assumed whole: its side conditions, the facts its
-  // evaluation brings, and its value.
+  // evaluation brings, and its value.  Its side conditions are the caller's
+  // obligation like the rest of it (#8102): `requires: x == 0 or pos(x) > 0`
+  // asks the caller for `x == 0 or x > 0`.  But a clause whose side
+  // conditions hold for no argument (a callee's `requires:` it always
+  // breaks, a division by zero) can be met by no call, and assuming it would
+  // make every obligation of the function hold vacuously.  So each clause
+  // with side conditions carries a goal that some argument satisfies them,
+  // under the parameters' facts and the clauses before it (#8223).
   val preTerms: List[Term] = newList()
   val preDiags: List[Diagnostic] = newList()
+  val preSideHyps: List[List[Term]] = newList()
+  val preSideTerms: List[Term] = newList()
+  val preSideSpans: List[Span] = newList()
   i = 0
   while i < decl.contracts.count {
     match decl.contracts[i] {
-      case CCRequires(e, _) -> {
+      case CCRequires(e, clauseSpan) -> {
         val parts = translateContractParts(envInOwnContract(envWithParams, decl.name), e)
+        if parts.sides.count > 0 {
+          val before: List[Term] = newList()
+          appendTermList(before, paramHyps)
+          appendTermList(before, extraHyps)
+          appendTermList(before, preTerms)
+          preSideHyps.add(before)
+          preSideTerms.add(mkAnd(parts.sides))
+          preSideSpans.add(clauseSpan)
+        }
         appendTermList(preTerms, partsHyps(parts))
         appendTermList2(preDiags, parts.diags)
       }
@@ -7116,6 +7157,24 @@ pub func goalsForFunctionWithState(
 
   val goals: List[Goal] = newList()
   goals.add(mainGoal)
+  i = 0
+  while i < preSideTerms.count {
+    val preSymbols: List[SymbolDecl] = newList()
+    for sym in env0.symbols {
+      preSymbols.add(sym)
+    }
+    goals.add(
+      Goal(
+        hypotheses = preSideHyps[i],
+        conclusion = mkNot(preSideTerms[i]),
+        symbols = preSymbols,
+        origin = preSideSpans[i],
+        kind = GKPreconditionDomain(fnName = decl.name),
+        label = decl.name + "$pre"
+      )
+    )
+    i = i + 1
+  }
   i = 0
   while i < wpRes.sideGoals.count {
     val sg = wpRes.sideGoals[i]

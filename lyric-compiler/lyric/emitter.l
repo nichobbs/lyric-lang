@@ -2490,16 +2490,33 @@ func loadRestoredArtifacts(restoredDllPaths: in List[String]): Result[List[RP.Sy
   Ok(value = restoredArtifacts)
 }
 
-/// What the type checker says of a project, as a `--target dotnet`
-/// `emitProject` of `req` would reach it, without compiling anything: every
-/// diagnostic of the passes up to and including the type check (the merge
-/// of each package's files, parse, `@cfg` erasure, template expansion, the
-/// rewrites, the check), attributed to its file and never printed.  For a
-/// caller that must not act on a program the type checker rejects (`lyric
-/// prove`, #8227).  `req.target` and `req.outputPath` are not used.
+// The standard-library sources a build for `target` type-checks against: the
+// public modules with that target's kernels.
+func checkStdlibSources(target: in CompileTarget): List[String] {
+  match target {
+    case Dotnet -> findStdlibSources()
+    case Jvm -> findStdlibSourcesForTarget(true)
+    case Native -> {
+      val sources: List[String] = newList()
+      for f in findStdlibSourcesNative() {
+        sources.add(f.source)
+      }
+      sources
+    }
+  }
+}
+
+/// What a build of `req` for `req.target` rejects the project for, up to and
+/// including the mode check, without compiling anything: every diagnostic of
+/// those passes (the merge of each package's files, parse, `@cfg` erasure,
+/// template expansion, the rewrites, the type check, the checked
+/// desugarings, the effect rules, the mode check), attributed to its file and
+/// never printed.  For a caller that must not act on a program the build
+/// rejects (`lyric prove`, #8227).  `req.outputPath` is not used.
 pub func typeCheckProject(req: in EmitProjectRequest): List[DiagUtil.LocatedDiagnostic] {
   val located: List[DiagUtil.LocatedDiagnostic] = newList()
-  val merged = mergeRequest(req, compileTargetName(Dotnet), true, located)
+  val targetName = compileTargetName(req.target)
+  val merged = mergeRequest(req, targetName, true, located)
   if merged.failed {
     return located
   }
@@ -2515,7 +2532,7 @@ pub func typeCheckProject(req: in EmitProjectRequest): List[DiagUtil.LocatedDiag
   try {
     val checked = MsilBridge.checkProjectTypes(
       msilPayloads(merged.packages),
-      findStdlibSources(),
+      checkStdlibSources(req.target),
       req.activeFeatures,
       req.declaredFeatures,
       restoredArtifacts,
@@ -2523,7 +2540,8 @@ pub func typeCheckProject(req: in EmitProjectRequest): List[DiagUtil.LocatedDiag
       msilPayloads(merged.depTemplates),
       req.defines,
       unitPaths(merged.packages),
-      merged.origins
+      merged.origins,
+      targetName
     )
     for d in checked {
       located.add(d)
@@ -2534,13 +2552,19 @@ pub func typeCheckProject(req: in EmitProjectRequest): List[DiagUtil.LocatedDiag
   located
 }
 
-/// What the type checker says of the single source `req.source`, as a
-/// `--target dotnet` `emit` of `req` would reach it, without compiling
-/// anything (see `typeCheckProject`).  Every diagnostic is attributed to
-/// `req.path`.  `req.target` and `req.outputPath` are not used.
+/// What a build of the single source `req.source` for `req.target` rejects it
+/// for, up to and including the mode check, without compiling anything (see
+/// `typeCheckProject`).  Every diagnostic is attributed to `req.path`.
+/// `req.outputPath` is not used.
 pub func typeCheckSource(req: in EmitRequest): List[DiagUtil.LocatedDiagnostic] {
   try {
-    MsilBridge.checkSourceTypes(req.source, findStdlibSources(), req.defines, req.path)
+    MsilBridge.checkSourceTypes(
+      req.source,
+      checkStdlibSources(req.target),
+      req.defines,
+      req.path,
+      compileTargetName(req.target)
+    )
   } catch Bug as b {
     val located: List[DiagUtil.LocatedDiagnostic] = newList()
     located.add(DiagUtil.LocatedDiagnostic(path = req.path, diagnostic = msilBridgePanicDiagnostic(b.message)))

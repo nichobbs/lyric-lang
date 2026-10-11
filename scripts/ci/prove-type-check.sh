@@ -38,7 +38,7 @@ expect_type_error() {
   rc="$(run "$@")"
   [ "$rc" -ne 0 ] || fail "$label: expected a non-zero exit"
   grep -q "error\[$code\]" "$err" || fail "$label: expected the type checker's $code"
-  grep -q "does not type-check; no proof obligation was attempted" "$err" || fail "$label: expected the refusal"
+  grep -q "fails the build's checks; no proof obligation was attempted" "$err" || fail "$label: expected the refusal"
   if grep -q "obligations discharged" "$out"; then
     fail "$label: no obligation may be attempted"
   fi
@@ -77,6 +77,32 @@ expect_type_error "ill-typed sibling, --manifest" T0031 "$lyric_bin" prove --man
 grep -q "a_types.l: error\[T0031\]" "$err" || fail "ill-typed sibling, --manifest: expected the diagnostic attributed to a_types.l"
 expect_proved "well-typed package, single file" "$lyric_bin" prove "$tc/control/src/p/b_logic.l"
 expect_proved "well-typed package, --manifest" "$lyric_bin" prove --manifest "$tc/control/lyric.toml"
+
+# The check is the build's for the flags given: a package gated to the JVM
+# or to a non-default feature does not type-check in a default build, and
+# does with --target jvm / --features extra.
+expect_type_error "JVM-only package, dotnet, --manifest" T0020 "$lyric_bin" prove --manifest "$tc/jvmonly/lyric.toml"
+expect_type_error "JVM-only package, dotnet, single file" T0020 "$lyric_bin" prove "$tc/jvmonly/src/p/b_logic.l"
+expect_proved "JVM-only package, --target jvm, --manifest" "$lyric_bin" prove --target jvm --manifest "$tc/jvmonly/lyric.toml"
+expect_proved "JVM-only package, --target jvm, single file" "$lyric_bin" prove --target jvm "$tc/jvmonly/src/p/b_logic.l"
+expect_type_error "feature-gated package, default features" T0020 "$lyric_bin" prove "$tc/featured/src/p/b_logic.l"
+expect_proved "feature-gated package, --features extra" "$lyric_bin" prove --features extra "$tc/featured/src/p/b_logic.l"
+
+# A dependency that is not built stops the proof, as it stops a build.
+rc="$(run "$lyric_bin" prove "$tc/unbuiltdep/app/src/app.l")"
+[ "$rc" -ne 0 ] || fail "unbuilt dependency: expected a non-zero exit"
+grep -q 'run `lyric restore` or `lyric build` first' "$err" || fail "unbuilt dependency: expected the restore/build advice"
+grep -q "no proof obligation was attempted" "$err" || fail "unbuilt dependency: expected the refusal"
+if grep -q "^build:" "$err" || grep -q "obligations discharged" "$out"; then
+  fail "unbuilt dependency: no build-prefixed message and no obligation may be attempted"
+fi
+echo "PASS: unbuilt dependency"
+
+# A file is checked with its own package and the packages it imports, not
+# the whole project: the ledger's accounting package imports only Std, so
+# the command its header documents proves it without the service packages'
+# dependencies being built.
+expect_proved "ledger accounting package" "$lyric_bin" prove "$examples/ledger/src/accounting.l" --verbose
 
 # #8223: a quantifier's side conditions hold for every bound value.
 rc="$(run "$lyric_bin" prove "$qs/unsound.l")"

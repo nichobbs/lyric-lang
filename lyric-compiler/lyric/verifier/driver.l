@@ -100,6 +100,14 @@ pub func outcomeToDiag(g: in Goal, outcome: in SolverOutcome, allowUnverified: i
   match outcome {
     case Discharged -> None
     case Counterexample(model) -> {
+      match g.kind {
+        case GKPreconditionDomain(fn) -> {
+          return Some(
+            value = errorDiagnostic("V0008", "the precondition of " + fn + " can never be evaluated: " + model, g.origin)
+          )
+        }
+        case _ -> ()
+      }
       val body = if model.length > 0 {
         val bindings = parseModel(model)
         if bindings.count == 0 {
@@ -150,6 +158,23 @@ pub func outcomeToDiag(g: in Goal, outcome: in SolverOutcome, allowUnverified: i
         Some(value = errorDiagnostic("V0007", goalKindDisplay(g.kind) + " — solver returned unknown: " + reason, g.origin))
       }
     }
+  }
+}
+
+// A `GKPreconditionDomain` goal states that no argument lets a `requires:`
+// clause be evaluated; it holds when the solver refutes it, with the
+// refuting model as the witness.  Proved, it is the failure: the clause can
+// be met by no call (#8223).
+func domainOutcome(g: in Goal, outcome: in SolverOutcome): SolverOutcome {
+  match g.kind {
+    case GKPreconditionDomain(_) -> match outcome {
+      case Discharged -> Counterexample(
+        model = "every argument breaks a side condition of the clause (a callee's requires:, a non-zero divisor), so no call can meet the precondition and every proof of the function would hold vacuously"
+      )
+      case Counterexample(_) -> Discharged
+      case Unknown(r) -> Unknown(reason = r)
+    }
+    case _ -> outcome
   }
 }
 
@@ -480,7 +505,7 @@ pub func proveSourceInScope(source: in String, allowUnverified: in Bool, pkgScop
     } else {
       match reconcileGoalSorts(g) {
         case Ok(rg) -> {
-          val outcome = discharge(rg)
+          val outcome = domainOutcome(rg, discharge(rg))
           results.add(ProofResult(goal = rg, outcome = outcome))
           match outcomeToDiag(rg, outcome, allowUnverified) {
             case Some(d) -> resultDiags.add(d)

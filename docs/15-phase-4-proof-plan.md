@@ -1300,6 +1300,7 @@ without breakage across patch and minor compiler releases.
 | `message`  | string  | Human-readable diagnostic text (LF-newline-separated for multi-line counterexample blocks). |
 | `line`     | integer | 1-based source line.                                                                        |
 | `col`      | integer | 1-based source column.                                                                      |
+| `file`     | string  | The file the diagnostic is in: the proved file for the verifier's diagnostics; for a type-check diagnostic, the file of the program it is in, which may be another file of the proved file's package or of a package it imports (#8227). Added after M4.3, under A.6's rule that new fields may be added. |
 
 ### A.4 Summary object
 

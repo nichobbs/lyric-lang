@@ -1102,6 +1102,9 @@ pub union GoalKind {
   case GKLoopConclude
   case GKAssertion
   case GKRangeBound
+  /// That some argument lets a `requires:` clause be evaluated: the goal's
+  /// conclusion is that none does, so the goal must be refuted (#8223).
+  case GKPreconditionDomain(fnName: String)
 }
 
 pub func goalKindDisplay(k: in GoalKind): String {
@@ -1115,6 +1118,7 @@ pub func goalKindDisplay(k: in GoalKind): String {
     case GKLoopConclude -> "loop invariant (conclude)"
     case GKAssertion -> "user assertion"
     case GKRangeBound -> "range-subtype bound"
+    case GKPreconditionDomain(fn) -> "domain of the precondition of " + fn
   }
 }
 

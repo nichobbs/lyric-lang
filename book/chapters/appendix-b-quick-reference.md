@@ -1202,6 +1202,9 @@ lyric prove --proof-dir <dir> <file.l> # write SMT files to <dir> (default: targ
 lyric prove --verbose <file.l>         # print each goal's SMT query and solver response
 lyric prove                            # project mode: prove every [project.packages] source file
 lyric prove --manifest <lyric.toml>    # project mode: override manifest discovery
+lyric prove --target jvm <file.l>      # type-check as a --target jvm build (dotnet|jvm|native)
+lyric prove --features a,b <file.l>    # features for the type check (also --no-default-features, --all-features)
+lyric prove --define KEY=VALUE <file.l> # build define for the type check (repeatable)
                                        # (--json and --explain --goal N require explicit source file)
                                        # a single-file proof is relative to the file's ancestor
                                        # manifests; prove a package whose manifest lists files

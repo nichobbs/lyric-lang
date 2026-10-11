@@ -1,0 +1,14 @@
+[package]
+name = "ProveTypeCheckFeatured"
+version = "0.1.0"
+
+[project]
+name = "ProveTypeCheckFeatured"
+output = "single"
+output_assembly = "ProveTypeCheckFeatured.dll"
+
+[project.packages]
+"P" = "src/p"
+
+[features]
+extra = []
