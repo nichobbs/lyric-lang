@@ -2513,6 +2513,12 @@ func checkStdlibSources(target: in CompileTarget): List[String] {
 /// desugarings, the effect rules, the mode check), attributed to its file and
 /// never printed.  For a caller that must not act on a program the build
 /// rejects (`lyric prove`, #8227).  `req.outputPath` is not used.
+///
+/// Every target is checked through the dotnet bridge's front end
+/// (`Msil.Bridge.checkProjectTypes`) with that target's `@cfg` items,
+/// standard-library kernels and middle-end options; the JVM and native
+/// bridges' own front ends are not run, so a check they would fail and the
+/// dotnet one passes goes unreported (#8311).
 pub func typeCheckProject(req: in EmitProjectRequest): List[DiagUtil.LocatedDiagnostic] {
   val located: List[DiagUtil.LocatedDiagnostic] = newList()
   val targetName = compileTargetName(req.target)

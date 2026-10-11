@@ -2857,9 +2857,10 @@ func vacuousSrc(clause: in String): String {
 }
 
 // A `requires:` clause's side conditions are the caller's to meet (#8102),
-// but a clause no argument can meet would make every proof of the function
-// vacuous: it is reported, plain or under a quantifier (#8223).
-test "a precondition no argument can evaluate is reported (#8223)" {
+// but a clause no argument can meet, through its side conditions or its
+// value, would make every proof of the function vacuous: it is reported,
+// V0035 (#8223).
+test "a precondition no argument can meet is reported (#8223)" {
   assertRefuted(invDecl() + vacuousSrc("inv(0u8) >= 0u8"), "plain-precondition-side")
   assertRefuted(invDecl() + vacuousSrc("forall (k: Byte) inv(k) >= 0u8"), "quantified-precondition-side")
   assertRefuted(vacuousSrc("10 / 0 == 0"), "division-in-a-precondition")
@@ -2883,6 +2884,41 @@ test "a precondition no argument can evaluate is reported (#8223)" {
       "func k(): Byte\n{\n  h(0u8)\n}\n",
     "partial-precondition-unmet-by-a-caller"
   )
+  // The clause as a whole, not only its side conditions: its value, and
+  // its side conditions under the facts it brings.
+  assertRefuted(
+    invDecl() + "func g(z: in Byte): Int\n  requires: z == 0u8 and forall (k: Byte) where k == z { inv(k) >= 0u8 }\n" +
+      "  ensures: result == 42\n{\n  0\n}\n",
+    "side-conditions-unmet-where-the-clause-holds"
+  )
+  assertRefuted(
+    "func h(x: in Byte): Byte\n  requires: x > 5u8 and x < 3u8\n  ensures: result == 7u8\n{\n  x\n}\n",
+    "unsatisfiable-precondition"
+  )
+  assertDischarged(
+    "func h(x: in Byte): Byte\n  requires: x > 5u8\n  requires: x < 9u8\n  ensures: result > 5u8\n{\n  x\n}\n",
+    "satisfiable-preconditions"
+  )
+  assertDischarged(
+    invDecl() + "func g(z: in Byte): Int\n  requires: z == 1u8 and forall (k: Byte) where k == z { inv(k) >= 0u8 }\n" +
+      "  ensures: result == 0\n{\n  0\n}\n",
+    "quantified-precondition-met-by-an-argument"
+  )
+  // An unmeetable clause is reported, not the clauses after it.
+  val earlier = provePkg(
+    "func h(x: in Byte): Byte\n  requires: x > 5u8 and x < 3u8\n  requires: x == 4u8\n  ensures: result == 7u8\n{\n  x\n}\n"
+  )
+  assertEqualInt(diagCodeCount(earlier, "V0035"), 1, "only the earlier clause is reported")
+}
+
+func diagCodeCount(s: in ProofSummary, code: in String): Int {
+  var n = 0
+  for d in s.diagnostics {
+    if d.code == code {
+      n = n + 1
+    }
+  }
+  n
 }
 
 test "a quantifier over Char ranges over UTF-16 code units (#8214)" {

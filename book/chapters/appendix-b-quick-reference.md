@@ -1614,6 +1614,7 @@ The first-party UI generators (D151) report their own codes under `X0005`:
 | `V0032` | error | Contract clause (`requires:`/`ensures:`) on an `async func` or `yield`-bearing generator — the WP/SP calculus cannot model suspend/resume, so the verifier rejects the function rather than checking it against an unmodelled body. Move the contract to a synchronous core, or mark the package `@runtime_checked` |
 | `V0033` | error | A proof obligation cannot be translated faithfully — an unsigned (`UInt`/`ULong`) operand beside a signed variable, a negative or too-wide constant used as an unsigned value, an unsigned negation, or a result range bound that is not a fitting literal. Add an explicit conversion or write the bound as a literal of the base type |
 | `V0034` | error | (mode checker) `spawn` outside a `scope { }`. A spawned task must not outlive its scope, so every `spawn` sits lexically inside one in the same function or lambda body (D165, docs/68 §4). Wrap the `spawn` and its `await` in `scope { ... }` |
+| `V0035` | error | A `requires:` clause no argument can meet, given the parameters' types and the clauses before it: its value is never true, or a side condition in it (a callee's `requires:`, a non-zero divisor) always fails. Every proof of the function would hold vacuously, so `lyric prove` reports the clause |
 
 ### Multi-file package diagnostics (B001x)
 

@@ -1102,8 +1102,8 @@ pub union GoalKind {
   case GKLoopConclude
   case GKAssertion
   case GKRangeBound
-  /// That some argument lets a `requires:` clause be evaluated: the goal's
-  /// conclusion is that none does, so the goal must be refuted (#8223).
+  /// That some argument meets a `requires:` clause: the goal's conclusion is
+  /// that none does, so the goal must be refuted (#8223).
   case GKPreconditionDomain(fnName: String)
 }
 

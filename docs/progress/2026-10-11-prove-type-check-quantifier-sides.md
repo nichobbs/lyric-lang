@@ -40,23 +40,29 @@ justifies its own `requires:` (#8102).  So `forall (k: Byte) inv(nz(k)) >=
 side conditions were checked.
 
 Checking those side conditions exposed a related, older hole: a `requires:`
-clause is assumed at entry with its side conditions, so a clause whose side
-conditions hold for no argument (`requires: inv(0u8) >= 0u8`, or the same
-under a quantifier) made every obligation of the function hold vacuously.  The
-side conditions stay the caller's obligation (#8102: `requires: x == 0 or
-pos(x) > 0` asks the caller for `x == 0 or x > 0`), and each clause with side
-conditions now also carries a goal, `GKPreconditionDomain`, that some argument
-satisfies them under the parameters' facts and the clauses before it; the
+clause is assumed at entry with its side conditions, so a clause no argument
+can meet (`requires: inv(0u8) >= 0u8`, the same under a quantifier, or
+`requires: z == 0u8 and forall (k: Byte) where k == z { inv(k) >= 0u8 }`,
+whose quantified side condition holds only where its first conjunct fails)
+made every obligation of the function hold vacuously.  The side conditions
+stay the caller's obligation (#8102: `requires: x == 0 or pos(x) > 0` asks the
+caller for `x == 0 or x > 0`), and each clause now also carries a goal,
+`GKPreconditionDomain`, that some argument meets it, side conditions, facts
+and value together, under the parameters' facts and the clauses before it; the
 solver refuting "no argument does" is its proof.  A clause no call can meet is
-V0008, "the precondition of f can never be evaluated".
+the new error V0035 ("this precondition of f can never hold"), which also
+catches a plainly unsatisfiable `requires: x > 5u8 and x < 3u8`.  When an
+earlier clause cannot be met, only it is reported.
 
 `verifier_self_test.l` covers a precondition and a division under `forall` and
 `exists`, in the `where` clause, under nested quantifiers and independent of
 the binder (each refuted unguarded, proved guarded); an argument's, a
 divisor's and an earlier clause's facts (proved), a call's own `ensures:`
 (refuted); and vacuous preconditions, plain, quantified, by division and
-contradicted by an earlier clause (reported), next to partial ones some
-argument meets (proved, and refuted at a caller that does not meet them).
+contradicted by an earlier clause, unmet where the clause holds, or plainly
+unsatisfiable (reported, the earlier clause alone when two are), next to
+partial and satisfiable ones some argument meets (proved, and a partial one
+refuted at a caller that does not meet it).
 
 ## `lyric prove` stops on a program the build rejects (#8227)
 

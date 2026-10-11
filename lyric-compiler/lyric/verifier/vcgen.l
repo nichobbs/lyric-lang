@@ -7000,12 +7000,13 @@ pub func goalsForFunctionWithState(
   // A precondition is assumed whole: its side conditions, the facts its
   // evaluation brings, and its value.  Its side conditions are the caller's
   // obligation like the rest of it (#8102): `requires: x == 0 or pos(x) > 0`
-  // asks the caller for `x == 0 or x > 0`.  But a clause whose side
-  // conditions hold for no argument (a callee's `requires:` it always
-  // breaks, a division by zero) can be met by no call, and assuming it would
-  // make every obligation of the function hold vacuously.  So each clause
-  // with side conditions carries a goal that some argument satisfies them,
-  // under the parameters' facts and the clauses before it (#8223).
+  // asks the caller for `x == 0 or x > 0`.  But a clause that no argument can
+  // meet (side conditions that always fail, a value that is never true, or
+  // one that contradicts an earlier clause) can be met by no call, and
+  // assuming it would make every obligation of the function hold vacuously.
+  // So each clause carries a goal that some argument meets it, side
+  // conditions, facts and value together, under the parameters' facts and
+  // the clauses before it (#8223).
   val preTerms: List[Term] = newList()
   val preDiags: List[Diagnostic] = newList()
   val preSideHyps: List[List[Term]] = newList()
@@ -7016,15 +7017,13 @@ pub func goalsForFunctionWithState(
     match decl.contracts[i] {
       case CCRequires(e, clauseSpan) -> {
         val parts = translateContractParts(envInOwnContract(envWithParams, decl.name), e)
-        if parts.sides.count > 0 {
-          val before: List[Term] = newList()
-          appendTermList(before, paramHyps)
-          appendTermList(before, extraHyps)
-          appendTermList(before, preTerms)
-          preSideHyps.add(before)
-          preSideTerms.add(mkAnd(parts.sides))
-          preSideSpans.add(clauseSpan)
-        }
+        val before: List[Term] = newList()
+        appendTermList(before, paramHyps)
+        appendTermList(before, extraHyps)
+        appendTermList(before, preTerms)
+        preSideHyps.add(before)
+        preSideTerms.add(mkAnd(partsHyps(parts)))
+        preSideSpans.add(clauseSpan)
         appendTermList(preTerms, partsHyps(parts))
         appendTermList2(preDiags, parts.diags)
       }

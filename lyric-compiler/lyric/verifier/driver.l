@@ -103,7 +103,14 @@ pub func outcomeToDiag(g: in Goal, outcome: in SolverOutcome, allowUnverified: i
       match g.kind {
         case GKPreconditionDomain(fn) -> {
           return Some(
-            value = errorDiagnostic("V0008", "the precondition of " + fn + " can never be evaluated: " + model, g.origin)
+            value = errorDiagnostic(
+              "V0035",
+              "this precondition of " + fn +
+                " can never hold: no argument meets it, given the parameters' types and the clauses before it (its value is never true, or a side condition in it, such as a callee's requires: or a non-zero divisor, always fails), so no call can meet it and every proof of " +
+                fn +
+                " would hold vacuously",
+              g.origin
+            )
           )
         }
         case _ -> ()
@@ -161,20 +168,47 @@ pub func outcomeToDiag(g: in Goal, outcome: in SolverOutcome, allowUnverified: i
   }
 }
 
-// A `GKPreconditionDomain` goal states that no argument lets a `requires:`
-// clause be evaluated; it holds when the solver refutes it, with the
-// refuting model as the witness.  Proved, it is the failure: the clause can
-// be met by no call (#8223).
+// A `GKPreconditionDomain` goal states that no argument meets a `requires:`
+// clause; it holds when the solver refutes it, the refuting model being an
+// argument that meets it.  Proved, it is the failure: no call can meet the
+// clause (#8223).
 func domainOutcome(g: in Goal, outcome: in SolverOutcome): SolverOutcome {
   match g.kind {
     case GKPreconditionDomain(_) -> match outcome {
-      case Discharged -> Counterexample(
-        model = "every argument breaks a side condition of the clause (a callee's requires:, a non-zero divisor), so no call can meet the precondition and every proof of the function would hold vacuously"
-      )
+      case Discharged -> Counterexample(model = "")
       case Counterexample(_) -> Discharged
       case Unknown(r) -> Unknown(reason = r)
     }
     case _ -> outcome
+  }
+}
+
+// A precondition clause of a function whose earlier clause no call can meet
+// holds vacuously under that clause: the earlier one is reported, not this
+// one.  Records each function with a clause that cannot be met in
+// `unmeetable`.
+func afterUnmeetable(g: in Goal, outcome: in SolverOutcome, unmeetable: in List[String]): SolverOutcome {
+  match g.kind {
+    case GKPreconditionDomain(fn) -> match outcome {
+      case Counterexample(_) -> {
+        for f in unmeetable {
+          if f == fn {
+            return Discharged
+          }
+        }
+        unmeetable.add(fn)
+        outcome
+      }
+      case _ -> outcome
+    }
+    case _ -> outcome
+  }
+}
+
+func isDomainGoal(g: in Goal): Bool {
+  match g.kind {
+    case GKPreconditionDomain(_) -> true
+    case _ -> false
   }
 }
 
@@ -475,6 +509,8 @@ pub func proveSourceInScope(source: in String, allowUnverified: in Bool, pkgScop
   }
 
   // 5. Discharge each goal.
+  // The functions with a `requires:` clause no call can meet (#8223).
+  val unmeetable: List[String] = newList()
   val results: List[ProofResult] = newList()
   val resultDiags: List[Diagnostic] = newList()
   var i = 0
@@ -505,7 +541,7 @@ pub func proveSourceInScope(source: in String, allowUnverified: in Bool, pkgScop
     } else {
       match reconcileGoalSorts(g) {
         case Ok(rg) -> {
-          val outcome = domainOutcome(rg, discharge(rg))
+          val outcome = afterUnmeetable(rg, domainOutcome(rg, discharge(rg)), unmeetable)
           results.add(ProofResult(goal = rg, outcome = outcome))
           match outcomeToDiag(rg, outcome, allowUnverified) {
             case Some(d) -> resultDiags.add(d)
@@ -515,13 +551,17 @@ pub func proveSourceInScope(source: in String, allowUnverified: in Bool, pkgScop
         }
         case Err(reason) -> {
           results.add(ProofResult(goal = g, outcome = Unknown(reason = "not translatable: " + reason)))
-          resultDiags.add(
-            errorDiagnostic(
-              "V0033",
-              goalKindDisplay(g.kind) + " — cannot translate the obligation into the proof logic faithfully: " + reason,
-              g.origin
+          // A precondition clause that cannot be translated is a hypothesis
+          // of every other goal of its function, which reports it.
+          if not isDomainGoal(g) {
+            resultDiags.add(
+              errorDiagnostic(
+                "V0033",
+                goalKindDisplay(g.kind) + " — cannot translate the obligation into the proof logic faithfully: " + reason,
+                g.origin
+              )
             )
-          )
+          }
         }
       }
     }
