@@ -10258,6 +10258,26 @@ func typeExprForOpenBinding(tbl: in SymbolTable, t: in Type, sp: in Span, typePa
       case Some(te) -> Some(value = TypeExpr(kind = TSlice(element = te), span = sp))
       case None -> None
     }
+    // An array of a type parameter (`array[2, T]`, #8190): spelled as
+    // `typeExprForRef` spells a closed one, its length a literal or the
+    // value generic parameter that is its length (D169).
+    case TyArray(sz, e, sv) -> match typeExprForOpenBinding(tbl, e, sp, typeParams) {
+      case Some(te) -> match sz {
+        case Some(n) -> {
+          val lenLit = mkExpr(ELiteral(lit = LInt(value = n.toLong(), suffix = I32, raw = "")), sp)
+          Some(value = TypeExpr(kind = TArray(size = TAValue(expr = lenLit), element = te), span = sp))
+        }
+        case None -> if sv.length > 0 {
+          val nsegs: List[String] = newList()
+          nsegs.add(sv)
+          val lenTe = TypeExpr(kind = TRef(path = refTypePath(nsegs, sp)), span = sp)
+          Some(value = TypeExpr(kind = TArray(size = TAType(ty = lenTe), element = te), span = sp))
+        } else {
+          None
+        }
+      }
+      case None -> None
+    }
     case TyNullable(inner) -> match typeExprForOpenBinding(tbl, inner, sp, typeParams) {
       case Some(te) -> Some(value = TypeExpr(kind = TNullable(inner = te), span = sp))
       case None -> None
@@ -11248,21 +11268,124 @@ func hoistTupleElemTypes(t: in Type, n: in Int): List[Type] {
   holes
 }
 
-// Whether `e` is a bracket list literal, through parentheses.
-func exprIsListLiteral(e: in Expr): Bool {
+// The type a hoisted operand `e` is built at when its value is a literal
+// whose runtime shape the expected type decides rather than its elements: a
+// bracket literal where an `array[N, T]`, a `List[T]` or a `slice[T]` is
+// expected (`inferExprExpected`'s `EList` arm builds it as that, D167), a
+// tuple literal holding one, or an `if`, `match` or block whose value is one.
+// `None` when `e` is no such literal.  `own` is the operand's checked type
+// and `expected` the type of the position it is passed to.
+func shapedOperandType(tbl: in SymbolTable, e: in Expr, own: in Type, expected: in Type): Option[Type] {
   match e.kind {
-    case EList(_) -> true
-    case EParen(inner) -> exprIsListLiteral(inner)
-    case _ -> false
+    case EParen(inner) -> shapedOperandType(tbl, inner, own, expected)
+    case EList(_) -> shapedCollectionType(tbl, own, unrefine(expected))
+    case ETuple(elems) -> match unrefine(expected) {
+      case TyTuple(ets) -> {
+        if ets.count != elems.count {
+          return None
+        }
+        val owns = hoistTupleElemTypes(unrefine(own), elems.count)
+        val ts: List[Type] = newList()
+        var any = false
+        var i = 0
+        while i < elems.count {
+          match shapedOperandType(tbl, elems[i], owns[i], ets[i]) {
+            case Some(t) -> {
+              any = true
+              ts.add(t)
+            }
+            case None -> ts.add(joinOpenTypes(owns[i], unrefine(ets[i])))
+          }
+          i = i + 1
+        }
+        if any {
+          Some(value = TyTuple(elems = ts))
+        } else {
+          None
+        }
+      }
+      case _ -> None
+    }
+    case EIf(_, thenBranch, elseBranch, _) -> match shapedBranchType(tbl, thenBranch, own, expected) {
+      case Some(t) -> Some(value = t)
+      case None -> match elseBranch {
+        case Some(eb) -> shapedBranchType(tbl, eb, own, expected)
+        case None -> None
+      }
+    }
+    case EMatch(_, arms) -> {
+      for arm in arms {
+        match shapedBranchType(tbl, arm.body, own, expected) {
+          case Some(t) -> return Some(value = t)
+          case None -> ()
+        }
+      }
+      None
+    }
+    case EBlock(blk) -> shapedBranchType(tbl, EOBBlock(block = blk), own, expected)
+    case EUnsafe(blk) -> shapedBranchType(tbl, EOBBlock(block = blk), own, expected)
+    case _ -> None
   }
 }
 
-// Whether `t` is the stdlib `List[T]` a bracket literal is built as when it
-// is expected (the test `inferExprExpected`'s `EList` arm makes).
-func expectsStdList(tbl: in SymbolTable, t: in Type): Bool {
+func shapedBranchType(tbl: in SymbolTable, b: in ExprOrBlock, own: in Type, expected: in Type): Option[Type] {
+  match branchValueExpr(b) {
+    case Some(ve) -> shapedOperandType(tbl, ve, own, expected)
+    case None -> None
+  }
+}
+
+// The collection type a bracket literal of checked type `own` is built as
+// where `expected` is expected of it, or `None` when `expected` leaves the
+// literal its own shape.  The element type is `expected`'s, which each
+// element is widened to (`List[Long]` from `[1, 2]`), or `own`'s where
+// `expected`'s is open; an array whose length is a value parameter is not
+// built from a literal (T0155).
+func shapedCollectionType(tbl: in SymbolTable, own: in Type, expected: in Type): Option[Type] {
+  val ownElem = collectionElemType(tbl, unrefine(own))
+  match expected {
+    case TyArray(sz, et, _) -> match sz {
+      case Some(n) -> Some(
+        value = TyArray(
+          size = Some(value = n),
+          element = shapedElemType(ownElem, et),
+          sizeVar = ""
+        )
+      )
+      case None -> None
+    }
+    case TySlice(et) -> Some(value = TySlice(element = shapedElemType(ownElem, et)))
+    case TyUser(id, name, args) -> if args.count == 1 and isStdCollectionsHostType(tbl, id, "List") {
+      val elemArgs: List[Type] = newList()
+      elemArgs.add(shapedElemType(ownElem, args[0]))
+      Some(value = TyUser(id = id, name = name, args = elemArgs))
+    } else {
+      None
+    }
+    case _ -> None
+  }
+}
+
+func shapedElemType(ownElem: in Type, expectedElem: in Type): Type {
+  if typeIsClosed(expectedElem) {
+    expectedElem
+  } else {
+    joinOpenTypes(ownElem, expectedElem)
+  }
+}
+
+// The element type of an array, slice or stdlib `List[T]`; `TyError` (a
+// hole) for any other type.
+func collectionElemType(tbl: in SymbolTable, t: in Type): Type {
   match t {
-    case TyUser(id, _, args) -> args.count == 1 and isStdCollectionsHostType(tbl, id, "List")
-    case _ -> false
+    case TyArray(_, et, _) -> et
+    case TySlice(et) -> et
+    case TyUser(id, _, args) -> if args.count == 1 and isStdCollectionsHostType(tbl, id, "List") {
+      args[0]
+    } else {
+      TyError
+    }
+    case _ -> TyError
   }
 }
 
@@ -11274,12 +11397,15 @@ func recordHoistOperandType(sc: in Scope, tbl: in SymbolTable, e: in Expr, own: 
   }
 }
 
-// `recordHoistOperandType` once `e` is known to be bound by the hoist; `t`
-// may name `typeParams`, the enclosing function's type parameters.  A
-// bracket literal where a `List[T]` is expected is built as that list, not
-// as the slice it types as on its own (`inferExprExpected`'s `EList` arm), so
-// its local takes the list type: left to its own type it would be built as
-// an array and then passed where a list is read (#8171).
+// `recordHoistOperandType` once `e` is known to be bound by the hoist; the
+// recorded type may name `typeParams`, the enclosing function's type
+// parameters.  An operand whose value is a literal its position shapes
+// (`shapedOperandType`) is recorded at that shape, at any element type
+// including a type parameter (`array[2, T]`): typed from the literal alone,
+// its local would be built as a slice of the elements' own type and then
+// read as an array, a list or a slice of the widened type (#8171, #8190).
+// Any other operand is recorded only at a generic instantiation, the one
+// type its value alone does not give.
 func recordHoistOperandTypeOver(
   tbl: in SymbolTable,
   typeParams: in List[String],
@@ -11288,12 +11414,10 @@ func recordHoistOperandTypeOver(
   expected: in Type,
 ): Unit {
   val sp = e.span
-  val t = if exprIsListLiteral(e) and expectsStdList(tbl, unrefine(expected)) {
-    unrefine(expected)
-  } else {
-    joinOpenTypes(own, unrefine(expected))
-  }
-  if not typeMentionsGenericInst(t) or not typeIsClosedOver(t, typeParams) {
+  val shaped = shapedOperandType(tbl, e, own, expected)
+  val t = match shaped { case Some(st) -> st; case None -> joinOpenTypes(own, unrefine(expected)) }
+  val shapeDecides = match shaped { case Some(_) -> true; case None -> false }
+  if not (shapeDecides or typeMentionsGenericInst(t)) or not typeIsClosedOver(t, typeParams) {
     return
   }
   match typeExprForOpenBinding(tbl, t, sp, typeParams) {
@@ -12065,6 +12189,191 @@ func sigExpectedArgTypes(
     j = j + 1
   }
   expected
+}
+
+// Record the callee `fn` of a call in `typeArgCalleeSites` when it is a
+// generic function under explicit type arguments written as an index of its
+// name (`firstOf[Int]`): the name is not a local or a field of the implicit
+// receiver, the symbol it resolves to here (`calleeHeadSymbol`) is not a
+// `val`, `const`, wire or config, and it names a function with one generic
+// parameter per index (#8279).
+func recordTypeArgCallee(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  fn: in Expr,
+  arity: in Int,
+  argTypes: in List[Type],
+): Unit {
+  val inner = match fn.kind { case EIndex(i, _) -> i; case _ -> return }
+  val count = match fn.kind { case EIndex(_, ixs) -> ixs.count; case _ -> return }
+  val path = match inner.kind { case EPath(p) -> p; case _ -> return }
+  if path.segments.count == 0 or isNoSourceSpan(fn.span) {
+    return
+  }
+  val head = path.segments[0]
+  if scopeHasName(sc, head) or sc.selfFields.containsKey(head) {
+    return
+  }
+  match calleeHeadSymbol(tbl, path) {
+    case Some(sym) -> if symbolIsValue(sym) { return }
+    case None -> ()
+  }
+  match findDirectSig(sc, tbl, sigs, inner, arity, argTypes) {
+    case Some(sig) -> if sig.generics.count == count {
+      val key = recordCopySiteKey(fn.span)
+      if not tbl.typeArgCalleeSites.containsKey(key) {
+        tbl.typeArgCalleeSites.add(key, true)
+      }
+    }
+    case None -> ()
+  }
+}
+
+// The symbol the path `p` names where it is written, as a reference to it
+// resolves: under a package qualifier (`Lib.fns`) that package's declaration
+// of the name, otherwise the bare name under the current package and its
+// imports (`symTableTryFindOne`), never a package the file does not import.
+func calleeHeadSymbol(tbl: in SymbolTable, p: in ModulePath): Option[Symbol] {
+  val name = p.segments[p.segments.count - 1]
+  if p.segments.count > 1 {
+    val prefix: List[String] = newList()
+    var i = 0
+    while i < p.segments.count - 1 {
+      prefix.add(p.segments[i])
+      i = i + 1
+    }
+    val qual = modulePathJoin(prefix)
+    for sym in symTableTryFindAll(tbl, name) {
+      if sym.originPackage == qual {
+        return Some(value = sym)
+      }
+    }
+  }
+  symTableTryFindOne(tbl, name)
+}
+
+func symbolIsValue(sym: in Symbol): Bool {
+  match sym.kind {
+    case DKVal(_) -> true
+    case DKConst(_) -> true
+    case DKWire(_) -> true
+    case DKConfig(_) -> true
+    case _ -> false
+  }
+}
+
+// A call to a generic function under explicit type arguments
+// (`firstOf[Int](xs, ok(1)?)`, which the parser leaves as an index of the
+// function's name) has no direct signature, so its arguments are checked
+// against none.  Its arguments are still evaluated into temporaries ahead of
+// a `?` or an `await` and, written out of order, in source order (D171), so
+// each is recorded at the parameter type the explicit type arguments give it,
+// as a call to the function's bare name records them (#8190, #8279).
+func recordExplicitTypeArgCall(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  callSpan: in Span,
+  fn: in Expr,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+): Unit {
+  val hazard = callArgsHaveHoistHazard(args)
+  if not hazard and not callArgsHaveNamed(args) and not callArgsHaveElementPlace(args) {
+    return
+  }
+  val inner = match fn.kind { case EIndex(i, _) -> i; case ETypeApp(i, _) -> i; case _ -> return }
+  match inner.kind {
+    case EPath(_) -> ()
+    case _ -> return
+  }
+  val sig = match findDirectSig(sc, tbl, sigs, inner, args.count, argTypes) { case Some(s) -> s; case None -> return }
+  val targs = match explicitCallTypeArgs(sc, tbl, fn, sig) { case Some(ts) -> ts; case None -> return }
+  val noRecv: Option[Type] = None
+  val expected: List[Type] = newList()
+  var ei = 0
+  while ei < args.count {
+    expected.add(TyError)
+    ei = ei + 1
+  }
+  val paramNames: List[String] = newList()
+  for p in sig.params {
+    paramNames.add(p.name)
+  }
+  val srcIdx = argIndicesInParamOrder(args, paramNames)
+  var j = 0
+  while j < srcIdx.count and j < sig.params.count {
+    val ai = srcIdx[j]
+    if ai >= 0 and ai < expected.count {
+      expected[ai] = substituteTyVars(sig.params[j].ty, sig.generics, targs)
+    }
+    j = j + 1
+  }
+  if hazard {
+    recordHoistedCallArgs(sc, tbl, args, argTypes, expected)
+  }
+  recordSigArgOrderSite(sc, tbl, callSpan, fn, args, argTypes, sig, expected, noRecv)
+}
+
+// The types the explicit type arguments of the callee `fn` give `sig`'s type
+// parameters, in order; `None` unless there is one for each and every one
+// names a type here.
+func explicitCallTypeArgs(sc: in Scope, tbl: in SymbolTable, fn: in Expr, sig: in ResolvedSignature): Option[List[Type]] {
+  val given = explicitGenericArgs(fn)
+  if given.count == 0 or given.count != sig.generics.count {
+    return None
+  }
+  val ctx = newGenericContext()
+  gctxPush(ctx, sc.genericNames)
+  val ts: List[Type] = newList()
+  for ta in given {
+    val te = match ta {
+      case TAType(t) -> t
+      case TAValue(ve) -> match typeArgExprAsTypeExpr(ve) { case Some(t) -> t; case None -> return None }
+    }
+    val scratch: List[Diagnostic] = newList()
+    val t = resolveType(tbl, ctx, scratch, te)
+    if scratch.count > 0 or not typeIsClosedOver(t, sc.genericNames) {
+      return None
+    }
+    ts.add(t)
+  }
+  Some(value = ts)
+}
+
+// The type an explicit type argument written as an index expression spells:
+// a type name (`Int`, `Pkg.Rec`), a generic instantiation (`List[Int]`) or a
+// tuple of them.
+func typeArgExprAsTypeExpr(e: in Expr): Option[TypeExpr] {
+  match e.kind {
+    case EPath(p) -> Some(value = TypeExpr(kind = TRef(path = p), span = e.span))
+    case EParen(inner) -> typeArgExprAsTypeExpr(inner)
+    case EIndex(head, indices) -> match head.kind {
+      case EPath(hp) -> {
+        val targs: List[TypeArg] = newList()
+        for ix in indices {
+          match typeArgExprAsTypeExpr(ix) {
+            case Some(t) -> targs.add(TAType(ty = t))
+            case None -> return None
+          }
+        }
+        Some(value = TypeExpr(kind = TGenericApp(head = hp, args = targs), span = e.span))
+      }
+      case _ -> None
+    }
+    case ETuple(elems) -> {
+      val tes: List[TypeExpr] = newList()
+      for el in elems {
+        match typeArgExprAsTypeExpr(el) {
+          case Some(t) -> tes.add(t)
+          case None -> return None
+        }
+      }
+      Some(value = TypeExpr(kind = TTuple(types = tes), span = e.span))
+    }
+    case _ -> None
+  }
 }
 
 // The type arguments a call to the generic `sig` binds, in `sig.generics`
@@ -13418,6 +13727,7 @@ func inferExprCore(
       val explicitValueGenericTy = checkExplicitValueGenericCall(sc, tbl, sigs, diag, fn, args, argTypes, e.span)
       // Try direct-sig lookup first.
       val directSig = findDirectSig(sc, tbl, sigs, fn, args.count, argTypes)
+      recordTypeArgCallee(sc, tbl, sigs, fn, args.count, argTypes)
       // A4: method-space resolution for a member callee — consulted only when
       // neither a direct signature nor a field/builtin member type resolved
       // (a function-typed FIELD keeps winning over a same-named method).
@@ -13640,6 +13950,10 @@ func inferExprCore(
       recordEmptyCollectionCtorSite(tbl, e.span, false)
       recordAsyncCallSite(tbl, e.span, false)
       clearEffectCallSite(tbl, e.span)
+      match directSig {
+        case Some(_) -> ()
+        case None -> recordExplicitTypeArgCall(sc, tbl, sigs, e.span, fn, args, argTypes)
+      }
       match directSig {
         case Some(sig) -> {
           recordGeneratorCallSite(tbl, e.span, sig.isGenerator)

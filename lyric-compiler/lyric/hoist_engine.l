@@ -253,6 +253,11 @@ record HoistState {
   // narrower, file-scoped question with its own doc trail (this
   // comment) that would otherwise be lost inside a generically-named map.
   moduleValNames: Map[String, Bool]
+  // #8279: the callees the type checker resolved as a generic function
+  // under explicit type arguments written as an index of its name
+  // (`SymbolTable.typeArgCalleeSites`, keyed by `recordCopySiteKey` of the
+  // callee's span).  File-scoped and threaded like `moduleValNames`.
+  typeArgCallees: Map[String, Bool]
 }
 
 func hzFresh(cfg: in HoistConfig, st: in HoistState): String {
@@ -509,6 +514,19 @@ func hzMemberChainBaseIsValue(st: in HoistState, e: in Expr): Bool {
 // on (#5629).
 func hzIsNameLikeSafe(st: in HoistState, e: in Expr): Bool {
   hzIsNameLike(e) and not hzNameLikeMutable(st, e)
+}
+
+// A callee expression evaluated before its arguments: its own hazards are
+// hoisted, and it is bound when an argument (the last hazardous one is
+// `last`) holds a hazard, so it is not left on the stack across it.
+func hzStackedCallee(cfg: in HoistConfig, fn: in Expr, last: in Int, acc: in List[Statement], st: in HoistState): Expr {
+  if hzHasHazard(cfg, fn) {
+    hzBind(cfg, hzHoistSpine(cfg, fn, acc, st), acc, st)
+  } else if last >= 0 {
+    hzBind(cfg, fn, acc, st)
+  } else {
+    fn
+  }
 }
 
 // An assignment whose target is a member or index write stacks its receiver
@@ -1050,15 +1068,32 @@ func hzHoistSpine(cfg: in HoistConfig, e: in Expr, acc: in List[Statement], st: 
             fn
           }
         }
-        case _ -> {
-          if hzHasHazard(cfg, fn) {
-            hzBind(cfg, hzHoistSpine(cfg, fn, acc, st), acc, st)
-          } else if last >= 0 {
+        // A type application of a name names its function as a bare name
+        // does, so it is bound only when that name is a reassignable local.
+        // That is the `__lyric_array_of[array[N, T]](...)` intrinsic a JVM
+        // array literal is built with, which is no value at all: bound to a
+        // local, it left the JVM a reference to nothing (#8190).
+        case ETypeApp(inner, _) -> match inner.kind {
+          case EPath(_) -> if last >= 0 and not hzIsNameLikeSafe(st, inner) {
             hzBind(cfg, fn, acc, st)
           } else {
             fn
           }
+          case _ -> hzStackedCallee(cfg, fn, last, acc, st)
         }
+        // The parser leaves explicit type arguments written in source
+        // (`f[Int](...)`) as an index of the function's name.  A callee the
+        // type checker resolved that way (`st.typeArgCallees`) evaluates
+        // nothing, so it stays in the call, where binding it made a value of
+        // a generic function (T0115, J008, N0007; #8279).  Any other index
+        // (`handlers[i](...)`, an imported `pub val` included) is a value,
+        // read before the arguments and bound like any other callee.
+        case EIndex(_, _) -> if st.typeArgCallees.containsKey(recordCopySiteKey(fn.span)) and not hzHasHazard(cfg, fn) {
+          fn
+        } else {
+          hzStackedCallee(cfg, fn, last, acc, st)
+        }
+        case _ -> hzStackedCallee(cfg, fn, last, acc, st)
       }
       val newArgs: List[CallArg] = newList()
       var i = 0
@@ -2154,7 +2189,8 @@ func hzRewriteFunction(
     selfFieldNames = selfFieldNames,
     localNames = fnLocalNames,
     moduleValNames = st.moduleValNames,
-    typeFieldIndex = st.typeFieldIndex
+    typeFieldIndex = st.typeFieldIndex,
+    typeArgCallees = st.typeArgCallees
   )
   FunctionDecl(
     docComments = fn.docComments,
@@ -2198,7 +2234,8 @@ func hzRewriteEntry(
     selfFieldNames = selfFieldNames,
     localNames = edLocalNames,
     moduleValNames = st.moduleValNames,
-    typeFieldIndex = st.typeFieldIndex
+    typeFieldIndex = st.typeFieldIndex,
+    typeArgCallees = st.typeArgCallees
   )
   EntryDecl(
     docComments = ed.docComments,
@@ -2409,6 +2446,20 @@ func hzRewriteRecord(cfg: in HoistConfig, decl: in RecordDecl, st: in HoistState
 // Public entry point.
 // ─────────────────────────────────────────────────────────────────────────────
 pub func hoistFile(cfg: in HoistConfig, file: in SourceFile, extraRecords: in List[RecordDecl]): SourceFile {
+  val noTypeArgCallees: Map[String, Bool] = newMap()
+  hoistFileWithTypeArgCallees(cfg, file, extraRecords, noTypeArgCallees)
+}
+
+// `hoistFile` given the callees the type checker resolved as functions under
+// explicit type arguments (`SymbolTable.typeArgCalleeSites`, #8279): the
+// hoist leaves those in their calls.  Without them every indexed callee is
+// read as a value and bound before the arguments.
+pub func hoistFileWithTypeArgCallees(
+  cfg: in HoistConfig,
+  file: in SourceFile,
+  extraRecords: in List[RecordDecl],
+  typeArgCallees: in Map[String, Bool],
+): SourceFile {
   var any = false
   var i = 0
   while i < file.items.count {
@@ -2435,7 +2486,8 @@ pub func hoistFile(cfg: in HoistConfig, file: in SourceFile, extraRecords: in Li
     selfFieldNames = newMap(),
     localNames = newMap(),
     moduleValNames = hzModuleValNames(file),
-    typeFieldIndex = hzBuildTypeFieldIndex(file, extraRecords)
+    typeFieldIndex = hzBuildTypeFieldIndex(file, extraRecords),
+    typeArgCallees = typeArgCallees
   )
   val newItems: List[Item] = newList()
   var j = 0

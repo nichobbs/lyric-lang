@@ -315,6 +315,14 @@ pub record SymbolTable {
   /// Span keys of call callees, whose function reference is a call rather
   /// than a value and is never desugared.
   funcRefCallees: Map[String, Bool]
+  /// Callees of the form `f[A, B]` (an index of a name, as the parser leaves
+  /// explicit type arguments written in source) that name a generic
+  /// function under type arguments, keyed by `recordCopySiteKey` of the
+  /// callee's span (#8279).  The `?` and `await` hoists leave such a callee
+  /// in its call: it evaluates nothing.  Any other indexed callee
+  /// (`handlers[i](x)`, including an imported `pub val`) is a value, read
+  /// before the arguments.
+  typeArgCalleeSites: Map[String, Bool]
   /// Implicit conversions made explicit after the check, keyed like
   /// `recordCopySites` (see `Lyric.Parser.ArgConversionSite`): widenings
   /// the backends cannot see, and unsigned operands whose lowering depends
@@ -703,6 +711,7 @@ pub func newSymbolTable(): SymbolTable {
     invariantCtorSites = newMap(),
     funcRefSites = newMap(),
     funcRefCallees = newMap(),
+    typeArgCalleeSites = newMap(),
     argConversionSites = newMap(),
     callResultTypes = newMap(),
     localBindingTypeSites = newMap(),

@@ -134,6 +134,7 @@ for t in \
   lyric-compiler/lyric/propagate_ctor_operand_self_test.l \
   lyric-compiler/lyric/propagate_ctor_operand_try_self_test.l \
   lyric-compiler/lyric/protected_byref_self_test.l \
+  lyric-compiler/lyric/hoisted_literal_shape_self_test.l \
   lyric-compiler/lyric/inout_array_element_try_self_test.l \
   lyric-compiler/lyric/compiler_bugs_3502_3505_3547_self_test.l \
   lyric-compiler/lyric/method_closure_var_capture_self_test.l \
@@ -316,6 +317,15 @@ if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
   echo "=== scripts/ci/multi-file-package-merge-e2e.sh ==="
   LYRIC_BIN="$lyric_bin" bash scripts/ci/multi-file-package-merge-e2e.sh dotnet jvm
   ran="$ran multi-file-package-merge-e2e"
+fi
+# #8279: an indexed callee beside `?` and `await` named from another package
+# (a `pub val` list of functions, and a generic function under explicit type
+# arguments), both targets (Java 21, as above).
+idx=$((idx + 1))
+if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
+  echo "=== scripts/ci/hoisted-callee-cross-package-e2e.sh ==="
+  LYRIC_BIN="$lyric_bin" bash scripts/ci/hoisted-callee-cross-package-e2e.sh dotnet jvm
+  ran="$ran hoisted-callee-cross-package-e2e"
 fi
 if [[ -z "$ran" ]]; then
   echo "::error::shard ${SHARD_K}/${SHARD_N} selected no files" >&2

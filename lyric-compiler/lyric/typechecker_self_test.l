@@ -3895,6 +3895,102 @@ test "a `?` operand built from context records its type (#8181)" {
   assertEqual(recordedOperandType(callCr, callSrc, "g()?"), "", "a call operand is not recorded")
 }
 
+// #8190: a literal bound to a temporary ahead of a `?` is recorded at the
+// shape its position gives it (an array, a widened slice, a tuple holding an
+// array, a branch whose value is one), whatever its element type; an operand
+// that is no such literal is left to its own type.  A tuple's elements are
+// bound one by one, so its annotation is the position of the first two.
+test "a literal its position shapes records that shape ahead of a `?` (#8190)" {
+  val monads = "union Result[T, E] { case Ok(value: T); case Err(error: E) }\n"
+  val defs = "package P\n" + monads + "func g(): Result[Int, String] { Ok(value = 1) }\n" +
+    "func arr(xs: in array[2, Int], v: in Int): Int { xs[0] + v }\n" +
+    "func mk(): array[2, Int] { [1, 2] }\n"
+  val src = defs + "func f(c: in Bool): Result[Int, String] {\n" + "  val a = arr([7, 8], g()?)\n" +
+    "  val b: (slice[Long], Int) = ([3, 4], g()?)\n" +
+    "  val d: ((array[2, Int], Int), Int) = (([5, 6], 9), g()?)\n" +
+    "  val e = arr(if c { [1, 1] } else { [2, 2] }, g()?)\n" +
+    "  val h = arr(mk(), g()?)\n" +
+    "  Ok(value = a + e + h)\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "clean (" + diagCodesOf(cr) + ")")
+  assertEqual(recordedOperandType(cr, src, "[7, 8]"), "array[2, Int]", "array literal")
+  assertEqual(recordedOperandType(cr, src, "[3, 4]"), "slice[Long]", "widened slice literal")
+  assertEqual(recordedOperandType(cr, src, "([5, 6], 9)"), "(array[2, Int], Int)", "tuple holding an array literal")
+  assertEqual(recordedOperandType(cr, src, "if c"), "array[2, Int]", "if whose value is an array literal")
+  assertEqual(recordedOperandType(cr, src, "mk()"), "", "a call operand is not recorded")
+
+  // An element of the enclosing function's type parameter (`array[2, T]`).
+  val genSrc = defs + "func first[T](xs: in array[2, T], v: in Int): T { xs[v] }\n" +
+    "func h[T](x: in T, y: in T): Result[T, String] {\n" +
+    "  val p: (array[2, T], Int) = ([x, y], g()?)\n" +
+    "  val q = first([y, x], g()?)\n" +
+    "  Ok(value = q)\n}\n"
+  val genCr = parseCheck(genSrc)
+  assertEqualInt(diagCount(genCr), 0, "generic: clean (" + diagCodesOf(genCr) + ")")
+  assertEqual(recordedOperandType(genCr, genSrc, "[x, y]"), "array[2, T]", "tuple element of array[2, T]")
+  assertEqual(recordedOperandType(genCr, genSrc, "[y, x]"), "array[2, T]", "argument of a generic callee")
+
+  // Explicit type arguments give the parameter its element type (#8279).
+  val taSrc = defs + "func first[T](xs: in array[2, T], v: in Int): T { xs[v] }\n" +
+    "func k(): Result[Long, String] {\n" +
+    "  val q = first[Long]([7, 8], g()?)\n" +
+    "  Ok(value = q)\n}\n"
+  val taCr = parseCheck(taSrc)
+  assertEqualInt(diagCount(taCr), 0, "explicit type arguments: clean (" + diagCodesOf(taCr) + ")")
+  assertEqual(recordedOperandType(taCr, taSrc, "[7, 8]"), "array[2, Long]", "explicit type argument")
+  assertEqualInt(taCr.symbols.typeArgCalleeSites.count, 1, "the callee under type arguments is recorded")
+
+  // An index of a value is not a type application, whether the value is a
+  // parameter or a module-level `val`.
+  val ixSrc = defs + "func inc(x: in Int): Int { x + 1 }\n" + "val table: array[2, (Int) -> Int] = [inc, inc]\n" +
+    "func viaParam(fs: in array[2, (Int) -> Int]): Result[Int, String] {\n" +
+    "  Ok(value = fs[0](g()?))\n}\n" +
+    "func viaVal(): Result[Int, String] {\n" +
+    "  Ok(value = table[1](g()?))\n}\n"
+  val ixCr = parseCheck(ixSrc)
+  assertEqualInt(diagCount(ixCr), 0, "indexed values: clean (" + diagCodesOf(ixCr) + ")")
+  assertEqualInt(ixCr.symbols.typeArgCalleeSites.count, 0, "an indexed value is not recorded")
+
+  // The callee's name resolves as written: a `val` of a package the file
+  // does not import does not hide the file's own generic function, and an
+  // imported `val` is a value.
+  val lib2 = parse("package Lib2\npub val pick: Int = 1\n")
+  val lib = parse(
+    "package Lib\npub func inc(x: in Int): Int { x + 1 }\npub val fns: array[2, (Int) -> Int] = [inc, inc]\n"
+  )
+  val pkgs: List[ImportedPackage] = newList()
+  pkgs.add(
+    ImportedPackage(
+      name = "Lib2",
+      items = lib2.file.items,
+      imports = collectImportNames(lib2.file.imports),
+      wholeImports = collectWholeImportNames(lib2.file.imports)
+    )
+  )
+  pkgs.add(
+    ImportedPackage(
+      name = "Lib",
+      items = lib.file.items,
+      imports = collectImportNames(lib.file.imports),
+      wholeImports = collectWholeImportNames(lib.file.imports)
+    )
+  )
+  val ownSrc = "package App\n" + monads + "func g(): Result[Int, String] { Ok(value = 1) }\n" +
+    "func pick[T](xs: in array[2, T], v: in Int): T { xs[v] }\n" +
+    "func k(): Result[Int, String] {\n" +
+    "  val q = pick[Int]([7, 8], g()?)\n" +
+    "  Ok(value = 0)\n}\n"
+  val ownCr = checkWithImportedPackages(parse(ownSrc).file, pkgs)
+  assertEqualInt(diagCount(ownCr), 0, "own generic beside an unimported val: clean (" + diagCodesOf(ownCr) + ")")
+  assertEqualInt(ownCr.symbols.typeArgCalleeSites.count, 1, "an unimported package's val does not hide the function")
+  val impSrc = "package App\nimport Lib\n" + monads + "func g(): Result[Int, String] { Ok(value = 1) }\n" +
+    "func k(): Result[Int, String] {\n" +
+    "  Ok(value = fns[1](g()?))\n}\n"
+  val impCr = checkWithImportedPackages(parse(impSrc).file, pkgs)
+  assertEqualInt(diagCount(impCr), 0, "imported val: clean (" + diagCodesOf(impCr) + ")")
+  assertEqualInt(impCr.symbols.typeArgCalleeSites.count, 0, "an imported val is a value")
+}
+
 // #8181: an `if`/`match` operand whose first branch fixes no success type
 // takes it from the later branch; an operand that fixes none takes the type
 // of the position consuming it.

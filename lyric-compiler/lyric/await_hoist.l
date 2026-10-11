@@ -152,3 +152,13 @@ func awaitHoistConfig(): HoistConfig {
 pub func hoistAwaitsFile(file: in SourceFile, extraRecords: in List[RecordDecl]): SourceFile {
   hoistFile(awaitHoistConfig(), file, extraRecords)
 }
+
+// `hoistAwaitsFile` that leaves the callees the type checker resolved as
+// functions under explicit type arguments in their calls (#8279).
+pub func hoistAwaitsFileWithTypeArgCallees(
+  file: in SourceFile,
+  extraRecords: in List[RecordDecl],
+  typeArgCallees: in Map[String, Bool],
+): SourceFile {
+  hoistFileWithTypeArgCallees(awaitHoistConfig(), file, extraRecords, typeArgCallees)
+}
