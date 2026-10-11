@@ -10258,6 +10258,26 @@ func typeExprForOpenBinding(tbl: in SymbolTable, t: in Type, sp: in Span, typePa
       case Some(te) -> Some(value = TypeExpr(kind = TSlice(element = te), span = sp))
       case None -> None
     }
+    // An array of a type parameter (`array[2, T]`, #8190): spelled as
+    // `typeExprForRef` spells a closed one, its length a literal or the
+    // value generic parameter that is its length (D169).
+    case TyArray(sz, e, sv) -> match typeExprForOpenBinding(tbl, e, sp, typeParams) {
+      case Some(te) -> match sz {
+        case Some(n) -> {
+          val lenLit = mkExpr(ELiteral(lit = LInt(value = n.toLong(), suffix = I32, raw = "")), sp)
+          Some(value = TypeExpr(kind = TArray(size = TAValue(expr = lenLit), element = te), span = sp))
+        }
+        case None -> if sv.length > 0 {
+          val nsegs: List[String] = newList()
+          nsegs.add(sv)
+          val lenTe = TypeExpr(kind = TRef(path = refTypePath(nsegs, sp)), span = sp)
+          Some(value = TypeExpr(kind = TArray(size = TAType(ty = lenTe), element = te), span = sp))
+        } else {
+          None
+        }
+      }
+      case None -> None
+    }
     case TyNullable(inner) -> match typeExprForOpenBinding(tbl, inner, sp, typeParams) {
       case Some(te) -> Some(value = TypeExpr(kind = TNullable(inner = te), span = sp))
       case None -> None
@@ -11377,14 +11397,15 @@ func recordHoistOperandType(sc: in Scope, tbl: in SymbolTable, e: in Expr, own: 
   }
 }
 
-// `recordHoistOperandType` once `e` is known to be bound by the hoist; `t`
-// may name `typeParams`, the enclosing function's type parameters.  An
-// operand whose value is a literal the expected type shapes
-// (`shapedOperandType`) is recorded at that shape whatever its element type:
-// its local, typed from the literal alone, would be built as the slice a
-// bracket literal is on its own and then passed where an array or a list is
-// read (#8171, #8190).  Any other operand is recorded only at a closed
-// generic instantiation, the one type its value alone does not give.
+// `recordHoistOperandType` once `e` is known to be bound by the hoist; the
+// recorded type may name `typeParams`, the enclosing function's type
+// parameters.  An operand whose value is a literal its position shapes
+// (`shapedOperandType`) is recorded at that shape, at any element type
+// including a type parameter (`array[2, T]`): typed from the literal alone,
+// its local would be built as a slice of the elements' own type and then
+// read as an array, a list or a slice of the widened type (#8171, #8190).
+// Any other operand is recorded only at a generic instantiation, the one
+// type its value alone does not give.
 func recordHoistOperandTypeOver(
   tbl: in SymbolTable,
   typeParams: in List[String],
@@ -12168,6 +12189,119 @@ func sigExpectedArgTypes(
     j = j + 1
   }
   expected
+}
+
+// A call to a generic function under explicit type arguments
+// (`firstOf[Int](xs, ok(1)?)`, which the parser leaves as an index of the
+// function's name) has no direct signature, so its arguments are checked
+// against none.  Its arguments are still evaluated into temporaries ahead of
+// a `?` or an `await` and, written out of order, in source order (D171), so
+// each is recorded at the parameter type the explicit type arguments give it,
+// as a call to the function's bare name records them (#8190, #8279).
+func recordExplicitTypeArgCall(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  callSpan: in Span,
+  fn: in Expr,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+): Unit {
+  val hazard = callArgsHaveHoistHazard(args)
+  if not hazard and not callArgsHaveNamed(args) and not callArgsHaveElementPlace(args) {
+    return
+  }
+  val inner = match fn.kind { case EIndex(i, _) -> i; case ETypeApp(i, _) -> i; case _ -> return }
+  match inner.kind {
+    case EPath(_) -> ()
+    case _ -> return
+  }
+  val sig = match findDirectSig(sc, tbl, sigs, inner, args.count, argTypes) { case Some(s) -> s; case None -> return }
+  val targs = match explicitCallTypeArgs(sc, tbl, fn, sig) { case Some(ts) -> ts; case None -> return }
+  val noRecv: Option[Type] = None
+  val expected: List[Type] = newList()
+  var ei = 0
+  while ei < args.count {
+    expected.add(TyError)
+    ei = ei + 1
+  }
+  val paramNames: List[String] = newList()
+  for p in sig.params {
+    paramNames.add(p.name)
+  }
+  val srcIdx = argIndicesInParamOrder(args, paramNames)
+  var j = 0
+  while j < srcIdx.count and j < sig.params.count {
+    val ai = srcIdx[j]
+    if ai >= 0 and ai < expected.count {
+      expected[ai] = substituteTyVars(sig.params[j].ty, sig.generics, targs)
+    }
+    j = j + 1
+  }
+  if hazard {
+    recordHoistedCallArgs(sc, tbl, args, argTypes, expected)
+  }
+  recordSigArgOrderSite(sc, tbl, callSpan, fn, args, argTypes, sig, expected, noRecv)
+}
+
+// The types the explicit type arguments of the callee `fn` give `sig`'s type
+// parameters, in order; `None` unless there is one for each and every one
+// names a type here.
+func explicitCallTypeArgs(sc: in Scope, tbl: in SymbolTable, fn: in Expr, sig: in ResolvedSignature): Option[List[Type]] {
+  val given = explicitGenericArgs(fn)
+  if given.count == 0 or given.count != sig.generics.count {
+    return None
+  }
+  val ctx = newGenericContext()
+  gctxPush(ctx, sc.genericNames)
+  val ts: List[Type] = newList()
+  for ta in given {
+    val te = match ta {
+      case TAType(t) -> t
+      case TAValue(ve) -> match typeArgExprAsTypeExpr(ve) { case Some(t) -> t; case None -> return None }
+    }
+    val scratch: List[Diagnostic] = newList()
+    val t = resolveType(tbl, ctx, scratch, te)
+    if scratch.count > 0 or not typeIsClosedOver(t, sc.genericNames) {
+      return None
+    }
+    ts.add(t)
+  }
+  Some(value = ts)
+}
+
+// The type an explicit type argument written as an index expression spells:
+// a type name (`Int`, `Pkg.Rec`), a generic instantiation (`List[Int]`) or a
+// tuple of them.
+func typeArgExprAsTypeExpr(e: in Expr): Option[TypeExpr] {
+  match e.kind {
+    case EPath(p) -> Some(value = TypeExpr(kind = TRef(path = p), span = e.span))
+    case EParen(inner) -> typeArgExprAsTypeExpr(inner)
+    case EIndex(head, indices) -> match head.kind {
+      case EPath(hp) -> {
+        val targs: List[TypeArg] = newList()
+        for ix in indices {
+          match typeArgExprAsTypeExpr(ix) {
+            case Some(t) -> targs.add(TAType(ty = t))
+            case None -> return None
+          }
+        }
+        Some(value = TypeExpr(kind = TGenericApp(head = hp, args = targs), span = e.span))
+      }
+      case _ -> None
+    }
+    case ETuple(elems) -> {
+      val tes: List[TypeExpr] = newList()
+      for el in elems {
+        match typeArgExprAsTypeExpr(el) {
+          case Some(t) -> tes.add(t)
+          case None -> return None
+        }
+      }
+      Some(value = TypeExpr(kind = TTuple(types = tes), span = e.span))
+    }
+    case _ -> None
+  }
 }
 
 // The type arguments a call to the generic `sig` binds, in `sig.generics`
@@ -13743,6 +13877,10 @@ func inferExprCore(
       recordEmptyCollectionCtorSite(tbl, e.span, false)
       recordAsyncCallSite(tbl, e.span, false)
       clearEffectCallSite(tbl, e.span)
+      match directSig {
+        case Some(_) -> ()
+        case None -> recordExplicitTypeArgCall(sc, tbl, sigs, e.span, fn, args, argTypes)
+      }
       match directSig {
         case Some(sig) -> {
           recordGeneratorCallSite(tbl, e.span, sig.isGenerator)

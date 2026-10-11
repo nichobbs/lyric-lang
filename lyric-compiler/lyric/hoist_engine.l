@@ -511,6 +511,19 @@ func hzIsNameLikeSafe(st: in HoistState, e: in Expr): Bool {
   hzIsNameLike(e) and not hzNameLikeMutable(st, e)
 }
 
+// Whether the path `p` starts at a value bound in the enclosing function or
+// file: a local or parameter, a field of the implicit receiver, or a
+// module-level `val`/`const`.  Any other name is a function, a type or a
+// package qualifier.
+func hzPathNamesValue(st: in HoistState, p: in ModulePath): Bool {
+  if p.segments.count == 0 {
+    return false
+  }
+  val head = p.segments[0]
+  st.localNames.containsKey(head) or st.mutableNames.containsKey(head) or st.selfFieldNames.containsKey(head) or
+    st.moduleValNames.containsKey(head)
+}
+
 // A callee expression evaluated before its arguments: its own hazards are
 // hoisted, and it is bound when an argument (the last hazardous one is
 // `last`) holds a hazard, so it is not left on the stack across it.
@@ -1063,15 +1076,30 @@ func hzHoistSpine(cfg: in HoistConfig, e: in Expr, acc: in List[Statement], st: 
             fn
           }
         }
-        // A type application of a name (`f[Int](...)`, and the
-        // `__lyric_array_of[array[N, T]](...)` intrinsic a JVM array literal
-        // is built with) names its function as a bare name does, so it is
-        // bound only when that name is a reassignable local.  The intrinsic
-        // is no value at all: bound to a local, it left the JVM a reference
-        // to nothing (#8190).
+        // A type application of a name names its function as a bare name
+        // does, so it is bound only when that name is a reassignable local.
+        // That is the `__lyric_array_of[array[N, T]](...)` intrinsic a JVM
+        // array literal is built with, which is no value at all: bound to a
+        // local, it left the JVM a reference to nothing (#8190).
         case ETypeApp(inner, _) -> match inner.kind {
           case EPath(_) -> if last >= 0 and not hzIsNameLikeSafe(st, inner) {
             hzBind(cfg, fn, acc, st)
+          } else {
+            fn
+          }
+          case _ -> hzStackedCallee(cfg, fn, last, acc, st)
+        }
+        // The parser leaves explicit type arguments written in source
+        // (`f[Int](...)`) as an index of the function's name.  An index of a
+        // name that binds no value here (`hzPathNamesValue`) can only be
+        // that, as the type checker reads it (`calleeIsFuncValue`): nothing
+        // is evaluated, so it stays in the call, where binding it made a
+        // value of a generic function (T0115, J008, N0007; #8279).  An index
+        // of a value (`handlers[i](...)`) is evaluated before the arguments
+        // and is bound like any other callee.
+        case EIndex(recv, _) -> match recv.kind {
+          case EPath(p) -> if hzPathNamesValue(st, p) or hzHasHazard(cfg, fn) {
+            hzStackedCallee(cfg, fn, last, acc, st)
           } else {
             fn
           }

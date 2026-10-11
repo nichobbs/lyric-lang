@@ -3918,6 +3918,26 @@ test "a literal its position shapes records that shape ahead of a `?` (#8190)" {
   assertEqual(recordedOperandType(cr, src, "([5, 6], 9)"), "(array[2, Int], Int)", "tuple holding an array literal")
   assertEqual(recordedOperandType(cr, src, "if c"), "array[2, Int]", "if whose value is an array literal")
   assertEqual(recordedOperandType(cr, src, "mk()"), "", "a call operand is not recorded")
+
+  // An element of the enclosing function's type parameter (`array[2, T]`).
+  val genSrc = defs + "func first[T](xs: in array[2, T], v: in Int): T { xs[v] }\n" +
+    "func h[T](x: in T, y: in T): Result[T, String] {\n" +
+    "  val p: (array[2, T], Int) = ([x, y], g()?)\n" +
+    "  val q = first([y, x], g()?)\n" +
+    "  Ok(value = q)\n}\n"
+  val genCr = parseCheck(genSrc)
+  assertEqualInt(diagCount(genCr), 0, "generic: clean (" + diagCodesOf(genCr) + ")")
+  assertEqual(recordedOperandType(genCr, genSrc, "[x, y]"), "array[2, T]", "tuple element of array[2, T]")
+  assertEqual(recordedOperandType(genCr, genSrc, "[y, x]"), "array[2, T]", "argument of a generic callee")
+
+  // Explicit type arguments give the parameter its element type (#8279).
+  val taSrc = defs + "func first[T](xs: in array[2, T], v: in Int): T { xs[v] }\n" +
+    "func k(): Result[Long, String] {\n" +
+    "  val q = first[Long]([7, 8], g()?)\n" +
+    "  Ok(value = q)\n}\n"
+  val taCr = parseCheck(taSrc)
+  assertEqualInt(diagCount(taCr), 0, "explicit type arguments: clean (" + diagCodesOf(taCr) + ")")
+  assertEqual(recordedOperandType(taCr, taSrc, "[7, 8]"), "array[2, Long]", "explicit type argument")
 }
 
 // #8181: an `if`/`match` operand whose first branch fixes no success type

@@ -12,9 +12,10 @@
 //! The cases cover array, list and widened-slice literals before a `?` and
 //! before an `await`, named arguments in and out of order with and without a
 //! `?`, a by-reference variable and array element beside them (D171, D179), a
-//! method call, a record's and a union case's fields, a generic callee, nested
-//! literals, a tuple holding one, an `if` and a `match` whose value is one,
-//! and the failing-`?` path.
+//! method call, a record's and a union case's fields, a generic callee (with
+//! explicit type arguments, and inside a generic function), an indexed
+//! callee, nested literals, a tuple holding one, an `if` and a `match` whose
+//! value is one, and the failing-`?` path.
 //!
 //!   lyric test --target dotnet lyric-compiler/lyric/hoisted_literal_shape_self_test.l
 //!   lyric test --target jvm    lyric-compiler/lyric/hoisted_literal_shape_self_test.l
@@ -212,6 +213,49 @@ func genericBeforeTry(): Result[Int, String] {
   Ok(value = firstOf([7, 8], ok(1)?))
 }
 
+// The element type is the enclosing function's type parameter.
+func firstGeneric[T](x: in T, y: in T): Result[T, String] {
+  Ok(value = firstOf([x, y], ok(1)?))
+}
+
+func pickGeneric[T](x: in T, y: in T): Result[T, String] {
+  val p: (array[2, T], Int) = ([x, y], ok(1)?)
+  val (xs, i) = p
+  Ok(value = xs[i])
+}
+
+func id2[T](a: in T, b: in Int): T {
+  a
+}
+
+// Explicit type arguments name the function: the hoist leaves the callee in
+// the call (#8279).
+func typeArgsBeforeTry(): Result[Int, String] {
+  Ok(value = firstOf[Int]([7, 8], ok(1)?) + id2[Int](5, ok(1)?) * 10)
+}
+
+// The explicit type argument, not the elements, gives the literal its
+// element type.
+func typeArgWidensBeforeTry(): Result[Long, String] {
+  Ok(value = firstOf[Long]([7, 8], ok(1)?))
+}
+
+func tagged[T](a: in T, b: in Int): Int {
+  b * 10
+}
+
+// Named arguments of a call under explicit type arguments run in source
+// order (D171).
+func typeArgsNamedOutOfOrder(): Result[Int, String] {
+  Ok(value = tagged[Int](b = ok(note("b", 3))?, a = note("a", 1)))
+}
+
+// An index of a value is evaluated before the arguments, `?` or not.
+func indexedClosureBeforeTry(): Result[Int, String] {
+  val fs: List[(Int) -> Int] = [{ x: Int -> x + 10 }, { x: Int -> x + 20 }]
+  Ok(value = fs[note("i", 1)](ok(2)?))
+}
+
 func genericStringBeforeTry(): Result[String, String] {
   Ok(value = firstOf(["a", "b"], ok(0)?))
 }
@@ -297,6 +341,14 @@ async func genericBeforeAwait(): Int {
   firstOf([7, 8], await later(1))
 }
 
+async func typeArgsBeforeAwait(): Int {
+  firstOf[Int]([7, 8], await later(1)) + id2[Int](5, await later(1)) * 10
+}
+
+async func firstGenericAwait[T](x: in T, y: in T): T {
+  firstOf([x, y], await later(1))
+}
+
 func expectOk(r: in Result[Int, String], want: in Int, label: in String): Unit {
   match r {
     case Ok(v) -> assertEqualInt(v, want, label)
@@ -352,6 +404,16 @@ test "constructor fields holding literals before a ?" {
 
 test "a generic callee whose parameter is array[2, T]" {
   expectOk(genericBeforeTry(), 8, "Int")
+  expectOk(firstGeneric(3, 4), 4, "inside a generic function")
+  expectOk(pickGeneric(3, 4), 4, "array[2, T] tuple element")
+  match pickGeneric("a", "b") {
+    case Ok(v) -> assertEqual(v, "b", "array[2, T] at String")
+    case Err(e) -> assertTrue(false, "array[2, T] at String: " + e)
+  }
+  match firstGeneric("a", "b") {
+    case Ok(v) -> assertEqual(v, "b", "generic function at String")
+    case Err(e) -> assertTrue(false, "generic function at String: " + e)
+  }
   match genericStringBeforeTry() {
     case Ok(v) -> assertEqual(v, "a", "String")
     case Err(e) -> assertTrue(false, "String: " + e)
@@ -389,6 +451,20 @@ test "an array element passed by reference beside a literal and a ?" {
   assertEqual(since(start), "i,xs,ok", "source order")
 }
 
+test "explicit type arguments and an indexed callee before a ?" {
+  expectOk(typeArgsBeforeTry(), 58, "explicit type arguments")
+  match typeArgWidensBeforeTry() {
+    case Ok(v) -> assertTrue(v == 8i64, "explicit Long type argument")
+    case Err(e) -> assertTrue(false, "explicit Long type argument: " + e)
+  }
+  val named = trace.count
+  expectOk(typeArgsNamedOutOfOrder(), 30, "named, out of order")
+  assertEqual(since(named), "b,ok,a", "source order under explicit type arguments")
+  val start = trace.count
+  expectOk(indexedClosureBeforeTry(), 22, "indexed closure")
+  assertEqual(since(start), "i,ok", "the index runs first")
+}
+
 test "the literal runs before a failing ? and the call does not" {
   val start = trace.count
   match arrayBeforeFailingTry() {
@@ -411,4 +487,6 @@ test "literals before an await argument" {
   assertEqualInt(await listOfArraysBeforeAwait(), 5046, "List of arrays")
   assertEqualInt(await methodBeforeAwait(Scale(k = 2)), 356, "method")
   assertEqualInt(await genericBeforeAwait(), 8, "generic")
+  assertEqualInt(await typeArgsBeforeAwait(), 58, "explicit type arguments")
+  assertEqualInt(await firstGenericAwait(3, 4), 4, "inside a generic function")
 }
