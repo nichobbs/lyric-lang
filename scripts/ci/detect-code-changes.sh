@@ -247,7 +247,7 @@ fi
 # has_core_changes above: any ambiguity resolves to "true".
 MSIL_ONLY_PATTERN='lyric-compiler/msil/'
 JVM_ONLY_PATTERN='lyric-compiler/jvm/|lyric-stdlib/std/_kernel_jvm/'
-NATIVE_ONLY_PATTERN='lyric-compiler/lyric/llvm_[^/]*\.l$|lyric-stdlib/std/_kernel_native/|lyric-rt/'
+NATIVE_ONLY_PATTERN='lyric-compiler/lyric/llvm_[^/]*\.l$|lyric-stdlib/std/_kernel_native/|lyric-stdlib/std/_kernel_wasm_module/|lyric-rt/'
 BACKEND_ONLY_PATTERN="${MSIL_ONLY_PATTERN}|${JVM_ONLY_PATTERN}|${NATIVE_ONLY_PATTERN}"
 
 backend_files=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" 2>/dev/null) && backend_ok=1 || backend_ok=0

@@ -1339,7 +1339,7 @@ func loadStdlibPayloads(stdlibDir: in String, entrySource: in String): Discovere
     // .NET target: drop the JVM-only and native-only kernel files (each
     // declares the same `Std.*Host` package as its `_kernel/` twin and
     // would otherwise merge into it, colliding on the host* names).
-    if Str.contains(path, "_kernel_jvm") or Str.contains(path, "_kernel_native") {
+    if Str.contains(path, "_kernel_jvm") or Str.contains(path, "_kernel_native") or Str.contains(path, "_kernel_wasm_module") {
       continue
     }
     val base = Path.basename(path)

@@ -42,7 +42,7 @@ SCRIPT="$WORKDIR/scripts/ci/detect-code-changes.sh"
 mkdir -p "$WORKDIR/lyric-compiler/msil" "$WORKDIR/lyric-compiler/jvm" \
   "$WORKDIR/lyric-compiler/lyric" "$WORKDIR/lyric-stdlib/std/_kernel" \
   "$WORKDIR/lyric-stdlib/std/_kernel_jvm" "$WORKDIR/lyric-stdlib/std/_kernel_native" \
-  "$WORKDIR/lyric-stdlib/std/_kernel_native_bogus" "$WORKDIR/lyric-rt" \
+  "$WORKDIR/lyric-stdlib/std/_kernel_wasm_module" "$WORKDIR/lyric-stdlib/std/_kernel_native_bogus" "$WORKDIR/lyric-rt" \
   "$WORKDIR/lyric-web" "$WORKDIR/lyric-storage" "$WORKDIR/lyric-resilience" \
   "$WORKDIR/lyric-auth"
 echo base >"$WORKDIR/README.md"
@@ -63,6 +63,7 @@ CASES=(
   "kernel-asymmetric-basename-fallback|lyric-stdlib/std/_kernel/verifier_env_host.l|t,t,t,t"
   "native-only|lyric-compiler/lyric/llvm_foo.l|f,f,t,t"
   "native-kernel|lyric-stdlib/std/_kernel_native/foo.l|f,f,t,t"
+  "native-wasm-module-kernel|lyric-stdlib/std/_kernel_wasm_module/foo.l|f,f,t,t"
   "native-rt|lyric-rt/foo.c|f,f,t,t"
   "near-miss-kernel-native-bogus|lyric-stdlib/std/_kernel_native_bogus/foo.l|t,t,t,t"
   "jvm-ecosystem-web|lyric-web/foo.l|f,t,f,f"

@@ -907,7 +907,7 @@ func findCompiledLibDir(): String {
 // bundle, so editing one must NOT flag the bundle stale on a `--target dotnet`
 // run (which would break the guard's "never fires spuriously" invariant).
 pub func isDotnetStdlibSource(path: in String): Bool {
-  if Str.contains(path, "_kernel_jvm") or Str.contains(path, "_kernel_native") {
+  if Str.contains(path, "_kernel_jvm") or Str.contains(path, "_kernel_native") or Str.contains(path, "_kernel_wasm_module") {
     return false
   }
   // Any `jvm*.l` file in the shared `_kernel/` dir (today `jvm.l` /
