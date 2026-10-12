@@ -90,6 +90,26 @@ everywhere it is read:
   tuple element, `toList()`'s copy, and a function-typed argument or field.
   Invoking an `object` whose static type returns `Unit` narrows it to the
   `Action` of the call's arity (`invokeLoadedFuncValueMsil`).
+- **Every lambda whose checked type returns `Unit` is built as an `Action`.**
+  This is decided by the lambda's own type, not by where it goes.
+  - The type checker records the result of each lambda
+    (`SymbolTable.lambdaUnitSites`).
+  - `Lyric.Pipeline.endUnitLambdasInUnit` ends the body of each lambda whose
+    result is `Unit` in `()` before mono and before the package's generics
+    are exported.
+  - A specialisation of another package's generic is checked in that
+    package's scope (`foreignUnitLambdaSites`), and its lambdas are marked
+    the same way.
+  - The MSIL backend builds a lambda that ends in `()` as an `Action`.
+    Before this, three kinds of value were built as a `Func`, and reading or
+    calling them as the `Action` their type is threw `InvalidCastException`:
+    an unannotated `val start = { n: Int -> withIt(...) }` in a generic
+    `make[T]` that another package specialises (lyric-ui's `instance`); a
+    `Unit` lambda given to a generic record's `T` field; and an unannotated
+    lambda ending in `xs.add(x)`.
+  - A lambda whose destination already chose its delegate keeps that
+    delegate: an `@externTarget` parameter (`lambdaExternDelegateRetType`) or
+    an erased-generic `Func` parameter.
 - **Type checker.**  `List.add(item)`, `List.add(index, item)`,
   `List.removeAt(index)` and `Map.add(key, value)` now have the result type
   `Unit`; before, the result was unknown.  As a result, a lambda that ends in
@@ -122,6 +142,12 @@ everywhere it is read:
 
   It does not run on native, because the native codegen does not yet accept a
   `Unit`-returning function type as a type argument (N0007).
+- `scripts/ci/unit-lambda-cross-package-e2e.sh` (dotnet, JVM) covers a sibling
+  package's generic `make[T]` that stores unannotated `Unit` lambdas in a
+  record's function fields, and the same against the library built on its own
+  (a restored dependency).  It also covers a `Unit` lambda in a generic
+  record's `T` field.  `slice_func_unit_elem_self_test.l` has the
+  single-package cases.
 - `slice_func_tolist_dotnet_self_test.l` (dotnet only): `slice.toList()` of
   function elements.  The JVM backend does not lower `toList()` on a slice.
 - `scripts/ci/inout-receiver-e2e.sh` now also covers a record-body method with

@@ -12977,6 +12977,16 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
       if fctx.actionLambdaSpans.containsKey(lambdaSpanKeyMsil(expr.span)) {
         seedNextLambdaVoidRetMsil(cctx, fctx)
       }
+      // A lambda whose own checked type returns `Unit` ends in `()`
+      // (`Lyric.Pipeline`'s `endUnitLambdasInUnit`) and is built as an
+      // `Action` unless its destination already chose its delegate (an
+      // `@externTarget` or erased-generic `Func` parameter keeps the `Func`
+      // its callee invokes, `lambdaReturnsVoidMsil`), so a value of a
+      // `Unit`-returning function type is an `Action` wherever it is made
+      // (#8299).
+      if lambdaBodyEndsInUnitMsil(lbody) {
+        seedNextLambdaVoidRetMsil(cctx, fctx)
+      }
       // A lambda in a member of a type with type parameters is hosted by a
       // closure class generic over them (#8284): `liftLambdasMsil` marked it,
       // and the class is instantiated here at this member's own `!0..!n`.
@@ -34031,6 +34041,21 @@ func seedLambdaLiteralVoidRetMsil(cctx: in CodegenCtx, fctx: in FuncCtx, expr: i
     if arity >= 0 {
       markActionSlotLambdasMsil(fctx, expr, arity)
     }
+  }
+}
+
+// True when a lambda body's last statement is the `()` literal.
+func lambdaBodyEndsInUnitMsil(body: in Block): Bool {
+  val n = body.statements.count
+  if n == 0 {
+    return false
+  }
+  match body.statements[n - 1].kind {
+    case SExpr(tail) -> match tail.kind {
+      case ELiteral(lit) -> match lit { case LUnit -> true; case _ -> false }
+      case _ -> false
+    }
+    case _ -> false
   }
 }
 

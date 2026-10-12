@@ -12,7 +12,10 @@
 //! list element, an annotated `val`), the elements of a slice's `.append`/
 //! `.concat`/`.slice` (which used to lose the element type and invoke an
 //! `Action` as a `Func`, `InvalidCastException`), and a destructured tuple
-//! element.  A lambda ending in `xs.add(x)` is a `(T) -> Unit` like any other
+//! element.  Every lambda whose checked type returns `Unit` ends in `()` before
+//! codegen, so it is built as an `Action` wherever it is made: unannotated, in
+//! a generic's body, or given to a generic record's `T` field.  A lambda
+//! ending in `xs.add(x)` is a `(T) -> Unit` like any other
 //! (the type checker left its result unknown before).  `.toList()` is covered
 //! by `slice_func_tolist_dotnet_self_test.l`.
 //!
@@ -69,6 +72,33 @@ func joined(log: in List[String]): String {
     acc = acc + s + " "
   }
   acc
+}
+
+record Holder[T] {
+  v: T
+}
+
+record Getter[T] {
+  v: T
+
+  func get(self: in Getter[T]): T {
+    self.v
+  }
+}
+
+record Hooks {
+  start: (Int) -> Unit
+  close: () -> Unit
+}
+
+func runIt(f: in () -> Unit): Unit {
+  f()
+}
+
+func makeHooks[T](x: in T, log: in List[String]): Hooks {
+  val start = { n: Int -> runIt({ -> log.add("s") }); log.add(toString(n)) }
+  val close = { -> log.add("c") }
+  Hooks(start = start, close = close)
 }
 
 func unitListCall(fs: in List[(Int) -> Unit], x: in Int): Unit {
@@ -157,4 +187,23 @@ test "a destructured tuple's Unit-function element" {
     g(k)
   }
   assertEqual(joined(log), "u2 u1 u2 ", "tuple")
+}
+
+test "a Unit lambda given to a generic record's T field" {
+  val log: List[String] = newList()
+  val gb = Holder(v = { a: Int -> log.add("h" + toString(a)) })
+  val f = gb.v
+  f(1)
+  val ub = Getter(v = { a: Int -> log.add("g" + toString(a)) })
+  val g = ub.get()
+  g(2)
+  assertEqual(joined(log), "h1 g2 ", "generic field")
+}
+
+test "unannotated Unit lambdas a generic function stores in Unit-function fields" {
+  val log: List[String] = newList()
+  val h = makeHooks(5, log)
+  h.start(1)
+  h.close()
+  assertEqual(joined(log), "s 1 c ", "generic make")
 }

@@ -14843,7 +14843,9 @@ func inferExprCore(
     // function type's parameter types (docs/59 A2).
     case ELambda(lambdaParams, body) -> {
       val noExpectedRet: Option[Type] = None
-      inferLambda(sc, tbl, sigs, diag, lambdaParams, body, newList(), noExpectedRet)
+      val blt = inferLambda(sc, tbl, sigs, diag, lambdaParams, body, newList(), noExpectedRet)
+      recordLambdaUnitSite(tbl, blt, e.span)
+      blt
     }
     // An `if`/`else` expression takes the unified type of its branches.  An
     // `if` without an `else` produces no value on the false path, so it is
@@ -15135,6 +15137,24 @@ func recordLambdaParamTypes(tbl: in SymbolTable, ps: in List[LambdaParam], lt: i
   match lt {
     case TyFunction(pts, _, _) -> recordLambdaParamTypesOf(tbl, ps, pts, sp)
     case _ -> ()
+  }
+}
+
+// Record whether the lambda at `sp`, checked as `lt`, returns `Unit`
+// (`SymbolTable.lambdaUnitSites`).  A lambda checked more than once keeps
+// `true` only while every check agrees.
+func recordLambdaUnitSite(tbl: in SymbolTable, lt: in Type, sp: in Span): Unit {
+  val isUnit = match unrefine(lt) {
+    case TyFunction(_, ret, _) -> match unrefine(ret) {
+      case TyPrim(pt) -> match pt { case PtUnit -> true; case _ -> false }
+      case _ -> false
+    }
+    case _ -> false
+  }
+  val key = recordCopySiteKey(sp)
+  match mapGet(tbl.lambdaUnitSites, key) {
+    case Some(prev) -> if prev and not isUnit { tbl.lambdaUnitSites.remove(key); tbl.lambdaUnitSites.add(key, false) }
+    case None -> tbl.lambdaUnitSites.add(key, isUnit)
   }
 }
 
@@ -15840,6 +15860,7 @@ func inferExprExpectedCore(
       case TyFunction(eps, eret, _) -> {
         val lt = inferLambda(sc, tbl, sigs, diag, ps, body, eps, Some(value = eret))
         recordLambdaParamTypes(tbl, ps, lt, e.span)
+        recordLambdaUnitSite(tbl, lt, e.span)
         lt
       }
       case _ -> inferExpr(sc, tbl, sigs, diag, e)
