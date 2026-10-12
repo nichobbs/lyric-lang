@@ -632,7 +632,8 @@ func testSummaryHelpers(): Unit {
   results.add(r1)
   results.add(r2)
   val diags: List[Diagnostic] = newList()
-  val summary = ProofSummary(level = VLProofRequired, diagnostics = diags, results = results)
+  val noChecks: List[ProofResult] = newList()
+  val summary = ProofSummary(level = VLProofRequired, diagnostics = diags, results = results, vacuityChecks = noChecks)
   assertEqualInt(summaryTotalCount(summary), 2, "summary-total-2")
   assertEqualInt(summaryDischargedCount(summary), 1, "summary-discharged-1")
   assertTrue(summaryHasFailure(summary), "summary-has-failure")
@@ -2861,10 +2862,10 @@ func vacuousSrc(clause: in String): String {
 // value, would make every proof of the function vacuous: it is reported,
 // V0035 (#8223).
 test "a precondition no argument can meet is reported (#8223)" {
-  assertRefuted(invDecl() + vacuousSrc("inv(0u8) >= 0u8"), "plain-precondition-side")
-  assertRefuted(invDecl() + vacuousSrc("forall (k: Byte) inv(k) >= 0u8"), "quantified-precondition-side")
-  assertRefuted(vacuousSrc("10 / 0 == 0"), "division-in-a-precondition")
-  assertRefuted(
+  assertUnmeetable(invDecl() + vacuousSrc("inv(0u8) >= 0u8"), "plain-precondition-side")
+  assertUnmeetable(invDecl() + vacuousSrc("forall (k: Byte) inv(k) >= 0u8"), "quantified-precondition-side")
+  assertUnmeetable(vacuousSrc("10 / 0 == 0"), "division-in-a-precondition")
+  assertUnmeetable(
     invDecl() +
       "func h(z: in Byte): Byte\n  requires: z == 0u8\n  requires: inv(z) >= 0u8\n  ensures: result == 7u8\n{\n  z\n}\n",
     "contradicted-by-an-earlier-clause"
@@ -2886,12 +2887,12 @@ test "a precondition no argument can meet is reported (#8223)" {
   )
   // The clause as a whole, not only its side conditions: its value, and
   // its side conditions under the facts it brings.
-  assertRefuted(
+  assertUnmeetable(
     invDecl() + "func g(z: in Byte): Int\n  requires: z == 0u8 and forall (k: Byte) where k == z { inv(k) >= 0u8 }\n" +
       "  ensures: result == 42\n{\n  0\n}\n",
     "side-conditions-unmet-where-the-clause-holds"
   )
-  assertRefuted(
+  assertUnmeetable(
     "func h(x: in Byte): Byte\n  requires: x > 5u8 and x < 3u8\n  ensures: result == 7u8\n{\n  x\n}\n",
     "unsatisfiable-precondition"
   )
@@ -2923,6 +2924,8 @@ test "an undecided precondition domain is a warning, not a failure (#8223)" {
   assertTrue(not summaryHasErrorDiag(s), "no error diagnostics")
   assertTrue(not summaryHasCounterexample(s), "no counterexample")
   assertEqualInt(diagCodeCount(s, "V0036"), 1, "one V0036 warning")
+  assertEqualInt(summaryTotalCount(s), 1, "the vacuity check is not counted as an obligation")
+  assertEqualInt(s.vacuityChecks.count, 1, "one vacuity check")
   var postDischarged = false
   for r in s.results {
     match r.goal.kind {
@@ -2938,6 +2941,21 @@ test "an undecided precondition domain is a warning, not a failure (#8223)" {
     }
   }
   assertTrue(postDischarged, "the postcondition is still proved")
+}
+
+// A `requires:` clause no argument can meet: V0035, the proof failing,
+// and the vacuity check kept out of the obligations (#8223).
+func assertUnmeetable(body: in String, label: in String): Unit {
+  val s = provePkg(body)
+  assertTrue(summaryHasDiagCode(s, "V0035"), label + ": V0035 reported")
+  assertTrue(summaryHasErrorDiag(s), label + ": the proof fails")
+  for r in s.results {
+    match r.goal.kind {
+      case GKPreconditionDomain(_) -> assertTrue(false, label + ": a vacuity check counted as an obligation")
+      case _ -> ()
+    }
+  }
+  assertTrue(s.vacuityChecks.count > 0, label + ": vacuity checks kept")
 }
 
 func diagCodeCount(s: in ProofSummary, code: in String): Int {

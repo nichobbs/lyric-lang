@@ -56,7 +56,12 @@ earlier clause cannot be met, only it is reported.  The check guards against vac
 not one of the function's obligations: when the solver cannot decide it (a
 nonlinear clause), the function's goals keep their outcome and the clause gets
 warning V0036, "could not rule out that this precondition can never hold",
-instead of a V0007 error that would fail a proof that passed before.
+instead of a V0007 error that would fail a proof that passed before.  The checks are
+kept apart from the obligations (`ProofSummary.vacuityChecks`): they are not
+counted in `N/M obligations discharged`, listed among the `--json` goals or
+numbered for `--explain`, and show only as V0035 or V0036.  A solver that
+stops at its time limit (z3's `timeout`, cvc5's "interrupted by timeout") now
+reads "reached its 5 s time limit" rather than "returned unexpected output".
 
 `verifier_self_test.l` covers a precondition and a division under `forall` and
 `exists`, in the `where` clause, under nested quantifiers and independent of

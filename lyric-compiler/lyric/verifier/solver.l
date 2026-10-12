@@ -401,6 +401,11 @@ func invokeSolver(binPath: in String, args: in List[String], smtSource: in Strin
   if captured.timedOut {
     return Unknown(reason = pathBaseName(binPath) + " timed out (killed after 10 s)")
   }
+  // Both solvers run under a 5 s limit (`-T:5`, `--tlimit=5000`): z3 prints
+  // `timeout` when it is reached, cvc5 reports being interrupted by it.
+  if solverTimedOut(captured.stdout) or solverTimedOut(captured.stderr) {
+    return Unknown(reason = pathBaseName(binPath) + " reached its 5 s time limit")
+  }
   if captured.stdout.length == 0 {
     val stderrDetail = if captured.stderr != "" { ": " + captured.stderr } else { "" }
     val exitDetail = if captured.exitCode != 0 { " (exit " + intToString(captured.exitCode) + ")" } else { "" }
@@ -420,6 +425,12 @@ func invokeSolver(binPath: in String, args: in List[String], smtSource: in Strin
   } else {
     Unknown(reason = pathBaseName(binPath) + " returned unexpected output: " + firstLine)
   }
+}
+
+// Whether a solver's output says it stopped at its time limit.
+func solverTimedOut(output: in String): Bool {
+  val first = firstNonEmptyLine(output)
+  first == "timeout" or first.contains("interrupted by timeout")
 }
 
 // Prefixes the reason of an `Unknown` outcome whose query the solver

@@ -112,3 +112,11 @@ for fn in callsEveryByte dividesByEveryByte; do
 done
 echo "PASS: quantifier side conditions, refuted"
 expect_proved "quantifier side conditions, guarded" "$lyric_bin" prove "$qs/sound.l"
+
+# A precondition no argument meets is reported, and the check is not counted
+# among the function's obligations.
+rc="$(run "$lyric_bin" prove "$qs/vacuous.l")"
+[ "$rc" -ne 0 ] || fail "unmeetable precondition: expected a non-zero exit"
+grep -q "V0035 error .*precondition of pick can never hold" "$err" || fail "unmeetable precondition: expected V0035"
+grep -q "^1/1 obligations discharged" "$out" || fail "unmeetable precondition: expected the vacuity check left out of the count"
+echo "PASS: unmeetable precondition"

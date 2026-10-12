@@ -27,7 +27,13 @@ pub record ProofResult {
 pub record ProofSummary {
   pub level: VerificationLevel
   pub diagnostics: List[Diagnostic]
+  /// The function's obligations: what `lyric prove` counts and lists.
   pub results: List[ProofResult]
+  /// The checks that each `requires:` clause can be met (#8223).  They guard
+  /// the obligations against vacuity and are not obligations themselves, so
+  /// they are kept apart from `results`; a failed one is reported as V0035,
+  /// an undecided one as V0036.
+  pub vacuityChecks: List[ProofResult]
 }
 
 pub func summaryDischargedCount(s: in ProofSummary): Int {
@@ -470,7 +476,8 @@ pub func proveSourceInScope(source: in String, allowUnverified: in Bool, pkgScop
 
   if parseFatal {
     val results: List[ProofResult] = newList()
-    return ProofSummary(level = VLRuntimeChecked, diagnostics = parseDiags, results = results)
+    val noChecks: List[ProofResult] = newList()
+    return ProofSummary(level = VLRuntimeChecked, diagnostics = parseDiags, results = results, vacuityChecks = noChecks)
   }
 
   // 2. Mode-check (against parsed file — annotations and aspect decls
@@ -489,7 +496,8 @@ pub func proveSourceInScope(source: in String, allowUnverified: in Bool, pkgScop
 
   if not vlIsProofRequired(level) {
     val results: List[ProofResult] = newList()
-    return ProofSummary(level = level, diagnostics = allParseDiags, results = results)
+    val noChecks: List[ProofResult] = newList()
+    return ProofSummary(level = level, diagnostics = allParseDiags, results = results, vacuityChecks = noChecks)
   }
 
   // 4. Aspect weave (#336).  Replaces each matched IFunc with a renamed
@@ -513,7 +521,8 @@ pub func proveSourceInScope(source: in String, allowUnverified: in Bool, pkgScop
   // path's `reportAndAbort(weaveRes.diagnostics)` guard.
   if hasFatalDiag(weaveDiags) {
     val results: List[ProofResult] = newList()
-    return ProofSummary(level = level, diagnostics = allParseDiags, results = results)
+    val noChecks: List[ProofResult] = newList()
+    return ProofSummary(level = level, diagnostics = allParseDiags, results = results, vacuityChecks = noChecks)
   }
 
   // 5. VC generation against the woven file.
@@ -525,13 +534,15 @@ pub func proveSourceInScope(source: in String, allowUnverified: in Bool, pkgScop
     val allDiags: List[Diagnostic] = newList()
     appendDiags(allDiags, allParseDiags)
     appendDiags(allDiags, vcDiags)
-    return ProofSummary(level = level, diagnostics = allDiags, results = results)
+    val noChecks: List[ProofResult] = newList()
+    return ProofSummary(level = level, diagnostics = allDiags, results = results, vacuityChecks = noChecks)
   }
 
   // 5. Discharge each goal.
   // The functions with a `requires:` clause no call can meet (#8223).
   val unmeetable: List[String] = newList()
   val results: List[ProofResult] = newList()
+  val vacuity: List[ProofResult] = newList()
   val resultDiags: List[Diagnostic] = newList()
   var i = 0
   while i < goals.count {
@@ -556,13 +567,14 @@ pub func proveSourceInScope(source: in String, allowUnverified: in Bool, pkgScop
     // discharger nor the solver sees it.  A goal carrying a construct VC
     // generation already reported as V0033 fails the same way, without a
     // second report (#7874).
+    val into = if isDomainGoal(g) { vacuity } else { results }
     if goalIsPoisoned(g) {
-      results.add(ProofResult(goal = g, outcome = Unknown(reason = "not translatable: a construct reported above (V0033)")))
+      into.add(ProofResult(goal = g, outcome = Unknown(reason = "not translatable: a construct reported above (V0033)")))
     } else {
       match reconcileGoalSorts(g) {
         case Ok(rg) -> {
           val outcome = afterUnmeetable(rg, domainOutcome(rg, discharge(rg)), unmeetable)
-          results.add(ProofResult(goal = rg, outcome = outcome))
+          into.add(ProofResult(goal = rg, outcome = outcome))
           match outcomeToDiag(rg, outcome, allowUnverified) {
             case Some(d) -> resultDiags.add(d)
             case None -> {
@@ -570,7 +582,7 @@ pub func proveSourceInScope(source: in String, allowUnverified: in Bool, pkgScop
           }
         }
         case Err(reason) -> {
-          results.add(ProofResult(goal = g, outcome = Unknown(reason = "not translatable: " + reason)))
+          into.add(ProofResult(goal = g, outcome = Unknown(reason = "not translatable: " + reason)))
           // A precondition clause that cannot be translated is a hypothesis
           // of every other goal of its function, which reports it.
           if not isDomainGoal(g) {
@@ -592,7 +604,7 @@ pub func proveSourceInScope(source: in String, allowUnverified: in Bool, pkgScop
   appendDiags(finalDiags, allParseDiags)
   appendDiags(finalDiags, vcDiags)
   appendDiags(finalDiags, resultDiags)
-  ProofSummary(level = level, diagnostics = finalDiags, results = results)
+  ProofSummary(level = level, diagnostics = finalDiags, results = results, vacuityChecks = vacuity)
 }
 
 // Reconcile the integer/bitvector sorts of every hypothesis and the
