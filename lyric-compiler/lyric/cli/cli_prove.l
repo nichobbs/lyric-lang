@@ -106,7 +106,9 @@ func cmdProve(argv: in slice[String]): Int {
         return 1
       }
     } else if arg == "--proof-dir" {
-      if i + 1 < argv.length and argv[i + 1].length > 0 {
+      // A following option is not a directory: `--proof-dir --json` would
+      // otherwise create a directory named `--json`.
+      if i + 1 < argv.length and argv[i + 1].length > 0 and not argv[i + 1].startsWith("-") {
         proofDir = Some(value = argv[i + 1])
         i += 2
       } else {
@@ -327,26 +329,6 @@ func cmdProve(argv: in slice[String]): Int {
   }
   val summary = Verifier.proveSourceInScope(source, allowUnverified, fileScope)
 
-  // `--proof-dir`: each obligation's SMT-LIB query, one file per goal.
-  val smtPaths: List[Option[String]] = match proofDir {
-    case Some(dir) -> match writeProofFiles(dir, summary) {
-      case Ok(paths) -> paths
-      case Err(message) -> {
-        printErr("prove: " + message)
-        return 1
-      }
-    }
-    case None -> {
-      val none: List[Option[String]] = newList()
-      var ni = 0
-      while ni < summary.results.count {
-        none.add(None)
-        ni = ni + 1
-      }
-      none
-    }
-  }
-
   if explain {
     val total = Verifier.summaryTotalCount(summary)
     match explainGoal {
@@ -366,10 +348,44 @@ func cmdProve(argv: in slice[String]): Int {
           printErr("prove --explain: goal " + toString(idx) + " out of range (0.." + toString(total - 1) + ")")
           return 1
         }
+        match proofDir {
+          case Some(dir) -> match writeProofFiles(dir, summary) {
+            case Ok(_) -> {
+            }
+            case Err(message) -> {
+              printErr("prove: " + message)
+              return 1
+            }
+          }
+          case None -> {
+          }
+        }
         val r = summary.results[idx]
         Console.print(Verifier.prettyGoal(idx, r.goal))
         return 0
       }
+    }
+  }
+
+  // `--proof-dir`: each obligation's SMT-LIB query, one file per goal,
+  // written once the arguments are known to be good (an `--explain` run
+  // writes them above, after its goal index is checked).
+  val smtPaths: List[Option[String]] = match proofDir {
+    case Some(dir) -> match writeProofFiles(dir, summary) {
+      case Ok(paths) -> paths
+      case Err(message) -> {
+        printErr("prove: " + message)
+        return 1
+      }
+    }
+    case None -> {
+      val none: List[Option[String]] = newList()
+      var ni = 0
+      while ni < summary.results.count {
+        none.add(None)
+        ni = ni + 1
+      }
+      none
     }
   }
 
@@ -515,7 +531,8 @@ func proveJson(
 // ─────────────────────────────────────────────────────────────────────────────
 // Writes each obligation's SMT-LIB v2.6 query to `<dir>/<n>-<label>.smt2`,
 // `<n>` its goal index (as `--explain --goal` and the `--json` goals number
-// it), creating `dir` if needed, and returns the path written for each
+// it), creating `dir` if needed and first removing every `.smt2` file
+// already in it, and returns the path written for each
 // obligation in goal order.  An obligation that could not be translated
 // into the proof logic (V0033) has no query, so no file and `None`.  A
 // trivially discharged obligation still gets its query, which a solver
@@ -525,6 +542,22 @@ func writeProofFiles(dir: in String, summary: in Verifier.ProofSummary): Result[
     case Ok(_) -> {
     }
     case Err(e) -> return Err(error = "cannot create proof directory '" + dir + "': " + IOError.message(e))
+  }
+  // The directory holds the last run's queries only: an earlier run's
+  // `.smt2` files, whose goals may since have moved or gone, are removed.
+  match File.listFiles(dir) {
+    case Ok(existing) -> {
+      for f in existing {
+        if Str.endsWith(f, ".smt2") {
+          match File.deleteFile(f) {
+            case Ok(_) -> {
+            }
+            case Err(e) -> return Err(error = "cannot remove the earlier query '" + f + "': " + IOError.message(e))
+          }
+        }
+      }
+    }
+    case Err(e) -> return Err(error = "cannot list proof directory '" + dir + "': " + IOError.message(e))
   }
   val paths: List[Option[String]] = newList()
   var gi = 0

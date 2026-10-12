@@ -134,7 +134,9 @@ summary_field() {
 outcome_count() {
   grep -c "\"outcome\": \"$1\"" "$out" || true
 }
-rc="$(run "$lyric_bin" prove --json "$js/counts.l")"
+# One run serves both this and the --proof-dir checks below: the undecided
+# goal costs the solver's whole time limit.
+rc="$(run "$lyric_bin" prove --json --proof-dir "$proofs/q" "$js/counts.l")"
 [ "$rc" -eq 1 ] || fail "--json summary: expected exit 1 for the refuted goal"
 for pair in total: discharged:discharged unknown:unknown counterexamples:counterexample; do
   field="${pair%%:*}"
@@ -154,8 +156,6 @@ echo "PASS: --json summary counts"
 
 # #8309: --proof-dir writes one SMT-LIB query per obligation, named by goal
 # index, and --json points each goal at its file.
-rc="$(run "$lyric_bin" prove --json --proof-dir "$proofs/q" "$js/counts.l")"
-[ "$rc" -eq 1 ] || fail "--proof-dir --json: expected exit 1 for the refuted goal"
 total="$(summary_field total)"
 [ "$(find "$proofs/q" -name '*.smt2' | wc -l)" -eq "$total" ] || fail "--proof-dir: expected one query per obligation"
 [ "$(grep -c '"smtPath": "' "$out")" -eq "$total" ] || fail "--proof-dir --json: expected every goal's smtPath"
@@ -163,10 +163,21 @@ grep -q '"smtPath": ".*/q/0-[^"]*\.smt2"' "$out" || fail "--proof-dir --json: ex
 for f in "$proofs"/q/*.smt2; do
   grep -q '(check-sat)' "$f" || fail "--proof-dir: $f is not an SMT-LIB query"
 done
+# A re-run leaves only its own queries: an earlier run's .smt2 files go,
+# other files stay.
+mkdir -p "$proofs/h"
+echo stale > "$proofs/h/7-gone_post.smt2"
+echo keep > "$proofs/h/notes.txt"
 rc="$(run "$lyric_bin" prove --proof-dir "$proofs/h" "$tc/welltyped.l")"
 [ "$rc" -eq 0 ] || fail "--proof-dir: expected the proof to go through"
 grep -q "SMT-LIB queries for 1 obligation(s) written to $proofs/h" "$out" || fail "--proof-dir: expected the report"
 [ "$(find "$proofs/h" -name '0-*.smt2' | wc -l)" -eq 1 ] || fail "--proof-dir: expected goal 0's query"
+[ ! -e "$proofs/h/7-gone_post.smt2" ] || fail "--proof-dir: an earlier run's query survived"
+[ -f "$proofs/h/notes.txt" ] || fail "--proof-dir: a file that is not a query was removed"
+# --explain writes the queries only once its goal index is known good.
+rc="$(run "$lyric_bin" prove --explain --goal 0 --proof-dir "$proofs/e" "$tc/welltyped.l")"
+[ "$rc" -eq 0 ] || fail "--proof-dir --explain: expected exit 0"
+[ "$(find "$proofs/e" -name '*.smt2' | wc -l)" -eq 1 ] || fail "--proof-dir --explain: expected the query"
 echo "PASS: --proof-dir"
 
 # #8309: an option prove does not take, a second source file, or a misused
@@ -191,7 +202,11 @@ expect_usage_error "two source files" "prove: expected one source file, got 2" \
   "$lyric_bin" prove "$tc/welltyped.l" "$qs/sound.l"
 expect_usage_error "--proof-dir without a directory" "prove: --proof-dir requires a directory" \
   "$lyric_bin" prove "$tc/welltyped.l" --proof-dir
+expect_usage_error "--proof-dir followed by an option" "prove: --proof-dir requires a directory" \
+  "$lyric_bin" prove --proof-dir --json "$tc/welltyped.l"
+expect_usage_error "--explain goal out of range" "prove --explain: goal 5 out of range" \
+  "$lyric_bin" prove --explain --goal 5 --proof-dir "$proofs/g" "$tc/welltyped.l"
 expect_usage_error "--proof-dir in project mode" "prove: --proof-dir requires a source file" \
   "$lyric_bin" prove --proof-dir "$proofs/p" --manifest "$tc/control/lyric.toml"
-[ ! -e "$proofs/x" ] && [ ! -e "$proofs/p" ] || fail "a refused run may not write a proof directory"
+[ ! -e "$proofs/x" ] && [ ! -e "$proofs/p" ] && [ ! -e "$proofs/g" ] && [ ! -e ./--json ] || fail "a refused run may not write a proof directory"
 echo "PASS: refused runs write nothing"

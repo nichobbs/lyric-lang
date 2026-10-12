@@ -1470,19 +1470,28 @@ func exprQuantMulti(
       appendLines(acc, indentDoc(2, blockLines(b, ctx)))
       acc.add("}")
     }
-    case _ -> match quantBodyLayout(w, body, form) {
-      case QBodyImplies -> {
-        acc.add(head)
-        appendLines(acc, indentDoc(2, prependPrefix("implies ", exprAtCol(col + 2 + 8, ctx, body))))
-      }
-      case QBodyBare -> {
-        acc.add(head)
-        appendLines(acc, indentDoc(2, exprAtCol(col + 2, ctx, body)))
-      }
-      case QBodyBraced -> {
-        acc.add(head + " {")
-        appendLines(acc, indentDoc(2, exprAtCol(col + 2, ctx, body)))
-        acc.add("}")
+    case _ -> {
+      // Comments between the binders (or `where` guard) and the body, an
+      // `implies` included, go on their own lines above the body; left in
+      // the context they would escape to the enclosing function (#8305).
+      val lead = indentDoc(2, popTriviaBefore(ctx, body.span.startPos.offset))
+      match quantBodyLayout(w, body, form) {
+        case QBodyImplies -> {
+          acc.add(head)
+          appendLines(acc, lead)
+          appendLines(acc, indentDoc(2, prependPrefix("implies ", exprAtCol(col + 2 + 8, ctx, body))))
+        }
+        case QBodyBare -> {
+          acc.add(head)
+          appendLines(acc, lead)
+          appendLines(acc, indentDoc(2, exprAtCol(col + 2, ctx, body)))
+        }
+        case QBodyBraced -> {
+          acc.add(head + " {")
+          appendLines(acc, lead)
+          appendLines(acc, indentDoc(2, exprAtCol(col + 2, ctx, body)))
+          acc.add("}")
+        }
       }
     }
   }

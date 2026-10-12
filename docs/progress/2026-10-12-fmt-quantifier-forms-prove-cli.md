@@ -15,7 +15,10 @@ in the multi-line layout (a long bare body goes on the lines below the
 binders, a long `implies` body there after `implies`).  A bare body that would
 not parse back as the body (it opens with `{` or `implies`, or, after a
 `where` guard, with a token that would extend the guard) is braced; only a
-body a pass rewrote can be like that.
+body a pass rewrote can be like that.  A comment between the binders (or the
+`where` guard) and a bare or `implies` body goes on its own line above the
+body; it used to escape into the function's body, and a second format then
+changed the file again.
 
 `examples/prove-quantifier-sides/unsound.l` is back to the bare form #8223 was
 reported in, with braced twins, and `sound.l` gains bare and `implies`
@@ -44,7 +47,10 @@ prover, but the self-hosted CLI never parsed it: the flag and its directory
 became source paths.  It is implemented: each obligation's SMT-LIB query is
 written to `<dir>/<n>-<label>.smt2` and `--json` gives its path as `smtPath`
 (`null` for an obligation that could not be translated, `V0033`, recorded by
-the new `ProofResult.translated`).  It needs a source file, like `--json`;
+the new `ProofResult.translated`).  A run first removes the `.smt2` files already in `<dir>`, so the directory
+holds that run's queries only; `--explain --goal N` writes them only once `N`
+is known to be in range; and a following option is not taken as the
+directory (`--proof-dir --json` is an error).  It needs a source file, like `--json`;
 without it nothing is written (the old `target/proofs/` default is gone from
 the docs).
 

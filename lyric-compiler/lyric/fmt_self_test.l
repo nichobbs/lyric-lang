@@ -893,6 +893,31 @@ test "long unbraced quantifier bodies break and round trip" {
   }
 }
 
+test "a comment before an unbraced quantifier body stays in the clause" {
+  // A comment between the binders and a bare body, or before `implies`,
+  // stays with the quantifier, and a second format changes nothing (#8305).
+  val src = "package P\n\nfunc f(): Unit\n  ensures: forall (k: Byte)\n    // before the bare body\n    k == k\n{\n}\n\n" +
+    "func g(): Unit\n  ensures: forall (k: Byte) where k > 0u8 // after the guard\n    implies k == k\n{\n}\n"
+  match formatSourceChecked(src) {
+    case FmtOk(text) -> {
+      assertTrue(
+        Str.contains(text, "  ensures: forall (k: Byte)\n    // before the bare body\n    k == k\n{\n}\n"),
+        "comment before a bare body: kept above the body"
+      )
+      assertTrue(
+        Str.contains(text, "  ensures: forall (k: Byte) where k > 0u8\n    // after the guard\n    implies k == k\n{\n}\n"),
+        "comment before implies: kept above implies"
+      )
+      assertEqual(format(parse(text)), text, "comment before a quantifier body: idempotent")
+      match formatSourceChecked(text) {
+        case FmtOk(again) -> assertEqual(again, text, "comment before a quantifier body: second checked format stable")
+        case _ -> assertTrue(false, "comment before a quantifier body: second checked format refused")
+      }
+    }
+    case _ -> assertTrue(false, "comment before a quantifier body: checked format refused the source")
+  }
+}
+
 test "rewritten bare quantifier body that would not parse back is braced" {
   // A body a compiler pass rewrote may open with a token that would extend
   // the `where` guard if written bare; it is printed in braces (#8305).
