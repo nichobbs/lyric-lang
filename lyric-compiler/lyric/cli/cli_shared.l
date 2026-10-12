@@ -14,7 +14,7 @@
 //!   run     [<source.l>] [--manifest <lyric.toml>] [--target dotnet|jvm] [--watch] [-- <args>...]
 //!   fmt     [<source.l>...] [--manifest <lyric.toml>] [--check] [--write] [--stdin]
 //!   lint    [<source.l>] [--manifest <lyric.toml>] [--error-on-warning]
-//!   prove   [<source.l>] [--manifest <lyric.toml>] [--verbose] [--allow-unverified] [--json] [--explain --goal <n>]
+//!   prove   [<source.l>] [--manifest <lyric.toml>] [--target dotnet|jvm|native] [--features <a,b>] [--no-default-features] [--all-features] [--define K=V] [--verbose] [--allow-unverified] [--json] [--explain --goal <n>]
 //!   doc     [<source.l>] [--manifest <lyric.toml>] [-o <out.md|dir>]
 //!   public-api-diff <old.dll> <new.dll>
 //!   restore [--manifest <lyric.toml>]
@@ -313,7 +313,9 @@ func usageText(): String {
     "                 --diff shows a unified diff of changes; --stdin reads from stdin and writes formatted output to stdout)\n" +
     "  lyric lint    [<source.l>] [--manifest <lyric.toml>] [--error-on-warning]\n" +
     "                (no source: lints all project source files; prints summary at end)\n" +
-    "  lyric prove   [<source.l>] [--manifest <lyric.toml>] [--verbose] [--allow-unverified] [--json] [--explain --goal <n>]\n" +
+    "  lyric prove   [<source.l>] [--manifest <lyric.toml>] [--target dotnet|jvm|native] [--features <a,b>]\n" +
+    "                [--no-default-features] [--all-features] [--define K=V] [--verbose] [--allow-unverified]\n" +
+    "                [--json] [--explain --goal <n>]\n" +
     "                (no source: proves contracts in all project source files)\n" +
     "  lyric doc     [<source.l>] [--manifest <lyric.toml>] [-o <out.md|dir>]\n" +
     "                (no source: generates docs/ for all project source files)\n" +

@@ -218,6 +218,9 @@ record Tally {
     total
   }
 
+  // An explicit `in` receiver and an expression body (#8216).
+  func explicitIn(self: in Tally): Int = total
+
   func nested(c: in Bool): Int {
     if c {
       val total = 1
@@ -513,6 +516,7 @@ test "record-body methods: a local shadows the field, and the field beats a modu
   val t = Tally(total = 3)
   assertEqualInt(t.shadowed(), 105, "local")
   assertEqualInt(t.plain(), 3, "field, not the module val")
+  assertEqualInt(t.explicitIn(), 3, "explicit `in` receiver: field, not the module val")
   assertEqualInt(t.nested(true), 1, "inner local")
   assertEqualInt(t.nested(false), 3, "field")
   assertEqualInt(t.lambdaParam(), 5, "lambda parameter, then the field")

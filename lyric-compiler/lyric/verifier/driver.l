@@ -27,7 +27,13 @@ pub record ProofResult {
 pub record ProofSummary {
   pub level: VerificationLevel
   pub diagnostics: List[Diagnostic]
+  /// The function's obligations: what `lyric prove` counts and lists.
   pub results: List[ProofResult]
+  /// The checks that each `requires:` clause can be met (#8223).  They guard
+  /// the obligations against vacuity and are not obligations themselves, so
+  /// they are kept apart from `results`; a failed one is reported as V0035,
+  /// an undecided one as V0036.
+  pub vacuityChecks: List[ProofResult]
 }
 
 pub func summaryDischargedCount(s: in ProofSummary): Int {
@@ -100,6 +106,21 @@ pub func outcomeToDiag(g: in Goal, outcome: in SolverOutcome, allowUnverified: i
   match outcome {
     case Discharged -> None
     case Counterexample(model) -> {
+      match g.kind {
+        case GKPreconditionDomain(fn) -> {
+          return Some(
+            value = errorDiagnostic(
+              "V0035",
+              "this precondition of " + fn +
+                " can never hold: no argument meets it, given the parameters' types and the clauses before it (its value is never true, or a side condition in it, such as a callee's requires: or a non-zero divisor, always fails), so no call can meet it and every proof of " +
+                fn +
+                " would hold vacuously",
+              g.origin
+            )
+          )
+        }
+        case _ -> ()
+      }
       val body = if model.length > 0 {
         val bindings = parseModel(model)
         if bindings.count == 0 {
@@ -144,12 +165,76 @@ pub func outcomeToDiag(g: in Goal, outcome: in SolverOutcome, allowUnverified: i
           )
         )
       }
+      // A precondition-domain goal guards against vacuity; it is not an
+      // obligation of the function.  The solver not deciding it leaves the
+      // function's own goals as they are, and is only a warning (#8223).
+      match g.kind {
+        case GKPreconditionDomain(fn) -> {
+          return Some(
+            value = warningDiagnostic(
+              "V0036",
+              "could not rule out that this precondition of " + fn +
+                " can never hold: the solver could not decide whether some argument meets it (" +
+                reason +
+                "); if none does, every proof of " +
+                fn +
+                " holds vacuously",
+              g.origin
+            )
+          )
+        }
+        case _ -> ()
+      }
       if allowUnverified {
         Some(value = warningDiagnostic("V0007", goalKindDisplay(g.kind) + " — solver returned unknown: " + reason, g.origin))
       } else {
         Some(value = errorDiagnostic("V0007", goalKindDisplay(g.kind) + " — solver returned unknown: " + reason, g.origin))
       }
     }
+  }
+}
+
+// A `GKPreconditionDomain` goal states that no argument meets a `requires:`
+// clause; it holds when the solver refutes it, the refuting model being an
+// argument that meets it.  Proved, it is the failure: no call can meet the
+// clause (#8223).
+func domainOutcome(g: in Goal, outcome: in SolverOutcome): SolverOutcome {
+  match g.kind {
+    case GKPreconditionDomain(_) -> match outcome {
+      case Discharged -> Counterexample(model = "")
+      case Counterexample(_) -> Discharged
+      case Unknown(r) -> Unknown(reason = r)
+    }
+    case _ -> outcome
+  }
+}
+
+// A precondition clause of a function whose earlier clause no call can meet
+// holds vacuously under that clause: the earlier one is reported, not this
+// one.  Records each function with a clause that cannot be met in
+// `unmeetable`.
+func afterUnmeetable(g: in Goal, outcome: in SolverOutcome, unmeetable: in List[String]): SolverOutcome {
+  match g.kind {
+    case GKPreconditionDomain(fn) -> match outcome {
+      case Counterexample(_) -> {
+        for f in unmeetable {
+          if f == fn {
+            return Discharged
+          }
+        }
+        unmeetable.add(fn)
+        outcome
+      }
+      case _ -> outcome
+    }
+    case _ -> outcome
+  }
+}
+
+func isDomainGoal(g: in Goal): Bool {
+  match g.kind {
+    case GKPreconditionDomain(_) -> true
+    case _ -> false
   }
 }
 
@@ -373,6 +458,16 @@ pub func proveSourceWithOptions(source: in String, allowUnverified: in Bool): Pr
   proveSourceInScope(source, allowUnverified, unknownPackageScope())
 }
 
+/// The verification level `source` declares, as `proveSourceInScope` reads
+/// it; `@runtime_checked` when the source does not parse.
+pub func sourceVerificationLevel(source: in String): VerificationLevel {
+  val parsed = parse(source)
+  if hasFatalDiag(parsed.diagnostics) {
+    return VLRuntimeChecked
+  }
+  checkFile(parsed.file).level
+}
+
 pub func proveSourceInScope(source: in String, allowUnverified: in Bool, pkgScope: in PackageScope): ProofSummary {
   // 1. Parse.
   val parsed = parse(source)
@@ -381,7 +476,8 @@ pub func proveSourceInScope(source: in String, allowUnverified: in Bool, pkgScop
 
   if parseFatal {
     val results: List[ProofResult] = newList()
-    return ProofSummary(level = VLRuntimeChecked, diagnostics = parseDiags, results = results)
+    val noChecks: List[ProofResult] = newList()
+    return ProofSummary(level = VLRuntimeChecked, diagnostics = parseDiags, results = results, vacuityChecks = noChecks)
   }
 
   // 2. Mode-check (against parsed file — annotations and aspect decls
@@ -400,7 +496,8 @@ pub func proveSourceInScope(source: in String, allowUnverified: in Bool, pkgScop
 
   if not vlIsProofRequired(level) {
     val results: List[ProofResult] = newList()
-    return ProofSummary(level = level, diagnostics = allParseDiags, results = results)
+    val noChecks: List[ProofResult] = newList()
+    return ProofSummary(level = level, diagnostics = allParseDiags, results = results, vacuityChecks = noChecks)
   }
 
   // 4. Aspect weave (#336).  Replaces each matched IFunc with a renamed
@@ -424,7 +521,8 @@ pub func proveSourceInScope(source: in String, allowUnverified: in Bool, pkgScop
   // path's `reportAndAbort(weaveRes.diagnostics)` guard.
   if hasFatalDiag(weaveDiags) {
     val results: List[ProofResult] = newList()
-    return ProofSummary(level = level, diagnostics = allParseDiags, results = results)
+    val noChecks: List[ProofResult] = newList()
+    return ProofSummary(level = level, diagnostics = allParseDiags, results = results, vacuityChecks = noChecks)
   }
 
   // 5. VC generation against the woven file.
@@ -436,11 +534,15 @@ pub func proveSourceInScope(source: in String, allowUnverified: in Bool, pkgScop
     val allDiags: List[Diagnostic] = newList()
     appendDiags(allDiags, allParseDiags)
     appendDiags(allDiags, vcDiags)
-    return ProofSummary(level = level, diagnostics = allDiags, results = results)
+    val noChecks: List[ProofResult] = newList()
+    return ProofSummary(level = level, diagnostics = allDiags, results = results, vacuityChecks = noChecks)
   }
 
   // 5. Discharge each goal.
+  // The functions with a `requires:` clause no call can meet (#8223).
+  val unmeetable: List[String] = newList()
   val results: List[ProofResult] = newList()
+  val vacuity: List[ProofResult] = newList()
   val resultDiags: List[Diagnostic] = newList()
   var i = 0
   while i < goals.count {
@@ -465,13 +567,14 @@ pub func proveSourceInScope(source: in String, allowUnverified: in Bool, pkgScop
     // discharger nor the solver sees it.  A goal carrying a construct VC
     // generation already reported as V0033 fails the same way, without a
     // second report (#7874).
+    val into = if isDomainGoal(g) { vacuity } else { results }
     if goalIsPoisoned(g) {
-      results.add(ProofResult(goal = g, outcome = Unknown(reason = "not translatable: a construct reported above (V0033)")))
+      into.add(ProofResult(goal = g, outcome = Unknown(reason = "not translatable: a construct reported above (V0033)")))
     } else {
       match reconcileGoalSorts(g) {
         case Ok(rg) -> {
-          val outcome = discharge(rg)
-          results.add(ProofResult(goal = rg, outcome = outcome))
+          val outcome = afterUnmeetable(rg, domainOutcome(rg, discharge(rg)), unmeetable)
+          into.add(ProofResult(goal = rg, outcome = outcome))
           match outcomeToDiag(rg, outcome, allowUnverified) {
             case Some(d) -> resultDiags.add(d)
             case None -> {
@@ -479,14 +582,18 @@ pub func proveSourceInScope(source: in String, allowUnverified: in Bool, pkgScop
           }
         }
         case Err(reason) -> {
-          results.add(ProofResult(goal = g, outcome = Unknown(reason = "not translatable: " + reason)))
-          resultDiags.add(
-            errorDiagnostic(
-              "V0033",
-              goalKindDisplay(g.kind) + " — cannot translate the obligation into the proof logic faithfully: " + reason,
-              g.origin
+          into.add(ProofResult(goal = g, outcome = Unknown(reason = "not translatable: " + reason)))
+          // A precondition clause that cannot be translated is a hypothesis
+          // of every other goal of its function, which reports it.
+          if not isDomainGoal(g) {
+            resultDiags.add(
+              errorDiagnostic(
+                "V0033",
+                goalKindDisplay(g.kind) + " — cannot translate the obligation into the proof logic faithfully: " + reason,
+                g.origin
+              )
             )
-          )
+          }
         }
       }
     }
@@ -497,7 +604,7 @@ pub func proveSourceInScope(source: in String, allowUnverified: in Bool, pkgScop
   appendDiags(finalDiags, allParseDiags)
   appendDiags(finalDiags, vcDiags)
   appendDiags(finalDiags, resultDiags)
-  ProofSummary(level = level, diagnostics = finalDiags, results = results)
+  ProofSummary(level = level, diagnostics = finalDiags, results = results, vacuityChecks = vacuity)
 }
 
 // Reconcile the integer/bitvector sorts of every hypothesis and the

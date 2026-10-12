@@ -233,9 +233,28 @@ pub func pipeParseAndErase(
   label: in String,
   origins: in List[DiagUtil.MergedLineOrigin],
 ): Option[SourceFile] {
-  val parseResult = parse(source)
-  if gate(label, origins, parseResult.diagnostics) {
+  val r = pipeParseAndEraseCollect(source, targetName, activeFeatures, declaredFeatures, defines)
+  if gate(label, origins, r.diagnostics) {
     return None
+  }
+  Some(value = r.file)
+}
+
+/// `pipeParseAndErase` for a caller that reports the diagnostics itself:
+/// they are returned, not printed.  The passes stop at the first that
+/// reports an error; the file is meaningful only when none did.
+pub func pipeParseAndEraseCollect(
+  source: in String,
+  targetName: in String,
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
+  defines: in List[BD.Define],
+): CheckReadyFile {
+  val diags: List[Diagnostic] = newList()
+  val parseResult = parse(source)
+  appendDiagnostics(diags, parseResult.diagnostics)
+  if hasErrorDiagnostic(diags) {
+    return CheckReadyFile(file = parseResult.file, diagnostics = diags)
   }
   // Auto-inject the well-known `target` define (docs/60 §3.3) as a fallback
   // beneath the already-decoded user/manifest defines: `pipeParseAndErase` is
@@ -253,12 +272,14 @@ pub func pipeParseAndErase(
   // predicates cannot observe a define. Both are pure SourceFile -> SourceFile
   // AST transforms; substitution only ever inserts String-literal nodes.
   val bdRes = BD.applyBuildDefines(definesWk, parseResult.file)
-  if gate(label, origins, bdRes.diagnostics) {
-    return None
+  appendDiagnostics(diags, bdRes.diagnostics)
+  if hasErrorDiagnostic(diags) {
+    return CheckReadyFile(file = bdRes.file, diagnostics = diags)
   }
   val cfgRes = Cfg.applyCfgErasure(Cfg.withTargetFeature(activeFeatures, targetName), declaredFeatures, bdRes.file)
-  if gate(label, origins, cfgRes.diagnostics) {
-    return None
+  appendDiagnostics(diags, cfgRes.diagnostics)
+  if hasErrorDiagnostic(diags) {
+    return CheckReadyFile(file = cfgRes.file, diagnostics = diags)
   }
   // Std.BuildInfo synthesis (docs/60 §9.2): if the file imports Std.BuildInfo,
   // append the per-build `buildInfo()` accessor. Runs after @cfg erasure so the
@@ -266,7 +287,13 @@ pub func pipeParseAndErase(
   // feature set (not the synthetic target pseudo-feature cfg adds).
   val biFile = BD.synthesizeBuildInfo(cfgRes.file, targetName, activeFeatures, definesWk)
   val arrayImports = withArrayImports(biFile, source)
-  Some(value = hoistValueRecordMethods(markWrappingArith(arrayImports, definesWk)))
+  CheckReadyFile(file = hoistValueRecordMethods(markWrappingArith(arrayImports, definesWk)), diagnostics = diags)
+}
+
+func appendDiagnostics(dst: in List[Diagnostic], src: in List[Diagnostic]): Unit {
+  for d in src {
+    dst.add(d)
+  }
 }
 
 /// A file that spells an `array[N, T]` type may need `Std.Collections` after
@@ -390,23 +417,44 @@ pub func pipeExpandAndRewrite(
   label: in String,
   origins: in List[DiagUtil.MergedLineOrigin],
 ): Option[SourceFile] {
+  val r = pipeExpandAndRewriteCollect(file, weWires, weConfigs, runWireExpand, runStubbable, injectWeave)
+  if gate(label, origins, r.diagnostics) {
+    return None
+  }
+  Some(value = r.file)
+}
+
+/// `pipeExpandAndRewrite` for a caller that reports the diagnostics itself:
+/// they are returned, not printed.  The file is meaningful only when none is
+/// an error.
+pub func pipeExpandAndRewriteCollect(
+  file: in SourceFile,
+  weWires: in Map[String, WireExpand.CollectedWireTemplate],
+  weConfigs: in Map[String, WireExpand.CollectedConfigTemplate],
+  runWireExpand: in Bool,
+  runStubbable: in Bool,
+  injectWeave: in Bool,
+): CheckReadyFile {
+  val diags: List[Diagnostic] = newList()
   var f: SourceFile = file
   if runWireExpand {
     val weRes = WireExpand.expandFile(f, weWires, weConfigs)
-    if gate(label, origins, weRes.diagnostics) {
-      return None
+    appendDiagnostics(diags, weRes.diagnostics)
+    if hasErrorDiagnostic(diags) {
+      return CheckReadyFile(file = f, diagnostics = diags)
     }
     f = weRes.file
   }
   val prep = pipePrepareForCheck(f, runStubbable)
-  if gate(label, origins, prep.diagnostics) {
-    return None
+  appendDiagnostics(diags, prep.diagnostics)
+  if hasErrorDiagnostic(diags) {
+    return CheckReadyFile(file = f, diagnostics = diags)
   }
   f = prep.file
   if injectWeave {
     f = Weaver.injectWeaveImports(f)
   }
-  Some(value = f)
+  CheckReadyFile(file = f, diagnostics = diags)
 }
 
 /// A file after the rewrites that run between parse and type check, and
@@ -581,22 +629,77 @@ pub func pipePrepareForCheck(file: in SourceFile, runStubbable: in Bool): CheckR
 /// are the monomorphizer's cross-package inputs — the caller composes them
 /// from its own source shapes (stdlib packages, in-bundle siblings,
 /// restored artifacts) via the `pipeAdd*` collectors below.
-pub func pipeCheckAndMono(
+/// Where the middle end's diagnostics go: printed, as a build reports them,
+/// or with `collect` attributed into `located` for a caller that reports
+/// them itself (`lyric prove`, #8227).
+pub record DiagSink {
+  collect: Bool
+  located: List[DiagUtil.LocatedDiagnostic]
+}
+
+/// A sink that prints.
+pub func printDiagnostics(): DiagSink {
+  DiagSink(collect = false, located = newList())
+}
+
+/// A sink that collects into `located`.
+pub func collectDiagnostics(located: in List[DiagUtil.LocatedDiagnostic]): DiagSink {
+  DiagSink(collect = true, located = located)
+}
+
+// `gate` into `sink`: whether any of `diags` is an error.
+func gateTo(
+  sink: in DiagSink,
+  pkgLabel: in String,
+  origins: in List[DiagUtil.MergedLineOrigin],
+  diags: in List[Diagnostic],
+): Bool {
+  if sink.collect {
+    return DiagUtil.diagLocateAll(pkgLabel, origins, diags, sink.located)
+  }
+  gate(pkgLabel, origins, diags)
+}
+
+// Report `diags` into `sink` without their deciding anything.
+func reportTo(
+  sink: in DiagSink,
+  pkgLabel: in String,
+  origins: in List[DiagUtil.MergedLineOrigin],
+  diags: in List[Diagnostic],
+): Unit {
+  if sink.collect {
+    val _ = DiagUtil.diagLocateAll(pkgLabel, origins, diags, sink.located)
+  } else {
+    DiagUtil.diagReport(diags)
+  }
+}
+
+/// The type check of a file and what a build rejects a file for up to and
+/// including the mode check: the type checker, the checked desugarings, the
+/// effect rules, the lowerings the mode check runs on, the mode check.
+pub record CheckFront {
+  tcRes: CheckResult
+  valueSites: Map[String, FuncRefSite]
+  checked: SourceFile
+}
+
+/// The front of `pipeCheckAndMono`: everything up to and including the mode
+/// check, with its diagnostics sent to `sink`.  None after an error.
+/// `lyric prove` runs exactly this, so it rejects what a build rejects up to
+/// the mode check (#8227).
+pub func pipeCheckFront(
   file0: in SourceFile,
   importedPkgs: in List[ImportedPackage],
-  deriveImports: in List[Item],
-  monoGenFuncs: in List[FunctionDecl],
-  monoIfaceDecls: in List[InterfaceDecl],
-  monoRecordDecls: in List[RecordDecl],
   opts: in MiddleEndOptions,
-): Option[SourceFile] {
+  sink: in DiagSink,
+): Option[CheckFront] {
   val tcRes = if opts.nativeIntrinsics {
     checkWithImportedPackagesForNative(file0, importedPkgs)
   } else {
     checkWithImportedPackages(file0, importedPkgs)
   }
   if opts.tcFatal {
-    if gate(opts.pkgLabel, opts.lineOrigins, tcRes.diagnostics) {
+    if gateTo(sink, opts.pkgLabel, opts.lineOrigins, tcRes.diagnostics) {
       return None
     }
   } else if opts.tcReport {
@@ -614,8 +717,8 @@ pub func pipeCheckAndMono(
         advisory.add(d)
       }
     }
-    DiagUtil.diagReport(advisory)
-    if gate(opts.pkgLabel, opts.lineOrigins, misplacedOld) {
+    reportTo(sink, opts.pkgLabel, opts.lineOrigins, advisory)
+    if gateTo(sink, opts.pkgLabel, opts.lineOrigins, misplacedOld) {
       return None
     }
   }
@@ -658,10 +761,10 @@ pub func pipeCheckAndMono(
       tcRes.symbols.hoistOperandTypeSites
     }
   )
-  if gate(opts.pkgLabel, opts.lineOrigins, copyRes.diagnostics) {
+  if gateTo(sink, opts.pkgLabel, opts.lineOrigins, copyRes.diagnostics) {
     return None
   }
-  if gate(opts.pkgLabel, opts.lineOrigins, effectDiagnostics(file0, tcRes.symbols, opts.ioForbiddenReason)) {
+  if gateTo(sink, opts.pkgLabel, opts.lineOrigins, effectDiagnostics(file0, tcRes.symbols, opts.ioForbiddenReason)) {
     return None
   }
   opts.checkedSourceOut.add(copyRes.file)
@@ -743,7 +846,7 @@ pub func pipeCheckAndMono(
   val checked = insertRangeSiteChecks(overflowChecked, tcRes.symbols.rangeCheckSites, tcRes.symbols.rangeCompoundSites)
 
   val mcRes = checkFile(checked)
-  if gate(opts.pkgLabel, opts.lineOrigins, mcRes.diagnostics) {
+  if gateTo(sink, opts.pkgLabel, opts.lineOrigins, mcRes.diagnostics) {
     return None
   }
 
@@ -751,8 +854,28 @@ pub func pipeCheckAndMono(
   // In a `@proof_required` file a quantifier is an obligation for `lyric
   // prove`, so the warning would only repeat what the annotation says.
   if not vlIsProofRequired(mcRes.level) {
-    val _ = gate(opts.pkgLabel, opts.lineOrigins, runtimeQuantifierWarnings(checked))
+    val _ = gateTo(sink, opts.pkgLabel, opts.lineOrigins, runtimeQuantifierWarnings(checked))
   }
+  Some(value = CheckFront(tcRes = tcRes, valueSites = valueSites, checked = checked))
+}
+
+pub func pipeCheckAndMono(
+  file0: in SourceFile,
+  importedPkgs: in List[ImportedPackage],
+  deriveImports: in List[Item],
+  monoGenFuncs: in List[FunctionDecl],
+  monoIfaceDecls: in List[InterfaceDecl],
+  monoRecordDecls: in List[RecordDecl],
+  opts: in MiddleEndOptions,
+): Option[SourceFile] {
+  val front = match pipeCheckFront(file0, importedPkgs, opts, printDiagnostics()) {
+    case Some(f) -> f
+    case None -> return None
+  }
+  val tcRes = front.tcRes
+  val valueSites = front.valueSites
+  val checked = front.checked
+
   // A member body's bare field references become `self.<name>` under the
   // type checker's scoping, so no backend decides between a local and a
   // field itself (#8264).  Before the elaborator, which resolves each

@@ -632,7 +632,8 @@ func testSummaryHelpers(): Unit {
   results.add(r1)
   results.add(r2)
   val diags: List[Diagnostic] = newList()
-  val summary = ProofSummary(level = VLProofRequired, diagnostics = diags, results = results)
+  val noChecks: List[ProofResult] = newList()
+  val summary = ProofSummary(level = VLProofRequired, diagnostics = diags, results = results, vacuityChecks = noChecks)
   assertEqualInt(summaryTotalCount(summary), 2, "summary-total-2")
   assertEqualInt(summaryDischargedCount(summary), 1, "summary-discharged-1")
   assertTrue(summaryHasFailure(summary), "summary-has-failure")
@@ -2803,6 +2804,168 @@ test "a quantifier over a distinct type or alias of a range subtype keeps its ra
   val cents = "type Cents = Int\n"
   assertDischarged(quantSrc(cents, "forall (c: Cents) c <= 2147483647"), "distinct-int-has-its-width")
   assertRefuted(quantSrc(cents, "exists (c: Cents) c == 3000000000"), "distinct-int-past-its-width")
+}
+
+// The `where` clause and the body of a quantifier run for each value of its
+// domain, so their side conditions are obligations for every such value:
+// none is dropped (#8223).
+func invDecl(): String {
+  "@pure\nfunc inv(x: in Byte): Byte\n  requires: x != 0u8\n{\n  100u8 / x\n}\n"
+}
+
+test "a quantifier's side conditions hold for every value of its domain (#8223)" {
+  assertRefuted(quantSrc(invDecl(), "forall (k: Byte) inv(k) == inv(k)"), "precondition-under-forall")
+  assertDischarged(quantSrc(invDecl(), "forall (k: Byte) where k != 0u8 { inv(k) == inv(k) }"), "guarded-precondition")
+  assertRefuted(quantSrc(invDecl(), "exists (k: Byte) inv(k) == 100u8"), "precondition-under-exists")
+  assertDischarged(quantSrc(invDecl(), "exists (k: Byte) where k > 0u8 { inv(k) == inv(k) }"), "guarded-exists")
+  assertRefuted(quantSrc("", "forall (k: Byte) 10u8 / k >= 0u8"), "division-by-the-binder")
+  assertDischarged(quantSrc("", "forall (k: Byte) where k > 0u8 { 10u8 / k >= 0u8 }"), "guarded-division")
+  assertRefuted(quantSrc("", "exists (k: Byte) 10u8 / k == 10u8"), "division-under-exists")
+  assertRefuted(quantSrc("", "forall (k: Byte) where 10u8 / k > 0u8 { true }"), "division-in-the-where-clause")
+  assertDischarged(quantSrc("", "forall (k: Byte) where k > 0u8 and 10u8 / k > 0u8 { true }"), "guarded-where-clause")
+  assertRefuted(quantSrc(smallDecl(), "forall (i: Small) forall (k: Byte) 10u8 / k >= 0u8"), "nested-quantifiers")
+  assertDischarged(
+    quantSrc(smallDecl(), "forall (i: Small) forall (k: Byte) where k > 0u8 { 10u8 / k >= 0u8 }"),
+    "guarded-nested-quantifiers"
+  )
+  // A side condition that does not depend on the bound variable still must
+  // hold wherever the body runs.
+  assertRefuted(
+    invDecl() + "func f(z: in Byte): Bool\n  ensures: forall (k: Small) inv(z) == inv(z)\n{\n  true\n}\n" + smallDecl(),
+    "binder-independent-precondition"
+  )
+  assertDischarged(
+    invDecl() + smallDecl() +
+      "func f(z: in Byte): Bool\n  requires: z > 0u8\n  ensures: forall (k: Small) inv(z) == inv(z)\n{\n  true\n}\n",
+    "binder-independent-precondition-held"
+  )
+}
+
+test "a side condition may rely on what is evaluated before it (#8223)" {
+  val nz = "@pure\nfunc nz(x: in Byte): Byte\n  ensures: result != 0u8\n{\n  1u8\n}\n"
+  assertDischarged(quantSrc(invDecl() + nz, "forall (k: Byte) inv(nz(k)) >= 0u8"), "argument-ensures-under-forall")
+  assertDischarged(quantSrc(invDecl() + nz, "inv(nz(7u8)) >= 0u8"), "argument-ensures")
+  assertDischarged(quantSrc(nz, "forall (k: Byte) 10u8 / nz(k) >= 0u8"), "divisor-ensures-under-forall")
+  // A call's own `ensures:` never proves its own `requires:` (#8102).
+  val selfish = "@pure\nfunc sf(x: in Byte): Byte\n  requires: x != 0u8\n  ensures: x != 0u8\n{\n  x\n}\n"
+  assertRefuted(quantSrc(selfish, "forall (k: Byte) sf(k) >= 0u8"), "own-ensures-under-forall")
+}
+
+// A function whose only `requires:` is `clause` and whose postcondition is
+// false of its body: proved only if the precondition is assumed vacuously.
+func vacuousSrc(clause: in String): String {
+  "func g(): Int\n  requires: " + clause + "\n  ensures: result == 42\n{\n  0\n}\n"
+}
+
+// A `requires:` clause's side conditions are the caller's to meet (#8102),
+// but a clause no argument can meet, through its side conditions or its
+// value, would make every proof of the function vacuous: it is reported,
+// V0035 (#8223).
+test "a precondition no argument can meet is reported (#8223)" {
+  assertUnmeetable(invDecl() + vacuousSrc("inv(0u8) >= 0u8"), "plain-precondition-side")
+  assertUnmeetable(invDecl() + vacuousSrc("forall (k: Byte) inv(k) >= 0u8"), "quantified-precondition-side")
+  assertUnmeetable(vacuousSrc("10 / 0 == 0"), "division-in-a-precondition")
+  assertUnmeetable(
+    invDecl() +
+      "func h(z: in Byte): Byte\n  requires: z == 0u8\n  requires: inv(z) >= 0u8\n  ensures: result == 7u8\n{\n  z\n}\n",
+    "contradicted-by-an-earlier-clause"
+  )
+  // Some argument evaluates these: the callers meet the side conditions.
+  assertDischarged(
+    invDecl() +
+      "func h(z: in Byte): Byte\n  requires: z != 0u8\n  requires: inv(z) >= 0u8\n  ensures: result == z\n{\n  z\n}\n",
+    "earlier-clause-guards-a-later-one"
+  )
+  assertDischarged(
+    invDecl() + "func h(z: in Byte): Byte\n  requires: inv(z) >= 0u8\n  ensures: result == z\n{\n  z\n}\n",
+    "partial-precondition"
+  )
+  assertRefuted(
+    invDecl() + "func h(z: in Byte): Byte\n  requires: inv(z) >= 0u8\n  ensures: result == z\n{\n  z\n}\n" +
+      "func k(): Byte\n{\n  h(0u8)\n}\n",
+    "partial-precondition-unmet-by-a-caller"
+  )
+  // The clause as a whole, not only its side conditions: its value, and
+  // its side conditions under the facts it brings.
+  assertUnmeetable(
+    invDecl() + "func g(z: in Byte): Int\n  requires: z == 0u8 and forall (k: Byte) where k == z { inv(k) >= 0u8 }\n" +
+      "  ensures: result == 42\n{\n  0\n}\n",
+    "side-conditions-unmet-where-the-clause-holds"
+  )
+  assertUnmeetable(
+    "func h(x: in Byte): Byte\n  requires: x > 5u8 and x < 3u8\n  ensures: result == 7u8\n{\n  x\n}\n",
+    "unsatisfiable-precondition"
+  )
+  assertDischarged(
+    "func h(x: in Byte): Byte\n  requires: x > 5u8\n  requires: x < 9u8\n  ensures: result > 5u8\n{\n  x\n}\n",
+    "satisfiable-preconditions"
+  )
+  assertDischarged(
+    invDecl() + "func g(z: in Byte): Int\n  requires: z == 1u8 and forall (k: Byte) where k == z { inv(k) >= 0u8 }\n" +
+      "  ensures: result == 0\n{\n  0\n}\n",
+    "quantified-precondition-met-by-an-argument"
+  )
+  // An unmeetable clause is reported, not the clauses after it.
+  val earlier = provePkg(
+    "func h(x: in Byte): Byte\n  requires: x > 5u8 and x < 3u8\n  requires: x == 4u8\n  ensures: result == 7u8\n{\n  x\n}\n"
+  )
+  assertEqualInt(diagCodeCount(earlier, "V0035"), 1, "only the earlier clause is reported")
+}
+
+// A precondition the solver cannot decide is satisfiable (`x^3 + y^3 + z^3
+// == 42` has a solution in `Long`, which z3 cannot find within its time
+// limit) is not reported as unmeetable: the function's own goals keep their
+// outcome, and a V0036 warning says vacuity could not be ruled out (#8223).
+test "an undecided precondition domain is a warning, not a failure (#8223)" {
+  val s = provePkg(
+    "func f(x: in Long, y: in Long, z: in Long): Long\n  requires: x * x * x + y * y * y + z * z * z == 42\n" +
+      "  ensures: result == x\n{\n  x\n}\n"
+  )
+  assertTrue(not summaryHasErrorDiag(s), "no error diagnostics")
+  assertTrue(not summaryHasCounterexample(s), "no counterexample")
+  assertEqualInt(diagCodeCount(s, "V0036"), 1, "one V0036 warning")
+  assertEqualInt(summaryTotalCount(s), 1, "the vacuity check is not counted as an obligation")
+  assertEqualInt(s.vacuityChecks.count, 1, "one vacuity check")
+  var postDischarged = false
+  for r in s.results {
+    match r.goal.kind {
+      case GKPostcondition(_) -> {
+        match r.outcome {
+          case Discharged -> {
+            postDischarged = true
+          }
+          case _ -> ()
+        }
+      }
+      case _ -> ()
+    }
+  }
+  assertTrue(postDischarged, "the postcondition is still proved")
+}
+
+// A `requires:` clause no argument can meet: V0035, the proof failing,
+// and the vacuity check kept out of the obligations (#8223).
+func assertUnmeetable(body: in String, label: in String): Unit {
+  val s = provePkg(body)
+  assertTrue(summaryHasDiagCode(s, "V0035"), label + ": V0035 reported")
+  assertTrue(summaryHasErrorDiag(s), label + ": the proof fails")
+  for r in s.results {
+    match r.goal.kind {
+      case GKPreconditionDomain(_) -> assertTrue(false, label + ": a vacuity check counted as an obligation")
+      case _ -> ()
+    }
+  }
+  assertTrue(s.vacuityChecks.count > 0, label + ": vacuity checks kept")
+}
+
+func diagCodeCount(s: in ProofSummary, code: in String): Int {
+  var n = 0
+  for d in s.diagnostics {
+    if d.code == code {
+      n = n + 1
+    }
+  }
+  n
 }
 
 test "a quantifier over Char ranges over UTF-16 code units (#8214)" {

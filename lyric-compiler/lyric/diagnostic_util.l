@@ -168,3 +168,63 @@ pub func diagReportAndAbortInPkgWithOrigins(
   }
   hasErrors
 }
+
+/// A diagnostic attributed to the file it is in: `path` is the on-disk file
+/// (or the package label where no single file owns the line, "" when
+/// unknown) and `diagnostic`'s line is that file's own, not a merged
+/// package's.  For a caller that reports diagnostics itself rather than
+/// letting a pass print them (`lyric prove`, #8227).
+pub record LocatedDiagnostic {
+  path: String
+  diagnostic: Diagnostic
+}
+
+/// `d` attributed through `origins` (see `MergedLineOrigin`), falling back
+/// to `pkgLabel` and `d`'s own line.
+pub func diagLocate(pkgLabel: in String, origins: in List[MergedLineOrigin], d: in Diagnostic): LocatedDiagnostic {
+  val o = resolveLineOrigin(pkgLabel, origins, d)
+  val sp = d.span
+  val start = sp.startPos
+  val shift = o.originalLine - start.line
+  val stop = sp.endPos
+  LocatedDiagnostic(
+    path = o.path,
+    diagnostic = Diagnostic(
+      code = d.code,
+      severity = d.severity,
+      message = d.message,
+      span = Span(
+        startPos = Position(line = o.originalLine, column = start.column, offset = start.offset),
+        endPos = Position(line = stop.line + shift, column = stop.column, offset = stop.offset)
+      )
+    )
+  )
+}
+
+/// Every diagnostic of `diags`, attributed by `diagLocate`, appended to `dst`.
+/// Returns true when any is error-severity.
+pub func diagLocateAll(
+  pkgLabel: in String,
+  origins: in List[MergedLineOrigin],
+  diags: in List[Diagnostic],
+  dst: in List[LocatedDiagnostic],
+): Bool {
+  var hasErrors = false
+  for d in diags {
+    dst.add(diagLocate(pkgLabel, origins, d))
+    if d.severity == DiagError {
+      hasErrors = true
+    }
+  }
+  hasErrors
+}
+
+/// `path: severity[code] line:col: message`, or without the `path: ` prefix
+/// when the path is unknown — the form a build prints.
+pub func diagFormatLocated(ld: in LocatedDiagnostic): String {
+  if ld.path.length > 0 {
+    ld.path + ": " + diagFormat(ld.diagnostic)
+  } else {
+    diagFormat(ld.diagnostic)
+  }
+}

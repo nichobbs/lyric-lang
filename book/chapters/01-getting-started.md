@@ -460,8 +460,9 @@ Core commands you will use constantly:
 | `lyric lint --error-on-warning` | Treat warnings as errors (CI gate) |
 | `lyric doc <file.l>` | Generate Markdown documentation from doc comments |
 | `lyric doc` | Generate docs for all packages in the discovered project |
-| `lyric prove <file.l>` | Run the SMT-backed verifier on `@proof_required` modules |
+| `lyric prove <file.l>` | Type-check, then run the SMT-backed verifier on `@proof_required` modules (an ill-typed program is not proved) |
 | `lyric prove` | Verify all packages in the discovered project |
+| `lyric prove --target <t> --features <f> --define K=V` | Type-check the program for that build before proving it |
 | `lyric bench <file.l>` | Measure runtime performance of `@bench_module` functions |
 | `lyric bench <file.l> --target jvm` | Benchmark on the JVM target (`java -jar`) |
 | `lyric bench <file.l> --target native` | Benchmark the native executable |

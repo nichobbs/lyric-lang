@@ -2556,17 +2556,31 @@ func readProjectPackageSources(
   genMf: in Option[Mf.Manifest],
   gens: in Generator.GeneratorSet,
 ): Option[PkgSourceRead] {
+  readProjectPackageSourcesAs("build", pkgEntry, proj, mfDir, mfPath, genMf, gens)
+}
+
+// `readProjectPackageSources` for the command `cmd`, which prefixes the
+// messages it prints.
+func readProjectPackageSourcesAs(
+  cmd: in String,
+  pkgEntry: in Mf.PackageEntry,
+  proj: in Mf.ProjectSection,
+  mfDir: in String,
+  mfPath: in String,
+  genMf: in Option[Mf.Manifest],
+  gens: in Generator.GeneratorSet,
+): Option[PkgSourceRead] {
   val pkgSources: List[String] = newList()
   val pkgPaths: List[String] = newList()
   var hadFatal = false
   // The entry's file set is `Lyric.Discovery`'s, which `lyric prove` shares.
   val entryFiles = Disc.projectEntryFiles(pkgEntry, mfDir, proj)
   for problem in entryFiles.problems.toArray() {
-    printErr("build: package '" + pkgEntry.name + "': " + problem)
+    printErr(cmd + ": package '" + pkgEntry.name + "': " + problem)
     hadFatal = true
   }
   if entryFiles.emptyDir.length > 0 {
-    printErr("build: package '" + pkgEntry.name + "': no .l files found in " + entryFiles.emptyDir)
+    printErr(cmd + ": package '" + pkgEntry.name + "': no .l files found in " + entryFiles.emptyDir)
     hadFatal = true
   }
   for f in entryFiles.paths.toArray() {
@@ -2583,7 +2597,7 @@ func readProjectPackageSources(
         }
       }
       case Err(e) -> {
-        printErr("build: package '" + pkgEntry.name + "': " + IOError.message(e))
+        printErr(cmd + ": package '" + pkgEntry.name + "': " + IOError.message(e))
         hadFatal = true
       }
     }

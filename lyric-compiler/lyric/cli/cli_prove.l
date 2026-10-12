@@ -10,9 +10,13 @@ import Std.Environment as Environment
 import Std.Json as Json
 import Lyric.Manifest as Mf
 import Lyric.Lexer
+import Lyric.Parser as Parser
 import Lyric.ModeChecker as MC
 import Lyric.Verifier as Verifier
 import Lyric.Discovery as Disc
+import Lyric.DiagnosticUtil as DiagUtil
+import Lyric.BuildDefines as BD
+import Lyric.Emitter as Emitter
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §7. Prove command
@@ -53,6 +57,13 @@ func cmdProve(argv: in slice[String]): Int {
   var explainGoal: Option[Int] = None
   var manifestArg: Option[String] = None
   val positional: List[String] = newList()
+  // The build the proof's type check mirrors (#8227): its target, features
+  // and defines, as `lyric build` takes them.
+  var target: Emitter.CompileTarget = Emitter.Dotnet
+  val cliFeatures: List[String] = newList()
+  var noDefaultFeatures = false
+  var allFeatures = false
+  val cliDefines: List[String] = newList()
 
   var i = 1
   while i < argv.length {
@@ -93,11 +104,78 @@ func cmdProve(argv: in slice[String]): Int {
         printErr("prove: --manifest requires a path")
         return 1
       }
+    } else if arg == "--target" {
+      if i + 1 < argv.length {
+        val t = argv[i + 1]
+        if t == "dotnet" {
+          target = Emitter.Dotnet
+        } else if t == "jvm" {
+          target = Emitter.Jvm
+        } else if t == "native" {
+          target = Emitter.Native
+        } else {
+          printErr("prove: --target must be 'dotnet', 'jvm' or 'native', got: " + t)
+          return 1
+        }
+        i += 2
+      } else {
+        printErr("prove: --target requires an argument (dotnet, jvm or native)")
+        return 1
+      }
+    } else if arg == "--features" {
+      if i + 1 < argv.length {
+        // Comma-separated, whitespace-trimmed; empty entries dropped.
+        for piece in Str.split(argv[i + 1], ",") {
+          val trimmed = Str.trim(piece)
+          if Str.length(trimmed) > 0 {
+            cliFeatures.add(trimmed)
+          }
+        }
+        i += 2
+      } else {
+        printErr("prove: --features requires a comma-separated list")
+        return 1
+      }
+    } else if arg == "--no-default-features" {
+      noDefaultFeatures = true
+      i += 1
+    } else if arg == "--all-features" {
+      allFeatures = true
+      i += 1
+    } else if arg == "--define" {
+      if i + 1 < argv.length {
+        val kv = argv[i + 1]
+        match Str.indexOf(kv, "=") {
+          case Some(eq) -> {
+            if eq == 0 {
+              printErr("prove: --define requires KEY=VALUE (empty key): " + kv)
+              return 1
+            }
+            cliDefines.add(kv)
+          }
+          case None -> {
+            printErr("prove: --define requires KEY=VALUE, got: " + kv)
+            return 1
+          }
+        }
+        i += 2
+      } else {
+        printErr("prove: --define requires a KEY=VALUE argument")
+        return 1
+      }
     } else {
       positional.add(arg)
       i += 1
     }
   }
+
+  val buildSettings = ProveBuild(
+    target = target,
+    cliFeatures = cliFeatures,
+    noDefaultFeatures = noDefaultFeatures,
+    allFeatures = allFeatures,
+    defines = cliDefines
+  )
 
   // Project-mode: no explicit source file — discover or use --manifest.
   // --json and --explain are file-specific and require an explicit source.
@@ -124,6 +202,12 @@ func cmdProve(argv: in slice[String]): Int {
     }
     if sourcePaths.count == 0 {
       printErr("prove: no source files found in project")
+      return 1
+    }
+    // A proof of a program the build rejects means nothing (#8227).
+    val noTestEntries: List[String] = newList()
+    val everyPackage: Option[List[String]] = None
+    if not reportProveTypeCheck(typeCheckManifestForProve(projectMfPath, noTestEntries, everyPackage, buildSettings), projectMfPath) {
       return 1
     }
     // Each `[project.packages]` entry's scope over exactly the files the
@@ -190,6 +274,20 @@ func cmdProve(argv: in slice[String]): Int {
     }
   }
 
+  // A proof of a program the type checker rejects means nothing: the file
+  // is type-checked as every build that compiles it checks it, and nothing
+  // is proved unless it passes (#8227).
+  val typeCheck = typeCheckForProveFile(sourcePath, source, buildSettings)
+  if jsonOutput and not typeCheck.ok {
+    Console.print(
+      proveJson(sourcePath, MC.vlDisplay(Verifier.sourceVerificationLevel(source)), "", typeCheck.diagnostics, 0, 0)
+    )
+    return 1
+  }
+  if not jsonOutput and not reportProveTypeCheck(typeCheck, sourcePath) {
+    return 1
+  }
+
   // The file's package is the build's: its manifest entry's files, or its
   // directory tree (#8108).
   val fileScope = match Disc.packageFileSetForSource(sourcePath) {
@@ -230,10 +328,7 @@ func cmdProve(argv: in slice[String]): Int {
   }
 
   if jsonOutput {
-    var jsonBuf = "{\n"
-    jsonBuf = jsonBuf + "  \"file\": " + jsonStr(sourcePath) + ",\n"
-    jsonBuf = jsonBuf + "  \"level\": " + jsonStr(MC.vlDisplay(summary.level)) + ",\n"
-    jsonBuf = jsonBuf + "  \"goals\": [\n"
+    var goalsBuf = ""
     var gi = 0
     while gi < summary.results.count {
       val r = summary.results[gi]
@@ -245,46 +340,37 @@ func cmdProve(argv: in slice[String]): Int {
         case Unknown(_) -> "unknown"
       }
       val modelStr = match r.outcome { case Counterexample(m) -> jsonStr(m); case _ -> "null" }
-      jsonBuf = jsonBuf + "    {\n"
-      jsonBuf = jsonBuf + "      \"index\": " + toString(gi) + ",\n"
-      jsonBuf = jsonBuf + "      \"label\": " + jsonStr(gl.label) + ",\n"
-      jsonBuf = jsonBuf + "      \"kind\": " + jsonStr(Verifier.goalKindDisplay(gl.kind)) + ",\n"
-      jsonBuf = jsonBuf + "      \"line\": " + toString(gl.origin.startPos.line) + ",\n"
-      jsonBuf = jsonBuf + "      \"col\": " + toString(gl.origin.startPos.column) + ",\n"
-      jsonBuf = jsonBuf + "      \"outcome\": " + jsonStr(outcomeStr) + ",\n"
-      jsonBuf = jsonBuf + "      \"model\": " + modelStr + ",\n"
-      jsonBuf = jsonBuf + "      \"smtPath\": null,\n"
-      jsonBuf = jsonBuf + "      \"suggestions\": []\n"
-      jsonBuf = jsonBuf + "    }" + comma + "\n"
+      goalsBuf = goalsBuf + "    {\n"
+      goalsBuf = goalsBuf + "      \"index\": " + toString(gi) + ",\n"
+      goalsBuf = goalsBuf + "      \"label\": " + jsonStr(gl.label) + ",\n"
+      goalsBuf = goalsBuf + "      \"kind\": " + jsonStr(Verifier.goalKindDisplay(gl.kind)) + ",\n"
+      goalsBuf = goalsBuf + "      \"line\": " + toString(gl.origin.startPos.line) + ",\n"
+      goalsBuf = goalsBuf + "      \"col\": " + toString(gl.origin.startPos.column) + ",\n"
+      goalsBuf = goalsBuf + "      \"outcome\": " + jsonStr(outcomeStr) + ",\n"
+      goalsBuf = goalsBuf + "      \"model\": " + modelStr + ",\n"
+      goalsBuf = goalsBuf + "      \"smtPath\": null,\n"
+      goalsBuf = goalsBuf + "      \"suggestions\": []\n"
+      goalsBuf = goalsBuf + "    }" + comma + "\n"
       gi = gi + 1
     }
-    jsonBuf = jsonBuf + "  ],\n"
-    jsonBuf = jsonBuf + "  \"diagnostics\": [\n"
-    var di = 0
-    while di < summary.diagnostics.count {
-      val d = summary.diagnostics[di]
-      val comma = if di + 1 < summary.diagnostics.count { "," } else { "" }
-      val sevStr = match d.severity { case DiagError -> "error"; case DiagWarning -> "warning" }
-      jsonBuf = jsonBuf + "    {\"code\":" + jsonStr(d.code) + ",\"severity\":" + jsonStr(sevStr) + ",\"message\":" +
-        jsonStr(d.message) +
-        ",\"line\":" +
-        toString(d.span.startPos.line) +
-        ",\"col\":" +
-        toString(d.span.startPos.column) +
-        "}" +
-        comma +
-        "\n"
-      di = di + 1
+    // The type checker's warnings, then the verifier's diagnostics.
+    val allDiags: List[DiagUtil.LocatedDiagnostic] = newList()
+    for d in typeCheck.diagnostics {
+      allDiags.add(d)
     }
-    jsonBuf = jsonBuf + "  ],\n"
-    jsonBuf = jsonBuf + "  \"summary\": {\n"
-    jsonBuf = jsonBuf + "    \"total\": " + toString(Verifier.summaryTotalCount(summary)) + ",\n"
-    jsonBuf = jsonBuf + "    \"discharged\": " + toString(Verifier.summaryDischargedCount(summary)) + ",\n"
-    jsonBuf = jsonBuf + "    \"unknown\": 0,\n"
-    jsonBuf = jsonBuf + "    \"counterexamples\": 0\n"
-    jsonBuf = jsonBuf + "  }\n"
-    jsonBuf = jsonBuf + "}\n"
-    Console.print(jsonBuf)
+    for d in summary.diagnostics {
+      allDiags.add(DiagUtil.LocatedDiagnostic(path = sourcePath, diagnostic = d))
+    }
+    Console.print(
+      proveJson(
+        sourcePath,
+        MC.vlDisplay(summary.level),
+        goalsBuf,
+        allDiags,
+        Verifier.summaryTotalCount(summary),
+        Verifier.summaryDischargedCount(summary)
+      )
+    )
     if Verifier.summaryHasErrorDiag(summary) or Verifier.summaryHasCounterexample(summary) {
       return 1
     }
@@ -312,6 +398,368 @@ func cmdProve(argv: in slice[String]): Int {
   } else {
     0
   }
+}
+
+// The `lyric prove --json` document (docs/15 Appendix A): `goalsBuf` is the
+// goal objects already rendered, one per line group.  Each diagnostic object
+// also names the file it is in (`file`, an addition to the frozen v1 keys).
+func proveJson(
+  file: in String,
+  level: in String,
+  goalsBuf: in String,
+  diags: in List[DiagUtil.LocatedDiagnostic],
+  total: in Int,
+  discharged: in Int,
+): String {
+  var jsonBuf = "{\n"
+  jsonBuf = jsonBuf + "  \"file\": " + jsonStr(file) + ",\n"
+  jsonBuf = jsonBuf + "  \"level\": " + jsonStr(level) + ",\n"
+  jsonBuf = jsonBuf + "  \"goals\": [\n"
+  jsonBuf = jsonBuf + goalsBuf
+  jsonBuf = jsonBuf + "  ],\n"
+  jsonBuf = jsonBuf + "  \"diagnostics\": [\n"
+  var di = 0
+  while di < diags.count {
+    val ld = diags[di]
+    val d = ld.diagnostic
+    val comma = if di + 1 < diags.count { "," } else { "" }
+    val sevStr = match d.severity { case DiagError -> "error"; case DiagWarning -> "warning" }
+    jsonBuf = jsonBuf + "    {\"code\":" + jsonStr(d.code) + ",\"severity\":" + jsonStr(sevStr) + ",\"message\":" +
+      jsonStr(d.message) +
+      ",\"line\":" +
+      toString(d.span.startPos.line) +
+      ",\"col\":" +
+      toString(d.span.startPos.column) +
+      ",\"file\":" +
+      jsonStr(ld.path) +
+      "}" +
+      comma +
+      "\n"
+    di = di + 1
+  }
+  jsonBuf = jsonBuf + "  ],\n"
+  jsonBuf = jsonBuf + "  \"summary\": {\n"
+  jsonBuf = jsonBuf + "    \"total\": " + toString(total) + ",\n"
+  jsonBuf = jsonBuf + "    \"discharged\": " + toString(discharged) + ",\n"
+  jsonBuf = jsonBuf + "    \"unknown\": 0,\n"
+  jsonBuf = jsonBuf + "    \"counterexamples\": 0\n"
+  jsonBuf = jsonBuf + "  }\n"
+  jsonBuf = jsonBuf + "}\n"
+  jsonBuf
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The type check `lyric prove` runs before it proves anything (#8227)
+// ─────────────────────────────────────────────────────────────────────────────
+// The type checker's diagnostics on the program a proof is about, and
+// whether it passed.  `ok` is false too when the program could not be
+// loaded to be checked (a manifest or package that cannot be read, a
+// dependency that cannot be resolved).
+record ProveTypeCheck {
+  diagnostics: List[DiagUtil.LocatedDiagnostic]
+  ok: Bool
+}
+
+func proveTypeCheckOf(diags: in List[DiagUtil.LocatedDiagnostic]): ProveTypeCheck {
+  var ok = true
+  for d in diags {
+    if d.diagnostic.severity == DiagError {
+      ok = false
+    }
+  }
+  ProveTypeCheck(diagnostics = diags, ok = ok)
+}
+
+// A failure to load the program for the type check, as a diagnostic of the
+// manifest or file at `path`.
+func proveLoadFailure(path: in String, message: in String): ProveTypeCheck {
+  val diags: List[DiagUtil.LocatedDiagnostic] = newList()
+  diags.add(
+    DiagUtil.LocatedDiagnostic(
+      path = path,
+      diagnostic = errorDiagnostic("B0001", message, pointSpan(initialPosition()))
+    )
+  )
+  ProveTypeCheck(diagnostics = diags, ok = false)
+}
+
+// Print the type check's diagnostics as a build prints them; when it did
+// not pass, say that nothing was proved.  Returns whether it passed.
+func reportProveTypeCheck(tc: in ProveTypeCheck, subject: in String): Bool {
+  for d in tc.diagnostics {
+    printErr(DiagUtil.diagFormatLocated(d))
+  }
+  if not tc.ok {
+    printErr("prove: " + subject + " fails the build's checks; no proof obligation was attempted")
+  }
+  tc.ok
+}
+
+// The build a proof's type check mirrors: `lyric build`'s `--target`,
+// `--features`, `--no-default-features`, `--all-features` and `--define`.
+// No manifest key declares a default target, so it is dotnet unless
+// `--target` says otherwise, as for `lyric build`.
+record ProveBuild {
+  target: Emitter.CompileTarget
+  cliFeatures: List[String]
+  noDefaultFeatures: Bool
+  allFeatures: Bool
+  defines: List[String]
+}
+
+// The source file at `sourcePath` checked as each build that compiles it
+// checks it: within each project whose manifest lists it, its own package
+// and the packages it imports, or alone, as `lyric build <file>` does, when
+// no manifest lists it.
+func typeCheckForProveFile(sourcePath: in String, source: in String, build: in ProveBuild): ProveTypeCheck {
+  val entries = match Disc.entriesContainingSource(sourcePath) {
+    case Some(es) -> es
+    case None -> return proveLoadFailure(
+      sourcePath,
+      "cannot tell which packages build this file: an enclosing lyric.toml cannot be read, or a package that lists it cannot be listed"
+    )
+  }
+  if entries.count == 0 {
+    val req = Emitter.EmitRequest(
+      source = source,
+      assemblyName = stemOf(Path.basename(sourcePath), 2),
+      outputPath = "",
+      target = build.target,
+      packageVersion = "",
+      defines = build.defines,
+      path = sourcePath,
+      contractsEnabled = true
+    )
+    return proveTypeCheckOf(Emitter.typeCheckSource(req))
+  }
+  // Each manifest once, with its entries that list the file: the packages
+  // checked there are theirs and what they import.  A `[project.tests]`
+  // entry is checked only when it lists the file.
+  val manifests: List[String] = newList()
+  for e in entries {
+    if not stringListContains(manifests, e.manifestPath) {
+      manifests.add(e.manifestPath)
+    }
+  }
+  val all: List[DiagUtil.LocatedDiagnostic] = newList()
+  for mfPath in manifests {
+    val tests: List[String] = newList()
+    val focus: List[String] = newList()
+    for e in entries {
+      if e.manifestPath == mfPath {
+        focus.add(e.entryName)
+        if e.isTests {
+          tests.add(e.entryName)
+        }
+      }
+    }
+    val one = typeCheckManifestForProve(mfPath, tests, Some(value = focus), build)
+    for d in one.diagnostics {
+      all.add(d)
+    }
+    if not one.ok {
+      return ProveTypeCheck(diagnostics = all, ok = false)
+    }
+  }
+  proveTypeCheckOf(all)
+}
+
+// A project entry and the packages its files import.
+record ProveEntry {
+  pkgEntry: Mf.PackageEntry
+  imports: List[String]
+}
+
+// The packages the files of `entry` import, by dotted name: not the
+// `import extern` ones, which name host types, nor a file that cannot be
+// read or parsed, which the check itself reports.
+func entryImports(entry: in Mf.PackageEntry, mfDir: in String, proj: in Mf.ProjectSection): List[String] {
+  val names: List[String] = newList()
+  for path in Disc.projectEntryFiles(entry, mfDir, proj).paths {
+    match File.readText(path) {
+      case Ok(text) -> {
+        for imp in Parser.parse(text).file.imports {
+          if not imp.isExtern {
+            val name = Str.joinList(".", imp.path.segments)
+            if not stringListContains(names, name) {
+              names.add(name)
+            }
+          }
+        }
+      }
+      case Err(_) -> ()
+    }
+  }
+  names
+}
+
+// The project at `mfPath` checked as `lyric build` for `build.target` checks
+// it, without compiling it: the entries named in `focus` and every project
+// package they import, directly or not (with `focus` None, every
+// `[project.packages]` entry, `test_only` ones included, since a proof covers
+// them), plus the `[project.tests]` entries named in `testEntries`.  The
+// project's dependencies are resolved only when one of those packages
+// imports a package that is neither the standard library's nor the
+// project's, and then each must be built or restored: a proof never restores
+// or builds one, so an unbuilt dependency stops it, as it does a build.
+func typeCheckManifestForProve(
+  mfPath: in String,
+  testEntries: in List[String],
+  focus: in Option[List[String]],
+  build: in ProveBuild,
+): ProveTypeCheck {
+  val mfText = match File.readText(mfPath) {
+    case Ok(t) -> t
+    case Err(e) -> return proveLoadFailure(mfPath, "cannot read the manifest: " + IOError.message(e))
+  }
+  val manifest = match Mf.parseManifest(mfText, mfPath) {
+    case Ok(m) -> m
+    case Err(e) -> return proveLoadFailure(mfPath, "cannot parse the manifest: " + Mf.ManifestError.message(e))
+  }
+  val proj = match manifest.project {
+    case Some(p) -> p
+    case None -> return proveLoadFailure(mfPath, "the manifest has no [project] section")
+  }
+  val mfDir = Path.dirname(mfPath)
+  val (activeFeatures, mfDeclared) = resolveManifestFeatures(
+    mfText,
+    mfPath,
+    build.cliFeatures,
+    build.noDefaultFeatures,
+    build.allFeatures,
+    build.target
+  )
+  val candidates: List[ProveEntry] = newList()
+  for e in proj.packages.toArray() {
+    candidates.add(ProveEntry(pkgEntry = e, imports = entryImports(e, mfDir, proj)))
+  }
+  for e in proj.tests.toArray() {
+    if stringListContains(testEntries, e.name) {
+      candidates.add(ProveEntry(pkgEntry = e, imports = entryImports(e, mfDir, proj)))
+    }
+  }
+  val projectNames: List[String] = newList()
+  for c in candidates {
+    projectNames.add(c.pkgEntry.name)
+  }
+  // The import closure of the focus entries over the project's packages.
+  val chosen: List[String] = newList()
+  match focus {
+    case Some(names) -> {
+      for n in names {
+        if not stringListContains(chosen, n) {
+          chosen.add(n)
+        }
+      }
+    }
+    case None -> {
+      for e in proj.packages.toArray() {
+        chosen.add(e.name)
+      }
+    }
+  }
+  for n in testEntries {
+    if not stringListContains(chosen, n) {
+      chosen.add(n)
+    }
+  }
+  var needsDeps = false
+  var ci = 0
+  while ci < chosen.count {
+    for c in candidates {
+      if c.pkgEntry.name == chosen[ci] {
+        for imp in c.imports {
+          if stringListContains(projectNames, imp) {
+            if not stringListContains(chosen, imp) {
+              chosen.add(imp)
+            }
+          } else if imp != "Std" and not Str.startsWith(imp, "Std.") {
+            needsDeps = true
+          }
+        }
+      }
+    }
+    ci = ci + 1
+  }
+  val gens = resolveGenerators(manifest, mfPath)
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  for c in candidates {
+    if stringListContains(chosen, c.pkgEntry.name) {
+      match readProjectPackageSourcesAs("prove", c.pkgEntry, proj, mfDir, mfPath, Some(value = manifest), gens) {
+        case Some(read) -> {
+          if read.sources.count > 0 {
+            pkgs.add(
+              Emitter.ProjectPackage(name = c.pkgEntry.name, sources = read.sources, paths = read.paths, nameFromManifest = true)
+            )
+          }
+        }
+        case None -> return proveLoadFailure(mfPath, "package '" + c.pkgEntry.name + "' cannot be read")
+      }
+    }
+  }
+  val restoredDlls: List[String] = newList()
+  val depSrcs: List[Emitter.ProjectPackage] = newList()
+  val nugetPaths: List[String] = newList()
+  var depFeatures = Emitter.noPackageFeatures()
+  if needsDeps {
+    if lockNeedsRestore(mfPath, manifest) {
+      return proveLoadFailure(
+        mfPath,
+        "the project's dependencies are not restored (lyric.lock is missing or out of date); run `lyric restore` or `lyric build` first"
+      )
+    }
+    val resolved = resolveManifestDependenciesAs(
+      "prove",
+      manifest,
+      mfPath,
+      build.target,
+      build.cliFeatures,
+      build.noDefaultFeatures
+    )
+    if resolved.hadWorkspaceError or resolved.hadUnsupportedDep or resolved.hadUnbuiltLocalDep {
+      return proveLoadFailure(
+        mfPath,
+        "a dependency of the project is not built or cannot be used (see above); run `lyric restore` or `lyric build` first"
+      )
+    }
+    for d in resolved.restoredDlls {
+      restoredDlls.add(d)
+    }
+    for d in resolved.depTemplateSrcs {
+      depSrcs.add(d)
+    }
+    for d in resolved.nugetThirdPartyPaths {
+      nugetPaths.add(d)
+    }
+    depFeatures = resolved.depPackageFeatures
+  }
+  // `[layers]` give each package its I/O rule, as for a build.
+  val layered = match checkProjectLayers(manifest, mfPath, pkgs, depSrcs, restoredDlls, build.target, activeFeatures, mfDeclared) {
+    case Some(l) -> l
+    case None -> return proveLoadFailure(mfPath, "the project breaks its [layers] rules (see above)")
+  }
+  // A dependency is compiled from its source on the JVM and native targets.
+  if compilesDepsFromSource(build.target) {
+    for d in depSrcs {
+      layered.add(d)
+    }
+  }
+  val req = Emitter.EmitProjectRequest(
+    packages = layered,
+    assemblyName = proj.name,
+    outputPath = "",
+    target = build.target,
+    restoredDllPaths = restoredDlls,
+    activeFeatures = activeFeatures,
+    declaredFeatures = mfDeclared,
+    packageVersion = manifest.packageSection.version,
+    depTemplateSrcs = depSrcs,
+    nugetAssemblyPaths = nugetPaths,
+    defines = BD.withManifestDefines(Mf.getManifestBuildDefines(manifest), build.defines),
+    packageFeatures = depFeatures,
+    contractsEnabled = match manifest.contracts { case Some(cs) -> cs.enabled; case None -> true }
+  )
+  proveTypeCheckOf(Emitter.typeCheckProject(req))
 }
 
 // The scope of every file of the project at `mfPath`: for each

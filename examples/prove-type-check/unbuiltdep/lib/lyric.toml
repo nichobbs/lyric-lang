@@ -1,0 +1,11 @@
+[package]
+name = "ProveTypeCheckLib"
+version = "0.1.0"
+
+[project]
+name = "ProveTypeCheckLib"
+output = "single"
+output_assembly = "ProveTypeCheckLib.dll"
+
+[project.packages]
+"Mylib" = "src/mylib.l"

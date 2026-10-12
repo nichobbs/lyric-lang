@@ -1,0 +1,11 @@
+[package]
+name = "ProveTypeCheckJvmOnly"
+version = "0.1.0"
+
+[project]
+name = "ProveTypeCheckJvmOnly"
+output = "single"
+output_assembly = "ProveTypeCheckJvmOnly.dll"
+
+[project.packages]
+"P" = "src/p"
