@@ -28,7 +28,9 @@ level. Two cases had no rule in docs/01:
    through the type. Any other method name on a primitive other than
    `String`, and on a distinct type that does not declare it, is T0113. A
    dot-named function declared through an alias (`alias Num = Int`,
-   `func Num.neg`) is the aliased type's (`Int.neg`).
+   `func Num.neg`) is the aliased type's (`Int.neg`), for an imported alias
+   and an alias chain too; an alias of a generic instance, a function or a
+   tuple type cannot name one (T0171).
 
 2. **The type's own applicable function wins.** A method call `b.m(args)`
    and a call through the type `T.m(b, args)` bind the same function: one of
@@ -60,9 +62,9 @@ level. Two cases had no rule in docs/01:
 5. **The middle end lowers it.** A method call bound to an extension (every
    dot-named function of a primitive is one) is rewritten into a plain call of
    the function through its package, as a by-reference dot-named call is
-   (#8179), so no backend chooses among same-named functions itself. A call
-   through the type that binds a method in the type's body is rewritten into
-   the method call, and one that binds another package's own function that a
+   (#8179), so no backend chooses among same-named functions itself. Every
+   call through the type (`T.m(x, args)`, `Pkg.T.m(x, args)`) that binds a
+   method in the type's body is rewritten into the method call, and one that binds another package's own function that a
    same-named function of another package could capture by name is named
    through its package. In a
    generic function of another package, the declaring package's check of the

@@ -191,6 +191,10 @@ pub record MiddleEndOptions {
   /// intrinsics, for a backend that has typed primitive arrays (the JVM,
   /// #8041).
   primitiveArrays: Bool = false
+  /// Leave the type checker's warnings unreported: a dependency compiled
+  /// from source into a consumer's build was already reported when the
+  /// dependency itself was built.
+  quietWarnings: Bool = false
 }
 
 // Report `diags` (package-labelled when `pkgLabel` is non-empty, further
@@ -598,7 +602,12 @@ pub func pipePrepareForCheck(file: in SourceFile, runStubbable: in Bool): CheckR
   }
   // Record-body methods with an `inout` receiver become dot-named functions
   // (#8179) before anything indexes the items.
-  var f = canonicalAliasDotNamed(Aliases.rewriteFile(hoistByRefReceiverMethods(mvRes.file)))
+  // A dot-named function declared through one of the file's own aliases is
+  // named after the aliased type (#8217); a project build has already done
+  // this for the aliases its packages import (`canonicalAliasDotNamedAll`).
+  val own: List[SourceFile] = newList()
+  own.add(mvRes.file)
+  var f = Aliases.rewriteFile(hoistByRefReceiverMethods(canonicalAliasDotNamed(mvRes.file, own)))
   if runStubbable {
     f = Stubbable.stubbableRewriteFile(f)
   }
@@ -617,66 +626,108 @@ pub func pipePrepareForCheck(file: in SourceFile, runStubbable: in Bool): CheckR
   CheckReadyFile(file = synthesizeInvariantCheckers(idRes.file), diagnostics = diags)
 }
 
-/// Each dot-named function declared through a type alias, `func Num.neg`
-/// for `alias Num = Int`, named after the aliased type, `Int.neg`, with
-/// every call through the alias (`Num.neg(n)`) renamed with it: a method
-/// call on a value finds a dot-named function under the name of the value's
-/// type, which an alias does not change (#8217).  An alias of a generic
-/// instance, a function type or another non-nominal type is left alone.
-pub func canonicalAliasDotNamed(file: in SourceFile): SourceFile {
-  val targets: Map[String, String] = newMap()
+/// Each file of a build with every dot-named function it declares through a
+/// type alias (`func Num.neg` for `alias Num = Int`) named after the aliased
+/// type (`Int.neg`), and every call written through the alias (`Num.neg(k)`,
+/// `Pkg.Num.neg(k)`) renamed with it, before any backend or the type checker
+/// indexes the files (#8217).  An alias is the file's own or a `pub` alias of
+/// a package of `files` the file imports, followed through chains; only an
+/// alias of a plain named type is followed (an alias of a generic instance,
+/// a function or a tuple type is left for the type checker, T0171).  The
+/// type checker resolves the same aliases for a restored package's
+/// declarations (`renameAliasDotNamed`).
+pub func canonicalAliasDotNamedAll(files: in List[SourceFile]): List[SourceFile] {
+  val renamed: List[SourceFile] = newList()
+  for f in files {
+    renamed.add(canonicalAliasDotNamed(f, files))
+  }
+  renamed
+}
+
+func canonicalAliasDotNamed(file: in SourceFile, files: in List[SourceFile]): SourceFile {
+  val raw: Map[String, TypeExpr] = newMap()
+  addAliasDecls(file, false, raw)
+  for imp in file.imports {
+    if not imp.isExtern {
+      val pkg = modulePathJoin(imp.path.segments)
+      for other in files {
+        if modulePathJoin(other.packageDecl.path.segments) == pkg {
+          addAliasDecls(other, true, raw)
+        }
+      }
+    }
+  }
+  if raw.count == 0 {
+    return file
+  }
+  // A name the file declares as a type of its own is never an alias here.
+  val ownTypes: List[String] = newList()
   for it in file.items {
     match it.kind {
-      case ITypeAlias(d) -> match d.generics {
-        case None -> match d.rhs.kind {
-          case TRef(p) -> if p.segments.count > 0 and not targets.containsKey(d.name) {
-            targets.add(d.name, p.segments[p.segments.count - 1])
-          }
-          case _ -> ()
-        }
-        case Some(_) -> ()
-      }
+      case IRecord(d) -> ownTypes.add(d.name)
+      case IExposedRec(d) -> ownTypes.add(d.name)
+      case IUnion(d) -> ownTypes.add(d.name)
+      case IEnum(d) -> ownTypes.add(d.name)
+      case IOpaque(d) -> ownTypes.add(d.name)
+      case IProtected(d) -> ownTypes.add(d.name)
+      case IDistinctType(d) -> ownTypes.add(d.name)
       case _ -> ()
+    }
+  }
+  val targets: Map[String, String] = newMap()
+  for name in mapKeys(raw) {
+    if not ownTypes.contains(name) {
+      match aliasPlainTarget(raw, name) {
+        case Some(t) -> if t != name { targets.add(name, t) }
+        case None -> ()
+      }
     }
   }
   if targets.count == 0 {
     return file
   }
-  var renamed = false
   val items: List[Item] = newList()
   for it in file.items {
     match it.kind {
       case IFunc(fd) -> match aliasDotNamedTarget(targets, fd.name) {
-        case Some(n) -> {
-          renamed = true
-          items.add(it.copy(kind = IFunc(decl = fd.copy(name = n))))
-        }
+        case Some(n) -> items.add(it.copy(kind = IFunc(decl = fd.copy(name = n))))
         case None -> items.add(it)
       }
       case _ -> items.add(it)
     }
-  }
-  if not renamed {
-    return file
   }
   mapFileAndContracts(
     file.copy(items = items),
     { e: Expr ->
       match e.kind {
         case ECall(fn, args) -> match fn.kind {
-          case EPath(p) -> if p.segments.count == 2 and targets.containsKey(p.segments[0]) {
+          case EPath(p) -> if p.segments.count >= 2 and targets.containsKey(p.segments[p.segments.count - 2]) {
             val segs: List[String] = newList()
-            segs.add(mapGetOr(targets, p.segments[0], p.segments[0]))
-            segs.add(p.segments[1])
+            var i = 0
+            while i < p.segments.count {
+              segs.add(if i == p.segments.count - 2 { aliasTargetOr(targets, p.segments[i]) } else { p.segments[i] })
+              i = i + 1
+            }
             Expr(kind = ECall(fn = fn.copy(kind = EPath(path = p.copy(segments = segs))), args = args), span = e.span)
           } else {
             e
           }
           case EMember(recv, m) -> match recv.kind {
-            case EPath(rp) -> if rp.segments.count == 1 and targets.containsKey(rp.segments[0]) {
+            case EPath(rp) -> if rp.segments.count >= 1 and targets.containsKey(rp.segments[rp.segments.count - 1]) {
               val segs: List[String] = newList()
-              segs.add(mapGetOr(targets, rp.segments[0], rp.segments[0]))
+              var i = 0
+              while i < rp.segments.count {
+                segs.add(if i == rp.segments.count - 1 { aliasTargetOr(targets, rp.segments[i]) } else { rp.segments[i] })
+                i = i + 1
+              }
               val newRecv = recv.copy(kind = EPath(path = rp.copy(segments = segs)))
+              Expr(kind = ECall(fn = fn.copy(kind = EMember(receiver = newRecv, memberName = m)), args = args), span = e.span)
+            } else {
+              e
+            }
+            // `Pkg.Num.neg(k)` written as members of a package path.
+            case EMember(inner, owner) -> if targets.containsKey(owner) and isPathExpr(inner) {
+              val newRecv = recv.copy(kind = EMember(receiver = inner, memberName = aliasTargetOr(targets, owner)))
               Expr(kind = ECall(fn = fn.copy(kind = EMember(receiver = newRecv, memberName = m)), args = args), span = e.span)
             } else {
               e
@@ -692,6 +743,53 @@ pub func canonicalAliasDotNamed(file: in SourceFile): SourceFile {
   )
 }
 
+// The aliases `file` declares (only its `pub` ones when `pubOnly`) into
+// `into`, a name already there winning.
+func addAliasDecls(file: in SourceFile, pubOnly: in Bool, into: in Map[String, TypeExpr]): Unit {
+  for it in file.items {
+    match it.kind {
+      case ITypeAlias(d) -> {
+        val isPub = match it.visibility { case Some(_) -> true; case None -> false }
+        val plain = match d.generics { case Some(_) -> false; case None -> true }
+        if plain and (isPub or not pubOnly) and not into.containsKey(d.name) {
+          into.add(d.name, d.rhs)
+        }
+      }
+      case _ -> ()
+    }
+  }
+}
+
+// The plain named type the alias `name` stands for, following chains
+// through `raw`; `None` for an alias of any other type, or a cycle.
+func aliasPlainTarget(raw: in Map[String, TypeExpr], name: in String): Option[String] {
+  var cur = name
+  var steps = 0
+  while steps < 32 {
+    match mapGet(raw, cur) {
+      case Some(te) -> match te.kind {
+        case TRef(p) -> if p.segments.count == 0 {
+          return None
+        } else {
+          cur = p.segments[p.segments.count - 1]
+        }
+        case _ -> return None
+      }
+      case None -> return if steps == 0 { None } else { Some(value = cur) }
+    }
+    steps = steps + 1
+  }
+  None
+}
+
+func isPathExpr(e: in Expr): Bool {
+  match e.kind {
+    case EPath(_) -> true
+    case EMember(inner, _) -> isPathExpr(inner)
+    case _ -> false
+  }
+}
+
 func aliasDotNamedTarget(targets: in Map[String, String], name: in String): Option[String] {
   val dot = Str.lastIndexOfRaw(name, ".")
   if dot <= 0 {
@@ -703,10 +801,41 @@ func aliasDotNamedTarget(targets: in Map[String, String], name: in String): Opti
   }
 }
 
-func mapGetOr(m: in Map[String, String], k: in String, dflt: in String): String {
-  match mapGet(m, k) {
-    case Some(v) -> v
-    case None -> dflt
+func aliasTargetOr(targets: in Map[String, String], name: in String): String {
+  match mapGet(targets, name) {
+    case Some(t) -> t
+    case None -> name
+  }
+}
+
+/// Each dot-named function this package declares through a type alias
+/// (`func Num.neg` for `alias Num = Int`) renamed to the name the type
+/// checker registered it under, the aliased type's (`Int.neg`,
+/// `SymbolTable.dotNameRenames`, #8217): every call of it, by method syntax
+/// or through the alias, names it that way after `rewriteByRefDotCalls`.
+pub func renameAliasDotNamed(file: in SourceFile, renames: in Map[String, String]): SourceFile {
+  if renames.count == 0 {
+    return file
+  }
+  val pkg = modulePathJoin(file.packageDecl.path.segments)
+  var renamed = false
+  val items: List[Item] = newList()
+  for it in file.items {
+    match it.kind {
+      case IFunc(fd) -> match mapGet(renames, pkg + "|" + fd.name) {
+        case Some(n) -> {
+          renamed = true
+          items.add(it.copy(kind = IFunc(decl = fd.copy(name = n))))
+        }
+        case None -> items.add(it)
+      }
+      case _ -> items.add(it)
+    }
+  }
+  if renamed {
+    file.copy(items = items)
+  } else {
+    file
   }
 }
 
@@ -753,6 +882,21 @@ func gateTo(
   gate(pkgLabel, origins, diags)
 }
 
+// `diags` without its warnings when `quiet`.
+func withoutWarningsIf(quiet: in Bool, diags: in List[Diagnostic]): List[Diagnostic] {
+  if not quiet {
+    return diags
+  }
+  val kept: List[Diagnostic] = newList()
+  for d in diags {
+    match d.severity {
+      case DiagWarning -> ()
+      case _ -> kept.add(d)
+    }
+  }
+  kept
+}
+
 // Report `diags` into `sink` without their deciding anything.
 func reportTo(
   sink: in DiagSink,
@@ -792,7 +936,7 @@ pub func pipeCheckFront(
     checkWithImportedPackages(file0, importedPkgs)
   }
   if opts.tcFatal {
-    if gateTo(sink, opts.pkgLabel, opts.lineOrigins, tcRes.diagnostics) {
+    if gateTo(sink, opts.pkgLabel, opts.lineOrigins, withoutWarningsIf(opts.quietWarnings, tcRes.diagnostics)) {
       return None
     }
   } else if opts.tcReport {
@@ -836,7 +980,10 @@ pub func pipeCheckFront(
   // function becomes a plain call of it (#8179, #8183) before anything binds
   // a call's operands (the D171 argument-order rewrite, the `?`/`await`
   // hoists), so the receiver is an argument the call keeps as a place.
-  val byRefCalls = rewriteByRefDotCalls(file0, tcRes.symbols.byRefDotCallSites)
+  val byRefCalls = renameAliasDotNamed(
+    rewriteByRefDotCalls(file0, tcRes.symbols.byRefDotCallSites),
+    tcRes.symbols.dotNameRenames
+  )
   val copyRes = pipeDesugarChecked(
     byRefCalls,
     tcRes,

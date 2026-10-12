@@ -820,6 +820,12 @@ func resolveTypeAliasesNative(file: in SourceFile): SourceFile {
   TAR.resolveAliasesInFile(BFR.collectFuncAliasTargets(file), file)
 }
 
+/// `resolveTypeAliasesNative` for a package of a project: the aliases it
+/// declares, then the `pub` aliases of the project packages it imports.
+func resolveProjectTypeAliasesNative(file: in SourceFile, projectFiles: in List[SourceFile]): SourceFile {
+  TAR.resolveAliasesInFile(TAR.projectAliasTargets(file, projectFiles), file)
+}
+
 /// `compileToNative` with extra clang driver flags (e.g.
 /// `-fsanitize=address` for the sanitizer-checked self-tests).
 ///
@@ -1361,6 +1367,14 @@ pub func compileProjectToNativeWithShape(
     cfgFiles.add(cfgFile)
     ppi = ppi + 1
   }
+  // Dot-named functions declared through an imported alias carry the
+  // aliased type's name before anything indexes the packages (#8217).
+  val canonicalCfg = canonicalAliasDotNamedAll(cfgFiles)
+  var cci = 0
+  while cci < canonicalCfg.count {
+    cfgFiles[cci] = canonicalCfg[cci]
+    cci = cci + 1
+  }
   // The component shims of one package may name another package's `pub` types, so
   // they are generated once every own package is parsed (docs/35 W4, cross-package
   // types).  Other shapes pass the files through.
@@ -1407,7 +1421,7 @@ pub func compileProjectToNativeWithShape(
       case Some(f) -> f
       case None -> return false
     }
-    ownFiles0.add(hoistModuleValInits(resolveTypeAliasesNative(f0)))
+    ownFiles0.add(hoistModuleValInits(resolveProjectTypeAliasesNative(f0, cfgFiles)))
     owi = owi + 1
   }
 

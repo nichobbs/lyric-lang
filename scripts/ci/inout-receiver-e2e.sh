@@ -73,6 +73,8 @@ pub record Pt {
   }
 
   func total(self: in Pt): Int = x + y
+
+  func twiceX(self: in Pt): Int = x * 2
 }
 
 pub func Pt.scaled(self: inout Pt, k: in Int): Unit {
@@ -87,6 +89,10 @@ pub record Box[T] {
   func set(self: inout Box[T], v: in T): Unit {
     self = Box(v = v)
   }
+
+  func peekV(self: in Box[T]): T = self.v
+
+  func pairV[U](self: in Box[T], u: in U): U = u
 }
 
 pub func putBox[T](q: inout Box[T], v: in T): Unit {
@@ -194,7 +200,7 @@ func main(): Int {
   zi.bump(3)
   Int.bump(zi, 1)
   val zz = zi.twice() + Int.twice(zi)
-  println(toString(beforeReset) + " " + toString(afterMove) + " " + toString(p.x + p.y) + " " + toString(b.v) + " " + toString(n) + " " + toString(y) + " " + toString(r) + " " + toString(w) + " " + toString(t) + " " + s + " " + toString(q.x + q.y) + " " + toString(z) + " " + toString(instantEquals(stamp, fromEpochMillis(7000i64))) + " " + toString(acc.n) + " " + toString(zi) + " " + toString(zz) + " " + toString(q.sum()) + " " + toString(Pt.sum(q)) + " " + toString(q.total()) + " " + toString(Pt.total(q)))
+  println(toString(beforeReset) + " " + toString(afterMove) + " " + toString(p.x + p.y) + " " + toString(b.v) + " " + toString(n) + " " + toString(y) + " " + toString(r) + " " + toString(w) + " " + toString(t) + " " + s + " " + toString(q.x + q.y) + " " + toString(z) + " " + toString(instantEquals(stamp, fromEpochMillis(7000i64))) + " " + toString(acc.n) + " " + toString(zi) + " " + toString(zz) + " " + toString(q.sum()) + " " + toString(Pt.sum(q)) + " " + toString(q.total()) + " " + toString(Pt.total(q)) + " " + toString(Pt.twiceX(q)) + " " + toString(Box.peekV(b)) + " " + toString(Box.pairV(b, 5) + b.pairV(6)))
   0
 }'
 
@@ -245,7 +251,10 @@ printf '%s\n' "$app_src" > "$work/restored/app/src/app.l"
 # record-body and `impl` methods' `inout`/`out` arguments (#8210): q = (7, 7),
 # z = 10, `stamp` = 7 s past the epoch, acc = 40 + 1.  A primitive's
 # dot-named functions (#8217): zi = 4 + 3 + 1 = 8, zz = 16 + 16.  Pt's own
-# `sum` and `total` over IrApp's same-named functions (D181): 14 four times.
+# `sum` and `total` over IrApp's same-named functions (D181): 14 four times;
+# body methods through their type, `Pt.twiceX(q)` 14 and the generic
+# `Box.peekV(b)` 42.  A method's own type parameter erases to `object`; its
+# result is unboxed at the call: `Box.pairV(b, 5) + b.pairV(6)` 11.
 clash_lib='package XLib
 
 pub record Box[T] {
@@ -392,13 +401,19 @@ pub record Bag {
   n: Int
 
   func get(self: in Bag): Int = self.n + 500
+
+  func half(self: in Bag): Int = self.n / 2
 }
 
 pub record Box[T] {
   v: T
 }
 
-pub func Bag.own(self: in Bag): Int = self.n + 1000'
+pub func Bag.own(self: in Bag): Int = self.n + 1000
+
+pub alias Num = Int
+
+pub func Num.neg(self: in Num): Num = 0 - self'
 ext_b='package ExtB
 
 import ExtA
@@ -439,12 +454,18 @@ func Bag.get(self: in Bag): Int = -1
 
 func Bag.own(self: in Bag): Int = -2
 
+alias N2 = Num
+
+func N2.dbl(self: in N2): N2 = self * 2
+
 func main(): Int {
   var b = Bag(n = 1)
   b.grow(4)
   Bag.grow(b, 1)
   val box = Box(v = "s")
-  println(toString(b.extra()) + " " + toString(Bag.extra(b)) + " " + toString(ExtB.Bag.extra(b)) + " " + toString(b.local()) + " " + toString(Bag.local(b)) + " " + toString(b.n) + " " + box.first() + " " + toString(b.own()) + " " + toString(b.own(5)) + " " + toString(extraTwice(b, "t")) + " " + toString(b.get()) + " " + toString(Bag.get(b)) + " " + toString(Bag.own(b)) + " " + toString(b.cfg(c = 7)) + " " + toString(b.cfg()))
+  println(toString(b.extra()) + " " + toString(Bag.extra(b)) + " " + toString(ExtB.Bag.extra(b)) + " " + toString(b.local()) + " " + toString(Bag.local(b)) + " " + toString(b.n) + " " + box.first() + " " + toString(b.own()) + " " + toString(b.own(5)) + " " + toString(extraTwice(b, "t")) + " " + toString(b.get()) + " " + toString(Bag.get(b)) + " " + toString(Bag.own(b)) + " " + toString(b.cfg(c = 7)) + " " + toString(b.cfg()) + " " + toString(Bag.half(b)) + " " + toString(ExtA.Bag.half(b)))
+  val k: Num = 4
+  println(toString(k.neg()) + " " + toString(Num.neg(k)) + " " + toString(ExtA.Num.neg(k)) + " " + toString(k.dbl()) + " " + toString(N2.dbl(k)))
   0
 }'
 mkdir -p "$work/ext/src"
@@ -469,10 +490,14 @@ printf '%s\n' "$ext_app" > "$work/ext/src/app.l"
 # `first` gives "s"; ExtA's own `own()` 1006, ExtB's `own(5)` 11; ExtB's
 # generic, specialised here, calls its own extensions: c.n = 16, 18 + 18 + 32.
 # Bag's own `get` (506) and `own` (1006) over ExtApp's same-named functions,
-# in both call forms; ExtB's `cfg` with its defaults: 617, 612.
-ext_want="8 8 8 60 60 6 s 1006 11 68 506 506 1006 617 612"
+# in both call forms; ExtB's `cfg` with its defaults: 617, 612; Bag's body
+# method `half` through its type and through its package: 3 3.  ExtA's
+# `Num.neg` and ExtApp's `N2.dbl`, declared through an imported alias and
+# an alias chain, are `Int`'s, three ways and two (#8217).
+ext_line1="8 8 8 60 60 6 s 1006 11 68 506 506 1006 617 612 3 3"
+ext_want="-4 -4 -4 8 8"
 
-want="268 279 0 42 2 204 202 105 42 q 14 10 true 41 8 32 14 14 14 14"
+want="268 279 0 42 2 204 202 105 42 q 14 10 true 41 8 32 14 14 14 14 14 42 11"
 fail=0
 for t in "${targets[@]}"; do
   out="$("$lyric_bin" run --manifest "$work/proj/lyric.toml" --target "$t" 2>&1 | grep -v '^Picked up JAVA_TOOL_OPTIONS')"
@@ -489,8 +514,8 @@ for t in "${targets[@]}"; do
     fail=1
   fi
   out="$("$lyric_bin" run --manifest "$work/ext/lyric.toml" --target "$t" 2>&1 | grep -v '^Picked up JAVA_TOOL_OPTIONS')"
-  if [ "$(printf '%s\n' "$out" | tail -n 1)" != "$ext_want" ]; then
-    echo "FAIL ($t): extensions from another package should print '$ext_want'; got:"
+  if [ "$(printf '%s\n' "$out" | tail -n 2 | head -n 1)" != "$ext_line1" ] || [ "$(printf '%s\n' "$out" | tail -n 1)" != "$ext_want" ]; then
+    echo "FAIL ($t): extensions from another package should print '$ext_line1' then '$ext_want'; got:"
     printf '%s\n' "$out" | tail -n 5 | sed 's/^/  /'
     fail=1
   fi

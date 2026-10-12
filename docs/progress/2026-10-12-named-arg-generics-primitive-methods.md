@@ -158,3 +158,39 @@ distinct-type function on all three targets.  `inout-receiver-e2e.sh` adds
 the type's own body method and dot-named function beside the caller's
 same-named functions, from a sibling package and from a restored
 dependency, in both call forms, and an extension with defaults.
+
+## Second review
+
+- **Calls through the type of a body method.**  The rewrite into the method
+  call fired only when a same-named dot-named function also existed, so
+  `Bag.one(b)` stopped with an internal error (T0120) on dotnet, and on the
+  JVM for a method with arguments; a generic `Box.get(bx)` and a
+  cross-package `Bag.get(b)` failed too.  Every call through the type, or
+  through the type's package, that binds a body method is now typed against
+  it (`bodyMethodViaType`) and written as the method call, its arguments
+  paired in that shape for the source-order evaluation (D171).
+  `type_qualified_method_self_test.l` (new, 7 cases, all targets) and the
+  e2e projects cover it.
+- **Aliases resolved like type names.**  The file-local pre-pass is
+  replaced: the type checker registers `func X.m` under the aliased type's
+  name whenever `X` resolves to an alias (imported, chained, or named
+  through its package), records the rename (`SymbolTable.dotNameRenames`),
+  and the pipeline renames the declaration after the check; calls through
+  the alias are named by the aliased type.  An alias of a generic instance,
+  function or tuple type is T0171 (it used to type-check and fail in
+  codegen).  The native bridge also resolves a project package's imported
+  `pub` aliases.
+- **Dependency warnings.**  On the JVM, a path dependency compiled from
+  source into the consumer's build no longer reports its type-check
+  warnings again (`MiddleEndOptions.quietWarnings`).
+- **A body method's own type parameter on dotnet.**  The MSIL backend
+  erases a method's own type parameter (`func pairWith[U](...)`) to
+  `object` in the emitted method, but registered the call site's parameter
+  and return types with `U` read as a class name, so the result was never
+  unboxed: `assertEqualInt(bx.pairWith(9), 9, ...)` stopped with
+  `InvalidProgramException`, in both call forms, and a restored library's
+  MemberRef named a type that does not exist.  The registrations
+  (`registerMethodRetTyG`, `registerMethodParamTypesG`,
+  `registerRestoredRecordMethod`) now erase the method's own type
+  parameters as the emitted method does.  `type_qualified_method_self_test.l`
+  and the e2e restored-dependency project cover it.

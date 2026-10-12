@@ -6634,6 +6634,15 @@ test "an extension duplicating a type's own function is T0170" {
   assertEqualInt(countDiagCode(ok, "T0170"), 0, "other parameters: " + diagCodesOf(ok))
 }
 
+// A dot-named function declared through an alias is the aliased type's
+// (#8217), through a chain too; an alias of a generic instance is T0171.
+test "a dot-named function declared through an alias is the aliased type's" {
+  val chain = "package P\nalias Num = Int\nalias N2 = Num\nfunc N2.dbl(self: in N2): N2 = self * 2\nfunc f(k: in Int): Int { k.dbl() + N2.dbl(k) + Num.dbl(k) + Int.dbl(k) }\n"
+  assertEqualInt(diagCount(parseCheck(chain)), 0, "an alias chain: " + diagCodesOf(parseCheck(chain)))
+  val inst = "package P\nrecord Box[T] { v: T }\nalias IB = Box[Int]\nfunc IB.get(self: in IB): Int = self.v\n"
+  assertTrue(hasDiagCode(parseCheck(inst), "T0171"), "an alias of a generic instance: " + diagCodesOf(parseCheck(inst)))
+}
+
 // A method call on a primitive or a distinct type that names nothing it has
 // is T0113 at check time (#8217); a `String`'s methods stay open-ended.
 test "an unknown method on a primitive or a distinct type is T0113" {

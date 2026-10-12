@@ -417,6 +417,11 @@ pub record SymbolTable {
   /// keyed by `recordCopySiteKey` of the callee's span: `Lyric.Pipeline`
   /// rewrites it into a plain call of the function.
   byRefDotCallSites: Map[String, ByRefDotCall]
+  /// Each dot-named function declared through a type alias (`func Num.neg`
+  /// for `alias Num = Int`), keyed `<package>|<declared name>`, to the name
+  /// it is registered and compiled under, the aliased type's (`Int.neg`,
+  /// #8217): `Lyric.Pipeline` renames the declaration.
+  dotNameRenames: Map[String, String]
   /// Each bare identifier pattern in a `match` arm that names a union or
   /// enum case rather than binding a name, keyed by `recordCopySiteKey` of
   /// the pattern's span.  `Lyric.SelfFields` reads it: such a pattern hides
@@ -742,6 +747,7 @@ pub func newSymbolTable(): SymbolTable {
     genericCallTypeArgSites = newMap(),
     dottedGenericCallSites = newMap(),
     byRefDotCallSites = newMap(),
+    dotNameRenames = newMap(),
     casePatternSites = newMap(),
     lambdaParamTypeSites = newMap(),
     lambdaUnitSites = newMap(),

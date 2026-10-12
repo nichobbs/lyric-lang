@@ -15026,27 +15026,58 @@ func inferExprCore(
           // Instantiate a generic return type from the argument types (#1488
           // category B) so `unwrapOr(opt, 0): T` yields `Int`, not `TyVar("T")`.
           var instRet = directCallType(tbl, diag, fn, sig, args, argTypes)
-          if dottedFuncCallee(tbl, fn) {
-            // `T.m(x, args)` binds the function `x.m(args)` does (#8219); an
-            // extension is called through the package declaring it.
-            val dotRecv = if argTypes.count > 0 { argTypes[0] } else { TyError }
-            val restArgs = tailArgs(args)
-            val restTypes = tailTypes(argTypes)
-            val member = memberOfDotted(fn)
-            val viaType = dottedPathName(fn).length > 0
-            if viaType and reportAmbiguousDotNamed(tbl, sigs, diag, dotRecv, member, args.count - 1, restArgs, restTypes, fn.span) {
-              instRet = TyError
+          match bodyMethodCalleeBinding(tbl, fn, args, argTypes) {
+            // `T.m(x, args)` binding a method in the body of `x`'s type is
+            // what `x.m(args)` calls (D181): the call is written that way
+            // for the backends, which have no function `T.m` for a body
+            // method.  Its arguments are paired in that shape.
+            case Some(bm) -> {
+              val member = memberOfDotted(fn)
+              val restArgs = tailArgs(args)
+              val restTypes = tailTypes(argTypes)
+              recordBodyMethodCallRewrite(tbl, fn, args, member, withReceiverParam(bm, argTypes[0]))
+              val siteKey = recordCopySiteKey(e.span)
+              if tbl.argOrderSites.containsKey(siteKey) {
+                tbl.argOrderSites.remove(siteKey)
+              }
+              if callArgsHaveNamed(restArgs) or callArgsHaveHoistHazard(restArgs) or callArgsHaveElementPlace(restArgs) {
+                val asMember = Expr(kind = EMember(receiver = callArgExpr(args[0]), memberName = member), span = fn.span)
+                recordSigArgOrderSite(
+                  sc,
+                  tbl,
+                  e.span,
+                  asMember,
+                  restArgs,
+                  restTypes,
+                  bm,
+                  sigExpectedArgTypes(bm, None, restArgs, restTypes),
+                  Some(value = argTypes[0])
+                )
+              }
             }
-            if viaType and receiverWrittenFirst(args) and typeQualifiedBindsBodyMethod(tbl, sigs, dotRecv, member, args.count - 1, restArgs, restTypes) {
-              // The type's own method, declared in its body, is what
-              // `x.m(args)` calls; the call is written that way for the
-              // backends, which find a same-named dot-named function first
-              // by the name `T.m`.
-              recordBodyMethodCallRewrite(tbl, fn, args, member, sig)
-            } else if isDotNamedExtension(tbl, dotRecv, sig) or (viaType and foreignDotNamedShadowed(tbl, sigs, dotRecv, member, sig)) {
-              recordDotCallRewrite(tbl, fn.span, qualifiedDottedName(fn), sig, false)
-            } else {
-              recordByRefDotCall(tbl, fn.span, qualifiedDottedName(fn), sig, false)
+            case None -> if dottedFuncCallee(tbl, fn) {
+              // `T.m(x, args)` binds the function `x.m(args)` does (#8219);
+              // an extension is called through the package declaring it,
+              // and a function declared through an alias by the aliased
+              // type's name, which it is compiled under.
+              val dotRecv = if argTypes.count > 0 { argTypes[0] } else { TyError }
+              val restArgs = tailArgs(args)
+              val restTypes = tailTypes(argTypes)
+              val member = memberOfDotted(fn)
+              val viaType = dottedPathName(fn).length > 0
+              if viaType and reportAmbiguousDotNamed(tbl, sigs, diag, dotRecv, member, args.count - 1, restArgs, restTypes, fn.span) {
+                instRet = TyError
+              }
+              val written = qualifiedDottedName(fn)
+              val canonical = canonicalDottedName(tbl, fn)
+              // A primitive's or distinct type's function named through its
+              // package (`Pkg.Int.neg(k)`) is called by its own name too.
+              val qualifiedPlain = not viaType and receiverNeedsPlainDotCall(tbl, Some(value = dotRecv))
+              if isDotNamedExtension(tbl, dotRecv, sig) or (viaType and foreignDotNamedShadowed(tbl, sigs, dotRecv, member, sig)) or canonical != written or qualifiedPlain {
+                recordDotCallRewrite(tbl, fn.span, canonical, sig, false)
+              } else {
+                recordByRefDotCall(tbl, fn.span, written, sig, false)
+              }
             }
           }
           // A generic call's result type is evidence for `Lyric.Mono` where
@@ -18011,19 +18042,43 @@ func isPackageDottedCallee(
     full.add(sg)
   }
   full.add(member)
-  match packageDottedSig(sigs, full, arity) {
+  match packageDottedSig(tbl, sigs, full, arity) {
     case Some(_) -> true
     case None -> false
   }
 }
 
+// The function a call `Pkg.T.m(x, args)` binds: the method `m` in the body
+// of `T` (D181) when `Pkg` declares `T` and the method takes the arguments,
+// else the dot-named function `T.m` that `Pkg` declares.
+func qualifiedTypeDotSig(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  segs: in List[String],
+  arity: in Int,
+  argTypes: in List[Type],
+): Option[ResolvedSignature] {
+  val typeSegs: List[String] = newList()
+  var i = 0
+  while i < segs.count - 1 {
+    typeSegs.add(segs[i])
+    i = i + 1
+  }
+  val noArgs: List[CallArg] = newList()
+  match bodyMethodViaType(tbl, typeSegs, segs[segs.count - 1], noArgs, argTypes) {
+    case Some(m) -> return Some(value = withReceiverParam(m, argTypes[0]))
+    case None -> ()
+  }
+  packageDottedSig(tbl, sigs, segs, arity)
+}
+
 // The dot-named function `T.m` declared by the package the leading
 // segments of `Pkg.T.m` name, taking `arity` arguments.
 func packageDottedSig(
-  sigs: in Map[String, ResolvedSignature], segs: in List[String], arity: in Int
+  tbl: in SymbolTable, sigs: in Map[String, ResolvedSignature], segs: in List[String], arity: in Int
 ): Option[ResolvedSignature] {
   val n = segs.count
-  val dotted = segs[n - 2] + "." + segs[n - 1]
+  val dotted = canonicalOwnerName(tbl, segs[n - 2]) + "." + segs[n - 1]
   val pkgSegs: List[String] = newList()
   var i = 0
   while i < n - 2 {
@@ -18053,14 +18108,13 @@ func typeQualifiedDotSig(
   arity: in Int,
   argTypes: in List[Type],
 ): Option[ResolvedSignature] {
-  if arity >= 1 and argTypes.count >= 1 and dotNamedOwnerName(argTypes[0]) == typeName {
+  val owner = canonicalOwnerName(tbl, typeName)
+  if arity >= 1 and argTypes.count >= 1 and dotNamedOwnerName(argTypes[0]) == owner {
     val recv = argTypes[0]
     val noArgs: List[CallArg] = newList()
     val rest = tailTypes(argTypes)
     match applicableBodyMethod(tbl, recv, member, arity - 1, noArgs, rest) {
-      case Some(m) -> if dotNamedSigsAnyArity(sigs, typeName + "." + member).count > 0 {
-        return Some(value = withReceiverParam(m, recv))
-      }
+      case Some(m) -> return Some(value = withReceiverParam(m, recv))
       case None -> ()
     }
     val cands = dotNamedCandidatesFor(tbl, sigs, recv, member, arity - 1, noArgs, rest)
@@ -18073,7 +18127,7 @@ func typeQualifiedDotSig(
       return Some(value = cands[0])
     }
   }
-  dottedSigLookup(sigs, typeName + "." + member, arity)
+  dottedSigLookup(sigs, owner + "." + member, arity)
 }
 
 // The applicable method named `name` in the body of the receiver's type,
@@ -18111,21 +18165,95 @@ func withReceiverParam(m: in ResolvedSignature, recv: in Type): ResolvedSignatur
   m.copy(params = ps)
 }
 
-// Whether a call `T.m(x, args)` binds a method in the body of `x`'s type
-// that a dot-named function `T.m` would otherwise answer (D181).
-func typeQualifiedBindsBodyMethod(
-  tbl: in SymbolTable,
-  sigs: in Map[String, ResolvedSignature],
-  recv: in Type,
-  member: in String,
-  argc: in Int,
-  args: in List[CallArg],
-  argTypes: in List[Type],
-): Bool {
-  match applicableBodyMethod(tbl, recv, member, argc, args, argTypes) {
-    case Some(_) -> dotNamedSigsAnyArity(sigs, dotNamedOwnerName(recv) + "." + member).count > 0
-    case None -> false
+// The method in the body of `x`'s type (receiver dropped) that a call
+// `T.m(x, args)` or `Pkg.T.m(x, args)` through the type binds (D181): `T`
+// names `x`'s type, directly or through an alias, `Pkg` the package that
+// declares it, and the method takes the other arguments.  `None` for any
+// other call.
+func bodyMethodCalleeBinding(
+  tbl: in SymbolTable, fn: in Expr, args: in List[CallArg], argTypes: in List[Type]
+): Option[ResolvedSignature] {
+  val segs: List[String] = newList()
+  if not calleeSegments(fn, segs) or segs.count < 2 or not receiverWrittenFirst(args) or argTypes.count == 0 {
+    return None
   }
+  val typeSegs: List[String] = newList()
+  var i = 0
+  while i < segs.count - 1 {
+    typeSegs.add(segs[i])
+    i = i + 1
+  }
+  bodyMethodViaType(tbl, typeSegs, segs[segs.count - 1], tailArgs(args), argTypes)
+}
+
+// The method `member` in the body of the type `typeSegs` names (`T`, or
+// `Pkg.T` with `Pkg` the package declaring it) that takes the arguments
+// after the first, whose type must be that type; `None` otherwise.
+func bodyMethodViaType(
+  tbl: in SymbolTable,
+  typeSegs: in List[String],
+  member: in String,
+  restArgs: in List[CallArg],
+  argTypes: in List[Type],
+): Option[ResolvedSignature] {
+  if typeSegs.count == 0 or argTypes.count == 0 {
+    return None
+  }
+  val recv = argTypes[0]
+  val owner = dotNamedOwnerName(recv)
+  if owner.length == 0 or canonicalOwnerName(tbl, typeSegs[typeSegs.count - 1]) != owner {
+    return None
+  }
+  if typeSegs.count > 1 {
+    val pkgSegs: List[String] = newList()
+    var i = 0
+    while i < typeSegs.count - 1 {
+      pkgSegs.add(typeSegs[i])
+      i = i + 1
+    }
+    match dotNamedDeclaringPackage(tbl, recv) {
+      case Some(p) -> if p != modulePathJoin(pkgSegs) { return None }
+      case None -> return None
+    }
+  }
+  applicableBodyMethod(tbl, recv, member, argTypes.count - 1, restArgs, tailTypes(argTypes))
+}
+
+// The name a dot-named function's owner `name` is registered under: the
+// aliased type's when `name` is a type alias of a named type (`Int` for
+// `alias Num = Int`, through chains), `name` itself otherwise (#8217).
+func canonicalOwnerName(tbl: in SymbolTable, name: in String): String {
+  var isAlias = false
+  for sym in symTableTryFindAll(tbl, name) {
+    match sym.kind {
+      case DKTypeAlias(_) -> {
+        isAlias = true
+      }
+      case _ -> ()
+    }
+  }
+  if not isAlias {
+    return name
+  }
+  val segs: List[String] = newList()
+  segs.add(name)
+  val scratch: List[Diagnostic] = newList()
+  val sp = noSourceSpan()
+  match unrefine(resolveType(tbl, newGenericContext(), scratch, TypeExpr(kind = TRef(path = ModulePath(segments = segs, span = sp)), span = sp))) {
+    case TyUser(_, n, targs) -> if targs.count == 0 { n } else { name }
+    case TyPrim(pt) -> primName(pt)
+    case _ -> name
+  }
+}
+
+// `T.m` for a callee written `T.m` or `Pkg.T.m`, `T` resolved through an
+// alias (`canonicalOwnerName`); "" when it is neither.
+func canonicalDottedName(tbl: in SymbolTable, fn: in Expr): String {
+  val segs: List[String] = newList()
+  if not calleeSegments(fn, segs) or segs.count < 2 {
+    return ""
+  }
+  canonicalOwnerName(tbl, segs[segs.count - 2]) + "." + segs[segs.count - 1]
 }
 
 // Whether `sig`, bound by a call through the type, is another package's
@@ -18204,7 +18332,7 @@ func findDirectSig(
             qsegs.add(qs)
           }
           qsegs.add(member)
-          match packageDottedSig(sigs, qsegs, arity) {
+          match qualifiedTypeDotSig(tbl, sigs, qsegs, arity, argTypes) {
             case Some(pds) -> return Some(value = pds)
             case None -> ()
           }
@@ -18259,7 +18387,7 @@ func findDirectSig(
       // `Pkg.Box.get(b)`: the same through the type's package (#8179), the
       // function `Box.get` that package declares.
       if path.segments.count >= 3 {
-        match packageDottedSig(sigs, path.segments, arity) {
+        match qualifiedTypeDotSig(tbl, sigs, path.segments, arity, argTypes) {
           case Some(pds) -> return Some(value = pds)
           case None -> ()
         }

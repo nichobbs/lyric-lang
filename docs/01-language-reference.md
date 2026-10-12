@@ -1373,13 +1373,19 @@ and one on a distinct type (§2.3) a function of the distinct type itself:
 `a.twice()` for `type Age = Int` and `func Int.twice` is **T0113**, written
 `a.value.twice()`. A dot-named function declared through an alias
 (`alias Num = Int`, `func Num.neg(self: in Num): Num`) is a function of the
-aliased type: `k.neg()`, `Num.neg(k)` and `Int.neg(k)` all call it.
+aliased type, whether the alias is declared in the package, imported
+(`pub alias`) or reached through a chain (`alias N2 = Num`): `k.neg()`,
+`Num.neg(k)`, `Int.neg(k)` and `Pkg.Num.neg(k)` all call it. An alias of a
+type no dot-named function is declared for, such as a generic instance
+(`alias Ints = List[Int]`), a function or a tuple type, cannot name one
+(**T0171**).
 
 A dot-named function may likewise be declared for a type another package
 declares, an *extension* (`func Bag.extra(self: in Bag): Int` in a package
 that imports the one declaring `Bag`); every dot-named function of a
 primitive is one. A method call `b.m(args)` and a call through the type
-`Bag.m(b, args)` bind the same function. It is one of the type's own
+`Bag.m(b, args)` (or `Pkg.Bag.m(b, args)`) bind the same function, a method
+in the type's body included. It is one of the type's own
 functions, declared in its body or by its declaring package, when one of
 them is applicable, taking the call's arguments in number and type
 (defaults included); an import never changes what such a call means.

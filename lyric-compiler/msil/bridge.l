@@ -1486,6 +1486,18 @@ func projectFrontEnd(
     )
     pi = pi + 1
   }
+  // Dot-named functions declared through an imported alias carry the
+  // aliased type's name before anything indexes the packages (#8217).
+  val parsedFiles: List[SourceFile] = newList()
+  for pp in parsedPkgs {
+    parsedFiles.add(pp.file)
+  }
+  val canonicalFiles = canonicalAliasDotNamedAll(parsedFiles)
+  var cpi = 0
+  while cpi < parsedPkgs.count {
+    parsedPkgs[cpi] = parsedPkgs[cpi].copy(file = canonicalFiles[cpi])
+    cpi = cpi + 1
+  }
 
   // docs/58 (D121): collect wire/config templates across every in-bundle
   // package and every path-dependency source package, then expand each

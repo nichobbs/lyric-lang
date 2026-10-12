@@ -545,6 +545,7 @@ func runMiddleEnd(
   typeIndex: in Option[Weaver.TypeOwnerIndex],
   ioForbiddenReason: in String,
   contractsEnabled: in Bool = true,
+  quietWarnings: in Bool = false,
 ): Option[SourceFile] {
   val importedItems = flattenImportedItems(importedPkgs)
   // #7198: see the other `MiddleEndOptions` construction site in this file.
@@ -565,7 +566,8 @@ func runMiddleEnd(
     foreignValueRecordsOut = newList(),
     arraysAsLists = true,
     primitiveArrays = true,
-    ioForbiddenReason = ioForbiddenReason
+    ioForbiddenReason = ioForbiddenReason,
+    quietWarnings = quietWarnings
   )
   // `@library` extern funcs become foreign-function downcall methods (D158).
   match pipeMiddleEnd(file0, importedPkgs, importedItems, stdlibGenFuncs, pipeInterfaceDecls(importedItems), pipeRecordDecls(importedItems), templates, opts, typeIndex) {
@@ -2575,6 +2577,14 @@ pub func compileProjectToJarBundledWithRestored(
     userFiles.add(uf)
     psi = psi + 1
   }
+  // Dot-named functions declared through an imported alias carry the
+  // aliased type's name before anything indexes the packages (#8217).
+  val canonicalUser = canonicalAliasDotNamedAll(userFiles)
+  var cui = 0
+  while cui < canonicalUser.count {
+    userFiles[cui] = canonicalUser[cui]
+    cui = cui + 1
+  }
 
   // docs/58 (D121): collect wire/config templates across every project
   // package and path-dependency source package, then expand each project
@@ -2603,9 +2613,16 @@ pub func compileProjectToJarBundledWithRestored(
     )
     wti = wti + 1
   }
+  // The packages of path dependencies compiled from source here: their
+  // warnings were reported when each was built on its own.
+  val depPkgNames: Map[String, Bool] = newMap()
   var wtd = 0
   while wtd < depTemplateSrcs.count {
     val wdtPr = parse(depTemplateSrcs[wtd])
+    val depName = dottedPath(wdtPr.file.packageDecl.path)
+    if not depPkgNames.containsKey(depName) {
+      depPkgNames.add(depName, true)
+    }
     WireExpand.collectWireTemplates(
       Aliases.rewriteFile(wdtPr.file).items,
       dottedPath(wdtPr.file.packageDecl.path),
@@ -2615,6 +2632,12 @@ pub func compileProjectToJarBundledWithRestored(
     wtd = wtd + 1
   }
   val arrayTypedByPkg: Map[String, SourceFile] = newMap()
+  // The project's packages as parsed, for the `pub` aliases each imports
+  // (#8217): an imported alias is resolved like the package's own.
+  val projectFilesForAliases: List[SourceFile] = newList()
+  for pf in userFiles {
+    projectFilesForAliases.add(pf)
+  }
   var wei = 0
   while wei < userFiles.count {
     // #6824 item 3: label/attribute this package's wire/config-template and
@@ -2635,7 +2658,7 @@ pub func compileProjectToJarBundledWithRestored(
     // #6404: resolve every project package's `alias X = ...` references
     // before ANYTHING (type-check, signature/case/ctor registration below,
     // codegen) reads the file — see `resolveTypeAliases`'s comment.
-    val resolvedUf = resolveTypeAliases(rewritten)
+    val resolvedUf = TAR.resolveAliasesInFile(TAR.projectAliasTargets(rewritten, projectFilesForAliases), rewritten)
     arrayTypedByPkg.add(dottedPath(resolvedUf.packageDecl.path), resolvedUf)
     userFiles[wei] = arrayTypesAsLists(resolvedUf)
     wei = wei + 1
@@ -3724,7 +3747,7 @@ pub func compileProjectToJarBundledWithRestored(
       // stdlib authors' contracts run in all cases. Project packages respect
       // the manifest [contracts] enabled setting.
       val pkgContractsEnabled = if isProjectPkg { contractsEnabled } else { true }
-      match runMiddleEnd(arrayTypedOrSelf(arrayTypedByPkg, f), importedPkgs, allMonoFuncs, allTemplates, isProjectPkg, siblingPkgLabel, siblingPkgOrigins, siblingChecked, siblingRecvClasses, siblingCallArities, Some(value = weaveTypeIndex), if isProjectPkg { unwrapOr(mapGet(ioForbiddenByPkg, pkgName), "") } else { "" }, pkgContractsEnabled) {
+      match runMiddleEnd(arrayTypedOrSelf(arrayTypedByPkg, f), importedPkgs, allMonoFuncs, allTemplates, isProjectPkg, siblingPkgLabel, siblingPkgOrigins, siblingChecked, siblingRecvClasses, siblingCallArities, Some(value = weaveTypeIndex), if isProjectPkg { unwrapOr(mapGet(ioForbiddenByPkg, pkgName), "") } else { "" }, pkgContractsEnabled, depPkgNames.containsKey(pkgName)) {
         case Some(ff) -> {
           // #7502: register THIS bundled/sibling package's own
           // derive-synthesised free functions (`Point.fromJson`, `Point.
