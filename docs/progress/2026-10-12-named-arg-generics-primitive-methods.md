@@ -215,3 +215,20 @@ dependency, in both call forms, and an extension with defaults.
   its own name for the backends too.
 - **T0171** suggests the working declaration
   (`func Box.get(self: in Box[Int], ...)`).
+
+## Restored-dependency regression (#8097)
+
+- **Both kinds of the type's own function.**  A package may declare a
+  method in a type's body and a dot-named function of the same name
+  (`func scaled` in `record Acc` and `pub func Acc.scaled`); #8097 tests
+  that `acc.scaled()` binds the body method and `Acc.scaled(acc)` the
+  dot-named function.  The first D181 change bound the body method through
+  the type too (`restored_default_args_self_test.l` printed -3 for 12).  A
+  call through the type now names the type package's dot-named function
+  whenever that package declares one (so a parameter it declares without a
+  default stays required, as #8097 tests), and the body method only when it
+  declares none; a method call binds the body method first and falls back
+  to the dot-named function; extensions come only after the type's own.
+  The typechecker self-test covers both forms, the method-call fallback,
+  the required parameter, the own-package prefix and a call from another
+  package, with no T0170 for the type's own package.

@@ -1386,11 +1386,14 @@ A dot-named function may likewise be declared for a type another package
 declares, an *extension* (`func Bag.extra(self: in Bag): Int` in a package
 that imports the one declaring `Bag`); every dot-named function of a
 primitive is one. A method call `b.m(args)` and a call through the type
-`Bag.m(b, args)` (or `Pkg.Bag.m(b, args)`) bind the same function, a method
-in the type's body included. It is one of the type's own
+`Bag.m(b, args)` (or `Pkg.Bag.m(b, args)`) bind one of the type's own
 functions, declared in its body or by its declaring package, when one of
 them is applicable, taking the call's arguments in number and type
-(defaults included); an import never changes what such a call means.
+(defaults included); an import never changes what such a call means. When
+the type's package declares both a method in its body and a dot-named
+function of that name, a method call binds the body method first, falling
+back to the dot-named function when the body method does not take the
+arguments, and a call through the type names the dot-named function only.
 Otherwise it is an extension declared by a package the file's imports
 reach, nearest first, as a bare name resolves (§3.1, §9.2): one the calling
 package declares, then one of a package it imports whole, then one of a

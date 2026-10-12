@@ -15041,7 +15041,7 @@ func inferExprCore(
           // Instantiate a generic return type from the argument types (#1488
           // category B) so `unwrapOr(opt, 0): T` yields `Int`, not `TyVar("T")`.
           var instRet = directCallType(tbl, diag, fn, sig, args, argTypes)
-          match bodyMethodCalleeBinding(tbl, fn, args, argTypes) {
+          match bodyMethodCalleeBinding(tbl, sigs, fn, args, argTypes) {
             // `T.m(x, args)` binding a method in the body of `x`'s type is
             // what `x.m(args)` calls (D181): the call is written that way
             // for the backends, which have no function `T.m` for a body
@@ -18068,8 +18068,9 @@ func isPackageDottedCallee(
 }
 
 // The function a call `Pkg.T.m(x, args)` binds: the method `m` in the body
-// of `T` (D181) when `Pkg` declares `T` and the method takes the arguments,
-// else the dot-named function `T.m` that `Pkg` declares.
+// of `T` (D181) when `Pkg` declares `T` and no dot-named `T.m`, and the
+// method takes the arguments; else the dot-named function `T.m` that `Pkg`
+// declares.
 func qualifiedTypeDotSig(
   tbl: in SymbolTable,
   sigs: in Map[String, ResolvedSignature],
@@ -18084,7 +18085,7 @@ func qualifiedTypeDotSig(
     i = i + 1
   }
   val noArgs: List[CallArg] = newList()
-  match bodyMethodViaType(tbl, typeSegs, segs[segs.count - 1], noArgs, argTypes) {
+  match bodyMethodViaType(tbl, sigs, typeSegs, segs[segs.count - 1], noArgs, argTypes) {
     case Some(m) -> return Some(value = withReceiverParam(m, argTypes[0]))
     case None -> ()
   }
@@ -18106,17 +18107,17 @@ func packageDottedSig(
   }
   val pkg = modulePathJoin(pkgSegs)
   for c in gatherOverloadCandidates(sigs, byNameSigKey(dotted)) {
-    if c.originPackage == pkg and arity <= c.params.count and arity >= minRequiredParams(c) {
+    if sigPackage(tbl, c) == pkg and arity <= c.params.count and arity >= minRequiredParams(c) {
       return Some(value = c)
     }
   }
   None
 }
 
-// The function a call `T.m(x, args)` through its type binds: the one
-// `x.m(args)` binds (D181, #8219) when the first argument is a `T` — the
-// type's own method in its body when it applies and some dot-named function
-// `T.m` would otherwise answer, then the dot-named functions
+// The function a call `T.m(x, args)` through its type binds when the first
+// argument is a `T` (D181, #8219): the method in the type's body when it
+// applies and the type's package declares no dot-named `T.m` (one it does
+// declare names the call, #8097), then the dot-named functions
 // `dotNamedCandidatesFor` keeps, an applicable one first; otherwise the one
 // registered for that name and arity.
 func typeQualifiedDotSig(
@@ -18132,9 +18133,14 @@ func typeQualifiedDotSig(
     val recv = argTypes[0]
     val noArgs: List[CallArg] = newList()
     val rest = tailTypes(argTypes)
-    match applicableBodyMethod(tbl, recv, member, arity - 1, noArgs, rest) {
-      case Some(m) -> return Some(value = withReceiverParam(m, recv))
-      case None -> ()
+    // A dot-named function of the type's package answers a call through
+    // the type, the method in the type's body only when there is none
+    // (#8097).
+    if not ownDotNamedDeclared(tbl, sigs, recv, member) {
+      match applicableBodyMethod(tbl, recv, member, arity - 1, noArgs, rest) {
+        case Some(m) -> return Some(value = withReceiverParam(m, recv))
+        case None -> ()
+      }
     }
     val cands = dotNamedCandidatesFor(tbl, sigs, recv, member, arity - 1, noArgs, rest)
     for c in cands {
@@ -18187,10 +18193,14 @@ func withReceiverParam(m: in ResolvedSignature, recv: in Type): ResolvedSignatur
 // The method in the body of `x`'s type (receiver dropped) that a call
 // `T.m(x, args)` or `Pkg.T.m(x, args)` through the type binds (D181): `T`
 // names `x`'s type, directly or through an alias, `Pkg` the package that
-// declares it, and the method takes the other arguments.  `None` for any
-// other call.
+// declares it, the method takes the other arguments, and that package
+// declares no dot-named `T.m`.  `None` for any other call.
 func bodyMethodCalleeBinding(
-  tbl: in SymbolTable, fn: in Expr, args: in List[CallArg], argTypes: in List[Type]
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  fn: in Expr,
+  args: in List[CallArg],
+  argTypes: in List[Type],
 ): Option[ResolvedSignature] {
   val segs: List[String] = newList()
   if not calleeSegments(fn, segs) or segs.count < 2 or not receiverWrittenFirst(args) or argTypes.count == 0 {
@@ -18202,14 +18212,17 @@ func bodyMethodCalleeBinding(
     typeSegs.add(segs[i])
     i = i + 1
   }
-  bodyMethodViaType(tbl, typeSegs, segs[segs.count - 1], tailArgs(args), argTypes)
+  bodyMethodViaType(tbl, sigs, typeSegs, segs[segs.count - 1], tailArgs(args), argTypes)
 }
 
 // The method `member` in the body of the type `typeSegs` names (`T`, or
 // `Pkg.T` with `Pkg` the package declaring it) that takes the arguments
-// after the first, whose type must be that type; `None` otherwise.
+// after the first, whose type must be that type; `None` otherwise, and when
+// the type's own package declares a dot-named `T.m`, which a call through
+// the type names instead (D181, #8097).
 func bodyMethodViaType(
   tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
   typeSegs: in List[String],
   member: in String,
   restArgs: in List[CallArg],
@@ -18235,7 +18248,25 @@ func bodyMethodViaType(
       case None -> return None
     }
   }
+  if ownDotNamedDeclared(tbl, sigs, recv, member) {
+    return None
+  }
   applicableBodyMethod(tbl, recv, member, argTypes.count - 1, restArgs, tailTypes(argTypes))
+}
+
+// Whether the package declaring `recv`'s type `T` also declares a dot-named
+// function `T.member`, of any arity.  A call through the type then names
+// that function, never the method in the type's body (#8097).
+func ownDotNamedDeclared(
+  tbl: in SymbolTable, sigs: in Map[String, ResolvedSignature], recv: in Type, member: in String
+): Bool {
+  val ownPkg = match dotNamedDeclaringPackage(tbl, recv) { case Some(p) -> p; case None -> return false }
+  for c in dotNamedSigsAnyArity(sigs, dotNamedOwnerName(recv) + "." + member) {
+    if sigPackage(tbl, c) == ownPkg {
+      return true
+    }
+  }
+  false
 }
 
 // The name a dot-named function's owner `name` is registered under: the

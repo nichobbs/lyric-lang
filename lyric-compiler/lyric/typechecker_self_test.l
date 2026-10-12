@@ -6647,6 +6647,40 @@ test "a dot-named function declared through an alias is the aliased type's" {
   )
 }
 
+// A type's package may declare both a method in the type's body and a
+// dot-named function of the same name; both are the type's own.  A method
+// call binds the body method first, falling back to the dot-named function
+// when it does not take the arguments; a call through the type names the
+// dot-named function, never the body method (D181, #8097).  The body method
+// returns an `Int` and the dot-named function a `String`, so the type a call
+// has says which bound.
+test "a body method beside a dot-named function of the same package" {
+  val decls = "record Acc {\n  n: Int\n  func scaled(self: in Acc, k: in Int = 7): Int = self.n - k\n}\nfunc Acc.scaled(self: in Acc, k: in Int = 3): String = \"dot\"\n"
+  val both = "package P\n" + decls +
+    "func f(a: in Acc): Unit {\n  val viaType: String = Acc.scaled(a)\n  val viaPkg: String = P.Acc.scaled(a, k = 2)\n  val viaMethod: Int = a.scaled()\n  val viaMethodK: Int = a.scaled(1)\n}\n"
+  val cr = parseCheck(both)
+  assertEqualInt(diagCount(cr), 0, "each form binds its own: " + diagCodesOf(cr))
+  assertEqualInt(countDiagCode(cr, "T0170"), 0, "no T0170 for the type's own package")
+  assertEqualInt(asMethodSiteCount(cr), 0, "the calls through the type are not written as method calls")
+  // A method call falls back to the dot-named function; a call through the
+  // type does not fall back to the body method.
+  val pick = "package P\nrecord Acc {\n  n: Int\n  func pick(self: in Acc, k: in Int): Int = k\n}\nfunc Acc.pick(self: in Acc, s: in String): String = s\n"
+  val fallback = pick +
+    "func f(a: in Acc): Unit {\n  val viaMethodStr: String = a.pick(\"s\")\n  val viaTypeStr: String = Acc.pick(a, \"t\")\n}\n"
+  val fr = parseCheck(fallback)
+  assertEqualInt(diagCount(fr), 0, "a method call falls back to the dot-named function: " + diagCodesOf(fr))
+  val noFallback = pick + "func f(a: in Acc): Int = Acc.pick(a, 1)\n"
+  assertTrue(diagCount(parseCheck(noFallback)) > 0, "a call through the type names the dot-named function")
+  val required = "package P\nrecord Acc {\n  n: Int\n  func trim(self: in Acc, k: in Int = 2): Int = self.n - k\n}\nfunc Acc.trim(self: in Acc, k: in Int): Int = self.n + k\nfunc f(a: in Acc): Int = Acc.trim(a)\n"
+  assertTrue(diagCount(parseCheck(required)) > 0, "the dot-named function's required parameter stays required")
+  // From another package, the same order holds.
+  val pkgs: List[ImportedPackage] = newList()
+  pkgs.add(rulePkg("RdLib", "package RdLib\npub " + decls.replace("func Acc.scaled", "pub func Acc.scaled")))
+  val app = "package App\nimport RdLib\nfunc f(a: in Acc): Unit {\n  val viaType: String = Acc.scaled(a)\n  val viaPkg: String = RdLib.Acc.scaled(a)\n  val viaMethod: Int = a.scaled()\n}\n"
+  val ar = checkWithImportedPackages(parse(app).file, pkgs)
+  assertEqualInt(diagCount(ar), 0, "from another package: " + diagCodesOf(ar))
+}
+
 func asMethodSiteCount(cr: in CheckResult): Int {
   var n = 0
   for k in mapKeys(cr.symbols.byRefDotCallSites) {

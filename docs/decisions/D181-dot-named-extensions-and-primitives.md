@@ -33,11 +33,18 @@ level. Two cases had no rule in docs/01:
    tuple type cannot name one (T0171).
 
 2. **The type's own applicable function wins.** A method call `b.m(args)`
-   and a call through the type `T.m(b, args)` bind the same function: one of
-   the type's own, declared in its body or by its declaring package, when one
-   is applicable in the Kotlin sense, taking the call's arguments in number
-   and type, defaults included. An own function that does not take the
-   arguments leaves the call to the extensions. An extension whose parameters
+   and a call through the type `T.m(b, args)` bind one of the type's own
+   functions, declared in its body or by its declaring package, when one is
+   applicable in the Kotlin sense, taking the call's arguments in number and
+   type, defaults included. When the type's package declares both kinds
+   under the name, a method call binds the body method first, falling back
+   to the dot-named function when the body method does not take the
+   arguments, and a call through the type names the dot-named function
+   only: `acc.scaled()` and `Acc.scaled(acc)` are different functions, and a
+   parameter the dot-named function declares without a default stays
+   required through the type even when the body method's has one (#8097).
+   An own function that does not take the arguments leaves the call to the
+   extensions. An extension whose parameters
    after the receiver have the number and types of one of the type's own
    functions of that name can never be bound by either form, and is warned
    about at its declaration (T0170); it stays reachable as `Pkg.T.m(x)`.
