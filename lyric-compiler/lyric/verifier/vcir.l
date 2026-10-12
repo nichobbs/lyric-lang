@@ -661,42 +661,136 @@ pub func untranslatableMarker(): String {
   "lyric!untranslatable"
 }
 
-// True when `t` contains a term wrapped by `untranslatableMarker`.
-pub func termIsPoisoned(t: in Term): Bool {
+// The function symbol wrapping the value of a `match` with an arm whose
+// pattern the verifier does not model (V0027, #8230).  Like
+// `untranslatableMarker` it keeps every goal it reaches failed; unlike a
+// V0033 construct, it fails only the goals its value reaches, and the
+// driver reports each of them as an error.
+pub func unmodelledPatternMarker(): String {
+  "lyric!unmodelled-pattern"
+}
+
+// The function symbol wrapping a call of a `@pure` function whose body the
+// verifier did not unfold because its value depends on a `match` it does not
+// model (#8230).  The call is still the callee applied to its arguments,
+// with its contract, so a goal it reaches is decided without the marker; one
+// that is not discharged may need the body, and is reported as V0027
+// rather than as a counterexample.
+pub func unfoldSkippedMarker(): String {
+  "lyric!unfold-skipped"
+}
+
+// True when a hypothesis or the conclusion of `g` holds a call wrapped by
+// `unfoldSkippedMarker`.
+pub func goalHasSkippedUnfold(g: in Goal): Bool {
+  anyHasMarker(g.hypotheses, unfoldSkippedMarker()) or termHasMarker(g.conclusion, unfoldSkippedMarker())
+}
+
+// `g` with every term wrapped by `unfoldSkippedMarker` unwrapped.
+pub func withoutSkippedUnfoldMarkers(g: in Goal): Goal {
+  val hyps: List[Term] = newList()
+  for h in g.hypotheses {
+    hyps.add(stripMarker(h, unfoldSkippedMarker()))
+  }
+  Goal(
+    hypotheses = hyps,
+    conclusion = stripMarker(g.conclusion, unfoldSkippedMarker()),
+    symbols = g.symbols,
+    origin = g.origin,
+    kind = g.kind,
+    label = g.label
+  )
+}
+
+func stripMarker(t: in Term, marker: in String): Term {
   match t {
-    case TVar(_, _) -> false
-    case TLit(_, _) -> false
-    case TBuiltin(_, args) -> anyPoisoned(args)
-    case TApp(name, args, _) -> name == untranslatableMarker() or anyPoisoned(args)
+    case TVar(_, _) -> t
+    case TLit(_, _) -> t
+    case TBuiltin(op, args) -> TBuiltin(op = op, args = stripMarkers(args, marker))
+    case TApp(name, args, retSort) -> {
+      if name == marker and args.count == 1 {
+        stripMarker(args[0], marker)
+      } else {
+        TApp(name = name, args = stripMarkers(args, marker), retSort = retSort)
+      }
+    }
     case TLet(bindings, body) -> {
-      var i = 0
-      while i < bindings.count {
-        if termIsPoisoned(bindings[i].term) {
-          return true
-        }
-        i = i + 1
+      val bs: List[TermBinding] = newList()
+      for b in bindings {
+        bs.add(TermBinding(name = b.name, term = stripMarker(b.term, marker)))
       }
-      termIsPoisoned(body)
+      TLet(bindings = bs, body = stripMarker(body, marker))
     }
-    case TIte(c, a, b) -> termIsPoisoned(c) or termIsPoisoned(a) or termIsPoisoned(b)
-    case TForall(_, triggers, body) -> {
-      var i = 0
-      while i < triggers.count {
-        if anyPoisoned(triggers[i]) {
-          return true
-        }
-        i = i + 1
+    case TIte(c, a, b) -> TIte(
+      cond = stripMarker(c, marker),
+      thenT = stripMarker(a, marker),
+      elseT = stripMarker(b, marker)
+    )
+    case TForall(binders, triggers, body) -> {
+      val trs: List[List[Term]] = newList()
+      for tr in triggers {
+        trs.add(stripMarkers(tr, marker))
       }
-      termIsPoisoned(body)
+      TForall(binders = binders, triggers = trs, body = stripMarker(body, marker))
     }
-    case TExists(_, body) -> termIsPoisoned(body)
+    case TExists(binders, body) -> TExists(binders = binders, body = stripMarker(body, marker))
   }
 }
 
-func anyPoisoned(xs: in List[Term]): Bool {
+func stripMarkers(ts: in List[Term], marker: in String): List[Term] {
+  val stripped: List[Term] = newList()
+  for x in ts {
+    stripped.add(stripMarker(x, marker))
+  }
+  stripped
+}
+
+// True when `t` contains a term wrapped by `untranslatableMarker`.
+pub func termIsPoisoned(t: in Term): Bool {
+  termHasMarker(t, untranslatableMarker())
+}
+
+// True when `t` contains a term wrapped by `unmodelledPatternMarker`.
+pub func termHasUnmodelledPattern(t: in Term): Bool {
+  termHasMarker(t, unmodelledPatternMarker())
+}
+
+// Whether `t` contains a term wrapped by the function symbol `marker`.
+func termHasMarker(t: in Term, marker: in String): Bool {
+  match t {
+    case TVar(_, _) -> false
+    case TLit(_, _) -> false
+    case TBuiltin(_, args) -> anyHasMarker(args, marker)
+    case TApp(name, args, _) -> name == marker or anyHasMarker(args, marker)
+    case TLet(bindings, body) -> {
+      var i = 0
+      while i < bindings.count {
+        if termHasMarker(bindings[i].term, marker) {
+          return true
+        }
+        i = i + 1
+      }
+      termHasMarker(body, marker)
+    }
+    case TIte(c, a, b) -> termHasMarker(c, marker) or termHasMarker(a, marker) or termHasMarker(b, marker)
+    case TForall(_, triggers, body) -> {
+      var i = 0
+      while i < triggers.count {
+        if anyHasMarker(triggers[i], marker) {
+          return true
+        }
+        i = i + 1
+      }
+      termHasMarker(body, marker)
+    }
+    case TExists(_, body) -> termHasMarker(body, marker)
+  }
+}
+
+func anyHasMarker(xs: in List[Term], marker: in String): Bool {
   var i = 0
   while i < xs.count {
-    if termIsPoisoned(xs[i]) {
+    if termHasMarker(xs[i], marker) {
       return true
     }
     i = i + 1
@@ -704,9 +798,27 @@ func anyPoisoned(xs: in List[Term]): Bool {
   false
 }
 
-// True when a hypothesis or the conclusion of `g` is poisoned.
+func anyPoisoned(xs: in List[Term]): Bool {
+  anyHasMarker(xs, untranslatableMarker())
+}
+
+// True when a hypothesis or the conclusion of `g` is poisoned: it holds a
+// construct reported as V0033, or the value of a `match` the verifier does
+// not model (`goalHasUnmodelledPattern`).  Such a goal is never discharged.
 pub func goalIsPoisoned(g: in Goal): Bool {
+  anyPoisoned(g.hypotheses) or termIsPoisoned(g.conclusion) or goalHasUnmodelledPattern(g)
+}
+
+// True when a hypothesis or the conclusion of `g` holds a construct
+// reported as V0033 (`untranslatableMarker`).
+pub func goalHasUntranslatable(g: in Goal): Bool {
   anyPoisoned(g.hypotheses) or termIsPoisoned(g.conclusion)
+}
+
+// True when a hypothesis or the conclusion of `g` holds the value of a
+// `match` the verifier does not model (`unmodelledPatternMarker`).
+pub func goalHasUnmodelledPattern(g: in Goal): Bool {
+  anyHasMarker(g.hypotheses, unmodelledPatternMarker()) or termHasUnmodelledPattern(g.conclusion)
 }
 
 pub func freeVarsOfTerm(t: in Term): List[String] {

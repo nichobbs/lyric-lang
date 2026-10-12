@@ -1,0 +1,14 @@
+[package]
+name = "ProveCfg"
+version = "0.1.0"
+
+[project]
+name = "ProveCfg"
+output = "single"
+output_assembly = "ProveCfg.dll"
+
+[project.packages]
+"P" = "src/p"
+
+[features]
+wide = []

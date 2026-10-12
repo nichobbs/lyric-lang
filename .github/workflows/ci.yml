@@ -307,6 +307,9 @@ jobs:
           # A program the type checker rejects is not proved (#8227), and a
           # quantifier's body keeps its side conditions (#8223).
           LYRIC_BIN="$lyric_bin" bash scripts/ci/prove-type-check.sh
+          # A proof is of the build's `@cfg`-erased items (#8325), fails
+          # closed on an unmodelled match (#8230) and verifies methods (#8231).
+          LYRIC_BIN="$lyric_bin" bash scripts/ci/prove-items.sh
 
       # Band 5 invariant guardrail (#3067): assert that no stage-1 DLL carries
       # an AssemblyRef entry for Lyric.Emitter or FSharp.Core.  These were

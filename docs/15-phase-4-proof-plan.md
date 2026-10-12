@@ -158,6 +158,7 @@ does not check the call-graph rule.
 | `V0012` | _(planned code, **repurposed**)_ The mode checker now uses `V0012` for `await` inside a `try`/`catch`/`finally` block in an async function (a CLR IL constraint, #2985/#3113), not for the broad "async in proof-required" rejection planned here.  The actual verifier-side rejection of contracts on async/generator functions ships as `V0032` (below, #3298). | — | — |
 | `V0031` | **Retired** in #336.  The self-hosted aspect weaver (`Lyric.Weaver.weaveFile`, ported from `bootstrap/src/Lyric.Emitter/Weaver.fs`) now runs in the verifier driver before VC generation, so proofs discharge against the woven wrapper's composed contracts — not the bare body.  The same-package limitation that previously made the warning incomplete is gone; cross-package aspect detection is still future work (imported aspect annotations don't fire weaving today, mirroring the original `V0031` cross-package gap). | — | — |
 | `V0032` | A `@proof_required` `async func` or `yield`-bearing generator carries a contract clause (`requires:`/`ensures:`).  The WP/SP calculus has no model for suspend/resume control flow — `await`/`yield` has no Term translation and would be coerced to an opaque symbol, so the contract would be checked against an unmodelled body.  `goalsForFunction` rejects such functions before VC generation and emits no goals (rather than vacuous/opaque ones).  A non-contract async function is unaffected.  Effect-aware VC generation is future work (#3298). | error | move the contract to a synchronous core, or mark `@runtime_checked` |
+| `V0027` | A `match` arm whose pattern the verifier does not model: a constructor, record, tuple, range, type-test, or-, or const pattern, a bare name that names a union or enum case (or may name one in scope: §5.4), or `name @ p` with such a `p` (#8230). The arm's guard and body are still checked; the match's value is unknown, and every obligation it reaches is not discharged. A `@pure` callee whose value comes from such a match is not unfolded, and an obligation not discharged without it gets V0027 too. | warning at the arm; error at each obligation the match's value reaches | rewrite the match over a modelled pattern (a literal or a guard on a binding), or keep its value out of the contract |
 | `V0033` | A proof obligation cannot be translated into the proof logic faithfully: an integer/bitvector sort mix with no implicit conversion (a `UInt` operand beside an `Int` variable, a negative constant or a constant too wide for an unsigned type, the negation of an unsigned value), a declared result range whose bound is not an integer literal that fits its base, or a call whose arguments cannot be paired with the callee's parameters (an unknown parameter name, a parameter given twice, an omitted parameter with no default; #7873).  The verifier reports the construct instead of reasoning about a term that means something else, once: at the construct when VC generation meets it (a construct in a callee's contract is reported once however many calls translate it), or at the goal when substitution first brings the mix together. Every goal the construct reaches stays failed (`unknown`, never `discharged` — an untranslatable result range included), and neither the trivial discharger nor the solver sees it (#7848, #7874). | error | add an explicit conversion, or state the bound as a literal of the base type |
 
 `V0007` defaults to *error* because allowing `unknown` to slide is
@@ -599,10 +600,38 @@ Calls the verifier cannot follow fail closed or are over-approximated
   and every backend.
 - A match arm's guard is translated in the arm's bindings: its side
   conditions and facts hold where the pattern matches and no earlier arm
-  did, and the arm is taken when pattern and guard hold. An arm whose
-  pattern the verifier does not model (V0027) still has its guard and body
-  checked, under an unknown condition and with each binding a value of its
-  own; its value is #8142's open question.
+  did, and the arm is taken when pattern and guard hold. A pattern the
+  verifier models is `_`, a literal, a binding, `name @ p` (which matches
+  where `p` does, #8142) and a parenthesised one. A bare name is a binding
+  only where the type checker cannot read it as a case. It reads a bare
+  name as a case whenever a case of that name is in scope — the file's, its
+  package's, the prelude's `Some`/`None`/`Ok`/`Err`, its imports' — and
+  rejects one that cannot match the scrutinee (`T0129`) unless the
+  scrutinee is a record, an enum or a type parameter (docs/01 §2.12). So
+  the name binds against a primitive, slice, tuple or `Unit`; against
+  `Option`/`Result` unless it is one of their cases; against a union, unless
+  it is one of that union's cases — only when every package in scope was
+  read and the scrutinee's type name resolves, as the type checker
+  resolves it, to exactly one union (the package's own, else the one
+  import that declares it), never a same-named union of a package the
+  file does not import;
+  and against anything else only when no case of that name is in scope and
+  the verifier read every package the proved package imports, and the
+  prelude (`PackageScope.imports`, which `lyric prove` fills from the
+  standard library's sources and the projects' packages). Otherwise it is
+  not modelled (#8230). An arm whose pattern the verifier does not model
+  gets warning `V0027` and still has its guard and body checked, under an
+  unknown condition and with each binding a value of its own; the match's
+  value is then unknown, and every goal it reaches — a postcondition about
+  the result, an `assert` on a binding of it, a hypothesis built from it —
+  is not discharged and gets error `V0027` at the goal, unless a `V0033`
+  construct already fails that goal. A match whose value reaches no goal (a
+  function without a postcondition that returns it) is no error. A `@pure`
+  function whose body's value comes from such a match is not unfolded at
+  its calls; a goal the call reaches is still decided from the callee's
+  contract, and one that is not discharged gets `V0027` (it may need the
+  body: "may be false", with the model found without it), never a bare
+  counterexample.
 - A lambda's body is checked for every call: it is walked as a function
   body, with each parameter a value of its own of its declared sort, each
   captured `var`/`out`/`inout` binding whatever it holds by then and every
@@ -711,11 +740,60 @@ mutable arguments reset). Inside a protected type, `self.m()` fails closed like 
 bare `m()`, as does a method call on any receiver the verifier does not
 model (V0024).
 
-Known limitations, tracked separately: no heap model, and record
-methods never verified (#8110); a callee's `ensures:` about an
+Methods are verified like functions (#8231): a method declared in a
+record or exposed record body, an `impl` method, and an interface's
+default method, with the receiver `self` a parameter of its declared type
+(`Self` read as the record, at its own type parameters, or the `impl`
+target), the type's parameters in scope beside the method's own, a field
+named without `self.` read on `self` under the type checker's scoping
+(`Lyric.SelfFields`: a parameter or local of the field's name shadows it),
+and a bare call of a sibling method read as the call on `self` it is, whose
+result has the sibling's declared type and is otherwise uninterpreted.
+Goals are labelled `<Type>.<method>`. An `impl` method is also checked
+against the `requires:`/`ensures:` of the interface method it implements,
+matched to its parameters by position, as the contract elaborator inserts
+them at run time (docs/01 §6.1.1); a bare call of one of the interface's
+methods in such a clause is the call on `self`, never a free function of
+the same name. The interface is resolved as the type checker resolves it
+(`resolveImplInterface`): a qualified name in the package it names (an
+import alias included); a bare one in the proved package — its files, and
+in the directory-tree fallback only the files whose `package` line is the
+proved file's — and otherwise in the packages the package imports and the
+prelude. `lyric prove` reads those packages' declarations from source: the
+standard library's (as the build for `--target` loads it) and every
+`[project.packages]`/`[project.tests]` entry of the manifests that list
+the file. An interface with no clauses gives none. The `impl` fails closed
+(`V0033`) when the interface is in a package the verifier did not read (a
+dependency restored as a compiled assembly: its contract metadata is not
+read), or is declared more than once where it is looked up; a method fails
+closed when the interface declares no method of its name and arity, rather
+than inheriting nothing. An interface's default method is verified once for
+every implementation, `Self` a type of its own. A method's contract is not
+yet assumed at its calls: a call on a receiver stays an uninterpreted
+function (#8110).
+
+What is proved is what the build compiles (#8325): `@cfg` erasure for the
+build's target and features (`Lyric.Cfg.applyCfgErasure`, as
+`Lyric.Pipeline.pipeParseAndErase` runs it) comes first, before the mode
+and stability checks and every pass that keys items by name, so of two
+declarations of one name gated by exclusive predicates only the build's
+is proved. `lyric prove` passes the build of each manifest whose entries
+list the file (its target and the features `lyric build` activates for
+the same flags) or, for a file no manifest lists, the target alone. A file
+two builds compile differently is proved as each compiles it, every goal
+labelled with its build (`[target=jvm features=a] f$post`), so counts
+never merge two builds' obligations, and so is each goal's diagnostic. The
+`@proof_required` items no build compiles are listed after the
+diagnostics (`inactiveItemsForBuilds`): those no build compiles in any
+form as not proved, and an inactive `@cfg` twin as a variant whose
+same-named declaration this build proves. A
+malformed predicate or undeclared feature (`F0012`/`F0013`) stops the
+proof.
+
+Known limitations, tracked separately: no heap model, and a method's
+contract not used at its calls (#8110); a callee's `ensures:` about an
 `out`/`inout` parameter not linked back to the argument (#8111);
-`Float`/`Double` as SMT reals (#8141); the value of an expression `match`
-arm with an unsupported pattern (#8142); anonymous-range assignment (#8143);
+`Float`/`Double` as SMT reals (#8141); anonymous-range assignment (#8143);
 precision and range gaps (#8103).
 
 Obligations raised inside an expression — a callee's `requires:`, an

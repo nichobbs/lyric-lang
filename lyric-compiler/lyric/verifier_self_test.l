@@ -2583,7 +2583,14 @@ test "a call of a function that is not @pure is a value of its own (#8109)" {
       "func f(a: in Tier, b: in Tier): Bool\n  requires: level(a) >= level(b)\n  ensures: result\n{\n  level(a) >= level(b)\n}\n",
     "pure-untranslatable-body"
   )
-  assertRefuted(level + "func f(a: in Tier): Bool\n  ensures: result\n{\n  level(a) == 1\n}\n", "pure-body-not-assumed")
+  // A goal that is not discharged without that body is reported as
+  // depending on it (#8230), not refuted.
+  val notAssumed = provePkg(level + "func f(a: in Tier): Bool\n  ensures: result\n{\n  level(a) == 1\n}\n")
+  assertTrue(summaryHasDiagCode(notAssumed, "V0027"), "pure-body-not-assumed: V0027")
+  assertTrue(
+    summaryHasFailure(notAssumed) and not summaryHasCounterexample(notAssumed),
+    "pure-body-not-assumed: not proved"
+  )
 }
 
 test "a function-valued binding calls the function it holds now (#8109)" {
@@ -3242,4 +3249,442 @@ test "an equality that compares by identity or over a type parameter fails close
       "func f(): Bool\n  ensures: result\n{\n  P(x = 1, s = \"a\") == P(x = 1, s = \"a\") and U.A(p = P(x = 1, s = \"a\")) == U.A(p = P(x = 1, s = \"a\"))\n}\n",
     "value-record-and-union"
   )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A proof sees the items the build compiles (#8325).
+// ─────────────────────────────────────────────────────────────────────────────
+func cfgTwins(): String {
+  "@proof_required\npackage Twins\n" +
+    "@cfg(feature = \"a\")\npub func which(): Int\n  ensures: result == 1\n{\n  1\n}\n" +
+    "@cfg(not(feature = \"a\"))\npub func which(): Int\n  ensures: result == 2\n{\n  2\n}\n" +
+    "pub func caller(): Int\n  ensures: result == 1\n{\n  which()\n}\n"
+}
+
+func proveFor(src: in String, target: in String, active: in List[String], declared: in List[String]): ProofSummary {
+  val noSiblings: List[String] = newList()
+  proveSourceForBuild(
+    src,
+    false,
+    packageScopeOf(noSiblings),
+    ProveBuildConfig(targetName = target, activeFeatures = active, declaredFeatures = declared)
+  )
+}
+
+test "two @cfg-gated declarations of one name are proved as the build erases them (#8325)" {
+  val none: List[String] = newList()
+  val a: List[String] = newList()
+  a.add("a")
+  val withA = proveFor(cfgTwins(), "dotnet", a, a)
+  assertEqualInt(summaryTotalCount(withA), 2, "feature a: the live twin and the caller only")
+  assertTrue(not summaryHasErrorDiag(withA), "feature a: no error diagnostics")
+  assertTrue(not summaryHasFailure(withA), "feature a: the caller sees which() == 1")
+  val without = proveFor(cfgTwins(), "dotnet", none, a)
+  assertEqualInt(summaryTotalCount(without), 2, "default: the other twin and the caller only")
+  assertTrue(summaryHasCounterexample(without), "default: the caller sees which() == 2")
+  // The default build of a file no manifest builds: no features.
+  val dflt = proveSourceInScope(cfgTwins(), false, packageScopeOf(none))
+  assertTrue(summaryHasCounterexample(dflt), "no build given: the default build's twin")
+}
+
+test "a @cfg(target) twin is proved for the target the build compiles (#8325)" {
+  val src = "@proof_required\npackage Targets\n" +
+    "@cfg(target = \"jvm\")\nfunc w(): Int\n  ensures: result == 1\n{\n  1\n}\n" +
+    "@cfg(not(target = \"jvm\"))\nfunc w(): Int\n  ensures: result == 2\n{\n  2\n}\n" +
+    "func c(): Int\n  ensures: result == 2\n{\n  w()\n}\n"
+  val none: List[String] = newList()
+  assertTrue(not summaryHasFailure(proveFor(src, "dotnet", none, none)), "dotnet: w() == 2")
+  assertTrue(summaryHasCounterexample(proveFor(src, "jvm", none, none)), "jvm: w() == 1")
+}
+
+test "a malformed @cfg predicate stops the proof (#8325)" {
+  val none: List[String] = newList()
+  val s = proveFor("@proof_required\npackage Bad\n@cfg(colour = \"red\")\nfunc f(): Int = 1\n", "dotnet", none, none)
+  assertTrue(summaryHasDiagCode(s, "F0012"), "F0012 reported")
+  assertEqualInt(summaryTotalCount(s), 0, "nothing proved")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A match arm the verifier does not model fails what depends on it (#8230).
+// ─────────────────────────────────────────────────────────────────────────────
+func summaryHasErrorCode(s: in ProofSummary, code: in String): Bool {
+  var i = 0
+  while i < s.diagnostics.count {
+    if s.diagnostics[i].code == code and s.diagnostics[i].severity == DiagError {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+func assertUnmodelledMatch(body: in String, label: in String): Unit {
+  val s = provePkg(body)
+  assertTrue(summaryHasErrorCode(s, "V0027"), label + ": V0027 error at the goal")
+  assertTrue(summaryHasFailure(s), label + ": the goal is not discharged")
+}
+
+test "a bare enum or union case is a case, never a binding (#8230)" {
+  assertUnmodelledMatch(
+    "enum Color {\n  case R\n  case G\n}\n" +
+      "func f(c: in Color): Bool\n  ensures: result\n{\n  match c {\n    case R -> true\n    case G -> false\n  }\n}\n",
+    "bare-enum-case"
+  )
+  assertUnmodelledMatch(
+    "union Opt {\n  case Has(v: Int)\n  case Nothing\n  case Other\n}\n" +
+      "func f(o: in Opt): Bool\n  ensures: result\n{\n  match o {\n    case Has(_) -> true\n    case Nothing -> true\n    case Other -> false\n  }\n}\n",
+    "union-constructor-and-bare-cases"
+  )
+  assertUnmodelledMatch(
+    "func f(o: in Option[Int]): Bool\n  ensures: result\n{\n  match o {\n    case None -> false\n    case _ -> true\n  }\n}\n",
+    "bare-none"
+  )
+}
+
+test "a bare name matched against a type another file declares fails closed (#8230)" {
+  // `Opt` and its cases are declared in a sibling file: `Nothing` may be one.
+  val noSiblingDecls: List[String] = newList()
+  noSiblingDecls.add("Opt")
+  val s = proveSourceInScope(
+    "@proof_required\npackage U\nfunc f(o: in Opt): Bool\n  ensures: result\n{\n  match o {\n    case Nothing -> true\n    case _ -> false\n  }\n}\n",
+    false,
+    packageScopeOf(noSiblingDecls)
+  )
+  assertTrue(summaryHasErrorCode(s, "V0027"), "sibling-union: V0027 error at the goal")
+  assertTrue(summaryHasFailure(s), "sibling-union: not discharged")
+}
+
+test "a match whose value no obligation needs is not an error (#8230)" {
+  val s = provePkg(
+    "enum Color {\n  case R\n  case G\n}\n" +
+      "func label(c: in Color): Int {\n  match c {\n    case Color.R -> 1\n    case Color.G -> 2\n  }\n}\n"
+  )
+  assertTrue(summaryHasDiagCode(s, "V0027"), "unused-match: V0027 warning at the arm")
+  assertTrue(not summaryHasErrorDiag(s), "unused-match: no error")
+  assertTrue(not summaryHasFailure(s), "unused-match: every goal discharged")
+  assertUnmodelledMatch(
+    "enum Color {\n  case R\n  case G\n}\n" +
+      "func label(c: in Color): Int {\n  val v = match c {\n    case Color.R -> 1\n    case Color.G -> 0\n  }\n  assert(v > 0)\n  v\n}\n",
+    "value-in-an-assertion"
+  )
+}
+
+// The standard library's prelude as the verifier reads it, and a scope that
+// reads it: every case in scope of a file importing nothing is then known.
+func coreScope(): ImportScope {
+  val core: List[String] = newList()
+  core.add(
+    "package Std.Core\npub union Option[T] {\n  case Some(value: T)\n  case None\n}\n" +
+      "pub union Result[T, E] {\n  case Ok(value: T)\n  case Err(error: E)\n}\n"
+  )
+  importScopeWithPackage(emptyImportScope(), "Std.Core", core)
+}
+
+func proveWithCore(body: in String): ProofSummary {
+  val noSiblings: List[String] = newList()
+  proveSourceInScope(
+    "@proof_required\npackage U\n" + body,
+    false,
+    withImportScope(packageScopeOf(noSiblings), coreScope())
+  )
+}
+
+test "a bare name binds where no case of that name can be meant (#8230)" {
+  assertDischarged(
+    "func f(n: in Int): Int\n  ensures: result == n\n{\n  match n {\n    case k -> k\n  }\n}\n",
+    "primitive-binding"
+  )
+  val rec = "record P {\n  x: Int\n}\nfunc f(p: in P): Int\n  ensures: result == p.x\n{\n  match p {\n    case q -> q.x\n  }\n}\n"
+  val recS = proveWithCore(rec)
+  assertTrue(not summaryHasErrorDiag(recS) and not summaryHasFailure(recS), "record-binding: every case in scope known")
+  // Without the prelude read, `q` may be one of its cases.
+  assertUnmodelledMatch(rec, "record-binding-scope-unknown")
+  val en = "enum Color {\n  case R\n  case G\n}\nfunc f(c: in Color): Bool\n  ensures: result\n{\n  match c {\n    case other -> true\n  }\n}\n"
+  val enS = proveWithCore(en)
+  assertTrue(not summaryHasErrorDiag(enS) and not summaryHasFailure(enS), "enum-binding-not-a-case")
+  // A case of an imported union is a case, never a binding, against a record.
+  val lib: List[String] = newList()
+  lib.add("package Lib\npub union Mode {\n  case q\n  case Other\n}\n")
+  val noSiblings: List[String] = newList()
+  val libS = proveSourceInScope(
+    "@proof_required\npackage U\nimport Lib\n" + rec,
+    false,
+    withImportScope(packageScopeOf(noSiblings), importScopeWithPackage(coreScope(), "Lib", lib))
+  )
+  assertTrue(summaryHasErrorCode(libS, "V0027"), "imported-case-against-a-record: V0027 at the goal")
+}
+
+test "bare Some, None, Ok and Err are the prelude's cases (#8230)" {
+  assertUnmodelledMatch(
+    "func f(o: in Option[Int]): Bool\n  ensures: result\n{\n  match o {\n    case Some -> true\n    case None -> false\n  }\n}\n",
+    "bare-some"
+  )
+  assertUnmodelledMatch(
+    "func g(r: in Result[Int, String]): Bool\n  ensures: result\n{\n  match r {\n    case Ok -> true\n    case Err -> false\n  }\n}\n",
+    "bare-ok-err"
+  )
+  assertUnmodelledMatch(
+    "func g(r: in Result[Int, String]): Bool\n  ensures: result\n{\n  match r {\n    case Err -> true\n    case _ -> false\n  }\n}\n",
+    "bare-err-first"
+  )
+  assertUnmodelledMatch(
+    "func h(o: in Option[Int]): Int\n  ensures: result == 1\n{\n  match o {\n    case Some -> 1\n    case _ -> 2\n  }\n}\n",
+    "bare-some-first"
+  )
+  // Any other bare name against an `Option` binds it.
+  assertDischarged(
+    "func h(o: in Option[Int]): Bool\n  ensures: result\n{\n  match o {\n    case v -> true\n  }\n}\n",
+    "option-binding"
+  )
+}
+
+test "a binding with a subpattern matches only where the subpattern does (#8142)" {
+  assertRefuted(
+    "func f(n: in Int): Int\n  ensures: result == 1\n{\n  match n {\n    case k @ 5 -> 1\n    case _ -> 0\n  }\n}\n",
+    "at-pattern-refuted"
+  )
+  assertDischarged(
+    "func f(n: in Int): Int\n  requires: n == 5\n  ensures: result == 5\n{\n  match n {\n    case k @ 5 -> k\n    case _ -> 0\n  }\n}\n",
+    "at-pattern-discharged"
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Methods are verified (#8231).
+// ─────────────────────────────────────────────────────────────────────────────
+test "a record method's body is verified, with its fields read on self (#8231)" {
+  val pt = "record Pt {\n  x: Int\n"
+  assertRefuted(
+    pt + "  func getX(self: in Pt): Int\n    ensures: result > 5\n  {\n    self.x\n  }\n}\n",
+    "false-ensures"
+  )
+  assertDischarged(
+    pt + "  func getX(self: in Pt): Int\n    ensures: result == self.x\n  {\n    self.x\n  }\n}\n",
+    "self-field"
+  )
+  assertDischarged(
+    pt + "  func getX(self: in Pt): Int\n    ensures: result == self.x\n  {\n    x\n  }\n}\n",
+    "bare-field-is-self-field"
+  )
+  assertDischarged(
+    pt + "  func getX(self: in Pt): Int\n    ensures: result == x\n  {\n    self.x\n  }\n}\n",
+    "bare-field-in-ensures"
+  )
+  assertRefuted(
+    pt + "  func getX(self: in Pt): Int\n    ensures: result == self.x\n  {\n    val x = 3\n    x\n  }\n}\n",
+    "local-shadows-field"
+  )
+  assertRefuted(pt + "  func check(self: in Pt): Int {\n    assert(x > 0)\n    1\n  }\n}\n", "method-assertion")
+  assertDischarged(
+    pt + "  func check(self: in Pt): Int\n    requires: x > 0\n  {\n    assert(self.x > 0)\n    1\n  }\n}\n",
+    "method-requires"
+  )
+}
+
+test "an impl method's body is verified, with the impl's type parameters in scope (#8231)" {
+  val pig = "interface Pig {\n  func pig(self: in Self, k: in Int): Int\n}\nrecord Box[Bit] {\n  v: Bit\n}\n"
+  assertRefuted(
+    pig +
+      "impl[Bit] Pig for Box[Bit] {\n  func pig(self: in Box[Bit], k: in Int): Int\n    ensures: result > 100\n  {\n    assert(k > 1000)\n    k\n  }\n}\n",
+    "generic-impl-assertion"
+  )
+  assertDischarged(
+    pig +
+      "impl[Bit] Pig for Box[Bit] {\n  func pig(self: in Box[Bit], k: in Int): Int\n    requires: k > 1000\n    ensures: result > 100\n  {\n    assert(k > 1000)\n    k\n  }\n}\n",
+    "generic-impl-holds"
+  )
+  // A generic record's field is not modelled, so reading one fails closed.
+  assertUntranslatable(
+    "interface Pig {\n  func pig(self: in Self): Int\n}\nrecord Box[Bit] {\n  v: Bit\n  n: Int\n}\n" +
+      "impl[Bit] Pig for Box[Bit] {\n  func pig(self: in Box[Bit]): Int\n    ensures: result > 100\n  {\n    self.n\n  }\n}\n",
+    "generic-impl-field"
+  )
+  val rec = "interface Pig {\n  func pig(self: in Self): Int\n}\nrecord Pen {\n  n: Int\n}\n"
+  assertRefuted(
+    rec +
+      "impl Pig for Pen {\n  func pig(self: in Pen): Int\n    ensures: result > 100\n  {\n    assert(self.n > 1000)\n    self.n\n  }\n}\n",
+    "impl-field-assertion"
+  )
+}
+
+test "an impl method is checked against its interface's clauses (#8231)" {
+  val sized = "interface Sized {\n  func size(self: in Self): Int\n    ensures: result >= 0\n}\nrecord R {\n  n: Int\n}\n"
+  assertRefuted(
+    sized + "impl Sized for R {\n  func size(self: in R): Int {\n    self.n\n  }\n}\n",
+    "inherited-ensures-refuted"
+  )
+  assertDischarged(
+    sized +
+      "impl Sized for R {\n  func size(self: in Self): Int {\n    if n < 0 {\n      0\n    } else {\n      n\n    }\n  }\n}\n",
+    "inherited-ensures-holds"
+  )
+  // The interface's parameter names stand for the implementation's at the
+  // same positions, swapped ones included.
+  val scale = "interface Scale {\n  func scale(self: in Self, k: in Int, j: in Int): Int\n    requires: k > 0\n    ensures: result == k\n}\n" +
+    "record R {\n  n: Int\n}\n"
+  assertDischarged(
+    scale + "impl Scale for R {\n  func scale(self: in R, j: in Int, k: in Int): Int {\n    j\n  }\n}\n",
+    "renamed-parameters"
+  )
+  assertRefuted(
+    scale + "impl Scale for R {\n  func scale(self: in R, j: in Int, k: in Int): Int {\n    k\n  }\n}\n",
+    "renamed-wrong"
+  )
+}
+
+test "an impl of an interface another file of the package declares inherits its clauses (#8231)" {
+  val sibling = "package U\npub interface Sized {\n  func size(self: in Self): Int\n    ensures: result >= 0\n}\n"
+  val siblings: List[String] = newList()
+  siblings.add(sibling)
+  val s = proveSourceInScope(
+    "@proof_required\npackage U\nrecord R {\n  n: Int\n}\nimpl Sized for R {\n  func size(self: in R): Int {\n    self.n\n  }\n}\n",
+    false,
+    scopeOfSources(siblings, "")
+  )
+  assertTrue(summaryHasCounterexample(s), "sibling-interface: the inherited ensures is refuted")
+}
+
+test "an impl of an interface the verifier cannot see fails closed (#8231)" {
+  assertUntranslatable(
+    "record R {\n  n: Int\n}\nimpl Printable for R {\n  func show(self: in R): Int {\n    1\n  }\n}\n",
+    "unseen-interface"
+  )
+}
+
+test "an interface's default method is verified (#8231)" {
+  assertRefuted(
+    "interface One {\n  func one(self: in Self): Int\n    ensures: result > 1\n  {\n    1\n  }\n}\n",
+    "default-method"
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Review follow-ups (#8230, #8231, #8325).
+// ─────────────────────────────────────────────────────────────────────────────
+test "an interface of another package in the same directory is not inherited (#8231)" {
+  val other = "package Other\ninterface ByteReader {\n  func read(self: in Self, n: in Int): Int\n    requires: n > 1000\n}\n"
+  val siblings: List[String] = newList()
+  siblings.add(other)
+  val s = proveSourceInScope(
+    "@proof_required\npackage Proved\nrecord F {\n  n: Int\n}\nimpl ByteReader for F {\n  func read(self: in F, n: in Int): Int\n    ensures: n > 500\n  {\n    1\n  }\n}\n",
+    false,
+    scopeOfSources(siblings, "Proved")
+  )
+  assertTrue(summaryHasDiagCode(s, "V0033"), "other-package-interface: unresolved, V0033")
+  assertTrue(summaryHasCounterexample(s), "other-package-interface: its requires is not assumed")
+}
+
+test "an impl method its interface does not declare, or of another arity, fails closed (#8231)" {
+  val iface = "interface I {\n  func a(self: in Self, k: in Int): Int\n    ensures: result > 0\n}\nrecord R {\n  n: Int\n}\n"
+  assertUntranslatable(
+    iface + "impl I for R {\n  func b(self: in R, k: in Int): Int {\n    1\n  }\n}\n",
+    "no-such-method"
+  )
+  assertUntranslatable(iface + "impl I for R {\n  func a(self: in R): Int {\n    1\n  }\n}\n", "other-arity")
+}
+
+test "a bare call in an inherited clause is the interface's method, not a free function (#8231)" {
+  assertRefuted(
+    "@pure\nfunc limit(): Int {\n  0\n}\n" +
+      "interface L {\n  func limit(self: in Self): Int\n  func get(self: in Self): Int\n    ensures: result >= limit()\n}\n" +
+      "record R {\n  n: Int\n}\n" +
+      "impl L for R {\n  func limit(self: in R): Int {\n    100\n  }\n  func get(self: in R): Int {\n    5\n  }\n}\n",
+    "inherited-bare-call"
+  )
+}
+
+test "a record method declared with self: in Self reads the record's fields (#8231)" {
+  val p = "record P {\n  x: Int\n  func getX(self: in Self): Int\n    ensures: result == x\n  {\n"
+  assertRefuted(p + "    x + 1\n  }\n}\n", "self-type-refuted")
+  assertDischarged(p + "    x\n  }\n}\n", "self-type-holds")
+}
+
+test "a sibling method called on self has its declared result type (#8231)" {
+  assertRefuted(
+    "interface Dflt {\n  func n(self: in Self): Int\n  func twice(self: in Self): Int\n    ensures: result > 0\n  {\n    n() + n()\n  }\n}\n",
+    "default-method-sibling-calls"
+  )
+  assertDischarged(
+    "interface Dflt {\n  func n(self: in Self): Int\n  func same(self: in Self): Bool\n    ensures: result\n  {\n    n() == n()\n  }\n}\n",
+    "default-method-sibling-congruence"
+  )
+}
+
+test "an impl inherits the clauses of an interface another package declares (#8231)" {
+  val lib: List[String] = newList()
+  lib.add(
+    "package Lib\npub interface Sized {\n  func size(self: in Self): Int\n    ensures: result >= 0\n}\npub interface Plain {\n  func size(self: in Self): Int\n}\n"
+  )
+  val noSiblings: List[String] = newList()
+  val libScope = withImportScope(packageScopeOf(noSiblings), importScopeWithPackage(coreScope(), "Lib", lib))
+  val rec = "@proof_required\npackage U\nimport Lib\nrecord R {\n  n: Int\n}\n"
+  val sized = proveSourceInScope(
+    rec + "impl Sized for R {\n  func size(self: in R): Int {\n    self.n\n  }\n}\n",
+    false,
+    libScope
+  )
+  assertTrue(summaryHasCounterexample(sized), "imported-interface: its ensures is checked")
+  assertTrue(not summaryHasDiagCode(sized, "V0033"), "imported-interface: resolved")
+  val plain = proveSourceInScope(
+    rec + "impl Plain for R {\n  func size(self: in R): Int {\n    self.n\n  }\n}\n",
+    false,
+    libScope
+  )
+  assertTrue(not summaryHasErrorDiag(plain) and not summaryHasFailure(plain), "imported-interface-without-clauses")
+  val qualified = proveSourceInScope(
+    "@proof_required\npackage U\nimport Lib as L\nrecord R {\n  n: Int\n}\nimpl L.Sized for R {\n  func size(self: in R): Int {\n    self.n\n  }\n}\n",
+    false,
+    libScope
+  )
+  assertTrue(summaryHasCounterexample(qualified), "aliased-interface: its ensures is checked")
+  // A package the verifier did not read.
+  assertUntranslatable(
+    "import Elsewhere\nrecord R {\n  n: Int\n}\nimpl Sized for R {\n  func size(self: in R): Int {\n    1\n  }\n}\n",
+    "unread-package"
+  )
+}
+
+test "a goal that needs the body of a @pure callee with an unmodelled match is V0027 (#8230)" {
+  val shape = "union Shape {\n  case Circle(r: Int)\n  case Square(s: Int)\n}\n@pure\nfunc pick(s: in Shape): Int {\n  match s {\n    case Circle(_) -> 1\n    case Square(_) -> 2\n  }\n}\n"
+  val s = provePkg(shape + "func a(s: in Shape): Int\n  ensures: result == 1\n{\n  pick(s)\n}\n")
+  assertTrue(summaryHasErrorCode(s, "V0027"), "pure-callee: V0027")
+  assertTrue(not summaryHasCounterexample(s), "pure-callee: no counterexample")
+  // A goal its contract settles is still proved.
+  assertDischarged(
+    shape + "func a(s: in Shape): Bool\n  ensures: result\n{\n  pick(s) == pick(s)\n}\n",
+    "pure-callee-congruence"
+  )
+}
+
+test "a file two builds compile differently has each build's goals, labelled (#8325)" {
+  val a: List[String] = newList()
+  a.add("a")
+  val none: List[String] = newList()
+  val builds: List[ProveBuildConfig] = newList()
+  builds.add(ProveBuildConfig(targetName = "dotnet", activeFeatures = a, declaredFeatures = a))
+  builds.add(ProveBuildConfig(targetName = "dotnet", activeFeatures = none, declaredFeatures = a))
+  val noSiblings: List[String] = newList()
+  val s = proveSourceForBuilds(cfgTwins(), false, packageScopeOf(noSiblings), builds)
+  assertEqualInt(summaryTotalCount(s), 4, "two builds, two goals each")
+  var labelled = 0
+  for r in s.results {
+    if r.goal.label.startsWith("[target=dotnet features=a] ") or r.goal.label.startsWith("[target=dotnet] ") {
+      labelled = labelled + 1
+    }
+  }
+  assertEqualInt(labelled, 4, "each goal names its build")
+  val oneBuild: List[ProveBuildConfig] = newList()
+  oneBuild.add(ProveBuildConfig(targetName = "dotnet", activeFeatures = a, declaredFeatures = a))
+  val inactive = inactiveItemsForBuilds(cfgTwins(), oneBuild)
+  assertEqualInt(inactive.unproved.count, 0, "the twin's name is proved")
+  assertEqualInt(inactive.variants.count, 1, "one inactive variant")
+  assertEqual(inactive.variants[0], "which", "the inactive variant")
+  val both = inactiveItemsForBuilds(cfgTwins(), builds)
+  assertEqualInt(both.unproved.count + both.variants.count, 0, "both twins proved under some build")
+  val jvmOnly = inactiveItemsForBuilds(
+    "@proof_required\npackage J\n@cfg(target = \"jvm\")\nfunc onJvm(): Int = 1\nfunc always(): Int = 2\n",
+    oneBuild
+  )
+  assertEqualInt(jvmOnly.unproved.count, 1, "an item no build compiles")
+  assertEqual(jvmOnly.unproved[0], "onJvm", "the unproved item")
 }

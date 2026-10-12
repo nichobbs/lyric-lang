@@ -88,6 +88,28 @@ prove: money.l fails the build's checks; no proof obligation was attempted
 
 With `--json` the same diagnostics fill the document's `diagnostics` array, and `goals` is empty.
 
+The proof is of what the build compiles for those flags. A package that keeps two versions of one function, one per feature or per target, proves the one the build picks:
+
+```lyric
+@cfg(feature = "wide")
+pub func limit(): Int
+  ensures: result == 1000
+{
+  1000
+}
+
+@cfg(not(feature = "wide"))
+pub func limit(): Int
+  ensures: result == 10
+{
+  10
+}
+```
+
+`lyric prove` proves the second `limit`, and a caller sees `limit() == 10`; `lyric prove --features wide` proves the first, as `lyric build --features wide` compiles it.
+
+Every function body the build compiles is proved, methods included: a method in a `record` body, a method in an `impl` block and an interface's default method are proved like functions, with `self` as their first parameter and a field named without `self.` read on `self`. An `impl` method must also meet the `requires:` and `ensures:` of the interface method it implements. `lyric prove` reads the interface's clauses from source, whether it is declared in your package, the standard library or another package of your project. If it is declared in a dependency installed only as a compiled assembly, the verifier cannot see the clauses, so it reports `V0033` instead of proving the method against half of its contract.
+
 When all obligations discharge:
 
 ```
@@ -119,6 +141,8 @@ The key mechanism that makes module-level proof tractable is the Hoare call rule
 In both steps each parameter in the contract stands for the argument passed to it. A named argument goes to the parameter it names, whatever order the call writes it in (`debit(amount = a, from = acct)` binds `from` to `acct`), and a parameter the call leaves out stands for its default value.
 
 A method call works the same way when the file declares the function it runs: `acct.withdraw(n)` on an `Account` reaches `func Account.withdraw(a: in Account, n: in Int)`, with `acct` as its first argument. Each such call has a result of its own, so `acct.next() == acct.next()` is provable only if the contract says so (or the method is `@pure`). A method the file does not declare is an unknown function of its receiver and arguments: the same call twice gives the same value, and nothing else is known about it. An argument passed to an `out` or `inout` parameter holds a new value after the call; in the callee's `ensures:` the parameter means its final value and `old(p)` the value passed in.
+
+A `match` is modelled arm by arm when its patterns are `_`, literals or bindings (with an optional guard). The verifier does not yet model constructor patterns such as `case Some(x)` or the cases of a union or enum. A bare name like `case Other` or `case Err` is a case, not a binding, whenever the compiler would read it as one: `Some`, `None`, `Ok` and `Err` always are, and so is any case of a union or enum your file, your package or its imports declare. Such an arm gets warning `V0027`. Its body is still checked, but the match's value is unknown to the proof, so an obligation that depends on it is reported as error `V0027` and is not proved, rather than proved with the arm left out. Write the contract over values the verifier can follow, or keep the match out of it.
 
 This is the deal: you prove each function independently, and at call sites you trust what you proved. The proof for `execute` does not need to know how `debit` works internally; it only needs to know what `debit` promises.
 

@@ -349,11 +349,18 @@ pub func packageFileSetForSource(sourcePath: in String): Option[PackageFileSet] 
   val own = normalizePath(sourcePath)
   val dir = Path.dirname(own)
   val entries = match containingEntries(own) { case Some(es) -> es; case None -> return None }
+  // Each file once, though several entries list it (#8231): a file read
+  // twice would declare everything in it twice.
   val files: List[String] = newList()
+  val seen: List[String] = newList()
   val found = entries.count > 0
   for e in entries {
     for p in e.files {
-      files.add(p)
+      val k = pathKey(p)
+      if not seen.contains(k) {
+        seen.add(k)
+        files.add(p)
+      }
     }
   }
   if found {

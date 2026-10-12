@@ -1,0 +1,11 @@
+[package]
+name = "ProveRestoredLib"
+version = "0.1.0"
+
+[project]
+name = "ProveRestoredLib"
+output = "single"
+output_assembly = "ProveRestoredLib.dll"
+
+[project.packages]
+"Mylib" = "src/mylib.l"
