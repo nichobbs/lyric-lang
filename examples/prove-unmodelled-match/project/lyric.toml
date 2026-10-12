@@ -1,0 +1,11 @@
+[package]
+name = "ProveUnmodelledMatch"
+version = "0.1.0"
+
+[project]
+name = "ProveUnmodelledMatch"
+output = "single"
+output_assembly = "ProveUnmodelledMatch.dll"
+
+[project.packages]
+"P" = "src/p"

@@ -248,6 +248,13 @@ func cmdProve(argv: in slice[String]): Int {
     // normalized path; a file in no entry, or in an entry whose files
     // cannot all be read, parsed or listed, has an unknown scope (#8108).
     val fileScopes = projectFileScopes(projectMfPath)
+    // Every file is proved as the project's build compiles it: its `@cfg`
+    // erasure for the build's target and features (#8325).
+    val projectBuilds: List[Verifier.ProveBuildConfig] = newList()
+    match manifestProveBuildConfig(projectMfPath, buildSettings) {
+      case Some(c) -> projectBuilds.add(c)
+      case None -> projectBuilds.add(noManifestProveBuildConfig(buildSettings))
+    }
     var totalGoals = 0
     var totalDischarged = 0
     var anyError = false
@@ -267,7 +274,7 @@ func cmdProve(argv: in slice[String]): Int {
         case Some(fs) -> fs
         case None -> Verifier.unknownPackageScope()
       }
-      val summary = Verifier.proveSourceInScope(source, allowUnverified, pkgScope)
+      val summary = Verifier.proveSourceForBuilds(source, allowUnverified, pkgScope, projectBuilds)
       for d in summary.diagnostics.toArray() {
         printDiag(d)
       }
@@ -343,7 +350,12 @@ func cmdProve(argv: in slice[String]): Int {
     )
     case None -> Verifier.unknownPackageScope()
   }
-  val summary = Verifier.proveSourceInScope(source, allowUnverified, fileScope)
+  val summary = Verifier.proveSourceForBuilds(
+    source,
+    allowUnverified,
+    fileScope,
+    proveBuildConfigsForFile(sourcePath, buildSettings)
+  )
 
   if explain {
     val total = Verifier.summaryTotalCount(summary)
@@ -770,6 +782,70 @@ record ProveBuild {
   defines: List[String]
 }
 
+// The builds a proof of the source file at `sourcePath` is of, as its type
+// check (`typeCheckForProveFile`) takes them: one per manifest whose entries
+// list the file, with that manifest's features for `build`, or, when none
+// lists it, the build `lyric build <file>` makes of it alone.  The proof
+// sees what `@cfg` erasure keeps for each (#8325).
+func proveBuildConfigsForFile(sourcePath: in String, build: in ProveBuild): List[Verifier.ProveBuildConfig] {
+  val configs: List[Verifier.ProveBuildConfig] = newList()
+  match Disc.entriesContainingSource(sourcePath) {
+    case Some(entries) -> {
+      val manifests: List[String] = newList()
+      for e in entries {
+        if not stringListContains(manifests, e.manifestPath) {
+          manifests.add(e.manifestPath)
+        }
+      }
+      for mfPath in manifests {
+        match manifestProveBuildConfig(mfPath, build) {
+          case Some(c) -> configs.add(c)
+          case None -> ()
+        }
+      }
+    }
+    case None -> ()
+  }
+  if configs.count == 0 {
+    configs.add(noManifestProveBuildConfig(build))
+  }
+  configs
+}
+
+// The build of the project at `mfPath` for `build`: its target and the
+// features `lyric build` activates (`resolveManifestFeatures`), or None
+// when the manifest cannot be read.
+func manifestProveBuildConfig(mfPath: in String, build: in ProveBuild): Option[Verifier.ProveBuildConfig] {
+  val mfText = match File.readText(mfPath) { case Ok(t) -> t; case Err(_) -> return None }
+  val (active, declared) = resolveManifestFeatures(
+    mfText,
+    mfPath,
+    build.cliFeatures,
+    build.noDefaultFeatures,
+    build.allFeatures,
+    build.target
+  )
+  Some(
+    value = Verifier.ProveBuildConfig(
+      targetName = targetFeatureName(build.target),
+      activeFeatures = active,
+      declaredFeatures = declared
+    )
+  )
+}
+
+// A file no manifest builds is compiled alone, for its target and with no
+// features: `lyric build <file>` has no `[features]` to resolve `--features`
+// against.
+func noManifestProveBuildConfig(build: in ProveBuild): Verifier.ProveBuildConfig {
+  val none: List[String] = newList()
+  Verifier.ProveBuildConfig(
+    targetName = targetFeatureName(build.target),
+    activeFeatures = none,
+    declaredFeatures = none
+  )
+}
+
 // The source file at `sourcePath` checked as each build that compiles it
 // checks it: within each project whose manifest lists it, its own package
 // and the packages it imports, or alone, as `lyric build <file>` does, when
@@ -1078,7 +1154,23 @@ func projectFileScopes(mfPath: in String): Map[String, Verifier.PackageScope] {
             for n in entryScope.typeNames.toArray() {
               both.add(n)
             }
-            Verifier.packageScopeOf(both)
+            // A file both entries merge declares its interfaces once.
+            val bothInterfaces: List[Parser.InterfaceDecl] = newList()
+            for d in prev.interfaces.toArray() {
+              bothInterfaces.add(d)
+            }
+            for d in entryScope.interfaces.toArray() {
+              var dup = false
+              for e in bothInterfaces {
+                if e.name == d.name and e.span.startPos.offset == d.span.startPos.offset and e.span.endPos.offset == d.span.endPos.offset {
+                  dup = true
+                }
+              }
+              if not dup {
+                bothInterfaces.add(d)
+              }
+            }
+            Verifier.packageScopeWith(both, bothInterfaces)
           } else {
             Verifier.unknownPackageScope()
           }
