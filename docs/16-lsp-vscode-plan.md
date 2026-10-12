@@ -156,7 +156,7 @@ file path.
 
 Every `didOpen`/`didChange` of a `@proof_required` document also proves it
 (`Lyric.Lsp.analyzeAndStore`), with unknown goals reported as warnings
-(`--allow-unverified`).  The proof is the one `lyric prove <file>` makes with
+(`--allow-unverified`).  The proof is under the builds `lyric prove <file>` takes with
 no flags (#8342): the builds come from `Verifier.proveBuildConfigsForSource`
 (each manifest that lists the file, with its default features, for
 `--target dotnet`; the file alone when none does), each goal labelled with
@@ -166,11 +166,20 @@ of the listing manifests' packages (`Verifier.importScopeWithManifests`);
 `@cfg` erasure diagnostics (`F0012`/`F0013`) are published with the
 verifier's; and each item no build compiles is an Information diagnostic
 (severity 3) at its declaration, where `lyric prove` lists it after its
-diagnostics.  The server does not type-check with the standard library, so
-it cannot stop a proof the way `lyric prove` does on a type error
-(#8227, #8304): the verifier proves such a document anyway, and a duplicate
-declaration it would otherwise have been stopped at is reported with
-`V0033` instead of throwing (#8341).
+diagnostics.  The document's own type check runs on what `@cfg` erasure
+keeps for each of those builds (diagnostics merged), so `@cfg` twins are
+not a T0001 duplicate.  A document whose builds cannot be known (an
+enclosing `lyric.toml` that cannot be read) is refused with `B0001`, as
+`lyric prove` refuses it.  The builds, the package file set and the import
+scope are read per document path on first use (`LspState.docContexts`) and
+dropped on `workspace/didChangeWatchedFiles`; the VS Code extension watches
+`**/*.l` and `**/lyric.toml`.  Two differences from `lyric prove` remain:
+the server does not type-check with the standard library, so it cannot stop
+a proof the way `lyric prove` does on a type error (#8227, #8304) — the
+verifier proves such a document anyway, and a duplicate declaration it
+would otherwise have been stopped at is reported with `V0033` instead of
+throwing (#8341) — and an undecided goal is a warning
+(`--allow-unverified`).
 
 ---
 

@@ -3817,4 +3817,93 @@ test "overloads of different arity are each proved, and a call reaches the one o
     not summaryHasDiagCode(provePkg(stab + "@stable(since = \"1.0\")\npub func a(x: in Int): Int {\n  k(x, 1)\n}\n"), "S0001"),
     "stability: the stable overload"
   )
+  // Of two declarations a call reaches only through defaults, either may be
+  // the one it binds: an experimental one is S0001.
+  val viaDefaults = "pub func m(x: in Int, y: in Int = 1): Int {\n  x + y\n}\n@experimental\npub func m(x: in Int, y: in Int = 10, z: in Int = 100): Int {\n  x + y + z\n}\n"
+  assertTrue(
+    summaryHasDiagCode(
+      provePkg(viaDefaults + "@stable(since = \"1.0\")\npub func a(x: in Int): Int {\n  m(x)\n}\n"),
+      "S0001"
+    ),
+    "stability: an experimental declaration reached through defaults"
+  )
+}
+
+// A call is resolved among the declarations of the whole package: another
+// file's `add(x)` is the one `add(x)` binds, not this file's `add(x, y =
+// 100)`, so the call fails closed instead of taking the wrong contract
+// (#8341).
+test "an overload another file of the package declares is never stood in for (#8341)" {
+  val sibling = "@proof_required\npackage U\npub func add(x: in Int): Int\n  ensures: result == x\n{\n  x\n}\n"
+  val pts: List[PackageTypes] = newList()
+  pts.add(packageTypesOfSource(sibling))
+  val pkgScope = scopeOfPackageTypes(pts)
+  val own = "@proof_required\npackage U\n" +
+    "pub func add(x: in Int, y: in Int = 100): Int\n  ensures: result == x + y\n{\n  x + y\n}\n"
+  val viaDefault = proveSourceInScope(
+    own + "pub func useIt(x: in Int): Int\n  ensures: result == x + 100\n{\n  add(x)\n}\n",
+    false,
+    pkgScope
+  )
+  assertTrue(summaryHasErrorCode(viaDefault, "V0033"), "sibling overload: the call fails closed")
+  assertTrue(summaryHasFailure(viaDefault), "sibling overload: useIt is not proved")
+  // The call of this file's own arity still resolves.
+  val exact = proveSourceInScope(
+    own + "pub func useIt(x: in Int): Int\n  ensures: result == x + 1\n{\n  add(x, 1)\n}\n",
+    false,
+    pkgScope
+  )
+  assertTrue(
+    not summaryHasErrorDiag(exact) and not summaryHasFailure(exact),
+    "sibling overload: the exact arity in this file"
+  )
+  // The same arity in two files is a duplicate: not proved.
+  val same = proveSourceInScope(
+    "@proof_required\npackage U\npub func add(x: in Int): Int\n  ensures: result == x\n{\n  x\n}\n",
+    false,
+    pkgScope
+  )
+  assertTrue(summaryHasErrorCode(same, "V0033"), "the same arity in two files: reported")
+}
+
+test "a generic record built from a Some, Ok or None argument (#8340)" {
+  val obox = "record OBox[T] {\n  o: Option[T]\n}\n"
+  assertDischarged(
+    obox +
+      "func obox(x: in Int): OBox[Int]\n  ensures: result.o == Some(value = x)\n{\n  OBox(o = Some(value = x))\n}\n",
+    "option-field"
+  )
+  assertRefuted(
+    obox +
+      "func obox(x: in Int): OBox[Int]\n  ensures: result.o == Some(value = x + 1)\n{\n  OBox(o = Some(value = x))\n}\n",
+    "option-field-refuted"
+  )
+  assertDischarged(
+    "record RBox[T] {\n  r: Result[T, String]\n}\nfunc rbox(x: in Int): RBox[Int]\n  ensures: result.r == Ok(value = x)\n{\n  RBox(r = Ok(value = x))\n}\n",
+    "result-field"
+  )
+  val box = "record Box[T] {\n  v: T\n  n: Int = 7\n}\n"
+  assertDischarged(
+    box +
+      "func someBox(x: in Int): Box[Option[Int]]\n  ensures: result.v == Some(value = x) and result.n == 7\n{\n  Box(v = Some(value = x))\n}\n",
+    "option-type-argument"
+  )
+  // `None` alone does not say which `Option` it is.
+  assertUntranslatable(
+    obox + "func none(): OBox[Int]\n  ensures: result.o == None\n{\n  OBox(o = None)\n}\n",
+    "none-argument"
+  )
+}
+
+test "a generic record nesting itself is left uninterpreted, without breaking other goals (#8340)" {
+  assertDischarged(
+    "record Node[T] {\n  v: T\n  next: Option[Node[T]]\n}\nfunc unrelated(x: in Int): Int\n  requires: x > 0\n  ensures: result > 1\n{\n  x + 1\n}\n",
+    "self-nested-unrelated"
+  )
+  // A record and parameter whose names join to a preamble sort's
+  // (`Lyric!Unit`) still give a well-formed query.
+  val preamble = provePkg(
+    "record Lyric[Unit] {\n  v: Unit\n  n: Int\n}\nfunc get(b: in Lyric[Int]): Int\n  ensures: result == b.n\n{\n  b.n\n}\n"
+  )
+  assertTrue(not summaryHasDiagCode(preamble, "V0007"), "parameter-named-like-a-preamble-sort: a well-formed query")
 }

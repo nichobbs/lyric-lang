@@ -425,6 +425,7 @@ test "the editor proves a document under its manifest's features, as lyric prove
     Str.contains(wideMsgs, "inactive @cfg variant"),
     "the narrow twin, which no build compiles, is reported as lyric prove lists it"
   )
+  assertFalse(Str.contains(wideMsgs, "T0001"), "the check sees the build's erasure: the twins are not a duplicate")
   removeProject(wide)
   val narrow = featureProject(false)
   val narrowMsgs = openDocMessages(lspInit(), "file://" + narrow, featureTwins())
@@ -444,4 +445,24 @@ test "a duplicate declaration in an open document is reported, not thrown on (#8
   )
   assertTrue(Str.contains(msgs, "publishDiagnostics"), "diagnostics are published")
   assertTrue(Str.contains(msgs, "V0033"), "the duplicate is reported")
+}
+
+// #8342: like `lyric prove`, the server proves nothing of a file whose
+// builds cannot be known — here an enclosing manifest it cannot read.
+test "a document under an unreadable manifest is refused, as lyric prove refuses it (#8342)" {
+  val dir = Path.join(tempBase(), "lyric-lsp-prove-bad-" + uuidToString(newUuid()))
+  mkdirOrPanic(dir)
+  mkdirOrPanic(Path.join(dir, "src"))
+  mkdirOrPanic(Path.join(dir, "src/p"))
+  writeOrPanic(
+    Path.join(dir, "lyric.toml"),
+    "[package]\nname = \"Bad\"\nversion = \"0.1.0\"\n\n[project]\nname = \"Bad\"\n\n[project.packages]\n\"P\" = \"src/p\"\n\n[features]\ndefault = 5\na = \"oops\"\n"
+  )
+  val src = Path.join(dir, "src/p/f.l")
+  val text = "@proof_required\npackage P\npub func k(): Int\n  ensures: result == 2\n{\n  1\n}\n"
+  writeOrPanic(src, text)
+  val msgs = openDocMessages(lspInit(), "file://" + src, text)
+  removeProject(src)
+  assertTrue(Str.contains(msgs, "B0001"), "the refusal is reported")
+  assertFalse(Str.contains(msgs, "V0008"), "nothing is proved")
 }

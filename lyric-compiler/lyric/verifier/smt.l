@@ -861,6 +861,96 @@ func renameAppList(
   out2
 }
 
+// The names of the datatypes of `symbols` that `claim` reaches: those a
+// sort in it names, and, transitively, those their fields' sorts name.
+func reachedDatatypes(symbols: in List[SymbolDecl], claim: in Term): Map[String, Bool] {
+  val names: Map[String, Bool] = newMap()
+  datatypeNamesInTerm(claim, names)
+  var changed = true
+  while changed {
+    changed = false
+    for sym in symbols {
+      match sym {
+        case DeclDatatype(dtName, ctors, _) -> {
+          if names.containsKey(dtName) {
+            for c in ctors {
+              for f in c.fields {
+                val before = mapCount(names)
+                datatypeNamesInSort(f.sort, names)
+                if mapCount(names) != before {
+                  changed = true
+                }
+              }
+            }
+          }
+        }
+        case DeclUserFun(_, _, _) -> ()
+      }
+    }
+  }
+  names
+}
+
+func mapCount(m: in Map[String, Bool]): Int {
+  mapKeys(m).count
+}
+
+func datatypeNamesInSort(s: in Sort, names: in Map[String, Bool]): Unit {
+  match s {
+    case SDatatype(n, args) -> {
+      if not names.containsKey(n) {
+        names.add(n, true)
+      }
+      for a in args {
+        datatypeNamesInSort(a, names)
+      }
+    }
+    case SSlice(e) -> datatypeNamesInSort(e, names)
+    case _ -> ()
+  }
+}
+
+func datatypeNamesInTerm(t: in Term, names: in Map[String, Bool]): Unit {
+  match t {
+    case TVar(_, srt) -> datatypeNamesInSort(srt, names)
+    case TLit(_, srt) -> datatypeNamesInSort(srt, names)
+    case TBuiltin(_, args) -> {
+      for a in args {
+        datatypeNamesInTerm(a, names)
+      }
+    }
+    case TApp(_, args, retSort) -> {
+      datatypeNamesInSort(retSort, names)
+      for a in args {
+        datatypeNamesInTerm(a, names)
+      }
+    }
+    case TLet(bindings, body) -> {
+      for b in bindings {
+        datatypeNamesInTerm(b.term, names)
+      }
+      datatypeNamesInTerm(body, names)
+    }
+    case TIte(c, a, b) -> {
+      datatypeNamesInTerm(c, names)
+      datatypeNamesInTerm(a, names)
+      datatypeNamesInTerm(b, names)
+    }
+    case TForall(binders, _, body) -> {
+      for b in binders {
+        datatypeNamesInSort(b.sort, names)
+      }
+      datatypeNamesInTerm(body, names)
+    }
+    case TExists(binders, body) -> {
+      for b in binders {
+        datatypeNamesInSort(b.sort, names)
+      }
+      datatypeNamesInTerm(body, names)
+    }
+  }
+}
+
 // Render a goal as a self-contained SMT-LIB v2.6 file.
 pub func smtRenderGoal(g: in Goal): String {
   var output = smtRenderPreamble()
@@ -976,12 +1066,18 @@ pub func smtRenderGoal(g: in Goal): String {
     k = k + 1
   }
 
-  // Emit the datatype declarations; functions are declared from the claim.
+  // Emit the datatype declarations the claim reaches — a sort it names, or
+  // one a reached datatype's fields name — so a declaration no obligation
+  // of this goal needs never makes its query malformed (#8340); functions
+  // are declared from the claim.
+  val reached = reachedDatatypes(g.symbols, claim)
   var i = 0
   while i < g.symbols.count {
     match g.symbols[i] {
-      case DeclDatatype(_, _, _) -> {
-        output = output + smtRenderSymbol(g.symbols[i]) + "\n"
+      case DeclDatatype(dtName, _, _) -> {
+        if reached.containsKey(dtName) {
+          output = output + smtRenderSymbol(g.symbols[i]) + "\n"
+        }
       }
       case DeclUserFun(_, _, _) -> ()
     }

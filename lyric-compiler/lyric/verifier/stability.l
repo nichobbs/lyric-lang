@@ -441,10 +441,11 @@ func checkCallGraph(file: in SourceFile, diag: in List[Diagnostic]): Unit {
 }
 
 // Whether a declaration the call `cr` may reach is `@experimental`: among
-// the functions of its name, those taking exactly its arguments, else the
-// first that fills the rest from defaults (the type checker's overload
-// choice; two of one arity are both reached); and any other item of its
-// name.
+// the functions of its name, those taking exactly its arguments, else every
+// one that fills the rest from defaults (which of those the type checker
+// binds is not a rule the language states, so each counts); and any other
+// item of its name.  Declarations in the package's other files are not
+// seen here.
 func callReachesExperimental(entries: in List[StabilityEntry], cr: in CallRef): Bool {
   var anyExact = false
   for e in entries {
@@ -452,18 +453,14 @@ func callReachesExperimental(entries: in List[StabilityEntry], cr: in CallRef): 
       anyExact = true
     }
   }
-  var viaDefaultsTaken = false
   for e in entries {
     if e.name == cr.name {
       val reached = if e.paramCount < 0 {
         true
       } else if anyExact {
         e.paramCount == cr.argCount
-      } else if not viaDefaultsTaken and e.requiredCount <= cr.argCount and cr.argCount <= e.paramCount {
-        viaDefaultsTaken = true
-        true
       } else {
-        false
+        e.requiredCount <= cr.argCount and cr.argCount <= e.paramCount
       }
       if reached and e.experimental {
         return true

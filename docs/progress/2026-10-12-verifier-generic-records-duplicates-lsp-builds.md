@@ -21,17 +21,30 @@ generic function or a method of `Box`, where `T` is an uninterpreted sort,
 without a second mechanism.
 
 - `DeclDatatype` gains `params`; the SMT renderer emits the `par` form, and
-  the sort parameters are named `<Record>!<T>` so no source sort (a type the
-  file declares, a function's type parameter, already declared with
-  `declare-sort`) is shadowed — cvc5 rejects that shadowing outright.
+  the sort parameters are named `Lyric!sortparam!<Record>!<T>` so no source
+  sort (a type the file declares, a function's type parameter, already
+  declared with `declare-sort`) is shadowed — cvc5 rejects that shadowing
+  outright — and no synthesized name is either (`record Lyric[Unit]` would
+  otherwise have named `Lyric!Unit`).
 - A field read instantiates the field's declared sort at the receiver's type
   arguments (`instantiateRecordSort`); a receiver whose sort does not apply
   the record to one argument per parameter falls back to the old
   uninterpreted read, which fails closed.
-- A constructor's type arguments are inferred from its field values
-  (`matchSortParams`); a type argument no field determines (a phantom
-  parameter) or two fields bind differently fails closed with V0033 rather
-  than taking an arbitrary sort.
+- A constructor's type arguments are inferred from its arguments
+  (`matchArgSortParams`) before they are given their fields' sorts, so a
+  `Some(x)`/`Ok(x)` argument binds the parameter its payload fixes and then
+  takes the instantiated field sort (an `Option[T]` field coerced at its
+  uninstantiated sort made the query malformed); a type argument the
+  arguments do not determine (a phantom parameter, or one only `None`
+  stands for) or bind differently fails closed with V0033 rather than taking
+  an arbitrary sort.
+- A generic record whose fields name the record itself (`next:
+  Option[Node[T]]`) stays an uninterpreted sort: a parametric datatype
+  nested through another is rejected by z3 as not well-founded, and since
+  every goal declared every datatype, one such record made every goal of the
+  file malformed.  A goal's query now also declares only the datatypes its
+  claim reaches (`reachedDatatypes`), so a declaration no obligation needs
+  can never break an unrelated goal.
 - z3 4.8 resolves a constructor of a parametric datatype only at an instance
   it has already seen (the reason #8108 declares a `lyric!inst!<k>` constant
   per `Result`/`Option` instance); without it the query was malformed.  Every
@@ -54,25 +67,35 @@ with such overloads failed with "MSIL codegen failed: An item with the same
 key has already been added" (the mode checker's callee table).
 
 - Mode check: the callee table holds every declaration of a name, and a call
-  is checked against those it may reach — the declarations taking exactly its
-  argument count, else the first that fills the rest from defaults
-  (`calleeCandidates`, the type checker's overload choice); same-named fields
-  and types keep their first declaration.
-- Stability check (`S0001`): the same overload choice
-  (`callReachesExperimental`), with each `CallRef` now carrying its argument
-  count.
-- VC generation (`registerFileFunctions`): a name declared once is reachable
-  as before.  Overloads are each proved and reachable only as
-  `name/<arity>`; a call (bare, `P.f`, or a dot-named method call) reaches the
-  overload taking exactly its arguments, and one that would reach a
-  declaration only through defaults fails closed (V0033) — resolving that
-  case was not needed to stop the crash and is left conservative.  Two
-  declarations of one name and arity are reported (V0033, naming T0001): no
-  declaration of that arity is proved and a call reaching one fails closed.  A type
-  declared twice leaves every sort of that name ambiguous, so the file proves
-  nothing (V0033 at the second declaration).  Duplicate protected-type
-  members are registered under neither key (no call reaches a member through
-  that table).
+  is checked against those it may reach — the declarations taking exactly
+  its argument count, else every one that fills the rest from defaults
+  (`calleeCandidates`).  Which of several default-filling declarations the
+  type checker binds is not a rule the language states (its signature table
+  is in effect last-declared-wins), so every one is taken as reachable, the
+  conservative choice; same-named fields and types keep their first
+  declaration.  It sees the proved file only; the build's mode check, which
+  `lyric prove` runs first, sees the merged package.
+- Stability check (`S0001`): the same candidates (`callReachesExperimental`),
+  with each `CallRef` now carrying its argument count.
+- VC generation (`registerFileFunctions`): names are counted over the whole
+  package — the proved file's functions and the other files'
+  (`ScopeDecls.functions`, read from the package's files) — because the
+  build merges them and the type checker resolves a call among all of them.
+  A name the package declares once is reachable as before.  Overloads are
+  each proved and reachable only as `name/<arity>`: a call (bare, `P.f`, or
+  a dot-named method call) reaches the proved file's declaration taking
+  exactly its arguments; one whose declaration of that arity is in another
+  file, or that would reach one only through defaults, fails closed (V0033).
+  Without the package-wide count, `add(x)` in a file declaring `add(x, y =
+  100)` was proved against that declaration's contract although the program
+  binds another file's `add(x)` — a false discharge the first version of
+  this change made reachable (it had crashed before).  Two declarations of
+  one name and arity in the package are reported (V0033, naming T0001): no
+  declaration of that arity is proved and a call reaching one fails closed.
+  A type declared twice in the file leaves every sort of that name
+  ambiguous, so the file proves nothing (V0033 at the second declaration).
+  Duplicate protected-type members are registered under neither key (no
+  call reaches a member through that table).
 
 ## The language server proves what `lyric prove` proves (#8342)
 
@@ -88,12 +111,22 @@ and `prove` all use it), `Lyric.Discovery.sourceBuildsForFile` /
 the server call.  The import scope is shared the same way
 (`Verifier.importScopeWithManifests`, `Lyric.Discovery.manifestsListingSource`);
 the server reads the standard library's declarations once per process
-(`LspState.stdlibScope`) and only for `@proof_required` documents.  The server
-proves with `lyric prove`'s defaults (`--target dotnet`, each manifest's
-default features), labels goals by build when there are several, publishes
-the erasure's F0012/F0013 with the verifier's diagnostics, and reports each
-item no build compiles as an LSP Information diagnostic at its declaration,
-where `lyric prove` lists it after its output.
+(`LspState.stdlibScope`) and only for `@proof_required` documents, and each
+document's builds, package file set and import scope once per path
+(`LspState.docContexts`), dropped on `workspace/didChangeWatchedFiles` (the
+VS Code extension now watches `**/lyric.toml` as well as `**/*.l`).  The
+server proves with `lyric prove`'s defaults (`--target dotnet`, each
+manifest's default features), labels goals by build when there are several,
+publishes the erasure's F0012/F0013 with the verifier's diagnostics, and
+reports each item no build compiles as an LSP Information diagnostic at its
+declaration, where `lyric prove` lists it after its output.  Its own type
+check of the document runs on what `@cfg` erasure keeps for each build
+(diagnostics merged), so `@cfg` twins are no longer a T0001 duplicate there.
+A document whose builds cannot be known (an enclosing `lyric.toml` that
+cannot be read) is refused with B0001, as `lyric prove` refuses it, instead
+of being proved standalone.  Two differences remain and are documented:
+the server proves a document its check rejects (its check does not load the
+standard library, #8304), and reports undecided goals as warnings.
 
 #8339 (the build/prove disagreement for a file under a manifest that does
 not list it, and `lyric build`'s silently ignored `--features` for a file with
@@ -111,14 +144,21 @@ consequence of sharing the selection function.
   generic record; construction, a two-parameter swap and the phantom
   parameter that fails closed; duplicates (functions, types, fields,
   protected members) reported without throwing; overloads by arity, a
-  qualified overload, a call through defaults failing closed, and `S0001`
-  choosing the overload by arity.  The #8231 `generic-impl-field` case, which
+  qualified overload, a call through defaults failing closed, `S0001`
+  choosing by arity and counting every default-filling declaration, an
+  overload in another file of the package (the call fails closed; the
+  exact arity in this file still resolves; the same arity in two files is
+  reported), `Some`/`Ok`/`None` constructor arguments, a self-nesting
+  generic record beside an unrelated goal, and a record/parameter pair
+  whose names join to a preamble sort's.  The #8231 `generic-impl-field` case, which
   pinned the old fail-closed read, now expects a refutation.
 - `modechecker_self_test.l`: overloads and duplicates checked without
   throwing; `calleeCandidates`' choice.
 - `lsp_self_test.l`: a document under a manifest whose default features
   select a `@cfg` twin is proved under that feature (no refutation, the
-  inactive twin reported), and refuted without it; a duplicate declaration
-  is published as V0033, not thrown on.
-- `scripts/ci/prove-items.sh` with `examples/prove-generic-records/` and
-  `examples/prove-overloads/`.
+  inactive twin reported, no T0001 for the twins), and refuted without it; a
+  document under an unreadable manifest is refused with B0001; a duplicate
+  declaration is published as V0033, not thrown on.
+- `scripts/ci/prove-items.sh` with `examples/prove-generic-records/`,
+  `examples/prove-overloads/` and `examples/prove-overloads/sibling/` (the
+  cross-file overload, in single-file and `--manifest` mode).

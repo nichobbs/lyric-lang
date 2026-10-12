@@ -1195,7 +1195,7 @@ test "overloads and a duplicate declaration are mode checked without throwing (#
   assertTrue(not hasDiagCode(dup, "V0002"), "duplicates: no V0002")
 }
 
-test "a call reaches the overload taking its argument count, else the first filling defaults (#8341)" {
+test "a call reaches the overload taking its argument count, else every one filling defaults (#8341)" {
   val infos: List[CalleeInfo] = newList()
   infos.add(CalleeInfo(name = "f", level = VLRuntimeChecked, isPure = false, paramCount = 1, requiredCount = 1))
   infos.add(CalleeInfo(name = "f", level = VLProofRequired, isPure = false, paramCount = 3, requiredCount = 1))
@@ -1216,7 +1216,8 @@ test "a call reaches the overload taking its argument count, else the first fill
   val dflt: List[CalleeInfo] = newList()
   dflt.add(CalleeInfo(name = "h", level = VLProofRequired, isPure = false, paramCount = 2, requiredCount = 1))
   dflt.add(CalleeInfo(name = "h", level = VLRuntimeChecked, isPure = false, paramCount = 3, requiredCount = 1))
+  // Which default-filling declaration the call binds is not a stated
+  // rule: every one is reachable.
   val viaDefaults = calleeCandidates(dflt, 1)
-  assertEqualInt(viaDefaults.count, 1, "defaults: one declaration")
-  assertEqualInt(viaDefaults[0].paramCount, 2, "defaults: the first that takes the call")
+  assertEqualInt(viaDefaults.count, 2, "defaults: every declaration that takes the call")
 }

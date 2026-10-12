@@ -329,6 +329,16 @@ pub record ScopeDecls {
   pub enumCases: List[String]
   /// The packages the files import (`import P`, not `import extern`).
   pub imports: List[String]
+  /// Every top-level function, by name and parameter count, so a call in
+  /// the proved file is never resolved to its own declaration where the
+  /// type checker would pick another file's of the same name (#8341).
+  pub functions: List[FunctionArity]
+}
+
+/// A function's name and how many parameters it declares.
+pub record FunctionArity {
+  pub name: String
+  pub paramCount: Int
 }
 
 /// A package whose declarations the verifier read, by its dotted name.
@@ -350,7 +360,14 @@ pub func emptyScopeDecls(): ScopeDecls {
   val noUnions: List[UnionDecl] = newList()
   val none: List[String] = newList()
   val noImports: List[String] = newList()
-  ScopeDecls(interfaces = noInterfaces, unions = noUnions, enumCases = none, imports = noImports)
+  val noFunctions: List[FunctionArity] = newList()
+  ScopeDecls(
+    interfaces = noInterfaces,
+    unions = noUnions,
+    enumCases = none,
+    imports = noImports,
+    functions = noFunctions
+  )
 }
 
 pub func emptyImportScope(): ImportScope {
@@ -375,6 +392,7 @@ func appendScopeDecls(acc: in ScopeDecls, file: in SourceFile): Unit {
           acc.enumCases.add(c.name)
         }
       }
+      case IFunc(fn) -> acc.functions.add(FunctionArity(name = fn.name, paramCount = fn.params.count))
       case _ -> ()
     }
   }
@@ -397,6 +415,9 @@ func mergeScopeDecls(acc: in ScopeDecls, more: in ScopeDecls): Unit {
   }
   for c in more.enumCases {
     acc.enumCases.add(c)
+  }
+  for f in more.functions {
+    acc.functions.add(f)
   }
   for n in more.imports {
     if not acc.imports.contains(n) {

@@ -37,6 +37,7 @@ import Lyric.Pipeline
 import Lyric.ModeChecker
 import Lyric.Verifier
 import Lyric.Discovery as Disc
+import Lyric.Cfg as Cfg
 import Lyric.Emitter as Emitter
 import Lyric.Version as Ver
 import Lyric.Fmt
@@ -79,6 +80,26 @@ pub record LspState {
   // The standard library's declarations a proof reads (`ImportScope`),
   // read once, on the first proof: empty until then (box[ImportScope]).
   stdlibScope: List[ImportScope]
+  // What a document's builds and proof read from disk, by its path
+  // (`lspDocContext`): kept until a watched file changes (#8342).
+  docContexts: Map[String, LspDocContext]
+}
+
+// The builds that compile a document and what its proof reads besides the
+// document itself, as `lyric prove <file>` finds them: read once per path,
+// and again after any watched `.l` or `lyric.toml` file changes
+// (`workspace/didChangeWatchedFiles`).
+pub record LspDocContext {
+  // False when which packages build the file cannot be known (an enclosing
+  // `lyric.toml` that cannot be read, a containing package that cannot be
+  // listed): `lyric prove` refuses such a file (B0001), and so does the
+  // server.
+  buildsKnown: Bool
+  builds: List[ProveBuildConfig]
+  fileSet: Option[Disc.PackageFileSet]
+  manifests: List[String]
+  // The proof's import scope, read on the first proof (box[ImportScope]).
+  imports: List[ImportScope]
 }
 
 pub func lspInit(): LspState {
@@ -98,7 +119,8 @@ pub func lspInit(): LspState {
     ffiTypeIndex = newMap(),
     ffiPathIndex = newMap(),
     ffiIndexInit = ffiInit,
-    stdlibScope = newList()
+    stdlibScope = newList(),
+    docContexts = newMap()
   )
 }
 
@@ -690,9 +712,39 @@ func analyzeAndStore(state: in LspState, uri: in String, text: in String): List[
   // editor reports what the build reports (#7512).  No `@stubbable`
   // synthesis: its stubs need `Std.Testing.Mocking`, which the server does
   // not load, so they would only add unknown-name reports.
-  val prep = pipePrepareForCheck(parsedFile, false)
-  val importedItems = buildImportedItems(state, prep.file)
-  val cr = checkWithImports(prep.file, importedItems)
+  //
+  // The check sees what `@cfg` erasure keeps for each build that compiles
+  // the document, as `lyric build` and `lyric prove` do, so two
+  // `@cfg`-gated declarations of one name are not a duplicate (#8342).
+  val docPath = uriToPath(uri)
+  val ctx = lspDocContext(state, docPath)
+  val checkDiags: List[Diagnostic] = newList()
+  var firstCheck: Option[CheckResult] = None
+  var firstPrep: Option[CheckReadyFile] = None
+  for b in ctx.builds {
+    val erasedFile = Cfg.applyCfgErasure(Cfg.withTargetFeature(b.activeFeatures, b.targetName), b.declaredFeatures, parsedFile).file
+    val bPrep = pipePrepareForCheck(erasedFile, false)
+    val bCheck = checkWithImports(bPrep.file, buildImportedItems(state, bPrep.file))
+    if not isSome(firstCheck) {
+      firstCheck = Some(value = bCheck)
+      firstPrep = Some(value = bPrep)
+    }
+    // After a failed rewrite the build stops before type checking; so does
+    // the report here (the check still runs, for hover and navigation).
+    val bDiags: List[Diagnostic] = newList()
+    collectDiags(bPrep.diagnostics, bDiags)
+    if not hasErrorDiagnostic(bPrep.diagnostics) {
+      collectDiags(bCheck.diagnostics, bDiags)
+    }
+    for d in bDiags {
+      addDiagOnce(checkDiags, d)
+    }
+  }
+  val prep = match firstPrep { case Some(fp) -> fp; case None -> pipePrepareForCheck(parsedFile, false) }
+  val cr = match firstCheck {
+    case Some(fc) -> fc
+    case None -> checkWithImports(prep.file, buildImportedItems(state, prep.file))
+  }
 
   // Update rev-deps: for each import in this file, register uri as a consumer.
   val parsedImports = parsedFile.imports
@@ -722,67 +774,56 @@ func analyzeAndStore(state: in LspState, uri: in String, text: in String): List[
 
   val allDiags: List[Diagnostic] = newList()
   collectDiags(parsed.diagnostics, allDiags)
-  collectDiags(prep.diagnostics, allDiags)
-  // After a failed rewrite the build stops before type checking; so does
-  // the report here (the check still runs, for hover and navigation).
-  if not hasErrorDiagnostic(prep.diagnostics) {
-    collectDiags(cr.diagnostics, allDiags)
-  }
+  collectDiags(checkDiags, allDiags)
 
   // Run verifier (allow-unverified so unknowns become warnings, not errors).
-  // The document's package siblings are read from disk (#8108).
-  val docPath = uriToPath(uri)
-  val fileSet = Disc.packageFileSetForSource(docPath)
-  val docScope = match fileSet {
-    case Some(fs) -> scopeFromPackageFiles(
-      Some(value = fs.files),
-      fs.fromManifest,
-      Disc.normalizePath(docPath),
-      text
-    )
-    case None -> unknownPackageScope()
-  }
   // Unlike `lyric prove`, which proves nothing of a program the build
   // rejects (#8227), this proves the document whatever its check says: the
   // server's check does not load the standard library, so it reports a type
   // error for every `Std` name and cannot gate the proof (#8304).  It is
-  // proved as `lyric prove <file>` proves it (#8342): as each build that
-  // compiles it erases its `@cfg` items (the manifests that list it, with
-  // their default features, for `--target dotnet` — `lyric prove`'s
-  // defaults), each goal labelled with its build when there are several,
-  // reading the declarations of the standard library and of those
-  // manifests' packages.
-  val noCliFeatures: List[String] = newList()
-  val builds = proveBuildConfigsForSource(docPath, "dotnet", noCliFeatures, false, false)
-  // Only a `@proof_required` document is proved: no other reads them.
-  val proofScope = if vlIsProofRequired(sourceVerificationLevel(text)) {
-    withImportScope(docScope, importScopeWithManifests(lspStdlibScope(state), Disc.manifestsListingSource(docPath)))
+  // otherwise proved as `lyric prove <file>` proves it (#8342): as each
+  // build that compiles it erases its `@cfg` items (the manifests that list
+  // it, with their default features, for `--target dotnet` — `lyric
+  // prove`'s defaults), each goal labelled with its build when there are
+  // several, reading the declarations of its package's other files (#8108),
+  // the standard library and those manifests' packages; and, like `lyric
+  // prove`, not at all when which packages build it cannot be known.
+  val inactive = if ctx.buildsKnown { inactiveItemsForBuilds(text, ctx.builds) } else { noInactiveItems() }
+  val proofSummary: Option[ProofSummary] = if not ctx.buildsKnown {
+    allDiags.add(
+      errorDiagnostic(
+        "B0001",
+        "cannot tell which packages build this file: an enclosing lyric.toml cannot be read, or a package that lists it cannot be listed; no proof obligation was attempted",
+        pointSpan(initialPosition())
+      )
+    )
+    None
   } else {
-    docScope
-  }
-  val proofResult = proveSourceForBuilds(text, true, proofScope, builds)
-  val inactive = inactiveItemsForBuilds(text, builds)
-  var pi = 0
-  while pi < proofResult.diagnostics.count {
-    val d = proofResult.diagnostics[pi]
-    // The verifier's diagnostics, and the `@cfg` erasure's for the builds
-    // it proves (F0012/F0013), as `lyric prove` reports them.
-    if d.code.startsWith("V") or d.code == "F0012" or d.code == "F0013" {
-      var dup = false
-      var di = 0
-      while di < allDiags.count {
-        if allDiags[di].code == d.code and allDiags[di].span.startPos.line == d.span.startPos.line and allDiags[di].span.startPos.column == d.span.startPos.column {
-          dup = true
-        }
-        di = di + 1
-      }
-      if not dup {
-        allDiags.add(d)
+    val docScope = match ctx.fileSet {
+      case Some(fs) -> scopeFromPackageFiles(
+        Some(value = fs.files),
+        fs.fromManifest,
+        Disc.normalizePath(docPath),
+        text
+      )
+      case None -> unknownPackageScope()
+    }
+    // Only a `@proof_required` document is proved: no other reads them.
+    val proofScope = if vlIsProofRequired(sourceVerificationLevel(text)) {
+      withImportScope(docScope, lspDocImports(state, ctx))
+    } else {
+      docScope
+    }
+    val proofResult = proveSourceForBuilds(text, true, proofScope, ctx.builds)
+    for d in proofResult.diagnostics {
+      // The verifier's diagnostics, and the `@cfg` erasure's for the builds
+      // it proves (F0012/F0013), as `lyric prove` reports them.
+      if d.code.startsWith("V") or d.code == "F0012" or d.code == "F0013" {
+        addDiagOnce(allDiags, d)
       }
     }
-    pi = pi + 1
+    Some(value = proofResult)
   }
-  val proofSummary = Some(value = proofResult)
 
   val doc = CachedDoc(source = text, checkResult = cr, proofSummary = proofSummary)
   state.store.remove(uri)
@@ -790,6 +831,55 @@ func analyzeAndStore(state: in LspState, uri: in String, text: in String): List[
   state.store.add(uri, doc)
   acc.add(pushDiagnosticsWithInactive(uri, allDiags, inactive))
   acc
+}
+
+// Add `d` to `diags` unless one of its code is already reported at its
+// position.
+func addDiagOnce(diags: in List[Diagnostic], d: in Diagnostic): Unit {
+  for e in diags {
+    if e.code == d.code and e.span.startPos.line == d.span.startPos.line and e.span.startPos.column == d.span.startPos.column {
+      return ()
+    }
+  }
+  diags.add(d)
+}
+
+func noInactiveItems(): InactiveItems {
+  val noNames: List[String] = newList()
+  val noVariants: List[String] = newList()
+  val noSpans: List[Span] = newList()
+  val noVariantSpans: List[Span] = newList()
+  InactiveItems(unproved = noNames, variants = noVariants, unprovedSpans = noSpans, variantSpans = noVariantSpans)
+}
+
+// The builds of the document at `docPath` and what its proof reads from
+// disk (`LspDocContext`), read once and kept until a watched file changes.
+func lspDocContext(state: in LspState, docPath: in String): LspDocContext {
+  match mapGet(state.docContexts, docPath) {
+    case Some(c) -> c
+    case None -> {
+      val noCliFeatures: List[String] = newList()
+      val c = LspDocContext(
+        buildsKnown = isSome(Disc.entriesContainingSource(docPath)),
+        builds = proveBuildConfigsForSource(docPath, "dotnet", noCliFeatures, false, false),
+        fileSet = Disc.packageFileSetForSource(docPath),
+        manifests = Disc.manifestsListingSource(docPath),
+        imports = newList()
+      )
+      state.docContexts.add(docPath, c)
+      c
+    }
+  }
+}
+
+// The declarations a proof of the document reads besides its package's: the
+// standard library's and those of the packages of the manifests that list
+// it, read on its first proof.
+func lspDocImports(state: in LspState, ctx: in LspDocContext): ImportScope {
+  if ctx.imports.count == 0 {
+    ctx.imports.add(importScopeWithManifests(lspStdlibScope(state), ctx.manifests))
+  }
+  ctx.imports[0]
 }
 
 // The standard library's declarations a proof reads, as `lyric prove`
@@ -2387,6 +2477,11 @@ pub func lspHandle(state: in LspState, json: in String): List[String] {
     collectMsgs(handleDocClose(state, params), acc)
   } else if method == "workspace/didChangeWatchedFiles" {
     rebuildWsIndex(state)
+    // A manifest or a package file changed: the documents' builds and what
+    // their proofs read are read again.
+    for k in mapKeys(state.docContexts) {
+      val _dropped = state.docContexts.remove(k)
+    }
   } else if method == "textDocument/hover" {
     acc.add(mkResponse(id, handleHover(state, params)))
   } else if method == "textDocument/completion" {

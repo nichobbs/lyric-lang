@@ -1,0 +1,11 @@
+[package]
+name = "ProveOverloadsSibling"
+version = "0.1.0"
+
+[project]
+name = "ProveOverloadsSibling"
+output = "single"
+output_assembly = "ProveOverloadsSibling.dll"
+
+[project.packages]
+"P" = "src/p"

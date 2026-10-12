@@ -76,11 +76,16 @@ pub func calleeTableOfFile(fileLevel: in VerificationLevel, file: in SourceFile)
   m
 }
 
-/// The declarations of `infos` (one name's) a call passing `argCount`
-/// arguments may reach, as the type checker picks among overloads: those
-/// taking exactly `argCount`, else the first that fills the rest from
-/// defaults.  Two of the same arity — a duplicate the type checker rejects
+/// The declarations of `infos` (one name's, in this file) a call passing
+/// `argCount` arguments may reach: those taking exactly `argCount`, else
+/// every one that fills the rest from defaults.  Which of several
+/// default-filling declarations the type checker binds is not a rule the
+/// language states, so each is taken as reachable (the conservative
+/// choice).  Two of the same arity — a duplicate the type checker rejects
 /// (T0001) — are both returned; none when no declaration takes `argCount`.
+/// A declaration in another file of the package is not seen here: the
+/// build's mode check, which `lyric prove` runs first, checks the merged
+/// package.
 pub func calleeCandidates(infos: in List[CalleeInfo], argCount: in Int): List[CalleeInfo] {
   val exact: List[CalleeInfo] = newList()
   for info in infos {
@@ -93,7 +98,7 @@ pub func calleeCandidates(infos: in List[CalleeInfo], argCount: in Int): List[Ca
   }
   val viaDefaults: List[CalleeInfo] = newList()
   for info in infos {
-    if viaDefaults.count == 0 and info.requiredCount <= argCount and argCount <= info.paramCount {
+    if info.requiredCount <= argCount and argCount <= info.paramCount {
       viaDefaults.add(info)
     }
   }

@@ -174,6 +174,24 @@ fi
 expect_proved "functions overloaded by arity" "$lyric_bin" prove "$ov/overloads.l"
 grep -q "^3/3 obligations discharged" "$out" || fail "overloads: expected each overload's goal and the caller's"
 echo "PASS: overloads, every goal"
+# A call binds the declaration of its arity in any file of the package: one
+# in another file is never stood in for by this file's default-filling
+# overload, in single-file and --manifest mode alike.
+for mode in single manifest; do
+  if [ "$mode" = single ]; then
+    rc="$(run "$lyric_bin" prove "$ov/sibling/src/p/b.l")"
+  else
+    rc="$(run "$lyric_bin" prove --manifest "$ov/sibling/lyric.toml")"
+  fi
+  no_crash "an overload in another file, $mode"
+  [ "$rc" -ne 0 ] || fail "an overload in another file, $mode: expected a non-zero exit"
+  grep -q "V0033 error .*a call to 'add', which its package declares more than once" "$err" ||
+    fail "an overload in another file, $mode: expected the call to fail closed"
+  if grep -q "^3/3 obligations discharged" "$out"; then
+    fail "an overload in another file, $mode: useIt must not be proved"
+  fi
+  echo "PASS: an overload in another file, $mode"
+done
 
 # A union of a dependency restored as a compiled assembly is not resolved to
 # a same-named union of a package the verifier read (Std.Http's HttpError):
