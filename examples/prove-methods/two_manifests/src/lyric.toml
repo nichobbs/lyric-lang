@@ -1,0 +1,11 @@
+[package]
+name = "ProveTwoManifestsInner"
+version = "0.1.0"
+
+[project]
+name = "ProveTwoManifestsInner"
+output = "single"
+output_assembly = "ProveTwoManifestsInner.dll"
+
+[project.packages]
+"P" = "p"

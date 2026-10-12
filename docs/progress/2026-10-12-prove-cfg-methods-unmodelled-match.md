@@ -146,7 +146,10 @@ false" and shows that model; each goal's diagnostic in a multi-build file
 names its build; an inactive `@cfg` twin is listed as a variant whose
 same-named declaration is proved, apart from items no build compiles; and
 a project file's scope is built from the other files of its entries, read
-once each, so its own declarations never count twice.
+once each, so its own declarations never count twice; and a file two
+manifests' entries list is read once in a single-file proof
+(`Lyric.Discovery.packageFileSetForSource` deduplicates by path), so a
+sibling's interface is not "declared more than once".
 
 ## Tests
 
@@ -171,7 +174,8 @@ once each, so its own declarations never count twice.
   hold, `Std.Stream`'s `ByteReader` clauses inherited, another package's
   same-named interface ignored, a bare call in an inherited clause), a
   JVM-only item listed as not proved, and a restored dependency's union
-  named like the standard library's (built in a copy): 22 checks, each
+  named like the standard library's (built in a copy), and a package two
+  manifests list, in single-file and both `--manifest` modes: 25 checks, each
   failing on `main`.
 
 ## Behaviour changes in existing proofs

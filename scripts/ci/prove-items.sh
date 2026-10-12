@@ -141,6 +141,19 @@ expect_refuted "another package's same-named interface is not inherited" "postco
 if grep -q "V0033" "$err"; then
   fail "another package's same-named interface: Std.Stream's resolves"
 fi
+# A package two manifests list reads each sibling file once: its interface
+# is declared once, in single-file and --manifest mode alike.
+for mode in single outer inner; do
+  case "$mode" in
+    single) set -- "$lyric_bin" prove "$pm/two_manifests/src/p/b.l" ;;
+    outer) set -- "$lyric_bin" prove --manifest "$pm/two_manifests/lyric.toml" ;;
+    inner) set -- "$lyric_bin" prove --manifest "$pm/two_manifests/src/lyric.toml" ;;
+  esac
+  expect_refuted "a package two manifests list, $mode" "postcondition of R.f" "$@"
+  if grep -q "V0033" "$err"; then
+    fail "a package two manifests list, $mode: the interface is declared once"
+  fi
+done
 expect_refuted "a bare call in an inherited clause" "postcondition of R.get" "$lyric_bin" prove "$pm/inherited_bare_call.l"
 
 # A union of a dependency restored as a compiled assembly is not resolved to

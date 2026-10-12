@@ -573,9 +573,12 @@ pub func scopeOfFiles(files: in List[String], skipPath: in String): PackageScope
 
 func scopeOfFilesIn(files: in List[String], skipPath: in String, ownPackage: in String): PackageScope {
   val sources: List[String] = newList()
+  // A path listed twice is one file: read once, its declarations count once.
+  val seen: List[String] = newList()
   var i = 0
   while i < files.count {
-    if files[i] != skipPath {
+    if files[i] != skipPath and not seen.contains(files[i]) {
+      seen.add(files[i])
       match File.readText(files[i]) {
         case Ok(t) -> sources.add(t)
         case Err(_) -> return unknownPackageScope()

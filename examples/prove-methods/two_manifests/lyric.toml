@@ -1,0 +1,11 @@
+[package]
+name = "ProveTwoManifestsOuter"
+version = "0.1.0"
+
+[project]
+name = "ProveTwoManifestsOuter"
+output = "single"
+output_assembly = "ProveTwoManifestsOuter.dll"
+
+[project.packages]
+"P" = "src/p"
