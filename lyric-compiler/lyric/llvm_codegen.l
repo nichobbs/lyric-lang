@@ -3545,6 +3545,12 @@ func lowerMember(ctx: in Ctx, insns: in List[NInsn], receiver: in Expr, memberNa
       case None -> {
       }
     }
+    // A package-qualified module-level `val` (`Pkg.handlers`), which a
+    // qualified path reaches the same way (#8283).
+    match mapGet(ctx.moduleVals, joined) {
+      case Some(mv) -> return lowerModuleVal(ctx, insns, mv)
+      case None -> ()
+    }
   }
   val v = lowerExpr(ctx, insns, receiver)
   if isStringNType(v.ty) {
@@ -5104,7 +5110,7 @@ func lowerCallEx(
       // `f[T](args)`: explicit type arguments on a generic function.  Any
       // other index (`handlers[i](args)`, an element of a module-level `val`)
       // is a function value (#8283).
-      if iname.length > 0 and not ctx.varTypes.containsKey(iname) and explicitGenericFnKey(ctx, iname, args.count).length > 0 {
+      if iname.length > 0 and not nameIsValueNative(ctx, iname) and explicitGenericFnKey(ctx, iname, args.count).length > 0 {
         val idxTes: List[TypeExpr] = newList()
         for ix in idxs {
           idxTes.add(exprAsTypeExpr(ix))
@@ -10749,6 +10755,13 @@ func explicitGenericFnKey(ctx: in Ctx, name: in String, argc: in Int): String {
   } else {
     ""
   }
+}
+
+/// Whether a bare `name` is a value that hides a same-named generic function:
+/// a local, or a module-level `val` of the current package (a package's own
+/// declarations win over its imports, as in the type checker).
+func nameIsValueNative(ctx: in Ctx, name: in String): Bool {
+  ctx.varTypes.containsKey(name) or ctx.moduleVals.containsKey(ctx.curPkg[0] + "." + name)
 }
 
 /// A call whose callee is an expression producing a function value (an

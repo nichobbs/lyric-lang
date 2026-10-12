@@ -184,3 +184,30 @@ test "a module-level List of functions passed to a generic function (#8283)" {
   val ints: List[(Int) -> Int] = [{ x: Int -> moduleFns[1](x, x) }]
   assertEqualInt(applyAt(ints, 0, 9), 81, "Int instantiation")
 }
+
+val moduleGreet: (String) -> String = { s: String -> "hi " + s }
+
+test "module-level function values named with the package (#8283)" {
+  assertEqual(
+    Lyric.SliceFuncElemSelfTest.moduleLambdas[1]("x") + Lyric.SliceFuncElemSelfTest.moduleLambdas[0]("y"),
+    "<x>y!",
+    "an element of a package-qualified List"
+  )
+  assertEqualInt(Lyric.SliceFuncElemSelfTest.moduleFns[1](3, 4) + moduleFns[0](1, 1), 14, "Int elements")
+  assertEqual(
+    moduleGreet("a") + Lyric.SliceFuncElemSelfTest.moduleGreet("b"),
+    "hi ahi b",
+    "a function-typed val called"
+  )
+}
+
+// A module-level `val` hides an imported generic function of its name: the
+// package's own declaration wins, so `isSome[0](5)` indexes the list rather
+// than giving `Std.Core.isSome` a type argument.
+val isSome: List[(Int) -> Bool] = [{ x: Int -> x > 0 }]
+
+test "a module-level val hides an imported generic function of its name (#8283)" {
+  assertTrue(isSome[0](5), "the val's element")
+  val isNone: List[(Int) -> Bool] = [{ x: Int -> x < 0 }]
+  assertFalse(isNone[0](5), "a local hides the imported generic too")
+}

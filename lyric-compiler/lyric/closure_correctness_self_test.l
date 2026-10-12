@@ -19,7 +19,9 @@
 //!      the parameter arrives boxed under the uniform `Func` ABI and was stored
 //!      into the inner closure's typed field without being unboxed, so a
 //!      curried `{ a: Int -> { b: Int -> a + b } }` read the object reference
-//!      as an `Int`.
+//!      as an `Int`.  A slice or in-bundle generic parameter, which has no
+//!      verifiable narrowing, is kept boxed; on the JVM a slice parameter was
+//!      never cast to its array type.
 //!
 //! Run with:
 //!   lyric test --target dotnet lyric-compiler/lyric/closure_correctness_self_test.l
@@ -228,4 +230,40 @@ test "a curried Unit-returning lambda called in place (#8317)" {
   (if pick { curryLogger(log)("b") } else { curryLogger(log)("c") })()
   assertEqualInt(log.count, 2, "both calls ran")
   assertEqual(log[0] + log[1], "ab", "each call kept its own captured tag")
+}
+
+// A captured parameter whose type has no verifiable narrowing from `object`
+// (a slice, which may be `List`-backed, or an in-bundle generic, which may be
+// an erased construction) is kept boxed in the closure field and read as the
+// parameter is (#8317).
+record CurryBox[T] {
+  v: T
+}
+
+union CurryEither[A, B] {
+  case CurryLeft(a: A)
+  case CurryRight(b: B)
+}
+
+test "a slice parameter, read and captured (#8317)" {
+  val first: (slice[Int]) -> Int = { xs: slice[Int] -> xs[0] }
+  val at: (slice[Int]) -> (Int) -> Int = { xs: slice[Int] -> { i: Int -> xs[i] } }
+  val s: slice[Int] = [4, 5, 6]
+  assertEqualInt(first(s), 4, "a direct read")
+  assertEqualInt(at(s)(1) + at(s)(2), 11, "a captured read")
+  val names: (slice[String]) -> (Int) -> String = { xs: slice[String] -> { i: Int -> xs[i] } }
+  assertEqual(names(["a", "b"])(1), "b", "a List-backed literal argument")
+  val later: (slice[Int]) -> (Int) -> () -> Int = { xs: slice[Int] -> { i: Int -> { -> xs[i] * 10 } } }
+  assertEqualInt(later(s)(2)(), 60, "re-captured two levels down")
+}
+
+test "a generic record and union parameter captured (#8317)" {
+  val unbox: (CurryBox[Int]) -> () -> Int = { b: CurryBox[Int] -> { -> b.v } }
+  assertEqualInt(unbox(CurryBox(v = 5))(), 5, "CurryBox[Int]")
+  val show: (CurryEither[Int, String]) -> () -> String = { e: CurryEither[Int, String] ->
+    { -> match e { case CurryLeft(a) -> toString(a); case CurryRight(b) -> b } }
+  }
+  val l: CurryEither[Int, String] = CurryLeft(a = 3)
+  val r: CurryEither[Int, String] = CurryRight(b = "r")
+  assertEqual(show(l)() + show(r)(), "3r", "CurryEither[Int, String]")
 }

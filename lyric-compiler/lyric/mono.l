@@ -7631,7 +7631,11 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
                 val bareCallee = Expr(kind = EIndex(receiver = bareRecv, indices = idxExprs), span = fn.span)
                 return rewriteExpr(state, env, Expr(kind = ECall(fn = bareCallee, args = args), span = s))
               }
-              if ipath.segments.count == 1 and state.genDecls.containsKey(ipath.segments[0]) and idxExprs.count > 0 {
+              // A local or module-level value of the generic's name hides it:
+              // `isSome[0](x)` indexes that value (#8283).
+              val shadowedByValue = ipath.segments.count == 1 and
+                (env.containsKey(ipath.segments[0]) or state.moduleValTypes.containsKey(ipath.segments[0]))
+              if ipath.segments.count == 1 and not shadowedByValue and state.genDecls.containsKey(ipath.segments[0]) and idxExprs.count > 0 {
                 val targsConv: List[TypeArg] = newList()
                 var convOk = true
                 var xi = 0

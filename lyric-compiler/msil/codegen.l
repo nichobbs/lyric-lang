@@ -446,6 +446,11 @@ pub record CodegenCtx {
   // `object[]` because the declaring function passes the variable to an
   // erased `inout Self` parameter (`FuncCtx.objectCellNames`, #8204).
   lambdaObjectCells: Map[String, List[String]]
+  // The by-value captures of each lambda whose closure field is `object`
+  // although the capture's logical type is a reference type: a parameter of
+  // the enclosing lambda that arrives boxed and has no verifiable narrowing
+  // (`boxedParamNarrowIsNoopMsil`), or such a capture re-captured (#8317).
+  lambdaObjectFieldCaps: Map[String, List[String]]
   // `<owner>/<method>#<i>` for every method whose receiver-less parameter
   // `i` is an `out`/`inout` `Self`, `<owner>` being the declaring class or
   // interface FQN without its arity suffix, and `*` standing for any owner
@@ -2305,6 +2310,7 @@ pub func newCodegenCtx(
     lambdaCaptureTypes = newMap(),
     lambdaCaptureCells = newMap(),
     lambdaObjectCells = newMap(),
+    lambdaObjectFieldCaps = newMap(),
     erasedSelfByrefMethods = newMap(),
     lambdaCaptureFuncRetTypes = newMap(),
     lambdaClosureClasses = newMap(),
@@ -6330,6 +6336,10 @@ pub record FuncCtx {
   // before the body is lowered (`collectErasedSelfByrefArgsBlock`), and
   // handed to each lambda capturing such a cell (`lambdaObjectCells`).
   objectCellNames: List[String]
+  // Captures of this lifted lambda whose closure field is `object`
+  // (`CodegenCtx.lambdaObjectFieldCaps`): the field is read as the boxed
+  // value, as the parameter it was captured from is (#8317).
+  objectFieldCaptureNames: List[String]
   // Phase B.1 async SM context.  Empty except when synthesiseAsyncSmPhaseBMsil
   // is lowering the MoveNext body (singleton then).  The EAwait handler checks
   // this to switch from the blocking shim to the real suspend/resume protocol.
@@ -13009,6 +13019,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
       // must never be silently captured by value — fail loud as a safety net.
       val capTypes: List[MsilType] = newList()
       val capCells: List[String] = newList()
+      val capObjFields: List[String] = newList()
       var capTyI = 0
       while capTyI < caps.count {
         val cn = caps[capTyI]
@@ -13020,6 +13031,9 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           capTypes.add(match mapGet(fctx.captureNameToType, cn) { case Some(t) -> t; case None -> MObject })
           if nameListContains(fctx.captureCellNames, cn) {
             capCells.add(cn)
+          }
+          if nameListContains(fctx.objectFieldCaptureNames, cn) {
+            capObjFields.add(cn)
           }
         } else {
           match mapGet(fctx.hoistedCellSlot, cn) {
@@ -13055,6 +13069,9 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                 }
               } else {
                 capTypes.add(match mapGet(fctx.types, cn) { case Some(t) -> t; case None -> MObject })
+                if boxedParamFieldIsObjectMsil(fctx, cn) {
+                  capObjFields.add(cn)
+                }
               }
             }
           }
@@ -13157,6 +13174,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
         // Synthesize closure class (#1877 Phase 1): emit a __Closure_<i> record with
         // typed fields for captures instead of object[] array. Store in context for
         // emission to the module's TypeDef table and use in delegate instantiation.
+        cctx.lambdaObjectFieldCaps.add(lambdaKey, capObjFields)
         val closureClass = synthesizeClosureClassMsil(
           cctx,
           lname,
@@ -13166,6 +13184,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           capTypes,
           capCells,
           capObjCells,
+          capObjFields,
           hostGenerics
         )
         cctx.lambdaClosureClasses.add(lambdaKey, closureClass)
@@ -13317,7 +13336,9 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                           // logical type, so it is unboxed (or narrowed) as a
                           // read of the parameter is (#8317).  An erased
                           // field takes the boxed value as it is.
-                          case Some(logicalTy) -> if not erasedField { castObjectToMsil(cctx, insns, logicalTy) }
+                          case Some(logicalTy) -> if not erasedField and not nameListContains(capObjFields, capName) {
+                            castObjectToMsil(cctx, insns, logicalTy)
+                          }
                           // Also a type that mentions one (#7704): a value-type
                           // instantiation needs the box; a reference type has
                           // none to add.  A hosted closure class's field keeps
@@ -15941,7 +15962,10 @@ func lowerMatchExprMsil(
   val scrutTy = lowerExprMsil(cctx, fctx, insns, scrutinee)
   // One fresh slot, as `matchScrutineeTempSlotsMsil` declares (the name is
   // unique, so `allocSlotMsil` never reuses a slot here).
-  val scrutSlot = allocSlotMsil(fctx, "__scrut_" + toString(fctx.slotTicker.count), scrutTy)
+  // A lambda parameter held boxed (`boxedParamNarrowIsNoopMsil`) is still the
+  // `object` it arrived as; the pattern tests `isinst` it (#8317).
+  val scrutSlotTy = if exprIsBoxedUnnarrowedMsil(fctx, scrutinee) { MObject } else { scrutTy }
+  val scrutSlot = allocSlotMsil(fctx, "__scrut_" + toString(fctx.slotTicker.count), scrutSlotTy)
   emitStoreSlot(insns, scrutSlot, fctx.paramCount)
   // A later arm's pattern test reads the scrutinee after an earlier arm's
   // guard may have suspended (#7816).
@@ -26038,6 +26062,7 @@ func makeFuncCtxMsil(
     hoistedCellType = hoistedCellType,
     captureCellNames = captureCellNames,
     objectCellNames = objectCellNames,
+    objectFieldCaptureNames = newList(),
     phaseBCtx = newList(),
     lazyGenCtx = newList(),
     asyncFuncFlag = newList(),
@@ -34548,6 +34573,14 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
       case Some(c) -> c
       case None -> newList()
     }
+    match mapGet(cctx.lambdaObjectFieldCaps, qualifiedLambdaName) {
+      case Some(names) -> {
+        for n in names {
+          fctx.objectFieldCaptureNames.add(n)
+        }
+      }
+      case None -> ()
+    }
     var cni = 0
     while cni < lambdaCaps.count {
       fctx.captureNameToIndex.add(lambdaCaps[cni], cni)
@@ -36291,6 +36324,64 @@ func lambdaMethodSigMsil(cctx: in CodegenCtx, lambdaKey: in String, nparams: in 
   LambdaSigMsil(params = params, ret = ret)
 }
 
+// Whether `ty`, the logical type of a lambda parameter that arrives boxed, is
+// a reference type `castObjectToMsil` leaves as `object`: a slice, an in-bundle
+// generic instantiation, a tuple or an erased collection.  Such a value may be
+// an erased construction (a `List`-backed slice, a `Box<object>`), so no cast
+// to the declared type is safe.
+func boxedParamNarrowIsNoopMsil(ty: in MsilType): Bool {
+  if isValueType(ty) {
+    return false
+  }
+  match ty {
+    case MObject -> false
+    case MTypeVar(_) -> false
+    case MMethodTypeVar(_) -> false
+    case MString -> false
+    case MClass(_) -> false
+    case MGenericInst(_, _, _) -> false
+    case MGenericInstByName(head, _) -> not (isFuncDelegateHeadMsil(head) or isActionDelegateHeadMsil(head))
+    case MConcreteList(_) -> false
+    case MConcreteMap(_, _) -> false
+    case _ -> true
+  }
+}
+
+// Whether the capture of `name`, a parameter of the lambda being lowered,
+// is stored in an `object` closure field: the parameter arrives boxed and its
+// type has no verifiable narrowing.  The field then holds the boxed value and
+// a read of it is typed as a read of the parameter is (#8317).
+func boxedParamFieldIsObjectMsil(fctx: in FuncCtx, name: in String): Bool {
+  match mapGet(fctx.slots, name) {
+    case Some(slot) -> match mapGet(fctx.boxedParamTypes, slot) {
+      case Some(logicalTy) -> boxedParamNarrowIsNoopMsil(logicalTy)
+      case None -> false
+    }
+    case None -> false
+  }
+}
+
+// Whether `e` reads a lambda parameter, or a capture of one, that is held as
+// the boxed `object` it arrived as although it is typed with its logical type
+// (`boxedParamNarrowIsNoopMsil`): a consumer that stores it in a slot of that
+// type must keep the slot `object`.
+func exprIsBoxedUnnarrowedMsil(fctx: in FuncCtx, e: in Expr): Bool {
+  match e.kind {
+    case EParen(inner) -> exprIsBoxedUnnarrowedMsil(fctx, inner)
+    case EPath(p) -> {
+      if p.segments.count != 1 {
+        return false
+      }
+      val name = p.segments[0]
+      if fctx.slots.containsKey(name) {
+        return boxedParamFieldIsObjectMsil(fctx, name)
+      }
+      nameListContains(fctx.objectFieldCaptureNames, name)
+    }
+    case _ -> false
+  }
+}
+
 // Synthesize a __Closure_<i> record for a capturing lambda (Stage 1, #1877).
 // Creates one public field per captured variable with its original type.
 // The record is stored in cctx.lambdaClosureClasses for later registration.
@@ -36303,6 +36394,7 @@ func synthesizeClosureClassMsil(
   capTypes: in List[MsilType],
   capCells: in List[String],
   capObjCells: in List[String],
+  capObjFields: in List[String],
   hostGenerics: in List[String],
 ): MRecord {
   val closureClassName = pkgName + ".__Closure_" + toString(lambdaIdx)
@@ -36337,7 +36429,7 @@ func synthesizeClosureClassMsil(
       // unrepresentable here, so it erases too.  A hosted closure class
       // declares the enclosing type's parameters, so there the field keeps
       // its type (#8284).
-      if not hosted and msilTypeHasDanglingTypeVarMsil(rawTy) {
+      if (not hosted and msilTypeHasDanglingTypeVarMsil(rawTy)) or nameListContains(capObjFields, capName) {
         MObject
       } else {
         rawTy
