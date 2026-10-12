@@ -6283,6 +6283,10 @@ pub record FuncCtx {
   // result to `R`.  Consulted when a function-typed value is invoked (`f()`) so
   // the call yields the declared type.  Absent ⇒ default to `object`.  #1877.
   funcValRetTypes: Map[String, MsilType]
+  // Lambda literals (keyed by `lambdaSpanKeyMsil`) that sit in a value
+  // position of an expression whose destination is a `Unit`-returning
+  // function type (`markActionSlotLambdasMsil`): built as that `Action`.
+  actionLambdaSpans: Map[String, Bool]
   // Parameter types for function-typed locals/parameters, keyed by variable name.
   // Maps to the full parameter list (in order) to enable typed delegate ABI
   // at the invoke site. Populated alongside funcValRetTypes. (#1877 Phase 3)
@@ -9982,15 +9986,15 @@ func castObjectToMsil(cctx: in CodegenCtx, insns: in List[MInsn], ty: in MsilTyp
         case MString -> insns.add(MCastclassByName(className = "System.String"))
         case MClass(c) -> insns.add(MCastclassByName(className = c))
         case MGenericInst(_, headFqn, tas) -> insns.add(MCastclassGeneric(className = headFqn, typeArgs = tas))
-        // A `Func` delegate — a function-typed lambda parameter read back
-        // out of its `object` signature slot (#7755).  Every non-Unit lambda
-        // is built on the uniform `Func<object, ..., object>` ABI, so the
-        // value genuinely is that type.  Nothing else by-name is cast: an
-        // `Action` slot holds a `Func<..., object>` (a Unit lambda, see
-        // `castObjectToDelegateMsil`), and an in-bundle generic value may be
-        // an erased `Box<object>` construction (see
+        // A `Func`/`Action` delegate — a function-typed value read back out
+        // of an `object` slot (a lambda parameter's signature slot, #7755; a
+        // container or tuple element, #8299).  Every non-Unit lambda is built
+        // on the uniform `Func<object, ..., object>` ABI and every Unit one as
+        // the `Action` its type is (`castObjectToDelegateMsil`), so the value
+        // genuinely is that type.  Nothing else by-name is cast: an in-bundle
+        // generic value may be an erased `Box<object>` construction (see
         // `narrowObjectToDeclaredTypeMsil`).
-        case MGenericInstByName(headFqn, tas) -> if headFqn.startsWith("System.Func`") {
+        case MGenericInstByName(headFqn, tas) -> if isFuncDelegateHeadMsil(headFqn) or isActionDelegateHeadMsil(headFqn) {
           insns.add(MCastclassGeneric(className = headFqn, typeArgs = tas))
         }
         // Concrete collections: narrow an `object` back to the closed
@@ -11011,6 +11015,10 @@ func lowerCollElemMsil(
   }
   val saved = pushAnnoHintTyArgs(fctx, e)
   pushCollExpect(fctx, e)
+  // A lambda literal element of a `Unit`-returning function type is built as
+  // the `Action` the element type is (#7520), so the collection holds what
+  // its readers narrow the element to (#8299).
+  seedLambdaLiteralVoidRetMsil(cctx, fctx, elem, e)
   val t = lowerExprMsil(cctx, fctx, insns, elem)
   popCollExpect(fctx)
   restoreHintTyArgs(fctx, saved)
@@ -12754,6 +12762,8 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             // `object`; the EMember handler narrows them with castclass (#1442).
             if isValueType(elemTy) {
               castObjectToMsil(cctx, insns, elemTy)
+            } else {
+              castObjectToDelegateMsil(cctx, insns, MObject, elemTy)
             }
             elemTy
           }
@@ -12846,8 +12856,10 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               // read is tracked as when that type has a single runtime
               // representation (`narrowObjectToDeclaredTypeMsil`).  An
               // in-bundle generic, collection or array element stays `object`
-              // (#7755).
+              // (#7755).  A function-typed element is narrowed to its
+              // delegate type (#8299).
               narrowObjectToDeclaredTypeMsil(cctx, insns, MObject, elem)
+              castObjectToDelegateMsil(cctx, insns, MObject, elem)
             }
             elem
           }
@@ -12959,6 +12971,22 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
       // computes the capture set (free idents ∩ enclosing slots); their types
       // come from the enclosing scope.
       val caps = lambdaCaptureNamesMsil(fctx, lparams, lbody)
+      // A literal producing the value of an `Action`-typed destination's
+      // `if`/`match`/block (`markActionSlotLambdasMsil`) is built as that
+      // `Action` (#8299).
+      if fctx.actionLambdaSpans.containsKey(lambdaSpanKeyMsil(expr.span)) {
+        seedNextLambdaVoidRetMsil(cctx, fctx)
+      }
+      // A lambda whose own checked type returns `Unit` ends in `()`
+      // (`Lyric.Pipeline`'s `endUnitLambdasInUnit`) and is built as an
+      // `Action` unless its destination already chose its delegate (an
+      // `@externTarget` or erased-generic `Func` parameter keeps the `Func`
+      // its callee invokes, `lambdaReturnsVoidMsil`), so a value of a
+      // `Unit`-returning function type is an `Action` wherever it is made
+      // (#8299).
+      if lambdaBodyEndsInUnitMsil(lbody) {
+        seedNextLambdaVoidRetMsil(cctx, fctx)
+      }
       // A lambda in a member of a type with type parameters is hosted by a
       // closure class generic over them (#8284): `liftLambdasMsil` marked it,
       // and the class is instantiated here at this member's own `!0..!n`.
@@ -19070,7 +19098,106 @@ func invokeLoadedFuncValueMsil(
     insns.add(MCallvirt(methodToken = invokeTok))
     return MVoid
   }
+  // A value the codegen only knows as `object`, whose result is `Unit` or not
+  // tracked: an element of a container built with no element type, or a
+  // binding of one (`val hs = [{ -> c = v }]; hs[0]()`).  A `Unit`-returning
+  // function value is an `Action` and every other one the uniform `Func`, so
+  // the call tests which it holds (#8299).
+  val erasedValue = match valueTy {
+    case MObject -> match retType { case None -> true; case Some(MVoid) -> true; case _ -> false }
+    case _ -> false
+  }
+  if erasedValue {
+    return invokeErasedFuncValueMsil(cctx, fctx, insns, args, retType)
+  }
   lowerFuncValueInvokeMsil(cctx, fctx, insns, args, retType)
+}
+
+// The locals `invokeErasedFuncValueMsil` allocates for a call of `argCount`
+// arguments: the function value and each boxed argument.
+func erasedFuncInvokeTempSlotsMsil(argCount: in Int): Int = 1 + argCount
+
+// Invoke a function value on the stack known only as `object`: an `Action`
+// of the call's arity when it is one, the uniform `Func` otherwise.  The value
+// and the arguments are evaluated once, in order, into locals, so either
+// branch reads them.  `retType` is `Some(MVoid)` (a `Unit` result, discarded)
+// or `None` (untracked: the `Func`'s boxed result, `null` for an `Action`).
+func invokeErasedFuncValueMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  args: in List[CallArg],
+  retType: in Option[MsilType],
+): MsilType {
+  val n = toString(fctx.slotTicker.count)
+  val fnSlot = allocSlotMsil(fctx, "__erasedfn_" + n, MObject)
+  emitStoreSlot(insns, fnSlot, fctx.paramCount)
+  val argSlots: List[Int] = newList()
+  var i = 0
+  while i < args.count {
+    val argTy = lowerCallArgMsil(cctx, fctx, insns, args[i])
+    boxIfNeededMsil(cctx, insns, argTy)
+    val aSlot = allocSlotMsil(fctx, "__erasedfn_a" + toString(i) + "_" + n, MObject)
+    emitStoreSlot(insns, aSlot, fctx.paramCount)
+    argSlots.add(aSlot)
+    i = i + 1
+  }
+  val funcL = freshLabelMsil(fctx)
+  val doneL = freshLabelMsil(fctx)
+  val returnsUnit = match retType { case Some(MVoid) -> true; case _ -> false }
+  val actionTy = actionTypeOfArityMsil(args.count)
+  emitLoadSlot(insns, fnSlot, fctx.paramCount)
+  match actionTy {
+    case MGenericInstByName(head, targs) -> insns.add(MIsinstGeneric(className = head, typeArgs = targs))
+    case _ -> insns.add(MIsinstByName(className = "System.Action"))
+  }
+  insns.add(MDup)
+  insns.add(MBrFalse(label = funcL))
+  for sl in argSlots {
+    emitLoadSlot(insns, sl, fctx.paramCount)
+  }
+  insns.add(
+    MCallvirt(
+      methodToken = if args.count == 0 { cctx.tokActionInvoke } else { buildActionNInvokeTok(cctx, args.count) }
+    )
+  )
+  if not returnsUnit {
+    insns.add(MLdNull)
+  }
+  insns.add(MBr(label = doneL))
+  insns.add(MLabel(id = funcL))
+  insns.add(MPop)
+  emitLoadSlot(insns, fnSlot, fctx.paramCount)
+  insns.add(MCastclass(typeToken = 0x1B000000 + internFuncNTypeSpec(cctx, args.count)))
+  for sl in argSlots {
+    emitLoadSlot(insns, sl, fctx.paramCount)
+  }
+  insns.add(MCallvirt(methodToken = buildFuncNInvokeTok(cctx, args.count)))
+  if returnsUnit {
+    insns.add(MPop)
+  }
+  insns.add(MLabel(id = doneL))
+  if returnsUnit {
+    MVoid
+  } else {
+    MObject
+  }
+}
+
+// The MSIL type of a `Unit`-returning function type of `arity` parameters:
+// `System.Action` or `System.Action`N<object, ...>`, as `typeExprToMsilCtx`
+// builds it.
+func actionTypeOfArityMsil(arity: in Int): MsilType {
+  if arity == 0 {
+    return MClass(className = "System.Action")
+  }
+  val targs: List[MsilType] = newList()
+  var i = 0
+  while i < arity {
+    targs.add(MObject)
+    i = i + 1
+  }
+  MGenericInstByName(headFqn = "System.Action`" + toString(arity), typeArgs = targs)
 }
 
 // Push `p + offset` as a `native int` for `nativeLoadByte`/`nativeStoreByte`.
@@ -19168,19 +19295,29 @@ func isFuncDelegateHeadMsil(head: in String): Bool {
   head.startsWith("System.Func`")
 }
 
-// A function value held as `object` (an unannotated `val g = { ... }`, or an
-// erased generic's result) flowing into a function-typed parameter or field:
-// narrow it to that `Func` type (D-progress-969).  `Action` targets are left
-// alone: a Unit-returning lambda is built as a `Func<..., object>` (every
-// invoke casts to `Func`), so the value in an `Action`-typed slot is not an
-// `Action` and a cast would throw.
+// True for the head of a `Unit`-returning function type's delegate,
+// `System.Action`N` (arity 0 is the non-generic `MClass("System.Action")`).
+func isActionDelegateHeadMsil(head: in String): Bool {
+  head.startsWith("System.Action`")
+}
+
+// A function value held as `object` (an unannotated `val g = { ... }`, an
+// erased generic's result, or an element read out of an erased container —
+// `IList.get_Item` on a `slice[F]`, a `List<object>`, a tuple) flowing into a
+// function-typed slot, or invoked: narrow it to that delegate type
+// (D-progress-969, #8299).  A `(T1, ..., TN) -> Unit` type is a real
+// `Action`/`Action`N` wherever a value of it is made (D-progress-886; a lambda
+// literal is seeded `Unit`-returning by every typed destination, #7520,
+// #8299), and every other function type is the uniform `Func`, so the cast
+// cannot fail for a well-typed program.
 func castObjectToDelegateMsil(cctx: in CodegenCtx, insns: in List[MInsn], fromTy: in MsilType, toTy: in MsilType): Unit {
   match fromTy {
     case MObject -> match toTy {
-      case MGenericInstByName(head, targs) -> if isFuncDelegateHeadMsil(head) {
+      case MClass(cn) -> if cn == "System.Action" { insns.add(MCastclassByName(className = cn)) }
+      case MGenericInstByName(head, targs) -> if isFuncDelegateHeadMsil(head) or isActionDelegateHeadMsil(head) {
         insns.add(MCastclassGeneric(className = head, typeArgs = targs))
       }
-      case MGenericInst(trc, head, targs) -> if isFuncDelegateHeadMsil(head) {
+      case MGenericInst(trc, head, targs) -> if isFuncDelegateHeadMsil(head) or isActionDelegateHeadMsil(head) {
         val dtsRow = ctxAddGenericInstTypeSpec(cctx.lctx, "delegate_cast_ts_" + msilTypeKey(toTy), trc, targs, false)
         insns.add(MCastclass(typeToken = 0x1B000000 + dtsRow))
       }
@@ -21246,6 +21383,20 @@ func storeIntConstSlotMsil(fctx: in FuncCtx, insns: in List[MInsn], v: in Int): 
   slot
 }
 
+// The static type of the `List<object>`-backed slice `.append`/`.concat`/
+// `.slice` build when the element type has no array token: still the
+// receiver's `slice[e]`, whose reads go through `IList` and narrow each
+// element to `e` (a `slice` literal of such elements is the same
+// `List<object>` under the same type).  The erased `object` it used to be
+// lost `e`, so a function element was invoked through the uniform `Func`
+// whatever its type (#8299).
+func sliceOpResultTyMsil(recvTy: in MsilType): MsilType {
+  match recvTy {
+    case MArray(e) -> MArray(elemTy = e)
+    case _ -> MObject
+  }
+}
+
 // `xs.append(x)`: a new slice one element longer than `xs`, `x` at the end.
 func lowerSliceAppendMsil(
   cctx: in CodegenCtx,
@@ -21265,7 +21416,18 @@ func lowerSliceAppendMsil(
   // requires exactly 1 arg (T0042 otherwise), so a mismatched call never
   // reaches codegen from a type-checked program; the `else` is an
   // unreachable defensive default, not a real call shape.
-  val argTy = if args.count > 0 { lowerCallArgMsil(cctx, fctx, insns, args[0]) } else { insns.add(MLdNull); MObject }
+  // The appended element is built at the receiver's element type: a `Unit`
+  // lambda literal as the `Action` the slice's readers narrow it to (#8299).
+  val argTy = if args.count > 0 {
+    match recvTy {
+      case MArray(ae) -> seedLambdaLiteralVoidRetMsil(cctx, fctx, callArgExpr(args[0]), ae)
+      case _ -> ()
+    }
+    lowerCallArgMsil(cctx, fctx, insns, args[0])
+  } else {
+    insns.add(MLdNull)
+    MObject
+  }
   val argSlot = allocSlotMsil(fctx, "__sliceapp_arg_" + toString(fctx.slotTicker.count), argTy)
   emitStoreSlot(insns, argSlot, fctx.paramCount)
   val zeroSlot = storeIntConstSlotMsil(fctx, insns, 0)
@@ -21312,7 +21474,7 @@ func lowerSliceAppendMsil(
       boxIfNeededMsil(cctx, insns, argTy)
       insns.add(MCallvirt(methodToken = cctx.tokListObjAdd))
       emitLoadSlot(insns, newSlot, fctx.paramCount)
-      MObject
+      sliceOpResultTyMsil(recvTy)
     }
   }
 }
@@ -21336,7 +21498,16 @@ func lowerSliceConcatMsil(
   // See the matching comment in `lowerSliceAppendMsil`: `concat`'s signature
   // hard-requires exactly 1 arg, so this `else` is unreachable from a
   // type-checked program.
-  val otherTy = if args.count > 0 { lowerCallArgMsil(cctx, fctx, insns, args[0]) } else { insns.add(MLdNull); MObject }
+  // A literal argument is built as the receiver's own `slice[e]` (#8299).
+  val otherTy = if args.count > 0 {
+    pushCollExpect(fctx, recvTy)
+    val t = lowerCallArgMsil(cctx, fctx, insns, args[0])
+    popCollExpect(fctx)
+    t
+  } else {
+    insns.add(MLdNull)
+    MObject
+  }
   val otherSlot = allocSlotMsil(fctx, "__sliceccat_other_" + toString(fctx.slotTicker.count), otherTy)
   emitStoreSlot(insns, otherSlot, fctx.paramCount)
   emitLoadSlot(insns, otherSlot, fctx.paramCount)
@@ -21371,7 +21542,7 @@ func lowerSliceConcatMsil(
       emitSliceCopyLoopMsil(cctx, fctx, insns, recvSlot, recvTy, zeroSlot, cntSlot, newSlot, None, MObject, zeroSlot)
       emitSliceCopyLoopMsil(cctx, fctx, insns, otherSlot, otherTy, zeroSlot, otherCntSlot, newSlot, None, MObject, zeroSlot)
       emitLoadSlot(insns, newSlot, fctx.paramCount)
-      MObject
+      sliceOpResultTyMsil(recvTy)
     }
   }
 }
@@ -21460,7 +21631,7 @@ func lowerSliceSliceMsil(
       emitStoreSlot(insns, newSlot, fctx.paramCount)
       emitSliceCopyLoopMsil(cctx, fctx, insns, recvSlot, recvTy, startSlot, cntSlot, newSlot, None, MObject, zeroSlot)
       emitLoadSlot(insns, newSlot, fctx.paramCount)
-      MObject
+      sliceOpResultTyMsil(recvTy)
     }
   }
 }
@@ -24568,7 +24739,18 @@ func registerLocalLambdaLiteralFnTypesMsil(
         case None -> ()
       }
     }
-    case _ -> ()
+    // An `if`/`match`/block initializer whose branches are lambda literals:
+    // an annotated `Unit`-returning function type builds them as its `Action`
+    // (#8299).
+    case _ -> match tyOpt {
+      case Some(te) -> {
+        val arity = actionSlotArityMsil(typeExprToMsilBodyCtx(cctx, fctx, te))
+        if arity >= 0 {
+          markActionSlotLambdasMsil(fctx, init, arity)
+        }
+      }
+      case None -> ()
+    }
   }
 }
 
@@ -25838,6 +26020,7 @@ func makeFuncCtxMsil(
     byrefSlotTypes = byrefSlotTypes,
     erasedByrefSlots = newMap(),
     funcValRetTypes = funcValRetTypes,
+    actionLambdaSpans = newMap(),
     funcValParamTypes = funcValParamTypes,
     boxedParamTypes = boxedParamTypes,
     captureNameToIndex = captureNameToIndex,
@@ -32005,6 +32188,24 @@ func countGenLocalsStmt(cctx: in CodegenCtx, pkgName: in String, hoistedNms: in 
   }
 }
 
+// The locals a call may take to invoke an `object`-typed function value
+// (`invokeErasedFuncValueMsil`): any call whose callee is not a function this
+// package declares by that name may be one.
+func erasedCallTempSlotsUpperBoundMsil(cctx: in CodegenCtx, pkgName: in String, callee: in Expr, argCount: in Int): Int {
+  match callee.kind {
+    case EPath(p) -> if p.segments.count == 1 and cctx.funcTokens.containsKey(pkgName + "." + p.segments[0]) {
+      0
+    } else if p.segments.count == 1 {
+      erasedFuncInvokeTempSlotsMsil(argCount)
+    } else {
+      0
+    }
+    case EMember(_, _) -> 0
+    case ETypeApp(_, _) -> 0
+    case _ -> erasedFuncInvokeTempSlotsMsil(argCount)
+  }
+}
+
 func countGenLocalsExpr(cctx: in CodegenCtx, pkgName: in String, hoistedNms: in List[String], e: in Expr): Int {
   match e.kind {
     case EBlock(b) -> countGenLocalsBlock(cctx, pkgName, hoistedNms, b)
@@ -32043,7 +32244,8 @@ func countGenLocalsExpr(cctx: in CodegenCtx, pkgName: in String, hoistedNms: in 
       n
     }
     case ECall(callee, args) -> {
-      var n = countGenLocalsExpr(cctx, pkgName, hoistedNms, callee)
+      var n = countGenLocalsExpr(cctx, pkgName, hoistedNms, callee) +
+        erasedCallTempSlotsUpperBoundMsil(cctx, pkgName, callee, args.count)
       var ai = 0
       while ai < args.count {
         val argE = match args[ai] { case CAPositional(ex) -> ex; case CANamed(_, ex, _) -> ex }
@@ -33902,11 +34104,7 @@ func emitEpilogueMsil(fctx: in FuncCtx, insns: in List[MInsn]): Unit {
 func lambdaLiteralTargetsActionSlotMsil(expr: in Expr, slotTy: in MsilType): Bool {
   match stripExprParens(expr).kind {
     case ELambda(lparams, _) -> {
-      val slotArity = match slotTy {
-        case MClass(n) -> if n == "System.Action" { 0 } else { -1 }
-        case MGenericInstByName(h, targs) -> if startsWith(h, "System.Action`") { targs.count } else { -1 }
-        case _ -> -1
-      }
+      val slotArity = actionSlotArityMsil(slotTy)
       slotArity >= 0 and slotArity == lparams.count
     }
     case _ -> false
@@ -33927,6 +34125,91 @@ func seedNextLambdaVoidRetMsil(cctx: in CodegenCtx, fctx: in FuncCtx): Unit {
 func seedLambdaLiteralVoidRetMsil(cctx: in CodegenCtx, fctx: in FuncCtx, expr: in Expr, slotTy: in MsilType): Unit {
   if lambdaLiteralTargetsActionSlotMsil(expr, slotTy) {
     seedNextLambdaVoidRetMsil(cctx, fctx)
+  } else {
+    val arity = actionSlotArityMsil(slotTy)
+    if arity >= 0 {
+      markActionSlotLambdasMsil(fctx, expr, arity)
+    }
+  }
+}
+
+// True when a lambda body's last statement is the `()` literal.
+func lambdaBodyEndsInUnitMsil(body: in Block): Bool {
+  val n = body.statements.count
+  if n == 0 {
+    return false
+  }
+  match body.statements[n - 1].kind {
+    case SExpr(tail) -> match tail.kind {
+      case ELiteral(lit) -> match lit { case LUnit -> true; case _ -> false }
+      case _ -> false
+    }
+    case _ -> false
+  }
+}
+
+// The parameter count of a `Unit`-returning function type's `Action` /
+// `Action`N`, or -1 when `slotTy` is not one.
+func actionSlotArityMsil(slotTy: in MsilType): Int {
+  match slotTy {
+    case MClass(n) -> if n == "System.Action" { 0 } else { -1 }
+    case MGenericInstByName(h, targs) -> if startsWith(h, "System.Action`") { targs.count } else { -1 }
+    case _ -> -1
+  }
+}
+
+// A lambda literal's identity within the function being lowered: its source
+// span.  Only used for literals with a non-empty span (a synthesized node may
+// carry an empty one, and is never marked).
+func lambdaSpanKeyMsil(sp: in Span): String {
+  toString(sp.startPos.offset) + ":" + toString(sp.endPos.offset) + "@" + toString(sp.startPos.line) + "." +
+    toString(sp.startPos.column)
+}
+
+// Mark the lambda literals that produce the value of `expr` — `expr` itself,
+// or the branches of an `if`, the arms of a `match` and the tail of a block,
+// through parentheses — when their arity is `arity`: `expr`'s destination is
+// an `Action` of that arity, so each such literal is built as one (the
+// `ELambda` lowering seeds it `Unit`-returning, #8299).  An `if`/`match` whose
+// branches are lambdas otherwise built `Func<..., object>` values where the
+// `Action` was expected (`InvalidCastException` / `ArrayTypeMismatchException`
+// at the destination, StackUnexpected under ilverify).
+func markActionSlotLambdasMsil(fctx: in FuncCtx, expr: in Expr, arity: in Int): Unit {
+  match expr.kind {
+    case ELambda(lparams, _) -> if lparams.count == arity and expr.span.endPos.offset > expr.span.startPos.offset {
+      val key = lambdaSpanKeyMsil(expr.span)
+      if not fctx.actionLambdaSpans.containsKey(key) {
+        fctx.actionLambdaSpans.add(key, true)
+      }
+    }
+    case EParen(inner) -> markActionSlotLambdasMsil(fctx, inner, arity)
+    case EIf(_, thenB, elseB, _) -> {
+      markActionSlotLambdasEobMsil(fctx, thenB, arity)
+      match elseB {
+        case Some(eb) -> markActionSlotLambdasEobMsil(fctx, eb, arity)
+        case None -> ()
+      }
+    }
+    case EMatch(_, arms) -> {
+      for arm in arms {
+        markActionSlotLambdasEobMsil(fctx, arm.body, arity)
+      }
+    }
+    case EBlock(b) -> match blockTailExprMsil(b) {
+      case Some(t) -> markActionSlotLambdasMsil(fctx, t, arity)
+      case None -> ()
+    }
+    case _ -> ()
+  }
+}
+
+func markActionSlotLambdasEobMsil(fctx: in FuncCtx, eob: in ExprOrBlock, arity: in Int): Unit {
+  match eob {
+    case EOBExpr(e) -> markActionSlotLambdasMsil(fctx, e, arity)
+    case EOBBlock(b) -> match blockTailExprMsil(b) {
+      case Some(t) -> markActionSlotLambdasMsil(fctx, t, arity)
+      case None -> ()
+    }
   }
 }
 
@@ -34465,6 +34748,12 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
                 case Some(tailE) -> {
                   if tailE.span.startPos.offset > 0 and lambdaLiteralTargetsActionSlotMsil(tailE, retTy) {
                     fctx.voidLambdaTailOffset = tailE.span.startPos.offset
+                  } else {
+                    // The branches of a tail `if`/`match` (#8299).
+                    val tailArity = actionSlotArityMsil(retTy)
+                    if tailArity >= 0 {
+                      markActionSlotLambdasMsil(fctx, tailE, tailArity)
+                    }
                   }
                 }
                 case None -> ()
@@ -46250,7 +46539,12 @@ func registerRestoredRecordMethod(
     }
     case None -> MVoid
   }
-  val sig = buildInstanceMethodSigWithCtx(sigParamTypes, sigRetType, cctx.lctx)
+  // An `out`/`inout` parameter is a managed pointer in the producer's
+  // MethodDef (`byrefWrapSigTypes`, as `lowerImplMethodMsil` and the record
+  // method lowering build it), so the MemberRef must encode `T&` too; a
+  // by-value encoding names a method that does not exist
+  // (`MissingMethodException`, #8210).
+  val sig = buildInstanceMethodSigWithCtx(byrefWrapSigTypes(realParams, sigParamTypes), sigRetType, cctx.lctx)
   val sigKey = "restored_recmethod_" + arityKey
   val memberRow = ctxAddMemberRef(cctx.lctx, recordTypeRefRow, methodName, sigKey, sig)
   cctx.methodTokens.add(arityKey, 0x0A000000 + memberRow)
@@ -46378,7 +46672,9 @@ func registerRestoredIfaceMethod(
     spi = spi + 1
   }
   val sigRetType = match ret { case Some(te) -> typeExprToMsilCtx(cctx, te, packageName); case None -> MVoid }
-  val sig = buildInstanceMethodSigWithCtx(sigParamTypes, sigRetType, cctx.lctx)
+  // `out`/`inout` slots are managed pointers in the interface's MethodDef
+  // (#8210; see `registerRestoredRecordMethod`).
+  val sig = buildInstanceMethodSigWithCtx(byrefWrapSigTypes(realParams, sigParamTypes), sigRetType, cctx.lctx)
   val sigKey = "restored_iface_" + key
   val memberRow = ctxAddMemberRef(cctx.lctx, typeRefRow, methodName, sigKey, sig)
   cctx.methodTokens.add(key, 0x0A000000 + memberRow)

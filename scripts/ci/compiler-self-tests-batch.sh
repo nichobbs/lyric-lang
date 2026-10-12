@@ -184,6 +184,11 @@ for t in \
   lyric-compiler/lyric/format_builtin_self_test.l \
   lyric-compiler/lyric/byte_erased_positions_self_test.l \
   lyric-compiler/lyric/function_value_typing_self_test.l \
+  lyric-compiler/lyric/byref_value_type_self_test.l \
+  lyric-compiler/lyric/byref_extern_struct_dotnet_self_test.l \
+  lyric-compiler/lyric/slice_func_elem_self_test.l \
+  lyric-compiler/lyric/slice_func_unit_elem_self_test.l \
+  lyric-compiler/lyric/slice_func_tolist_dotnet_self_test.l \
   lyric-compiler/lyric/println_stringify_self_test.l \
   lyric-compiler/lyric/println_extern_struct_dotnet_self_test.l \
   lyric-compiler/lyric/pconstructor_typed_binding_self_test.l \
@@ -299,6 +304,14 @@ if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
   echo "=== scripts/ci/inout-receiver-e2e.sh ==="
   LYRIC_BIN="$lyric_bin" bash scripts/ci/inout-receiver-e2e.sh dotnet jvm
   ran="$ran inout-receiver-e2e"
+fi
+# #8299: Unit lambdas made in a sibling package's or a dependency's generic,
+# both targets (Java 21, as above).
+idx=$((idx + 1))
+if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
+  echo "=== scripts/ci/unit-lambda-cross-package-e2e.sh ==="
+  LYRIC_BIN="$lyric_bin" bash scripts/ci/unit-lambda-cross-package-e2e.sh dotnet jvm
+  ran="$ran unit-lambda-cross-package-e2e"
 fi
 # #8187: a generic opaque type from a separately built dependency.
 idx=$((idx + 1))

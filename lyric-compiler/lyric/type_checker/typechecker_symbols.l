@@ -420,6 +420,13 @@ pub record SymbolTable {
   /// type it was checked against, keyed by `recordCopySiteKey` of the lambda's
   /// span (see `Lyric.Parser.LambdaParamTypesSite`, #7865).
   lambdaParamTypeSites: Map[String, LambdaParamTypesSite]
+  /// Whether each lambda's checked type returns `Unit`, keyed by
+  /// `recordCopySiteKey` of the lambda's span: `true` when every check of the
+  /// lambda gave it a `Unit` result, `false` when one did not.  `Lyric.Mono`
+  /// ends the body of each `true` lambda in `()`, so every backend builds it as
+  /// the `Unit`-returning function its type is, wherever it is copied
+  /// (#8299).
+  lambdaUnitSites: Map[String, Bool]
   /// The checked type of each unannotated module `val` the destructuring
   /// desugaring synthesized, keyed by its name; `annotateModuleVals` writes
   /// it onto the declaration (#7763).
@@ -731,6 +738,7 @@ pub func newSymbolTable(): SymbolTable {
     byRefDotCallSites = newMap(),
     casePatternSites = newMap(),
     lambdaParamTypeSites = newMap(),
+    lambdaUnitSites = newMap(),
     moduleValTypes = newMap(),
     generatorCallSites = newMap(),
     emptyCollectionCtorSites = newMap(),

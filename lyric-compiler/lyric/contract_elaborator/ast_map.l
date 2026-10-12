@@ -644,7 +644,9 @@ func anyInEob(eob: in ExprOrBlock, p: in (Expr) -> Bool): Bool {
   }
 }
 
-func anyInExpr(e: in Expr, p: in (Expr) -> Bool): Bool {
+/// True when `p` holds for `e` or an expression within it; stops at the
+/// first hit.
+pub func anyInExpr(e: in Expr, p: in (Expr) -> Bool): Bool {
   if p(e) {
     return true
   }
@@ -713,7 +715,9 @@ func anyInExpr(e: in Expr, p: in (Expr) -> Bool): Bool {
   }
 }
 
-func anyInBlock(blk: in Block, p: in (Expr) -> Bool): Bool {
+/// True when `p` holds for an expression within `blk`; stops at the first
+/// hit.
+pub func anyInBlock(blk: in Block, p: in (Expr) -> Bool): Bool {
   for s in blk.statements {
     if anyInStmt(s, p) {
       return true

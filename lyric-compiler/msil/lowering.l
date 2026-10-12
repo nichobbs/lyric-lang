@@ -322,11 +322,36 @@ pub func elementTypeByte(t: in MsilType): Int {
   }
 }
 
-// Emit the `ldind.*` opcode that dereferences a managed pointer whose pointee
-// is `ty`.  Used to read an `inout` parameter (whose slot holds a `T&`).  Lyric
-// primitives load natively (i4/i8/r8); every reference-shaped type (object,
-// string, class, list/map, generic instance, type variable) uses `ldind.ref`.
-func emitLdindForType(mb: in MethodBody, ty: in MsilType): Unit {
+// The type token `ldobj`/`stobj` take for a pointee that no `ldind.*` /
+// `stind.*` form covers: a value type other than the primitives (an extern
+// struct such as `System.TimeSpan`, or a value-type generic instantiation) and
+// a type parameter, whose instantiation may be a value type.  `ldind.ref` /
+// `stind.ref` are only defined for object references (ECMA-335 III.3.42,
+// III.3.62), so using them there is an invalid program (#8206).  None for
+// every other pointee.
+func indirectObjTokenOpt(ctx: in LoweringCtx, ty: in MsilType): Option[Int] {
+  match ty {
+    case MValueTypeRef(_, _) -> Some(value = cellElemTypeTokenWithCtx(ctx, ty))
+    case MValueTypeGenericInst(_, _, _) -> Some(value = cellElemTypeTokenWithCtx(ctx, ty))
+    case MTypeVar(_) -> Some(value = cellElemTypeTokenWithCtx(ctx, ty))
+    case MMethodTypeVar(_) -> Some(value = cellElemTypeTokenWithCtx(ctx, ty))
+    case _ -> None
+  }
+}
+
+// Emit the opcode that dereferences a managed pointer whose pointee is `ty`.
+// Used to read an `inout` parameter (whose slot holds a `T&`).  Lyric
+// primitives load natively (i4/i8/r8); a struct or type-parameter pointee
+// loads with `ldobj` (`indirectObjTokenOpt`); every reference-shaped type
+// (object, string, class, list/map, generic instance) uses `ldind.ref`.
+func emitLdindForType(ctx: in LoweringCtx, mb: in MethodBody, ty: in MsilType): Unit {
+  match indirectObjTokenOpt(ctx, ty) {
+    case Some(tok) -> {
+      emitLdobj(mb, tok)
+      return ()
+    }
+    case None -> ()
+  }
   match ty {
     case MInt -> emitLdind_I4(mb)
     case MLong -> emitLdind_I8(mb)
@@ -342,10 +367,16 @@ func emitLdindForType(mb: in MethodBody, ty: in MsilType): Unit {
   }
 }
 
-// Emit the `stind.*` opcode that stores through a managed pointer whose pointee
-// is `ty`.  Counterpart of `emitLdindForType`; used to write an `out`/`inout`
-// parameter.
-func emitStindForType(mb: in MethodBody, ty: in MsilType): Unit {
+// Emit the opcode that stores through a managed pointer whose pointee is `ty`.
+// Counterpart of `emitLdindForType`; used to write an `out`/`inout` parameter.
+func emitStindForType(ctx: in LoweringCtx, mb: in MethodBody, ty: in MsilType): Unit {
+  match indirectObjTokenOpt(ctx, ty) {
+    case Some(tok) -> {
+      emitStobj(mb, tok)
+      return ()
+    }
+    case None -> ()
+  }
   match ty {
     case MInt -> emitStind_I4(mb)
     case MLong -> emitStind_I8(mb)
@@ -2406,8 +2437,8 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
     case MStloc(slot) -> emitStloc(mb, slot)
     case MLdloca(slot) -> emitLdloca(mb, slot)
     case MLdarga(slot) -> emitLdarga(mb, slot)
-    case MLdind(ty) -> emitLdindForType(mb, ty)
-    case MStind(ty) -> emitStindForType(mb, ty)
+    case MLdind(ty) -> emitLdindForType(ctx, mb, ty)
+    case MStind(ty) -> emitStindForType(ctx, mb, ty)
     case MAdd -> emitAdd(mb)
     case MSub -> emitSub(mb)
     case MMul -> emitMul(mb)

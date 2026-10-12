@@ -10594,6 +10594,31 @@ func collParam(ty: in Type, role: in String): CollMemberParam {
   CollMemberParam(ty = ty, role = role)
 }
 
+// The result type of an element-taking member of the stdlib `List[T]` or
+// `Map[K, V]` that `stdCollectionMemberParams` checks: `Unit` for the members
+// that only mutate the collection — `List.add(item)`, `List.add(index, item)`,
+// `List.removeAt(index)` and `Map.add(key, value)` (void on every backend).
+// Any other member's result is still left unknown (`TyError`).  Without it a
+// lambda ending in `xs.add(x)` was typed `(T) -> <error>` rather than
+// `(T) -> Unit`, so the backends could not tell it returns `Unit` (#8299).
+func stdCollectionMemberResult(tbl: in SymbolTable, recvTy: in Type, name: in String, argCount: in Int): Type {
+  match unrefine(recvTy) {
+    case TyUser(id, _, targs) -> {
+      val isList = targs.count == 1 and isStdCollectionsHostType(tbl, id, "List")
+      val isMap = targs.count == 2 and isStdCollectionsHostType(tbl, id, "Map")
+      val unitResult = (isList and name == "add" and (argCount == 1 or argCount == 2)) or
+        (isList and name == "removeAt" and argCount == 1) or
+        (isMap and name == "add" and argCount == 2)
+      if unitResult {
+        TyPrim(pt = PtUnit)
+      } else {
+        TyError
+      }
+    }
+    case _ -> TyError
+  }
+}
+
 // The parameters of `recv.<name>(...)` with `argCount` arguments when `recv`
 // is the stdlib `List[T]`, `Map[K, V]` or `Set[T]` and `name` is one of the
 // members that take an element, key, value or index; `None` otherwise.  These
@@ -14561,7 +14586,21 @@ func inferExprCore(
                       }
                       ret
                     }
-                    case TyError -> match explicitValueGenericTy { case Some(vt) -> vt; case None -> TyError }
+                    case TyError -> match explicitValueGenericTy {
+                      case Some(vt) -> vt
+                      case None -> match collMemberParams {
+                        case Some(_) -> match memberRecvTy {
+                          case Some(crt3) -> stdCollectionMemberResult(
+                            tbl,
+                            crt3,
+                            memberName,
+                            args.count
+                          )
+                          case None -> TyError
+                        }
+                        case None -> TyError
+                      }
+                    }
                     case _ -> {
                       diag.add(errorDiagnostic("T0044", "called value of non-function type " + renderType(fnT), e.span))
                       TyError
@@ -14804,7 +14843,9 @@ func inferExprCore(
     // function type's parameter types (docs/59 A2).
     case ELambda(lambdaParams, body) -> {
       val noExpectedRet: Option[Type] = None
-      inferLambda(sc, tbl, sigs, diag, lambdaParams, body, newList(), noExpectedRet)
+      val blt = inferLambda(sc, tbl, sigs, diag, lambdaParams, body, newList(), noExpectedRet)
+      recordLambdaUnitSite(tbl, blt, e.span)
+      blt
     }
     // An `if`/`else` expression takes the unified type of its branches.  An
     // `if` without an `else` produces no value on the false path, so it is
@@ -15096,6 +15137,24 @@ func recordLambdaParamTypes(tbl: in SymbolTable, ps: in List[LambdaParam], lt: i
   match lt {
     case TyFunction(pts, _, _) -> recordLambdaParamTypesOf(tbl, ps, pts, sp)
     case _ -> ()
+  }
+}
+
+// Record whether the lambda at `sp`, checked as `lt`, returns `Unit`
+// (`SymbolTable.lambdaUnitSites`).  A lambda checked more than once keeps
+// `true` only while every check agrees.
+pub func recordLambdaUnitSite(tbl: in SymbolTable, lt: in Type, sp: in Span): Unit {
+  val isUnit = match unrefine(lt) {
+    case TyFunction(_, ret, _) -> match unrefine(ret) {
+      case TyPrim(pt) -> match pt { case PtUnit -> true; case _ -> false }
+      case _ -> false
+    }
+    case _ -> false
+  }
+  val key = recordCopySiteKey(sp)
+  match mapGet(tbl.lambdaUnitSites, key) {
+    case Some(prev) -> if prev and not isUnit { tbl.lambdaUnitSites.remove(key); tbl.lambdaUnitSites.add(key, false) }
+    case None -> tbl.lambdaUnitSites.add(key, isUnit)
   }
 }
 
@@ -15801,6 +15860,7 @@ func inferExprExpectedCore(
       case TyFunction(eps, eret, _) -> {
         val lt = inferLambda(sc, tbl, sigs, diag, ps, body, eps, Some(value = eret))
         recordLambdaParamTypes(tbl, ps, lt, e.span)
+        recordLambdaUnitSite(tbl, lt, e.span)
         lt
       }
       case _ -> inferExpr(sc, tbl, sigs, diag, e)

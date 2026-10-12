@@ -917,8 +917,13 @@ pub func pipeCheckAndMono(
   }
 
   // An `inout` receiver becomes an ordinary parameter (#8179) before the
-  // package's generic functions are exported to its siblings and mono.
-  val derived = deriveFileWithImports(renameByRefReceivers(propRes.file), deriveImports)
+  // package's generic functions are exported to its siblings and mono.  A
+  // lambda whose checked type returns `Unit` ends in `()` before then too, so
+  // the specialisations another package makes of a generic carry it (#8299).
+  val derived = deriveFileWithImports(
+    endUnitLambdasInUnit(renameByRefReceivers(propRes.file), tcRes.symbols.lambdaUnitSites),
+    deriveImports
+  )
 
   val noSpecSites: Map[String, Map[String, ArgConversionSite]] = newMap()
   val lambdaTypes = funcValueLambdaTypes(valueSites)
@@ -974,6 +979,13 @@ pub func pipeCheckAndMono(
     opts.nativeIntrinsics,
     opts.methodCallAritiesOut
   )
+  val foreignUnitSites = foreignUnitLambdaSites(
+    monoRes0.foreignSpecs,
+    file0,
+    importedPkgs,
+    monoGenFuncs,
+    opts.nativeIntrinsics
+  )
   // A specialisation whose body uses `==`/`!=` on a type parameter bound to
   // a named type or a tuple is re-checked too, so the comparison is lowered
   // as the bound type's (D172 item 4).
@@ -990,7 +1002,7 @@ pub func pipeCheckAndMono(
     }
   }
   if toRecheck.count == 0 {
-    return match finishValueRecords(monoRes0.file, file0, importedPkgs, tcRes, opts) {
+    return match finishValueRecords(endForeignUnitLambdas(monoRes0.file, foreignUnitSites), file0, importedPkgs, tcRes, opts) {
       case Some(f) -> Some(value = finishMono(f, opts))
       case None -> None
     }
@@ -1028,7 +1040,7 @@ pub func pipeCheckAndMono(
   if gate(opts.pkgLabel, opts.lineOrigins, monoRes.diagnostics) {
     return None
   }
-  match finishValueRecords(lowerSpecArrays(monoRes.file, specArrays, opts.primitiveArrays, not opts.arraysAsLists), file0, importedPkgs, tcRes, opts) {
+  match finishValueRecords(lowerSpecArrays(endForeignUnitLambdas(monoRes.file, foreignUnitSites), specArrays, opts.primitiveArrays, not opts.arraysAsLists), file0, importedPkgs, tcRes, opts) {
     case Some(f) -> Some(value = finishMono(f, opts))
     case None -> None
   }
@@ -1243,13 +1255,41 @@ func foreignOriginArities(
   native: in Bool,
   acc: in Map[String, Int],
 ): Unit {
+  // A package not available here was never resolved against, so its
+  // generics' calls dispatch by the arguments written, as before.
+  val res = match checkInOriginScope(origin, decls, file0, importedPkgs, monoGenFuncs, native) {
+    case Some(r) -> r
+    case None -> return
+  }
+  // A package's source offsets are unique across its files (and a restored
+  // package is synthesised as one source), so an entry recorded at a
+  // signature's default never shares a key with a call in a body.
+  for k in mapKeys(res.symbols.methodCallArities) {
+    if not acc.containsKey(origin + "|" + k) {
+      match mapGet(res.symbols.methodCallArities, k) {
+        case Some(code) -> acc.add(origin + "|" + k, code)
+        case None -> ()
+      }
+    }
+  }
+}
+
+// `decls` (specialisations of `origin`'s generics) type-checked in the scope
+// of `origin`, the package declaring them: its other functions as signatures
+// only.  None when `origin` is not available here.
+func checkInOriginScope(
+  origin: in String,
+  decls: in List[FunctionDecl],
+  file0: in SourceFile,
+  importedPkgs: in List[ImportedPackage],
+  monoGenFuncs: in List[FunctionDecl],
+  native: in Bool,
+): Option[CheckResult] {
   val items: List[Item] = newList()
   val imports: List[ImportDecl] = newList()
   val checkPkgs: List[ImportedPackage] = newList()
-  // A package not available here was never resolved against, so its
-  // generics' calls dispatch by the arguments written, as before.
   if not addOriginScope(origin, file0, importedPkgs, monoGenFuncs, items, imports, checkPkgs) {
-    return
+    return None
   }
   for d in decls {
     items.add(funcItem(d))
@@ -1265,22 +1305,108 @@ func foreignOriginArities(
     items = items,
     span = file0.span
   )
-  val res = if native {
-    checkWithImportedPackagesForNative(checkFile, checkPkgs)
-  } else {
-    checkWithImportedPackages(checkFile, checkPkgs)
-  }
-  // A package's source offsets are unique across its files (and a restored
-  // package is synthesised as one source), so an entry recorded at a
-  // signature's default never shares a key with a call in a body.
-  for k in mapKeys(res.symbols.methodCallArities) {
-    if not acc.containsKey(origin + "|" + k) {
-      match mapGet(res.symbols.methodCallArities, k) {
-        case Some(code) -> acc.add(origin + "|" + k, code)
-        case None -> ()
+  Some(
+    value = if native {
+      checkWithImportedPackagesForNative(checkFile, checkPkgs)
+    } else {
+      checkWithImportedPackages(checkFile, checkPkgs)
+    }
+  )
+}
+
+// ─── Unit lambdas in other packages' generics (#8299) ──────────────────────
+// `endUnitLambdasInUnit` ends a lambda whose checked type returns `Unit` in
+// `()`, for this package's own code.  A specialisation of another package's
+// generic is copied from that package's declaration, which this package's
+// check never saw, so each one whose body holds a lambda is checked in the
+// scope of its package, and what the checker records in it is returned per
+// package (a package's source offsets are unique across its files).
+pub func foreignUnitLambdaSites(
+  specs: in List[UnsignedSpecRequest],
+  file0: in SourceFile,
+  importedPkgs: in List[ImportedPackage],
+  monoGenFuncs: in List[FunctionDecl],
+  native: in Bool,
+): Map[String, Map[String, Bool]] {
+  val sitesByOrigin: Map[String, Map[String, Bool]] = newMap()
+  val byOrigin: Map[String, List[FunctionDecl]] = newMap()
+  val seen: Map[String, Bool] = newMap()
+  for sp in specs {
+    val seenKey = sp.originPkg + "|" + recordCopySiteKey(sp.specDecl.span)
+    if sp.originPkg.length > 0 and not seen.containsKey(seenKey) and funcDeclHasLambda(sp.specDecl) {
+      seen.add(seenKey, true)
+      match mapGet(byOrigin, sp.originPkg) {
+        case Some(ds) -> ds.add(sp.specDecl)
+        case None -> {
+          val ds: List[FunctionDecl] = newList()
+          ds.add(sp.specDecl)
+          byOrigin.add(sp.originPkg, ds)
+        }
       }
     }
   }
+  for origin in mapKeys(byOrigin) {
+    match mapGet(byOrigin, origin) {
+      case Some(decls) -> match checkInOriginScope(origin, decls, file0, importedPkgs, monoGenFuncs, native) {
+        case Some(res) -> sitesByOrigin.add(origin, res.symbols.lambdaUnitSites)
+        case None -> ()
+      }
+      case None -> ()
+    }
+  }
+  sitesByOrigin
+}
+
+func funcDeclHasLambda(fd: in FunctionDecl): Bool {
+  val isLambda = { e: Expr -> match e.kind { case ELambda(_, _) -> true; case _ -> false } }
+  match fd.body {
+    case Some(FBBlock(b)) -> anyInBlock(b, isLambda)
+    case Some(FBExpr(ex)) -> anyInExpr(ex, isLambda)
+    case None -> false
+  }
+}
+
+// Each function of `file` specialised from another package's generic, with
+// its `Unit` lambdas ended in `()` as that package's check typed them
+// (`foreignUnitLambdaSites`).
+func endForeignUnitLambdas(file: in SourceFile, sitesByOrigin: in Map[String, Map[String, Bool]]): SourceFile {
+  if sitesByOrigin.count == 0 {
+    return file
+  }
+  val items: List[Item] = newList()
+  for it in file.items {
+    match it.kind {
+      case IFunc(fd) -> match mapGet(sitesByOrigin, originPkgOf(fd.annotations)) {
+        case Some(sites) -> {
+          val single = SourceFile(
+            moduleDoc = file.moduleDoc,
+            fileAnnotations = file.fileAnnotations,
+            packageDecl = file.packageDecl,
+            imports = file.imports,
+            items = singleItemList(it),
+            span = file.span
+          )
+          items.add(endUnitLambdasInUnit(single, sites).items[0])
+        }
+        case None -> items.add(it)
+      }
+      case _ -> items.add(it)
+    }
+  }
+  SourceFile(
+    moduleDoc = file.moduleDoc,
+    fileAnnotations = file.fileAnnotations,
+    packageDecl = file.packageDecl,
+    imports = file.imports,
+    items = items,
+    span = file.span
+  )
+}
+
+func singleItemList(it: in Item): List[Item] {
+  val l: List[Item] = newList()
+  l.add(it)
+  l
 }
 
 // The names of the methods whose calls the backends dispatch by the type
@@ -3918,4 +4044,57 @@ pub func effectDiagnostics(file: in SourceFile, symbols: in SymbolTable, layerRe
     )
   }
   diags
+}
+
+// End the body of every lambda whose checked type returns `Unit`
+// (`SymbolTable.lambdaUnitSites`) in `()` (#8299).  The lambda's value is
+// `Unit` either way; the trailing `()` states it in the tree itself, so every
+// backend, and every copy of the body a specialisation of its generic makes in
+// this package or another, builds the lambda as the `Unit`-returning function
+// its type is (an `Action` on .NET) however the type checker came to type it
+// (no expected type, an unannotated `val`, an erased generic argument).
+pub func endUnitLambdasInUnit(file: in SourceFile, sites: in Map[String, Bool]): SourceFile {
+  if sites.count == 0 {
+    return file
+  }
+  mapExprsInFile(
+    file,
+    { e: Expr ->
+      match e.kind {
+        case ELambda(ps, body) -> match mapGet(sites, recordCopySiteKey(e.span)) {
+          case Some(isUnit) -> if isUnit {
+            Expr(kind = ELambda(lambdaParams = ps, body = endBlockInUnit(body)), span = e.span)
+          } else {
+            e
+          }
+          case None -> e
+        }
+        case _ -> e
+      }
+    }
+  )
+}
+
+// `body`, ending in `()`.  A body already ending in `()`, a `return` or a
+// `throw` is left as it is.
+func endBlockInUnit(body: in Block): Block {
+  val n = body.statements.count
+  if n > 0 {
+    match body.statements[n - 1].kind {
+      case SExpr(tail) -> match tail.kind {
+        case ELiteral(lit) -> match lit { case LUnit -> return body; case _ -> () }
+        case _ -> ()
+      }
+      case SReturn(_) -> return body
+      case SThrow(_) -> return body
+      case _ -> ()
+    }
+  }
+  val stmts: List[Statement] = newList()
+  for st in body.statements {
+    stmts.add(st)
+  }
+  val unitSpan = Span(startPos = body.span.endPos, endPos = body.span.endPos)
+  stmts.add(Statement(kind = SExpr(expr = Expr(kind = ELiteral(lit = LUnit), span = unitSpan)), span = unitSpan))
+  Block(statements = stmts, span = body.span)
 }

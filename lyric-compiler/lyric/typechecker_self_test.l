@@ -8,6 +8,7 @@ import Std.Collections
 import Std.String as Str
 import Std.Testing
 import Std.Time as Time
+import Lyric.Lexer
 import Lyric.Parser
 import Lyric.TypeChecker
 import Lyric.AliasRewriter
@@ -9662,6 +9663,44 @@ test "a lambda's unannotated parameter types are recorded (#7865)" {
     0,
     "a parameter typed by a type parameter is not recorded"
   )
+}
+
+// #8299: whether each lambda's checked type returns `Unit` is recorded, so
+// `Lyric.Pipeline` can build it as a `Unit`-returning function; a lambda
+// checked more than once is recorded as `Unit` only while every check agrees.
+func unitSiteState(tbl: in SymbolTable, sp: in Span): String {
+  match mapGet(tbl.lambdaUnitSites, recordCopySiteKey(sp)) {
+    case Some(isUnit) -> if isUnit { "unit" } else { "not unit" }
+    case None -> "absent"
+  }
+}
+
+test "a lambda's Unit result is recorded only while every check agrees (#8299)" {
+  val cr = parseCheck(
+    "package P\nfunc f(): Int {\n  val u = { a: Int -> println(toString(a)) }\n  val g = { a: Int -> a + 1 }\n  u(1)\n  g(2)\n}\n"
+  )
+  assertEqualInt(diagCount(cr), 0, "clean")
+  var units = 0
+  var others = 0
+  for k in mapKeys(cr.symbols.lambdaUnitSites) {
+    match mapGet(cr.symbols.lambdaUnitSites, k) {
+      case Some(isUnit) -> if isUnit { units = units + 1 } else { others = others + 1 }
+      case None -> ()
+    }
+  }
+  assertEqualInt(units, 1, "the println lambda returns Unit")
+  assertEqualInt(others, 1, "the Int lambda does not")
+  val tbl = newSymbolTable()
+  val sp = makeSpan(Position(offset = 10, line = 1, column = 11), Position(offset = 20, line = 1, column = 21))
+  val noParams: List[Type] = newList()
+  val unitFn = TyFunction(params = noParams, ret = TyPrim(pt = PtUnit), isAsync = false)
+  val intFn = TyFunction(params = noParams, ret = TyPrim(pt = PtInt), isAsync = false)
+  recordLambdaUnitSite(tbl, unitFn, sp)
+  assertEqual(unitSiteState(tbl, sp), "unit", "one Unit check")
+  recordLambdaUnitSite(tbl, intFn, sp)
+  assertEqual(unitSiteState(tbl, sp), "not unit", "a disagreeing check clears it")
+  recordLambdaUnitSite(tbl, unitFn, sp)
+  assertEqual(unitSiteState(tbl, sp), "not unit", "and it stays cleared")
 }
 
 // #7854: unary minus on an unsigned operand (`Byte`, `UInt`, `ULong`) is
