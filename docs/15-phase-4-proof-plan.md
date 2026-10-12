@@ -882,8 +882,10 @@ Three outcomes; one user-facing path each.
 ### 8.1 `unsat` — discharged
 
 The VC's negation is unsatisfiable; the obligation holds. Cached
-and the user sees nothing (or, with `lyric prove --verbose`, a
-table of "247/247 obligations discharged in 9.3s").
+and the user sees nothing beyond the `N/M obligations discharged`
+count.  With `lyric prove --verbose` each obligation also gets a
+result line, its SMT-LIB query and the solver's raw response (#8320;
+`docs/01` §13.3).
 
 ### 8.2 `sat` — proof failed
 

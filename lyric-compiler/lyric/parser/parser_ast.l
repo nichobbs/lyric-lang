@@ -432,7 +432,10 @@ pub record Param {
 /// How a `forall`/`exists` quantifier's body was written (#8305): in braces
 /// (`forall (k: Byte) { e }`, whose body is an `EBlock`), after `implies`
 /// (`forall (k: Byte) where g implies e`), or bare (`forall (k: Byte) e`).
-/// The three mean the same thing; the form is kept so `lyric fmt` can write
+/// A braced body after `implies` (`forall (k: Byte) implies { e }`, #8322)
+/// is `QBodyImplies` with an `EBlock` body: a body read after `implies` is
+/// an `EBlock` only when it was written in braces.
+/// The forms mean the same thing; the form is kept so `lyric fmt` can write
 /// the body back as it was written.  `QBodyBraced` is also the form of a
 /// quantifier a compiler pass builds: a printer writes it in braces, which
 /// re-parse to the same body wherever the quantifier sits.

@@ -5345,6 +5345,21 @@ func resolveExprPath(
   TyError
 }
 
+// A quantifier's `where` guard and body are propositions (#8322): T0132,
+// the contract-clause type error, when either is not `Bool`.  An operand
+// already in error, or one that never yields, was reported where it fails.
+func requireQuantifierBool(diag: in List[Diagnostic], kw: in String, part: in String, t: in Type, sp: in Span): Unit {
+  val reported = match t {
+    case TyError -> true
+    case TyPrim(pt) -> match pt { case PtNever -> true; case _ -> false }
+    case _ -> false
+  }
+  if not reported and not typeEquiv(t, TyPrim(pt = PtBool)) {
+    val article = if kw == "exists" { "an " } else { "a " }
+    diag.add(errorDiagnostic("T0132", article + kw + " " + part + " must be Bool (got " + renderType(t) + ")", sp))
+  }
+}
+
 // The functions named `name` a bare reference may mean under the file's
 // import rule, in registration order; `arity` < 0 takes every arity.
 func visibleBareFuncSigs(
@@ -14924,13 +14939,11 @@ func inferExprCore(
         fi = fi + 1
       }
       match whereOpt {
-        case Some(we) -> {
-          val _ = inferExpr(sc, tbl, sigs, diag, we)
-        }
+        case Some(we) -> requireQuantifierBool(diag, "forall", "where guard", inferExpr(sc, tbl, sigs, diag, we), we.span)
         case None -> {
         }
       }
-      val _ = inferExpr(sc, tbl, sigs, diag, body)
+      requireQuantifierBool(diag, "forall", "body", inferExpr(sc, tbl, sigs, diag, body), body.span)
       scopePop(sc)
       TyPrim(pt = PtBool)
     }
@@ -14946,13 +14959,11 @@ func inferExprCore(
         ei = ei + 1
       }
       match whereOpt {
-        case Some(we) -> {
-          val _ = inferExpr(sc, tbl, sigs, diag, we)
-        }
+        case Some(we) -> requireQuantifierBool(diag, "exists", "where guard", inferExpr(sc, tbl, sigs, diag, we), we.span)
         case None -> {
         }
       }
-      val _ = inferExpr(sc, tbl, sigs, diag, body)
+      requireQuantifierBool(diag, "exists", "body", inferExpr(sc, tbl, sigs, diag, body), body.span)
       scopePop(sc)
       TyPrim(pt = PtBool)
     }

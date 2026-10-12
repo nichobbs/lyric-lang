@@ -30,10 +30,10 @@ pub union DeclKind {
   case DKWire(decl: WireDecl)
   case DKExtern(decl: ExternPackageDecl)
   case DKScopeKind(decl: ScopeKindDecl)
-  // Test-only declarations.
+  // Test-only declarations.  A `fixture` is registered as the `DKVal` it
+  // becomes under `lyric test` (#8308).
   case DKTest(decl: TestDecl)
   case DKProperty(decl: PropertyDecl)
-  case DKFixture(decl: FixtureDecl)
   /// `config Name { ... }` per `docs/25-config-blocks.md` (D046).
   /// Treated as a static namespace whose fields are read once at
   /// process startup; field access is resolved like a record's

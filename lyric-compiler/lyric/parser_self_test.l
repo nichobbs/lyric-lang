@@ -1138,6 +1138,119 @@ test "forall as quantifier expression still works" {
   assertEqualInt(itemCount(pr), 1, "quantifier: one item")
 }
 
+// #8322: braces after `implies` are the body's block, not a lambda.
+func firstEnsuresQuantBody(pr: in ParseResult): String {
+  match pr.file.items[0].kind {
+    case IFunc(fd) -> match fd.contracts[0] {
+      case CCEnsures(ex, _) -> match ex.kind {
+        case EForall(_, _, body, form) -> quantBodyShape(body, form)
+        case EExists(_, _, body, form) -> quantBodyShape(body, form)
+        case _ -> "not a quantifier"
+      }
+      case _ -> "not an ensures clause"
+    }
+    case _ -> "not a function"
+  }
+}
+
+func quantBodyShape(body: in Expr, form: in QuantBodyForm): String {
+  val formName = match form { case QBodyImplies -> "implies"; case QBodyBraced -> "braced"; case QBodyBare -> "bare" }
+  val kindName = match body.kind { case EBlock(_) -> "block"; case ELambda(_, _) -> "lambda"; case _ -> "expr" }
+  formName + " " + kindName
+}
+
+test "a braced body after implies is a block" {
+  val pr = parse("package P\nfunc f(): Bool\n  ensures: forall (k: Byte) implies { k == k }\n{ true }\n")
+  assertEqualInt(diagCount(pr), 0, "implies { e }: no diagnostics")
+  assertEqual(firstEnsuresQuantBody(pr), "implies block", "implies { e }: block body, implies form")
+  val pr2 = parse("package P\nfunc f(): Bool\n  ensures: exists (k: Byte) where k > 0u8 implies { k == k }\n{ true }\n")
+  assertEqualInt(diagCount(pr2), 0, "where … implies { e }: no diagnostics")
+  assertEqual(firstEnsuresQuantBody(pr2), "implies block", "where … implies { e }: block body")
+  val pr3 = parse("package P\nfunc f(): Bool\n  ensures: forall (k: Byte) implies k == k\n{ true }\n")
+  assertEqual(firstEnsuresQuantBody(pr3), "implies expr", "implies e: expression body")
+  val pr4 = parse("package P\nfunc f(): Bool\n  ensures: forall (k: Byte) { k == k }\n{ true }\n")
+  assertEqual(firstEnsuresQuantBody(pr4), "braced block", "{ e }: braced block body")
+}
+
+test "a body or right operand after implies may start on the next line" {
+  val q = "package P\nfunc f(xs: in slice[Int]): Bool\n  requires: forall (i: Int) where i >= 0 implies\n    xs[i] >= 0\n{ true }\n"
+  assertEqualInt(diagCount(parse(q)), 0, "quantifier: expression body on the next line")
+  val qb = "package P\nfunc f(xs: in slice[Int]): Bool\n  requires: forall (i: Int) where i >= 0 implies\n    { xs[i] >= 0 }\n{ true }\n"
+  assertEqual(firstRequiresQuantBody(parse(qb)), "implies block", "quantifier: block body on the next line")
+  val b = "package P\nfunc f(n: in Int): Bool\n  requires: n > 0 implies\n    n >= 1\n{ true }\n"
+  assertEqualInt(diagCount(parse(b)), 0, "binary implies: right operand on the next line")
+}
+
+func firstRequiresQuantBody(pr: in ParseResult): String {
+  match pr.file.items[0].kind {
+    case IFunc(fd) -> match fd.contracts[0] {
+      case CCRequires(ex, _) -> match ex.kind {
+        case EForall(_, _, body, form) -> quantBodyShape(body, form)
+        case _ -> "not a quantifier"
+      }
+      case _ -> "not a requires clause"
+    }
+    case _ -> "not a function"
+  }
+}
+
+test "a braced right operand of implies is a block" {
+  val pr = parse("package P\nfunc f(n: in Int): Bool\n  requires: n > 0 implies { n >= 1 }\n{ true }\n")
+  assertEqualInt(diagCount(pr), 0, "a implies { b }: no diagnostics")
+  val shape = match pr.file.items[0].kind {
+    case IFunc(fd) -> match fd.contracts[0] {
+      case CCRequires(ex, _) -> match ex.kind {
+        case EBinop(op, _, rhs) -> match op {
+          case BImplies -> match rhs.kind {
+            case EBlock(_) -> "block"
+            case ELambda(_, _) -> "lambda"
+            case _ -> "expr"
+          }
+          case _ -> "not implies"
+        }
+        case _ -> "not a binop"
+      }
+      case _ -> "not requires"
+    }
+    case _ -> "not a function"
+  }
+  assertEqual(shape, "block", "a implies { b }: the right operand is a block")
+}
+
+// #8322: the closing brace of a braced `implies` body ends the expression;
+// an operator or postfix after it is one P0347 at that token, nothing more.
+func onlyP0347(src: in String, label: in String): Unit {
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 1, label + ": exactly one diagnostic")
+  assertTrue(hasDiagCode(pr, "P0347"), label + ": P0347")
+}
+
+test "an operator or postfix after a braced implies body is P0347" {
+  val head = "package P\nfunc f(a: in Bool, b: in Bool, c: in Bool, xs: in slice[Int]): Bool\n  requires: "
+  val tail = "\n{\n  true\n}\n"
+  onlyP0347(head + "a implies { b } and c" + tail, "binary, and")
+  onlyP0347(head + "a implies { b } or c" + tail, "binary, or")
+  onlyP0347(head + "a implies { b } implies c" + tail, "binary, implies")
+  onlyP0347(head + "a implies { b } == true" + tail, "binary, ==")
+  onlyP0347(head + "a implies { xs }.isEmpty()" + tail, "binary, member call")
+  onlyP0347(head + "forall (k: Byte) implies { k == k } and true" + tail, "quantifier, and")
+  onlyP0347(head + "exists (k: Byte) where k > 0u8 implies { k == k }.toString()" + tail, "quantifier, member call")
+  onlyP0347(
+    "package P\nfunc g(a: in Bool, b: in Bool, c: in Bool): Bool {\n  val x = a implies { b } and c\n  x\n}\n",
+    "val in a body"
+  )
+  val pr = parse(head + "a implies { b } and c" + tail)
+  assertEqualInt(pr.diagnostics[0].span.startPos.column, 29, "reported at the operator")
+}
+
+test "a parenthesised braced implies may be continued" {
+  val head = "package P\nfunc f(a: in Bool, b: in Bool, c: in Bool): Bool\n  requires: "
+  val tail = "\n{\n  true\n}\n"
+  for clause in ["(a implies { b }) and c", "(a implies { b }) == c", "c and (a implies { b }) and c", "(forall (k: Byte) implies { k == k }) and c", "a implies { b }"] {
+    assertEqualInt(diagCount(parse(head + clause + tail)), 0, clause)
+  }
+}
+
 // #7228: a quantifier outside a contract or invariant clause is P0344 (it
 // cannot be evaluated); `exists(x)` as an ordinary call is unaffected.
 test "a quantifier outside a contract clause is P0344" {

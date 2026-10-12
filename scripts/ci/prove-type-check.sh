@@ -7,7 +7,9 @@
 # because it dropped them is refuted, and its guarded twin is proved.  And
 # the --json summary counts every outcome (#8307), --proof-dir writes the
 # obligations' SMT-LIB queries, and an option prove does not take is an
-# error rather than a source path (#8309).
+# error rather than a source path (#8309).  A quantifier body or guard that
+# is not Bool (#8322) and an ill-typed test body (#8308) are type errors,
+# and --verbose prints each goal's query and solver response (#8320).
 #
 #   LYRIC_BIN=<lyric> bash scripts/ci/prove-type-check.sh
 set -euo pipefail
@@ -74,6 +76,16 @@ rc="$(run "$lyric_bin" prove --json "$tc/welltyped.l")"
 [ "$rc" -eq 0 ] || fail "well-typed file, --json: expected exit 0"
 grep -q '"outcome": "discharged"' "$out" || fail "well-typed file, --json: expected a discharged goal"
 echo "PASS: well-typed file, --json"
+
+# #8322: a quantifier's body is a proposition.
+expect_type_error "non-Bool quantifier body" T0132 "$lyric_bin" prove "$tc/nonbool_quantifier.l"
+grep -q "a forall body must be Bool (got Byte)" "$err" || fail "non-Bool quantifier body: expected the message"
+expect_type_error "non-Bool quantified invariant conjunct" T0132 "$lyric_bin" prove "$tc/nonbool_invariant.l"
+grep -q "nonbool_invariant.l: error\[T0132\] 9:" "$err" || fail "non-Bool quantified invariant conjunct: expected it at the invariant"
+# #8308: a test body is type-checked by the checker itself, not only after
+# `lyric test` rewrites it.
+expect_type_error "ill-typed test body" T0043 "$lyric_bin" prove "$tc/illtyped_test.l"
+grep -q "illtyped_test.l: error\[T0043\] 13:" "$err" || fail "ill-typed test body: expected the error at the test body's line"
 
 # A package the type checker rejects in another file: neither a single-file
 # proof of its sound file nor the --manifest proof goes ahead.
@@ -210,3 +222,57 @@ expect_usage_error "--proof-dir in project mode" "prove: --proof-dir requires a 
   "$lyric_bin" prove --proof-dir "$proofs/p" --manifest "$tc/control/lyric.toml"
 [ ! -e "$proofs/x" ] && [ ! -e "$proofs/p" ] && [ ! -e "$proofs/g" ] && [ ! -e ./--json ] || fail "a refused run may not write a proof directory"
 echo "PASS: refused runs write nothing"
+
+# #8320: --verbose prints, for each obligation, its result line, its SMT-LIB
+# query and the solver's raw response, before the summary line.
+rc="$(run "$lyric_bin" prove --verbose "$tc/welltyped.l")"
+[ "$rc" -eq 0 ] || fail "--verbose: expected the proof to go through"
+grep -Eq "^goal 0: .*: discharged \[(z3|cvc5|trivial discharger)\]$" "$out" || fail "--verbose: expected goal 0's result line"
+grep -q "^  ;; SMT-LIB query$" "$out" || fail "--verbose: expected the query heading"
+grep -q "^  (check-sat)$" "$out" || fail "--verbose: expected the query"
+grep -Eq "^  ;; ((z3|cvc5) response|no solver run: the trivial discharger decided the obligation)$" "$out" ||
+  fail "--verbose: expected the solver's response heading"
+[ "$(tail -n 1 "$out")" = "1/1 obligations discharged (@proof_required)" ] || fail "--verbose: expected the summary line last"
+echo "PASS: --verbose"
+# A refuted goal shows the solver's own answer: sat and its model.
+rc="$(run "$lyric_bin" prove --verbose "$qs/unsound.l")"
+[ "$rc" -ne 0 ] || fail "--verbose, refuted: expected a non-zero exit"
+grep -Eq "^goal [0-9]+: .*: counterexample \[(z3|cvc5)\]$" "$out" || fail "--verbose, refuted: expected a counterexample line"
+grep -Eq "^  ;; (z3|cvc5) response$" "$out" || fail "--verbose, refuted: expected the solver's response"
+grep -q "^  sat$" "$out" || fail "--verbose, refuted: expected the solver's sat"
+echo "PASS: --verbose, refuted"
+rc="$(run "$lyric_bin" prove --verbose --explain --goal 0 "$tc/welltyped.l")"
+[ "$rc" -eq 0 ] || fail "--verbose --explain: expected exit 0"
+[ "$(grep -c "^goal " "$out")" -eq 1 ] || fail "--verbose --explain: expected the one goal's result line"
+grep -q "^  (check-sat)$" "$out" || fail "--verbose --explain: expected the goal's query"
+echo "PASS: --verbose --explain"
+rc="$(run "$lyric_bin" prove -v --manifest "$tc/control/lyric.toml")"
+[ "$rc" -eq 0 ] || fail "--verbose, project mode: expected exit 0"
+grep -q "^goal 0: " "$out" || fail "--verbose, project mode: expected the goals' result lines"
+grep -q "^.*b_logic\.l:$" "$out" || fail "--verbose, project mode: expected each file's header"
+echo "PASS: --verbose, project mode"
+expect_usage_error "--verbose with --json" "prove: --verbose cannot be combined with --json" \
+  "$lyric_bin" prove --verbose --json "$tc/welltyped.l"
+if grep -q '"goals"' "$out"; then
+  fail "--verbose with --json: no document may be written"
+fi
+# The precondition checks behind V0035/V0036 are shown too, unnumbered.
+rc="$(run "$lyric_bin" prove --verbose "$qs/vacuous.l")"
+[ "$rc" -ne 0 ] || fail "--verbose, precondition checks: expected the V0035 exit"
+grep -Eq "^precondition check: .*: can never hold \(V0035\) \[[^]]+\]$" "$out" ||
+  fail "--verbose, precondition checks: expected the unmeetable clause's check"
+echo "PASS: --verbose, precondition checks"
+# The solver is named by its kind, not by its binary's file name.
+if command -v z3 > /dev/null; then
+  mkdir -p "$proofs/bin"
+  ln -sf "$(command -v z3)" "$proofs/bin/z3-renamed"
+  rc="$(LYRIC_Z3="$proofs/bin/z3-renamed" run "$lyric_bin" prove --verbose "$qs/unsound.l")"
+  grep -Eq "^goal [0-9]+: .*: counterexample \[z3\]$" "$out" || fail "--verbose, renamed z3: expected the solver named z3"
+  echo "PASS: --verbose, renamed z3"
+fi
+rc="$(run "$lyric_bin" prove --help)"
+[ "$rc" -eq 0 ] || fail "--help: expected exit 0"
+for opt in --verbose --json --explain --goal --proof-dir; do
+  grep -q -- "$opt" "$out" || fail "--help: expected $opt"
+done
+echo "PASS: prove --help"

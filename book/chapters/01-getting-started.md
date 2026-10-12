@@ -465,6 +465,7 @@ Core commands you will use constantly:
 | `lyric prove --target <t> --features <f> --define K=V` | Type-check the program for that build before proving it |
 | `lyric prove --json <file.l>` | Machine-readable goals, diagnostics and outcome counts |
 | `lyric prove --proof-dir <dir> <file.l>` | Also write each obligation's SMT-LIB query to `<dir>` |
+| `lyric prove --verbose <file.l>` | Also print each obligation's outcome, SMT-LIB query and solver response |
 | `lyric bench <file.l>` | Measure runtime performance of `@bench_module` functions |
 | `lyric bench <file.l> --target jvm` | Benchmark on the JVM target (`java -jar`) |
 | `lyric bench <file.l> --target native` | Benchmark the native executable |

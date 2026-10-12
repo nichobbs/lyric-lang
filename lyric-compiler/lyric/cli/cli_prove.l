@@ -69,7 +69,10 @@ func cmdProve(argv: in slice[String]): Int {
   var i = 1
   while i < argv.length {
     val arg = argv[i]
-    if arg == "--verbose" or arg == "-v" {
+    if arg == "--help" or arg == "-h" {
+      Console.print("usage:\n" + proveUsageText())
+      return 0
+    } else if arg == "--verbose" or arg == "-v" {
       verbose = true
       i += 1
     } else if arg == "--allow-unverified" {
@@ -187,6 +190,14 @@ func cmdProve(argv: in slice[String]): Int {
     return 1
   }
 
+  // The `--json` document is the whole of the output, so the per-goal text
+  // `--verbose` adds has no place in it; `smtPath` (with `--proof-dir`)
+  // carries each query instead.
+  if verbose and jsonOutput {
+    printErr("prove: --verbose cannot be combined with --json (use --proof-dir to write each goal's SMT-LIB query)")
+    return 1
+  }
+
   val buildSettings = ProveBuild(
     target = target,
     cliFeatures = cliFeatures,
@@ -259,6 +270,11 @@ func cmdProve(argv: in slice[String]): Int {
       val summary = Verifier.proveSourceInScope(source, allowUnverified, pkgScope)
       for d in summary.diagnostics.toArray() {
         printDiag(d)
+      }
+      if verbose {
+        // Goal numbers restart in each file.
+        Console.println(sp + ":")
+        printVerboseGoals(summary)
       }
       val total = Verifier.summaryTotalCount(summary)
       val discharged = Verifier.summaryDischargedCount(summary)
@@ -362,6 +378,9 @@ func cmdProve(argv: in slice[String]): Int {
         }
         val r = summary.results[idx]
         Console.print(Verifier.prettyGoal(idx, r.goal))
+        if verbose {
+          printVerboseGoal(idx, r)
+        }
         return 0
       }
     }
@@ -433,6 +452,9 @@ func cmdProve(argv: in slice[String]): Int {
 
   for d in summary.diagnostics.toArray() {
     printDiag(d)
+  }
+  if verbose {
+    printVerboseGoals(summary)
   }
 
   val total = Verifier.summaryTotalCount(summary)
@@ -524,6 +546,93 @@ func proveJson(
   jsonBuf = jsonBuf + "  }\n"
   jsonBuf = jsonBuf + "}\n"
   jsonBuf
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// `--verbose`: each obligation's query and the solver's answer (#8320)
+// ─────────────────────────────────────────────────────────────────────────────
+// For each obligation, in goal order: a result line naming its index (as
+// `--explain --goal` numbers it), label, kind, source position, outcome and
+// who decided it, then its SMT-LIB query and the solver's raw response.
+func printVerboseGoals(summary: in Verifier.ProofSummary): Unit {
+  var gi = 0
+  while gi < summary.results.count {
+    val r = summary.results[gi]
+    printVerboseExchange("goal " + toString(gi), r, obligationOutcome(r.outcome), "obligation")
+    gi = gi + 1
+  }
+  // The checks that each `requires:` clause can be met (V0035/V0036): not
+  // obligations, so not numbered as goals.
+  var ci = 0
+  while ci < summary.vacuityChecks.count {
+    val c = summary.vacuityChecks[ci]
+    printVerboseExchange("precondition check", c, meetabilityOutcome(c.outcome), "check")
+    ci = ci + 1
+  }
+}
+
+func printVerboseGoal(idx: in Int, r: in Verifier.ProofResult): Unit {
+  printVerboseExchange("goal " + toString(idx), r, obligationOutcome(r.outcome), "obligation")
+}
+
+func obligationOutcome(o: in Verifier.SolverOutcome): String {
+  match o {
+    case Discharged -> "discharged"
+    case Counterexample(_) -> "counterexample"
+    case Unknown(reason) -> "unknown (" + reason + ")"
+  }
+}
+
+// A meetability check's outcome is already in the clause's terms: a
+// `Discharged` check is a clause some argument meets.
+func meetabilityOutcome(o: in Verifier.SolverOutcome): String {
+  match o {
+    case Discharged -> "can be met"
+    case Counterexample(_) -> "can never hold (V0035)"
+    case Unknown(reason) -> "undecided (V0036: " + reason + ")"
+  }
+}
+
+func printVerboseExchange(head: in String, r: in Verifier.ProofResult, outcomeStr: in String, noun: in String): Unit {
+  val g = r.goal
+  val by = if r.decidedBy.length > 0 { " [" + r.decidedBy + "]" } else { "" }
+  Console.println(
+    head + ": " + g.label + " (" + Verifier.goalKindDisplay(g.kind) + ") at " + toString(g.origin.startPos.line) + ":" +
+      toString(g.origin.startPos.column) +
+      ": " +
+      outcomeStr +
+      by
+  )
+  if not r.translated {
+    Console.println("  no SMT-LIB query: the " + noun + " could not be translated into the proof logic (V0033)")
+    return
+  }
+  Console.println("  ;; SMT-LIB query")
+  printIndented(Verifier.smtRenderGoal(g))
+  if r.decidedBy == Verifier.trivialDischargerName() {
+    Console.println("  ;; no solver run: the trivial discharger decided the " + noun)
+  } else if r.decidedBy == Verifier.noSolverName() {
+    Console.println("  ;; no solver run: no SMT solver is available (set LYRIC_Z3 or LYRIC_CVC5, or install z3 or cvc5)")
+  } else {
+    Console.println("  ;; " + r.decidedBy + " response")
+    printIndented(r.response)
+  }
+}
+
+// `text` line by line, each indented two spaces; a trailing newline adds no
+// empty line.
+func printIndented(text: in String): Unit {
+  val lines = Str.split(text, "\n")
+  var n = lines.length
+  if n > 0 and lines[n - 1].length == 0 {
+    n = n - 1
+  }
+  var i = 0
+  while i < n {
+    val line = Str.trimEnd(lines[i])
+    Console.println(if line.length == 0 { "" } else { "  " + line })
+    i = i + 1
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

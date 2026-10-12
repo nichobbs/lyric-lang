@@ -7741,6 +7741,37 @@ test "a non-Bool requires clause is T0132" {
   assertTrue(hasDiagCode(parseCheck(src), "T0132"), "Int-typed requires")
 }
 
+// #8322: a quantifier's body and `where` guard are propositions.
+test "a non-Bool quantifier body or where guard is T0132" {
+  val lam = "package P\nfunc f(): Unit\n  requires: forall (k: Byte) implies { k == k }\n{\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(lam), "T0132"), "implies { k == k } is a Bool block")
+  val intBody = "package P\nfunc f(): Unit\n  requires: forall (k: Byte) k + 1u8\n{\n}\n"
+  assertTrue(hasDiagCode(parseCheck(intBody), "T0132"), "Byte-typed forall body")
+  assertTrue(diagMessagesContain(parseCheck(intBody), "a forall body must be Bool"), "forall body message")
+  val existsBody = "package P\nfunc f(): Unit\n  ensures: exists (k: Byte) where k > 0u8 { k }\n{\n}\n"
+  assertTrue(hasDiagCode(parseCheck(existsBody), "T0132"), "Byte-typed braced exists body")
+  val guard = "package P\nfunc f(): Unit\n  requires: forall (k: Byte) where k + 1u8 implies k == k\n{\n}\n"
+  assertTrue(diagMessagesContain(parseCheck(guard), "a forall where guard must be Bool"), "Byte-typed where guard")
+  val ok = "package P\nfunc f(): Unit\n  requires: forall (k: Byte) where k > 0u8 implies { k == k } and exists (j: Byte) j == 1u8\n{\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(ok), "T0132"), "Bool bodies and guards")
+}
+
+// #8322: a record's or opaque type's invariant conjunct with a quantifier is
+// not part of its runtime construction checker, so the checker checks it at
+// the clause.
+test "a quantified record or opaque invariant conjunct is type-checked" {
+  val rec = "package P\nrecord Bag {\n  n: Int\n  invariant: n > 0 and forall (k: Byte) where k > 0u8 { k + 1u8 }\n}\n"
+  val cr = parseCheck(rec)
+  assertEqualInt(countDiagCode(cr, "T0132"), 1, "the quantified conjunct's Byte body, once")
+  assertTrue(diagMessagesContain(cr, "a forall body must be Bool (got Byte)"), "record invariant: forall body message")
+  val fieldRef = "package P\nrecord Bag {\n  n: Int\n  invariant: forall (k: Byte) where k > 0u8 { n > 0 }\n}\n"
+  assertEqualInt(diagCount(parseCheck(fieldRef)), 0, "a field read by bare name in a quantified conjunct")
+  val opq = "package P\nopaque type Box {\n  n: Int\n  invariant: exists (k: Byte) k + 1u8\n}\n"
+  assertTrue(diagMessagesContain(parseCheck(opq), "an exists body must be Bool (got Byte)"), "opaque invariant")
+  val unknown = "package P\nrecord Bag {\n  n: Int\n  invariant: forall (k: Byte) k == nope\n}\n"
+  assertTrue(hasDiagCode(parseCheck(unknown), "T0020"), "an unknown name in a quantified conjunct")
+}
+
 test "an ensures clause is checked with result as the return type" {
   val ok = "package P\nfunc f(x: in Int): Int\n  ensures: result >= x\n{\n  x\n}\n"
   assertTrue(not hasDiagCode(parseCheck(ok), "T0132"), "result >= x is Bool")
@@ -11116,4 +11147,23 @@ test "a val constructor pattern binds its names at the case's field types (#8264
   assertTrue(hasDiagCode(plain, "T0060"), "an ordinary binding is the Int field")
   val ok = parseCheck(decls + "func f(p: in Pair): Color {\n  val Only(n, red) = p\n  val m: Int = n\n  red\n}\n")
   assertEqualInt(diagCount(ok), 0, "well-typed uses of both bindings: " + diagCodesOf(ok))
+}
+
+// #8308: a `test` body is type-checked as the body of a parameterless Unit
+// function in the module's scope, as `lyric test` compiles it, so every
+// command reports its errors.  A fixture reads as the module-level `val`
+// `lyric test` makes it.
+test "a test block body is type-checked" {
+  val bad = "@test_module\npackage P\nfunc dbl(x: in Int): Int { x * 2 }\ntest \"bad\" {\n  val y: Int = dbl(\"x\")\n}\n"
+  val cr = parseCheck(bad)
+  assertTrue(diagCount(cr) > 0, "String argument to an Int parameter in a test body")
+  assertEqualInt(cr.diagnostics[0].span.startPos.line, 5, "reported at the call's line in the test body")
+  val unknown = "@test_module\npackage P\ntest \"t\" {\n  nope()\n}\n"
+  assertTrue(hasDiagCode(parseCheck(unknown), "T0020"), "unknown name in a test body")
+  val ok = "@test_module\npackage P\nfunc dbl(x: in Int): Int { x * 2 }\nfixture base: Int = 21\nfixture other = dbl(base)\ntest \"ok\" {\n  val y: Int = dbl(base) + other\n  if y != 84 {\n    panic(\"wrong\")\n  }\n}\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "a well-typed test reading fixtures")
+  val badFixture = "@test_module\npackage P\nfixture base: Int = \"x\"\ntest \"t\" {\n  val y = base\n}\n"
+  assertTrue(hasDiagCode(parseCheck(badFixture), "T0060"), "a fixture's initialiser is checked as a val's")
+  val valueTail = "@test_module\npackage P\ntest \"t\" {\n  val y = 1\n}\n"
+  assertEqualInt(diagCount(parseCheck(valueTail)), 0, "a test body ending in a binding")
 }
