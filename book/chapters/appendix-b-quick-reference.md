@@ -1615,6 +1615,7 @@ The first-party UI generators (D151) report their own codes under `X0005`:
 | `V0033` | error | A proof obligation cannot be translated faithfully — an unsigned (`UInt`/`ULong`) operand beside a signed variable, a negative or too-wide constant used as an unsigned value, an unsigned negation, or a result range bound that is not a fitting literal. Add an explicit conversion or write the bound as a literal of the base type |
 | `V0034` | error | (mode checker) `spawn` outside a `scope { }`. A spawned task must not outlive its scope, so every `spawn` sits lexically inside one in the same function or lambda body (D165, docs/68 §4). Wrap the `spawn` and its `await` in `scope { ... }` |
 | `V0035` | error | A `requires:` clause no argument can meet, given the parameters' types and the clauses before it: its value is never true, or a side condition in it (a callee's `requires:`, a non-zero divisor) always fails. Every proof of the function would hold vacuously, so `lyric prove` reports the clause |
+| `V0036` | warning | The solver could not decide whether some argument meets a `requires:` clause (V0035's check came back `unknown`), so vacuity could not be ruled out. The function's own goals keep their outcome; check the clause is satisfiable by hand, or simplify it |
 
 ### Multi-file package diagnostics (B001x)
 

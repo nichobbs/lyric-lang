@@ -2911,6 +2911,35 @@ test "a precondition no argument can meet is reported (#8223)" {
   assertEqualInt(diagCodeCount(earlier, "V0035"), 1, "only the earlier clause is reported")
 }
 
+// A precondition the solver cannot decide is satisfiable (`x^3 + y^3 + z^3
+// == 42` has a solution in `Long`, which z3 cannot find within its time
+// limit) is not reported as unmeetable: the function's own goals keep their
+// outcome, and a V0036 warning says vacuity could not be ruled out (#8223).
+test "an undecided precondition domain is a warning, not a failure (#8223)" {
+  val s = provePkg(
+    "func f(x: in Long, y: in Long, z: in Long): Long\n  requires: x * x * x + y * y * y + z * z * z == 42\n" +
+      "  ensures: result == x\n{\n  x\n}\n"
+  )
+  assertTrue(not summaryHasErrorDiag(s), "no error diagnostics")
+  assertTrue(not summaryHasCounterexample(s), "no counterexample")
+  assertEqualInt(diagCodeCount(s, "V0036"), 1, "one V0036 warning")
+  var postDischarged = false
+  for r in s.results {
+    match r.goal.kind {
+      case GKPostcondition(_) -> {
+        match r.outcome {
+          case Discharged -> {
+            postDischarged = true
+          }
+          case _ -> ()
+        }
+      }
+      case _ -> ()
+    }
+  }
+  assertTrue(postDischarged, "the postcondition is still proved")
+}
+
 func diagCodeCount(s: in ProofSummary, code: in String): Int {
   var n = 0
   for d in s.diagnostics {

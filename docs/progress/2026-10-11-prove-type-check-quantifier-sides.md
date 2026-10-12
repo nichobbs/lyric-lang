@@ -52,7 +52,11 @@ and value together, under the parameters' facts and the clauses before it; the
 solver refuting "no argument does" is its proof.  A clause no call can meet is
 the new error V0035 ("this precondition of f can never hold"), which also
 catches a plainly unsatisfiable `requires: x > 5u8 and x < 3u8`.  When an
-earlier clause cannot be met, only it is reported.
+earlier clause cannot be met, only it is reported.  The check guards against vacuity and is
+not one of the function's obligations: when the solver cannot decide it (a
+nonlinear clause), the function's goals keep their outcome and the clause gets
+warning V0036, "could not rule out that this precondition can never hold",
+instead of a V0007 error that would fail a proof that passed before.
 
 `verifier_self_test.l` covers a precondition and a division under `forall` and
 `exists`, in the `where` clause, under nested quantifiers and independent of

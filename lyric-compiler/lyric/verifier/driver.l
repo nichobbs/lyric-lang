@@ -159,6 +159,26 @@ pub func outcomeToDiag(g: in Goal, outcome: in SolverOutcome, allowUnverified: i
           )
         )
       }
+      // A precondition-domain goal guards against vacuity; it is not an
+      // obligation of the function.  The solver not deciding it leaves the
+      // function's own goals as they are, and is only a warning (#8223).
+      match g.kind {
+        case GKPreconditionDomain(fn) -> {
+          return Some(
+            value = warningDiagnostic(
+              "V0036",
+              "could not rule out that this precondition of " + fn +
+                " can never hold: the solver could not decide whether some argument meets it (" +
+                reason +
+                "); if none does, every proof of " +
+                fn +
+                " holds vacuously",
+              g.origin
+            )
+          )
+        }
+        case _ -> ()
+      }
       if allowUnverified {
         Some(value = warningDiagnostic("V0007", goalKindDisplay(g.kind) + " — solver returned unknown: " + reason, g.origin))
       } else {
