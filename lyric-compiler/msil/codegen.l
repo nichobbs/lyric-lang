@@ -11011,6 +11011,10 @@ func lowerCollElemMsil(
   }
   val saved = pushAnnoHintTyArgs(fctx, e)
   pushCollExpect(fctx, e)
+  // A lambda literal element of a `Unit`-returning function type is built as
+  // the `Action` the element type is (#7520), so the collection holds what
+  // its readers narrow the element to (#8299).
+  seedLambdaLiteralVoidRetMsil(cctx, fctx, elem, e)
   val t = lowerExprMsil(cctx, fctx, insns, elem)
   popCollExpect(fctx)
   restoreHintTyArgs(fctx, saved)
@@ -12754,6 +12758,8 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             // `object`; the EMember handler narrows them with castclass (#1442).
             if isValueType(elemTy) {
               castObjectToMsil(cctx, insns, elemTy)
+            } else {
+              narrowObjectToFuncElemMsil(cctx, insns, elemTy)
             }
             elemTy
           }
@@ -12824,6 +12830,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                   insns.add(MCastclassByName(className = "System.String"))
                 } else {
                   castObjectToMsil(cctx, insns, elem)
+                  narrowObjectToActionMsil(insns, elem)
                 }
                 insns.add(MLabel(id = doneL))
                 return elem
@@ -12846,8 +12853,10 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               // read is tracked as when that type has a single runtime
               // representation (`narrowObjectToDeclaredTypeMsil`).  An
               // in-bundle generic, collection or array element stays `object`
-              // (#7755).
+              // (#7755).  A function-typed element is narrowed to its
+              // delegate type (#8299).
               narrowObjectToDeclaredTypeMsil(cctx, insns, MObject, elem)
+              narrowObjectToFuncElemMsil(cctx, insns, elem)
             }
             elem
           }
@@ -19168,6 +19177,32 @@ func isFuncDelegateHeadMsil(head: in String): Bool {
   head.startsWith("System.Func`")
 }
 
+// A function value read out of an erased container element (`IList.get_Item`
+// on a `slice[F]`, `get_Item` on a `List<object>`) is an `object`: narrow it to
+// the element's delegate type, so binding, returning or invoking it is
+// verifiable (#8299).  Unlike `castObjectToDelegateMsil`, `Action` element
+// types are narrowed too (`narrowObjectToActionMsil`).
+func narrowObjectToFuncElemMsil(cctx: in CodegenCtx, insns: in List[MInsn], elemTy: in MsilType): Unit {
+  castObjectToDelegateMsil(cctx, insns, MObject, elemTy)
+  narrowObjectToActionMsil(insns, elemTy)
+}
+
+// Narrow an `object` that is a container element of a `(T1, ..., TN) -> Unit`
+// type to that `Action`/`Action`N`.  The element was stored as the
+// container's element type, which such a type builds as a real `Action`
+// (D-progress-886; a lambda literal element is seeded `Unit`-returning by
+// `lowerCollElemMsil`), and the invoke of an `Action`-typed value calls
+// `Action.Invoke` on it directly (`invokeLoadedFuncValueMsil`).
+func narrowObjectToActionMsil(insns: in List[MInsn], elemTy: in MsilType): Unit {
+  match elemTy {
+    case MClass(cn) -> if cn == "System.Action" { insns.add(MCastclassByName(className = cn)) }
+    case MGenericInstByName(head, targs) -> if head.startsWith("System.Action`") {
+      insns.add(MCastclassGeneric(className = head, typeArgs = targs))
+    }
+    case _ -> ()
+  }
+}
+
 // A function value held as `object` (an unannotated `val g = { ... }`, or an
 // erased generic's result) flowing into a function-typed parameter or field:
 // narrow it to that `Func` type (D-progress-969).  `Action` targets are left
@@ -24073,7 +24108,10 @@ func emitCollectionForMsil(
       // element (ref or value), so no narrow is emitted.
       match iterTy {
         case MConcreteList(_) -> ()
-        case _ -> if forElemTy != MObject { castObjectToMsil(cctx, insns, forElemTy) }
+        case _ -> if forElemTy != MObject {
+          castObjectToMsil(cctx, insns, forElemTy)
+          narrowObjectToActionMsil(insns, forElemTy)
+        }
       }
       emitStoreSlot(insns, elemSlot, fctx.paramCount)
       insns.add(MLabel(id = readDoneL))
@@ -46250,7 +46288,12 @@ func registerRestoredRecordMethod(
     }
     case None -> MVoid
   }
-  val sig = buildInstanceMethodSigWithCtx(sigParamTypes, sigRetType, cctx.lctx)
+  // An `out`/`inout` parameter is a managed pointer in the producer's
+  // MethodDef (`byrefWrapSigTypes`, as `lowerImplMethodMsil` and the record
+  // method lowering build it), so the MemberRef must encode `T&` too; a
+  // by-value encoding names a method that does not exist
+  // (`MissingMethodException`, #8210).
+  val sig = buildInstanceMethodSigWithCtx(byrefWrapSigTypes(realParams, sigParamTypes), sigRetType, cctx.lctx)
   val sigKey = "restored_recmethod_" + arityKey
   val memberRow = ctxAddMemberRef(cctx.lctx, recordTypeRefRow, methodName, sigKey, sig)
   cctx.methodTokens.add(arityKey, 0x0A000000 + memberRow)
@@ -46378,7 +46421,9 @@ func registerRestoredIfaceMethod(
     spi = spi + 1
   }
   val sigRetType = match ret { case Some(te) -> typeExprToMsilCtx(cctx, te, packageName); case None -> MVoid }
-  val sig = buildInstanceMethodSigWithCtx(sigParamTypes, sigRetType, cctx.lctx)
+  // `out`/`inout` slots are managed pointers in the interface's MethodDef
+  // (#8210; see `registerRestoredRecordMethod`).
+  val sig = buildInstanceMethodSigWithCtx(byrefWrapSigTypes(realParams, sigParamTypes), sigRetType, cctx.lctx)
   val sigKey = "restored_iface_" + key
   val memberRow = ctxAddMemberRef(cctx.lctx, typeRefRow, methodName, sigKey, sig)
   cctx.methodTokens.add(key, 0x0A000000 + memberRow)

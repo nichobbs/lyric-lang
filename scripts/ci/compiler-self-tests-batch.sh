@@ -184,6 +184,10 @@ for t in \
   lyric-compiler/lyric/format_builtin_self_test.l \
   lyric-compiler/lyric/byte_erased_positions_self_test.l \
   lyric-compiler/lyric/function_value_typing_self_test.l \
+  lyric-compiler/lyric/byref_value_type_self_test.l \
+  lyric-compiler/lyric/byref_extern_struct_dotnet_self_test.l \
+  lyric-compiler/lyric/slice_func_elem_self_test.l \
+  lyric-compiler/lyric/slice_func_unit_elem_self_test.l \
   lyric-compiler/lyric/println_stringify_self_test.l \
   lyric-compiler/lyric/println_extern_struct_dotnet_self_test.l \
   lyric-compiler/lyric/pconstructor_typed_binding_self_test.l \

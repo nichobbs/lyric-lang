@@ -19,7 +19,11 @@
 #   - the same for a generic dot-named function with an `in` receiver
 #     (`Box.peek[T]`), with method syntax and through the type and its
 #     package (`AL.Box.peek(g)`, `ALib.Box.peek(g)`), beside a caller's own
-#     `Box.peek` and with none.
+#     `Box.peek` and with none;
+#   - a record-body method with an `inout` record, `out Int` and `inout
+#     Instant` (a value type) parameter, and an `impl` method with an `inout
+#     Self` parameter (#8210: the restored MemberRef encoded them by value,
+#     `MissingMethodException`).
 #
 #   bash scripts/ci/inout-receiver-e2e.sh [dotnet] [jvm] [native]
 # LYRIC_BIN overrides the binary (default: the AOT build for BUILD_CONFIG).
@@ -40,6 +44,8 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
 lib_src='package IrLib
+
+import Std.Time
 
 pub record Pt {
   x: Int
@@ -89,11 +95,38 @@ pub func Acc.setOut(self: in Acc, x: out Int, j: in Int): Int {
 
 pub func Box.take[T](self: in Box[T], x: inout T): Unit {
   x = self.v
+}
+
+pub record Holder {
+  k: Int
+
+  func setIt(self: in Holder, p: inout Pt): Unit {
+    p = Pt(x = k, y = k)
+  }
+
+  func outIt(self: in Holder, z: out Int): Unit {
+    z = k + 3
+  }
+
+  func stampIt(self: in Holder, i: inout Instant): Unit {
+    i = fromEpochMillis(1000i64 * k.toLong())
+  }
+}
+
+pub interface Absorb {
+  func absorb(self: in Self, other: inout Self): Unit
+}
+
+impl Absorb for Acc {
+  func absorb(self: in Self, other: inout Self): Unit {
+    other = Acc(n = self.n + other.n)
+  }
 }'
 
 app_src='package IrApp
 
 import Std.Core
+import Std.Time
 import IrLib
 
 func main(): Int {
@@ -121,7 +154,16 @@ func main(): Int {
   b.take(t)
   var s = ""
   Box.take(Box(v = "q"), s)
-  println(toString(beforeReset) + " " + toString(afterMove) + " " + toString(p.x + p.y) + " " + toString(b.v) + " " + toString(n) + " " + toString(y) + " " + toString(r) + " " + toString(w) + " " + toString(t) + " " + s)
+  val h = Holder(k = 7)
+  var q = Pt(x = 0, y = 0)
+  h.setIt(q)
+  var z = 0
+  h.outIt(z)
+  var stamp = fromEpochMillis(0i64)
+  h.stampIt(stamp)
+  var acc = Acc(n = 1)
+  Acc(n = 40).absorb(acc)
+  println(toString(beforeReset) + " " + toString(afterMove) + " " + toString(p.x + p.y) + " " + toString(b.v) + " " + toString(n) + " " + toString(y) + " " + toString(r) + " " + toString(w) + " " + toString(t) + " " + s + " " + toString(q.x + q.y) + " " + toString(z) + " " + toString(instantEquals(stamp, fromEpochMillis(7000i64))) + " " + toString(acc.n))
   0
 }'
 
@@ -168,7 +210,9 @@ printf '%s\n' "$app_src" > "$work/restored/app/src/app.l"
 # p: (5,6) -> moved 1 (6,7) -> scaled 2 (12,14) -> scaled 2 (24,28) = 268;
 # moved 1 (25,29) = 279; reset = 0; b: 40 then 42; n: 2.  A dot-named
 # method's `inout`/`out` arguments (#8183): y = 103, then 100 + 104 = 204;
-# w = 200, r = 202, then w = 105; t takes b.v (42); s takes "q".
+# w = 200, r = 202, then w = 105; t takes b.v (42); s takes "q".  The
+# record-body and `impl` methods' `inout`/`out` arguments (#8210): q = (7, 7),
+# z = 10, `stamp` = 7 s past the epoch, acc = 40 + 1.
 clash_lib='package XLib
 
 pub record Box[T] {
@@ -309,7 +353,7 @@ func main(): Int {
   0
 }'
 
-want="268 279 0 42 2 204 202 105 42 q"
+want="268 279 0 42 2 204 202 105 42 q 14 10 true 41"
 fail=0
 for t in "${targets[@]}"; do
   out="$("$lyric_bin" run --manifest "$work/proj/lyric.toml" --target "$t" 2>&1 | grep -v '^Picked up JAVA_TOOL_OPTIONS')"

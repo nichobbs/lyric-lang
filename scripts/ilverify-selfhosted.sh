@@ -284,6 +284,10 @@ SELF_TESTS=(
   lyric-compiler/lyric/function_value_typing_self_test.l
   lyric-compiler/lyric/println_stringify_self_test.l
   lyric-compiler/lyric/println_extern_struct_dotnet_self_test.l
+  lyric-compiler/lyric/byref_value_type_self_test.l
+  lyric-compiler/lyric/byref_extern_struct_dotnet_self_test.l
+  lyric-compiler/lyric/slice_func_elem_self_test.l
+  lyric-compiler/lyric/slice_func_unit_elem_self_test.l
 )
 st_errors=0
 st_failed=()
