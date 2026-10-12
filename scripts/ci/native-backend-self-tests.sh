@@ -100,6 +100,7 @@ for t in \
   lyric-compiler/lyric/protected_byref_self_test.l \
   lyric-compiler/lyric/byref_value_type_self_test.l \
   lyric-compiler/lyric/slice_func_elem_self_test.l \
+  lyric-compiler/lyric/closure_correctness_self_test.l \
   lyric-compiler/lyric/hoisted_literal_shape_self_test.l \
   lyric-compiler/lyric/member_local_shadow_self_test.l \
   lyric-compiler/lyric/closure_shadow_self_test.l \

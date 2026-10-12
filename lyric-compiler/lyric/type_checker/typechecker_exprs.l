@@ -13440,7 +13440,7 @@ func calleeIsFuncValue(
   memberName: in String,
 ): Bool {
   match fn.kind {
-    case EPath(p) -> isLocalNameTc(sc, p)
+    case EPath(p) -> isLocalNameTc(sc, p) or isModuleValNameTc(sc, tbl, p)
     case EMember(_, _) -> match memberRecvTy {
       case Some(rt) -> match unrefine(rt) {
         case TyUser(tid, _, targs) -> {
@@ -13460,10 +13460,27 @@ func calleeIsFuncValue(
     }
     case EParen(inner) -> calleeIsFuncValue(sc, tbl, inner, None, "")
     // `f[T](x)` applies type arguments to a named function; an index into a
-    // local's value (`fs[0](x)`) or any other expression's is a value.
-    case EIndex(recv, _) -> match recv.kind { case EPath(rp) -> isLocalNameTc(sc, rp); case _ -> true }
+    // local's or a module-level `val`'s value (`fs[0](x)`, #8283) or any other
+    // expression's is a value.
+    case EIndex(recv, _) -> match recv.kind {
+      case EPath(rp) -> isLocalNameTc(sc, rp) or isModuleValNameTc(sc, tbl, rp)
+      case _ -> true
+    }
     case ETypeApp(_, _) -> false
     case _ -> true
+  }
+}
+
+// Whether `p` names a module-level `val` (bare or package-qualified) that no
+// local of that name shadows: a value, not a function the call reaches by
+// name (#8283).
+func isModuleValNameTc(sc: in Scope, tbl: in SymbolTable, p: in ModulePath): Bool {
+  if p.segments.count == 0 or isLocalNameTc(sc, p) {
+    return false
+  }
+  match calleeHeadSymbol(tbl, p) {
+    case Some(sym) -> match sym.kind { case DKVal(_) -> true; case _ -> false }
+    case None -> false
   }
 }
 

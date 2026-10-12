@@ -15,11 +15,22 @@
 //!      `typeExprToMsilCtx` to map `TFunction([], TUnit)` → `MClass("System.Action")`
 //!      so the MemberRef signature matches the F#-compiled method.
 //!
-//! Run with:
-//!   lyric test lyric-compiler/lyric/closure_correctness_self_test.l
+//!   3. A lambda's own parameter captured by an inner lambda (#8317): on dotnet
+//!      the parameter arrives boxed under the uniform `Func` ABI and was stored
+//!      into the inner closure's typed field without being unboxed, so a
+//!      curried `{ a: Int -> { b: Int -> a + b } }` read the object reference
+//!      as an `Int`.
 //!
-//! Compiles through the self-hosted `Msil.Bridge`; no F# shim needed.
-//! Imports only `Std.*`.
+//! Run with:
+//!   lyric test --target dotnet lyric-compiler/lyric/closure_correctness_self_test.l
+//!   lyric test --target jvm    lyric-compiler/lyric/closure_correctness_self_test.l
+//!   lyric test --target native lyric-compiler/lyric/closure_correctness_self_test.l
+//!
+//! The cases that call a lambda writing a captured `var` are not run on
+//! native, whose closures capture a variable's value (#7891), nor are the
+//! `assertPanics` cases (native has no unwinding, D-N-003).
+//! `scripts/ilverify-selfhosted.sh` verifies the dotnet test DLL.  Imports
+//! only `Std.*`.
 @test_module
 package ClosureCorrectnessTest
 
@@ -45,6 +56,7 @@ test "inner closure uses outer closure captured name twice" {
   assertEqualInt(adder(), 14, "captured name used twice in inner body")
 }
 
+@cfg(not(target = "native"))
 test "nested closure captures mutable (cell) from outer scope" {
   var counter = 0
   val inc = { -> val check = { -> counter }; counter = counter + 1; check() }
@@ -62,14 +74,17 @@ test "multiple distinct captured values at two levels" {
 }
 
 // ─── #1854 lambdas in @test_module (#1877 uniform ABI) ──────────────────────
+@cfg(not(target = "native"))
 test "assertPanics compiles and runs in test_module" {
   assertPanics("explicit panic", { -> panic("expected") })
 }
 
+@cfg(not(target = "native"))
 test "assertPanicsWith compiles and runs in test_module" {
   assertPanicsWith("panic with substring", "expected", { -> panic("expected panic message") })
 }
 
+@cfg(not(target = "native"))
 test "assertPanics fails when fn does not panic" {
   val didFail = try {
     assertPanics("should fail", { -> () })
@@ -132,4 +147,85 @@ test "nested lambda calls a function captured two levels up" {
   val double: (Int) -> Int = { x: Int -> x * 2 }
   val outer = { -> val inner = { y: Int -> double(y) + 1 }; inner(20) }
   assertEqualInt(outer(), 41, "double(y) + 1 through two capture levels")
+}
+
+// ─── #8317 a lambda's own parameter captured by an inner lambda ─────────────
+// On --target dotnet a lambda's parameters arrive boxed (`object`) under the
+// uniform `Func` ABI.  An inner lambda capturing one stored the boxed
+// reference into its closure's typed field without unboxing it, so a curried
+// `{ a: Int -> { b: Int -> a + b } }` read the object pointer as an `Int`.
+record CurryPoint {
+  x: Int
+  y: Int
+}
+
+func runCurryThunk(f: in () -> Unit): Unit {
+  f()
+}
+
+func applyCurried(f: in (Int) -> (Int) -> Int, a: in Int, b: in Int): Int = f(a)(b)
+
+test "curried Int lambda (#8317)" {
+  val add: (Int) -> (Int) -> Int = { a: Int -> { b: Int -> a + b } }
+  assertEqualInt(add(3)(4), 7, "add(3)(4)")
+  val add3 = add(3)
+  assertEqualInt(add3(10) + add3(20), 36, "a partial application reused")
+}
+
+test "an inner closure captures the enclosing lambda's parameter (#8317)" {
+  val log: List[String] = newList()
+  val start = { n: Int -> runCurryThunk({ -> log.add("s" + toString(n)) }) }
+  start(1)
+  start(-2)
+  assertEqual(log[0], "s1", "first call")
+  assertEqual(log[1], "s-2", "second call")
+}
+
+test "three levels of curried parameters (#8317)" {
+  val f: (Int) -> (Int) -> (Int) -> Int = { a: Int -> { b: Int -> { c: Int -> a * 100 + b * 10 + c } } }
+  assertEqualInt(f(1)(2)(3), 123, "f(1)(2)(3)")
+  assertEqualInt(applyCurried({ a: Int -> { b: Int -> a - b } }, 9, 4), 5, "passed to a function")
+}
+
+test "curried Long, Double, Bool and String parameters (#8317)" {
+  val f: (Long) -> (Double) -> (Bool) -> (String) -> String = { a: Long ->
+    { b: Double -> { c: Bool -> { d: String -> toString(a) + "/" + toString(b) + "/" + toString(c) + "/" + d } } }
+  }
+  assertEqual(f(5000000000i64)(2.5)(true)("z"), "5000000000/2.5/true/z", "four parameter types")
+  val big: (Long) -> (Long) -> Long = { a: Long -> { b: Long -> a * b } }
+  assertTrue(big(3000000000i64)(3i64) == 9000000000i64, "Long arithmetic on the captured parameter")
+  val half: (Double) -> (Double) -> Double = { a: Double -> { b: Double -> a / b } }
+  assertTrue(half(7.0)(2.0) == 3.5, "Double arithmetic on the captured parameter")
+  val both: (Bool) -> (Bool) -> Bool = { a: Bool -> { b: Bool -> a and not b } }
+  assertTrue(both(true)(false), "Bool logic on the captured parameter")
+}
+
+test "a curried record parameter (#8317)" {
+  val scale: (CurryPoint) -> (Int) -> Int = { p: CurryPoint -> { k: Int -> p.x * k + p.y } }
+  assertEqualInt(scale(CurryPoint(x = 3, y = 1))(5), 16, "p.x * k + p.y")
+}
+
+test "curried functions in a List (#8317)" {
+  val add: (Int) -> (Int) -> Int = { a: Int -> { b: Int -> a + b } }
+  val adders: List[(Int) -> Int] = [add(1), add(10), add(100)]
+  assertEqualInt(adders[0](5) + adders[1](5) + adders[2](5), 126, "each adder keeps its own captured parameter")
+}
+
+@cfg(not(target = "native"))
+test "a captured parameter beside a mutated var (#8317)" {
+  val counted: (Int) -> Int = { n: Int -> var acc = n; val bump = { -> acc = acc + n }; bump(); bump(); acc }
+  assertEqualInt(counted(7), 21, "acc = n + n + n")
+}
+
+func curryLogger(log: in List[String]): (String) -> () -> Unit {
+  { tag: String -> { -> log.add(tag) } }
+}
+
+test "a curried Unit-returning lambda called in place (#8317)" {
+  val log: List[String] = newList()
+  curryLogger(log)("a")()
+  val pick = true;
+  (if pick { curryLogger(log)("b") } else { curryLogger(log)("c") })()
+  assertEqualInt(log.count, 2, "both calls ran")
+  assertEqual(log[0] + log[1], "ab", "each call kept its own captured tag")
 }

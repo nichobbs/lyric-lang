@@ -13310,12 +13310,19 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                       case Some(s) -> {
                         emitLoadVarMsil(fctx, insns, s)
                         val capLocalTy = match mapGet(fctx.types, capName) { case Some(t) -> t; case None -> MObject }
-                        // Also a type that mentions one (#7704): a value-type
-                        // instantiation needs the box; a reference type has
-                        // none to add.  A hosted closure class's field keeps
-                        // the type itself (#8284).
-                        if not hosted and msilTypeHasDanglingTypeVarMsil(capLocalTy) {
-                          boxIfNeededMsil(cctx, insns, capLocalTy)
+                        val erasedField = not hosted and msilTypeHasDanglingTypeVarMsil(capLocalTy)
+                        match mapGet(fctx.boxedParamTypes, s) {
+                          // A parameter of the enclosing lambda arrives boxed
+                          // under the uniform `Func` ABI; the field holds its
+                          // logical type, so it is unboxed (or narrowed) as a
+                          // read of the parameter is (#8317).  An erased
+                          // field takes the boxed value as it is.
+                          case Some(logicalTy) -> if not erasedField { castObjectToMsil(cctx, insns, logicalTy) }
+                          // Also a type that mentions one (#7704): a value-type
+                          // instantiation needs the box; a reference type has
+                          // none to add.  A hosted closure class's field keeps
+                          // the type itself (#8284).
+                          case None -> if erasedField { boxIfNeededMsil(cctx, insns, capLocalTy) }
                         }
                       }
                       case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.slots")
