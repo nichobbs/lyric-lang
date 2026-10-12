@@ -1180,3 +1180,43 @@ test "two same-named records in different packages mark all colliding fields uns
     "colliding A.State.a also marked unsafe to lock (name collision, not just the written field)"
   )
 }
+
+// #8341: a name declared more than once — overloads of different arity, or
+// a duplicate no type check has rejected yet (the language server proves
+// without one) — never makes the mode check throw.
+test "overloads and a duplicate declaration are mode checked without throwing (#8341)" {
+  val overloads = parseCheck(
+    "@proof_required\npackage P\nfunc f(x: in Int): Int { x }\nfunc f(x: in Int, y: in Int): Int { x + y }\nfunc g(x: in Int): Int { f(x, 1) + f(x) }\n"
+  )
+  assertEqualInt(diagCount(overloads), 0, "overloads: no diagnostics")
+  val dup = parseCheck(
+    "@proof_required\npackage P\nrecord R {\n  n: Int\n  n: Int\n}\nrecord R {\n  m: Int\n}\nfunc f(x: in Int): Int { x }\nfunc f(x: in Int): Int { x }\nfunc g(x: in Int): Int { f(x) }\n"
+  )
+  assertTrue(not hasDiagCode(dup, "V0002"), "duplicates: no V0002")
+}
+
+test "a call reaches the overload taking its argument count, else the first filling defaults (#8341)" {
+  val infos: List[CalleeInfo] = newList()
+  infos.add(CalleeInfo(name = "f", level = VLRuntimeChecked, isPure = false, paramCount = 1, requiredCount = 1))
+  infos.add(CalleeInfo(name = "f", level = VLProofRequired, isPure = false, paramCount = 3, requiredCount = 1))
+  infos.add(CalleeInfo(name = "f", level = VLAxiom, isPure = false, paramCount = 2, requiredCount = 2))
+  val one = calleeCandidates(infos, 1)
+  assertEqualInt(one.count, 1, "one argument: the exact overload")
+  assertEqualInt(one[0].paramCount, 1, "one argument: f/1")
+  val two = calleeCandidates(infos, 2)
+  assertEqualInt(two.count, 1, "two arguments: the exact overload, not the defaulted one")
+  assertEqualInt(two[0].paramCount, 2, "two arguments: f/2")
+  val three = calleeCandidates(infos, 3)
+  assertEqualInt(three[0].paramCount, 3, "three arguments: f/3")
+  assertEqualInt(calleeCandidates(infos, 4).count, 0, "four arguments: none")
+  val dup: List[CalleeInfo] = newList()
+  dup.add(CalleeInfo(name = "g", level = VLProofRequired, isPure = false, paramCount = 1, requiredCount = 1))
+  dup.add(CalleeInfo(name = "g", level = VLRuntimeChecked, isPure = false, paramCount = 1, requiredCount = 1))
+  assertEqualInt(calleeCandidates(dup, 1).count, 2, "a duplicate: both declarations")
+  val dflt: List[CalleeInfo] = newList()
+  dflt.add(CalleeInfo(name = "h", level = VLProofRequired, isPure = false, paramCount = 2, requiredCount = 1))
+  dflt.add(CalleeInfo(name = "h", level = VLRuntimeChecked, isPure = false, paramCount = 3, requiredCount = 1))
+  val viaDefaults = calleeCandidates(dflt, 1)
+  assertEqualInt(viaDefaults.count, 1, "defaults: one declaration")
+  assertEqualInt(viaDefaults[0].paramCount, 2, "defaults: the first that takes the call")
+}

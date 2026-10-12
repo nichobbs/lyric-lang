@@ -504,7 +504,7 @@ func smtRenderSymbol(sym: in SymbolDecl): String {
       }
       "(declare-fun " + smtSanitize(name) + " (" + paramText + ") " + smtRenderSort(resultSort) + ")"
     }
-    case DeclDatatype(name, ctors) -> {
+    case DeclDatatype(name, ctors, params) -> {
       var ctorText = ""
       var i = 0
       while i < ctors.count {
@@ -528,7 +528,24 @@ func smtRenderSymbol(sym: in SymbolDecl): String {
         }
         i = i + 1
       }
-      "(declare-datatypes ((" + smtSanitize(name) + " 0)) ((" + ctorText + ")))"
+      if params.count == 0 {
+        "(declare-datatypes ((" + smtSanitize(name) + " 0)) ((" + ctorText + ")))"
+      } else {
+        // A generic record (#8340): one parametric datatype stands for every
+        // instantiation, as the preamble's `Result`/`Option` do.
+        var parText = ""
+        var pi = 0
+        while pi < params.count {
+          if pi > 0 {
+            parText = parText + " "
+          }
+          parText = parText + smtSanitize(params[pi])
+          pi = pi + 1
+        }
+        "(declare-datatypes ((" + smtSanitize(name) + " " + intToString(params.count) + ")) ((par (" + parText + ") (" +
+          ctorText +
+          "))))"
+      }
     }
   }
 }
@@ -711,7 +728,7 @@ func datatypeFunctionNames(symbols: in List[SymbolDecl]): Map[String, Bool] {
   var i = 0
   while i < symbols.count {
     match symbols[i] {
-      case DeclDatatype(_, ctors) -> {
+      case DeclDatatype(_, ctors, _) -> {
         var c = 0
         while c < ctors.count {
           if not names.containsKey(ctors[c].name) {
@@ -869,7 +886,7 @@ pub func smtRenderGoal(g: in Goal): String {
   while si < g.symbols.count {
     match g.symbols[si] {
       case DeclUserFun(_, _, _) -> ()
-      case DeclDatatype(_, dtCtors) -> {
+      case DeclDatatype(_, dtCtors, _) -> {
         // (declare-datatypes ...) defines both the constructor and each
         // field selector — record them as "known" so the unknown-TApp
         // scanner below doesn't redeclare them via declare-fun (#3843).
@@ -904,7 +921,7 @@ pub func smtRenderGoal(g: in Goal): String {
   var sd = 0
   while sd < g.symbols.count {
     match g.symbols[sd] {
-      case DeclDatatype(dtName, _) -> {
+      case DeclDatatype(dtName, _, _) -> {
         val dtKey = smtSanitize(dtName)
         if not seenSorts.containsKey(dtKey) {
           seenSorts.add(dtKey, true)
@@ -928,7 +945,15 @@ pub func smtRenderGoal(g: in Goal): String {
         }
         collectSortNames(rSort, seenSorts, outSorts)
       }
-      case DeclDatatype(_, dtCtors) -> {
+      case DeclDatatype(_, dtCtors, dtParams) -> {
+        // A parametric datatype's own sort parameters are bound by its
+        // `par`, never declared (#8340); no other sort is spelt like one.
+        for p in dtParams {
+          val pKey = smtSanitize(p)
+          if not seenSorts.containsKey(pKey) {
+            seenSorts.add(pKey, true)
+          }
+        }
         var ci = 0
         while ci < dtCtors.count {
           var fi = 0
@@ -955,7 +980,7 @@ pub func smtRenderGoal(g: in Goal): String {
   var i = 0
   while i < g.symbols.count {
     match g.symbols[i] {
-      case DeclDatatype(_, _) -> {
+      case DeclDatatype(_, _, _) -> {
         output = output + smtRenderSymbol(g.symbols[i]) + "\n"
       }
       case DeclUserFun(_, _, _) -> ()
@@ -986,7 +1011,9 @@ pub func smtRenderGoal(g: in Goal): String {
 
   // z3 resolves a qualified constructor of a parametric datatype, such as
   // `(as Result!Ok (Lyric!Result Int String))`, only at a sort instance it
-  // has already seen: name each `Result`/`Option` instance first (#8108).
+  // has already seen: name each `Result`/`Option` instance first (#8108),
+  // and each instance of a generic record, whose constructor z3 4.8 does
+  // not otherwise resolve even unqualified (#8340).
   val monadSorts: List[Sort] = newList()
   val monadSeen: Map[String, Bool] = newMap()
   collectMonadSortsInTerm(claim, monadSeen, monadSorts)
@@ -1084,7 +1111,10 @@ func collectMonadSortsInSort(srt: in Sort, seen: in Map[String, Bool], outSorts:
         collectMonadSortsInSort(args[i], seen, outSorts)
         i = i + 1
       }
-      if isResultSort(srt) or isOptionSort(srt) {
+      // Every applied sort: a generic record's parametric datatype needs
+      // its instance named too, before z3 4.8 resolves its constructor
+      // (#8340); a constant of an uninterpreted applied sort is harmless.
+      if args.count > 0 {
         val key = smtRenderSort(srt)
         if not seen.containsKey(key) {
           seen.add(key, true)

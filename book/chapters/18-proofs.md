@@ -108,7 +108,9 @@ pub func limit(): Int
 
 `lyric prove` proves the second `limit`, and a caller sees `limit() == 10`; `lyric prove --features wide` proves the first, as `lyric build --features wide` compiles it.
 
-Every function body the build compiles is proved, methods included: a method in a `record` body, a method in an `impl` block and an interface's default method are proved like functions, with `self` as their first parameter and a field named without `self.` read on `self`. An `impl` method must also meet the `requires:` and `ensures:` of the interface method it implements. `lyric prove` reads the interface's clauses from source, whether it is declared in your package, the standard library or another package of your project. If it is declared in a dependency installed only as a compiled assembly, the verifier cannot see the clauses, so it reports `V0033` instead of proving the method against half of its contract.
+Your editor proves the same thing. The language server proves an open `@proof_required` file exactly as `lyric prove <file>` with no flags does: for `--target dotnet`, with the default features of every `lyric.toml` that lists the file. If your manifest says `default = ["wide"]`, the editor proves the first `limit`, and it marks the other one with an information note saying that no build compiles it.
+
+Every function body the build compiles is proved, methods included: a method in a `record` body, a method in an `impl` block and an interface's default method are proved like functions, with `self` as their first parameter and a field named without `self.` read on `self`. Generic records work too: a field of a `Box[T]` is read at whatever `T` the value has, so `ensures: result == b.n` proves for a `func size[T](b: in Box[T])`, and `Box(n = 1, v = x)` is a `Box[Int]` whose `v` the proof knows. An `impl` method must also meet the `requires:` and `ensures:` of the interface method it implements. `lyric prove` reads the interface's clauses from source, whether it is declared in your package, the standard library or another package of your project. If it is declared in a dependency installed only as a compiled assembly, the verifier cannot see the clauses, so it reports `V0033` instead of proving the method against half of its contract.
 
 When all obligations discharge:
 
@@ -139,6 +141,8 @@ The key mechanism that makes module-level proof tractable is the Hoare call rule
 2. **Assume** `debit`'s `ensures:` after the call — treat the postcondition as an established fact for the rest of the analysis.
 
 In both steps each parameter in the contract stands for the argument passed to it. A named argument goes to the parameter it names, whatever order the call writes it in (`debit(amount = a, from = acct)` binds `from` to `acct`), and a parameter the call leaves out stands for its default value.
+
+When a file declares two functions of one name with different numbers of parameters, a call reaches the one that takes exactly the arguments it passes. A call that would reach one only by filling in default arguments is not resolved, and the proof reports `V0033` there instead of guessing.
 
 A method call works the same way when the file declares the function it runs: `acct.withdraw(n)` on an `Account` reaches `func Account.withdraw(a: in Account, n: in Int)`, with `acct` as its first argument. Each such call has a result of its own, so `acct.next() == acct.next()` is provable only if the contract says so (or the method is `@pure`). A method the file does not declare is an unknown function of its receiver and arguments: the same call twice gives the same value, and nothing else is known about it. An argument passed to an `out` or `inout` parameter holds a new value after the call; in the callee's `ensures:` the parameter means its final value and `old(p)` the value passed in.
 

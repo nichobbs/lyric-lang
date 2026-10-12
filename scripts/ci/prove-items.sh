@@ -12,7 +12,10 @@
 #     method against the clauses of the interface it implements — resolved
 #     as the type checker resolves it, the standard library's included —
 #     and a bare `Some`/`None`/`Ok`/`Err` pattern is a case (#8231, #8230);
-#   * the `@proof_required` items no build compiles are listed (#8325).
+#   * the `@proof_required` items no build compiles are listed (#8325);
+#   * a generic record's fields are read at the receiver's instance (#8340);
+#   * functions overloaded by arity are each proved, a call reaching the
+#     one of its arity, without crashing on the shared name (#8341).
 #
 #   LYRIC_BIN=<lyric> bash scripts/ci/prove-items.sh
 set -euo pipefail
@@ -22,6 +25,8 @@ examples="$(cd "$(dirname "$0")/../.." && pwd)/examples"
 cfg="$examples/prove-cfg"
 um="$examples/prove-unmodelled-match"
 pm="$examples/prove-methods"
+gr="$examples/prove-generic-records"
+ov="$examples/prove-overloads"
 out="$(mktemp)"
 err="$(mktemp)"
 trap 'rm -f "$out" "$err"' EXIT
@@ -155,6 +160,20 @@ for mode in single outer inner; do
   fi
 done
 expect_refuted "a bare call in an inherited clause" "postcondition of R.get" "$lyric_bin" prove "$pm/inherited_bare_call.l"
+
+# #8340: generic records.
+expect_proved "generic record fields, methods and construction" "$lyric_bin" prove "$gr/box.l"
+grep -q "^4/4 obligations discharged" "$out" || fail "generic records: expected every goal of box.l"
+echo "PASS: generic records, every goal"
+expect_refuted "a false claim about a generic record's field" "postcondition of big" "$lyric_bin" prove "$gr/refuted.l"
+if grep -q "V0033" "$err"; then
+  fail "a generic record's field: translatable"
+fi
+
+# #8341: overloads.
+expect_proved "functions overloaded by arity" "$lyric_bin" prove "$ov/overloads.l"
+grep -q "^3/3 obligations discharged" "$out" || fail "overloads: expected each overload's goal and the caller's"
+echo "PASS: overloads, every goal"
 
 # A union of a dependency restored as a compiled assembly is not resolved to
 # a same-named union of a package the verifier read (Std.Http's HttpError):

@@ -20,6 +20,7 @@ import Std.Environment as Environment
 import Std.Errors
 import Std.Uuid
 import Lyric.Lsp
+import Lyric.Verifier
 
 func openDoc(state: in LspState, uri: in String, text: in String): Unit {
   val params = "{\"textDocument\":{\"uri\":" + encodeString(uri) + ",\"text\":" + encodeString(text) + "}}"
@@ -360,4 +361,87 @@ test "readFrameVia: a read failure is reported as an error" {
     case LspReadError(message) -> assertEqual(message, "boom", "read error propagates")
     case _ -> assertTrue(false, "expected the read error")
   }
+}
+
+func writeOrPanic(path: in String, text: in String): Unit {
+  match File.writeText(path, text) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write " + path + ": " + IOError.message(e))
+  }
+}
+
+func mkdirOrPanic(dir: in String): Unit {
+  match File.createDir(dir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create " + dir + ": " + IOError.message(e))
+  }
+}
+
+func featureTwins(): String {
+  "@proof_required\npackage P\n" +
+    "@cfg(feature = \"wide\")\npub func limit(): Int\n  ensures: result == 1000\n{\n  1000\n}\n" +
+    "@cfg(not(feature = \"wide\"))\npub func limit(): Int\n  ensures: result == 10\n{\n  10\n}\n" +
+    "pub func atLeastHundred(): Int\n  ensures: result >= 100\n{\n  limit()\n}\n"
+}
+
+// A project whose manifest lists `src/p` and declares the feature `wide`,
+// on by default when `wideByDefault`; returns the path of its source file.
+func featureProject(wideByDefault: in Bool): String {
+  val dir = Path.join(tempBase(), "lyric-lsp-prove-build-" + uuidToString(newUuid()))
+  mkdirOrPanic(dir)
+  mkdirOrPanic(Path.join(dir, "src"))
+  mkdirOrPanic(Path.join(dir, "src/p"))
+  val dflt = if wideByDefault { "default = [\"wide\"]\n" } else { "" }
+  writeOrPanic(
+    Path.join(dir, "lyric.toml"),
+    "[package]\nname = \"Feat\"\nversion = \"0.1.0\"\n\n[project]\nname = \"Feat\"\n\n[project.packages]\n\"P\" = \"src/p\"\n\n[features]\n" +
+      dflt +
+      "wide = []\n"
+  )
+  val src = Path.join(dir, "src/p/limits.l")
+  writeOrPanic(src, featureTwins())
+  src
+}
+
+func removeProject(src: in String): Unit {
+  match File.deleteDirRecursive(Path.dirname(Path.dirname(Path.dirname(src)))) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+}
+
+// #8342: the editor proves a document as `lyric prove` proves it — under
+// each build its manifests define, with their default features — not as a
+// standalone `--target dotnet` file with no features.
+test "the editor proves a document under its manifest's features, as lyric prove does (#8342)" {
+  val wide = featureProject(true)
+  val noCli: List[String] = newList()
+  val builds = proveBuildConfigsForSource(wide, "dotnet", noCli, false, false)
+  assertEqualInt(builds.count, 1, "one manifest lists the file")
+  assertTrue(builds[0].activeFeatures.contains("wide"), "the manifest's default feature is active")
+  val wideMsgs = openDocMessages(lspInit(), "file://" + wide, featureTwins())
+  assertFalse(Str.contains(wideMsgs, "V0008"), "with `wide` on by default the wide twin is proved: no refutation")
+  assertTrue(
+    Str.contains(wideMsgs, "inactive @cfg variant"),
+    "the narrow twin, which no build compiles, is reported as lyric prove lists it"
+  )
+  removeProject(wide)
+  val narrow = featureProject(false)
+  val narrowMsgs = openDocMessages(lspInit(), "file://" + narrow, featureTwins())
+  assertTrue(Str.contains(narrowMsgs, "V0008"), "without `wide` the narrow twin's contract refutes atLeastHundred")
+  removeProject(narrow)
+}
+
+// #8341: the editor proves without a type check, so a duplicate declaration
+// reaches the verifier; it is reported, never thrown on.
+test "a duplicate declaration in an open document is reported, not thrown on (#8341)" {
+  val msgs = openDocMessages(
+    lspInit(),
+    "file:///lsp_self_test_duplicate.l",
+    "@proof_required\npackage D\nrecord R {\n  n: Int\n}\nrecord R {\n  m: Int\n}\n" +
+      "func f(x: in Int): Int\n  ensures: result == x\n{\n  x\n}\nfunc f(x: in Int): Int\n  ensures: result == x + 1\n{\n  x + 1\n}\n" +
+      "pub func g(x: in Int): Int\n  ensures: result == x\n{\n  f(x)\n}\n"
+  )
+  assertTrue(Str.contains(msgs, "publishDiagnostics"), "diagnostics are published")
+  assertTrue(Str.contains(msgs, "V0033"), "the duplicate is reported")
 }

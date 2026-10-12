@@ -272,7 +272,7 @@ Lyric.Verifier/
 | `Char`                    | `Int` (its code point)                       | a `Char` literal is its code point; every `Char` value carries `0 ≤ c ≤ 65535`, the UTF-16 code-unit range every target guarantees, wherever a range subtype carries its range, so `==` and ordering on `Char` are the integer ones. It is not assumed to lie outside the surrogate range: a `Char` an extern returns (`System.Convert.ToChar`, `Character.highSurrogate`) is not checked (#8214) |
 | `Float`, `Double`         | SMT `Real` (mathematical reals)              | sound approximation: avoids IEEE 754 FP theory and its rounding-mode complexity; linear arithmetic over reals is decidable and fast; division emits `/` (Real div) not `div` (integer) |
 | `String`                  | uninterpreted sort with `length: String -> Int`, `==` | content reasoning out of scope |
-| record                    | SMT-LIB datatype                             | one constructor, fields as selectors |
+| record                    | SMT-LIB datatype                             | one constructor, fields as selectors (`<Record>__<field>`); a generic record is a parametric datatype, `(declare-datatypes ((Box 1)) ((par (Box!T) ((Box (Box__n Int) (Box__v Box!T))))))`, its sort parameters named apart from every source sort, so `Box[Int]` is `(Box Int)` and a field read is instantiated at the receiver's type arguments; a constructor's type arguments are inferred from its field values, and one no field determines fails closed (V0033) (#8340) |
 | union                     | SMT-LIB datatype                             | one constructor per variant |
 | enum                      | SMT-LIB datatype, no payloads                | as union with arity-0 variants |
 | `slice[T]` of compile-time-bounded length | array sort with separate length | length axiom asserts `0 ≤ length ≤ N` |
@@ -788,7 +788,26 @@ diagnostics (`inactiveItemsForBuilds`): those no build compiles in any
 form as not proved, and an inactive `@cfg` twin as a variant whose
 same-named declaration this build proves. A
 malformed predicate or undeclared feature (`F0012`/`F0013`) stops the
-proof.
+proof. The language server proves an open document under the builds
+`lyric prove <file>` takes with no flags, from the same function
+(`proveBuildConfigsForSource`, over `Lyric.Discovery.sourceBuildsForFile`
+and `Lyric.Manifest.resolveFeatureSelection`), with the same import scope
+(`importScopeWithManifests` over the standard library's declarations, read
+once per server) and the same build labels; each inactive item is an
+Information diagnostic at its declaration (#8342).
+
+A name the file declares more than once never makes the verifier throw
+(#8341). Functions of one name and different arities — overloads — are
+each proved and registered under `name/<arity>`; a call reaches the one
+taking exactly its argument count, and a call that would reach one through
+its defaults fails closed (V0033). Two of one name and arity, or a type
+declared twice, are a duplicate the type check rejects (T0001); a file
+reaches the verifier with one only on the language server's path, which
+proves without that check. The duplicate is reported (V0033): neither
+function is proved and a call reaching one fails closed, and a file with a
+duplicate type proves nothing. The mode and stability checks choose among
+overloads the same way (a call reaches every declaration of its arity), and
+keep the first of two same-named fields or types.
 
 Known limitations, tracked separately: no heap model, and a method's
 contract not used at its calls (#8110); a callee's `ensures:` about an

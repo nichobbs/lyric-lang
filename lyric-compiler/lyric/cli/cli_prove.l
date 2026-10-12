@@ -368,7 +368,7 @@ func cmdProve(argv: in slice[String]): Int {
     allowUnverified,
     Verifier.withImportScope(
       fileScope,
-      proveImportScope(buildSettings.target, manifestsListing(sourcePath))
+      proveImportScope(buildSettings.target, Disc.manifestsListingSource(sourcePath))
     ),
     fileBuilds
   )
@@ -818,125 +818,44 @@ func printInactiveItems(items: in Verifier.InactiveItems, prefix: in String): Un
   }
 }
 
-// The manifests whose entries list the source file at `sourcePath`.
-func manifestsListing(sourcePath: in String): List[String] {
-  val manifests: List[String] = newList()
-  match Disc.entriesContainingSource(sourcePath) {
-    case Some(entries) -> {
-      for e in entries {
-        if not stringListContains(manifests, e.manifestPath) {
-          manifests.add(e.manifestPath)
-        }
-      }
-    }
-    case None -> ()
-  }
-  manifests
-}
-
 // The packages whose declarations a proof reads (`Verifier.ImportScope`):
 // the standard library's, as the build for `target` loads it, and every
 // `[project.packages]` and `[project.tests]` entry of `manifests`, each as
-// the files its build merges.  A dependency is not read; a package it
-// declares stays unresolved, and what depends on it fails closed.
+// the files its build merges (`Verifier.importScopeWithManifests`).  A
+// dependency is not read; a package it declares stays unresolved, and what
+// depends on it fails closed.
 func proveImportScope(target: in Emitter.CompileTarget, manifests: in List[String]): Verifier.ImportScope {
   val stdlib = match target {
     case Emitter.Jvm -> Emitter.findStdlibSourcesJvm()
     case _ -> Emitter.findStdlibSources()
   }
-  var sc = Verifier.importScopeWithSources(Verifier.emptyImportScope(), stdlib)
-  for mfPath in manifests {
-    match File.readText(mfPath) {
-      case Ok(text) -> match Mf.parseManifest(text, mfPath) {
-        case Ok(mf) -> match mf.project {
-          case Some(proj) -> {
-            val mfDir = Path.dirname(mfPath)
-            val entries: List[Mf.PackageEntry] = newList()
-            for e in proj.packages.toArray() {
-              entries.add(e)
-            }
-            for e in proj.tests.toArray() {
-              entries.add(e)
-            }
-            for entry in entries {
-              val ef = Disc.projectEntryFiles(entry, mfDir, proj)
-              if ef.problems.count == 0 {
-                val texts: List[String] = newList()
-                var readAll = true
-                for path in ef.paths.toArray() {
-                  match File.readText(path) {
-                    case Ok(t) -> texts.add(t)
-                    case Err(_) -> {
-                      readAll = false
-                    }
-                  }
-                }
-                if readAll and texts.count > 0 {
-                  sc = Verifier.importScopeWithPackage(sc, entry.name, texts)
-                }
-              }
-            }
-          }
-          case None -> ()
-        }
-        case Err(_) -> ()
-      }
-      case Err(_) -> ()
-    }
-  }
-  sc
+  Verifier.importScopeWithManifests(Verifier.importScopeWithSources(Verifier.emptyImportScope(), stdlib), manifests)
 }
 
 // The builds a proof of the source file at `sourcePath` is of, as its type
 // check (`typeCheckForProveFile`) takes them: one per manifest whose entries
 // list the file, with that manifest's features for `build`, or, when none
 // lists it, the build `lyric build <file>` makes of it alone.  The proof
-// sees what `@cfg` erasure keeps for each (#8325).
+// sees what `@cfg` erasure keeps for each (#8325); the language server
+// takes a file's builds from the same function (#8342).
 func proveBuildConfigsForFile(sourcePath: in String, build: in ProveBuild): List[Verifier.ProveBuildConfig] {
-  val configs: List[Verifier.ProveBuildConfig] = newList()
-  match Disc.entriesContainingSource(sourcePath) {
-    case Some(entries) -> {
-      val manifests: List[String] = newList()
-      for e in entries {
-        if not stringListContains(manifests, e.manifestPath) {
-          manifests.add(e.manifestPath)
-        }
-      }
-      for mfPath in manifests {
-        match manifestProveBuildConfig(mfPath, build) {
-          case Some(c) -> configs.add(c)
-          case None -> ()
-        }
-      }
-    }
-    case None -> ()
-  }
-  if configs.count == 0 {
-    configs.add(noManifestProveBuildConfig(build))
-  }
-  configs
+  Verifier.proveBuildConfigsForSource(
+    sourcePath,
+    targetFeatureName(build.target),
+    build.cliFeatures,
+    build.noDefaultFeatures,
+    build.allFeatures
+  )
 }
 
 // The build of the project at `mfPath` for `build`: its target and the
-// features `lyric build` activates (`resolveManifestFeatures`), or None
-// when the manifest cannot be read.
+// features `lyric build` activates, or None when the manifest cannot be
+// read.
 func manifestProveBuildConfig(mfPath: in String, build: in ProveBuild): Option[Verifier.ProveBuildConfig] {
-  val mfText = match File.readText(mfPath) { case Ok(t) -> t; case Err(_) -> return None }
-  val (active, declared) = resolveManifestFeatures(
-    mfText,
-    mfPath,
-    build.cliFeatures,
-    build.noDefaultFeatures,
-    build.allFeatures,
-    build.target
-  )
-  Some(
-    value = Verifier.ProveBuildConfig(
-      targetName = targetFeatureName(build.target),
-      activeFeatures = active,
-      declaredFeatures = declared
-    )
-  )
+  match Disc.manifestSourceBuild(mfPath, targetFeatureName(build.target), build.cliFeatures, build.noDefaultFeatures, build.allFeatures) {
+    case Some(b) -> Some(value = Verifier.proveBuildConfigOf(b))
+    case None -> None
+  }
 }
 
 // A file no manifest builds is compiled alone, for its target and with no

@@ -486,3 +486,92 @@ func insideNestedProject(file: in String, root: in String): Bool {
   }
   false
 }
+
+/// A build that compiles a source file, as `@cfg` erasure sees it: the
+/// target it is for (`dotnet`, `jvm` or `native`), its active features and
+/// the features its manifest declares (none for a file no manifest builds).
+pub record SourceBuild {
+  pub targetName: String
+  pub activeFeatures: List[String]
+  pub declaredFeatures: List[String]
+}
+
+/// The build of the project whose manifest is at `mfPath`, for the target
+/// named `targetName` and the command line's feature selection
+/// (`Mf.resolveFeatureSelection`); None when the manifest cannot be read.
+pub func manifestSourceBuild(
+  mfPath: in String,
+  targetName: in String,
+  cliFeatures: in List[String],
+  noDefaultFeatures: in Bool,
+  allFeatures: in Bool,
+): Option[SourceBuild] {
+  val mfText = match File.readText(mfPath) { case Ok(t) -> t; case Err(_) -> return None }
+  val (active, declared) = Mf.resolveFeatureSelection(
+    mfText,
+    mfPath,
+    cliFeatures,
+    noDefaultFeatures,
+    allFeatures,
+    targetName
+  )
+  Some(value = SourceBuild(targetName = targetName, activeFeatures = active, declaredFeatures = declared))
+}
+
+/// The builds that compile the source file at `sourcePath` for the target
+/// named `targetName` and the command line's feature selection: one per
+/// manifest whose `[project.packages]`/`[project.tests]` entries list the
+/// file (`entriesContainingSource`), each with that manifest's features,
+/// or, when none lists it (or that cannot be known), the file built alone,
+/// with no features.  `lyric prove` and the language server prove a file as
+/// each of these builds compiles it (#8325, #8342).
+pub func sourceBuildsForFile(
+  sourcePath: in String,
+  targetName: in String,
+  cliFeatures: in List[String],
+  noDefaultFeatures: in Bool,
+  allFeatures: in Bool,
+): List[SourceBuild] {
+  val builds: List[SourceBuild] = newList()
+  match entriesContainingSource(sourcePath) {
+    case Some(entries) -> {
+      val manifests: List[String] = newList()
+      for e in entries {
+        if not manifests.contains(e.manifestPath) {
+          manifests.add(e.manifestPath)
+        }
+      }
+      for mfPath in manifests {
+        match manifestSourceBuild(mfPath, targetName, cliFeatures, noDefaultFeatures, allFeatures) {
+          case Some(b) -> builds.add(b)
+          case None -> ()
+        }
+      }
+    }
+    case None -> ()
+  }
+  if builds.count == 0 {
+    val noActive: List[String] = newList()
+    val noDeclared: List[String] = newList()
+    builds.add(SourceBuild(targetName = targetName, activeFeatures = noActive, declaredFeatures = noDeclared))
+  }
+  builds
+}
+
+/// The manifests whose `[project.packages]`/`[project.tests]` entries list
+/// the source file at `sourcePath`; empty when none does, or when that
+/// cannot be known.
+pub func manifestsListingSource(sourcePath: in String): List[String] {
+  val manifests: List[String] = newList()
+  match entriesContainingSource(sourcePath) {
+    case Some(entries) -> {
+      for e in entries {
+        if not manifests.contains(e.manifestPath) {
+          manifests.add(e.manifestPath)
+        }
+      }
+    }
+    case None -> ()
+  }
+  manifests
+}

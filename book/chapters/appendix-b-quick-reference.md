@@ -1222,6 +1222,8 @@ lyric prove --define KEY=VALUE <file.l> # build define for the type check (repea
                                        # a single-file proof is relative to the file's ancestor
                                        # manifests; prove a package whose manifest lists files
                                        # outside its own tree with --manifest
+                                       # the language server proves an open file as
+                                       # `lyric prove <file>` with no flags does
 
 # Benchmarking  (see chapter 28)
 lyric bench <file.l>                   # compile and run @bench_module timing harness

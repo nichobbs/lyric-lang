@@ -152,6 +152,28 @@ file path.
 
 ---
 
+## Proofs in the editor
+
+Every `didOpen`/`didChange` of a `@proof_required` document also proves it
+(`Lyric.Lsp.analyzeAndStore`), with unknown goals reported as warnings
+(`--allow-unverified`).  The proof is the one `lyric prove <file>` makes with
+no flags (#8342): the builds come from `Verifier.proveBuildConfigsForSource`
+(each manifest that lists the file, with its default features, for
+`--target dotnet`; the file alone when none does), each goal labelled with
+its build when there are several; the declarations it reads are the
+standard library's (read once per server, `LspState.stdlibScope`) and those
+of the listing manifests' packages (`Verifier.importScopeWithManifests`);
+`@cfg` erasure diagnostics (`F0012`/`F0013`) are published with the
+verifier's; and each item no build compiles is an Information diagnostic
+(severity 3) at its declaration, where `lyric prove` lists it after its
+diagnostics.  The server does not type-check with the standard library, so
+it cannot stop a proof the way `lyric prove` does on a type error
+(#8227, #8304): the verifier proves such a document anyway, and a duplicate
+declaration it would otherwise have been stopped at is reported with
+`V0033` instead of throwing (#8341).
+
+---
+
 ## Progress log
 
 ### D-lsp-001 — Extension skeleton + server improvements (M-L1, M-L2, M-L3)

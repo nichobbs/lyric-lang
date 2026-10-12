@@ -2387,3 +2387,78 @@ pub func readFeatureDeclaredFromToml(text: in String, filePath: in String): List
   }
   result
 }
+
+/// Resolve a manifest's active/declared feature sets for `@cfg` erasure in
+/// a build for the target named `targetName` (`dotnet`, `jvm` or
+/// `native`): the manifest's `[features].default` set unless
+/// `noDefaultFeatures`, `allFeatures` selecting every declared feature,
+/// else `cliFeatures` layered on top of the defaults.  Every command that
+/// erases `@cfg` items for a manifest — `lyric build`, `test`, `prove` and
+/// the language server — selects features through this function (#8342).
+///
+/// The composed set is then TARGET-NORMALIZED (#5571): features named
+/// after a NON-active target (`dotnet` / `jvm` / `native`) are deactivated
+/// unless the user asked for them explicitly (via `--features` or
+/// `--all-features`), and — only when such a mismatched platform default
+/// was removed — the active target's own feature name is swapped in if the
+/// manifest declares it.  Without this, every platform-split manifest
+/// (`default = ["dotnet"]`, kernels gated on `@cfg(feature = "dotnet")` /
+/// `@cfg(feature = "jvm")`) compiled its .NET kernel into `--target jvm`
+/// builds unless the caller remembered to pass `--no-default-features
+/// --features jvm` on every invocation.
+///
+/// The swap fires ONLY on a removed mismatch — a target-named feature is
+/// never introduced into a composed set that contained none.  A manifest
+/// with an empty default set is a deliberate opt-out, not an omission:
+/// lyric-session documents that defaulting either target feature on would
+/// make every transitive build compile a kernel with a mandatory
+/// NuGet/Maven dependency the builder may not have restored.  Manifests
+/// that declare no target-named features at all are likewise unaffected in
+/// both directions.
+pub func resolveFeatureSelection(
+  mfText: in String,
+  mfPath: in String,
+  cliFeatures: in List[String],
+  noDefaultFeatures: in Bool,
+  allFeatures: in Bool,
+  targetName: in String,
+): (List[String], List[String]) {
+  val mfDefaults = readFeatureDefaultsFromToml(mfText, mfPath)
+  val mfDeclared = readFeatureDeclaredFromToml(mfText, mfPath)
+  val composed: List[String] = newList()
+  if allFeatures {
+    for f in mfDeclared {
+      composed.add(f)
+    }
+  } else {
+    if not noDefaultFeatures {
+      for f in mfDefaults {
+        composed.add(f)
+      }
+    }
+    for f in cliFeatures {
+      composed.add(f)
+    }
+  }
+  val activeFeatures: List[String] = newList()
+  var removedMismatch = false
+  for f in composed {
+    val explicitlyRequested = allFeatures or cliFeatures.contains(f)
+    if isTargetFeatureName(f) and f != targetName and not explicitlyRequested {
+      removedMismatch = true
+    } else if not activeFeatures.contains(f) {
+      activeFeatures.add(f)
+    }
+  }
+  if removedMismatch and mfDeclared.contains(targetName) and not activeFeatures.contains(targetName) {
+    activeFeatures.add(targetName)
+  };
+
+  (activeFeatures, mfDeclared)
+}
+
+/// Whether `name` is the plain feature name the ecosystem's `[features]`
+/// tables pair with a compile target (`dotnet`, `jvm`, `native`).
+pub func isTargetFeatureName(name: in String): Bool {
+  name == "dotnet" or name == "jvm" or name == "native"
+}

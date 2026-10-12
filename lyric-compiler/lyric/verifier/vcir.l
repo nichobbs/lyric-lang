@@ -1236,7 +1236,11 @@ pub func goalKindDisplay(k: in GoalKind): String {
 
 pub union SymbolDecl {
   case DeclUserFun(name: String, paramSorts: List[Sort], resultSort: Sort)
-  case DeclDatatype(name: String, constructors: List[DatatypeCtor])
+  // `params` are the sort parameters of a parametric datatype (a generic
+  // record, #8340): its fields' sorts name them as `SDatatype(param, [])`,
+  // and each is a name no source sort can take (`Box!T`).  Empty for a
+  // datatype of no parameters.
+  case DeclDatatype(name: String, constructors: List[DatatypeCtor], params: List[String])
 }
 
 pub record DatatypeCtor {
@@ -1474,7 +1478,7 @@ func renderSymbol(s: in SymbolDecl): String {
       }
       "  fun " + name + "(" + joinSortList(parts) + "): " + sortDisplay(rSort)
     }
-    case DeclDatatype(name, ctors) -> {
+    case DeclDatatype(name, ctors, params) -> {
       val ctorParts: List[String] = newList()
       var i = 0
       while i < ctors.count {
@@ -1492,7 +1496,8 @@ func renderSymbol(s: in SymbolDecl): String {
         }
         i = i + 1
       }
-      "  type " + name + " = " + joinCtors(ctorParts)
+      val shown = if params.count == 0 { name } else { name + "[" + joinSortList(params) + "]" }
+      "  type " + shown + " = " + joinCtors(ctorParts)
     }
   }
 }

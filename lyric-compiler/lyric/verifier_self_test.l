@@ -3493,8 +3493,9 @@ test "an impl method's body is verified, with the impl's type parameters in scop
       "impl[Bit] Pig for Box[Bit] {\n  func pig(self: in Box[Bit], k: in Int): Int\n    requires: k > 1000\n    ensures: result > 100\n  {\n    assert(k > 1000)\n    k\n  }\n}\n",
     "generic-impl-holds"
   )
-  // A generic record's field is not modelled, so reading one fails closed.
-  assertUntranslatable(
+  // A generic record's field is read at the instance the receiver is
+  // (#8340): `self.n` is an `Int` nothing bounds.
+  assertRefuted(
     "interface Pig {\n  func pig(self: in Self): Int\n}\nrecord Box[Bit] {\n  v: Bit\n  n: Int\n}\n" +
       "impl[Bit] Pig for Box[Bit] {\n  func pig(self: in Box[Bit]): Int\n    ensures: result > 100\n  {\n    self.n\n  }\n}\n",
     "generic-impl-field"
@@ -3687,4 +3688,133 @@ test "a file two builds compile differently has each build's goals, labelled (#8
   )
   assertEqualInt(jvmOnly.unproved.count, 1, "an item no build compiles")
   assertEqual(jvmOnly.unproved[0], "onJvm", "the unproved item")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Generic records are parametric datatypes (#8340).
+// ─────────────────────────────────────────────────────────────────────────────
+func genericBox(): String {
+  "record Box[T] {\n  n: Int\n  v: T\n  func size(self: in Box[T]): Int\n    ensures: result == self.n\n  {\n    self.n\n  }\n}\n"
+}
+
+test "a field of a generic record is read like a field of any record (#8340)" {
+  assertDischarged(
+    genericBox() + "func size[T](b: in Box[T]): Int\n  ensures: result == b.n\n{\n  b.n\n}\n",
+    "generic-function-field"
+  )
+  assertRefuted(
+    genericBox() + "func size[T](b: in Box[T]): Int\n  ensures: result == b.n + 1\n{\n  b.n\n}\n",
+    "generic-function-field-refuted"
+  )
+  // A field of the type parameter's sort, compared with `==`.
+  assertDischarged(
+    genericBox() + "func get[T](b: in Box[T]): T\n  ensures: result == b.v\n{\n  b.v\n}\n",
+    "type-parameter-field"
+  )
+  // A field read at a closed instance has the instance's sort.
+  assertDischarged(
+    genericBox() + "func useInt(b: in Box[Int]): Int\n  requires: b.v >= 0\n  ensures: result >= 0\n{\n  b.v\n}\n",
+    "instance-field"
+  )
+  assertRefuted(
+    genericBox() + "func useInt(b: in Box[Int]): Int\n  ensures: result >= 0\n{\n  b.v\n}\n",
+    "instance-field-refuted"
+  )
+}
+
+test "a method of a generic record reads its fields on self (#8340)" {
+  val s = provePkg(
+    "record Box[T] {\n  n: Int\n  v: T\n  func size(self: in Box[T]): Int\n    ensures: result == self.n\n  {\n    self.n\n  }\n" +
+      "  func bad(self: in Box[T]): Int\n    ensures: result > 100\n  {\n    n\n  }\n}\n"
+  )
+  assertTrue(not summaryHasDiagCode(s, "V0033"), "methods: translatable")
+  assertTrue(summaryHasCounterexample(s), "methods: the false ensures is refuted")
+  var sizeHolds = false
+  for r in s.results {
+    match r.outcome {
+      case Discharged -> if r.goal.label.contains("size") { sizeHolds = true }
+      case _ -> ()
+    }
+  }
+  assertTrue(sizeHolds, "methods: size's ensures is proved")
+}
+
+test "a generic record built from its fields is the instance they give it (#8340)" {
+  assertDischarged(
+    genericBox() +
+      "func mk(x: in Int): Box[Int]\n  ensures: result.v == x and result.n == 1\n{\n  Box(n = 1, v = x)\n}\n",
+    "construction"
+  )
+  assertRefuted(
+    genericBox() + "func mk(x: in Int): Box[Int]\n  ensures: result.v == x + 1\n{\n  Box(n = 1, v = x)\n}\n",
+    "construction-refuted"
+  )
+  assertDischarged(
+    "record Pair[A, B] {\n  first: A\n  second: B\n}\n" +
+      "func swap[A, B](p: in Pair[A, B]): Pair[B, A]\n  ensures: result.first == p.second and result.second == p.first\n{\n  Pair(first = p.second, second = p.first)\n}\n",
+    "two-parameters"
+  )
+  // A type argument no field determines is not known: the value fails
+  // closed rather than taking an arbitrary sort.
+  assertUntranslatable(
+    "record Tag[T] {\n  n: Int\n}\nfunc mk(): Tag[Int]\n  ensures: result.n == 1\n{\n  Tag(n = 1)\n}\n",
+    "phantom-parameter"
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Names declared more than once (#8341).
+// ─────────────────────────────────────────────────────────────────────────────
+test "a duplicate declaration is reported and not proved, without throwing (#8341)" {
+  val s = provePkg(
+    "func f(x: in Int): Int\n  ensures: result == x\n{\n  x\n}\n" +
+      "func f(x: in Int): Int\n  ensures: result == x + 1\n{\n  x + 1\n}\n" +
+      "pub func g(x: in Int): Int\n  ensures: result == x\n{\n  f(x)\n}\n"
+  )
+  assertTrue(summaryHasErrorCode(s, "V0033"), "duplicate: V0033")
+  assertTrue(not summaryHasCounterexample(s), "duplicate: no counterexample")
+  for r in s.results {
+    match r.outcome {
+      case Discharged -> assertTrue(not r.goal.label.startsWith("f"), "duplicate: no goal of f is proved")
+      case _ -> ()
+    }
+  }
+  assertTrue(summaryHasFailure(s), "duplicate: the call to f fails closed")
+  // Duplicate types, fields and protected members.
+  assertUntranslatable(
+    "record R {\n  n: Int\n}\nrecord R {\n  m: Int\n}\nfunc f(r: in R): Int\n  ensures: result == r.n\n{\n  r.n\n}\n",
+    "duplicate-record"
+  )
+  val fields = provePkg(
+    "record R {\n  n: Int\n  n: Int\n}\nprotected type Q {\n  var k: Int\n  func get(): Int { k }\n  func get(): Int { k }\n}\n" +
+      "pub func f(r: in R): Int\n  ensures: result == 1\n{\n  1\n}\n"
+  )
+  assertTrue(summaryTotalCount(fields) > 0, "duplicate fields and members: goals")
+}
+
+test "overloads of different arity are each proved, and a call reaches the one of its arity (#8341)" {
+  val ov = "func f(x: in Int): Int\n  ensures: result == x\n{\n  x\n}\n" +
+    "func f(x: in Int, y: in Int): Int\n  ensures: result == x + y\n{\n  x + y\n}\n"
+  assertDischarged(ov + "func g(x: in Int): Int\n  ensures: result == 2 * x + 1\n{\n  f(x) + f(x, 1)\n}\n", "overloads")
+  assertRefuted(ov + "func g(x: in Int): Int\n  ensures: result == x\n{\n  f(x, 1)\n}\n", "overload-refuted")
+  assertDischarged(ov + "func g(x: in Int): Int\n  ensures: result == x + 2\n{\n  U.f(x, 2)\n}\n", "qualified-overload")
+  // A call no overload takes by its argument count — here through a
+  // default — is not resolved: it fails closed.
+  assertUntranslatable(
+    "func h(x: in Int): Int\n  ensures: result == x\n{\n  x\n}\n" +
+      "func h(x: in Int, y: in Int, z: in Int = 0): Int\n  ensures: result == x + y + z\n{\n  x + y + z\n}\n" +
+      "func g(x: in Int): Int\n  ensures: result == x + 1\n{\n  h(x, 1)\n}\n",
+    "overload-via-default"
+  )
+  // A stable pub function calling an experimental overload is S0001; one
+  // calling the stable overload is not.
+  val stab = "@experimental\npub func k(x: in Int): Int {\n  x\n}\n@stable(since = \"1.0\")\npub func k(x: in Int, y: in Int): Int {\n  x + y\n}\n"
+  assertTrue(
+    summaryHasDiagCode(provePkg(stab + "@stable(since = \"1.0\")\npub func a(x: in Int): Int {\n  k(x)\n}\n"), "S0001"),
+    "stability: the experimental overload"
+  )
+  assertTrue(
+    not summaryHasDiagCode(provePkg(stab + "@stable(since = \"1.0\")\npub func a(x: in Int): Int {\n  k(x, 1)\n}\n"), "S0001"),
+    "stability: the stable overload"
+  )
 }

@@ -37,6 +37,7 @@ import Lyric.Pipeline
 import Lyric.ModeChecker
 import Lyric.Verifier
 import Lyric.Discovery as Disc
+import Lyric.Emitter as Emitter
 import Lyric.Version as Ver
 import Lyric.Fmt
 import Msil.MetadataReader as Mdr
@@ -75,6 +76,9 @@ pub record LspState {
   ffiPathIndex: Map[String, String]
   // assembly simple name → on-disk path
   ffiIndexInit: List[Bool]
+  // The standard library's declarations a proof reads (`ImportScope`),
+  // read once, on the first proof: empty until then (box[ImportScope]).
+  stdlibScope: List[ImportScope]
 }
 
 pub func lspInit(): LspState {
@@ -93,7 +97,8 @@ pub func lspInit(): LspState {
     exit = exit,
     ffiTypeIndex = newMap(),
     ffiPathIndex = newMap(),
-    ffiIndexInit = ffiInit
+    ffiIndexInit = ffiInit,
+    stdlibScope = newList()
   )
 }
 
@@ -740,12 +745,29 @@ func analyzeAndStore(state: in LspState, uri: in String, text: in String): List[
   // Unlike `lyric prove`, which proves nothing of a program the build
   // rejects (#8227), this proves the document whatever its check says: the
   // server's check does not load the standard library, so it reports a type
-  // error for every `Std` name and cannot gate the proof (#8304).
-  val proofResult = proveSourceInScope(text, true, docScope)
+  // error for every `Std` name and cannot gate the proof (#8304).  It is
+  // proved as `lyric prove <file>` proves it (#8342): as each build that
+  // compiles it erases its `@cfg` items (the manifests that list it, with
+  // their default features, for `--target dotnet` — `lyric prove`'s
+  // defaults), each goal labelled with its build when there are several,
+  // reading the declarations of the standard library and of those
+  // manifests' packages.
+  val noCliFeatures: List[String] = newList()
+  val builds = proveBuildConfigsForSource(docPath, "dotnet", noCliFeatures, false, false)
+  // Only a `@proof_required` document is proved: no other reads them.
+  val proofScope = if vlIsProofRequired(sourceVerificationLevel(text)) {
+    withImportScope(docScope, importScopeWithManifests(lspStdlibScope(state), Disc.manifestsListingSource(docPath)))
+  } else {
+    docScope
+  }
+  val proofResult = proveSourceForBuilds(text, true, proofScope, builds)
+  val inactive = inactiveItemsForBuilds(text, builds)
   var pi = 0
   while pi < proofResult.diagnostics.count {
     val d = proofResult.diagnostics[pi]
-    if d.code.startsWith("V") {
+    // The verifier's diagnostics, and the `@cfg` erasure's for the builds
+    // it proves (F0012/F0013), as `lyric prove` reports them.
+    if d.code.startsWith("V") or d.code == "F0012" or d.code == "F0013" {
       var dup = false
       var di = 0
       while di < allDiags.count {
@@ -766,8 +788,49 @@ func analyzeAndStore(state: in LspState, uri: in String, text: in String): List[
   state.store.remove(uri)
   // safe on absent key; avoids if-branch stack imbalance
   state.store.add(uri, doc)
-  acc.add(pushDiagnostics(uri, allDiags))
+  acc.add(pushDiagnosticsWithInactive(uri, allDiags, inactive))
   acc
+}
+
+// The standard library's declarations a proof reads, as `lyric prove`
+// reads them for `--target dotnet`: read on the first proof, then kept.
+func lspStdlibScope(state: in LspState): ImportScope {
+  if state.stdlibScope.count == 0 {
+    state.stdlibScope.add(importScopeWithSources(emptyImportScope(), Emitter.findStdlibSources()))
+  }
+  state.stdlibScope[0]
+}
+
+// `diags`, then the items of a `@proof_required` document no build
+// compiles, which `lyric prove` lists after its diagnostics (#8342): each
+// an Information diagnostic at the declaration.
+func pushDiagnosticsWithInactive(uri: in String, diags: in List[Diagnostic], inactive: in InactiveItems): String {
+  val arr: List[String] = newList()
+  for d in diags {
+    arr.add(toLspDiag(d))
+  }
+  for sp in inactive.unprovedSpans {
+    arr.add(toLspInfo(sp, "not proved: inactive under this build (@cfg)"))
+  }
+  for sp in inactive.variantSpans {
+    arr.add(
+      toLspInfo(sp, "inactive @cfg variant, not proved; the declaration of the same name this build compiles is proved")
+    )
+  }
+  val fs: List[String] = newList()
+  fs.add(jPair("uri", jStr(uri)))
+  fs.add(jPair("diagnostics", jArr(arr)))
+  mkNotif("textDocument/publishDiagnostics", jObj(fs))
+}
+
+// An LSP Information diagnostic (severity 3) at `sp`.
+func toLspInfo(sp: in Span, message: in String): String {
+  val fs: List[String] = newList()
+  fs.add(jPair("range", toLspRange(sp)))
+  fs.add(jPair("severity", jInt(3)))
+  fs.add(jPair("source", jStr("lyric")))
+  fs.add(jPair("message", jStr(message)))
+  jObj(fs)
 }
 
 // Helper: re-analyze one consumer URI and append notifications to acc.
