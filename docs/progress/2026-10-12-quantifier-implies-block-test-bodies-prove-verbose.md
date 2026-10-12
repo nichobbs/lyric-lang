@@ -20,7 +20,13 @@ left `implies` out for `exists`, which the parser always accepted).
 A binary `a implies { b }` outside a quantifier had the same lambda problem;
 its braced right operand is now a block too, and `docs/grammar.ebnf` gains
 the `ImpliesExpr` level the parser always had.  A newline after `implies` used to end
-the clause (P0050); the body or right operand may now start on the next line.
+the clause (P0050); the body or right operand may now start on the next line.  The closing brace of a braced
+`implies` body, binary or a quantifier's, ends the expression: an operator or
+postfix after it (`a implies { b } and c`, `forall … implies { e } and c`,
+`a implies { b }.f()`) is the new **P0347** at that token, with the rest of
+the expression parsed and dropped so nothing else is reported, rather than
+silently giving the block a precedence or cascading into P0040/P0051;
+`(a implies { b }) and c` continues it.
 
 A `where` guard or body whose type is not `Bool` is **T0132**, the
 contract-clause type error ("a forall body must be Bool (got Byte)",

@@ -897,6 +897,12 @@ test "a braced body after implies on the next line formats" {
   }
 }
 
+test "a parenthesised braced implies round trips" {
+  assertQuantClauseRoundTrips("(g(1) > 0 implies { g(2) > 0 }) and g(3) > 0", "parenthesised, and")
+  assertQuantClauseRoundTrips("(g(1) > 0 implies { g(2) > 0 }) == true", "parenthesised, ==")
+  assertQuantClauseRoundTrips("g(3) > 0 and (g(1) > 0 implies { g(2) > 0 }) and g(4) > 0", "parenthesised, middle")
+}
+
 test "long braced body after implies keeps implies" {
   val clause = "forall (k: Int) where k > 0 implies { aVeryLongPredicateName(k) and anotherVeryLongPredicateName(k) and yetAnother(k) }"
   val src = "package P\n\nfunc f(): Bool\n  ensures: " + clause + "\n{\n  true\n}\n"

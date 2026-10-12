@@ -1217,6 +1217,40 @@ test "a braced right operand of implies is a block" {
   assertEqual(shape, "block", "a implies { b }: the right operand is a block")
 }
 
+// #8322: the closing brace of a braced `implies` body ends the expression;
+// an operator or postfix after it is one P0347 at that token, nothing more.
+func onlyP0347(src: in String, label: in String): Unit {
+  val pr = parse(src)
+  assertEqualInt(diagCount(pr), 1, label + ": exactly one diagnostic")
+  assertTrue(hasDiagCode(pr, "P0347"), label + ": P0347")
+}
+
+test "an operator or postfix after a braced implies body is P0347" {
+  val head = "package P\nfunc f(a: in Bool, b: in Bool, c: in Bool, xs: in slice[Int]): Bool\n  requires: "
+  val tail = "\n{\n  true\n}\n"
+  onlyP0347(head + "a implies { b } and c" + tail, "binary, and")
+  onlyP0347(head + "a implies { b } or c" + tail, "binary, or")
+  onlyP0347(head + "a implies { b } implies c" + tail, "binary, implies")
+  onlyP0347(head + "a implies { b } == true" + tail, "binary, ==")
+  onlyP0347(head + "a implies { xs }.isEmpty()" + tail, "binary, member call")
+  onlyP0347(head + "forall (k: Byte) implies { k == k } and true" + tail, "quantifier, and")
+  onlyP0347(head + "exists (k: Byte) where k > 0u8 implies { k == k }.toString()" + tail, "quantifier, member call")
+  onlyP0347(
+    "package P\nfunc g(a: in Bool, b: in Bool, c: in Bool): Bool {\n  val x = a implies { b } and c\n  x\n}\n",
+    "val in a body"
+  )
+  val pr = parse(head + "a implies { b } and c" + tail)
+  assertEqualInt(pr.diagnostics[0].span.startPos.column, 29, "reported at the operator")
+}
+
+test "a parenthesised braced implies may be continued" {
+  val head = "package P\nfunc f(a: in Bool, b: in Bool, c: in Bool): Bool\n  requires: "
+  val tail = "\n{\n  true\n}\n"
+  for clause in ["(a implies { b }) and c", "(a implies { b }) == c", "c and (a implies { b }) and c", "(forall (k: Byte) implies { k == k }) and c", "a implies { b }"] {
+    assertEqualInt(diagCount(parse(head + clause + tail)), 0, clause)
+  }
+}
+
 // #7228: a quantifier outside a contract or invariant clause is P0344 (it
 // cannot be evaluated); `exists(x)` as an ordinary call is unaffected.
 test "a quantifier outside a contract clause is P0344" {

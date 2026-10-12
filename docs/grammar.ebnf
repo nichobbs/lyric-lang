@@ -912,7 +912,9 @@ AssignExpr =
       ImpliesExpr [ AssignOp AssignExpr ] ;   (* right-assoc *)
 
 (* 'a implies b' ≡ 'not a or b', for contract expressions (reference §6.3).
- * A '{' after 'implies' opens a Block, never a lambda (#8322). *)
+ * A '{' after 'implies' opens a Block, never a lambda (#8322).  That Block
+ * ends the expression: no operator or postfix may follow it (P0347);
+ * '(a implies { b }) and c' continues it. *)
 ImpliesExpr =
       OrExpr [ 'implies' ( Block | ImpliesExpr ) ] ;   (* right-assoc *)
 
@@ -1095,7 +1097,9 @@ QuantifierExpr =
       ( 'forall' | 'exists' ) '(' QuantifierBinder { ',' QuantifierBinder } ')'
           [ 'where' Expr ] QuantifierBody ;
 
-(* After 'implies', a '{' opens the body's Block, never a lambda (#8322).
+(* After 'implies', a '{' opens the body's Block, never a lambda (#8322);
+ * that Block ends the quantifier, and no operator or postfix may follow it
+ * (P0347).
  * The 'where' guard and the body must be Bool (T0132). *)
 QuantifierBody =
       'implies' ( Block | Expr )

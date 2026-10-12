@@ -1478,7 +1478,12 @@ func postfixOnSameLine(st: in ParseState): Bool {
 }
 
 pub func parsePostfixExpr(st: inout ParseState): Expr {
-  var e = parsePrimaryExpr(st)
+  parsePostfixTail(st, parsePrimaryExpr(st))
+}
+
+// The calls, member accesses, `?`s and indexings that follow `base`.
+func parsePostfixTail(st: inout ParseState, base: in Expr): Expr {
+  var e = base
   var keep = true
   while keep {
     if isPunct(peekToken(st), LParen) and postfixOnSameLine(st) {
@@ -1901,7 +1906,9 @@ func parseQuantifierExpr(st: inout ParseState, isForall: in Bool): Expr {
     // expression, the `{` would open a lambda.
     if isPunct(peekToken(st), LBrace) {
       val blk = parseBlock(st)
-      mkExpr(EBlock(block = blk), blk.span)
+      val blockExpr = mkExpr(EBlock(block = blk), blk.span)
+      rejectBracedImpliesContinuation(st, blockExpr)
+      blockExpr
     } else {
       parseExpr(st)
     }
@@ -2291,6 +2298,68 @@ pub func parseOrExpr(st: inout ParseState): Expr {
   lhs
 }
 
+// A braced `implies` body, `a implies { b }` or a quantifier's
+// `implies { e }`, ends the expression: an operator or postfix after the
+// closing brace would extend an expression the brace already closed, and
+// giving the block a precedence would make `a implies { b } and c` read
+// differently from `a implies b and c` (#8322).  It is one P0347 at that
+// token; the continuation is parsed and dropped, so the clause reports
+// nothing more.
+func rejectBracedImpliesContinuation(st: inout ParseState, blockExpr: in Expr): Unit {
+  if not continuesBracedImplies(st) {
+    return
+  }
+  emitErr(
+    st,
+    "P0347",
+    "a braced `implies` body ends its expression; parenthesise the `implies` to continue it, as in `(a implies { b }) and c`",
+    peekSpan(st)
+  )
+  var keep = true
+  while keep {
+    val before = mark(st)
+    if continuesAsPostfix(st) {
+      val _ = parsePostfixTail(st, blockExpr)
+    } else if continuesBracedImplies(st) {
+      val _ = advance(st)
+      val _ = skipStmtEnds(st)
+      val _ = parseImpliesExpr(st)
+    } else {
+      keep = false
+    }
+    if mark(st) == before {
+      keep = false
+    }
+  }
+}
+
+func continuesAsPostfix(st: in ParseState): Bool {
+  val t = peekToken(st)
+  isPunct(t, Dot) or isPunct(t, Question) or ((isPunct(t, LParen) or isPunct(t, LBracket)) and postfixOnSameLine(st))
+}
+
+// Whether the next token would continue the expression before it: a binary
+// operator, a range operator, or a postfix.
+func continuesBracedImplies(st: in ParseState): Bool {
+  val t = peekToken(st)
+  continuesAsPostfix(st) or isKw(t, KwAnd) or isKw(t, KwOr) or isKw(t, KwXor) or identStr(t) == "implies" or
+    isPunct(t, EqEq) or
+    isPunct(t, NotEq) or
+    isPunct(t, Lt) or
+    isPunct(t, LtEq) or
+    isPunct(t, Gt) or
+    isPunct(t, GtEq) or
+    isPunct(t, QuestionQuestion) or
+    isPunct(t, Plus) or
+    isPunct(t, Minus) or
+    isPunct(t, Star) or
+    isPunct(t, Slash) or
+    isPunct(t, Percent) or
+    isPunct(t, DotDot) or
+    isPunct(t, DotDotEq) or
+    isPunct(t, DotDotLt)
+}
+
 func parseImpliesExpr(st: inout ParseState): Expr {
   val lhs = parseOrExpr(st)
   if identStr(peekToken(st)) == "implies" {
@@ -2302,7 +2371,9 @@ func parseImpliesExpr(st: inout ParseState): Expr {
     // `implies`, never a lambda (#8322).
     val rhs = if isPunct(peekToken(st), LBrace) {
       val blk = parseBlock(st)
-      mkExpr(EBlock(block = blk), blk.span)
+      val blockExpr = mkExpr(EBlock(block = blk), blk.span)
+      rejectBracedImpliesContinuation(st, blockExpr)
+      blockExpr
     } else {
       parseImpliesExpr(st)
     }

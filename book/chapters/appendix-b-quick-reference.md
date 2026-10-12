@@ -1328,6 +1328,14 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `L005` | warning | `pub func` with a block body has no `requires:`/`ensures:` contracts |
 | `L007` | warning | `pub`/`internal` item's signature names a package-private type from the same file (receiver, parameter, return, field, union case payload, interface method, `pub val` type) |
 
+### Parser (P-series)
+
+Syntax errors reported while parsing.  Most name the token they expected; the ones below need more explanation.
+
+| Code | Severity | Meaning |
+|---|---|---|
+| `P0347` | error | An operator or postfix (`and`, `or`, `implies`, a comparison, arithmetic, a range, `.`, `?`, a call or an index) follows the closing brace of a braced `implies` body, `a implies { b } and c` or `forall (k: T) implies { e } and c`. The brace ends the expression; parenthesise the `implies` to continue it: `(a implies { b }) and c` |
+
 ### Type checker (T-series)
 
 | Code | Meaning |
