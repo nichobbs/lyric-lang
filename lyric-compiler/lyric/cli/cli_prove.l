@@ -69,7 +69,10 @@ func cmdProve(argv: in slice[String]): Int {
   var i = 1
   while i < argv.length {
     val arg = argv[i]
-    if arg == "--verbose" or arg == "-v" {
+    if arg == "--help" or arg == "-h" {
+      Console.print("usage:\n" + proveUsageText())
+      return 0
+    } else if arg == "--verbose" or arg == "-v" {
       verbose = true
       i += 1
     } else if arg == "--allow-unverified" {
@@ -269,6 +272,8 @@ func cmdProve(argv: in slice[String]): Int {
         printDiag(d)
       }
       if verbose {
+        // Goal numbers restart in each file.
+        Console.println(sp + ":")
         printVerboseGoals(summary)
       }
       val total = Verifier.summaryTotalCount(summary)
@@ -552,36 +557,60 @@ func proveJson(
 func printVerboseGoals(summary: in Verifier.ProofSummary): Unit {
   var gi = 0
   while gi < summary.results.count {
-    printVerboseGoal(gi, summary.results[gi])
+    val r = summary.results[gi]
+    printVerboseExchange("goal " + toString(gi), r, obligationOutcome(r.outcome), "obligation")
     gi = gi + 1
+  }
+  // The checks that each `requires:` clause can be met (V0035/V0036): not
+  // obligations, so not numbered as goals.
+  var ci = 0
+  while ci < summary.vacuityChecks.count {
+    val c = summary.vacuityChecks[ci]
+    printVerboseExchange("precondition check", c, meetabilityOutcome(c.outcome), "check")
+    ci = ci + 1
   }
 }
 
 func printVerboseGoal(idx: in Int, r: in Verifier.ProofResult): Unit {
-  val g = r.goal
-  val outcomeStr = match r.outcome {
+  printVerboseExchange("goal " + toString(idx), r, obligationOutcome(r.outcome), "obligation")
+}
+
+func obligationOutcome(o: in Verifier.SolverOutcome): String {
+  match o {
     case Discharged -> "discharged"
     case Counterexample(_) -> "counterexample"
     case Unknown(reason) -> "unknown (" + reason + ")"
   }
+}
+
+// A meetability check's outcome is already in the clause's terms: a
+// `Discharged` check is a clause some argument meets.
+func meetabilityOutcome(o: in Verifier.SolverOutcome): String {
+  match o {
+    case Discharged -> "can be met"
+    case Counterexample(_) -> "can never hold (V0035)"
+    case Unknown(reason) -> "undecided (V0036: " + reason + ")"
+  }
+}
+
+func printVerboseExchange(head: in String, r: in Verifier.ProofResult, outcomeStr: in String, noun: in String): Unit {
+  val g = r.goal
   val by = if r.decidedBy.length > 0 { " [" + r.decidedBy + "]" } else { "" }
   Console.println(
-    "goal " + toString(idx) + ": " + g.label + " (" + Verifier.goalKindDisplay(g.kind) + ") at " +
-      toString(g.origin.startPos.line) +
-      ":" +
+    head + ": " + g.label + " (" + Verifier.goalKindDisplay(g.kind) + ") at " + toString(g.origin.startPos.line) + ":" +
       toString(g.origin.startPos.column) +
       ": " +
       outcomeStr +
       by
   )
   if not r.translated {
-    Console.println("  no SMT-LIB query: the obligation could not be translated into the proof logic (V0033)")
+    Console.println("  no SMT-LIB query: the " + noun + " could not be translated into the proof logic (V0033)")
     return
   }
   Console.println("  ;; SMT-LIB query")
   printIndented(Verifier.smtRenderGoal(g))
   if r.decidedBy == Verifier.trivialDischargerName() {
-    Console.println("  ;; no solver run: the trivial discharger decided the obligation")
+    Console.println("  ;; no solver run: the trivial discharger decided the " + noun)
   } else if r.decidedBy == Verifier.noSolverName() {
     Console.println("  ;; no solver run: no SMT solver is available (set LYRIC_Z3 or LYRIC_CVC5, or install z3 or cvc5)")
   } else {

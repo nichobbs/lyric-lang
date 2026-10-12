@@ -7756,6 +7756,22 @@ test "a non-Bool quantifier body or where guard is T0132" {
   assertTrue(not hasDiagCode(parseCheck(ok), "T0132"), "Bool bodies and guards")
 }
 
+// #8322: a record's or opaque type's invariant conjunct with a quantifier is
+// not part of its runtime construction checker, so the checker checks it at
+// the clause.
+test "a quantified record or opaque invariant conjunct is type-checked" {
+  val rec = "package P\nrecord Bag {\n  n: Int\n  invariant: n > 0 and forall (k: Byte) where k > 0u8 { k + 1u8 }\n}\n"
+  val cr = parseCheck(rec)
+  assertEqualInt(countDiagCode(cr, "T0132"), 1, "the quantified conjunct's Byte body, once")
+  assertTrue(diagMessagesContain(cr, "a forall body must be Bool (got Byte)"), "record invariant: forall body message")
+  val fieldRef = "package P\nrecord Bag {\n  n: Int\n  invariant: forall (k: Byte) where k > 0u8 { n > 0 }\n}\n"
+  assertEqualInt(diagCount(parseCheck(fieldRef)), 0, "a field read by bare name in a quantified conjunct")
+  val opq = "package P\nopaque type Box {\n  n: Int\n  invariant: exists (k: Byte) k + 1u8\n}\n"
+  assertTrue(diagMessagesContain(parseCheck(opq), "an exists body must be Bool (got Byte)"), "opaque invariant")
+  val unknown = "package P\nrecord Bag {\n  n: Int\n  invariant: forall (k: Byte) k == nope\n}\n"
+  assertTrue(hasDiagCode(parseCheck(unknown), "T0020"), "an unknown name in a quantified conjunct")
+}
+
 test "an ensures clause is checked with result as the return type" {
   val ok = "package P\nfunc f(x: in Int): Int\n  ensures: result >= x\n{\n  x\n}\n"
   assertTrue(not hasDiagCode(parseCheck(ok), "T0132"), "result >= x is Bool")

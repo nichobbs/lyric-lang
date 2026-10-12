@@ -80,6 +80,8 @@ echo "PASS: well-typed file, --json"
 # #8322: a quantifier's body is a proposition.
 expect_type_error "non-Bool quantifier body" T0132 "$lyric_bin" prove "$tc/nonbool_quantifier.l"
 grep -q "a forall body must be Bool (got Byte)" "$err" || fail "non-Bool quantifier body: expected the message"
+expect_type_error "non-Bool quantified invariant conjunct" T0132 "$lyric_bin" prove "$tc/nonbool_invariant.l"
+grep -q "nonbool_invariant.l: error\[T0132\] 9:" "$err" || fail "non-Bool quantified invariant conjunct: expected it at the invariant"
 # #8308: a test body is type-checked by the checker itself, not only after
 # `lyric test` rewrites it.
 expect_type_error "ill-typed test body" T0043 "$lyric_bin" prove "$tc/illtyped_test.l"
@@ -247,9 +249,30 @@ echo "PASS: --verbose --explain"
 rc="$(run "$lyric_bin" prove -v --manifest "$tc/control/lyric.toml")"
 [ "$rc" -eq 0 ] || fail "--verbose, project mode: expected exit 0"
 grep -q "^goal 0: " "$out" || fail "--verbose, project mode: expected the goals' result lines"
+grep -q "^.*b_logic\.l:$" "$out" || fail "--verbose, project mode: expected each file's header"
 echo "PASS: --verbose, project mode"
 expect_usage_error "--verbose with --json" "prove: --verbose cannot be combined with --json" \
   "$lyric_bin" prove --verbose --json "$tc/welltyped.l"
 if grep -q '"goals"' "$out"; then
   fail "--verbose with --json: no document may be written"
 fi
+# The precondition checks behind V0035/V0036 are shown too, unnumbered.
+rc="$(run "$lyric_bin" prove --verbose "$qs/vacuous.l")"
+[ "$rc" -ne 0 ] || fail "--verbose, precondition checks: expected the V0035 exit"
+grep -Eq "^precondition check: .*: can never hold \(V0035\) \[[^]]+\]$" "$out" ||
+  fail "--verbose, precondition checks: expected the unmeetable clause's check"
+echo "PASS: --verbose, precondition checks"
+# The solver is named by its kind, not by its binary's file name.
+if command -v z3 > /dev/null; then
+  mkdir -p "$proofs/bin"
+  ln -sf "$(command -v z3)" "$proofs/bin/z3-renamed"
+  rc="$(LYRIC_Z3="$proofs/bin/z3-renamed" run "$lyric_bin" prove --verbose "$qs/unsound.l")"
+  grep -Eq "^goal [0-9]+: .*: counterexample \[z3\]$" "$out" || fail "--verbose, renamed z3: expected the solver named z3"
+  echo "PASS: --verbose, renamed z3"
+fi
+rc="$(run "$lyric_bin" prove --help)"
+[ "$rc" -eq 0 ] || fail "--help: expected exit 0"
+for opt in --verbose --json --explain --goal --proof-dir; do
+  grep -q -- "$opt" "$out" || fail "--help: expected $opt"
+done
+echo "PASS: prove --help"

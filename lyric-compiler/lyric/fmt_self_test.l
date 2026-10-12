@@ -878,6 +878,25 @@ test "quantifier braced body after implies round trips" {
   assertQuantClauseRoundTrips("exists (k: Byte) implies { k == 3u8 }", "exists implies braced")
 }
 
+test "a braced right operand of implies round trips" {
+  assertQuantClauseRoundTrips("xs.count > 0 implies { g(1) >= 0 }", "binary implies braced")
+  assertQuantClauseRoundTrips(
+    "forall (k: Int) k > 0 implies { g(k) > 0 }",
+    "binary implies braced in a quantifier body"
+  )
+}
+
+test "a braced body after implies on the next line formats" {
+  val src = "package P\n\nfunc f(xs: in slice[Int]): Bool\n  requires: forall (i: Int) where i >= 0 and i < xs.length implies\n    { xs[i] >= 0 }\n{\n  true\n}\n"
+  match formatSourceChecked(src) {
+    case FmtOk(text) -> {
+      assertTrue(Str.contains(text, "implies { xs[i] >= 0 }"), "implies block on the next line: kept as implies { … }")
+      assertEqual(format(parse(text)), text, "implies block on the next line: idempotent")
+    }
+    case _ -> assertTrue(false, "implies block on the next line: checked format refused the source")
+  }
+}
+
 test "long braced body after implies keeps implies" {
   val clause = "forall (k: Int) where k > 0 implies { aVeryLongPredicateName(k) and anotherVeryLongPredicateName(k) and yetAnother(k) }"
   val src = "package P\n\nfunc f(): Bool\n  ensures: " + clause + "\n{\n  true\n}\n"

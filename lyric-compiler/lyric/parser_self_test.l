@@ -1172,6 +1172,51 @@ test "a braced body after implies is a block" {
   assertEqual(firstEnsuresQuantBody(pr4), "braced block", "{ e }: braced block body")
 }
 
+test "a body or right operand after implies may start on the next line" {
+  val q = "package P\nfunc f(xs: in slice[Int]): Bool\n  requires: forall (i: Int) where i >= 0 implies\n    xs[i] >= 0\n{ true }\n"
+  assertEqualInt(diagCount(parse(q)), 0, "quantifier: expression body on the next line")
+  val qb = "package P\nfunc f(xs: in slice[Int]): Bool\n  requires: forall (i: Int) where i >= 0 implies\n    { xs[i] >= 0 }\n{ true }\n"
+  assertEqual(firstRequiresQuantBody(parse(qb)), "implies block", "quantifier: block body on the next line")
+  val b = "package P\nfunc f(n: in Int): Bool\n  requires: n > 0 implies\n    n >= 1\n{ true }\n"
+  assertEqualInt(diagCount(parse(b)), 0, "binary implies: right operand on the next line")
+}
+
+func firstRequiresQuantBody(pr: in ParseResult): String {
+  match pr.file.items[0].kind {
+    case IFunc(fd) -> match fd.contracts[0] {
+      case CCRequires(ex, _) -> match ex.kind {
+        case EForall(_, _, body, form) -> quantBodyShape(body, form)
+        case _ -> "not a quantifier"
+      }
+      case _ -> "not a requires clause"
+    }
+    case _ -> "not a function"
+  }
+}
+
+test "a braced right operand of implies is a block" {
+  val pr = parse("package P\nfunc f(n: in Int): Bool\n  requires: n > 0 implies { n >= 1 }\n{ true }\n")
+  assertEqualInt(diagCount(pr), 0, "a implies { b }: no diagnostics")
+  val shape = match pr.file.items[0].kind {
+    case IFunc(fd) -> match fd.contracts[0] {
+      case CCRequires(ex, _) -> match ex.kind {
+        case EBinop(op, _, rhs) -> match op {
+          case BImplies -> match rhs.kind {
+            case EBlock(_) -> "block"
+            case ELambda(_, _) -> "lambda"
+            case _ -> "expr"
+          }
+          case _ -> "not implies"
+        }
+        case _ -> "not a binop"
+      }
+      case _ -> "not requires"
+    }
+    case _ -> "not a function"
+  }
+  assertEqual(shape, "block", "a implies { b }: the right operand is a block")
+}
+
 // #7228: a quantifier outside a contract or invariant clause is P0344 (it
 // cannot be evaluated); `exists(x)` as an ordinary call is unaffected.
 test "a quantifier outside a contract clause is P0344" {

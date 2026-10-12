@@ -868,36 +868,47 @@ func fnHasAnnotation(fn: in FunctionDecl, name: in String): Bool {
   false
 }
 
-// Return true if any expression in the block/statement/expr tree is EYield,
-// without descending into nested ELambda bodies.
+/// What `exprContains` looks for: a generator `yield` (not inside a nested
+/// lambda), or a `forall`/`exists` quantifier (anywhere, as the contract
+/// elaborator's `exprHasQuantifier` finds it).
+union ExprProbe {
+  case ProbeYield
+  case ProbeQuantifier
+}
+
+// Return true if any expression in the block/statement/expr tree is what
+// `probe` names; a `yield` inside a nested ELambda body does not count.
 // Mirror of AsyncStateMachine.bodyContainsYield; kept here because
 // Lyric.TypeChecker cannot depend on Lyric.Emitter.  Keep both in sync.
-func exprContainsYield(e: in Expr): Bool {
+func exprContains(e: in Expr, probe: in ExprProbe): Bool {
   match e.kind {
-    case EYield(_) -> true
-    case ELambda(_, _) -> false
+    case EYield(inner) -> match probe { case ProbeYield -> true; case ProbeQuantifier -> exprContains(inner, probe) }
     // yield inside a lambda is not a generator yield
+    case ELambda(_, body) -> match probe {
+      case ProbeYield -> false
+      case ProbeQuantifier -> blockContains(body, probe)
+    }
     case ELiteral(_) -> false
     case EPath(_) -> false
     case ESelf -> false
     case EResult -> false
     case EError -> false
-    case EParen(inner) -> exprContainsYield(inner)
-    case EAwait(inner) -> exprContainsYield(inner)
-    case ESpawn(inner) -> exprContainsYield(inner)
-    case EOld(inner) -> exprContainsYield(inner)
-    case EPropagate(inner) -> exprContainsYield(inner)
-    case ETry(inner) -> exprContainsYield(inner)
-    case EPrefix(_, inner) -> exprContainsYield(inner)
-    case ETuple(elems) -> listAnyExprContainsYield(elems)
-    case EList(elems) -> listAnyExprContainsYield(elems)
+    case EParen(inner) -> exprContains(inner, probe)
+    case EAwait(inner) -> exprContains(inner, probe)
+    case ESpawn(inner) -> exprContains(inner, probe)
+    case EOld(inner) -> exprContains(inner, probe)
+    case EPropagate(inner) -> exprContains(inner, probe)
+    case ETry(inner) -> exprContains(inner, probe)
+    case EPrefix(_, inner) -> exprContains(inner, probe)
+    case ETuple(elems) -> listAnyExprContains(elems, probe)
+    case EList(elems) -> listAnyExprContains(elems, probe)
     case EInterpolated(segs) -> {
       var found = false
       var i = 0
       while i < segs.count {
         match segs[i] {
           case ISExpr(se) -> {
-            if exprContainsYield(se) {
+            if exprContains(se, probe) {
               found = true
             }
           }
@@ -908,20 +919,20 @@ func exprContainsYield(e: in Expr): Bool {
       }
       found
     }
-    case EBinop(_, l, r) -> exprContainsYield(l) or exprContainsYield(r)
-    case EAssign(t, _, v) -> exprContainsYield(t) or exprContainsYield(v)
-    case EMember(recv, _) -> exprContainsYield(recv)
-    case ETypeApp(f, _) -> exprContainsYield(f)
-    case EIndex(recv, idxs) -> exprContainsYield(recv) or listAnyExprContainsYield(idxs)
+    case EBinop(_, l, r) -> exprContains(l, probe) or exprContains(r, probe)
+    case EAssign(t, _, v) -> exprContains(t, probe) or exprContains(v, probe)
+    case EMember(recv, _) -> exprContains(recv, probe)
+    case ETypeApp(f, _) -> exprContains(f, probe)
+    case EIndex(recv, idxs) -> exprContains(recv, probe) or listAnyExprContains(idxs, probe)
     case ECall(f, args) -> {
-      if exprContainsYield(f) {
+      if exprContains(f, probe) {
         return true
       }
       var i = 0
       while i < args.count {
         val found = match args[i] {
-          case CAPositional(v) -> exprContainsYield(v)
-          case CANamed(_, v, _) -> exprContainsYield(v)
+          case CAPositional(v) -> exprContains(v, probe)
+          case CANamed(_, v, _) -> exprContains(v, probe)
         }
         if found {
           return true
@@ -931,36 +942,42 @@ func exprContainsYield(e: in Expr): Bool {
       false
     }
     case ERange(rb) -> match rb {
-      case RBClosed(a, b) -> exprContainsYield(a) or exprContainsYield(b)
-      case RBHalfOpen(a, b, _) -> exprContainsYield(a) or exprContainsYield(b)
-      case RBLowerOpen(a) -> exprContainsYield(a)
-      case RBUpperOpen(a) -> exprContainsYield(a)
+      case RBClosed(a, b) -> exprContains(a, probe) or exprContains(b, probe)
+      case RBHalfOpen(a, b, _) -> exprContains(a, probe) or exprContains(b, probe)
+      case RBLowerOpen(a) -> exprContains(a, probe)
+      case RBUpperOpen(a) -> exprContains(a, probe)
     }
     case EIf(c, t, eOpt, _) -> {
-      if exprContainsYield(c) {
+      if exprContains(c, probe) {
         return true
       }
-      val inT = match t { case EOBExpr(te) -> exprContainsYield(te); case EOBBlock(tb) -> blockContainsYield(tb) }
+      val inT = match t { case EOBExpr(te) -> exprContains(te, probe); case EOBBlock(tb) -> blockContains(tb, probe) }
       if inT {
         return true
       }
       match eOpt {
         case None -> false
-        case Some(b) -> match b { case EOBExpr(ee) -> exprContainsYield(ee); case EOBBlock(eb) -> blockContainsYield(eb) }
+        case Some(b) -> match b {
+          case EOBExpr(ee) -> exprContains(ee, probe)
+          case EOBBlock(eb) -> blockContains(eb, probe)
+        }
       }
     }
     case EMatch(subj, arms) -> {
-      if exprContainsYield(subj) {
+      if exprContains(subj, probe) {
         return true
       }
       var i = 0
       while i < arms.count {
         val arm = arms[i]
-        val inGuard = match arm.guard { case None -> false; case Some(g) -> exprContainsYield(g) }
+        val inGuard = match arm.guard { case None -> false; case Some(g) -> exprContains(g, probe) }
         if inGuard {
           return true
         }
-        val inBody = match arm.body { case EOBExpr(ae) -> exprContainsYield(ae); case EOBBlock(ab) -> blockContainsYield(ab) }
+        val inBody = match arm.body {
+          case EOBExpr(ae) -> exprContains(ae, probe)
+          case EOBBlock(ab) -> blockContains(ab, probe)
+        }
         if inBody {
           return true
         }
@@ -968,23 +985,29 @@ func exprContainsYield(e: in Expr): Bool {
       }
       false
     }
-    case EBlock(blk) -> blockContainsYield(blk)
-    case EUnsafe(blk) -> blockContainsYield(blk)
+    case EBlock(blk) -> blockContains(blk, probe)
+    case EUnsafe(blk) -> blockContains(blk, probe)
     case EForall(_, w, body, _) -> {
-      val inW = match w { case None -> false; case Some(we) -> exprContainsYield(we) }
-      inW or exprContainsYield(body)
+      if isQuantifierProbe(probe) {
+        return true
+      }
+      val inW = match w { case None -> false; case Some(we) -> exprContains(we, probe) }
+      inW or exprContains(body, probe)
     }
     case EExists(_, w, body, _) -> {
-      val inW = match w { case None -> false; case Some(we) -> exprContainsYield(we) }
-      inW or exprContainsYield(body)
+      if isQuantifierProbe(probe) {
+        return true
+      }
+      val inW = match w { case None -> false; case Some(we) -> exprContains(we, probe) }
+      inW or exprContains(body, probe)
     }
   }
 }
 
-func listAnyExprContainsYield(es: in List[Expr]): Bool {
+func listAnyExprContains(es: in List[Expr], probe: in ExprProbe): Bool {
   var i = 0
   while i < es.count {
-    if exprContainsYield(es[i]) {
+    if exprContains(es[i], probe) {
       return true
     }
     i = i + 1
@@ -992,10 +1015,10 @@ func listAnyExprContainsYield(es: in List[Expr]): Bool {
   false
 }
 
-func blockContainsYield(blk: in Block): Bool {
+func blockContains(blk: in Block, probe: in ExprProbe): Bool {
   var i = 0
   while i < blk.statements.count {
-    if stmtContainsYield(blk.statements[i]) {
+    if stmtContains(blk.statements[i], probe) {
       return true
     }
     i = i + 1
@@ -1003,46 +1026,66 @@ func blockContainsYield(blk: in Block): Bool {
   false
 }
 
-func stmtContainsYield(stmt: in Statement): Bool {
+func stmtContains(stmt: in Statement, probe: in ExprProbe): Bool {
   match stmt.kind {
-    case SExpr(e) -> exprContainsYield(e)
-    case SThrow(e) -> exprContainsYield(e)
-    case SReturn(Some(e)) -> exprContainsYield(e)
+    case SExpr(e) -> exprContains(e, probe)
+    case SThrow(e) -> exprContains(e, probe)
+    case SReturn(Some(e)) -> exprContains(e, probe)
     case SReturn(None) -> false
     case SBreak(_) -> false
     case SContinue(_) -> false
     case SInvariant(_) -> false
     case SItem(_) -> false
-    case SAssign(t, _, v) -> exprContainsYield(t) or exprContainsYield(v)
+    case SAssign(t, _, v) -> exprContains(t, probe) or exprContains(v, probe)
     case SLocal(binding) -> match binding {
-      case LBVal(_, _, e) -> exprContainsYield(e)
-      case LBLet(_, _, e) -> exprContainsYield(e)
-      case LBVar(_, _, Some(e)) -> exprContainsYield(e)
+      case LBVal(_, _, e) -> exprContains(e, probe)
+      case LBLet(_, _, e) -> exprContains(e, probe)
+      case LBVar(_, _, Some(e)) -> exprContains(e, probe)
       case LBVar(_, _, None) -> false
     }
     case STry(body, catches, finally_) -> {
-      if blockContainsYield(body) {
+      if blockContains(body, probe) {
         return true
       }
       var i = 0
       while i < catches.count {
-        if blockContainsYield(catches[i].body) {
+        if blockContains(catches[i].body, probe) {
           return true
         }
         i = i + 1
       }
       match finally_ {
         case None -> false
-        case Some(fb) -> blockContainsYield(fb)
+        case Some(fb) -> blockContains(fb, probe)
       }
     }
-    case SDefer(b) -> blockContainsYield(b)
-    case SScope(_, b) -> blockContainsYield(b)
-    case SLoop(_, b) -> blockContainsYield(b)
-    case SFor(_, _, iter, body) -> exprContainsYield(iter) or blockContainsYield(body)
-    case SWhile(_, cond, body) -> exprContainsYield(cond) or blockContainsYield(body)
-    case SRule(l, r) -> exprContainsYield(l) or exprContainsYield(r)
+    case SDefer(b) -> blockContains(b, probe)
+    case SScope(_, b) -> blockContains(b, probe)
+    case SLoop(_, b) -> blockContains(b, probe)
+    case SFor(_, _, iter, body) -> exprContains(iter, probe) or blockContains(body, probe)
+    case SWhile(_, cond, body) -> exprContains(cond, probe) or blockContains(body, probe)
+    case SRule(l, r) -> exprContains(l, probe) or exprContains(r, probe)
   }
+}
+
+func isQuantifierProbe(probe: in ExprProbe): Bool {
+  match probe {
+    case ProbeQuantifier -> true
+    case ProbeYield -> false
+  }
+}
+
+func exprContainsYield(e: in Expr): Bool {
+  exprContains(e, ProbeYield)
+}
+
+func blockContainsYield(blk: in Block): Bool {
+  blockContains(blk, ProbeYield)
+}
+
+/// True when `e` holds a `forall`/`exists` anywhere.
+func exprHasQuantifier(e: in Expr): Bool {
+  exprContains(e, ProbeQuantifier)
 }
 
 func funcBodyContainsYield(fn: in FunctionDecl): Bool {
@@ -3232,6 +3275,21 @@ func checkProtectedInvariant(
   fieldLocals: in List[LocalBinding],
   selfTy: in Type,
 ): Unit {
+  checkInvariantExpr(tbl, sigs, diag, inv.expr, inv.span, ownerGenerics, fieldLocals, selfTy)
+}
+
+// An `invariant:` expression, checked as `Bool` with the type's fields bound
+// by bare name.
+func checkInvariantExpr(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  expr: in Expr,
+  sp: in Span,
+  ownerGenerics: in List[String],
+  fieldLocals: in List[LocalBinding],
+  selfTy: in Type,
+): Unit {
   val selfFields: Map[String, Type] = newMap()
   for f in fieldLocals {
     selfFields.add(f.name, f.ty)
@@ -3241,7 +3299,111 @@ func checkProtectedInvariant(
   for f in fieldLocals {
     scopeAdd(sc, f)
   }
-  checkBoolClause(sc, tbl, sigs, diag, inv.expr, "invariant", inv.span)
+  checkBoolClause(sc, tbl, sigs, diag, expr, "invariant", sp)
+}
+
+// A record's or opaque type's `invariant:` is type-checked through the
+// construction checker `synthesizeInvariantCheckers` adds, which asserts
+// only its `and`-conjuncts without a quantifier: one with a quantifier
+// cannot be evaluated at runtime (W0002) and is `lyric prove`'s alone.
+// Those conjuncts are checked here, at the clause (#8322).
+func checkQuantifiedInvariantConjuncts(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  inv: in InvariantClause,
+  ownerGenerics: in List[String],
+  fieldLocals: in List[LocalBinding],
+  selfTy: in Type,
+): Unit {
+  val parts: List[Expr] = newList()
+  collectInvariantConjuncts(inv.expr, parts)
+  for part in parts {
+    if exprHasQuantifier(part) {
+      checkInvariantExpr(tbl, sigs, diag, part, part.span, ownerGenerics, fieldLocals, selfTy)
+    }
+  }
+}
+
+// The top-level `and`-conjuncts of `e`, through parentheses, split as the
+// contract elaborator splits a clause it checks at runtime.
+func collectInvariantConjuncts(e: in Expr, acc: in List[Expr]): Unit {
+  match e.kind {
+    case EBinop(op, l, r) -> match op {
+      case BAnd -> {
+        collectInvariantConjuncts(l, acc)
+        collectInvariantConjuncts(r, acc)
+      }
+      case _ -> acc.add(e)
+    }
+    case EParen(inner) -> collectInvariantConjuncts(inner, acc)
+    case _ -> acc.add(e)
+  }
+}
+
+func opaqueFieldLocals(tbl: in SymbolTable, ctx: in GenericContext, decl: in OpaqueTypeDecl): List[LocalBinding] {
+  val scratch: List[Diagnostic] = newList()
+  val locals: List[LocalBinding] = newList()
+  for m in decl.members {
+    match m {
+      case OMField(field) -> locals.add(
+        LocalBinding(
+          name = field.name,
+          ty = resolveType(tbl, ctx, scratch, field.ty),
+          isMutable = field.isMutable
+        )
+      )
+      case OMInvariant(_) -> ()
+    }
+  }
+  locals
+}
+
+// The quantified `invariant:` conjuncts of an opaque type (#8322).
+func checkOpaqueInvariants(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  decl: in OpaqueTypeDecl,
+): Unit {
+  if not opaqueHasInvariant(decl) {
+    return
+  }
+  val ownerGenerics = extractGenericNames(decl.generics)
+  val fieldLocals = opaqueFieldLocals(tbl, declGenericContext(decl.generics), decl)
+  val selfTy = opaqueSelfType(tbl, decl.name, ownerGenerics)
+  for m in decl.members {
+    match m {
+      case OMInvariant(inv) -> checkQuantifiedInvariantConjuncts(tbl, sigs, diag, inv, ownerGenerics, fieldLocals, selfTy)
+      case OMField(_) -> ()
+    }
+  }
+}
+
+func opaqueHasInvariant(decl: in OpaqueTypeDecl): Bool {
+  for m in decl.members {
+    match m {
+      case OMInvariant(_) -> return true
+      case OMField(_) -> ()
+    }
+  }
+  false
+}
+
+func opaqueSelfType(tbl: in SymbolTable, name: in String, ownerGenerics: in List[String]): Type {
+  match symTableTryFindOne(tbl, name) {
+    case Some(sym) -> match symbolTypeIdOpt(sym) {
+      case Some(tid) -> {
+        val targs: List[Type] = newList()
+        for g in ownerGenerics {
+          targs.add(TyVar(name = g))
+        }
+        TyUser(id = tid, name = name, args = targs)
+      }
+      case None -> TyError
+    }
+    case None -> TyError
+  }
 }
 
 // #6487: the record-body counterpart of `protectedFieldLocals` — resolves
@@ -3493,6 +3655,7 @@ func checkRecordMemberBodies(
           selfTy
         )
       }
+      case RMInvariant(inv) -> checkQuantifiedInvariantConjuncts(tbl, sigs, diag, inv, ownerGenerics, fieldLocals, selfTy)
       case _ -> {
       }
     }
@@ -5481,6 +5644,7 @@ func checkWithImportedPackagesCore(
       case IProtected(decl) -> checkProtectedMemberBodies(tbl, sigs, diag, decl)
       case IRecord(decl) -> checkRecordMemberBodies(tbl, sigs, diag, decl)
       case IExposedRec(decl) -> checkRecordMemberBodies(tbl, sigs, diag, decl)
+      case IOpaque(decl) -> checkOpaqueInvariants(tbl, sigs, diag, decl)
       case IConfig(decl) -> checkConfigBlock(diag, decl)
       case IAspect(decl) -> checkAspectConfigRanges(diag, decl)
       case ITest(decl) -> checkTestBody(tbl, sigs, diag, userPkg, decl)

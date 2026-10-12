@@ -874,6 +874,7 @@ ExprStmt = Expr ;                             (* an expression in statement posi
  *  loosest to tightest binding:
  *
  *     Expr          assignment   (right-assoc)        '=' '+=' '-=' '*=' '/=' '%='
+ *     ImpliesExpr   implication  (right-assoc)        'implies'
  *     OrExpr        or / xor     (left-assoc)         'or' 'xor'
  *     AndExpr       and          (left-assoc)         'and'
  *     CompareExpr   comparison   (non-associative)    '==' '!=' '<' '<=' '>' '>='
@@ -908,7 +909,12 @@ Expr =
       AssignExpr ;
 
 AssignExpr =
-      OrExpr [ AssignOp AssignExpr ] ;        (* right-assoc *)
+      ImpliesExpr [ AssignOp AssignExpr ] ;   (* right-assoc *)
+
+(* 'a implies b' ≡ 'not a or b', for contract expressions (reference §6.3).
+ * A '{' after 'implies' opens a Block, never a lambda (#8322). *)
+ImpliesExpr =
+      OrExpr [ 'implies' ( Block | ImpliesExpr ) ] ;   (* right-assoc *)
 
 OrExpr =
       AndExpr { ('or' | 'xor') AndExpr } ;

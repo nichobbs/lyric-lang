@@ -416,9 +416,9 @@ pub func noSolverName(): String {
   "no solver"
 }
 
-func invokeSolver(binPath: in String, args: in List[String], smtSource: in String): SolverExchange {
+// `name` is the solver's kind (`z3`, `cvc5`), whatever its binary is called.
+func invokeSolver(name: in String, binPath: in String, args: in List[String], smtSource: in String): SolverExchange {
   val captured = runCaptureWithDiagnostics(binPath, args, smtSource)
-  val name = pathBaseName(binPath)
   // What the solver wrote: its output, then anything it wrote to stderr.
   val raw = if captured.stderr.length == 0 {
     captured.stdout
@@ -489,7 +489,7 @@ pub func invokeZ3(z3Path: in String, smtSource: in String): SolverExchange {
   val args: List[String] = newList()
   args.add("-in")
   args.add("-T:5")
-  invokeSolver(z3Path, args, smtSource)
+  invokeSolver("z3", z3Path, args, smtSource)
 }
 
 pub func invokeCvc5(cvc5Path: in String, smtSource: in String): SolverExchange {
@@ -498,7 +498,7 @@ pub func invokeCvc5(cvc5Path: in String, smtSource: in String): SolverExchange {
   args.add("--tlimit=5000")
   args.add("--produce-models")
   args.add("-")
-  invokeSolver(cvc5Path, args, smtSource)
+  invokeSolver("cvc5", cvc5Path, args, smtSource)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -562,18 +562,5 @@ func pathJoin(dir: in String, file: in String): String {
       }
     }
     case None -> file
-  }
-}
-
-func pathBaseName(path: in String): String {
-  // `Std.String.lastIndexOf` returns Option[Int] (#6124/#6348); collapse to
-  // the -1 sentinel the max/branch logic below expects.
-  val sep1 = match path.lastIndexOf("/") { case Some(i) -> i; case None -> -1 }
-  val sep2 = match path.lastIndexOf("\\") { case Some(i) -> i; case None -> -1 }
-  val pos = if sep1 > sep2 { sep1 } else { sep2 }
-  if pos < 0 {
-    path
-  } else {
-    path.substring(pos + 1, path.length - pos - 1)
   }
 }

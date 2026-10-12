@@ -1893,6 +1893,9 @@ func parseQuantifierExpr(st: inout ParseState, isForall: in Bool): Expr {
   var bodyForm: QuantBodyForm = QBodyBare
   val body = if identStr(peekToken(st)) == "implies" {
     val _ = advance(st)
+    // `implies` cannot end the quantifier: its body may start on the next
+    // line.
+    val _ = skipStmtEnds(st)
     bodyForm = QBodyImplies
     // `implies { e }` is a braced body after `implies` (#8322); read as an
     // expression, the `{` would open a lambda.
@@ -2292,7 +2295,17 @@ func parseImpliesExpr(st: inout ParseState): Expr {
   val lhs = parseOrExpr(st)
   if identStr(peekToken(st)) == "implies" {
     val _ = advance(st)
-    val rhs = parseImpliesExpr(st)
+    // `implies` cannot end an expression: its right operand may start on
+    // the next line.
+    val _ = skipStmtEnds(st)
+    // `a implies { b }`: the braces hold a block, as after a quantifier's
+    // `implies`, never a lambda (#8322).
+    val rhs = if isPunct(peekToken(st), LBrace) {
+      val blk = parseBlock(st)
+      mkExpr(EBlock(block = blk), blk.span)
+    } else {
+      parseImpliesExpr(st)
+    }
     mkExpr(EBinop(op = BImplies, lhs = lhs, rhs = rhs), joinSpans(lhs.span, rhs.span))
   } else {
     lhs

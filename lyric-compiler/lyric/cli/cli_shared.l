@@ -14,7 +14,7 @@
 //!   run     [<source.l>] [--manifest <lyric.toml>] [--target dotnet|jvm] [--watch] [-- <args>...]
 //!   fmt     [<source.l>...] [--manifest <lyric.toml>] [--check] [--write] [--stdin]
 //!   lint    [<source.l>] [--manifest <lyric.toml>] [--error-on-warning]
-//!   prove   [<source.l>] [--manifest <lyric.toml>] [--target dotnet|jvm|native] [--features <a,b>] [--no-default-features] [--all-features] [--define K=V] [--verbose] [--allow-unverified] [--json] [--explain --goal <n>]
+//!   prove   [<source.l>] [--manifest <lyric.toml>] [--target dotnet|jvm|native] [--features <a,b>] [--no-default-features] [--all-features] [--define K=V] [--allow-unverified] [--json | --verbose] [--explain --goal <n>] [--proof-dir <dir>]
 //!   doc     [<source.l>] [--manifest <lyric.toml>] [-o <out.md|dir>]
 //!   public-api-diff <old.dll> <new.dll>
 //!   restore [--manifest <lyric.toml>]
@@ -109,6 +109,18 @@ func printErr(message: in String): Unit {
 /// True, after reporting it, when `arg` is an option (`-x`, `--x`) that
 /// `cmd` does not take, so a misspelt or unsupported flag is an error rather
 /// than a source path (#8309).  A lone `-` is not an option.
+/// `lyric prove`'s entry in `lyric --help`, also what `lyric prove --help`
+/// prints.
+func proveUsageText(): String {
+  "  lyric prove   [<source.l>] [--manifest <lyric.toml>] [--target dotnet|jvm|native] [--features <a,b>]\n" +
+    "                [--no-default-features] [--all-features] [--define K=V] [--allow-unverified]\n" +
+    "                [--json | --verbose|-v] [--explain --goal <n>] [--proof-dir <dir>]\n" +
+    "                (no source: proves contracts in all project source files;\n" +
+    "                 --json: machine-readable goals and diagnostics; --verbose: each goal's SMT-LIB query\n" +
+    "                 and solver response; --explain --goal <n>: goal n's verification condition;\n" +
+    "                 --proof-dir: write each goal's SMT-LIB query to <dir>/<n>-<label>.smt2)\n"
+}
+
 func rejectUnknownOption(cmd: in String, arg: in String): Bool {
   if arg.length > 1 and arg.startsWith("-") {
     printErr(cmd + ": unknown option '" + arg + "' (run `lyric --help` for the options of `lyric " + cmd + "`)")
@@ -325,10 +337,7 @@ func usageText(): String {
     "                 --diff shows a unified diff of changes; --stdin reads from stdin and writes formatted output to stdout)\n" +
     "  lyric lint    [<source.l>] [--manifest <lyric.toml>] [--error-on-warning]\n" +
     "                (no source: lints all project source files; prints summary at end)\n" +
-    "  lyric prove   [<source.l>] [--manifest <lyric.toml>] [--target dotnet|jvm|native] [--features <a,b>]\n" +
-    "                [--no-default-features] [--all-features] [--define K=V] [--verbose] [--allow-unverified]\n" +
-    "                [--json] [--explain --goal <n>] [--proof-dir <dir>]\n" +
-    "                (no source: proves contracts in all project source files)\n" +
+    proveUsageText() +
     "  lyric doc     [<source.l>] [--manifest <lyric.toml>] [-o <out.md|dir>]\n" +
     "                (no source: generates docs/ for all project source files)\n" +
     "  lyric public-api-diff <old.dll> <new.dll>\n" +

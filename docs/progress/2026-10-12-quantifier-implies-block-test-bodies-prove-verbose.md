@@ -1,4 +1,4 @@
-# Quantifier `implies { e }` and Bool bodies; test bodies type-checked; `lyric prove --verbose` (#8322, #8308, #8320)
+# Quantifier and binary `implies { e }`, Bool bodies and invariants; test bodies type-checked; `lyric prove --verbose` (#8322, #8308, #8320)
 
 ## `implies { e }` is a block; a quantifier body and guard must be `Bool` (#8322)
 
@@ -17,10 +17,22 @@ multi-line layout.  `docs/grammar.ebnf`'s `QuantifierExpr` now has one
 `QuantifierBody` production shared by `forall` and `exists` (the grammar had
 left `implies` out for `exists`, which the parser always accepted).
 
+A binary `a implies { b }` outside a quantifier had the same lambda problem;
+its braced right operand is now a block too, and `docs/grammar.ebnf` gains
+the `ImpliesExpr` level the parser always had.  A newline after `implies` used to end
+the clause (P0050); the body or right operand may now start on the next line.
+
 A `where` guard or body whose type is not `Bool` is **T0132**, the
 contract-clause type error ("a forall body must be Bool (got Byte)",
 "a forall where guard must be Bool (...)"); an operand already in error or of
-type `Never` is not reported twice.  The quantifiers in the standard library,
+type `Never` is not reported twice.  A record's or opaque type's
+`invariant:` is type-checked through the construction checker
+`synthesizeInvariantCheckers` adds, which asserts only the conjuncts without
+a quantifier; the conjuncts with one are now checked at the clause, with the
+fields bound by bare name (`checkQuantifiedInvariantConjuncts`; the
+yield-walker became `exprContains` with a quantifier probe).  An interface
+method's contract clauses are still not type-checked at all, quantifier or
+not; that is a separate gap.  The quantifiers in the standard library,
 the ecosystem libraries and `examples/` were all `Bool` already.
 
 Tests: `parser_self_test.l` (the body after `implies {` is a block, after
@@ -75,6 +87,13 @@ project mode it prints each file's goals before that file's count.
 Tests: `prove-type-check.sh` checks the result line, query and response of a
 discharged goal, a refuted goal's `sat`, `--explain`, project mode and the
 `--json` refusal.
+
+The checks that each `requires:` clause can be met (V0035/V0036) are printed
+after the obligations as unnumbered `precondition check:` blocks.  In project
+mode each file's block starts with a `<file>:` header, since goal numbers
+restart per file.  The solver is named by its kind (`z3`, `cvc5`), not by
+the file name of the binary `LYRIC_Z3`/`LYRIC_CVC5` points at.
+`lyric prove --help` prints its options, from the same text as `lyric --help`.
 
 Docs: `docs/01` §6.3, §13.2 (test runner), §13.3 (verifier output) and the
 formatter notes; `docs/grammar.ebnf`; `docs/15` §8.1; book chapters 1 and 18;
