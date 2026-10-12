@@ -1894,7 +1894,14 @@ func parseQuantifierExpr(st: inout ParseState, isForall: in Bool): Expr {
   val body = if identStr(peekToken(st)) == "implies" {
     val _ = advance(st)
     bodyForm = QBodyImplies
-    parseExpr(st)
+    // `implies { e }` is a braced body after `implies` (#8322); read as an
+    // expression, the `{` would open a lambda.
+    if isPunct(peekToken(st), LBrace) {
+      val blk = parseBlock(st)
+      mkExpr(EBlock(block = blk), blk.span)
+    } else {
+      parseExpr(st)
+    }
   } else if isPunct(peekToken(st), LBrace) {
     bodyForm = QBodyBraced
     val blk = parseBlock(st)

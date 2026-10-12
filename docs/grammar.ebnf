@@ -1086,10 +1086,15 @@ OldExpr =
     'old' '(' Expr ')' ;
 
 QuantifierExpr =
-      'forall' '(' QuantifierBinder { ',' QuantifierBinder } ')'
-          [ 'where' Expr ] ( 'implies' Expr | Block | Expr )
-    | 'exists' '(' QuantifierBinder { ',' QuantifierBinder } ')'
-          [ 'where' Expr ] ( Block | Expr ) ;
+      ( 'forall' | 'exists' ) '(' QuantifierBinder { ',' QuantifierBinder } ')'
+          [ 'where' Expr ] QuantifierBody ;
+
+(* After 'implies', a '{' opens the body's Block, never a lambda (#8322).
+ * The 'where' guard and the body must be Bool (T0132). *)
+QuantifierBody =
+      'implies' ( Block | Expr )
+    | Block
+    | Expr ;
 
 QuantifierBinder = IDENT ':' Type ;
 

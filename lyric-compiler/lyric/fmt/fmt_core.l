@@ -1466,7 +1466,7 @@ func exprQuantMulti(
     // When the body was parsed as `{ … }` the parser wraps it in EBlock.
     // Render the block contents directly to avoid double braces.
     case EBlock(b) -> {
-      acc.add(head + " {")
+      acc.add(head + braceOpener(form))
       appendLines(acc, indentDoc(2, blockLines(b, ctx)))
       acc.add("}")
     }
@@ -1496,6 +1496,15 @@ func exprQuantMulti(
     }
   }
   acc
+}
+
+/// What opens a block body after the quantifier's head: ` {`, or
+/// ` implies {` for a block written after `implies` (#8322).
+func braceOpener(form: in QuantBodyForm): String {
+  match form {
+    case QBodyImplies -> " implies {"
+    case _ -> " {"
+  }
 }
 
 func appendLines(acc: List[String], lines: in List[String]): Unit {
@@ -1661,7 +1670,7 @@ func quantifierStr(
   match body.kind {
     // When the body was parsed as `{ … }` the parser wraps it in EBlock.
     // Render the block contents directly to avoid double braces.
-    case EBlock(b) -> head + " { " + blockInline(b) + " }"
+    case EBlock(b) -> head + braceOpener(form) + " " + blockInline(b) + " }"
     case _ -> {
       val bodyStr = exprInline(0, body)
       match quantBodyLayout(w, body, form) {

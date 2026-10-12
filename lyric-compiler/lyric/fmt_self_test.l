@@ -871,6 +871,28 @@ test "quantifier implies and braced bodies round trip" {
   assertQuantClauseRoundTrips("g(1) == 1 and forall (k: Int) g(k) == k", "rhs operand")
 }
 
+test "quantifier braced body after implies round trips" {
+  // `implies { e }` is a block after `implies`, kept as written (#8322).
+  assertQuantClauseRoundTrips("forall (k: Byte) implies { k == k }", "implies braced")
+  assertQuantClauseRoundTrips("forall (k: Int) where k > 0 implies { g(k) > 0 }", "where implies braced")
+  assertQuantClauseRoundTrips("exists (k: Byte) implies { k == 3u8 }", "exists implies braced")
+}
+
+test "long braced body after implies keeps implies" {
+  val clause = "forall (k: Int) where k > 0 implies { aVeryLongPredicateName(k) and anotherVeryLongPredicateName(k) and yetAnother(k) }"
+  val src = "package P\n\nfunc f(): Bool\n  ensures: " + clause + "\n{\n  true\n}\n"
+  match formatSourceChecked(src) {
+    case FmtOk(text) -> {
+      assertTrue(
+        Str.contains(text, "  ensures: forall (k: Int) where k > 0 implies {\n"),
+        "long implies block: opener kept with implies"
+      )
+      assertEqual(format(parse(text)), text, "long implies block: idempotent")
+    }
+    case _ -> assertTrue(false, "long implies block: checked format refused the source")
+  }
+}
+
 test "long unbraced quantifier bodies break and round trip" {
   // A body too long for one line goes on the lines below the binders, with
   // `implies` kept in front of an implies body (#8305).

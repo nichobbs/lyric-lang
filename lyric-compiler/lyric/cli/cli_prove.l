@@ -187,6 +187,14 @@ func cmdProve(argv: in slice[String]): Int {
     return 1
   }
 
+  // The `--json` document is the whole of the output, so the per-goal text
+  // `--verbose` adds has no place in it; `smtPath` (with `--proof-dir`)
+  // carries each query instead.
+  if verbose and jsonOutput {
+    printErr("prove: --verbose cannot be combined with --json (use --proof-dir to write each goal's SMT-LIB query)")
+    return 1
+  }
+
   val buildSettings = ProveBuild(
     target = target,
     cliFeatures = cliFeatures,
@@ -259,6 +267,9 @@ func cmdProve(argv: in slice[String]): Int {
       val summary = Verifier.proveSourceInScope(source, allowUnverified, pkgScope)
       for d in summary.diagnostics.toArray() {
         printDiag(d)
+      }
+      if verbose {
+        printVerboseGoals(summary)
       }
       val total = Verifier.summaryTotalCount(summary)
       val discharged = Verifier.summaryDischargedCount(summary)
@@ -362,6 +373,9 @@ func cmdProve(argv: in slice[String]): Int {
         }
         val r = summary.results[idx]
         Console.print(Verifier.prettyGoal(idx, r.goal))
+        if verbose {
+          printVerboseGoal(idx, r)
+        }
         return 0
       }
     }
@@ -433,6 +447,9 @@ func cmdProve(argv: in slice[String]): Int {
 
   for d in summary.diagnostics.toArray() {
     printDiag(d)
+  }
+  if verbose {
+    printVerboseGoals(summary)
   }
 
   val total = Verifier.summaryTotalCount(summary)
@@ -524,6 +541,69 @@ func proveJson(
   jsonBuf = jsonBuf + "  }\n"
   jsonBuf = jsonBuf + "}\n"
   jsonBuf
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// `--verbose`: each obligation's query and the solver's answer (#8320)
+// ─────────────────────────────────────────────────────────────────────────────
+// For each obligation, in goal order: a result line naming its index (as
+// `--explain --goal` numbers it), label, kind, source position, outcome and
+// who decided it, then its SMT-LIB query and the solver's raw response.
+func printVerboseGoals(summary: in Verifier.ProofSummary): Unit {
+  var gi = 0
+  while gi < summary.results.count {
+    printVerboseGoal(gi, summary.results[gi])
+    gi = gi + 1
+  }
+}
+
+func printVerboseGoal(idx: in Int, r: in Verifier.ProofResult): Unit {
+  val g = r.goal
+  val outcomeStr = match r.outcome {
+    case Discharged -> "discharged"
+    case Counterexample(_) -> "counterexample"
+    case Unknown(reason) -> "unknown (" + reason + ")"
+  }
+  val by = if r.decidedBy.length > 0 { " [" + r.decidedBy + "]" } else { "" }
+  Console.println(
+    "goal " + toString(idx) + ": " + g.label + " (" + Verifier.goalKindDisplay(g.kind) + ") at " +
+      toString(g.origin.startPos.line) +
+      ":" +
+      toString(g.origin.startPos.column) +
+      ": " +
+      outcomeStr +
+      by
+  )
+  if not r.translated {
+    Console.println("  no SMT-LIB query: the obligation could not be translated into the proof logic (V0033)")
+    return
+  }
+  Console.println("  ;; SMT-LIB query")
+  printIndented(Verifier.smtRenderGoal(g))
+  if r.decidedBy == Verifier.trivialDischargerName() {
+    Console.println("  ;; no solver run: the trivial discharger decided the obligation")
+  } else if r.decidedBy == Verifier.noSolverName() {
+    Console.println("  ;; no solver run: no SMT solver is available (set LYRIC_Z3 or LYRIC_CVC5, or install z3 or cvc5)")
+  } else {
+    Console.println("  ;; " + r.decidedBy + " response")
+    printIndented(r.response)
+  }
+}
+
+// `text` line by line, each indented two spaces; a trailing newline adds no
+// empty line.
+func printIndented(text: in String): Unit {
+  val lines = Str.split(text, "\n")
+  var n = lines.length
+  if n > 0 and lines[n - 1].length == 0 {
+    n = n - 1
+  }
+  var i = 0
+  while i < n {
+    val line = Str.trimEnd(lines[i])
+    Console.println(if line.length == 0 { "" } else { "  " + line })
+    i = i + 1
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

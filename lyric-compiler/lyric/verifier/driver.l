@@ -25,6 +25,10 @@ pub record ProofResult {
   /// False when the goal could not be put into the proof logic faithfully
   /// (V0033): it has no SMT-LIB query, and was never sent to a solver.
   pub translated: Bool
+  /// Who decided the goal and what the solver answered (`SolverExchange`;
+  /// `lyric prove --verbose`, #8320).  Empty for a goal never decided.
+  pub decidedBy: String
+  pub response: String
 }
 
 pub record ProofSummary {
@@ -612,14 +616,25 @@ pub func proveSourceInScope(source: in String, allowUnverified: in Bool, pkgScop
         ProofResult(
           goal = g,
           outcome = Unknown(reason = "not translatable: a construct reported above (V0033)"),
-          translated = false
+          translated = false,
+          decidedBy = "",
+          response = ""
         )
       )
     } else {
       match reconcileGoalSorts(g) {
         case Ok(rg) -> {
-          val outcome = afterUnmeetable(rg, domainOutcome(rg, discharge(rg)), unmeetable)
-          into.add(ProofResult(goal = rg, outcome = outcome, translated = true))
+          val exchange = dischargeExchange(rg)
+          val outcome = afterUnmeetable(rg, domainOutcome(rg, exchange.outcome), unmeetable)
+          into.add(
+            ProofResult(
+              goal = rg,
+              outcome = outcome,
+              translated = true,
+              decidedBy = exchange.decidedBy,
+              response = exchange.response
+            )
+          )
           match outcomeToDiag(rg, outcome, allowUnverified) {
             case Some(d) -> resultDiags.add(d)
             case None -> {
@@ -627,7 +642,15 @@ pub func proveSourceInScope(source: in String, allowUnverified: in Bool, pkgScop
           }
         }
         case Err(reason) -> {
-          into.add(ProofResult(goal = g, outcome = Unknown(reason = "not translatable: " + reason), translated = false))
+          into.add(
+            ProofResult(
+              goal = g,
+              outcome = Unknown(reason = "not translatable: " + reason),
+              translated = false,
+              decidedBy = "",
+              response = ""
+            )
+          )
           // A precondition clause that cannot be translated is a hypothesis
           // of every other goal of its function, which reports it.
           if not isDomainGoal(g) {

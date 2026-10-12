@@ -1138,6 +1138,40 @@ test "forall as quantifier expression still works" {
   assertEqualInt(itemCount(pr), 1, "quantifier: one item")
 }
 
+// #8322: braces after `implies` are the body's block, not a lambda.
+func firstEnsuresQuantBody(pr: in ParseResult): String {
+  match pr.file.items[0].kind {
+    case IFunc(fd) -> match fd.contracts[0] {
+      case CCEnsures(ex, _) -> match ex.kind {
+        case EForall(_, _, body, form) -> quantBodyShape(body, form)
+        case EExists(_, _, body, form) -> quantBodyShape(body, form)
+        case _ -> "not a quantifier"
+      }
+      case _ -> "not an ensures clause"
+    }
+    case _ -> "not a function"
+  }
+}
+
+func quantBodyShape(body: in Expr, form: in QuantBodyForm): String {
+  val formName = match form { case QBodyImplies -> "implies"; case QBodyBraced -> "braced"; case QBodyBare -> "bare" }
+  val kindName = match body.kind { case EBlock(_) -> "block"; case ELambda(_, _) -> "lambda"; case _ -> "expr" }
+  formName + " " + kindName
+}
+
+test "a braced body after implies is a block" {
+  val pr = parse("package P\nfunc f(): Bool\n  ensures: forall (k: Byte) implies { k == k }\n{ true }\n")
+  assertEqualInt(diagCount(pr), 0, "implies { e }: no diagnostics")
+  assertEqual(firstEnsuresQuantBody(pr), "implies block", "implies { e }: block body, implies form")
+  val pr2 = parse("package P\nfunc f(): Bool\n  ensures: exists (k: Byte) where k > 0u8 implies { k == k }\n{ true }\n")
+  assertEqualInt(diagCount(pr2), 0, "where … implies { e }: no diagnostics")
+  assertEqual(firstEnsuresQuantBody(pr2), "implies block", "where … implies { e }: block body")
+  val pr3 = parse("package P\nfunc f(): Bool\n  ensures: forall (k: Byte) implies k == k\n{ true }\n")
+  assertEqual(firstEnsuresQuantBody(pr3), "implies expr", "implies e: expression body")
+  val pr4 = parse("package P\nfunc f(): Bool\n  ensures: forall (k: Byte) { k == k }\n{ true }\n")
+  assertEqual(firstEnsuresQuantBody(pr4), "braced block", "{ e }: braced block body")
+}
+
 // #7228: a quantifier outside a contract or invariant clause is P0344 (it
 // cannot be evaluated); `exists(x)` as an ordinary call is unaffected.
 test "a quantifier outside a contract clause is P0344" {

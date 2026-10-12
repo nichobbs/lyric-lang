@@ -396,15 +396,48 @@ pub func findCvc5(): Option[String] {
 // ─────────────────────────────────────────────────────────────────────────────
 // §5. Solver invocation.
 // ─────────────────────────────────────────────────────────────────────────────
-func invokeSolver(binPath: in String, args: in List[String], smtSource: in String): SolverOutcome {
+/// What deciding one goal produced: its outcome, who decided it (`z3`,
+/// `cvc5`, the built-in trivial discharger, or no one when no solver is
+/// installed), and the solver's raw response, which `lyric prove --verbose`
+/// prints (#8320).  `response` is empty when no solver ran.
+pub record SolverExchange {
+  pub outcome: SolverOutcome
+  pub decidedBy: String
+  pub response: String
+}
+
+/// `decidedBy` of a goal the trivial discharger decided without a solver.
+pub func trivialDischargerName(): String {
+  "trivial discharger"
+}
+
+/// `decidedBy` of a goal no solver could be found to decide.
+pub func noSolverName(): String {
+  "no solver"
+}
+
+func invokeSolver(binPath: in String, args: in List[String], smtSource: in String): SolverExchange {
   val captured = runCaptureWithDiagnostics(binPath, args, smtSource)
+  val name = pathBaseName(binPath)
+  // What the solver wrote: its output, then anything it wrote to stderr.
+  val raw = if captured.stderr.length == 0 {
+    captured.stdout
+  } else if captured.stdout.length == 0 {
+    captured.stderr
+  } else {
+    captured.stdout + "\n" + captured.stderr
+  }
+  SolverExchange(outcome = solverOutcomeOf(name, captured), decidedBy = name, response = raw)
+}
+
+func solverOutcomeOf(name: in String, captured: in CaptureResult): SolverOutcome {
   if captured.timedOut {
-    return Unknown(reason = pathBaseName(binPath) + " timed out (killed after 10 s)")
+    return Unknown(reason = name + " timed out (killed after 10 s)")
   }
   // Both solvers run under a 5 s limit (`-T:5`, `--tlimit=5000`): z3 prints
   // `timeout` when it is reached, cvc5 reports being interrupted by it.
   if solverTimedOut(captured.stdout) or solverTimedOut(captured.stderr) {
-    return Unknown(reason = pathBaseName(binPath) + " reached its 5 s time limit")
+    return Unknown(reason = name + " reached its 5 s time limit")
   }
   if captured.stdout.length == 0 {
     val stderrDetail = if captured.stderr != "" { ": " + captured.stderr } else { "" }
@@ -417,13 +450,13 @@ func invokeSolver(binPath: in String, args: in List[String], smtSource: in Strin
   } else if firstLine == "sat" {
     Counterexample(model = captured.stdout)
   } else if firstLine == "unknown" {
-    Unknown(reason = pathBaseName(binPath) + " returned unknown")
+    Unknown(reason = name + " returned unknown")
   } else if firstLine.startsWith("(error") {
     // The query itself was malformed: a verifier bug, never a property of
     // the program.  It stays a failed goal (#8102).
     Unknown(reason = solverRejectedMarker() + firstLine)
   } else {
-    Unknown(reason = pathBaseName(binPath) + " returned unexpected output: " + firstLine)
+    Unknown(reason = name + " returned unexpected output: " + firstLine)
   }
 }
 
@@ -452,14 +485,14 @@ func firstNonEmptyLine(s: in String): String {
   ""
 }
 
-pub func invokeZ3(z3Path: in String, smtSource: in String): SolverOutcome {
+pub func invokeZ3(z3Path: in String, smtSource: in String): SolverExchange {
   val args: List[String] = newList()
   args.add("-in")
   args.add("-T:5")
   invokeSolver(z3Path, args, smtSource)
 }
 
-pub func invokeCvc5(cvc5Path: in String, smtSource: in String): SolverOutcome {
+pub func invokeCvc5(cvc5Path: in String, smtSource: in String): SolverExchange {
   val args: List[String] = newList()
   args.add("--lang=smt2")
   args.add("--tlimit=5000")
@@ -472,8 +505,14 @@ pub func invokeCvc5(cvc5Path: in String, smtSource: in String): SolverOutcome {
 // §6. Public discharge function.
 // ─────────────────────────────────────────────────────────────────────────────
 pub func discharge(g: in Goal): SolverOutcome {
+  dischargeExchange(g).outcome
+}
+
+/// Decide `g` as `discharge` does, keeping who decided it and the solver's
+/// raw response (#8320).
+pub func dischargeExchange(g: in Goal): SolverExchange {
   match trivialDischarge(g) {
-    case Some(outcome) -> outcome
+    case Some(outcome) -> SolverExchange(outcome = outcome, decidedBy = trivialDischargerName(), response = "")
     case None -> {
       val smtSrc = smtRenderGoal(g)
       match findZ3() {
@@ -481,7 +520,13 @@ pub func discharge(g: in Goal): SolverOutcome {
         case None -> {
           match findCvc5() {
             case Some(cvc5) -> invokeCvc5(cvc5, smtSrc)
-            case None -> Unknown(reason = "no SMT solver available (set LYRIC_Z3 or LYRIC_CVC5, or install z3/cvc5)")
+            case None -> SolverExchange(
+              outcome = Unknown(
+                reason = "no SMT solver available (set LYRIC_Z3 or LYRIC_CVC5, or install z3/cvc5)"
+              ),
+              decidedBy = noSolverName(),
+              response = ""
+            )
           }
         }
       }

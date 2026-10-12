@@ -1199,7 +1199,8 @@ lyric prove --allow-unverified <file.l> # downgrade V0007 (unknown) from error t
 lyric prove --explain --goal N <file.l> # show the VC IR for goal N
 lyric prove --json <file.l>            # machine-readable output
 lyric prove --proof-dir <dir> <file.l> # also write each obligation's SMT-LIB query to <dir>/<n>-<label>.smt2
-lyric prove --verbose <file.l>         # print each goal's SMT query and solver response
+lyric prove --verbose <file.l>         # also print each goal's result line, SMT-LIB query and solver response
+                                       # (not with --json; with --explain, for that goal only)
 lyric prove                            # project mode: prove every [project.packages] source file
 lyric prove --manifest <lyric.toml>    # project mode: override manifest discovery
 lyric prove --target jvm <file.l>      # type-check as a --target jvm build (dotnet|jvm|native)
@@ -1411,7 +1412,7 @@ Style and quality rules checked by `lyric lint`.  These are single-digit codes (
 | `T0129` | A union- or enum-case pattern is matched against a value of a different type: `case Some(i)` on an `Int`, or `case Ok(v)` on an `Option`. The pattern can never match; it used to type-check and then take the wrong arm on dotnet or fail JVM verification. Fix the scrutinee or the pattern. A bare nullary case (`case None`) is checked the same way. Not checked when the scrutinee's type is unknown or open (a type variable, `Self`, a nullable). |
 | `T0130` | `break` or `continue` outside a loop, or `break label` / `continue label` where no enclosing loop has that label. A lambda body, a `defer` body and a `finally` block start with no enclosing loops. |
 | `T0131` | A loop reuses the label of a loop it is nested in, so `break label` would be ambiguous. Rename one; sibling loops may share a label. |
-| `T0132` | A contract clause has the wrong type: `requires:`, `ensures:`, `when:`, loop `invariant:` and a protected type's `invariant:` must be `Bool` (a protected invariant reads the fields by bare name). Clauses are checked in the function's scope, with `result` typed as the declared return type. |
+| `T0132` | A contract clause has the wrong type: `requires:`, `ensures:`, `when:`, loop `invariant:` and a protected type's `invariant:` must be `Bool` (a protected invariant reads the fields by bare name), and so must a `forall`/`exists` body and `where` guard. Clauses are checked in the function's scope, with `result` typed as the declared return type. |
 | `T0133` | A contract clause or loop invariant calls a function that is not `@pure`. Mark the callee `@pure` if it has no side effects (the compiler trusts the annotation), or move the check into the body. |
 | `T0134` | A compound assignment (`+=`, `-=`, ...) to a distinct type, or to a record with derived `Add`/`Sub`, has a target that is not a variable or field path (`xs[i] += y`). The assignment is rewritten to `x = x op y`, which evaluates the target twice; write it out explicitly. |
 | `T0135` | A protected type's `func` member, or a method of an `impl` for a protected type, is `async` or declares its own type parameters. Every `entry` and `func` (and every such impl method) runs under the instance lock, which cannot be held across an `await` or taken by a method-generic member. |

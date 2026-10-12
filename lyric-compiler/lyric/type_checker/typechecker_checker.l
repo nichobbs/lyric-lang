@@ -352,8 +352,10 @@ func registerItem(
     case IProperty(decl) -> {
       val _ = addSym(tbl, diag, isImported, originPkg, decl.title, DKProperty(decl = decl), vis, span)
     }
+    // `lyric test` makes a fixture a module-level `val` (`Lyric.TestSynth`);
+    // a test body reads it as one in every command (#8308).
     case IFixture(decl) -> {
-      val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKFixture(decl = decl), vis, span)
+      val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKVal(decl = fixtureAsVal(decl)), vis, span)
     }
     case IConfig(decl) -> {
       val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKConfig(decl = decl), vis, span)
@@ -380,6 +382,47 @@ func registerItem(
     case IError -> {
     }
   }
+}
+
+/// The module-level `val` a `fixture` stands for: `fixture n[: T] = e` is
+/// `val n[: T] = e`, as `Lyric.TestSynth` rewrites it.
+func fixtureAsVal(decl: in FixtureDecl): ValDecl {
+  ValDecl(
+    pattern = Pattern(kind = PBinding(name = decl.name, inner = None), span = decl.nameSpan),
+    ty = decl.ty,
+    init = decl.init,
+    span = decl.span
+  )
+}
+
+/// A `test "…" { … }` body is checked as `Lyric.TestSynth` compiles it: the
+/// body of a parameterless `Unit` function in the module's scope (#8308).
+/// Every command that type-checks the module then reports its errors at
+/// their own spans, not only `lyric test` after the rewrite.
+func checkTestBody(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  pkgName: in String,
+  decl: in TestDecl,
+): Unit {
+  val noLocals: List[LocalBinding] = newList()
+  val fn = FunctionDecl(
+    docComments = newList(),
+    annotations = newList(),
+    visibility = None,
+    isAsync = false,
+    name = "test \"" + decl.title + "\"",
+    generics = None,
+    params = newList(),
+    ret = Some(value = TypeExpr(kind = TUnit, span = decl.span)),
+    whereClause = None,
+    contracts = newList(),
+    body = Some(value = FBBlock(block = decl.body)),
+    span = decl.span
+  )
+  val sig = resolveFunctionSig(tbl, diag, pkgName, fn)
+  checkFunctionBody(tbl, sigs, diag, fn, sig, noLocals, noLocals, false, TyError)
 }
 
 // Record each `impl Iface for Target` conformance keyed by resolved `TypeId`,
@@ -4461,6 +4504,19 @@ func checkItemDeclaredInits(
 ): Unit {
   val noGenerics: List[String] = newList()
   match item.kind {
+    // A fixture's initialiser is checked as the `val` it becomes (#8308).
+    case IFixture(fd) -> checkItemDeclaredInits(
+      tbl,
+      sigs,
+      diag,
+      Item(
+        docComments = item.docComments,
+        annotations = item.annotations,
+        visibility = item.visibility,
+        kind = IVal(decl = fixtureAsVal(fd)),
+        span = item.span
+      )
+    )
     // An `@asyncLocal` value's initialiser is a `()` placeholder: the
     // backend constructs the `AsyncLocal` slot itself, as it supplies an
     // `@externTarget` function's body.
@@ -5427,6 +5483,7 @@ func checkWithImportedPackagesCore(
       case IExposedRec(decl) -> checkRecordMemberBodies(tbl, sigs, diag, decl)
       case IConfig(decl) -> checkConfigBlock(diag, decl)
       case IAspect(decl) -> checkAspectConfigRanges(diag, decl)
+      case ITest(decl) -> checkTestBody(tbl, sigs, diag, userPkg, decl)
       case _ -> {
       }
     }
