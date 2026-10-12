@@ -113,8 +113,15 @@ the server call.  The import scope is shared the same way
 the server reads the standard library's declarations once per process
 (`LspState.stdlibScope`) and only for `@proof_required` documents, and each
 document's builds, package file set and import scope once per path
-(`LspState.docContexts`), dropped on `workspace/didChangeWatchedFiles` (the
-VS Code extension now watches `**/lyric.toml` as well as `**/*.l`).  The
+(`LspState.docContexts`).  Each analysis compares a cheap disk snapshot
+(the enclosing manifests' presence and modification times, and the `.l`
+files of the package's directories) and reads the context again when it
+changed, so a client that never sends `workspace/didChangeWatchedFiles` no
+longer keeps a stale package (a sibling file created after the document was
+opened was invisible, giving an editor-only false "all proved").  The
+context is also dropped on that notification: the VS Code extension now
+watches `**/lyric.toml` as well as `**/*.l`, and a client that advertises
+`dynamicRegistration` is asked for both (`client/registerCapability`).  The
 server proves with `lyric prove`'s defaults (`--target dotnet`, each
 manifest's default features), labels goals by build when there are several,
 publishes the erasure's F0012/F0013 with the verifier's diagnostics, and
@@ -124,7 +131,8 @@ check of the document runs on what `@cfg` erasure keeps for each build
 (diagnostics merged), so `@cfg` twins are no longer a T0001 duplicate there.
 A document whose builds cannot be known (an enclosing `lyric.toml` that
 cannot be read) is refused with B0001, as `lyric prove` refuses it, instead
-of being proved standalone.  Two differences remain and are documented:
+of being proved standalone, and its check under the no-feature fallback is
+not reported.  Two differences remain and are documented:
 the server proves a document its check rejects (its check does not load the
 standard library, #8304), and reports undecided goals as warnings.
 
@@ -157,8 +165,11 @@ consequence of sharing the selection function.
 - `lsp_self_test.l`: a document under a manifest whose default features
   select a `@cfg` twin is proved under that feature (no refutation, the
   inactive twin reported, no T0001 for the twins), and refuted without it; a
-  document under an unreadable manifest is refused with B0001; a duplicate
-  declaration is published as V0033, not thrown on.
+  document under an unreadable manifest is refused with B0001 and no type
+  diagnostic; a sibling file created with no watched-files notification is
+  seen on the next edit; a client advertising `dynamicRegistration` is sent
+  the watched-files registration; a duplicate declaration is published as
+  V0033, not thrown on.
 - `scripts/ci/prove-items.sh` with `examples/prove-generic-records/`,
   `examples/prove-overloads/` and `examples/prove-overloads/sibling/` (the
   cross-file overload, in single-file and `--manifest` mode).

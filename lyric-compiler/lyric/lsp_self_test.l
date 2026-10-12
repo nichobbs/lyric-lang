@@ -459,10 +459,83 @@ test "a document under an unreadable manifest is refused, as lyric prove refuses
     "[package]\nname = \"Bad\"\nversion = \"0.1.0\"\n\n[project]\nname = \"Bad\"\n\n[project.packages]\n\"P\" = \"src/p\"\n\n[features]\ndefault = 5\na = \"oops\"\n"
   )
   val src = Path.join(dir, "src/p/f.l")
-  val text = "@proof_required\npackage P\npub func k(): Int\n  ensures: result == 2\n{\n  1\n}\n"
+  // `@cfg` items whose features the unreadable manifest would declare.
+  val text = "@proof_required\npackage P\n\n@cfg(feature = \"a\")\npub func k(): Int\n  ensures: result == 1\n{\n  1\n}\n\n@cfg(feature = \"b\")\npub func k(): Int\n  ensures: result == 2\n{\n  2\n}\n\npub func useK(): Int\n  ensures: result == 1\n{\n  k()\n}\n\n@cfg(feature = \"zzz\")\npub func typo(): Int\n{\n  0\n}\n"
   writeOrPanic(src, text)
   val msgs = openDocMessages(lspInit(), "file://" + src, text)
   removeProject(src)
   assertTrue(Str.contains(msgs, "B0001"), "the refusal is reported")
   assertFalse(Str.contains(msgs, "V0008"), "nothing is proved")
+  assertFalse(Str.contains(msgs, "\"code\":\"T"), "no check of a build no command makes")
+}
+
+func changeDocMessages(state: in LspState, uri: in String, version: in Int, text: in String): String {
+  val params = "{\"textDocument\":{\"uri\":" + encodeString(uri) + ",\"version\":" + ("" + version) +
+    "},\"contentChanges\":[{\"text\":" +
+    encodeString(text) +
+    "}]}"
+  val msgs = lspHandle(state, "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didChange\",\"params\":" + params + "}")
+  var all = ""
+  for m in msgs {
+    all = all + m
+  }
+  all
+}
+
+// #8342: what a proof reads from disk is read again when the disk changes,
+// whether or not the client reports it: a file of the package created
+// after the document was opened is seen on the next edit.
+test "a sibling file created without a watched-files notification is seen on the next edit (#8342)" {
+  val dir = Path.join(tempBase(), "lyric-lsp-fresh-" + uuidToString(newUuid()))
+  mkdirOrPanic(dir)
+  mkdirOrPanic(Path.join(dir, "src"))
+  mkdirOrPanic(Path.join(dir, "src/p"))
+  writeOrPanic(
+    Path.join(dir, "lyric.toml"),
+    "[package]\nname = \"Fresh\"\nversion = \"0.1.0\"\n\n[project]\nname = \"Fresh\"\n\n[project.packages]\n\"P\" = \"src/p\"\n"
+  )
+  val b = Path.join(dir, "src/p/b.l")
+  val text = "@proof_required\npackage P\npub func add(x: in Int, y: in Int = 100): Int\n  ensures: result == x + y\n{\n  x + y\n}\n" +
+    "pub func useIt(x: in Int): Int\n  ensures: result == x + 100\n{\n  add(x)\n}\n"
+  writeOrPanic(b, text)
+  val state = lspInit()
+  val before = openDocMessages(state, "file://" + b, text)
+  writeOrPanic(
+    Path.join(dir, "src/p/a.l"),
+    "@proof_required\npackage P\npub func add(x: in Int): Int\n  ensures: result == x\n{\n  x\n}\n"
+  )
+  val after = changeDocMessages(state, "file://" + b, 2, text + "\n")
+  match File.deleteDirRecursive(dir) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+  assertFalse(Str.contains(before, "V0033"), "alone, add(x) reaches the file's own add")
+  assertTrue(Str.contains(after, "V0033"), "with a.l created, add(x) binds a.l's add: the call fails closed")
+}
+
+test "a client that registers watched files dynamically is asked for .l and lyric.toml changes (#8342)" {
+  val state = lspInit()
+  val _init = lspHandle(
+    state,
+    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"capabilities\":{\"workspace\":{\"didChangeWatchedFiles\":{\"dynamicRegistration\":true}}}}}"
+  )
+  val msgs = lspHandle(state, "{\"jsonrpc\":\"2.0\",\"method\":\"initialized\",\"params\":{}}")
+  var all = ""
+  for m in msgs {
+    all = all + m
+  }
+  assertTrue(Str.contains(all, "client/registerCapability"), "the registration is requested")
+  assertTrue(Str.contains(all, "lyric.toml"), "lyric.toml is watched")
+  val reply = lspHandle(state, "{\"jsonrpc\":\"2.0\",\"id\":\"lyric-register-watched-files\",\"result\":null}")
+  assertEqualInt(reply.count, 0, "the client's response is not answered")
+  val plain = lspInit()
+  val _init2 = lspHandle(
+    plain,
+    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"capabilities\":{}}}"
+  )
+  assertEqualInt(
+    lspHandle(plain, "{\"jsonrpc\":\"2.0\",\"method\":\"initialized\",\"params\":{}}").count,
+    0,
+    "no registration otherwise"
+  )
 }

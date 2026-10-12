@@ -170,10 +170,21 @@ diagnostics.  The document's own type check runs on what `@cfg` erasure
 keeps for each of those builds (diagnostics merged), so `@cfg` twins are
 not a T0001 duplicate.  A document whose builds cannot be known (an
 enclosing `lyric.toml` that cannot be read) is refused with `B0001`, as
-`lyric prove` refuses it.  The builds, the package file set and the import
+`lyric prove` refuses it, and its own check is not reported (it would be of
+a build no command makes).  The builds, the package file set and the import
 scope are read per document path on first use (`LspState.docContexts`) and
-dropped on `workspace/didChangeWatchedFiles`; the VS Code extension watches
-`**/*.l` and `**/lyric.toml`.  Two differences from `lyric prove` remain:
+read again when the disk they came from changes: each analysis compares a
+cheap snapshot (`LspDiskSnapshot`: every `lyric.toml` from the document's
+directory up, present or not and its modification time, and the `.l` files
+of the package's directories, or the whole tree under the document's
+directory when no manifest lists it), so a client that never reports file
+changes still sees a sibling file created or a manifest edited.  They are
+also dropped on `workspace/didChangeWatchedFiles`: the VS Code extension
+watches `**/*.l` and `**/lyric.toml`, and a client that advertises
+`workspace.didChangeWatchedFiles.dynamicRegistration` is sent a
+`client/registerCapability` request for both on `initialized`.  An edit to
+another package's file that changes neither is seen after such a
+notification.  Two differences from `lyric prove` remain:
 the server does not type-check with the standard library, so it cannot stop
 a proof the way `lyric prove` does on a type error (#8227, #8304) — the
 verifier proves such a document anyway, and a duplicate declaration it

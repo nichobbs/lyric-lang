@@ -30,6 +30,8 @@ import Std.String as Str
 import Std.Parse
 import Std.Console
 import Std.FileHost
+import Std.File as File
+import Std.Path as Path
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.TypeChecker
@@ -83,6 +85,11 @@ pub record LspState {
   // What a document's builds and proof read from disk, by its path
   // (`lspDocContext`): kept until a watched file changes (#8342).
   docContexts: Map[String, LspDocContext]
+  // Whether the client registers watched files on the server's request
+  // (`dynamicRegistration`), and whether that request has been sent
+  // (box[Bool] each).
+  dynamicWatch: List[Bool]
+  watchRegistered: List[Bool]
 }
 
 // The builds that compile a document and what its proof reads besides the
@@ -100,6 +107,21 @@ pub record LspDocContext {
   manifests: List[String]
   // The proof's import scope, read on the first proof (box[ImportScope]).
   imports: List[ImportScope]
+  // What on disk the context was read from (`lspDiskSnapshot`): a context
+  // whose snapshot no longer matches is read again, whether or not the
+  // client reports file changes.
+  snapshot: LspDiskSnapshot
+}
+
+// The parts of the disk a document's context depends on, cheap to read on
+// every analysis: every `lyric.toml` from the document's directory up (its
+// path, and its modification time or absence) and the `.l` files of the
+// directories its package's files are in (the whole tree under the
+// document's directory when no manifest lists it).
+pub record LspDiskSnapshot {
+  manifests: List[String]
+  manifestStats: List[Option[File.FileStat]]
+  sources: List[String]
 }
 
 pub func lspInit(): LspState {
@@ -120,7 +142,9 @@ pub func lspInit(): LspState {
     ffiPathIndex = newMap(),
     ffiIndexInit = ffiInit,
     stdlibScope = newList(),
-    docContexts = newMap()
+    docContexts = newMap(),
+    dynamicWatch = newList(),
+    watchRegistered = newList()
   )
 }
 
@@ -721,7 +745,11 @@ func analyzeAndStore(state: in LspState, uri: in String, text: in String): List[
   val checkDiags: List[Diagnostic] = newList()
   var firstCheck: Option[CheckResult] = None
   var firstPrep: Option[CheckReadyFile] = None
-  for b in ctx.builds {
+  // A file whose builds cannot be known is refused (B0001, below), as
+  // `lyric prove` refuses it: its check would be of a build no command
+  // makes, so it is not reported (it still runs, for hover and navigation).
+  val checkedBuilds: List[ProveBuildConfig] = if ctx.buildsKnown { ctx.builds } else { newList() }
+  for b in checkedBuilds {
     val erasedFile = Cfg.applyCfgErasure(Cfg.withTargetFeature(b.activeFeatures, b.targetName), b.declaredFeatures, parsedFile).file
     val bPrep = pipePrepareForCheck(erasedFile, false)
     val bCheck = checkWithImports(bPrep.file, buildImportedItems(state, bPrep.file))
@@ -833,6 +861,55 @@ func analyzeAndStore(state: in LspState, uri: in String, text: in String): List[
   acc
 }
 
+// Whether the `initialize` params say the client registers
+// `workspace/didChangeWatchedFiles` dynamically.
+func clientRegistersWatchedFiles(params: in String): Bool {
+  val root = rootElement(parseJson(params))
+  match tryGetProperty(root, "capabilities") {
+    case Some(caps) -> match tryGetProperty(caps, "workspace") {
+      case Some(ws) -> match tryGetProperty(ws, "didChangeWatchedFiles") {
+        case Some(w) -> match tryGetProperty(w, "dynamicRegistration") {
+          case Some(d) -> valueKind(d) == 5
+          case None -> false
+        }
+        case None -> false
+      }
+      case None -> false
+    }
+    case None -> false
+  }
+}
+
+// The `client/registerCapability` request for `.l` and `lyric.toml` change
+// notifications.
+func watchedFilesRegistration(): String {
+  val watchers: List[String] = newList()
+  val globs: List[String] = newList()
+  globs.add("**/*.l")
+  globs.add("**/lyric.toml")
+  for glob in globs {
+    val w: List[String] = newList()
+    w.add(jPair("globPattern", jStr(glob)))
+    watchers.add(jObj(w))
+  }
+  val opts: List[String] = newList()
+  opts.add(jPair("watchers", jArr(watchers)))
+  val reg: List[String] = newList()
+  reg.add(jPair("id", jStr("lyric-watched-files")))
+  reg.add(jPair("method", jStr("workspace/didChangeWatchedFiles")))
+  reg.add(jPair("registerOptions", jObj(opts)))
+  val regs: List[String] = newList()
+  regs.add(jObj(reg))
+  val ps: List[String] = newList()
+  ps.add(jPair("registrations", jArr(regs)))
+  val fs: List[String] = newList()
+  fs.add(jPair("jsonrpc", jStr("2.0")))
+  fs.add(jPair("id", jStr("lyric-register-watched-files")))
+  fs.add(jPair("method", jStr("client/registerCapability")))
+  fs.add(jPair("params", jObj(ps)))
+  jObj(fs)
+}
+
 // Add `d` to `diags` unless one of its code is already reported at its
 // position.
 func addDiagOnce(diags: in List[Diagnostic], d: in Diagnostic): Unit {
@@ -853,23 +930,117 @@ func noInactiveItems(): InactiveItems {
 }
 
 // The builds of the document at `docPath` and what its proof reads from
-// disk (`LspDocContext`), read once and kept until a watched file changes.
+// disk (`LspDocContext`), read once and kept while the disk it was read
+// from is unchanged (`lspDiskSnapshot`) and no watched file is reported
+// changed.
 func lspDocContext(state: in LspState, docPath: in String): LspDocContext {
   match mapGet(state.docContexts, docPath) {
-    case Some(c) -> c
-    case None -> {
-      val noCliFeatures: List[String] = newList()
-      val c = LspDocContext(
-        buildsKnown = isSome(Disc.entriesContainingSource(docPath)),
-        builds = proveBuildConfigsForSource(docPath, "dotnet", noCliFeatures, false, false),
-        fileSet = Disc.packageFileSetForSource(docPath),
-        manifests = Disc.manifestsListingSource(docPath),
-        imports = newList()
-      )
-      state.docContexts.add(docPath, c)
-      c
+    case Some(c) -> {
+      if sameDiskSnapshot(c.snapshot, lspDiskSnapshot(docPath, c.fileSet)) {
+        return c
+      }
+      val _stale = state.docContexts.remove(docPath)
+    }
+    case None -> ()
+  }
+  val noCliFeatures: List[String] = newList()
+  val fileSet = Disc.packageFileSetForSource(docPath)
+  val c = LspDocContext(
+    buildsKnown = isSome(Disc.entriesContainingSource(docPath)),
+    builds = proveBuildConfigsForSource(docPath, "dotnet", noCliFeatures, false, false),
+    fileSet = fileSet,
+    manifests = Disc.manifestsListingSource(docPath),
+    imports = newList(),
+    snapshot = lspDiskSnapshot(docPath, fileSet)
+  )
+  state.docContexts.add(docPath, c)
+  c
+}
+
+func lspDiskSnapshot(docPath: in String, fileSet: in Option[Disc.PackageFileSet]): LspDiskSnapshot {
+  val manifests: List[String] = newList()
+  val stats: List[Option[File.FileStat]] = newList()
+  val docDir = Path.dirname(Disc.normalizePath(docPath))
+  var dir = docDir
+  var walking = dir.length > 0
+  while walking {
+    val m = Path.join(dir, "lyric.toml")
+    manifests.add(m)
+    stats.add(match File.stat(m) { case Ok(st) -> Some(value = st); case Err(_) -> None })
+    val parent = Path.dirname(dir)
+    walking = parent.length > 0 and parent != dir
+    dir = parent
+  }
+  val sources: List[String] = newList()
+  val fromManifest = match fileSet { case Some(fs) -> fs.fromManifest; case None -> false }
+  if fromManifest {
+    val dirs: List[String] = newList()
+    dirs.add(docDir)
+    match fileSet {
+      case Some(fs) -> {
+        for f in fs.files {
+          val d = Path.dirname(f)
+          if not dirs.contains(d) {
+            dirs.add(d)
+          }
+        }
+      }
+      case None -> ()
+    }
+    for d in dirs {
+      match File.listFiles(d) {
+        case Ok(fs) -> {
+          for f in fs.toArray() {
+            if Str.endsWith(f, ".l") {
+              sources.add(f)
+            }
+          }
+        }
+        case Err(_) -> sources.add("!unlistable " + d)
+      }
+    }
+  } else {
+    match File.listFilesRecursive(docDir) {
+      case Ok(fs) -> {
+        for f in fs.toArray() {
+          if Str.endsWith(f, ".l") {
+            sources.add(f)
+          }
+        }
+      }
+      case Err(_) -> sources.add("!unlistable " + docDir)
     }
   }
+  LspDiskSnapshot(manifests = manifests, manifestStats = stats, sources = sources)
+}
+
+func sameDiskSnapshot(a: in LspDiskSnapshot, b: in LspDiskSnapshot): Bool {
+  if a.manifests.count != b.manifests.count or a.sources.count != b.sources.count {
+    return false
+  }
+  var i = 0
+  while i < a.manifests.count {
+    if a.manifests[i] != b.manifests[i] {
+      return false
+    }
+    val same = match a.manifestStats[i] {
+      case Some(x) -> match b.manifestStats[i] {
+        case Some(y) -> not File.fileStatIsNewer(x, y) and not File.fileStatIsNewer(y, x)
+        case None -> false
+      }
+      case None -> not isSome(b.manifestStats[i])
+    }
+    if not same {
+      return false
+    }
+    i = i + 1
+  }
+  for f in a.sources {
+    if not b.sources.contains(f) {
+      return false
+    }
+  }
+  true
 }
 
 // The declarations a proof of the document reads besides its package's: the
@@ -1350,6 +1521,9 @@ func initResult(): String {
 func handleInitialize(state: in LspState, id: in String, params: in String): List[String] {
   val acc: List[String] = newList()
   acc.add(mkResponse(id, initResult()))
+  if state.dynamicWatch.count == 0 {
+    state.dynamicWatch.add(clientRegistersWatchedFiles(params))
+  }
   // Extract workspace root — rootUri/rootPath are top-level fields of `params`.
   val rootUri = jRootStr(params, "rootUri")
   val rootPath = jRootStr(params, "rootPath")
@@ -2464,7 +2638,13 @@ pub func lspHandle(state: in LspState, json: in String): List[String] {
   if method == "initialize" {
     collectMsgs(handleInitialize(state, id, params), acc)
   } else if method == "initialized" {
-    // no-op
+    // A client that registers watched files on request is asked to report
+    // `.l` and `lyric.toml` changes (#8342); responses to the request carry
+    // no method and are ignored.
+    if state.dynamicWatch.count > 0 and state.dynamicWatch[0] and state.watchRegistered.count == 0 {
+      state.watchRegistered.add(true)
+      acc.add(watchedFilesRegistration())
+    }
   } else if method == "shutdown" {
     acc.add(mkResponse(id, "{}"))
   } else if method == "exit" {
@@ -2494,6 +2674,8 @@ pub func lspHandle(state: in LspState, json: in String): List[String] {
     acc.add(mkResponse(id, handleCodeAction(state, params)))
   } else if method == "textDocument/rename" {
     acc.add(mkResponse(id, handleRename(state, params)))
+  } else if method.length == 0 {
+    // A response to a request of the server's (`client/registerCapability`).
   } else {
     if id != "null" and id.length > 0 {
       acc.add(mkErrorResponse(id, -32601, "method not found: " + method))
