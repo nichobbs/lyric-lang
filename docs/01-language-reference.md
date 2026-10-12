@@ -1367,25 +1367,38 @@ place under the rules of §5.2 (**T0166** for a receiver that is not one). A
 built-in method of the primitive (`toString`, the conversions such as
 `toLong`, the bitwise `shl`, the `String` methods such as `trim`, ...) keeps
 its meaning in method syntax: a dot-named function of the same name is
-reachable only through the type (`Int.toString(k)`).
+reachable only through the type (`Int.toString(k)`). Any other method call
+on a primitive other than `String` must name a dot-named function of it,
+and one on a distinct type (§2.3) a function of the distinct type itself:
+`a.twice()` for `type Age = Int` and `func Int.twice` is **T0113**, written
+`a.value.twice()`. A dot-named function declared through an alias
+(`alias Num = Int`, `func Num.neg(self: in Num): Num`) is a function of the
+aliased type: `k.neg()`, `Num.neg(k)` and `Int.neg(k)` all call it.
 
 A dot-named function may likewise be declared for a type another package
 declares, an *extension* (`func Bag.extra(self: in Bag): Int` in a package
 that imports the one declaring `Bag`); every dot-named function of a
-primitive is one. A method call `b.m(args)`, or a call through the type
-`Bag.m(b, args)`, binds one of the type's own functions, declared in its
-body or by its declaring package, when one of them takes the call's
-arguments. Otherwise it binds an extension declared by a package the
-file's imports reach, nearest first, as a bare name resolves (§3.1, §9.2):
-one the calling package declares, then one of a package it imports whole,
-then one of a package reached only through those packages' own whole
-imports. Two or more packages declaring it at the nearest of these levels
-is **T0123**; the call names the one meant through its package
-(`BLib.Bag.extra(b)`), which reaches that package's function whether or not
-the package declares `Bag`. An extension of a package the imports do not
-reach (one imported only selectively or under an alias, or not at all) is
-not a candidate, so the call is **T0113**, whose message names the package
-declaring it. Every target calls the function the type checker binds,
+primitive is one. A method call `b.m(args)` and a call through the type
+`Bag.m(b, args)` bind the same function. It is one of the type's own
+functions, declared in its body or by its declaring package, when one of
+them is applicable, taking the call's arguments in number and type
+(defaults included); an import never changes what such a call means.
+Otherwise it is an extension declared by a package the file's imports
+reach, nearest first, as a bare name resolves (§3.1, §9.2): one the calling
+package declares, then one of a package it imports whole, then one of a
+package reached only through those packages' own whole imports; at that
+level an applicable extension is preferred. Two or more packages whose
+extensions are left (an extension with defaulted parameters counting when
+it takes the call's arguments) is **T0123**; the call names the one meant
+through its package (`BLib.Bag.extra(b)`), which reaches that package's
+function whether or not the package declares `Bag`. An extension of a
+package the imports do not reach is not a candidate, so the call is
+**T0113**, whose message names the package declaring it, and for a package
+imported under an alias or selectively, the call through it
+(`EB.Bag.extra(b)`). An extension whose parameters after the receiver have
+the number and types of one of the type's own functions of that name is
+never bound by either call form and is warned about at its declaration
+(**T0170**). Every target calls the function the type checker binds,
 inside a generic function of another package specialised for a call too
 (#8219, D181).
 

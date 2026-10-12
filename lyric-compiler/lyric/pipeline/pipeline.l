@@ -598,7 +598,7 @@ pub func pipePrepareForCheck(file: in SourceFile, runStubbable: in Bool): CheckR
   }
   // Record-body methods with an `inout` receiver become dot-named functions
   // (#8179) before anything indexes the items.
-  var f = Aliases.rewriteFile(hoistByRefReceiverMethods(mvRes.file))
+  var f = canonicalAliasDotNamed(Aliases.rewriteFile(hoistByRefReceiverMethods(mvRes.file)))
   if runStubbable {
     f = Stubbable.stubbableRewriteFile(f)
   }
@@ -615,6 +615,99 @@ pub func pipePrepareForCheck(file: in SourceFile, runStubbable: in Bool): CheckR
   // before type checking so they are checked, and exported, like any
   // function of the declaring package.
   CheckReadyFile(file = synthesizeInvariantCheckers(idRes.file), diagnostics = diags)
+}
+
+/// Each dot-named function declared through a type alias, `func Num.neg`
+/// for `alias Num = Int`, named after the aliased type, `Int.neg`, with
+/// every call through the alias (`Num.neg(n)`) renamed with it: a method
+/// call on a value finds a dot-named function under the name of the value's
+/// type, which an alias does not change (#8217).  An alias of a generic
+/// instance, a function type or another non-nominal type is left alone.
+pub func canonicalAliasDotNamed(file: in SourceFile): SourceFile {
+  val targets: Map[String, String] = newMap()
+  for it in file.items {
+    match it.kind {
+      case ITypeAlias(d) -> match d.generics {
+        case None -> match d.rhs.kind {
+          case TRef(p) -> if p.segments.count > 0 and not targets.containsKey(d.name) {
+            targets.add(d.name, p.segments[p.segments.count - 1])
+          }
+          case _ -> ()
+        }
+        case Some(_) -> ()
+      }
+      case _ -> ()
+    }
+  }
+  if targets.count == 0 {
+    return file
+  }
+  var renamed = false
+  val items: List[Item] = newList()
+  for it in file.items {
+    match it.kind {
+      case IFunc(fd) -> match aliasDotNamedTarget(targets, fd.name) {
+        case Some(n) -> {
+          renamed = true
+          items.add(it.copy(kind = IFunc(decl = fd.copy(name = n))))
+        }
+        case None -> items.add(it)
+      }
+      case _ -> items.add(it)
+    }
+  }
+  if not renamed {
+    return file
+  }
+  mapFileAndContracts(
+    file.copy(items = items),
+    { e: Expr ->
+      match e.kind {
+        case ECall(fn, args) -> match fn.kind {
+          case EPath(p) -> if p.segments.count == 2 and targets.containsKey(p.segments[0]) {
+            val segs: List[String] = newList()
+            segs.add(mapGetOr(targets, p.segments[0], p.segments[0]))
+            segs.add(p.segments[1])
+            Expr(kind = ECall(fn = fn.copy(kind = EPath(path = p.copy(segments = segs))), args = args), span = e.span)
+          } else {
+            e
+          }
+          case EMember(recv, m) -> match recv.kind {
+            case EPath(rp) -> if rp.segments.count == 1 and targets.containsKey(rp.segments[0]) {
+              val segs: List[String] = newList()
+              segs.add(mapGetOr(targets, rp.segments[0], rp.segments[0]))
+              val newRecv = recv.copy(kind = EPath(path = rp.copy(segments = segs)))
+              Expr(kind = ECall(fn = fn.copy(kind = EMember(receiver = newRecv, memberName = m)), args = args), span = e.span)
+            } else {
+              e
+            }
+            case _ -> e
+          }
+          case _ -> e
+        }
+        case _ -> e
+      }
+    },
+    { s: Statement -> s }
+  )
+}
+
+func aliasDotNamedTarget(targets: in Map[String, String], name: in String): Option[String] {
+  val dot = Str.lastIndexOfRaw(name, ".")
+  if dot <= 0 {
+    return None
+  }
+  match mapGet(targets, name.substring(0, dot)) {
+    case Some(t) -> Some(value = t + name.substring(dot))
+    case None -> None
+  }
+}
+
+func mapGetOr(m: in Map[String, String], k: in String, dflt: in String): String {
+  match mapGet(m, k) {
+    case Some(v) -> v
+    case None -> dflt
+  }
 }
 
 /// The check-through-mono half of the middle end on one (already rewritten)

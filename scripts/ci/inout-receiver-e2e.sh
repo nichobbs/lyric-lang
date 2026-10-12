@@ -31,7 +31,12 @@
 #     called with method syntax, through the type and through their package,
 #     beside a same-named extension of a package the caller does not import
 #     and the type's own function of another arity, and from the body of a
-#     generic function of the extending package specialised in the caller.
+#     generic function of the extending package specialised in the caller;
+#   - the type's own function (a method in its body, or a dot-named function
+#     of its package, from a sibling package or a dependency) beside a
+#     same-named function of the caller, which T0170 warns about: both call
+#     forms bind the type's own (D181); an extension with defaulted
+#     parameters.
 #
 #   bash scripts/ci/inout-receiver-e2e.sh [dotnet] [jvm] [native]
 # LYRIC_BIN overrides the binary (default: the AOT build for BUILD_CONFIG).
@@ -66,11 +71,15 @@ pub record Pt {
   func moved(self: inout Pt, d: in Int): Unit {
     self = Pt(x = x + d, y = y + d)
   }
+
+  func total(self: in Pt): Int = x + y
 }
 
 pub func Pt.scaled(self: inout Pt, k: in Int): Unit {
   self = Pt(x = self.x * k, y = self.y * k)
 }
+
+pub func Pt.sum(self: in Pt): Int = self.x + self.y
 
 pub record Box[T] {
   v: T
@@ -143,6 +152,10 @@ import Std.Core
 import Std.Time
 import IrLib
 
+func Pt.sum(self: in Pt): Int = -9
+
+func Pt.total(self: in Pt): Int = -8
+
 func main(): Int {
   var p = Pt(x = 5, y = 6)
   p.moved(1)
@@ -181,7 +194,7 @@ func main(): Int {
   zi.bump(3)
   Int.bump(zi, 1)
   val zz = zi.twice() + Int.twice(zi)
-  println(toString(beforeReset) + " " + toString(afterMove) + " " + toString(p.x + p.y) + " " + toString(b.v) + " " + toString(n) + " " + toString(y) + " " + toString(r) + " " + toString(w) + " " + toString(t) + " " + s + " " + toString(q.x + q.y) + " " + toString(z) + " " + toString(instantEquals(stamp, fromEpochMillis(7000i64))) + " " + toString(acc.n) + " " + toString(zi) + " " + toString(zz))
+  println(toString(beforeReset) + " " + toString(afterMove) + " " + toString(p.x + p.y) + " " + toString(b.v) + " " + toString(n) + " " + toString(y) + " " + toString(r) + " " + toString(w) + " " + toString(t) + " " + s + " " + toString(q.x + q.y) + " " + toString(z) + " " + toString(instantEquals(stamp, fromEpochMillis(7000i64))) + " " + toString(acc.n) + " " + toString(zi) + " " + toString(zz) + " " + toString(q.sum()) + " " + toString(Pt.sum(q)) + " " + toString(q.total()) + " " + toString(Pt.total(q)))
   0
 }'
 
@@ -231,7 +244,8 @@ printf '%s\n' "$app_src" > "$work/restored/app/src/app.l"
 # w = 200, r = 202, then w = 105; t takes b.v (42); s takes "q".  The
 # record-body and `impl` methods' `inout`/`out` arguments (#8210): q = (7, 7),
 # z = 10, `stamp` = 7 s past the epoch, acc = 40 + 1.  A primitive's
-# dot-named functions (#8217): zi = 4 + 3 + 1 = 8, zz = 16 + 16.
+# dot-named functions (#8217): zi = 4 + 3 + 1 = 8, zz = 16 + 16.  Pt's own
+# `sum` and `total` over IrApp's same-named functions (D181): 14 four times.
 clash_lib='package XLib
 
 pub record Box[T] {
@@ -376,6 +390,8 @@ ext_a='package ExtA
 
 pub record Bag {
   n: Int
+
+  func get(self: in Bag): Int = self.n + 500
 }
 
 pub record Box[T] {
@@ -394,6 +410,8 @@ pub func Bag.grow(self: inout Bag, by: in Int): Unit {
 }
 
 pub func Bag.own(self: in Bag, k: in Int): Int = self.n + k
+
+pub func Bag.cfg(self: in Bag, a: in Int = 1, c: in Int = 2): Int = self.n * 100 + a * 10 + c
 
 pub func Box.first[T](self: in Box[T]): T = self.v
 
@@ -417,12 +435,16 @@ import ExtB
 
 func Bag.local(self: in Bag): Int = self.n * 10
 
+func Bag.get(self: in Bag): Int = -1
+
+func Bag.own(self: in Bag): Int = -2
+
 func main(): Int {
   var b = Bag(n = 1)
   b.grow(4)
   Bag.grow(b, 1)
   val box = Box(v = "s")
-  println(toString(b.extra()) + " " + toString(Bag.extra(b)) + " " + toString(ExtB.Bag.extra(b)) + " " + toString(b.local()) + " " + toString(Bag.local(b)) + " " + toString(b.n) + " " + box.first() + " " + toString(b.own()) + " " + toString(b.own(5)) + " " + toString(extraTwice(b, "t")))
+  println(toString(b.extra()) + " " + toString(Bag.extra(b)) + " " + toString(ExtB.Bag.extra(b)) + " " + toString(b.local()) + " " + toString(Bag.local(b)) + " " + toString(b.n) + " " + box.first() + " " + toString(b.own()) + " " + toString(b.own(5)) + " " + toString(extraTwice(b, "t")) + " " + toString(b.get()) + " " + toString(Bag.get(b)) + " " + toString(Bag.own(b)) + " " + toString(b.cfg(c = 7)) + " " + toString(b.cfg()))
   0
 }'
 mkdir -p "$work/ext/src"
@@ -446,9 +468,11 @@ printf '%s\n' "$ext_app" > "$work/ext/src/app.l"
 # gives 8 three ways; the caller's own extension 60 two ways; ExtB's generic
 # `first` gives "s"; ExtA's own `own()` 1006, ExtB's `own(5)` 11; ExtB's
 # generic, specialised here, calls its own extensions: c.n = 16, 18 + 18 + 32.
-ext_want="8 8 8 60 60 6 s 1006 11 68"
+# Bag's own `get` (506) and `own` (1006) over ExtApp's same-named functions,
+# in both call forms; ExtB's `cfg` with its defaults: 617, 612.
+ext_want="8 8 8 60 60 6 s 1006 11 68 506 506 1006 617 612"
 
-want="268 279 0 42 2 204 202 105 42 q 14 10 true 41 8 32"
+want="268 279 0 42 2 204 202 105 42 q 14 10 true 41 8 32 14 14 14 14"
 fail=0
 for t in "${targets[@]}"; do
   out="$("$lyric_bin" run --manifest "$work/proj/lyric.toml" --target "$t" 2>&1 | grep -v '^Picked up JAVA_TOOL_OPTIONS')"

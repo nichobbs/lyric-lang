@@ -6528,15 +6528,28 @@ func rulePkg(name: in String, src: in String): ImportedPackage {
 // bound first when one takes the call's arguments.
 func extensionPackages(ownExtra: in Bool): List[ImportedPackage] {
   val packages: List[ImportedPackage] = newList()
-  val own = if ownExtra { "pub func Bag.extra(self: in Bag): Int = self.n + 1\n" } else { "" }
-  packages.add(rulePkg("ExtA", "package ExtA\npub record Bag {\n  n: Int\n}\n" + own))
+  // ExtA's own functions return a `String` where the extensions return an
+  // `Int`, so the type a call has says which one it bound.
+  val own = if ownExtra { "pub func Bag.extra(self: in Bag): String = \"own\"\n" } else { "" }
+  packages.add(
+    rulePkg(
+      "ExtA",
+      "package ExtA\npub record Bag {\n  n: Int\n  func get(self: in Bag): String = \"own\"\n}\npub func Bag.tag(self: in Bag, s: in String): String = s\n" +
+        own
+    )
+  )
   packages.add(
     rulePkg(
       "ExtB",
-      "package ExtB\nimport ExtA\npub func Bag.extra(self: in Bag): Int = self.n + 2\npub func Int.twice(self: in Int): Int = self * 2\n"
+      "package ExtB\nimport ExtA\npub func Bag.extra(self: in Bag): Int = self.n + 2\npub func Int.twice(self: in Int): Int = self * 2\npub func Bag.get(self: in Bag): Int = 1\npub func Bag.tag(self: in Bag, k: in Int): Int = k\npub func Bag.cfg(self: in Bag, a: in Int = 1): Int = a\n"
     )
   )
-  packages.add(rulePkg("ExtC", "package ExtC\nimport ExtA\npub func Bag.extra(self: in Bag): Int = self.n + 3\n"))
+  packages.add(
+    rulePkg(
+      "ExtC",
+      "package ExtC\nimport ExtA\npub func Bag.extra(self: in Bag): Int = self.n + 3\npub func Bag.cfg(self: in Bag): Int = 2\n"
+    )
+  )
   packages.add(rulePkg("ExtD", "package ExtD\nimport ExtC\npub func viaD(): Int { 0 }\n"))
   packages
 }
@@ -6576,9 +6589,71 @@ test "an extension resolves through the file's imports" {
   )
 }
 
-test "the type's own function is bound before an imported extension" {
-  val cr = checkExtensionCall("import ExtA\nimport ExtB\nimport ExtC\n", "b.extra() + Bag.extra(b)", true)
-  assertEqualInt(diagCount(cr), 0, "ExtA declares Bag: " + diagCodesOf(cr))
+test "the type's own applicable function is bound before an imported extension, in both call forms" {
+  val all = "import ExtA\nimport ExtB\nimport ExtC\n"
+  val dot = checkExtensionCall(all, "val s: String = b.extra() + Bag.extra(b)\n  0", true)
+  assertEqualInt(diagCount(dot), 0, "ExtA's dot-named extra, a String: " + diagCodesOf(dot))
+  val body = checkExtensionCall(all, "val s: String = b.get() + Bag.get(b)\n  0", false)
+  assertEqualInt(diagCount(body), 0, "the get in Bag's body, a String, not ExtB's Int: " + diagCodesOf(body))
+}
+
+test "an own function that does not take the arguments leaves the call to an extension" {
+  val imports = "import ExtA\nimport ExtB\n"
+  val ext = checkExtensionCall(imports, "val i: Int = b.tag(5) + Bag.tag(b, 6)\n  i", false)
+  assertEqualInt(diagCount(ext), 0, "ExtB's tag(Int): " + diagCodesOf(ext))
+  val own = checkExtensionCall(imports, "val s: String = b.tag(\"x\") + Bag.tag(b, \"y\")\n  0", false)
+  assertEqualInt(diagCount(own), 0, "ExtA's tag(String): " + diagCodesOf(own))
+}
+
+test "an extension with a defaulted parameter takes part in the ambiguity" {
+  val cr = checkExtensionCall("import ExtA\nimport ExtB\nimport ExtC\n", "b.cfg()", false)
+  assertTrue(hasDiagCode(cr, "T0123"), "ExtB's cfg(a = 1) and ExtC's cfg(): " + diagCodesOf(cr))
+  val one = checkExtensionCall("import ExtA\nimport ExtB\n", "b.cfg() + b.cfg(a = 3)", false)
+  assertEqualInt(diagCount(one), 0, "ExtB's alone: " + diagCodesOf(one))
+}
+
+test "an extension imported under an alias is called through it" {
+  val cr = checkExtensionCall("import ExtA\nimport ExtB as EB\n", "b.extra()", false)
+  assertTrue(hasDiagCode(cr, "T0113"), "not bound by a method call: " + diagCodesOf(cr))
+  assertTrue(
+    Str.contains(diagMessageFor(cr, "T0113"), "EB.Bag.extra("),
+    "the message names EB.Bag.extra: " + diagMessageFor(cr, "T0113")
+  )
+  val via = checkExtensionCall("import ExtA\nimport ExtB as EB\n", "EB.Bag.extra(b)", false)
+  assertEqualInt(diagCount(via), 0, "through the alias: " + diagCodesOf(via))
+}
+
+// T0170 (a warning): an extension that duplicates one of the type's own
+// functions is never bound by a method call or a call through the type.
+test "an extension duplicating a type's own function is T0170" {
+  val dup = "package App\nimport ExtA\nfunc Bag.get(self: in Bag): String = \"mine\"\nfunc Bag.tag(self: in Bag, s: in String): String = s\n"
+  val cr = checkWithImportedPackages(parse(dup).file, extensionPackages(false))
+  assertEqualInt(countDiagCode(cr, "T0170"), 2, "the body method get and the dot-named tag: " + diagCodesOf(cr))
+  val other = "package App\nimport ExtA\nfunc Bag.get(self: in Bag, k: in Int): Int = k\nfunc Bag.tag(self: in Bag, k: in Int): Int = k\n"
+  val ok = checkWithImportedPackages(parse(other).file, extensionPackages(false))
+  assertEqualInt(countDiagCode(ok, "T0170"), 0, "other parameters: " + diagCodesOf(ok))
+}
+
+// A method call on a primitive or a distinct type that names nothing it has
+// is T0113 at check time (#8217); a `String`'s methods stay open-ended.
+test "an unknown method on a primitive or a distinct type is T0113" {
+  assertTrue(hasDiagCode(parseCheck("package P\nfunc f(k: in Int): Int { k.nosuch() }\n"), "T0113"), "Int")
+  assertTrue(
+    hasDiagCode(parseCheck("package P\ntype Age = Int\nfunc f(a: in Age): Int { a.nosuch() }\n"), "T0113"),
+    "a distinct type"
+  )
+  val under = "package P\ntype Age = Int\nfunc Int.twice(self: in Int): Int = self * 2\n"
+  assertTrue(
+    hasDiagCode(parseCheck(under + "func f(a: in Age): Int { a.twice() }\n"), "T0113"),
+    "the underlying type's method"
+  )
+  assertEqualInt(diagCount(parseCheck(under + "func f(a: in Age): Int { a.value.twice() }\n")), 0, "through .value")
+  assertEqualInt(
+    diagCount(parseCheck("package P\nfunc f(k: in Int): Long { k.toLong() + k.shl(1).toLong() }\n")),
+    0,
+    "built-ins"
+  )
+  assertTrue(not hasDiagCode(parseCheck("package P\nfunc f(s: in String): Int { s.nosuch() }\n"), "T0113"), "String")
 }
 
 // #7555: only a whole import reaches further.  A package's selective or

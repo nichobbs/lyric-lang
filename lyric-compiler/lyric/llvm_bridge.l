@@ -47,6 +47,8 @@ import Lyric.WireExpand as WireExpand
 import Lyric.Mono
 import Lyric.Derives
 import Lyric.Pipeline
+import Lyric.TypeAliasResolve as TAR
+import Lyric.BareFuncRef as BFR
 import Lyric.SelfFields as SelfFields
 import Lyric.DiagnosticUtil as DiagUtil
 import Lyric.LlvmTypes
@@ -811,6 +813,13 @@ pub func compileToNative(
   compileToNativeWithFlags(source, outputPath, stdlibFiles, triple, optLevel, noFlags, noDefines, "", true)
 }
 
+/// Each `alias X = T` reference resolved to `T` before the checker or the
+/// codegen sees the file, as the MSIL and JVM bridges do (#6404): native
+/// codegen lowers the types an alias names, never the alias itself.
+func resolveTypeAliasesNative(file: in SourceFile): SourceFile {
+  TAR.resolveAliasesInFile(BFR.collectFuncAliasTargets(file), file)
+}
+
 /// `compileToNative` with extra clang driver flags (e.g.
 /// `-fsanitize=address` for the sanitizer-checked self-tests).
 ///
@@ -968,7 +977,7 @@ pub func compileToNativeWithShape(
     noConfigs
   )
   val userFile0 = match pipeExpandAndRewrite(shimFile, noWires, noConfigs, true, false, false, path, noOrigins) {
-    case Some(f) -> hoistModuleValInits(f)
+    case Some(f) -> hoistModuleValInits(resolveTypeAliasesNative(f))
     case None -> return false
   }
 
@@ -1398,7 +1407,7 @@ pub func compileProjectToNativeWithShape(
       case Some(f) -> f
       case None -> return false
     }
-    ownFiles0.add(hoistModuleValInits(f0))
+    ownFiles0.add(hoistModuleValInits(resolveTypeAliasesNative(f0)))
     owi = owi + 1
   }
 

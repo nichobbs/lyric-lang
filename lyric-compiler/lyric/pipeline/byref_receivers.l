@@ -401,7 +401,25 @@ pub func rewriteByRefDotCalls(file: in SourceFile, sites: in Map[String, ByRefDo
     { e: Expr ->
       match e.kind {
         case ECall(fn, args) -> match mapGet(sites, recordCopySiteKey(fn.span)) {
-          case Some(site) -> {
+          case Some(site) -> if site.asMethod {
+            if args.count > 0 {
+              match args[0] {
+                case CAPositional(recv) -> {
+                  val rest: List[CallArg] = newList()
+                  var ri = 1
+                  while ri < args.count {
+                    rest.add(args[ri])
+                    ri = ri + 1
+                  }
+                  val member = Expr(kind = EMember(receiver = recv, memberName = site.name), span = fn.span)
+                  Expr(kind = ECall(fn = member, args = rest), span = e.span)
+                }
+                case CANamed(_, _, _) -> e
+              }
+            } else {
+              e
+            }
+          } else {
             val segs: List[String] = newList()
             if site.originPkg.length > 0 {
               for seg in dottedSegments(site.originPkg) {

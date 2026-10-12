@@ -183,6 +183,10 @@ pub record ByRefDotCall {
   name: String
   receiverFirst: Bool
   originPkg: String
+  /// A call through the type that binds a method in the type's body
+  /// (D181): `T.m(x, args)` becomes the method call `x.m(args)`, `name`
+  /// being `m`.
+  asMethod: Bool = false
 }
 
 /// A construction of a case of a union with value generic parameters

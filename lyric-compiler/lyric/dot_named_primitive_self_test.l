@@ -11,8 +11,8 @@
 //! dotnet at codegen or run time, the JVM and native at codegen.  This file
 //! covers `in` and `inout` receivers of several primitives, a receiver that is
 //! a literal, a call result or a field, chained calls, named arguments in and
-//! out of order (evaluated in source order, D171), a generic function, and
-//! built-in methods (`toString`, `shl`, `toInt`, `trim`), which keep their
+//! out of order (evaluated in source order, D171), a generic function, a
+//! function declared through an alias, a distinct type's, and built-in methods (`toString`, `shl`, `toInt`, `trim`), which keep their
 //! meaning in method syntax beside a dot-named function of the same name.
 //!
 //!   lyric test --target dotnet lyric-compiler/lyric/dot_named_primitive_self_test.l
@@ -91,6 +91,17 @@ func Int.toString(self: in Int): String = "dot-named"
 func Long.toInt(self: in Long): Int = -2
 
 func String.trim(self: in String): String = "dot-named"
+
+// Declared through an alias: the function of the aliased type, `Int.neg`.
+alias Num = Int
+
+func Num.neg(self: in Num): Num = 0 - self
+
+// A distinct type has its own dot-named functions, and reaches the
+// underlying type's through `.value`.
+type Age = Int
+
+func Age.older(self: in Age): Age = Age.from(self.value + 1)
 
 record Counter {
   var n: Int
@@ -206,4 +217,18 @@ test "the method call and the type-qualified call agree" {
   a.inc()
   Int.inc(b)
   assertEqualInt(a, b, "inout")
+}
+
+test "a dot-named function declared through an alias" {
+  val n: Num = 4
+  assertEqualInt(n.neg(), -4, "an alias-typed receiver")
+  val k = 5
+  assertEqualInt(k.neg(), -5, "an Int receiver")
+  assertEqualInt(Num.neg(k) + Int.neg(k), -10, "through the alias and through the type")
+}
+
+test "a distinct type's own function and its underlying type's through value" {
+  val a = Age.from(3)
+  assertEqualInt(a.older().value, 4, "the distinct type's function")
+  assertEqualInt(a.value.twice(), 6, "the underlying type's through value")
 }

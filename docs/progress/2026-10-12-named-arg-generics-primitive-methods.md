@@ -55,7 +55,7 @@ primitive keeps its meaning in method syntax: the methods the checker types
 excluded from the dot-named lookup too (`isPrimitiveIntrinsicMethod`), so a
 same-named dot-named function is reached only through the type.
 
-Tests: `dot_named_primitive_self_test.l` (new, 10 cases, dotnet, JVM and
+Tests: `dot_named_primitive_self_test.l` (new, 12 cases, dotnet, JVM and
 native, wired into the three batch scripts) covers `in` receivers of `Int`,
 `Long`, `Double`, `Bool`, `Char` and `String`, a literal, a call result and a
 chain as the receiver, `inout` receivers (a local, a field, a `String`), an
@@ -111,8 +111,50 @@ extension; an extension of another arity than the type's own function; and a
 generic function of the extending package, specialised in the caller, whose
 body calls its extensions, an `inout` one among them, and a primitive's.
 
-Left open: when the type's own function and an imported extension both take
-the call's arguments, the own function is bound (the behaviour before this
-change, and the rule of Kotlin, C# and Swift).  The issue suggested ordering the two
-by import level like any extensions instead; D181 records the choice and
-the alternative as open.
+The type's own function wins when it is applicable, in the Kotlin sense:
+it takes the call's arguments in number and type, defaults included (D181
+item 2, decided in review: an import must never change what an applicable
+own-method call means).  An own function that does not take the arguments
+(`tag(String)` beside an extension `tag(Int)`) leaves the call to the
+extensions.
+
+## Follow-up from review
+
+- **Both call forms bind the same function.**  `T.m(b)` bound the caller's
+  own same-named dot-named function while `b.m()` bound the type's own
+  (`1 10 20 2 10` on every target).  `typeQualifiedDotSig` now resolves
+  through `dotNamedCandidatesFor`/`bindableDotNamed`, a method in the type's
+  body included.  A call through the type that binds a body method is
+  rewritten into the method call `b.m(args)`, and one that binds another
+  package's own function a same-named function of another package could
+  capture by name is named through its package, so every target calls it.
+- **T0170 (warning)**: an extension whose parameters after the receiver have
+  the number and types of one of the type's own functions of that name is
+  never bound by either call form; it is reported at its declaration.
+- **Defaults**: an extension with defaulted parameters is a candidate (and
+  takes part in T0123) whenever it takes the call's arguments.
+- **Applicability**: the own-function check, and the choice among the
+  nearest extensions, compare argument types (`dotNamedApplicable`).
+- **Aliases**: `func Num.neg` for `alias Num = Int` is renamed `Int.neg`
+  before type checking, with every call through the alias
+  (`canonicalAliasDotNamed`).  The native bridge now resolves type aliases
+  like the MSIL and JVM bridges (`resolveTypeAliasesNative`); before, any
+  scalar alias (`val n: Num`) failed native codegen with N0007.
+- **Unknown methods**: a method call on a primitive other than `String`, or
+  on a distinct type, naming none of its built-in methods or dot-named
+  functions is T0113 at check time (it used to fail at codegen or run time);
+  on a distinct type the message points at `.value`.  A `String`'s methods
+  stay open-ended (the JVM reaches its host methods by name); the rest of
+  #8334 (other receivers) is not covered here.
+- **T0113 hint**: for an extension of a package imported under an alias or
+  selectively, the message gives the call through it (`EB.Bag.extra(b)`).
+
+Tests: `typechecker_self_test.l` asserts which function binds in both call
+forms (the own functions return `String`, the extensions `Int`), an own
+function that does not take the arguments, a defaulted extension in T0123,
+the alias hint, T0170, and unknown methods on `Int`, a distinct type and
+`String`.  `dot_named_primitive_self_test.l` adds an alias-declared and a
+distinct-type function on all three targets.  `inout-receiver-e2e.sh` adds
+the type's own body method and dot-named function beside the caller's
+same-named functions, from a sibling package and from a restored
+dependency, in both call forms, and an extension with defaults.

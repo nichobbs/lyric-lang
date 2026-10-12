@@ -4702,7 +4702,10 @@ func checkItemDeclaredInits(
         }
       }
     }
-    case IFunc(decl) -> checkParamDefaults(tbl, sigs, diag, extractGenericNames(decl.generics), decl.name, decl.params)
+    case IFunc(decl) -> {
+      checkParamDefaults(tbl, sigs, diag, extractGenericNames(decl.generics), decl.name, decl.params)
+      checkShadowedExtension(tbl, sigs, diag, decl)
+    }
     case IExternFunc(decl) -> checkParamDefaults(tbl, sigs, diag, noGenerics, decl.name, decl.params)
     case IRecord(decl) -> checkRecordDeclaredInits(tbl, sigs, diag, decl)
     case IExposedRec(decl) -> checkRecordDeclaredInits(tbl, sigs, diag, decl)
@@ -4837,6 +4840,83 @@ func checkRecordDeclaredInits(
       case RMInvariant(_) -> ()
     }
   }
+}
+
+// T0170 (a warning): a dot-named function `T.m` this package declares for a
+// type another package declares (an extension) whose parameters after the
+// receiver are, in number and type, those of one of `T`'s own functions
+// named `m` (declared in its body or by its declaring package).  A method
+// call, and a call through the type, binds the type's own function whenever
+// it applies (D181), so the extension is reached only through its package
+// (`Pkg.T.m(x)`).
+func checkShadowedExtension(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  decl: in FunctionDecl,
+): Unit {
+  val dot = lastIndexOfRaw(decl.name, ".")
+  if dot <= 0 or decl.params.count == 0 {
+    return
+  }
+  val member = decl.name.substring(dot + 1)
+  val curPkg = symTableScopePkg(tbl)
+  for ext in dotNamedSigsAnyArity(sigs, decl.name) {
+    if sigPackage(tbl, ext) == curPkg and ext.params.count == decl.params.count and ext.params.count > 0 {
+      val recv = ext.params[0].ty
+      match dotNamedDeclaringPackage(tbl, recv) {
+        case Some(ownPkg) -> if ownPkg.length > 0 and ownPkg != curPkg {
+          val extRest = dropReceiverParam(ext).params
+          var shadowed = false
+          for own in dotNamedSigsAnyArity(sigs, decl.name) {
+            if sigPackage(tbl, own) == ownPkg and sameParamTypes(dropReceiverParam(own).params, extRest) {
+              shadowed = true
+            }
+          }
+          match unrefine(recv) {
+            case TyUser(tid, _, targs) -> {
+              for e in symTableMethodSigs(tbl, tid, member) {
+                if sameParamTypes(substituteMethodSig(e, unrefine(recv), targs).params, extRest) {
+                  shadowed = true
+                }
+              }
+            }
+            case _ -> ()
+          }
+          if shadowed {
+            diag.add(
+              warningDiagnostic(
+                "T0170",
+                "'" + decl.name + "' duplicates a method of '" + decl.name.substring(0, dot) + "' declared by " + ownPkg +
+                  ", which a method call or a call through the type always binds instead; this function is reached only as '" +
+                  curPkg +
+                  "." +
+                  decl.name +
+                  "(...)' (rename it, or change its parameters)",
+                decl.span
+              )
+            )
+          }
+        }
+        case None -> ()
+      }
+      return
+    }
+  }
+}
+
+func sameParamTypes(a: in List[ResolvedParam], b: in List[ResolvedParam]): Bool {
+  if a.count != b.count {
+    return false
+  }
+  var i = 0
+  while i < a.count {
+    if renderType(a[i].ty) != renderType(b[i].ty) {
+      return false
+    }
+    i = i + 1
+  }
+  true
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
