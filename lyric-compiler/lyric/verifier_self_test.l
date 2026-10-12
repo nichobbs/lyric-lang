@@ -3676,7 +3676,15 @@ test "a file two builds compile differently has each build's goals, labelled (#8
   val oneBuild: List[ProveBuildConfig] = newList()
   oneBuild.add(ProveBuildConfig(targetName = "dotnet", activeFeatures = a, declaredFeatures = a))
   val inactive = inactiveItemsForBuilds(cfgTwins(), oneBuild)
-  assertEqualInt(inactive.count, 1, "one twin inactive")
-  assertEqual(inactive[0], "which", "the inactive twin")
-  assertEqualInt(inactiveItemsForBuilds(cfgTwins(), builds).count, 0, "both twins proved under some build")
+  assertEqualInt(inactive.unproved.count, 0, "the twin's name is proved")
+  assertEqualInt(inactive.variants.count, 1, "one inactive variant")
+  assertEqual(inactive.variants[0], "which", "the inactive variant")
+  val both = inactiveItemsForBuilds(cfgTwins(), builds)
+  assertEqualInt(both.unproved.count + both.variants.count, 0, "both twins proved under some build")
+  val jvmOnly = inactiveItemsForBuilds(
+    "@proof_required\npackage J\n@cfg(target = \"jvm\")\nfunc onJvm(): Int = 1\nfunc always(): Int = 2\n",
+    oneBuild
+  )
+  assertEqualInt(jvmOnly.unproved.count, 1, "an item no build compiles")
+  assertEqual(jvmOnly.unproved[0], "onJvm", "the unproved item")
 }

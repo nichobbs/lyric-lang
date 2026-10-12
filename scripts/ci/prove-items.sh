@@ -73,9 +73,18 @@ rc="$(run "$lyric_bin" prove "$cfg/twins.l")"
 grep -q "^2/2 obligations discharged" "$out" || fail "target twins: expected one twin's goals, not both"
 expect_refuted "feature twins, default features" "postcondition of atLeastHundred" \
   "$lyric_bin" prove "$cfg/project/src/p/limits.l"
-grep -q "^1 item(s) not proved: inactive under this build (@cfg): limit$" "$out" ||
+grep -q "^1 inactive @cfg variant(s) not proved; the declaration of the same name this build compiles is: limit$" "$out" ||
   fail "feature twins, default features: expected the inactive twin listed"
 echo "PASS: feature twins, inactive twin listed"
+expect_proved "a JVM-only item, dotnet" "$lyric_bin" prove "$cfg/jvm_only.l"
+grep -q "^1 item(s) not proved: inactive under this build (@cfg): onJvm$" "$out" ||
+  fail "a JVM-only item, dotnet: expected it listed as not proved"
+echo "PASS: a JVM-only item listed"
+rc="$(run "$lyric_bin" prove --target jvm "$cfg/jvm_only.l")"
+if grep -q "not proved: inactive" "$out"; then
+  fail "a JVM-only item, --target jvm: nothing is inactive"
+fi
+echo "PASS: a JVM-only item proved on the JVM"
 expect_proved "feature twins, --features wide" "$lyric_bin" prove --features wide "$cfg/project/src/p/limits.l"
 expect_refuted "feature twins, --manifest" "postcondition of atLeastHundred" \
   "$lyric_bin" prove --manifest "$cfg/project/lyric.toml"
@@ -133,3 +142,16 @@ if grep -q "V0033" "$err"; then
   fail "another package's same-named interface: Std.Stream's resolves"
 fi
 expect_refuted "a bare call in an inherited clause" "postcondition of R.get" "$lyric_bin" prove "$pm/inherited_bare_call.l"
+
+# A union of a dependency restored as a compiled assembly is not resolved to
+# a same-named union of a package the verifier read (Std.Http's HttpError):
+# its bare cases are not modelled.  Built in a copy, so the example tree
+# stays clean.
+restored="$(mktemp -d)"
+trap 'rm -f "$out" "$err"; rm -rf "${restored:?}"' EXIT
+cp -r "$um/restored/." "$restored/"
+rc="$(run "$lyric_bin" build --manifest "$restored/lib/lyric.toml")"
+[ "$rc" -eq 0 ] || fail "restored dependency: the library did not build"
+rc="$(run "$lyric_bin" restore --manifest "$restored/app/lyric.toml")"
+[ "$rc" -eq 0 ] || fail "restored dependency: the app's dependencies did not restore"
+expect_unmodelled "a restored dependency's union" "f" "$lyric_bin" prove "$restored/app/src/app.l"

@@ -1,0 +1,14 @@
+[package]
+name = "ProveRestoredApp"
+version = "0.1.0"
+
+[project]
+name = "ProveRestoredApp"
+output = "single"
+output_assembly = "ProveRestoredApp.dll"
+
+[project.packages]
+"App" = "src/app.l"
+
+[dependencies]
+"Mylib" = { path = "../lib" }

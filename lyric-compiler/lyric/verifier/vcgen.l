@@ -4340,8 +4340,11 @@ func matchCondKind(env: in VEnv, scrutSort: in Sort, kind: in PatternKind, subje
 //   * against a primitive, a slice, a tuple or `Unit`, always;
 //   * against the standard `Option` (`Result`), unless it is `Some` or
 //     `None` (`Ok` or `Err`);
-//   * against a union whose declaration the verifier read, unless it is one
-//     of that union's cases;
+//   * against a union, unless it is one of that union's cases — when the
+//     verifier read every package in scope and the type's name resolves to
+//     exactly one union declaration as the type checker resolves it (the
+//     package's own, else the one import that declares it), never a
+//     same-named union of a package the file does not import;
 //   * against anything else, unless a case of that name is in scope — which
 //     the verifier can tell only when it read every package in scope
 //     (`addScopeCaseFacts`); otherwise the arm is not modelled (#8230).
@@ -4358,7 +4361,7 @@ func bareNameBinds(env: in VEnv, scrutSort: in Sort, name: in String): Bool {
         if isTupleSortName(n) or n == unitSortName() {
           return true
         }
-        if env.valueTypes.containsKey(scopeUnionKey(n)) {
+        if env.valueTypes.containsKey(scopeCasesKnownKey()) and env.valueTypes.containsKey(scopeUnionKey(n)) {
           return not env.valueTypes.containsKey(scopeUnionCaseKey(n, name))
         }
       }
@@ -4376,10 +4379,9 @@ func scopeCaseKey(name: in String): String {
   "!case!" + name
 }
 
-// The key under which `valueTypes` records that a union named `name` whose
-// declaration the verifier read is in scope, and the key for each of its
-// cases.  Two unions of one name in different packages share the keys, so
-// a name a case of either is a case of both: the safe side.
+// The key under which `valueTypes` records that the type name `name`
+// resolves to one union declaration the verifier read
+// (`addScopeCaseFacts`), and the key for each of its cases.
 func scopeUnionKey(name: in String): String {
   "!scopeunion!" + name
 }
@@ -4402,18 +4404,28 @@ func scopeCasesKnownKey(): String {
 // closed.  Every case is known when each package the file and its package's
 // other files import, and `Std.Core`, was read.
 func addScopeCaseFacts(file: in SourceFile, pscope: in PackageScope, valueTypes: in Map[String, Bool]): Unit {
-  addScopeDeclCases(scopeDeclsOfFile(file), valueTypes)
+  val ownDecls = scopeDeclsOfFile(file)
+  addScopeDeclCases(ownDecls, valueTypes)
   addScopeDeclCases(pscope.siblings, valueTypes)
   for p in pscope.imports.packages {
     addScopeDeclCases(p.decls, valueTypes)
   }
+  // Every case is known only when every file of the package was seen and
+  // every package it imports, and the prelude, was read.
+  if not pscope.known {
+    return
+  }
   val needed: List[String] = newList()
   needed.add("Std.Core")
-  for n in scopeDeclsOfFile(file).imports {
-    needed.add(n)
+  for n in ownDecls.imports {
+    if not needed.contains(n) {
+      needed.add(n)
+    }
   }
   for n in pscope.siblings.imports {
-    needed.add(n)
+    if not needed.contains(n) {
+      needed.add(n)
+    }
   }
   val own = joinPathSegments(file.packageDecl.path.segments)
   for n in needed {
@@ -4422,6 +4434,52 @@ func addScopeCaseFacts(file: in SourceFile, pscope: in PackageScope, valueTypes:
     }
   }
   addKey(valueTypes, scopeCasesKnownKey())
+  // A union a scrutinee's type names: the package's own of that name, or
+  // the one of the packages it imports (the prelude included) that
+  // declares it — the type checker's resolution.  A name declared by more
+  // than one of those is ambiguous here and gets no entry, so a bare name
+  // against it is decided by the general rule (#8230).
+  val candidates: List[UnionDecl] = newList()
+  val candidateOwners: List[String] = newList()
+  for u in ownDecls.unions {
+    candidates.add(u)
+    candidateOwners.add(own)
+  }
+  for u in pscope.siblings.unions {
+    candidates.add(u)
+    candidateOwners.add(own)
+  }
+  for n in needed {
+    if n != own {
+      for p in pscope.imports.packages {
+        if p.name == n {
+          for u in p.decls.unions {
+            candidates.add(u)
+            candidateOwners.add(n)
+          }
+        }
+      }
+    }
+  }
+  var ci = 0
+  while ci < candidates.count {
+    val u = candidates[ci]
+    var unique = true
+    var cj = 0
+    while cj < candidates.count {
+      if cj != ci and candidates[cj].name == u.name and candidateOwners[cj] != candidateOwners[ci] {
+        unique = false
+      }
+      cj = cj + 1
+    }
+    if unique {
+      addKey(valueTypes, scopeUnionKey(u.name))
+      for c in u.cases {
+        addKey(valueTypes, scopeUnionCaseKey(u.name, c.name))
+      }
+    }
+    ci = ci + 1
+  }
 }
 
 func importResolved(imports: in ImportScope, name: in String): Bool {
@@ -4433,15 +4491,14 @@ func importResolved(imports: in ImportScope, name: in String): Bool {
   false
 }
 
+// Record every case name `decls` declares.
 func addScopeDeclCases(decls: in ScopeDecls, valueTypes: in Map[String, Bool]): Unit {
   for c in decls.enumCases {
     addKey(valueTypes, scopeCaseKey(c))
   }
   for u in decls.unions {
-    addKey(valueTypes, scopeUnionKey(u.name))
     for c in u.cases {
       addKey(valueTypes, scopeCaseKey(c.name))
-      addKey(valueTypes, scopeUnionCaseKey(u.name, c.name))
     }
   }
 }
@@ -8376,19 +8433,9 @@ func resolveImplInterface(
       case _ -> ()
     }
   }
-  // Project mode's scope lists the proved file among the package's files:
-  // a declaration at the same place is the same one.
   for d in pscope.siblings.interfaces {
     if d.name == ifaceName {
-      var dup = false
-      for e in ownCandidates {
-        if e.span.startPos.offset == d.span.startPos.offset and e.span.endPos.offset == d.span.endPos.offset {
-          dup = true
-        }
-      }
-      if not dup {
-        ownCandidates.add(d)
-      }
+      ownCandidates.add(d)
     }
   }
   // The packages the name may be declared in, other than the proved one.

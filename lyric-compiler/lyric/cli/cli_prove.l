@@ -799,13 +799,21 @@ record ProveBuild {
   defines: List[String]
 }
 
-// Say which `@proof_required` items no build proved covers: `@cfg` erased
-// them under every build (#8325).
-func printInactiveItems(names: in List[String], prefix: in String): Unit {
-  if names.count > 0 {
+// Say which `@proof_required` items no proved build compiles (#8325): those
+// that no build compiles in any form, and the inactive `@cfg` variants of
+// items another declaration of the same name stands for, which is proved.
+func printInactiveItems(items: in Verifier.InactiveItems, prefix: in String): Unit {
+  if items.unproved.count > 0 {
     Console.println(
-      prefix + toString(names.count) + " item(s) not proved: inactive under this build (@cfg): " +
-        Str.joinList(", ", names)
+      prefix + toString(items.unproved.count) + " item(s) not proved: inactive under this build (@cfg): " +
+        Str.joinList(", ", items.unproved)
+    )
+  }
+  if items.variants.count > 0 {
+    Console.println(
+      prefix + toString(items.variants.count) +
+        " inactive @cfg variant(s) not proved; the declaration of the same name this build compiles is: " +
+        Str.joinList(", ", items.variants)
     )
   }
 }
@@ -1219,6 +1227,13 @@ func projectFileScopes(mfPath: in String): Map[String, Verifier.PackageScope] {
   for e in proj.tests.toArray() {
     entries.add(e)
   }
+  // Each file is read once; a file's scope is made of the other files of
+  // every entry that lists it, so its own declarations never count twice
+  // (#8231).
+  val classified: Map[String, Option[Verifier.PackageTypes]] = newMap()
+  val siblingsOf: Map[String, List[String]] = newMap()
+  val unknownFor: Map[String, Bool] = newMap()
+  val order: List[String] = newList()
   for entry in entries.toArray() {
     val ef = Disc.projectEntryFiles(entry, mfDir, proj)
     val files: List[String] = newList()
@@ -1226,7 +1241,6 @@ func projectFileScopes(mfPath: in String): Map[String, Verifier.PackageScope] {
       files.add(Disc.normalizePath(p))
     }
     val complete = ef.problems.count == 0 and ef.emptyDir.length == 0
-    val entryScope = if complete { Verifier.scopeOfFiles(files, "") } else { Verifier.unknownPackageScope() }
     // A file outside the manifest's tree cannot find this manifest from
     // where it is: a single-file proof of it does not see this package.
     val treeKey = Disc.pathKey(mfDir) + "/"
@@ -1238,32 +1252,60 @@ func projectFileScopes(mfPath: in String): Map[String, Verifier.PackageScope] {
         )
       }
     }
-    for fileKey in files.toArray() {
-      val f = Disc.pathKey(fileKey)
-      val merged = match mapGet(scopes, f) {
-        case None -> entryScope
-        case Some(prev) -> {
-          if prev.known and entryScope.known {
-            val both: List[String] = newList()
-            for n in prev.typeNames.toArray() {
-              both.add(n)
+    if complete {
+      for f in files.toArray() {
+        val k = Disc.pathKey(f)
+        if not classified.containsKey(k) {
+          val pt: Option[Verifier.PackageTypes] = match File.readText(f) {
+            case Ok(text) -> Verifier.classifyManifestSource(text)
+            case Err(_) -> None
+          }
+          classified.add(k, pt)
+        }
+      }
+    }
+    for f in files.toArray() {
+      val k = Disc.pathKey(f)
+      if not siblingsOf.containsKey(k) {
+        val none: List[String] = newList()
+        siblingsOf.add(k, none)
+        order.add(k)
+      }
+      if not complete {
+        if not unknownFor.containsKey(k) {
+          unknownFor.add(k, true)
+        }
+      }
+      match mapGet(siblingsOf, k) {
+        case Some(sibs) -> {
+          for g in files.toArray() {
+            val gk = Disc.pathKey(g)
+            if gk != k and not stringListContains(sibs, gk) {
+              sibs.add(gk)
             }
-            for n in entryScope.typeNames.toArray() {
-              both.add(n)
+          }
+        }
+        case None -> ()
+      }
+    }
+  }
+  for k in order.toArray() {
+    var known = not unknownFor.containsKey(k)
+    val pts: List[Verifier.PackageTypes] = newList()
+    match mapGet(siblingsOf, k) {
+      case Some(sibs) -> {
+        for gk in sibs.toArray() {
+          match mapGet(classified, gk) {
+            case Some(Some(pt)) -> pts.add(pt)
+            case _ -> {
+              known = false
             }
-            // The file is built in both entries' packages: what either
-            // declares is in scope in one of its builds.
-            Verifier.packageScopeWith(both, Verifier.unionScopeDecls(prev.siblings, entryScope.siblings))
-          } else {
-            Verifier.unknownPackageScope()
           }
         }
       }
-      if scopes.containsKey(f) {
-        val dropped = scopes.remove(f)
-      }
-      scopes.add(f, merged)
+      case None -> ()
     }
+    scopes.add(k, if known { Verifier.scopeOfPackageTypes(pts) } else { Verifier.unknownPackageScope() })
   }
   scopes
 }

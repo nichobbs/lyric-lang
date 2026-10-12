@@ -609,8 +609,12 @@ Calls the verifier cannot follow fail closed or are over-approximated
   rejects one that cannot match the scrutinee (`T0129`) unless the
   scrutinee is a record, an enum or a type parameter (docs/01 §2.12). So
   the name binds against a primitive, slice, tuple or `Unit`; against
-  `Option`/`Result` unless it is one of their cases; against a union whose
-  declaration the verifier read, unless it is one of that union's cases;
+  `Option`/`Result` unless it is one of their cases; against a union, unless
+  it is one of that union's cases — only when every package in scope was
+  read and the scrutinee's type name resolves, as the type checker
+  resolves it, to exactly one union (the package's own, else the one
+  import that declares it), never a same-named union of a package the
+  file does not import;
   and against anything else only when no case of that name is in scope and
   the verifier read every package the proved package imports, and the
   prelude (`PackageScope.imports`, which `lyric prove` fills from the
@@ -626,7 +630,8 @@ Calls the verifier cannot follow fail closed or are over-approximated
   function whose body's value comes from such a match is not unfolded at
   its calls; a goal the call reaches is still decided from the callee's
   contract, and one that is not discharged gets `V0027` (it may need the
-  body), never a counterexample.
+  body: "may be false", with the model found without it), never a bare
+  counterexample.
 - A lambda's body is checked for every call: it is walked as a function
   body, with each parameter a value of its own of its declared sort, each
   captured `var`/`out`/`inout` binding whatever it holds by then and every
@@ -777,8 +782,11 @@ list the file (its target and the features `lyric build` activates for
 the same flags) or, for a file no manifest lists, the target alone. A file
 two builds compile differently is proved as each compiles it, every goal
 labelled with its build (`[target=jvm features=a] f$post`), so counts
-never merge two builds' obligations. The `@proof_required` items no build
-compiles are listed after the diagnostics (`inactiveItemsForBuilds`). A
+never merge two builds' obligations, and so is each goal's diagnostic. The
+`@proof_required` items no build compiles are listed after the
+diagnostics (`inactiveItemsForBuilds`): those no build compiles in any
+form as not proved, and an inactive `@cfg` twin as a variant whose
+same-named declaration this build proves. A
 malformed predicate or undeclared feature (`F0012`/`F0013`) stops the
 proof.
 

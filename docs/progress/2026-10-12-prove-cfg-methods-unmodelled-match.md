@@ -132,6 +132,22 @@ results and several rough edges, all fixed:
   build compiles are listed (`1 item(s) not proved: inactive under this
   build (@cfg): limit`).
 
+A second review found one more false "discharged": the union rule keyed
+unions by their simple name, so a scrutinee typed with a dependency's
+`HttpError` (restored as a compiled assembly, so unread) took the cases of
+the standard library's `Std.Http.HttpError`, which the verifier did read.
+A type name now resolves to a union only as the type checker resolves it
+— the package's own, else the one import (or the prelude) that declares
+it, with every package in scope read — and an ambiguous or unread one
+falls back to the general rule, which fails closed.  Also: the
+"every case known" fact needs the package's other files known; a V0027
+on a `@pure` callee that the solver refutes without the body says "may be
+false" and shows that model; each goal's diagnostic in a multi-build file
+names its build; an inactive `@cfg` twin is listed as a variant whose
+same-named declaration is proved, apart from items no build compiles; and
+a project file's scope is built from the other files of its entries, read
+once each, so its own declarations never count twice.
+
 ## Tests
 
 * `verifier_self_test.l`: 23 new tests — `@cfg` feature and target twins
@@ -146,14 +162,17 @@ results and several rough edges, all fixed:
   another package in the same directory, of an imported package (with and
   without clauses, aliased), an unread package, a method or arity the
   interface lacks; interface default methods; a `@pure` callee with an
-  unmodelled match.  198/198 pass.
+  unmodelled match; an item no build compiles versus an inactive twin.
+  198/198 pass.
 * `scripts/ci/prove-items.sh` (wired into CI next to `prove-type-check.sh`)
   over `examples/prove-cfg/`, `examples/prove-unmodelled-match/` (a union
   in a sibling file, bare `Err`, a `@pure` callee) and
   `examples/prove-methods/` (a failing `impl` assertion, methods that
   hold, `Std.Stream`'s `ByteReader` clauses inherited, another package's
-  same-named interface ignored, a bare call in an inherited clause): 18
-  checks, each failing on `main`.
+  same-named interface ignored, a bare call in an inherited clause), a
+  JVM-only item listed as not proved, and a restored dependency's union
+  named like the standard library's (built in a copy): 22 checks, each
+  failing on `main`.
 
 ## Behaviour changes in existing proofs
 
