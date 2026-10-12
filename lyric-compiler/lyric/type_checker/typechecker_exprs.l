@@ -4441,7 +4441,7 @@ func typeExprsForRefV(tbl: in SymbolTable, ts: in List[Type], sp: in Span, vars:
   val acc: List[TypeExpr] = newList()
   var i = 0
   while i < ts.count {
-    match typeExprForRef(tbl, ts[i], sp) {
+    match typeExprForRefV(tbl, ts[i], sp, vars) {
       case Some(te) -> acc.add(te)
       case None -> return None
     }
@@ -9554,9 +9554,10 @@ func recordLocalBranchType(tbl: in SymbolTable, init: in Expr, t: in Type): Unit
 
 // Record the checked type of an unannotated local binding's function-valued
 // initializer (see `SymbolTable.localBindingTypeSites`).  An async function, one
-// that never returns, and a type with no source spelling (an error, or a type
-// parameter unless the backend lowers generic bodies itself) stay unrecorded:
-// the binding keeps its inferred-only form.
+// that never returns, and a type with no source spelling (an error) stay
+// unrecorded: the binding keeps its inferred-only form.  A type parameter of
+// the enclosing declaration is spelled by its name, which names the same
+// parameter at the binding; a specialised copy substitutes it (#8205).
 func recordLocalFuncType(tbl: in SymbolTable, init: in Expr, t: in Type): Unit {
   if isNoSourceSpan(init.span) {
     return
@@ -9574,12 +9575,7 @@ func recordLocalFuncType(tbl: in SymbolTable, init: in Expr, t: in Type): Unit {
       if tbl.localBindingTypeSites.containsKey(key) {
         return
       }
-      val spelled = if tbl.spellTypeVarsInLocalFuncs.count > 0 {
-        typeExprForRefWithVars(tbl, t, init.span)
-      } else {
-        typeExprForRef(tbl, t, init.span)
-      }
-      match spelled {
+      match typeExprForRefWithVars(tbl, t, init.span) {
         case Some(te) -> tbl.localBindingTypeSites.add(key, te)
         case None -> ()
       }
@@ -10883,8 +10879,9 @@ func resolveOpenTupleSite(tbl: in SymbolTable, site: in OpenBindingSite): Option
 // block) — never a function or builtin name, which the call reaches by name.
 // A call whose function is async, returns `Unit` (the result is discarded,
 // and a `() -> Unit` binding is a real `Action` the erased value is not) or
-// never returns, or whose type has no source spelling (a type parameter), is
-// left as written.
+// never returns, or whose type has no source spelling, is left as written.  A
+// type parameter of the enclosing declaration is spelled by its name, as
+// `recordLocalFuncType` spells it (#8292).
 func recordFuncValueCall(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -10910,7 +10907,7 @@ func recordFuncValueCall(
       if not calleeIsFuncValue(sc, tbl, fn, memberRecvTy, memberName) {
         return
       }
-      match typeExprForRef(tbl, unrefine(fnT), fn.span) {
+      match typeExprForRefWithVars(tbl, unrefine(fnT), fn.span) {
         case Some(te) -> {
           val key = recordCopySiteKey(sp)
           val rendered = renderType(fnT)
@@ -15010,7 +15007,10 @@ func inferLambda(
   expectedReturn: in Option[Type],
 ): Type {
   val useExpected = expectedParams.count == lambdaParams.count
+  // A parameter annotation may name the enclosing declaration's type
+  // parameters, as a local's annotation may.
   val lctx = newGenericContext()
+  gctxPush(lctx, sc.genericNames)
   val paramTypes: List[Type] = newList()
   scopePush(sc)
   var li = 0

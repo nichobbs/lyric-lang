@@ -1,12 +1,11 @@
-//! self_fields_self_test.l — unit tests for `Lyric.SelfFields` and the
-//! F0048 check built on it (#8264, #8284).
+//! self_fields_self_test.l — unit tests for `Lyric.SelfFields` (#8264).
 //!
-//! F0048: on `--target dotnet` a lambda in a member of a type with type
-//! parameters cannot read the receiver (`self`, or a field by bare name),
-//! because MSIL lifts the lambda into a method of the non-generic package
-//! class.  `Lyric.Pipeline.genericReceiverLambdaDiagnostics` reports it at the
-//! lambda, before codegen, once per outermost such lambda.  The runtime
-//! behaviour of field resolution is covered by `member_local_shadow_self_test.l`.
+//! A member body's bare field references are written as `self.<field>`
+//! before any backend runs, inside the member's lambdas too.  A lambda in a
+//! member of a type with type parameters reads the receiver on every target:
+//! MSIL hosts it in a closure class generic over the type's parameters
+//! (#8284).  The runtime behaviour is covered by
+//! `member_local_shadow_self_test.l` and `generic_closure_self_test.l`.
 //!
 //!   lyric test lyric-compiler/lyric/self_fields_self_test.l
 @test_module
@@ -18,7 +17,7 @@ import Std.Testing
 import Lyric.Lexer
 import Lyric.Parser
 import Lyric.SelfFields as SelfFields
-import Lyric.Pipeline as Pipe
+import Lyric.ContractElaborator as Ast
 
 func resolved(text: in String): SourceFile {
   val pr = parse(text)
@@ -30,59 +29,58 @@ func resolved(text: in String): SourceFile {
   SelfFields.resolveSelfFieldsInFile(pr.file, noRecords, noSites)
 }
 
-func f0048Lines(text: in String): List[Int] {
-  val lines: List[Int] = newList()
-  for d in Pipe.genericReceiverLambdaDiagnostics(resolved(text)) {
-    if d.code == "F0048" {
-      lines.add(d.span.startPos.line)
-    }
-  }
-  lines
+// How many lambdas in `text` read the receiver once it is resolved.
+func receiverLambdas(text: in String): Int {
+  val found: List[Bool] = newList()
+  val _ = Ast.mapExprsInFile(resolved(text), { e: Expr -> noteReceiverLambda(e, found) })
+  found.count
 }
 
-test "a bare field read in a lambda of a generic record method is F0048 at the lambda" {
-  val lines = f0048Lines(
+func noteReceiverLambda(e: in Expr, found: in List[Bool]): Expr {
+  match e.kind {
+    case ELambda(_, body) -> {
+      val seen: List[Bool] = newList()
+      val _ = Ast.mapBlock(body, { x: Expr -> noteSelf(x, seen) })
+      if seen.count > 0 {
+        found.add(true)
+      }
+    }
+    case _ -> ()
+  }
+  e
+}
+
+func noteSelf(x: in Expr, seen: in List[Bool]): Expr {
+  match x.kind {
+    case ESelf -> seen.add(true)
+    case _ -> ()
+  }
+  x
+}
+
+test "a bare field read in a lambda of a generic record method reads self" {
+  val n = receiverLambdas(
     "package P\nrecord Box[T] {\n  item: T\n  n: Int\n  func f(): Int {\n    val g = { k: Int -> k + n }\n    g(1)\n  }\n}\n"
   )
-  assertEqualInt(lines.count, 1, "one diagnostic")
-  assertEqualInt(lines[0], 6, "on the lambda's line")
+  assertEqualInt(n, 1, "the lambda reads the receiver")
 }
 
-test "an explicit self read in a lambda of a generic impl method is F0048" {
-  val lines = f0048Lines(
-    "package P\ninterface I {\n  func f(): Int\n}\nrecord Box[T] {\n  item: T\n  n: Int\n}\nimpl[T] I for Box[T] {\n  func f(): Int {\n    val g = { k: Int -> k + self.n }\n    g(1)\n  }\n}\n"
-  )
-  assertEqualInt(lines.count, 1, "one diagnostic")
-}
-
-test "a generic protected type's lambda nested in another is reported once" {
-  val lines = f0048Lines(
+test "a generic protected type's nested lambdas read self" {
+  val n = receiverLambdas(
     "package P\nprotected type Cell[T] {\n  var item: T\n  var n: Int = 2\n  entry f(): Int {\n    val g = { k: Int ->\n      val h = { j: Int -> j + n }\n      h(k)\n    }\n    g(1)\n  }\n}\n"
   )
-  assertEqualInt(lines.count, 1, "the outer lambda only")
-  assertEqualInt(lines[0], 6, "on the outer lambda's line")
+  assertEqualInt(n, 2, "the inner lambda and the one enclosing it")
 }
 
-test "a local read into the lambda, a non-generic type and a shadowing parameter are not F0048" {
-  val viaLocal = f0048Lines(
+test "a local of the field's name and a lambda parameter shadow the field" {
+  val viaLocal = receiverLambdas(
     "package P\nrecord Box[T] {\n  item: T\n  n: Int\n  func f(): Int {\n    val n = n\n    val g = { k: Int -> k + n }\n    g(1)\n  }\n}\n"
   )
-  assertEqualInt(viaLocal.count, 0, "a local of the field's name")
-  val plain = f0048Lines(
-    "package P\nrecord Plain {\n  n: Int\n  func f(): Int {\n    val g = { k: Int -> k + n }\n    g(1)\n  }\n}\n"
-  )
-  assertEqualInt(plain.count, 0, "a non-generic record")
-  val param = f0048Lines(
+  assertEqualInt(viaLocal, 0, "a local of the field's name")
+  val param = receiverLambdas(
     "package P\nrecord Box[T] {\n  item: T\n  n: Int\n  func f(): Int {\n    val g = { n: Int -> n + 1 }\n    g(1)\n  }\n}\n"
   )
-  assertEqualInt(param.count, 0, "a lambda parameter of the field's name")
-}
-
-test "a value-only generic is not F0048" {
-  val lines = f0048Lines(
-    "package P\nprotected type Ring[N: Nat] {\n  var next: Int = 0\n  entry f(): Int {\n    val g = { k: Int -> k + next }\n    g(1)\n  }\n}\n"
-  )
-  assertEqualInt(lines.count, 0, "no type parameter")
+  assertEqualInt(param, 0, "a lambda parameter of the field's name")
 }
 
 test "resolution marks each member it resolves, once" {
