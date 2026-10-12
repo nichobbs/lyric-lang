@@ -106,6 +106,18 @@ func printErr(message: in String): Unit {
   Console.error(message)
 }
 
+/// True, after reporting it, when `arg` is an option (`-x`, `--x`) that
+/// `cmd` does not take, so a misspelt or unsupported flag is an error rather
+/// than a source path (#8309).  A lone `-` is not an option.
+func rejectUnknownOption(cmd: in String, arg: in String): Bool {
+  if arg.length > 1 and arg.startsWith("-") {
+    printErr(cmd + ": unknown option '" + arg + "' (run `lyric --help` for the options of `lyric " + cmd + "`)")
+    true
+  } else {
+    false
+  }
+}
+
 func printDiag(d: in Diagnostic): Unit {
   val sev = match d.severity { case DiagError -> "error"; case DiagWarning -> "warning" }
   printErr(
@@ -315,7 +327,7 @@ func usageText(): String {
     "                (no source: lints all project source files; prints summary at end)\n" +
     "  lyric prove   [<source.l>] [--manifest <lyric.toml>] [--target dotnet|jvm|native] [--features <a,b>]\n" +
     "                [--no-default-features] [--all-features] [--define K=V] [--verbose] [--allow-unverified]\n" +
-    "                [--json] [--explain --goal <n>]\n" +
+    "                [--json] [--explain --goal <n>] [--proof-dir <dir>]\n" +
     "                (no source: proves contracts in all project source files)\n" +
     "  lyric doc     [<source.l>] [--manifest <lyric.toml>] [-o <out.md|dir>]\n" +
     "                (no source: generates docs/ for all project source files)\n" +

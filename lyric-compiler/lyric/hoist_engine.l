@@ -647,11 +647,11 @@ func hzHasHazard(cfg: in HoistConfig, e: in Expr): Bool {
     // `requires:`/`ensures:` quantifier or `old(...)` verbatim into a body
     // as a runtime assert argument.
     case EOld(inner) -> hzHasHazard(cfg, inner)
-    case EForall(_, whereOpt, body) -> {
+    case EForall(_, whereOpt, body, _) -> {
       val w = match whereOpt { case Some(we) -> hzHasHazard(cfg, we); case None -> false }
       w or hzHasHazard(cfg, body)
     }
-    case EExists(_, whereOpt, body) -> {
+    case EExists(_, whereOpt, body, _) -> {
       val w = match whereOpt { case Some(we) -> hzHasHazard(cfg, we); case None -> false }
       w or hzHasHazard(cfg, body)
     }
@@ -915,11 +915,11 @@ func hzNeedsHoist(cfg: in HoistConfig, e: in Expr): Bool {
     // is detected but the enclosing statement's OTHER hazards (if any)
     // still get hoisted through the generic rules.
     case EOld(inner) -> hzNeedsHoist(cfg, inner)
-    case EForall(_, whereOpt, body) -> {
+    case EForall(_, whereOpt, body, _) -> {
       val w = match whereOpt { case Some(we) -> hzNeedsHoist(cfg, we); case None -> false }
       w or hzNeedsHoist(cfg, body)
     }
-    case EExists(_, whereOpt, body) -> {
+    case EExists(_, whereOpt, body, _) -> {
       val w = match whereOpt { case Some(we) -> hzNeedsHoist(cfg, we); case None -> false }
       w or hzNeedsHoist(cfg, body)
     }
@@ -1750,7 +1750,7 @@ func hzCollectMutableNamesExpr(e: in Expr, m: in Map[String, Bool], localM: in M
     case ESpawn(inner) -> hzCollectMutableNamesExpr(inner, m, localM)
     case ETry(inner) -> hzCollectMutableNamesExpr(inner, m, localM)
     case EOld(inner) -> hzCollectMutableNamesExpr(inner, m, localM)
-    case EForall(_, whereOpt, body) -> {
+    case EForall(_, whereOpt, body, _) -> {
       match whereOpt {
         case Some(we) -> hzCollectMutableNamesExpr(we, m, localM)
         case None -> {
@@ -1758,7 +1758,7 @@ func hzCollectMutableNamesExpr(e: in Expr, m: in Map[String, Bool], localM: in M
       }
       hzCollectMutableNamesExpr(body, m, localM)
     }
-    case EExists(_, whereOpt, body) -> {
+    case EExists(_, whereOpt, body, _) -> {
       match whereOpt {
         case Some(we) -> hzCollectMutableNamesExpr(we, m, localM)
         case None -> {

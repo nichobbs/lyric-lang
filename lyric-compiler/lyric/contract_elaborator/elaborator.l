@@ -274,7 +274,7 @@ func exprContainsResult(e: in Expr): Bool {
       }
       false
     }
-    case EForall(_, whereOpt, body) -> {
+    case EForall(_, whereOpt, body, _) -> {
       match whereOpt {
         case Some(w) -> if exprContainsResult(w) { return true }
         case None -> {
@@ -282,7 +282,7 @@ func exprContainsResult(e: in Expr): Bool {
       }
       exprContainsResult(body)
     }
-    case EExists(_, whereOpt, body) -> {
+    case EExists(_, whereOpt, body, _) -> {
       match whereOpt {
         case Some(w) -> if exprContainsResult(w) { return true }
         case None -> {
@@ -557,21 +557,27 @@ func substResult(e: in Expr, name: in String, renames: in Map[String, String]): 
     case ESpawn(inner) -> mkExpr(ESpawn(inner = substResult(inner, name, renames)), e.span)
     case ETry(inner) -> mkExpr(ETry(inner = substResult(inner, name, renames)), e.span)
     case EOld(inner) -> mkExpr(EOld(inner = substResult(inner, name, renames)), e.span)
-    case EForall(binders, whereOpt, body) -> {
+    case EForall(binders, whereOpt, body, bf) -> {
       val qRenames = withoutNames(renames, propertyBinderNames(binders))
       val newWhere: Option[Expr] = match whereOpt {
         case Some(w) -> Some(value = substResult(w, name, qRenames))
         case None -> None
       }
-      mkExpr(EForall(binders = binders, whereExpr = newWhere, body = substResult(body, name, qRenames)), e.span)
+      mkExpr(
+        EForall(binders = binders, whereExpr = newWhere, body = substResult(body, name, qRenames), bodyForm = bf),
+        e.span
+      )
     }
-    case EExists(binders, whereOpt, body) -> {
+    case EExists(binders, whereOpt, body, bf) -> {
       val qRenames = withoutNames(renames, propertyBinderNames(binders))
       val newWhere: Option[Expr] = match whereOpt {
         case Some(w) -> Some(value = substResult(w, name, qRenames))
         case None -> None
       }
-      mkExpr(EExists(binders = binders, whereExpr = newWhere, body = substResult(body, name, qRenames)), e.span)
+      mkExpr(
+        EExists(binders = binders, whereExpr = newWhere, body = substResult(body, name, qRenames), bodyForm = bf),
+        e.span
+      )
     }
     case ELambda(params, body) -> mkExpr(
       ELambda(
@@ -975,14 +981,14 @@ func collectOldExpr(e: in Expr, acc: inout List[Expr]) {
     case EYield(inner) -> collectOldExpr(inner, acc)
     case ESpawn(inner) -> collectOldExpr(inner, acc)
     case ETry(inner) -> collectOldExpr(inner, acc)
-    case EForall(_, whereOpt, body) -> {
+    case EForall(_, whereOpt, body, _) -> {
       match whereOpt {
         case Some(w) -> collectOldExpr(w, acc)
         case None -> ()
       }
       collectOldExpr(body, acc)
     }
-    case EExists(_, whereOpt, body) -> {
+    case EExists(_, whereOpt, body, _) -> {
       match whereOpt {
         case Some(w) -> collectOldExpr(w, acc)
         case None -> ()
@@ -1158,19 +1164,19 @@ func replaceOldExpr(e: in Expr, counter: inout RenameCounter): Expr {
     case EYield(inner) -> mkExpr(EYield(inner = replaceOldExpr(inner, counter)), e.span)
     case ESpawn(inner) -> mkExpr(ESpawn(inner = replaceOldExpr(inner, counter)), e.span)
     case ETry(inner) -> mkExpr(ETry(inner = replaceOldExpr(inner, counter)), e.span)
-    case EForall(binders, whereOpt, body) -> {
+    case EForall(binders, whereOpt, body, bf) -> {
       val newWhere: Option[Expr] = match whereOpt {
         case Some(w) -> Some(value = replaceOldExpr(w, counter))
         case None -> None
       }
-      mkExpr(EForall(binders = binders, whereExpr = newWhere, body = replaceOldExpr(body, counter)), e.span)
+      mkExpr(EForall(binders = binders, whereExpr = newWhere, body = replaceOldExpr(body, counter), bodyForm = bf), e.span)
     }
-    case EExists(binders, whereOpt, body) -> {
+    case EExists(binders, whereOpt, body, bf) -> {
       val newWhere: Option[Expr] = match whereOpt {
         case Some(w) -> Some(value = replaceOldExpr(w, counter))
         case None -> None
       }
-      mkExpr(EExists(binders = binders, whereExpr = newWhere, body = replaceOldExpr(body, counter)), e.span)
+      mkExpr(EExists(binders = binders, whereExpr = newWhere, body = replaceOldExpr(body, counter), bodyForm = bf), e.span)
     }
     case ELambda(params, body) -> {
       mkExpr(ELambda(lambdaParams = params, body = replaceOldExprBlock(body, counter)), e.span)

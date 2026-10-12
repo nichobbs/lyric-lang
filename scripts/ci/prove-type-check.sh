@@ -4,7 +4,10 @@
 # diagnostics and a non-zero exit, in the single-file, --manifest and --json
 # modes, while its type-correct twin is proved.  Also: a quantifier's body
 # keeps its side conditions (#8223) — a goal the verifier used to prove
-# because it dropped them is refuted, and its guarded twin is proved.
+# because it dropped them is refuted, and its guarded twin is proved.  And
+# the --json summary counts every outcome (#8307), --proof-dir writes the
+# obligations' SMT-LIB queries, and an option prove does not take is an
+# error rather than a source path (#8309).
 #
 #   LYRIC_BIN=<lyric> bash scripts/ci/prove-type-check.sh
 set -euo pipefail
@@ -13,9 +16,11 @@ lyric_bin="$(cd "$(dirname "$lyric_bin")" && pwd)/$(basename "$lyric_bin")"
 examples="$(cd "$(dirname "$0")/../.." && pwd)/examples"
 tc="$examples/prove-type-check"
 qs="$examples/prove-quantifier-sides"
+js="$examples/prove-json-summary"
 out="$(mktemp)"
 err="$(mktemp)"
-trap 'rm -f "$out" "$err"' EXIT
+proofs="$(mktemp -d)"
+trap 'rm -f "$out" "$err"; rm -rf "${proofs:?}"' EXIT
 
 run() {
   local rc=0
@@ -104,11 +109,12 @@ echo "PASS: unbuilt dependency"
 # dependencies being built.
 expect_proved "ledger accounting package" "$lyric_bin" prove "$examples/ledger/src/accounting.l" --verbose
 
-# #8223: a quantifier's side conditions hold for every bound value.
+# #8223: a quantifier's side conditions hold for every bound value, whether
+# its body is written bare or in braces (#8305).
 rc="$(run "$lyric_bin" prove "$qs/unsound.l")"
 [ "$rc" -ne 0 ] || fail "quantifier side conditions: expected the unsound postconditions refuted"
-for fn in callsEveryByte dividesByEveryByte; do
-  grep -q "V0008 error .*postcondition of $fn" "$err" || fail "quantifier side conditions: expected $fn refuted"
+for fn in callsEveryByte dividesByEveryByte callsEveryByteBraced dividesByEveryByteBraced; do
+  grep -Eq "V0008 error .*postcondition of $fn([^A-Za-z0-9_]|\$)" "$err" || fail "quantifier side conditions: expected $fn refuted"
 done
 echo "PASS: quantifier side conditions, refuted"
 expect_proved "quantifier side conditions, guarded" "$lyric_bin" prove "$qs/sound.l"
@@ -120,3 +126,87 @@ rc="$(run "$lyric_bin" prove "$qs/vacuous.l")"
 grep -q "V0035 error .*precondition of pick can never hold" "$err" || fail "unmeetable precondition: expected V0035"
 grep -q "^1/1 obligations discharged" "$out" || fail "unmeetable precondition: expected the vacuity check left out of the count"
 echo "PASS: unmeetable precondition"
+
+# #8307: the --json summary counts each outcome of the goals it lists.
+summary_field() {
+  sed -n '/"summary"/,/}/p' "$out" | sed -n "s/.*\"$1\": \([0-9]*\).*/\1/p"
+}
+outcome_count() {
+  grep -c "\"outcome\": \"$1\"" "$out" || true
+}
+# One run serves both this and the --proof-dir checks below: the undecided
+# goal costs the solver's whole time limit.
+rc="$(run "$lyric_bin" prove --json --proof-dir "$proofs/q" "$js/counts.l")"
+[ "$rc" -eq 1 ] || fail "--json summary: expected exit 1 for the refuted goal"
+for pair in total: discharged:discharged unknown:unknown counterexamples:counterexample; do
+  field="${pair%%:*}"
+  outcome="${pair#*:}"
+  value="$(summary_field "$field")"
+  [ -n "$value" ] || fail "--json summary: missing $field"
+  if [ -n "$outcome" ]; then
+    [ "$value" -eq "$(outcome_count "$outcome")" ] || fail "--json summary: $field disagrees with the goals"
+    [ "$value" -ge 1 ] || fail "--json summary: expected at least one $outcome goal"
+  else
+    [ "$value" -eq "$(grep -c '"outcome": ' "$out")" ] || fail "--json summary: total disagrees with the goals"
+  fi
+done
+[ "$(summary_field total)" -eq $(($(summary_field discharged) + $(summary_field unknown) + $(summary_field counterexamples))) ] ||
+  fail "--json summary: total is not the sum of the outcome counts"
+echo "PASS: --json summary counts"
+
+# #8309: --proof-dir writes one SMT-LIB query per obligation, named by goal
+# index, and --json points each goal at its file.
+total="$(summary_field total)"
+[ "$(find "$proofs/q" -name '*.smt2' | wc -l)" -eq "$total" ] || fail "--proof-dir: expected one query per obligation"
+[ "$(grep -c '"smtPath": "' "$out")" -eq "$total" ] || fail "--proof-dir --json: expected every goal's smtPath"
+grep -q '"smtPath": ".*/q/0-[^"]*\.smt2"' "$out" || fail "--proof-dir --json: expected goal 0's file"
+for f in "$proofs"/q/*.smt2; do
+  grep -q '(check-sat)' "$f" || fail "--proof-dir: $f is not an SMT-LIB query"
+done
+# A re-run leaves only its own queries: an earlier run's .smt2 files go,
+# other files stay.
+mkdir -p "$proofs/h"
+echo stale > "$proofs/h/7-gone_post.smt2"
+echo keep > "$proofs/h/notes.txt"
+rc="$(run "$lyric_bin" prove --proof-dir "$proofs/h" "$tc/welltyped.l")"
+[ "$rc" -eq 0 ] || fail "--proof-dir: expected the proof to go through"
+grep -q "SMT-LIB queries for 1 obligation(s) written to $proofs/h" "$out" || fail "--proof-dir: expected the report"
+[ "$(find "$proofs/h" -name '0-*.smt2' | wc -l)" -eq 1 ] || fail "--proof-dir: expected goal 0's query"
+[ ! -e "$proofs/h/7-gone_post.smt2" ] || fail "--proof-dir: an earlier run's query survived"
+[ -f "$proofs/h/notes.txt" ] || fail "--proof-dir: a file that is not a query was removed"
+# --explain writes the queries only once its goal index is known good.
+rc="$(run "$lyric_bin" prove --explain --goal 0 --proof-dir "$proofs/e" "$tc/welltyped.l")"
+[ "$rc" -eq 0 ] || fail "--proof-dir --explain: expected exit 0"
+[ "$(find "$proofs/e" -name '*.smt2' | wc -l)" -eq 1 ] || fail "--proof-dir --explain: expected the query"
+echo "PASS: --proof-dir"
+
+# #8309: an option prove does not take, a second source file, or a misused
+# --proof-dir stops before anything is proved.
+expect_usage_error() {
+  local label="$1" message="$2"; shift 2
+  local rc
+  rc="$(run "$@")"
+  [ "$rc" -ne 0 ] || fail "$label: expected a non-zero exit"
+  grep -qF "$message" "$err" || fail "$label: expected '$message'"
+  if grep -q "obligations discharged" "$out"; then
+    fail "$label: nothing may be proved"
+  fi
+  echo "PASS: $label"
+}
+expect_usage_error "unknown option" "prove: unknown option '--proof-dirs'" \
+  "$lyric_bin" prove --proof-dirs "$proofs/x" "$tc/welltyped.l"
+expect_usage_error "unknown short option" "prove: unknown option '-q'" "$lyric_bin" prove -q "$tc/welltyped.l"
+expect_usage_error "unknown option after the source" "prove: unknown option '--jsn'" \
+  "$lyric_bin" prove "$tc/welltyped.l" --jsn
+expect_usage_error "two source files" "prove: expected one source file, got 2" \
+  "$lyric_bin" prove "$tc/welltyped.l" "$qs/sound.l"
+expect_usage_error "--proof-dir without a directory" "prove: --proof-dir requires a directory" \
+  "$lyric_bin" prove "$tc/welltyped.l" --proof-dir
+expect_usage_error "--proof-dir followed by an option" "prove: --proof-dir requires a directory" \
+  "$lyric_bin" prove --proof-dir --json "$tc/welltyped.l"
+expect_usage_error "--explain goal out of range" "prove --explain: goal 5 out of range" \
+  "$lyric_bin" prove --explain --goal 5 --proof-dir "$proofs/g" "$tc/welltyped.l"
+expect_usage_error "--proof-dir in project mode" "prove: --proof-dir requires a source file" \
+  "$lyric_bin" prove --proof-dir "$proofs/p" --manifest "$tc/control/lyric.toml"
+[ ! -e "$proofs/x" ] && [ ! -e "$proofs/p" ] && [ ! -e "$proofs/g" ] && [ ! -e ./--json ] || fail "a refused run may not write a proof directory"
+echo "PASS: refused runs write nothing"

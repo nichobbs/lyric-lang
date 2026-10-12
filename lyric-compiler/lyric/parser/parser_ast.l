@@ -429,6 +429,19 @@ pub record Param {
   // ─────────────────────────────────────────────────────────────────────────────
 }
 
+/// How a `forall`/`exists` quantifier's body was written (#8305): in braces
+/// (`forall (k: Byte) { e }`, whose body is an `EBlock`), after `implies`
+/// (`forall (k: Byte) where g implies e`), or bare (`forall (k: Byte) e`).
+/// The three mean the same thing; the form is kept so `lyric fmt` can write
+/// the body back as it was written.  `QBodyBraced` is also the form of a
+/// quantifier a compiler pass builds: a printer writes it in braces, which
+/// re-parse to the same body wherever the quantifier sits.
+pub union QuantBodyForm {
+  case QBodyBraced
+  case QBodyImplies
+  case QBodyBare
+}
+
 pub union PrefixOp {
   case PreNeg
   case PreNot
@@ -515,8 +528,8 @@ pub union ExprKind {
   case ESpawn(inner: Expr)
   case ETry(inner: Expr)
   case EOld(inner: Expr)
-  case EForall(binders: List[PropertyBinder], whereExpr: Option[Expr], body: Expr)
-  case EExists(binders: List[PropertyBinder], whereExpr: Option[Expr], body: Expr)
+  case EForall(binders: List[PropertyBinder], whereExpr: Option[Expr], body: Expr, bodyForm: QuantBodyForm)
+  case EExists(binders: List[PropertyBinder], whereExpr: Option[Expr], body: Expr, bodyForm: QuantBodyForm)
   case ESelf
   case EResult
   case ELambda(lambdaParams: List[LambdaParam], body: Block)
@@ -1705,8 +1718,8 @@ pub func exprKindTag(e: in Expr): String {
     case ESpawn(_) -> "ESpawn"
     case ETry(_) -> "ETry"
     case EOld(_) -> "EOld"
-    case EForall(_, _, _) -> "EForall"
-    case EExists(_, _, _) -> "EExists"
+    case EForall(_, _, _, _) -> "EForall"
+    case EExists(_, _, _, _) -> "EExists"
     case ESelf -> "ESelf"
     case EResult -> "EResult"
     case ELambda(_, _) -> "ELambda"

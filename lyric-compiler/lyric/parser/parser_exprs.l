@@ -1890,19 +1890,22 @@ func parseQuantifierExpr(st: inout ParseState, isForall: in Bool): Expr {
     None
   }
   val _ = skipStmtEnds(st)
+  var bodyForm: QuantBodyForm = QBodyBare
   val body = if identStr(peekToken(st)) == "implies" {
     val _ = advance(st)
+    bodyForm = QBodyImplies
     parseExpr(st)
   } else if isPunct(peekToken(st), LBrace) {
+    bodyForm = QBodyBraced
     val blk = parseBlock(st)
     mkExpr(EBlock(block = blk), blk.span)
   } else {
     parseExpr(st)
   }
   val kind = if isForall {
-    EForall(binders = binders, whereExpr = whereExpr, body = body)
+    EForall(binders = binders, whereExpr = whereExpr, body = body, bodyForm = bodyForm)
   } else {
-    EExists(binders = binders, whereExpr = whereExpr, body = body)
+    EExists(binders = binders, whereExpr = whereExpr, body = body, bodyForm = bodyForm)
   }
   mkExpr(kind, joinSpans(startTok.span, body.span))
 }

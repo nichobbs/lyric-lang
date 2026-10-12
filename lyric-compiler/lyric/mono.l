@@ -7864,7 +7864,7 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
 
     case ERange(bound) -> Expr(kind = ERange(bound = rewriteRangeBound(state, env, bound)), span = s)
 
-    case EForall(binders, whereExpr, body) -> Expr(
+    case EForall(binders, whereExpr, body, bf) -> Expr(
       kind = EForall(
         binders = binders,
         whereExpr = match whereExpr {
@@ -7877,12 +7877,13 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
           )
           case None -> None
         },
-        body = rewriteExpr(state, env, body)
+        body = rewriteExpr(state, env, body),
+        bodyForm = bf
       ),
       span = s
     )
 
-    case EExists(binders, whereExpr, body) -> Expr(
+    case EExists(binders, whereExpr, body, bf) -> Expr(
       kind = EExists(
         binders = binders,
         whereExpr = match whereExpr {
@@ -7895,7 +7896,8 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
           )
           case None -> None
         },
-        body = rewriteExpr(state, env, body)
+        body = rewriteExpr(state, env, body),
+        bodyForm = bf
       ),
       span = s
     )

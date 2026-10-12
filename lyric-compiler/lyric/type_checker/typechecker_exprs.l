@@ -14871,7 +14871,7 @@ func inferExprCore(
     // quantified variables into a fresh scope, infer the optional `where`
     // filter and the body predicate, then return Bool — quantifiers always
     // produce a boolean truth value.
-    case EForall(binders, whereOpt, body) -> {
+    case EForall(binders, whereOpt, body, _) -> {
       val fctx = newGenericContext()
       scopePush(sc)
       var fi = 0
@@ -14893,7 +14893,7 @@ func inferExprCore(
       scopePop(sc)
       TyPrim(pt = PtBool)
     }
-    case EExists(binders, whereOpt, body) -> {
+    case EExists(binders, whereOpt, body, _) -> {
       val ectx = newGenericContext()
       scopePush(sc)
       var ei = 0

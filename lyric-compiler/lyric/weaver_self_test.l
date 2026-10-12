@@ -393,11 +393,11 @@ func exprMentionsPath(e: in Expr, name: in String): Bool {
       false
     }
     case ERange(bound) -> rangeBoundMentionsPath(bound, name)
-    case EForall(_, whereExpr, body) -> {
+    case EForall(_, whereExpr, body, _) -> {
       val whereHit = match whereExpr { case Some(e) -> exprMentionsPath(e, name); case None -> false }
       whereHit or exprMentionsPath(body, name)
     }
-    case EExists(_, whereExpr, body) -> {
+    case EExists(_, whereExpr, body, _) -> {
       val whereHit = match whereExpr { case Some(e) -> exprMentionsPath(e, name); case None -> false }
       whereHit or exprMentionsPath(body, name)
     }
@@ -713,11 +713,11 @@ func exprHasMemberAccess(e: in Expr, recv: in String, mem: in String): Bool {
       false
     }
     case ERange(bound) -> rangeBoundHasMemberAccess(bound, recv, mem)
-    case EForall(_, whereExpr, body) -> {
+    case EForall(_, whereExpr, body, _) -> {
       val whereHit = match whereExpr { case Some(e) -> exprHasMemberAccess(e, recv, mem); case None -> false }
       whereHit or exprHasMemberAccess(body, recv, mem)
     }
-    case EExists(_, whereExpr, body) -> {
+    case EExists(_, whereExpr, body, _) -> {
       val whereHit = match whereExpr { case Some(e) -> exprHasMemberAccess(e, recv, mem); case None -> false }
       whereHit or exprHasMemberAccess(body, recv, mem)
     }

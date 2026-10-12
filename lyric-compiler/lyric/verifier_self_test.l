@@ -626,18 +626,24 @@ func testSummaryHelpers(): Unit {
     kind = GKAssertion,
     label = "test"
   )
-  val r1 = ProofResult(goal = g, outcome = Discharged)
-  val r2 = ProofResult(goal = g, outcome = Unknown(reason = "no solver"))
+  val r1 = ProofResult(goal = g, outcome = Discharged, translated = true)
+  val r2 = ProofResult(goal = g, outcome = Unknown(reason = "no solver"), translated = true)
   val results: List[ProofResult] = newList()
+  val r3 = ProofResult(goal = g, outcome = Counterexample(model = "(model)"), translated = true)
   results.add(r1)
   results.add(r2)
+  results.add(r3)
   val diags: List[Diagnostic] = newList()
-  val noChecks: List[ProofResult] = newList()
-  val summary = ProofSummary(level = VLProofRequired, diagnostics = diags, results = results, vacuityChecks = noChecks)
-  assertEqualInt(summaryTotalCount(summary), 2, "summary-total-2")
+  // A vacuity check is not an obligation: its outcome is in no count (#8307).
+  val checks: List[ProofResult] = newList()
+  checks.add(ProofResult(goal = g, outcome = Unknown(reason = "timeout"), translated = true))
+  val summary = ProofSummary(level = VLProofRequired, diagnostics = diags, results = results, vacuityChecks = checks)
+  assertEqualInt(summaryTotalCount(summary), 3, "summary-total-3")
   assertEqualInt(summaryDischargedCount(summary), 1, "summary-discharged-1")
+  assertEqualInt(summaryUnknownCount(summary), 1, "summary-unknown-1")
+  assertEqualInt(summaryCounterexampleCount(summary), 1, "summary-counterexample-1")
   assertTrue(summaryHasFailure(summary), "summary-has-failure")
-  assertTrue(not summaryHasCounterexample(summary), "summary-no-counterexample")
+  assertTrue(summaryHasCounterexample(summary), "summary-has-counterexample")
   assertTrue(not summaryHasErrorDiag(summary), "summary-no-error-diag")
 }
 

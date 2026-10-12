@@ -463,6 +463,8 @@ Core commands you will use constantly:
 | `lyric prove <file.l>` | Type-check, then run the SMT-backed verifier on `@proof_required` modules (an ill-typed program is not proved) |
 | `lyric prove` | Verify all packages in the discovered project |
 | `lyric prove --target <t> --features <f> --define K=V` | Type-check the program for that build before proving it |
+| `lyric prove --json <file.l>` | Machine-readable goals, diagnostics and outcome counts |
+| `lyric prove --proof-dir <dir> <file.l>` | Also write each obligation's SMT-LIB query to `<dir>` |
 | `lyric bench <file.l>` | Measure runtime performance of `@bench_module` functions |
 | `lyric bench <file.l> --target jvm` | Benchmark on the JVM target (`java -jar`) |
 | `lyric bench <file.l> --target native` | Benchmark the native executable |

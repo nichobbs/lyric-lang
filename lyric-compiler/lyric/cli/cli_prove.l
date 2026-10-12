@@ -56,6 +56,7 @@ func cmdProve(argv: in slice[String]): Int {
   var explain = false
   var explainGoal: Option[Int] = None
   var manifestArg: Option[String] = None
+  var proofDir: Option[String] = None
   val positional: List[String] = newList()
   // The build the proof's type check mirrors (#8227): its target, features
   // and defines, as `lyric build` takes them.
@@ -102,6 +103,16 @@ func cmdProve(argv: in slice[String]): Int {
         i += 2
       } else {
         printErr("prove: --manifest requires a path")
+        return 1
+      }
+    } else if arg == "--proof-dir" {
+      // A following option is not a directory: `--proof-dir --json` would
+      // otherwise create a directory named `--json`.
+      if i + 1 < argv.length and argv[i + 1].length > 0 and not argv[i + 1].startsWith("-") {
+        proofDir = Some(value = argv[i + 1])
+        i += 2
+      } else {
+        printErr("prove: --proof-dir requires a directory")
         return 1
       }
     } else if arg == "--target" {
@@ -163,10 +174,17 @@ func cmdProve(argv: in slice[String]): Int {
         printErr("prove: --define requires a KEY=VALUE argument")
         return 1
       }
+    } else if rejectUnknownOption("prove", arg) {
+      return 1
     } else {
       positional.add(arg)
       i += 1
     }
+  }
+
+  if positional.count > 1 {
+    printErr("prove: expected one source file, got " + toString(positional.count) + ": " + Str.joinList(" ", positional))
+    return 1
   }
 
   val buildSettings = ProveBuild(
@@ -186,6 +204,10 @@ func cmdProve(argv: in slice[String]): Int {
     }
     if explain {
       printErr("prove: --explain requires a source file")
+      return 1
+    }
+    if isSome(proofDir) {
+      printErr("prove: --proof-dir requires a source file")
       return 1
     }
     var projectMfPath = ""
@@ -280,7 +302,13 @@ func cmdProve(argv: in slice[String]): Int {
   val typeCheck = typeCheckForProveFile(sourcePath, source, buildSettings)
   if jsonOutput and not typeCheck.ok {
     Console.print(
-      proveJson(sourcePath, MC.vlDisplay(Verifier.sourceVerificationLevel(source)), "", typeCheck.diagnostics, 0, 0)
+      proveJson(
+        sourcePath,
+        MC.vlDisplay(Verifier.sourceVerificationLevel(source)),
+        "",
+        typeCheck.diagnostics,
+        ProveCounts(total = 0, discharged = 0, unknown = 0, counterexamples = 0)
+      )
     )
     return 1
   }
@@ -320,10 +348,44 @@ func cmdProve(argv: in slice[String]): Int {
           printErr("prove --explain: goal " + toString(idx) + " out of range (0.." + toString(total - 1) + ")")
           return 1
         }
+        match proofDir {
+          case Some(dir) -> match writeProofFiles(dir, summary) {
+            case Ok(_) -> {
+            }
+            case Err(message) -> {
+              printErr("prove: " + message)
+              return 1
+            }
+          }
+          case None -> {
+          }
+        }
         val r = summary.results[idx]
         Console.print(Verifier.prettyGoal(idx, r.goal))
         return 0
       }
+    }
+  }
+
+  // `--proof-dir`: each obligation's SMT-LIB query, one file per goal,
+  // written once the arguments are known to be good (an `--explain` run
+  // writes them above, after its goal index is checked).
+  val smtPaths: List[Option[String]] = match proofDir {
+    case Some(dir) -> match writeProofFiles(dir, summary) {
+      case Ok(paths) -> paths
+      case Err(message) -> {
+        printErr("prove: " + message)
+        return 1
+      }
+    }
+    case None -> {
+      val none: List[Option[String]] = newList()
+      var ni = 0
+      while ni < summary.results.count {
+        none.add(None)
+        ni = ni + 1
+      }
+      none
     }
   }
 
@@ -348,7 +410,8 @@ func cmdProve(argv: in slice[String]): Int {
       goalsBuf = goalsBuf + "      \"col\": " + toString(gl.origin.startPos.column) + ",\n"
       goalsBuf = goalsBuf + "      \"outcome\": " + jsonStr(outcomeStr) + ",\n"
       goalsBuf = goalsBuf + "      \"model\": " + modelStr + ",\n"
-      goalsBuf = goalsBuf + "      \"smtPath\": null,\n"
+      val smtPathStr = match smtPaths[gi] { case Some(sp) -> jsonStr(sp); case None -> "null" }
+      goalsBuf = goalsBuf + "      \"smtPath\": " + smtPathStr + ",\n"
       goalsBuf = goalsBuf + "      \"suggestions\": []\n"
       goalsBuf = goalsBuf + "    }" + comma + "\n"
       gi = gi + 1
@@ -361,16 +424,7 @@ func cmdProve(argv: in slice[String]): Int {
     for d in summary.diagnostics {
       allDiags.add(DiagUtil.LocatedDiagnostic(path = sourcePath, diagnostic = d))
     }
-    Console.print(
-      proveJson(
-        sourcePath,
-        MC.vlDisplay(summary.level),
-        goalsBuf,
-        allDiags,
-        Verifier.summaryTotalCount(summary),
-        Verifier.summaryDischargedCount(summary)
-      )
-    )
+    Console.print(proveJson(sourcePath, MC.vlDisplay(summary.level), goalsBuf, allDiags, summaryCounts(summary)))
     if Verifier.summaryHasErrorDiag(summary) or Verifier.summaryHasCounterexample(summary) {
       return 1
     }
@@ -390,6 +444,13 @@ func cmdProve(argv: in slice[String]): Int {
   } else {
     Console.println("no proof obligations: package is " + levelStr)
   }
+  match proofDir {
+    case Some(dir) -> Console.println(
+      "SMT-LIB queries for " + toString(countSome(smtPaths)) + " obligation(s) written to " + dir
+    )
+    case None -> {
+    }
+  }
 
   // Exit 1 only for error diagnostics or counterexamples; unknown goals
   // (trivial solver gave up, z3 not available) are not failures.
@@ -403,13 +464,30 @@ func cmdProve(argv: in slice[String]): Int {
 // The `lyric prove --json` document (docs/15 Appendix A): `goalsBuf` is the
 // goal objects already rendered, one per line group.  Each diagnostic object
 // also names the file it is in (`file`, an addition to the frozen v1 keys).
+// The `summary` object's counts (docs/15 A.4), over the obligations only:
+// the vacuity checks behind V0035/V0036 are not obligations (#8307).
+record ProveCounts {
+  total: Int
+  discharged: Int
+  unknown: Int
+  counterexamples: Int
+}
+
+func summaryCounts(summary: in Verifier.ProofSummary): ProveCounts {
+  ProveCounts(
+    total = Verifier.summaryTotalCount(summary),
+    discharged = Verifier.summaryDischargedCount(summary),
+    unknown = Verifier.summaryUnknownCount(summary),
+    counterexamples = Verifier.summaryCounterexampleCount(summary)
+  )
+}
+
 func proveJson(
   file: in String,
   level: in String,
   goalsBuf: in String,
   diags: in List[DiagUtil.LocatedDiagnostic],
-  total: in Int,
-  discharged: in Int,
+  counts: in ProveCounts,
 ): String {
   var jsonBuf = "{\n"
   jsonBuf = jsonBuf + "  \"file\": " + jsonStr(file) + ",\n"
@@ -439,13 +517,89 @@ func proveJson(
   }
   jsonBuf = jsonBuf + "  ],\n"
   jsonBuf = jsonBuf + "  \"summary\": {\n"
-  jsonBuf = jsonBuf + "    \"total\": " + toString(total) + ",\n"
-  jsonBuf = jsonBuf + "    \"discharged\": " + toString(discharged) + ",\n"
-  jsonBuf = jsonBuf + "    \"unknown\": 0,\n"
-  jsonBuf = jsonBuf + "    \"counterexamples\": 0\n"
+  jsonBuf = jsonBuf + "    \"total\": " + toString(counts.total) + ",\n"
+  jsonBuf = jsonBuf + "    \"discharged\": " + toString(counts.discharged) + ",\n"
+  jsonBuf = jsonBuf + "    \"unknown\": " + toString(counts.unknown) + ",\n"
+  jsonBuf = jsonBuf + "    \"counterexamples\": " + toString(counts.counterexamples) + "\n"
   jsonBuf = jsonBuf + "  }\n"
   jsonBuf = jsonBuf + "}\n"
   jsonBuf
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// `--proof-dir`: the obligations' SMT-LIB queries on disk (#8309)
+// ─────────────────────────────────────────────────────────────────────────────
+// Writes each obligation's SMT-LIB v2.6 query to `<dir>/<n>-<label>.smt2`,
+// `<n>` its goal index (as `--explain --goal` and the `--json` goals number
+// it), creating `dir` if needed and first removing every `.smt2` file
+// already in it, and returns the path written for each
+// obligation in goal order.  An obligation that could not be translated
+// into the proof logic (V0033) has no query, so no file and `None`.  A
+// trivially discharged obligation still gets its query, which a solver
+// would also prove.
+func writeProofFiles(dir: in String, summary: in Verifier.ProofSummary): Result[List[Option[String]], String] {
+  match File.createDir(dir) {
+    case Ok(_) -> {
+    }
+    case Err(e) -> return Err(error = "cannot create proof directory '" + dir + "': " + IOError.message(e))
+  }
+  // The directory holds the last run's queries only: an earlier run's
+  // `.smt2` files, whose goals may since have moved or gone, are removed.
+  match File.listFiles(dir) {
+    case Ok(existing) -> {
+      for f in existing {
+        if Str.endsWith(f, ".smt2") {
+          match File.deleteFile(f) {
+            case Ok(_) -> {
+            }
+            case Err(e) -> return Err(error = "cannot remove the earlier query '" + f + "': " + IOError.message(e))
+          }
+        }
+      }
+    }
+    case Err(e) -> return Err(error = "cannot list proof directory '" + dir + "': " + IOError.message(e))
+  }
+  val paths: List[Option[String]] = newList()
+  var gi = 0
+  while gi < summary.results.count {
+    val r = summary.results[gi]
+    if r.translated {
+      val path = Path.join(dir, toString(gi) + "-" + proofFileStem(r.goal.label) + ".smt2")
+      match File.writeText(path, Verifier.smtRenderGoal(r.goal)) {
+        case Ok(_) -> paths.add(Some(value = path))
+        case Err(e) -> return Err(error = "cannot write '" + path + "': " + IOError.message(e))
+      }
+    } else {
+      paths.add(None)
+    }
+    gi = gi + 1
+  }
+  Ok(value = paths)
+}
+
+// A goal label as a portable file-name stem: ASCII letters, digits, `_`,
+// `-` and `.` are kept, anything else (`$`, `<`, `/`, spaces) becomes `_`.
+func proofFileStem(label: in String): String {
+  var r = ""
+  var i = 0
+  while i < label.length {
+    val c = Str.charAtOrReplacement(label, i)
+    val keep = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '_' or c == '-' or
+      c == '.'
+    r = r + (if keep { Str.substring(label, i, 1) } else { "_" })
+    i = i + 1
+  }
+  r
+}
+
+func countSome(xs: in List[Option[String]]): Int {
+  var n = 0
+  for x in xs {
+    if isSome(x) {
+      n = n + 1
+    }
+  }
+  n
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

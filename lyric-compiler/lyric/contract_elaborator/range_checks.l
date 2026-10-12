@@ -462,8 +462,8 @@ func rangeWalkExpr(e: in Expr, sc: in RangeScope): Expr {
     case EResult -> e
     case EError -> e
     case EOld(_) -> e
-    case EForall(_, _, _) -> e
-    case EExists(_, _, _) -> e
+    case EForall(_, _, _, _) -> e
+    case EExists(_, _, _, _) -> e
   }
 }
 

@@ -927,11 +927,11 @@ func exprContainsYield(e: in Expr): Bool {
     }
     case EBlock(blk) -> blockContainsYield(blk)
     case EUnsafe(blk) -> blockContainsYield(blk)
-    case EForall(_, w, body) -> {
+    case EForall(_, w, body, _) -> {
       val inW = match w { case None -> false; case Some(we) -> exprContainsYield(we) }
       inW or exprContainsYield(body)
     }
-    case EExists(_, w, body) -> {
+    case EExists(_, w, body, _) -> {
       val inW = match w { case None -> false; case Some(we) -> exprContainsYield(we) }
       inW or exprContainsYield(body)
     }
@@ -2672,7 +2672,7 @@ func checkExprSelfMembers(diag: in List[Diagnostic], ctx: in DefaultBodyCtx, e: 
     }
     case EBlock(blk) -> checkBlockSelfMembers(diag, ctx, blk)
     case EUnsafe(blk) -> checkBlockSelfMembers(diag, ctx, blk)
-    case EForall(_, w, body) -> {
+    case EForall(_, w, body, _) -> {
       match w {
         case None -> {
         }
@@ -2680,7 +2680,7 @@ func checkExprSelfMembers(diag: in List[Diagnostic], ctx: in DefaultBodyCtx, e: 
       }
       checkExprSelfMembers(diag, ctx, body)
     }
-    case EExists(_, w, body) -> {
+    case EExists(_, w, body, _) -> {
       match w {
         case None -> {
         }

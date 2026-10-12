@@ -567,7 +567,7 @@ func oldExpr(diag: in List[Diagnostic], pos: in String, inOld: in Bool, e: in Ex
     }
     case EBlock(blk) -> oldBlock(diag, pos, inOld, blk)
     case EUnsafe(blk) -> oldBlock(diag, pos, inOld, blk)
-    case EForall(binders, w, body) -> {
+    case EForall(binders, w, body, _) -> {
       oldBinders(diag, binders)
       match w {
         case Some(we) -> oldExpr(diag, pos, inOld, we)
@@ -575,7 +575,7 @@ func oldExpr(diag: in List[Diagnostic], pos: in String, inOld: in Bool, e: in Ex
       }
       oldExpr(diag, pos, inOld, body)
     }
-    case EExists(binders, w, body) -> {
+    case EExists(binders, w, body, _) -> {
       oldBinders(diag, binders)
       match w {
         case Some(we) -> oldExpr(diag, pos, inOld, we)

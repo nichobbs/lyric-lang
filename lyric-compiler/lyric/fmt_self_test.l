@@ -820,6 +820,125 @@ test "forall body no braces" {
   assertTrue(Str.contains(acc, "forall (j: Int) { j > 0 }"), "forall: single-brace block body round-trips")
 }
 
+// #8305: a quantifier body keeps the form it was written in.  Each case is
+// one `ensures:` clause that must survive a checked format unchanged, and
+// format again to the same text.
+func assertQuantClauseRoundTrips(clause: in String, label: in String): Unit {
+  val src = "package P\n\n@pure\nfunc g(x: in Int): Int = x\n\nfunc f(xs: in List[Int]): Bool\n  ensures: " + clause +
+    "\n{\n  true\n}\n"
+  match formatSourceChecked(src) {
+    case FmtOk(text) -> {
+      assertTrue(Str.contains(text, "  ensures: " + clause + "\n"), label + ": clause written back as written")
+      assertEqual(format(parse(text)), text, label + ": idempotent")
+    }
+    case _ -> assertTrue(false, label + ": checked format refused the source")
+  }
+}
+
+test "quantifier unbraced body starting with a call round trips" {
+  assertQuantClauseRoundTrips("forall (k: Byte) g(1) == g(1)", "call")
+  assertQuantClauseRoundTrips("exists (k: Int) g(k) == 3", "exists call")
+}
+
+test "quantifier unbraced body starting with a path round trips" {
+  assertQuantClauseRoundTrips("forall (k: Int) k == k", "path")
+  assertQuantClauseRoundTrips("forall (k: Int) xs.contains(k) or k > 0", "member call")
+  assertQuantClauseRoundTrips("forall (k: Int) where k > 0 g(k) > 0", "path after where")
+}
+
+test "quantifier unbraced body starting with parens round trips" {
+  assertQuantClauseRoundTrips("forall (k: Int) (k == k)", "parenthesised")
+  assertQuantClauseRoundTrips("forall (k: Int) (k + 1) > k", "parenthesised operand")
+}
+
+test "quantifier unbraced body starting with a unary operator round trips" {
+  assertQuantClauseRoundTrips("forall (k: Int) not (k > k)", "not")
+  assertQuantClauseRoundTrips("forall (k: Int) -k == 0 - k", "negation")
+  assertQuantClauseRoundTrips("forall (k: Int) where k > 0 not (k < 0)", "not after where")
+}
+
+test "nested unbraced quantifiers round trip" {
+  assertQuantClauseRoundTrips("forall (k: Int) forall (j: Int) g(k) + j == j + g(k)", "nested forall")
+  assertQuantClauseRoundTrips("forall (k: Int) exists (j: Int) where j > k j > 0", "forall exists")
+  assertQuantClauseRoundTrips("forall (k: Int) { exists (j: Int) j > k }", "bare inside braced")
+  assertQuantClauseRoundTrips("forall (k: Int) exists (j: Int) { j > k }", "braced inside bare")
+}
+
+test "quantifier implies and braced bodies round trip" {
+  assertQuantClauseRoundTrips("forall (k: Int) implies g(k) == g(k)", "implies")
+  assertQuantClauseRoundTrips("forall (k: Int) where k > 0 implies -k < 0", "where implies")
+  assertQuantClauseRoundTrips("forall (k: Int) where k > 0 { g(k) > 0 }", "where braced")
+  assertQuantClauseRoundTrips("g(1) == 1 and forall (k: Int) g(k) == k", "rhs operand")
+}
+
+test "long unbraced quantifier bodies break and round trip" {
+  // A body too long for one line goes on the lines below the binders, with
+  // `implies` kept in front of an implies body (#8305).
+  val bare = "forall (k: Int) where k > 0 aVeryLongPredicateName(k) and anotherVeryLongPredicateName(k) and yetAnotherLongPredicateName(k)"
+  val implies = "forall (k: Int) where k > 0 implies aVeryLongPredicateName(k) and anotherVeryLongPredicateName(k) and yetAnotherOne(k)"
+  var i = 0
+  for clause in [bare, implies] {
+    val src = "package P\n\nfunc f(): Bool\n  ensures: " + clause + "\n{\n  true\n}\n"
+    match formatSourceChecked(src) {
+      case FmtOk(text) -> {
+        assertTrue(Str.contains(text, "  ensures: forall (k: Int) where k > 0\n"), "long body: binders line breaks")
+        assertEqual(format(parse(text)), text, "long body: idempotent")
+        if i == 1 {
+          assertTrue(Str.contains(text, "\n    implies aVeryLongPredicateName(k)"), "long implies body keeps implies")
+        }
+      }
+      case _ -> assertTrue(false, "long body: checked format refused the source")
+    }
+    i = i + 1
+  }
+}
+
+test "a comment before an unbraced quantifier body stays in the clause" {
+  // A comment between the binders and a bare body, or before `implies`,
+  // stays with the quantifier, and a second format changes nothing (#8305).
+  val src = "package P\n\nfunc f(): Unit\n  ensures: forall (k: Byte)\n    // before the bare body\n    k == k\n{\n}\n\n" +
+    "func g(): Unit\n  ensures: forall (k: Byte) where k > 0u8 // after the guard\n    implies k == k\n{\n}\n"
+  match formatSourceChecked(src) {
+    case FmtOk(text) -> {
+      assertTrue(
+        Str.contains(text, "  ensures: forall (k: Byte)\n    // before the bare body\n    k == k\n{\n}\n"),
+        "comment before a bare body: kept above the body"
+      )
+      assertTrue(
+        Str.contains(text, "  ensures: forall (k: Byte) where k > 0u8\n    // after the guard\n    implies k == k\n{\n}\n"),
+        "comment before implies: kept above implies"
+      )
+      assertEqual(format(parse(text)), text, "comment before a quantifier body: idempotent")
+      match formatSourceChecked(text) {
+        case FmtOk(again) -> assertEqual(again, text, "comment before a quantifier body: second checked format stable")
+        case _ -> assertTrue(false, "comment before a quantifier body: second checked format refused")
+      }
+    }
+    case _ -> assertTrue(false, "comment before a quantifier body: checked format refused the source")
+  }
+}
+
+test "rewritten bare quantifier body that would not parse back is braced" {
+  // A body a compiler pass rewrote may open with a token that would extend
+  // the `where` guard if written bare; it is printed in braces (#8305).
+  val pr = parse("package P\n\nfunc f(): Bool\n  ensures: forall (k: Int) where k > 0 implies -k < 0\n{\n  true\n}\n")
+  match pr.file.items[0].kind {
+    case IFunc(fd) -> match fd.contracts[0] {
+      case CCEnsures(ex, _) -> match ex.kind {
+        case EForall(bs, w, body, _) -> {
+          val bare = Expr(kind = EForall(binders = bs, whereExpr = w, body = body, bodyForm = QBodyBare), span = ex.span)
+          assertEqual(exprInline(0, bare), "forall (k: Int) where k > 0 { -k < 0 }", "guard-extending body braced")
+          val built = Expr(kind = EForall(binders = bs, whereExpr = None, body = body, bodyForm = QBodyBraced), span = ex.span)
+          assertEqual(exprInline(0, built), "forall (k: Int) { -k < 0 }", "pass-built quantifier braced")
+        }
+        case _ -> assertTrue(false, "expected a forall")
+      }
+      case _ -> assertTrue(false, "expected an ensures clause")
+    }
+    case _ -> assertTrue(false, "expected a function")
+  }
+}
+
 test "width driven long if breaks" {
   // An if-expression whose inline form exceeds 120 chars converts
   // to the brace layout (M5.3 stage 12).

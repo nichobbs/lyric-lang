@@ -169,7 +169,7 @@ func visitExpr(e: in Expr, output: in List[CallRef]): Unit {
         i = i + 1
       }
     }
-    case EForall(_, whereExpr, body) -> {
+    case EForall(_, whereExpr, body, _) -> {
       match whereExpr {
         case Some(w) -> visitExpr(w, output)
         case None -> {
@@ -177,7 +177,7 @@ func visitExpr(e: in Expr, output: in List[CallRef]): Unit {
       }
       visitExpr(body, output)
     }
-    case EExists(_, whereExpr, body) -> {
+    case EExists(_, whereExpr, body, _) -> {
       match whereExpr {
         case Some(w) -> visitExpr(w, output)
         case None -> {

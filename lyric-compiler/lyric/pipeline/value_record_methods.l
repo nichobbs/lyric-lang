@@ -412,23 +412,25 @@ func sfExprT(e: in Expr, fields: in Map[String, Bool], bound: in List[String], s
     case ESpawn(x) -> e.copy(kind = ESpawn(inner = sfExprT(x, fields, bound, selfTy)))
     case ETry(x) -> e.copy(kind = ETry(inner = sfExprT(x, fields, bound, selfTy)))
     case EOld(x) -> e.copy(kind = EOld(inner = sfExprT(x, fields, bound, selfTy)))
-    case EForall(bs, w, body) -> {
+    case EForall(bs, w, body, bf) -> {
       val names = binderScope(bound, bs)
       e.copy(
         kind = EForall(
           binders = bs,
           whereExpr = sfExprOpt(w, fields, names, selfTy),
-          body = sfExprT(body, fields, names, selfTy)
+          body = sfExprT(body, fields, names, selfTy),
+          bodyForm = bf
         )
       )
     }
-    case EExists(bs, w, body) -> {
+    case EExists(bs, w, body, bf) -> {
       val names = binderScope(bound, bs)
       e.copy(
         kind = EExists(
           binders = bs,
           whereExpr = sfExprOpt(w, fields, names, selfTy),
-          body = sfExprT(body, fields, names, selfTy)
+          body = sfExprT(body, fields, names, selfTy),
+          bodyForm = bf
         )
       )
     }

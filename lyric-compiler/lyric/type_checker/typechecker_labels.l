@@ -239,14 +239,14 @@ func labelsExpr(diag: in List[Diagnostic], loops: in List[String], e: in Expr): 
     }
     case EBlock(blk) -> labelsBlock(diag, loops, blk)
     case EUnsafe(blk) -> labelsBlock(diag, loops, blk)
-    case EForall(_, w, body) -> {
+    case EForall(_, w, body, _) -> {
       match w {
         case Some(we) -> labelsExpr(diag, loops, we)
         case None -> ()
       }
       labelsExpr(diag, loops, body)
     }
-    case EExists(_, w, body) -> {
+    case EExists(_, w, body, _) -> {
       match w {
         case Some(we) -> labelsExpr(diag, loops, we)
         case None -> ()

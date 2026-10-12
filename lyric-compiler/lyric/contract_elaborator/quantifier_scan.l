@@ -104,8 +104,8 @@ func scanExpr(e: in Expr, diags: in List[Diagnostic]): Unit {
 
 func noteQuantifier(e: in Expr, diags: in List[Diagnostic]): Expr {
   match e.kind {
-    case EForall(_, _, _) -> diags.add(quantifierWarning("forall", e.span))
-    case EExists(_, _, _) -> diags.add(quantifierWarning("exists", e.span))
+    case EForall(_, _, _, _) -> diags.add(quantifierWarning("forall", e.span))
+    case EExists(_, _, _, _) -> diags.add(quantifierWarning("exists", e.span))
     case _ -> ()
   }
   e
@@ -129,8 +129,8 @@ pub func exprHasQuantifier(e: in Expr): Bool {
 
 func noteQuantifierSpan(e: in Expr, hits: in List[Span]): Expr {
   match e.kind {
-    case EForall(_, _, _) -> hits.add(e.span)
-    case EExists(_, _, _) -> hits.add(e.span)
+    case EForall(_, _, _, _) -> hits.add(e.span)
+    case EExists(_, _, _, _) -> hits.add(e.span)
     case _ -> ()
   }
   e

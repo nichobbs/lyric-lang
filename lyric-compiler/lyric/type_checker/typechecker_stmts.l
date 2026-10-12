@@ -975,11 +975,11 @@ func exprMayEscapeLoop(e: in Expr, label: in Option[String], nested: in Bool): B
     }
     case EBlock(blk) -> blockMayEscapeLoop(blk, label, nested)
     case EUnsafe(blk) -> blockMayEscapeLoop(blk, label, nested)
-    case EForall(_, w, body) -> {
+    case EForall(_, w, body, _) -> {
       val inW = match w { case None -> false; case Some(we) -> exprMayEscapeLoop(we, label, nested) }
       inW or exprMayEscapeLoop(body, label, nested)
     }
-    case EExists(_, w, body) -> {
+    case EExists(_, w, body, _) -> {
       val inW = match w { case None -> false; case Some(we) -> exprMayEscapeLoop(we, label, nested) }
       inW or exprMayEscapeLoop(body, label, nested)
     }
