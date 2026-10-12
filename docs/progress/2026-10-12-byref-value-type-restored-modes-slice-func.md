@@ -63,6 +63,40 @@ result, `val ls: List[(Int) -> Unit] = [{ a: Int -> ... }]` no longer throws
 `ArrayTypeMismatchException` in `List.Add`.  A slice of such literals held
 `Func`s that callers invoked as `Action`s and that worked only by chance.
 
+### Every value of a `Unit`-returning function type is an `Action`
+
+The review of the first version found the same class of bug wherever a
+function value passes through an erased `object`.  A value whose static type
+is `(T1, ..., TN) -> Unit` is now an `Action` everywhere it is made and
+everywhere it is read:
+
+- **Lambdas produced by `if`/`match`/block.**  A lambda literal that is a
+  branch of an `if`, an arm of a `match` or the tail of a block is built as the
+  `Action` its destination expects.  This applies to a return, a list or slice
+  element, an annotated `val` and a call or constructor argument.  The literals
+  are marked by source span (`markActionSlotLambdasMsil`).  Before, `pick(c):
+  (Int) -> Unit = if c { {...} } else { {...} }` returned a `Func`, which
+  failed ilverify, and putting it into a `List[(Int) -> Unit]` threw
+  `ArrayTypeMismatchException`.
+- **`.append`, `.concat` and `.slice` on a slice.**  The result keeps the
+  receiver's `slice[e]` type when `e` has no array token, instead of the
+  erased `object` it had.  The appended element and a literal `concat`
+  argument are built at `e`.  `ss.append(ss[0])` on a `slice[(Int) -> Unit]`
+  used to invoke the `Action` element as a `Func`, which threw
+  `InvalidCastException` after the first version of this change.
+- **Narrowing reads.**  `castObjectToDelegateMsil` and `castObjectToMsil` now
+  narrow an `object` to `Action`/`Action`N` as well as `Func`.  This applies to
+  every erased read: slice and list elements, a `for` loop, a destructured
+  tuple element, `toList()`'s copy, and a function-typed argument or field.
+  Invoking an `object` whose static type returns `Unit` narrows it to the
+  `Action` of the call's arity (`invokeLoadedFuncValueMsil`).
+- **Type checker.**  `List.add(item)`, `List.add(index, item)`,
+  `List.removeAt(index)` and `Map.add(key, value)` now have the result type
+  `Unit`; before, the result was unknown.  As a result, a lambda that ends in
+  `xs.add(x)` is a `(T) -> Unit`, as docs/01 now states, and the backends
+  build it as an `Action`.  A binding that declares another type for such a
+  call's result is now T0060.
+
 ## Tests
 
 - `byref_value_type_self_test.l` (dotnet, JVM, native): `inout`/`out`
@@ -71,15 +105,27 @@ result, `val ls: List[(Int) -> Unit] = [{ a: Int -> ... }]` no longer throws
   `String`.  Also covers `inout Option[Int]`.
 - `byref_extern_struct_dotnet_self_test.l` (dotnet): `inout`/`out` of
   `extern type` `System.TimeSpan` and `System.Guid`.
-- `slice_func_elem_self_test.l` (dotnet, JVM, native): bound, direct,
-  returned, two-argument, `String` and thunk function elements of a slice.
-- `slice_func_unit_elem_self_test.l` (dotnet, JVM): `Unit`-returning function
-  elements of a slice, indexed and iterated, and a `Unit` lambda literal in a
-  `List` literal.  It does not run on native, because the native codegen does
-  not yet accept a `Unit`-returning function type as a type argument (N0007).
+- `slice_func_elem_self_test.l` (dotnet, JVM, native) covers function
+  elements of a slice that are bound, invoked directly, returned,
+  two-argument, `String` and thunks.  It also covers the slice's `.append`,
+  `.slice` and `.concat`, an `if`-produced lambda, and a destructured tuple's
+  element.
+- `slice_func_unit_elem_self_test.l` (dotnet, JVM) covers `Unit`-returning
+  function elements:
+  - slice elements, indexed and iterated;
+  - a `Unit` lambda literal in a `List` literal;
+  - `.append`, `.slice` and `.concat` of such a slice, including an appended
+    literal and an unannotated lambda ending in `log.add`;
+  - lambdas that an `if` or a `match` produces for a return, a list element, an
+    annotated `val` and a generic argument;
+  - a destructured tuple's element.
+
+  It does not run on native, because the native codegen does not yet accept a
+  `Unit`-returning function type as a type argument (N0007).
+- `slice_func_tolist_dotnet_self_test.l` (dotnet only): `slice.toList()` of
+  function elements.  The JVM backend does not lower `toList()` on a slice.
 - `scripts/ci/inout-receiver-e2e.sh` now also covers a record-body method with
   `inout` record, `out Int` and `inout Instant` parameters, and an `impl`
   method with an `inout Self` parameter.  These are called from a sibling
   package and from a restored dependency.
-- ilverify (`scripts/ilverify-selfhosted.sh`) verifies the three new test
-  DLLs.
+- ilverify (`scripts/ilverify-selfhosted.sh`) verifies the new test DLLs.

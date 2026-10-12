@@ -70,3 +70,31 @@ test "reference-typed and two-argument function elements" {
   val ts: slice[() -> Int] = [{ -> 8 }]
   assertEqualInt(thunkCall(ts), 8, "thunkCall")
 }
+
+func pickInc(c: in Bool): (Int) -> Int {
+  if c {
+    { a: Int -> a + 1 }
+  } else {
+    { a: Int -> a - 1 }
+  }
+}
+
+test "function elements of a slice's append, slice and concat" {
+  val fs: slice[(Int) -> Int] = [{ a: Int -> a + 1 }]
+  val f2 = fs.append({ a: Int -> a * 3 })
+  assertEqualInt(f2[1](5), 15, "append")
+  val f3 = f2.concat(fs).slice(1, 3)
+  assertEqualInt(f3[0](2) + f3[1](2), 9, "concat then slice")
+  var total = 0
+  for f in f2 {
+    total = total + f(10)
+  }
+  assertEqualInt(total, 41, "for over append")
+}
+
+test "function values an if produces and a destructured tuple holds" {
+  assertEqualInt(pickInc(true)(5) + pickInc(false)(5), 10, "pickInc")
+  val ti: slice[(Int, (Int) -> Int)] = [(1, { a: Int -> a + 5 })]
+  val (m, tg) = ti[0]
+  assertEqualInt(tg(m), 6, "tuple")
+}

@@ -288,6 +288,7 @@ SELF_TESTS=(
   lyric-compiler/lyric/byref_extern_struct_dotnet_self_test.l
   lyric-compiler/lyric/slice_func_elem_self_test.l
   lyric-compiler/lyric/slice_func_unit_elem_self_test.l
+  lyric-compiler/lyric/slice_func_tolist_dotnet_self_test.l
 )
 st_errors=0
 st_failed=()

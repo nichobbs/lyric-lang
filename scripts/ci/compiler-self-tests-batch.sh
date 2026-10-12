@@ -188,6 +188,7 @@ for t in \
   lyric-compiler/lyric/byref_extern_struct_dotnet_self_test.l \
   lyric-compiler/lyric/slice_func_elem_self_test.l \
   lyric-compiler/lyric/slice_func_unit_elem_self_test.l \
+  lyric-compiler/lyric/slice_func_tolist_dotnet_self_test.l \
   lyric-compiler/lyric/println_stringify_self_test.l \
   lyric-compiler/lyric/println_extern_struct_dotnet_self_test.l \
   lyric-compiler/lyric/pconstructor_typed_binding_self_test.l \
