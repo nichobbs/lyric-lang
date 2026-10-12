@@ -23,7 +23,15 @@
 #   - a record-body method with an `inout` record, `out Int` and `inout
 #     Instant` (a value type) parameter, and an `impl` method with an `inout
 #     Self` parameter (#8210: the restored MemberRef encoded them by value,
-#     `MissingMethodException`).
+#     `MissingMethodException`);
+#   - dot-named functions of a primitive type (`Int.twice`, `Int.bump` with
+#     an `inout` receiver, #8217), with method syntax and through the type;
+#   - extensions (#8219): dot-named functions a package other than the one
+#     declaring the type declares for it, `inout` and generic ones included,
+#     called with method syntax, through the type and through their package,
+#     beside a same-named extension of a package the caller does not import
+#     and the type's own function of another arity, and from the body of a
+#     generic function of the extending package specialised in the caller.
 #
 #   bash scripts/ci/inout-receiver-e2e.sh [dotnet] [jvm] [native]
 # LYRIC_BIN overrides the binary (default: the AOT build for BUILD_CONFIG).
@@ -121,6 +129,12 @@ impl Absorb for Acc {
   func absorb(self: in Self, other: inout Self): Unit {
     other = Acc(n = self.n + other.n)
   }
+}
+
+pub func Int.twice(self: in Int): Int = self * 2
+
+pub func Int.bump(self: inout Int, d: in Int): Unit {
+  self = self + d
 }'
 
 app_src='package IrApp
@@ -163,7 +177,11 @@ func main(): Int {
   h.stampIt(stamp)
   var acc = Acc(n = 1)
   Acc(n = 40).absorb(acc)
-  println(toString(beforeReset) + " " + toString(afterMove) + " " + toString(p.x + p.y) + " " + toString(b.v) + " " + toString(n) + " " + toString(y) + " " + toString(r) + " " + toString(w) + " " + toString(t) + " " + s + " " + toString(q.x + q.y) + " " + toString(z) + " " + toString(instantEquals(stamp, fromEpochMillis(7000i64))) + " " + toString(acc.n))
+  var zi = 4
+  zi.bump(3)
+  Int.bump(zi, 1)
+  val zz = zi.twice() + Int.twice(zi)
+  println(toString(beforeReset) + " " + toString(afterMove) + " " + toString(p.x + p.y) + " " + toString(b.v) + " " + toString(n) + " " + toString(y) + " " + toString(r) + " " + toString(w) + " " + toString(t) + " " + s + " " + toString(q.x + q.y) + " " + toString(z) + " " + toString(instantEquals(stamp, fromEpochMillis(7000i64))) + " " + toString(acc.n) + " " + toString(zi) + " " + toString(zz))
   0
 }'
 
@@ -212,7 +230,8 @@ printf '%s\n' "$app_src" > "$work/restored/app/src/app.l"
 # method's `inout`/`out` arguments (#8183): y = 103, then 100 + 104 = 204;
 # w = 200, r = 202, then w = 105; t takes b.v (42); s takes "q".  The
 # record-body and `impl` methods' `inout`/`out` arguments (#8210): q = (7, 7),
-# z = 10, `stamp` = 7 s past the epoch, acc = 40 + 1.
+# z = 10, `stamp` = 7 s past the epoch, acc = 40 + 1.  A primitive's
+# dot-named functions (#8217): zi = 4 + 3 + 1 = 8, zz = 16 + 16.
 clash_lib='package XLib
 
 pub record Box[T] {
@@ -353,7 +372,83 @@ func main(): Int {
   0
 }'
 
-want="268 279 0 42 2 204 202 105 42 q 14 10 true 41"
+ext_a='package ExtA
+
+pub record Bag {
+  n: Int
+}
+
+pub record Box[T] {
+  v: T
+}
+
+pub func Bag.own(self: in Bag): Int = self.n + 1000'
+ext_b='package ExtB
+
+import ExtA
+
+pub func Bag.extra(self: in Bag): Int = self.n + 2
+
+pub func Bag.grow(self: inout Bag, by: in Int): Unit {
+  self = Bag(n = self.n + by)
+}
+
+pub func Bag.own(self: in Bag, k: in Int): Int = self.n + k
+
+pub func Box.first[T](self: in Box[T]): T = self.v
+
+pub func Int.twice(self: in Int): Int = self * 2
+
+pub func extraTwice[T](b: in Bag, tag: in T): Int {
+  var c = b
+  c.grow(10)
+  c.extra() + Bag.extra(c) + c.n.twice()
+}'
+ext_c='package ExtC
+
+import ExtA
+
+pub func Bag.extra(self: in Bag): Int = self.n + 3'
+ext_app='package ExtApp
+
+import Std.Core
+import ExtA
+import ExtB
+
+func Bag.local(self: in Bag): Int = self.n * 10
+
+func main(): Int {
+  var b = Bag(n = 1)
+  b.grow(4)
+  Bag.grow(b, 1)
+  val box = Box(v = "s")
+  println(toString(b.extra()) + " " + toString(Bag.extra(b)) + " " + toString(ExtB.Bag.extra(b)) + " " + toString(b.local()) + " " + toString(Bag.local(b)) + " " + toString(b.n) + " " + box.first() + " " + toString(b.own()) + " " + toString(b.own(5)) + " " + toString(extraTwice(b, "t")))
+  0
+}'
+mkdir -p "$work/ext/src"
+cat > "$work/ext/lyric.toml" <<'TOML'
+[package]
+name = "ExtApp"
+version = "0.1.0"
+[project]
+name = "ExtApp"
+[project.packages]
+"ExtA" = "src/a.l"
+"ExtB" = "src/b.l"
+"ExtC" = "src/c.l"
+"ExtApp" = "src/app.l"
+TOML
+printf '%s\n' "$ext_a" > "$work/ext/src/a.l"
+printf '%s\n' "$ext_b" > "$work/ext/src/b.l"
+printf '%s\n' "$ext_c" > "$work/ext/src/c.l"
+printf '%s\n' "$ext_app" > "$work/ext/src/app.l"
+# b: 1 + 4 + 1 = 6; ExtB's extra (not ExtC's, which ExtApp does not import)
+# gives 8 three ways; the caller's own extension 60 two ways; ExtB's generic
+# `first` gives "s"; ExtA's own `own()` 1006, ExtB's `own(5)` 11; ExtB's
+# generic, specialised here, calls its own extensions: c.n = 16, 18 + 18 + 32.
+ext_want="8 8 8 60 60 6 s 1006 11 68"
+
+want="268 279 0 42 2 204 202 105 42 q 14 10 true 41 8 32"
 fail=0
 for t in "${targets[@]}"; do
   out="$("$lyric_bin" run --manifest "$work/proj/lyric.toml" --target "$t" 2>&1 | grep -v '^Picked up JAVA_TOOL_OPTIONS')"
@@ -369,6 +464,12 @@ for t in "${targets[@]}"; do
     printf '%s\n' "$out" | tail -n 5 | sed 's/^/  /'
     fail=1
   fi
+  out="$("$lyric_bin" run --manifest "$work/ext/lyric.toml" --target "$t" 2>&1 | grep -v '^Picked up JAVA_TOOL_OPTIONS')"
+  if [ "$(printf '%s\n' "$out" | tail -n 1)" != "$ext_want" ]; then
+    echo "FAIL ($t): extensions from another package should print '$ext_want'; got:"
+    printf '%s\n' "$out" | tail -n 5 | sed 's/^/  /'
+    fail=1
+  fi
   for clash in "clash_method:9 200" "clash_type:10 1" "clash_string:z" "peek_clash:s s s s 2 3 3" "peek_noclash:s s s"; do
     name="${clash%%:*}"
     cwant="${clash#*:}"
@@ -381,4 +482,4 @@ for t in "${targets[@]}"; do
   done
 done
 [ "$fail" = 0 ] || exit 1
-echo "inout receivers: called from another package, from a dependency, and past a same-named type of the caller, on: ${targets[*]}"
+echo "inout receivers and extensions: called from another package, from a dependency, and past a same-named type of the caller, on: ${targets[*]}"

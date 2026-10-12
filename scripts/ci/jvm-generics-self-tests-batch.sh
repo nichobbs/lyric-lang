@@ -67,6 +67,7 @@ for t in \
   lyric-compiler/lyric/inout_receiver_closure_self_test.l \
   lyric-compiler/lyric/inout_array_element_self_test.l \
   lyric-compiler/lyric/dot_named_byref_self_test.l \
+  lyric-compiler/lyric/dot_named_primitive_self_test.l \
   lyric-compiler/lyric/member_local_shadow_self_test.l \
   lyric-compiler/lyric/member_local_shadow_panics_self_test.l \
   lyric-compiler/lyric/propagate_ctor_operand_self_test.l \

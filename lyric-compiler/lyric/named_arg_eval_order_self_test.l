@@ -288,6 +288,37 @@ test "generic-typed arguments run in source order" {
   assertEqual(since(t1), "second,first", "generic order")
 }
 
+// Each type parameter binds from the argument that names its parameter, not
+// the argument at that parameter's position (#8240): `collect(y = 5000000000,
+// x = a)` is a `List[Long]`.  Before, `B` bound from `x`'s `Int`, and the
+// call failed to verify on dotnet and the JVM and to compile on native.
+func collect[A, B](x: inout A, y: in B): List[B] {
+  val l: List[B] = newList()
+  l.add(y)
+  l
+}
+
+func Pair.second[A, B](self: in Pair, x: in A, y: in B): B = y
+
+test "named arguments out of order bind the type parameters they name" {
+  var a = 1
+  val longs = collect(y = 5000000000, x = a)
+  assertEqualLong(longs[0], 5000000000i64, "a Long element")
+  val t0 = trace.count
+  val strs = collect(y = noteStr("y", "str"), x = a)
+  assertEqual(strs[0], "str", "a String element")
+  assertEqual(since(t0), "y", "order")
+  val p = Pair(a = 1, b = 2)
+  val t1 = trace.count
+  val m = p.second(y = noteStr("y", "m"), x = note("x", 1))
+  assertEqual(m, "m", "method value")
+  assertEqual(since(t1), "y,x", "method order")
+  val t2 = trace.count
+  val q = Pair.second(p, y = 7000000000, x = noteStr("x", "s"))
+  assertEqualLong(q, 7000000000i64, "type-qualified value")
+  assertEqual(since(t2), "x", "type-qualified order")
+}
+
 test "nested calls each run their own arguments in source order" {
   val t0 = trace.count
   val r = two(b = two(b = note("bb", 1), a = note("ba", 2)), a = note("a", 3))

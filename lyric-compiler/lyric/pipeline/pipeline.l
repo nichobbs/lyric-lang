@@ -971,13 +971,18 @@ pub func pipeCheckAndMono(
   if gate(opts.pkgLabel, opts.lineOrigins, monoRes0.diagnostics) {
     return None
   }
+  // The dot-named calls in another package's generic bodies that are
+  // rewritten into plain calls there (#8179, #8217, #8219), keyed
+  // `<origin>|<recordCopySiteKey>`: the bodies arrive here as parsed.
+  val foreignDotCalls: Map[String, ByRefDotCall] = newMap()
   foreignMethodCallArities(
     monoRes0.foreignSpecs,
     file0,
     importedPkgs,
     monoGenFuncs,
     opts.nativeIntrinsics,
-    opts.methodCallAritiesOut
+    opts.methodCallAritiesOut,
+    foreignDotCalls
   )
   val foreignUnitSites = foreignUnitLambdaSites(
     monoRes0.foreignSpecs,
@@ -1002,7 +1007,7 @@ pub func pipeCheckAndMono(
     }
   }
   if toRecheck.count == 0 {
-    return match finishValueRecords(endForeignUnitLambdas(monoRes0.file, foreignUnitSites), file0, importedPkgs, tcRes, opts) {
+    return match finishValueRecords(rewriteForeignDotCalls(endForeignUnitLambdas(monoRes0.file, foreignUnitSites), foreignDotCalls), file0, importedPkgs, tcRes, opts) {
       case Some(f) -> Some(value = finishMono(f, opts))
       case None -> None
     }
@@ -1040,7 +1045,7 @@ pub func pipeCheckAndMono(
   if gate(opts.pkgLabel, opts.lineOrigins, monoRes.diagnostics) {
     return None
   }
-  match finishValueRecords(lowerSpecArrays(endForeignUnitLambdas(monoRes.file, foreignUnitSites), specArrays, opts.primitiveArrays, not opts.arraysAsLists), file0, importedPkgs, tcRes, opts) {
+  match finishValueRecords(lowerSpecArrays(rewriteForeignDotCalls(endForeignUnitLambdas(monoRes.file, foreignUnitSites), foreignDotCalls), specArrays, opts.primitiveArrays, not opts.arraysAsLists), file0, importedPkgs, tcRes, opts) {
     case Some(f) -> Some(value = finishMono(f, opts))
     case None -> None
   }
@@ -1206,7 +1211,10 @@ func addOriginScope(
 // body goes to `acc` keyed `<origin>|<methodCallSiteKey>`; each backend looks
 // a call in a body specialised from `origin` up under that key.  The checker
 // resolves a call in a generic body the same way for every specialisation,
-// so one specialisation of each generic is checked.
+// so one specialisation of each generic is checked.  The same check records
+// the dot-named calls in those bodies that are rewritten into plain calls
+// (`SymbolTable.byRefDotCallSites`), which go to `dotCalls` under the same
+// keys for `rewriteForeignDotCalls`.
 pub func foreignMethodCallArities(
   specs: in List[UnsignedSpecRequest],
   file0: in SourceFile,
@@ -1214,11 +1222,17 @@ pub func foreignMethodCallArities(
   monoGenFuncs: in List[FunctionDecl],
   native: in Bool,
   acc: in Map[String, Int],
+  dotCalls: in Map[String, ByRefDotCall],
 ): Unit {
   if specs.count == 0 {
     return
   }
   val names = dispatchSensitiveMethodNames(file0, importedPkgs)
+  for rn in mapKeys(dotCallRewriteMethodNames(file0, importedPkgs)) {
+    if not names.containsKey(rn) {
+      names.add(rn, true)
+    }
+  }
   if names.count == 0 {
     return
   }
@@ -1240,7 +1254,7 @@ pub func foreignMethodCallArities(
   }
   for origin in mapKeys(byOrigin) {
     match mapGet(byOrigin, origin) {
-      case Some(decls) -> foreignOriginArities(origin, decls, file0, importedPkgs, monoGenFuncs, native, acc)
+      case Some(decls) -> foreignOriginArities(origin, decls, file0, importedPkgs, monoGenFuncs, native, acc, dotCalls)
       case None -> ()
     }
   }
@@ -1254,6 +1268,7 @@ func foreignOriginArities(
   monoGenFuncs: in List[FunctionDecl],
   native: in Bool,
   acc: in Map[String, Int],
+  dotCalls: in Map[String, ByRefDotCall],
 ): Unit {
   // A package not available here was never resolved against, so its
   // generics' calls dispatch by the arguments written, as before.
@@ -1268,6 +1283,19 @@ func foreignOriginArities(
     if not acc.containsKey(origin + "|" + k) {
       match mapGet(res.symbols.methodCallArities, k) {
         case Some(code) -> acc.add(origin + "|" + k, code)
+        case None -> ()
+      }
+    }
+  }
+  // A call the origin package's check rewrites names its function through
+  // that package, which a call specialised here does not belong to.
+  for k in mapKeys(res.symbols.byRefDotCallSites) {
+    if not dotCalls.containsKey(origin + "|" + k) {
+      match mapGet(res.symbols.byRefDotCallSites, k) {
+        case Some(site) -> dotCalls.add(
+          origin + "|" + k,
+          if site.originPkg.length > 0 { site } else { site.copy(originPkg = origin) }
+        )
         case None -> ()
       }
     }
@@ -1407,6 +1435,109 @@ func singleItemList(it: in Item): List[Item] {
   val l: List[Item] = newList()
   l.add(it)
   l
+}
+
+/// Each function specialised from another package's generic, its dot-named
+/// calls rewritten into plain calls of the function as the declaring
+/// package's check recorded them (`foreignMethodCallArities`): a method call
+/// on a primitive receiver, one bound to an extension, and one passing a
+/// place by reference (#8179, #8217, #8219).
+pub func rewriteForeignDotCalls(file: in SourceFile, dotCalls: in Map[String, ByRefDotCall]): SourceFile {
+  if dotCalls.count == 0 {
+    return file
+  }
+  var changed = false
+  val items: List[Item] = newList()
+  for it in file.items {
+    match it.kind {
+      case IFunc(fd) -> {
+        val origin = originPkgOf(fd.annotations)
+        val sites: Map[String, ByRefDotCall] = newMap()
+        if origin.length > 0 {
+          val prefix = origin + "|"
+          for k in mapKeys(dotCalls) {
+            if Str.startsWith(k, prefix) {
+              match mapGet(dotCalls, k) {
+                case Some(site) -> sites.add(k.substring(prefix.length), site)
+                case None -> ()
+              }
+            }
+          }
+        }
+        if sites.count > 0 {
+          changed = true
+          val one = rewriteByRefDotCalls(oneItemFile(file, it), sites)
+          items.add(one.items[0])
+        } else {
+          items.add(it)
+        }
+      }
+      case _ -> items.add(it)
+    }
+  }
+  if changed {
+    file.copy(items = items)
+  } else {
+    file
+  }
+}
+
+// The names of the dot-named functions a call of which is rewritten into a
+// plain call of the function: one with an `out`/`inout` parameter (#8179),
+// one of a primitive (#8217), and an extension, declared by a package that
+// does not declare its type (#8219).
+func dotCallRewriteMethodNames(file0: in SourceFile, importedPkgs: in List[ImportedPackage]): Map[String, Bool] {
+  val names: Map[String, Bool] = newMap()
+  noteRewrittenDotNamed(file0.items, names)
+  for ip in importedPkgs {
+    noteRewrittenDotNamed(ip.items, names)
+  }
+  names
+}
+
+func noteRewrittenDotNamed(items: in List[Item], names: in Map[String, Bool]): Unit {
+  val types: List[String] = newList()
+  for it in items {
+    match it.kind {
+      case IRecord(d) -> types.add(d.name)
+      case IExposedRec(d) -> types.add(d.name)
+      case IUnion(d) -> types.add(d.name)
+      case IEnum(d) -> types.add(d.name)
+      case IOpaque(d) -> types.add(d.name)
+      case IProtected(d) -> types.add(d.name)
+      case IDistinctType(d) -> types.add(d.name)
+      case _ -> ()
+    }
+  }
+  for it in items {
+    match it.kind {
+      case IFunc(fn) -> {
+        val dot = Str.lastIndexOfRaw(fn.name, ".")
+        if dot > 0 {
+          val owner = fn.name.substring(0, dot)
+          val byRef = fnHasByRefParam(fn)
+          if byRef or not types.contains(owner) {
+            val m = fn.name.substring(dot + 1)
+            if not names.containsKey(m) {
+              names.add(m, true)
+            }
+          }
+        }
+      }
+      case _ -> ()
+    }
+  }
+}
+
+func fnHasByRefParam(fn: in FunctionDecl): Bool {
+  for p in fn.params {
+    match p.mode {
+      case PMInout -> return true
+      case PMOut -> return true
+      case _ -> ()
+    }
+  }
+  false
 }
 
 // The names of the methods whose calls the backends dispatch by the type

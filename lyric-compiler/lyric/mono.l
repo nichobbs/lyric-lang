@@ -1690,6 +1690,33 @@ func typeExprNestedUnsafe(te: in TypeExpr, unpinned: in List[String]): Bool {
   }
 }
 
+// For each of `params`, the index in `args` of the argument a call pairs
+// with it, or -1 when the call leaves it to its default: each named argument
+// with the parameter it names, then the positional ones with the remaining
+// parameters in order (D171), as the type checker pairs them.  Inference
+// unifies each parameter with its own argument, so a named argument written
+// out of order binds the type parameters of the parameter it names (#8240).
+// A call that does not pair, which the type checker has reported, pairs
+// positionally.
+func argSlotsMono(params: in List[Param], args: in List[CallArg]): List[Int] {
+  val names: List[String] = newList()
+  for p in params {
+    names.add(p.name)
+  }
+  match pairCallArgs(names, 0, args) {
+    case Ok(slots) -> slots
+    case Err(_) -> {
+      val slots: List[Int] = newList()
+      var i = 0
+      while i < params.count {
+        slots.add(if i < args.count { i } else { -1 })
+        i = i + 1
+      }
+      slots
+    }
+  }
+}
+
 // True when ANY of `decl`'s parameters is BOTH erasure-unsafe to specialise
 // with `unpinned`'s names defaulted to `Object` AND backed, at this call
 // site, by an OPAQUE argument — one `argOpaque` marks as having given
@@ -1845,7 +1872,7 @@ func specFuncName(
 // complex sub-expressions (calls, field projections, binary ops, etc.).
 func inferLitTE(lit: in Literal, span: in Span): Option[TypeExpr] {
   match lit {
-    case LInt(_, suffix, _) -> {
+    case LInt(value, suffix, _) -> {
       // `I16`/`U16` name their surrogate `TypeExpr` "Int"/"UInt", NOT
       // "Short"/"UShort" (#6661 residual, D-progress-840): the suffix only
       // constrains the literal's VALUE range at parse time — the
@@ -1868,7 +1895,10 @@ func inferLitTE(lit: in Literal, span: in Span): Option[TypeExpr] {
         case U16 -> "UInt"
         case U32 -> "UInt"
         case U64 -> "ULong"
-        case NoIntSuffix -> "Int"
+        // An unsuffixed literal is an `Int` only when its value fits, as the
+        // type checker types it (#7346): `pick(a, 5000000000)` specialises
+        // its type parameter at `Long`, not at a truncating `Int` (#8240).
+        case NoIntSuffix -> if value >= 0i64 - 2147483648i64 and value <= 2147483647i64 { "Int" } else { "Long" }
       }
       Some(value = TypeExpr(kind = TRef(path = singleSegPath(name)), span = span))
     }
@@ -2446,13 +2476,17 @@ func substMethodRetTE(
       // Infer method-level generics from the call arguments.
       val methodParams = extractTypeParamNames(methodGenerics)
       if methodParams.count > 0 {
-        var ai = 0
-        while ai < args.count and ai < params.count {
-          match argTEForParamMono(state, env, callArgExpr(args[ai]), params[ai].ty) {
-            case Some(argTE) -> unifyArgMono(methodParams, params[ai].ty, argTE, subst, bareBound)
-            case None -> ()
+        val slots = argSlotsMono(params, args)
+        var pi = 0
+        while pi < slots.count {
+          val ai = slots[pi]
+          if ai >= 0 {
+            match argTEForParamMono(state, env, callArgExpr(args[ai]), params[pi].ty) {
+              case Some(argTE) -> unifyArgMono(methodParams, params[pi].ty, argTE, subst, bareBound)
+              case None -> ()
+            }
           }
-          ai = ai + 1
+          pi = pi + 1
         }
         if not substIsComplete(methodParams, subst) {
           return None
@@ -2963,17 +2997,21 @@ func candidateArgsCompatible(
 ): Bool {
   var matchCount = 0
   var conflict = false
+  val slots = argSlotsMono(cand.params, args)
   var i = 0
-  while i < cand.params.count and i < args.count {
-    match argTEForParamMono(state, env, callArgExpr(args[i]), cand.params[i].ty) {
-      case Some(argTE) -> {
-        if teKeysEqual(argTE, cand.params[i].ty) {
-          matchCount = matchCount + 1
-        } else {
-          conflict = true
+  while i < slots.count {
+    val ai = slots[i]
+    if ai >= 0 {
+      match argTEForParamMono(state, env, callArgExpr(args[ai]), cand.params[i].ty) {
+        case Some(argTE) -> {
+          if teKeysEqual(argTE, cand.params[i].ty) {
+            matchCount = matchCount + 1
+          } else {
+            conflict = true
+          }
         }
-      }
-      case None -> {
+        case None -> {
+        }
       }
     }
     i = i + 1
@@ -3208,44 +3246,51 @@ func inferReturnFromName(
         }
         case None -> {
           if typeParams.count > 0 {
+            val slots = argSlotsMono(decl.params, args)
             var i = 0
-            while i < args.count and i < decl.params.count {
+            while i < slots.count {
               var evidenced = false
-              match lambdaShapeOfArg(callArgExpr(args[i])) {
-                case Some(lamE) -> {
-                  match lamE.kind {
-                    case ELambda(lps, lbody) -> {
-                      unifyLambdaArgTE(state, env, typeParams, decl.params[i].ty, lps, lbody, subst)
-                      evidenced = true
-                    }
-                    case _ -> ()
-                  }
-                }
-                case None -> {
-                  // Direct union-case construction: bind only field-pinned
-                  // slots (see partialUnifyCtorArg); everything else takes the
-                  // full inferred TE.
-                  var handled = false
-                  match ctorSynthOfArg(state, callArgExpr(args[i])) {
-                    case Some(ctorD) -> {
-                      val ctorCallArgs = match stripExprParens(callArgExpr(args[i])).kind { case ECall(_, cas) -> cas; case _ -> newList() }
-                      handled = partialUnifyCtorArg(state, env, typeParams, decl.params[i].ty, ctorD, ctorCallArgs, subst)
-                    }
-                    case None -> ()
-                  }
-                  if handled {
-                    evidenced = true
-                  } else {
-                    match argTEForParamMono(state, env, callArgExpr(args[i]), decl.params[i].ty) {
-                      case Some(argTE) -> {
-                        unifyArgMono(typeParams, decl.params[i].ty, argTE, subst, bareBound)
+              val ai = slots[i]
+              if ai >= 0 {
+                match lambdaShapeOfArg(callArgExpr(args[ai])) {
+                  case Some(lamE) -> {
+                    match lamE.kind {
+                      case ELambda(lps, lbody) -> {
+                        unifyLambdaArgTE(state, env, typeParams, decl.params[i].ty, lps, lbody, subst)
                         evidenced = true
+                      }
+                      case _ -> ()
+                    }
+                  }
+                  case None -> {
+                    // Direct union-case construction: bind only field-pinned
+                    // slots (see partialUnifyCtorArg); everything else takes the
+                    // full inferred TE.
+                    var handled = false
+                    match ctorSynthOfArg(state, callArgExpr(args[ai])) {
+                      case Some(ctorD) -> {
+                        val ctorCallArgs = match stripExprParens(callArgExpr(args[ai])).kind {
+                          case ECall(_, cas) -> cas
+                          case _ -> newList()
+                        }
+                        handled = partialUnifyCtorArg(state, env, typeParams, decl.params[i].ty, ctorD, ctorCallArgs, subst)
                       }
                       case None -> ()
                     }
-                  }
-                  if not evidenced and bareInferenceOnlyCtorRef(state, callArgExpr(args[i])) {
-                    evidenced = true
+                    if handled {
+                      evidenced = true
+                    } else {
+                      match argTEForParamMono(state, env, callArgExpr(args[ai]), decl.params[i].ty) {
+                        case Some(argTE) -> {
+                          unifyArgMono(typeParams, decl.params[i].ty, argTE, subst, bareBound)
+                          evidenced = true
+                        }
+                        case None -> ()
+                      }
+                    }
+                    if not evidenced and bareInferenceOnlyCtorRef(state, callArgExpr(args[ai])) {
+                      evidenced = true
+                    }
                   }
                 }
               }
@@ -5767,14 +5812,15 @@ func inferValueArgsMono(
   args: in List[CallArg],
   acc: in Map[String, Expr],
 ): Unit {
+  val slots = argSlotsMono(decl.params, args)
   var i = 0
-  while i < args.count and i < decl.params.count {
-    match args[i] {
-      case CAPositional(a) -> match inferExprTE(state, env, a) {
+  while i < slots.count {
+    val ai = slots[i]
+    if ai >= 0 {
+      match inferExprTE(state, env, callArgExpr(args[ai])) {
         case Some(argTe) -> bindValueArgsTE(decl.params[i].ty, argTe, valueParams, acc)
         case None -> ()
       }
-      case CANamed(_, _, _) -> ()
     }
     i = i + 1
   }
@@ -6046,10 +6092,13 @@ func markArgsExpectedMono(
   args: in List[CallArg],
 ): Unit {
   val isGeneric = match callee.generics { case Some(_) -> true; case None -> false }
+  val slots = argSlotsMono(callee.params, args)
   if not isGeneric {
     var i = 0
-    while i < args.count and i < callee.params.count {
-      markExpectedMono(state, callArgExpr(args[i]), callee.params[i].ty)
+    while i < slots.count {
+      if slots[i] >= 0 {
+        markExpectedMono(state, callArgExpr(args[slots[i]]), callee.params[i].ty)
+      }
       i = i + 1
     }
     return
@@ -6075,13 +6124,12 @@ func markArgsExpectedMono(
   val subst: Map[String, TypeExpr] = newMap()
   val bareBound: Map[String, Bool] = newMap()
   var j = 0
-  while j < args.count and j < callee.params.count {
-    val argE = callArgExpr(args[j])
+  while j < slots.count {
     // A call to another generic is the kind of argument this pass exists to
     // type; its own inferred type may still mention that generic's type
     // variables, so it is never evidence here.
-    if not isGenericCallExprMono(state, argE) {
-      match argTEForParamMono(state, env, argE, callee.params[j].ty) {
+    if slots[j] >= 0 and not isGenericCallExprMono(state, callArgExpr(args[slots[j]])) {
+      match argTEForParamMono(state, env, callArgExpr(args[slots[j]]), callee.params[j].ty) {
         case Some(argTE) -> if not teMentionsTypeParam(typeParams, argTE) {
           unifyArgMono(typeParams, callee.params[j].ty, argTE, subst, bareBound)
         }
@@ -6095,12 +6143,11 @@ func markArgsExpectedMono(
   }
   val noValues: Map[String, Expr] = newMap()
   var k = 0
-  while k < args.count and k < callee.params.count {
-    val argK = callArgExpr(args[k])
-    if isGenericCallExprMono(state, argK) {
+  while k < slots.count {
+    if slots[k] >= 0 and isGenericCallExprMono(state, callArgExpr(args[slots[k]])) {
       val pte = substTypeExpr(subst, noValues, callee.params[k].ty)
       if not teMentionsTypeParam(typeParams, pte) {
-        markExpectedMono(state, argK, pte)
+        markExpectedMono(state, callArgExpr(args[slots[k]]), pte)
       }
     }
     k = k + 1
@@ -7378,43 +7425,50 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
                     // argument gave inference NO evidence at all — see the
                     // matching comment in `inferReturnFromName` (#5970).
                     val argOpaque: List[Bool] = newList()
+                    val slots = argSlotsMono(baseDecl.params, args)
                     var i = 0
-                    while i < args.count and i < baseDecl.params.count {
+                    while i < slots.count {
                       var evidenced = false
-                      match lambdaShapeOfArg(callArgExpr(args[i])) {
-                        case Some(lamE) -> {
-                          match lamE.kind {
-                            case ELambda(lps, lbody) -> {
-                              unifyLambdaArgTE(state, env, typeParams, baseDecl.params[i].ty, lps, lbody, subst)
-                              evidenced = true
-                            }
-                            case _ -> ()
-                          }
-                        }
-                        case None -> {
-                          // Direct union-case construction: bind only
-                          // field-pinned slots (see partialUnifyCtorArg).
-                          var handled = false
-                          match ctorSynthOfArg(state, callArgExpr(args[i])) {
-                            case Some(ctorD) -> {
-                              val ctorCallArgs = match stripExprParens(callArgExpr(args[i])).kind { case ECall(_, cas) -> cas; case _ -> newList() }
-                              handled = partialUnifyCtorArg(state, env, typeParams, baseDecl.params[i].ty, ctorD, ctorCallArgs, subst)
-                            }
-                            case None -> ()
-                          }
-                          if handled {
-                            evidenced = true
-                          } else {
-                            match argTEForParamMono(state, env, callArgExpr(args[i]), baseDecl.params[i].ty) {
-                              case Some(argTE) -> {
-                                unifyArgMono(typeParams, baseDecl.params[i].ty, argTE, subst, bareBound)
+                      val ai = slots[i]
+                      if ai >= 0 {
+                        match lambdaShapeOfArg(callArgExpr(args[ai])) {
+                          case Some(lamE) -> {
+                            match lamE.kind {
+                              case ELambda(lps, lbody) -> {
+                                unifyLambdaArgTE(state, env, typeParams, baseDecl.params[i].ty, lps, lbody, subst)
                                 evidenced = true
+                              }
+                              case _ -> ()
+                            }
+                          }
+                          case None -> {
+                            // Direct union-case construction: bind only
+                            // field-pinned slots (see partialUnifyCtorArg).
+                            var handled = false
+                            match ctorSynthOfArg(state, callArgExpr(args[ai])) {
+                              case Some(ctorD) -> {
+                                val ctorCallArgs = match stripExprParens(callArgExpr(args[ai])).kind {
+                                  case ECall(_, cas) -> cas
+                                  case _ -> newList()
+                                }
+                                handled = partialUnifyCtorArg(state, env, typeParams, baseDecl.params[i].ty, ctorD, ctorCallArgs, subst)
                               }
                               case None -> ()
                             }
-                          }
-                          if not evidenced and bareInferenceOnlyCtorRef(state, callArgExpr(args[i])) {
-                            evidenced = true
+                            if handled {
+                              evidenced = true
+                            } else {
+                              match argTEForParamMono(state, env, callArgExpr(args[ai]), baseDecl.params[i].ty) {
+                                case Some(argTE) -> {
+                                  unifyArgMono(typeParams, baseDecl.params[i].ty, argTE, subst, bareBound)
+                                  evidenced = true
+                                }
+                                case None -> ()
+                              }
+                            }
+                            if not evidenced and bareInferenceOnlyCtorRef(state, callArgExpr(args[ai])) {
+                              evidenced = true
+                            }
                           }
                         }
                       }
@@ -7575,11 +7629,14 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
                 if qTypeParams.count > 0 and qValueParams.count == 0 and args.count <= qBaseDecl.params.count and genDeclResolvesForCallSite(state, env, qfname, args, qBaseDecl) {
                   val qSubst: Map[String, TypeExpr] = newMap()
                   val qBareBound: Map[String, Bool] = newMap()
+                  val qSlots = argSlotsMono(qBaseDecl.params, args)
                   var qi = 0
-                  while qi < args.count and qi < qBaseDecl.params.count {
-                    match argTEForParamMono(state, env, callArgExpr(args[qi]), qBaseDecl.params[qi].ty) {
-                      case Some(qArgTE) -> unifyArgMono(qTypeParams, qBaseDecl.params[qi].ty, qArgTE, qSubst, qBareBound)
-                      case None -> ()
+                  while qi < qSlots.count {
+                    if qSlots[qi] >= 0 {
+                      match argTEForParamMono(state, env, callArgExpr(args[qSlots[qi]]), qBaseDecl.params[qi].ty) {
+                        case Some(qArgTE) -> unifyArgMono(qTypeParams, qBaseDecl.params[qi].ty, qArgTE, qSubst, qBareBound)
+                        case None -> ()
+                      }
                     }
                     qi = qi + 1
                   }

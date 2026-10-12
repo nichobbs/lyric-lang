@@ -408,8 +408,10 @@ pub record SymbolTable {
   /// `Lyric.Pipeline` rewrites such a call into a plain call of the
   /// function, which `Lyric.Mono` specialises (#8173).
   dottedGenericCallSites: Map[String, DottedGenericCall]
-  /// Each call of a dot-named function with an `out`/`inout` parameter,
-  /// keyed by `recordCopySiteKey` of the callee's span (#8179).
+  /// Each call of a dot-named function with an `out`/`inout` parameter
+  /// (#8179), and each method call of one on a primitive receiver (#8217),
+  /// keyed by `recordCopySiteKey` of the callee's span: `Lyric.Pipeline`
+  /// rewrites it into a plain call of the function.
   byRefDotCallSites: Map[String, ByRefDotCall]
   /// Each bare identifier pattern in a `match` arm that names a union or
   /// enum case rather than binding a name, keyed by `recordCopySiteKey` of

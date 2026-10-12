@@ -651,7 +651,7 @@ By default, declarations are package-private (visible only within the same packa
 
 Visibility is enforced at use sites: referencing a package-private declaration (no modifier) from another package is a compile error (**T0097**). This includes naming a package-private type as the receiver of a dotted type-associated-function call (`Widget.create(...)` or `Pkg.Widget.create(...)`, docs/49) from another package — T0097 whether or not the file imports the declaring package, since an import cannot make the type nameable (#7499). The same holds for a package-private type named in TYPE POSITION (`val w: Pkg.Widget`) and for a package-private union or enum's case named in a PATTERN head, qualified (`case Pkg.Kind.A -> ...`) or bare (`case A -> ...`) — T0097 there too, regardless of import (#7548, #7591). A `pub` wrapper function may legally return a value of a package-private type with no diagnostic at its own call site, so a bare pattern head matched against that call's result is often the first point the private type or case gets named; T0097 fires there just as it would for a qualified head. A `pub func Widget.create(...)` on a package-private `Widget` is not itself an error at its declaration: its reach is capped by its receiver type's visibility, in the same way a `pub` function's signature may mention a package-private type, and the use-site check above is the enforcement point. `pub` and `internal` declarations are both referenceable across packages within a project; the cross-*project* hiding of `internal` is enforced by the publish/restore layer, which only includes `pub` declarations in a package's external contract. Extern types / extern packages (FFI host-binding declarations, e.g. the `List`/`Map` aliases) are not subject to these tiers — their cross-package use is governed by the kernel-boundary convention.
 
-**Cross-package bare-name ambiguity (#6287):** when a bare (unqualified) name — a function, `val`/`const`, or union/enum case constructor — is declared by two or more packages imported at the same use site, referencing it unqualified is a compile error (**T0123**), rather than silently resolving to whichever package happened to register the name last. The fix is to qualify the reference with its declaring package (`Pkg.name`) or, for a pattern match against a scrutinee of known type, the compiler already resolves the case against the scrutinee's own union/enum without needing qualification. A local declaration that shadows the ambiguous import (a same-named `val`/parameter/function in the current scope) takes priority and is never flagged; a name reachable through only one of the imports (no actual collision), or reachable only transitively through another package's own imports (the kernel/host re-export idiom), is likewise not ambiguous. Only names visible under the file's imports (§9.2) are candidates: a name from a package the file does not import, or reaches only through an alias or an unlisted selective import, is not a candidate and so cannot make a reference ambiguous.
+**Cross-package bare-name ambiguity (#6287):** when a bare (unqualified) name — a function, `val`/`const`, or union/enum case constructor — is declared by two or more packages imported at the same use site, referencing it unqualified is a compile error (**T0123**), rather than silently resolving to whichever package happened to register the name last. The fix is to qualify the reference with its declaring package (`Pkg.name`) or, for a pattern match against a scrutinee of known type, the compiler already resolves the case against the scrutinee's own union/enum without needing qualification. A local declaration that shadows the ambiguous import (a same-named `val`/parameter/function in the current scope) takes priority and is never flagged; a name reachable through only one of the imports (no actual collision), or reachable only transitively through another package's own imports (the kernel/host re-export idiom), is likewise not ambiguous. Only names visible under the file's imports (§9.2) are candidates: a name from a package the file does not import, or reaches only through an alias or an unlisted selective import, is not a candidate and so cannot make a reference ambiguous. A method call whose receiver's type has no function of that name taking the call's arguments, and which two or more packages extend with one at the nearest import level, is **T0123** in the same way (§5.1, #8219).
 
 A public function that exposes an **imported nested** host extern type (a CLR FQN containing `+`, e.g. `System.Text.Json.JsonElement+ArrayEnumerator`) in its signature emits a warning (**W0006**): these are host implementation-detail structs whose FFI boundary is meant to stay in the `_kernel/` layer. A kernel file that *declares* the extern type locally is exempt; the fix for a consumer is to wrap the host type in an opaque Lyric type (as `Std.Json` does with `JsonArrayCursor` / `JsonObjectCursor`). Top-level domain extern types (e.g. `JsonElement` itself) are deliberately re-exposable and are not flagged.
 
@@ -1252,7 +1252,12 @@ D037 dot-named function, whether called as `x.m(args)`, `T.m(x, args)` or as a
 bare call to a sibling method inside a method body: each named argument goes
 to the parameter it names, then the positional arguments fill the remaining
 parameters left to right, and every parameter still without an argument
-takes its declared default, evaluated at the call. A named argument that
+takes its declared default, evaluated at the call. A generic callee's type
+arguments are inferred from each argument and the parameter it pairs with
+by this rule, never from the parameter at the argument's position: for
+`func pick[A, B](x: inout A, y: B): List[B]`, `pick(y = 5000000000, x = a)`
+with `a: Int` is a `List[Long]`, and a `where` bound on `B` is checked
+against the argument named `y` (#8240). A named argument that
 names no parameter, or a parameter with no default left without an argument
 (`f(b = 1)` for `f(a: Int, b: Int = 0)`), is **T0042**. So is a parameter
 given more than once: named twice (`f(a = 1, a = 2)`), or named after a
@@ -1349,6 +1354,40 @@ from the call and are specialised per instantiation like any generic
 function call, on every target (#8173). Inside the body, as in any function
 whose first parameter is named `self`, `self` has the parameter's declared
 type, so `self.data` on an `Ints[N]` is an `array[N, Int]`.
+
+A dot-named function may also be declared for a primitive type
+(`func Int.twice(self: in Int): Int = self * 2`,
+`func String.shout(self: in String): String`). A method call on a value of
+that type (`k.twice()`, `(4).twice()`, `"hi".shout()`, `k.twice().twice()`)
+resolves among those functions and pairs and checks its arguments as a
+method call on a user type does, and it is the same call as the
+type-qualified form `Int.twice(k)` on every target (#8217). An `inout`
+receiver (`func Int.inc(self: inout Int)`, `m.inc()`) writes the caller's
+place under the rules of §5.2 (**T0166** for a receiver that is not one). A
+built-in method of the primitive (`toString`, the conversions such as
+`toLong`, the bitwise `shl`, the `String` methods such as `trim`, ...) keeps
+its meaning in method syntax: a dot-named function of the same name is
+reachable only through the type (`Int.toString(k)`).
+
+A dot-named function may likewise be declared for a type another package
+declares, an *extension* (`func Bag.extra(self: in Bag): Int` in a package
+that imports the one declaring `Bag`); every dot-named function of a
+primitive is one. A method call `b.m(args)`, or a call through the type
+`Bag.m(b, args)`, binds one of the type's own functions, declared in its
+body or by its declaring package, when one of them takes the call's
+arguments. Otherwise it binds an extension declared by a package the
+file's imports reach, nearest first, as a bare name resolves (§3.1, §9.2):
+one the calling package declares, then one of a package it imports whole,
+then one of a package reached only through those packages' own whole
+imports. Two or more packages declaring it at the nearest of these levels
+is **T0123**; the call names the one meant through its package
+(`BLib.Bag.extra(b)`), which reaches that package's function whether or not
+the package declares `Bag`. An extension of a package the imports do not
+reach (one imported only selectively or under an alias, or not at all) is
+not a candidate, so the call is **T0113**, whose message names the package
+declaring it. Every target calls the function the type checker binds,
+inside a generic function of another package specialised for a call too
+(#8219, D181).
 
 Field-style access `x.name` (no call parens) to a name that exists **only**
 as a D037 dot-named (UFCS) function — never as a real record/union field — is
