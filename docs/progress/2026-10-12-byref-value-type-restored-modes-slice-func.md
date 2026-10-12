@@ -110,6 +110,12 @@ everywhere it is read:
   - A lambda whose destination already chose its delegate keeps that
     delegate: an `@externTarget` parameter (`lambdaExternDelegateRetType`) or
     an erased-generic `Func` parameter.
+- **Function values the codegen knows only as `object`.**  An element of a
+  container built with no element type (`val hs = [{ -> c = v }]`) can be
+  either kind of delegate.  When such a value is called and its result is
+  `Unit` or untracked, the call checks at runtime whether the value is an
+  `Action` and otherwise calls it as a `Func`
+  (`invokeErasedFuncValueMsil`).  It no longer casts to `Func` unconditionally.
 - **Type checker.**  `List.add(item)`, `List.add(index, item)`,
   `List.removeAt(index)` and `Map.add(key, value)` now have the result type
   `Unit`; before, the result was unknown.  As a result, a lambda that ends in

@@ -19087,31 +19087,101 @@ func invokeLoadedFuncValueMsil(
     }
     case _ -> -1
   }
-  // A value the codegen only knows as `object` whose static function type
-  // returns `Unit` is an `Action` of the call's arity: such a type is built as
-  // one wherever a value of it is made (D-progress-886, #7520, #8299), so it
-  // is narrowed and invoked as that `Action`, never through the uniform
-  // `Func` (an `InvalidCastException` on the `Action` it is).
-  val erasedUnitValue = match valueTy {
-    case MObject -> match retType { case Some(MVoid) -> true; case _ -> false }
-    case _ -> false
-  }
-  if erasedUnitValue {
-    castObjectToDelegateMsil(cctx, insns, MObject, actionTypeOfArityMsil(args.count))
-  }
-  if (realActionArity >= 0 and args.count == realActionArity) or erasedUnitValue {
-    val invokeArity = args.count
+  if realActionArity >= 0 and args.count == realActionArity {
     var argI = 0
     while argI < args.count {
       val argTy = lowerCallArgMsil(cctx, fctx, insns, args[argI])
       boxIfNeededMsil(cctx, insns, argTy)
       argI = argI + 1
     }
-    val invokeTok = if invokeArity == 0 { cctx.tokActionInvoke } else { buildActionNInvokeTok(cctx, invokeArity) }
+    val invokeTok = if realActionArity == 0 { cctx.tokActionInvoke } else { buildActionNInvokeTok(cctx, realActionArity) }
     insns.add(MCallvirt(methodToken = invokeTok))
     return MVoid
   }
+  // A value the codegen only knows as `object`, whose result is `Unit` or not
+  // tracked: an element of a container built with no element type, or a
+  // binding of one (`val hs = [{ -> c = v }]; hs[0]()`).  A `Unit`-returning
+  // function value is an `Action` and every other one the uniform `Func`, so
+  // the call tests which it holds (#8299).
+  val erasedValue = match valueTy {
+    case MObject -> match retType { case None -> true; case Some(MVoid) -> true; case _ -> false }
+    case _ -> false
+  }
+  if erasedValue {
+    return invokeErasedFuncValueMsil(cctx, fctx, insns, args, retType)
+  }
   lowerFuncValueInvokeMsil(cctx, fctx, insns, args, retType)
+}
+
+// The locals `invokeErasedFuncValueMsil` allocates for a call of `argCount`
+// arguments: the function value and each boxed argument.
+func erasedFuncInvokeTempSlotsMsil(argCount: in Int): Int = 1 + argCount
+
+// Invoke a function value on the stack known only as `object`: an `Action`
+// of the call's arity when it is one, the uniform `Func` otherwise.  The value
+// and the arguments are evaluated once, in order, into locals, so either
+// branch reads them.  `retType` is `Some(MVoid)` (a `Unit` result, discarded)
+// or `None` (untracked: the `Func`'s boxed result, `null` for an `Action`).
+func invokeErasedFuncValueMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  args: in List[CallArg],
+  retType: in Option[MsilType],
+): MsilType {
+  val n = toString(fctx.slotTicker.count)
+  val fnSlot = allocSlotMsil(fctx, "__erasedfn_" + n, MObject)
+  emitStoreSlot(insns, fnSlot, fctx.paramCount)
+  val argSlots: List[Int] = newList()
+  var i = 0
+  while i < args.count {
+    val argTy = lowerCallArgMsil(cctx, fctx, insns, args[i])
+    boxIfNeededMsil(cctx, insns, argTy)
+    val aSlot = allocSlotMsil(fctx, "__erasedfn_a" + toString(i) + "_" + n, MObject)
+    emitStoreSlot(insns, aSlot, fctx.paramCount)
+    argSlots.add(aSlot)
+    i = i + 1
+  }
+  val funcL = freshLabelMsil(fctx)
+  val doneL = freshLabelMsil(fctx)
+  val returnsUnit = match retType { case Some(MVoid) -> true; case _ -> false }
+  val actionTy = actionTypeOfArityMsil(args.count)
+  emitLoadSlot(insns, fnSlot, fctx.paramCount)
+  match actionTy {
+    case MGenericInstByName(head, targs) -> insns.add(MIsinstGeneric(className = head, typeArgs = targs))
+    case _ -> insns.add(MIsinstByName(className = "System.Action"))
+  }
+  insns.add(MDup)
+  insns.add(MBrFalse(label = funcL))
+  for sl in argSlots {
+    emitLoadSlot(insns, sl, fctx.paramCount)
+  }
+  insns.add(
+    MCallvirt(
+      methodToken = if args.count == 0 { cctx.tokActionInvoke } else { buildActionNInvokeTok(cctx, args.count) }
+    )
+  )
+  if not returnsUnit {
+    insns.add(MLdNull)
+  }
+  insns.add(MBr(label = doneL))
+  insns.add(MLabel(id = funcL))
+  insns.add(MPop)
+  emitLoadSlot(insns, fnSlot, fctx.paramCount)
+  insns.add(MCastclass(typeToken = 0x1B000000 + internFuncNTypeSpec(cctx, args.count)))
+  for sl in argSlots {
+    emitLoadSlot(insns, sl, fctx.paramCount)
+  }
+  insns.add(MCallvirt(methodToken = buildFuncNInvokeTok(cctx, args.count)))
+  if returnsUnit {
+    insns.add(MPop)
+  }
+  insns.add(MLabel(id = doneL))
+  if returnsUnit {
+    MVoid
+  } else {
+    MObject
+  }
 }
 
 // The MSIL type of a `Unit`-returning function type of `arity` parameters:
@@ -32118,6 +32188,24 @@ func countGenLocalsStmt(cctx: in CodegenCtx, pkgName: in String, hoistedNms: in 
   }
 }
 
+// The locals a call may take to invoke an `object`-typed function value
+// (`invokeErasedFuncValueMsil`): any call whose callee is not a function this
+// package declares by that name may be one.
+func erasedCallTempSlotsUpperBoundMsil(cctx: in CodegenCtx, pkgName: in String, callee: in Expr, argCount: in Int): Int {
+  match callee.kind {
+    case EPath(p) -> if p.segments.count == 1 and cctx.funcTokens.containsKey(pkgName + "." + p.segments[0]) {
+      0
+    } else if p.segments.count == 1 {
+      erasedFuncInvokeTempSlotsMsil(argCount)
+    } else {
+      0
+    }
+    case EMember(_, _) -> 0
+    case ETypeApp(_, _) -> 0
+    case _ -> erasedFuncInvokeTempSlotsMsil(argCount)
+  }
+}
+
 func countGenLocalsExpr(cctx: in CodegenCtx, pkgName: in String, hoistedNms: in List[String], e: in Expr): Int {
   match e.kind {
     case EBlock(b) -> countGenLocalsBlock(cctx, pkgName, hoistedNms, b)
@@ -32156,7 +32244,8 @@ func countGenLocalsExpr(cctx: in CodegenCtx, pkgName: in String, hoistedNms: in 
       n
     }
     case ECall(callee, args) -> {
-      var n = countGenLocalsExpr(cctx, pkgName, hoistedNms, callee)
+      var n = countGenLocalsExpr(cctx, pkgName, hoistedNms, callee) +
+        erasedCallTempSlotsUpperBoundMsil(cctx, pkgName, callee, args.count)
       var ai = 0
       while ai < args.count {
         val argE = match args[ai] { case CAPositional(ex) -> ex; case CANamed(_, ex, _) -> ex }

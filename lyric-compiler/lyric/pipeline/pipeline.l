@@ -1358,18 +1358,12 @@ pub func foreignUnitLambdaSites(
 }
 
 func funcDeclHasLambda(fd: in FunctionDecl): Bool {
-  val hits: List[Int] = newList()
-  val note = { e: Expr -> match e.kind { case ELambda(_, _) -> hits.add(1); case _ -> () }; e }
+  val isLambda = { e: Expr -> match e.kind { case ELambda(_, _) -> true; case _ -> false } }
   match fd.body {
-    case Some(FBBlock(b)) -> {
-      val _ = mapBlock(b, note)
-    }
-    case Some(FBExpr(ex)) -> {
-      val _ = mapExpr(ex, note)
-    }
-    case None -> ()
+    case Some(FBBlock(b)) -> anyInBlock(b, isLambda)
+    case Some(FBExpr(ex)) -> anyInExpr(ex, isLambda)
+    case None -> false
   }
-  hits.count > 0
 }
 
 // Each function of `file` specialised from another package's generic, with

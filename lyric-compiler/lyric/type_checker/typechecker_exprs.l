@@ -15143,7 +15143,7 @@ func recordLambdaParamTypes(tbl: in SymbolTable, ps: in List[LambdaParam], lt: i
 // Record whether the lambda at `sp`, checked as `lt`, returns `Unit`
 // (`SymbolTable.lambdaUnitSites`).  A lambda checked more than once keeps
 // `true` only while every check agrees.
-func recordLambdaUnitSite(tbl: in SymbolTable, lt: in Type, sp: in Span): Unit {
+pub func recordLambdaUnitSite(tbl: in SymbolTable, lt: in Type, sp: in Span): Unit {
   val isUnit = match unrefine(lt) {
     case TyFunction(_, ret, _) -> match unrefine(ret) {
       case TyPrim(pt) -> match pt { case PtUnit -> true; case _ -> false }

@@ -17,7 +17,9 @@
 //! a generic's body, or given to a generic record's `T` field.  A lambda
 //! ending in `xs.add(x)` is a `(T) -> Unit` like any other
 //! (the type checker left its result unknown before).  `.toList()` is covered
-//! by `slice_func_tolist_dotnet_self_test.l`.
+//! by `slice_func_tolist_dotnet_self_test.l`.  An element of a container
+//! built with no element type (`val hs = [{ -> c = v }]`) is known only as an
+//! `object`; calling it tests whether it is an `Action` or a `Func`.
 //!
 //!   lyric test --target dotnet lyric-compiler/lyric/slice_func_unit_elem_self_test.l
 //!   lyric test --target jvm lyric-compiler/lyric/slice_func_unit_elem_self_test.l
@@ -206,4 +208,18 @@ test "unannotated Unit lambdas a generic function stores in Unit-function fields
   h.start(1)
   h.close()
   assertEqual(joined(log), "s 1 c ", "generic make")
+}
+
+test "an element of a list literal with no element type, called" {
+  var c = 0
+  val hs = [{ -> c = 7 }]
+  hs[0]()
+  assertEqualInt(c, 7, "Unit element called through its index")
+  val h = hs[0]
+  c = 0
+  h()
+  assertEqualInt(c, 7, "Unit element bound, then called")
+  val ks = [{ -> 5 }]
+  val k = ks[0]
+  assertEqual(toString(k()), "5", "value element")
 }
