@@ -1077,7 +1077,7 @@ func resolveExprAt(
     }
     // Remaining ExprKind variants (ELiteral, EPath, ESelf, EResult, ...)
     // carry no TypeExpr and no nested Block/Expr — pass through unchanged.
-    case EForall(binders, whereExpr, body) -> {
+    case EForall(binders, whereExpr, body, bf) -> {
       val bs: List[PropertyBinder] = newList()
       var bi = 0
       while bi < binders.count {
@@ -1094,9 +1094,9 @@ func resolveExprAt(
         case Some(w) -> Some(value = resolveExprAt(aliasTargets, genericNames, w, depth))
         case None -> None
       }
-      EForall(binders = bs, whereExpr = w2, body = resolveExprAt(aliasTargets, genericNames, body, depth))
+      EForall(binders = bs, whereExpr = w2, body = resolveExprAt(aliasTargets, genericNames, body, depth), bodyForm = bf)
     }
-    case EExists(binders, whereExpr, body) -> {
+    case EExists(binders, whereExpr, body, bf) -> {
       val bs: List[PropertyBinder] = newList()
       var bi = 0
       while bi < binders.count {
@@ -1113,7 +1113,7 @@ func resolveExprAt(
         case Some(w) -> Some(value = resolveExprAt(aliasTargets, genericNames, w, depth))
         case None -> None
       }
-      EExists(binders = bs, whereExpr = w2, body = resolveExprAt(aliasTargets, genericNames, body, depth))
+      EExists(binders = bs, whereExpr = w2, body = resolveExprAt(aliasTargets, genericNames, body, depth), bodyForm = bf)
     }
     case _ -> expr.kind
   }

@@ -12874,10 +12874,10 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
     // (W0002, #7228): a quantifier ranges over a type and cannot be evaluated.
     // Lowering it as a constant was unsound under negation, so reaching here
     // is a compiler bug.
-    case EForall(_, _, _) -> {
+    case EForall(_, _, _, _) -> {
       panic("Msil.Codegen: a forall quantifier reached codegen; the contract elaborator must drop it (#7228)")
     }
-    case EExists(_, _, _) -> {
+    case EExists(_, _, _, _) -> {
       panic("Msil.Codegen: an exists quantifier reached codegen; the contract elaborator must drop it (#7228)")
     }
     // `EOld` is materialised as `let __old_N = e` by the contract elaborator;

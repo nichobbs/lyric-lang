@@ -238,7 +238,7 @@ func walkExprCalls(ctx: in WalkCtx, e: in Expr): Unit {
         ai = ai + 1
       }
     }
-    case EForall(_, whereOpt, body) -> {
+    case EForall(_, whereOpt, body, _) -> {
       walkExprCalls(ctx, body)
       match whereOpt {
         case Some(w) -> walkExprCalls(ctx, w)
@@ -246,7 +246,7 @@ func walkExprCalls(ctx: in WalkCtx, e: in Expr): Unit {
         }
       }
     }
-    case EExists(_, whereOpt, body) -> {
+    case EExists(_, whereOpt, body, _) -> {
       walkExprCalls(ctx, body)
       match whereOpt {
         case Some(w) -> walkExprCalls(ctx, w)
@@ -581,7 +581,7 @@ func isUnboundedDomain(te: in TypeExpr): Bool {
 
 func walkExprQuantifiers(fileLevel: in VerificationLevel, diag: in List[Diagnostic], e: in Expr): Unit {
   match e.kind {
-    case EForall(binders, whereOpt, body) -> {
+    case EForall(binders, whereOpt, body, _) -> {
       var bi = 0
       while bi < binders.count {
         val b = binders[bi]
@@ -604,7 +604,7 @@ func walkExprQuantifiers(fileLevel: in VerificationLevel, diag: in List[Diagnost
         }
       }
     }
-    case EExists(binders, whereOpt, body) -> {
+    case EExists(binders, whereOpt, body, _) -> {
       var bi = 0
       while bi < binders.count {
         val b = binders[bi]
@@ -851,7 +851,7 @@ func walkExprAssume(diag: in List[Diagnostic], inUnsafe: in Bool, e: in Expr): U
         ai = ai + 1
       }
     }
-    case EForall(_, whereOpt, body) -> {
+    case EForall(_, whereOpt, body, _) -> {
       walkExprAssume(diag, inUnsafe, body)
       match whereOpt {
         case Some(w) -> walkExprAssume(diag, inUnsafe, w)
@@ -859,7 +859,7 @@ func walkExprAssume(diag: in List[Diagnostic], inUnsafe: in Bool, e: in Expr): U
         }
       }
     }
-    case EExists(_, whereOpt, body) -> {
+    case EExists(_, whereOpt, body, _) -> {
       walkExprAssume(diag, inUnsafe, body)
       match whereOpt {
         case Some(w) -> walkExprAssume(diag, inUnsafe, w)
@@ -1246,7 +1246,7 @@ func walkExprForAwaitInTry(ctx: in AwaitTryCtx, e: in Expr): Unit {
         case RBUpperOpen(lo) -> walkExprForAwaitInTry(ctx, lo)
       }
     }
-    case EForall(_, whereOpt, body) -> {
+    case EForall(_, whereOpt, body, _) -> {
       match whereOpt {
         case Some(w) -> walkExprForAwaitInTry(ctx, w)
         case None -> {
@@ -1254,7 +1254,7 @@ func walkExprForAwaitInTry(ctx: in AwaitTryCtx, e: in Expr): Unit {
       }
       walkExprForAwaitInTry(ctx, body)
     }
-    case EExists(_, whereOpt, body) -> {
+    case EExists(_, whereOpt, body, _) -> {
       match whereOpt {
         case Some(w) -> walkExprForAwaitInTry(ctx, w)
         case None -> {
@@ -2257,7 +2257,7 @@ func walkExprForSpawn(ctx: in SpawnCtx, valuePos: in Bool, e: in Expr): Unit {
         case RBUpperOpen(lo) -> walkExprForSpawn(ctx, true, lo)
       }
     }
-    case EForall(_, whereOpt, body) -> {
+    case EForall(_, whereOpt, body, _) -> {
       match whereOpt {
         case Some(w) -> walkExprForSpawn(ctx, true, w)
         case None -> {
@@ -2265,7 +2265,7 @@ func walkExprForSpawn(ctx: in SpawnCtx, valuePos: in Bool, e: in Expr): Unit {
       }
       walkExprForSpawn(ctx, true, body)
     }
-    case EExists(_, whereOpt, body) -> {
+    case EExists(_, whereOpt, body, _) -> {
       match whereOpt {
         case Some(w) -> walkExprForSpawn(ctx, true, w)
         case None -> {
@@ -3033,7 +3033,7 @@ func walkExprForFieldWrite(ctx: in FieldWriteCtx, e: in Expr): Unit {
         ai = ai + 1
       }
     }
-    case EForall(_, whereOpt, body) -> {
+    case EForall(_, whereOpt, body, _) -> {
       walkExprForFieldWrite(ctx, body)
       match whereOpt {
         case Some(w) -> walkExprForFieldWrite(ctx, w)
@@ -3041,7 +3041,7 @@ func walkExprForFieldWrite(ctx: in FieldWriteCtx, e: in Expr): Unit {
         }
       }
     }
-    case EExists(_, whereOpt, body) -> {
+    case EExists(_, whereOpt, body, _) -> {
       walkExprForFieldWrite(ctx, body)
       match whereOpt {
         case Some(w) -> walkExprForFieldWrite(ctx, w)

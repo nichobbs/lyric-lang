@@ -715,15 +715,21 @@ pub func rewriteExpr(aliases: in List[String], e: in Expr): Expr {
     case ESpawn(inner) -> return Expr(kind = ESpawn(inner = rewriteExpr(aliases, inner)), span = e.span)
     case ETry(inner) -> return Expr(kind = ETry(inner = rewriteExpr(aliases, inner)), span = e.span)
     case EOld(inner) -> return Expr(kind = EOld(inner = rewriteExpr(aliases, inner)), span = e.span)
-    case EForall(binders, whereExpr, body) -> {
+    case EForall(binders, whereExpr, body, bf) -> {
       val inner = dropRenamesNamed(aliases, binderNames(binders))
       val w = match whereExpr { case Some(x) -> Some(value = rewriteExpr(inner, x)); case None -> whereExpr }
-      return Expr(kind = EForall(binders = binders, whereExpr = w, body = rewriteExpr(inner, body)), span = e.span)
+      return Expr(
+        kind = EForall(binders = binders, whereExpr = w, body = rewriteExpr(inner, body), bodyForm = bf),
+        span = e.span
+      )
     }
-    case EExists(binders, whereExpr, body) -> {
+    case EExists(binders, whereExpr, body, bf) -> {
       val inner = dropRenamesNamed(aliases, binderNames(binders))
       val w = match whereExpr { case Some(x) -> Some(value = rewriteExpr(inner, x)); case None -> whereExpr }
-      return Expr(kind = EExists(binders = binders, whereExpr = w, body = rewriteExpr(inner, body)), span = e.span)
+      return Expr(
+        kind = EExists(binders = binders, whereExpr = w, body = rewriteExpr(inner, body), bodyForm = bf),
+        span = e.span
+      )
     }
     case ELambda(lambdaParams, body) -> {
       val params2: List[LambdaParam] = newList()
@@ -1188,7 +1194,7 @@ func collectExprLocalNames(e: in Expr, acc: List[String]): Unit {
     case ESpawn(inner) -> collectExprLocalNames(inner, acc)
     case ETry(inner) -> collectExprLocalNames(inner, acc)
     case EOld(inner) -> collectExprLocalNames(inner, acc)
-    case EForall(binders, whereExpr, body) -> {
+    case EForall(binders, whereExpr, body, _) -> {
       var i = 0
       while i < binders.count {
         acc.add(binders[i].name)
@@ -1200,7 +1206,7 @@ func collectExprLocalNames(e: in Expr, acc: List[String]): Unit {
       }
       collectExprLocalNames(body, acc)
     }
-    case EExists(binders, whereExpr, body) -> {
+    case EExists(binders, whereExpr, body, _) -> {
       var i = 0
       while i < binders.count {
         acc.add(binders[i].name)

@@ -320,12 +320,12 @@ func collectExprBinders(e: in Expr, acc: in Map[String, Bool]): Unit {
         collectPatternBinders(a.pattern, acc)
       }
     }
-    case EForall(bs, _, _) -> {
+    case EForall(bs, _, _, _) -> {
       for b in bs {
         addName(acc, b.name)
       }
     }
-    case EExists(bs, _, _) -> {
+    case EExists(bs, _, _, _) -> {
       for b in bs {
         addName(acc, b.name)
       }

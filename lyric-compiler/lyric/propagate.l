@@ -996,19 +996,19 @@ func rewriteExpr(e: in Expr, kind: in PropKind, st: in PropState): Expr {
     case ETry(inner) -> mkExpr(ETry(inner = rewriteExpr(inner, kind, st)), e.span)
     case EOld(inner) -> mkExpr(EOld(inner = rewriteExpr(inner, kind, st)), e.span)
 
-    case EForall(binders, whereOpt, body) -> {
+    case EForall(binders, whereOpt, body, bf) -> {
       val newWhere: Option[Expr] = match whereOpt {
         case Some(w) -> Some(value = rewriteExpr(w, kind, st))
         case None -> None
       }
-      mkExpr(EForall(binders = binders, whereExpr = newWhere, body = rewriteExpr(body, kind, st)), e.span)
+      mkExpr(EForall(binders = binders, whereExpr = newWhere, body = rewriteExpr(body, kind, st), bodyForm = bf), e.span)
     }
-    case EExists(binders, whereOpt, body) -> {
+    case EExists(binders, whereOpt, body, bf) -> {
       val newWhere: Option[Expr] = match whereOpt {
         case Some(w) -> Some(value = rewriteExpr(w, kind, st))
         case None -> None
       }
-      mkExpr(EExists(binders = binders, whereExpr = newWhere, body = rewriteExpr(body, kind, st)), e.span)
+      mkExpr(EExists(binders = binders, whereExpr = newWhere, body = rewriteExpr(body, kind, st), bodyForm = bf), e.span)
     }
 
     // Lambdas carry their own return monad — switch to PropInLambda so a `?` inside surfaces the lambda-specific F0020 instead of the enclosing function's.

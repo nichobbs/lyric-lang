@@ -776,25 +776,31 @@ func rewriteExpr(ctx: in RewriteCtx, expr: in Expr): Expr {
     // `rewriteContractClauseArgs` calls this same `rewriteExpr` on
     // contract clauses. `PropertyBinder` carries no expression of its
     // own (just a name + type), so only `whereExpr`/`body` need it.
-    case EForall(binders, whereExpr, body) -> Expr(
+    case EForall(binders, whereExpr, body, bf) -> Expr(
       kind = EForall(
         binders = binders,
         whereExpr = match whereExpr {
-          case Some(e) -> Some(value = rewriteExpr(ctx, e))
+          case Some(e) -> Some(
+            value = rewriteExpr(ctx, e)
+          )
           case None -> None
         },
-        body = rewriteExpr(ctx, body)
+        body = rewriteExpr(ctx, body),
+        bodyForm = bf
       ),
       span = s
     )
-    case EExists(binders, whereExpr, body) -> Expr(
+    case EExists(binders, whereExpr, body, bf) -> Expr(
       kind = EExists(
         binders = binders,
         whereExpr = match whereExpr {
-          case Some(e) -> Some(value = rewriteExpr(ctx, e))
+          case Some(e) -> Some(
+            value = rewriteExpr(ctx, e)
+          )
           case None -> None
         },
-        body = rewriteExpr(ctx, body)
+        body = rewriteExpr(ctx, body),
+        bodyForm = bf
       ),
       span = s
     )
@@ -1726,14 +1732,14 @@ func collectRefsExpr(e: in Expr, mode: in RefMatchMode, into: in Map[String, Boo
     // had before D-progress-887 — `PropertyBinder` carries no expression
     // of its own, so only `whereExpr`/`body` need recursing into.
     case ERange(bound) -> collectRefsRangeBound(bound, mode, into)
-    case EForall(_, whereExpr, body) -> {
+    case EForall(_, whereExpr, body, _) -> {
       match whereExpr {
         case Some(e) -> collectRefsExpr(e, mode, into)
         case None -> ()
       }
       collectRefsExpr(body, mode, into)
     }
-    case EExists(_, whereExpr, body) -> {
+    case EExists(_, whereExpr, body, _) -> {
       match whereExpr {
         case Some(e) -> collectRefsExpr(e, mode, into)
         case None -> ()

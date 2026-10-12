@@ -389,19 +389,21 @@ func mapExprWith(e: in Expr, m: in AstMapper): Expr {
     case ESpawn(inner) -> mkExpr(ESpawn(inner = mapExprWith(inner, m)), sp)
     case ETry(inner) -> mkExpr(ETry(inner = mapExprWith(inner, m)), sp)
     case EOld(inner) -> mkExpr(EOld(inner = mapExprWith(inner, m)), sp)
-    case EForall(bs, w, body) -> mkExpr(
+    case EForall(bs, w, body, bf) -> mkExpr(
       EForall(
         binders = bs,
         whereExpr = mapExprOpt(w, m),
-        body = mapExprWith(body, m)
+        body = mapExprWith(body, m),
+        bodyForm = bf
       ),
       sp
     )
-    case EExists(bs, w, body) -> mkExpr(
+    case EExists(bs, w, body, bf) -> mkExpr(
       EExists(
         binders = bs,
         whereExpr = mapExprOpt(w, m),
-        body = mapExprWith(body, m)
+        body = mapExprWith(body, m),
+        bodyForm = bf
       ),
       sp
     )
@@ -677,8 +679,8 @@ func anyInExpr(e: in Expr, p: in (Expr) -> Bool): Bool {
     case ESpawn(inner) -> anyInExpr(inner, p)
     case ETry(inner) -> anyInExpr(inner, p)
     case EOld(inner) -> anyInExpr(inner, p)
-    case EForall(_, w, body) -> anyInExprOpt(w, p) or anyInExpr(body, p)
-    case EExists(_, w, body) -> anyInExprOpt(w, p) or anyInExpr(body, p)
+    case EForall(_, w, body, _) -> anyInExprOpt(w, p) or anyInExpr(body, p)
+    case EExists(_, w, body, _) -> anyInExprOpt(w, p) or anyInExpr(body, p)
     case ELambda(_, body) -> anyInBlock(body, p)
     case ECall(fn, args) -> {
       if anyInExpr(fn, p) {

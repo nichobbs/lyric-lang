@@ -1288,7 +1288,7 @@ without breakage across patch and minor compiler releases.
 | `col`      | integer               | 1-based source column of the goal's origin span.                                                                        |
 | `outcome`  | string                | One of `discharged`, `counterexample`, `unknown`.                                                                       |
 | `model`    | string &#124; null    | Raw `(get-model)` block on `counterexample`; the solver's `unknown` reason on `unknown`; `null` on `discharged`.        |
-| `smtPath`  | string &#124; null    | Path to the goal's SMT-LIB v2.6 source on disk under `target/proofs/`, or `null` when SMT was not written.              |
+| `smtPath`  | string &#124; null    | Path of the goal's SMT-LIB v2.6 query, `<dir>/<index>-<label>.smt2`, when `--proof-dir <dir>` is given; `null` without it, and for a goal that could not be translated (`V0033`), which has no query (#8309). |
 | `suggestions` | array of string    | Heuristic contract clauses the user could add to block this counterexample (e.g. `"requires: x > 0"`).  Always present; empty for `discharged` / `unknown`, capped at 3 for `counterexample`.  See §9.3 for the boundary-suggestion policy. |
 
 ### A.3 Diagnostic object
@@ -1310,6 +1310,10 @@ without breakage across patch and minor compiler releases.
 | `discharged`      | integer | Goals whose outcome is `discharged`.                                           |
 | `unknown`         | integer | Goals whose outcome is `unknown`.                                              |
 | `counterexamples` | integer | Goals whose outcome is `counterexample`.                                       |
+
+The counts are over the goals listed in `goals`, the function's obligations.  The
+checks that a `requires:` clause can be met (`V0035`/`V0036`) are not obligations
+and are in no count (#8307).
 
 ### A.5 Exit codes
 

@@ -2934,8 +2934,8 @@ func describeExprKind(kind: in ExprKind): String {
     case ESpawn(_) -> "ESpawn"
     case ETry(_) -> "ETry"
     case EOld(_) -> "EOld"
-    case EForall(_, _, _) -> "EForall"
-    case EExists(_, _, _) -> "EExists"
+    case EForall(_, _, _, _) -> "EForall"
+    case EExists(_, _, _, _) -> "EExists"
     case ESelf -> "ESelf"
     case EResult -> "EResult"
     case ELambda(_, _) -> "ELambda"
@@ -14751,11 +14751,11 @@ func exprContainsYieldNative(e: in Expr): Bool {
     }
     case EBlock(blk) -> blockContainsYieldNative(blk)
     case EUnsafe(blk) -> blockContainsYieldNative(blk)
-    case EForall(_, w, body) -> {
+    case EForall(_, w, body, _) -> {
       val inW = match w { case None -> false; case Some(we) -> exprContainsYieldNative(we) }
       inW or exprContainsYieldNative(body)
     }
-    case EExists(_, w, body) -> {
+    case EExists(_, w, body, _) -> {
       val inW = match w { case None -> false; case Some(we) -> exprContainsYieldNative(we) }
       inW or exprContainsYieldNative(body)
     }

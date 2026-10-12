@@ -1078,8 +1078,8 @@ pub func exprAtCol(col: in Int, ctx: inout FmtCtx, e: in Expr): List[String] {
     case ETuple(elems) -> exprListMulti(col, ctx, elems, "(", ")")
     case EParen(inner) -> exprParenMulti(col, ctx, inner)
     case ELambda(ps, body) -> exprLambdaMulti(col, ctx, ps, body)
-    case EForall(bs, w, body) -> exprQuantMulti(col, ctx, "forall", bs, w, body)
-    case EExists(bs, w, body) -> exprQuantMulti(col, ctx, "exists", bs, w, body)
+    case EForall(bs, w, body, form) -> exprQuantMulti(col, ctx, "forall", bs, w, body, form)
+    case EExists(bs, w, body, form) -> exprQuantMulti(col, ctx, "exists", bs, w, body, form)
     // When an if-expression (brace form) or match-expression is too wide to
     // fit inline, convert to the brace layout the statement-level formatters
     // already produce.  The `then` form (`if cond then e`) has no brace
@@ -1432,11 +1432,18 @@ func lambdaParamsStr(ps: in List[LambdaParam]): String {
   joinStrings(parts, ", ")
 }
 
-/// Shared multi-line layout for `EForall` / `EExists`:
+/// Shared multi-line layout for `EForall` / `EExists`.  The body keeps the
+/// form it was written in (#8305): a braced body is laid out as
 ///
 ///     forall (a: Int, b: Int) where guard {
 ///       body
 ///     }
+///
+/// a bare body goes on the lines below the binders, and an `implies` body
+/// on the lines below them after `implies`:
+///
+///     forall (a: Int, b: Int) where guard
+///       implies body
 ///
 /// When the binders + where-guard line itself overruns budget the
 /// multi-line break still puts the body on a separate line — that's
@@ -1451,7 +1458,47 @@ func exprQuantMulti(
   bs: in List[PropertyBinder],
   w: in Option[Expr],
   body: in Expr,
+  form: in QuantBodyForm,
 ): List[String] {
+  val head = quantifierHead(kw, bs, w)
+  val acc: List[String] = newList()
+  match body.kind {
+    // When the body was parsed as `{ … }` the parser wraps it in EBlock.
+    // Render the block contents directly to avoid double braces.
+    case EBlock(b) -> {
+      acc.add(head + " {")
+      appendLines(acc, indentDoc(2, blockLines(b, ctx)))
+      acc.add("}")
+    }
+    case _ -> match quantBodyLayout(w, body, form) {
+      case QBodyImplies -> {
+        acc.add(head)
+        appendLines(acc, indentDoc(2, prependPrefix("implies ", exprAtCol(col + 2 + 8, ctx, body))))
+      }
+      case QBodyBare -> {
+        acc.add(head)
+        appendLines(acc, indentDoc(2, exprAtCol(col + 2, ctx, body)))
+      }
+      case QBodyBraced -> {
+        acc.add(head + " {")
+        appendLines(acc, indentDoc(2, exprAtCol(col + 2, ctx, body)))
+        acc.add("}")
+      }
+    }
+  }
+  acc
+}
+
+func appendLines(acc: List[String], lines: in List[String]): Unit {
+  var j = 0
+  while j < lines.count {
+    acc.add(lines[j])
+    j = j + 1
+  }
+}
+
+/// `forall (a: Int, b: Int)` plus ` where guard` when there is one.
+func quantifierHead(kw: in String, bs: in List[PropertyBinder], w: in Option[Expr]): String {
   val parts: List[String] = newList()
   var i = 0
   while i < bs.count {
@@ -1459,22 +1506,64 @@ func exprQuantMulti(
     i = i + 1
   }
   val whereStr = match w { case Some(we) -> " where " + exprInline(0, we); case None -> "" }
-  val opener = kw + " (" + joinStrings(parts, ", ") + ")" + whereStr + " {"
-  val acc: List[String] = newList()
-  acc.add(opener)
-  // When the body was parsed as `{ … }` the parser wraps it in EBlock.
-  // Render the block contents directly to avoid double braces.
-  val bd = match body.kind {
-    case EBlock(b) -> indentDoc(2, blockLines(b, ctx))
-    case _ -> indentDoc(2, exprAtCol(col + 2, ctx, body))
+  kw + " (" + joinStrings(parts, ", ") + ")" + whereStr
+}
+
+/// The form a non-block quantifier body is printed in.  It is the form it
+/// was written in, except that a bare body is braced when, written bare, it
+/// would not parse back as the body: one that opens with `{` or `implies`
+/// (it would read as the other forms), or, after a `where` guard, one whose
+/// first token could continue the guard (`-`, `(`, `[`, `.`, an infix
+/// operator word).  A body the parser read bare never has such a start,
+/// since the parser would have read it the other way; only a body a
+/// compiler pass rewrote can, and braces keep it the body.
+func quantBodyLayout(w: in Option[Expr], body: in Expr, form: in QuantBodyForm): QuantBodyForm {
+  match form {
+    case QBodyBare -> if bareQuantBodyParsesBack(w, exprInline(0, body)) { QBodyBare } else { QBodyBraced }
+    case QBodyImplies -> QBodyImplies
+    case QBodyBraced -> QBodyBraced
   }
-  var j = 0
-  while j < bd.count {
-    acc.add(bd[j])
-    j = j + 1
+}
+
+func bareQuantBodyParsesBack(w: in Option[Expr], bodyStr: in String): Bool {
+  if bodyStr.length == 0 {
+    return false
   }
-  acc.add("}")
-  acc
+  val first = Str.charAtOrReplacement(bodyStr, 0)
+  if first == '{' {
+    return false
+  }
+  val word = leadingWord(bodyStr)
+  if word == "implies" {
+    return false
+  }
+  match w {
+    case None -> true
+    case Some(_) -> {
+      val startsWord = Ch.isLetter(first) or first == '_' or Ch.isDigit(first)
+      val startsLiteral = first == '"' or first == '\''
+      if startsLiteral {
+        true
+      } else if not startsWord {
+        false
+      } else {
+        not (word == "and" or word == "or" or word == "xor" or word == "is" or word == "as" or word == "in")
+      }
+    }
+  }
+}
+
+/// The identifier-like run at the start of `s` (letters, digits, `_`).
+func leadingWord(s: in String): String {
+  var i = 0
+  while i < s.length {
+    val c = Str.charAtOrReplacement(s, i)
+    if not (Ch.isLetter(c) or Ch.isDigit(c) or c == '_') {
+      return Str.substring(s, 0, i)
+    }
+    i = i + 1
+  }
+  s
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1496,8 +1585,8 @@ pub func exprInline(minPrec: in Int, e: in Expr): String {
     case ESpawn(inner) -> "spawn " + exprInline(0, inner)
     case ETry(inner) -> "try " + exprInline(0, inner)
     case EOld(inner) -> "old(" + exprInline(0, inner) + ")"
-    case EForall(bs, w, body) -> quantifierStr("forall", bs, w, body)
-    case EExists(bs, w, body) -> quantifierStr("exists", bs, w, body)
+    case EForall(bs, w, body, form) -> quantifierStr("forall", bs, w, body, form)
+    case EExists(bs, w, body, form) -> quantifierStr("exists", bs, w, body, form)
     case ESelf -> "self"
     case EResult -> "result"
     case ELambda(ps, body) -> lambdaInlineStr(ps, body)
@@ -1556,18 +1645,23 @@ func matchInlineStr(scrut: in Expr, arms: in List[MatchArm]): String {
   "match " + exprInline(0, scrut) + " { " + joinStrings(parts, "; ") + " }"
 }
 
-func quantifierStr(kw: in String, bs: in List[PropertyBinder], w: in Option[Expr], body: in Expr): String {
-  val parts: List[String] = newList()
-  var i = 0
-  while i < bs.count {
-    parts.add(bs[i].name + ": " + typeStr(bs[i].ty))
-    i = i + 1
+func quantifierStr(
+  kw: in String, bs: in List[PropertyBinder], w: in Option[Expr], body: in Expr, form: in QuantBodyForm
+): String {
+  val head = quantifierHead(kw, bs, w)
+  match body.kind {
+    // When the body was parsed as `{ … }` the parser wraps it in EBlock.
+    // Render the block contents directly to avoid double braces.
+    case EBlock(b) -> head + " { " + blockInline(b) + " }"
+    case _ -> {
+      val bodyStr = exprInline(0, body)
+      match quantBodyLayout(w, body, form) {
+        case QBodyImplies -> head + " implies " + bodyStr
+        case QBodyBare -> head + " " + bodyStr
+        case QBodyBraced -> head + " { " + bodyStr + " }"
+      }
+    }
   }
-  val whereStr = match w { case Some(we) -> " where " + exprInline(0, we); case None -> "" }
-  // When the body was parsed as `{ … }` the parser wraps it in EBlock.
-  // Render the block contents directly to avoid double braces.
-  val bodyStr = match body.kind { case EBlock(b) -> blockInline(b); case _ -> exprInline(0, body) }
-  kw + " (" + joinStrings(parts, ", ") + ")" + whereStr + " { " + bodyStr + " }"
 }
 
 func lambdaInlineStr(ps: in List[LambdaParam], body: in Block): String {

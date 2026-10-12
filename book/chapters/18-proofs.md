@@ -211,6 +211,8 @@ Output:
 
 Each diagnostic object carries `code`, `severity`, `message`, `line`, `col`, and the `file` it is in. The `outcome` field is `"discharged"`, `"counterexample"`, or `"unknown"`. A CI gate that fails if `counterexamples > 0` or `unknown > 0` ensures that every proof obligation is affirmatively discharged before a merge. The `"model"` field, when present, contains the counterexample bindings in the same format the human-readable output shows.
 
+To see what the solver was asked, add `--proof-dir <dir>`: `lyric prove` writes each obligation's SMT-LIB query to `<dir>/<n>-<label>.smt2` (`<n>` is the goal's `index`) and sets its `smtPath`. You can run a query through `z3` or `cvc5` yourself, edit it, or attach it to a bug report.
+
 ## §18.6 `@axiom` boundaries in `@proof_required` packages
 
 Not everything a domain package needs is itself provable. I/O, clocks, database operations, and .NET BCL calls live outside the decidable fragment. The `@axiom` boundary is the mechanism for bringing them in.

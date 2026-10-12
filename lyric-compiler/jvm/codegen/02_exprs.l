@@ -2299,10 +2299,10 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
     // drops every conjunct containing one before codegen (W0002, #7228).
     // Lowering it as a constant was unsound under negation, so reaching here
     // is a compiler bug.
-    case EForall(_, _, _) -> {
+    case EForall(_, _, _, _) -> {
       panic("Jvm.Codegen: a forall quantifier reached codegen; the contract elaborator must drop it (#7228)")
     }
-    case EExists(_, _, _) -> {
+    case EExists(_, _, _, _) -> {
       panic("Jvm.Codegen: an exists quantifier reached codegen; the contract elaborator must drop it (#7228)")
     }
     case EOld(_) -> {

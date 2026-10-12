@@ -389,13 +389,13 @@ func rwKind(cx: in Members, shadowed: in Map[String, Bool], e: in Expr): ExprKin
     case ESpawn(inner) -> ESpawn(inner = rwExpr(cx, shadowed, inner))
     case ETry(inner) -> ETry(inner = rwExpr(cx, shadowed, inner))
     case EOld(inner) -> EOld(inner = rwExpr(cx, shadowed, inner))
-    case EForall(binders, whereE, body) -> {
+    case EForall(binders, whereE, body, bf) -> {
       val inner = binderScope(cx, shadowed, binders)
-      EForall(binders = binders, whereExpr = rwOptExpr(cx, inner, whereE), body = rwExpr(cx, inner, body))
+      EForall(binders = binders, whereExpr = rwOptExpr(cx, inner, whereE), body = rwExpr(cx, inner, body), bodyForm = bf)
     }
-    case EExists(binders, whereE, body) -> {
+    case EExists(binders, whereE, body, bf) -> {
       val inner = binderScope(cx, shadowed, binders)
-      EExists(binders = binders, whereExpr = rwOptExpr(cx, inner, whereE), body = rwExpr(cx, inner, body))
+      EExists(binders = binders, whereExpr = rwOptExpr(cx, inner, whereE), body = rwExpr(cx, inner, body), bodyForm = bf)
     }
     case ELambda(lps, body) -> {
       val inner = copyNames(shadowed)

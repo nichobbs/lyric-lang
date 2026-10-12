@@ -22,6 +22,9 @@ import Std.String as Str
 pub record ProofResult {
   pub goal: Goal
   pub outcome: SolverOutcome
+  /// False when the goal could not be put into the proof logic faithfully
+  /// (V0033): it has no SMT-LIB query, and was never sent to a solver.
+  pub translated: Bool
 }
 
 pub record ProofSummary {
@@ -54,6 +57,42 @@ pub func summaryDischargedCount(s: in ProofSummary): Int {
 
 pub func summaryTotalCount(s: in ProofSummary): Int {
   s.results.count
+}
+
+/// The obligations whose outcome is `unknown`: the solver could not decide
+/// them, none was available, or they could not be translated.  The vacuity
+/// checks are not obligations and are not counted (#8307).
+pub func summaryUnknownCount(s: in ProofSummary): Int {
+  var n = 0
+  var i = 0
+  while i < s.results.count {
+    match s.results[i].outcome {
+      case Unknown(_) -> {
+        n = n + 1
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+  n
+}
+
+/// The obligations the solver refuted with a counterexample (#8307).
+pub func summaryCounterexampleCount(s: in ProofSummary): Int {
+  var n = 0
+  var i = 0
+  while i < s.results.count {
+    match s.results[i].outcome {
+      case Counterexample(_) -> {
+        n = n + 1
+      }
+      case _ -> {
+      }
+    }
+    i = i + 1
+  }
+  n
 }
 
 pub func summaryHasFailure(s: in ProofSummary): Bool {
@@ -569,12 +608,18 @@ pub func proveSourceInScope(source: in String, allowUnverified: in Bool, pkgScop
     // second report (#7874).
     val into = if isDomainGoal(g) { vacuity } else { results }
     if goalIsPoisoned(g) {
-      into.add(ProofResult(goal = g, outcome = Unknown(reason = "not translatable: a construct reported above (V0033)")))
+      into.add(
+        ProofResult(
+          goal = g,
+          outcome = Unknown(reason = "not translatable: a construct reported above (V0033)"),
+          translated = false
+        )
+      )
     } else {
       match reconcileGoalSorts(g) {
         case Ok(rg) -> {
           val outcome = afterUnmeetable(rg, domainOutcome(rg, discharge(rg)), unmeetable)
-          into.add(ProofResult(goal = rg, outcome = outcome))
+          into.add(ProofResult(goal = rg, outcome = outcome, translated = true))
           match outcomeToDiag(rg, outcome, allowUnverified) {
             case Some(d) -> resultDiags.add(d)
             case None -> {
@@ -582,7 +627,7 @@ pub func proveSourceInScope(source: in String, allowUnverified: in Bool, pkgScop
           }
         }
         case Err(reason) -> {
-          into.add(ProofResult(goal = g, outcome = Unknown(reason = "not translatable: " + reason)))
+          into.add(ProofResult(goal = g, outcome = Unknown(reason = "not translatable: " + reason), translated = false))
           // A precondition clause that cannot be translated is a hypothesis
           // of every other goal of its function, which reports it.
           if not isDomainGoal(g) {

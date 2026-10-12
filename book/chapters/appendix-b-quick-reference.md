@@ -1198,14 +1198,15 @@ lyric prove <file.l>                   # type-check, then run SMT verifier on @p
 lyric prove --allow-unverified <file.l> # downgrade V0007 (unknown) from error to warning
 lyric prove --explain --goal N <file.l> # show the VC IR for goal N
 lyric prove --json <file.l>            # machine-readable output
-lyric prove --proof-dir <dir> <file.l> # write SMT files to <dir> (default: target/proofs/)
+lyric prove --proof-dir <dir> <file.l> # also write each obligation's SMT-LIB query to <dir>/<n>-<label>.smt2
 lyric prove --verbose <file.l>         # print each goal's SMT query and solver response
 lyric prove                            # project mode: prove every [project.packages] source file
 lyric prove --manifest <lyric.toml>    # project mode: override manifest discovery
 lyric prove --target jvm <file.l>      # type-check as a --target jvm build (dotnet|jvm|native)
 lyric prove --features a,b <file.l>    # features for the type check (also --no-default-features, --all-features)
 lyric prove --define KEY=VALUE <file.l> # build define for the type check (repeatable)
-                                       # (--json and --explain --goal N require explicit source file)
+                                       # (--json, --explain --goal N and --proof-dir require explicit source file;
+                                       #  an unknown option is an error, not a source path)
                                        # a single-file proof is relative to the file's ancestor
                                        # manifests; prove a package whose manifest lists files
                                        # outside its own tree with --manifest

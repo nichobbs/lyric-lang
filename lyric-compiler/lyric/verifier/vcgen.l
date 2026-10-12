@@ -3464,9 +3464,9 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
       }
     }
 
-    case EForall(binders, whereExprOpt, body) -> translateQuantifier(env, binders, whereExprOpt, body, true)
+    case EForall(binders, whereExprOpt, body, _) -> translateQuantifier(env, binders, whereExprOpt, body, true)
 
-    case EExists(binders, whereExprOpt, body) -> translateQuantifier(env, binders, whereExprOpt, body, false)
+    case EExists(binders, whereExprOpt, body, _) -> translateQuantifier(env, binders, whereExprOpt, body, false)
 
     case EMember(receiver, memberName) -> {
       val (rR, rDiags) = translateExpr(env, receiver)
@@ -6674,11 +6674,11 @@ func exprContainsYield(e: in Expr): Bool {
         case RBUpperOpen(lo) -> exprContainsYield(lo)
       }
     }
-    case EForall(_, whereExpr, body) -> {
+    case EForall(_, whereExpr, body, _) -> {
       val inWhere = match whereExpr { case Some(w) -> exprContainsYield(w); case None -> false }
       inWhere or exprContainsYield(body)
     }
-    case EExists(_, whereExpr, body) -> {
+    case EExists(_, whereExpr, body, _) -> {
       val inWhere = match whereExpr { case Some(w) -> exprContainsYield(w); case None -> false }
       inWhere or exprContainsYield(body)
     }
@@ -6859,11 +6859,11 @@ func exprHasPropagate(e: in Expr): Bool {
         case RBUpperOpen(lo) -> exprHasPropagate(lo)
       }
     }
-    case EForall(_, whereExpr, body) -> {
+    case EForall(_, whereExpr, body, _) -> {
       val inWhere = match whereExpr { case Some(w) -> exprHasPropagate(w); case None -> false }
       inWhere or exprHasPropagate(body)
     }
-    case EExists(_, whereExpr, body) -> {
+    case EExists(_, whereExpr, body, _) -> {
       val inWhere = match whereExpr { case Some(w) -> exprHasPropagate(w); case None -> false }
       inWhere or exprHasPropagate(body)
     }
