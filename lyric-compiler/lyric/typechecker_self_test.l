@@ -6641,6 +6641,30 @@ test "a dot-named function declared through an alias is the aliased type's" {
   assertEqualInt(diagCount(parseCheck(chain)), 0, "an alias chain: " + diagCodesOf(parseCheck(chain)))
   val inst = "package P\nrecord Box[T] { v: T }\nalias IB = Box[Int]\nfunc IB.get(self: in IB): Int = self.v\n"
   assertTrue(hasDiagCode(parseCheck(inst), "T0171"), "an alias of a generic instance: " + diagCodesOf(parseCheck(inst)))
+  assertTrue(
+    diagMessagesContain(parseCheck(inst), "func Box.get(self: in Box[Int]"),
+    "the message names the working declaration: " + diagMessageFor(parseCheck(inst), "T0171")
+  )
+}
+
+func asMethodSiteCount(cr: in CheckResult): Int {
+  var n = 0
+  for k in mapKeys(cr.symbols.byRefDotCallSites) {
+    match mapGet(cr.symbols.byRefDotCallSites, k) {
+      case Some(site) -> if site.asMethod { n = n + 1 }
+      case None -> ()
+    }
+  }
+  n
+}
+
+// A call through the type of a body method, the type named directly or
+// through its own package, is written as the method call (D181).
+test "a body method called through its type, named through its own package" {
+  val src = "package Main\nrecord Bag {\n  n: Int\n  func two(self: in Bag, x: in Int, y: in Int): Int = self.n + x + y\n}\nfunc f(b: in Bag): Int = Bag.two(b, 1, 2) + Main.Bag.two(b, 1, 2) + Main.Bag.two(b, y = 2, x = 1)\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "checks: " + diagCodesOf(cr))
+  assertEqualInt(asMethodSiteCount(cr), 3, "each call is written as the method call")
 }
 
 // A method call on a primitive or a distinct type that names nothing it has

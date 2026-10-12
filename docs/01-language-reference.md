@@ -1378,7 +1378,9 @@ aliased type, whether the alias is declared in the package, imported
 `Num.neg(k)`, `Int.neg(k)` and `Pkg.Num.neg(k)` all call it. An alias of a
 type no dot-named function is declared for, such as a generic instance
 (`alias Ints = List[Int]`), a function or a tuple type, cannot name one
-(**T0171**).
+(**T0171**); a generic instance's function is declared for the generic type
+with the instance as the receiver's type
+(`func List.total(self: in List[Int]): Int`).
 
 A dot-named function may likewise be declared for a type another package
 declares, an *extension* (`func Bag.extra(self: in Bag): Int` in a package

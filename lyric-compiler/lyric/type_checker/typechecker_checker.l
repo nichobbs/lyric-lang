@@ -1397,11 +1397,26 @@ func canonicalDotNamedName(
   }
   if canonical.length == 0 {
     if not isImported {
+      val member = decl.name.substring(dot + 1)
+      // A generic instance's function is declared for the generic type, with
+      // the instance as the receiver's type.
+      val instead = match unrefine(t) {
+        case TyUser(_, n, _) -> "; declare it for '" + n +
+          "' with the instance as the receiver's type: 'func " +
+          n +
+          "." +
+          member +
+          "(self: in " +
+          renderType(t) +
+          ", ...)'"
+        case _ -> "; use a plain function taking a '" + renderType(t) + "' instead"
+      }
       diag.add(
         errorDiagnostic(
           "T0171",
           "'" + decl.name + "' is declared through the alias '" + owner + "' of '" + renderType(t) +
-            "', which is not a plain named type; a dot-named function is declared for a named type (a record, union, enum, opaque, distinct or primitive type) under its own name",
+            "', which is not a plain named type" +
+            instead,
           decl.span
         )
       )

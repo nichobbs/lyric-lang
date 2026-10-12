@@ -13318,6 +13318,21 @@ func dottedCalleeName(fn: in Expr, sig: in ResolvedSignature): String {
   segs[segs.count - 2] + "." + segs[segs.count - 1]
 }
 
+// `Pkg` for a callee written `Pkg.T.m`; "" for `T.m` or any other callee.
+func calleePackagePrefix(fn: in Expr): String {
+  val segs: List[String] = newList()
+  if not calleeSegments(fn, segs) or segs.count < 3 {
+    return ""
+  }
+  val pkgSegs: List[String] = newList()
+  var i = 0
+  while i < segs.count - 2 {
+    pkgSegs.add(segs[i])
+    i = i + 1
+  }
+  modulePathJoin(pkgSegs)
+}
+
 // `T.m` for a callee written through its type, `T.m` or package-qualified
 // `Pkg.T.m`, as a path or a member chain; "" otherwise.
 func qualifiedDottedName(fn: in Expr): String {
@@ -15073,7 +15088,11 @@ func inferExprCore(
               // A primitive's or distinct type's function named through its
               // package (`Pkg.Int.neg(k)`) is called by its own name too.
               val qualifiedPlain = not viaType and receiverNeedsPlainDotCall(tbl, Some(value = dotRecv))
-              if isDotNamedExtension(tbl, dotRecv, sig) or (viaType and foreignDotNamedShadowed(tbl, sigs, dotRecv, member, sig)) or canonical != written or qualifiedPlain {
+              // So is one named through this package (`Main.Bag.top(b)` in
+              // `Main`): the backends resolve a package prefix only for
+              // another package.
+              val ownPkgQualified = calleePackagePrefix(fn) == symTableScopePkg(tbl)
+              if isDotNamedExtension(tbl, dotRecv, sig) or (viaType and foreignDotNamedShadowed(tbl, sigs, dotRecv, member, sig)) or canonical != written or qualifiedPlain or ownPkgQualified {
                 recordDotCallRewrite(tbl, fn.span, canonical, sig, false)
               } else {
                 recordByRefDotCall(tbl, fn.span, written, sig, false)
@@ -18324,20 +18343,15 @@ func findDirectSig(
     // `Box.get(b)`: a dot-named function called through its type name
     // (#8173).  The receiver names a type, not a value in scope.
     case EMember(recv, member) -> {
-      // `Pkg.Box.get(b)`, the type named through its package (#8179).
-      match recv.kind {
-        case EPath(qp) -> if qp.segments.count >= 2 and startsUppercase(qp.segments[qp.segments.count - 1]) and not scopeHasName(sc, qp.segments[0]) {
-          val qsegs: List[String] = newList()
-          for qs in qp.segments {
-            qsegs.add(qs)
-          }
-          qsegs.add(member)
-          match qualifiedTypeDotSig(tbl, sigs, qsegs, arity, argTypes) {
-            case Some(pds) -> return Some(value = pds)
-            case None -> ()
-          }
+      // `Pkg.Box.get(b)`, the type named through its package (#8179), the
+      // receiver a path or a chain of members (`Main.Bag` in `Main`).
+      val qsegs: List[String] = newList()
+      if calleeSegments(recv, qsegs) and qsegs.count >= 2 and startsUppercase(qsegs[qsegs.count - 1]) and not scopeHasName(sc, qsegs[0]) {
+        qsegs.add(member)
+        match qualifiedTypeDotSig(tbl, sigs, qsegs, arity, argTypes) {
+          case Some(pds) -> return Some(value = pds)
+          case None -> ()
         }
-        case _ -> ()
       }
       val typeName = match recv.kind {
         case EPath(rp) -> if rp.segments.count == 1 and startsUppercase(rp.segments[0]) {

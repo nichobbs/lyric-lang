@@ -9,9 +9,11 @@
 //! internal error (T0120) in MSIL codegen, and on the JVM for a method with
 //! arguments.  This file covers a method with and without arguments, a
 //! receiver that is a call result, a generic record's method and a method
-//! with its own type parameter, an `inout` receiver, named arguments in and
-//! out of order with their evaluation order, a defaulted argument, and the
-//! type named through an alias.  Calls into another package and a restored
+//! with its own type parameter (bare, and inside a `List`, an `Option`, a
+//! tuple and a function type, on a generic and a non-generic record), the
+//! type named through its own package, an `inout` receiver, named arguments
+//! in and out of order with their evaluation order, a defaulted argument,
+//! and the type named through an alias.  Calls into another package and a restored
 //! dependency are covered by `scripts/ci/inout-receiver-e2e.sh`.
 //!
 //!   lyric test --target dotnet lyric-compiler/lyric/type_qualified_method_self_test.l
@@ -64,6 +66,36 @@ record Box[T] {
   func get(self: in Box[T]): T = self.v
 
   func pairWith[U](self: in Box[T], u: in U): U = u
+
+  func listOf[U](self: in Box[T], u: in U): List[U] {
+    val l: List[U] = newList()
+    l.add(u)
+    l
+  }
+
+  func optOf[U](self: in Box[T], u: in U): Option[U] = Some(value = u)
+
+  func pairOf[U](self: in Box[T], u: in U): (T, U) = (self.v, u)
+
+  func mapV[U](self: in Box[T], f: in (T) -> U): U = f(self.v)
+
+  func orElse[U](self: in Box[T], o: in Option[U], d: in U): U = match o { case Some(x) -> x; case None -> d }
+}
+
+record Tag {
+  k: Int
+
+  func echo[U](self: in Tag, u: in U): U = u
+
+  func listOf[U](self: in Tag, u: in U): List[U] {
+    val l: List[U] = newList()
+    l.add(u)
+    l
+  }
+
+  func optOf[U](self: in Tag, u: in U): Option[U] = Some(value = u)
+
+  func mapK[U](self: in Tag, f: in (Int) -> U): U = f(self.k)
 }
 
 alias Sack = Bag
@@ -94,6 +126,40 @@ test "a generic record's method and a method with its own type parameter" {
   assertEqualInt(Box.pairWith(bx, 9), 9, "the method's own type parameter")
   assertEqualInt(bx.pairWith(9), Box.pairWith(bx, 9), "the same as the method call")
   assertEqual(Box.pairWith(by, "s"), "s", "a reference type argument")
+}
+
+test "a method's own type parameter inside a List, an Option, a tuple and a function type" {
+  val bx = Box(v = "s")
+  assertEqualInt(bx.listOf(2)[0] + 1, 3, "a List of it, as a method call")
+  assertEqualInt(Box.listOf(bx, 4)[0], 4, "through the type")
+  assertEqual(Box.listOf(bx, "r")[0], "r", "a reference type argument")
+  val o = match bx.optOf(5) { case Some(x) -> x + 1; case None -> 0 }
+  assertEqualInt(o, 6, "an Option of it")
+  val (pv, pu) = Box.pairOf(bx, 7)
+  assertEqual(pv, "s", "a tuple of it, the record's part")
+  assertEqualInt(pu + 1, 8, "a tuple of it, its part")
+  val len: (String) -> Int = { s -> s.length }
+  assertEqualInt(bx.mapV(len) + 1, 2, "a function returning it")
+  assertEqualInt(Box.orElse(bx, None, 9) + 1, 10, "an Option of it as a parameter")
+}
+
+test "a non-generic record's method with its own type parameter" {
+  val t = Tag(k = 3)
+  assertEqualInt(t.echo(4) + 1, 5, "the method call")
+  assertEqualInt(Tag.echo(t, 6) + 1, 7, "through the type")
+  assertEqual(t.echo("e"), "e", "a reference type argument")
+  assertEqualInt(Tag.listOf(t, 8)[0] + 1, 9, "a List of it")
+  val o = match t.optOf(10) { case Some(x) -> x; case None -> 0 }
+  assertEqualInt(o, 10, "an Option of it")
+  val dbl: (Int) -> Int = { n -> n * 2 }
+  assertEqualInt(Tag.mapK(t, dbl), 6, "a function returning it")
+}
+
+test "the type named through its own package" {
+  val b = Bag(n = 5)
+  assertEqualInt(Lyric.TypeQualifiedMethodSelfTest.Bag.two(b, 1, 2), 512, "positional")
+  assertEqualInt(Lyric.TypeQualifiedMethodSelfTest.Bag.two(b, y = 2, x = 1), 512, "named")
+  assertEqualInt(Lyric.TypeQualifiedMethodSelfTest.Bag.one(b), 5, "no arguments")
 }
 
 test "an inout receiver" {

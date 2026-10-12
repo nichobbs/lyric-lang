@@ -59,6 +59,7 @@ trap 'rm -rf "$work"' EXIT
 lib_src='package IrLib
 
 import Std.Time
+import Std.Collections
 
 pub record Pt {
   x: Int
@@ -73,6 +74,8 @@ pub record Pt {
   }
 
   func total(self: in Pt): Int = x + y
+
+  func echoP[U](self: in Pt, u: in U): U = u
 
   func twiceX(self: in Pt): Int = x * 2
 }
@@ -93,6 +96,12 @@ pub record Box[T] {
   func peekV(self: in Box[T]): T = self.v
 
   func pairV[U](self: in Box[T], u: in U): U = u
+
+  func listV[U](self: in Box[T], u: in U): List[U] {
+    val l: List[U] = newList()
+    l.add(u)
+    l
+  }
 }
 
 pub func putBox[T](q: inout Box[T], v: in T): Unit {
@@ -155,6 +164,7 @@ pub func Int.bump(self: inout Int, d: in Int): Unit {
 app_src='package IrApp
 
 import Std.Core
+import Std.Collections
 import Std.Time
 import IrLib
 
@@ -200,7 +210,7 @@ func main(): Int {
   zi.bump(3)
   Int.bump(zi, 1)
   val zz = zi.twice() + Int.twice(zi)
-  println(toString(beforeReset) + " " + toString(afterMove) + " " + toString(p.x + p.y) + " " + toString(b.v) + " " + toString(n) + " " + toString(y) + " " + toString(r) + " " + toString(w) + " " + toString(t) + " " + s + " " + toString(q.x + q.y) + " " + toString(z) + " " + toString(instantEquals(stamp, fromEpochMillis(7000i64))) + " " + toString(acc.n) + " " + toString(zi) + " " + toString(zz) + " " + toString(q.sum()) + " " + toString(Pt.sum(q)) + " " + toString(q.total()) + " " + toString(Pt.total(q)) + " " + toString(Pt.twiceX(q)) + " " + toString(Box.peekV(b)) + " " + toString(Box.pairV(b, 5) + b.pairV(6)))
+  println(toString(beforeReset) + " " + toString(afterMove) + " " + toString(p.x + p.y) + " " + toString(b.v) + " " + toString(n) + " " + toString(y) + " " + toString(r) + " " + toString(w) + " " + toString(t) + " " + s + " " + toString(q.x + q.y) + " " + toString(z) + " " + toString(instantEquals(stamp, fromEpochMillis(7000i64))) + " " + toString(acc.n) + " " + toString(zi) + " " + toString(zz) + " " + toString(q.sum()) + " " + toString(Pt.sum(q)) + " " + toString(q.total()) + " " + toString(Pt.total(q)) + " " + toString(Pt.twiceX(q)) + " " + toString(Box.peekV(b)) + " " + toString(Box.pairV(b, 5) + b.pairV(6)) + " " + toString(Box.listV(b, 7)[0] + b.listV(8)[0]) + " " + toString(Pt.echoP(q, 3) + q.echoP(4)))
   0
 }'
 
@@ -254,7 +264,9 @@ printf '%s\n' "$app_src" > "$work/restored/app/src/app.l"
 # `sum` and `total` over IrApp's same-named functions (D181): 14 four times;
 # body methods through their type, `Pt.twiceX(q)` 14 and the generic
 # `Box.peekV(b)` 42.  A method's own type parameter erases to `object`; its
-# result is unboxed at the call: `Box.pairV(b, 5) + b.pairV(6)` 11.
+# result is unboxed at the call: `Box.pairV(b, 5) + b.pairV(6)` 11; inside
+# a `List`, `Box.listV(b, 7)[0] + b.listV(8)[0]` 15; on a non-generic record,
+# `Pt.echoP(q, 3) + q.echoP(4)` 7.
 clash_lib='package XLib
 
 pub record Box[T] {
@@ -497,7 +509,7 @@ printf '%s\n' "$ext_app" > "$work/ext/src/app.l"
 ext_line1="8 8 8 60 60 6 s 1006 11 68 506 506 1006 617 612 3 3"
 ext_want="-4 -4 -4 8 8"
 
-want="268 279 0 42 2 204 202 105 42 q 14 10 true 41 8 32 14 14 14 14 14 42 11"
+want="268 279 0 42 2 204 202 105 42 q 14 10 true 41 8 32 14 14 14 14 14 42 11 15 7"
 fail=0
 for t in "${targets[@]}"; do
   out="$("$lyric_bin" run --manifest "$work/proj/lyric.toml" --target "$t" 2>&1 | grep -v '^Picked up JAVA_TOOL_OPTIONS')"

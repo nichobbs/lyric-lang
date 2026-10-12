@@ -169,7 +169,7 @@ dependency, in both call forms, and an extension with defaults.
   through the type's package, that binds a body method is now typed against
   it (`bodyMethodViaType`) and written as the method call, its arguments
   paired in that shape for the source-order evaluation (D171).
-  `type_qualified_method_self_test.l` (new, 7 cases, all targets) and the
+  `type_qualified_method_self_test.l` (new, 10 cases, all targets) and the
   e2e projects cover it.
 - **Aliases resolved like type names.**  The file-local pre-pass is
   replaced: the type checker registers `func X.m` under the aliased type's
@@ -184,13 +184,34 @@ dependency, in both call forms, and an extension with defaults.
   source into the consumer's build no longer reports its type-check
   warnings again (`MiddleEndOptions.quietWarnings`).
 - **A body method's own type parameter on dotnet.**  The MSIL backend
-  erases a method's own type parameter (`func pairWith[U](...)`) to
-  `object` in the emitted method, but registered the call site's parameter
-  and return types with `U` read as a class name, so the result was never
-  unboxed: `assertEqualInt(bx.pairWith(9), 9, ...)` stopped with
-  `InvalidProgramException`, in both call forms, and a restored library's
-  MemberRef named a type that does not exist.  The registrations
-  (`registerMethodRetTyG`, `registerMethodParamTypesG`,
-  `registerRestoredRecordMethod`) now erase the method's own type
-  parameters as the emitted method does.  `type_qualified_method_self_test.l`
-  and the e2e restored-dependency project cover it.
+  erases a method's own type parameter (`func pairWith[U](...)`), but
+  registered the call site's parameter and return types with `U` read as a
+  class name, so a bare `U` result was never unboxed:
+  `assertEqualInt(bx.pairWith(9), 9, ...)` stopped with
+  `InvalidProgramException`.  The emitted MethodDef, the call-site
+  registrations and a restored method's MemberRef (records, `impl`s and
+  interfaces) now all encode a member's signature through one function,
+  `memberSigTypeMsil`, which writes each of the method's own type
+  parameters as `object` wherever it occurs (`U` is `object`, `List[U]` is
+  `List<object>`), so the two sides cannot disagree.
+
+## Third review
+
+- **No disagreement between the method and its calls.**  The fix above
+  first erased the call site's whole `List[U]` to `object` while the method
+  kept `List<object>` (`MissingMethodException`); the shared
+  `memberSigTypeMsil` replaces it.  `type_qualified_method_self_test.l`
+  covers `U` bare and inside a `List`, an `Option`, a tuple and a function
+  type, on a generic and a non-generic record, and the e2e restored
+  dependency `Box.listV` and `Pt.echoP`.
+- **Native: a non-generic record's generic method.**  A method with its own
+  type parameters in a non-generic record (`func echo[U]` in `record Tag`)
+  was dropped by the native backend (N0007 at the call); it is now
+  specialised per call like a generic record's method.
+- **The type named through its own package.**  `Main.Bag.two(b, 1, 2)` in
+  `Main` reached the checker as a member chain, which bound the method but
+  never recorded the rewrite, so dotnet (T0115) and the JVM (J008) failed;
+  a dot-named function called that way (`Main.Bag.top(b)`) is now named by
+  its own name for the backends too.
+- **T0171** suggests the working declaration
+  (`func Box.get(self: in Box[Int], ...)`).
