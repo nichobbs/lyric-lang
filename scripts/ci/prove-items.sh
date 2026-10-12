@@ -8,7 +8,11 @@
 #     union declared in another file, a constructor pattern — is reported
 #     (V0027 error) and not proved, while a match no goal needs is not an
 #     error (#8230);
-#   * record and `impl` methods are verified like functions (#8231).
+#   * record and `impl` methods are verified like functions, an `impl`
+#     method against the clauses of the interface it implements — resolved
+#     as the type checker resolves it, the standard library's included —
+#     and a bare `Some`/`None`/`Ok`/`Err` pattern is a case (#8231, #8230);
+#   * the `@proof_required` items no build compiles are listed (#8325).
 #
 #   LYRIC_BIN=<lyric> bash scripts/ci/prove-items.sh
 set -euo pipefail
@@ -69,6 +73,9 @@ rc="$(run "$lyric_bin" prove "$cfg/twins.l")"
 grep -q "^2/2 obligations discharged" "$out" || fail "target twins: expected one twin's goals, not both"
 expect_refuted "feature twins, default features" "postcondition of atLeastHundred" \
   "$lyric_bin" prove "$cfg/project/src/p/limits.l"
+grep -q "^1 item(s) not proved: inactive under this build (@cfg): limit$" "$out" ||
+  fail "feature twins, default features: expected the inactive twin listed"
+echo "PASS: feature twins, inactive twin listed"
 expect_proved "feature twins, --features wide" "$lyric_bin" prove --features wide "$cfg/project/src/p/limits.l"
 expect_refuted "feature twins, --manifest" "postcondition of atLeastHundred" \
   "$lyric_bin" prove --manifest "$cfg/project/lyric.toml"
@@ -102,3 +109,27 @@ echo "PASS: impl method goals listed"
 expect_proved "record and impl methods that hold" "$lyric_bin" prove "$pm/methods_hold.l"
 grep -q "^2/2 obligations discharged" "$out" || fail "record and impl methods that hold: expected both methods' goals"
 echo "PASS: record and impl methods proved"
+
+# A V0027 at a goal, not a refutation: the goal depends on what the verifier
+# does not model.
+expect_unmodelled() {
+  local label="$1" fn="$2"; shift 2
+  local rc
+  rc="$(run "$@")"
+  no_crash "$label"
+  [ "$rc" -ne 0 ] || fail "$label: expected a non-zero exit"
+  grep -Eq "V0027 error .*of $fn " "$err" || fail "$label: expected V0027 at $fn's goal"
+  if grep -q "V0008" "$err"; then
+    fail "$label: expected no counterexample"
+  fi
+  echo "PASS: $label"
+}
+expect_unmodelled "bare Err pattern" "g" "$lyric_bin" prove "$um/bare_err.l"
+expect_unmodelled "@pure callee with an unmodelled match" "a" "$lyric_bin" prove "$um/pure_callee.l"
+expect_proved "standard-library interface clauses inherited" "$lyric_bin" prove "$pm/stdlib_interface/reader.l"
+expect_refuted "another package's same-named interface is not inherited" "postcondition of F.read" \
+  "$lyric_bin" prove "$pm/foreign_sibling/proved.l"
+if grep -q "V0033" "$err"; then
+  fail "another package's same-named interface: Std.Stream's resolves"
+fi
+expect_refuted "a bare call in an inherited clause" "postcondition of R.get" "$lyric_bin" prove "$pm/inherited_bare_call.l"

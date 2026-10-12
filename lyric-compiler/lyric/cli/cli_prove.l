@@ -255,6 +255,12 @@ func cmdProve(argv: in slice[String]): Int {
       case Some(c) -> projectBuilds.add(c)
       case None -> projectBuilds.add(noManifestProveBuildConfig(buildSettings))
     }
+    // The declarations of the standard library and the project's packages
+    // a proof reads: interfaces an `impl` inherits from, cases a bare
+    // pattern may name (#8230, #8231).
+    val projectManifests: List[String] = newList()
+    projectManifests.add(projectMfPath)
+    val projectImports = proveImportScope(buildSettings.target, projectManifests)
     var totalGoals = 0
     var totalDischarged = 0
     var anyError = false
@@ -274,10 +280,16 @@ func cmdProve(argv: in slice[String]): Int {
         case Some(fs) -> fs
         case None -> Verifier.unknownPackageScope()
       }
-      val summary = Verifier.proveSourceForBuilds(source, allowUnverified, pkgScope, projectBuilds)
+      val summary = Verifier.proveSourceForBuilds(
+        source,
+        allowUnverified,
+        Verifier.withImportScope(pkgScope, projectImports),
+        projectBuilds
+      )
       for d in summary.diagnostics.toArray() {
         printDiag(d)
       }
+      printInactiveItems(Verifier.inactiveItemsForBuilds(source, projectBuilds), sp + ": ")
       if verbose {
         // Goal numbers restart in each file.
         Console.println(sp + ":")
@@ -350,11 +362,15 @@ func cmdProve(argv: in slice[String]): Int {
     )
     case None -> Verifier.unknownPackageScope()
   }
+  val fileBuilds = proveBuildConfigsForFile(sourcePath, buildSettings)
   val summary = Verifier.proveSourceForBuilds(
     source,
     allowUnverified,
-    fileScope,
-    proveBuildConfigsForFile(sourcePath, buildSettings)
+    Verifier.withImportScope(
+      fileScope,
+      proveImportScope(buildSettings.target, manifestsListing(sourcePath))
+    ),
+    fileBuilds
   )
 
   if explain {
@@ -465,6 +481,7 @@ func cmdProve(argv: in slice[String]): Int {
   for d in summary.diagnostics.toArray() {
     printDiag(d)
   }
+  printInactiveItems(Verifier.inactiveItemsForBuilds(source, fileBuilds), "")
   if verbose {
     printVerboseGoals(summary)
   }
@@ -780,6 +797,86 @@ record ProveBuild {
   noDefaultFeatures: Bool
   allFeatures: Bool
   defines: List[String]
+}
+
+// Say which `@proof_required` items no build proved covers: `@cfg` erased
+// them under every build (#8325).
+func printInactiveItems(names: in List[String], prefix: in String): Unit {
+  if names.count > 0 {
+    Console.println(
+      prefix + toString(names.count) + " item(s) not proved: inactive under this build (@cfg): " +
+        Str.joinList(", ", names)
+    )
+  }
+}
+
+// The manifests whose entries list the source file at `sourcePath`.
+func manifestsListing(sourcePath: in String): List[String] {
+  val manifests: List[String] = newList()
+  match Disc.entriesContainingSource(sourcePath) {
+    case Some(entries) -> {
+      for e in entries {
+        if not stringListContains(manifests, e.manifestPath) {
+          manifests.add(e.manifestPath)
+        }
+      }
+    }
+    case None -> ()
+  }
+  manifests
+}
+
+// The packages whose declarations a proof reads (`Verifier.ImportScope`):
+// the standard library's, as the build for `target` loads it, and every
+// `[project.packages]` and `[project.tests]` entry of `manifests`, each as
+// the files its build merges.  A dependency is not read; a package it
+// declares stays unresolved, and what depends on it fails closed.
+func proveImportScope(target: in Emitter.CompileTarget, manifests: in List[String]): Verifier.ImportScope {
+  val stdlib = match target {
+    case Emitter.Jvm -> Emitter.findStdlibSourcesJvm()
+    case _ -> Emitter.findStdlibSources()
+  }
+  var sc = Verifier.importScopeWithSources(Verifier.emptyImportScope(), stdlib)
+  for mfPath in manifests {
+    match File.readText(mfPath) {
+      case Ok(text) -> match Mf.parseManifest(text, mfPath) {
+        case Ok(mf) -> match mf.project {
+          case Some(proj) -> {
+            val mfDir = Path.dirname(mfPath)
+            val entries: List[Mf.PackageEntry] = newList()
+            for e in proj.packages.toArray() {
+              entries.add(e)
+            }
+            for e in proj.tests.toArray() {
+              entries.add(e)
+            }
+            for entry in entries {
+              val ef = Disc.projectEntryFiles(entry, mfDir, proj)
+              if ef.problems.count == 0 {
+                val texts: List[String] = newList()
+                var readAll = true
+                for path in ef.paths.toArray() {
+                  match File.readText(path) {
+                    case Ok(t) -> texts.add(t)
+                    case Err(_) -> {
+                      readAll = false
+                    }
+                  }
+                }
+                if readAll and texts.count > 0 {
+                  sc = Verifier.importScopeWithPackage(sc, entry.name, texts)
+                }
+              }
+            }
+          }
+          case None -> ()
+        }
+        case Err(_) -> ()
+      }
+      case Err(_) -> ()
+    }
+  }
+  sc
 }
 
 // The builds a proof of the source file at `sourcePath` is of, as its type
@@ -1154,23 +1251,9 @@ func projectFileScopes(mfPath: in String): Map[String, Verifier.PackageScope] {
             for n in entryScope.typeNames.toArray() {
               both.add(n)
             }
-            // A file both entries merge declares its interfaces once.
-            val bothInterfaces: List[Parser.InterfaceDecl] = newList()
-            for d in prev.interfaces.toArray() {
-              bothInterfaces.add(d)
-            }
-            for d in entryScope.interfaces.toArray() {
-              var dup = false
-              for e in bothInterfaces {
-                if e.name == d.name and e.span.startPos.offset == d.span.startPos.offset and e.span.endPos.offset == d.span.endPos.offset {
-                  dup = true
-                }
-              }
-              if not dup {
-                bothInterfaces.add(d)
-              }
-            }
-            Verifier.packageScopeWith(both, bothInterfaces)
+            // The file is built in both entries' packages: what either
+            // declares is in scope in one of its builds.
+            Verifier.packageScopeWith(both, Verifier.unionScopeDecls(prev.siblings, entryScope.siblings))
           } else {
             Verifier.unknownPackageScope()
           }

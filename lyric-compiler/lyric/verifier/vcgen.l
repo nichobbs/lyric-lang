@@ -1344,6 +1344,7 @@ func translateResolvedCall(
 
   // @pure callee: translate body expr, emit equality as assumption.
   val pureUnfold: List[Term] = newList()
+  var unfoldSkipped = false
   if isPure(decl) and not cyclicCallee {
     match decl.body {
       case Some(body) -> {
@@ -1370,6 +1371,9 @@ func translateResolvedCall(
             // call is still the callee applied to its arguments, equal for
             // equal arguments, with its contract.  Leaving out a fact never
             // proves anything false (#8109, #8230).
+            if termHasUnmodelledPattern(bodyR.term) and not termIsPoisoned(bodyR.term) {
+              unfoldSkipped = true
+            }
             if not termIsPoisoned(bodyR.term) and not termHasUnmodelledPattern(bodyR.term) {
               match coerceToSort(bodyR.term, resultSort) {
                 case Ok(bodyAtSort) -> {
@@ -1520,7 +1524,17 @@ func translateResolvedCall(
   appendTermList(asList, pureUnfold)
   // The callee proves its result is in its declared range (#7872).
   appendTermList(asList, valueFactsForTerm(callTerm, resultInfo))
-  val knownCalleeTR = TranslateResult(term = callTerm, sideConds = sc, assumed = asList)
+  // A goal this call reaches without its body is reported as V0027 when it
+  // is not discharged (`unfoldSkippedMarker`).
+  val knownCalleeTR = TranslateResult(
+    term = if unfoldSkipped {
+      TApp(name = unfoldSkippedMarker(), args = termList1(callTerm), retSort = sortOf(callTerm))
+    } else {
+      callTerm
+    },
+    sideConds = sc,
+    assumed = asList
+  )
   val knownCalleePair: (TranslateResult, List[Diagnostic]) = (knownCalleeTR, allArgDiags)
   knownCalleePair
 }
@@ -2446,8 +2460,17 @@ func translateMethodCall(
         i = i + 1
       }
       // Every unmodelled result shares one sort, so results the source may
-      // compare are comparable; distinct functions keep them distinct.
-      val t = TApp(name = ufName, args = ufArgs, retSort = SUninterp(name = "call"))
+      // compare are comparable; distinct functions keep them distinct.  A
+      // sibling method called on `self` inside a method has its declared
+      // result type (#8231).
+      val selfResult = match receiver.kind {
+        case ESelf -> mapGet(env.distincts, selfMethodResultKey(methodName))
+        case _ -> None
+      }
+      val t = match selfResult {
+        case Some(te) -> TApp(name = ufName, args = ufArgs, retSort = sortOfTypeExprE(env, te).sort)
+        case None -> TApp(name = ufName, args = ufArgs, retSort = SUninterp(name = "call"))
+      }
       val methodTR = TranslateResult(term = t, sideConds = sides, assumed = facts)
       val methodPair: (TranslateResult, List[Diagnostic]) = (methodTR, diags)
       methodPair
@@ -4309,73 +4332,117 @@ func matchCondKind(env: in VEnv, scrutSort: in Sort, kind: in PatternKind, subje
 // Whether the bare pattern name `name`, matched against a value of sort
 // `scrutSort`, binds that value rather than naming a union or enum case.
 // The type checker reads a bare name as a case whenever a case of that name
-// is in scope (docs/01 §2.12, #8264), so in a well-typed program it binds
-// exactly when no case of that name is visible.  The verifier sees only the
-// file's own types: a name that is a case of one of them, or `None`, is a
-// case; otherwise the name binds where the scrutinee's type has no cases
-// that could be named — a primitive, a slice, a tuple, `Unit`, the standard
-// `Option`/`Result` (whose only nullary case is `None`), a type parameter,
-// a record or protected type the file declares, or an enum or union the
-// file declares (whose cases are known not to include it).  For any other
-// type — one another file or package declares — the name may be one of
-// its cases, and the arm is not modelled (#8230).
+// is in scope — the file's, its package's, the standard library's (the
+// prelude's `Some`/`None`/`Ok`/`Err` included) and its imports' — and
+// rejects a case that can never match the scrutinee (T0129) unless the
+// scrutinee is a record, an enum or a type parameter (docs/01 §2.12,
+// #8264).  So in a well-typed program the name binds:
+//   * against a primitive, a slice, a tuple or `Unit`, always;
+//   * against the standard `Option` (`Result`), unless it is `Some` or
+//     `None` (`Ok` or `Err`);
+//   * against a union whose declaration the verifier read, unless it is one
+//     of that union's cases;
+//   * against anything else, unless a case of that name is in scope — which
+//     the verifier can tell only when it read every package in scope
+//     (`addScopeCaseFacts`); otherwise the arm is not modelled (#8230).
 func bareNameBinds(env: in VEnv, scrutSort: in Sort, name: in String): Bool {
-  if name == "None" or env.valueTypes.containsKey(fileCaseKey(name)) {
-    return false
-  }
   match scrutSort {
-    case SDatatype(n, _) -> isTupleSortName(n) or n == unitSortName() or isOptionSort(scrutSort) or
-      isResultSort(scrutSort) or
-      env.typeParams.contains(n) or
-      env.valueTypes.containsKey(fileTypeCasesKnownKey(n))
-    case SSlice(_) -> true
-    case SUninterp(_) -> false
-    case _ -> isPrimitiveSort(scrutSort)
+    case SDatatype(n, _) -> {
+      if not env.typeParams.contains(n) {
+        if isOptionSort(scrutSort) {
+          return name != "Some" and name != "None"
+        }
+        if isResultSort(scrutSort) {
+          return name != "Ok" and name != "Err"
+        }
+        if isTupleSortName(n) or n == unitSortName() {
+          return true
+        }
+        if env.valueTypes.containsKey(scopeUnionKey(n)) {
+          return not env.valueTypes.containsKey(scopeUnionCaseKey(n, name))
+        }
+      }
+    }
+    case SSlice(_) -> return true
+    case SUninterp(_) -> ()
+    case _ -> return isPrimitiveSort(scrutSort)
   }
+  env.valueTypes.containsKey(scopeCasesKnownKey()) and not env.valueTypes.containsKey(scopeCaseKey(name))
 }
 
-// The key under which `valueTypes` records that a union or enum the file
-// declares has a case named `name`.
-func fileCaseKey(name: in String): String {
+// The key under which `valueTypes` records that a union or enum in scope
+// has a case named `name`.
+func scopeCaseKey(name: in String): String {
   "!case!" + name
 }
 
-// The key under which `valueTypes` records that the file declares the type
-// `name` and so knows every case it has: none for a record, exposed record,
-// protected or opaque type, its own for an enum or union.
-func fileTypeCasesKnownKey(name: in String): String {
-  "!casesknown!" + name
+// The key under which `valueTypes` records that a union named `name` whose
+// declaration the verifier read is in scope, and the key for each of its
+// cases.  Two unions of one name in different packages share the keys, so
+// a name a case of either is a case of both: the safe side.
+func scopeUnionKey(name: in String): String {
+  "!scopeunion!" + name
 }
 
-// Record the case names of the enums and unions `file` declares, and the
-// types whose cases are therefore all known (`bareNameBinds`).
-func addFileCaseFacts(file: in SourceFile, valueTypes: in Map[String, Bool]): Unit {
-  var i = 0
-  while i < file.items.count {
-    match file.items[i].kind {
-      case IEnum(d) -> {
-        addKey(valueTypes, fileTypeCasesKnownKey(d.name))
-        var ci = 0
-        while ci < d.cases.count {
-          addKey(valueTypes, fileCaseKey(d.cases[ci].name))
-          ci = ci + 1
-        }
-      }
-      case IUnion(d) -> {
-        addKey(valueTypes, fileTypeCasesKnownKey(d.name))
-        var ci = 0
-        while ci < d.cases.count {
-          addKey(valueTypes, fileCaseKey(d.cases[ci].name))
-          ci = ci + 1
-        }
-      }
-      case IRecord(d) -> addKey(valueTypes, fileTypeCasesKnownKey(d.name))
-      case IExposedRec(d) -> addKey(valueTypes, fileTypeCasesKnownKey(d.name))
-      case IProtected(d) -> addKey(valueTypes, fileTypeCasesKnownKey(d.name))
-      case IOpaque(d) -> addKey(valueTypes, fileTypeCasesKnownKey(d.name))
-      case _ -> ()
+func scopeUnionCaseKey(union: in String, name: in String): String {
+  "!scopeunion!" + union + "!" + name
+}
+
+// The key under which `valueTypes` records that every case in scope is
+// known: the verifier read every package the proved package imports, and
+// the standard library's prelude.
+func scopeCasesKnownKey(): String {
+  "!casesknown!"
+}
+
+// Record the cases in scope of the proved `file` (`bareNameBinds`): its
+// own unions' and enums', those of the package's other files, and those of
+// every package the verifier read — every one of them, imported or not,
+// since a case recorded that is not in scope only makes a bare name fail
+// closed.  Every case is known when each package the file and its package's
+// other files import, and `Std.Core`, was read.
+func addScopeCaseFacts(file: in SourceFile, pscope: in PackageScope, valueTypes: in Map[String, Bool]): Unit {
+  addScopeDeclCases(scopeDeclsOfFile(file), valueTypes)
+  addScopeDeclCases(pscope.siblings, valueTypes)
+  for p in pscope.imports.packages {
+    addScopeDeclCases(p.decls, valueTypes)
+  }
+  val needed: List[String] = newList()
+  needed.add("Std.Core")
+  for n in scopeDeclsOfFile(file).imports {
+    needed.add(n)
+  }
+  for n in pscope.siblings.imports {
+    needed.add(n)
+  }
+  val own = joinPathSegments(file.packageDecl.path.segments)
+  for n in needed {
+    if n != own and not importResolved(pscope.imports, n) {
+      return
     }
-    i = i + 1
+  }
+  addKey(valueTypes, scopeCasesKnownKey())
+}
+
+func importResolved(imports: in ImportScope, name: in String): Bool {
+  for p in imports.packages {
+    if p.name == name {
+      return true
+    }
+  }
+  false
+}
+
+func addScopeDeclCases(decls: in ScopeDecls, valueTypes: in Map[String, Bool]): Unit {
+  for c in decls.enumCases {
+    addKey(valueTypes, scopeCaseKey(c))
+  }
+  for u in decls.unions {
+    addKey(valueTypes, scopeUnionKey(u.name))
+    for c in u.cases {
+      addKey(valueTypes, scopeCaseKey(c.name))
+      addKey(valueTypes, scopeUnionCaseKey(u.name, c.name))
+    }
   }
 }
 
@@ -6564,6 +6631,30 @@ func envWithTypeParams(env: in VEnv, names: in List[String]): VEnv {
   )
 }
 
+// `env` whose distinct-type and declaration map is `distincts`.
+func envWithDistincts(env: in VEnv, distincts: in Map[String, TypeExpr]): VEnv {
+  VEnv(
+    vars = env.vars,
+    varNames = env.varNames,
+    sorts = env.sorts,
+    callees = env.callees,
+    symbols = env.symbols,
+    checkedArithmetic = env.checkedArithmetic,
+    distincts = distincts,
+    fieldInfos = env.fieldInfos,
+    recordDefaults = env.recordDefaults,
+    fresh = env.fresh,
+    recordMethods = env.recordMethods,
+    finals = env.finals,
+    mutables = env.mutables,
+    protectedMembers = env.protectedMembers,
+    contractStack = env.contractStack,
+    cyclic = env.cyclic,
+    valueTypes = env.valueTypes,
+    typeParams = env.typeParams
+  )
+}
+
 // `env` whose postcondition placeholders are `finals`.
 func envWithFinals(env: in VEnv, finals: in List[FinalSlot]): VEnv {
   envWithState(env, finals, env.mutables, env.protectedMembers)
@@ -7744,21 +7835,18 @@ func addDatatypeField(
 // With nothing known of the package's other files, a type named `Result`
 // or `Option` may be declared there (#8108).
 pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[Goal], List[Diagnostic]) {
-  val none: List[String] = newList()
-  val noInterfaces: List[InterfaceDecl] = newList()
-  goalsForFileInScope(file, level, false, none, noInterfaces)
+  goalsForFileInScope(file, level, unknownPackageScope())
 }
 
-// `siblingsKnown` says `siblingTypeNames` are all the top-level type names
-// the package's other files declare; `siblingInterfaces` are the interfaces
-// they declare, whose clauses an `impl` here inherits (#8231).
+// `scope.known` says `scope.typeNames` are all the top-level type names
+// the package's other files declare; `scope.siblings` is what else they
+// declare, and `scope.imports` the packages whose declarations the
+// verifier can read (#8230, #8231).
 pub func goalsForFileInScope(
-  file: in SourceFile,
-  level: in VerificationLevel,
-  siblingsKnown: in Bool,
-  siblingTypeNames: in List[String],
-  siblingInterfaces: in List[InterfaceDecl],
+  file: in SourceFile, level: in VerificationLevel, pscope: in PackageScope
 ): (List[Goal], List[Diagnostic]) {
+  val siblingsKnown = pscope.known
+  val siblingTypeNames = pscope.typeNames
   if not vlIsProofRequired(level) {
     val noGoals: List[Goal] = newList()
     val noDiags: List[Diagnostic] = newList()
@@ -8028,7 +8116,7 @@ pub func goalsForFileInScope(
     gi = gi + 1
   }
   val valueTypesMap = fileValueTypes(file, distinctMap)
-  addFileCaseFacts(file, valueTypesMap)
+  addScopeCaseFacts(file, pscope, valueTypesMap)
   val env0 = VEnv(
     vars = env0Init.vars,
     varNames = env0Init.varNames,
@@ -8083,7 +8171,7 @@ pub func goalsForFileInScope(
       // parameter and the type's parameters in scope (#8231).
       case IRecord(rd) -> goalsForRecordMethods(level, env0, rd.name, rd.generics, rd.members, allGoals, allDiags)
       case IExposedRec(rd) -> goalsForRecordMethods(level, env0, rd.name, rd.generics, rd.members, allGoals, allDiags)
-      case IImpl(id) -> goalsForImplMethods(level, env0, file, siblingInterfaces, id, allGoals, allDiags)
+      case IImpl(id) -> goalsForImplMethods(level, env0, file, pscope, id, allGoals, allDiags)
       case IInterface(iface) -> goalsForInterfaceDefaults(level, env0, iface, allGoals, allDiags)
       case _ -> {
       }
@@ -8111,7 +8199,15 @@ func noInheritedClauses(): InheritedClauses {
   InheritedClauses(clauses = noClauses, paramNames = noNames)
 }
 
-// The methods declared in a record's body.
+// A method of the type a method being verified belongs to: its name and
+// declared result, which a call of it on `self` has (#8231).
+record SiblingMethod {
+  name: String
+  ret: Option[TypeExpr]
+}
+
+// The methods declared in a record's body.  `self: in Self` is the record
+// itself, at its own type parameters.
 func goalsForRecordMethods(
   level: in VerificationLevel,
   env0: in VEnv,
@@ -8121,14 +8217,15 @@ func goalsForRecordMethods(
   allGoals: in List[Goal],
   allDiags: in List[Diagnostic],
 ): Unit {
-  val methodNames: List[String] = newList()
+  val siblings: List[SiblingMethod] = newList()
   for m in members {
     match m {
-      case RMFunc(fn) -> methodNames.add(fn.name)
+      case RMFunc(fn) -> siblings.add(SiblingMethod(name = fn.name, ret = fn.ret))
       case _ -> ()
     }
   }
   val fields = SelfFields.recordFieldNames(members)
+  val selfType = Some(value = typeOfDeclaration(recordName, generics))
   for m in members {
     match m {
       case RMFunc(fn) -> goalsForMethod(
@@ -8137,10 +8234,10 @@ func goalsForRecordMethods(
         recordName,
         fields,
         generics,
-        None,
-        methodNames,
+        selfType,
+        siblings,
         fn,
-        noInheritedClauses(),
+        Ok(value = noInheritedClauses()),
         allGoals,
         allDiags
       )
@@ -8149,53 +8246,65 @@ func goalsForRecordMethods(
   }
 }
 
+// The type a declaration `name[generics]` names at its own type parameters:
+// `Box[T]` inside `record Box[T]`.
+func typeOfDeclaration(name: in String, generics: in Option[GenericParams]): TypeExpr {
+  val sp = makeSpan(initialPosition(), initialPosition())
+  val segs: List[String] = newList()
+  segs.add(name)
+  val head = ModulePath(segments = segs, span = sp)
+  match generics {
+    case None -> TypeExpr(kind = TRef(path = head), span = sp)
+    case Some(gp) -> {
+      val args: List[TypeArg] = newList()
+      for g in gp.params {
+        match g {
+          case GPType(n, gsp) -> {
+            val ps: List[String] = newList()
+            ps.add(n)
+            args.add(TAType(ty = TypeExpr(kind = TRef(path = ModulePath(segments = ps, span = gsp)), span = gsp)))
+          }
+          case GPValue(n, _, gsp) -> {
+            val ps: List[String] = newList()
+            ps.add(n)
+            args.add(TAValue(expr = Expr(kind = EPath(path = ModulePath(segments = ps, span = gsp)), span = gsp)))
+          }
+        }
+      }
+      if args.count == 0 {
+        TypeExpr(kind = TRef(path = head), span = sp)
+      } else {
+        TypeExpr(kind = TGenericApp(head = head, args = args), span = sp)
+      }
+    }
+  }
+}
+
 // The methods of an `impl` block, each checked against its own clauses and
-// the ones it inherits from the interface it implements.  The interface is
-// found among the file's declarations and those of the package's other
-// files; one declared elsewhere — another package — has clauses the
-// verifier cannot see, so the methods cannot be checked against them and
-// the `impl` fails closed (V0033), as does an interface name declared more
-// than once.
+// the ones it inherits from the interface it implements
+// (`resolveImplInterface`).  When the interface cannot be resolved, or it
+// declares no method of an implementing method's name and arity, the
+// method's inherited obligations cannot be stated: V0033, never "nothing
+// inherited".
 func goalsForImplMethods(
   level: in VerificationLevel,
   env0: in VEnv,
   file: in SourceFile,
-  siblingInterfaces: in List[InterfaceDecl],
+  pscope: in PackageScope,
   decl: in ImplDecl,
   allGoals: in List[Goal],
   allDiags: in List[Diagnostic],
 ): Unit {
-  val methodNames: List[String] = newList()
+  val siblings: List[SiblingMethod] = newList()
   for m in decl.members {
     match m {
-      case IMplFunc(fn) -> methodNames.add(fn.name)
+      case IMplFunc(fn) -> siblings.add(SiblingMethod(name = fn.name, ret = fn.ret))
       case _ -> ()
     }
   }
   val ownerName = implTargetName(decl.target)
   val noRecords: List[RecordDecl] = newList()
   val fields = SelfFields.implTargetFieldNames(SelfFields.typeFieldIndex(file, noRecords), decl.target)
-  val ifaceSegs = decl.iface.head.segments
-  val ifaceName = if ifaceSegs.count == 0 { "" } else { ifaceSegs[ifaceSegs.count - 1] }
-  val candidates: List[InterfaceDecl] = newList()
-  // A qualified interface (`P.I`) is another package's unless `P` is this
-  // file's own package.
-  val ownQualified = ifaceSegs.count > 1 and
-    joinPathSegments(file.packageDecl.path.segments) + "." + ifaceName == joinPathSegments(ifaceSegs)
-  if ifaceSegs.count == 1 or ownQualified {
-    for it in file.items {
-      match it.kind {
-        case IInterface(iface) -> if iface.name == ifaceName { candidates.add(iface) }
-        case _ -> ()
-      }
-    }
-    for iface in siblingInterfaces {
-      if iface.name == ifaceName {
-        candidates.add(iface)
-      }
-    }
-  }
-  val ifaceOpt: Option[InterfaceDecl] = if candidates.count == 1 { Some(value = candidates[0]) } else { None }
   var anyProved = false
   for m in decl.members {
     match m {
@@ -8203,26 +8312,27 @@ func goalsForImplMethods(
       case _ -> ()
     }
   }
-  if not isSome(ifaceOpt) and anyProved {
-    val why = if candidates.count > 1 {
-      "interface `" + joinPathSegments(ifaceSegs) + "` is declared more than once in this package"
-    } else {
-      "interface `" + joinPathSegments(ifaceSegs) +
-        "` is declared outside this package, so the verifier cannot see its `requires:`/`ensures:` clauses"
-    }
-    allDiags.add(
+  if not anyProved {
+    return
+  }
+  val resolved = resolveImplInterface(file, pscope, decl.iface.head.segments)
+  match resolved {
+    case Err(why) -> allDiags.add(
       untranslatableDiag(
-        "the methods of this `impl` must also satisfy the clauses of the interface they implement, but " + why,
+        "the methods of this `impl` must also satisfy the clauses of the interface they implement, but " +
+          why,
         decl.iface.span
       )
     )
+    case Ok(_) -> ()
   }
   for m in decl.members {
     match m {
       case IMplFunc(fn) -> {
-        val inherited = match ifaceOpt {
-          case Some(iface) -> inheritedInterfaceClauses(iface, fn)
-          case None -> noInheritedClauses()
+        val inherited: Result[InheritedClauses, String] = match resolved {
+          case Ok(iface) -> inheritedInterfaceClauses(iface, fn)
+          // Reported once, at the interface.
+          case Err(_) -> Ok(value = noInheritedClauses())
         }
         goalsForMethod(
           level,
@@ -8231,7 +8341,7 @@ func goalsForImplMethods(
           fields,
           decl.generics,
           Some(value = decl.target),
-          methodNames,
+          siblings,
           fn,
           inherited,
           allGoals,
@@ -8241,6 +8351,122 @@ func goalsForImplMethods(
       case _ -> ()
     }
   }
+}
+
+// The interface an `impl` names (`segs`), as the type checker resolves it:
+// a qualified name `Q.I` in the package `Q` (an import's alias, or a
+// package path), a bare name in the proved package — the file and the
+// package's other files — and otherwise in the packages it imports and the
+// prelude `Std.Core`.  Err with the reason when the name is declared more
+// than once where it is looked up, or in a package whose declarations the
+// verifier did not read (a dependency restored as a compiled assembly).
+func resolveImplInterface(
+  file: in SourceFile, pscope: in PackageScope, segs: in List[String]
+): Result[InterfaceDecl, String] {
+  val shown = joinPathSegments(segs)
+  if segs.count == 0 {
+    return Err(error = "the interface has no name")
+  }
+  val ifaceName = segs[segs.count - 1]
+  val own = joinPathSegments(file.packageDecl.path.segments)
+  val ownCandidates: List[InterfaceDecl] = newList()
+  for it in file.items {
+    match it.kind {
+      case IInterface(d) -> if d.name == ifaceName { ownCandidates.add(d) }
+      case _ -> ()
+    }
+  }
+  // Project mode's scope lists the proved file among the package's files:
+  // a declaration at the same place is the same one.
+  for d in pscope.siblings.interfaces {
+    if d.name == ifaceName {
+      var dup = false
+      for e in ownCandidates {
+        if e.span.startPos.offset == d.span.startPos.offset and e.span.endPos.offset == d.span.endPos.offset {
+          dup = true
+        }
+      }
+      if not dup {
+        ownCandidates.add(d)
+      }
+    }
+  }
+  // The packages the name may be declared in, other than the proved one.
+  val lookIn: List[String] = newList()
+  if segs.count > 1 {
+    val qualifier: List[String] = newList()
+    var qi = 0
+    while qi < segs.count - 1 {
+      qualifier.add(segs[qi])
+      qi = qi + 1
+    }
+    val q = joinPathSegments(qualifier)
+    var target = q
+    for imp in file.imports {
+      match imp.asAlias {
+        case Some(alias) -> if alias == q and not imp.isExtern { target = joinPathSegments(imp.path.segments) }
+        case None -> ()
+      }
+    }
+    if target == own {
+      return pickInterface(ownCandidates, shown, "this package")
+    }
+    lookIn.add(target)
+  } else {
+    if ownCandidates.count > 0 {
+      return pickInterface(ownCandidates, shown, "this package")
+    }
+    lookIn.add("Std.Core")
+    for n in scopeDeclsOfFile(file).imports {
+      if not lookIn.contains(n) {
+        lookIn.add(n)
+      }
+    }
+    for n in pscope.siblings.imports {
+      if not lookIn.contains(n) {
+        lookIn.add(n)
+      }
+    }
+  }
+  val found: List[InterfaceDecl] = newList()
+  val unread: List[String] = newList()
+  for pkg in lookIn {
+    var read = false
+    for p in pscope.imports.packages {
+      if p.name == pkg {
+        read = true
+        for d in p.decls.interfaces {
+          if d.name == ifaceName {
+            found.add(d)
+          }
+        }
+      }
+    }
+    if not read and pkg != own {
+      unread.add(pkg)
+    }
+  }
+  if found.count == 0 and unread.count > 0 {
+    return Err(
+      error = "interface `" + shown + "` is declared in a package whose declarations the verifier cannot read (" +
+        Str.joinList(", ", unread) +
+        "), so it cannot see the interface's `requires:`/`ensures:` clauses"
+    )
+  }
+  if found.count > 1 or (found.count == 1 and unread.count > 0) {
+    return Err(error = "interface `" + shown + "` may be declared in more than one of the packages in scope")
+  }
+  pickInterface(found, shown, "the packages in scope")
+}
+
+func pickInterface(found: in List[InterfaceDecl], shown: in String, place: in String): Result[InterfaceDecl, String] {
+  if found.count == 1 {
+    return Ok(value = found[0])
+  }
+  if found.count == 0 {
+    return Err(error = "interface `" + shown + "` is not declared in " + place)
+  }
+  Err(error = "interface `" + shown + "` is declared more than once in " + place)
 }
 
 // An interface's default methods, verified once for every implementation:
@@ -8253,11 +8479,11 @@ func goalsForInterfaceDefaults(
   allGoals: in List[Goal],
   allDiags: in List[Diagnostic],
 ): Unit {
-  val methodNames: List[String] = newList()
+  val siblings: List[SiblingMethod] = newList()
   for m in iface.members {
     match m {
-      case IMSig(sig) -> methodNames.add(sig.name)
-      case IMFunc(fn) -> methodNames.add(fn.name)
+      case IMSig(sig) -> siblings.add(SiblingMethod(name = sig.name, ret = sig.ret))
+      case IMFunc(fn) -> siblings.add(SiblingMethod(name = fn.name, ret = fn.ret))
       case IMAssoc(_) -> ()
     }
   }
@@ -8272,9 +8498,9 @@ func goalsForInterfaceDefaults(
           noFields,
           iface.generics,
           None,
-          methodNames,
+          siblings,
           fn,
-          noInheritedClauses(),
+          Ok(value = noInheritedClauses()),
           allGoals,
           allDiags
         )
@@ -8285,38 +8511,64 @@ func goalsForInterfaceDefaults(
 }
 
 // The clauses `fn` inherits from `iface`'s method of its name, matched to
-// its parameters by position; none when the interface declares no such
-// method or its arity differs (the type checker reports that).
-func inheritedInterfaceClauses(iface: in InterfaceDecl, fn: in FunctionDecl): InheritedClauses {
+// its parameters by position.  Err when the interface declares no method of
+// that name or arity: the obligations cannot be stated, and assuming none
+// would let the method skip them.
+func inheritedInterfaceClauses(iface: in InterfaceDecl, fn: in FunctionDecl): Result[InheritedClauses, String] {
+  val methods: Map[String, Bool] = newMap()
   for m in iface.members {
     match m {
-      case IMSig(sig) -> if sig.name == fn.name { return clausesInheritedFrom(sig.params, sig.contracts, fn) }
-      case IMFunc(ifn) -> if ifn.name == fn.name { return clausesInheritedFrom(ifn.params, ifn.contracts, fn) }
+      case IMSig(sig) -> if not methods.containsKey(sig.name) { methods.add(sig.name, true) }
+      case IMFunc(ifn) -> if not methods.containsKey(ifn.name) { methods.add(ifn.name, true) }
       case IMAssoc(_) -> ()
     }
   }
-  noInheritedClauses()
+  for m in iface.members {
+    match m {
+      case IMSig(sig) -> if sig.name == fn.name {
+        return clausesInheritedFrom(iface.name, methods, sig.params, sig.contracts, fn)
+      }
+      case IMFunc(ifn) -> if ifn.name == fn.name {
+        return clausesInheritedFrom(iface.name, methods, ifn.params, ifn.contracts, fn)
+      }
+      case IMAssoc(_) -> ()
+    }
+  }
+  Err(error = "interface `" + iface.name + "` declares no method `" + fn.name + "`")
 }
 
+// The interface clauses of a method with `params`, rewritten as the
+// implementation reads them: a bare call of one of the interface's
+// `methods` is the call on `self` (#8231), and no name is one of the
+// implementing type's fields (docs/01 §2.12).
 func clausesInheritedFrom(
-  params: in List[Param], contracts: in List[ContractClause], fn: in FunctionDecl
-): InheritedClauses {
+  ifaceName: in String,
+  methods: in Map[String, Bool],
+  params: in List[Param],
+  contracts: in List[ContractClause],
+  fn: in FunctionDecl,
+): Result[InheritedClauses, String] {
   if params.count != fn.params.count {
-    return noInheritedClauses()
+    return Err(
+      error = "interface `" + ifaceName + "`'s method `" + fn.name + "` takes " + intToString(params.count) +
+        " parameter(s), the implementation " +
+        intToString(fn.params.count)
+    )
   }
   val names: List[String] = newList()
   for p in params {
     names.add(p.name)
   }
+  val noFields: Map[String, Bool] = newMap()
   val clauses: List[ContractClause] = newList()
   for c in contracts {
     match c {
-      case CCRequires(_, _) -> clauses.add(c)
-      case CCEnsures(_, _) -> clauses.add(c)
+      case CCRequires(x, sp) -> clauses.add(CCRequires(expr = resolveMemberExpr(noFields, methods, params, x), span = sp))
+      case CCEnsures(x, sp) -> clauses.add(CCEnsures(expr = resolveMemberExpr(noFields, methods, params, x), span = sp))
       case _ -> ()
     }
   }
-  InheritedClauses(clauses = clauses, paramNames = names)
+  Ok(value = InheritedClauses(clauses = clauses, paramNames = names))
 }
 
 // The name of an `impl` target's type, for its methods' goal labels.
@@ -8345,20 +8597,27 @@ func goalsForMethod(
   fields: in Map[String, Bool],
   typeGenerics: in Option[GenericParams],
   selfType: in Option[TypeExpr],
-  methodNames: in List[String],
+  siblings: in List[SiblingMethod],
   fn: in FunctionDecl,
-  inherited: in InheritedClauses,
+  inherited: in Result[InheritedClauses, String],
   allGoals: in List[Goal],
   allDiags: in List[Diagnostic],
 ): Unit {
   if not vlIsProofRequired(levelOfFunction(level, fn)) {
     return
   }
+  val inheritedClauses = match inherited {
+    case Ok(ic) -> ic
+    case Err(why) -> {
+      allDiags.add(untranslatableDiag("the clauses this method inherits from the interface it implements: " + why, fn.span))
+      noInheritedClauses()
+    }
+  }
   val noCases: Map[String, Bool] = newMap()
   val methods: Map[String, Bool] = newMap()
-  for n in methodNames {
-    if not methods.containsKey(n) {
-      methods.add(n, true)
+  for sm in siblings {
+    if not methods.containsKey(sm.name) {
+      methods.add(sm.name, true)
     }
   }
   val body = match fn.body {
@@ -8402,14 +8661,40 @@ func goalsForMethod(
     body = body,
     span = fn.span
   )
-  val fnEnv = freshSymbolsEnv(env0)
+  // A call of a sibling method on `self` has the sibling's declared result
+  // type; it is otherwise not interpreted.
+  val distincts: Map[String, TypeExpr] = newMap()
+  for k in mapKeys(env0.distincts) {
+    match mapGet(env0.distincts, k) {
+      case Some(te) -> distincts.add(k, te)
+      case None -> ()
+    }
+  }
+  for sm in siblings {
+    match sm.ret {
+      case Some(te) -> {
+        val key = selfMethodResultKey(sm.name)
+        if not distincts.containsKey(key) {
+          distincts.add(key, match selfType { case Some(st) -> substSelfType(te, st); case None -> te })
+        }
+      }
+      case None -> ()
+    }
+  }
+  val fnEnv = freshSymbolsEnv(envWithDistincts(env0, distincts))
   val noHyps: List[Term] = newList()
   val noState: List[String] = newList()
-  val (goals, diags) = goalsForFunctionInheriting(fnEnv, method, noHyps, noState, inherited)
+  val (goals, diags) = goalsForFunctionInheriting(fnEnv, method, noHyps, noState, inheritedClauses)
   for g in goals {
     allGoals.add(g)
   }
   appendTermList2(allDiags, diags)
+}
+
+// The key under which a method's environment records the declared result
+// type of a sibling method `name`, for a call of it on `self`.
+func selfMethodResultKey(name: in String): String {
+  "!selfmethod!" + name
 }
 
 // `x`, a clause of a member with `params`, with each bare reference to one of

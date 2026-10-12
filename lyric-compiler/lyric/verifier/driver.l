@@ -308,25 +308,209 @@ pub func proveSource(source: in String): ProofSummary {
 pub record PackageScope {
   pub known: Bool
   pub typeNames: List[String]
-  /// The interfaces they declare, whose `requires:`/`ensures:` an `impl`
-  /// in the proved file inherits (#8231).
+  /// What they declare that a proof of the file reads (#8230, #8231):
+  /// interfaces an `impl` here inherits clauses from, union and enum cases a
+  /// bare `match` pattern may name, and the packages they import.
+  pub siblings: ScopeDecls
+  /// The packages the verifier can read declarations of: the standard
+  /// library's, and the other packages of the file's project.
+  pub imports: ImportScope
+}
+
+/// The declarations of one or more files that a proof reads beyond the
+/// proved file itself.
+pub record ScopeDecls {
   pub interfaces: List[InterfaceDecl]
+  pub unions: List[UnionDecl]
+  /// The cases of every enum, by name.
+  pub enumCases: List[String]
+  /// The packages the files import (`import P`, not `import extern`).
+  pub imports: List[String]
+}
+
+/// A package whose declarations the verifier read, by its dotted name.
+pub record ResolvedPackage {
+  pub name: String
+  pub decls: ScopeDecls
+}
+
+/// The packages a proof can see the declarations of.  A package imported by
+/// the proved package but not listed here is unresolved: a case it declares
+/// may be named by a bare pattern, and an interface it declares has clauses
+/// the verifier cannot read.
+pub record ImportScope {
+  pub packages: List[ResolvedPackage]
+}
+
+pub func emptyScopeDecls(): ScopeDecls {
+  val noInterfaces: List[InterfaceDecl] = newList()
+  val noUnions: List[UnionDecl] = newList()
+  val none: List[String] = newList()
+  val noImports: List[String] = newList()
+  ScopeDecls(interfaces = noInterfaces, unions = noUnions, enumCases = none, imports = noImports)
+}
+
+pub func emptyImportScope(): ImportScope {
+  val none: List[ResolvedPackage] = newList()
+  ImportScope(packages = none)
+}
+
+/// The declarations of `file` a proof of another file reads.
+pub func scopeDeclsOfFile(file: in SourceFile): ScopeDecls {
+  val acc = emptyScopeDecls()
+  appendScopeDecls(acc, file)
+  acc
+}
+
+func appendScopeDecls(acc: in ScopeDecls, file: in SourceFile): Unit {
+  for it in file.items {
+    match it.kind {
+      case IInterface(d) -> acc.interfaces.add(d)
+      case IUnion(d) -> acc.unions.add(d)
+      case IEnum(d) -> {
+        for c in d.cases {
+          acc.enumCases.add(c.name)
+        }
+      }
+      case _ -> ()
+    }
+  }
+  for imp in file.imports {
+    if not imp.isExtern {
+      val name = joinPathSegments(imp.path.segments)
+      if not acc.imports.contains(name) {
+        acc.imports.add(name)
+      }
+    }
+  }
+}
+
+func mergeScopeDecls(acc: in ScopeDecls, more: in ScopeDecls): Unit {
+  for d in more.interfaces {
+    acc.interfaces.add(d)
+  }
+  for d in more.unions {
+    acc.unions.add(d)
+  }
+  for c in more.enumCases {
+    acc.enumCases.add(c)
+  }
+  for n in more.imports {
+    if not acc.imports.contains(n) {
+      acc.imports.add(n)
+    }
+  }
+}
+
+/// The declarations of `a` and `b` together, a declaration both hold (the
+/// same name at the same place: one file in both) once.
+pub func unionScopeDecls(a: in ScopeDecls, b: in ScopeDecls): ScopeDecls {
+  val acc = emptyScopeDecls()
+  mergeScopeDecls(acc, a)
+  for d in b.interfaces {
+    var dup = false
+    for e in acc.interfaces {
+      if e.name == d.name and e.span.startPos.offset == d.span.startPos.offset and e.span.endPos.offset == d.span.endPos.offset {
+        dup = true
+      }
+    }
+    if not dup {
+      acc.interfaces.add(d)
+    }
+  }
+  for d in b.unions {
+    acc.unions.add(d)
+  }
+  for c in b.enumCases {
+    acc.enumCases.add(c)
+  }
+  for n in b.imports {
+    if not acc.imports.contains(n) {
+      acc.imports.add(n)
+    }
+  }
+  acc
+}
+
+/// `scope` with the package `name`, built from `sources`, added: unchanged
+/// when it already holds `name`, or when a source does not parse (the
+/// package then stays unresolved).
+pub func importScopeWithPackage(sc: in ImportScope, name: in String, sources: in List[String]): ImportScope {
+  for p in sc.packages {
+    if p.name == name {
+      return sc
+    }
+  }
+  val decls = emptyScopeDecls()
+  for src in sources {
+    val parsed = parse(src)
+    if hasFatalDiag(parsed.diagnostics) {
+      return sc
+    }
+    appendScopeDecls(decls, parsed.file)
+  }
+  val packages: List[ResolvedPackage] = newList()
+  for p in sc.packages {
+    packages.add(p)
+  }
+  packages.add(ResolvedPackage(name = name, decls = decls))
+  ImportScope(packages = packages)
+}
+
+/// `scope` with every package of `sources` added, each source belonging to
+/// the package its own `package` line names (the standard library's
+/// layout).  A package one of whose sources does not parse stays
+/// unresolved.
+pub func importScopeWithSources(sc: in ImportScope, sources: in List[String]): ImportScope {
+  val names: List[String] = newList()
+  val grouped: List[List[String]] = newList()
+  for src in sources {
+    val name = headerPackageName(src)
+    if name.length > 0 {
+      var at = -1
+      var i = 0
+      while i < names.count {
+        if names[i] == name {
+          at = i
+        }
+        i = i + 1
+      }
+      if at < 0 {
+        names.add(name)
+        val one: List[String] = newList()
+        one.add(src)
+        grouped.add(one)
+      } else {
+        grouped[at].add(src)
+      }
+    }
+  }
+  var acc = sc
+  var gi = 0
+  while gi < names.count {
+    acc = importScopeWithPackage(acc, names[gi], grouped[gi])
+    gi = gi + 1
+  }
+  acc
 }
 
 pub func unknownPackageScope(): PackageScope {
   val none: List[String] = newList()
-  val noInterfaces: List[InterfaceDecl] = newList()
-  PackageScope(known = false, typeNames = none, interfaces = noInterfaces)
+  PackageScope(known = false, typeNames = none, siblings = emptyScopeDecls(), imports = emptyImportScope())
 }
 
-/// A known scope of `typeNames` that declares no interface.
+/// A known scope of `typeNames` that declares nothing else.
 pub func packageScopeOf(typeNames: in List[String]): PackageScope {
-  val noInterfaces: List[InterfaceDecl] = newList()
-  PackageScope(known = true, typeNames = typeNames, interfaces = noInterfaces)
+  PackageScope(known = true, typeNames = typeNames, siblings = emptyScopeDecls(), imports = emptyImportScope())
 }
 
-pub func packageScopeWith(typeNames: in List[String], interfaces: in List[InterfaceDecl]): PackageScope {
-  PackageScope(known = true, typeNames = typeNames, interfaces = interfaces)
+pub func packageScopeWith(typeNames: in List[String], siblings: in ScopeDecls): PackageScope {
+  PackageScope(known = true, typeNames = typeNames, siblings = siblings, imports = emptyImportScope())
+}
+
+/// `scope` reading the declarations of the packages of `imports`.
+pub func withImportScope(sc: in PackageScope, imports: in ImportScope): PackageScope {
+  PackageScope(known = sc.known, typeNames = sc.typeNames, siblings = sc.siblings, imports = imports)
 }
 
 // A source file's package and the top-level type names it declares;
@@ -336,7 +520,7 @@ pub func packageScopeWith(typeNames: in List[String], interfaces: in List[Interf
 pub record PackageTypes {
   pub packageName: String
   pub typeNames: List[String]
-  pub interfaces: List[InterfaceDecl]
+  pub decls: ScopeDecls
   pub parsed: Bool
   pub customGenerator: Bool = false
 }
@@ -345,20 +529,12 @@ pub func packageTypesOfSource(source: in String): PackageTypes {
   val parsed = parse(source)
   if hasFatalDiag(parsed.diagnostics) {
     val none: List[String] = newList()
-    val noInterfaces: List[InterfaceDecl] = newList()
-    return PackageTypes(packageName = "", typeNames = none, interfaces = noInterfaces, parsed = false)
-  }
-  val interfaces: List[InterfaceDecl] = newList()
-  for it in parsed.file.items {
-    match it.kind {
-      case IInterface(d) -> interfaces.add(d)
-      case _ -> ()
-    }
+    return PackageTypes(packageName = "", typeNames = none, decls = emptyScopeDecls(), parsed = false)
   }
   PackageTypes(
     packageName = joinPathSegments(parsed.file.packageDecl.path.segments),
     typeNames = declaredTypeNames(parsed.file),
-    interfaces = interfaces,
+    decls = scopeDeclsOfFile(parsed.file),
     parsed = true,
     customGenerator = hasCustomGenerator(parsed.file)
   )
@@ -461,7 +637,7 @@ func scopeOfFilesIn(files: in List[String], skipPath: in String, ownPackage: in 
 // declare any type.
 pub func scopeOfSources(sources: in List[String], ownPackage: in String): PackageScope {
   val names: List[String] = newList()
-  val interfaces: List[InterfaceDecl] = newList()
+  val siblings = emptyScopeDecls()
   var i = 0
   while i < sources.count {
     val src = sources[i]
@@ -488,12 +664,15 @@ pub func scopeOfSources(sources: in List[String], ownPackage: in String): Packag
       names.add(pt.typeNames[k])
       k = k + 1
     }
-    for d in pt.interfaces {
-      interfaces.add(d)
+    // In the directory-tree fallback a file of another package that parses
+    // is no part of the build: its declarations are not in scope (#8231).
+    // A file with no `package` line is merged into the build's package.
+    if ownPackage.length == 0 or pt.packageName == ownPackage or headerPackageName(src).length == 0 {
+      mergeScopeDecls(siblings, pt.decls)
     }
     i = i + 1
   }
-  packageScopeWith(names, interfaces)
+  packageScopeWith(names, siblings)
 }
 
 // The package a file's `package` line names, or "" when its header has
@@ -533,7 +712,15 @@ pub func sourceVerificationLevel(source: in String): VerificationLevel {
   if hasFatalDiag(parsed.diagnostics) {
     return VLRuntimeChecked
   }
-  checkFile(parsed.file).level
+  fileLevelOf(parsed.file)
+}
+
+// The verification level `file` declares, read from its annotations alone:
+// the full mode check keys items by name, and a file not yet `@cfg`-erased
+// may declare one name twice (#8325).
+func fileLevelOf(file: in SourceFile): VerificationLevel {
+  val ignored: List[Diagnostic] = newList()
+  levelOfFile(file, ignored)
 }
 
 /// The build a proof is of: what `@cfg` erasure keeps of a file, as
@@ -556,28 +743,16 @@ pub func defaultProveBuildConfig(): ProveBuildConfig {
 /// `source` proved for each distinct build of `builds` (the default build
 /// when there is none), the results of all of them together: a file that
 /// builds compile under different targets or features is proved as each of
-/// them compiles it.  Identical diagnostics are reported once.
+/// them compiles it, each of its goals labelled with its build
+/// (`[target=jvm features=a] f$post`), so no count merges two builds'
+/// obligations.  Identical diagnostics are reported once.
 pub func proveSourceForBuilds(
   source: in String,
   allowUnverified: in Bool,
   pkgScope: in PackageScope,
   builds: in List[ProveBuildConfig],
 ): ProofSummary {
-  val distinct: List[ProveBuildConfig] = newList()
-  for b in builds {
-    var seen = false
-    for d in distinct {
-      if sameProveBuild(d, b) {
-        seen = true
-      }
-    }
-    if not seen {
-      distinct.add(b)
-    }
-  }
-  if distinct.count == 0 {
-    distinct.add(defaultProveBuildConfig())
-  }
+  val distinct = distinctProveBuilds(builds)
   val first = proveSourceForBuild(source, allowUnverified, pkgScope, distinct[0])
   if distinct.count == 1 {
     return first
@@ -593,15 +768,116 @@ pub func proveSourceForBuilds(
       level = one.level
     }
     appendDiags(diags, one.diagnostics)
+    val tag = "[" + proveBuildDisplay(distinct[bi]) + "] "
     for r in one.results {
-      results.add(r)
+      results.add(withBuildLabel(r, tag))
     }
     for r in one.vacuityChecks {
-      vacuity.add(r)
+      vacuity.add(withBuildLabel(r, tag))
     }
     bi = bi + 1
   }
   ProofSummary(level = level, diagnostics = dedupeDiagnostics(diags), results = results, vacuityChecks = vacuity)
+}
+
+func withBuildLabel(r: in ProofResult, tag: in String): ProofResult {
+  val g = r.goal
+  ProofResult(
+    goal = Goal(
+      hypotheses = g.hypotheses,
+      conclusion = g.conclusion,
+      symbols = g.symbols,
+      origin = g.origin,
+      kind = g.kind,
+      label = tag + g.label
+    ),
+    outcome = r.outcome,
+    translated = r.translated,
+    decidedBy = r.decidedBy,
+    response = r.response
+  )
+}
+
+/// A build as goal labels name it: `target=jvm`, then `features=a,b` when
+/// any are active.
+pub func proveBuildDisplay(b: in ProveBuildConfig): String {
+  if b.activeFeatures.count == 0 {
+    "target=" + b.targetName
+  } else {
+    "target=" + b.targetName + " features=" + Str.joinList(",", b.activeFeatures)
+  }
+}
+
+/// The items of a `@proof_required` `source` that `@cfg` erasure removes
+/// under every build of `builds` (the default build when there is none):
+/// their names, which no proof of those builds covers.  Empty for a source
+/// that does not parse, is not `@proof_required`, or erases nothing.
+pub func inactiveItemsForBuilds(source: in String, builds: in List[ProveBuildConfig]): List[String] {
+  val names: List[String] = newList()
+  val parsed = parse(source)
+  if hasFatalDiag(parsed.diagnostics) or not vlIsProofRequired(fileLevelOf(parsed.file)) {
+    return names
+  }
+  val distinct = distinctProveBuilds(builds)
+  var ii = 0
+  while ii < parsed.file.items.count {
+    val item = parsed.file.items[ii]
+    var everywhere = true
+    for b in distinct {
+      val erased = Cfg.applyCfgErasure(
+        Cfg.withTargetFeature(b.activeFeatures, b.targetName),
+        b.declaredFeatures,
+        parsed.file
+      )
+      var kept = false
+      for k in erased.file.items {
+        if k.span.startPos.offset == item.span.startPos.offset and k.span.endPos.offset == item.span.endPos.offset {
+          kept = true
+        }
+      }
+      if kept {
+        everywhere = false
+      }
+    }
+    if everywhere {
+      names.add(itemDisplayName(item.kind))
+    }
+    ii = ii + 1
+  }
+  names
+}
+
+func itemDisplayName(kind: in ItemKind): String {
+  match kind {
+    case IFunc(fn) -> fn.name
+    case IRecord(d) -> d.name
+    case IExposedRec(d) -> d.name
+    case IUnion(d) -> d.name
+    case IEnum(d) -> d.name
+    case IProtected(d) -> d.name
+    case IInterface(d) -> d.name
+    case IImpl(d) -> "an impl"
+    case _ -> "an item"
+  }
+}
+
+func distinctProveBuilds(builds: in List[ProveBuildConfig]): List[ProveBuildConfig] {
+  val distinct: List[ProveBuildConfig] = newList()
+  for b in builds {
+    var seen = false
+    for d in distinct {
+      if sameProveBuild(d, b) {
+        seen = true
+      }
+    }
+    if not seen {
+      distinct.add(b)
+    }
+  }
+  if distinct.count == 0 {
+    distinct.add(defaultProveBuildConfig())
+  }
+  distinct
 }
 
 // Whether two builds erase alike: one target, and the same active and
@@ -664,7 +940,7 @@ pub func proveSourceForBuild(
     val results: List[ProofResult] = newList()
     val noChecks: List[ProofResult] = newList()
     return ProofSummary(
-      level = checkFile(erased.file).level,
+      level = fileLevelOf(erased.file),
       diagnostics = parseDiags,
       results = results,
       vacuityChecks = noChecks
@@ -718,7 +994,7 @@ pub func proveSourceForBuild(
   }
 
   // 5. VC generation against the woven file.
-  val (goals, vcDiags) = goalsForFileInScope(wovenFile, level, pkgScope.known, pkgScope.typeNames, pkgScope.interfaces)
+  val (goals, vcDiags) = goalsForFileInScope(wovenFile, level, pkgScope)
 
   val modeFatal = hasFatalDiag(modeDiags)
   if modeFatal {
@@ -738,7 +1014,8 @@ pub func proveSourceForBuild(
   val resultDiags: List[Diagnostic] = newList()
   var i = 0
   while i < goals.count {
-    val g = goals[i]
+    val skippedUnfold = goalHasSkippedUnfold(goals[i])
+    val g = if skippedUnfold { withoutSkippedUnfoldMarkers(goals[i]) } else { goals[i] }
     // Warn before discharging if the goal contains NaN or ±Infinity float
     // literals.  smtRenderFloat silently substitutes 0.0 for non-finite values
     // (no SMT-LIB representation exists for them), so the verification result
@@ -772,7 +1049,8 @@ pub func proveSourceForBuild(
         "not translatable: a construct reported above (V0033)"
       }
       into.add(ProofResult(goal = g, outcome = Unknown(reason = reason), translated = false, decidedBy = "", response = ""))
-      if unmodelled and not isDomainGoal(g) {
+      // A goal a V0033 construct already fails is not reported again.
+      if unmodelled and not isDomainGoal(g) and not goalHasUntranslatable(g) {
         resultDiags.add(
           errorDiagnostic(
             "V0027",
@@ -786,7 +1064,19 @@ pub func proveSourceForBuild(
       match reconcileGoalSorts(g) {
         case Ok(rg) -> {
           val exchange = dischargeExchange(rg)
-          val outcome = afterUnmeetable(rg, domainOutcome(rg, exchange.outcome), unmeetable)
+          val decided = afterUnmeetable(rg, domainOutcome(rg, exchange.outcome), unmeetable)
+          // A goal not discharged without the body of a `@pure` callee the
+          // verifier could not unfold may hold with it: not proved, and
+          // reported as what it depends on (#8230).
+          val needsBody = skippedUnfold and not isDomainGoal(rg) and
+            (match decided { case Discharged -> false; case _ -> true })
+          val outcome = if needsBody {
+            Unknown(
+              reason = "depends on a @pure callee whose body the verifier does not unfold: its value comes from a match arm pattern the verifier does not model (V0027)"
+            )
+          } else {
+            decided
+          }
           into.add(
             ProofResult(
               goal = rg,
@@ -796,9 +1086,20 @@ pub func proveSourceForBuild(
               response = exchange.response
             )
           )
-          match outcomeToDiag(rg, outcome, allowUnverified) {
-            case Some(d) -> resultDiags.add(d)
-            case None -> {
+          if needsBody {
+            resultDiags.add(
+              errorDiagnostic(
+                "V0027",
+                goalKindDisplay(rg.kind) +
+                  " depends on a @pure callee whose body the verifier does not unfold, since its value comes from a match with an arm whose pattern the verifier does not model; not proved",
+                rg.origin
+              )
+            )
+          } else {
+            match outcomeToDiag(rg, outcome, allowUnverified) {
+              case Some(d) -> resultDiags.add(d)
+              case None -> {
+              }
             }
           }
         }

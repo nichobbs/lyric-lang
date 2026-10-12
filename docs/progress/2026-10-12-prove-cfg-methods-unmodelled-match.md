@@ -54,11 +54,9 @@ interface method it implements (docs/01 §6.1.1), matched to its parameters
 by position: the clauses are translated with the interface's parameter
 names bound to the implementation's terms (`withInterfaceParamNames`, which
 reads every binding before making any, so swapped names stay apart).  The
-interface is looked up among the file's declarations and those of the
-package's other files (`PackageScope.interfaces`, collected with the
-sibling type names of #8108).  An interface declared in another package has
-clauses the verifier cannot see, so such an `impl` fails closed (`V0033`), as
-does an interface name declared more than once.
+interface is resolved as the type checker resolves it — in the proved
+package, then in its imports and the prelude, read from source — as the
+review follow-ups below describe.
 
 A method's contract is still not assumed at its calls (a call on a
 receiver stays an uninterpreted function) — the other half of #8110, which
@@ -74,13 +72,8 @@ Two defects made a postcondition over a `match` provable when it was false:
   unconditionally, so `case R -> true; case G -> false` on an enum proved
   `ensures: result`: the first arm was taken for every value.  The type
   checker reads a bare name as a case whenever a case of that name is in
-  scope (#8264).  The verifier now does the same with what it can see
-  (`bareNameBinds`): a name that is a case of an enum or union the file
-  declares, or `None`, is a case; otherwise it binds where the scrutinee's
-  type has no case it could name (a primitive, slice, tuple, `Unit`, the
-  standard `Option`/`Result`, a type parameter, a record, protected, enum or
-  union type the file declares).  Against a type another file or package
-  declares it may be a case, so it is not modelled.  `name @ p` now matches
+  scope (#8264).  The verifier now does the same (`bareNameBinds`, in
+  its final form after the review follow-ups below).  `name @ p` now matches
   where `p` does, rather than unconditionally (the rest of #8142).
 * An arm whose pattern is not modelled (V0027) was dropped from the match's
   value, with only a warning.  The match's value is now wrapped in a marker
@@ -93,27 +86,74 @@ Two defects made a postcondition over a `match` provable when it was false:
   `examples/ledger/src/accounting.l` still proves.  A `@pure` body with such
   a match is not unfolded at its calls.
 
+## Review follow-ups
+
+An adversarial review of the first cut found three false "discharged"
+results and several rough edges, all fixed:
+
+* **Bare `Some`/`None`/`Ok`/`Err`.**  The first `bareNameBinds` knew only
+  the file's cases and `None`, so `case Err -> true; case _ -> false`
+  proved `ensures: result`.  The rule now follows the type checker
+  exactly: it reads a bare name as a case whenever one of that name is in
+  scope, and rejects a case that cannot match (T0129) unless the scrutinee
+  is a record, enum or type parameter.  So a bare name binds against a
+  primitive, slice, tuple or `Unit`; against `Option`/`Result` unless it is
+  one of their cases; against a union the verifier read unless it is one
+  of its cases; and against anything else only when no case of that name
+  is in scope and every package in scope was read.  `lyric prove` now
+  gives the verifier the declarations it needs (`PackageScope.imports`,
+  `ImportScope`): the standard library's sources, as the build for
+  `--target` loads them, and every package of the projects whose
+  manifests list the file.
+* **A same-named interface of another package.**  In the directory-tree
+  fallback, a sibling file of another package contributed its interfaces;
+  an `impl` then inherited the wrong interface's `requires:`.  Only files
+  of the proved package (or with no `package` line) contribute now.  The
+  interface is resolved as the type checker resolves it
+  (`resolveImplInterface`): qualified (an alias included), in the proved
+  package, then in its imports and the prelude, read from source.  An
+  interface without clauses gives none; one that cannot be read (a
+  dependency restored as a compiled assembly) or is ambiguous is V0033,
+  and so is a method its interface does not declare at that arity —
+  never "nothing inherited".
+* **A bare call in an inherited clause** (`ensures: result >= limit()`)
+  bound to a free function `limit`; it is now the interface's method on
+  `self` (`resolveMemberExpr` over the interface's method names).
+* A record method written `self: in Self` gets the record type, at its own
+  type parameters, and a sibling method called on `self` has its declared
+  result type (an interface default's `n() + n()` was V0033).
+* A goal not discharged only because a `@pure` callee's body was not
+  unfolded (its value comes from an unmodelled match) is V0027, not a
+  counterexample (`unfoldSkippedMarker`: the goal is decided without the
+  body, and reported as depending on it when that fails).
+* A goal a V0033 construct already fails no longer gets a second V0027.
+* A file two builds compile differently labels each goal with its build
+  (`[target=dotnet features=a] f$post`); the `@proof_required` items no
+  build compiles are listed (`1 item(s) not proved: inactive under this
+  build (@cfg): limit`).
+
 ## Tests
 
-* `verifier_self_test.l`: 14 new tests — `@cfg` feature and target twins
-  proved per build, F0012 stops the proof; bare enum/union cases and `None`
-  fail closed, a bare name against a sibling's type fails closed, an unused
-  unmodelled match is no error, bare bindings on primitives/records/enums
-  still bind, `k @ 5` matches only 5; record methods (false `ensures:`
-  refuted, bare field read as `self.<field>`, a local shadowing a field,
-  `assert`/`requires:` in a method), a generic `impl` method's assertion
-  refuted with the impl's type parameter in scope, interface clauses
-  inherited (refuted, proved, renamed and swapped parameters), an interface
-  in a sibling file, an unseen interface failing closed, and an interface
-  default method.  189/189 pass.
+* `verifier_self_test.l`: 23 new tests — `@cfg` feature and target twins
+  proved per build, F0012 stops the proof, multi-build labels and the
+  inactive items; bare enum/union cases, bare `Some`/`None`/`Ok`/`Err`, a
+  bare name against a sibling's type, an imported union's case against a
+  record, and bindings that bind only when every case in scope is known;
+  an unused unmodelled match is no error, `k @ 5` matches only 5; record
+  methods (`self: in Self` included), a generic `impl` method, sibling
+  calls on `self`, interface clauses inherited (renamed and swapped
+  parameters, a bare call in a clause), an interface in a sibling file, of
+  another package in the same directory, of an imported package (with and
+  without clauses, aliased), an unread package, a method or arity the
+  interface lacks; interface default methods; a `@pure` callee with an
+  unmodelled match.  198/198 pass.
 * `scripts/ci/prove-items.sh` (wired into CI next to `prove-type-check.sh`)
-  over `examples/prove-cfg/` (target twins in a single file; feature twins
-  in a project, refuted by default and proved with `--features wide`, in
-  single-file and `--manifest` mode), `examples/prove-unmodelled-match/`
-  (the #8230 repro: a union declared in a sibling file) and
-  `examples/prove-methods/` (an `impl` method's failing assertion refuted;
-  record and `impl` methods that hold).  Every case fails on `main` (the
-  first with the crash).
+  over `examples/prove-cfg/`, `examples/prove-unmodelled-match/` (a union
+  in a sibling file, bare `Err`, a `@pure` callee) and
+  `examples/prove-methods/` (a failing `impl` assertion, methods that
+  hold, `Std.Stream`'s `ByteReader` clauses inherited, another package's
+  same-named interface ignored, a bare call in an inherited clause): 18
+  checks, each failing on `main`.
 
 ## Behaviour changes in existing proofs
 
