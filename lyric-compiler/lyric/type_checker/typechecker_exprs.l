@@ -5187,6 +5187,17 @@ func resolveExprPath(
       case Some(ft) -> return ft
       case None -> ()
     }
+    // A package-qualified module-level `val` (#8283).
+    match moduleValSymbolOfSegs(sc, tbl, path.segments) {
+      case Some(vsym) -> match vsym.kind {
+        case DKVal(vd) -> {
+          checkImportedVisibility(vsym, span, diag)
+          return moduleValReadType(tbl, sigs, vsym, vd)
+        }
+        case _ -> ()
+      }
+      case None -> ()
+    }
     val pkgKnown = symTablePackageHasAnySymbol(tbl, pkg) or symTablePackageHasAnyExternBlockMember(tbl, pkg)
     if pkgKnown and not symTablePackageHasMember(tbl, pkg, name) and not symTableHasExternBlockMember(tbl, pkg, name) {
       diag.add(errorDiagnostic("T0020", "unknown name '" + pkg + "." + name + "'", span))
@@ -5201,9 +5212,21 @@ func resolveExprPath(
     case None -> {
     }
   }
+  // The name's symbol in scope (the current package's first, then its
+  // imports') is a `val` or `const`: it hides an imported function of that
+  // name, as the package's own declarations hide its imports (#8283).
+  val valueInScope = match symTableTryFindOne(tbl, name) {
+    case Some(vs) -> match vs.kind {
+      case DKVal(_) -> true
+      case DKConst(_) -> true
+      case _ -> false
+    }
+    case None -> false
+  }
+  val noSig: Option[ResolvedSignature] = None
   val bareSig = match mapGet(sigs, name) {
-    case Some(first) -> visibleBareSig(tbl, sigs, name, first)
-    case None -> None
+    case Some(first) -> if valueInScope { noSig } else { visibleBareSig(tbl, sigs, name, first) }
+    case None -> noSig
   }
   match bareSig {
     case Some(sig) -> {
@@ -5310,30 +5333,7 @@ func resolveExprPath(
           restoreScope(tbl, saved)
           return t
         }
-        case DKVal(vd) -> {
-          // The declaration itself reports its type's and its initialiser's
-          // errors, once (`checkItemDeclaredInits`, #7777); a read reports
-          // none of them again, and an importer never re-reports what the
-          // declaring package's own check found.
-          val saved = enterDeclaringScopeIfForeign(tbl, sym)
-          val readDiag: List[Diagnostic] = newList()
-          val t = match vd.ty {
-            case Some(te) -> {
-              val ctx = newGenericContext()
-              resolveType(tbl, ctx, readDiag, te)
-            }
-            case None -> {
-              // Infer against an empty scope to avoid the caller's local bindings
-              // shadowing module-level names referenced in vd.init.
-              val noRte: Option[TypeExpr] = None
-              val noSelfFields: Map[String, Type] = newMap()
-              val emptyScope = newScopeForFunction(TyError, newList(), noRte, noSelfFields, false, TyError)
-              inferExpr(emptyScope, tbl, sigs, readDiag, vd.init)
-            }
-          }
-          restoreScope(tbl, saved)
-          return t
-        }
+        case DKVal(vd) -> return moduleValReadType(tbl, sigs, sym, vd)
         case _ -> {
         }
       }
@@ -13440,31 +13440,132 @@ func calleeIsFuncValue(
   memberName: in String,
 ): Bool {
   match fn.kind {
-    case EPath(p) -> isLocalNameTc(sc, p)
-    case EMember(_, _) -> match memberRecvTy {
-      case Some(rt) -> match unrefine(rt) {
-        case TyUser(tid, _, targs) -> {
-          val fs = fieldsOfRecordInstantiated(tbl, tid, targs)
-          var i = 0
-          while i < fs.count {
-            if fs[i].name == memberName {
-              return true
+    case EPath(p) -> isLocalNameTc(sc, p) or isModuleValNameTc(sc, tbl, p)
+    // A record's function-typed field, or a package-qualified module-level
+    // `val` (`Pkg.handlers`, #8283).
+    case EMember(_, _) -> match moduleValSymbolOfExpr(sc, tbl, fn) {
+      case Some(_) -> true
+      case None -> match memberRecvTy {
+        case Some(rt) -> match unrefine(rt) {
+          case TyUser(tid, _, targs) -> {
+            val fs = fieldsOfRecordInstantiated(tbl, tid, targs)
+            var i = 0
+            while i < fs.count {
+              if fs[i].name == memberName {
+                return true
+              }
+              i = i + 1
             }
-            i = i + 1
+            false
           }
-          false
+          case _ -> false
         }
-        case _ -> false
+        case None -> false
       }
-      case None -> false
     }
     case EParen(inner) -> calleeIsFuncValue(sc, tbl, inner, None, "")
     // `f[T](x)` applies type arguments to a named function; an index into a
-    // local's value (`fs[0](x)`) or any other expression's is a value.
-    case EIndex(recv, _) -> match recv.kind { case EPath(rp) -> isLocalNameTc(sc, rp); case _ -> true }
+    // local's or a module-level `val`'s value (`fs[0](x)`, #8283) or any other
+    // expression's is a value.
+    case EIndex(recv, _) -> match recv.kind {
+      case EPath(rp) -> isLocalNameTc(sc, rp) or isModuleValNameTc(sc, tbl, rp)
+      case _ -> true
+    }
     case ETypeApp(_, _) -> false
     case _ -> true
   }
+}
+
+// The type a read of the module-level `val` `vd` (symbol `sym`) has.  The
+// declaration itself reports its type's and its initialiser's errors, once
+// (`checkItemDeclaredInits`, #7777); a read reports none of them again, and an
+// importer never re-reports what the declaring package's own check found.  A
+// declared type, and an untyped val's initializer, are written in the
+// declaring package's scope, not the reading file's (docs/01 §9.2).
+func moduleValReadType(
+  tbl: in SymbolTable, sigs: in Map[String, ResolvedSignature], sym: in Symbol, vd: in ValDecl
+): Type {
+  val saved = enterDeclaringScopeIfForeign(tbl, sym)
+  val readDiag: List[Diagnostic] = newList()
+  val t = match vd.ty {
+    case Some(te) -> {
+      val ctx = newGenericContext()
+      resolveType(tbl, ctx, readDiag, te)
+    }
+    case None -> {
+      // Infer against an empty scope to avoid the caller's local bindings
+      // shadowing module-level names referenced in vd.init.
+      val noRte: Option[TypeExpr] = None
+      val noSelfFields: Map[String, Type] = newMap()
+      val emptyScope = newScopeForFunction(TyError, newList(), noRte, noSelfFields, false, TyError)
+      inferExpr(emptyScope, tbl, sigs, readDiag, vd.init)
+    }
+  }
+  restoreScope(tbl, saved)
+  t
+}
+
+// Whether `p` names a module-level `val` that no local of that name shadows:
+// a value, not a function the call reaches by name (#8283).
+func isModuleValNameTc(sc: in Scope, tbl: in SymbolTable, p: in ModulePath): Bool {
+  match moduleValSymbolOfSegs(sc, tbl, p.segments) {
+    case Some(_) -> true
+    case None -> false
+  }
+}
+
+// The module-level `val` a bare or package-qualified path names (`v`,
+// `Pkg.v`, `Pkg.Sub.v`, the package's own name included), when its root is no
+// local.  A bare name resolves under the current scope as any name does; a
+// qualified one names a `val` its qualifier's package declares, preferring the
+// current package and its imports when several packages end in the qualifier
+// (#8283).
+func moduleValSymbolOfSegs(sc: in Scope, tbl: in SymbolTable, segs: in List[String]): Option[Symbol] {
+  if segs.count == 0 {
+    return None
+  }
+  match scopeTryFind(sc, segs[0]) {
+    case Some(_) -> return None
+    case None -> ()
+  }
+  val name = segs[segs.count - 1]
+  if segs.count == 1 {
+    return match symTableTryFindOne(tbl, name) {
+      case Some(sym) -> match sym.kind { case DKVal(_) -> Some(value = sym); case _ -> None }
+      case None -> None
+    }
+  }
+  val qualSegs: List[String] = newList()
+  var qi = 0
+  while qi < segs.count - 1 {
+    qualSegs.add(segs[qi])
+    qi = qi + 1
+  }
+  val qual = modulePathJoin(qualSegs)
+  val scopePkg = symTableScopePkg(tbl)
+  var fallback: Option[Symbol] = None
+  for sym in symTableTryFindAll(tbl, name) {
+    match sym.kind {
+      case DKVal(_) -> if pkgMatchesQualifier(sym.originPackage, qual) {
+        if sym.originPackage == scopePkg or symTableScopeAllows(tbl, sym.originPackage) {
+          return Some(value = sym)
+        }
+        fallback = Some(value = sym)
+      }
+      case _ -> ()
+    }
+  }
+  fallback
+}
+
+// The module-level `val` a member chain or path expression names
+// (`moduleValSymbolOfSegs`).
+func moduleValSymbolOfExpr(sc: in Scope, tbl: in SymbolTable, e: in Expr): Option[Symbol] {
+  val segs: List[String] = newList()
+  if not flattenCalleePathSegs(e, segs) {
+    return None
+  }
+  moduleValSymbolOfSegs(sc, tbl, segs)
 }
 
 // Whether `p` is a bare name bound in scope (a local, parameter or pattern
@@ -13970,8 +14071,17 @@ func inferExprCore(
       var memberRecvTy: Option[Type] = None
       var memberName = ""
       var isMemberCallee = false
+      // A package-qualified module-level `val` (`Pkg.handler(x)`) is a
+      // function value called through its type, not a member (#8283).
+      val calleeIsQualifiedVal = match fn.kind {
+        case EMember(_, _) -> match moduleValSymbolOfExpr(sc, tbl, fn) {
+          case Some(_) -> true
+          case None -> false
+        }
+        case _ -> false
+      }
       match fn.kind {
-        case EMember(recvE2, mname2) -> {
+        case EMember(recvE2, mname2) -> if not calleeIsQualifiedVal {
           isMemberCallee = true
           memberName = mname2
           match cachedRecvType {
@@ -14665,6 +14775,18 @@ func inferExprCore(
         }
       }
       checkQualifiedMemberRef(tbl, sc, recv, name, e.span, diag)
+      // A package-qualified module-level `val` (`Pkg.v`, the file's own
+      // package included) reads as the bare name does (#8283).
+      match moduleValSymbolOfExpr(sc, tbl, e) {
+        case Some(vsym) -> match vsym.kind {
+          case DKVal(vd) -> {
+            checkImportedVisibility(vsym, e.span, diag)
+            return moduleValReadType(tbl, sigs, vsym, vd)
+          }
+          case _ -> ()
+        }
+        case None -> ()
+      }
       // A full package path used as a function value (`Pkg.Sub.fn`, not
       // collapsed by the alias rewriter since it is not a call callee).  A
       // root bound as a local is a field chain, never a package.
@@ -15918,25 +16040,30 @@ func inferExprExpectedCore(
         // `Pkg.Shape.Circle(...)`) adopts the expected instantiation too.
         inferQualifiedCaseCtorExpected(sc, tbl, sigs, diag, e, fn, cargs, expected)
       }
-      case EMember(_, _) -> match unionCaseSymbolOf(tbl, fn) {
-        case Some(_) -> inferQualifiedCaseCtorExpected(
-          sc,
-          tbl,
-          sigs,
-          diag,
-          e,
-          fn,
-          cargs,
-          expected
-        )
-        case None -> inferMethodCallExpected(
-          sc,
-          tbl,
-          sigs,
-          diag,
-          e,
-          expected
-        )
+      // A package-qualified module-level `val` of function type is called
+      // through its type, not as a method (#8283).
+      case EMember(_, _) -> match moduleValSymbolOfExpr(sc, tbl, fn) {
+        case Some(_) -> inferExpr(sc, tbl, sigs, diag, e)
+        case None -> match unionCaseSymbolOf(tbl, fn) {
+          case Some(_) -> inferQualifiedCaseCtorExpected(
+            sc,
+            tbl,
+            sigs,
+            diag,
+            e,
+            fn,
+            cargs,
+            expected
+          )
+          case None -> inferMethodCallExpected(
+            sc,
+            tbl,
+            sigs,
+            diag,
+            e,
+            expected
+          )
+        }
       }
       case _ -> inferExpr(sc, tbl, sigs, diag, e)
     }

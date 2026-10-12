@@ -5238,8 +5238,11 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
     bodyInsns.add(LAload(slot = argsSlot))
     bodyInsns.add(LIconst(v = pi))
     bodyInsns.add(LAaload)
-    // args[i] is Object; coerce to the param's (possibly primitive) type.
-    coerceArgTo(bodyInsns, JRef(className = "java/lang/Object"), pty)
+    // args[i] is Object; coerce to the param's (possibly primitive) type.  A
+    // slice parameter is narrowed to the `Object[]` it is (or converted from
+    // the `ArrayList` a bracket literal built), as any erased value reaching a
+    // slice slot is (#8317).
+    coerceArgToCtx(bodyCtx, bodyInsns, JRef(className = "java/lang/Object"), pty)
     emitStore(bodyInsns, pslot, pty)
     pi = pi + 1
   }

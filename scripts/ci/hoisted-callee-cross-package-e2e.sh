@@ -8,9 +8,11 @@
 # runs first.  Two-package projects:
 #   - an element of the library's `pub val` list of functions, used
 #     unqualified, called with a `?` and with an `await` argument: the index
-#     runs before the arguments (JVM and native; on dotnet a function value
-#     read from a module-level `val` by index and bound ahead of a `?` is
-#     invalid IL, tracked in #8283);
+#     runs before the arguments;
+#   - the library's `pub val`s named with their package (`HcLib.fns[i](...)`,
+#     `HcLib.greet(...)`) and the function-typed one called bare: each call
+#     goes through the value's function type, so two `String` results
+#     concatenate (#8283);
 #   - the library's generic function under explicit type arguments, with an
 #     array literal before a `?` and before an `await` argument, also against
 #     the library built on its own (a restored dependency, read through its
@@ -48,6 +50,10 @@ pub func add(a: in Int, b: in Int): Int = a + b
 pub func mul(a: in Int, b: in Int): Int = a * b
 
 pub val fns: List[(Int, Int) -> Int] = [add, mul]
+
+pub val strs: List[(String) -> String] = [{ s: String -> s + "!" }, { s: String -> "<" + s + ">" }]
+
+pub val greet: (String) -> String = { s: String -> "hi " + s }
 
 pub func firstOf[T](xs: in array[2, T], v: in Int): T = xs[v]'
 
@@ -112,6 +118,22 @@ func main(): Int {
   0
 }'
 
+qual_src="$prelude"'
+
+func viaQualified(): Result[Int, String] {
+  Ok(value = HcLib.fns[note("idx", 1)](note("a", 3), ok(4)?))
+}
+
+func main(): Int {
+  val s0 = trace.count
+  val a = show(viaQualified())
+  val ta = since(s0)
+  val g = HcLib.strs[1]("x") + HcLib.strs[0]("y")
+  val h = greet("b") + HcLib.greet("z")
+  println(a + " " + ta + " " + g + " " + h + " " + toString(HcLib.fns[0](1, 1) + fns[1](2, 3)))
+  0
+}'
+
 targs_src="$prelude"'
 
 func typeArgsTry(): Result[Int, String] {
@@ -146,6 +168,7 @@ TOML
   printf '%s\n' "$2" > "$work/$1/src/app.l"
 }
 write_project vals "$vals_src"
+write_project qual "$qual_src"
 write_project targs "$targs_src"
 mkdir -p "$work/unimported/src"
 cat > "$work/unimported/lyric.toml" <<'TOML'
@@ -227,12 +250,12 @@ check() { # $1=target $2=manifest $3=want $4=what
 # mul(3, 4) = 12 and add(3, 4) = 7, each index read before the arguments;
 # firstOf picks 8 and then 7, its literal an array on every target.
 vals_want="12 idx,a,ok 7 idx,a,await"
+qual_want="12 idx,a,ok <x>y! hi bhi z 8"
 targs_want="8 7 i,ok,await"
 fail=0
 for t in "${targets[@]}"; do
-  if [ "$t" != dotnet ]; then
-    check "$t" "$work/vals/lyric.toml" "$vals_want" "an element of a sibling package's pub val list of functions"
-  fi
+  check "$t" "$work/vals/lyric.toml" "$vals_want" "an element of a sibling package's pub val list of functions"
+  check "$t" "$work/qual/lyric.toml" "$qual_want" "a sibling package's pub vals of function type, named with their package,"
   check "$t" "$work/targs/lyric.toml" "$targs_want" "a sibling package's generic function under explicit type arguments"
   check "$t" "$work/unimported/lyric.toml" "8" "the application's own generic function, beside an unimported package's pub val of its name,"
   "$lyric_bin" build --manifest "$work/restored/lib/lyric.toml" --target "$t" >/dev/null 2>&1

@@ -98,3 +98,116 @@ test "function values an if produces and a destructured tuple holds" {
   val (m, tg) = ti[0]
   assertEqualInt(tg(m), 6, "tuple")
 }
+
+// #8283: an element of a module-level `val` holding function values, called
+// in place.  The type checker recorded the callee type of a call through a
+// local's element but not a module-level `val`'s, so the call's result was an
+// untyped `object`: dotnet added two `String` results as numbers (invalid IL,
+// a crash or garbage), the JVM rejected the same `+` (J008), and native took
+// `fns[1]` for explicit type arguments on a function named `fns` (N0007).
+func addInts(a: in Int, b: in Int): Int {
+  a + b
+}
+
+func mulInts(a: in Int, b: in Int): Int {
+  a * b
+}
+
+val moduleFns: List[(Int, Int) -> Int] = [addInts, mulInts]
+
+val moduleLambdas: List[(String) -> String] = [{ s: String -> s + "!" }, { s: String -> "<" + s + ">" }]
+
+val moduleLongs: slice[(Long) -> Long] = [{ x: Long -> x * 2i64 }, { x: Long -> x + 1i64 }]
+
+val moduleSinks: List[(Int) -> Unit] = [{ x: Int -> sinkLog.add(x) }, { x: Int -> sinkLog.add(x * 100) }]
+
+val sinkLog: List[Int] = newList()
+
+func parseDigit(s: in String): Result[Int, String] {
+  match s {
+    case "3" -> Ok(value = 3)
+    case "4" -> Ok(value = 4)
+    case "7" -> Ok(value = 7)
+    case _ -> Err(error = "not a digit: " + s)
+  }
+}
+
+func moduleFnWithPropagate(i: in Int, a: in String, b: in String): Result[Int, String] {
+  val r = moduleFns[i](parseDigit(a)?, parseDigit(b)?)
+  Ok(value = r)
+}
+
+func moduleFnTailPropagate(a: in String): Result[Int, String] {
+  Ok(value = moduleFns[1](parseDigit(a)?, 6))
+}
+
+func applyAt[T](fs: in List[(T) -> T], i: in Int, x: in T): T {
+  fs[i](x)
+}
+
+test "an element of a module-level List of functions called in place (#8283)" {
+  assertEqualInt(moduleFns[1](3, 4), 12, "mulInts")
+  var i = 0
+  assertEqualInt(moduleFns[i](3, 4) + 1, 8, "addInts at a variable index")
+  i = i + 1
+  val r: Int = moduleFns[i](5, 5)
+  assertEqualInt(r, 25, "bound result")
+  assertEqual(moduleLambdas[1]("x") + moduleLambdas[0]("y"), "<x>y!", "lambda elements")
+  assertTrue(moduleLongs[0](21i64) + moduleLongs[1](1i64) == 44i64, "Long elements of a module-level slice")
+}
+
+test "a module-level function element called with ? in its arguments (#8283)" {
+  match moduleFnWithPropagate(1, "3", "4") {
+    case Ok(v) -> assertEqualInt(v, 12, "both arguments propagate")
+    case Err(e) -> assertTrue(false, "unexpected Err " + e)
+  }
+  match moduleFnWithPropagate(0, "3", "x") {
+    case Ok(_) -> assertTrue(false, "expected Err")
+    case Err(e) -> assertEqual(e, "not a digit: x", "the second argument's error")
+  }
+  match moduleFnTailPropagate("7") {
+    case Ok(v) -> assertEqualInt(v, 42, "tail position")
+    case Err(e) -> assertTrue(false, "unexpected Err " + e)
+  }
+}
+
+test "a Unit-returning module-level function element (#8283)" {
+  moduleSinks[0](4)
+  moduleSinks[1](5)
+  assertEqualInt(sinkLog.count, 2, "both sinks ran")
+  assertEqualInt(sinkLog[0] + sinkLog[1], 504, "sink values")
+}
+
+test "a module-level List of functions passed to a generic function (#8283)" {
+  val strs: List[(String) -> String] = moduleLambdas
+  assertEqual(applyAt(strs, 0, "go"), "go!", "String instantiation")
+  val ints: List[(Int) -> Int] = [{ x: Int -> moduleFns[1](x, x) }]
+  assertEqualInt(applyAt(ints, 0, 9), 81, "Int instantiation")
+}
+
+val moduleGreet: (String) -> String = { s: String -> "hi " + s }
+
+test "module-level function values named with the package (#8283)" {
+  assertEqual(
+    Lyric.SliceFuncElemSelfTest.moduleLambdas[1]("x") + Lyric.SliceFuncElemSelfTest.moduleLambdas[0]("y"),
+    "<x>y!",
+    "an element of a package-qualified List"
+  )
+  assertEqualInt(Lyric.SliceFuncElemSelfTest.moduleFns[1](3, 4) + moduleFns[0](1, 1), 14, "Int elements")
+  assertEqual(
+    moduleGreet("a") + Lyric.SliceFuncElemSelfTest.moduleGreet("b"),
+    "hi ahi b",
+    "a function-typed val called"
+  )
+}
+
+// A module-level `val` hides an imported generic function of its name: the
+// package's own declaration wins, so `isSome[0](5)` indexes the list rather
+// than giving `Std.Core.isSome` a type argument.
+val isSome: List[(Int) -> Bool] = [{ x: Int -> x > 0 }]
+
+test "a module-level val hides an imported generic function of its name (#8283)" {
+  assertTrue(isSome[0](5), "the val's element")
+  val isNone: List[(Int) -> Bool] = [{ x: Int -> x < 0 }]
+  assertFalse(isNone[0](5), "a local hides the imported generic too")
+}

@@ -3545,6 +3545,12 @@ func lowerMember(ctx: in Ctx, insns: in List[NInsn], receiver: in Expr, memberNa
       case None -> {
       }
     }
+    // A package-qualified module-level `val` (`Pkg.handlers`), which a
+    // qualified path reaches the same way (#8283).
+    match mapGet(ctx.moduleVals, joined) {
+      case Some(mv) -> return lowerModuleVal(ctx, insns, mv)
+      case None -> ()
+    }
   }
   val v = lowerExpr(ctx, insns, receiver)
   if isStringNType(v.ty) {
@@ -5101,7 +5107,10 @@ func lowerCallEx(
         val vTy = typeToN(ctx, exprAsTypeExpr(idxs[1]))
         return constructMap(ctx, insns, kTy, vTy)
       }
-      if iname.length > 0 {
+      // `f[T](args)`: explicit type arguments on a generic function.  Any
+      // other index (`handlers[i](args)`, an element of a module-level `val`)
+      // is a function value (#8283).
+      if iname.length > 0 and not nameIsValueNative(ctx, iname) and explicitGenericFnKey(ctx, iname, args.count).length > 0 {
         val idxTes: List[TypeExpr] = newList()
         for ix in idxs {
           idxTes.add(exprAsTypeExpr(ix))
@@ -5112,6 +5121,7 @@ func lowerCallEx(
           }
         }
       }
+      return lowerValueCalleeCall(ctx, insns, fnExpr, args)
     }
     case _ -> {
     }
@@ -5172,15 +5182,9 @@ func lowerCallEx(
   // Static function call through the registry.
   val key = callKeyOf(fnExpr, args.count)
   if key.length == 0 {
-    panic(
-      "Lyric.LlvmCodegen: indirect calls are not yet supported for --target native (rest of Phase N2.6): the callee is a " +
-        describeExprKind(fnExpr.kind) +
-        " expression (in " +
-        ctx.curPkg[0] +
-        " at line " +
-        line.toString() +
-        ")"
-    )
+    // No name: the callee is an expression whose value is the function
+    // (`makeAdder(1)(2)`, `(if c { f } else { g })(x)`).
+    return lowerValueCalleeCall(ctx, insns, fnExpr, args)
   }
   // Resolution order: self-package qualified, then the key as written,
   // then heap-type constructors (records, union cases, distinct types).
@@ -10738,6 +10742,47 @@ func copyNTypes(xs: in List[NType]): List[NType] {
 
 /// `name[T1, T2](args)` where `name` is a generic function: the type
 /// arguments bind its type parameters in declaration order.
+/// The `genericFnDefs` key of the generic function `name[T..](args)` names
+/// (self-package qualified first), or "" when `name` is no generic function
+/// of that arity.
+func explicitGenericFnKey(ctx: in Ctx, name: in String, argc: in Int): String {
+  val key = name + "/" + argc.toString()
+  val selfKey = ctx.curPkg[0] + "." + key
+  if ctx.genericFnDefs.containsKey(selfKey) {
+    selfKey
+  } else if ctx.genericFnDefs.containsKey(key) {
+    key
+  } else {
+    ""
+  }
+}
+
+/// Whether a bare `name` is a value that hides a same-named generic function:
+/// a local, or a module-level `val` of the current package (a package's own
+/// declarations win over its imports, as in the type checker).
+func nameIsValueNative(ctx: in Ctx, name: in String): Bool {
+  ctx.varTypes.containsKey(name) or ctx.moduleVals.containsKey(ctx.curPkg[0] + "." + name)
+}
+
+/// A call whose callee is an expression producing a function value (an
+/// element of a collection, the result of a call, a parenthesised or
+/// conditional value): the callee is evaluated first and held for the call,
+/// so the arguments cannot release it, then invoked through its closure.
+func lowerValueCalleeCall(ctx: in Ctx, insns: in List[NInsn], fnExpr: in Expr, args: in List[CallArg]): NVal {
+  val clos = lowerExpr(ctx, insns, fnExpr)
+  match closureSigOfType(ctx, clos.ty) {
+    case Some(cs) -> {
+      ensureOwned(ctx, insns, clos)
+      registerTemp(ctx, clos)
+      lowerClosureCall(ctx, insns, clos, cs, args)
+    }
+    case None -> panic(
+      "Lyric.LlvmCodegen: the callee " + describeExprKind(fnExpr.kind) + " expression in " + ctx.curPkg[0] +
+        " is not a function value"
+    )
+  }
+}
+
 func tryLowerExplicitGenericCall(
   ctx: in Ctx,
   insns: in List[NInsn],
@@ -10748,14 +10793,7 @@ func tryLowerExplicitGenericCall(
   wantTask: in Bool,
   retWant: in Option[NType],
 ): Option[NVal] {
-  val key = name + "/" + args.count.toString()
-  val selfKey = ctx.curPkg[0] + "." + key
-  var useKey = ""
-  if ctx.genericFnDefs.containsKey(selfKey) {
-    useKey = selfKey
-  } else if ctx.genericFnDefs.containsKey(key) {
-    useKey = key
-  }
+  val useKey = explicitGenericFnKey(ctx, name, args.count)
   if useKey.length == 0 {
     return None
   }
@@ -11448,6 +11486,28 @@ func fvStmt(
       fvExpr(ctx, cond, bound, free, assigned)
       fvBlock(ctx, body, bound, free, assigned)
     }
+    // The iterable is read in the enclosing scope; the pattern's names are
+    // bound only in the body.
+    case SFor(_, pat, iter, body) -> {
+      fvExpr(ctx, iter, bound, free, assigned)
+      val mark = bound.count
+      fvPattern(pat, bound)
+      fvBlock(ctx, body, bound, free, assigned)
+      truncateNames(bound, mark)
+    }
+    case SLoop(_, body) -> fvBlock(ctx, body, bound, free, assigned)
+    case SDefer(body) -> fvBlock(ctx, body, bound, free, assigned)
+    case SScope(binding, body) -> {
+      val mark = bound.count
+      match binding {
+        case Some(n) -> bound.add(n)
+        case None -> ()
+      }
+      fvBlock(ctx, body, bound, free, assigned)
+      truncateNames(bound, mark)
+    }
+    case SThrow(ex) -> fvExpr(ctx, ex, bound, free, assigned)
+    case SInvariant(ex) -> fvExpr(ctx, ex, bound, free, assigned)
     case SExpr(ex) -> fvExpr(ctx, ex, bound, free, assigned)
     case _ -> {
     }
