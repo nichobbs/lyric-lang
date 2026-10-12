@@ -1373,8 +1373,7 @@ func checkOptions(
     ioForbiddenReason = ioForbiddenReason,
     nativeIntrinsics = onNative,
     arraysAsLists = not onNative,
-    primitiveArrays = onJvm,
-    genericReceiverLambdasUnsupported = not onJvm and not onNative
+    primitiveArrays = onJvm
   )
 }
 
