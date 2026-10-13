@@ -5488,6 +5488,22 @@ func genericRecordMethodKey(ctx: in Ctx, recvTyName: in String, nameAndArity: in
   }
 }
 
+/// The generic-function key of a non-generic type's method that has its own
+/// type parameters (`func echo[U]` in `record Bag`), registered as
+/// `<Pkg>.<Type>.<name>/<n>`.
+func ownGenericMethodKey(ctx: in Ctx, recvTyName: in String, nameAndArity: in String): Option[String] {
+  if recvTyName.length == 0 {
+    return None
+  }
+  // Only the receiver type's own key: a bare `<Type>.<name>` may be another
+  // package's same-named type's method.
+  val k = recvTyName + "." + nameAndArity
+  if ctx.genericFnDefs.containsKey(k) {
+    return Some(value = k)
+  }
+  None
+}
+
 /// Whether the type named `recvTyName` has a method `name` of any arity: a
 /// record method or dot-named function registered as `<Type>.<name>/<n>`, an
 /// impl method, or a generic record's method.
@@ -5712,6 +5728,18 @@ func lowerUfcsCall(
         val instPre: List[NVal] = newList()
         instPre.add(recv)
         return lowerGenericFnCall(ctx, insns, gk, instPre, args, line, wantTask, None)
+      }
+      case None -> ()
+    }
+  }
+  // A method with its own type parameters of a non-generic record.
+  match sigOpt {
+    case Some(_) -> ()
+    case None -> match ownGenericMethodKey(ctx, recvTyName, name + "/" + arity) {
+      case Some(gk) -> {
+        val ownPre: List[NVal] = newList()
+        ownPre.add(recv)
+        return lowerGenericFnCall(ctx, insns, gk, ownPre, args, line, wantTask, None)
       }
       case None -> ()
     }
@@ -16167,8 +16195,9 @@ pub func wasmImportModule(imports: in List[WasmImportDecl], symbol: in String): 
 
 /// Methods declared inside a record body desugar to package functions
 /// with the explicit `self` receiver already in their parameter list
-/// (D037), named `<Record>.<method>` as a dot-named function is; non-generic
-/// ones lower like any other function.  The
+/// (D037), named `<Record>.<method>` as a dot-named function is; they lower
+/// like any other function, and one with its own type parameters
+/// (`func echo[U]`) is specialised per call like a generic function.  The
 /// parser's synthesised receiver is typed `Self` — substitute the
 /// concrete record reference so the native type mapping resolves it.
 pub func collectRecordMethods(pkgName: in String, decl: in RecordDecl, fns: in List[FunctionDecl]): Unit {
@@ -16180,16 +16209,10 @@ pub func collectRecordMethods(pkgName: in String, decl: in RecordDecl, fns: in L
           case Some(_) -> {
           }
           case None -> {
-            match fn.generics {
-              case Some(_) -> {
-              }
-              case None -> {
-                // Registered as `<Record>.<method>`, so a same-named method of
-                // another record in the package is a different function.
-                val lifted = substSelfInFn(fn, decl.name)
-                fns.add(lifted.copy(name = decl.name + "." + fn.name))
-              }
-            }
+            // Registered as `<Record>.<method>`, so a same-named method of
+            // another record in the package is a different function.
+            val lifted = substSelfInFn(fn, decl.name)
+            fns.add(lifted.copy(name = decl.name + "." + fn.name))
           }
         }
       }

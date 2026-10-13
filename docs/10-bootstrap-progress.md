@@ -131,7 +131,8 @@ deferred to Phase 3 by design.
   record, `impl`, interface, protected or dot-named method that omits a
   defaulted argument splices the default on both targets, with arguments
   paired as the type checker pairs them (#7820;
-  `docs/progress/2026-09-30-method-default-args.md`), and binds the
+  `docs/progress/2026-09-30-method-default-args.md`; a generic callee's
+  type arguments are inferred with the same pairing, #8240), and binds the
   overload the type checker resolved on every target; an `impl` default
   that differs from the interface's is warned about (T0161) (#7828;
   `docs/progress/2026-10-02-method-overload-default-dispatch.md`).  A
@@ -318,6 +319,8 @@ deferred to Phase 3 by design.
 | Stdlib import resolver beyond `Std.Core` | **Shipped** | (this branch) |
 | Cross-assembly union-case type-arg inference from return type | **Shipped** | (this branch) |
 | UFCS-style static dispatch (`Type.method(args)`) | **Shipped** | (this branch) |
+| Dot-named functions of a primitive (`func Int.twice`, `k.twice()`) and of another package's type (extensions), with method syntax and through the type, on every target: the type's own applicable function first, then an extension the imports reach (T0123 when two packages tie, T0113 when none is reached, T0170 for an extension duplicating the type's own); declared through an alias; a distinct type's or primitive's unknown method is T0113 (#8217, #8219) | **Shipped** | D181, docs/progress/2026-10-12-named-arg-generics-primitive-methods.md |
+| Generic type arguments inferred from named arguments by the parameter each names, in the checker and `Lyric.Mono` (#8240) | **Shipped** | docs/progress/2026-10-12-named-arg-generics-primitive-methods.md |
 | `panic` / `expect` / `assert` builtins | **Shipped** | (this branch) |
 | Function overloading by arity | **Shipped** | (stdlib-ergonomics) |
 | BCL default-argument emission | **Shipped** | (stdlib-ergonomics) |

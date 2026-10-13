@@ -100,27 +100,38 @@ func emitOne(
   target: in Emitter.CompileTarget,
   restored: in List[String],
 ): Bool {
-  val pkgs: List[Emitter.ProjectPackage] = newList()
-  pkgs.add(mkPkg(pkgName, source))
-  val req = Emitter.EmitProjectRequest(
-    packages = pkgs,
-    assemblyName = pkgName,
-    outputPath = outPath,
-    target = target,
-    restoredDllPaths = restored,
-    activeFeatures = newList(),
-    declaredFeatures = newList(),
-    packageVersion = "",
-    depTemplateSrcs = newList(),
-    nugetAssemblyPaths = newList(),
-    defines = newList(),
-    packageFeatures = Emitter.noPackageFeatures(),
-    contractsEnabled = true
-  )
-  match Emitter.emitProject(req).outputPath {
+  match emitOneResult(pkgName, source, outPath, target, restored).outputPath {
     case Some(_) -> true
     case None -> false
   }
+}
+
+func emitOneResult(
+  pkgName: in String,
+  source: in String,
+  outPath: in String,
+  target: in Emitter.CompileTarget,
+  restored: in List[String],
+): Emitter.EmitResult {
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(mkPkg(pkgName, source))
+  Emitter.emitProject(
+    Emitter.EmitProjectRequest(
+      packages = pkgs,
+      assemblyName = pkgName,
+      outputPath = outPath,
+      target = target,
+      restoredDllPaths = restored,
+      activeFeatures = newList(),
+      declaredFeatures = newList(),
+      packageVersion = "",
+      depTemplateSrcs = newList(),
+      nugetAssemblyPaths = newList(),
+      defines = newList(),
+      packageFeatures = Emitter.noPackageFeatures(),
+      contractsEnabled = true
+    )
+  )
 }
 
 // Build the producer, then a consumer restoring it, run the consumer and
@@ -306,6 +317,39 @@ func consumerCompiles(label: in String, jvm: in Bool, libSrc: in String, appSrc:
   ok
 }
 
+// The codes of the diagnostics a consumer of `libSrc` fails with ("" when
+// it compiles): B0001 for a program the checker rejects (its own
+// diagnostics go to stderr), a backend's code (T0120, J008) when codegen
+// fails.  The library must compile.
+func consumerDiagCodes(label: in String, jvm: in Bool, libSrc: in String, appSrc: in String): String {
+  val dir = freshTempDir(label + (if jvm { "-jvm" } else { "-dotnet" }))
+  val ext = if jvm { ".jar" } else { ".dll" }
+  val target = if jvm { Emitter.Jvm } else { Emitter.Dotnet }
+  val libPath = Path.join(dir, "Rd.Lib" + ext)
+  val noRestored: List[String] = newList()
+  if not emitOne("Rd.Lib", libSrc, libPath, target, noRestored) {
+    cleanup(dir)
+    panic(label + ": the library failed to compile")
+  }
+  val restored: List[String] = newList()
+  restored.add("Rd.Lib\t" + libPath)
+  val res = emitOneResult("Rd.App", appSrc, Path.join(dir, "Rd.App" + ext), target, restored)
+  cleanup(dir)
+  var codes = ""
+  for d in res.diagnostics {
+    codes = codes + d.code + " "
+  }
+  codes
+}
+
+// The same call through the declaring package: still that package's
+// function, so T0042, never the body method's default.
+func omitsRequiredArgQualifiedApp(): String {
+  "package Rd.App\n\n" + "import Rd.Lib\n\n" + "func main(): Unit {\n" +
+    "  println(toString(Rd.Lib.Acc.trim(Acc(n = 9))))\n" +
+    "}\n"
+}
+
 func omitsRequiredArgApp(): String {
   "package Rd.App\n\n" + "import Rd.Lib\n\n" + "func main(): Unit {\n" + "  println(toString(Acc.trim(Acc(n = 9))))\n" +
     "}\n"
@@ -321,6 +365,17 @@ test "a record method and a same-named dot-named function keep their own default
     not consumerCompiles("dotnamed-required", false, methodAndDotNamedLib(), omitsRequiredArgApp()),
     "the dot-named function's k has no default, so leaving it out does not compile"
   )
+  val qualifiedCodes = consumerDiagCodes(
+    "dotnamed-required-qualified",
+    false,
+    methodAndDotNamedLib(),
+    omitsRequiredArgQualifiedApp()
+  )
+  assertTrue(
+    Str.contains(qualifiedCodes, "B0001") and not Str.contains(qualifiedCodes, "T0120") and
+      not Str.contains(qualifiedCodes, "J008"),
+    "through the declaring package too, rejected by the checker rather than codegen (got: " + qualifiedCodes + ")"
+  )
 }
 
 test "a record method and a same-named dot-named function keep their own defaults on the JVM (#8097)" {
@@ -332,6 +387,17 @@ test "a record method and a same-named dot-named function keep their own default
   assertTrue(
     not consumerCompiles("dotnamed-required", true, methodAndDotNamedLib(), omitsRequiredArgApp()),
     "the dot-named function's k has no default, so leaving it out does not compile"
+  )
+  val qualifiedCodes = consumerDiagCodes(
+    "dotnamed-required-qualified",
+    true,
+    methodAndDotNamedLib(),
+    omitsRequiredArgQualifiedApp()
+  )
+  assertTrue(
+    Str.contains(qualifiedCodes, "B0001") and not Str.contains(qualifiedCodes, "T0120") and
+      not Str.contains(qualifiedCodes, "J008"),
+    "through the declaring package too, rejected by the checker rather than codegen (got: " + qualifiedCodes + ")"
   )
 }
 

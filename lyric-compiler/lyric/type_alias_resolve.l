@@ -1773,6 +1773,48 @@ pub func resolveItem(aliasTargets: in Map[String, TypeExpr], it: in Item): Item 
 // `Lyric.BareFuncRef.collectFuncAliasTargets` — which sees the whole package,
 // since docs/19 multi-file packages are concatenated before parsing; axis 3
 // of #6404).
+/// The alias targets of `file` for `resolveAliasesInFile` in a project
+/// build: the aliases it declares, then the `pub` aliases of the packages of
+/// `projectFiles` it imports, its own winning a name both declare.  A
+/// parameterized alias is never registered (see `addFileAliasTargetsInto`).
+pub func projectAliasTargets(file: in SourceFile, projectFiles: in List[SourceFile]): Map[String, TypeExpr] {
+  val targets = BFR.collectFuncAliasTargets(file)
+  for imp in file.imports {
+    if not imp.isExtern {
+      val pkg = joinSegs(imp.path.segments)
+      for other in projectFiles {
+        if joinSegs(other.packageDecl.path.segments) == pkg {
+          for it in other.items {
+            match it.kind {
+              case ITypeAlias(d) -> {
+                val isPub = match it.visibility { case Some(_) -> true; case None -> false }
+                val parameterized = match d.generics { case Some(_) -> true; case None -> false }
+                val selfNamed = match d.rhs.kind {
+                  case TRef(p) -> p.segments.count > 0 and p.segments[p.segments.count - 1] == d.name
+                  case _ -> false
+                }
+                if isPub and not parameterized and not selfNamed and not targets.containsKey(d.name) {
+                  targets.add(d.name, d.rhs)
+                }
+              }
+              case _ -> ()
+            }
+          }
+        }
+      }
+    }
+  }
+  targets
+}
+
+func joinSegs(segs: in List[String]): String {
+  var acc = ""
+  for sg in segs {
+    acc = if acc.length == 0 { sg } else { acc + "." + sg }
+  }
+  acc
+}
+
 pub func resolveAliasesInFile(aliasTargets: in Map[String, TypeExpr], file: in SourceFile): SourceFile {
   val items: List[Item] = newList()
   var i = 0

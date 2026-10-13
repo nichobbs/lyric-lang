@@ -97,6 +97,8 @@ for t in \
   lyric-compiler/lyric/inout_receiver_self_test.l \
   lyric-compiler/lyric/inout_array_element_self_test.l \
   lyric-compiler/lyric/dot_named_byref_self_test.l \
+  lyric-compiler/lyric/dot_named_primitive_self_test.l \
+  lyric-compiler/lyric/type_qualified_method_self_test.l \
   lyric-compiler/lyric/protected_byref_self_test.l \
   lyric-compiler/lyric/byref_value_type_self_test.l \
   lyric-compiler/lyric/slice_func_elem_self_test.l \

@@ -3620,59 +3620,340 @@ func methodCandidatesFor(tbl: in SymbolTable, recv: in Type, name: in String): L
   acc
 }
 
-// D037 type-associated functions (`func T.m(recv, ...)`) callable
-// method-style: same-arity `sigs` candidates under the dotted key whose
-// FIRST param accepts the receiver.  Returned as full signatures (receiver
-// param included); the call site drops the receiver slot for argument
-// validation and uses the full signature for return-type inference (a
-// generic like `func Box.get[T](self: in Box[T]): T` binds `T` from the
-// receiver).
+// D037 type-associated functions (`func T.m(recv, ...)`) a call on a
+// receiver of type `recv` with `argc` further arguments (`args`, of types
+// `argTypes`; `args` may be empty when every argument is positional) may
+// bind: every package's `T.m` whose FIRST param accepts the receiver and
+// whose other parameters take `argc` arguments, defaults included, narrowed
+// by `bindableDotNamed` (D181).  Returned as full signatures (receiver param
+// included); the call site drops the receiver slot for argument validation
+// and uses the full signature for return-type inference (a generic like
+// `func Box.get[T](self: in Box[T]): T` binds `T` from the receiver).
 func dotNamedCandidatesFor(
   tbl: in SymbolTable,
   sigs: in Map[String, ResolvedSignature],
   recv: in Type,
   name: in String,
   argc: in Int,
+  args: in List[CallArg],
+  argTypes: in List[Type],
 ): List[ResolvedSignature] {
-  val acc: List[ResolvedSignature] = newList()
-  match recv {
-    case TyUser(_, tname, _) -> {
-      val key = tname + "." + name
-      val arityKey = key + "/" + toString(argc + 1)
-      match mapGet(sigs, arityKey) {
-        case Some(s) -> acc.add(s)
-        case None -> match mapGet(sigs, key) { case Some(s2) -> acc.add(s2); case None -> {  } }
-      }
-      val over = gatherOverloadCandidates(sigs, arityKey)
-      var i = 0
-      while i < over.count {
-        acc.add(over[i])
-        i = i + 1
-      }
-      // Every package's `T.m` of this arity, generic ones included: the
-      // slots above keep the first registered, which may be another
-      // package's same-named type's function (a caller's own `Box.set`
-      // beside a library's generic `Box[T].set`, #8179); the receiver test
-      // below keeps the one declared on the receiver's type.
-      for c in gatherOverloadCandidates(sigs, byNameSigKey(key)) {
-        if c.params.count == argc + 1 {
-          acc.add(c)
-        }
-      }
-    }
-    case _ -> {
-    }
+  val owner = dotNamedOwnerName(recv)
+  if owner.length == 0 {
+    return newList()
+  }
+  // Every package's `T.m`, generic ones included: the `sigs` slot keeps
+  // the first registered, which may be another package's same-named type's
+  // function (a caller's own `Box.set` beside a library's generic
+  // `Box[T].set`, #8179); the receiver test keeps the ones declared on the
+  // receiver's type.
+  val key = owner + "." + name
+  val arityKey = key + "/" + toString(argc + 1)
+  val all = dotNamedSigsAnyArity(sigs, key)
+  match mapGet(sigs, arityKey) {
+    case Some(s) -> all.add(s)
+    case None -> ()
+  }
+  for o in gatherOverloadCandidates(sigs, arityKey) {
+    all.add(o)
   }
   val kept: List[ResolvedSignature] = newList()
-  var k = 0
-  while k < acc.count {
-    val c = acc[k]
-    if c.params.count >= 1 and argSatisfiesParam(tbl, c.params[0].ty, recv) {
+  for c in all {
+    if takesArgCount(c, argc + 1) and argSatisfiesParam(tbl, c.params[0].ty, recv) and not sigListHas(kept, c) {
       kept.add(c)
     }
-    k = k + 1
   }
-  kept
+  // None takes that many arguments: the receiver's functions of the name
+  // are kept so the call reports its arity against a real signature (T0042).
+  if kept.count == 0 {
+    for c in all {
+      if c.params.count >= 1 and argSatisfiesParam(tbl, c.params[0].ty, recv) and not sigListHas(kept, c) {
+        kept.add(c)
+      }
+    }
+  }
+  bindableDotNamed(tbl, recv, name, kept, argc, args, argTypes)
+}
+
+func takesArgCount(sig: in ResolvedSignature, n: in Int): Bool {
+  sig.params.count >= 1 and n >= minRequiredParams(sig) and n <= sig.params.count
+}
+
+func sigListHas(sigs: in List[ResolvedSignature], s: in ResolvedSignature): Bool {
+  for x in sigs {
+    if x.originPackage == s.originPackage and x.span.startPos.offset == s.span.startPos.offset and x.span.endPos.offset == s.span.endPos.offset and x.params.count == s.params.count {
+      return true
+    }
+  }
+  false
+}
+
+// Whether the full dot-named signature `sig` accepts a call's arguments
+// after the receiver, by count and by type (D181's "applicable").
+func dotNamedApplicable(
+  tbl: in SymbolTable,
+  sig: in ResolvedSignature,
+  argc: in Int,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+): Bool {
+  if not takesArgCount(sig, argc + 1) {
+    return false
+  }
+  val dropped = dropReceiverParam(sig)
+  suppliedArgsMatch(tbl, dropped.params, argTypesInSigOrder(dropped, 0, args, argTypes))
+}
+
+// Whether a method in the body of the receiver's type, or of an `impl` for
+// it, accepts the call's arguments by count and type.
+func ownBodyMethodApplicable(
+  tbl: in SymbolTable,
+  recv: in Type,
+  name: in String,
+  argc: in Int,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+): Bool {
+  for m in methodCandidatesFor(tbl, unrefine(recv), name) {
+    if argc >= minRequiredParams(m) and argc <= m.params.count and suppliedArgsMatch(tbl, m.params, argTypesInSigOrder(m, 0, args, argTypes)) {
+      return true
+    }
+  }
+  false
+}
+
+// Of the dot-named functions `cands` for a receiver of type `recv`, those a
+// call with `argc` arguments besides the receiver binds (D181, #8219): the
+// type's own (declared by its declaring package) when one of the type's
+// own functions, those or a method in its body, is applicable — takes the
+// call's arguments, types included — so an import never changes what an
+// applicable own-method call means; otherwise the extensions, declared by
+// other packages, that the file's imports reach at the nearest level
+// (`dotNamedExtensionTier`), the applicable ones when there are any.
+// Several packages left make the call ambiguous (`dotNamedAmbiguousPackages`).
+func bindableDotNamed(
+  tbl: in SymbolTable,
+  recv: in Type,
+  name: in String,
+  cands: in List[ResolvedSignature],
+  argc: in Int,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+): List[ResolvedSignature] {
+  val ownPkg = match dotNamedDeclaringPackage(tbl, recv) { case Some(p) -> p; case None -> return cands }
+  val own: List[ResolvedSignature] = newList()
+  var ownApplies = ownBodyMethodApplicable(tbl, recv, name, argc, args, argTypes)
+  val exts: List[ResolvedSignature] = newList()
+  for c in cands {
+    if sigPackage(tbl, c) == ownPkg {
+      own.add(c)
+      if dotNamedApplicable(tbl, c, argc, args, argTypes) {
+        ownApplies = true
+      }
+    } else {
+      exts.add(c)
+    }
+  }
+  if ownApplies or exts.count == 0 {
+    return own
+  }
+  var best = 3
+  for x in exts {
+    val t = dotNamedExtensionTier(tbl, sigPackage(tbl, x))
+    if t >= 0 and t < best {
+      best = t
+    }
+  }
+  val nearest: List[ResolvedSignature] = newList()
+  val applicable: List[ResolvedSignature] = newList()
+  for x in exts {
+    if dotNamedExtensionTier(tbl, sigPackage(tbl, x)) == best {
+      nearest.add(x)
+      if dotNamedApplicable(tbl, x, argc, args, argTypes) {
+        applicable.add(x)
+      }
+    }
+  }
+  if nearest.count == 0 {
+    return own
+  }
+  // An own function that takes the arguments' count but not their types is
+  // still reported against when no extension applies either.
+  if applicable.count > 0 {
+    applicable
+  } else if own.count > 0 {
+    own
+  } else {
+    nearest
+  }
+}
+
+// Every package's dot-named function `dotted` (`T.m`), of any arity.
+func dotNamedSigsAnyArity(sigs: in Map[String, ResolvedSignature], dotted: in String): List[ResolvedSignature] {
+  val acc: List[ResolvedSignature] = newList()
+  match mapGet(sigs, dotted) {
+    case Some(s) -> acc.add(s)
+    case None -> ()
+  }
+  for c in gatherOverloadCandidates(sigs, byNameSigKey(dotted)) {
+    acc.add(c)
+  }
+  acc
+}
+
+// The package that declares the type of a receiver `recv`, whose dot-named
+// functions are the type's own; "" for a primitive, which every package may
+// only extend, and `None` for a type whose declaration is not known here.
+func dotNamedDeclaringPackage(tbl: in SymbolTable, recv: in Type): Option[String] {
+  match unrefine(recv) {
+    case TyUser(tid, _, _) -> match symTableTypeSymbolOf(tbl, tid) {
+      case Some(sym) -> Some(
+        value = if sym.originPackage.length == 0 {
+          symTableScopePkg(tbl)
+        } else {
+          sym.originPackage
+        }
+      )
+      case None -> None
+    }
+    case TyPrim(_) -> Some(value = "")
+    case _ -> None
+  }
+}
+
+// The package declaring `sig`, the current one when it records none.
+func sigPackage(tbl: in SymbolTable, sig: in ResolvedSignature): String {
+  if sig.originPackage.length == 0 {
+    symTableScopePkg(tbl)
+  } else {
+    sig.originPackage
+  }
+}
+
+// Whether `sig`, a dot-named function bound by a call on a receiver of type
+// `recv`, extends the type from a package other than the one declaring it.
+func isDotNamedExtension(tbl: in SymbolTable, recv: in Type, sig: in ResolvedSignature): Bool {
+  match dotNamedDeclaringPackage(tbl, recv) {
+    case Some(ownPkg) -> sigPackage(tbl, sig) != ownPkg
+    case None -> false
+  }
+}
+
+// How near an extension declared in package `origin` is to a call here, as
+// the import rule orders bare names (§9.2): 0 for this package (or no import
+// rule), 1 for a package imported whole, 2 for one reached only through a
+// whole import's own whole imports, and -1 for one the imports do not reach
+// (imported only under an alias or selectively, or not at all), whose
+// extensions a method call never binds.
+func dotNamedExtensionTier(tbl: in SymbolTable, origin: in String): Int {
+  val curPkg = symTableScopePkg(tbl)
+  if origin.length == 0 or origin == curPkg or curPkg.length == 0 or not symTableImportRuleApplies(tbl, curPkg) {
+    return 0
+  }
+  if not tbl.importVisiblePkgs.containsKey(origin) {
+    -1
+  } else if symTableScopeAllows(tbl, origin) {
+    1
+  } else {
+    2
+  }
+}
+
+// The packages whose extensions `T.m` a method call `recv.m(<argc
+// arguments>)` could equally bind, when there are several (#8219): each
+// declares one at the nearest level the call's imports reach.  Empty when
+// the call is not ambiguous.
+func dotNamedAmbiguousPackages(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  recv: in Type,
+  name: in String,
+  argc: in Int,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+): List[String] {
+  val pkgs: List[String] = newList()
+  for c in dotNamedCandidatesFor(tbl, sigs, recv, name, argc, args, argTypes) {
+    if takesArgCount(c, argc + 1) and isDotNamedExtension(tbl, recv, c) and not pkgs.contains(sigPackage(tbl, c)) {
+      pkgs.add(sigPackage(tbl, c))
+    }
+  }
+  if pkgs.count < 2 {
+    return newList()
+  }
+  pkgs
+}
+
+// T0123 for a call of `T.m` that two or more packages' extensions could
+// equally bind (#8219); `true` when reported.
+func reportAmbiguousDotNamed(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  recv: in Type,
+  name: in String,
+  argc: in Int,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  span: in Span,
+): Bool {
+  val pkgs = dotNamedAmbiguousPackages(tbl, sigs, recv, name, argc, args, argTypes)
+  if pkgs.count < 2 {
+    return false
+  }
+  val dotted = dotNamedOwnerName(recv) + "." + name
+  diag.add(
+    errorDiagnostic(
+      "T0123",
+      "'" + dotted + "' is ambiguous: it is declared by " + joinPackageNames(pkgs) +
+        ", all reached through this file's imports, and not by the package declaring '" +
+        dotNamedOwnerName(recv) +
+        "' — call it through its package (e.g. '" +
+        pkgs[0] +
+        "." +
+        dotted +
+        "(...)')",
+      span
+    )
+  )
+  true
+}
+
+// The type name a dot-named function for a receiver of type `recv` is
+// declared under: a user type's name (`func Box.get`), or a primitive's
+// (`func Int.twice`, #8217); "" for a type no dot-named function names.
+func dotNamedOwnerName(recv: in Type): String {
+  match unrefine(recv) {
+    case TyUser(_, tname, _) -> tname
+    case TyPrim(pt) -> primName(pt)
+    case _ -> ""
+  }
+}
+
+// A method every backend lowers itself on a primitive receiver, which no
+// signature types here: `toString()`, and the bitwise `and`/`or`/`xor`/`shl`/
+// `shr` of an integer (#1610).  A dot-named function of the primitive with
+// the same name does not capture the method call (#8217), as it does not
+// capture one of the methods typed here (`toLong`, `trim`, ...).
+func isPrimitiveIntrinsicMethod(recv: in Type, name: in String, argc: in Int): Bool {
+  match unrefine(recv) {
+    case TyPrim(pt) -> if name == "toString" and argc == 0 {
+      true
+    } else if argc == 1 and (name == "and" or name == "or" or name == "xor" or name == "shl" or name == "shr") {
+      match pt {
+        case PtByte -> true
+        case PtInt -> true
+        case PtLong -> true
+        case PtUInt -> true
+        case PtULong -> true
+        case PtNat -> true
+        case _ -> false
+      }
+    } else {
+      false
+    }
+    case _ -> false
+  }
 }
 
 // A resolved method call: `sig` is the receiver-dropped signature the
@@ -3748,16 +4029,13 @@ func resolveMethodCallPick(
   sigs: in Map[String, ResolvedSignature],
   recvRaw: in Type,
   name: in String,
-  argc: in Int,
+  args: in List[CallArg],
   argTypes: in List[Type],
 ): Option[MethodCallPick] {
+  val argc = args.count
   val recv = unrefine(recvRaw)
-  match recv {
-    case TyUser(_, _, _) -> {
-    }
-    case _ -> {
-      return None
-    }
+  if dotNamedOwnerName(recv).length == 0 or isPrimitiveIntrinsicMethod(recv, name, argc) {
+    return None
   }
   val picks: List[MethodCallPick] = newList()
   val direct = methodCandidatesFor(tbl, recv, name)
@@ -3766,7 +4044,7 @@ func resolveMethodCallPick(
     picks.add(MethodCallPick(sig = direct[i], fullSig = None))
     i = i + 1
   }
-  val dotted = dotNamedCandidatesFor(tbl, sigs, recv, name, argc)
+  val dotted = dotNamedCandidatesFor(tbl, sigs, recv, name, argc, args, argTypes)
   var d = 0
   while d < dotted.count {
     picks.add(MethodCallPick(sig = dropReceiverParam(dotted[d]), fullSig = Some(value = dotted[d])))
@@ -3794,7 +4072,7 @@ func resolveMethodCallPick(
         case Some(_) -> {
         }
       }
-      if suppliedArgsMatch(tbl, p.sig.params, argTypes) {
+      if suppliedArgsMatch(tbl, p.sig.params, argTypesInSigOrder(p.sig, 0, args, argTypes)) {
         match best {
           case None -> {
             best = Some(value = p)
@@ -4033,6 +4311,10 @@ func maybeUnknownMemberDiag(
   val recv = unrefine(recvRaw)
   match recv {
     case TyUser(tid, tname, _) -> {
+      if isCall and isNonGenericDistinct(tbl, tid) {
+        unknownDistinctMethodDiag(tbl, sigs, diag, recv, tname, name, span)
+        return
+      }
       if not symTableIsMemberComplete(tbl, tid) {
         return
       }
@@ -4066,17 +4348,145 @@ func maybeUnknownMemberDiag(
         }
         pi = pi + 1
       }
-      if sigs.containsKey(tname + "." + name) {
-        return
-      }
+      val hint = match hiddenExtensionsHint(tbl, sigs, recv, tname + "." + name) { case Some(h) -> h; case None -> return }
       val what = if isCall { "no method '" } else { "no member '" }
       diag.add(
-        errorDiagnostic("T0113", what + name + "' on type '" + tname + "'" + shadowedStdCollectionNote(tbl, recv), span)
+        errorDiagnostic(
+          "T0113",
+          what + name + "' on type '" + tname + "'" + shadowedStdCollectionNote(tbl, recv) + hint,
+          span
+        )
       )
+    }
+    // A method call on a primitive that names no built-in method, no
+    // dot-named function of the primitive and no extension the imports reach
+    // (#8217, #8219).  A `String`'s methods stay open-ended: on the JVM its
+    // host methods are reached by name.
+    case TyPrim(pt) -> match hiddenExtensionsHint(tbl, sigs, recv, primName(pt) + "." + name) {
+      case Some(h) -> if isCall and (h.length > 0 or not (isPrimitiveBuiltinMethodName(name) or (match pt { case PtString -> true; case _ -> false }))) {
+        diag.add(errorDiagnostic("T0113", "no method '" + name + "' on type '" + primName(pt) + "'" + h, span))
+      }
+      case None -> ()
     }
     case _ -> {
     }
   }
+}
+
+// The methods every backend gives a primitive receiver itself: `toString`,
+// the conversions, the bitwise and the wrapping arithmetic.  A call of any
+// other name on a primitive needs a dot-named function of it.
+func isPrimitiveBuiltinMethodName(name: in String): Bool {
+  match numericConvTarget(name) {
+    case Some(_) -> return true
+    case None -> ()
+  }
+  name == "toString" or name == "toUInt" or name == "toULong" or name == "toNat" or name == "and" or name == "or" or
+    name == "xor" or
+    name == "shl" or
+    name == "shr" or
+    isWrappingMethodName(name)
+}
+
+// Whether `tid` is a distinct type with no generic parameters.
+func isNonGenericDistinct(tbl: in SymbolTable, tid: in TypeId): Bool {
+  for sym in tbl.symbols {
+    match sym.kind {
+      case DKDistinctType(did, dt) -> if typeIdEq(did, tid) {
+        return match dt.generics { case Some(_) -> false; case None -> true }
+      }
+      case _ -> ()
+    }
+  }
+  false
+}
+
+// T0113 for a method call on a distinct type that names none of its
+// methods: a distinct type does not expose its underlying type's methods
+// (docs/01 §2.3), so a dot-named function of the underlying type is called
+// on `.value`.
+func unknownDistinctMethodDiag(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  recv: in Type,
+  tname: in String,
+  name: in String,
+  span: in Span,
+): Unit {
+  if isUniversalMethodName(name) or isPrimitiveBuiltinMethodName(name) or name == "value" {
+    return
+  }
+  match builtinMember(tbl, recv, name) {
+    case Some(_) -> {
+      return
+    }
+    case None -> ()
+  }
+  match recv {
+    case TyUser(tid, _, _) -> {
+      if symTableMethodSigs(tbl, tid, name).count > 0 {
+        return
+      }
+    }
+    case _ -> ()
+  }
+  val hint = match hiddenExtensionsHint(tbl, sigs, recv, tname + "." + name) { case Some(h) -> h; case None -> return }
+  diag.add(
+    errorDiagnostic(
+      "T0113",
+      "no method '" + name + "' on distinct type '" + tname + "'" + hint +
+        "; a distinct type does not expose its underlying type's methods, call them on '.value' (e.g. 'x.value." +
+        name +
+        "()')",
+      span
+    )
+  )
+}
+
+// For a member `dotted` (`T.m`) a call on a receiver of type `recv` did not
+// bind: `None` when some dot-named function of that name is the type's own or
+// an extension the file's imports reach, so the call is checked against it
+// elsewhere; otherwise the clause naming the packages whose extensions the
+// imports do not reach (#8219), "" when there are none.
+func hiddenExtensionsHint(
+  tbl: in SymbolTable, sigs: in Map[String, ResolvedSignature], recv: in Type, dotted: in String
+): Option[String] {
+  val hiddenIn: List[String] = newList()
+  for c in dotNamedSigsAnyArity(sigs, dotted) {
+    if not isDotNamedExtension(tbl, recv, c) or dotNamedExtensionTier(tbl, sigPackage(tbl, c)) >= 0 {
+      return None
+    }
+    if not hiddenIn.contains(sigPackage(tbl, c)) {
+      hiddenIn.add(sigPackage(tbl, c))
+    }
+  }
+  if hiddenIn.count == 0 {
+    return Some(value = "")
+  }
+  // A package imported under an alias or selectively is named in this
+  // file, so its extension is called through it (#8219).
+  val via: List[String] = newList()
+  for pkg in hiddenIn {
+    match mapGet(tbl.importAliases, pkg) {
+      case Some(alias) -> via.add("'" + alias + "." + dotted + "(...)' (" + pkg + " is imported as " + alias + ")")
+      case None -> if symTableScopeAllows(tbl, pkg) {
+        via.add("'" + pkg + "." + dotted + "(...)' (" + pkg + " is imported selectively)")
+      }
+    }
+  }
+  if via.count > 0 {
+    return Some(
+      value = " ('" + dotted + "' is declared by " + joinPackageNames(hiddenIn) +
+        ", whose extensions a method call binds only when the package is imported whole; call it as " +
+        joinStrs(via, " or ") +
+        ")"
+    )
+  }
+  Some(
+    value = " ('" + dotted + "' is declared by " + joinPackageNames(hiddenIn) +
+      ", which this file's imports do not reach; import it)"
+  )
 }
 
 // True when `name` names a REAL field of the LOCAL (non-imported) opaque
@@ -8594,8 +9004,14 @@ func isBareTyVar(t: in Type, name: in String): Bool {
 // A generic function's return type instantiated from the call's argument types:
 // `unwrapOr(o: Option[T], default: T): T` called with an `Option[Int]` / `Int`
 // pair yields `Int` instead of the raw `TyVar("T")` (#1488 category B).  A
-// non-generic sig is returned unchanged.
-func instantiateReturnType(sig: in ResolvedSignature, argTypes: in List[Type]): Type {
+// non-generic sig is returned unchanged.  `argTypes` are the types of the
+// call's `skip` leading receiver arguments followed by those of `args`, in
+// source order; each is paired with its parameter as the call pairs them
+// (D171), so a named argument written out of order binds the type parameter
+// of the parameter it names (#8240).
+func instantiateReturnType(
+  sig: in ResolvedSignature, skip: in Int, args: in List[CallArg], argTypes: in List[Type]
+): Type {
   if sig.generics.count == 0 {
     return sig.returnTy
   }
@@ -8605,8 +9021,42 @@ func instantiateReturnType(sig: in ResolvedSignature, argTypes: in List[Type]): 
     paramTys.add(sig.params[i].ty)
     i = i + 1
   }
-  val targs = inferGenericArgsDeep(sig.generics, paramTys, argTypes)
+  val targs = inferGenericArgsDeep(sig.generics, paramTys, argTypesInSigOrder(sig, skip, args, argTypes))
   substituteTyVars(sig.returnTy, sig.generics, targs)
+}
+
+// `argTypes` (the types of `skip` leading receiver arguments, then of `args`
+// in source order) rearranged into the order of `sig`'s parameters: each
+// named argument's type at the parameter it names, the positional ones in
+// the remaining slots left to right, and `TyError`, which binds nothing, for
+// a parameter the call leaves to its default (#8240).
+func argTypesInSigOrder(
+  sig: in ResolvedSignature, skip: in Int, args: in List[CallArg], argTypes: in List[Type]
+): List[Type] {
+  if not callArgsHaveNamed(args) or skip > sig.params.count or skip > argTypes.count {
+    return argTypes
+  }
+  val ordered: List[Type] = newList()
+  val names: List[String] = newList()
+  val rest: List[Type] = newList()
+  var i = 0
+  while i < argTypes.count {
+    if i < skip {
+      ordered.add(argTypes[i])
+    } else {
+      rest.add(argTypes[i])
+    }
+    i = i + 1
+  }
+  var p = skip
+  while p < sig.params.count {
+    names.add(sig.params[p].name)
+    p = p + 1
+  }
+  for t in argTypesInFieldOrder(args, rest, names) {
+    ordered.add(t)
+  }
+  ordered
 }
 
 // H15: verify that concrete type arguments inferred for a generic call site
@@ -8617,6 +9067,7 @@ func checkBoundsSatisfied(
   tbl: in SymbolTable,
   diag: in List[Diagnostic],
   sig: in ResolvedSignature,
+  args: in List[CallArg],
   argTypes: in List[Type],
   span: in Span,
 ): Unit {
@@ -8629,7 +9080,7 @@ func checkBoundsSatisfied(
     paramTys.add(sig.params[pi].ty)
     pi = pi + 1
   }
-  val targs = inferGenericArgsDeep(sig.generics, paramTys, argTypes)
+  val targs = inferGenericArgsDeep(sig.generics, paramTys, argTypesInSigOrder(sig, 0, args, argTypes))
   var bi = 0
   while bi < sig.bounds.count {
     val bound = sig.bounds[bi]
@@ -12357,7 +12808,7 @@ func recordSigArgOrderSite(
     byRef,
     expected,
     recvTy,
-    instantiateReturnType(sig, argTypes),
+    instantiateReturnType(sig, 0, args, argTypes),
     sig.isAsync or sig.isGenerator
   )
 }
@@ -12779,7 +13230,7 @@ func directCallType(
   args: in List[CallArg],
   argTypes: in List[Type],
 ): Type {
-  val ret = instantiateReturnType(sig, argTypes)
+  val ret = instantiateReturnType(sig, 0, args, argTypes)
   match dottedGenericPathCallee(tbl, fn, sig) {
     case Some(dottedFn) -> {
       recordDottedGenericCallSite(tbl, fn.span, dottedCalleeName(fn, sig), false, sig)
@@ -12867,6 +13318,21 @@ func dottedCalleeName(fn: in Expr, sig: in ResolvedSignature): String {
   segs[segs.count - 2] + "." + segs[segs.count - 1]
 }
 
+// `Pkg` for a callee written `Pkg.T.m`; "" for `T.m` or any other callee.
+func calleePackagePrefix(fn: in Expr): String {
+  val segs: List[String] = newList()
+  if not calleeSegments(fn, segs) or segs.count < 3 {
+    return ""
+  }
+  val pkgSegs: List[String] = newList()
+  var i = 0
+  while i < segs.count - 2 {
+    pkgSegs.add(segs[i])
+    i = i + 1
+  }
+  modulePathJoin(pkgSegs)
+}
+
 // `T.m` for a callee written through its type, `T.m` or package-qualified
 // `Pkg.T.m`, as a path or a member chain; "" otherwise.
 func qualifiedDottedName(fn: in Expr): String {
@@ -12926,24 +13392,71 @@ func recordDottedGenericCallSite(
 }
 
 // The full signature of a method call resolved to a dot-named function that
-// takes something by reference (#8179): the call is rewritten into a plain
-// call of the function.  None for any other call.
-func byRefDotFullSig(methodPick: in Option[MethodCallPick], fn: in Expr): Option[ResolvedSignature] {
+// takes something by reference (#8179), is called on a primitive receiver
+// (#8217) or extends the receiver's type from another package (#8219): the
+// call is rewritten into a plain call of the function.  None for any other
+// call.
+func rewrittenDotFullSig(
+  tbl: in SymbolTable,
+  methodPick: in Option[MethodCallPick],
+  fn: in Expr,
+  recvTy: in Option[Type],
+): Option[ResolvedSignature] {
   match fn.kind {
     case EMember(_, _) -> ()
     case _ -> return None
   }
   match methodPick {
     case Some(mp) -> match mp.fullSig {
-      case Some(fullS) -> if sigHasByRefParam(fullS) { Some(value = fullS) } else { None }
+      case Some(fullS) -> if sigHasByRefParam(fullS) or receiverNeedsPlainDotCall(tbl, recvTy) or receiverExtendedBy(tbl, recvTy, fullS) {
+        Some(value = fullS)
+      } else {
+        None
+      }
       case None -> None
     }
     case None -> None
   }
 }
 
-func isByRefDotPick(methodPick: in Option[MethodCallPick], fn: in Expr): Bool {
-  match byRefDotFullSig(methodPick, fn) {
+// Whether `sig` extends the type of the receiver `recvTy` from a package
+// other than the one declaring it (#8219): no backend finds such a function
+// among the type's methods.
+func receiverExtendedBy(tbl: in SymbolTable, recvTy: in Option[Type], sig: in ResolvedSignature): Bool {
+  match recvTy {
+    case Some(rt) -> isDotNamedExtension(tbl, rt, sig)
+    case None -> false
+  }
+}
+
+// A method call on a primitive or distinct-type receiver resolved to a
+// dot-named function (`k.twice()` for `func Int.twice`, `a.older()` for
+// `func Age.older`) becomes a plain call of the function, as a by-reference
+// one does: a primitive has no methods to dispatch to on any backend, and a
+// distinct type none on native, which represents it as its underlying type
+// (#8217).
+func receiverNeedsPlainDotCall(tbl: in SymbolTable, recvTy: in Option[Type]): Bool {
+  match recvTy {
+    case Some(rt) -> match unrefine(rt) {
+      case TyPrim(_) -> true
+      case TyUser(tid, _, _) -> isDistinctTypeId(tbl, tid)
+      case _ -> false
+    }
+    case None -> false
+  }
+}
+
+func isDistinctTypeId(tbl: in SymbolTable, tid: in TypeId): Bool {
+  match symTableTypeSymbolOf(tbl, tid) {
+    case Some(sym) -> match sym.kind { case DKDistinctType(_, _) -> true; case _ -> false }
+    case None -> false
+  }
+}
+
+func isRewrittenDotPick(
+  tbl: in SymbolTable, methodPick: in Option[MethodCallPick], fn: in Expr, recvTy: in Option[Type]
+): Bool {
+  match rewrittenDotFullSig(tbl, methodPick, fn, recvTy) {
     case Some(_) -> true
     case None -> false
   }
@@ -12970,7 +13483,49 @@ func recordByRefDotCall(
   fullSig: in ResolvedSignature,
   receiverFirst: in Bool,
 ): Unit {
-  if isNoSourceSpan(sp) or name.length == 0 or not sigHasByRefParam(fullSig) {
+  if sigHasByRefParam(fullSig) {
+    recordDotCallRewrite(tbl, sp, name, fullSig, receiverFirst)
+  }
+}
+
+// Record a call `T.m(x, args)` through its type that binds the method `m`
+// in the body of `x`'s type (`sig`, receiver included) for rewriting into
+// the method call `x.m(args)` (D181), with the arity the call resolves to
+// when it leaves out a defaulted argument (#7828).
+func recordBodyMethodCallRewrite(
+  tbl: in SymbolTable,
+  fn: in Expr,
+  args: in List[CallArg],
+  member: in String,
+  sig: in ResolvedSignature,
+): Unit {
+  if isNoSourceSpan(fn.span) or args.count == 0 {
+    return
+  }
+  val key = recordCopySiteKey(fn.span)
+  if tbl.byRefDotCallSites.containsKey(key) {
+    tbl.byRefDotCallSites.remove(key)
+  }
+  if tbl.dottedGenericCallSites.containsKey(key) {
+    tbl.dottedGenericCallSites.remove(key)
+  }
+  tbl.byRefDotCallSites.add(key, ByRefDotCall(name = member, receiverFirst = false, originPkg = "", asMethod = true))
+  val recvExpr = callArgExpr(args[0])
+  val asMember = Expr(kind = EMember(receiver = recvExpr, memberName = member), span = fn.span)
+  recordMethodCallArity(tbl, asMember, args.count - 1, sig.params.count - 1, false)
+}
+
+// Record the call of the dot-named function `name` (`fullSig`, receiver
+// included) at `sp` for rewriting into a plain call of the function
+// (`SymbolTable.byRefDotCallSites`).
+func recordDotCallRewrite(
+  tbl: in SymbolTable,
+  sp: in Span,
+  name: in String,
+  fullSig: in ResolvedSignature,
+  receiverFirst: in Bool,
+): Unit {
+  if isNoSourceSpan(sp) or name.length == 0 {
     return
   }
   val key = recordCopySiteKey(sp)
@@ -13155,7 +13710,7 @@ func dottedMethodCallType(
   fullArgTypes: in List[Type],
   fullSig: in ResolvedSignature,
 ): Type {
-  val dotRet = instantiateReturnType(fullSig, fullArgTypes)
+  val dotRet = instantiateReturnType(fullSig, 1, args, fullArgTypes)
   if fullSig.generics.count == 0 {
     return dotRet
   }
@@ -13181,7 +13736,10 @@ func recordDottedGenericMethodCall(
   instRet: in Type,
 ): Type {
   val recvExpr = match fn.kind { case EMember(r, _) -> r; case _ -> return instRet }
-  val tname = match unrefine(recvTy) { case TyUser(_, n, _) -> n; case _ -> return instRet }
+  val tname = dotNamedOwnerName(recvTy)
+  if tname.length == 0 {
+    return instRet
+  }
   val name = tname + "." + memberName
   recordDottedGenericCallSite(tbl, fn.span, name, true, fullSig)
   val segs: List[String] = newList()
@@ -13310,7 +13868,7 @@ func checkExplicitValueGenericCall(
     case None -> return None
   }
   checkCallArgsAgainstSig(sc, tbl, sigs, diag, sig, args, argTypes, sp)
-  Some(value = bindValueGenericCall(tbl, diag, fn, args, argTypes, instantiateReturnType(sig, argTypes)))
+  Some(value = bindValueGenericCall(tbl, diag, fn, args, argTypes, instantiateReturnType(sig, 0, args, argTypes)))
 }
 
 func anyErrorType(ts: in List[Type]): Bool {
@@ -14095,6 +14653,12 @@ func inferExprCore(
                   checkUnimportedTypeReceiver(tbl, sc, p2.segments[0], recvE2.span, diag)
                   val scratch2: List[Diagnostic] = newList()
                   inferExpr(sc, tbl, sigs, scratch2, recvE2)
+                } else if isPackageDottedCallee(sc, tbl, sigs, p2.segments, mname2, args.count) {
+                  // `Pkg.T.m(x)` names the function `T.m` a package declares,
+                  // which need not be the package declaring `T` (an extension,
+                  // #8219): `Pkg.T` is not a value.
+                  val scratch3: List[Diagnostic] = newList()
+                  inferExpr(sc, tbl, sigs, scratch3, recvE2)
                 } else {
                   inferExpr(sc, tbl, sigs, diag, recvE2)
                 }
@@ -14211,7 +14775,7 @@ func inferExprCore(
           match fnT {
             case TyError -> match memberRecvTy {
               case Some(rt3) -> {
-                methodPick = resolveMethodCallPick(tbl, sigs, rt3, memberName, args.count, argTypes)
+                methodPick = resolveMethodCallPick(tbl, sigs, rt3, memberName, args, argTypes)
               }
               case None -> {
               }
@@ -14367,7 +14931,7 @@ func inferExprCore(
       // other arguments or the type expected of the result (#7844).
       // A receiver passed by reference is a place the call keeps, like a
       // by-reference argument (#8179): never hoisted into a temporary.
-      if isMemberCallee and callArgsHaveHoistHazard(args) and not isByRefDotPick(methodPick, fn) {
+      if isMemberCallee and callArgsHaveHoistHazard(args) and not isRewrittenDotPick(tbl, methodPick, fn, memberRecvTy) {
         match fn.kind {
           case EMember(hoistRecv, _) -> match memberRecvTy {
             case Some(hoistRecvTy) -> {
@@ -14473,12 +15037,67 @@ func inferExprCore(
             recordSigArgConversions(tbl, sig, args, argTypes)
           }
           // H15: verify where-clause bounds on generic call sites.
-          checkBoundsSatisfied(tbl, diag, sig, argTypes, e.span)
+          checkBoundsSatisfied(tbl, diag, sig, args, argTypes, e.span)
           // Instantiate a generic return type from the argument types (#1488
           // category B) so `unwrapOr(opt, 0): T` yields `Int`, not `TyVar("T")`.
-          val instRet = directCallType(tbl, diag, fn, sig, args, argTypes)
-          if dottedFuncCallee(tbl, fn) {
-            recordByRefDotCall(tbl, fn.span, qualifiedDottedName(fn), sig, false)
+          var instRet = directCallType(tbl, diag, fn, sig, args, argTypes)
+          match bodyMethodCalleeBinding(tbl, sigs, fn, args, argTypes) {
+            // `T.m(x, args)` binding a method in the body of `x`'s type is
+            // what `x.m(args)` calls (D181): the call is written that way
+            // for the backends, which have no function `T.m` for a body
+            // method.  Its arguments are paired in that shape.
+            case Some(bm) -> {
+              val member = memberOfDotted(fn)
+              val restArgs = tailArgs(args)
+              val restTypes = tailTypes(argTypes)
+              recordBodyMethodCallRewrite(tbl, fn, args, member, withReceiverParam(bm, argTypes[0]))
+              val siteKey = recordCopySiteKey(e.span)
+              if tbl.argOrderSites.containsKey(siteKey) {
+                tbl.argOrderSites.remove(siteKey)
+              }
+              if callArgsHaveNamed(restArgs) or callArgsHaveHoistHazard(restArgs) or callArgsHaveElementPlace(restArgs) {
+                val asMember = Expr(kind = EMember(receiver = callArgExpr(args[0]), memberName = member), span = fn.span)
+                recordSigArgOrderSite(
+                  sc,
+                  tbl,
+                  e.span,
+                  asMember,
+                  restArgs,
+                  restTypes,
+                  bm,
+                  sigExpectedArgTypes(bm, None, restArgs, restTypes),
+                  Some(value = argTypes[0])
+                )
+              }
+            }
+            case None -> if dottedFuncCallee(tbl, fn) {
+              // `T.m(x, args)` binds the function `x.m(args)` does (#8219);
+              // an extension is called through the package declaring it,
+              // and a function declared through an alias by the aliased
+              // type's name, which it is compiled under.
+              val dotRecv = if argTypes.count > 0 { argTypes[0] } else { TyError }
+              val restArgs = tailArgs(args)
+              val restTypes = tailTypes(argTypes)
+              val member = memberOfDotted(fn)
+              val viaType = dottedPathName(fn).length > 0
+              if viaType and reportAmbiguousDotNamed(tbl, sigs, diag, dotRecv, member, args.count - 1, restArgs, restTypes, fn.span) {
+                instRet = TyError
+              }
+              val written = qualifiedDottedName(fn)
+              val canonical = canonicalDottedName(tbl, fn)
+              // A primitive's or distinct type's function named through its
+              // package (`Pkg.Int.neg(k)`) is called by its own name too.
+              val qualifiedPlain = not viaType and receiverNeedsPlainDotCall(tbl, Some(value = dotRecv))
+              // So is one named through this package (`Main.Bag.top(b)` in
+              // `Main`): the backends resolve a package prefix only for
+              // another package.
+              val ownPkgQualified = calleePackagePrefix(fn) == symTableScopePkg(tbl)
+              if isDotNamedExtension(tbl, dotRecv, sig) or (viaType and foreignDotNamedShadowed(tbl, sigs, dotRecv, member, sig)) or canonical != written or qualifiedPlain or ownPkgQualified {
+                recordDotCallRewrite(tbl, fn.span, canonical, sig, false)
+              } else {
+                recordByRefDotCall(tbl, fn.span, written, sig, false)
+              }
+            }
           }
           // A generic call's result type is evidence for `Lyric.Mono` where
           // it cannot infer the call's type arguments itself (#7865).
@@ -14548,10 +15167,10 @@ func inferExprCore(
                       recordHoistedCallArgs(sc, tbl, args, argTypes, mpExpected)
                     }
                     if mpNamed or mpHazard or mpElem {
-                      match byRefDotFullSig(methodPick, fn) {
-                        // The call becomes `T.m(recv, args)` (#8179), so its
-                        // argument order is recorded in that shape, the
-                        // receiver a by-reference argument.
+                      match rewrittenDotFullSig(tbl, methodPick, fn, memberRecvTy) {
+                        // The call becomes `T.m(recv, args)` (#8179, #8217),
+                        // so its argument order is recorded in that shape,
+                        // the receiver its first argument.
                         case Some(fullS) -> {
                           val fullArgs: List[CallArg] = newList()
                           val fullArgTypes: List[Type] = newList()
@@ -14580,7 +15199,7 @@ func inferExprCore(
                       }
                     }
                   }
-                  checkBoundsSatisfied(tbl, diag, mp.sig, argTypes, e.span)
+                  checkBoundsSatisfied(tbl, diag, mp.sig, args, argTypes, e.span)
                   match mp.fullSig {
                     case Some(fullS) -> match memberRecvTy {
                       case Some(_) -> recordGenericArgWidenings(tbl, fullS, memberRecvTy, args, argTypes)
@@ -14593,15 +15212,15 @@ func inferExprCore(
                       match fn.kind {
                         case EMember(byRecv, _) -> {
                           match memberRecvTy {
-                            case Some(byRt) -> match unrefine(byRt) {
-                              case TyUser(_, byTname, _) -> recordByRefDotCall(
-                                tbl,
-                                fn.span,
-                                byTname + "." + memberName,
-                                fullS,
-                                true
-                              )
-                              case _ -> ()
+                            case Some(byRt) -> {
+                              val byTname = dotNamedOwnerName(byRt)
+                              if byTname.length > 0 {
+                                if receiverNeedsPlainDotCall(tbl, memberRecvTy) or isDotNamedExtension(tbl, byRt, fullS) {
+                                  recordDotCallRewrite(tbl, fn.span, byTname + "." + memberName, fullS, true)
+                                } else {
+                                  recordByRefDotCall(tbl, fn.span, byTname + "." + memberName, fullS, true)
+                                }
+                              }
                             }
                             case None -> ()
                           }
@@ -14621,9 +15240,27 @@ func inferExprCore(
                         extArgs.add(argTypes[xi])
                         xi = xi + 1
                       }
-                      dottedMethodCallType(tbl, diag, fn, memberRecvTy, memberName, args, extArgs, fullS)
+                      val ambiguous = match memberRecvTy {
+                        case Some(amRt) -> reportAmbiguousDotNamed(
+                          tbl,
+                          sigs,
+                          diag,
+                          amRt,
+                          memberName,
+                          args.count,
+                          args,
+                          argTypes,
+                          fn.span
+                        )
+                        case None -> false
+                      }
+                      if ambiguous {
+                        TyError
+                      } else {
+                        dottedMethodCallType(tbl, diag, fn, memberRecvTy, memberName, args, extArgs, fullS)
+                      }
                     }
-                    case None -> instantiateReturnType(mp.sig, argTypes)
+                    case None -> instantiateReturnType(mp.sig, 0, args, argTypes)
                   }
                 }
                 case None -> {
@@ -17394,13 +18031,74 @@ func qualifiedCallCandidates(
   acc
 }
 
+// Whether `Pkg.T.m`, the receiver `segs` of a call of `m` with `arity`
+// arguments, names an extension `T.m` that package `Pkg` declares for a type
+// `T` it does not declare itself (#8219).  `Pkg.T` names no value or type
+// then; where `Pkg` declares `T`, the receiver resolves as that type.
+func isPackageDottedCallee(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  segs: in List[String],
+  member: in String,
+  arity: in Int,
+): Bool {
+  if segs.count < 2 or not startsUppercase(segs[segs.count - 1]) or scopeHasName(sc, segs[0]) {
+    return false
+  }
+  val pkgSegs: List[String] = newList()
+  var i = 0
+  while i < segs.count - 1 {
+    pkgSegs.add(segs[i])
+    i = i + 1
+  }
+  match symTableTryFindInPackage(tbl, modulePathJoin(pkgSegs), segs[segs.count - 1]) {
+    case Some(_) -> return false
+    case None -> ()
+  }
+  val full: List[String] = newList()
+  for sg in segs {
+    full.add(sg)
+  }
+  full.add(member)
+  match packageDottedSig(tbl, sigs, full, arity) {
+    case Some(_) -> true
+    case None -> false
+  }
+}
+
+// The function a call `Pkg.T.m(x, args)` binds: the method `m` in the body
+// of `T` (D181) when `Pkg` declares `T` and no dot-named `T.m`, and the
+// method takes the arguments; else the dot-named function `T.m` that `Pkg`
+// declares.
+func qualifiedTypeDotSig(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  segs: in List[String],
+  arity: in Int,
+  argTypes: in List[Type],
+): Option[ResolvedSignature] {
+  val typeSegs: List[String] = newList()
+  var i = 0
+  while i < segs.count - 1 {
+    typeSegs.add(segs[i])
+    i = i + 1
+  }
+  val noArgs: List[CallArg] = newList()
+  match bodyMethodViaType(tbl, sigs, typeSegs, segs[segs.count - 1], noArgs, argTypes) {
+    case Some(m) -> return Some(value = withReceiverParam(m, argTypes[0]))
+    case None -> ()
+  }
+  packageDottedSig(tbl, sigs, segs, arity)
+}
+
 // The dot-named function `T.m` declared by the package the leading
-// segments of `Pkg.T.m` name, taking `arity` arguments.
+// segments of `Pkg.T.m` name, one taking `arity` arguments first.
 func packageDottedSig(
-  sigs: in Map[String, ResolvedSignature], segs: in List[String], arity: in Int
+  tbl: in SymbolTable, sigs: in Map[String, ResolvedSignature], segs: in List[String], arity: in Int
 ): Option[ResolvedSignature] {
   val n = segs.count
-  val dotted = segs[n - 2] + "." + segs[n - 1]
+  val dotted = canonicalOwnerName(tbl, segs[n - 2]) + "." + segs[n - 1]
   val pkgSegs: List[String] = newList()
   var i = 0
   while i < n - 2 {
@@ -17408,12 +18106,272 @@ func packageDottedSig(
     i = i + 1
   }
   val pkg = modulePathJoin(pkgSegs)
+  var other: Option[ResolvedSignature] = None
   for c in gatherOverloadCandidates(sigs, byNameSigKey(dotted)) {
-    if c.originPackage == pkg and arity <= c.params.count and arity >= minRequiredParams(c) {
-      return Some(value = c)
+    if sigPackage(tbl, c) == pkg {
+      if arity <= c.params.count and arity >= minRequiredParams(c) {
+        return Some(value = c)
+      }
+      match other {
+        case None -> {
+          other = Some(value = c)
+        }
+        case Some(_) -> ()
+      }
     }
   }
-  None
+  // None takes the arguments' count: the call still names that package's
+  // function, against which the count is reported (T0042), never another
+  // function of the type's (#8097).
+  other
+}
+
+// The function a call `T.m(x, args)` through its type binds when the first
+// argument is a `T` (D181, #8219): the method in the type's body when it
+// applies and the type's package declares no dot-named `T.m` (one it does
+// declare names the call, #8097), then the dot-named functions
+// `dotNamedCandidatesFor` keeps, an applicable one first; otherwise the one
+// registered for that name and arity.
+func typeQualifiedDotSig(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  typeName: in String,
+  member: in String,
+  arity: in Int,
+  argTypes: in List[Type],
+): Option[ResolvedSignature] {
+  val owner = canonicalOwnerName(tbl, typeName)
+  if arity >= 1 and argTypes.count >= 1 and dotNamedOwnerName(argTypes[0]) == owner {
+    val recv = argTypes[0]
+    val noArgs: List[CallArg] = newList()
+    val rest = tailTypes(argTypes)
+    // A dot-named function of the type's package answers a call through
+    // the type, the method in the type's body only when there is none
+    // (#8097).
+    if not ownDotNamedDeclared(tbl, sigs, recv, member) {
+      match applicableBodyMethod(tbl, recv, member, arity - 1, noArgs, rest) {
+        case Some(m) -> return Some(value = withReceiverParam(m, recv))
+        case None -> ()
+      }
+    }
+    val cands = dotNamedCandidatesFor(tbl, sigs, recv, member, arity - 1, noArgs, rest)
+    for c in cands {
+      if dotNamedApplicable(tbl, c, arity - 1, noArgs, rest) {
+        return Some(value = c)
+      }
+    }
+    if cands.count > 0 {
+      return Some(value = cands[0])
+    }
+  }
+  dottedSigLookup(sigs, owner + "." + member, arity)
+}
+
+// The applicable method named `name` in the body of the receiver's type,
+// receiver dropped, or `None`.
+func applicableBodyMethod(
+  tbl: in SymbolTable,
+  recv: in Type,
+  name: in String,
+  argc: in Int,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+): Option[ResolvedSignature] {
+  match unrefine(recv) {
+    case TyUser(tid, _, targs) -> {
+      for e in symTableMethodSigs(tbl, tid, name) {
+        val m = substituteMethodSig(e, unrefine(recv), targs)
+        if argc >= minRequiredParams(m) and argc <= m.params.count and suppliedArgsMatch(tbl, m.params, argTypesInSigOrder(m, 0, args, argTypes)) {
+          return Some(value = m)
+        }
+      }
+      None
+    }
+    case _ -> None
+  }
+}
+
+// A receiver-dropped method signature with its receiver, of type `recv`,
+// put back as the first parameter.
+func withReceiverParam(m: in ResolvedSignature, recv: in Type): ResolvedSignature {
+  val ps: List[ResolvedParam] = newList()
+  ps.add(ResolvedParam(name = "self", ty = recv, mode = PMIn, hasDefault = false, span = m.span))
+  for p in m.params {
+    ps.add(p)
+  }
+  m.copy(params = ps)
+}
+
+// The method in the body of `x`'s type (receiver dropped) that a call
+// `T.m(x, args)` or `Pkg.T.m(x, args)` through the type binds (D181): `T`
+// names `x`'s type, directly or through an alias, `Pkg` the package that
+// declares it, the method takes the other arguments, and that package
+// declares no dot-named `T.m`.  `None` for any other call.
+func bodyMethodCalleeBinding(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  fn: in Expr,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+): Option[ResolvedSignature] {
+  val segs: List[String] = newList()
+  if not calleeSegments(fn, segs) or segs.count < 2 or not receiverWrittenFirst(args) or argTypes.count == 0 {
+    return None
+  }
+  val typeSegs: List[String] = newList()
+  var i = 0
+  while i < segs.count - 1 {
+    typeSegs.add(segs[i])
+    i = i + 1
+  }
+  bodyMethodViaType(tbl, sigs, typeSegs, segs[segs.count - 1], tailArgs(args), argTypes)
+}
+
+// The method `member` in the body of the type `typeSegs` names (`T`, or
+// `Pkg.T` with `Pkg` the package declaring it) that takes the arguments
+// after the first, whose type must be that type; `None` otherwise, and when
+// the type's own package declares a dot-named `T.m`, which a call through
+// the type names instead (D181, #8097).
+func bodyMethodViaType(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  typeSegs: in List[String],
+  member: in String,
+  restArgs: in List[CallArg],
+  argTypes: in List[Type],
+): Option[ResolvedSignature] {
+  if typeSegs.count == 0 or argTypes.count == 0 {
+    return None
+  }
+  val recv = argTypes[0]
+  val owner = dotNamedOwnerName(recv)
+  if owner.length == 0 or canonicalOwnerName(tbl, typeSegs[typeSegs.count - 1]) != owner {
+    return None
+  }
+  if typeSegs.count > 1 {
+    val pkgSegs: List[String] = newList()
+    var i = 0
+    while i < typeSegs.count - 1 {
+      pkgSegs.add(typeSegs[i])
+      i = i + 1
+    }
+    match dotNamedDeclaringPackage(tbl, recv) {
+      case Some(p) -> if p != modulePathJoin(pkgSegs) { return None }
+      case None -> return None
+    }
+  }
+  if ownDotNamedDeclared(tbl, sigs, recv, member) {
+    return None
+  }
+  applicableBodyMethod(tbl, recv, member, argTypes.count - 1, restArgs, tailTypes(argTypes))
+}
+
+// Whether the package declaring `recv`'s type `T` also declares a dot-named
+// function `T.member`, of any arity.  A call through the type then names
+// that function, never the method in the type's body (#8097).
+func ownDotNamedDeclared(
+  tbl: in SymbolTable, sigs: in Map[String, ResolvedSignature], recv: in Type, member: in String
+): Bool {
+  val ownPkg = match dotNamedDeclaringPackage(tbl, recv) { case Some(p) -> p; case None -> return false }
+  for c in dotNamedSigsAnyArity(sigs, dotNamedOwnerName(recv) + "." + member) {
+    if sigPackage(tbl, c) == ownPkg {
+      return true
+    }
+  }
+  false
+}
+
+// The name a dot-named function's owner `name` is registered under: the
+// aliased type's when `name` is a type alias of a named type (`Int` for
+// `alias Num = Int`, through chains), `name` itself otherwise (#8217).
+func canonicalOwnerName(tbl: in SymbolTable, name: in String): String {
+  var isAlias = false
+  for sym in symTableTryFindAll(tbl, name) {
+    match sym.kind {
+      case DKTypeAlias(_) -> {
+        isAlias = true
+      }
+      case _ -> ()
+    }
+  }
+  if not isAlias {
+    return name
+  }
+  val segs: List[String] = newList()
+  segs.add(name)
+  val scratch: List[Diagnostic] = newList()
+  val sp = noSourceSpan()
+  match unrefine(resolveType(tbl, newGenericContext(), scratch, TypeExpr(kind = TRef(path = ModulePath(segments = segs, span = sp)), span = sp))) {
+    case TyUser(_, n, targs) -> if targs.count == 0 { n } else { name }
+    case TyPrim(pt) -> primName(pt)
+    case _ -> name
+  }
+}
+
+// `T.m` for a callee written `T.m` or `Pkg.T.m`, `T` resolved through an
+// alias (`canonicalOwnerName`); "" when it is neither.
+func canonicalDottedName(tbl: in SymbolTable, fn: in Expr): String {
+  val segs: List[String] = newList()
+  if not calleeSegments(fn, segs) or segs.count < 2 {
+    return ""
+  }
+  canonicalOwnerName(tbl, segs[segs.count - 2]) + "." + segs[segs.count - 1]
+}
+
+// Whether `sig`, bound by a call through the type, is another package's
+// function that a same-named dot-named function of a different package
+// (this one among them) would capture if the backends looked it up by its
+// name `T.m` alone.
+func foreignDotNamedShadowed(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  recv: in Type,
+  member: in String,
+  sig: in ResolvedSignature,
+): Bool {
+  val pkg = sigPackage(tbl, sig)
+  if pkg == symTableScopePkg(tbl) {
+    return false
+  }
+  for c in dotNamedSigsAnyArity(sigs, dotNamedOwnerName(recv) + "." + member) {
+    if sigPackage(tbl, c) != pkg {
+      return true
+    }
+  }
+  false
+}
+
+func tailArgs(args: in List[CallArg]): List[CallArg] {
+  val acc: List[CallArg] = newList()
+  var i = 1
+  while i < args.count {
+    acc.add(args[i])
+    i = i + 1
+  }
+  acc
+}
+
+func tailTypes(ts: in List[Type]): List[Type] {
+  val acc: List[Type] = newList()
+  var i = 1
+  while i < ts.count {
+    acc.add(ts[i])
+    i = i + 1
+  }
+  acc
+}
+
+func receiverWrittenFirst(args: in List[CallArg]): Bool {
+  args.count > 0 and (match args[0] { case CAPositional(_) -> true; case CANamed(_, _, _) -> false })
+}
+
+// `m` for a callee written `T.m` or `Pkg.T.m`; "" otherwise.
+func memberOfDotted(fn: in Expr): String {
+  val segs: List[String] = newList()
+  if not calleeSegments(fn, segs) or segs.count < 2 {
+    return ""
+  }
+  segs[segs.count - 1]
 }
 
 func findDirectSig(
@@ -17428,20 +18386,15 @@ func findDirectSig(
     // `Box.get(b)`: a dot-named function called through its type name
     // (#8173).  The receiver names a type, not a value in scope.
     case EMember(recv, member) -> {
-      // `Pkg.Box.get(b)`, the type named through its package (#8179).
-      match recv.kind {
-        case EPath(qp) -> if qp.segments.count >= 2 and startsUppercase(qp.segments[qp.segments.count - 1]) and not scopeHasName(sc, qp.segments[0]) {
-          val qsegs: List[String] = newList()
-          for qs in qp.segments {
-            qsegs.add(qs)
-          }
-          qsegs.add(member)
-          match packageDottedSig(sigs, qsegs, arity) {
-            case Some(pds) -> return Some(value = pds)
-            case None -> ()
-          }
+      // `Pkg.Box.get(b)`, the type named through its package (#8179), the
+      // receiver a path or a chain of members (`Main.Bag` in `Main`).
+      val qsegs: List[String] = newList()
+      if calleeSegments(recv, qsegs) and qsegs.count >= 2 and startsUppercase(qsegs[qsegs.count - 1]) and not scopeHasName(sc, qsegs[0]) {
+        qsegs.add(member)
+        match qualifiedTypeDotSig(tbl, sigs, qsegs, arity, argTypes) {
+          case Some(pds) -> return Some(value = pds)
+          case None -> ()
         }
-        case _ -> ()
       }
       val typeName = match recv.kind {
         case EPath(rp) -> if rp.segments.count == 1 and startsUppercase(rp.segments[0]) {
@@ -17454,8 +18407,7 @@ func findDirectSig(
       if typeName.length == 0 or scopeHasName(sc, typeName) {
         return None
       }
-      val dotted = typeName + "." + member
-      dottedSigLookup(sigs, dotted, arity)
+      typeQualifiedDotSig(tbl, sigs, typeName, member, arity, argTypes)
     }
     case EPath(path) -> {
       if path.segments.count == 0 {
@@ -17484,16 +18436,15 @@ func findDirectSig(
       // `Box.get(b)`: a dot-named function called through its type (#8173),
       // registered under its full dotted name.
       if path.segments.count == 2 {
-        val dotted = path.segments[0] + "." + name
-        match mapGet(sigs, dotted + "/" + toString(arity)) {
+        match typeQualifiedDotSig(tbl, sigs, path.segments[0], name, arity, argTypes) {
           case Some(ds) -> return Some(value = ds)
-          case None -> match mapGet(sigs, dotted) { case Some(ds2) -> return Some(value = ds2); case None -> () }
+          case None -> ()
         }
       }
       // `Pkg.Box.get(b)`: the same through the type's package (#8179), the
       // function `Box.get` that package declares.
       if path.segments.count >= 3 {
-        match packageDottedSig(sigs, path.segments, arity) {
+        match qualifiedTypeDotSig(tbl, sigs, path.segments, arity, argTypes) {
           case Some(pds) -> return Some(value = pds)
           case None -> ()
         }

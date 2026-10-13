@@ -1304,7 +1304,8 @@ func addFuncSig(
   }
   val sg0 = resolveFunctionSig(tbl, diag, pkgName, decl)
   val sg = if isExternFunc { asExternFuncSig(sg0) } else { sg0 }
-  val arityKey = decl.name + "/" + toString(decl.params.count)
+  val name = canonicalDotNamedName(tbl, diag, decl, isImported, pkgName)
+  val arityKey = name + "/" + toString(decl.params.count)
   // Sig-map insertion policy.  Imported items use first-in-wins
   // because bare-name collisions across stdlib files (e.g.
   // `toString`, `tryGet` defined in multiple modules) would
@@ -1318,17 +1319,17 @@ func addFuncSig(
   // redefine names that happen to overlap with the stdlib
   // (#1383).
   if isImported {
-    if not sigs.containsKey(decl.name) {
-      sigs.add(decl.name, sg)
+    if not sigs.containsKey(name) {
+      sigs.add(name, sg)
     }
     if not sigs.containsKey(arityKey) {
       sigs.add(arityKey, sg)
     }
   } else {
-    if sigs.containsKey(decl.name) {
-      sigs.remove(decl.name)
+    if sigs.containsKey(name) {
+      sigs.remove(name)
     }
-    sigs.add(decl.name, sg)
+    sigs.add(name, sg)
     if sigs.containsKey(arityKey) {
       sigs.remove(arityKey)
     }
@@ -1355,7 +1356,94 @@ func addFuncSig(
   // the file's import rule may hide (docs/01 §9.2), so a bare
   // reference picks its visible declaration from here
   // (`visibleBareFuncSigs`).
-  registerOverloadCandidate(sigs, byNameSigKey(decl.name), sg)
+  registerOverloadCandidate(sigs, byNameSigKey(name), sg)
+}
+
+// The name a dot-named function `X.m` is registered and compiled under: when
+// `X` is a type alias, the aliased type's (`Int.m` for `alias Num = Int`,
+// through chains and imported aliases alike, #8217), recorded in
+// `SymbolTable.dotNameRenames`; `decl.name` otherwise.  An alias of a type
+// a dot-named function cannot be declared for (a generic instance such as
+// `List[Int]`, a function or tuple type) is T0171.
+func canonicalDotNamedName(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  decl: in FunctionDecl,
+  isImported: in Bool,
+  pkgName: in String,
+): String {
+  val dot = lastIndexOfRaw(decl.name, ".")
+  if dot <= 0 {
+    return decl.name
+  }
+  val owner = decl.name.substring(0, dot)
+  if not dotOwnerIsAlias(tbl, owner) {
+    return decl.name
+  }
+  val segs: List[String] = newList()
+  segs.add(owner)
+  val scratch: List[Diagnostic] = newList()
+  val t = resolveType(
+    tbl,
+    newGenericContext(),
+    scratch,
+    TypeExpr(kind = TRef(path = ModulePath(segments = segs, span = decl.span)), span = decl.span)
+  )
+  val canonical = match unrefine(t) {
+    case TyUser(_, n, targs) -> if targs.count == 0 { n } else { "" }
+    case TyPrim(pt) -> primName(pt)
+    case TyError -> return decl.name
+    case _ -> ""
+  }
+  if canonical.length == 0 {
+    if not isImported {
+      val member = decl.name.substring(dot + 1)
+      // A generic instance's function is declared for the generic type, with
+      // the instance as the receiver's type.
+      val instead = match unrefine(t) {
+        case TyUser(_, n, _) -> "; declare it for '" + n +
+          "' with the instance as the receiver's type: 'func " +
+          n +
+          "." +
+          member +
+          "(self: in " +
+          renderType(t) +
+          ", ...)'"
+        case _ -> "; use a plain function taking a '" + renderType(t) + "' instead"
+      }
+      diag.add(
+        errorDiagnostic(
+          "T0171",
+          "'" + decl.name + "' is declared through the alias '" + owner + "' of '" + renderType(t) +
+            "', which is not a plain named type" +
+            instead,
+          decl.span
+        )
+      )
+    }
+    return decl.name
+  }
+  if canonical == owner {
+    return decl.name
+  }
+  val renamed = canonical + decl.name.substring(dot)
+  val key = pkgName + "|" + decl.name
+  if not tbl.dotNameRenames.containsKey(key) {
+    tbl.dotNameRenames.add(key, renamed)
+  }
+  renamed
+}
+
+// Whether `name`, the owner of a dot-named function, names a type alias in
+// the current scope.
+func dotOwnerIsAlias(tbl: in SymbolTable, name: in String): Bool {
+  for sym in symTableTryFindAll(tbl, name) {
+    match sym.kind {
+      case DKTypeAlias(_) -> return true
+      case _ -> ()
+    }
+  }
+  false
 }
 
 // Names whose typecheck behaviour is owned by `codegenBuiltinType` (see
@@ -4702,7 +4790,10 @@ func checkItemDeclaredInits(
         }
       }
     }
-    case IFunc(decl) -> checkParamDefaults(tbl, sigs, diag, extractGenericNames(decl.generics), decl.name, decl.params)
+    case IFunc(decl) -> {
+      checkParamDefaults(tbl, sigs, diag, extractGenericNames(decl.generics), decl.name, decl.params)
+      checkShadowedExtension(tbl, sigs, diag, decl)
+    }
     case IExternFunc(decl) -> checkParamDefaults(tbl, sigs, diag, noGenerics, decl.name, decl.params)
     case IRecord(decl) -> checkRecordDeclaredInits(tbl, sigs, diag, decl)
     case IExposedRec(decl) -> checkRecordDeclaredInits(tbl, sigs, diag, decl)
@@ -4837,6 +4928,84 @@ func checkRecordDeclaredInits(
       case RMInvariant(_) -> ()
     }
   }
+}
+
+// T0170 (a warning): a dot-named function `T.m` this package declares for a
+// type another package declares (an extension) whose parameters after the
+// receiver are, in number and type, those of one of `T`'s own functions
+// named `m` (declared in its body or by its declaring package).  A method
+// call, and a call through the type, binds the type's own function whenever
+// it applies (D181), so the extension is reached only through its package
+// (`Pkg.T.m(x)`).
+func checkShadowedExtension(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  decl: in FunctionDecl,
+): Unit {
+  val dot = lastIndexOfRaw(decl.name, ".")
+  if dot <= 0 or decl.params.count == 0 {
+    return
+  }
+  val member = decl.name.substring(dot + 1)
+  val curPkg = symTableScopePkg(tbl)
+  val name = match mapGet(tbl.dotNameRenames, curPkg + "|" + decl.name) { case Some(n) -> n; case None -> decl.name }
+  for ext in dotNamedSigsAnyArity(sigs, name) {
+    if sigPackage(tbl, ext) == curPkg and ext.params.count == decl.params.count and ext.params.count > 0 {
+      val recv = ext.params[0].ty
+      match dotNamedDeclaringPackage(tbl, recv) {
+        case Some(ownPkg) -> if ownPkg.length > 0 and ownPkg != curPkg {
+          val extRest = dropReceiverParam(ext).params
+          var shadowed = false
+          for own in dotNamedSigsAnyArity(sigs, name) {
+            if sigPackage(tbl, own) == ownPkg and sameParamTypes(dropReceiverParam(own).params, extRest) {
+              shadowed = true
+            }
+          }
+          match unrefine(recv) {
+            case TyUser(tid, _, targs) -> {
+              for e in symTableMethodSigs(tbl, tid, member) {
+                if sameParamTypes(substituteMethodSig(e, unrefine(recv), targs).params, extRest) {
+                  shadowed = true
+                }
+              }
+            }
+            case _ -> ()
+          }
+          if shadowed {
+            diag.add(
+              warningDiagnostic(
+                "T0170",
+                "'" + decl.name + "' duplicates a method of '" + decl.name.substring(0, dot) + "' declared by " + ownPkg +
+                  ", which a method call or a call through the type always binds instead; this function is reached only as '" +
+                  curPkg +
+                  "." +
+                  decl.name +
+                  "(...)' (rename it, or change its parameters)",
+                decl.span
+              )
+            )
+          }
+        }
+        case None -> ()
+      }
+      return
+    }
+  }
+}
+
+func sameParamTypes(a: in List[ResolvedParam], b: in List[ResolvedParam]): Bool {
+  if a.count != b.count {
+    return false
+  }
+  var i = 0
+  while i < a.count {
+    if renderType(a[i].ty) != renderType(b[i].ty) {
+      return false
+    }
+    i = i + 1
+  }
+  true
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -3139,6 +3139,53 @@ test "named lambda arg typed via param-name pairing" {
   )
 }
 
+// A generic call's type arguments are inferred from each argument paired
+// with the parameter it names, not the parameter at its source position
+// (#8240): `pick(y = 5000000000, x = a)` binds `B` to `Long`, so its result
+// is a `Box[Long]`, not a `Box[Int]` holding a `Long`.
+test "named arguments out of order bind the type parameters they name" {
+  val decls = "package P\nrecord Box[T] { v: T }\nfunc pick[A, B](x: inout A, y: in B): Box[B] = Box(v = y)\n"
+  val longs = decls + "func f(): Unit {\n  var a = 1\n  val l: Box[Long] = pick(y = 5000000000, x = a)\n}\n"
+  assertEqualInt(diagCount(parseCheck(longs)), 0, "Box[Long]: " + diagCodesOf(parseCheck(longs)))
+  val strs = decls + "func f(): Unit {\n  var a = 1\n  val l: Box[String] = pick(y = \"s\", x = a)\n}\n"
+  assertEqualInt(diagCount(parseCheck(strs)), 0, "Box[String]: " + diagCodesOf(parseCheck(strs)))
+  val wrong = decls + "func f(): Unit {\n  var a = 1\n  val l: Box[Int] = pick(y = \"s\", x = a)\n}\n"
+  assertTrue(hasDiagCode(parseCheck(wrong), "T0060"), "a Box[String] is not a Box[Int]")
+  val mixed = decls + "func f(): Unit {\n  var a = 1\n  val l: Box[String] = pick(a, y = \"s\")\n}\n"
+  assertEqualInt(diagCount(parseCheck(mixed)), 0, "positional then named: " + diagCodesOf(parseCheck(mixed)))
+}
+
+test "a dot-named generic method pairs named arguments by name" {
+  val src = "package P\nrecord Box { n: Int }\nfunc Box.second[A, B](self: in Box, x: in A, y: in B): B = y\nfunc f(): Unit {\n  val b = Box(n = 1)\n  val s: String = b.second(y = \"s\", x = 1)\n  val t: String = Box.second(b, y = \"s\", x = 1)\n}\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "both call forms: " + diagCodesOf(parseCheck(src)))
+}
+
+test "a where bound is checked against the argument its parameter names" {
+  val decls = "package P\n@derive(Add)\nrecord Meters { value: Int }\nrecord Plain { value: Int }\nfunc both[A, B](a: in A, b: in B): Unit where B: Add {\n}\n"
+  val ok = decls + "func f(): Unit {\n  both(b = Meters(value = 1), a = Plain(value = 2))\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(ok), "T0108"), "B is Meters: no T0108")
+  val bad = decls + "func f(): Unit {\n  both(b = Plain(value = 1), a = Meters(value = 2))\n}\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0108"), "B is Plain: T0108")
+}
+
+// A method call on a primitive receiver resolves to the primitive's
+// dot-named function and is checked against it (#8217): its result type,
+// its arity, its argument types, and an `inout` receiver's place.
+test "a method call on a primitive resolves to its dot-named function" {
+  val decls = "package P\nfunc Int.twice(self: in Int): Int = self * 2\nfunc Int.inc(self: inout Int): Unit {\n  self = self + 1\n}\nfunc String.shout(self: in String, n: in Int): String = self\n"
+  val ok = decls +
+    "func f(): Unit {\n  var m = 3\n  m.inc()\n  val a: Int = m.twice()\n  val b: String = \"s\".shout(2)\n}\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "well-typed calls: " + diagCodesOf(parseCheck(ok)))
+  val ret = decls + "func f(): Unit {\n  val s: String = (3).twice()\n}\n"
+  assertTrue(hasDiagCode(parseCheck(ret), "T0060"), "an Int result bound to a String")
+  val arity = decls + "func f(): Unit {\n  val n = (3).twice(1)\n}\n"
+  assertTrue(hasDiagCode(parseCheck(arity), "T0042"), "one argument too many")
+  val argTy = decls + "func f(): Unit {\n  val s = \"s\".shout(\"x\")\n}\n"
+  assertTrue(hasDiagCode(parseCheck(argTy), "T0043"), "a String where an Int is expected")
+  val place = decls + "func f(): Unit {\n  val k = 3\n  k.inc()\n}\n"
+  assertTrue(hasDiagCode(parseCheck(place), "T0166"), "an inout receiver that is a val")
+}
+
 test "function-typed local callee threads expectation to lambda arg" {
   val src = "package P\nfunc g(h: in ((Int) -> Int, Int) -> Int): Int {\n  h({ n -> n + true }, 3)\n}\n"
   val cr = parseCheck(src)
@@ -6472,6 +6519,230 @@ func rulePkg(name: in String, src: in String): ImportedPackage {
     imports = collectImportNames(f.imports),
     wholeImports = collectWholeImportNames(f.imports)
   )
+}
+
+// #8219: a dot-named function another package declares for a type (an
+// extension) is a candidate for a method call only where the file's imports
+// reach that package, the nearest import level winning; two packages at that
+// level are T0123.  The type's own functions, from its declaring package, are
+// bound first when one takes the call's arguments.
+func extensionPackages(ownExtra: in Bool): List[ImportedPackage] {
+  val packages: List[ImportedPackage] = newList()
+  // ExtA's own functions return a `String` where the extensions return an
+  // `Int`, so the type a call has says which one it bound.
+  val own = if ownExtra { "pub func Bag.extra(self: in Bag): String = \"own\"\n" } else { "" }
+  packages.add(
+    rulePkg(
+      "ExtA",
+      "package ExtA\npub record Bag {\n  n: Int\n  func get(self: in Bag): String = \"own\"\n}\npub func Bag.tag(self: in Bag, s: in String): String = s\n" +
+        own
+    )
+  )
+  packages.add(
+    rulePkg(
+      "ExtB",
+      "package ExtB\nimport ExtA\npub func Bag.extra(self: in Bag): Int = self.n + 2\npub func Int.twice(self: in Int): Int = self * 2\npub func Bag.get(self: in Bag): Int = 1\npub func Bag.tag(self: in Bag, k: in Int): Int = k\npub func Bag.cfg(self: in Bag, a: in Int = 1): Int = a\n"
+    )
+  )
+  packages.add(
+    rulePkg(
+      "ExtC",
+      "package ExtC\nimport ExtA\npub func Bag.extra(self: in Bag): Int = self.n + 3\npub func Bag.cfg(self: in Bag): Int = 2\n"
+    )
+  )
+  packages.add(rulePkg("ExtD", "package ExtD\nimport ExtC\npub func viaD(): Int { 0 }\n"))
+  packages
+}
+
+func checkExtensionCall(imports: in String, body: in String, ownExtra: in Bool): CheckResult {
+  val src = "package App\n" + imports + "func f(b: in Bag): Int {\n  " + body + "\n}\n"
+  checkWithImportedPackages(parse(src).file, extensionPackages(ownExtra))
+}
+
+test "a method call two imported packages' extensions could bind is T0123" {
+  val both = "import ExtA\nimport ExtB\nimport ExtC\n"
+  assertTrue(hasDiagCode(checkExtensionCall(both, "b.extra()", false), "T0123"), "method syntax")
+  assertTrue(hasDiagCode(checkExtensionCall(both, "Bag.extra(b)", false), "T0123"), "through the type")
+  val msg = diagMessageFor(checkExtensionCall(both, "b.extra()", false), "T0123")
+  assertTrue(Str.contains(msg, "'ExtB'") and Str.contains(msg, "'ExtC'"), "names both packages: " + msg)
+  val qualified = checkExtensionCall(both, "ExtB.Bag.extra(b)", false)
+  assertEqualInt(diagCount(qualified), 0, "through its package: " + diagCodesOf(qualified))
+}
+
+test "an extension resolves through the file's imports" {
+  val one = checkExtensionCall("import ExtA\nimport ExtB\n", "b.extra()", false)
+  assertEqualInt(diagCount(one), 0, "one imported extension: " + diagCodesOf(one))
+  val nearer = checkExtensionCall("import ExtA\nimport ExtB\nimport ExtD\n", "b.extra() + Bag.extra(b)", false)
+  assertEqualInt(diagCount(nearer), 0, "a direct import beats one reached through ExtD: " + diagCodesOf(nearer))
+  val hidden = checkExtensionCall("import ExtA\n", "b.extra()", false)
+  assertTrue(
+    hasDiagCode(hidden, "T0113"),
+    "an extension of a package not imported is no method: " + diagCodesOf(hidden)
+  )
+  assertTrue(Str.contains(diagMessageFor(hidden, "T0113"), "'ExtB'"), "the message names ExtB")
+  val prim = checkExtensionCall("import ExtA\nimport ExtB\n", "b.n.twice()", false)
+  assertEqualInt(diagCount(prim), 0, "an imported primitive extension: " + diagCodesOf(prim))
+  val hiddenPrim = checkExtensionCall("import ExtA\n", "b.n.twice()", false)
+  assertTrue(
+    hasDiagCode(hiddenPrim, "T0113"),
+    "a primitive extension of a package not imported: " + diagCodesOf(hiddenPrim)
+  )
+}
+
+test "the type's own applicable function is bound before an imported extension, in both call forms" {
+  val all = "import ExtA\nimport ExtB\nimport ExtC\n"
+  val dot = checkExtensionCall(all, "val s: String = b.extra() + Bag.extra(b)\n  0", true)
+  assertEqualInt(diagCount(dot), 0, "ExtA's dot-named extra, a String: " + diagCodesOf(dot))
+  val body = checkExtensionCall(all, "val s: String = b.get() + Bag.get(b)\n  0", false)
+  assertEqualInt(diagCount(body), 0, "the get in Bag's body, a String, not ExtB's Int: " + diagCodesOf(body))
+}
+
+test "an own function that does not take the arguments leaves the call to an extension" {
+  val imports = "import ExtA\nimport ExtB\n"
+  val ext = checkExtensionCall(imports, "val i: Int = b.tag(5) + Bag.tag(b, 6)\n  i", false)
+  assertEqualInt(diagCount(ext), 0, "ExtB's tag(Int): " + diagCodesOf(ext))
+  val own = checkExtensionCall(imports, "val s: String = b.tag(\"x\") + Bag.tag(b, \"y\")\n  0", false)
+  assertEqualInt(diagCount(own), 0, "ExtA's tag(String): " + diagCodesOf(own))
+}
+
+test "an extension with a defaulted parameter takes part in the ambiguity" {
+  val cr = checkExtensionCall("import ExtA\nimport ExtB\nimport ExtC\n", "b.cfg()", false)
+  assertTrue(hasDiagCode(cr, "T0123"), "ExtB's cfg(a = 1) and ExtC's cfg(): " + diagCodesOf(cr))
+  val one = checkExtensionCall("import ExtA\nimport ExtB\n", "b.cfg() + b.cfg(a = 3)", false)
+  assertEqualInt(diagCount(one), 0, "ExtB's alone: " + diagCodesOf(one))
+}
+
+test "an extension imported under an alias is called through it" {
+  val cr = checkExtensionCall("import ExtA\nimport ExtB as EB\n", "b.extra()", false)
+  assertTrue(hasDiagCode(cr, "T0113"), "not bound by a method call: " + diagCodesOf(cr))
+  assertTrue(
+    Str.contains(diagMessageFor(cr, "T0113"), "EB.Bag.extra("),
+    "the message names EB.Bag.extra: " + diagMessageFor(cr, "T0113")
+  )
+  val via = checkExtensionCall("import ExtA\nimport ExtB as EB\n", "EB.Bag.extra(b)", false)
+  assertEqualInt(diagCount(via), 0, "through the alias: " + diagCodesOf(via))
+}
+
+// T0170 (a warning): an extension that duplicates one of the type's own
+// functions is never bound by a method call or a call through the type.
+test "an extension duplicating a type's own function is T0170" {
+  val dup = "package App\nimport ExtA\nfunc Bag.get(self: in Bag): String = \"mine\"\nfunc Bag.tag(self: in Bag, s: in String): String = s\n"
+  val cr = checkWithImportedPackages(parse(dup).file, extensionPackages(false))
+  assertEqualInt(countDiagCode(cr, "T0170"), 2, "the body method get and the dot-named tag: " + diagCodesOf(cr))
+  val other = "package App\nimport ExtA\nfunc Bag.get(self: in Bag, k: in Int): Int = k\nfunc Bag.tag(self: in Bag, k: in Int): Int = k\n"
+  val ok = checkWithImportedPackages(parse(other).file, extensionPackages(false))
+  assertEqualInt(countDiagCode(ok, "T0170"), 0, "other parameters: " + diagCodesOf(ok))
+}
+
+// A dot-named function declared through an alias is the aliased type's
+// (#8217), through a chain too; an alias of a generic instance is T0171.
+test "a dot-named function declared through an alias is the aliased type's" {
+  val chain = "package P\nalias Num = Int\nalias N2 = Num\nfunc N2.dbl(self: in N2): N2 = self * 2\nfunc f(k: in Int): Int { k.dbl() + N2.dbl(k) + Num.dbl(k) + Int.dbl(k) }\n"
+  assertEqualInt(diagCount(parseCheck(chain)), 0, "an alias chain: " + diagCodesOf(parseCheck(chain)))
+  val inst = "package P\nrecord Box[T] { v: T }\nalias IB = Box[Int]\nfunc IB.get(self: in IB): Int = self.v\n"
+  assertTrue(hasDiagCode(parseCheck(inst), "T0171"), "an alias of a generic instance: " + diagCodesOf(parseCheck(inst)))
+  assertTrue(
+    diagMessagesContain(parseCheck(inst), "func Box.get(self: in Box[Int]"),
+    "the message names the working declaration: " + diagMessageFor(parseCheck(inst), "T0171")
+  )
+}
+
+// A type's package may declare both a method in the type's body and a
+// dot-named function of the same name; both are the type's own.  A method
+// call binds the body method first, falling back to the dot-named function
+// when it does not take the arguments; a call through the type names the
+// dot-named function, never the body method (D181, #8097).  The body method
+// returns an `Int` and the dot-named function a `String`, so the type a call
+// has says which bound.
+test "a body method beside a dot-named function of the same package" {
+  val decls = "record Acc {\n  n: Int\n  func scaled(self: in Acc, k: in Int = 7): Int = self.n - k\n}\nfunc Acc.scaled(self: in Acc, k: in Int = 3): String = \"dot\"\n"
+  val both = "package P\n" + decls +
+    "func f(a: in Acc): Unit {\n  val viaType: String = Acc.scaled(a)\n  val viaPkg: String = P.Acc.scaled(a, k = 2)\n  val viaMethod: Int = a.scaled()\n  val viaMethodK: Int = a.scaled(1)\n}\n"
+  val cr = parseCheck(both)
+  assertEqualInt(diagCount(cr), 0, "each form binds its own: " + diagCodesOf(cr))
+  assertEqualInt(countDiagCode(cr, "T0170"), 0, "no T0170 for the type's own package")
+  assertEqualInt(asMethodSiteCount(cr), 0, "the calls through the type are not written as method calls")
+  // A method call falls back to the dot-named function; a call through the
+  // type does not fall back to the body method.
+  val pick = "package P\nrecord Acc {\n  n: Int\n  func pick(self: in Acc, k: in Int): Int = k\n}\nfunc Acc.pick(self: in Acc, s: in String): String = s\n"
+  val fallback = pick +
+    "func f(a: in Acc): Unit {\n  val viaMethodStr: String = a.pick(\"s\")\n  val viaTypeStr: String = Acc.pick(a, \"t\")\n}\n"
+  val fr = parseCheck(fallback)
+  assertEqualInt(diagCount(fr), 0, "a method call falls back to the dot-named function: " + diagCodesOf(fr))
+  val noFallback = pick + "func f(a: in Acc): Int = Acc.pick(a, 1)\n"
+  assertTrue(diagCount(parseCheck(noFallback)) > 0, "a call through the type names the dot-named function")
+  val required = "package P\nrecord Acc {\n  n: Int\n  func trim(self: in Acc, k: in Int = 2): Int = self.n - k\n}\nfunc Acc.trim(self: in Acc, k: in Int): Int = self.n + k\nfunc f(a: in Acc): Int = Acc.trim(a)\n"
+  assertTrue(
+    hasDiagCode(parseCheck(required), "T0042"),
+    "the dot-named function's required parameter stays required: " + diagCodesOf(parseCheck(required))
+  )
+  val requiredPkg = required.replace("Acc.trim(a)\n", "P.Acc.trim(a)\n")
+  assertTrue(
+    hasDiagCode(parseCheck(requiredPkg), "T0042"),
+    "through the type's package too: " + diagCodesOf(parseCheck(requiredPkg))
+  )
+  // From another package, the same order holds.
+  val pkgs: List[ImportedPackage] = newList()
+  pkgs.add(rulePkg("RdLib", "package RdLib\npub " + decls.replace("func Acc.scaled", "pub func Acc.scaled")))
+  val app = "package App\nimport RdLib\nfunc f(a: in Acc): Unit {\n  val viaType: String = Acc.scaled(a)\n  val viaPkg: String = RdLib.Acc.scaled(a)\n  val viaMethod: Int = a.scaled()\n}\n"
+  val ar = checkWithImportedPackages(parse(app).file, pkgs)
+  assertEqualInt(diagCount(ar), 0, "from another package: " + diagCodesOf(ar))
+  val trimPkgs: List[ImportedPackage] = newList()
+  trimPkgs.add(
+    rulePkg(
+      "ALib",
+      "package ALib\npub record Acc {\n  n: Int\n  func trim(self: in Acc, k: in Int = 2): Int = self.n - k\n}\npub func Acc.trim(self: in Acc, k: in Int): Int = self.n + k\n"
+    )
+  )
+  for call in ["Acc.trim(a)", "ALib.Acc.trim(a)"] {
+    val tr = checkWithImportedPackages(
+      parse("package App\nimport ALib\nfunc f(a: in Acc): Int = " + call + "\n").file,
+      trimPkgs
+    )
+    assertTrue(hasDiagCode(tr, "T0042"), call + " from another package: " + diagCodesOf(tr))
+  }
+}
+
+func asMethodSiteCount(cr: in CheckResult): Int {
+  var n = 0
+  for k in mapKeys(cr.symbols.byRefDotCallSites) {
+    match mapGet(cr.symbols.byRefDotCallSites, k) {
+      case Some(site) -> if site.asMethod { n = n + 1 }
+      case None -> ()
+    }
+  }
+  n
+}
+
+// A call through the type of a body method, the type named directly or
+// through its own package, is written as the method call (D181).
+test "a body method called through its type, named through its own package" {
+  val src = "package Main\nrecord Bag {\n  n: Int\n  func two(self: in Bag, x: in Int, y: in Int): Int = self.n + x + y\n}\nfunc f(b: in Bag): Int = Bag.two(b, 1, 2) + Main.Bag.two(b, 1, 2) + Main.Bag.two(b, y = 2, x = 1)\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "checks: " + diagCodesOf(cr))
+  assertEqualInt(asMethodSiteCount(cr), 3, "each call is written as the method call")
+}
+
+// A method call on a primitive or a distinct type that names nothing it has
+// is T0113 at check time (#8217); a `String`'s methods stay open-ended.
+test "an unknown method on a primitive or a distinct type is T0113" {
+  assertTrue(hasDiagCode(parseCheck("package P\nfunc f(k: in Int): Int { k.nosuch() }\n"), "T0113"), "Int")
+  assertTrue(
+    hasDiagCode(parseCheck("package P\ntype Age = Int\nfunc f(a: in Age): Int { a.nosuch() }\n"), "T0113"),
+    "a distinct type"
+  )
+  val under = "package P\ntype Age = Int\nfunc Int.twice(self: in Int): Int = self * 2\n"
+  assertTrue(
+    hasDiagCode(parseCheck(under + "func f(a: in Age): Int { a.twice() }\n"), "T0113"),
+    "the underlying type's method"
+  )
+  assertEqualInt(diagCount(parseCheck(under + "func f(a: in Age): Int { a.value.twice() }\n")), 0, "through .value")
+  assertEqualInt(
+    diagCount(parseCheck("package P\nfunc f(k: in Int): Long { k.toLong() + k.shl(1).toLong() }\n")),
+    0,
+    "built-ins"
+  )
+  assertTrue(not hasDiagCode(parseCheck("package P\nfunc f(s: in String): Int { s.nosuch() }\n"), "T0113"), "String")
 }
 
 // #7555: only a whole import reaches further.  A package's selective or
