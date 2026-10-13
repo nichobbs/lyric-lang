@@ -152,6 +152,48 @@ file path.
 
 ---
 
+## Proofs in the editor
+
+Every `didOpen`/`didChange` of a `@proof_required` document also proves it
+(`Lyric.Lsp.analyzeAndStore`), with unknown goals reported as warnings
+(`--allow-unverified`).  The proof is under the builds `lyric prove <file>` takes with
+no flags (#8342): the builds come from `Verifier.proveBuildConfigsForSource`
+(each manifest that lists the file, with its default features, for
+`--target dotnet`; the file alone when none does), each goal labelled with
+its build when there are several; the declarations it reads are the
+standard library's (read once per server, `LspState.stdlibScope`) and those
+of the listing manifests' packages (`Verifier.importScopeWithManifests`);
+`@cfg` erasure diagnostics (`F0012`/`F0013`) are published with the
+verifier's; and each item no build compiles is an Information diagnostic
+(severity 3) at its declaration, where `lyric prove` lists it after its
+diagnostics.  The document's own type check runs on what `@cfg` erasure
+keeps for each of those builds (diagnostics merged), so `@cfg` twins are
+not a T0001 duplicate.  A document whose builds cannot be known (an
+enclosing `lyric.toml` that cannot be read) is refused with `B0001`, as
+`lyric prove` refuses it, and its own check is not reported (it would be of
+a build no command makes).  The builds, the package file set and the import
+scope are read per document path on first use (`LspState.docContexts`) and
+read again when the disk they came from changes: each analysis compares a
+cheap snapshot (`LspDiskSnapshot`: every `lyric.toml` from the document's
+directory up, present or not and its modification time, and the `.l` files
+of the package's directories, or the whole tree under the document's
+directory when no manifest lists it), so a client that never reports file
+changes still sees a sibling file created or a manifest edited.  They are
+also dropped on `workspace/didChangeWatchedFiles`: the VS Code extension
+watches `**/*.l` and `**/lyric.toml`, and a client that advertises
+`workspace.didChangeWatchedFiles.dynamicRegistration` is sent a
+`client/registerCapability` request for both on `initialized`.  An edit to
+another package's file that changes neither is seen after such a
+notification.  Two differences from `lyric prove` remain:
+the server does not type-check with the standard library, so it cannot stop
+a proof the way `lyric prove` does on a type error (#8227, #8304) — the
+verifier proves such a document anyway, and a duplicate declaration it
+would otherwise have been stopped at is reported with `V0033` instead of
+throwing (#8341) — and an undecided goal is a warning
+(`--allow-unverified`).
+
+---
+
 ## Progress log
 
 ### D-lsp-001 — Extension skeleton + server improvements (M-L1, M-L2, M-L3)

@@ -104,6 +104,7 @@ func itemIsPub(item: in Item): Bool {
 pub record CallRef {
   pub name: String
   pub span: Span
+  pub argCount: Int
   // ─────────────────────────────────────────────────────────────────────────────
   // §4. Expression walker — collect (callee-name, span) from call sites.
   // ─────────────────────────────────────────────────────────────────────────────
@@ -122,7 +123,7 @@ func visitExpr(e: in Expr, output: in List[CallRef]): Unit {
       match fn.kind {
         case EPath(path) -> {
           if path.segments.count == 1 {
-            output.add(CallRef(name = path.segments[0], span = e.span))
+            output.add(CallRef(name = path.segments[0], span = e.span, argCount = args.count))
           }
         }
         case _ -> {
@@ -365,70 +366,108 @@ func checkConflicts(file: in SourceFile, diag: in List[Diagnostic]): Unit {
 // ─────────────────────────────────────────────────────────────────────────────
 // §6. Check S0001: stable pub func calls @experimental callee.
 // ─────────────────────────────────────────────────────────────────────────────
+// One declaration of a name a call may reach: a function, with how many
+// arguments a call of it may pass, or another item (a record's
+// constructor), with `paramCount` -1.
+record StabilityEntry {
+  name: String
+  paramCount: Int
+  requiredCount: Int
+  experimental: Bool
+}
+
 func checkCallGraph(file: in SourceFile, diag: in List[Diagnostic]): Unit {
-  // Build name -> stability map for all items.
-  val stabilityMap: Map[String, StabilityLevel] = newMap()
-  var i = 0
-  while i < file.items.count {
-    val item = file.items[i]
-    val nameOpt = itemKindName(item.kind)
-    match nameOpt {
-      case Some(name) -> stabilityMap.add(name, stabilityOfItem(item))
-      case None -> {
+  // Every declaration by name: a name may be declared more than once —
+  // overloads of different arity, or, in a file no type check has rejected
+  // yet, a duplicate (#8341).
+  val entries: List[StabilityEntry] = newList()
+  for item in file.items {
+    val experimental = stabilityIsExperimental(stabilityOfItem(item))
+    match item.kind {
+      case IFunc(fn) -> {
+        var required = 0
+        for p in fn.params {
+          if not isSome(p.dflt) {
+            required = required + 1
+          }
+        }
+        entries.add(
+          StabilityEntry(name = fn.name, paramCount = fn.params.count, requiredCount = required, experimental = experimental)
+        )
+      }
+      case _ -> match itemKindName(item.kind) {
+        case Some(name) -> entries.add(
+          StabilityEntry(
+            name = name,
+            paramCount = -1,
+            requiredCount = 0,
+            experimental = experimental
+          )
+        )
+        case None -> ()
       }
     }
-    i = i + 1
   }
 
   // Check each pub non-experimental func.
-  i = 0
-  while i < file.items.count {
-    val item = file.items[i]
+  for item in file.items {
     if itemIsPub(item) and not stabilityIsExperimental(stabilityOfItem(item)) {
       match item.kind {
-        case IFunc(fn) -> {
-          match fn.body {
-            case Some(body) -> {
-              val calls: List[CallRef] = newList()
-              collectCallNames(body, calls)
-              var j = 0
-              while j < calls.count {
-                val cr = calls[j]
-                match mapGet(stabilityMap, cr.name) {
-                  case Some(StabilityLevel) -> {
-                    match mapGet(stabilityMap, cr.name) {
-                      case Some(Experimental) -> {
-                        diag.add(
-                          errorDiagnostic(
-                            "S0001",
-                            "stable pub func '" + fn.name + "' calls @experimental '" + cr.name + "'; mark '" + fn.name +
-                              "' @experimental or promote '" +
-                              cr.name +
-                              "' to @stable",
-                            cr.span
-                          )
-                        )
-                      }
-                      case _ -> {
-                      }
-                    }
-                  }
-                  case _ -> {
-                  }
-                }
-                j = j + 1
+        case IFunc(fn) -> match fn.body {
+          case Some(body) -> {
+            val calls: List[CallRef] = newList()
+            collectCallNames(body, calls)
+            for cr in calls {
+              if callReachesExperimental(entries, cr) {
+                diag.add(
+                  errorDiagnostic(
+                    "S0001",
+                    "stable pub func '" + fn.name + "' calls @experimental '" + cr.name + "'; mark '" + fn.name +
+                      "' @experimental or promote '" +
+                      cr.name +
+                      "' to @stable",
+                    cr.span
+                  )
+                )
               }
             }
-            case None -> {
-            }
           }
+          case None -> ()
         }
-        case _ -> {
-        }
+        case _ -> ()
       }
     }
-    i = i + 1
   }
+}
+
+// Whether a declaration the call `cr` may reach is `@experimental`: among
+// the functions of its name, those taking exactly its arguments, else every
+// one that fills the rest from defaults (which of those the type checker
+// binds is not a rule the language states, so each counts); and any other
+// item of its name.  Declarations in the package's other files are not
+// seen here.
+func callReachesExperimental(entries: in List[StabilityEntry], cr: in CallRef): Bool {
+  var anyExact = false
+  for e in entries {
+    if e.name == cr.name and e.paramCount == cr.argCount {
+      anyExact = true
+    }
+  }
+  for e in entries {
+    if e.name == cr.name {
+      val reached = if e.paramCount < 0 {
+        true
+      } else if anyExact {
+        e.paramCount == cr.argCount
+      } else {
+        e.requiredCount <= cr.argCount and cr.argCount <= e.paramCount
+      }
+      if reached and e.experimental {
+        return true
+      }
+    }
+  }
+  false
 }
 
 func itemKindName(kind: in ItemKind): Option[String] {

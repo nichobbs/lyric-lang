@@ -51,7 +51,12 @@ function startLsp(context: vscode.ExtensionContext): void {
     const clientOptions: LanguageClientOptions = {
         documentSelector: [{ scheme: 'file', language: 'lyric' }],
         synchronize: {
-            fileEvents: vscode.workspace.createFileSystemWatcher('**/*.l'),
+            // `lyric.toml` too: a document's builds and the declarations its
+            // proof reads come from its manifests (#8342).
+            fileEvents: [
+                vscode.workspace.createFileSystemWatcher('**/*.l'),
+                vscode.workspace.createFileSystemWatcher('**/lyric.toml'),
+            ],
         },
         traceOutputChannel: vscode.window.createOutputChannel('Lyric Language Server Trace'),
     };

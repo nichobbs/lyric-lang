@@ -15,6 +15,10 @@ pub record CalleeInfo {
   name: String
   level: VerificationLevel
   isPure: Bool
+  // How many arguments a call of it may pass: `paramCount` at most, and at
+  // least `paramCount` less the parameters with a default.
+  paramCount: Int
+  requiredCount: Int
   // Simplified cross-package import metadata (replaces Imports.ImportedPackage
   // for the self-hosted pipeline; only the name and level string are needed).
 }
@@ -34,14 +38,35 @@ pub record ModeCheckResult {
   // Build a Map<name, CalleeInfo> from the file's local function declarations.
 }
 
-pub func calleeTableOfFile(fileLevel: in VerificationLevel, file: in SourceFile): Map[String, CalleeInfo] {
-  val m: Map[String, CalleeInfo] = newMap()
+pub func calleeTableOfFile(fileLevel: in VerificationLevel, file: in SourceFile): Map[String, List[CalleeInfo]] {
+  // A name may be declared more than once: overloads of different arity,
+  // or — in a file no type check has rejected yet — two of one arity (#8341).
+  val m: Map[String, List[CalleeInfo]] = newMap()
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
       case IFunc(fn) -> {
-        val info = CalleeInfo(name = fn.name, level = levelOfFunction(fileLevel, fn), isPure = isFuncPure(fn))
-        m.add(fn.name, info)
+        var required = 0
+        for p in fn.params {
+          if not isSome(p.dflt) {
+            required = required + 1
+          }
+        }
+        val info = CalleeInfo(
+          name = fn.name,
+          level = levelOfFunction(fileLevel, fn),
+          isPure = isFuncPure(fn),
+          paramCount = fn.params.count,
+          requiredCount = required
+        )
+        match mapGet(m, fn.name) {
+          case Some(infos) -> infos.add(info)
+          case None -> {
+            val infos: List[CalleeInfo] = newList()
+            infos.add(info)
+            m.add(fn.name, infos)
+          }
+        }
       }
       case _ -> {
       }
@@ -51,6 +76,35 @@ pub func calleeTableOfFile(fileLevel: in VerificationLevel, file: in SourceFile)
   m
 }
 
+/// The declarations of `infos` (one name's, in this file) a call passing
+/// `argCount` arguments may reach: those taking exactly `argCount`, else
+/// every one that fills the rest from defaults.  Which of several
+/// default-filling declarations the type checker binds is not a rule the
+/// language states, so each is taken as reachable (the conservative
+/// choice).  Two of the same arity — a duplicate the type checker rejects
+/// (T0001) — are both returned; none when no declaration takes `argCount`.
+/// A declaration in another file of the package is not seen here: the
+/// build's mode check, which `lyric prove` runs first, checks the merged
+/// package.
+pub func calleeCandidates(infos: in List[CalleeInfo], argCount: in Int): List[CalleeInfo] {
+  val exact: List[CalleeInfo] = newList()
+  for info in infos {
+    if info.paramCount == argCount {
+      exact.add(info)
+    }
+  }
+  if exact.count > 0 {
+    return exact
+  }
+  val viaDefaults: List[CalleeInfo] = newList()
+  for info in infos {
+    if info.requiredCount <= argCount and argCount <= info.paramCount {
+      viaDefaults.add(info)
+    }
+  }
+  viaDefaults
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. AST walker — V0002/V0003 (call-graph and unsafe-block checks).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -58,25 +112,34 @@ pub func calleeTableOfFile(fileLevel: in VerificationLevel, file: in SourceFile)
 record WalkCtx {
   fnName: String
   fnLevel: VerificationLevel
-  callees: Map[String, CalleeInfo]
+  callees: Map[String, List[CalleeInfo]]
   imports: List[ImportedMeta]
   // cross-package callee resolution
   diag: List[Diagnostic]
   // Check a single resolved callee against the V0002 call-graph rule.
 }
 
-func checkCallee(ctx: in WalkCtx, calleeName: in String, span: in Span): Unit {
+func checkCallee(ctx: in WalkCtx, calleeName: in String, argCount: in Int, span: in Span): Unit {
   match mapGet(ctx.callees, calleeName) {
     case None -> {
     }
     // unknown — skip conservatively (M4.1 deferral)
-    case Some(info) -> {
-      val admissible = vlDominates(info.level, ctx.fnLevel) or info.isPure
+    case Some(infos) -> {
+      // Every declaration the call may reach must be admissible; a call no
+      // declaration takes is the type checker's to report.
+      var admissible = true
+      var shown = VLRuntimeChecked
+      for info in calleeCandidates(infos, argCount) {
+        if not (vlDominates(info.level, ctx.fnLevel) or info.isPure) and admissible {
+          admissible = false
+          shown = info.level
+        }
+      }
       if not admissible {
         ctx.diag.add(
           errorDiagnostic(
             "V0002",
-            "proof-required function '" + ctx.fnName + "' may not call '" + calleeName + "' (" + vlDisplay(info.level) +
+            "proof-required function '" + ctx.fnName + "' may not call '" + calleeName + "' (" + vlDisplay(shown) +
               "); upgrade callee, mark @pure, or shift caller to @runtime_checked",
             span
           )
@@ -161,7 +224,7 @@ func walkExprCalls(ctx: in WalkCtx, e: in Expr): Unit {
       match fn.kind {
         case EPath(path) -> {
           if path.segments.count == 1 {
-            checkCallee(ctx, path.segments[0], e.span)
+            checkCallee(ctx, path.segments[0], args.count, e.span)
           }
         }
         case EMember(recv, _) -> {
@@ -464,7 +527,7 @@ func bodyHasInvariant(body: in Block): Bool {
 // Only called when fnLevel is proof-required.
 func checkFunctionCalls(
   fileLevel: in VerificationLevel,
-  callees: in Map[String, CalleeInfo],
+  callees: in Map[String, List[CalleeInfo]],
   imports: in List[ImportedMeta],
   diag: in List[Diagnostic],
   fn: in FunctionDecl,
@@ -2638,8 +2701,12 @@ func recordFieldMutabilityMap(members: in List[RecordMember]): Map[String, Bool]
   var i = 0
   while i < members.count {
     match members[i] {
+      // A field declared twice (T0001) keeps its first declaration's
+      // mutability; the check never throws on it (#8341).
       case RMField(field) -> {
-        m.add(field.name, field.isMutable)
+        if not m.containsKey(field.name) {
+          m.add(field.name, field.isMutable)
+        }
       }
       case _ -> {
       }
@@ -2657,10 +2724,13 @@ func protectedFieldMutabilityMap(members: in List[ProtectedMember]): Map[String,
   while i < members.count {
     match members[i] {
       case PMField(pf) -> {
-        match pf {
-          case PFVar(name, _, _, _, _, _) -> m.add(name, true)
-          case PFLet(name, _, _, _, _, _) -> m.add(name, false)
-          case PFImmutable(field) -> m.add(field.name, field.isMutable)
+        val (fname, mutable) = match pf {
+          case PFVar(name, _, _, _, _, _) -> (name, true)
+          case PFLet(name, _, _, _, _, _) -> (name, false)
+          case PFImmutable(field) -> (field.name, field.isMutable)
+        }
+        if not m.containsKey(fname) {
+          m.add(fname, mutable)
         }
       }
       case _ -> {
@@ -2675,10 +2745,24 @@ func collectRecordFieldsOfFile(file: in SourceFile): Map[String, Map[String, Boo
   val result: Map[String, Map[String, Bool]] = newMap()
   var i = 0
   while i < file.items.count {
+    // A type declared twice (T0001) is checked as its first declaration;
+    // the check never throws on it (#8341).
     match file.items[i].kind {
-      case IRecord(decl) -> result.add(decl.name, recordFieldMutabilityMap(decl.members))
-      case IExposedRec(decl) -> result.add(decl.name, recordFieldMutabilityMap(decl.members))
-      case IProtected(decl) -> result.add(decl.name, protectedFieldMutabilityMap(decl.members))
+      case IRecord(decl) -> {
+        if not result.containsKey(decl.name) {
+          result.add(decl.name, recordFieldMutabilityMap(decl.members))
+        }
+      }
+      case IExposedRec(decl) -> {
+        if not result.containsKey(decl.name) {
+          result.add(decl.name, recordFieldMutabilityMap(decl.members))
+        }
+      }
+      case IProtected(decl) -> {
+        if not result.containsKey(decl.name) {
+          result.add(decl.name, protectedFieldMutabilityMap(decl.members))
+        }
+      }
       case _ -> {
       }
     }

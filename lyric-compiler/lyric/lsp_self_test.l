@@ -20,6 +20,7 @@ import Std.Environment as Environment
 import Std.Errors
 import Std.Uuid
 import Lyric.Lsp
+import Lyric.Verifier
 
 func openDoc(state: in LspState, uri: in String, text: in String): Unit {
   val params = "{\"textDocument\":{\"uri\":" + encodeString(uri) + ",\"text\":" + encodeString(text) + "}}"
@@ -360,4 +361,181 @@ test "readFrameVia: a read failure is reported as an error" {
     case LspReadError(message) -> assertEqual(message, "boom", "read error propagates")
     case _ -> assertTrue(false, "expected the read error")
   }
+}
+
+func writeOrPanic(path: in String, text: in String): Unit {
+  match File.writeText(path, text) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot write " + path + ": " + IOError.message(e))
+  }
+}
+
+func mkdirOrPanic(dir: in String): Unit {
+  match File.createDir(dir) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create " + dir + ": " + IOError.message(e))
+  }
+}
+
+func featureTwins(): String {
+  "@proof_required\npackage P\n" +
+    "@cfg(feature = \"wide\")\npub func limit(): Int\n  ensures: result == 1000\n{\n  1000\n}\n" +
+    "@cfg(not(feature = \"wide\"))\npub func limit(): Int\n  ensures: result == 10\n{\n  10\n}\n" +
+    "pub func atLeastHundred(): Int\n  ensures: result >= 100\n{\n  limit()\n}\n"
+}
+
+// A project whose manifest lists `src/p` and declares the feature `wide`,
+// on by default when `wideByDefault`; returns the path of its source file.
+func featureProject(wideByDefault: in Bool): String {
+  val dir = Path.join(tempBase(), "lyric-lsp-prove-build-" + uuidToString(newUuid()))
+  mkdirOrPanic(dir)
+  mkdirOrPanic(Path.join(dir, "src"))
+  mkdirOrPanic(Path.join(dir, "src/p"))
+  val dflt = if wideByDefault { "default = [\"wide\"]\n" } else { "" }
+  writeOrPanic(
+    Path.join(dir, "lyric.toml"),
+    "[package]\nname = \"Feat\"\nversion = \"0.1.0\"\n\n[project]\nname = \"Feat\"\n\n[project.packages]\n\"P\" = \"src/p\"\n\n[features]\n" +
+      dflt +
+      "wide = []\n"
+  )
+  val src = Path.join(dir, "src/p/limits.l")
+  writeOrPanic(src, featureTwins())
+  src
+}
+
+func removeProject(src: in String): Unit {
+  match File.deleteDirRecursive(Path.dirname(Path.dirname(Path.dirname(src)))) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+}
+
+// #8342: the editor proves a document as `lyric prove` proves it — under
+// each build its manifests define, with their default features — not as a
+// standalone `--target dotnet` file with no features.
+test "the editor proves a document under its manifest's features, as lyric prove does (#8342)" {
+  val wide = featureProject(true)
+  val noCli: List[String] = newList()
+  val builds = proveBuildConfigsForSource(wide, "dotnet", noCli, false, false)
+  assertEqualInt(builds.count, 1, "one manifest lists the file")
+  assertTrue(builds[0].activeFeatures.contains("wide"), "the manifest's default feature is active")
+  val wideMsgs = openDocMessages(lspInit(), "file://" + wide, featureTwins())
+  assertFalse(Str.contains(wideMsgs, "V0008"), "with `wide` on by default the wide twin is proved: no refutation")
+  assertTrue(
+    Str.contains(wideMsgs, "inactive @cfg variant"),
+    "the narrow twin, which no build compiles, is reported as lyric prove lists it"
+  )
+  assertFalse(Str.contains(wideMsgs, "T0001"), "the check sees the build's erasure: the twins are not a duplicate")
+  removeProject(wide)
+  val narrow = featureProject(false)
+  val narrowMsgs = openDocMessages(lspInit(), "file://" + narrow, featureTwins())
+  assertTrue(Str.contains(narrowMsgs, "V0008"), "without `wide` the narrow twin's contract refutes atLeastHundred")
+  removeProject(narrow)
+}
+
+// #8341: the editor proves without a type check, so a duplicate declaration
+// reaches the verifier; it is reported, never thrown on.
+test "a duplicate declaration in an open document is reported, not thrown on (#8341)" {
+  val msgs = openDocMessages(
+    lspInit(),
+    "file:///lsp_self_test_duplicate.l",
+    "@proof_required\npackage D\nrecord R {\n  n: Int\n}\nrecord R {\n  m: Int\n}\n" +
+      "func f(x: in Int): Int\n  ensures: result == x\n{\n  x\n}\nfunc f(x: in Int): Int\n  ensures: result == x + 1\n{\n  x + 1\n}\n" +
+      "pub func g(x: in Int): Int\n  ensures: result == x\n{\n  f(x)\n}\n"
+  )
+  assertTrue(Str.contains(msgs, "publishDiagnostics"), "diagnostics are published")
+  assertTrue(Str.contains(msgs, "V0033"), "the duplicate is reported")
+}
+
+// #8342: like `lyric prove`, the server proves nothing of a file whose
+// builds cannot be known — here an enclosing manifest it cannot read.
+test "a document under an unreadable manifest is refused, as lyric prove refuses it (#8342)" {
+  val dir = Path.join(tempBase(), "lyric-lsp-prove-bad-" + uuidToString(newUuid()))
+  mkdirOrPanic(dir)
+  mkdirOrPanic(Path.join(dir, "src"))
+  mkdirOrPanic(Path.join(dir, "src/p"))
+  writeOrPanic(
+    Path.join(dir, "lyric.toml"),
+    "[package]\nname = \"Bad\"\nversion = \"0.1.0\"\n\n[project]\nname = \"Bad\"\n\n[project.packages]\n\"P\" = \"src/p\"\n\n[features]\ndefault = 5\na = \"oops\"\n"
+  )
+  val src = Path.join(dir, "src/p/f.l")
+  // `@cfg` items whose features the unreadable manifest would declare.
+  val text = "@proof_required\npackage P\n\n@cfg(feature = \"a\")\npub func k(): Int\n  ensures: result == 1\n{\n  1\n}\n\n@cfg(feature = \"b\")\npub func k(): Int\n  ensures: result == 2\n{\n  2\n}\n\npub func useK(): Int\n  ensures: result == 1\n{\n  k()\n}\n\n@cfg(feature = \"zzz\")\npub func typo(): Int\n{\n  0\n}\n"
+  writeOrPanic(src, text)
+  val msgs = openDocMessages(lspInit(), "file://" + src, text)
+  removeProject(src)
+  assertTrue(Str.contains(msgs, "B0001"), "the refusal is reported")
+  assertFalse(Str.contains(msgs, "V0008"), "nothing is proved")
+  assertFalse(Str.contains(msgs, "\"code\":\"T"), "no check of a build no command makes")
+}
+
+func changeDocMessages(state: in LspState, uri: in String, version: in Int, text: in String): String {
+  val params = "{\"textDocument\":{\"uri\":" + encodeString(uri) + ",\"version\":" + ("" + version) +
+    "},\"contentChanges\":[{\"text\":" +
+    encodeString(text) +
+    "}]}"
+  val msgs = lspHandle(state, "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didChange\",\"params\":" + params + "}")
+  var all = ""
+  for m in msgs {
+    all = all + m
+  }
+  all
+}
+
+// #8342: what a proof reads from disk is read again when the disk changes,
+// whether or not the client reports it: a file of the package created
+// after the document was opened is seen on the next edit.
+test "a sibling file created without a watched-files notification is seen on the next edit (#8342)" {
+  val dir = Path.join(tempBase(), "lyric-lsp-fresh-" + uuidToString(newUuid()))
+  mkdirOrPanic(dir)
+  mkdirOrPanic(Path.join(dir, "src"))
+  mkdirOrPanic(Path.join(dir, "src/p"))
+  writeOrPanic(
+    Path.join(dir, "lyric.toml"),
+    "[package]\nname = \"Fresh\"\nversion = \"0.1.0\"\n\n[project]\nname = \"Fresh\"\n\n[project.packages]\n\"P\" = \"src/p\"\n"
+  )
+  val b = Path.join(dir, "src/p/b.l")
+  val text = "@proof_required\npackage P\npub func add(x: in Int, y: in Int = 100): Int\n  ensures: result == x + y\n{\n  x + y\n}\n" +
+    "pub func useIt(x: in Int): Int\n  ensures: result == x + 100\n{\n  add(x)\n}\n"
+  writeOrPanic(b, text)
+  val state = lspInit()
+  val before = openDocMessages(state, "file://" + b, text)
+  writeOrPanic(
+    Path.join(dir, "src/p/a.l"),
+    "@proof_required\npackage P\npub func add(x: in Int): Int\n  ensures: result == x\n{\n  x\n}\n"
+  )
+  val after = changeDocMessages(state, "file://" + b, 2, text + "\n")
+  match File.deleteDirRecursive(dir) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+  assertFalse(Str.contains(before, "V0033"), "alone, add(x) reaches the file's own add")
+  assertTrue(Str.contains(after, "V0033"), "with a.l created, add(x) binds a.l's add: the call fails closed")
+}
+
+test "a client that registers watched files dynamically is asked for .l and lyric.toml changes (#8342)" {
+  val state = lspInit()
+  val _init = lspHandle(
+    state,
+    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"capabilities\":{\"workspace\":{\"didChangeWatchedFiles\":{\"dynamicRegistration\":true}}}}}"
+  )
+  val msgs = lspHandle(state, "{\"jsonrpc\":\"2.0\",\"method\":\"initialized\",\"params\":{}}")
+  var all = ""
+  for m in msgs {
+    all = all + m
+  }
+  assertTrue(Str.contains(all, "client/registerCapability"), "the registration is requested")
+  assertTrue(Str.contains(all, "lyric.toml"), "lyric.toml is watched")
+  val reply = lspHandle(state, "{\"jsonrpc\":\"2.0\",\"id\":\"lyric-register-watched-files\",\"result\":null}")
+  assertEqualInt(reply.count, 0, "the client's response is not answered")
+  val plain = lspInit()
+  val _init2 = lspHandle(
+    plain,
+    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"capabilities\":{}}}"
+  )
+  assertEqualInt(
+    lspHandle(plain, "{\"jsonrpc\":\"2.0\",\"method\":\"initialized\",\"params\":{}}").count,
+    0,
+    "no registration otherwise"
+  )
 }

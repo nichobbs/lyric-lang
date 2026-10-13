@@ -764,12 +764,14 @@ func appendTermList(dst: in List[Term], src: in List[Term]): Unit {
 // Scan env.symbols for a single-ctor `DeclDatatype` whose name matches.
 // Returns the constructor's fields (name → sort) so EMember can emit a
 // strongly-typed selector and ECall can emit a strongly-typed ctor call
-// when the receiver type is a known record (#3843).
+// when the receiver type is a known record (#3843).  A generic record's
+// field sorts name its sort parameters (`recordSortParams`); a reader
+// instantiates them (`instantiateRecordSort`).
 func findRecordFields(env: in VEnv, name: in String): Option[List[DatatypeField]] {
   var i = 0
   while i < env.symbols.count {
     match env.symbols[i] {
-      case DeclDatatype(rName, ctors) -> {
+      case DeclDatatype(rName, ctors, _) -> {
         if rName == name and ctors.count >= 1 {
           val fieldsOpt: Option[List[DatatypeField]] = Some(value = ctors[0].fields)
           return fieldsOpt
@@ -783,9 +785,192 @@ func findRecordFields(env: in VEnv, name: in String): Option[List[DatatypeField]
   none
 }
 
-// Return the sort of a named field on a record type, or None if the record
-// (or that field) isn't registered.  Drives EMember's selector emission.
-func findRecordFieldSort(env: in VEnv, recName: in String, fieldName: in String): Option[Sort] {
+// The sort parameters of the record datatype `name` (#8340): empty for a
+// record that is not generic, or that is not registered.
+func recordSortParams(env: in VEnv, name: in String): List[String] {
+  for sym in env.symbols {
+    match sym {
+      case DeclDatatype(rName, ctors, params) -> {
+        if rName == name and ctors.count >= 1 {
+          return params
+        }
+      }
+      case _ -> ()
+    }
+  }
+  val none: List[String] = newList()
+  none
+}
+
+// The sort parameter a generic record's datatype declares for its type
+// parameter `typeParam` (#8340).  `!` keeps it apart from every source sort,
+// a type of the file spelt like the parameter among them, and the
+// `Lyric!sortparam!` prefix from every name the verifier synthesizes
+// (`Lyric!Unit`, the tuple sorts), whatever the record and parameter are
+// called.
+func recordSortParamName(recordName: in String, typeParam: in String): String {
+  "Lyric!sortparam!" + recordName + "!" + typeParam
+}
+
+// `s` with each sort `SDatatype(params[i], [])` replaced by `args[i]`.
+func substSortParams(s: in Sort, params: in List[String], args: in List[Sort]): Sort {
+  match s {
+    case SDatatype(name, sargs) -> {
+      if sargs.count == 0 {
+        var i = 0
+        while i < params.count {
+          if params[i] == name {
+            return args[i]
+          }
+          i = i + 1
+        }
+        s
+      } else {
+        val newArgs: List[Sort] = newList()
+        for a in sargs {
+          newArgs.add(substSortParams(a, params, args))
+        }
+        SDatatype(name = name, args = newArgs)
+      }
+    }
+    case SSlice(e) -> SSlice(element = substSortParams(e, params, args))
+    case _ -> s
+  }
+}
+
+// The sort a field of sort `fieldSort` has on a value of the record sort
+// `recvSort`: the field's sort with the record's sort parameters replaced
+// by the value's type arguments (#8340).  `None` when the value's sort does
+// not apply the record to one argument per parameter.
+func instantiateRecordSort(env: in VEnv, recvSort: in Sort, fieldSort: in Sort): Option[Sort] {
+  match recvSort {
+    case SDatatype(rName, targs) -> {
+      val params = recordSortParams(env, rName)
+      if params.count != targs.count {
+        return None
+      }
+      if params.count == 0 {
+        return Some(value = fieldSort)
+      }
+      Some(value = substSortParams(fieldSort, params, targs))
+    }
+    case _ -> None
+  }
+}
+
+// Bind the sort parameters `params` so that `pattern` (a field's declared
+// sort) is `actual` (the sort of the value given for it), recording each
+// binding in `bound` (one slot per parameter, `None` while unbound).
+// False when the two cannot agree: a parameter bound to two sorts, or
+// sorts of different shapes.
+func matchSortParams(pattern: in Sort, actual: in Sort, params: in List[String], bound: in List[Option[Sort]]): Bool {
+  match pattern {
+    case SDatatype(name, pargs) -> {
+      if pargs.count == 0 {
+        var i = 0
+        while i < params.count {
+          if params[i] == name {
+            match bound[i] {
+              case Some(prev) -> {
+                return smtRenderSort(prev) == smtRenderSort(actual)
+              }
+              case None -> {
+                bound[i] = Some(value = actual)
+                return true
+              }
+            }
+          }
+          i = i + 1
+        }
+      }
+      match actual {
+        case SDatatype(aname, aargs) -> {
+          if aname != name or aargs.count != pargs.count {
+            return false
+          }
+          var j = 0
+          while j < pargs.count {
+            if not matchSortParams(pargs[j], aargs[j], params, bound) {
+              return false
+            }
+            j = j + 1
+          }
+          true
+        }
+        case _ -> false
+      }
+    }
+    case SSlice(pe) -> match actual { case SSlice(ae) -> matchSortParams(pe, ae, params, bound); case _ -> false }
+    case _ -> smtRenderSort(pattern) == smtRenderSort(actual)
+  }
+}
+
+// `matchSortParams` for the argument `t` given a field of sort `pattern`:
+// a `Some(x)`/`Ok(x)`/`Err(e)` not yet given its type binds the parameters
+// its payload's sort fixes, and `None` binds none.
+func matchArgSortParams(pattern: in Sort, t: in Term, params: in List[String], bound: in List[Option[Sort]]): Bool {
+  val ctor = pendingCtorName(t)
+  if ctor.length == 0 {
+    return matchSortParams(pattern, sortOf(t), params, bound)
+  }
+  // A field of a parameter's own sort: `Some(x)` gives it `Option` of
+  // `x`'s sort; any other constructor leaves part of it open.
+  match pendingCtorSort(t) {
+    case Some(srt) -> match pattern {
+      case SDatatype(pn, pargs) -> {
+        if pargs.count == 0 and params.contains(pn) {
+          return matchSortParams(pattern, srt, params, bound)
+        }
+      }
+      case _ -> ()
+    }
+    case None -> ()
+  }
+  val wantResult = ctor == "Ok" or ctor == "Err"
+  val fits = if wantResult { isResultSort(pattern) } else { isOptionSort(pattern) }
+  if not fits {
+    return false
+  }
+  val payload = pendingCtorArgs(t)
+  if payload.count == 0 {
+    return true
+  }
+  val slot = if ctor == "Err" { monadArgSort(pattern, 1) } else { monadArgSort(pattern, 0) }
+  matchArgSortParams(slot, payload[0], params, bound)
+}
+
+// The sort a `Some(x)` not yet given its type has: `Option` of `x`'s sort,
+// when that is known; `None`, `Ok` and `Err` leave part of theirs open.
+func pendingCtorSort(t: in Term): Option[Sort] {
+  if pendingCtorName(t) != "Some" {
+    return None
+  }
+  val payload = pendingCtorArgs(t)
+  if payload.count != 1 {
+    return None
+  }
+  val inner = match pendingCtorSort(payload[0]) {
+    case Some(srt) -> srt
+    case None -> {
+      if pendingCtorName(payload[0]).length > 0 {
+        return None
+      }
+      sortOf(payload[0])
+    }
+  }
+  val args: List[Sort] = newList()
+  args.add(inner)
+  Some(value = SDatatype(name = "Option", args = args))
+}
+
+// Return the sort of a named field on a value of the record sort
+// `recvSort`, or None if the record (or that field) isn't registered.
+// Drives EMember's selector emission.
+func findRecordFieldSort(env: in VEnv, recvSort: in Sort, fieldName: in String): Option[Sort] {
+  val recName = match recvSort { case SDatatype(n, _) -> n; case _ -> "" }
+  if recName.length == 0 {
+    return None
+  }
   // Selectors are registered with a `<TypeName>__` prefix (see
   // `goalsForFile` IRecord / IProtected) so a field named `capacity` on a
   // Bucket doesn't collide with a free constant of the same name in z3's
@@ -796,8 +981,7 @@ func findRecordFieldSort(env: in VEnv, recName: in String, fieldName: in String)
       var j = 0
       while j < fields.count {
         if fields[j].name == prefixed {
-          val sortOpt: Option[Sort] = Some(value = fields[j].sort)
-          return sortOpt
+          return instantiateRecordSort(env, recvSort, fields[j].sort)
         }
         j = j + 1
       }
@@ -1815,21 +1999,7 @@ func noTypeParams(): List[String] {
 
 // The names of `decl`'s type parameters.
 func typeParamNames(decl: in FunctionDecl): List[String] {
-  val names: List[String] = newList()
-  match decl.generics {
-    case Some(gp) -> {
-      var i = 0
-      while i < gp.params.count {
-        match gp.params[i] {
-          case GPType(n, _) -> names.add(n)
-          case _ -> ()
-        }
-        i = i + 1
-      }
-    }
-    case None -> ()
-  }
-  names
+  genericTypeParamNames(decl.generics)
 }
 
 // Whether `t` holds an `==` or `!=` whose operands the verifier's equality
@@ -2217,7 +2387,9 @@ func localCallee(env: in VEnv, fn: in Expr): Bool {
 // that `recv` is, unless `R` declares its own method `m`, which the call
 // reaches first.  `None` when the receiver's type is not one of the file's
 // records, or the function's first parameter does not take it.
-func resolveMethodCallee(env: in VEnv, recvTerm: in Term, methodName: in String): Option[ResolvedCallee] {
+func resolveMethodCallee(
+  env: in VEnv, recvTerm: in Term, methodName: in String, args: in List[CallArg]
+): Option[ResolvedCallee] {
   val recvSort = sortOf(recvTerm)
   match recvSort {
     case SDatatype(rName, targs) -> {
@@ -2231,7 +2403,14 @@ func resolveMethodCallee(env: in VEnv, recvTerm: in Term, methodName: in String)
         }
       }
       val key = rName + "." + methodName
-      match mapGet(env.callees, key) {
+      // The receiver is the first argument of a dot-named function, which
+      // may be overloaded (#8341).
+      val withRecv: List[CallArg] = newList()
+      withRecv.add(CAPositional(expr = Expr(kind = ESelf, span = makeSpan(initialPosition(), initialPosition()))))
+      for a in args {
+        withRecv.add(a)
+      }
+      match fileCallee(env, key, withRecv) {
         case Some(decl) -> {
           if decl.params.count >= 1 and sortEq(calleeSortInfo(env, decl, decl.params[0].ty).sort, recvSort) {
             Some(value = ResolvedCallee(name = key, decl = decl))
@@ -2248,21 +2427,28 @@ func resolveMethodCallee(env: in VEnv, recvTerm: in Term, methodName: in String)
 
 // `T.m(...)` where `T` names no binding but the file declares `func T.m`:
 // a call of that function, like a call by its path.
-func resolveStaticCallee(env: in VEnv, receiver: in Expr, methodName: in String): Option[ResolvedCallee] {
+func resolveStaticCallee(
+  env: in VEnv, receiver: in Expr, methodName: in String, args: in List[CallArg]
+): Option[ResolvedCallee] {
+  match staticCalleeKey(env, receiver, methodName) {
+    // `T.m` (a dot-named function), `P.f` with `P` this file's package, or
+    // `P.T.m`: the callee table holds each spelling, an overloaded one by
+    // its arity (#8341).
+    case Some(key) -> match fileCallee(env, key, args) {
+      case Some(decl) -> Some(value = ResolvedCallee(name = decl.name, decl = decl))
+      case None -> None
+    }
+    case None -> None
+  }
+}
+
+// The callee-table spelling of `receiver.methodName` when `receiver` is a
+// path naming no binding.
+func staticCalleeKey(env: in VEnv, receiver: in Expr, methodName: in String): Option[String] {
   match qualifiedPathOf(receiver) {
-    case Some(segs) -> {
-      match envLookup(segs[0], env) {
-        case Some(_) -> None
-        case None -> {
-          // `T.m` (a dot-named function), `P.f` with `P` this file's
-          // package, or `P.T.m`: the callee table holds each spelling.
-          val key = joinPathSegments(segs) + "." + methodName
-          match mapGet(env.callees, key) {
-            case Some(decl) -> Some(value = ResolvedCallee(name = decl.name, decl = decl))
-            case None -> None
-          }
-        }
-      }
+    case Some(segs) -> match envLookup(segs[0], env) {
+      case Some(_) -> None
+      case None -> Some(value = joinPathSegments(segs) + "." + methodName)
     }
     case None -> None
   }
@@ -2281,7 +2467,9 @@ func typeAppCallee(env: in VEnv, fn: in Expr): Option[Expr] {
         }
         match mapGet(env.callees, joinPathSegments(path.segments)) {
           case Some(decl) -> match decl.generics { case Some(_) -> Some(value = receiver); case None -> None }
-          case None -> None
+          // A function cannot be indexed: `f[T]` of an overloaded `f` is a
+          // type application.
+          case None -> if calleeIsOverloaded(env, joinPathSegments(path.segments)) { Some(value = receiver) } else { None }
         }
       }
       case _ -> None
@@ -2335,7 +2523,7 @@ func translateMethodCall(
   argAssumed: in List[Term],
   allArgDiags: in List[Diagnostic],
 ): (TranslateResult, List[Diagnostic]) {
-  match resolveStaticCallee(env, receiver, methodName) {
+  match resolveStaticCallee(env, receiver, methodName, args) {
     case Some(rc) -> {
       return translateResolvedCall(
         env,
@@ -2349,6 +2537,29 @@ func translateMethodCall(
         argAssumed,
         allArgDiags
       )
+    }
+    case None -> ()
+  }
+  // `P.f(...)` of a name its package declares more than once that no single
+  // declaration takes by the call's argument count fails closed (#8341).
+  match staticCalleeKey(env, receiver, methodName) {
+    case Some(key) -> {
+      if calleeIsOverloaded(env, key) {
+        allArgDiags.add(
+          untranslatableDiag(
+            "a call to '" + key +
+              "', which its package declares more than once, that no single declaration takes by its argument count",
+            callSpan
+          )
+        )
+        val ambTR = TranslateResult(
+          term = poisonTerm(freshVar(env, methodName + "!result", SUninterp(name = "call"))),
+          sideConds = argSides,
+          assumed = argAssumed
+        )
+        val ambPair: (TranslateResult, List[Diagnostic]) = (ambTR, allArgDiags)
+        return ambPair
+      }
     }
     case None -> ()
   }
@@ -2427,7 +2638,7 @@ func translateMethodCall(
     val selfPair: (TranslateResult, List[Diagnostic]) = (selfTR, diags)
     return selfPair
   }
-  match resolveMethodCallee(env, recvR.term, methodName) {
+  match resolveMethodCallee(env, recvR.term, methodName, args) {
     case Some(rc) -> {
       val fullArgs: List[CallArg] = newList()
       fullArgs.add(CAPositional(expr = receiver))
@@ -2445,6 +2656,25 @@ func translateMethodCall(
       translateResolvedCall(env, rc.name, rc.decl, fullArgs, fullTerms, fullSpans, callSpan, sides, facts, diags)
     }
     case None -> {
+      // A dot-named function its package declares more than once that no
+      // single declaration takes by the call's argument count (#8341).
+      val dotKey = match sortOf(recvR.term) { case SDatatype(rName, _) -> rName + "." + methodName; case _ -> "" }
+      if dotKey.length > 0 and calleeIsOverloaded(env, dotKey) and not env.recordMethods.containsKey(dotKey) {
+        diags.add(
+          untranslatableDiag(
+            "a call to '" + dotKey +
+              "', which its package declares more than once, that no single declaration takes by its argument count",
+            callSpan
+          )
+        )
+        val ambTR = TranslateResult(
+          term = poisonTerm(freshVar(env, methodName + "!result", SUninterp(name = "call"))),
+          sideConds = sides,
+          assumed = facts
+        )
+        val ambPair: (TranslateResult, List[Diagnostic]) = (ambTR, diags)
+        return ambPair
+      }
       val ufArgs: List[Term] = newList()
       ufArgs.add(recvR.term)
       // One function per method, argument shape and sorts: `!`-separated
@@ -2654,13 +2884,13 @@ func intBitsOfExprWith(env: in VEnv, e: in Expr, unknownWins: in Bool): Int {
       case Some(last) -> intBitsOfExprWith(env, last, unknownWins)
       case None -> 0
     }
-    case ECall(fn, _) -> match fn.kind {
+    case ECall(fn, callArgs) -> match fn.kind {
       case EPath(path) -> {
         val name = joinPathSegments(path.segments)
         if localCallee(env, fn) {
           return 0
         }
-        match mapGet(env.callees, name) {
+        match fileCallee(env, name, callArgs) {
           case Some(decl) -> match decl.ret { case Some(te) -> calleeSortInfo(env, decl, te).intBits; case None -> 0 }
           case None -> {
             // A distinct type's constructor yields its underlying value.
@@ -2680,13 +2910,14 @@ func intBitsOfExprWith(env: in VEnv, e: in Expr, unknownWins: in Bool): Int {
           }
           case None -> ()
         }
-        val resolved = match resolveStaticCallee(env, receiver, methodName) {
+        val resolved = match resolveStaticCallee(env, receiver, methodName, callArgs) {
           case Some(rc) -> Some(value = rc)
           case None -> match staticSortOfExpr(env, receiver) {
             case Some(srt) -> resolveMethodCallee(
               env,
               TVar(name = "self", sort = srt),
-              methodName
+              methodName,
+              callArgs
             )
             case None -> None
           }
@@ -2819,9 +3050,11 @@ func staticSortOfExpr(env: in VEnv, e: in Expr): Option[Sort] {
     case EResult -> match envLookupSort("result", env) { case Some(si) -> Some(value = si.sort); case None -> None }
     case ESelf -> match envLookupSort("self", env) { case Some(si) -> Some(value = si.sort); case None -> None }
     case EMember(receiver, memberName) -> {
-      val inner = recordNameOfExpr(env, receiver)
-      if inner.length > 0 {
-        findRecordFieldSort(env, inner, memberName)
+      if recordNameOfExpr(env, receiver).length > 0 {
+        match staticSortOfExpr(env, receiver) {
+          case Some(recvSort) -> findRecordFieldSort(env, recvSort, memberName)
+          case None -> None
+        }
       } else {
         None
       }
@@ -3367,10 +3600,74 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
                   noDefaults
                 }
               }
+              // A generic record's type arguments are those its field
+              // values give it (#8340), read from the arguments before they
+              // take their fields' sorts, so a `Some(x)`/`Ok(x)` argument
+              // takes the instantiated field sort; one the arguments leave
+              // open, or give two sorts, is not known, and the value fails
+              // closed.
+              val recParams = recordSortParams(env, name)
+              val recTypeArgs: List[Sort] = newList()
+              var recInferred = true
+              val slotSorts: List[Sort] = newList()
+              if recParams.count > 0 {
+                val bound: List[Option[Sort]] = newList()
+                var bi = 0
+                while bi < recParams.count {
+                  bound.add(None)
+                  bi = bi + 1
+                }
+                match pairCallArgs(fieldNames, 0, args) {
+                  case Ok(slots) -> {
+                    var ti = 0
+                    while ti < slots.count and ti < fieldSorts.count {
+                      if slots[ti] >= 0 and not matchArgSortParams(fieldSorts[ti], rawArgTerms[slots[ti]], recParams, bound) {
+                        recInferred = false
+                      }
+                      ti = ti + 1
+                    }
+                  }
+                  case Err(_) -> {
+                    recInferred = false
+                  }
+                }
+                for b in bound {
+                  match b {
+                    case Some(bs) -> recTypeArgs.add(bs)
+                    case None -> {
+                      recInferred = false
+                    }
+                  }
+                }
+                if recInferred {
+                  for fs in fieldSorts {
+                    slotSorts.add(substSortParams(fs, recParams, recTypeArgs))
+                  }
+                }
+              } else {
+                for fs in fieldSorts {
+                  slotSorts.add(fs)
+                }
+              }
+              if not recInferred {
+                allArgDiags.add(
+                  untranslatableDiag(
+                    "a value of the generic record '" + name + "' whose type arguments its fields do not determine",
+                    e.span
+                  )
+                )
+                val openTR = TranslateResult(
+                  term = poisonTerm(freshVar(env, name, SUninterp(name = "generic." + name))),
+                  sideConds = argSides,
+                  assumed = argAssumed
+                )
+                val openPair: (TranslateResult, List[Diagnostic]) = (openTR, allArgDiags)
+                return openPair
+              }
               val recPaired = pairArgTerms(
                 name,
                 fieldNames,
-                fieldSorts,
+                slotSorts,
                 fieldDefaults,
                 envInOwnContract(varlessEnv(env), recordKey),
                 args,
@@ -3381,8 +3678,7 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
                 argAssumed,
                 allArgDiags
               )
-              val emptyArgs: List[Sort] = newList()
-              val recRetSort: Sort = SDatatype(name = name, args = emptyArgs)
+              val recRetSort: Sort = SDatatype(name = name, args = recTypeArgs)
               val recCallTerm = TApp(name = name, args = recPaired.terms, retSort = recRetSort)
               val recSc: List[Term] = newList()
               appendTermList(recSc, argSides)
@@ -3408,6 +3704,43 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
                 val memberTR = TranslateResult(term = memberTerm, sideConds = argSides, assumed = argAssumed)
                 val memberPair: (TranslateResult, List[Diagnostic]) = (memberTR, memberDiags)
                 return memberPair
+              }
+            }
+          }
+          // A name its package declares more than once reaches the
+          // declaration taking the call's argument count; a call no single
+          // declaration takes that way fails closed (#8341).
+          if calleeIsOverloaded(env, name) {
+            match resolveOverloadedCallee(env, name, args) {
+              case Some(odecl) -> {
+                return translateResolvedCall(
+                  env,
+                  odecl.name,
+                  odecl,
+                  args,
+                  rawArgTerms,
+                  argSpans,
+                  e.span,
+                  argSides,
+                  argAssumed,
+                  allArgDiags
+                )
+              }
+              case None -> {
+                allArgDiags.add(
+                  untranslatableDiag(
+                    "a call to '" + name +
+                      "', which its package declares more than once, that no single declaration takes by its argument count",
+                    e.span
+                  )
+                )
+                val ambTR = TranslateResult(
+                  term = poisonTerm(freshVar(env, name + "!result", SUninterp(name = "call"))),
+                  sideConds = argSides,
+                  assumed = argAssumed
+                )
+                val ambPair: (TranslateResult, List[Diagnostic]) = (ambTR, allArgDiags)
+                return ambPair
               }
             }
           }
@@ -3541,7 +3874,7 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
       }
       val recvRecName: String = match recvSort { case SDatatype(rName, _) -> rName; case _ -> "" }
       val recordFieldHit: Option[Sort] = if recvRecName.length > 0 {
-        findRecordFieldSort(env, recvRecName, memberName)
+        findRecordFieldSort(env, recvSort, memberName)
       } else {
         None
       }
@@ -5774,7 +6107,7 @@ func hoistCall(ctx: in HoistCtx, e: in Expr, fn: in Expr, args: in List[CallArg]
     case EPath(_) -> None
     case ETypeApp(_, _) -> None
     case EMember(receiver, methodName) -> {
-      if isSome(resolveStaticCallee(ctx.env, receiver, methodName)) or isSome(distinctFromCallee(ctx.env, fn)) {
+      if isSome(resolveStaticCallee(ctx.env, receiver, methodName, args)) or isSome(distinctFromCallee(ctx.env, fn)) {
         None
       } else {
         match qualifiedPathOf(receiver) {
@@ -6477,7 +6810,7 @@ func effOutArgs(env: in VEnv, fn: in Expr, args: in List[CallArg], eff: in Effec
     case EParen(inner) -> effOutArgs(env, inner, args, eff)
     case EPath(path) -> {
       val name = joinPathSegments(path.segments)
-      match mapGet(env.callees, name) {
+      match fileCallee(env, name, args) {
         case Some(decl) -> effOutParams(decl, 0, args, eff)
         case None -> {
           val known = name == "assert" or env.protectedMembers.contains(name) or isFileDistinct(env, name)
@@ -6489,11 +6822,11 @@ func effOutArgs(env: in VEnv, fn: in Expr, args: in List[CallArg], eff: in Effec
       }
     }
     case EMember(receiver, methodName) -> {
-      match resolveStaticCallee(env, receiver, methodName) {
+      match resolveStaticCallee(env, receiver, methodName, args) {
         case Some(rc) -> effOutParams(rc.decl, 0, args, eff)
         case None -> {
           val methodOpt = match staticSortOfExpr(env, receiver) {
-            case Some(srt) -> resolveMethodCallee(env, TVar(name = "self", sort = srt), methodName)
+            case Some(srt) -> resolveMethodCallee(env, TVar(name = "self", sort = srt), methodName, args)
             case None -> None
           }
           match methodOpt {
@@ -7882,6 +8215,273 @@ func addDatatypeField(
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Names declared more than once (#8341).
+// ─────────────────────────────────────────────────────────────────────────────
+// Register the file's functions in `callees` (and their declarations in
+// `decls`); return the indices of the items that are not proved.  Names are
+// counted over the whole package — this file's functions and
+// `siblingFunctions`, the other files' — since the build merges them and
+// the type checker resolves a call among all of them (#8341).
+//
+// A name the package declares once is reachable by its name and as
+// `P.name`.  Functions of one name and different arities — overloads,
+// which the language admits — are reachable only through
+// `overloadCalleeKey`, each the declaration of its arity in this file: a
+// call reaches the one taking exactly its argument count
+// (`resolveOverloadedCallee`), and a call whose declaration of that arity
+// is in another file, or that reaches one only by filling defaults, is not
+// resolved and fails closed.  Each overload this file declares is proved.
+// Two declarations of one name and arity in the package are a duplicate
+// the type checker rejects (T0001), which reaches the verifier only when
+// nothing type checked the program first (the language server): which one a
+// call reaches is not known, so this file's are neither reachable nor
+// proved, and each is reported.
+func registerFileFunctions(
+  file: in SourceFile,
+  siblingFunctions: in List[FunctionArity],
+  packagePrefix: in String,
+  callees: in Map[String, FunctionDecl],
+  decls: in List[FunctionDecl],
+  diags: in List[Diagnostic],
+): List[Int] {
+  val unproved: List[Int] = newList()
+  // How many functions the package declares of each name, and of each name
+  // and arity.
+  val byName: Map[String, Int] = newMap()
+  val byArity: Map[String, Int] = newMap()
+  for item in file.items {
+    match item.kind {
+      case IFunc(fn) -> {
+        bumpCount(byName, fn.name)
+        bumpCount(byArity, overloadCalleeKey(fn.name, fn.params.count))
+      }
+      case _ -> ()
+    }
+  }
+  for sf in siblingFunctions {
+    bumpCount(byName, sf.name)
+    bumpCount(byArity, overloadCalleeKey(sf.name, sf.paramCount))
+  }
+  var i = 0
+  while i < file.items.count {
+    match file.items[i].kind {
+      case IFunc(fn) -> {
+        decls.add(fn)
+        val arityKey = overloadCalleeKey(fn.name, fn.params.count)
+        if countOf(byName, fn.name) > 1 {
+          addCalleeIfAbsent(callees, overloadedMarkerKey(fn.name), fn)
+          addCalleeIfAbsent(callees, overloadedMarkerKey(packagePrefix + fn.name), fn)
+        }
+        if countOf(byArity, arityKey) > 1 {
+          unproved.add(i)
+          diags.add(
+            untranslatableDiag(
+              "'" + fn.name + "' is declared more than once in its package with " + toString(fn.params.count) +
+                " parameter(s) (T0001); no declaration of it is proved, and no call reaching one is translated",
+              fn.span
+            )
+          )
+        } else if countOf(byName, fn.name) > 1 {
+          addCalleeIfAbsent(callees, arityKey, fn)
+          addCalleeIfAbsent(callees, overloadCalleeKey(packagePrefix + fn.name, fn.params.count), fn)
+        } else {
+          addCalleeIfAbsent(callees, fn.name, fn)
+          addCalleeIfAbsent(callees, packagePrefix + fn.name, fn)
+        }
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  unproved
+}
+
+func addCalleeIfAbsent(callees: in Map[String, FunctionDecl], key: in String, fn: in FunctionDecl): Unit {
+  if not callees.containsKey(key) {
+    callees.add(key, fn)
+  }
+}
+
+func bumpCount(m: in Map[String, Int], key: in String): Unit {
+  val n = countOf(m, key)
+  if m.containsKey(key) {
+    val _ = m.remove(key)
+  }
+  m.add(key, n + 1)
+}
+
+func countOf(m: in Map[String, Int], key: in String): Int {
+  match mapGet(m, key) {
+    case Some(n) -> n
+    case None -> 0
+  }
+}
+
+// The callee-table key of the overload of `name` taking `arity` arguments.
+// `/` never occurs in a name.
+func overloadCalleeKey(name: in String, arity: in Int): String {
+  name + "/" + toString(arity)
+}
+
+// The callee-table key present when `name` names functions of more than
+// one declaration (#8341).
+func overloadedMarkerKey(name: in String): String {
+  "!overloaded/" + name
+}
+
+/// Whether `name` names more than one function of its package (this file's or another's), which a
+/// call by that name alone cannot pick (`resolveOverloadedCallee`).
+pub func calleeIsOverloaded(env: in VEnv, name: in String): Bool {
+  env.callees.containsKey(overloadedMarkerKey(name))
+}
+
+// The function a call of the overloaded `name` with `args` reaches: the
+// declaration of this file taking exactly that many arguments, when no
+// other file of the package declares one of that arity.  A call no
+// declaration takes exactly — one filling the rest from defaults, a
+// duplicate's, or another file's — is not resolved.
+func resolveOverloadedCallee(env: in VEnv, name: in String, args: in List[CallArg]): Option[FunctionDecl] {
+  mapGet(env.callees, overloadCalleeKey(name, args.count))
+}
+
+// The function of this file a call of `name` with `args` reaches: the one
+// declaration of that name, or the overload taking that many arguments.
+func fileCallee(env: in VEnv, name: in String, args: in List[CallArg]): Option[FunctionDecl] {
+  match mapGet(env.callees, name) {
+    case Some(decl) -> Some(value = decl)
+    case None -> if calleeIsOverloaded(env, name) { resolveOverloadedCallee(env, name, args) } else { None }
+  }
+}
+
+// Register a protected type's member under `key`; two members of one key
+// (one protected type's functions or entries of one name) are reachable by
+// neither.  No call reaches a member through this table (a call to one
+// fails closed), so the ambiguity needs no report.
+func addMemberCallee(callees: in Map[String, FunctionDecl], key: in String, fn: in FunctionDecl): Unit {
+  val marker = overloadedMarkerKey(key)
+  if callees.containsKey(marker) {
+    return ()
+  }
+  if callees.containsKey(key) {
+    val _ = callees.remove(key)
+    callees.add(marker, fn)
+  } else {
+    callees.add(key, fn)
+  }
+}
+
+// A type name the file declares twice, at its second declaration.
+record DuplicateType {
+  name: String
+  span: Span
+}
+
+func duplicateTypeDeclaration(file: in SourceFile): Option[DuplicateType] {
+  val seen: Map[String, Bool] = newMap()
+  for item in file.items {
+    val declared = match item.kind {
+      case ITypeAlias(d) -> d.name
+      case IDistinctType(d) -> d.name
+      case IRecord(d) -> d.name
+      case IExposedRec(d) -> d.name
+      case IUnion(d) -> d.name
+      case IEnum(d) -> d.name
+      case IOpaque(d) -> d.name
+      case IProtected(d) -> d.name
+      case IInterface(d) -> d.name
+      case _ -> ""
+    }
+    if declared.length > 0 {
+      if seen.containsKey(declared) {
+        return Some(value = DuplicateType(name = declared, span = item.span))
+      }
+      seen.add(declared, true)
+    }
+  }
+  None
+}
+
+// A field of a generic record (#8340): its sort read with the record's type
+// parameters in scope, each then named by the datatype's sort parameter for
+// it (`sortParamSorts`, in `typeParams` order).  A field whose type is not
+// generic is registered as `addDatatypeField` registers it.
+func addGenericDatatypeField(
+  dtFields: in List[DatatypeField],
+  infos: in Map[String, SortInfo],
+  distinctMap: in Map[String, TypeExpr],
+  selector: in String,
+  ty: in TypeExpr,
+  typeParams: in List[String],
+  sortParamSorts: in List[Sort],
+): Unit {
+  if typeParams.count == 0 {
+    addDatatypeField(dtFields, infos, distinctMap, selector, ty)
+    return ()
+  }
+  val raw = sortOfTypeExprIn(distinctMap, typeParams, ty)
+  val info = SortInfo(
+    sort = substSortParams(raw.sort, typeParams, sortParamSorts),
+    range = raw.range,
+    intBits = raw.intBits
+  )
+  dtFields.add(DatatypeField(name = selector, sort = info.sort))
+  if not infos.containsKey(selector) {
+    infos.add(selector, info)
+  }
+}
+
+// Whether a field of the generic record `rd` has a sort that names `rd`.
+func recordFieldsNameRecord(rd: in RecordDecl, typeParams: in List[String], distinctMap: in Map[String, TypeExpr]): Bool {
+  for m in rd.members {
+    match m {
+      case RMField(fld) -> {
+        if sortNamesDatatype(sortOfTypeExprIn(distinctMap, typeParams, fld.ty).sort, rd.name) {
+          return true
+        }
+      }
+      case _ -> ()
+    }
+  }
+  false
+}
+
+func sortNamesDatatype(s: in Sort, name: in String): Bool {
+  match s {
+    case SDatatype(n, args) -> {
+      if n == name {
+        return true
+      }
+      for a in args {
+        if sortNamesDatatype(a, name) {
+          return true
+        }
+      }
+      false
+    }
+    case SSlice(e) -> sortNamesDatatype(e, name)
+    case _ -> false
+  }
+}
+
+// The names of the type parameters of `generics` (not its value
+// parameters).
+func genericTypeParamNames(generics: in Option[GenericParams]): List[String] {
+  val names: List[String] = newList()
+  match generics {
+    case Some(gp) -> {
+      for g in gp.params {
+        match g {
+          case GPType(n, _) -> names.add(n)
+          case _ -> ()
+        }
+      }
+    }
+    case None -> ()
+  }
+  names
+}
+
 // #336: aspect weaving (Lyric.Weaver.weaveFile) now runs in the
 // verifier driver before VC generation.  goalsForFile receives the
 // woven SourceFile — original IFuncs are replaced with renamed
@@ -7928,23 +8528,43 @@ pub func goalsForFileInScope(
     shadowDiags.add(untranslatableDiag(shadowReason, file.packageDecl.path.span))
     return (noGoals, shadowDiags)
   }
+  // A type declared twice — a file no type check has rejected yet (T0001)
+  // — leaves every sort named by it ambiguous: nothing is proved (#8341).
+  match duplicateTypeDeclaration(file) {
+    case Some(dup) -> {
+      val noGoals: List[Goal] = newList()
+      val dupDiags: List[Diagnostic] = newList()
+      dupDiags.add(
+        untranslatableDiag(
+          "a second declaration of the type `" + dup.name +
+            "` (T0001), which leaves every value of that name ambiguous; nothing in this file is proved",
+          dup.span
+        )
+      )
+      return (noGoals, dupDiags)
+    }
+    case None -> ()
+  }
 
   // Build callee table from file's IFunc and protected-type PMFunc items.
   // A function is reachable by its name and by its name qualified with
-  // this file's package (`P.f`, #8102).
+  // this file's package (`P.f`, #8102).  A name declared more than once is
+  // never reachable by its name alone (`registerFileFunctions`, #8341).
   val callees: Map[String, FunctionDecl] = newMap()
   val calleeDecls: List[FunctionDecl] = newList()
   val packagePrefix = joinPathSegments(file.packageDecl.path.segments) + "."
+  val calleeDiags: List[Diagnostic] = newList()
+  val unprovedFuncs = registerFileFunctions(
+    file,
+    pscope.siblings.functions,
+    packagePrefix,
+    callees,
+    calleeDecls,
+    calleeDiags
+  )
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
-      case IFunc(fn) -> {
-        callees.add(fn.name, fn)
-        calleeDecls.add(fn)
-        if not callees.containsKey(packagePrefix + fn.name) {
-          callees.add(packagePrefix + fn.name, fn)
-        }
-      }
       case IProtected(decl) -> {
         // #663: Hoare-call rule at a PMEntry call site reads
         // `callees.<entry>.contracts` to derive the post-state.
@@ -7956,7 +8576,7 @@ pub func goalsForFileInScope(
         while mi < decl.members.count {
           match decl.members[mi] {
             case PMFunc(fn) -> {
-              callees.add(decl.name + "::" + fn.name, fn)
+              addMemberCallee(callees, decl.name + "::" + fn.name, fn)
               calleeDecls.add(fn)
             }
             case PMEntry(ed) -> {
@@ -7988,7 +8608,7 @@ pub func goalsForFileInScope(
                 body = Some(value = ed.body),
                 span = ed.span
               )
-              callees.add(decl.name + "::" + ed.name, entryFn)
+              addMemberCallee(callees, decl.name + "::" + ed.name, entryFn)
               calleeDecls.add(entryFn)
             }
             case _ -> {
@@ -8041,8 +8661,11 @@ pub func goalsForFileInScope(
   // matching the record's fields.  Lets the verifier reason about
   // `Amount(value = c)` constructors and `result.value` field reads against
   // a properly declared sort, instead of falling back to uninterpreted
-  // names that z3 rejects as "unknown constant" (#3843).  Generic records
-  // are skipped — the SMT encoding here is the simple non-parametric form.
+  // names that z3 rejects as "unknown constant" (#3843).  A generic record
+  // is one parametric datatype, a sort parameter per type parameter, as the
+  // preamble's `Result`/`Option` are: `Box[Int]` and `Box[T]` are its
+  // instances, and a field read on either has the field's sort at that
+  // instance (#8340).
   var ri = 0
   while ri < file.items.count {
     match file.items[ri].kind {
@@ -8054,15 +8677,40 @@ pub func goalsForFileInScope(
       // Bucket-field reading.  EMember's record-field translation mirrors
       // this prefix when it emits the selector TApp.
       case IRecord(recDecl) -> {
-        val skipGeneric = match recDecl.generics { case Some(_) -> true; case None -> false }
-        if not skipGeneric {
+        val recTypeParams = genericTypeParamNames(recDecl.generics)
+        // A generic record named like the standard library's `Result` or
+        // `Option` is taken for neither: its sorts are renamed apart from
+        // the preamble's (`unshadowMonadSort`) and stay uninterpreted.
+        val monadNamed = recTypeParams.count > 0 and (recDecl.name == "Result" or recDecl.name == "Option")
+        // A generic record whose fields name the record itself (`next:
+        // Option[Node[T]]`) would be a parametric datatype nested through
+        // another, which the solver rejects as not well-founded: it stays
+        // an uninterpreted sort, its field reads failing closed.
+        val selfNested = recTypeParams.count > 0 and recordFieldsNameRecord(recDecl, recTypeParams, distinctMap)
+        if not monadNamed and not selfNested {
+          val sortParams: List[String] = newList()
+          val sortParamSorts: List[Sort] = newList()
+          for tp in recTypeParams {
+            val sp = recordSortParamName(recDecl.name, tp)
+            sortParams.add(sp)
+            val noArgs: List[Sort] = newList()
+            sortParamSorts.add(SDatatype(name = sp, args = noArgs))
+          }
           val dtFields: List[DatatypeField] = newList()
           val dtDefaults: List[Option[Expr]] = newList()
           var fi = 0
           while fi < recDecl.members.count {
             match recDecl.members[fi] {
               case RMField(fld) -> {
-                addDatatypeField(dtFields, fieldInfosMap, distinctMap, recDecl.name + "__" + fld.name, fld.ty)
+                addGenericDatatypeField(
+                  dtFields,
+                  fieldInfosMap,
+                  distinctMap,
+                  recDecl.name + "__" + fld.name,
+                  fld.ty,
+                  recTypeParams,
+                  sortParamSorts
+                )
                 dtDefaults.add(fld.dflt)
               }
               case _ -> ()
@@ -8071,7 +8719,7 @@ pub func goalsForFileInScope(
           }
           val dtCtors: List[DatatypeCtor] = newList()
           dtCtors.add(DatatypeCtor(name = recDecl.name, fields = dtFields))
-          sharedSymbols.add(DeclDatatype(name = recDecl.name, constructors = dtCtors))
+          sharedSymbols.add(DeclDatatype(name = recDecl.name, constructors = dtCtors, params = sortParams))
           if not recordDefaultsMap.containsKey(recDecl.name) {
             recordDefaultsMap.add(recDecl.name, dtDefaults)
             recordNames.add(recDecl.name)
@@ -8111,7 +8759,8 @@ pub func goalsForFileInScope(
         }
         val dtCtors: List[DatatypeCtor] = newList()
         dtCtors.add(DatatypeCtor(name = pdecl.name, fields = dtFields))
-        sharedSymbols.add(DeclDatatype(name = pdecl.name, constructors = dtCtors))
+        val noParams: List[String] = newList()
+        sharedSymbols.add(DeclDatatype(name = pdecl.name, constructors = dtCtors, params = noParams))
       }
       case _ -> ()
     }
@@ -8197,13 +8846,14 @@ pub func goalsForFileInScope(
 
   val allGoals: List[Goal] = newList()
   val allDiags: List[Diagnostic] = newList()
+  appendTermList2(allDiags, calleeDiags)
 
   i = 0
   while i < file.items.count {
     match file.items[i].kind {
       case IFunc(fn) -> {
         val fnLevel = levelOfFunction(level, fn)
-        if vlIsProofRequired(fnLevel) {
+        if vlIsProofRequired(fnLevel) and not unprovedFuncs.contains(i) {
           // #336: aspect weaving runs in driver.l before this point, so
           // the IFunc here is either an original function with no
           // matching aspect, an `__aspect_target` (the renamed inner

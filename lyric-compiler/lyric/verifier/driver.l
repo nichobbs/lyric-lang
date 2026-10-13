@@ -14,7 +14,10 @@ import Lyric.Parser
 import Lyric.ModeChecker
 import Lyric.Weaver
 import Lyric.Cfg as Cfg
+import Lyric.Discovery as Disc
+import Lyric.Manifest as Mf
 import Std.File as File
+import Std.Path as Path
 import Std.String as Str
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -326,6 +329,16 @@ pub record ScopeDecls {
   pub enumCases: List[String]
   /// The packages the files import (`import P`, not `import extern`).
   pub imports: List[String]
+  /// Every top-level function, by name and parameter count, so a call in
+  /// the proved file is never resolved to its own declaration where the
+  /// type checker would pick another file's of the same name (#8341).
+  pub functions: List[FunctionArity]
+}
+
+/// A function's name and how many parameters it declares.
+pub record FunctionArity {
+  pub name: String
+  pub paramCount: Int
 }
 
 /// A package whose declarations the verifier read, by its dotted name.
@@ -347,7 +360,14 @@ pub func emptyScopeDecls(): ScopeDecls {
   val noUnions: List[UnionDecl] = newList()
   val none: List[String] = newList()
   val noImports: List[String] = newList()
-  ScopeDecls(interfaces = noInterfaces, unions = noUnions, enumCases = none, imports = noImports)
+  val noFunctions: List[FunctionArity] = newList()
+  ScopeDecls(
+    interfaces = noInterfaces,
+    unions = noUnions,
+    enumCases = none,
+    imports = noImports,
+    functions = noFunctions
+  )
 }
 
 pub func emptyImportScope(): ImportScope {
@@ -372,6 +392,7 @@ func appendScopeDecls(acc: in ScopeDecls, file: in SourceFile): Unit {
           acc.enumCases.add(c.name)
         }
       }
+      case IFunc(fn) -> acc.functions.add(FunctionArity(name = fn.name, paramCount = fn.params.count))
       case _ -> ()
     }
   }
@@ -394,6 +415,9 @@ func mergeScopeDecls(acc: in ScopeDecls, more: in ScopeDecls): Unit {
   }
   for c in more.enumCases {
     acc.enumCases.add(c)
+  }
+  for f in more.functions {
+    acc.functions.add(f)
   }
   for n in more.imports {
     if not acc.imports.contains(n) {
@@ -479,6 +503,56 @@ pub func packageScopeWith(typeNames: in List[String], siblings: in ScopeDecls): 
 }
 
 /// `scope` reading the declarations of the packages of `imports`.
+/// `sc` with every `[project.packages]` and `[project.tests]` entry of the
+/// manifests at `manifestPaths` added, each as the files its build merges.
+/// A manifest, or an entry, that cannot be read or listed adds nothing: a
+/// package it declares stays unresolved, and what depends on it fails
+/// closed.  `lyric prove` and the language server read a proof's imports
+/// through this (#8342).
+pub func importScopeWithManifests(sc: in ImportScope, manifestPaths: in List[String]): ImportScope {
+  var acc = sc
+  for mfPath in manifestPaths {
+    match File.readText(mfPath) {
+      case Ok(text) -> match Mf.parseManifest(text, mfPath) {
+        case Ok(mf) -> match mf.project {
+          case Some(proj) -> {
+            val mfDir = Path.dirname(mfPath)
+            val entries: List[Mf.PackageEntry] = newList()
+            for e in proj.packages.toArray() {
+              entries.add(e)
+            }
+            for e in proj.tests.toArray() {
+              entries.add(e)
+            }
+            for entry in entries {
+              val ef = Disc.projectEntryFiles(entry, mfDir, proj)
+              if ef.problems.count == 0 {
+                val texts: List[String] = newList()
+                var readAll = true
+                for path in ef.paths.toArray() {
+                  match File.readText(path) {
+                    case Ok(t) -> texts.add(t)
+                    case Err(_) -> {
+                      readAll = false
+                    }
+                  }
+                }
+                if readAll and texts.count > 0 {
+                  acc = importScopeWithPackage(acc, entry.name, texts)
+                }
+              }
+            }
+          }
+          case None -> ()
+        }
+        case Err(_) -> ()
+      }
+      case Err(_) -> ()
+    }
+  }
+  acc
+}
+
 pub func withImportScope(sc: in PackageScope, imports: in ImportScope): PackageScope {
   PackageScope(known = sc.known, typeNames = sc.typeNames, siblings = sc.siblings, imports = imports)
 }
@@ -748,6 +822,30 @@ pub func defaultProveBuildConfig(): ProveBuildConfig {
   ProveBuildConfig(targetName = "dotnet", activeFeatures = none, declaredFeatures = none)
 }
 
+/// The build a proof of `b` is of.
+pub func proveBuildConfigOf(b: in Disc.SourceBuild): ProveBuildConfig {
+  ProveBuildConfig(targetName = b.targetName, activeFeatures = b.activeFeatures, declaredFeatures = b.declaredFeatures)
+}
+
+/// The builds a proof of the source file at `sourcePath` is of, for the
+/// target named `targetName` and the command line's feature selection:
+/// those that compile it (`Lyric.Discovery.sourceBuildsForFile`).  `lyric
+/// prove <file>` and the language server both take a file's builds from
+/// here, so the editor proves what the command does (#8342).
+pub func proveBuildConfigsForSource(
+  sourcePath: in String,
+  targetName: in String,
+  cliFeatures: in List[String],
+  noDefaultFeatures: in Bool,
+  allFeatures: in Bool,
+): List[ProveBuildConfig] {
+  val configs: List[ProveBuildConfig] = newList()
+  for b in Disc.sourceBuildsForFile(sourcePath, targetName, cliFeatures, noDefaultFeatures, allFeatures) {
+    configs.add(proveBuildConfigOf(b))
+  }
+  configs
+}
+
 /// `source` proved for each distinct build of `builds` (the default build
 /// when there is none), the results of all of them together: a file that
 /// builds compile under different targets or features is proved as each of
@@ -845,6 +943,10 @@ pub record InactiveItems {
   /// Inactive variants of items another declaration of the same name
   /// stands for in a build, which is proved (`@cfg` twins).
   pub variants: List[String]
+  /// The declarations of `unproved`, one span per declaration.
+  pub unprovedSpans: List[Span]
+  /// The inactive declarations of `variants`, one span per declaration.
+  pub variantSpans: List[Span]
 }
 
 /// The items of a `@proof_required` `source` that `@cfg` erasure removes
@@ -854,9 +956,16 @@ pub record InactiveItems {
 pub func inactiveItemsForBuilds(source: in String, builds: in List[ProveBuildConfig]): InactiveItems {
   val unproved: List[String] = newList()
   val variants: List[String] = newList()
+  val unprovedSpans: List[Span] = newList()
+  val variantSpans: List[Span] = newList()
   val parsed = parse(source)
   if hasFatalDiag(parsed.diagnostics) or not vlIsProofRequired(fileLevelOf(parsed.file)) {
-    return InactiveItems(unproved = unproved, variants = variants)
+    return InactiveItems(
+      unproved = unproved,
+      variants = variants,
+      unprovedSpans = unprovedSpans,
+      variantSpans = variantSpans
+    )
   }
   val distinct = distinctProveBuilds(builds)
   val keptFiles: List[SourceFile] = newList()
@@ -883,12 +992,14 @@ pub func inactiveItemsForBuilds(source: in String, builds: in List[ProveBuildCon
         if not variants.contains(name) {
           variants.add(name)
         }
+        variantSpans.add(item.span)
       } else {
         unproved.add(name)
+        unprovedSpans.add(item.span)
       }
     }
   }
-  InactiveItems(unproved = unproved, variants = variants)
+  InactiveItems(unproved = unproved, variants = variants, unprovedSpans = unprovedSpans, variantSpans = variantSpans)
 }
 
 func itemDisplayName(kind: in ItemKind): String {

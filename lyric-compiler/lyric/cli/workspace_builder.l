@@ -804,34 +804,9 @@ pub func targetFeatureName(target: in Emitter.CompileTarget): String {
   name
 }
 
-func isTargetFeatureName(name: in String): Bool {
-  name == "dotnet" or name == "jvm" or name == "native"
-}
-
-/// Resolve a manifest's active/declared feature sets for `@cfg` erasure:
-/// the manifest's `[features].default` set unless `--no-default-features`,
-/// `--all-features` selecting every declared feature, else CLI `--features`
-/// layered on top of the defaults.
-///
-/// The composed set is then TARGET-NORMALIZED (#5571): features named
-/// after a NON-active target (`dotnet` / `jvm` / `native`) are deactivated
-/// unless the user asked for them explicitly (via `--features` or
-/// `--all-features`), and — only when such a mismatched platform default
-/// was removed — the active target's own feature name is swapped in if the
-/// manifest declares it.  Without this, every platform-split manifest
-/// (`default = ["dotnet"]`, kernels gated on `@cfg(feature = "dotnet")` /
-/// `@cfg(feature = "jvm")`) compiled its .NET kernel into `--target jvm`
-/// builds unless the caller remembered to pass `--no-default-features
-/// --features jvm` on every invocation.
-///
-/// The swap fires ONLY on a removed mismatch — a target-named feature is
-/// never introduced into a composed set that contained none.  A manifest
-/// with an empty default set is a deliberate opt-out, not an omission:
-/// lyric-session documents that defaulting either target feature on would
-/// make every transitive build compile a kernel with a mandatory
-/// NuGet/Maven dependency the builder may not have restored.  Manifests
-/// that declare no target-named features at all are likewise unaffected in
-/// both directions.
+/// Resolve a manifest's active/declared feature sets for `@cfg` erasure for
+/// a build for `target`: `Lyric.Manifest.resolveFeatureSelection`, the one
+/// selection every command shares (#8342).
 pub func resolveManifestFeatures(
   mfText: in String,
   mfPath: in String,
@@ -840,51 +815,7 @@ pub func resolveManifestFeatures(
   allFeatures: in Bool,
   target: in Emitter.CompileTarget,
 ): (List[String], List[String]) {
-  val mfDefaults = Mf.readFeatureDefaultsFromToml(mfText, mfPath)
-  val mfDeclared = Mf.readFeatureDeclaredFromToml(mfText, mfPath)
-  val composed: List[String] = newList()
-  if allFeatures {
-    var ai = 0
-    while ai < mfDeclared.count {
-      composed.add(mfDeclared[ai])
-      ai += 1
-    }
-  } else {
-    if not noDefaultFeatures {
-      var ai = 0
-      while ai < mfDefaults.count {
-        composed.add(mfDefaults[ai])
-        ai += 1
-      }
-    }
-    var ci = 0
-    while ci < cliFeatures.count {
-      composed.add(cliFeatures[ci])
-      ci += 1
-    }
-  }
-
-  val tName = targetFeatureName(target)
-  val activeFeatures: List[String] = newList()
-  var removedMismatch = false
-  var fi = 0
-  while fi < composed.count {
-    val f = composed[fi]
-    val explicitlyRequested = allFeatures or stringListContains(cliFeatures, f)
-    if isTargetFeatureName(f) and f != tName and not explicitlyRequested {
-      removedMismatch = true
-    } else {
-      if not stringListContains(activeFeatures, f) {
-        activeFeatures.add(f)
-      }
-    }
-    fi += 1
-  }
-  if removedMismatch and stringListContains(mfDeclared, tName) and not stringListContains(activeFeatures, tName) {
-    activeFeatures.add(tName)
-  };
-
-  (activeFeatures, mfDeclared)
+  Mf.resolveFeatureSelection(mfText, mfPath, cliFeatures, noDefaultFeatures, allFeatures, targetFeatureName(target))
 }
 
 /// Aggregated result of `resolveManifestDependencies`.

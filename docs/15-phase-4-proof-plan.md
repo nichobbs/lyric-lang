@@ -272,7 +272,7 @@ Lyric.Verifier/
 | `Char`                    | `Int` (its code point)                       | a `Char` literal is its code point; every `Char` value carries `0 ≤ c ≤ 65535`, the UTF-16 code-unit range every target guarantees, wherever a range subtype carries its range, so `==` and ordering on `Char` are the integer ones. It is not assumed to lie outside the surrogate range: a `Char` an extern returns (`System.Convert.ToChar`, `Character.highSurrogate`) is not checked (#8214) |
 | `Float`, `Double`         | SMT `Real` (mathematical reals)              | sound approximation: avoids IEEE 754 FP theory and its rounding-mode complexity; linear arithmetic over reals is decidable and fast; division emits `/` (Real div) not `div` (integer) |
 | `String`                  | uninterpreted sort with `length: String -> Int`, `==` | content reasoning out of scope |
-| record                    | SMT-LIB datatype                             | one constructor, fields as selectors |
+| record                    | SMT-LIB datatype                             | one constructor, fields as selectors (`<Record>__<field>`); a generic record is a parametric datatype, `(declare-datatypes ((Box 1)) ((par (Lyric!sortparam!Box!T) ((Box (Box__n Int) (Box__v Lyric!sortparam!Box!T))))))`, its sort parameters named apart from every source sort and every name the verifier synthesizes, so `Box[Int]` is `(Box Int)` and a field read is instantiated at the receiver's type arguments; a constructor's type arguments are inferred from its arguments before they take their fields' sorts (a `Some(x)`/`Ok(x)` argument by its payload), and one they do not determine fails closed (V0033); a generic record whose fields name itself (nested through `Option`, which z3 rejects as not well-founded) stays an uninterpreted sort. A goal's query declares only the datatypes its claim reaches (#8340) |
 | union                     | SMT-LIB datatype                             | one constructor per variant |
 | enum                      | SMT-LIB datatype, no payloads                | as union with arity-0 variants |
 | `slice[T]` of compile-time-bounded length | array sort with separate length | length axiom asserts `0 ≤ length ≤ N` |
@@ -788,7 +788,37 @@ diagnostics (`inactiveItemsForBuilds`): those no build compiles in any
 form as not proved, and an inactive `@cfg` twin as a variant whose
 same-named declaration this build proves. A
 malformed predicate or undeclared feature (`F0012`/`F0013`) stops the
-proof.
+proof. The language server proves an open document under the builds
+`lyric prove <file>` takes with no flags, from the same function
+(`proveBuildConfigsForSource`, over `Lyric.Discovery.sourceBuildsForFile`
+and `Lyric.Manifest.resolveFeatureSelection`), with the same import scope
+(`importScopeWithManifests` over the standard library's declarations, read
+once per server) and the same build labels; each inactive item is an
+Information diagnostic at its declaration, its own check sees the same
+`@cfg` erasure, and a file whose builds cannot be known is refused with
+`B0001`, as `lyric prove` refuses it (#8342). It still proves a document
+its check rejects (no type-check gate, #8304) and reports undecided goals
+as warnings.
+
+A name declared more than once never makes the verifier throw (#8341).
+Names are counted over the whole package — the proved file's functions and
+those of its other files (`ScopeDecls.functions`), which the build merges
+and the type checker resolves a call among. Functions of one name and
+different arities — overloads — are each proved and registered under
+`name/<arity>`; a call reaches the proved file's declaration taking exactly
+its argument count, and a call whose declaration of that arity is in
+another file, or that would reach one through its defaults, fails closed
+(V0033). Two of one name and arity in the package, or a type the file
+declares twice, are a duplicate the type check rejects (T0001); a program
+reaches the verifier with one only on the language server's path, which
+proves without that check. The duplicate is reported (V0033): neither
+function is proved and a call reaching one fails closed, and a file with a
+duplicate type proves nothing. The mode and stability checks, which see the
+proved file only, take a call to reach every declaration of its arity, or
+when there is none every declaration that fills the rest from defaults —
+which of several the type checker binds is not a stated rule — and keep the
+first of two same-named fields or types; the build's mode check, which
+`lyric prove` runs first, sees the merged package.
 
 Known limitations, tracked separately: no heap model, and a method's
 contract not used at its calls (#8110); a callee's `ensures:` about an
