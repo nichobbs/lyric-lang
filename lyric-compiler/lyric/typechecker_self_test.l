@@ -6672,13 +6672,35 @@ test "a body method beside a dot-named function of the same package" {
   val noFallback = pick + "func f(a: in Acc): Int = Acc.pick(a, 1)\n"
   assertTrue(diagCount(parseCheck(noFallback)) > 0, "a call through the type names the dot-named function")
   val required = "package P\nrecord Acc {\n  n: Int\n  func trim(self: in Acc, k: in Int = 2): Int = self.n - k\n}\nfunc Acc.trim(self: in Acc, k: in Int): Int = self.n + k\nfunc f(a: in Acc): Int = Acc.trim(a)\n"
-  assertTrue(diagCount(parseCheck(required)) > 0, "the dot-named function's required parameter stays required")
+  assertTrue(
+    hasDiagCode(parseCheck(required), "T0042"),
+    "the dot-named function's required parameter stays required: " + diagCodesOf(parseCheck(required))
+  )
+  val requiredPkg = required.replace("Acc.trim(a)\n", "P.Acc.trim(a)\n")
+  assertTrue(
+    hasDiagCode(parseCheck(requiredPkg), "T0042"),
+    "through the type's package too: " + diagCodesOf(parseCheck(requiredPkg))
+  )
   // From another package, the same order holds.
   val pkgs: List[ImportedPackage] = newList()
   pkgs.add(rulePkg("RdLib", "package RdLib\npub " + decls.replace("func Acc.scaled", "pub func Acc.scaled")))
   val app = "package App\nimport RdLib\nfunc f(a: in Acc): Unit {\n  val viaType: String = Acc.scaled(a)\n  val viaPkg: String = RdLib.Acc.scaled(a)\n  val viaMethod: Int = a.scaled()\n}\n"
   val ar = checkWithImportedPackages(parse(app).file, pkgs)
   assertEqualInt(diagCount(ar), 0, "from another package: " + diagCodesOf(ar))
+  val trimPkgs: List[ImportedPackage] = newList()
+  trimPkgs.add(
+    rulePkg(
+      "ALib",
+      "package ALib\npub record Acc {\n  n: Int\n  func trim(self: in Acc, k: in Int = 2): Int = self.n - k\n}\npub func Acc.trim(self: in Acc, k: in Int): Int = self.n + k\n"
+    )
+  )
+  for call in ["Acc.trim(a)", "ALib.Acc.trim(a)"] {
+    val tr = checkWithImportedPackages(
+      parse("package App\nimport ALib\nfunc f(a: in Acc): Int = " + call + "\n").file,
+      trimPkgs
+    )
+    assertTrue(hasDiagCode(tr, "T0042"), call + " from another package: " + diagCodesOf(tr))
+  }
 }
 
 func asMethodSiteCount(cr: in CheckResult): Int {

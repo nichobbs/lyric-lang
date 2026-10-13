@@ -232,3 +232,9 @@ dependency, in both call forms, and an extension with defaults.
   The typechecker self-test covers both forms, the method-call fallback,
   the required parameter, the own-package prefix and a call from another
   package, with no T0170 for the type's own package.
+- **Through the declaring package too.**  `Pkg.T.m(x)` with no dot-named
+  `T.m` of `Pkg` taking the argument count fell through to the body method,
+  so `Main.Acc.trim(a)` and `ALib.Acc.trim(a)` type-checked and then failed
+  in codegen (T0120 / J008).  The package's function is now named whatever
+  the count, and the count is reported against it (T0042); the typechecker
+  self-test and `restored_default_args_self_test.l` cover both.

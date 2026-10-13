@@ -18093,7 +18093,7 @@ func qualifiedTypeDotSig(
 }
 
 // The dot-named function `T.m` declared by the package the leading
-// segments of `Pkg.T.m` name, taking `arity` arguments.
+// segments of `Pkg.T.m` name, one taking `arity` arguments first.
 func packageDottedSig(
   tbl: in SymbolTable, sigs: in Map[String, ResolvedSignature], segs: in List[String], arity: in Int
 ): Option[ResolvedSignature] {
@@ -18106,12 +18106,24 @@ func packageDottedSig(
     i = i + 1
   }
   val pkg = modulePathJoin(pkgSegs)
+  var other: Option[ResolvedSignature] = None
   for c in gatherOverloadCandidates(sigs, byNameSigKey(dotted)) {
-    if sigPackage(tbl, c) == pkg and arity <= c.params.count and arity >= minRequiredParams(c) {
-      return Some(value = c)
+    if sigPackage(tbl, c) == pkg {
+      if arity <= c.params.count and arity >= minRequiredParams(c) {
+        return Some(value = c)
+      }
+      match other {
+        case None -> {
+          other = Some(value = c)
+        }
+        case Some(_) -> ()
+      }
     }
   }
-  None
+  // None takes the arguments' count: the call still names that package's
+  // function, against which the count is reported (T0042), never another
+  // function of the type's (#8097).
+  other
 }
 
 // The function a call `T.m(x, args)` through its type binds when the first
