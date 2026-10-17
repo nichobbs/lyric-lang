@@ -7,8 +7,9 @@
 # Both toolchains are downloaded from their official GitHub releases and
 # sha256-verified, then cached under $LYRIC_WASM_TOOLCACHE (default
 # $RUNNER_TEMP/wasm-tools, falling back to a temp dir), so a persistent
-# runner pays the download once.  wasi-sdk 24 ships clang 18, the same major
-# version the native backend's other CI lanes pin.
+# runner pays the download once.  wasi-sdk 34 ships clang 23, newer than the
+# clang 18 the native backend's other CI lanes pin, so this lane also checks
+# that the emitted IR stays valid across that range.
 #
 # It also checks the embedded JS glue is current, runs the module-shape
 # self-test under node, and runs scripts/audit-native-extern-abi.sh, which fails
@@ -22,15 +23,15 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
-WASI_SDK_VERSION="24"
-WASI_SDK_SHA256="c6c38aab56e5de88adf6c1ebc9c3ae8da72f88ec2b656fb024eda8d4167a0bc5"
-WASMTIME_VERSION="26.0.1"
-WASMTIME_SHA256="5f3596cbe481422c32a4bc4505ad4db4fd15ed5eba5e6f0b359092b902f5269c"
-WASM_TOOLS_VERSION="1.220.0"
-WASM_TOOLS_SHA256="474a334c48d59ab5aed67381c287a53d1c5161adef8328fa0f9a7bdb8510e5f8"
-WASI_ADAPTER_SHA256="5cf61fb9c5d5c47a63d2f61c4d8bfc3b2f862f7ed50e8d62c29c233597002af4"
-JCO_VERSION="1.8.1"
-PREVIEW2_SHIM_VERSION="0.17.1"
+WASI_SDK_VERSION="34"
+WASI_SDK_SHA256="b761e3a0721dbae9c09a0059e5fdb2bf917d1b4a8a7b430fb3b5aafb0984b2c4"
+WASMTIME_VERSION="49.0.3"
+WASMTIME_SHA256="4001225413f208345b980525f31c4080e1873808b38d0ddc7918497340667fbb"
+WASM_TOOLS_VERSION="1.262.0"
+WASM_TOOLS_SHA256="655b8df67d54c3ef9b52fc237c4e94bbfbb5f5f43825245cb0940a7002a9ed65"
+WASI_ADAPTER_SHA256="79fa20ff8d49f1aba13d25af4fd616a1431028fff954b2927e55fcac4fefd6e3"
+JCO_VERSION="1.39.0"
+PREVIEW2_SHIM_VERSION="0.30.0"
 
 tools="${LYRIC_WASM_TOOLCACHE:-${RUNNER_TEMP:-$(mktemp -d)}/wasm-tools}"
 mkdir -p "$tools"

@@ -15380,9 +15380,11 @@ func lowerFunctionEnv(
     body.add(NCallVoid(fn = NGlobal(name = "lyric_free"), args = arg1(p8, NLocal(name = "coro.freemem"))))
     body.add(NBr(label = "coro.exit"))
     body.add(NLabel(name = "coro.exit"))
+    // Unnamed: LLVM 18 declares `llvm.coro.end` as returning `i1`, later LLVM
+    // auto-upgrades it to `void`, and a named result would not survive that.
     body.add(
       NCall(
-        dest = "coro.done",
+        dest = "",
         retTy = NI1,
         fn = NGlobal(name = "llvm.coro.end"),
         args = arg2(p8, NLocal(name = "coro.hdl"), NI1, NLitInt(v = 0i64, ty = NI1))
