@@ -763,25 +763,26 @@ pub func HttpClientBuilder.build(b: in HttpClientBuilder): HttpClient {
     }
   }
 
-  val http3UnsupportedReason: Option[String] = match version {
+  val http3UnsupportedReason = match version {
     case Http3 -> Some(
       value = "HTTP/3 is not supported on this target yet (see #5874 / docs/61-https-tls-http-versions.md Q-TLS-002)"
     )
     case Http11 -> None
     case Http2 -> None
   }
-  val tlsUnsupportedReason: Option[String] = if unixSocketBlocksTls {
+  val tlsUnsupportedReason = if unixSocketBlocksTls {
     Some(
       value = "TLS client configuration combined with withUnixSocket is not supported yet on this target " +
         "(SslClientAuthenticationOptions.RemoteCertificateValidationCallback is a custom .NET delegate type " +
         "the current FFI delegate-bridge cannot bind to); see issue #5947"
     )
   } else if hasTls and not tlsSupported {
-    // Unreachable on both currently-shipped targets (dotnet: #5877; jvm:
-    // #5878) — kept as a generic, honest fallback for any future target
-    // whose kernel has not yet wired TLS config (docs/61's no-silent-skip
-    // rule: `build()` still succeeds, but every request fails with a typed
-    // error naming this gap, never a silent no-TLS-config connection).
+    // Reached by the wasm32 module shape, whose `fetch` host owns
+    // certificate verification (`_kernel_wasm_module/http_host.l`); dotnet
+    // (#5877), JVM (#5878) and native wire TLS config.  docs/61's
+    // no-silent-skip rule: `build()` still succeeds, but every request fails
+    // with a typed error naming this gap, never a silent no-TLS-config
+    // connection.
     Some(
       value = "TLS client configuration (withCaCertificate/withExclusiveCaCertificate/withClientIdentity/" +
         "withMinTlsVersion/withInsecureSkipVerify) is not supported yet on this target " +
@@ -790,7 +791,7 @@ pub func HttpClientBuilder.build(b: in HttpClientBuilder): HttpClient {
   } else {
     None
   }
-  val unsupportedReason: Option[String] = match http3UnsupportedReason {
+  val unsupportedReason = match http3UnsupportedReason {
     case Some(_) -> http3UnsupportedReason
     case None -> tlsUnsupportedReason
   }

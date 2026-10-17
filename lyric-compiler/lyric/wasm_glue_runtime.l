@@ -642,20 +642,6 @@ function fsWasiImports(fs, view, bytes) {
   };
 }
 
-/**
- * Instantiate a Lyric module.
- *
- * @param source  ArrayBuffer, URL, Response (or promise of one) or a
- *                WebAssembly.Module; defaults to the `.wasm` next to this file.
- * @param options { stdout, stderr, stdin, args, env, files, imports }
- *                stdout/stderr receive raw text chunks (default: console.log /
- *                console.error per line); stdin() returns a string,
- *                Uint8Array or null for end of input.
- *                files seeds the in-memory filesystem behind the preopened "/"
- *                ({ "/path": string | Uint8Array } or a Map); the instance's
- *                `files` member reads it back (read, readText, write, mkdir,
- *                list, exists, snapshot).
- */
 const HTTP_BODY_LIMIT = 10 * 1024 * 1024;
 
 // The default `std.http.fetch` (the host import behind the module-shape
@@ -667,8 +653,10 @@ async function defaultStdHttpFetch(method, url, headerLines, contentType, body, 
     if (typeof fetch !== 'function') return 'error\nthis host has no global fetch (pass options.imports["std.http"].fetch)';
     const headers = new Headers();
     for (const line of headerLines.split('\n')) {
+      if (line.length === 0) continue;
       const colon = line.indexOf(':');
-      if (colon > 0) headers.append(line.slice(0, colon), line.slice(colon + 1).trim());
+      if (colon <= 0) return 'error\nmalformed request header line (expected "Name: value"): ' + line;
+      headers.append(line.slice(0, colon), line.slice(colon + 1).trim());
     }
     if (hasBody && contentType.length > 0) headers.set('Content-Type', contentType);
     const response = await fetch(url, {
@@ -718,6 +706,20 @@ async function defaultStdHttpFetch(method, url, headerLines, contentType, body, 
 // Host-import modules the glue implements itself; `options.imports` overrides any member.
 const BUILTIN_HOST = { 'std.http': { fetch: defaultStdHttpFetch } };
 
+/**
+ * Instantiate a Lyric module.
+ *
+ * @param source  ArrayBuffer, URL, Response (or promise of one) or a
+ *                WebAssembly.Module; defaults to the `.wasm` next to this file.
+ * @param options { stdout, stderr, stdin, args, env, files, imports }
+ *                stdout/stderr receive raw text chunks (default: console.log /
+ *                console.error per line); stdin() returns a string,
+ *                Uint8Array or null for end of input.
+ *                files seeds the in-memory filesystem behind the preopened "/"
+ *                ({ "/path": string | Uint8Array } or a Map); the instance's
+ *                `files` member reads it back (read, readText, write, mkdir,
+ *                list, exists, snapshot).
+ */
 export async function instantiate(source, options = {}) {
   const module = await loadModule(source);
   const sinks = {

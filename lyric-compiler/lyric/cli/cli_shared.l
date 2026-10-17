@@ -971,12 +971,13 @@ func findCompiledLibDir(): String {
 // surfaces that staleness.
 // True iff a `.l` source file is one that the `.NET` `Lyric.Stdlib.dll` bundle
 // is built from.  Mirrors `findStdlibSourcesForTarget(false)`: the JVM- and
-// native-only kernels — the whole `_kernel_jvm/` and `_kernel_native/` trees,
-// plus the two JVM-only `_kernel/jvm*.l` files — never contribute to the .NET
-// bundle, so editing one must NOT flag the bundle stale on a `--target dotnet`
-// run (which would break the guard's "never fires spuriously" invariant).
+// native-only kernels — the target-only kernel trees
+// (`Emitter.isTargetOnlyKernelPath`), plus the two JVM-only `_kernel/jvm*.l`
+// files — never contribute to the .NET bundle, so editing one must NOT flag
+// the bundle stale on a `--target dotnet` run (which would break the guard's
+// "never fires spuriously" invariant).
 pub func isDotnetStdlibSource(path: in String): Bool {
-  if Str.contains(path, "_kernel_jvm") or Str.contains(path, "_kernel_native") or Str.contains(path, "_kernel_wasm_module") {
+  if Emitter.isTargetOnlyKernelPath(path) {
     return false
   }
   // Any `jvm*.l` file in the shared `_kernel/` dir (today `jvm.l` /
