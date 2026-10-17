@@ -298,6 +298,24 @@ func renderConv(op: in String, dest: in String, fromTy: in NType, value: in NVal
     nTypeToIrString(toTy)
 }
 
+/// A float-to-signed-integer conversion, saturating: an out-of-range value
+/// clamps to the target's minimum or maximum and NaN gives 0, which is what
+/// .NET (9 and later) and the JVM do.  A plain `fptosi` yields poison there
+/// (#8375).  `Lyric.LlvmCodegen.runtimeDecls` declares the intrinsics.
+func renderFPToSISat(dest: in String, fromTy: in NType, value: in NValue, toTy: in NType): String {
+  "  %" + quoteIrIdent(dest) + " = call " + nTypeToIrString(toTy) + " @" + fpToSISatIntrinsic(fromTy, toTy) + "(" +
+    nTypeToIrString(fromTy) +
+    " " +
+    nValueOperandString(value) +
+    ")"
+}
+
+/// `llvm.fptosi.sat.<int>.<float>` for one conversion's operand types.
+pub func fpToSISatIntrinsic(fromTy: in NType, toTy: in NType): String {
+  val fromSuffix = match fromTy { case NFloat -> "f32"; case _ -> "f64" }
+  "llvm.fptosi.sat." + nTypeToIrString(toTy) + "." + fromSuffix
+}
+
 /// Render one instruction (or label / comment) as its `.ll` line.
 pub func emitInsn(i: in NInsn): String {
   match i {
@@ -375,7 +393,7 @@ pub func emitInsn(i: in NInsn): String {
     case NTrunc(dest, fromTy, value, toTy) -> renderConv("trunc", dest, fromTy, value, toTy)
     case NBitcast(dest, fromTy, value, toTy) -> renderConv("bitcast", dest, fromTy, value, toTy)
     case NSIToFP(dest, fromTy, value, toTy) -> renderConv("sitofp", dest, fromTy, value, toTy)
-    case NFPToSI(dest, fromTy, value, toTy) -> renderConv("fptosi", dest, fromTy, value, toTy)
+    case NFPToSI(dest, fromTy, value, toTy) -> renderFPToSISat(dest, fromTy, value, toTy)
     case NFPExt(dest, value) -> renderConv("fpext", dest, NFloat, value, NDouble)
     case NFPTrunc(dest, value) -> renderConv("fptrunc", dest, NDouble, value, NFloat)
     case NPtrToInt(dest, fromTy, value, toTy) -> renderConv("ptrtoint", dest, fromTy, value, toTy)
