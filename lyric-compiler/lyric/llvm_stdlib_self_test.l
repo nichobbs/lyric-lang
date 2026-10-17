@@ -1586,6 +1586,58 @@ func main(): Int {
   assertEqualInt(r.exitCode, 42, "defaultClient().get on an invalid URL is InvalidUrl through the interface")
 }
 
+// #8376: the bundled impl is reached when the constructing function is called
+// through an import alias or a fully qualified path, not only a bare name.
+test "Native: Std.Http's client impl is reached through an import alias (ASan)" {
+  val src = r#"package T
+import Std.Core
+import Std.Http as H
+
+async func viaAlias(): Int {
+  val c = H.defaultClient()
+  match await c.get("") {
+    case Ok(_) -> 100
+    case Err(_) -> 20
+  }
+}
+
+async func viaAliasBuilder(): Int {
+  val c = H.HttpClientBuilder.new().withNoRedirects().build()
+  match await c.get("") {
+    case Ok(_) -> 100
+    case Err(_) -> 22
+  }
+}
+
+func main(): Int {
+  viaAlias() + viaAliasBuilder()
+}
+"#
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "both aliased constructions dispatch get through the bundled impl")
+}
+
+test "Native: Std.Http's client impl is reached through a fully qualified constructor call (ASan)" {
+  val src = r#"package T
+import Std.Core
+import Std.Http
+
+async func probe(): Int {
+  val c = Std.Http.clientNoRedirects()
+  match await c.get("") {
+    case Ok(_) -> 1
+    case Err(_) -> 42
+  }
+}
+
+func main(): Int {
+  probe()
+}
+"#
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "a qualified construction dispatches get through the bundled impl")
+}
+
 test "Native: importing Std.Http without constructing a client does not lower the client impl (ASan)" {
   val src = r#"package T
 import Std.Core
@@ -1691,7 +1743,7 @@ test "Native: toNat panics on a negative Int, Long or Double and on NaN (ASan)" 
 
 // #8363: an unannotated binding whose branches mix a constructed case and a
 // bare generic case (`None`) takes the bare case's type from its sibling, in
-// either order, through `else if` chains and `match` arms.
+// either order, through `else if` chains and `match` arms, guarded or not.
 test "Native: a bare None beside Some in an unannotated if or match binding (ASan)" {
   val src = r#"package T
 import Std.Core
@@ -1705,6 +1757,11 @@ func pick(c: in Bool, k: in Int): Int {
     case 1 -> Some(value = "one")
     case _ -> None
   }
+  val h = match k {
+    case n if n > 5 -> None
+    case n if n == 1 -> Some(value = n * 10000)
+    case _ -> None
+  }
   val g = if c {
     None
   } else {
@@ -1716,16 +1773,53 @@ func pick(c: in Bool, k: in Int): Int {
   val sd = match d { case Some(n) -> n * 10; case None -> 0 }
   val se = match e { case Some(s) -> s.length * 100; case None -> 0 }
   val sg = match g { case Some(n) -> n * 1000; case None -> 0 }
-  sa + sb + sd + se + sg
+  val sh = match h { case Some(n) -> n; case None -> 0 }
+  sa + sb + sd + se + sg + sh
 }
 
 func main(): Int {
-  // c = true,  k = 1: a = 1, b = 0, d = 10, e = 300, g = 0  -> 311
-  // c = false, k = 1: a = 0, b = 5, d = 10, e = 300, g = 2000 -> 2315
-  // c = false, k = 0: a = 0, b = 5, d = 0,  e = 0,   g = 1000 -> 1005
-  if pick(true, 1) == 311 and pick(false, 1) == 2315 and pick(false, 0) == 1005 { 42 } else { 1 }
+  // c = true,  k = 1: a = 1, b = 0, d = 10, e = 300, g = 0,    h = 10000 -> 10311
+  // c = false, k = 1: a = 0, b = 5, d = 10, e = 300, g = 2000, h = 10000 -> 12315
+  // c = false, k = 0: a = 0, b = 5, d = 0,  e = 0,   g = 1000, h = 0     -> 1005
+  // c = false, k = 9: a = 0, b = 5, d = 0,  e = 0,   g = 10000, h = 0    -> 10005
+  if pick(true, 1) == 10311 and pick(false, 1) == 12315 and pick(false, 0) == 1005 and pick(false, 9) == 10005 {
+    42
+  } else {
+    1
+  }
 }
 "#
   val r = compileAndRunNative(src)
   assertEqualInt(r.exitCode, 42, "every binding took its sibling branch's Option type")
+}
+
+// #8375: an out-of-range `Double` or `Float` conversion saturates and NaN
+// gives 0, as on .NET and the JVM; a plain `fptosi` was poison there.
+test "Native: Double and Float conversions saturate out of range, NaN gives 0 (ASan)" {
+  val src = r#"package T
+import Std.Core
+
+func main(): Int {
+  val big = 1e300
+  val small = 0.0 - 1e300
+  val inf = 1.0 / 0.0
+  val nan = 0.0 / 0.0
+  val f: Float = 1e30.toFloat()
+  val ok = big.toLong() == 9223372036854775807i64 and
+    small.toLong() == 0i64 - 9223372036854775807i64 - 1i64 and
+    inf.toLong() == 9223372036854775807i64 and
+    nan.toLong() == 0i64 and
+    3e9.toInt() == 2147483647 and
+    (0.0 - 3e9).toInt() == 0 - 2147483647 - 1 and
+    nan.toInt() == 0 and
+    big.toByte().toInt() == 255 and
+    nan.toByte().toInt() == 0 and
+    f.toInt() == 2147483647 and
+    f.toLong() == 9223372036854775807i64 and
+    big.toNat().toString() == "9223372036854775807"
+  if ok { 42 } else { 1 }
+}
+"#
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "every out-of-range conversion saturated")
 }

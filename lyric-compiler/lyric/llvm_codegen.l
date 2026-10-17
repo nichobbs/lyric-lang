@@ -15485,6 +15485,10 @@ func runtimeDecls(): List[NFunc] {
   decls.add(mkDecl1("lyric_mutex_wait", NVoid, p8))
   decls.add(mkDecl1("lyric_mutex_notify_all", NVoid, p8))
   decls.add(mkDecl1("lyric_free", NVoid, p8))
+  // Every `NFPToSI` renders as a saturating intrinsic call (#8375); the
+  // codegen converts from `double` only (a `Float` widens first).
+  decls.add(mkDecl1(fpToSISatIntrinsic(NDouble, NI32), NI32, NDouble))
+  decls.add(mkDecl1(fpToSISatIntrinsic(NDouble, NI64), NI64, NDouble))
   decls
 }
 

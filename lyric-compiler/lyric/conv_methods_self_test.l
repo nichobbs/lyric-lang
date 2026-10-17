@@ -20,6 +20,7 @@
 //! on MSIL; `i2l`/`l2i`/`d2i`/`l2d`/… on the JVM, with `.toByte()` using `& 0xFF`
 //! masking rather than the *signed* `i2b` so the unsigned-`Byte` result matches
 //! MSIL's `conv.u1` — so every assertion below is valid on both targets.
+//! An out-of-range `Double` or `Float` saturates and NaN gives 0 (#8375).
 //! `.toChar()` from an `Int`/`Long`/`Double` is additionally checked
 //! (D-progress-1006): a value that is not a BMP scalar fails instead of
 //! narrowing — inline IL on MSIL, the `__lyricToChar`/`__lyricToCharD`
@@ -71,6 +72,32 @@ test "Double.toLong truncates toward zero" {
   assertTrue(d.toLong() == 5i64, "5.0.toLong() == 5L")
   val dt: Double = 9.9
   assertEqualInt(dt.toLong().toInt(), 9, "9.9.toLong().toInt() == 9 (truncated)")
+}
+
+// An out-of-range `Double` saturates to the target's minimum or maximum and NaN
+// gives 0, the same on every target (#8375).  `.toByte()` saturates to the
+// `Long` range first and keeps the low 8 bits, so a huge value is 255.
+test "Double.toInt and toLong saturate out of range, NaN gives 0" {
+  val big: Double = 1e300
+  val small: Double = 0.0 - 1e300
+  val inf: Double = 1.0 / 0.0
+  val nan: Double = 0.0 / 0.0
+  val over: Double = 3e9
+  assertTrue(big.toLong() == 9223372036854775807i64, "1e300.toLong() is Long.MAX")
+  assertTrue(small.toLong() == 0i64 - 9223372036854775807i64 - 1i64, "-1e300.toLong() is Long.MIN")
+  assertTrue(inf.toLong() == 9223372036854775807i64, "Inf.toLong() is Long.MAX")
+  assertTrue(nan.toLong() == 0i64, "NaN.toLong() is 0")
+  assertEqualInt(over.toInt(), 2147483647, "3e9.toInt() is Int.MAX")
+  assertEqualInt((0.0 - over).toInt(), 0 - 2147483647 - 1, "-3e9.toInt() is Int.MIN")
+  assertEqualInt(nan.toInt(), 0, "NaN.toInt() is 0")
+  assertEqualInt(big.toByte().toInt(), 255, "1e300.toByte() keeps the low 8 bits of Long.MAX")
+  assertEqualInt(nan.toByte().toInt(), 0, "NaN.toByte() is 0")
+}
+
+test "Float.toInt and toLong saturate out of range" {
+  val f: Float = 1e30.toFloat()
+  assertEqualInt(f.toInt(), 2147483647, "1e30f.toInt() is Int.MAX")
+  assertTrue(f.toLong() == 9223372036854775807i64, "1e30f.toLong() is Long.MAX")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
