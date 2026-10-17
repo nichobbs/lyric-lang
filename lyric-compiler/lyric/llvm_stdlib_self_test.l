@@ -1601,3 +1601,42 @@ func main(): Int {
   val r = compileAndRunNative(src)
   assertEqualInt(r.exitCode, 42, "a program that never builds a client still compiles and runs")
 }
+
+// `Std.Stream`'s interfaces take a `Nat` bound; `Nat` lowers as the `Long` it is
+// a subtype of, so a user impl of a bundled stream interface compiles and
+// dispatches. (Building a `Nat` value, `n.toNat()`, is a separate native gap, so
+// the call goes through `readLine`.)
+test "Native: a user impl of Std.Stream.TextReader (a Nat parameter) dispatches (ASan)" {
+  val src = r#"package T
+import Std.Core
+import Std.Errors
+import Std.Stream
+
+record Src {
+  n: Int
+}
+
+impl TextReader for Src {
+  func readLine(): Result[Option[String], IOError] {
+    Ok(value = Some(value = "line"))
+  }
+  func readToEnd(maxChars: in Nat): Result[String, IOError] {
+    Ok(value = "abcdef")
+  }
+}
+
+func pull(r: in TextReader): Int {
+  match r.readLine() {
+    case Ok(Some(s)) -> s.length
+    case Ok(None) -> 1
+    case Err(_) -> 2
+  }
+}
+
+func main(): Int {
+  pull(Src(n = 0)) + 38
+}
+"#
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "readLine through the vtable returned a four-character line")
+}

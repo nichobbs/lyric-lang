@@ -29,9 +29,17 @@
    whose other branches are `Some(...)`; the diagnostic names the annotation as the remedy.
    The inference gap itself is tracked as its own issue.
 
+6. `Nat` now lowers on native as `i64`, the non-negative `Long` the language reference defines.
+   Collecting every bundled interface made `Std.Stream`'s `ByteReader`/`TextReader`
+   (`Nat`-typed parameters) reach codegen, which exposed that `Nat` had no native mapping
+   ("type 'Nat' is not yet supported"); the CI gate that builds every public `Std` package
+   caught it. Building a `Nat` value (`n.toNat()`) is still unlowered on native and is
+   tracked separately (#8366).
+
 ## Tests
 
 `llvm_stdlib_self_test.l` (ASan): a user `impl Logger for ...` dispatching through the vtable,
 `defaultClient().get("")` returning `InvalidUrl` through the interface with no network, and a
-program that imports `Std.Http` without constructing a client. `llvm_wasm32_module_self_test.l`
+program that imports `Std.Http` without constructing a client, and a user `impl` of
+`Std.Stream.TextReader` (a `Nat` parameter) dispatching through the vtable. `llvm_wasm32_module_self_test.l`
 gains the `HttpClientBuilder` TLS refusal and a `defaultClient().get` through the host fetch.

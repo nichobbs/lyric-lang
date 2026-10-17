@@ -784,6 +784,10 @@ pub func typeExprToNType(te: in TypeExpr): NType {
       if n == "Long" {
         return NI64
       }
+      // `Nat` is a non-negative `Long` (language reference, numeric types).
+      if n == "Nat" {
+        return NI64
+      }
       if n == "Double" {
         return NDouble
       }
