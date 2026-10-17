@@ -101,7 +101,7 @@ pub opaque type TestClock {
 /// expressed against the literal `Long` maximum (`9223372036854775807i64`;
 /// there is no `Long.MAX` constant in the stdlib).
 @stable(since = "0.1")
-pub func advance(clock: inout TestClock, ms: in Long): Unit
+pub func advance(clock: in TestClock, ms: in Long): Unit
   requires: ms >= 0i64
   requires: ms <= 9223372036854775807i64 - now(clock)
   ensures: now(clock) == old(now(clock)) + ms
@@ -165,7 +165,7 @@ pub func sentCount(sender: in MockMailSender): Int {
 
 /// Clear all captured emails from the mock sender.
 @stable(since = "0.1")
-pub func clearSent(sender: inout MockMailSender): Unit {
+pub func clearSent(sender: in MockMailSender): Unit {
   sender.sentEmails = newList()
   sender.count = 0
 }
@@ -532,7 +532,7 @@ impl Flags.FlagStore for MockFlagStore {
 
 /// Enable the named flag in the mock store.
 @stable(since = "0.1")
-pub func enable(store: inout MockFlagStore, name: in String): Unit
+pub func enable(store: in MockFlagStore, name: in String): Unit
   requires: name.length > 0
 {
   store.flags[name] = true
@@ -540,7 +540,7 @@ pub func enable(store: inout MockFlagStore, name: in String): Unit
 
 /// Disable the named flag in the mock store.
 @stable(since = "0.1")
-pub func disable(store: inout MockFlagStore, name: in String): Unit
+pub func disable(store: in MockFlagStore, name: in String): Unit
   requires: name.length > 0
 {
   store.flags[name] = false
