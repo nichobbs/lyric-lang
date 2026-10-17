@@ -25,6 +25,7 @@ import Std.Path as Path
 import Std.Process as Process
 import Std.Environment as Environment
 import Std.Uuid as Uuid
+import Std.String as Str
 import Lyric.Emitter
 import Lyric.LlvmBridge
 
@@ -1523,4 +1524,119 @@ test "Native record method beside a dot-named function of another arity (#8098)"
     "}\n"
   val r = compileAndRunNative(src)
   assertEqualInt(r.exitCode, 42, "each call runs the method the checker resolved")
+}
+
+// An interface a bundled stdlib package declares (`Std.Log.Logger`) is a type
+// the user's program can implement and call through; before the bridge
+// collected bundled interfaces this was "type 'Logger' is not yet supported".
+test "Native: a user impl of a bundled stdlib interface dispatches through its vtable (ASan)" {
+  val src = r#"package T
+import Std.Core
+import Std.Log
+
+record CountingLogger {
+  seen: Int
+}
+
+impl Logger for CountingLogger {
+  func log(level: in LogLevel, msg: in String, fields: in slice[LogField]): Unit {
+    println(msg)
+  }
+}
+
+func emit(l: in Logger): Unit {
+  val none: slice[LogField] = []
+  l.log(Info, "via-vtable", none)
+}
+
+func main(): Int {
+  emit(CountingLogger(seen = 0))
+  42
+}
+"#
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "the program ran to completion")
+  assertTrue(Str.contains(r.stdout, "via-vtable"), "the impl's method ran: " + r.stdout)
+}
+
+// A bundled package's own impl (`Std.Http`'s `HttpClientImpl`) is lowered once
+// reachable code constructs its record, and is absent otherwise.  An invalid
+// URL fails before any I/O, so the call needs no network.
+test "Native: Std.Http's client interface dispatches to the bundled impl without network (ASan)" {
+  val src = r#"package T
+import Std.Core
+import Std.Http
+import Std.Errors
+
+async func probe(): Int {
+  val c = defaultClient()
+  match await c.get("") {
+    case Ok(_) -> 1
+    case Err(InvalidUrl(_)) -> 42
+    case Err(_) -> 2
+  }
+}
+
+func main(): Int {
+  probe()
+}
+"#
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "defaultClient().get on an invalid URL is InvalidUrl through the interface")
+}
+
+test "Native: importing Std.Http without constructing a client does not lower the client impl (ASan)" {
+  val src = r#"package T
+import Std.Core
+import Std.Http
+
+func main(): Int {
+  if isHttpUrlShape("http://example.com") {
+    42
+  } else {
+    1
+  }
+}
+"#
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "a program that never builds a client still compiles and runs")
+}
+
+// `Std.Stream`'s interfaces take a `Nat` bound; `Nat` lowers as the `Long` it is
+// a subtype of, so a user impl of a bundled stream interface compiles and
+// dispatches. (Building a `Nat` value, `n.toNat()`, is a separate native gap, so
+// the call goes through `readLine`.)
+test "Native: a user impl of Std.Stream.TextReader (a Nat parameter) dispatches (ASan)" {
+  val src = r#"package T
+import Std.Core
+import Std.Errors
+import Std.Stream
+
+record Src {
+  n: Int
+}
+
+impl TextReader for Src {
+  func readLine(): Result[Option[String], IOError] {
+    Ok(value = Some(value = "line"))
+  }
+  func readToEnd(maxChars: in Nat): Result[String, IOError] {
+    Ok(value = "abcdef")
+  }
+}
+
+func pull(r: in TextReader): Int {
+  match r.readLine() {
+    case Ok(Some(s)) -> s.length
+    case Ok(None) -> 1
+    case Err(_) -> 2
+  }
+}
+
+func main(): Int {
+  pull(Src(n = 0)) + 38
+}
+"#
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "readLine through the vtable returned a four-character line")
 }

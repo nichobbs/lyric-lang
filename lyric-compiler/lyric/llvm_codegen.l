@@ -784,6 +784,10 @@ pub func typeExprToNType(te: in TypeExpr): NType {
       if n == "Long" {
         return NI64
       }
+      // `Nat` is a non-negative `Long` (language reference, numeric types).
+      if n == "Nat" {
+        return NI64
+      }
       if n == "Double" {
         return NDouble
       }
@@ -18134,7 +18138,7 @@ func mangleIfaceName(key: in String): String {
 
 /// The record name an `impl` targets, when it is a plain (non-generic)
 /// record reference; generic targets are deferred (N3.2 first slice).
-func implTargetRecordName(target: in TypeExpr): Option[String] {
+pub func implTargetRecordName(target: in TypeExpr): Option[String] {
   match target.kind {
     case TRef(path) -> Some(value = lastSeg(path))
     case TParen(inner) -> implTargetRecordName(inner)

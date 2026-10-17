@@ -763,14 +763,14 @@ pub func HttpClientBuilder.build(b: in HttpClientBuilder): HttpClient {
     }
   }
 
-  val http3UnsupportedReason = match version {
+  val http3UnsupportedReason: Option[String] = match version {
     case Http3 -> Some(
       value = "HTTP/3 is not supported on this target yet (see #5874 / docs/61-https-tls-http-versions.md Q-TLS-002)"
     )
     case Http11 -> None
     case Http2 -> None
   }
-  val tlsUnsupportedReason = if unixSocketBlocksTls {
+  val tlsUnsupportedReason: Option[String] = if unixSocketBlocksTls {
     Some(
       value = "TLS client configuration combined with withUnixSocket is not supported yet on this target " +
         "(SslClientAuthenticationOptions.RemoteCertificateValidationCallback is a custom .NET delegate type " +
@@ -790,7 +790,7 @@ pub func HttpClientBuilder.build(b: in HttpClientBuilder): HttpClient {
   } else {
     None
   }
-  val unsupportedReason = match http3UnsupportedReason {
+  val unsupportedReason: Option[String] = match http3UnsupportedReason {
     case Some(_) -> http3UnsupportedReason
     case None -> tlsUnsupportedReason
   }
