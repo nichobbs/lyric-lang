@@ -367,11 +367,13 @@ func isWasmTriple(triple: in String): Bool {
   Str.startsWith(triple, "wasm32")
 }
 
-/// clang's canonical spelling of the WASI triple; the shorter `wasm32-wasi`
-/// makes it print an "overriding the module target triple" warning.
+/// clang's canonical spelling of the WASI triple. `wasm32-wasi` is WASI
+/// preview 1, which clang 23 (wasi-sdk 34) deprecates under that name and whose
+/// sysroot only carries headers as `wasm32-wasip1`; the short form also makes
+/// clang print an "overriding the module target triple" warning.
 func normalizeNativeTriple(triple: in String): String {
   if triple == "wasm32-wasi" {
-    return "wasm32-unknown-wasi"
+    return "wasm32-unknown-wasip1"
   }
   triple
 }
