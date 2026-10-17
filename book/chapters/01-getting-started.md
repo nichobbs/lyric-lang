@@ -437,6 +437,7 @@ Core commands you will use constantly:
 | `lyric build --target native --triple wasm32-wasi --shape module\|component <file.l>` | Compile to WebAssembly: a module with JS glue, or a component with a WIT interface (Chapter 32) |
 | `lyric build` | Build the discovered project (no source arg needed) |
 | `lyric run <file.l>` | Compile and immediately execute a single file |
+| `lyric run <file.l> --features a,b` | Run with features from the file's `lyric.toml` `[features]` (`--features` with no manifest is `F0049`) |
 | `lyric run` | Build and run the discovered project (no source arg needed) |
 | `lyric run --target jvm` | Build and run the project on the JVM target |
 | `lyric run --target native <file.l>` | Build the native binary and run it directly |

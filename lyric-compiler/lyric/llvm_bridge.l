@@ -951,13 +951,47 @@ pub func compileToNativeWithShape(
   contractsEnabled: in Bool,
   shape: in String,
 ): Bool {
+  val noFeatures: List[String] = newList()
+  compileToNativeWithFeatures(
+    source,
+    outputPath,
+    stdlibFiles,
+    triple,
+    optLevel,
+    extraClangFlags,
+    defines,
+    path,
+    contractsEnabled,
+    shape,
+    noFeatures,
+    noFeatures
+  )
+}
+
+/// `compileToNativeWithShape` for a single file built under a manifest's
+/// `[features]` (D182): its `@cfg` items are erased with the active features
+/// `activeFeatures` and the manifest-declared `declaredFeatures`, as a
+/// `--target dotnet` or `--target jvm` build of the file erases them.
+pub func compileToNativeWithFeatures(
+  source: in String,
+  outputPath: in String,
+  stdlibFiles: in List[NativeStdlibFile],
+  triple: in String,
+  optLevel: in String,
+  extraClangFlags: in List[String],
+  defines: in List[String],
+  path: in String,
+  contractsEnabled: in Bool,
+  shape: in String,
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
+): Bool {
   // Parse + `@cfg` erasure with the `target.native` pseudo-feature
   // (D-N-013); `Lyric.Pipeline` owns the placement (erasure directly
   // after parse, before anything indexes the items).
-  val noFeatures: List[String] = newList()
   val nativeDefines = BD.decodeDefines(defines)
   val noOrigins: List[DiagUtil.MergedLineOrigin] = newList()
-  val cfgFile = match pipeParseAndErase(source, "native", noFeatures, noFeatures, nativeDefines, path, noOrigins) {
+  val cfgFile = match pipeParseAndErase(source, "native", activeFeatures, declaredFeatures, nativeDefines, path, noOrigins) {
     case Some(f) -> f
     case None -> return false
   }

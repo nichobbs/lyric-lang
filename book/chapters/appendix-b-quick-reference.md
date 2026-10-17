@@ -1071,6 +1071,10 @@ lyric build --all-features             # transitive closure of every declared fe
                                        # workspace-dependency builds; a platform-named
                                        # default feature (dotnet/jvm/native) is swapped
                                        # to match --target (docs/24 s2.3)
+                                       # a single file takes the features of the nearest
+                                       # lyric.toml above it, listed there or not, for
+                                       # build, run, test and prove alike; --features on a
+                                       # file with no manifest is F0049 (D182)
 
 # Runtime contract control (manifest [contracts])
 #   [contracts]
@@ -1085,6 +1089,8 @@ lyric build --all-features             # transitive closure of every declared fe
 lyric run <file.l>                     # compile and immediately execute
 lyric run <file.l> -- arg1 arg2        # pass arguments to the program
 lyric run <file.l> --watch             # rebuild & re-run on source changes (Ctrl-C to stop)
+lyric run <file.l> --features a,b      # features for the build (also --no-default-features,
+                                       #   --all-features, --manifest; F0049 with no manifest)
 lyric run                              # project mode: build + run the project's main entry point
 lyric run -- arg1 arg2                 # project mode: pass arguments to the program
 lyric run --watch                      # project mode: rebuild & re-run on source changes
@@ -1528,6 +1534,7 @@ profile/shape codes); see those docs for their own F-series ranges.
 | `F0034` | External-interface `impl` block: the target resolves through `extern type` / `import extern`, but its .NET metadata is not an interface (e.g. `impl Math for Foo` against the class `System.Math`). Numbered `F0034`, not `F0020`, to avoid colliding with `propagate.l`'s pre-existing `F0020` (`?` used in a function returning neither `Result` nor `Option`) — see issue #6648. |
 | `F0046` | A direct call to an `async func` inside a `try`/`catch`/`finally` of another `async func`, on `--target dotnet`: the call awaits in place, and a suspend point inside a protected region cannot be lowered. Await the call explicitly before or after the `try` block (#7838). |
 | `F0047` | An untyped module-level `val` whose initializer's type (e.g. a call or numeric conversion) disagrees with the type the rest of the package was compiled against, on `--target dotnet`. Add an explicit annotation, `val x: Long = ...`. |
+| `F0049` | `--features` on a single source file no manifest applies to (no `--manifest`, and no `lyric.toml` with a `[package]` section in its directory or any parent), from `lyric build`, `run`, `test` or `prove`. Features are declared in a manifest's `[features]` table, so there is nothing to select; declare them in a `lyric.toml` or pass `--manifest` (D182). |
 
 ### Native codegen / build diagnostics (N-series)
 

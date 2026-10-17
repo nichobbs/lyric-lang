@@ -22,6 +22,21 @@ import Lyric.Discovery as Disc
 // path directly (#6815 item 3a), mirroring `cli_build.l`'s `buildProject`
 // (#5819's same "pub for self-test seam" precedent).
 pub func runProjectOnce(mfPath: in String, userArgs: in List[String], target: in Emitter.CompileTarget): Int {
+  val noCliFeatures: List[String] = newList()
+  runProjectOnceWithFeatures(mfPath, userArgs, target, noCliFeatures, false, false)
+}
+
+// `runProjectOnce` with the command line's feature selection
+// (`--features` / `--no-default-features` / `--all-features`), applied to
+// the project build as `lyric build --manifest` applies it.
+func runProjectOnceWithFeatures(
+  mfPath: in String,
+  userArgs: in List[String],
+  target: in Emitter.CompileTarget,
+  cliFeatures: in List[String],
+  noDefaultFeatures: in Bool,
+  allFeatures: in Bool,
+): Int {
   val mfText = match File.readText(mfPath) {
     case Ok(t) -> t
     case Err(e) -> {
@@ -44,7 +59,18 @@ pub func runProjectOnce(mfPath: in String, userArgs: in List[String], target: in
     case Some(p) -> p
   }
   val mfDir = Path.dirname(mfPath)
-  val buildRc = buildProject(mfPath, None, target, newList(), false, false, false, None, None, newList())
+  val buildRc = buildProject(
+    mfPath,
+    None,
+    target,
+    cliFeatures,
+    noDefaultFeatures,
+    allFeatures,
+    false,
+    None,
+    None,
+    newList()
+  )
   if buildRc != 0 {
     return buildRc
   }
@@ -171,16 +197,25 @@ val WATCH_POLL_MS: Int = 400
 // — `BuildProj` used to carry neither field at all, so they were silently
 // dropped under `--watch` even when explicitly passed).
 pub union WatchAction {
-  case RunFile(sourcePath: String, userArgs: List[String], target: Emitter.CompileTarget)
-  case RunProj(mfPath: String, userArgs: List[String], target: Emitter.CompileTarget)
+  case RunFile(sourcePath: String, userArgs: List[String], target: Emitter.CompileTarget, manifest: Option[String], feats: List[String], noDef: Bool, allF: Bool)
+  case RunProj(mfPath: String, userArgs: List[String], target: Emitter.CompileTarget, feats: List[String], noDef: Bool, allF: Bool)
   case BuildProj(mfPath: String, outArg: Option[String], target: Emitter.CompileTarget, feats: List[String], noDef: Bool, allF: Bool, noRestore: Bool, pkgVer: Option[String], profile: BuildProfile, nativeTriple: String, nativeOpt: String)
   case BuildFile(sourcePath: String, outArg: String, target: Emitter.CompileTarget, manifest: Option[String], nativeTriple: String, nativeOpt: String, feats: List[String], noDef: Bool, allF: Bool, profile: BuildProfile)
 }
 
 // Build the program once and execute it.  Target-aware: Dotnet runs via
 // `dotnet exec`, Jvm runs via `java -jar`.  Extracted from cmdRun so the
-// watch loop can re-run it.
-func runOnce(sourcePath: in String, userArgs: in List[String], target: in Emitter.CompileTarget): Int {
+// watch loop can re-run it.  `manifestPath` and the feature selection reach
+// the build as `lyric build <file>` takes them.
+func runOnce(
+  sourcePath: in String,
+  userArgs: in List[String],
+  target: in Emitter.CompileTarget,
+  manifestPath: in Option[String],
+  cliFeatures: in List[String],
+  noDefaultFeatures: in Bool,
+  allFeatures: in Bool,
+): Int {
   val srcDir = Path.dirname(sourcePath)
   val stem = stemOf(Path.basename(sourcePath), 2)
   // var-mutation shape: a value-position match over CompileTarget
@@ -200,7 +235,19 @@ func runOnce(sourcePath: in String, userArgs: in List[String], target: in Emitte
   }
   val outPath = Path.join(Path.join(srcDir, ".lyric-run"), stem + outExt)
 
-  val buildExit = buildOne(sourcePath, outPath, target, None)
+  val noDefines: List[String] = newList()
+  val buildExit = buildOneNativeWithFeatures(
+    sourcePath,
+    outPath,
+    target,
+    manifestPath,
+    "",
+    "",
+    cliFeatures,
+    noDefaultFeatures,
+    allFeatures,
+    noDefines
+  )
   if buildExit != 0 {
     return buildExit
   }
@@ -258,8 +305,8 @@ func runOnce(sourcePath: in String, userArgs: in List[String], target: in Emitte
 
 pub func runWatchAction(a: in WatchAction): Int {
   match a {
-    case RunFile(sp, ua, t) -> runOnce(sp, ua, t)
-    case RunProj(mp, ua, t) -> runProjectOnce(mp, ua, t)
+    case RunFile(sp, ua, t, m, f, nd, af) -> runOnce(sp, ua, t, m, f, nd, af)
+    case RunProj(mp, ua, t, f, nd, af) -> runProjectOnceWithFeatures(mp, ua, t, f, nd, af)
     case BuildProj(mf, o, t, f, nd, af, nr, pv, prof, ntr, nop) -> buildProjectWithNativeFlags(
       mf,
       o,
@@ -364,6 +411,9 @@ func cmdRun(argv: in slice[String]): Int {
   var manifestArg: Option[String] = None
   var targetArg: Option[String] = None
   val userArgs: List[String] = newList()
+  val cliFeatures: List[String] = newList()
+  var noDefaultFeatures = false
+  var allFeatures = false
 
   var i = 1
   var pastSep = false
@@ -394,6 +444,27 @@ func cmdRun(argv: in slice[String]): Int {
         printErr("run: --target requires dotnet or jvm")
         return 1
       }
+    } else if arg == "--features" {
+      if i + 1 < argv.length {
+        // Comma-separated, whitespace-trimmed; empty entries dropped (the
+        // grammar `lyric build --features` takes).
+        for piece in Str.split(argv[i + 1], ",") {
+          val trimmed = Str.trim(piece)
+          if Str.length(trimmed) > 0 {
+            cliFeatures.add(trimmed)
+          }
+        }
+        i += 2
+      } else {
+        printErr("run: --features requires a comma-separated list")
+        return 1
+      }
+    } else if arg == "--no-default-features" {
+      noDefaultFeatures = true
+      i += 1
+    } else if arg == "--all-features" {
+      allFeatures = true
+      i += 1
     } else if not haveSource {
       sourcePath = arg
       haveSource = true
@@ -440,9 +511,19 @@ func cmdRun(argv: in slice[String]): Int {
       }
     }
     if watch {
-      return watchLoop(projectWatchFiles(mfPath), RunProj(mfPath = mfPath, userArgs = userArgs, target = runTarget))
+      return watchLoop(
+        projectWatchFiles(mfPath),
+        RunProj(
+          mfPath = mfPath,
+          userArgs = userArgs,
+          target = runTarget,
+          feats = cliFeatures,
+          noDef = noDefaultFeatures,
+          allF = allFeatures
+        )
+      )
     }
-    return runProjectOnce(mfPath, userArgs, runTarget)
+    return runProjectOnceWithFeatures(mfPath, userArgs, runTarget, cliFeatures, noDefaultFeatures, allFeatures)
   }
 
   if not File.fileExists(sourcePath) {
@@ -450,11 +531,32 @@ func cmdRun(argv: in slice[String]): Int {
     return 1
   }
 
+  // D182: `--features` on a file no manifest applies to selects nothing;
+  // reject it once, up front, rather than on every `--watch` rebuild.
+  match featuresWithoutManifestError(sourcePath, manifestArg, cliFeatures) {
+    case Some(msg) -> {
+      printErr(msg)
+      return 1
+    }
+    case None -> ()
+  }
+
   if watch {
     val files: List[String] = newList()
     files.add(sourcePath)
-    return watchLoop(files, RunFile(sourcePath = sourcePath, userArgs = userArgs, target = runTarget))
+    return watchLoop(
+      files,
+      RunFile(
+        sourcePath = sourcePath,
+        userArgs = userArgs,
+        target = runTarget,
+        manifest = manifestArg,
+        feats = cliFeatures,
+        noDef = noDefaultFeatures,
+        allF = allFeatures
+      )
+    )
   }
 
-  runOnce(sourcePath, userArgs, runTarget)
+  runOnce(sourcePath, userArgs, runTarget, manifestArg, cliFeatures, noDefaultFeatures, allFeatures)
 }

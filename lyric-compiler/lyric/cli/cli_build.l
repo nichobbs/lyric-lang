@@ -539,12 +539,7 @@ record NonNativeEmitOutcome {
 // `Environment.currentDirectory()` first is required for the walk to reach
 // any parent directory at all (D123).
 func discoverManifestForSourceFile(sourcePath: in String): Option[String] {
-  val absSource = if Path.isAbsolute(sourcePath) {
-    sourcePath
-  } else {
-    Path.join(Environment.currentDirectory(), sourcePath)
-  }
-  Disc.findNearestManifest(Path.dirname(absSource))
+  Disc.singleFileManifest(sourcePath)
 }
 
 // Load + parse the manifest that should drive a single-file build's
@@ -788,14 +783,18 @@ func emitSingleFileOrProject(
     case Some(l) -> l
   }
 
-  val (activeFeatures, declaredFeatures) = resolveManifestFeatures(
-    lm.mfText,
-    lm.mfPath,
+  // The file's features, chosen as `lyric prove` chooses them for the same
+  // file (D182): this manifest's, whether or not its entries list the file.
+  val sfBuild = Disc.singleFileSourceBuild(
+    sourcePath,
+    Some(value = lm.mfPath),
+    targetFeatureName(req.target),
     cliFeatures,
     noDefaultFeatures,
-    allFeatures,
-    req.target
+    allFeatures
   )
+  val activeFeatures = sfBuild.activeFeatures
+  val declaredFeatures = sfBuild.declaredFeatures
   val resolvedDeps = resolveManifestDependencies(lm.manifest, lm.mfPath, req.target, cliFeatures, noDefaultFeatures)
   if resolvedDeps.hadWorkspaceError {
     return failedEmitOutcome(
@@ -1025,10 +1024,10 @@ pub func buildOne(
 
 // `nativeTriple` / `nativeOpt` only apply to `--target native` (the
 // `--triple` / `--opt` flags); empty strings mean host triple / -O2.
-// Callers with no CLI feature selection of their own (`lyric run`, the
-// self-tests) use this default-feature entry point; `cmdBuild` threads the
+// Callers with no CLI feature selection of their own (the self-tests) use
+// this default-feature entry point; `cmdBuild` and `lyric run` thread the
 // user's `--features` / `--no-default-features` / `--all-features` through
-// `buildOneNativeWithFeatures` below (#5571).
+// `buildOneNativeWithFeatures` below (#5571, D182).
 pub func buildOneNative(
   sourcePath: in String,
   outPath: in String,
@@ -1165,6 +1164,13 @@ pub func buildOneNativeShaped(
   wasmShape: in String,
 ): Int {
   val buildStart = Time.now()
+  match featuresWithoutManifestError(sourcePath, manifestPath, cliFeatures) {
+    case Some(msg) -> {
+      printErr(msg)
+      return 1
+    }
+    case None -> ()
+  }
   var source = match File.readText(sourcePath) {
     case Ok(text) -> text
     case Err(e) -> {
@@ -1249,7 +1255,25 @@ pub func buildOneNativeShaped(
   var resolvedNugetPaths: List[String] = newList()
   var resolvedNativePaths: List[String] = newList()
   val result = if isNativeTarget {
-    Emitter.emitNativeWithShape(req, effTriple, effOpt, effLibs, shapeSpec(wasmShape, wasmVersion, wasmWorld, wasmStack))
+    // A native build compiles the file alone (D123), with the features the
+    // other targets select for it (D182).
+    val nativeBuild = Disc.singleFileSourceBuild(
+      sourcePath,
+      manifestPath,
+      "native",
+      cliFeatures,
+      noDefaultFeatures,
+      allFeatures
+    )
+    Emitter.emitNativeWithFeatures(
+      req,
+      effTriple,
+      effOpt,
+      effLibs,
+      shapeSpec(wasmShape, wasmVersion, wasmWorld, wasmStack),
+      nativeBuild.activeFeatures,
+      nativeBuild.declaredFeatures
+    )
   } else {
     val outcome = emitSingleFileOrProject(req, sourcePath, manifestPath, cliFeatures, noDefaultFeatures, allFeatures)
     resolvedRestoredDlls = outcome.restoredDlls
@@ -1924,7 +1948,17 @@ func cmdBuild(argv: in slice[String]): Int {
   // resolves to `SAot` but produces its binary through the LLVM pipeline, not
   // through `Lyric.Release`, so only a genuine packaging pipeline takes the hop.
   if usesPackagingPipeline(axes.shape, target) {
-    return buildReleaseSingle(sourcePath, explicitOut, target, ridArg, manifestArg, axes.profile)
+    return buildReleaseSingle(
+      sourcePath,
+      explicitOut,
+      target,
+      ridArg,
+      manifestArg,
+      axes.profile,
+      cliFeatures,
+      noDefaultFeatures,
+      allFeatures
+    )
   }
 
   // `--rid` only applies to the packaging shapes; warn here so the flag isn't
@@ -2131,7 +2165,17 @@ func buildReleaseSingle(
   ridArg: in Option[String],
   manifestArg: in Option[String],
   profile: in BuildProfile,
+  cliFeatures: in List[String],
+  noDefaultFeatures: in Bool,
+  allFeatures: in Bool,
 ): Int {
+  match featuresWithoutManifestError(sourcePath, manifestArg, cliFeatures) {
+    case Some(msg) -> {
+      printErr(msg)
+      return 1
+    }
+    case None -> ()
+  }
   // Native is unreachable here because `usesPackagingPipeline` is false for
   // every native shape, so cmdBuild never routes a native build into this
   // function. It is NOT because the CLI rejects `--release --target native`:
@@ -2194,9 +2238,9 @@ func buildReleaseSingle(
     manifestArg,
     "",
     "",
-    newList(),
-    false,
-    false,
+    cliFeatures,
+    noDefaultFeatures,
+    allFeatures,
     profileOnlyDefines(profile)
   )
   if buildExit != 0 {

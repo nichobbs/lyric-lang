@@ -323,6 +323,15 @@ func cmdProve(argv: in slice[String]): Int {
   }
 
   val sourcePath = positional[0]
+  // D182: `--features` on a file no manifest applies to selects nothing, as
+  // for `lyric build <file>`.
+  match featuresWithoutManifestError(sourcePath, manifestArg, cliFeatures) {
+    case Some(msg) -> {
+      printErr(msg)
+      return 1
+    }
+    case None -> ()
+  }
   val source = match File.readText(sourcePath) {
     case Ok(text) -> text
     case Err(e) -> {
@@ -334,7 +343,7 @@ func cmdProve(argv: in slice[String]): Int {
   // A proof of a program the type checker rejects means nothing: the file
   // is type-checked as every build that compiles it checks it, and nothing
   // is proved unless it passes (#8227).
-  val typeCheck = typeCheckForProveFile(sourcePath, source, buildSettings)
+  val typeCheck = typeCheckForProveFile(sourcePath, source, buildSettings, manifestArg)
   if jsonOutput and not typeCheck.ok {
     Console.print(
       proveJson(
@@ -362,7 +371,7 @@ func cmdProve(argv: in slice[String]): Int {
     )
     case None -> Verifier.unknownPackageScope()
   }
-  val fileBuilds = proveBuildConfigsForFile(sourcePath, buildSettings)
+  val fileBuilds = proveBuildConfigsForFile(sourcePath, buildSettings, manifestArg)
   val summary = Verifier.proveSourceForBuilds(
     source,
     allowUnverified,
@@ -835,12 +844,17 @@ func proveImportScope(target: in Emitter.CompileTarget, manifests: in List[Strin
 // The builds a proof of the source file at `sourcePath` is of, as its type
 // check (`typeCheckForProveFile`) takes them: one per manifest whose entries
 // list the file, with that manifest's features for `build`, or, when none
-// lists it, the build `lyric build <file>` makes of it alone.  The proof
+// lists it, the build `lyric build <file>` makes of it alone, with the
+// features of the file's own manifest (`Disc.singleFileSourceBuild`, D182).
+// With `--manifest`, the build of the file under that manifest.  The proof
 // sees what `@cfg` erasure keeps for each (#8325); the language server
 // takes a file's builds from the same function (#8342).
-func proveBuildConfigsForFile(sourcePath: in String, build: in ProveBuild): List[Verifier.ProveBuildConfig] {
-  Verifier.proveBuildConfigsForSource(
+func proveBuildConfigsForFile(
+  sourcePath: in String, build: in ProveBuild, explicitManifest: in Option[String]
+): List[Verifier.ProveBuildConfig] {
+  Verifier.proveBuildConfigsForSourceUnder(
     sourcePath,
+    explicitManifest,
     targetFeatureName(build.target),
     build.cliFeatures,
     build.noDefaultFeatures,
@@ -873,16 +887,42 @@ func noManifestProveBuildConfig(build: in ProveBuild): Verifier.ProveBuildConfig
 // The source file at `sourcePath` checked as each build that compiles it
 // checks it: within each project whose manifest lists it, its own package
 // and the packages it imports, or alone, as `lyric build <file>` does, when
-// no manifest lists it.
-func typeCheckForProveFile(sourcePath: in String, source: in String, build: in ProveBuild): ProveTypeCheck {
-  val entries = match Disc.entriesContainingSource(sourcePath) {
+// no manifest lists it — with the features `lyric build <file>` erases it
+// with (`Disc.singleFileSourceBuild`, D182).  With `--manifest`, only that
+// manifest's entries count, as `lyric build --manifest <m> <file>` builds
+// the file under `m` alone.
+func typeCheckForProveFile(
+  sourcePath: in String,
+  source: in String,
+  build: in ProveBuild,
+  explicitManifest: in Option[String],
+): ProveTypeCheck {
+  val allEntries = match Disc.entriesContainingSource(sourcePath) {
     case Some(es) -> es
     case None -> return proveLoadFailure(
       sourcePath,
       "cannot tell which packages build this file: an enclosing lyric.toml cannot be read, or a package that lists it cannot be listed"
     )
   }
+  val entries: List[Disc.ContainingEntry] = newList()
+  for e in allEntries {
+    val keep = match explicitManifest {
+      case Some(m) -> Disc.pathKey(Disc.normalizePath(e.manifestPath)) == Disc.pathKey(Disc.normalizePath(m))
+      case None -> true
+    }
+    if keep {
+      entries.add(e)
+    }
+  }
   if entries.count == 0 {
+    val alone = Disc.singleFileSourceBuild(
+      sourcePath,
+      explicitManifest,
+      targetFeatureName(build.target),
+      build.cliFeatures,
+      build.noDefaultFeatures,
+      build.allFeatures
+    )
     val req = Emitter.EmitRequest(
       source = source,
       assemblyName = stemOf(Path.basename(sourcePath), 2),
@@ -893,7 +933,7 @@ func typeCheckForProveFile(sourcePath: in String, source: in String, build: in P
       path = sourcePath,
       contractsEnabled = true
     )
-    return proveTypeCheckOf(Emitter.typeCheckSource(req))
+    return proveTypeCheckOf(Emitter.typeCheckSourceForFeatures(req, alone.activeFeatures, alone.declaredFeatures))
   }
   // Each manifest once, with its entries that list the file: the packages
   // checked there are theirs and what they import.  A `[project.tests]`

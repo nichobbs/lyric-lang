@@ -433,6 +433,36 @@ test "the editor proves a document under its manifest's features, as lyric prove
   removeProject(narrow)
 }
 
+// D182: a document under a manifest that does not list it is proved with
+// that manifest's features, the features `lyric build <file>` compiles it
+// with; a document no manifest applies to has none.
+test "an unlisted document is proved with its manifest's features, as lyric build compiles it (D182)" {
+  val listed = featureProject(true)
+  val root = Path.dirname(Path.dirname(Path.dirname(listed)))
+  mkdirOrPanic(Path.join(root, "tools"))
+  val unlisted = Path.join(root, "tools/limits.l")
+  writeOrPanic(unlisted, featureTwins())
+  val noCli: List[String] = newList()
+  val builds = proveBuildConfigsForSource(unlisted, "dotnet", noCli, false, false)
+  assertEqualInt(builds.count, 1, "the file built alone is its one build")
+  assertTrue(builds[0].activeFeatures.contains("wide"), "the manifest's default feature is active")
+  assertTrue(builds[0].declaredFeatures.contains("wide"), "the manifest's features are declared")
+  val msgs = openDocMessages(lspInit(), "file://" + unlisted, featureTwins())
+  assertFalse(Str.contains(msgs, "V0008"), "the wide twin is proved: no refutation")
+  removeProject(listed)
+  val loneDir = Path.join(tempBase(), "lyric-lsp-prove-lone-" + uuidToString(newUuid()))
+  mkdirOrPanic(loneDir)
+  val lone = Path.join(loneDir, "limits.l")
+  writeOrPanic(lone, featureTwins())
+  val loneBuilds = proveBuildConfigsForSource(lone, "dotnet", noCli, false, false)
+  assertEqualInt(loneBuilds.count, 1, "a file no manifest applies to has one build")
+  assertEqualInt(loneBuilds[0].activeFeatures.count, 0, "and no features")
+  match File.deleteDirRecursive(loneDir) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+}
+
 // #8341: the editor proves without a type check, so a duplicate declaration
 // reaches the verifier; it is reported, never thrown on.
 test "a duplicate declaration in an open document is reported, not thrown on (#8341)" {

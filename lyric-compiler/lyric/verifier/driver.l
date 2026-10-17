@@ -839,8 +839,24 @@ pub func proveBuildConfigsForSource(
   noDefaultFeatures: in Bool,
   allFeatures: in Bool,
 ): List[ProveBuildConfig] {
+  val noManifest: Option[String] = None
+  proveBuildConfigsForSourceUnder(sourcePath, noManifest, targetName, cliFeatures, noDefaultFeatures, allFeatures)
+}
+
+/// `proveBuildConfigsForSource` for `lyric prove --manifest <m> <file>`:
+/// with `explicitManifest`, the build of the file under that manifest, as
+/// `lyric build --manifest <m> <file>` compiles it
+/// (`Lyric.Discovery.sourceBuildsForFileUnder`, D182).
+pub func proveBuildConfigsForSourceUnder(
+  sourcePath: in String,
+  explicitManifest: in Option[String],
+  targetName: in String,
+  cliFeatures: in List[String],
+  noDefaultFeatures: in Bool,
+  allFeatures: in Bool,
+): List[ProveBuildConfig] {
   val configs: List[ProveBuildConfig] = newList()
-  for b in Disc.sourceBuildsForFile(sourcePath, targetName, cliFeatures, noDefaultFeatures, allFeatures) {
+  for b in Disc.sourceBuildsForFileUnder(sourcePath, explicitManifest, targetName, cliFeatures, noDefaultFeatures, allFeatures) {
     configs.add(proveBuildConfigOf(b))
   }
   configs

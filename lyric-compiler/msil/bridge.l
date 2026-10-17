@@ -1317,10 +1317,25 @@ pub func checkSourceTypes(
   path: in String,
   targetName: in String,
 ): List[DiagUtil.LocatedDiagnostic] {
-  val located: List[DiagUtil.LocatedDiagnostic] = newList()
   val noFeatures: List[String] = newList()
+  checkSourceTypesForFeatures(source, stdlibSources, defines, path, targetName, noFeatures, noFeatures)
+}
+
+/// `checkSourceTypes` for a build whose `@cfg` erasure has the active
+/// features `activeFeatures` and the manifest-declared `declaredFeatures`
+/// (a single file built under a manifest's `[features]`, D182).
+pub func checkSourceTypesForFeatures(
+  source: in String,
+  stdlibSources: in List[String],
+  defines: in List[String],
+  path: in String,
+  targetName: in String,
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
+): List[DiagUtil.LocatedDiagnostic] {
+  val located: List[DiagUtil.LocatedDiagnostic] = newList()
   val noOrigins: List[DiagUtil.MergedLineOrigin] = newList()
-  val cfgFile = match frontEndParse(true, targetName, source, noFeatures, noFeatures, BD.decodeDefines(defines), path, noOrigins, located) {
+  val cfgFile = match frontEndParse(true, targetName, source, activeFeatures, declaredFeatures, BD.decodeDefines(defines), path, noOrigins, located) {
     case Some(f) -> f
     case None -> return located
   }

@@ -2563,13 +2563,27 @@ pub func typeCheckProject(req: in EmitProjectRequest): List[DiagUtil.LocatedDiag
 /// `typeCheckProject`).  Every diagnostic is attributed to `req.path`.
 /// `req.outputPath` is not used.
 pub func typeCheckSource(req: in EmitRequest): List[DiagUtil.LocatedDiagnostic] {
+  val noFeatures: List[String] = newList()
+  typeCheckSourceForFeatures(req, noFeatures, noFeatures)
+}
+
+/// `typeCheckSource` for a build that erases `@cfg` items with the active
+/// features `activeFeatures` and the manifest-declared `declaredFeatures`:
+/// a single file built under a manifest's `[features]` (D182).
+pub func typeCheckSourceForFeatures(
+  req: in EmitRequest,
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
+): List[DiagUtil.LocatedDiagnostic] {
   try {
-    MsilBridge.checkSourceTypes(
+    MsilBridge.checkSourceTypesForFeatures(
       req.source,
       checkStdlibSources(req.target),
       req.defines,
       req.path,
-      compileTargetName(req.target)
+      compileTargetName(req.target),
+      activeFeatures,
+      declaredFeatures
     )
   } catch Bug as b {
     val located: List[DiagUtil.LocatedDiagnostic] = newList()
@@ -3020,7 +3034,7 @@ pub func emit(req: in EmitRequest): EmitResult {
   match req.target {
     case Dotnet -> emitMsilInProcess(req)
     case Jvm -> emitJvmInProcess(req)
-    case Native -> emitNativeInProcess(req, "", "", newList(), "")
+    case Native -> emitNativeInProcess(req, "", "", newList(), "", newList(), newList())
   }
 }
 
@@ -3042,6 +3056,22 @@ pub func emitNativeWithShape(
   extraLibs: in List[String],
   shape: in String,
 ): EmitResult {
+  val noFeatures: List[String] = newList()
+  emitNativeWithFeatures(req, triple, optLevel, extraLibs, shape, noFeatures, noFeatures)
+}
+
+/// `emitNativeWithShape` for a single file built under a manifest's
+/// `[features]` (D182): its `@cfg` items are erased with `activeFeatures` and
+/// the manifest-declared `declaredFeatures`.
+pub func emitNativeWithFeatures(
+  req: in EmitRequest,
+  triple: in String,
+  optLevel: in String,
+  extraLibs: in List[String],
+  shape: in String,
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
+): EmitResult {
   val outDir = Path.dirname(req.outputPath)
   if Str.isNotEmpty(outDir) {
     match File.createDir(outDir) {
@@ -3049,7 +3079,7 @@ pub func emitNativeWithShape(
       case Err(_) -> ()
     }
   }
-  emitNativeInProcess(req, triple, optLevel, extraLibs, shape)
+  emitNativeInProcess(req, triple, optLevel, extraLibs, shape, activeFeatures, declaredFeatures)
 }
 
 func emitNativeInProcess(
@@ -3058,6 +3088,8 @@ func emitNativeInProcess(
   optLevel: in String,
   extraLibs: in List[String],
   shape: in String,
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
 ): EmitResult {
   val stdlibFiles = findStdlibSourcesNativeForShape(shape)
   // `[native].extra_libs` (N6.4) become `-l<name>` clang flags, threaded
@@ -3076,7 +3108,7 @@ func emitNativeInProcess(
   // exception.
   val diags: List[Diagnostic] = newList()
   val ok = try {
-    LlvmBridge.compileToNativeWithShape(
+    LlvmBridge.compileToNativeWithFeatures(
       req.source,
       req.outputPath,
       stdlibFiles,
@@ -3086,7 +3118,9 @@ func emitNativeInProcess(
       req.defines,
       req.path,
       req.contractsEnabled,
-      shape
+      shape,
+      activeFeatures,
+      declaredFeatures
     )
   } catch Bug as b {
     diags.add(nativeBridgePanicDiagnostic(b.message))
