@@ -543,7 +543,13 @@ error?
 **Q-JS-006 — WIT async stability.** *Resolved for v1 in D-progress-1043: the
 synchronous subset ships (an `async func` export is a blocking WIT function,
 with a `W0041` note); `future<T>`/`stream<T>` wait for the Component Model
-async ABI to stabilise.*
+async ABI to stabilise.* The 2026-10 spike
+(`docs/progress/2026-10-17-component-async-spike.md`) found the async ABI
+shipped in WASI 0.3.0 and frozen until 1.0 (stackful lift and `error-context`
+still gated), ran hand-written async components on wasmtime 49.0.3 and jco
+1.39.0 (node >= 24), and recommends a callback-lift slice for async exports
+next; it also proposes that `async func` map to a WIT `async func` rather than
+`-> future<T>` (§11), pending a decision entry.
 
 **Q-JS-007 — Linear-memory limits.** Default stack size and maximum heap for
 the `module` shape; whether `lyric_alloc` failure traps or returns an error.
