@@ -118,7 +118,8 @@ pub union NInsn {
   case NIntToPtr(dest: String, fromTy: NType, value: NValue, toTy: NType)
 
   // Calls.  `fn` is usually NGlobal for direct calls, NLocal for
-  // indirect calls through a loaded function pointer.
+  // indirect calls through a loaded function pointer.  An empty `dest`
+  // discards the result (the call is emitted without a name).
   case NCall(dest: String, retTy: NType, fn: NValue, args: List[NArg])
   case NCallVoid(fn: NValue, args: List[NArg])
 
@@ -380,7 +381,9 @@ pub func emitInsn(i: in NInsn): String {
     case NPtrToInt(dest, fromTy, value, toTy) -> renderConv("ptrtoint", dest, fromTy, value, toTy)
     case NIntToPtr(dest, fromTy, value, toTy) -> renderConv("inttoptr", dest, fromTy, value, toTy)
     case NCall(dest, retTy, fn, args) -> {
-      "  %" + quoteIrIdent(dest) + " = call " + nTypeToIrString(retTy) + " " + nValueOperandString(fn) + "(" +
+      (if dest.length == 0 { "  call " } else { "  %" + quoteIrIdent(dest) + " = call " }) + nTypeToIrString(retTy) + " " +
+        nValueOperandString(fn) +
+        "(" +
         renderArgs(args) +
         ")"
     }

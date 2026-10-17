@@ -83,7 +83,7 @@ WASMTIME    ?= wasmtime
 WASM_BUILD  := build-wasm32-wasi
 WASM_CC     := $(WASI_SDK)/bin/clang
 WASM_AR     := $(WASI_SDK)/bin/llvm-ar
-WASM_CFLAGS := --target=wasm32-wasi --sysroot=$(WASI_SDK)/share/wasi-sysroot -O2 -std=c11 -Wall -Wextra -Werror
+WASM_CFLAGS := --target=wasm32-wasip1 --sysroot=$(WASI_SDK)/share/wasi-sysroot -O2 -std=c11 -Wall -Wextra -Werror
 WASM_SRCS   := src/lyric_rt.c src/lyric_string.c src/lyric_weak.c \
                src/lyric_posix.c src/lyric_collections.c src/lyric_async.c \
                src/lyric_fs.c src/lyric_process_unsupported.c src/lyric_net_unsupported.c \
