@@ -150,9 +150,11 @@ this table-level resolution.
 
 **A single file (D182).** A source file compiled, checked or proved on its
 own — `lyric build`/`run`/`test`/`prove <file>` and the language server, on
-every target — takes the features of `--manifest` when given, otherwise of
-the nearest `lyric.toml` with a `[package]` section above it, whether or not
-that manifest's entries list the file (`Lyric.Discovery.singleFileSourceBuild`
+every target — takes the features of `--manifest` when given (a
+`--manifest` that cannot be read is a hard error), otherwise of the nearest
+`lyric.toml` with a `[package]` section above it (the path normalized, so
+`..` segments are resolved), whether or not that manifest's entries list
+the file (`Lyric.Discovery.singleFileSourceBuild`
 chooses them for every command), resolved by the rules above. With no
 manifest it has none, and `--features` is error `F0049`: there is no
 `[features]` table to select from.

@@ -325,7 +325,7 @@ func cmdProve(argv: in slice[String]): Int {
   val sourcePath = positional[0]
   // D182: `--features` on a file no manifest applies to selects nothing, as
   // for `lyric build <file>`.
-  match featuresWithoutManifestError(sourcePath, manifestArg, cliFeatures) {
+  match singleFileManifestError("prove", sourcePath, manifestArg, cliFeatures) {
     case Some(msg) -> {
       printErr(msg)
       return 1
@@ -886,11 +886,12 @@ func noManifestProveBuildConfig(build: in ProveBuild): Verifier.ProveBuildConfig
 
 // The source file at `sourcePath` checked as each build that compiles it
 // checks it: within each project whose manifest lists it, its own package
-// and the packages it imports, or alone, as `lyric build <file>` does, when
-// no manifest lists it — with the features `lyric build <file>` erases it
-// with (`Disc.singleFileSourceBuild`, D182).  With `--manifest`, only that
-// manifest's entries count, as `lyric build --manifest <m> <file>` builds
-// the file under `m` alone.
+// and the packages it imports; and alone, as `lyric build <file>` checks it,
+// with the features of the manifest that command builds it under
+// (`Disc.singleFileSourceBuild`), whenever that manifest is not one that
+// lists it — no manifest lists it, or the nearest manifest is a nested one
+// (D182).  With `--manifest`, only that manifest's entries count, as
+// `lyric build --manifest <m> <file>` builds the file under `m` alone.
 func typeCheckForProveFile(
   sourcePath: in String,
   source: in String,
@@ -915,25 +916,7 @@ func typeCheckForProveFile(
     }
   }
   if entries.count == 0 {
-    val alone = Disc.singleFileSourceBuild(
-      sourcePath,
-      explicitManifest,
-      targetFeatureName(build.target),
-      build.cliFeatures,
-      build.noDefaultFeatures,
-      build.allFeatures
-    )
-    val req = Emitter.EmitRequest(
-      source = source,
-      assemblyName = stemOf(Path.basename(sourcePath), 2),
-      outputPath = "",
-      target = build.target,
-      packageVersion = "",
-      defines = build.defines,
-      path = sourcePath,
-      contractsEnabled = true
-    )
-    return proveTypeCheckOf(Emitter.typeCheckSourceForFeatures(req, alone.activeFeatures, alone.declaredFeatures))
+    return typeCheckAloneForProve(sourcePath, source, build, explicitManifest)
   }
   // Each manifest once, with its entries that list the file: the packages
   // checked there are theirs and what they import.  A `[project.tests]`
@@ -964,7 +947,50 @@ func typeCheckForProveFile(
       return ProveTypeCheck(diagnostics = all, ok = false)
     }
   }
+  val nearestBuildListed = match explicitManifest {
+    case Some(_) -> true
+    case None -> Disc.nearestManifestListsSource(sourcePath)
+  }
+  if not nearestBuildListed {
+    val alone = typeCheckAloneForProve(sourcePath, source, build, explicitManifest)
+    for d in alone.diagnostics {
+      all.add(d)
+    }
+    if not alone.ok {
+      return ProveTypeCheck(diagnostics = all, ok = false)
+    }
+  }
   proveTypeCheckOf(all)
+}
+
+// The source file at `sourcePath` checked alone, as `lyric build <file>`
+// checks it: for the build's target and defines, with the features of the
+// manifest it is built under (`Disc.singleFileSourceBuild`, D182).
+func typeCheckAloneForProve(
+  sourcePath: in String,
+  source: in String,
+  build: in ProveBuild,
+  explicitManifest: in Option[String],
+): ProveTypeCheck {
+  val alone = Disc.singleFileSourceBuild(
+    sourcePath,
+    explicitManifest,
+    targetFeatureName(build.target),
+    build.cliFeatures,
+    build.noDefaultFeatures,
+    build.allFeatures
+  )
+  val req = Emitter.EmitRequest(
+    source = source,
+    assemblyName = stemOf(Path.basename(sourcePath), 2),
+    outputPath = "",
+    target = build.target,
+    packageVersion = "",
+    defines = build.defines,
+    path = sourcePath,
+    contractsEnabled = true
+  )
+  proveTypeCheckOf(Emitter.typeCheckSourceForFeatures(req, alone.activeFeatures, alone.declaredFeatures))
 }
 
 // A project entry and the packages its files import.

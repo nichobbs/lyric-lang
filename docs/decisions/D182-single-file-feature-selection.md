@@ -41,11 +41,16 @@ Two commands chose a single source file's feature set in different ways:
    `[package]` section, walking up from the file's directory, not the
    working directory, as D123 discovers it), resolved for the target by
    `Lyric.Manifest.resolveFeatureSelection`; with no manifest, none.
-   `emitSingleFileOrProject` (`lyric build`, `run`, `test`), the native
-   single-file build and test, `typeCheckForProveFile`'s check of a file no
-   manifest lists, and `sourceBuildsForFile`'s fallback (`lyric prove` and the
-   language server) all call it, so they compile, check and prove the same
-   items.
+   Every single-file manifest lookup is the one walk
+   `Disc.singleFileManifestDetailed`, which first makes the path absolute and
+   resolves its `.` and `..` segments (`normalizePath`): `lyric run
+   ../loose/a.l` from inside another project finds `loose/`'s manifest (or
+   none), never the working directory's.
+   `emitSingleFileOrProject` (`lyric build`, `run`, `test`, and `lyric
+   check`, which compiled a file with no manifest at all before), the native
+   single-file build and test, `typeCheckForProveFile`'s check of the file
+   alone, and `sourceBuildsForFile` (`lyric prove` and the language server)
+   all call it, so they compile, check and prove the same items.
 2. **A file under a manifest that does not list it takes that manifest's
    features.** This keeps `lyric build`'s D123 rule rather than `lyric
    prove`'s "no features" fallback. A manifest's `[features]` table is
@@ -56,21 +61,42 @@ Two commands chose a single source file's feature set in different ways:
    the file itself does not see. Dropping the features instead would have
    silently changed `lyric build` and `lyric run` for every script inside an
    ecosystem library whose manifest defaults to a platform feature
-   (`default = ["dotnet"]`), compiling them without their kernels. A file
-   that some manifest lists is still proved once per listing manifest's build
-   (#8325); that manifest is the nearest one above the file, so `lyric build`
-   uses the same features.
-3. **`--manifest` with a source file is honoured by every command.** `lyric
-   prove --manifest <m> <file>` checks and proves the file under `m` alone
-   (within `m`'s project when one of its entries lists the file, otherwise on
-   its own with `m`'s features), as `lyric build --manifest <m> <file>`
-   builds it; it was previously ignored in single-file mode. `lyric run
-   --manifest <m> <file>` reaches the build too (it was ignored as well).
-4. **`--features` with no manifest is error `F0049`.** Features are declared
+   (`default = ["dotnet"]`), compiling them without their kernels.
+3. **`lyric prove` covers the build `lyric build <file>` makes.** A file that
+   some manifest lists is still proved once per listing manifest's build
+   (#8325). When the manifest `lyric build <file>` uses (the nearest one) is
+   not one of those, that build is proved and type-checked too
+   (`Disc.nearestManifestListsSource`; `sourceBuildsForFile` and
+   `typeCheckForProveFile` add it). This matters beyond unlisted files: a
+   project's directory entry takes every `.l` file under it, so a file inside
+   `src/tool/`, which has its own `[package]` manifest, belongs to the
+   project's `src` package (built with the project's features) and is built
+   alone by `lyric build src/tool/x.l` under the nested manifest's features.
+   Proving only the project's build gave a false "proved" for a
+   postcondition the nested build violates at runtime; the proof now covers
+   both builds, labelled, and refutes it. Changing which files a directory
+   entry takes was the alternative; it would change the project build, which
+   `Lyric.Discovery.projectEntryFiles` defines for both `lyric build` and
+   `lyric prove` (#8108), so the proof instead covers every build that
+   compiles the file.
+4. **`--manifest` with a source file is honoured by every command, and a
+   bad one is a hard error.** `lyric prove --manifest <m> <file>` checks and
+   proves the file under `m` alone (within `m`'s project when one of its
+   entries lists the file, otherwise on its own with `m`'s features), as
+   `lyric build --manifest <m> <file>` builds it; it was previously ignored
+   in single-file mode. `lyric run --manifest <m> <file>` and `lyric check
+   --manifest <m> <file>` reach the build too (both ignored it before). An
+   explicit `--manifest` that cannot be read or does not parse fails every
+   single-file command before anything is compiled or proved
+   (`prove: cannot read manifest <path>: ...`, or the parse error; the
+   shared `Lyric.Cli.singleFileManifestError` with
+   `Disc.manifestLoadError`), never a silent build with no manifest.
+5. **`--features` with no manifest is error `F0049`.** Features are declared
    in a manifest's `[features]` table, so with neither `--manifest` nor a
    manifest above the file there is nothing for `--features` to select.
-   `lyric build`, `run` (single file, `--watch` included), `test` and `prove`
-   all fail before compiling anything:
+   `lyric build` (`--watch` and `--aot` included, rejected once, up front),
+   `run` (single file, `--watch` included), `test` and `prove` all fail
+   before compiling anything:
    `error[F0049]: --features a selects features a manifest's [features] table
    declares, but dup.l has no manifest (no lyric.toml with a [package] section
    in its directory or any parent); declare the features in one, or pass
@@ -82,13 +108,15 @@ Two commands chose a single source file's feature set in different ways:
    manifest (there are no defaults and no declared features) and are
    accepted: they cannot change what is compiled, so there is nothing to
    report. An explicit `--manifest` that cannot be read or parsed is the
-   existing hard error, not `F0049`.
-5. **`lyric run` takes the feature flags.** `--features`,
+   hard error of item 4, not `F0049`. A `--features` name a manifest does
+   not declare is not reported; that predates this decision and is tracked
+   separately.
+6. **`lyric run` takes the feature flags.** `--features`,
    `--no-default-features` and `--all-features` are options of `lyric run`,
    for a single file and a project, as for `lyric build`; arguments after
    `--` are the program's, so `lyric run app.l -- --features a` still passes
    the flag to the program.
-6. **Native single-file builds honour the file's features.** `lyric build
+7. **Native single-file builds honour the file's features.** `lyric build
    --target native <file>` and `lyric test --target native <file>` erase
    `@cfg` items with `singleFileSourceBuild`'s features for `native`
    (`Lyric.LlvmBridge.compileToNativeWithFeatures`), as the dotnet and JVM
@@ -96,7 +124,8 @@ Two commands chose a single source file's feature set in different ways:
 
 ## Unchanged
 
-- A file no manifest lists is still type-checked by `lyric prove` on its own
+- A file whose nearest manifest does not list it is type-checked by `lyric
+  prove` on its own
   (`Emitter.typeCheckSourceForFeatures`), now with the features above; it is
   not compiled against the manifest's own packages or dependencies the way
   `lyric build` compiles it, since a proof never builds or restores a
@@ -112,7 +141,14 @@ Two commands chose a single source file's feature set in different ways:
 
 `scripts/ci/single-file-features-e2e.sh` (run by
 `compiler-self-tests-batch.sh`): `F0049` from `build` (dotnet and jvm, no
-output written), `run`, `run --watch`, `prove` and `test`; the same file
+output written, `--aot`, and `--watch`, which exits instead of polling),
+`run`, `run --watch`, `prove` and `test`, and through a `../` path from
+inside another project (which also takes no features for `run` and
+`prove`); a missing and a broken `--manifest` are hard errors for `prove`
+and `build`, with nothing proved; the nested-manifest file is refuted
+(`V0008`) on dotnet and the JVM, never proved, and running it violates the
+postcondition; `check`, `run --manifest` and `test --features` agree with
+`build` under a manifest; the same file
 without `--features`, with `--no-default-features` and with
 `--all-features` still builds and runs, and `-- --features a` reaches the
 program; an unlisted `@cfg` twin file under a manifest is proved with its
@@ -123,4 +159,6 @@ feature is accepted by both `lyric build` and `lyric prove` and rejected by
 both, with the same diagnostic, under `--no-default-features`.
 `lsp_self_test.l` covers the language server's builds for an unlisted
 document and a manifest-less one; `native-target-smoke-test.sh` covers a
-native single-file build under its manifest's features.
+native single-file build under its manifest's features, and
+`single-file-features-aot-e2e.sh` (e2e-cli-tests) a `--aot` build under
+them.

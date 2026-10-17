@@ -449,6 +449,28 @@ test "an unlisted document is proved with its manifest's features, as lyric buil
   assertTrue(builds[0].declaredFeatures.contains("wide"), "the manifest's features are declared")
   val msgs = openDocMessages(lspInit(), "file://" + unlisted, featureTwins())
   assertFalse(Str.contains(msgs, "V0008"), "the wide twin is proved: no refutation")
+  // A file in the listed package's directory under a nested `[package]`
+  // manifest with no default features: the project builds it with `wide`,
+  // `lyric build <file>` without, and both builds are proved.  The listed
+  // file is removed first, so the package declares the twins once.
+  match File.deleteFile(listed) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot delete " + listed + ": " + IOError.message(e))
+  }
+  val toolDir = Path.join(Path.dirname(listed), "tool")
+  mkdirOrPanic(toolDir)
+  writeOrPanic(
+    Path.join(toolDir, "lyric.toml"),
+    "[package]\nname = \"Tool\"\nversion = \"0.1.0\"\n\n[features]\ndefault = []\nwide = []\n"
+  )
+  val nested = Path.join(toolDir, "limits.l")
+  writeOrPanic(nested, featureTwins())
+  val nestedBuilds = proveBuildConfigsForSource(nested, "dotnet", noCli, false, false)
+  assertEqualInt(nestedBuilds.count, 2, "the listing project's build and the nested manifest's")
+  assertTrue(nestedBuilds[0].activeFeatures.contains("wide"), "the project's build has its default feature")
+  assertEqualInt(nestedBuilds[1].activeFeatures.count, 0, "the nested manifest's build has none")
+  val nestedMsgs = openDocMessages(lspInit(), "file://" + nested, featureTwins())
+  assertTrue(Str.contains(nestedMsgs, "V0008"), "the nested build refutes atLeastHundred: no false proof")
   removeProject(listed)
   val loneDir = Path.join(tempBase(), "lyric-lsp-prove-lone-" + uuidToString(newUuid()))
   mkdirOrPanic(loneDir)

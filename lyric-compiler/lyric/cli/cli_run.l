@@ -441,7 +441,7 @@ func cmdRun(argv: in slice[String]): Int {
         targetArg = Some(value = argv[i + 1])
         i += 2
       } else {
-        printErr("run: --target requires dotnet or jvm")
+        printErr("run: --target requires an argument (dotnet, jvm or native)")
         return 1
       }
     } else if arg == "--features" {
@@ -533,7 +533,7 @@ func cmdRun(argv: in slice[String]): Int {
 
   // D182: `--features` on a file no manifest applies to selects nothing;
   // reject it once, up front, rather than on every `--watch` rebuild.
-  match featuresWithoutManifestError(sourcePath, manifestArg, cliFeatures) {
+  match singleFileManifestError("run", sourcePath, manifestArg, cliFeatures) {
     case Some(msg) -> {
       printErr(msg)
       return 1

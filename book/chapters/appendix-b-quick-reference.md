@@ -1073,8 +1073,8 @@ lyric build --all-features             # transitive closure of every declared fe
                                        # to match --target (docs/24 s2.3)
                                        # a single file takes the features of the nearest
                                        # lyric.toml above it, listed there or not, for
-                                       # build, run, test and prove alike; --features on a
-                                       # file with no manifest is F0049 (D182)
+                                       # build, run, test, check and prove alike; --features
+                                       # on a file with no manifest is F0049 (D182)
 
 # Runtime contract control (manifest [contracts])
 #   [contracts]
@@ -1255,6 +1255,8 @@ lyric openapi <spec.json> --package <Pkg.Name>   # override the generated packag
 
 # Type checking (without output artifact)
 lyric check <file.l>                   # type-check without producing a usable bin/ artifact
+                                       #   (as `lyric build <file.l>` builds it: its manifest's
+                                       #    dependencies and features, or --manifest's; D182)
 lyric check <file1.l> <file2.l> ...    # type-check multiple files
 lyric check --target jvm <file.l>      # type-check against the JVM target
 lyric check                            # project mode: type-check all [project.packages]

@@ -8273,6 +8273,11 @@ jobs:
             echo "expected a cross-compile diagnostic"; cat "$work/xcompile.out"; exit 1; }
           echo "Release Native AOT e2e passed"
 
+      # D182 (#8339): `--aot <file>` stages its build with the file's features.
+      - name: Single-file features under --aot e2e (D182)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/single-file-features-aot-e2e.sh
+
       # GraalVM for the JVM `--release` e2e below.  Installed by direct download
       # rather than via `graalvm/setup-graalvm` to keep the workflow's
       # pin-every-action-by-SHA policy intact without adding a third-party

@@ -636,33 +636,36 @@ pub func parseShapeName(s: in String): Option[BuildShape] {
   }
 }
 
-/// `F0049` — `--features` on a single source file no manifest applies to
-/// (D182).  Features are declared in a manifest's `[features]` table, so
-/// with neither `--manifest` nor a lyric.toml above the file
-/// (`Disc.singleFileManifest`) there is nothing for `--features` to select:
-/// the command fails instead of compiling the file without them.
-/// `--no-default-features` and `--all-features` select nothing either way
-/// and are accepted.
-pub func featuresWithoutManifestError(
+/// Why the manifest a single source file is compiled under cannot be used
+/// (D182), prefixed with `command`: an explicit `--manifest` that cannot be
+/// read or parsed is a hard error, never a build with no manifest; and
+/// `F0049` — `--features` on a file no manifest applies to.  Features are
+/// declared in a manifest's `[features]` table, so with neither `--manifest`
+/// nor a lyric.toml above the file (`Disc.singleFileManifestDetailed`)
+/// there is nothing for `--features` to select: the command fails instead of
+/// compiling the file without them.  `--no-default-features` and
+/// `--all-features` select nothing either way and are accepted.
+pub func singleFileManifestError(
+  command: in String,
   sourcePath: in String,
   explicitManifest: in Option[String],
   cliFeatures: in List[String],
 ): Option[String] {
+  match explicitManifest {
+    case Some(m) -> {
+      match Disc.manifestLoadError(m) {
+        case Some(msg) -> return Some(value = command + ": " + msg)
+        case None -> return None
+      }
+    }
+    case None -> ()
+  }
   if cliFeatures.count == 0 {
     return None
   }
-  match explicitManifest {
-    case Some(_) -> return None
-    case None -> ()
-  }
-  val absSource = if Path.isAbsolute(sourcePath) {
-    sourcePath
-  } else {
-    Path.join(Environment.currentDirectory(), sourcePath)
-  }
   val head = "error[F0049]: --features " + Str.joinList(",", cliFeatures) +
     " selects features a manifest's [features] table declares, but "
-  match Disc.findNearestManifestDetailed(Path.dirname(absSource)) {
+  match Disc.singleFileManifestDetailed(sourcePath) {
     case FoundManifest(_) -> None
     case FoundBrokenManifest(path, error) -> Some(
       value = head + "the manifest of " + sourcePath + " (" + path +

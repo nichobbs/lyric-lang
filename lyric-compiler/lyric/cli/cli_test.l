@@ -610,7 +610,7 @@ func cmdTest(argv: in slice[String]): Int {
   // D182: `--features` on a test file no manifest applies to selects nothing
   // (an explicit `--manifest` went to `cmdTestManifest` above).
   val noManifestArg: Option[String] = None
-  match featuresWithoutManifestError(sourcePath, noManifestArg, cliFeatures) {
+  match singleFileManifestError("test", sourcePath, noManifestArg, cliFeatures) {
     case Some(msg) -> {
       printErr(msg)
       return 1

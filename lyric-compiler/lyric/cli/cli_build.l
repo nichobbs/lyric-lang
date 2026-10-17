@@ -537,7 +537,10 @@ record NonNativeEmitOutcome {
 // filename like "foo.l" has `Path.dirname` == "." and walking up from "."
 // alone can never leave the cwd, so resolving against
 // `Environment.currentDirectory()` first is required for the walk to reach
-// any parent directory at all (D123).
+// any parent directory at all (D123), and its `.` and `..` segments are
+// resolved, so `../x/foo.l` walks up from `x/`, not from the cwd
+// (`Disc.singleFileManifestDetailed`, the one walk every single-file
+// command shares, D182).
 func discoverManifestForSourceFile(sourcePath: in String): Option[String] {
   Disc.singleFileManifest(sourcePath)
 }
@@ -932,11 +935,8 @@ func emitSingleFileOrProject(
 // parity).  No manifest means no features / own-packages / NuGet / Maven
 // contribution — those axes stay empty.
 func emitSingleFileWithWorkspaceMembers(req: in Emitter.EmitRequest, sourcePath: in String): NonNativeEmitOutcome {
-  val absSource = if Path.isAbsolute(sourcePath) {
-    sourcePath
-  } else {
-    Path.join(Environment.currentDirectory(), sourcePath)
-  }
+  // The same normalized walk as the file's manifest lookup (D182).
+  val absSource = Disc.normalizePath(sourcePath)
   val noSeen: List[String] = newList()
   val wsDeps = resolveWorkspaceImportDeps(req.source, Path.dirname(absSource), noSeen, req.target)
   if wsDeps.hadUnbuiltMember {
@@ -1164,7 +1164,7 @@ pub func buildOneNativeShaped(
   wasmShape: in String,
 ): Int {
   val buildStart = Time.now()
-  match featuresWithoutManifestError(sourcePath, manifestPath, cliFeatures) {
+  match singleFileManifestError("build", sourcePath, manifestPath, cliFeatures) {
     case Some(msg) -> {
       printErr(msg)
       return 1
@@ -1908,6 +1908,17 @@ func cmdBuild(argv: in slice[String]): Int {
     return 1
   }
 
+  // D182: an unusable `--manifest`, or `--features` on a file no manifest
+  // applies to, is rejected once, up front — `--watch` would otherwise
+  // report it on every rebuild and keep polling.
+  match singleFileManifestError("build", sourcePath, manifestArg, cliFeatures) {
+    case Some(msg) -> {
+      printErr(msg)
+      return 1
+    }
+    case None -> ()
+  }
+
   // docs/63: resolve both axes. A single-file build honours `[build] shape` /
   // `[build] profile` from an explicitly-passed `--manifest` only; there is no
   // manifest discovery on this path, matching `readBuildKindFromManifest`.
@@ -2169,7 +2180,7 @@ func buildReleaseSingle(
   noDefaultFeatures: in Bool,
   allFeatures: in Bool,
 ): Int {
-  match featuresWithoutManifestError(sourcePath, manifestArg, cliFeatures) {
+  match singleFileManifestError("build", sourcePath, manifestArg, cliFeatures) {
     case Some(msg) -> {
       printErr(msg)
       return 1
