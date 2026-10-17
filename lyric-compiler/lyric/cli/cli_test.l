@@ -85,16 +85,21 @@ func emitTestPlainOrProject(
 
 // Emit a single-file `@test_module` as a self-contained native (LLVM)
 // binary (N7.2), mirroring `buildOneNative`'s use of `Emitter.emitNative`.
-// No manifest is available in this path (the manifest-based test suite is
-// rejected earlier for `--target native`), so there is no `[native]`
-// config to merge — triple/opt/extra_libs use the emitter's own defaults
-// (host triple, `-O2`, none), exactly like `lyric build <file.l> --target
-// native` with no CLI knobs and no manifest.
+// No `[native]` config is merged (the manifest-based test suite is rejected
+// earlier for `--target native`): triple/opt/extra_libs use the emitter's own
+// defaults (host triple, `-O2`, none).  `activeFeatures`/`declaredFeatures`
+// are the file's features (`Disc.singleFileSourceBuild`, D182), as
+// `lyric build <file.l> --target native` erases its `@cfg` items.
 func emitTestNative(
-  rewritten: in String, stem: in String, outPath: in String, sourcePath: in String
+  rewritten: in String,
+  stem: in String,
+  outPath: in String,
+  sourcePath: in String,
+  activeFeatures: in List[String],
+  declaredFeatures: in List[String],
 ): Emitter.EmitResult {
   val noLibs: List[String] = newList()
-  Emitter.emitNative(
+  Emitter.emitNativeWithFeatures(
     Emitter.EmitRequest(
       source = rewritten,
       assemblyName = stem,
@@ -107,7 +112,10 @@ func emitTestNative(
     ),
     "",
     "",
-    noLibs
+    noLibs,
+    "",
+    activeFeatures,
+    declaredFeatures
   )
 }
 
@@ -599,6 +607,16 @@ func cmdTest(argv: in slice[String]): Int {
   }
 
   val sourcePath = positional[0]
+  // D182: `--features` on a test file no manifest applies to selects nothing
+  // (an explicit `--manifest` went to `cmdTestManifest` above).
+  val noManifestArg: Option[String] = None
+  match singleFileManifestError("test", sourcePath, noManifestArg, cliFeatures) {
+    case Some(msg) -> {
+      printErr(msg)
+      return 1
+    }
+    case None -> ()
+  }
   val source = match File.readText(sourcePath) {
     case Ok(text) -> text
     case Err(e) -> {
@@ -637,13 +655,11 @@ func cmdTest(argv: in slice[String]): Int {
 
   // #6868: resolve the same active/declared feature set the eventual
   // compile will use, so the file-level `@cfg` gating check inside
-  // `synthesizeFor` agrees with what `Cfg.applyCfgErasure` sees downstream.
-  // Native has no manifest-driven features at all — `emitTestNative` never
-  // resolves a manifest, and `Lyric.LlvmBridge` always erases against
-  // `Cfg.withTargetFeature(<empty>, "native")` — so it always gates against
-  // an empty set. `--manifest` was already routed to `cmdTestManifest`
-  // above, so any manifest here is auto-discovered (`None` override),
-  // matching `emitSingleFileOrProject`'s own resolution for this file.
+  // `synthesizeFor` agrees with what `Cfg.applyCfgErasure` sees downstream:
+  // the file's own build (`Disc.singleFileSourceBuild`, D182), which
+  // `emitSingleFileOrProject` and `emitTestNative` compile it with.
+  // `--manifest` was already routed to `cmdTestManifest` above, so any
+  // manifest here is auto-discovered (`None` override).
   val cfgEmptyActive: List[String] = newList()
   val cfgEmptyDeclared: List[String] = newList()
   val cfgNoManifestOverride: Option[String] = None
@@ -654,22 +670,16 @@ func cmdTest(argv: in slice[String]): Int {
   } else {
     Emitter.Dotnet
   }
-  val (cfgActive, cfgDeclared) = if targetNative {
-    (cfgEmptyActive, cfgEmptyDeclared)
-  } else {
-    match loadManifestForSingleFileBuild(sourcePath, cfgNoManifestOverride) {
-      case Ok(Some(lm)) -> resolveManifestFeatures(
-        lm.mfText,
-        lm.mfPath,
-        cliFeatures,
-        noDefaultFeatures,
-        allFeatures,
-        cfgTestTarget
-      )
-      case Ok(None) -> (cfgEmptyActive, cfgEmptyDeclared)
-      case Err(_) -> (cfgEmptyActive, cfgEmptyDeclared)
-    }
-  }
+  val cfgBuild = Disc.singleFileSourceBuild(
+    sourcePath,
+    cfgNoManifestOverride,
+    targetFeatureName(cfgTestTarget),
+    cliFeatures,
+    noDefaultFeatures,
+    allFeatures
+  )
+  val cfgActive = cfgBuild.activeFeatures
+  val cfgDeclared = cfgBuild.declaredFeatures
   // #7189: every real backend bridge calls `pipeParseAndErase(source,
   // targetName, activeFeatures, ...)`, which always injects the
   // `"target." + targetName` pseudo-feature via `Cfg.withTargetFeature`
@@ -765,7 +775,7 @@ func cmdTest(argv: in slice[String]): Int {
       var manifestNugetPaths: List[String] = newList()
       var manifestNativePaths: List[String] = newList()
       val result = if targetNative {
-        emitTestNative(rewritten, stem, outPath, sourcePath)
+        emitTestNative(rewritten, stem, outPath, sourcePath, cfgActive, cfgDeclared)
       } else if compilerDlls.count > 0 {
         emitTestLinked(rewritten, stem, outPath, compilerDlls, sourcePath)
       } else {

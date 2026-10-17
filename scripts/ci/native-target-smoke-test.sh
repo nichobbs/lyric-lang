@@ -56,6 +56,47 @@ if "$lyric_bin" test "$work/fail_test.l" --target native; then
   exit 1
 fi
 echo "Native lyric test --target native smoke test passed"
+# D182 (#8339): a native single-file build erases `@cfg` items with the
+# features of the file's manifest (listed there or not), as dotnet and the
+# JVM do; `--features` with no manifest is F0049.
+mkdir -p "$work/featproj/tools"
+cat > "$work/featproj/lyric.toml" <<'TOML'
+[package]
+name = "NativeFeatures"
+version = "0.1.0"
+
+[features]
+default = ["wide"]
+wide = []
+TOML
+cat > "$work/featproj/tools/show.l" <<'LYR'
+package Show
+
+@cfg(feature = "wide")
+func limit(): Int {
+  1000
+}
+
+@cfg(not(feature = "wide"))
+func limit(): Int {
+  10
+}
+
+func main(): Unit {
+  println(toString(limit()))
+}
+LYR
+got="$("$lyric_bin" run --target native "$work/featproj/tools/show.l" | tail -n1)"
+[ "$got" = "1000" ] || { echo "::error::native single file: expected the manifest's default feature, got '$got'"; exit 1; }
+got="$("$lyric_bin" run --target native "$work/featproj/tools/show.l" --no-default-features | tail -n1)"
+[ "$got" = "10" ] || { echo "::error::native single file --no-default-features: expected the narrow twin, got '$got'"; exit 1; }
+cp "$work/featproj/tools/show.l" "$work/show_lone.l"
+if "$lyric_bin" build --target native "$work/show_lone.l" --features wide 2> "$work/f0049.err"; then
+  echo "::error::native --features with no manifest: expected F0049"
+  exit 1
+fi
+grep -q "^error\[F0049\]" "$work/f0049.err" || { echo "::error::expected F0049"; cat "$work/f0049.err"; exit 1; }
+echo "Native single-file features (D182) passed"
 "$lyric_bin" test lyric-compiler/lyric/indexof_native_self_test.l --target native
 echo "Native indexof_native_self_test.l (--target native) passed"
 "$lyric_bin" test lyric-compiler/lyric/split_self_test.l --target native

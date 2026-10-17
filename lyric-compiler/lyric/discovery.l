@@ -518,12 +518,75 @@ pub func manifestSourceBuild(
   Some(value = SourceBuild(targetName = targetName, activeFeatures = active, declaredFeatures = declared))
 }
 
+/// The walk for the manifest of a source file compiled on its own (D123):
+/// up from the file's own directory, not the working directory, the path
+/// first made absolute with its `.` and `..` segments resolved
+/// (`normalizePath`), so `../loose/a.l` finds what `/abs/loose/a.l` finds.
+/// Every single-file manifest lookup goes through here (D182).
+pub func singleFileManifestDetailed(sourcePath: in String): FindManifestResult {
+  findNearestManifestDetailed(Path.dirname(normalizePath(sourcePath)))
+}
+
+/// The manifest a source file compiled on its own is built under: the
+/// nearest lyric.toml with a `[package]` section above it
+/// (`singleFileManifestDetailed`); None when there is none, or when the
+/// nearest one is broken.
+pub func singleFileManifest(sourcePath: in String): Option[String] {
+  match singleFileManifestDetailed(sourcePath) {
+    case FoundManifest(path) -> Some(value = path)
+    case FoundBrokenManifest(_, _) -> None
+    case NoManifestFound -> None
+  }
+}
+
+/// Why the manifest at `mfPath` (an explicit `--manifest`) cannot drive a
+/// build: it cannot be read, or does not parse; None when it can.  A
+/// manifest the user named is never silently treated as no manifest (D182).
+pub func manifestLoadError(mfPath: in String): Option[String] {
+  match File.readText(mfPath) {
+    case Err(e) -> Some(value = "cannot read manifest " + mfPath + ": " + IOError.message(e))
+    case Ok(text) -> match Mf.parseManifest(text, mfPath) {
+      case Err(me) -> Some(value = Mf.ManifestError.message(me))
+      case Ok(_) -> None
+    }
+  }
+}
+
+/// The build `lyric build <file>` makes of the source file at `sourcePath`,
+/// for the target named `targetName` and the command line's feature
+/// selection (D182): the features of `explicitManifest` (`--manifest`) when
+/// one is given, else those of the file's own manifest (`singleFileManifest`)
+/// whether or not its entries list the file, else none.  `lyric build`,
+/// `run`, `test` and `prove` and the language server all choose a single
+/// file's features here, so they compile, check and prove the same items.
+pub func singleFileSourceBuild(
+  sourcePath: in String,
+  explicitManifest: in Option[String],
+  targetName: in String,
+  cliFeatures: in List[String],
+  noDefaultFeatures: in Bool,
+  allFeatures: in Bool,
+): SourceBuild {
+  val mfPath = match explicitManifest { case Some(p) -> Some(value = p); case None -> singleFileManifest(sourcePath) }
+  val noActive: List[String] = newList()
+  val noDeclared: List[String] = newList()
+  val none = SourceBuild(targetName = targetName, activeFeatures = noActive, declaredFeatures = noDeclared)
+  match mfPath {
+    case None -> none
+    case Some(p) -> match manifestSourceBuild(p, targetName, cliFeatures, noDefaultFeatures, allFeatures) {
+      case Some(b) -> b
+      case None -> none
+    }
+  }
+}
+
 /// The builds that compile the source file at `sourcePath` for the target
 /// named `targetName` and the command line's feature selection: one per
 /// manifest whose `[project.packages]`/`[project.tests]` entries list the
 /// file (`entriesContainingSource`), each with that manifest's features,
-/// or, when none lists it (or that cannot be known), the file built alone,
-/// with no features.  `lyric prove` and the language server prove a file as
+/// and the build `lyric build <file>` makes of the file on its own
+/// (`singleFileSourceBuild`) whenever its nearest manifest is not one of
+/// those (D182).  `lyric prove` and the language server prove a file as
 /// each of these builds compiles it (#8325, #8342).
 pub func sourceBuildsForFile(
   sourcePath: in String,
@@ -532,7 +595,31 @@ pub func sourceBuildsForFile(
   noDefaultFeatures: in Bool,
   allFeatures: in Bool,
 ): List[SourceBuild] {
+  val noManifest: Option[String] = None
+  sourceBuildsForFileUnder(sourcePath, noManifest, targetName, cliFeatures, noDefaultFeatures, allFeatures)
+}
+
+/// `sourceBuildsForFile` for a command given `--manifest`: with
+/// `explicitManifest`, the one build of the file under that manifest, as
+/// `lyric build --manifest <m> <file>` compiles it (D182).
+pub func sourceBuildsForFileUnder(
+  sourcePath: in String,
+  explicitManifest: in Option[String],
+  targetName: in String,
+  cliFeatures: in List[String],
+  noDefaultFeatures: in Bool,
+  allFeatures: in Bool,
+): List[SourceBuild] {
   val builds: List[SourceBuild] = newList()
+  match explicitManifest {
+    case Some(_) -> {
+      builds.add(
+        singleFileSourceBuild(sourcePath, explicitManifest, targetName, cliFeatures, noDefaultFeatures, allFeatures)
+      )
+      return builds
+    }
+    case None -> ()
+  }
   match entriesContainingSource(sourcePath) {
     case Some(entries) -> {
       val manifests: List[String] = newList()
@@ -550,12 +637,37 @@ pub func sourceBuildsForFile(
     }
     case None -> ()
   }
-  if builds.count == 0 {
-    val noActive: List[String] = newList()
-    val noDeclared: List[String] = newList()
-    builds.add(SourceBuild(targetName = targetName, activeFeatures = noActive, declaredFeatures = noDeclared))
+  // `lyric build <file>` builds the file under its nearest manifest, which
+  // need not be one that lists it: a `[package]` manifest nested inside a
+  // listing project's package directory, or a broken one.  That build is one
+  // of the file's builds too (D182); when it is a listing manifest's build,
+  // it is not added again.
+  if not nearestManifestListsSource(sourcePath) {
+    builds.add(
+      singleFileSourceBuild(sourcePath, explicitManifest, targetName, cliFeatures, noDefaultFeatures, allFeatures)
+    )
   }
   builds
+}
+
+/// Whether the manifest `lyric build <file>` builds the source file at
+/// `sourcePath` under (`singleFileManifest`) is one whose entries list the
+/// file, so its build is among the listing builds; false when the file has
+/// no manifest, its manifest does not list it, or which manifests list it
+/// cannot be known.
+pub func nearestManifestListsSource(sourcePath: in String): Bool {
+  match singleFileManifest(sourcePath) {
+    case None -> false
+    case Some(nearest) -> {
+      val key = pathKey(normalizePath(nearest))
+      for m in manifestsListingSource(sourcePath) {
+        if pathKey(normalizePath(m)) == key {
+          return true
+        }
+      }
+      false
+    }
+  }
 }
 
 /// The manifests whose `[project.packages]`/`[project.tests]` entries list

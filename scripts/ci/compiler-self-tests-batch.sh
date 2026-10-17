@@ -348,6 +348,16 @@ if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
   LYRIC_BIN="$lyric_bin" bash scripts/ci/hoisted-callee-cross-package-e2e.sh dotnet jvm
   ran="$ran hoisted-callee-cross-package-e2e"
 fi
+# D182 (#8339): a single file's features — `--features` with no manifest is
+# F0049 from build/run/test/prove, and a file under a manifest that does not
+# list it is built and proved with that manifest's features (dotnet + jvm,
+# z3 for the proofs; this job has both).
+idx=$((idx + 1))
+if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
+  echo "=== scripts/ci/single-file-features-e2e.sh ==="
+  LYRIC_BIN="$lyric_bin" bash scripts/ci/single-file-features-e2e.sh
+  ran="$ran single-file-features-e2e"
+fi
 if [[ -z "$ran" ]]; then
   echo "::error::shard ${SHARD_K}/${SHARD_N} selected no files" >&2
   exit 1

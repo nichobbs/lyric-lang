@@ -11,7 +11,7 @@
 //!              [--target dotnet|jvm]
 //!   check   [<source.l>...] [--manifest <lyric.toml>] [--target dotnet|jvm]
 //!   clean   [<dir>] [--manifest <lyric.toml>]
-//!   run     [<source.l>] [--manifest <lyric.toml>] [--target dotnet|jvm] [--watch] [-- <args>...]
+//!   run     [<source.l>] [--manifest <lyric.toml>] [--target dotnet|jvm|native] [--features <a,b>] [--no-default-features] [--all-features] [--watch] [-- <args>...]
 //!   fmt     [<source.l>...] [--manifest <lyric.toml>] [--check] [--write] [--stdin]
 //!   lint    [<source.l>] [--manifest <lyric.toml>] [--error-on-warning]
 //!   prove   [<source.l>] [--manifest <lyric.toml>] [--target dotnet|jvm|native] [--features <a,b>] [--no-default-features] [--all-features] [--define K=V] [--allow-unverified] [--json | --verbose] [--explain --goal <n>] [--proof-dir <dir>]
@@ -316,7 +316,8 @@ func usageText(): String {
     "                (print or update versions for all workspace members; warns on misalignment)\n" +
     "\n" +
     "Dev loop:\n" +
-    "  lyric run     [<source.l>] [--manifest <lyric.toml>] [--target dotnet|jvm|native] [--watch] [-- <args>...]\n" +
+    "  lyric run     [<source.l>] [--manifest <lyric.toml>] [--target dotnet|jvm|native] [--features <a,b>]\n" +
+    "                [--no-default-features] [--all-features] [--watch] [-- <args>...]\n" +
     "                (no source: builds and runs the discovered project;\n" +
     "                 --watch: rebuild & re-run on source changes; Ctrl-C to stop)\n" +
     "  lyric test    [<source.l>] [--manifest <lyric.toml>] [--filter <prefix>] [--list] [--fail-fast] [--properties] [--property-trials N] [--seed N] [--target dotnet|jvm]\n" +
@@ -632,6 +633,51 @@ pub func parseShapeName(s: in String): Option[BuildShape] {
     Some(value = SComponent)
   } else {
     None
+  }
+}
+
+/// Why the manifest a single source file is compiled under cannot be used
+/// (D182), prefixed with `command`: an explicit `--manifest` that cannot be
+/// read or parsed is a hard error, never a build with no manifest; and
+/// `F0049` — `--features` on a file no manifest applies to.  Features are
+/// declared in a manifest's `[features]` table, so with neither `--manifest`
+/// nor a lyric.toml above the file (`Disc.singleFileManifestDetailed`)
+/// there is nothing for `--features` to select: the command fails instead of
+/// compiling the file without them.  `--no-default-features` and
+/// `--all-features` select nothing either way and are accepted.
+pub func singleFileManifestError(
+  command: in String,
+  sourcePath: in String,
+  explicitManifest: in Option[String],
+  cliFeatures: in List[String],
+): Option[String] {
+  match explicitManifest {
+    case Some(m) -> {
+      match Disc.manifestLoadError(m) {
+        case Some(msg) -> return Some(value = command + ": " + msg)
+        case None -> return None
+      }
+    }
+    case None -> ()
+  }
+  if cliFeatures.count == 0 {
+    return None
+  }
+  val head = "error[F0049]: --features " + Str.joinList(",", cliFeatures) +
+    " selects features a manifest's [features] table declares, but "
+  match Disc.singleFileManifestDetailed(sourcePath) {
+    case FoundManifest(_) -> None
+    case FoundBrokenManifest(path, error) -> Some(
+      value = head + "the manifest of " + sourcePath + " (" + path +
+        ") cannot be read: " +
+        Mf.ManifestError.message(error) +
+        "; fix it, or pass --manifest <lyric.toml>"
+    )
+    case NoManifestFound -> Some(
+      value = head + sourcePath +
+        " has no manifest (no lyric.toml with a [package] section in its directory " +
+        "or any parent); declare the features in one, or pass --manifest <lyric.toml>"
+    )
   }
 }
 

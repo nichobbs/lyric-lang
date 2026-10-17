@@ -124,7 +124,11 @@ func cmdCheck(argv: in slice[String]): Int {
       path = sourcePath,
       contractsEnabled = true
     )
-    val result = Emitter.emit(req)
+    // Checked as `lyric build <file>` compiles it: under the file's manifest
+    // (`--manifest`, else the nearest one above it), with that manifest's
+    // dependencies and default features (D123, D182).
+    val noCliFeatures: List[String] = newList()
+    val result = emitSingleFileOrProject(req, sourcePath, manifestArg, noCliFeatures, false, false).emitResult
     var hadError = false
     for d in result.diagnostics.toArray() {
       match d.severity {
