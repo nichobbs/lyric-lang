@@ -9508,10 +9508,6 @@ func emitCheckedToNatMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[
   }
 }
 
-func toNatRangeMessage(): String {
-  "toNat: value must be non-negative"
-}
-
 // Cross-package call resolution helper (#1183 Phase 2).  Walks `imports`
 // — the dotted-name list of packages imported by the calling site's
 // package — and returns the first `<imp>.<funcName>` key that exists in

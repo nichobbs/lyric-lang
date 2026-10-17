@@ -669,6 +669,15 @@ pub func findStdlibSourcesNative(): List[LlvmBridge.NativeStdlibFile] {
   findStdlibSourcesNativeForShape("")
 }
 
+/// True when `path` lies in a target-only kernel tree (`_kernel_jvm/`,
+/// `_kernel_native/`, `_kernel_wasm_module/`), none of which is part of the
+/// .NET stdlib: each declares the same `Std.*Host` package as its `_kernel/`
+/// twin.  Shared by the .NET stdlib loader below and the CLI's stale-bundle
+/// guard (`Lyric.Cli.isDotnetStdlibSource`).
+pub func isTargetOnlyKernelPath(path: in String): Bool {
+  Str.contains(path, "_kernel_jvm") or Str.contains(path, "_kernel_native") or Str.contains(path, "_kernel_wasm_module")
+}
+
 // As `findStdlibSourcesNative`, for an output `shape` (the `--shape` spec).  The
 // wasm32 `module` shape runs in a JS host, so `_kernel_wasm_module/<module>.l`
 // (browser-host twins such as the fetch-backed `Std.HttpHost`) wins over
@@ -1339,7 +1348,7 @@ func loadStdlibPayloads(stdlibDir: in String, entrySource: in String): Discovere
     // .NET target: drop the JVM-only and native-only kernel files (each
     // declares the same `Std.*Host` package as its `_kernel/` twin and
     // would otherwise merge into it, colliding on the host* names).
-    if Str.contains(path, "_kernel_jvm") or Str.contains(path, "_kernel_native") or Str.contains(path, "_kernel_wasm_module") {
+    if isTargetOnlyKernelPath(path) {
       continue
     }
     val base = Path.basename(path)

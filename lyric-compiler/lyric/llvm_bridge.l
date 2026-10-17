@@ -1137,6 +1137,8 @@ pub func compileToNativeWithFeatures(
     bi = bi + 1
   }
 
+  // Reachable function ids, plus an `impl:<Pkg>.<Record>` marker per bundled
+  // impl whose record is constructed (`noteConstructedImplType`).
   val reachable: Map[String, Bool] = newMap()
   val fnWorklist: List[String] = newList()
   var gi = 0
@@ -1635,6 +1637,8 @@ pub func compileProjectToNativeWithShape(
     bi = bi + 1
   }
 
+  // Reachable function ids, plus an `impl:<Pkg>.<Record>` marker per bundled
+  // impl whose record is constructed (`noteConstructedImplType`).
   val reachable: Map[String, Bool] = newMap()
   val fnWorklist: List[String] = newList()
   var sfi = 0
@@ -2559,11 +2563,6 @@ func addKey(m: in Map[String, String], k: in String, v: in String): Unit {
   }
 }
 
-// An own package's `impl`, record and protected-type method bodies are lowered whole (`unitOf`'s
-// `collectImplMethods`), so what they call must be reachable too: index each
-// method under its lowered name and seed the walk with it. Without this a
-// stdlib function called only from an impl method (`Std.HttpServer.nextContext`
-// from an accept loop's `step`) never reaches the bundle.
 /// A bundled package's `impl <Iface> for <Record>` blocks, indexed by the
 /// implementing record's package-qualified name.  The impl's vtable references
 /// every one of its methods, so a bundled impl is lowered whole, and only when
@@ -2639,6 +2638,11 @@ func noteConstructedImplType(
   }
 }
 
+// An own package's `impl`, record and protected-type method bodies are lowered whole (`unitOf`'s
+// `collectImplMethods`), so what they call must be reachable too: index each
+// method under its lowered name and seed the walk with it. Without this a
+// stdlib function called only from an impl method (`Std.HttpServer.nextContext`
+// from an accept loop's `step`) never reaches the bundle.
 func seedImplMethods(
   f: in SourceFile,
   bodyIndex: in Map[String, FunctionDecl],

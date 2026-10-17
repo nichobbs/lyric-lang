@@ -2049,6 +2049,12 @@ pub func toCharRangeMessage(): String {
   "toChar: value out of range [0, 65535] or in the UTF-16 surrogate range [55296, 57343]"
 }
 
+// `.toNat()` on a negative value (or NaN); `Nat` is a non-negative `Long`
+// (docs/01 §2.1).  Shared by the MSIL and native backends.
+pub func toNatRangeMessage(): String {
+  "toNat: value must be non-negative"
+}
+
 // Convert a BMP scalar value (UTF-16 code unit, 0..0xFFFF) to a Char.
 // Rejects the surrogate range (0xD800..0xDFFF): surrogate code points
 // are not valid Unicode scalar values (Unicode §3.9).

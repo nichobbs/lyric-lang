@@ -25,12 +25,13 @@
 //! ## Deliberate scope decisions (real, disclosed divergences)
 //!
 //! 1. **TLS configuration is unsupported, and fails at request time.**
-//!    `hostSupportsTlsConfig()` is `false`, so `HttpClientBuilder.build()` stays
-//!    infallible and every request through a client built with a custom CA, a
-//!    client identity, a minimum TLS version or `withInsecureSkipVerify` fails with
-//!    a typed `ConnectionFailed` naming the gap.  A browser owns certificate
-//!    verification; ignoring such an option would silently weaken or change a
-//!    caller's security configuration.
+//!    `hostSupportsTlsConfig()` is `false`, so `Std.Http` itself refuses a client
+//!    built with a custom CA, a client identity, a minimum TLS version or
+//!    `withInsecureSkipVerify`: `HttpClientBuilder.build()` stays infallible and
+//!    every request through that client fails with a typed `ConnectionFailed`
+//!    naming the gap, without reaching this kernel (`hostClientWithTls` is never
+//!    called).  A browser owns certificate verification; ignoring such an option
+//!    would silently weaken or change a caller's security configuration.
 //! 2. **Unix domain sockets are unsupported**, failing the same way.
 //! 3. **HTTP version pins are accepted and have no effect**, and
 //!    `hostResponseVersionMajor` reports 1: `fetch` does not expose the negotiated
@@ -45,7 +46,11 @@
 //!    `Origin` and others).  The kernel rejects the framing headers the other
 //!    kernels reject, and CR or LF anywhere in a request.
 //! 7. **The body is read fully, capped at 10 MiB** (the native kernel's budget): a
-//!    larger response is an error.
+//!    larger response is an error.  The cap counts the body's bytes; the base64 reply
+//!    carrying them to the module is about a third larger again.
+//! 8. **Repeated response headers are joined**: the host's `Headers` object folds
+//!    them into one comma-separated value (as `Headers.forEach` reports them), so
+//!    several `Set-Cookie` lines arrive as one, and values are whitespace-trimmed.
 @axiom("the host's global fetch conforms to the WHATWG Fetch standard; the glue's std.http.fetch import returns the documented ok/error String")
 @io
 package Std.HttpHost

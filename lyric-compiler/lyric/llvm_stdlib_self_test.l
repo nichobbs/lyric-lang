@@ -39,6 +39,7 @@ func tempBase(): String {
 record RunOutcome {
   exitCode: Int
   stdout: String
+  stderr: String
 }
 
 func compileAndRunNative(source: in String): RunOutcome {
@@ -56,7 +57,7 @@ func compileAndRunNative(source: in String): RunOutcome {
   }
   val noArgs: List[String] = newList()
   match Process.runCapture(stem, noArgs, 60000) {
-    case Ok(res) -> RunOutcome(exitCode = res.exitCode, stdout = res.stdout)
+    case Ok(res) -> RunOutcome(exitCode = res.exitCode, stdout = res.stdout, stderr = res.stderr)
     case Err(e) -> panic("binary could not be started: " + e)
   }
 }
@@ -1604,8 +1605,7 @@ func main(): Int {
 
 // `Std.Stream`'s interfaces take a `Nat` bound; `Nat` lowers as the `Long` it is
 // a subtype of, so a user impl of a bundled stream interface compiles and
-// dispatches. (Building a `Nat` value, `n.toNat()`, is a separate native gap, so
-// the call goes through `readLine`.)
+// dispatches, and `.toNat()` builds the argument (#8366).
 test "Native: a user impl of Std.Stream.TextReader (a Nat parameter) dispatches (ASan)" {
   val src = r#"package T
 import Std.Core
@@ -1621,22 +1621,111 @@ impl TextReader for Src {
     Ok(value = Some(value = "line"))
   }
   func readToEnd(maxChars: in Nat): Result[String, IOError] {
-    Ok(value = "abcdef")
+    if maxChars == 10.toNat() {
+      Ok(value = "abcdef")
+    } else {
+      Ok(value = "x")
+    }
   }
 }
 
 func pull(r: in TextReader): Int {
-  match r.readLine() {
+  val line = match r.readLine() {
     case Ok(Some(s)) -> s.length
     case Ok(None) -> 1
     case Err(_) -> 2
   }
+  val rest = match r.readToEnd(10.toNat()) {
+    case Ok(s) -> s.length
+    case Err(_) -> 100
+  }
+  line + rest
 }
 
 func main(): Int {
-  pull(Src(n = 0)) + 38
+  pull(Src(n = 0)) + 32
 }
 "#
   val r = compileAndRunNative(src)
-  assertEqualInt(r.exitCode, 42, "readLine through the vtable returned a four-character line")
+  assertEqualInt(r.exitCode, 42, "readLine and readToEnd(10.toNat()) through the vtable returned 4 + 6 characters")
+}
+
+// `.toNat()` (#8366) from every receiver the checker accepts: a `Double` is
+// truncated toward zero first, so -0.5 is the Nat 0.
+test "Native: toNat converts Byte, Int, Long, Char, Double and Float receivers (ASan)" {
+  val src = r#"package T
+import Std.Core
+
+func main(): Int {
+  val b: Byte = 200.toByte()
+  val c: Char = 'A'
+  val f: Float = 2.75.toFloat()
+  val ok = b.toNat() == 200.toNat() and
+    7.toNat() == 7i64.toNat() and
+    5000000000i64.toNat().toString() == "5000000000" and
+    c.toNat() == 65.toNat() and
+    (0.0 - 0.5).toNat() == 0.toNat() and
+    3.9.toNat() == 3.toNat() and
+    f.toNat() == 2.toNat() and
+    0.toNat() == 0i64.toNat()
+  if ok { 42 } else { 1 }
+}
+"#
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "each conversion produced the expected Nat")
+}
+
+func assertToNatPanics(expr: in String, what: in String): Unit {
+  val src = "package T\nimport Std.Core\n\nfunc main(): Int {\n  val n: Nat = " + expr + "\n  42\n}\n"
+  val r = compileAndRunNative(src)
+  assertTrue(r.exitCode != 42 and r.exitCode != 0, what + ": a negative toNat must not return")
+  assertTrue(Str.contains(r.stderr, "toNat: value must be non-negative"), what + ": the panic names the toNat range")
+}
+
+test "Native: toNat panics on a negative Int, Long or Double and on NaN (ASan)" {
+  assertToNatPanics("(0 - 5).toNat()", "Int")
+  assertToNatPanics("(0i64 - 1i64).toNat()", "Long")
+  assertToNatPanics("(0.0 - 1.0).toNat()", "Double")
+  assertToNatPanics("(0.0 / 0.0).toNat()", "NaN")
+}
+
+// #8363: an unannotated binding whose branches mix a constructed case and a
+// bare generic case (`None`) takes the bare case's type from its sibling, in
+// either order, through `else if` chains and `match` arms.
+test "Native: a bare None beside Some in an unannotated if or match binding (ASan)" {
+  val src = r#"package T
+import Std.Core
+
+func pick(c: in Bool, k: in Int): Int {
+  val a = if c { Some(value = "x") } else { None }
+  val b = if c { None } else { Some(value = 5) }
+  val d = if k == 0 { None } else if k == 1 { Some(value = 1) } else { None }
+  val e = match k {
+    case 0 -> None
+    case 1 -> Some(value = "one")
+    case _ -> None
+  }
+  val g = if c {
+    None
+  } else {
+    val t = k + 1
+    Some(value = t)
+  }
+  val sa = match a { case Some(s) -> s.length; case None -> 0 }
+  val sb = match b { case Some(n) -> n; case None -> 0 }
+  val sd = match d { case Some(n) -> n * 10; case None -> 0 }
+  val se = match e { case Some(s) -> s.length * 100; case None -> 0 }
+  val sg = match g { case Some(n) -> n * 1000; case None -> 0 }
+  sa + sb + sd + se + sg
+}
+
+func main(): Int {
+  // c = true,  k = 1: a = 1, b = 0, d = 10, e = 300, g = 0  -> 311
+  // c = false, k = 1: a = 0, b = 5, d = 10, e = 300, g = 2000 -> 2315
+  // c = false, k = 0: a = 0, b = 5, d = 0,  e = 0,   g = 1000 -> 1005
+  if pick(true, 1) == 311 and pick(false, 1) == 2315 and pick(false, 0) == 1005 { 42 } else { 1 }
+}
+"#
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 42, "every binding took its sibling branch's Option type")
 }

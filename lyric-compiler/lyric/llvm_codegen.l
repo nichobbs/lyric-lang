@@ -3730,6 +3730,26 @@ func lowerCheckedToCharI32(ctx: in Ctx, insns: in List[NInsn], x: in NValue, lin
   NVal(ty = NI32, value = x)
 }
 
+/// Branch to a `lyric_panic_msg` trap carrying the shared `.toNat()` failure
+/// text when `bad` holds.
+func emitToNatRangeTrap(ctx: in Ctx, insns: in List[NInsn], bad: in NValue, line: in Int): Unit {
+  val trapL = freshLabel(ctx, "tonat.trap")
+  val okL = freshLabel(ctx, "tonat.ok")
+  insns.add(NCondBr(cond = bad, thenLabel = trapL, elseLabel = okL))
+  insns.add(NLabel(name = trapL))
+  emitPanicRaw(ctx, insns, toNatRangeMessage(), line)
+  insns.add(NBr(label = okL))
+  insns.add(NLabel(name = okL))
+}
+
+/// `.toNat()` on an `i64`: trap when negative, else the value itself.
+func lowerCheckedToNatI64(ctx: in Ctx, insns: in List[NInsn], x: in NValue, line: in Int): NVal {
+  val neg = freshTmp(ctx)
+  insns.add(NICmp(dest = neg, pred = ISlt, ty = NI64, a = x, b = NLitInt(v = 0i64, ty = NI64)))
+  emitToNatRangeTrap(ctx, insns, NLocal(name = neg), line)
+  NVal(ty = NI64, value = x)
+}
+
 /// Scalar method-call receivers: `.and/.or/.xor/.shl/.shr`, the
 /// conversion family, `.toString()`, and String's `.substring`/`.trim`/
 /// `.trimStart`/`.trimEnd`/`.replace`/`.toLower`/`.toUpper`/`.indexOf`/
@@ -4083,6 +4103,39 @@ func lowerScalarMethodCall(
         val dest = freshTmp(ctx)
         insns.add(NZExt(dest = dest, fromTy = NI8, value = v.value, toTy = NI32))
         return Some(value = NVal(ty = NI32, value = NLocal(name = dest)))
+      }
+      case _ -> {
+      }
+    }
+  }
+  if name == "toNat" and args.count == 0 {
+    // Checked conversion (#8366): `Nat` is the non-negative `Long` it lowers
+    // to, so a negative source (or NaN) panics with the message the MSIL
+    // backend throws.  `Byte` and `Char` (an NI32 here, always 0..65535)
+    // cannot be negative.
+    match v.ty {
+      case NI8 -> {
+        val dest = freshTmp(ctx)
+        insns.add(NZExt(dest = dest, fromTy = NI8, value = v.value, toTy = NI64))
+        return Some(value = NVal(ty = NI64, value = NLocal(name = dest)))
+      }
+      case NI32 -> {
+        val dest = freshTmp(ctx)
+        insns.add(NSExt(dest = dest, fromTy = NI32, value = v.value, toTy = NI64))
+        return Some(value = lowerCheckedToNatI64(ctx, insns, NLocal(name = dest), line))
+      }
+      case NI64 -> return Some(value = lowerCheckedToNatI64(ctx, insns, v.value, line))
+      case NDouble -> {
+        // Truncation toward zero follows, so the bound is an exclusive -1.0
+        // (-0.5 is the Nat 0); the ordered compare is false for NaN.
+        val gtLo = freshTmp(ctx)
+        insns.add(NFCmp(dest = gtLo, pred = FOgt, ty = NDouble, a = v.value, b = NLitFloat(v = 0.0 - 1.0, ty = NDouble)))
+        val bad = freshTmp(ctx)
+        insns.add(NXor(dest = bad, ty = NI1, a = NLocal(name = gtLo), b = NLitInt(v = 1i64, ty = NI1)))
+        emitToNatRangeTrap(ctx, insns, NLocal(name = bad), line)
+        val dest = freshTmp(ctx)
+        insns.add(NFPToSI(dest = dest, fromTy = NDouble, value = v.value, toTy = NI64))
+        return Some(value = NVal(ty = NI64, value = NLocal(name = dest)))
       }
       case _ -> {
       }
@@ -13669,9 +13722,21 @@ func lowerMatch(
   val mergeL = freshLabel(ctx, "match.merge")
   var slotName = ""
   var slotTy = NVoid
-  var ai = 0
-  while ai < arms.count {
+  // Each arm lowers into its own list, appended in source order below.  With
+  // no expected type, an arm whose value is a bare generic case (`None`)
+  // lowers after the others so it takes the slot type they fix (#8363).
+  val armInsns: List[List[NInsn]] = newList()
+  val armBodies: List[ExprOrBlock] = newList()
+  for a in arms {
+    val one: List[NInsn] = newList()
+    armInsns.add(one)
+    armBodies.add(a.body)
+  }
+  val order = typeDonorsFirst(ctx, armBodies, want)
+  for ai in order {
     val arm = arms[ai]
+    val ainsns = armInsns[ai]
+    val armWant = branchWant(ctx, arm.body, want, slotTy)
     val armBodyL = freshLabel(ctx, "match.body")
     val isLastArm = ai == arms.count - 1
     val nextL = if isLastArm { freshLabel(ctx, "match.nomatch") } else { freshLabel(ctx, "match.next") }
@@ -13681,68 +13746,54 @@ func lowerMatch(
     match arm.guard {
       case Some(g) -> {
         val guardL = freshLabel(ctx, "match.guard")
-        emitPatternTest(ctx, insns, sv, arm.pattern, guardL, nextL, bindNames, bindVals, scrutEnumHint)
-        insns.add(NLabel(name = guardL))
+        emitPatternTest(ctx, ainsns, sv, arm.pattern, guardL, nextL, bindNames, bindVals, scrutEnumHint)
+        ainsns.add(NLabel(name = guardL))
         pushVarScope(ctx)
-        applyPatternBinds(ctx, insns, bindNames, bindVals)
+        applyPatternBinds(ctx, ainsns, bindNames, bindVals)
         pushTempScope(ctx)
-        val gv = lowerExpr(ctx, insns, g)
-        popTempScope(ctx, insns)
+        val gv = lowerExpr(ctx, ainsns, g)
+        popTempScope(ctx, ainsns)
         // Guard bindings stay live for the body; release scope only on
         // the fail path.
         val failReleaseL = freshLabel(ctx, "match.guardfail")
-        insns.add(NCondBr(cond = gv.value, thenLabel = armBodyL, elseLabel = failReleaseL))
-        insns.add(NLabel(name = failReleaseL))
-        releaseVarScopeAt(ctx, insns, ctx.scopeRefs.count - 1)
-        insns.add(NBr(label = nextL))
-        insns.add(NLabel(name = armBodyL))
-        val armV = lowerArmBody(ctx, insns, arm, want)
-        // Arm value protocol mirrors lowerIf's slot scheme.
-        match armV.ty {
-          case NVoid -> {
-          }
-          case vty -> {
-            if slotName.length == 0 {
-              slotName = "match.slot." + freshTmp(ctx)
-              slotTy = vty
-              ctx.allocas.add(NAlloca(dest = slotName, ty = vty))
-            }
-            val cv = coerceTo(ctx, insns, armV, slotTy)
-            insns.add(NStore(ty = slotTy, value = cv.value, ptr = NLocal(name = slotName)))
-          }
-        }
-        popVarScope(ctx, insns)
-        insns.add(NBr(label = mergeL))
+        ainsns.add(NCondBr(cond = gv.value, thenLabel = armBodyL, elseLabel = failReleaseL))
+        ainsns.add(NLabel(name = failReleaseL))
+        releaseVarScopeAt(ctx, ainsns, ctx.scopeRefs.count - 1)
+        ainsns.add(NBr(label = nextL))
+        ainsns.add(NLabel(name = armBodyL))
       }
       case None -> {
-        emitPatternTest(ctx, insns, sv, arm.pattern, armBodyL, nextL, bindNames, bindVals, scrutEnumHint)
-        insns.add(NLabel(name = armBodyL))
+        emitPatternTest(ctx, ainsns, sv, arm.pattern, armBodyL, nextL, bindNames, bindVals, scrutEnumHint)
+        ainsns.add(NLabel(name = armBodyL))
         pushVarScope(ctx)
-        applyPatternBinds(ctx, insns, bindNames, bindVals)
-        val armV = lowerArmBody(ctx, insns, arm, want)
-        match armV.ty {
-          case NVoid -> {
-          }
-          case vty -> {
-            if slotName.length == 0 {
-              slotName = "match.slot." + freshTmp(ctx)
-              slotTy = vty
-              ctx.allocas.add(NAlloca(dest = slotName, ty = vty))
-            }
-            val cv = coerceTo(ctx, insns, armV, slotTy)
-            insns.add(NStore(ty = slotTy, value = cv.value, ptr = NLocal(name = slotName)))
-          }
-        }
-        popVarScope(ctx, insns)
-        insns.add(NBr(label = mergeL))
+        applyPatternBinds(ctx, ainsns, bindNames, bindVals)
       }
     }
-    insns.add(NLabel(name = nextL))
-    if isLastArm {
-      emitPanicRaw(ctx, insns, "non-exhaustive match", line)
-      insns.add(NBr(label = mergeL))
+    val armV = lowerArmBody(ctx, ainsns, arm, armWant)
+    // Arm value protocol mirrors lowerIf's slot scheme.
+    match armV.ty {
+      case NVoid -> {
+      }
+      case vty -> {
+        if slotName.length == 0 {
+          slotName = "match.slot." + freshTmp(ctx)
+          slotTy = vty
+          ctx.allocas.add(NAlloca(dest = slotName, ty = vty))
+        }
+        val cv = coerceTo(ctx, ainsns, armV, slotTy)
+        ainsns.add(NStore(ty = slotTy, value = cv.value, ptr = NLocal(name = slotName)))
+      }
     }
-    ai = ai + 1
+    popVarScope(ctx, ainsns)
+    ainsns.add(NBr(label = mergeL))
+    ainsns.add(NLabel(name = nextL))
+    if isLastArm {
+      emitPanicRaw(ctx, ainsns, "non-exhaustive match", line)
+      ainsns.add(NBr(label = mergeL))
+    }
+  }
+  for one in armInsns {
+    appendInsns(insns, one)
   }
   insns.add(NLabel(name = mergeL))
   if slotName.length == 0 {
@@ -13833,6 +13884,99 @@ func applyPatternBinds(ctx: in Ctx, insns: in List[NInsn], bindNames: in List[St
   }
 }
 
+/// Whether the value of `eob` has no type of its own to lower at: it is a
+/// bare nullary generic union case (`None`), or an `if`/`match` whose
+/// branches are such cases — every branch when `all`, any branch otherwise.
+func branchNeedsType(ctx: in Ctx, eob: in ExprOrBlock, all: in Bool): Bool {
+  match eob {
+    case EOBExpr(ex) -> exprNeedsType(ctx, ex, all)
+    case EOBBlock(b) -> {
+      if b.statements.count == 0 {
+        return false
+      }
+      match b.statements[b.statements.count - 1].kind {
+        case SExpr(ex) -> exprNeedsType(ctx, ex, all)
+        case _ -> false
+      }
+    }
+  }
+}
+
+func exprNeedsType(ctx: in Ctx, e: in Expr, all: in Bool): Bool {
+  match e.kind {
+    case EPath(_) -> isGenericCaseCtorExpr(ctx, e)
+    case EParen(inner) -> exprNeedsType(ctx, inner, all)
+    case EIf(_, thenBranch, elseBranch, _) -> match elseBranch {
+      case Some(eb) -> {
+        val t = branchNeedsType(ctx, thenBranch, all)
+        val f = branchNeedsType(ctx, eb, all)
+        if all {
+          t and f
+        } else {
+          t or f
+        }
+      }
+      case None -> false
+    }
+    case EMatch(_, arms) -> {
+      if arms.count == 0 {
+        return false
+      }
+      var any = false
+      var every = true
+      for a in arms {
+        if branchNeedsType(ctx, a.body, all) {
+          any = true
+        } else {
+          every = false
+        }
+      }
+      if all {
+        every
+      } else {
+        any
+      }
+    }
+    case _ -> false
+  }
+}
+
+/// The order to lower value branches in: with no expected type, the
+/// branches with no type of their own (`branchNeedsType`) go after the
+/// rest, so they can take the type a sibling fixes (#8363).  Source order
+/// otherwise.
+func typeDonorsFirst(ctx: in Ctx, bodies: in List[ExprOrBlock], want: in Option[NType]): List[Int] {
+  val noWant = match want { case Some(_) -> false; case None -> true }
+  val order: List[Int] = newList()
+  val late: List[Int] = newList()
+  var i = 0
+  while i < bodies.count {
+    if noWant and branchNeedsType(ctx, bodies[i], true) {
+      late.add(i)
+    } else {
+      order.add(i)
+    }
+    i = i + 1
+  }
+  for j in late {
+    order.add(j)
+  }
+  order
+}
+
+/// The expected type for one value branch: the consumer's, else the slot
+/// type an earlier-lowered sibling fixed when this branch holds a bare
+/// generic case that needs one.
+func branchWant(ctx: in Ctx, eob: in ExprOrBlock, want: in Option[NType], slotTy: in NType): Option[NType] {
+  match want {
+    case Some(_) -> want
+    case None -> match slotTy {
+      case NVoid -> None
+      case t -> if branchNeedsType(ctx, eob, false) { Some(value = t) } else { None }
+    }
+  }
+}
+
 /// Lower an arm body producing an OWNED value (ref results retained or
 /// transferred before the arm's scopes unwind).
 func lowerArmBody(ctx: in Ctx, insns: in List[NInsn], arm: in MatchArm, want: in Option[NType]): NVal {
@@ -13879,8 +14023,8 @@ func lowerIf(
   val thenL = freshLabel(ctx, "if.then")
   val elseL = freshLabel(ctx, "if.else")
   val mergeL = freshLabel(ctx, "if.merge")
-  // Value-producing if: both branches store into a shared temp slot;
-  // the slot is typed after lowering the then-branch.  Ref-typed
+  // Value-producing if: both branches store into a shared temp slot,
+  // typed by the first branch lowered that produces a value.  Ref-typed
   // results follow the value-region ARC protocol: each branch stores
   // an OWNED value (its temps released within the branch), and the
   // merged load re-registers as a single owned temp.
@@ -13889,51 +14033,47 @@ func lowerIf(
       // Slot protocol mirrors lowerMatch: a branch producing NVoid in a
       // value context has diverged (panic / return — Never coerces to
       // anything in a well-typed program) and simply doesn't store; the
-      // slot is typed by the first value-producing branch.
+      // slot is typed by the first value-producing branch lowered.  Each
+      // branch lowers into its own list; a bare generic case (`None`)
+      // lowers after its sibling so it takes the sibling's type (#8363).
+      val bodies: List[ExprOrBlock] = newList()
+      bodies.add(thenBranch)
+      bodies.add(eb)
+      val order = typeDonorsFirst(ctx, bodies, want)
+      val thenInsns: List[NInsn] = newList()
+      val elseInsns: List[NInsn] = newList()
+      var slotTy = NVoid
+      var thenV = NVal(ty = NVoid, value = NUndef(ty = NVoid))
+      var elseV = NVal(ty = NVoid, value = NUndef(ty = NVoid))
+      for bi in order {
+        if bi == 0 {
+          thenV = lowerIfBranch(ctx, thenInsns, thenBranch, branchWant(ctx, thenBranch, want, slotTy), slotTy)
+          if isVoidNType(slotTy) {
+            slotTy = thenV.ty
+          }
+        } else {
+          elseV = lowerIfBranch(ctx, elseInsns, eb, branchWant(ctx, eb, want, slotTy), slotTy)
+          if isVoidNType(slotTy) {
+            slotTy = elseV.ty
+          }
+        }
+      }
+      val slotName = match slotTy {
+        case NVoid -> ""
+        case ty -> {
+          val n = "if.slot." + freshTmp(ctx)
+          ctx.allocas.add(NAlloca(dest = n, ty = ty))
+          n
+        }
+      }
       insns.add(NCondBr(cond = c.value, thenLabel = thenL, elseLabel = elseL))
       insns.add(NLabel(name = thenL))
-      var slotName = ""
-      var slotTy = NVoid
-      val thenInsns: List[NInsn] = newList()
-      pushTempScope(ctx)
-      val tv = lowerExprOrBlockW(ctx, thenInsns, thenBranch, want)
-      match tv.ty {
-        case NVoid -> {
-          popTempScope(ctx, thenInsns)
-          appendInsns(insns, thenInsns)
-        }
-        case vty -> {
-          if isRefNType(vty) {
-            ensureOwned(ctx, thenInsns, tv)
-          }
-          popTempScope(ctx, thenInsns)
-          appendInsns(insns, thenInsns)
-          slotName = "if.slot." + freshTmp(ctx)
-          slotTy = vty
-          ctx.allocas.add(NAlloca(dest = slotName, ty = vty))
-          insns.add(NStore(ty = vty, value = tv.value, ptr = NLocal(name = slotName)))
-        }
-      }
+      appendInsns(insns, thenInsns)
+      storeIfBranch(insns, thenV, slotTy, slotName)
       insns.add(NBr(label = mergeL))
       insns.add(NLabel(name = elseL))
-      pushTempScope(ctx)
-      val ev = lowerExprOrBlockW(ctx, insns, eb, want)
-      match ev.ty {
-        case NVoid -> popTempScope(ctx, insns)
-        case ety -> {
-          if slotName.length == 0 {
-            slotName = "if.slot." + freshTmp(ctx)
-            slotTy = ety
-            ctx.allocas.add(NAlloca(dest = slotName, ty = ety))
-          }
-          val evc = coerceTo(ctx, insns, ev, slotTy)
-          if isRefNType(slotTy) {
-            ensureOwned(ctx, insns, evc)
-          }
-          popTempScope(ctx, insns)
-          insns.add(NStore(ty = slotTy, value = evc.value, ptr = NLocal(name = slotName)))
-        }
-      }
+      appendInsns(insns, elseInsns)
+      storeIfBranch(insns, elseV, slotTy, slotName)
       insns.add(NBr(label = mergeL))
       insns.add(NLabel(name = mergeL))
       if slotName.length == 0 {
@@ -13956,6 +14096,37 @@ func lowerIf(
       insns.add(NLabel(name = mergeL))
       NVal(ty = NVoid, value = NUndef(ty = NVoid))
     }
+  }
+}
+
+/// One branch of a value-producing `if`, as an OWNED value coerced to
+/// `slotTy` when an earlier-lowered sibling fixed it (NVoid when not), its
+/// temps released within the branch.  NVoid when the branch diverged.
+func lowerIfBranch(
+  ctx: in Ctx, insns: in List[NInsn], eob: in ExprOrBlock, want: in Option[NType], slotTy: in NType
+): NVal {
+  pushTempScope(ctx)
+  val v = lowerExprOrBlockW(ctx, insns, eob, want)
+  match v.ty {
+    case NVoid -> {
+      popTempScope(ctx, insns)
+      v
+    }
+    case vty -> {
+      val vc = match slotTy { case NVoid -> v; case _ -> coerceTo(ctx, insns, v, slotTy) }
+      if isRefNType(vc.ty) {
+        ensureOwned(ctx, insns, vc)
+      }
+      popTempScope(ctx, insns)
+      vc
+    }
+  }
+}
+
+func storeIfBranch(insns: in List[NInsn], v: in NVal, slotTy: in NType, slotName: in String): Unit {
+  match v.ty {
+    case NVoid -> ()
+    case _ -> insns.add(NStore(ty = slotTy, value = v.value, ptr = NLocal(name = slotName)))
   }
 }
 
