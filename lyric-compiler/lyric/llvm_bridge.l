@@ -1137,7 +1137,13 @@ pub func compileToNativeWithShape(
     addPkgImports(pkgImports, toBundle[bi3])
     bi3 = bi3 + 1
   }
-  walkReachableFns(fnWorklist, canonical, bareTrailing, bodyIndex, pkgOfId, reachable, pkgImports)
+  val implTypes: Map[String, BundledImpl] = newMap()
+  var bi4 = 0
+  while bi4 < toBundle.count {
+    indexBundledImpls(toBundle[bi4], implTypes)
+    bi4 = bi4 + 1
+  }
+  walkReachableFns(fnWorklist, canonical, bareTrailing, bodyIndex, pkgOfId, reachable, pkgImports, implTypes)
 
   // Assemble the codegen units: the user package in full, then each
   // bundled package's reachable slice.
@@ -1645,7 +1651,13 @@ pub func compileProjectToNativeWithShape(
     bi3 = bi3 + 1
   }
 
-  walkReachableFns(fnWorklist, canonical, bareTrailing, bodyIndex, pkgOfId, reachable, pkgImports)
+  val implTypes: Map[String, BundledImpl] = newMap()
+  var bi4 = 0
+  while bi4 < toBundle.count {
+    indexBundledImpls(toBundle[bi4], implTypes)
+    bi4 = bi4 + 1
+  }
+  walkReachableFns(fnWorklist, canonical, bareTrailing, bodyIndex, pkgOfId, reachable, pkgImports, implTypes)
 
   // Assemble the codegen units: the package declaring a top-level `func
   // main` goes FIRST — `Lyric.LlvmCodegen`'s C-`main` synthesis only scans
@@ -1695,7 +1707,7 @@ func appendBundledUnits(
   while bi < toBundle.count {
     val noArities: Map[String, Int] = newMap()
     val u = unitOf(toBundle[bi], reachable, false, noArities)
-    if u.fns.count > 0 or u.externs.count > 0 or u.records.count > 0 or u.unions.count > 0 or u.enums.count > 0 or u.distincts.count > 0 {
+    if u.fns.count > 0 or u.externs.count > 0 or u.records.count > 0 or u.unions.count > 0 or u.enums.count > 0 or u.distincts.count > 0 or u.interfaces.count > 0 {
       units.add(u)
     }
     bi = bi + 1
@@ -1793,6 +1805,7 @@ func walkReachableFns(
   pkgOfId: in Map[String, String],
   reachable: in Map[String, Bool],
   pkgImports: in Map[String, List[String]],
+  implTypes: in Map[String, BundledImpl],
 ): Unit {
   val pkgClosureMemo: Map[String, Map[String, Bool]] = newMap()
   var wfi = 0
@@ -1831,6 +1844,7 @@ func walkReachableFns(
             reachable.add(target, true)
             fnWorklist.add(target)
           }
+          noteConstructedImplType(raw, curPkg, implTypes, bodyIndex, pkgOfId, reachable, fnWorklist)
           // `raw` may ALSO be a bare UFCS trailing-segment key
           // (`collectCallKeys`'s "cfg.identity.rawHandle()" fallback):
           // resolve it through the multi-valued `bareTrailing` map
@@ -2516,6 +2530,81 @@ func addKey(m: in Map[String, String], k: in String, v: in String): Unit {
 // method under its lowered name and seed the walk with it. Without this a
 // stdlib function called only from an impl method (`Std.HttpServer.nextContext`
 // from an accept loop's `step`) never reaches the bundle.
+/// A bundled package's `impl <Iface> for <Record>` blocks, indexed by the
+/// implementing record's package-qualified name.  The impl's vtable references
+/// every one of its methods, so a bundled impl is lowered whole, and only when
+/// a value of its record type can exist: when reachable code constructs the
+/// record (`implTypeSeen`).  An interface-typed value is always built from an
+/// implementing record, so no construction means no vtable is ever read.
+record BundledImpl {
+  pkg: String
+  methods: List[FunctionDecl]
+}
+
+func implMarker(pkg: in String, recordName: in String): String {
+  "impl:" + pkg + "." + recordName
+}
+
+/// Index `f`'s non-generic impl blocks by implementing record.
+func indexBundledImpls(f: in SourceFile, idx: in Map[String, BundledImpl]): Unit {
+  val pkg = dottedPath(f.packageDecl.path)
+  for item in f.items {
+    match item.kind {
+      case IImpl(decl) -> {
+        match implTargetRecordName(decl.target) {
+          case Some(recordName) -> {
+            val key = pkg + "." + recordName
+            val methods: List[FunctionDecl] = match mapGet(idx, key) {
+              case Some(existing) -> existing.methods
+              case None -> {
+                val fresh: List[FunctionDecl] = newList()
+                idx.add(key, BundledImpl(pkg = pkg, methods = fresh))
+                fresh
+              }
+            }
+            collectImplMethods(pkg, decl, methods)
+          }
+          case None -> {
+          }
+        }
+      }
+      case _ -> {
+      }
+    }
+  }
+}
+
+/// A call key names a bundled record with impls: mark its impl reachable and
+/// seed the impl's methods so the walk follows their callees.
+func noteConstructedImplType(
+  callKey: in String,
+  curPkg: in String,
+  implTypes: in Map[String, BundledImpl],
+  bodyIndex: in Map[String, FunctionDecl],
+  pkgOfId: in Map[String, String],
+  reachable: in Map[String, Bool],
+  fnWorklist: in List[String],
+): Unit {
+  // A call key is `<callee path>/<argument count>`.
+  val slash = Str.indexOfRaw(callKey, "/")
+  val key = if slash > 0 { Str.substring(callKey, 0, slash) } else { callKey }
+  var implKey = ""
+  if curPkg.length > 0 and implTypes.containsKey(curPkg + "." + key) {
+    implKey = curPkg + "." + key
+  } else if implTypes.containsKey(key) {
+    implKey = key
+  }
+  if implKey.length == 0 or reachable.containsKey("impl:" + implKey) {
+    return
+  }
+  reachable.add("impl:" + implKey, true)
+  match mapGet(implTypes, implKey) {
+    case Some(bi) -> seedMethodList(bi.pkg, bi.methods, bodyIndex, pkgOfId, reachable, fnWorklist)
+    case None -> {
+    }
+  }
+}
+
 func seedImplMethods(
   f: in SourceFile,
   bodyIndex: in Map[String, FunctionDecl],
@@ -2685,17 +2774,22 @@ func unitOf(
           opaqueNames.add(decl.name)
         }
       }
-      // Interface + impl are collected together (N3.2): the impl's vtable
-      // references its methods, so registering one without the other would
-      // dangle.  Gated on `lowerAll` — native interfaces are user-package
-      // only today (no bundled stdlib interfaces to reach).
+      // Interface + impl (N3.2).  An interface is only a box and vtable type,
+      // so every package contributes its own, as it does records: another
+      // package's signature may name it.  An impl lowers whole (its vtable
+      // references each method), so a bundled package's impl is taken only
+      // once reachable code constructs its record (`noteConstructedImplType`).
       case IInterface(decl) -> {
-        if lowerAll {
-          interfaces.add(decl)
-        }
+        interfaces.add(decl)
       }
       case IImpl(decl) -> {
-        if lowerAll {
+        val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
+        val needed = not isGeneric and
+          match implTargetRecordName(decl.target) {
+            case Some(recordName) -> reachable.containsKey(implMarker(pkg, recordName))
+            case None -> false
+          }
+        if lowerAll or needed {
           impls.add(decl)
           collectImplMethods(pkg, decl, fns)
         }

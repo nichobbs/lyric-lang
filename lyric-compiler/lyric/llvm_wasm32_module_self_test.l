@@ -883,6 +883,7 @@ import Std.Core
 import Std.Http
 import Std.Errors
 import Std.HttpHost as HostHttp
+import Std.Tls
 
 func show(e: HttpError): String {
   "err: " + HttpError.message(e)
@@ -943,6 +944,23 @@ pub async func noRedirects(url: String): String {
   }
 }
 
+pub async func tlsClient(url: String): String {
+  val c = HttpClientBuilder.build(HttpClientBuilder.withMinTlsVersion(HttpClientBuilder.new(), Tls13))
+  match await c.get(url) {
+    case Ok(_) -> "unexpected success"
+    case Err(ConnectionFailed(_, msg)) -> "connection-failed: " + msg
+    case Err(e) -> "other: " + HttpError.message(e)
+  }
+}
+
+pub async func clientGet(url: String): String {
+  val c = defaultClient()
+  match await c.get(url) {
+    case Ok(resp) -> "status=" + HttpResponse.statusCode(resp).toString()
+    case Err(e) -> show(e)
+  }
+}
+
 pub async func unixClient(): String {
   match await HostHttp.hostGetSafe(HostHttp.hostClientWithUnixSocket("/var/run/docker.sock"), "http://localhost/version") {
     case Ok(_) -> "unexpected success"
@@ -979,6 +997,7 @@ console.log('json=' + await m.postJsonWithHeader('http://h.test/j', '{"a":1}'));
 console.log('down=' + await m.fetchText('http://h.test/down'));
 console.log('big=' + await m.fetchText('http://h.test/big'));
 console.log('noredir=' + await m.noRedirects('http://h.test/redirect'));
+console.log('client=' + await m.clientGet('http://h.test/c'));
 console.log('seen=' + seen.join(' | '));
 "#
   )
@@ -1002,6 +1021,10 @@ console.log('seen=' + seen.join(' | '));
     "an oversized body is an error: " + r.stdout
   )
   assertTrue(Str.contains(r.stdout, "noredir=err: "), "a hidden redirect is an error: " + r.stdout)
+  assertTrue(
+    Str.contains(r.stdout, "client=status=200\n"),
+    "defaultClient().get works through the interface: " + r.stdout
+  )
   assertTrue(Str.contains(r.stdout, "GET http://h.test/a follow - null null"), "GET sends no body: " + r.stdout)
   assertTrue(
     Str.contains(r.stdout, "POST http://h.test/p follow payload text/plain"),
@@ -1025,12 +1048,17 @@ let calls = 0;
 globalThis.fetch = async () => { calls++; return new Response('x'); };
 const m = await instantiate();
 console.log('supported=' + m.tlsSupported());
+console.log('tls=' + await m.tlsClient('https://h.test/'));
 console.log('unix=' + await m.unixClient());
 console.log('fetchCalls=' + calls);
 "
   )
   assertEqualInt(r.exitCode, 0, "node exits cleanly: " + r.stderr)
   assertTrue(Str.contains(r.stdout, "supported=false\n"), "tlsConfigSupported reports false: " + r.stdout)
+  assertTrue(
+    Str.contains(r.stdout, "tls=connection-failed: "),
+    "a TLS-configured client fails with ConnectionFailed: " + r.stdout
+  )
   assertTrue(Str.contains(r.stdout, "unix=err: "), "a Unix-socket client fails the request: " + r.stdout)
   assertTrue(Str.contains(r.stdout, "fetchCalls=0\n"), "the request never reached fetch: " + r.stdout)
 }
@@ -1147,7 +1175,10 @@ console.log('snapshot=' + Object.keys(m.files.snapshot()).sort().join(','));
   assertTrue(Str.contains(r.stdout, "late.txt;"), "listFiles sees the host file: " + r.stdout)
   assertTrue(Str.contains(r.stdout, "stat=true false\n"), "stat finds only the existing file: " + r.stdout)
   assertTrue(Str.contains(r.stdout, "del=true false\n"), "deleteFile removes it for the host too: " + r.stdout)
-  assertTrue(Str.contains(r.stdout, "snapshot=/out/late.txt,/seed/in.txt\n"), "snapshot lists what is left: " + r.stdout)
+  assertTrue(
+    Str.contains(r.stdout, "snapshot=/out/late.txt,/seed/in.txt\n"),
+    "snapshot lists what is left: " + r.stdout
+  )
 }
 
 test "wasm32 module: the .d.ts types options.files and the files member" {

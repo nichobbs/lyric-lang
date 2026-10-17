@@ -18134,7 +18134,7 @@ func mangleIfaceName(key: in String): String {
 
 /// The record name an `impl` targets, when it is a plain (non-generic)
 /// record reference; generic targets are deferred (N3.2 first slice).
-func implTargetRecordName(target: in TypeExpr): Option[String] {
+pub func implTargetRecordName(target: in TypeExpr): Option[String] {
   match target.kind {
     case TRef(path) -> Some(value = lastSeg(path))
     case TParen(inner) -> implTargetRecordName(inner)

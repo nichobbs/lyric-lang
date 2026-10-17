@@ -6,6 +6,11 @@
 //!
 //! ## Why this drives `Std.HttpHost` directly, not `Std.Http`
 //!
+//! _Note (D-progress-1050): the interface gap described below is closed; `Std.Http`'s
+//! `HttpClient` lowers on native. This test still calls the kernel directly because it
+//! exercises `hostClientWithTls`'s option surface and the second-thread server._
+//!
+//!
 //! `Std.Http`'s own public surface for a TLS-configured client
 //! (`HttpClientBuilder.build()`, and every other function returning the
 //! `HttpClient` interface — `defaultClient()`, `clientWithRedirects`, …) does

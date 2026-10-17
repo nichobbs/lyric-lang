@@ -35,7 +35,9 @@
    reported as an error; cancellation tokens are accepted and an in-flight `fetch` is not
    aborted; the host decides which request headers may be set (CORS applies).
 
-## Known limit, pre-existing
+## Known limit, pre-existing (corrected by D-progress-1050)
+
+_Superseded: the gap was bundled-interface collection, not async methods, and D-progress-1050 closed it. The text below is kept as written._
 
 `HttpClient` is an interface with `async` methods, which the native backend cannot lower yet
 (N3.2; documented in `llvm_http_client_self_test.l`). A native-built program therefore reaches
