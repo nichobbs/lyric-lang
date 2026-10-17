@@ -827,7 +827,7 @@ pub func freeVarsOfTerm(t: in Term): List[String] {
   acc
 }
 
-func accumulateFreeVars(t: in Term, acc: inout List[String]): Unit {
+func accumulateFreeVars(t: in Term, acc: in List[String]): Unit {
   match t {
     case TVar(name, _) -> {
       if not nameMember(acc, name) {
@@ -903,7 +903,7 @@ func accumulateFreeVars(t: in Term, acc: inout List[String]): Unit {
   }
 }
 
-func addUnshadowed(inner: in List[String], binders: in List[SortBinder], acc: inout List[String]): Unit {
+func addUnshadowed(inner: in List[String], binders: in List[SortBinder], acc: in List[String]): Unit {
   var j = 0
   while j < inner.count {
     val n = inner[j]

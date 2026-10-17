@@ -282,7 +282,7 @@ pub func buildGreenTree(events: in List[CstEvent], tokens: in List[SpannedToken]
 /// cursor.  (`end` is a reserved keyword; the local clamp is named
 /// `stopIdx`.)
 func flushTokensToTop(
-  stackChildren: inout List[List[GreenChild]],
+  stackChildren: in List[List[GreenChild]],
   tokens: in List[SpannedToken],
   fromIdx: in Int,
   toIdx: in Int,

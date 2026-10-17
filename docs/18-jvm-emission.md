@@ -830,62 +830,56 @@ lives on a class.
 
 ### 11.2 Parameter modes — `in` / `out` / `inout`
 
-The JVM has no native `in`/`out`/`inout` parameter conventions.  Lyric
-lowers them with explicit boxing:
+The JVM has no native `in`/`out`/`inout` parameter conventions and no
+interior pointers.  An `out`/`inout` parameter refers to the caller's place
+itself (D183, #8263), so Lyric passes an object through which the callee
+reads and writes that place:
 
 | Mode    | JVM convention                                              |
 |---------|-------------------------------------------------------------|
 | `in`    | by-value for primitives; by-reference for objects (the JVM's only convention) |
-| `out`   | a single-element array `T[]` of length 1 — caller passes a fresh array, callee assigns to `arr[0]` |
-| `inout` | the same single-element array convention, with the array pre-populated |
+| `out`, `inout` | the shared interface `Lyric/Lyric$Ref$<K>` (`get()`, `set(v)`), `<K>` the descriptor letter of the place's type (`I`, `J`, `D`, …; `L` for any reference or array type) |
 
-The single-element array is the canonical Java idiom for
-out-parameter simulation (used in `java.lang.ref` and `java.util`
-internals).  We considered `Cell<T>` (a generated wrapper class) and
-`AtomicReference<T>`; `T[]` of length 1 wins because:
-- it costs one allocation (same as a `Cell`),
-- the JIT specialises array element access well,
-- it preserves the underlying primitive type (`long[]` for
-  `out Long`), avoiding box-then-unbox.
+The caller builds the reference (`emitPlaceRef`, `codegen/04_calls.l`):
 
-Front-end mode-checking (definite assignment for `out`,
-mutability for `inout`) runs unchanged on the AST; the back-end's
-only role is the array-allocation prelude and the indexed
-assignment for body operations.
+- a field at any depth, a protected type's field, or the receiver's own
+  field: a synthesised `<pkg>$Ref$<shape>` class over the receiver object
+  whose `get`/`set` read and write the field (an opaque type's through its
+  accessors), converting between the field's type and the parameter's;
+- a local: a reference to the local's one-element heap cell.  A local passed
+  by reference is hoisted to a cell for its lifetime, exactly as a local a
+  closure captures is (`runClosureCapturePrePassJvm`, which finds such
+  locals before any call is resolved, by callee name, through the
+  registry's `~byref~<name>` index);
+- the caller's own `out`/`inout` parameter: its reference as it is, or one
+  converting between the two views of the place when the callee sees it as
+  a differently erased type (a generic `T` instantiated at a primitive).
 
-**Implementation status (#1763, follow-up to the MSIL #1761).** The
-self-hosted JVM backend implements this holder-array lowering for
-**free functions**: the method descriptor declares each `out`/`inout`
-parameter as the single-element array `[T`; on entry the callee
-unwraps `holder[0]` into a plain value slot (`setupStaticParamSlotsAndHolders`
-in `codegen/06_items.l`); every assignment to the parameter both stores
-into the value slot and writes the new value through to `holder[0]`
-(`emitStoreLocalWriteThrough` in `codegen/01_types.l`), so the caller
-observes the write with no return-time epilogue; the call site
-(`lowerStaticCallWithHolders` in `codegen/04_calls.l`) allocates a holder
-pre-filled with the caller's local, passes it, and copies element 0 back
-into the local after the call. `JvmFuncSig.paramModes` carries the
-declared modes so a call site knows which arguments to wrap; the
-`FuncCtx.holderArraySlot` / `holderElemType` maps record the value-slot
-→ holder-slot / element-type bindings (parallel maps, not a
-record-valued map, per the stage-0 bootstrap hazard). Forwarding an
-`inout` parameter to a nested call is handled by the post-call readback,
-which itself writes through the holder binding so the outer holder stays
-in sync. Guarded by `lyric-compiler/jvm/out_inout_jvm_self_test.l`
-(out String/Int/Long, multiple out, inout read-modify-write, nested
-forwarding, mixed-mode), run in CI via native `lyric test --target jvm`.
+An array element is copied in and copied out (D179): the middle end has
+already rewritten it into a local holding the element's temporary.
 
-`out`/`inout` parameters on **instance / interface methods** (record,
-protected, `impl`, interface abstract/default, and async-generator
-methods) are a tracked follow-up: the interface slot's descriptor and
-the impl method's descriptor must agree on the holder shape and the
-virtual/interface dispatch site must perform the wrap/unwrap, which is
-not yet wired. Rather than silently passing such a parameter by value
-(which would drop the callee's write), the backend emits a hard compile
-error (`rejectInstanceHolderParams` in `codegen/06_items.l`). The MSIL
-backend supports the instance-method cases via byref (the companion
-`lyric-compiler/lyric/outparam_self_test.l` covers them on
-`--target dotnet`).
+The callee reads the parameter through `get()` at each use
+(`emitLoadLocalReadThrough`, refreshing a value slot the rest of the body
+reads) and writes it through `set(v)` (`emitStoreLocalWriteThrough`), so a
+write the callee makes to the place through another path is seen through
+the parameter, and nothing is copied back when the call returns: a
+protected member writes the place while it holds its lock, and a write made
+before a panic stays made.  `JvmFuncSig.refElems` carries each parameter's
+place type, which the erased interface descriptor does not spell.  The
+interfaces are emitted by every package that uses them and kept once per
+bundle, like `Lyric$Lambda`.
+
+An earlier design passed a single-element array `T[]` pre-filled with the
+place's value and copied element 0 back after the call (#1763).  It could
+not refer to a field, so a callee that also reached the place another way
+lost one of its writes, and a protected member's place was written after
+its lock had been released; D183 replaced it.
+
+Front-end mode-checking (definite assignment for `out`, a writable place for
+every `out`/`inout` argument) runs unchanged on the AST.  Instance,
+interface, protected and `impl` methods take references exactly as free
+functions do; an async generator rejects `out`/`inout` parameters, since its
+body runs after the call that passed the place has returned.
 
 ### 11.3 Closures and lambdas
 

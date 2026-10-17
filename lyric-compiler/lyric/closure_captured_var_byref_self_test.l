@@ -11,10 +11,10 @@
 //! memory (`AccessViolationException`); on `--target jvm` it copied the cell
 //! array into a holder and stored the callee's `int` result back into the
 //! slot holding the cell (`VerifyError`).  The argument now denotes the
-//! cell's element: `ldelema` on dotnet, and on the JVM the cell itself is
-//! passed as the callee's holder array, so the closure sees each write the
-//! callee makes while the call is still running, and the callee's caller sees
-//! each write the closure makes.  On dotnet that holds for every type because
+//! cell's element: `ldelema` on dotnet, and on the JVM a place reference over
+//! the cell (D183), so the closure sees each write the callee makes while
+//! the call is still running, and the callee's caller sees each write the
+//! closure makes.  On dotnet that holds for every type because
 //! a captured record, union, generic or collection `var` has a cell of its own
 //! type, not an `object[]` (#8199); the generic-receiver case is #8182.
 //!

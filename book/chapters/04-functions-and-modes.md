@@ -75,7 +75,7 @@ divmod(17, 5, quotient, remainder)
 // quotient is now 3, remainder is now 2
 ```
 
-The argument must be a writable l-value — a `var` local, another `out`/`inout` parameter, or a mutable field access (`obj.field`). You cannot pass an immutable binding (`val`/`let`/`in`), a literal, or a call result to an `out` parameter.
+The argument must be a writable l-value — a `var` local, another `out`/`inout` parameter, or a mutable field access (`obj.field`), whatever the parameter's type. You cannot pass an immutable binding (`val`/`let`/`in`), a literal, or a call result to an `out` or `inout` parameter (`T0085`).
 
 ### `inout` — read and write
 
@@ -102,7 +102,31 @@ var i = 2
 increment(scores[i])          // scores is now [10, 21, 31]
 ```
 
-The index is evaluated once, in its turn among the arguments. The element is passed by copy in and copy out: it is read into a temporary once every argument has been evaluated, the function works on the temporary, and the temporary is stored back into the element when the call returns. The array itself is never copied. An element of a `List`, a `Map` or a slice is not a place you can pass this way (`T0085`): copy it into a `var`, pass that, and store it back.
+### The parameter is the caller's place
+
+An `out` or `inout` parameter does not hold a copy of the caller's variable: it *is* the variable, or the field, for as long as the call runs. A write through the parameter is visible through every other way of reaching the place at once, and a write through another way is visible through the parameter:
+
+```lyric
+record Cell {
+  var f: Int
+}
+
+func bump(x: inout Int, c: in Cell) {
+  x = x + 1        // writes c.f, since the caller passed it
+  c.f = c.f + 1    // and x sees this write
+}
+
+val c = Cell(f = 0)
+bump(c.f, c)       // c.f is now 2
+```
+
+The same holds when one variable is passed to two parameters, when a protected type's member passes its own field on, and when a closure the callee calls writes the caller's `var`. Nothing is copied back when the call returns, so a write made before the callee panics stays made. This is the same on every target (D183); on `--target native` a closure captures a variable's value, so there a closure cannot see a callee's write to a variable it captured.
+
+A lambda that uses an `out` or `inout` parameter of its enclosing function gets the parameter's value, not the caller's place, because the lambda might run after the function has returned. Inside the lambda the parameter cannot be assigned (`T0087`) or passed on to another `out`/`inout` parameter (`T0085`); copy it into a `var` first, or make the assignment outside the lambda.
+
+### Array elements
+
+The index is evaluated once, in its turn among the arguments. Unlike every other place, the element is passed by copy in and copy out: it is read into a temporary once every argument has been evaluated, the function works on the temporary, and the temporary is stored back into the element when the call returns. The array itself is never copied. An element of a `List`, a `Map` or a slice is not a place you can pass this way (`T0085`): copy it into a `var`, pass that, and store it back.
 
 A practical example — sorting a slice in place:
 

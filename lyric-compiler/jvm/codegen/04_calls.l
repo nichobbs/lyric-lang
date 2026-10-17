@@ -494,7 +494,7 @@ func lowerExternTargetBody(decl: in FunctionDecl, ctx: in FuncCtx, insns: in Lis
       if not isStatic and decl.params.count > 0 {
         extRecvTy = typeExprToJvm(decl.params[0].ty, ctx.pkgName)
         match lookupSlot(ctx, decl.params[0].name) {
-          case Some(s) -> emitLoad(insns, s, extRecvTy)
+          case Some(s) -> emitLoadLocalReadThrough(ctx, insns, s, extRecvTy)
           case None -> insns.add(LAconstNull)
         }
         extRecvSlot = allocSlot(ctx, "__ext_recv_" + freshLabel(ctx), extRecvTy)
@@ -507,7 +507,7 @@ func lowerExternTargetBody(decl: in FunctionDecl, ctx: in FuncCtx, insns: in Lis
         val p = decl.params[li]
         val paramTy = typeExprToJvm(p.ty, ctx.pkgName)
         match lookupSlot(ctx, p.name) {
-          case Some(s) -> emitLoad(insns, s, paramTy)
+          case Some(s) -> emitLoadLocalReadThrough(ctx, insns, s, paramTy)
           case None -> insns.add(LAconstNull)
         }
         val declDesc = if argJ < f5ArgDescs.count { f5ArgDescs[argJ] } else { jvmTypeToDescStr(paramTy) }
@@ -985,7 +985,8 @@ func lowerLambdaInvoke(ctx: in FuncCtx, insns: in List[LInsn], name: in String, 
   // reached `BAdd`/`reconcileCmpOperands` with no anchor and either
   // mis-dispatched to string concatenation or, after the #6398 fail-loud
   // guard, panicked instead of computing the correct value.
-  insns.add(LAload(slot = slot))
+  val slotTy = match lookupType(ctx, name) { case Some(t) -> t; case None -> JRef(className = "java/lang/Object") }
+  emitLoadLocalReadThrough(ctx, insns, slot, slotTy)
   lowerLambdaInvokeTail(ctx, insns, args, mapGet(ctx.funcValRetTypes, name))
 }
 
@@ -2059,7 +2060,8 @@ func ensureSamAdapterClass(ctx: in FuncCtx, ifaceBin: in String, sam: in ClassMe
       methodParams = paramTys,
       methodRet = retTy,
       bodyInsns = body,
-      bodyMaxLocals = 0
+      bodyMaxLocals = 0,
+      extraMethods = newList()
     )
   )
   adapterClass
@@ -3440,27 +3442,30 @@ func anyHolderMode(modes: in List[ParamMode]): Bool {
 }
 
 // Emit a static call whose callee has one or more `out`/`inout` parameters
-// (#1763).  Each holder argument must be an assignable local (or a forwarded
-// `out`/`inout` parameter of the current function); it is wrapped in a fresh
-// single-element holder array pre-filled with the local's current value, the
-// array is passed in that argument position, and after the call the callee's
-// write to `holder[0]` is copied back into the caller's local.
+// (#1763, D183).  Each such argument is passed as a reference to its place
+// (`Lyric$Ref$<K>`, see the place-reference section of 01_types.l): the
+// callee reads and writes the place itself while the call runs, so a write
+// the callee makes to the place through any other path (a field of an object
+// it was also given, a closure it calls, a second argument naming the same
+// place) is seen through the parameter, and nothing is copied back after the
+// call.  Inside a protected member the writes therefore happen while the
+// member holds its lock.
 //
 // Evaluation order (D171, #8171): the arguments are evaluated once each, in
 // order, a place's object path included — `prepareHolderPlace` lowers a
 // field-access argument's receiver (`cells[at(0)]` in `cells[at(0)].v`) into
 // a temp slot at the argument's own turn, and every by-value argument is
-// lowered into a temp slot at its turn.  Only then are the holder arrays
-// built (`buildHolderArrays`), each reading its place's value as it stands
-// just before the call, since the callee reads and writes the place itself.
-// The push loop then reloads the temps in declaration order.  `callArgs` is
-// already reordered/defaulted to match `sig.params`.
-// Record one holder argument's place in the parallel bookkeeping lists.  An
-// assignable local needs nothing evaluated; a field access `obj.field`
-// (#3628, JVM analog of MSIL #3547) lowers its receiver into its own temp
-// slot and records the slot + class, which the holder is filled from and
-// `writeBackHolderArg` `putfield`s through.  `hRecvSlot` is -1 (and
-// `hRecvCls` "") for the local case.
+// lowered into a temp slot at its turn.  Only then are the references built
+// (`buildPlaceRefs`); building one reads nothing, since the callee reads the
+// place when it uses the parameter.  The push loop then reloads the temps in
+// declaration order.  `callArgs` is already reordered/defaulted to match
+// `sig.params`.
+//
+// Record one by-reference argument's place in the parallel bookkeeping lists.
+// A local needs nothing evaluated; a field access `obj.field` (#3628, JVM
+// analog of MSIL #3547) lowers its receiver into its own temp slot and
+// records the slot + class, which the field reference is built over.
+// `hRecvSlot` is -1 (and `hRecvCls` "") for the local case.
 func prepareHolderPlace(
   ctx: in FuncCtx,
   insns: in List[LInsn],
@@ -3487,7 +3492,7 @@ func prepareHolderPlace(
       case None -> {
         // A bare field of the receiver inside an instance method (a
         // protected-type member passing its own field on, #8184) is the
-        // place `this.<name>`, written back through `this` like `self.<name>`.
+        // place `this.<name>`, referred to through `this` like `self.<name>`.
         val fieldCls = match ctx.selfClass {
           case Some(cls) -> match selfFieldType(ctx, name) { case Some(_) -> cls; case None -> "" }
           case None -> ""
@@ -3536,9 +3541,9 @@ func prepareHolderPlace(
   }
 }
 
-// Build each recorded place's single-element holder array, filled with the
-// place's current value, into a temp slot appended to `hTempSlot`.
-func buildHolderArrays(
+// Build each recorded place's reference into a temp slot appended to
+// `hTempSlot`.
+func buildPlaceRefs(
   ctx: in FuncCtx,
   insns: in List[LInsn],
   calleeLabel: in String,
@@ -3552,67 +3557,315 @@ func buildHolderArrays(
   var k = 0
   while k < hArgIdx.count {
     val elemTy = hElemTy[k]
-    val name = hBackName[k]
-    // A closure-captured `var` (#8189): its slot holds its heap cell, which
-    // `prepareCellHolderArg` passes as the holder itself, or copies into one.
-    val cellSlot = if hRecvSlot[k] >= 0 {
-      0 - 1
-    } else {
-      match mapGet(ctx.hoistedCellSlot, name) {
-        case Some(cs) -> cs
-        case None -> 0 - 1
-      }
-    }
-    if cellSlot >= 0 {
-      prepareCellHolderArg(ctx, insns, name, cellSlot, elemTy)
-    } else {
-      buildHolderFromPlace(ctx, insns, calleeLabel, k, elemTy, name, hRecvSlot, hRecvCls)
-    }
-    // Stash the array reference in a temp slot, typed precisely so the
-    // StackMapTable verifies the later aload + element load.
-    val tmpSlot = allocSlot(ctx, "__holderarg$" + calleeLabel + "$" + toString(hArgIdx[k]), holderArrayType(elemTy))
-    insns.add(LAstoreAs(slot = tmpSlot, className = holderArrayDescriptor(elemTy)))
+    emitPlaceRef(ctx, insns, calleeLabel, elemTy, hBackName[k], hRecvSlot[k], hRecvCls[k])
+    val iface = refIfaceName(elemTy)
+    val tmpSlot = allocSlot(ctx, "__placeref$" + calleeLabel + "$" + toString(hArgIdx[k]), JRef(className = iface))
+    insns.add(LAstoreAs(slot = tmpSlot, className = iface))
     hTempSlot.add(tmpSlot)
     k = k + 1
   }
 }
 
-// Push a fresh single-element holder for place `k`, filled with the place's
-// current value: a field through its saved receiver, or a plain local.
-func buildHolderFromPlace(
+// Push the reference to one place, for a parameter whose place has type
+// `elemTy` (the callee's view of it):
+//  - a field `recv.name` (`recvSlot >= 0`): a reference reading and writing
+//    the field of the object in `recvSlot`;
+//  - an `out`/`inout` parameter of the current function: its own reference,
+//    passed on as it is when the callee sees the place as the same JVM type,
+//    or wrapped in a reference that converts between the two views;
+//  - a local: a reference to the heap cell the local lives in.  Every local
+//    passed by reference is hoisted to a cell (`runClosureCapturePrePassJvm`),
+//    so its value has one location the callee, the caller and any closure all
+//    reach, for as long as the local lives.
+func emitPlaceRef(
   ctx: in FuncCtx,
   insns: in List[LInsn],
   calleeLabel: in String,
-  k: in Int,
   elemTy: in JvmType,
   name: in String,
-  hRecvSlot: in List[Int],
-  hRecvCls: in List[String],
+  recvSlot: in Int,
+  recvCls: in String,
 ): Unit {
-  // holder := new [elemTy](1); holder[0] := <current value of the place>
-  emitNewHolder(insns, elemTy)
-  insns.add(LDup)
-  insns.add(LIconst(v = 0))
-  if hRecvSlot[k] >= 0 {
-    val cls = hRecvCls[k]
-    val fty = match recordFieldType(ctx, cls, name) {
+  if recvSlot >= 0 {
+    val fty = match recordFieldType(ctx, recvCls, name) {
       case Some(t) -> t
       case None -> JRef(className = "java/lang/Object")
     }
-    emitLoad(insns, hRecvSlot[k], JRef(className = cls))
-    emitFieldLoadOpaqueAware(ctx, insns, cls, name, fty)
-    coerceArgToCtx(ctx, insns, fty, elemTy)
-  } else {
-    match lookupSlot(ctx, name) {
-      case Some(srcSlot) -> {
-        val srcTy = match lookupType(ctx, name) { case Some(t) -> t; case None -> elemTy }
-        emitLoad(insns, srcSlot, srcTy)
-        coerceArgToCtx(ctx, insns, srcTy, elemTy)
-      }
-      case None -> panic("Jvm.Codegen: out/inout argument '" + name + "' to '" + calleeLabel + "' lost its local")
-    }
+    emitLoad(insns, recvSlot, JRef(className = recvCls))
+    emitRefObject(ctx, insns, 0, JRef(className = recvCls), recvCls, name, fty, elemTy)
+    return
   }
-  emitHolderElemStore(insns, elemTy)
+  match mapGet(ctx.hoistedCellSlot, name) {
+    case Some(cellSlot) -> {
+      val cellElemTy = match mapGet(ctx.hoistedCellType, name) { case Some(t) -> t; case None -> elemTy }
+      val cellType = JArray(elem = cellElemTy)
+      emitLoad(insns, cellSlot, cellType)
+      emitRefObject(ctx, insns, 1, cellType, "", "", cellElemTy, elemTy)
+      return
+    }
+    case None -> ()
+  }
+  match lookupSlot(ctx, name) {
+    case Some(slot) -> {
+      match mapGet(ctx.refParamSlot, slot) {
+        case Some(refSlot) -> {
+          val placeTy = match mapGet(ctx.refParamElemType, slot) { case Some(t) -> t; case None -> elemTy }
+          val inner = JRef(className = refIfaceName(placeTy))
+          emitLoad(insns, refSlot, inner)
+          if not refViewsAgree(placeTy, elemTy) {
+            emitRefObject(ctx, insns, 2, inner, "", "", placeTy, elemTy)
+          }
+        }
+        case None -> panic(
+          "Jvm.Codegen: internal error: local '" + name + "' passed to an out/inout parameter of '" +
+            calleeLabel +
+            "' was not hoisted to a heap cell (the by-reference pre-pass `runClosureCapturePrePassJvm` missed it)"
+        )
+      }
+    }
+    case None -> panic("Jvm.Codegen: out/inout argument '" + name + "' to '" + calleeLabel + "' lost its local")
+  }
+}
+
+// True when a reference to a place of type `placeTy` can be handed, as it is,
+// to a callee that sees the place as type `elemTy`: the same type, or two
+// reference types the callee only narrows with a `checkcast` when it reads
+// (`emitRefGet`).  An array, or a primitive seen as a boxed type-parameter
+// value, needs a converting reference instead.
+func refViewsAgree(placeTy: in JvmType, elemTy: in JvmType): Bool {
+  if placeTy == elemTy {
+    return true
+  }
+  match elemTy {
+    case JRef(toCls) -> match placeTy {
+      case JRef(_) -> true
+      case JArray(_) -> toCls == "java/lang/Object"
+      case _ -> false
+    }
+    case _ -> false
+  }
+}
+
+// Wrap the object on the stack in a place reference for a parameter that
+// sees the place as `elemTy`, and push the reference.  `accessKind` says what
+// the object (of type `oType`) is and how the place of type `placeTy` is
+// reached from it: 0, a field `fieldName` of class `fieldOwner`; 1, element 0
+// of a local's heap cell; 2, another place reference.  The reference class is
+// synthesised once per package per shape (`placeRefClass`).
+func emitRefObject(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  accessKind: in Int,
+  oType: in JvmType,
+  fieldOwner: in String,
+  fieldName: in String,
+  placeTy: in JvmType,
+  elemTy: in JvmType,
+): Unit {
+  val cls = placeRefClass(ctx, accessKind, oType, fieldOwner, fieldName, placeTy, elemTy)
+  val oSlot = allocSlot(ctx, "__placeref_o_" + freshLabel(ctx), oType)
+  emitStore(insns, oSlot, oType)
+  insns.add(LNew(className = cls))
+  insns.add(LDup)
+  emitLoad(insns, oSlot, oType)
+  val ctorPs: List[JvmType] = newList()
+  ctorPs.add(oType)
+  insns.add(LInvokespecial(owner = cls, name = "<init>", params = ctorPs, ret = JVoid))
+}
+
+// The package's place-reference class for one shape (see `emitRefObject`),
+// synthesised on first use into `ctx.closureAcc` as `<pkg>$Ref$<n>`: a class
+// implementing `Lyric$Ref$<K>` over one field `$o`, whose `get` reads the
+// place and converts it to the callee's view, and whose `set` converts the
+// callee's value back and writes the place.  The conversions are the ones a
+// by-value argument and an assignment make (`coerceArgToCtx`,
+// `coerceHolderWriteBack`).
+func placeRefClass(
+  ctx: in FuncCtx,
+  accessKind: in Int,
+  oType: in JvmType,
+  fieldOwner: in String,
+  fieldName: in String,
+  placeTy: in JvmType,
+  elemTy: in JvmType,
+): String {
+  val iface = refIfaceName(elemTy)
+  markRefIface(ctx, elemTy)
+  // The name spells the shape, so a second use of the shape finds the class.
+  val shape = toString(accessKind) + "|" + typeDescriptor(oType) + "|" + fieldOwner + "|" + fieldName + "|" +
+    typeDescriptor(placeTy) +
+    "|" +
+    typeDescriptor(elemTy)
+  val cls = ctx.pkgName + "$Ref$" + mangleRefShape(shape)
+  var i = 0
+  while i < ctx.closureAcc.count {
+    if ctx.closureAcc[i].closureClass == cls {
+      return cls
+    }
+    i = i + 1
+  }
+  val valTy = refValueType(elemTy)
+  // `get()`: slot 0 is `this`.
+  val gctx = placeRefBodyCtx(ctx, cls, valTy)
+  allocSlot(gctx, "__ref_this", JRef(className = cls))
+  val g: List[LInsn] = newList()
+  g.add(LAload(slot = 0))
+  g.add(LGetfield(owner = cls, name = "$o", t = oType))
+  emitPlaceRead(gctx, g, accessKind, fieldOwner, fieldName, placeTy)
+  coerceArgToCtx(gctx, g, placeTy, elemTy)
+  emitReturn(g, valTy)
+  // `set(v)`: slot 0 is `this`, slot 1 the value.  The value is converted
+  // into a temp before `$o` is pushed, so a conversion that branches runs on
+  // an empty operand stack.
+  val sctx = placeRefBodyCtx(ctx, cls, JVoid)
+  allocSlot(sctx, "__ref_this", JRef(className = cls))
+  val vSlot = allocSlot(sctx, "__ref_v", valTy)
+  val st: List[LInsn] = newList()
+  emitLoad(st, vSlot, valTy)
+  match elemTy {
+    case JRef(ecls) -> {
+      if ecls != "java/lang/Object" {
+        st.add(LCheckcast(className = ecls))
+      }
+    }
+    case JArray(_) -> st.add(LCheckcast(className = typeDescriptor(elemTy)))
+    case _ -> ()
+  }
+  coerceHolderWriteBack(sctx, st, elemTy, placeTy, "ref")
+  val tSlot = allocSlot(sctx, "__ref_t", placeTy)
+  emitStore(st, tSlot, placeTy)
+  st.add(LAload(slot = 0))
+  st.add(LGetfield(owner = cls, name = "$o", t = oType))
+  if accessKind == 1 {
+    st.add(LIconst(v = 0))
+  }
+  emitLoad(st, tSlot, placeTy)
+  emitPlaceWrite(sctx, st, accessKind, fieldOwner, fieldName, placeTy)
+  st.add(LReturn)
+  val setPs: List[JvmType] = newList()
+  setPs.add(valTy)
+  val setFn = LFunc(
+    flags = ACC_PUBLIC,
+    name = "set",
+    params = setPs,
+    ret = JVoid,
+    insns = st,
+    maxStack = 16,
+    maxLocals = sctx.slotTicker.count
+  )
+  val extra: List[LFunc] = newList()
+  extra.add(setFn)
+  val caps: List[LClosureCapture] = newList()
+  caps.add(LClosureCapture(captureName = "$o", captureType = oType))
+  val noPs: List[JvmType] = newList()
+  ctx.closureAcc.add(
+    LClosure(
+      closureClass = cls,
+      ifaceClass = iface,
+      ifaceMethod = "get",
+      captures = caps,
+      methodParams = noPs,
+      methodRet = valTy,
+      bodyInsns = g,
+      bodyMaxLocals = gctx.slotTicker.count,
+      extraMethods = extra
+    )
+  )
+  cls
+}
+
+// `shape` spelled with only the characters a JVM class name may contain,
+// injectively: `_` escapes itself and each character a name may not hold.
+func mangleRefShape(shape: in String): String {
+  var acc = ""
+  var i = 0
+  while i < shape.length {
+    val c = shape[i]
+    acc = acc +
+      (
+        if c == '_' {
+          "__"
+        } else if c == '/' {
+          "_s"
+        } else if c == ';' {
+          "_e"
+        } else if c == '[' {
+          "_a"
+        } else if c == '.' {
+          "_d"
+        } else if c == '|' {
+          "_p"
+        } else if c == '<' {
+          "_l"
+        } else if c == '>' {
+          "_g"
+        } else {
+          shape.substring(i, 1)
+        }
+      )
+    i = i + 1
+  }
+  acc
+}
+
+// A fresh `FuncCtx` for a method body of the place-reference class `cls`.
+func placeRefBodyCtx(ctx: in FuncCtx, cls: in String, retTy: in JvmType): FuncCtx {
+  makeFuncCtx(
+    ctx.pkgName,
+    cls,
+    ctx.funcSigs,
+    ctx.caseFields,
+    ctx.ctors,
+    ctx.externTypes,
+    ctx.autoFfi,
+    retTy,
+    ctx.moduleVals,
+    ctx.configFieldTypes,
+    ctx.opaqueTypes,
+    ctx.closureAcc,
+    ctx.usedRuntimeHelpers,
+    ctx.importsStdString,
+    ctx.aliasTargets
+  )
+}
+
+// Read the place from the object on the stack (see `emitRefObject` for
+// `accessKind`), leaving its value of type `placeTy`.
+func emitPlaceRead(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  accessKind: in Int,
+  fieldOwner: in String,
+  fieldName: in String,
+  placeTy: in JvmType,
+): Unit {
+  if accessKind == 0 {
+    emitFieldLoadOpaqueAware(ctx, insns, fieldOwner, fieldName, placeTy)
+  } else if accessKind == 1 {
+    insns.add(LIconst(v = 0))
+    emitArrayLoad(insns, placeTy)
+  } else {
+    emitRefGet(ctx, insns, placeTy)
+  }
+}
+
+// Write the place: the stack holds the object (and, for a cell, the index 0)
+// and the value of type `placeTy`.
+func emitPlaceWrite(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  accessKind: in Int,
+  fieldOwner: in String,
+  fieldName: in String,
+  placeTy: in JvmType,
+): Unit {
+  if accessKind == 0 {
+    emitFieldStoreOpaqueAware(ctx, insns, fieldOwner, fieldName, placeTy)
+  } else if accessKind == 1 {
+    emitArrayStore(insns, placeTy)
+  } else {
+    emitRefSet(ctx, insns, placeTy)
+  }
 }
 
 // Lower the by-value argument `arg` for parameter `pi` into a fresh temp slot
@@ -3649,8 +3902,8 @@ func stashByValueArg(
   bvIdx.add(pi)
 }
 
-// Evaluate every argument of a holder call in order (holder places and
-// by-value temps), then build the holder arrays.  `boxPrimArrays` is
+// Evaluate every argument of a by-reference call in order (places and
+// by-value temps), then build the place references.  `boxPrimArrays` is
 // `stashByValueArg`'s.
 func lowerHolderCallArgs(
   ctx: in FuncCtx,
@@ -3672,7 +3925,7 @@ func lowerHolderCallArgs(
   while bi < callArgs.count {
     val isHolder = if bi < sig.paramModes.count { isHolderMode(sig.paramModes[bi]) } else { false }
     if isHolder {
-      val elemTy = match sig.params[bi] { case JArray(el) -> el; case other -> other }
+      val elemTy = if bi < sig.refElems.count { sig.refElems[bi] } else { sig.params[bi] }
       prepareHolderPlace(
         ctx,
         insns,
@@ -3691,10 +3944,10 @@ func lowerHolderCallArgs(
     }
     bi = bi + 1
   }
-  buildHolderArrays(ctx, insns, calleeLabel, hArgIdx, hElemTy, hBackName, hRecvSlot, hRecvCls, hTempSlot)
+  buildPlaceRefs(ctx, insns, calleeLabel, hArgIdx, hElemTy, hBackName, hRecvSlot, hRecvCls, hTempSlot)
 }
 
-// Push a holder call's prepared arguments in declaration order.
+// Push a by-reference call's prepared arguments in declaration order.
 func pushHolderCallArgs(
   insns: in List[LInsn],
   sig: in JvmFuncSig,
@@ -3718,69 +3971,18 @@ func pushHolderCallArgs(
   }
 }
 
-// True when the heap cell (epic #1877 Stage 2) of the closure-captured `var` `name`
-// can itself be passed as the holder array of an `out`/`inout` parameter of
-// element type `elemTy` (#8189): both are single-element arrays, so when the
-// element types agree the callee's holder IS the variable's storage, and each
-// write the callee makes (`emitStoreLocalWriteThrough`) is visible to the
-// closures sharing the cell as it happens.  A reference-typed cell also
-// serves an erased `Object[]` holder (a generic record type, or a type
-// parameter, in the callee's signature, #8199): JVM arrays are covariant, so
-// a `Gen[]` cell is an `Object[]`, and the callee only stores values of the
-// variable's own type into it.  A primitive cell (`int[]`) cannot be an
-// `Object[]`; that shape alone keeps the copy-in/copy-out of
-// `prepareCellHolderArg`.
-func cellAliasesHolder(ctx: in FuncCtx, name: in String, elemTy: in JvmType): Bool {
-  match mapGet(ctx.hoistedCellType, name) {
-    case Some(cellElemTy) -> {
-      if cellElemTy == elemTy {
-        return true
-      }
-      val holderIsObject = match elemTy { case JRef(cls) -> cls == "java/lang/Object"; case _ -> false }
-      val cellIsRef = match cellElemTy { case JRef(_) -> true; case JArray(_) -> true; case _ -> false }
-      holderIsObject and cellIsRef
-    }
-    case None -> false
-  }
-}
-
-// Push the holder array for an `out`/`inout` argument naming the
-// closure-captured `var` `name`, whose slot holds its heap cell, not its value
-// (#8189).  The cell is passed as the holder when `cellAliasesHolder`; when
-// the element types differ (an erased generic parameter's `Object` holder for
-// a `String` or record cell) the holder is a fresh array pre-filled from the
-// cell, and `writeBackHolderArg` copies the result back into the cell.
-func prepareCellHolderArg(
-  ctx: in FuncCtx, insns: in List[LInsn], name: in String, cellSlot: in Int, elemTy: in JvmType
-): Unit {
-  val cellElemTy = match mapGet(ctx.hoistedCellType, name) { case Some(t) -> t; case None -> elemTy }
-  val cellType = JArray(elem = cellElemTy)
-  if cellAliasesHolder(ctx, name, elemTy) {
-    emitLoad(insns, cellSlot, cellType)
-    return
-  }
-  emitNewHolder(insns, elemTy)
-  insns.add(LDup)
-  insns.add(LIconst(v = 0))
-  emitLoad(insns, cellSlot, cellType)
-  insns.add(LIconst(v = 0))
-  emitArrayLoad(insns, cellElemTy)
-  coerceArgToCtx(ctx, insns, cellElemTy, elemTy)
-  emitHolderElemStore(insns, elemTy)
-}
-
 // Convert a genuine reference array (top of stack, e.g. the `Object[]` a
 // `slice[T]` value is passed as at a call boundary) into a fresh `ArrayList`
 // wrapping its elements, via `new ArrayList(Arrays.asList(arr))`.  Needs a
 // temp slot to reorder the stack for the `invokespecial <init>` call, so it
 // lives here (where `ctx` is available) rather than in `coerceArgTo` (which
-// has no `FuncCtx` to allocate one).  #5842 JVM parity: the write-back half
-// of the `out`/`inout` holder protocol re-reads the holder's `Object[]`
-// content after the callee wrote to it, but a `slice[T]` local is
-// `ArrayList`-backed at the value level (`TSlice` only erases to `JArray` at
-// the FFI/signature boundary, #4700) — storing the raw array back into an
-// `ArrayList`-typed local slot faulted at class-verification time
-// (`VerifyError` on the later `ArrayList.get(...)` call).
+// has no `FuncCtx` to allocate one).  #5842 JVM parity: a callee writes an
+// `out`/`inout` `slice[T]` place as the `Object[]` its parameter type is,
+// but a `slice[T]` local can be `ArrayList`-backed at the value level
+// (`TSlice` only erases to `JArray` at the FFI/signature boundary, #4700) —
+// storing the raw array into an `ArrayList`-typed place faulted at
+// class-verification time (`VerifyError` on the later `ArrayList.get(...)`
+// call).
 func emitArrayToArrayListJvm(ctx: in FuncCtx, insns: in List[LInsn], label: in String): Unit {
   val asListPs: List[JvmType] = newList()
   asListPs.add(JArray(elem = JRef(className = "java/lang/Object")))
@@ -3792,7 +3994,7 @@ func emitArrayToArrayListJvm(ctx: in FuncCtx, insns: in List[LInsn], label: in S
       ret = JRef(className = "java/util/List")
     )
   )
-  val listSlot = allocSlot(ctx, "__holder_wb_list$" + label, JRef(className = "java/util/List"))
+  val listSlot = allocSlot(ctx, "__ref_list$" + label, JRef(className = "java/util/List"))
   insns.add(LAstoreAs(slot = listSlot, className = "java/util/List"))
   insns.add(LNew(className = "java/util/ArrayList"))
   insns.add(LDup)
@@ -3802,8 +4004,9 @@ func emitArrayToArrayListJvm(ctx: in FuncCtx, insns: in List[LInsn], label: in S
   insns.add(LInvokespecial(owner = "java/util/ArrayList", name = "<init>", params = alInitPs, ret = JVoid))
 }
 
-// Coerce a holder-loaded value (typed `fromTy`) into `toTy` for write-back,
-// routing an array-shaped value flowing into an `ArrayList`-typed target
+// Coerce a value a callee writes through a place reference (typed `fromTy`,
+// the callee's view of the place) into the place's own type `toTy`, routing
+// an array-shaped value flowing into an `ArrayList`-typed target
 // through `emitArrayToArrayListJvm` (the direction `coerceArgTo` does not
 // handle, #5842) and falling back to `coerceArgTo` for every other shape.
 func coerceHolderWriteBack(
@@ -3827,67 +4030,6 @@ func coerceHolderWriteBack(
       }
     }
     case _ -> coerceArgTo(insns, fromTy, toTy)
-  }
-}
-
-// Copy a holder's element 0 back to its target after the call: the caller's
-// local (write-through so a forwarded out/inout parameter's own holder stays
-// in sync) or, for a field-access argument (#3628), `putfield` through the
-// stashed receiver.
-func writeBackHolderArg(
-  ctx: in FuncCtx,
-  insns: in List[LInsn],
-  ts: in Int,
-  elemTy: in JvmType,
-  name: in String,
-  recvSlot: in Int,
-  recvCls: in String,
-): Unit {
-  if recvSlot >= 0 {
-    val fty = match recordFieldType(ctx, recvCls, name) {
-      case Some(t) -> t
-      case None -> JRef(className = "java/lang/Object")
-    }
-    emitLoad(insns, recvSlot, JRef(className = recvCls))
-    insns.add(LAload(slot = ts))
-    insns.add(LIconst(v = 0))
-    emitHolderElemLoad(insns, elemTy)
-    coerceHolderWriteBack(ctx, insns, elemTy, fty, name + "$" + toString(ts))
-    emitFieldStoreOpaqueAware(ctx, insns, recvCls, name, fty)
-    return
-  }
-  match mapGet(ctx.hoistedCellSlot, name) {
-    case Some(cellSlot) -> {
-      // A closure-captured `var` (#8189): nothing to copy when its cell was
-      // the holder; otherwise store the holder's element into the cell.
-      if not cellAliasesHolder(ctx, name, elemTy) {
-        val cellElemTy = match mapGet(ctx.hoistedCellType, name) { case Some(t) -> t; case None -> elemTy }
-        val cellType = JArray(elem = cellElemTy)
-        val vSlot = allocSlot(ctx, "__holder_wb_cell$" + name + "$" + toString(ts), cellElemTy)
-        insns.add(LAload(slot = ts))
-        insns.add(LIconst(v = 0))
-        emitHolderElemLoad(insns, elemTy)
-        coerceHolderWriteBack(ctx, insns, elemTy, cellElemTy, name + "$" + toString(ts))
-        emitStore(insns, vSlot, cellElemTy)
-        emitLoad(insns, cellSlot, cellType)
-        insns.add(LIconst(v = 0))
-        emitLoad(insns, vSlot, cellElemTy)
-        emitArrayStore(insns, cellElemTy)
-      }
-      return
-    }
-    case None -> ()
-  }
-  match lookupSlot(ctx, name) {
-    case Some(destSlot) -> {
-      val destTy = match lookupType(ctx, name) { case Some(t) -> t; case None -> elemTy }
-      insns.add(LAload(slot = ts))
-      insns.add(LIconst(v = 0))
-      emitHolderElemLoad(insns, elemTy)
-      coerceHolderWriteBack(ctx, insns, elemTy, destTy, name + "$" + toString(ts))
-      emitStoreLocalWriteThrough(ctx, insns, destSlot, destTy)
-    }
-    case None -> ()
   }
 }
 
@@ -3942,13 +4084,6 @@ func lowerStaticCallWithHolders(
   insns.add(
     LInvokestatic(owner = sig.owner, name = staticCallJvmName(sig, funcName), params = sig.params, ret = sig.ret)
   )
-  // Copy each holder's element 0 back into its target (caller local or
-  // field-access receiver, #3628).
-  var ri = 0
-  while ri < hArgIdx.count {
-    writeBackHolderArg(ctx, insns, hTempSlot[ri], hElemTy[ri], hBackName[ri], hRecvSlot[ri], hRecvCls[ri])
-    ri = ri + 1
-  }
   narrowStaticCallResult(ctx, insns, sig)
 }
 
@@ -3974,8 +4109,9 @@ func anyRefArrayParam(params: in List[JvmType]): Bool {
   false
 }
 
-// Linear lookup of the temp slot prepared for the holder argument at call-arg
-// index `argIdx` (the parallel-list companion to `lowerStaticCallWithHolders`).
+// Linear lookup of the temp slot prepared for the by-reference (or by-value)
+// argument at call-arg index `argIdx` (the parallel-list companion to
+// `lowerStaticCallWithHolders`).
 func holderTempSlotFor(hArgIdx: in List[Int], hTempSlot: in List[Int], argIdx: in Int): Int {
   var i = 0
   while i < hArgIdx.count {
@@ -3984,7 +4120,7 @@ func holderTempSlotFor(hArgIdx: in List[Int], hTempSlot: in List[Int], argIdx: i
     }
     i = i + 1
   }
-  panic("Jvm.Codegen: holder temp slot not found for argument index " + toString(argIdx))
+  panic("Jvm.Codegen: argument temp slot not found for argument index " + toString(argIdx))
 }
 
 // Emit a virtual (or interface) method call whose callee has one or more
@@ -4004,8 +4140,8 @@ func holderTempSlotFor(hArgIdx: in List[Int], hTempSlot: in List[Int], argIdx: i
 // site (#3604).  This function used to hard-code `invokevirtual`
 // unconditionally, so ANY `out`/`inout`-parameter interface method dispatched
 // through an interface-typed binding or parameter (abstract, `impl`-overridden
-// or a default `IMFunc` body alike) crashed at runtime — the holder path is
-// reached before the non-holder path's `isIface` check ever runs.
+// or a default `IMFunc` body alike) crashed at runtime — the by-reference path
+// is reached before the by-value path's `isIface` check ever runs.
 func lowerVirtualCallWithHolders(
   ctx: in FuncCtx,
   insns: in List[LInsn],
@@ -4040,10 +4176,8 @@ func lowerVirtualCallWithHolders(
   )
   pushHolderCallArgs(insns, sig, args.count, hArgIdx, hTempSlot, bvIdx, bvSlots)
   // A `Self` return narrows against the dispatch class exactly as the
-  // non-holder path does (#6431/#6437) — the checkcast must land right
-  // after the invoke, while the return value is top-of-stack, BEFORE the
-  // holder write-backs run (they push/pop their own operands above it).
-  val retNarrowed = if sig.isIface {
+  // by-value path does (#6431/#6437), right after the invoke.
+  if sig.isIface {
     insns.add(
       LInvokeinterface(
         owner = owner,
@@ -4058,12 +4192,6 @@ func lowerVirtualCallWithHolders(
     insns.add(LInvokevirtual(owner = owner, name = methodName, params = sig.params, ret = sig.ret))
     narrowSelfCallResult(insns, sig, owner)
   }
-  var ri = 0
-  while ri < hArgIdx.count {
-    writeBackHolderArg(ctx, insns, hTempSlot[ri], hElemTy[ri], hBackName[ri], hRecvSlot[ri], hRecvCls[ri])
-    ri = ri + 1
-  }
-  retNarrowed
 }
 
 // Resolve a general (non-construction, non-self) call's `JvmFuncSig` from the
@@ -4409,7 +4537,7 @@ func lowerGeneralStaticCall(
         }
       }
       val callArgs = reorderAndFillJvmArgs(sig, args)
-      // `out`/`inout` parameters need holder-array wrapping + write-back (#1763).
+      // `out`/`inout` parameters pass their places by reference (#1763, D183).
       if anyHolderMode(sig.paramModes) {
         return lowerStaticCallWithHolders(ctx, insns, funcName, sig, callArgs)
       }
@@ -5840,7 +5968,8 @@ func lowerMethodCall(
   // real return type) rather than the `()Object` guess — which would mis-resolve
   // a `void` entry like `c.increment()` to a non-existent `()Object` method.
   // When the sig has out/inout params, route through `lowerVirtualCallWithHolders`
-  // so the call site wraps/unwraps holder arrays (#1763).
+  // so the call site passes each such argument's place by reference (#1763,
+  // D183).
   match recvTy {
     case JRef(cls) -> {
       match methodSigJvm(ctx, cls, memberName, siteKey, args.count) {

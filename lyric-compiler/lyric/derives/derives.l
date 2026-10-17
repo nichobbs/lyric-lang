@@ -1081,7 +1081,7 @@ func deriveJsonRecord(
   decl: in RecordDecl,
   vis: in Option[Visibility],
   existingItems: in List[Item],
-  synths: inout List[Item],
+  synths: in List[Item],
   jsonTypes: in Map[String, Bool],
 ) {
   addIfNew(synths, existingItems, synthesizeToJsonRecord(typeName, decl, vis), typeName + ".toJson")
@@ -1581,7 +1581,7 @@ func funcAlreadyExists(items: in List[Item], name: in String): Bool {
 // must not duplicate the synthesised helpers).  Also checks `synths` so
 // that a type with both a `derives X` clause and a `@derive(X)` annotation
 // does not add the same helper twice in one pass.
-func addIfNew(synths: inout List[Item], existingItems: in List[Item], candidate: in Item, funcName: in String) {
+func addIfNew(synths: in List[Item], existingItems: in List[Item], candidate: in Item, funcName: in String) {
   if not funcAlreadyExists(existingItems, funcName) and not funcAlreadyExists(synths, funcName) {
     synths.add(candidate)
   }
@@ -1590,7 +1590,7 @@ func addIfNew(synths: inout List[Item], existingItems: in List[Item], candidate:
 func deriveItem(
   item: in Item,
   existingItems: in List[Item],
-  synths: inout List[Item],
+  synths: in List[Item],
   distincts: in Map[String, String],
   jsonTypes: in Map[String, Bool],
 ) {
@@ -1709,7 +1709,7 @@ func deriveItem(
 // ones (an imported package's `IDistinctType` items, #3287) so @derive(Ord)
 // fields typed as a distinct type resolve through to their ordering-capable
 // primitive regardless of which package the distinct type was declared in.
-func collectDistinctsFromItems(items: in List[Item], distincts: inout Map[String, String]) {
+func collectDistinctsFromItems(items: in List[Item], distincts: in Map[String, String]) {
   var di = 0
   while di < items.count {
     match items[di].kind {

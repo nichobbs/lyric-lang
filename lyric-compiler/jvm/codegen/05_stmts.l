@@ -339,7 +339,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                   // Compound assignment: read-combine-store through the shared
                   // `emitCompoundCombineJvm` (Float/String opcode selection,
                   // erased-RHS coercion — see the helper's doc).
-                  emitLoad(insns, slot, ty)
+                  emitLoadLocalReadThrough(ctx, insns, slot, ty)
                   val cvTy = lowerExpr(ctx, insns, value)
                   emitCompoundCombineJvm(ctx, insns, op, ty, cvTy, spellsUnsigned(value))
                   emitStoreLocalWriteThrough(ctx, insns, slot, ty)

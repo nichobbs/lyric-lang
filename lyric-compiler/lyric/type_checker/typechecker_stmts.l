@@ -582,7 +582,7 @@ pub func checkStatement(
       match target.kind {
         case EPath(p) -> if p.segments.count == 1 {
           match scopeTryFind(sc, p.segments[0]) {
-            case Some(b) -> if not b.isMutable { diag.add(errorDiagnostic("T0087", t0087Msg(p.segments[0]), target.span)) }
+            case Some(b) -> if not b.isMutable { diag.add(errorDiagnostic("T0087", t0087BindingMsg(b), target.span)) }
             case None -> {
             }
           }
@@ -1776,7 +1776,7 @@ func checkFunctionBodyAt(
   while i < sig.params.count {
     val p = sig.params[i]
     val isMut = match p.mode { case PMIn -> false; case _ -> true }
-    scopeAdd(sc, LocalBinding(name = p.name, ty = p.ty, isMutable = isMut))
+    scopeAdd(sc, LocalBinding(name = p.name, ty = p.ty, isMutable = isMut, byRefParam = isMut))
     i = i + 1
   }
 

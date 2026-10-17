@@ -5,7 +5,8 @@
 #
 # Builds a small program, checks its output, and disassembles the functions
 # that work on arrays: each must take and return the typed array (`[F`,
-# `[I`), and none may call a wrapper `valueOf` (boxing) or touch `ArrayList`.
+# `[I`), or for an `inout` array read it as one from its place reference,
+# and none may call a wrapper `valueOf` (boxing) or touch `ArrayList`.
 #
 #   bash scripts/ci/jvm-typed-arrays-nobox.sh [lyric-bin]
 # ---------------------------------------------------------------------------
@@ -124,7 +125,20 @@ elif grep -Eq 'java/lang/(Integer|Long|Float|Double)\.valueOf' <<<"$grid"; then
   grep -E 'valueOf' <<<"$grid" | sed 's/^/  /'
   fail=1
 fi
-scale="$(grep -E 'scaleInPlace\(' "$work/disasm.txt" | head -1)"
-grep -q 'int\[\]' <<<"$scale" || { echo "FAIL: scaleInPlace does not take int[]: $scale"; fail=1; }
+# An `inout` array is passed as a reference to the caller's place (D183):
+# the callee reads the typed array out of it (`checkcast [I`) and works on
+# the array in place, boxing nothing.
+scale="$(method_body "scaleInPlace(Lyric.Lyric\$Ref\$L, int)")"
+if [ -z "$scale" ]; then
+  echo "FAIL: no method 'scaleInPlace(Lyric.Lyric\$Ref\$L, int)'"
+  fail=1
+else
+  grep -q 'class "\[I"' <<<"$scale" || { echo "FAIL: scaleInPlace does not read its place as int[]"; fail=1; }
+  if grep -Eq "$box_re" <<<"$scale"; then
+    echo "FAIL: scaleInPlace boxes or uses ArrayList:"
+    grep -E "$box_re" <<<"$scale" | sed 's/^/  /'
+    fail=1
+  fi
+fi
 [ "$fail" = 0 ] || exit 1
 echo "JVM typed arrays: numeric array[N, T] code boxes nothing"

@@ -228,7 +228,7 @@ if acct.withdraw(50, got) {
 }
 ```
 
-This works on `--target dotnet`, `--target jvm` and `--target native`, for entries, funcs, barrier entries and the methods of an `impl` for the type, including a call made through the interface. Storing the result into the caller's place is not part of the locked operation, so a variable or field that several threads pass in needs its own protection. Shared state belongs inside the protected object, where only its members can reach it.
+This works on `--target dotnet`, `--target jvm` and `--target native`, for entries, funcs, barrier entries and the methods of an `impl` for the type, including a call made through the interface. The parameter is the caller's place itself (Chapter 4), so the member's writes to it happen while it holds the lock: several threads that each pass a field of the protected object itself lose no update. A place outside the object that several threads pass in is still written by each thread's call in turn, and reading it outside a member needs its own protection. Shared state belongs inside the protected object, where only its members can reach it.
 
 Here is the token-bucket rate limiter from the worked examples. The `acquire` entry shows the barrier pattern in a realistic setting:
 

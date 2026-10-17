@@ -507,7 +507,7 @@ func incrementAll(xs: inout slice[Int]) {
 }
 ```
 
-`out`/`inout` parameters lower to CLR byref. Async functions cannot have `out`/`inout` parameters that cross await points.
+An `out`/`inout` parameter refers to the caller's place while the call runs (D183): a write through it is seen at once through every other path to the place, and the reverse. An array element is the one place passed by copy in and copy out (D179). The argument must be a writable place whatever its type (`T0085`); inside a lambda, a captured `out`/`inout` parameter is a value that cannot be assigned (`T0087`) or passed by reference (`T0085`). `out`/`inout` parameters lower to CLR byref on dotnet, a pointer on native, and a `Lyric$Ref` place reference on the JVM. Async functions cannot have `out`/`inout` parameters that cross await points.
 
 ---
 

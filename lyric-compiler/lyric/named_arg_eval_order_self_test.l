@@ -859,8 +859,9 @@ test "a by-value element after a ? keeps its index in its own turn" {
 
 // ─── By-reference places with no ? or await run in their own turn ───────────
 // A call that passes a field of an element by reference runs each argument
-// in order, the place's own path included, on every backend; the JVM built
-// its holders, evaluating the place's path, before the earlier arguments.
+// in order, the place's own path included, on every backend; the JVM once
+// evaluated the place's path, building its holder, before the earlier
+// arguments.
 record Shelf {
   cell: Cell
 }

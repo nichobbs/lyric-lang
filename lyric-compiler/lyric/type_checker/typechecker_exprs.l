@@ -6423,28 +6423,35 @@ func argIsValidByRefTarget(sc: in Scope, e: in Expr): Bool {
   // literal / call / operator / … — not an l-value
 }
 
+// The tail of T0085's message for an argument `argIsValidByRefTarget`
+// rejects: a lambda's capture of an enclosing `out`/`inout` parameter is a
+// value, not the caller's place (D183).
+func byRefTargetHint(sc: in Scope, e: in Expr): String {
+  match e.kind {
+    case EParen(inner) -> byRefTargetHint(sc, inner)
+    case EPath(p) -> if p.segments.count == 1 {
+      match scopeTryFind(sc, p.segments[0]) {
+        case Some(b) -> if b.capturedByRefParam {
+          "(a `var`, or an `out`/`inout` binding): inside a lambda, the enclosing function's `out`/`inout` parameter '" +
+            p.segments[0] +
+            "' is the value the lambda captured, not the caller's place"
+        } else {
+          "(a `var`, or an `out`/`inout` binding)"
+        }
+        case None -> "(a `var`, or an `out`/`inout` binding)"
+      }
+    } else {
+      "(a `var`, or an `out`/`inout` binding)"
+    }
+    case _ -> "(a `var`, or an `out`/`inout` binding)"
+  }
+}
+
 func modeNeedsLValue(m: in ParamMode): Bool {
   match m {
     case PMOut -> true
     case PMInout -> true
     case PMIn -> false
-  }
-}
-
-// The mutable-l-value requirement for an `out`/`inout` argument applies only to
-// *value-type* parameters, where the callee writes a value back into the
-// caller's binding (so it must be assignable).  Reference-type parameters
-// (records, `String`, slices, arrays, …) are mutated in place through the
-// reference — the idiomatic `inout RecordState` pattern passes a `val`-bound
-// record and mutates its fields without rebinding — so requiring a mutable
-// l-value there would false-positive on valid by-ref code.  Restricting to
-// value types is conservative (it never rejects valid code) and still catches
-// the common `out Int` / `inout Bool` mis-argument.
-func isByRefValueType(t: in Type): Bool {
-  match unrefine(t) {
-    case TyPrim(pt) -> match pt { case PtString -> false; case PtUnit -> false; case PtNever -> false; case _ -> true }
-    case TyArray(_, _, _) -> true
-    case _ -> false
   }
 }
 
@@ -15756,7 +15763,7 @@ func inferExprCore(
       match target.kind {
         case EPath(p) -> if p.segments.count == 1 {
           match scopeTryFind(sc, p.segments[0]) {
-            case Some(b) -> if not b.isMutable { diag.add(errorDiagnostic("T0087", t0087Msg(p.segments[0]), target.span)) }
+            case Some(b) -> if not b.isMutable { diag.add(errorDiagnostic("T0087", t0087BindingMsg(b), target.span)) }
             case None -> {
             }
           }
@@ -15807,6 +15814,28 @@ func inferExprCore(
 // statement position — the lenient direction, matching the historical
 // behaviour for lambdas with no contextual return type — rather than
 // defaulting to value position, which would be the unsound direction.
+// Inside a lambda, each `out`/`inout` parameter of an enclosing function is
+// the value the lambda captures, not the caller's place: the lambda can be
+// called after the function has returned, when the place may no longer
+// exist (D183).  Bind each such parameter visible here again, immutable, in
+// the lambda's own frame (`scopePush` already ran), so an assignment to it
+// is T0087 and passing it to an `out`/`inout` parameter T0085.
+func shadowCapturedByRefParams(sc: in Scope): Unit {
+  val start = sc.frameStarts[sc.frameStarts.count - 1]
+  val seen: Map[String, Bool] = newMap()
+  var i = start - 1
+  while i >= 0 {
+    val b = sc.bindings[i]
+    if not seen.containsKey(b.name) {
+      seen.add(b.name, true)
+      if b.byRefParam or b.capturedByRefParam {
+        scopeAdd(sc, LocalBinding(name = b.name, ty = b.ty, isMutable = false, capturedByRefParam = true))
+      }
+    }
+    i = i - 1
+  }
+}
+
 func inferLambda(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -15824,6 +15853,7 @@ func inferLambda(
   gctxPush(lctx, sc.genericNames)
   val paramTypes: List[Type] = newList()
   scopePush(sc)
+  shadowCapturedByRefParams(sc)
   var li = 0
   while li < lambdaParams.count {
     val lp = lambdaParams[li]
@@ -17228,9 +17258,9 @@ func checkPairedCallArgs(
         exemptArrayCopy(tbl, callArgExpr(args[ai]))
         checkArrayByRefArg(sc, tbl, sigs, diag, callArgExpr(args[ai]), argTy, span)
       }
-      // #1487 (§5.2): a value-type `out`/`inout` argument must be a
-      // writable l-value (reference-type by-ref params are mutated in
-      // place — see `isByRefValueType`).
+      // #1487 (§5.2): an `out`/`inout` argument must be a writable l-value,
+      // whatever its type: the parameter refers to the caller's place
+      // (D183), which the callee may assign.
       // A by-reference receiver written as an argument (`T.m(p)`, or a
       // function whose first parameter is `self: inout T`) is held to the
       // receiver rule of a method call, whatever its type (#8179).
@@ -17254,12 +17284,12 @@ func checkPairedCallArgs(
             span
           )
         )
-      } else if modeNeedsLValue(p.mode) and isByRefValueType(p.ty) and not argIsValidByRefTarget(sc, callArgExpr(args[ai])) {
+      } else if modeNeedsLValue(p.mode) and not argIsValidByRefTarget(sc, callArgExpr(args[ai])) {
         diag.add(
           errorDiagnostic(
             "T0085",
-            "argument for `out`/`inout` parameter '" + p.name +
-              "' must be a mutable l-value (a `var`, or an `out`/`inout` binding)",
+            "argument for `out`/`inout` parameter '" + p.name + "' must be a mutable l-value " +
+              byRefTargetHint(sc, callArgExpr(args[ai])),
             span
           )
         )

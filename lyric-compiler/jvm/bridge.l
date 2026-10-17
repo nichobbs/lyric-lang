@@ -1364,12 +1364,15 @@ func codegenPackageInto(
   // package's own codegen still decides independently whether it needs the
   // interface (`fileNeedsLambdaIface`/`closureAcc`), so several packages in
   // one bundle legitimately try to emit the identical class; keep only the
-  // first copy so the JAR never carries duplicate entries for it.
+  // first copy so the JAR never carries duplicate entries for it.  The
+  // `out`/`inout` place-reference interfaces `Lyric/Lyric$Ref$<K>`
+  // (`Jvm.Codegen.refIfaceName`, D183) are shared the same way.
   val sharedLambdaIface = lambdaIfaceName()
   var j = 0
   while j < classFiles.count {
     val cf = classFiles[j]
-    if cf.thisClass == sharedLambdaIface and builtClassNameExists(acc, cf.thisClass) {
+    val shared = cf.thisClass == sharedLambdaIface or isRefIfaceName(cf.thisClass)
+    if shared and builtClassNameExists(acc, cf.thisClass) {
       ()
     } else {
       if fileName.length > 0 {
@@ -1693,10 +1696,10 @@ func collectDeriveFreeSigs(
     match file.items[i].kind {
       case IFunc(decl) -> {
         if isDeriveFreeName(decl.name) or isRangeCheckerName(decl.name) {
-          // An `out`/`inout` parameter is a holder array with its mode
-          // recorded, as for any function (#1763): a dot-named function
+          // An `out`/`inout` parameter is a place reference with its mode
+          // recorded, as for any function (#1763, D183): a dot-named function
           // `Lyric.Mono` specialised (`Box.put__Int`, #8179) is first
-          // registered here, and its call site wraps the holder by the mode.
+          // registered here, and its call site passes the place by the mode.
           val noTypeParams: List[String] = newList()
           val params = holderAwareParamTypes(decl.params, owner, false, noTypeParams, externTypes)
           val paramNames: List[String] = newList()
@@ -1717,6 +1720,7 @@ func collectDeriveFreeSigs(
             paramNames = paramNames,
             paramDefaults = paramDefaults,
             paramModes = paramModes,
+            refElems = holderAwareRefElems(decl.params, owner, false, noTypeParams, externTypes),
             isIface = false,
             // Eagerly resolved against the DECLARING file's own package/extern
             // scope (`Jvm.Codegen.eagerlyResolveGenericArg`), exactly like the
@@ -1852,6 +1856,7 @@ func collectWovenSigsMatching(
             paramNames = paramNames,
             paramDefaults = paramDefaults,
             paramModes = newList(),
+            refElems = newList(),
             isIface = false,
             retGenericArgs = returnTypeGenericArgs(decl.ret),
             // A closure-returning woven function keeps the pre-fix
@@ -2108,17 +2113,17 @@ func collectMonoSpecializedSigs(
           val fnExternTypes = originScopedExternTypes(decl, dottedPath(file.packageDecl.path), externTypes)
           // Mono specialisations are fully concrete post-monomorphization
           // (no type params of their own remain to erase), but an `out`/
-          // `inout` parameter still needs the holder-array descriptor
-          // (`Counter` -> `Counter[]`) `holderAwareParamTypes` already gives
+          // `inout` parameter still needs the place-reference descriptor
+          // (`Counter` -> `Lyric$Ref$L`) `holderAwareParamTypes` already gives
           // every OTHER registration path (`collectFileSigsSeeded` /
           // `registerFileSigs`, 06_items.l) — this hand-rolled loop skipped
-          // it and always recorded plain (non-array) types plus an EMPTY
-          // `paramModes`, so a call site to a specialised function with an
-          // `out`/`inout` param (`cdTryGetValue[K, V]` and any other generic
-          // helper wrapping an `out` parameter) never wrapped its holder
-          // argument, producing a MemberRef with the wrong (non-array)
-          // descriptor — `NoSuchMethodError` at runtime against the real,
-          // correctly holder-typed specialised method (#3432).
+          // it and always recorded plain types plus an EMPTY `paramModes`,
+          // so a call site to a specialised function with an `out`/`inout`
+          // param (`cdTryGetValue[K, V]` and any other generic helper
+          // wrapping an `out` parameter) passed the argument by value,
+          // producing a MemberRef with the wrong descriptor —
+          // `NoSuchMethodError` at runtime against the real, correctly
+          // typed specialised method (#3432).
           val params: List[JvmType] = holderAwareParamTypes(decl.params, owner, false, newList(), fnExternTypes)
           val paramNames: List[String] = newList()
           val paramModes: List[ParamMode] = newList()
@@ -2155,6 +2160,7 @@ func collectMonoSpecializedSigs(
             paramNames = paramNames,
             paramDefaults = paramDefaults,
             paramModes = paramModes,
+            refElems = holderAwareRefElems(decl.params, owner, false, newList(), fnExternTypes),
             isIface = false,
             retGenericArgs = if isGenerator {
               generatorIterableGenericArgs(decl.ret, newList())

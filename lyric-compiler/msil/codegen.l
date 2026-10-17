@@ -7709,15 +7709,18 @@ func narrowToClassMsil(insns: in List[MInsn], t: in MsilType): Unit {
 }
 
 // Push the pointer for an `out`/`inout` argument whose callee parameter
-// pointee is `paramElem` (#7783).  When the argument's own storage has the
-// same type this is `emitByrefArgMsil`.  When they differ in the way
-// `byrefArgNeedsTempMsil` describes, the value is copied into a temp of the
-// parameter's type, the temp's address is passed, and the returned
-// write-back stores the temp back into the argument after the call — the
-// same copy-in/copy-out the JVM's holder protocol performs for every
-// `out`/`inout` argument (`writeBackHolderArg`), so both targets observe the
-// argument identically.  `pending` collects the write-backs; the call site
-// runs them with `emitByrefWriteBacksMsil` once the call returns.
+// pointee is `paramElem` (#7783).  The parameter refers to the argument's own
+// place (D183): when the place's CLR type is the pointee this is
+// `emitByrefArgMsil`.  Managed pointers are invariant, so when the two are
+// different reference types — one of them the erased `object`, as an
+// `inout Self` parameter's interface-slot `object&` is against the caller's
+// concrete class (`byrefArgNeedsTempMsil`) — the place's address is
+// reinterpreted as the pointee's with `Unsafe.As` (`emitByrefReinterpretMsil`),
+// still the place itself; the callee only stores values of the place's type
+// through it.  Only a pointee that may be a value type (a type parameter)
+// cannot alias an `object` place, whose value is boxed: that one argument
+// goes through a temp of the pointee type that the returned write-back stores
+// into the place after the call (`pending`, run by `emitByrefWriteBacksMsil`).
 func emitByrefArgCheckedMsil(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
@@ -7735,14 +7738,14 @@ func emitByrefArgCheckedMsil(
     return ()
   }
   // A field argument: lower the receiver once, then pass the field's own
-  // address or, on a type mismatch, a temp copied back through the saved
-  // receiver.
+  // address, reinterpreted when its type is not the pointee's, or a temp
+  // copied back through the saved receiver.
   match argExpr.kind {
     case EMember(recv, memberName) -> match paramElem {
       case Some(pe) -> {
         val fld = lowerByrefFieldReceiverMsil(cctx, fctx, insns, recv, memberName)
         val fldTy = match mapGet(cctx.fieldMsilTypes, fld.key) { case Some(t) -> t; case None -> pe }
-        if byrefArgNeedsTempMsil(fldTy, pe) {
+        if byrefArgNeedsTempMsil(fldTy, pe) and not byrefReinterpretableMsil(fldTy, pe) {
           val recvSlot = allocSlotMsil(fctx, "__byref_recv_" + toString(fctx.slotTicker.count), fld.recvTy)
           emitStoreSlot(insns, recvSlot, fctx.paramCount)
           val tempSlot = allocSlotMsil(fctx, "__byref_tmp_" + toString(fctx.slotTicker.count), pe)
@@ -7763,6 +7766,9 @@ func emitByrefArgCheckedMsil(
           )
         } else {
           insns.add(fld.addr)
+          if byrefArgNeedsTempMsil(fldTy, pe) {
+            emitByrefReinterpretMsil(cctx, insns, fldTy, pe)
+          }
         }
         return ()
       }
@@ -7784,6 +7790,11 @@ func emitByrefArgCheckedMsil(
   }
   val pe = match paramElem { case Some(v) -> v; case None -> MObject }
   val st = match storage { case Some(v) -> v; case None -> MObject }
+  if byrefReinterpretableMsil(st, pe) {
+    emitByrefArgMsil(cctx, fctx, insns, argExpr)
+    emitByrefReinterpretMsil(cctx, insns, st, pe)
+    return ()
+  }
   match argExpr.kind {
     case EPath(path) -> {
       val slot = match mapGet(fctx.slots, lastSegmentMsil(path)) { case Some(sl) -> sl; case None -> -1 }
@@ -7813,6 +7824,37 @@ func emitByrefArgCheckedMsil(
     }
     case _ -> emitByrefArgMsil(cctx, fctx, insns, argExpr)
   }
+}
+
+// True when a place of CLR type `placeTy` can be passed to a byref parameter
+// of pointee `paramTy` by reinterpreting its address (`Unsafe.As`): both are
+// reference types whatever the instantiation, so the pointer's target holds a
+// reference either way.  A type parameter may be a value type, and a value
+// type's storage is not an object reference's.
+func byrefReinterpretableMsil(placeTy: in MsilType, paramTy: in MsilType): Bool {
+  isCertainlyRefTypeMsil(placeTy) and isCertainlyRefTypeMsil(paramTy)
+}
+
+func isCertainlyRefTypeMsil(t: in MsilType): Bool {
+  match t {
+    case MString | MObject | MClass(_) | MClassRef(_, _) -> true
+    case MGenericInst(_, _, _) | MGenericInstByName(_, _) -> true
+    case MArray(_) | MListOf(_) | MMapOf(_, _) | MSetOf(_) | MTuple(_) -> true
+    case MConcreteList(_) | MConcreteMap(_, _) | MIAsyncEnumerable(_) | MExternEnumerable(_) | MCellArray(_) -> true
+    case _ -> false
+  }
+}
+
+// Reinterpret the managed pointer on the stack, a `fromTy&`, as a `toTy&`
+// with `System.Runtime.CompilerServices.Unsafe.As<fromTy, toTy>(ref fromTy)`
+// (D183): the pointer still addresses the caller's place, so the callee's
+// writes reach it as they happen.  Sound only for two reference types
+// (`byrefReinterpretableMsil`); the callee stores only values of the place's
+// own type, which the type checker guarantees.
+func emitByrefReinterpretMsil(cctx: in CodegenCtx, insns: in List[MInsn], fromTy: in MsilType, toTy: in MsilType): Unit {
+  val unsafeRef = internFfiTypeRef(cctx, "System.Runtime", "System.Runtime.CompilerServices", "Unsafe")
+  val mrRow = ctxAddMemberRef(cctx.lctx, unsafeRef, "As", "unsafe_as_byref_open", buildUnsafeAsByrefOpenSig())
+  insns.add(MCallUnsafeAsByref(asMrRow = mrRow, fromTy = fromTy, toTy = toTy))
 }
 
 // Push a closure-captured `var`'s heap cell (#1479 v2) and return its logical
@@ -7847,14 +7889,14 @@ func emitCapturedCellRefMsil(
 // closure, so its slot holds the cell reference, not the value: the address
 // passed must be the element's (`ldelema`), which makes the callee's writes
 // visible to the closure as they happen.  A cell whose storage element type
-// is not the parameter's pointee cannot be aliased by a `T&`, since managed
-// pointers are invariant; the value goes through a temp of the pointee type
-// that is stored back into the cell after the call, the copy-in/copy-out
-// `emitByrefArgCheckedMsil` uses for any such mismatch.  The cells are shaped
-// so that this happens only where no cell can serve both: a variable whose
-// type names a type parameter (its cell is `object[]`, #7695) passed at that
-// type, and a variable both passed to an erased `inout Self` (`object&`,
-// which fixes an `object[]` cell, #8204) and to a typed parameter.
+// is not the parameter's pointee cannot be aliased by a `T&` as it is, since
+// managed pointers are invariant: when both are reference types (a variable
+// both passed to an erased `inout Self`, which fixes an `object[]` cell,
+// #8204, and to a typed parameter) the element's address is reinterpreted
+// (`emitByrefReinterpretMsil`, D183).  Only a variable whose type names a
+// type parameter (its cell is `object[]`, #7695) passed at that type, which
+// may be a value type, goes through a temp of the pointee type that is stored
+// back into the cell after the call.
 // Returns false, emitting nothing, when the argument is not a captured `var`.
 func emitCellByrefArgMsil(
   cctx: in CodegenCtx,
@@ -7872,15 +7914,19 @@ func emitCellByrefArgMsil(
   val objCell = cellObjMsil(fctx, name)
   val storageTy = cellStorageElemTyMsil(elemTy, objCell)
   val pe = match paramElem { case Some(t) -> t; case None -> elemTy }
-  if sameClrTypeMsil(storageTy, pe) or (storageTy == MObject and byrefPointeeIsObjectMsil(pe)) {
+  val aliases = sameClrTypeMsil(storageTy, pe) or (storageTy == MObject and byrefPointeeIsObjectMsil(pe))
+  if aliases or byrefReinterpretableMsil(storageTy, pe) {
     insns.add(MLdcI4(v = 0))
     if cellTypedMsil(elemTy, objCell) {
       insns.add(MLdelemaCell(elemTy = elemTy))
-      return true
+    } else {
+      match arrayElemTokenOpt(cctx, storageTy) {
+        case Some(tok) -> insns.add(MLdelema(typeToken = tok))
+        case None -> panic("Msil.Codegen: hoisted-var cell storage type has no array element token (invariant violation)")
+      }
     }
-    match arrayElemTokenOpt(cctx, storageTy) {
-      case Some(tok) -> insns.add(MLdelema(typeToken = tok))
-      case None -> panic("Msil.Codegen: hoisted-var cell storage type has no array element token (invariant violation)")
+    if not aliases {
+      emitByrefReinterpretMsil(cctx, insns, storageTy, pe)
     }
     return true
   }
@@ -26303,6 +26349,7 @@ func insnStackDelta(insn: in MInsn): Int {
     case MInitobj(_) -> -1
     case MCallAwaitUnsafeOnCompleted(_, _, _) -> 1
     case MCallByName(_, _) -> 1
+    case MCallUnsafeAsByref(_, _, _) -> 0
   }
 }
 

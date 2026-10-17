@@ -2842,7 +2842,7 @@ func parseAspectConfigBlock(st: inout ParseState): List[ConfigField] {
 // predicate and the `except name in { … }` exclusion clause.  `ctx` names the
 // clause for the brace diagnostics (e.g. "name in" / "except name in").
 // Parsed identifiers are appended to `names`.
-func parseAspectNameSet(st: inout ParseState, ctx: in String, names: inout List[String]): Unit {
+func parseAspectNameSet(st: inout ParseState, ctx: in String, names: in List[String]): Unit {
   match tryEatPunct(st, LBrace) {
     case Some(_) -> {
     }
@@ -3046,7 +3046,7 @@ func parseOneMatchPredicate(st: inout ParseState): Option[AspectMatcher] {
 // Parse a `matches:` clause: predicates joined by `and`, then optional
 // `except name in { ... }`.  Results are appended to the supplied lists.
 func parseAspectMatchesClause(
-  st: inout ParseState, matchers: inout List[AspectMatcher], exceptNames: inout List[String]
+  st: inout ParseState, matchers: in List[AspectMatcher], exceptNames: in List[String]
 ): Unit {
   val _ = skipStmtEnds(st)
   match parseOneMatchPredicate(st) {

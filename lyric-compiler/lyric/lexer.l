@@ -2771,7 +2771,7 @@ func normaliseLineEndings(s: in String): String {
 @stable(since = "0.1")
 pub func lex(source: in String): LexResult {
   val normalised = normaliseLineEndings(source)
-  val state = newState(normalised)
+  var state = newState(normalised)
   while not isAtEnd(state) {
     lexNext(state)
   }

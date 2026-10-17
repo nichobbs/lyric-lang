@@ -17,6 +17,12 @@ pub record LocalBinding {
   /// The `SymbolTable.openBindingSites` key of an open binding (#7788), ""
   /// for every other binding.
   openSite: String = ""
+  /// An `out`/`inout` parameter, which refers to the caller's place (D183).
+  byRefParam: Bool = false
+  /// The value a lambda captures of an enclosing function's `out`/`inout`
+  /// parameter (D183): the lambda holds the value, never the caller's place,
+  /// so the binding is immutable inside it (`inferLambda`).
+  capturedByRefParam: Bool = false
   // ─────────────────────────────────────────────────────────────────────────────
   // §2. Scope — stack of lexical frames (flat list + watermark indices).
   // ─────────────────────────────────────────────────────────────────────────────

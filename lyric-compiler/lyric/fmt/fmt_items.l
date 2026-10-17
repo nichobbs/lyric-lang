@@ -105,7 +105,7 @@ func contractClauseStartOffset(cc: in ContractClause): Int {
 /// line with the contract-clause indent (`  `).  Blank-line markers
 /// stay literally `""` so `joinLines`' `trimEnd` doesn't try to
 /// strip indented whitespace.
-func appendIndentedTrivia(acc: inout List[String], items: in List[String]): Unit {
+func appendIndentedTrivia(acc: in List[String], items: in List[String]): Unit {
   var k = 0
   while k < items.count {
     val line = items[k]
@@ -119,7 +119,7 @@ func appendIndentedTrivia(acc: inout List[String], items: in List[String]): Unit
 }
 
 /// Append every line of `items` to `acc` in order, verbatim.
-func appendDoc(acc: inout List[String], items: in List[String]): Unit {
+func appendDoc(acc: in List[String], items: in List[String]): Unit {
   var k = 0
   while k < items.count {
     acc.add(items[k])

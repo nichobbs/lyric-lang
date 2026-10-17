@@ -922,7 +922,7 @@ func freshOldName(n: in Int): String {
   "__old_" + toString(n)
 }
 
-func collectOldExpr(e: in Expr, acc: inout List[Expr]) {
+func collectOldExpr(e: in Expr, acc: in List[Expr]) {
   match e.kind {
     case EOld(inner) -> acc.add(inner)
     case ELiteral(_) -> ()
@@ -1015,7 +1015,7 @@ func collectOldExpr(e: in Expr, acc: inout List[Expr]) {
   }
 }
 
-func collectOldExprList(exprs: in List[Expr], acc: inout List[Expr]) {
+func collectOldExprList(exprs: in List[Expr], acc: in List[Expr]) {
   var i = 0
   while i < exprs.count {
     collectOldExpr(exprs[i], acc)
@@ -1023,7 +1023,7 @@ func collectOldExprList(exprs: in List[Expr], acc: inout List[Expr]) {
   }
 }
 
-func collectOldExprRange(b: in RangeBound, acc: inout List[Expr]) {
+func collectOldExprRange(b: in RangeBound, acc: in List[Expr]) {
   match b {
     case RBClosed(lo, hi) -> {
       collectOldExpr(lo, acc)
@@ -1038,14 +1038,14 @@ func collectOldExprRange(b: in RangeBound, acc: inout List[Expr]) {
   }
 }
 
-func collectOldExprEob(eob: in ExprOrBlock, acc: inout List[Expr]) {
+func collectOldExprEob(eob: in ExprOrBlock, acc: in List[Expr]) {
   match eob {
     case EOBExpr(e) -> collectOldExpr(e, acc)
     case EOBBlock(blk) -> collectOldExprBlock(blk, acc)
   }
 }
 
-func collectOldExprBlock(blk: in Block, acc: inout List[Expr]) {
+func collectOldExprBlock(blk: in Block, acc: in List[Expr]) {
   var i = 0
   while i < blk.statements.count {
     collectOldExprStmt(blk.statements[i], acc)
@@ -1053,7 +1053,7 @@ func collectOldExprBlock(blk: in Block, acc: inout List[Expr]) {
   }
 }
 
-func collectOldExprStmt(s: in Statement, acc: inout List[Expr]) {
+func collectOldExprStmt(s: in Statement, acc: in List[Expr]) {
   match s.kind {
     case SReturn(opt) -> {
       match opt {
@@ -2496,7 +2496,7 @@ func elaborateFunctionBody(
       outs.add(mkLetBinding(freshOldName(oi), oldInners[oi], body.span))
       oi = oi + 1
     }
-    val replCounter = newRenameCounter()
+    var replCounter = newRenameCounter()
     val rewritten: List[SpannedExpr] = newList()
     var rei = 0
     while rei < allEnsures.count {
