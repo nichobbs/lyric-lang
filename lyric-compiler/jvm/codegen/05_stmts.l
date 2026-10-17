@@ -339,7 +339,7 @@ func lowerAssignExpr(ctx: in FuncCtx, insns: in List[LInsn], target: in Expr, op
                   // Compound assignment: read-combine-store through the shared
                   // `emitCompoundCombineJvm` (Float/String opcode selection,
                   // erased-RHS coercion — see the helper's doc).
-                  emitLoad(insns, slot, ty)
+                  emitLoadLocalReadThrough(ctx, insns, slot, ty)
                   val cvTy = lowerExpr(ctx, insns, value)
                   emitCompoundCombineJvm(ctx, insns, op, ty, cvTy, spellsUnsigned(value))
                   emitStoreLocalWriteThrough(ctx, insns, slot, ty)
@@ -2804,6 +2804,7 @@ func emitForCloseHandlerJvm(
 // path).  Early `return` / `break` / `continue` inside the region replay the
 // pending defers before transferring (see `replayDefers`).  Mirrors MSIL #1477.
 func lowerBlockStmtsFrom(ctx: in FuncCtx, insns: in List[LInsn], stmts: in List[Statement], start: in Int): Unit {
+  noteByRefLocals(ctx, stmts, start)
   val n = stmts.count
   // Locate the first `defer` at or after `start`.
   var deferIdx = -1
@@ -3161,6 +3162,7 @@ pub func blockHasDefer(block: in Block): Bool {
 // `replayDefers`; an exception runs the deferred block via the catch-all and
 // rethrows.  Mirrors MSIL `lowerStmtsExprFromMsil` (#1833 / #1477).
 pub func lowerBlockExprWithDefer(ctx: in FuncCtx, insns: in List[LInsn], block: in Block, start: in Int): JvmType {
+  noteByRefLocals(ctx, block.statements, start)
   val stmts = block.statements
   val n = stmts.count
   // Locate the first defer at/after `start`.
@@ -3302,6 +3304,7 @@ pub func lowerBlockExprWithDefer(ctx: in FuncCtx, insns: in List[LInsn], block: 
 // range).  The last statement's value becomes the block value; non-tail
 // statements are lowered in statement position.
 func lowerStmtsTrailingValue(ctx: in FuncCtx, insns: in List[LInsn], stmts: in List[Statement], start: in Int): JvmType {
+  noteByRefLocals(ctx, stmts, start)
   val n = stmts.count
   if start >= n {
     return JVoid

@@ -120,14 +120,14 @@ func errName(e: in HpackError): String {
   }
 }
 
-func decodeBlock(decoder: inout HpackDecoder, block: in slice[Byte], label: in String): List[HeaderField] {
+func decodeBlock(decoder: in HpackDecoder, block: in slice[Byte], label: in String): List[HeaderField] {
   match decodeHeaderBlock(decoder, block) {
     case Ok(hs) -> hs
     case Err(e) -> panic(label + ": unexpected decode error " + errName(e))
   }
 }
 
-func encodeList(encoder: inout HpackEncoder, headers: in List[HeaderField], label: in String): slice[Byte] {
+func encodeList(encoder: in HpackEncoder, headers: in List[HeaderField], label: in String): slice[Byte] {
   match encodeHeaderList(encoder, headers) {
     case Ok(b) -> b
     case Err(e) -> panic(label + ": unexpected encode error " + errName(e))

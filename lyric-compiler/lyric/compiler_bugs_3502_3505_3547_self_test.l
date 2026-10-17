@@ -42,8 +42,10 @@ import Std.Core
 import Std.Testing
 
 // ─── Bug #3547 — inout/out argument as field access ──────────────────────────
+// The field is `var`: an `out`/`inout` argument must be a writable place
+// (D183, T0085).
 record Counter {
-  count: Int
+  var count: Int
 }
 
 func addTo(x: inout Int, delta: in Int): Unit {

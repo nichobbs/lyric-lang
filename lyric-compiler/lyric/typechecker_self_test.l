@@ -2546,6 +2546,70 @@ test "in arg any expr ok" {
   assertTrue(not hasDiagCode(parseCheck(src), "T0085"), "in arg literal: no T0085")
 }
 
+// D183: an `out`/`inout` parameter refers to the caller's place, so the
+// argument must be one whatever its type — a String or record argument is
+// held to the rule a value-type one always was.
+test "a reference-type out/inout argument must be a place (D183)" {
+  val valStr = "package P\nfunc g(x: inout String): Unit { x = \"b\" }\nfunc f(): Unit {\n  val s = \"a\"\n  g(s)\n}\n"
+  assertTrue(hasDiagCode(parseCheck(valStr), "T0085"), "a val String: T0085")
+  val litStr = "package P\nfunc g(x: out String): Unit { x = \"b\" }\nfunc f(): Unit { g(\"a\") }\n"
+  assertTrue(hasDiagCode(parseCheck(litStr), "T0085"), "a String literal: T0085")
+  val valRec = "package P\nrecord B {\n  n: Int\n}\nfunc g(x: inout B): Unit { x = B(n = 1) }\nfunc f(): Unit {\n  val b = B(n = 0)\n  g(b)\n}\n"
+  assertTrue(hasDiagCode(parseCheck(valRec), "T0085"), "a val record: T0085")
+  val varRec = "package P\nrecord B {\n  n: Int\n}\nfunc g(x: inout B): Unit { x = B(n = 1) }\nfunc f(): Unit {\n  var b = B(n = 0)\n  g(b)\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(varRec), "T0085"), "a var record: no T0085")
+  val gen = "package P\nfunc g[T](x: inout T, v: in T): Unit { x = v }\nfunc f(): Unit {\n  val s = \"a\"\n  g(s, \"b\")\n}\n"
+  assertTrue(hasDiagCode(parseCheck(gen), "T0085"), "a val passed to a generic inout: T0085")
+  val inParam = "package P\nrecord B {\n  var n: Int\n}\nfunc g(x: inout B): Unit { x.n = 1 }\nfunc f(b: in B): Unit { g(b) }\n"
+  val inDiags = parseCheck(inParam)
+  assertTrue(hasDiagCode(inDiags, "T0085"), "an in parameter: T0085")
+  assertTrue(diagMessagesContain(inDiags, "D183"), "the message names the rule")
+  assertTrue(diagMessagesContain(inDiags, "make that parameter `in`"), "the message suggests an in parameter")
+}
+
+// D183: a field passed by reference must be a `var` field, the place class
+// assignment requires (T0157's `placeClass`), whatever the receiver's root.
+test "an out/inout field argument must be a var field (D183)" {
+  val immField = "package P\nrecord Pt {\n  x: Int\n}\nfunc bump(x: inout Int): Unit { x = x + 1 }\nfunc f(): Unit {\n  val p = Pt(x = 1)\n  bump(p.x)\n}\n"
+  val immDiags = parseCheck(immField)
+  assertTrue(hasDiagCode(immDiags, "T0085"), "a non-var field: T0085, got " + diagCodesOf(immDiags))
+  assertTrue(diagMessagesContain(immDiags, "is not `var`"), "the message names the field")
+  val varField = "package P\nrecord Pt {\n  var x: Int\n}\nfunc bump(x: inout Int): Unit { x = x + 1 }\nfunc f(): Unit {\n  val p = Pt(x = 1)\n  bump(p.x)\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(varField), "T0085"), "a var field of a val record: no T0085")
+  val nested = "package P\nrecord In {\n  n: Int\n}\nrecord Out {\n  var i: In\n}\nfunc bump(x: inout Int): Unit { x = x + 1 }\nfunc f(): Unit {\n  val o = Out(i = In(n = 0))\n  bump(o.i.n)\n}\n"
+  assertTrue(hasDiagCode(parseCheck(nested), "T0085"), "a non-var field at the end of a path: T0085")
+  val prot = "package P\nfunc bump(x: inout Int): Unit { x = x + 1 }\nprotected type C {\n  var total: Int = 0\n  let cap: Int = 3\n  entry ok(): Unit { bump(total) }\n  entry bad(): Unit { bump(cap) }\n}\n"
+  assertEqualInt(
+    countDiagCode(parseCheck(prot), "T0085"),
+    1,
+    "a protected `let` field, not its `var` field: " + diagCodesOf(parseCheck(prot))
+  )
+}
+
+// D183: a lambda captures the value of an enclosing function's `out`/`inout`
+// parameter, never the caller's place, so it may read the parameter but not
+// assign it (T0087) or pass it on by reference (T0085).
+test "a lambda may not write a captured out/inout parameter (D183)" {
+  val assign = "package P\nfunc f(x: inout Int): Unit {\n  val k = { -> x = 1 }\n  k()\n}\n"
+  val assignDiags = parseCheck(assign)
+  assertTrue(hasDiagCode(assignDiags, "T0087"), "assigning: T0087")
+  assertTrue(diagMessagesContain(assignDiags, "captures its value"), "assigning: the message says why")
+  val outAssign = "package P\nfunc f(x: out Int): Unit {\n  x = 0\n  val k = { -> x += 1 }\n  k()\n}\n"
+  assertTrue(hasDiagCode(parseCheck(outAssign), "T0087"), "compound-assigning an out: T0087")
+  val pass = "package P\nfunc g(y: inout Int): Unit { y = 2 }\nfunc f(x: inout Int): Unit {\n  val k = { -> g(x) }\n  k()\n}\n"
+  val passDiags = parseCheck(pass)
+  assertTrue(hasDiagCode(passDiags, "T0085"), "passing by reference: T0085")
+  assertTrue(diagMessagesContain(passDiags, "not the caller's place"), "passing: the message says why")
+  val nested = "package P\nfunc f(x: inout Int): Unit {\n  val k = { -> { -> x = 1 } }\n  k()\n}\n"
+  assertTrue(hasDiagCode(parseCheck(nested), "T0087"), "a nested lambda: T0087")
+  val read = "package P\nfunc f(x: inout Int): Int {\n  val k = { -> x + 1 }\n  k()\n}\n"
+  assertTrue(parseCheck(read).diagnostics.count == 0, "reading: no diagnostic, got " + diagCodesOf(parseCheck(read)))
+  val shadow = "package P\nfunc f(x: inout Int): Int {\n  val k = { -> var x = 1\n    x = 2\n    x }\n  k()\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(shadow), "T0087"), "a lambda's own var of the same name: no T0087")
+  val outside = "package P\nfunc f(x: inout Int): Unit {\n  val k = { -> 1 }\n  x = k()\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(outside), "T0087"), "assigning outside the lambda: no T0087")
+}
+
 // #1483 (record-ctor) / #1485 (opaque hiding): a record/opaque construction
 // call now yields the constructed type (non-generic records); a named argument
 // must reference a real field (T0101); an opaque type cannot be constructed

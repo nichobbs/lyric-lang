@@ -89,8 +89,8 @@ func makeFuncCtx(
     closureAcc = closureAcc,
     usedRuntimeHelpers = usedRuntimeHelpers,
     importsStdString = importsStdString,
-    holderArraySlot = newMap(),
-    holderElemType = newMap(),
+    refParamSlot = newMap(),
+    refParamElemType = newMap(),
     hoistedVarNames = newList(),
     hoistedCellSlot = newMap(),
     hoistedCellType = newMap(),
@@ -158,8 +158,8 @@ func withWireBinding(ctx: in FuncCtx, wireClassName: in String, wireBindingTypes
     closureAcc = ctx.closureAcc,
     usedRuntimeHelpers = ctx.usedRuntimeHelpers,
     importsStdString = ctx.importsStdString,
-    holderArraySlot = ctx.holderArraySlot,
-    holderElemType = ctx.holderElemType,
+    refParamSlot = ctx.refParamSlot,
+    refParamElemType = ctx.refParamElemType,
     hoistedVarNames = ctx.hoistedVarNames,
     hoistedCellSlot = ctx.hoistedCellSlot,
     hoistedCellType = ctx.hoistedCellType,
@@ -237,8 +237,8 @@ func makeFuncCtxForGenerator(
     closureAcc = closureAcc,
     usedRuntimeHelpers = usedRuntimeHelpers,
     importsStdString = importsStdString,
-    holderArraySlot = newMap(),
-    holderElemType = newMap(),
+    refParamSlot = newMap(),
+    refParamElemType = newMap(),
     hoistedVarNames = newList(),
     hoistedCellSlot = newMap(),
     hoistedCellType = newMap(),
@@ -323,8 +323,8 @@ func makeFuncCtxInstance(
     closureAcc = closureAcc,
     usedRuntimeHelpers = usedRuntimeHelpers,
     importsStdString = importsStdString,
-    holderArraySlot = newMap(),
-    holderElemType = newMap(),
+    refParamSlot = newMap(),
+    refParamElemType = newMap(),
     hoistedVarNames = newList(),
     hoistedCellSlot = newMap(),
     hoistedCellType = newMap(),
@@ -522,11 +522,10 @@ func anyHolderParam(params: in List[Param]): Bool {
 }
 
 // Build the JVM descriptor parameter types for a function/method, honouring
-// `out`/`inout` modes: a holder parameter of element type T is declared as the
-// single-element array type `JArray(T)` (the caller passes the holder array),
-// while `in` parameters keep their value type.  `toJvm` maps a parameter's
-// TypeExpr to its element JvmType (caller supplies the erased or non-erased
-// mapper).  Index-aligned with `params`.
+// `out`/`inout` modes: such a parameter, whose place has type T, is declared
+// as the place reference `Lyric$Ref$<K>` (`holderParamType`, D183), while
+// `in` parameters keep their value type.  `erase` selects the erasing type
+// mapper.  Index-aligned with `params`.
 pub func holderAwareParamTypes(
   params: in List[Param],
   pkgName: in String,
@@ -550,9 +549,37 @@ pub func holderAwareParamTypes(
       typeExprToJvmExtern(p.ty, pkgName, externTypes)
     }
     if isHolderMode(p.mode) {
-      acc.add(holderArrayType(elemTy))
+      acc.add(holderParamType(elemTy))
     } else {
       acc.add(elemTy)
+    }
+    i = i + 1
+  }
+  acc
+}
+
+// The `JvmFuncSig.refElems` of a function/method: for each `out`/`inout`
+// parameter the JVM type of its place, `JVoid` for an `in` parameter.
+// Index-aligned with `params` and with `holderAwareParamTypes`.
+pub func holderAwareRefElems(
+  params: in List[Param],
+  pkgName: in String,
+  erase: in Bool,
+  typeParams: in List[String],
+  externTypes: in Map[String, String],
+): List[JvmType] {
+  val acc: List[JvmType] = newList()
+  var i = 0
+  while i < params.count {
+    val p = params[i]
+    if isHolderMode(p.mode) {
+      if erase {
+        acc.add(typeExprToJvmErasedExtern(p.ty, pkgName, typeParams, externTypes))
+      } else {
+        acc.add(typeExprToJvmExtern(p.ty, pkgName, externTypes))
+      }
+    } else {
+      acc.add(JVoid)
     }
     i = i + 1
   }
@@ -585,14 +612,13 @@ func resolveParamsFuncAlias(aliasTargets: in Map[String, TypeExpr], params: in L
 }
 
 // Allocate JVM local slots for a static (free) function's parameters, set up
-// `out`/`inout` holder bindings, and emit the entry-prologue unwrap for each
-// holder parameter (#1763).  Parameter slots are allocated first, in
-// declaration order, so they line up with the JVM calling convention; then a
-// fresh value slot is allocated for each holder parameter and the holder array's
-// element 0 is unwrapped into it.  The parameter name resolves to the value slot
-// (a plain local), so reads need no array deref; `emitStoreLocalWriteThrough`
-// mirrors writes back to the holder.  `collectModes`, when non-null, receives
-// the declared modes index-aligned with the descriptor.
+// `out`/`inout` parameter bindings, and emit the entry-prologue read of each
+// (#1763, D183).  Parameter slots are allocated first, in declaration order,
+// so they line up with the JVM calling convention; then a fresh value slot is
+// allocated for each `out`/`inout` parameter and the place its reference
+// refers to is read into it.  The parameter name resolves to the value slot;
+// `emitLoadLocalReadThrough` re-reads the place at each use and
+// `emitStoreLocalWriteThrough` writes it.
 pub func setupStaticParamSlotsAndHolders(
   ctx: in FuncCtx,
   insns: in List[LInsn],
@@ -600,10 +626,10 @@ pub func setupStaticParamSlotsAndHolders(
   pkgName: in String,
   externTypes: in Map[String, String],
 ): Unit {
-  // Pass 1: allocate the ABI slot for every parameter, in order.  A holder
-  // parameter's ABI slot holds the incoming array; it is bound under a hidden
-  // name so the visible parameter name can later map to the unwrapped value
-  // slot.  `rawSlots`/`rawTypes`/`narrowCls` (#6691) are index-aligned with
+  // Pass 1: allocate the ABI slot for every parameter, in order.  An
+  // `out`/`inout` parameter's ABI slot holds the incoming place reference; it
+  // is bound under a hidden name so the visible parameter name can later map
+  // to the value slot.  `rawSlots`/`rawTypes`/`narrowCls` (#6691) are index-aligned with
   // `params`, carrying enough for pass 3 (below) to run strictly AFTER every
   // parameter's real ABI slot is allocated — slots 0..paramCount-1 must stay
   // contiguous and gap-free, matching the JVM calling convention, so nothing
@@ -619,7 +645,7 @@ pub func setupStaticParamSlotsAndHolders(
     val p = params[pi]
     val elemTy = typeExprToJvmExtern(p.ty, pkgName, externTypes)
     if isHolderMode(p.mode) {
-      val hs = allocSlot(ctx, "__holder$" + p.name, holderArrayType(elemTy))
+      val hs = allocSlot(ctx, "__ref$" + p.name, holderParamType(elemTy))
       holderIdx.add(pi)
       holderSlots.add(hs)
       holderElems.add(elemTy)
@@ -635,21 +661,20 @@ pub func setupStaticParamSlotsAndHolders(
     }
     pi = pi + 1
   }
-  // Pass 2: unwrap each holder into a fresh value slot bound to the parameter
-  // name, and record the holder binding so assignments write through.  The
-  // unwrap instructions are appended to `insns` (the body list, still empty at
-  // this point) so they run first.
+  // Pass 2: read each referenced place into a fresh value slot bound to the
+  // parameter name, and record the reference binding so reads and writes go
+  // through it.  The instructions are appended to `insns` (the body list,
+  // still empty at this point) so they run first.
   var hi = 0
   while hi < holderIdx.count {
     val name = params[holderIdx[hi]].name
     val elemTy = holderElems[hi]
     val hs = holderSlots[hi]
     val valueSlot = allocSlot(ctx, name, elemTy)
-    ctx.holderArraySlot.add(valueSlot, hs)
-    ctx.holderElemType.add(valueSlot, elemTy)
+    ctx.refParamSlot.add(valueSlot, hs)
+    ctx.refParamElemType.add(valueSlot, elemTy)
     insns.add(LAload(slot = hs))
-    insns.add(LIconst(v = 0))
-    emitHolderElemLoad(insns, elemTy)
+    emitRefGet(ctx, insns, elemTy)
     emitStore(insns, valueSlot, elemTy)
     hi = hi + 1
   }
@@ -684,8 +709,8 @@ pub func setupStaticParamSlotsAndHolders(
 }
 
 // Allocate JVM local slots for an instance method's parameters (slot 0 = `this`
-// is already reserved), set up `out`/`inout` holder bindings, and emit the
-// entry-prologue unwrap for each holder parameter (#1763).  Identical in structure
+// is already reserved), set up `out`/`inout` parameter bindings, and emit the
+// entry-prologue read of each (#1763, D183).  Identical in structure
 // to `setupStaticParamSlotsAndHolders` but uses `typeExprToJvmErasedExtern` with
 // the caller-supplied `typeParams` list so generic record methods erase type
 // variables to `Object`, matching the descriptor emitted for the method.  For
@@ -720,7 +745,7 @@ pub func setupInstanceParamSlotsAndHolders(
     val p = params[pi]
     val elemTy = typeExprToJvmErasedExtern(p.ty, pkgName, typeParams, externTypes)
     if isHolderMode(p.mode) {
-      val hs = allocSlot(ctx, "__holder$" + p.name, holderArrayType(elemTy))
+      val hs = allocSlot(ctx, "__ref$" + p.name, holderParamType(elemTy))
       holderIdx.add(pi)
       holderSlots.add(hs)
       holderElems.add(elemTy)
@@ -742,11 +767,10 @@ pub func setupInstanceParamSlotsAndHolders(
     val elemTy = holderElems[hi]
     val hs = holderSlots[hi]
     val valueSlot = allocSlot(ctx, name, elemTy)
-    ctx.holderArraySlot.add(valueSlot, hs)
-    ctx.holderElemType.add(valueSlot, elemTy)
+    ctx.refParamSlot.add(valueSlot, hs)
+    ctx.refParamElemType.add(valueSlot, elemTy)
     insns.add(LAload(slot = hs))
-    insns.add(LIconst(v = 0))
-    emitHolderElemLoad(insns, elemTy)
+    emitRefGet(ctx, insns, elemTy)
     emitStore(insns, valueSlot, elemTy)
     hi = hi + 1
   }
@@ -785,10 +809,10 @@ pub func setupInstanceParamSlotsAndHolders(
 // Shared by-reference closure capture pre-pass entry point (#7690) — the JVM
 // analog of MSIL's `runClosureCapturePrePassMsil`.  Every codegen path that
 // builds a `FuncCtx` for a body containing statements must run this before
-// lowering the body: it walks `body` for every `var` declaration and every
-// name referenced inside a nested lambda, and populates `ctx.hoistedVarNames`
-// with their intersection — the set of mutable locals a closure in this body
-// actually captures, which must be hoisted to a heap cell (`emitCellLoadJvm`
+// lowering the body: it walks `body` for every name referenced inside a
+// nested lambda and adds it to `ctx.hoistedVarNames`, which affects only a
+// `var` declaration — so the mutable locals a closure in this body actually
+// captures are hoisted to a heap cell (`emitCellLoadJvm`
 // / `emitCellAssignJvm`) rather than a plain local slot so the closure and
 // the enclosing scope share one mutable location.  Before this was
 // centralised, `lowerFuncScoped` (top-level functions and lifted lambdas)
@@ -801,17 +825,6 @@ pub func setupInstanceParamSlotsAndHolders(
 // diagnostic (unlike MSIL, which panics on the same gap via its
 // `hoistedVarNames`-miss invariant check).
 func runClosureCapturePrePassJvm(ctx: in FuncCtx, body: in Option[FunctionBody]): Unit {
-  val mutableVars: Map[String, Bool] = newMap()
-  match body {
-    case Some(b) -> match b {
-      case FBBlock(blk) -> collectMutableVarsBlock(blk, mutableVars)
-      // #7694: an expression body (an `= expr` function, or a `spawn` operand)
-      // can still declare a `var` inside a nested block (an `if`/`match` arm,
-      // `EBlock`) that a closure in the same body captures.
-      case FBExpr(e) -> collectMutableVarsExpr(e, mutableVars)
-    }
-    case None -> ()
-  }
   val inLambdaNames: List[String] = newList()
   match body {
     case Some(b) -> match b {
@@ -823,164 +836,344 @@ func runClosureCapturePrePassJvm(ctx: in FuncCtx, body: in Option[FunctionBody])
   var i = 0
   while i < inLambdaNames.count {
     val nm = inLambdaNames[i]
-    if mutableVars.containsKey(nm) and not nameInList(ctx.hoistedVarNames, nm) {
+    if not nameInList(ctx.hoistedVarNames, nm) {
       ctx.hoistedVarNames.add(nm)
     }
     i = i + 1
   }
 }
 
-// Collect all `var` declarations in a function body.  Mirrors the
-// `collectInLambdaNamesExpr` traversal in `02_exprs.l` (same set of
-// sub-expression-carrying `ExprKind` arms) so a `var` declared inside a
-// block that appears in call-argument, operand, or other nested-expression
-// position is not missed (#4264).  `ELambda` is deliberately NOT recursed
-// into: a `var` declared inside a lambda's own body belongs to that
-// lambda's own scope and is analyzed separately when the lambda is lowered.
-func collectMutableVarsExpr(e: in Expr, acc: in Map[String, Bool]): Unit {
-  match e.kind {
-    case EIf(cond, thenBranch, elseBranch, thenForm) -> {
-      collectMutableVarsExpr(cond, acc)
-      match thenBranch {
-        case EOBExpr(ex) -> collectMutableVarsExpr(ex, acc)
-        case EOBBlock(blk) -> collectMutableVarsBlock(blk, acc)
-      }
-      match elseBranch {
-        case Some(eb) -> {
-          match eb {
-            case EOBExpr(ex) -> collectMutableVarsExpr(ex, acc)
-            case EOBBlock(blk) -> collectMutableVarsBlock(blk, acc)
+// Index every function and method with an `out`/`inout` parameter under
+// `~byref~<name>` in `funcSigs`, by its bare name (the part of the registry
+// key after any package, type or `#` qualifier, and without an `@<arity>`
+// suffix) and, for a dot-named function, by its member name too.  Run once
+// per package before any function is lowered; `collectByRefArgNamesExpr`
+// consults it.  `~`-prefixed keys are the registry's meta entries, never a
+// callable name.
+func indexByRefCallees(funcSigs: in Map[String, JvmFuncSig]): Unit {
+  val keys = mapKeys(funcSigs)
+  var ki = 0
+  while ki < keys.count {
+    val k = keys[ki]
+    if not k.startsWith("~") {
+      match mapGet(funcSigs, k) {
+        case Some(sig) -> {
+          if anyHolderMode(sig.paramModes) {
+            val bare = bareCalleeName(k)
+            addByRefCallee(funcSigs, bare, sig)
+            var dot = 0 - 1
+            var di = 0
+            while di < bare.length {
+              if bare[di] == '.' {
+                dot = di
+              }
+              di = di + 1
+            }
+            if dot >= 0 {
+              addByRefCallee(funcSigs, bare.substring(dot + 1, bare.length - dot - 1), sig)
+            }
           }
         }
         case None -> ()
       }
     }
+    ki = ki + 1
+  }
+}
+
+func addByRefCallee(funcSigs: in Map[String, JvmFuncSig], name: in String, sig: in JvmFuncSig): Unit {
+  val key = "~byref~" + name
+  if not funcSigs.containsKey(key) {
+    funcSigs.add(key, sig)
+  }
+}
+
+// The name a registry key registers a callable under, without the key's
+// package/type qualifier (`a/b/f`, `Cls#m`, `pkg::f`) or arity (`f@2`).
+func bareCalleeName(key: in String): String {
+  var stop = key.length
+  var start = 0
+  var i = 0
+  while i < stop {
+    val c = key[i]
+    if c == '@' {
+      stop = i
+    } else if c == '/' or c == '#' or c == ':' {
+      start = i + 1
+    }
+    i = i + 1
+  }
+  key.substring(start, stop - start)
+}
+
+// True when some registered function or method named `name` has an
+// `out`/`inout` parameter (`indexByRefCallees`).
+func isByRefCalleeName(ctx: in FuncCtx, name: in String): Bool {
+  ctx.funcSigs.containsKey("~byref~" + name)
+}
+
+// The bare name an argument expression names, when it is a single-segment
+// path.
+func bareArgName(e: in Expr): String {
+  match e.kind {
+    case EPath(p) -> if p.segments.count == 1 { p.segments[0] } else { "" }
+    case EParen(inner) -> bareArgName(inner)
+    case _ -> ""
+  }
+}
+
+func addBareArgName(acc: in List[String], e: in Expr): Unit {
+  val nm = bareArgName(e)
+  if nm.length > 0 {
+    addNameOnceJvm(acc, nm)
+  }
+}
+
+// D183: a `var` passed to an `out`/`inout` parameter is hoisted to a heap
+// cell, so the callee's place reference (`emitPlaceRef`) refers to the
+// local's one location — the place the caller, the callee and any closure
+// read and write while the call runs.  Every block, in every context that
+// lowers one (a function or lambda body, a module `val` initialiser, a field
+// default or default argument lowered at its use, a wire binding), runs this
+// on entry over its own statements, before any of them is lowered, so each
+// `var` it declares is known to be passed by reference before its slot is
+// chosen; a block nested inside runs it again for its own.  Which calls pass
+// by reference is decided by callee name alone (`~byref~<name>`,
+// `indexByRefCallees`), before any call is resolved, so a local passed to a
+// same-named by-value function is hoisted too; that costs only the cell.
+// `hoistedVarNames` only ever affects a `var` declaration.
+pub func noteByRefLocals(ctx: in FuncCtx, stmts: in List[Statement], start: in Int): Unit {
+  val names: List[String] = newList()
+  var i = start
+  while i < stmts.count {
+    collectByRefArgNamesStmt(ctx, stmts[i], names)
+    i = i + 1
+  }
+  var ni = 0
+  while ni < names.count {
+    if not nameInList(ctx.hoistedVarNames, names[ni]) {
+      ctx.hoistedVarNames.add(names[ni])
+    }
+    ni = ni + 1
+  }
+}
+
+// Collect into `acc` every bare name that a call to a by-reference callee
+// (`isByRefCalleeName`) passes as an argument or as its receiver, in `e`.
+// Every expression kind is listed, so a new one cannot be skipped silently.
+// A lambda body is not entered: a local of the enclosing function it names
+// is captured, and so already hoisted, and its own blocks run
+// `noteByRefLocals` when they are lowered.
+func collectByRefArgNamesExpr(ctx: in FuncCtx, e: in Expr, acc: in List[String]): Unit {
+  match e.kind {
+    case ECall(fn, args) -> {
+      val calleeName = byRefCalleeNameOf(fn)
+      val byRef = calleeName.length > 0 and isByRefCalleeName(ctx, calleeName)
+      if byRef {
+        match fn.kind {
+          case EMember(recv, _) -> addBareArgName(acc, recv)
+          case _ -> ()
+        }
+      }
+      collectByRefArgNamesExpr(ctx, fn, acc)
+      var ai = 0
+      while ai < args.count {
+        val ae = match args[ai] { case CAPositional(ex) -> ex; case CANamed(_, ex, _) -> ex }
+        if byRef {
+          addBareArgName(acc, ae)
+        }
+        collectByRefArgNamesExpr(ctx, ae, acc)
+        ai = ai + 1
+      }
+    }
+    case EIf(cond, thenBranch, elseBranch, _) -> {
+      collectByRefArgNamesExpr(ctx, cond, acc)
+      collectByRefArgNamesEob(ctx, thenBranch, acc)
+      match elseBranch {
+        case Some(eb) -> collectByRefArgNamesEob(ctx, eb, acc)
+        case None -> ()
+      }
+    }
     case EMatch(scr, arms) -> {
-      collectMutableVarsExpr(scr, acc)
+      collectByRefArgNamesExpr(ctx, scr, acc)
       var ai = 0
       while ai < arms.count {
         match arms[ai].guard {
-          case Some(guardExpr) -> collectMutableVarsExpr(guardExpr, acc)
+          case Some(g) -> collectByRefArgNamesExpr(ctx, g, acc)
           case None -> ()
         }
-        match arms[ai].body {
-          case EOBExpr(ex) -> collectMutableVarsExpr(ex, acc)
-          case EOBBlock(blk) -> collectMutableVarsBlock(blk, acc)
-        }
+        collectByRefArgNamesEob(ctx, arms[ai].body, acc)
         ai = ai + 1
       }
     }
-    case EBlock(blk) -> {
-      collectMutableVarsBlock(blk, acc)
-    }
-    case EUnsafe(blk) -> {
-      collectMutableVarsBlock(blk, acc)
-    }
-    case ECall(fn, args) -> {
-      collectMutableVarsExpr(fn, acc)
-      var ai = 0
-      while ai < args.count {
-        match args[ai] {
-          case CAPositional(ex) -> collectMutableVarsExpr(ex, acc)
-          case CANamed(_, ex, _) -> collectMutableVarsExpr(ex, acc)
-        }
-        ai = ai + 1
-      }
-    }
+    case EBlock(blk) -> collectByRefArgNamesBlock(ctx, blk, acc)
+    case EUnsafe(blk) -> collectByRefArgNamesBlock(ctx, blk, acc)
     case EBinop(_, lhs, rhs) -> {
-      collectMutableVarsExpr(lhs, acc)
-      collectMutableVarsExpr(rhs, acc)
+      collectByRefArgNamesExpr(ctx, lhs, acc)
+      collectByRefArgNamesExpr(ctx, rhs, acc)
     }
-    case EPrefix(_, operand) -> collectMutableVarsExpr(operand, acc)
-    case EParen(inner) -> collectMutableVarsExpr(inner, acc)
-    case EMember(recv, _) -> collectMutableVarsExpr(recv, acc)
-    case EList(exprs) -> {
-      var ei = 0
-      while ei < exprs.count {
-        collectMutableVarsExpr(exprs[ei], acc)
-        ei = ei + 1
-      }
-    }
-    case ETuple(exprs) -> {
-      var ei = 0
-      while ei < exprs.count {
-        collectMutableVarsExpr(exprs[ei], acc)
-        ei = ei + 1
-      }
-    }
+    case EPrefix(_, operand) -> collectByRefArgNamesExpr(ctx, operand, acc)
+    case EParen(inner) -> collectByRefArgNamesExpr(ctx, inner, acc)
+    case EMember(recv, _) -> collectByRefArgNamesExpr(ctx, recv, acc)
+    case EList(exprs) -> collectByRefArgNamesList(ctx, exprs, acc)
+    case ETuple(exprs) -> collectByRefArgNamesList(ctx, exprs, acc)
     case EIndex(recv, indices) -> {
-      collectMutableVarsExpr(recv, acc)
-      var ii = 0
-      while ii < indices.count {
-        collectMutableVarsExpr(indices[ii], acc)
-        ii = ii + 1
+      collectByRefArgNamesExpr(ctx, recv, acc)
+      collectByRefArgNamesList(ctx, indices, acc)
+    }
+    case EAwait(inner) -> collectByRefArgNamesExpr(ctx, inner, acc)
+    case EYield(inner) -> collectByRefArgNamesExpr(ctx, inner, acc)
+    case ESpawn(inner) -> collectByRefArgNamesExpr(ctx, inner, acc)
+    case ETry(inner) -> collectByRefArgNamesExpr(ctx, inner, acc)
+    case EOld(inner) -> collectByRefArgNamesExpr(ctx, inner, acc)
+    case EPropagate(inner) -> collectByRefArgNamesExpr(ctx, inner, acc)
+    case EForall(_, whereExpr, body, _) -> {
+      match whereExpr {
+        case Some(w) -> collectByRefArgNamesExpr(ctx, w, acc)
+        case None -> ()
+      }
+      collectByRefArgNamesExpr(ctx, body, acc)
+    }
+    case EExists(_, whereExpr, body, _) -> {
+      match whereExpr {
+        case Some(w) -> collectByRefArgNamesExpr(ctx, w, acc)
+        case None -> ()
+      }
+      collectByRefArgNamesExpr(ctx, body, acc)
+    }
+    case ERange(bound) -> {
+      match bound {
+        case RBClosed(lo, hi) -> {
+          collectByRefArgNamesExpr(ctx, lo, acc)
+          collectByRefArgNamesExpr(ctx, hi, acc)
+        }
+        case RBHalfOpen(lo, hi, _) -> {
+          collectByRefArgNamesExpr(ctx, lo, acc)
+          collectByRefArgNamesExpr(ctx, hi, acc)
+        }
+        case RBLowerOpen(hi) -> collectByRefArgNamesExpr(ctx, hi, acc)
+        case RBUpperOpen(lo) -> collectByRefArgNamesExpr(ctx, lo, acc)
       }
     }
-    case EAwait(inner) -> collectMutableVarsExpr(inner, acc)
-    case EYield(inner) -> collectMutableVarsExpr(inner, acc)
-    case ESpawn(inner) -> collectMutableVarsExpr(inner, acc)
-    case ETry(inner) -> collectMutableVarsExpr(inner, acc)
-    case EPropagate(inner) -> collectMutableVarsExpr(inner, acc)
     case EAssign(target, _, v) -> {
-      collectMutableVarsExpr(target, acc)
-      collectMutableVarsExpr(v, acc)
+      collectByRefArgNamesExpr(ctx, target, acc)
+      collectByRefArgNamesExpr(ctx, v, acc)
     }
     case EInterpolated(segs) -> {
       var si = 0
       while si < segs.count {
         match segs[si] {
-          case ISExpr(ex) -> collectMutableVarsExpr(ex, acc)
-          case _ -> ()
+          case ISExpr(ex) -> collectByRefArgNamesExpr(ctx, ex, acc)
+          case ISText(_, _) -> ()
         }
         si = si + 1
       }
     }
-    case ETypeApp(fn, _) -> collectMutableVarsExpr(fn, acc)
-    case _ -> ()
+    case ETypeApp(fn, _) -> collectByRefArgNamesExpr(ctx, fn, acc)
+    case ELambda(_, _) -> ()
+    case ELiteral(_) -> ()
+    case EPath(_) -> ()
+    case ESelf -> ()
+    case EResult -> ()
+    case EError -> ()
   }
 }
 
-func collectMutableVarsBlock(b: in Block, acc: in Map[String, Bool]): Unit {
+// The name a call's callee expression calls, as `indexByRefCallees` indexes
+// it: a path's last segment, a method's name, or either under a type
+// application; "" for anything else, which cannot name a declared function.
+func byRefCalleeNameOf(fn: in Expr): String {
+  match fn.kind {
+    case EPath(p) -> if p.segments.count > 0 { p.segments[p.segments.count - 1] } else { "" }
+    case EMember(_, m) -> m
+    case ETypeApp(inner, _) -> byRefCalleeNameOf(inner)
+    case EParen(inner) -> byRefCalleeNameOf(inner)
+    case _ -> ""
+  }
+}
+
+func collectByRefArgNamesList(ctx: in FuncCtx, es: in List[Expr], acc: in List[String]): Unit {
+  var i = 0
+  while i < es.count {
+    collectByRefArgNamesExpr(ctx, es[i], acc)
+    i = i + 1
+  }
+}
+
+func collectByRefArgNamesEob(ctx: in FuncCtx, eob: in ExprOrBlock, acc: in List[String]): Unit {
+  match eob {
+    case EOBExpr(ex) -> collectByRefArgNamesExpr(ctx, ex, acc)
+    case EOBBlock(blk) -> collectByRefArgNamesBlock(ctx, blk, acc)
+  }
+}
+
+func collectByRefArgNamesBlock(ctx: in FuncCtx, b: in Block, acc: in List[String]): Unit {
   var i = 0
   while i < b.statements.count {
-    match b.statements[i].kind {
-      case SLocal(binding) -> {
-        match binding {
-          case LBVar(name, _, _) -> {
-            if not acc.containsKey(name) {
-              acc.add(name, true)
-            }
-          }
-          case LBVal(_, _, init) -> {
-            collectMutableVarsExpr(init, acc)
-          }
-          case LBLet(_, _, init) -> {
-            collectMutableVarsExpr(init, acc)
-          }
-          case _ -> ()
-        }
-      }
-      case SExpr(e) -> collectMutableVarsExpr(e, acc)
-      case SWhile(_, _, body) -> collectMutableVarsBlock(body, acc)
-      case SLoop(_, body) -> collectMutableVarsBlock(body, acc)
-      case SFor(_, _, _, body) -> collectMutableVarsBlock(body, acc)
-      case STry(body, catches, finally_) -> {
-        collectMutableVarsBlock(body, acc)
-        var ci = 0
-        while ci < catches.count {
-          collectMutableVarsBlock(catches[ci].body, acc)
-          ci = ci + 1
-        }
-        match finally_ {
-          case Some(fb) -> collectMutableVarsBlock(fb, acc)
-          case None -> ()
-        }
-      }
-      case SDefer(body) -> collectMutableVarsBlock(body, acc)
-      case SScope(_, body) -> collectMutableVarsBlock(body, acc)
-      case _ -> ()
-    }
+    collectByRefArgNamesStmt(ctx, b.statements[i], acc)
     i = i + 1
+  }
+}
+
+// Every statement kind is listed, as in `collectByRefArgNamesExpr`.  A nested
+// item declares its own functions, lowered with their own blocks.
+func collectByRefArgNamesStmt(ctx: in FuncCtx, st: in Statement, acc: in List[String]): Unit {
+  match st.kind {
+    case SLocal(binding) -> {
+      match binding {
+        case LBVar(_, _, initOpt) -> {
+          match initOpt {
+            case Some(init) -> collectByRefArgNamesExpr(ctx, init, acc)
+            case None -> ()
+          }
+        }
+        case LBVal(_, _, init) -> collectByRefArgNamesExpr(ctx, init, acc)
+        case LBLet(_, _, init) -> collectByRefArgNamesExpr(ctx, init, acc)
+      }
+    }
+    case SAssign(target, _, value) -> {
+      collectByRefArgNamesExpr(ctx, target, acc)
+      collectByRefArgNamesExpr(ctx, value, acc)
+    }
+    case SReturn(valueOpt) -> {
+      match valueOpt {
+        case Some(v) -> collectByRefArgNamesExpr(ctx, v, acc)
+        case None -> ()
+      }
+    }
+    case SThrow(e) -> collectByRefArgNamesExpr(ctx, e, acc)
+    case SExpr(e) -> collectByRefArgNamesExpr(ctx, e, acc)
+    case SInvariant(e) -> collectByRefArgNamesExpr(ctx, e, acc)
+    case SRule(lhs, rhs) -> {
+      collectByRefArgNamesExpr(ctx, lhs, acc)
+      collectByRefArgNamesExpr(ctx, rhs, acc)
+    }
+    case SWhile(_, cond, body) -> {
+      collectByRefArgNamesExpr(ctx, cond, acc)
+      collectByRefArgNamesBlock(ctx, body, acc)
+    }
+    case SLoop(_, body) -> collectByRefArgNamesBlock(ctx, body, acc)
+    case SFor(_, _, iter, body) -> {
+      collectByRefArgNamesExpr(ctx, iter, acc)
+      collectByRefArgNamesBlock(ctx, body, acc)
+    }
+    case STry(body, catches, finally_) -> {
+      collectByRefArgNamesBlock(ctx, body, acc)
+      var ci = 0
+      while ci < catches.count {
+        collectByRefArgNamesBlock(ctx, catches[ci].body, acc)
+        ci = ci + 1
+      }
+      match finally_ {
+        case Some(fb) -> collectByRefArgNamesBlock(ctx, fb, acc)
+        case None -> ()
+      }
+    }
+    case SDefer(body) -> collectByRefArgNamesBlock(ctx, body, acc)
+    case SScope(_, body) -> collectByRefArgNamesBlock(ctx, body, acc)
+    case SBreak(_) -> ()
+    case SContinue(_) -> ()
+    case SItem(_) -> ()
   }
 }
 
@@ -1071,8 +1264,9 @@ func lowerFuncScoped(
   runClosureCapturePrePassJvm(ctx, decl.body)
   val insns: List[LInsn] = newList()
 
-  // Allocate slots for parameters and set up any `out`/`inout` holder bindings;
-  // the holder unwrap-prologue (if any) is emitted into `insns` first (#1763).
+  // Allocate slots for parameters and set up any `out`/`inout` parameter
+  // bindings; their prologue reads (if any) are emitted into `insns` first
+  // (#1763, D183).
   // `resolvedParams` (not `decl.params`) so a function-type alias param
   // (`h: in Handler`) allocates its slot as `Object`, exactly like the
   // literal `(Int) -> Int` annotation already does (#6393).
@@ -1198,7 +1392,7 @@ func lowerFuncScoped(
   }
 
   // Determine param types for the LFunc descriptor.  An `out`/`inout`
-  // parameter is declared as a single-element holder array (#1763).
+  // parameter is declared as its place reference `Lyric$Ref$<K>` (D183).
   // `resolvedParams` so the emitted descriptor matches the registered
   // `JvmFuncSig.params` in `collectFileSigsSeeded` exactly (#6393).
   val noTypeParams: List[String] = newList()
@@ -1892,17 +2086,17 @@ func isSelfTypeExprJvm(te: in TypeExpr): Bool {
 // with its real class rather than `Object`, #3307).  A by-value parameter
 // is stored into a FRESH local the name is rebound to (the builder frames a
 // parameter's own slot from the descriptor); an `inout`-mode param's value
-// already lives in a non-parameter local, which is REUSED so its holder
-// write-through bookkeeping (`ctx.holderArraySlot`/`ctx.holderElemType`,
-// keyed by slot number) stays valid.  Either way `ctx.types[p.name]` becomes
+// already lives in a non-parameter local, and the fresh local it is rebound
+// to inherits that local's reference bookkeeping (`ctx.refParamSlot`/
+// `ctx.refParamElemType`, keyed by slot number).  Either way `ctx.types[p.name]` becomes
 // the concrete `JRef(selfTypeName)` so every later read of the parameter (field access,
 // method-call receiver, byref reassignment) resolves through the existing
 // type-directed lookups instead of ever falling into the erased-`Object`
 // fallback (`02_exprs.l`'s `error[J007]` refusal).  Must run AFTER
 // `setupInstanceParamSlotsAndHolders` has already allocated the parameter's
-// slot (and, for a holder param, already appended its unwrap-into-value-slot
-// instructions to `insns` — the cast instructions appended here run
-// immediately after, re-narrowing that same already-unwrapped slot).
+// slot (and, for an `out`/`inout` param, already appended its prologue read
+// of the place to `insns` — the cast instructions appended here run
+// immediately after, narrowing the value that read produced).
 //
 // Sound because `checkImplConformance` (D-progress-751/#6417) only accepts a
 // `Self`-typed argument at this parameter position when it resolves to
@@ -1931,18 +2125,18 @@ func emitSelfParamChecksJvm(
           insns.add(LCheckcast(className = selfTypeName))
           if isHolderMode(p.mode) {
             // The StackMapTable builder types a slot by its FIRST store (the
-            // holder unwrap's erased `Object`), so narrowing the unwrapped
-            // slot in place is invisible at every later branch-target frame
-            // (an overflow-checked `other.n = other.n + self.n` joins after
-            // the check's `if`).  Rebind the name to a fresh slot of the
-            // concrete class and carry the write-through bookkeeping to it.
+            // prologue's erased `Object` read of the place), so narrowing
+            // that slot in place is invisible at every later branch-target
+            // frame (an overflow-checked `other.n = other.n + self.n` joins
+            // after the check's `if`).  Rebind the name to a fresh slot of the
+            // concrete class and carry the reference bookkeeping to it.
             val narrowedHolder = allocSlot(ctx, p.name, selfTy)
             emitStore(insns, narrowedHolder, selfTy)
-            match mapGet(ctx.holderArraySlot, slot) {
-              case Some(arrSlot) -> {
-                ctx.holderArraySlot.add(narrowedHolder, arrSlot)
-                match mapGet(ctx.holderElemType, slot) {
-                  case Some(et) -> ctx.holderElemType.add(narrowedHolder, et)
+            match mapGet(ctx.refParamSlot, slot) {
+              case Some(refSlot) -> {
+                ctx.refParamSlot.add(narrowedHolder, refSlot)
+                match mapGet(ctx.refParamElemType, slot) {
+                  case Some(et) -> ctx.refParamElemType.add(narrowedHolder, et)
                   case None -> ()
                 }
               }
@@ -2011,9 +2205,26 @@ func implParamTypesToJvm(params: in List[Param], pkgName: in String, externTypes
     val p = params[i]
     val elemTy = implTypeExprToJvm(p.ty, pkgName, externTypes)
     if isHolderMode(p.mode) {
-      acc.add(holderArrayType(elemTy))
+      acc.add(holderParamType(elemTy))
     } else {
       acc.add(elemTy)
+    }
+    i = i + 1
+  }
+  acc
+}
+
+// `holderAwareRefElems` for an extern-interface impl method, whose parameter
+// types `implTypeExprToJvm` resolves.
+func implParamRefElems(params: in List[Param], pkgName: in String, externTypes: in Map[String, String]): List[JvmType] {
+  val acc: List[JvmType] = newList()
+  var i = 0
+  while i < params.count {
+    val p = params[i]
+    if isHolderMode(p.mode) {
+      acc.add(implTypeExprToJvm(p.ty, pkgName, externTypes))
+    } else {
+      acc.add(JVoid)
     }
     i = i + 1
   }
@@ -3163,9 +3374,9 @@ func lowerGeneratorBody(
   runClosureCapturePrePassJvm(ctx, decl.body)
 
   // `out`/`inout` parameters on an async generator are not supported on the
-  // JVM target (the holder array is captured into a generator field, and the
-  // write-back point is undefined across suspension) — reject rather than
-  // silently pass by value (#1763).
+  // JVM target (the place reference would be captured into a generator field
+  // and written after the call that passed it has returned) — reject rather
+  // than silently pass by value (#1763).
   var gpi = 0
   while gpi < decl.params.count {
     if isHolderMode(decl.params[gpi].mode) {
@@ -3953,6 +4164,7 @@ func registerFnFieldSig(
           paramNames = newList(),
           paramDefaults = newList(),
           paramModes = newList(),
+          refElems = newList(),
           isIface = false,
           retGenericArgs = eagerlyResolveGenericArgs(
             returnTypeGenericArgsFiltered(Some(value = r), recTps),
@@ -4053,9 +4265,11 @@ pub func collectFileSigsSeeded(
         // A specialised copy of another package's generic resolves its type
         // names in that package's scope (D-progress-967).
         val fnExternTypes = originScopedExternTypes(decl, dottedPathOfSegments(file.packageDecl.path.segments), externTypes)
-        // An `out`/`inout` parameter is declared as a holder array in the JVM
-        // descriptor (#1763), so the registry records the array type and the
-        // declared mode; call sites read the modes to wrap holder arguments.
+        // An `out`/`inout` parameter is declared as its place reference
+        // `Lyric$Ref$<K>` in the JVM descriptor (#1763, D183), so the registry
+        // records that type, the place's own type (`refElems`) and the
+        // declared mode; call sites read the modes to pass places by
+        // reference.
         // A generic function's own type parameters erase to Object in the
         // registered sig — the previous empty list let `T` fall to the
         // in-package class guess, so an unmonomorphized call's descriptor
@@ -4157,6 +4371,7 @@ pub func collectFileSigsSeeded(
           paramNames = paramNames,
           paramDefaults = paramDefaults,
           paramModes = paramModes,
+          refElems = holderAwareRefElems(resolvedParams, owner, false, sigTps, fnExternTypes),
           isIface = false,
           // An async generator's call is the generated `Iterable`, whose one
           // type argument is the declared element type -- not the element
@@ -4479,6 +4694,7 @@ pub func collectFileSigsSeeded(
           paramNames = noParamNames,
           paramDefaults = noParamDefaults,
           paramModes = noParamModes,
+          refElems = newList(),
           isIface = false,
           retGenericArgs = newList(),
           closureRetTy = None,
@@ -4520,6 +4736,7 @@ pub func collectFileSigsSeeded(
           paramNames = noParamNames,
           paramDefaults = noParamDefaults,
           paramModes = noParamModes,
+          refElems = newList(),
           isIface = false,
           retGenericArgs = eagerlyResolveGenericArgs(rawArgs, owner, externTypes),
           closureRetTy = None,
@@ -4641,6 +4858,7 @@ pub func collectFileSigsSeeded(
                       paramNames = newList(),
                       paramDefaults = newList(),
                       paramModes = newList(),
+                      refElems = newList(),
                       isIface = false,
                       retGenericArgs = eagerlyResolveGenericArgs(returnTypeGenericArgsFiltered(Some(f.ty), opqTps), owner, externTypes),
                       closureRetTy = None,
@@ -4737,6 +4955,7 @@ pub func collectFileSigsSeeded(
                   paramNames = newList(),
                   paramDefaults = newList(),
                   paramModes = newList(),
+                  refElems = newList(),
                   isIface = false,
                   retGenericArgs = newList(),
                   closureRetTy = None,
@@ -4798,6 +5017,7 @@ pub func collectFileSigsSeeded(
             paramNames = newList(),
             paramDefaults = newList(),
             paramModes = newList(),
+            refElems = newList(),
             isIface = false,
             retGenericArgs = newList(),
             closureRetTy = None,
@@ -4957,8 +5177,9 @@ func registerInstanceSigErased(
   externTypes: in Map[String, String],
 ): Unit {
   val filteredParams = stripLeadingSelfParam(params)
-  // Use holderAwareParamTypes so out/inout params register as JArray(elemTy) in the
-  // descriptor, matching the emitted method and the call-site wrapping (#1763).
+  // Use holderAwareParamTypes so out/inout params register as the place
+  // reference `Lyric$Ref$<K>` in the descriptor, matching the emitted method
+  // and the call site (#1763, D183).
   // Resolves through the declaring file's own `externTypes` (#5051) — a bare
   // `noExts` here pre-resolved an extern-typed param/return/generic-arg
   // (`Option[Instant]`) to the in-package guess instead of the real class.
@@ -4996,6 +5217,7 @@ func registerInstanceSigErased(
       paramNames = paramNames,
       paramDefaults = paramDefs,
       paramModes = modes,
+      refElems = holderAwareRefElems(filteredParams, owner, true, typeParams, externTypes),
       isIface = false,
       retGenericArgs = eagerlyResolveGenericArgs(returnTypeGenericArgsFiltered(retOpt, typeParams), owner, externTypes),
       closureRetTy = closureRetTypeOf(retOpt, owner, typeParams, externTypes),
@@ -5059,6 +5281,7 @@ func registerInstanceSigImplExtern(
       paramNames = paramNames,
       paramDefaults = paramDefs,
       paramModes = modes,
+      refElems = implParamRefElems(filteredParams, owner, externTypes),
       isIface = false,
       retGenericArgs = eagerlyResolveGenericArgs(
         returnTypeGenericArgsFiltered(retOpt, noTypeParams),
@@ -5237,6 +5460,7 @@ func addFieldPseudoSig(
       paramNames = noNames,
       paramDefaults = noDefs,
       paramModes = noModes,
+      refElems = newList(),
       isIface = false,
       retGenericArgs = noRga,
       closureRetTy = None,
@@ -5445,6 +5669,7 @@ func registerIfaceSig(
       paramNames = pNames,
       paramDefaults = pDefs,
       paramModes = pModes,
+      refElems = holderAwareRefElems(realParams, owner, true, typeParams, externTypes),
       isIface = true,
       // Resolved eagerly against the DECLARING file's own `owner`/`externTypes`
       // (#5050), same as `collectFileSigsSeeded`/`registerInstanceSigErased` —
@@ -5490,6 +5715,7 @@ func registerStaticWireSig(
         paramNames = newList(),
         paramDefaults = newList(),
         paramModes = newList(),
+        refElems = newList(),
         isIface = false,
         retGenericArgs = newList(),
         closureRetTy = None,
@@ -6853,6 +7079,7 @@ pub func registerProjectableViews(
                 paramNames = newList(),
                 paramDefaults = newList(),
                 paramModes = newList(),
+                refElems = newList(),
                 isIface = false,
                 retGenericArgs = newList(),
                 closureRetTy = None,
@@ -6886,6 +7113,7 @@ pub func registerProjectableViews(
                   paramNames = newList(),
                   paramDefaults = newList(),
                   paramModes = newList(),
+                  refElems = newList(),
                   isIface = false,
                   retGenericArgs = newList(),
                   closureRetTy = None,
@@ -8398,6 +8626,7 @@ pub func codegenPackageWithSigsSeeded(
 ): LPackage {
   val pkgName = segmentsToJvmPath(file.packageDecl.path.segments)
   val funcsClass = pkgName
+  indexByRefCallees(funcSigs)
 
   // #6124: whether THIS FILE has `import Std.String` in scope — see
   // `FuncCtx.importsStdString`.  Computed once per file and threaded through
@@ -9384,6 +9613,36 @@ pub func codegenPackageWithSigsSeeded(
       li = li + 1
     }
   }
+  // The `out`/`inout` place-reference interfaces this package's code uses
+  // (`markRefIface`, D183), shared across the bundle like `Lyric$Lambda`.
+  refIfaceItems(usedRuntimeHelpers, items)
 
   LPackage(packageName = pkgName, items = items)
+}
+
+// Append the `Lyric/Lyric$Ref$<K>` interface for each kind `<K>` in `used`:
+// `get()` returns the place's value and `set(v)` writes it, typed by
+// `refValueTypeForKind`.
+func refIfaceItems(used: in List[String], items: in List[LPackageItem]): Unit {
+  val kinds = ["Z", "B", "C", "S", "I", "J", "F", "D", "L"]
+  var ki = 0
+  while ki < kinds.length {
+    val kind = kinds[ki]
+    val name = refIfaceNameForKind(kind)
+    if runtimeHelperUsed(used, name) {
+      val valTy = refValueTypeForKind(kind)
+      val noAttrs: List[Attribute] = newList()
+      val noPs: List[JvmType] = newList()
+      val setPs: List[JvmType] = newList()
+      setPs.add(valTy)
+      val abstractMethods: List[MethodInfo] = newList()
+      abstractMethods.add(makeMethodInfo(ACC_PUBLIC + ACC_ABSTRACT, "get", buildDescriptor(noPs, valTy), noAttrs))
+      abstractMethods.add(makeMethodInfo(ACC_PUBLIC + ACC_ABSTRACT, "set", buildDescriptor(setPs, JVoid), noAttrs))
+      val noConcrete: List[LFunc] = newList()
+      items.add(
+        LPInterface(iface = LInterface(className = name, abstractMethods = abstractMethods, concreteFuncs = noConcrete))
+      )
+    }
+    ki = ki + 1
+  }
 }

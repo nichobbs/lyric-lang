@@ -114,6 +114,16 @@ func t0087Msg(name: in String): String {
     "' (`val`/`let`/`in` prevents rebinding, not mutation of the referenced object)"
 }
 
+// T0087's message for an assignment to the immutable binding `b`.
+func t0087BindingMsg(b: in LocalBinding): String {
+  if b.capturedByRefParam {
+    "cannot assign '" + b.name + "' inside a lambda: it is an `out`/`inout` parameter of the enclosing function, " +
+      "and a lambda captures its value, not the caller's place (D183); assign it outside the lambda"
+  } else {
+    t0087Msg(b.name)
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §4. Item registration.
 // ─────────────────────────────────────────────────────────────────────────────

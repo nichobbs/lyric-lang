@@ -378,7 +378,12 @@ func staticBaseClass(ctx: in FuncCtx, base: in Expr): Option[String] {
     case ESelf -> ctx.selfClass
     case EPath(p) -> {
       if p.segments.count == 1 {
-        match mapGet(ctx.types, p.segments[0]) {
+        // A local hoisted to a heap cell (captured by a closure, or passed
+        // by reference, D183) is typed as its cell; its value is the cell's
+        // element.
+        val cellTracked = ctx.hoistedCellType.containsKey(p.segments[0])
+        val tracked = if cellTracked { mapGet(ctx.hoistedCellType, p.segments[0]) } else { mapGet(ctx.types, p.segments[0]) }
+        match tracked {
           case Some(t) -> {
             match t {
               case JRef(cls) -> {
@@ -1058,8 +1063,8 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
               cellElemTy
             }
             case None -> {
-              // Normal load
-              emitLoad(insns, slot, ty)
+              // Normal load; an `out`/`inout` parameter re-reads its place.
+              emitLoadLocalReadThrough(ctx, insns, slot, ty)
               ty
             }
           }
@@ -2318,7 +2323,7 @@ pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmTy
       match lookupSlot(ctx, "self") {
         case Some(sslot) -> {
           val sty = match lookupType(ctx, "self") { case Some(t) -> t; case None -> JRef(className = "java/lang/Object") }
-          emitLoad(insns, sslot, sty)
+          emitLoadLocalReadThrough(ctx, insns, sslot, sty)
           return sty
         }
         case None -> {
@@ -3357,6 +3362,7 @@ func lowerBlockExpr(ctx: in FuncCtx, insns: in List[LInsn], block: in Block): Jv
 }
 
 func lowerBlockExprInner(ctx: in FuncCtx, insns: in List[LInsn], block: in Block): JvmType {
+  noteByRefLocals(ctx, block.statements, 0)
   val n = block.statements.count
   if n == 0 {
     return JVoid
@@ -5105,7 +5111,8 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
       methodParams = placeholderParams,
       methodRet = JRef(className = "java/lang/Object"),
       bodyInsns = placeholderInsns,
-      bodyMaxLocals = 0
+      bodyMaxLocals = 0,
+      extraMethods = newList()
     )
   )
 
@@ -5288,7 +5295,8 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
     methodParams = methodParams,
     methodRet = JRef(className = "java/lang/Object"),
     bodyInsns = bodyInsns,
-    bodyMaxLocals = bodyCtx.slotTicker.count
+    bodyMaxLocals = bodyCtx.slotTicker.count,
+    extraMethods = newList()
   )
   ctx.closureAcc[idx] = closure
 
@@ -5314,7 +5322,7 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
       }
     } else {
       match lookupSlot(ctx, cap.captureName) {
-        case Some(s) -> emitLoad(insns, s, cap.captureType)
+        case Some(s) -> emitLoadLocalReadThrough(ctx, insns, s, cap.captureType)
         case None -> {
           if cap.captureName == "self" {
             // #6304: the receiver capture is the enclosing `this` itself.
@@ -5567,6 +5575,59 @@ func lowerSpawnSubmit(ctx: in FuncCtx, insns: in List[LInsn], inner: in Expr): J
   futureTy
 }
 
+// The place type of `name` when it is an `out`/`inout` parameter of the
+// function `ctx` lowers (its value slot has a place reference, D183), else
+// `JVoid`.
+func refParamElemOf(ctx: in FuncCtx, name: in String): JvmType {
+  match lookupSlot(ctx, name) {
+    case Some(slot) -> match mapGet(ctx.refParamElemType, slot) { case Some(t) -> t; case None -> JVoid }
+    case None -> JVoid
+  }
+}
+
+// The slot holding `name`'s place reference, when it is an `out`/`inout`
+// parameter.
+func refParamRefSlotOf(ctx: in FuncCtx, name: in String): Option[Int] {
+  match lookupSlot(ctx, name) {
+    case Some(slot) -> mapGet(ctx.refParamSlot, slot)
+    case None -> None
+  }
+}
+
+// In a spawned task's body, bind the captured place reference `cap` of the
+// enclosing function's `out`/`inout` parameter as that parameter is bound in
+// a callee (`setupStaticParamSlotsAndHolders`): a value slot named after it,
+// read from the place, whose reads and writes go through the reference.
+// `valueTy` is the parameter's value-slot type in the enclosing function.
+func bindCapturedRefParam(
+  bodyCtx: in FuncCtx,
+  bodyInsns: in List[LInsn],
+  closureClass: in String,
+  cap: in LClosureCapture,
+  elemTy: in JvmType,
+  valueTy: in Option[JvmType],
+): Unit {
+  val rslot = allocSlot(bodyCtx, "__ref$" + cap.captureName, cap.captureType)
+  bodyInsns.add(LAload(slot = 0))
+  bodyInsns.add(LGetfield(owner = closureClass, name = cap.captureName, t = cap.captureType))
+  emitStore(bodyInsns, rslot, cap.captureType)
+  val vTy = match valueTy { case Some(t) -> t; case None -> elemTy }
+  val vslot = allocSlot(bodyCtx, cap.captureName, vTy)
+  bodyCtx.refParamSlot.add(vslot, rslot)
+  bodyCtx.refParamElemType.add(vslot, elemTy)
+  bodyInsns.add(LAload(slot = rslot))
+  emitRefGet(bodyCtx, bodyInsns, elemTy)
+  match vTy {
+    case JRef(cls) -> {
+      if vTy != elemTy and cls != "java/lang/Object" {
+        bodyInsns.add(LCheckcast(className = cls))
+      }
+    }
+    case _ -> ()
+  }
+  emitStore(bodyInsns, vslot, vTy)
+}
+
 // Synthesize a no-arg `Callable` closure whose `call()` evaluates `inner` (a
 // `spawn`'s operand) and returns the boxed result.  Mirrors `lowerLambda` — same
 // `LClosure`/`ctx.closureAcc` synthesis and same capture snapshotting — but
@@ -5592,7 +5653,8 @@ func lowerSpawnCallable(ctx: in FuncCtx, insns: in List[LInsn], inner: in Expr):
       methodParams = placeholderParams,
       methodRet = objTy,
       bodyInsns = placeholderInsns,
-      bodyMaxLocals = 0
+      bodyMaxLocals = 0,
+      extraMethods = newList()
     )
   )
 
@@ -5614,7 +5676,12 @@ func lowerSpawnCallable(ctx: in FuncCtx, insns: in List[LInsn], inner: in Expr):
         val elemTy = match mapGet(ctx.hoistedCellType, cn) { case Some(t) -> t; case None -> objTy }
         captures.add(LClosureCapture(captureName = cn, captureType = JArray(elem = elemTy)))
       }
-      case None -> {
+      case None -> if refParamElemOf(ctx, cn) != JVoid {
+        // An `out`/`inout` parameter: the task, which its `scope` joins
+        // before the function returns, refers to the caller's place through
+        // the parameter's own reference (D183).
+        captures.add(LClosureCapture(captureName = cn, captureType = JRef(className = refIfaceName(refParamElemOf(ctx, cn)))))
+      } else {
         val cty = if cn == "self" {
           // #6304: same receiver-capture typing as lowerLambda (local wins
           // for the nested-closure case).
@@ -5680,6 +5747,12 @@ func lowerSpawnCallable(ctx: in FuncCtx, insns: in List[LInsn], inner: in Expr):
   while cj < captures.count {
     val cap = captures[cj]
     val isHoistedCell = match mapGet(ctx.hoistedCellType, cap.captureName) { case Some(_) -> true; case None -> false }
+    val refElem = if isHoistedCell { JVoid } else { refParamElemOf(ctx, cap.captureName) }
+    if refElem != JVoid {
+      bindCapturedRefParam(bodyCtx, bodyInsns, closureClass, cap, refElem, lookupType(ctx, cap.captureName))
+      cj = cj + 1
+      continue
+    }
     val cslot = allocSlot(bodyCtx, cap.captureName, cap.captureType)
     bodyInsns.add(LAload(slot = 0))
     bodyInsns.add(LGetfield(owner = closureClass, name = cap.captureName, t = cap.captureType))
@@ -5708,7 +5781,8 @@ func lowerSpawnCallable(ctx: in FuncCtx, insns: in List[LInsn], inner: in Expr):
     methodParams = placeholderParams,
     methodRet = objTy,
     bodyInsns = bodyInsns,
-    bodyMaxLocals = bodyCtx.slotTicker.count
+    bodyMaxLocals = bodyCtx.slotTicker.count,
+    extraMethods = newList()
   )
   ctx.closureAcc[idx] = closure
 
@@ -5724,9 +5798,14 @@ func lowerSpawnCallable(ctx: in FuncCtx, insns: in List[LInsn], inner: in Expr):
         case Some(cellSlot) -> emitLoad(insns, cellSlot, cap.captureType)
         case None -> insns.add(LAconstNull)
       }
+    } else if refParamElemOf(ctx, cap.captureName) != JVoid {
+      match refParamRefSlotOf(ctx, cap.captureName) {
+        case Some(rs) -> emitLoad(insns, rs, cap.captureType)
+        case None -> insns.add(LAconstNull)
+      }
     } else {
       match lookupSlot(ctx, cap.captureName) {
-        case Some(s) -> emitLoad(insns, s, cap.captureType)
+        case Some(s) -> emitLoadLocalReadThrough(ctx, insns, s, cap.captureType)
         case None -> {
           if cap.captureName == "self" {
             // #6304: the receiver capture is the enclosing `this` itself.

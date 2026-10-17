@@ -109,7 +109,7 @@ pub func popTriviaBefore(ctx: inout FmtCtx, hi: in Int): List[String] {
 /// matching `popTriviaBefore`.  Used by the member / statement / arm
 /// list printers (which build an un-indented accumulator that the caller
 /// indents wholesale).
-pub func appendTriviaInto(acc: inout List[String], ctx: inout FmtCtx, hi: in Int, dropBlanks: in Bool): Unit {
+pub func appendTriviaInto(acc: in List[String], ctx: inout FmtCtx, hi: in Int, dropBlanks: in Bool): Unit {
   while ctx.cursor < ctx.items.count and harvestedOffset(ctx.items[ctx.cursor]) < hi {
     match ctx.items[ctx.cursor] {
       case HiComment(text, _, trailing, gap) -> {
@@ -170,7 +170,7 @@ pub func skipCommentsBefore(ctx: inout FmtCtx, hi: in Int): Unit {
   }
 }
 
-func harvestTriviaFromToken(t: in SpannedToken, acc: inout List[HarvestedItem]): Unit {
+func harvestTriviaFromToken(t: in SpannedToken, acc: in List[HarvestedItem]): Unit {
   // `newlineRun` counts consecutive `TKNewline` trivia (whitespace
   // between newlines doesn't reset the run — `\n  \n` is still a
   // blank-line run).  `blankRecorded` ensures we emit at most one
@@ -236,7 +236,7 @@ func harvestTriviaFromToken(t: in SpannedToken, acc: inout List[HarvestedItem]):
   }
 }
 
-func harvestTriviaFromNode(n: in GreenNode, acc: inout List[HarvestedItem]): Unit {
+func harvestTriviaFromNode(n: in GreenNode, acc: in List[HarvestedItem]): Unit {
   var i = 0
   while i < n.children.count {
     match n.children[i] {
@@ -259,7 +259,7 @@ func harvestTrivia(cst: in GreenNode): List[HarvestedItem] {
 // lock-step by the parser, so the n-th `SkItem` corresponds to the n-th AST
 // item.
 // ─────────────────────────────────────────────────────────────────────────────
-func collectItemNodes(n: in GreenNode, acc: inout List[GreenNode]): Unit {
+func collectItemNodes(n: in GreenNode, acc: in List[GreenNode]): Unit {
   match n.kind {
     case SkItem -> {
       acc.add(n)

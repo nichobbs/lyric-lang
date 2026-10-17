@@ -239,6 +239,8 @@ SELF_TESTS=(
   lyric-compiler/lyric/inout_array_element_try_self_test.l
   lyric-compiler/lyric/dot_named_byref_self_test.l
   lyric-compiler/lyric/protected_byref_self_test.l
+  lyric-compiler/lyric/inout_aliasing_self_test.l
+  lyric-compiler/lyric/inout_aliasing_closure_self_test.l
   lyric-compiler/lyric/hoisted_literal_shape_self_test.l
   lyric-compiler/lyric/member_local_shadow_self_test.l
   lyric-compiler/lyric/member_local_shadow_panics_self_test.l

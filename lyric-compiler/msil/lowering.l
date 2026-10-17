@@ -964,6 +964,13 @@ pub union MInsn {
   // call RunBody() on the synthesised generator class before the MethodDef
   // table is fully populated (mirrors the MNewobjByName / MLdfldByName pattern).
   case MCallByName(className: String, methodName: String)
+  // `call System.Runtime.CompilerServices.Unsafe.As<fromTy, toTy>(ref fromTy):
+  // ref toTy`: reinterprets the managed pointer on the stack, a `fromTy&`, as
+  // a `toTy&` (D183).  The MethodSpec is built at Phase 5, when an in-bundle
+  // class's TypeDef row is known (`bufMsilTypeWithCtx`).  `asMrRow` is the
+  // 1-based MemberRef row of the open-generic method
+  // (`buildUnsafeAsByrefOpenSig`).
+  case MCallUnsafeAsByref(asMrRow: Int, fromTy: MsilType, toTy: MsilType)
 }
 
 // ── MField / MFunc / MRecord ──────────────────────────────────────────────────
@@ -1945,6 +1952,26 @@ pub func buildArrayEmptyOpenSig(): List[Byte] {
   bufU1(w, 0x1D)             // ELEMENT_TYPE_SZARRAY (return is T[])
   bufU1(w, 0x1E)             // ELEMENT_TYPE_MVAR (method generic parameter)
   writeCompressedInt(w, 0)   // method-var index 0
+  bufToList(w)
+}
+
+// Open-generic method signature for
+// `System.Runtime.CompilerServices.Unsafe.As<TFrom, TTo>(ref TFrom): ref TTo`
+// (ECMA-335 §II.23.2.1): GENERIC calling convention (0x10, static), two
+// generic parameters, one formal parameter `BYREF MVAR 0`, return
+// `BYREF MVAR 1`.  The name and this signature select the two-parameter
+// overload over `As<T>(object): T`.
+pub func buildUnsafeAsByrefOpenSig(): List[Byte] {
+  val w = bufNew()
+  bufU1(w, 0x10)             // GENERIC calling convention
+  writeCompressedInt(w, 2)   // generic parameter count
+  writeCompressedInt(w, 1)   // formal parameter count
+  bufU1(w, 0x10)             // ELEMENT_TYPE_BYREF (return: ref TTo)
+  bufU1(w, 0x1E)             // ELEMENT_TYPE_MVAR
+  writeCompressedInt(w, 1)   // index 1 (!!1 = TTo)
+  bufU1(w, 0x10)             // ELEMENT_TYPE_BYREF (param: ref TFrom)
+  bufU1(w, 0x1E)             // ELEMENT_TYPE_MVAR
+  writeCompressedInt(w, 0)   // index 0 (!!0 = TFrom)
   bufToList(w)
 }
 
@@ -2943,6 +2970,16 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
 
     case MInitobj(typeToken) -> emitInitobj(mb, typeToken)
 
+    case MCallUnsafeAsByref(asMrRow, fromTy, toTy) -> {
+      val w = bufNew()
+      bufU1(w, 0x0A)  // GENERICINST (method instantiation)
+      writeCompressedInt(w, 2)
+      bufMsilTypeWithCtx(w, fromTy, ctx)
+      bufMsilTypeWithCtx(w, toTy, ctx)
+      val specKey = "ms_unsafe_as_byref_" + msilTypeKey(fromTy) + "_" + msilTypeKey(toTy)
+      val specRow = ctxAddMethodSpec(ctx, mdorMemberRef(asMrRow), specKey, bufToList(w))
+      emitCall(mb, 0x2B000000 + specRow)
+    }
     case MCallAwaitUnsafeOnCompleted(smFqn, atmbMrRow, awaiterMsilTy) -> {
       // Build a 2-arg MethodSpec for `ATMB[<T>].AwaitUnsafeOnCompleted<TAwaiter, SM>`.
       // arg0 = concrete awaiter type; arg1 = SM class (TypeDef row looked up from smFqn).

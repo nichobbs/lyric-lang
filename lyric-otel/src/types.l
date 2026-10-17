@@ -121,19 +121,19 @@ pub func spanErrorMessage(s: in Span): Option[String] {
 
 /// Attach a string attribute.  Mutation is visible through every other
 /// reference to the same `Span` (records are reference types).
-pub func spanAddAttribute(s: inout Span, key: in String, value: in String): Unit {
+pub func spanAddAttribute(s: in Span, key: in String, value: in String): Unit {
   s.attributes.add(SpanAttribute(key = key, value = value))
 }
 
 /// Record an error message on the span (does not end it).
-pub func spanSetError(s: inout Span, message: in String): Unit {
+pub func spanSetError(s: in Span, message: in String): Unit {
   s.hasError = true
   s.errorText = message
 }
 
 /// Stamp the end timestamp.  Idempotent-ish: calling it twice just
 /// overwrites `endNanos` with the later value.
-pub func spanFinish(s: inout Span, endNanos: in Long): Unit {
+pub func spanFinish(s: in Span, endNanos: in Long): Unit {
   s.endNanos = endNanos
 }
 

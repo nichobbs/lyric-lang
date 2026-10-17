@@ -3431,6 +3431,10 @@ pub record LClosure {
   // allocate no extra locals).  J2b general lambdas set this from the codegen
   // body ctx's slot ticker so `max_locals` covers param/capture/temporary slots.
   bodyMaxLocals: Int
+  // Further instance methods of the class, beyond the interface method: the
+  // `set` of an `out`/`inout` place reference (`Lyric$Ref$<K>`, D183), whose
+  // interface has two.  Empty for every lambda and async closure.
+  extraMethods: List[LFunc]
 }
 
 func lowerClosureCaptures(captures: in List[LClosureCapture], pool: in Pool): List[FieldInfo] {
@@ -3559,6 +3563,11 @@ pub func lowerClosure(c: in LClosure, pool: in Pool): ClassFile {
   val methods: List[MethodInfo] = newList()
   methods.add(ctor)
   methods.add(method)
+  var xi = 0
+  while xi < c.extraMethods.count {
+    methods.add(lowerFuncForClass(c.extraMethods[xi], c.closureClass, pool))
+    xi = xi + 1
+  }
   val ifaces: List[String] = newList()
   ifaces.add(c.ifaceClass)
   makeClassFullWithInterfaces(c.closureClass, ifaces, fields, methods)
@@ -5811,7 +5820,8 @@ pub func lowerHotAsync(h: in LHotFunc, pool: in Pool): List[ClassFile] {
     methodParams = appParams,
     methodRet = JRef(className = "java/lang/Object"),
     bodyInsns = appInsns,
-    bodyMaxLocals = 0
+    bodyMaxLocals = 0,
+    extraMethods = newList()
   )
   result.add(lowerClosure(appClosure, pool))
 

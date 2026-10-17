@@ -813,7 +813,7 @@ func runHandlerAttempt(handler: in JobHandler, spec: in JobSpec): Result[String,
 ///
 /// Returns `Err("queue empty")` when there are no pending jobs.
 @stable(since = "0.1")
-pub func runNext(scheduler: inout InProcessJobScheduler, handler: in JobHandler): Result[JobResult, String] {
+pub func runNext(scheduler: in InProcessJobScheduler, handler: in JobHandler): Result[JobResult, String] {
   if scheduler.queue.count == 0 {
     return Err("queue empty")
   }
@@ -894,7 +894,7 @@ pub func attemptCount(scheduler: in InProcessJobScheduler, jobId: in String): In
 /// Drain the entire pending queue, executing each job with `handler`.
 /// Returns the list of results in execution order.
 @stable(since = "0.1")
-pub func runAll(scheduler: inout InProcessJobScheduler, handler: in JobHandler): slice[JobResult] {
+pub func runAll(scheduler: in InProcessJobScheduler, handler: in JobHandler): slice[JobResult] {
   val results: List[JobResult] = newList()
   while scheduler.queue.count > 0 {
     match runNext(scheduler, handler) {

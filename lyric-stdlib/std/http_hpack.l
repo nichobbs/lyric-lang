@@ -802,7 +802,7 @@ func decoderTrie(decoder: in HpackDecoder): HuffTrie {
 /// `SETTINGS_HEADER_TABLE_SIZE`); the peer's next block must carry a size
 /// update at or below it.
 @experimental
-pub func decoderSetMaxProtocolSize(decoder: inout HpackDecoder, newMax: in Int): Unit {
+pub func decoderSetMaxProtocolSize(decoder: in HpackDecoder, newMax: in Int): Unit {
   decoder.maxProtocolSize = newMax
 }
 
@@ -816,7 +816,7 @@ pub func decoderDynamicTable(decoder: in HpackDecoder): DynamicTable {
 /// the decoder's dynamic table as a side effect. A malformed block leaves the
 /// decoder poisoned for the connection (the caller must not continue on error).
 @experimental
-pub func decodeHeaderBlock(decoder: inout HpackDecoder, block: in slice[Byte]): Result[List[HeaderField], HpackError] {
+pub func decodeHeaderBlock(decoder: in HpackDecoder, block: in slice[Byte]): Result[List[HeaderField], HpackError] {
   decodeHeaderBlockLimited(decoder, block, 2147483647)
 }
 
@@ -830,7 +830,7 @@ pub func decodeHeaderBlock(decoder: inout HpackDecoder, block: in slice[Byte]): 
 /// caller must fail the connection.
 @experimental
 pub func decodeHeaderBlockLimited(
-  decoder: inout HpackDecoder, block: in slice[Byte], maxListSize: in Int
+  decoder: in HpackDecoder, block: in slice[Byte], maxListSize: in Int
 ): Result[List[HeaderField], HpackError] {
   val outList: List[HeaderField] = newList()
   var listSize = 0
@@ -884,7 +884,7 @@ pub func decodeHeaderBlockLimited(
 }
 
 func decodeLiteralField(
-  decoder: inout HpackDecoder,
+  decoder: in HpackDecoder,
   block: in slice[Byte],
   offset: in Int,
   prefixBits: in Int,
@@ -989,7 +989,7 @@ pub func encoderDynamicTable(encoder: in HpackEncoder): DynamicTable {
 /// Table Size Update that the next `encodeHeaderList` must emit first. Rejects
 /// a size above the peer's advertised ceiling.
 @experimental
-pub func encoderSetMaxTableSize(encoder: inout HpackEncoder, newSize: in Int): Result[Unit, HpackError]
+pub func encoderSetMaxTableSize(encoder: in HpackEncoder, newSize: in Int): Result[Unit, HpackError]
   requires: newSize >= 0
 {
   if newSize > encoder.maxProtocolSize {
@@ -1004,7 +1004,7 @@ pub func encoderSetMaxTableSize(encoder: inout HpackEncoder, newSize: in Int): R
 /// update first (if any) and updating the dynamic table for every
 /// incrementally-indexed field.
 @experimental
-pub func encodeHeaderList(encoder: inout HpackEncoder, headers: in List[HeaderField]): Result[slice[Byte], HpackError] {
+pub func encodeHeaderList(encoder: in HpackEncoder, headers: in List[HeaderField]): Result[slice[Byte], HpackError] {
   val acc: List[Byte] = newList()
   if encoder.pendingUpdate {
     appendSlice(acc, encodeDynamicTableSizeUpdate(encoder.table.maxSize))
@@ -1023,7 +1023,7 @@ pub func encodeHeaderList(encoder: inout HpackEncoder, headers: in List[HeaderFi
   Ok(value = acc.toArray())
 }
 
-func encodeHeaderField(encoder: inout HpackEncoder, acc: in List[Byte], h: in HeaderField): Result[Unit, HpackError] {
+func encodeHeaderField(encoder: in HpackEncoder, acc: in List[Byte], h: in HeaderField): Result[Unit, HpackError] {
   val nameOctets = match stringToOctets(h.name) { case Ok(v) -> v; case Err(e) -> return Err(error = e) }
   val valueOctets = match stringToOctets(h.value) { case Ok(v) -> v; case Err(e) -> return Err(error = e) }
   match findExactIndex(encoder, h.name, h.value) {

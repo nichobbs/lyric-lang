@@ -75,7 +75,7 @@ Testing.lastSent(mailSender: in MockMailSender)
 Testing.sentCount(mailSender: in MockMailSender)
   -> Int
 
-Testing.clearSent(mailSender: inout MockMailSender)
+Testing.clearSent(mailSender: in MockMailSender)
   -> Unit
 ```
 
@@ -101,14 +101,14 @@ Testing.assertEq(Testing.sentCount(testCtx.mailSender), 0)
 Enable or disable feature flags at runtime:
 
 ```lyric
-Testing.enable(flagStore: inout MockFlagStore, key: in String)
+Testing.enable(flagStore: in MockFlagStore, key: in String)
   -> Unit
 
-Testing.disable(flagStore: inout MockFlagStore, key: in String)
+Testing.disable(flagStore: in MockFlagStore, key: in String)
   -> Unit
 ```
 
-Note: these take `inout` parameter mode because they mutate the mock.
+Note: these take the mock `in`: they change its fields, which an `in` parameter allows, and never replace the mock itself. (An `inout` parameter would refer to the caller's place, so the argument would have to be a `var` or `var` field, D183.)
 
 Example:
 
@@ -127,7 +127,7 @@ Testing.assertTrue(Flags.isEnabled(testCtx.flagStore, "newFeature"))
 Advance the test clock for time-dependent code:
 
 ```lyric
-Testing.advance(clock: inout TestClock, ms: in Long)
+Testing.advance(clock: in TestClock, ms: in Long)
   -> Unit
   requires: ms >= 0i64
   requires: ms <= 9223372036854775807i64 - now(clock)

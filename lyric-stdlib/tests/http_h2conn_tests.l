@@ -88,7 +88,7 @@ func encodeBlock(headers: in List[HeaderField]): slice[Byte] {
 /// Encode a header block with a caller-supplied (persistent) encoder, so a test
 /// can exercise dynamic-table indexing across several requests — the same
 /// paired HPACK context a real client keeps for the whole connection.
-func encodeBlockWith(enc: inout HpackEncoder, headers: in List[HeaderField]): slice[Byte] {
+func encodeBlockWith(enc: in HpackEncoder, headers: in List[HeaderField]): slice[Byte] {
   match encodeHeaderList(enc, headers) {
     case Ok(b) -> {
       // Typed local before returning the union-case value: on the JVM backend

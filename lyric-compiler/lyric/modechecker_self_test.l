@@ -991,10 +991,10 @@ test "val-bound receiver write marks the field unsafe to lock (#6596 scenario 2)
 }
 
 // Scenario 4 (#6596): a field passed as an `out`/`inout` call argument
-// (`bump(c.pos)`) is a write-back target the JVM `writeBackHolderArg` /
-// MSIL `emitByrefArgMsil` codegen paths `putfield`/`stfld` into after the
-// call, but V0015's `walkExprForFieldWrite` never inspected call arguments
-// at all.
+// (`bump(c.pos)`) is a field the callee writes through the JVM place
+// reference (`Jvm.Codegen.placeRefClass`) / MSIL `emitByrefArgMsil` field
+// address, but V0015's `walkExprForFieldWrite` never inspected call
+// arguments at all.
 test "out/inout call-argument write-back marks the field unsafe to lock (#6596 scenario 4)" {
   val src = "package P\nrecord Cursor {\n  pos: Int\n}\nfunc bump(n: inout Int): Unit {\n  n = n + 1\n}\nfunc f(c: inout Cursor): Unit {\n  bump(c.pos)\n}\n"
   val unsafeSet = lockSafety(src)

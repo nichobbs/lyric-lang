@@ -46,9 +46,17 @@ pub record JvmFuncSig {
   // Declared parameter modes, index-aligned with `params` (#1763).  An empty
   // list means "all `in`" (the common case): a call site treats every argument
   // as by-value.  When non-empty, a `PMOut`/`PMInout` entry tells the call site
-  // to pass that argument as a holder array and copy the callee's write back to
-  // the caller's local after the call.  Mirrors the MSIL `funcParamModes`.
+  // to pass that argument as a reference to the caller's place (D183): its
+  // entry in `params` is the place-reference interface `Lyric$Ref$<K>`, and
+  // its entry in `refElems` the type of the place.  Mirrors the MSIL
+  // `funcParamModes`.
   paramModes: List[ParamMode]
+  // For each `out`/`inout` parameter, the JVM type of the place it refers to
+  // (`params` carries only the erased `Lyric$Ref$<K>` interface); `JVoid` for
+  // an `in` parameter.  Index-aligned with `params` when `paramModes` is
+  // non-empty, empty otherwise.  No default per the JVM-codegen
+  // no-defaulted-field rule (see `isIface` below).
+  refElems: List[JvmType]
   // True when `owner` is a JVM interface (a Lyric `interface` item), so the
   // call site must emit `invokeinterface` — `invokevirtual` against an
   // interface owner fails class-load verification ("Found interface X, but
@@ -793,17 +801,17 @@ pub record FuncCtx {
   // one carries no dead code.  The same list object is threaded through every
   // `FuncCtx` of the package, mirroring `closureAcc`.
   usedRuntimeHelpers: List[String]
-  // `out`/`inout` parameter holder bindings (#1763), keyed by the parameter's
-  // *value* slot (the slot `ctx.slots` maps the parameter name to after the
-  // entry-prologue unwrap).  An assignment to a value slot present in
-  // `holderArraySlot` writes the new value through to its holder array's
-  // element 0 so the caller observes it; a read uses the value slot directly
-  // (no deref).  Two parallel maps — value slot → holder array slot, and value
-  // slot → element type — rather than a `Map[Int, <record>]`, which the stage-0
-  // bootstrap emitter mis-resolves (see `ctors` above for the same hazard).
-  // Both empty for functions with no `out`/`inout` parameters.
-  holderArraySlot: Map[Int, Int]
-  holderElemType: Map[Int, JvmType]
+  // `out`/`inout` parameter bindings (#1763, D183), keyed by the parameter's
+  // *value* slot (the slot `ctx.slots` maps the parameter name to): the slot
+  // of the parameter's `Lyric$Ref$<K>` reference, and the place's type.  A
+  // read of the value slot re-reads the place through the reference
+  // (`emitLoadLocalReadThrough`) and an assignment writes the place through
+  // it (`emitStoreLocalWriteThrough`).  Two parallel maps rather than a
+  // `Map[Int, <record>]`, which the stage-0 bootstrap emitter mis-resolves
+  // (see `ctors` above for the same hazard).  Both empty for functions with
+  // no `out`/`inout` parameters.
+  refParamSlot: Map[Int, Int]
+  refParamElemType: Map[Int, JvmType]
   // By-reference closure capture (#1479 v2 JVM equivalent, epic #1877 Stage 2).
   // `hoistedVarNames` is the pre-pass set of names referenced inside any lambda
   // in this function; a `var` local in this set is hoisted to a one-element
@@ -2170,12 +2178,26 @@ pub func emitReturn(insns: in List[LInsn], ty: in JvmType): Unit {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §4b. `out` / `inout` holder-array helpers (#1763).
+// §4b. `out` / `inout` place references (#1763, D183).
 // ─────────────────────────────────────────────────────────────────────────────
-// True for the by-reference parameter modes (`out`, `inout`) — the JVM lowers
-// these to a single-element holder array (the MSIL backend uses a managed
-// byref `T&`).  `in` (the default) passes by value.  Mirrors the MSIL
-// `isByrefMode`.
+// An `out`/`inout` parameter refers to the caller's place itself (D183): a
+// write through the parameter is a write to the place, and a write to the
+// place through any other path is seen through the parameter.  The JVM has
+// no interior pointers, so the place is passed as an object implementing the
+// shared interface `Lyric/Lyric$Ref$<K>` — `get()` reads the place and
+// `set(v)` writes it — where `<K>` is the descriptor letter of the place's
+// JVM type (`L` for every reference or array type).  The caller builds one
+// per argument (`Jvm.Codegen.emitPlaceRef`): for a field it reads and writes
+// the field of the receiver object, for a local it reads and writes the
+// local's heap cell (a local passed by reference is hoisted to a cell, like a
+// local a closure captures), and an `out`/`inout` parameter passed on is
+// passed as the reference it already is.  The callee reads the parameter
+// through `get()` at each use (`emitLoadLocalReadThrough`) and writes it
+// through `set(v)` (`emitStoreLocalWriteThrough`).  An array element is the
+// one place passed by copy in and copy out (D179): the middle end has already
+// rewritten it into a local by the time a call reaches the backend.
+// True for the by-reference parameter modes (`out`, `inout`).  `in` (the
+// default) passes by value.  Mirrors the MSIL `isByrefMode`.
 pub func isHolderMode(m: in ParamMode): Bool {
   match m {
     case PMOut -> true
@@ -2184,101 +2206,126 @@ pub func isHolderMode(m: in ParamMode): Bool {
   }
 }
 
-// The JVM holder type for an `out`/`inout` parameter of element type `elemTy`:
-// a single-element array of that element type.
-pub func holderArrayType(elemTy: in JvmType): JvmType {
-  JArray(elem = elemTy)
-}
-
-// The JVM array descriptor for a holder of element type `elemTy` (e.g. `[I`,
-// `[Ljava/lang/String;`), used as the `LAstoreAs` class name so the
-// StackMapTable types the temp slot precisely enough to verify the later
-// element load/store.
-pub func holderArrayDescriptor(elemTy: in JvmType): String {
-  typeDescriptor(holderArrayType(elemTy))
-}
-
-// Allocate a fresh single-element holder array of element type `elemTy` on the
-// stack: `iconst_1; (a)newarray <elemTy>`.  Reference and array element types
-// use `anewarray <className>`; every primitive uses `newarray <T_*>`.
-pub func emitNewHolder(insns: in List[LInsn], elemTy: in JvmType): Unit {
-  insns.add(LIconst(v = 1))
+// The descriptor letter of the `Lyric$Ref$<K>` interface a place of JVM type
+// `elemTy` is passed as.
+pub func refKind(elemTy: in JvmType): String {
   match elemTy {
-    case JRef(cls) -> insns.add(LAnewarray(className = cls))
-    case JArray(_) -> insns.add(LAnewarray(className = arrayElemClassName(elemTy)))
-    case JBoolean -> insns.add(LNewarray(typeCode = 4))
-    case JChar -> insns.add(LNewarray(typeCode = 5))
-    case JFloat -> insns.add(LNewarray(typeCode = 6))
-    case JDouble -> insns.add(LNewarray(typeCode = 7))
-    case JByte -> insns.add(LNewarray(typeCode = 8))
-    case JShort -> insns.add(LNewarray(typeCode = 9))
-    case JInt -> insns.add(LNewarray(typeCode = 10))
-    case JLong -> insns.add(LNewarray(typeCode = 11))
-    case JVoid -> panic("Jvm.Codegen: cannot build an out/inout holder for a Unit-typed parameter")
+    case JBoolean -> "Z"
+    case JByte -> "B"
+    case JChar -> "C"
+    case JShort -> "S"
+    case JInt -> "I"
+    case JLong -> "J"
+    case JFloat -> "F"
+    case JDouble -> "D"
+    case JRef(_) -> "L"
+    case JArray(_) -> "L"
+    case JVoid -> panic("Jvm.Codegen: an out/inout parameter cannot have type Unit")
   }
 }
 
-// The JVM internal class name an `anewarray` needs for a (possibly nested)
-// array element type — i.e. the array's component descriptor with the leading
-// `[` dimension stripped relative to the holder array we are creating.  For a
-// `JArray(inner)` element, `anewarray` is given the *component* descriptor
-// (`[<inner-descriptor>`); for a `JRef`, it is the bare class name.
-func arrayElemClassName(elemTy: in JvmType): String {
+// The binary name of the shared place-reference interface for a place of JVM
+// type `elemTy`.  Like `Lyric/Lyric$Lambda`, every package that needs one
+// emits the identical class and the bundle keeps the first copy.
+pub func refIfaceName(elemTy: in JvmType): String {
+  refIfaceNameForKind(refKind(elemTy))
+}
+
+pub func refIfaceNameForKind(kind: in String): String {
+  "Lyric/Lyric$Ref$" + kind
+}
+
+pub func isRefIfaceName(cls: in String): Bool {
+  cls.startsWith("Lyric/Lyric$Ref$")
+}
+
+// The JVM parameter type of an `out`/`inout` parameter whose place has type
+// `elemTy`.
+pub func holderParamType(elemTy: in JvmType): JvmType {
+  JRef(className = refIfaceName(elemTy))
+}
+
+// The type `get()` returns and `set(v)` takes: the place's own type for a
+// primitive, `Object` for any reference or array type.
+pub func refValueType(elemTy: in JvmType): JvmType {
   match elemTy {
-    case JArray(inner) -> "[" + typeDescriptor(inner)
-    case JRef(cls) -> cls
-    case _ -> panic("Jvm.Codegen: arrayElemClassName called on a non-reference element type")
+    case JRef(_) -> JRef(className = "java/lang/Object")
+    case JArray(_) -> JRef(className = "java/lang/Object")
+    case _ -> elemTy
   }
 }
 
-// Emit the array-element *load* for a holder of element type `elemTy`: consumes
-// `arrayref, index` from the stack and pushes the element.
-pub func emitHolderElemLoad(insns: in List[LInsn], elemTy: in JvmType): Unit {
+pub func refValueTypeForKind(kind: in String): JvmType {
+  if kind == "Z" {
+    JBoolean
+  } else if kind == "B" {
+    JByte
+  } else if kind == "C" {
+    JChar
+  } else if kind == "S" {
+    JShort
+  } else if kind == "I" {
+    JInt
+  } else if kind == "J" {
+    JLong
+  } else if kind == "F" {
+    JFloat
+  } else if kind == "D" {
+    JDouble
+  } else {
+    JRef(className = "java/lang/Object")
+  }
+}
+
+// Record that this package uses the place-reference interface for `elemTy`,
+// so `codegenPackageWithSigsSeeded` emits it (`refIfaceItems`).
+pub func markRefIface(ctx: in FuncCtx, elemTy: in JvmType): Unit {
+  markRuntimeHelper(ctx, refIfaceName(elemTy))
+}
+
+// Read the place a reference refers to: consumes the reference on the stack
+// and pushes the place's value as `elemTy`.  A reference-typed value is
+// narrowed from the interface's `Object`; a `Byte` is masked to its canonical
+// unsigned form, as every other `Byte` load is.
+pub func emitRefGet(ctx: in FuncCtx, insns: in List[LInsn], elemTy: in JvmType): Unit {
+  markRefIface(ctx, elemTy)
+  val noPs: List[JvmType] = newList()
+  insns.add(
+    LInvokeinterface(
+      owner = refIfaceName(elemTy),
+      name = "get",
+      params = noPs,
+      ret = refValueType(elemTy),
+      argCount = 1
+    )
+  )
   match elemTy {
-    case JLong -> insns.add(LLaload)
-    case JDouble -> insns.add(LDaload)
-    case JFloat -> insns.add(LFaload)
-    case JBoolean -> insns.add(LBaload)
     case JByte -> {
-      // `baload` sign-extends; mask to the canonical unsigned form (see
-      // maskByteUnsigned in 04_calls.l).
-      insns.add(LBaload)
-      maskByteUnsigned(insns)
+      insns.add(LIconst(v = 255))
+      insns.add(LIand)
     }
-    case JChar -> insns.add(LCaload)
-    case JShort -> insns.add(LSaload)
-    case JInt -> insns.add(LIaload)
-    case JRef(_) -> insns.add(LAaload)
-    case JArray(_) -> insns.add(LAaload)
-    case JVoid -> panic("Jvm.Codegen: cannot load a Unit-typed holder element")
+    case JRef(cls) -> {
+      if cls != "java/lang/Object" {
+        insns.add(LCheckcast(className = cls))
+      }
+    }
+    case JArray(_) -> insns.add(LCheckcast(className = typeDescriptor(elemTy)))
+    case _ -> ()
   }
 }
 
-// Emit the array-element *store* for a holder of element type `elemTy`:
-// consumes `arrayref, index, value` from the stack.
-pub func emitHolderElemStore(insns: in List[LInsn], elemTy: in JvmType): Unit {
-  match elemTy {
-    case JLong -> insns.add(LLastore)
-    case JDouble -> insns.add(LDastore)
-    case JFloat -> insns.add(LFastore)
-    case JBoolean -> insns.add(LBastore)
-    case JByte -> insns.add(LBastore)
-    case JChar -> insns.add(LCastore)
-    case JShort -> insns.add(LSastore)
-    case JInt -> insns.add(LIastore)
-    case JRef(_) -> insns.add(LAastore)
-    case JArray(_) -> insns.add(LAastore)
-    case JVoid -> panic("Jvm.Codegen: cannot store a Unit-typed holder element")
-  }
+// Write the place a reference refers to: consumes the reference and the new
+// value (of type `elemTy`) on the stack.
+pub func emitRefSet(ctx: in FuncCtx, insns: in List[LInsn], elemTy: in JvmType): Unit {
+  markRefIface(ctx, elemTy)
+  val ps: List[JvmType] = newList()
+  ps.add(refValueType(elemTy))
+  val width = match elemTy { case JLong -> 2; case JDouble -> 2; case _ -> 1 }
+  insns.add(
+    LInvokeinterface(owner = refIfaceName(elemTy), name = "set", params = ps, ret = JVoid, argCount = 1 + width)
+  )
 }
 
-// Store the value currently on the stack into local `slot` (of type `ty`), and
-// — when `slot` is an `out`/`inout` parameter's value slot — also write the new
-// value through to its holder array's element 0 so the caller observes it
-// (#1763).  All assignment-statement paths funnel their final store through
-// here, so write-through is centralised.  The value is consumed once; the
-// write-through reloads it from the value slot (cheaper than a `dup` that would
-// have to handle the long/double two-word case).
 // Resolve a constructable type name (record / union case / protected /
 // opaque) to its JVM class, preferring the current package's own
 // declaration (`<pkg>::<name>` scoped key) over the bundle-global
@@ -2810,6 +2857,7 @@ pub func tryQualifiedModuleValJvm(ctx: in FuncCtx, expr: in Expr): Option[JvmFun
                 paramNames = newList(),
                 paramDefaults = newList(),
                 paramModes = newList(),
+                refElems = newList(),
                 isIface = false,
                 retGenericArgs = newList(),
                 closureRetTy = None,
@@ -2898,18 +2946,49 @@ pub func recordDeclaredElemType(ctx: in FuncCtx, name: in String, ty: in TypeExp
   }
 }
 
+// Store the value on the stack into local `slot` (of type `ty`) and, when
+// `slot` is an `out`/`inout` parameter's value slot, write it to the
+// caller's place through the parameter's reference too (D183).  Every
+// assignment to a local funnels its final store through here.  The value is
+// consumed once; the write-through reloads it from the slot (cheaper than a
+// `dup` that would have to handle the long/double two-word case).
 pub func emitStoreLocalWriteThrough(ctx: in FuncCtx, insns: in List[LInsn], slot: in Int, ty: in JvmType): Unit {
   emitStore(insns, slot, ty)
-  match mapGet(ctx.holderArraySlot, slot) {
-    case Some(arrSlot) -> {
-      val elemTy = match mapGet(ctx.holderElemType, slot) { case Some(t) -> t; case None -> ty }
-      insns.add(LAload(slot = arrSlot))
-      insns.add(LIconst(v = 0))
-      emitLoad(insns, slot, elemTy)
-      emitHolderElemStore(insns, elemTy)
+  match mapGet(ctx.refParamSlot, slot) {
+    case Some(refSlot) -> {
+      val elemTy = match mapGet(ctx.refParamElemType, slot) { case Some(t) -> t; case None -> ty }
+      insns.add(LAload(slot = refSlot))
+      emitLoad(insns, slot, ty)
+      emitRefSet(ctx, insns, elemTy)
     }
     case None -> ()
   }
+}
+
+// Load local `slot` (of type `ty`).  When `slot` is an `out`/`inout`
+// parameter's value slot, the value is first re-read from the caller's place
+// through the parameter's reference, since the callee may have written the
+// place through another path (a field, a closure, another argument) since
+// the parameter was last read (D183); the slot is refreshed with it.
+pub func emitLoadLocalReadThrough(ctx: in FuncCtx, insns: in List[LInsn], slot: in Int, ty: in JvmType): Unit {
+  match mapGet(ctx.refParamSlot, slot) {
+    case Some(refSlot) -> {
+      val elemTy = match mapGet(ctx.refParamElemType, slot) { case Some(t) -> t; case None -> ty }
+      insns.add(LAload(slot = refSlot))
+      emitRefGet(ctx, insns, elemTy)
+      match ty {
+        case JRef(cls) -> {
+          if ty != elemTy and cls != "java/lang/Object" {
+            insns.add(LCheckcast(className = cls))
+          }
+        }
+        case _ -> ()
+      }
+      emitStore(insns, slot, ty)
+    }
+    case None -> ()
+  }
+  emitLoad(insns, slot, ty)
 }
 
 // Record that this package's code calls the synthesised static helper `name`

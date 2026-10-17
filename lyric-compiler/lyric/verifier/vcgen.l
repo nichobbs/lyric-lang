@@ -2949,7 +2949,7 @@ func intBitsOfExprWith(env: in VEnv, e: in Expr, unknownWins: in Bool): Int {
 }
 
 // The value an `if` branch or `match` arm yields, when it names one.
-func addEobValue(parts: inout List[Expr], eob: in ExprOrBlock): Unit {
+func addEobValue(parts: in List[Expr], eob: in ExprOrBlock): Unit {
   match eob {
     case EOBExpr(x) -> parts.add(x)
     case EOBBlock(blk) -> match blockLastExpr(blk) { case Some(last) -> parts.add(last); case None -> () }
