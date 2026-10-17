@@ -809,10 +809,10 @@ pub func setupInstanceParamSlotsAndHolders(
 // Shared by-reference closure capture pre-pass entry point (#7690) — the JVM
 // analog of MSIL's `runClosureCapturePrePassMsil`.  Every codegen path that
 // builds a `FuncCtx` for a body containing statements must run this before
-// lowering the body: it walks `body` for every `var` declaration and every
-// name referenced inside a nested lambda, and populates `ctx.hoistedVarNames`
-// with their intersection — the set of mutable locals a closure in this body
-// actually captures, which must be hoisted to a heap cell (`emitCellLoadJvm`
+// lowering the body: it walks `body` for every name referenced inside a
+// nested lambda and adds it to `ctx.hoistedVarNames`, which affects only a
+// `var` declaration — so the mutable locals a closure in this body actually
+// captures are hoisted to a heap cell (`emitCellLoadJvm`
 // / `emitCellAssignJvm`) rather than a plain local slot so the closure and
 // the enclosing scope share one mutable location.  Before this was
 // centralised, `lowerFuncScoped` (top-level functions and lifted lambdas)
@@ -825,17 +825,6 @@ pub func setupInstanceParamSlotsAndHolders(
 // diagnostic (unlike MSIL, which panics on the same gap via its
 // `hoistedVarNames`-miss invariant check).
 func runClosureCapturePrePassJvm(ctx: in FuncCtx, body: in Option[FunctionBody]): Unit {
-  val mutableVars: Map[String, Bool] = newMap()
-  match body {
-    case Some(b) -> match b {
-      case FBBlock(blk) -> collectMutableVarsBlock(blk, mutableVars)
-      // #7694: an expression body (an `= expr` function, or a `spawn` operand)
-      // can still declare a `var` inside a nested block (an `if`/`match` arm,
-      // `EBlock`) that a closure in the same body captures.
-      case FBExpr(e) -> collectMutableVarsExpr(e, mutableVars)
-    }
-    case None -> ()
-  }
   val inLambdaNames: List[String] = newList()
   match body {
     case Some(b) -> match b {
@@ -847,37 +836,10 @@ func runClosureCapturePrePassJvm(ctx: in FuncCtx, body: in Option[FunctionBody])
   var i = 0
   while i < inLambdaNames.count {
     val nm = inLambdaNames[i]
-    if mutableVars.containsKey(nm) and not nameInList(ctx.hoistedVarNames, nm) {
-      ctx.hoistedVarNames.add(nm)
-    }
-    i = i + 1
-  }
-  // D183: a local passed to an `out`/`inout` parameter is hoisted to a heap
-  // cell too, so the callee's place reference (`emitPlaceRef`) refers to the
-  // local's one location — the place the caller, the callee and any closure
-  // read and write while the call runs.  Which calls pass by reference is
-  // decided here by callee name alone (`~byref~<name>`, `indexByRefCallees`),
-  // before any call is resolved, so a local passed to a same-named by-value
-  // function is hoisted too; that costs only the cell.
-  val byRefNames: List[String] = newList()
-  match body {
-    case Some(b) -> match b {
-      case FBBlock(blk) -> collectByRefArgNamesBlock(ctx, blk, byRefNames)
-      case FBExpr(e) -> collectByRefArgNamesExpr(ctx, e, byRefNames)
-    }
-    case None -> ()
-  }
-  // Every such name is recorded, not only the `var`s `mutableVars` found:
-  // that walk skips the expressions of an assignment, `return` or loop
-  // condition, where the middle end declares an array element's temporary
-  // (D179); `hoistedVarNames` only ever affects a `var` declaration.
-  var bi = 0
-  while bi < byRefNames.count {
-    val nm = byRefNames[bi]
     if not nameInList(ctx.hoistedVarNames, nm) {
       ctx.hoistedVarNames.add(nm)
     }
-    bi = bi + 1
+    i = i + 1
   }
 }
 
@@ -967,28 +929,45 @@ func addBareArgName(acc: in List[String], e: in Expr): Unit {
   }
 }
 
+// D183: a `var` passed to an `out`/`inout` parameter is hoisted to a heap
+// cell, so the callee's place reference (`emitPlaceRef`) refers to the
+// local's one location — the place the caller, the callee and any closure
+// read and write while the call runs.  Every block, in every context that
+// lowers one (a function or lambda body, a module `val` initialiser, a field
+// default or default argument lowered at its use, a wire binding), runs this
+// on entry over its own statements, before any of them is lowered, so each
+// `var` it declares is known to be passed by reference before its slot is
+// chosen; a block nested inside runs it again for its own.  Which calls pass
+// by reference is decided by callee name alone (`~byref~<name>`,
+// `indexByRefCallees`), before any call is resolved, so a local passed to a
+// same-named by-value function is hoisted too; that costs only the cell.
+// `hoistedVarNames` only ever affects a `var` declaration.
+pub func noteByRefLocals(ctx: in FuncCtx, stmts: in List[Statement], start: in Int): Unit {
+  val names: List[String] = newList()
+  var i = start
+  while i < stmts.count {
+    collectByRefArgNamesStmt(ctx, stmts[i], names)
+    i = i + 1
+  }
+  var ni = 0
+  while ni < names.count {
+    if not nameInList(ctx.hoistedVarNames, names[ni]) {
+      ctx.hoistedVarNames.add(names[ni])
+    }
+    ni = ni + 1
+  }
+}
+
 // Collect into `acc` every bare name that a call to a by-reference callee
 // (`isByRefCalleeName`) passes as an argument or as its receiver, in `e`.
-// Lambda bodies are skipped: a local of the enclosing function a lambda
-// names is captured, and so already hoisted, and the lambda's own locals are
-// hoisted by its own pre-pass.
+// Every expression kind is listed, so a new one cannot be skipped silently.
+// A lambda body is not entered: a local of the enclosing function it names
+// is captured, and so already hoisted, and its own blocks run
+// `noteByRefLocals` when they are lowered.
 func collectByRefArgNamesExpr(ctx: in FuncCtx, e: in Expr, acc: in List[String]): Unit {
   match e.kind {
     case ECall(fn, args) -> {
-      val calleeName = match fn.kind {
-        case EPath(p) -> if p.segments.count > 0 { p.segments[p.segments.count - 1] } else { "" }
-        case EMember(_, m) -> m
-        case ETypeApp(inner, _) -> match inner.kind {
-          case EPath(p2) -> if p2.segments.count > 0 {
-            p2.segments[p2.segments.count - 1]
-          } else {
-            ""
-          }
-          case EMember(_, m2) -> m2
-          case _ -> ""
-        }
-        case _ -> ""
-      }
+      val calleeName = byRefCalleeNameOf(fn)
       val byRef = calleeName.length > 0 and isByRefCalleeName(ctx, calleeName)
       if byRef {
         match fn.kind {
@@ -1046,7 +1025,36 @@ func collectByRefArgNamesExpr(ctx: in FuncCtx, e: in Expr, acc: in List[String])
     case EYield(inner) -> collectByRefArgNamesExpr(ctx, inner, acc)
     case ESpawn(inner) -> collectByRefArgNamesExpr(ctx, inner, acc)
     case ETry(inner) -> collectByRefArgNamesExpr(ctx, inner, acc)
+    case EOld(inner) -> collectByRefArgNamesExpr(ctx, inner, acc)
     case EPropagate(inner) -> collectByRefArgNamesExpr(ctx, inner, acc)
+    case EForall(_, whereExpr, body, _) -> {
+      match whereExpr {
+        case Some(w) -> collectByRefArgNamesExpr(ctx, w, acc)
+        case None -> ()
+      }
+      collectByRefArgNamesExpr(ctx, body, acc)
+    }
+    case EExists(_, whereExpr, body, _) -> {
+      match whereExpr {
+        case Some(w) -> collectByRefArgNamesExpr(ctx, w, acc)
+        case None -> ()
+      }
+      collectByRefArgNamesExpr(ctx, body, acc)
+    }
+    case ERange(bound) -> {
+      match bound {
+        case RBClosed(lo, hi) -> {
+          collectByRefArgNamesExpr(ctx, lo, acc)
+          collectByRefArgNamesExpr(ctx, hi, acc)
+        }
+        case RBHalfOpen(lo, hi, _) -> {
+          collectByRefArgNamesExpr(ctx, lo, acc)
+          collectByRefArgNamesExpr(ctx, hi, acc)
+        }
+        case RBLowerOpen(hi) -> collectByRefArgNamesExpr(ctx, hi, acc)
+        case RBUpperOpen(lo) -> collectByRefArgNamesExpr(ctx, lo, acc)
+      }
+    }
     case EAssign(target, _, v) -> {
       collectByRefArgNamesExpr(ctx, target, acc)
       collectByRefArgNamesExpr(ctx, v, acc)
@@ -1056,13 +1064,31 @@ func collectByRefArgNamesExpr(ctx: in FuncCtx, e: in Expr, acc: in List[String])
       while si < segs.count {
         match segs[si] {
           case ISExpr(ex) -> collectByRefArgNamesExpr(ctx, ex, acc)
-          case _ -> ()
+          case ISText(_, _) -> ()
         }
         si = si + 1
       }
     }
     case ETypeApp(fn, _) -> collectByRefArgNamesExpr(ctx, fn, acc)
-    case _ -> ()
+    case ELambda(_, _) -> ()
+    case ELiteral(_) -> ()
+    case EPath(_) -> ()
+    case ESelf -> ()
+    case EResult -> ()
+    case EError -> ()
+  }
+}
+
+// The name a call's callee expression calls, as `indexByRefCallees` indexes
+// it: a path's last segment, a method's name, or either under a type
+// application; "" for anything else, which cannot name a declared function.
+func byRefCalleeNameOf(fn: in Expr): String {
+  match fn.kind {
+    case EPath(p) -> if p.segments.count > 0 { p.segments[p.segments.count - 1] } else { "" }
+    case EMember(_, m) -> m
+    case ETypeApp(inner, _) -> byRefCalleeNameOf(inner)
+    case EParen(inner) -> byRefCalleeNameOf(inner)
+    case _ -> ""
   }
 }
 
@@ -1084,211 +1110,70 @@ func collectByRefArgNamesEob(ctx: in FuncCtx, eob: in ExprOrBlock, acc: in List[
 func collectByRefArgNamesBlock(ctx: in FuncCtx, b: in Block, acc: in List[String]): Unit {
   var i = 0
   while i < b.statements.count {
-    match b.statements[i].kind {
-      case SLocal(binding) -> {
-        match binding {
-          case LBVar(_, _, initOpt) -> {
-            match initOpt {
-              case Some(init) -> collectByRefArgNamesExpr(ctx, init, acc)
-              case None -> ()
-            }
-          }
-          case LBVal(_, _, init) -> collectByRefArgNamesExpr(ctx, init, acc)
-          case LBLet(_, _, init) -> collectByRefArgNamesExpr(ctx, init, acc)
-        }
-      }
-      case SAssign(target, _, value) -> {
-        collectByRefArgNamesExpr(ctx, target, acc)
-        collectByRefArgNamesExpr(ctx, value, acc)
-      }
-      case SReturn(valueOpt) -> {
-        match valueOpt {
-          case Some(v) -> collectByRefArgNamesExpr(ctx, v, acc)
-          case None -> ()
-        }
-      }
-      case SThrow(e) -> collectByRefArgNamesExpr(ctx, e, acc)
-      case SExpr(e) -> collectByRefArgNamesExpr(ctx, e, acc)
-      case SWhile(_, cond, body) -> {
-        collectByRefArgNamesExpr(ctx, cond, acc)
-        collectByRefArgNamesBlock(ctx, body, acc)
-      }
-      case SLoop(_, body) -> collectByRefArgNamesBlock(ctx, body, acc)
-      case SFor(_, _, iter, body) -> {
-        collectByRefArgNamesExpr(ctx, iter, acc)
-        collectByRefArgNamesBlock(ctx, body, acc)
-      }
-      case STry(body, catches, finally_) -> {
-        collectByRefArgNamesBlock(ctx, body, acc)
-        var ci = 0
-        while ci < catches.count {
-          collectByRefArgNamesBlock(ctx, catches[ci].body, acc)
-          ci = ci + 1
-        }
-        match finally_ {
-          case Some(fb) -> collectByRefArgNamesBlock(ctx, fb, acc)
-          case None -> ()
-        }
-      }
-      case SDefer(body) -> collectByRefArgNamesBlock(ctx, body, acc)
-      case SScope(_, body) -> collectByRefArgNamesBlock(ctx, body, acc)
-      case _ -> ()
-    }
+    collectByRefArgNamesStmt(ctx, b.statements[i], acc)
     i = i + 1
   }
 }
 
-// Collect all `var` declarations in a function body.  Mirrors the
-// `collectInLambdaNamesExpr` traversal in `02_exprs.l` (same set of
-// sub-expression-carrying `ExprKind` arms) so a `var` declared inside a
-// block that appears in call-argument, operand, or other nested-expression
-// position is not missed (#4264).  `ELambda` is deliberately NOT recursed
-// into: a `var` declared inside a lambda's own body belongs to that
-// lambda's own scope and is analyzed separately when the lambda is lowered.
-func collectMutableVarsExpr(e: in Expr, acc: in Map[String, Bool]): Unit {
-  match e.kind {
-    case EIf(cond, thenBranch, elseBranch, thenForm) -> {
-      collectMutableVarsExpr(cond, acc)
-      match thenBranch {
-        case EOBExpr(ex) -> collectMutableVarsExpr(ex, acc)
-        case EOBBlock(blk) -> collectMutableVarsBlock(blk, acc)
-      }
-      match elseBranch {
-        case Some(eb) -> {
-          match eb {
-            case EOBExpr(ex) -> collectMutableVarsExpr(ex, acc)
-            case EOBBlock(blk) -> collectMutableVarsBlock(blk, acc)
+// Every statement kind is listed, as in `collectByRefArgNamesExpr`.  A nested
+// item declares its own functions, lowered with their own blocks.
+func collectByRefArgNamesStmt(ctx: in FuncCtx, st: in Statement, acc: in List[String]): Unit {
+  match st.kind {
+    case SLocal(binding) -> {
+      match binding {
+        case LBVar(_, _, initOpt) -> {
+          match initOpt {
+            case Some(init) -> collectByRefArgNamesExpr(ctx, init, acc)
+            case None -> ()
           }
         }
+        case LBVal(_, _, init) -> collectByRefArgNamesExpr(ctx, init, acc)
+        case LBLet(_, _, init) -> collectByRefArgNamesExpr(ctx, init, acc)
+      }
+    }
+    case SAssign(target, _, value) -> {
+      collectByRefArgNamesExpr(ctx, target, acc)
+      collectByRefArgNamesExpr(ctx, value, acc)
+    }
+    case SReturn(valueOpt) -> {
+      match valueOpt {
+        case Some(v) -> collectByRefArgNamesExpr(ctx, v, acc)
         case None -> ()
       }
     }
-    case EMatch(scr, arms) -> {
-      collectMutableVarsExpr(scr, acc)
-      var ai = 0
-      while ai < arms.count {
-        match arms[ai].guard {
-          case Some(guardExpr) -> collectMutableVarsExpr(guardExpr, acc)
-          case None -> ()
-        }
-        match arms[ai].body {
-          case EOBExpr(ex) -> collectMutableVarsExpr(ex, acc)
-          case EOBBlock(blk) -> collectMutableVarsBlock(blk, acc)
-        }
-        ai = ai + 1
+    case SThrow(e) -> collectByRefArgNamesExpr(ctx, e, acc)
+    case SExpr(e) -> collectByRefArgNamesExpr(ctx, e, acc)
+    case SInvariant(e) -> collectByRefArgNamesExpr(ctx, e, acc)
+    case SRule(lhs, rhs) -> {
+      collectByRefArgNamesExpr(ctx, lhs, acc)
+      collectByRefArgNamesExpr(ctx, rhs, acc)
+    }
+    case SWhile(_, cond, body) -> {
+      collectByRefArgNamesExpr(ctx, cond, acc)
+      collectByRefArgNamesBlock(ctx, body, acc)
+    }
+    case SLoop(_, body) -> collectByRefArgNamesBlock(ctx, body, acc)
+    case SFor(_, _, iter, body) -> {
+      collectByRefArgNamesExpr(ctx, iter, acc)
+      collectByRefArgNamesBlock(ctx, body, acc)
+    }
+    case STry(body, catches, finally_) -> {
+      collectByRefArgNamesBlock(ctx, body, acc)
+      var ci = 0
+      while ci < catches.count {
+        collectByRefArgNamesBlock(ctx, catches[ci].body, acc)
+        ci = ci + 1
+      }
+      match finally_ {
+        case Some(fb) -> collectByRefArgNamesBlock(ctx, fb, acc)
+        case None -> ()
       }
     }
-    case EBlock(blk) -> {
-      collectMutableVarsBlock(blk, acc)
-    }
-    case EUnsafe(blk) -> {
-      collectMutableVarsBlock(blk, acc)
-    }
-    case ECall(fn, args) -> {
-      collectMutableVarsExpr(fn, acc)
-      var ai = 0
-      while ai < args.count {
-        match args[ai] {
-          case CAPositional(ex) -> collectMutableVarsExpr(ex, acc)
-          case CANamed(_, ex, _) -> collectMutableVarsExpr(ex, acc)
-        }
-        ai = ai + 1
-      }
-    }
-    case EBinop(_, lhs, rhs) -> {
-      collectMutableVarsExpr(lhs, acc)
-      collectMutableVarsExpr(rhs, acc)
-    }
-    case EPrefix(_, operand) -> collectMutableVarsExpr(operand, acc)
-    case EParen(inner) -> collectMutableVarsExpr(inner, acc)
-    case EMember(recv, _) -> collectMutableVarsExpr(recv, acc)
-    case EList(exprs) -> {
-      var ei = 0
-      while ei < exprs.count {
-        collectMutableVarsExpr(exprs[ei], acc)
-        ei = ei + 1
-      }
-    }
-    case ETuple(exprs) -> {
-      var ei = 0
-      while ei < exprs.count {
-        collectMutableVarsExpr(exprs[ei], acc)
-        ei = ei + 1
-      }
-    }
-    case EIndex(recv, indices) -> {
-      collectMutableVarsExpr(recv, acc)
-      var ii = 0
-      while ii < indices.count {
-        collectMutableVarsExpr(indices[ii], acc)
-        ii = ii + 1
-      }
-    }
-    case EAwait(inner) -> collectMutableVarsExpr(inner, acc)
-    case EYield(inner) -> collectMutableVarsExpr(inner, acc)
-    case ESpawn(inner) -> collectMutableVarsExpr(inner, acc)
-    case ETry(inner) -> collectMutableVarsExpr(inner, acc)
-    case EPropagate(inner) -> collectMutableVarsExpr(inner, acc)
-    case EAssign(target, _, v) -> {
-      collectMutableVarsExpr(target, acc)
-      collectMutableVarsExpr(v, acc)
-    }
-    case EInterpolated(segs) -> {
-      var si = 0
-      while si < segs.count {
-        match segs[si] {
-          case ISExpr(ex) -> collectMutableVarsExpr(ex, acc)
-          case _ -> ()
-        }
-        si = si + 1
-      }
-    }
-    case ETypeApp(fn, _) -> collectMutableVarsExpr(fn, acc)
-    case _ -> ()
-  }
-}
-
-func collectMutableVarsBlock(b: in Block, acc: in Map[String, Bool]): Unit {
-  var i = 0
-  while i < b.statements.count {
-    match b.statements[i].kind {
-      case SLocal(binding) -> {
-        match binding {
-          case LBVar(name, _, _) -> {
-            if not acc.containsKey(name) {
-              acc.add(name, true)
-            }
-          }
-          case LBVal(_, _, init) -> {
-            collectMutableVarsExpr(init, acc)
-          }
-          case LBLet(_, _, init) -> {
-            collectMutableVarsExpr(init, acc)
-          }
-          case _ -> ()
-        }
-      }
-      case SExpr(e) -> collectMutableVarsExpr(e, acc)
-      case SWhile(_, _, body) -> collectMutableVarsBlock(body, acc)
-      case SLoop(_, body) -> collectMutableVarsBlock(body, acc)
-      case SFor(_, _, _, body) -> collectMutableVarsBlock(body, acc)
-      case STry(body, catches, finally_) -> {
-        collectMutableVarsBlock(body, acc)
-        var ci = 0
-        while ci < catches.count {
-          collectMutableVarsBlock(catches[ci].body, acc)
-          ci = ci + 1
-        }
-        match finally_ {
-          case Some(fb) -> collectMutableVarsBlock(fb, acc)
-          case None -> ()
-        }
-      }
-      case SDefer(body) -> collectMutableVarsBlock(body, acc)
-      case SScope(_, body) -> collectMutableVarsBlock(body, acc)
-      case _ -> ()
-    }
-    i = i + 1
+    case SDefer(body) -> collectByRefArgNamesBlock(ctx, body, acc)
+    case SScope(_, body) -> collectByRefArgNamesBlock(ctx, body, acc)
+    case SBreak(_) -> ()
+    case SContinue(_) -> ()
+    case SItem(_) -> ()
   }
 }
 

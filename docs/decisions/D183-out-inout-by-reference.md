@@ -43,10 +43,21 @@ say which one aliasing code could rely on.
    by reference.
 
 3. **An argument is always a place.** An argument bound to an `out`/`inout`
-   parameter must be a writable place whatever its type (T0085). The former
-   exemption for reference types (a `val` record, a `String` literal) is
-   withdrawn: under item 1 the callee may assign the parameter, which would
-   reassign an immutable binding or a value that is no place at all.
+   parameter must be a writable place whatever its type (T0085): a `var`
+   local, an `out`/`inout` parameter, a `var` field (of any receiver, the
+   field being what is written, as for `p.f = v`; a protected type's `var`
+   field named bare inside its member), or an element of an array that is a
+   writable place (item 2). These are the place classes an element write
+   already requires (T0157, `placeClass`). A `val`, `let` or `in` binding, a
+   non-`var` field, a literal, a call result or any other value is not. The
+   former exemption for reference types (a `val` record, a `String`
+   literal) is withdrawn, and a non-`var` field is no longer accepted: under
+   item 1 the callee may assign the parameter, which would reassign an
+   immutable binding or field, or a value that is no place at all. A callee
+   that only changes the fields of the record it is given, or adds to the
+   collection, takes it `in` (docs/01 §5.2); lyric-otel's `spanSetError`/
+   `spanAddAttribute`/`spanFinish` and lyric-jobs' `runNext`/`runAll`, and a
+   few compiler-internal helpers, changed to `in` for this reason.
 
 4. **A lambda captures a parameter's value.** A lambda that names an
    enclosing function's `out`/`inout` parameter captures its value when the
@@ -118,3 +129,17 @@ hold a reference to a place that may not outlive the call that passed it.
   dotnet, the JVM and native; `inout_aliasing_closure_self_test.l` pins the
   closure and panic cases on dotnet and the JVM; `typechecker_self_test.l`
   pins items 3 and 4.
+- **Cost on the JVM.** The callee reads the place through `get()` at every
+  use and writes it through `set(v)`, and the reference's class depends on
+  the kind of place each caller passes (a field, a local's cell, a converting
+  wrapper). A callee called with several kinds of place in a hot loop sees a
+  megamorphic call site there, which the JIT cannot inline: a
+  read-modify-write loop over an `inout Int` measured about 3-5x slower than
+  the old holder array (whose `iaload`/`iastore` were monomorphic, but whose
+  copy back was wrong). A callee whose callers all pass one kind of place
+  stays monomorphic and is inlined. Caching the place in a local across a
+  loop and writing it back afterwards would be faster, but is sound only
+  where no call, field write or other argument can reach the place in
+  between, which the backend cannot yet prove; until it can, read the
+  parameter into a `var` in a hot loop and assign it once at the end, which
+  is what the cache would do.

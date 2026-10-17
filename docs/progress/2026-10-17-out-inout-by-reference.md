@@ -29,7 +29,7 @@ passes (`emitPlaceRef`):
   accessors), converting between the field's type and the parameter's;
 - a local: a reference to the local's heap cell. A local passed by reference
   is now hoisted to a cell for its lifetime, as a local a closure captures
-  already was (`runClosureCapturePrePassJvm`, which finds such locals by the
+  already was (`noteByRefLocals`, run as each block is entered, which finds such locals by the
   callee's name through a `~byref~<name>` index of the registry, before any
   call is resolved);
 - the caller's own `out`/`inout` parameter: its reference, or a converting
@@ -40,6 +40,16 @@ Nothing is written back after the call, so a write made before a panic stays
 made, and a protected member writes the place while it holds its lock. The
 holder-array helpers and the write-back (`writeBackHolderArg`,
 `prepareCellHolderArg`) are gone.
+
+Which locals to hoist is decided as each block is entered, over that block's
+own statements (`noteByRefLocals`), with a walker that lists every expression
+and statement kind. A function-level pass missed a `var` declared in a range
+bound, a module `val` initialiser, a record field default or a default
+argument (both lowered at the use), and a wire binding, and the call then
+failed in codegen; now every context that lowers a block runs it. (A
+branching wire-binding initialiser, where such a `var` would live, fails JVM
+verification for an unrelated reason — no stackmap frame in the wire's
+`bootstrap` — so that context is not exercised by a test yet.)
 
 A local hoisted to a cell is typed as its cell, so a field of it read with an
 index (`h.buf[0]`, for a `var h` a closure captures or a call passes by
@@ -60,6 +70,16 @@ function returns.
   and `inout List`/`Map` parameters of the parser,
   formatter, contract elaborator, verifier and derives that only add to the
   collection (now `in`, which allows that, docs/01 §5.2).
+  The place must also be writable along its last step: a field argument
+  must be a `var` field (the class `placeClass` gives assignment and element
+  writes, T0157), so `bump(p.x)` with a non-`var` `x` is T0085 instead of
+  silently mutating the field (dotnet, JVM) or failing in native codegen.
+  Callees that only change the fields of the record they are given take it
+  `in`: lyric-otel's `spanSetError`/`spanAddAttribute`/`spanFinish`,
+  lyric-jobs' `runNext`/`runAll`, and `Std.HttpEngine.Hpack`'s encoder and
+  decoder functions (whose `HpackEncoder`/`HpackDecoder` were held in a
+  non-`var` field of the connection state). The T0085 message now says why
+  (D183), suggests a `var` or an `in` parameter, and points at the argument.
 - A lambda captures an enclosing function's `out`/`inout` parameter's value,
   never the caller's place: inside it the name is immutable, so assigning it
   is T0087 and passing it by reference T0085, each with a message naming the

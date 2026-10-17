@@ -848,7 +848,7 @@ The caller builds the reference (`emitPlaceRef`, `codegen/04_calls.l`):
   accessors), converting between the field's type and the parameter's;
 - a local: a reference to the local's one-element heap cell.  A local passed
   by reference is hoisted to a cell for its lifetime, exactly as a local a
-  closure captures is (`runClosureCapturePrePassJvm`, which finds such
+  closure captures is (`noteByRefLocals`, run as each block is entered, which finds such
   locals before any call is resolved, by callee name, through the
   registry's `~byref~<name>` index);
 - the caller's own `out`/`inout` parameter: its reference as it is, or one
@@ -868,6 +868,18 @@ before a panic stays made.  `JvmFuncSig.refElems` carries each parameter's
 place type, which the erased interface descriptor does not spell.  The
 interfaces are emitted by every package that uses them and kept once per
 bundle, like `Lyric$Lambda`.
+
+Cost: every read is an `invokeinterface get` and every write an
+`invokeinterface set`.  The reference's class depends on the kind of place
+the caller passed, so a callee reached from callers passing different kinds
+of place (a field reference, a local's cell, a converting wrapper) has a
+megamorphic call site the JIT does not inline: a tight read-modify-write loop
+over an `inout Int` runs about 3-5x slower than with the old holder array.
+Callers that all pass one kind of place keep it monomorphic and inlined.  The
+backend does not cache the place in a local, since a write through another
+path (a call, a field write, another argument) can intervene and it cannot
+yet prove none does; code with such a hot loop reads the parameter into a
+`var`, works on that, and assigns the parameter once at the end (D183).
 
 An earlier design passed a single-element array `T[]` pre-filled with the
 place's value and copied element 0 back after the call (#1763).  It could

@@ -3362,6 +3362,7 @@ func lowerBlockExpr(ctx: in FuncCtx, insns: in List[LInsn], block: in Block): Jv
 }
 
 func lowerBlockExprInner(ctx: in FuncCtx, insns: in List[LInsn], block: in Block): JvmType {
+  noteByRefLocals(ctx, block.statements, 0)
   val n = block.statements.count
   if n == 0 {
     return JVoid

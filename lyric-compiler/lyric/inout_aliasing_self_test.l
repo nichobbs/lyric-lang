@@ -123,6 +123,26 @@ func spawnBump(x: inout Int): Int {
   }
 }
 
+// A local declared in a module initialiser, a field default, a default
+// argument or a range bound is passed by reference like any other (the JVM
+// hoists it wherever its block is lowered).
+func bumpOne(x: inout Int): Unit {
+  x = x + 1
+}
+
+func nxt(x: inout Int): Int {
+  x = x + 1
+  x
+}
+
+val initialised: Int = if true { var t = 40; bumpOne(t); t } else { 0 }
+
+record Defaulted {
+  var f: Int = if true { var u = 7; bumpOne(u); u } else { 0 }
+}
+
+func withDefault(a: in Int = if true { var w = 3; bumpOne(w); w } else { 0 }): Int = a
+
 // The lambda holds the value `x` had when it was created.
 func captureThenWrite(x: inout Int): Int {
   val g = { -> x }
@@ -373,6 +393,25 @@ test "a lambda captures an out/inout parameter's value" {
   var x = 1
   assertEqualInt(captureThenWrite(x), 1, "the value when the lambda was created")
   assertEqualInt(x, 5, "the place")
+}
+
+test "a local passed by reference in a range bound, an initialiser and a default" {
+  var n = 2
+  var s = 0
+  for i in 0 ..< nxt(n) {
+    s = s + i
+  }
+  assertEqualInt(n, 3, "the range bound's call wrote n")
+  assertEqualInt(s, 3, "0 + 1 + 2")
+  var m = 0
+  var c = 0
+  for j in nxt(m) ..= nxt(m) {
+    c = c + j
+  }
+  assertEqualInt(c, 3, "1 ..= 2")
+  assertEqualInt(initialised, 41, "a module val initialiser")
+  assertEqualInt(Defaulted().f, 8, "a field default")
+  assertEqualInt(withDefault(), 4, "a default argument")
 }
 
 test "a spawned task passes the caller's place on" {

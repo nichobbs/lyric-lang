@@ -3574,7 +3574,7 @@ func buildPlaceRefs(
 //    passed on as it is when the callee sees the place as the same JVM type,
 //    or wrapped in a reference that converts between the two views;
 //  - a local: a reference to the heap cell the local lives in.  Every local
-//    passed by reference is hoisted to a cell (`runClosureCapturePrePassJvm`),
+//    passed by reference is hoisted to a cell (`noteByRefLocals`),
 //    so its value has one location the callee, the caller and any closure all
 //    reach, for as long as the local lives.
 func emitPlaceRef(
@@ -3616,10 +3616,13 @@ func emitPlaceRef(
             emitRefObject(ctx, insns, 2, inner, "", "", placeTy, elemTy)
           }
         }
+        // Every `var` a block passes by reference is hoisted when the block
+        // is entered (`noteByRefLocals`), and the type checker accepts no
+        // other local as an `out`/`inout` argument (T0085), so a plain slot
+        // here is a compiler defect; it is reported, never compiled by copy.
         case None -> panic(
-          "Jvm.Codegen: internal error: local '" + name + "' passed to an out/inout parameter of '" +
-            calleeLabel +
-            "' was not hoisted to a heap cell (the by-reference pre-pass `runClosureCapturePrePassJvm` missed it)"
+          "Jvm.Codegen: '" + name + "' is passed to an out/inout parameter of '" + calleeLabel +
+            "' but is neither a `var` hoisted to a heap cell nor an out/inout parameter, so it cannot be passed by reference (a compiler defect: please report it with this program)"
         )
       }
     }

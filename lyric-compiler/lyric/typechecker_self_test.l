@@ -2560,6 +2560,30 @@ test "a reference-type out/inout argument must be a place (D183)" {
   assertTrue(not hasDiagCode(parseCheck(varRec), "T0085"), "a var record: no T0085")
   val gen = "package P\nfunc g[T](x: inout T, v: in T): Unit { x = v }\nfunc f(): Unit {\n  val s = \"a\"\n  g(s, \"b\")\n}\n"
   assertTrue(hasDiagCode(parseCheck(gen), "T0085"), "a val passed to a generic inout: T0085")
+  val inParam = "package P\nrecord B {\n  var n: Int\n}\nfunc g(x: inout B): Unit { x.n = 1 }\nfunc f(b: in B): Unit { g(b) }\n"
+  val inDiags = parseCheck(inParam)
+  assertTrue(hasDiagCode(inDiags, "T0085"), "an in parameter: T0085")
+  assertTrue(diagMessagesContain(inDiags, "D183"), "the message names the rule")
+  assertTrue(diagMessagesContain(inDiags, "make that parameter `in`"), "the message suggests an in parameter")
+}
+
+// D183: a field passed by reference must be a `var` field, the place class
+// assignment requires (T0157's `placeClass`), whatever the receiver's root.
+test "an out/inout field argument must be a var field (D183)" {
+  val immField = "package P\nrecord Pt {\n  x: Int\n}\nfunc bump(x: inout Int): Unit { x = x + 1 }\nfunc f(): Unit {\n  val p = Pt(x = 1)\n  bump(p.x)\n}\n"
+  val immDiags = parseCheck(immField)
+  assertTrue(hasDiagCode(immDiags, "T0085"), "a non-var field: T0085, got " + diagCodesOf(immDiags))
+  assertTrue(diagMessagesContain(immDiags, "is not `var`"), "the message names the field")
+  val varField = "package P\nrecord Pt {\n  var x: Int\n}\nfunc bump(x: inout Int): Unit { x = x + 1 }\nfunc f(): Unit {\n  val p = Pt(x = 1)\n  bump(p.x)\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(varField), "T0085"), "a var field of a val record: no T0085")
+  val nested = "package P\nrecord In {\n  n: Int\n}\nrecord Out {\n  var i: In\n}\nfunc bump(x: inout Int): Unit { x = x + 1 }\nfunc f(): Unit {\n  val o = Out(i = In(n = 0))\n  bump(o.i.n)\n}\n"
+  assertTrue(hasDiagCode(parseCheck(nested), "T0085"), "a non-var field at the end of a path: T0085")
+  val prot = "package P\nfunc bump(x: inout Int): Unit { x = x + 1 }\nprotected type C {\n  var total: Int = 0\n  let cap: Int = 3\n  entry ok(): Unit { bump(total) }\n  entry bad(): Unit { bump(cap) }\n}\n"
+  assertEqualInt(
+    countDiagCode(parseCheck(prot), "T0085"),
+    1,
+    "a protected `let` field, not its `var` field: " + diagCodesOf(parseCheck(prot))
+  )
 }
 
 // D183: a lambda captures the value of an enclosing function's `out`/`inout`

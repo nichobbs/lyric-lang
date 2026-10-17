@@ -6392,58 +6392,58 @@ func callArgExpr(arg: in CallArg): Expr {
   }
 }
 
-// #1487 (§5.2): an argument bound to an `out`/`inout` parameter must be a
-// writable l-value.  Conservative by construction (zero false positives): flag
-// only arguments that are *definitely not* assignable targets — literals, call
-// results, operator expressions — and single-segment locals that are *known
-// immutable* (`val` / `let` / `in`).  Member access (`x.field`), element access
-// (`x[i]`), qualified paths, and non-local names are accepted as potential
-// l-values; precise mutability of fields / elements is deferred rather than
-// risk a false positive on valid by-ref code.
-func argIsValidByRefTarget(sc: in Scope, e: in Expr): Bool {
+// #1487 (§5.2), D183: an argument bound to an `out`/`inout` parameter is the
+// place the callee writes, so it must be a writable one: a `var` local, an
+// `out`/`inout` parameter, a `var` field (of any receiver, as `p.f = v`
+// requires; inside a protected member a bare field is a local of the field's
+// own mutability), or an element of an array that is a writable place —
+// the place classes `placeClass` gives assignment (T0157).  A literal, a call
+// result, an operator expression, a `val`/`let`/`in` binding and a non-`var`
+// field are not.  A place the checker cannot resolve (a module-qualified
+// path, which `byRefArgModuleProblem` reports, or a field of a type whose
+// declaration it cannot see) is accepted.
+func argIsValidByRefTarget(sc: in Scope, tbl: in SymbolTable, sigs: in Map[String, ResolvedSignature], e: in Expr): Bool {
   match e.kind {
-    case EParen(inner) -> argIsValidByRefTarget(sc, inner)
-    case EPath(p) -> if p.segments.count == 1 {
-      match scopeTryFind(sc, p.segments[0]) {
-        case Some(b) -> b.isMutable
-        case None -> true
-      }
-    } else {
-      true
-    }
-    // a local binding must be mutable
-    // not a local (global / unknown) — accept
-    // qualified path — accept
-    case EMember(_, _) -> true
-    // field access — potential l-value
+    case EParen(inner) -> argIsValidByRefTarget(sc, tbl, sigs, inner)
+    case EPath(_) -> placeClass(sc, tbl, sigs, e) != 0
+    case EMember(_, _) -> placeClass(sc, tbl, sigs, e) != 0
     case EIndex(_, _) -> true
-    // element access — potential l-value
+    // `self` is a place only in a function whose receiver is `self: inout`.
+    case ESelf -> match scopeTryFind(sc, "self") { case Some(b) -> b.isMutable; case None -> false }
     case _ -> false
   }
-  // literal / call / operator / … — not an l-value
 }
 
-// The tail of T0085's message for an argument `argIsValidByRefTarget`
-// rejects: a lambda's capture of an enclosing `out`/`inout` parameter is a
-// value, not the caller's place (D183).
-func byRefTargetHint(sc: in Scope, e: in Expr): String {
+// T0085's message for an argument `argIsValidByRefTarget` rejects: why it is
+// not a place the callee may write (D183) and what to pass instead.
+func byRefTargetProblem(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  paramName: in String,
+  e: in Expr,
+): String {
+  val head = "argument for `out`/`inout` parameter '" + paramName +
+    "' must be a writable place: the parameter refers to the caller's place, which the callee may assign (D183); "
   match e.kind {
-    case EParen(inner) -> byRefTargetHint(sc, inner)
+    case EParen(inner) -> byRefTargetProblem(sc, tbl, sigs, paramName, inner)
     case EPath(p) -> if p.segments.count == 1 {
       match scopeTryFind(sc, p.segments[0]) {
         case Some(b) -> if b.capturedByRefParam {
-          "(a `var`, or an `out`/`inout` binding): inside a lambda, the enclosing function's `out`/`inout` parameter '" +
-            p.segments[0] +
-            "' is the value the lambda captured, not the caller's place"
+          head + "inside a lambda, the enclosing function's `out`/`inout` parameter '" + p.segments[0] +
+            "' is the value the lambda captured, not the caller's place; assign it outside the lambda"
         } else {
-          "(a `var`, or an `out`/`inout` binding)"
+          head + "'" + p.segments[0] +
+            "' is an immutable binding (`val`, `let` or an `in` parameter); declare it `var`, or, if the callee only changes the fields of the value it is given, make that parameter `in`"
         }
-        case None -> "(a `var`, or an `out`/`inout` binding)"
+        case None -> head + "pass a `var`, an `out`/`inout` parameter or a `var` field"
       }
     } else {
-      "(a `var`, or an `out`/`inout` binding)"
+      head + "pass a `var`, an `out`/`inout` parameter or a `var` field"
     }
-    case _ -> "(a `var`, or an `out`/`inout` binding)"
+    case EMember(_, name) -> head + "the field '" + name +
+      "' is not `var`; declare it `var` on its type, or pass a `var` holding its value and store it back"
+    case _ -> head + "pass a `var`, an `out`/`inout` parameter or a `var` field, not a value"
   }
 }
 
@@ -17284,13 +17284,12 @@ func checkPairedCallArgs(
             span
           )
         )
-      } else if modeNeedsLValue(p.mode) and not argIsValidByRefTarget(sc, callArgExpr(args[ai])) {
+      } else if modeNeedsLValue(p.mode) and not argIsValidByRefTarget(sc, tbl, sigs, callArgExpr(args[ai])) {
         diag.add(
           errorDiagnostic(
             "T0085",
-            "argument for `out`/`inout` parameter '" + p.name + "' must be a mutable l-value " +
-              byRefTargetHint(sc, callArgExpr(args[ai])),
-            span
+            byRefTargetProblem(sc, tbl, sigs, p.name, callArgExpr(args[ai])),
+            callArgExpr(args[ai]).span
           )
         )
       }
