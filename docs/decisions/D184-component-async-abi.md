@@ -1,6 +1,6 @@
 # D184 - The wasm32 component shape uses the Component Model async ABI
 
-**Status:** accepted; slices A1 (async exports) and A2 (promise imports) implemented, A3 to follow
+**Status:** accepted, implemented (slices A1 async exports, A2 promise imports, A3 concurrent calls)
 
 ## Context
 
@@ -69,13 +69,18 @@ subtask (a host import or a timer) is outstanding.
    `context.get`/`context.set` slot 0, never a global. An async shim
    snapshots its lowered result into its own call's record when the task
    completes, because the turn that completes it may belong to another call.
-   A call whose task completes during another call's turn is woken through a
-   private unit `future`: it parks with a pending `future.read`, and the
-   completing turn writes the future. Outstanding subtasks live in the
-   waitable set of a running call; when that call exits, they move
-   (`waitable.join`) to the set of another live call, which is woken.
-   Until slice A3 ships, a second concurrent call into an instance traps with a
-   message naming this limit.
+   A call whose task completes outside its own turn (in another call's turn,
+   or inside a synchronous export's blocking wait) is woken through a private
+   unit `future` (`[future-new-unit]`): it parks with a pending `future.read`
+   in its own set, and the completion writes the future. Outstanding subtasks
+   live in the waitable set of one live call (the home call); when it exits
+   they move (`waitable.join`) to another live call's set, which that call is
+   already waiting on, or out of any set until the next call starts. A call
+   retires its future by writing it if nothing did and taking the completed
+   read through `future.cancel-read`, since a future's writable end can only be
+   dropped once written and its read end only once its event is delivered.
+   (Slices A1 and A2 shipped with a second concurrent call trapping; A3 lifts
+   that.)
 
 7. **`future<T>` values are deferred.** A `future<T>` as a parameter, a field
    or a sync result is a separate boundary type when a consumer needs it, not

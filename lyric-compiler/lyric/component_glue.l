@@ -2930,18 +2930,28 @@ func renderImportWrapper(pkgs: in List[ComponentPkg], h: in HostImport, i: in In
   Str.joinList("\n", l)
 }
 
-/// The C half of the async lift (D184), written once into `<stem>.cabi.c` when
-/// a component has an `async func` export.  A call is a slot in `cabi_calls`,
-/// reached from its callbacks through `context.get` slot 0 (slot index plus
-/// one).  Each callback turn runs the scheduler; a task asleep on a timer parks
-/// the call on an async-lowered WASI 0.3 `wait-for` subtask, which is the one
-/// outstanding timer of the instance and joins the set of whichever call is
-/// running.  An instance carries one call at a time until slice A3.
+/// The C half of the async ABI (D184), written once into `<stem>.cabi.c` when a
+/// component has an `async func` export or a `promise` host import.
+///
+/// * A call of an async export is a heap record in `cabi_calls`, found from its
+///   callbacks through `context.get` slot 0 (its index plus one).  Each
+///   callback turn runs the scheduler and returns `EXIT` once the call's task
+///   is done (after `task.return`), else `WAIT` on the call's waitable set.
+/// * Outstanding subtasks (the one WASI 0.3 `wait-for` timer and the
+///   async-lowered host imports) live in the set of one live call, the home
+///   call; when it exits they move to another live call's set, or out of any
+///   set until the next call starts.
+/// * Every call parks a pending read on a private unit future in its own set.
+///   When a call's task completes outside that call's own turn (in another
+///   call's turn, or inside a synchronous export), `lyric_cabi_async_done`
+///   writes the future, so the call wakes and returns its result.
 val asyncRuntime: String = r#"#define CABI_EXIT 0
 #define CABI_WAIT 2
 #define CABI_EVENT_SUBTASK 1
+#define CABI_EVENT_FUTURE_READ 4
 #define CABI_SUBTASK_RETURNED 2
-#define CABI_SUBTASK_STATE_MASK 0xf
+#define CABI_STATE_MASK 0xf
+#define CABI_BLOCKED 0xffffffffu
 
 __attribute__((import_module("$root"), import_name("[waitable-set-new]")))
 extern uint32_t cabi_ws_new(void);
@@ -2957,6 +2967,18 @@ __attribute__((import_module("$root"), import_name("[context-get-0]")))
 extern uint32_t cabi_context_get(void);
 __attribute__((import_module("$root"), import_name("[context-set-0]")))
 extern void cabi_context_set(uint32_t value);
+__attribute__((import_module("$root"), import_name("[future-new-unit]")))
+extern uint64_t cabi_future_new(void);
+__attribute__((import_module("$root"), import_name("[async-lower][future-read-unit]")))
+extern uint32_t cabi_future_read(uint32_t readable, uint32_t ptr);
+__attribute__((import_module("$root"), import_name("[async-lower][future-write-unit]")))
+extern uint32_t cabi_future_write(uint32_t writable, uint32_t ptr);
+__attribute__((import_module("$root"), import_name("[future-cancel-read-unit]")))
+extern uint32_t cabi_future_cancel_read(uint32_t readable);
+__attribute__((import_module("$root"), import_name("[future-drop-readable-unit]")))
+extern void cabi_future_drop_readable(uint32_t readable);
+__attribute__((import_module("$root"), import_name("[future-drop-writable-unit]")))
+extern void cabi_future_drop_writable(uint32_t writable);
 __attribute__((import_module("wasi:clocks/monotonic-clock@0.3.0"), import_name("[async-lower]wait-for")))
 extern uint32_t cabi_wait_for(uint64_t nanos);
 
@@ -2964,16 +2986,21 @@ static inline float cabi_f32_of_bits(uint32_t b) { float f; memcpy(&f, &b, 4); r
 static inline double cabi_f64_of_bits(uint64_t b) { double d; memcpy(&d, &b, 8); return d; }
 
 typedef struct cabi_call {
+  int32_t index;
   void* task;
   uint64_t ret_bits;
   int32_t ret_ptr;
   int32_t done;
+  int32_t woken;     /* its wake-up future has been written */
+  int32_t wake_seen; /* the wake-up read's event has been delivered */
   uint32_t set;
+  uint32_t wake_r;   /* readable end, with a pending read, in `set` */
+  uint32_t wake_w;
 } cabi_call;
 
-#define CABI_MAX_CALLS 1
-static cabi_call cabi_calls[CABI_MAX_CALLS];
-static int32_t cabi_live;
+static cabi_call** cabi_calls;
+static int32_t cabi_calls_cap;
+static int32_t cabi_home = -1;       /* the call whose set holds the outstanding subtasks */
 static uint32_t cabi_timer;          /* the outstanding wait-for subtask, 0 when none */
 static int64_t cabi_timer_deadline;  /* when it fires, on lyric_monotonic_nanos' clock */
 
@@ -2986,57 +3013,106 @@ typedef struct cabi_pending {
 static cabi_pending* cabi_pend;
 static int32_t cabi_pend_n, cabi_pend_cap;
 
+static void cabi_oom(void) { lyric_panic_msg("out of memory in the component's async glue", "component", 0); }
+
 /* Move every outstanding subtask into `set` (0 takes them out of any set). */
 static void cabi_join_outstanding(uint32_t set) {
   if (cabi_timer != 0) cabi_ws_join(cabi_timer, set);
   for (int32_t i = 0; i < cabi_pend_n; i++) cabi_ws_join(cabi_pend[i].subtask, set);
 }
 
-/* Start a call: its slot, its waitable set (which takes the outstanding timer),
-   and its context slot. */
+static uint32_t cabi_home_set(void) { return cabi_home >= 0 ? cabi_calls[cabi_home]->set : 0; }
+
+/* Start a call: a record, a waitable set holding a pending read of a private
+   wake-up future, and the context slot; the first live call becomes home. */
 static cabi_call* cabi_call_begin(void) {
-  if (cabi_live >= CABI_MAX_CALLS) {
-    lyric_panic_msg("an async export was called while another call into this component instance is still running; concurrent calls are not supported yet (D184 slice A3)", "component", 0);
-  }
   int32_t i = 0;
-  cabi_call* c = &cabi_calls[i];
-  memset(c, 0, sizeof *c);
+  while (i < cabi_calls_cap && cabi_calls[i] != 0) i++;
+  if (i == cabi_calls_cap) {
+    int32_t cap = cabi_calls_cap == 0 ? 4 : cabi_calls_cap * 2;
+    cabi_call** grown = (cabi_call**)realloc(cabi_calls, (size_t)cap * sizeof *grown);
+    if (!grown) cabi_oom();
+    for (int32_t k = cabi_calls_cap; k < cap; k++) grown[k] = 0;
+    cabi_calls = grown;
+    cabi_calls_cap = cap;
+  }
+  cabi_call* c = (cabi_call*)calloc(1, sizeof *c);
+  if (!c) cabi_oom();
+  c->index = i;
+  cabi_calls[i] = c;
   c->set = cabi_ws_new();
-  cabi_join_outstanding(c->set);
-  cabi_live++;
+  uint64_t ends = cabi_future_new();
+  c->wake_r = (uint32_t)ends;
+  c->wake_w = (uint32_t)(ends >> 32);
+  if (cabi_future_read(c->wake_r, 0) != CABI_BLOCKED) {
+    lyric_panic_msg("a fresh wake-up future was already written (component glue bug)", "component", 0);
+  }
+  cabi_ws_join(c->wake_r, c->set);
+  if (cabi_home < 0) {
+    cabi_home = i;
+    cabi_join_outstanding(c->set);
+  }
   cabi_context_set((uint32_t)i + 1);
   return c;
 }
 
-static int32_t cabi_call_index(cabi_call* c) { return (int32_t)(c - cabi_calls); }
+static int32_t cabi_call_index(cabi_call* c) { return c->index; }
 
 static cabi_call* cabi_call_current(void) {
   uint32_t i = cabi_context_get();
-  if (i == 0 || i > CABI_MAX_CALLS) lyric_panic_msg("async export callback without a call (component glue bug)", "component", 0);
-  return &cabi_calls[i - 1];
+  if (i == 0 || (int32_t)i > cabi_calls_cap || cabi_calls[i - 1] == 0) {
+    lyric_panic_msg("async export callback without a call (component glue bug)", "component", 0);
+  }
+  return cabi_calls[i - 1];
 }
 
-/* Finish a call: the outstanding subtasks leave the set (the next call takes
-   them), the set and the task are released. */
+/* Finish a call: retire its wake-up future, hand the outstanding subtasks to
+   another live call when it was home, release its set, task and record. */
 static void cabi_call_end(cabi_call* c) {
-  cabi_join_outstanding(0);
+  /* A writable future end may only be dropped once written, and a read end
+     stays mid-copy until its event is delivered: write the future if nothing
+     did, then take the completed read through cancel-read, which returns the
+     pending completion. */
+  cabi_ws_join(c->wake_r, 0);
+  if (!c->woken) {
+    cabi_future_write(c->wake_w, 0);
+    c->woken = 1;
+  }
+  if (!c->wake_seen) cabi_future_cancel_read(c->wake_r);
+  cabi_future_drop_readable(c->wake_r);
+  cabi_future_drop_writable(c->wake_w);
+  if (cabi_home == c->index) {
+    cabi_home = -1;
+    for (int32_t j = 0; j < cabi_calls_cap; j++) {
+      if (j != c->index && cabi_calls[j] != 0) {
+        cabi_home = j;
+        break;
+      }
+    }
+    cabi_join_outstanding(cabi_home_set());
+  }
   cabi_ws_drop(c->set);
   lyric_wasm_release(c->task);
-  c->task = 0;
-  cabi_live--;
+  cabi_calls[c->index] = 0;
+  free(c);
   cabi_context_set(0);
 }
 
-/* An async shim's task completed: keep the lowered result for its own call. */
+/* An async shim's task completed: keep the lowered result for its own call,
+   and wake that call when this is not its own turn. */
 void lyric_cabi_async_done(int32_t call) {
-  cabi_call* c = &cabi_calls[call];
+  cabi_call* c = cabi_calls[call];
   c->ret_bits = cabi_ret_bits;
   c->ret_ptr = cabi_ret_ptr;
   c->done = 1;
+  if (cabi_context_get() != (uint32_t)call + 1 && !c->woken) {
+    cabi_future_write(c->wake_w, 0);
+    c->woken = 1;
+  }
 }
 
 /* Replace the outstanding timer with one that fires `ns` from now. */
-static void cabi_timer_start(cabi_call* c, int64_t ns, int64_t deadline) {
+static void cabi_timer_start(int64_t ns, int64_t deadline) {
   if (cabi_timer != 0) {
     cabi_ws_join(cabi_timer, 0);
     cabi_subtask_cancel(cabi_timer);
@@ -3044,10 +3120,10 @@ static void cabi_timer_start(cabi_call* c, int64_t ns, int64_t deadline) {
     cabi_timer = 0;
   }
   uint32_t st = cabi_wait_for((uint64_t)ns);
-  if ((st & CABI_SUBTASK_STATE_MASK) == CABI_SUBTASK_RETURNED) return;
+  if ((st & CABI_STATE_MASK) == CABI_SUBTASK_RETURNED) return;
   cabi_timer = st >> 4;
   cabi_timer_deadline = deadline;
-  cabi_ws_join(cabi_timer, c->set);
+  cabi_ws_join(cabi_timer, cabi_home_set());
 }
 
 /* The core call of a promise import returned `status`: a host task the
@@ -3056,26 +3132,30 @@ static void cabi_timer_start(cabi_call* c, int64_t ns, int64_t deadline) {
    out-pointer area the generated Lyric function reads after the await. */
 void* lyric_cabi_host_call(uint32_t status) {
   void* t = lyric_host_task_new();
-  if ((status & CABI_SUBTASK_STATE_MASK) == CABI_SUBTASK_RETURNED) {
+  if ((status & CABI_STATE_MASK) == CABI_SUBTASK_RETURNED) {
     lyric_host_task_finish(t, 0, 0);
     return t;
   }
   if (cabi_pend_n == cabi_pend_cap) {
     cabi_pend_cap = cabi_pend_cap == 0 ? 8 : cabi_pend_cap * 2;
     cabi_pend = (cabi_pending*)realloc(cabi_pend, (size_t)cabi_pend_cap * sizeof *cabi_pend);
-    if (!cabi_pend) lyric_panic_msg("out of memory recording a host import call", "component", 0);
+    if (!cabi_pend) cabi_oom();
   }
   cabi_pend[cabi_pend_n].subtask = status >> 4;
   cabi_pend[cabi_pend_n].task = t;
   cabi_pend_n++;
-  uint32_t i = cabi_context_get();
-  if (i != 0 && i <= CABI_MAX_CALLS) cabi_ws_join(status >> 4, cabi_calls[i - 1].set);
+  uint32_t home = cabi_home_set();
+  if (home != 0) cabi_ws_join(status >> 4, home);
   return t;
 }
 
 static void cabi_on_event(cabi_call* c, uint32_t event, uint32_t handle, uint32_t code) {
-  (void)c;
-  if (event != CABI_EVENT_SUBTASK) return; /* NONE and TASK_CANCELLED: run to completion (D184 item 9) */
+  if (event == CABI_EVENT_FUTURE_READ && handle == c->wake_r) {
+    c->wake_seen = 1;
+    return;
+  }
+  /* NONE and TASK_CANCELLED (D184 item 9) just run a turn. */
+  if (event != CABI_EVENT_SUBTASK) return;
   if (handle == cabi_timer) {
     if (code == CABI_SUBTASK_RETURNED) {
       cabi_subtask_drop(handle);
@@ -3113,7 +3193,7 @@ static int32_t cabi_turn(cabi_call* c) {
     if (ns > 0) {
       int64_t deadline = lyric_monotonic_nanos() + ns;
       if (cabi_timer == 0 || deadline < cabi_timer_deadline) {
-        cabi_timer_start(c, ns, deadline);
+        cabi_timer_start(ns, deadline);
         if (cabi_timer == 0) continue;
       }
     }

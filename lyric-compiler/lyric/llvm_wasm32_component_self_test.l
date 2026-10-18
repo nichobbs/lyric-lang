@@ -9,8 +9,9 @@
 //! `$WASM_TOOLS` (a wasm-tools binary), `$LYRIC_WASI_ADAPTER` (the preview1
 //! reactor adapter), `$JCO` (the jco binary), `$LYRIC_JCO_NODE_MODULES` (a
 //! node_modules directory holding `@bytecodealliance/preview2-shim` and, for the
-//! async exports, `@bytecodealliance/preview3-shim`) and `$WASMTIME`.  jco's
-//! output for an async export needs node 24 or later (`$NODE`, else `node`).
+//! async exports, `@bytecodealliance/preview3-shim`), `$WASMTIME` and `$WAC` (the
+//! wac binary that composes a test consumer with a component).  jco's output for
+//! an async export needs node 24 or later (`$NODE`, else `node`).
 @test_module
 package Lyric.LlvmWasm32ComponentSelfTest
 
@@ -1349,6 +1350,203 @@ console.log('go=' + v + ' ticked=' + globalThis.__ticked + ' waited=' + (perform
   assertTrue(
     Str.contains(n.stdout, "go=body of wörld|3000000012|7|-1 ticked=true waited=true"),
     "String, spilled-argument, Option and Unit promise imports, each awaited: " + n.stdout
+  )
+}
+
+val concurrentProgram: String = r#"package Probe
+
+import Std.Time
+
+@wasmImport("net", promise)
+extern func fetchText(url: String): String = "fetch-text"
+
+pub async func later(x: Int, ms: Int): Int {
+  Time.sleepMillis(ms)
+  x + 1
+}
+
+pub async func fetchTwice(url: String): String {
+  val a = fetchText(url)
+  val b = fetchText(url + "?again")
+  a + "+" + b
+}
+
+pub func plain(x: Int): Int {
+  x + 100
+}
+"#
+
+test "wasm32 component: concurrent calls into one instance each complete with their own result under jco" {
+  val dir = buildComponentOf(concurrentProgram)
+  val wasm = Path.join(dir, "prog.wasm")
+  val outDir = Path.join(dir, "js")
+  val jargs: List[String] = newList()
+  jargs.add("transpile")
+  jargs.add(wasm)
+  jargs.add("-o")
+  jargs.add(outDir)
+  jargs.add("--map")
+  jargs.add("lyric:probe/net@0.1.0=../net.js")
+  val j = run(envOrPanic("JCO"), jargs)
+  assertTrue(j.exitCode == 0, "jco transpile: " + j.stderr)
+  val lnargs: List[String] = newList()
+  lnargs.add("-s")
+  lnargs.add(envOrPanic("LYRIC_JCO_NODE_MODULES"))
+  lnargs.add(Path.join(dir, "node_modules"))
+  val _ln = run("ln", lnargs)
+  val _n = File.writeText(
+    Path.join(dir, "net.js"),
+    r"const later = (ms) => new Promise((r) => setTimeout(r, ms));
+export async function fetchText(url) { await later(url.includes('slow') ? 80 : 20); return '<' + url + '>'; }
+"
+  )
+  val script = r"import * as m from './js/prog.js';
+const p = m.probe;
+const t0 = performance.now();
+const [a, b, c] = await Promise.all([p.later(1, 150), p.later(2, 60), p.later(3, 100)]);
+const dt = performance.now() - t0;
+console.log('later=' + [a, b, c].join(',') + ' overlapped=' + (dt < 280));
+const [x, y] = await Promise.all([p.fetchTwice('slow'), p.fetchTwice('fast')]);
+console.log('fetch=' + x + ' | ' + y);
+const s = p.later(10, 50);
+const f = p.fetchTwice('mix');
+console.log('plain-during=' + (await p.plain(1)));
+console.log('mixed=' + (await s) + ' ' + (await f));
+console.log('again=' + (await p.later(41, 5)));
+"
+  val scriptPath = Path.join(dir, "run.mjs")
+  val _s = File.writeText(scriptPath, script)
+  val nargs: List[String] = newList()
+  nargs.add(scriptPath)
+  val n = run(Environment.getVarOrDefault("NODE", "node"), nargs)
+  assertTrue(n.exitCode == 0, "node: " + n.stderr + n.stdout)
+  assertTrue(
+    Str.contains(n.stdout, "later=2,3,4 overlapped=true"),
+    "three concurrent sleeps overlap and each returns its own value: " + n.stdout
+  )
+  assertTrue(
+    Str.contains(n.stdout, "fetch=<slow>+<slow?again> | <fast>+<fast?again>"),
+    "concurrent calls whose host imports finish out of order: " + n.stdout
+  )
+  assertTrue(Str.contains(n.stdout, "plain-during=101"), "a sync export while async calls are in flight: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "mixed=11 <mix>+<mix?again>"), "a sleeper and an importer at once: " + n.stdout)
+  assertTrue(Str.contains(n.stdout, "again=42"), "the instance keeps working after concurrent calls: " + n.stdout)
+}
+
+val laterOnlyProgram: String = r"package Probe
+
+import Std.Time
+
+pub async func later(x: Int, ms: Int): Int {
+  Time.sleepMillis(ms)
+  x + 1
+}
+"
+
+/// A consumer component that async-lowers `later` three times at once, waits
+/// for all three subtasks, and returns r1 * 100 + r2 * 10 + r3.
+val concurrentConsumerWit: String = r"package lyric:consumer@0.1.0;
+
+world consumer {
+  import lyric:probe/probe@0.1.0;
+  export run: async func() -> u32;
+}
+
+package lyric:probe@0.1.0 {
+  interface probe {
+    later: async func(x: s32, ms: s32) -> s32;
+  }
+}
+"
+
+val concurrentConsumerWat: String = r#"(module
+  (import "lyric:probe/probe@0.1.0" "[async-lower]later" (func $later (param i32 i32 i32) (result i32)))
+  (import "$root" "[waitable-set-new]" (func $ws_new (result i32)))
+  (import "$root" "[waitable-join]" (func $ws_join (param i32 i32)))
+  (import "$root" "[waitable-set-drop]" (func $ws_drop (param i32)))
+  (import "$root" "[subtask-drop]" (func $sdrop (param i32)))
+  (import "[export]$root" "[task-return]run" (func $ret (param i32)))
+  (memory (export "memory") 1)
+  (global $ws (mut i32) (i32.const 0))
+  (global $left (mut i32) (i32.const 0))
+  (func $start (param $st i32)
+    (if (i32.eq (i32.and (local.get $st) (i32.const 15)) (i32.const 2)) (then (return)))
+    (global.set $left (i32.add (global.get $left) (i32.const 1)))
+    (call $ws_join (i32.shr_u (local.get $st) (i32.const 4)) (global.get $ws)))
+  (func $finish (result i32)
+    (call $ws_drop (global.get $ws))
+    (call $ret
+      (i32.add
+        (i32.add (i32.mul (i32.load (i32.const 16)) (i32.const 100)) (i32.mul (i32.load (i32.const 20)) (i32.const 10)))
+        (i32.load (i32.const 24))))
+    (i32.const 0))
+  (func (export "[async-lift]run") (result i32)
+    (global.set $ws (call $ws_new))
+    (call $start (call $later (i32.const 1) (i32.const 150) (i32.const 16)))
+    (call $start (call $later (i32.const 2) (i32.const 60) (i32.const 20)))
+    (call $start (call $later (i32.const 3) (i32.const 100) (i32.const 24)))
+    (if (i32.eqz (global.get $left)) (then (return (call $finish))))
+    (i32.or (i32.shl (global.get $ws) (i32.const 4)) (i32.const 2)))
+  (func (export "[callback][async-lift]run") (param $ev i32) (param $h i32) (param $code i32) (result i32)
+    (if (i32.and (i32.eq (local.get $ev) (i32.const 1)) (i32.eq (local.get $code) (i32.const 2)))
+      (then
+        (call $sdrop (local.get $h))
+        (global.set $left (i32.sub (global.get $left) (i32.const 1)))))
+    (if (i32.eqz (global.get $left)) (then (return (call $finish))))
+    (i32.or (i32.shl (global.get $ws) (i32.const 4)) (i32.const 2))))
+"#
+
+test "wasm32 component: concurrent calls into one instance each complete with their own result under wasmtime" {
+  val dir = buildComponentOf(laterOnlyProgram)
+  val tools = envOrPanic("WASM_TOOLS")
+  val _w = File.writeText(Path.join(dir, "consumer.wit"), concurrentConsumerWit)
+  val _c = File.writeText(Path.join(dir, "consumer.wat"), concurrentConsumerWat)
+  val steps: List[List[String]] = newList()
+  val parse: List[String] = newList()
+  parse.add("parse")
+  parse.add(Path.join(dir, "consumer.wat"))
+  parse.add("-o")
+  parse.add(Path.join(dir, "consumer.core.wasm"))
+  steps.add(parse)
+  val embed: List[String] = newList()
+  embed.add("component")
+  embed.add("embed")
+  embed.add(Path.join(dir, "consumer.wit"))
+  embed.add(Path.join(dir, "consumer.core.wasm"))
+  embed.add("--world")
+  embed.add("consumer")
+  embed.add("-o")
+  embed.add(Path.join(dir, "consumer.embedded.wasm"))
+  steps.add(embed)
+  val mk: List[String] = newList()
+  mk.add("component")
+  mk.add("new")
+  mk.add(Path.join(dir, "consumer.embedded.wasm"))
+  mk.add("-o")
+  mk.add(Path.join(dir, "consumer.wasm"))
+  steps.add(mk)
+  for st in steps {
+    val r = run(tools, st)
+    assertTrue(r.exitCode == 0, "wasm-tools " + Str.joinList(" ", st) + ": " + r.stderr)
+  }
+  val plug: List[String] = newList()
+  plug.add("plug")
+  plug.add(Path.join(dir, "consumer.wasm"))
+  plug.add("--plug")
+  plug.add(Path.join(dir, "prog.wasm"))
+  plug.add("-o")
+  plug.add(Path.join(dir, "composed.wasm"))
+  val pr = run(envOrPanic("WAC"), plug)
+  assertTrue(pr.exitCode == 0, "wac plug: " + pr.stderr)
+  val inv: List[String] = newList()
+  inv.add("run")
+  inv.add("--invoke")
+  inv.add("run()")
+  inv.add(Path.join(dir, "composed.wasm"))
+  val w = run(envOrPanic("WASMTIME"), inv)
+  assertTrue(
+    w.exitCode == 0 and Str.trim(w.stdout) == "234",
+    "three overlapping calls return 2, 3 and 4 to the consumer: " + w.stdout + w.stderr
   )
 }
 
