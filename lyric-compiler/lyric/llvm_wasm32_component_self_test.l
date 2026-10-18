@@ -1413,6 +1413,10 @@ const f = p.fetchTwice('mix');
 console.log('plain-during=' + (await p.plain(1)));
 console.log('mixed=' + (await s) + ' ' + (await f));
 console.log('again=' + (await p.later(41, 5)));
+const [h1, h2] = await Promise.all([p.later(5, 20), p.later(6, 120)]);
+console.log('handoff-timer=' + h1 + ',' + h2);
+const [h3, h4] = await Promise.all([p.later(7, 20), p.fetchTwice('slow')]);
+console.log('handoff-import=' + h3 + ',' + h4);
 "
   val scriptPath = Path.join(dir, "run.mjs")
   val _s = File.writeText(scriptPath, script)
@@ -1431,6 +1435,14 @@ console.log('again=' + (await p.later(41, 5)));
   assertTrue(Str.contains(n.stdout, "plain-during=101"), "a sync export while async calls are in flight: " + n.stdout)
   assertTrue(Str.contains(n.stdout, "mixed=11 <mix>+<mix?again>"), "a sleeper and an importer at once: " + n.stdout)
   assertTrue(Str.contains(n.stdout, "again=42"), "the instance keeps working after concurrent calls: " + n.stdout)
+  assertTrue(
+    Str.contains(n.stdout, "handoff-timer=6,7"),
+    "the first call exits while a later call still sleeps on the timer: " + n.stdout
+  )
+  assertTrue(
+    Str.contains(n.stdout, "handoff-import=8,<slow>+<slow?again>"),
+    "the first call exits while a later call still waits on a host import: " + n.stdout
+  )
 }
 
 val laterOnlyProgram: String = r"package Probe

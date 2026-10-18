@@ -2176,8 +2176,9 @@ func importSignature(h: in HostImport): String {
   val ps: List[String] = newList()
   for f in h.params {
     ps.add(lyricTy(f.ty))
-  };
-  (if h.isPromise { "promise " } else { "" }) + "(" + Str.joinList(", ", ps) + "): " + lyricTy(h.ret)
+  }
+  val kind = if h.isPromise { "promise " } else { "" }
+  kind + "(" + Str.joinList(", ", ps) + "): " + lyricTy(h.ret)
 }
 
 /// A message when two externs bind the same host function (module and name)
@@ -3089,6 +3090,9 @@ static void cabi_call_end(cabi_call* c) {
         break;
       }
     }
+    /* With no live call left the subtasks join no set.  No event is lost: a
+       waitable keeps its pending event until it is delivered, and the next
+       call's cabi_call_begin joins them to its own set. */
     cabi_join_outstanding(cabi_home_set());
   }
   cabi_ws_drop(c->set);
@@ -3101,6 +3105,9 @@ static void cabi_call_end(cabi_call* c) {
 /* An async shim's task completed: keep the lowered result for its own call,
    and wake that call when this is not its own turn. */
 void lyric_cabi_async_done(int32_t call) {
+  if (call < 0 || call >= cabi_calls_cap || cabi_calls[call] == 0) {
+    lyric_panic_msg("an async export's task finished after its call ended (component glue bug)", "component", 0);
+  }
   cabi_call* c = cabi_calls[call];
   c->ret_bits = cabi_ret_bits;
   c->ret_ptr = cabi_ret_ptr;
@@ -3137,9 +3144,11 @@ void* lyric_cabi_host_call(uint32_t status) {
     return t;
   }
   if (cabi_pend_n == cabi_pend_cap) {
-    cabi_pend_cap = cabi_pend_cap == 0 ? 8 : cabi_pend_cap * 2;
-    cabi_pend = (cabi_pending*)realloc(cabi_pend, (size_t)cabi_pend_cap * sizeof *cabi_pend);
-    if (!cabi_pend) cabi_oom();
+    int32_t cap = cabi_pend_cap == 0 ? 8 : cabi_pend_cap * 2;
+    cabi_pending* grown = (cabi_pending*)realloc(cabi_pend, (size_t)cap * sizeof *grown);
+    if (!grown) cabi_oom();
+    cabi_pend = grown;
+    cabi_pend_cap = cap;
   }
   cabi_pend[cabi_pend_n].subtask = status >> 4;
   cabi_pend[cabi_pend_n].task = t;
@@ -3168,6 +3177,8 @@ static void cabi_on_event(cabi_call* c, uint32_t event, uint32_t handle, uint32_
     if (code == CABI_SUBTASK_RETURNED) {
       lyric_host_task_finish(cabi_pend[i].task, 0, 0);
     } else if (code > CABI_SUBTASK_RETURNED) {
+      /* The cancelled states follow only a subtask.cancel, which the glue
+         never issues for an import; fail the task rather than strand it. */
       static const char msg[] = "host import was cancelled before it returned";
       lyric_host_task_fail(cabi_pend[i].task, lyric_wasm_string_new((const uint8_t*)msg, (int32_t)(sizeof msg - 1)));
     } else {
@@ -3180,14 +3191,16 @@ static void cabi_on_event(cabi_call* c, uint32_t event, uint32_t handle, uint32_
   }
 }
 
-/* One callback turn: run every ready task, then either report the call done
-   (EXIT) or park it on its waitable set (WAIT). */
+/* One callback turn: run every ready task and arm the timer for the earliest
+   sleeper, then either report the call done (EXIT) or park it on its waitable
+   set (WAIT).  A call that is done still leaves the scheduler armed: the other
+   calls' sleepers may have no timer but the one that just fired. */
 static int32_t cabi_turn(cabi_call* c) {
   for (;;) {
     int64_t ns = lyric_sched_poll();
-    if (c->done) return CABI_EXIT;
     if (ns == 0) continue;
     if (ns == -1) {
+      if (c->done) return CABI_EXIT;
       lyric_panic_msg("an async export's task can never complete: no task is ready, asleep or waiting on the host", "component", 0);
     }
     if (ns > 0) {
@@ -3197,6 +3210,7 @@ static int32_t cabi_turn(cabi_call* c) {
         if (cabi_timer == 0) continue;
       }
     }
+    if (c->done) return CABI_EXIT;
     return CABI_WAIT | (int32_t)(c->set << 4);
   }
 }
