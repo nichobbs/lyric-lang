@@ -1360,8 +1360,9 @@ pub record CExport {
   ret: WitTy
   flat: List[String]
   retKind: String
-  /// An `async func`: the generated shim is an async function whose task the C
-  /// wrapper drives to completion before returning.
+  /// An `async func`: a WIT `async func` lifted with a callback (D184).  The shim
+  /// is an async function; the C wrappers run scheduler turns until its task
+  /// completes and pass the result to `task.return`.
   isAsync: Bool
 }
 
@@ -1460,7 +1461,13 @@ func emitExport(g: in Gen, k: in Int, d: in FunctionDecl, params: in List[WitFie
     flatCount = flatCount + flatOf(p.ty).count
   }
   val spilled = flatCount > 16
-  lines.add("pub " + (if d.isAsync { "async " } else { "" }) + "func __cabi_ex_" + kn + "(): Unit {")
+  // An async shim is told its call's slot so it can hand its lowered result to
+  // that call when its task completes: the scheduler turn that completes it may
+  // belong to another call (D184 item 6).
+  lines.add(
+    "pub " + (if d.isAsync { "async func __cabi_ex_" + kn + "(call: Int)" } else { "func __cabi_ex_" + kn + "()" }) +
+      ": Unit {"
+  )
   if spilled {
     lines.add("  val base = cabiNextI32()")
     var i = 0
@@ -1500,6 +1507,9 @@ func emitExport(g: in Gen, k: in Int, d: in FunctionDecl, params: in List[WitFie
   } else {
     lines.add("  val r = " + call)
     lines.add("  " + lowerFlatStmt(g, ret, "r"))
+  }
+  if d.isAsync {
+    lines.add("  cabiAsyncDone(call)")
   }
   lines.add("}")
   if kind == "mem" {
@@ -1835,6 +1845,15 @@ func emitImageImport(g: in Gen, h: in HostImport, vis: in Option[Visibility], na
   Str.joinList("\n", lines)
 }
 
+func hasAsyncExport(exports: in List[CExport]): Bool {
+  for e in exports {
+    if e.isAsync {
+      return true
+    }
+  }
+  false
+}
+
 /// Add the generated shims to `file` and describe its exports.  An export the
 /// component ABI cannot carry gets a `W0040` note and is left out.
 pub func componentRewriteFile(file: in SourceFile, peers: in List[SourceFile]): ComponentRewrite {
@@ -1917,11 +1936,8 @@ pub func componentRewriteFile(file: in SourceFile, peers: in List[SourceFile]): 
               case Some(te) -> match resolveTy(te, tbl, 0) { case Ok(t) -> t; case Err(_) -> WUnit }
             }
             val k = exports.count
-            if d.isAsync {
-              notes.add(
-                "warning[W0041]: pub async func " + pkg + "." + d.name +
-                  " is exported as a synchronous call: the component call blocks until the task completes (docs/35 Q-JS-006)"
-              )
+            if d.isAsync and not hasAsyncExport(exports) {
+              bodies.add("extern func cabiAsyncDone(call: Int): Unit = \"lyric_cabi_async_done\"")
             }
             bodies.add(emitExport(g, k, d, params, ret))
             val flat: List[String] = newList()
@@ -2391,11 +2407,16 @@ pub func renderWit(pkgs: in List[ComponentPkg], version: in String, world: in St
         ps.add(witName(f.name) + ": " + witRef(f.ty))
       }
       val tail = if isUnit(e.ret) { "" } else { " -> " + witRef(e.ret) }
-      lines.add("  " + witName(e.jsName) + ": func(" + Str.joinList(", ", ps) + ")" + tail + ";")
+      val kw = if e.isAsync { ": async func(" } else { ": func(" }
+      lines.add("  " + witName(e.jsName) + kw + Str.joinList(", ", ps) + ")" + tail + ";")
     }
     parts.add("interface " + witName(p.pkg) + " {\n" + Str.joinList("\n", lines) + "\n}\n")
   }
+  val hasAsync = componentHasAsync(pkgs)
   val exportLines: List[String] = newList()
+  if hasAsync {
+    exportLines.add("  import " + wasiClocksP3 + "/monotonic-clock@" + wasiClocksP3Version + ";")
+  }
   for m in importModules(pkgs) {
     exportLines.add("  import " + witName(m) + ";")
   }
@@ -2403,7 +2424,28 @@ pub func renderWit(pkgs: in List[ComponentPkg], version: in String, world: in St
     exportLines.add("  export " + witName(p.pkg) + ";")
   }
   parts.add("world " + witWorldName(pkgs, world) + " {\n" + Str.joinList("\n", exportLines) + "\n}\n")
+  if hasAsync {
+    parts.add(wasiClocksP3Package())
+  }
   Str.joinList("\n", parts)
+}
+
+/// The WASI 0.3 clock an async component waits on for its timers (D184 item 4).
+val wasiClocksP3: String = "wasi:clocks"
+
+val wasiClocksP3Version: String = "0.3.0"
+
+/// The slice of `wasi:clocks@0.3.0` the async wrappers import, nested in the
+/// generated WIT file so `wasm-tools component embed` needs no `deps/` folder.
+func wasiClocksP3Package(): String {
+  "package " + wasiClocksP3 + "@" + wasiClocksP3Version + " {\n" + "  interface types {\n" +
+    "    type duration = u64;\n" +
+    "  }\n" +
+    "  interface monotonic-clock {\n" +
+    "    use types.{duration};\n" +
+    "    wait-for: async func(how-long: duration);\n" +
+    "  }\n" +
+    "}\n"
 }
 
 // ─── C wrappers ──────────────────────────────────────────────────────────────
@@ -2443,10 +2485,10 @@ func cabiRuntime(hasAsync: in Bool): String {
   l.add("extern const uint8_t* lyric_wasm_string_data(void*);")
   l.add("")
   if hasAsync {
-    l.add("#include <time.h>")
-    l.add("extern int64_t lyric_wasm_poll(void);")
-    l.add("extern int32_t lyric_task_is_complete(void*);")
+    l.add("extern int64_t lyric_sched_poll(void);")
+    l.add("extern int64_t lyric_monotonic_nanos(void);")
     l.add("extern void lyric_wasm_release(void*);")
+    l.add("extern void lyric_panic_msg(const char*, const char*, int32_t);")
     l.add("")
   }
   l.add("static uint64_t cabi_slots[64];")
@@ -2505,22 +2547,7 @@ func cabiRuntime(hasAsync: in Bool): String {
   l.add("void lyric_cabi_set_ret_f32(float v) { uint32_t b; memcpy(&b, &v, 4); cabi_ret_bits = b; }")
   l.add("void lyric_cabi_set_ret_f64(double v) { uint64_t b; memcpy(&b, &v, 8); cabi_ret_bits = b; }")
   if hasAsync {
-    l.add("/* Run the scheduler until `task` completes, sleeping out the timers a")
-    l.add("   suspended task waits on.  A component export is a synchronous call, so an")
-    l.add("   async export blocks its caller for the task's duration (docs/35 Q-JS-006). */")
-    l.add("static void cabi_drive(void* task) {")
-    l.add("  for (;;) {")
-    l.add("    int64_t wait = lyric_wasm_poll();")
-    l.add("    if (lyric_task_is_complete(task)) return;")
-    l.add("    if (wait < 0) __builtin_trap(); /* nothing can ever complete it */")
-    l.add("    if (wait > 0) {")
-    l.add("      struct timespec ts;")
-    l.add("      ts.tv_sec = (time_t)(wait / 1000);")
-    l.add("      ts.tv_nsec = (long)((wait % 1000) * 1000000);")
-    l.add("      nanosleep(&ts, 0);")
-    l.add("    }")
-    l.add("  }")
-    l.add("}")
+    l.add(asyncRuntime)
   }
   l.add("")
   l.add("__attribute__((export_name(\"cabi_realloc\")))")
@@ -2832,6 +2859,142 @@ func renderImportWrapper(pkgs: in List[ComponentPkg], h: in HostImport, i: in In
   Str.joinList("\n", l)
 }
 
+/// The C half of the async lift (D184), written once into `<stem>.cabi.c` when
+/// a component has an `async func` export.  A call is a slot in `cabi_calls`,
+/// reached from its callbacks through `context.get` slot 0 (slot index plus
+/// one).  Each callback turn runs the scheduler; a task asleep on a timer parks
+/// the call on an async-lowered WASI 0.3 `wait-for` subtask, which is the one
+/// outstanding timer of the instance and joins the set of whichever call is
+/// running.  An instance carries one call at a time until slice A3.
+val asyncRuntime: String = r#"#define CABI_EXIT 0
+#define CABI_WAIT 2
+#define CABI_EVENT_SUBTASK 1
+#define CABI_SUBTASK_RETURNED 2
+#define CABI_SUBTASK_STATE_MASK 0xf
+
+__attribute__((import_module("$root"), import_name("[waitable-set-new]")))
+extern uint32_t cabi_ws_new(void);
+__attribute__((import_module("$root"), import_name("[waitable-join]")))
+extern void cabi_ws_join(uint32_t waitable, uint32_t set);
+__attribute__((import_module("$root"), import_name("[waitable-set-drop]")))
+extern void cabi_ws_drop(uint32_t set);
+__attribute__((import_module("$root"), import_name("[subtask-cancel]")))
+extern uint32_t cabi_subtask_cancel(uint32_t subtask);
+__attribute__((import_module("$root"), import_name("[subtask-drop]")))
+extern void cabi_subtask_drop(uint32_t subtask);
+__attribute__((import_module("$root"), import_name("[context-get-0]")))
+extern uint32_t cabi_context_get(void);
+__attribute__((import_module("$root"), import_name("[context-set-0]")))
+extern void cabi_context_set(uint32_t value);
+__attribute__((import_module("wasi:clocks/monotonic-clock@0.3.0"), import_name("[async-lower]wait-for")))
+extern uint32_t cabi_wait_for(uint64_t nanos);
+
+static inline float cabi_f32_of_bits(uint32_t b) { float f; memcpy(&f, &b, 4); return f; }
+static inline double cabi_f64_of_bits(uint64_t b) { double d; memcpy(&d, &b, 8); return d; }
+
+typedef struct cabi_call {
+  void* task;
+  uint64_t ret_bits;
+  int32_t ret_ptr;
+  int32_t done;
+  uint32_t set;
+} cabi_call;
+
+#define CABI_MAX_CALLS 1
+static cabi_call cabi_calls[CABI_MAX_CALLS];
+static int32_t cabi_live;
+static uint32_t cabi_timer;          /* the outstanding wait-for subtask, 0 when none */
+static int64_t cabi_timer_deadline;  /* when it fires, on lyric_monotonic_nanos' clock */
+
+/* Start a call: its slot, its waitable set (which takes the outstanding timer),
+   and its context slot. */
+static cabi_call* cabi_call_begin(void) {
+  if (cabi_live >= CABI_MAX_CALLS) {
+    lyric_panic_msg("an async export was called while another call into this component instance is still running; concurrent calls are not supported yet (D184 slice A3)", "component", 0);
+  }
+  int32_t i = 0;
+  cabi_call* c = &cabi_calls[i];
+  memset(c, 0, sizeof *c);
+  c->set = cabi_ws_new();
+  if (cabi_timer != 0) cabi_ws_join(cabi_timer, c->set);
+  cabi_live++;
+  cabi_context_set((uint32_t)i + 1);
+  return c;
+}
+
+static int32_t cabi_call_index(cabi_call* c) { return (int32_t)(c - cabi_calls); }
+
+static cabi_call* cabi_call_current(void) {
+  uint32_t i = cabi_context_get();
+  if (i == 0 || i > CABI_MAX_CALLS) lyric_panic_msg("async export callback without a call (component glue bug)", "component", 0);
+  return &cabi_calls[i - 1];
+}
+
+/* Finish a call: the outstanding timer leaves the set (the next call takes it),
+   the set and the task are released. */
+static void cabi_call_end(cabi_call* c) {
+  if (cabi_timer != 0) cabi_ws_join(cabi_timer, 0);
+  cabi_ws_drop(c->set);
+  lyric_wasm_release(c->task);
+  c->task = 0;
+  cabi_live--;
+  cabi_context_set(0);
+}
+
+/* An async shim's task completed: keep the lowered result for its own call. */
+void lyric_cabi_async_done(int32_t call) {
+  cabi_call* c = &cabi_calls[call];
+  c->ret_bits = cabi_ret_bits;
+  c->ret_ptr = cabi_ret_ptr;
+  c->done = 1;
+}
+
+/* Replace the outstanding timer with one that fires `ns` from now. */
+static void cabi_timer_start(cabi_call* c, int64_t ns, int64_t deadline) {
+  if (cabi_timer != 0) {
+    cabi_ws_join(cabi_timer, 0);
+    cabi_subtask_cancel(cabi_timer);
+    cabi_subtask_drop(cabi_timer);
+    cabi_timer = 0;
+  }
+  uint32_t st = cabi_wait_for((uint64_t)ns);
+  if ((st & CABI_SUBTASK_STATE_MASK) == CABI_SUBTASK_RETURNED) return;
+  cabi_timer = st >> 4;
+  cabi_timer_deadline = deadline;
+  cabi_ws_join(cabi_timer, c->set);
+}
+
+static void cabi_on_event(cabi_call* c, uint32_t event, uint32_t handle, uint32_t code) {
+  (void)c;
+  if (event == CABI_EVENT_SUBTASK && handle == cabi_timer && code == CABI_SUBTASK_RETURNED) {
+    cabi_subtask_drop(handle);
+    cabi_timer = 0;
+  }
+  /* NONE and TASK_CANCELLED: the call runs to completion (D184 item 9). */
+}
+
+/* One callback turn: run every ready task, then either report the call done
+   (EXIT) or park it on its waitable set (WAIT). */
+static int32_t cabi_turn(cabi_call* c) {
+  for (;;) {
+    int64_t ns = lyric_sched_poll();
+    if (c->done) return CABI_EXIT;
+    if (ns == 0) continue;
+    if (ns == -1) {
+      lyric_panic_msg("an async export's task can never complete: no task is ready, asleep or waiting on the host", "component", 0);
+    }
+    if (ns > 0) {
+      int64_t deadline = lyric_monotonic_nanos() + ns;
+      if (cabi_timer == 0 || deadline < cabi_timer_deadline) {
+        cabi_timer_start(c, ns, deadline);
+        if (cabi_timer == 0) continue;
+      }
+    }
+    return CABI_WAIT | (int32_t)(c->set << 4);
+  }
+}
+"#
+
 /// Whether any exported function of `pkgs` is an `async func`.
 pub func componentHasAsync(pkgs: in List[ComponentPkg]): Bool {
   for p in pkgs {
@@ -2842,6 +3005,99 @@ pub func componentHasAsync(pkgs: in List[ComponentPkg]): Bool {
     }
   }
   false
+}
+
+/// The core wrappers of one `async func` export (D184): `[async-lift]` starts the
+/// call and runs its first scheduler turn, `[callback][async-lift]` runs one turn
+/// per event, and the turn that sees the task done passes the snapshotted result
+/// to `[task-return]` as flat values (a pointer past 16), then frees what the
+/// result allocated.
+func renderAsyncExport(pkgs: in List[ComponentPkg], e: in CExport, n: in Int, version: in String): String {
+  val buf: List[String] = newList()
+  val ns = idStr(n)
+  val sh = "lyric_shim" + ns
+  val full = coreExportName(pkgs, e, version)
+  val ifaceId = "lyric:" + witName(firstPkgName(pkgs)) + "/" + witName(e.pkg) + "@" + version
+  buf.add("extern void* " + sh + "(int32_t) __asm__(\"" + e.wasmName + "\");")
+  val kinds = flatOf(e.ret)
+  val retParams: List[String] = newList()
+  val retArgs: List[String] = newList()
+  if e.retKind == "mem" {
+    if kinds.count > 16 {
+      retParams.add("int32_t")
+      retArgs.add("area")
+    } else {
+      for k in kinds {
+        retParams.add(cType(k))
+      }
+      for x in slotExprs(e.ret, "area") {
+        retArgs.add(x)
+      }
+    }
+  } else if e.retKind != "none" {
+    retParams.add(cType(e.retKind))
+    retArgs.add(
+      match e.retKind {
+        case "i64" -> "(int64_t)c->ret_bits"
+        case "f32" -> "cabi_f32_of_bits((uint32_t)c->ret_bits)"
+        case "f64" -> "cabi_f64_of_bits(c->ret_bits)"
+        case _ -> "(int32_t)(uint32_t)c->ret_bits"
+      }
+    )
+  }
+  buf.add(
+    "__attribute__((import_module(\"[export]" + ifaceId + "\"), import_name(\"[task-return]" + witName(e.jsName) +
+      "\")))"
+  )
+  buf.add(
+    "extern void lyric_taskret" + ns + "(" + (if retParams.count == 0 { "void" } else { Str.joinList(", ", retParams) }) +
+      ");"
+  )
+  if e.postName.length > 0 {
+    buf.add("extern void lyric_postshim" + ns + "(void) __asm__(\"" + e.postName + "\");")
+  }
+  buf.add("static int32_t lyric_step" + ns + "(cabi_call* c) {")
+  buf.add("  int32_t code = cabi_turn(c);")
+  buf.add("  if (code != CABI_EXIT) return code;")
+  if e.retKind == "mem" {
+    buf.add("  int32_t area = c->ret_ptr;")
+    buf.add("  lyric_taskret" + ns + "(" + Str.joinList(", ", retArgs) + ");")
+    buf.add("  cabi_reset();")
+    buf.add("  cabi_push((uint32_t)area);")
+    buf.add("  lyric_postshim" + ns + "();")
+    buf.add("  free(CABI_ADDR(area));")
+  } else {
+    buf.add("  lyric_taskret" + ns + "(" + Str.joinList(", ", retArgs) + ");")
+  }
+  buf.add("  cabi_call_end(c);")
+  buf.add("  return CABI_EXIT;")
+  buf.add("}")
+  val ps: List[String] = newList()
+  var i = 0
+  while i < e.flat.count {
+    ps.add(cType(e.flat[i]) + " a" + idStr(i))
+    i = i + 1
+  }
+  buf.add("__attribute__((export_name(\"[async-lift]" + full + "\")))")
+  buf.add("int32_t lyric_wrap" + ns + "(" + (if ps.count == 0 { "void" } else { Str.joinList(", ", ps) }) + ") {")
+  buf.add("  cabi_call* c = cabi_call_begin();")
+  buf.add("  cabi_reset();")
+  i = 0
+  while i < e.flat.count {
+    buf.add("  " + pushStmt(e.flat[i], "a" + idStr(i)))
+    i = i + 1
+  }
+  buf.add("  c->task = " + sh + "(cabi_call_index(c));")
+  buf.add("  return lyric_step" + ns + "(c);")
+  buf.add("}")
+  buf.add("__attribute__((export_name(\"[callback][async-lift]" + full + "\")))")
+  buf.add("int32_t lyric_callback" + ns + "(int32_t event, int32_t handle, int32_t code) {")
+  buf.add("  cabi_call* c = cabi_call_current();")
+  buf.add("  cabi_on_event(c, (uint32_t)event, (uint32_t)handle, (uint32_t)code);")
+  buf.add("  return lyric_step" + ns + "(c);")
+  buf.add("}")
+  buf.add("")
+  Str.joinList("\n", buf)
 }
 
 /// The C file for the exporting packages (see the module header).
@@ -2856,8 +3112,13 @@ pub func renderCabi(pkgs: in List[ComponentPkg], version: in String): String {
   var n = 0
   for p in exportingPkgs(pkgs) {
     for e in p.exports {
+      if e.isAsync {
+        buf.add(renderAsyncExport(pkgs, e, n, version))
+        n = n + 1
+        continue
+      }
       val sh = "lyric_shim" + idStr(n)
-      buf.add("extern " + (if e.isAsync { "void*" } else { "void" }) + " " + sh + "(void) __asm__(\"" + e.wasmName + "\");")
+      buf.add("extern void " + sh + "(void) __asm__(\"" + e.wasmName + "\");")
       val exportName = coreExportName(pkgs, e, version)
       val ps: List[String] = newList()
       var i = 0
@@ -2874,11 +3135,7 @@ pub func renderCabi(pkgs: in List[ComponentPkg], version: in String): String {
         buf.add("  " + pushStmt(e.flat[i], "a" + idStr(i)))
         i = i + 1
       }
-      if e.isAsync {
-        buf.add("  { void* task = " + sh + "(); cabi_drive(task); lyric_wasm_release(task); }")
-      } else {
-        buf.add("  " + sh + "();")
-      }
+      buf.add("  " + sh + "();")
       match e.retKind {
         case "none" -> ()
         case "mem" -> buf.add("  return cabi_ret_ptr;")

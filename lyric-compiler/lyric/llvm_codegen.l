@@ -15512,6 +15512,8 @@ func asyncRuntimeDecls(): List[NFunc] {
   decls.add(mkDecl2("llvm.coro.begin", p8, NToken, p8))
   decls.add(mkDecl2("llvm.coro.suspend", NI8, NToken, NI1))
   decls.add(mkDecl2("llvm.coro.free", p8, NToken, p8))
+  // Stays `i1`: LLVM 18 rejects a `void` declaration, and LLVM 23 auto-upgrades
+  // this one (the call site leaves the result unnamed for that reason).
   decls.add(mkDecl2("llvm.coro.end", NI1, p8, NI1))
   decls.add(mkDecl1("llvm.coro.resume", NVoid, p8))
   decls.add(mkDecl1("llvm.coro.destroy", NVoid, p8))

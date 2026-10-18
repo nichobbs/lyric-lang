@@ -1,6 +1,6 @@
 # D184 - The wasm32 component shape uses the Component Model async ABI
 
-**Status:** accepted (implementation in slices A1 to A3 below)
+**Status:** accepted; slice A1 implemented (async exports), A2 and A3 to follow
 
 ## Context
 

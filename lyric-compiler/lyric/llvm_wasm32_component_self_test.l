@@ -7,8 +7,10 @@
 //!
 //! Requires everything `llvm_wasm32_module_self_test.l` does, plus
 //! `$WASM_TOOLS` (a wasm-tools binary), `$LYRIC_WASI_ADAPTER` (the preview1
-//! reactor adapter), `$JCO` (the jco binary) and `$LYRIC_JCO_NODE_MODULES` (a
-//! node_modules directory holding `@bytecodealliance/preview2-shim`).
+//! reactor adapter), `$JCO` (the jco binary), `$LYRIC_JCO_NODE_MODULES` (a
+//! node_modules directory holding `@bytecodealliance/preview2-shim` and, for the
+//! async exports, `@bytecodealliance/preview3-shim`) and `$WASMTIME`.  jco's
+//! output for an async export needs node 24 or later (`$NODE`, else `node`).
 @test_module
 package Lyric.LlvmWasm32ComponentSelfTest
 
@@ -1193,19 +1195,45 @@ pub func plain(x: Int): Int {
 }
 "#
 
-test "wasm32 component: an async export runs to completion inside the call, sleeping out its timers" {
+test "wasm32 component: an async export is a WIT async func whose timers wait on WASI 0.3 clocks" {
   val dir = buildComponentOf(asyncComponentProgram)
   val wasm = Path.join(dir, "prog.wasm")
   val wit = match File.readText(Path.join(dir, "prog.wit")) { case Ok(t) -> t; case Err(_) -> "" }
   assertTrue(
-    Str.contains(wit, "later: func(x: s32, ms: s32) -> s32"),
-    "an async export is an ordinary WIT function: " + wit
+    Str.contains(wit, "later: async func(x: s32, ms: s32) -> s32"),
+    "an async export is a WIT async func: " + wit
+  )
+  assertTrue(Str.contains(wit, "plain: func(x: s32) -> s32"), "a sync export stays a plain func: " + wit)
+  assertTrue(
+    Str.contains(wit, "import wasi:clocks/monotonic-clock@0.3.0;"),
+    "timers are WASI 0.3 wait-for subtasks: " + wit
   )
   val vargs: List[String] = newList()
   vargs.add("validate")
   vargs.add(wasm)
   val v = run(envOrPanic("WASM_TOOLS"), vargs)
   assertTrue(v.exitCode == 0, "wasm-tools validate: " + v.stderr)
+  val wt = envOrPanic("WASMTIME")
+  val later: List[String] = newList()
+  later.add("run")
+  later.add("--invoke")
+  later.add("later(41, 60)")
+  later.add(wasm)
+  val wl = run(wt, later)
+  assertTrue(
+    wl.exitCode == 0 and Str.trim(wl.stdout) == "42",
+    "wasmtime runs the async export: " + wl.stdout + wl.stderr
+  )
+  val tag: List[String] = newList()
+  tag.add("run")
+  tag.add("--invoke")
+  tag.add("tag(\"wörld\", 10)")
+  tag.add(wasm)
+  val wtag = run(wt, tag)
+  assertTrue(
+    wtag.exitCode == 0 and Str.trim(wtag.stdout) == "\"wörld!\"",
+    "a String result through task.return: " + wtag.stdout + wtag.stderr
+  )
   val outDir = Path.join(dir, "js")
   val jargs: List[String] = newList()
   jargs.add("transpile")
@@ -1222,14 +1250,18 @@ test "wasm32 component: an async export runs to completion inside the call, slee
   val script = r"import * as m from './js/prog.js';
 const p = m.probe;
 const t0 = performance.now();
-const v = p.later(41, 60);
+const pending = p.later(41, 60);
+console.log('promise=' + (pending instanceof Promise));
+const v = await pending;
 const dt = performance.now() - t0;
 console.log('later=' + v + ' waited=' + (dt >= 50));
-console.log('tag=' + p.tag('wörld', 10));
-console.log('immediate=' + p.immediate());
-console.log('wide=' + p.wide(3000000000n));
-console.log('pair=' + p.pair(4) + ',' + p.pair(0));
-console.log('plain=' + p.plain(1));
+console.log('tag=' + (await p.tag('wörld', 10)));
+console.log('immediate=' + (await p.immediate()));
+console.log('wide=' + (await p.wide(3000000000n)));
+console.log('pair=' + (await p.pair(4)) + ',' + (await p.pair(0)));
+// jco 1.39 types a sync export of an async component as a plain value but
+// returns a Promise for it, so it is awaited too (awaiting a value is a no-op).
+console.log('plain=' + (await p.plain(1)));
 "
   val scriptPath = Path.join(dir, "run.mjs")
   val _s = File.writeText(scriptPath, script)
@@ -1237,9 +1269,10 @@ console.log('plain=' + p.plain(1));
   nargs.add(scriptPath)
   val n = run(Environment.getVarOrDefault("NODE", "node"), nargs)
   assertTrue(n.exitCode == 0, "node: " + n.stderr + n.stdout)
+  assertTrue(Str.contains(n.stdout, "promise=true"), "an async export returns a Promise under jco: " + n.stdout)
   assertTrue(
     Str.contains(n.stdout, "later=42 waited=true"),
-    "the call blocked for its sleep and returned the value: " + n.stdout
+    "the call waited out its sleep and resolved to the value: " + n.stdout
   )
   assertTrue(Str.contains(n.stdout, "tag=wörld!"), "String argument and result through a task: " + n.stdout)
   assertTrue(Str.contains(n.stdout, "immediate=41"), "an async func that never suspends: " + n.stdout)
