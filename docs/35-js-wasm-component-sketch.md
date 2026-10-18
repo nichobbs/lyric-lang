@@ -240,7 +240,7 @@ are entirely in the `exposed` tier.
 | `List[T]` | `list<T>` | |
 | `exposed record Foo` | `record foo { ... }` | fields mapped recursively |
 | Union type | `variant` | each constructor becomes a case |
-| `Async[T]` | `future<T>` | see §11 |
+| `async func` result (`Task[T]`) | the export or import is a WIT `async func` returning `T` | §11, D184; a `Task[T]` value is not exportable |
 | `opaque type T` | not exported | only the `@projectable` exposed twin appears |
 | `protected type T` | not exported | see §10.1 |
 | Range subtype | underlying type with contract guard | see §10.2 |
@@ -486,10 +486,14 @@ except at the host edge:
   and timers become host timer imports; an exported `lyric_poll`/callback
   re-enters the scheduler when a host promise resolves. Blocking is never
   used.
-- **`component` shape:** `Async[T]` maps to WIT `future<T>` once the
-  Component Model async ABI is stable (Q-JS-006). Until then `async func`
-  exports use the synchronous-subset lowering with a `W0041` note (shipped,
-  D-progress-1043): the wrapper drives the scheduler until the task completes.
+- **`component` shape:** an `async func` export, and a `promise` host
+  import, is a WIT `async func` (D184; the Component Model async ABI shipped
+  in WASI 0.3.0). Exports use the stackless callback lift: each callback turn
+  runs the scheduler, timers wait on an async-lowered WASI 0.3
+  `monotonic-clock.wait-for`, and the result goes back through `task.return`.
+  `future<T>`/`stream<T>` values are deferred (D184 items 7 and 8). Until the
+  first slice lands, `async func` exports still use the synchronous-subset
+  lowering with a `W0041` note (D-progress-1043).
 
 No separate backend pass is needed (the earlier revision's claim that the
 MSIL/JVM state-machine lowering needed an unrelated WASM pass no longer
@@ -540,7 +544,8 @@ set; decide the registry model before the 20th package.
 map to the same Lyric name. Suffix disambiguator, or hard `lyric restore`
 error?
 
-**Q-JS-006 — WIT async stability.** *Resolved for v1 in D-progress-1043: the
+**Q-JS-006 — WIT async stability.** *Resolved in D184 (the async ABI is used
+through the callback lift). Earlier, for v1, in D-progress-1043: the
 synchronous subset ships (an `async func` export is a blocking WIT function,
 with a `W0041` note); `future<T>`/`stream<T>` wait for the Component Model
 async ABI to stabilise.* The 2026-10 spike
@@ -548,8 +553,7 @@ async ABI to stabilise.* The 2026-10 spike
 shipped in WASI 0.3.0 and frozen until 1.0 (stackful lift and `error-context`
 still gated), ran hand-written async components on wasmtime 49.0.3 and jco
 1.39.0 (node >= 24), and recommends a callback-lift slice for async exports
-next; it also proposes that `async func` map to a WIT `async func` rather than
-`-> future<T>` (§11), pending a decision entry.
+next. D184 records the design: `async func` maps to a WIT `async func` (§11).
 
 **Q-JS-007 — Linear-memory limits.** Default stack size and maximum heap for
 the `module` shape; whether `lyric_alloc` failure traps or returns an error.
