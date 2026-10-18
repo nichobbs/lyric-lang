@@ -665,20 +665,6 @@ pub func go(): Unit {
     componentBuildOk(
       r#"package Probe
 
-@wasmImport("net", promise)
-extern func fetchText(url: String): String = "fetch-text"
-
-pub async func go(): String {
-  fetchText("u")
-}
-"#
-    ),
-    "a promise host import is available in the module shape only"
-  )
-  assertFalse(
-    componentBuildOk(
-      r#"package Probe
-
 @wasmImport("")
 extern func bad(n: Int): Unit = "bad"
 
@@ -1279,6 +1265,91 @@ console.log('plain=' + (await p.plain(1)));
   assertTrue(Str.contains(n.stdout, "wide=6000000000"), "Long result: " + n.stdout)
   assertTrue(Str.contains(n.stdout, "pair=8,undefined"), "an Option result through a task: " + n.stdout)
   assertTrue(Str.contains(n.stdout, "plain=101"), "a sync export beside the async ones: " + n.stdout)
+}
+
+val promiseImportProgram: String = r#"package Probe
+
+@wasmImport("net", promise)
+extern func fetchText(url: String): String = "fetch-text"
+
+@wasmImport("net", promise)
+extern func sum5(a: Int, b: Int, c: Long, d: Int, e: Int): Long = "sum5"
+
+@wasmImport("net", promise)
+extern func lookup(key: String): Option[Int] = "lookup"
+
+@wasmImport("net", promise)
+extern func tick(): Unit = "tick"
+
+pub async func go(url: String): String {
+  val body = fetchText(url)
+  tick()
+  val total = sum5(1, 2, 3000000000i64, 4, 5)
+  val hit = match lookup("x") {
+    case Some(v) -> v
+    case None -> 0 - 1
+  }
+  val miss = match lookup("y") {
+    case Some(v) -> v
+    case None -> 0 - 1
+  }
+  body + "|" + total.toString() + "|" + hit.toString() + "|" + miss.toString()
+}
+"#
+
+test "wasm32 component: a promise host import is a WIT async func the calling task awaits" {
+  val dir = buildComponentOf(promiseImportProgram)
+  val wasm = Path.join(dir, "prog.wasm")
+  val wit = match File.readText(Path.join(dir, "prog.wit")) { case Ok(t) -> t; case Err(_) -> "" }
+  assertTrue(
+    Str.contains(wit, "fetch-text: async func(url: string) -> string") and Str.contains(wit, "tick: async func();") and
+      Str.contains(wit, "go: async func(url: string) -> string"),
+    "promise imports and the export are WIT async funcs: " + wit
+  )
+  val vargs: List[String] = newList()
+  vargs.add("validate")
+  vargs.add(wasm)
+  val v = run(envOrPanic("WASM_TOOLS"), vargs)
+  assertTrue(v.exitCode == 0, "wasm-tools validate: " + v.stderr)
+  val outDir = Path.join(dir, "js")
+  val jargs: List[String] = newList()
+  jargs.add("transpile")
+  jargs.add(wasm)
+  jargs.add("-o")
+  jargs.add(outDir)
+  jargs.add("--map")
+  jargs.add("lyric:probe/net@0.1.0=../net.js")
+  val j = run(envOrPanic("JCO"), jargs)
+  assertTrue(j.exitCode == 0, "jco transpile: " + j.stderr)
+  val lnargs: List[String] = newList()
+  lnargs.add("-s")
+  lnargs.add(envOrPanic("LYRIC_JCO_NODE_MODULES"))
+  lnargs.add(Path.join(dir, "node_modules"))
+  val _ln = run("ln", lnargs)
+  val _n = File.writeText(
+    Path.join(dir, "net.js"),
+    r"const later = (ms) => new Promise((r) => setTimeout(r, ms));
+export async function fetchText(url) { await later(30); return 'body of ' + url; }
+export async function sum5(a, b, c, d, e) { await later(5); return BigInt(a + b + d + e) + c; }
+export async function lookup(key) { await later(5); return key === 'x' ? 7 : undefined; }
+export async function tick() { await later(5); globalThis.__ticked = true; }
+"
+  )
+  val script = r"import * as m from './js/prog.js';
+const t0 = performance.now();
+const v = await m.probe.go('wörld');
+console.log('go=' + v + ' ticked=' + globalThis.__ticked + ' waited=' + (performance.now() - t0 >= 40));
+"
+  val scriptPath = Path.join(dir, "run.mjs")
+  val _s = File.writeText(scriptPath, script)
+  val nargs: List[String] = newList()
+  nargs.add(scriptPath)
+  val n = run(Environment.getVarOrDefault("NODE", "node"), nargs)
+  assertTrue(n.exitCode == 0, "node: " + n.stderr + n.stdout)
+  assertTrue(
+    Str.contains(n.stdout, "go=body of wörld|3000000012|7|-1 ticked=true waited=true"),
+    "String, spilled-argument, Option and Unit promise imports, each awaited: " + n.stdout
+  )
 }
 
 val tupleProgram: String = r#"package Probe

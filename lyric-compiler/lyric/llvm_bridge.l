@@ -2052,6 +2052,9 @@ func linkAndEmitNative(
     }
     ui = ui + 1
   }
+  if isComponent {
+    markComponentHostTaskExterns(units, componentPkgs)
+  }
   if wasmExports.importErrors.count > 0 {
     var ii = 0
     while ii < wasmExports.importErrors.count {
@@ -2218,6 +2221,26 @@ func linkAndEmitNative(
 /// `[wasm] version` and no project version).
 func componentVersion(): String {
   "0.1.0"
+}
+
+/// A component's promise host import is reached through a generated C function
+/// that returns the pending host task (D184 item 5).  Record each one as a
+/// module-less promise import so codegen declares it returning the task and
+/// awaits every call, as it does a `--shape module` promise import.
+func markComponentHostTaskExterns(units: in List[CodegenUnit], pkgs: in List[ComponentPkg]): Unit {
+  for p in pkgs {
+    for h in p.imports {
+      if h.isPromise {
+        for u in units {
+          for ef in u.externs {
+            if ef.symbol == h.cSym and not wasmImportIsPromise(u.wasmImports, ef.symbol) {
+              u.wasmImports.add(WasmImportDecl(symbol = ef.symbol, module = "", problem = "", isPromise = true))
+            }
+          }
+        }
+      }
+    }
+  }
 }
 
 /// Locate `wasm-tools`: `$WASM_TOOLS`, else `wasm-tools` on PATH.

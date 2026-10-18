@@ -127,8 +127,11 @@ If the promise rejects, the Lyric code waiting on it panics with
 `host import failed: <message>`, so a host that wants a recoverable failure resolves to a
 status value instead. Calling a promise import from a synchronous function aborts with a
 message telling you to make the caller `async`, because the host can only finish the
-operation after that call returns. The component shape does not support promise imports
-(the Component Model async ABI is not stable).
+operation after that call returns. The component shape supports promise imports too: there
+the import is a WIT `async func` and the host's async function settles it. A rejection never
+reaches the Lyric code (the Component Model's only error channel is a `result` in the
+signature; under jco the pending export call rejects with the host's error), so declare a
+`Result` for failures the Lyric caller should handle.
 
 ## Publishing a library: the component shape
 

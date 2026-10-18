@@ -88,6 +88,8 @@ pub record WasmImportDecl {
   problem: String
   /// `@wasmImport("module", promise)`: the host function may return a Promise,
   /// and a call suspends the calling task until it settles (docs/35 section 11).
+  /// With an empty `module` the symbol is instead a C function that returns the
+  /// pending host task (a component's async-lowered host import, D184).
   isPromise: Bool
 }
 
@@ -15937,6 +15939,20 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
               isExtern = plain.isExtern,
               body = plain.body,
               attributes = attrs
+            )
+          )
+        } else if wasmImportIsPromise(u.wasmImports, ef.symbol) {
+          // A module-less promise import is a C function returning the pending
+          // host task (the component shape's async-lowered host imports).
+          externDecls.add(
+            NFunc(
+              name = llName,
+              params = plain.params,
+              retTy = NPtr(pointee = NI8),
+              isPublic = plain.isPublic,
+              isExtern = plain.isExtern,
+              body = plain.body,
+              attributes = plain.attributes
             )
           )
         } else {
