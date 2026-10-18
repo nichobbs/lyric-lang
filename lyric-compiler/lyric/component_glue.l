@@ -1383,6 +1383,10 @@ pub record HostImport {
   /// arguments into a memory image, calls `cSym(image, returnArea)`, and
   /// loads the result from the return area (see `emitImageImport`).
   viaImage: Bool
+  /// `@wasmImport("m", promise)`: a WIT `async func` import, async-lowered
+  /// (D184 item 5).  Always an image import: `cSym` returns a pending host task
+  /// the generated `async func` awaits before it loads the result.
+  isPromise: Bool
 }
 
 pub record ComponentPkg {
@@ -1703,7 +1707,9 @@ func hostModuleName(module: in String): String {
 }
 
 /// The host import an annotated extern declares, or an error.
-func hostImportOf(d: in ExternFuncDecl, rawModule: in String, tbl: in TypeTable): Result[HostImport, String] {
+func hostImportOf(
+  d: in ExternFuncDecl, rawModule: in String, isPromise: in Bool, tbl: in TypeTable
+): Result[HostImport, String] {
   val module = hostModuleName(rawModule)
   if Str.startsWith(rawModule, "npm:") and module == "npm" {
     return Err(error = "@wasmImport on " + d.name + ": '" + rawModule + "' names no NPM package")
@@ -1751,7 +1757,8 @@ func hostImportOf(d: in ExternFuncDecl, rawModule: in String, tbl: in TypeTable)
         sanitizeIdent(d.symbol),
       params = params,
       ret = ret,
-      viaImage = importNeedsImage(params, ret)
+      viaImage = isPromise or importNeedsImage(params, ret),
+      isPromise = isPromise
     )
   )
 }
@@ -1775,6 +1782,15 @@ func imageRetMode(ret: in WitTy): String {
   }
 }
 
+/// How an async-lowered import returns: "unit", or "area" for any result, which
+/// the host writes through the out-pointer when the subtask returns.
+func promiseRetMode(ret: in WitTy): String {
+  match ret {
+    case WUnit -> "unit"
+    case _ -> "area"
+  }
+}
+
 func imageRawName(h: in HostImport): String {
   "cabiRaw_" + h.cSym
 }
@@ -1786,14 +1802,20 @@ func imageRawName(h: in HostImport): String {
 /// and loads the result from the return area.
 func emitImageImport(g: in Gen, h: in HostImport, vis: in Option[Visibility], name: in String): String {
   val lines: List[String] = newList()
-  val mode = imageRetMode(h.ret)
+  val mode = if h.isPromise { promiseRetMode(h.ret) } else { imageRetMode(h.ret) }
   val rawRet = if mode == "scalar" { lyricTy(h.ret) } else { "Unit" }
+  // A promise import's raw extern hands back a pending host task (the bridge marks
+  // `cSym` so), which the call below awaits in place.
   lines.add("extern func " + imageRawName(h) + "(img: Int, area: Int): " + rawRet + " = \"" + h.cSym + "\"")
   val sig: List[String] = newList()
   for f in h.params {
     sig.add(f.name + ": " + lyricTy(f.ty))
   }
-  lines.add(visPrefix(vis) + "func " + name + "(" + Str.joinList(", ", sig) + "): " + lyricTy(h.ret) + " {")
+  lines.add(
+    visPrefix(vis) + (if h.isPromise { "async " } else { "" }) + "func " + name + "(" + Str.joinList(", ", sig) + "): " +
+      lyricTy(h.ret) +
+      " {"
+  )
   var size = 0
   var align = 1
   for p in h.params {
@@ -1872,16 +1894,7 @@ pub func componentRewriteFile(file: in SourceFile, peers: in List[SourceFile]): 
         match wasmImportModuleOf(it.annotations) {
           case None -> baseItems.add(it)
           case Some(m) -> {
-            if wasmImportHasPromise(it.annotations) {
-              val info0 = ComponentPkg(pkg = pkg, exports = exports, defs = defs, notes = notes, imports = imports)
-              return ComponentRewrite(
-                file = file,
-                info = info0,
-                error = "@wasmImport extern func " + d.name +
-                  " is marked promise: a host import the importing code waits for is available in the --shape module build only (the Component Model async ABI is not stable, docs/35 Q-JS-006)"
-              )
-            }
-            match hostImportOf(d, m, tbl) {
+            match hostImportOf(d, m, wasmImportHasPromise(it.annotations), tbl) {
               case Err(e) -> {
                 val info0 = ComponentPkg(pkg = pkg, exports = exports, defs = defs, notes = notes, imports = imports)
                 return ComponentRewrite(file = file, info = info0, error = e)
@@ -2163,8 +2176,8 @@ func importSignature(h: in HostImport): String {
   val ps: List[String] = newList()
   for f in h.params {
     ps.add(lyricTy(f.ty))
-  }
-  "(" + Str.joinList(", ", ps) + "): " + lyricTy(h.ret)
+  };
+  (if h.isPromise { "promise " } else { "" }) + "(" + Str.joinList(", ", ps) + "): " + lyricTy(h.ret)
 }
 
 /// A message when two externs bind the same host function (module and name)
@@ -2391,7 +2404,8 @@ pub func renderWit(pkgs: in List[ComponentPkg], version: in String, world: in St
           ps.add(witName(f.name) + ": " + witRef(f.ty))
         }
         val tail = if isUnit(h.ret) { "" } else { " -> " + witRef(h.ret) }
-        ilines.add("  " + witName(h.name) + ": func(" + Str.joinList(", ", ps) + ")" + tail + ";")
+        val kw = if h.isPromise { ": async func(" } else { ": func(" }
+        ilines.add("  " + witName(h.name) + kw + Str.joinList(", ", ps) + ")" + tail + ";")
       }
     }
     parts.add("interface " + witName(m) + " {\n" + Str.joinList("\n", ilines) + "\n}\n")
@@ -2489,6 +2503,9 @@ func cabiRuntime(hasAsync: in Bool): String {
     l.add("extern int64_t lyric_monotonic_nanos(void);")
     l.add("extern void lyric_wasm_release(void*);")
     l.add("extern void lyric_panic_msg(const char*, const char*, int32_t);")
+    l.add("extern void* lyric_host_task_new(void);")
+    l.add("extern void lyric_host_task_finish(void*, int64_t, int32_t);")
+    l.add("extern void lyric_host_task_fail(void*, void*);")
     l.add("")
   }
   l.add("static uint64_t cabi_slots[64];")
@@ -2720,6 +2737,9 @@ func slotExprs(t: in WitTy, p: in String): List[String] {
 /// spill), calls the core import, and either returns a scalar result or leaves
 /// the result in `area`.
 func renderImageImportWrapper(pkgs: in List[ComponentPkg], h: in HostImport, i: in Int, version: in String): String {
+  if h.isPromise {
+    return renderPromiseImportWrapper(pkgs, h, i, version)
+  }
   val l: List[String] = newList()
   val id = importInterfaceId(pkgs, h.module, version)
   val rawName = "lyric_rawimport" + idStr(i)
@@ -2789,6 +2809,57 @@ func renderImageImportWrapper(pkgs: in List[ComponentPkg], h: in HostImport, i: 
   } else {
     l.add("  " + call + ";")
   }
+  l.add("}")
+  l.add("")
+  Str.joinList("\n", l)
+}
+
+/// The C wrapper of a promise import (D184 item 5): `cSym(image, area)` makes the
+/// async-lowered core call, passing the flat arguments read out of the image (or
+/// the image itself past 4 flat values) and `area` as the result's out-pointer,
+/// and returns the host task `lyric_cabi_host_call` makes for the subtask.  The
+/// image and area stay allocated until the generated Lyric function has awaited
+/// that task, so the host may read the arguments and write the result late.
+func renderPromiseImportWrapper(pkgs: in List[ComponentPkg], h: in HostImport, i: in Int, version: in String): String {
+  val l: List[String] = newList()
+  val id = importInterfaceId(pkgs, h.module, version)
+  val rawName = "lyric_rawimport" + idStr(i)
+  val rawParams: List[String] = newList()
+  val callArgs: List[String] = newList()
+  var total = 0
+  for p in h.params {
+    total = total + flatOf(p.ty).count
+  }
+  if total > 4 {
+    rawParams.add("int32_t")
+    callArgs.add("img")
+  } else {
+    var pi = 0
+    while pi < h.params.count {
+      val kinds = flatOf(h.params[pi].ty)
+      val exprs = slotExprs(h.params[pi].ty, "img + " + idStr(fieldOffset(h.params, pi)))
+      var k = 0
+      while k < kinds.count {
+        rawParams.add(cTypeOfKind(kinds[k]))
+        callArgs.add(exprs[k])
+        k = k + 1
+      }
+      pi = pi + 1
+    }
+  }
+  if not isUnit(h.ret) {
+    rawParams.add("int32_t")
+    callArgs.add("area")
+  }
+  l.add("__attribute__((import_module(\"" + id + "\"), import_name(\"[async-lower]" + witName(h.name) + "\")))")
+  l.add(
+    "extern uint32_t " + rawName + "(" + (if rawParams.count == 0 { "void" } else { Str.joinList(", ", rawParams) }) +
+      ");"
+  )
+  l.add("void* " + h.cSym + "(int32_t img, int32_t area) {")
+  l.add("  (void)img;")
+  l.add("  (void)area;")
+  l.add("  return lyric_cabi_host_call(" + rawName + "(" + Str.joinList(", ", callArgs) + "));")
   l.add("}")
   l.add("")
   Str.joinList("\n", l)
@@ -2906,6 +2977,21 @@ static int32_t cabi_live;
 static uint32_t cabi_timer;          /* the outstanding wait-for subtask, 0 when none */
 static int64_t cabi_timer_deadline;  /* when it fires, on lyric_monotonic_nanos' clock */
 
+/* Outstanding async-lowered host imports: each subtask and the host task the
+   importing Lyric code awaits (D184 item 5). */
+typedef struct cabi_pending {
+  uint32_t subtask;
+  void* task;
+} cabi_pending;
+static cabi_pending* cabi_pend;
+static int32_t cabi_pend_n, cabi_pend_cap;
+
+/* Move every outstanding subtask into `set` (0 takes them out of any set). */
+static void cabi_join_outstanding(uint32_t set) {
+  if (cabi_timer != 0) cabi_ws_join(cabi_timer, set);
+  for (int32_t i = 0; i < cabi_pend_n; i++) cabi_ws_join(cabi_pend[i].subtask, set);
+}
+
 /* Start a call: its slot, its waitable set (which takes the outstanding timer),
    and its context slot. */
 static cabi_call* cabi_call_begin(void) {
@@ -2916,7 +3002,7 @@ static cabi_call* cabi_call_begin(void) {
   cabi_call* c = &cabi_calls[i];
   memset(c, 0, sizeof *c);
   c->set = cabi_ws_new();
-  if (cabi_timer != 0) cabi_ws_join(cabi_timer, c->set);
+  cabi_join_outstanding(c->set);
   cabi_live++;
   cabi_context_set((uint32_t)i + 1);
   return c;
@@ -2930,10 +3016,10 @@ static cabi_call* cabi_call_current(void) {
   return &cabi_calls[i - 1];
 }
 
-/* Finish a call: the outstanding timer leaves the set (the next call takes it),
-   the set and the task are released. */
+/* Finish a call: the outstanding subtasks leave the set (the next call takes
+   them), the set and the task are released. */
 static void cabi_call_end(cabi_call* c) {
-  if (cabi_timer != 0) cabi_ws_join(cabi_timer, 0);
+  cabi_join_outstanding(0);
   cabi_ws_drop(c->set);
   lyric_wasm_release(c->task);
   c->task = 0;
@@ -2964,13 +3050,54 @@ static void cabi_timer_start(cabi_call* c, int64_t ns, int64_t deadline) {
   cabi_ws_join(cabi_timer, c->set);
 }
 
+/* The core call of a promise import returned `status`: a host task the
+   importing code awaits, already finished when the import returned at once,
+   else finished from the subtask's RETURNED event.  The result is in the
+   out-pointer area the generated Lyric function reads after the await. */
+void* lyric_cabi_host_call(uint32_t status) {
+  void* t = lyric_host_task_new();
+  if ((status & CABI_SUBTASK_STATE_MASK) == CABI_SUBTASK_RETURNED) {
+    lyric_host_task_finish(t, 0, 0);
+    return t;
+  }
+  if (cabi_pend_n == cabi_pend_cap) {
+    cabi_pend_cap = cabi_pend_cap == 0 ? 8 : cabi_pend_cap * 2;
+    cabi_pend = (cabi_pending*)realloc(cabi_pend, (size_t)cabi_pend_cap * sizeof *cabi_pend);
+    if (!cabi_pend) lyric_panic_msg("out of memory recording a host import call", "component", 0);
+  }
+  cabi_pend[cabi_pend_n].subtask = status >> 4;
+  cabi_pend[cabi_pend_n].task = t;
+  cabi_pend_n++;
+  uint32_t i = cabi_context_get();
+  if (i != 0 && i <= CABI_MAX_CALLS) cabi_ws_join(status >> 4, cabi_calls[i - 1].set);
+  return t;
+}
+
 static void cabi_on_event(cabi_call* c, uint32_t event, uint32_t handle, uint32_t code) {
   (void)c;
-  if (event == CABI_EVENT_SUBTASK && handle == cabi_timer && code == CABI_SUBTASK_RETURNED) {
-    cabi_subtask_drop(handle);
-    cabi_timer = 0;
+  if (event != CABI_EVENT_SUBTASK) return; /* NONE and TASK_CANCELLED: run to completion (D184 item 9) */
+  if (handle == cabi_timer) {
+    if (code == CABI_SUBTASK_RETURNED) {
+      cabi_subtask_drop(handle);
+      cabi_timer = 0;
+    }
+    return;
   }
-  /* NONE and TASK_CANCELLED: the call runs to completion (D184 item 9). */
+  for (int32_t i = 0; i < cabi_pend_n; i++) {
+    if (cabi_pend[i].subtask != handle) continue;
+    if (code == CABI_SUBTASK_RETURNED) {
+      lyric_host_task_finish(cabi_pend[i].task, 0, 0);
+    } else if (code > CABI_SUBTASK_RETURNED) {
+      static const char msg[] = "host import was cancelled before it returned";
+      lyric_host_task_fail(cabi_pend[i].task, lyric_wasm_string_new((const uint8_t*)msg, (int32_t)(sizeof msg - 1)));
+    } else {
+      return; /* STARTED: the arguments were read; the result is still to come */
+    }
+    cabi_subtask_drop(handle);
+    cabi_pend[i] = cabi_pend[cabi_pend_n - 1];
+    cabi_pend_n--;
+    return;
+  }
 }
 
 /* One callback turn: run every ready task, then either report the call done
@@ -2995,11 +3122,18 @@ static int32_t cabi_turn(cabi_call* c) {
 }
 "#
 
-/// Whether any exported function of `pkgs` is an `async func`.
+/// Whether the component uses the async ABI: an `async func` export or a
+/// `promise` host import.  Either brings in the async runtime of `<stem>.cabi.c`
+/// and the WASI 0.3 clock import its scheduler turns wait on.
 pub func componentHasAsync(pkgs: in List[ComponentPkg]): Bool {
   for p in pkgs {
     for e in p.exports {
       if e.isAsync {
+        return true
+      }
+    }
+    for h in p.imports {
+      if h.isPromise {
         return true
       }
     }
