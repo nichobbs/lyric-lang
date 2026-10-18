@@ -35,6 +35,10 @@ PREVIEW2_SHIM_VERSION="0.30.0"
 PREVIEW3_SHIM_VERSION="0.11.0"
 # jco's output for a Component Model async export calls WebAssembly.promising,
 # which node ships from 24 (D184); the component suite runs it under this node.
+# wac composes a test consumer with a component, so the component suite can make
+# concurrent calls into one instance under wasmtime (D184 slice A3).
+WAC_VERSION="0.12.0"
+WAC_SHA256="7cd490edbd452221ef89e6750fc43eacc9b71b1242095eb577cb9a3bf0d3beda"
 NODE_VERSION="24.22.0"
 NODE_SHA256="cc2f601cee82d9a5a233302fe307abc600727035fd7d2c3a3571755989e95008"
 
@@ -86,6 +90,11 @@ if [ ! -x "$jco_dir/node_modules/.bin/jco" ]; then
       "@bytecodealliance/preview3-shim@${PREVIEW3_SHIM_VERSION}" >/dev/null)
 fi
 
+wac="$tools/wac-${WAC_VERSION}"
+fetch "https://github.com/bytecodealliance/wac/releases/download/v${WAC_VERSION}/wac-cli-x86_64-unknown-linux-musl" \
+  "$WAC_SHA256" "$wac"
+chmod +x "$wac"
+
 node_dir="$tools/node-v${NODE_VERSION}-linux-x64"
 if [ ! -x "$node_dir/bin/node" ]; then
   fetch "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" \
@@ -119,6 +128,6 @@ LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/llvm_wasm32_module_
 LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/cli_wasm_npm_project_self_test.l
 # The `component` shape: WIT + canonical ABI wrappers, componentized by wasm-tools
 # and transpiled by jco to run under node.
-WASM_TOOLS="$wt_dir/wasm-tools" LYRIC_WASI_ADAPTER="$adapter" NODE="$node_dir/bin/node" \
+WASM_TOOLS="$wt_dir/wasm-tools" LYRIC_WASI_ADAPTER="$adapter" NODE="$node_dir/bin/node" WAC="$wac" \
   JCO="$jco_dir/node_modules/.bin/jco" LYRIC_JCO_NODE_MODULES="$jco_dir/node_modules" \
   LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/llvm_wasm32_component_self_test.l
