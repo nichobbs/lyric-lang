@@ -161,10 +161,14 @@ different types that would both become one WIT name in an interface keep the fun
 the component with a `W0040` note. Types from the standard library or a restored package are
 not carried.
 
-An `async func` export is an ordinary WIT function: the wrapper runs its task to
-completion before returning, sleeping out any `Std.Time.sleepMillis` the task waits on, so
-the host call blocks for that long (the build prints `W0041` as a reminder). A module-shape
-export is the non-blocking alternative: it returns a Promise.
+An `async func` export is a WIT `async func`, so the host never blocks on it: jco gives
+JavaScript a function that returns a Promise, and wasmtime runs it as a concurrent call. A
+`Std.Time.sleepMillis` inside it waits on the WASI 0.3 clock (`wasi:clocks/monotonic-clock`
+`wait-for`) rather than stopping the instance, which is why such a component imports that
+interface. Running it under node needs jco's output on node 24 or later and
+`@bytecodealliance/preview3-shim` installed beside `preview2-shim`. One call at a time may be
+in flight per component instance for now: a second concurrent call traps with a message
+saying so.
 
 Lyric `snake_case` and `PascalCase` names become kebab-case; two names that fold to
 the same WIT name, or a function sharing a name with a type, leave the function out

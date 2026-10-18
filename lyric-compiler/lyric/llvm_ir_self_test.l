@@ -222,6 +222,11 @@ test "calls and phi render" {
     "  %r = call i32 @add2(i32 3, i32 %y)",
     "call"
   )
+  assertEqual(
+    emitInsn(NCall(dest = "", retTy = NI32, fn = NGlobal(name = "add2"), args = args)),
+    "  call i32 @add2(i32 3, i32 %y)",
+    "call with its result discarded (llvm.coro.end, which LLVM 23 makes void)"
+  )
   val noArgs: List[NArg] = newList()
   assertEqual(emitInsn(NCallVoid(fn = NGlobal(name = "go"), args = noArgs)), "  call void @go()", "call void")
   val inc: List[NPhiIncoming] = newList()

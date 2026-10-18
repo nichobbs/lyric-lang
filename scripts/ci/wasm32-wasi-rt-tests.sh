@@ -32,6 +32,11 @@ WASM_TOOLS_SHA256="655b8df67d54c3ef9b52fc237c4e94bbfbb5f5f43825245cb0940a7002a9e
 WASI_ADAPTER_SHA256="79fa20ff8d49f1aba13d25af4fd616a1431028fff954b2927e55fcac4fefd6e3"
 JCO_VERSION="1.39.0"
 PREVIEW2_SHIM_VERSION="0.30.0"
+PREVIEW3_SHIM_VERSION="0.11.0"
+# jco's output for a Component Model async export calls WebAssembly.promising,
+# which node ships from 24 (D184); the component suite runs it under this node.
+NODE_VERSION="24.22.0"
+NODE_SHA256="cc2f601cee82d9a5a233302fe307abc600727035fd7d2c3a3571755989e95008"
 
 tools="${LYRIC_WASM_TOOLCACHE:-${RUNNER_TEMP:-$(mktemp -d)}/wasm-tools}"
 mkdir -p "$tools"
@@ -70,12 +75,22 @@ adapter="$tools/wasi_snapshot_preview1.reactor.wasm"
 fetch "https://github.com/bytecodealliance/wasmtime/releases/download/v${WASMTIME_VERSION}/wasi_snapshot_preview1.reactor.wasm" \
   "$WASI_ADAPTER_SHA256" "$adapter"
 
-# jco transpiles the component for node; pinned alongside its preview2 shim.
-jco_dir="$tools/jco-${JCO_VERSION}"
+# jco transpiles the component for node; pinned alongside its WASI shims (the
+# preview3 shim backs the WASI 0.3 clock an async component waits on).
+jco_dir="$tools/jco-${JCO_VERSION}-p3-${PREVIEW3_SHIM_VERSION}"
 if [ ! -x "$jco_dir/node_modules/.bin/jco" ]; then
   mkdir -p "$jco_dir"
   (cd "$jco_dir" && npm init -y >/dev/null && \
-    npm install --no-audit --no-fund "@bytecodealliance/jco@${JCO_VERSION}" "@bytecodealliance/preview2-shim@${PREVIEW2_SHIM_VERSION}" >/dev/null)
+    npm install --no-audit --no-fund "@bytecodealliance/jco@${JCO_VERSION}" \
+      "@bytecodealliance/preview2-shim@${PREVIEW2_SHIM_VERSION}" \
+      "@bytecodealliance/preview3-shim@${PREVIEW3_SHIM_VERSION}" >/dev/null)
+fi
+
+node_dir="$tools/node-v${NODE_VERSION}-linux-x64"
+if [ ! -x "$node_dir/bin/node" ]; then
+  fetch "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" \
+    "$NODE_SHA256" "$tools/node.tar.xz"
+  tar -xJf "$tools/node.tar.xz" -C "$tools"
 fi
 
 # The module-shape JS glue is embedded in the compiler from a real .js file.
@@ -104,6 +119,6 @@ LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/llvm_wasm32_module_
 LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/cli_wasm_npm_project_self_test.l
 # The `component` shape: WIT + canonical ABI wrappers, componentized by wasm-tools
 # and transpiled by jco to run under node.
-WASM_TOOLS="$wt_dir/wasm-tools" LYRIC_WASI_ADAPTER="$adapter" \
+WASM_TOOLS="$wt_dir/wasm-tools" LYRIC_WASI_ADAPTER="$adapter" NODE="$node_dir/bin/node" \
   JCO="$jco_dir/node_modules/.bin/jco" LYRIC_JCO_NODE_MODULES="$jco_dir/node_modules" \
   LYRIC_LOAD_COMPILER=1 "$lyric_bin" test lyric-compiler/lyric/llvm_wasm32_component_self_test.l
