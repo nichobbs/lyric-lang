@@ -53,39 +53,38 @@ fi
 export PATH="$DOTNET_DIR:$PATH"
 export DOTNET_ROOT="$DOTNET_DIR"
 
-# Idempotent fast path: if the pinned SDK is already installed, no
-# work to do.
+# Idempotent fast path: if the pinned SDK is already installed, skip
+# the download (the tool installs below still run).
 if [ -x "$DOTNET_BIN" ] \
    && "$DOTNET_BIN" --list-sdks 2>/dev/null | grep -q "^$SDK_VERSION "; then
     echo "session-start.sh: .NET SDK $SDK_VERSION already present at $DOTNET_DIR"
-    exit 0
-fi
+else
+    INSTALL_SCRIPT="$(mktemp -t dotnet-install.XXXXXX.sh)"
+    trap 'rm -f "$INSTALL_SCRIPT"' EXIT
 
-INSTALL_SCRIPT="$(mktemp -t dotnet-install.XXXXXX.sh)"
-trap 'rm -f "$INSTALL_SCRIPT"' EXIT
+    curl -fsSL https://dot.net/v1/dotnet-install.sh -o "$INSTALL_SCRIPT"
+    chmod +x "$INSTALL_SCRIPT"
 
-curl -fsSL https://dot.net/v1/dotnet-install.sh -o "$INSTALL_SCRIPT"
-chmod +x "$INSTALL_SCRIPT"
-
-# Install the SDK pinned by global.json.  The script also drops the
-# matching shared runtime into the same prefix, so a separate
-# `--runtime dotnet` invocation isn't needed for the SDK band.
-"$INSTALL_SCRIPT" \
-    --version "$SDK_VERSION" \
-    --install-dir "$DOTNET_DIR"
-
-# Defensive: if the SDK shipped without a matching shared runtime
-# (the script's own behaviour varies by RID), pull the runtime
-# explicitly so `dotnet exec out.dll` works for emitter tests.
-if ! "$DOTNET_BIN" --list-runtimes 2>/dev/null \
-        | grep -q "^Microsoft.NETCore.App $SDK_MAJOR\."; then
+    # Install the SDK pinned by global.json.  The script also drops the
+    # matching shared runtime into the same prefix, so a separate
+    # `--runtime dotnet` invocation isn't needed for the SDK band.
     "$INSTALL_SCRIPT" \
-        --runtime dotnet \
-        --version "$RUNTIME_VERSION" \
+        --version "$SDK_VERSION" \
         --install-dir "$DOTNET_DIR"
-fi
 
-echo "session-start.sh: installed .NET SDK $SDK_VERSION + runtime ${SDK_MAJOR}.x at $DOTNET_DIR"
+    # Defensive: if the SDK shipped without a matching shared runtime
+    # (the script's own behaviour varies by RID), pull the runtime
+    # explicitly so `dotnet exec out.dll` works for emitter tests.
+    if ! "$DOTNET_BIN" --list-runtimes 2>/dev/null \
+            | grep -q "^Microsoft.NETCore.App $SDK_MAJOR\."; then
+        "$INSTALL_SCRIPT" \
+            --runtime dotnet \
+            --version "$RUNTIME_VERSION" \
+            --install-dir "$DOTNET_DIR"
+    fi
+
+    echo "session-start.sh: installed .NET SDK $SDK_VERSION + runtime ${SDK_MAJOR}.x at $DOTNET_DIR"
+fi
 
 # ---------------------------------------------------------------------------
 # Phase 4 verifier dependencies: z3 + cvc5.
@@ -127,4 +126,25 @@ if command -v z3 >/dev/null 2>&1; then
 fi
 if command -v cvc5 >/dev/null 2>&1; then
     echo "session-start.sh: cvc5 ready ($(cvc5 --version 2>/dev/null | head -1))"
+fi
+
+# ---------------------------------------------------------------------------
+# Native-backend sanitizer runtimes.
+#
+# The native self-tests (llvm_heap_self_test.l, llvm_stdlib_self_test.l, ...)
+# link their ARC cases with -fsanitize=address, which needs clang 18's
+# libclang_rt.asan_static; the base image ships clang-18 without it, so every
+# ASan case fails to link.  libclang-rt-18-dev provides it.
+# ---------------------------------------------------------------------------
+
+ASAN_LIB=/usr/lib/llvm-18/lib/clang/18/lib/linux/libclang_rt.asan_static-x86_64.a
+if command -v clang-18 >/dev/null 2>&1 && [ ! -f "$ASAN_LIB" ] \
+   && command -v sudo >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+    echo "session-start.sh: installing libclang-rt-18-dev (ASan runtime for the native self-tests)"
+    if ! DEBIAN_FRONTEND=noninteractive sudo -n apt-get install -y libclang-rt-18-dev >/dev/null 2>&1; then
+        # A fresh image has no package lists yet.
+        sudo -n apt-get update -qq >/dev/null 2>&1 || true
+        DEBIAN_FRONTEND=noninteractive sudo -n apt-get install -y libclang-rt-18-dev >/dev/null 2>&1 || \
+            echo "session-start.sh: apt-get install libclang-rt-18-dev failed; native ASan self-test cases will not link" >&2
+    fi
 fi
