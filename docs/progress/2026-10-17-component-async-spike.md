@@ -387,7 +387,18 @@ jco transpile comp.wasm -o js --name comp                  # then on node >= 24:
 node -e 'import("./js/comp.js").then(async m => console.log(await m.doubleLater(21)))'
 ```
 
-Spec file hashes (first 16 hex digits of SHA-256): `Explainer.md`
-267bfc5decf4eb79, `CanonicalABI.md` 0790395f318e84e0, `definitions.py`
-eff34e28dc0917f8, `WIT.md` 56d661602a66623d, `Concurrency.md` ee0d9ef5bc7ecb28,
-component-model `README.md` e4f10e26b987c4b6.
+SHA-256 of the spec files as read on 2026-10-17 (raw `main` of
+`WebAssembly/component-model` and `WebAssembly/WASI`):
+
+```
+267bfc5decf4eb7952090324c9e845c8598e611d8de9dcc8cd7594d6a1f21f6c  component-model/design/mvp/Explainer.md
+0790395f318e84e0af5d8adae5bc222388470bf1b5a7da157b7650120e90b65c  component-model/design/mvp/CanonicalABI.md
+eff34e28dc0917f8a3690cb6cf3a182977b168a38ba2171c9c49b0edba38c8ca  component-model/design/mvp/canonical-abi/definitions.py
+56d661602a66623d856f28a2d10eeaa10323dc33c5dcb65b985291015ca50415  component-model/design/mvp/WIT.md
+ee0d9ef5bc7ecb28e33525d1f66c6726dde7e8df04d9fbb9131df921c34eec93  component-model/design/mvp/Concurrency.md
+e4f10e26b987c4b6b72624a9e55acf2736308087c8091948ded1516812ceecb6  component-model/README.md
+8d6c2db209df59fb17fb419724d8fb78530e523c35ef7d398fa36e64a35f46e5  WASI/README.md
+e2c7d077e1392b28b3a5743d80cb102969aeb5b8798063e61d72adc1ecd433ee  WASI/docs/Proposals.md
+```
+
+The design questions this spike left open are settled in D184.
