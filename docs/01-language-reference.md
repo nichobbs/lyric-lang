@@ -784,6 +784,37 @@ not `"-lssl"`; a malformed entry (empty, containing space/tab/CR/LF, or
 keys is treated as absent (equivalent to declaring no `[native]` table at
 all), so every default applies.
 
+#### C libraries — `[native.libs.<name>]`
+
+A native program that links a C library declares it in the manifest of the
+project that binds it (docs/67 §6, D191):
+
+```toml
+[native.libs.sdl3]
+version    = "3.2"            # with pkg_config: the minimum version
+pkg_config = "sdl3"           # a system library, found with pkg-config
+# or
+[native.libs.cdep]
+dir        = "native"         # a directory, relative to this manifest, holding libcdep.so / .dylib / .a
+link       = "cdep"           # optional: the -l name, default the table key
+```
+
+A table names exactly one source, `pkg_config` or `dir`, else the manifest is
+rejected. The build links each library (`-L<dir>` `-l<link>`, or the flags
+`pkg-config --libs` prints) and takes the declarations of its dependencies as
+well: a path or workspace dependency's `[native.libs]`, and those of its own
+dependencies, join the application's, so an application that depends on a
+binding library links what the library needs without repeating it. A library
+named twice is resolved once, from the project nearest the application. A
+`dir` library's shared files (`lib<link>.so`, `.so.N`, `.dylib`) are copied next
+to the executable and the link adds a run path of `$ORIGIN` (`@loader_path`
+on macOS), so the program runs from that directory without the original one;
+a `pkg_config` library is a system library and is not copied. A missing
+directory or an unknown pkg-config package fails the build naming the library,
+and `[native.libs]` is an error with a `wasm32` triple. `@library("name")` on
+an `extern func` (what `lyric bindgen --library` emits) names the library that
+declaration needs; `[native.libs]` says where to find it.
+
 ### 3.7 Contract compilation — `[contracts]`
 
 A project's `lyric.toml` may control compile-time contract behavior:
@@ -2508,7 +2539,7 @@ extern func strlen(s: NativePtr[Byte]): Long = "strlen"
 
 **C structs, callbacks and buffers (D155; not yet implemented, docs/67 phase G3).**
 
-- `foreign record` declares a struct with C layout for the target triple. It is allowed only in kernel files and is not generic, its fields are `Plain` types, `NativePtr[T]`, `array[N, T]` or other foreign records, and it never appears in a library's public API: the kernel's safe wrappers take ordinary Lyric types. It is passed to C by value or by pointer (`nativeAddrOf` on a `var` local) under the platform C ABI. `foreign` is a contextual keyword, recognised only directly before `record`.
+- `foreign record` declares a struct with C layout for the target triple. It is allowed only in a file that declares itself part of the FFI boundary, a stdlib `_kernel_native/` package or a file annotated `@unsafe_ffi` at file level (`N0101` elsewhere), and is not generic, its fields are `Plain` types, `NativePtr[T]`, `array[N, T]` or other foreign records, and it never appears in a library's public API: the kernel's safe wrappers take ordinary Lyric types. It is passed to C by value or by pointer (`nativeAddrOf` on a `var` local) under the platform C ABI. `foreign` is a contextual keyword, recognised only directly before `record`.
 - `NativeUserdata`, written as a parameter type of a callback function type, names the parameter that carries the closure pointer, so a trampoline is synthesised for it when the C API does not put userdata last (SDL3 puts it first). It is a native-only built-in type like `NativeWeak[T]`; a closure passed in a `NativeUserdata` argument position lowers to the closure pointer, as for `NativePtr[Byte]`, and the type is under `N0100` like `NativePtr`.
 - `b.withPointer({ p: NativePtr[T] -> ... })` and `b.withMutPointer(...)` lend a buffer's storage to C for the duration of the closure and return its result (D187, `--target native` only: T0175 elsewhere); `withMutPointer` first makes the storage unique and needs a writable place (T0157). The closure writes its parameter's type (T0176), which puts the call under the `N0100` FFI boundary (a lambda parameter written `NativePtr[T]` is allowed only in `@unsafe_ffi` functions and `_kernel_native/` packages), and the pointer may not escape the closure: it may be only a call argument or a member receiver (`N0102`).
 

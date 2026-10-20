@@ -95,7 +95,7 @@ func cmdBindgen(argv: in slice[String]): Int {
         return 1
       }
     }
-    case Err(e) -> {
+    case Err(_) -> {
       printErr("bindgen: cannot read " + allowFile)
       return 1
     }
@@ -158,7 +158,7 @@ func cmdBindgen(argv: in slice[String]): Int {
         return 1
       }
       case Err(_) -> {
-        printErr("bindgen: cannot read " + outPath)
+        printErr("bindgen: " + outPath + " does not exist yet; generate it with `lyric bindgen` first")
         return 1
       }
     }

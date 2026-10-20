@@ -3883,6 +3883,9 @@ pub func pipeIsCrossPackageItem(it: in Item): Bool {
   }
   val isPubFunc = match it.kind {
     case IFunc(decl) -> match decl.visibility { case Some(VisPub(_)) -> true; case _ -> false }
+    // A `pub extern func` is callable from another package (a bindgen kernel
+    // package is nothing but externs, D191).
+    case IExternFunc(_) -> match it.visibility { case Some(VisPub(_)) -> true; case _ -> false }
     case _ -> false
   }
   if isPubFunc {
@@ -3936,6 +3939,7 @@ pub func pipeIsCrossPackageItemProject(it: in Item): Bool {
   }
   val isVisibleFunc = match it.kind {
     case IFunc(decl) -> match decl.visibility { case Some(_) -> true; case None -> false }
+    case IExternFunc(_) -> match it.visibility { case Some(_) -> true; case None -> false }
     case _ -> false
   }
   if isVisibleFunc {

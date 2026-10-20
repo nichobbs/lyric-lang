@@ -1246,6 +1246,11 @@ test "a call reaches the overload taking its argument count, else every one fill
 }
 
 // N0101 — a `foreign record` is part of the FFI boundary, so a user file may not declare one.
+test "n0101 foreign record is allowed in a file annotated unsafe_ffi" {
+  val result = parseCheck("@unsafe_ffi\npackage P\nforeign record Desc {\n  w: Int\n}\n")
+  assertTrue(not hasDiagCode(result, "N0101"), "an @unsafe_ffi file may declare a foreign record")
+}
+
 test "n0101 foreign record outside a kernel package" {
   val result = parseCheck("package P\nforeign record Desc {\n  w: Int\n}\n")
   assertTrue(hasDiagCode(result, "N0101"), "foreign record: N0101 emitted")

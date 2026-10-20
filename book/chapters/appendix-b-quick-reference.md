@@ -684,6 +684,10 @@ triple     = "x86_64-unknown-linux-gnu"  # default: auto-detect host; overridden
 opt_level  = "2"                          # clang -O level 0|1|2|3|s; overridden by --opt
 extra_libs = ["ssl", "crypto"]            # extra clang -l<name> link flags (manifest-only)
 
+[native.libs.sdl3]                        # a C library the program links (lang-ref §3.6)
+pkg_config = "sdl3"                       # system library via pkg-config, or:
+# dir = "native"                          # a directory holding libsdl3.so (copied beside the executable)
+
 # Optional — opt in for project-as-DLL bundling (M5.1 stage 2c.2):
 [project]
 name           = "myapp"

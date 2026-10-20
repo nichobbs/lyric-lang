@@ -376,7 +376,17 @@ lyric bindgen window.h --package Window.Kernel --allow window.allow --library wi
 
 Commit the output, and run the same command with `--check` in CI to catch a header that has moved on.
 
-`foreign record` is allowed only in kernel files (N0101 elsewhere) and never appears in a library's public API. The kernel's safe wrappers take ordinary Lyric records. `foreign` is a contextual keyword, recognised only directly before `record`.
+A project that binds a C library says where the library is in its manifest, and every application that depends on the project inherits that:
+
+```toml
+[native.libs.window]
+dir = "native"          # a directory holding libwindow.so (or .dylib / .a), relative to this manifest
+# pkg_config = "window" # or: a system library found with pkg-config
+```
+
+The build links the library, copies its shared files next to the executable and adds an `$ORIGIN` run path, so the program runs from its output directory even after the library's original directory is gone.
+
+`foreign record` is allowed only in a stdlib `_kernel_native/` package or in a file annotated `@unsafe_ffi` at file level (N0101 elsewhere), and never appears in a library's public API. The kernel's safe wrappers take ordinary Lyric records. `foreign` is a contextual keyword, recognised only directly before `record`.
 
 ## §13.11 JavaScript and NPM packages
 
