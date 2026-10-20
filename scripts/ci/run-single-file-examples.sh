@@ -62,7 +62,9 @@ echo "PASS"
 echo "=== smoke lyric-web/tests/serve_failure_tests.l ==="
 "$lyric_bin" run lyric-web/tests/serve_failure_tests.l > /tmp/serve_failure.run.log 2>&1 &
 sf_pid=$!
-for _ in $(seq 1 20); do
+# `lyric run` builds the workspace dependencies first (about 9 s on a CI runner),
+# so wait up to 30 s for the listener rather than 10 s.
+for _ in $(seq 1 60); do
   if curl -s --max-time 1 http://127.0.0.1:8199/health >/dev/null 2>&1; then
     break
   fi

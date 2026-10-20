@@ -6,6 +6,11 @@ import Std.File as File
 import Std.String as Str
 import Std.Path as Path
 import Std.Process as Process
+import Std.ProcessCapture as ProcessCapture
+import Std.Hash as Hash
+import Std.Directory as Dir
+import Std.Console as Console
+import Jvm.ZipReader as Zip
 import Lyric.Manifest as Mf
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -100,6 +105,206 @@ func resolveDirLib(
   }
 }
 
+/// Where the prebuilt archive for `triple` is restored: beside the manifest
+/// that declares the library, under `.lyric/native/<name>/<triple>`.
+pub func nativePrebuiltDir(decl: in NativeLibDecl, triple: in String): String {
+  Path.join(Path.join(Path.join(Path.join(decl.baseDir, ".lyric"), "native"), decl.spec.name), triple)
+}
+
+func prebuiltFor(spec: in Mf.NativeLibSpec, triple: in String): Option[Mf.NativePrebuilt] {
+  for p in spec.prebuilt {
+    if p.triple == triple {
+      return Some(value = p)
+    }
+  }
+  None
+}
+
+func readMarker(dir: in String): String {
+  match File.readText(Path.join(dir, ".sha256")) {
+    case Ok(t) -> Str.trim(t)
+    case Err(_) -> ""
+  }
+}
+
+func resolvePrebuiltLib(
+  decl: in NativeLibDecl,
+  triple: in String,
+  darwin: in Bool,
+  args: in List[String],
+  bundle: in List[String],
+  errors: in List[String],
+): Unit {
+  val spec = decl.spec
+  match prebuiltFor(spec, triple) {
+    case None -> {
+      val have: List[String] = newList()
+      for p in spec.prebuilt {
+        have.add(p.triple)
+      }
+      errors.add(
+        "native library '" + spec.name + "' has no prebuilt archive for " + triple + " (declared: " +
+          Str.joinList(", ", have) +
+          ")"
+      )
+    }
+    case Some(p) -> {
+      val dir = nativePrebuiltDir(decl, triple)
+      if readMarker(dir) != p.sha256 {
+        errors.add("native library '" + spec.name + "': the " + triple + " archive is not restored; run `lyric restore`")
+        return
+      }
+      val restored = NativeLibDecl(
+        spec = Mf.NativeLibSpec(
+          name = spec.name,
+          link = spec.link,
+          version = spec.version,
+          pkgConfig = "",
+          dir = dir
+        ),
+        baseDir = decl.baseDir
+      )
+      resolveDirLib(restored, darwin, args, bundle, errors)
+    }
+  }
+}
+
+func fileNameFromUrl(url: in String): String {
+  val noQuery = if Str.contains(url, "?") { Str.substring(url, 0, Str.indexOfRaw(url, "?")) } else { url }
+  Path.basename(noQuery)
+}
+
+func writeIntBytes(path: in String, ints: in List[Int]): Bool {
+  val bytes: List[Byte] = newList()
+  for n in ints {
+    bytes.add(n.toByte())
+  }
+  match File.writeBytes(path, bytes.toArray()) {
+    case Ok(_) -> true
+    case Err(_) -> false
+  }
+}
+
+/// Fetches, verifies and unpacks one prebuilt archive into its restore directory.
+/// The file at `url` must hash to the manifest's `sha256`; anything else is refused
+/// before it is unpacked.  Returns what failed.
+pub func restorePrebuilt(decl: in NativeLibDecl, p: in Mf.NativePrebuilt): List[String] {
+  val errors: List[String] = newList()
+  val label = "native library '" + decl.spec.name + "' (" + p.triple + ")"
+  val dir = nativePrebuiltDir(decl, p.triple)
+  if readMarker(dir) == p.sha256 {
+    Console.println("restore: " + label + " is up to date")
+    return errors
+  }
+  // A pin change restores into an empty directory: files of the previous archive
+  // (an old `libfoo.so.2`) would otherwise be bundled beside the new ones.
+  if File.dirExists(dir) {
+    val _ = File.deleteDirRecursive(dir)
+  }
+  match Dir.createRecursive(dir) {
+    case Ok(_) -> ()
+    case Err(_) -> {
+      errors.add(label + ": cannot create " + dir)
+      return errors
+    }
+  }
+  val download = Path.join(dir, ".download")
+  val curlArgs: List[String] = newList()
+  curlArgs.add("-fsSL")
+  curlArgs.add("--retry")
+  curlArgs.add("2")
+  curlArgs.add("-o")
+  curlArgs.add(download)
+  curlArgs.add(p.url)
+  Console.println("restore: " + label + " <- " + p.url)
+  val res = ProcessCapture.runCaptureWithDiagnosticsTimeout("curl", curlArgs, "", 900000)
+  if res.exitCode != 0 {
+    errors.add(
+      label + ": downloading " + p.url + " failed (curl exit " + Str.fromInt(res.exitCode) + "): " + Str.trim(res.stderr)
+    )
+    return errors
+  }
+  val bytes = match File.readBytes(download) {
+    case Ok(b) -> b
+    case Err(_) -> {
+      errors.add(label + ": cannot read the downloaded file " + download)
+      return errors
+    }
+  }
+  val got = Str.toLower(Hash.sha256OfBytes(bytes))
+  if got != p.sha256 {
+    val _ = File.deleteFile(download)
+    errors.add(label + ": checksum mismatch for " + p.url + ": expected " + p.sha256 + ", got " + got)
+    return errors
+  }
+  if p.members.count == 0 {
+    val dest = Path.join(dir, fileNameFromUrl(p.url))
+    match File.writeBytes(dest, bytes) {
+      case Ok(_) -> ()
+      case Err(_) -> {
+        errors.add(label + ": cannot write " + dest)
+        return errors
+      }
+    }
+  } else {
+    val entries = Zip.readZipEntries(bytes)
+    for m in p.members {
+      match Zip.extractByName(bytes, entries, m) {
+        case None -> {
+          errors.add(label + ": the archive has no member '" + m + "'")
+          return errors
+        }
+        case Some(ints) -> if not writeIntBytes(Path.join(dir, Path.basename(m)), ints) {
+          errors.add(label + ": cannot write " + Path.basename(m))
+          return errors
+        }
+      }
+    }
+  }
+  val _ = File.deleteFile(download)
+  match File.writeText(Path.join(dir, ".sha256"), p.sha256) {
+    case Ok(_) -> ()
+    case Err(_) -> errors.add(label + ": cannot record the restore")
+  }
+  errors
+}
+
+/// Restores every prebuilt archive the declarations list for the given triples.
+pub func restoreNativeLibs(decls: in List[NativeLibDecl], triples: in List[String]): List[String] {
+  val errors: List[String] = newList()
+  val seen: List[String] = newList()
+  for d in decls {
+    if d.spec.prebuilt.count > 0 and not stringListContains(seen, d.spec.name) {
+      seen.add(d.spec.name)
+      for t in triples {
+        match prebuiltFor(d.spec, t) {
+          case Some(p) -> {
+            for e in restorePrebuilt(d, p) {
+              errors.add(e)
+            }
+          }
+          case None -> ()
+        }
+      }
+    }
+  }
+  errors
+}
+
+/// The triples a restore fetches for: the host's and the manifest's `[native].triple`.
+pub func restoreTriples(manifest: in Mf.Manifest): List[String] {
+  val triples: List[String] = newList()
+  val host = hostTripleOrEmpty()
+  if host.length > 0 {
+    triples.add(host)
+  }
+  match manifest.native {
+    case Some(nc) -> if nc.triple.length > 0 and not stringListContains(triples, nc.triple) { triples.add(nc.triple) }
+    case None -> ()
+  }
+  triples
+}
+
 func resolvePkgConfigLib(decl: in NativeLibDecl, args: in List[String], errors: in List[String]): Unit {
   val spec = decl.spec
   if spec.version.length > 0 {
@@ -132,8 +337,11 @@ func resolvePkgConfigLib(decl: in NativeLibDecl, args: in List[String], errors: 
         )
         return
       }
-      for tok in Str.split(Str.trim(res.stdout), " ") {
-        if Str.startsWith(tok, "-L") or Str.startsWith(tok, "-l") or Str.startsWith(tok, "-Wl,") {
+      // Every token `pkg-config --libs` prints is a link argument (`-L`, `-l`, `-pthread`,
+      // `-Wl,...`, a static archive path); only blanks are dropped.
+      val flat = Str.replace(Str.replace(Str.replace(res.stdout, "\n", " "), "\t", " "), "\r", " ")
+      for tok in Str.split(Str.trim(flat), " ") {
+        if tok.length > 0 {
           args.add(tok)
         }
       }
@@ -163,6 +371,8 @@ pub func resolveNativeLibs(decls: in List[NativeLibDecl], triple: in String): Na
       seen.add(d.spec.name)
       if d.spec.pkgConfig.length > 0 {
         resolvePkgConfigLib(d, args, errors)
+      } else if d.spec.prebuilt.count > 0 {
+        resolvePrebuiltLib(d, effTriple, darwin, args, bundle, errors)
       } else {
         resolveDirLib(d, darwin, args, bundle, errors)
       }

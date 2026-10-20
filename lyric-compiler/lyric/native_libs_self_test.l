@@ -23,6 +23,7 @@ import Std.ProcessCapture as Capture
 import Std.Testing
 import Std.Uuid
 import Std.Environment as Environment
+import Std.Hash as Hash
 import Lyric.Cli as Cli
 import Lyric.Emitter as Emitter
 import Lyric.Manifest as Mf
@@ -100,6 +101,15 @@ func clangOrPanic(args: in List[String]): Unit {
   }
 }
 
+func hostTriple(): String {
+  val args: List[String] = newList()
+  args.add("-print-effective-triple")
+  match Process.runCapture("clang", args, 30000) {
+    case Ok(res) -> Str.trim(res.stdout)
+    case Err(_) -> ""
+  }
+}
+
 func sharedExt(): String {
   val args: List[String] = newList()
   args.add("-print-effective-triple")
@@ -115,7 +125,7 @@ func sharedExt(): String {
 
 // The library project: the C library built into `native/`, bindgen's bindings in
 // the kernel package, and a wrapper package with a safe surface.
-func writeBinding(root: in String): String {
+func writeBinding(root: in String, libSection: in String): String {
   val dir = Path.join(root, "Binding")
   mkdirOrPanic(dir)
   mkdirOrPanic(Path.join(dir, "src"))
@@ -166,7 +176,7 @@ func writeBinding(root: in String): String {
     Path.join(dir, "lyric.toml"),
     "[package]\nname = \"Fixture.CBind\"\nversion = \"0.1.0\"\n\n[project]\nname = \"Fixture.CBind\"\n\n" +
       "[project.packages]\n\"Fixture.CBind.Kernel\" = \"src/kernel.l\"\n\"Fixture.CBind\" = \"src/main.l\"\n\n" +
-      "[native.libs.cdep]\nversion = \"1.0\"\ndir = \"native\"\n"
+      libSection
   )
   dir
 }
@@ -200,7 +210,7 @@ test "an application consumes a C library bound through generated bindings" {
   defer {
     cleanup(root)
   }
-  val binding = writeBinding(root)
+  val binding = writeBinding(root, "[native.libs.cdep]\nversion = \"1.0\"\ndir = \"native\"\n")
   val appDir = writeApp(root)
   val outDir = Path.join(appDir, "out")
   mkdirOrPanic(outDir)
@@ -259,4 +269,187 @@ test "a [native.libs] table names exactly one source" {
     }
     case Err(e) -> assertTrue(false, "a valid table parses: " + Mf.ManifestError.message(e))
   }
+}
+
+// A prebuilt archive: the library is zipped, the zip is the only thing the project
+// names, and `restoreNativeLibs` is what makes it available to the build.
+func zipLibrary(binding: in String, root: in String): String {
+  val nativeDir = Path.join(binding, "native")
+  val zipPath = Path.join(root, "cdep-prebuilt.zip")
+  val zargs: List[String] = newList()
+  zargs.add("-j")
+  zargs.add(zipPath)
+  zargs.add(Path.join(nativeDir, "libcdep" + sharedExt()))
+  zargs.add(Path.join(nativeDir, "cdep.h"))
+  match Process.runCapture("zip", zargs, 60000) {
+    case Ok(res) -> if res.exitCode != 0 { panic("zip failed: " + res.stdout + res.stderr) }
+    case Err(e) -> panic("zip could not be started: " + e)
+  }
+  cleanup(nativeDir)
+  zipPath
+}
+
+func prebuiltSection(zipPath: in String, sha: in String): String {
+  "[native.libs.cdep.prebuilt." + hostTriple() + "]\nurl = \"file://" + zipPath + "\"\nsha256 = \"" + sha +
+    "\"\nmembers = [\"libcdep" +
+    sharedExt() +
+    "\"]\n"
+}
+
+func zipSha(zipPath: in String): String {
+  match File.readBytes(zipPath) {
+    case Ok(b) -> Str.toLower(Hash.sha256OfBytes(b))
+    case Err(_) -> panic("cannot read " + zipPath)
+  }
+}
+
+func bindingDecls(binding: in String): List[Cli.NativeLibDecl] {
+  val mfPath = Path.join(binding, "lyric.toml")
+  val text = match File.readText(mfPath) { case Ok(t) -> t; case Err(_) -> panic("cannot read " + mfPath) }
+  match Mf.parseManifest(text, mfPath) {
+    case Ok(m) -> Cli.nativeLibDeclsOf(m, binding)
+    case Err(e) -> panic("fixture manifest does not parse: " + Mf.ManifestError.message(e))
+  }
+}
+
+test "a prebuilt archive is restored, verified and linked by an application" {
+  val root = freshTempDir("prebuilt")
+  defer {
+    cleanup(root)
+  }
+  // Build the library once, zip it, and write the project against the zip alone.
+  val scratch = writeBinding(root, "[native.libs.cdep]\nversion = \"1.0\"\ndir = \"native\"\n")
+  val zipPath = zipLibrary(scratch, root)
+  val sha = zipSha(zipPath)
+  val mfPath = Path.join(scratch, "lyric.toml")
+  val original = match File.readText(mfPath) { case Ok(t) -> t; case Err(_) -> panic("cannot read " + mfPath) }
+  writeFileOrPanic(
+    mfPath,
+    Str.replace(original, "[native.libs.cdep]\nversion = \"1.0\"\ndir = \"native\"\n", prebuiltSection(zipPath, sha))
+  )
+  val appDir = writeApp(root)
+  val outDir = Path.join(appDir, "out")
+  mkdirOrPanic(outDir)
+  val outPath = Path.join(outDir, "app-native")
+  assertTrue(
+    buildNative(Path.join(appDir, "lyric.toml"), outPath) != 0,
+    "the build refuses an archive that was never restored"
+  )
+  val triples: List[String] = newList()
+  triples.add(hostTriple())
+  val errs = Cli.restoreNativeLibs(bindingDecls(scratch), triples)
+  assertEqualInt(errs.count, 0, "the restore succeeds: " + Str.joinList("; ", errs))
+  assertTrue(
+    File.dirExists(Path.join(Path.join(scratch, ".lyric"), "native")),
+    "the archive is restored beside its manifest"
+  )
+  assertEqualInt(
+    buildNative(Path.join(appDir, "lyric.toml"), outPath),
+    0,
+    "the native build succeeds after the restore"
+  )
+  assertTrue(
+    File.fileExists(Path.join(outDir, "libcdep" + sharedExt())),
+    "the restored library ships beside the executable"
+  )
+  val run = runBinary(outPath)
+  assertEqualInt(run.exitCode, 0, "the program runs (stderr=" + run.stderr + ")")
+  assertEqual(Str.trim(run.stdout), "5,10", "calls cross the restored library")
+  val again = Cli.restoreNativeLibs(bindingDecls(scratch), triples)
+  assertEqualInt(again.count, 0, "a second restore is a no-op")
+}
+
+test "a prebuilt archive with the wrong checksum is refused and nothing is unpacked" {
+  val root = freshTempDir("badsum")
+  defer {
+    cleanup(root)
+  }
+  val scratch = writeBinding(root, "[native.libs.cdep]\nversion = \"1.0\"\ndir = \"native\"\n")
+  val zipPath = zipLibrary(scratch, root)
+  val mfPath = Path.join(scratch, "lyric.toml")
+  val original = match File.readText(mfPath) { case Ok(t) -> t; case Err(_) -> panic("cannot read " + mfPath) }
+  val wrong = "0000000000000000000000000000000000000000000000000000000000000000"
+  writeFileOrPanic(
+    mfPath,
+    Str.replace(original, "[native.libs.cdep]\nversion = \"1.0\"\ndir = \"native\"\n", prebuiltSection(zipPath, wrong))
+  )
+  val triples: List[String] = newList()
+  triples.add(hostTriple())
+  val errs = Cli.restoreNativeLibs(bindingDecls(scratch), triples)
+  assertEqualInt(errs.count, 1, "one error: " + Str.joinList("; ", errs))
+  assertTrue(Str.contains(errs[0], "checksum mismatch"), "it names the mismatch: " + errs[0])
+  val libDir = Path.join(Path.join(Path.join(Path.join(scratch, ".lyric"), "native"), "cdep"), hostTriple())
+  assertFalse(File.fileExists(Path.join(libDir, "libcdep" + sharedExt())), "nothing was unpacked")
+  assertFalse(File.fileExists(Path.join(libDir, ".sha256")), "the restore is not recorded")
+}
+
+test "prebuilt tables are validated" {
+  val base = "[package]\nname = \"P\"\nversion = \"0.1.0\"\n"
+  val sha = "0000000000000000000000000000000000000000000000000000000000000000"
+  val noSha = Mf.parseManifest(base + "\n[native.libs.x.prebuilt.t]\nurl = \"https://e/x.so\"\n", "lyric.toml")
+  assertTrue(match noSha { case Err(_) -> true; case Ok(_) -> false }, "a missing sha256")
+  val zipNoMembers = Mf.parseManifest(
+    base + "\n[native.libs.x.prebuilt.t]\nurl = \"https://e/x.zip\"\nsha256 = \"" + sha + "\"\n",
+    "lyric.toml"
+  )
+  assertTrue(match zipNoMembers { case Err(_) -> true; case Ok(_) -> false }, "a zip without members")
+  val mixed = Mf.parseManifest(
+    base +
+      "\n[native.libs.x]\ndir = \"d\"\n\n[native.libs.x.prebuilt.t]\nurl = \"https://e/x.so\"\nsha256 = \"" +
+      sha +
+      "\"\n",
+    "lyric.toml"
+  )
+  assertTrue(match mixed { case Err(_) -> true; case Ok(_) -> false }, "dir together with prebuilt")
+  val dup = Mf.parseManifest(
+    base + "\n[native.libs.x.prebuilt.t]\nurl = \"https://e/x.zip\"\nsha256 = \"" + sha +
+      "\"\nmembers = [\"a/libx.so\", \"b/libx.so\"]\n",
+    "lyric.toml"
+  )
+  assertTrue(match dup { case Err(_) -> true; case Ok(_) -> false }, "two members with one file name")
+  val upper = Mf.parseManifest(
+    base +
+      "\n[native.libs.x.prebuilt.t]\nurl = \"https://e/x.so\"\nsha256 = \"ABCDEF0000000000000000000000000000000000000000000000000000000000\"\n",
+    "lyric.toml"
+  )
+  assertTrue(match upper { case Err(_) -> true; case Ok(_) -> false }, "an upper-case digest is refused")
+  val ok = Mf.parseManifest(
+    base + "\n[native.libs.x.prebuilt.a-b-c]\nurl = \"https://e/x.so\"\nsha256 = \"" + sha + "\"\n",
+    "lyric.toml"
+  )
+  match ok {
+    case Ok(m) -> match m.native {
+      case Some(nc) -> assertEqualInt(nc.libs[0].prebuilt.count, 1, "one prebuilt archive")
+      case None -> assertTrue(false, "the native table is present")
+    }
+    case Err(e) -> assertTrue(false, "a valid table parses: " + Mf.ManifestError.message(e))
+  }
+}
+
+test "a pkg_config library resolves to the flags pkg-config prints, and a missing one names itself" {
+  val z = Mf.NativeLibSpec(name = "zlib", link = "", version = "1.0", pkgConfig = "zlib", dir = "")
+  val decls: List[Cli.NativeLibDecl] = newList()
+  decls.add(Cli.NativeLibDecl(spec = z, baseDir = "."))
+  val plan = Cli.resolveNativeLibs(decls, "")
+  assertEqualInt(plan.errors.count, 0, "zlib resolves: " + Str.joinList("; ", plan.errors))
+  assertTrue(listHas(plan.args, "-lz"), "pkg-config's -lz reaches the link line")
+  assertEqualInt(plan.bundle.count, 0, "a system library is not bundled")
+  val newer = Mf.NativeLibSpec(name = "zlib", link = "", version = "999.0", pkgConfig = "zlib", dir = "")
+  val tooNew: List[Cli.NativeLibDecl] = newList()
+  tooNew.add(Cli.NativeLibDecl(spec = newer, baseDir = "."))
+  assertTrue(Cli.resolveNativeLibs(tooNew, "").errors.count > 0, "a version newer than the installed one fails")
+  val ghost = Mf.NativeLibSpec(name = "ghost", link = "", version = "", pkgConfig = "no-such-lyric-package", dir = "")
+  val missing: List[Cli.NativeLibDecl] = newList()
+  missing.add(Cli.NativeLibDecl(spec = ghost, baseDir = "."))
+  val gone = Cli.resolveNativeLibs(missing, "")
+  assertTrue(gone.errors.count > 0 and Str.contains(gone.errors[0], "ghost"), "an unknown package names the library")
+}
+
+func listHas(xs: in List[String], s: in String): Bool {
+  for x in xs {
+    if x == s {
+      return true
+    }
+  }
+  false
 }

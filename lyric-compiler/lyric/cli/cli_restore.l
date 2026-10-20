@@ -1580,6 +1580,45 @@ func runRestore(mfPath: in String, lockedMode: in Bool): Int {
   var lf = existingLf
 
   var exitCode = 0
+  // Prebuilt C libraries (`[native.libs.<name>.prebuilt.<triple>]`, D192) of this
+  // project and of its path and workspace dependencies.
+  val nativeDecls = nativeLibDeclsOf(manifest, mfDir)
+  val nativeSeenDirs: List[String] = newList()
+  nativeSeenDirs.add(mfDir)
+  for nd in manifest.deps {
+    match nd.source {
+      case Mf.DepSource.Path(dir) -> {
+        val nativeDepDir = if Path.isAbsolute(dir) { dir } else { Path.join(mfDir, dir) }
+        collectDepNativeLibs(nativeDepDir, wsCtx, nativeSeenDirs, nativeDecls)
+      }
+      case Mf.DepSource.Workspace(_) -> match wsCtx {
+        case Some(ctx) -> match Ws.resolveDep(nd.name, ctx) {
+          case Some(wsDir) -> collectDepNativeLibs(
+            wsDir,
+            wsCtx,
+            nativeSeenDirs,
+            nativeDecls
+          )
+          case None -> ()
+        }
+        case None -> ()
+      }
+      case _ -> ()
+    }
+  }
+  // Only a library with a prebuilt archive needs a triple (and the `clang` probe that finds the host's).
+  var anyPrebuilt = false
+  for nd0 in nativeDecls {
+    if nd0.spec.prebuilt.count > 0 {
+      anyPrebuilt = true
+    }
+  }
+  if anyPrebuilt {
+    for e in restoreNativeLibs(nativeDecls, restoreTriples(manifest)) {
+      printErr("restore: " + e)
+      exitCode = 1
+    }
+  }
   var di = 0
   while di < manifest.deps.count {
     val dep = manifest.deps[di]

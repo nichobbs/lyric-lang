@@ -190,6 +190,17 @@ pub record NpmSection {
   manager: String = "npm"
 }
 
+/// One prebuilt archive of a `[native.libs]` library: `[native.libs.<name>.prebuilt.<triple>]`.
+pub record NativePrebuilt {
+  triple: String
+  url: String
+  /// Lower-case hex SHA-256 of the downloaded file; the restore refuses anything else.
+  sha256: String
+  /// Members of a `.zip` archive to extract (their file names land in the cache
+  /// directory); empty means the URL is the library file itself.
+  members: List[String]
+}
+
 /// `[native]` section (N6.4): defaults for `--target native` builds.
 /// `triple` is the LLVM target triple (empty = auto-detect the host);
 /// `optLevel` is the clang `-O` level (empty = the built-in default "2");
@@ -209,6 +220,8 @@ pub record NativeLibSpec {
   /// A directory, relative to the declaring manifest, holding `lib<link>.so`
   /// / `.dylib` / `.a`.  The shared library is bundled next to the executable.
   dir: String
+  /// Prebuilt archives per target triple, fetched by `lyric restore`.
+  prebuilt: List[NativePrebuilt] = newList()
 }
 
 pub record NativeConfig {
@@ -1909,8 +1922,15 @@ func nativeLibNames(entries: in List[Entry]): List[String] {
   val names: List[String] = newList()
   for e in entries {
     if Str.startsWith(e.section, "native.libs.") {
-      val name = Str.substring(e.section, 12)
-      if name.length > 0 and not Str.contains(name, ".") and not listHasString(names, name) {
+      val rest = Str.substring(e.section, 12)
+      val dot = Str.indexOfRaw(rest, ".")
+      var name = rest
+      var valid = true
+      if dot >= 0 {
+        name = Str.substring(rest, 0, dot)
+        valid = Str.startsWith(Str.substring(rest, dot), ".prebuilt.") and rest.length > dot + 10
+      }
+      if name.length > 0 and valid and not listHasString(names, name) {
         names.add(name)
       }
     }
@@ -1927,6 +1947,99 @@ func listHasString(xs: in List[String], s: in String): Bool {
     i += 1
   }
   false
+}
+
+func hasPrebuiltFor(xs: in List[NativePrebuilt], triple: in String): Bool {
+  var i = 0
+  while i < xs.count {
+    if xs[i].triple == triple {
+      return true
+    }
+    i += 1
+  }
+  false
+}
+
+func basenameOf(path: in String): String {
+  val slash = Str.lastIndexOfRaw(path, "/")
+  if slash < 0 {
+    path
+  } else {
+    Str.substring(path, slash + 1)
+  }
+}
+
+func isLowerHex64(s: in String): Bool {
+  if s.length != 64 {
+    return false
+  }
+  var i = 0
+  while i < 64 {
+    val c = Str.codeUnitAt(s, i)
+    if not ((c >= 48 and c <= 57) or (c >= 97 and c <= 102)) {
+      return false
+    }
+    i += 1
+  }
+  true
+}
+
+func assemblePrebuilt(
+  entries: in List[Entry], section: in String, triple: in String
+): Result[NativePrebuilt, ManifestError] {
+  val url = unwrapOr(findString(entries, section, "url"), "")
+  val sha = unwrapOr(findString(entries, section, "sha256"), "")
+  if url.length == 0 or not (Str.startsWith(url, "https://") or Str.startsWith(url, "http://") or Str.startsWith(url, "file://")) {
+    return Err(
+      error = InvalidField(
+        section = section,
+        field = "url",
+        message = "must be an https:// (or http://, file://) URL of the archive or library file"
+      )
+    )
+  }
+  if not isLowerHex64(sha) {
+    return Err(
+      error = InvalidField(
+        section = section,
+        field = "sha256",
+        message = "must be the 64 lower-case hex digits of the SHA-256 of the file at `url`"
+      )
+    )
+  }
+  val members: List[String] = unwrapOr(findStringList(entries, section, "members"), newList())
+  val member = unwrapOr(findString(entries, section, "member"), "")
+  if member.length > 0 {
+    members.add(member)
+  }
+  var mi = 0
+  while mi < members.count {
+    var mj = mi + 1
+    while mj < members.count {
+      if basenameOf(members[mi]) == basenameOf(members[mj]) {
+        return Err(
+          error = InvalidField(
+            section = section,
+            field = "members",
+            message = "two members share the file name '" + basenameOf(members[mi]) +
+              "' and would overwrite each other"
+          )
+        )
+      }
+      mj += 1
+    }
+    mi += 1
+  }
+  if members.count == 0 and Str.endsWith(url, ".zip") {
+    return Err(
+      error = InvalidField(
+        section = section,
+        field = "members",
+        message = "a .zip archive needs `members`, the files to extract"
+      )
+    )
+  }
+  Ok(value = NativePrebuilt(triple = triple, url = url, sha256 = sha, members = members))
 }
 
 func assembleNativeLibs(entries: in List[Entry]): Result[List[NativeLibSpec], ManifestError] {
@@ -1946,17 +2059,28 @@ func assembleNativeLibs(entries: in List[Entry]): Result[List[NativeLibSpec], Ma
         )
       )
     }
-    val sources = (if pkg.length > 0 { 1 } else { 0 }) + (if dir.length > 0 { 1 } else { 0 })
+    val prebuilt: List[NativePrebuilt] = newList()
+    for e in entries {
+      if Str.startsWith(e.section, section + ".prebuilt.") and not hasPrebuiltFor(prebuilt, Str.substring(e.section, section.length + 10)) {
+        val triple = Str.substring(e.section, section.length + 10)
+        match assemblePrebuilt(entries, e.section, triple) {
+          case Err(err) -> return Err(error = err)
+          case Ok(p) -> prebuilt.add(p)
+        }
+      }
+    }
+    val sources = (if pkg.length > 0 { 1 } else { 0 }) + (if dir.length > 0 { 1 } else { 0 }) +
+      (if prebuilt.count > 0 { 1 } else { 0 })
     if sources != 1 {
       return Err(
         error = InvalidField(
           section = section,
           field = "dir",
-          message = "name exactly one source for the library: `pkg_config = \"<package>\"` (a system library) or `dir = \"<path>\"` (a directory holding it)"
+          message = "name exactly one source for the library: `pkg_config = \"<package>\"` (a system library), `dir = \"<path>\"` (a directory holding it), or `[native.libs.<name>.prebuilt.<triple>]` tables (archives fetched by `lyric restore`)"
         )
       )
     }
-    specs.add(NativeLibSpec(name = name, link = link, version = version, pkgConfig = pkg, dir = dir))
+    specs.add(NativeLibSpec(name = name, link = link, version = version, pkgConfig = pkg, dir = dir, prebuilt = prebuilt))
   }
   Ok(value = specs)
 }

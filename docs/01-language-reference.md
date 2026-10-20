@@ -799,7 +799,8 @@ dir        = "native"         # a directory, relative to this manifest, holding 
 link       = "cdep"           # optional: the -l name, default the table key
 ```
 
-A table names exactly one source, `pkg_config` or `dir`, else the manifest is
+A table names exactly one source, `pkg_config`, `dir`, or one or more
+`[native.libs.<name>.prebuilt.<triple>]` tables (below), else the manifest is
 rejected. The build links each library (`-L<dir>` `-l<link>`, or the flags
 `pkg-config --libs` prints) and takes the declarations of its dependencies as
 well: a path or workspace dependency's `[native.libs]`, and those of its own
@@ -814,6 +815,28 @@ directory or an unknown pkg-config package fails the build naming the library,
 and `[native.libs]` is an error with a `wasm32` triple. `@library("name")` on
 an `extern func` (what `lyric bindgen --library` emits) names the library that
 declaration needs; `[native.libs]` says where to find it.
+
+A library with no system package and no source checkout is a prebuilt
+archive per target triple:
+
+```toml
+[native.libs.wgpu_native.prebuilt.x86_64-unknown-linux-gnu]
+url     = "https://github.com/gfx-rs/wgpu-native/releases/download/v25.0.2.1/wgpu-linux-x86_64-release.zip"
+sha256  = "<64 hex digits>"
+members = ["lib/libwgpu_native.so"]     # zip members to extract; omit for a bare .so/.dylib URL
+```
+
+`lyric restore` downloads the file for the host triple and for `[native].triple`
+(using `curl`, which also reads `file://` URLs), refuses it unless its SHA-256
+equals `sha256`, extracts `members` into `.lyric/native/<name>/<triple>/`
+beside the declaring manifest, and records the digest there, so a second
+restore is a no-op. It restores the libraries of path and workspace
+dependencies too. `lyric build` never downloads: for a prebuilt library that
+is not restored it fails with "run `lyric restore`", and a triple with no
+`prebuilt` table is an error naming the triples that exist. The restored
+files are then linked and bundled like a `dir` library. The checksum lives in
+the manifest rather than `lyric.lock` because the URL is the version
+identity: changing either is a reviewed manifest change.
 
 ### 3.7 Contract compilation — `[contracts]`
 
