@@ -8413,10 +8413,10 @@ func trampolineFor(ctx: in Ctx, t: in TypeExpr): String {
       val rawParams: List[NType] = newList()
       var i = 0
       while i < parameters.count {
-        rawParams.add(typeExprToNType(parameters[i]))
+        rawParams.add(typeToN(ctx, parameters[i]))
         i = i + 1
       }
-      val rawRet = typeExprToNType(retTy)
+      val rawRet = typeToN(ctx, retTy)
       val key = nTypeToIrString(NFnPtr(params = rawParams, ret = rawRet))
       match mapGet(ctx.trampolines, key) {
         case Some(existing) -> return existing
@@ -17509,7 +17509,15 @@ func externCallbackNType(ctx: in Ctx, te: in TypeExpr): NType {
         }
         NFnPtr(params = ptys, ret = cRetNType(cb.plan.ret, cb.ret))
       }
-      case None -> typeExprToNType(te)
+      case None -> {
+        // Parameter and result types resolve against the package, so a
+        // `NativePtr[Record]` names a declared record.
+        val ptys: List[NType] = newList()
+        for pt in parameters {
+          ptys.add(typeToN(ctx, pt))
+        }
+        NFnPtr(params = ptys, ret = typeToN(ctx, retTy))
+      }
     }
     case _ -> typeExprToNType(te)
   }

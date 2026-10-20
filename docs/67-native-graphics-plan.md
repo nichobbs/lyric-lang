@@ -475,8 +475,9 @@ them:
   selects which symbols to bind.
 - Generated files are checked in. CI regenerates them and fails if they
   differ, as docs/65 §10.3 does for the TypeScript widget schema.
-- Implemented in Lyric as `Lyric.Bindgen` in `lyric-compiler/lyric/`,
-  dispatched from `cli_main.l`.
+- Implemented in Lyric as `Lyric.Bindgen` in `lyric-compiler/lyric/bindgen/`,
+  dispatched from `cli_main.l` (D190). The clang-AST input and the allow-list
+  shipped first; the `webgpu.yml` input is a later addition.
 
 ---
 

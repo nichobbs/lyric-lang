@@ -22,6 +22,7 @@ pub func knownCommands(): List[String] {
   cmds.add("build")
   cmds.add("run")
   cmds.add("fmt")
+  cmds.add("bindgen")
   cmds.add("lint")
   cmds.add("prove")
   cmds.add("doc")

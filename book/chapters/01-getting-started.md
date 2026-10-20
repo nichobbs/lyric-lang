@@ -450,6 +450,7 @@ Core commands you will use constantly:
 | `lyric test <file.l> --target jvm --coverage` | Run on the JVM target under JaCoCo, writing a Cobertura XML coverage report |
 | `lyric check <file.l>` | Type-check without producing a usable output artifact |
 | `lyric check` | Type-check the discovered project (output to `.lyric-check/`, not `bin/`) |
+| `lyric bindgen` | Generate native FFI bindings (`extern func`, `foreign record`, constants) from a C header with clang |
 | `lyric clean` | Remove `bin/`, `.lyric-run/`, `.lyric-test/`, `.lyric-bench/`, `.lyric-check/`, `.lyric-release/` |
 | `lyric fmt` | Dry-run: list files that would be reformatted (exit 1 if any) |
 | `lyric fmt --write` | Reformat all project source files in place |

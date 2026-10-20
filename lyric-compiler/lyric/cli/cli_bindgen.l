@@ -1,0 +1,176 @@
+package Lyric.Cli
+
+import Std.Core
+import Std.Collections
+import Std.Console as Console
+import Std.File as File
+import Std.String as Str
+import Std.Process as Process
+import Lyric.Bindgen as Bindgen
+import Lyric.Fmt as Fmt
+
+// ─────────────────────────────────────────────────────────────────────────────
+// `lyric bindgen` (docs/67 §5.3, D190): C header -> `_kernel_native/` bindings.
+// ─────────────────────────────────────────────────────────────────────────────
+val bindgenUsage: String = "usage: lyric bindgen <header.h> --package <Name> --allow <file> [-o <out.l>] [--library <name>] [-I <dir>]... [--clang-arg <arg>]... [--long-bits 32|64] [--check]"
+
+func cmdBindgen(argv: in slice[String]): Int {
+  var header = ""
+  var packageName = ""
+  var allowFile = ""
+  var outPath = ""
+  var library = ""
+  var longBits = 64
+  var check = false
+  val clangArgs: List[String] = newList()
+  var i = 1
+  while i < argv.length {
+    val arg = argv[i]
+    if arg == "--package" or arg == "--allow" or arg == "-o" or arg == "--library" or arg == "-I" or arg == "--clang-arg" or arg == "--long-bits" {
+      if i + 1 >= argv.length {
+        printErr("bindgen: " + arg + " requires a value")
+        return 1
+      }
+      val value = argv[i + 1]
+      i += 2
+      if arg == "--package" {
+        packageName = value
+      } else if arg == "--allow" {
+        allowFile = value
+      } else if arg == "-o" {
+        outPath = value
+      } else if arg == "--library" {
+        library = value
+      } else if arg == "-I" {
+        clangArgs.add("-I" + value)
+      } else if arg == "--clang-arg" {
+        clangArgs.add(value)
+      } else {
+        if value == "32" {
+          longBits = 32
+        } else if value == "64" {
+          longBits = 64
+        } else {
+          printErr("bindgen: --long-bits must be 32 or 64")
+          return 1
+        }
+      }
+    } else if arg == "--check" {
+      check = true
+      i += 1
+    } else if Str.startsWith(arg, "-") {
+      printErr("bindgen: unknown option " + arg)
+      printErr(bindgenUsage)
+      return 1
+    } else if header.length == 0 {
+      header = arg
+      i += 1
+    } else {
+      printErr("bindgen: one header expected, got a second: " + arg)
+      return 1
+    }
+  }
+  if header.length == 0 or packageName.length == 0 or allowFile.length == 0 {
+    printErr(bindgenUsage)
+    return 1
+  }
+  if check and outPath.length == 0 {
+    printErr("bindgen: --check needs -o <out.l> to compare against")
+    return 1
+  }
+  val cfg = Bindgen.BindgenConfig(
+    packageName = packageName,
+    library = library,
+    allow = newList(),
+    userdata = newMap(),
+    longBits = longBits
+  )
+  match File.readText(allowFile) {
+    case Ok(text) -> {
+      val problems = Bindgen.parseAllowList(text, cfg)
+      if problems.count > 0 {
+        for p in problems {
+          printErr("bindgen: " + allowFile + ": " + p)
+        }
+        return 1
+      }
+    }
+    case Err(e) -> {
+      printErr("bindgen: cannot read " + allowFile)
+      return 1
+    }
+  }
+  if cfg.allow.count == 0 {
+    printErr("bindgen: the allow-list selects nothing; name the functions, records and constants to bind")
+    return 1
+  }
+  val args: List[String] = newList()
+  args.add("-Xclang")
+  args.add("-ast-dump=json")
+  args.add("-fsyntax-only")
+  for a in clangArgs {
+    args.add(a)
+  }
+  args.add(header)
+  var astText = ""
+  match Process.runCapture("clang", args, 300000) {
+    case Ok(res) -> {
+      if res.exitCode != 0 {
+        printErr("bindgen: clang failed on " + header + ":")
+        printErr(res.stderr)
+        return 1
+      }
+      astText = res.stdout
+    }
+    case Err(e) -> {
+      printErr("bindgen: clang could not be started (" + e + "); bindgen needs clang on PATH")
+      return 1
+    }
+  }
+  val result = Bindgen.generateBindings(astText, cfg)
+  for n in result.notes {
+    printErr("bindgen: " + n)
+  }
+  if result.errors.count > 0 {
+    for e in result.errors {
+      printErr("bindgen: error: " + e)
+    }
+    return 1
+  }
+  // The file is committed and `lyric fmt --check` runs over it, so emit it formatted.
+  val formatted = Fmt.formatSourceChecked(result.source)
+  if not Fmt.fmtCheckIsOk(formatted) {
+    printErr("bindgen: internal error: the generated source did not format: " + Fmt.fmtCheckMessage(formatted))
+    return 1
+  }
+  val source = Fmt.fmtCheckText(formatted)
+  if outPath.length == 0 {
+    Console.print(source)
+    return 0
+  }
+  if check {
+    match File.readText(outPath) {
+      case Ok(existing) -> {
+        if existing == source {
+          return 0
+        }
+        printErr("bindgen: " + outPath + " is out of date; regenerate it with `lyric bindgen`")
+        return 1
+      }
+      case Err(_) -> {
+        printErr("bindgen: cannot read " + outPath)
+        return 1
+      }
+    }
+  }
+  match File.writeText(outPath, source) {
+    case Ok(_) -> {
+      Console.println("bindgen: wrote " + outPath)
+      0
+    }
+    case Err(_) -> {
+      printErr("bindgen: cannot write " + outPath)
+      1
+    }
+  }
+}

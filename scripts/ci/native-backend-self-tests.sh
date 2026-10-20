@@ -56,6 +56,7 @@ for t in \
   lyric-compiler/lyric/llvm_buffer_self_test.l \
   lyric-compiler/lyric/llvm_ffi_self_test.l \
   lyric-compiler/lyric/llvm_c_abi_self_test.l \
+  lyric-compiler/lyric/bindgen_self_test.l \
   lyric-compiler/lyric/llvm_collections_self_test.l \
   lyric-compiler/lyric/llvm_stdlib_self_test.l \
   lyric-compiler/lyric/llvm_tls_self_test.l \

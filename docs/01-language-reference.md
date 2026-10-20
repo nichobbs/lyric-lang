@@ -2490,9 +2490,13 @@ extern func strlen(s: NativePtr[Byte]): Long = "strlen"
   wherever the C API puts it), or, in the older spelling, end in
   `NativePtr[Byte]`, is a C callback: it takes a Lyric closure of the same
   type without the userdata slot, which the native backend wraps in a
-  C-ABI trampoline, and a closure of the full C signature is rejected.  A closure value is also accepted for a `NativePtr[Byte]`
-  parameter, where it passes as the closure pointer itself, so the same
-  closure can be handed to a C API as both the callback and its userdata.
+  C-ABI trampoline, and a closure of the full C signature is rejected.
+  With more than one `NativeUserdata` the first is the slot.  A function-typed
+  `extern func` parameter with neither marker nor a trailing
+  `NativePtr[Byte]` is **T0181**: C could not hand the closure back.  A closure value is also
+  accepted for a `NativePtr[Byte]` or `NativeUserdata` parameter, where it
+  passes as the closure pointer itself, so the same closure can be handed
+  to a C API as both the callback and its userdata.
   Any other value meets a `NativePtr[Byte]` parameter only if it is one;
   a collection the C side reads is declared with its Lyric type
   (`List[String]` for a `LyricList*`).
@@ -3117,6 +3121,18 @@ A `@bench` function whose signature does not match `func name(): Unit` passes th
 | `.lyric-release/` | `lyric build --aot` (`--shape aot`) |
 
 **Exit codes:** 0 = nothing to remove or all directories removed successfully; 1 = at least one removal failed.
+
+### 13.11a Bindgen
+
+`lyric bindgen <header.h> --package <Name> --allow <file> [-o <out.l>] [--library <name>] [-I <dir>]... [--clang-arg <arg>]... [--long-bits 32|64] [--check]` generates a `--target native` kernel binding file from a C header (docs/67 §5.3, D190). It runs `clang -Xclang -ast-dump=json -fsyntax-only` over the header (`clang` must be on `PATH`) and writes `-o <out.l>`, or standard output without `-o`.
+
+The allow-list file selects what is bound: one name or `prefix*` pattern per line (`#` starts a comment), matched against function, record, typedef and enum-constant names, and `userdata <callback> <index>` lines naming a callback typedef's user-pointer parameter. The output has `pub extern func` declarations (each with `@library("<name>")` when `--library` is given, which is what links the library into a native build), `pub foreign record` declarations for the structs those functions use (transitively), and `pub val` constants for the selected enum constants. A callback parameter becomes a function type whose user-pointer parameter is `NativeUserdata`; the pointer is the callback's only `void *` parameter unless a `userdata` line says otherwise.
+
+Mapping: `int`/`unsigned int`/enums to `Int`, `long long` and `size_t` to `Long`, 8-bit integers and `bool` to `Byte`, `float` to `Float`, `double` to `Double`, a pointer to `NativePtr[T]` (`NativePtr[Byte]` for `void *`, `char *` and incomplete or unsupported struct types), an array field to `array[N, T]`. `long` follows `--long-bits` (default 64). Signedness is not tracked: an unsigned value is the signed type of the same width. A symbol that cannot be passed faithfully (a 16-bit integer, a bit-field, a union, a variadic function, a function-pointer field, an ambiguous callback) is skipped with a note on standard error; naming a skipped or undeclared symbol exactly, rather than by pattern, is an error.
+
+`--check` regenerates in memory and fails when `-o` differs, so CI can keep generated files in sync with their headers.
+
+**Exit codes:** 0 = generated (or up to date); 1 = bad arguments, clang failure, or an error in the allow-list or selection.
 
 ### 13.12 Package manager
 

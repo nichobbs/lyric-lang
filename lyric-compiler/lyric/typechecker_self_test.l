@@ -11679,3 +11679,22 @@ test "NativeUserdata marks the callback userdata slot at any position (D189)" {
   val bad = checkWithImportedPackagesForNative(parse(full).file, stdCoreOptionPackages())
   assertTrue(hasDiagCode(bad, "T0043"), "a closure of the full C signature is rejected: " + diagCodesOf(bad))
 }
+
+test "with two NativeUserdata slots the first is the userdata, and a callback type with none is T0181 (D189)" {
+  val two = "package T\n" +
+    "extern func reg(f: (NativeUserdata, Int, NativeUserdata) -> Int, ud: NativeUserdata): Int = \"reg\"\n" +
+    "@unsafe_ffi\n" +
+    "func f(): Int {\n" +
+    "  val cb: (Int, NativeUserdata) -> Int = { n: Int, u: NativeUserdata -> n }\n" +
+    "  reg(cb, cb)\n" +
+    "}\n"
+  val ok = checkWithImportedPackagesForNative(parse(two).file, stdCoreOptionPackages())
+  assertEqualInt(diagCount(ok), 0, "the closure keeps the second slot: " + diagCodesOf(ok))
+  val none = "package T\n" + "extern func reg(f: (Int) -> Int, n: Int): Int = \"reg\"\n" + "@unsafe_ffi\n" +
+    "func f(): Int {\n" +
+    "  val cb: (Int) -> Int = { n: Int -> n }\n" +
+    "  reg(cb, 1)\n" +
+    "}\n"
+  val bad = checkWithImportedPackagesForNative(parse(none).file, stdCoreOptionPackages())
+  assertTrue(hasDiagCode(bad, "T0181"), "a callback type with no userdata slot is T0181: " + diagCodesOf(bad))
+}
