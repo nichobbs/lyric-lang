@@ -1,0 +1,13 @@
+# Doubles a thousand integers on the GPU and checks every one (docs/67 G5).
+[package]
+name    = "Lyric.Gpu.Examples.Compute"
+version = "0.1.0"
+
+[project]
+name = "Lyric.Gpu.Examples.Compute"
+
+[project.packages]
+"Gpu.Examples.Compute" = "src/main.l"
+
+[dependencies]
+"Lyric.Gpu" = { path = "../.." }

@@ -1,0 +1,13 @@
+# Draws a triangle offscreen and compares the pixels to a golden image (docs/67 G5).
+[package]
+name    = "Lyric.Gpu.Examples.Triangle"
+version = "0.1.0"
+
+[project]
+name = "Lyric.Gpu.Examples.Triangle"
+
+[project.packages]
+"Gpu.Examples.Triangle" = "src/main.l"
+
+[dependencies]
+"Lyric.Gpu" = { path = "../.." }

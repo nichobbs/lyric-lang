@@ -10456,6 +10456,25 @@ test "an extern func with a NativePtr parameter is checked in a native check (#7
   )
 }
 
+test "NativePtr[Byte] (the null pointer, C's void*) passes for any typed pointer, a typed pointer does not pass for another" {
+  val src = "package T\n" + "extern func fill(p: NativePtr[Int]): Unit = \"fill\"\n" + "@unsafe_ffi\n" +
+    "func ok(): Unit {\n" +
+    "  fill(nativeNullPtr())\n" +
+    "}\n" +
+    "@unsafe_ffi\n" +
+    "func bad(): Unit {\n" +
+    "  var x: Long = 0\n" +
+    "  fill(nativeAddrOf(x))\n" +
+    "}\n"
+  val cr = checkWithImportedPackagesForNative(parse(src).file, stdCoreOptionPackages())
+  assertEqualInt(
+    countDiagCode(cr, "T0043"),
+    1,
+    "only the NativePtr[Long] argument is rejected (" + diagCodesOf(cr) + ")"
+  )
+  assertEqualInt(diagCount(cr), 1, "and nothing else (" + diagCodesOf(cr) + ")")
+}
+
 func externKernelPackages(): List[ImportedPackage] {
   val kernel = parse("package K\npub extern func cAbs(x: Int): Int = \"abs\"\n")
   val packages: List[ImportedPackage] = newList()
