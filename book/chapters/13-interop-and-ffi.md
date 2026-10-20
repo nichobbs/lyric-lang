@@ -384,6 +384,15 @@ dir = "native"          # a directory holding libwindow.so (or .dylib / .a), rel
 # pkg_config = "window" # or: a system library found with pkg-config
 ```
 
+A library you do not build yourself can be a prebuilt archive per target triple. Pin its SHA-256 in the manifest and run `lyric restore`, which downloads and verifies it into `.lyric/native/` beside the manifest:
+
+```toml
+[native.libs.window.prebuilt.x86_64-unknown-linux-gnu]
+url     = "https://example.org/window-linux-x86_64.zip"
+sha256  = "<64 hex digits>"
+members = ["lib/libwindow.so"]
+```
+
 The build links the library, copies its shared files next to the executable and adds an `$ORIGIN` run path, so the program runs from its output directory even after the library's original directory is gone.
 
 `foreign record` is allowed only in a stdlib `_kernel_native/` package or in a file annotated `@unsafe_ffi` at file level (N0101 elsewhere), and never appears in a library's public API. The kernel's safe wrappers take ordinary Lyric records. `foreign` is a contextual keyword, recognised only directly before `record`.
