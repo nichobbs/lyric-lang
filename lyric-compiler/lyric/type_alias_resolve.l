@@ -495,9 +495,17 @@ func resolveTypeExprAt(
       } else {
         head
       }
-      match valueRecordRef(aliasTargets, head2, args2, args) {
-        case Some(k) -> k
-        case None -> TGenericApp(head = head2, args = args2)
+      // `buffer[T]` on a backend whose buffer is a `List[T]` (D185).
+      val isBuffer = head2.segments.count == 1 and head2.segments[0] == "buffer" and args2.count == 1
+      if isBuffer and aliasTargets.containsKey(arraysAsListsKey()) {
+        val lsegs: List[String] = newList()
+        lsegs.add("List")
+        TGenericApp(head = ModulePath(segments = lsegs, span = head2.span), args = args2)
+      } else {
+        match valueRecordRef(aliasTargets, head2, args2, args) {
+          case Some(k) -> k
+          case None -> TGenericApp(head = head2, args = args2)
+        }
       }
     }
     case TArray(size, element) -> {

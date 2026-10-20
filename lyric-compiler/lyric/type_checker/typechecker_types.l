@@ -48,6 +48,14 @@ pub func builtinTaskTypeId(): TypeId {
   TypeId(id = -1)
 }
 
+// The built-in `buffer[T]` (D185, docs/67 §4.4): a contiguous, runtime-length
+// sequence of `Plain` elements with value semantics.  Like `Task[T]` it has no
+// declaring symbol, so it takes a reserved id and never reaches
+// `symTableTypeSymbolOf`.
+pub func builtinBufferTypeId(): TypeId {
+  TypeId(id = -2)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // §3. Resolved type.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -108,6 +116,32 @@ pub func taskType(result: in Type): Type {
   val targs: List[Type] = newList()
   targs.add(result)
   TyUser(id = builtinTaskTypeId(), name = "Task", args = targs)
+}
+
+// `buffer[element]`.
+pub func bufferType(element: in Type): Type {
+  val targs: List[Type] = newList()
+  targs.add(element)
+  TyUser(id = builtinBufferTypeId(), name = "buffer", args = targs)
+}
+
+// The element type `T` of a `buffer[T]`; None for any other type.
+pub func bufferElementType(t: in Type): Option[Type] {
+  match unrefine(t) {
+    case TyUser(id, _, args) -> if typeIdEq(id, builtinBufferTypeId()) and args.count == 1 {
+      Some(value = args[0])
+    } else {
+      None
+    }
+    case _ -> None
+  }
+}
+
+pub func isBufferType(t: in Type): Bool {
+  match bufferElementType(t) {
+    case Some(_) -> true
+    case None -> false
+  }
 }
 
 // The result type `R` of a `Task[R]`; None for any other type.

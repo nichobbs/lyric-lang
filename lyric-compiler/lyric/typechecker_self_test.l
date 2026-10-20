@@ -3506,6 +3506,55 @@ test "Plain cannot be derived" {
   assertTrue(hasDiagCode(parseCheck(src), "T0172"), "T0172")
 }
 
+// `buffer[T]` (D185): a built-in type whose elements must be `Plain` (T0173),
+// indexed and written like an array (T0157), with a runtime `.length`.
+test "buffer[T] resolves, indexes and has a length" {
+  val src = "package P\nfunc f(b: in buffer[Int]): Int {\n  b[0] + b.length\n}\n"
+  assertEqualInt(diagCount(parseCheck(src)), 0, "reads: " + diagCodesOf(parseCheck(src)))
+  val rec = "package P\nrecord V { x: Float\n y: Float }\nfunc f(b: in buffer[V]): Float {\n  b[1].y\n}\n"
+  assertEqualInt(diagCount(parseCheck(rec)), 0, "a record element: " + diagCodesOf(parseCheck(rec)))
+  val loop = "package P\nfunc f(b: in buffer[Int]): Int {\n  var t = 0\n  for x in b {\n    t = t + x\n  }\n  t\n}\n"
+  assertEqualInt(diagCount(parseCheck(loop)), 0, "for: " + diagCodesOf(parseCheck(loop)))
+}
+
+test "a buffer element must be Plain: T0173" {
+  for arg in ["String", "array[2, String]", "slice[Int]"] {
+    val src = "package P\nimport Std.Collections\nfunc f(b: in buffer[" + arg + "]): Unit {\n}\n"
+    assertTrue(hasDiagCode(parseCheck(src), "T0173"), arg + ": " + diagCodesOf(parseCheck(src)))
+  }
+  val range = "package P\ntype Age = Int range 0 ..= 150\nfunc f(b: in buffer[Age]): Unit {\n}\n"
+  assertTrue(
+    diagMessagesContain(parseCheck(range), "tryFrom"),
+    "range subtype: " + diagMessageFor(parseCheck(range), "T0173")
+  )
+  val genericSrc = "package P\nfunc f[T](b: in buffer[T]): Unit {\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(genericSrc), "T0173"), "an unresolved parameter is checked where it is bound")
+}
+
+test "a buffer element is written through a writable place: T0157" {
+  val bad = "package P\nfunc f(b: in buffer[Int]): Unit {\n  b[0] = 1\n}\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0157"), "an in parameter: " + diagCodesOf(parseCheck(bad)))
+  val ok = "package P\nfunc f(b: inout buffer[Int]): Unit {\n  b[0] = 1\n}\nfunc g(): Unit {\n  var b: buffer[Int] = h()\n  b[0] = 1\n}\nfunc h(): buffer[Int] {\n  h()\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(ok), "T0157"), "inout and var: " + diagCodesOf(parseCheck(ok)))
+}
+
+test "a buffer is indexed through a stable receiver: T0174" {
+  val bad = "package P\nfunc make(): buffer[Int] {\n  make()\n}\nfunc f(): Int {\n  make()[0]\n}\n"
+  assertTrue(hasDiagCode(parseCheck(bad), "T0174"), "a call result: " + diagCodesOf(parseCheck(bad)))
+  val ok = "package P\nrecord R { b: buffer[Int] }\nfunc f(r: in R, i: in Int): Int {\n  r.b[i]\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(ok), "T0174"), "a field path: " + diagCodesOf(parseCheck(ok)))
+}
+
+test "a buffer has only length, indexing and for: T0113" {
+  val src = "package P\nfunc f(b: in buffer[Int]): Int {\n  b.count\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0113"), diagCodesOf(parseCheck(src)))
+}
+
+test "a record holding a buffer cannot derive Equals: T0159" {
+  val src = "package P\n@derive(Equals)\nrecord R { b: buffer[Int] }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0159"), diagCodesOf(parseCheck(src)))
+}
+
 test "where bound not satisfied rejected" {
   val src = "package P\nrecord Plain { value: Int }\nfunc add2[T](a: in T, b: in T): T where T: Add { default() }\nfunc f(): Plain { add2(Plain(value = 1), Plain(value = 2)) }\n"
   val cr = parseCheck(src)

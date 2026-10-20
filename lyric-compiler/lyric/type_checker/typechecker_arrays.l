@@ -16,6 +16,37 @@ pub func arrayLengthOf(t: in Type): Option[Int] {
   }
 }
 
+/// The length a site records for a `buffer[T]`, whose length is known only at
+/// run time (D185): `lowerArrays` reads the receiver's own count instead of a
+/// constant.
+pub func runtimeArrayLength(): Int = 0 - 1
+
+/// Whether evaluating `e` twice is harmless: a buffer access reads the
+/// receiver's length as well as its element, so its receiver must be a
+/// variable, a field path or an element of one selected by a literal or
+/// variable (T0174).
+pub func bufferReceiverIsStable(e: in Expr): Bool {
+  match e.kind {
+    case EPath(_) -> true
+    case ESelf -> true
+    case EParen(inner) -> bufferReceiverIsStable(inner)
+    case EMember(recv, _) -> bufferReceiverIsStable(recv)
+    case EIndex(recv, idxs) -> idxs.count == 1 and bufferReceiverIsStable(recv) and
+      (
+        match idxs[0].kind {
+          case ELiteral(_) -> true
+          case EPath(_) -> true
+          case _ -> false
+        }
+      )
+    case _ -> false
+  }
+}
+
+/// An array or a buffer: the types whose storage a writable place owns
+/// exclusively, so copies and element writes follow D167's place rules.
+pub func isStorageType(t: in Type): Bool = isArrayType(t) or isBufferType(t)
+
 pub func isArrayType(t: in Type): Bool {
   match unrefine(t) {
     case TyArray(_, _, _) -> true
@@ -59,6 +90,20 @@ func isPlaceExprKind(e: in Expr): Bool {
 
 /// The array operand's site, its type spelled (a type variable by name).
 pub func arraySiteOf(tbl: in SymbolTable, t: in Type, sp: in Span): Option[ArraySite] {
+  match bufferElementType(t) {
+    case Some(el) -> return match typeExprForRefWithVars(tbl, t, sp) {
+      case Some(bt) -> Some(
+        value = ArraySite(
+          len = runtimeArrayLength(),
+          arrayType = Some(value = bt),
+          elemType = typeExprForRefWithVars(tbl, el, sp),
+          span = sp
+        )
+      )
+      case None -> None
+    }
+    case None -> ()
+  }
   match unrefine(t) {
     case TyArray(sz, el, _) -> match sz {
       case Some(n) -> match typeExprForRefWithVars(tbl, t, sp) {
@@ -121,7 +166,7 @@ pub func noteArrayPlaceRead(
   e: in Expr,
   t: in Type,
 ): Unit {
-  if not isPlaceExprKind(e) or not isArrayType(t) {
+  if not isPlaceExprKind(e) or not isStorageType(t) {
     return
   }
   if placeClass(sc, tbl, sigs, e) == 0 {
@@ -142,7 +187,7 @@ func peelParens(e: in Expr): Expr {
 /// is copied unless it is already a copy or a fresh bracket literal of
 /// scalars.  Idempotent per expression.
 pub func noteArrayStore(tbl: in SymbolTable, e: in Expr, t: in Type): Unit {
-  if not isArrayType(t) {
+  if not isStorageType(t) {
     return
   }
   val v = peelParens(e)
@@ -194,6 +239,14 @@ pub func reportUnspellableArrayCopies(tbl: in SymbolTable, diag: in List[Diagnos
 /// T0113 for a member an array does not have: it has `.length`, `.toSlice()`,
 /// indexing and `==`.
 pub func arrayNoMember(t: in Type, name: in String, sp: in Span): Diagnostic {
+  if isBufferType(t) {
+    return errorDiagnostic(
+      "T0113",
+      "no member '" + name + "' on type '" + renderType(t) +
+        "' (a buffer has `.length`, indexing, `for` and the `Std.Buffer` functions; use a `slice[T]` or `List[T]` for anything else)",
+      sp
+    )
+  }
   errorDiagnostic(
     "T0113",
     "no member '" + name + "' on type '" + renderType(t) +
@@ -384,7 +437,9 @@ pub func noteArrayIndex(
 ): Unit {
   val n = match arrayLengthOf(recvTy) {
     case Some(n) -> n
-    case None -> {
+    case None -> if isBufferType(recvTy) {
+      runtimeArrayLength()
+    } else {
       if inValueGenericBody(tbl) {
         return
       }
@@ -507,7 +562,7 @@ func placeClass(sc: in Scope, tbl: in SymbolTable, sigs: in Map[String, Resolved
     case EIndex(recv, _) -> {
       val scratch: List[Diagnostic] = newList()
       val rt = inferExpr(sc, tbl, sigs, scratch, recv)
-      if isArrayType(rt) {
+      if isStorageType(rt) {
         placeClass(sc, tbl, sigs, recv)
       } else {
         0
@@ -538,7 +593,7 @@ pub func checkArrayElementWrite(
     case EIndex(recv, _) -> {
       val scratch: List[Diagnostic] = newList()
       val rt = inferExpr(sc, tbl, sigs, scratch, recv)
-      if isArrayType(rt) and not arrayPlaceWritable(sc, tbl, sigs, recv) {
+      if isStorageType(rt) and not arrayPlaceWritable(sc, tbl, sigs, recv) {
         diag.add(
           errorDiagnostic(
             "T0157",
@@ -566,7 +621,7 @@ pub func checkArrayByRefArg(
   argTy: in Type,
   span: in Span,
 ): Unit {
-  if not isArrayType(argTy) {
+  if not isStorageType(argTy) {
     checkArrayElementWrite(sc, tbl, sigs, diag, arg)
     return
   }
@@ -575,7 +630,7 @@ pub func checkArrayByRefArg(
     case EMember(_, _) -> true
     case EIndex(recv, _) -> {
       val scratch: List[Diagnostic] = newList()
-      isArrayType(inferExpr(sc, tbl, sigs, scratch, recv))
+      isStorageType(inferExpr(sc, tbl, sigs, scratch, recv))
     }
     case _ -> false
   }
@@ -604,7 +659,7 @@ pub func arrayCompoundTemps(
   match target.kind {
     case EIndex(recv, _) -> {
       val rt = inferExpr(sc, tbl, sigs, scratch, recv)
-      if not isArrayType(rt) {
+      if not isStorageType(rt) {
         return None
       }
       // The array chain's root: `c.hits` in `c.hits[i][j]`.
@@ -1015,6 +1070,9 @@ pub func isFloatLeafType(t: in Type): Bool {
 
 func typeHoldsArrayOr(tbl: in SymbolTable, t: in Type, seen: in List[Int], floats: Bool): Bool {
   if floats and isFloatLeafType(t) {
+    return true
+  }
+  if isBufferType(t) {
     return true
   }
   match t {

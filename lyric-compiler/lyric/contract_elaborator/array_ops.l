@@ -230,7 +230,7 @@ func rewriteArrayExpr(e: in Expr, sites: in ArraySites): Expr {
     case EIndex(recv, idxs) -> match mapGet(sites.index, key) {
       case Some(site) -> {
         if idxs.count == 1 {
-          r = mkExpr(EIndex(receiver = recv, indices = oneExpr(checkedIndex(idxs[0], site, e.span))), e.span)
+          r = mkExpr(EIndex(receiver = recv, indices = oneExpr(checkedIndex(recv, idxs[0], site, e.span))), e.span)
         }
       }
       case None -> ()
@@ -328,7 +328,7 @@ func uncheckedIndex(recv: in Expr, idx: in Expr, sp: in Span): Expr {
 
 // The index of `a[i]` with its bounds check, wrapped in the marker that
 // tells a backend the access is already settled.
-func checkedIndex(idx: in Expr, site: in ArrayIndexSite, sp: in Span): Expr {
+func checkedIndex(recv: in Expr, idx: in Expr, site: in ArrayIndexSite, sp: in Span): Expr {
   val wsp = syntheticSpan(sp)
   val i0 = if site.unwrap { mkExpr(EMember(receiver = idx, memberName = "value"), wsp) } else { idx }
   // An index that is not an `Int` is range checked as a `Long` and narrowed.
@@ -342,14 +342,40 @@ func checkedIndex(idx: in Expr, site: in ArrayIndexSite, sp: in Span): Expr {
   stmts.add(typedLocal(name, Some(value = idxTy), i, wsp))
   val ref = localRef(name, wsp)
   val zeroLit = if site.wide { typedIntLit("Long", 0i64, wsp) } else { intLit(0, wsp) }
-  val lenLit = if site.wide { typedIntLit("Long", site.len.toLong(), wsp) } else { intLit(site.len, wsp) }
+  // A buffer's length is read from the receiver at run time (D185).
+  val countE = mkExpr(EMember(receiver = recv, memberName = "count"), wsp)
+  val lenLit = if site.len < 0 {
+    if site.wide {
+      method0(countE, "toLong", wsp)
+    } else {
+      countE
+    }
+  } else if site.wide {
+    typedIntLit("Long", site.len.toLong(), wsp)
+  } else {
+    intLit(site.len, wsp)
+  }
   val outOfRange = bin(BOr, bin(BLt, ref, zeroLit, wsp), bin(BGte, ref, lenLit, wsp), wsp)
-  val msg = bin(
-    BAdd,
-    bin(BAdd, mkExpr(ELiteral(lit = LString(text = "index ")), wsp), method0(ref, "toString", wsp), wsp),
-    mkExpr(ELiteral(lit = LString(text = " out of range for array[" + toString(site.len) + "]")), wsp),
-    wsp
-  )
+  val msg = if site.len < 0 {
+    bin(
+      BAdd,
+      bin(
+        BAdd,
+        bin(BAdd, mkExpr(ELiteral(lit = LString(text = "index ")), wsp), method0(ref, "toString", wsp), wsp),
+        mkExpr(ELiteral(lit = LString(text = " out of range for buffer of length ")), wsp),
+        wsp
+      ),
+      method0(countE, "toString", wsp),
+      wsp
+    )
+  } else {
+    bin(
+      BAdd,
+      bin(BAdd, mkExpr(ELiteral(lit = LString(text = "index ")), wsp), method0(ref, "toString", wsp), wsp),
+      mkExpr(ELiteral(lit = LString(text = " out of range for array[" + toString(site.len) + "]")), wsp),
+      wsp
+    )
+  }
   stmts.add(panicIfDynamic(outOfRange, msg, wsp))
   stmts.add(mkStmt(SExpr(expr = if site.wide { method0(ref, "toInt", wsp) } else { ref }), wsp))
   callOf(arrayUncheckedIntrinsic(), oneExpr(blockOf(stmts, wsp)), wsp)
@@ -374,6 +400,10 @@ func panicIfDynamic(cond: in Expr, msg: in Expr, sp: in Span): Statement {
 // `a.length` is the constant `N`; an operand that is more than a variable or
 // field path is still evaluated.
 func lengthOf(recv: in Expr, n: in Int, sp: in Span): Expr {
+  // A buffer's length is its list's count (D185).
+  if n < 0 {
+    return mkExpr(EMember(receiver = recv, memberName = "count"), sp)
+  }
   if isSideEffectFreePath(recv) {
     return intLit(n, sp)
   }
@@ -523,9 +553,13 @@ func copyArrayElement(read: in Expr, elemType: in Option[TypeExpr], sp: in Span)
   }
 }
 
-func rangeFor(label: in Option[String], iName: in String, n: in Int, body: in List[Statement], sp: in Span): Statement {
+func rangeFor(label: in Option[String], iName: in String, n: in Int, body: in List[Statement], sp: in Span): Statement = rangeForTo(label, iName, intLit(n, sp), body, sp)
+
+func rangeForTo(
+  label: in Option[String], iName: in String, hi: in Expr, body: in List[Statement], sp: in Span
+): Statement {
   val pat = Pattern(kind = PBinding(name = iName, inner = None), span = sp)
-  val range = mkExpr(ERange(bound = RBHalfOpen(lo = intLit(0, sp), hi = intLit(n, sp), bareDotDot = false)), sp)
+  val range = mkExpr(ERange(bound = RBHalfOpen(lo = intLit(0, sp), hi = hi, bareDotDot = false)), sp)
   mkStmt(SFor(label = label, pat = pat, iter = range, body = Block(statements = body, span = sp)), sp)
 }
 
@@ -584,7 +618,11 @@ func forOverArray(
   for st in body.statements {
     inner.add(st)
   }
-  val loop = rangeFor(label, iName, site.len, inner, wsp)
+  val loop = if site.len < 0 {
+    rangeForTo(label, iName, mkExpr(EMember(receiver = localRef(aName, wsp), memberName = "count"), wsp), inner, wsp)
+  } else {
+    rangeFor(label, iName, site.len, inner, wsp)
+  }
   stmts.add(loop)
   mkStmt(SExpr(expr = blockOf(stmts, wsp)), s.span)
 }
@@ -604,6 +642,13 @@ pub func lowerArrayIntrinsicsToLists(file: in SourceFile, keepPrimitive: in Bool
 func rewriteArrayIntrinsic(e: in Expr, keepPrimitive: in Bool): Expr {
   match e.kind {
     case ECall(fn, args) -> {
+      // `Std.Buffer`'s bridge to the list that represents a buffer (D185).
+      match fn.kind {
+        case EMember(recv, member) -> if args.count == 0 and (member == bufferAsListMember() or member == bufferFromListMember()) {
+          return recv
+        }
+        case _ -> ()
+      }
       val name = match fn.kind {
         case EPath(p) -> if p.segments.count == 1 { p.segments[0] } else { "" }
         case ETypeApp(inner, _) -> match inner.kind {
@@ -631,7 +676,7 @@ func rewriteArrayIntrinsic(e: in Expr, keepPrimitive: in Bool): Expr {
       if name == arrayCopyIntrinsic() and args.count == 1 {
         return match fn.kind {
           case ETypeApp(_, targs) -> match arrayTypeArg(targs) {
-            case Some(arr) -> if keepPrimitive and primitiveArrayElement(arr.elem) {
+            case Some(arr) -> if keepPrimitive and arr.len >= 0 and primitiveArrayElement(arr.elem) {
               e
             } else {
               copyList(arr, callArgValue(args[0]), keepPrimitive, e.span)
@@ -677,7 +722,27 @@ func arrayDepth(te: in TypeExpr): Int {
   }
 }
 
+/// The element of `buffer[T]`, whose length is known only at run time (D185).
+func bufferElementOf(te: in TypeExpr): Option[TypeExpr] {
+  match te.kind {
+    case TParen(inner) -> bufferElementOf(inner)
+    case TGenericApp(head, args) -> if head.segments.count == 1 and head.segments[0] == "buffer" and args.count == 1 {
+      match args[0] {
+        case TAType(el) -> Some(value = el)
+        case TAValue(_) -> None
+      }
+    } else {
+      None
+    }
+    case _ -> None
+  }
+}
+
 func arrayShapeOf(te: in TypeExpr): Option[ArrayShape] {
+  match bufferElementOf(te) {
+    case Some(el) -> return Some(value = ArrayShape(len = 0 - 1, elem = el))
+    case None -> ()
+  }
   match te.kind {
     case TParen(inner) -> arrayShapeOf(inner)
     case TArray(size, elem) -> match size {
@@ -756,7 +821,9 @@ func copyList(arr: in ArrayShape, a: in Expr, keepPrimitive: in Bool, sp: in Spa
   val listTy = Some(value = listTypeOf(arr.elem, wsp))
   val stmts: List[Statement] = newList()
   stmts.add(typedLocal(sName, listTy, a, wsp))
-  stmts.add(typedLocal(dName, listTy, callOf("newListWithCapacity", oneExpr(intLit(arr.len, wsp)), wsp), wsp))
+  val countE = mkExpr(EMember(receiver = localRef(sName, wsp), memberName = "count"), wsp)
+  val capacity = if arr.len < 0 { countE } else { intLit(arr.len, wsp) }
+  stmts.add(typedLocal(dName, listTy, callOf("newListWithCapacity", oneExpr(capacity), wsp), wsp))
   val elemRead = mkExpr(EIndex(receiver = localRef(sName, wsp), indices = oneExpr(localRef(iName, wsp))), wsp)
   val elemCopy = match arrayShapeOf(arr.elem) {
     // An element array the backend keeps native (#8041) is copied by the
@@ -774,7 +841,11 @@ func copyList(arr: in ArrayShape, a: in Expr, keepPrimitive: in Bool, sp: in Spa
   }
   val body: List[Statement] = newList()
   body.add(mkStmt(SExpr(expr = method1(localRef(dName, wsp), "add", elemCopy, wsp)), wsp))
-  stmts.add(rangeFor(None, iName, arr.len, body, wsp))
+  if arr.len < 0 {
+    stmts.add(rangeForTo(None, iName, countE, body, wsp))
+  } else {
+    stmts.add(rangeFor(None, iName, arr.len, body, wsp))
+  }
   stmts.add(mkStmt(SExpr(expr = localRef(dName, wsp)), wsp))
   blockOf(stmts, wsp)
 }

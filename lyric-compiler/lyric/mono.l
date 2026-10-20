@@ -9502,8 +9502,12 @@ pub func monoFileWithLambdaTypes(
     val substitutedBody = substValueInBody(req.valueSubst, req.baseDecl.body)
     val env = seedEnvFromParams(req.baseDecl.params)
     val specOrigin = originPkgOf(req.baseDecl.annotations)
+    // Another package's generic is lowered only when its specialisation is
+    // checked again, so one whose signature holds a buffer (D185) is.
+    val foreignBufferSpec = specOrigin.length > 0 and declMentionsBufferMono(req.baseDecl)
     val unsignedSpec = substMentionsUnsignedMono(req.subst) or substMentionsArrayMono(req.subst) or
-      req.valueSubst.count > 0
+      req.valueSubst.count > 0 or
+      foreignBufferSpec
     val structSpec = not unsignedSpec and substMentionsStructuredMono(req.subst)
     if unsignedSpec or structSpec or specOrigin.length > 0 {
       val specReq = UnsignedSpecRequest(
@@ -9709,11 +9713,67 @@ func isScalarPathMono(p: in ModulePath): Bool {
     n == "Unit"
 }
 
+// True when a parameter or the result of `fd` is or holds a `buffer[T]`.
+func declMentionsBufferMono(fd: in FunctionDecl): Bool {
+  for p in fd.params {
+    if teMentionsBufferMono(p.ty) {
+      return true
+    }
+  }
+  match fd.ret {
+    case Some(rt) -> teMentionsBufferMono(rt)
+    case None -> false
+  }
+}
+
+func teMentionsBufferMono(te: in TypeExpr): Bool {
+  match te.kind {
+    case TParen(inner) -> teMentionsBufferMono(inner)
+    case TGenericApp(head, args) -> {
+      if head.segments.count == 1 and head.segments[0] == "buffer" and args.count == 1 {
+        return true
+      }
+      for a in args {
+        match a {
+          case TAType(ate) -> if teMentionsBufferMono(ate) { return true }
+          case TAValue(_) -> ()
+        }
+      }
+      false
+    }
+    case TTuple(elems) -> {
+      for el in elems {
+        if teMentionsBufferMono(el) {
+          return true
+        }
+      }
+      false
+    }
+    case TSlice(elem) -> teMentionsBufferMono(elem)
+    case TArray(_, elem) -> teMentionsBufferMono(elem)
+    case TNullable(inner) -> teMentionsBufferMono(inner)
+    case TFunction(ps, r) -> {
+      for pte in ps {
+        if teMentionsBufferMono(pte) {
+          return true
+        }
+      }
+      teMentionsBufferMono(r)
+    }
+    case _ -> false
+  }
+}
+
 func teMentionsArrayMono(te: in TypeExpr): Bool {
   match te.kind {
     case TArray(_, _) -> true
     case TParen(inner) -> teMentionsArrayMono(inner)
-    case TGenericApp(_, args) -> {
+    case TGenericApp(head, args) -> {
+      // A `buffer[T]` (D185) is lowered with the array sites, so a generic that
+      // mentions one is checked again per specialisation like an array's.
+      if head.segments.count == 1 and head.segments[0] == "buffer" and args.count == 1 {
+        return true
+      }
       for a in args {
         match a {
           case TAType(ate) -> if teMentionsArrayMono(ate) { return true }
