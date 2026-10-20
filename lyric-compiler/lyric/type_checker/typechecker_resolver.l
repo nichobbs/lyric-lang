@@ -710,6 +710,37 @@ func taskNameIsBuiltin(tbl: in SymbolTable): Bool {
   }
 }
 
+// `buffer[T]` is the built-in buffer type unless a type called `buffer` is in
+// scope.
+func bufferNameIsBuiltin(tbl: in SymbolTable): Bool {
+  match symTableTryFindOne(tbl, "buffer") {
+    case None -> true
+    case Some(_) -> false
+  }
+}
+
+// `buffer[element]`, whose element must be `Plain` (T0173): foreign code writes
+// buffer memory without running construction checks, so only a type whose bit
+// pattern is its whole meaning may be an element.  An element that is still a
+// type variable or not yet resolved is checked where it is instantiated.
+func resolveBufferType(tbl: in SymbolTable, diag: in List[Diagnostic], element: in Type, span: in Span): Type {
+  match element {
+    case TyVar(_) -> ()
+    case TyError -> ()
+    case _ -> match plainViolation(tbl, element) {
+      case Some(why) -> diag.add(
+        errorDiagnostic(
+          "T0173",
+          "'" + renderType(element) + "' cannot be a buffer element: " + why,
+          span
+        )
+      )
+      case None -> ()
+    }
+  }
+  bufferType(element)
+}
+
 func resolveTypePath(
   tbl: in SymbolTable,
   ctx: in GenericContext,
@@ -739,6 +770,9 @@ func resolveTypePath(
     }
     if name == "Task" and args.count == 1 and taskNameIsBuiltin(tbl) {
       return taskType(args[0])
+    }
+    if name == "buffer" and args.count == 1 and bufferNameIsBuiltin(tbl) {
+      return resolveBufferType(tbl, diag, args[0], span)
     }
     match symTableTryFindOne(tbl, name) {
       case Some(sym) -> {

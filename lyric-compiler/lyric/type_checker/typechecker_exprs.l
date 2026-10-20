@@ -2269,6 +2269,30 @@ func builtinMember(tbl: in SymbolTable, recvRaw: in Type, name: in String): Opti
       // the stdlib `List`'s identity (#7737): a package's own `record
       // List[T]` has no `toArray`/`count`, and typing them here hid the
       // unknown-member diagnostic and reached codegen as invalid IL.
+      if targs.count == 1 and typeIdEq(tid, builtinBufferTypeId()) {
+        if name == "length" {
+          return Some(value = TyPrim(pt = PtInt))
+        }
+        // `Std.Buffer`'s own bridge to its `List` representation (D185): the
+        // identity on a target that represents a buffer as a list.
+        if name == bufferAsListMember() and symTableScopePkg(tbl) == "Std.Buffer" {
+          match symTableStdCollectionsHostTypeId(tbl, "List") {
+            case Some(listId) -> {
+              val noParams: List[Type] = newList()
+              val elemArgs: List[Type] = newList()
+              elemArgs.add(targs[0])
+              return Some(
+                value = TyFunction(
+                  params = noParams,
+                  ret = TyUser(id = listId, name = "List", args = elemArgs),
+                  isAsync = false
+                )
+              )
+            }
+            case None -> ()
+          }
+        }
+      }
       if targs.count == 1 and isStdCollectionsHostType(tbl, tid, "List") {
         if name == "toArray" {
           // A real `TyFunction` (zero params), not the bare result type:
@@ -2281,6 +2305,10 @@ func builtinMember(tbl: in SymbolTable, recvRaw: in Type, name: in String): Opti
         }
         if name == "count" {
           return Some(value = TyPrim(pt = PtInt))
+        }
+        if name == bufferFromListMember() and symTableScopePkg(tbl) == "Std.Buffer" {
+          val noParams: List[Type] = newList()
+          return Some(value = TyFunction(params = noParams, ret = bufferType(targs[0]), isAsync = false))
         }
       }
       None
@@ -2551,7 +2579,9 @@ func indexElementType(tbl: in SymbolTable, recvRaw: in Type): Type {
       // genuine `List<T>`/`ArrayList` `get_Item`/`get` or the
       // `Dictionary`/`HashMap` lookup, so a package's own `record List[T]` or
       // `record Map[K, V]` must not be typed as if it were one.
-      if targs.count == 1 and isStdCollectionsHostType(tbl, tid, "List") {
+      if targs.count == 1 and typeIdEq(tid, builtinBufferTypeId()) {
+        targs[0]
+      } else if targs.count == 1 and isStdCollectionsHostType(tbl, tid, "List") {
         targs[0]
       } else if targs.count == 2 and isStdCollectionsHostType(tbl, tid, "Map") {
         targs[1]
@@ -4229,7 +4259,7 @@ func checkRecordCopy(
     var ni = 0
     while ni < fields.count {
       names.add(fields[ni].name)
-      if isArrayType(fields[ni].ty) {
+      if isStorageType(fields[ni].ty) {
         // An array field carried over by `.copy` is copied (D167), so its
         // type must be spelled, a type variable by name.
         val arrTe = typeExprForRefWithVars(tbl, fields[ni].ty, e.span)
@@ -4787,54 +4817,19 @@ func typeExprForRefV(tbl: in SymbolTable, t: in Type, sp: in Span, vars: in Bool
         case None -> None
       }
     }
-    case TyUser(tid, nm, args) -> match symTableTypeSymbolOf(tbl, tid) {
-      case Some(sym) -> {
-        val segs: List[String] = newList()
-        val origin = sym.originPackage
-        // The bare name is used only when it denotes this same type at the use
-        // site; otherwise the type is qualified by its package. An extern type
-        // (resolved by its bare name in codegen) or a type with no package has
-        // no other spelling, so it has none here (#7371).
-        val bareOk = match symTableTryFindOne(tbl, sym.name) {
-          case Some(found) -> match symbolTypeIdOpt(found) {
-            case Some(fid) -> typeIdEq(fid, tid)
-            case None -> false
-          }
-          case None -> false
+    case TyUser(tid, nm, args) -> if typeIdEq(tid, builtinBufferTypeId()) and args.count == 1 {
+      match typeExprForRefV(tbl, args[0], sp, vars) {
+        case Some(ate) -> {
+          val bsegs: List[String] = newList()
+          bsegs.add("buffer")
+          val btargs: List[TypeArg] = newList()
+          btargs.add(TAType(ty = ate))
+          Some(value = TypeExpr(kind = TGenericApp(head = refTypePath(bsegs, sp), args = btargs), span = sp))
         }
-        val isExtern = match sym.kind { case DKExternType(_, _) -> true; case _ -> false }
-        if not bareOk and (origin.length == 0 or isExtern) {
-          return None
-        }
-        if not bareOk and origin != symTableScopePkg(tbl) {
-          val pkgSegs = dottedSegsTc(origin)
-          var k = 0
-          while k < pkgSegs.count {
-            segs.add(pkgSegs[k])
-            k = k + 1
-          }
-        }
-        segs.add(sym.name)
-        if args.count == 0 {
-          Some(value = TypeExpr(kind = TRef(path = refTypePath(segs, sp)), span = sp))
-        } else {
-          // A length argument (`TyLen`) is spelled as the literal (D169).
-          val targs: List[TypeArg] = newList()
-          for a in args {
-            match a {
-              case TyLen(n) -> targs.add(
-                TAValue(expr = mkExpr(ELiteral(lit = LInt(value = n.toLong(), suffix = I32, raw = "")), sp))
-              )
-              case _ -> match typeExprForRefV(tbl, a, sp, vars) {
-                case Some(ate) -> targs.add(TAType(ty = ate))
-                case None -> return None
-              }
-            }
-          }
-          Some(value = TypeExpr(kind = TGenericApp(head = refTypePath(segs, sp), args = targs), span = sp))
-        }
+        case None -> None
       }
-      case None -> None
+    } else {
+      typeExprForUserType(tbl, tid, args, sp, vars)
     }
     case TyVar(nm) -> if vars {
       val vsegs: List[String] = newList()
@@ -4844,6 +4839,60 @@ func typeExprForRefV(tbl: in SymbolTable, t: in Type, sp: in Span, vars: in Bool
       None
     }
     case _ -> None
+  }
+}
+
+func typeExprForUserType(
+  tbl: in SymbolTable, tid: in TypeId, args: in List[Type], sp: in Span, vars: in Bool
+): Option[TypeExpr] {
+  match symTableTypeSymbolOf(tbl, tid) {
+    case Some(sym) -> {
+      val segs: List[String] = newList()
+      val origin = sym.originPackage
+      // The bare name is used only when it denotes this same type at the use
+      // site; otherwise the type is qualified by its package. An extern type
+      // (resolved by its bare name in codegen) or a type with no package has
+      // no other spelling, so it has none here (#7371).
+      val bareOk = match symTableTryFindOne(tbl, sym.name) {
+        case Some(found) -> match symbolTypeIdOpt(found) {
+          case Some(fid) -> typeIdEq(fid, tid)
+          case None -> false
+        }
+        case None -> false
+      }
+      val isExtern = match sym.kind { case DKExternType(_, _) -> true; case _ -> false }
+      if not bareOk and (origin.length == 0 or isExtern) {
+        return None
+      }
+      if not bareOk and origin != symTableScopePkg(tbl) {
+        val pkgSegs = dottedSegsTc(origin)
+        var k = 0
+        while k < pkgSegs.count {
+          segs.add(pkgSegs[k])
+          k = k + 1
+        }
+      }
+      segs.add(sym.name)
+      if args.count == 0 {
+        Some(value = TypeExpr(kind = TRef(path = refTypePath(segs, sp)), span = sp))
+      } else {
+        // A length argument (`TyLen`) is spelled as the literal (D169).
+        val targs: List[TypeArg] = newList()
+        for a in args {
+          match a {
+            case TyLen(n) -> targs.add(
+              TAValue(expr = mkExpr(ELiteral(lit = LInt(value = n.toLong(), suffix = I32, raw = "")), sp))
+            )
+            case _ -> match typeExprForRefV(tbl, a, sp, vars) {
+              case Some(ate) -> targs.add(TAType(ty = ate))
+              case None -> return None
+            }
+          }
+        }
+        Some(value = TypeExpr(kind = TGenericApp(head = refTypePath(segs, sp), args = targs), span = sp))
+      }
+    }
+    case None -> None
   }
 }
 
@@ -14824,7 +14873,7 @@ func inferExprCore(
         }
       }
       match memberRecvTy {
-        case Some(arrRt) -> if isMemberCallee and isArrayType(arrRt) and memberName != "toSlice" {
+        case Some(arrRt) -> if isMemberCallee and isStorageType(arrRt) and memberName != "toSlice" {
           val resolved = match directSig {
             case Some(_) -> true
             case None -> match methodPick { case Some(_) -> true; case None -> false }
@@ -15499,7 +15548,16 @@ func inferExprCore(
           diag.add(arrayNoMember(rt, name, e.span))
         }
         case TyArray(None, _, _) -> if not inValueGenericBody(tbl) { diag.add(arrayUnknownLength(rt, e.span)) }
-        case _ -> ()
+        case _ -> if isBufferType(rt) {
+          if name == "length" {
+            exemptArrayCopy(tbl, recv)
+            if not tbl.arrayLenSites.containsKey(recordCopySiteKey(e.span)) {
+              tbl.arrayLenSites.add(recordCopySiteKey(e.span), runtimeArrayLength())
+            }
+          } else {
+            diag.add(arrayNoMember(rt, name, e.span))
+          }
+        }
       }
       match distinctMemberType(tbl, diag, rt, name, e.span) {
         case Some(dt) -> return dt
@@ -15601,7 +15659,17 @@ func inferExprCore(
         }
         ii = ii + 1
       }
-      if isArrayType(rt) {
+      if isBufferType(rt) and not bufferReceiverIsStable(recvE) {
+        diag.add(
+          errorDiagnostic(
+            "T0174",
+            "a buffer is indexed through a variable, a field path or an element of one: bind " +
+              "the buffer to a `val` first, because indexing reads its length as well as its element",
+            recvE.span
+          )
+        )
+      }
+      if isStorageType(rt) {
         exemptArrayCopy(tbl, recvE)
         if indices.count == 1 {
           val idxScratch: List[Diagnostic] = newList()

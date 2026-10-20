@@ -1452,6 +1452,12 @@ pub func arrayFillIntrinsic(): String = "__lyric_array_fill"
 
 pub func arrayCopyIntrinsic(): String = "__lyric_array_copy"
 
+/// The members `Std.Buffer` uses to move between a buffer and the `List` that
+/// represents it on a managed target (D185); lowered to the identity.
+pub func bufferAsListMember(): String = "__lyric_buffer_as_list"
+
+pub func bufferFromListMember(): String = "__lyric_buffer_from_list"
+
 pub func arrayUncheckedIntrinsic(): String = "__lyric_unchecked"
 
 /// The reserved key that puts `Lyric.TypeAliasResolve.resolveAliasesInFile`

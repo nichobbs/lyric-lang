@@ -78,6 +78,7 @@ output_assembly = "Lyric.Stdlib.dll"
 "Std.Set"              = "std/set.l"
 "Std.Iter"             = "std/iter.l"
 "Std.Sort"             = "std/sort.l"
+"Std.Buffer"           = "std/buffer.l"          # seed: current
 "Std.Format"           = "std/format.l"
 "Std.Encoding"         = "std/encoding.l"
 

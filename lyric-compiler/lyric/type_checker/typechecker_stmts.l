@@ -2174,7 +2174,9 @@ func forIterElemType(tbl: in SymbolTable, diag: in List[Diagnostic], iter: in Ex
     case TySlice(e) -> e
     case TyArray(_, e, _) -> e
     case TyUser(iterId, _, iterArgs) -> {
-      if iterArgs.count == 1 and isStdCollectionsHostType(tbl, iterId, "List") {
+      if iterArgs.count == 1 and typeIdEq(iterId, builtinBufferTypeId()) {
+        iterArgs[0]
+      } else if iterArgs.count == 1 and isStdCollectionsHostType(tbl, iterId, "List") {
         iterArgs[0]
       } else if iterArgs.count == 2 and isStdCollectionsHostType(tbl, iterId, "MapKeyCollection") {
         iterArgs[0]
