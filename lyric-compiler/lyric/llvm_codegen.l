@@ -4638,6 +4638,19 @@ func coerceTo(ctx: in Ctx, insns: in List[NInsn], v: in NVal, want: in NType, at
   if sameKind {
     return v
   }
+  // `NativePtr[Byte]` is C's `void *`: it converts to and from any other raw pointer
+  // (the type checker admits no other pointer-to-pointer conversion).
+  match v.ty {
+    case NPtr(_) -> match want {
+      case NPtr(_) -> if isBytePtrNType(v.ty) or isBytePtrNType(want) {
+        val cast = freshTmp(ctx)
+        insns.add(NBitcast(dest = cast, fromTy = v.ty, value = v.value, toTy = want))
+        return NVal(ty = want, value = NLocal(name = cast))
+      }
+      case _ -> ()
+    }
+    case _ -> ()
+  }
   // Implicit upcast: a concrete record flowing into an interface-typed
   // position (arg / return / binding / field / match arm) is boxed into a
   // fat pointer here (N3.2) — the type checker inserts no coercion node.

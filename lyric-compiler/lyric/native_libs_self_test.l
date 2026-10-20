@@ -453,3 +453,27 @@ func listHas(xs: in List[String], s: in String): Bool {
   }
   false
 }
+
+test "a prebuilt archive matches its platform under another vendor string" {
+  val sha = "0000000000000000000000000000000000000000000000000000000000000000"
+  val members: List[String] = newList()
+  val declared = Mf.NativePrebuilt(
+    triple = "x86_64-unknown-linux-gnu",
+    url = "https://e/x.so",
+    sha256 = sha,
+    members = members
+  )
+  val prebuilt: List[Mf.NativePrebuilt] = newList()
+  prebuilt.add(declared)
+  val spec = Mf.NativeLibSpec(name = "x", link = "", version = "", pkgConfig = "", dir = "", prebuilt = prebuilt)
+  val decls: List[Cli.NativeLibDecl] = newList()
+  decls.add(Cli.NativeLibDecl(spec = spec, baseDir = "/nonexistent"))
+  val same = Cli.resolveNativeLibs(decls, "x86_64-pc-linux-gnu")
+  assertEqualInt(same.errors.count, 1, "one error")
+  assertTrue(
+    Str.contains(same.errors[0], "not restored"),
+    "the Ubuntu spelling finds the declaration: " + same.errors[0]
+  )
+  val other = Cli.resolveNativeLibs(decls, "aarch64-apple-darwin")
+  assertTrue(Str.contains(other.errors[0], "no prebuilt archive"), "another platform does not: " + other.errors[0])
+}

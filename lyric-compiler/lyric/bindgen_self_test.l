@@ -171,6 +171,21 @@ test "static const integers (flag bits) become constants of their width" {
   assertTrue(Str.contains(r.source, "pub val Mode_Small: Int = 4"), "a 32-bit flag is an Int")
 }
 
+test "a repeated typedef, forward-declared struct and repeated prototype bind once" {
+  val src = "typedef struct Node Node;\ntypedef struct Node Node;\nstruct Node { int v; };\n" +
+    "void touch(Node* n);\nvoid touch(Node* n);\ntypedef enum E { E_A = 1 } E;\ntypedef enum E E;\n"
+  val r = generateBindings(astOf(src), configOf(allowOf(["touch", "Node", "E_*"])))
+  assertEqualInt(r.errors.count, 0, "no errors: " + Str.joinList("; ", r.errors))
+  var calls = 0
+  for line in Str.split(r.source, "\n") {
+    if Str.contains(line, "pub extern func touch(") {
+      calls = calls + 1
+    }
+  }
+  assertEqualInt(calls, 1, "the repeated prototype is bound once")
+  assertTrue(Str.contains(r.source, "pub foreign record Node {"), "the struct is bound")
+}
+
 test "the allow-list file format" {
   val cfg = configOf(newList())
   val problems = parseAllowList("# comment\nwin_*  # trailing\n\nuserdata Cb 1\nMODE_A\n", cfg)

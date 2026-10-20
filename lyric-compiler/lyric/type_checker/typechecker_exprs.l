@@ -18120,6 +18120,36 @@ func taskHandleAssignable(tbl: in SymbolTable, expected: in Type, actual: in Typ
   }
 }
 
+// `NativePtr[Byte]` is C's `void *` and converts to and from any other `NativePtr[T]`
+// (a chained descriptor's `next` pointer, the pointer a callback is handed back).  No
+// other pointer-to-pointer conversion exists.
+func pointeeIsUserType(targs: in List[Type]): Bool {
+  match unrefine(targs.get(0)) {
+    case TyUser(_, _, _) -> true
+    case _ -> false
+  }
+}
+
+func nativeVoidPtrConvertible(tbl: in SymbolTable, paramTy: in Type, argTy: in Type): Bool {
+  match mapGet(tbl.nativeIntrinsicTypes, "NativePtr") {
+    case None -> false
+    case Some(ptrId) -> match unrefine(paramTy) {
+      case TyUser(pid, _, pargs) -> match unrefine(argTy) {
+        case TyUser(aid, _, aargs) -> {
+          if typeIdEq(pid, ptrId) and typeIdEq(aid, ptrId) and pargs.count == 1 and aargs.count == 1 {
+            (isNativeBytePtrType(tbl, paramTy) and pointeeIsUserType(aargs)) or
+              (isNativeBytePtrType(tbl, argTy) and pointeeIsUserType(pargs))
+          } else {
+            false
+          }
+        }
+        case _ -> false
+      }
+      case _ -> false
+    }
+  }
+}
+
 func argSatisfiesParam(tbl: in SymbolTable, paramTy: in Type, argTy: in Type): Bool {
   if typeEquiv(paramTy, argTy) {
     return true
@@ -18134,6 +18164,9 @@ func argSatisfiesParam(tbl: in SymbolTable, paramTy: in Type, argTy: in Type): B
     case _ -> ()
   }
   if taskHandleAssignable(tbl, paramTy, argTy) {
+    return true
+  }
+  if nativeVoidPtrConvertible(tbl, paramTy, argTy) {
     return true
   }
   // M6: numeric widening — Int satisfies Long, Float satisfies Double, etc.
