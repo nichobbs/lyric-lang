@@ -1511,7 +1511,8 @@ func rewriteRecordDecl(decl: in RecordDecl, st: in PropState): RecordDecl {
     generics = decl.generics,
     whereClause = decl.whereClause,
     members = newMembers,
-    span = decl.span
+    span = decl.span,
+    isForeign = decl.isForeign
   )
 }
 

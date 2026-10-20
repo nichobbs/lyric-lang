@@ -6288,6 +6288,32 @@ func classifyByValueFieldEnv(
 /// `NRecInfo` lands in `st.results` and its struct definition in `st.typeDefs`
 /// (nested by-value records first, so a definition never precedes the ones it
 /// embeds).
+/// A foreign record's field: the by-value classification, plus `NativePtr[T]`
+/// as a raw pointer (a foreign record is a C struct, so a pointer field keeps
+/// it by-value; an ordinary record holding one stays on the heap).
+func classifyForeignField(st: in NByValState, pkg: in String, te: in TypeExpr): List[NType] {
+  match te.kind {
+    case TParen(inner) -> return classifyForeignField(st, pkg, inner)
+    case TGenericApp(head, args) -> if lastSeg(head) == "NativePtr" and args.count == 1 {
+      val res: List[NType] = newList()
+      match args[0] {
+        case TAType(inner) -> {
+          val it = classifyByValueField(st, pkg, inner)
+          if it.count == 1 {
+            res.add(NPtr(pointee = it[0]))
+          } else {
+            res.add(NPtr(pointee = NI8))
+          }
+        }
+        case TAValue(_) -> ()
+      }
+      return res
+    }
+    case _ -> ()
+  }
+  classifyByValueField(st, pkg, te)
+}
+
 func classifyByValueRecord(st: in NByValState, pkg: in String, rd: in RecordDecl): Bool {
   val irName = pkg + "." + rd.name
   if st.results.containsKey(irName) {
@@ -6306,6 +6332,9 @@ func classifyByValueRecord(st: in NByValState, pkg: in String, rd: in RecordDecl
     return false
   }
   val fields = recFieldsOf(rd)
+  if fields.count == 0 and rd.isForeign {
+    panic("Lyric.LlvmCodegen: foreign record '" + irName + "' has no fields: a C struct needs at least one")
+  }
   if fields.count == 0 {
     st.failed.add(irName, true)
     return false
@@ -6317,8 +6346,18 @@ func classifyByValueRecord(st: in NByValState, pkg: in String, rd: in RecordDecl
   var ok = true
   var i = 0
   while i < fields.count and ok {
-    val ft = classifyByValueField(st, pkg, fields[i].ty)
+    val ft = if rd.isForeign {
+      classifyForeignField(st, pkg, fields[i].ty)
+    } else {
+      classifyByValueField(st, pkg, fields[i].ty)
+    }
     if ft.count == 0 {
+      if rd.isForeign {
+        panic(
+          "Lyric.LlvmCodegen: field '" + fields[i].name + "' of foreign record '" + irName +
+            "' has no C layout on --target native"
+        )
+      }
       ok = false
     } else {
       names.add(fields[i].name)
@@ -6881,7 +6920,7 @@ func isBoxedValueNType(t: in NType): Bool {
 func placeNType(ctx: in Ctx, e: in Expr): Option[NType] {
   match e.kind {
     case EParen(inner) -> placeNType(ctx, inner)
-    case ESelf -> mapGet(ctx.varTypes, "self")
+    case ESelf -> if ctx.varSlots.containsKey("self") { mapGet(ctx.varTypes, "self") } else { None }
     case EPath(p) -> if p.segments.count == 1 and ctx.varSlots.containsKey(p.segments[0]) {
       mapGet(ctx.varTypes, p.segments[0])
     } else {
@@ -6889,6 +6928,17 @@ func placeNType(ctx: in Ctx, e: in Expr): Option[NType] {
     }
     case EMember(recv, fieldName) -> match placeOrListElemNType(ctx, recv) {
       case Some(rt) -> match rt {
+        case NStruct(_, _) -> match recInfoOfType(ctx, rt) {
+          case Some(ri) -> {
+            val idx = recFieldIndex(ri, fieldName)
+            if idx >= 0 and ri.byValue {
+              Some(value = ri.fieldTys[idx])
+            } else {
+              None
+            }
+          }
+          case None -> None
+        }
         case NPtr(_) -> match recInfoOfType(ctx, rt) {
           case Some(ri) -> {
             val idx = recFieldIndex(ri, fieldName)
@@ -6951,6 +7001,24 @@ func placeAddr(ctx: in Ctx, insns: in List[NInsn], e: in Expr): NVal {
     case ESelf -> localAddr(ctx, "self")
     case EPath(p) -> localAddr(ctx, p.segments[0])
     case EMember(recv, fieldName) -> {
+      val inlineTy = match placeNType(ctx, recv) { case Some(t) -> t; case None -> NVoid }
+      match inlineTy {
+        case NStruct(_, _) -> {
+          val base = placeAddr(ctx, insns, recv)
+          val bri = match recInfoOfType(ctx, inlineTy) {
+            case Some(r) -> r
+            case None -> panic("Lyric.LlvmCodegen: internal — a field place on a value that is not a record")
+          }
+          val bidx = recFieldIndex(bri, fieldName)
+          val bptr = freshTmp(ctx)
+          val bArgs: List[NArg] = newList()
+          bArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+          bArgs.add(NArg(ty = NI32, value = NLitInt(v = bidx.toLong(), ty = NI32)))
+          insns.add(NGEP(dest = bptr, ty = inlineTy, ptr = base.value, indices = bArgs))
+          return NVal(ty = NPtr(pointee = bri.fieldTys[bidx]), value = NLocal(name = bptr))
+        }
+        case _ -> ()
+      }
       val obj = lowerExpr(ctx, insns, recv)
       val ri = match recInfoOfType(ctx, obj.ty) {
         case Some(r) -> r
@@ -15053,28 +15121,54 @@ func lowerFieldAssign(
   value: in Expr,
   line: in Int,
 ): Unit {
-  val obj = lowerExpr(ctx, insns, recv)
-  val ri = match recInfoOfType(ctx, obj.ty) {
-    case Some(r) -> r
-    case None -> panic("Lyric.LlvmCodegen: assignment target '." + fieldName + "' is not a record field")
+  // A by-value (foreign) record is written in place through the address of
+  // the place that holds it; a heap record through its object pointer.
+  val inlineTy = match placeNType(ctx, recv) { case Some(t) -> t; case None -> NVoid }
+  var fieldPtr = ""
+  var fieldTy = NVoid
+  match inlineTy {
+    case NStruct(_, _) -> {
+      val ri = match recInfoOfType(ctx, inlineTy) {
+        case Some(r) -> r
+        case None -> panic("Lyric.LlvmCodegen: assignment target '." + fieldName + "' is not a record field")
+      }
+      val idx = recFieldIndex(ri, fieldName)
+      if idx < 0 {
+        panic("Lyric.LlvmCodegen: record '" + ri.irName + "' has no field '" + fieldName + "'")
+      }
+      val base = placeAddr(ctx, insns, recv)
+      fieldTy = ri.fieldTys[idx]
+      fieldPtr = freshTmp(ctx)
+      val pArgs: List[NArg] = newList()
+      pArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+      pArgs.add(NArg(ty = NI32, value = NLitInt(v = idx.toLong(), ty = NI32)))
+      insns.add(NGEP(dest = fieldPtr, ty = inlineTy, ptr = base.value, indices = pArgs))
+    }
+    case _ -> {
+      val obj = lowerExpr(ctx, insns, recv)
+      val ri = match recInfoOfType(ctx, obj.ty) {
+        case Some(r) -> r
+        case None -> panic("Lyric.LlvmCodegen: assignment target '." + fieldName + "' is not a record field")
+      }
+      val idx = recFieldIndex(ri, fieldName)
+      if idx < 0 {
+        panic("Lyric.LlvmCodegen: record '" + ri.irName + "' has no field '" + fieldName + "'")
+      }
+      if ri.byValue {
+        panic(
+          "Lyric.LlvmCodegen: internal — assignment to field '." + fieldName + "' of by-value record '" + ri.irName +
+            "' held somewhere that is not a place"
+        )
+      }
+      fieldTy = ri.fieldTys[idx]
+      val structTy = match obj.ty { case NPtr(pointee) -> pointee; case _ -> panic("unreachable") }
+      fieldPtr = freshTmp(ctx)
+      val fArgs: List[NArg] = newList()
+      fArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+      fArgs.add(NArg(ty = NI32, value = NLitInt(v = (arcHeaderSlots + idx).toLong(), ty = NI32)))
+      insns.add(NGEP(dest = fieldPtr, ty = structTy, ptr = obj.value, indices = fArgs))
+    }
   }
-  val idx = recFieldIndex(ri, fieldName)
-  if idx < 0 {
-    panic("Lyric.LlvmCodegen: record '" + ri.irName + "' has no field '" + fieldName + "'")
-  }
-  if ri.byValue {
-    panic(
-      "Lyric.LlvmCodegen: internal — assignment to field '." + fieldName + "' of by-value record '" + ri.irName +
-        "' (a record with no `var` field cannot be assigned through)"
-    )
-  }
-  val fieldTy = ri.fieldTys[idx]
-  val structTy = match obj.ty { case NPtr(pointee) -> pointee; case _ -> panic("unreachable") }
-  val fieldPtr = freshTmp(ctx)
-  val fArgs: List[NArg] = newList()
-  fArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-  fArgs.add(NArg(ty = NI32, value = NLitInt(v = (arcHeaderSlots + idx).toLong(), ty = NI32)))
-  insns.add(NGEP(dest = fieldPtr, ty = structTy, ptr = obj.value, indices = fArgs))
   val newVal = match op {
     case AssEq -> lowerExprExpecting(ctx, insns, value, fieldTy)
     case _ -> {

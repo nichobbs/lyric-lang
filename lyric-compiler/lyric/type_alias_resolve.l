@@ -1257,7 +1257,14 @@ func resolveRecordDecl(aliasTargets: in Map[String, TypeExpr], d: in RecordDecl)
     )
     i = i + 1
   }
-  RecordDecl(name = d.name, generics = d.generics, whereClause = d.whereClause, members = ms, span = d.span)
+  RecordDecl(
+    name = d.name,
+    generics = d.generics,
+    whereClause = d.whereClause,
+    members = ms,
+    span = d.span,
+    isForeign = d.isForeign
+  )
 }
 
 func resolveUnionField(

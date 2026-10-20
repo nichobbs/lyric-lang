@@ -122,6 +122,17 @@ func plainRecordViolation(
   args: in List[Type],
   depth: in Int,
 ): Option[String] {
+  if rd.isForeign {
+    // A foreign record's fields are checked as a layout (`checkForeignRecordDecl`):
+    // pointers are allowed, and it is a plain value, so it is `Plain` itself.
+    for f in fieldsOfRecordInstantiated(tbl, tid, args) {
+      match foreignFieldViolation(tbl, f.ty, depth + 1) {
+        case None -> ()
+        case Some(why) -> return Some(value = "field '" + f.name + "' of '" + name + "' is not allowed in a foreign record: " + why)
+      }
+    }
+    return None
+  }
   for m in rd.members {
     match m {
       case RMInvariant(_) -> return Some(

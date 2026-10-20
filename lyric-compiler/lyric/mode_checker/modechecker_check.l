@@ -2180,7 +2180,22 @@ pub func checkNativeFfiBoundary(file: in SourceFile, diag: in List[Diagnostic]):
   while i < file.items.count {
     match file.items[i].kind {
       case IFunc(fn) -> n0100CheckFn(diag, fn)
-      case IRecord(decl) -> n0100CheckRecordFields(diag, decl.name, decl.members)
+      case IRecord(decl) -> {
+        // Kernel files never reach this check (they are not mode-checked), so a
+        // foreign record seen here is in a user file (D188).
+        if decl.isForeign {
+          diag.add(
+            errorDiagnostic(
+              "N0101",
+              "'foreign record " + decl.name +
+                "' is allowed only in a _kernel_native/ package: a C-layout struct is part of the audited FFI boundary, and a library's safe surface takes ordinary Lyric records",
+              decl.span
+            )
+          )
+        } else {
+          n0100CheckRecordFields(diag, decl.name, decl.members)
+        }
+      }
       case IExposedRec(decl) -> n0100CheckRecordFields(diag, decl.name, decl.members)
       case IUnion(decl) -> {
         var ci = 0

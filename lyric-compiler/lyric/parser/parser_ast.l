@@ -632,6 +632,8 @@ pub record RecordDecl {
   whereClause: Option[WhereClause]
   members: List[RecordMember]
   span: Span
+  /// `foreign record` (D188, docs/67 §4.7): a C-layout struct of a kernel file.
+  isForeign: Bool = false
 }
 
 pub union UnionField {

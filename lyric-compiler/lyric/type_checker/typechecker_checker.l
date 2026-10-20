@@ -4414,6 +4414,9 @@ func checkDeclTypeRefs(tbl: in SymbolTable, diag: in List[Diagnostic], items: in
     checkNoPlainDerive(diag, items[i].annotations)
     match items[i].kind {
       case IRecord(decl) -> {
+        if decl.isForeign {
+          checkForeignRecordDecl(tbl, diag, decl)
+        }
         checkRecordDeclTypes(tbl, diag, decl)
         checkRecordArithDerives(diag, items[i].annotations, decl)
         checkArrayFieldDerives(

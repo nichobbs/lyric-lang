@@ -2683,3 +2683,23 @@ test "anything but one @message string after an invariant is P0345" {
   val notString = parse("package P\nrecord R {\n  x: Int\n  invariant: x > 0 @message(3)\n}\n")
   assertTrue(hasDiagCode(notString, "P0345"), "a non-string message")
 }
+
+test "foreign record parses as a record with the foreign flag" {
+  val pr = parse("package P\nforeign record Desc {\n  w: Int\n  h: Int\n}\n")
+  assertEqualInt(diagCount(pr), 0, "no diagnostics")
+  assertEqualInt(itemCount(pr), 1, "one item")
+  match pr.file.items[0].kind {
+    case IRecord(decl) -> {
+      assertTrue(decl.isForeign, "isForeign")
+      assertEqual(decl.name, "Desc", "name")
+    }
+    case _ -> assertTrue(false, "an IRecord item")
+  }
+  val plain = parse("package P\nrecord Desc {\n  w: Int\n}\n")
+  match plain.file.items[0].kind {
+    case IRecord(decl) -> assertTrue(not decl.isForeign, "an ordinary record is not foreign")
+    case _ -> assertTrue(false, "an IRecord item")
+  }
+  val ident = parse("package P\nfunc f(): Int {\n  val foreign = 1\n  foreign\n}\n")
+  assertEqualInt(diagCount(ident), 0, "foreign stays an ordinary identifier elsewhere")
+}

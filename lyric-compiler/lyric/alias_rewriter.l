@@ -1620,7 +1620,8 @@ func rewriteRecordDecl(aliases: in List[String], rd: in RecordDecl): RecordDecl 
     generics = rd.generics,
     whereClause = rewriteWhereClauseOpt(aliases, rd.whereClause),
     members = ms,
-    span = rd.span
+    span = rd.span,
+    isForeign = rd.isForeign
   )
 }
 

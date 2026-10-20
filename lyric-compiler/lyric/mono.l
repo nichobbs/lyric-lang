@@ -4886,7 +4886,8 @@ func desugarCopiesInRecord(state: in MonoState, decl: in RecordDecl): RecordDecl
     generics = decl.generics,
     whereClause = decl.whereClause,
     members = members,
-    span = decl.span
+    span = decl.span,
+    isForeign = decl.isForeign
   )
 }
 

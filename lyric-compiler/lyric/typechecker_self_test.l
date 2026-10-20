@@ -11611,3 +11611,49 @@ test "a test block body is type-checked" {
   val valueTail = "@test_module\npackage P\ntest \"t\" {\n  val y = 1\n}\n"
   assertEqualInt(diagCount(parseCheck(valueTail)), 0, "a test body ending in a binding")
 }
+
+// `foreign record` (D188): a C-layout struct of `Plain` values, `NativePtr[T]`,
+// arrays and other foreign records, written in place through a `var`.
+func foreignDecl(): String {
+  "package P\nforeign record Inner {\n  a: Int\n  b: Float\n}\nforeign record Desc {\n  w: Int\n  scale: Double\n  flags: array[4, Byte]\n  inner: Inner\n  user: NativePtr[Byte]\n}\n"
+}
+
+test "foreign record accepts C-layout fields" {
+  val cr = parseCheck(foreignDecl())
+  assertEqualInt(diagCount(cr), 0, "well-formed: " + diagCodesOf(cr))
+}
+
+test "foreign record is Plain, so it can be a buffer element" {
+  val cr = parseCheck(foreignDecl() + "func f(b: in buffer[Desc]): Int {\n  b[0].w\n}\n")
+  assertEqualInt(diagCount(cr), 0, "buffer[Desc]: " + diagCodesOf(cr))
+}
+
+test "foreign record shape rules are T0178" {
+  val genericRec = parseCheck("package P\nforeign record R[T] {\n  a: Int\n}\n")
+  assertTrue(hasDiagCode(genericRec, "T0178"), "genericRec: " + diagCodesOf(genericRec))
+  val mutField = parseCheck("package P\nforeign record R {\n  var a: Int\n}\n")
+  assertTrue(hasDiagCode(mutField, "T0178"), "var field: " + diagCodesOf(mutField))
+  val dflt = parseCheck("package P\nforeign record R {\n  a: Int = 1\n}\n")
+  assertTrue(hasDiagCode(dflt, "T0178"), "default: " + diagCodesOf(dflt))
+  val inv = parseCheck("package P\nforeign record R {\n  a: Int\n  invariant: a > 0\n}\n")
+  assertTrue(hasDiagCode(inv, "T0178"), "invariant: " + diagCodesOf(inv))
+}
+
+test "foreign record fields must have a C layout (T0179)" {
+  val str = parseCheck("package P\nforeign record R {\n  s: String\n}\n")
+  assertTrue(hasDiagCode(str, "T0179"), "String: " + diagCodesOf(str))
+  val ptrArr = parseCheck("package P\nforeign record R {\n  p: array[2, NativePtr[Byte]]\n}\n")
+  assertTrue(hasDiagCode(ptrArr, "T0179"), "array of NativePtr: " + diagCodesOf(ptrArr))
+  val ordinary = parseCheck("package P\nrecord V {\n  x: Int\n}\nforeign record R {\n  v: V\n}\n")
+  assertEqualInt(diagCount(ordinary), 0, "an ordinary Plain record is a fine field: " + diagCodesOf(ordinary))
+}
+
+test "a foreign record is written in place only through a var place (T0180)" {
+  val decl = "package P\nforeign record R {\n  w: Int\n}\n"
+  val bad = parseCheck(decl + "func f(r: in R): Unit {\n  r.w = 1\n}\n")
+  assertTrue(hasDiagCode(bad, "T0180") or hasDiagCode(bad, "T0050"), "in parameter: " + diagCodesOf(bad))
+  val okVar = parseCheck(decl + "func f(): Int {\n  var r = R(w = 0)\n  r.w = 5\n  r.w\n}\n")
+  assertEqualInt(diagCount(okVar), 0, "var local: " + diagCodesOf(okVar))
+  val okInout = parseCheck(decl + "func f(r: inout R): Unit {\n  r.w = 5\n}\n")
+  assertEqualInt(diagCount(okInout), 0, "inout parameter: " + diagCodesOf(okInout))
+}

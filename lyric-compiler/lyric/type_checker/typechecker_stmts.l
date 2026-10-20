@@ -506,6 +506,7 @@ pub func checkStatement(
       val targetType = inferExpr(sc, tbl, sigs, diag, target)
       exemptArrayCopy(tbl, target)
       checkArrayElementWrite(sc, tbl, sigs, diag, target)
+      checkForeignFieldWrite(sc, tbl, sigs, diag, target)
       val valueType = inferExprExpected(sc, tbl, sigs, diag, value, targetType)
       noteArrayStore(tbl, value, valueType)
       recordHoistedAssignValue(sc, tbl, target, value, valueType, targetType)
