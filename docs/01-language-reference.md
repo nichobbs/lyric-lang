@@ -2485,11 +2485,12 @@ extern func strlen(s: NativePtr[Byte]): Long = "strlen"
   to the bundled `_kernel_native/` kernels as well as to the program
   (#7933).
   Two argument adaptations apply at an `extern func` call and nowhere
-  else.  A parameter of function type `(P1, …, Pk, NativePtr[Byte]) -> R`
-  is a C callback whose last parameter is the userdata slot: it takes a
-  Lyric closure of type `(P1, …, Pk) -> R`, which the native backend wraps
-  in a C-ABI trampoline, and a closure of the full C signature is
-  rejected.  A closure value is also accepted for a `NativePtr[Byte]`
+  else.  A parameter of function type whose parameters include a
+  `NativeUserdata` (a `void*` marking the slot that carries the closure,
+  wherever the C API puts it), or, in the older spelling, end in
+  `NativePtr[Byte]`, is a C callback: it takes a Lyric closure of the same
+  type without the userdata slot, which the native backend wraps in a
+  C-ABI trampoline, and a closure of the full C signature is rejected.  A closure value is also accepted for a `NativePtr[Byte]`
   parameter, where it passes as the closure pointer itself, so the same
   closure can be handed to a C API as both the callback and its userdata.
   Any other value meets a `NativePtr[Byte]` parameter only if it is one;
@@ -2504,7 +2505,7 @@ extern func strlen(s: NativePtr[Byte]): Long = "strlen"
 **C structs, callbacks and buffers (D155; not yet implemented, docs/67 phase G3).**
 
 - `foreign record` declares a struct with C layout for the target triple. It is allowed only in kernel files and is not generic, its fields are `Plain` types, `NativePtr[T]`, `array[N, T]` or other foreign records, and it never appears in a library's public API: the kernel's safe wrappers take ordinary Lyric types. It is passed to C by value or by pointer (`nativeAddrOf` on a `var` local) under the platform C ABI. `foreign` is a contextual keyword, recognised only directly before `record`.
-- `@userdata` on a parameter of a callback function type names the parameter that carries the closure pointer, so a trampoline can be synthesised when the C API does not put userdata last.
+- `NativeUserdata`, written as a parameter type of a callback function type, names the parameter that carries the closure pointer, so a trampoline is synthesised for it when the C API does not put userdata last (SDL3 puts it first). It is a native-only built-in type like `NativeWeak[T]`; a closure passed in a `NativeUserdata` argument position lowers to the closure pointer, as for `NativePtr[Byte]`, and the type is under `N0100` like `NativePtr`.
 - `b.withPointer({ p: NativePtr[T] -> ... })` and `b.withMutPointer(...)` lend a buffer's storage to C for the duration of the closure and return its result (D187, `--target native` only: T0175 elsewhere); `withMutPointer` first makes the storage unique and needs a writable place (T0157). The closure writes its parameter's type (T0176), which puts the call under the `N0100` FFI boundary (a lambda parameter written `NativePtr[T]` is allowed only in `@unsafe_ffi` functions and `_kernel_native/` packages), and the pointer may not escape the closure: it may be only a call argument or a member receiver (`N0102`).
 
 Target-specific kernel selection follows the `_kernel_jvm/` precedent:

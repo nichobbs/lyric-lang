@@ -250,6 +250,34 @@ test "a foreign record is a C struct written in place and shared with C, under A
   )
 }
 
+// `NativeUserdata` marks the callback parameter that carries the closure, so
+// the C API may put it first or in the middle (docs/67 §4.8).
+test "a callback's userdata slot may be first or in the middle, with and without records, under ASan" {
+  val c = cHelper() + "double apply_first(double (*f)(void*, double), void* ud) { return f(ud, 20.0); }\n" +
+    "double apply_mid(double (*f)(double, void*, double), void* ud) { return f(1.0, ud, 2.0); }\n" +
+    "Vec3 apply_vec_first(Vec3 (*f)(void*, Vec3, float), void* ud) { Vec3 v = { 1, 2, 3 }; return f(ud, v, 2.0f); }\n" +
+    "double apply_big_mid(Big (*f)(int, void*, Big), void* ud) { Big b = { 1, 2, 3, 4 }; Big r = f(5, ud, b); return r.a + r.b + r.c + r.d; }\n"
+  val src = lyricDecls() +
+    "extern func apply_first(f: (NativeUserdata, Double) -> Double, ud: NativeUserdata): Double = \"apply_first\"\n" +
+    "extern func apply_mid(f: (Double, NativeUserdata, Double) -> Double, ud: NativeUserdata): Double = \"apply_mid\"\n" +
+    "extern func apply_vec_first(f: (NativeUserdata, Vec3, Float) -> Vec3, ud: NativeUserdata): Vec3 = \"apply_vec_first\"\n" +
+    "extern func apply_big_mid(f: (Int, NativeUserdata, Big) -> Big, ud: NativeUserdata): Double = \"apply_big_mid\"\n" +
+    "@unsafe_ffi\n" +
+    "func main(): Int {\n" +
+    "  val inc: (Double) -> Double = { x: Double -> x + 1.0 }\n" +
+    "  if apply_first(inc, inc) != 21.0 {\n    return 1\n  }\n" +
+    "  val mix: (Double, Double) -> Double = { a: Double, b: Double -> a * 10.0 + b }\n" +
+    "  if apply_mid(mix, mix) != 12.0 {\n    return 2\n  }\n" +
+    "  val scale: (Vec3, Float) -> Vec3 = { v: Vec3, k: Float -> Vec3(x = v.x * k, y = v.y * k, z = v.z * k) }\n" +
+    "  val r = apply_vec_first(scale, scale)\n" +
+    "  if r.x != 2.0f32 or r.y != 4.0f32 or r.z != 6.0f32 {\n    return 3\n  }\n" +
+    "  val grow: (Int, Big) -> Big = { n: Int, b: Big -> Big(a = b.a * n.toDouble(), b = b.b, c = b.c, d = b.d) }\n" +
+    "  if apply_big_mid(grow, grow) != 14.0 {\n    return 4\n  }\n" +
+    "  0\n" +
+    "}\n"
+  assertEqualInt(runWithC(src, c, true), 0, "every callback receives its arguments in C order")
+}
+
 func mainStub(): String = "func main(): Int {\n  0\n}\n"
 
 test "AArch64 declarations match clang's AAPCS64 lowering" {

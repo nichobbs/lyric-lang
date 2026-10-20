@@ -17657,19 +17657,50 @@ func isNativeBytePtrType(tbl: in SymbolTable, t: in Type): Bool {
 // such a callback type.
 func externCallbackClosureType(tbl: in SymbolTable, paramTy: in Type): Option[Type] {
   match unrefine(paramTy) {
-    case TyFunction(ps, ret, isAsync) -> if ps.count > 0 and isNativeBytePtrType(tbl, ps[ps.count - 1]) {
+    case TyFunction(ps, ret, isAsync) -> {
+      val ud = externCallbackUserdataIndex(tbl, ps)
+      if ud < 0 {
+        return None
+      }
       val reduced: List[Type] = newList()
       var i = 0
-      while i < ps.count - 1 {
-        reduced.add(ps[i])
+      while i < ps.count {
+        if i != ud {
+          reduced.add(ps[i])
+        }
         i = i + 1
       }
       Some(value = TyFunction(params = reduced, ret = ret, isAsync = isAsync))
-    } else {
-      None
     }
     case _ -> None
   }
+}
+
+// `NativeUserdata`: marks the parameter of an `extern func` callback type that
+// carries the closure pointer, wherever the C API puts it (SDL3 puts it first,
+// docs/67 §4.8).  It is a `void*` like `NativePtr[Byte]`.
+func isNativeUserdataType(tbl: in SymbolTable, t: in Type): Bool {
+  match mapGet(tbl.nativeIntrinsicTypes, "NativeUserdata") {
+    case Some(udId) -> match unrefine(t) { case TyUser(tid, _, _) -> typeIdEq(tid, udId); case _ -> false }
+    case None -> false
+  }
+}
+
+// The index of a callback signature's userdata slot: the first `NativeUserdata`
+// parameter, else (the older spelling) a trailing `NativePtr[Byte]`; -1 when
+// the signature has neither, so it is not a callback type.
+func externCallbackUserdataIndex(tbl: in SymbolTable, ps: in List[Type]): Int {
+  var i = 0
+  while i < ps.count {
+    if isNativeUserdataType(tbl, ps[i]) {
+      return i
+    }
+    i = i + 1
+  }
+  if ps.count > 0 and isNativeBytePtrType(tbl, ps[ps.count - 1]) {
+    return ps.count - 1
+  }
+  -1
 }
 
 // The type an argument to an `extern func` parameter is inferred against: the
@@ -17692,7 +17723,7 @@ func argSatisfiesExternParam(tbl: in SymbolTable, paramTy: in Type, argTy: in Ty
     case Some(closureTy) -> return argSatisfiesParam(tbl, closureTy, argTy)
     case None -> ()
   }
-  if isNativeBytePtrType(tbl, paramTy) {
+  if isNativeBytePtrType(tbl, paramTy) or isNativeUserdataType(tbl, paramTy) {
     match unrefine(argTy) {
       case TyFunction(_, _, _) -> return true
       case _ -> ()
@@ -17709,7 +17740,7 @@ func externCallbackHint(tbl: in SymbolTable, sig: in ResolvedSignature, paramTy:
   }
   match externCallbackClosureType(tbl, paramTy) {
     case Some(closureTy) -> " (an extern callback parameter takes a closure of type " + renderType(closureTy) +
-      ", without the trailing NativePtr[Byte] userdata slot)"
+      ", without the NativeUserdata slot)"
     case None -> ""
   }
 }

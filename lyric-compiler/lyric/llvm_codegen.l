@@ -811,6 +811,9 @@ pub func typeExprToNType(te: in TypeExpr): NType {
       if n == "Char" {
         return NI32
       }
+      if n == "NativeUserdata" {
+        return NPtr(pointee = NI8)
+      }
       if n == "String" {
         return lyricStringNType()
       }
@@ -1068,6 +1071,9 @@ func typeToNOpt(ctx: in Ctx, te: in TypeExpr): Option[NType] {
       }
       if n == "Byte" {
         return Some(value = NI8)
+      }
+      if n == "NativeUserdata" {
+        return Some(value = NPtr(pointee = NI8))
       }
       if n == "String" {
         return Some(value = lyricStringNType())
@@ -8332,31 +8338,45 @@ func isFunctionTypeExpr(t: in TypeExpr): Bool {
   }
 }
 
+/// The index of the parameter of an extern callback signature that carries the
+/// closure pointer: the first `NativeUserdata`, else a trailing `NativePtr[Byte]`
+/// (the older spelling); -1 when there is neither.
+func callbackUserdataIndex(parameters: in List[TypeExpr]): Int {
+  var i = 0
+  while i < parameters.count {
+    match parameters[i].kind {
+      case TRef(path) -> if lastSeg(path) == "NativeUserdata" { return i }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  if parameters.count > 0 and isBytePtrNType(typeExprToNType(parameters[parameters.count - 1])) {
+    return parameters.count - 1
+  }
+  -1
+}
+
 /// The Lyric-side expected type for a closure passed to an extern
-/// callback parameter: the callback signature minus its trailing
-/// userdata slot, as a closure struct pointer.
+/// callback parameter: the callback signature minus its userdata slot, as a
+/// closure struct pointer.
 func externCallbackClosureWant(ctx: in Ctx, t: in TypeExpr): NType {
   match t.kind {
     case TParen(inner) -> externCallbackClosureWant(ctx, inner)
     case TFunction(parameters, retTy) -> {
-      if parameters.count < 1 {
+      val ud = callbackUserdataIndex(parameters)
+      if ud < 0 {
         panic(
-          "Lyric.LlvmCodegen: an extern callback parameter must declare a trailing NativePtr[Byte] userdata slot (got a zero-parameter function type)"
-        )
-      }
-      val lastTy = typeExprToNType(parameters[parameters.count - 1])
-      if not isBytePtrNType(lastTy) {
-        panic(
-          "Lyric.LlvmCodegen: an extern callback parameter's last parameter must be NativePtr[Byte] (the userdata slot); got " +
-            nTypeToIrString(lastTy)
+          "Lyric.LlvmCodegen: an extern callback parameter must declare a NativeUserdata slot (or end in NativePtr[Byte])"
         )
       }
       // The closure's own types: a by-value record parameter is a struct
       // value, as the Lyric function the closure wraps takes it (#8009).
       val reduced: List[NType] = newList()
       var i = 0
-      while i < parameters.count - 1 {
-        reduced.add(typeToN(ctx, parameters[i]))
+      while i < parameters.count {
+        if i != ud {
+          reduced.add(typeToN(ctx, parameters[i]))
+        }
         i = i + 1
       }
       closureNType(ctx, reduced, typeToN(ctx, retTy))
@@ -8408,13 +8428,17 @@ func trampolineFor(ctx: in Ctx, t: in TypeExpr): String {
       val closTy = externCallbackClosureWant(ctx, t)
       val closStruct = match closTy { case NPtr(pointee) -> pointee; case _ -> panic("unreachable") }
       val name = "__lyric_cb_tramp." + ctx.trampolines.count.toString()
+      val udIdx = callbackUserdataIndex(parameters)
       val params: List[NParam] = newList()
       var pi = 0
-      while pi < rawParams.count - 1 {
-        params.add(NParam(name = "p" + pi.toString(), ty = rawParams[pi]))
+      while pi < rawParams.count {
+        if pi == udIdx {
+          params.add(NParam(name = "ud", ty = NPtr(pointee = NI8)))
+        } else {
+          params.add(NParam(name = "p" + pi.toString(), ty = rawParams[pi]))
+        }
         pi = pi + 1
       }
-      params.add(NParam(name = "ud", ty = NPtr(pointee = NI8)))
       val body: List[NInsn] = newList()
       body.add(NBitcast(dest = "hdr", fromTy = NPtr(pointee = NI8), value = NLocal(name = "ud"), toTy = closTy))
       val gArgs: List[NArg] = newList()
@@ -8425,8 +8449,10 @@ func trampolineFor(ctx: in Ctx, t: in TypeExpr): String {
       val lyricParams: List[NType] = newList()
       lyricParams.add(NPtr(pointee = NI8))
       var li = 0
-      while li < rawParams.count - 1 {
-        lyricParams.add(rawParams[li])
+      while li < rawParams.count {
+        if li != udIdx {
+          lyricParams.add(rawParams[li])
+        }
         li = li + 1
       }
       body.add(
@@ -8440,8 +8466,10 @@ func trampolineFor(ctx: in Ctx, t: in TypeExpr): String {
       val callArgs: List[NArg] = newList()
       callArgs.add(NArg(ty = NPtr(pointee = NI8), value = NLocal(name = "ud")))
       var ci = 0
-      while ci < rawParams.count - 1 {
-        callArgs.add(NArg(ty = rawParams[ci], value = NLocal(name = "p" + ci.toString())))
+      while ci < rawParams.count {
+        if ci != udIdx {
+          callArgs.add(NArg(ty = rawParams[ci], value = NLocal(name = "p" + ci.toString())))
+        }
         ci = ci + 1
       }
       match rawRet {
@@ -17491,6 +17519,7 @@ record CCallbackAbi {
   params: List[NType]
   ret: NType
   plan: CAbiPlan
+  userdata: Int
 }
 
 // A callback signature's own types and C ABI plan, when one of them is a
@@ -17515,7 +17544,14 @@ func callbackCAbi(ctx: in Ctx, parameters: in List[TypeExpr], retTy: in TypeExpr
   if not any {
     return None
   }
-  Some(value = CCallbackAbi(params = ps, ret = r, plan = cAbiPlanOf(ctx, ps, r)))
+  Some(
+    value = CCallbackAbi(
+      params = ps,
+      ret = r,
+      plan = cAbiPlanOf(ctx, ps, r),
+      userdata = callbackUserdataIndex(parameters)
+    )
+  )
 }
 
 /// The trampoline for a callback whose signature carries a by-value record:
@@ -17526,7 +17562,7 @@ func cAbiTrampoline(ctx: in Ctx, name: in String, closTy: in NType, cb: in CCall
   val n = cb.params.count
   val allocas: List[NInsn] = newList()
   val body: List[NInsn] = newList()
-  val udName = "p" + toString(n - 1)
+  val udName = "p" + toString(cb.userdata)
   body.add(NBitcast(dest = "hdr", fromTy = NPtr(pointee = NI8), value = NLocal(name = udName), toTy = closTy))
   val gArgs: List[NArg] = newList()
   gArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
@@ -17539,7 +17575,11 @@ func cAbiTrampoline(ctx: in Ctx, name: in String, closTy: in NType, cb: in CCall
   callArgs.add(NArg(ty = NPtr(pointee = NI8), value = NLocal(name = udName)))
   val scratchTy = NArray(elem = NI64, size = 2)
   var i = 0
-  while i < n - 1 {
+  while i < n {
+    if i == cb.userdata {
+      i = i + 1
+      continue
+    }
     val t = cb.params[i]
     val nm = "p" + toString(i)
     lyricParams.add(t)

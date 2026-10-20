@@ -5656,7 +5656,7 @@ pub func checkWithImportedPackagesForNative(
 // only on the native target, which alone has ARC.
 val ffiIntrinsicTypesSource: String = "package Lyric.NativeIntrinsics\n" + "extern type NativePtr[T] = \"lyric.native.NativePtr\"\n"
 
-val nativeIntrinsicTypesSource: String = ffiIntrinsicTypesSource + "extern type NativeWeak[T] = \"lyric.native.NativeWeak\"\n"
+val nativeIntrinsicTypesSource: String = ffiIntrinsicTypesSource + "extern type NativeWeak[T] = \"lyric.native.NativeWeak\"\n" + "extern type NativeUserdata = \"lyric.native.NativeUserdata\"\n"
 
 // Register the FFI intrinsic types with no declaring package, so every file
 // sees them bare with no import, as codegen does.  They are registered
