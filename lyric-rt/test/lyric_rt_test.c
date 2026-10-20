@@ -884,6 +884,46 @@ static void test_list_append_all(void) {
     lyric_release(rd);
 }
 
+static void test_buffer(void) {
+    LyricBuffer* b = lyric_buffer_new(4, (int64_t)sizeof(int32_t));
+    CHECK(b->len == 4);
+    CHECK(b->elem_size == 4);
+    CHECK(atomic_load(&b->rc) == 1);
+    int32_t* d = (int32_t*)b->data;
+    for (int i = 0; i < 4; i++) CHECK(d[i] == 0);         /* zero filled */
+    CHECK(((uintptr_t)b->data % 16) == 0);                 /* 16-byte aligned */
+    for (int i = 0; i < 4; i++) d[i] = i + 10;
+
+    /* Sole reference: unique hands back the same buffer, retained. */
+    LyricBuffer* u = lyric_buffer_unique(b);
+    CHECK(u == b);
+    CHECK(atomic_load(&b->rc) == 2);
+    lyric_release(u);
+    CHECK(atomic_load(&b->rc) == 1);
+
+    /* Shared: unique copies, and a write to the copy leaves the original. */
+    lyric_retain(b);
+    LyricBuffer* c = lyric_buffer_unique(b);
+    CHECK(c != b);
+    CHECK(atomic_load(&c->rc) == 1);
+    CHECK(atomic_load(&b->rc) == 2);
+    ((int32_t*)c->data)[0] = 99;
+    CHECK(((int32_t*)b->data)[0] == 10);
+    CHECK(((int32_t*)c->data)[3] == 13);
+    lyric_release(c);
+    lyric_release(b);
+    lyric_release(b);
+
+    LyricBuffer* empty = lyric_buffer_new(0, 8);
+    CHECK(empty->len == 0);
+    LyricBuffer* ec = lyric_buffer_copy(empty);
+    CHECK(ec->len == 0);
+    lyric_release(ec);
+    lyric_release(empty);
+    CHECK(lyric_buffer_copy(0) == 0);
+    CHECK(lyric_buffer_unique(0) == 0);
+}
+
 static void test_list_copy(void) {
     /* Ref elements: the copy retains; releasing the source leaves the
      * copy's elements alive. */
@@ -3606,6 +3646,7 @@ int main(void) {
     test_list_append_all();
     test_map_string_keys();
     test_list_copy();
+    test_buffer();
     test_list_slice_concat_append();
     test_list_bulk_builders();
 #ifndef __wasi__

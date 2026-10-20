@@ -266,6 +266,33 @@ void       lyric_list_append_all(LyricList* dst, LyricList* src);
 LyricList* lyric_list_append(LyricList* src, int64_t val);
 void       lyric_list_dtor(void* obj);
 
+/* ── Buffer (D185, docs/67 §4.4) ───────────────────────────────────────
+ * `buffer[T]`: a refcounted, contiguous, runtime-length sequence of `Plain`
+ * elements stored packed after the header, so its bytes can be handed to C.
+ * The codegen models it as the LLVM struct
+ * `{ i32, i32, i8*, i64 len, i64 elem_size, [0 x T] }` and reads the length
+ * and addresses elements itself; only construction and the copy-on-write
+ * step live here.  A `Plain` element holds no reference, so there is no
+ * per-element ownership and no destructor. */
+typedef struct {
+    _Atomic int32_t rc;
+    _Atomic int32_t weak;
+    void (*dtor)(void*);
+    int64_t         len;
+    int64_t         elem_size;
+    _Alignas(16) uint8_t data[];
+} LyricBuffer;
+
+/* Fresh rc=1 buffer of `len` zeroed elements of `elem_size` bytes; panics on a
+ * negative length or a size that overflows. */
+LyricBuffer* lyric_buffer_new(int64_t len, int64_t elem_size);
+/* Fresh rc=1 copy of `src` (a NULL `src` yields NULL). */
+LyricBuffer* lyric_buffer_copy(LyricBuffer* src);
+/* The buffer a write may modify, as an owned (+1) reference: `b` itself,
+ * retained, when it is the only reference, otherwise a fresh copy.  The
+ * copy-on-write step of `b[i] = v` (docs/67 §4.4). */
+LyricBuffer* lyric_buffer_unique(LyricBuffer* b);
+
 /* Concatenate every element of a List[String] into one fresh rc=1 string,
  * allocated once from the summed lengths — the native backing for
  * Std.String.StringBuilder (#7257).  Borrows `parts` (ARC Rule 5). */

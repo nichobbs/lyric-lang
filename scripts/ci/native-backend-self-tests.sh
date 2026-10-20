@@ -53,6 +53,7 @@ for t in \
   lyric-compiler/lyric/llvm_byvalue_record_self_test.l \
   lyric-compiler/lyric/llvm_inline_union_self_test.l \
   lyric-compiler/lyric/llvm_fixed_array_self_test.l \
+  lyric-compiler/lyric/llvm_buffer_self_test.l \
   lyric-compiler/lyric/llvm_ffi_self_test.l \
   lyric-compiler/lyric/llvm_c_abi_self_test.l \
   lyric-compiler/lyric/llvm_collections_self_test.l \
@@ -112,6 +113,8 @@ for t in \
   lyric-compiler/lyric/inout_self_param_self_test.l \
   lyric-compiler/lyric/propagate_ctor_operand_self_test.l \
   lyric-compiler/lyric/fixed_array_self_test.l \
+  lyric-compiler/lyric/buffer_self_test.l \
+  lyric-compiler/lyric/buffer_spawn_self_test.l \
   lyric-compiler/lyric/value_generic_record_self_test.l \
   lyric-compiler/lyric/value_generic_protected_self_test.l \
   lyric-compiler/lyric/dotted_generic_func_self_test.l \

@@ -3550,6 +3550,13 @@ test "a buffer has only length, indexing and for: T0113" {
   assertTrue(hasDiagCode(parseCheck(src), "T0113"), diagCodesOf(parseCheck(src)))
 }
 
+test "the buffer bridge members are usable only inside Std.Buffer" {
+  val src = "package P\nfunc f(b: in buffer[Int]): Int {\n  val l = b.__lyric_buffer_as_list()\n  0\n}\n"
+  val cr = parseCheck(src)
+  assertTrue(diagCount(cr) > 0, "rejected outside Std.Buffer: " + diagCodesOf(cr))
+  assertTrue(diagMessagesContain(cr, "__lyric_buffer_as_list"), "the diagnostic names the member")
+}
+
 test "a record holding a buffer cannot derive Equals: T0159" {
   val src = "package P\n@derive(Equals)\nrecord R { b: buffer[Int] }\n"
   assertTrue(hasDiagCode(parseCheck(src), "T0159"), diagCodesOf(parseCheck(src)))

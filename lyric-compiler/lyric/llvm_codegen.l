@@ -492,6 +492,9 @@ record Ctx {
   // LyricList / LyricMap C layouts — the per-instantiation struct name
   // only preserves the Lyric-level element typing for method lowering.
   listElems: Map[String, NType]
+  // `buffer[T]` instantiations already given a struct definition, by struct name
+  // (D185); the element type is read back from the struct's own last field.
+  bufferElems: Map[String, NType]
   mapKeyTys: Map[String, NType]
   mapValTys: Map[String, NType]
   // Interface registries (N3.2), module-wide.  `ifaceInfos` maps both the
@@ -3577,6 +3580,11 @@ func lowerMember(ctx: in Ctx, insns: in List[NInsn], receiver: in Expr, memberNa
       case None -> {
       }
     }
+    match bufferElemOfType(ctx, v.ty) {
+      case Some(_) -> return bufferCountVal(ctx, insns, v)
+      case None -> {
+      }
+    }
     match mapKeyOfType(ctx, v.ty) {
       case Some(_) -> {
         val n = callRuntime(ctx, insns, "lyric_map_len", NI64, arg1(NPtr(pointee = NI8), collectionAsI8(ctx, insns, v)))
@@ -4904,6 +4912,9 @@ func lowerCallEx(
         val n = path.segments[0]
         if n == arrayCopyIntrinsic() and args.count == 1 {
           return lowerPositionalArg(ctx, insns, args, 0)
+        }
+        if n == bufferUniqueIntrinsic() and args.count == 1 {
+          return lowerBufferUniqueCall(ctx, insns, args)
         }
         if n == arrayUncheckedIntrinsic() and args.count == 1 {
           return lowerPositionalArg(ctx, insns, args, 0)
@@ -7206,6 +7217,12 @@ func copyArrayValue(ctx: in Ctx, insns: in List[NInsn], v: in NVal, arrTe: in Op
     case NArray(_, _) -> return v
     case _ -> ()
   }
+  // A buffer is copied when a write meets shared storage (docs/67 §4.4), not
+  // when it is stored: the binding that holds it retains it.
+  match bufferElemOfType(ctx, v.ty) {
+    case Some(_) -> return v
+    case None -> ()
+  }
   val elemTy = match listElemOfType(ctx, v.ty) { case Some(t) -> t; case None -> return v }
   val elemTe: Option[TypeExpr] = match arrTe { case Some(te) -> arrayElemTypeExpr(te); case None -> None }
   val nested = match elemTe {
@@ -8497,6 +8514,173 @@ func listElemOfType(ctx: in Ctx, t: in NType): Option[NType] {
   }
 }
 
+// ─── buffer[T] (D185, docs/67 §4.4) ──────────────────────────────────────────
+// A refcounted block `{ header, i64 len, i64 elem_size, [0 x T] data }` mirroring
+// the C `LyricBuffer`: the elements are `Plain`, so they are packed by value
+// after the header and carry no ownership of their own.
+val bufferLenSlot: Int = 3
+
+val bufferDataSlot: Int = 5
+
+func bufferNType(ctx: in Ctx, elem: in NType): NType {
+  val nm = "__buffer<" + mangleNTypeArg(elem) + ">"
+  val fields: List[NType] = newList()
+  addArcHeader(fields)
+  fields.add(NI64)
+  fields.add(NI64)
+  fields.add(NArray(elem = elem, size = 0))
+  if not ctx.bufferElems.containsKey(nm) {
+    ctx.bufferElems.add(nm, elem)
+    ctx.moduleTypeDefs.add(NTypeDefn(name = nm, fields = fields))
+  }
+  NPtr(pointee = NStruct(name = nm, fields = fields))
+}
+
+func bufferElemOfType(ctx: in Ctx, t: in NType): Option[NType] {
+  match t {
+    case NPtr(pointee) -> match pointee { case NStruct(name, _) -> mapGet(ctx.bufferElems, name); case _ -> None }
+    case _ -> None
+  }
+}
+
+func bufferStructTy(t: in NType): NType {
+  match t {
+    case NPtr(pointee) -> pointee
+    case _ -> panic("Lyric.LlvmCodegen: internal — a buffer value that is not a pointer")
+  }
+}
+
+/// The element count of a buffer, as an `i64`.
+func bufferLenVal(ctx: in Ctx, insns: in List[NInsn], buf: in NVal): NVal {
+  val lenPtr = freshTmp(ctx)
+  val gArgs: List[NArg] = newList()
+  gArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  gArgs.add(NArg(ty = NI32, value = NLitInt(v = bufferLenSlot.toLong(), ty = NI32)))
+  insns.add(NGEP(dest = lenPtr, ty = bufferStructTy(buf.ty), ptr = buf.value, indices = gArgs))
+  val dest = freshTmp(ctx)
+  insns.add(NLoad(dest = dest, ty = NI64, ptr = NLocal(name = lenPtr)))
+  NVal(ty = NI64, value = NLocal(name = dest))
+}
+
+/// `buffer.length` / `.count`, as an `Int`.
+func bufferCountVal(ctx: in Ctx, insns: in List[NInsn], buf: in NVal): NVal {
+  val n = bufferLenVal(ctx, insns, buf)
+  val dest = freshTmp(ctx)
+  insns.add(NTrunc(dest = dest, fromTy = NI64, value = n.value, toTy = NI32))
+  NVal(ty = NI32, value = NLocal(name = dest))
+}
+
+/// The address of element `idx` (an `i64`) of `buf`.
+func bufferElemPtr(ctx: in Ctx, insns: in List[NInsn], buf: in NVal, elem: in NType, idx: in NValue): NVal {
+  val dest = freshTmp(ctx)
+  val gArgs: List[NArg] = newList()
+  gArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  gArgs.add(NArg(ty = NI32, value = NLitInt(v = bufferDataSlot.toLong(), ty = NI32)))
+  gArgs.add(NArg(ty = NI64, value = idx))
+  insns.add(NGEP(dest = dest, ty = bufferStructTy(buf.ty), ptr = buf.value, indices = gArgs))
+  NVal(ty = NPtr(pointee = elem), value = NLocal(name = dest))
+}
+
+/// A fresh zeroed buffer of `len` (an `i64`) elements, an owned temporary.
+func constructBuffer(ctx: in Ctx, insns: in List[NInsn], elem: in NType, len: in NValue): NVal {
+  val nArgs: List[NArg] = newList()
+  nArgs.add(NArg(ty = NI64, value = len))
+  nArgs.add(NArg(ty = NI64, value = NLitInt(v = sizeOfN(ctx, elem).toLong(), ty = NI64)))
+  val raw = callRuntime(ctx, insns, "lyric_buffer_new", NPtr(pointee = NI8), nArgs)
+  val ty = bufferNType(ctx, elem)
+  val dest = freshTmp(ctx)
+  insns.add(NBitcast(dest = dest, fromTy = NPtr(pointee = NI8), value = raw.value, toTy = ty))
+  val outV = NVal(ty = ty, value = NLocal(name = dest))
+  registerTemp(ctx, outV)
+  outV
+}
+
+/// `__lyric_buffer_unique(b)`: the buffer a write may modify, an owned
+/// reference (`b` itself when it is the only reference, else a copy).
+func lowerBufferUniqueCall(ctx: in Ctx, insns: in List[NInsn], args: in List[CallArg]): NVal {
+  val b = lowerPositionalArg(ctx, insns, args, 0)
+  val raw = callRuntime(
+    ctx,
+    insns,
+    "lyric_buffer_unique",
+    NPtr(pointee = NI8),
+    arg1(NPtr(pointee = NI8), collectionAsI8(ctx, insns, b))
+  )
+  val dest = freshTmp(ctx)
+  insns.add(NBitcast(dest = dest, fromTy = NPtr(pointee = NI8), value = raw.value, toTy = b.ty))
+  val outV = NVal(ty = b.ty, value = NLocal(name = dest))
+  registerTemp(ctx, outV)
+  outV
+}
+
+/// A counted loop `for i in 0 ..< limit` whose body `emitBody` fills in.
+func emitCountedLoop(ctx: in Ctx, insns: in List[NInsn], limit: in NValue, emitBody: in (NValue) -> Unit): Unit {
+  val idxSlot = "bufloop.idx." + freshTmp(ctx)
+  ctx.allocas.add(NAlloca(dest = idxSlot, ty = NI64))
+  insns.add(NStore(ty = NI64, value = NLitInt(v = 0i64, ty = NI64), ptr = NLocal(name = idxSlot)))
+  val condL = freshLabel(ctx, "bufloop.cond")
+  val bodyL = freshLabel(ctx, "bufloop.body")
+  val exitL = freshLabel(ctx, "bufloop.exit")
+  insns.add(NBr(label = condL))
+  insns.add(NLabel(name = condL))
+  val cur = freshTmp(ctx)
+  insns.add(NLoad(dest = cur, ty = NI64, ptr = NLocal(name = idxSlot)))
+  val cmp = freshTmp(ctx)
+  insns.add(NICmp(dest = cmp, pred = ISlt, ty = NI64, a = NLocal(name = cur), b = limit))
+  insns.add(NCondBr(cond = NLocal(name = cmp), thenLabel = bodyL, elseLabel = exitL))
+  insns.add(NLabel(name = bodyL))
+  pushTempScope(ctx)
+  emitBody(NLocal(name = cur))
+  popTempScope(ctx, insns)
+  val next = freshTmp(ctx)
+  insns.add(NAdd(dest = next, ty = NI64, a = NLocal(name = cur), b = NLitInt(v = 1i64, ty = NI64)))
+  insns.add(NStore(ty = NI64, value = NLocal(name = next), ptr = NLocal(name = idxSlot)))
+  insns.add(NBr(label = condL))
+  insns.add(NLabel(name = exitL))
+}
+
+/// `list.__lyric_buffer_from_list()`: a buffer holding a copy of the list's
+/// elements (`Std.Buffer`'s bridge from the managed representation).
+func lowerBufferFromList(ctx: in Ctx, insns: in List[NInsn], list: in NVal, elem: in NType): NVal {
+  val listP = collectionAsI8(ctx, insns, list)
+  val lenV = callRuntime(ctx, insns, "lyric_list_len", NI64, arg1(NPtr(pointee = NI8), listP))
+  val buf = constructBuffer(ctx, insns, elem, lenV.value)
+  emitCountedLoop(
+    ctx,
+    insns,
+    lenV.value,
+    { i: NValue ->
+      val gArgs: List[NArg] = newList()
+      gArgs.add(NArg(ty = NPtr(pointee = NI8), value = listP))
+      gArgs.add(NArg(ty = NI64, value = i))
+      val slot = callRuntime(ctx, insns, "lyric_list_get", NI64, gArgs)
+      val v = valOfSlot(ctx, insns, slot.value, elem)
+      val ptr = bufferElemPtr(ctx, insns, buf, elem, i)
+      insns.add(NStore(ty = elem, value = v.value, ptr = ptr.value))
+    }
+  )
+  buf
+}
+
+/// `buffer.__lyric_buffer_as_list()`: a list holding a copy of the elements.
+func lowerBufferAsList(ctx: in Ctx, insns: in List[NInsn], buf: in NVal, elem: in NType): NVal {
+  val dst = constructList(ctx, insns, elem)
+  val dstP = collectionAsI8(ctx, insns, dst)
+  val lenV = bufferLenVal(ctx, insns, buf)
+  emitCountedLoop(
+    ctx,
+    insns,
+    lenV.value,
+    { i: NValue ->
+      val ptr = bufferElemPtr(ctx, insns, buf, elem, i)
+      val dest = freshTmp(ctx)
+      insns.add(NLoad(dest = dest, ty = elem, ptr = ptr.value))
+      pushToList(ctx, insns, dstP, NVal(ty = elem, value = NLocal(name = dest)))
+    }
+  )
+  dst
+}
+
 func mapKeyOfType(ctx: in Ctx, t: in NType): Option[NType] {
   match t {
     case NPtr(pointee) -> {
@@ -9225,9 +9409,21 @@ func lowerCollectionMethodCall(
   name: in String,
   args: in List[CallArg],
 ): Option[NVal] {
+  match bufferElemOfType(ctx, recv.ty) {
+    case Some(elem) -> {
+      if name == bufferAsListMember() and args.count == 0 {
+        return Some(value = lowerBufferAsList(ctx, insns, recv, elem))
+      }
+    }
+    case None -> {
+    }
+  }
   match listElemOfType(ctx, recv.ty) {
     case Some(elem) -> {
       val recvP = collectionAsI8(ctx, insns, recv)
+      if name == bufferFromListMember() and args.count == 0 {
+        return Some(value = lowerBufferFromList(ctx, insns, recv, elem))
+      }
       if name == "add" and args.count == 1 {
         val v = lowerCallArgExpecting(ctx, insns, args, 0, elem)
         val pArgs: List[NArg] = newList()
@@ -9619,6 +9815,18 @@ func lowerCollectionIndex(
       gArgs.add(NArg(ty = NI64, value = idx.value))
       val slot = callRuntime(ctx, insns, "lyric_list_get", NI64, gArgs)
       return valOfSlot(ctx, insns, slot.value, elem)
+    }
+    case None -> {
+    }
+  }
+  match bufferElemOfType(ctx, recv.ty) {
+    case Some(elem) -> {
+      // The lowering has already checked the index against the length.
+      val idx = lowerExprExpecting(ctx, insns, indices[0], NI64)
+      val ptr = bufferElemPtr(ctx, insns, recv, elem, idx.value)
+      val dest = freshTmp(ctx)
+      insns.add(NLoad(dest = dest, ty = elem, ptr = ptr.value))
+      return NVal(ty = elem, value = NLocal(name = dest))
     }
     case None -> {
     }
@@ -10029,6 +10237,17 @@ func typeToNEnvOpt(ctx: in Ctx, te: in TypeExpr, envNames: in List[String], envT
       }
       if bare == "Map" and argTys.count == 2 {
         return Some(value = mapNType(ctx, argTys[0], argTys[1]))
+      }
+      // The built-in `buffer[T]` (D185): `T` is `Plain`, so it has no
+      // ownership of its own.
+      if bare == "buffer" and argTys.count == 1 {
+        if isRefNType(argTys[0]) {
+          panic(
+            "error[N0021] " + te.span.startPos.line.toString() + ":" + te.span.startPos.column.toString() +
+              ": a buffer element must be a `Plain` value type with no native reference (docs/67 §4.4)"
+          )
+        }
+        return Some(value = bufferNType(ctx, argTys[0]))
       }
       // NativePtr[T] with a registry-resolved pointee (kernel out-params
       // like NativePtr[slice[Byte]]; the plain-scalar cases also resolve
@@ -10714,6 +10933,11 @@ func unifyTyArg(
                   val headName = modulePathJoin(head.segments)
                   if headName == "List" and targs.count == 1 {
                     match listElemOfType(ctx, argTy) {
+                      case Some(et) -> unifyTypeArgWith(ctx, targs[0], et, paramNames, boundNames, boundTys)
+                      case None -> ()
+                    }
+                  } else if headName == "buffer" and targs.count == 1 {
+                    match bufferElemOfType(ctx, argTy) {
                       case Some(et) -> unifyTypeArgWith(ctx, targs[0], et, paramNames, boundNames, boundTys)
                       case None -> ()
                     }
@@ -14497,6 +14721,68 @@ func combineIndexedAssignValue(
   }
 }
 
+/// `b[i] = v` / `b[i] op= v` where `b` is a place holding a buffer; false when
+/// the receiver is not one.  Copy on write (docs/67 §4.4): the place first takes
+/// the buffer a write may modify, so a buffer other bindings still hold is left
+/// alone.  The checker guarantees the receiver is a stable place, so reading it
+/// again afterwards is the buffer just stored.
+func lowerBufferElemAssign(
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  receiver: in Expr,
+  idxExpr: in Expr,
+  op: in AssignOp,
+  value: in Expr,
+  line: in Int,
+): Bool {
+  val bufTy = match placeNType(ctx, receiver) { case Some(t) -> t; case None -> return false }
+  val elem = match bufferElemOfType(ctx, bufTy) { case Some(e) -> e; case None -> return false }
+  val sp = receiver.span
+  val calleeSegs: List[String] = newList()
+  calleeSegs.add(bufferUniqueIntrinsic())
+  val callee = Expr(kind = EPath(path = ModulePath(segments = calleeSegs, span = sp)), span = sp)
+  val uargs: List[CallArg] = newList()
+  uargs.add(CAPositional(expr = receiver))
+  val unique = Expr(kind = ECall(fn = callee, args = uargs), span = sp)
+  // The fast path is one load and a branch: a buffer nothing else references is
+  // written in place.  Only a shared one takes the copy and stores it back.
+  val current = lowerExpr(ctx, insns, receiver)
+  val rcPtr = freshTmp(ctx)
+  val rcArgs: List[NArg] = newList()
+  rcArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  rcArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+  insns.add(NGEP(dest = rcPtr, ty = bufferStructTy(current.ty), ptr = current.value, indices = rcArgs))
+  val rc = freshTmp(ctx)
+  insns.add(NLoad(dest = rc, ty = NI32, ptr = NLocal(name = rcPtr)))
+  val shared = freshTmp(ctx)
+  insns.add(NICmp(dest = shared, pred = INe, ty = NI32, a = NLocal(name = rc), b = NLitInt(v = 1i64, ty = NI32)))
+  val copyL = freshLabel(ctx, "bufw.copy")
+  val writeL = freshLabel(ctx, "bufw.write")
+  insns.add(NCondBr(cond = NLocal(name = shared), thenLabel = copyL, elseLabel = writeL))
+  insns.add(NLabel(name = copyL))
+  pushTempScope(ctx)
+  lowerAssign(ctx, insns, receiver, AssEq, unique, line)
+  popTempScope(ctx, insns)
+  insns.add(NBr(label = writeL))
+  insns.add(NLabel(name = writeL))
+  val buf = lowerExpr(ctx, insns, receiver)
+  val idx = lowerExprExpecting(ctx, insns, idxExpr, NI64)
+  val ptr = bufferElemPtr(ctx, insns, buf, elem, idx.value)
+  val newVal = match op {
+    case AssEq -> lowerExprExpecting(ctx, insns, value, elem)
+    case _ -> {
+      // The right-hand side is evaluated before the element is read, as for a
+      // list element (`combineIndexedAssignValue`).
+      val rhs = lowerExpr(ctx, insns, value)
+      val curDest = freshTmp(ctx)
+      insns.add(NLoad(dest = curDest, ty = elem, ptr = ptr.value))
+      combineIndexedAssignValue(ctx, insns, op, elem, NVal(ty = elem, value = NLocal(name = curDest)), rhs, line)
+    }
+  }
+  insns.add(NStore(ty = elem, value = newVal.value, ptr = ptr.value))
+  true
+}
+
 /// `xs[i] = e` / `xs[i] op= e` on a `List[T]` (and, since `slice[T]` shares
 /// `List[T]`'s runtime representation, D-N-015, also `slice[T]`) or
 /// `Map[K, V]` receiver (issue #6811/#6808: `Std.HttpEngine.Hpack`'s
@@ -14518,6 +14804,9 @@ func lowerIndexAssign(
     panic("Lyric.LlvmCodegen: indexed assignment takes exactly one index for --target native")
   }
   if lowerArrayElemAssign(ctx, insns, receiver, indices[0], op, value, line) {
+    return
+  }
+  if lowerBufferElemAssign(ctx, insns, receiver, indices[0], op, value, line) {
     return
   }
   val recv = lowerExpr(ctx, insns, receiver)
@@ -14867,6 +15156,7 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     trampolines = mod.trampolines,
     weakTargets = mod.weakTargets,
     listElems = mod.listElems,
+    bufferElems = mod.bufferElems,
     mapKeyTys = mod.mapKeyTys,
     mapValTys = mod.mapValTys,
     ifaceInfos = mod.ifaceInfos,
@@ -15469,6 +15759,9 @@ func runtimeDecls(): List[NFunc] {
   decls.add(mkDecl3("lyric_list_slice", p8, p8, NI64, NI64))
   decls.add(mkDecl2("lyric_list_concat", p8, p8, p8))
   decls.add(mkDecl2("lyric_list_append", p8, p8, NI64))
+  decls.add(mkDecl2("lyric_buffer_new", p8, NI64, NI64))
+  decls.add(mkDecl1("lyric_buffer_copy", p8, p8))
+  decls.add(mkDecl1("lyric_buffer_unique", p8, p8))
   decls.add(mkDecl2("lyric_args_set", NVoid, NI32, NPtr(pointee = p8)))
   decls.add(mkDecl2("lyric_map_new", p8, NI32, NI32))
   decls.add(mkDecl3("lyric_map_set", NVoid, p8, NI64, NI64))
@@ -15860,6 +16153,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     trampolines = newMap(),
     weakTargets = emptyWeakTargets,
     listElems = newMap(),
+    bufferElems = newMap(),
     mapKeyTys = newMap(),
     mapValTys = newMap(),
     ifaceInfos = newMap(),

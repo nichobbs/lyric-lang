@@ -1458,6 +1458,10 @@ pub func bufferAsListMember(): String = "__lyric_buffer_as_list"
 
 pub func bufferFromListMember(): String = "__lyric_buffer_from_list"
 
+/// `__lyric_buffer_unique(b)`: the buffer a write to the place `b` may modify
+/// (the native backend's copy-on-write step, docs/67 §4.4).
+pub func bufferUniqueIntrinsic(): String = "__lyric_buffer_unique"
+
 pub func arrayUncheckedIntrinsic(): String = "__lyric_unchecked"
 
 /// The reserved key that puts `Lyric.TypeAliasResolve.resolveAliasesInFile`
