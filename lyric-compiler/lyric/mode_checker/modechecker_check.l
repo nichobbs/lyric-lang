@@ -1910,6 +1910,7 @@ func isPathNamed(e: in Expr, name: in String): Bool {
 func n0100PointerUses(ctx: in N0100Ctx, name: in String, body: in Block, sp: in Span): Unit {
   val total: List[Int] = newList()
   val allowed: List[Int] = newList()
+  val captured: List[Int] = newList()
   val probe = { x: Expr ->
     if isPathNamed(x, name) {
       total.add(1)
@@ -1924,12 +1925,15 @@ func n0100PointerUses(ctx: in N0100Ctx, name: in String, body: in Block, sp: in 
         }
       }
       case EMember(recv, _) -> if isPathNamed(recv, name) { allowed.add(1) }
+      // An inner closure that mentions the pointer holds it past the call,
+      // wherever in that closure it appears.
+      case ELambda(_, inner) -> if n0100BlockMentions(inner, name) { captured.add(1) }
       case _ -> ()
     }
     x
   }
   val _ = mapBlock(body, probe)
-  if total.count > allowed.count {
+  if total.count > allowed.count or captured.count > 0 {
     ctx.diag.add(
       errorDiagnostic(
         "N0102",
@@ -1939,6 +1943,13 @@ func n0100PointerUses(ctx: in N0100Ctx, name: in String, body: in Block, sp: in 
       )
     )
   }
+}
+
+func n0100BlockMentions(b: in Block, name: in String): Bool {
+  val seen: List[Int] = newList()
+  val probe = { x: Expr -> if isPathNamed(x, name) { seen.add(1) }; x }
+  val _ = mapBlock(b, probe)
+  seen.count > 0
 }
 
 // A lambda body is its own stack frame: nativeAddrOf inside it may

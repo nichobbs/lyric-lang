@@ -18,8 +18,9 @@
    signature or a local.
 4. **The pointer does not escape.** Inside the closure the parameter may appear
    only as a call argument or a member receiver; returning, binding, assigning
-   or capturing it is **N0102**. Deeper aliasing is out of scope, as for
-   `nativeAddrOf`.
+   or capturing it is **N0102**. A nested closure that mentions the pointer anywhere
+   holds it past the call, so it is `N0102` too. Deeper aliasing is out of scope,
+   as for `nativeAddrOf`.
 5. **Result type.** The checker records the closure's result type for each call
    (T0177 when it cannot be written out), and the shared lowering binds the
    closure literal to an annotated `val` before the call, so the backend has the

@@ -20,6 +20,6 @@ buffer's packed elements to a closure on `--target native` and return its result
 - From the `#8392` review: a threading note on `lyric_buffer_unique` and a C test
   for the size-overflow panic.
 
-Open under #7941: the verifier's array model, the `lyric lint` rule, the lazy
-managed form (#8389), a native `filled` that skips the list, and the JVM spawn
-argument copy (#8391).
+Tracked separately: the verifier's sequence model (#8394), the copy-before-loop
+diagnostic (#8395), the lazy managed form (#8389), a native `filled` that skips
+the list, and the JVM spawn argument copy (#8391).

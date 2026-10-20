@@ -459,6 +459,26 @@ val w = xs[j]                    // bounds check happens at runtime; may panic
 
 This is the payoff that §2.2 previewed. A range-typed index is not just documentation — it eliminates real overhead in hot paths. The type does the work.
 
+**Buffers.** An array's length is part of its type. When the length is only known at run time, and the elements are plain numeric or record data (vertices, pixels, audio samples), use a `buffer[T]`. It behaves like an array in every way you can observe: it is a value, so assigning, passing or returning one is a logical copy and a write through one binding is never seen through another.
+
+```lyric
+import Std.Buffer
+
+record Vertex { x: Float; y: Float }
+
+var vs: buffer[Vertex] = filled(4, Vertex(x = 0.0, y = 0.0))
+vs[1] = vs[1].copy(y = 2.0)       // written in place through a var local
+val n = vs.length                 // known at run time
+
+var other = vs
+other[0] = Vertex(x = 9.0, y = 9.0)
+// vs[0] is still the zero vertex
+```
+
+The element type must be `Plain`, meaning its bit pattern is its whole meaning: the numeric types, `Bool`, `Char`, enums, records of those with no `var` field and no `invariant:`, and arrays of those. A `String`, a `List`, a range subtype or a record with an invariant is T0173 as an element, with a message naming the part that is not `Plain`; convert such a value at the boundary instead. The length is fixed when the buffer is made; `Std.Buffer` has `filled`, `fromSlice`, `view`, `toSlice`, `grow` and `truncate`. An index goes through a variable or a field path (T0174), and is bounds-checked against the buffer's own length.
+
+The cost of the value semantics depends on the target. On `--target native` a buffer is a packed, reference-counted block: copying one shares the block, and the first write after a copy takes a private copy, so writing to a buffer nothing else holds is an in-place store. On the dotnet and JVM targets a buffer is a list that is copied at each logical copy, which is O(n); prefer native for large buffers that are passed around. On native, `withPointer` and `withMutPointer` lend the packed elements to C inside `@unsafe_ffi` code (§13).
+
 ## §3.6 Choosing the right structure
 
 Every data modelling problem in Lyric involves a choice between these forms. Here is a quick guide.

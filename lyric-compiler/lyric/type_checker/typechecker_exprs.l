@@ -1313,7 +1313,7 @@ func nativeIntrinsicCallType(
   }
   // `nativeAddrOf` and `NativeWeak` lower only on the native target, which
   // registers `NativeWeak`; elsewhere they are unknown names (D158).
-  if name != "nativeNullPtr" and not tbl.nativeIntrinsicTypes.containsKey("NativeWeak") {
+  if name != "nativeNullPtr" and not checkingForNative(tbl) {
     return None
   }
   val argTypes: List[Type] = newList()
@@ -1333,6 +1333,10 @@ func nativeIntrinsicCallType(
   }
   nativeIntrinsicType(tbl, "NativeWeak", argTypes[0])
 }
+
+// Whether this check is for a `--target native` build: only then are the native
+// intrinsic types (`NativeWeak`) registered.
+func checkingForNative(tbl: in SymbolTable): Bool = tbl.nativeIntrinsicTypes.containsKey("NativeWeak")
 
 // A closure literal with one parameter whose type is written.
 func isAnnotatedPointerLambda(e: in Expr): Bool {
@@ -1393,7 +1397,7 @@ func bufferPointerCallType(
       )
     )
   }
-  if not tbl.nativeIntrinsicTypes.containsKey("NativeWeak") {
+  if not checkingForNative(tbl) {
     diag.add(
       errorDiagnostic("T0175", name + " lends a buffer's address to C code and exists only on --target native", span)
     )

@@ -597,6 +597,10 @@ test "n0102 the lent pointer may not escape the closure" {
   assertTrue(hasDiagCode(returned, "N0102"), "returned: N0102")
   val bound = parseCheck(head + "  b.withPointer({ p: NativePtr[Byte] ->\n    val q = p\n    1\n  })\n}\n")
   assertTrue(hasDiagCode(bound, "N0102"), "bound to a local: N0102")
+  val captured = parseCheck(
+    head + "  b.withPointer({ p: NativePtr[Byte] ->\n    val g = { -> w(p, 1) }\n    1\n  })\n}\n"
+  )
+  assertTrue(hasDiagCode(captured, "N0102"), "captured by an inner closure: N0102")
   val used = parseCheck(head + "  b.withPointer({ p: NativePtr[Byte] -> w(p, 1) })\n}\n")
   assertTrue(not (hasDiagCode(used, "N0102")), "passed to a call: no N0102")
   assertTrue(not (hasDiagCode(used, "N0100")), "inside @unsafe_ffi: no N0100")

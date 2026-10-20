@@ -1,10 +1,15 @@
 # 67 - Native graphics, GPU and windowing: implementation plan (sketch)
 
 **Status:** Specced in D155 (phase G0): Q-GFX-001 to Q-GFX-004 are
-resolved, `docs/01` specifies the §4 language features as not yet
-implemented, and `docs/00` / `docs/04` carry the §4.9 revisions. Phases G1
-to G10 are open; G1's 32-bit `Float` (§4.1) and component-wise record
-arithmetic (§4.6) have shipped on every backend.
+resolved and `docs/00` / `docs/04` carry the §4.9 revisions. G1 is done
+(32-bit `Float`, by-value records and unions, `array[N, T]`, component-wise
+record arithmetic). G2 is implemented: the `Plain` marker, `buffer[T]` on
+dotnet, the JVM (D185) and native (D186), `Std.Buffer`, and `withPointer` /
+`withMutPointer` (D187); the verifier's sequence model (#8394) and the
+copy-before-loop diagnostic (#8395) are tracked separately, as are the lazy
+managed form (#8389) and the JVM `spawn` argument copy (#8391). Phases G3 to
+G10 are open; `docs/01` §11.6 still marks G3's features as not yet
+implemented.
 D156 and D157 resolve Q-GFX-005 to Q-GFX-010 (§10).
 
 **Builds on:** `native/plan/` (the LLVM backend, D-N-001 onward),
