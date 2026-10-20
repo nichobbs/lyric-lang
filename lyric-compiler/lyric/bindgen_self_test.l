@@ -158,6 +158,19 @@ test "a function-pointer struct member becomes a callback-typed field of a forei
   assertTrue(Str.contains(r.source, "pub extern func request(info: Info): Unit"), "the struct goes by value")
 }
 
+test "static const integers (flag bits) become constants of their width" {
+  val src = "typedef unsigned long long Flags64;\ntypedef unsigned int Flags32;\n" +
+    "static const Flags64 Usage_Read = 0x0000000000000001;\nstatic const Flags64 Usage_Both = 0x0000000000000003;\n" +
+    "static const Flags32 Mode_Small = 0x4;\nstatic const Flags64 Mode_Huge = 0xFFFFFFFFFFFFFFFF;\n" +
+    "typedef struct { Flags64 usage; } Desc;\nvoid make(Desc d);\n"
+  val ast = astOf(src)
+  val r = generateBindings(ast, configOf(allowOf(["make", "Usage_*", "Mode_Small"])))
+  assertEqualInt(r.errors.count, 0, "no errors: " + Str.joinList("; ", r.errors))
+  assertTrue(Str.contains(r.source, "pub val Usage_Read: Long = 1"), "a 64-bit flag is a Long: " + r.source)
+  assertTrue(Str.contains(r.source, "pub val Usage_Both: Long = 3"), "another 64-bit flag")
+  assertTrue(Str.contains(r.source, "pub val Mode_Small: Int = 4"), "a 32-bit flag is an Int")
+}
+
 test "the allow-list file format" {
   val cfg = configOf(newList())
   val problems = parseAllowList("# comment\nwin_*  # trailing\n\nuserdata Cb 1\nMODE_A\n", cfg)

@@ -81,6 +81,8 @@ record FuncInfo {
 record ConstInfo {
   name: String
   value: Long
+  /// The declared C type of a `static const` integer ("" for an enum constant).
+  ty: String = ""
 }
 
 record Index {
@@ -283,6 +285,49 @@ func parseLong(s: in String): Option[Long] {
   }
 }
 
+/// The first integer literal under `node` (an initializer is wrapped in implicit casts).
+func findLiteralValue(node: in J.JsonValue, depth: in Int): Option[Long] {
+  if depth > 6 {
+    return None
+  }
+  val kind = jstr(node, "kind")
+  if kind == "IntegerLiteral" or kind == "ConstantExpr" {
+    match J.getString(node, "value") {
+      case Some(vs) -> return parseLong(vs)
+      case None -> ()
+    }
+  }
+  for ch in jinner(node) {
+    if jstr(ch, "kind") != "FullComment" {
+      match findLiteralValue(ch, depth + 1) {
+        case Some(n) -> return Some(value = n)
+        case None -> ()
+      }
+    }
+  }
+  None
+}
+
+/// A `static const <integer type> NAME = <literal>;` (webgpu.h's flag bits are these,
+/// not enumerators).
+func addConstVar(ix: in Index, node: in J.JsonValue): Unit {
+  val ty = jtype(node)
+  if not Str.startsWith(ty, "const ") {
+    return
+  }
+  for ch in jinner(node) {
+    if jstr(ch, "kind") != "FullComment" {
+      match findLiteralValue(ch, 0) {
+        case Some(n) -> {
+          ix.consts.add(ConstInfo(name = jstr(node, "name"), value = n, ty = Str.substring(ty, 6)))
+          return
+        }
+        case None -> ()
+      }
+    }
+  }
+}
+
 func addTypedef(ix: in Index, node: in J.JsonValue): Unit {
   val name = jstr(node, "name")
   ix.typedefs.add(name, jtype(node))
@@ -358,6 +403,8 @@ func buildIndex(root: in J.JsonValue, longBits: in Int): Index {
       addTypedef(ix, node)
     } else if kind == "FunctionDecl" {
       addFunc(ix, node)
+    } else if kind == "VarDecl" {
+      addConstVar(ix, node)
     }
   }
   // A record's Lyric name: the typedef that names it, else its tag.
@@ -842,6 +889,13 @@ func bindFunc(ix: in Index, em: in Emit, cfg: in BindgenConfig, f: in FuncInfo):
   }
 }
 
+func isWideInt(ct: in CType): Bool {
+  match ct {
+    case CInt(bits) -> bits == 64
+    case _ -> false
+  }
+}
+
 func unwrapJson(v: in Option[J.JsonValue]): J.JsonValue {
   match v {
     case Some(x) -> x
@@ -882,8 +936,11 @@ pub func generateBindings(astJson: in String, cfg: in BindgenConfig): BindgenRes
   for c in ix.consts {
     if isAllowed(cfg, c.name) {
       matched.add(c.name, true)
-      if c.value > 2147483647i64 or c.value < (0i64 - 2147483648i64) {
-        notes.add("skipped enum constant '" + c.name + "': " + c.value.toString() + " does not fit an Int")
+      val wide = c.ty.length > 0 and isWideInt(parseCType(ix, c.ty, "", 0))
+      if wide {
+        constText.add("pub val " + identOf(c.name, c.name) + ": Long = " + c.value.toString() + "\n")
+      } else if c.value > 2147483647i64 or c.value < (0i64 - 2147483648i64) {
+        notes.add("skipped constant '" + c.name + "': " + c.value.toString() + " does not fit an Int")
       } else {
         constText.add("pub val " + identOf(c.name, c.name) + ": Int = " + c.value.toString() + "\n")
       }
