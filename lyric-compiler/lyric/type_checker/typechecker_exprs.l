@@ -18124,7 +18124,7 @@ func taskHandleAssignable(tbl: in SymbolTable, expected: in Type, actual: in Typ
 // (a chained descriptor's `next` pointer, the pointer a callback is handed back).  No
 // other pointer-to-pointer conversion exists.
 func pointeeIsUserType(targs: in List[Type]): Bool {
-  match unrefine(targs.get(0)) {
+  match unrefine(targs[0]) {
     case TyUser(_, _, _) -> true
     case _ -> false
   }
