@@ -95,12 +95,10 @@ func run(d: Gpu.Device, args: slice[String]): Int {
 }
 
 func main(): Int {
-  match Gpu.openDevice() {
+  val args = Environment.args()
+  val body: (Gpu.Device) -> Int = { d: Gpu.Device -> run(d, args) }
+  match Gpu.withDevice(body) {
     case Err(e) -> fail(e)
-    case Ok(d) -> {
-      val rc = run(d, Environment.args())
-      Gpu.closeDevice(d)
-      rc
-    }
+    case Ok(rc) -> rc
   }
 }

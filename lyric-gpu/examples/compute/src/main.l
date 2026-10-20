@@ -40,17 +40,23 @@ func run(d: Gpu.Device): Int {
     }
     k = k + 1
   }
+  // The device's error callback is called long after `withDevice` set it up: a shader that does not compile
+  // must come back as an `Err`, not crash.
+  match Gpu.createComputePipeline(d, "this is not WGSL", "main") {
+    case Ok(_) -> return fail("invalid WGSL was accepted")
+    case Err(message) -> Console.println(
+      "invalid shader rejected: " +
+        (if message.length > 0 then "with a message" else "without a message")
+    )
+  }
   Console.println("checked " + n.toString() + " values, wrong=" + bad.toString())
   if bad == 0 then 0 else 1
 }
 
 func main(): Int {
-  match Gpu.openDevice() {
+  val body: (Gpu.Device) -> Int = { d: Gpu.Device -> run(d) }
+  match Gpu.withDevice(body) {
     case Err(e) -> fail(e)
-    case Ok(d) -> {
-      val rc = run(d)
-      Gpu.closeDevice(d)
-      rc
-    }
+    case Ok(rc) -> rc
   }
 }

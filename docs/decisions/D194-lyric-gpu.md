@@ -8,7 +8,11 @@
    and `wgpu.h` (allow-list: every `wgpu*` and `WGPU*` name) and is never edited by hand; CI
    regenerates it with `--check`. `Gpu` is the safe layer: no `NativePtr` appears in its public
    API. Every GPU object is an opaque `Long` handle inside a record (`Device`, `Buffer`,
-   `ComputePipeline`, `BindGroup`, `RenderTarget`, `RenderPipeline`).
+   `ComputePipeline`, `BindGroup`, `RenderTarget`, `RenderPipeline`). A `Device` lives for one
+   `withDevice(body)` call: wgpu keeps the error and device-lost callbacks for the device's life,
+   native closures are reference-counted, and a heap type or module value cannot hold them
+   (N0100), so the closures are alive exactly while `body` runs. An invalid shader after the
+   device has been in use comes back as `Err` (checked by the compute example).
 2. **Library.** wgpu-native v29.0.1.1, restored from the pinned platform wheels of the `wgpu`
    0.32.0 release (the wheel's zip carries the shared library) through `[native.libs]` prebuilt
    archives (D191, D192). The Linux and macOS triples are pinned.

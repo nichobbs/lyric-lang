@@ -2,7 +2,7 @@
 //!
 //! Every GPU object is an opaque `Long` handle inside a record, so no `NativePtr`
 //! crosses this package's public surface.  A `Device` owns the instance, adapter,
-//! device and queue; `closeDevice` releases them.  Failures wgpu reports through its
+//! device and queue and lives for one `withDevice` call.  Failures wgpu reports through its
 //! uncaptured-error callback are collected on the device and returned as `Err` by the
 //! call that caused them.
 //!
@@ -205,9 +205,12 @@ pub func takeError(d: Device): Option[String] {
   Some(value = text)
 }
 
-/// Opens the first available adapter's device and its queue.
+/// Opens the first available adapter's device and its queue, runs `body` with it, then
+/// releases everything.  wgpu keeps the device's error and device-lost callbacks for the
+/// device's whole life and native closures are reference-counted, so the device lives only
+/// as long as this call: the closures are alive until `body` has returned.
 @unsafe_ffi
-pub func openDevice(): Result[Device, String] {
+pub func withDevice[T](body: (Device) -> T): Result[T, String] {
   val inst = wgpuCreateInstance(nativeNullPtr())
   if ptrToLong(inst) == 0 {
     return Err(error = "wgpu: cannot create an instance")
@@ -282,20 +285,21 @@ pub func openDevice(): Result[Device, String] {
     return Err(error = "wgpu: cannot open a device: " + deviceSlot.message)
   }
   val queue = wgpuDeviceGetQueue(longToPtr(deviceSlot.handle))
-  Ok(
-    value = Device(
-      instance = instance,
-      adapter = adapterSlot.handle,
-      device = deviceSlot.handle,
-      queue = ptrToLong(queue),
-      errors = ptrToLong(errorCell)
-    )
+  val device = Device(
+    instance = instance,
+    adapter = adapterSlot.handle,
+    device = deviceSlot.handle,
+    queue = ptrToLong(queue),
+    errors = ptrToLong(errorCell)
   )
+  val result = body(device)
+  closeDevice(device)
+  Ok(value = result)
 }
 
 /// Releases the device, its queue, the adapter and the instance.
 @unsafe_ffi
-pub func closeDevice(d: Device): Unit {
+func closeDevice(d: Device): Unit {
   wgpuQueueRelease(longToPtr(d.queue))
   wgpuDeviceRelease(longToPtr(d.device))
   wgpuAdapterRelease(longToPtr(d.adapter))

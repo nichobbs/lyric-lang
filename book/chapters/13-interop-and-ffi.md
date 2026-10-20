@@ -419,13 +419,16 @@ The build links the library, copies its shared files next to the executable and 
 `lyric-gpu` binds wgpu-native, the WebGPU C API, this way: `Gpu.Kernel.Wgpu` is `lyric bindgen` output over `webgpu.h` and `wgpu.h` (the library comes from pinned prebuilt archives, so `lyric restore` is all an application runs), and `Gpu` wraps it so that no pointer reaches the public API. Every GPU object is an opaque `Long` handle; a callback result lands in a record with `var` fields that the callback closure captures; descriptor chains take the first member's address as a `NativePtr[Byte]`, which converts to any typed pointer. A compute pass is a few calls:
 
 ```lyric
-val d = match Gpu.openDevice() { case Ok(x) -> x; case Err(e) -> panic(e) }
-val buf = Gpu.createBuffer(d, 4000, Gpu.usageStorage + Gpu.usageCopyDst + Gpu.usageCopySrc)
-Gpu.writeInts(d, buf, 0, input)                       // input: buffer[Int]
-val pipeline = Gpu.createComputePipeline(d, wgsl, "main")
+val body: (Gpu.Device) -> Int = { d: Gpu.Device ->
+  val buf = Gpu.createBuffer(d, 4000, Gpu.usageStorage + Gpu.usageCopyDst + Gpu.usageCopySrc)
+  Gpu.writeInts(d, buf, 0, input)                       // input: buffer[Int]
+  val pipeline = Gpu.createComputePipeline(d, wgsl, "main")
+  0
+}
+Gpu.withDevice(body)
 ```
 
-then `createBindGroup`, `dispatch` and `readInts`. `examples/triangle` renders into an offscreen target and checks the pixels against a golden image; both examples run in CI on a software Vulkan device.
+`withDevice` owns the device for the call, because wgpu keeps its error callback for the device's whole life and a native closure is freed when its scope ends. The rest of a compute pass is `createBindGroup`, `dispatch` and `readInts`. `examples/triangle` renders into an offscreen target and checks the pixels against a golden image; both examples run in CI on a software Vulkan device.
 
 `foreign record` is allowed only in a stdlib `_kernel_native/` package or in a file annotated `@unsafe_ffi` at file level (N0101 elsewhere), and never appears in a library's public API. The kernel's safe wrappers take ordinary Lyric records. `foreign` is a contextual keyword, recognised only directly before `record`.
 
