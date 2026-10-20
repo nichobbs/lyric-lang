@@ -790,7 +790,7 @@ func checkWhereClause(
         while j < bound.constraints.count {
           val cr = bound.constraints[j]
           val cname = modulePathJoin(cr.head.segments)
-          val known = if cr.head.segments.count == 1 { isKnownDeriveMarker(cname) } else { false }
+          val known = if cr.head.segments.count == 1 { isKnownDeriveMarker(cname) or isPlainMarker(cname) } else { false }
           if not known and not isInterfaceSym(tbl, cname) {
             diag.add(
               errorDiagnostic(
@@ -2308,6 +2308,29 @@ func checkRecordDeclTypes(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
       }
     }
     i = i + 1
+  }
+}
+
+// `Plain` is computed from a type's structure (D155), so a declaration cannot
+// ask for it: it is valid in a `where` clause only.
+func checkNoPlainDerive(diag: in List[Diagnostic], anns: in List[Annotation]): Unit {
+  for ann in anns {
+    if ann.name.segments.count == 1 and ann.name.segments[0] == "derive" {
+      for a in ann.args {
+        match a {
+          case ABare(nm, sp) -> if isPlainMarker(nm) {
+            diag.add(
+              errorDiagnostic(
+                "T0172",
+                "'Plain' cannot be derived: the compiler computes it from a type's structure, and it is valid only in a 'where' clause",
+                sp
+              )
+            )
+          }
+          case _ -> ()
+        }
+      }
+    }
   }
 }
 
@@ -4388,6 +4411,7 @@ func checkDeclTypeRefs(tbl: in SymbolTable, diag: in List[Diagnostic], items: in
   val emptyCtx = newGenericContext()
   var i = 0
   while i < items.count {
+    checkNoPlainDerive(diag, items[i].annotations)
     match items[i].kind {
       case IRecord(decl) -> {
         checkRecordDeclTypes(tbl, diag, decl)

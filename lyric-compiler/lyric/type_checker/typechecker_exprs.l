@@ -9111,7 +9111,17 @@ func checkBoundsSatisfied(
           while ci < bound.constraints.count {
             val cname = bound.constraints[ci]
             var satisfied = false
-            if isKnownDeriveMarker(cname) {
+            var why = ""
+            if isPlainMarker(cname) {
+              match plainViolation(tbl, concreteTy) {
+                case None -> {
+                  satisfied = true
+                }
+                case Some(reason) -> {
+                  why = ": " + reason
+                }
+              }
+            } else if isKnownDeriveMarker(cname) {
               satisfied = hasDerive(tbl, cname, concreteTy)
             } else {
               match constraintInterfaceSym(tbl, cname) {
@@ -9149,7 +9159,8 @@ func checkBoundsSatisfied(
                   "T0108",
                   "type argument " + renderType(concreteTy) + " does not satisfy constraint '" + cname + "' for type parameter '" +
                     bound.name +
-                    "'",
+                    "'" +
+                    why,
                   span
                 )
               )

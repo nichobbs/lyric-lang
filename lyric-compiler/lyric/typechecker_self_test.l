@@ -3458,6 +3458,54 @@ test "== on a record with a function field is T0153" {
   assertTrue(not hasDiagCode(parseCheck(mutable), "T0153"), "a mutable record keeps identity")
 }
 
+// The `Plain` marker (D155, docs/67 §4.5): computed from structure, valid in
+// `where` clauses only, and a T0108 says which part of the type defeats it.
+func plainSrc(decls: in String, arg: in String): String {
+  "package P\n" + decls + "func need[T](x: in T): Unit where T: Plain {\n}\nfunc f(v: in " + arg +
+    "): Unit {\n  need(v)\n}\n"
+}
+
+test "Plain accepts scalars, enums, value records, distinct types and arrays of them" {
+  val decls = "record Vec3 { x: Float\n y: Float\n z: Float }\nrecord Seg { a: Vec3\n b: Vec3 }\nenum Color {\n  case Red\n  case Green\n}\ntype Meters = Float\n"
+  for arg in ["Int", "Float", "Double", "Bool", "Byte", "Char", "Vec3", "Seg", "Color", "Meters", "array[4, Vec3]"] {
+    val cr = parseCheck(plainSrc(decls, arg))
+    assertTrue(not hasDiagCode(cr, "T0108"), arg + " is Plain: " + diagCodesOf(cr))
+  }
+}
+
+test "Plain rejects references, range subtypes, invariants, var fields and opaque types" {
+  val decls = "type Age = Int range 0 ..= 150\nrecord Pos { n: Int\n invariant: n >= 0 }\nrecord Cell { var n: Int }\nrecord Named { name: String }\nopaque type Secret { token: Int }\nunion Shape {\n  case Dot\n}\n"
+  for arg in ["String", "Age", "Pos", "Cell", "Named", "Secret", "Shape", "array[2, String]", "slice[Int]"] {
+    val cr = parseCheck(plainSrc(decls, arg))
+    assertTrue(hasDiagCode(cr, "T0108"), arg + " is not Plain: " + diagCodesOf(cr))
+  }
+}
+
+test "a Plain violation names the offending part" {
+  val decls = "record Named { name: String }\nrecord Outer { inner: Named }\ntype Age = Int range 0 ..= 150\n"
+  val nested = parseCheck(plainSrc(decls, "Outer"))
+  assertTrue(
+    diagMessagesContain(nested, "field 'inner' of 'Outer'"),
+    "path to the field: " + diagMessageFor(nested, "T0108")
+  )
+  assertTrue(
+    diagMessagesContain(nested, "'String' is a reference"),
+    "the leaf reason: " + diagMessageFor(nested, "T0108")
+  )
+  val range = parseCheck(plainSrc(decls, "Age"))
+  assertTrue(diagMessagesContain(range, "tryFrom"), "the range-subtype hint: " + diagMessageFor(range, "T0108"))
+}
+
+test "Plain is satisfied inside a generic caller that is itself Plain-bounded" {
+  val src = "package P\nfunc need[T](x: in T): Unit where T: Plain {\n}\nfunc outer[U](x: in U): Unit where U: Plain {\n  need(x)\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0108"), "an unresolved type parameter passes through")
+}
+
+test "Plain cannot be derived" {
+  val src = "package P\n@derive(Plain)\nrecord V { x: Int }\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0172"), "T0172")
+}
+
 test "where bound not satisfied rejected" {
   val src = "package P\nrecord Plain { value: Int }\nfunc add2[T](a: in T, b: in T): T where T: Add { default() }\nfunc f(): Plain { add2(Plain(value = 1), Plain(value = 2)) }\n"
   val cr = parseCheck(src)
