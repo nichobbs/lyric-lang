@@ -148,8 +148,8 @@ pub func checkForeignRecordDecl(tbl: in SymbolTable, diag: in List[Diagnostic], 
 }
 
 // Whether the place `e` can be written field by field: a `var` local, an
-// `inout`/`out` parameter, or a field or element of one.  `None` when the checker
-// cannot resolve it (left to the other rules).
+// `inout`/`out` parameter, or a field or element of one.  False for anything else,
+// including a place the checker cannot resolve (left to the other rules).
 func foreignPlaceWritable(sc: in Scope, tbl: in SymbolTable, sigs: in Map[String, ResolvedSignature], e: in Expr): Bool {
   match e.kind {
     case EParen(inner) -> foreignPlaceWritable(sc, tbl, sigs, inner)
