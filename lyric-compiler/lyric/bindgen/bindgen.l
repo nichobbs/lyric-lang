@@ -81,6 +81,8 @@ record FuncInfo {
 record ConstInfo {
   name: String
   value: Long
+  /// The declared C type of a `static const` integer ("" for an enum constant).
+  ty: String = ""
 }
 
 record Index {
@@ -124,7 +126,12 @@ pub func parseAllowList(text: in String, cfg: in BindgenConfig): List[String] {
       val parts = Str.split(Str.trim(Str.substring(line, 9)), " ")
       if parts.length == 2 {
         match parseSmallInt(parts[1]) {
-          case Some(n) -> cfg.userdata.add(parts[0], n)
+          case Some(n) -> {
+            if cfg.userdata.containsKey(parts[0]) {
+              cfg.userdata.remove(parts[0])
+            }
+            cfg.userdata.add(parts[0], n)
+          }
           case None -> errs.add("allow-list line " + Str.fromInt(i) + ": the index of a userdata line must be a number")
         }
       } else {
@@ -236,7 +243,9 @@ func addRecord(ix: in Index, node: in J.JsonValue): Unit {
 func addEnum(ix: in Index, node: in J.JsonValue): Unit {
   val tag = jstr(node, "name")
   if tag.length > 0 {
-    ix.enumTags.add(tag, true)
+    if not ix.enumTags.containsKey(tag) {
+      ix.enumTags.add(tag, true)
+    }
   }
   var next = 0i64
   for ch in jinner(node) {
@@ -283,8 +292,67 @@ func parseLong(s: in String): Option[Long] {
   }
 }
 
+/// The value of a constant initializer, or None when it is anything but an integer
+/// literal under implicit casts, parentheses and a unary sign (an expression,
+/// a float or a string is not a constant the bindings can state).
+func findLiteralValue(node: in J.JsonValue, depth: in Int): Option[Long] {
+  if depth > 8 {
+    return None
+  }
+  val kind = jstr(node, "kind")
+  if kind == "IntegerLiteral" or kind == "ConstantExpr" {
+    match J.getString(node, "value") {
+      case Some(vs) -> return parseLong(vs)
+      case None -> ()
+    }
+  }
+  if kind == "UnaryOperator" {
+    val op = jstr(node, "opcode")
+    if op != "-" and op != "+" {
+      return None
+    }
+    for ch in jinner(node) {
+      match findLiteralValue(ch, depth + 1) {
+        case Some(n) -> return Some(value = if op == "-" then 0i64 - n else n)
+        case None -> return None
+      }
+    }
+    return None
+  }
+  if kind == "ImplicitCastExpr" or kind == "ParenExpr" or kind == "ConstantExpr" {
+    for ch in jinner(node) {
+      return findLiteralValue(ch, depth + 1)
+    }
+  }
+  None
+}
+
+/// A `static const <integer type> NAME = <literal>;` (webgpu.h's flag bits are these,
+/// not enumerators).
+func addConstVar(ix: in Index, node: in J.JsonValue): Unit {
+  val ty = jtype(node)
+  if not Str.startsWith(ty, "const ") or Str.contains(ty, "float") or Str.contains(ty, "double") or Str.contains(ty, "*") {
+    return
+  }
+  for ch in jinner(node) {
+    if jstr(ch, "kind") != "FullComment" {
+      match findLiteralValue(ch, 0) {
+        case Some(n) -> {
+          ix.consts.add(ConstInfo(name = jstr(node, "name"), value = n, ty = Str.substring(ty, 6)))
+          return
+        }
+        case None -> ()
+      }
+    }
+  }
+}
+
 func addTypedef(ix: in Index, node: in J.JsonValue): Unit {
   val name = jstr(node, "name")
+  // C11 allows a typedef to be repeated; the last spelling wins.
+  if ix.typedefs.containsKey(name) {
+    ix.typedefs.remove(name)
+  }
   ix.typedefs.add(name, jtype(node))
   for ch in jinner(node) {
     if jstr(ch, "kind") == "ElaboratedType" {
@@ -358,6 +426,8 @@ func buildIndex(root: in J.JsonValue, longBits: in Int): Index {
       addTypedef(ix, node)
     } else if kind == "FunctionDecl" {
       addFunc(ix, node)
+    } else if kind == "VarDecl" {
+      addConstVar(ix, node)
     }
   }
   // A record's Lyric name: the typedef that names it, else its tag.
@@ -599,9 +669,106 @@ func recordNameOf(ix: in Index, id: in String): String {
   }
 }
 
+/// A forward declaration (`struct Foo;`) is the same type as the definition that follows
+/// it: the complete declaration with the same tag, when there is one.
+func canonRecord(ix: in Index, id: in String): String {
+  match mapGet(ix.records, id) {
+    case None -> id
+    case Some(r) -> {
+      if not r.complete and r.tag.length > 0 {
+        match mapGet(ix.tagToId, r.tag) {
+          case Some(other) -> other
+          case None -> id
+        }
+      } else {
+        id
+      }
+    }
+  }
+}
+
+record Layout {
+  size: Int
+  align: Int
+}
+
+func alignUp(n: in Int, a: in Int): Int {
+  if a <= 1 {
+    return n
+  };
+  ((n + a - 1) / a) * a
+}
+
+/// The C size and alignment of a type, when it can be computed (pointers are `longBits / 8`
+/// bytes: LP64 or ILP32).
+func cLayout(ix: in Index, cfg: in BindgenConfig, ct: in CType, depth: in Int): Option[Layout] {
+  if depth > 8 {
+    return None
+  }
+  val ptrBytes = cfg.longBits / 8
+  match ct {
+    case CInt(bits) -> Some(value = Layout(size = bits / 8, align = bits / 8))
+    case CBool -> Some(value = Layout(size = 1, align = 1))
+    case CFloat -> Some(value = Layout(size = 4, align = 4))
+    case CDouble -> Some(value = Layout(size = 8, align = 8))
+    case CEnumT -> Some(value = Layout(size = 4, align = 4))
+    case CPtr(_) -> Some(value = Layout(size = ptrBytes, align = ptrBytes))
+    case CFuncPtr(_, _, _) -> Some(value = Layout(size = ptrBytes, align = ptrBytes))
+    case CArr(elem, count) -> match cLayout(ix, cfg, elem, depth + 1) {
+      case Some(l) -> Some(value = Layout(size = l.size * count, align = l.align))
+      case None -> None
+    }
+    case CRecordT(id) -> {
+      match mapGet(ix.records, canonRecord(ix, id)) {
+        case Some(r) -> {
+          var off = 0
+          var maxAlign = 1
+          for f in r.fields {
+            match cLayout(ix, cfg, parseCType(ix, f.ty, "", 0), depth + 1) {
+              case Some(l) -> {
+                off = alignUp(off, l.align) + l.size
+                if l.align > maxAlign {
+                  maxAlign = l.align
+                }
+              }
+              case None -> return None
+            }
+          }
+          Some(value = Layout(size = alignUp(off, maxAlign), align = maxAlign))
+        }
+        case None -> None
+      }
+    }
+    case _ -> None
+  }
+}
+
+func is16(ct: in CType): Bool {
+  match ct {
+    case CInt(bits) -> bits == 16
+    case CArr(elem, _) -> is16(elem)
+    case _ -> false
+  }
+}
+
+/// The layout the generated record has: as C's, except that a 16-bit integer is spelt
+/// as bytes (Lyric has no 16-bit type), which have alignment 1.
+func lyricLayout(ix: in Index, cfg: in BindgenConfig, ct: in CType): Option[Layout] {
+  match ct {
+    case CInt(bits) -> if bits == 16 { Some(value = Layout(size = 2, align = 1)) } else { cLayout(ix, cfg, ct, 0) }
+    case CArr(elem, count) -> if is16(elem) {
+      Some(value = Layout(size = 2 * count, align = 1))
+    } else {
+      cLayout(ix, cfg, ct, 0)
+    }
+    case _ -> cLayout(ix, cfg, ct, 0)
+  }
+}
+
 /// Registers the foreign record `id` (and the records it holds by value or by
 /// pointer) and returns its name, or why it has none.
-func useRecord(ix: in Index, em: in Emit, id: in String): Mapped {
+func useRecord(ix: in Index, em: in Emit, cfg: in BindgenConfig, id0: in String): Mapped {
+  val id = canonRecord(ix, id0)
   val name = recordNameOf(ix, id)
   match mapGet(ix.records, id) {
     case None -> return No(why = "record has no definition")
@@ -630,20 +797,59 @@ func useRecord(ix: in Index, em: in Emit, id: in String): Mapped {
       em.recordState.add(id, 1)
       val lines: List[String] = newList()
       var failure = ""
+      var cOff = 0
+      var lOff = 0
+      var cMax = 1
+      var lMax = 1
+      var has16 = false
       var fi = 0
       while fi < r.fields.count and failure.length == 0 {
         val f = r.fields[fi]
         if f.isBitfield {
           failure = "'" + name + "' has a bit-field"
         } else {
-          match fieldType(ix, em, parseCType(ix, f.ty, "", 0)) {
+          val fct = parseCType(ix, f.ty, "", 0)
+          match fieldType(ix, em, cfg, fct) {
             case Ok(t) -> lines.add("  " + identOf(f.name, "f" + Str.fromInt(fi)) + ": " + t)
             case No(why) -> {
               failure = "field '" + f.name + "' of '" + name + "': " + why
             }
           }
+          if is16(fct) {
+            has16 = true
+          }
+          // Offsets are tracked in both layouts so a 16-bit field spelt as bytes is
+          // accepted only where that changes nothing (the field is already 2-aligned and
+          // the record's size and later offsets agree).
+          match cLayout(ix, cfg, fct, 0) {
+            case Some(cl) -> match lyricLayout(ix, cfg, fct) {
+              case Some(ll) -> {
+                cOff = alignUp(cOff, cl.align)
+                lOff = alignUp(lOff, ll.align)
+                if cOff != lOff and failure.length == 0 {
+                  failure = "field '" + f.name + "' of '" + name + "' does not sit at its C offset in the generated record"
+                }
+                cOff = cOff + cl.size
+                lOff = lOff + ll.size
+                if cl.align > cMax {
+                  cMax = cl.align
+                }
+                if ll.align > lMax {
+                  lMax = ll.align
+                }
+              }
+              case None -> ()
+            }
+            case None -> if has16 and failure.length == 0 {
+              failure = "the layout of '" + name + "' cannot be checked against C's"
+            }
+          }
         }
         fi = fi + 1
+      }
+      if has16 and failure.length == 0 and alignUp(cOff, cMax) != alignUp(lOff, lMax) {
+        failure = "'" + name + "' would be " + Str.fromInt(alignUp(lOff, lMax)) + " bytes, not C's " +
+          Str.fromInt(alignUp(cOff, cMax))
       }
       if failure.length > 0 {
         em.recordState.remove(id)
@@ -686,11 +892,14 @@ func scalarName(ct: in CType): Mapped {
   }
 }
 
-func pointeeName(ix: in Index, em: in Emit, to: in CType): Mapped {
+func pointeeName(ix: in Index, em: in Emit, cfg: in BindgenConfig, to: in CType): Mapped {
   match to {
     case CVoid -> Ok(text = "Byte")
-    case CRecordT(id) -> match useRecord(ix, em, id) { case Ok(n) -> Ok(text = n); case No(_) -> Ok(text = "Byte") }
-    case CPtr(inner) -> match pointeeName(ix, em, inner) {
+    case CRecordT(id) -> match useRecord(ix, em, cfg, id) {
+      case Ok(n) -> Ok(text = n)
+      case No(_) -> Ok(text = "Byte")
+    }
+    case CPtr(inner) -> match pointeeName(ix, em, cfg, inner) {
       case Ok(n) -> Ok(text = "NativePtr[" + n + "]")
       case No(why) -> No(why = why)
     }
@@ -703,22 +912,31 @@ func pointeeName(ix: in Index, em: in Emit, to: in CType): Mapped {
 
 /// A record field's type: scalars, pointers, other records by value, and arrays
 /// of scalars or records.
-func fieldType(ix: in Index, em: in Emit, ct: in CType): Mapped {
+func fieldType(ix: in Index, em: in Emit, cfg: in BindgenConfig, ct: in CType): Mapped {
   match ct {
-    case CPtr(to) -> match pointeeName(ix, em, to) {
+    case CPtr(to) -> match pointeeName(ix, em, cfg, to) {
       case Ok(n) -> Ok(text = "NativePtr[" + n + "]")
       case No(why) -> No(why = why)
     }
-    case CRecordT(id) -> useRecord(ix, em, id)
+    case CRecordT(id) -> useRecord(ix, em, cfg, id)
+    case CInt(bits) -> if bits == 16 { Ok(text = "array[2, Byte]") } else { scalarName(ct) }
     case CArr(elem, count) -> match elem {
       case CPtr(_) -> No(why = "an array of pointers has no layout here")
+      case CInt(ebits) -> if ebits == 16 {
+        Ok(text = "array[" + Str.fromInt(2 * count) + ", Byte]")
+      } else {
+        match fieldType(ix, em, cfg, elem) {
+          case Ok(t) -> Ok(text = "array[" + Str.fromInt(count) + ", " + t + "]")
+          case No(why) -> No(why = why)
+        }
+      }
       case CArr(_, _) -> No(why = "a multi-dimensional array")
-      case _ -> match fieldType(ix, em, elem) {
+      case _ -> match fieldType(ix, em, cfg, elem) {
         case Ok(t) -> Ok(text = "array[" + Str.fromInt(count) + ", " + t + "]")
         case No(why) -> No(why = why)
       }
     }
-    case CFuncPtr(_, _, _) -> No(why = "a function-pointer field")
+    case CFuncPtr(name, ret, params) -> callbackType(ix, em, cfg, name, ret, params)
     case CVoid -> No(why = "a void field")
     case CBad(why) -> No(why = why)
     case _ -> scalarName(ct)
@@ -763,12 +981,12 @@ func externType(ix: in Index, em: in Emit, cfg: in BindgenConfig, ct: in CType, 
     case CVoid -> if isResult { Ok(text = "Unit") } else { No(why = "a void parameter") }
     case CPtr(to) -> match to {
       case CFuncPtr(_, _, _) -> No(why = "a pointer to a function pointer")
-      case _ -> match pointeeName(ix, em, to) {
+      case _ -> match pointeeName(ix, em, cfg, to) {
         case Ok(n) -> Ok(text = "NativePtr[" + n + "]")
         case No(why) -> No(why = why)
       }
     }
-    case CRecordT(id) -> useRecord(ix, em, id)
+    case CRecordT(id) -> useRecord(ix, em, cfg, id)
     case CFuncPtr(name, ret, params) -> callbackType(ix, em, cfg, name, ret, params)
     case CArr(_, _) -> No(why = "an array parameter")
     case CBad(why) -> No(why = why)
@@ -839,11 +1057,36 @@ func bindFunc(ix: in Index, em: in Emit, cfg: in BindgenConfig, f: in FuncInfo):
   }
 }
 
+func isWideInt(ct: in CType): Bool {
+  match ct {
+    case CInt(bits) -> bits == 64
+    case _ -> false
+  }
+}
+
 func unwrapJson(v: in Option[J.JsonValue]): J.JsonValue {
   match v {
     case Some(x) -> x
     case None -> J.JNull
   }
+}
+
+func markMatched(matched: in Map[String, Bool], name: in String): Unit {
+  if not matched.containsKey(name) {
+    matched.add(name, true)
+  }
+}
+
+/// Whether the allow-list names `name` exactly (not through a pattern).
+func isExplicitName(cfg: in BindgenConfig, name: in String): Bool {
+  var i = 0
+  while i < cfg.allow.count {
+    if cfg.allow[i] == name {
+      return true
+    }
+    i = i + 1
+  }
+  false
 }
 
 func hasWildcard(p: in String): Bool = Str.endsWith(p, "*")
@@ -867,8 +1110,8 @@ pub func generateBindings(astJson: in String, cfg: in BindgenConfig): BindgenRes
   val matched: Map[String, Bool] = newMap()
   val funcText: List[String] = newList()
   for f in ix.funcs {
-    if isAllowed(cfg, f.name) {
-      matched.add(f.name, true)
+    if isAllowed(cfg, f.name) and not matched.containsKey(f.name) {
+      markMatched(matched, f.name)
       match bindFunc(ix, em, cfg, f) {
         case Ok(t) -> funcText.add(t)
         case No(why) -> notes.add("skipped " + why)
@@ -877,10 +1120,13 @@ pub func generateBindings(astJson: in String, cfg: in BindgenConfig): BindgenRes
   }
   val constText: List[String] = newList()
   for c in ix.consts {
-    if isAllowed(cfg, c.name) {
-      matched.add(c.name, true)
-      if c.value > 2147483647i64 or c.value < (0i64 - 2147483648i64) {
-        notes.add("skipped enum constant '" + c.name + "': " + c.value.toString() + " does not fit an Int")
+    if isAllowed(cfg, c.name) and not matched.containsKey(c.name) {
+      markMatched(matched, c.name)
+      val wide = c.ty.length > 0 and isWideInt(parseCType(ix, c.ty, "", 0))
+      if wide {
+        constText.add("pub val " + identOf(c.name, c.name) + ": Long = " + c.value.toString() + "\n")
+      } else if c.value > 2147483647i64 or c.value < (0i64 - 2147483648i64) {
+        notes.add("skipped constant '" + c.name + "': " + c.value.toString() + " does not fit an Int")
       } else {
         constText.add("pub val " + identOf(c.name, c.name) + ": Int = " + c.value.toString() + "\n")
       }
@@ -888,13 +1134,19 @@ pub func generateBindings(astJson: in String, cfg: in BindgenConfig): BindgenRes
   }
   // A record or typedef named in the allow-list is bound even when no selected
   // function uses it.
-  for id in mapKeys(ix.records) {
+  for id0 in mapKeys(ix.records) {
+    val id = canonRecord(ix, id0)
     val name = recordNameOf(ix, id)
     if name.length > 0 and isAllowed(cfg, name) {
-      matched.add(name, true)
-      match useRecord(ix, em, id) {
-        case Ok(_) -> ()
-        case No(why) -> notes.add("skipped record " + why)
+      markMatched(matched, name)
+      val complete = match mapGet(ix.records, id) { case Some(r) -> r.complete; case None -> false }
+      if complete {
+        match useRecord(ix, em, cfg, id) {
+          case Ok(_) -> ()
+          case No(why) -> notes.add("skipped record " + why)
+        }
+      } else if isExplicitName(cfg, name) {
+        notes.add("skipped record '" + name + "' is an incomplete type")
       }
     }
   }

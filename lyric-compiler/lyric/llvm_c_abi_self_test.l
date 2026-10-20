@@ -278,6 +278,29 @@ test "a callback's userdata slot may be first or in the middle, with and without
   assertEqualInt(runWithC(src, c, true), 0, "every callback receives its arguments in C order")
 }
 
+// A callback stored in a struct member, as webgpu.h and SDL3 do: the construction
+// takes a Lyric closure for the callback field and, for the `void*` member, the
+// same closure as its own pointer; C calls back through the struct.
+test "a foreign record's callback field takes a closure and C calls it back, under ASan" {
+  val c = "typedef struct { int mode; int (*cb)(int v, void* ud); void* ud; } Info;\n" +
+    "int run_info(Info i, int n) { return i.cb(n, i.ud); }\n" +
+    "int run_info_ptr(const Info* i, int n) { return i->cb(n, i->ud) + i->mode; }\n"
+  val src = "package T\n" +
+    "foreign record Info {\n  mode: Int\n  cb: (Int, NativeUserdata) -> Int\n  ud: NativeUserdata\n}\n" +
+    "extern func run_info(i: Info, n: Int): Int = \"run_info\"\n" +
+    "extern func run_info_ptr(i: NativePtr[Info], n: Int): Int = \"run_info_ptr\"\n" +
+    "@unsafe_ffi\n" +
+    "func main(): Int {\n" +
+    "  val f: (Int) -> Int = { v: Int -> v * 3 }\n" +
+    "  val info = Info(mode = 100, cb = f, ud = f)\n" +
+    "  if run_info(info, 14) != 42 {\n    return 1\n  }\n" +
+    "  var held = Info(mode = 100, cb = f, ud = f)\n" +
+    "  if run_info_ptr(nativeAddrOf(held), 5) != 115 {\n    return 2\n  }\n" +
+    "  0\n" +
+    "}\n"
+  assertEqualInt(runWithC(src, c, true), 0, "C reaches the Lyric closure through the struct")
+}
+
 func mainStub(): String = "func main(): Int {\n  0\n}\n"
 
 test "AArch64 declarations match clang's AAPCS64 lowering" {

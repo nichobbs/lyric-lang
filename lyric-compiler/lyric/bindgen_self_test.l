@@ -142,6 +142,64 @@ test "an ambiguous callback needs a userdata directive" {
   assertTrue(Str.contains(ok.source, "(NativePtr[Byte], NativeUserdata) -> Unit"), "index 1 is the userdata slot")
 }
 
+test "a function-pointer struct member becomes a callback-typed field of a foreign record" {
+  val src = "typedef void (*Done)(int status, void* userdata1, void* userdata2);\n" +
+    "typedef struct { int mode; Done callback; void* userdata1; void* userdata2; } Info;\n" +
+    "void request(Info info);\n"
+  val ast = astOf(src)
+  val cfg = configOf(allowOf(["request"]))
+  cfg.userdata.add("Done", 1)
+  val r = generateBindings(ast, cfg)
+  assertEqualInt(r.errors.count, 0, "no errors: " + Str.joinList("; ", r.errors))
+  assertTrue(
+    Str.contains(r.source, "callback: (Int, NativeUserdata, NativePtr[Byte]) -> Unit"),
+    "the callback field marks the configured userdata parameter: " + r.source
+  )
+  assertTrue(Str.contains(r.source, "pub extern func request(info: Info): Unit"), "the struct goes by value")
+}
+
+test "static const integers (flag bits) become constants of their width" {
+  val src = "typedef unsigned long long Flags64;\ntypedef unsigned int Flags32;\n" +
+    "static const Flags64 Usage_Read = 0x0000000000000001;\nstatic const Flags64 Usage_Both = 0x0000000000000003;\n" +
+    "static const Flags32 Mode_Small = 0x4;\nstatic const Flags64 Mode_Huge = 0xFFFFFFFFFFFFFFFF;\n" +
+    "typedef struct { Flags64 usage; } Desc;\nvoid make(Desc d);\n"
+  val ast = astOf(src)
+  val r = generateBindings(ast, configOf(allowOf(["make", "Usage_*", "Mode_Small"])))
+  assertEqualInt(r.errors.count, 0, "no errors: " + Str.joinList("; ", r.errors))
+  assertTrue(Str.contains(r.source, "pub val Usage_Read: Long = 1"), "a 64-bit flag is a Long: " + r.source)
+  assertTrue(Str.contains(r.source, "pub val Usage_Both: Long = 3"), "another 64-bit flag")
+  assertTrue(Str.contains(r.source, "pub val Mode_Small: Int = 4"), "a 32-bit flag is an Int")
+}
+
+test "a negative constant keeps its sign and an expression or float constant is not bound" {
+  val src = "static const int Neg = -1;\nstatic const int Shifted = 1 << 3;\nstatic const float Ratio = 0.5f;\n" +
+    "static const int Plain = 7;\nvoid use(int x);\n"
+  val r = generateBindings(astOf(src), configOf(allowOf(["use", "Neg", "Plain", "Shifted*", "Ratio*"])))
+  assertEqualInt(r.errors.count, 0, "no errors: " + Str.joinList("; ", r.errors))
+  assertTrue(Str.contains(r.source, "pub val Neg: Int = -1"), "a negative value keeps its sign: " + r.source)
+  assertTrue(Str.contains(r.source, "pub val Plain: Int = 7"), "a plain value binds")
+  assertTrue(not Str.contains(r.source, "pub val Ratio"), "a float constant is not bound as an Int")
+  assertTrue(
+    not Str.contains(r.source, "pub val Shifted: Int = 1\n"),
+    "an expression is never read as its first literal"
+  )
+}
+
+test "a repeated typedef, forward-declared struct and repeated prototype bind once" {
+  val src = "typedef struct Node Node;\ntypedef struct Node Node;\nstruct Node { int v; };\n" +
+    "void touch(Node* n);\nvoid touch(Node* n);\ntypedef enum E { E_A = 1 } E;\ntypedef enum E E;\n"
+  val r = generateBindings(astOf(src), configOf(allowOf(["touch", "Node", "E_*"])))
+  assertEqualInt(r.errors.count, 0, "no errors: " + Str.joinList("; ", r.errors))
+  var calls = 0
+  for line in Str.split(r.source, "\n") {
+    if Str.contains(line, "pub extern func touch(") {
+      calls = calls + 1
+    }
+  }
+  assertEqualInt(calls, 1, "the repeated prototype is bound once")
+  assertTrue(Str.contains(r.source, "pub foreign record Node {"), "the struct is bound")
+}
+
 test "the allow-list file format" {
   val cfg = configOf(newList())
   val problems = parseAllowList("# comment\nwin_*  # trailing\n\nuserdata Cb 1\nMODE_A\n", cfg)

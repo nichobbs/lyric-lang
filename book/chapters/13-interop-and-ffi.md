@@ -357,7 +357,26 @@ foreign record WindowDesc {
 }
 ```
 
-A foreign record is a value with no identity. Its fields are `Plain` types, `NativePtr[T]`, `array[N, T]` of those, or other foreign records. It cannot be generic and has no `var` fields, defaults, methods or invariants, because C writes its memory without running any Lyric code. It is stored inline, laid out as clang lays out the matching C struct, and passed to `extern func` by value (under the platform C ABI) or by pointer.
+A foreign record is a value with no identity. Its fields are `Plain` types, `NativePtr[T]`, `array[N, T]` of those, other foreign records, or a C callback (a function type with a `NativeUserdata` parameter). It cannot be generic and has no `var` fields, defaults, methods or invariants, because C writes its memory without running any Lyric code. It is stored inline, laid out as clang lays out the matching C struct, and passed to `extern func` by value (under the platform C ABI) or by pointer.
+
+Many C APIs take their callback inside a struct, next to the user pointer that is handed back:
+
+```lyric
+foreign record RequestInfo {
+  mode: Int
+  callback: (Int, NativeUserdata) -> Unit
+  userdata: NativeUserdata
+}
+
+@unsafe_ffi
+func ask(): Unit {
+  val done: (Int) -> Unit = { status: Int -> Console.println(status.toString()) }
+  val info = RequestInfo(mode = 1, callback = done, userdata = done)
+  request(info)
+}
+```
+
+The closure for `callback` has the callback's type without its `NativeUserdata` parameter; the compiler stores the address of a trampoline there, and the same closure stored in the `void*` field is the pointer C passes back to it. Bind the closure to an annotated `val` first, and keep it alive until C has finished calling back.
 
 A `val` or `in` binding is immutable. A `var` local or an `inout` parameter is written field by field in place, so its address can be handed to C:
 

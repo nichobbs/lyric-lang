@@ -111,9 +111,40 @@ pub func nativePrebuiltDir(decl: in NativeLibDecl, triple: in String): String {
   Path.join(Path.join(Path.join(Path.join(decl.baseDir, ".lyric"), "native"), decl.spec.name), triple)
 }
 
+/// The architecture and operating-system family of a target triple, so that
+/// `x86_64-pc-linux-gnu` (Ubuntu's clang), `x86_64-unknown-linux-gnu` and
+/// `x86_64-redhat-linux-gnu` name one platform.
+func platformKey(triple: in String): String {
+  val parts = Str.split(triple, "-")
+  var arch = if parts.length > 0 { parts[0] } else { "" }
+  if arch == "arm64" {
+    arch = "aarch64"
+  }
+  if arch == "amd64" {
+    arch = "x86_64"
+  }
+  var os = "other"
+  if Str.contains(triple, "linux") {
+    os = "linux"
+  } else if Str.contains(triple, "apple") or Str.contains(triple, "darwin") or Str.contains(triple, "macos") {
+    os = "darwin"
+  } else if Str.contains(triple, "windows") or Str.contains(triple, "win32") {
+    os = "windows"
+  }
+  arch + "-" + os
+}
+
+/// The prebuilt archive declared for `triple`: the exact triple, else the one for
+/// the same architecture and operating system.
 func prebuiltFor(spec: in Mf.NativeLibSpec, triple: in String): Option[Mf.NativePrebuilt] {
   for p in spec.prebuilt {
     if p.triple == triple {
+      return Some(value = p)
+    }
+  }
+  val key = platformKey(triple)
+  for p in spec.prebuilt {
+    if platformKey(p.triple) == key {
       return Some(value = p)
     }
   }
@@ -149,7 +180,7 @@ func resolvePrebuiltLib(
       )
     }
     case Some(p) -> {
-      val dir = nativePrebuiltDir(decl, triple)
+      val dir = nativePrebuiltDir(decl, p.triple)
       if readMarker(dir) != p.sha256 {
         errors.add("native library '" + spec.name + "': the " + triple + " archive is not restored; run `lyric restore`")
         return

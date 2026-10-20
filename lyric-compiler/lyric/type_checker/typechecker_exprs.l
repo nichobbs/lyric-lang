@@ -6813,6 +6813,24 @@ func ctorValueGenericNames(sym: in Symbol): List[String] {
   valueGenericNames(gOpt)
 }
 
+func ctorIsForeign(sym: in Symbol): Bool {
+  match sym.kind {
+    case DKRecord(_, rd) -> rd.isForeign
+    case _ -> false
+  }
+}
+
+// A construction's argument meets its field's type.  A `foreign record` field is
+// a C struct member, so it takes what an `extern func` parameter of that type
+// takes: a Lyric closure for a callback-typed field, and for a `void*` field
+// (`NativePtr[Byte]` or `NativeUserdata`) a closure as its own pointer (D193).
+func argSatisfiesCtorField(tbl: in SymbolTable, sym: in Symbol, fieldTy: in Type, argTy: in Type): Bool {
+  if ctorIsForeign(sym) {
+    return argSatisfiesExternParam(tbl, fieldTy, argTy)
+  }
+  argSatisfiesParam(tbl, fieldTy, argTy)
+}
+
 func ctorIsOpaque(sym: in Symbol): Bool {
   match sym.kind {
     case DKOpaque(_, _) -> true
@@ -7860,7 +7878,7 @@ func inferConstructionExpected(
           val fieldTy = fieldTypeByName(fields, nm)
           recordUnsignedWidening(tbl, fieldTy, argTy, valE)
           noteRangeSlot(tbl, fieldTy, valE, sym.name + " field " + nm)
-          if not argSatisfiesParam(tbl, fieldTy, argTy) and not literalArgSatisfiesParam(tbl, fieldTy, argTy, valE) {
+          if not argSatisfiesCtorField(tbl, sym, fieldTy, argTy) and not literalArgSatisfiesParam(tbl, fieldTy, argTy, valE) {
             diag.add(
               errorDiagnostic(
                 "T0104",
@@ -7887,7 +7905,7 @@ func inferConstructionExpected(
           val fieldTy = fields[posIdx].ty
           recordUnsignedWidening(tbl, fieldTy, argTy, ae)
           noteRangeSlot(tbl, fieldTy, ae, sym.name + " field " + fields[posIdx].name)
-          if not argSatisfiesParam(tbl, fieldTy, argTy) and not literalArgSatisfiesParam(tbl, fieldTy, argTy, ae) {
+          if not argSatisfiesCtorField(tbl, sym, fieldTy, argTy) and not literalArgSatisfiesParam(tbl, fieldTy, argTy, ae) {
             diag.add(
               errorDiagnostic(
                 "T0104",
@@ -18102,6 +18120,45 @@ func taskHandleAssignable(tbl: in SymbolTable, expected: in Type, actual: in Typ
   }
 }
 
+// `NativePtr[Byte]` is C's `void *` and converts to and from any other `NativePtr[T]`
+// (a chained descriptor's `next` pointer, the pointer a callback is handed back).  No
+// other pointer-to-pointer conversion exists.
+func pointeeIsUserType(tbl: in SymbolTable, targs: in List[Type]): Bool {
+  match unrefine(targs[0]) {
+    case TyUser(tid, _, _) -> {
+      var intrinsic = false
+      for k in ["NativePtr", "NativeUserdata", "NativeWeak"] {
+        match mapGet(tbl.nativeIntrinsicTypes, k) {
+          case Some(id) -> if typeIdEq(tid, id) { intrinsic = true }
+          case None -> ()
+        }
+      }
+      not intrinsic
+    }
+    case _ -> false
+  }
+}
+
+func nativeVoidPtrConvertible(tbl: in SymbolTable, paramTy: in Type, argTy: in Type): Bool {
+  match mapGet(tbl.nativeIntrinsicTypes, "NativePtr") {
+    case None -> false
+    case Some(ptrId) -> match unrefine(paramTy) {
+      case TyUser(pid, _, pargs) -> match unrefine(argTy) {
+        case TyUser(aid, _, aargs) -> {
+          if typeIdEq(pid, ptrId) and typeIdEq(aid, ptrId) and pargs.count == 1 and aargs.count == 1 {
+            (isNativeBytePtrType(tbl, paramTy) and pointeeIsUserType(tbl, aargs)) or
+              (isNativeBytePtrType(tbl, argTy) and pointeeIsUserType(tbl, pargs))
+          } else {
+            false
+          }
+        }
+        case _ -> false
+      }
+      case _ -> false
+    }
+  }
+}
+
 func argSatisfiesParam(tbl: in SymbolTable, paramTy: in Type, argTy: in Type): Bool {
   if typeEquiv(paramTy, argTy) {
     return true
@@ -18116,6 +18173,9 @@ func argSatisfiesParam(tbl: in SymbolTable, paramTy: in Type, argTy: in Type): B
     case _ -> ()
   }
   if taskHandleAssignable(tbl, paramTy, argTy) {
+    return true
+  }
+  if nativeVoidPtrConvertible(tbl, paramTy, argTy) {
     return true
   }
   // M6: numeric widening — Int satisfies Long, Float satisfies Double, etc.

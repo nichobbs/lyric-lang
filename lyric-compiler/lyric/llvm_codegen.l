@@ -200,6 +200,10 @@ record NRecInfo {
   // lowers to a plain LLVM struct VALUE (no ARC header, no allocation, no
   // destructor); every other record is the shared heap form behind a pointer.
   byValue: Bool
+  // A `foreign record`'s callback-typed fields (D193): the field's written type, by
+  // field index, so a construction stores the closure's trampoline there.  Empty
+  // for every other record.
+  fieldCallbackTys: List[Option[TypeExpr]] = newList()
 }
 
 record NUnionCaseInfo {
@@ -4634,6 +4638,19 @@ func coerceTo(ctx: in Ctx, insns: in List[NInsn], v: in NVal, want: in NType, at
   if sameKind {
     return v
   }
+  // `NativePtr[Byte]` is C's `void *`: it converts to and from any other raw pointer
+  // (the type checker admits no other pointer-to-pointer conversion).
+  match v.ty {
+    case NPtr(_) -> match want {
+      case NPtr(_) -> if isBytePtrNType(v.ty) or isBytePtrNType(want) {
+        val cast = freshTmp(ctx)
+        insns.add(NBitcast(dest = cast, fromTy = v.ty, value = v.value, toTy = want))
+        return NVal(ty = want, value = NLocal(name = cast))
+      }
+      case _ -> ()
+    }
+    case _ -> ()
+  }
   // Implicit upcast: a concrete record flowing into an interface-typed
   // position (arg / return / binding / field / match arm) is boxed into a
   // fat pointer here (N3.2) — the type checker inserts no coercion node.
@@ -6300,6 +6317,17 @@ func classifyByValueFieldEnv(
 func classifyForeignField(st: in NByValState, pkg: in String, te: in TypeExpr): List[NType] {
   match te.kind {
     case TParen(inner) -> return classifyForeignField(st, pkg, inner)
+    // A callback is stored as a function pointer; a `NativeUserdata` is a `void*`.
+    case TFunction(_, _) -> {
+      val fp: List[NType] = newList()
+      fp.add(NPtr(pointee = NI8))
+      return fp
+    }
+    case TRef(path) -> if lastSeg(path) == "NativeUserdata" {
+      val ud: List[NType] = newList()
+      ud.add(NPtr(pointee = NI8))
+      return ud
+    }
     case TGenericApp(head, args) -> if lastSeg(head) == "NativePtr" and args.count == 1 {
       val res: List[NType] = newList()
       match args[0] {
@@ -6377,9 +6405,28 @@ func classifyByValueRecord(st: in NByValState, pkg: in String, rd: in RecordDecl
     st.failed.add(irName, true)
     return false
   }
+  val callbackTys: List[Option[TypeExpr]] = newList()
+  if rd.isForeign {
+    for f in fields {
+      match f.ty.kind {
+        case TFunction(_, _) -> callbackTys.add(Some(value = f.ty))
+        case _ -> {
+          val none: Option[TypeExpr] = None
+          callbackTys.add(none)
+        }
+      }
+    }
+  }
   st.results.add(
     irName,
-    NRecInfo(irName = irName, fieldNames = names, fieldTys = tys, fieldDefaults = dflts, byValue = true)
+    NRecInfo(
+      irName = irName,
+      fieldNames = names,
+      fieldTys = tys,
+      fieldDefaults = dflts,
+      byValue = true,
+      fieldCallbackTys = callbackTys
+    )
   )
   st.typeDefs.add(NTypeDefn(name = irName, fields = layoutFieldTys(tys)))
   true
@@ -13254,7 +13301,19 @@ func resolveFieldArgs(
       }
     }
     match ex {
-      case Some(e) -> outV.add(lowerExprExpecting(ctx, insns, e, fieldTys[fi]))
+      case Some(e) -> {
+        // A closure given for a `void*` or callback field is adapted when the
+        // record is built (`adaptForeignFieldValue`), so it is not coerced here.
+        if isBytePtrNType(fieldTys[fi]) {
+          val raw = lowerExpr(ctx, insns, e)
+          match closureSigOfType(ctx, raw.ty) {
+            case Some(_) -> outV.add(raw)
+            case None -> outV.add(coerceUnlessDiverged(ctx, insns, raw, fieldTys[fi], Some(value = e.span)))
+          }
+        } else {
+          outV.add(lowerExprExpecting(ctx, insns, e, fieldTys[fi]))
+        }
+      }
       case None -> panic("Lyric.LlvmCodegen: missing field '" + fieldNames[fi] + "' constructing " + what)
     }
     fi = fi + 1
@@ -13289,6 +13348,50 @@ func buildByValueRecord(ctx: in Ctx, insns: in List[NInsn], ri: in NRecInfo, val
   NVal(ty = aggTy, value = cur)
 }
 
+/// A construction's value for field `vi`, as the field stores it.  In a `foreign
+/// record` a Lyric closure given for a callback-typed field is stored as the
+/// address of its C trampoline, and one given for a `void*` field as its own
+/// pointer (the userdata a callback is handed back); everything else coerces.
+func adaptForeignFieldValue(
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  ri: in NRecInfo,
+  vi: in Int,
+  raw: in NVal,
+  want: in NType,
+): NVal {
+  if ri.byValue and vi < ri.fieldCallbackTys.count {
+    match ri.fieldCallbackTys[vi] {
+      case Some(te) -> {
+        match closureSigOfType(ctx, raw.ty) {
+          case Some(_) -> {
+            val fnTy = externCallbackNType(ctx, te)
+            val cast = freshTmp(ctx)
+            insns.add(NBitcast(dest = cast, fromTy = fnTy, value = NGlobal(name = trampolineFor(ctx, te)), toTy = want))
+            return NVal(ty = want, value = NLocal(name = cast))
+          }
+          case None -> panic(
+            "Lyric.LlvmCodegen: a callback field of a foreign record takes a Lyric closure; got " +
+              nTypeToIrString(raw.ty)
+          )
+        }
+      }
+      case None -> ()
+    }
+  }
+  if isBytePtrNType(want) {
+    match closureSigOfType(ctx, raw.ty) {
+      case Some(_) -> {
+        val cast = freshTmp(ctx)
+        insns.add(NBitcast(dest = cast, fromTy = raw.ty, value = raw.value, toTy = want))
+        return NVal(ty = want, value = NLocal(name = cast))
+      }
+      case None -> ()
+    }
+  }
+  coerceTo(ctx, insns, raw, want)
+}
+
 /// Construct a record from pre-lowered field values (coerced here).
 func lowerRecordConstructVals(ctx: in Ctx, insns: in List[NInsn], ri: in NRecInfo, rawVals: in List[NVal]): NVal {
   val vals: List[NVal] = newList()
@@ -13296,7 +13399,7 @@ func lowerRecordConstructVals(ctx: in Ctx, insns: in List[NInsn], ri: in NRecInf
   while vi < rawVals.count {
     match ri.fieldTys[vi] {
       case NVoid -> vals.add(rawVals[vi])
-      case want -> vals.add(coerceTo(ctx, insns, rawVals[vi], want))
+      case want -> vals.add(adaptForeignFieldValue(ctx, insns, ri, vi, rawVals[vi], want))
     }
     vi = vi + 1
   }
