@@ -196,6 +196,11 @@ pub func restorePrebuilt(decl: in NativeLibDecl, p: in Mf.NativePrebuilt): List[
     Console.println("restore: " + label + " is up to date")
     return errors
   }
+  // A pin change restores into an empty directory: files of the previous archive
+  // (an old `libfoo.so.2`) would otherwise be bundled beside the new ones.
+  if File.dirExists(dir) {
+    val _ = File.deleteDirRecursive(dir)
+  }
   match Dir.createRecursive(dir) {
     case Ok(_) -> ()
     case Err(_) -> {

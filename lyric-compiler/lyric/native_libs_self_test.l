@@ -401,6 +401,18 @@ test "prebuilt tables are validated" {
     "lyric.toml"
   )
   assertTrue(match mixed { case Err(_) -> true; case Ok(_) -> false }, "dir together with prebuilt")
+  val dup = Mf.parseManifest(
+    base + "\n[native.libs.x.prebuilt.t]\nurl = \"https://e/x.zip\"\nsha256 = \"" + sha +
+      "\"\nmembers = [\"a/libx.so\", \"b/libx.so\"]\n",
+    "lyric.toml"
+  )
+  assertTrue(match dup { case Err(_) -> true; case Ok(_) -> false }, "two members with one file name")
+  val upper = Mf.parseManifest(
+    base +
+      "\n[native.libs.x.prebuilt.t]\nurl = \"https://e/x.so\"\nsha256 = \"ABCDEF0000000000000000000000000000000000000000000000000000000000\"\n",
+    "lyric.toml"
+  )
+  assertTrue(match upper { case Err(_) -> true; case Ok(_) -> false }, "an upper-case digest is refused")
   val ok = Mf.parseManifest(
     base + "\n[native.libs.x.prebuilt.a-b-c]\nurl = \"https://e/x.so\"\nsha256 = \"" + sha + "\"\n",
     "lyric.toml"

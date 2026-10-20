@@ -190,12 +190,6 @@ pub record NpmSection {
   manager: String = "npm"
 }
 
-/// `[native]` section (N6.4): defaults for `--target native` builds.
-/// `triple` is the LLVM target triple (empty = auto-detect the host);
-/// `optLevel` is the clang `-O` level (empty = the built-in default "2");
-/// `extraLibs` are additional `-l<name>` link flags for clang.  The CLI
-/// `--triple` / `--opt` flags override the manifest triple / optLevel;
-/// `extraLibs` has no CLI counterpart and is applied unconditionally.
 /// One prebuilt archive of a `[native.libs]` library: `[native.libs.<name>.prebuilt.<triple>]`.
 pub record NativePrebuilt {
   triple: String
@@ -207,6 +201,12 @@ pub record NativePrebuilt {
   members: List[String]
 }
 
+/// `[native]` section (N6.4): defaults for `--target native` builds.
+/// `triple` is the LLVM target triple (empty = auto-detect the host);
+/// `optLevel` is the clang `-O` level (empty = the built-in default "2");
+/// `extraLibs` are additional `-l<name>` link flags for clang.  The CLI
+/// `--triple` / `--opt` flags override the manifest triple / optLevel;
+/// `extraLibs` has no CLI counterpart and is applied unconditionally.
 pub record NativeLibSpec {
   /// The table key: `[native.libs.<name>]`.
   name: String
@@ -1960,6 +1960,15 @@ func hasPrebuiltFor(xs: in List[NativePrebuilt], triple: in String): Bool {
   false
 }
 
+func basenameOf(path: in String): String {
+  val slash = Str.lastIndexOfRaw(path, "/")
+  if slash < 0 {
+    path
+  } else {
+    Str.substring(path, slash + 1)
+  }
+}
+
 func isLowerHex64(s: in String): Bool {
   if s.length != 64 {
     return false
@@ -1979,7 +1988,7 @@ func assemblePrebuilt(
   entries: in List[Entry], section: in String, triple: in String
 ): Result[NativePrebuilt, ManifestError] {
   val url = unwrapOr(findString(entries, section, "url"), "")
-  val sha = Str.toLower(unwrapOr(findString(entries, section, "sha256"), ""))
+  val sha = unwrapOr(findString(entries, section, "sha256"), "")
   if url.length == 0 or not (Str.startsWith(url, "https://") or Str.startsWith(url, "http://") or Str.startsWith(url, "file://")) {
     return Err(
       error = InvalidField(
@@ -1994,7 +2003,7 @@ func assemblePrebuilt(
       error = InvalidField(
         section = section,
         field = "sha256",
-        message = "must be the 64-digit hex SHA-256 of the file at `url`"
+        message = "must be the 64 lower-case hex digits of the SHA-256 of the file at `url`"
       )
     )
   }
@@ -2002,6 +2011,24 @@ func assemblePrebuilt(
   val member = unwrapOr(findString(entries, section, "member"), "")
   if member.length > 0 {
     members.add(member)
+  }
+  var mi = 0
+  while mi < members.count {
+    var mj = mi + 1
+    while mj < members.count {
+      if basenameOf(members[mi]) == basenameOf(members[mj]) {
+        return Err(
+          error = InvalidField(
+            section = section,
+            field = "members",
+            message = "two members share the file name '" + basenameOf(members[mi]) +
+              "' and would overwrite each other"
+          )
+        )
+      }
+      mj += 1
+    }
+    mi += 1
   }
   if members.count == 0 and Str.endsWith(url, ".zip") {
     return Err(
