@@ -1606,9 +1606,18 @@ func runRestore(mfPath: in String, lockedMode: in Bool): Int {
       case _ -> ()
     }
   }
-  for e in restoreNativeLibs(nativeDecls, restoreTriples(manifest)) {
-    printErr("restore: " + e)
-    exitCode = 1
+  // Only a library with a prebuilt archive needs a triple (and the `clang` probe that finds the host's).
+  var anyPrebuilt = false
+  for nd0 in nativeDecls {
+    if nd0.spec.prebuilt.count > 0 {
+      anyPrebuilt = true
+    }
+  }
+  if anyPrebuilt {
+    for e in restoreNativeLibs(nativeDecls, restoreTriples(manifest)) {
+      printErr("restore: " + e)
+      exitCode = 1
+    }
   }
   var di = 0
   while di < manifest.deps.count {
