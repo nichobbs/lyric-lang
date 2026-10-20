@@ -5230,6 +5230,58 @@ func installImportRule(
   symTableSetImportRule(tbl, userPkg, whole, names, aliasPkgs, aliasNames)
 }
 
+// Whether `te` is `NativeUserdata`, or `NativePtr[Byte]`, the older spelling of a
+// callback's userdata slot.
+func isUserdataSlotType(te: in TypeExpr, allowBytePtr: in Bool): Bool {
+  match te.kind {
+    case TParen(inner) -> isUserdataSlotType(inner, allowBytePtr)
+    case TRef(path) -> path.segments[path.segments.count - 1] == "NativeUserdata"
+    case TGenericApp(head, args) -> {
+      if not allowBytePtr or head.segments[head.segments.count - 1] != "NativePtr" or args.count != 1 {
+        return false
+      }
+      match args[0] {
+        case TAType(inner) -> match inner.kind {
+          case TRef(ip) -> ip.segments[ip.segments.count - 1] == "Byte"
+          case _ -> false
+        }
+        case TAValue(_) -> false
+      }
+    }
+    case _ -> false
+  }
+}
+
+// T0181: a function-typed parameter of an `extern func` is a C callback, and a
+// Lyric closure reaches C through its userdata slot, so the type must name one:
+// a `NativeUserdata` parameter, or a trailing `NativePtr[Byte]` (D189).
+func checkExternCallbackSlot(diag: in List[Diagnostic], fname: in String, pname: in String, te: in TypeExpr): Unit {
+  match te.kind {
+    case TParen(inner) -> checkExternCallbackSlot(diag, fname, pname, inner)
+    case TFunction(ps, _) -> {
+      var found = false
+      var i = 0
+      while i < ps.count {
+        if isUserdataSlotType(ps[i], false) or (i == ps.count - 1 and isUserdataSlotType(ps[i], true)) {
+          found = true
+        }
+        i = i + 1
+      }
+      if not found {
+        diag.add(
+          errorDiagnostic(
+            "T0181",
+            "extern func '" + fname + "' parameter '" + pname +
+              "' is a callback type with no userdata slot: C can call a Lyric closure only through the pointer the API hands back, so mark that parameter NativeUserdata (or end the parameter list with NativePtr[Byte])",
+            te.span
+          )
+        )
+      }
+    }
+    case _ -> ()
+  }
+}
+
 // The C bindings of a file (D158).  `@library("name")` names the C library
 // an `extern func` binds into: P/Invoke on .NET, a foreign-function downcall
 // on the JVM, a `-l` link flag on the native target.  The native target
@@ -5275,6 +5327,11 @@ func checkExternFuncBindings(diag: in List[Diagnostic], items: in List[Item], na
               decl.span
             )
           )
+        }
+        if native {
+          for p in decl.params {
+            checkExternCallbackSlot(diag, decl.name, p.name, p.ty)
+          }
         }
         // Native lowers the full `extern func` surface (callbacks, `String`);
         // the managed targets marshal only the types every runtime passes

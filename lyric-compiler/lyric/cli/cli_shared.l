@@ -11,6 +11,7 @@
 //!              [--target dotnet|jvm]
 //!   check   [<source.l>...] [--manifest <lyric.toml>] [--target dotnet|jvm]
 //!   clean   [<dir>] [--manifest <lyric.toml>]
+//!   bindgen <header.h> --package <Name> --allow <file> [-o <out.l>] [--library <name>] [-I <dir>]... [--check]
 //!   run     [<source.l>] [--manifest <lyric.toml>] [--target dotnet|jvm|native] [--features <a,b>] [--no-default-features] [--all-features] [--watch] [-- <args>...]
 //!   fmt     [<source.l>...] [--manifest <lyric.toml>] [--check] [--write] [--stdin]
 //!   lint    [<source.l>] [--manifest <lyric.toml>] [--error-on-warning]
@@ -294,6 +295,8 @@ func usageText(): String {
     "                (type-check without producing a usable output artifact)\n" +
     "  lyric clean   [<dir>] [--manifest <lyric.toml>]\n" +
     "                (remove bin/, .lyric-run/, .lyric-test/, .lyric-bench/, .lyric-check/, .lyric-release/)\n" +
+    "  lyric bindgen <header.h> --package <Name> --allow <file> [-o <out.l>] [--library <name>] [-I <dir>]... [--clang-arg <arg>]... [--long-bits 32|64] [--check]\n" +
+    "                (generate native FFI bindings from a C header with clang; --check fails if -o is out of date)\n" +
     "  lyric restore [--manifest <lyric.toml>] [--locked]\n" +
     "  lyric update  [--manifest <lyric.toml>]\n" +
     "                (re-resolve all deps to latest compatible versions and rewrite lyric.lock)\n" +

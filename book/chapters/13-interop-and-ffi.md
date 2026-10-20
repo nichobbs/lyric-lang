@@ -368,6 +368,14 @@ d.flags[2] = 1u8
 fill(nativeAddrOf(d))
 ```
 
+Writing these declarations by hand does not scale to a large C header. `lyric bindgen` generates them from `clang`'s AST: you list the functions, structs and constants you want in an allow-list file and it emits the `extern func`, `foreign record` and `val` declarations, with `NativeUserdata` marking each callback's user pointer:
+
+```sh
+lyric bindgen window.h --package Window.Kernel --allow window.allow --library window -o window_kernel.l
+```
+
+Commit the output, and run the same command with `--check` in CI to catch a header that has moved on.
+
 `foreign record` is allowed only in kernel files (N0101 elsewhere) and never appears in a library's public API. The kernel's safe wrappers take ordinary Lyric records. `foreign` is a contextual keyword, recognised only directly before `record`.
 
 ## §13.11 JavaScript and NPM packages

@@ -387,6 +387,10 @@ pub func main(argv: in slice[String]): Int {
     return cmdClean(argv)
   }
 
+  if cmd == "bindgen" {
+    return cmdBindgen(argv)
+  }
+
   if cmd == "update" {
     return cmdUpdate(argv)
   }

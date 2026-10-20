@@ -1269,6 +1269,10 @@ lyric clean                            # remove bin/, .lyric-run/, .lyric-test/,
 lyric clean --manifest <lyric.toml>    # clean the project at the given manifest's directory
 lyric clean <dir>                      # clean a specific directory
 
+# Generate native FFI bindings from a C header (needs clang on PATH)
+lyric bindgen sdl.h --package Sdl.Kernel --allow sdl.allow --library SDL3 -o sdl_kernel.l
+lyric bindgen sdl.h --package Sdl.Kernel --allow sdl.allow -o sdl_kernel.l --check   # CI: fail if out of date
+
 # Package management
 lyric restore                          # download all dependencies declared in lyric.toml
                                        # ([maven] entries of workspace/path deps included, transitively)
