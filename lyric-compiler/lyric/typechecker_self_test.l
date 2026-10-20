@@ -11657,3 +11657,25 @@ test "a foreign record is written in place only through a var place (T0180)" {
   val okInout = parseCheck(decl + "func f(r: inout R): Unit {\n  r.w = 5\n}\n")
   assertEqualInt(diagCount(okInout), 0, "inout parameter: " + diagCodesOf(okInout))
 }
+
+// `NativeUserdata` (D189): marks a callback's closure-pointer parameter wherever it sits.
+test "NativeUserdata marks the callback userdata slot at any position (D189)" {
+  val src = "package T\n" +
+    "extern func onEvent(f: (NativeUserdata, NativePtr[Byte], Int) -> Int, ud: NativeUserdata): Int = \"on_event\"\n" +
+    "@unsafe_ffi\n" +
+    "func f(): Int {\n" +
+    "  val cb: (NativePtr[Byte], Int) -> Int = { p: NativePtr[Byte], n: Int -> n }\n" +
+    "  onEvent(cb, cb)\n" +
+    "}\n"
+  val ok = checkWithImportedPackagesForNative(parse(src).file, stdCoreOptionPackages())
+  assertEqualInt(diagCount(ok), 0, "the closure drops the NativeUserdata slot: " + diagCodesOf(ok))
+  val full = "package T\n" +
+    "extern func onEvent(f: (NativeUserdata, NativePtr[Byte], Int) -> Int, ud: NativeUserdata): Int = \"on_event\"\n" +
+    "@unsafe_ffi\n" +
+    "func f(): Int {\n" +
+    "  val cb: (NativeUserdata, NativePtr[Byte], Int) -> Int = { u: NativeUserdata, p: NativePtr[Byte], n: Int -> n }\n" +
+    "  onEvent(cb, cb)\n" +
+    "}\n"
+  val bad = checkWithImportedPackagesForNative(parse(full).file, stdCoreOptionPackages())
+  assertTrue(hasDiagCode(bad, "T0043"), "a closure of the full C signature is rejected: " + diagCodesOf(bad))
+}

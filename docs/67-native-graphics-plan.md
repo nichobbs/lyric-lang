@@ -395,8 +395,10 @@ foreign record WGPURenderPassColorAttachment {
 The trampolines (N4) assume the userdata pointer is the last C
 parameter. SDL3 puts it first (`SDL_EventFilter(void* userdata,
 SDL_Event*)`); current `webgpu.h` uses callback-info structs with two
-userdata slots. Callback parameters gain an explicit marker
-(`@userdata`) naming which parameter carries the closure pointer, and
+userdata slots. A callback type marks the parameter that carries the
+closure pointer with the built-in `NativeUserdata` type (D189; a type
+rather than an annotation because a function type's parameters carry no
+annotations, and the resolved type is what the checker sees), and
 trampolines are synthesised for that position.
 
 ### 4.9 Does this break Lyric's core goals?

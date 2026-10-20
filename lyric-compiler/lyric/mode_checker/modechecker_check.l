@@ -1514,7 +1514,11 @@ record N0100Ctx {
 
 func typeMentionsNativePtr(t: in TypeExpr): Bool {
   match t.kind {
-    case TRef(path) -> path.segments.count > 0 and path.segments[path.segments.count - 1] == "NativePtr"
+    case TRef(path) -> path.segments.count > 0 and
+      (
+        path.segments[path.segments.count - 1] == "NativePtr" or
+          path.segments[path.segments.count - 1] == "NativeUserdata"
+      )
     case TGenericApp(head, args) -> {
       if head.segments.count > 0 and head.segments[head.segments.count - 1] == "NativePtr" {
         return true
