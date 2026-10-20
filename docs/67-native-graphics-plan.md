@@ -7,9 +7,11 @@ record arithmetic). G2 is implemented: the `Plain` marker, `buffer[T]` on
 dotnet, the JVM (D185) and native (D186), `Std.Buffer`, and `withPointer` /
 `withMutPointer` (D187); the verifier's sequence model (#8394) and the
 copy-before-loop diagnostic (#8395) are tracked separately, as are the lazy
-managed form (#8389) and the JVM `spawn` argument copy (#8391). Phases G3 to
-G10 are open; `docs/01` §11.6 still marks G3's features as not yet
-implemented.
+managed form (#8389) and the JVM `spawn` argument copy (#8391). G3 is implemented (D188 to D193: `foreign record`, `NativeUserdata`,
+`lyric bindgen`, `[native.libs]`, prebuilt restore, callback members). G5 is
+implemented for compute and offscreen render (D194: `lyric-gpu`, compute and
+triangle examples with golden-image CI on lavapipe); textures, samplers and
+presentation remain. G4 is blocked on SDL3 binaries. The other phases are open.
 D156 and D157 resolve Q-GFX-005 to Q-GFX-010 (§10).
 
 **Builds on:** `native/plan/` (the LLVM backend, D-N-001 onward),

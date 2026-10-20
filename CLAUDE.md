@@ -1131,6 +1131,7 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
   `MockMessageQueue`, `MockSessionStore`, `MockFlagStore`, `TestClock`;
   `TestContext` factory; `assertOk`/`assertErr`/`assertSome`/`assertEq`/
   `assertTrue`/`assertFalse` assertion helpers.
+- `lyric-gpu/` — `lyric-gpu` library: WebGPU compute and offscreen rendering for `--target native` over wgpu-native (`Gpu`; `Gpu.Kernel.Wgpu` is `lyric bindgen` output, never hand-edited). Examples `compute` and `triangle` (golden image) run in CI on lavapipe via `scripts/ci/gpu-examples-e2e.sh` (D194, docs/67 G5).
 - `lyric-vscode/` — VS Code extension (LSP client) for the Lyric language
   server (`docs/16-lsp-vscode-plan.md`).
 - `resolver/` — Java-side Maven resolver JAR that the F# `MavenShim.fs`

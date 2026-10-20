@@ -1,0 +1,22 @@
+# What lyric bindgen binds from wgpu_bindings.h (wgpu-native v29.0.1.1).  Everything:
+# the whole WebGPU C API is generated, so the safe layer in src/gpu.l can grow without
+# touching the kernel.  Regenerate with:
+#   lyric bindgen native/include/wgpu_bindings.h --package Gpu.Kernel.Wgpu \
+#     --allow native/wgpu.allow --library wgpu_native-release -o src/_kernel/wgpu.l
+# and check it is current with the same command plus --check.
+wgpu*
+WGPU*
+
+# Callbacks carry two user pointers (userdata1, userdata2); the first is the
+# closure's slot, the second is passed through.  The index counts the callback's
+# parameters from 0.
+userdata WGPURequestAdapterCallback 3
+userdata WGPURequestDeviceCallback 3
+userdata WGPUBufferMapCallback 2
+userdata WGPUCompilationInfoCallback 2
+userdata WGPUCreateComputePipelineAsyncCallback 3
+userdata WGPUCreateRenderPipelineAsyncCallback 3
+userdata WGPUPopErrorScopeCallback 3
+userdata WGPUQueueWorkDoneCallback 2
+userdata WGPUDeviceLostCallback 3
+userdata WGPUUncapturedErrorCallback 3

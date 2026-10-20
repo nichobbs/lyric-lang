@@ -165,3 +165,5 @@ for t in \
 done
 # Std.Parse is a plain program, not a test module.
 "$lyric_bin" run --target native lyric-stdlib/tests/parse_tests.l
+# docs/67 G5: lyric-gpu's compute and render examples on wgpu-native over lavapipe.
+LYRIC_BIN="$lyric_bin" bash scripts/ci/gpu-examples-e2e.sh

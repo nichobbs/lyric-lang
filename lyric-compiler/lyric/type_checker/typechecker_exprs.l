@@ -18120,9 +18120,10 @@ func taskHandleAssignable(tbl: in SymbolTable, expected: in Type, actual: in Typ
   }
 }
 
-// `NativePtr[Byte]` is C's `void *` and converts to and from any other `NativePtr[T]`
-// (a chained descriptor's `next` pointer, the pointer a callback is handed back).  No
-// other pointer-to-pointer conversion exists.
+// `NativePtr[Byte]` is C's `void *`: it converts to any other `NativePtr[T]` (the null
+// pointer, a pointer a C library hands back untyped), and a `NativePtr[Record]` converts
+// to it.  A pointer to a primitive or to another pointer does not convert to
+// `NativePtr[Byte]`, so a mistyped buffer pointer is still rejected.
 func pointeeIsUserType(tbl: in SymbolTable, targs: in List[Type]): Bool {
   match unrefine(targs[0]) {
     case TyUser(tid, _, _) -> {
@@ -18146,8 +18147,7 @@ func nativeVoidPtrConvertible(tbl: in SymbolTable, paramTy: in Type, argTy: in T
       case TyUser(pid, _, pargs) -> match unrefine(argTy) {
         case TyUser(aid, _, aargs) -> {
           if typeIdEq(pid, ptrId) and typeIdEq(aid, ptrId) and pargs.count == 1 and aargs.count == 1 {
-            (isNativeBytePtrType(tbl, paramTy) and pointeeIsUserType(tbl, aargs)) or
-              (isNativeBytePtrType(tbl, argTy) and pointeeIsUserType(tbl, pargs))
+            (isNativeBytePtrType(tbl, paramTy) and pointeeIsUserType(tbl, aargs)) or isNativeBytePtrType(tbl, argTy)
           } else {
             false
           }
