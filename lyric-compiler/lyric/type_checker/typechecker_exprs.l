@@ -6813,6 +6813,24 @@ func ctorValueGenericNames(sym: in Symbol): List[String] {
   valueGenericNames(gOpt)
 }
 
+func ctorIsForeign(sym: in Symbol): Bool {
+  match sym.kind {
+    case DKRecord(_, rd) -> rd.isForeign
+    case _ -> false
+  }
+}
+
+// A construction's argument meets its field's type.  A `foreign record` field is
+// a C struct member, so it takes what an `extern func` parameter of that type
+// takes: a Lyric closure for a callback-typed field, and for a `void*` field
+// (`NativePtr[Byte]` or `NativeUserdata`) a closure as its own pointer (D193).
+func argSatisfiesCtorField(tbl: in SymbolTable, sym: in Symbol, fieldTy: in Type, argTy: in Type): Bool {
+  if ctorIsForeign(sym) {
+    return argSatisfiesExternParam(tbl, fieldTy, argTy)
+  }
+  argSatisfiesParam(tbl, fieldTy, argTy)
+}
+
 func ctorIsOpaque(sym: in Symbol): Bool {
   match sym.kind {
     case DKOpaque(_, _) -> true
@@ -7860,7 +7878,7 @@ func inferConstructionExpected(
           val fieldTy = fieldTypeByName(fields, nm)
           recordUnsignedWidening(tbl, fieldTy, argTy, valE)
           noteRangeSlot(tbl, fieldTy, valE, sym.name + " field " + nm)
-          if not argSatisfiesParam(tbl, fieldTy, argTy) and not literalArgSatisfiesParam(tbl, fieldTy, argTy, valE) {
+          if not argSatisfiesCtorField(tbl, sym, fieldTy, argTy) and not literalArgSatisfiesParam(tbl, fieldTy, argTy, valE) {
             diag.add(
               errorDiagnostic(
                 "T0104",
@@ -7887,7 +7905,7 @@ func inferConstructionExpected(
           val fieldTy = fields[posIdx].ty
           recordUnsignedWidening(tbl, fieldTy, argTy, ae)
           noteRangeSlot(tbl, fieldTy, ae, sym.name + " field " + fields[posIdx].name)
-          if not argSatisfiesParam(tbl, fieldTy, argTy) and not literalArgSatisfiesParam(tbl, fieldTy, argTy, ae) {
+          if not argSatisfiesCtorField(tbl, sym, fieldTy, argTy) and not literalArgSatisfiesParam(tbl, fieldTy, argTy, ae) {
             diag.add(
               errorDiagnostic(
                 "T0104",

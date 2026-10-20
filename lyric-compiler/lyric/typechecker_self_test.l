@@ -11680,6 +11680,25 @@ test "NativeUserdata marks the callback userdata slot at any position (D189)" {
   assertTrue(hasDiagCode(bad, "T0043"), "a closure of the full C signature is rejected: " + diagCodesOf(bad))
 }
 
+test "a foreign record's callback field takes a closure, and needs a userdata parameter (D193)" {
+  val decl = "package P\nforeign record Info {\n  mode: Int\n  cb: (Int, NativeUserdata) -> Int\n  ud: NativeUserdata\n}\n"
+  val ok = checkWithImportedPackagesForNative(
+    parse(decl + "@unsafe_ffi\nfunc f(): Int {\n  val g: (Int) -> Int = { v: Int -> v }\n  val i = Info(mode = 1, cb = g, ud = g)\n  i.mode\n}\n").file,
+    stdCoreOptionPackages()
+  )
+  assertEqualInt(diagCount(ok), 0, "closures for the callback and userdata fields: " + diagCodesOf(ok))
+  val noSlot = checkWithImportedPackagesForNative(
+    parse("package P\nforeign record Bad {\n  cb: (Int) -> Int\n}\n").file,
+    stdCoreOptionPackages()
+  )
+  assertTrue(hasDiagCode(noSlot, "T0179"), "a callback field with no userdata parameter: " + diagCodesOf(noSlot))
+  val wrong = checkWithImportedPackagesForNative(
+    parse(decl + "@unsafe_ffi\nfunc f(): Int {\n  val g: (Int, Int) -> Int = { a: Int, b: Int -> a }\n  val i = Info(mode = 1, cb = g, ud = g)\n  i.mode\n}\n").file,
+    stdCoreOptionPackages()
+  )
+  assertTrue(hasDiagCode(wrong, "T0104"), "a closure of the wrong shape: " + diagCodesOf(wrong))
+}
+
 test "with two NativeUserdata slots the first is the userdata, and a callback type with none is T0181 (D189)" {
   val two = "package T\n" +
     "extern func reg(f: (NativeUserdata, Int, NativeUserdata) -> Int, ud: NativeUserdata): Int = \"reg\"\n" +

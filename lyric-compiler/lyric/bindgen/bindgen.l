@@ -601,7 +601,7 @@ func recordNameOf(ix: in Index, id: in String): String {
 
 /// Registers the foreign record `id` (and the records it holds by value or by
 /// pointer) and returns its name, or why it has none.
-func useRecord(ix: in Index, em: in Emit, id: in String): Mapped {
+func useRecord(ix: in Index, em: in Emit, cfg: in BindgenConfig, id: in String): Mapped {
   val name = recordNameOf(ix, id)
   match mapGet(ix.records, id) {
     case None -> return No(why = "record has no definition")
@@ -636,7 +636,7 @@ func useRecord(ix: in Index, em: in Emit, id: in String): Mapped {
         if f.isBitfield {
           failure = "'" + name + "' has a bit-field"
         } else {
-          match fieldType(ix, em, parseCType(ix, f.ty, "", 0)) {
+          match fieldType(ix, em, cfg, parseCType(ix, f.ty, "", 0)) {
             case Ok(t) -> lines.add("  " + identOf(f.name, "f" + Str.fromInt(fi)) + ": " + t)
             case No(why) -> {
               failure = "field '" + f.name + "' of '" + name + "': " + why
@@ -686,11 +686,14 @@ func scalarName(ct: in CType): Mapped {
   }
 }
 
-func pointeeName(ix: in Index, em: in Emit, to: in CType): Mapped {
+func pointeeName(ix: in Index, em: in Emit, cfg: in BindgenConfig, to: in CType): Mapped {
   match to {
     case CVoid -> Ok(text = "Byte")
-    case CRecordT(id) -> match useRecord(ix, em, id) { case Ok(n) -> Ok(text = n); case No(_) -> Ok(text = "Byte") }
-    case CPtr(inner) -> match pointeeName(ix, em, inner) {
+    case CRecordT(id) -> match useRecord(ix, em, cfg, id) {
+      case Ok(n) -> Ok(text = n)
+      case No(_) -> Ok(text = "Byte")
+    }
+    case CPtr(inner) -> match pointeeName(ix, em, cfg, inner) {
       case Ok(n) -> Ok(text = "NativePtr[" + n + "]")
       case No(why) -> No(why = why)
     }
@@ -703,22 +706,22 @@ func pointeeName(ix: in Index, em: in Emit, to: in CType): Mapped {
 
 /// A record field's type: scalars, pointers, other records by value, and arrays
 /// of scalars or records.
-func fieldType(ix: in Index, em: in Emit, ct: in CType): Mapped {
+func fieldType(ix: in Index, em: in Emit, cfg: in BindgenConfig, ct: in CType): Mapped {
   match ct {
-    case CPtr(to) -> match pointeeName(ix, em, to) {
+    case CPtr(to) -> match pointeeName(ix, em, cfg, to) {
       case Ok(n) -> Ok(text = "NativePtr[" + n + "]")
       case No(why) -> No(why = why)
     }
-    case CRecordT(id) -> useRecord(ix, em, id)
+    case CRecordT(id) -> useRecord(ix, em, cfg, id)
     case CArr(elem, count) -> match elem {
       case CPtr(_) -> No(why = "an array of pointers has no layout here")
       case CArr(_, _) -> No(why = "a multi-dimensional array")
-      case _ -> match fieldType(ix, em, elem) {
+      case _ -> match fieldType(ix, em, cfg, elem) {
         case Ok(t) -> Ok(text = "array[" + Str.fromInt(count) + ", " + t + "]")
         case No(why) -> No(why = why)
       }
     }
-    case CFuncPtr(_, _, _) -> No(why = "a function-pointer field")
+    case CFuncPtr(name, ret, params) -> callbackType(ix, em, cfg, name, ret, params)
     case CVoid -> No(why = "a void field")
     case CBad(why) -> No(why = why)
     case _ -> scalarName(ct)
@@ -763,12 +766,12 @@ func externType(ix: in Index, em: in Emit, cfg: in BindgenConfig, ct: in CType, 
     case CVoid -> if isResult { Ok(text = "Unit") } else { No(why = "a void parameter") }
     case CPtr(to) -> match to {
       case CFuncPtr(_, _, _) -> No(why = "a pointer to a function pointer")
-      case _ -> match pointeeName(ix, em, to) {
+      case _ -> match pointeeName(ix, em, cfg, to) {
         case Ok(n) -> Ok(text = "NativePtr[" + n + "]")
         case No(why) -> No(why = why)
       }
     }
-    case CRecordT(id) -> useRecord(ix, em, id)
+    case CRecordT(id) -> useRecord(ix, em, cfg, id)
     case CFuncPtr(name, ret, params) -> callbackType(ix, em, cfg, name, ret, params)
     case CArr(_, _) -> No(why = "an array parameter")
     case CBad(why) -> No(why = why)
@@ -892,7 +895,7 @@ pub func generateBindings(astJson: in String, cfg: in BindgenConfig): BindgenRes
     val name = recordNameOf(ix, id)
     if name.length > 0 and isAllowed(cfg, name) {
       matched.add(name, true)
-      match useRecord(ix, em, id) {
+      match useRecord(ix, em, cfg, id) {
         case Ok(_) -> ()
         case No(why) -> notes.add("skipped record " + why)
       }

@@ -43,10 +43,30 @@ pub func foreignFieldViolation(tbl: in SymbolTable, t: in Type, depth: in Int): 
   if depth > 16 {
     return Some(value = "the type nests too deeply to check")
   }
-  if isNativePtrType(tbl, t) {
+  if isNativePtrType(tbl, t) or isNativeUserdataType(tbl, t) {
     return None
   }
   match unrefine(t) {
+    // A C callback: a function type with a `NativeUserdata` parameter, whose
+    // parameters and result are themselves C-passable.  It is stored as a function pointer.
+    case TyFunction(ps, ret, _) -> {
+      if externCallbackUserdataIndex(tbl, ps) < 0 {
+        return Some(value = "a function-typed field is a C callback and needs a NativeUserdata parameter")
+      }
+      for p in ps {
+        match foreignFieldViolation(tbl, p, depth + 1) {
+          case Some(why) -> return Some(value = "its callback parameter is not allowed: " + why)
+          case None -> ()
+        }
+      }
+      match unrefine(ret) {
+        case TyPrim(PtUnit) -> None
+        case _ -> match foreignFieldViolation(tbl, ret, depth + 1) {
+          case Some(why) -> Some(value = "its callback result is not allowed: " + why)
+          case None -> None
+        }
+      }
+    }
     case TyArray(sz, el, _) -> {
       if isNativePtrType(tbl, el) {
         return Some(value = "an array of NativePtr has no layout here; hold the pointers in separate fields")

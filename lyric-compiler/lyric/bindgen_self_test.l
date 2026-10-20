@@ -142,6 +142,22 @@ test "an ambiguous callback needs a userdata directive" {
   assertTrue(Str.contains(ok.source, "(NativePtr[Byte], NativeUserdata) -> Unit"), "index 1 is the userdata slot")
 }
 
+test "a function-pointer struct member becomes a callback-typed field of a foreign record" {
+  val src = "typedef void (*Done)(int status, void* userdata1, void* userdata2);\n" +
+    "typedef struct { int mode; Done callback; void* userdata1; void* userdata2; } Info;\n" +
+    "void request(Info info);\n"
+  val ast = astOf(src)
+  val cfg = configOf(allowOf(["request"]))
+  cfg.userdata.add("Done", 1)
+  val r = generateBindings(ast, cfg)
+  assertEqualInt(r.errors.count, 0, "no errors: " + Str.joinList("; ", r.errors))
+  assertTrue(
+    Str.contains(r.source, "callback: (Int, NativeUserdata, NativePtr[Byte]) -> Unit"),
+    "the callback field marks the configured userdata parameter: " + r.source
+  )
+  assertTrue(Str.contains(r.source, "pub extern func request(info: Info): Unit"), "the struct goes by value")
+}
+
 test "the allow-list file format" {
   val cfg = configOf(newList())
   val problems = parseAllowList("# comment\nwin_*  # trailing\n\nuserdata Cb 1\nMODE_A\n", cfg)
