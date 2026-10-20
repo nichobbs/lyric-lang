@@ -579,6 +579,10 @@ pub record SymbolTable {
   /// by the literal's span: a backend with typed primitive arrays builds it
   /// through `arrayOfIntrinsic` (#8041).
   arrayLiteralSites: Map[String, TypeExpr]
+  /// The result type of each `b.withPointer(f)` / `b.withMutPointer(f)` call, by
+  /// the call's span, for `lowerArrays` to bind the closure to an annotated
+  /// `val` (D187): the backends need a closure literal's function type.
+  bufferPointerSites: Map[String, TypeExpr]
   /// Each construction of a value-generic record (D169), keyed by the call's
   /// span: the value arguments of the instance it builds, in parameter order,
   /// as a literal length or the name of an enclosing value generic
@@ -785,6 +789,7 @@ pub func newSymbolTable(): SymbolTable {
     arrayZeroSites = newMap(),
     arrayCtorZeroArgs = newMap(),
     arrayLiteralSites = newMap(),
+    bufferPointerSites = newMap(),
     valueRecordCtorSites = newMap(),
     valueUnionCtorSites = newMap(),
     valueTypeArgSites = newMap(),

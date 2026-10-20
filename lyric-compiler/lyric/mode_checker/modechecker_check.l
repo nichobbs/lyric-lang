@@ -6,6 +6,7 @@ import Std.Core
 import Std.Collections
 import Lyric.Lexer
 import Lyric.Parser
+import Lyric.ContractElaborator
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Public types.
@@ -1748,6 +1749,7 @@ func n0100CollectVarsEob(ctx: in N0100Ctx, eob: in ExprOrBlock): Unit {
 
 // Walk expressions for nativeAddrOf uses (placement + operand rules).
 func n0100Expr(ctx: in N0100Ctx, e: in Expr): Unit {
+  n0100BufferPointerEscape(ctx, e)
   if isNativeNullPtrCall(e) {
     if not ctx.unsafeFfi {
       n0100Placement(ctx, e.span)
@@ -1834,7 +1836,19 @@ func n0100Expr(ctx: in N0100Ctx, e: in Expr): Unit {
         ai = ai + 1
       }
     }
-    case ELambda(_, body) -> n0100LambdaBody(ctx, body)
+    case ELambda(lparams, body) -> {
+      // A lambda parameter written `NativePtr[T]` is the raw side of the FFI
+      // like any other `NativePtr` type expression.
+      if not ctx.unsafeFfi {
+        for lp in lparams {
+          match lp.ty {
+            case Some(te) -> if typeMentionsNativePtr(te) { n0100Placement(ctx, lp.span) }
+            case None -> ()
+          }
+        }
+      }
+      n0100LambdaBody(ctx, body)
+    }
     case EBlock(block) -> n0100Block(ctx, block)
     case EUnsafe(block) -> n0100Block(ctx, block)
     case EAwait(inner) -> n0100Expr(ctx, inner)
@@ -1858,6 +1872,72 @@ func n0100Expr(ctx: in N0100Ctx, e: in Expr): Unit {
     }
     case _ -> {
     }
+  }
+}
+
+// `b.withPointer({ p: NativePtr[T] -> ... })` and `b.withMutPointer(...)` lend a
+// buffer's storage for the duration of the closure (D187), so the pointer `p`
+// may not outlive it: it may appear only as an argument of a call or as the
+// receiver of a member access.  Returning it, binding it, assigning it or
+// capturing it in an inner closure is `N0102`.  Deeper aliasing is out of scope,
+// as for `nativeAddrOf`; the placement rule still confines the pointer to
+// `@unsafe_ffi` code.
+func n0100BufferPointerEscape(ctx: in N0100Ctx, e: in Expr): Unit {
+  match e.kind {
+    case ECall(fn, args) -> match fn.kind {
+      case EMember(_, member) -> {
+        if (member == "withPointer" or member == "withMutPointer") and args.count == 1 {
+          val arg = match args[0] { case CAPositional(x) -> x; case CANamed(_, x, _) -> x }
+          match arg.kind {
+            case ELambda(lparams, body) -> if lparams.count == 1 { n0100PointerUses(ctx, lparams[0].name, body, e.span) }
+            case _ -> ()
+          }
+        }
+      }
+      case _ -> ()
+    }
+    case _ -> ()
+  }
+}
+
+func isPathNamed(e: in Expr, name: in String): Bool {
+  match e.kind {
+    case EPath(p) -> p.segments.count == 1 and p.segments[0] == name
+    case _ -> false
+  }
+}
+
+func n0100PointerUses(ctx: in N0100Ctx, name: in String, body: in Block, sp: in Span): Unit {
+  val total: List[Int] = newList()
+  val allowed: List[Int] = newList()
+  val probe = { x: Expr ->
+    if isPathNamed(x, name) {
+      total.add(1)
+    }
+    match x.kind {
+      case ECall(_, cargs) -> {
+        for ca in cargs {
+          val ae = match ca { case CAPositional(a) -> a; case CANamed(_, a, _) -> a }
+          if isPathNamed(ae, name) {
+            allowed.add(1)
+          }
+        }
+      }
+      case EMember(recv, _) -> if isPathNamed(recv, name) { allowed.add(1) }
+      case _ -> ()
+    }
+    x
+  }
+  val _ = mapBlock(body, probe)
+  if total.count > allowed.count {
+    ctx.diag.add(
+      errorDiagnostic(
+        "N0102",
+        "the pointer '" + name +
+          "' is lent to the closure and may not escape it: use it only as a call argument or a member receiver, not as a value to return, bind, assign or capture",
+        sp
+      )
+    )
   }
 }
 

@@ -884,6 +884,30 @@ static void test_list_append_all(void) {
     lyric_release(rd);
 }
 
+/* A negative length and a size that overflows must panic (forked, as for the
+ * list bounds checks), not allocate a wrapped-around block. */
+#ifndef __wasi__
+static void run_forked_buffer_new_abort(int64_t len, int64_t elem_size) {
+    pid_t pid = fork();
+    CHECK(pid >= 0);
+    if (pid == 0) {
+        if (!freopen("/dev/null", "w", stderr)) _exit(9);
+        LyricBuffer* b = lyric_buffer_new(len, elem_size);
+        (void)b;
+        _exit(0); /* not reached */
+    }
+    int status = 0;
+    CHECK(waitpid(pid, &status, 0) == pid);
+    CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
+}
+
+static void test_buffer_new_aborts(void) {
+    run_forked_buffer_new_abort(-1, 4);                    /* negative length */
+    run_forked_buffer_new_abort(INT64_MAX, 8);             /* len * elem_size overflows */
+    run_forked_buffer_new_abort(INT64_MAX / 4 + 1, 4);     /* just past the limit */
+}
+#endif /* !__wasi__ */
+
 static void test_buffer(void) {
     LyricBuffer* b = lyric_buffer_new(4, (int64_t)sizeof(int32_t));
     CHECK(b->len == 4);
@@ -3647,6 +3671,9 @@ int main(void) {
     test_map_string_keys();
     test_list_copy();
     test_buffer();
+#ifndef __wasi__
+    test_buffer_new_aborts();
+#endif
     test_list_slice_concat_append();
     test_list_bulk_builders();
 #ifndef __wasi__

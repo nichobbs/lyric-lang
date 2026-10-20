@@ -2505,7 +2505,7 @@ extern func strlen(s: NativePtr[Byte]): Long = "strlen"
 
 - `foreign record` declares a struct with C layout for the target triple. It is allowed only in kernel files and is not generic, its fields are `Plain` types, `NativePtr[T]`, `array[N, T]` or other foreign records, and it never appears in a library's public API: the kernel's safe wrappers take ordinary Lyric types. It is passed to C by value or by pointer (`nativeAddrOf` on a `var` local) under the platform C ABI. `foreign` is a contextual keyword, recognised only directly before `record`.
 - `@userdata` on a parameter of a callback function type names the parameter that carries the closure pointer, so a trampoline can be synthesised when the C API does not put userdata last.
-- `b.withPointer((p: NativePtr[T]) -> R)` and `b.withMutPointer(...)` lend a buffer's storage to C for the duration of the closure; `withMutPointer` first makes the storage unique. The pointer may not escape the closure (`N0100`).
+- `b.withPointer({ p: NativePtr[T] -> ... })` and `b.withMutPointer(...)` lend a buffer's storage to C for the duration of the closure and return its result (D187, `--target native` only: T0175 elsewhere); `withMutPointer` first makes the storage unique and needs a writable place (T0157). The closure writes its parameter's type (T0176), which puts the call under the `N0100` FFI boundary (a lambda parameter written `NativePtr[T]` is allowed only in `@unsafe_ffi` functions and `_kernel_native/` packages), and the pointer may not escape the closure: it may be only a call argument or a member receiver (`N0102`).
 
 Target-specific kernel selection follows the `_kernel_jvm/` precedent:
 `_kernel_native/<module>.l` declares the **same** package as

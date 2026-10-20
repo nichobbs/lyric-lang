@@ -583,6 +583,25 @@ test "n0100 unsafe_ffi function is admitted" {
   assertTrue(not (hasDiagCode(result, "N0100")), "unsafe-ffi-positive: no N0100")
 }
 
+// `buffer[T].withPointer` / `withMutPointer` (D187): the closure's `NativePtr[T]`
+// parameter is the raw side of the FFI (N0100) and may not escape the closure
+// (N0102).
+test "n0100 a withMutPointer closure outside unsafe_ffi" {
+  val src = "package P\nfunc f(b: inout buffer[Byte]): Int {\n  b.withMutPointer({ p: NativePtr[Byte] -> 1 })\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "N0100"), "the NativePtr parameter outside @unsafe_ffi: N0100")
+}
+
+test "n0102 the lent pointer may not escape the closure" {
+  val head = "package P\nextern func w(buf: NativePtr[Byte], n: Long): Long = \"write\"\n@unsafe_ffi\nfunc f(b: inout buffer[Byte]): Unit {\n"
+  val returned = parseCheck(head + "  val q = b.withMutPointer({ p: NativePtr[Byte] -> p })\n}\n")
+  assertTrue(hasDiagCode(returned, "N0102"), "returned: N0102")
+  val bound = parseCheck(head + "  b.withPointer({ p: NativePtr[Byte] ->\n    val q = p\n    1\n  })\n}\n")
+  assertTrue(hasDiagCode(bound, "N0102"), "bound to a local: N0102")
+  val used = parseCheck(head + "  b.withPointer({ p: NativePtr[Byte] -> w(p, 1) })\n}\n")
+  assertTrue(not (hasDiagCode(used, "N0102")), "passed to a call: no N0102")
+  assertTrue(not (hasDiagCode(used, "N0100")), "inside @unsafe_ffi: no N0100")
+}
+
 test "n0100 extern func params exempt" {
   val src = "package P\nextern func w(buf: NativePtr[Byte], n: Long): Long = \"write\"\nextern func m(n: Long): NativePtr[Byte] = \"malloc\"\n"
   val result = parseCheck(src)

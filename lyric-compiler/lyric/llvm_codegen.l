@@ -5056,6 +5056,13 @@ func lowerCallEx(
           case None -> {
           }
         }
+        if (memberName == "withPointer" or memberName == "withMutPointer") and args.count == 1 {
+          match lowerBufferPointerCall(ctx, insns, receiver, memberName, args, line) {
+            case Some(v) -> return v
+            case None -> {
+            }
+          }
+        }
         val recvVal = lowerExpr(ctx, insns, receiver)
         // `r.f(args)` where `f` is a function-typed field of the record `r`:
         // read the field (a borrow) and call the closure it holds.
@@ -14721,22 +14728,11 @@ func combineIndexedAssignValue(
   }
 }
 
-/// `b[i] = v` / `b[i] op= v` where `b` is a place holding a buffer; false when
-/// the receiver is not one.  Copy on write (docs/67 §4.4): the place first takes
-/// the buffer a write may modify, so a buffer other bindings still hold is left
-/// alone.  The checker guarantees the receiver is a stable place, so reading it
-/// again afterwards is the buffer just stored.
-func lowerBufferElemAssign(
-  ctx: in Ctx,
-  insns: in List[NInsn],
-  receiver: in Expr,
-  idxExpr: in Expr,
-  op: in AssignOp,
-  value: in Expr,
-  line: in Int,
-): Bool {
-  val bufTy = match placeNType(ctx, receiver) { case Some(t) -> t; case None -> return false }
-  val elem = match bufferElemOfType(ctx, bufTy) { case Some(e) -> e; case None -> return false }
+/// Makes the buffer held by the place `receiver` one a write may modify: a
+/// block nothing else references is left alone (one load and a branch), a shared
+/// one is replaced by a private copy stored back to the place.  The place is a
+/// stable one (T0174), so reading it again afterwards yields that buffer.
+func lowerBufferEnsureUnique(ctx: in Ctx, insns: in List[NInsn], receiver: in Expr, line: in Int): Unit {
   val sp = receiver.span
   val calleeSegs: List[String] = newList()
   calleeSegs.add(bufferUniqueIntrinsic())
@@ -14765,6 +14761,63 @@ func lowerBufferElemAssign(
   popTempScope(ctx, insns)
   insns.add(NBr(label = writeL))
   insns.add(NLabel(name = writeL))
+}
+
+/// `b.withPointer(f)` / `b.withMutPointer(f)` where `b` is a place holding a
+/// buffer (D187): calls the closure `f` with a `NativePtr[T]` to the packed
+/// elements and returns its result.  `withMutPointer` first makes the storage
+/// unique.  None when the receiver is not a buffer place.
+func lowerBufferPointerCall(
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  receiver: in Expr,
+  memberName: in String,
+  args: in List[CallArg],
+  line: in Int,
+): Option[NVal] {
+  val bufTy = match placeNType(ctx, receiver) { case Some(t) -> t; case None -> return None }
+  val elem = match bufferElemOfType(ctx, bufTy) { case Some(e) -> e; case None -> return None }
+  if memberName == "withMutPointer" {
+    lowerBufferEnsureUnique(ctx, insns, receiver, line)
+  }
+  val buf = lowerExpr(ctx, insns, receiver)
+  val data = bufferElemPtr(ctx, insns, buf, elem, NLitInt(v = 0i64, ty = NI64))
+  val name = "bufptr." + freshTmp(ctx)
+  val slot = name + ".slot"
+  ctx.allocas.add(NAlloca(dest = slot, ty = data.ty))
+  insns.add(NStore(ty = data.ty, value = data.value, ptr = NLocal(name = slot)))
+  ctx.varSlots.add(name, slot)
+  ctx.varTypes.add(name, data.ty)
+  val fnVal = lowerExpr(ctx, insns, nativeCallArgExpr(args[0]))
+  val cs = match closureSigOfType(ctx, fnVal.ty) {
+    case Some(c) -> c
+    case None -> panic("Lyric.LlvmCodegen: " + memberName + " takes a closure")
+  }
+  val sp = receiver.span
+  val segs: List[String] = newList()
+  segs.add(name)
+  val ptrArgs: List[CallArg] = newList()
+  ptrArgs.add(CAPositional(expr = Expr(kind = EPath(path = ModulePath(segments = segs, span = sp)), span = sp)))
+  Some(value = lowerClosureCall(ctx, insns, fnVal, cs, ptrArgs))
+}
+
+/// `b[i] = v` / `b[i] op= v` where `b` is a place holding a buffer; false when
+/// the receiver is not one.  Copy on write (docs/67 §4.4): the place first takes
+/// the buffer a write may modify, so a buffer other bindings still hold is left
+/// alone.  The checker guarantees the receiver is a stable place, so reading it
+/// again afterwards is the buffer just stored.
+func lowerBufferElemAssign(
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  receiver: in Expr,
+  idxExpr: in Expr,
+  op: in AssignOp,
+  value: in Expr,
+  line: in Int,
+): Bool {
+  val bufTy = match placeNType(ctx, receiver) { case Some(t) -> t; case None -> return false }
+  val elem = match bufferElemOfType(ctx, bufTy) { case Some(e) -> e; case None -> return false }
+  lowerBufferEnsureUnique(ctx, insns, receiver, line)
   val buf = lowerExpr(ctx, insns, receiver)
   val idx = lowerExprExpecting(ctx, insns, idxExpr, NI64)
   val ptr = bufferElemPtr(ctx, insns, buf, elem, idx.value)

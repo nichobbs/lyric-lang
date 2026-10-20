@@ -1334,6 +1334,134 @@ func nativeIntrinsicCallType(
   nativeIntrinsicType(tbl, "NativeWeak", argTypes[0])
 }
 
+// A closure literal with one parameter whose type is written.
+func isAnnotatedPointerLambda(e: in Expr): Bool {
+  match e.kind {
+    case ELambda(lparams, _) -> {
+      if lparams.count != 1 {
+        return false
+      }
+      match lparams[0].ty {
+        case Some(_) -> true
+        case None -> false
+      }
+    }
+    case _ -> false
+  }
+}
+
+// `b.withPointer(f)` and `b.withMutPointer(f)` on a `buffer[T]` (D187, docs/67
+// §4.4): lend the buffer's packed elements to `f` as a `NativePtr[T]` for the
+// duration of the call, and give back `f`'s result.  `withMutPointer` first makes
+// the storage unique, so `b` must be a writable place.  Native only: the other
+// targets have no address to lend.  The closure writes its parameter's type
+// (`{ p: NativePtr[Byte] -> ... }`), which is what confines the call to
+// `@unsafe_ffi` code and kernels (N0100).  None when `fn` is not one of these
+// calls on a buffer.
+func bufferPointerCallType(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  fn: in Expr,
+  args: in List[CallArg],
+  span: in Span,
+): Option[Type] {
+  var recvOpt: Option[Expr] = None
+  var name = ""
+  match fn.kind {
+    case EMember(r, n) -> {
+      if n == "withPointer" or n == "withMutPointer" {
+        recvOpt = Some(value = r)
+        name = n
+      }
+    }
+    case _ -> ()
+  }
+  val recv = match recvOpt { case Some(r) -> r; case None -> return None }
+  val scratch: List[Diagnostic] = newList()
+  val rt = inferExpr(sc, tbl, sigs, scratch, recv)
+  val elem = match bufferElementType(rt) { case Some(t) -> t; case None -> return None }
+  val _ = inferExpr(sc, tbl, sigs, diag, recv)
+  exemptArrayCopy(tbl, recv)
+  if not bufferReceiverIsStable(recv) {
+    diag.add(
+      errorDiagnostic(
+        "T0174",
+        "a buffer is lent through a variable, a field path or an element of one: bind the buffer to a `val` first",
+        recv.span
+      )
+    )
+  }
+  if not tbl.nativeIntrinsicTypes.containsKey("NativeWeak") {
+    diag.add(
+      errorDiagnostic("T0175", name + " lends a buffer's address to C code and exists only on --target native", span)
+    )
+    return Some(value = TyError)
+  }
+  if args.count != 1 {
+    diag.add(errorDiagnostic("T0042", "expected 1 argument(s), got " + toString(args.count), span))
+    return Some(value = TyError)
+  }
+  val argE = callArgExpr(args[0])
+  if not isAnnotatedPointerLambda(argE) {
+    diag.add(
+      errorDiagnostic(
+        "T0176",
+        name + " takes a closure that writes its pointer parameter's type, `{ p: NativePtr[T] -> ... }`",
+        argE.span
+      )
+    )
+    return Some(value = TyError)
+  }
+  if name == "withMutPointer" and not arrayPlaceWritable(sc, tbl, sigs, recv) {
+    diag.add(
+      errorDiagnostic(
+        "T0157",
+        "withMutPointer writes the buffer, so it is called on a `var` local, an `out`/`inout` parameter or a `var` field",
+        recv.span
+      )
+    )
+  }
+  val ptrTy = match nativeIntrinsicType(tbl, "NativePtr", elem) {
+    case Some(t) -> t
+    case None -> return Some(value = TyError)
+  }
+  val params: List[Type] = newList()
+  params.add(ptrTy)
+  val want = TyFunction(params = params, ret = TyError, isAsync = false)
+  val got = inferExprExpected(sc, tbl, sigs, diag, argE, want)
+  match got {
+    case TyFunction(ps, ret, _) -> {
+      val siteKey = recordCopySiteKey(span)
+      if not tbl.bufferPointerSites.containsKey(siteKey) {
+        match typeExprForRefWithVars(tbl, ret, span) {
+          case Some(rte) -> tbl.bufferPointerSites.add(siteKey, rte)
+          case None -> diag.add(
+            errorDiagnostic(
+              "T0177",
+              name + ": the closure's result type " + renderType(ret) +
+                " cannot be written out here; return a scalar, a record or a buffer",
+              argE.span
+            )
+          )
+        }
+      }
+      if ps.count == 1 and not typeEquiv(ps[0], ptrTy) {
+        diag.add(
+          errorDiagnostic(
+            "T0043",
+            name + ": the closure's parameter must be a " + renderType(ptrTy) + ", got " + renderType(ps[0]),
+            argE.span
+          )
+        )
+      }
+      Some(value = ret)
+    }
+    case _ -> Some(value = TyError)
+  }
+}
+
 // `nativeLoadByte(p, offset): Byte` and `nativeStoreByte(p, offset, value)`
 // read and write the byte at `p + offset` in C memory, on every target
 // (D161): `p` is a `NativePtr[Byte]`, `offset` an `Int` or `Long`, `value`
@@ -14548,6 +14676,10 @@ func inferExprCore(
       }
       match nativeIntrinsicCallType(sc, tbl, sigs, diag, fn, args, e.span) {
         case Some(nt) -> return nt
+        case None -> ()
+      }
+      match bufferPointerCallType(sc, tbl, sigs, diag, fn, args, e.span) {
+        case Some(bt) -> return bt
         case None -> ()
       }
       // Numeric / character conversion-method intrinsics (#1901): `x.toInt()`,

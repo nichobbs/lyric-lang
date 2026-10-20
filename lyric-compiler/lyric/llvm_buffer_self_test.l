@@ -386,3 +386,37 @@ test "an out-of-range index aborts with the buffer's message" {
     "the shared bounds check message (" + r.stderr + ")"
   )
 }
+
+test "withMutPointer lends the packed elements, copying a shared block first" {
+  runClean(
+    "extern func cMemset(p: NativePtr[Byte], c: Int, n: Long): NativePtr[Byte] = \"memset\"\n" + "@unsafe_ffi\n" +
+      "func fillSeven(b: inout buffer[Byte]): Unit {\n" +
+      "  val _ = b.withMutPointer({ p: NativePtr[Byte] ->\n    val _ = cMemset(p, 7, 4)\n    0\n  })\n" +
+      "}\n" +
+      "@unsafe_ffi\n" +
+      "func main(): Int {\n" +
+      "  var b: buffer[Byte] = filled(6, 1.toByte())\n" +
+      "  val snap = b\n" +
+      "  fillSeven(b)\n" +
+      "  if b[0] != 7.toByte() or b[3] != 7.toByte() or b[4] != 1.toByte() { return 1 }\n" +
+      "  if snap[0] != 1.toByte() or snap[3] != 1.toByte() { return 2 }\n" +
+      "  0\n" +
+      "}\n",
+    "memset through withMutPointer"
+  )
+}
+
+test "withPointer reads and nativeStoreByte through a mutable pointer round-trip" {
+  runClean(
+    "@unsafe_ffi\n" + "func main(): Int {\n" + "  var b: buffer[Byte] = filled(4, 0.toByte())\n" +
+      "  val _ = b.withMutPointer({ p: NativePtr[Byte] ->\n    nativeStoreByte(p, 2, 9.toByte())\n    0\n  })\n" +
+      "  val got = b.withPointer({ p: NativePtr[Byte] -> nativeLoadByte(p, 2) })\n" +
+      "  if got != 9.toByte() or b[2] != 9.toByte() { return 1 }\n" +
+      "  var empty: buffer[Byte] = filled(0, 0.toByte())\n" +
+      "  val n = empty.withPointer({ p: NativePtr[Byte] -> 5 })\n" +
+      "  if n != 5 { return 2 }\n" +
+      "  0\n" +
+      "}\n",
+    "load and store through the lent pointer"
+  )
+}
