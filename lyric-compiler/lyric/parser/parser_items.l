@@ -420,6 +420,23 @@ func annotationsPrecedeFunc(st: in ParseState): Bool {
   }
 }
 
+func nextIsRecordKeyword(st: in ParseState): Bool {
+  match peekAt(st, 1).token {
+    case TKeyword(k) -> match k { case KwRecord -> true; case _ -> false }
+    case _ -> false
+  }
+}
+
+/// `foreign record Name { ... }` (D188): the same body as a record, flagged so the
+/// checker and the native backend give it C layout.
+func parseForeignRecordBody(st: inout ParseState): RecordDecl {
+  val startSpan = peekSpan(st)
+  val _ = advance(st)
+  // 'foreign'
+  val rd = parseRecordBody(st, None, false)
+  rd.copy(span = joinSpans(startSpan, rd.span), isForeign = true)
+}
+
 func parseRecordBody(st: inout ParseState, genericsPrefix: Option[GenericParams], isExposed: Bool): RecordDecl {
   val startSpan = peekSpan(st)
   if isExposed {
@@ -4113,6 +4130,10 @@ func parseItemOpt(st: inout ParseState): Option[List[Item]] {
         IConfig(decl = parseConfigBody(st))
       } else if identName == "aspect" and nextIsIdent {
         IAspect(decl = parseAspectBody(st))
+      } else if identName == "foreign" and nextIsRecordKeyword(st) {
+        // D188: `foreign` is a contextual keyword, recognised only directly
+        // before `record`, so it stays usable as a name everywhere else.
+        IRecord(decl = parseForeignRecordBody(st))
       } else {
         emitErr(st, "P0040", "expected an item declaration", nextTok.span)
         if not isAtEnd(st) {

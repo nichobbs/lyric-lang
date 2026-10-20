@@ -210,6 +210,46 @@ test "a Lyric closure takes and returns records when C calls it, under ASan" {
   assertEqualInt(runWithC(src, c, true), 0, "every callback crosses intact")
 }
 
+// A `foreign record` is a C struct: written in place field by field through a
+// `var`, filled by C through its address, and passed to C by value and by
+// pointer.
+test "a foreign record is a C struct written in place and shared with C, under ASan" {
+  val c = "typedef struct { int w, h; double scale; unsigned char flags[4]; void* user; } Desc;\n" +
+    "void desc_fill(Desc* d) { d->w = 640; d->h = 480; d->scale = 1.5; d->flags[2] = 7; }\n" +
+    "double desc_area(Desc d) { return d.w * d.h * d.scale + d.flags[1] + (d.user != 0 ? 1000 : 0); }\n" +
+    "int desc_ptr_sum(const Desc* d) { return d->w + d->h + d->flags[3]; }\n" +
+    "static int token_target;\nvoid* desc_token(void) { return &token_target; }\n"
+  val src = "package T\n" +
+    "foreign record Desc {\n  w: Int\n  h: Int\n  scale: Double\n  flags: array[4, Byte]\n  user: NativePtr[Byte]\n}\n" +
+    "extern func desc_fill(d: NativePtr[Desc]): Unit = \"desc_fill\"\n" +
+    "extern func desc_area(d: Desc): Double = \"desc_area\"\n" +
+    "extern func desc_ptr_sum(d: NativePtr[Desc]): Int = \"desc_ptr_sum\"\n" +
+    "extern func desc_token(): NativePtr[Byte] = \"desc_token\"\n" +
+    "@unsafe_ffi\n" +
+    "func main(): Int {\n" +
+    "  var d = Desc(w = 0, h = 0, scale = 0.0, flags = [0u8, 0u8, 0u8, 0u8], user = nativeNullPtr())\n" +
+    "  desc_fill(nativeAddrOf(d))\n" +
+    "  if d.w != 640 or d.h != 480 or d.scale != 1.5 or d.flags[2] != 7u8 {\n    return 1\n  }\n" +
+    "  d.w = 100\n" +
+    "  d.h += 2\n" +
+    "  d.flags[1] = 9u8\n" +
+    "  d.flags[3] = 4u8\n" +
+    "  if desc_area(d) != 100.0 * 482.0 * 1.5 + 9.0 {\n    return 2\n  }\n" +
+    "  if desc_ptr_sum(nativeAddrOf(d)) != 100 + 482 + 4 {\n    return 3\n  }\n" +
+    "  val copy = d\n" +
+    "  d.w = 1\n" +
+    "  if copy.w != 100 or d.w != 1 {\n    return 4\n  }\n" +
+    "  d.user = desc_token()\n" +
+    "  if desc_area(d) < 1000.0 {\n    return 5\n  }\n" +
+    "  0\n" +
+    "}\n"
+  assertEqualInt(
+    runWithC(src, c, true),
+    0,
+    "fields written in place are what C sees, and what C writes is what Lyric reads"
+  )
+}
+
 func mainStub(): String = "func main(): Int {\n  0\n}\n"
 
 test "AArch64 declarations match clang's AAPCS64 lowering" {

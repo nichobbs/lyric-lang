@@ -2756,3 +2756,11 @@ test "a raw string's hash count may change when the body needs fewer" {
   assertTrue(fmtCheckIsOk(c), "r##-delimited quote-free body: the loss check accepts r-quote: " + format(parse(src)))
   assertTrue(Str.contains(format(parse(src)), "r\"plain body\""), "re-derived as r-quote")
 }
+
+test "foreign record keeps its keyword through a format round trip" {
+  val src = "package P\nforeign record Desc {\n  w: Int\n  flags: array[4, Byte]\n}\n"
+  val pr = parse(src)
+  val acc = format(pr)
+  assertTrue(Str.contains(acc, "foreign record Desc {"), "format: foreign keyword kept")
+  assertTrue(isFormatted(acc, pr), "format: foreign record idempotent")
+}

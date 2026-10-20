@@ -1244,3 +1244,9 @@ test "a call reaches the overload taking its argument count, else every one fill
   val viaDefaults = calleeCandidates(dflt, 1)
   assertEqualInt(viaDefaults.count, 2, "defaults: every declaration that takes the call")
 }
+
+// N0101 — a `foreign record` is part of the FFI boundary, so a user file may not declare one.
+test "n0101 foreign record outside a kernel package" {
+  val result = parseCheck("package P\nforeign record Desc {\n  w: Int\n}\n")
+  assertTrue(hasDiagCode(result, "N0101"), "foreign record: N0101 emitted")
+}

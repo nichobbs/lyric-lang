@@ -717,7 +717,7 @@ pub func itemDoc(item: in Item, ctx: inout FmtCtx): List[String] {
       header,
       recordDoc(
         visAndLegacyPrefixStr(visStr, rd.generics),
-        "record",
+        if rd.isForeign { "foreign record" } else { "record" },
         rd.name,
         rd.generics,
         rd.whereClause,

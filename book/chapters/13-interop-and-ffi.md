@@ -343,6 +343,33 @@ func setTitle(w: in NativePtr[Byte], title: in String): Int {
 
 `Std.Ffi` is built from two intrinsics you can use directly for other C data: `nativeLoadByte(p, offset)` reads the byte at `p + offset` and `nativeStoreByte(p, offset, value)` writes one, on all three targets. `Ffi.allocate(size)` gives you C heap memory to use them on. There is no bounds check, which is why they, like every function in `Std.Ffi`, are allowed only in `@unsafe_ffi` code.
 
+## §13.10a C structs with `foreign record`
+
+A C API that takes a descriptor struct needs a Lyric type with the same memory layout. On `--target native`, a kernel file (`_kernel_native/`) declares one with `foreign record`:
+
+```lyric
+foreign record WindowDesc {
+  width: Int
+  height: Int
+  scale: Double
+  flags: array[4, Byte]
+  userdata: NativePtr[Byte]
+}
+```
+
+A foreign record is a value with no identity. Its fields are `Plain` types, `NativePtr[T]`, `array[N, T]` of those, or other foreign records. It cannot be generic and has no `var` fields, defaults, methods or invariants, because C writes its memory without running any Lyric code. It is stored inline, laid out as clang lays out the matching C struct, and passed to `extern func` by value (under the platform C ABI) or by pointer.
+
+A `val` or `in` binding is immutable. A `var` local or an `inout` parameter is written field by field in place, so its address can be handed to C:
+
+```lyric
+var d = WindowDesc(width = 0, height = 0, scale = 1.0, flags = [0u8, 0u8, 0u8, 0u8], userdata = nativeNullPtr())
+d.width = 640
+d.flags[2] = 1u8
+fill(nativeAddrOf(d))
+```
+
+`foreign record` is allowed only in kernel files (N0101 elsewhere) and never appears in a library's public API. The kernel's safe wrappers take ordinary Lyric records. `foreign` is a contextual keyword, recognised only directly before `record`.
+
 ## §13.11 JavaScript and NPM packages
 
 On the `wasm32` target the foreign boundary is JavaScript rather than the BCL or C. A
