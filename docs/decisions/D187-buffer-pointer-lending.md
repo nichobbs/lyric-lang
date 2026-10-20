@@ -20,7 +20,11 @@
    only as a call argument or a member receiver; returning, binding, assigning
    or capturing it is **N0102**. Deeper aliasing is out of scope, as for
    `nativeAddrOf`.
-5. **Lowering.** The codegen takes the address of the first element, stores it in
+5. **Result type.** The checker records the closure's result type for each call
+   (T0177 when it cannot be written out), and the shared lowering binds the
+   closure literal to an annotated `val` before the call, so the backend has the
+   function type it lowers a closure against.
+6. **Lowering.** The codegen takes the address of the first element, stores it in
    a fresh local, and calls the closure with that local as its argument. No
    runtime function is involved.
 
