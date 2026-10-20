@@ -358,6 +358,13 @@ pub func readInts(d: Device, b: Buffer, count: Int): Result[buffer[Int], String]
   val encoder = wgpuDeviceCreateCommandEncoder(longToPtr(d.device), nativeNullPtr())
   wgpuCommandEncoderCopyBufferToBuffer(encoder, longToPtr(b.raw), 0, longToPtr(staging.raw), 0, bytes)
   submit(d, encoder)
+  match takeError(d) {
+    case Some(message) -> {
+      releaseBuffer(staging)
+      return Err(error = message)
+    }
+    case None -> ()
+  }
 
   val slot = Slot(status = 0 - 1, handle = 0, message = "")
   val onMap: (Int, WGPUStringView, NativePtr[Byte]) -> Unit = { status: Int, message: WGPUStringView, user: NativePtr[Byte] ->
@@ -418,7 +425,10 @@ pub func createComputePipeline(d: Device, source: String, entry: String): Result
   Ffi.release(wgsl)
   Ffi.release(entryName)
   match takeError(d) {
-    case Some(message) -> Err(error = message)
+    case Some(message) -> {
+      wgpuComputePipelineRelease(pipeline)
+      Err(error = message)
+    }
     case None -> Ok(value = ComputePipeline(raw = ptrToLong(pipeline)))
   }
 }
@@ -458,7 +468,10 @@ pub func createBindGroup(d: Device, pipeline: ComputePipeline, buffers: List[Buf
   wgpuBindGroupLayoutRelease(layout)
   Ffi.release(entries)
   match takeError(d) {
-    case Some(message) -> Err(error = message)
+    case Some(message) -> {
+      wgpuBindGroupRelease(group)
+      Err(error = message)
+    }
     case None -> Ok(value = BindGroup(raw = ptrToLong(group)))
   }
 }
@@ -583,7 +596,10 @@ pub func createRenderPipeline(
   Ffi.release(vertexName)
   Ffi.release(fragmentName)
   match takeError(d) {
-    case Some(message) -> Err(error = message)
+    case Some(message) -> {
+      wgpuRenderPipelineRelease(pipeline)
+      Err(error = message)
+    }
     case None -> Ok(value = RenderPipeline(raw = ptrToLong(pipeline)))
   }
 }
@@ -660,6 +676,13 @@ pub func readPixels(d: Device, target: RenderTarget): Result[buffer[Byte], Strin
   var size = WGPUExtent3D(width = target.width, height = target.height, depthOrArrayLayers = 1)
   wgpuCommandEncoderCopyTextureToBuffer(encoder, nativeAddrOf(source), nativeAddrOf(destination), nativeAddrOf(size))
   submit(d, encoder)
+  match takeError(d) {
+    case Some(message) -> {
+      releaseBuffer(staging)
+      return Err(error = message)
+    }
+    case None -> ()
+  }
 
   val slot = Slot(status = 0 - 1, handle = 0, message = "")
   val onMap: (Int, WGPUStringView, NativePtr[Byte]) -> Unit = { status: Int, message: WGPUStringView, user: NativePtr[Byte] ->
