@@ -3105,7 +3105,13 @@ func emitNativeInProcess(
   // through the existing extra-clang-flags slot on compileToNativeWithFlags.
   val clangFlags: List[String] = newList()
   for lib in extraLibs {
-    clangFlags.add("-l" + lib)
+    // An entry written `-...` is a resolved link argument (`[native.libs]`:
+    // `-L`, `-Wl,-rpath`); a bare name is `[native].extra_libs`' `-l<name>`.
+    if Str.startsWith(lib, "-") {
+      clangFlags.add(lib)
+    } else {
+      clangFlags.add("-l" + lib)
+    }
   }
   // Native `--define` is threaded and consumed (#5977 closed: list-literal
   // lowering + module-level `val` inlining make `@build_const`/`Std.BuildInfo`
@@ -3264,7 +3270,13 @@ pub func emitNativeProjectWithShape(
   val stdlibFiles = findStdlibSourcesNativeForShape(shape)
   val clangFlags: List[String] = newList()
   for lib in extraLibs {
-    clangFlags.add("-l" + lib)
+    // An entry written `-...` is a resolved link argument (`[native.libs]`:
+    // `-L`, `-Wl,-rpath`); a bare name is `[native].extra_libs`' `-l<name>`.
+    if Str.startsWith(lib, "-") {
+      clangFlags.add(lib)
+    } else {
+      clangFlags.add("-l" + lib)
+    }
   }
   // #7452: same `try`/`catch` boundary as `emitNativeInProcess` above.
   val projDiags: List[Diagnostic] = newList()

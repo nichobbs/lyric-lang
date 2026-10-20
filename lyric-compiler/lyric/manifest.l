@@ -196,10 +196,27 @@ pub record NpmSection {
 /// `extraLibs` are additional `-l<name>` link flags for clang.  The CLI
 /// `--triple` / `--opt` flags override the manifest triple / optLevel;
 /// `extraLibs` has no CLI counterpart and is applied unconditionally.
+pub record NativeLibSpec {
+  /// The table key: `[native.libs.<name>]`.
+  name: String
+  /// The library to link (`-l<link>`); "" means `name`.
+  link: String
+  /// The version this project was written against.  Informational for a
+  /// `dir` library; the version a `pkg_config` lookup must satisfy.
+  version: String
+  /// A system library found with `pkg-config --libs --cflags <pkg_config>`.
+  pkgConfig: String
+  /// A directory, relative to the declaring manifest, holding `lib<link>.so`
+  /// / `.dylib` / `.a`.  The shared library is bundled next to the executable.
+  dir: String
+}
+
 pub record NativeConfig {
   triple: String
   optLevel: String
   extraLibs: List[String]
+  /// `[native.libs.<name>]` tables: C libraries the program links (docs/67 §6).
+  libs: List[NativeLibSpec] = newList()
   /// `[wasm] version`: the WIT package version of a `--shape component` build
   /// ("" = the project's `[package]` version, else `0.1.0`).
   wasmVersion: String = ""
@@ -1887,26 +1904,94 @@ func assembleNative(entries: in List[Entry]): Result[Option[NativeConfig], Manif
   }
 }
 
+/// The distinct `<name>`s of the `[native.libs.<name>]` tables, in file order.
+func nativeLibNames(entries: in List[Entry]): List[String] {
+  val names: List[String] = newList()
+  for e in entries {
+    if Str.startsWith(e.section, "native.libs.") {
+      val name = Str.substring(e.section, 12)
+      if name.length > 0 and not Str.contains(name, ".") and not listHasString(names, name) {
+        names.add(name)
+      }
+    }
+  }
+  names
+}
+
+func listHasString(xs: in List[String], s: in String): Bool {
+  var i = 0
+  while i < xs.count {
+    if xs[i] == s {
+      return true
+    }
+    i += 1
+  }
+  false
+}
+
+func assembleNativeLibs(entries: in List[Entry]): Result[List[NativeLibSpec], ManifestError] {
+  val specs: List[NativeLibSpec] = newList()
+  for name in nativeLibNames(entries) {
+    val section = "native.libs." + name
+    val link = unwrapOr(findString(entries, section, "link"), "")
+    val version = unwrapOr(findString(entries, section, "version"), "")
+    val pkg = unwrapOr(findString(entries, section, "pkg_config"), "")
+    val dir = unwrapOr(findString(entries, section, "dir"), "")
+    if invalidLibName(name) or (link.length > 0 and invalidLibName(link)) {
+      return Err(
+        error = InvalidField(
+          section = section,
+          field = "link",
+          message = "library names must be non-empty, whitespace-free bare names (not a \"-l\" flag)"
+        )
+      )
+    }
+    val sources = (if pkg.length > 0 { 1 } else { 0 }) + (if dir.length > 0 { 1 } else { 0 })
+    if sources != 1 {
+      return Err(
+        error = InvalidField(
+          section = section,
+          field = "dir",
+          message = "name exactly one source for the library: `pkg_config = \"<package>\"` (a system library) or `dir = \"<path>\"` (a directory holding it)"
+        )
+      )
+    }
+    specs.add(NativeLibSpec(name = name, link = link, version = version, pkgConfig = pkg, dir = dir))
+  }
+  Ok(value = specs)
+}
+
 func assembleNativeWith(entries: in List[Entry], wasm: in Option[WasmCfg]): Result[Option[NativeConfig], ManifestError] {
+  match assembleNativeLibs(entries) {
+    case Err(e) -> return Err(error = e)
+    case Ok(libs) -> return assembleNativeWithLibs(entries, wasm, libs)
+  }
+}
+
+func assembleNativeWithLibs(
+  entries: in List[Entry], wasm: in Option[WasmCfg], nativeLibs: in List[NativeLibSpec]
+): Result[Option[NativeConfig], ManifestError] {
   val wasmVersion = match wasm { case Some(w) -> w.version; case None -> "" }
   val wasmWorld = match wasm { case Some(w) -> w.world; case None -> "" }
   val wasmStack = match wasm { case Some(w) -> w.stack; case None -> 0 }
   if not hasSection(entries, "native") {
-    return match wasm {
-      case None -> Ok(value = None)
-      case Some(_) -> Ok(
-        value = Some(
-          value = NativeConfig(
-            triple = "",
-            optLevel = "",
-            extraLibs = newList(),
-            wasmVersion = wasmVersion,
-            wasmWorld = wasmWorld,
-            wasmStack = wasmStack
-          )
+    val wasmDeclared = match wasm { case Some(_) -> true; case None -> false }
+    if not wasmDeclared and nativeLibs.count == 0 {
+      return Ok(value = None)
+    }
+    return Ok(
+      value = Some(
+        value = NativeConfig(
+          triple = "",
+          optLevel = "",
+          extraLibs = newList(),
+          libs = nativeLibs,
+          wasmVersion = wasmVersion,
+          wasmWorld = wasmWorld,
+          wasmStack = wasmStack
         )
       )
-    }
+    )
   }
   val triple = unwrapOr(findString(entries, "native", "triple"), "")
   val opt = unwrapOr(findString(entries, "native", "opt_level"), "")
@@ -1941,6 +2026,7 @@ func assembleNativeWith(entries: in List[Entry], wasm: in Option[WasmCfg]): Resu
         triple = triple,
         optLevel = opt,
         extraLibs = libs,
+        libs = nativeLibs,
         wasmVersion = wasmVersion,
         wasmWorld = wasmWorld,
         wasmStack = wasmStack

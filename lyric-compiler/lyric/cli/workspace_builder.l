@@ -260,6 +260,56 @@ pub func collectTransitiveDepDlls(
   }
 }
 
+/// Adds the `[native.libs]` of the dependency in `depDir`, and of its own path and
+/// workspace dependencies, to `decls` (D191).  A directory is read once.
+func collectDepNativeLibs(
+  depDir: in String,
+  wsCtxOpt: in Option[Ws.WorkspaceContext],
+  seenDirs: in List[String],
+  decls: in List[NativeLibDecl],
+): Unit {
+  if stringListContains(seenDirs, depDir) {
+    return
+  }
+  seenDirs.add(depDir)
+  val tomlPath = Path.join(depDir, "lyric.toml")
+  if not File.fileExists(tomlPath) {
+    return
+  }
+  match File.readText(tomlPath) {
+    case Err(_) -> ()
+    case Ok(mfText) -> match Mf.parseManifest(mfText, tomlPath) {
+      case Err(_) -> ()
+      case Ok(mf) -> {
+        for d in nativeLibDeclsOf(mf, depDir) {
+          decls.add(d)
+        }
+        for tdep in mf.deps {
+          match tdep.source {
+            case Mf.DepSource.Path(dir) -> {
+              val subDir = if Path.isAbsolute(dir) { dir } else { Path.join(depDir, dir) }
+              collectDepNativeLibs(subDir, wsCtxOpt, seenDirs, decls)
+            }
+            case Mf.DepSource.Workspace(_) -> match wsCtxOpt {
+              case None -> ()
+              case Some(wsCtx) -> match Ws.resolveDep(tdep.name, wsCtx) {
+                case None -> ()
+                case Some(wsDir) -> collectDepNativeLibs(
+                  wsDir,
+                  wsCtxOpt,
+                  seenDirs,
+                  decls
+                )
+              }
+            }
+            case _ -> ()
+          }
+        }
+      }
+    }
+  }
+}
+
 /// Read every `[project.packages]` source file under `depDir`'s manifest and
 /// append it to `depTemplatePkgsList` as a `ProjectPackage`, tagged with
 /// `depName`.  Shared by `resolveManifestDependencies`'s workspace-dep branch
@@ -852,6 +902,9 @@ pub record ResolvedManifestDeps {
   /// True when the target cannot use a declared dependency at all: a
   /// registry or git dependency on `--target native` (#7833).  Fatal.
   hadUnsupportedDep: Bool = false
+  /// The `[native.libs]` the dependencies declare (transitively), for a native
+  /// build to link beside the project's own (D191).
+  nativeLibs: List[NativeLibDecl] = newList()
   /// The `@cfg` features each `depTemplateSrcs` package is compiled with
   /// when bundled from source (`collectDepPackageFeatures`); pass as
   /// `EmitProjectRequest.packageFeatures`.
@@ -1360,6 +1413,31 @@ pub func resolveManifestDependenciesAs(
     }
   }
 
+  val depNativeLibs: List[NativeLibDecl] = newList()
+  if targetIsNative(target) {
+    val seenNativeDirs: List[String] = newList()
+    for dep in manifest.deps {
+      match dep.source {
+        case Mf.DepSource.Path(dir) -> {
+          val nativeDepDir = if Path.isAbsolute(dir) { dir } else { Path.join(mfDir, dir) }
+          collectDepNativeLibs(nativeDepDir, wsCtxOpt, seenNativeDirs, depNativeLibs)
+        }
+        case Mf.DepSource.Workspace(_) -> match wsCtxOpt {
+          case None -> ()
+          case Some(wsCtx) -> match Ws.resolveDep(dep.name, wsCtx) {
+            case None -> ()
+            case Some(wsDir) -> collectDepNativeLibs(
+              wsDir,
+              wsCtxOpt,
+              seenNativeDirs,
+              depNativeLibs
+            )
+          }
+        }
+        case _ -> ()
+      }
+    }
+  }
   ResolvedManifestDeps(
     restoredDlls = restoredDlls,
     depTemplateSrcs = depTemplatePkgsList,
@@ -1368,6 +1446,7 @@ pub func resolveManifestDependenciesAs(
     hadWorkspaceError = false,
     hadUnbuiltLocalDep = hadUnbuiltLocalDep,
     hadUnsupportedDep = hadUnsupportedDep,
+    nativeLibs = depNativeLibs,
     depPackageFeatures = depPackageFeatures
   )
 }

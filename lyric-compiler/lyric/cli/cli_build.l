@@ -331,6 +331,29 @@ pub func manifestDefineGateError(
 // `Ok(None)` on any read/parse failure so a native single-file build is
 // never blocked by an unrelated malformed lyric.toml found up the tree.
 // `Ok(None)` also covers "no manifest found" and "no `[native]` table".
+/// The `[native.libs]` the manifest at `manifestPath` (or the discovered one)
+/// declares, each relative to that manifest's directory.
+func nativeLibDeclsForManifestPath(manifestPath: in Option[String]): List[NativeLibDecl] {
+  val none: List[NativeLibDecl] = newList()
+  var path = ""
+  match manifestPath {
+    case Some(p) -> {
+      path = p
+    }
+    case None -> match discoverManifest(None) { case Some(p) -> { path = p }; case None -> () }
+  }
+  if path.length == 0 {
+    return none
+  }
+  match File.readText(path) {
+    case Err(_) -> none
+    case Ok(text) -> match Mf.parseManifest(text, path) {
+      case Err(_) -> none
+      case Ok(m) -> nativeLibDeclsOf(m, Path.dirname(path))
+    }
+  }
+}
+
 func resolveNativeConfig(manifestPath: in Option[String]): Result[Option[Mf.NativeConfig], String] {
   // Explicitly typed so the emitter cannot mistype a bare `None` arm as
   // `Option<String>` (the self-hosted lowerMatchExprMsil fall-through bug,
@@ -1222,6 +1245,7 @@ pub func buildOneNativeShaped(
   var effTriple = nativeTriple
   var effOpt = nativeOpt
   val effLibs: List[String] = newList()
+  var nativeLibPlan = emptyNativeLinkPlan()
   var wasmVersion = ""
   var wasmWorld = ""
   var wasmStack = 0
@@ -1250,6 +1274,17 @@ pub func buildOneNativeShaped(
         case None -> ()
       }
     }
+    val libPlan = resolveNativeLibs(nativeLibDeclsForManifestPath(manifestPath), effTriple)
+    if libPlan.errors.count > 0 {
+      for e in libPlan.errors {
+        printErr("build: " + e)
+      }
+      return 1
+    }
+    for a in libPlan.args {
+      effLibs.add(a)
+    }
+    nativeLibPlan = libPlan
   }
   var resolvedRestoredDlls: List[String] = newList()
   var resolvedNugetPaths: List[String] = newList()
@@ -1336,7 +1371,15 @@ pub func buildOneNativeShaped(
       }
     }
     case Emitter.Jvm -> ()
-    case Emitter.Native -> ()
+    case Emitter.Native -> {
+      val bundleErrors = bundleNativeLibs(nativeLibPlan, outPath)
+      if bundleErrors.count > 0 {
+        for e in bundleErrors {
+          printErr("build: " + e)
+        }
+        return 1
+      }
+    }
   }
   val elapsedMs = Time.totalMillis(Time.since(Time.now(), buildStart))
   Console.println("built " + outPath + " in " + Format.formatFixed(elapsedMs, 0) + "ms")
@@ -3070,6 +3113,7 @@ pub func buildProjectFromManifest(
   var effTriple = nativeTriple
   var effOpt = nativeOpt
   val effLibs: List[String] = newList()
+  var nativeLibPlan = emptyNativeLinkPlan()
   var wasmVersion = projReq.packageVersion
   var wasmWorld = ""
   var wasmStack = 0
@@ -3091,6 +3135,23 @@ pub func buildProjectFromManifest(
       }
       case None -> ()
     }
+    // The project's own `[native.libs]` first, then its dependencies': a library
+    // named twice resolves from the first declaration (D191).
+    val libDecls = nativeLibDeclsOf(manifest, mfDir)
+    for d in resolved.nativeLibs {
+      libDecls.add(d)
+    }
+    val libPlan = resolveNativeLibs(libDecls, effTriple)
+    if libPlan.errors.count > 0 {
+      for e in libPlan.errors {
+        printErr(mfPath + ": " + e)
+      }
+      return 1
+    }
+    for a in libPlan.args {
+      effLibs.add(a)
+    }
+    nativeLibPlan = libPlan
   }
 
   if isNativeTarget and Str.startsWith(effTriple, "wasm32") {
@@ -3197,8 +3258,17 @@ pub func buildProjectFromManifest(
       }
     }
     // A native build produces a self-contained POSIX binary directly (no
-    // runtimeconfig.json / module-path.txt companion artifact needed).
-    case Emitter.Native -> ()
+    // runtimeconfig.json / module-path.txt companion artifact needed); the
+    // shared libraries it links ship beside it.
+    case Emitter.Native -> {
+      val bundleErrors = bundleNativeLibs(nativeLibPlan, outPath)
+      if bundleErrors.count > 0 {
+        for e in bundleErrors {
+          printErr("build: " + e)
+        }
+        return 1
+      }
+    }
   }
   val elapsedMs = Time.totalMillis(Time.since(Time.now(), buildStart))
   Console.println(
