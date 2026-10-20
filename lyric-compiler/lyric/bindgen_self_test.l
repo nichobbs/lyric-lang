@@ -171,6 +171,20 @@ test "static const integers (flag bits) become constants of their width" {
   assertTrue(Str.contains(r.source, "pub val Mode_Small: Int = 4"), "a 32-bit flag is an Int")
 }
 
+test "a negative constant keeps its sign and an expression or float constant is not bound" {
+  val src = "static const int Neg = -1;\nstatic const int Shifted = 1 << 3;\nstatic const float Ratio = 0.5f;\n" +
+    "static const int Plain = 7;\nvoid use(int x);\n"
+  val r = generateBindings(astOf(src), configOf(allowOf(["use", "Neg", "Plain", "Shifted*", "Ratio*"])))
+  assertEqualInt(r.errors.count, 0, "no errors: " + Str.joinList("; ", r.errors))
+  assertTrue(Str.contains(r.source, "pub val Neg: Int = -1"), "a negative value keeps its sign: " + r.source)
+  assertTrue(Str.contains(r.source, "pub val Plain: Int = 7"), "a plain value binds")
+  assertTrue(not Str.contains(r.source, "pub val Ratio"), "a float constant is not bound as an Int")
+  assertTrue(
+    not Str.contains(r.source, "pub val Shifted: Int = 1\n"),
+    "an expression is never read as its first literal"
+  )
+}
+
 test "a repeated typedef, forward-declared struct and repeated prototype bind once" {
   val src = "typedef struct Node Node;\ntypedef struct Node Node;\nstruct Node { int v; };\n" +
     "void touch(Node* n);\nvoid touch(Node* n);\ntypedef enum E { E_A = 1 } E;\ntypedef enum E E;\n"

@@ -292,9 +292,11 @@ func parseLong(s: in String): Option[Long] {
   }
 }
 
-/// The first integer literal under `node` (an initializer is wrapped in implicit casts).
+/// The value of a constant initializer, or None when it is anything but an integer
+/// literal under implicit casts, parentheses and a unary sign (an expression,
+/// a float or a string is not a constant the bindings can state).
 func findLiteralValue(node: in J.JsonValue, depth: in Int): Option[Long] {
-  if depth > 6 {
+  if depth > 8 {
     return None
   }
   val kind = jstr(node, "kind")
@@ -304,12 +306,22 @@ func findLiteralValue(node: in J.JsonValue, depth: in Int): Option[Long] {
       case None -> ()
     }
   }
-  for ch in jinner(node) {
-    if jstr(ch, "kind") != "FullComment" {
+  if kind == "UnaryOperator" {
+    val op = jstr(node, "opcode")
+    if op != "-" and op != "+" {
+      return None
+    }
+    for ch in jinner(node) {
       match findLiteralValue(ch, depth + 1) {
-        case Some(n) -> return Some(value = n)
-        case None -> ()
+        case Some(n) -> return Some(value = if op == "-" then 0i64 - n else n)
+        case None -> return None
       }
+    }
+    return None
+  }
+  if kind == "ImplicitCastExpr" or kind == "ParenExpr" or kind == "ConstantExpr" {
+    for ch in jinner(node) {
+      return findLiteralValue(ch, depth + 1)
     }
   }
   None
@@ -319,7 +331,7 @@ func findLiteralValue(node: in J.JsonValue, depth: in Int): Option[Long] {
 /// not enumerators).
 func addConstVar(ix: in Index, node: in J.JsonValue): Unit {
   val ty = jtype(node)
-  if not Str.startsWith(ty, "const ") {
+  if not Str.startsWith(ty, "const ") or Str.contains(ty, "float") or Str.contains(ty, "double") or Str.contains(ty, "*") {
     return
   }
   for ch in jinner(node) {

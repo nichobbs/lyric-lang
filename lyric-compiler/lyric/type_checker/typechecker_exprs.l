@@ -18123,9 +18123,18 @@ func taskHandleAssignable(tbl: in SymbolTable, expected: in Type, actual: in Typ
 // `NativePtr[Byte]` is C's `void *` and converts to and from any other `NativePtr[T]`
 // (a chained descriptor's `next` pointer, the pointer a callback is handed back).  No
 // other pointer-to-pointer conversion exists.
-func pointeeIsUserType(targs: in List[Type]): Bool {
+func pointeeIsUserType(tbl: in SymbolTable, targs: in List[Type]): Bool {
   match unrefine(targs[0]) {
-    case TyUser(_, _, _) -> true
+    case TyUser(tid, _, _) -> {
+      var intrinsic = false
+      for k in ["NativePtr", "NativeUserdata", "NativeWeak"] {
+        match mapGet(tbl.nativeIntrinsicTypes, k) {
+          case Some(id) -> if typeIdEq(tid, id) { intrinsic = true }
+          case None -> ()
+        }
+      }
+      not intrinsic
+    }
     case _ -> false
   }
 }
@@ -18137,8 +18146,8 @@ func nativeVoidPtrConvertible(tbl: in SymbolTable, paramTy: in Type, argTy: in T
       case TyUser(pid, _, pargs) -> match unrefine(argTy) {
         case TyUser(aid, _, aargs) -> {
           if typeIdEq(pid, ptrId) and typeIdEq(aid, ptrId) and pargs.count == 1 and aargs.count == 1 {
-            (isNativeBytePtrType(tbl, paramTy) and pointeeIsUserType(aargs)) or
-              (isNativeBytePtrType(tbl, argTy) and pointeeIsUserType(pargs))
+            (isNativeBytePtrType(tbl, paramTy) and pointeeIsUserType(tbl, aargs)) or
+              (isNativeBytePtrType(tbl, argTy) and pointeeIsUserType(tbl, pargs))
           } else {
             false
           }
