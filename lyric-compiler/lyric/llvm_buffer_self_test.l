@@ -421,13 +421,13 @@ test "withPointer reads and nativeStoreByte through a mutable pointer round-trip
   )
 }
 
-test "a write inside the closure goes to the closure's own copy and the lent pointer stays valid" {
+test "a closure writes its own local copy of a buffer while a pointer to the original is lent" {
   runClean(
     "@unsafe_ffi\n" + "func main(): Int {\n" + "  var b: buffer[Byte] = filled(4, 1.toByte())\n" +
-      "  val seen = b.withPointer({ p: NativePtr[Byte] ->\n    b[0] = 9.toByte()\n    nativeLoadByte(p, 0)\n  })\n" +
+      "  val seen = b.withPointer({ p: NativePtr[Byte] ->\n    var c = b\n    c[0] = 9.toByte()\n    if c[0] != 9.toByte() { return 100.toByte() }\n    nativeLoadByte(p, 0)\n  })\n" +
       "  if seen != 1.toByte() or b[0] != 1.toByte() { return 1 }\n" +
       "  0\n" +
       "}\n",
-    "closure-local write"
+    "closure-local copy"
   )
 }

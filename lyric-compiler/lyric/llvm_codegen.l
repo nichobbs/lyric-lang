@@ -11564,7 +11564,35 @@ func truncateNames(xs: in List[String], n: in Int): Unit {
 /// Free-variable analysis over a lambda body: `free` accumulates outer
 /// locals referenced (captures); `assigned` accumulates assignment
 /// targets (mutating a capture is rejected — captures are by-value).
+/// A write to an element of the buffer held by the variable `recv` (or a call
+/// that makes its storage unique) may replace the variable's buffer, so inside a
+/// closure that is an assignment to the captured variable: native closures
+/// capture by value, and the variable's storage there is not owned.
+func markBufferWrite(ctx: in Ctx, recv: in Expr, bound: in List[String], assigned: in List[String]): Unit {
+  match recv.kind {
+    case EParen(inner) -> markBufferWrite(ctx, inner, bound, assigned)
+    case EPath(p) -> {
+      if p.segments.count == 1 and not namesContains(bound, p.segments[0]) and not namesContains(assigned, p.segments[0]) {
+        match mapGet(ctx.varTypes, p.segments[0]) {
+          case Some(t) -> match bufferElemOfType(ctx, t) { case Some(_) -> assigned.add(p.segments[0]); case None -> () }
+          case None -> ()
+        }
+      }
+    }
+    case _ -> ()
+  }
+}
+
 func fvExpr(ctx: in Ctx, e: in Expr, bound: in List[String], free: in List[String], assigned: in List[String]): Unit {
+  match e.kind {
+    case ECall(fn, _) -> match fn.kind {
+      case EMember(recv, member) -> if member == "withMutPointer" {
+        markBufferWrite(ctx, recv, bound, assigned)
+      }
+      case _ -> ()
+    }
+    case _ -> ()
+  }
   match e.kind {
     case EPath(path) -> {
       if path.segments.count == 1 {
@@ -11678,6 +11706,10 @@ func fvExpr(ctx: in Ctx, e: in Expr, bound: in List[String], free: in List[Strin
             assigned.add(tp.segments[0])
           }
         }
+        case EIndex(recv, _) -> {
+          markBufferWrite(ctx, recv, bound, assigned)
+          fvExpr(ctx, target, bound, free, assigned)
+        }
         case _ -> fvExpr(ctx, target, bound, free, assigned)
       }
       fvExpr(ctx, value, bound, free, assigned)
@@ -11789,6 +11821,10 @@ func fvStmt(
             assigned.add(tp.segments[0])
           }
         }
+        case EIndex(recv, _) -> {
+          markBufferWrite(ctx, recv, bound, assigned)
+          fvExpr(ctx, target, bound, free, assigned)
+        }
         case _ -> fvExpr(ctx, target, bound, free, assigned)
       }
       fvExpr(ctx, value, bound, free, assigned)
@@ -11864,7 +11900,7 @@ func lowerLambda(
     if namesContains(free, assigned[ci]) {
       panic(
         "Lyric.LlvmCodegen: lambda mutates captured variable '" + assigned[ci] +
-          "'; native closures capture by value (rebind inside the lambda instead)"
+          "'; native closures capture by value (rebind inside the lambda instead; writing an element of a captured buffer counts, so copy it to a local first)"
       )
     }
     ci = ci + 1
