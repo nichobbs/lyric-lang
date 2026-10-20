@@ -164,6 +164,49 @@ LyricList* lyric_list_copy(LyricList* src) {
     return out;
 }
 
+/* ── Buffer (D185) ─────────────────────────────────────────────────── */
+
+_Static_assert(offsetof(LyricBuffer, len) == 2 * sizeof(int64_t),
+               "len must follow the 16-byte header on every target");
+_Static_assert(offsetof(LyricBuffer, data) == 4 * sizeof(int64_t),
+               "data must start 32 bytes in, where the codegen's [0 x T] member lands");
+
+LyricBuffer* lyric_buffer_new(int64_t len, int64_t elem_size) {
+    if (len < 0) {
+        lyric_panic_msg("buffer length must not be negative", "lyric_collections.c", __LINE__);
+    }
+    if (elem_size < 0 || (elem_size != 0 && len > (INT64_MAX - (int64_t)sizeof(LyricBuffer)) / elem_size)) {
+        lyric_panic_msg("buffer is too large", "lyric_collections.c", __LINE__);
+    }
+    uint64_t bytes = (uint64_t)len * (uint64_t)elem_size;
+    LyricBuffer* b = (LyricBuffer*)lyric_alloc(sizeof(LyricBuffer) + bytes);
+    atomic_store_explicit(&b->rc, 1, memory_order_relaxed);
+    atomic_store_explicit(&b->weak, 1, memory_order_relaxed);
+    b->dtor = 0;
+    b->len = len;
+    b->elem_size = elem_size;
+    if (bytes > 0) memset(b->data, 0, bytes);
+    return b;
+}
+
+LyricBuffer* lyric_buffer_copy(LyricBuffer* src) {
+    if (!src) return 0;
+    LyricBuffer* out = lyric_buffer_new(src->len, src->elem_size);
+    if (src->len > 0 && src->elem_size > 0) {
+        memcpy(out->data, src->data, (size_t)src->len * (size_t)src->elem_size);
+    }
+    return out;
+}
+
+LyricBuffer* lyric_buffer_unique(LyricBuffer* b) {
+    if (!b) return 0;
+    if (atomic_load_explicit(&b->rc, memory_order_acquire) == 1) {
+        lyric_retain(b);
+        return b;
+    }
+    return lyric_buffer_copy(b);
+}
+
 /* `List[T].slice(start, stop)` / `slice[T].slice(start, stop)` (#6104):
  * a fresh half-open [start, stop) sub-copy. Bounds contract and panic
  * message match the MSIL/JVM twins (Msil.Codegen's lowerSliceSliceMsil)
