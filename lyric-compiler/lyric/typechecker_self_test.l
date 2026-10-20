@@ -3550,6 +3550,11 @@ test "a buffer has only length, indexing and for: T0113" {
   assertTrue(hasDiagCode(parseCheck(src), "T0113"), diagCodesOf(parseCheck(src)))
 }
 
+test "withPointer and withMutPointer exist only on native: T0175" {
+  val src = "package P\nfunc f(b: inout buffer[Byte]): Int {\n  b.withMutPointer({ p: NativePtr[Byte] -> 1 })\n}\n"
+  assertTrue(hasDiagCode(parseCheck(src), "T0175"), diagCodesOf(parseCheck(src)))
+}
+
 test "the buffer bridge members are usable only inside Std.Buffer" {
   val src = "package P\nfunc f(b: in buffer[Int]): Int {\n  val l = b.__lyric_buffer_as_list()\n  0\n}\n"
   val cr = parseCheck(src)

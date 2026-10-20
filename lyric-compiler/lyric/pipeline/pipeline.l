@@ -1067,7 +1067,8 @@ pub func pipeCheckFront(
       copy = tcRes.symbols.arrayCopySites,
       zero = tcRes.symbols.arrayZeroSites,
       ctorZero = tcRes.symbols.arrayCtorZeroArgs,
-      literal = if opts.primitiveArrays { tcRes.symbols.arrayLiteralSites } else { newMap() }
+      literal = if opts.primitiveArrays { tcRes.symbols.arrayLiteralSites } else { newMap() },
+      pointerClosures = tcRes.symbols.bufferPointerSites
     )
   )
   // Integer overflow panics in a debug build and wraps in a release build or
@@ -2045,6 +2046,7 @@ func specArraySitesNonEmpty(sa: in SpecArraySites): Bool {
     sa.arrays.copy.count > 0 or
     sa.arrays.zero.count > 0 or
     sa.arrays.literal.count > 0 or
+    sa.arrays.pointerClosures.count > 0 or
     sa.arrayEq.count > 0 or
     sa.recordEq.count > 0 or
     sa.wrapEq.count > 0 or
@@ -2073,7 +2075,8 @@ func specArraySitesOf(
       copy = siteSlice(syms.arrayCopySites, p.arrayCopySites, usePrior, lo, hi),
       zero = siteSlice(syms.arrayZeroSites, p.arrayZeroSites, usePrior, lo, hi),
       ctorZero = siteSlice(syms.arrayCtorZeroArgs, p.arrayCtorZeroArgs, usePrior, lo, hi),
-      literal = siteSlice(syms.arrayLiteralSites, p.arrayLiteralSites, usePrior, lo, hi)
+      literal = siteSlice(syms.arrayLiteralSites, p.arrayLiteralSites, usePrior, lo, hi),
+      pointerClosures = siteSlice(syms.bufferPointerSites, p.bufferPointerSites, usePrior, lo, hi)
     ),
     arrayEq = siteSlice(syms.arrayEqSites, p.arrayEqSites, usePrior, lo, hi),
     recordEq = siteSlice(syms.recordEqSites, p.recordEqSites, usePrior, lo, hi),

@@ -44,6 +44,9 @@ pub record ArraySites {
   /// arrays only (empty elsewhere): one of a primitive element becomes
   /// `arrayOfIntrinsic` (#8041).
   literal: Map[String, TypeExpr] = newMap()
+  /// The result type of each `b.withPointer(f)` / `b.withMutPointer(f)` call
+  /// (D187), keyed by the call's span.
+  pointerClosures: Map[String, TypeExpr] = newMap()
 }
 
 func arrayLiteralOfPrimitive(te: in TypeExpr): Bool {
@@ -71,7 +74,8 @@ func arraySitesEmpty(sites: in ArraySites): Bool {
     sites.copy.count == 0 and
     sites.zero.count == 0 and
     sites.ctorZero.count == 0 and
-    sites.literal.count == 0
+    sites.literal.count == 0 and
+    sites.pointerClosures.count == 0
 }
 
 pub func lowerArrays(file: in SourceFile, sites: in ArraySites): SourceFile {
@@ -227,6 +231,15 @@ func rewriteArrayExpr(e: in Expr, sites: in ArraySites): Expr {
   val key = recordCopySiteKey(e.span)
   var r: Expr = e
   match e.kind {
+    case ECall(fn, args) -> match mapGet(sites.pointerClosures, key) {
+      case Some(retTe) -> {
+        r = bindPointerClosure(e, fn, args, retTe)
+      }
+      case None -> ()
+    }
+    case _ -> ()
+  }
+  match e.kind {
     case EIndex(recv, idxs) -> match mapGet(sites.index, key) {
       case Some(site) -> {
         if idxs.count == 1 {
@@ -288,6 +301,33 @@ func rewriteArrayExpr(e: in Expr, sites: in ArraySites): Expr {
     case None -> ()
   }
   r
+}
+
+/// `b.withPointer({ p: NativePtr[T] -> body })` (D187) becomes
+///   { val __lyric_bp_<s>_<e>: (NativePtr[T]) -> R = { p: NativePtr[T] -> body }
+///     b.withPointer(__lyric_bp_<s>_<e>) }
+/// so the closure carries the function type the backend lowers it against.
+func bindPointerClosure(e: in Expr, fn: in Expr, args: in List[CallArg], retTe: in TypeExpr): Expr {
+  if args.count != 1 {
+    return e
+  }
+  val lam = match args[0] { case CAPositional(x) -> x; case CANamed(_, x, _) -> x }
+  val paramTe = match lam.kind {
+    case ELambda(lparams, _) -> if lparams.count == 1 { lparams[0].ty } else { None }
+    case _ -> None
+  }
+  val pte = match paramTe { case Some(t) -> t; case None -> return e }
+  val wsp = syntheticSpan(e.span)
+  val name = "__lyric_bp_" + toString(e.span.startPos.offset) + "_" + toString(e.span.endPos.offset)
+  val params: List[TypeExpr] = newList()
+  params.add(pte)
+  val fnTy = TypeExpr(kind = TFunction(parameters = params, retTy = retTe), span = wsp)
+  val stmts: List[Statement] = newList()
+  stmts.add(typedLocal(name, Some(value = fnTy), lam, wsp))
+  val callArgs: List[CallArg] = newList()
+  callArgs.add(CAPositional(expr = localRef(name, wsp)))
+  stmts.add(mkStmt(SExpr(expr = mkExpr(ECall(fn = fn, args = callArgs), e.span)), wsp))
+  blockOf(stmts, wsp)
 }
 
 func oneExpr(e: in Expr): List[Expr] {

@@ -198,6 +198,12 @@ LyricBuffer* lyric_buffer_copy(LyricBuffer* src) {
     return out;
 }
 
+/* Threading: the `rc == 1` test is sound only if every other reference to `b`
+ * was taken (its retain happened-before this call) by a thread that has since
+ * synchronised with the caller.  That is the ordinary ARC contract for a value
+ * handed between threads, and what the scheduler guarantees when it moves a
+ * task; a buffer another thread may still be retaining concurrently must not be
+ * written through its unsynchronised place. */
 LyricBuffer* lyric_buffer_unique(LyricBuffer* b) {
     if (!b) return 0;
     if (atomic_load_explicit(&b->rc, memory_order_acquire) == 1) {
