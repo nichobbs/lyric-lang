@@ -86,7 +86,7 @@ Platform-specific release assets:
 | `lyric-linux-arm64.tar.gz` | `linux-arm64` |
 | `lyric-osx-x64.tar.gz` | `osx-x64` |
 | `lyric-osx-arm64.tar.gz` | `osx-arm64` |
-| `lyric-win-x64.zip` | `win-x64` |
+| `lyric-win-x64.zip` | `win-x64` (unsigned) |
 
 Each archive contains the same `lib/` and `stdlib/` layout as the NuGet tool,
 plus `lyric-resolver.jar` beside the binary (docs/44 M-7) so `--target jvm`
@@ -261,11 +261,17 @@ Releases are published one of two ways:
 The `.github/workflows/publish.yml` workflow then:
 
 1. **Builds self-contained binaries** for `linux-x64`, `linux-arm64`, `osx-arm64`,
-   `osx-x64`, and `win-x64` using `dotnet publish --self-contained --runtime <RID>
-   -p:PublishSingleFile=true`.
-2. **Signs the Windows binary** with Authenticode via `AzureSignTool` if the
-   `AZURE_KEY_VAULT_URL`, `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`,
-   `AZURE_CLIENT_SECRET`, and `AZURE_CERT_NAME` repository secrets are set.
+   and `osx-x64` using `dotnet publish --self-contained --runtime <RID>
+   -p:PublishSingleFile=true`.  The `win-x64` archive is built by the reusable
+   `.github/workflows/windows-build.yml`: the stage-2 managed compiler DLLs are
+   produced once on Linux and uploaded as an artifact, and the Windows runner
+   only NativeAOT-links them (no release has ever shipped a win-x64 seed, so a
+   Windows-side `bootstrap.sh` has nothing to download).  The same workflow runs
+   as a dry run on `workflow_dispatch` and on pull requests touching it.
+2. **Signs the Windows binary** with Authenticode via `AzureSignTool`.  _Not
+   currently implemented:_ the Windows archive ships unsigned until the
+   `AZURE_*` Key Vault secrets exist and the signing step is re-added to
+   `windows-build.yml`.
 3. **Codesigns and notarizes the macOS arm64 binary** if `APPLE_TEAM_ID`,
    `APPLE_ID`, `APPLE_APP_PASSWORD`, `APPLE_DEVELOPER_CERT_BASE64`, and
    `APPLE_DEVELOPER_CERT_PASSWORD` secrets are set.  The `osx-x64` build is
@@ -275,7 +281,9 @@ The `.github/workflows/publish.yml` workflow then:
    Gatekeeper, or run `xattr -d com.apple.quarantine lyric` after download.
    Full notarization for `osx-x64` is tracked as a future workflow enhancement.
 4. **Packages** each binary into a `.tar.gz` (Linux / macOS) or `.zip` (Windows)
-   archive named `lyric-<version>-<rid>.<ext>`.
+   archive named `lyric-<version>-<rid>.<ext>`.  The Windows leg is not yet a
+   release gate: `publish-checksums` runs whether or not it succeeds, so a
+   Windows failure ships the release without the zip.
 5. **Uploads** all archives as GitHub Release assets.
 6. **Packs** the NuGet global-tool package (`lyric`) with `dotnet pack -p:PackAsTool=true`.
 7. **Signs** the `.nupkg` with `dotnet nuget sign` if `NUGET_SIGNING_CERT_BASE64`

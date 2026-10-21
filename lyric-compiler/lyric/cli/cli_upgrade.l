@@ -264,6 +264,17 @@ func downloadUrl(url: in String): Option[Downloaded] {
 }
 
 func runGithubUpgrade(installDir: in String, versionArg: in Option[String], isDryRun: in Bool): Int {
+  // The installer is a POSIX shell script and replaces the running binary in
+  // place, neither of which works on Windows (a running lyric.exe is locked).
+  if Environment.isWindows() {
+    printErr(
+      "upgrade: --github is not supported on Windows (the installer is a POSIX shell script and cannot replace a running lyric.exe). " +
+        "Use `lyric upgrade --nuget`, or download the win-x64 zip from https://github.com/nichobbs/lyric-lang/releases and extract it over " +
+        installDir
+    )
+    return 1
+  }
+
   // Resolve an omitted `--version` to the latest published GitHub release
   // (#4589) instead of defaulting to the `main` branch tip, which is not
   // guaranteed stable.  `cmdUpgrade` requires an explicit `--version` for a

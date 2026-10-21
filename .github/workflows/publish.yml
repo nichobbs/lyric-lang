@@ -193,15 +193,8 @@ jobs:
           - os: macos-latest
             rid: osx-x64
             archive_suffix: tar.gz
-          # win-x64 temporarily disabled: the download-seed bootstrap path has
-          # not been validated on Windows runners.  The former mint-stage-0
-          # Windows failure (#3941) was the original blocker; now that the mint
-          # path is removed, win-x64 needs a fresh validation run with
-          # `bootstrap.sh --stage 2` before re-enabling.  Tracking: #3941.
-          # - os: windows-latest
-          #   rid: win-x64
-          #   archive_suffix: zip
-          #   authenticode: true
+          # win-x64 is built by the `build-windows` job below (it cannot
+          # bootstrap here: no release has ever shipped a win-x64 seed).
 
     runs-on: ${{ matrix.os }}
 
@@ -230,12 +223,6 @@ jobs:
         if: matrix.os == 'ubuntu-latest' && matrix.rid == 'linux-arm64'
         run: |
           sudo apt-get install -y gcc-aarch64-linux-gnu binutils-multiarch
-
-      - name: Install unzip (Windows)
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: |
-          choco install unzip -y
 
       - name: Set up .NET
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
@@ -282,23 +269,6 @@ jobs:
             -p:StageDir="${GITHUB_WORKSPACE}/.bootstrap/stage2/lib" \
             --output publish/${{ matrix.rid }} \
             --no-restore
-
-      # ── Windows: Authenticode signing via Azure Key Vault ─────────────────
-      - name: Sign Windows binary (Authenticode)
-        if: matrix.authenticode == true && env.AZURE_KEY_VAULT_URL != ''
-        shell: bash
-        run: |
-          dotnet tool install --global AzureSignTool --version 5.0.0
-          AzureSignTool sign \
-            --azure-key-vault-url "${{ secrets.AZURE_KEY_VAULT_URL }}" \
-            --azure-key-vault-tenant-id "${{ secrets.AZURE_TENANT_ID }}" \
-            --azure-key-vault-client-id "${{ secrets.AZURE_CLIENT_ID }}" \
-            --azure-key-vault-client-secret "${{ secrets.AZURE_CLIENT_SECRET }}" \
-            --azure-key-vault-certificate "${{ secrets.AZURE_CERT_NAME }}" \
-            --timestamp-rfc3161 http://timestamp.digicert.com \
-            --description "Lyric compiler" \
-            --description-url "https://github.com/${{ github.repository }}" \
-            "bootstrap/publish/win-x64/lyric.exe"
 
       # ── macOS: codesign + notarize (osx-arm64 only) ─────────────────────
       - name: Sign and notarize macOS binary
@@ -371,16 +341,6 @@ jobs:
           tar -czf "$ARCHIVE" -C bootstrap/publish/${{ matrix.rid }} .
           echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
 
-      - name: Package zip archive (Windows)
-        if: matrix.archive_suffix == 'zip'
-        shell: pwsh
-        run: |
-          $version  = "${{ needs.create-release.outputs.version }}"
-          $archive  = "lyric-${version}-${{ matrix.rid }}.zip"
-          Compress-Archive -Path "bootstrap/publish/${{ matrix.rid }}/*" `
-                           -DestinationPath $archive
-          "ARCHIVE=$archive" | Out-File -FilePath $env:GITHUB_ENV -Append
-
       # ── macOS: submit for notarization after archive is ready ─────────────
       - name: Notarize macOS archive
         if: matrix.notarize == true && env.APPLE_TEAM_ID != ''
@@ -401,6 +361,23 @@ jobs:
           gh release upload "v${{ needs.create-release.outputs.version }}" "$ARCHIVE"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ---------------------------------------------------------------------------
+  # win-x64 standalone archive (unsigned).  Reuses the stage-2 managed DLLs
+  # built on Linux and only NativeAOT-links on Windows, so no Windows seed is
+  # needed -- see .github/workflows/windows-build.yml.  Not yet a release gate:
+  # publish-checksums runs whether or not this succeeds, so a Windows failure
+  # ships the release without the zip instead of deleting it.  Make it a
+  # required need of finalize-release once a dry run (workflow_dispatch on
+  # windows-build.yml) and one real release have both been green.
+  # ---------------------------------------------------------------------------
+  build-windows:
+    needs: [create-release]
+    uses: ./.github/workflows/windows-build.yml
+    with:
+      version: ${{ needs.create-release.outputs.version }}
+      release_tag: v${{ needs.create-release.outputs.version }}
+    secrets: inherit
 
   # ---------------------------------------------------------------------------
   # Build and publish the NuGet global tool package (lyric).
@@ -966,7 +943,12 @@ jobs:
   # ---------------------------------------------------------------------------
   publish-checksums:
     runs-on: ubuntu-latest
-    needs: [create-release, build-standalone, publish-vscode]
+    needs: [create-release, build-standalone, publish-vscode, build-windows]
+    if: >-
+      always() &&
+      needs.create-release.result == 'success' &&
+      needs.build-standalone.result == 'success' &&
+      needs.publish-vscode.result == 'success'
     steps:
       - name: Download release assets
         shell: bash
