@@ -430,6 +430,18 @@ Gpu.withDevice(body)
 
 `withDevice` owns the device for the call, because wgpu keeps its error callback for the device's whole life and a native closure is freed when its scope ends. The rest of a compute pass is `createBindGroup`, `dispatch` and `readInts`. `examples/triangle` renders into an offscreen target and checks the pixels against a golden image; both examples run in CI on a software Vulkan device.
 
+`lyric-window` does the same for SDL3 (windows, input, clipboard, timing and audio), with SDL3 found through pkg-config, because SDL publishes no prebuilt Linux library to pin. Its event type is a union in C; `Window` decodes SDL's event buffer into a Lyric `union Event`, and a C file of `_Static_assert`s compiles every offset the decoder uses against SDL's headers, so a header that moves a field breaks the build instead of the decoder:
+
+```lyric
+match Window.pollEvent() {
+  case Some(KeyDown(window, key, scancode, modifiers, repeat)) -> handleKey(key)
+  case Some(Quit) -> running = false
+  case _ -> ()
+}
+```
+
+The demo runs headless in CI on SDL's `offscreen` video driver and `disk` audio driver, posting input events with `Window.post` and checking the samples the audio driver wrote.
+
 `foreign record` is allowed only in a stdlib `_kernel_native/` package or in a file annotated `@unsafe_ffi` at file level (N0101 elsewhere), and never appears in a library's public API. The kernel's safe wrappers take ordinary Lyric records. `foreign` is a contextual keyword, recognised only directly before `record`.
 
 ## §13.11 JavaScript and NPM packages
