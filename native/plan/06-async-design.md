@@ -146,6 +146,11 @@ loop:
 Phase 2 can replace this with a work-stealing multi-threaded scheduler (like
 Tokio's or Go's runtime) without changing the compiler's coro emission.
 
+> **Status (D202):** the coroutine scheduler is still this single-threaded one.  Multi-threaded
+> data parallelism shipped separately as a worker pool in `lyric_parallel.c` behind
+> `Std.Parallel` (docs/67 G8): it runs plain loop bodies on pool threads and never resumes a
+> coroutine frame on a thread other than the one that started it.
+
 ---
 
 ## Coroutine frame layout and ARC

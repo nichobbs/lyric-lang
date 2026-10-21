@@ -389,8 +389,8 @@ void lyric_cond_destroy(void* c) {
 typedef struct {
     pthread_mutex_t mutex;
     pthread_cond_t cond;
-    pthread_t owner;
-    int32_t depth;
+    _Atomic pthread_t owner;
+    _Atomic int32_t depth;
 } lyric_monitor_t;
 
 int32_t lyric_mutex_size(void) {
@@ -405,24 +405,31 @@ void lyric_mutex_init(void* m) {
     if (pthread_cond_init(&mon->cond, 0) != 0) {
         lyric_panic_msg("pthread_cond_init failed", "lyric_posix.c", __LINE__);
     }
-    mon->depth = 0;
+    atomic_store_explicit(&mon->depth, 0, memory_order_relaxed);
 }
 
+/* `owner` is written before `depth` is published with release, and `depth` is read with acquire
+ * before `owner`: a thread that sees another holder's non-zero depth also sees that holder's
+ * owner, so it cannot mistake a stale owner of its own for the current one.  Both are atomic
+ * (relaxed apart from that pairing), so these unlocked reads are not data races (ThreadSanitizer
+ * flagged the plain `owner` read, docs/67 G8). */
 static int lyric_monitor_held_by_me(lyric_monitor_t* mon) {
-    return __atomic_load_n(&mon->depth, __ATOMIC_RELAXED) > 0 && pthread_equal(mon->owner, pthread_self());
+    return atomic_load_explicit(&mon->depth, memory_order_acquire) > 0 &&
+           pthread_equal(atomic_load_explicit(&mon->owner, memory_order_relaxed), pthread_self());
 }
 
 void lyric_mutex_lock(void* m) {
     lyric_monitor_t* mon = (lyric_monitor_t*)m;
     if (lyric_monitor_held_by_me(mon)) {
-        mon->depth += 1;
+        atomic_store_explicit(&mon->depth, atomic_load_explicit(&mon->depth, memory_order_relaxed) + 1,
+                              memory_order_relaxed);
         return;
     }
     if (pthread_mutex_lock(&mon->mutex) != 0) {
         lyric_panic_msg("pthread_mutex_lock failed", "lyric_posix.c", __LINE__);
     }
-    mon->owner = pthread_self();
-    __atomic_store_n(&mon->depth, 1, __ATOMIC_RELAXED);
+    atomic_store_explicit(&mon->owner, pthread_self(), memory_order_relaxed);
+    atomic_store_explicit(&mon->depth, 1, memory_order_release);
 }
 
 void lyric_mutex_unlock(void* m) {
@@ -430,11 +437,12 @@ void lyric_mutex_unlock(void* m) {
     if (!lyric_monitor_held_by_me(mon)) {
         lyric_panic_msg("unlock of a lock that is not held", "lyric_posix.c", __LINE__);
     }
-    if (mon->depth > 1) {
-        mon->depth -= 1;
+    int32_t depth = atomic_load_explicit(&mon->depth, memory_order_relaxed);
+    if (depth > 1) {
+        atomic_store_explicit(&mon->depth, depth - 1, memory_order_relaxed);
         return;
     }
-    __atomic_store_n(&mon->depth, 0, __ATOMIC_RELAXED);
+    atomic_store_explicit(&mon->depth, 0, memory_order_release);
     if (pthread_mutex_unlock(&mon->mutex) != 0) {
         lyric_panic_msg("pthread_mutex_unlock failed", "lyric_posix.c", __LINE__);
     }
@@ -454,13 +462,13 @@ void lyric_mutex_wait(void* m) {
     if (!lyric_monitor_held_by_me(mon)) {
         lyric_panic_msg("wait on a lock that is not held", "lyric_posix.c", __LINE__);
     }
-    int32_t saved = mon->depth;
-    __atomic_store_n(&mon->depth, 0, __ATOMIC_RELAXED);
+    int32_t saved = atomic_load_explicit(&mon->depth, memory_order_relaxed);
+    atomic_store_explicit(&mon->depth, 0, memory_order_release);
     if (pthread_cond_wait(&mon->cond, &mon->mutex) != 0) {
         lyric_panic_msg("pthread_cond_wait failed", "lyric_posix.c", __LINE__);
     }
-    mon->owner = pthread_self();
-    __atomic_store_n(&mon->depth, saved, __ATOMIC_RELAXED);
+    atomic_store_explicit(&mon->owner, pthread_self(), memory_order_relaxed);
+    atomic_store_explicit(&mon->depth, saved, memory_order_release);
 }
 
 void lyric_mutex_notify_all(void* m) {
@@ -624,11 +632,11 @@ void lyric_cond_wait(void* c, void* m) {
     if (!lyric_monitor_held_by_me(mon)) {
         lyric_panic_msg("wait on a lock that is not held", "lyric_posix.c", __LINE__);
     }
-    int32_t saved = mon->depth;
-    __atomic_store_n(&mon->depth, 0, __ATOMIC_RELAXED);
+    int32_t saved = atomic_load_explicit(&mon->depth, memory_order_relaxed);
+    atomic_store_explicit(&mon->depth, 0, memory_order_release);
     lyric_cond_wait_raw((pthread_cond_t*)c, &mon->mutex);
-    mon->owner = pthread_self();
-    __atomic_store_n(&mon->depth, saved, __ATOMIC_RELAXED);
+    atomic_store_explicit(&mon->owner, pthread_self(), memory_order_relaxed);
+    atomic_store_explicit(&mon->depth, saved, memory_order_release);
 }
 
 int32_t lyric_cond_timedwait(void* c, void* m, int64_t timeout_ns) {
@@ -636,11 +644,11 @@ int32_t lyric_cond_timedwait(void* c, void* m, int64_t timeout_ns) {
     if (!lyric_monitor_held_by_me(mon)) {
         lyric_panic_msg("wait on a lock that is not held", "lyric_posix.c", __LINE__);
     }
-    int32_t saved = mon->depth;
-    __atomic_store_n(&mon->depth, 0, __ATOMIC_RELAXED);
+    int32_t saved = atomic_load_explicit(&mon->depth, memory_order_relaxed);
+    atomic_store_explicit(&mon->depth, 0, memory_order_release);
     int32_t woke = lyric_cond_timedwait_raw((pthread_cond_t*)c, &mon->mutex, timeout_ns);
-    mon->owner = pthread_self();
-    __atomic_store_n(&mon->depth, saved, __ATOMIC_RELAXED);
+    atomic_store_explicit(&mon->owner, pthread_self(), memory_order_relaxed);
+    atomic_store_explicit(&mon->depth, saved, memory_order_release);
     return woke;
 }
 

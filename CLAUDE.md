@@ -1181,7 +1181,7 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
     `llvm_stdlib_self_test.l`) also ship.
 - `lyric-rt/` — the native runtime C library (`lyric_rt.a`): ARC
   intrinsics, LyricString, NativeWeak upgrade, List/Map kernels, POSIX
-  helpers, console writes.  `make -C lyric-rt` builds it;
+  helpers, console writes, and a fork-join worker pool (`lyric_parallel.c`: `lyric_parallel_for`, `LYRIC_THREADS`) behind `Std.Parallel` (D202; `make -C lyric-rt test-tsan`, `scripts/ci/parallel-e2e.sh`).  `make -C lyric-rt` builds it;
   `make -C lyric-rt test` runs its C unit tests.  The native bridge
   resolves it via `$LYRIC_RT_PATH`, the installed `lib/` layout, or the
   dev tree (`lyric-rt/build/lyric_rt.a`).
