@@ -78,15 +78,25 @@ jobs:
         shell: bash
         run: make maven-resolver
 
+      # upload-artifact skips hidden directories, so stage the DLLs (under
+      # .bootstrap/) into a plain directory first.
+      - name: Stage managed compiler closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p managed-out/lib
+          cp .bootstrap/stage2/lib/Lyric.*.dll managed-out/lib/
+          cp resolver/target/lyric-resolver.jar managed-out/
+          test -f managed-out/lib/Lyric.Stdlib.dll || { echo "::error::Lyric.Stdlib.dll missing from stage2"; exit 1; }
+          ls -l managed-out managed-out/lib
+
       - name: Upload managed compiler closure
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: managed-stage2
           if-no-files-found: error
           retention-days: 7
-          path: |
-            .bootstrap/stage2/lib/Lyric.*.dll
-            resolver/target/lyric-resolver.jar
+          path: managed-out
 
   windows:
     needs: [managed]
@@ -115,10 +125,9 @@ jobs:
         working-directory: bootstrap
         run: |
           set -euo pipefail
-          # The artifact keeps each path's common ancestor, so the DLLs land in
-          # managed/.bootstrap/stage2/lib (or managed/lib on a flatter layout).
-          STAGE="$(dirname "$(find "$GITHUB_WORKSPACE/managed" -name 'Lyric.Stdlib.dll' | head -1)")"
-          test -d "$STAGE" || { echo "::error::Lyric.Stdlib.dll not found in managed artifact"; exit 1; }
+          find "$GITHUB_WORKSPACE/managed" -type f | head -50
+          STAGE="$GITHUB_WORKSPACE/managed/lib"
+          test -f "$STAGE/Lyric.Stdlib.dll" || { echo "::error::Lyric.Stdlib.dll not found in managed artifact"; exit 1; }
           dotnet publish src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj \
             --configuration Release \
             --runtime win-x64 \
@@ -138,7 +147,7 @@ jobs:
           out=bootstrap/publish/win-x64
           mkdir -p "$out/lib"
           cp "$STAGE_DIR"/Lyric.Stdlib*.dll "$out/lib/"
-          cp "$(find managed -name lyric-resolver.jar | head -1)" "$out/lyric-resolver.jar"
+          cp managed/lyric-resolver.jar "$out/lyric-resolver.jar"
 
       - name: Smoke test the published binary
         shell: bash
