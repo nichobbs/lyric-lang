@@ -1,0 +1,13 @@
+# Shapes, rasterises and lays out Latin, Arabic and CJK text and checks the results (docs/67 G6).
+[package]
+name    = "Lyric.Text.Examples.Shape"
+version = "0.1.0"
+
+[project]
+name = "Lyric.Text.Examples.Shape"
+
+[project.packages]
+"Text.Examples.Shape" = "src/main.l"
+
+[dependencies]
+"Lyric.Text" = { path = "../.." }

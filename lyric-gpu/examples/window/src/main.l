@@ -60,7 +60,17 @@ func drawTo(
   d: Gpu.Device, surface: Gpu.Surface, pipeline: Gpu.RenderPipeline, target: Gpu.RenderTarget
 ): Result[Unit, String] {
   val draws: List[Gpu.Draw] = newList()
-  draws.add(Gpu.Draw(pipeline = pipeline, bindGroup = None, vertexBuffers = noBuffers, vertexCount = 3))
+  draws.add(
+    Gpu.Draw(
+      pipeline = pipeline,
+      bindGroup = None,
+      vertexBuffers = noBuffers,
+      vertexCount = 3,
+      instanceCount = 1,
+      firstInstance = 0,
+      scissor = None
+    )
+  )
   match Gpu.render(d, target, 0.0, 0.0, 1.0, 1.0, draws) {
     case Err(message) -> {
       Gpu.discardFrame(target)
@@ -73,7 +83,7 @@ func drawTo(
 // An unavailable frame (the window was resized or minimized) is answered by reconfiguring the
 // surface and trying again on the next iteration; any other failure ends the loop.
 func drawFrames(d: Gpu.Device, surface: Gpu.Surface, frames: Int): Result[Unit, String] {
-  val pipeline = match Gpu.createRenderPipeline(d, shader, "vs", "fs", noLayouts, surface.format) {
+  val pipeline = match Gpu.createRenderPipeline(d, shader, "vs", "fs", noLayouts, surface.format, false) {
     case Ok(p) -> p
     case Err(e) -> return Err(error = e)
   }

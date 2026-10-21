@@ -1,0 +1,16 @@
+# What lyric bindgen binds from HarfBuzz: buffers, shaping and the FreeType font bridge.  Regenerate
+# with (from lyric-text/):
+#   lyric bindgen native/harfbuzz_bindings.h --package Text.Kernel.Harfbuzz --allow native/harfbuzz.allow \
+#     --library harfbuzz -o src/_kernel/harfbuzz.l -I <harfbuzz include dir> -I <freetype2 include dir>
+hb_buffer_create
+hb_buffer_destroy
+hb_buffer_add_utf8
+hb_buffer_set_direction
+hb_buffer_guess_segment_properties
+hb_buffer_get_length
+hb_buffer_get_glyph_infos
+hb_buffer_get_glyph_positions
+hb_shape
+hb_ft_font_create_referenced
+hb_ft_font_set_load_flags
+hb_font_destroy

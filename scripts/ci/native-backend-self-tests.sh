@@ -165,6 +165,10 @@ for t in \
 done
 # Std.Parse is a plain program, not a test module.
 "$lyric_bin" run --target native lyric-stdlib/tests/parse_tests.l
+# docs/67 G6: lyric-text on FreeType and HarfBuzz (shaping, rasterising, fallback, layout, a golden scene).
+LYRIC_BIN="$lyric_bin" bash scripts/ci/text-examples-e2e.sh
+# docs/67 G6: lyric-draw on lyric-gpu and lyric-text (a golden scene and a text-heavy frame on lavapipe).
+LYRIC_BIN="$lyric_bin" bash scripts/ci/draw-examples-e2e.sh
 # docs/67 G5: lyric-gpu's compute and render examples on wgpu-native over lavapipe.
 LYRIC_BIN="$lyric_bin" bash scripts/ci/gpu-examples-e2e.sh
 # docs/67 G4 + G5: lyric-window on SDL3 and lyric-gpu's surface.  SDL3 is built once from the pinned

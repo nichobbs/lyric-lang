@@ -14,7 +14,11 @@ triangle examples with golden-image CI on lavapipe; D196: vertex and uniform
 buffers, textures, samplers and the textured-quad example; D197: X11 and Wayland
 surfaces and presentation, tested under Xvfb). Cocoa and Win32 surfaces remain.
 G4 is implemented for Linux (D195: `lyric-window` on SDL3 with a headless demo
-in CI; macOS is not yet in CI). The other phases are open.
+in CI; macOS is not yet in CI). G6's `lyric-text` is implemented (D199: FreeType and HarfBuzz
+shaping, rasterising, glyph atlas, fallback and line layout, with a golden Latin/Arabic/CJK scene);
+bidirectional reordering and UAX #14 are tracked in #8410. `lyric-draw` is implemented (D200:
+instanced signed-distance quads, shadows, images, clips and text, with a golden scene and a
+text-heavy frame budget on lavapipe; no run on real hardware yet). The other phases are open.
 D156 and D157 resolve Q-GFX-005 to Q-GFX-010 (§10).
 
 **Builds on:** `native/plan/` (the LLVM backend, D-N-001 onward),

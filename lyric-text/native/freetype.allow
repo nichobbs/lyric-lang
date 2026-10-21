@@ -1,0 +1,12 @@
+# What lyric bindgen binds from FreeType: font faces, glyph loading and rendering.  Regenerate with
+# (from lyric-text/, FreeType's headers reachable through pkg-config or -I):
+#   lyric bindgen native/freetype_bindings.h --package Text.Kernel.Freetype --allow native/freetype.allow \
+#     --library freetype -o src/_kernel/freetype.l -I <freetype2 include dir>
+FT_Init_FreeType
+FT_Done_FreeType
+FT_New_Memory_Face
+FT_Done_Face
+FT_Set_Pixel_Sizes
+FT_Get_Char_Index
+FT_Load_Glyph
+FT_Render_Glyph

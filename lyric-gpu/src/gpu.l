@@ -100,13 +100,26 @@ pub record VertexLayout {
   attributes: List[VertexAttribute]
 }
 
+/// A rectangle of the target in pixels, from its top-left corner.
+pub record Scissor {
+  x: Int
+  y: Int
+  width: Int
+  height: Int
+}
+
 /// One draw: the pipeline, its optional bind group, the vertex buffers (slot i is
-/// `vertexBuffers[i]`) and the number of vertices.
+/// `vertexBuffers[i]`), the number of vertices, and how many instances of them to draw starting
+/// at `firstInstance` (`@builtin(instance_index)` counts from it).  `scissor` clips the draw to
+/// a rectangle of the target; `None` draws the whole target.
 pub record Draw {
   pipeline: RenderPipeline
   bindGroup: Option[BindGroup]
   vertexBuffers: List[Buffer]
   vertexCount: Int
+  instanceCount: Int
+  firstInstance: Int
+  scissor: Option[Scissor]
 }
 
 pub val usageMapRead: Long = 1
@@ -662,7 +675,9 @@ pub func releaseRenderTarget(t: RenderTarget): Unit {
 /// A pipeline from one WGSL module's vertex and fragment entry points that draws triangle
 /// lists into targets of `format` (`formatRgba8` for `createRenderTarget`, `Surface.format` for
 /// a surface's frames).  `layouts[i]` describes vertex buffer slot i; an empty list is a
-/// shader that generates its positions from `@builtin(vertex_index)`.
+/// shader that generates its positions from `@builtin(vertex_index)`.  With `blend`, the
+/// fragment output is composited over the target as premultiplied alpha (`src + dst * (1 - src.a)`);
+/// without it the output replaces the target's pixel.
 @unsafe_ffi
 pub func createRenderPipeline(
   d: Device,
@@ -671,6 +686,7 @@ pub func createRenderPipeline(
   fragmentEntry: String,
   layouts: List[VertexLayout],
   format: Int,
+  blend: Bool,
 ): Result[RenderPipeline, String] {
   val wgsl = Ffi.toCString(source)
   val vertexName = Ffi.toCString(vertexEntry)
@@ -719,10 +735,22 @@ pub func createRenderPipeline(
     )
     li = li + 1
   }
+  var blendState = WGPUBlendState(
+    color = WGPUBlendComponent(
+      operation = WGPUBlendOperation_Add,
+      srcFactor = WGPUBlendFactor_One,
+      dstFactor = WGPUBlendFactor_OneMinusSrcAlpha
+    ),
+    alpha = WGPUBlendComponent(
+      operation = WGPUBlendOperation_Add,
+      srcFactor = WGPUBlendFactor_One,
+      dstFactor = WGPUBlendFactor_OneMinusSrcAlpha
+    )
+  )
   var target = WGPUColorTargetState(
     nextInChain = nativeNullPtr(),
     format = format,
-    blend = nativeNullPtr(),
+    blend = if blend { nativeAddrOf(blendState) } else { nativeNullPtr() },
     writeMask = WGPUColorWriteMask_All
   )
   var fragment = WGPUFragmentState(
@@ -787,7 +815,8 @@ pub func releaseRenderPipeline(p: RenderPipeline): Unit {
   wgpuRenderPipelineRelease(longToPtr(p.raw))
 }
 
-/// Clears the target to (`red`, `green`, `blue`, `alpha`) and runs the draws in order.
+/// Clears the target to (`red`, `green`, `blue`, `alpha`) and runs the draws in order.  A
+/// scissor must lie inside the target.
 @unsafe_ffi
 pub func render(
   d: Device, target: RenderTarget, red: Float, green: Float, blue: Float, alpha: Float, draws: List[Draw]
@@ -824,7 +853,11 @@ pub func render(
       wgpuRenderPassEncoderSetVertexBuffer(pass, slot, longToPtr(buffer.raw), 0, buffer.size)
       slot = slot + 1
     }
-    wgpuRenderPassEncoderDraw(pass, draw.vertexCount, 1, 0, 0)
+    match draw.scissor {
+      case Some(r) -> wgpuRenderPassEncoderSetScissorRect(pass, r.x, r.y, r.width, r.height)
+      case None -> wgpuRenderPassEncoderSetScissorRect(pass, 0, 0, target.width, target.height)
+    }
+    wgpuRenderPassEncoderDraw(pass, draw.vertexCount, draw.instanceCount, 0, draw.firstInstance)
   }
   wgpuRenderPassEncoderEnd(pass)
   wgpuRenderPassEncoderRelease(pass)
@@ -833,6 +866,35 @@ pub func render(
     case Some(message) -> Err(error = message)
     case None -> Ok(value = ())
   }
+}
+
+@unsafe_ffi
+func writePixels(d: Device, texture: NativePtr[Byte], width: Int, height: Int, pixels: buffer[Byte]): Unit {
+  var destination = WGPUTexelCopyTextureInfo(
+    texture = texture,
+    mipLevel = 0,
+    origin = WGPUOrigin3D(x = 0, y = 0, z = 0),
+    aspect = WGPUTextureAspect_All
+  )
+  var layout = WGPUTexelCopyBufferLayout(offset = 0, bytesPerRow = width * 4, rowsPerImage = height)
+  var size = WGPUExtent3D(width = width, height = height, depthOrArrayLayers = 1)
+  val destinationAddress = ptrToLong(nativeAddrOf(destination))
+  val layoutAddress = ptrToLong(nativeAddrOf(layout))
+  val sizeAddress = ptrToLong(nativeAddrOf(size))
+  val queue = d.queue
+  val bytes = pixels.length.toLong()
+  pixels.withPointer(
+    { p: NativePtr[Byte] ->
+      wgpuQueueWriteTexture(
+        longToPtr(queue),
+        longToPtr(destinationAddress),
+        p,
+        bytes,
+        longToPtr(layoutAddress),
+        longToPtr(sizeAddress)
+      )
+    }
+  )
 }
 
 /// An RGBA8 texture of `width` by `height` pixels holding `pixels` (tightly packed rows, top
@@ -863,31 +925,7 @@ pub func createTexture(d: Device, width: Int, height: Int, pixels: buffer[Byte])
     viewFormats = nativeNullPtr()
   )
   val texture = wgpuDeviceCreateTexture(longToPtr(d.device), nativeAddrOf(desc))
-  var destination = WGPUTexelCopyTextureInfo(
-    texture = texture,
-    mipLevel = 0,
-    origin = WGPUOrigin3D(x = 0, y = 0, z = 0),
-    aspect = WGPUTextureAspect_All
-  )
-  var layout = WGPUTexelCopyBufferLayout(offset = 0, bytesPerRow = width * 4, rowsPerImage = height)
-  var size = WGPUExtent3D(width = width, height = height, depthOrArrayLayers = 1)
-  val destinationAddress = ptrToLong(nativeAddrOf(destination))
-  val layoutAddress = ptrToLong(nativeAddrOf(layout))
-  val sizeAddress = ptrToLong(nativeAddrOf(size))
-  val queue = d.queue
-  val bytes = pixels.length.toLong()
-  pixels.withPointer(
-    { p: NativePtr[Byte] ->
-      wgpuQueueWriteTexture(
-        longToPtr(queue),
-        longToPtr(destinationAddress),
-        p,
-        bytes,
-        longToPtr(layoutAddress),
-        longToPtr(sizeAddress)
-      )
-    }
-  )
+  writePixels(d, texture, width, height, pixels)
   val view = wgpuTextureCreateView(texture, nativeNullPtr())
   match takeError(d) {
     case Some(message) -> {
@@ -903,6 +941,25 @@ pub func createTexture(d: Device, width: Int, height: Int, pixels: buffer[Byte])
 pub func releaseTexture(t: Texture): Unit {
   wgpuTextureViewRelease(longToPtr(t.view))
   wgpuTextureRelease(longToPtr(t.raw))
+}
+
+/// Replaces every pixel of `t` with `pixels` (tightly packed rows, top row first), for a texture
+/// whose contents change, such as a glyph atlas.  The count must be the texture's own size.
+@unsafe_ffi
+pub func writeTexture(d: Device, t: Texture, pixels: buffer[Byte]): Result[Unit, String] {
+  val needed = t.width.toLong() * t.height.toLong() * 4
+  if pixels.length.toLong() != needed {
+    return Err(
+      error = "a " + t.width.toString() + "x" + t.height.toString() + " RGBA8 texture needs " + needed.toString() +
+        " bytes, not " +
+        pixels.length.toString()
+    )
+  }
+  writePixels(d, longToPtr(t.raw), t.width, t.height, pixels)
+  match takeError(d) {
+    case Some(message) -> Err(error = message)
+    case None -> Ok(value = ())
+  }
 }
 
 /// A sampler that clamps to the texture's edge and filters linearly (`linear`) or takes the
