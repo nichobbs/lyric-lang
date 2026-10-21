@@ -10,8 +10,8 @@ copy-before-loop diagnostic (#8395) are tracked separately, as are the lazy
 managed form (#8389) and the JVM `spawn` argument copy (#8391). G3 is implemented (D188 to D193: `foreign record`, `NativeUserdata`,
 `lyric bindgen`, `[native.libs]`, prebuilt restore, callback members). G5 is
 implemented for compute and offscreen render (D194: `lyric-gpu`, compute and
-triangle examples with golden-image CI on lavapipe); textures, samplers and
-presentation remain. G4 is blocked on SDL3 binaries. The other phases are open.
+triangle examples with golden-image CI on lavapipe; D196: vertex and uniform
+buffers, textures, samplers and the textured-quad example); presentation remains. G4 is blocked on SDL3 binaries. The other phases are open.
 D156 and D157 resolve Q-GFX-005 to Q-GFX-010 (§10).
 
 **Builds on:** `native/plan/` (the LLVM backend, D-N-001 onward),

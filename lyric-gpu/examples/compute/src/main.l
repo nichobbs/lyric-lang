@@ -24,9 +24,9 @@ func run(d: Gpu.Device): Int {
   val buf = Gpu.createBuffer(d, bytes, Gpu.usageStorage + Gpu.usageCopyDst + Gpu.usageCopySrc)
   Gpu.writeInts(d, buf, 0, input)
   val pipeline = match Gpu.createComputePipeline(d, shader, "main") { case Ok(p) -> p; case Err(e) -> return fail(e) }
-  val bufs: List[Gpu.Buffer] = newList()
-  bufs.add(buf)
-  val group = match Gpu.createBindGroup(d, pipeline, bufs) { case Ok(g) -> g; case Err(e) -> return fail(e) }
+  val bindings: List[Gpu.Binding] = newList()
+  bindings.add(BufferBinding(buffer = buf))
+  val group = match Gpu.createBindGroup(d, pipeline, bindings) { case Ok(g) -> g; case Err(e) -> return fail(e) }
   match Gpu.dispatch(d, pipeline, group, 16, 1, 1) {
     case Ok(_) -> ()
     case Err(e) -> return fail(e)

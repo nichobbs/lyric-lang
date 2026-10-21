@@ -1,0 +1,14 @@
+# Draws a textured, tinted quad from a vertex buffer, a uniform buffer, a texture and a
+# sampler, and compares the pixels to a golden image (docs/67 G5).
+[package]
+name    = "Lyric.Gpu.Examples.Quad"
+version = "0.1.0"
+
+[project]
+name = "Lyric.Gpu.Examples.Quad"
+
+[project.packages]
+"Gpu.Examples.Quad" = "src/main.l"
+
+[dependencies]
+"Lyric.Gpu" = { path = "../.." }

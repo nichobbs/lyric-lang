@@ -52,9 +52,50 @@ pub record RenderPipeline {
   raw: Long
 }
 
-/// Buffers bound to the bindings of a compute pipeline's group 0.
+/// Buffers, textures and samplers bound to the bindings of group 0 of a pipeline.
 pub record BindGroup {
   raw: Long
+}
+
+/// An RGBA8 texture to sample in a shader, with its default view.
+pub record Texture {
+  raw: Long
+  view: Long
+  width: Int
+  height: Int
+}
+
+pub record Sampler {
+  raw: Long
+}
+
+/// What `@binding(i)` of group 0 is bound to: a uniform or storage buffer, a texture or a sampler.
+pub union Binding {
+  case BufferBinding(buffer: Buffer)
+  case TextureBinding(texture: Texture)
+  case SamplerBinding(sampler: Sampler)
+}
+
+/// One attribute of a vertex: its format (`vertexFloat32x2` ...), byte offset and `@location`.
+pub record VertexAttribute {
+  format: Int
+  offset: Long
+  location: Int
+}
+
+/// How one vertex buffer is read: bytes per vertex and the attributes in each.
+pub record VertexLayout {
+  stride: Long
+  attributes: List[VertexAttribute]
+}
+
+/// One draw: the pipeline, its optional bind group, the vertex buffers (slot i is
+/// `vertexBuffers[i]`) and the number of vertices.
+pub record Draw {
+  pipeline: RenderPipeline
+  bindGroup: Option[BindGroup]
+  vertexBuffers: List[Buffer]
+  vertexCount: Int
 }
 
 pub val usageMapRead: Long = 1
@@ -64,6 +105,10 @@ pub val usageMapWrite: Long = 2
 pub val usageCopySrc: Long = 4
 
 pub val usageCopyDst: Long = 8
+
+pub val usageIndex: Long = 16
+
+pub val usageVertex: Long = 32
 
 pub val usageUniform: Long = 64
 
@@ -76,7 +121,19 @@ record Slot {
   var message: String
 }
 
+pub val vertexFloat32: Int = 28
+
+pub val vertexFloat32x2: Int = 29
+
+pub val vertexFloat32x3: Int = 30
+
+pub val vertexFloat32x4: Int = 31
+
 val errorCellSize: Long = 1032
+
+val vertexAttributeSize: Long = 32
+
+val vertexLayoutSize: Long = 40
 
 val bindGroupEntrySize: Long = 56
 
@@ -101,6 +158,18 @@ extern func memcpyEntry(dst: NativePtr[Byte], src: NativePtr[WGPUBindGroupEntry]
 @library("c")
 @unsafe_ffi
 extern func memcpyBytes(dst: NativePtr[Byte], src: NativePtr[Byte], n: Long): NativePtr[Byte] = "memcpy"
+
+@library("c")
+@unsafe_ffi
+extern func memcpyAttribute(dst: NativePtr[Byte], src: NativePtr[WGPUVertexAttribute], n: Long): NativePtr[Byte] = "memcpy"
+
+@library("c")
+@unsafe_ffi
+extern func memcpyVertexLayout(dst: NativePtr[Byte], src: NativePtr[WGPUVertexBufferLayout], n: Long): NativePtr[Byte] = "memcpy"
+
+@library("wgpu_native-release")
+@unsafe_ffi
+extern func wgpuQueueWriteBufferFloats(queue: NativePtr[Byte], buffer: NativePtr[Byte], bufferOffset: Long, data: NativePtr[Float], size: Long): Unit = "wgpuQueueWriteBuffer"
 
 @library("wgpu_native-release")
 @unsafe_ffi
@@ -346,6 +415,16 @@ pub func writeBytes(d: Device, b: Buffer, offset: Long, values: buffer[Byte]): U
   )
 }
 
+/// Copies `values` (32-bit floats) into the buffer at `offset` bytes.
+@unsafe_ffi
+pub func writeFloats(d: Device, b: Buffer, offset: Long, values: buffer[Float]): Unit {
+  values.withPointer(
+    { p: NativePtr[Float] ->
+      wgpuQueueWriteBufferFloats(longToPtr(d.queue), longToPtr(b.raw), offset, p, values.length.toLong() * 4)
+    }
+  )
+}
+
 @unsafe_ffi
 func submit(d: Device, encoder: NativePtr[Byte]): Unit {
   var cmd = wgpuCommandEncoderFinish(encoder, nativeNullPtr())
@@ -437,23 +516,33 @@ pub func createComputePipeline(d: Device, source: String, entry: String): Result
   }
 }
 
-/// Binds `buffers[i]` to `@binding(i)` of group 0 of the pipeline.
 @unsafe_ffi
-pub func createBindGroup(d: Device, pipeline: ComputePipeline, buffers: List[Buffer]): Result[BindGroup, String] {
-  val layout = wgpuComputePipelineGetBindGroupLayout(longToPtr(pipeline.raw), 0)
-  val count = buffers.count
+func buildBindGroup(d: Device, layout: NativePtr[Byte], bindings: List[Binding]): Result[BindGroup, String] {
+  val count = bindings.count
   val entries = Ffi.allocate(bindGroupEntrySize * count.toLong())
   var i = 0
   while i < count {
     var entry = WGPUBindGroupEntry(
       nextInChain = nativeNullPtr(),
       binding = i,
-      buffer = longToPtr(buffers[i].raw),
+      buffer = nativeNullPtr(),
       offset = 0,
-      size = buffers[i].size,
+      size = 0,
       sampler = nativeNullPtr(),
       textureView = nativeNullPtr()
     )
+    match bindings[i] {
+      case BufferBinding(buffer) -> {
+        entry.buffer = longToPtr(buffer.raw)
+        entry.size = buffer.size
+      }
+      case TextureBinding(texture) -> {
+        entry.textureView = longToPtr(texture.view)
+      }
+      case SamplerBinding(sampler) -> {
+        entry.sampler = longToPtr(sampler.raw)
+      }
+    }
     val _m = memcpyEntry(
       longToPtr(ptrToLong(entries) + bindGroupEntrySize * i.toLong()),
       nativeAddrOf(entry),
@@ -478,6 +567,18 @@ pub func createBindGroup(d: Device, pipeline: ComputePipeline, buffers: List[Buf
     }
     case None -> Ok(value = BindGroup(raw = ptrToLong(group)))
   }
+}
+
+/// Binds `bindings[i]` to `@binding(i)` of group 0 of the compute pipeline.
+@unsafe_ffi
+pub func createBindGroup(d: Device, pipeline: ComputePipeline, bindings: List[Binding]): Result[BindGroup, String] {
+  buildBindGroup(d, wgpuComputePipelineGetBindGroupLayout(longToPtr(pipeline.raw), 0), bindings)
+}
+
+/// Binds `bindings[i]` to `@binding(i)` of group 0 of the render pipeline.
+@unsafe_ffi
+pub func createRenderBindGroup(d: Device, pipeline: RenderPipeline, bindings: List[Binding]): Result[BindGroup, String] {
+  buildBindGroup(d, wgpuRenderPipelineGetBindGroupLayout(longToPtr(pipeline.raw), 0), bindings)
 }
 
 /// Runs the pipeline over `x * y * z` workgroups with the bind group, waiting for the queue.
@@ -533,11 +634,16 @@ pub func releaseRenderTarget(t: RenderTarget): Unit {
   wgpuTextureRelease(longToPtr(t.texture))
 }
 
-/// A pipeline from one WGSL module's vertex and fragment entry points; it draws triangle
-/// lists with no vertex buffers (the shader generates positions from `@builtin(vertex_index)`).
+/// A pipeline from one WGSL module's vertex and fragment entry points that draws triangle
+/// lists into an RGBA8 target.  `layouts[i]` describes vertex buffer slot i; an empty list is a
+/// shader that generates its positions from `@builtin(vertex_index)`.
 @unsafe_ffi
 pub func createRenderPipeline(
-  d: Device, source: String, vertexEntry: String, fragmentEntry: String
+  d: Device,
+  source: String,
+  vertexEntry: String,
+  fragmentEntry: String,
+  layouts: List[VertexLayout],
 ): Result[RenderPipeline, String] {
   val wgsl = Ffi.toCString(source)
   val vertexName = Ffi.toCString(vertexEntry)
@@ -549,6 +655,43 @@ pub func createRenderPipeline(
   val chainHead: NativePtr[Byte] = nativeAddrOf(chained)
   var moduleDesc = WGPUShaderModuleDescriptor(nextInChain = chainHead, label = noString())
   val shader = wgpuDeviceCreateShaderModule(longToPtr(d.device), nativeAddrOf(moduleDesc))
+  val layoutCount = layouts.count
+  val layoutArray = Ffi.allocate(vertexLayoutSize * (if layoutCount > 0 then layoutCount.toLong() else 1))
+  val attributeArrays: List[Long] = newList()
+  var li = 0
+  while li < layoutCount {
+    val attributeCount = layouts[li].attributes.count
+    val attributeArray = Ffi.allocate(vertexAttributeSize * (if attributeCount > 0 then attributeCount.toLong() else 1))
+    attributeArrays.add(ptrToLong(attributeArray))
+    var ai = 0
+    while ai < attributeCount {
+      var attribute = WGPUVertexAttribute(
+        nextInChain = nativeNullPtr(),
+        format = layouts[li].attributes[ai].format,
+        offset = layouts[li].attributes[ai].offset,
+        shaderLocation = layouts[li].attributes[ai].location
+      )
+      val _a = memcpyAttribute(
+        longToPtr(ptrToLong(attributeArray) + vertexAttributeSize * ai.toLong()),
+        nativeAddrOf(attribute),
+        vertexAttributeSize
+      )
+      ai = ai + 1
+    }
+    var layoutEntry = WGPUVertexBufferLayout(
+      nextInChain = nativeNullPtr(),
+      stepMode = WGPUVertexStepMode_Vertex,
+      arrayStride = layouts[li].stride,
+      attributeCount = attributeCount.toLong(),
+      attributes = attributeArray
+    )
+    val _l = memcpyVertexLayout(
+      longToPtr(ptrToLong(layoutArray) + vertexLayoutSize * li.toLong()),
+      nativeAddrOf(layoutEntry),
+      vertexLayoutSize
+    )
+    li = li + 1
+  }
   var target = WGPUColorTargetState(
     nextInChain = nativeNullPtr(),
     format = WGPUTextureFormat_RGBA8Unorm,
@@ -574,8 +717,8 @@ pub func createRenderPipeline(
       entryPoint = cString(vertexName),
       constantCount = 0,
       constants = nativeNullPtr(),
-      bufferCount = 0,
-      buffers = nativeNullPtr()
+      bufferCount = layoutCount.toLong(),
+      buffers = layoutArray
     ),
     primitive = WGPUPrimitiveState(
       nextInChain = nativeNullPtr(),
@@ -599,6 +742,10 @@ pub func createRenderPipeline(
   Ffi.release(wgsl)
   Ffi.release(vertexName)
   Ffi.release(fragmentName)
+  Ffi.release(layoutArray)
+  for address in attributeArrays {
+    Ffi.release(longToPtr(address))
+  }
   match takeError(d) {
     case Some(message) -> {
       wgpuRenderPipelineRelease(pipeline)
@@ -613,17 +760,10 @@ pub func releaseRenderPipeline(p: RenderPipeline): Unit {
   wgpuRenderPipelineRelease(longToPtr(p.raw))
 }
 
-/// Clears the target to (`red`, `green`, `blue`, `alpha`) and draws `vertexCount` vertices.
+/// Clears the target to (`red`, `green`, `blue`, `alpha`) and runs the draws in order.
 @unsafe_ffi
 pub func render(
-  d: Device,
-  target: RenderTarget,
-  pipeline: RenderPipeline,
-  red: Float,
-  green: Float,
-  blue: Float,
-  alpha: Float,
-  vertexCount: Int,
+  d: Device, target: RenderTarget, red: Float, green: Float, blue: Float, alpha: Float, draws: List[Draw]
 ): Result[Unit, String] {
   val encoder = wgpuDeviceCreateCommandEncoder(longToPtr(d.device), nativeNullPtr())
   var attachment = WGPURenderPassColorAttachment(
@@ -645,8 +785,20 @@ pub func render(
     timestampWrites = nativeNullPtr()
   )
   val pass = wgpuCommandEncoderBeginRenderPass(encoder, nativeAddrOf(passDesc))
-  wgpuRenderPassEncoderSetPipeline(pass, longToPtr(pipeline.raw))
-  wgpuRenderPassEncoderDraw(pass, vertexCount, 1, 0, 0)
+  for draw in draws {
+    wgpuRenderPassEncoderSetPipeline(pass, longToPtr(draw.pipeline.raw))
+    match draw.bindGroup {
+      case Some(group) -> wgpuRenderPassEncoderSetBindGroup(pass, 0, longToPtr(group.raw), 0, nativeNullPtr())
+      case None -> ()
+    }
+    var slot = 0
+    while slot < draw.vertexBuffers.count {
+      val buffer = draw.vertexBuffers[slot]
+      wgpuRenderPassEncoderSetVertexBuffer(pass, slot, longToPtr(buffer.raw), 0, buffer.size)
+      slot = slot + 1
+    }
+    wgpuRenderPassEncoderDraw(pass, draw.vertexCount, 1, 0, 0)
+  }
   wgpuRenderPassEncoderEnd(pass)
   wgpuRenderPassEncoderRelease(pass)
   submit(d, encoder)
@@ -654,6 +806,100 @@ pub func render(
     case Some(message) -> Err(error = message)
     case None -> Ok(value = ())
   }
+}
+
+/// An RGBA8 texture of `width` by `height` pixels holding `pixels` (tightly packed rows, top
+/// row first), ready to bind with `TextureBinding`.
+@unsafe_ffi
+pub func createTexture(d: Device, width: Int, height: Int, pixels: buffer[Byte]): Result[Texture, String] {
+  if pixels.length != width * height * 4 {
+    return Err(
+      error = "a " + width.toString() + "x" + height.toString() + " RGBA8 texture needs " +
+        (width * height * 4).toString() +
+        " bytes, not " +
+        pixels.length.toString()
+    )
+  }
+  var desc = WGPUTextureDescriptor(
+    nextInChain = nativeNullPtr(),
+    label = noString(),
+    usage = WGPUTextureUsage_TextureBinding + WGPUTextureUsage_CopyDst,
+    dimension = WGPUTextureDimension_2D,
+    size = WGPUExtent3D(width = width, height = height, depthOrArrayLayers = 1),
+    format = WGPUTextureFormat_RGBA8Unorm,
+    mipLevelCount = 1,
+    sampleCount = 1,
+    viewFormatCount = 0,
+    viewFormats = nativeNullPtr()
+  )
+  val texture = wgpuDeviceCreateTexture(longToPtr(d.device), nativeAddrOf(desc))
+  var destination = WGPUTexelCopyTextureInfo(
+    texture = texture,
+    mipLevel = 0,
+    origin = WGPUOrigin3D(x = 0, y = 0, z = 0),
+    aspect = WGPUTextureAspect_All
+  )
+  var layout = WGPUTexelCopyBufferLayout(offset = 0, bytesPerRow = width * 4, rowsPerImage = height)
+  var size = WGPUExtent3D(width = width, height = height, depthOrArrayLayers = 1)
+  val destinationAddress = ptrToLong(nativeAddrOf(destination))
+  val layoutAddress = ptrToLong(nativeAddrOf(layout))
+  val sizeAddress = ptrToLong(nativeAddrOf(size))
+  val queue = d.queue
+  val bytes = pixels.length.toLong()
+  pixels.withPointer(
+    { p: NativePtr[Byte] ->
+      wgpuQueueWriteTexture(
+        longToPtr(queue),
+        longToPtr(destinationAddress),
+        p,
+        bytes,
+        longToPtr(layoutAddress),
+        longToPtr(sizeAddress)
+      )
+    }
+  )
+  val view = wgpuTextureCreateView(texture, nativeNullPtr())
+  match takeError(d) {
+    case Some(message) -> {
+      wgpuTextureViewRelease(view)
+      wgpuTextureRelease(texture)
+      Err(error = message)
+    }
+    case None -> Ok(value = Texture(raw = ptrToLong(texture), view = ptrToLong(view), width = width, height = height))
+  }
+}
+
+@unsafe_ffi
+pub func releaseTexture(t: Texture): Unit {
+  wgpuTextureViewRelease(longToPtr(t.view))
+  wgpuTextureRelease(longToPtr(t.raw))
+}
+
+/// A sampler that clamps to the texture's edge and filters linearly (`linear`) or takes the
+/// nearest texel.
+@unsafe_ffi
+pub func createSampler(d: Device, linear: Bool): Sampler {
+  val filter = if linear then WGPUFilterMode_Linear else WGPUFilterMode_Nearest
+  var desc = WGPUSamplerDescriptor(
+    nextInChain = nativeNullPtr(),
+    label = noString(),
+    addressModeU = WGPUAddressMode_ClampToEdge,
+    addressModeV = WGPUAddressMode_ClampToEdge,
+    addressModeW = WGPUAddressMode_ClampToEdge,
+    magFilter = filter,
+    minFilter = filter,
+    mipmapFilter = WGPUMipmapFilterMode_Nearest,
+    lodMinClamp = 0.0f32,
+    lodMaxClamp = 32.0f32,
+    compare = WGPUCompareFunction_Undefined,
+    maxAnisotropy = [1u8, 0u8]
+  )
+  Sampler(raw = ptrToLong(wgpuDeviceCreateSampler(longToPtr(d.device), nativeAddrOf(desc))))
+}
+
+@unsafe_ffi
+pub func releaseSampler(s: Sampler): Unit {
+  wgpuSamplerRelease(longToPtr(s.raw))
 }
 
 /// The target's pixels as tightly packed RGBA8 rows, top row first.
