@@ -1047,30 +1047,12 @@ pub func pipeCheckFront(
   // Component-wise arithmetic on homogeneous numeric records (D155), and
   // field-by-field `==` / `!=` on value records and records deriving
   // `Equals` (D164).
-  val recordLowered = lowerRecordEq(
-    lowerRecordArith(distinctLowered, tcRes.symbols.recordArithSites),
-    tcRes.symbols.recordEqSites,
-    tcRes.symbols.arrayEqSites,
-    tcRes.symbols.wrapEqSites
-  )
+  val recordLowered = lowerRecordSites(distinctLowered, tcRes.symbols)
   // `array[N, T]` (D167): bounds-checked indexing, `.length`, `.toSlice()`,
   // `for` over an array, copies on store and zero-filled declarations become
   // forms every backend lowers.  Before the overflow pass, which still finds
   // a compound assignment's statement and its operators by their own spans.
-  val arraysLowered = lowerArrays(
-    recordLowered,
-    ArraySites(
-      index = tcRes.symbols.arrayIndexSites,
-      len = tcRes.symbols.arrayLenSites,
-      slice = tcRes.symbols.arraySliceSites,
-      forIter = tcRes.symbols.arrayForSites,
-      copy = tcRes.symbols.arrayCopySites,
-      zero = tcRes.symbols.arrayZeroSites,
-      ctorZero = tcRes.symbols.arrayCtorZeroArgs,
-      literal = if opts.primitiveArrays { tcRes.symbols.arrayLiteralSites } else { newMap() },
-      pointerClosures = tcRes.symbols.bufferPointerSites
-    )
-  )
+  val arraysLowered = lowerArraySites(recordLowered, tcRes.symbols, opts.primitiveArrays)
   // Integer overflow panics in a debug build and wraps in a release build or
   // in the standard library (D163); `.wrappingAdd(...)` and its siblings
   // become the plain operator either way.
@@ -1098,6 +1080,32 @@ pub func pipeCheckFront(
     val _ = gateTo(sink, opts.pkgLabel, opts.lineOrigins, runtimeQuantifierWarnings(checked))
   }
   Some(value = CheckFront(tcRes = tcRes, valueSites = valueSites, checked = checked))
+}
+
+/// Component-wise arithmetic on homogeneous numeric records (D155) and
+/// field-by-field `==` / `!=` on value records and records deriving `Equals`
+/// (D164), lowered from the sites the checker recorded in `sym`.
+pub func lowerRecordSites(file: in SourceFile, sym: in SymbolTable): SourceFile {
+  lowerRecordEq(lowerRecordArith(file, sym.recordArithSites), sym.recordEqSites, sym.arrayEqSites, sym.wrapEqSites)
+}
+
+/// `array[N, T]` (D167) and `buffer[T]` pointer-closure sites recorded in
+/// `sym`, lowered to forms every backend handles.
+pub func lowerArraySites(file: in SourceFile, sym: in SymbolTable, primitiveArrays: in Bool): SourceFile {
+  lowerArrays(
+    file,
+    ArraySites(
+      index = sym.arrayIndexSites,
+      len = sym.arrayLenSites,
+      slice = sym.arraySliceSites,
+      forIter = sym.arrayForSites,
+      copy = sym.arrayCopySites,
+      zero = sym.arrayZeroSites,
+      ctorZero = sym.arrayCtorZeroArgs,
+      literal = if primitiveArrays { sym.arrayLiteralSites } else { newMap() },
+      pointerClosures = sym.bufferPointerSites
+    )
+  )
 }
 
 pub func pipeCheckAndMono(
