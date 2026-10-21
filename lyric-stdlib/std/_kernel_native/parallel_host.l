@@ -65,6 +65,8 @@ pub func hostForChunks[T](b: inout buffer[T], chunkSize: in Int, body: in (Int, 
           len.toString()
       )
     }
+    // Each index is written by exactly one body and the list was filled to its final length above,
+    // so no slot is shared and the backing store never moves while the pool runs.
     results[i] = updated
   }
   hostRun(chunks, work)

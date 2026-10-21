@@ -38,6 +38,9 @@ int32_t lyric_parallel_threads(void) {
     return 1;
 }
 
+/* A call from inside a body (in_body is thread-local) runs serially, so nesting cannot deadlock.
+ * A call from a thread that is not a pool worker, such as a user pthread, takes submit_mu and
+ * so runs one job at a time with the others. */
 void lyric_parallel_for(int64_t count, void (*body)(int64_t, void*), void* ud) {
     for (int64_t i = 0; i < count; i++) {
         body(i, ud);
