@@ -24,6 +24,10 @@ val pixelBudget: Int = 80
 
 val shader: String = "@vertex\nfn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {\n  var p = array<vec2<f32>, 3>(vec2<f32>(0.0, 0.8), vec2<f32>(-0.8, -0.8), vec2<f32>(0.8, -0.8));\n  return vec4<f32>(p[i], 0.0, 1.0);\n}\n@fragment\nfn fs() -> @location(0) vec4<f32> {\n  return vec4<f32>(1.0, 0.0, 0.0, 1.0);\n}\n"
 
+val noLayouts: List[Gpu.VertexLayout] = []
+
+val noBuffers: List[Gpu.Buffer] = []
+
 func fail(message: String): Int {
   Console.println("FAIL: " + message)
   1
@@ -37,11 +41,13 @@ func channelDiff(a: Byte, b: Byte): Int {
 
 func render(d: Gpu.Device): Result[buffer[Byte], String] {
   val target = Gpu.createRenderTarget(d, size, size)
-  val pipeline = match Gpu.createRenderPipeline(d, shader, "vs", "fs") {
+  val pipeline = match Gpu.createRenderPipeline(d, shader, "vs", "fs", noLayouts) {
     case Ok(p) -> p
     case Err(e) -> return Err(error = e)
   }
-  match Gpu.render(d, target, pipeline, 0.0, 0.0, 1.0, 1.0, 3) {
+  val draws: List[Gpu.Draw] = newList()
+  draws.add(Gpu.Draw(pipeline = pipeline, bindGroup = None, vertexBuffers = noBuffers, vertexCount = 3))
+  match Gpu.render(d, target, 0.0, 0.0, 1.0, 1.0, draws) {
     case Ok(_) -> ()
     case Err(e) -> return Err(error = e)
   }
