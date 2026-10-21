@@ -434,6 +434,8 @@ A window and a GPU meet through raw handles: `Window.nativeWindow` returns the X
 
 `lyric-window` does the same for SDL3 (windows, input, clipboard, timing and audio), with SDL3 found through pkg-config, because SDL publishes no prebuilt Linux library to pin. Its event type is a union in C; `Window` decodes SDL's event buffer into a Lyric `union Event`, and a C file of `_Static_assert`s compiles every offset the decoder uses against SDL's headers, so a header that moves a field breaks the build instead of the decoder:
 
+`lyric-text` binds two libraries the same way (FreeType and HarfBuzz, each a generated kernel linked by its own `@library`) and shows the other half of the pattern: where a C struct has a field `lyric bindgen` cannot represent (a 16-bit-integer-bearing outline, a union), the safe layer reads the few fields it needs with `nativeLoadByte` at offsets that a compiled `_Static_assert` file checks against the installed headers. A font is a `Font` record of handles; `shape` returns glyphs with metrics in pixels, `rasterize` an 8-bit coverage bitmap, and `layoutText` places a paragraph in a column with a fallback chain of fonts, so Latin, Arabic and CJK text share one call.
+
 ```lyric
 match Window.pollEvent() {
   case Some(KeyDown(window, key, scancode, modifiers, repeat)) -> handleKey(key)
