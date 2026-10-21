@@ -159,7 +159,8 @@ for t in \
   lyric-stdlib/tests/task_native_tests.l \
   lyric-stdlib/tests/secure_random_native_tests.l \
   lyric-stdlib/tests/json_native_tests.l \
-  lyric-stdlib/tests/json_value_tests.l ; do
+  lyric-stdlib/tests/json_value_tests.l \
+  lyric-stdlib/tests/linalg_tests.l ; do
   echo "=== $t (--target native) ==="
   "$lyric_bin" test --target native "$t"
 done

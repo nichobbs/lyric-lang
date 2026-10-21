@@ -24,7 +24,6 @@ import Std.Math
 // =====================================================================
 // Scalar helpers.
 // =====================================================================
-
 func sqrtF(x: in Float): Float {
   sqrt(x).toFloat()
 }
@@ -72,7 +71,6 @@ pub func degrees(rad: in Float): Float {
 // =====================================================================
 // Vec2
 // =====================================================================
-
 @derive(Add, Sub)
 pub record Vec2 {
   x: Float
@@ -139,7 +137,6 @@ pub func Vec2.cross(a: in Vec2, b: in Vec2): Float {
 // =====================================================================
 // Vec3
 // =====================================================================
-
 @derive(Add, Sub)
 pub record Vec3 {
   x: Float
@@ -172,11 +169,7 @@ pub func Vec3.dot(a: in Vec3, b: in Vec3): Float {
 }
 
 pub func Vec3.cross(a: in Vec3, b: in Vec3): Vec3 {
-  Vec3(
-    x = a.y * b.z - a.z * b.y,
-    y = a.z * b.x - a.x * b.z,
-    z = a.x * b.y - a.y * b.x
-  )
+  Vec3(x = a.y * b.z - a.z * b.y, y = a.z * b.x - a.x * b.z, z = a.x * b.y - a.y * b.x)
 }
 
 pub func Vec3.lengthSquared(a: in Vec3): Float {
@@ -209,7 +202,6 @@ pub func Vec3.reflect(a: in Vec3, n: in Vec3): Vec3 {
 // =====================================================================
 // Vec4
 // =====================================================================
-
 @derive(Add, Sub)
 pub record Vec4 {
   x: Float
@@ -268,19 +260,13 @@ pub func Vec4.normalize(a: in Vec4): Vec4 {
 }
 
 pub func Vec4.lerp(a: in Vec4, b: in Vec4, t: in Float): Vec4 {
-  Vec4(
-    x = lerpFloat(a.x, b.x, t),
-    y = lerpFloat(a.y, b.y, t),
-    z = lerpFloat(a.z, b.z, t),
-    w = lerpFloat(a.w, b.w, t)
-  )
+  Vec4(x = lerpFloat(a.x, b.x, t), y = lerpFloat(a.y, b.y, t), z = lerpFloat(a.z, b.z, t), w = lerpFloat(a.w, b.w, t))
 }
 
 // =====================================================================
 // Mat3 - 3x3, column-major. Rotation and scale in 3D, or an affine 2D
 // transform in homogeneous coordinates.
 // =====================================================================
-
 pub record Mat3 {
   m: array[9, Float]
 }
@@ -344,7 +330,8 @@ pub func Mat3.transpose(a: in Mat3): Mat3 {
 }
 
 pub func Mat3.determinant(a: in Mat3): Float {
-  a.m[0] * (a.m[4] * a.m[8] - a.m[7] * a.m[5]) - a.m[3] * (a.m[1] * a.m[8] - a.m[7] * a.m[2]) + a.m[6] * (a.m[1] * a.m[5] - a.m[4] * a.m[2])
+  a.m[0] * (a.m[4] * a.m[8] - a.m[7] * a.m[5]) - a.m[3] * (a.m[1] * a.m[8] - a.m[7] * a.m[2]) +
+    a.m[6] * (a.m[1] * a.m[5] - a.m[4] * a.m[2])
 }
 
 /// The inverse, or `None` when the matrix is singular.
@@ -391,7 +378,6 @@ pub func Mat3.rotation2d(angle: in Float): Mat3 {
 // Quat - unit quaternions for rotation. Stored as (x, y, z) vector part
 // and w scalar part.
 // =====================================================================
-
 pub record Quat {
   x: Float
   y: Float
@@ -465,12 +451,7 @@ pub func Quat.slerp(a: in Quat, b: in Quat, t: in Float): Quat {
     bw = -bw
   }
   if cosTheta > 0.9995f32 {
-    Quat(
-      x = lerpFloat(a.x, bx, t),
-      y = lerpFloat(a.y, by, t),
-      z = lerpFloat(a.z, bz, t),
-      w = lerpFloat(a.w, bw, t)
-    ).normalize()
+    Quat(x = lerpFloat(a.x, bx, t), y = lerpFloat(a.y, by, t), z = lerpFloat(a.z, bz, t), w = lerpFloat(a.w, bw, t)).normalize()
   } else {
     val theta = acosF(cosTheta)
     val sinTheta = sinF(theta)
@@ -483,7 +464,6 @@ pub func Quat.slerp(a: in Quat, b: in Quat, t: in Float): Quat {
 // =====================================================================
 // Mat4 - 4x4, column-major.
 // =====================================================================
-
 pub record Mat4 {
   m: array[16, Float]
 }
@@ -493,7 +473,24 @@ func mat4Of(a: in array[16, Float]): Mat4 {
 }
 
 func zeros16(): array[16, Float] {
-  [0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32]
+  [
+    0.0f32,
+    0.0f32,
+    0.0f32,
+    0.0f32,
+    0.0f32,
+    0.0f32,
+    0.0f32,
+    0.0f32,
+    0.0f32,
+    0.0f32,
+    0.0f32,
+    0.0f32,
+    0.0f32,
+    0.0f32,
+    0.0f32,
+    0.0f32
+  ]
 }
 
 pub func Mat4.identity(): Mat4 {
@@ -677,7 +674,14 @@ pub func Mat4.perspective(fovY: in Float, aspect: in Float, near: in Float, far:
 }
 
 /// A right-handed orthographic projection with 0-to-1 clip-space depth.
-pub func Mat4.orthographic(left: in Float, right: in Float, bottom: in Float, top: in Float, near: in Float, far: in Float): Mat4
+pub func Mat4.orthographic(
+  left: in Float,
+  right: in Float,
+  bottom: in Float,
+  top: in Float,
+  near: in Float,
+  far: in Float,
+): Mat4
   requires: right != left and top != bottom and far != near
 {
   var a = zeros16()
@@ -695,22 +699,45 @@ pub func Mat4.orthographic(left: in Float, right: in Float, bottom: in Float, to
 pub func Mat4.inverse(a: in Mat4): Option[Mat4] {
   val m = a.m
   var inv = zeros16()
-  inv[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15] + m[9] * m[7] * m[14] + m[13] * m[6] * m[11] - m[13] * m[7] * m[10]
-  inv[4] = -m[4] * m[10] * m[15] + m[4] * m[11] * m[14] + m[8] * m[6] * m[15] - m[8] * m[7] * m[14] - m[12] * m[6] * m[11] + m[12] * m[7] * m[10]
-  inv[8] = m[4] * m[9] * m[15] - m[4] * m[11] * m[13] - m[8] * m[5] * m[15] + m[8] * m[7] * m[13] + m[12] * m[5] * m[11] - m[12] * m[7] * m[9]
-  inv[12] = -m[4] * m[9] * m[14] + m[4] * m[10] * m[13] + m[8] * m[5] * m[14] - m[8] * m[6] * m[13] - m[12] * m[5] * m[10] + m[12] * m[6] * m[9]
-  inv[1] = -m[1] * m[10] * m[15] + m[1] * m[11] * m[14] + m[9] * m[2] * m[15] - m[9] * m[3] * m[14] - m[13] * m[2] * m[11] + m[13] * m[3] * m[10]
-  inv[5] = m[0] * m[10] * m[15] - m[0] * m[11] * m[14] - m[8] * m[2] * m[15] + m[8] * m[3] * m[14] + m[12] * m[2] * m[11] - m[12] * m[3] * m[10]
-  inv[9] = -m[0] * m[9] * m[15] + m[0] * m[11] * m[13] + m[8] * m[1] * m[15] - m[8] * m[3] * m[13] - m[12] * m[1] * m[11] + m[12] * m[3] * m[9]
-  inv[13] = m[0] * m[9] * m[14] - m[0] * m[10] * m[13] - m[8] * m[1] * m[14] + m[8] * m[2] * m[13] + m[12] * m[1] * m[10] - m[12] * m[2] * m[9]
-  inv[2] = m[1] * m[6] * m[15] - m[1] * m[7] * m[14] - m[5] * m[2] * m[15] + m[5] * m[3] * m[14] + m[13] * m[2] * m[7] - m[13] * m[3] * m[6]
-  inv[6] = -m[0] * m[6] * m[15] + m[0] * m[7] * m[14] + m[4] * m[2] * m[15] - m[4] * m[3] * m[14] - m[12] * m[2] * m[7] + m[12] * m[3] * m[6]
-  inv[10] = m[0] * m[5] * m[15] - m[0] * m[7] * m[13] - m[4] * m[1] * m[15] + m[4] * m[3] * m[13] + m[12] * m[1] * m[7] - m[12] * m[3] * m[5]
-  inv[14] = -m[0] * m[5] * m[14] + m[0] * m[6] * m[13] + m[4] * m[1] * m[14] - m[4] * m[2] * m[13] - m[12] * m[1] * m[6] + m[12] * m[2] * m[5]
-  inv[3] = -m[1] * m[6] * m[11] + m[1] * m[7] * m[10] + m[5] * m[2] * m[11] - m[5] * m[3] * m[10] - m[9] * m[2] * m[7] + m[9] * m[3] * m[6]
-  inv[7] = m[0] * m[6] * m[11] - m[0] * m[7] * m[10] - m[4] * m[2] * m[11] + m[4] * m[3] * m[10] + m[8] * m[2] * m[7] - m[8] * m[3] * m[6]
-  inv[11] = -m[0] * m[5] * m[11] + m[0] * m[7] * m[9] + m[4] * m[1] * m[11] - m[4] * m[3] * m[9] - m[8] * m[1] * m[7] + m[8] * m[3] * m[5]
-  inv[15] = m[0] * m[5] * m[10] - m[0] * m[6] * m[9] - m[4] * m[1] * m[10] + m[4] * m[2] * m[9] + m[8] * m[1] * m[6] - m[8] * m[2] * m[5]
+  inv[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15] + m[9] * m[7] * m[14] +
+    m[13] * m[6] * m[11] -
+    m[13] * m[7] * m[10]
+  inv[4] = -m[4] * m[10] * m[15] + m[4] * m[11] * m[14] + m[8] * m[6] * m[15] - m[8] * m[7] * m[14] -
+    m[12] * m[6] * m[11] +
+    m[12] * m[7] * m[10]
+  inv[8] = m[4] * m[9] * m[15] - m[4] * m[11] * m[13] - m[8] * m[5] * m[15] + m[8] * m[7] * m[13] + m[12] * m[5] * m[11] -
+    m[12] * m[7] * m[9]
+  inv[12] = -m[4] * m[9] * m[14] + m[4] * m[10] * m[13] + m[8] * m[5] * m[14] - m[8] * m[6] * m[13] -
+    m[12] * m[5] * m[10] +
+    m[12] * m[6] * m[9]
+  inv[1] = -m[1] * m[10] * m[15] + m[1] * m[11] * m[14] + m[9] * m[2] * m[15] - m[9] * m[3] * m[14] -
+    m[13] * m[2] * m[11] +
+    m[13] * m[3] * m[10]
+  inv[5] = m[0] * m[10] * m[15] - m[0] * m[11] * m[14] - m[8] * m[2] * m[15] + m[8] * m[3] * m[14] +
+    m[12] * m[2] * m[11] -
+    m[12] * m[3] * m[10]
+  inv[9] = -m[0] * m[9] * m[15] + m[0] * m[11] * m[13] + m[8] * m[1] * m[15] - m[8] * m[3] * m[13] -
+    m[12] * m[1] * m[11] +
+    m[12] * m[3] * m[9]
+  inv[13] = m[0] * m[9] * m[14] - m[0] * m[10] * m[13] - m[8] * m[1] * m[14] + m[8] * m[2] * m[13] +
+    m[12] * m[1] * m[10] -
+    m[12] * m[2] * m[9]
+  inv[2] = m[1] * m[6] * m[15] - m[1] * m[7] * m[14] - m[5] * m[2] * m[15] + m[5] * m[3] * m[14] + m[13] * m[2] * m[7] -
+    m[13] * m[3] * m[6]
+  inv[6] = -m[0] * m[6] * m[15] + m[0] * m[7] * m[14] + m[4] * m[2] * m[15] - m[4] * m[3] * m[14] - m[12] * m[2] * m[7] +
+    m[12] * m[3] * m[6]
+  inv[10] = m[0] * m[5] * m[15] - m[0] * m[7] * m[13] - m[4] * m[1] * m[15] + m[4] * m[3] * m[13] + m[12] * m[1] * m[7] -
+    m[12] * m[3] * m[5]
+  inv[14] = -m[0] * m[5] * m[14] + m[0] * m[6] * m[13] + m[4] * m[1] * m[14] - m[4] * m[2] * m[13] - m[12] * m[1] * m[6] +
+    m[12] * m[2] * m[5]
+  inv[3] = -m[1] * m[6] * m[11] + m[1] * m[7] * m[10] + m[5] * m[2] * m[11] - m[5] * m[3] * m[10] - m[9] * m[2] * m[7] +
+    m[9] * m[3] * m[6]
+  inv[7] = m[0] * m[6] * m[11] - m[0] * m[7] * m[10] - m[4] * m[2] * m[11] + m[4] * m[3] * m[10] + m[8] * m[2] * m[7] -
+    m[8] * m[3] * m[6]
+  inv[11] = -m[0] * m[5] * m[11] + m[0] * m[7] * m[9] + m[4] * m[1] * m[11] - m[4] * m[3] * m[9] - m[8] * m[1] * m[7] +
+    m[8] * m[3] * m[5]
+  inv[15] = m[0] * m[5] * m[10] - m[0] * m[6] * m[9] - m[4] * m[1] * m[10] + m[4] * m[2] * m[9] + m[8] * m[1] * m[6] -
+    m[8] * m[2] * m[5]
   val det = m[0] * inv[0] + m[1] * inv[4] + m[2] * inv[8] + m[3] * inv[12]
   if det == 0.0f32 {
     None
@@ -729,7 +756,6 @@ pub func Mat4.inverse(a: in Mat4): Option[Mat4] {
 // Rgba8 - an 8-bit-per-channel colour, laid res as the four bytes a
 // texture upload expects.
 // =====================================================================
-
 pub record Rgba8 {
   r: Byte
   g: Byte
@@ -791,12 +817,7 @@ pub func Rgba8.toVec4(c: in Rgba8): Vec4 {
 
 /// From four floats in 0 to 1 (clamped), rounding to the nearest byte.
 pub func Rgba8.fromVec4(v: in Vec4): Rgba8 {
-  Rgba8.fromInts(
-    channelOf(v.x),
-    channelOf(v.y),
-    channelOf(v.z),
-    channelOf(v.w)
-  )
+  Rgba8.fromInts(channelOf(v.x), channelOf(v.y), channelOf(v.z), channelOf(v.w))
 }
 
 func channelOf(f: in Float): Int {

@@ -51,8 +51,6 @@ output_assembly = "Lyric.Stdlib.dll"
 
 # Tier 2 — numeric, text, stream utilities.
 "Std.Math"             = "std/math.l"
-# Vec2/Vec3/Vec4/Quat/Mat3/Mat4/Rgba8 for graphics and games (docs/67 §4.6).
-"Std.Linalg"           = "std/linalg.l"
 "Std.Parse"            = "std/parse.l"
 "Std.Stream"           = "std/stream.l"
 

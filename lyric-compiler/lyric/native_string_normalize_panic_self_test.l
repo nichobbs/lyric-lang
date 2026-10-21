@@ -116,3 +116,21 @@ test "other native String methods unaffected by the isNormalized/normalize guard
     "unrelated String methods must still compile cleanly (got panic: " + outcome.panicMsg + ")"
   )
 }
+
+test "a record's own normalize method does not pull in the String one (D198)" {
+  val dir = Path.join(tempBase(), "lyric-native-normalize-panic-selftest")
+  val _ = File.createDir(dir)
+  val stem = Path.join(dir, "t_" + Uuid.uuidToString(Uuid.newUuid()))
+  val source = "package NativeRecordNormalizeRepro\n" + "import Std.String\n" + "record V {\n" + "  x: Float\n" + "}\n" +
+    "func V.normalize(a: in V): V = a\n" +
+    "func main(): Unit {\n" +
+    "  val v = V(x = 1.0f32).normalize()\n" +
+    "  println(toString(v.x))\n" +
+    "}\n"
+  val outcome = attemptCompile(source, stem)
+  assertTrue(
+    not outcome.panicked,
+    "V.normalize() must compile although Std.String.normalize shares its bare name (got panic: " + outcome.panicMsg +
+      ")"
+  )
+}

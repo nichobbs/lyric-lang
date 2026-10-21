@@ -25,6 +25,14 @@
    supported" panic (#7304). Inside `Std.String` that failure is now a runtime trap with the same
    message; a `.normalize()` on a `String` receiver anywhere else is still the compile-time error.
 
+6. **Native stdlib lowering.** A bundled stdlib package on native skipped the record-arithmetic,
+   record-equality and `array[N, T]` lowering the user package gets, so the stdlib's own `a - b` on
+   a `Vec3` reached codegen as an operator on a record. `checkBundledStdlibPackage` now applies the
+   same `lowerRecordSites` / `lowerArraySites` (shared with `pipeCheckFront`).
+7. **Manifest.** `Std.Linalg` is registered in `lyric-stdlib/lyric.full.toml` (marked
+   `# seed: current`: it uses record derives and `array[N, T]` fields the seed compiler need not
+   know), which is the manifest the bundle is built from.
+
 ## Not in this slice
 
 SIMD (docs/04 stands: no intrinsics), a GPU-side `Plain` layout check for `Mat4` uniforms beyond

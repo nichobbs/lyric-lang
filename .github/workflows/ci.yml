@@ -4599,6 +4599,12 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci/self-test.sh --summary \"Std.JsonValue test ran: json_value_tests.l (--target jvm)\" --target jvm lyric-stdlib/tests/json_value_tests.l"
 
+      - name: Std.Linalg test coverage on JVM (native lyric test --target jvm)
+        if: ${{ !cancelled() }}
+        background: true
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target jvm lyric-stdlib/tests/linalg_tests.l
+
       # Std.Tls TlsServerConfig test coverage on JVM — the JVM half of the
       # dotnet-job step of the same name (stdlib-builds). Now runs on both
       # targets: the file's only target-specific case (default-field-omission
@@ -7111,6 +7117,10 @@ jobs:
       - name: Std.JsonValue test coverage (native lyric test)
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target dotnet lyric-stdlib/tests/json_value_tests.l
+
+      - name: Std.Linalg test coverage (native lyric test)
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci/self-test.sh --target dotnet lyric-stdlib/tests/linalg_tests.l
 
       # TlsServerConfig test coverage — runs on both targets now that its
       # only target-specific case (default-field-omission construction,

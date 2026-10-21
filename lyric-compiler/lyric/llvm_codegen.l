@@ -3951,7 +3951,8 @@ func lowerScalarMethodCall(
       emitPanicRaw(
         ctx,
         insns,
-        "String ." + name + "() is not yet supported for --target native (Unicode normalization tables not yet ported to lyric-rt)",
+        "String ." + name +
+          "() is not yet supported for --target native (Unicode normalization tables not yet ported to lyric-rt)",
         line
       )
       val trapTy = if name == "normalize" { v.ty } else { NI1 }

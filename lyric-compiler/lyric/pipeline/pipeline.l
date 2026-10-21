@@ -1086,12 +1086,7 @@ pub func pipeCheckFront(
 /// field-by-field `==` / `!=` on value records and records deriving `Equals`
 /// (D164), lowered from the sites the checker recorded in `sym`.
 pub func lowerRecordSites(file: in SourceFile, sym: in SymbolTable): SourceFile {
-  lowerRecordEq(
-    lowerRecordArith(file, sym.recordArithSites),
-    sym.recordEqSites,
-    sym.arrayEqSites,
-    sym.wrapEqSites
-  )
+  lowerRecordEq(lowerRecordArith(file, sym.recordArithSites), sym.recordEqSites, sym.arrayEqSites, sym.wrapEqSites)
 }
 
 /// `array[N, T]` (D167) and `buffer[T]` pointer-closure sites recorded in

@@ -114,13 +114,12 @@ test "Quat matches the equivalent matrix" {
 }
 
 test "Mat4 inverse and singular matrices" {
-  val m = Mat4.translation(Vec3(x = 1.0f32, y = 2.0f32, z = 3.0f32)).mul(Mat4.rotationY(0.7f32)).mul(Mat4.scaling(Vec3(x = 2.0f32, y = 3.0f32, z = 4.0f32)))
+  val m = Mat4.translation(Vec3(x = 1.0f32, y = 2.0f32, z = 3.0f32)).mul(Mat4.rotationY(0.7f32)).mul(
+    Mat4.scaling(Vec3(x = 2.0f32, y = 3.0f32, z = 4.0f32))
+  )
   assertTrue(nearMat4(m.mul(unwrapMat4(m.inverse())), Mat4.identity()), "m * inverse is identity")
   val singular = Mat4.scaling(Vec3(x = 1.0f32, y = 0.0f32, z = 1.0f32))
-  val none = match singular.inverse() {
-    case Some(_) -> false
-    case None -> true
-  }
+  val none = match singular.inverse() { case Some(_) -> false; case None -> true }
   assertTrue(none, "singular matrix has no inverse")
   assertTrue(nearMat4(m.transpose().transpose(), m), "double transpose")
 }
@@ -132,15 +131,27 @@ test "projection matrices map the view volume to 0..1 depth" {
   assertTrue(near(nearP.z / nearP.w, 0.0f32), "near plane maps to depth 0")
   assertTrue(near(farP.z / farP.w, 1.0f32), "far plane maps to depth 1")
   val ortho = Mat4.orthographic(-2.0f32, 2.0f32, -1.0f32, 1.0f32, 0.0f32, 10.0f32)
-  assertTrue(nearVec3(ortho.transformPoint(Vec3(x = 2.0f32, y = 1.0f32, z = -10.0f32)), Vec3(x = 1.0f32, y = 1.0f32, z = 1.0f32)), "orthographic corner")
-  assertTrue(nearVec3(ortho.transformPoint(Vec3(x = -2.0f32, y = -1.0f32, z = 0.0f32)), Vec3(x = -1.0f32, y = -1.0f32, z = 0.0f32)), "orthographic opposite corner")
+  assertTrue(
+    nearVec3(ortho.transformPoint(Vec3(x = 2.0f32, y = 1.0f32, z = -10.0f32)), Vec3(x = 1.0f32, y = 1.0f32, z = 1.0f32)),
+    "orthographic corner"
+  )
+  assertTrue(
+    nearVec3(
+      ortho.transformPoint(Vec3(x = -2.0f32, y = -1.0f32, z = 0.0f32)),
+      Vec3(x = -1.0f32, y = -1.0f32, z = 0.0f32)
+    ),
+    "orthographic opposite corner"
+  )
 }
 
 test "lookAt puts the eye at the origin looking down -Z" {
   val eye = Vec3(x = 0.0f32, y = 0.0f32, z = 5.0f32)
   val view = Mat4.lookAt(eye, Vec3.zero(), Vec3(x = 0.0f32, y = 1.0f32, z = 0.0f32))
   assertTrue(nearVec3(view.transformPoint(eye), Vec3.zero()), "eye maps to origin")
-  assertTrue(nearVec3(view.transformPoint(Vec3.zero()), Vec3(x = 0.0f32, y = 0.0f32, z = -5.0f32)), "target is 5 units ahead")
+  assertTrue(
+    nearVec3(view.transformPoint(Vec3.zero()), Vec3(x = 0.0f32, y = 0.0f32, z = -5.0f32)),
+    "target is 5 units ahead"
+  )
 }
 
 test "Mat3 2D transforms, determinant and inverse" {
@@ -151,10 +162,7 @@ test "Mat3 2D transforms, determinant and inverse" {
   assertTrue(near(turned.x, 0.0f32) and near(turned.y, 1.0f32), "rotate")
   val s = Mat3.scaling2d(2.0f32, 4.0f32)
   assertTrue(near(s.determinant(), 8.0f32), "determinant")
-  val inv = match s.inverse() {
-    case Some(i) -> i
-    case None -> Mat3.identity()
-  }
+  val inv = match s.inverse() { case Some(i) -> i; case None -> Mat3.identity() }
   val roundTrip = inv.mul(s).transform(p)
   assertTrue(near(roundTrip.x, 1.0f32) and near(roundTrip.y, 0.0f32), "inverse undoes scaling")
   assertTrue(near(s.transpose().get(0, 0), 2.0f32), "transpose diagonal")
