@@ -67,12 +67,14 @@ for _ in \$(seq 1 150); do
   sleep 0.1
 done
 sleep 1
+# No window manager runs here, so SDL centres the window; positions are given relative to it.
+win=\$(xdotool search --onlyvisible --pid \$pid | head -1)
 xwd -root -silent | convert xwd:- -depth 8 rgb:"$work/list.rgb"
 # A real click on the first customer's link, then real typing into the name field.
-xdotool mousemove 60 120 click 1
+xdotool mousemove --window \$win 60 120 click 1
 sleep 1.5
 xwd -root -silent | convert xwd:- -depth 8 rgb:"$work/edit.rgb"
-xdotool mousemove 300 180 click 1
+xdotool mousemove --window \$win 300 180 click 1
 sleep 0.3
 xdotool key ctrl+a
 xdotool type --delay 40 "Typed Live"
