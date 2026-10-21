@@ -976,7 +976,8 @@ func addMavenDeclarations(
 // `dir` with `.` and `..` segments resolved, so one dependency reached along
 // two relative routes (`../lyric-web`, `lyric-ws/../lyric-web`) is visited
 // once and a dependency cycle ends.
-func canonicalDir(dir: in String): String {
+func canonicalDir(rawDir: in String): String {
+  val dir = Str.replace(rawDir, "\\", "/")
   val parts: List[String] = newList()
   for seg in Str.split(dir, "/") {
     if seg == ".." {

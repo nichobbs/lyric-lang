@@ -918,7 +918,10 @@ func cmdTest(argv: in slice[String]): Int {
         // Fallback for environments without a discoverable compiled stdlib
         // (e.g. an isolated temp checkout): recover the DLLs the in-process
         // bridge just wrote to its per-PID `/tmp/lyric-stdlib-*` cache.
-        val tmpRoot = Environment.getVarOrDefault("TMPDIR", "/tmp")
+        val tmpRoot = Environment.getVarOrDefault(
+          "TMPDIR",
+          Environment.getVarOrDefault("TEMP", Environment.getVarOrDefault("TMP", "/tmp"))
+        )
         match File.listDirs(tmpRoot) {
           case Err(_) -> ()
           case Ok(tmpDirs) -> {

@@ -1,0 +1,192 @@
+name: Windows build
+
+# Builds the win-x64 standalone `lyric` archive without ever running a Lyric
+# seed on Windows.  The self-hosted stage-2 compiler DLLs are managed IL
+# (RID-independent), so they are produced once on Linux (`managed` job, where
+# `bootstrap.sh --stage 3` seeds from the published linux-x64 release) and the
+# Windows runner only NativeAOT-links them (`windows` job).  No release has
+# ever shipped a win-x64 seed binary, so a Windows-side bootstrap has nothing
+# to download -- see docs/34-distribution-strategy.md.
+#
+# Three entry points share these jobs:
+#   * workflow_call     -- publish.yml's `build-windows` job (release_tag set:
+#                          the archive is attached to the draft release).
+#   * workflow_dispatch -- manual dry run (no release_tag: archive is only a
+#                          workflow artifact; nothing is published).
+#   * pull_request      -- dry run when this workflow or the AOT project
+#                          changes.
+# The archive is unsigned; Authenticode signing is a follow-up once the
+# Azure Key Vault secrets exist.
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Release version (X.Y.Z) baked into the binary.
+        required: true
+        type: string
+      release_tag:
+        description: >-
+          Existing draft release tag (vX.Y.Z) to attach the archive to.
+          Empty = dry run, nothing is published.
+        required: false
+        default: ''
+        type: string
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version baked into the dry-run binary.
+        required: false
+        default: '0.0.0-dryrun'
+        type: string
+  pull_request:
+    paths:
+      - '.github/workflows/windows-build.yml'
+      - 'bootstrap/src/Lyric.Cli.Aot/**'
+
+permissions:
+  contents: write
+
+env:
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_NOLOGO: true
+  VERSION: ${{ inputs.version || '0.0.0-dryrun' }}
+
+jobs:
+  managed:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
+        with:
+          global-json-file: bootstrap/global.json
+
+      - name: Set up Java 22 (for the Maven resolver jar)
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad  # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '22'
+
+      - name: Build stage 2 (self-hosted compiler)
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/bootstrap.sh --stage 3
+
+      - name: Build Maven resolver jar
+        shell: bash
+        run: make maven-resolver
+
+      # upload-artifact skips hidden directories, so stage the DLLs (under
+      # .bootstrap/) into a plain directory first.
+      - name: Stage managed compiler closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p managed-out/lib
+          cp .bootstrap/stage2/lib/Lyric.*.dll managed-out/lib/
+          cp resolver/target/lyric-resolver.jar managed-out/
+          test -f managed-out/lib/Lyric.Stdlib.dll || { echo "::error::Lyric.Stdlib.dll missing from stage2"; exit 1; }
+          ls -l managed-out managed-out/lib
+
+      - name: Upload managed compiler closure
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: managed-stage2
+          if-no-files-found: error
+          retention-days: 7
+          path: managed-out
+
+  windows:
+    needs: [managed]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68  # v6.0.0
+        with:
+          global-json-file: bootstrap/global.json
+
+      - name: Download managed compiler closure
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: managed-stage2
+          path: managed
+
+      - name: Restore AOT project
+        shell: bash
+        working-directory: bootstrap
+        run: dotnet restore src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj --runtime win-x64
+
+      - name: Publish self-contained AOT binary
+        shell: bash
+        working-directory: bootstrap
+        run: |
+          set -euo pipefail
+          find "$GITHUB_WORKSPACE/managed" -type f | head -50
+          STAGE="$GITHUB_WORKSPACE/managed/lib"
+          test -f "$STAGE/Lyric.Stdlib.dll" || { echo "::error::Lyric.Stdlib.dll not found in managed artifact"; exit 1; }
+          dotnet publish src/Lyric.Cli.Aot/Lyric.Cli.Aot.csproj \
+            --configuration Release \
+            --runtime win-x64 \
+            --self-contained true \
+            -p:PublishSingleFile=true \
+            -p:EnableCompressionInSingleFile=true \
+            -p:Version="$VERSION" \
+            -p:StageDir="$(cygpath -m "$STAGE")" \
+            --output publish/win-x64 \
+            --no-restore
+          echo "STAGE_DIR=$STAGE" >> "$GITHUB_ENV"
+
+      - name: Stage stdlib and Maven resolver beside the binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=bootstrap/publish/win-x64
+          mkdir -p "$out/lib"
+          cp "$STAGE_DIR"/Lyric.Stdlib*.dll "$out/lib/"
+          cp managed/lyric-resolver.jar "$out/lyric-resolver.jar"
+
+      - name: Smoke test the published binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          lyric="$PWD/bootstrap/publish/win-x64/lyric.exe"
+          test -f "$lyric" || { echo "::error::lyric.exe was not produced"; exit 1; }
+          reported="$("$lyric" --version | tr -d '\r')"
+          echo "lyric --version: $reported"
+          case "$reported" in
+            *"$VERSION"*) ;;
+            *) echo "::error::lyric.exe reports '$reported', expected version $VERSION"; exit 1 ;;
+          esac
+          # Compile and run a program through the installed layout
+          # (lyric.exe + lib/), from a directory outside the repo checkout.
+          work="$(mktemp -d)"
+          cp examples/fizzbuzz.l "$work/"
+          (cd "$work" && "$lyric" run fizzbuzz.l | tr -d '\r' | tee out.txt)
+          grep -qx "FizzBuzz" "$work/out.txt" || { echo "::error::fizzbuzz output missing FizzBuzz"; exit 1; }
+
+      - name: Package zip archive
+        shell: pwsh
+        run: |
+          $archive = "lyric-$env:VERSION-win-x64.zip"
+          Compress-Archive -Path "bootstrap/publish/win-x64/*" -DestinationPath $archive
+          "ARCHIVE=$archive" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Upload archive as workflow artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: lyric-win-x64
+          path: ${{ env.ARCHIVE }}
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload release asset
+        if: inputs.release_tag != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: gh release upload "$RELEASE_TAG" "$ARCHIVE" --repo "${{ github.repository }}" --clobber
