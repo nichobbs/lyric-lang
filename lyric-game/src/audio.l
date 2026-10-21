@@ -143,6 +143,37 @@ func pow2(e: Int): Double {
   r
 }
 
+/// A sine tone of `hertz` lasting `seconds`, fading out linearly, at `volume` (0 to 1): a synthesized
+/// effect for games that ship no sound files.
+pub func tone(hertz: in Float, seconds: in Float, frequency: in Int, volume: in Float): Sound
+  requires: hertz > 0.0f32 and seconds > 0.0f32 and frequency > 0
+{
+  val frames = (seconds * frequency.toFloat()).toInt()
+  var samples = Buf.filled(frames, 0.0f32)
+  var i = 0
+  while i < frames {
+    val t = i.toFloat() / frequency.toFloat()
+    val fade = 1.0f32 - i.toFloat() / frames.toFloat()
+    samples[i] = sine(6.2831855f32 * hertz * t) * volume * fade
+    i = i + 1
+  }
+  Sound(frequency = frequency, channels = 1, samples = samples)
+}
+
+// A sine from a range-reduced Taylor series: no host maths library, so the same samples on every target.
+func sine(x: Float): Float {
+  var a = x
+  val twoPi = 6.2831855f32
+  while a > 3.1415927f32 {
+    a = a - twoPi
+  }
+  while a < -3.1415927f32 {
+    a = a + twoPi
+  }
+  val a2 = a * a
+  a * (1.0f32 - a2 / 6.0f32 * (1.0f32 - a2 / 20.0f32 * (1.0f32 - a2 / 42.0f32 * (1.0f32 - a2 / 72.0f32 * (1.0f32 - a2 / 110.0f32)))))
+}
+
 /// One playing sound.
 pub record Voice {
   id: Int

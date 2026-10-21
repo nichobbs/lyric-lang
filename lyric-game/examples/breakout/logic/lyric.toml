@@ -1,0 +1,18 @@
+# Breakout - the rules of the lyric-game sample (docs/67 G7): pure, so it tests on every target.
+[package]
+name    = "Lyric.Breakout"
+version = "0.1.0"
+
+[project]
+name            = "Lyric.Breakout"
+output          = "single"
+output_assembly = "Lyric.Breakout.dll"
+
+[project.packages]
+"Breakout" = "src/breakout.l"
+
+[project.tests]
+"Breakout.Tests" = "tests/breakout_tests.l"
+
+[dependencies]
+"Lyric.Game" = { path = "../../.." }

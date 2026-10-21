@@ -11,9 +11,19 @@ pub record Rng {
   var state: Long
 }
 
-/// A generator seeded with `seed`.  Every seed, zero included, gives a distinct sequence.
+/// A generator seeded with `seed`.  Distinct seeds give distinct sequences (sixteen draws are discarded so that nearby seeds diverge).
 pub func seeded(seed: in Long): Rng {
-  Rng(state = seed.xor(0x2545F4914F6CDD1Di64).or(1i64))
+  var state = seed.xor(0x2545F4914F6CDD1Di64)
+  if state == 0i64 {
+    state = 0x2545F4914F6CDD1Di64
+  }
+  val r = Rng(state = state)
+  var i = 0
+  while i < 16 {
+    val _ = nextInt(r)
+    i = i + 1
+  }
+  r
 }
 
 /// The next 32 random bits as a non-negative `Int`.
