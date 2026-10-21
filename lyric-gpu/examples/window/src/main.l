@@ -62,7 +62,10 @@ func drawTo(
   val draws: List[Gpu.Draw] = newList()
   draws.add(Gpu.Draw(pipeline = pipeline, bindGroup = None, vertexBuffers = noBuffers, vertexCount = 3))
   match Gpu.render(d, target, 0.0, 0.0, 1.0, 1.0, draws) {
-    case Err(message) -> Err(error = message)
+    case Err(message) -> {
+      Gpu.discardFrame(target)
+      Err(error = message)
+    }
     case Ok(_) -> Gpu.presentFrame(surface, target)
   }
 }

@@ -1059,7 +1059,7 @@ pub func configureSurface(d: Device, s: Surface, width: Int, height: Int): Resul
     alphaModes = nativeNullPtr()
   )
   val status = wgpuSurfaceGetCapabilities(longToPtr(s.raw), longToPtr(d.adapter), nativeAddrOf(caps))
-  if status != 1 {
+  if status != WGPUStatus_Success {
     return Err(error = "the surface reports no capabilities for this adapter")
   }
   if caps.formatCount == 0 {
@@ -1123,13 +1123,20 @@ pub func acquireFrame(d: Device, s: Surface): Result[RenderTarget, String] {
   )
 }
 
-/// Shows the frame on the window and releases it.
+/// Shows the frame on the window and releases it; use `discardFrame` instead when drawing failed.
 @unsafe_ffi
 pub func presentFrame(s: Surface, frame: RenderTarget): Result[Unit, String] {
   val status = wgpuSurfacePresent(longToPtr(s.raw))
   wgpuTextureViewRelease(longToPtr(frame.view))
   wgpuTextureRelease(longToPtr(frame.texture))
-  if status == 1 then Ok(value = ()) else Err(error = "presenting the frame failed (status " + status.toString() + ")")
+  if status == WGPUStatus_Success then Ok(value = ()) else Err(error = "presenting the frame failed (status " + status.toString() + ")")
+}
+
+/// Releases a frame from `acquireFrame` without showing it, for when drawing into it failed.
+@unsafe_ffi
+pub func discardFrame(frame: RenderTarget): Unit {
+  wgpuTextureViewRelease(longToPtr(frame.view))
+  wgpuTextureRelease(longToPtr(frame.texture))
 }
 
 @unsafe_ffi
