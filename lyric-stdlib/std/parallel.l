@@ -13,6 +13,8 @@
 //! (the same length); the results are copied back into the buffer once every body has finished.
 //! Because a body never sees the buffer itself, no two bodies can touch the same storage, and the
 //! copy-on-write rule of `buffer[T]` (D185) is never involved.
+//! The chunks are copied in and the results copied back, so `forChunks` pays off only when each
+//! body does enough work per element to outweigh that copy; use coarse chunks.
 //!
 //! A body runs on a pool thread, concurrently with the others.  It may read what it captured
 //! (captured values are immutable or copy-on-write) and must not mutate shared reference-typed
