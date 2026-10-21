@@ -17,7 +17,9 @@
 //! A body runs on a pool thread, concurrently with the others.  It may read what it captured
 //! (captured values are immutable or copy-on-write) and must not mutate shared reference-typed
 //! state such as a `List` or `Map` held outside; share mutable state through a `protected type`.
-//! A panic in a body ends the process on native, as everywhere there.
+//! A panic in a body ends the whole process on native, where the managed targets unwind instead.
+//! The default thread count is the online processor count, which ignores container CPU quotas:
+//! set `LYRIC_THREADS` on a cgroup-limited host to avoid oversubscription.
 @runtime_checked
 @io
 package Std.Parallel
