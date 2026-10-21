@@ -753,7 +753,7 @@ pub func Mat4.inverse(a: in Mat4): Option[Mat4] {
 }
 
 // =====================================================================
-// Rgba8 - an 8-bit-per-channel colour, laid res as the four bytes a
+// Rgba8 - an 8-bit-per-channel colour, laid out as the four bytes a
 // texture upload expects.
 // =====================================================================
 pub record Rgba8 {
