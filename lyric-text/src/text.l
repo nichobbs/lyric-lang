@@ -10,7 +10,7 @@
 //! font's own tables.  Layout is a greedy line breaker over simplified break opportunities
 //! (after a space or hyphen, and between ideographs, kana and Hangul syllables).  A paragraph has
 //! one base direction, taken from its first strong character; right-to-left paragraphs lay their
-//! words placed right to left.  Text that mixes directions inside one paragraph is not reordered
+//! words out right to left.  Text that mixes directions inside one paragraph is not reordered
 //! (bidirectional text through FriBidi is tracked in #8410).
 //!
 //! Glyphs rasterise to 8-bit coverage bitmaps and pack into a CPU-side `Atlas` that a renderer
@@ -80,7 +80,7 @@ pub record PlacedGlyph {
   line: Int
 }
 
-/// A laid-placed block of text.
+/// A laid-out block of text.
 pub record TextLayout {
   glyphs: List[PlacedGlyph]
   lineCount: Int
@@ -451,35 +451,31 @@ pub func atlasGlyph(a: Atlas, f: Font, glyph: Int): Result[AtlasRegion, String] 
   if bmp.width > a.width or bmp.height > a.height {
     return Err(error = "atlas: glyph " + glyph.toString() + " is larger than the atlas")
   }
-  if a.penX + bmp.width > a.width {
-    a.penX = 0
-    a.penY = a.penY + a.rowHeight + 1
-    a.rowHeight = 0
+  // Decide the shelf before touching the atlas, so a glyph that does not fit leaves it as it was.
+  var px = a.penX
+  var py = a.penY
+  var rowH = a.rowHeight
+  if px + bmp.width > a.width {
+    px = 0
+    py = py + rowH + 1
+    rowH = 0
   }
-  if a.penY + bmp.height > a.height {
-    return Err(error = "atlas: placed of room for glyph " + glyph.toString())
+  if py + bmp.height > a.height {
+    return Err(error = "atlas: out of room for glyph " + glyph.toString())
   }
   var row = 0
   while row < bmp.height {
     var col = 0
     while col < bmp.width {
-      a.pixels[(a.penY + row) * a.width + a.penX + col] = bmp.pixels[row * bmp.width + col]
+      a.pixels[(py + row) * a.width + px + col] = bmp.pixels[row * bmp.width + col]
       col = col + 1
     }
     row = row + 1
   }
-  val region = AtlasRegion(
-    x = a.penX,
-    y = a.penY,
-    width = bmp.width,
-    height = bmp.height,
-    left = bmp.left,
-    top = bmp.top
-  )
-  a.penX = a.penX + bmp.width + 1
-  if bmp.height > a.rowHeight {
-    a.rowHeight = bmp.height
-  }
+  val region = AtlasRegion(x = px, y = py, width = bmp.width, height = bmp.height, left = bmp.left, top = bmp.top)
+  a.penX = px + bmp.width + 1
+  a.penY = py
+  a.rowHeight = if bmp.height > rowH { bmp.height } else { rowH }
   a.version = a.version + 1
   a.regions.add(key, region)
   Ok(value = region)
@@ -671,7 +667,7 @@ func placeLine(
   }
 }
 
-/// Lays `text` placed in a column `maxWidth` pixels wide (no wrapping when it is not positive),
+/// Lays `text` out in a column `maxWidth` pixels wide (no wrapping when it is not positive),
 /// breaking lines at spaces, hyphens and between ideographs, and at `\n`.  `fonts` is the
 /// fallback chain, its first font setting the line height.
 @unsafe_ffi
