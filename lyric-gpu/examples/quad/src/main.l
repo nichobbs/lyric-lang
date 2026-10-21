@@ -85,7 +85,7 @@ func draw(d: Gpu.Device): Result[buffer[Byte], String] {
   attributes.add(Gpu.VertexAttribute(format = Gpu.vertexFloat32x2, offset = 8, location = 1))
   val layouts: List[Gpu.VertexLayout] = newList()
   layouts.add(Gpu.VertexLayout(stride = 16, attributes = attributes))
-  val pipeline = match Gpu.createRenderPipeline(d, shader, "vs", "fs", layouts) {
+  val pipeline = match Gpu.createRenderPipeline(d, shader, "vs", "fs", layouts, Gpu.formatRgba8) {
     case Ok(p) -> p
     case Err(e) -> return Err(error = e)
   }

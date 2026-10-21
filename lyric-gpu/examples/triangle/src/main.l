@@ -41,7 +41,7 @@ func channelDiff(a: Byte, b: Byte): Int {
 
 func render(d: Gpu.Device): Result[buffer[Byte], String] {
   val target = Gpu.createRenderTarget(d, size, size)
-  val pipeline = match Gpu.createRenderPipeline(d, shader, "vs", "fs", noLayouts) {
+  val pipeline = match Gpu.createRenderPipeline(d, shader, "vs", "fs", noLayouts, Gpu.formatRgba8) {
     case Ok(p) -> p
     case Err(e) -> return Err(error = e)
   }

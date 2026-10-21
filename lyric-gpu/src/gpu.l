@@ -39,10 +39,20 @@ pub record ComputePipeline {
   raw: Long
 }
 
-/// An offscreen RGBA8 colour target of `width` by `height` pixels.
+/// A colour target of `width` by `height` pixels: an offscreen RGBA8 texture, or one frame of a
+/// surface (`acquireFrame`).
 pub record RenderTarget {
   texture: Long
   view: Long
+  width: Int
+  height: Int
+  format: Int
+}
+
+/// A window's drawable surface.  `format` and the size are set by `configureSurface`.
+pub record Surface {
+  raw: Long
+  format: Int
   width: Int
   height: Int
 }
@@ -65,6 +75,7 @@ pub record Texture {
   height: Int
 }
 
+/// How a shader reads a texture: the filter and the edge handling set by `createSampler`.
 pub record Sampler {
   raw: Long
 }
@@ -121,6 +132,10 @@ record Slot {
   var message: String
 }
 
+pub val formatRgba8: Int = 22
+
+pub val formatBgra8: Int = 27
+
 pub val vertexFloat32: Int = 28
 
 pub val vertexFloat32x2: Int = 29
@@ -158,6 +173,10 @@ extern func memcpyEntry(dst: NativePtr[Byte], src: NativePtr[WGPUBindGroupEntry]
 @library("c")
 @unsafe_ffi
 extern func memcpyBytes(dst: NativePtr[Byte], src: NativePtr[Byte], n: Long): NativePtr[Byte] = "memcpy"
+
+@library("c")
+@unsafe_ffi
+extern func memcpyIntPointerToLong(dst: NativePtr[Long], src: NativePtr[NativePtr[Int]], n: Long): NativePtr[Byte] = "memcpy"
 
 @library("c")
 @unsafe_ffi
@@ -625,7 +644,13 @@ pub func createRenderTarget(d: Device, width: Int, height: Int): RenderTarget {
   )
   val texture = wgpuDeviceCreateTexture(longToPtr(d.device), nativeAddrOf(desc))
   val view = wgpuTextureCreateView(texture, nativeNullPtr())
-  RenderTarget(texture = ptrToLong(texture), view = ptrToLong(view), width = width, height = height)
+  RenderTarget(
+    texture = ptrToLong(texture),
+    view = ptrToLong(view),
+    width = width,
+    height = height,
+    format = WGPUTextureFormat_RGBA8Unorm
+  )
 }
 
 @unsafe_ffi
@@ -635,7 +660,8 @@ pub func releaseRenderTarget(t: RenderTarget): Unit {
 }
 
 /// A pipeline from one WGSL module's vertex and fragment entry points that draws triangle
-/// lists into an RGBA8 target.  `layouts[i]` describes vertex buffer slot i; an empty list is a
+/// lists into targets of `format` (`formatRgba8` for `createRenderTarget`, `Surface.format` for
+/// a surface's frames).  `layouts[i]` describes vertex buffer slot i; an empty list is a
 /// shader that generates its positions from `@builtin(vertex_index)`.
 @unsafe_ffi
 pub func createRenderPipeline(
@@ -644,6 +670,7 @@ pub func createRenderPipeline(
   vertexEntry: String,
   fragmentEntry: String,
   layouts: List[VertexLayout],
+  format: Int,
 ): Result[RenderPipeline, String] {
   val wgsl = Ffi.toCString(source)
   val vertexName = Ffi.toCString(vertexEntry)
@@ -694,7 +721,7 @@ pub func createRenderPipeline(
   }
   var target = WGPUColorTargetState(
     nextInChain = nativeNullPtr(),
-    format = WGPUTextureFormat_RGBA8Unorm,
+    format = format,
     blend = nativeNullPtr(),
     writeMask = WGPUColorWriteMask_All
   )
@@ -812,10 +839,13 @@ pub func render(
 /// row first), ready to bind with `TextureBinding`.
 @unsafe_ffi
 pub func createTexture(d: Device, width: Int, height: Int, pixels: buffer[Byte]): Result[Texture, String] {
-  if pixels.length != width * height * 4 {
+  if width <= 0 or height <= 0 {
+    return Err(error = "a texture needs a positive size, not " + width.toString() + "x" + height.toString())
+  }
+  val needed = width.toLong() * height.toLong() * 4
+  if pixels.length.toLong() != needed {
     return Err(
-      error = "a " + width.toString() + "x" + height.toString() + " RGBA8 texture needs " +
-        (width * height * 4).toString() +
+      error = "a " + width.toString() + "x" + height.toString() + " RGBA8 texture needs " + needed.toString() +
         " bytes, not " +
         pixels.length.toString()
     )
@@ -969,4 +999,137 @@ pub func readPixels(d: Device, target: RenderTarget): Result[buffer[Byte], Strin
   wgpuBufferUnmap(longToPtr(staging.raw))
   releaseBuffer(staging)
   Ok(value = pixels)
+}
+
+@unsafe_ffi
+func finishSurface(d: Device, raw: NativePtr[Byte]): Result[Surface, String] {
+  match takeError(d) {
+    case Some(message) -> {
+      wgpuSurfaceRelease(raw)
+      Err(error = message)
+    }
+    case None -> if ptrToLong(raw) == 0 {
+      Err(error = "wgpu could not create a surface for this window")
+    } else {
+      Ok(value = Surface(raw = ptrToLong(raw), format = 0, width = 0, height = 0))
+    }
+  }
+}
+
+/// A surface for an X11 window: `display` is the `Display*` and `window` the window id, as
+/// `Window.nativeWindow` returns them.  The device's adapter must be able to present to it, which
+/// holds on a machine with one GPU or a software Vulkan device.
+@unsafe_ffi
+pub func createXlibSurface(d: Device, display: Long, window: Long): Result[Surface, String] {
+  var source = WGPUSurfaceSourceXlibWindow(
+    chain = WGPUChainedStruct(next = nativeNullPtr(), sType = WGPUSType_SurfaceSourceXlibWindow),
+    display = longToPtr(display),
+    window = window
+  )
+  val head: NativePtr[Byte] = nativeAddrOf(source)
+  var desc = WGPUSurfaceDescriptor(nextInChain = head, label = noString())
+  finishSurface(d, wgpuInstanceCreateSurface(longToPtr(d.instance), nativeAddrOf(desc)))
+}
+
+/// A surface for a Wayland window: `display` is the `wl_display*` and `surface` the `wl_surface*`.
+@unsafe_ffi
+pub func createWaylandSurface(d: Device, display: Long, surface: Long): Result[Surface, String] {
+  var source = WGPUSurfaceSourceWaylandSurface(
+    chain = WGPUChainedStruct(next = nativeNullPtr(), sType = WGPUSType_SurfaceSourceWaylandSurface),
+    display = longToPtr(display),
+    surface = longToPtr(surface)
+  )
+  val head: NativePtr[Byte] = nativeAddrOf(source)
+  var desc = WGPUSurfaceDescriptor(nextInChain = head, label = noString())
+  finishSurface(d, wgpuInstanceCreateSurface(longToPtr(d.instance), nativeAddrOf(desc)))
+}
+
+/// Sets the surface's size in pixels (call it again when the window is resized) and picks its
+/// format: RGBA8 when the surface offers it, else its first format.  Presentation is vsynced.
+@unsafe_ffi
+pub func configureSurface(d: Device, s: Surface, width: Int, height: Int): Result[Surface, String] {
+  var caps = WGPUSurfaceCapabilities(
+    nextInChain = nativeNullPtr(),
+    usages = 0,
+    formatCount = 0,
+    formats = nativeNullPtr(),
+    presentModeCount = 0,
+    presentModes = nativeNullPtr(),
+    alphaModeCount = 0,
+    alphaModes = nativeNullPtr()
+  )
+  val status = wgpuSurfaceGetCapabilities(longToPtr(s.raw), longToPtr(d.adapter), nativeAddrOf(caps))
+  if status != 1 or caps.formatCount == 0 {
+    return Err(error = "the surface reports no usable format for this adapter")
+  }
+  var formatsAddress: Long = 0
+  var formats = caps.formats
+  val _a = memcpyIntPointerToLong(nativeAddrOf(formatsAddress), nativeAddrOf(formats), 8)
+  var chosen = 0
+  var i: Long = 0
+  while i < caps.formatCount {
+    var candidate = 0
+    val _c = memcpyFromBytes(nativeAddrOf(candidate), longToPtr(formatsAddress + 4 * i), 4)
+    if i == 0 or candidate == formatRgba8 {
+      chosen = candidate
+    }
+    i = i + 1
+  }
+  wgpuSurfaceCapabilitiesFreeMembers(caps)
+  var config = WGPUSurfaceConfiguration(
+    nextInChain = nativeNullPtr(),
+    device = longToPtr(d.device),
+    format = chosen,
+    usage = WGPUTextureUsage_RenderAttachment,
+    width = width,
+    height = height,
+    viewFormatCount = 0,
+    viewFormats = nativeNullPtr(),
+    alphaMode = WGPUCompositeAlphaMode_Auto,
+    presentMode = WGPUPresentMode_Fifo
+  )
+  wgpuSurfaceConfigure(longToPtr(s.raw), nativeAddrOf(config))
+  match takeError(d) {
+    case Some(message) -> Err(error = message)
+    case None -> Ok(value = Surface(raw = s.raw, format = chosen, width = width, height = height))
+  }
+}
+
+/// The surface's next frame as a render target.  Draw into it with `render`, then `presentFrame`.
+/// An `Err` here (the window was resized, minimized or lost) means reconfigure the surface and
+/// try again next frame.
+@unsafe_ffi
+pub func acquireFrame(d: Device, s: Surface): Result[RenderTarget, String] {
+  var current = WGPUSurfaceTexture(nextInChain = nativeNullPtr(), texture = nativeNullPtr(), status = 0)
+  wgpuSurfaceGetCurrentTexture(longToPtr(s.raw), nativeAddrOf(current))
+  if current.status != WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal and current.status != WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal {
+    return Err(
+      error = "no surface frame is available (status " + current.status.toString() + "); reconfigure the surface"
+    )
+  }
+  val view = wgpuTextureCreateView(current.texture, nativeNullPtr())
+  Ok(
+    value = RenderTarget(
+      texture = ptrToLong(current.texture),
+      view = ptrToLong(view),
+      width = s.width,
+      height = s.height,
+      format = s.format
+    )
+  )
+}
+
+/// Shows the frame on the window and releases it.
+@unsafe_ffi
+pub func presentFrame(s: Surface, frame: RenderTarget): Result[Unit, String] {
+  val status = wgpuSurfacePresent(longToPtr(s.raw))
+  wgpuTextureViewRelease(longToPtr(frame.view))
+  wgpuTextureRelease(longToPtr(frame.texture))
+  if status == 1 then Ok(value = ()) else Err(error = "presenting the frame failed (status " + status.toString() + ")")
+}
+
+@unsafe_ffi
+pub func releaseSurface(s: Surface): Unit {
+  wgpuSurfaceUnconfigure(longToPtr(s.raw))
+  wgpuSurfaceRelease(longToPtr(s.raw))
 }

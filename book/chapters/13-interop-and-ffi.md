@@ -430,6 +430,8 @@ Gpu.withDevice(body)
 
 `withDevice` owns the device for the call, because wgpu keeps its error callback for the device's whole life and a native closure is freed when its scope ends. The rest of a compute pass is `createBindGroup`, `dispatch` and `readInts`. `examples/triangle` renders into an offscreen target and checks the pixels against a golden image; both examples run in CI on a software Vulkan device.
 
+A window and a GPU meet through raw handles: `Window.nativeWindow` returns the X11 or Wayland handles and `Gpu.createXlibSurface` or `Gpu.createWaylandSurface` makes a surface from them, so neither library depends on the other. `acquireFrame` hands back the surface's next texture as a `RenderTarget`, `render` draws into it, and `presentFrame` shows it; a surface's format is the window system's choice, so `createRenderPipeline` takes the target format. CI runs this on an Xvfb display, takes a screenshot, and counts the pixels.
+
 `lyric-window` does the same for SDL3 (windows, input, clipboard, timing and audio), with SDL3 found through pkg-config, because SDL publishes no prebuilt Linux library to pin. Its event type is a union in C; `Window` decodes SDL's event buffer into a Lyric `union Event`, and a C file of `_Static_assert`s compiles every offset the decoder uses against SDL's headers, so a header that moves a field breaks the build instead of the decoder:
 
 ```lyric
