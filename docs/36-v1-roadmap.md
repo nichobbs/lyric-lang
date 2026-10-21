@@ -342,10 +342,18 @@ manifest (GPG/Sigstore) remains open and unscheduled.
 
 ---
 
-### R7 — Self-hosted `--target dotnet` soundness & correctness floor  *(NEW; the real v1.0 blocker)*
+### R7 — Self-hosted `--target dotnet` soundness & correctness floor  *(CLOSED 2026-10; was the v1.0 blocker)*
 
-**Status:** OPEN.  This is the gating milestone the original §R1–R6 list missed.
-Authoritative tracking and per-gap evidence live in
+**Status (2026-10-21): CLOSED for Bands 1-5.**  The table below is the
+2026-06-03 snapshot and is retained as history: its cells saying that
+`IAsyncStateMachine` is absent, that F# DLLs are load-bearing, that no
+`PublishAot` is configured and that `TyError` is a universal unifier were all
+fixed by the milestones recorded in `docs/41` §10 and `docs/progress/`.  The F# compiler
+is deleted.  What remains toward the tag is the Tier 1 silent-miscompile tail
+and the Tier 4 release items in `docs/12-todo-plan.md`.
+
+Original framing: this is the gating milestone the original §R1–R6 list missed.
+Per-gap evidence lives in
 `docs/41-self-hosted-compiler-gap-analysis.md` §10 (re-verified 2026-06-03).
 Because the self-hosted compiler is now the default and only non-JVM path, every
 gap below ships to users at the v1.0 tag unless closed.
@@ -723,7 +731,7 @@ G1, G2, G3, G4, G5   (gate decisions — no code; answer in sequence)
      │
      ├── R6  (distribution / signing)       ← independent; can run parallel with all above
      │
-     └── R7  (self-hosted soundness/correctness floor)  ← THE remaining blocker
+     └── R7  (self-hosted soundness/correctness floor)  ← closed; see docs/12 Tier 1 for the residual tail
               R7.1 (front-end soundness) → R7.2 (backend correctness)
               R7.3 (async) ∥  →  R7.4 (features) → R7.5 (F# elimination + AOT)
 ```

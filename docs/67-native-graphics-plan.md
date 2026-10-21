@@ -88,7 +88,9 @@ hardware intrinsics or inline assembly (still rejected, §4.6).
 
 ---
 
-## 3. Current state (audited 2026-10-01, `main` at 6c8bc68)
+## 3. Baseline at the start of the work (audited 2026-10-01, `main` at 6c8bc68)
+
+_Superseded by the status header and §8: 32-bit `Float`, by-value records and unions, `array[N, T]`, `foreign record`, `@userdata` callbacks and library-carried extern kernels have all shipped (G1-G3). Kept as the baseline the phases were planned against._
 
 Each item was checked against the code, not only the plan documents.
 
@@ -559,6 +561,8 @@ XL (a quarter or more of focused work).
 | **G8** | Multi-threaded native scheduler (native/plan Phase 2) and `Parallel.forChunks` (§4.4). | G2 | Parallel buffer processing scales across cores in `lyric bench`; ThreadSanitizer clean. | L |
 | **G9** | Windows x86-64 native target (§6). | G3 | Native test suite passes on Windows CI; G4 to G7 examples run there. | XL |
 | **G10** | Native `lyric-ui` host (§5.2): layout, widgets, focus, IME, clipboard, accessibility. | G6 | `examples/ui-customers/` runs natively with no application changes; screen-reader smoke test on macOS. | XL |
+
+**Status (2026-10-21):** G0-G6 done (G4 on Linux only, no macOS CI; G5 has no Cocoa or Win32 surfaces; G6 lacks a real-hardware frame-budget run and bidi/UAX #14, #8410). G7 (#7946), G8 (#7947), G9 (#7948) and G10 (#7949) have not started. Follow-ups: #8389, #8391, #8394, #8395, #8401, #7955.
 
 **Critical path to a first native graphics program:** G0, G1, G2, G3, G4,
 G5. G8 and G9 can run in parallel once their dependencies land.

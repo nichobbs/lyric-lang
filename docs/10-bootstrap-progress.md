@@ -66,9 +66,8 @@ stage-2 startup blocker**: the old `Could not load type 'Std.Core.Option' from
 assembly 'Lyric.Stdlib.Core'` was the per-package + suffix-detection mismatch, so
 with the collapse the stage-2 self-hosted binary now **starts and runs the
 compile pipeline**.  The two-ABI `usesAritySuffix` detection is gone (stdlib is
-always the self-hosted/suffixed bundle).  The next surfaced blocker is a separate
-self-hosted **parser** miscompile (`P0040` on function bodies) — the deeper bug
-the runnability gate now exposes.  Run things against the toolchain with
+always the self-hosted/suffixed bundle).  At D111 time the next surfaced blocker was a separate
+self-hosted parser miscompile (`P0040` on function bodies); that was fixed and the stage-3 fixpoint holds (D-progress-531).  Run things against the toolchain with
 `make run-stage2 ARGS="…"` (which pins `LYRIC_STDLIB_BIN=.bootstrap/stage2/lib`);
 `make stage3` runs the reproducibility fixpoint as a non-blocking diagnostic.
 

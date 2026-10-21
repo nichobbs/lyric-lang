@@ -25,9 +25,9 @@ These estimates assume a funded team. A side-project effort with a single contri
 ### Deliverables
 
 1. **Language reference v0.1** — already in this repository at `docs/01-language-reference.md`. Iterate based on review.
-2. **Decision log** — already exists at `docs/03-decision-log.md`. Append as decisions are made.
+2. **Decision log** — `docs/decisions/` (one file per entry); `docs/03-decision-log.md` is the frozen archive.
 3. **Worked examples** — already exists at `docs/02-worked-examples.md`. Add 5-10 more covering edge cases.
-4. **Formal grammar in BNF or similar** — does not yet exist; needs writing. Target: a parseable grammar that can be implemented unambiguously.
+4. **Formal grammar in BNF or similar** — shipped as `docs/grammar.ebnf`. Target: a parseable grammar that can be implemented unambiguously.
 5. **Operational semantics for contracts** — does not yet exist. Define what `requires`/`ensures`/`invariant` *mean* in formal notation. This is the hardest single Phase 0 deliverable and the most underrated.
 6. **Resolved TBD items from the language reference** — all 12 listed in §13 of the language reference.
 7. **MSIL emission strategy document** — how Lyric's value types, opaque types, generics, async, and protected types lower to MSIL. Target: enough specificity that the Phase 1 implementer doesn't need to make new design decisions.
@@ -50,7 +50,7 @@ Iterate based on feedback. Do not start Phase 1 with unresolved fundamentals.
 
 ## Phase 1: Bootstrap compiler MVP (months 6-18)
 
-**Goal:** Smallest language subset that can compile useful programs. Implemented in F# on .NET.
+**Goal:** Smallest language subset that can compile useful programs. Implemented in F# on .NET (historical: the F# bootstrap has since been deleted and the compiler is self-hosted in Lyric).
 
 ### Language subset for Phase 1
 
@@ -86,8 +86,7 @@ was built first.  The **production pipeline today** is the self-hosted
 Lyric implementation under `lyric-compiler/lyric/` (lexer, parser,
 type checker, mode checker, contract elaborator, monomorphizer,
 weaver, derive synthesizer) and `lyric-compiler/msil/` +
-`lyric-compiler/jvm/` (backends), with the F# pipeline retained only
-as stage-0 bootstrap.
+`lyric-compiler/jvm/` (backends), The F# bootstrap has since been deleted; stage 0 is a downloaded stable self-hosted release binary (see `docs/10-bootstrap-progress.md`, "Bootstrap stages").
 
 ```
 Stage 0 (historical, F# bootstrap — compiles the self-hosted compiler):
@@ -287,7 +286,7 @@ Port piece by piece, not big-bang. Order roughly:
 7. MSIL emitter
 8. LSP/tooling
 
-The proof system is *not* ported in Phase 5. SMT solver bindings are awkward in any host; the proof system is also the most likely place to need significant changes during this period. Keep it in F# until Phase 6 or later.
+The proof system is *not* ported in Phase 5. SMT solver bindings are awkward in any host; the proof system is also the most likely place to need significant changes during this period. Historical note (superseded: the verifier was ported to Lyric in M5.3, D-progress-234, `lyric-compiler/lyric/verifier/`). Originally: keep it in F# until Phase 6 or later.
 
 ### Phase 5 milestones
 
@@ -329,22 +328,18 @@ The proof system is *not* ported in Phase 5. SMT solver bindings are awkward in 
      preservation for all constructs; width-driven multi-line expression
      rendering; `ELambda`/`EForall`/`EExists`/`EIf`/`EMatch` layouts;
      `Lyric.ManifestBridge` + `Lyric.TestSynthBridge` CLI hookup.
-   - Remaining: per-expression sub-tree CST granularity (comments inside
-     expression nodes still anchor at the enclosing statement);
-     `Lyric.Lint`, `Lyric.Verifier`, `Lyric.Doc`, `Lyric.ContractMeta`,
-     `Pack.l`; F# `Fmt.fs` sunset.
+   - Remaining: none. `Lyric.Lint`, `Lyric.Verifier`, `Lyric.Doc`, `Lyric.ContractMeta` and `Pack.l` all shipped, `Fmt.fs` and the `--legacy` flag are deleted, and the formatter is the sole loss-checked `Lyric.Fmt`.
 
 ### Exit criteria
 
-- `lyric build` builds itself (`lyric build --self-host`)
-- All tests pass
-- Performance within 50% of the F# bootstrap
+- Stage-3 output is byte-identical to stage-2 (D-progress-531). **Met.**
+- All self-tests pass in CI. **Met.**
+- (The original "within 50% of the F# bootstrap" criterion is moot: the F# bootstrap no longer exists.)
 
 ### Phase 5 production readiness
 
 Phase R parity (shipped in D-progress-241) covers a 20-program
-smoke-test subset across `--target dotnet-legacy`, `--target dotnet`,
-and `--target jvm`. **Full production-grade self-hosting** — every
+smoke-test subset (a historical suite; `--target dotnet-legacy` and the F# emitter it compared against are gone). **Full production-grade self-hosting** — every
 M1.4 program compiling identically through the self-hosted pipeline
 on both targets — still requires the seven remediation bands in
 [`docs/41-self-hosted-compiler-gap-analysis.md`](41-self-hosted-compiler-gap-analysis.md)
@@ -355,6 +350,8 @@ Phase 1–5 milestones above; it lives in the gap-analysis bands and
 should be tracked there until cleared.
 
 ## Phase 6 and beyond: ecosystem
+
+**Status (2026-10-21).** Beyond the JVM emitter and library cohort below, Phase 6 has delivered: the native (LLVM) backend (`native/plan/`, phases N0-N9, D-N-001 onward); the wasm32 module and component targets with `[wasm]`/`[npm]` (`docs/35`, W0-W5); the native graphics stack (`docs/67`: `lyric-window`, `lyric-gpu`, `lyric-text`, `lyric-draw`, `Std.Linalg`; G7-G10 not started); `lyric-ui` (`docs/65`, U1-U5); and the 26-library ecosystem. Open work is tracked in `docs/12-todo-plan.md`.
 
 Open-ended. Successful languages spend most of their lifetime here.
 
@@ -385,10 +382,7 @@ Open-ended. Successful languages spend most of their lifetime here.
 
 - **JVM emitter** — self-hosted Lyric emitter in `lyric-compiler/jvm/`
   (`classfile.l`, `bytecode.l`, `lowering.l`, `driver.l`, …);
-  `--target jvm` is wired in the CLI via the existing `Lyric.Jvm.Hosts`
-  F# host shim (D-progress-124 / D-progress-125, PR #183–#186) —
-  a transitional shim on the deletion schedule listed in
-  `docs/23-fsharp-shim-elimination.md`; no new F# code is added here.
+  `--target jvm` is dispatched by the self-hosted CLI through `Jvm.Bridge`; the F# `Lyric.Jvm.Hosts` shim has been deleted.
   The JVM kernel (`lyric-compiler/jvm/_kernel/kernel.l`) provides
   the trusted host boundary.
   The JVM emitter strategy is documented in `docs/18-jvm-emission.md`.

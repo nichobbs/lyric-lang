@@ -1,244 +1,210 @@
 # 12 — Open work
 
-Everything in Bands A–D and Tiers 1–5 of the previous version of this file
-has shipped.  What remains is tracked here.
-
 The phased plan in `docs/05-implementation-plan.md` is the strategic view.
-**This file is the single source of truth for outstanding work.**
-`docs/36-v1-roadmap.md` (§R1–R6 all complete) is superseded for tracking
-purposes and retained as a historical reference only.  Technical per-gap
-evidence lives in `docs/41-self-hosted-compiler-gap-analysis.md`.
+**This file is the single source of truth for outstanding work.**  It was
+rewritten on 2026-10-21 after an audit of every planning doc against the
+progress log (`docs/progress/`, 313 entries), the decision log
+(`docs/decisions/`, D001-D200) and the issue tracker (379 open issues, most
+carrying a `group:*` label).  The previous version was stamped 2026-06-12 and
+had drifted four months.
 
-_Last verified against source: **2026-06-12**._
+Related status docs, each now carrying its own current-status header:
+`docs/36-v1-roadmap.md` (v1.0 gates), `docs/41-self-hosted-compiler-gap-analysis.md`
+(dotnet audit, historical), `docs/44-jvm-production-readiness-plan.md` (JVM),
+`docs/57-stdlib-ecosystem-library-review.md`, `docs/59-compiler-stdlib-deep-review.md`,
+`docs/67-native-graphics-plan.md`, `docs/68-structured-tasks-sketch.md`.
 
----
-
-## Tier 0 — self-hosted `--target dotnet` soundness & correctness floor (v1.0 blocker)
-
-This is the top of the queue and the real remaining v1.0 work.  In priority
-order:
-
-1. **Front-end soundness (CRITICAL).** **Shipped:** gatekeeper flip done — single-file
-   `lyric build` now aborts on type errors, matching the project path (C1,
-   D-progress-438); match exhaustiveness for unions/enums/`Bool`/unbounded scalars
-   (T0016, #1483 split 1); `EPropagate` (`?`) unwrap typing (#1483 split 2a);
-   `EIndex` element typing (D-progress-407); `EIf`-branch unified typing
-   (D-progress-414); `EMatch`-branch unified typing with per-arm pattern variable
-   binding (D-progress-419); generic union-constructor typing (D-progress-418);
-   generic return-type instantiation (D-progress-424); argument-type overload
-   resolution (D-progress-421); `EBlock`/`EUnsafe`/`EResult` typing
-   (D-progress-408); visibility enforcement (H14, #1484); opaque
-   representation-hiding (C10, #1485); §5.2 parameter-mode pass for all packages
-   (C13-front-end, #1487); impl-conformance start — missing-abstract-method and
-   arity-mismatch errors, interface subtyping at argument positions (C11 PARTIAL,
-   #1486); remaining `TyError` expression forms — `ELambda`, `ETypeApp`,
-   `EForall`/`EExists`, `EAssign`, tuple-destructure sub-bindings, record-ctor
-   argument checking (C2, #2939); full impl-conformance signature type matching
-   (C11, #1486, #2939); `where T: Marker` bound satisfaction at call sites (H15,
-   #2939); `alias X = Long` as a usable type (H16, #2939); numeric widening —
-   `Int`/`Long` and `Float`/`Double` in arithmetic, comparisons, and argument
-   positions (M6, #2939); default interface method (DIM) bodies lowered as
-   concrete .NET DIM MethodDefs in the self-hosted MSIL emitter (C11 DONE,
-   `lowerMInterface` + `lowerImplMethodMsil`). **Remaining:** none — Band 1 is
-   complete.
-2. **Backend correctness (CRITICAL). Shipped:** `?` (C3, #1475); `==`/`Map`-key
-   structural equality (H1, #1480/#1837); `defer` (C7, #1477); all of #1481;
-   try/catch-as-value-expression IL (#1823); capturing closures (H20, #1479
-   v1+v2 — immutable by value into `object[]`, `var` by heap-cell reference,
-   single-level incl. escaping); function-value invocation for zero-arg lambdas
-   (#1877) and annotated/HOF-propagated param-using lambdas (#1939); M7 closed
-   (loop invariants lowered by the elaborator; `SItem` never produced by the
-   parser). **Remaining:** multi-level nested closure capture (nested lambda
-   captures enclosing lambda's locals, #1479); lambdas in `@test_module` bodies
-   (#1854, LOW). **Anything not yet correctly lowered must hard-error, never
-   silently pass through.**
-3. **Async tail (CRITICAL): SHIPPED.** All five phases of Epic #2070 complete
-   (extern async unwrapping, `IAsyncStateMachine` synthesis with multi-await,
-   promoted locals and stack-spill, `ESpawn`, lazy `IAsyncEnumerable[T]` generator
-   synthesis — C4 and C5 resolved, #2965).  `await`-in-`try` IL validity enforced
-   via V0012 diagnostic (#2965); dynamic `maxStack` computed in `ee501fd` (#3085).
-   Open correctness bugs tracked separately (not v1.0 blocking): #2725 (further
-   await-in-try edge cases), #2469 (JVM generator parity).
-4. **Feature completion (HIGH): SHIPPED.** All Band 4 items resolved: C8
-   (cross-package generic records/unions #1496, #3079; in-bundle #2362), C12
-   (protected-type `Monitor.Enter`/`Exit` #1499, #3120), H2 (`@projectable` twins
-   #1500, #3015/#3044), H3 (range-subtype validation #1501, #3112), H4 (wire
-   `@provided`/`WMBind` + topo sort #1502, #3050), H5 (named/default args #1503,
-   #3050), H6 (user cross-package generic-fn mono #1498, #2966), H10 (custom
-   `@generate` wiring #1505, #2966), H11 (`old()`/`forall`/`exists` lowering
-   #1506, #2966), M3 (`config{}` lowering #1508, #2966), M4 (`@derive(Ord)`/
-   union/enum derives #1507, #3120).
-5. **F# elimination + AOT (HIGH): SHIPPED.** All ecosystem host shims deleted
-   (#3053: Jvm.Hosts, Jobs.Host, Mq.Host, Web.Host; #3016: Session.Host,
-   ProcessCapture, StubCounterHost; #3034/#3062: HttpClientHost `.cctor` #1576
-   fixed, `Lyric.Emitter.dll` + `FSharp.Core.dll` removed from stage-1 bundle).
-   AOT publishing wired and CI smoke test running (#3197/#3201/#3206). Stage-1
-   determinism CI-enforced — 103/103 DLLs byte-identical (#3217). (docs/41 H12,
-   H13 complete.)
+_Last verified against source and tracker: **2026-10-21**._
 
 ---
 
-## Band F — post-review follow-ups (resolved in D-progress-261)
+## What has shipped (do not re-plan)
 
-All tractable items below have shipped.  None were blocking v1.0.
-
-### F1. B128 self-test `/tmp` path is non-portable
-
-`bootstrap/tests/Lyric.Emitter.Tests/JvmLoweringB128Test.fs:55` and
-`lyric-compiler/jvm/self_test_b128.l:216,241` hardcode
-`/tmp/lyric-jvm-b128/parse.jar`.  Fails on Windows CI runners and may
-collide across parallel test runs.
-
-**Fix:** Use `Path.GetTempPath()` + a per-test unique subdirectory on the
-F# side; update the Lyric self-test to accept the path as a parameter.
-
-### F2. `in List[T]` parameter mutation — spec clarification needed
-
-`appendDiags(target: in List[LintDiag], ...)` in `lint.l` declares
-`target` as `in` but calls `target.add(...)` which mutates the list content.
-The spec does not clarify whether `in` means "reference-immutable" or
-"content-immutable".  The self-hosted compiler uses reference-immutable
-throughout.
-
-**Fix:** Add a paragraph to `docs/01-language-reference.md` §4 (modes)
-clarifying that `in` prohibits rebinding the parameter but does not prevent
-mutation through a mutable container type.  Update the mode checker's V0001
-diagnostic message to match.
-
-### F3. `@externTarget` static-vs-instance naming convention — document in spec
-
-`isStaticExternByName` in `lyric-compiler/jvm/codegen.l:1592-1602` detects
-static vs instance calls by checking whether the Lyric function name starts
-with a PascalCase prefix before `_`.  A hand-written extern that doesn't
-follow this convention will be silently miscompiled.
-
-**Fix:** Document the naming convention in `docs/01-language-reference.md`
-§11.3 alongside `@externTarget`.  Long-term fix is an explicit `kind`
-parameter on `@externTarget(...)`.
-
-### F4. Lint bridge protocol breaks on multi-line diagnostic messages
-
-`lyric-compiler/lyric/lint_bridge.l:29-30` serialises one diagnostic per
-line using `'|'` fields and `'\n'` as the row separator.
-`SelfHostedLint.fs:107-118` splits on `'\n'` and drops any line where
-`parts.Length < 5`.  A lint rule emitting a `'\n'` in its message will have
-the spillover line silently discarded.
-
-**Fix:** Escape `'\n'` inside the message field as `\\n` before serialising
-(option b); deserialise accordingly in the F# bridge.
-
-### F5. Scratch directories under `Path.GetTempPath()` are never cleaned up
-
-`SelfHostedDoc.fs`, `SelfHostedLint.fs`, `SelfHostedFmt.fs`,
-`SelfHostedPack.fs`, `SelfHostedManifest.fs`, and `SelfHostedTestSynth.fs`
-each create a `lyric-<feature>-bridge-<pid>` directory but never delete it.
-For a long-lived process (e.g., the LSP server) this accumulates stale
-directories across restarts.
-
-Note: `SelfHostedCli.fs` already registers a `ProcessExit` handler for its
-scratch directory — the pattern just needs to be applied to the other bridges.
-
-**Fix:** Register a `System.AppDomain.CurrentDomain.ProcessExit` handler in
-each bridge to delete its scratch directory on normal exit.
-
-### F6. Pack XML generation — unit test coverage gap
-
-`PackTests.fs` round-trips raw TOML through `SelfHostedPack`, giving
-integration coverage but making it hard to isolate XML-generation bugs.
-`Lyric.Doc` bridge has no F#-side unit test.
-
-**Fix:** (a) Add a `pack_self_test.l` or direct-call test that exercises
-`publishCsproj` with a known `Manifest` value and asserts specific XML
-fragments.  (b) Add a `DocTests.fs` stub covering two or three fixture
-inputs against known Markdown output.
-
-### F7. GitHub Actions pinned by tag, not commit SHA (supply-chain hygiene)
-
-`.github/workflows/publish.yml` uses floating tags for third-party actions:
-`actions/checkout@v4`, `actions/setup-dotnet@v4`, `softprops/action-gh-release@v2`.
-The publish workflow has `id-token: write` and access to signing secrets; a
-tag hijack could exfiltrate them.
-
-**Fix:** Pin each action to its commit SHA with the human-readable tag in a
-comment.  Consider adding Dependabot or Renovate to automate SHA updates.
-
-### F8. `lowerExternTargetBody` catches only `java/lang/Exception`, not `Error`
-
-`lyric-compiler/jvm/codegen.l` emits catch blocks targeting
-`java/lang/Exception`.  JVM `Error` subclasses (`OutOfMemoryError`,
-`StackOverflowError`, `AssertionError`) are not subtypes of `Exception` and
-will not be caught.
-
-**Fix (v1.x):** Accept an optional exception-class parameter in
-`@externTarget(...)` so callers can widen to `java/lang/Throwable` when
-needed.  Track as a known limitation in `docs/18-jvm-emission.md`.
-
-### F9. `findExternTarget` double-walks the annotation list
-
-`lyric-compiler/jvm/codegen.l:1487-1510` walks `decl.annotations` twice:
-once to find `@externTarget` and once to check `@noJvmBridge`.  Minor
-optimisation opportunity; non-blocking.
-
-**Fix:** Merge into a single pass or cache the result on `FunctionDecl` at
-parse time.
-
-### F10. Hand-rolled `joinStrs` / `typeArgsStr` helpers — stdlib enhancement
-
-`doc.l` and `lint.l` each define local list-to-string join helpers.
-
-**Fix:** Add `join(xs: in List[String], sep: in String): String` to
-`lyric-stdlib/std/string.l` (kernel: `String.Join` BCL extern) and update
-`doc.l`, `lint.l`, and any other callers.  Mark `@stable(since="1.0")`.
-
-### F11. Test coverage gaps — Q021-4 Path 1.5 and Q022-1 pubUseDecls
-
-Two code paths added in PR #291 have no dedicated regression tests:
-- `satisfiesViaImportedDistinct` / Path 1.5 in `Codegen.fs:689-693`
-- `pubUseDecls` in `ContractMeta.fs:432-456`
-
-**Fix:** Add one test each in `Lyric.Emitter.Tests` or `Lyric.Cli.Tests`
-exercising these paths end-to-end.
-
----
-
-## Tier 6 — deferred, low priority
-
-These items don't block v1.0 and will be pulled in as real programs
-surface the need.
-
-- **Regex RE2** (`Std.Regex`) — deferred until a Lyric program is exposed
-  to attacker-controlled regex input that forces an upgrade off the BCL ECMA
-  backtracker.
-- **FFI score-based matching + special shapes** (C4 phases 2/3) — strict
-  auto-FFI is shipped; score-based coercion, by-ref structs, `Span<T>`,
-  `params T[]`, and extension methods land on demand.
-- **CST type-expression multi-line layout** — the formatter defers
-  multi-line layout inside type expressions (comments inside type
-  annotations, multi-line generic argument lists).  Real programs haven't
-  hit this yet.
-- **`format7+`** — format arities beyond 6 wait for a varargs story or an
-  explicit program need.
-- **Async SM for generic impl methods** — `asyncSmEligible` gates on
-  `sg.Generics.IsEmpty`.  The SM wiring is mechanical once generic impl
-  methods are exercised with async; no program has needed it yet.
-- **`Std.Core.Proof` structural-induction** — `List[T]` / `Result[T,E]`
-  proof surface deferred to Phase 4 polish; gated on verifier structural-
-  induction support past the M4.2-core primitives.
-
----
-
-## Band E — long-horizon
-
-- **JVM backend completion** (Phase 6+): JVM self-hosted emitter stages B127+,
-  `LyricTestEngine` JUnit 5 adapter completion, Maven resolver polish.
-- **ISO standardisation** (Phase 6+): language specification submission.
-- **Distribution channels** (Phase 6+): AOT binary, standalone ZIP, signed
-  installers per `docs/34-distribution-strategy.md`.
+- **Self-hosted compiler soundness floor (old Tier 0).** Front-end soundness,
+  backend correctness (`?`, `==`, `defer`, closures including multi-level
+  capture), async state machines, feature completion (cross-package generics,
+  protected types, projectable twins, range subtypes, wire, config, derives)
+  and F# elimination are all done.  Single-file and project builds abort on
+  type errors on dotnet and JVM.  Stage-2/stage-3 fixpoint holds (D-progress-531).
+  No `.fs`/`.fsproj` file remains in the repository.
+- **Native (LLVM) backend.** N0-N8 and N9 (HTTP/TLS) shipped in substance:
+  ARC, records/unions, closures, generics, interfaces, protected types,
+  async/spawn/scope, FFI and callbacks, stdlib kernel twins, project
+  dependencies, `[native]` manifest table.  See `native/plan/08-work-items.md`.
+- **wasm32 and npm (docs/35, W0-W5 and the #8117/#8118 follow-ups).**  Module
+  and component shapes, `[wasm]`/`[npm]`, shim generation, component async
+  (D184).
+- **Language additions.** 32-bit `Float` on every backend, by-value records
+  and inline unions on native, `array[N, T]`, `buffer[T]` and the `Plain`
+  marker, `foreign record`, `@userdata` callbacks, unsigned arithmetic,
+  checked integer conversions, out/inout by reference (D183), generator
+  `for`, `spawn` only inside `scope` (V0034, D165), built-in `Task[T]` (D166),
+  enforced `[layers]`, custom `@generate` source generators, C bindings on
+  every target.
+- **Libraries.** `lyric-ui` U1-U5, `lyric-window`, `lyric-gpu`, `lyric-text`,
+  `lyric-draw`, `Std.Linalg`, `Std.JsonValue`, JSON-RPC/MCP stateless core,
+  `lyric bindgen`.
+- **Band F follow-ups (old F1-F11).** F2, F3, F7, F10 shipped; F4, F5, F6, F9,
+  F11 are obsolete (the F# bridges and `Codegen.fs` they referenced are gone).
+  F1 and F8 remain open (below).
 
 ---
 
 ## Triage rule
 
-When the type checker or emitter throws `failwithf` or produces invalid IL
-on a program the language reference says should work, that is a Band A bug
-regardless of where it sits in this list — it jumps the queue.
+A program the language reference says should work that produces invalid IL,
+a verifier-rejected class, a type-checker ICE, or a silently wrong result is a
+Tier 1 bug regardless of where it sits in this list.  It jumps the queue.
+Anything not yet correctly lowered must hard-error, never silently pass through.
+
+---
+
+## Tier 1 — silent miscompiles and unsoundness (fix first)
+
+Issue clusters, by `group:*` label.  Counts are open issues as of 2026-10-21.
+
+1. **Generics at codegen (`compiler-mono-codegen`, 12).**  The largest single
+   source of cross-target failures: generic call at `T = Unit` (#8236),
+   Unit-typed parameters (#8266), generic member calling a generic free
+   function with the type's own `T` (#8271, #8370), method-level generics on
+   record methods (#8241), `?` inside a restored generic function (#8337),
+   open type argument fixed only by a pattern binding (#8250), enclosing type
+   parameter as explicit type argument (#8280, #8282).
+2. **Async and inout (`async-concurrency` 8, `inout-out-params` 10).**  An async
+   function's inout write is silently lost on dotnet (#8229, #8318); aspect-woven
+   async returns garbage on dotnet (#8287); `ldloca.s` slot >= 256 corrupts
+   memory in async (#7822); async call result stored as raw `Task` (#7196);
+   captured `var` passed as inout still copies in three shapes (#8204); JVM
+   `async_sm_self_test.l` fails verification (#8294); `Std.Task.Scope` spawn
+   (#5329, verify stale); flaky native task race (#8259, #8367).
+3. **Invalid IL where a diagnostic is owed (`msil-codegen` 6).**  `+` on object
+   operands lowered as numeric add (#8344), overload chosen through default
+   arguments (#8355), `Option[Int]` parameter match panics on `None` (#8273),
+   `Self` spelling in impl (#8313), `Result == Ok(..)` literal false (#8144),
+   Unit function values `Func` vs `Action` (#7219), module-val shadowing shifts
+   MethodDef tokens (#7963).
+4. **Type-checker and mode-checker gaps (`typechecker-diagnostics` 5,
+   `compiler-frontend-resolution` 5, `contracts-invariants` 2).**
+   `List`/`Map` method arguments unchecked (#7683, with #7978, #7786, #8104,
+   #8161), writes through an `in` parameter not rejected (#8289), `?` on a
+   non-Result/Option (#8249), interface method contracts never type-checked
+   (#8331), record invariant never enforced (#7222, epic #7221), unknown
+   methods on primitives accepted (#8334).
+5. **Verifier soundness (`verifier` 7 plus an unlabelled family).**  Match arm
+   guards ignored (#8142), `sortEq` ignores datatype arguments (#8354), no
+   bounds obligation on index (#8157), no array/slice/buffer model (#8394),
+   sibling-file record fields (#8306), Float as Real (#8141), no heap model
+   (#8110).  The verifier must fail closed; these are the unsound ones.
+6. **Silent build-system behaviour (`build-system-toolchain` 10).**  JVM project
+   builds skip unreachable packages so type errors are lost (#8357),
+   `--features` ignores undeclared features (#8362), CLI ignores unknown flags
+   (#8321), `prove --target jvm/native` uses the MSIL front end (#8311),
+   `prove` and build disagree on package files (#8245).
+7. **Security-labelled issues** (#7253, #7249, #7247, #7241, #7240, #7239,
+   #7236, #7231 HPACK bomb).  Review and close or fix before any v1.0 tag.
+
+## Tier 2 — expected-type inference, lambdas, UFCS
+
+- `expected-type-inference` (7): bracket literals not adopted as `List` in
+  argument and nested positions (#8277, #8293), JVM `Int` literal to
+  `List[Long]` ClassCastException (#8278), bare `None`/`Ok`/`Err` built with
+  erased type arguments (#8303, #8346), `newMap()` as nested map value (#8274).
+- `lambdas-closures` (6): lambda default values (#8302), function-typed field
+  of a generic record (#8319), boxed lambda parameters (#8349), capture
+  analysis vs `for` shadowing (#8345), chained curried call member read (#8347),
+  assert in lambda in generic function (#8232).
+- `ufcs-method-calls` (3): async dot-named methods (#8253), enum receivers
+  (#8254), lambda reading `self` (#8291).
+
+## Tier 3 — JVM and native parity
+
+- **JVM.**  `docs/44` bands J0-J7 are shipped; what remains is the long tail
+  (`jvm-production-readiness` 12): J008 on `+` over `String` elements and
+  `slice.toList()` (#8237, #8281, #8323, #8351), `List[List[Long]]` casts
+  (#8242), wire bootstrap stackmap (#8372), inout through generic field or
+  aspect weaving (#8272, #8368), inout `Ref` megamorphism (3-5x slowdown,
+  #8371), array/buffer passed to `spawn` copied inside the task (#8391).
+  Still `NOT_IMPLEMENTED` on JVM: lyric-storage S3/Azure, lyric-mq brokers,
+  lyric-mail providers, lyric-search (docs/57 §3).  `F8`: `@externTarget`
+  catches only `java/lang/Exception`, not `Error` (accepted limitation, see
+  docs/18 Q-J009).  `F1`: `self_test_b128.l` hardcodes `/tmp/lyric-jvm-b128`.
+- **Native (`native-backend` 11).**  `N0007` family: impl method for a generic
+  target (#8300), method call on a captured `List` in a lambda (#8330),
+  one-argument `String.substring` (#8335), function-type alias and tuple `for`
+  pattern (#8348), `slice[(Int) -> Unit]` literal (#8315), `isNone(None)`
+  (#8352); closure `var` capture by value, `println` of non-scalars, `String +
+  Int`, `UInt`/`ULong` (#7891, umbrella epic #4607 is stale and should be
+  rewritten or closed); reachability keyed by bare method name (#8413); clang
+  collision with no diagnostic (#8360); `nativeAddrOf(var: Int)` (#4845).
+  Missing: 3-OS native CI matrix, ARM, Windows (docs/67 G9).
+- **Cross-target stdlib divergence.**  `Std.Time.toIsoString` (#8314), `Map.add`,
+  tuple key and `==` on `List` differ by target (#7301, #8169, #8170),
+  JVM `Std.Set` unusable (#7312), JVM `format1..4` drop args (#7367).
+
+## Tier 4 — v1.0 gates and release
+
+The dotnet soundness floor that gated v1.0 (`docs/36` §R7) is closed; what is
+left is verification and release work, tracked in `docs/36`:
+
+- Re-run the Tier 1 triage; no open silent-miscompile on `--target dotnet`.
+- Stability promotions (#367) and the `@stable(since="1.0")` surface walk.
+- State the "supported but not v1.0 SemVer-guaranteed" JVM note in
+  `docs/01` §0.1 (G1, D-progress-620; flagged not-yet-done).
+- Release items from `docs/63`: `--release` does no optimisation and does not
+  relax overflow checking (#6263), `--shape standalone` unimplemented (#6262),
+  bands B2-B7 (debug info, debugger).
+- Distribution: AOT binary and signing are shipped; ISO submission is Phase 6+.
+
+## Tier 5 — feature work, in dependency order
+
+1. **Graphics (docs/67).**  Remaining: G7 `lyric-game` (#7946), G8 multi-threaded
+   scheduler and `Parallel.forChunks` (#7947), G9 Windows (#7948), G10 native
+   `lyric-ui` host (#7949); G4 macOS CI, G5 Cocoa/Win32 surfaces and the
+   macOS `.app` bundles (#8401); `lyric-text` bidi and UAX #14 (#8410);
+   `buffer[T]` lazy copy (#8389) and the warn-on-copy lint (#8395); explicit
+   mutable-record marker (D157 follow-up, #7955).
+2. **Structured tasks (docs/68).**  `Std.Task` handle API (`waitFor`, `isDone`,
+   `cancel`, `awaitAll` over handles, `awaitAny`), the handle-escape rule (new
+   diagnostic code **V0037**; V0035 is taken by the verifier), MSIL scope-exit
+   join, native `Task[T]`; open Q-TASK-002/004/005/006/008.
+3. **Ecosystem backends (docs/57).**  lyric-storage S3/Azure, lyric-mq brokers,
+   lyric-mail SES/SendGrid (#7462), lyric-search wiring (#5067), Hangfire/
+   Quartz.NET on dotnet; missing `Lyric.Testing` mocks (Jobs, Search, Queue
+   consumer, i18n, Ws); `.new()` migration of remaining `..ctor` wrappers in
+   lyric-mq/jobs/ws/resilience kernels and `_kernel/collections_host.l`.
+4. **Tooling.**  LSP: stdlib not loaded by the type check, hover/go-to on
+   dot-named calls (#8304, #8338); formatter/parser losslessness (#2280);
+   test runner v2 (#678); native coverage (#5294); `lyric doc` roll-up index.
+5. **wasm/npm.**  Q-JS-002/007/009, NPM shims beyond plain functions,
+   transitive NPM deps, stackful lift and error-context gating (#8117, #8118).
+6. **Contracts.**  `Std.Core.Proof` structural induction (gated on verifier
+   induction support); stubbable DSL beyond `_value`/`_counter` (docs/36 G-01);
+   `@projectionBoundary` `asId` (G-10); `call.caller` aspect context.
+7. **Compiler structure (docs/59).**  Four independent type systems (H10),
+   capture-analysis extraction, match decision tree, intrinsic table, stdlib
+   API consolidation, performance band (JVM auto-FFI caching, MSIL
+   `methodBodyRvas`).
+
+## Tier 6 — deferred, low priority
+
+- **Regex RE2** (`Std.Regex`): `regex_safe.l` mitigates; full RE2 backend
+  waits for a program exposed to attacker-controlled patterns.
+- **FFI shapes:** `Span<T>`, `params T[]`, extension methods, `inout` struct
+  receivers, value-type property set, out/ref null-to-Option convention.
+- **CST type-expression multi-line layout** in the formatter (unverified).
+- **TLS/HTTP2:** native h2 (#6808), dotnet h2 send pump (#6107), native TLS
+  (#5890, #6106); epic #5874.
+- **ISO standardisation** and conformance programme (Phase 6+).
+
+---
+
+## Issue tracker hygiene (do alongside Tier 1)
+
+- Close or rewrite stale epics: #7945 (G6 done: D198-D200), #7944 (G5 done
+  except #8404, which is itself covered by D196/D197: verify), #7941 (G2 done:
+  D185-D187), #4607 (native umbrella, N2-N5 shipped), #8118 (verify remainder),
+  #8149 (value generics: verify remainder).
+- Close the ten `review-finding` doc-hygiene issues (#6982, #6999, #7066,
+  #7068, #7070, #7073-#7077) after confirming each is fixed on `main`.
+- 239 of 379 open issues carry no `group:*` label; label them so clusters
+  above stay countable.

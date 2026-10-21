@@ -1,5 +1,7 @@
 # 08 — Work Items
 
+> **Status (2026-10-21):** N0-N7 shipped in substance, N8 (async, defer, spawn, process) shipped, N9.1-N9.10 (HTTP/TLS) shipped. This file lists 48 base items (N0-N7) plus N8 and N9, not 43. Paths below naming `lyric-compiler/llvm/` are superseded by D-N-014: the backend is `lyric-compiler/lyric/llvm_*.l` (`Lyric.Llvm*`). The N9.5 "BLOCKED" heading is stale: its blockers (inout/out, native `Std.Char`, multi-package native builds) all shipped and `serveTls` is `@cfg`-gated for native. Open: 3-OS and ARM native CI (N7.1 is one Ubuntu job), HPACK encode (#6237, verify), Windows (docs/67 G9), multi-threaded scheduler (G8), generic/default/async interface methods.
+
 Ordered task list for implementing the native backend. Each item is self-contained
 enough for an agent to execute without design decisions to make. All decisions are
 resolved in `01-design-decisions.md`. Read that document before starting any item.

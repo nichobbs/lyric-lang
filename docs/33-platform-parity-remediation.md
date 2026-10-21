@@ -1,5 +1,7 @@
 # docs/33-platform-parity-remediation.md — Platform parity remediation plan
 
+_**Historical (2026-10-21): superseded by `docs/44` and the per-feature cross-target self-tests in CI.** The 20-program parity suite, `ParityTests.fs`, `SelfHostedJvm.fs`/`SelfHostedMsil.fs` and `--target dotnet-legacy` described below no longer exist; the "both emitters stub ~15 of 25 item kinds" claim is false today._
+
 _Status: R1–R6 shipped (D-progress-227–239). MSIL bridge tests (6) shipped (D-progress-240). Full parity smoke-test suite (20 programs × 3 paths = 60 tests) shipped (D-progress-241). All 60 tests passing._
 _Backing decision: D058 (see `docs/03-decision-log.md`)._
 _Note: the 60-test suite covers only a 20-program common subset; the full JVM production-readiness audit and remediation plan (closing the much larger gap beyond this subset) lives in `docs/44-jvm-production-readiness-plan.md`._

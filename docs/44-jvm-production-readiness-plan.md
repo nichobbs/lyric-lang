@@ -1,5 +1,7 @@
 # 44 — JVM Production-Readiness Remediation Plan
 
+**Current status (2026-10-21): bands J0-J6 shipped; J7 (acceptance gate) is met in practice by the per-feature cross-target CI steps.** §1-§3 below are the original audit prose and describe the 2026-05 state (closures/async/aspects as panics, `.dll` output, F# `JvmLoweringB*Test.fs` wrappers, `Manifest.fs`/`JvmHosts.fs` debt); all of that is fixed or deleted, and `codegen.l:NNNN` citations are dead because the codegen is now split into `lyric-compiler/jvm/codegen/01_types.l`..`06_items.l`. Findings B-3 (aspects, `Lyric.Weaver` is imported by `jvm/bridge.l`), B-9, M-4, M-5, M-14 and m-1 are shipped though their rows are not struck; M-16 is obsolete (F# removed). JVM generics remain erased-with-checkcast by design (Q-J001). The residual JVM tail (J008 on `+` over `String` elements, wire bootstrap stackmaps, inout through generic fields, unimplemented ecosystem backends) is tracked in `docs/12-todo-plan.md` Tier 3 and the `group:jvm-production-readiness` issues (epic #2663).
+
 **Status:** Backed by D-progress-620 (`docs/03-decision-log.md`), which
 codifies the G1 channel decision: JVM is an independently-versioned Phase-6
 target, not a v1.0 SemVer-guaranteed channel. Band ordering (J0–J7) is

@@ -1,6 +1,6 @@
 # 68. Structured tasks: a first-class `Task[T]`, scope-bound `spawn`, and bounded waits
 
-_Status: **Partly implemented.** §4's `spawn`-only-inside-`scope` rule (`V0034`) shipped in D165 and §3's `Task[T]` type (checker, mono, MSIL, JVM) in D166; the API in §5, `V0035` and the native backend remain a proposed sketch. Extends docs/01 §7.1,
+_Status: **Partly implemented.** §4's `spawn`-only-inside-`scope` rule (`V0034`) shipped in D165 and §3's `Task[T]` type (checker, mono, MSIL, JVM) in D166; the API in §5, the handle-escape rule (`V0037`; the sketch first called it `V0035`, but the verifier already owns that code), the MSIL scope-exit join and the native backend remain a proposed sketch. Extends docs/01 §7.1,
 §7.3 and §7.4 and decision D119. Open questions Q-TASK-001 to Q-TASK-008 are
 listed in §9._
 
@@ -76,7 +76,7 @@ A scope guarantees, on all targets:
 ### 4.1 Handles do not escape
 
 A `Task[T]` value is valid only inside the scope that created it. The checker
-rejects (`V0035`):
+rejects (`V0037`):
 
 - a scope block whose result type mentions `Task[...]`;
 - assigning a handle to a variable declared outside the scope;
@@ -157,7 +157,7 @@ case.
 
 1. **Checker.** Add `Task[T]` to the type universe. Type `spawn e` as
    `Task[R]` and `await t` as `R`. Add `V0034` (spawn outside a scope) and
-   `V0035` (handle escapes). Keep `asyncCallSites` (it drives the in-place
+   `V0037` (handle escapes). Keep `asyncCallSites` (it drives the in-place
    await lowering).
 2. **Mono.** Delete `spawnHandleTEMono` and the `asyncCallSites` parameter added
    in #8026. A generic over a handle now specialises over `Task[R]` through
@@ -180,7 +180,7 @@ case.
 
 - Apply in this order, each shippable alone: (1) type and API behind the
   existing rules; (2) `V0034` as a warning for one release, then an error;
-  (3) `V0035`.
+  (3) `V0037`.
 - `V0034` breaks bare `spawn` outside a scope. docs/63 set the precedent of a
   clean break instead of a deprecation window (D132), so the warning release is
   optional (Q-TASK-007).
@@ -209,7 +209,7 @@ case.
 - **Q-TASK-005: stuck tasks.** Should a scope have a cancel-then-abandon
   deadline, or always wait?
 - **Q-TASK-006: `awaitAny`.** Needed, or leave racing to a later addition.
-- **Q-TASK-007: deprecation window** for `V0034` (§8).
+- **Q-TASK-007: deprecation window** for `V0034` (§8). _Resolved in D165: shipped as an error immediately, no warning window._
 - **Q-TASK-008: generators.** An async generator is `IAsyncEnumerable[T]` and is
   not a `Task[T]`. This sketch leaves §7.2 unchanged.
 
