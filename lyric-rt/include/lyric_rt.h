@@ -483,6 +483,17 @@ int32_t lyric_thread_join(int64_t tid, void** retval);
  * the thread never ran and the caller still owns its retain. */
 int32_t lyric_thread_spawn_detached(void* (*start)(void*), void* arg);
 
+/* ── Data-parallel loops (lyric_parallel.c, docs/67 G8) ────────────────
+ * Threads a parallel loop uses: the pool's workers plus the calling thread.  The count is the
+ * processor count, or `LYRIC_THREADS` when that names a positive integer; the pool starts on the
+ * first call.  1 on wasm32-wasi. */
+int32_t lyric_parallel_threads(void);
+/* Runs `body(i, ud)` for every i in [0, count) across the pool and the caller, and returns when
+ * every call has finished.  Indices are handed out one at a time, so uneven work balances.  One
+ * loop runs at a time (another caller waits), and a body that starts a loop runs it serially, so
+ * nesting cannot deadlock.  `body` must be safe to run concurrently for distinct indices. */
+void lyric_parallel_for(int64_t count, void (*body)(int64_t, void*), void* ud);
+
 /* One process-wide lock for the short critical sections of stdlib kernels that
  * keep no module state of their own (Std.Task's flags and child lists).  Never
  * hold it across a blocking call. */

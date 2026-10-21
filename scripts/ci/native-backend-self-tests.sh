@@ -132,6 +132,7 @@ for t in \
   lyric-compiler/lyric/explicit_type_args_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_type_self_test.l \
   lyric-compiler/lyric/byte_native_self_test.l \
+  lyric-compiler/lyric/nested_nullary_pattern_native_self_test.l \
   lyric-compiler/lyric/extern_cbinding_self_test.l ; do
   echo "=== $t (--target native) ==="
   "$lyric_bin" test --target native "$t"
@@ -168,6 +169,8 @@ done
 "$lyric_bin" run --target native lyric-stdlib/tests/parse_tests.l
 # docs/67 G6: lyric-text on FreeType and HarfBuzz (shaping, rasterising, fallback, layout, a golden scene).
 LYRIC_BIN="$lyric_bin" bash scripts/ci/text-examples-e2e.sh
+# docs/67 G8: Std.Parallel and the lyric-rt worker pool (ThreadSanitizer, scaling).
+LYRIC_BIN="$lyric_bin" bash scripts/ci/parallel-e2e.sh
 # docs/67 G6: lyric-draw on lyric-gpu and lyric-text (a golden scene and a text-heavy frame on lavapipe).
 LYRIC_BIN="$lyric_bin" bash scripts/ci/draw-examples-e2e.sh
 # docs/67 G5: lyric-gpu's compute and render examples on wgpu-native over lavapipe.
@@ -177,8 +180,12 @@ LYRIC_BIN="$lyric_bin" bash scripts/ci/gpu-examples-e2e.sh
 # the window demo runs headless, the surface example on an Xvfb display with lavapipe.
 command -v cmake >/dev/null || sudo apt-get install -y -qq cmake
 sudo apt-get install -y -qq libx11-dev libxext-dev libxcursor-dev libxi-dev libxrandr-dev libxfixes-dev \
-  libxrender-dev libxtst-dev xvfb x11-apps imagemagick
+  libxrender-dev libxtst-dev xvfb x11-apps imagemagick xdotool
 sdl3_prefix="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/sdl3"
 bash scripts/ci/build-sdl3.sh --x11 "$sdl3_prefix"
 LYRIC_BIN="$lyric_bin" SDL3_PREFIX="$sdl3_prefix" bash scripts/ci/window-examples-e2e.sh
 LYRIC_BIN="$lyric_bin" SDL3_PREFIX="$sdl3_prefix" bash scripts/ci/gpu-window-e2e.sh
+# docs/67 G7: lyric-game's Breakout sample (tests, headless native replay, an X11 window under Xvfb).
+LYRIC_BIN="$lyric_bin" SDL3_PREFIX="$sdl3_prefix" bash scripts/ci/game-examples-e2e.sh
+# docs/67 G10: the native lyric-ui host on examples/ui-customers (scripted golden frames, then a live X11 window).
+LYRIC_BIN="$lyric_bin" SDL3_PREFIX="$sdl3_prefix" bash scripts/ci/ui-native-e2e.sh

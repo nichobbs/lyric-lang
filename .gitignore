@@ -111,6 +111,7 @@ book/*.html
 # lyric-rt native runtime build output
 lyric-rt/build/
 lyric-rt/build-wasm32-wasi/
+lyric-rt/build-tsan/
 
 # Ephemeral lyric build/check output
 .lyric-check/

@@ -1121,6 +1121,8 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
 - `lyric-window/` — `lyric-window` library: SDL3 windows, input events, clipboard, timing and audio for `--target native` (`Window`; `Window.Kernel.Sdl` is `lyric bindgen` output, never hand-edited). SDL3 via pkg-config; CI builds the pinned release tarball (`scripts/ci/build-sdl3.sh`) and runs the headless demo (`scripts/ci/window-examples-e2e.sh`) (D195, docs/67 G4).
 - `lyric-text/` — `lyric-text` library: font loading, HarfBuzz shaping, FreeType rasterising, a glyph atlas, fallback chains and line layout for `--target native` (`Text`; `Text.Kernel.Freetype` and `Text.Kernel.Harfbuzz` are `lyric bindgen` output, never hand-edited). FreeType and HarfBuzz via pkg-config; the `shape` example (with a golden scene) runs in CI via `scripts/ci/text-examples-e2e.sh` (D199, docs/67 G6).
 - `lyric-draw/` — `lyric-draw` library: an immediate-mode 2D renderer on `lyric-gpu` and `lyric-text` for `--target native` (`Draw`: rectangles, rounded rectangles, borders, shadows, images, clips, text). The `scene` example (golden image and a text-heavy frame budget) runs in CI on lavapipe via `scripts/ci/draw-examples-e2e.sh` (D200, docs/67 G6).
+- `lyric-game/` — `lyric-game` library: the deterministic core of 2D games (`Game.Clock` fixed timestep, `Game.Rng`, `Game.Input` frames, `Game.Replay` recordings, `Game.Inflate`/`Game.Image` PNG, `Game.Audio` WAV and mixer, `Game.Sprites`), buildable on every target, and `platform/` (`Game.Run`, native only: window, GPU and audio loop, headless `renderRecording`). The Breakout sample (`examples/breakout`) has a pure rules package tested with a checked-in recording and a native app; `scripts/ci/game-examples-e2e.sh` replays it headless and in an Xvfb window (D201, docs/67 G7).
+- `lyric-ui/native/` — the native `lyric-ui` host (D203, docs/67 G10): `Lyric.Ui.Native.Core` (`Ui.Native.Theme`/`Client`/`Layout`/`Interact`, host-free, tests on every target) and `host/` (`Ui.Native.Paint`, `Ui.Native.Run`: window loop and headless harness, `--target native`). `Ui.Native.Run.run(cfg, route)` takes the same `route` as the web and desktop hosts; `host/examples/customers` runs `examples/ui-customers` unchanged, and `scripts/ci/ui-native-e2e.sh` checks it against golden frames and in an Xvfb window.
 - `lyric-vscode/` — VS Code extension (LSP client) for the Lyric language
   server (`docs/16-lsp-vscode-plan.md`).
 - `resolver/` — Java-side Maven resolver JAR that the self-hosted
@@ -1180,7 +1182,7 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
     `llvm_stdlib_self_test.l`) also ship.
 - `lyric-rt/` — the native runtime C library (`lyric_rt.a`): ARC
   intrinsics, LyricString, NativeWeak upgrade, List/Map kernels, POSIX
-  helpers, console writes.  `make -C lyric-rt` builds it;
+  helpers, console writes, and a fork-join worker pool (`lyric_parallel.c`: `lyric_parallel_for`, `LYRIC_THREADS`) behind `Std.Parallel` (D202; `make -C lyric-rt test-tsan`, `scripts/ci/parallel-e2e.sh`).  `make -C lyric-rt` builds it;
   `make -C lyric-rt test` runs its C unit tests.  The native bridge
   resolves it via `$LYRIC_RT_PATH`, the installed `lib/` layout, or the
   dev tree (`lyric-rt/build/lyric_rt.a`).

@@ -36,6 +36,7 @@ output_assembly = "UiCustomers.dll"
 "Customers.List.Effects" = "src/list_effects.l"
 "Customers.List.View"    = "src/list_view.l"
 "Customers.Store"        = "src/store.l"
+"Customers.App"          = "src/app.l"
 "Customers"              = "src/main.l"
 
 # The docs/65 §5 layer rules, enforced at build time (D149).  The in-memory

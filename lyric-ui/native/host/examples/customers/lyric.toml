@@ -1,0 +1,42 @@
+# The customers example (examples/ui-customers) on the native lyric-ui host (docs/67 G10).
+#
+# Every package of the example is used exactly as it is, through the same `Customers.App.route`
+# the web and desktop hosts take; only the entry point differs, which is why this manifest points at
+# the example's own sources.  `customers-native` opens a window; `customers-native --check <dir>`
+# drives the app headless with scripted input and compares what it draws with the golden images
+# in <dir> (scripts/ci/ui-native-e2e.sh).
+[package]
+name    = "Lyric.Ui.Native.Examples.Customers"
+version = "0.1.0"
+
+[project]
+name = "Lyric.Ui.Native.Examples.Customers"
+
+[project.packages]
+"Customers.Domain"       = "../../../../../examples/ui-customers/src/domain.l"
+"Customers.Ports"        = "../../../../../examples/ui-customers/src/ports.l"
+"Customers.Routes"       = "../../../../../examples/ui-customers/src/routes.l"
+"Customers.Edit.Logic"   = "../../../../../examples/ui-customers/src/edit_logic.l"
+"Customers.Edit.Effects" = "../../../../../examples/ui-customers/src/edit_effects.l"
+"Customers.Edit.View"    = "../../../../../examples/ui-customers/src/edit_view.l"
+"Customers.List.Logic"   = "../../../../../examples/ui-customers/src/list_logic.l"
+"Customers.List.Effects" = "../../../../../examples/ui-customers/src/list_effects.l"
+"Customers.List.View"    = "../../../../../examples/ui-customers/src/list_view.l"
+"Customers.Store"        = "../../../../../examples/ui-customers/src/store.l"
+"Customers.App"          = "../../../../../examples/ui-customers/src/app.l"
+"Customers.Native"       = "src/main.l"
+
+[dependencies]
+"Lyric.Forms"          = { path = "../../../../../lyric-forms" }
+"Forms.Derive"         = { path = "../../../../../lyric-forms/derive" }
+"Lyric.Ui"             = { path = "../../../.." }
+"Ui.Routes"            = { path = "../../../../routes" }
+"Lyric.Ui.Native.Core" = { path = "../../.." }
+"Lyric.Ui.Native"      = { path = "../.." }
+"Lyric.Window"         = { path = "../../../../../lyric-window" }
+"Lyric.Gpu"            = { path = "../../../../../lyric-gpu" }
+"Lyric.Draw"           = { path = "../../../../../lyric-draw" }
+"Lyric.Text"           = { path = "../../../../../lyric-text" }
+"Lyric.Web"            = { path = "../../../../../lyric-web" }
+"Lyric.Ws"             = { path = "../../../../../lyric-ws" }
+"Lyric.Auth"           = { path = "../../../../../lyric-auth" }

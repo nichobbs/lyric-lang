@@ -438,6 +438,10 @@ A window and a GPU meet through raw handles: `Window.nativeWindow` returns the X
 
 `lyric-draw` sits on both: a `Painter` collects a frame of rectangles, rounded and stroked boxes, shadows, images and text, and `finish` draws it as instanced signed-distance quads in one pipeline, batched by texture and clip rectangle. It needed `lyric-gpu` to grow `instanceCount`, `scissor`, a `blend` flag and `writeTexture`, which is how a library above a binding is meant to drive the binding's growth rather than reach around it.
 
+`lyric-game` is the layer above for games. Its core is host-free (a fixed-timestep `Clock`, a deterministic `Rng`, input as an immutable `InputFrame` folded from events, text recordings of a session, PNG and WAV decoders written in Lyric), so a game's `update(state, input, dt)` is tested with plain `lyric test` and a recorded session is a regression test. `Game.Run` (native only) opens the window, surface and sound device and runs the frame loop, or plays a recording back with no window at all; the Breakout sample replays the same recording on every target and gets the same final state.
+
+For work that should use every core, `Std.Parallel.forChunks(inout b, chunkSize, body)` splits a `buffer[T]` into disjoint chunks, hands `body(start, chunk)` a private copy of each, and copies the results back when all have finished; `forRange(count, body)` is the same without a buffer, and `threadCount()` says how many threads share the work (`LYRIC_THREADS` overrides the processor count). On `--target native` the bodies run on a worker pool in `lyric-rt` and a million-element transform scales about 3x on four cores; on the managed targets the same calls run in order, so a program means the same thing everywhere. One difference: a panic inside a body ends the whole process on native, while the managed targets unwind, so do not rely on catching it around `forRange` or `forChunks`.
+
 ```lyric
 match Window.pollEvent() {
   case Some(KeyDown(window, key, scancode, modifiers, repeat)) -> handleKey(key)

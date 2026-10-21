@@ -832,9 +832,10 @@ A Skia-based renderer or native widget hosts behind the same `WidgetKind`
 vocabulary. The semantic vocabulary is what keeps this possible. Cost: text
 shaping, IME and accessibility become the library's problem.
 
-The native host is planned in `docs/67-native-graphics-plan.md` (phase G10),
-on a GPU renderer (`lyric-draw`, `webgpu.h`) and FreeType/HarfBuzz text rather
-than Skia, together with the language and FFI building blocks it needs.
+The native host is `Ui.Native.Run` (`lyric-ui/native/`, D203, `docs/67-native-graphics-plan.md`
+phase G10), on a GPU renderer (`lyric-draw`, `webgpu.h`) and FreeType/HarfBuzz text rather
+than Skia. It is the protocol's client in-process: the same `route(url)` an application gives the web or
+desktop host runs unchanged. Accessibility (AccessKit) and macOS are not done.
 
 ### 13.4 Server-side rendering for first paint
 

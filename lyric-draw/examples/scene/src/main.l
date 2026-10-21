@@ -95,7 +95,10 @@ func paint(p: Draw.Painter, title: List[Text.Font], body: List[Text.Font]): Resu
     case Ok(_) -> ()
     case Err(e) -> return Err(error = e)
   }
-  val image = match Draw.createImage(p, 16, 16, checker()) { case Ok(i) -> i; case Err(e) -> return Err(error = e) }
+  val image = match Draw.createImage(p, 16, 16, checker(), false) {
+    case Ok(i) -> i
+    case Err(e) -> return Err(error = e)
+  }
   Draw.drawImage(p, image, Draw.Rect(x = 184.0, y = 58.0, width = 48.0, height = 48.0), Draw.rgb(1.0, 1.0, 1.0))
   Draw.fillRoundedRect(p, Draw.Rect(x = 190.0, y = 118.0, width = 36.0, height = 36.0), 18.0, Draw.rgb(0.15, 0.7, 0.4))
   Draw.pushClip(p, Draw.Rect(x = 24.0, y = 128.0, width = 140.0, height = 36.0))

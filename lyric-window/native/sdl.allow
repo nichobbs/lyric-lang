@@ -29,6 +29,8 @@ SDL_WaitEventTimeout
 SDL_PushEvent
 SDL_StartTextInput
 SDL_StopTextInput
+SDL_Rect
+SDL_SetTextInputArea
 SDL_SetClipboardText
 SDL_GetClipboardText
 SDL_HasClipboardText

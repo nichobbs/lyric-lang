@@ -1,0 +1,41 @@
+# lyric-game - the deterministic core of 2D games (docs/67 phase G7).
+#
+#   Game.Clock    fixed-timestep accumulator with interpolation alpha
+#   Game.Rng      a small deterministic generator whose sequence this package defines
+#   Game.Input    per-step input snapshots built from events
+#   Game.Replay   recorded input streams and their text form
+#   Game.Inflate  DEFLATE and zlib decompression
+#   Game.Image    PNG decoding to RGBA8
+#   Game.Audio    WAV decoding and a software mixer
+#
+# Nothing here touches a window, a GPU or a sound card, so it builds and tests on every target.
+# The platform loop and sprite drawing live in the `platform/` project.
+
+[package]
+name        = "Lyric.Game"
+version     = "0.1.0"
+description = "Fixed-timestep loop, input snapshots, replay, PNG and WAV decoding and a mixer for 2D games."
+authors     = ["Lyric authors"]
+license     = "Apache-2.0"
+
+[project]
+name            = "Lyric.Game"
+output          = "single"
+output_assembly = "Lyric.Game.dll"
+
+[project.packages]
+"Game.Clock"   = "src/clock.l"
+"Game.Rng"     = "src/rng.l"
+"Game.Input"   = "src/input.l"
+"Game.Replay"  = "src/replay.l"
+"Game.Inflate" = "src/inflate.l"
+"Game.Image"   = "src/image.l"
+"Game.Audio"   = "src/audio.l"
+"Game.Keys"    = "src/keys.l"
+"Game.Program" = "src/program.l"
+"Game.Sprites" = "src/sprites.l"
+
+[project.tests]
+"Game.CoreTests" = "tests/core_tests.l"
+"Game.PngTests"  = "tests/png_tests.l"
+"Game.AudioTests" = "tests/audio_tests.l"

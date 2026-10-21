@@ -1,0 +1,31 @@
+# lyric-ui native host - paints a lyric-ui session with lyric-draw and runs it in a window
+# (docs/65 §13.3, docs/67 phase G10).
+#
+#   Ui.Native.Paint   the painter: boxes from Ui.Native.Layout drawn with lyric-draw and lyric-text
+#   Ui.Native.Run     the frame loop on lyric-window and lyric-gpu, and a headless renderer
+#
+# The same `route(url): Option[Instance]` an application gives `Ui.Host.Web` or
+# `Ui.Host.Desktop` runs here unchanged: `Native.run(config, route)`.  `--target native` only.
+[package]
+name        = "Lyric.Ui.Native"
+version     = "0.1.0"
+description = "Native window host for lyric-ui: layout, widgets, focus, text input and clipboard on lyric-draw."
+authors     = ["Lyric authors"]
+license     = "Apache-2.0"
+
+[project]
+name            = "Lyric.Ui.Native"
+output          = "single"
+output_assembly = "Lyric.Ui.Native.dll"
+
+[project.packages]
+"Ui.Native.Paint" = "src/paint.l"
+"Ui.Native.Run"   = "src/run.l"
+
+[dependencies]
+"Lyric.Ui"             = { path = "../.." }
+"Lyric.Ui.Native.Core" = { path = ".." }
+"Lyric.Window"         = { path = "../../../lyric-window" }
+"Lyric.Gpu"            = { path = "../../../lyric-gpu" }
+"Lyric.Draw"           = { path = "../../../lyric-draw" }
+"Lyric.Text"           = { path = "../../../lyric-text" }

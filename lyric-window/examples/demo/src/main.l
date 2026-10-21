@@ -32,6 +32,7 @@ func describe(e: Window.Event): String {
       repeat.toString()
     case KeyUp(w, key, scancode, modifiers) -> "key-up " + key.toString()
     case TextInput(w, text) -> "text " + text
+    case TextEditing(w, text, start, length) -> "composing " + text
     case MouseMotion(w, x, y, dx, dy) -> "motion " + x.toString() + "," + y.toString() + " rel " + dx.toString() + "," +
       dy.toString()
     case MouseButtonDown(w, button, x, y, clicks) -> "button-down " + button.toString() + " at " + x.toString() + "," +

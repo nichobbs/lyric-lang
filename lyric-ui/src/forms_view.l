@@ -69,19 +69,19 @@ pub func fieldViewAt[Msg](
   val onInput = { s: String -> onEdit(name, s) }
   val opts = optsFor(spec)
   val input: View[Msg] = match spec.kind {
-    case Text -> textInput("text", value, onInput, opts)
-    case Email -> textInput("email", value, onInput, opts)
-    case MultilineText -> textArea(value, onInput, opts)
-    case Date -> textInput("date", value, onInput, opts)
-    case Number -> {
+    case InputKind.Text -> textInput("text", value, onInput, opts)
+    case InputKind.Email -> textInput("email", value, onInput, opts)
+    case InputKind.MultilineText -> textArea(value, onInput, opts)
+    case InputKind.Date -> textInput("date", value, onInput, opts)
+    case InputKind.Number -> {
       val bounds: Option[NumberBounds] = match spec.bounds {
         case Some(b) -> Some(value = NumberBounds(min = b.min, max = b.max))
         case None -> None
       }
       numberInput(value, onInput, opts, bounds)
     }
-    case Checkbox -> checkbox(spec.label, value == "true", onInput)
-    case Select -> {
+    case InputKind.Checkbox -> checkbox(spec.label, value == "true", onInput)
+    case InputKind.Select -> {
       val choices: List[SelectChoice] = newList()
       for c in spec.choices {
         choices.add(SelectChoice(value = c.value, label = c.label))

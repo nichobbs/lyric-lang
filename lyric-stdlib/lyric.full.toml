@@ -46,6 +46,7 @@ output_assembly = "Lyric.Stdlib.dll"
 "Std.FormatHost"       = "std/_kernel/format_host.l"
 "Std.EncodingHost"     = "std/_kernel/encoding_host.l"
 "Std.RandomHost"       = "std/_kernel/random_host.l"
+"Std.ParallelHost"     = "std/_kernel/parallel_host.l"   # seed: current
 "Std.SecureRandomHost" = "std/_kernel/secure_random_host.l"
 "Std.UuidHost"         = "std/_kernel/uuid_host.l"
 "Std.FileHost"         = "std/_kernel/file_host.l"
@@ -86,6 +87,7 @@ output_assembly = "Lyric.Stdlib.dll"
 
 # Tier 3 — randomness, hashing, ids.
 "Std.Random"           = "std/random.l"
+"Std.Parallel"         = "std/parallel.l"        # seed: current
 "Std.SecureRandom"     = "std/secure_random.l"
 "Std.Uuid"             = "std/uuid.l"
 

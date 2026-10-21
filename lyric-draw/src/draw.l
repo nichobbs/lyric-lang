@@ -7,7 +7,9 @@
 //! `finish` uploads the instances, a changed atlas, and the viewport, and issues one instanced
 //! draw per batch of consecutive instances that share a texture and a clip rectangle.
 //!
-//! Coordinates are pixels with the origin at the top-left and y growing downward.  Colours are
+//! Coordinates are logical pixels with the origin at the top-left and y growing downward; a
+//! painter drawing into a high-DPI target is given the target's scale (`setScale`) and multiplies
+//! every coordinate, size, radius and blur by it, so callers lay out once for any display.  Colours are
 //! straight (non-premultiplied) RGBA in 0 to 1 and are composited with premultiplied alpha.
 //! Clips are rectangles in whole pixels (the clip stack's intersection), applied as scissors.
 @io
@@ -47,10 +49,14 @@ pub record Rect {
 /// An image to draw with `drawImage`.
 pub record Image {
   texture: G.Texture
+  width: Int
+  height: Int
+  pixelArt: Bool
 }
 
 record Batch {
   texture: G.Texture
+  crisp: Bool
   first: Int
   var count: Int
   scissor: Option[G.Scissor]
@@ -61,6 +67,7 @@ pub record Painter {
   device: G.Device
   pipeline: G.RenderPipeline
   sampler: G.Sampler
+  nearest: G.Sampler
   white: G.Texture
   atlas: Text.Atlas
   atlasTexture: G.Texture
@@ -70,6 +77,7 @@ pub record Painter {
   var atlasUploaded: Int
   var width: Int
   var height: Int
+  var scale: Float
   var data: List[Float]
   var batches: List[Batch]
   var clips: List[G.Scissor]
@@ -100,6 +108,7 @@ pub func newPainter(d: G.Device, format: Int): Result[Painter, String] {
     case Err(e) -> return Err(error = e)
   }
   val sampler = G.createSampler(d, true)
+  val nearest = G.createSampler(d, false)
   val white = match G.createTexture(d, 1, 1, Buf.fromSlice([255u8, 255u8, 255u8, 255u8])) {
     case Ok(t) -> t
     case Err(e) -> return Err(error = e)
@@ -116,6 +125,7 @@ pub func newPainter(d: G.Device, format: Int): Result[Painter, String] {
       device = d,
       pipeline = pipeline,
       sampler = sampler,
+      nearest = nearest,
       white = white,
       atlas = atlas,
       atlasTexture = atlasTexture,
@@ -125,6 +135,7 @@ pub func newPainter(d: G.Device, format: Int): Result[Painter, String] {
       atlasUploaded = 0,
       width = 0,
       height = 0,
+      scale = 1.0f32,
       data = newList(),
       batches = newList(),
       clips = newList()
@@ -135,10 +146,22 @@ pub func newPainter(d: G.Device, format: Int): Result[Painter, String] {
 pub func releasePainter(p: Painter): Unit {
   G.releaseRenderPipeline(p.pipeline)
   G.releaseSampler(p.sampler)
+  G.releaseSampler(p.nearest)
   G.releaseTexture(p.white)
   G.releaseTexture(p.atlasTexture)
   G.releaseBuffer(p.view)
   G.releaseBuffer(p.instances)
+}
+
+/// Sets how many target pixels one logical pixel covers (1 by default).  Every coordinate,
+/// length, corner radius, line width and blur given to the drawing functions after this is
+/// multiplied by it; the target size given to `beginFrame` stays in target pixels.  Text is
+/// positioned and wrapped in logical pixels too, but is rasterised from the fonts it is given, so
+/// open them at the scaled size.
+pub func setScale(p: Painter, scale: Float): Unit
+  requires: scale > 0.0f32
+{
+  p.scale = scale
 }
 
 /// Starts a frame for a target of `width` by `height` pixels, discarding anything collected.
@@ -151,7 +174,9 @@ pub func beginFrame(p: Painter, width: Int, height: Int): Unit {
 }
 
 /// An image from straight-alpha RGBA8 pixels (`width * height * 4` bytes, top row first).
-pub func createImage(p: Painter, width: Int, height: Int, pixels: buffer[Byte]): Result[Image, String] {
+/// `pixelArt` samples it with nearest-neighbour filtering instead of bilinear, so scaled-up
+/// pixels stay sharp.
+pub func createImage(p: Painter, width: Int, height: Int, pixels: buffer[Byte], pixelArt: Bool): Result[Image, String] {
   if pixels.length != width * height * 4 {
     return Err(
       error = "createImage: " + width.toString() + "x" + height.toString() + " needs " +
@@ -170,7 +195,7 @@ pub func createImage(p: Painter, width: Int, height: Int, pixels: buffer[Byte]):
     i = i + 4
   }
   match G.createTexture(p.device, width, height, premultiplied) {
-    case Ok(t) -> Ok(value = Image(texture = t))
+    case Ok(t) -> Ok(value = Image(texture = t, width = width, height = height, pixelArt = pixelArt))
     case Err(e) -> Err(error = e)
   }
 }
@@ -201,10 +226,11 @@ func currentClip(p: Painter): Option[G.Scissor] {
 /// Restricts later drawing to the intersection of `r` (rounded outward to whole pixels) and the
 /// clips already pushed.  Pair with `popClip`.
 pub func pushClip(p: Painter, r: Rect): Unit {
-  var x0 = floorInt(r.x)
-  var y0 = floorInt(r.y)
-  var x1 = ceilInt(r.x + r.width)
-  var y1 = ceilInt(r.y + r.height)
+  val k = p.scale
+  var x0 = floorInt(r.x * k)
+  var y0 = floorInt(r.y * k)
+  var x1 = ceilInt((r.x + r.width) * k)
+  var y1 = ceilInt((r.y + r.height) * k)
   match currentClip(p) {
     case Some(c) -> {
       if c.x > x0 {
@@ -279,6 +305,7 @@ func addInstance(
   v0: Float,
   u1: Float,
   v1: Float,
+  crisp: Bool,
 ): Unit {
   val clip = currentClip(p)
   match clip {
@@ -287,24 +314,26 @@ func addInstance(
   }
   val first = p.data.count / floatsPerInstance
   val open = p.batches.count > 0 and p.batches[p.batches.count - 1].texture.raw == texture.raw and
+    p.batches[p.batches.count - 1].crisp == crisp and
     sameScissor(p.batches[p.batches.count - 1].scissor, clip)
   if open {
     p.batches[p.batches.count - 1].count = p.batches[p.batches.count - 1].count + 1
   } else {
-    p.batches.add(Batch(texture = texture, first = first, count = 1, scissor = clip))
+    p.batches.add(Batch(texture = texture, crisp = crisp, first = first, count = 1, scissor = clip))
   }
   val d = p.data
-  d.add(x)
-  d.add(y)
-  d.add(w)
-  d.add(h)
+  val k = p.scale
+  d.add(x * k)
+  d.add(y * k)
+  d.add(w * k)
+  d.add(h * k)
   d.add(c.r * c.a)
   d.add(c.g * c.a)
   d.add(c.b * c.a)
   d.add(c.a)
   d.add(kind)
-  d.add(radius)
-  d.add(extra)
+  d.add(radius * k)
+  d.add(if kind == shapeKindTexture { extra } else { extra * k })
   d.add(0.0f32)
   d.add(u0)
   d.add(v0)
@@ -314,12 +343,44 @@ func addInstance(
 
 /// A filled rectangle.
 pub func fillRect(p: Painter, r: Rect, c: Color): Unit {
-  addInstance(p, p.white, shapeKindFill, r.x, r.y, r.width, r.height, c, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 1.0f32, 1.0f32)
+  addInstance(
+    p,
+    p.white,
+    shapeKindFill,
+    r.x,
+    r.y,
+    r.width,
+    r.height,
+    c,
+    0.0f32,
+    0.0f32,
+    0.0f32,
+    0.0f32,
+    1.0f32,
+    1.0f32,
+    false
+  )
 }
 
 /// A filled rectangle with corners of `radius` pixels.
 pub func fillRoundedRect(p: Painter, r: Rect, radius: Float, c: Color): Unit {
-  addInstance(p, p.white, shapeKindFill, r.x, r.y, r.width, r.height, c, radius, 0.0f32, 0.0f32, 0.0f32, 1.0f32, 1.0f32)
+  addInstance(
+    p,
+    p.white,
+    shapeKindFill,
+    r.x,
+    r.y,
+    r.width,
+    r.height,
+    c,
+    radius,
+    0.0f32,
+    0.0f32,
+    0.0f32,
+    1.0f32,
+    1.0f32,
+    false
+  )
 }
 
 /// A border `lineWidth` pixels wide, inside the rectangle's edge.
@@ -338,14 +399,31 @@ pub func strokeRoundedRect(p: Painter, r: Rect, radius: Float, lineWidth: Float,
     0.0f32,
     0.0f32,
     1.0f32,
-    1.0f32
+    1.0f32,
+    false
   )
 }
 
 /// A soft shadow of a rounded rectangle: full strength inside it, fading to nothing over
 /// `blur` pixels either side of its edge.  Draw it before the shape that casts it.
 pub func drawShadow(p: Painter, r: Rect, radius: Float, blur: Float, c: Color): Unit {
-  addInstance(p, p.white, shapeKindShadow, r.x, r.y, r.width, r.height, c, radius, blur, 0.0f32, 0.0f32, 1.0f32, 1.0f32)
+  addInstance(
+    p,
+    p.white,
+    shapeKindShadow,
+    r.x,
+    r.y,
+    r.width,
+    r.height,
+    c,
+    radius,
+    blur,
+    0.0f32,
+    0.0f32,
+    1.0f32,
+    1.0f32,
+    false
+  )
 }
 
 /// An image stretched over `dest`, multiplied by `tint` (white for none).
@@ -364,17 +442,43 @@ pub func drawImage(p: Painter, image: Image, dest: Rect, tint: Color): Unit {
     0.0f32,
     0.0f32,
     1.0f32,
-    1.0f32
+    1.0f32,
+    image.pixelArt
   )
 }
 
-/// Lays `text` out with `fonts` in a column `maxWidth` pixels wide (no wrapping when it is not
+/// The part of `image` inside `source` (in image pixels, from its top-left corner) stretched over
+/// `dest`, multiplied by `tint`: one cell of a sprite sheet or atlas.
+pub func drawImageRegion(p: Painter, image: Image, source: Rect, dest: Rect, tint: Color): Unit {
+  val w = image.width.toFloat()
+  val h = image.height.toFloat()
+  addInstance(
+    p,
+    image.texture,
+    shapeKindTexture,
+    dest.x,
+    dest.y,
+    dest.width,
+    dest.height,
+    tint,
+    0.0f32,
+    0.0f32,
+    source.x / w,
+    source.y / h,
+    (source.x + source.width) / w,
+    (source.y + source.height) / h,
+    image.pixelArt
+  )
+}
+
+/// Lays `text` out with `fonts` in a column `maxWidth` logical pixels wide (no wrapping when it is not
 /// positive) and draws it with its top-left corner at (`x`, `y`).  Returns the layout, whose
 /// `width` and `height` size the block.  `Err` when the glyph atlas is full.
 pub func drawText(
   p: Painter, fonts: List[Text.Font], text: String, x: Float, y: Float, maxWidth: Float, c: Color
 ): Result[Text.TextLayout, String] {
-  val layout = Text.layoutText(fonts, text, maxWidth)
+  val k = p.scale
+  val layout = Text.layoutText(fonts, text, maxWidth * k)
   val size = atlasSize.toFloat()
   for g in layout.glyphs {
     val region = match Text.atlasGlyph(p.atlas, fonts[g.font], g.glyph) {
@@ -382,23 +486,24 @@ pub func drawText(
       case Err(e) -> return Err(error = e)
     }
     if region.width > 0 {
-      val gx = (x + g.x + 0.5f32).toInt().toFloat() + region.left.toFloat()
-      val gy = (y + g.y + 0.5f32).toInt().toFloat() - region.top.toFloat()
+      val gx = (x * k + g.x + 0.5f32).toInt().toFloat() + region.left.toFloat()
+      val gy = (y * k + g.y + 0.5f32).toInt().toFloat() - region.top.toFloat()
       addInstance(
         p,
         p.atlasTexture,
         shapeKindTexture,
-        gx,
-        gy,
-        region.width.toFloat(),
-        region.height.toFloat(),
+        gx / k,
+        gy / k,
+        region.width.toFloat() / k,
+        region.height.toFloat() / k,
         c,
         0.0f32,
         0.0f32,
         region.x.toFloat() / size,
         region.y.toFloat() / size,
         (region.x + region.width).toFloat() / size,
-        (region.y + region.height).toFloat() / size
+        (region.y + region.height).toFloat() / size,
+        false
       )
     }
   }
@@ -480,14 +585,15 @@ pub func finish(p: Painter, target: G.RenderTarget, clear: Color): Result[Unit, 
   val draws: List[G.Draw] = newList()
   val noBuffers: List[G.Buffer] = newList()
   for b in p.batches {
-    val group = match mapGet(groups, b.texture.raw) {
+    val groupKey = b.texture.raw * 2 + (if b.crisp { 1 } else { 0 })
+    val group = match mapGet(groups, groupKey) {
       case Some(g) -> g
       case None -> {
         val bindings: List[G.Binding] = newList()
         bindings.add(G.BufferBinding(buffer = p.view))
         bindings.add(G.BufferBinding(buffer = p.instances))
         bindings.add(G.TextureBinding(texture = b.texture))
-        bindings.add(G.SamplerBinding(sampler = p.sampler))
+        bindings.add(G.SamplerBinding(sampler = if b.crisp { p.nearest } else { p.sampler }))
         val made = match G.createRenderBindGroup(p.device, p.pipeline, bindings) {
           case Ok(g) -> g
           case Err(e) -> {
@@ -495,7 +601,7 @@ pub func finish(p: Painter, target: G.RenderTarget, clear: Color): Result[Unit, 
             return Err(error = e)
           }
         }
-        groups.add(b.texture.raw, made)
+        groups.add(groupKey, made)
         made
       }
     }

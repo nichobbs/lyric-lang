@@ -25,14 +25,14 @@ BUILD   := build
 
 SRCS := src/lyric_rt.c src/lyric_string.c src/lyric_weak.c \
         src/lyric_posix.c src/lyric_collections.c src/lyric_async.c \
-        src/lyric_fs.c src/lyric_process.c src/lyric_tls.c
+        src/lyric_fs.c src/lyric_process.c src/lyric_tls.c src/lyric_parallel.c
 OBJS := $(SRCS:src/%.c=$(BUILD)/%.o)
 
 # The TLS seam dlopen's OpenSSL at runtime (no link-time -lssl/-lcrypto);
 # it needs libdl (a no-op stub on glibc >= 2.34) and libpthread.
 TEST_LIBS := -lpthread -ldl
 
-.PHONY: all test test-asan clean clean-wasm32-wasi wasm32-wasi wasm32-wasi-ir test-wasm32-wasi
+.PHONY: all test test-asan test-tsan clean clean-wasm32-wasi wasm32-wasi wasm32-wasi-ir test-wasm32-wasi
 
 all: $(BUILD)/lyric_rt.a
 
@@ -54,6 +54,19 @@ test: $(BUILD)/lyric_rt.a
 	$(BUILD)/lyric_rt_test
 	$(CC) $(CFLAGS) -Iinclude test/lyric_tls_test.c $(BUILD)/lyric_rt.a $(TEST_LIBS) -o $(BUILD)/lyric_tls_test
 	$(BUILD)/lyric_tls_test
+	$(CC) $(CFLAGS) -Iinclude test/lyric_parallel_test.c $(BUILD)/lyric_rt.a $(TEST_LIBS) -o $(BUILD)/lyric_parallel_test
+	$(BUILD)/lyric_parallel_test
+	LYRIC_THREADS=1 $(BUILD)/lyric_parallel_test --serial
+	LYRIC_THREADS=3 $(BUILD)/lyric_parallel_test
+
+# ThreadSanitizer run of the worker pool (docs/67 G8): the pool and its test are compiled from source
+# with -fsanitize=thread, so a missing happens-before edge between a worker's writes and the caller's
+# reads, a race on the job, or a use of the job after the caller returned fails the run.
+# `make test-tsan`
+test-tsan: | $(BUILD)
+	$(CC) $(CFLAGS) -fsanitize=thread -Iinclude test/lyric_parallel_test.c src/lyric_parallel.c $(TEST_LIBS) -o $(BUILD)/lyric_parallel_test_tsan
+	$(BUILD)/lyric_parallel_test_tsan
+	LYRIC_THREADS=3 $(BUILD)/lyric_parallel_test_tsan
 
 # ASan variant of the TLS seam test, kept OUT of the default `test` target
 # because it needs the compiler's AddressSanitizer runtime, which is not
@@ -87,7 +100,7 @@ WASM_CFLAGS := --target=wasm32-wasip1 --sysroot=$(WASI_SDK)/share/wasi-sysroot -
 WASM_SRCS   := src/lyric_rt.c src/lyric_string.c src/lyric_weak.c \
                src/lyric_posix.c src/lyric_collections.c src/lyric_async.c \
                src/lyric_fs.c src/lyric_process_unsupported.c src/lyric_net_unsupported.c \
-               src/lyric_wasm.c src/lyric_wasm_async.c
+               src/lyric_wasm.c src/lyric_wasm_async.c src/lyric_parallel.c
 WASM_OBJS   := $(WASM_SRCS:src/%.c=$(WASM_BUILD)/%.o)
 
 $(WASM_BUILD)/%.o: src/%.c include/lyric_rt.h | $(WASM_BUILD)

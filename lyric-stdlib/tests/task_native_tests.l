@@ -251,17 +251,35 @@ test "awaitAll blocks until a slow child finishes, and a second awaitAll returns
   assertTrue((monotonicNanos() - again) / 1000000i64 < 100i64, "a finished child does not delay a second awaitAll")
 }
 
+// Three threads record into this concurrently, so it is a protected type, not a List.
+protected type Finished {
+  var n: Int = 0
+  var first: Int = 0
+  entry mark(who: in Int) {
+    if n == 0 {
+      first = who
+    }
+    n = n + 1
+  }
+  func count(): Int {
+    return n
+  }
+  func firstWho(): Int {
+    return first
+  }
+}
+
 test "several threads can await the same scope" {
   val s = makeScope()
-  val finished: List[Int] = newList()
-  scopeSpawn(s, { -> sleepMillis(150); finished.add(1) })
+  val finished = Finished()
+  scopeSpawn(s, { -> sleepMillis(150); finished.mark(1) })
   val waiters = makeScope()
-  scopeSpawn(waiters, { -> val a = await awaitAll(s); finished.add(2) })
-  scopeSpawn(waiters, { -> val b = await awaitAll(s); finished.add(3) })
+  scopeSpawn(waiters, { -> val a = await awaitAll(s); finished.mark(2) })
+  scopeSpawn(waiters, { -> val b = await awaitAll(s); finished.mark(3) })
   val w = await awaitAll(waiters)
   val j = await awaitAll(s)
-  assertEqualInt(finished.count, 3, "the child and both waiters completed")
-  assertEqualInt(finished[0], 1, "the child finished before either waiter returned")
+  assertEqualInt(finished.count(), 3, "the child and both waiters completed")
+  assertEqualInt(finished.firstWho(), 1, "the child finished before either waiter returned")
 }
 
 test "runActionWithin returns as soon as the action finishes, not at the budget" {
