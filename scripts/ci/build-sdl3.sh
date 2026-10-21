@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
 # build-sdl3.sh: build SDL3 from the pinned libsdl.org release tarball into a
-# prefix, for lyric-window's CI (docs/67 G4).  A headless build: no X11,
-# Wayland or sound-server dependencies, so the offscreen/dummy video drivers
-# and the dummy/disk audio drivers are what it provides.  A developer machine
-# uses its distribution's SDL3 (or this script without the console-build flag).
+# prefix, for lyric-window's CI (docs/67 G4).  A headless build: every window-system
+# and sound-server backend is switched off explicitly (a runner image may carry some
+# of their development packages) and the console-build flag acknowledges that, so the
+# offscreen/dummy video drivers and the dummy/disk audio drivers are what it provides.
+# A developer machine uses its distribution's SDL3.
 #
 # Usage: bash scripts/ci/build-sdl3.sh <prefix>
 # Afterwards: PKG_CONFIG_PATH=<prefix>/lib/pkgconfig LD_LIBRARY_PATH=<prefix>/lib
@@ -34,7 +35,10 @@ generator=()
 command -v ninja >/dev/null && generator=(-G Ninja)
 cmake "${generator[@]}" -S "$work/src" -B "$work/build" \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix" \
-  -DSDL_UNIX_CONSOLE_BUILD=ON -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF -DSDL_INSTALL_TESTS=OFF
+  -DSDL_UNIX_CONSOLE_BUILD=ON -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF -DSDL_INSTALL_TESTS=OFF \
+  -DSDL_X11=OFF -DSDL_WAYLAND=OFF -DSDL_KMSDRM=OFF -DSDL_VIVANTE=OFF -DSDL_OPENGL=OFF -DSDL_OPENGLES=OFF \
+  -DSDL_VULKAN=OFF -DSDL_ALSA=OFF -DSDL_PULSEAUDIO=OFF -DSDL_PIPEWIRE=OFF -DSDL_JACK=OFF -DSDL_SNDIO=OFF \
+  -DSDL_IBUS=OFF -DSDL_DBUS=OFF -DSDL_LIBUDEV=OFF -DSDL_LIBURING=OFF
 cmake --build "$work/build" -j"$(nproc)"
 cmake --install "$work/build"
 touch "$prefix/.sdl3-$SDL_VERSION"
