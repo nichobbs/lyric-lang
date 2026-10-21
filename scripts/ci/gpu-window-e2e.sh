@@ -72,6 +72,8 @@ for i in range(0, len(data), 3):
     elif px == b"\xff\x00\x00":
         red += 1
 print("screenshot: %d blue pixels, %d red pixels" % (blue, red))
+# The 256x256 window shows ~44.7k blue and ~20.8k red pixels (the triangle covers a third of
+# the window); the thresholds leave room for a different rasteriser or window decoration.
 if blue < 30000 or red < 10000:
     sys.exit("the window does not show the blue field with a red triangle")
 PY

@@ -56,36 +56,49 @@ func surfaceFor(d: Gpu.Device, w: Window.Window): Result[Gpu.Surface, String] {
   }
 }
 
+func drawTo(
+  d: Gpu.Device, surface: Gpu.Surface, pipeline: Gpu.RenderPipeline, target: Gpu.RenderTarget
+): Result[Unit, String] {
+  val draws: List[Gpu.Draw] = newList()
+  draws.add(Gpu.Draw(pipeline = pipeline, bindGroup = None, vertexBuffers = noBuffers, vertexCount = 3))
+  match Gpu.render(d, target, 0.0, 0.0, 1.0, 1.0, draws) {
+    case Err(message) -> Err(error = message)
+    case Ok(_) -> Gpu.presentFrame(surface, target)
+  }
+}
+
+// An unavailable frame (the window was resized or minimized) is answered by reconfiguring the
+// surface and trying again on the next iteration; any other failure ends the loop.
 func drawFrames(d: Gpu.Device, surface: Gpu.Surface, frames: Int): Result[Unit, String] {
   val pipeline = match Gpu.createRenderPipeline(d, shader, "vs", "fs", noLayouts, surface.format) {
     case Ok(p) -> p
     case Err(e) -> return Err(error = e)
   }
+  var failed = false
+  var reason = ""
   var frame = 0
-  while frame < frames and not closeRequested() {
+  while frame < frames and not failed and not closeRequested() {
     match Gpu.acquireFrame(d, surface) {
-      case Err(message) -> return Err(error = message)
-      case Ok(target) -> {
-        val draws: List[Gpu.Draw] = newList()
-        draws.add(Gpu.Draw(pipeline = pipeline, bindGroup = None, vertexBuffers = noBuffers, vertexCount = 3))
-        match Gpu.render(d, target, 0.0, 0.0, 1.0, 1.0, draws) {
-          case Err(message) -> return Err(error = message)
-          case Ok(_) -> ()
+      case Err(_) -> match Gpu.configureSurface(d, surface, size, size) {
+        case Err(message) -> {
+          failed = true
+          reason = message
         }
-        match Gpu.presentFrame(surface, target) {
-          case Err(message) -> return Err(error = message)
-          case Ok(_) -> ()
+        case Ok(_) -> ()
+      }
+      case Ok(target) -> match drawTo(d, surface, pipeline, target) {
+        case Err(message) -> {
+          failed = true
+          reason = message
         }
-        if frame == 0 {
-          Console.println("presented")
-        }
+        case Ok(_) -> if frame == 0 { Console.println("presented") }
       }
     }
     Window.delayNanos(16000000)
     frame = frame + 1
   }
   Gpu.releaseRenderPipeline(pipeline)
-  Ok(value = ())
+  if failed then Err(error = reason) else Ok(value = ())
 }
 
 func run(win: Window.Window, frames: Int): Int {

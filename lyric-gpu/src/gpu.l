@@ -1059,8 +1059,12 @@ pub func configureSurface(d: Device, s: Surface, width: Int, height: Int): Resul
     alphaModes = nativeNullPtr()
   )
   val status = wgpuSurfaceGetCapabilities(longToPtr(s.raw), longToPtr(d.adapter), nativeAddrOf(caps))
-  if status != 1 or caps.formatCount == 0 {
-    return Err(error = "the surface reports no usable format for this adapter")
+  if status != 1 {
+    return Err(error = "the surface reports no capabilities for this adapter")
+  }
+  if caps.formatCount == 0 {
+    wgpuSurfaceCapabilitiesFreeMembers(caps)
+    return Err(error = "the surface offers no format for this adapter")
   }
   var formatsAddress: Long = 0
   var formats = caps.formats
