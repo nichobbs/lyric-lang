@@ -551,7 +551,7 @@ WASM-target and JS-integration questions (Q-JS-001–Q-JS-009) are maintained in
 `docs/35-js-wasm-component-sketch.md` §13.  They live there because they
 require WASM Component Model domain context to evaluate.  Q-JS-001, Q-JS-003
 and Q-JS-005 are resolved (§13.1, D-progress-1028); Q-JS-004 is resolved
-(D-progress-1036); Q-JS-006 is resolved for v1 (D-progress-1043); Q-JS-002 and Q-JS-007–Q-JS-009 remain open (§13.2).
+(D-progress-1036); Q-JS-006 is resolved (D184, the async ABI) and Q-JS-008 is resolved (fetch-backed `Std.Http` twin, in-memory WASI filesystem); Q-JS-002, Q-JS-007 and Q-JS-009 remain open and none blocks implementation (§13.2).
 
 ---
 
@@ -559,8 +559,8 @@ and Q-JS-005 are resolved (§13.1, D-progress-1028); Q-JS-004 is resolved
 
 Workspace and native dep elimination open questions (Q-W-001–Q-W-004) are
 maintained in `docs/38-workspace.md` §8.  They live there because they require
-workspace and registry design context to evaluate.  All Q-W entries are
-currently open.
+workspace and registry design context to evaluate.  Q-W-001 is resolved
+(D108), Q-W-003 and Q-W-004 are moot, and Q-W-002 is open.
 
 ---
 
@@ -568,8 +568,8 @@ currently open.
 
 Source generator open questions (Q-SG-001–Q-SG-004) are maintained in
 `docs/40-source-generators.md` §10.  They live there because they require
-source-generator design context to evaluate.  All Q-SG entries are currently
-open.
+source-generator design context to evaluate.  All Q-SG entries are still
+open; the consumer side of `@generate` shipped in D150 and D151.
 
 ---
 
@@ -626,13 +626,15 @@ See `docs/47-import-extern-syntax.md` for the full design and
 (full-FQN namespace syntax, local-shadows-external collision handling,
 external types excluded from the public API surface, `import extern`
 allowed in `pub use`). Parser support shipped in PR #3728; type-checker
-integration (Phase 2) remains a separate, still-open follow-up.
+integration (Phase 2) shipped in commit `a64e649` (#4714, 2026-07-03).
 
-**Q48-001–Q48-002 (Constructor shorthand — generic and async constructors, open):**
+**Q48-001–Q48-002 (Constructor shorthand — generic and async constructors):**
 See `docs/48-constructor-shorthand.md`. `.new(args)` calls on external types
 now work on both MSIL and JVM (D-progress-530). Remaining open questions:
 - Q48-001: Generic constructors (`List[T].new(capacity)`; requires template instantiation; part of Q022-4).
-- Q48-002: Async constructors (`async T.new(...)`).
+- Q48-002: Async constructors (`async T.new(...)`); `docs/48` records this as not planned.
+
+(Q48-004 was resolved on 2026-07-10; see `docs/48`.)
 
 (Q48-003 — static factory methods — is resolved, see D117: already reachable
 via ordinary auto-FFI method calls, no special syntax needed.)

@@ -1,5 +1,7 @@
 # 41 — Self-hosted compiler gap analysis vs. language reference (production readiness)
 
+_**Current status (2026-10-21): historical.** Every Band 1-5 item in this audit has shipped (see §10 and `docs/progress/`), and `docs/12-todo-plan.md` is the live tracker. Where the §3 table disagrees with §10, §10 wins: rows C12, H4-H7, H10, H11, M3 and M4 still read PARTIAL/inert but are RESOLVED; L1 and L3 (weaver self-test in CI), L4 (`Float` is 32-bit on every backend, see `docs/progress/2026-10-01-float32-every-backend.md`) are shipped; L2 and §11 (F# mint bootstrap, retired by D125/D126) are obsolete. Still open from this audit: M8 (`call.caller`, config no-default panic stub), M9 (`pub use Foo.bar` is an `isPubUse` flag, not an item node), M10 (stdlib parse diagnostics are advisory on JVM, #914), and `weaver_ci_test.l` is not wired into CI._
+
 _Status: **Re-verified 2026-06-03** (source-checked, all four severity bands).
 The body below is the **2026-05-29 re-audit**; the per-gap status cells in §3
 have been refreshed against live source on 2026-06-03 and a consolidated

@@ -1,6 +1,6 @@
 # 59 — Self-Hosted Compiler & Standard Library Deep Review (2026-07)
 
-_Status: Unbacked — audit. See §10 for the prioritized remediation plan; no
+_Status: **Partly implemented (waves 1-6, D-progress-638..663, banner below; nothing recorded after 2026-07-12).** Headline findings H1-H9 are shipped (H7 `scopeSpawn` was fixed in #5329 though the wave-1 banner still lists it open). Still open: H10 (four independent type systems), §10 Band 4 item 19, Band 5 items 21 and 23, the Band 6 performance work, and the out/ref null-to-Option FFI decision. Counts in this doc are stale: `@externTarget` declarations in `_kernel/` are about 111 today (not 69), and the numbered self-tests are b3..b134 (131 files) and m-series (92 files). Live tracker: `docs/12-todo-plan.md`. Original status: Unbacked audit; no
 decision-log entry yet. Follows the docs/41 (compiler gap analysis) and
 docs/57 (stdlib/ecosystem review) audit-doc pattern._
 

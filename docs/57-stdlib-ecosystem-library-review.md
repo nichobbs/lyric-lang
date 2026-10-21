@@ -1,5 +1,7 @@
 # 57 — Standard Library & Ecosystem Library Review (2026-07)
 
+**Current status (2026-10-21):** §1's "adoption is zero" is obsolete: 33 `.l` files use `import extern` and about 159 call sites use `.new(`; lyric-web and lyric-mail migrations, the lyric-resilience JVM kernel, the `file`/`directory`/`http`/`path` test files and `MockDb*`/`MockCacheStore` have shipped, and the #5167 seed blocker on stdlib `.new()` migration was refuted by docs/59 wave 3. Still open: remaining `..ctor` wrappers (`collections_host.l`, `http_host.l`, `process_capture_host.l`, lyric-mq/jobs/ws/resilience kernels), storage S3/Azure, mq brokers, mail SES/SendGrid (#7462), search wiring (#5067), and mocks for Jobs, Search, Queue consumer, i18n and Ws. Tracker: `docs/12-todo-plan.md` Tier 5.
+
 **Status:** Unbacked (audit). No decision-log entry yet — this document
 catalogues findings; see §7 for suggested follow-up.
 
