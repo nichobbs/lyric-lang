@@ -125,7 +125,7 @@ func floatFromBits(bits: Int): Float {
   }
   if exponent == 0 {
     return (sign * fraction.toDouble() * pow2(-149)).toFloat()
-  }
+  };
   (sign * (1.0 + fraction.toDouble() / 8388608.0) * pow2(exponent - 127)).toFloat()
 }
 
@@ -171,7 +171,12 @@ func sine(x: Float): Float {
     a = a + twoPi
   }
   val a2 = a * a
-  a * (1.0f32 - a2 / 6.0f32 * (1.0f32 - a2 / 20.0f32 * (1.0f32 - a2 / 42.0f32 * (1.0f32 - a2 / 72.0f32 * (1.0f32 - a2 / 110.0f32)))))
+  a *
+    (
+      1.0f32 -
+        a2 / 6.0f32 *
+          (1.0f32 - a2 / 20.0f32 * (1.0f32 - a2 / 42.0f32 * (1.0f32 - a2 / 72.0f32 * (1.0f32 - a2 / 110.0f32))))
+    )
 }
 
 /// One playing sound.

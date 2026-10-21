@@ -1,0 +1,27 @@
+# lyric-game platform - the window, GPU and sound-card half of lyric-game (docs/67 phase G7).
+#
+#   Game.Run   the frame loop on lyric-window, lyric-gpu and lyric-draw, a headless renderer for
+#              replays, and sprite drawing
+#
+# The deterministic core (clock, input, replay, PNG, WAV, mixer) is the sibling `Lyric.Game`
+# project and builds on every target; this project is for `--target native` only.
+[package]
+name        = "Lyric.Game.Platform"
+version     = "0.1.0"
+description = "Frame loop, headless replay rendering and sprite drawing for lyric-game on --target native."
+authors     = ["Lyric authors"]
+license     = "Apache-2.0"
+
+[project]
+name            = "Lyric.Game.Platform"
+output          = "single"
+output_assembly = "Lyric.Game.Platform.dll"
+
+[project.packages]
+"Game.Run" = "src/run.l"
+
+[dependencies]
+"Lyric.Game"   = { path = ".." }
+"Lyric.Window" = { path = "../../lyric-window" }
+"Lyric.Gpu"    = { path = "../../lyric-gpu" }
+"Lyric.Draw"   = { path = "../../lyric-draw" }

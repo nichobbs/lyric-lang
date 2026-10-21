@@ -19,7 +19,10 @@ in CI; macOS is not yet in CI). G6 is implemented: `Std.Linalg` (D198: `Vec2`/`V
 shaping, rasterising, glyph atlas, fallback and line layout, with a golden Latin/Arabic/CJK scene;
 bidirectional reordering and UAX #14 are tracked in #8410) and `lyric-draw` (D200: instanced
 signed-distance quads, shadows, images, clips and text, with a golden scene and a text-heavy
-frame budget on lavapipe; no run on real hardware yet). The other phases are open.
+frame budget on lavapipe; no run on real hardware yet). G7 is implemented on Linux (D201: `lyric-game`
+deterministic core with PNG and WAV decoding, a native frame loop with input recording and replay,
+and a Breakout sample whose recorded session is replayed headless, in a window under Xvfb, and in
+`lyric test`; macOS waits on a Cocoa surface). The other phases are open.
 D156 and D157 resolve Q-GFX-005 to Q-GFX-010 (§10).
 
 **Builds on:** `native/plan/` (the LLVM backend, D-N-001 onward),

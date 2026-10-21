@@ -245,8 +245,7 @@ func playing(s: State, px: Float, dt: Float): State {
     cues.add(cueWall)
   }
   val half = paddleWidth / 2.0f32
-  if vy > 0.0f32 and y + ballRadius >= paddleY and y - ballRadius <= paddleY + paddleHeight and x >= px - half - ballRadius and
-      x <= px + half + ballRadius {
+  if vy > 0.0f32 and y + ballRadius >= paddleY and y - ballRadius <= paddleY + paddleHeight and x >= px - half - ballRadius and x <= px + half + ballRadius {
     val offset = (x - px) / (half + ballRadius)
     val nvx = offset * ballSpeed * 0.8f32
     val nvy = sqrtF(ballSpeed * ballSpeed - nvx * nvx)
@@ -267,10 +266,14 @@ func playing(s: State, px: Float, dt: Float): State {
       if bricks[i] > 0 {
         val bx0 = brickX(c)
         val by0 = brickY(r)
-        val overlapX = if x + ballRadius < bx0 or x - ballRadius > bx0 + brickWidth { 0.0f32 } else {
+        val overlapX = if x + ballRadius < bx0 or x - ballRadius > bx0 + brickWidth {
+          0.0f32
+        } else {
           minF(x + ballRadius - bx0, bx0 + brickWidth - (x - ballRadius))
         }
-        val overlapY = if y + ballRadius < by0 or y - ballRadius > by0 + brickHeight { 0.0f32 } else {
+        val overlapY = if y + ballRadius < by0 or y - ballRadius > by0 + brickHeight {
+          0.0f32
+        } else {
           minF(y + ballRadius - by0, by0 + brickHeight - (y - ballRadius))
         }
         if overlapX > 0.0f32 and overlapY > 0.0f32 {
@@ -329,7 +332,11 @@ func playing(s: State, px: Float, dt: Float): State {
 }
 
 func minF(a: Float, b: Float): Float {
-  if a < b { a } else { b }
+  if a < b {
+    a
+  } else {
+    b
+  }
 }
 
 /// A 32-bit digest of everything that determines the game's future, for pinning a replay.

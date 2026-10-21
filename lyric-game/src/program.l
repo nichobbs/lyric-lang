@@ -11,9 +11,7 @@ import Game.Input
 import Game.Replay
 
 /// Every state of a replay: the initial state, then the state after each recorded step.
-pub func simulate[S](
-  init: in (Long) -> S, update: in (S, InputFrame, Float) -> S, hz: in Int, r: in Recording
-): List[S]
+pub func simulate[S](init: in (Long) -> S, update: in (S, InputFrame, Float) -> S, hz: in Int, r: in Recording): List[S]
   requires: hz > 0
 {
   val dt = 1.0f32 / hz.toFloat()
@@ -28,9 +26,7 @@ pub func simulate[S](
 }
 
 /// The state after the whole recording.
-pub func finalState[S](
-  init: in (Long) -> S, update: in (S, InputFrame, Float) -> S, hz: in Int, r: in Recording
-): S
+pub func finalState[S](init: in (Long) -> S, update: in (S, InputFrame, Float) -> S, hz: in Int, r: in Recording): S
   requires: hz > 0
 {
   val dt = 1.0f32 / hz.toFloat()

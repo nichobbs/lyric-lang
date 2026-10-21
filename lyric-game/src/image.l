@@ -125,10 +125,7 @@ func to8(v: Int, depth: Int): Int {
 
 /// Decodes a PNG file.
 pub func decodePng(file: in slice[Byte]): Result[Image, String] {
-  if file.length < 8 or file[0] != 137u8 or file[1] != 80u8 or file[2] != 78u8 or file[3] != 71u8 or file[4] != 13u8 or
-      file[5] != 10u8 or
-      file[6] != 26u8 or
-      file[7] != 10u8 {
+  if file.length < 8 or file[0] != 137u8 or file[1] != 80u8 or file[2] != 78u8 or file[3] != 71u8 or file[4] != 13u8 or file[5] != 10u8 or file[6] != 26u8 or file[7] != 10u8 {
     return Err(error = "png: bad signature")
   }
   var header: Option[Header] = None
@@ -142,7 +139,9 @@ pub func decodePng(file: in slice[Byte]): Result[Image, String] {
     if len < 0 or pos + 12 + len > file.length {
       return Err(error = "png: truncated chunk")
     }
-    val kind = file[pos + 4].toInt().shl(24).or(file[pos + 5].toInt().shl(16)).or(file[pos + 6].toInt().shl(8)).or(file[pos + 7].toInt())
+    val kind = file[pos + 4].toInt().shl(24).or(file[pos + 5].toInt().shl(16)).or(file[pos + 6].toInt().shl(8)).or(
+      file[pos + 7].toInt()
+    )
     if crc32(file, pos + 4, pos + 8 + len) != be32(file, pos + 8 + len) {
       return Err(error = "png: chunk CRC mismatch")
     }
@@ -187,10 +186,7 @@ pub func decodePng(file: in slice[Byte]): Result[Image, String] {
     }
     pos = pos + 12 + len
   }
-  val h = match header {
-    case Some(h) -> h
-    case None -> return Err(error = "png: no IHDR chunk")
-  }
+  val h = match header { case Some(h) -> h; case None -> return Err(error = "png: no IHDR chunk") }
   if h.width <= 0 or h.height <= 0 or h.width > 65536 or h.height > 65536 {
     return Err(error = "png: unsupported dimensions " + h.width.toString() + "x" + h.height.toString())
   }
@@ -203,10 +199,7 @@ pub func decodePng(file: in slice[Byte]): Result[Image, String] {
   if h.colorType == 3 and palette.count == 0 {
     return Err(error = "png: palette image without a PLTE chunk")
   }
-  val raw = match zlibDecompress(idat.toArray()) {
-    case Ok(b) -> b
-    case Err(e) -> return Err(error = "png: " + e)
-  }
+  val raw = match zlibDecompress(idat.toArray()) { case Ok(b) -> b; case Err(e) -> return Err(error = "png: " + e) }
   decodePixels(h, raw, palette, trns)
 }
 
@@ -282,8 +275,7 @@ func decodePixels(h: Header, rawIn: buffer[Byte], palette: List[Int], trns: List
             r = to8(vr, h.depth)
             g = to8(vg, h.depth)
             b = to8(vb, h.depth)
-            if trns.count >= 6 and vr == trns[0].shl(8).or(trns[1]) and vg == trns[2].shl(8).or(trns[3]) and
-                vb == trns[4].shl(8).or(trns[5]) {
+            if trns.count >= 6 and vr == trns[0].shl(8).or(trns[1]) and vg == trns[2].shl(8).or(trns[3]) and vb == trns[4].shl(8).or(trns[5]) {
               a = 0
             }
           } else if h.colorType == 3 {

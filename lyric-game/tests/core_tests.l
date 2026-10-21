@@ -69,7 +69,7 @@ test "replay text round-trips and rebuilds the same frames" {
   val r = newRecording(777i64)
   record(r, [KeyPressed(key = 97), pointerMoved(1.5f32, 2.0f32)])
   record(r, [])
-  record(r, [TextTyped(text = "h\u{e9}"), scrolled(0.0f32, -1.0f32), ButtonPressed(button = 1)])
+  record(r, [TextTyped(text = "hé"), scrolled(0.0f32, -1.0f32), ButtonPressed(button = 1)])
   record(r, [KeyReleased(key = 97), ButtonReleased(button = 1)])
   val text = encode(r)
   match decode(text) {
@@ -80,7 +80,7 @@ test "replay text round-trips and rebuilds the same frames" {
       val a = frames(r)
       val b = frames(back)
       eqI(a.count, 4)
-      assertEqual(b[2].text, "h\u{e9}", "text")
+      assertEqual(b[2].text, "hé", "text")
       eqI(b[2].wheelY16, -16)
       assertTrue(isDown(b[0], 97) and not isDown(b[3], 97), "keys replay")
       eqI(b[3].buttons, 0)

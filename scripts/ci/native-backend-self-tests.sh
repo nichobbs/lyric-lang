@@ -182,3 +182,5 @@ sdl3_prefix="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/sdl3"
 bash scripts/ci/build-sdl3.sh --x11 "$sdl3_prefix"
 LYRIC_BIN="$lyric_bin" SDL3_PREFIX="$sdl3_prefix" bash scripts/ci/window-examples-e2e.sh
 LYRIC_BIN="$lyric_bin" SDL3_PREFIX="$sdl3_prefix" bash scripts/ci/gpu-window-e2e.sh
+# docs/67 G7: lyric-game's Breakout sample (tests, headless native replay, an X11 window under Xvfb).
+LYRIC_BIN="$lyric_bin" SDL3_PREFIX="$sdl3_prefix" bash scripts/ci/game-examples-e2e.sh

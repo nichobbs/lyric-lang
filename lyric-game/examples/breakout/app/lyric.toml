@@ -1,0 +1,24 @@
+# Breakout app - draws and plays the Breakout sample on lyric-game (docs/67 G7).
+#   breakout                          play
+#   breakout --record <file>          play and record the input
+#   breakout --play <file> [--record <file>]
+#                                     watch a recording
+#   breakout --check <file> <digest> <golden.rgba>
+#                                     replay headless, check the state digest and the last frame
+[package]
+name    = "Lyric.Breakout.App"
+version = "0.1.0"
+
+[project]
+name = "Lyric.Breakout.App"
+
+[project.packages]
+"Breakout.View" = "src/view.l"
+"Breakout.App"  = "src/main.l"
+
+[dependencies]
+"Lyric.Breakout"      = { path = "../logic" }
+"Lyric.Game"          = { path = "../../.." }
+"Lyric.Game.Platform" = { path = "../../../platform" }
+"Lyric.Draw"          = { path = "../../../../lyric-draw" }
+"Lyric.Text"          = { path = "../../../../lyric-text" }

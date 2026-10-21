@@ -297,7 +297,8 @@ func addInstance(
     case None -> ()
   }
   val first = p.data.count / floatsPerInstance
-  val open = p.batches.count > 0 and p.batches[p.batches.count - 1].texture.raw == texture.raw and p.batches[p.batches.count - 1].crisp == crisp and
+  val open = p.batches.count > 0 and p.batches[p.batches.count - 1].texture.raw == texture.raw and
+    p.batches[p.batches.count - 1].crisp == crisp and
     sameScissor(p.batches[p.batches.count - 1].scissor, clip)
   if open {
     p.batches[p.batches.count - 1].count = p.batches[p.batches.count - 1].count + 1
@@ -325,12 +326,44 @@ func addInstance(
 
 /// A filled rectangle.
 pub func fillRect(p: Painter, r: Rect, c: Color): Unit {
-  addInstance(p, p.white, shapeKindFill, r.x, r.y, r.width, r.height, c, 0.0f32, 0.0f32, 0.0f32, 0.0f32, 1.0f32, 1.0f32, false)
+  addInstance(
+    p,
+    p.white,
+    shapeKindFill,
+    r.x,
+    r.y,
+    r.width,
+    r.height,
+    c,
+    0.0f32,
+    0.0f32,
+    0.0f32,
+    0.0f32,
+    1.0f32,
+    1.0f32,
+    false
+  )
 }
 
 /// A filled rectangle with corners of `radius` pixels.
 pub func fillRoundedRect(p: Painter, r: Rect, radius: Float, c: Color): Unit {
-  addInstance(p, p.white, shapeKindFill, r.x, r.y, r.width, r.height, c, radius, 0.0f32, 0.0f32, 0.0f32, 1.0f32, 1.0f32, false)
+  addInstance(
+    p,
+    p.white,
+    shapeKindFill,
+    r.x,
+    r.y,
+    r.width,
+    r.height,
+    c,
+    radius,
+    0.0f32,
+    0.0f32,
+    0.0f32,
+    1.0f32,
+    1.0f32,
+    false
+  )
 }
 
 /// A border `lineWidth` pixels wide, inside the rectangle's edge.
@@ -357,7 +390,23 @@ pub func strokeRoundedRect(p: Painter, r: Rect, radius: Float, lineWidth: Float,
 /// A soft shadow of a rounded rectangle: full strength inside it, fading to nothing over
 /// `blur` pixels either side of its edge.  Draw it before the shape that casts it.
 pub func drawShadow(p: Painter, r: Rect, radius: Float, blur: Float, c: Color): Unit {
-  addInstance(p, p.white, shapeKindShadow, r.x, r.y, r.width, r.height, c, radius, blur, 0.0f32, 0.0f32, 1.0f32, 1.0f32, false)
+  addInstance(
+    p,
+    p.white,
+    shapeKindShadow,
+    r.x,
+    r.y,
+    r.width,
+    r.height,
+    c,
+    radius,
+    blur,
+    0.0f32,
+    0.0f32,
+    1.0f32,
+    1.0f32,
+    false
+  )
 }
 
 /// An image stretched over `dest`, multiplied by `tint` (white for none).

@@ -1102,7 +1102,7 @@ pub func createWaylandSurface(d: Device, display: Long, surface: Long): Result[S
 }
 
 /// Sets the surface's size in pixels (call it again when the window is resized) and picks its
-/// format: RGBA8 when the surface offers it, else its first format.  Presentation is vsynced.
+/// format: RGBA8 when the surface offers it, else BGRA8, else its first format.  The two unorm formats are preferred over their sRGB twins so that colours written by a shader appear as written, as they do in an offscreen `formatRgba8` target.  Presentation is vsynced.
 @unsafe_ffi
 pub func configureSurface(d: Device, s: Surface, width: Int, height: Int): Result[Surface, String] {
   var caps = WGPUSurfaceCapabilities(
@@ -1127,12 +1127,15 @@ pub func configureSurface(d: Device, s: Surface, width: Int, height: Int): Resul
   var formats = caps.formats
   val _a = memcpyIntPointerToLong(nativeAddrOf(formatsAddress), nativeAddrOf(formats), 8)
   var chosen = 0
+  var chosenRank = 0
   var i: Long = 0
   while i < caps.formatCount {
     var candidate = 0
     val _c = memcpyFromBytes(nativeAddrOf(candidate), longToPtr(formatsAddress + 4 * i), 4)
-    if i == 0 or candidate == formatRgba8 {
+    val rank = if candidate == formatRgba8 { 3 } else if candidate == formatBgra8 { 2 } else { 1 }
+    if rank > chosenRank {
       chosen = candidate
+      chosenRank = rank
     }
     i = i + 1
   }
