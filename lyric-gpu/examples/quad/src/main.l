@@ -85,7 +85,7 @@ func draw(d: Gpu.Device): Result[buffer[Byte], String] {
   attributes.add(Gpu.VertexAttribute(format = Gpu.vertexFloat32x2, offset = 8, location = 1))
   val layouts: List[Gpu.VertexLayout] = newList()
   layouts.add(Gpu.VertexLayout(stride = 16, attributes = attributes))
-  val pipeline = match Gpu.createRenderPipeline(d, shader, "vs", "fs", layouts, Gpu.formatRgba8) {
+  val pipeline = match Gpu.createRenderPipeline(d, shader, "vs", "fs", layouts, Gpu.formatRgba8, false) {
     case Ok(p) -> p
     case Err(e) -> return Err(error = e)
   }
@@ -102,7 +102,17 @@ func draw(d: Gpu.Device): Result[buffer[Byte], String] {
   val buffers: List[Gpu.Buffer] = newList()
   buffers.add(vertices)
   val draws: List[Gpu.Draw] = newList()
-  draws.add(Gpu.Draw(pipeline = pipeline, bindGroup = Some(value = group), vertexBuffers = buffers, vertexCount = 6))
+  draws.add(
+    Gpu.Draw(
+      pipeline = pipeline,
+      bindGroup = Some(value = group),
+      vertexBuffers = buffers,
+      vertexCount = 6,
+      instanceCount = 1,
+      firstInstance = 0,
+      scissor = None
+    )
+  )
   match Gpu.render(d, target, 0.0, 0.0, 0.0, 1.0, draws) {
     case Ok(_) -> ()
     case Err(e) -> return Err(error = e)
