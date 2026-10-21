@@ -11,7 +11,9 @@ managed form (#8389) and the JVM `spawn` argument copy (#8391). G3 is implemente
 `lyric bindgen`, `[native.libs]`, prebuilt restore, callback members). G5 is
 implemented for compute and offscreen render (D194: `lyric-gpu`, compute and
 triangle examples with golden-image CI on lavapipe; D196: vertex and uniform
-buffers, textures, samplers and the textured-quad example); presentation remains. G4 is blocked on SDL3 binaries. The other phases are open.
+buffers, textures, samplers and the textured-quad example); presentation remains.
+G4 is implemented for Linux (D195: `lyric-window` on SDL3 with a headless demo
+in CI; macOS is not yet in CI). The other phases are open.
 D156 and D157 resolve Q-GFX-005 to Q-GFX-010 (§10).
 
 **Builds on:** `native/plan/` (the LLVM backend, D-N-001 onward),

@@ -1,0 +1,13 @@
+# Opens a window, handles input events and plays a sound, headless-testable (docs/67 G4).
+[package]
+name    = "Lyric.Window.Examples.Demo"
+version = "0.1.0"
+
+[project]
+name = "Lyric.Window.Examples.Demo"
+
+[project.packages]
+"Window.Examples.Demo" = "src/main.l"
+
+[dependencies]
+"Lyric.Window" = { path = "../.." }

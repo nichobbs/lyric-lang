@@ -1,0 +1,49 @@
+# What lyric bindgen binds from <SDL3/SDL.h> (SDL 3.4).  Regenerate with (from lyric-window/,
+# with SDL3's headers reachable through pkg-config or -I):
+#   lyric bindgen native/sdl_bindings.h --package Window.Kernel.Sdl --allow native/sdl.allow \
+#     --library SDL3 -o src/_kernel/sdl.l -I <SDL3 include dir>
+SDL_Init
+SDL_InitSubSystem
+SDL_QuitSubSystem
+SDL_Quit
+SDL_GetError
+SDL_free
+SDL_CreateWindow
+SDL_DestroyWindow
+SDL_SetWindowTitle
+SDL_GetWindowTitle
+SDL_GetWindowSize
+SDL_SetWindowSize
+SDL_GetWindowSizeInPixels
+SDL_GetWindowDisplayScale
+SDL_ShowWindow
+SDL_HideWindow
+SDL_GetWindowID
+SDL_GetWindowProperties
+SDL_GetPointerProperty
+SDL_GetNumberProperty
+SDL_GetWindowFlags
+SDL_PumpEvents
+SDL_PollEvent
+SDL_WaitEventTimeout
+SDL_PushEvent
+SDL_StartTextInput
+SDL_StopTextInput
+SDL_SetClipboardText
+SDL_GetClipboardText
+SDL_HasClipboardText
+SDL_GetTicksNS
+SDL_GetPerformanceCounter
+SDL_GetPerformanceFrequency
+SDL_DelayNS
+SDL_AudioSpec
+SDL_OpenAudioDevice
+SDL_CloseAudioDevice
+SDL_CreateAudioStream
+SDL_DestroyAudioStream
+SDL_BindAudioStream
+SDL_PutAudioStreamData
+SDL_FlushAudioStream
+SDL_GetAudioStreamQueued
+SDL_ResumeAudioDevice
+SDL_AUDIO_*
