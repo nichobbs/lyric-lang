@@ -1,0 +1,22 @@
+# lyric-draw - an immediate-mode 2D renderer on lyric-gpu for --target native (docs/67 phase G6).
+#
+#   Draw   rectangles, rounded rectangles, borders, soft shadows, images, clip rectangles and
+#          text (lyric-text) drawn as instanced signed-distance quads.
+[package]
+name        = "Lyric.Draw"
+version     = "0.1.0"
+description = "Immediate-mode 2D rendering on WebGPU for --target native."
+authors     = ["Lyric authors"]
+license     = "Apache-2.0"
+
+[project]
+name            = "Lyric.Draw"
+output          = "single"
+output_assembly = "Lyric.Draw.dll"
+
+[project.packages]
+"Draw" = "src/draw.l"
+
+[dependencies]
+"Lyric.Gpu"  = { path = "../lyric-gpu" }
+"Lyric.Text" = { path = "../lyric-text" }

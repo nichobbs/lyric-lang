@@ -1,0 +1,14 @@
+# Draws a card with shapes, a shadow, an image, clipped and wrapped Latin, Arabic and CJK text
+# into an offscreen target and compares the pixels to a golden image (docs/67 G6).
+[package]
+name    = "Lyric.Draw.Examples.Scene"
+version = "0.1.0"
+
+[project]
+name = "Lyric.Draw.Examples.Scene"
+
+[project.packages]
+"Draw.Examples.Scene" = "src/main.l"
+
+[dependencies]
+"Lyric.Draw" = { path = "../.." }
