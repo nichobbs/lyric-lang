@@ -25,7 +25,10 @@ and a Breakout sample whose recorded session is replayed headless, in a window u
 `lyric test`; macOS waits on a Cocoa surface). G8 is implemented as a data-parallel worker pool
 (D202: `Std.Parallel.forRange`/`forChunks` over `lyric_parallel_for`, 2.9x on four cores, ThreadSanitizer
 clean, which also fixed a race in the protected-type monitor); the coroutine scheduler for `async`
-tasks is still single-threaded. The other phases are open.
+tasks is still single-threaded. G10 is implemented except accessibility (D203: the native `lyric-ui` host,
+layout, widgets, focus, text editing, clipboard and input-method composition, running `examples/ui-customers`
+unchanged, with golden-frame and live-window CI; AccessKit and the macOS screen-reader smoke test remain).
+G9 is open.
 D156 and D157 resolve Q-GFX-005 to Q-GFX-010 (§10).
 
 **Builds on:** `native/plan/` (the LLVM backend, D-N-001 onward),

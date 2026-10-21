@@ -38,6 +38,9 @@ pub union Event {
   case KeyDown(window: Int, key: Int, scancode: Int, modifiers: Int, repeat: Bool)
   case KeyUp(window: Int, key: Int, scancode: Int, modifiers: Int)
   case TextInput(window: Int, text: String)
+  /// An input method is composing `text`; `start` and `length` select part of it (in code points).
+  /// An empty `text` ends the composition.
+  case TextEditing(window: Int, text: String, start: Int, length: Int)
   case MouseMotion(window: Int, x: Float, y: Float, dx: Float, dy: Float)
   case MouseButtonDown(window: Int, button: Int, x: Float, y: Float, clicks: Int)
   case MouseButtonUp(window: Int, button: Int, x: Float, y: Float, clicks: Int)
@@ -86,6 +89,8 @@ val eventKeyDown: Long = 768
 
 val eventKeyUp: Long = 769
 
+val eventTextEditing: Long = 770
+
 val eventTextInput: Long = 771
 
 val eventMouseMotion: Long = 1024
@@ -117,6 +122,10 @@ val offKeyDown: Long = 36
 val offKeyRepeat: Long = 37
 
 val offTextPointer: Long = 24
+
+val offEditStart: Long = 32
+
+val offEditLength: Long = 36
 
 val offMotionX: Long = 28
 
@@ -380,6 +389,15 @@ func decode(cell: Long): Event {
       modifiers = readU16(cell, offKeyMod).toInt()
     )
   }
+  if kind == eventTextEditing {
+    val text = match Ffi.tryFromCString(longToPtr(readU64(cell, offTextPointer))) { case Some(s) -> s; case None -> "" }
+    return TextEditing(
+      window = window,
+      text = text,
+      start = readI32(cell, offEditStart),
+      length = readI32(cell, offEditLength)
+    )
+  }
   if kind == eventTextInput {
     val text = match Ffi.tryFromCString(longToPtr(readU64(cell, offTextPointer))) { case Some(s) -> s; case None -> "" }
     return TextInput(window = window, text = text)
@@ -521,6 +539,14 @@ pub func post(e: Event): Result[Unit, String] {
   }
   Ffi.release(cellPtr)
   outcome
+}
+
+/// Tells the input method where text is being entered, as a rectangle of `w` in window units
+/// and the caret's x offset inside it, so its candidate window opens beside the caret.
+@unsafe_ffi
+pub func setTextInputArea(w: Window, x: Int, y: Int, width: Int, height: Int, caretX: Int): Unit {
+  var area = SDL_Rect(x = x, y = y, w = width, h = height)
+  val _ = SDL_SetTextInputArea(longToPtr(w.handle), nativeAddrOf(area), caretX)
 }
 
 /// Text events are delivered for `w` until `stopTextInput`.

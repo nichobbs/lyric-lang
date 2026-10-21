@@ -48,4 +48,4 @@ open part of docs/67 G5), so it is playable on Linux and macOS is blocked on tha
 itself has no platform code. Gamepad and touch input, stereo panning, and an audio resampler better
 than linear interpolation. A generic function called from another package must be `pub` for the
 native backend to find it (`frameLoop` and `drawFrame` are `pub` for that reason; tracked as a
-compiler bug, not a design).
+compiler bug, not a design: #8417).

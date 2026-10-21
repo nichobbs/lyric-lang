@@ -11,6 +11,10 @@ import Std.Collections
 import Std.Buffer as Buf
 import Game.Inflate
 
+/// The most pixels `decodePng` accepts (64 mega-pixels, 256 MB of RGBA): a header can name 65536 by
+/// 65536, and the decoder must not allocate that on its word.
+pub val maxPixels: Int = 67108864
+
 /// A decoded image.
 pub record Image {
   width: Int
@@ -187,7 +191,7 @@ pub func decodePng(file: in slice[Byte]): Result[Image, String] {
     pos = pos + 12 + len
   }
   val h = match header { case Some(h) -> h; case None -> return Err(error = "png: no IHDR chunk") }
-  if h.width <= 0 or h.height <= 0 or h.width > 65536 or h.height > 65536 {
+  if h.width <= 0 or h.height <= 0 or h.width > 65536 or h.height > 65536 or h.width > maxPixels / h.height {
     return Err(error = "png: unsupported dimensions " + h.width.toString() + "x" + h.height.toString())
   }
   if not validDepth(h.colorType, h.depth) {
@@ -199,8 +203,31 @@ pub func decodePng(file: in slice[Byte]): Result[Image, String] {
   if h.colorType == 3 and palette.count == 0 {
     return Err(error = "png: palette image without a PLTE chunk")
   }
-  val raw = match zlibDecompress(idat.toArray()) { case Ok(b) -> b; case Err(e) -> return Err(error = "png: " + e) }
+  val raw = match zlibDecompress(idat.toArray(), rawSize(h)) {
+    case Ok(b) -> b
+    case Err(e) -> return Err(error = "png: " + e)
+  }
   decodePixels(h, raw, palette, trns)
+}
+
+// The bytes of filtered scanlines the header promises: every pass's rows, each a filter byte and its pixels.
+func rawSize(h: Header): Int {
+  val bitsPerPixel = channelsOf(h.colorType) * h.depth
+  val passX = if h.interlace == 1 { [0, 4, 0, 2, 0, 1, 0] } else { [0] }
+  val passY = if h.interlace == 1 { [0, 0, 4, 0, 2, 0, 1] } else { [0] }
+  val stepX = if h.interlace == 1 { [8, 8, 4, 4, 2, 2, 1] } else { [1] }
+  val stepY = if h.interlace == 1 { [8, 8, 8, 4, 4, 2, 2] } else { [1] }
+  var total = 0
+  var pass = 0
+  while pass < passX.length {
+    val pw = (h.width - passX[pass] + stepX[pass] - 1) / stepX[pass]
+    val ph = (h.height - passY[pass] + stepY[pass] - 1) / stepY[pass]
+    if pw > 0 and ph > 0 {
+      total = total + ph * ((pw * bitsPerPixel + 7) / 8 + 1)
+    }
+    pass = pass + 1
+  }
+  total
 }
 
 func decodePixels(h: Header, rawIn: buffer[Byte], palette: List[Int], trns: List[Int]): Result[Image, String] {

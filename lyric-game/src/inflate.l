@@ -10,6 +10,8 @@ import Std.Buffer as Buf
 
 record Inflater {
   data: slice[Byte]
+  stop: Int
+  limit: Int
   var pos: Int
   var bitBuf: Int
   var bitCnt: Int
@@ -20,6 +22,9 @@ record Inflater {
 record Huffman {
   counts: buffer[Int]
   symbols: buffer[Int]
+  /// Unused code space: 0 for a complete code, positive when incomplete, negative when
+  /// over-subscribed (more codes of a length than the length can hold).
+  left: Int
 }
 
 func fail(s: Inflater, message: String): Unit {
@@ -30,7 +35,7 @@ func fail(s: Inflater, message: String): Unit {
 
 func getBits(s: Inflater, need: Int): Int {
   while s.bitCnt < need {
-    if s.pos >= s.data.length {
+    if s.pos >= s.stop {
       fail(s, "unexpected end of compressed data")
       return 0
     }
@@ -57,6 +62,12 @@ func buildHuffman(lengths: buffer[Int], n: Int): Huffman {
     offs[len + 1] = offs[len] + counts[len]
     len = len + 1
   }
+  var left = 1
+  var l = 1
+  while l <= 15 {
+    left = left.shl(1) - counts[l]
+    l = l + 1
+  }
   var symbols = Buf.filled(if n > 0 { n } else { 1 }, 0)
   var sym = 0
   while sym < n {
@@ -67,7 +78,7 @@ func buildHuffman(lengths: buffer[Int], n: Int): Huffman {
     }
     sym = sym + 1
   }
-  Huffman(counts = counts, symbols = symbols)
+  Huffman(counts = counts, symbols = symbols, left = left)
 }
 
 func decodeSymbol(s: Inflater, h: Huffman): Int {
@@ -154,6 +165,10 @@ func codes(s: Inflater, lit: Huffman, dist: Huffman): Unit {
     if s.error != "" {
       return
     }
+    if s.produced.count > s.limit {
+      fail(s, "output exceeds the expected size")
+      return
+    }
     if sym < 256 {
       s.produced.add(sym.toByte())
     } else if sym == 256 {
@@ -181,6 +196,10 @@ func codes(s: Inflater, lit: Huffman, dist: Huffman): Unit {
         fail(s, "distance reaches before the start of the output")
         return
       }
+      if s.produced.count + len > s.limit + 258 {
+        fail(s, "output exceeds the expected size")
+        return
+      }
       var k = 0
       while k < len {
         s.produced.add(s.produced[s.produced.count - d])
@@ -193,7 +212,7 @@ func codes(s: Inflater, lit: Huffman, dist: Huffman): Unit {
 func stored(s: Inflater): Unit {
   s.bitBuf = 0
   s.bitCnt = 0
-  if s.pos + 4 > s.data.length {
+  if s.pos + 4 > s.stop {
     fail(s, "unexpected end of compressed data")
     return
   }
@@ -204,8 +223,12 @@ func stored(s: Inflater): Unit {
     return
   }
   s.pos = s.pos + 4
-  if s.pos + len > s.data.length {
+  if s.pos + len > s.stop {
     fail(s, "unexpected end of compressed data")
+    return
+  }
+  if s.produced.count + len > s.limit {
+    fail(s, "output exceeds the expected size")
     return
   }
   var i = 0
@@ -254,6 +277,10 @@ func dynamicCodes(s: Inflater): Unit {
     return
   }
   val lencode = buildHuffman(lengths, 19)
+  if lencode.left != 0 {
+    fail(s, "over-subscribed or incomplete code length code")
+    return
+  }
   var index = 0
   var all = Buf.filled(320, 0)
   while index < nlen + ndist {
@@ -310,12 +337,36 @@ func dynamicCodes(s: Inflater): Unit {
     distLengths[j] = all[nlen + j]
     j = j + 1
   }
-  codes(s, buildHuffman(litLengths, nlen), buildHuffman(distLengths, ndist))
+  val lit = buildHuffman(litLengths, nlen)
+  val dist = buildHuffman(distLengths, ndist)
+  if lit.left < 0 or dist.left < 0 {
+    fail(s, "over-subscribed Huffman code")
+    return
+  }
+  // An incomplete code is accepted only for the single-code case DEFLATE allows (zlib's puff).
+  if (lit.left > 0 and not (lit.counts[1] == 1 and nlen == lit.counts[0] + 1)) or (dist.left > 0 and not (dist.counts[1] == 1 and ndist == dist.counts[0] + 1)) {
+    fail(s, "incomplete Huffman code")
+    return
+  }
+  codes(s, lit, dist)
 }
 
-/// Decompresses a raw DEFLATE stream.
-pub func inflate(data: in slice[Byte]): Result[buffer[Byte], String] {
-  val s = Inflater(data = data, pos = 0, bitBuf = 0, bitCnt = 0, produced = newList(), error = "")
+/// Decompresses the raw DEFLATE stream in `data[from ..< to]`.  `maxOutput` bounds the output
+/// (a stream that would produce more is an error, not an allocation): pass the size the format
+/// promises, so a small hostile stream cannot expand without limit.
+pub func inflateRange(data: in slice[Byte], from: in Int, to: in Int, maxOutput: in Int): Result[buffer[Byte], String]
+  requires: from >= 0 and from <= to and to <= data.length and maxOutput >= 0
+{
+  val s = Inflater(
+    data = data,
+    stop = to,
+    limit = maxOutput,
+    pos = from,
+    bitBuf = 0,
+    bitCnt = 0,
+    produced = newList(),
+    error = ""
+  )
   var last = 0
   while last == 0 and s.error == "" {
     last = getBits(s, 1)
@@ -335,7 +386,17 @@ pub func inflate(data: in slice[Byte]): Result[buffer[Byte], String] {
   if s.error != "" {
     return Err(error = "inflate: " + s.error)
   }
+  if s.produced.count > maxOutput {
+    return Err(error = "inflate: output exceeds the expected size")
+  }
   Ok(value = Buf.fromSlice(s.produced.toArray()))
+}
+
+/// Decompresses a raw DEFLATE stream, producing at most `maxOutput` bytes.
+pub func inflate(data: in slice[Byte], maxOutput: in Int): Result[buffer[Byte], String]
+  requires: maxOutput >= 0
+{
+  inflateRange(data, 0, data.length, maxOutput)
 }
 
 /// The Adler-32 checksum of `data`.
@@ -351,8 +412,11 @@ pub func adler32(data: in buffer[Byte]): Long {
   b.toLong().shl(16).or(a.toLong())
 }
 
-/// Decompresses a zlib stream: the two-byte header, DEFLATE data, and the Adler-32 check.
-pub func zlibDecompress(data: in slice[Byte]): Result[buffer[Byte], String] {
+/// Decompresses a zlib stream: the two-byte header, DEFLATE data, and the Adler-32 check, producing
+/// at most `maxOutput` bytes.
+pub func zlibDecompress(data: in slice[Byte], maxOutput: in Int): Result[buffer[Byte], String]
+  requires: maxOutput >= 0
+{
   if data.length < 6 {
     return Err(error = "zlib: stream too short")
   }
@@ -364,19 +428,16 @@ pub func zlibDecompress(data: in slice[Byte]): Result[buffer[Byte], String] {
   if flg.and(32) != 0 {
     return Err(error = "zlib: preset dictionaries are not supported")
   }
-  val body: List[Byte] = newList()
-  var i = 2
-  while i < data.length - 4 {
-    body.add(data[i])
-    i = i + 1
+  val plain = match inflateRange(data, 2, data.length - 4, maxOutput) {
+    case Ok(b) -> b
+    case Err(e) -> return Err(error = e)
   }
-  val produced = match inflate(body.toArray()) { case Ok(b) -> b; case Err(e) -> return Err(error = e) }
   val n = data.length
   val expected = data[n - 4].toLong().shl(24).or(data[n - 3].toLong().shl(16)).or(data[n - 2].toLong().shl(8)).or(
     data[n - 1].toLong()
   )
-  if adler32(produced) != expected {
+  if adler32(plain) != expected {
     return Err(error = "zlib: Adler-32 mismatch")
   }
-  Ok(value = produced)
+  Ok(value = plain)
 }

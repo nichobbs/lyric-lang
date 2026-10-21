@@ -7,7 +7,9 @@
 //! `finish` uploads the instances, a changed atlas, and the viewport, and issues one instanced
 //! draw per batch of consecutive instances that share a texture and a clip rectangle.
 //!
-//! Coordinates are pixels with the origin at the top-left and y growing downward.  Colours are
+//! Coordinates are logical pixels with the origin at the top-left and y growing downward; a
+//! painter drawing into a high-DPI target is given the target's scale (`setScale`) and multiplies
+//! every coordinate, size, radius and blur by it, so callers lay out once for any display.  Colours are
 //! straight (non-premultiplied) RGBA in 0 to 1 and are composited with premultiplied alpha.
 //! Clips are rectangles in whole pixels (the clip stack's intersection), applied as scissors.
 @io
@@ -75,6 +77,7 @@ pub record Painter {
   var atlasUploaded: Int
   var width: Int
   var height: Int
+  var scale: Float
   var data: List[Float]
   var batches: List[Batch]
   var clips: List[G.Scissor]
@@ -132,6 +135,7 @@ pub func newPainter(d: G.Device, format: Int): Result[Painter, String] {
       atlasUploaded = 0,
       width = 0,
       height = 0,
+      scale = 1.0f32,
       data = newList(),
       batches = newList(),
       clips = newList()
@@ -147,6 +151,17 @@ pub func releasePainter(p: Painter): Unit {
   G.releaseTexture(p.atlasTexture)
   G.releaseBuffer(p.view)
   G.releaseBuffer(p.instances)
+}
+
+/// Sets how many target pixels one logical pixel covers (1 by default).  Every coordinate,
+/// length, corner radius, line width and blur given to the drawing functions after this is
+/// multiplied by it; the target size given to `beginFrame` stays in target pixels.  Text is
+/// positioned and wrapped in logical pixels too, but is rasterised from the fonts it is given, so
+/// open them at the scaled size.
+pub func setScale(p: Painter, scale: Float): Unit
+  requires: scale > 0.0f32
+{
+  p.scale = scale
 }
 
 /// Starts a frame for a target of `width` by `height` pixels, discarding anything collected.
@@ -211,10 +226,11 @@ func currentClip(p: Painter): Option[G.Scissor] {
 /// Restricts later drawing to the intersection of `r` (rounded outward to whole pixels) and the
 /// clips already pushed.  Pair with `popClip`.
 pub func pushClip(p: Painter, r: Rect): Unit {
-  var x0 = floorInt(r.x)
-  var y0 = floorInt(r.y)
-  var x1 = ceilInt(r.x + r.width)
-  var y1 = ceilInt(r.y + r.height)
+  val k = p.scale
+  var x0 = floorInt(r.x * k)
+  var y0 = floorInt(r.y * k)
+  var x1 = ceilInt((r.x + r.width) * k)
+  var y1 = ceilInt((r.y + r.height) * k)
   match currentClip(p) {
     case Some(c) -> {
       if c.x > x0 {
@@ -306,17 +322,18 @@ func addInstance(
     p.batches.add(Batch(texture = texture, crisp = crisp, first = first, count = 1, scissor = clip))
   }
   val d = p.data
-  d.add(x)
-  d.add(y)
-  d.add(w)
-  d.add(h)
+  val k = p.scale
+  d.add(x * k)
+  d.add(y * k)
+  d.add(w * k)
+  d.add(h * k)
   d.add(c.r * c.a)
   d.add(c.g * c.a)
   d.add(c.b * c.a)
   d.add(c.a)
   d.add(kind)
-  d.add(radius)
-  d.add(extra)
+  d.add(radius * k)
+  d.add(if kind == shapeKindTexture { extra } else { extra * k })
   d.add(0.0f32)
   d.add(u0)
   d.add(v0)
@@ -454,13 +471,14 @@ pub func drawImageRegion(p: Painter, image: Image, source: Rect, dest: Rect, tin
   )
 }
 
-/// Lays `text` out with `fonts` in a column `maxWidth` pixels wide (no wrapping when it is not
+/// Lays `text` out with `fonts` in a column `maxWidth` logical pixels wide (no wrapping when it is not
 /// positive) and draws it with its top-left corner at (`x`, `y`).  Returns the layout, whose
 /// `width` and `height` size the block.  `Err` when the glyph atlas is full.
 pub func drawText(
   p: Painter, fonts: List[Text.Font], text: String, x: Float, y: Float, maxWidth: Float, c: Color
 ): Result[Text.TextLayout, String] {
-  val layout = Text.layoutText(fonts, text, maxWidth)
+  val k = p.scale
+  val layout = Text.layoutText(fonts, text, maxWidth * k)
   val size = atlasSize.toFloat()
   for g in layout.glyphs {
     val region = match Text.atlasGlyph(p.atlas, fonts[g.font], g.glyph) {
@@ -468,16 +486,16 @@ pub func drawText(
       case Err(e) -> return Err(error = e)
     }
     if region.width > 0 {
-      val gx = (x + g.x + 0.5f32).toInt().toFloat() + region.left.toFloat()
-      val gy = (y + g.y + 0.5f32).toInt().toFloat() - region.top.toFloat()
+      val gx = (x * k + g.x + 0.5f32).toInt().toFloat() + region.left.toFloat()
+      val gy = (y * k + g.y + 0.5f32).toInt().toFloat() - region.top.toFloat()
       addInstance(
         p,
         p.atlasTexture,
         shapeKindTexture,
-        gx,
-        gy,
-        region.width.toFloat(),
-        region.height.toFloat(),
+        gx / k,
+        gy / k,
+        region.width.toFloat() / k,
+        region.height.toFloat() / k,
         c,
         0.0f32,
         0.0f32,

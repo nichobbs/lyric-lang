@@ -64,6 +64,7 @@ for _ in \$(seq 1 100); do
   sleep 0.1
 done
 sleep 1
+kill -0 \$pid 2>/dev/null || { echo '::error::the game exited before the screenshot'; exit 1; }
 xwd -root -silent | convert xwd:- -depth 8 rgb:"$work/shot.rgb"
 wait \$pid
 SESSION

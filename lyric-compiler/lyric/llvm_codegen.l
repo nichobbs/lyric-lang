@@ -14158,18 +14158,34 @@ func emitConstructorTest(
         match inner {
           case Some(_) -> panic("Lyric.LlvmCodegen: nested binding patterns are not yet supported for --target native")
           case None -> {
-            bindNames.add(name)
-            bindVals.add(fieldVals[pi])
-            if isLast {
-              insns.add(NBr(label = okLabel))
+            // A bare identifier that names a case of the FIELD'S union is a nullary
+            // constructor pattern, not a binding (`case Ok(Back) ->`): without this
+            // test `Ok(Back)` matched every `Ok(_)` that no earlier arm took.  Only a
+            // union-typed field is checked: an enum field erases to `i32`, where a
+            // bundle-wide name match could capture an ordinary `Int` bind (#6969).
+            val namesCase = match unionInfoOfType(ctx, fieldVals[pi].ty) {
+              case Some(_) -> scrutineeHasCase(ctx, fieldVals[pi].ty, name, "")
+              case None -> false
+            }
+            if namesCase {
+              emitPatternTest(ctx, insns, fieldVals[pi], sub, nextL, failLabel, bindNames, bindVals, "")
+              if not isLast {
+                insns.add(NLabel(name = nextL))
+              }
+            } else {
+              bindNames.add(name)
+              bindVals.add(fieldVals[pi])
+              if isLast {
+                insns.add(NBr(label = okLabel))
+              }
             }
           }
         }
       }
       case _ -> {
-        // "" — a nested field's bare-case-name test never reaches
-        // `scrutineeHasCase`'s enum branch (a `PBinding` sub-pattern is
-        // always a plain bind, handled above); the hint is unused here.
+        // "" — an enum-typed nested field's bare-case-name test never reaches
+        // `scrutineeHasCase`'s enum branch (see the `PBinding` arm above); the
+        // hint is unused here.
         emitPatternTest(ctx, insns, fieldVals[pi], sub, nextL, failLabel, bindNames, bindVals, "")
         if not isLast {
           insns.add(NLabel(name = nextL))

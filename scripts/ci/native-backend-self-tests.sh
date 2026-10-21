@@ -132,6 +132,7 @@ for t in \
   lyric-compiler/lyric/explicit_type_args_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_type_self_test.l \
   lyric-compiler/lyric/byte_native_self_test.l \
+  lyric-compiler/lyric/nested_nullary_pattern_native_self_test.l \
   lyric-compiler/lyric/extern_cbinding_self_test.l ; do
   echo "=== $t (--target native) ==="
   "$lyric_bin" test --target native "$t"
@@ -186,3 +187,5 @@ LYRIC_BIN="$lyric_bin" SDL3_PREFIX="$sdl3_prefix" bash scripts/ci/window-example
 LYRIC_BIN="$lyric_bin" SDL3_PREFIX="$sdl3_prefix" bash scripts/ci/gpu-window-e2e.sh
 # docs/67 G7: lyric-game's Breakout sample (tests, headless native replay, an X11 window under Xvfb).
 LYRIC_BIN="$lyric_bin" SDL3_PREFIX="$sdl3_prefix" bash scripts/ci/game-examples-e2e.sh
+# docs/67 G10: the native lyric-ui host on examples/ui-customers (scripted golden frames, then a live X11 window).
+LYRIC_BIN="$lyric_bin" SDL3_PREFIX="$sdl3_prefix" bash scripts/ci/ui-native-e2e.sh

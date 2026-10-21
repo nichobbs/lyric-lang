@@ -127,6 +127,15 @@ Keyed nodes (`keyed(key, view)`) are addressed by key in events, so a click
 on a row that moved between render and click still reaches that row, and a
 click on a row that has gone is dropped. Key the items of dynamic lists.
 
+## A native window
+
+`Ui.Native.Run.run(cfg, route)` (`lyric-ui/native/`, `--target native`) draws the same screens itself, with
+`lyric-draw` and `lyric-text`, instead of a webview: no browser engine, one process. It takes the same
+`route` as the other hosts, so an application is written once (`examples/ui-customers` gets a native
+entry point without a change to any screen). It supports mouse, keyboard with Tab traversal, text
+editing with a caret and selection, the clipboard, input-method composition, scrolling and data grids.
+It is built from a host-free core (`Ui.Native.Layout` and friends, tested on every target) and a painter and window loop.
+
 ## A desktop window
 
 `Ui.Host.Desktop.run(cfg, route)` shows the same screens in a window of the

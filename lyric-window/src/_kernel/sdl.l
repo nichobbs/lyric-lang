@@ -34,6 +34,13 @@ pub foreign record SDL_AudioSpec {
   freq: Int
 }
 
+pub foreign record SDL_Rect {
+  x: Int
+  y: Int
+  w: Int
+  h: Int
+}
+
 @library("SDL3")
 pub extern func SDL_free(mem: NativePtr[Byte]): Unit = "SDL_free"
 
@@ -126,6 +133,9 @@ pub extern func SDL_StartTextInput(window: NativePtr[Byte]): Byte = "SDL_StartTe
 
 @library("SDL3")
 pub extern func SDL_StopTextInput(window: NativePtr[Byte]): Byte = "SDL_StopTextInput"
+
+@library("SDL3")
+pub extern func SDL_SetTextInputArea(window: NativePtr[Byte], rect: NativePtr[SDL_Rect], cursor: Int): Byte = "SDL_SetTextInputArea"
 
 @library("SDL3")
 pub extern func SDL_PumpEvents(): Unit = "SDL_PumpEvents"

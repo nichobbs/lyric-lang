@@ -168,12 +168,38 @@ test "a truncated file and a wrong signature are errors" {
 }
 
 test "inflate rejects a corrupt stream without panicking" {
-  match inflate(unhex("ffffffff")) {
+  match inflate(unhex("ffffffff"), 1000) {
     case Ok(_) -> assertTrue(false, "should not inflate")
     case Err(e) -> assertTrue(contains(e, "inflate"), e)
   }
-  match zlibDecompress(unhex("789c0300000001")) {
+  match zlibDecompress(unhex("789c0300000001"), 1000) {
     case Ok(_) -> assertTrue(false, "should not decompress")
     case Err(_) -> ()
+  }
+}
+
+test "a stream that expands past its promised size is refused, not allocated" {
+  // 1000 bytes of zeros deflated: far below 1000 bytes of input, 1000 bytes out.
+  val zeros = unhex("78da63601805a360140c77000003e80001")
+  match zlibDecompress(zeros, 10) {
+    case Ok(_) -> assertTrue(false, "should exceed the limit")
+    case Err(e) -> assertTrue(contains(e, "exceeds") or contains(e, "Adler"), e)
+  }
+}
+
+test "a header that names a huge image is refused before anything is allocated" {
+  // 65536 x 65536 RGBA8: a valid IHDR with the right CRC, no pixel data.
+  val ihdr = unhex("89504e470d0a1a0a0000000d49484452000100000001000008060000006c8430e3")
+  match decodePng(ihdr) {
+    case Ok(_) -> assertTrue(false, "should not decode")
+    case Err(e) -> assertTrue(contains(e, "dimensions"), e)
+  }
+}
+
+test "over-subscribed Huffman codes are refused" {
+  // A dynamic block whose code-length code gives five codes of length one.
+  match inflate(unhex("05009204"), 100) {
+    case Ok(_) -> assertTrue(false, "should not inflate")
+    case Err(e) -> assertTrue(contains(e, "inflate"), e)
   }
 }

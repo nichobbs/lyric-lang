@@ -1,0 +1,36 @@
+# lyric-ui native host, core - the host-independent half of the native `lyric-ui` host
+# (docs/65 §13.3, docs/67 phase G10).
+#
+#   Ui.Native.Theme     design tokens (light and dark), the same as runtime/ui.css
+#   Ui.Native.Client    the session protocol from the host's side: decode server messages, apply
+#                       patches to the host's mirror of the tree, address events
+#   Ui.Native.Layout    flex-style layout of the widget tree into boxes with absolute rectangles
+#   Ui.Native.Interact  focus order, hit testing, text editing, grid scrolling, click actions
+#
+# Nothing here touches a window or a GPU, so it builds and tests on every target; the painter and
+# the frame loop are the sibling `host/` project, for `--target native`.
+[package]
+name        = "Lyric.Ui.Native.Core"
+version     = "0.1.0"
+description = "Layout, protocol client and interaction logic of the native lyric-ui host."
+authors     = ["Lyric authors"]
+license     = "Apache-2.0"
+
+[project]
+name            = "Lyric.Ui.Native.Core"
+output          = "single"
+output_assembly = "Lyric.Ui.Native.Core.dll"
+
+[project.packages]
+"Ui.Native.Theme"    = "src/theme.l"
+"Ui.Native.Client"   = "src/client.l"
+"Ui.Native.Layout"   = "src/layout.l"
+"Ui.Native.Interact" = "src/interact.l"
+
+[project.tests]
+"Ui.Native.ClientTests"   = "tests/client_tests.l"
+"Ui.Native.LayoutTests"   = "tests/layout_tests.l"
+"Ui.Native.InteractTests" = "tests/interact_tests.l"
+
+[dependencies]
+"Lyric.Ui" = { path = ".." }
