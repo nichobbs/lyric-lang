@@ -9,7 +9,8 @@
    when every call has finished. Indices are claimed from an atomic counter, so uneven work
    balances. The pool is created on first use with `LYRIC_THREADS - 1` workers (default: the
    processor count; `1` means no pool, a serial loop; wasm32-wasi has no threads and is always
-   serial). One loop runs at a time (a second caller on another thread waits), and a body that
+   serial). If a worker thread fails to start the pool runs with the workers it got, since the
+   caller always helps; `Std.Parallel.threadCount` reports the configured count. One loop runs at a time (a second caller on another thread waits), and a body that
    starts a loop runs it serially, so nesting cannot deadlock. A worker holds the job only between
    taking it and finishing its share, both under the pool mutex, and the caller waits for
    `done == count and no active worker` before returning, so no worker touches a finished job.
