@@ -136,7 +136,7 @@ Issue clusters, by `group:*` label.  Counts are open issues as of 2026-10-21.
   Int`, `UInt`/`ULong` (#7891, umbrella epic #4607 is stale and should be
   rewritten or closed); reachability keyed by bare method name (#8413); clang
   collision with no diagnostic (#8360); `nativeAddrOf(var: Int)` (#4845).
-  Missing: 3-OS native CI matrix, ARM, Windows (docs/67 G9).
+  Missing: arm64 and macOS native CI legs (#8419), Windows (docs/67 G9).
 - **Cross-target stdlib divergence.**  `Std.Time.toIsoString` (#8314), `Map.add`,
   tuple key and `==` on `List` differ by target (#7301, #8169, #8170),
   JVM `Std.Set` unusable (#7312), JVM `format1..4` drop args (#7367).
@@ -200,10 +200,13 @@ left is verification and release work, tracked in `docs/36`:
 
 ## Issue tracker hygiene (do alongside Tier 1)
 
-- Close or rewrite stale epics: #7945 (G6 done: D198-D200), #7944 (G5 done
-  except #8404, which is itself covered by D196/D197: verify), #7941 (G2 done:
-  D185-D187), #4607 (native umbrella, N2-N5 shipped), #8118 (verify remainder),
-  #8149 (value generics: verify remainder).
+- Stale epics: #4607 (native umbrella) and #7944 (G5, all three golden-image
+  examples pass in CI) were closed on 2026-10-21; the native CI matrix residual
+  is #8419 and the G5 residual is #8404. Deliberately left open because their
+  own exit criteria are unmet: #7945 (G6: no real-hardware frame-budget run,
+  bidi in #8410), #7941 (G2: JVM `spawn` copy #8391, verifier array model
+  #8394, copy-before-loop lint #8395), #8118 (NPM, items 2-8) and #8149
+  (value-generic protected types cannot be `pub`, T0166).
 - Close the ten `review-finding` doc-hygiene issues (#6982, #6999, #7066,
   #7068, #7070, #7073-#7077) after confirming each is fixed on `main`.
 - 239 of 379 open issues carry no `group:*` label; label them so clusters

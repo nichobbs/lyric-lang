@@ -1,11 +1,11 @@
 # 44 — JVM Production-Readiness Remediation Plan
 
-**Current status (2026-10-21): bands J0-J6 shipped; J7 (acceptance gate) is met in practice by the per-feature cross-target CI steps.** §1-§3 below are the original audit prose and describe the 2026-05 state (closures/async/aspects as panics, `.dll` output, F# `JvmLoweringB*Test.fs` wrappers, `Manifest.fs`/`JvmHosts.fs` debt); all of that is fixed or deleted, and `codegen.l:NNNN` citations are dead because the codegen is now split into `lyric-compiler/jvm/codegen/01_types.l`..`06_items.l`. Findings B-3 (aspects, `Lyric.Weaver` is imported by `jvm/bridge.l`), B-9, M-4, M-5, M-14 and m-1 are shipped though their rows are not struck; M-16 is obsolete (F# removed). JVM generics remain erased-with-checkcast by design (Q-J001). The residual JVM tail (J008 on `+` over `String` elements, wire bootstrap stackmaps, inout through generic fields, unimplemented ecosystem backends) is tracked in `docs/12-todo-plan.md` Tier 3 and the `group:jvm-production-readiness` issues (epic #2663).
+**Current status (2026-10-21): bands J0-J6 shipped; J7 (acceptance gate) is met in practice by the per-feature cross-target CI steps.** §1-§3 were rewritten on 2026-10-21 to describe the current state; §4 (findings) and §5 (bands) remain the original audit record, and their `codegen.l:NNNN` citations are dead because the codegen is now split into `lyric-compiler/jvm/codegen/01_types.l`..`06_items.l`. Findings B-3 (aspects, `Lyric.Weaver` is imported by `jvm/bridge.l`), B-9, M-4, M-5, M-14 and m-1 are shipped though their rows are not struck; M-16 is obsolete (F# removed). JVM generics remain erased-with-checkcast by design (Q-J001). The residual JVM tail (J008 on `+` over `String` elements, wire bootstrap stackmaps, inout through generic fields, unimplemented ecosystem backends) is tracked in `docs/12-todo-plan.md` Tier 3 and the `group:jvm-production-readiness` issues (epic #2663).
 
 **Status:** Backed by D-progress-620 (`docs/03-decision-log.md`), which
 codifies the G1 channel decision: JVM is an independently-versioned Phase-6
 target, not a v1.0 SemVer-guaranteed channel. Band ordering (J0–J7) is
-documented in §5 below; J0–J3 shipped historically.
+documented in §5 below; J0–J6 shipped (see the current-status note above).
 
 **Method.** This plan was produced by auditing the **code as source of truth**
 (docs and issues were treated as possibly-stale corroboration), cross-checked
@@ -25,124 +25,78 @@ This is the JVM counterpart to `docs/41-self-hosted-compiler-gap-analysis.md`
 
 ## 1. Executive summary
 
-The self-hosted JVM backend (`lyric-compiler/jvm/`, ~600 KB of `.l` across 12
-packages) is **real and partially working**, not a stub: a clean program with
-records, unions, pattern matching, arithmetic, bitwise ops, `for`/`while`, and
-string handling compiles to a runnable JAR and produces correct output under
-`java`. Verified empirically:
+_Rewritten 2026-10-21. The 2026-05 audit found `--target jvm` to be a working
+demo of a language subset; the bands in §5 closed that gap. The original
+headline problems and their outcome:_
 
-- `lyric test --target jvm lyric-compiler/lyric/bitwise_self_test.l` →
-  **10/10 pass**, executing real bytecode under `java`.
-- A record + `union` + `match` program built with
-  `lyric build --target jvm -o out.jar` ran under `java` and printed the
-  correct results (`12`, `15`).
+| 2026-05 headline problem | Outcome |
+|---|---|
+| The user compile path (`jvm/bridge.l` to `jvm/codegen/`) was a strict subset: no aspect weaving, lambda lifting, `?` lowering, `@cfg` erasure, generics, opaque, protected, wire or config types; closures, async, aspects and `defer` panicked or silently no-opped. | Fixed. `Jvm.Bridge` runs the shared middle end (`Lyric.Pipeline`, D-progress-647: `@cfg` erasure, weaver, `?` propagation, mono, elaborator) and codegen emits closures (D-progress-474), generics (D-progress-473, erased with `checkcast` by design, Q-J001), async/`spawn`/`scope` (D120), generators, `defer`, protected types, wire and config. |
+| Silent miscompiles: `Float` as `double`, or-pattern binding a no-op, complex assignment targets dropped, stdlib codegen failures swallowed. | Fixed in J1 (B-4..B-8). `Float` is 32-bit on every backend (`docs/progress/2026-10-01-float32-every-backend.md`); a type error in user code now fails the JVM build (`tcFatalUserPkg`, #5609). Stdlib parse diagnostics are still advisory (#914). |
+| CLI UX: JAR written to `foo.dll`, spurious `runtimeconfig.json`, `lyric run --target jvm` unwired (#674). | Fixed: `.jar` output, `runtimeconfig.json` is dotnet-only, `lyric run --target jvm` is wired in `cli_run.l`. |
+| Only about four programs exercised `--target jvm` end to end; the `self_test_b*.l` corpus was driven by F# wrappers testing the emission library. | Fixed. `ci.yml` has roughly 415 `target jvm` references, there are dozens of `*_jvm_self_test.l` per-feature programs run through `lyric test --target jvm`, and the numbered corpus runs through `scripts/run-numbered-self-tests.sh --target jvm`. The F# wrappers are gone with all F#. |
+| F# host and Maven debt (`Jvm.Hosts`, `Manifest.fs`, orphaned `resolver/`). | Fixed: no F# remains; `manifest.l:assembleMaven` parses `[maven]`; `resolver/` is the live resolution path via `cli_restore.l`, with the classpath injected through `LYRIC_FFI_JARS` by `cli_build.l`. |
+| No JVM production-readiness epic. | Epic #2663 exists. |
 
-But the path is **MSIL-minus** and carries several **silent-miscompile** and
-**user-facing-UX** defects that disqualify it from a production bar. The
-headline problems:
-
-1. **The user-facing JVM compile path is a strict subset of the language.**
-   `lyric build/test --target jvm` runs through `jvm/bridge.l` →
-   `jvm/codegen.l`, which **does not** weave aspects, lift lambdas, lower `?`
-   propagation, erase `@cfg`, or emit generics/opaque/protected/wire/config
-   types — all of which the MSIL bridge does. Closures, async, aspects, and
-   `defer` either **panic** or **silently no-op**. (Verified: a closure program
-   fails to build on `--target jvm`.)
-
-2. **Silent miscompiles.** `Float` is emitted as JVM `double`
-   (`jvm/codegen.l:261,302`); or-pattern variable binding is a no-op
-   (`codegen.l:2060`); complex assignment targets (`member =`, `index =`) are
-   silently dropped (`codegen.l:1442`); stdlib packages that fail JVM codegen
-   are swallowed and only fail at runtime (`bridge.l:408-413`). These compile
-   to **wrong-but-running** output rather than erroring.
-
-3. **CLI UX is bootstrap-grade.** `lyric build --target jvm foo.l` (no `-o`)
-   writes the JAR to `foo.dll` (`cli.l:712` always appends `.dll`), writes a
-   spurious .NET `runtimeconfig.json` next to it (`cli.l:545`), and leaks
-   advisory stdlib parse errors to stdout. `lyric run --target jvm` is not
-   wired at all (#674).
-
-4. **The self-hosted JVM pipeline is barely tested.** Of ~132
-   `jvm/self_test_b*.l`, **all** are driven by F# `JvmLoweringB*Test.fs`
-   wrappers that test the **emission library** (compiled by the F# stage-0
-   emitter to .NET, then asked to *emit* a JAR) — **not** the self-hosted
-   front-end → JVM pipeline. Only **4** programs (bitwise, conv-methods,
-   pattern-lowering, auto-ffi-jvm) actually exercise `--target jvm`
-   end-to-end in CI.
-
-5. **F#-host and Maven debt.** The JVM byte-builder / constant pool route
-   through `@externTarget` into F# host code (`jvm/_kernel/kernel.l:19,24,28`
-   → `bootstrap/src/Lyric.Jvm.Hosts/JvmHosts.fs`) — exactly the pattern
-   CLAUDE.md forbids for new boundaries, and an F#-residue parity gap the
-   MSIL path already eliminated (#1492; `docs/41` H12). ~~Automated Maven
-   resolution is **non-functional**: the `[maven]` table is parsed only by F#
-   `Manifest.fs` (absent from `manifest.l`), and the `resolver/` Java project
-   is **orphaned** (no script, F#, Lyric, or CI references it). The only
-   working JVM-dependency mechanism is the manual `LYRIC_FFI_JARS` env var.~~
-   **Superseded by M-6/M-7 (both DONE):** `manifest.l:assembleMaven` parses the
-   `[maven]` table, and `resolver/` is the **live** Maven resolution path —
-   `cli_restore.l` locates `lyric-resolver.jar` and executes it, and
-   `cli_build.l` injects the resolved classpath via `LYRIC_FFI_JARS`.
-
-6. **No JVM production-readiness epic exists.** Unlike .NET (#1470), JVM work
-   lives as scattered "parity with MSIL #N" follow-ups. This plan proposes the
-   missing umbrella.
-
-**Verdict:** `--target jvm` is a *working demo of a language subset*, not a
-production target. Closing the gap is tractable — much of the missing
-capability already exists in `jvm/lowering.l` but is unwired from
-`codegen.l`, and the architectural fix is to bring `jvm/bridge.l` up to
-`msil/bridge.l`'s middle-end. The work is sequenced into bands J1–J7 below.
+**Verdict (2026-10-21):** `--target jvm` is a real, independently-versioned
+Phase-6 channel (G1, D-progress-620), not a v1.0 SemVer-guaranteed one. Bands
+J0-J6 are shipped and J7's acceptance gate is met in practice by the CI steps
+above. What remains is a long tail rather than a structural gap, tracked under
+the `group:jvm-production-readiness` label and `docs/12-todo-plan.md` Tier 3:
+`J008` on `+` over `String` elements (#8237, #8281, #8351) and on
+`slice.toList()` (#8323), `List[List[Long]]` casts (#8242), wire-bootstrap
+stackmap frames (#8372), inout through generic fields and aspect weaving
+(#8272, #8368), `Ref` megamorphism making hot inout loops 3-5x slower (#8371),
+arrays and buffers passed to `spawn` copied inside the task (#8391), and the
+JVM project build silently skipping packages unreachable from the entry
+package (#8357). Ecosystem backends that remain `NOT_IMPLEMENTED` on the JVM
+are listed in `docs/57` section 3.
 
 ---
 
-## 2. What works today (empirically verified)
+## 2. What works today
+
+The capabilities below are all covered by CI (per-feature `*_jvm_self_test.l`
+programs under `lyric-compiler/jvm/` and `lyric-compiler/lyric/`, the numbered corpus, and the ecosystem
+suites run with `--target jvm`).
 
 | Capability | Evidence |
 |---|---|
-| Records, fields, constructors, accessors | `jvm/codegen.l:3166-3184`; built+ran |
-| Unions / enums with payloads (sealed interface + case classes) | `codegen.l:75,3164,4928`; built+ran (`area(Circle/Rect)` correct) |
-| Pattern matching (wildcard/binding/literal/range/ctor/record/tuple/type-test/or) | `codegen.l:1640-2061`; ran |
-| Interfaces + `impl` | `codegen.l:4942-4974` |
-| try / catch / finally / throw | `codegen.l:3727-3729,3899-3924` |
-| Bitwise `.and/.or/.xor/.shl/.shr` (Int + Long) | `codegen.l:3367-3405`; `bitwise_self_test.l` 10/10 |
-| String interpolation | `codegen.l:949` |
-| Arithmetic, locals, if/while/for/loop | `codegen.l:3490-3676` |
-| `requires:` / `ensures:` runtime asserts (via elaborator) | `bridge.l:153` |
-| Distinct types | `lowering.l:2215`; `codegen.l:4924` |
-| Auto-FFI into JDK classes (read from `java.base.jmod`) | `auto_ffi.l` + `zip_reader.l`/`class_reader.l`/`deflate.l`; `auto_ffi_jvm_self_test.l` green |
-| End-to-end `lyric build --target jvm -o x.jar` → runnable JAR | built+ran (`file` reports "Java archive data"; correct output) |
-
-This is a substantial, genuinely-working core. The bands below are about the
-gap between this core and the full language the reference defines for both
-targets.
+| Records, unions and enums with payloads, pattern matching (all pattern forms), interfaces and `impl`, distinct and range types, tuples | `iface_dispatch_jvm_self_test.l`, `control_flow_jvm_self_test.l`, `pattern_lowering_self_test.l` |
+| Closures, higher-order functions, captured `var` | `closure_jvm_self_test.l`, `closure_catch_captured_var_jvm_self_test.l` |
+| Generics (erased with `checkcast`, within and across packages) | `generic_jvm_self_test.l`, `cross_package_generics_jvm_self_test.l` |
+| `async`, `spawn`/`scope`/`await` on virtual threads, generators | `async_spawn_self_test.l`, `docs/progress/2026-09-29-jvm-generator-rendezvous.md` |
+| Aspect weaving (`Lyric.Weaver` is imported by `jvm/bridge.l`), `@cfg` erasure, `defer`, `?` propagation, contracts (shared elaborator) | `aspect_weave_self_test.l`, `cfg_self_test.l` |
+| Protected types, wire and config blocks | `docs/progress/2026-09-27-jvm-config-block-setvar-overlay.md`, `lyric-web` JVM parity |
+| Auto-FFI into the JDK and Maven JARs (`LYRIC_FFI_JARS`) | `auto_ffi_jvm_self_test.l` |
+| Maven resolution (`[maven]`, `resolver/`, `lyric restore`) | `cli_restore_self_test.l` |
+| stdlib on the JVM: 29 files under `lyric-stdlib/std/_kernel_jvm/`, no phantom kernel classes (docs/59 wave 4) | `stdlib` suites run with `--target jvm` |
+| `lyric build/run/test --target jvm` to a runnable JAR, JUnit-shaped test engine (`test_engine.l`) | CI |
 
 ---
 
-## 3. The two-path architecture (read this first)
+## 3. The two-path architecture
 
-Understanding the gaps requires distinguishing two JVM code paths:
+Two JVM code paths still exist and are tested differently:
 
-- **Path A — emission library (well-tested).** `jvm/lowering.l` +
-  `jvm/classfile.l` + `jvm/bytecode.l` are a bytecode-emission library. The
-  ~132 `self_test_b*.l` programs *call this library* to emit class files; the
-  F# `JvmLoweringB*Test.fs` wrappers compile those programs **with the F#
-  stage-0 emitter to .NET**, run them, and `java -jar` the JAR they emit. This
-  proves the *library* works. `lowering.l` contains working `lowerOpaqueType`,
-  `lowerOpaqueFacade` (`lowering.l:2554`, D-progress-226), etc.
+- **Path A, the emission library.** `jvm/lowering.l`, `jvm/classfile.l` and
+  `jvm/bytecode.l` are a bytecode-emission library. About 131
+  `jvm/self_test_b*.l` programs (b3..b134) call it to build class files and
+  validate them structurally. They are host programs that run on the dotnet
+  runtime (they do not execute under `java`), and are run by
+  `scripts/run-numbered-self-tests.sh --target jvm`, sharded in CI.
 
-- **Path B — the user compile pipeline (under-tested, MSIL-minus).**
-  `lyric build/test --target jvm` runs `jvm/bridge.l` → `jvm/codegen.l`
-  (AST→IR) → `jvm/lowering.l` (IR→class) → JAR. **This** is what users invoke,
-  and it is where the gaps live: `codegen.l` erases generics and **no-ops** the
-  item kinds that `lowering.l` can actually emit, and `bridge.l` omits the
-  middle-end stages `msil/bridge.l` runs.
+- **Path B, the user compile pipeline.** `lyric build/test --target jvm` runs
+  `jvm/bridge.l` (shared middle end via `Lyric.Pipeline`), then
+  `jvm/codegen/` (AST to IR, split into `01_types.l` .. `06_items.l`), then
+  `jvm/lowering.l` (IR to class), then a JAR. The per-feature
+  `*_jvm_self_test.l` programs go through this path with
+  `lyric test --target jvm` and execute under `java`.
 
-**Key consequence:** capability existing in Path A does **not** mean it works
-for users. E.g. `lowering.l` can emit opaque types, but `codegen.l:4938`
-no-ops `IOpaque`, so `--target jvm` silently drops opaque-type bodies. Several
-"shipped" claims in `docs/18`/`docs/04` describe Path A; the
-production-readiness bar is Path B.
+The two-path split is the reason a library-level test passing never proves a
+user program works: new JVM work should add a Path B self-test, not only a
+numbered Path A one. The `codegen.l:NNNN` line references in §4 and §5 predate
+the split of `codegen.l` into `codegen/`; search the six files instead.
 
 ---
 

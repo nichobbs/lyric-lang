@@ -705,10 +705,10 @@ need direction and have nothing else productive to do**.  Specifically:
   as `Lyric.Stdlib.dll` directly — the SDK's `lib/Lyric.Stdlib.dll` is
   this bundle. `lib/Lyric.Stdlib.dll` is
   this bundle, not the retired F# shim.
-- `bootstrap/src/Lyric.Emitter/` — the MSIL emitter (Phase 1, milestone M1.3,
-  complete). Lowers a parsed + type-checked Lyric source to a `dotnet exec`-
-  runnable PE via `System.Reflection.Emit`'s `PersistedAssemblyBuilder` and
-  `ManagedPEBuilder`.
+- `lyric-compiler/msil/` — the self-hosted MSIL emitter (Phase 1, milestone
+  M1.3, complete; the original F# `bootstrap/src/Lyric.Emitter/` is deleted).
+  Lowers a parsed + type-checked Lyric source to a `dotnet exec`-runnable PE
+  with a pure-Lyric PE/CLI-metadata writer.
 - `lyric-compiler/lyric/` — the **self-hosted Lyric compiler** sources.
   M5.1 (lexer / parser / type checker / CST) and M5.2 stages 1–2
   (mode checker, contract elaborator) have shipped:
@@ -813,11 +813,10 @@ need direction and have nothing else productive to do**.  Specifically:
     flag `--internal-perpackage-build <entry.l> <outDir> [--target jvm]`
     (emit a driver's transitive `Std.*` import closure into per-package
     `Lyric.Stdlib.<X>.dll` assemblies; used by the self-hosted stdlib build
-    pipeline, not user-facing).  Wired as the primary dispatcher via
-    `SelfHostedCli.fs`.
+    pipeline, not user-facing).  This is the dispatcher the AOT entry point calls.
   - `repl/repl.l` — `Lyric.Repl` interactive REPL (D-progress-260).
     Script-accumulation loop; entry point `pub func runRepl(argv)`.
-    `lyric repl` routes through this package via `SelfHostedCli`.
+    `lyric repl` routes through this package.
   - `emitter.l` — `Lyric.Emitter` self-hosted emitter shim (D-progress-260).
     Shells out to `--internal-build` to compile Lyric source from within
     the self-hosted CLI.
@@ -878,8 +877,8 @@ need direction and have nothing else productive to do**.  Specifically:
   - `test_synth_self_test.l`, `manifest_self_test.l`,
     `contract_meta_self_test.l`, `restored_packages_self_test.l`,
     `verifier_self_test.l`, `generator/generator_self_test.l` —
-    `func main` self-test consumers still run by the F# emitter test suite
-    via `SelfHosted*Tests.fs`; their migration to native `lyric test` is
+    `func main` self-test consumers, run by `make test-emitter`
+    (`lyric test --target dotnet`); their migration to `@test_module` form is
     deferred (each surfaces a real self-hosted gap, tracked in #2580).
   - `weaver_self_test.l` — `@test_module` covering the todo/06
     weaver features (config wiring #683, call context #682,
@@ -1000,29 +999,16 @@ need direction and have nothing else productive to do**.  Specifically:
   reconstruction via `nodeSourceText`).  CST types and the
   event-based builder live in
   `lyric-compiler/lyric/parser/parser_cst.l`.
-- `bootstrap/src/Lyric.Cli/` — bootstrap-only entry point.  Track A
-  A1.4 (#860) deleted the F# user-facing CLI dispatcher; every user
-  command (`lyric build`, `lyric run`, `lyric fmt`, `lyric publish`,
-  `lyric restore`, `lyric prove`, `lyric doc`, `lyric lint`,
-  `lyric test`, `lyric bench`, `lyric openapi`, …) now flows through
-  the **AOT entry-point project** at `bootstrap/src/Lyric.Cli.Aot/`,
-  which trampolines straight into the Lyric-emitted
+- `bootstrap/src/Lyric.Cli.Aot/` — the only remaining project under
+  `bootstrap/`.  Every user command (`lyric build`, `lyric run`, `lyric fmt`,
+  `lyric publish`, `lyric restore`, `lyric prove`, `lyric doc`, `lyric lint`,
+  `lyric test`, `lyric bench`, `lyric openapi`, …) flows through this AOT
+  entry point, whose `Program.cs` is a pure trampoline into the Lyric-emitted
   `Lyric.Cli.Program.main` (in `Lyric.Lyric.Cli.dll`, produced by
-  `bootstrap.sh -stage 1`).  What remains in this project:
-  - `Program.fs` — bootstrap entry; only handles the three internal
-    flags `--internal-build`, `--internal-project-build`,
-    `--internal-contract-meta`, plus `--internal-manifest-build`
-    (used by stage 1 to compile the multi-package stdlib bundle).
-    Any other argv prints a one-line error pointing at the AOT
-    binary and exits non-zero.
-  - `Manifest.fs` — TOML parser for `lyric.toml`; consumed by
-    `--internal-manifest-build`.  Self-hosted equivalent lives in
-    `lyric-compiler/lyric/manifest.l`.
-  - `SelfHostedBridge.fs` / `SelfHostedMsil.fs` / `SelfHostedJvm.fs` —
-    test-infrastructure shims that drive the self-hosted MSIL / JVM
-    pipeline in-process via reflection.  Used by
-    `bootstrap/tests/Lyric.Cli.Tests/SelfHosted{Msil,Jvm}BridgeTests.fs`.
-- `bootstrap/tests/Lyric.Emitter.Tests/` — test project that hosts and runs self-hosted self-tests.
+  `bootstrap.sh -stage 1`).  There is no F# anywhere in the repository: the
+  old `bootstrap/src/Lyric.Cli/`, `bootstrap/src/Lyric.Emitter/` and
+  `bootstrap/tests/` projects, the `SelfHosted*Bridge.fs` shims and
+  `Manifest.fs` were deleted (the manifest parser is `lyric-compiler/lyric/manifest.l`).
 
 ### Other top-level directories
 
@@ -1137,8 +1123,9 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
 - `lyric-draw/` — `lyric-draw` library: an immediate-mode 2D renderer on `lyric-gpu` and `lyric-text` for `--target native` (`Draw`: rectangles, rounded rectangles, borders, shadows, images, clips, text). The `scene` example (golden image and a text-heavy frame budget) runs in CI on lavapipe via `scripts/ci/draw-examples-e2e.sh` (D200, docs/67 G6).
 - `lyric-vscode/` — VS Code extension (LSP client) for the Lyric language
   server (`docs/16-lsp-vscode-plan.md`).
-- `resolver/` — Java-side Maven resolver JAR that the F# `MavenShim.fs`
-  shell-outs to for `--target jvm` dependency resolution (D053).
+- `resolver/` — Java-side Maven resolver JAR that the self-hosted
+  `lyric restore` (`lyric-compiler/lyric/cli/cli_restore.l`) shells out to for
+  `--target jvm` dependency resolution (D053); `make maven-resolver` builds it.
 - `scripts/` — build and release automation, including
   `scripts/bootstrap.sh` which implements the three-stage reproducibility
   bootstrap (F# → self-hosted → self-hosted² binary comparison).
@@ -1153,7 +1140,7 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
     `05-ffi-design.md` (extern func, NativePtr, _kernel_native/),
     `06-async-design.md` (LLVM coro.*, Phase 2 async),
     `07-stdlib-port.md` (@cfg(target=...) conditional imports),
-    `08-work-items.md` (43 ordered work items, N0–N8).
+    `08-work-items.md` (48 base work items N0–N7, plus N8 async and N9 HTTP/TLS).
     All 13 decisions are mirrored in `docs/03-decision-log.md` (D-N-001–D-N-013).
     **Agents implementing the native backend must read this directory before starting.**
     Phase 1's first slice (N0, N1, N4.1/N4.6, and the console/math/libc +
@@ -1209,8 +1196,11 @@ Run tests:
 # Run a specific self-test
 make self-test NAME=parser
 
-# Run the emitter tests (which hosts self-tests)
-dotnet run --project bootstrap/tests/Lyric.Emitter.Tests
+# Run the --target dotnet self-test set (needs ./bin/lyric from `make lyric`)
+make test-emitter
+
+# Run the native backend self-tests (needs clang and ./bin/lyric)
+make test-native
 ```
 
 #### Iteration loops — pick the smallest one that exercises your change
