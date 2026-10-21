@@ -3940,6 +3940,23 @@ func lowerScalarMethodCall(
     // "not yet supported" this file gives every other un-ported method.
     // Mirrors the `indexOf`/`lastIndexOf` self-package guard above
     // (#6752) for the same recursion hazard class.
+    //
+    // Inside `Std.String` itself (the two wrappers' own bodies) the failure
+    // is a runtime trap instead: reachability marks a function by its bare
+    // trailing name, so ANY `x.normalize()` in a program that imports
+    // `Std.String` (a `Vec3.normalize` method, say) also marks
+    // `Std.String.normalize` reachable, and a compile-time panic there
+    // would reject programs that never call the String method.
+    if (name == "isNormalized" or name == "normalize") and args.count == 0 and ctx.curPkg[0] == "Std.String" {
+      emitPanicRaw(
+        ctx,
+        insns,
+        "String ." + name + "() is not yet supported for --target native (Unicode normalization tables not yet ported to lyric-rt)",
+        line
+      )
+      val trapTy = if name == "normalize" { v.ty } else { NI1 }
+      return Some(value = NVal(ty = trapTy, value = NUndef(ty = trapTy)))
+    }
     if (name == "isNormalized" or name == "normalize") and args.count == 0 {
       panic(
         "Lyric.LlvmCodegen: String member '." + name +

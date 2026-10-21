@@ -339,7 +339,7 @@ backend.
 arithmetic on numeric distinct types. This plan stays inside that
 mechanism:
 
-- `Std.Math` ships `Vec2`, `Vec3`, `Vec4`, `Mat3`, `Mat4`, `Quat` and
+- `Std.Linalg` (D198; first written as `Std.Math`) ships `Vec2`, `Vec3`, `Vec4`, `Mat3`, `Mat4`, `Quat` and
   `Rgba8` as by-value `Plain` records of `Float` (and `Byte`).
 - `derives Add, Sub` is extended to **homogeneous numeric records** (every
   field the same numeric type) as component-wise operations: `a + b` on

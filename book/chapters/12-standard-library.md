@@ -36,6 +36,7 @@ Here is the full module inventory:
 | `Std.Sort` | `sort[T](xs, cmp)`, `sortInts`, `sortLongs`, `sortStrings`; `isAscendingInts`/`isAscendingLongs`/`isAscendingStrings` |
 | `Std.Iter` | `map`, `filter`, `fold`, `find`, `take`, `drop` over slices |
 | `Std.Math` | `absDouble`, `sqrt`, `pow`, `minPairDouble`, `maxPairDouble`, `floor`, `ceiling` |
+| `Std.Linalg` | `Vec2`, `Vec3`, `Vec4`, `Quat`, `Mat3`, `Mat4`, `Rgba8`: by-value `Float` records for graphics (column-major, right-handed, 0-to-1 depth) with `dot`, `cross`, `mul`, `inverse`, `lookAt`, `perspective` |
 | `Std.Random` | seeded RNG: `makeRandom`, `nextInt`, `nextDouble` |
 | `Std.SecureRandom` | CSPRNG: `secureNextInt`, `secureNextIntRange`, `secureGetBytes` |
 | `Std.Hash` | SHA-512: `sha512OfBytes(slice[Byte]) -> String`, `sha512OfFile(path) -> Result[String, String]`; raw SHA-256 `sha256Digest`; `hmacSha256(key, message) -> slice[Byte]` and `constantTimeEquals(a, b)` for comparing MAC tags |

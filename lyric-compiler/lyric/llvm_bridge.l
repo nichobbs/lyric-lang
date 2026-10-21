@@ -492,8 +492,11 @@ func parseNativeStdlib(stdlibFiles: in List[NativeStdlibFile]): NativeStdlib {
 /// stdlib warning is not the user's to act on.  The package is checked
 /// against the packages its own import closure reaches rather than the
 /// whole stdlib, which bounds the signature resolution each check repeats.
-/// Returns false after reporting an error.
-func checkBundledStdlibPackage(pkg: in String, file: in SourceFile, stdlib: in NativeStdlib): Bool {
+/// Returns None after reporting an error, else the package with the checker's
+/// record-arithmetic, record-equality and `array[N, T]` sites lowered, as the
+/// user package gets from `pipeCheckFront`: the stdlib's own `Vec3 + Vec3` or
+/// `m.m[i]` would otherwise reach codegen as an operator on a record.
+func checkBundledStdlibPackage(pkg: in String, file: in SourceFile, stdlib: in NativeStdlib): Option[SourceFile] {
   val visible = stdlibImportClosure(pkg, stdlib)
   val tcRes = checkWithImportedPackagesForNative(file, visible)
   val errors: List[Diagnostic] = newList()
@@ -503,10 +506,10 @@ func checkBundledStdlibPackage(pkg: in String, file: in SourceFile, stdlib: in N
     }
   }
   if errors.count == 0 {
-    return true
+    return Some(value = lowerArraySites(lowerRecordSites(file, tcRes.symbols), tcRes.symbols, false))
   }
   DiagUtil.diagReportAndAbortInPkg(stdlibDiagLabel(pkg, stdlib), errors)
-  false
+  None
 }
 
 /// The label a diagnostic in bundled stdlib package `pkg` is reported
@@ -1102,10 +1105,11 @@ pub func compileToNativeWithFeatures(
           // [contracts] enabled setting (#7748); stdlib authors'
           // contracts run in all cases. User package contracts are governed
           // by the manifest setting above (via MiddleEndOptions).
-          if not checkBundledStdlibPackage(pkg, f, stdlib) {
-            return false
+          val stdChecked = match checkBundledStdlibPackage(pkg, f, stdlib) {
+            case Some(lowered) -> lowered
+            case None -> return false
           }
-          val stdElaborated = elaborateFileWithInterfaces(f, newList(), true)
+          val stdElaborated = elaborateFileWithInterfaces(stdChecked, newList(), true)
           // `?`-propagation (#6954): a bundled Std.* package's own body can
           // use `?` just like the user file's, and `Lyric.LlvmCodegen`
           // cannot lower an un-rewritten `EPropagate` node — mirrors
@@ -1602,10 +1606,11 @@ pub func compileProjectToNativeWithShape(
           // `awaitInTryIsHazard = true`: native, like MSIL, keeps F0045's
           // guard enabled (#7198; see the `MiddleEndOptions` sites above).
           // Stdlib contracts are always enabled (#7748).
-          if not checkBundledStdlibPackage(pkg, f, stdlib) {
-            return false
+          val stdChecked = match checkBundledStdlibPackage(pkg, f, stdlib) {
+            case Some(lowered) -> lowered
+            case None -> return false
           }
-          val stdElaborated = elaborateFileWithInterfaces(f, newList(), true)
+          val stdElaborated = elaborateFileWithInterfaces(stdChecked, newList(), true)
           val stdProp = lowerPropagateFile(stdElaborated, true)
           if DiagUtil.diagReportAndAbortInPkg(stdlibDiagLabel(pkg, stdlib), stdProp.diagnostics) {
             return false
