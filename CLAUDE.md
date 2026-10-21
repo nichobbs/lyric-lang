@@ -1131,7 +1131,7 @@ These directories exist at the repo root alongside `bootstrap/`, `lyric/`,
   `MockMessageQueue`, `MockSessionStore`, `MockFlagStore`, `TestClock`;
   `TestContext` factory; `assertOk`/`assertErr`/`assertSome`/`assertEq`/
   `assertTrue`/`assertFalse` assertion helpers.
-- `lyric-gpu/` — `lyric-gpu` library: WebGPU compute and offscreen rendering for `--target native` over wgpu-native (`Gpu`; `Gpu.Kernel.Wgpu` is `lyric bindgen` output, never hand-edited). Examples `compute`, `triangle` and `quad` (golden images) run in CI on lavapipe via `scripts/ci/gpu-examples-e2e.sh` (D194, D196, docs/67 G5).
+- `lyric-gpu/` — `lyric-gpu` library: WebGPU compute and offscreen rendering for `--target native` over wgpu-native (`Gpu`; `Gpu.Kernel.Wgpu` is `lyric bindgen` output, never hand-edited). Examples `compute`, `triangle` and `quad` (golden images) run in CI on lavapipe via `scripts/ci/gpu-examples-e2e.sh`, and `window` (an SDL3 window with a wgpu surface, screenshot-checked under Xvfb) via `scripts/ci/gpu-window-e2e.sh` (D194, D196, D197, docs/67 G5).
 - `lyric-window/` — `lyric-window` library: SDL3 windows, input events, clipboard, timing and audio for `--target native` (`Window`; `Window.Kernel.Sdl` is `lyric bindgen` output, never hand-edited). SDL3 via pkg-config; CI builds the pinned release tarball (`scripts/ci/build-sdl3.sh`) and runs the headless demo (`scripts/ci/window-examples-e2e.sh`) (D195, docs/67 G4).
 - `lyric-vscode/` — VS Code extension (LSP client) for the Lyric language
   server (`docs/16-lsp-vscode-plan.md`).

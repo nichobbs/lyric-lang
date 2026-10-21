@@ -3,8 +3,8 @@
 //!
 //! No `NativePtr` crosses the public surface: a window is a record around an opaque
 //! handle, and an input event is a Lyric union decoded from the C event buffer.  The
-//! decoder reads the fields it names at the offsets SDL3 documents; `scripts/ci/
-//! window-sdl-layout-check.sh` compiles those offsets and the flag constants below
+//! decoder reads the fields it names at the offsets SDL3 documents; `native/sdl_layout_check.c`,
+//! compiled by `scripts/ci/window-examples-e2e.sh`, checks those offsets and the flag constants below
 //! against SDL's own headers.
 //!
 //! SDL's video and audio calls belong to the thread that called `init`, normally the main

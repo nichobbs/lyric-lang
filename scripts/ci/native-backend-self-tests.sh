@@ -167,9 +167,13 @@ done
 "$lyric_bin" run --target native lyric-stdlib/tests/parse_tests.l
 # docs/67 G5: lyric-gpu's compute and render examples on wgpu-native over lavapipe.
 LYRIC_BIN="$lyric_bin" bash scripts/ci/gpu-examples-e2e.sh
-# docs/67 G4: lyric-window on SDL3's headless drivers (SDL3 is built from the pinned
-# release tarball; no display, sound server or window-system packages are needed).
+# docs/67 G4 + G5: lyric-window on SDL3 and lyric-gpu's surface.  SDL3 is built once from the pinned
+# release tarball with its X11 driver (the headless offscreen/dummy/disk drivers stay available);
+# the window demo runs headless, the surface example on an Xvfb display with lavapipe.
 command -v cmake >/dev/null || sudo apt-get install -y -qq cmake
+sudo apt-get install -y -qq libx11-dev libxext-dev libxcursor-dev libxi-dev libxrandr-dev libxfixes-dev \
+  libxrender-dev libxtst-dev xvfb x11-apps imagemagick
 sdl3_prefix="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/sdl3"
-bash scripts/ci/build-sdl3.sh "$sdl3_prefix"
+bash scripts/ci/build-sdl3.sh --x11 "$sdl3_prefix"
 LYRIC_BIN="$lyric_bin" SDL3_PREFIX="$sdl3_prefix" bash scripts/ci/window-examples-e2e.sh
+LYRIC_BIN="$lyric_bin" SDL3_PREFIX="$sdl3_prefix" bash scripts/ci/gpu-window-e2e.sh

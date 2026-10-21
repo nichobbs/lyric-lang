@@ -7,7 +7,12 @@
 # offscreen/dummy video drivers and the dummy/disk audio drivers are what it provides.
 # A developer machine uses its distribution's SDL3.
 #
-# Usage: bash scripts/ci/build-sdl3.sh <prefix>
+# With --x11 the X11 video driver is built too (for the window-system tests under Xvfb); the
+# caller installs the X11 development packages first (libx11-dev libxext-dev libxcursor-dev
+# libxi-dev libxrandr-dev libxfixes-dev libxrender-dev libxtst-dev).  The headless drivers
+# stay available either way.
+#
+# Usage: bash scripts/ci/build-sdl3.sh [--x11] <prefix>
 # Afterwards: PKG_CONFIG_PATH=<prefix>/lib/pkgconfig LD_LIBRARY_PATH=<prefix>/lib
 # ---------------------------------------------------------------------------
 set -euo pipefail
@@ -16,10 +21,16 @@ SDL_VERSION="3.4.18"
 SDL_SHA256="9c75cf16330322c217dedd2e0609f1124f1b54b8633e763467b4684d0f4334a3"
 SDL_URL="https://libsdl.org/release/SDL3-${SDL_VERSION}.tar.gz"
 
-prefix="${1:?usage: build-sdl3.sh <prefix>}"
+x11=0
+if [ "${1:-}" = "--x11" ]; then
+  x11=1
+  shift
+fi
+prefix="${1:?usage: build-sdl3.sh [--x11] <prefix>}"
 mkdir -p "$prefix"
 prefix="$(cd "$prefix" && pwd)"
-if [ -f "$prefix/.sdl3-$SDL_VERSION" ]; then
+marker="$prefix/.sdl3-$SDL_VERSION-x11-$x11"
+if [ -f "$marker" ]; then
   echo "SDL3 $SDL_VERSION already built in $prefix"
   exit 0
 fi
@@ -33,12 +44,16 @@ tar -xzf "$work/sdl3.tar.gz" -C "$work/src" --strip-components=1
 
 generator=()
 command -v ninja >/dev/null && generator=(-G Ninja)
+windowing=(-DSDL_UNIX_CONSOLE_BUILD=ON -DSDL_X11=OFF)
+if [ "$x11" = 1 ]; then
+  windowing=(-DSDL_X11=ON -DSDL_X11_XSCRNSAVER=OFF)
+fi
 cmake "${generator[@]}" -S "$work/src" -B "$work/build" \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix" \
-  -DSDL_UNIX_CONSOLE_BUILD=ON -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF -DSDL_INSTALL_TESTS=OFF \
-  -DSDL_X11=OFF -DSDL_WAYLAND=OFF -DSDL_KMSDRM=OFF -DSDL_VIVANTE=OFF -DSDL_OPENGL=OFF -DSDL_OPENGLES=OFF \
+  "${windowing[@]}" -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF -DSDL_INSTALL_TESTS=OFF \
+  -DSDL_WAYLAND=OFF -DSDL_KMSDRM=OFF -DSDL_VIVANTE=OFF -DSDL_OPENGL=OFF -DSDL_OPENGLES=OFF \
   -DSDL_VULKAN=OFF -DSDL_ALSA=OFF -DSDL_PULSEAUDIO=OFF -DSDL_PIPEWIRE=OFF -DSDL_JACK=OFF -DSDL_SNDIO=OFF \
   -DSDL_IBUS=OFF -DSDL_DBUS=OFF -DSDL_LIBUDEV=OFF -DSDL_LIBURING=OFF
 cmake --build "$work/build" -j"$(nproc)"
 cmake --install "$work/build"
-touch "$prefix/.sdl3-$SDL_VERSION"
+touch "$marker"

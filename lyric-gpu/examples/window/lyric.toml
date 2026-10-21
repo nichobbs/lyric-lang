@@ -1,0 +1,15 @@
+# Draws a triangle into an SDL3 window through a wgpu surface (docs/67 G4 + G5).  Needs a window
+# system: CI runs it on an X11 server (Xvfb) with lavapipe.
+[package]
+name    = "Lyric.Gpu.Examples.Window"
+version = "0.1.0"
+
+[project]
+name = "Lyric.Gpu.Examples.Window"
+
+[project.packages]
+"Gpu.Examples.Window" = "src/main.l"
+
+[dependencies]
+"Lyric.Gpu"    = { path = "../.." }
+"Lyric.Window" = { path = "../../../lyric-window" }
