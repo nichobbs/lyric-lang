@@ -588,3 +588,13 @@ pipelines.
 
 **Recommendation:** Option 1 for v1. Option 2 is the right long-term direction and can be
 added to the `lyric publish` validation pass without breaking existing generators.
+
+### Related: plugin points (docs/69)
+
+`docs/69-plugins.md` proposes a general plugin architecture and uses generators
+as its first plugin point (§15 there). It would replace the fixed `generate`
+entry point and the hand-written stdin/stdout protocol with a `SourceGenerator`
+plugin point, keep one generator process alive for a whole build (which removes
+the cost behind Q-SG-001 and gives Q-SG-004 a long-lived process to call), and
+answer Q-SG-005 with a WebAssembly payload that has no I/O except the
+capabilities the compiler grants.

@@ -24,6 +24,8 @@ Lyric programs cannot inspect types at runtime. There is no equivalent of `typeo
 
 **Why:** Reflection is what makes opaque types' representational privacy meaningless. It's also what blocks AOT compilation and forces runtime DI containers. Source generators (`@generate`) cover the legitimate use cases that reflection used to handle.
 
+Plugin systems, the other common reason for reflection, are sketched without it in `docs/69-plugins.md`: a plugin implements a typed plugin point and runs out of process or in a WebAssembly sandbox, and the host finds it through a manifest, not by inspecting types.
+
 ### Implicit numeric conversion
 
 **Status:** REJECTED
