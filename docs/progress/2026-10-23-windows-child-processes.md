@@ -1,4 +1,4 @@
-# Child processes on the Windows native target (D207, #8433)
+# Child processes on the Windows native target (D208, #8433)
 
 `Std.Process` and `Std.ProcessCapture` now work on `--target native --triple x86_64-pc-windows-msvc`.
 
@@ -7,7 +7,7 @@
   piped children, using `CreateProcessW` over overlapped named pipes with a handle list, and a Job Object per
   captured or piped child. A killed child reports status 137, as on POSIX.
 - The runtime resolves the program itself (`PATH` only, `.exe` first) and refuses batch files with `ENOEXEC`
-  (D207 explains why).
+  (D208 explains why).
 - `lyric_win32_errno` is shared between the Win32 files, and gains `ENOEXEC`, `ENAMETOOLONG`, `EPIPE` and
   `EINVAL` mappings.
 - New `lyric-rt/test/lyric_process_win32_test.c`, run by `make -C lyric-rt test-windows` and by CTest on the
