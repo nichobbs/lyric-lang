@@ -11903,6 +11903,18 @@ test "with two NativeUserdata slots the first is the userdata, and a callback ty
   assertTrue(hasDiagCode(bad, "T0181"), "a callback type with no userdata slot is T0181: " + diagCodesOf(bad))
 }
 
+// #8280: an enclosing function's type parameter is a type, not a value name,
+// when it is an index of an explicit type application.
+test "an enclosing type parameter as an explicit type argument is not an unknown name (#8280)" {
+  val src = "package P\n" + "func firstOf[T](xs: in array[2, T], k: in Int): T { xs[k] }\n" +
+    "func t3[T](x: in T, y: in T): T {\n" +
+    "  firstOf[T]([x, y], 0)\n" +
+    "}\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0020"), "T is a type argument")
+  val shadowed = "package P\n" + "func g[T](xs: in List[Int], T: in Int): Int { xs[T] }\n"
+  assertTrue(not hasDiagCode(parseCheck(shadowed), "T0020"), "a local named like the parameter still indexes")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // By-reference parameter rules: defaults (T0182), async (T0183), function
 // values (T0128) and non-`var` field paths (T0166).  #8255, #8318, #8229,

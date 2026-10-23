@@ -5172,6 +5172,45 @@ func moduleValRegistryType(decl: in ValDecl, owner: in String, externTypes: in M
   }
 }
 
+// Register the record methods `Lyric.Mono` adds after the sigs of the
+// pre-middle-end sources are collected: a generic call at a generic record's
+// own type parameter is specialised into a `__spec_` method of the record
+// (`memberSpecCallMono`, #8271).  Without it the call resolves through the
+// `()Object` guess and fails to link.
+pub func registerMonoMemberSigsJvm(
+  file: in SourceFile,
+  owner: in String,
+  into: in Map[String, JvmFuncSig],
+  externTypes: in Map[String, String],
+): Unit {
+  for it in file.items {
+    match it.kind {
+      case IRecord(decl) -> {
+        val recClass = owner + "/" + decl.name
+        val recTps = genericParamNames(decl.generics)
+        for m in decl.members {
+          match m {
+            case RMFunc(fn) -> if fn.name.startsWith("__spec_") {
+              registerInstanceSigErased(
+                into,
+                recClass,
+                fn.name,
+                fn.params,
+                fn.ret,
+                owner,
+                withOwnGenericsJvm(recTps, fn.generics),
+                externTypes
+              )
+            }
+            case _ -> ()
+          }
+        }
+      }
+      case _ -> ()
+    }
+  }
+}
+
 // Register an instance method's signature under the `<class>#<method>` key used
 // by `lowerMethodCall` to emit a precisely-typed `invokevirtual` for in-package
 // receivers (records / protected types) instead of the `()Object` guess.

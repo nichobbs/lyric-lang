@@ -2704,6 +2704,38 @@ test "a generic call next to an ensures: exists(...) conjunct is still specialis
   assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics")
 }
 
+// #7161/#7210: `substTypesExpr` treated `EForall`/`EExists` as leaves, so a
+// quantifier binder typed with the generic's own parameter kept the open `T`
+// in the specialised copy.
+func firstQuantBinderPath(file: in SourceFile, name: in String): String {
+  match lastStmtExprInFunc(file, name) {
+    case None -> "<none>"
+    case Some(e) -> match e.kind {
+      case EForall(bs, _, _, _) -> quantBinderTy(bs)
+      case EExists(bs, _, _, _) -> quantBinderTy(bs)
+      case _ -> "<none>"
+    }
+  }
+}
+
+func quantBinderTy(bs: in List[PropertyBinder]): String {
+  match bs[0].ty.kind {
+    case TRef(p) -> p.segments[0]
+    case _ -> "<other>"
+  }
+}
+
+test "a quantifier binder typed with the generic parameter is substituted (#7161, #7210)" {
+  val src = "package P\n" + "func f[T](x: in T): Bool {\n" + "  forall(i: T) true\n" + "}\n" +
+    "func g[T](x: in T): Bool {\n" +
+    "  exists(i: T) true\n" +
+    "}\n" +
+    "func caller(): Bool { f(1) and g(2) }\n"
+  val res = runMono(src)
+  assertEqual(firstQuantBinderPath(res.file, "f__Int"), "Int", "forall binder type substituted")
+  assertEqual(firstQuantBinderPath(res.file, "g__Int"), "Int", "exists binder type substituted")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // #6891: `indexExprToTypeArgMono`'s single-segment-name whitelist recognised
 // primitives, records, interfaces, distinct types, and unions as legitimate
@@ -2729,6 +2761,140 @@ test "generic call with an explicit extern-type type argument monomorphises (#68
     0,
     "no dangling-reference M0002 for a call site whose type argument names an extern type"
   )
+}
+
+func recordMethodBodyHasCall(file: in SourceFile, recName: in String, callee: in String): Bool {
+  for it in file.items {
+    match it.kind {
+      case IRecord(d) -> if d.name == recName {
+        for m in d.members {
+          match m {
+            case RMFunc(fn) -> match fn.body {
+              case Some(fb) -> match fb {
+                case FBExpr(be) -> match callFnBareName(be) {
+                  case Some(n) -> if n == callee { return true }
+                  case None -> ()
+                }
+                case _ -> ()
+              }
+              case None -> ()
+            }
+            case _ -> ()
+          }
+        }
+      }
+      case _ -> ()
+    }
+  }
+  false
+}
+
+test "a generic call inside a record method is specialised (#8271, #8370)" {
+  val src = "package P\n" + "func ident[A](x: in A): A = x\n" + "record Box {\n" + "  v: Int\n" +
+    "  func echo(self: in Box): Int = ident(self.v)\n" +
+    "}\n"
+  val res = runMono(src)
+  assertTrue(hasFunc(res.file, "ident__Int"), "ident__Int specialisation emitted for a record method call")
+  assertTrue(recordMethodBodyHasCall(res.file, "Box", "ident__Int"), "the method calls the specialisation")
+}
+
+func recordHasMethodNamed(file: in SourceFile, recName: in String, methodName: in String): Bool {
+  for it in file.items {
+    match it.kind {
+      case IRecord(d) -> if d.name == recName {
+        for m in d.members {
+          match m {
+            case RMFunc(fn) -> if fn.name == methodName { return true }
+            case _ -> ()
+          }
+        }
+      }
+      case _ -> ()
+    }
+  }
+  false
+}
+
+test "a generic call at a generic record's own type parameter becomes a method of the record (#8271, #8370)" {
+  val src = "package P\n" + "func ident[A](x: in A): A = x\n" + "record Box[T] {\n" + "  v: T\n" +
+    "  func echo(self: in Box[T]): T = ident(self.v)\n" +
+    "}\n"
+  val res = runMono(src)
+  assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics")
+  assertTrue(not hasFunc(res.file, "ident__T"), "no top-level specialisation over the record's T")
+  assertTrue(recordHasMethodNamed(res.file, "Box", "__spec_Box_ident__T"), "the specialisation is a method of Box")
+}
+
+test "a record method written without a receiver still gets one, so its call is specialised (#8271)" {
+  val src = "package P\n" + "func ident[A](x: in A): A = x\n" + "record Box[T] {\n" + "  v: T\n" +
+    "  func plain(x: in T): T = ident(x)\n" +
+    "}\n"
+  val res = runMono(src)
+  assertTrue(
+    recordHasMethodNamed(res.file, "Box", "__spec_Box_ident__T"),
+    "the parser injects `self`, so the member specialisation is reachable"
+  )
+}
+
+test "a generic call in a generic protected type's member becomes a function of the type (#8271)" {
+  val src = "package P\n" + "func ident[A](x: in A): A = x\n" + "protected type Cell[T] {\n" + "  var value: T\n" +
+    "  entry set(v: in T): Unit { value = ident(v) }\n" +
+    "}\n"
+  val res = runMono(src)
+  assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics")
+  assertTrue(not hasFunc(res.file, "ident__T"), "no top-level specialisation over the type's T")
+  var found = false
+  for it in res.file.items {
+    match it.kind {
+      case IProtected(d) -> {
+        for m in d.members {
+          match m {
+            case PMFunc(fn) -> if fn.name == "__spec_Cell_ident__T" { found = true }
+            case _ -> ()
+          }
+        }
+      }
+      case _ -> ()
+    }
+  }
+  assertTrue(found, "the specialisation is a function of Cell")
+}
+
+test "an enclosing type parameter as an explicit type argument is substituted (#8280)" {
+  val src = "package P\n" + "func firstOf[T](xs: in array[2, T], k: in Int): T { xs[k] }\n" +
+    "func t3[T](x: in T, y: in T): T { firstOf[T]([x, y], 0) }\n" +
+    "func caller(): Int { t3(4, 5) }\n"
+  val res = runMono(src)
+  assertTrue(hasFunc(res.file, "t3__Int"), "t3 specialised")
+  assertTrue(hasFunc(res.file, "firstOf__Int"), "firstOf specialised at the substituted T")
+  assertEqualInt(diagCountCode(res.diagnostics, "M0002"), 0, "no dangling-reference M0002")
+}
+
+test "a generic argument is inferred from a protected entry's result (#7531)" {
+  val src = "package P\n" + "func noneOf[T](o: in Option[T]): Bool = true\n" + "protected type Slot {\n" +
+    "  var v: Int = 0\n" +
+    "  entry put(x: in Int): Option[Int] {\n" +
+    "    v = x\n" +
+    "    Some(value = x)\n" +
+    "  }\n" +
+    "  func peek(): Option[Int] { Some(value = v) }\n" +
+    "}\n" +
+    "func caller(s: in Slot): Bool { noneOf(s.put(1)) and noneOf(s.peek()) }\n"
+  val res = runMono(src)
+  assertTrue(hasFunc(res.file, "noneOf__Int"), "noneOf specialised at Int from the entry and function results")
+  assertEqualInt(res.diagnostics.count, 0, "no mono diagnostics")
+}
+
+test "generic call with an explicit enum, opaque or protected type argument monomorphises (#7162)" {
+  val src = "package P\n" + "enum Color {\n  case Red\n  case Blue\n}\n" + "opaque type Handle { n: Int }\n" +
+    "protected type Counter {\n  var n: Int = 0\n}\n" +
+    "func zero[T](): Int { 0 }\n" +
+    "func caller(): Int { zero[Color]() + zero[Handle]() + zero[Counter]() }\n"
+  val res = runMono(src)
+  assertTrue(hasFunc(res.file, "zero__Color"), "enum type argument specialised")
+  assertTrue(hasFunc(res.file, "zero__Handle"), "opaque type argument specialised")
+  assertTrue(hasFunc(res.file, "zero__Counter"), "protected type argument specialised")
+  assertEqualInt(diagCountCode(res.diagnostics, "M0002"), 0, "no dangling-reference M0002")
 }
 
 test "a generic call inside a protected member specialises with the protected fields in scope (D-progress-965)" {

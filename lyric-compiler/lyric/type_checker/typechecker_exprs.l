@@ -15953,9 +15953,17 @@ func inferExprCore(
         val isPrimTypeIndex = match indices[ii].kind {
           case EPath(ip) -> {
             if ip.segments.count == 1 {
-              match primFromString(ip.segments[0]) {
-                case Some(_) -> true
-                case None -> false
+              // An enclosing type parameter names a type here too
+              // (`firstOf[T](...)` inside `func g[T]`, #8280), unless a local
+              // of the same name shadows it.
+              val shadowedByLocal = match scopeTryFind(sc, ip.segments[0]) { case Some(_) -> true; case None -> false }
+              if not shadowedByLocal and listContainsStr(sc.genericNames, ip.segments[0]) {
+                true
+              } else {
+                match primFromString(ip.segments[0]) {
+                  case Some(_) -> true
+                  case None -> false
+                }
               }
             } else {
               false
