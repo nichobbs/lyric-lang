@@ -32,7 +32,7 @@ void lyric_weak_release(void* obj) {
     if (!obj) return;
     LyricObjectHeader* h = (LyricObjectHeader*)obj;
     if (atomic_load_explicit(&h->rc, memory_order_relaxed) == INT32_MAX) return;
-    if (atomic_fetch_sub_explicit(&h->weak, 1, memory_order_release) == 1) {
+    if (atomic_fetch_sub_explicit(&h->weak, 1, LYRIC_RC_DEC_ORDER) == 1) {
         /* The acquire fence pairs with the release decrement so the destructor's
          * writes (run by the last strong release before it dropped the implicit
          * weak) are complete before the allocation is handed back to malloc. */

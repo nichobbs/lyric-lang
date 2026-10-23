@@ -146,10 +146,17 @@ loop:
 Phase 2 can replace this with a work-stealing multi-threaded scheduler (like
 Tokio's or Go's runtime) without changing the compiler's coro emission.
 
-> **Status (D202):** the coroutine scheduler is still this single-threaded one (#7947).  Multi-threaded
-> data parallelism shipped separately as a worker pool in `lyric_parallel.c` behind
-> `Std.Parallel` (docs/67 G8): it runs plain loop bodies on pool threads and never resumes a
-> coroutine frame on a thread other than the one that started it.
+> **Status (D202, D217):** the default scheduler is still this single-threaded one.  Multi-threaded
+> data parallelism shipped as a worker pool in `lyric_parallel.c` behind `Std.Parallel` (D202,
+> docs/67 G8).  The Phase 2 coroutine scheduler shipped in D217 as an opt-in mode of
+> `lyric_async.c`: `LYRIC_ASYNC_THREADS=N` (N >= 2) starts N-1 workers that, with every thread
+> blocked in `lyric_task_block_on`, take ready coroutines from one shared FIFO queue under one lock.
+> `spawn` call sites raise a thread-local hint that the callee's prologue
+> (`lyric_task_defer_start`) turns into a first suspend point, so the body runs on a worker; the
+> await/sleep registration is published only after the coroutine function has returned
+> (`lyric_ramp_done`, `run_one`), because LLVM stores the resume index at the suspend point.  Work
+> stealing, a compile-time `Send` check and an async I/O reactor are tracked follow-ups (D217,
+> "Not in this decision").
 
 ---
 

@@ -68,6 +68,7 @@ for t in \
   lyric-compiler/lyric/llvm_self_test_n3.l \
   lyric-compiler/lyric/llvm_self_test_n34.l \
   lyric-compiler/lyric/llvm_self_test_async.l \
+  lyric-compiler/lyric/llvm_self_test_async_mt.l \
   lyric-compiler/lyric/llvm_self_test_defer.l \
   lyric-compiler/lyric/llvm_opaque_self_test.l \
   lyric-compiler/lyric/llvm_enum_case_resolve_self_test.l \
@@ -189,6 +190,8 @@ bash scripts/ci/plugin-e2e.sh "$lyric_bin" native dotnet
 LYRIC_BIN="$lyric_bin" bash scripts/ci/text-examples-e2e.sh
 # docs/67 G8: Std.Parallel and the lyric-rt worker pool (ThreadSanitizer, scaling).
 LYRIC_BIN="$lyric_bin" bash scripts/ci/parallel-e2e.sh
+# docs/67 G8 (D217): the multi-threaded coroutine scheduler (unit tests, ThreadSanitizer, AddressSanitizer).
+LYRIC_BIN="$lyric_bin" bash scripts/ci/async-mt-e2e.sh
 # docs/67 G6: lyric-draw on lyric-gpu and lyric-text (a golden scene and a text-heavy frame on lavapipe).
 LYRIC_BIN="$lyric_bin" bash scripts/ci/draw-examples-e2e.sh
 # docs/67 G5: lyric-gpu's compute and render examples on wgpu-native over lavapipe.

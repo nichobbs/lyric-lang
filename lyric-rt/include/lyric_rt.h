@@ -25,6 +25,24 @@ extern "C" {
 
 /* ── Object header ─────────────────────────────────────────────────── */
 
+/* Memory order of the strong and weak count decrements.  Every build decrements with release and
+ * issues an acquire fence on the final decrement.  ThreadSanitizer does not model standalone
+ * fences, so it would report the free of an object whose last reference another thread dropped as
+ * a race; a sanitized build therefore decrements with acq_rel, which is equivalent for the
+ * program and visible to the sanitizer.  Normal builds keep the cheaper release + fence. */
+#if defined(__SANITIZE_THREAD__)
+#define LYRIC_TSAN_BUILD 1
+#elif defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+#define LYRIC_TSAN_BUILD 1
+#endif
+#endif
+#ifdef LYRIC_TSAN_BUILD
+#define LYRIC_RC_DEC_ORDER memory_order_acq_rel
+#else
+#define LYRIC_RC_DEC_ORDER memory_order_release
+#endif
+
 typedef struct {
     _Atomic int32_t rc;    /* strong reference count; INT32_MAX = static sentinel */
     _Atomic int32_t weak;  /* weak-ref count, plus 1 while any strong ref lives */
@@ -753,8 +771,8 @@ LyricList* lyric_args_get(void);
 
 /* ── Async task scheduler (lyric_async.c) ──────────────────────────────
  *
- * Single-threaded cooperative scheduler for `async func` on the native
- * target (06-async-design.md; hot-task model — see lyric_async.c's
+ * Cooperative scheduler for `async func` on the native target, single-threaded by
+ * default and multi-threaded with LYRIC_ASYNC_THREADS=N (06-async-design.md; hot-task model — see lyric_async.c's
  * header comment for the full state machine and rc discipline).
  * `lyric_coro_resume`/`lyric_coro_destroy` are extern symbols that
  * generated IR defines as thin llvm.coro.* wrappers (CoroSplit's frame
@@ -766,12 +784,14 @@ typedef struct LyricTask {
     _Atomic int32_t weak;
     void (*dtor)(void*);
     void* coro_handle;        /* LLVM coro frame; destroyed by the dtor  */
-    int32_t state;            /* RUNNING/SLEEPING/WAITING/READY/COMPLETE */
+    _Atomic int32_t state;    /* RUNNING/SLEEPING/WAITING/READY/COMPLETE */
     int64_t result;           /* 64-bit slot, valid when COMPLETE        */
     int32_t result_is_ref;    /* 0 scalar, 1 strong ref, 2 weak ref (#5545), 3 failed host task (result is the message String) */
     int64_t wake_deadline_ns; /* monotonic deadline while SLEEPING       */
     struct LyricTask* waiters; /* tasks parked on this task's completion */
     struct LyricTask* next;    /* intrusive link (ready/sleeper/waiter)  */
+    int32_t park_kind;         /* multi-threaded: registration recorded, not yet published */
+    struct LyricTask* park_dep; /* the task a PARK_AWAIT registration waits on */
 } LyricTask;
 
 /* Fresh rc=1 RUNNING task (called in the coroutine prologue). */
@@ -784,6 +804,16 @@ void       lyric_task_complete(LyricTask* t, int64_t result, int32_t result_is_r
 /* Park the RUNNING task on `dep` / on a timer; suspend right after. */
 void       lyric_async_await(LyricTask* waiter, LyricTask* dep);
 void       lyric_async_sleep(LyricTask* t, int64_t ms);
+/* Multi-threaded scheduler (LYRIC_ASYNC_THREADS=N, N >= 2; docs/67 G8, D217).  A `spawn` call
+ * site raises the hint, the callee's prologue asks whether to start deferred on a worker, and
+ * every async call is followed by lyric_ramp_done so a registration recorded inside the ramp is
+ * published once the coroutine has really suspended.  All three are no-ops in the default
+ * single-threaded mode.  lyric_async_threads returns 1 when the multi-threaded scheduler is
+ * active, else 0. */
+void       lyric_spawn_hint(void);
+int32_t    lyric_task_defer_start(LyricTask* t);
+void       lyric_ramp_done(void);
+int32_t    lyric_async_threads(void);
 /* Drive the scheduler until `root` completes (sync-context await). */
 void       lyric_task_block_on(LyricTask* root);
 /* Run every ready task without blocking (host-driven event loops).  Returns -1

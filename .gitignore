@@ -113,6 +113,7 @@ lyric-rt/build/
 lyric-rt/build-wasm32-wasi/
 lyric-rt/build-x86_64-pc-windows-msvc/
 lyric-rt/build-tsan/
+lyric-rt/build-tsan-async/
 
 # Ephemeral lyric build/check output
 .lyric-check/
