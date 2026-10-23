@@ -42,7 +42,7 @@ async func dockerClientDemo(): Int {
       println("✗ Failed to connect to Docker daemon")
       println("  Error: " + e.message)
       if e.statusCode.isSome() {
-        val code = e.statusCode.assertSome()
+        val code = e.statusCode.value
         println("  Status: " + code.toString())
       }
       if e.details.length > 0 {
