@@ -1,0 +1,88 @@
+name: tmp-windows-experiment
+on:
+  push:
+    branches: [claude/relaxed-fermi-34von1]
+    paths: ['.github/workflows/tmp-windows-experiment.yml', 'scripts/install.ps1']
+jobs:
+  win:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Real download install (checksum path)
+        shell: powershell
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "inst1"
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install.ps1 -Version 0.7.10 -Dir $dir -NoPath
+          if ($LASTEXITCODE -ne 0) { throw "install failed" }
+          & "$dir\lyric.exe" --version
+      - name: Upgrade over a running lyric.exe
+        shell: powershell
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "inst1"
+          $zip = Join-Path $env:RUNNER_TEMP "lyric.zip"
+          Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/nichobbs/lyric-lang/releases/download/v0.7.10/lyric-0.7.10-win-x64.zip" -OutFile $zip
+          $psi = New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName = "$dir\lyric.exe"
+          $psi.Arguments = "lsp"
+          $psi.RedirectStandardInput = $true
+          $psi.RedirectStandardOutput = $true
+          $psi.UseShellExecute = $false
+          $p = [System.Diagnostics.Process]::Start($psi)
+          Start-Sleep -Seconds 3
+          if ($p.HasExited) { throw "holder process exited early (code $($p.ExitCode))" }
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install.ps1 -Archive $zip -Dir $dir -NoPath
+          $code = $LASTEXITCODE
+          Get-ChildItem -Recurse -Filter *.old $dir | ForEach-Object { Write-Host "left: $($_.FullName)" }
+          $p.Kill()
+          if ($code -ne 0) { throw "in-place upgrade failed with $code" }
+          & "$dir\lyric.exe" --version
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install.ps1 -Archive $zip -Dir $dir -NoPath
+          if ($LASTEXITCODE -ne 0) { throw "third install failed" }
+          $left = @(Get-ChildItem -Recurse -Filter *.old $dir)
+          Write-Host "after third install, .old files: $($left.Count)"
+      - name: Failure rollback (corrupt archive)
+        shell: powershell
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "inst1"
+          $bad = Join-Path $env:RUNNER_TEMP "bad.zip"
+          Set-Content -Path $bad -Value "not a zip"
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install.ps1 -Archive $bad -Dir $dir -NoPath
+          if ($LASTEXITCODE -eq 0) { throw "corrupt archive should fail" }
+          & "$dir\lyric.exe" --version
+      - name: lyric test with TMPDIR unset (installed layout)
+        shell: powershell
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "inst1"
+          $w = Join-Path $env:RUNNER_TEMP "smoke"
+          New-Item -ItemType Directory -Force -Path $w | Out-Null
+          @"
+          @test_module
+          package SmokeTests
+
+          import Std.Testing
+
+          test "one" {
+            assertEqualInt(1, 1, "one")
+          }
+          "@ | Set-Content -Path "$w\smoke_tests.l"
+          Remove-Item Env:TMPDIR -ErrorAction SilentlyContinue
+          Write-Host "TEMP=$env:TEMP TMP=$env:TMP"
+          Push-Location $w
+          & "$dir\lyric.exe" test smoke_tests.l
+          $c = $LASTEXITCODE
+          Pop-Location
+          if ($c -ne 0) { throw "lyric test failed ($c)" }
+      - name: lyric test fallback (no lib/ beside the exe)
+        shell: powershell
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "inst1"
+          $iso = Join-Path $env:RUNNER_TEMP "iso"
+          New-Item -ItemType Directory -Force -Path $iso | Out-Null
+          Copy-Item "$dir\lyric.exe" $iso
+          $w = Join-Path $env:RUNNER_TEMP "smoke"
+          $env:LYRIC_STD_PATH = Join-Path $env:GITHUB_WORKSPACE "lyric-stdlib\std"
+          Remove-Item Env:TMPDIR -ErrorAction SilentlyContinue
+          Push-Location $w
+          & "$iso\lyric.exe" test smoke_tests.l
+          Write-Host "exit: $LASTEXITCODE"
+          Pop-Location
