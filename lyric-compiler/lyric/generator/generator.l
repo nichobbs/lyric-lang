@@ -881,6 +881,20 @@ func projectSegments(path: in String): List[String] {
   segs
 }
 
+// A generator gets exactly the capabilities it requests: the compiler runs
+// only generators the consumer's manifest declares (X0008), and
+// `ProjectRead` cannot reach outside the project.  Declared here rather than
+// using `Std.Plugin.GrantAllRequested` because the stage-0 seed that builds
+// the compiler does not see a stdlib package's `impl` blocks.
+record GeneratorGrantPolicy {
+}
+
+impl Plugin.GrantPolicy for GeneratorGrantPolicy {
+  func decide(manifest: in Plugin.PluginManifest): Plugin.GrantDecision {
+    Plugin.grantAllRequested(manifest)
+  }
+}
+
 func generatorHost(gens: in GeneratorSet, projectRoot: in String): Plugin.PluginHost {
   match gens.runtime.host {
     case Some(h) -> h
@@ -901,7 +915,7 @@ func generatorHost(gens: in GeneratorSet, projectRoot: in String): Plugin.Plugin
         Plugin.PluginHostConfig(
           points = points,
           providers = providers,
-          policy = Plugin.GrantAllRequested(),
+          policy = GeneratorGrantPolicy(),
           callTimeoutMs = generatorTimeoutMs,
           maxRestarts = 0,
           preferWasm = false
