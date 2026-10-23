@@ -384,7 +384,8 @@ where they disagree, these notes are the shipped behaviour.
   `requires:` clauses that name `grant` (Decision 2) and answers `-32040`
   `Denied`. Other `requires:`/`ensures:` run inside the implementation, on the
   side that owns it. The host does not re-check a point method's `ensures:`
-  on the decoded result in v1, and K0104 (interface hash) is not checked. A
+  on the decoded result in v1, and K0104 (interface hash) is not checked
+  (#8486). A
   contributions value that does not decode is left out of `<p>Contributions`,
   and the generated `<p>ContributionIssues(host)` reports it as a
   `PluginLoadIssue` of kind `BadContributions` (K0101).
@@ -396,11 +397,15 @@ where they disagree, these notes are the shipped behaviour.
   restarted), grants exactly what the generator requests, and serves
   `ProjectRead` itself with the same `projectPathWithin` rule the SDK's
   guard uses. Building a wasm payload for generators, which would make
-  `ProjectRead` their only I/O, is left for later (docs/40 Q-SG-005).
-- **Deferred, unchanged:** trusted in-process mode, signing (Q-PLG-006), the
-  registry (Q-PLG-007), operating-system restrictions in process mode
-  (Q-PLG-002), the language server running `Lyric.PluginExpand`, and plugins
-  declaring points (Q-PLG-010).
+  `ProjectRead` their only I/O, is left for later (docs/40 Q-SG-005, #8487);
+  it depends on `ProjectRead` resolving symbolic links before it reads
+  (#8468).
+- **Deferred, unchanged:** trusted in-process mode (#8483), signing
+  (Q-PLG-006, #8484), the registry (Q-PLG-007, #8485), operating-system
+  restrictions in process mode (Q-PLG-002), the language server running
+  `Lyric.PluginExpand` (#8488), a bound on the CPU of a plugin that ignores
+  a timed-out call's cancellation (#8465), and plugins declaring points
+  (Q-PLG-010).
 
 ## Consequences
 
