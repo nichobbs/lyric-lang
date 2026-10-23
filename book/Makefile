@@ -50,6 +50,7 @@ CHAPTERS := \
 	chapters/30-source-generators.md \
 	chapters/31-user-interfaces.md \
 	chapters/32-webassembly.md \
+	chapters/33-plugins.md \
 	chapters/appendix-a-vscode.md \
 	chapters/appendix-b-quick-reference.md
 

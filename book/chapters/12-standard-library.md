@@ -47,6 +47,7 @@ Here is the full module inventory:
 | `Std.JsonValue` | A JSON tree you can build, read and write on dotnet and the JVM: `JsonValue`, `parseValue`, `writeValue`, `writeValueIndented`, `getField`, `getString` |
 | `Std.JsonRpc` | JSON-RPC 2.0 peer over any transport: `RpcPeer`, `newPeer`, `runLoop`, `call`, `callWithin`, `notify`, `RpcHandler`, `RpcTransport`, the standard error codes |
 | `Std.JsonRpc.Stdio` | JSON-RPC framings over stdin and stdout: `newNdjsonTransport` (one message per line, as MCP uses) and `newContentLengthTransport` (as LSP uses) |
+| `Std.Plugin` | The plugin runtime (Chapter 33): `PluginHost`, `newPluginHost`, `PluginHostConfig`, `discoverPlugins`, `GrantPolicy`, `GrantAllRequested`, `CapabilityProvider`, `CallError`, `BoundaryError`, `boundaryErrorMessage`, `stopAllPlugins`, `revokeCapability`, `openProtocolPlugin`; the plugin side (`runPlugin`, `callHost`) is what generated code calls |
 | `Std.Http` | HTTP client and server primitives |
 | `Std.Rest` | Typed REST client built on `Std.Http` (`RestClient`, `RestAuth`, `RestError`) |
 | `Std.Testing` | `expect`, `expectEq`, `expectErr`, `fail` |

@@ -943,32 +943,39 @@ func localDepDir(dep: in Mf.DependencyEntry, mfDir: in String, wsCtx: in Option[
   }
 }
 
-// Whether the generator in `depDir` declares the `generate` entry point and
-// a `main` that runs it (docs/40 §3.2, §6).
-func generatorEntryPoints(depDir: in String, depName: in String): (Bool, Bool) {
+// Whether the generator in `depDir` declares a `@plugin` record and an
+// `impl SourceGenerator` (docs/40 §3.2, D207): the plugin form the compiler
+// runs.  The record's own `implements(...)` is checked by Lyric.PluginExpand
+// when the generator is built.
+func declaresGeneratorPlugin(depDir: in String, depName: in String): Bool {
   val pkgs: List[Emitter.ProjectPackage] = newList()
   collectDepTemplateSources(depDir, depName, pkgs)
-  var hasGenerate = false
-  var hasMain = false
+  var hasPlugin = false
+  var hasImpl = false
   for pkg in pkgs {
     for src in pkg.sources {
       val pr = Parser.parse(src)
       for item in pr.file.items {
         match item.kind {
-          case IFunc(fd) -> {
-            if fd.name == "generate" {
-              hasGenerate = true
+          case IRecord(_) -> {
+            for ann in item.annotations {
+              if ann.name.segments.count == 1 and ann.name.segments[0] == "plugin" {
+                hasPlugin = true
+              }
             }
-            if fd.name == "main" {
-              hasMain = true
+          }
+          case IImpl(d) -> {
+            val segs = d.iface.head.segments
+            if segs.count > 0 and segs[segs.count - 1] == "SourceGenerator" {
+              hasImpl = true
             }
           }
           case _ -> ()
         }
       }
     }
-  };
-  (hasGenerate, hasMain)
+  }
+  hasPlugin and hasImpl
 }
 
 /// The source generators the manifest at `mfPath` declares: each path or
@@ -988,17 +995,11 @@ pub func resolveGenerators(manifest: in Mf.Manifest, mfPath: in String): Generat
         if kind != "source-generator" {
           gens.libraries[dep.name] = kind
         } else {
-          val (hasGenerate, hasMain) = generatorEntryPoints(depDir, dep.name)
-          if not hasGenerate or not hasMain {
-            val missing = if not hasGenerate {
-              "pub func generate(req: GeneratorRequest): GeneratorResponse"
-            } else {
-              "func main(): Int { runGenerator(generate) }"
-            }
+          if not declaresGeneratorPlugin(depDir, dep.name) {
             gens.failures[dep.name] = Generator.GeneratorFailure(
               code = "X0003",
-              message = "source generator '" + dep.name + "' (" + depDir + ") does not declare " +
-                missing
+              message = "source generator '" + dep.name + "' (" + depDir + ") declares no @plugin record " +
+                "implementing Lyric.GeneratorSdk.SourceGenerator"
             )
           } else {
             val stack: List[String] = newList()
