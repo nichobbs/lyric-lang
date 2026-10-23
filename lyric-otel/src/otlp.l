@@ -272,7 +272,9 @@ func isSuccessStatus(status: in Int): Bool {
 /// Call this before process exit (Lambda / short-lived containers) and
 /// periodically otherwise — there is no background flush thread.
 @stable(since = "0.2")
-pub async func flushOtlpAsync(timeoutMs: Int): Bool {
+pub async func flushOtlpAsync(timeoutMs: Int): Bool
+  requires: timeoutMs > 0
+{
   var allOk = true
   match exporterState.traces() {
     case None -> {

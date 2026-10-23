@@ -115,6 +115,7 @@ func errName(e: in HpackError): String {
     case HuffmanEosSymbol -> "HuffmanEosSymbol"
     case TableSizeUpdateTooLarge(_, _) -> "TableSizeUpdateTooLarge"
     case SizeUpdateAfterHeader -> "SizeUpdateAfterHeader"
+    case MissingSizeUpdate -> "MissingSizeUpdate"
     case HeaderListTooLarge(_, _) -> "HeaderListTooLarge"
     case NonOctetValue(_) -> "NonOctetValue"
   }
@@ -565,7 +566,13 @@ test "C.5 response sequence encodes byte-for-byte with eviction" {
   var encoder = newEncoder(256, false)
   assertBytesHex(encodeList(encoder, resp1(), "C.5.1 enc"), c51, "C.5.1 enc")
   assertBytesHex(encodeList(encoder, resp2(), "C.5.2 enc"), c52, "C.5.2 enc")
-  assertBytesHex(encodeList(encoder, resp3(), "C.5.3 enc"), c53, "C.5.3 enc")
+  // RFC 7541 sends set-cookie with incremental indexing (0x77); this encoder
+  // sends it never-indexed (0x1f28) because it carries credentials (#7231).
+  assertBytesHex(
+    encodeList(encoder, resp3(), "C.5.3 enc"),
+    "88c1611d4d6f6e2c203231204f637420323031332032303a31333a323220474d54c05a04677a69701f2838666f6f3d4153444a4b48514b425a584f5157454f50495541585157454f49553b206d61782d6167653d333630303b2076657273696f6e3d31",
+    "C.5.3 enc"
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -581,7 +588,11 @@ test "C.6 response sequence encodes byte-for-byte with Huffman literals" {
   var encoder = newEncoder(256, true)
   assertBytesHex(encodeList(encoder, resp1(), "C.6.1 enc"), c61, "C.6.1 enc")
   assertBytesHex(encodeList(encoder, resp2(), "C.6.2 enc"), c62, "C.6.2 enc")
-  assertBytesHex(encodeList(encoder, resp3(), "C.6.3 enc"), c63, "C.6.3 enc")
+  assertBytesHex(
+    encodeList(encoder, resp3(), "C.6.3 enc"),
+    "88c16196d07abe941054d444a8200595040b8166e084a62d1bffc05a839bd9ab1f28ad94e7821dd7f2e6c7b335dfdfcd5b3960d5af27087f3672c1ab270fb5291f9587316065c003ed4ee5b1063d5007",
+    "C.6.3 enc"
+  )
 }
 
 test "C.6 response sequence decodes with the documented eviction states" {
@@ -833,4 +844,36 @@ test "HPACK encoders reject out-of-range programmer inputs (#7251)" {
   assertPanics("index 0", { -> val _ = encodeIndexedField(0) })
   assertPanics("negative table size", { -> val _ = newDynamicTable(-1) })
   assertPanics("negative size update", { -> val _ = encodeDynamicTableSizeUpdate(-1) })
+}
+
+test "credential headers are sent never-indexed and stay out of the dynamic table (#7231)" {
+  var encoder = newEncoder(4096, false)
+  val hl: List[HeaderField] = newList()
+  hl.add(h("authorization", "secret"))
+  hl.add(h("cookie", "a=b"))
+  hl.add(h("x-custom", "v"))
+  val block = encodeList(encoder, hl, "credentials")
+  // 0x1f 0x08 = never-indexed, static name 23 (authorization); 0x1f 0x0d = cookie (32).
+  assertBytesHex(block, "1f08067365637265741f1103613d62" + "400878" + "2d637573746f6d0176", "never-indexed credentials")
+  assertEqualInt(dynamicTableCount(encoderDynamicTable(encoder)), 1, "only the non-credential field is indexed")
+  var decoder = newDecoder(4096)
+  val decoded = decodeBlock(decoder, block, "round trip")
+  assertHeader(decoded, 0, "authorization", "secret", "round trip")
+  assertHeader(decoded, 1, "cookie", "a=b", "round trip")
+}
+
+test "after the ceiling is lowered the next block must open with a size update (#7231)" {
+  var decoder = newDecoder(4096)
+  decoderSetMaxProtocolSize(decoder, 100)
+  match decodeHeaderBlock(decoder, hx("82")) {
+    case Ok(_) -> panic("expected MissingSizeUpdate")
+    case Err(e) -> assertEqual(errName(e), "MissingSizeUpdate", "block without size update")
+  }
+  var ok = newDecoder(4096)
+  decoderSetMaxProtocolSize(ok, 100)
+  // 0x3f 0x45 = size update to 100, then :method GET.
+  val decoded = decodeBlock(ok, hx("3f4582"), "block with size update")
+  assertHeader(decoded, 0, ":method", "GET", "after size update")
+  val again = decodeBlock(ok, hx("82"), "later block needs no update")
+  assertHeader(again, 0, ":method", "GET", "later block")
 }

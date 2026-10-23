@@ -161,7 +161,6 @@ aspect KeyGuardDisabled from Web.Aspects.ApiKey {
   matches: name like "apiKeyBypassed*"
   config {
     expectedKey: String = "secret-key-123"
-    enabled: Bool = false
   }
 }
 
@@ -169,10 +168,10 @@ pub func apiKeyBypassedHandler(apiKey: in String): Result[String, Web.ApiError] 
   return Ok("reached")
 }
 
-test "ApiKey aspect: enabled=false bypasses the key check" {
+test "ApiKey aspect: security guards have no off switch (#7249)" {
   match apiKeyBypassedHandler("wrong-key") {
-    case Ok(v) -> assertEqual(v, "reached", "a disabled guard must let any call through")
-    case Err(_) -> assertTrue(false, "a disabled guard must not reject")
+    case Ok(_) -> assertTrue(false, "a security guard has no off switch: the call must be rejected")
+    case Err(_) -> assertTrue(true, "rejected")
   }
 }
 
@@ -182,7 +181,6 @@ aspect AuthGuardDisabled from Web.Aspects.RequiresAuth {
     jwtSecret: String = "lyric-test-hs256-signing-key-0123456789"
     issuer: String = "lyric-tests"
     audience: String = "lyric-tests-api"
-    enabled: Bool = false
   }
 }
 
@@ -190,16 +188,17 @@ pub func authBypassedHandler(authToken: in String): Result[String, Web.ApiError]
   return Ok("reached")
 }
 
-test "RequiresAuth aspect: enabled=false bypasses JWT verification" {
+test "RequiresAuth aspect: security guards have no off switch (#7249)" {
   match authBypassedHandler("not.a.valid.jwt") {
-    case Ok(v) -> assertEqual(v, "reached", "a disabled guard must let any call through")
-    case Err(_) -> assertTrue(false, "a disabled guard must not reject")
+    case Ok(_) -> assertTrue(false, "a security guard has no off switch: the call must be rejected")
+    case Err(_) -> assertTrue(true, "rejected")
   }
 }
 
-// Complete the bypass matrix for the remaining web aspects that carry an
-// `enabled` master switch (#3653): RequiresRole, RateLimit, HttpCircuitBreaker.
-// Each must short-circuit to call.proceed() when disabled.
+// RateLimit and HttpCircuitBreaker keep an `enabled` master switch (#3653) and
+// must short-circuit to call.proceed() when disabled. The authentication and
+// authorization aspects have none (#7249): an environment variable must not be
+// able to turn authentication off.
 aspect RoleGuardDisabled from Web.Aspects.RequiresRole {
   matches: name like "roleBypassed*"
   config {
@@ -207,7 +206,6 @@ aspect RoleGuardDisabled from Web.Aspects.RequiresRole {
     issuer: String = "lyric-tests"
     audience: String = "lyric-tests-api"
     allowedRoles: String = "admin"
-    enabled: Bool = false
   }
 }
 
@@ -215,10 +213,10 @@ pub func roleBypassedHandler(authToken: in String): Result[String, Web.ApiError]
   return Ok("reached")
 }
 
-test "RequiresRole aspect: enabled=false bypasses the role check" {
+test "RequiresRole aspect: security guards have no off switch (#7249)" {
   match roleBypassedHandler("not.a.valid.jwt") {
-    case Ok(v) -> assertEqual(v, "reached", "a disabled guard must let any call through")
-    case Err(_) -> assertTrue(false, "a disabled guard must not reject")
+    case Ok(_) -> assertTrue(false, "a security guard has no off switch: the call must be rejected")
+    case Err(_) -> assertTrue(true, "rejected")
   }
 }
 

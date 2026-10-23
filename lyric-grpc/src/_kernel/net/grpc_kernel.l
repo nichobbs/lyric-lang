@@ -496,22 +496,30 @@ record RateLimiterPair {
 
 val rateLimiters: ConcurrentDict[String, RateLimiterPair] = newConcurrentDict()
 
+// Keyed on the whole configuration, not the method alone: two instantiations
+// of the aspect over one method, or a changed environment value, must not
+// inherit the limits of whichever created the entry first (#7247).
+func limiterKey(method: in String, requestsPerMinute: in Int, burstSize: in Int): String {
+  method + "|" + requestsPerMinute.toString() + "|" + burstSize.toString()
+}
+
 func getOrCreateLimiterPair(method: in String, requestsPerMinute: in Int, burstSize: in Int): RateLimiterPair {
+  val key = limiterKey(method, requestsPerMinute, burstSize)
   var existing: RateLimiterPair = default()
-  if cdTryGetValue(rateLimiters, method, existing) {
+  if cdTryGetValue(rateLimiters, key, existing) {
     return existing
   }
   val fresh = RateLimiterPair(
     sustained = Some(value = newSlidingWindowLimiter(60000, requestsPerMinute, 6)),
     burst = Some(value = newSlidingWindowLimiter(1000, burstSize, 1))
   )
-  if cdTryAdd(rateLimiters, method, fresh) {
+  if cdTryAdd(rateLimiters, key, fresh) {
     return fresh
   }
   // Lost the race to another thread creating the same method's entry
   // concurrently; use its winning pair instead of our (now-orphaned) one.
   var winner: RateLimiterPair = default()
-  val _ = cdTryGetValue(rateLimiters, method, winner)
+  val _ = cdTryGetValue(rateLimiters, key, winner)
   winner
 }
 

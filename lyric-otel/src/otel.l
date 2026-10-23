@@ -52,7 +52,9 @@ pub enum MetricUnit {
 /// design (issue #5410), there is no host listener whose absence could
 /// make this return a null/no-op span.
 @stable(since = "0.2")
-pub func startSpan(operationName: String, kind: Int): Span {
+pub func startSpan(operationName: String, kind: Int): Span
+  requires: kind >= 0 and kind <= 4
+{
   val traceId = secureGetBytes(16)
   val spanId = secureGetBytes(8)
   newSpanRecord(traceId, spanId, operationName, kind, nowUnixNanos())
@@ -72,24 +74,34 @@ pub func setSpanAttribute(span: Span, key: String, value: String): Unit {
 
 /// End the span: stamps the end timestamp and enqueues it for OTLP
 /// export via `OTel.Otlp.flushOtlpAsync`.  Must be called even when an
-/// error was recorded.
+/// error was recorded.  Ending a span that has already ended is a no-op, so a
+/// span is never exported twice.
 @stable(since = "0.2")
 pub func endSpan(span: Span): Unit {
-  spanFinish(span, nowUnixNanos())
-  globalSpanBuffer.push(span)
+  if spanMarkEnded(span) {
+    spanFinish(span, nowUnixNanos())
+    globalSpanBuffer.push(span)
+  }
 }
 
 // ─── Metrics ────────────────────────────────────────────────────────────────
-/// Add `delta` to the named cumulative counter.
+/// Add `delta` to the named cumulative counter.  A counter only grows, so a
+/// negative `delta` is ignored rather than corrupting the running total (and
+/// telemetry must not take the service down over a bad number).
 @stable(since = "0.2")
 pub func incrementCounter(name: String, delta: Int, unit: String): Unit {
-  globalMetricsBuffer.incrementCounter(name, delta.toLong(), unit)
+  if delta >= 0 {
+    globalMetricsBuffer.incrementCounter(name, delta.toLong(), unit)
+  }
 }
 
-/// Record one histogram observation.
+/// Record one histogram observation.  A NaN or infinite `value` is ignored:
+/// either one would poison the histogram's `sum` for the life of the process.
 @stable(since = "0.2")
 pub func recordHistogram(name: String, value: Double, unit: String): Unit {
-  globalMetricsBuffer.recordHistogram(name, value, unit)
+  if value - value == 0.0 {
+    globalMetricsBuffer.recordHistogram(name, value, unit)
+  }
 }
 
 // ─── Aspect templates ────────────────────────────────────────────────────────

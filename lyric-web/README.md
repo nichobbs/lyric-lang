@@ -416,12 +416,11 @@ aspect Auth from Web.Aspects.RequiresAuth {
 
 | Config field | Type | Default | Env var (`Auth` instantiation) |
 |---|---|---|---|
-| `enabled` | `Bool` | `true` | `LYRIC_ASPECT_AUTH_ENABLED` |
 | `jwtSecret` | `String` | **REQUIRED** | `LYRIC_ASPECT_AUTH_JWTSECRET` |
 | `issuer` | `String` | **REQUIRED** | `LYRIC_ASPECT_AUTH_ISSUER` |
 | `audience` | `String` | **REQUIRED** | `LYRIC_ASPECT_AUTH_AUDIENCE` |
 
-The `jwtSecret` field is `@sensitive` — its value is redacted in `lyric explain` and Swagger UI metadata output. It must be at least 32 bytes (the HS256 key minimum). `issuer` and `audience` have no default: an empty default used to skip both checks, so any token signed with the same secret for another service was accepted. Tokens without an `exp` claim are rejected.
+The `jwtSecret` field is `@sensitive` — its value is redacted in `lyric explain` and Swagger UI metadata output. It must be at least 32 bytes (the HS256 key minimum). `issuer` and `audience` have no default: an empty default used to skip both checks, so any token signed with the same secret for another service was accepted. Tokens without an `exp` claim are rejected. `RequiresAuth`, `RequiresRole` and `ApiKey` have no `enabled` switch: an environment variable must not be able to turn authentication off (#7249). To skip a handler, leave it out of the aspect's `matches:` or add it to `except`.
 
 ### `Web.Aspects.RateLimit`
 

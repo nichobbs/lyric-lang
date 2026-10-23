@@ -307,8 +307,12 @@ ships Phase A:
 - Existing `McpToolHandler` implementations need no changes — the
   resumable interface is additive (§3.1).
 - `Mcp.Client` calls now time out (#7451): a call the server does not
-  answer within 60 s fails with a "timed out after 60000 ms" error
-  instead of blocking forever. A consumer that calls a tool known to run
+  answer within 60 s fails with `McpTimeout` ("timed out after 60000
+  ms") instead of blocking forever. Failures are typed (#7522): a
+  deadline is `McpTimeout`, a server error response `McpRpcFailure`, a
+  transport failure `McpTransportError` and an unexpected result shape
+  `McpProtocolError`; `Mcp.Client` operations no longer return a bare
+  `String` error. A consumer that calls a tool known to run
   longer raises the bound with `setClientCallTimeout` or passes one to
   `callToolWithin`.
 - Legacy-peer tolerance is **server-side only, not symmetric**:

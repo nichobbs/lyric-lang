@@ -138,6 +138,14 @@ test "globalSpanBuffer.snapshot is a copy that later pushes do not change" {
   assertEqual(spanName(globalSpanBuffer.snapshot()[0]), "snapshotCopy.second", "and it is the late one")
 }
 
+test "endSpan on an already-ended span does not export it twice (#7235)" {
+  val _ = globalSpanBuffer.drain()
+  val span = startSpan("endTwice.op", 0)
+  endSpan(span)
+  endSpan(span)
+  assertEqualInt(globalSpanBuffer.count(), 1, "the span is buffered once")
+}
+
 // ─── Counters ─────────────────────────────────────────────────────────────────
 test "incrementCounter accumulates across calls with the same name" {
   incrementCounter("otel_span_tests.counter.a", 3, "requests")
@@ -175,6 +183,19 @@ test "incrementCounter keeps distinct names independent" {
   assertEqualLong(b2, 100i64, "counter b2 unaffected by b1")
 }
 
+test "incrementCounter ignores a negative delta (#7235)" {
+  incrementCounter("otel_span_tests.counter.neg", 5, "requests")
+  incrementCounter("otel_span_tests.counter.neg", -3, "requests")
+  val counters = globalMetricsBuffer.snapshotCounters().toArray()
+  var i = 0
+  while i < counters.length {
+    if counters[i].name == "otel_span_tests.counter.neg" {
+      assertEqualLong(counters[i].total, 5i64, "a counter never goes down")
+    }
+    i = i + 1
+  }
+}
+
 // ─── Histograms ───────────────────────────────────────────────────────────────
 test "recordHistogram accumulates count and sum across calls with the same name" {
   recordHistogram("otel_span_tests.hist.a", 10.0, "ms")
@@ -191,6 +212,23 @@ test "recordHistogram accumulates count and sum across calls with the same name"
     i = i + 1
   }
   assertTrue(found, "histogram was registered in the buffer")
+}
+
+test "recordHistogram ignores NaN and infinite observations (#7235)" {
+  val nan = 0.0 / 0.0
+  val inf = 1.0 / 0.0
+  recordHistogram("otel_span_tests.hist.bad", 4.0, "ms")
+  recordHistogram("otel_span_tests.hist.bad", nan, "ms")
+  recordHistogram("otel_span_tests.hist.bad", inf, "ms")
+  val histograms = globalMetricsBuffer.snapshotHistograms().toArray()
+  var i = 0
+  while i < histograms.length {
+    if histograms[i].name == "otel_span_tests.hist.bad" {
+      assertEqualLong(histograms[i].count, 1i64, "only the finite observation counts")
+      assertTrue(histograms[i].sum == 4.0, "the sum is not poisoned")
+    }
+    i = i + 1
+  }
 }
 
 // ─── Time conversion ──────────────────────────────────────────────────────────

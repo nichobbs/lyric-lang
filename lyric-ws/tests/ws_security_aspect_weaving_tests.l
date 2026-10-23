@@ -68,14 +68,13 @@ test "WsAuth aspect: a validly-signed token reaches the handler" {
   }
 }
 
-// The `enabled` master switch must bypass the guard entirely when false.
+// WsAuth has no `enabled` master switch (#7249): the guard always runs.
 aspect WsAuthGuardDisabled from Ws.Aspects.WsAuth {
   matches: name like "wsAuthBypassed*"
   config {
     jwtSecret: String = "lyric-test-hs256-signing-key-0123456789"
     issuer: String = "lyric-tests"
     audience: String = "lyric-tests-api"
-    enabled: Bool = false
   }
 }
 
@@ -83,10 +82,10 @@ pub func wsAuthBypassedHandler(authToken: in String): Result[Unit, Unit] {
   return Ok(())
 }
 
-test "WsAuth aspect: enabled=false bypasses JWT verification" {
+test "WsAuth aspect: the guard has no off switch (#7249)" {
   match wsAuthBypassedHandler("not.a.valid.jwt") {
-    case Ok(_) -> assertTrue(true, "a disabled guard must let any call through")
-    case Err(_) -> assertTrue(false, "a disabled guard must not reject")
+    case Ok(_) -> assertTrue(false, "an invalid token must be rejected")
+    case Err(_) -> assertTrue(true, "rejected")
   }
 }
 

@@ -162,10 +162,17 @@ pub interface DbConnection {
 pub interface DbTransaction {
   func query(sql: in String, params: in [String]): Result[[DbRow], DbError]
   func execute(sql: in String, params: in [String]): Result[Int, DbError]
+  func isActive(): Bool
   func commit(): Result[Unit, DbError]
   func rollback(): Result[Unit, DbError]
 }
 ```
+
+`isActive()` is true until the transaction is committed or rolled back. On
+a finished transaction `query`, `execute` and `commit` return an `Err` with
+code `TX_FINISHED` without reaching the driver (#7241). `rollback` is
+idempotent and returns `Ok` after the transaction has finished, so a
+cleanup path can call it unconditionally.
 
 ## Row access
 

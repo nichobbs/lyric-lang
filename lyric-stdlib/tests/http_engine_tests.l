@@ -48,9 +48,37 @@ func appendAll(acc: in List[HttpEvent], events: in List[HttpEvent]): Unit {
 
 /// Drive `full` through a fresh connection in one `feed` call.
 func feedWhole(limits: in EngineLimits, full: in slice[Byte]): List[HttpEvent] {
-  val conn = newConnection(limits)
+  var conn = newConnection(limits)
   val result = feed(conn, full)
-  result.events
+  conn = result.conn
+  val acc: List[HttpEvent] = newList()
+  appendAll(acc, result.events)
+  drainPipelined(conn, acc)
+  acc
+}
+
+/// `feed` stops after each `RequestComplete` (#7859), leaving a pipelined
+/// next request buffered: keep feeding empty slices until nothing remains.
+func drainPipelined(start: in Connection, acc: in List[HttpEvent]): Unit {
+  var conn = start
+  var again = acc.count > 0 and endsWithComplete(acc) and hasBufferedInput(conn)
+  while again {
+    val none: slice[Byte] = []
+    val r = feed(conn, none)
+    conn = r.conn
+    appendAll(acc, r.events)
+    again = endsWithComplete(r.events) and hasBufferedInput(conn)
+  }
+}
+
+func endsWithComplete(events: in List[HttpEvent]): Bool {
+  if events.count == 0 {
+    return false
+  }
+  match events[events.count - 1] {
+    case RequestComplete -> true
+    case _ -> false
+  }
 }
 
 /// Drive `full` through a fresh connection split at `splitAt` (two `feed`
@@ -328,6 +356,23 @@ test "keep-alive pipeline of two sequential requests fed in one buffer" {
   assertRequestComplete(events[1], "pipeline request 1")
   assertRequestHead(events[2], "GET", "/second", "pipeline request 2")
   assertRequestComplete(events[3], "pipeline request 2")
+}
+
+test "feed stops after the first RequestComplete and keeps the next request buffered (#7859)" {
+  val req = bytesOf(
+    "GET /first HTTP/1.1\r\nHost: example.com\r\n\r\n" + "GET /second HTTP/1.1\r\nHost: example.com\r\n\r\n"
+  )
+  val r1 = feed(newConnection(EngineLimits.defaults()), req)
+  assertEqualInt(r1.events.count, 2, "first feed yields one request only")
+  assertRequestHead(r1.events[0], "GET", "/first", "first feed head")
+  assertRequestComplete(r1.events[1], "first feed complete")
+  assertTrue(hasBufferedInput(r1.conn), "second request stays buffered")
+  val none: slice[Byte] = []
+  val r2 = feed(r1.conn, none)
+  assertEqualInt(r2.events.count, 2, "draining feed yields the second request")
+  assertRequestHead(r2.events[0], "GET", "/second", "drained head")
+  assertRequestComplete(r2.events[1], "drained complete")
+  assertTrue(not hasBufferedInput(r2.conn), "nothing left after the second request")
 }
 
 test "the pipelined buffer re-fed one byte at a time parses identically" {
@@ -890,22 +935,28 @@ test "a bare LF after a partially scanned line is still rejected" {
 }
 
 test "EngineLimits rejects a non-positive limit (#7251)" {
-  assertPanics("zero header count", { ->
-    val ignored = EngineLimits(
-      maxRequestLineLength = 8192,
-      maxHeaderCount = 0,
-      maxHeaderLineLength = 8192,
-      maxTotalHeaderBytes = 65536,
-      maxBodyBytes = 10
-    )
-  })
-  assertPanics("negative body cap", { ->
-    val ignored = EngineLimits(
-      maxRequestLineLength = 8192,
-      maxHeaderCount = 10,
-      maxHeaderLineLength = 8192,
-      maxTotalHeaderBytes = 65536,
-      maxBodyBytes = -1
-    )
-  })
+  assertPanics(
+    "zero header count",
+    { ->
+      val ignored = EngineLimits(
+        maxRequestLineLength = 8192,
+        maxHeaderCount = 0,
+        maxHeaderLineLength = 8192,
+        maxTotalHeaderBytes = 65536,
+        maxBodyBytes = 10
+      )
+    }
+  )
+  assertPanics(
+    "negative body cap",
+    { ->
+      val ignored = EngineLimits(
+        maxRequestLineLength = 8192,
+        maxHeaderCount = 10,
+        maxHeaderLineLength = 8192,
+        maxTotalHeaderBytes = 65536,
+        maxBodyBytes = -1
+      )
+    }
+  )
 }

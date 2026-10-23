@@ -13,11 +13,14 @@
 //!
 //! **Deadlines (#7451).** Every operation waits for its response for at
 //! most the client's call timeout — `JsonRpc.defaultCallTimeoutMs` (60 s)
-//! unless changed with `setClientCallTimeout` — and fails with a message
-//! naming the timeout when the server does not answer in time. The
+//! unless changed with `setClientCallTimeout` — and fails with `McpTimeout`
+//! when the server does not answer in time. The
 //! tool-call operations, which a slow tool can legitimately stretch, also
 //! come in `...Within` forms taking a per-call timeout. A response that
 //! arrives after its call timed out is discarded when it is later read.
+//! Operations fail with `McpClientError` (#7522): `McpTimeout`,
+//! `McpRpcFailure`, `McpTransportError` or `McpProtocolError`, so a caller can
+//! retry a deadline and not a tool error.
 //!
 //! Sampling/elicitation (server -> client requests) are out of scope —
 //! `2026-07-28` deprecates both outright (docs/64 §1), so this is now moot
@@ -70,6 +73,48 @@ pub record McpClient {
   var serverInfo: McpImplementation
 }
 
+/// Why an `Mcp.Client` operation failed, so a caller can retry a deadline but
+/// not a tool error.
+///
+/// - `McpTimeout`: no response arrived within `timeoutMs`; the request may or
+///   may not have run on the server.
+/// - `McpRpcFailure`: the server answered with a JSON-RPC error (an unknown
+///   tool, invalid params, a failing handler).
+/// - `McpTransportError`: the transport failed or closed, or the peer sent a
+///   malformed message, so the connection is likely unusable.
+/// - `McpProtocolError`: the server answered, but the result is not what MCP
+///   defines for the method.
+@stable(since = "0.2")
+pub union McpClientError {
+  case McpTimeout(method: String, timeoutMs: Int)
+  case McpRpcFailure(method: String, code: Int, message: String, data: Option[JsonValue])
+  case McpTransportError(message: String)
+  case McpProtocolError(message: String)
+}
+
+/// A one-line description of `e`, naming the method where there is one.
+@pure
+@stable(since = "0.2")
+pub func describeClientError(e: in McpClientError): String {
+  match e {
+    case McpTimeout(method, timeoutMs) -> "'" + method + "' timed out after " + timeoutMs.toString() + " ms"
+    case McpRpcFailure(method, code, message, _) -> "'" + method + "' failed: " + message + " (code " + code.toString() +
+      ")"
+    case McpTransportError(message) -> message
+    case McpProtocolError(message) -> message
+  }
+}
+
+/// True when `e` is a deadline: the one failure that is generally safe to retry.
+@pure
+@stable(since = "0.2")
+pub func isClientTimeout(e: in McpClientError): Bool {
+  match e {
+    case McpTimeout(_, _) -> true
+    case _ -> false
+  }
+}
+
 /// Wrap an already-constructed transport in an `McpClient`. Stateless core
 /// (docs/64 §3.3): this is now a pure local operation — no handshake, no
 /// round trip, cannot fail on its own (still `Result`-returning for
@@ -103,7 +148,9 @@ pub func setClientCallTimeout(client: inout McpClient, timeoutMs: in Int): Unit
 
 // Every operation's JSON-RPC round trip, under the client's call timeout.
 // The failure text names the method and, for a timeout, says so.
-func request(client: inout McpClient, method: in String, params: in Option[JsonValue]): Result[JsonValue, String] {
+func request(
+  client: inout McpClient, method: in String, params: in Option[JsonValue]
+): Result[JsonValue, McpClientError] {
   requestWithin(client, method, params, client.peer.callTimeoutMs)
 }
 
@@ -120,13 +167,27 @@ func request(client: inout McpClient, method: in String, params: in Option[JsonV
 // result this call already obtained.
 func requestWithin(
   client: inout McpClient, method: in String, params: in Option[JsonValue], timeoutMs: in Int
-): Result[JsonValue, String] {
+): Result[JsonValue, McpClientError] {
   val result = callWithin(client.peer, method, params, timeoutMs)
   val _: Result[Unit, String] = drainPendingQueue(client.peer)
   match result {
     case Ok(v) -> Ok(value = v)
-    case Err(e) -> Err(error = "'" + method + "' failed: " + e.message)
+    case Err(e) -> Err(error = classifyRpcError(method, timeoutMs, e))
   }
+}
+
+// A local deadline, a local transport failure and a peer's own error response
+// are different things to a caller deciding whether to retry. `JsonRpc` marks
+// the errors it produces itself (`isLocalError`); everything else came off the
+// wire.
+func classifyRpcError(method: in String, timeoutMs: in Int, e: in RpcError): McpClientError {
+  if isLocalError(e) {
+    if isTimeoutError(e) {
+      return McpTimeout(method = method, timeoutMs = timeoutMs)
+    }
+    return McpTransportError(message = "'" + method + "' failed: " + e.message)
+  }
+  McpRpcFailure(method = method, code = e.code, message = e.message, data = e.data)
 }
 
 /// Fetch the server's identity and capability summary via `server/discover`,
@@ -138,7 +199,7 @@ func requestWithin(
 /// caller wants to display or log which server it is talking to, or branch
 /// on capabilities before calling tools/resources/prompts.
 @stable(since = "0.2")
-pub func discoverServer(client: inout McpClient): Result[McpDiscoverResult, String] {
+pub func discoverServer(client: inout McpClient): Result[McpDiscoverResult, McpClientError] {
   match request(client, "server/discover", None) {
     case Ok(v) -> {
       val discovered = decodeServerDiscoverResult(v)
@@ -150,7 +211,7 @@ pub func discoverServer(client: inout McpClient): Result[McpDiscoverResult, Stri
 }
 
 @stable(since = "0.1")
-pub func listTools(client: inout McpClient): Result[List[McpToolInfo], String] {
+pub func listTools(client: inout McpClient): Result[List[McpToolInfo], McpClientError] {
   match request(client, "tools/list", None) {
     case Ok(v) -> Ok(value = decodeToolInfoList(v))
     case Err(e) -> Err(error = e)
@@ -168,7 +229,9 @@ pub func listTools(client: inout McpClient): Result[List[McpToolInfo], String] {
 // rather than re-deriving the `resultType == "input_required"` check
 // here, so the sentinel string lives in exactly one place.
 @stable(since = "0.1")
-pub func callTool(client: inout McpClient, name: in String, args: in Option[JsonValue]): Result[McpToolResult, String] {
+pub func callTool(
+  client: inout McpClient, name: in String, args: in Option[JsonValue]
+): Result[McpToolResult, McpClientError] {
   callToolWithin(client, name, args, client.peer.callTimeoutMs)
 }
 
@@ -177,18 +240,20 @@ pub func callTool(client: inout McpClient, name: in String, args: in Option[Json
 @stable(since = "0.2")
 pub func callToolWithin(
   client: inout McpClient, name: in String, args: in Option[JsonValue], timeoutMs: in Int
-): Result[McpToolResult, String]
+): Result[McpToolResult, McpClientError]
   requires: isValidCallTimeout(timeoutMs)
 {
   match requestWithin(client, "tools/call", Some(value = toolCallParams(name, args)), timeoutMs) {
     case Ok(v) -> {
       match decodeToolCallOutcome(v) {
-        case Err(e) -> Err(error = "'tools/call' returned a malformed result: " + e)
+        case Err(e) -> Err(error = McpProtocolError(message = "'tools/call' returned a malformed result: " + e))
         case Ok(outcome) -> match outcome {
           case ToolResult(result) -> Ok(value = result)
           case InputRequired(_) -> Err(
-            error = "'" + name +
-              "' is a resumable tool waiting for more input (resultType: input_required) — call it with Mcp.Client.callResumableTool/resumeToolCall instead of callTool"
+            error = McpProtocolError(
+              message = "'" + name +
+                "' is a resumable tool waiting for more input (resultType: input_required) — call it with Mcp.Client.callResumableTool/resumeToolCall instead of callTool"
+            )
           )
         }
       }
@@ -207,11 +272,15 @@ func toolCallParams(name: in String, args: in Option[JsonValue]): JsonValue {
   JObject(fields = fields)
 }
 
-func decodeOutcome(response: in Result[JsonValue, String]): Result[McpToolCallOutcome, String] {
+func decodeOutcome(response: in Result[JsonValue, McpClientError]): Result[McpToolCallOutcome, McpClientError] {
   match response {
     case Ok(v) -> match decodeToolCallOutcome(v) {
       case Ok(outcome) -> Ok(value = outcome)
-      case Err(e) -> Err(error = "'tools/call' returned a malformed result: " + e)
+      case Err(e) -> Err(
+        error = McpProtocolError(
+          message = "'tools/call' returned a malformed result: " + e
+        )
+      )
     }
     case Err(e) -> Err(error = e)
   }
@@ -224,7 +293,7 @@ func decodeOutcome(response: in Result[JsonValue, String]): Result[McpToolCallOu
 @stable(since = "0.2")
 pub func callResumableTool(
   client: inout McpClient, name: in String, args: in Option[JsonValue]
-): Result[McpToolCallOutcome, String] {
+): Result[McpToolCallOutcome, McpClientError] {
   callResumableToolWithin(client, name, args, client.peer.callTimeoutMs)
 }
 
@@ -232,7 +301,7 @@ pub func callResumableTool(
 @stable(since = "0.2")
 pub func callResumableToolWithin(
   client: inout McpClient, name: in String, args: in Option[JsonValue], timeoutMs: in Int
-): Result[McpToolCallOutcome, String]
+): Result[McpToolCallOutcome, McpClientError]
   requires: isValidCallTimeout(timeoutMs)
 {
   decodeOutcome(requestWithin(client, "tools/call", Some(value = toolCallParams(name, args)), timeoutMs))
@@ -245,7 +314,7 @@ pub func callResumableToolWithin(
 @stable(since = "0.2")
 pub func resumeToolCall(
   client: inout McpClient, name: in String, requestState: in String, inputResponses: in JsonValue
-): Result[McpToolCallOutcome, String] {
+): Result[McpToolCallOutcome, McpClientError] {
   resumeToolCallWithin(client, name, requestState, inputResponses, client.peer.callTimeoutMs)
 }
 
@@ -257,7 +326,7 @@ pub func resumeToolCallWithin(
   requestState: in String,
   inputResponses: in JsonValue,
   timeoutMs: in Int,
-): Result[McpToolCallOutcome, String]
+): Result[McpToolCallOutcome, McpClientError]
   requires: isValidCallTimeout(timeoutMs)
 {
   val fields: List[JsonField] = newList()
@@ -268,7 +337,7 @@ pub func resumeToolCallWithin(
 }
 
 @stable(since = "0.1")
-pub func listResources(client: inout McpClient): Result[List[McpResourceInfo], String] {
+pub func listResources(client: inout McpClient): Result[List[McpResourceInfo], McpClientError] {
   match request(client, "resources/list", None) {
     case Ok(v) -> Ok(value = decodeResourceInfoList(v))
     case Err(e) -> Err(error = e)
@@ -276,14 +345,14 @@ pub func listResources(client: inout McpClient): Result[List[McpResourceInfo], S
 }
 
 @stable(since = "0.1")
-pub func readResource(client: inout McpClient, uri: in String): Result[McpResourceContent, String] {
+pub func readResource(client: inout McpClient, uri: in String): Result[McpResourceContent, McpClientError] {
   val params = JObject(fields = [JsonField(name = "uri", value = JString(value = uri))])
   match request(client, "resources/read", Some(value = params)) {
     case Ok(v) -> match getArray(v, "contents") {
-      case None -> Err(error = "'resources/read' response missing 'contents'")
+      case None -> Err(error = McpProtocolError(message = "'resources/read' response missing 'contents'"))
       case Some(items) -> {
         if items.count == 0 {
-          Err(error = "'resources/read' response has an empty 'contents' array")
+          Err(error = McpProtocolError(message = "'resources/read' response has an empty 'contents' array"))
         } else {
           Ok(value = decodeResourceContent(items[0]))
         }
@@ -294,7 +363,7 @@ pub func readResource(client: inout McpClient, uri: in String): Result[McpResour
 }
 
 @stable(since = "0.1")
-pub func listPrompts(client: inout McpClient): Result[List[McpPromptInfo], String] {
+pub func listPrompts(client: inout McpClient): Result[List[McpPromptInfo], McpClientError] {
   match request(client, "prompts/list", None) {
     case Ok(v) -> Ok(value = decodePromptInfoList(v))
     case Err(e) -> Err(error = e)
@@ -304,7 +373,7 @@ pub func listPrompts(client: inout McpClient): Result[List[McpPromptInfo], Strin
 @stable(since = "0.1")
 pub func getPrompt(
   client: inout McpClient, name: in String, args: in Option[JsonValue]
-): Result[McpPromptResult, String] {
+): Result[McpPromptResult, McpClientError] {
   val fields: List[JsonField] = newList()
   fields.add(JsonField(name = "name", value = JString(value = name)))
   match args {
@@ -318,7 +387,7 @@ pub func getPrompt(
 }
 
 @stable(since = "0.1")
-pub func ping(client: inout McpClient): Result[Unit, String] {
+pub func ping(client: inout McpClient): Result[Unit, McpClientError] {
   match request(client, "ping", None) {
     case Ok(_) -> Ok(value = ())
     case Err(e) -> Err(error = e)

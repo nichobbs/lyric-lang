@@ -25,10 +25,14 @@
 //! connection value (old values must not be reused — see "Connection
 //! lifecycle" below) plus every event produced by consuming `bytes`. One
 //! `feed` call can yield many events (a full bodyless request is
-//! `RequestHead` + `RequestComplete` in one call; two fully-buffered
-//! pipelined requests yield two of each) or none of substance, in which case
+//! `RequestHead` + `RequestComplete` in one call) or none of substance, in which case
 //! the single event `NeedMore` is returned so a caller never has to treat an
 //! empty list specially.
+//!
+//! A `feed` call stops after the first `RequestComplete`: bytes of a
+//! pipelined next request stay buffered in the connection and are parsed by
+//! the next `feed` (pass an empty slice to drain them; `hasBufferedInput`
+//! reports whether any remain).
 //!
 //!   - `NeedMore` — no complete event yet; wait for more bytes.
 //!   - `RequestHead(method, target, version, headers)` — request line +
@@ -1611,6 +1615,17 @@ func driveFeed(state: in Connection, bytes: in slice[Byte]): FeedResult {
       }
       case PhFatal -> {
         progress = false
+      }
+    }
+    // Stop at a request boundary: bytes of a pipelined next request stay
+    // buffered for the next `feed`, so a driver that answers one request at a
+    // time (the HTTP/1.1 servers) never discards the events of the second (#7859).
+    if events.count > 0 {
+      match events[events.count - 1] {
+        case RequestComplete -> {
+          progress = false
+        }
+        case _ -> ()
       }
     }
   }

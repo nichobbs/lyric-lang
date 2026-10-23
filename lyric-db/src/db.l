@@ -146,10 +146,17 @@ pub interface DbTransaction {
   func execute(sql: in String, params: in slice[String]): Result[Int, DbError]
     requires: sql.length > 0
 
+  /// True until the transaction has been committed or rolled back.  A
+  /// finished transaction answers `query`, `execute` and `commit` with an
+  /// `Err` whose code is `TX_FINISHED` instead of reaching the driver.
+  func isActive(): Bool
+
   /// Commit the transaction.
   func commit(): Result[Unit, DbError]
 
-  /// Roll back the transaction.
+  /// Roll back the transaction.  Idempotent: rolling back a transaction that
+  /// has already finished is a no-op that returns `Ok`, so cleanup paths can
+  /// call it unconditionally.
   func rollback(): Result[Unit, DbError]
 }
 
@@ -199,7 +206,7 @@ impl DbConnection for NativeConnection {
 
   func transaction(): Result[DbTransaction, DbError] {
     match DbKernel.beginTransaction(self.conn) {
-      case Ok(tx) -> Ok(NativeTransaction(conn = self.conn, tx = tx))
+      case Ok(tx) -> Ok(NativeTransaction(conn = self.conn, tx = tx, finished = false))
       case Err(msg) -> Err(DbError(message = msg, code = "TX_BEGIN_ERROR"))
     }
   }
@@ -212,10 +219,18 @@ impl DbConnection for NativeConnection {
 record NativeTransaction {
   conn: DbKernel.DbConn
   tx: DbKernel.DbTxT
+  var finished: Bool
+}
+
+func txFinishedError(): DbError {
+  DbError(message = "the transaction has already been committed or rolled back", code = "TX_FINISHED")
 }
 
 impl DbTransaction for NativeTransaction {
   func query(sql: in String, params: in slice[String]): Result[slice[DbRow], DbError] {
+    if self.finished {
+      return Err(txFinishedError())
+    }
     match DbKernel.txQuery(self.conn, self.tx, sql, params) {
       case Ok(jsonRows) -> parseRows(jsonRows)
       case Err(msg) -> Err(DbError(message = msg, code = "TX_QUERY_ERROR"))
@@ -223,13 +238,25 @@ impl DbTransaction for NativeTransaction {
   }
 
   func execute(sql: in String, params: in slice[String]): Result[Int, DbError] {
+    if self.finished {
+      return Err(txFinishedError())
+    }
     match DbKernel.txExecute(self.conn, self.tx, sql, params) {
       case Ok(n) -> Ok(n)
       case Err(msg) -> Err(DbError(message = msg, code = "TX_EXECUTE_ERROR"))
     }
   }
 
+  func isActive(): Bool {
+    not self.finished
+  }
+
   func commit(): Result[Unit, DbError] {
+    if self.finished {
+      return Err(txFinishedError())
+    }
+    // A failed commit leaves the driver transaction unusable too.
+    self.finished = true
     match DbKernel.commitTransaction(self.tx) {
       case Ok(_) -> Ok(())
       case Err(msg) -> Err(DbError(message = msg, code = "TX_COMMIT_ERROR"))
@@ -237,6 +264,10 @@ impl DbTransaction for NativeTransaction {
   }
 
   func rollback(): Result[Unit, DbError] {
+    if self.finished {
+      return Ok(())
+    }
+    self.finished = true
     match DbKernel.rollbackTransaction(self.tx) {
       case Ok(_) -> Ok(())
       case Err(msg) -> Err(DbError(message = msg, code = "TX_ROLLBACK_ERROR"))

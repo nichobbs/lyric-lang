@@ -610,6 +610,9 @@ impl Db.DbTransaction for MockDbTransaction {
     self.executeCount = self.executeCount + 1
     return Ok(0)
   }
+  func isActive(): Bool {
+    return not self.committed and not self.rolledBack
+  }
   func commit(): Result[Unit, Db.DbError] {
     self.committed = true
     return Ok(())
