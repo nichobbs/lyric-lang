@@ -263,18 +263,57 @@ func downloadUrl(url: in String): Option[Downloaded] {
   None
 }
 
-func runGithubUpgrade(installDir: in String, versionArg: in Option[String], isDryRun: in Bool): Int {
-  // The installer is a POSIX shell script and replaces the running binary in
-  // place, neither of which works on Windows (a running lyric.exe is locked).
-  if Environment.isWindows() {
-    printErr(
-      "upgrade: --github is not supported on Windows (the installer is a POSIX shell script and cannot replace a running lyric.exe). " +
-        "Use `lyric upgrade --nuget`, or download the win-x64 zip from https://github.com/nichobbs/lyric-lang/releases and extract it over " +
-        installDir
-    )
-    return 1
-  }
+// The installer that matches the host: install.sh run by `sh`, or
+// install.ps1 run by Windows PowerShell (always present, unlike pwsh).
+// `pub` so cli_upgrade_self_test.l can pin the command lines on any host.
+pub func installerScriptName(isWindows: in Bool): String {
+  if isWindows then "install.ps1" else "install.sh"
+}
 
+pub func installerInterpreter(isWindows: in Bool): String {
+  if isWindows then "powershell" else "sh"
+}
+
+pub func installerArgs(
+  isWindows: in Bool,
+  scriptPath: in String,
+  installDir: in String,
+  version: in Option[String]
+): List[String] {
+  val args: List[String] = newList()
+  if isWindows {
+    args.add("-NoProfile")
+    args.add("-ExecutionPolicy")
+    args.add("Bypass")
+    args.add("-File")
+    args.add(scriptPath)
+    args.add("-Dir")
+    args.add(installDir)
+    args.add("-NoPath")
+    match version {
+      case Some(v) -> {
+        args.add("-Version")
+        args.add(v)
+      }
+      case None -> ()
+    }
+  } else {
+    args.add(scriptPath)
+    args.add("--dir")
+    args.add(installDir)
+    args.add("--no-path")
+    match version {
+      case Some(v) -> {
+        args.add("--version")
+        args.add(v)
+      }
+      case None -> ()
+    }
+  }
+  args
+}
+
+func runGithubUpgrade(installDir: in String, versionArg: in Option[String], isDryRun: in Bool): Int {
   // Resolve an omitted `--version` to the latest published GitHub release
   // (#4589) instead of defaulting to the `main` branch tip, which is not
   // guaranteed stable.  `cmdUpgrade` requires an explicit `--version` for a
@@ -313,7 +352,9 @@ func runGithubUpgrade(installDir: in String, versionArg: in Option[String], isDr
     // resolved without network access, so there is no concrete ref to show.
     case None -> "<latest-release>"
   }
-  val scriptUrl = "https://raw.githubusercontent.com/nichobbs/lyric-lang/" + ref + "/scripts/install.sh"
+  val isWindows = Environment.isWindows()
+  val scriptName = installerScriptName(isWindows)
+  val scriptUrl = "https://raw.githubusercontent.com/nichobbs/lyric-lang/" + ref + "/scripts/" + scriptName
 
   // `--no-path` always applies here: this is an in-place upgrade of an
   // already-installed binary (the caller's PATH already resolves it), not a
@@ -336,21 +377,12 @@ func runGithubUpgrade(installDir: in String, versionArg: in Option[String], isDr
           "(network error or API rate limit) — a real upgrade run resolves and fetches the latest release."
       )
     } else {
-      Console.println("dry-run: would fetch install.sh from: " + scriptUrl)
+      Console.println("dry-run: would fetch " + scriptName + " from: " + scriptUrl)
     }
-    val printArgs: List[String] = newList()
-    printArgs.add("--dir")
-    printArgs.add(installDir)
-    printArgs.add("--no-path")
-    match version {
-      case Some(v) -> {
-        printArgs.add("--version")
-        printArgs.add(v)
-      }
-      case None -> ()
-    }
+    val printArgs = installerArgs(isWindows, "<tempFile>", installDir, version)
     Console.println(
-      "dry-run: would write fetched script to temporary file and run: sh <tempFile> " + Process.buildArgString(printArgs)
+      "dry-run: would write fetched script to temporary file and run: " + installerInterpreter(isWindows) + " " +
+        Process.buildArgString(printArgs)
     )
     return 0
   }
@@ -383,7 +415,7 @@ func runGithubUpgrade(installDir: in String, versionArg: in Option[String], isDr
   }
 
   // Retrieve the checksum of the script
-  val sha256Url = "https://raw.githubusercontent.com/nichobbs/lyric-lang/" + ref + "/scripts/install.sh.sha256"
+  val sha256Url = scriptUrl + ".sha256"
   val sha256Option = downloadUrl(sha256Url)
 
   var expectedHash = ""
@@ -421,16 +453,16 @@ func runGithubUpgrade(installDir: in String, versionArg: in Option[String], isDr
   // instead of the raw downloaded bytes (#4753, follow-up to #4614).
   val actualHash = Hash.sha256OfBytes(scriptBytes).toUpper()
   if actualHash != expectedHash {
-    printErr("upgrade: installation script hash mismatch (does not match install.sh.sha256) — aborting")
+    printErr("upgrade: installation script hash mismatch (does not match " + scriptName + ".sha256) — aborting")
     printErr("Expected SHA-256: " + expectedHash)
     printErr("Actual SHA-256:   " + actualHash)
     return 1
   }
 
   // Create temporary directory path with unique UUID suffix to prevent symlink/TOCTOU attacks
-  val tempDir = Environment.getVarOrDefault("TMPDIR", Environment.getVarOrDefault("TEMP", "/tmp"))
+  val tempDir = Environment.getVarOrDefault("TMPDIR", Environment.getVarOrDefault("TEMP", Environment.getVarOrDefault("TMP", "/tmp")))
   val uuid = Uuid.uuidToString(Uuid.newUuid())
-  val tempFile = Path.join(tempDir, "lyric-install-" + uuid + ".sh")
+  val tempFile = Path.join(tempDir, "lyric-install-" + uuid + (if isWindows then ".ps1" else ".sh"))
 
   match File.writeText(tempFile, scriptContent) {
     case Ok(_) -> ()
@@ -440,20 +472,14 @@ func runGithubUpgrade(installDir: in String, versionArg: in Option[String], isDr
     }
   }
 
-  val shArgs: List[String] = newList()
-  shArgs.add(tempFile)
-  shArgs.add("--dir")
-  shArgs.add(installDir)
-  shArgs.add("--no-path")
-
-  shArgs.add("--version")
-  shArgs.add(resolvedVersion)
+  val shArgs = installerArgs(isWindows, tempFile, installDir, Some(value = resolvedVersion))
+  val interpreter = installerInterpreter(isWindows)
 
   Console.println("Executing installation script...")
-  val code = match Process.run("sh", shArgs) {
+  val code = match Process.run(interpreter, shArgs) {
     case Ok(c) -> c
     case Err(e) -> {
-      printErr("upgrade: failed to execute sh " + tempFile + ": " + IOError.message(e))
+      printErr("upgrade: failed to execute " + interpreter + " " + tempFile + ": " + IOError.message(e))
       1
     }
   }
