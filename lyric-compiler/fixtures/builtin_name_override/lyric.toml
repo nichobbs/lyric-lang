@@ -1,0 +1,15 @@
+[package]
+name        = "builtin-name-override"
+version     = "0.1.0"
+description = "Cross-package regression fixture for #7508: an imported non-Std package's newList/mapGet must win over the builtin intrinsic."
+
+[project]
+name   = "builtin-name-override"
+output = "single"
+
+[project.packages]
+"OverrideLib" = "src/override_lib.l"
+"OverrideMain" = "src/main.l"
+
+[project.tests]
+"OverrideTests" = "tests/override_tests.l"
