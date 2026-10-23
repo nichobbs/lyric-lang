@@ -14810,7 +14810,7 @@ func explicitTypeArgCallType(
     case EPath(_) -> ()
     case _ -> return None
   }
-  val sig = match findDirectSig(sc, tbl, sigs, inner, args.count, argTypes) {
+  val sig = match findDirectSig(sc, tbl, sigs, inner, args, argTypes) {
     case Some(s) -> s
     case None -> return None
   }
