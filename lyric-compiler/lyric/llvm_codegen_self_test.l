@@ -1197,10 +1197,12 @@ func main(): Int {
   println("[${r.c}] ${r.n} ${r.inner.c}")
   println(r.show())
   println(r.n.toString())
+  val ch: Char = 'k'
+  println("<${ch}>")
   0
 }
 "#
   val r = compileAndRun(src)
   assertEqualInt(r.exitCode, 0, "exit")
-  assertEqual(r.stdout, "q\n[q] 5 z\nq\n5\n", "Char fields print as characters, Int fields as numbers")
+  assertEqual(r.stdout, "q\n[q] 5 z\nq\n5\n<k>\n", "Char fields print as characters, Int fields as numbers")
 }

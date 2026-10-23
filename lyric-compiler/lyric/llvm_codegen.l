@@ -3312,19 +3312,33 @@ func lowerLiteral(ctx: in Ctx, insns: in List[NInsn], lit: in Literal): NVal {
   }
 }
 
+/// One `${expr}` of an interpolated string, rendered as `toString` renders it;
+/// a `Char` (an `i32` like an `Int`) is told apart by `exprIsCharTyped` and
+/// prints as the character, not its code point.
+func interpolatedPiece(ctx: in Ctx, insns: in List[NInsn], ex: in Expr): NVal {
+  val v = lowerExpr(ctx, insns, ex)
+  match v.ty {
+    case NI32 -> if exprIsCharTyped(ctx, ex) {
+      return callRuntime(ctx, insns, "lyric_string_from_char", lyricStringNType(), arg1(NI32, v.value))
+    }
+    case _ -> ()
+  }
+  emitToString(ctx, insns, v)
+}
+
 func lowerInterpolated(ctx: in Ctx, insns: in List[NInsn], segments: in List[InterpolatedSegment]): NVal {
   if segments.count == 0 {
     return emitStringLiteral(ctx, insns, "")
   }
   var acc = match segments[0] {
     case ISText(text, _) -> emitStringLiteral(ctx, insns, text)
-    case ISExpr(ex) -> emitToString(ctx, insns, lowerExpr(ctx, insns, ex))
+    case ISExpr(ex) -> interpolatedPiece(ctx, insns, ex)
   }
   var i = 1
   while i < segments.count {
     val piece = match segments[i] {
       case ISText(text, _) -> emitStringLiteral(ctx, insns, text)
-      case ISExpr(ex) -> emitToString(ctx, insns, lowerExpr(ctx, insns, ex))
+      case ISExpr(ex) -> interpolatedPiece(ctx, insns, ex)
     }
     acc = callRuntime(
       ctx,
