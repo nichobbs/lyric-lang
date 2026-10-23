@@ -239,8 +239,6 @@ static int key_matches_cert(NCRYPT_KEY_HANDLE key, PCCERT_CONTEXT cert) {
     return same;
 }
 
-/* The leaf certificate of a store read by read_cert_store: the first one
- * added (enumeration follows insertion order). */
 /* ── Identities ────────────────────────────────────────────────────── */
 
 typedef struct {
@@ -898,6 +896,7 @@ static SECURITY_STATUS step(TlsConn* t, const wchar_t* target, uint8_t* alpn, un
 static int handshake(TlsConn* t, const wchar_t* target, uint8_t* alpn, unsigned long alpn_size) {
     const char* what = "TLS handshake";
     int first = 1;
+    int incomplete = 0;
     int need_input = t->ctx->is_server; /* a server starts from the ClientHello */
     for (;;) {
         if (need_input) {
@@ -923,7 +922,12 @@ static int handshake(TlsConn* t, const wchar_t* target, uint8_t* alpn, unsigned 
         if (st == SEC_E_OK) return 0;
         if (st == SEC_I_INCOMPLETE_CREDENTIALS) {
             /* The server asked for a client certificate and none was
-             * supplied: go on without one (the input is not consumed). */
+             * supplied: go on without one (the input is not consumed).
+             * Schannel asks once; a repeat means it cannot go on. */
+            if (++incomplete > 2) {
+                set_err("%s: the server asked for a client certificate this context cannot supply", what);
+                return -1;
+            }
             need_input = 0;
             continue;
         }
