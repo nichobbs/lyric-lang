@@ -3041,6 +3041,8 @@ func emitToString(ctx: in Ctx, insns: in List[NInsn], v: in NVal): NVal {
     )
     case NDouble -> callRuntime(ctx, insns, "lyric_string_from_float", lyricStringNType(), arg1(NDouble, v.value))
     case NFloat -> callRuntime(ctx, insns, "lyric_string_from_float32", lyricStringNType(), arg1(NFloat, v.value))
+    // The one `Unit` value renders as `()` on every target (D209).
+    case NVoid -> emitStringLiteral(ctx, insns, "()")
     case _ -> {
       if isStringNType(v.ty) {
         return v
@@ -3062,6 +3064,7 @@ func isScalarNType(t: in NType): Bool {
     case NI1 -> true
     case NDouble -> true
     case NFloat -> true
+    case NVoid -> true
     case _ -> false
   }
 }
@@ -3635,6 +3638,7 @@ func isConcatStringifiableNType(t: in NType): Bool {
     case NI1 -> true
     case NDouble -> true
     case NFloat -> true
+    case NVoid -> true
     case _ -> false
   }
 }
@@ -9533,6 +9537,8 @@ func slotOfVal(ctx: in Ctx, insns: in List[NInsn], v: in NVal): NValue {
       insns.add(NZExt(dest = dest, fromTy = NI1, value = v.value, toTy = NI64))
       NLocal(name = dest)
     }
+    // The one `Unit` value carries no data: its slot is zero.
+    case NVoid -> NLitInt(v = 0i64, ty = NI64)
     case _ -> panic(
       "Lyric.LlvmCodegen: this element type cannot be stored in a List/Map slot for --target native: " +
         nTypeToIrString(v.ty)
@@ -9593,6 +9599,7 @@ func valOfSlot(ctx: in Ctx, insns: in List[NInsn], slot: in NValue, elemTy: in N
       insns.add(NTrunc(dest = dest, fromTy = NI64, value = slot, toTy = NI1))
       NVal(ty = NI1, value = NLocal(name = dest))
     }
+    case NVoid -> NVal(ty = NVoid, value = NUndef(ty = NVoid))
     case _ -> panic(
       "Lyric.LlvmCodegen: this element type cannot be read from a List/Map slot for --target native: " +
         nTypeToIrString(elemTy)
@@ -12661,7 +12668,7 @@ func lowerLambda(
   implFields.add(NPtr(pointee = NI8))
   var ti = 0
   while ti < capTys.count {
-    implFields.add(capTys[ti])
+    implFields.add(unitOperandType(capTys[ti]))
     ti = ti + 1
   }
   ctx.moduleTypeDefs.add(NTypeDefn(name = implName, fields = implFields))
@@ -12710,16 +12717,19 @@ func lowerLambda(
   insns.add(NStore(ty = NPtr(pointee = NI8), value = NLocal(name = fnPtrCast), ptr = NLocal(name = fnSlot)))
   var si = 0
   while si < free.count {
-    val capVal = loadLocal(ctx, insns, free[si])
-    if isRefNType(capTys[si]) {
-      emitRetain(ctx, insns, capVal)
+    // A captured `Unit` holds no data: its field stays an unwritten placeholder.
+    if not isVoidNType(capTys[si]) {
+      val capVal = loadLocal(ctx, insns, free[si])
+      if isRefNType(capTys[si]) {
+        emitRetain(ctx, insns, capVal)
+      }
+      val capSlot = freshTmp(ctx)
+      val cArgs: List[NArg] = newList()
+      cArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+      cArgs.add(NArg(ty = NI32, value = NLitInt(v = (closureCaptureBase + si).toLong(), ty = NI32)))
+      insns.add(NGEP(dest = capSlot, ty = structTy, ptr = NLocal(name = obj), indices = cArgs))
+      insns.add(NStore(ty = capTys[si], value = capVal.value, ptr = NLocal(name = capSlot)))
     }
-    val capSlot = freshTmp(ctx)
-    val cArgs: List[NArg] = newList()
-    cArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-    cArgs.add(NArg(ty = NI32, value = NLitInt(v = (closureCaptureBase + si).toLong(), ty = NI32)))
-    insns.add(NGEP(dest = capSlot, ty = structTy, ptr = NLocal(name = obj), indices = cArgs))
-    insns.add(NStore(ty = capTys[si], value = capVal.value, ptr = NLocal(name = capSlot)))
     si = si + 1
   }
   val castOut = freshTmp(ctx)
@@ -12765,18 +12775,23 @@ func synthLambdaBody(
   // closure alive for the duration).
   var ci = 0
   while ci < free.count {
-    val capPtr = freshTmp(ctx)
-    val gArgs: List[NArg] = newList()
-    gArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
-    gArgs.add(NArg(ty = NI32, value = NLitInt(v = (closureCaptureBase + ci).toLong(), ty = NI32)))
-    bodyInsns.add(NGEP(dest = capPtr, ty = structTy, ptr = NLocal(name = "self.env"), indices = gArgs))
-    val capVal = freshTmp(ctx)
-    bodyInsns.add(NLoad(dest = capVal, ty = capTys[ci], ptr = NLocal(name = capPtr)))
-    val slot = free[ci] + captureSlotMarker() + freshTmp(ctx)
-    ctx.allocas.add(NAlloca(dest = slot, ty = capTys[ci]))
-    bodyInsns.add(NStore(ty = capTys[ci], value = NLocal(name = capVal), ptr = NLocal(name = slot)))
-    ctx.varSlots.add(free[ci], slot)
-    ctx.varTypes.add(free[ci], capTys[ci])
+    if isVoidNType(capTys[ci]) {
+      // A captured `Unit` is a virtual binding: nothing to load.
+      ctx.varTypes.add(free[ci], NVoid)
+    } else {
+      val capPtr = freshTmp(ctx)
+      val gArgs: List[NArg] = newList()
+      gArgs.add(NArg(ty = NI32, value = NLitInt(v = 0i64, ty = NI32)))
+      gArgs.add(NArg(ty = NI32, value = NLitInt(v = (closureCaptureBase + ci).toLong(), ty = NI32)))
+      bodyInsns.add(NGEP(dest = capPtr, ty = structTy, ptr = NLocal(name = "self.env"), indices = gArgs))
+      val capVal = freshTmp(ctx)
+      bodyInsns.add(NLoad(dest = capVal, ty = capTys[ci], ptr = NLocal(name = capPtr)))
+      val slot = free[ci] + captureSlotMarker() + freshTmp(ctx)
+      ctx.allocas.add(NAlloca(dest = slot, ty = capTys[ci]))
+      bodyInsns.add(NStore(ty = capTys[ci], value = NLocal(name = capVal), ptr = NLocal(name = slot)))
+      ctx.varSlots.add(free[ci], slot)
+      ctx.varTypes.add(free[ci], capTys[ci])
+    }
     // #6237: propagate the enclosing function's char-ness for a captured
     // variable into the closure body's own ctx (varIsChar is per-function
     // state — freshFnCtx starts it empty, unlike varTypes/varSlots which
@@ -12799,11 +12814,16 @@ func synthLambdaBody(
     val pn = lambdaParams[pi].name
     val pty = sig.paramTys[pi]
     params.add(NParam(name = "arg." + pn, ty = pty))
-    val slot = pn + ".slot." + freshTmp(ctx)
-    ctx.allocas.add(NAlloca(dest = slot, ty = pty))
-    bodyInsns.add(NStore(ty = pty, value = NLocal(name = "arg." + pn), ptr = NLocal(name = slot)))
-    ctx.varSlots.add(pn, slot)
-    ctx.varTypes.add(pn, pty)
+    if isVoidNType(pty) {
+      // A `Unit` parameter is a virtual binding: the incoming `i8` is ignored.
+      ctx.varTypes.add(pn, NVoid)
+    } else {
+      val slot = pn + ".slot." + freshTmp(ctx)
+      ctx.allocas.add(NAlloca(dest = slot, ty = pty))
+      bodyInsns.add(NStore(ty = pty, value = NLocal(name = "arg." + pn), ptr = NLocal(name = slot)))
+      ctx.varSlots.add(pn, slot)
+      ctx.varTypes.add(pn, pty)
+    }
     val pnIsChar = match lambdaParams[pi].ty { case Some(te) -> isCharTypeExpr(te); case None -> false }
     ctx.varIsChar.add(pn, pnIsChar)
     pi = pi + 1

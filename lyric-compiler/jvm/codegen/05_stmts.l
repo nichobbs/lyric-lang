@@ -1461,7 +1461,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
             pushCtorExpect(ctx, annTy)
             val initTy = unannotatedSliceLiteralBinding(ctx, insns, init, lowerBindingInit(ctx, insns, init, tyOpt), tyOpt)
             popCtorExpect(ctx)
-            val ty = match tyOpt { case Some(_) -> annTy; case None -> initTy }
+            val ty = match tyOpt { case Some(_) -> match annTy { case JVoid -> initTy; case t -> t }; case None -> initTy }
             // `coerceValueTo` boxes a primitive array into an annotated
             // `slice[T]` local's erased slot type (#5572).
             coerceValueTo(ctx, insns, initTy, ty)
@@ -1495,7 +1495,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
                 pushCtorExpect(ctx, annTy)
                 val initTy = unannotatedSliceLiteralBinding(ctx, insns, init, lowerBindingInit(ctx, insns, init, tyOpt), tyOpt)
                 popCtorExpect(ctx)
-                ty = match tyOpt { case Some(_) -> annTy; case None -> initTy }
+                ty = match tyOpt { case Some(_) -> match annTy { case JVoid -> initTy; case t -> t }; case None -> initTy }
                 // `coerceValueTo` boxes a primitive array into an annotated
                 // `slice[T]` var's erased slot type (#5572).
                 coerceValueTo(ctx, insns, initTy, ty)
@@ -1641,7 +1641,20 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
           // `coerceValueTo` (not bare `coerceArgTo`) so an explicit
           // `return someIntArray` gets the same primitive-array boxing an
           // equivalent tail-expression return already got.
-          val rt = match ctx.retTy { case JVoid -> ty; case t -> { coerceValueTo(ctx, insns, ty, t); t } }
+          val rt = match ctx.retTy {
+            case JVoid -> {
+              // `return u` in a `Unit` function: the unit value is dropped.
+              match ty {
+                case JVoid -> ()
+                case _ -> discardValue(insns, ty)
+              }
+              JVoid
+            }
+            case t -> {
+              coerceValueTo(ctx, insns, ty, t)
+              t
+            }
+          }
           // A `return` exits the function, so every still-pending `defer` block
           // (the whole stack) must run first.  Stash the already-coerced value
           // in a temp so the deferred blocks run on an empty operand stack, then
@@ -2050,7 +2063,10 @@ func lowerLocalPatBind(
       // #6393: resolve through a same-file function-type alias
       // (`val f: Handler = ...`) too, not just a literal `(A,...) -> R`
       // annotation — see `FuncCtx.aliasTargets`.
-      val ty = match tyOpt { case Some(te) -> localAnnotatedJvmType(ctx, te); case None -> initTy }
+      val ty = match tyOpt {
+        case Some(te) -> match localAnnotatedJvmType(ctx, te) { case JVoid -> initTy; case t -> t }
+        case None -> initTy
+      }
       // `coerceValueTo` boxes a primitive array into an annotated `slice[T]`
       // val's erased slot type (#5572).
       coerceValueTo(ctx, insns, initTy, ty)

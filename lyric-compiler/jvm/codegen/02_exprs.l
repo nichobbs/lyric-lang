@@ -930,6 +930,38 @@ func narrowErasedReceiverJvm(ctx: in FuncCtx, insns: in List[LInsn], recv: in Ex
   }
 }
 
+// Load a captured local into the closure constructor's argument.  A virtual
+// `Unit` local owns no stack value, but the capture field is an `Object`, so
+// the unit value (`null`) is materialised.
+func emitCaptureLocalLoadJvm(
+  ctx: in FuncCtx,
+  insns: in List[LInsn],
+  name: in String,
+  slot: in Int,
+  captureType: in JvmType,
+): Unit {
+  match lookupType(ctx, name) {
+    case Some(JVoid) -> insns.add(LAconstNull)
+    case _ -> emitLoadLocalReadThrough(ctx, insns, slot, captureType)
+  }
+}
+
+// Lower an expression whose result is stored or passed on.  A `Unit`-typed
+// expression that left nothing on the stack (a void call, a virtual `Unit`
+// binding, `()`) is materialised as the unit value (`null`), so the consumer's
+// `Object` slot has something to take.  `func f(): Unit` keeps its `V` return;
+// only an observed result pays for the `aconst_null` (docs/18 "Unit").
+pub func lowerValueExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmType {
+  val t = lowerExpr(ctx, insns, expr)
+  match t {
+    case JVoid -> {
+      insns.add(LAconstNull)
+      JRef(className = "java/lang/Object")
+    }
+    case _ -> t
+  }
+}
+
 // Lower a single expression.  Pushes exactly one value onto the operand
 // stack (or nothing for JVoid).  Returns the JvmType of the pushed value.
 pub func lowerExpr(ctx: in FuncCtx, insns: in List[LInsn], expr: in Expr): JvmType {
@@ -3558,9 +3590,8 @@ func coerceToStringForConcat(ctx: in FuncCtx, insns: in List[LInsn], ty: in JvmT
         )
       }
     }
-    case JVoid -> panic(
-      "Jvm.Codegen: string-concatenation operand lowered to void — a Unit-typed operand should have been rejected by the type checker"
-    )
+    // The one `Unit` value renders as `()` on every target (D209).
+    case JVoid -> insns.add(LPushString(s = "()"))
     // A void operand left nothing on the stack; silently pushing "" here
     // would mask a type-checker or lowering bug as wrong output (#4685).
     case JArray(_) -> {
@@ -5169,7 +5200,7 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
             case None -> match selfFieldType(ctx, cn) { case Some(ft) -> ft; case None -> JRef(className = "java/lang/Object") }
           }
         }
-        captures.add(LClosureCapture(captureName = cn, captureType = cty))
+        captures.add(LClosureCapture(captureName = cn, captureType = unitStorageType(cty)))
       }
     }
     ci = ci + 1
@@ -5249,10 +5280,12 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
   while pi < lparams.count {
     val lp = lparams[pi]
     // A parameter typed by an enclosing type parameter erases to `Object`.
-    val pty = match lp.ty {
-      case Some(te) -> typeExprToJvmErasedExtern(te, ctx.pkgName, ctx.typeParams, ctx.externTypes)
-      case None -> JRef(className = "java/lang/Object")
-    }
+    val pty = unitStorageType(
+      match lp.ty {
+        case Some(te) -> typeExprToJvmErasedExtern(te, ctx.pkgName, ctx.typeParams, ctx.externTypes)
+        case None -> JRef(className = "java/lang/Object")
+      }
+    )
     val pslot = allocSlot(bodyCtx, lp.name, pty)
     bodyInsns.add(LAload(slot = argsSlot))
     bodyInsns.add(LIconst(v = pi))
@@ -5334,7 +5367,7 @@ func lowerLambda(ctx: in FuncCtx, insns: in List[LInsn], lparams: in List[Lambda
       }
     } else {
       match lookupSlot(ctx, cap.captureName) {
-        case Some(s) -> emitLoadLocalReadThrough(ctx, insns, s, cap.captureType)
+        case Some(s) -> emitCaptureLocalLoadJvm(ctx, insns, cap.captureName, s, cap.captureType)
         case None -> {
           if cap.captureName == "self" {
             // #6304: the receiver capture is the enclosing `this` itself.
@@ -5707,7 +5740,7 @@ func lowerSpawnCallable(ctx: in FuncCtx, insns: in List[LInsn], inner: in Expr):
             case None -> match selfFieldType(ctx, cn) { case Some(ft) -> ft; case None -> objTy }
           }
         }
-        captures.add(LClosureCapture(captureName = cn, captureType = cty))
+        captures.add(LClosureCapture(captureName = cn, captureType = unitStorageType(cty)))
       }
     }
     ci = ci + 1
@@ -5817,7 +5850,7 @@ func lowerSpawnCallable(ctx: in FuncCtx, insns: in List[LInsn], inner: in Expr):
       }
     } else {
       match lookupSlot(ctx, cap.captureName) {
-        case Some(s) -> emitLoadLocalReadThrough(ctx, insns, s, cap.captureType)
+        case Some(s) -> emitCaptureLocalLoadJvm(ctx, insns, cap.captureName, s, cap.captureType)
         case None -> {
           if cap.captureName == "self" {
             // #6304: the receiver capture is the enclosing `this` itself.

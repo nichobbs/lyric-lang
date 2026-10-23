@@ -271,6 +271,13 @@ func fcmpPredString(p: in FCmpPred): String {
   }
 }
 
+func isUnitNType(t: in NType): Bool {
+  match t {
+    case NVoid -> true
+    case _ -> false
+  }
+}
+
 func renderArgs(args: in List[NArg]): String {
   var acc = ""
   var i = 0
@@ -278,7 +285,9 @@ func renderArgs(args: in List[NArg]): String {
     if i > 0 {
       acc = acc + ", "
     }
-    if args[i].attrs.length > 0 {
+    if isUnitNType(args[i].ty) {
+      acc = acc + "i8 undef"
+    } else if args[i].attrs.length > 0 {
       acc = acc + nTypeToIrString(args[i].ty) + " " + args[i].attrs + " " + nValueOperandString(args[i].value)
     } else {
       acc = acc + nValueTypedString(args[i].ty, args[i].value)
@@ -454,7 +463,7 @@ func renderParams(params: in List[NParam], withNames: in Bool): String {
     if i > 0 {
       acc = acc + ", "
     }
-    acc = acc + nTypeToIrString(params[i].ty)
+    acc = acc + nTypeToIrString(unitOperandType(params[i].ty))
     if params[i].attrs.length > 0 {
       acc = acc + " " + params[i].attrs
     }

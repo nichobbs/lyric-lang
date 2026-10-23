@@ -358,6 +358,14 @@ func makeFuncCtxInstance(
 // function boundary actually matches the method's `[Ljava/lang/Object;`
 // descriptor.
 func emitReturnArrayCoerced(ctx: in FuncCtx, insns: in List[LInsn], tailTy: in JvmType, retTy: in JvmType): Unit {
+  // A `Unit` function whose tail still produced the unit value (`func f():
+  // Unit = x` for a `Unit` parameter): nothing observes it, so drop it before
+  // the void return.
+  if retTy == JVoid and tailTy != JVoid {
+    discardValue(insns, tailTy)
+    emitReturn(insns, retTy)
+    return ()
+  }
   coerceValueTo(ctx, insns, tailTy, retTy)
   emitReturn(insns, retTy)
 }
@@ -543,11 +551,13 @@ pub func holderAwareParamTypes(
     // argument this function already takes — an extern-typed impl-method
     // param resolved to the in-package `<pkg>/<Name>` guess instead of the
     // real JVM class).
-    val elemTy = if erase {
-      typeExprToJvmErasedExtern(p.ty, pkgName, typeParams, externTypes)
-    } else {
-      typeExprToJvmExtern(p.ty, pkgName, externTypes)
-    }
+    val elemTy = unitStorageType(
+      if erase {
+        typeExprToJvmErasedExtern(p.ty, pkgName, typeParams, externTypes)
+      } else {
+        typeExprToJvmExtern(p.ty, pkgName, externTypes)
+      }
+    )
     if isHolderMode(p.mode) {
       acc.add(holderParamType(elemTy))
     } else {
@@ -643,7 +653,7 @@ pub func setupStaticParamSlotsAndHolders(
   var pi = 0
   while pi < params.count {
     val p = params[pi]
-    val elemTy = typeExprToJvmExtern(p.ty, pkgName, externTypes)
+    val elemTy = unitStorageType(typeExprToJvmExtern(p.ty, pkgName, externTypes))
     if isHolderMode(p.mode) {
       val hs = allocSlot(ctx, "__ref$" + p.name, holderParamType(elemTy))
       holderIdx.add(pi)
@@ -743,7 +753,7 @@ pub func setupInstanceParamSlotsAndHolders(
   var pi = 0
   while pi < params.count {
     val p = params[pi]
-    val elemTy = typeExprToJvmErasedExtern(p.ty, pkgName, typeParams, externTypes)
+    val elemTy = unitStorageType(typeExprToJvmErasedExtern(p.ty, pkgName, typeParams, externTypes))
     if isHolderMode(p.mode) {
       val hs = allocSlot(ctx, "__ref$" + p.name, holderParamType(elemTy))
       holderIdx.add(pi)
@@ -2359,21 +2369,37 @@ func buildProtected(
             LField(
               flags = 0x0001,
               name = name,
-              fieldType = typeExprToJvmErasedExtern(ty, pkgName, typeParams, externTypes)
+              fieldType = unitStorageType(
+                typeExprToJvmErasedExtern(
+                  ty,
+                  pkgName,
+                  typeParams,
+                  externTypes
+                )
+              )
             )
           )
           case PFLet(name, ty, _, _, _, _) -> fields.add(
             LField(
               flags = 0x0001,
               name = name,
-              fieldType = typeExprToJvmErasedExtern(ty, pkgName, typeParams, externTypes)
+              fieldType = unitStorageType(
+                typeExprToJvmErasedExtern(
+                  ty,
+                  pkgName,
+                  typeParams,
+                  externTypes
+                )
+              )
             )
           )
           case PFImmutable(f) -> fields.add(
             LField(
               flags = 0x0001,
               name = f.name,
-              fieldType = typeExprToJvmErasedExtern(f.ty, pkgName, typeParams, externTypes)
+              fieldType = unitStorageType(
+                typeExprToJvmErasedExtern(f.ty, pkgName, typeParams, externTypes)
+              )
             )
           )
         }
@@ -8166,6 +8192,12 @@ func emitUnboxErasedElement(insns: in List[LInsn], elem: in JvmType): Unit {
 func makeErasedToStringHelperFunc(): LFunc {
   val strTy = JRef(className = "java/lang/String")
   val insns: List[LInsn] = newList()
+  // Lyric has no null: a null in an erased slot is the `Unit` value (D209).
+  insns.add(LAload(slot = 0))
+  insns.add(LIfnonnull(label = "__ets_nn"))
+  insns.add(LPushString(s = "()"))
+  insns.add(LAreturn)
+  insns.add(LLabel(name = "__ets_nn"))
   insns.add(LAload(slot = 0))
   insns.add(LInstanceof(className = "java/lang/Byte"))
   insns.add(LIfeq(label = "__ets_obj"))

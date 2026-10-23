@@ -244,6 +244,7 @@ SELF_TESTS=(
   lyric-compiler/lyric/inout_aliasing_self_test.l
   lyric-compiler/lyric/inout_aliasing_closure_self_test.l
   lyric-compiler/lyric/hoisted_literal_shape_self_test.l
+  lyric-compiler/lyric/unit_value_self_test.l
   lyric-compiler/lyric/member_local_shadow_self_test.l
   lyric-compiler/lyric/member_local_shadow_panics_self_test.l
   lyric-compiler/lyric/literal_arg_shape_self_test.l

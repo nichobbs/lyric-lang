@@ -93,6 +93,7 @@ for t in \
   lyric-compiler/lyric/overflow_self_test.l \
   lyric-compiler/lyric/record_eq_self_test.l \
   lyric-compiler/lyric/byvalue_record_self_test.l \
+  lyric-compiler/lyric/unit_value_self_test.l \
   lyric-compiler/lyric/inline_union_self_test.l \
   lyric-compiler/lyric/generic_ctor_open_arg_self_test.l \
   lyric-compiler/lyric/generic_ctor_widening_self_test.l \

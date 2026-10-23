@@ -156,6 +156,7 @@ for t in \
   lyric-compiler/lyric/task_shadow_self_test.l \
   lyric-compiler/lyric/task_kernel_record_self_test.l \
   lyric-compiler/lyric/byvalue_record_self_test.l \
+  lyric-compiler/lyric/unit_value_self_test.l \
   lyric-compiler/lyric/inline_union_self_test.l \
   lyric-compiler/lyric/unsigned_typed_ops_self_test.l \
   lyric-compiler/lyric/unsigned_literal_max_self_test.l \
