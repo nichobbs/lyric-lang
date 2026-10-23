@@ -6389,7 +6389,12 @@ func qualifiedEnumCaseType(sc: in Scope, tbl: in SymbolTable, recv: in Expr, nam
       }
     }
     if sameOrigin {
-      found = Some(value = candidates[0])
+      // The declaration a written `Mode` resolves to, so the case's type is
+      // the parameter and annotation type of its own enum.
+      found = match symTableTryFindOne(tbl, typeName) {
+        case Some(one) -> match one.kind { case DKEnum(_, _) -> Some(value = one); case _ -> None }
+        case None -> None
+      }
     }
   } else {
     val quals: List[String] = newList()
