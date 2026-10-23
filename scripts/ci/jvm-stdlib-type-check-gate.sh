@@ -9,8 +9,9 @@
 # The JVM backend compiles the `Std.*` packages a program imports, and their
 # `_kernel_jvm/` kernels, from source into every jar.  Their bodies used to be
 # type-checked advisorily, so an ill-typed kernel built.  This checks that:
-#   1. a program importing every public `Std.*` package builds cleanly, so each
-#      of those files (kernels included) type-checks in its bundle context;
+#   1. a program importing every public `Std.*` package, and one importing every
+#      `_kernel_jvm/` package, builds cleanly, so each of those files
+#      type-checks in its bundle context;
 #   2. with LYRIC_STD_PATH pointed at a temp copy of the stdlib in which one
 #      kernel is ill-typed, a build that reaches that kernel — directly —
 #      fails with a non-zero exit,
@@ -79,6 +80,10 @@ expect_clean() {
 public_files=("$std_dir"/*.l)
 write_importer "$work/public.l" JvmStdlibGatePublic "${public_files[@]}"
 expect_clean "every public Std package" "$work/public.l"
+
+kernel_files=("$std_dir"/_kernel_jvm/*.l)
+write_importer "$work/kernels.l" JvmStdlibGateKernels "${kernel_files[@]}"
+expect_clean "every _kernel_jvm package" "$work/kernels.l"
 
 # A temp copy of the stdlib with one ill-typed kernel.
 broken_std="$work/std"

@@ -19,6 +19,12 @@ Records D212.
   `string_host.l`, `regex_host.l`: a `String` returned as `String?`, a two-argument
   `indexOf`, a `String` returned as a `CharSequence`), now typed through
   `String.valueOf` at the host boundary.
+- JVM type errors in path-dependency packages compiled from source are fatal
+  too. `Std.HttpServer` (`http_server.l`), only reachable through `lyric-web`,
+  needed the same host-boundary typing for an `HttpsServer` bound as an
+  `HttpServer`; the gate now also imports every `_kernel_jvm/` package.
+  `jvm_bundle_leak_reachability_self_test.l` lost its #6767 case, which needed
+  a type-incorrect bundled package.
 - Tests: `extern_upcast_self_test.l` (dotnet) and `extern_upcast_jvm_self_test.l`
   (JVM) run real upcasts end to end; `typechecker_self_test.l` and
   `modechecker_self_test.l` cover `T0205`, `T0206`, `T0140` and `N0103`;

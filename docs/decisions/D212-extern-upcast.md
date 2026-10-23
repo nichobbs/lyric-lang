@@ -73,3 +73,6 @@ metadata. The owner chose an explicit upcast limited to the extern boundary.
   `string_host.l`, `regex_host.l`). Each is typed at the host boundary through
   `java.lang.String.valueOf`, whose extern result unifies with the position's
   declared type, rather than by widening the language.
+- The gate covers every package `Jvm.Bridge` compiles from source, which now
+  includes a path or workspace dependency's packages: a type error in one is a
+  fatal build error on `--target jvm`, as in a project's own packages.
