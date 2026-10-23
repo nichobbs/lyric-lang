@@ -11801,6 +11801,9 @@ test "a non-var field is not a place for an inout argument or receiver (#8215)" 
   )
   assertEqualInt(countDiagCode(recv, "T0166"), 1, "a non-var field receiver: " + diagCodesOf(recv))
   assertTrue(Str.contains(diagMessageFor(recv, "T0166"), "'r' is not `var`"), "the message names the field")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Type-checker diagnostics batch: #8249, #7916, #7978, #8334, #8039, #8005,
 // #8018, #7974.
 // ─────────────────────────────────────────────────────────────────────────────
