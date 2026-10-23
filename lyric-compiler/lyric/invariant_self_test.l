@@ -108,3 +108,28 @@ test "a construction nested in an expression is checked" {
     }
   )
 }
+
+protected type Stock {
+  var level: Int = 5
+  invariant: level >= 0
+  entry add(n: in Int): Unit {
+    level = level + n
+  }
+  func take(n: in Int): Int {
+    level = level - n
+    level
+  }
+  func peek(): Int = level
+}
+
+test "a protected func keeps the type invariant (#7529)" {
+  val s = Stock()
+  assertEqualInt(s.take(2), 3, "a func that keeps the invariant returns")
+  assertEqualInt(s.peek(), 3, "state after the func")
+  assertPanicsWith("over-draw", "InvariantViolated: Lyric.InvariantSelfTest.Stock", { -> val _ = s.take(10) })
+}
+
+test "a protected entry still keeps the type invariant (#7529)" {
+  val s = Stock()
+  assertPanics("entry driving the level negative", { -> s.add(-9) })
+}

@@ -348,3 +348,136 @@ test "range-refined config fields are checked at startup (subprocess, jvm)" {
   runnerArgs.add(jarPath)
   assertRangedFixtureRuns("jvm", "java", runnerArgs)
 }
+
+// #7436 (G0003): a value that does not parse as the field's type exits 78 with
+// a message instead of an unhandled exception from the static initializer.
+// `Bool` is read by hand, so both targets accept exactly `1`/`0`/`true`/`false`
+// in any case.
+func parseFixtureSource(): String {
+  "package ConfigParseFixture\n\n" + "config Knobs {\n" + "  port: Int = 8080\n" + "  quota: Long = 5i64\n" +
+    "  ratio: Double = 0.5\n" +
+    "  scale: Float = 1.0f32\n" +
+    "  verbose: Bool = false\n" +
+    "  name: String = \"dflt\"\n" +
+    "}\n\n" +
+    "func main(): Unit {\n" +
+    "  println(\"port=\" + toString(Knobs.port))\n" +
+    "  println(\"quota=\" + toString(Knobs.quota))\n" +
+    "  println(\"ratio=\" + toString(Knobs.ratio))\n" +
+    "  println(\"scale=\" + toString(Knobs.scale))\n" +
+    "  println(\"verbose=\" + toString(Knobs.verbose))\n" +
+    "  println(\"name=\" + Knobs.name)\n" +
+    "}\n"
+}
+
+func emitParseFixture(dir: in String, target: in Emitter.CompileTarget, outName: in String): String {
+  val outPath = Path.join(dir, outName)
+  val srcs: List[String] = newList()
+  srcs.add(parseFixtureSource())
+  val paths: List[String] = newList()
+  paths.add("")
+  val pkgs: List[Emitter.ProjectPackage] = newList()
+  pkgs.add(Emitter.ProjectPackage(name = "ConfigParseFixture", sources = srcs, paths = paths))
+  val req = Emitter.EmitProjectRequest(
+    packages = pkgs,
+    assemblyName = "ConfigParseFixture",
+    outputPath = outPath,
+    target = target,
+    restoredDllPaths = newList(),
+    activeFeatures = newList(),
+    declaredFeatures = newList(),
+    packageVersion = "",
+    depTemplateSrcs = newList(),
+    nugetAssemblyPaths = newList(),
+    defines = newList(),
+    packageFeatures = Emitter.noPackageFeatures(),
+    contractsEnabled = true
+  )
+  match Emitter.emitProject(req).outputPath {
+    case None -> panic("parse config fixture: emitProject produced no output (diagnostics on stderr)")
+    case Some(_) -> ()
+  }
+  outPath
+}
+
+func assertBadParse(
+  label: in String,
+  field: in String,
+  value: in String,
+  typeName: in String,
+  runner: in String,
+  runnerArgs: in List[String],
+): Unit {
+  val env: List[String] = newList()
+  env.add("LYRIC_CONFIG_CONFIGPARSEFIXTURE_KNOBS_" + field + "=" + value)
+  val r = runRangedFixture(env, runner, runnerArgs)
+  assertEqualInt(r.exitCode, 78, label + ": " + field + "=" + value + " exits 78 (stderr=" + r.stderr + ")")
+  assertTrue(r.stderr.contains("Knobs." + field.toLower()), label + ": the message names the field (" + r.stderr + ")")
+  assertTrue(r.stderr.contains("not a valid " + typeName), label + ": the message names the type (" + r.stderr + ")")
+  assertTrue(r.stderr.contains("G0003"), label + ": the message carries the code")
+  assertTrue(not r.stdout.contains("port="), label + ": main does not run")
+}
+
+func assertGoodParse(
+  label: in String,
+  field: in String,
+  value: in String,
+  expectLine: in String,
+  runner: in String,
+  runnerArgs: in List[String],
+): Unit {
+  val env: List[String] = newList()
+  env.add("LYRIC_CONFIG_CONFIGPARSEFIXTURE_KNOBS_" + field + "=" + value)
+  val r = runRangedFixture(env, runner, runnerArgs)
+  assertEqualInt(r.exitCode, 0, label + ": " + field + "=" + value + " starts (stderr=" + r.stderr + ")")
+  assertTrue(
+    r.stdout.contains(expectLine),
+    label + ": " + field + "=" + value + " gives " + expectLine + " (" + r.stdout + ")"
+  )
+}
+
+func assertParseFixtureRuns(label: in String, runner: in String, runnerArgs: in List[String]): Unit {
+  assertBadParse(label, "PORT", "80a", "Int", runner, runnerArgs)
+  assertBadParse(label, "PORT", "99999999999", "Int", runner, runnerArgs)
+  assertBadParse(label, "QUOTA", "abc", "Long", runner, runnerArgs)
+  assertBadParse(label, "RATIO", "x", "Double", runner, runnerArgs)
+  assertBadParse(label, "RATIO", "1,5", "Double", runner, runnerArgs)
+  assertBadParse(label, "SCALE", "fast", "Float", runner, runnerArgs)
+  assertBadParse(label, "VERBOSE", "maybe", "Bool", runner, runnerArgs)
+  assertBadParse(label, "VERBOSE", "2", "Bool", runner, runnerArgs)
+  assertGoodParse(label, "PORT", "443", "port=443", runner, runnerArgs)
+  assertGoodParse(label, "PORT", "-5", "port=-5", runner, runnerArgs)
+  assertGoodParse(label, "QUOTA", "7", "quota=7", runner, runnerArgs)
+  assertGoodParse(label, "RATIO", "0.25", "ratio=0.25", runner, runnerArgs)
+  assertGoodParse(label, "VERBOSE", "true", "verbose=true", runner, runnerArgs)
+  assertGoodParse(label, "VERBOSE", "TRUE", "verbose=true", runner, runnerArgs)
+  assertGoodParse(label, "VERBOSE", "1", "verbose=true", runner, runnerArgs)
+  assertGoodParse(label, "VERBOSE", "False", "verbose=false", runner, runnerArgs)
+  assertGoodParse(label, "VERBOSE", "0", "verbose=false", runner, runnerArgs)
+  assertGoodParse(label, "NAME", "any text", "name=any text", runner, runnerArgs)
+}
+
+test "an unparseable config value exits 78 with G0003 (subprocess, dotnet)" {
+  val dir = freshTempDir("parse-dotnet")
+  defer {
+    cleanupDir(dir)
+  }
+  val dllPath = emitParseFixture(dir, Emitter.Dotnet, "ConfigParseFixture.dll")
+  writeRuntimeConfigBeside(dllPath)
+  val runnerArgs: List[String] = newList()
+  runnerArgs.add("exec")
+  runnerArgs.add(dllPath)
+  assertParseFixtureRuns("dotnet", "dotnet", runnerArgs)
+}
+
+test "an unparseable config value exits 78 with G0003 (subprocess, jvm)" {
+  val dir = freshTempDir("parse-jvm")
+  defer {
+    cleanupDir(dir)
+  }
+  val jarPath = emitParseFixture(dir, Emitter.Jvm, "ConfigParseFixture.jar")
+  val runnerArgs: List[String] = newList()
+  runnerArgs.add("-jar")
+  runnerArgs.add(jarPath)
+  assertParseFixtureRuns("jvm", "java", runnerArgs)
+}
