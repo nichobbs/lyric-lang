@@ -24,7 +24,6 @@ latest release, and no release has ever shipped a `win-x64` asset.
   `publish-checksums`, `cleanup-on-failure` and `finalize-release`, so a Windows
   failure no longer ships a release without the zip.
 
-
 ## CLI runtime
 
 - `lyric test` temp-dir fallback honours `TEMP`/`TMP` as well as `TMPDIR`.

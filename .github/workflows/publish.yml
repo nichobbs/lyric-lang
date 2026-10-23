@@ -1012,6 +1012,12 @@ jobs:
         needs.publish-nuget.result == 'success' &&
         needs.publish-checksums.result == 'success')
     steps:
+      - name: Log upstream results
+        shell: bash
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: echo "$NEEDS_JSON"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Delete git tag (dispatch only)
