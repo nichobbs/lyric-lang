@@ -132,11 +132,14 @@ Issue clusters, by `group:*` label.  Counts are open issues as of 2026-10-21.
   target (#8300), method call on a captured `List` in a lambda (#8330),
   one-argument `String.substring` (#8335), function-type alias and tuple `for`
   pattern (#8348), `slice[(Int) -> Unit]` literal (#8315), `isNone(None)`
-  (#8352); closure `var` capture by value, `println` of non-scalars, `String +
+  (#8352), or-patterns (#8428); closure `var` capture by value, `println` of non-scalars, `String +
   Int`, `UInt`/`ULong` (#7891, umbrella epic #4607 is stale and should be
   rewritten or closed); reachability keyed by bare method name (#8413); clang
   collision with no diagnostic (#8360); `nativeAddrOf(var: Int)` (#4845).
   Missing: arm64 and macOS native CI legs (#8419), Windows (docs/67 G9).
+- **Private helpers of a generic.**  A `pub` generic may call a private helper of
+  its package on native (and a private generic one on the JVM), not on dotnet
+  (T0123); docs/01 §3.3, D204, plan in #8427.
 - **Cross-target stdlib divergence.**  `Std.Time.toIsoString` (#8314), `Map.add`,
   tuple key and `==` on `List` differ by target (#7301, #8169, #8170),
   JVM `Std.Set` unusable (#7312), JVM `format1..4` drop args (#7367).
@@ -157,12 +160,14 @@ left is verification and release work, tracked in `docs/36`:
 
 ## Tier 5 — feature work, in dependency order
 
-1. **Graphics (docs/67).**  Remaining: G7 `lyric-game` (#7946), G8 multi-threaded
-   scheduler and `Parallel.forChunks` (#7947), G9 Windows (#7948), G10 native
-   `lyric-ui` host (#7949); G4 macOS CI, G5 Cocoa/Win32 surfaces and the
-   macOS `.app` bundles (#8401); `lyric-text` bidi and UAX #14 (#8410);
-   `buffer[T]` lazy copy (#8389) and the warn-on-copy lint (#8395); explicit
-   mutable-record marker (D157 follow-up, #7955).
+1. **Graphics (docs/67).**  G7 `lyric-game` (D201), `Std.Parallel` on a worker
+   pool (D202) and the native `lyric-ui` host (D203, D204) are implemented on
+   Linux.  Remaining: the multi-threaded coroutine scheduler (G8, #7947), G9
+   Windows (#7948), accessibility through AccessKit (G10, #8430) and pruning
+   dependency kernels from the link (#8429); G4 macOS CI, G5 Cocoa/Win32
+   surfaces and the macOS `.app` bundles (#8401, #8419); `lyric-text` bidi and
+   UAX #14 (#8410); `buffer[T]` lazy copy (#8389) and the warn-on-copy lint
+   (#8395); explicit mutable-record marker (D157 follow-up, #7955).
 2. **Structured tasks (docs/68).**  `Std.Task` handle API (`waitFor`, `isDone`,
    `cancel`, `awaitAll` over handles, `awaitAny`), the handle-escape rule (new
    diagnostic code **V0037**; V0035 is taken by the verifier), MSIL scope-exit

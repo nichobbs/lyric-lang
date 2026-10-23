@@ -25,9 +25,13 @@ and a Breakout sample whose recorded session is replayed headless, in a window u
 `lyric test`; macOS waits on a Cocoa surface). G8 is implemented as a data-parallel worker pool
 (D202: `Std.Parallel.forRange`/`forChunks` over `lyric_parallel_for`, 2.9x on four cores, ThreadSanitizer
 clean, which also fixed a race in the protected-type monitor); the coroutine scheduler for `async`
-tasks is still single-threaded. G10 is implemented except accessibility (D203: the native `lyric-ui` host,
-layout, widgets, focus, text editing, clipboard and input-method composition, running `examples/ui-customers`
-unchanged, with golden-frame and live-window CI; AccessKit and the macOS screen-reader smoke test remain).
+tasks is still single-threaded (#7947). G10 is implemented except accessibility (D203, D204: the native
+`lyric-ui` host, layout, widgets, focus, text editing with soft-wrapped multi-line text areas, clipboard and
+input-method composition, running `examples/ui-customers` unchanged, with golden-frame and live-window CI;
+AccessKit and the macOS screen-reader smoke test remain, #8430, as do bidirectional carets, #8410, and
+pruning the libraries of unused dependency kernels from the link, #8429). D204 also fixed two native
+backend gaps the host found: private generic helpers of a generic from another package (#8417) and bare
+enum-case patterns over two enums sharing a case name (#8421).
 G9 is open.
 D156 and D157 resolve Q-GFX-005 to Q-GFX-010 (§10).
 
@@ -571,7 +575,7 @@ XL (a quarter or more of focused work).
 | **G9** | Windows x86-64 native target (§6). | G3 | Native test suite passes on Windows CI; G4 to G7 examples run there. | XL |
 | **G10** | Native `lyric-ui` host (§5.2): layout, widgets, focus, IME, clipboard, accessibility. | G6 | `examples/ui-customers/` runs natively with no application changes; screen-reader smoke test on macOS. | XL |
 
-**Status (2026-10-21):** G0-G6 done (G4 on Linux only, no macOS CI; G5 has no Cocoa or Win32 surfaces; G6 lacks a real-hardware frame-budget run and bidi/UAX #14, #8410). G7 (#7946), G8 (#7947), G9 (#7948) and G10 (#7949) have not started. Follow-ups: #8389, #8391, #8394, #8395, #8401, #7955.
+**Status (2026-10-21):** G0-G6 done (G4 on Linux only, no macOS CI; G5 has no Cocoa or Win32 surfaces; G6 lacks a real-hardware frame-budget run and bidi/UAX #14, #8410). G7 (#7946), G8 (#7947) and G10 (#7949) are implemented on Linux (D201, D202, D203, D204; their open parts are listed in the status paragraph at the top), and G9 (#7948) has not started. Follow-ups: #8389, #8391, #8394, #8395, #8401, #7955.
 
 **Critical path to a first native graphics program:** G0, G1, G2, G3, G4,
 G5. G8 and G9 can run in parallel once their dependencies land.

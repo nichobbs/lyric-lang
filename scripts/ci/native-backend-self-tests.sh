@@ -133,6 +133,7 @@ for t in \
   lyric-compiler/lyric/protected_iface_impl_self_type_self_test.l \
   lyric-compiler/lyric/byte_native_self_test.l \
   lyric-compiler/lyric/nested_nullary_pattern_native_self_test.l \
+  lyric-compiler/lyric/native_enum_pattern_scrutinee_self_test.l \
   lyric-compiler/lyric/extern_cbinding_self_test.l ; do
   echo "=== $t (--target native) ==="
   "$lyric_bin" test --target native "$t"

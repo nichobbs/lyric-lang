@@ -40,8 +40,9 @@ import Ui.Diff.{WireNode, WElement, WText, WEmpty, SetProp}
 import Ui.Protocol.{Event, EventMsg, NodeRef, refsKey, pathKey}
 import Ui.Native.Theme.{Theme, light, dark, styleCount}
 import Ui.Native.Client.{ServerMessage, PatchMsg, NavigateMsg, BackMsg, ToastMsg, SessionIdMsg, decodeServer, applyServer, eventPath, nodeAt}
-import Ui.Native.Layout.{Box, Env, Metrics, layoutTree, propOf, textOfWire}
+import Ui.Native.Layout.{Box, Env, Metrics, layoutTree, propOf, textOfWire, textAreaPadding}
 import Ui.Native.Interact
+import Ui.Native.Wrap
 import Ui.Native.Interact.{TextEdit, Action}
 import Ui.Native.Paint.{Fonts, PaintCtx, metricsFor, paintPage, paintSelectPopup, paintToasts}
 
@@ -138,6 +139,14 @@ pub record Host {
   var page: Box
   var now: Float
   var quit: Bool
+  /// The wrapped lines of each text area (by id) for the text and width they were made for.
+  var wraps: Map[String, WrapEntry]
+}
+
+record WrapEntry {
+  value: String
+  width: Float
+  lines: List[Wrap.VisualLine]
 }
 
 func emptyPage(): Box {
@@ -200,7 +209,8 @@ pub func openHost(
     mouseY = -1.0f32,
     page = emptyPage(),
     now = 0.0f32,
-    quit = false
+    quit = false,
+    wraps = newMap()
   )
 }
 
@@ -315,6 +325,62 @@ func editOf(h: Host, id: String): TextEdit {
   match mapGet(h.edits, id) {
     case Some(e) -> e
     case None -> Interact.emptyEdit()
+  }
+}
+
+/// The wrapped lines of the text area `b` showing `shown`; cached, since measuring is not free.
+func areaLinesOf(h: Host, b: Box, shown: String): List[Wrap.VisualLine] {
+  val id = idOfBox(h, b)
+  val width = b.w - 2.0f32 * h.theme.inputPadding
+  match mapGet(h.wraps, id) {
+    case Some(entry) -> {
+      if entry.value == shown and entry.width == width {
+        return entry.lines
+      }
+    }
+    case None -> ()
+  }
+  val m = h.metrics
+  val lines = Wrap.wrapLines(shown, width, { t: String -> m.measure(t, 0, 0.0f32).w })
+  if mapKeys(h.wraps).count > 64 {
+    h.wraps = newMap()
+  }
+  h.wraps.add(id, WrapEntry(value = shown, width = width, lines = lines))
+  lines
+}
+
+// The advance of a text in the body style, trailing spaces included (see `Ui.Native.Paint`'s
+// `widthOf`): where a caret or a selection edge after it is drawn.
+func advanceOf(m: Metrics, t: String): Float {
+  if t.length > 0 and t.endsWith(" ") {
+    m.measure(t + "x", 0, 0.0f32).w - m.measure("x", 0, 0.0f32).w
+  } else {
+    m.measure(t, 0, 0.0f32).w
+  }
+}
+
+func widthOfText(h: Host): (String) -> Float {
+  val m = h.metrics
+  { t: String -> advanceOf(m, t) }
+}
+
+/// Scrolls the text area `id` so the line the caret is on is in view.
+func revealCaret(h: Host, id: String): Unit {
+  match findBox(h.page, id, h) {
+    case Some(b) -> {
+      if b.kind == "textArea" {
+        val e = editOf(h, id)
+        val lines = areaLinesOf(h, b, b.text)
+        val lh = h.metrics.lineHeight(0)
+        val view = b.h - 2.0f32 * textAreaPadding
+        val row = Wrap.lineIndexOf(lines, e.caret)
+        val sy = Interact.clampScroll(Wrap.scrollToRow(e.scrollY, row, lh, view), Wrap.contentHeight(lines, lh), view)
+        if sy != e.scrollY {
+          h.edits.add(id, e.copy(scrollY = sy))
+        }
+      }
+    }
+    case None -> ()
   }
 }
 
@@ -514,6 +580,7 @@ func typeText(h: Host, text: String): Unit {
     case Some(b) -> if isTextInput(b.kind) and not (propOf(b.props, "readonly", "") == "true") {
       val id = idOfBox(h, b)
       applyEdit(h, b, Interact.insertText(b.text, editOf(h, id), text, maxLengthOf(b)))
+      revealCaret(h, id)
     }
     case None -> ()
   }
@@ -525,12 +592,20 @@ func focusBox(h: Host, b: Box): Unit {
   h.openSelect = ""
 }
 
-func setCaretFromClick(h: Host, b: Box, x: Float, shift: Bool): Unit {
+func setCaretFromClick(h: Host, b: Box, x: Float, y: Float, shift: Bool): Unit {
   val id = idOfBox(h, b)
   val e = editOf(h, id)
-  val local = x - (b.x + h.theme.inputPadding) + e.scrollX
   val m = h.metrics
-  val pos = Interact.caretAt(b.text, local, { t: String -> m.measure(t, 0, 0.0f32).w })
+  if b.kind == "textArea" {
+    val lines = areaLinesOf(h, b, b.text)
+    val row = Wrap.rowAtY(lines, y - (b.y + textAreaPadding) + e.scrollY, m.lineHeight(0))
+    val pos = Wrap.positionAt(b.text, lines, row, x - (b.x + h.theme.inputPadding), widthOfText(h))
+    h.edits.add(id, Interact.moveCaret(b.text, e, pos, shift))
+    revealCaret(h, id)
+    return
+  }
+  val local = x - (b.x + h.theme.inputPadding) + e.scrollX
+  val pos = Interact.caretAt(b.text, local, { t: String -> advanceOf(m, t) })
   h.edits.add(id, Interact.moveCaret(b.text, e, pos, shift))
 }
 
@@ -719,10 +794,14 @@ func onMouseDown(h: Host, x: Float, y: Float, shift: Bool, clicks: Int): Unit {
       }
       if isTextInput(b.kind) {
         focusBox(h, b)
-        setCaretFromClick(h, b, x, shift)
+        setCaretFromClick(h, b, x, y, shift)
         h.dragging = idOfBox(h, b)
         if clicks >= 3 {
-          h.edits.add(h.dragging, Interact.selectAll(b.text, editOf(h, h.dragging)))
+          if b.kind == "textArea" {
+            h.edits.add(h.dragging, Interact.paragraphAt(b.text, editOf(h, h.dragging).caret))
+          } else {
+            h.edits.add(h.dragging, Interact.selectAll(b.text, editOf(h, h.dragging)))
+          }
           h.dragging = ""
         } else if clicks == 2 {
           val c = editOf(h, h.dragging)
@@ -798,6 +877,7 @@ func onKey(h: Host, key: Int, mods: Int): Unit {
     case Some(b) -> {
       if isTextInput(b.kind) {
         onTextKey(h, b, key, shift, cmd)
+        revealCaret(h, idOfBox(h, b))
       } else if b.kind == "select" {
         onSelectKey(h, b, key)
       } else if b.kind == "gridRow" {
@@ -826,6 +906,30 @@ func onKey(h: Host, key: Int, mods: Int): Unit {
         activate(h, b)
       }
     }
+  }
+}
+
+// The wheel over a text area taller than its box scrolls the text; false when it does not
+// (no such area under the pointer, or it is already at that end), so the page scrolls instead.
+func scrollTextArea(h: Host, dy: Float): Bool {
+  match Interact.hitTest(h.page, h.mouseX, h.mouseY) {
+    case Some(b) -> {
+      if b.kind != "textArea" {
+        return false
+      }
+      val id = idOfBox(h, b)
+      val e = editOf(h, id)
+      val lh = h.metrics.lineHeight(0)
+      val view = b.h - 2.0f32 * textAreaPadding
+      val content = Wrap.contentHeight(areaLinesOf(h, b, b.text), lh)
+      val next = Interact.clampScroll(e.scrollY - dy * 48.0f32, content, view)
+      if next == e.scrollY {
+        return false
+      }
+      h.edits.add(id, e.copy(scrollY = next))
+      true
+    }
+    case None -> false
   }
 }
 
@@ -901,9 +1005,23 @@ func onTextKey(h: Host, b: Box, key: Int, shift: Bool, cmd: Bool): Unit {
   } else if key == keyRight {
     h.edits.add(id, Interact.stepCaret(value, e, 1, shift))
   } else if key == keyHome {
-    h.edits.add(id, Interact.moveCaret(value, e, 0, shift))
+    if b.kind == "textArea" and not cmd {
+      h.edits.add(id, Interact.moveToLineEdge(value, areaLinesOf(h, b, value), e, false, shift))
+    } else {
+      h.edits.add(id, Interact.moveCaret(value, e, 0, shift))
+    }
   } else if key == keyEnd {
-    h.edits.add(id, Interact.moveCaret(value, e, Interact.cpCount(value), shift))
+    if b.kind == "textArea" and not cmd {
+      h.edits.add(id, Interact.moveToLineEdge(value, areaLinesOf(h, b, value), e, true, shift))
+    } else {
+      h.edits.add(id, Interact.moveCaret(value, e, Interact.cpCount(value), shift))
+    }
+  } else if b.kind == "textArea" and (key == keyUp or key == keyDown or key == keyPageUp or key == keyPageDown) {
+    val lh = h.metrics.lineHeight(0)
+    val page = (b.h - 2.0f32 * textAreaPadding) / lh
+    val rows = if page >= 2.0f32 { page.toInt() - 1 } else { 1 }
+    val delta = if key == keyUp { -1 } else if key == keyDown { 1 } else if key == keyPageUp { 0 - rows } else { rows }
+    h.edits.add(id, Interact.moveVertical(value, areaLinesOf(h, b, value), e, delta, shift, widthOfText(h)))
   } else if key == keyReturn {
     if b.kind == "textArea" {
       if not readonly {
@@ -939,7 +1057,7 @@ pub func handle(h: Host, e: Window.Event): Unit {
       h.mouseY = y
       if h.dragging.length > 0 {
         match findBox(h.page, h.dragging, h) {
-          case Some(b) -> setCaretFromClick(h, b, x, true)
+          case Some(b) -> setCaretFromClick(h, b, x, y, true)
           case None -> {
             h.dragging = ""
           }
@@ -966,7 +1084,9 @@ pub func handle(h: Host, e: Window.Event): Unit {
       match gridBodyAt(h, h.mouseX, h.mouseY) {
         case Some(body) -> scrollGrid(h, body, 0.0f32 - dy * 48.0f32)
         case None -> {
-          h.pageScroll = clampPage(h, h.pageScroll - dy * 48.0f32)
+          if not scrollTextArea(h, dy) {
+            h.pageScroll = clampPage(h, h.pageScroll - dy * 48.0f32)
+          }
         }
       }
     }
@@ -1022,7 +1142,9 @@ pub func renderFrame(h: Host, p: Draw.Painter): Unit {
     editOf = { id: String -> editOf(h, id) },
     time = h.now,
     composing = h.composing,
-    openSelect = h.openSelect
+    openSelect = h.openSelect,
+    scale = h.scale,
+    areaLines = { b: Box, shown: String -> areaLinesOf(h, b, shown) }
   )
   paintPage(h.page, p, ctx)
   if h.openSelect.length > 0 {
@@ -1050,7 +1172,21 @@ pub func renderFrame(h: Host, p: Draw.Painter): Unit {
 /// The caret's rectangle in logical pixels when a text input has focus, for the input method.
 pub func caretArea(h: Host): Option[Ui.Native.Layout.Box] {
   match focusedBox(h) {
-    case Some(b) -> if isTextInput(b.kind) { Some(value = b) } else { None }
+    case Some(b) -> {
+      if b.kind == "textArea" {
+        val e = editOf(h, idOfBox(h, b))
+        val lines = areaLinesOf(h, b, b.text)
+        val lh = h.metrics.lineHeight(0)
+        val row = Wrap.lineIndexOf(lines, e.caret)
+        val cx = b.x + h.theme.inputPadding + Wrap.offsetInRow(b.text, lines, row, e.caret, widthOfText(h))
+        val cy = b.y + textAreaPadding - e.scrollY + row.toFloat() * lh
+        Some(value = b.copy(x = cx, y = cy, w = 1.0f32, h = lh))
+      } else if isTextInput(b.kind) {
+        Some(value = b)
+      } else {
+        None
+      }
+    }
     case None -> None
   }
 }
@@ -1357,6 +1493,50 @@ func findKind(b: Box, kind: String, text: String): Option[Box] {
     }
   }
   None
+}
+
+/// The first box of `kind` in the last frame.
+pub func firstOfKind(hl: Headless, kind: String): Option[Box] {
+  firstKind(hl.host.page, kind)
+}
+
+func firstKind(b: Box, kind: String): Option[Box] {
+  if b.kind == kind {
+    return Some(value = b)
+  }
+  for c in b.children {
+    match firstKind(c, kind) {
+      case Some(f) -> return Some(value = f)
+      case None -> ()
+    }
+  }
+  None
+}
+
+/// The caret of the focused input in code points, or -1 when nothing is focused.
+pub func caretOf(hl: Headless): Int {
+  match focusedBox(hl.host) {
+    case Some(b) -> editOf(hl.host, idOfBox(hl.host, b)).caret
+    case None -> 0 - 1
+  }
+}
+
+/// The number of visual lines the text area `area` shows its text in.
+pub func areaRows(hl: Headless, area: Box): Int {
+  areaLinesOf(hl.host, area, area.text).count
+}
+
+/// The visual line the caret of the focused text area is on.
+pub func caretRow(hl: Headless): Int {
+  match focusedBox(hl.host) {
+    case Some(b) -> Wrap.lineIndexOf(areaLinesOf(hl.host, b, b.text), editOf(hl.host, idOfBox(hl.host, b)).caret)
+    case None -> 0 - 1
+  }
+}
+
+/// The vertical scroll of the text area `area`, in logical pixels.
+pub func areaScroll(hl: Headless, area: Box): Float {
+  editOf(hl.host, idOfBox(hl.host, area)).scrollY
 }
 
 /// The composition text an input method is currently holding in the focused input ("" when none).
