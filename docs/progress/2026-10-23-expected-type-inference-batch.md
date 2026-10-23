@@ -36,3 +36,4 @@ dotnet, JVM and native, ilverify-clean on dotnet) and two new cases in
   cover bracket-literal typing.
 
 Already fixed on main and pinned by the new test file: #7906, #8136, #8278.
+Follow-up filed: #8481 (two unions in one package sharing a case name resolve by declaration order on JVM/native).
