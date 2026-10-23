@@ -869,6 +869,12 @@ test "after the ceiling is lowered the next block must open with a size update (
     case Ok(_) -> panic("expected MissingSizeUpdate")
     case Err(e) -> assertEqual(errName(e), "MissingSizeUpdate", "block without size update")
   }
+  var empty = newDecoder(4096)
+  decoderSetMaxProtocolSize(empty, 100)
+  match decodeHeaderBlock(empty, hx("")) {
+    case Ok(_) -> panic("expected MissingSizeUpdate for an empty block")
+    case Err(e) -> assertEqual(errName(e), "MissingSizeUpdate", "empty block cannot carry the size update")
+  }
   var ok = newDecoder(4096)
   decoderSetMaxProtocolSize(ok, 100)
   // 0x3f 0x45 = size update to 100, then :method GET.

@@ -899,6 +899,9 @@ pub func decodeHeaderBlockLimited(
       return Err(error = HeaderListTooLarge(size = listSize, maxSize = maxListSize))
     }
   }
+  if decoder.sizeUpdateRequired {
+    return Err(error = MissingSizeUpdate)
+  }
   Ok(value = outList)
 }
 
