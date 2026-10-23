@@ -225,7 +225,7 @@ required on the target machine:
 
 ```sh
 lyric build --release --aot hello.l
-# Produces: hello   (a native executable)
+# Produces: hello   (a native executable; hello.exe on Windows)
 ./hello
 ```
 
@@ -267,7 +267,7 @@ your host platform.
 
 Distinct from `--aot` on the .NET target (which AOT-compiles the managed build with `ilc`),
 `lyric build --target native hello.l` compiles Lyric source directly to LLVM
-IR and drives `clang` to produce a self-contained POSIX executable with no
+IR and drives `clang` to produce a self-contained executable with no
 managed runtime at all — no .NET, no JVM:
 
 ```sh
@@ -292,6 +292,19 @@ available on WASI. A program that uses them still builds. Spawning a process or 
 a connection returns the `Err` the library reports for any failed spawn or
 connect; `Std.HttpServer.startListener` panics on its failed bind.
 
+On Windows the native target is `x86_64-pc-windows-msvc`, the default
+triple of an LLVM install there. It needs LLVM (clang and `lld-link`) and the
+Visual Studio C runtime and Windows SDK (the Build Tools are enough), and the
+Windows runtime archive (`make -C lyric-rt windows`, or CMake on Windows:
+`cmake -S lyric-rt -B build -G Ninja -DCMAKE_C_COMPILER=clang`, then point
+`LYRIC_RT_WINDOWS_PATH` at the `lyric_rt.lib` it builds). From Linux, the same
+`--triple x86_64-pc-windows-msvc` cross-compiles when `INCLUDE` and `LIB` name
+an MSVC CRT and Windows SDK. The output is `hello.exe`. Text crosses the Win32
+API as UTF-16, so file names, arguments, environment variables and console
+output with non-ASCII characters work whatever the console code page. Child
+processes, sockets and TLS are not ported yet: a program that uses them
+builds, and the spawn or connect fails with its usual typed error.
+
 To call a program from JavaScript add `--shape module`; to publish it as a WebAssembly
 component add `--shape component`. Both, host imports, the `[wasm]` and `[npm]` manifest
 tables and the NPM shim workflow are covered in Chapter 32.
@@ -301,7 +314,7 @@ there is no garbage collector. Reference cycles are not collected; break
 them explicitly with `NativeWeak[T]`, whose `upgrade()` returns
 `Option[T]` (`None` once the target has been released).
 
-> **Scope today.** Linux (`x64`/`arm64`) and macOS (`arm64`) are supported.
+> **Scope today.** Linux (`x64`/`arm64`), macOS (`arm64`) and Windows (`x64`) are supported.
 > The lowered surface covers scalars and strings; records (methods, field
 > defaults, mutable fields), opaque types (construction, field access,
 > and ARC release lower identically to a record — opacity is a

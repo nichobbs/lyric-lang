@@ -955,7 +955,8 @@ lyric build --target dotnet <file.l>   # target .NET (default): writes foo.dll +
 lyric build --target jvm <file.l>      # writes a runnable foo.jar (NO runtimeconfig.json) via the
                                        # self-hosted JVM emitter (`Main-Class` derived from the source
                                        # `package` declaration; runs under `java -jar foo.jar`)
-lyric build --target native <file.l>   # writes a self-contained POSIX executable (no extension)
+lyric build --target native <file.l>   # writes a self-contained executable (no extension; <stem>.exe for Windows)
+lyric build --target native --triple x86_64-pc-windows-msvc <file.l>  # Windows x64 (docs/67 G9); cross-compiles from Linux with INCLUDE/LIB set
                                        # via the LLVM backend + clang; --triple cross-compiles,
                                        # --opt 0|1|2|3|s sets the clang -O level. triple/opt default
                                        # from the manifest [native] table (CLI flags override); with
@@ -1577,14 +1578,14 @@ span, exactly like `T0120`/`J008`.
 |---|---|
 | `N0001` | `clang` was not found on `PATH` (for `--triple wasm32-wasi`: the wasi-sdk's `clang` under `$WASI_SDK_PATH` could not be run). |
 | `N0002` | The generated LLVM IR (`.ll`) could not be written to disk. |
-| `N0003` | `lyric_rt.a` (the native runtime archive) was not found; set `LYRIC_RT_PATH` or run `make -C lyric-rt`. |
+| `N0003` | `lyric_rt.a` (the native runtime archive) was not found; set `LYRIC_RT_PATH` or run `make -C lyric-rt` (for `--triple x86_64-pc-windows-msvc`: set `LYRIC_RT_WINDOWS_PATH` or run `make -C lyric-rt windows`). |
 | `N0004` | `clang` failed while compiling/linking the generated `.ll` file; its own stderr is included. |
 | `N0005` | A native project build received no packages to compile. |
 | `N0006` | An interface method's parameter or return type mentions `Self` NESTED inside a generic type argument (e.g. `List[Self]`, `Option[Self]`) — accepted on `--target dotnet`/`--target jvm`, but native's generic types monomorphize per concrete type argument and there is no call site to infer one from at an interface declaration. A BARE `Self` (a parameter, a return, or the implicit receiver's own type) is accepted on native too, since #7585 — only the nested shape is `N0006`. |
 | `N0007` | A value flows into a codegen slot whose type it cannot be coerced to — most commonly a call argument against an extern generic collection method (`List[T].add`/`Map[K, V].add`, …) that the type checker admits with NO argument validation at all (an unresolved generic parameter is satisfied by any argument type on every target), so a genuinely incompatible argument (not a numeric narrowing — `coerceTo` narrows a wider `Int`/`Long` argument to a declared-narrower `Byte`/`Int` slot on its own, matching MSIL's implicit `List<byte>.Add` narrowing and JVM's `i2b`) reaches native codegen with no LLVM-IR-level conversion available. |
 | `N0008` | Retired: generic protected types now build on `--target native` (D176). |
 | `N0009` | A `--triple wasm32-wasi` build found no wasi-sdk; set `WASI_SDK_PATH` to its install directory. |
-| `N0010` | An `extern func` signature (including a callback parameter or a return) names an inline `array[N, T]` or a by-value union, which have no C equivalent, or a by-value record on a target whose C struct ABI the native backend does not lower (x86-64, AArch64 and wasm32 are lowered, #8009; Windows triples are not). Pass a `NativePtr` (to an array's first element), or give the type its heap form. |
+| `N0010` | An `extern func` signature (including a callback parameter or a return) names an inline `array[N, T]` or a by-value union, which have no C equivalent, or a by-value record on a target whose C struct ABI the native backend does not lower (x86-64 System V, Windows x64, AArch64 and wasm32 are lowered, #8009, D205). Pass a `NativePtr` (to an array's first element), or give the type its heap form. |
 | `N0011` | `--shape module` or `--shape component` was given a triple that is not wasm32; pass `--triple wasm32-wasi`. |
 | `N0012` | An unknown native output shape name reached the native bridge; the wasm32 shapes are `module` and `component`. |
 | `N0013` | A generated file could not be written next to the `.wasm`: the `--shape module` JS glue (`<name>.js`) or declarations (`<name>.d.ts`), or the `--shape component` WIT (`<name>.wit`) or C wrappers (`<name>.cabi.c`). |
@@ -1598,6 +1599,7 @@ span, exactly like `T0120`/`J008`.
 | `N0022` | `--js-bindings` could not run `jco` (`$JCO`, else `PATH`), or `jco transpile` failed. |
 | `N0023` | A call through an interface value passes an argument to an `out`/`inout` `Self` parameter of the interface method, on `--target native` (#8252). The interface value would have to be unboxed into a place the implementing method writes and boxed again after the call, which native does not lower yet. Call the method on the implementing type (`a.swapWith(b)` with `a: A`), where it works. Reported at the argument. |
 | `N0024` | A variable a closure captures is passed to an `out`/`inout` parameter from inside the closure, on `--target native` (#7891). Native closures capture a variable's value rather than the variable, so the call would write a copy the variable never sees. Pass a variable declared inside the closure, or make the call outside it; a field of a captured record (`h.n`) can be passed. Reported at the argument. |
+| `N0025` | A native build names a Windows triple other than `x86_64-pc-windows-msvc` (for example `x86_64-w64-windows-gnu` or `aarch64-pc-windows-msvc`); the native backend targets Windows x86-64 with the MSVC C runtime and ABI only (docs/67 G9, D205). |
 
 ### Custom source generators (X-series)
 

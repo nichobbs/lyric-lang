@@ -4242,5 +4242,6 @@ pub func parse(source: in String): ParseResult {
     span = joinSpans(startSpan, endSpan)
   )
   val cst = buildGreenTree(st.cstEvents, st.tokens)
-  ParseResult(file = file, diagnostics = st.diags, cst = cst, source = source)
+  // The text the spans index (a CRLF file's offsets count no `\r`).
+  ParseResult(file = file, diagnostics = st.diags, cst = cst, source = normaliseLineEndings(source))
 }

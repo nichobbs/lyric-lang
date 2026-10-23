@@ -40,6 +40,20 @@ func isDarwinTriple(triple: in String): Bool {
   Str.contains(triple, "apple") or Str.contains(triple, "darwin")
 }
 
+/// How a target names and finds its libraries: "darwin" (`lib<link>.dylib`,
+/// `@loader_path`), "windows" (`<link>.dll` and `<link>.lib`; the loader looks
+/// beside the executable first, so no run path, docs/67 G9) or "elf"
+/// (`lib<link>.so`, `$ORIGIN`).
+func libOsOf(triple: in String): String {
+  if isDarwinTriple(triple) {
+    "darwin"
+  } else if Str.contains(triple, "windows") or Str.contains(triple, "win32") {
+    "windows"
+  } else {
+    "elf"
+  }
+}
+
 func hostTripleOrEmpty(): String {
   val args: List[String] = newList()
   args.add("-print-effective-triple")
@@ -53,17 +67,22 @@ func fileNameOf(path: in String): String = Path.basename(path)
 
 func linkNameOf(spec: in Mf.NativeLibSpec): String = if spec.link.length > 0 { spec.link } else { spec.name }
 
-/// The shared-library files of `lib<link>` in `dir`: `lib<link>.so`, its
-/// versioned names (`.so.3`, `.so.3.2.0`), or `lib<link>.dylib` and its versioned names.
-func sharedLibraryFiles(dir: in String, link: in String, darwin: in Bool): List[String] {
+/// The shared-library files of `link` in `dir`: `lib<link>.so` and its
+/// versioned names (`.so.3`, `.so.3.2.0`), `lib<link>.dylib` and its versioned
+/// names, or `<link>.dll` on Windows.
+func sharedLibraryFiles(dir: in String, link: in String, os: in String): List[String] {
   val found: List[String] = newList()
   match File.listFiles(dir) {
     case Err(_) -> ()
     case Ok(files) -> {
       for f in files {
         val name = fileNameOf(f)
-        if darwin {
+        if os == "darwin" {
           if Str.startsWith(name, "lib" + link + ".") and Str.endsWith(name, ".dylib") {
+            found.add(f)
+          }
+        } else if os == "windows" {
+          if Str.toLower(name) == Str.toLower(link + ".dll") {
             found.add(f)
           }
         } else if name == "lib" + link + ".so" or Str.startsWith(name, "lib" + link + ".so.") {
@@ -77,7 +96,7 @@ func sharedLibraryFiles(dir: in String, link: in String, darwin: in Bool): List[
 
 func resolveDirLib(
   decl: in NativeLibDecl,
-  darwin: in Bool,
+  os: in String,
   args: in List[String],
   bundle: in List[String],
   errors: in List[String],
@@ -91,11 +110,17 @@ func resolveDirLib(
     )
     return
   }
-  val shared = sharedLibraryFiles(dir, link, darwin)
-  val staticName = Path.join(dir, "lib" + link + ".a")
-  if shared.count == 0 and not File.fileExists(staticName) {
-    val ext = if darwin { ".dylib" } else { ".so" }
-    errors.add("native library '" + spec.name + "': " + dir + " holds no lib" + link + ext + " or lib" + link + ".a")
+  val shared = sharedLibraryFiles(dir, link, os)
+  // On Windows a library links through `<link>.lib`, a static library or the
+  // import library of `<link>.dll`, so the `.lib` must be there either way.
+  val linkName = if os == "windows" { link + ".lib" } else { "lib" + link + ".a" }
+  if os == "windows" and not File.fileExists(Path.join(dir, linkName)) {
+    errors.add("native library '" + spec.name + "': " + dir + " holds no " + linkName)
+    return
+  }
+  if shared.count == 0 and not File.fileExists(Path.join(dir, linkName)) {
+    val ext = if os == "darwin" { ".dylib" } else { ".so" }
+    errors.add("native library '" + spec.name + "': " + dir + " holds no lib" + link + ext + " or " + linkName)
     return
   }
   args.add("-L" + dir)
@@ -161,7 +186,7 @@ func readMarker(dir: in String): String {
 func resolvePrebuiltLib(
   decl: in NativeLibDecl,
   triple: in String,
-  darwin: in Bool,
+  os: in String,
   args: in List[String],
   bundle: in List[String],
   errors: in List[String],
@@ -195,7 +220,7 @@ func resolvePrebuiltLib(
         ),
         baseDir = decl.baseDir
       )
-      resolveDirLib(restored, darwin, args, bundle, errors)
+      resolveDirLib(restored, os, args, bundle, errors)
     }
   }
 }
@@ -395,7 +420,7 @@ pub func resolveNativeLibs(decls: in List[NativeLibDecl], triple: in String): Na
     errors.add("[native.libs] is not supported for " + effTriple + ": a WebAssembly build links no C libraries")
     return NativeLinkPlan(args = args, bundle = bundle, errors = errors)
   }
-  val darwin = isDarwinTriple(effTriple)
+  val os = libOsOf(effTriple)
   val seen: List[String] = newList()
   for d in decls {
     if not stringListContains(seen, d.spec.name) {
@@ -403,20 +428,20 @@ pub func resolveNativeLibs(decls: in List[NativeLibDecl], triple: in String): Na
       if d.spec.pkgConfig.length > 0 {
         resolvePkgConfigLib(d, args, errors)
       } else if d.spec.prebuilt.count > 0 {
-        resolvePrebuiltLib(d, effTriple, darwin, args, bundle, errors)
+        resolvePrebuiltLib(d, effTriple, os, args, bundle, errors)
       } else {
-        resolveDirLib(d, darwin, args, bundle, errors)
+        resolveDirLib(d, os, args, bundle, errors)
       }
     }
   }
-  if bundle.count > 0 {
-    args.add("-Wl,-rpath," + (if darwin { "@loader_path" } else { "$ORIGIN" }))
+  if bundle.count > 0 and os != "windows" {
+    args.add("-Wl,-rpath," + (if os == "darwin" { "@loader_path" } else { "$ORIGIN" }))
   }
   NativeLinkPlan(args = args, bundle = bundle, errors = errors)
 }
 
 /// Copies the plan's shared libraries next to the executable, where the
-/// `$ORIGIN` / `@loader_path` run path finds them.  Returns what failed.
+/// `$ORIGIN` / `@loader_path` run path (and the Windows loader) finds them.  Returns what failed.
 pub func bundleNativeLibs(plan: in NativeLinkPlan, exePath: in String): List[String] {
   val errors: List[String] = newList()
   val outDir = Path.dirname(exePath)

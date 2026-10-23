@@ -562,9 +562,18 @@ func outputExt(target: in Emitter.CompileTarget, kind: in String): String {
   match target {
     case Emitter.Dotnet -> ".dll"
     case Emitter.Jvm -> ".jar"
-    // A native build IS the executable; no extension on the Phase 1
-    // POSIX targets (D-N-008).
-    case Emitter.Native -> ""
+    // A native build IS the executable: no extension on the POSIX targets
+    // (D-N-008), `.exe` when the host is Windows (docs/67 G9).
+    case Emitter.Native -> nativeOutputExt("")
+  }
+}
+
+/// The extension of a native executable for `triple` ("" = the host).
+func nativeOutputExt(triple: in String): String {
+  if Emitter.nativeExecutableOutputPath("x", triple) == "x" {
+    ""
+  } else {
+    ".exe"
   }
 }
 

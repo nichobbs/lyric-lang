@@ -103,6 +103,10 @@ int32_t lyric_sock_close(int32_t fd) {
     return close(fd) == 0 ? 0 : -1;
 }
 
+int32_t lyric_sock_shutdown(int32_t fd, int32_t how) {
+    return shutdown(fd, how) == 0 ? 0 : -1;
+}
+
 LyricString* lyric_sock_peer_string(int32_t fd) {
     struct sockaddr_storage ss;
     socklen_t len = (socklen_t)sizeof ss;

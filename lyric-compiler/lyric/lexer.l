@@ -2764,8 +2764,11 @@ func lexNext(state: inout LexerState): Unit {
   }
 }
 
+/// `s` with CRLF and bare CR line endings turned into LF: the text every
+/// token span indexes (`lex` normalises its input first), so a consumer that
+/// slices source by span offsets slices this, not the raw file.
 @pure
-func normaliseLineEndings(s: in String): String {
+pub func normaliseLineEndings(s: in String): String {
   // CRLF → LF, then bare CR → LF.  Sources that already use LF
   // round-trip through unchanged buffers.
   s.replace("\r\n", "\n").replace("\r", "\n")

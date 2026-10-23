@@ -151,6 +151,20 @@ test "empty source" {
   assertEqualInt(itemCount(pr), 0, "empty: no items")
 }
 
+// Spans index the lexer's normalised text, so `source` is that text: slicing
+// it by a span gives the item's own text in a CRLF file too.
+test "source is the line-ending-normalised text the spans index" {
+  val pr = parse("package P\r\n\r\nfunc f(): Int {\r\n  1\r\n}\r\nfunc g(): Int {\r\n  2\r\n}\r\n")
+  assertEqualInt(diagCount(pr), 0, "crlf: no diagnostics")
+  assertEqual(pr.source, "package P\n\nfunc f(): Int {\n  1\n}\nfunc g(): Int {\n  2\n}\n", "crlf: normalised")
+  val sp = pr.file.items[1].span
+  assertEqual(
+    pr.source.substring(sp.startPos.offset, sp.endPos.offset - sp.startPos.offset),
+    "func g(): Int {\n  2\n}",
+    "crlf: the second item's span slices its text"
+  )
+}
+
 test "package decl" {
   val pr = parse("package Foo.Bar\n")
   assertEqualInt(diagCount(pr), 0, "package: no diagnostics")

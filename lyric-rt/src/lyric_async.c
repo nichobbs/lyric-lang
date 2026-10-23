@@ -323,12 +323,7 @@ void lyric_task_block_on(LyricTask* root) {
         }
         int64_t now = lyric_monotonic_nanos();
         int64_t wait_ns = next_deadline - now;
-        if (wait_ns > 0) {
-            struct timespec ts;
-            ts.tv_sec = (time_t)(wait_ns / 1000000000);
-            ts.tv_nsec = (long)(wait_ns % 1000000000);
-            nanosleep(&ts, NULL);
-        }
+        lyric_sleep_nanos(wait_ns);
     }
 }
 

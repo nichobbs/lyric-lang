@@ -399,7 +399,7 @@ A project that binds a C library says where the library is in its manifest, and 
 
 ```toml
 [native.libs.window]
-dir = "native"          # a directory holding libwindow.so (or .dylib / .a), relative to this manifest
+dir = "native"          # a directory holding libwindow.so (or .dylib / .a; window.lib and window.dll on Windows), relative to this manifest
 # pkg_config = "window" # or: a system library found with pkg-config
 ```
 
@@ -412,7 +412,7 @@ sha256  = "<64 hex digits>"
 members = ["lib/libwindow.so"]
 ```
 
-The build links the library, copies its shared files next to the executable and adds an `$ORIGIN` run path, so the program runs from its output directory even after the library's original directory is gone.
+The build links the library, copies its shared files next to the executable and adds an `$ORIGIN` run path, so the program runs from its output directory even after the library's original directory is gone On Windows the DLL is copied beside the `.exe`, where the loader looks first, and no run path is needed.
 
 ### A worked binding: `lyric-gpu`
 

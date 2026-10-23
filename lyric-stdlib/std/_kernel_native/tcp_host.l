@@ -294,8 +294,9 @@ extern func rtSockPeerString(fd: Int): String = "lyric_sock_peer_string"
 // read/write on a CONNECTED socket on every POSIX platform this project
 // targets (unlike its behaviour on a LISTENING socket, which is Linux-only
 // and is why `hostStopListener` below uses the wake-pipe seam instead;
-// issue #6806).
-extern func rtShutdown(fd: Int, how: Int): Int = "shutdown"
+// issue #6806). Bound through lyric-rt so a target without BSD sockets
+// (wasm32-wasi, and Windows until the Winsock port, #8434) still links.
+extern func rtShutdown(fd: Int, how: Int): Int = "lyric_sock_shutdown"
 
 extern func rtSockReadBytes(fd: Int, maxBytes: Long, okOut: NativePtr[Int]): slice[Byte] = "lyric_sock_read_bytes"
 
@@ -311,7 +312,14 @@ extern func rtLongToPtr(v: Long): NativePtr[Byte] = "lyric_long_to_ptr"
 // --- TLS (server-side) --------------------------------------------------
 extern func rtTlsServerNewRaw(certPem: NativePtr[Byte], keyPem: NativePtr[Byte], minVersion: Int, clientCaPem: NativePtr[Byte], requireClientCert: Int, alpnCsv: NativePtr[Byte]): NativePtr[Byte] = "lyric_tls_server_new"
 
-func rtTlsServerNew(certPem: NativePtr[Byte], keyPem: NativePtr[Byte], minVersion: Int, clientCaPem: NativePtr[Byte], requireClientCert: Int, alpnCsv: NativePtr[Byte]): Long {
+func rtTlsServerNew(
+  certPem: NativePtr[Byte],
+  keyPem: NativePtr[Byte],
+  minVersion: Int,
+  clientCaPem: NativePtr[Byte],
+  requireClientCert: Int,
+  alpnCsv: NativePtr[Byte],
+): Long {
   rtPtrToLong(rtTlsServerNewRaw(certPem, keyPem, minVersion, clientCaPem, requireClientCert, alpnCsv))
 }
 

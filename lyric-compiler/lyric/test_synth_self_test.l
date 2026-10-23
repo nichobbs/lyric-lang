@@ -471,6 +471,37 @@ func testListEntriesEnumerates(): Unit {
   }
 }
 
+// A CRLF source (a Windows checkout): the lexer normalises line endings and
+// every span indexes the normalised text, so a rewrite that sliced the raw
+// input drifted one character per line and cut string literals in half.
+func crlfSource(): String {
+  "@test_module\r\npackage P\r\n\r\nimport Std.Testing\r\n\r\n" +
+    "func helper(): String {\r\n  \"a string\"\r\n}\r\n\r\n" +
+    "test \"first\" {\r\n  assertTrue(helper() == \"a string\", \"x\")\r\n}\r\n\r\n" +
+    "test \"second\" {\r\n  assertTrue(true, \"y\")\r\n}\r\n"
+}
+
+func testCrlfSourceRewritesCleanly(): Unit {
+  match synthesize(crlfSource(), Some(value = "")) {
+    case Synthesised(rewritten, n, _) -> {
+      assertEqualInt(n, 2, "two tests")
+      assertTrue(not Str.contains(rewritten, "\r"), "the rewrite is in the normalised text")
+      assertTrue(Str.contains(rewritten, "  \"a string\"\n}"), "the helper is copied whole")
+      assertTrue(Str.contains(rewritten, "assertTrue(helper() == \"a string\", \"x\")"), "the first test body is whole")
+      assertTrue(Str.contains(rewritten, "ok 2 - second"), "both tests are registered")
+      match synthesize(Str.replace(crlfSource(), "\r\n", "\n"), Some(value = "")) {
+        case Synthesised(lfRewritten, _, _) -> assertTrue(rewritten == lfRewritten, "identical to the LF rewrite")
+        case _ -> panic("expected Synthesised outcome for the LF form")
+      }
+    }
+    case _ -> panic("expected Synthesised outcome")
+  }
+}
+
+test "a CRLF source rewrites to the same text as its LF form" {
+  testCrlfSourceRewritesCleanly()
+}
+
 test "module //! header line numbers preserved in rewritten source (#6642)" {
   testHeaderLineNumbersPreserved()
 }
