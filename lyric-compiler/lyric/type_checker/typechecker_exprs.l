@@ -6370,8 +6370,21 @@ func qualifiedEnumCaseType(sc: in Scope, tbl: in SymbolTable, recv: in Expr, nam
     case None -> ()
   }
   val typeName = segs[segs.count - 1]
-  val found: Option[Symbol] = if segs.count == 1 {
-    symTableTryFindOne(tbl, typeName)
+  var found: Option[Symbol] = None
+  if segs.count == 1 {
+    // Only a name no other enum of the program shares is typed: with two
+    // packages declaring an enum `Mode`, the backends and the checker's
+    // sites would have to agree on which one a bare `Mode.Fast` names.
+    val candidates: List[Symbol] = newList()
+    for cand in symTableTryFindAll(tbl, typeName) {
+      match cand.kind {
+        case DKEnum(_, _) -> candidates.add(cand)
+        case _ -> ()
+      }
+    }
+    if candidates.count == 1 {
+      found = Some(value = candidates[0])
+    }
   } else {
     val quals: List[String] = newList()
     var qi = 0
@@ -6379,7 +6392,7 @@ func qualifiedEnumCaseType(sc: in Scope, tbl: in SymbolTable, recv: in Expr, nam
       quals.add(segs[qi])
       qi = qi + 1
     }
-    symTableTryFindInPackage(tbl, modulePathJoin(quals), typeName)
+    found = symTableTryFindInPackage(tbl, modulePathJoin(quals), typeName)
   }
   match found {
     case Some(sym) -> match sym.kind {
@@ -14862,10 +14875,7 @@ func explicitTypeArgCallType(
     case EPath(_) -> ()
     case _ -> return None
   }
-  val sig = match findDirectSig(sc, tbl, sigs, inner, args, argTypes) {
-    case Some(s) -> s
-    case None -> return None
-  }
+  val sig = match findDirectSig(sc, tbl, sigs, inner, args, argTypes) { case Some(s) -> s; case None -> return None }
   if sig.isAsync or sig.isGenerator {
     return None
   }
