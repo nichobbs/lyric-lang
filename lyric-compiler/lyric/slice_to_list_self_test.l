@@ -9,23 +9,15 @@
 //! describing `slice[T].toList()` / `List[T].toArray()` as the intended
 //! round-trip shuttle; only the `List[T].toArray()` direction worked.
 //!
-//! **`--target dotnet` ONLY.** This PR implements `.toList()` in
-//! `Msil.Codegen` (`lowerSliceToListMsil`) plus a `typechecker_exprs.l`
-//! `inferMemberBase` case that resolves the real `List` `TypeId` so the
-//! result type-checks wherever a `List[T]` is expected — matching the scope
-//! of the originating gotcha. `--target native` already implements
-//! `slice.toList()` (`llvm_codegen.l`, list and slice share one runtime
-//! representation there). `--target jvm` fails cleanly at BUILD time instead
-//! (`error[J008]: method 'toList' cannot be called on a slice receiver`) —
-//! `Jvm.Codegen`'s method dispatch (`04_calls.l`) has no `toList` arm, and
-//! rejects the call outright rather than deferring to a runtime throw the
-//! way the pre-fix MSIL backend did. A still-open gap tracked in #7662, not
-//! silently skipped: see docs/01-language-reference.md and
-//! `docs/59-compiler-stdlib-deep-review.md`'s parity ethic. Run only via:
+//! `.toList()` lowers in `Msil.Codegen` (`lowerSliceToListMsil`), in
+//! `Jvm.Codegen` (`lowerMethodCall`'s slice-receiver arm: the array, boxed
+//! first when primitive-element, is copied into a fresh `ArrayList`; #7662,
+//! #8323) and natively (`llvm_codegen.l`).  A `typechecker_exprs.l`
+//! `inferMemberBase` case resolves the real `List` `TypeId` so the result
+//! type-checks wherever a `List[T]` is expected.  Run via:
 //!
-//!   lyric test lyric-compiler/lyric/slice_to_list_self_test.l
-//!
-//! (no `--target jvm` variant).
+//!   lyric test --target dotnet lyric-compiler/lyric/slice_to_list_self_test.l
+//!   lyric test --target jvm lyric-compiler/lyric/slice_to_list_self_test.l
 @test_module
 package Lyric.SliceToListSelfTest
 

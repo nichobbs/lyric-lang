@@ -3321,7 +3321,7 @@ func lowerIfExpr(
             val elseVoidMixed = match elseTy { case JVoid -> not elseTerminated; case _ -> false }
             if not elseTerminated {
               if not elseVoidMixed {
-                coerceArgTo(insns, elseTy, joinTy)
+                coerceArgToCtx(ctx, insns, elseTy, joinTy)
                 emitStore(insns, rslot, joinTy)
               }
             }
@@ -4345,7 +4345,19 @@ func narrowGenericFieldRead(
     unboxNumericAs(insns, prim)
     prim
   } else {
-    fty
+    // A reference instantiation (`Box[String]`): narrow the erased `Object`
+    // to its class so `+` and member reads resolve against it (#8162).
+    match resolveConcreteTypeExpr(ctx, args[pIdx]) {
+      case JRef(refCls) -> {
+        if refCls != "java/lang/Object" {
+          insns.add(LCheckcast(className = refCls))
+          JRef(className = refCls)
+        } else {
+          fty
+        }
+      }
+      case _ -> fty
+    }
   }
 }
 

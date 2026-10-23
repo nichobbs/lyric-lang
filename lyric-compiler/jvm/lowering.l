@@ -3125,42 +3125,40 @@ pub func lowerWire(w: in LWire, pool: in Pool): ClassFile {
     bspi = bspi + 1
   }
 
-  // Run remaining bindings (WMSingleton / WMLocal / WMBind etc.).
-  // Pre-scan every binding's insns for handler-entry labels (#6551) before
-  // lowering any of them, so a binding whose init expression contains a
-  // `try`/`catch` gets a correct `maxStack` inference just like an ordinary
-  // function body.
-  val bsHandlerLabels: Map[String, String] = newMap()
+  // Run remaining bindings (WMSingleton / WMLocal / WMBind etc.).  Each
+  // binding's initialiser lowers through its own fresh FuncCtx (scratch slots
+  // from 0, labels numbered from 0), so it becomes its own private static
+  // method assembled like an ordinary function body: branch targets get
+  // StackMapTable frames (#8372) and neither slots nor labels collide across
+  // bindings or with bootstrap()'s own @provided parameter slots.
   for b in w.bindings.toArray() {
-    collectHandlerLabelsInto(b.insns, bsHandlerLabels)
-  }
-  bsAsm.handlerLabels = bsHandlerLabels
-  var bsBindingMaxSlots = 0
-  for b in w.bindings.toArray() {
+    val initName = "bootstrap$init$" + b.name
+    val initInsns: List[LInsn] = newList()
     for insn in b.insns.toArray() {
-      lowerInsn(insn, bsAsm)
+      initInsns.add(insn)
     }
+    initInsns.add(returnInsn(b.valType))
+    val initParams: List[JvmType] = newList()
+    methods.add(
+      lowerFunc(
+        LFunc(
+          flags = ACC_PRIVATE + ACC_STATIC,
+          name = initName,
+          params = initParams,
+          ret = b.valType,
+          insns = initInsns,
+          maxStack = 0,
+          maxLocals = b.tempSlots
+        ),
+        pool
+      )
+    )
+    lowerInsn(LInvokestatic(owner = w.className, name = initName, params = initParams, ret = b.valType), bsAsm)
     lowerInsn(LPutstatic(owner = w.className, name = b.name, t = b.valType), bsAsm)
-    if b.tempSlots > bsBindingMaxSlots {
-      bsBindingMaxSlots = b.tempSlots
-    }
   }
   lowerInsn(LReturn, bsAsm)
 
-  // bsSlot is the total local-slot count consumed by @provided params
-  // (category-2 types like Long/Double occupy 2 slots each per JVM spec
-  // §4.7.3).  Each binding's init expression lowers through its own fresh
-  // FuncCtx starting at scratch slot 0 (#5011), so bootstrap()'s max_locals
-  // must also cover the largest such binding's own slot usage — otherwise a
-  // binding whose init allocates temps (e.g. a constructor argument local,
-  // #5003/#5011) emits `istore`s past the declared local variable table
-  // size and trips `Local variable table overflow` at verify time.
-  val bsMaxLocals = if bsSlot > bsBindingMaxSlots { bsSlot } else { bsBindingMaxSlots }
-  // max_stack is inferred from `bsAsm.peakStack` (#5015) rather than a
-  // hardcoded constant: a multi-field constructor's `new; dup;
-  // load-each-temp; invokespecial` sequence (D-progress-580/#5011) reaches
-  // stack depth `2 + n_fields`, which a fixed `3` only covers for single-field
-  // records.
+  val bsMaxLocals = bsSlot
   val bsCode = assembleCodeInferred(bsAsm, bsMaxLocals)
   val bsAttrs: List[Attribute] = newList()
   bsAttrs.add(bsCode)

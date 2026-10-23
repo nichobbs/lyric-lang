@@ -154,7 +154,7 @@ everywhere it is read:
   (a restored dependency).  It also covers a `Unit` lambda in a generic
   record's `T` field.  `slice_func_unit_elem_self_test.l` has the
   single-package cases.
-- `slice_func_tolist_dotnet_self_test.l` (dotnet only): `slice.toList()` of
+- `slice_func_tolist_self_test.l` (dotnet only): `slice.toList()` of
   function elements.  The JVM backend does not lower `toList()` on a slice.
 - `scripts/ci/inout-receiver-e2e.sh` now also covers a record-body method with
   `inout` record, `out Int` and `inout Instant` parameters, and an `impl`

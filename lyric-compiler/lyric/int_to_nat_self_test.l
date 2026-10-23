@@ -9,21 +9,12 @@
 //! ran, on both backends — the reverse direction, `Nat.toInt()`, worked by
 //! accident (`Nat` and `Long` share the same MSIL/JVM erasure).
 //!
-//! **`--target dotnet` ONLY.** This PR implements `.toNat()` in
-//! `Msil.Codegen` alone, matching the scope of the originating gotcha (this
-//! project's own target). `.toNat()` on `--target jvm` fails cleanly at
-//! BUILD time instead (`error[J008]: method 'toNat' cannot be called on a
-//! primitive-typed receiver` — `Jvm.Codegen`'s numeric-conversion dispatch
-//! has no `toNat` arm either, and unlike the MSIL backend's pre-fix
-//! lenient/deferred dispatch, JVM codegen rejects the call outright rather
-//! than deferring to a runtime throw) — a still-open gap tracked in #7661,
-//! NOT silently skipped: see docs/01-language-reference.md §4.1 and
-//! `docs/59-compiler-stdlib-deep-review.md`'s FFI/parity ethic. Run only via:
+//! `.toNat()` is implemented in `Msil.Codegen` (`emitCheckedToNatMsil`) and in
+//! `Jvm.Codegen` (the `__lyricToNat`/`__lyricToNatD` runtime helpers, #7661,
+//! which throw `ArithmeticException`).  Run via:
 //!
-//!   lyric test lyric-compiler/lyric/int_to_nat_self_test.l
-//!
-//! (no `--target jvm` variant — deliberately, unlike `conv_methods_self_test.l`'s
-//! sibling cases, which this file does not touch).
+//!   lyric test --target dotnet lyric-compiler/lyric/int_to_nat_self_test.l
+//!   lyric test --target jvm lyric-compiler/lyric/int_to_nat_self_test.l
 @test_module
 package Lyric.IntToNatSelfTest
 
@@ -56,4 +47,8 @@ test "toNat rejects negative source values" {
   assertPanicsWith("(-1.5).toNat()", "non-negative", { -> val _ = negDouble.toNat() })
   val nan: Double = 0.0 / 0.0
   assertPanics("NaN.toNat()", { -> val _ = nan.toNat() })
+  val minusHalf: Double = 0.0 - 0.5
+  assertEqualInt(minusHalf.toNat().toInt(), 0, "-0.5.toNat() truncates to 0")
+  val minusOne: Double = 0.0 - 1.0
+  assertPanics("(-1.0).toNat()", { -> val _ = minusOne.toNat() })
 }
