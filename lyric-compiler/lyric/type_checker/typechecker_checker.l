@@ -708,6 +708,12 @@ func checkDistinctType(tbl: in SymbolTable, diag: in List[Diagnostic], dt: in Di
             }
             isFloatBase = uname == "Float" or uname == "Double"
             isULongBase = uname == "ULong"
+            match dt.rangeClause {
+              case Some(rbFit) -> if isNumericPrimitiveName(uname) {
+                checkRangeBoundsFitBase(tbl, diag, "range subtype '" + dt.name + "'", uname, rbFit)
+              }
+              case None -> ()
+            }
           }
         }
         case _ -> {
@@ -866,6 +872,15 @@ func resolveBounds(tbl: in SymbolTable, wc: in Option[WhereClause]): List[Resolv
 }
 
 // Return true if any annotation on the function has the single-segment name `name`.
+func annotationsHaveName(anns: in List[Annotation], name: in String): Bool {
+  for ann in anns {
+    if ann.name.segments.count == 1 and ann.name.segments[0] == name {
+      return true
+    }
+  }
+  false
+}
+
 func fnHasAnnotation(fn: in FunctionDecl, name: in String): Bool {
   var i = 0
   while i < fn.annotations.count {
@@ -1470,7 +1485,7 @@ func dotOwnerIsAlias(tbl: in SymbolTable, name: in String): Bool {
 // argument type from `TyError` (any) to the stdlib's concrete shape
 // (#1384).
 func isCodegenBuiltinName(name: in String): Bool {
-  name == "println" or name == "toString" or name == "panic" or name == "default" or name == "expect" or
+  name == "println" or name == "print" or name == "toString" or name == "panic" or name == "default" or name == "expect" or
     name == "assert" or
     name == "format1" or
     name == "format2" or
@@ -1740,7 +1755,7 @@ func addMethodSigsFromItems(tbl: in SymbolTable, items: in List[Item], pkgName: 
                         sig.params,
                         sig.ret,
                         sig.isAsync,
-                        false,
+                        annotationsHaveName(sig.annotations, "pure"),
                         false,
                         false,
                         sig.span
@@ -2110,6 +2125,16 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
                 )
               )
               case Some(fn) -> {
+                if annotationsHaveName(sig.annotations, "pure") and not fnHasAnnotation(fn, "pure") {
+                  diag.add(
+                    errorDiagnostic(
+                      "T0192",
+                      "impl method '" + sig.name + "' implements '@pure' method '" + ifaceName + "." + sig.name +
+                        "' and must itself be '@pure'",
+                      fn.span
+                    )
+                  )
+                }
                 if fn.params.count == sig.params.count {
                   reportImplDefaultMismatches(diag, ifaceName, sig.name, sig.params, fn.params)
                 }
@@ -2173,8 +2198,20 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
           }
           // An `impl` method overriding an interface default method.
           case IMFunc(ifn) -> match findImplMethod(decl, ifn.name) {
-            case Some(fn) -> if fn.params.count == ifn.params.count {
-              reportImplDefaultMismatches(diag, ifaceName, ifn.name, ifn.params, fn.params)
+            case Some(fn) -> {
+              if fnHasAnnotation(ifn, "pure") and not fnHasAnnotation(fn, "pure") {
+                diag.add(
+                  errorDiagnostic(
+                    "T0192",
+                    "impl method '" + ifn.name + "' overrides '@pure' method '" + ifaceName + "." + ifn.name +
+                      "' and must itself be '@pure'",
+                    fn.span
+                  )
+                )
+              }
+              if fn.params.count == ifn.params.count {
+                reportImplDefaultMismatches(diag, ifaceName, ifn.name, ifn.params, fn.params)
+              }
             }
             case None -> ()
           }
@@ -3052,6 +3089,80 @@ func checkInterfaceDeclTypes(tbl: in SymbolTable, diag: in List[Diagnostic], dec
   }
 }
 
+// An interface method's `requires:`/`ensures:` clauses are checked as `Bool`
+// in the method's parameter scope, `result` being the declared return type
+// (#8331).  An implementing method inherits the clauses after type checking,
+// so a clause is reported once, here, at the interface.
+func checkInterfaceContracts(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  decl: in InterfaceDecl,
+): Unit {
+  val ifaceGen = extractGenericNames(decl.generics)
+  for m in decl.members {
+    match m {
+      case IMSig(sig) -> checkMethodContracts(
+        tbl,
+        sigs,
+        diag,
+        ifaceGen,
+        sig.generics,
+        sig.params,
+        sig.ret,
+        sig.isAsync,
+        sig.contracts,
+        sig.span
+      )
+      case IMFunc(fn) -> checkMethodContracts(
+        tbl,
+        sigs,
+        diag,
+        ifaceGen,
+        fn.generics,
+        fn.params,
+        fn.ret,
+        fn.isAsync,
+        fn.contracts,
+        fn.span
+      )
+      case IMAssoc(_) -> ()
+    }
+  }
+}
+
+func checkMethodContracts(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  ownerGenerics: in List[String],
+  ownGenerics: in Option[GenericParams],
+  params: in List[Param],
+  ret: in Option[TypeExpr],
+  isAsync: in Bool,
+  contracts: in List[ContractClause],
+  span: in Span,
+): Unit {
+  if contracts.count == 0 {
+    return
+  }
+  val rsig = resolveMethodSigParts(tbl, "", ownerGenerics, ownGenerics, params, ret, isAsync, false, false, false, span)
+  val combined: List[String] = newList()
+  for g in ownerGenerics {
+    combined.add(g)
+  }
+  for g in extractGenericNames(ownGenerics) {
+    combined.add(g)
+  }
+  val noFields: Map[String, Type] = newMap()
+  val sc = newScopeForFunction(rsig.returnTy, combined, ret, noFields, false, TyError)
+  for p in rsig.params {
+    val isMut = match p.mode { case PMIn -> false; case _ -> true }
+    scopeAdd(sc, LocalBinding(name = p.name, ty = p.ty, isMutable = isMut, byRefParam = isMut))
+  }
+  checkContractClauses(sc, tbl, sigs, diag, contracts)
+}
+
 func checkOpaqueDeclTypes(tbl: in SymbolTable, diag: in List[Diagnostic], decl: in OpaqueTypeDecl): Unit {
   val ctx = declGenericContext(decl.generics)
   var i = 0
@@ -3608,13 +3719,19 @@ func recordSelfType(tbl: in SymbolTable, decl: in RecordDecl, ownerGenerics: in 
 func checkReceiverModes(diag: in List[Diagnostic], items: in List[Item]): Unit {
   for it in items {
     match it.kind {
-      case IFunc(fd) -> checkReceiverParams(diag, fd.params, fd.name, true)
+      case IFunc(fd) -> {
+        checkReceiverParams(diag, fd.params, fd.name, true)
+        checkByRefParams(diag, fd.params, fd.name, fd.isAsync)
+      }
       case IRecord(d) -> checkRecordReceivers(diag, d)
       case IExposedRec(d) -> checkRecordReceivers(diag, d)
       case IImpl(d) -> {
         for m in d.members {
           match m {
-            case IMplFunc(fn) -> checkReceiverParams(diag, fn.params, fn.name, false)
+            case IMplFunc(fn) -> {
+              checkReceiverParams(diag, fn.params, fn.name, false)
+              checkByRefParams(diag, fn.params, fn.name, fn.isAsync)
+            }
             case _ -> ()
           }
         }
@@ -3622,8 +3739,14 @@ func checkReceiverModes(diag: in List[Diagnostic], items: in List[Item]): Unit {
       case IProtected(d) -> {
         for m in d.members {
           match m {
-            case PMEntry(ed) -> checkProtectedReceiver(diag, ed.params, ed.name)
-            case PMFunc(fn) -> checkProtectedReceiver(diag, fn.params, fn.name)
+            case PMEntry(ed) -> {
+              checkProtectedReceiver(diag, ed.params, ed.name)
+              checkByRefParams(diag, ed.params, ed.name, false)
+            }
+            case PMFunc(fn) -> {
+              checkProtectedReceiver(diag, fn.params, fn.name)
+              checkByRefParams(diag, fn.params, fn.name, fn.isAsync)
+            }
             case _ -> ()
           }
         }
@@ -3631,8 +3754,14 @@ func checkReceiverModes(diag: in List[Diagnostic], items: in List[Item]): Unit {
       case IInterface(d) -> {
         for m in d.members {
           match m {
-            case IMSig(sig) -> checkReceiverParams(diag, sig.params, sig.name, false)
-            case IMFunc(fn) -> checkReceiverParams(diag, fn.params, fn.name, false)
+            case IMSig(sig) -> {
+              checkReceiverParams(diag, sig.params, sig.name, false)
+              checkByRefParams(diag, sig.params, sig.name, sig.isAsync)
+            }
+            case IMFunc(fn) -> {
+              checkReceiverParams(diag, fn.params, fn.name, false)
+              checkByRefParams(diag, fn.params, fn.name, fn.isAsync)
+            }
             case _ -> ()
           }
         }
@@ -3645,8 +3774,45 @@ func checkReceiverModes(diag: in List[Diagnostic], items: in List[Item]): Unit {
 func checkRecordReceivers(diag: in List[Diagnostic], d: in RecordDecl): Unit {
   for m in d.members {
     match m {
-      case RMFunc(fn) -> checkReceiverParams(diag, fn.params, fn.name, true)
+      case RMFunc(fn) -> {
+        checkReceiverParams(diag, fn.params, fn.name, true)
+        checkByRefParams(diag, fn.params, fn.name, fn.isAsync)
+      }
       case _ -> ()
+    }
+  }
+}
+
+// T0182: an `out`/`inout` parameter refers to the caller's place, so it has
+// no value to default.  T0183: an `async` function's `out`/`inout` parameter
+// would have to stay a live reference to the caller's place across every
+// suspension, which no target can keep; the function returns the new value
+// instead.
+func checkByRefParams(diag: in List[Diagnostic], params: in List[Param], name: in String, isAsync: in Bool): Unit {
+  for p in params {
+    val modeText = match p.mode { case PMOut -> "out"; case PMInout -> "inout"; case PMIn -> "" }
+    if modeText.length > 0 {
+      match p.dflt {
+        case Some(d) -> diag.add(
+          errorDiagnostic(
+            "T0182",
+            "parameter '" + p.name + "' of '" + name + "' is `" + modeText +
+              "` and cannot have a default value: it refers to the caller's place, so every call must pass one",
+            d.span
+          )
+        )
+        case None -> ()
+      }
+      if isAsync {
+        diag.add(
+          errorDiagnostic(
+            "T0183",
+            "parameter '" + p.name + "' of async function '" + name + "' cannot be `" + modeText +
+              "`: it would have to refer to the caller's place across every `await`; return the new value instead (a tuple for several), or pass a record and change its `var` fields",
+            p.span
+          )
+        )
+      }
     }
   }
 }
@@ -5904,6 +6070,7 @@ func checkWithImportedPackagesCore(
         checkSameArityMethods(diag, "impl " + implIfaceName(decl), implMethodHeads(decl.members))
         checkImplMemberBodies(tbl, sigs, diag, decl)
       }
+      case IInterface(decl) -> checkInterfaceContracts(tbl, sigs, diag, decl)
       case IProtected(decl) -> checkProtectedMemberBodies(tbl, sigs, diag, decl)
       case IRecord(decl) -> checkRecordMemberBodies(tbl, sigs, diag, decl)
       case IExposedRec(decl) -> checkRecordMemberBodies(tbl, sigs, diag, decl)

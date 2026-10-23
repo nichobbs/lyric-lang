@@ -4968,7 +4968,8 @@ func desugarFunctionSig(state: in MonoState, sig: in FunctionSig): FunctionSig {
     ret = sig.ret,
     whereClause = sig.whereClause,
     contracts = sig.contracts,
-    span = sig.span
+    span = sig.span,
+    annotations = sig.annotations
   )
 }
 

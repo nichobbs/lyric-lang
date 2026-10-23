@@ -3568,7 +3568,7 @@ func prepareHolderPlace(
   }
   match argExpr.kind {
     case EMember(recv, fieldName) -> {
-      val recvTy = lowerExpr(ctx, insns, recv)
+      val recvTy = narrowErasedReceiverJvm(ctx, insns, recv, lowerExpr(ctx, insns, recv))
       match recvTy {
         case JRef(cls) -> {
           val rSlot = allocSlot(ctx, "__holderrecv$" + calleeLabel + "$" + toString(bi), JRef(className = cls))

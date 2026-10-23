@@ -1074,3 +1074,135 @@ test "addPkgImports merges import lists across multiple files of the same packag
     "closure includes the second file's import, not shadowed by the first file"
   )
 }
+
+// #7339: indexing a `slice[Char]` / `List[Char]` / `array[N, Char]` binding
+// yields a `Char`, which `.toString()` must render as the character, not the
+// code point (`Char` and `Int` share the erased `NI32`).
+test "Char.toString() on an element of a slice/List of Char renders the character (#7339)" {
+  val shim = "package T\n" + "extern func consoleWriteFd(fd: Int, s: String): Unit = \"lyric_console_write\"\n" +
+    "extern func consoleNewlineFd(fd: Int): Unit = \"lyric_console_write_newline\"\n" +
+    "func println(s: in String): Unit {\n" +
+    "  consoleWriteFd(1, s)\n" +
+    "  consoleNewlineFd(1)\n" +
+    "}\n" +
+    "func second(cs: slice[Char]): String {\n" +
+    "  cs[1].toString()\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val cs: slice[Char] = ['a', 'z']\n" +
+    "  println(cs[1].toString())\n" +
+    "  println(second(cs))\n" +
+    "  println(\"<\" + cs[0] + \">\")\n" +
+    "  val n: slice[Int] = [7, 122]\n" +
+    "  println(n[1].toString())\n" +
+    "  0\n" +
+    "}\n"
+  val r = compileAndRun(shim)
+  assertEqualInt(r.exitCode, 0, "slice[Char] toString exit")
+  assertEqual(r.stdout, "z\nz\n<a>\n122\n", "Char elements print as characters, Int elements as numbers")
+}
+
+// #8335: the one-argument `String.substring(start)`.
+test "String.substring(start) lowers the one-argument form (#8335)" {
+  val shim = "package T\n" + "extern func consoleWriteFd(fd: Int, s: String): Unit = \"lyric_console_write\"\n" +
+    "extern func consoleNewlineFd(fd: Int): Unit = \"lyric_console_write_newline\"\n" +
+    "func println(s: in String): Unit {\n" +
+    "  consoleWriteFd(1, s)\n" +
+    "  consoleNewlineFd(1)\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  println(\"abc\".substring(1))\n" +
+    "  println(\"abc\".substring(3) + \"|\")\n" +
+    "  println(\"abc\".substring(0, 2))\n" +
+    "  0\n" +
+    "}\n"
+  val r = compileAndRun(shim)
+  assertEqualInt(r.exitCode, 0, "substring(start) exit")
+  assertEqual(r.stdout, "bc\n|\nab\n", "substring(start) returns the tail")
+  val bad = "package T\n" + "func main(): Int {\n" + "  val s = \"abc\".substring(4)\n" + "  0\n" + "}\n"
+  val rb = compileAndRun(bad)
+  assertTrue(rb.exitCode != 0, "substring start past the end must abort")
+}
+
+// #8014: a bare payload-free case of a generic union used as an `==`/`!=`
+// operand takes its instantiation from the other operand.
+test "o == None, None == o and o != None on generic unions (#8014)" {
+  val src = "package T\n" + "union Option[T] {\n" + "  case Some(value: T)\n" + "  case None\n" + "}\n" +
+    "func flag(b: Bool): Int {\n" +
+    "  if b {\n" +
+    "    1\n" +
+    "  } else {\n" +
+    "    0\n" +
+    "  }\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val a: Option[Int] = Some(value = 1)\n" +
+    "  val n: Option[Int] = None\n" +
+    "  val s: Option[String] = Some(value = \"x\")\n" +
+    "  val ns: Option[String] = None\n" +
+    "  var code = 0\n" +
+    "  code = code + flag(a == None) * 1\n" +
+    "  code = code + flag(None == a) * 2\n" +
+    "  code = code + flag(a != None) * 4\n" +
+    "  code = code + flag(n == None) * 8\n" +
+    "  code = code + flag(None != n) * 16\n" +
+    "  code = code + flag(s == None) * 32\n" +
+    "  code = code + flag(ns == None) * 64\n" +
+    "  code = code + flag(None == ns) * 128\n" +
+    "  code\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 4 + 8 + 64 + 128, "only a != None, n == None, ns == None and None == ns hold")
+}
+
+// #8360 (D181): a record-body method and a top-level dot-named function of the
+// same name and arity are different functions; a method call binds the body
+// method and a call through the type names the dot-named one. They used to
+// share the symbol `T.Acc.trim.2`, which clang rejected as a redefinition.
+test "a body method and a dot-named function of the same name and arity bind separately (#8360)" {
+  val src = "package T\n" + "record Acc {\n" + "  n: Int\n" + "  func trim(self: in Acc, k: in Int): Int = self.n - k\n" +
+    "}\n" +
+    "func Acc.trim(self: in Acc, k: in Int): Int = self.n + k\n" +
+    "func main(): Int {\n" +
+    "  val a = Acc(n = 9)\n" +
+    "  a.trim(1) * 10 + Acc.trim(a, 1)\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 90, "a.trim(1) = 8 (body method), Acc.trim(a, 1) = 10 (dot-named)")
+}
+
+// #7891 item 4: a `Char` read from a record field prints as the character,
+// through `.toString()` and string interpolation, for a field of the receiver,
+// of `self` and of a nested record.
+test "Char record fields render as characters in toString and interpolation (#7891)" {
+  val src = r#"package T
+extern func consoleWriteFd(fd: Int, s: String): Unit = "lyric_console_write"
+extern func consoleNewlineFd(fd: Int): Unit = "lyric_console_write_newline"
+func println(s: in String): Unit {
+  consoleWriteFd(1, s)
+  consoleNewlineFd(1)
+}
+record Inner {
+  c: Char
+}
+record R {
+  c: Char
+  n: Int
+  inner: Inner
+  func show(self: in R): String = self.c.toString()
+}
+func main(): Int {
+  val r = R(c = 'q', n = 5, inner = Inner(c = 'z'))
+  println(r.c.toString())
+  println("[${r.c}] ${r.n} ${r.inner.c}")
+  println(r.show())
+  println(r.n.toString())
+  val ch: Char = 'k'
+  println("<${ch}>")
+  0
+}
+"#
+  val r = compileAndRun(src)
+  assertEqualInt(r.exitCode, 0, "exit")
+  assertEqual(r.stdout, "q\n[q] 5 z\nq\n5\n<k>\n", "Char fields print as characters, Int fields as numbers")
+}

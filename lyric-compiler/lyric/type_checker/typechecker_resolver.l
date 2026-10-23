@@ -103,6 +103,10 @@ pub func resolveType(tbl: in SymbolTable, ctx: in GenericContext, diag: in List[
       val args: List[Type] = newList()
       val baseTy = resolveTypePath(tbl, ctx, diag, under, te.span, args)
       checkRangeBoundNegations(tbl, diag, range)
+      match unrefine(baseTy) {
+        case TyPrim(pt) -> checkRangeBoundsFitBase(tbl, diag, "range type over " + primName(pt), primName(pt), range)
+        case _ -> ()
+      }
       val lo = rangeLo(range)
       val hi = rangeHi(range)
       val inc = rangeHiInclusive(range)
@@ -357,6 +361,127 @@ func checkBoundNegation(tbl: in SymbolTable, diag: in List[Diagnostic], e: in Ex
       case _ -> ()
     }
     case FoldOk(_) -> ()
+  }
+}
+
+// A bound is written as a negation when it is `-x` after peeling parentheses.
+// A `ULong` bound above `Long.MaxValue` folds to a negative two's-complement
+// pattern (#7839), so the sign of the folded value alone cannot tell
+// `18446744073709551615u64` from `-1`.
+func boundIsNegated(e: in Expr): Bool {
+  match e.kind {
+    case EParen(inner) -> boundIsNegated(inner)
+    case EPrefix(op, _) -> match op { case PreNeg -> true; case _ -> false }
+    case _ -> false
+  }
+}
+
+record BaseLimits {
+  lo: Long
+  hi: Long
+}
+
+// The inclusive limits of the integer base `name`, or `None` when every
+// folded bound is representable (`Long`, `ULong` handled by sign, floats).
+func baseBoundLimits(name: in String): Option[BaseLimits] {
+  if name == "Byte" {
+    return Some(value = BaseLimits(lo = 0i64, hi = 255i64))
+  }
+  if name == "Int" {
+    return Some(value = BaseLimits(lo = -2147483648i64, hi = 2147483647i64))
+  }
+  if name == "UInt" {
+    return Some(value = BaseLimits(lo = 0i64, hi = 4294967295i64))
+  }
+  if name == "Nat" {
+    return Some(value = BaseLimits(lo = 0i64, hi = 9223372036854775807i64))
+  }
+  None
+}
+
+func baseRangeText(name: in String): String {
+  if name == "ULong" {
+    return "0 ..= 18446744073709551615"
+  }
+  match baseBoundLimits(name) {
+    case Some(l) -> toString(l.lo) + " ..= " + toString(l.hi)
+    case None -> ""
+  }
+}
+
+// True when the folded bound `v` (written as `e`) cannot be a value of the
+// base type `name`.  An exclusive upper bound may be one past the maximum.
+func boundOutsideBase(name: in String, v: in Long, e: in Expr, isExclusiveHi: in Bool): Bool {
+  if name == "ULong" {
+    return boundIsNegated(e) and v != 0i64
+  }
+  match baseBoundLimits(name) {
+    case None -> false
+    case Some(l) -> {
+      if v < l.lo {
+        return true
+      }
+      if v > l.hi {
+        return true
+      }
+      false
+    }
+  }
+}
+
+func checkOneBoundFits(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  typeLabel: in String,
+  baseName: in String,
+  e: in Expr,
+  isExclusiveHi: in Bool,
+): Unit {
+  match tryFoldInt(tbl, e) {
+    case FoldErr(_) -> ()
+    case FoldOk(v) -> {
+      // `lo ..< hi` may name one past the base's maximum as its exclusive end.
+      val onePastMax = isExclusiveHi and baseName != "ULong" and
+        match baseBoundLimits(baseName) {
+          case Some(l) -> l.hi < 9223372036854775807i64 and v == l.hi + 1i64
+          case None -> false
+        }
+      if not onePastMax and boundOutsideBase(baseName, v, e, isExclusiveHi) {
+        val shown = if baseName == "ULong" { "negative bound " + toString(v) } else { "bound " + toString(v) }
+        diag.add(
+          errorDiagnostic(
+            "T0190",
+            typeLabel + ": " + shown + " does not fit the base type " + baseName + " (" + baseRangeText(baseName) + ")",
+            e.span
+          )
+        )
+      }
+    }
+  }
+}
+
+// Every folded bound of a range over the integer base `baseName` must be a
+// value the base type can hold; the runtime range check compares in the
+// base type, so an unrepresentable bound would silently never (or always)
+// fire (#7900).  `typeLabel` names the type in the message.
+pub func checkRangeBoundsFitBase(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  typeLabel: in String,
+  baseName: in String,
+  rb: in RangeBound,
+): Unit {
+  match rb {
+    case RBClosed(lo, hi) -> {
+      checkOneBoundFits(tbl, diag, typeLabel, baseName, lo, false)
+      checkOneBoundFits(tbl, diag, typeLabel, baseName, hi, false)
+    }
+    case RBHalfOpen(lo, hi, _) -> {
+      checkOneBoundFits(tbl, diag, typeLabel, baseName, lo, false)
+      checkOneBoundFits(tbl, diag, typeLabel, baseName, hi, true)
+    }
+    case RBLowerOpen(hi) -> checkOneBoundFits(tbl, diag, typeLabel, baseName, hi, false)
+    case RBUpperOpen(lo) -> checkOneBoundFits(tbl, diag, typeLabel, baseName, lo, false)
   }
 }
 

@@ -57,7 +57,7 @@ expect_rejected() {
   fi
 }
 
-# `println()` is T0042 and `val b: Bool = 1` is T0060 on every target.  The
+# `println(1, 2)` is T0042 and `val b: Bool = 1` is T0060 on every target.  The
 # native backend lowers both, so before #7910 this program linked and ran.
 cat > "$work/bad.l" <<'LYR'
 package NativeTypeErrorGate
@@ -66,7 +66,7 @@ import Std.Console
 
 func main(): Int {
   println("ILL-TYPED-PROGRAM-RAN")
-  println()
+  println(1, 2)
   val b: Bool = 1
   println(toString(b))
   0
@@ -89,7 +89,7 @@ val GREETING: String = "default"
 
 func main(): Int {
   println("ILL-TYPED-PROGRAM-RAN " + GREETING)
-  println()
+  println(1, 2)
   val b: Bool = 1
   println(toString(b))
   0
@@ -116,7 +116,7 @@ import Std.Testing
 
 test "ill-typed" {
   println("ILL-TYPED-PROGRAM-RAN")
-  println()
+  println(1, 2)
   val b: Bool = 1
   assertTrue(b, "never reached")
 }
@@ -164,7 +164,7 @@ cat > "$work/dep/src/main.l" <<'LYR'
 package NativeGateDep
 
 pub func depWord(): String {
-  println()
+  println(1, 2)
   val b: Bool = 1
   toString(b)
 }

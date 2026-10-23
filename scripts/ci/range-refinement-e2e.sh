@@ -10,7 +10,8 @@
 # union case payload (declared, or an `Option` instantiated with a range), a
 # generic record field the expected instantiation makes a range beside one
 # that widens (#7813), an argument through a function value, and a list
-# element added, assigned and written in a literal.  Each must exit non-zero
+# element added, assigned and written in a literal, and an `Option`, a generic
+# record and a tuple passed straight as call arguments (#8145).  Each must exit non-zero
 # and print the expected `RangeViolated: ... must be in Int range 0 ..= 3`,
 # after the in-range use before it and never reaching the line after it.
 # `range_refinement_self_test.l` covers the same cases in-process on dotnet
@@ -57,6 +58,12 @@ record Duo[A, B] {
 
 func at(n: in Int): Int = n
 
+func takeOpt(o: in Option[Int range 0 ..= 3]): Int = 1
+
+func takeDuo(d: in Duo[Int, Int range 0 ..= 3]): Int = 1
+
+func takePair(p: in (Int range 0 ..= 3, String)): Int = 1
+
 LYR
 
 # name | the in-range use before | the failing statement | expected message
@@ -72,6 +79,9 @@ cases=(
   "literal|val ok: List[Int range 0 ..= 3] = [at(3)]|val bad: List[Int range 0 ..= 3] = [at(10)]|RangeViolated: element must be in Int range 0 ..= 3"
   "generic|val ok: Duo[Long, Int range 0 ..= 3] = Duo(wide = at(1), narrow = at(3))|val bad: Duo[Long, Int range 0 ..= 3] = Duo(wide = at(1), narrow = at(10))|RangeViolated: Duo field narrow must be in Int range 0 ..= 3"
   "option|val ok: Option[Int range 0 ..= 3] = Some(at(3))|val bad: Option[Int range 0 ..= 3] = Some(at(10))|RangeViolated: Some payload must be in Int range 0 ..= 3"
+  "argCase|val ok = takeOpt(Some(at(3)))|val bad = takeOpt(Some(at(10)))|RangeViolated: Some payload must be in Int range 0 ..= 3"
+  "argRecord|val ok = takeDuo(Duo(wide = at(1), narrow = at(3)))|val bad = takeDuo(Duo(wide = at(1), narrow = at(10)))|RangeViolated: Duo field narrow must be in Int range 0 ..= 3"
+  "argTuple|val ok = takePair((at(3), \"a\"))|val bad = takePair((at(10), \"a\"))|RangeViolated: tuple element 1 must be in Int range 0 ..= 3"
 )
 
 targets=("$@")

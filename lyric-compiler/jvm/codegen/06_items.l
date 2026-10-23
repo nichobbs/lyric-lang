@@ -6615,6 +6615,16 @@ func jvmRangeBoundText(b: in JvmRangeBoundVal): String {
   }
 }
 
+// The base type's name for a config field's G0003 message: `Int` for both
+// `Int` and `Int range 1 ..= 5`.
+func configFieldTypeLabelJvm(te: in TypeExpr): String {
+  match te.kind {
+    case TRef(path) -> if path.segments.count > 0 { path.segments[path.segments.count - 1] } else { "value" }
+    case TRefined(path, _) -> if path.segments.count > 0 { path.segments[path.segments.count - 1] } else { "value" }
+    case _ -> "value"
+  }
+}
+
 func configFieldRangeJvm(te: in TypeExpr): JvmConfigFieldRange {
   val none = JvmConfigFieldRange(
     hasMin = false,
@@ -9417,6 +9427,9 @@ pub func codegenPackageWithSigsSeeded(
             } else {
               "error: required config field " + decl.name + "." + cf.name + " (env var " + envVarName + ") is not set"
             }
+            val parseMsg = "error: config field " + decl.name + "." + cf.name + " (env var " + envVarName + ") is not a valid " +
+              configFieldTypeLabelJvm(cf.ty) +
+              " (G0003)"
             val cr = configFieldRangeJvm(cf.ty)
             cfgFields.add(
               LConfigField(
@@ -9426,6 +9439,7 @@ pub func codegenPackageWithSigsSeeded(
                 hasDefault = hasDefault,
                 defaultInsns = defaultInsnsList,
                 requiredErrMsg = requiredMsg,
+                parseErrMsg = parseMsg,
                 hasMin = cr.hasMin,
                 hasMax = cr.hasMax,
                 upperExclusive = cr.upperExclusive,

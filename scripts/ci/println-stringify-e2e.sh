@@ -21,6 +21,11 @@
 # `Decimal` and `Single` prove those are culture-invariant (#7902).  Under a
 # .NET without ICU every culture is invariant and that run simply passes.
 #
+# culture_invariant_self_test.l asserts, in-process, that interpolation, `+`,
+# `+=`, `.toString()`, `toString(x)`, `format1`, negative integers and a generic
+# payload render the same under any process culture (#7911).  It runs on dotnet
+# under de_DE (decimal comma) and sv_SE (U+2212 minus sign), and on the JVM.
+#
 # Invoked from `compiler-self-tests-batch.sh` (whose CI job has Java 21), so
 # it needs no ci.yml step of its own.
 # ---------------------------------------------------------------------------
@@ -85,9 +90,32 @@ check_pairs() {
   fi
 }
 
+# run_plain <target> <self-test> [locale]: the module must pass.
+run_plain() {
+  local target="$1" test_file="$2" locale="${3:-}"
+  local stem log
+  stem="$(basename "$test_file" .l)${locale:+@$locale}"
+  log="$work/$stem-$target.log"
+  local -a run=("$lyric_bin" test --target "$target" "$test_file")
+  if [[ -n "$locale" ]]; then
+    run=(env LANG="$locale" LC_ALL="$locale" "${run[@]}")
+  fi
+  if "${run[@]}" >"$log" 2>&1; then
+    echo "println-stringify e2e ($stem, $target): OK"
+  else
+    echo "::error::$stem failed on --target $target" >&2
+    cat "$log" >&2
+    fail=1
+  fi
+}
+
 check_pairs dotnet lyric-compiler/lyric/println_stringify_self_test.l 8
 check_pairs jvm lyric-compiler/lyric/println_stringify_self_test.l 8
 check_pairs dotnet lyric-compiler/lyric/println_extern_struct_dotnet_self_test.l 7
 check_pairs dotnet lyric-compiler/lyric/println_extern_struct_dotnet_self_test.l 7 de_DE.UTF-8
 check_pairs jvm lyric-compiler/lyric/println_extern_jvm_self_test.l 3
+run_plain dotnet lyric-compiler/lyric/culture_invariant_self_test.l
+run_plain dotnet lyric-compiler/lyric/culture_invariant_self_test.l de_DE.UTF-8
+run_plain dotnet lyric-compiler/lyric/culture_invariant_self_test.l sv_SE.UTF-8
+run_plain jvm lyric-compiler/lyric/culture_invariant_self_test.l
 exit "$fail"

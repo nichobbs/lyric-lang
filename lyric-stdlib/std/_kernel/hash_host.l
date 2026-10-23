@@ -59,6 +59,17 @@ pub func hostSha512File(path: in String): slice[Byte] {
   }
 }
 
+/// As `hostSha512File`, but an unreadable file is an `Err` carrying the host
+/// message rather than a panic, so `Std.Hash.sha512OfFile` needs no
+/// `try`/`catch` (which `--target native` cannot lower, #7684).
+pub func hostSha512FileResult(path: in String): Result[slice[Byte], String] {
+  try {
+    Ok(value = hostSha512File(path))
+  } catch Bug as b {
+    Err(error = b.message)
+  }
+}
+
 /// Convert a byte slice to an uppercase hexadecimal string (one `[0-9A-F]`
 /// pair per byte; no separator).
 pub func hostBytesToHex(bytes: in slice[Byte]): String {

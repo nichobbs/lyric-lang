@@ -146,6 +146,7 @@ for t in \
   lyric-compiler/lyric/dotted_generic_func_self_test.l \
   lyric-compiler/lyric/structural_equality_self_test.l \
   lyric-compiler/lyric/structural_equality_collections_self_test.l \
+  lyric-compiler/lyric/stdlib_parity_self_test.l \
   lyric-compiler/lyric/fixed_array_panic_self_test.l \
   lyric-compiler/lyric/buffer_self_test.l \
   lyric-compiler/lyric/buffer_panic_self_test.l \

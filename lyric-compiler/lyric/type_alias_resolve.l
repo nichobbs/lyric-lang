@@ -1239,7 +1239,8 @@ func resolveFunctionSig(
     ret = resolveOptType(aliasTargets, sigScope, sig.ret),
     whereClause = sig.whereClause,
     contracts = resolveContracts(aliasTargets, sigScope, sig.contracts),
-    span = sig.span
+    span = sig.span,
+    annotations = sig.annotations
   )
 }
 

@@ -112,6 +112,21 @@ void lyric_list_push(LyricList* list, int64_t val) {
     list->len++;
 }
 
+/* Insert `val` before position `idx` (0 ..= len), shifting later elements up
+ * by one: `xs.add(index, item)`.  Panics when `idx` is outside 0 ..= len,
+ * leaving the list unchanged. */
+void lyric_list_insert(LyricList* list, int64_t idx, int64_t val) {
+    if (idx < 0 || idx > list->len) {
+        lyric_panic_msg("list index out of bounds", "lyric_collections.c", __LINE__);
+    }
+    list_grow(list, list->len + 1);
+    elem_retain(list->elems_are_refs, val);
+    memmove(&list->data[idx + 1], &list->data[idx],
+            (size_t)(list->len - idx) * sizeof(int64_t));
+    list->data[idx] = val;
+    list->len++;
+}
+
 int64_t lyric_list_get(LyricList* list, int64_t idx) {
     if (idx < 0 || idx >= list->len) {
         lyric_panic_msg("list index out of bounds", "lyric_collections.c", __LINE__);
@@ -331,11 +346,46 @@ struct LyricMap {
     int64_t         used;  /* occupied + tombstones */
     int32_t         keys_are_strings;
     int32_t         vals_are_refs;
+    /* Structured-key maps (#8167): when set, keys are ARC objects hashed and
+     * compared by these functions (strong refs, like string keys). */
+    uint64_t      (*key_hash)(int64_t key);
+    int32_t       (*key_eq)(int64_t a, int64_t b);
 };
 
 #define MAP_MIN_CAP 16
 
+uint64_t lyric_hash_mix(uint64_t h, uint64_t x) {
+    h = (h * 31ULL + x) * 0x9E3779B97F4A7C15ULL;
+    return h ^ (h >> 32);
+}
+
+uint64_t lyric_string_hash(LyricString* s) {
+    return siphash24(LYRIC_STRING_DATA(s), (uint64_t)s->len);
+}
+
+/* D172: both zeros hash alike and every NaN does, matching the relation's
+ * equality for a Float/Double leaf. */
+uint64_t lyric_hash_double(double v) {
+    if (v == 0.0) return 0;
+    if (v != v) return 0x7FF8000000000000ULL;
+    uint64_t bits;
+    memcpy(&bits, &v, sizeof bits);
+    return bits;
+}
+
+uint64_t lyric_hash_float(float v) {
+    if (v == 0.0f) return 0;
+    if (v != v) return 0x7FC00000ULL;
+    uint32_t bits;
+    memcpy(&bits, &v, sizeof bits);
+    return bits;
+}
+
 static uint64_t map_hash(LyricMap* m, int64_t key) {
+    if (m->key_hash) {
+        uint64_t h = m->key_hash(key) * 0x9E3779B97F4A7C15ULL;
+        return h ^ (h >> 29);
+    }
     if (m->keys_are_strings) {
         LyricString* s = (LyricString*)(intptr_t)key;
         return siphash24(LYRIC_STRING_DATA(s), (uint64_t)s->len);
@@ -345,6 +395,7 @@ static uint64_t map_hash(LyricMap* m, int64_t key) {
 }
 
 static int32_t map_key_eq(LyricMap* m, int64_t a, int64_t b) {
+    if (m->key_eq) return m->key_eq(a, b);
     if (m->keys_are_strings) {
         return lyric_string_eq((LyricString*)(intptr_t)a, (LyricString*)(intptr_t)b);
     }
@@ -373,6 +424,15 @@ LyricMap* lyric_map_new(int32_t keys_are_strings, int32_t vals_are_refs) {
     m->used = 0;
     m->keys_are_strings = keys_are_strings;
     m->vals_are_refs = vals_are_refs;
+    m->key_hash = 0;
+    m->key_eq = 0;
+    return m;
+}
+
+LyricMap* lyric_map_new_custom(int32_t vals_are_refs, uint64_t (*key_hash)(int64_t), int32_t (*key_eq)(int64_t, int64_t)) {
+    LyricMap* m = lyric_map_new(1, vals_are_refs);
+    m->key_hash = key_hash;
+    m->key_eq = key_eq;
     return m;
 }
 

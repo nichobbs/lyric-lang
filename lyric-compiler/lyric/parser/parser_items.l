@@ -1160,7 +1160,8 @@ func parseInterfaceMemberOpt(st: inout ParseState): Option[InterfaceMember] {
                     ret = fn.ret,
                     whereClause = fn.whereClause,
                     contracts = fn.contracts,
-                    span = fn.span
+                    span = fn.span,
+                    annotations = fn.annotations
                   )
                 )
               )
@@ -1199,7 +1200,8 @@ func parseInterfaceMemberOpt(st: inout ParseState): Option[InterfaceMember] {
                     ret = fn.ret,
                     whereClause = fn.whereClause,
                     contracts = fn.contracts,
-                    span = fn.span
+                    span = fn.span,
+                    annotations = fn.annotations
                   )
                 )
               )

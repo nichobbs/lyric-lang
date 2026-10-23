@@ -56,10 +56,9 @@ pub func sha512OfBytes(bytes: in slice[Byte]): String
 /// the digest rather than read into memory.
 @stable(since = "1.0")
 pub func sha512OfFile(path: in String): Result[String, String] {
-  try {
-    Ok(value = hostBytesToHex(hostSha512File(path)))
-  } catch Bug as b {
-    Err(error = b.message)
+  match hostSha512FileResult(path) {
+    case Ok(digest) -> Ok(value = hostBytesToHex(digest))
+    case Err(message) -> Err(error = message)
   }
 }
 

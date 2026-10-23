@@ -479,6 +479,78 @@ static uint32_t cp_to_upper(uint32_t cp) {
     return case_table_lookup(kUpperTable, kUpperTable_count, cp);
 }
 
+/* ── Unicode general categories (issue #6858) ──────────────────────────
+ *
+ * `Std.Char`'s classification on the native target: the general category of
+ * a code point from the generated range table
+ * (lyric_unicode_category_tables.inc, Unicode 17.0.0), with the predicates
+ * defined as .NET's `System.Char` and the JVM's `java.lang.Character` define
+ * them by category.  A negative or out-of-range value, a surrogate half
+ * (Cs) and any unassigned code point are not letters, digits, punctuation or
+ * controls.  Case conversion is the simple one-to-one mapping the string
+ * `.toLower()`/`.toUpper()` use above, so the two agree. */
+#include "lyric_unicode_category_tables.inc"
+
+enum {
+    CAT_LU = 0, CAT_LL = 1, CAT_LT = 2, CAT_LM = 3, CAT_LO = 4,
+    CAT_ND = 8,
+    CAT_PC = 11, CAT_PD = 12, CAT_PS = 13, CAT_PE = 14, CAT_PI = 15, CAT_PF = 16, CAT_PO = 17,
+    CAT_CC = 25,
+    CAT_NONE = 255
+};
+
+static int cp_category(int32_t cp) {
+    if (cp < 0) return CAT_NONE;
+    uint32_t c = (uint32_t)cp;
+    size_t lo = 0;
+    size_t hi = sizeof kCategoryTable / sizeof kCategoryTable[0];
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (kCategoryTable[mid].last < c) {
+            lo = mid + 1;
+        } else if (kCategoryTable[mid].first > c) {
+            hi = mid;
+        } else {
+            return kCategoryTable[mid].category;
+        }
+    }
+    return CAT_NONE;
+}
+
+int32_t lyric_char_is_letter(int32_t cp) {
+    int cat = cp_category(cp);
+    return cat >= CAT_LU && cat <= CAT_LO;
+}
+
+int32_t lyric_char_is_digit(int32_t cp) {
+    return cp_category(cp) == CAT_ND;
+}
+
+int32_t lyric_char_is_upper(int32_t cp) {
+    return cp_category(cp) == CAT_LU;
+}
+
+int32_t lyric_char_is_lower(int32_t cp) {
+    return cp_category(cp) == CAT_LL;
+}
+
+int32_t lyric_char_is_punctuation(int32_t cp) {
+    int cat = cp_category(cp);
+    return cat >= CAT_PC && cat <= CAT_PO;
+}
+
+int32_t lyric_char_is_control(int32_t cp) {
+    return cp_category(cp) == CAT_CC;
+}
+
+int32_t lyric_char_to_upper(int32_t cp) {
+    return cp < 0 ? cp : (int32_t)cp_to_upper((uint32_t)cp);
+}
+
+int32_t lyric_char_to_lower(int32_t cp) {
+    return cp < 0 ? cp : (int32_t)cp_to_lower((uint32_t)cp);
+}
+
 typedef uint32_t (*CaseMapFn)(uint32_t);
 
 /* Shared by `.toLower()`/`.toUpper()`.  Unlike the old five-script table

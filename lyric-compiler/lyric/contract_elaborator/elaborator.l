@@ -2712,7 +2712,8 @@ func canonicalizeUnitAliasesInInterfaceMember(m: in InterfaceMember, aliasName: 
         ret = canonicalizeUnitRetOpt(sig.ret, aliasName),
         whereClause = sig.whereClause,
         contracts = sig.contracts,
-        span = sig.span
+        span = sig.span,
+        annotations = sig.annotations
       )
     )
     case IMFunc(fn) -> IMFunc(
@@ -2913,7 +2914,11 @@ pub func elaborateFunctionOwned(fn: in FunctionDecl, owner: in String, contracts
 /// `elaborateFunctionOwned` for a member of a type whose own contract
 /// clauses see `scope` by bare name.
 func elaborateMember(
-  fn: in FunctionDecl, owner: in String, contractsEnabled: in Bool, selfScope: in SelfScope
+  fn: in FunctionDecl,
+  owner: in String,
+  contractsEnabled: in Bool,
+  selfScope: in SelfScope,
+  typeInvariants: in List[InvariantClause] = newList(),
 ): FunctionDecl {
   // @axiom functions have no body — nothing to elaborate.
   if functionIsAxiom(fn) {
@@ -2933,7 +2938,7 @@ func elaborateMember(
   // identity of the input record so downstream passes (verifier,
   // contract-meta) see the original FunctionDecl.
   val hasReq = collectRequires(fn.contracts, owner).count > 0
-  val hasEns = collectEnsures(fn.contracts, owner).count > 0
+  val hasEns = collectEnsures(fn.contracts, owner).count > 0 or typeInvariants.count > 0
   val hasInv = functionBodyHasInvariant(fn)
   val hasRange = match fn.body {
     case Some(FBBlock(blk)) -> functionHasRangeRefinement(fn.params, fn.ret, blk)
@@ -2951,7 +2956,7 @@ func elaborateMember(
       case FBBlock(blk) -> FBBlock(
         block = elaborateFunctionBody(
           fn.contracts,
-          newList(),
+          typeInvariants,
           selfScope,
           fn.params,
           fn.ret,
@@ -2965,7 +2970,7 @@ func elaborateMember(
       case FBExpr(e) -> FBBlock(
         block = elaborateFunctionBody(
           fn.contracts,
-          newList(),
+          typeInvariants,
           selfScope,
           fn.params,
           fn.ret,
@@ -3227,7 +3232,8 @@ func elaborateProtectedMember(
         fn,
         typeName + "." + fn.name,
         contractsEnabled,
-        memberScope(selfScope, fn.annotations)
+        memberScope(selfScope, fn.annotations),
+        invariants
       )
     )
     case other -> other
@@ -3275,7 +3281,8 @@ func interfaceMemberContract(iface: in InterfaceDecl, name: in String): Option[F
             ret = fn.ret,
             whereClause = fn.whereClause,
             contracts = fn.contracts,
-            span = fn.span
+            span = fn.span,
+            annotations = fn.annotations
           )
         )
       }
