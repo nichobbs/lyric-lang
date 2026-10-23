@@ -1315,7 +1315,11 @@ method name that does not exist on a record, exposed record, or interface
 is a compile error (**T0113**) naming the receiver type, whether the type is
 declared locally or imported from another package (a restored package's
 contract carries its records' body methods and its `impl` blocks, so the
-member surface is known either way). Unions stay lenient.
+member surface is known either way). A method *call* on a union
+that names none of its `impl` methods, no dot-named function and no function
+the call binds to by its first argument is **T0113** as well (`r.unwrap()` on
+a `Result`, #8319); reading a member of a union value that is not a call
+stays lenient.
 
 **Default arguments.** A parameter declared with a default (`x: in Int = 5`)
 may be left out of a call. Arguments pair with parameters the same way for

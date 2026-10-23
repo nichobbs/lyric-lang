@@ -4695,6 +4695,20 @@ func stringListContains(xs: in List[String], x: in String): Bool {
   false
 }
 
+// True when a plain function called `name` is registered, whatever its arity.
+func anyFunctionNamed(sigs: in Map[String, ResolvedSignature], name: in String): Bool {
+  if sigs.containsKey(name) {
+    return true
+  }
+  val prefix = name + "/"
+  for k in mapKeys(sigs) {
+    if k.startsWith(prefix) {
+      return true
+    }
+  }
+  false
+}
+
 // A5 (docs/59 §5.1): report an unknown member/method on a receiver whose
 // member surface is fully known — a record, exposed record, or interface,
 // local or imported (`symTableIsMemberComplete`; a restored contract's record
@@ -4717,7 +4731,17 @@ func maybeUnknownMemberDiag(
         unknownDistinctMethodDiag(tbl, sigs, diag, recv, tname, name, span)
         return
       }
-      if not symTableIsMemberComplete(tbl, tid) {
+      // A union's member surface is its methods, its `impl`s and the dot-named
+      // functions and UFCS functions that bind to it, so an unresolved *call*
+      // on one names nothing any backend can dispatch (#8319).
+      val unionCall = isCall and tbl.unionDeclIndex.containsKey(toString(tid.id))
+      if not symTableIsMemberComplete(tbl, tid) and not unionCall {
+        return
+      }
+      // A plain function of that name, in this package or any package the
+      // checker was given, is what a method call on a union binds to by its
+      // first argument (`o.isSome()`, `o.assertSome()`).
+      if unionCall and anyFunctionNamed(sigs, name) {
         return
       }
       if isUniversalMethodName(name) {
@@ -14663,6 +14687,43 @@ func bindValueGenericCall(
   }
 }
 
+// The result type of a call to a generic function under explicit type
+// arguments (`boxer[Int]()`, the parser's `ECall(EIndex(fn, targs), args)`):
+// the declared result with each type parameter replaced by the argument given
+// for it.  `None` unless every parameter is given a closed type here and the
+// callee is a plain generic function; the call then types as it always did
+// (#8347).
+func explicitTypeArgCallType(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  fn: in Expr,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+): Option[Type] {
+  if explicitGenericArgs(fn).count == 0 {
+    return None
+  }
+  match valueGenericCallee(tbl, fn, args.count) {
+    case Some(_) -> return None
+    case None -> ()
+  }
+  val inner = match fn.kind { case EIndex(i, _) -> i; case ETypeApp(i, _) -> i; case _ -> return None }
+  match inner.kind {
+    case EPath(_) -> ()
+    case _ -> return None
+  }
+  val sig = match findDirectSig(sc, tbl, sigs, inner, args.count, argTypes) {
+    case Some(s) -> s
+    case None -> return None
+  }
+  if sig.isAsync or sig.isGenerator {
+    return None
+  }
+  val targs = match explicitCallTypeArgs(sc, tbl, fn, sig) { case Some(ts) -> ts; case None -> return None }
+  Some(value = substituteTyVars(sig.returnTy, sig.generics, targs))
+}
+
 func checkExplicitValueGenericCall(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -16273,17 +16334,20 @@ func inferExprCore(
                     }
                     case TyError -> match explicitValueGenericTy {
                       case Some(vt) -> vt
-                      case None -> match collMemberParams {
-                        case Some(_) -> match memberRecvTy {
-                          case Some(crt3) -> stdCollectionMemberResult(
-                            tbl,
-                            crt3,
-                            memberName,
-                            args.count
-                          )
+                      case None -> match explicitTypeArgCallType(sc, tbl, sigs, fn, args, argTypes) {
+                        case Some(et) -> et
+                        case None -> match collMemberParams {
+                          case Some(_) -> match memberRecvTy {
+                            case Some(crt3) -> stdCollectionMemberResult(
+                              tbl,
+                              crt3,
+                              memberName,
+                              args.count
+                            )
+                            case None -> TyError
+                          }
                           case None -> TyError
                         }
-                        case None -> TyError
                       }
                     }
                     case _ -> {

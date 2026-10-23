@@ -157,6 +157,194 @@ pub func synthesizeDefaultThunks(file: in SourceFile): SourceFile {
   )
 }
 
+/// A default that holds a lambda literal, moved into a private function that
+/// returns it: `f: () -> Int = { -> 1 }` becomes `f: () -> Int = __lyric_lamdef_0()`
+/// beside `func __lyric_lamdef_0(): () -> Int { { -> 1 } }`.  A backend that
+/// lifts lambda literals before lowering (`--target dotnet`) finds the lambda
+/// once, in the thunk's body, instead of once per call that splices the
+/// default, which it has no lifted body for (#8302).  A default whose type or
+/// value names a type parameter of its callable or owner is left in place: a
+/// nullary thunk has nothing to bind the parameter to.
+pub func hoistLambdaDefaults(file: in SourceFile): SourceFile {
+  val thunks: List[Item] = newList()
+  val items: List[Item] = newList()
+  for it in file.items {
+    items.add(hoistItemLambdaDefaults(it, thunks))
+  }
+  if thunks.count == 0 {
+    return file
+  }
+  for t in thunks {
+    items.add(t)
+  }
+  file.copy(items = items)
+}
+
+func hoistItemLambdaDefaults(it: in Item, thunks: in List[Item]): Item {
+  match it.kind {
+    case IFunc(fn) -> it.copy(kind = IFunc(decl = hoistFuncLambdaDefaults(fn, emptyNames(), thunks)))
+    case IRecord(decl) -> it.copy(kind = IRecord(decl = hoistRecordLambdaDefaults(decl, thunks)))
+    case IExposedRec(decl) -> it.copy(kind = IExposedRec(decl = hoistRecordLambdaDefaults(decl, thunks)))
+    case IImpl(decl) -> {
+      val owner = genericNames(decl.generics)
+      val members: List[ImplMember] = newList()
+      for m in decl.members {
+        members.add(
+          match m {
+            case IMplFunc(fn) -> IMplFunc(fn = hoistFuncLambdaDefaults(fn, owner, thunks))
+            case IMplAssoc(a) -> IMplAssoc(assoc = a)
+          }
+        )
+      }
+      it.copy(kind = IImpl(decl = decl.copy(members = members)))
+    }
+    case IInterface(decl) -> {
+      val owner = genericNames(decl.generics)
+      val members: List[InterfaceMember] = newList()
+      for m in decl.members {
+        members.add(
+          match m {
+            case IMSig(sig) -> IMSig(
+              sig = sig.copy(
+                params = hoistParamLambdaDefaults(
+                  sig.params,
+                  owner,
+                  genericNames(sig.generics),
+                  thunks
+                )
+              )
+            )
+            case IMFunc(fn) -> IMFunc(fn = hoistFuncLambdaDefaults(fn, owner, thunks))
+            case IMAssoc(a) -> IMAssoc(assoc = a)
+          }
+        )
+      }
+      it.copy(kind = IInterface(decl = decl.copy(members = members)))
+    }
+    case IProtected(decl) -> {
+      val owner = genericNames(decl.generics)
+      val members: List[ProtectedMember] = newList()
+      for m in decl.members {
+        members.add(
+          match m {
+            case PMFunc(fn) -> PMFunc(fn = hoistFuncLambdaDefaults(fn, owner, thunks))
+            case PMEntry(en) -> PMEntry(
+              entryDecl = en.copy(
+                params = hoistParamLambdaDefaults(en.params, owner, emptyNames(), thunks)
+              )
+            )
+            case other -> other
+          }
+        )
+      }
+      it.copy(kind = IProtected(decl = decl.copy(members = members)))
+    }
+    case _ -> it
+  }
+}
+
+func hoistRecordLambdaDefaults(decl: in RecordDecl, thunks: in List[Item]): RecordDecl {
+  val owner = genericNames(decl.generics)
+  val members: List[RecordMember] = newList()
+  for m in decl.members {
+    members.add(
+      match m {
+        case RMField(f) -> match f.dflt {
+          case Some(d) -> match hoistLambdaDefault(f.ty, d, owner, thunks) {
+            case Some(call) -> RMField(field = f.copy(dflt = Some(value = call)))
+            case None -> m
+          }
+          case None -> m
+        }
+        case RMFunc(fn) -> RMFunc(fn = hoistFuncLambdaDefaults(fn, owner, thunks))
+        case other -> other
+      }
+    )
+  }
+  decl.copy(members = members)
+}
+
+func hoistFuncLambdaDefaults(fn: in FunctionDecl, owner: in List[String], thunks: in List[Item]): FunctionDecl {
+  fn.copy(params = hoistParamLambdaDefaults(fn.params, owner, genericNames(fn.generics), thunks))
+}
+
+func hoistParamLambdaDefaults(
+  params: in List[Param],
+  owner: in List[String],
+  own: in List[String],
+  thunks: in List[Item],
+): List[Param] {
+  val inScope: List[String] = newList()
+  for g in owner {
+    inScope.add(g)
+  }
+  for g in own {
+    inScope.add(g)
+  }
+  val res: List[Param] = newList()
+  for p in params {
+    match p.dflt {
+      case Some(d) -> match hoistLambdaDefault(p.ty, d, inScope, thunks) {
+        case Some(call) -> res.add(p.copy(dflt = Some(value = call)))
+        case None -> res.add(p)
+      }
+      case None -> res.add(p)
+    }
+  }
+  res
+}
+
+// A lambda literal default `{ n -> n + 1 }` of a function type
+// `(Int) -> Int` with the parameter types the function type gives its
+// unannotated parameters: moved out of the declaration it is no longer an
+// argument of a call that would give them to a backend (#1939).
+func annotateLambdaParams(d: in Expr, ty: in TypeExpr): Expr {
+  match d.kind {
+    case EParen(inner) -> d.copy(kind = EParen(inner = annotateLambdaParams(inner, ty)))
+    case ELambda(ps, body) -> match ty.kind {
+      case TFunction(pts, _) -> {
+        if pts.count != ps.count {
+          return d
+        }
+        val annotated: List[LambdaParam] = newList()
+        var i = 0
+        while i < ps.count {
+          annotated.add(match ps[i].ty { case Some(_) -> ps[i]; case None -> ps[i].copy(ty = Some(value = pts[i])) })
+          i = i + 1
+        }
+        d.copy(kind = ELambda(lambdaParams = annotated, body = body))
+      }
+      case TParen(inner) -> annotateLambdaParams(d, inner)
+      case _ -> d
+    }
+    case _ -> d
+  }
+}
+
+// The call that replaces the default `d` of type `ty`, with the thunk it
+// calls added to `thunks`; None when `d` holds no lambda literal or names a
+// type parameter in `inScope`.
+func hoistLambdaDefault(ty: in TypeExpr, d: in Expr, inScope: in List[String], thunks: in List[Item]): Option[Expr] {
+  val isLambda = { e: Expr -> match e.kind { case ELambda(_, _) -> true; case _ -> false } }
+  if not anyInExpr(d, isLambda) or typeExprNamesAny(ty, inScope) or exprNamesAny(d, inScope) {
+    return None
+  }
+  val name = "__lyric_lamdef_" + toString(thunks.count)
+  thunks.add(thunkItem(name, ty, annotateLambdaParams(d, ty), d.span, false))
+  val segs: List[String] = newList()
+  segs.add(name)
+  val noArgs: List[CallArg] = newList()
+  Some(
+    value = Expr(
+      kind = ECall(
+        fn = Expr(kind = EPath(path = ModulePath(segments = segs, span = d.span)), span = d.span),
+        args = noArgs
+      ),
+      span = d.span
+    )
+  )
+}
+
 // The simple name of an `impl`'s target type, or "" for any other shape.
 func thunkImplTarget(decl: in ImplDecl): String {
   match decl.target.kind {
@@ -224,7 +412,7 @@ func addThunks(
         }
         if not existing.containsKey(thunk) {
           addedNames.add(thunk, true)
-          added.add(thunkItem(thunk, p.ty, d, sp))
+          added.add(thunkItem(thunk, p.ty, d, sp, true))
         }
       }
       case None -> ()
@@ -232,7 +420,7 @@ func addThunks(
   }
 }
 
-func thunkItem(name: in String, ty: in TypeExpr, dflt: in Expr, sp: in Span): Item {
+func thunkItem(name: in String, ty: in TypeExpr, dflt: in Expr, sp: in Span, exported: in Bool): Item {
   val noDocs: List[DocComment] = newList()
   val noAnns: List[Annotation] = newList()
   val noAspect: List[Annotation] = newList()
@@ -244,7 +432,7 @@ func thunkItem(name: in String, ty: in TypeExpr, dflt: in Expr, sp: in Span): It
   val noContracts: List[ContractClause] = newList()
   val noGenerics: Option[GenericParams] = None
   val noWhere: Option[WhereClause] = None
-  val vis: Option[Visibility] = Some(value = VisPub(span = sp))
+  val vis: Option[Visibility] = if exported { Some(value = VisPub(span = sp)) } else { None }
   val fn = FunctionDecl(
     docComments = noDocs,
     annotations = noAspect,

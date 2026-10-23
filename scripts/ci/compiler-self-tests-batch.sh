@@ -134,6 +134,7 @@ for t in \
   lyric-compiler/lyric/closure_var_capture_self_test.l \
   lyric-compiler/lyric/closure_captured_var_byref_self_test.l \
   lyric-compiler/lyric/closure_shadow_self_test.l \
+  lyric-compiler/lyric/lambda_gaps_batch_self_test.l \
   lyric-compiler/lyric/generic_closure_self_test.l \
   lyric-compiler/lyric/inout_receiver_self_test.l \
   lyric-compiler/lyric/inout_receiver_closure_self_test.l \

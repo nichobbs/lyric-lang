@@ -111,6 +111,7 @@ for t in \
   lyric-compiler/lyric/hoisted_literal_shape_self_test.l \
   lyric-compiler/lyric/member_local_shadow_self_test.l \
   lyric-compiler/lyric/closure_shadow_self_test.l \
+  lyric-compiler/lyric/lambda_gaps_batch_self_test.l \
   lyric-compiler/lyric/literal_arg_shape_self_test.l \
   lyric-compiler/lyric/generic_closure_self_test.l \
   lyric-compiler/lyric/generic_member_calls_self_test.l \
