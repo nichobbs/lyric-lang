@@ -52,7 +52,8 @@ func describeOnlyRecords(name: in String): String {
 
 // ── The plugin ──────────────────────────────────────────────────────────────
 @plugin(id = "acme.describe", version = "0.1.0", publisher = "acme", implements(SourceGenerator))
-pub record DescribePlugin {}
+pub record DescribePlugin {
+}
 
 impl SourceGenerator for DescribePlugin {
   func generate(req: in GeneratorRequest): Result[GeneratorResponse, GeneratorError] {

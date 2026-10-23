@@ -590,7 +590,8 @@ func emitUrl(m: in Model): String {
 
 // ── The plugin ──────────────────────────────────────────────────────────────
 @plugin(id = "lyric.ui.routes", version = "0.1.0", publisher = "lyric", implements(SourceGenerator))
-pub record UiRoutesPlugin {}
+pub record UiRoutesPlugin {
+}
 
 impl SourceGenerator for UiRoutesPlugin {
   func generate(req: in GeneratorRequest): Result[GeneratorResponse, GeneratorError] {

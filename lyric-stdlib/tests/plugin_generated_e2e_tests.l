@@ -179,7 +179,7 @@ impl GrantPolicy for NotesPolicy {
 }
 
 func discoveredHost(store: in NoteStore, log: in LineLog): PluginHost {
-  match writeText(join(fixtureDir(), "plugin.json"), writeValue(pluginManifestToJson(probedManifest()))) {
+  match writeText(Std.Path.join(fixtureDir(), "plugin.json"), writeValue(pluginManifestToJson(probedManifest()))) {
     case Ok(_) -> ()
     case Err(e) -> panic("could not write plugin.json: " + IOError.message(e))
   }
@@ -245,7 +245,9 @@ test "contributions that do not decode are left out and reported as K0101" {
   val m = probedManifest()
   val points: List[PluginPointDecl] = newList()
   for p in m.points {
-    points.add(PluginPointDecl(point = p.point, version = p.version, contributions = Some(value = JString(value = "none"))))
+    points.add(
+      PluginPointDecl(point = p.point, version = p.version, contributions = Some(value = JString(value = "none")))
+    )
   }
   val bad = PluginManifest(
     id = m.id,

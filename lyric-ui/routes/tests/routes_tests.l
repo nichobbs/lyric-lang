@@ -132,7 +132,10 @@ test "path problems are reported" {
     codes(generateSource(request([CaseDescriptor(name = "A", annotations = [], fields = [])], []))).contains("RT002"),
     "no @path"
   )
-  assertTrue(codes(generateSource(request([routeCase("A", "customers", [])], []))).contains("RT002"), "no leading slash")
+  assertTrue(
+    codes(generateSource(request([routeCase("A", "customers", [])], []))).contains("RT002"),
+    "no leading slash"
+  )
   assertTrue(codes(generateSource(request([routeCase("A", "/a b", [])], []))).contains("RT002"), "a space in a literal")
   assertTrue(codes(generateSource(request([routeCase("A", "/a/{x}", [])], []))).contains("RT003"), "an unknown field")
   assertTrue(

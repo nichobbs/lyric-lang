@@ -998,7 +998,8 @@ pub func resolveGenerators(manifest: in Mf.Manifest, mfPath: in String): Generat
           if not declaresGeneratorPlugin(depDir, dep.name) {
             gens.failures[dep.name] = Generator.GeneratorFailure(
               code = "X0003",
-              message = "source generator '" + dep.name + "' (" + depDir + ") declares no @plugin record " +
+              message = "source generator '" + dep.name + "' (" + depDir +
+                ") declares no @plugin record " +
                 "implementing Lyric.GeneratorSdk.SourceGenerator"
             )
           } else {

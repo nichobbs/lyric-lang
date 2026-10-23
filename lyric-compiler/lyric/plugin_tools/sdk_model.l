@@ -524,8 +524,7 @@ func siteType(ctx: in Ctx, idx: in Int, sp: in Span, useScope: in FileScope): BT
             ctx,
             useScope,
             sp,
-            "the distinct type " + d.name + " cannot cross a plugin boundary; mark it @plugin_handle (as `pub type " +
-              d.name +
+            "the distinct type " + d.name + " cannot cross a plugin boundary; mark it @plugin_handle (as `pub type " + d.name +
               " = Long`) to pass it as a handle"
           )
           return BUnit

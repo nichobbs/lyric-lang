@@ -489,7 +489,13 @@ func testSynthesiseArtifactWhitelistedT0010Filtered(): Unit {
 // must still restore it (the Lyric.GeneratorSdk case).
 func testSynthesiseArtifactPluginStdlibTypesFiltered(): Unit {
   val decls: List[Meta.ContractDecl] = newList()
-  decls.add(mkDecl("func", "sourceGeneratorRemotes", "pub func sourceGeneratorRemotes(host: PluginHost): List[PluginConnection]"))
+  decls.add(
+    mkDecl(
+      "func",
+      "sourceGeneratorRemotes",
+      "pub func sourceGeneratorRemotes(host: PluginHost): List[PluginConnection]"
+    )
+  )
   decls.add(mkDecl("func", "projectReadCapabilityInfo", "pub func projectReadCapabilityInfo(): CapabilityInfo"))
   decls.add(mkDecl("func", "callFailed", "pub func callFailed(e: RpcError): CallError[String]"))
   val art = mkArtifact("MyApp.PluginApi", decls)

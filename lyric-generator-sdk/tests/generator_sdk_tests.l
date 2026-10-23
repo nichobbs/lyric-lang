@@ -833,12 +833,14 @@ test "codec: same-file declarations round-trip, and declarationNamed finds one" 
 // `Lyric.Generator` writes it (members in its order, `defaultSource` only
 // when the field has a default).
 func compilerRequestJson(kind: in String, declKind: in String): String {
-  "{\"generatorArg\":\"G.X\",\"packageName\":\"P\",\"sourceFile\":\"p.l\"," +
-    "\"typeDescriptor\":{\"kind\":\"" + kind + "\",\"name\":\"R\",\"packageName\":\"P\",\"typeParams\":[]," +
+  "{\"generatorArg\":\"G.X\",\"packageName\":\"P\",\"sourceFile\":\"p.l\"," + "\"typeDescriptor\":{\"kind\":\"" + kind +
+    "\",\"name\":\"R\",\"packageName\":\"P\",\"typeParams\":[]," +
     "\"fields\":[{\"name\":\"x\",\"fieldType\":{\"kind\":\"Primitive\",\"name\":\"Int\",\"typeArgs\":[]}," +
     "\"isPublic\":true,\"annotations\":[],\"defaultSource\":\"0\"}]," +
     "\"annotations\":[],\"cases\":[],\"invariants\":[]}," +
-    "\"declarations\":[{\"name\":\"A\",\"kind\":\"" + declKind + "\",\"underlying\":\"Int\",\"range\":null,\"cases\":[]}]}"
+    "\"declarations\":[{\"name\":\"A\",\"kind\":\"" +
+    declKind +
+    "\",\"underlying\":\"Int\",\"range\":null,\"cases\":[]}]}"
 }
 
 test "decode: the compiler's request shape decodes" {
@@ -846,7 +848,10 @@ test "decode: the compiler's request shape decodes" {
     case Err(msg) -> assertTrue(false, "decodes: " + msg)
     case Ok(back) -> {
       assertEqualInt(back.typeDescriptor.fields.length, 1, "one field")
-      assertTrue(match back.typeDescriptor.fields[0].defaultSource { case Some(d) -> d == "0"; case None -> false }, "the default's source")
+      assertTrue(
+        match back.typeDescriptor.fields[0].defaultSource { case Some(d) -> d == "0"; case None -> false },
+        "the default's source"
+      )
       assertEqualInt(back.declarations.length, 1, "one declaration")
       assertTrue(match back.declarations[0].kind { case DeclaredAlias -> true; case _ -> false }, "an alias")
     }
@@ -860,7 +865,10 @@ test "decode: a field without a default decodes with no defaultSource" {
     "\"isPublic\":true,\"annotations\":[]}],\"annotations\":[],\"cases\":[],\"invariants\":[]},\"declarations\":[]}"
   match decodeText(json) {
     case Err(msg) -> assertTrue(false, "decodes: " + msg)
-    case Ok(back) -> assertTrue(match back.typeDescriptor.fields[0].defaultSource { case Some(_) -> false; case None -> true }, "no default")
+    case Ok(back) -> assertTrue(
+      match back.typeDescriptor.fields[0].defaultSource { case Some(_) -> false; case None -> true },
+      "no default"
+    )
   }
 }
 
@@ -883,10 +891,7 @@ test "decode: an unknown kind is an error, not a silent record" {
 
 test "decode: a missing member is an error naming it" {
   assertTrue(
-    match decodeText("{\"generatorArg\":\"G.X\"}") {
-      case Err(msg) -> msg.contains("packageName")
-      case Ok(_) -> false
-    },
+    match decodeText("{\"generatorArg\":\"G.X\"}") { case Err(msg) -> msg.contains("packageName"); case Ok(_) -> false },
     "missing member rejected"
   )
 }

@@ -927,7 +927,8 @@ func emitValidate(m: in Model): String {
 
 // ── The plugin ──────────────────────────────────────────────────────────────
 @plugin(id = "lyric.forms.derive", version = "0.1.0", publisher = "lyric", implements(SourceGenerator))
-pub record FormsDerivePlugin {}
+pub record FormsDerivePlugin {
+}
 
 impl SourceGenerator for FormsDerivePlugin {
   func generate(req: in GeneratorRequest): Result[GeneratorResponse, GeneratorError] {
