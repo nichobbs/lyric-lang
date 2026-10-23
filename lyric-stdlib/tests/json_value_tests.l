@@ -636,3 +636,10 @@ test "indented writer: empty containers and scalars stay on one line" {
   one.add(JBool(value = true))
   assertEqual(writeValueIndented(JArray(items = one), 0), "[\ntrue\n]", "width 0 still breaks lines")
 }
+
+// A stdlib `pub val` read from another assembly is inlined (D204): on
+// dotnet it was an unknown name before, bare or qualified.
+test "defaultMaxDepth is readable bare and qualified" {
+  assertTrue(defaultMaxDepth == 128, "bare read")
+  assertTrue(Std.JsonValue.defaultMaxDepth == 128, "qualified read")
+}

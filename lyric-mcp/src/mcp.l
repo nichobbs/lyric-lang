@@ -22,7 +22,7 @@
 //! interface-typed `handler` field (`McpToolHandler`/`McpResourceHandler`/
 //! `McpPromptHandler`), not the function-typed field
 //! (`(Option[JsonValue]) -> Result[McpToolResult, String]`) docs/62 §5.1
-//! specs. `lyric-jsonrpc/README.md` "Known upstream issues" #3 documents a
+//! specs. #5329 (bug 3) documented a
 //! real self-hosted-compiler bug: a closure stored in a record field (or
 //! passed as a function-typed parameter) from a *different* package than
 //! the field's declaring package fails at runtime on the JVM backend
@@ -31,7 +31,7 @@
 //! tool/resource/prompt handler necessarily lives in a different package
 //! than `Mcp`, so the function-typed field is exactly the buggy shape.
 //! Interfaces sidestep it (cross-package `impl` dispatch on a plain
-//! interface is unaffected) — the same fix `JsonRpc`'s own
+//! interface is unaffected) — the same fix `Std.JsonRpc`'s own
 //! `RpcHandler`/`RpcTransport` and `lyric-cache/src/cache.l`'s `Clock`
 //! already apply for the identical reason.
 @runtime_checked
@@ -369,8 +369,7 @@ pub union McpToolCallOutcome {
   // `jsonrpc.l`'s `RpcResponse.RpcSuccess` for why: the self-hosted parser
   // rejects `result` as a union case payload field name specifically (a
   // bare union case field named `result` fails with "expected a type" —
-  // P0050). Filed upstream; see `lyric-jsonrpc/README.md` "Known upstream
-  // issues".
+  // P0050). Tracked in #6118.
   case ToolResult(value: McpToolResult)
   case InputRequired(value: McpInputRequired)
 }

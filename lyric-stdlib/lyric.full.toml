@@ -157,3 +157,9 @@ output_assembly = "Lyric.Stdlib.dll"
 # bundle is rebuilt by the compiler stage 1 produces.
 "Std.FfiHost"   = "std/_kernel/ffi_host.l"  # seed: current
 "Std.Ffi"       = "std/ffi.l"               # seed: current
+
+# Tier 11 — JSON-RPC 2.0 peer and stdio framings (D204), formerly the
+# lyric-jsonrpc library's JsonRpc / JsonRpc.Stdio.  Appended last for the
+# same reason as Tier 8.
+"Std.JsonRpc"       = "std/json_rpc.l"
+"Std.JsonRpc.Stdio" = "std/json_rpc_stdio.l"

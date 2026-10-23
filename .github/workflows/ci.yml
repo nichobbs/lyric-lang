@@ -4593,11 +4593,11 @@ jobs:
         background: true
         working-directory: ${{ github.workspace }}
         run: "bash scripts/ci/self-test.sh --summary \"Std.Tls test ran: tls_tests.l (--target jvm)\" --target jvm lyric-stdlib/tests/tls_tests.l"
-      - name: Std.JsonValue test coverage on JVM (native lyric test --target jvm)
+      - name: Std.JsonValue and Std.JsonRpc test coverage on JVM (native lyric test --target jvm)
         if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
-        run: "bash scripts/ci/self-test.sh --summary \"Std.JsonValue test ran: json_value_tests.l (--target jvm)\" --target jvm lyric-stdlib/tests/json_value_tests.l"
+        run: for t in json_value json_rpc json_rpc_stdio; do bash scripts/ci/self-test.sh --summary "${t}_tests.l ran (--target jvm)" --target jvm lyric-stdlib/tests/${t}_tests.l || exit 1; done
 
       - name: Std.Linalg test coverage on JVM (native lyric test --target jvm)
         if: ${{ !cancelled() }}
@@ -6285,7 +6285,7 @@ jobs:
           java: 'true'
           build-config: ${{ env.BUILD_CONFIG }}
 
-      # Ecosystem suites on JVM: storage, resilience, jsonrpc, mcp, health,
+      # Ecosystem suites on JVM: storage, resilience, mcp, health,
       # generator-sdk, web (coverage notes in the script; web restores its
       # own Undertow Maven dependency first).
       - name: Ecosystem suites on JVM (scripts/ci/jvm-ecosystem-suites.sh)
@@ -6650,10 +6650,8 @@ jobs:
             deps: ""
           - id: otel
             deps: "proto"
-          - id: jsonrpc
-            deps: ""
           - id: mcp
-            deps: "jsonrpc"
+            deps: ""
           - id: logging
             deps: ""
           - id: mq
@@ -6673,7 +6671,7 @@ jobs:
           - id: forms
             deps: "generator-sdk"
           - id: ui
-            deps: "generator-sdk forms jsonrpc auth resilience web ws"
+            deps: "generator-sdk forms auth resilience web ws"
           - id: testing
             deps: "cache mail storage feature-flags mq session"
     # NOTE (#6165 follow-up): the original per-library gate
@@ -6840,16 +6838,8 @@ jobs:
         run: |
           "$LYRIC_CLI_PATH" test --manifest lyric-otel/lyric.toml
 
-      # lyric-jsonrpc is tier-0 (pure Lyric, no deps); its JVM run is in
-      # compiler-self-tests-jvm. Guards the published package (#6156).
-      - name: Run tests (jsonrpc)
-        if: matrix.id == 'jsonrpc'
-        run: |
-          "$LYRIC_CLI_PATH" test --manifest lyric-jsonrpc/lyric.toml
-
-      # lyric-mcp restores Lyric.JsonRpc as a workspace member (built as a
-      # path dependency above). Guards the published Lyric.Mcp package
-      # (#6156).
+      # lyric-mcp builds on the stdlib's Std.JsonRpc (D204). Guards the
+      # published Lyric.Mcp package (#6156).
       - name: Run tests (mcp)
         if: matrix.id == 'mcp'
         run: |
@@ -7111,12 +7101,11 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/self-test.sh --target dotnet lyric-stdlib/tests/tls_tests.l
 
-      # Std.JsonValue (D145, #7832): the strict cross-target JSON value
-      # model, formerly lyric-jsonrpc's JsonRpc.Json.  Its JVM half runs in
-      # the JVM batch job below.
-      - name: Std.JsonValue test coverage (native lyric test)
+      # Std.JsonValue (D145) and Std.JsonRpc / Std.JsonRpc.Stdio (D204),
+      # formerly lyric-jsonrpc.  Their JVM half runs in the JVM batch job.
+      - name: Std.JsonValue and Std.JsonRpc test coverage (native lyric test)
         working-directory: ${{ github.workspace }}
-        run: bash scripts/ci/self-test.sh --target dotnet lyric-stdlib/tests/json_value_tests.l
+        run: for t in json_value json_rpc json_rpc_stdio; do bash scripts/ci/self-test.sh --target dotnet lyric-stdlib/tests/${t}_tests.l || exit 1; done
 
       - name: Std.Linalg test coverage (native lyric test)
         working-directory: ${{ github.workspace }}

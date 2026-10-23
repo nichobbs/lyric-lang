@@ -30,7 +30,7 @@ tier0=(
   lyric-cache lyric-logging lyric-proto lyric-generator-sdk
   lyric-mail lyric-storage lyric-auth lyric-resilience
   lyric-validation lyric-i18n lyric-otel lyric-feature-flags
-  lyric-aws-xray lyric-aws-secrets lyric-db lyric-jsonrpc
+  lyric-aws-xray lyric-aws-secrets lyric-db
 )
 for lib in "${tier0[@]}"; do
   echo "=== build $lib (tier 0) ==="

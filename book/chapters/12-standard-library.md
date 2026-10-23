@@ -45,6 +45,8 @@ Here is the full module inventory:
 | `Std.Time` | `Instant`, `Duration`, `now`, ISO 8601 parsing |
 | `Std.Json` | `toJson`, `fromJson` for `@generate(Json)` types |
 | `Std.JsonValue` | A JSON tree you can build, read and write on dotnet and the JVM: `JsonValue`, `parseValue`, `writeValue`, `writeValueIndented`, `getField`, `getString` |
+| `Std.JsonRpc` | JSON-RPC 2.0 peer over any transport: `RpcPeer`, `newPeer`, `runLoop`, `call`, `callWithin`, `notify`, `RpcHandler`, `RpcTransport`, the standard error codes |
+| `Std.JsonRpc.Stdio` | JSON-RPC framings over stdin and stdout: `newNdjsonTransport` (one message per line, as MCP uses) and `newContentLengthTransport` (as LSP uses) |
 | `Std.Http` | HTTP client and server primitives |
 | `Std.Rest` | Typed REST client built on `Std.Http` (`RestClient`, `RestAuth`, `RestError`) |
 | `Std.Testing` | `expect`, `expectEq`, `expectErr`, `fail` |
@@ -396,6 +398,57 @@ func main(): Unit {
 An integral number in the `Long` range is `JInt`; a fraction, an exponent
 or a larger integer is `JFloat`. Object fields keep their order, and a
 duplicate key is kept, with the accessors reading the last one.
+
+### JSON-RPC: `Std.JsonRpc`
+
+`Std.JsonRpc` is a JSON-RPC 2.0 peer built on `Std.JsonValue`. JSON-RPC has
+no client or server side: an `RpcPeer` answers incoming requests with your
+`RpcHandler` and sends its own with `call` and `notify`, over any
+`RpcTransport`. `Std.JsonRpc.Stdio` supplies the two framings used over
+stdin and stdout: one message per line (`newNdjsonTransport`, as MCP uses)
+and `Content-Length` headers (`newContentLengthTransport`, as LSP uses).
+
+```lyric
+import Std.Core
+import Std.JsonValue
+import Std.JsonRpc
+import Std.JsonRpc.Stdio
+
+record PingHandler {
+  reply: String
+}
+
+impl RpcHandler for PingHandler {
+  func onRequest(method: in String, params: in Option[JsonValue]): Result[JsonValue, RpcError] {
+    if method == "ping" {
+      Ok(value = JString(value = self.reply))
+    } else {
+      Err(error = RpcError(code = methodNotFound, message = "unknown method: " + method, data = None))
+    }
+  }
+
+  func onNotification(method: in String, params: in Option[JsonValue]): Unit {
+  }
+}
+
+func main(): Int {
+  var peer = newPeer(newNdjsonTransport(), PingHandler(reply = "pong"))
+  match runLoop(peer) {
+    case Ok(_) -> 0
+    case Err(e) -> {
+      println("rpc: " + e)
+      1
+    }
+  }
+}
+```
+
+`runLoop` answers each request until stdin closes. A panic in a handler
+becomes an `internalError` response rather than ending the loop. Every
+`call` waits at most the peer's call timeout (60 seconds unless set with
+`newPeerWithTimeout`), and `callWithin` takes a timeout per call, so a peer
+that never answers fails the call with `requestTimedOut` instead of blocking
+it.
 
 `@generate` is not limited to built-in generators. Chapter 30 covers how to write and publish your own source generator package so that consumers can annotate their types with `@generate(YourPkg.Name)` and receive whatever code your generator emits.
 

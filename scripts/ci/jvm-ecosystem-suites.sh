@@ -11,7 +11,6 @@
 #   storage     multi-package JVM project build, @cfg dotnet/jvm kernel split,
 #               Storage.Kernel.Jvm and the Std.Json JVM kernel (#1444/#2669)
 #   resilience  Resilience.Kernel.Jvm circuit breaker / retry (#5037)
-#   jsonrpc     call deadlines against silent and late peers (#7451)
 #   mcp         client timeouts over real child processes (#7451)
 #   health      runCheckIsolated's bounded-wait timeout enforcement + panic
 #               isolation, both real on jvm now via Std.Task.runWithin (#7461)
@@ -55,7 +54,7 @@ if ! [[ "$max_jobs" =~ ^[1-9][0-9]*$ ]]; then
   echo "::error::LYRIC_JVM_SUITE_JOBS must be a positive integer, got '$max_jobs'" >&2
   exit 1
 fi
-libs=(storage resilience jsonrpc mcp health generator-sdk web i18n cache feature-flags mail)
+libs=(storage resilience mcp health generator-sdk web i18n cache feature-flags mail)
 log_dir="$(mktemp -d)"
 trap 'rm -rf "$log_dir"' EXIT
 

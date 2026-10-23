@@ -1,4 +1,5 @@
-//! src/jsonrpc.l — JsonRpc: transport-agnostic JSON-RPC 2.0 peer.
+//! std/json_rpc.l — Std.JsonRpc: transport-agnostic JSON-RPC 2.0 peer
+//! (D204; formerly `lyric-jsonrpc`'s `JsonRpc` package).
 //!
 //! Envelope types, the standard JSON-RPC 2.0 error codes, the
 //! `RpcHandler` / `RpcTransport` interfaces application code implements,
@@ -25,7 +26,7 @@
 //! response array, and an empty batch is `-32600 Invalid Request`. A batch
 //! longer than `maxBatchSize` is rejected whole with one `-32600` response.
 @io
-package JsonRpc
+package Std.JsonRpc
 
 import Std.Core
 import Std.Collections
@@ -62,7 +63,7 @@ pub record RpcError {
 // is unremarkable as a record field, a function parameter, or a match-arm
 // binding name; only this one production trips over it, presumably because
 // `result` is *also* the reserved word available inside `ensures:` contract
-// clauses). Filed upstream; see the README's "Known upstream issues" section.
+// clauses). Tracked in #6118.
 @stable(since = "0.1")
 pub union RpcResponse {
   case RpcSuccess(id: RpcId, value: JsonValue)
@@ -687,8 +688,7 @@ pub func runLoop(peer: inout RpcPeer): Result[Unit, String] {
       // (`Option$None cannot be cast to Option$Some`) on the *second*
       // iteration. Both reproduced in isolation with a minimal two-package
       // interface + `while`/`match`/`break` repro, .NET unaffected either
-      // way. Filed upstream; see the README's "Known upstream issues"
-      // section.
+      // way. Tracked in #6122.
       val received: Result[Option[String], String] = peer.transport.receive()
       match received {
         case Err(e) -> {

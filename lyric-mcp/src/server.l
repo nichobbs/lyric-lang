@@ -1,9 +1,9 @@
 //! src/server.l — Mcp.Server: MCP server surface (docs/62-jsonrpc-mcp.md §5.1,
 //! docs/64-mcp-2026-stateless-migration.md §3.2).
 //!
-//! `McpServer` implements `JsonRpc.RpcHandler` directly (rather than
+//! `McpServer` implements `Std.JsonRpc.RpcHandler` directly (rather than
 //! wrapping a separate handler record) and is handed straight to
-//! `JsonRpc.newPeer`. **Stateless core (docs/64 §3.2)**: there is no more
+//! `Std.JsonRpc.newPeer`. **Stateless core (docs/64 §3.2)**: there is no more
 //! readiness gate — every request is answerable immediately, with no
 //! `initialize`/`notifications/initialized` handshake required first.
 //! `initialize` remains an answerable method purely for legacy-peer
@@ -27,8 +27,8 @@ import Std.Core
 import Std.Collections
 import Std.Char as Ch
 import Std.JsonValue
-import JsonRpc
-import JsonRpc.Stdio
+import Std.JsonRpc
+import Std.JsonRpc.Stdio
 import Mcp
 import Std.String as Str
 
@@ -36,7 +36,7 @@ import Std.String as Str
 // dotnet` compiler bug found while building this library (filed upstream
 // against the compiler, not this library's own logic): a package-level
 // `pub val Int` read from a *workspace-restored cross-DLL dependency*
-// (`JsonRpc`, a separately-published/restored package, unlike `Mcp` which
+// (then `lyric-jsonrpc`, a separately-published/restored package, unlike `Mcp` which
 // is compiled together with `Mcp.Server` in the same project) silently
 // evaluates to `0` at runtime instead of its real value, with **no
 // compile-time or run-time error at all** — confirmed by direct
@@ -171,8 +171,8 @@ pub func hasPromptNamed(server: in McpServer, name: in String): Bool {
   false
 }
 
-// ── Lookup helpers (explicit, non-generic — see lyric-jsonrpc/README.md
-// "Known upstream issues" #5 for why this library avoids a shared generic
+// ── Lookup helpers (explicit, non-generic — see #6121
+// for why this library avoids a shared generic
 // `find[T]` helper called with several different concrete type arguments) ──
 func findTool(tools: in List[McpToolDef], name: in String): Option[McpToolDef] {
   var i = 0
@@ -275,7 +275,7 @@ func handleToolsList(server: in McpServer): Result[JsonValue, RpcError] {
 
 // A resumed call is an ordinary `tools/call` whose params additionally
 // carry `requestState` (echoing what a prior `InputRequired` outcome
-// issued) and `inputResponses` (docs/64 §3.1/§3.4 — `JsonRpc` never sees
+// issued) and `inputResponses` (docs/64 §3.1/§3.4 — `Std.JsonRpc` never sees
 // the difference, this is purely an `Mcp`-layer data-shape distinction).
 func dispatchResumableTool(
   def: in McpResumableToolDef,

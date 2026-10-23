@@ -1,4 +1,5 @@
-//! src/stdio.l — JsonRpc.Stdio: NDJSON and Content-Length stdio framings.
+//! std/json_rpc_stdio.l — Std.JsonRpc.Stdio: NDJSON and Content-Length
+//! stdio framings (D204; formerly `lyric-jsonrpc`'s `JsonRpc.Stdio`).
 //!
 //! Two `RpcTransport` implementations over this process's stdin/stdout:
 //!
@@ -31,22 +32,14 @@
 //! All of it is sans-IO: the framing logic is parameterized over the small
 //! `ByteSource`/`CharReader`/`LineReader`/`StringWriter`/`LineWriter`
 //! interfaces rather than calling the console directly, so
-//! `tests/stdio_tests.l` drives it against in-memory stand-ins with no real
-//! pipe. This is deliberately an interface seam, not a stored `() -> Int` /
-//! `(String) -> Unit` closure parameter: a closure argument passed *across a
-//! package boundary* on the current self-hosted JVM backend is wrapped in a
-//! lambda-adapter class scoped to the *caller's* package, which the
-//! *callee's* package then fails to downcast back to its own expected lambda
-//! type (`ClassCastException: JsonRpc.Stdio.StdioTests$Lambda$0 cannot be
-//! cast to class JsonRpc.Stdio.Lyric$Lambda`, reproduced in isolation — the
-//! .NET target is unaffected). Cross-package `impl` dispatch on a plain
-//! interface does not hit that bug (also matches `lyric-cache/src/cache.l`'s
-//! own documented reason for using a record-of-interface `Clock` instead of
-//! a stored closure). Filed upstream; see the README's "Known upstream
-//! issues" section.
+//! `lyric-stdlib/tests/json_rpc_stdio_tests.l` drives it against in-memory
+//! stand-ins with no real pipe. The seams are interfaces rather than stored
+//! closures because a closure passed across a package boundary once failed
+//! to downcast on the JVM backend (fixed in #5388/#5251); interfaces have
+//! kept the shape since and cost nothing.
 @runtime_checked
 @io
-package JsonRpc.Stdio
+package Std.JsonRpc.Stdio
 
 import Std.Core
 import Std.Collections
@@ -55,7 +48,7 @@ import Std.Encoding
 import Std.Errors
 import Std.Parse
 import Std.Time
-import JsonRpc
+import Std.JsonRpc
 
 // ── Sans-IO seams ────────────────────────────────────────────────────────────
 @stable(since = "0.1")
@@ -293,7 +286,7 @@ func clReadHeaders(reader: in CharReader): Result[Option[Int], String] {
   var done = false
   while not done {
     // NOTE: decomposed into two separate `match` steps (Result, then
-    // Option) for the same reason as jsonrpc.l's `runLoop`/`call` — see
+    // Option) for the same reason as json_rpc.l's `runLoop`/`call` — see
     // that file's NOTE on this exact `while`/`match` shape reproducibly
     // breaking on the self-hosted JVM backend when some arms end the loop
     // and others don't.

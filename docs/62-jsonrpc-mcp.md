@@ -5,7 +5,10 @@ the stdlib seams, and the lyric-ws dotnet backend (#778) are implemented;
 streamable HTTP (§5.3 milestone 2) and the open questions remain. JVM
 gaps are tracked in #6118–#6124, #6127, #6133–#6136; the lyric-jsonrpc
 and lyric-mcp suites pass on the JVM and run there in CI since #7451,
-which also added call deadlines (§3, D-progress-1007). First consumer:
+which also added call deadlines (§3, D-progress-1007). Since D204 the
+JSON-RPC peer and stdio framings are the stdlib's `Std.JsonRpc` and
+`Std.JsonRpc.Stdio`; this doc's `lyric-jsonrpc`, `JsonRpc` and
+`JsonRpc.Stdio` name them as they were before the move. First consumer:
 `nichobbs/cloud-agents`' in-container permission-callback MCP server
 (see that repo's `docs/phase6-mcp-callbacks.md`). This sketch is the
 agreed build spec for three coordinated tracks; each track lands as its

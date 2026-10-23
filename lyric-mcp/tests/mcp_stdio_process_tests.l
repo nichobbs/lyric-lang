@@ -24,7 +24,7 @@ import Std.Core
 import Std.Collections
 import Std.Testing
 import Std.Process
-import JsonRpc
+import Std.JsonRpc
 import Std.JsonValue
 import Mcp
 import Mcp.Stdio
