@@ -251,8 +251,8 @@ pub func carryPrivateGenerics(items: in List[Item], pkgName: in String): Carried
             pubs.add(fn)
             pubItems.add(it)
           } else if not hasAnnotation(fn.annotations, "externTarget") {
-            privates.put(fn.name, fn)
-            privateItems.put(fn.name, it)
+            privates.add(fn.name, fn)
+            privateItems.add(fn.name, it)
           }
         }
       }
@@ -286,7 +286,7 @@ pub func carryPrivateGenerics(items: in List[Item], pkgName: in String): Carried
 
   val renames: Map[String, String] = newMap()
   for n in reached {
-    renames.put(n, carriedName(pkgName, n))
+    renames.add(n, carriedName(pkgName, n))
   }
 
   val outPub: List[FunctionDecl] = newList()
