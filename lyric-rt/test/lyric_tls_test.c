@@ -606,6 +606,11 @@ static void test_mtls_accept(void) {
         CHECK(ok == 1);
         CHECK(rt == 1);
         CHECK(srv.accept_ok == 1);
+        /* The identity is fixed once a connection has been made. */
+        CHECK(lyric_tls_client_set_identity(client, CLIENT_CRT, CLIENT_KEY) == -1);
+        char err[256];
+        CHECK(lyric_tls_last_error(err, (int32_t)sizeof err) > 0);
+        CHECK(strstr(err, "first connection") != NULL);
     }
     lyric_tls_ctx_free(server);
     lyric_tls_ctx_free(client);

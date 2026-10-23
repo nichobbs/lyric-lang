@@ -38,7 +38,9 @@ change.
    the roots it accepts) and requests a client certificate; once the handshake completes the runtime checks the
    presented chain against those anchors with the client-authentication policy, and refuses the connection when
    the certificate is missing and required, or does not chain. A client certificate is sent only when one was
-   set (`ISC_REQ_USE_SUPPLIED_CREDS`).
+   set (`ISC_REQ_USE_SUPPLIED_CREDS`). A client context's connections share its credential, so
+   `lyric_tls_client_set_identity` must come before the first connection and fails after it; the OpenSSL twin
+   enforces the same rule, so the seam has one contract.
 6. **Versions and ALPN.** Contexts use `SCH_CREDENTIALS` with every protocol but TLS 1.2 and 1.3 (or 1.3 only)
    disabled; a Windows release that predates `SCH_CREDENTIALS` falls back to `SCHANNEL_CRED` with TLS 1.2. TLS 1.3
    needs a release whose Schannel offers it (Windows 11, Server 2022); a TLS 1.3-only context reports that when
