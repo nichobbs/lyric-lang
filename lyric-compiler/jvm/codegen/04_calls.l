@@ -659,7 +659,7 @@ func lowerCall(ctx: in FuncCtx, insns: in List[LInsn], fn: in Expr, args: in Lis
         lowerCloseExecutorIntrinsic(ctx, insns, args)
       } else if path.segments.count == 1 and isLambdaLocal(ctx, funcName) {
         lowerLambdaInvoke(ctx, insns, funcName, args)
-      } else if path.segments.count == 1 and isLambdaSelfField(ctx, funcName) {
+      } else if path.segments.count == 1 and isLambdaSelfField(ctx, funcName, args.count) {
         lowerSelfFieldLambdaInvoke(ctx, insns, funcName, args)
       } else {
         lowerBuiltinOrStaticCall(ctx, insns, funcName, path, args)
@@ -907,7 +907,7 @@ func isLambdaLocal(ctx: in FuncCtx, name: in String): Bool {
 // such a call through a typed local when the field's type has a source
 // spelling; inside a generic type it names a type parameter and is left as
 // written, so the backend loads the field from `this` itself.
-func isLambdaSelfField(ctx: in FuncCtx, name: in String): Bool {
+func isLambdaSelfField(ctx: in FuncCtx, name: in String, written: in Int): Bool {
   // A field beats a same-named top-level function: a bare name in a member
   // body resolves against the enclosing type's fields unless it is a local
   // or parameter (§2.4, #6173), as the type checker resolves it.
@@ -917,8 +917,19 @@ func isLambdaSelfField(ctx: in FuncCtx, name: in String): Bool {
   }
   match ctx.selfClass {
     case Some(cls) -> {
-      if ctx.funcSigs.containsKey(cls + "#" + name) {
-        return false
+      // A sibling METHOD of this name that takes the written arguments
+      // wins; one of another arity is not the callee (#8078).
+      match mapGet(ctx.funcSigs, cls + "#" + name + "/" + toString(written)) {
+        case Some(_) -> return false
+        case None -> ()
+      }
+      match mapGet(ctx.funcSigs, cls + "#" + name) {
+        case Some(sig) -> {
+          if methodSigTakesArgCount(sig, written) {
+            return false
+          }
+        }
+        case None -> ()
       }
     }
     case None -> return false
@@ -1004,8 +1015,45 @@ func methodSigJvm(
   val arity = match mapGet(ctx.externTypes, "~arity~" + siteKey) { case Some(n) -> n; case None -> toString(written) }
   match mapGet(ctx.funcSigs, cls + "#" + name + "/" + arity) {
     case Some(sig) -> Some(value = sig)
-    case None -> mapGet(ctx.funcSigs, cls + "#" + name)
+    case None -> {
+      // The first-registered overload only stands in when it can take the
+      // written argument count; a same-named method of another arity is not
+      // the callee (#8007).
+      match mapGet(ctx.funcSigs, cls + "#" + name) {
+        case Some(sig) -> {
+          if methodSigTakesArgCount(sig, written) {
+            Some(value = sig)
+          } else {
+            None
+          }
+        }
+        case None -> None
+      }
+    }
   }
+}
+
+// Whether `sig` can be called with `written` arguments: at most one per
+// parameter and at least one per parameter without a default.
+func methodSigTakesArgCount(sig: in JvmFuncSig, written: in Int): Bool {
+  if written > sig.params.count {
+    return false
+  }
+  if sig.paramDefaults.count != sig.params.count {
+    return true
+  }
+  var required = 0
+  var i = 0
+  while i < sig.paramDefaults.count {
+    match sig.paramDefaults[i] {
+      case None -> {
+        required = required + 1
+      }
+      case Some(_) -> ()
+    }
+    i = i + 1
+  }
+  written >= required
 }
 
 // True when the type checker resolved the method call at `siteKey` to a
@@ -5385,6 +5433,38 @@ func lowerMethodCall(
     }
     return JInt
   }
+  if memberName == "toNat" and args.count == 0 and isNumericJvm(recvTy) {
+    // Checked widen-to-`Nat` (#7661), mirroring `emitCheckedToNatMsil`:
+    // `Byte`/`Char` are non-negative by construction; the rest are checked.
+    match recvTy {
+      case JByte -> {
+        maskByteUnsigned(insns)
+        insns.add(LI2l)
+      }
+      case JChar -> insns.add(LI2l)
+      case JDouble | JFloat -> {
+        match recvTy {
+          case JFloat -> insns.add(LF2d)
+          case _ -> ()
+        }
+        val tndPs: List[JvmType] = newList()
+        tndPs.add(JDouble)
+        insns.add(LInvokestatic(owner = ctx.pkgName, name = "__lyricToNatD", params = tndPs, ret = JLong))
+        markRuntimeHelper(ctx, "__lyricToNatD")
+      }
+      case _ -> {
+        match recvTy {
+          case JLong -> ()
+          case _ -> insns.add(LI2l)
+        }
+        val tnPs: List[JvmType] = newList()
+        tnPs.add(JLong)
+        insns.add(LInvokestatic(owner = ctx.pkgName, name = "__lyricToNat", params = tnPs, ret = JLong))
+        markRuntimeHelper(ctx, "__lyricToNat")
+      }
+    }
+    return JLong
+  }
   if (memberName == "toInt" or memberName == "toLong" or memberName == "toByte" or memberName == "toChar" or memberName == "toDouble" or memberName == "toFloat") and args.count == 0 and isNumericJvm(recvTy) {
     if memberName == "toFloat" {
       emitToFloatJvm(insns, recvTy)
@@ -5958,6 +6038,15 @@ func lowerMethodCall(
         // A slice is already an array: `.toArray()` yields the receiver
         // itself, as MSIL's `toArray` does for an `MArray` receiver (#7480).
         return recvTy
+      } else if memberName == "toList" and args.count == 0 {
+        // `slice[T].toList()` (#8323, #7662): copy the array into a fresh
+        // `ArrayList`.  A primitive-element array is boxed to `Object[]` first.
+        match recvTy {
+          case JArray(fe) -> if isJvmPrimitiveElemType(fe) { emitBoxPrimitiveArray(ctx, insns, fe) }
+          case _ -> ()
+        }
+        emitArrayToArrayListJvm(ctx, insns, "tolist_" + freshLabel(ctx))
+        return JRef(className = "java/util/ArrayList")
       }
     }
     case _ -> ()

@@ -132,9 +132,15 @@ func fieldClassOf(ctx: in FuncCtx, cls: in String, fieldName: in String): Option
 }
 
 // Look up the `<class>#<method>` instance-method sig's generic return args.
-func instanceMethodRetGenericArgs(ctx: in FuncCtx, recv: in Expr, memberName: in String): List[TypeExpr] {
+func instanceMethodRetGenericArgs(
+  ctx: in FuncCtx,
+  recv: in Expr,
+  memberName: in String,
+  siteKey: in String,
+  written: in Int,
+): List[TypeExpr] {
   match receiverClassOf(ctx, recv) {
-    case Some(cls) -> funcSigRetGenericArgs(mapGet(ctx.funcSigs, cls + "#" + memberName))
+    case Some(cls) -> funcSigRetGenericArgs(methodSigJvm(ctx, cls, memberName, siteKey, written))
     case None -> newList()
   }
 }
@@ -186,6 +192,21 @@ func fieldGenericArgsOf(ctx: in FuncCtx, recv: in Expr, fieldName: in String): L
 // mismatch — shouldn't happen post-type-check) is silently dropped.
 func buildArgsByParamName(callArgs: in List[CallArg], paramNames: in List[String]): Map[String, Expr] {
   val result: Map[String, Expr] = newMap()
+  // Positional arguments fill the parameters no named argument names, left
+  // to right (`Lyric.Parser.pairCallArgs`, as the checker pairs them, #8162).
+  match pairCallArgs(paramNames, 0, callArgs) {
+    case Ok(slots) -> {
+      var pj = 0
+      while pj < slots.count {
+        if slots[pj] >= 0 {
+          result.add(paramNames[pj], callArgExpr(callArgs[slots[pj]]))
+        }
+        pj = pj + 1
+      }
+      return result
+    }
+    case Err(_) -> ()
+  }
   var i = 0
   var posIdx = 0
   while i < callArgs.count {
@@ -588,6 +609,13 @@ func genericRecordCtorArgs(ctx: in FuncCtx, name: in String, callArgs: in List[C
     if flds[i].paramIdx + 1 > arity {
       arity = flds[i].paramIdx + 1
     }
+    var ai = 0
+    while ai < flds[i].argParamIdx.count {
+      if flds[i].argParamIdx[ai] + 1 > arity {
+        arity = flds[i].argParamIdx[ai] + 1
+      }
+      ai = ai + 1
+    }
     i = i + 1
   }
   if arity == 0 {
@@ -645,6 +673,31 @@ func genericRecordCtorArgs(ctx: in FuncCtx, name: in String, callArgs: in List[C
       }
     }
     w = w + 1
+  }
+  // A field declared as an instantiation naming the type parameters
+  // (`xs: List[T]`) takes them from the argument's own recorded arguments
+  // (`ys: List[String]` -> `T = String`), #8132.
+  var fa = 0
+  while fa < flds.count {
+    if flds[fa].argParamIdx.count > 0 {
+      match mapGet(byName, flds[fa].name) {
+        case Some(argF) -> {
+          val argArgs = scrutineeGenericArgs(ctx, argF)
+          if argArgs.count == flds[fa].argParamIdx.count {
+            var aj = 0
+            while aj < argArgs.count {
+              val pj = flds[fa].argParamIdx[aj]
+              if pj >= 0 and not solved.containsKey(pj) {
+                solved.add(pj, argArgs[aj])
+              }
+              aj = aj + 1
+            }
+          }
+        }
+        case None -> ()
+      }
+    }
+    fa = fa + 1
   }
   var k = 0
   while k < flds.count {
@@ -769,7 +822,7 @@ func scrutineeGenericArgs(ctx: in FuncCtx, scrutinee: in Expr): List[TypeExpr] {
         // dispatches through); fall back to it when no instance-method sig
         // resolves, so the declared-return instantiation is recovered (#5570).
         case EMember(recv, memberName) -> {
-          val viaInstance = instanceMethodRetGenericArgs(ctx, recv, memberName)
+          val viaInstance = instanceMethodRetGenericArgs(ctx, recv, memberName, methodCallSiteKey(fn), callArgs.count)
           if viaInstance.count > 0 {
             viaInstance
           } else if memberName == "append" or memberName == "concat" or memberName == "slice" or (memberName == "toArray" and callArgs.count == 0) {
@@ -840,7 +893,30 @@ func scrutineeGenericArgs(ctx: in FuncCtx, scrutinee: in Expr): List[TypeExpr] {
     // qualified name with no recorded local args.
     case EPath(path) -> {
       if path.segments.count == 1 {
-        optGenericArgs(mapGet(ctx.varGenericArgs, path.segments[0]))
+        val local = optGenericArgs(mapGet(ctx.varGenericArgs, path.segments[0]))
+        val isSelfField = match selfFieldType(ctx, path.segments[0]) { case Some(_) -> true; case None -> false }
+        if local.count > 0 or ctx.slots.containsKey(path.segments[0]) or isSelfField {
+          local
+        } else {
+          // A module-level `val` (#8281): its declared arguments ride on the
+          // `val:` registry entry the declaring file registered.
+          match mapGet(ctx.funcSigs, "val:" + path.segments[0]) {
+            case Some(vsig) -> vsig.retGenericArgs
+            case None -> local
+          }
+        }
+      } else {
+        newList()
+      }
+    }
+    // An indexed element that is itself a collection (`s[0]` with `s:
+    // array[2, array[2, String]]` or `List[List[Long]]`): the element type
+    // of the base is the single/value argument, and its own arguments are
+    // this expression's (#8237).
+    case EIndex(base, _) -> {
+      val baseArgs = scrutineeGenericArgs(ctx, base)
+      if baseArgs.count == 1 or baseArgs.count == 2 {
+        elementTypeArgs(baseArgs[baseArgs.count - 1])
       } else {
         newList()
       }
@@ -862,6 +938,34 @@ func scrutineeGenericArgs(ctx: in FuncCtx, scrutinee: in Expr): List[TypeExpr] {
     // ends it with the call or with a local holding its value; that local is
     // out of scope once the block is lowered, so its binding is read here.
     case EBlock(blk) -> blockTrailingGenericArgs(ctx, blk)
+    case _ -> newList()
+  }
+}
+
+// The element-type arguments of a collection type expression: `array[N, E]`
+// and `slice[E]` yield `[E]`, `List[E]` yields `[E]`, `Map[K, V]` yields
+// `[K, V]`; anything else yields none.
+func elementTypeArgs(te: in TypeExpr): List[TypeExpr] {
+  match te.kind {
+    case TParen(inner) -> elementTypeArgs(inner)
+    case TSlice(elem) -> {
+      val one: List[TypeExpr] = newList()
+      one.add(elem)
+      one
+    }
+    case TArray(_, elem) -> {
+      val one: List[TypeExpr] = newList()
+      one.add(elem)
+      one
+    }
+    case TGenericApp(head, _) -> {
+      val nm = lastSegment(head)
+      if head.segments.count == 1 and (nm == "List" or nm == "Map") {
+        annotationGenericArgs(te)
+      } else {
+        newList()
+      }
+    }
     case _ -> newList()
   }
 }
@@ -1241,7 +1345,7 @@ func lowerMatchExpr(ctx: in FuncCtx, insns: in List[LInsn], scrutinee: in Expr, 
               // every path reaching the join.
               pushDefaultValue(insns, resultTy)
             }
-            case _ -> coerceArgTo(insns, armTy, resultTy)
+            case _ -> coerceArgToCtx(ctx, insns, armTy, resultTy)
           }
           rslotStoreIdxs.add(insns.count)
           emitStore(insns, rslot, resultTy)

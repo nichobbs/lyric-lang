@@ -7,7 +7,7 @@ Internationalization with placeholder substitution and locale fallback.
 | Feature flag | Backend                                              | Status                |
 |--------------|------------------------------------------------------|-----------------------|
 | `dotnet`     | `Std.File` + `Std.Json` for translation file loads   | Available             |
-| `jvm`        | `Std.File` + `Std.Json` for translation file loads   | Available, one known gap (below) |
+| `jvm`        | `Std.File` + `Std.Json` for translation file loads   | Available             |
 
 `I18n`'s public API (`src/i18n.l`) needs no platform-specific kernel at
 all: `Std.File`/`Std.Json` are already cross-platform (`Std.Json`'s
@@ -15,15 +15,6 @@ JVM backend was rewritten to pure Lyric in D-progress-555). Verified
 against `tests/i18n_tests.l` on both targets.
 `translate`/`translateWith`/`hasKey`/`fromJson`/`loadFromPath` are all
 confirmed working on JVM.
-
-One gap this surfaced: passing a `JsonElement`/`JsonDoc` (from
-`Std.Json`) as the parameter type of a function declared in *this*
-package fails at runtime on the self-hosted JVM backend
-(`NoClassDefFoundError`, confirmed with an isolated repro — it resolves
-the type against the caller's own package instead of the imported
-one; tracked in #7652). `fromJson` avoids the pattern rather than working around it: its
-whole JSON tree walk lives in one function body, with no such value
-ever crossing a function boundary.
 
 `I18n.Kernel` is a separate, standalone handle-based entry point
 (`loadStore`/`translate`/`hasKey`/`availableLocalesJson`/

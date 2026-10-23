@@ -4957,7 +4957,10 @@ pub func collectFileSigsSeeded(
                   paramModes = newList(),
                   refElems = newList(),
                   isIface = false,
-                  retGenericArgs = newList(),
+                  // The declared element / type arguments (#8281), so an
+                  // indexed or matched read of the val narrows its erased
+                  // `Object` element like a local with the same annotation.
+                  retGenericArgs = moduleValGenericArgs(decl, owner, externTypes),
                   closureRetTy = None,
                   recordRetClass = None,
                   // A module-level `val`'s type is never `Self`.
@@ -5110,6 +5113,30 @@ pub func collectFileSigsSeeded(
 // for an unannotated non-literal init — its field type only exists after
 // `prelowerModuleVals` lowers the initialiser, so it cannot be promised to
 // other packages.
+// The generic arguments of a module-level `val`'s explicit annotation
+// (`List[String]` -> `[String]`, `slice[T]`/`array[N, T]` -> `[T]`), resolved
+// in the declaring package's context; empty without an annotation.
+func moduleValGenericArgs(decl: in ValDecl, owner: in String, externTypes: in Map[String, String]): List[TypeExpr] {
+  match decl.ty {
+    case Some(te) -> {
+      val noParams: List[String] = newList()
+      val viaApp = annotationGenericArgsFiltered(te, noParams)
+      if viaApp.count > 0 {
+        eagerlyResolveGenericArgs(viaApp, owner, externTypes)
+      } else {
+        val elems: List[TypeExpr] = newList()
+        match te.kind {
+          case TSlice(elem) -> elems.add(elem)
+          case TArray(_, elem) -> elems.add(elem)
+          case _ -> ()
+        }
+        eagerlyResolveGenericArgs(elems, owner, externTypes)
+      }
+    }
+    case None -> newList()
+  }
+}
+
 func moduleValRegistryType(decl: in ValDecl, owner: in String, externTypes: in Map[String, String]): Option[JvmType] {
   match decl.ty {
     case Some(te) -> Some(value = typeExprToJvmExtern(te, owner, externTypes))
@@ -7321,6 +7348,42 @@ func makeToCharHelperFunc(): LFunc {
   LFunc(flags = 0x0009, name = "__lyricToChar", params = ps, ret = JChar, insns = insns, maxStack = 4, maxLocals = 2)
 }
 
+// `static long __lyricToNat(long v)`: `.toNat()` from an `Int`/`Long`,
+// throwing `ArithmeticException` on a negative value (#7661).
+func makeToNatHelperFunc(): LFunc {
+  val insns: List[LInsn] = newList()
+  insns.add(LLload(slot = 0))
+  insns.add(LLconst(v = 0i64))
+  insns.add(LLcmp)
+  insns.add(LIflt(label = "__tn_fail"))
+  insns.add(LLload(slot = 0))
+  insns.add(LLreturn)
+  insns.add(LLabel(name = "__tn_fail"))
+  emitJvmThrowWithMessage(insns, "java/lang/ArithmeticException", Lex.toNatRangeMessage())
+  val ps: List[JvmType] = newList()
+  ps.add(JLong)
+  LFunc(flags = 0x0009, name = "__lyricToNat", params = ps, ret = JLong, insns = insns, maxStack = 4, maxLocals = 2)
+}
+
+// `static long __lyricToNatD(double d)`: `.toNat()` from a `Double`.  The
+// value truncates toward zero, so the bound is an exclusive -1.0 (-0.5 is a
+// valid 0); NaN fails the same way a too-negative value does.
+func makeToNatDoubleHelperFunc(): LFunc {
+  val insns: List[LInsn] = newList()
+  insns.add(LDload(slot = 0))
+  insns.add(LDconst(v = 0.0 - 1.0))
+  insns.add(LDcmpl)
+  insns.add(LIfle(label = "__tnd_fail"))
+  insns.add(LDload(slot = 0))
+  insns.add(LD2l)
+  insns.add(LLreturn)
+  insns.add(LLabel(name = "__tnd_fail"))
+  emitJvmThrowWithMessage(insns, "java/lang/ArithmeticException", Lex.toNatRangeMessage())
+  val ps: List[JvmType] = newList()
+  ps.add(JDouble)
+  LFunc(flags = 0x0009, name = "__lyricToNatD", params = ps, ret = JLong, insns = insns, maxStack = 4, maxLocals = 2)
+}
+
 // The primitive `array[N, T]` <-> `ArrayList` conversions (#8041).  A
 // numeric `array[N, T]` is a typed Java array, but a generic record's
 // `array[N, T]` field is erased to `ArrayList`, so an array crossing into or
@@ -9513,6 +9576,12 @@ pub func codegenPackageWithSigsSeeded(
   }
   if runtimeHelperUsed(usedRuntimeHelpers, "__lyricToCharD") {
     fns.add(makeToCharDoubleHelperFunc(funcsClass))
+  }
+  if runtimeHelperUsed(usedRuntimeHelpers, "__lyricToNat") {
+    fns.add(makeToNatHelperFunc())
+  }
+  if runtimeHelperUsed(usedRuntimeHelpers, "__lyricToNatD") {
+    fns.add(makeToNatDoubleHelperFunc())
   }
   if runtimeHelperUsed(usedRuntimeHelpers, "__lyricErasedToString") {
     fns.add(makeErasedToStringHelperFunc())
