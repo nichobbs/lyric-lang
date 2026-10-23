@@ -362,8 +362,10 @@ Each target needs its toolchain when packing: the .NET SDK, a JDK 21 or later,
 
 ## Running a plugin as WebAssembly
 
-A plugin from someone you do not trust should not run as an ordinary process
-with your user's permissions. Pack it for wasm as well:
+A plugin from someone you do not trust should not run as an ordinary process.
+A process payload (dotnet, JVM or native) is arbitrary code running as your
+user: grants and guards limit what it can ask the host for, not what it can do
+by itself, such as reading files or opening sockets. Pack it for wasm as well:
 
 ```sh
 WASI_SDK_PATH=/opt/wasi-sdk lyric plugin pack --manifest notes-summary/lyric.toml --targets dotnet,wasm -o plugins

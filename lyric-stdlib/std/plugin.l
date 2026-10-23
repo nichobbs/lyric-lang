@@ -24,6 +24,13 @@
 //!   capabilities, other requests go to `PluginServer.dispatch`, and
 //!   `callHost` makes a capability call from inside a dispatch.
 //!
+//! Trust: a process payload (dotnet, JVM or native) is arbitrary code running
+//! with the host's user and privileges. Grants and guards limit what a plugin
+//! obtains through capability calls, not what it does directly. Only a wasm
+//! payload, run by `wasmtime` with no directories, environment or network, is
+//! confined to its capabilities; set `preferWasm` and pack untrusted plugins
+//! for wasm.
+//!
 //! Everything here is synchronous: a host is an ordinary program that calls
 //! `callPlugin` and gets the answer, and capability calls are served on the
 //! calling thread while it waits. A `PluginHost` is not safe to use from

@@ -3775,8 +3775,11 @@ plugin built for any other. **Wasm mode** runs a plugin built with
 network, so its only way to reach anything is a capability call; it speaks the
 same protocol. A host with `preferWasm` chooses a wasm payload whenever the
 plugin has one and `wasmtime` is available. Process mode applies no operating
-system restrictions; wasm mode is the isolation for untrusted code. A trusted
-in-process mode, signing and a plugin registry are not part of v1 (D207).
+system restrictions: a process payload is arbitrary code running with the
+host's user and privileges, and the grant policy and guards limit only what it
+does through capability calls, not what it does directly. Wasm mode is the
+isolation for untrusted code. A trusted in-process mode, signing and a plugin
+registry are not part of v1 (D207).
 
 ### 15.8 `lyric plugin`
 
