@@ -4,6 +4,11 @@
 #   Ui.Native.Theme     design tokens (light and dark), the same as runtime/ui.css
 #   Ui.Native.Client    the session protocol from the host's side: decode server messages, apply
 #                       patches to the host's mirror of the tree, address events
+#   Ui.Native.UnicodeData  the Unicode 15.1 properties text layout needs (bidi class, line break class,
+#                       mirroring, paired brackets), as tables in strings
+#   Ui.Native.Bidi      the Unicode Bidirectional Algorithm (UAX #9): levels, runs in visual order
+#   Ui.Native.LineBreak the Unicode line breaking algorithm (UAX #14)
+#   Ui.Native.Wrap      soft-wrapped text areas: lines, pieces in visual order, caret and selection
 #   Ui.Native.Layout    flex-style layout of the widget tree into boxes with absolute rectangles
 #   Ui.Native.Interact  focus order, hit testing, text editing, grid scrolling, click actions
 #
@@ -24,6 +29,9 @@ output_assembly = "Lyric.Ui.Native.Core.dll"
 [project.packages]
 "Ui.Native.Theme"    = "src/theme.l"
 "Ui.Native.Client"   = "src/client.l"
+"Ui.Native.UnicodeData" = "src/unicode_data.l"
+"Ui.Native.Bidi"      = "src/bidi.l"
+"Ui.Native.LineBreak" = "src/linebreak.l"
 "Ui.Native.Wrap"     = "src/wrap.l"
 "Ui.Native.Layout"   = "src/layout.l"
 "Ui.Native.Interact" = "src/interact.l"
@@ -33,6 +41,8 @@ output_assembly = "Lyric.Ui.Native.Core.dll"
 "Ui.Native.LayoutTests"   = "tests/layout_tests.l"
 "Ui.Native.InteractTests" = "tests/interact_tests.l"
 "Ui.Native.WrapTests"     = "tests/wrap_tests.l"
+"Ui.Native.BidiTests"    = "tests/bidi_tests.l"
+"Ui.Native.LineBreakTests" = "tests/linebreak_tests.l"
 
 [dependencies]
 "Lyric.Ui" = { path = ".." }

@@ -168,8 +168,8 @@ left is verification and release work, tracked in `docs/36`:
    Linux.  Remaining: the multi-threaded coroutine scheduler (G8, #7947), G9
    Windows (#7948; core target D205, processes D208, sockets and TLS D209, self-tests D213, remaining #8435), accessibility through AccessKit (G10, #8430) and pruning
    dependency kernels from the link (#8429); G4 macOS CI, G5 Cocoa/Win32
-   surfaces and the macOS `.app` bundles (#8401, #8419); `lyric-text` bidi and
-   UAX #14 (#8410); `buffer[T]` lazy copy (#8389) and the warn-on-copy lint
+   surfaces and the macOS `.app` bundles (#8401, #8419); `layoutText` reordering
+   mixed-direction paragraphs itself (#8496, D214 did text areas), bidi in single-line inputs (#8497); `buffer[T]` lazy copy (#8389) and the warn-on-copy lint
    (#8395); explicit mutable-record marker (D157 follow-up, #7955).
 2. **Structured tasks (docs/68).**  `Std.Task` handle API (`waitFor`, `isDone`,
    `cancel`, `awaitAll` over handles, `awaitAny`), the handle-escape rule (new
@@ -212,7 +212,7 @@ left is verification and release work, tracked in `docs/36`:
   examples pass in CI) were closed on 2026-10-21; the native CI matrix residual
   is #8419 and the G5 residual is #8404. Deliberately left open because their
   own exit criteria are unmet: #7945 (G6: no real-hardware frame-budget run,
-  bidi in #8410), #7941 (G2: JVM `spawn` copy #8391, verifier array model
+  layoutText bidi in #8496), #7941 (G2: JVM `spawn` copy #8391, verifier array model
   #8394, copy-before-loop lint #8395), #8118 (NPM, items 2-8) and #8149
   (value-generic protected types cannot be `pub`, T0166).
 - Close the ten `review-finding` doc-hygiene issues (#6982, #6999, #7066,

@@ -80,6 +80,16 @@ func say(ctx: PaintCtx, p: Draw.Painter, style: Int, text: String, x: Float, y: 
   }
 }
 
+// A run of one direction, as the Unicode Bidirectional Algorithm gives it.
+func sayRun(ctx: PaintCtx, p: Draw.Painter, style: Int, text: String, rtl: Bool, x: Float, y: Float, c: Rgba): Unit {
+  if text.length > 0 {
+    match Draw.drawTextRun(p, ctx.fonts.chains[style], text, rtl, x, y, col(c)) {
+      case Ok(_) -> ()
+      case Err(_) -> ()
+    }
+  }
+}
+
 // The fonts are opened at the display's scale, so their sizes are in device pixels; positions are
 // in logical pixels.
 func lineOf(ctx: PaintCtx, style: Int): Float {
@@ -396,26 +406,31 @@ func paintTextArea(b: Box, p: Draw.Painter, ctx: PaintCtx, id: String, focused: 
   if focused and e.anchor != e.caret and composing.length == 0 {
     val a = if e.anchor < e.caret { e.anchor } else { e.caret }
     val z = if e.anchor < e.caret { e.caret } else { e.anchor }
-    for span in Wrap.selectionRows(lines, a, z) {
-      val x0 = left + Wrap.offsetInRow(shown, lines, span.row, span.from, widthOfText)
-      val x1 = left + Wrap.offsetInRow(shown, lines, span.row, span.to, widthOfText) +
-        (if span.breakSelected { 6.0f32 } else { 0.0f32 })
-      Draw.fillRect(p, rect(x0, top + span.row.toFloat() * lh, x1 - x0, lh), col(withAlpha(t.accent, 0.3f32)))
+    for band in Wrap.selectionBands(shown, lines, a, z, widthOfText) {
+      Draw.fillRect(
+        p,
+        rect(left + band.x0, top + band.row.toFloat() * lh, band.x1 - band.x0, lh),
+        col(withAlpha(t.accent, 0.3f32))
+      )
     }
   }
   var row = 0
   for l in lines {
     val y = top + row.toFloat() * lh
     if y + lh >= b.y and y <= b.y + b.h {
-      say(ctx, p, styleBody, cpSlice(shown, l.from, l.to), left, y, 0.0f32, t.text)
+      for piece in Wrap.linePieces(shown, lines, row, widthOfText) {
+        sayRun(ctx, p, styleBody, piece.text, piece.level % 2 == 1, left + piece.textX, y, t.text)
+      }
     }
     row = row + 1
   }
   if composing.length > 0 {
-    for span in Wrap.selectionRows(lines, caret, caret + cpCount(composing)) {
-      val x0 = left + Wrap.offsetInRow(shown, lines, span.row, span.from, widthOfText)
-      val x1 = left + Wrap.offsetInRow(shown, lines, span.row, span.to, widthOfText)
-      Draw.fillRect(p, rect(x0, top + span.row.toFloat() * lh + lh - 1.0f32, x1 - x0, 1.0f32), col(t.text))
+    for band in Wrap.selectionBands(shown, lines, caret, caret + cpCount(composing), widthOfText) {
+      Draw.fillRect(
+        p,
+        rect(left + band.x0, top + band.row.toFloat() * lh + lh - 1.0f32, band.x1 - band.x0, 1.0f32),
+        col(t.text)
+      )
     }
   }
   if focused and (ctx.time * 2.0f32).toInt() % 2 == 0 {

@@ -308,6 +308,35 @@ pub func stepCaret(value: in String, e: in TextEdit, delta: in Int, select: in B
   moveCaret(value, c, c.caret + delta, select)
 }
 
+/// Left (`delta` -1) or right (1) by one step on screen in a text area.  On a line with right to
+/// left text that is not a step in the text: the caret moves to the next place to its left or
+/// right, and past the edge of the line to the line before or after in reading order.  With a
+/// selection and no `select`, to the edge of the selection on that side of a left to right line,
+/// the other side of a right to left one.
+pub func stepVisualCaret(
+  value: in String,
+  lines: in List[Wrap.VisualLine],
+  e: in TextEdit,
+  delta: in Int,
+  select: in Bool,
+  widthOf: in (String) -> Float,
+): TextEdit {
+  val c = clampEdit(value, e)
+  if lines.count == 0 {
+    return stepCaret(value, c, delta, select)
+  }
+  val row = Wrap.lineIndexOf(lines, c.caret)
+  if not select and hi(c) > lo(c) {
+    val towardsStart = (delta < 0) != lines[row].rtl
+    val p = if towardsStart { lo(c) } else { hi(c) }
+    return c.copy(caret = p, anchor = p, goalX = -1.0f32)
+  }
+  if not Wrap.isMixedAt(lines, c.caret) {
+    return stepCaret(value, c, delta, select)
+  }
+  moveCaret(value, c, Wrap.stepVisual(value, lines, c.caret, delta, widthOf), select)
+}
+
 pub func selectAll(value: in String, e: in TextEdit): TextEdit {
   e.copy(anchor = 0, caret = cpCount(value))
 }

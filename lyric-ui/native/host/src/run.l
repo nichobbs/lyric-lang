@@ -1001,9 +1001,17 @@ func onTextKey(h: Host, b: Box, key: Int, shift: Bool, cmd: Bool): Unit {
       applyEdit(h, b, Interact.deleteForward(value, e))
     }
   } else if key == keyLeft {
-    h.edits.add(id, Interact.stepCaret(value, e, -1, shift))
+    if b.kind == "textArea" {
+      h.edits.add(id, Interact.stepVisualCaret(value, areaLinesOf(h, b, value), e, -1, shift, widthOfText(h)))
+    } else {
+      h.edits.add(id, Interact.stepCaret(value, e, -1, shift))
+    }
   } else if key == keyRight {
-    h.edits.add(id, Interact.stepCaret(value, e, 1, shift))
+    if b.kind == "textArea" {
+      h.edits.add(id, Interact.stepVisualCaret(value, areaLinesOf(h, b, value), e, 1, shift, widthOfText(h)))
+    } else {
+      h.edits.add(id, Interact.stepCaret(value, e, 1, shift))
+    }
   } else if key == keyHome {
     if b.kind == "textArea" and not cmd {
       h.edits.add(id, Interact.moveToLineEdge(value, areaLinesOf(h, b, value), e, false, shift))
@@ -1532,6 +1540,11 @@ pub func caretRow(hl: Headless): Int {
     case Some(b) -> Wrap.lineIndexOf(areaLinesOf(hl.host, b, b.text), editOf(hl.host, idOfBox(hl.host, b)).caret)
     case None -> 0 - 1
   }
+}
+
+/// The height of one line of text in a text area, in logical pixels.
+pub func areaLineHeight(hl: Headless): Float {
+  hl.host.metrics.lineHeight(0)
 }
 
 /// The vertical scroll of the text area `area`, in logical pixels.

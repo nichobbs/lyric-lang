@@ -477,8 +477,23 @@ pub func drawImageRegion(p: Painter, image: Image, source: Rect, dest: Rect, tin
 pub func drawText(
   p: Painter, fonts: List[Text.Font], text: String, x: Float, y: Float, maxWidth: Float, c: Color
 ): Result[Text.TextLayout, String] {
+  val layout = Text.layoutText(fonts, text, maxWidth * p.scale)
+  drawLayout(p, fonts, layout, x, y, c)
+}
+
+/// Draws `text`, a run of one direction, on one line with its top-left corner at (`x`, `y`): right to
+/// left when `rtl` is true, left to right otherwise, whatever the characters are (`Text.layoutRun`).
+/// This is how a line of mixed-direction text is drawn, a run at a time.  Returns the layout.
+pub func drawTextRun(
+  p: Painter, fonts: List[Text.Font], text: String, rtl: Bool, x: Float, y: Float, c: Color
+): Result[Text.TextLayout, String] {
+  drawLayout(p, fonts, Text.layoutRun(fonts, text, rtl), x, y, c)
+}
+
+func drawLayout(
+  p: Painter, fonts: List[Text.Font], layout: Text.TextLayout, x: Float, y: Float, c: Color
+): Result[Text.TextLayout, String] {
   val k = p.scale
-  val layout = Text.layoutText(fonts, text, maxWidth * k)
   val size = atlasSize.toFloat()
   for g in layout.glyphs {
     val region = match Text.atlasGlyph(p.atlas, fonts[g.font], g.glyph) {

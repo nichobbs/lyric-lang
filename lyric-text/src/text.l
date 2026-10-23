@@ -10,8 +10,10 @@
 //! font's own tables.  Layout is a greedy line breaker over simplified break opportunities
 //! (after a space or hyphen, and between ideographs, kana and Hangul syllables).  A paragraph has
 //! one base direction, taken from its first strong character; right-to-left paragraphs lay their
-//! words out right to left.  Text that mixes directions inside one paragraph is not reordered
-//! (bidirectional text through FriBidi is tracked in #8410).
+//! words out right to left.  Text that mixes directions inside one paragraph is not reordered by
+//! `layoutText`: the caller splits it into runs of one direction with the Unicode Bidirectional
+//! Algorithm (`Ui.Native.Bidi`, used by the native lyric-ui host's text areas) and lays each out
+//! with `layoutRun`, which takes the direction instead of guessing it (#8410).
 //!
 //! Glyphs rasterise to 8-bit coverage bitmaps and pack into a CPU-side `Atlas` that a renderer
 //! uploads as an R8 texture.
@@ -26,6 +28,12 @@ import Text.Kernel.Freetype as Ft
 import Text.Kernel.Harfbuzz as Hb
 
 // FT_LOAD_NO_HINTING: advances and outlines at the exact scale, so shaping and rasterising agree.
+val dirGuess: Int = 0
+
+val dirLtr: Int = 4
+
+val dirRtl: Int = 5
+
 val loadNoHinting: Int = 2
 
 val loadRender: Int = 4
@@ -298,11 +306,16 @@ func codepointAt(u: Utf8, i: Int): Int {
 // Shaping.
 // ---------------------------------------------------------------------------
 /// Shapes the byte range `[start, stop)` of `u` with `f`, with the rest of the text as context.
-/// Direction, script and language are guessed from the range's characters.
+/// Script and language are guessed from the range's characters, and so is the direction unless
+/// `dir` is `dirLtr` or `dirRtl` (HarfBuzz's own numbers): a right to left buffer is shaped from the
+/// text in reading order, its glyphs come back left to right, and its mirrored characters are swapped.
 @unsafe_ffi
-func shapeRange(f: Font, u: Utf8, start: Int, stop: Int): List[ShapedGlyph] {
+func shapeRange(f: Font, u: Utf8, start: Int, stop: Int, dir: Int): List[ShapedGlyph] {
   val buf = Hb.hb_buffer_create()
   Hb.hb_buffer_add_utf8(buf, longToPtr(u.ptr), u.length, start, stop - start)
+  if dir != dirGuess {
+    Hb.hb_buffer_set_direction(buf, dir)
+  }
   Hb.hb_buffer_guess_segment_properties(buf)
   Hb.hb_shape(longToPtr(f.hb), buf, nativeNullPtr(), 0)
   val count = Hb.hb_buffer_get_length(buf)
@@ -333,7 +346,7 @@ func shapeRange(f: Font, u: Utf8, start: Int, stop: Int): List[ShapedGlyph] {
 @unsafe_ffi
 pub func shape(f: Font, text: String): List[ShapedGlyph] {
   val u = utf8Of(text)
-  val glyphs = shapeRange(f, u, 0, u.length)
+  val glyphs = shapeRange(f, u, 0, u.length, dirGuess)
   utf8Free(u)
   glyphs
 }
@@ -574,7 +587,7 @@ func fontFor(fonts: List[Font], cp: Int): Int {
 }
 
 // Shapes the byte range as one segment, split into runs where the chain's font changes.
-func shapeSegment(fonts: List[Font], u: Utf8, start: Int, stop: Int, isSpace: Bool): Seg {
+func shapeSegment(fonts: List[Font], u: Utf8, start: Int, stop: Int, isSpace: Bool, dir: Int): Seg {
   val runs: List[Run] = newList()
   var runStart = start
   var runFont = -1
@@ -583,7 +596,7 @@ func shapeSegment(fonts: List[Font], u: Utf8, start: Int, stop: Int, isSpace: Bo
     val cp = codepointAt(u, i)
     val f = if isNeutralCp(cp) and runFont >= 0 { runFont } else { fontFor(fonts, cp) }
     if runFont >= 0 and f != runFont {
-      val g = shapeRange(fonts[runFont], u, runStart, i)
+      val g = shapeRange(fonts[runFont], u, runStart, i, dir)
       runs.add(Run(font = runFont, glyphs = g, width = runWidth(g)))
       runStart = i
     }
@@ -594,7 +607,7 @@ func shapeSegment(fonts: List[Font], u: Utf8, start: Int, stop: Int, isSpace: Bo
     runFont = 0
   }
   if stop > runStart or runs.count == 0 {
-    val g = shapeRange(fonts[runFont], u, runStart, stop)
+    val g = shapeRange(fonts[runFont], u, runStart, stop, dir)
     runs.add(Run(font = runFont, glyphs = g, width = runWidth(g)))
   }
   var w = 0.0f32
@@ -605,7 +618,7 @@ func shapeSegment(fonts: List[Font], u: Utf8, start: Int, stop: Int, isSpace: Bo
 }
 
 // Splits a paragraph at break opportunities into words and space runs, shaped.
-func segmentParagraph(fonts: List[Font], u: Utf8, start: Int, stop: Int): List[Seg] {
+func segmentParagraph(fonts: List[Font], u: Utf8, start: Int, stop: Int, dir: Int): List[Seg] {
   val segs: List[Seg] = newList()
   var segStart = start
   var prevCp = -1
@@ -619,7 +632,7 @@ func segmentParagraph(fonts: List[Font], u: Utf8, start: Int, stop: Int): List[S
         not isSpaceCp(prevCp) and
         not isSpaceCp(cp)
       if spaceChange or afterHyphen or cjkBreak {
-        segs.add(shapeSegment(fonts, u, segStart, i, isSpaceCp(prevCp)))
+        segs.add(shapeSegment(fonts, u, segStart, i, isSpaceCp(prevCp), dir))
         segStart = i
       }
     }
@@ -627,7 +640,7 @@ func segmentParagraph(fonts: List[Font], u: Utf8, start: Int, stop: Int): List[S
     i = scalarEnd(u, i)
   }
   if stop > segStart {
-    segs.add(shapeSegment(fonts, u, segStart, stop, isSpaceCp(prevCp)))
+    segs.add(shapeSegment(fonts, u, segStart, stop, isSpaceCp(prevCp), dir))
   }
   segs
 }
@@ -669,11 +682,40 @@ func placeLine(
 
 /// Lays `text` out in a column `maxWidth` pixels wide (no wrapping when it is not positive),
 /// breaking lines at spaces, hyphens and between ideographs, and at `\n`.  `fonts` is the
-/// fallback chain, its first font setting the line height.
+/// fallback chain, its first font setting the line height.  Each paragraph has the direction of its
+/// first strong character; text that mixes directions inside a paragraph is reordered by the caller
+/// (`Ui.Native.Wrap` does it with the Unicode Bidirectional Algorithm) and drawn a run at a time with
+/// `layoutRun`.
 @unsafe_ffi
 pub func layoutText(fonts: List[Font], text: String, maxWidth: Float): TextLayout
   requires: fonts.count > 0
 {
+  layoutDirected(fonts, text, maxWidth, dirGuess)
+}
+
+/// Lays `text` out on one line in the direction `rtl` says, whatever its characters are: a run of
+/// text that is all in one direction, as the Unicode Bidirectional Algorithm gives it.  Right to left
+/// text is shaped from its reading order, so Arabic letters join, its words are placed right to
+/// left, and its brackets and other mirrored characters are swapped, even when the run holds only
+/// neutral characters; left to right text keeps its order even when it holds Hebrew or Arabic.
+/// `text` has no newline.  The glyphs are placed from the left edge of the line.
+@unsafe_ffi
+pub func layoutRun(fonts: List[Font], text: String, rtl: Bool): TextLayout
+  requires: fonts.count > 0
+{
+  layoutDirected(fonts, text, 0.0f32, if rtl { dirRtl } else { dirLtr })
+}
+
+/// The width of `text` as `layoutRun` lays it out.
+@unsafe_ffi
+pub func measureRun(fonts: List[Font], text: String, rtl: Bool): Float
+  requires: fonts.count > 0
+{
+  layoutRun(fonts, text, rtl).width
+}
+
+@unsafe_ffi
+func layoutDirected(fonts: List[Font], text: String, maxWidth: Float, dir: Int): TextLayout {
   val u = utf8Of(text)
   val placed: List[PlacedGlyph] = newList()
   val lead = fonts[0]
@@ -686,8 +728,8 @@ pub func layoutText(fonts: List[Font], text: String, maxWidth: Float): TextLayou
     while pe < u.length and nativeLoadByte(longToPtr(u.ptr), pe.toLong()) != 10u8 {
       pe = pe + 1
     }
-    val rtl = paragraphIsRtl(u, ps, pe)
-    val segs = segmentParagraph(fonts, u, ps, pe)
+    val rtl = if dir == dirGuess { paragraphIsRtl(u, ps, pe) } else { dir == dirRtl }
+    val segs = segmentParagraph(fonts, u, ps, pe, dir)
     var line: List[Seg] = newList()
     var lineWidth = 0.0f32
     var pendingSpace: List[Seg] = newList()
