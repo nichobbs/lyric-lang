@@ -104,6 +104,7 @@ for t in \
   lyric-compiler/lyric/inout_receiver_self_test.l \
   lyric-compiler/lyric/inout_array_element_self_test.l \
   lyric-compiler/lyric/dot_named_byref_self_test.l \
+  lyric-compiler/lyric/dot_named_receivers_self_test.l \
   lyric-compiler/lyric/dot_named_primitive_self_test.l \
   lyric-compiler/lyric/type_qualified_method_self_test.l \
   lyric-compiler/lyric/protected_byref_self_test.l \

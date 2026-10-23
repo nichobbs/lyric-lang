@@ -242,6 +242,7 @@ SELF_TESTS=(
   lyric-compiler/lyric/propagate_ctor_operand_try_self_test.l
   lyric-compiler/lyric/inout_array_element_try_self_test.l
   lyric-compiler/lyric/dot_named_byref_self_test.l
+  lyric-compiler/lyric/dot_named_receivers_self_test.l
   lyric-compiler/lyric/protected_byref_self_test.l
   lyric-compiler/lyric/inout_aliasing_self_test.l
   lyric-compiler/lyric/inout_aliasing_closure_self_test.l

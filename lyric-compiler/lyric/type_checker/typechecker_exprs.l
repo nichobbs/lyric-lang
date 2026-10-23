@@ -6355,6 +6355,49 @@ func resolveExprPath(
   TyError
 }
 
+// The enum a qualified case value `Color.Red` / `Pkg.Color.Red` is a value of
+// (#8254).  Typed as the enum, it is a receiver the method-call resolution
+// binds dot-named functions of; left untyped, `val c = Color.Red; c.num()`
+// reached codegen unresolved.  A local named like the type is a field chain,
+// not a type.
+func qualifiedEnumCaseType(sc: in Scope, tbl: in SymbolTable, recv: in Expr, name: in String): Option[Type] {
+  val segs: List[String] = newList()
+  if not flattenCalleePathSegs(recv, segs) or segs.count == 0 {
+    return None
+  }
+  match scopeTryFind(sc, segs[0]) {
+    case Some(_) -> return None
+    case None -> ()
+  }
+  val typeName = segs[segs.count - 1]
+  val found: Option[Symbol] = if segs.count == 1 {
+    symTableTryFindOne(tbl, typeName)
+  } else {
+    val quals: List[String] = newList()
+    var qi = 0
+    while qi < segs.count - 1 {
+      quals.add(segs[qi])
+      qi = qi + 1
+    }
+    symTableTryFindInPackage(tbl, modulePathJoin(quals), typeName)
+  }
+  match found {
+    case Some(sym) -> match sym.kind {
+      case DKEnum(eid, decl) -> {
+        for c in decl.cases {
+          if c.name == name {
+            val noArgs: List[Type] = newList()
+            return Some(value = TyUser(id = eid, name = sym.name, args = noArgs))
+          }
+        }
+        None
+      }
+      case _ -> None
+    }
+    case None -> None
+  }
+}
+
 // A quantifier's `where` guard and body are propositions (#8322): T0132,
 // the contract-clause type error, when either is not `Bool`.  An operand
 // already in error, or one that never yields, was reported where it fails.
@@ -14368,7 +14411,7 @@ func receiverNeedsPlainDotCall(tbl: in SymbolTable, recvTy: in Option[Type]): Bo
   match recvTy {
     case Some(rt) -> match unrefine(rt) {
       case TyPrim(_) -> true
-      case TyUser(tid, _, _) -> isDistinctTypeId(tbl, tid)
+      case TyUser(tid, _, _) -> isDistinctTypeId(tbl, tid) or isEnumTypeId(tbl, tid)
       case _ -> false
     }
     case None -> false
@@ -14378,6 +14421,15 @@ func receiverNeedsPlainDotCall(tbl: in SymbolTable, recvTy: in Option[Type]): Bo
 func isDistinctTypeId(tbl: in SymbolTable, tid: in TypeId): Bool {
   match symTableTypeSymbolOf(tbl, tid) {
     case Some(sym) -> match sym.kind { case DKDistinctType(_, _) -> true; case _ -> false }
+    case None -> false
+  }
+}
+
+// An enum is a bare tag on every backend: it has no methods to dispatch a
+// dot-named function to (#8254).
+func isEnumTypeId(tbl: in SymbolTable, tid: in TypeId): Bool {
+  match symTableTypeSymbolOf(tbl, tid) {
+    case Some(sym) -> match sym.kind { case DKEnum(_, _) -> true; case _ -> false }
     case None -> false
   }
 }
@@ -16500,6 +16552,10 @@ func inferExprCore(
         }
       }
       checkQualifiedMemberRef(tbl, sc, recv, name, e.span, diag)
+      match qualifiedEnumCaseType(sc, tbl, recv, name) {
+        case Some(enumTy) -> return enumTy
+        case None -> ()
+      }
       // A package-qualified module-level `val` (`Pkg.v`, the file's own
       // package included) reads as the bare name does (#8283).
       match moduleValSymbolOfExpr(sc, tbl, e) {
