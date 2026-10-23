@@ -6,7 +6,9 @@
 //! it through the environment:
 //!
 //!   - `LYRIC_PLUGIN_FIXTURE_DIR`: the plugin directory;
-//!   - `LYRIC_PLUGIN_FIXTURE_RUNTIME`: `dotnet`, `jvm` or `native`;
+//!   - `LYRIC_PLUGIN_FIXTURE_RUNTIME`: `dotnet`, `jvm`, `native` or `wasm`
+//!     (a wasm32-wasi module run under `wasmtime`, found on PATH or at
+//!     `$LYRIC_WASMTIME`);
 //!   - `LYRIC_PLUGIN_FIXTURE_FILE`: the payload, relative to the directory.
 //!
 //! The suite probes the payload with `--lyric-plugin-manifest`, adds the
@@ -51,6 +53,8 @@ func fixturePayload(): PluginPayload {
     ManagedPayload(runtime = "dotnet", command = ["dotnet", "exec", file])
   } else if runtime == "jvm" {
     ManagedPayload(runtime = "jvm", command = ["java", "-jar", file])
+  } else if runtime == "wasm" {
+    WasmPayload(wasmModule = file)
   } else {
     val p = currentPluginPlatform()
     NativePayload(os = p.os, arch = p.arch, command = [file])
@@ -60,7 +64,7 @@ func fixturePayload(): PluginPayload {
 // The fixture's manifest: what the plugin prints for `--lyric-plugin-manifest`,
 // plus the payload under test.
 func probedManifest(): PluginManifest {
-  val argv = match pluginLaunchCommand(fixturePayload(), fixtureDir(), None, 1i64) {
+  val argv = match pluginLaunchCommand(fixturePayload(), fixtureDir(), findWasmtime(), 268435456i64) {
     case Ok(a) -> a
     case Err(e) -> panic("launch command: " + e)
   }
