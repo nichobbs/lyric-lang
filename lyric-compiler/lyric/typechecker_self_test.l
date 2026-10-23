@@ -3528,6 +3528,34 @@ test "buffer[T] resolves, indexes and has a length" {
   assertEqualInt(diagCount(parseCheck(loop)), 0, "for: " + diagCodesOf(parseCheck(loop)))
 }
 
+// docs/67 §9 (#8395): a buffer copied out of another place and written by the
+// loop right after it.
+test "W0030: a buffer copy written by the loop right after it" {
+  val head = "package P\nfunc f(a: in buffer[Int]): Int {\n"
+  val tail = "  b[0]\n}\n"
+  val forLoop = head + "  var b = a\n  for i in 0 ..< 3 {\n    b[i] = i\n  }\n" + tail
+  assertEqualInt(countDiagCode(parseCheck(forLoop), "W0030"), 1, "for: " + diagCodesOf(parseCheck(forLoop)))
+  val nested = head +
+    "  var b: buffer[Int] = a\n  var i = 0\n  while i < 3 {\n    if i > 0 {\n      b[i] += 1\n    }\n    i = i + 1\n  }\n" +
+    tail
+  val nestedBad = head + "  var b: buffer[Int] = a\n  while true {\n    if true {\n      b[0] += 1\n    }\n  }\n" + tail
+  assertEqualInt(countDiagCode(parseCheck(nestedBad), "W0030"), 1, "while + if: " + diagCodesOf(parseCheck(nestedBad)))
+  assertEqualInt(countDiagCode(parseCheck(nested), "W0030"), 0, "loop not directly after the var")
+}
+
+test "W0030 stays silent when the copy is not followed by a writing loop" {
+  val head = "package P\nimport Std.Buffer\nfunc f(a: in buffer[Int]): Int {\n"
+  val tail = "  b[0]\n}\n"
+  val fresh = head + "  var b = filled(3, 0)\n  for i in 0 ..< 3 {\n    b[i] = i\n  }\n" + tail
+  assertEqualInt(countDiagCode(parseCheck(fresh), "W0030"), 0, "a fresh buffer is not a copy")
+  val readOnly = head + "  var b = a\n  var t = 0\n  for i in 0 ..< 3 {\n    t = t + b[i]\n  }\n" + tail
+  assertEqualInt(countDiagCode(parseCheck(readOnly), "W0030"), 0, "a read-only loop")
+  val otherTarget = head + "  var b = a\n  var c = filled(3, 0)\n  for i in 0 ..< 3 {\n    c[i] = i\n  }\n" + tail
+  assertEqualInt(countDiagCode(parseCheck(otherTarget), "W0030"), 0, "the loop writes another buffer")
+  val valBinding = head + "  val b = a\n  for i in 0 ..< 3 {\n    var c = filled(1, 0)\n    c[0] = i\n  }\n" + tail
+  assertEqualInt(countDiagCode(parseCheck(valBinding), "W0030"), 0, "a val never writes")
+}
+
 test "a buffer element must be Plain: T0173" {
   for arg in ["String", "array[2, String]", "slice[Int]"] {
     val src = "package P\nimport Std.Collections\nfunc f(b: in buffer[" + arg + "]): Unit {\n}\n"

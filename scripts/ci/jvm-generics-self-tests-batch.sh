@@ -154,6 +154,7 @@ for t in \
   lyric-compiler/lyric/stdlib_parity_self_test.l \
   lyric-compiler/lyric/fixed_array_panic_self_test.l \
   lyric-compiler/lyric/buffer_self_test.l \
+  lyric-compiler/lyric/buffer_spawn_self_test.l \
   lyric-compiler/lyric/buffer_panic_self_test.l \
   lyric-compiler/lyric/bench_alloc_self_test.l \
   lyric-compiler/lyric/record_eq_self_test.l \
