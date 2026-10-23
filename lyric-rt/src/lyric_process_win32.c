@@ -6,8 +6,8 @@
  * how it is met:
  *
  *   - The program is resolved here (a path with a separator as given, a bare
- *     name through PATH), with ".exe" tried first for a name without an
- *     extension, and handed to CreateProcessW as lpApplicationName, so the
+ *     name through PATH), with ".exe" appended first unless the name already
+ *     ends in ".exe" or ".com", and handed to CreateProcessW as lpApplicationName, so the
  *     OS performs no search of its own (no current-directory lookup).  No
  *     shell is ever involved: a batch file (.bat/.cmd), which Windows would
  *     run through cmd.exe and re-parse its arguments, is refused with
@@ -16,7 +16,7 @@
  *     runtime use to split a command line, so the child receives exactly
  *     the argv the caller passed.
  *   - The parent's pipe ends are overlapped named pipes (anonymous pipes
- *     cannot be waited on), and the child's ends are passed through
+ *     cannot be waited on) with a random name and an owner-only DACL, and the child's ends are passed through
  *     PROC_THREAD_ATTRIBUTE_HANDLE_LIST, so a concurrent spawn on another
  *     thread never inherits them (the POSIX twin's O_CLOEXEC).
  *   - Captured and piped children start in a Job Object, so a deadline or an
@@ -179,24 +179,62 @@ static void winpipe_pump_read(WinPipe* p, ProcBuf* buf) {
 
 static volatile LONG64 pipe_serial = 0;
 
+/* Security attributes giving only this process's user access to a pipe, so
+ * no other local account can open the child's end first (and read stdin
+ * content); NULL when the token cannot be read, which leaves the default
+ * descriptor. */
+static SECURITY_ATTRIBUTES* owner_only_pipe_attributes(void) {
+    static INIT_ONCE once = INIT_ONCE_STATIC_INIT;
+    static SECURITY_ATTRIBUTES sa;
+    static SECURITY_DESCRIPTOR sd;
+    static int ready = 0;
+    BOOL pending = FALSE;
+    if (!InitOnceBeginInitialize(&once, 0, &pending, NULL)) return NULL;
+    if (pending) {
+        HANDLE token = NULL;
+        BYTE user_buf[256];
+        DWORD len = 0;
+        static BYTE acl_buf[256];
+        if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token) &&
+            GetTokenInformation(token, TokenUser, user_buf, sizeof user_buf, &len)) {
+            PSID user = ((TOKEN_USER*)user_buf)->User.Sid;
+            PACL acl = (PACL)acl_buf;
+            ready = InitializeAcl(acl, sizeof acl_buf, ACL_REVISION) &&
+                    AddAccessAllowedAce(acl, ACL_REVISION, GENERIC_ALL, user) &&
+                    InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION) &&
+                    SetSecurityDescriptorDacl(&sd, TRUE, acl, FALSE);
+        }
+        if (token) CloseHandle(token);
+        sa.nLength = sizeof sa;
+        sa.lpSecurityDescriptor = &sd;
+        sa.bInheritHandle = FALSE;
+        InitOnceComplete(&once, 0, NULL);
+    }
+    return ready ? &sa : NULL;
+}
+
 /* A connected pipe: `parent` is the overlapped server end the runtime keeps
  * (inbound when the parent reads, outbound when it writes); `*child` is the
  * synchronous, inheritable client end the child receives.  0 on success. */
 static int make_pipe(WinPipe* parent, HANDLE* child, int parent_reads) {
     winpipe_init(parent);
     *child = INVALID_HANDLE_VALUE;
-    wchar_t name[96];
+    wchar_t name[128];
     HANDLE server = INVALID_HANDLE_VALUE;
     for (int attempt = 0; attempt < 16 && server == INVALID_HANDLE_VALUE; attempt++) {
         LONG64 serial = InterlockedIncrement64(&pipe_serial);
-        _snwprintf(name, sizeof name / sizeof name[0], L"\\\\.\\pipe\\lyric-rt-%lu-%lld",
-                   (unsigned long)GetCurrentProcessId(), (long long)serial);
+        uint8_t r[8] = {0};
+        lyric_secure_random(r, sizeof r);
+        _snwprintf(name, sizeof name / sizeof name[0],
+                   L"\\\\.\\pipe\\lyric-rt-%lu-%lld-%02x%02x%02x%02x%02x%02x%02x%02x",
+                   (unsigned long)GetCurrentProcessId(), (long long)serial, r[0], r[1], r[2], r[3], r[4], r[5], r[6],
+                   r[7]);
         name[sizeof name / sizeof name[0] - 1] = L'\0';
         server = CreateNamedPipeW(name,
                                   (parent_reads ? PIPE_ACCESS_INBOUND : PIPE_ACCESS_OUTBOUND) |
                                       FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
                                   PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-                                  1, LYRIC_PIPE_BUFFER, LYRIC_PIPE_BUFFER, 0, NULL);
+                                  1, LYRIC_PIPE_BUFFER, LYRIC_PIPE_BUFFER, 0, owner_only_pipe_attributes());
         if (server == INVALID_HANDLE_VALUE && GetLastError() != ERROR_ACCESS_DENIED &&
             GetLastError() != ERROR_PIPE_BUSY) {
             break; /* not a name collision */
@@ -256,19 +294,15 @@ static int has_separator(const char* s) {
     return 0;
 }
 
-/* True when the last path component of `w` has an extension. */
-static int has_extension(const wchar_t* w) {
-    const wchar_t* base = w;
-    for (const wchar_t* c = w; *c; c++) {
-        if (*c == L'\\' || *c == L'/' || *c == L':') base = c + 1;
-    }
-    return wcschr(base, L'.') != NULL;
-}
-
 static int ends_with_ci(const wchar_t* w, const wchar_t* suffix) {
     size_t n = wcslen(w);
     size_t m = wcslen(suffix);
     return n >= m && _wcsicmp(w + n - m, suffix) == 0;
+}
+
+/* True when `w` already ends in an executable image extension. */
+static int has_exe_extension(const wchar_t* w) {
+    return ends_with_ci(w, L".exe") || ends_with_ci(w, L".com");
 }
 
 static int is_regular_file(const wchar_t* w) {
@@ -293,10 +327,11 @@ static wchar_t* try_candidate(const wchar_t* base, int with_exe) {
     return NULL;
 }
 
-/* `base` itself when it has an extension; otherwise `base`.exe, then
- * `base` as is (CreateProcessW runs an extensionless image too). */
+/* `base` itself when it ends in `.exe` or `.com`; otherwise `base`.exe,
+ * then `base` as is (so `python3.12` finds `python3.12.exe`, and
+ * CreateProcessW runs an image with any other name too). */
 static wchar_t* resolve_candidate(const wchar_t* base) {
-    if (has_extension(base)) return try_candidate(base, 0);
+    if (has_exe_extension(base)) return try_candidate(base, 0);
     wchar_t* w = try_candidate(base, 1);
     return w ? w : try_candidate(base, 0);
 }

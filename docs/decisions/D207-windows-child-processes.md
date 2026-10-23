@@ -10,8 +10,9 @@ stdin content and a deadline, inherited-stdio runs, the nonblocking capture op t
 and long-lived piped children with bounded line reads.
 
 1. **The runtime resolves the program, and the OS does no search.** A path with a separator (`\`, `/` or `:`) is
-   used as given; a bare name is looked up in the `PATH` directories, in order. For a name without an
-   extension `<name>.exe` is tried first, then the name itself. The resolved path is passed to `CreateProcessW`
+   used as given; a bare name is looked up in the `PATH` directories, in order. Unless the name already ends in
+   `.exe` or `.com`, `<name>.exe` is tried first, then the name itself, so a dot elsewhere in the name
+   (`python3.12`) is not mistaken for an extension. The resolved path is passed to `CreateProcessW`
    as `lpApplicationName`, so the current directory and the application directory are never searched (the
    lookup `CreateProcessW` would otherwise do, and a well-known way to run a planted program). Nothing found is
    `ENOENT`.
@@ -23,8 +24,10 @@ and long-lived piped children with bounded line reads.
    backslashes before a quote or the closing quote are doubled. `argv[0]` is the program as the caller gave it,
    quoted. A NUL byte, which a command line cannot carry, is `EINVAL`; a line past 32,767 characters is `E2BIG`.
 4. **Overlapped named pipes, and handle lists.** Anonymous pipes cannot be waited on or read without blocking,
-   so each pipe is a uniquely named, single-instance, local-only pipe whose parent end is overlapped and whose
-   child end is a synchronous handle. The child's ends are inherited through
+   so each pipe is a uniquely and randomly named, single-instance, local-only pipe whose parent end is
+   overlapped and whose child end is a synchronous handle. Its DACL grants access to this process's user only,
+   so no other local account can open the child's end first and read stdin content; the first open failing
+   then fails the spawn. The child's ends are inherited through
    `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`, so a child started at the same time on another thread inherits none of
    them (the POSIX twin's `O_CLOEXEC`). The capture loop waits on the pipes' events with the POSIX twin's
    deadlines and its post-kill drain budget; the op and the piped reads keep one read in flight, so a bounded
@@ -40,7 +43,11 @@ and long-lived piped children with bounded line reads.
    kernels' timeout handling is unchanged. A child's own status is reported as is, and a crash as its NTSTATUS
    (`0xC0000005` becomes a negative 32-bit value). A kill after the child has already exited leaves its status
    alone and is not reported as a timeout (#5107).
-7. **`lyric_process_piped_close` releases the process handle,** as `Std.Process.pipedClose` documents. Later
+7. **Error mapping.** `lyric_win32_errno`, now shared by every Win32 file of the runtime, maps
+   `ERROR_INVALID_PARAMETER` to `EINVAL`, `ERROR_BROKEN_PIPE` and `ERROR_NO_DATA` to `EPIPE`, and the image and
+   name-length errors to `ENOEXEC` and `ENAMETOOLONG`; file-system callers that used to report those as `EIO`
+   report the closer code too.
+8. **`lyric_process_piped_close` releases the process handle,** as `Std.Process.pipedClose` documents. Later
    calls on the handle report the child as gone.
 
 ## Rationale

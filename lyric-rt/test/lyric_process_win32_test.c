@@ -344,6 +344,17 @@ static void test_run_resolution(void) {
     lyric_release(out);
     lyric_release(err);
 
+    /* A dot in the name is not an extension: helper.v2 runs helper.v2.exe. */
+    char dotted[MAX_PATH * 3];
+    snprintf(dotted, sizeof dotted, "%s\\helper.v2.exe", dir);
+    CHECK(copy_utf8(self_path, dotted) == 0);
+    char dotted_stem[MAX_PATH * 3];
+    snprintf(dotted_stem, sizeof dotted_stem, "%s\\helper.v2", dir);
+    CHECK(lyric_process_run(dotted_stem, args, NULL, -1, &code, &out, &err, NULL) == 0);
+    CHECK(code == 0);
+    lyric_release(out);
+    lyric_release(err);
+
     /* A bare name is looked up on PATH, never in the current directory. */
     wchar_t old_path[32767];
     DWORD had = GetEnvironmentVariableW(L"PATH", old_path, 32767);
@@ -380,6 +391,7 @@ static void test_run_resolution(void) {
     lyric_release(args);
 
     CHECK(lyric_file_delete(copy) == 0);
+    CHECK(lyric_file_delete(dotted) == 0);
     CHECK(lyric_file_delete(bat) == 0);
     CHECK(lyric_dir_remove(dir) == 0);
 }

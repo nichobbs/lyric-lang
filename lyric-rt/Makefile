@@ -158,10 +158,11 @@ WINE        ?=
 WIN_CFLAGS  := --target=$(WIN_TRIPLE) -O2 -std=c11 -Wall -Wextra -Werror \
                -D_CRT_SECURE_NO_WARNINGS -D_CRT_NONSTDC_NO_WARNINGS
 WIN_LDFLAGS := --target=$(WIN_TRIPLE) -fuse-ld=lld
-# System import libraries the runtime calls into: CNG entropy (bcrypt) and
-# the UTF-16 command-line parser (shell32).  The compiler's native link step
-# passes the same list.
-WIN_LIBS    := -lbcrypt -lshell32
+# System import libraries the runtime calls into: CNG entropy (bcrypt), the
+# UTF-16 command-line parser (shell32), and the security descriptors of the
+# child-process pipes (advapi32).  The compiler's native link step passes the
+# same list.
+WIN_LIBS    := -lbcrypt -lshell32 -ladvapi32
 WIN_SRCS    := src/lyric_rt.c src/lyric_string.c src/lyric_weak.c \
                src/lyric_win32.c src/lyric_collections.c src/lyric_async.c \
                src/lyric_fs_win32.c src/lyric_process_win32.c src/lyric_net_unsupported.c \
