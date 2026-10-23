@@ -302,8 +302,11 @@ Windows runtime archive (`make -C lyric-rt windows`, or CMake on Windows:
 an MSVC CRT and Windows SDK. The output is `hello.exe`. Text crosses the Win32
 API as UTF-16, so file names, arguments, environment variables and console
 output with non-ASCII characters work whatever the console code page. Child
-processes, sockets and TLS are not ported yet: a program that uses them
-builds, and the spawn or connect fails with its usual typed error.
+processes work as on Linux; a bare program name is looked up on `PATH` (never
+in the current directory), and a batch file (`.bat`, `.cmd`) is refused, since
+Windows would run it through `cmd.exe`: spawn `cmd.exe` with `/c` yourself if
+that is what you want. Sockets and TLS are not ported yet: a program that uses
+them builds, and the connect fails with its usual typed error.
 
 To call a program from JavaScript add `--shape module`; to publish it as a WebAssembly
 component add `--shape component`. Both, host imports, the `[wasm]` and `[npm]` manifest

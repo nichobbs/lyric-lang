@@ -26,9 +26,9 @@
 #   make windows        -> build-x86_64-pc-windows-msvc/lyric_rt.lib
 #   make test-windows   [WINE=wine when cross-compiling]
 #
-# lyric_posix.c and lyric_fs.c are replaced by their Win32 twins
-# (lyric_win32.c, lyric_fs_win32.c); processes, sockets and TLS use the
-# *_unsupported.c twins until their Win32 ports land.
+# lyric_posix.c, lyric_fs.c and lyric_process.c are replaced by their Win32
+# twins (lyric_win32.c, lyric_fs_win32.c, lyric_process_win32.c); sockets and
+# TLS use lyric_net_unsupported.c until their Win32 port lands (#8434).
 
 CC      ?= clang
 AR      ?= ar
@@ -158,22 +158,26 @@ WINE        ?=
 WIN_CFLAGS  := --target=$(WIN_TRIPLE) -O2 -std=c11 -Wall -Wextra -Werror \
                -D_CRT_SECURE_NO_WARNINGS -D_CRT_NONSTDC_NO_WARNINGS
 WIN_LDFLAGS := --target=$(WIN_TRIPLE) -fuse-ld=lld
-# System import libraries the runtime calls into: CNG entropy (bcrypt) and
-# the UTF-16 command-line parser (shell32).  The compiler's native link step
-# passes the same list.
-WIN_LIBS    := -lbcrypt -lshell32
+# System import libraries the runtime calls into: CNG entropy (bcrypt), the
+# UTF-16 command-line parser (shell32), and the security descriptors of the
+# child-process pipes (advapi32).  The compiler's native link step passes the
+# same list.
+WIN_LIBS    := -lbcrypt -lshell32 -ladvapi32
 WIN_SRCS    := src/lyric_rt.c src/lyric_string.c src/lyric_weak.c \
                src/lyric_win32.c src/lyric_collections.c src/lyric_async.c \
-               src/lyric_fs_win32.c src/lyric_process_unsupported.c src/lyric_net_unsupported.c \
+               src/lyric_fs_win32.c src/lyric_process_win32.c src/lyric_net_unsupported.c \
                src/lyric_parallel.c
 WIN_OBJS    := $(WIN_SRCS:src/%.c=$(WIN_BUILD)/%.obj)
 
 $(WIN_BUILD)/%.obj: src/%.c include/lyric_rt.h src/lyric_win32_internal.h | $(WIN_BUILD)
 	$(WIN_CC) $(WIN_CFLAGS) -Iinclude -c $< -o $@
 
-$(WIN_BUILD)/lyric_string.obj: src/lyric_unicode_case_tables.inc
+$(WIN_BUILD)/lyric_string.obj: src/lyric_unicode_case_tables.inc src/lyric_unicode_category_tables.inc
 
+# Recreated from scratch: `ar r` never drops a member, so an object removed
+# from WIN_SRCS would otherwise linger in the archive.
 $(WIN_BUILD)/lyric_rt.lib: $(WIN_OBJS)
+	rm -f $@
 	$(WIN_AR) rcs $@ $(WIN_OBJS)
 
 $(WIN_BUILD):
@@ -181,14 +185,17 @@ $(WIN_BUILD):
 
 windows: $(WIN_BUILD)/lyric_rt.lib
 
-# The unit tests that need fork, signals, POSIX file modes or child
-# processes are compiled out under _WIN32; test/lyric_win32_test.c covers
-# the Win32-only behaviour (UTF-16 paths, reparse points, console mode).
+# The unit tests that need fork, signals, POSIX file modes or /bin/sh are
+# compiled out under _WIN32; test/lyric_win32_test.c covers the Win32-only
+# behaviour (UTF-16 paths, reparse points, console mode) and
+# test/lyric_process_win32_test.c the Win32 process layer.
 test-windows: $(WIN_BUILD)/lyric_rt.lib
 	$(WIN_CC) $(WIN_CFLAGS) $(WIN_LDFLAGS) -Iinclude test/lyric_rt_test.c $(WIN_BUILD)/lyric_rt.lib $(WIN_LIBS) -o $(WIN_BUILD)/lyric_rt_test.exe
 	$(WINE) $(WIN_BUILD)/lyric_rt_test.exe
 	$(WIN_CC) $(WIN_CFLAGS) $(WIN_LDFLAGS) -Iinclude test/lyric_win32_test.c $(WIN_BUILD)/lyric_rt.lib $(WIN_LIBS) -o $(WIN_BUILD)/lyric_win32_test.exe
 	$(WINE) $(WIN_BUILD)/lyric_win32_test.exe
+	$(WIN_CC) $(WIN_CFLAGS) $(WIN_LDFLAGS) -Iinclude test/lyric_process_win32_test.c $(WIN_BUILD)/lyric_rt.lib $(WIN_LIBS) -o $(WIN_BUILD)/lyric_process_win32_test.exe
+	$(WINE) $(WIN_BUILD)/lyric_process_win32_test.exe
 	$(WIN_CC) $(WIN_CFLAGS) $(WIN_LDFLAGS) -Iinclude test/lyric_parallel_test.c $(WIN_BUILD)/lyric_rt.lib $(WIN_LIBS) -o $(WIN_BUILD)/lyric_parallel_test.exe
 	$(WINE) $(WIN_BUILD)/lyric_parallel_test.exe
 	LYRIC_THREADS=1 $(WINE) $(WIN_BUILD)/lyric_parallel_test.exe --serial

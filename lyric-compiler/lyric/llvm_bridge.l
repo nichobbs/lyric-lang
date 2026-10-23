@@ -419,13 +419,15 @@ func findWindowsRtArchive(): String {
   walkUpFor(Environment.currentDirectory(), devRel)
 }
 
-/// The system import libraries every Windows link names: CNG entropy
-/// (`bcrypt`) and the UTF-16 command-line parser (`shell32`), both used by
-/// the runtime (lyric-rt's `WIN_LIBS`).
+/// The system import libraries every Windows link names, all used by the
+/// runtime (lyric-rt's `WIN_LIBS`): CNG entropy (`bcrypt`), the UTF-16
+/// command-line parser (`shell32`), and the security descriptors of the
+/// child-process pipes (`advapi32`).
 func windowsSystemLibs(): List[String] {
   val libs: List[String] = newList()
-  libs.add("-lbcrypt")
-  libs.add("-lshell32")
+  for name in ["bcrypt", "shell32", "advapi32"] {
+    libs.add("-l" + name)
+  }
   libs
 }
 
@@ -2357,8 +2359,9 @@ func linkAndEmitNative(
         Console.error("  the LLVM IR was written to " + llPath + "; compile it manually with:")
         if isWindows {
           Console.error(
-            "  clang --target=" + effTriple + " -fuse-ld=lld -O" + effOpt + " " + llPath + " " + rtPath +
-              " -lbcrypt -lshell32 -o " +
+            "  clang --target=" + effTriple + " -fuse-ld=lld -O" + effOpt + " " + llPath + " " + rtPath + " " +
+              Str.joinList(" ", windowsSystemLibs()) +
+              " -o " +
               nativeExecutablePath(outputPath, effTriple)
           )
         } else {
