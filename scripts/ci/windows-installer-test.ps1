@@ -15,7 +15,8 @@ $dir = Join-Path $env:RUNNER_TEMP "lyric-installer-test"
 if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
 
 function Install([string]$Archive) {
-  & powershell -NoProfile -ExecutionPolicy Bypass -File $installer -Archive $Archive -Dir $dir -NoPath
+  # Out-Host keeps the installer's output out of this function's return value.
+  & powershell -NoProfile -ExecutionPolicy Bypass -File $installer -Archive $Archive -Dir $dir -NoPath | Out-Host
   return $LASTEXITCODE
 }
 
