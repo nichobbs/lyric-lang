@@ -1039,6 +1039,9 @@ func methodSigTakesArgCount(sig: in JvmFuncSig, written: in Int): Bool {
   if written > sig.params.count {
     return false
   }
+  // A signature whose default list is not aligned with its parameters (a
+  // synthesised sig) cannot be checked for a required count; accept it, so the
+  // lookup stays as lenient as before for those.
   if sig.paramDefaults.count != sig.params.count {
     return true
   }

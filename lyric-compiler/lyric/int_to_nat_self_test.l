@@ -47,4 +47,8 @@ test "toNat rejects negative source values" {
   assertPanicsWith("(-1.5).toNat()", "non-negative", { -> val _ = negDouble.toNat() })
   val nan: Double = 0.0 / 0.0
   assertPanics("NaN.toNat()", { -> val _ = nan.toNat() })
+  val minusHalf: Double = 0.0 - 0.5
+  assertEqualInt(minusHalf.toNat().toInt(), 0, "-0.5.toNat() truncates to 0")
+  val minusOne: Double = 0.0 - 1.0
+  assertPanics("(-1.0).toNat()", { -> val _ = minusOne.toNat() })
 }

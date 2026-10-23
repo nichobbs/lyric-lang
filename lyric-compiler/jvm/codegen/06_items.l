@@ -5106,13 +5106,6 @@ pub func collectFileSigsSeeded(
   }
 }
 
-// The exact JVM static-field type a module-level `val` will be emitted with,
-// when that is derivable without lowering the initialiser: the resolved
-// explicit annotation, or a literal init's type (mirroring both the literal
-// arm of `inferValType` and the width rule literal lowering applies).  `None`
-// for an unannotated non-literal init — its field type only exists after
-// `prelowerModuleVals` lowers the initialiser, so it cannot be promised to
-// other packages.
 // The generic arguments of a module-level `val`'s explicit annotation
 // (`List[String]` -> `[String]`, `slice[T]`/`array[N, T]` -> `[T]`), resolved
 // in the declaring package's context; empty without an annotation.
@@ -5137,6 +5130,13 @@ func moduleValGenericArgs(decl: in ValDecl, owner: in String, externTypes: in Ma
   }
 }
 
+// The exact JVM static-field type a module-level `val` will be emitted with,
+// when that is derivable without lowering the initialiser: the resolved
+// explicit annotation, or a literal init's type (mirroring both the literal
+// arm of `inferValType` and the width rule literal lowering applies).  `None`
+// for an unannotated non-literal init — its field type only exists after
+// `prelowerModuleVals` lowers the initialiser, so it cannot be promised to
+// other packages.
 func moduleValRegistryType(decl: in ValDecl, owner: in String, externTypes: in Map[String, String]): Option[JvmType] {
   match decl.ty {
     case Some(te) -> Some(value = typeExprToJvmExtern(te, owner, externTypes))
