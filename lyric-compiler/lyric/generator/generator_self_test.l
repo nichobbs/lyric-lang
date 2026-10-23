@@ -383,13 +383,13 @@ test "the request carries the same-file enum and range declarations the type nam
   val d = dirs[0].declarationsJson
   assertTrue(
     d.contains(
-      "{\"name\":\"Tier\",\"kind\":\"Enum\",\"underlying\":null,\"range\":null,\"cases\":[{\"name\":\"Standard\",\"annotations\":[],\"fields\":[]},{\"name\":\"Key\",\"annotations\":[{\"name\":\"label\",\"args\":[\"\\\"Key account\\\"\"]}],\"fields\":[]}]}"
+      "{\"name\":\"Tier\",\"kind\":\"DeclaredEnum\",\"underlying\":null,\"range\":null,\"cases\":[{\"name\":\"Standard\",\"annotations\":[],\"fields\":[]},{\"name\":\"Key\",\"annotations\":[{\"name\":\"label\",\"args\":[\"\\\"Key account\\\"\"]}],\"fields\":[]}]}"
     ),
     "the enum and its case annotations: " + d
   )
   assertTrue(
     d.contains(
-      "{\"name\":\"Limit\",\"kind\":\"Distinct\",\"underlying\":\"Long\",\"range\":{\"min\":\"0\",\"max\":\"1_000\",\"maxInclusive\":true},\"cases\":[]}"
+      "{\"name\":\"Limit\",\"kind\":\"DeclaredDistinct\",\"underlying\":\"Long\",\"range\":{\"min\":\"0\",\"max\":\"1_000\",\"maxInclusive\":true},\"cases\":[]}"
     ),
     "a closed range: " + d
   )

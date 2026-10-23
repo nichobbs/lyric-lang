@@ -294,7 +294,12 @@ func fieldTypeJson(src: in String, ty: in TypeExpr): String {
 func annotationJson(src: in String, ann: in Annotation): String {
   val args: List[String] = newList()
   for arg in ann.args {
-    val sp = match arg { case AAName(_, _, s) -> s; case ABare(_, s) -> s; case ALiteral(_, s) -> s; case AACall(_, _, s) -> s }
+    val sp = match arg {
+      case AAName(_, _, s) -> s
+      case ABare(_, s) -> s
+      case ALiteral(_, s) -> s
+      case AACall(_, _, s) -> s
+    }
     args.add(jsonStr(spanText(src, sp)))
   }
   "{\"name\":" + jsonStr(modulePathJoin(ann.name.segments)) + ",\"args\":" + jsonArray(args) + "}"
@@ -574,9 +579,7 @@ func declarationsFor(src: in String, file: in SourceFile, annotated: in Item): S
 // The generator request for `dir`, as the `SourceGenerator` point's
 // generated decoder reads a `GeneratorRequest` (D207 Decision 4).
 func buildRequestJson(dir: in GenerateDirective, sourceFile: in String): String {
-  "{\"generatorArg\":" + jsonStr(dir.generatorArg) + ",\"packageName\":" +
-    jsonStr(dir.packageName) +
-    ",\"sourceFile\":" +
+  "{\"generatorArg\":" + jsonStr(dir.generatorArg) + ",\"packageName\":" + jsonStr(dir.packageName) + ",\"sourceFile\":" +
     jsonStr(sourceFile) +
     ",\"typeDescriptor\":" +
     dir.descriptorJson +
@@ -751,6 +754,7 @@ pub func emptyGeneratorSet(): GeneratorSet {
 // predates `Lyric.PluginExpand`, so this host side uses `Std.Plugin`'s
 // dynamic API, not generated `SourceGeneratorRemote` code (D207).
 val sourceGeneratorPoint: String = "Lyric.GeneratorSdk.SourceGenerator"
+
 val projectReadCapability: String = "Lyric.GeneratorSdk.ProjectRead"
 
 /// The plugin host a build's generators run in.  It starts at the first
@@ -787,13 +791,18 @@ impl Plugin.CapabilityProvider for ProjectReadProvider {
     Plugin.CapabilityInfo(id = projectReadCapability, hasGrant = true)
   }
 
-  func serve(method: in String, params: in Option[Jv.JsonValue], grant: in Option[Jv.JsonValue]): Result[Jv.JsonValue, Rpc.RpcError] {
+  func serve(
+    method: in String, params: in Option[Jv.JsonValue], grant: in Option[Jv.JsonValue]
+  ): Result[Jv.JsonValue, Rpc.RpcError] {
     serveProjectRead(self.root, method, params, grant)
   }
 }
 
 func serveProjectRead(
-  root: in String, method: in String, params: in Option[Jv.JsonValue], grant: in Option[Jv.JsonValue]
+  root: in String,
+  method: in String,
+  params: in Option[Jv.JsonValue],
+  grant: in Option[Jv.JsonValue],
 ): Result[Jv.JsonValue, Rpc.RpcError] {
   if method != "readText" {
     return Err(error = Rpc.RpcError(code = 0 - 32601, message = "method not found: " + method, data = None))
@@ -821,7 +830,13 @@ func serveProjectRead(
     case None -> ()
   }
   if not projectPathWithin(path, roots) {
-    return Err(error = Rpc.RpcError(code = 0 - 32040, message = "'" + path + "' is outside the granted project roots", data = None))
+    return Err(
+      error = Rpc.RpcError(
+        code = 0 - 32040,
+        message = "'" + path + "' is outside the granted project roots",
+        data = None
+      )
+    )
   }
   val fields: List[Jv.JsonField] = newList()
   match File.readText(Path.join(root, path)) {
@@ -987,7 +1002,11 @@ func generatorConnection(
 
 // Runs one `generate` call on `generatorArg`'s plugin.
 func runGenerator(
-  gens: in GeneratorSet, generatorArg: in String, dllPath: in String, projectRoot: in String, requestJson: in String
+  gens: in GeneratorSet,
+  generatorArg: in String,
+  dllPath: in String,
+  projectRoot: in String,
+  requestJson: in String,
 ): Result[GeneratorResult, String] {
   val conn = match generatorConnection(gens, generatorArg, dllPath, projectRoot) {
     case Ok(c) -> c
