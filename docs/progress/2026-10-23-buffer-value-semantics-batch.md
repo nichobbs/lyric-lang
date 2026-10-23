@@ -9,7 +9,5 @@
   (`jvm-generics-self-tests-batch.sh`).
 - **#8395.** New checker warning **W0030** (docs/01 section 2.7, docs/67 section 9): a `var` initialised by copying a
   buffer place and directly followed by a loop that writes through it. Covered by `typechecker_self_test.l`.
-- Also fixes `explicitTypeArgCallType` passing `args.count` to `findDirectSig` (main did not bootstrap under the
-  released stage-0 compiler); the same one-line fix is in #8474.
 
 Left open: #8389 (lazy shared-mark buffers on dotnet/JVM), #7955 (explicit mutable-record form), #7941 (G2 tracker).
