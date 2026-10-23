@@ -72,6 +72,16 @@ pub func typeOfLiteral(lit: in Literal): Type {
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. Codegen builtins.
 // ─────────────────────────────────────────────────────────────────────────────
+// A single-segment path that is no local: a type name in the type-qualified
+// call form (`Int.shl(k, 2)`), not a value to infer.
+func recvIsUnboundName(sc: in Scope, e: in Expr): Bool {
+  match e.kind {
+    case EPath(sp) -> sp.segments.count == 1 and
+      (match scopeTryFind(sc, sp.segments[0]) { case Some(_) -> false; case None -> true })
+    case _ -> false
+  }
+}
+
 // Keep in sync with `isCodegenBuiltinName` in `typechecker_checker.l` (shadow-prevention).
 func codegenBuiltinType(name: in String): Option[Type] {
   if name == "println" or name == "print" {
@@ -11228,7 +11238,7 @@ func rigidVarClash(tbl: in SymbolTable, expected: in Type, actual: in Type, name
         case TyVar(_) -> false
         case TyError -> false
         case TySelf -> false
-        case TyUser(eid, _, _) -> not typeIdIsInterface(tbl, eid)
+        case TyUser(eid, _, _) -> not typeIdIsInterface(tbl, eid) and not symTableIsExternTypeId(tbl, eid)
         case TyPrim(ept) -> match ept { case PtNever -> false; case _ -> true }
         case TyNullable(_) -> true
         case TyTuple(_) -> true
@@ -15272,7 +15282,7 @@ func inferExprCore(
       // receiver's type (the shift count is an `Int`) and so does the result
       // (#8334).
       match fn.kind {
-        case EMember(bRecv, bName) -> if bName == "and" or bName == "or" or bName == "xor" or bName == "shl" or bName == "shr" {
+        case EMember(bRecv, bName) -> if (bName == "and" or bName == "or" or bName == "xor" or bName == "shl" or bName == "shr") and not recvIsUnboundName(sc, bRecv) {
           val bt = match cachedRecvType { case Some(t) -> t; case None -> inferExpr(sc, tbl, sigs, diag, bRecv) }
           cachedRecvType = Some(value = bt)
           if isConcreteIntType(bt) {

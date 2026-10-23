@@ -12016,3 +12016,21 @@ test "a type-qualified call T.m(x, args) is checked like x.m(args) (#8161, #8104
   val named = parseCheck(head + "Int {\n  Acc.scaled(acc, k = 2, j = 1)\n}\n")
   assertEqualInt(diagCount(named), 0, "named arguments in any order are clean (" + diagCodesOf(named) + ")")
 }
+
+test "the type-qualified form of a dot-named bitwise name is not typed as the intrinsic (#8334)" {
+  val src = "package P\nfunc Int.shl(self: in Int, n: in Int): Int = -1\nfunc f(k: in Int): Int {\n  k.shl(2) + Int.shl(k, 2)\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "Int.shl(k, 2) beside k.shl(2) (" + diagCodesOf(cr) + ")")
+}
+
+test "async Result operands, Unit operands and or-pattern duplicates (#8249, #7916)" {
+  val monads = "union Result[T, E] { case Ok(value: T); case Err(error: E) }\n"
+  val asyncSrc = "package P\n" + monads + "async func g(): Result[Int, String] { Ok(value = 1) }\n" +
+    "async func f(): Result[Int, String] {\n  val a = g()?\n  Ok(value = a)\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(asyncSrc), "T0190"), 0, "an async call's Result operand")
+  val unitSrc = "package P\n" + monads + "func g(): Unit {}\n" +
+    "func f(): Result[Int, String] {\n  g()?\n  Ok(value = 1)\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(unitSrc), "T0190"), 1, "a Unit operand is not a Result")
+  val orSrc = "package P\nunion U { case A; case B; case C }\nfunc f(u: in U): Int {\n  match u {\n    case A | B -> 1\n    case A -> 2\n    case C -> 3\n  }\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(orSrc), "T0191"), 1, "a case an earlier or-pattern already matched")
+}
