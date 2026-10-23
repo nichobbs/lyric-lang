@@ -8520,6 +8520,22 @@ test "a clause calling a @pure impl method is accepted (#7383)" {
   assertTrue(not hasDiagCode(parseCheck(src), "T0133"), "the impl method is @pure")
 }
 
+test "a clause calling a @pure interface method is accepted (#7410)" {
+  val pureSrc = "package P\ninterface Signed {\n  @pure\n  func positive(): Bool\n}\nfunc f(s: in Signed): Int\n  requires: s.positive()\n{\n  1\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(pureSrc), "T0133"), "a @pure interface method is callable in a clause")
+  val impureSrc = "package P\ninterface Signed {\n  func positive(): Bool\n}\nfunc f(s: in Signed): Int\n  requires: s.positive()\n{\n  1\n}\n"
+  assertTrue(hasDiagCode(parseCheck(impureSrc), "T0133"), "an interface method without @pure is still T0133")
+}
+
+test "an impl of a @pure interface method must be @pure (#7410)" {
+  val bad = "package P\nrecord Box {\n  v: Int\n}\ninterface Signed {\n  @pure\n  func positive(): Bool\n}\nimpl Signed for Box {\n  func positive(): Bool { self.v > 0 }\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(bad), "T0184"), 1, "an impure impl is T0184")
+  val good = "package P\nrecord Box {\n  v: Int\n}\ninterface Signed {\n  @pure\n  func positive(): Bool\n}\nimpl Signed for Box {\n  @pure\n  func positive(): Bool { self.v > 0 }\n}\n"
+  assertEqualInt(diagCount(parseCheck(good)), 0, "a @pure impl is accepted")
+  val plain = "package P\nrecord Box {\n  v: Int\n}\ninterface Signed {\n  func positive(): Bool\n}\nimpl Signed for Box {\n  func positive(): Bool { self.v > 0 }\n}\n"
+  assertEqualInt(diagCount(parseCheck(plain)), 0, "an interface without @pure imposes nothing")
+}
+
 test "an async or method-generic protected func is T0135 (#7384)" {
   val asyncSrc = "package P\nprotected type C {\n  var n: Int = 0\n  async func get(): Int {\n    n\n  }\n}\n"
   assertTrue(hasDiagCode(parseCheck(asyncSrc), "T0135"), "async func")
@@ -10254,6 +10270,156 @@ test "unary minus on a signed operand stays clean (#7854)" {
   )
   val cr = parseCheck(src)
   assertEqualInt(diagCount(cr), 0, "signed negation: clean (" + diagCodesOf(cr) + ")")
+}
+
+// #7901: a `Nat` is non-negative, so unary minus on one is T0147 as on the
+// unsigned types.
+test "unary minus on a Nat is T0147 (#7901)" {
+  assertNegRejected(negSrc("func f(n: in Nat): Nat {\n  -n\n}\n"), "-n")
+  assertNegRejected(negSrc("func f(n: in Nat range 0 ..= 9): Long {\n  val m = -n\n  0i64\n}\n"), "Nat range")
+  val msg = diagMessageFor(parseCheck(negSrc("func f(n: in Nat): Nat {\n  -n\n}\n")), "T0147")
+  assertTrue(Str.contains(msg, "Nat"), "the message names Nat: " + msg)
+  assertTrue(Str.contains(msg, "-(n.toLong())"), "the message suggests a signed conversion: " + msg)
+}
+
+test "a ULong has no Long or floating-point conversion (#7901)" {
+  for m in ["toLong", "toDouble", "toFloat"] {
+    val cr = parseCheck(negSrc("func f(w: in ULong): Unit {\n  val v = w." + m + "()\n}\n"))
+    assertEqualInt(countDiagCode(cr, "T0103"), 1, "ULong." + m + ": T0103 (" + diagCodesOf(cr) + ")")
+  }
+  val ok = parseCheck(
+    negSrc(
+      "func f(u: in UInt, w: in ULong, b: in Byte): Unit {\n  val a = u.toLong()\n  val c = u.toDouble()\n  val d = w.toInt()\n  val e = b.toLong()\n}\n"
+    )
+  )
+  assertEqualInt(diagCount(ok), 0, "UInt and Byte convert, ULong truncates: clean (" + diagCodesOf(ok) + ")")
+  val hint = diagMessageFor(parseCheck(negSrc("func f(u: in UInt): UInt {\n  -u\n}\n")), "T0147")
+  assertTrue(Str.contains(hint, "-(x.toLong())"), "the UInt negation hint names toLong: " + hint)
+}
+
+// #7900: a range bound must fit the base type.
+func assertBoundRejected(src: in String, label: in String): Unit {
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0182"), 1, label + ": T0182 (" + diagCodesOf(cr) + ")")
+  assertEqualInt(diagCount(cr), 1, label + ": no other diagnostic (" + diagCodesOf(cr) + ")")
+}
+
+test "a range bound outside the base type is T0182 (#7900)" {
+  assertBoundRejected(negSrc("type P = UInt range -1 ..= 5\n"), "negative UInt bound")
+  assertBoundRejected(negSrc("type B = Byte range 0 ..= 300\n"), "Byte bound above 255")
+  assertBoundRejected(negSrc("type B = Byte range -1 ..= 5\n"), "negative Byte bound")
+  assertBoundRejected(negSrc("type U = UInt range 0 ..= 4294967296\n"), "UInt bound above 2^32 - 1")
+  assertBoundRejected(negSrc("type I = Int range 0 ..= 2147483648\n"), "Int bound above 2^31 - 1")
+  assertBoundRejected(negSrc("type I = Int range -2147483649 ..= 0\n"), "Int bound below -2^31")
+  assertBoundRejected(negSrc("type N = Nat range -1 ..= 5\n"), "negative Nat bound")
+  assertBoundRejected(negSrc("type L = ULong range -1 ..= 18446744073709551615u64\n"), "negative ULong bound")
+  assertBoundRejected(negSrc("type B = Byte range 0 ..< 257\n"), "Byte exclusive bound two past the maximum")
+  assertBoundRejected(negSrc("func f(x: in Byte range 0 ..= 300): Unit {\n}\n"), "inline parameter bound")
+  assertBoundRejected(negSrc("func f(): Unit {\n  val n: UInt range -1 ..= 5 = 3u32\n}\n"), "inline local bound")
+  assertBoundRejected(negSrc("val Big: Int = 300\ntype B = Byte range 0 ..= Big\n"), "constant bound above 255")
+  val msg = diagMessageFor(parseCheck(negSrc("type B = Byte range 0 ..= 300\n")), "T0182")
+  assertTrue(
+    Str.contains(msg, "300") and Str.contains(msg, "Byte") and Str.contains(msg, "0 ..= 255"),
+    "names the bound, base and range: " + msg
+  )
+}
+
+test "range bounds that fit the base type stay clean (#7900)" {
+  val src = negSrc(
+    "type A = Byte range 0 ..= 255\ntype B = Byte range 0 ..< 256\ntype C = UInt range 0 ..= 4294967295\ntype D = Int range -2147483648 ..= 2147483647\ntype E = ULong range 0 ..= 18446744073709551615u64\ntype F = Long range -9223372036854775807 ..= 9223372036854775807\ntype G = Nat range 0 ..= 100\ntype H = Float range -1.0 ..= 1.0\nfunc f(x: in Byte range 1 ..= 9): Unit {\n}\n"
+  )
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "bounds within the base type: clean (" + diagCodesOf(cr) + ")")
+}
+
+// #8226: a variable whose type has no valid zero default must be assigned
+// before it is read.
+func assertUnassignedRead(body: in String, label: in String): Unit {
+  val cr = parseCheck(negSrc(body))
+  assertEqualInt(countDiagCode(cr, "T0183"), 1, label + ": T0183 (" + diagCodesOf(cr) + ")")
+}
+
+func assertAssignedClean(body: in String, label: in String): Unit {
+  val cr = parseCheck(negSrc(body))
+  assertEqualInt(countDiagCode(cr, "T0183"), 0, label + ": no T0183 (" + diagCodesOf(cr) + ")")
+}
+
+test "an unassigned range-typed var that is read is T0183 (#8226)" {
+  assertUnassignedRead("func h(): Bool {\n  var y: Int range 5 ..= 10\n  y >= 5\n}\n", "inline range")
+  assertUnassignedRead("type R = Int range 5 ..= 10\nfunc h(): Int {\n  var x: R\n  x.toInt()\n}\n", "named range")
+  assertUnassignedRead(
+    "func h(c: in Bool): Int {\n  var y: Int range 5 ..= 10\n  if c {\n    y = 6\n  }\n  y\n}\n",
+    "assigned on only one branch"
+  )
+  assertUnassignedRead(
+    "func h(n: in Int): Int {\n  var y: Int range 5 ..= 10\n  var i = 0\n  while i < n {\n    y = 7\n    i = i + 1\n  }\n  y\n}\n",
+    "assigned only inside a loop that may not run"
+  )
+  assertUnassignedRead("func h(): Int {\n  var y: Int range 5 ..= 10\n  y += 1\n  y\n}\n", "compound assignment reads")
+  assertUnassignedRead("func h(): Double {\n  var p: Double range 0.5 ..= 1.0\n  p\n}\n", "float range excluding zero")
+  val cr = parseCheck(negSrc("func h(): Bool {\n  var y: Int range 5 ..= 10\n  y >= 5\n}\n"))
+  assertTrue(Str.contains(diagMessageFor(cr, "T0183"), "'y'"), "the message names the variable")
+}
+
+test "a range-typed var assigned before every read stays clean (#8226)" {
+  assertAssignedClean("func h(): Int {\n  var y: Int range 5 ..= 10\n  y = 6\n  y\n}\n", "plain assignment")
+  assertAssignedClean(
+    "func h(c: in Bool): Int {\n  var y: Int range 5 ..= 10\n  if c {\n    y = 6\n  } else {\n    y = 7\n  }\n  y\n}\n",
+    "both branches assign"
+  )
+  assertAssignedClean(
+    "func h(c: in Bool): Int {\n  var y: Int range 5 ..= 10\n  if c {\n    return 0\n  } else {\n    y = 7\n  }\n  y\n}\n",
+    "the other branch returns"
+  )
+  assertAssignedClean(
+    "func h(c: in Bool): Int {\n  var y: Int range 5 ..= 10\n  match c {\n    case true -> { y = 6 }\n    case false -> { y = 8 }\n  }\n  y\n}\n",
+    "every match arm assigns"
+  )
+  assertAssignedClean(
+    "func h(): Int {\n  var y: Int range 5 ..= 10\n  do {\n    y = 9\n    break\n  }\n  y\n}\n",
+    "assigned before the break of a loop"
+  )
+  assertAssignedClean(
+    "func fill(v: out Int range 5 ..= 10): Unit {\n  v = 6\n}\nfunc h(): Int {\n  var y: Int range 5 ..= 10\n  fill(y)\n  y\n}\n",
+    "an out argument assigns"
+  )
+  assertAssignedClean(
+    "func h(): Int {\n  var y: Int range 0 ..= 10\n  y\n}\n",
+    "a range that includes zero has a valid default"
+  )
+  assertAssignedClean("func h(): Int {\n  var y: Int\n  y\n}\n", "an unconstrained Int")
+  assertAssignedClean("func h(): Int {\n  var y: Int range 5 ..= 10\n  0\n}\n", "never read")
+}
+
+// #8331: an interface method's `requires:`/`ensures:` clauses are
+// type-checked like a function's.
+func ifaceSrc(clauses: in String): String {
+  "package P\ninterface Store {\n  func get(k: in String): Int\n" + clauses + "}\n"
+}
+
+test "an interface method contract clause that is not Bool is T0132 (#8331)" {
+  val cr = parseCheck(ifaceSrc("    ensures: 7\n"))
+  assertEqualInt(countDiagCode(cr, "T0132"), 1, "ensures: 7 (" + diagCodesOf(cr) + ")")
+  val req = parseCheck(ifaceSrc("    requires: k.length\n"))
+  assertEqualInt(countDiagCode(req, "T0132"), 1, "requires: k.length (" + diagCodesOf(req) + ")")
+  val quant = parseCheck(ifaceSrc("    ensures: forall (i: Int) i\n"))
+  assertEqualInt(countDiagCode(quant, "T0132"), 1, "a non-Bool quantifier body (" + diagCodesOf(quant) + ")")
+}
+
+test "an interface method contract clause naming an unknown name is reported (#8331)" {
+  val cr = parseCheck(ifaceSrc("    requires: missing > 0\n"))
+  assertTrue(diagCount(cr) > 0, "an unknown name in a requires clause: (" + diagCodesOf(cr) + ")")
+}
+
+test "an interface method contract clause is checked with result bound (#8331)" {
+  val ok = parseCheck(ifaceSrc("    requires: k.length > 0\n    ensures: result >= 0\n"))
+  assertEqualInt(diagCount(ok), 0, "valid clauses: clean (" + diagCodesOf(ok) + ")")
+  val badResult = parseCheck(ifaceSrc("    ensures: result\n"))
+  assertEqualInt(
+    countDiagCode(badResult, "T0132"),
+    1,
+    "result is the declared Int, not Bool (" + diagCodesOf(badResult) + ")"
+  )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

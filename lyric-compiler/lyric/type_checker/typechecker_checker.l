@@ -708,6 +708,12 @@ func checkDistinctType(tbl: in SymbolTable, diag: in List[Diagnostic], dt: in Di
             }
             isFloatBase = uname == "Float" or uname == "Double"
             isULongBase = uname == "ULong"
+            match dt.rangeClause {
+              case Some(rbFit) -> if isNumericPrimitiveName(uname) {
+                checkRangeBoundsFitBase(tbl, diag, "range subtype '" + dt.name + "'", uname, rbFit)
+              }
+              case None -> ()
+            }
           }
         }
         case _ -> {
@@ -866,6 +872,15 @@ func resolveBounds(tbl: in SymbolTable, wc: in Option[WhereClause]): List[Resolv
 }
 
 // Return true if any annotation on the function has the single-segment name `name`.
+func annotationsHaveName(anns: in List[Annotation], name: in String): Bool {
+  for ann in anns {
+    if ann.name.segments.count == 1 and ann.name.segments[0] == name {
+      return true
+    }
+  }
+  false
+}
+
 func fnHasAnnotation(fn: in FunctionDecl, name: in String): Bool {
   var i = 0
   while i < fn.annotations.count {
@@ -1740,7 +1755,7 @@ func addMethodSigsFromItems(tbl: in SymbolTable, items: in List[Item], pkgName: 
                         sig.params,
                         sig.ret,
                         sig.isAsync,
-                        false,
+                        annotationsHaveName(sig.annotations, "pure"),
                         false,
                         false,
                         sig.span
@@ -2110,6 +2125,16 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
                 )
               )
               case Some(fn) -> {
+                if annotationsHaveName(sig.annotations, "pure") and not fnHasAnnotation(fn, "pure") {
+                  diag.add(
+                    errorDiagnostic(
+                      "T0184",
+                      "impl method '" + sig.name + "' implements '@pure' method '" + ifaceName + "." + sig.name +
+                        "' and must itself be '@pure'",
+                      fn.span
+                    )
+                  )
+                }
                 if fn.params.count == sig.params.count {
                   reportImplDefaultMismatches(diag, ifaceName, sig.name, sig.params, fn.params)
                 }
@@ -2173,8 +2198,20 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
           }
           // An `impl` method overriding an interface default method.
           case IMFunc(ifn) -> match findImplMethod(decl, ifn.name) {
-            case Some(fn) -> if fn.params.count == ifn.params.count {
-              reportImplDefaultMismatches(diag, ifaceName, ifn.name, ifn.params, fn.params)
+            case Some(fn) -> {
+              if fnHasAnnotation(ifn, "pure") and not fnHasAnnotation(fn, "pure") {
+                diag.add(
+                  errorDiagnostic(
+                    "T0184",
+                    "impl method '" + ifn.name + "' overrides '@pure' method '" + ifaceName + "." + ifn.name +
+                      "' and must itself be '@pure'",
+                    fn.span
+                  )
+                )
+              }
+              if fn.params.count == ifn.params.count {
+                reportImplDefaultMismatches(diag, ifaceName, ifn.name, ifn.params, fn.params)
+              }
             }
             case None -> ()
           }
@@ -3050,6 +3087,80 @@ func checkInterfaceDeclTypes(tbl: in SymbolTable, diag: in List[Diagnostic], dec
     }
     i = i + 1
   }
+}
+
+// An interface method's `requires:`/`ensures:` clauses are checked as `Bool`
+// in the method's parameter scope, `result` being the declared return type
+// (#8331).  An implementing method inherits the clauses after type checking,
+// so a clause is reported once, here, at the interface.
+func checkInterfaceContracts(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  decl: in InterfaceDecl,
+): Unit {
+  val ifaceGen = extractGenericNames(decl.generics)
+  for m in decl.members {
+    match m {
+      case IMSig(sig) -> checkMethodContracts(
+        tbl,
+        sigs,
+        diag,
+        ifaceGen,
+        sig.generics,
+        sig.params,
+        sig.ret,
+        sig.isAsync,
+        sig.contracts,
+        sig.span
+      )
+      case IMFunc(fn) -> checkMethodContracts(
+        tbl,
+        sigs,
+        diag,
+        ifaceGen,
+        fn.generics,
+        fn.params,
+        fn.ret,
+        fn.isAsync,
+        fn.contracts,
+        fn.span
+      )
+      case IMAssoc(_) -> ()
+    }
+  }
+}
+
+func checkMethodContracts(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  ownerGenerics: in List[String],
+  ownGenerics: in Option[GenericParams],
+  params: in List[Param],
+  ret: in Option[TypeExpr],
+  isAsync: in Bool,
+  contracts: in List[ContractClause],
+  span: in Span,
+): Unit {
+  if contracts.count == 0 {
+    return
+  }
+  val rsig = resolveMethodSigParts(tbl, "", ownerGenerics, ownGenerics, params, ret, isAsync, false, false, false, span)
+  val combined: List[String] = newList()
+  for g in ownerGenerics {
+    combined.add(g)
+  }
+  for g in extractGenericNames(ownGenerics) {
+    combined.add(g)
+  }
+  val noFields: Map[String, Type] = newMap()
+  val sc = newScopeForFunction(rsig.returnTy, combined, ret, noFields, false, TyError)
+  for p in rsig.params {
+    val isMut = match p.mode { case PMIn -> false; case _ -> true }
+    scopeAdd(sc, LocalBinding(name = p.name, ty = p.ty, isMutable = isMut, byRefParam = isMut))
+  }
+  checkContractClauses(sc, tbl, sigs, diag, contracts)
 }
 
 func checkOpaqueDeclTypes(tbl: in SymbolTable, diag: in List[Diagnostic], decl: in OpaqueTypeDecl): Unit {
@@ -5959,6 +6070,7 @@ func checkWithImportedPackagesCore(
         checkSameArityMethods(diag, "impl " + implIfaceName(decl), implMethodHeads(decl.members))
         checkImplMemberBodies(tbl, sigs, diag, decl)
       }
+      case IInterface(decl) -> checkInterfaceContracts(tbl, sigs, diag, decl)
       case IProtected(decl) -> checkProtectedMemberBodies(tbl, sigs, diag, decl)
       case IRecord(decl) -> checkRecordMemberBodies(tbl, sigs, diag, decl)
       case IExposedRec(decl) -> checkRecordMemberBodies(tbl, sigs, diag, decl)

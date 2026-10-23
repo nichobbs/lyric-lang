@@ -95,6 +95,15 @@ message naming the field, its env var and the range:
 error: config field Cache.ttlSeconds (env var LYRIC_CONFIG_APP_CACHE_TTLSECONDS) is outside its range [0, 86400]
 ```
 
+A value that does not parse as the field's type at all (`80a` for an `Int`,
+`maybe` for a `Bool`) stops startup the same way with exit code 78 (G0003):
+
+```
+error: config field Cache.ttlSeconds (env var LYRIC_CONFIG_APP_CACHE_TTLSECONDS) is not a valid Int (G0003)
+```
+
+A `Bool` is `true` or `false` in any case, or `1` or `0`.
+
 `NaN` is outside every `Float` or `Double` range.  A default outside the range
 is a compile error (G0010), and so is a malformed range: a bound that is not a
 literal, an empty range, or a range on a non-numeric field (G0009).

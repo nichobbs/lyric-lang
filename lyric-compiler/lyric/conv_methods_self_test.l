@@ -233,3 +233,18 @@ test "toChar rejects values outside 0..65535" {
   val dbig: Double = 65536.0
   assertPanics("65536.0.toChar()", { -> val _ = dbig.toChar() })
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Unsigned sources (#7901): the conversion reads the unsigned VALUE, not the
+// top bit as a sign.
+// ─────────────────────────────────────────────────────────────────────────────
+test "UInt converts by value to Long, Double and Float" {
+  val u: UInt = 4000000000u32
+  assertEqualLong(u.toLong(), 4000000000i64, "UInt.toLong zero-extends")
+  assertTrue(u.toDouble() == 4000000000.0, "UInt.toDouble is the unsigned value")
+  assertTrue(u.toFloat() == 4000000000.0f32, "UInt.toFloat is the unsigned value")
+  val small: UInt = 7u32
+  assertEqualLong(small.toLong(), 7i64, "a small UInt")
+  val max: UInt = 4294967295u32
+  assertEqualLong(max.toLong(), 4294967295i64, "UInt.MaxValue")
+}

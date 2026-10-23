@@ -1494,7 +1494,10 @@ func reprForFunctionSig(sig: in FunctionSig, dt: in DefaultThunks, owner: in Thu
   val params = renderParamsWithDefaults(sig.params, dt, owner, sig.name)
   val retStr = match sig.ret { case Some(t) -> ": " + renderTypeExpr(t); case None -> "" }
   val asyncPrefix = if sig.isAsync { "async " } else { "" }
-  asyncPrefix + "func " + sig.name + renderGenerics(sig.generics) + "(" + params + ")" + retStr
+  // `@pure` rides in the repr so a restored consumer's contract clause may
+  // call the method through the interface (#7410).
+  val pureAnn = if hasAnnotationNamed(sig.annotations, "pure") { "@pure " } else { "" }
+  pureAnn + asyncPrefix + "func " + sig.name + renderGenerics(sig.generics) + "(" + params + ")" + retStr
 }
 
 // `pub type Name = <underlying>` for distinct types.  Renders the

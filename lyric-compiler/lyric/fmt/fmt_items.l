@@ -941,6 +941,7 @@ func interfaceDoc(visStr: in String, id: in InterfaceDecl, ctx: inout FmtCtx): L
         // contract clauses (`requires:` / `ensures:` / …), mirroring how
         // an extern-package member is rendered.
         appendDoc(mLines, docLines(sg.docComments))
+        appendDoc(mLines, annotationLines(sg.annotations))
         mLines.add(funcSigStr(sg))
         var ci = 0
         while ci < sg.contracts.count {
