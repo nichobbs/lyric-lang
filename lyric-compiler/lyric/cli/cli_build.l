@@ -3313,7 +3313,13 @@ func projectBinOutputPath(
 ): String {
   val ext = outputExt(target, buildKind)
   val stem = match proj.outputAssembly { case Some(s) -> s; case None -> proj.name + ext }
-  Path.join(Path.join(mfDir, "bin"), stem)
+  val path = Path.join(Path.join(mfDir, "bin"), stem)
+  match target {
+    // The native build names its executable this way, so an `output_assembly`
+    // without `.exe` still gets one on Windows.
+    case Emitter.Native -> Emitter.nativeExecutableOutputPath(path, "")
+    case _ -> path
+  }
 }
 
 // Collect all .l source file paths from [project.packages] in a lyric.toml.
