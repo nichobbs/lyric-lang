@@ -570,6 +570,11 @@ impl GrantPolicy for PanickingPolicy {
 }
 
 test "registerPlugin: a panicking policy refuses the plugin" {
+  // A native host cannot contain a policy panic: native has no unwinding, so
+  // a panic ends the process (D-N-003, `_kernel_native/panic_guard_host.l`).
+  if currentPluginPlatform().runtime == "native" {
+    return
+  }
   val host = newPluginHost(
     PluginHostConfig(points = [editorPoint("1.0")], providers = providers(), policy = PanickingPolicy())
   )

@@ -316,6 +316,12 @@ test "capability calls back into the host, within the narrowed grant" {
   val beta = callPlugin(c, "Fixture.Api.Greeter/secret", params("key", JString(value = "beta")))
   assertTrue(errText(beta, "secret beta").contains("not granted"), "the grant narrowed the request to alpha")
   assertEqualInt(secrets.served, 2, "the provider served both calls")
+  // A native host cannot contain a provider panic: native has no unwinding,
+  // so a panic ends the process (D-N-003, `_kernel_native/panic_guard_host.l`).
+  if currentPluginPlatform().runtime == "native" {
+    stopAllPlugins(host)
+    return
+  }
   val boom = errText(callPlugin(c, "Fixture.Api.Greeter/secret", params("key", JString(value = "boom"))), "secret boom")
   assertTrue(boom.contains("contract violated"), "a provider panic fails only that capability call: " + boom)
   assertEqual(

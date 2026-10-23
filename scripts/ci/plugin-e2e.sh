@@ -5,7 +5,8 @@
 #
 # Usage: plugin-e2e.sh <lyric-binary> <host-target> <plugin-target>
 #
-#   host-target    dotnet | jvm      the target the test suite (the host) runs on
+#   host-target    dotnet | jvm | native
+#                                    the target the test suite (the host) runs on
 #   plugin-target  dotnet | jvm | native
 #                                    the target the fixture plugin is built for
 #
@@ -16,13 +17,13 @@
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
-usage="usage: plugin-e2e.sh <lyric-binary> <dotnet|jvm> <dotnet|jvm|native>"
+usage="usage: plugin-e2e.sh <lyric-binary> <dotnet|jvm|native> <dotnet|jvm|native>"
 LYRIC_BIN="${1:?$usage}"
 HOST_TARGET="${2:?$usage}"
 PLUGIN_TARGET="${3:?$usage}"
 
 case "$HOST_TARGET" in
-  dotnet|jvm) ;;
+  dotnet|jvm|native) ;;
   *) echo "$usage" >&2; exit 2 ;;
 esac
 
