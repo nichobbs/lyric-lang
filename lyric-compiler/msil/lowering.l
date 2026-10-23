@@ -445,6 +445,16 @@ pub func bufMsilType(w: in ByteWriter, t: in MsilType): Unit {
       // `Single`-typed return in `_kernel/kernel.l`).
       if clrFqn == "System.Single" {
         bufU1(w, 0x0C)   // ELEMENT_TYPE_R4
+      } else if clrFqn == "System.SByte" {
+        bufU1(w, 0x04)   // ELEMENT_TYPE_I1
+      } else if clrFqn == "System.Int16" {
+        bufU1(w, 0x06)   // ELEMENT_TYPE_I2
+      } else if clrFqn == "System.UInt16" {
+        bufU1(w, 0x07)   // ELEMENT_TYPE_U2
+      } else if clrFqn == "System.UInt32" {
+        bufU1(w, 0x09)   // ELEMENT_TYPE_U4
+      } else if clrFqn == "System.UInt64" {
+        bufU1(w, 0x0B)   // ELEMENT_TYPE_U8
       } else {
         bufU1(w, 0x11)   // ELEMENT_TYPE_VALUETYPE
         writeCompressedInt(w, typeRefCode)

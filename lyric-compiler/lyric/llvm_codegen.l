@@ -8789,10 +8789,8 @@ func trampolineFor(ctx: in Ctx, t: in TypeExpr): String {
 /// Extern-call argument adaptation (N4.5): a closure value meeting a
 /// function-pointer parameter becomes its trampoline symbol; a closure
 /// value meeting a NativePtr[Byte] parameter becomes the closure
-/// pointer itself (the userdata).  A List/Map value meeting a
-/// NativePtr[Byte] parameter passes as its raw kernel pointer (the
-/// lyric-rt process/collection helpers take container handles that
-/// way).  Everything else coerces normally.
+/// pointer itself (the userdata).  Everything else coerces normally; the
+/// checker rejects any other value for a NativePtr[Byte] parameter (#7624).
 func externAdaptArg(ctx: in Ctx, insns: in List[NInsn], declTyExpr: in TypeExpr, declTy: in NType, v: in NVal): NVal {
   match declTy {
     case NFnPtr(_, _) -> {
@@ -8809,24 +8807,6 @@ func externAdaptArg(ctx: in Ctx, insns: in List[NInsn], declTyExpr: in TypeExpr,
   }
   if isBytePtrNType(declTy) {
     match closureSigOfType(ctx, v.ty) {
-      case Some(_) -> {
-        val cast = freshTmp(ctx)
-        insns.add(NBitcast(dest = cast, fromTy = v.ty, value = v.value, toTy = NPtr(pointee = NI8)))
-        return NVal(ty = NPtr(pointee = NI8), value = NLocal(name = cast))
-      }
-      case None -> {
-      }
-    }
-    match listElemOfType(ctx, v.ty) {
-      case Some(_) -> {
-        val cast = freshTmp(ctx)
-        insns.add(NBitcast(dest = cast, fromTy = v.ty, value = v.value, toTy = NPtr(pointee = NI8)))
-        return NVal(ty = NPtr(pointee = NI8), value = NLocal(name = cast))
-      }
-      case None -> {
-      }
-    }
-    match mapKeyOfType(ctx, v.ty) {
       case Some(_) -> {
         val cast = freshTmp(ctx)
         insns.add(NBitcast(dest = cast, fromTy = v.ty, value = v.value, toTy = NPtr(pointee = NI8)))
