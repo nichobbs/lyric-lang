@@ -144,3 +144,63 @@ test "a lambda parameter scrutinee compares against its own enum" {
   assertEqual(describe(Second.Shared), "shared", "lambda Shared")
   assertEqual(describe(Second.Beta), "beta", "lambda Beta")
 }
+
+union Side {
+  case Left(n: Int)
+  case Right(n: Int)
+  case Middle
+}
+
+func sideValue(s: in Side): Int {
+  match s {
+    case Left(n) | Right(n) -> n
+    case Middle -> -1
+  }
+}
+
+func isSharedOrOther(k: in Second): Bool {
+  match k {
+    case Shared | Other -> true
+    case Beta -> false
+  }
+}
+
+func smallOrBig(n: in Int): String {
+  match n {
+    case 1 | 2 | 3 -> "small"
+    case 100 | 200 -> "big"
+    case _ -> "other"
+  }
+}
+
+func orInTuple(a: in First, b: in Second): String {
+  match (a, b) {
+    case (Shared | Other, Beta) -> "first shared or other, second beta"
+    case (_, Shared | Other) -> "second shared or other"
+    case _ -> "neither"
+  }
+}
+
+test "an or-pattern over enum cases compares against the scrutinee's own enum" {
+  assertTrue(isSharedOrOther(Second.Shared), "Shared")
+  assertTrue(isSharedOrOther(Second.Other), "Other")
+  assertFalse(isSharedOrOther(Second.Beta), "Beta")
+}
+
+test "an or-pattern over literals" {
+  assertEqual(smallOrBig(2), "small", "2")
+  assertEqual(smallOrBig(200), "big", "200")
+  assertEqual(smallOrBig(7), "other", "7")
+}
+
+test "alternatives that bind the same name join their values" {
+  assertEqualInt(sideValue(Left(n = 4)), 4, "Left")
+  assertEqualInt(sideValue(Right(n = 9)), 9, "Right")
+  assertEqualInt(sideValue(Middle), -1, "Middle")
+}
+
+test "an or-pattern nested in a tuple pattern" {
+  assertEqual(orInTuple(First.Other, Second.Beta), "first shared or other, second beta", "nested first")
+  assertEqual(orInTuple(First.Alpha, Second.Other), "second shared or other", "nested second")
+  assertEqual(orInTuple(First.Alpha, Second.Beta), "neither", "neither")
+}
