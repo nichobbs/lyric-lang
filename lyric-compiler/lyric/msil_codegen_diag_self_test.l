@@ -57,6 +57,7 @@ import Std.Core
 import Std.Collections
 import Std.Testing
 import Std.Environment as Environment
+import Std.File as File
 import Msil.Bridge
 
 func mkPkg(name: in String, source: in String): ProjectPackagePayload {
@@ -583,4 +584,51 @@ test "annotated module-level val with the same initializer still compiles" {
     "  println(toString(big0047g + 1))\n" +
     "}\n"
   assertTrue(compiles("F0047Good", src), "an explicitly annotated module-level val must compile")
+}
+
+// #8295: every shadowing block in an async state machine gets its own
+// promoted field, and a resume used to reload every field registered so far,
+// including those of blocks that had already exited, so the IL grew
+// quadratically in the number of shadowing blocks.  Output size must now grow
+// linearly: the second step of equal size must cost about as much as the
+// first, where the quadratic form costs about three times as much.
+func shadowBlocksSource(n: in Int): String {
+  var body = ""
+  var i = 0
+  while i < n {
+    body = body + "  if true {\n    val t = " + toString(i) + "\n    acc = acc + t + await tick()\n  }\n"
+    i = i + 1
+  }
+  "package ShadowSize\n" + "async func tick(): Int {\n  1\n}\n" + "async func f(): Int {\n  var acc = 0\n" + body +
+    "  acc\n}\n" +
+    "func main(): Unit {\n  println(toString(await f()))\n}\n"
+}
+
+func shadowBlocksDllSize(n: in Int): Int {
+  val label = "ShadowSize" + toString(n)
+  val outPath = tempBase() + "/lyric-msil-shadow-size-" + toString(n) + ".dll"
+  val pkgs: List[ProjectPackagePayload] = newList()
+  pkgs.add(mkPkg(label, shadowBlocksSource(n)))
+  val empty: List[String] = newList()
+  val stdlibSources: List[String] = newList()
+  val ok = compileProjectToMsilWithFeatures(pkgs, label, outPath, stdlibSources, empty, empty)
+  assertTrue(ok, "the " + toString(n) + "-shadow-block async function compiles")
+  val size = File.readBytesOrPanic(outPath).count
+  val _ = File.deleteFile(outPath)
+  size
+}
+
+test "async state machine IL grows linearly in the number of shadowing blocks (#8295)" {
+  val s0 = shadowBlocksDllSize(1)
+  val s1 = shadowBlocksDllSize(61)
+  val s2 = shadowBlocksDllSize(121)
+  val first = s1 - s0
+  val second = s2 - s1
+  assertTrue(
+    second < first * 2,
+    "doubling the shadowing blocks must roughly double the output, not triple it: sizes " + toString(s0) + ", " +
+      toString(s1) +
+      ", " +
+      toString(s2)
+  )
 }
