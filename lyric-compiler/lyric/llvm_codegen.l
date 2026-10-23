@@ -725,7 +725,7 @@ func exprIsCharTyped(ctx: in Ctx, e: in Expr): Bool {
     case EIndex(recv, _) -> exprIsStringTyped(ctx, recv) or exprIsCharCollection(ctx, recv)
     case EMember(recv, field) -> memberIsChar(ctx, recv, field)
     // A call to a function declared to return `Char` (`charAtOrReplacement`).
-    case ECall(fn, args) -> callReturnsChar(ctx, fn, args.count)
+    case ECall(fn, args) -> callReturnsChar(ctx, fn, freeCallArity(ctx, fn, args.count))
     case _ -> false
   }
 }
@@ -2360,6 +2360,15 @@ func flattenMemberPathSegs(e: in Expr): Option[List[String]] {
     }
     case _ -> None
   }
+}
+
+/// The parameter count of the declaration a free call binds: the one the type
+/// checker resolved it to when the call leaves out defaulted arguments
+/// (`SymbolTable.methodCallArities`, under the callee's site key), else the
+/// `written` argument count (#8355).
+func freeCallArity(ctx: in Ctx, fnExpr: in Expr, written: in Int): Int {
+  val originKey = if ctx.curOrigin.count > 0 { ctx.curOrigin[0] + "|" } else { "" }
+  methodCallTarget(ctx.methodCallArities, ctx.curPkg[0] + "|" + originKey + methodCallSiteKey(fnExpr), written).arity
 }
 
 /// The registry key for a call target, or "" when the callee shape is
@@ -5495,7 +5504,7 @@ func lowerCallEx(
     case _ -> ()
   }
   // Static function call through the registry.
-  val key = callKeyOf(fnExpr, args.count)
+  val key = callKeyOf(fnExpr, freeCallArity(ctx, fnExpr, args.count))
   if key.length == 0 {
     // No name: the callee is an expression whose value is the function
     // (`makeAdder(1)(2)`, `(if c { f } else { g })(x)`).
@@ -5631,7 +5640,7 @@ func tryLowerQualifiedCallee(
     return None
   }
   val plainName = modulePathJoin(segs)
-  val key = plainName + "/" + args.count.toString()
+  val key = plainName + "/" + freeCallArity(ctx, fnExpr, args.count).toString()
   val selfKey = ctx.curPkg[0] + "." + key
   var sigOpt = mapGet(ctx.sigs, selfKey)
   match sigOpt {

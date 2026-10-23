@@ -405,7 +405,7 @@ pub func checkStatement(
           val initType = inferExprExpected(sc, tbl, sigs, diag, init, declT)
 
           val literalOutOfRange = reportIntLiteralOutOfRange(declT, init, diag)
-          if not literalOutOfRange and (not argSatisfiesParam(tbl, declT, initType) or rigidVarClash(tbl, declT, initType, sc.genericNames)) {
+          if not literalOutOfRange and (not argFlowSatisfies(tbl, declT, initType, init) or rigidVarClash(tbl, declT, initType, sc.genericNames)) {
             diag.add(
               errorDiagnostic(
                 "T0060",
@@ -448,7 +448,7 @@ pub func checkStatement(
               noteArrayStore(tbl, initE, initType)
 
               val literalOutOfRange = reportIntLiteralOutOfRange(declT, initE, diag)
-              if not literalOutOfRange and (not argSatisfiesParam(tbl, declT, initType) or rigidVarClash(tbl, declT, initType, sc.genericNames)) {
+              if not literalOutOfRange and (not argFlowSatisfies(tbl, declT, initType, initE) or rigidVarClash(tbl, declT, initType, sc.genericNames)) {
                 diag.add(
                   errorDiagnostic(
                     "T0061",
@@ -484,7 +484,7 @@ pub func checkStatement(
           val initType = inferExprExpected(sc, tbl, sigs, diag, init, declT)
 
           val literalOutOfRange = reportIntLiteralOutOfRange(declT, init, diag)
-          if not literalOutOfRange and (not argSatisfiesParam(tbl, declT, initType) or rigidVarClash(tbl, declT, initType, sc.genericNames)) {
+          if not literalOutOfRange and (not argFlowSatisfies(tbl, declT, initType, init) or rigidVarClash(tbl, declT, initType, sc.genericNames)) {
             diag.add(
               errorDiagnostic(
                 "T0062",
@@ -559,7 +559,7 @@ pub func checkStatement(
       // A literal that does not fit the target (`x += -1` on a `UInt`) is
       // T0015, as for a binding, rather than a type mismatch (#7841).
       val literalOutOfRange = not stringPlusAssign and reportIntLiteralOutOfRange(targetType, value, diag)
-      if not stringPlusAssign and not literalOutOfRange and (not argSatisfiesParam(tbl, targetType, valueType) or rigidVarClash(tbl, targetType, valueType, sc.genericNames)) {
+      if not stringPlusAssign and not literalOutOfRange and (not argFlowSatisfies(tbl, targetType, valueType, value) or rigidVarClash(tbl, targetType, valueType, sc.genericNames)) {
         diag.add(
           errorDiagnostic(
             "T0063",
@@ -633,7 +633,7 @@ pub func checkStatement(
         // A returned value initialises the result, so it widens like an
         // initialiser (docs/01 §4.1, #7805).
         recordWideningSite(tbl, returnTy, t, e, false)
-        if not isNever and ((not typeAssignable(tbl, returnTy, t) and not numericWidensTo(returnTy, t)) or rigidVarClash(tbl, returnTy, t, sc.genericNames)) {
+        if not isNever and ((not typeAssignableByFlow(tbl, returnTy, t, e) and not numericWidensTo(returnTy, t)) or rigidVarClash(tbl, returnTy, t, sc.genericNames)) {
           diag.add(
             errorDiagnostic(
               "T0065",
@@ -1835,7 +1835,7 @@ func checkFunctionBodyAt(
         if not sig.isGenerator {
           recordWideningSite(tbl, sig.returnTy, bodyType, e, false)
         }
-        if not isNever and not sig.isGenerator and not typeAssignable(tbl, sig.returnTy, bodyType) and not numericWidensTo(sig.returnTy, bodyType) {
+        if not isNever and not sig.isGenerator and not typeAssignableByFlow(tbl, sig.returnTy, bodyType, e) and not numericWidensTo(sig.returnTy, bodyType) {
           diag.add(
             errorDiagnostic(
               "T0070",
@@ -1892,7 +1892,7 @@ func checkFunctionBodyAt(
             case None -> ()
           }
         }
-        if not isNever and not sig.isGenerator and not typeAssignable(tbl, sig.returnTy, bodyType) and not numericWidensTo(sig.returnTy, bodyType) {
+        if not isNever and not sig.isGenerator and not typeAssignableByFlow(tbl, sig.returnTy, bodyType, blockValueExprOr(blk)) and not numericWidensTo(sig.returnTy, bodyType) {
           diag.add(
             errorDiagnostic(
               "T0070",

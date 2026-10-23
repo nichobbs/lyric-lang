@@ -2031,6 +2031,66 @@ pub func pairCallArgs(paramNames: in List[String], skip: in Int, args: in List[C
   Ok(value = slots)
 }
 
+/// How many of a callee's parameters after the first `skip` a call leaves to
+/// their defaults, or -1 when the call does not fit it: the arguments cannot
+/// be paired (`pairCallArgs`) or a parameter left out has no default.
+/// `hasDefault[k]` says whether parameter `k` of `paramNames` has a default.
+/// This is the shape of a call against a declaration, which the overload rule
+/// of calls resolving through defaults compares (#8355, D210): every
+/// consumer (type checker, `Lyric.Mono`, mode, stability and verifier
+/// checks) decides which declaration a call binds from it.
+pub func callDefaultsFilled(
+  paramNames: in List[String], hasDefault: in List[Bool], skip: in Int, args: in List[CallArg]
+): Int {
+  if hasDefault.count != paramNames.count {
+    return -1
+  }
+  val slots: List[Int] = match pairCallArgs(paramNames, skip, args) {
+    case Ok(paired) -> paired
+    case Err(_) -> return -1
+  }
+  var filled = 0
+  var k = 0
+  while k < slots.count {
+    if slots[k] < 0 {
+      if not hasDefault[skip + k] {
+        return -1
+      }
+      filled = filled + 1
+    }
+    k = k + 1
+  }
+  filled
+}
+
+/// The positions in `fills` (`callDefaultsFilled` of each candidate
+/// declaration, -1 for one the call does not fit) of the declarations a call
+/// binds before their parameter types are looked at: those leaving the fewest
+/// parameters to their defaults.  A declaration the call supplies in full
+/// (0) wins over every one filling a default, and a declaration is not
+/// chosen for the types of its parameters over one that fills fewer
+/// defaults.  Empty when the call fits none.
+pub func fewestDefaultsCandidates(fills: in List[Int]): List[Int] {
+  var best = -1
+  for f in fills {
+    if f >= 0 and (best < 0 or f < best) {
+      best = f
+    }
+  }
+  val chosen: List[Int] = newList()
+  if best < 0 {
+    return chosen
+  }
+  var i = 0
+  while i < fills.count {
+    if fills[i] == best {
+      chosen.add(i)
+    }
+    i = i + 1
+  }
+  chosen
+}
+
 /// Whether evaluating `e` can neither cause an effect nor observe one, so
 /// it gives the same value wherever it runs among a call's arguments
 /// (D171): a literal, a negated literal, a lambda (building a closure runs
