@@ -70,7 +70,7 @@ func testSmtSortInt(): Unit {
 }
 
 func testSmtSortFloat32(): Unit {
-  assertEqual(smtRenderSort(SFloat32), "Real", "sort-float32-as-real")
+  assertEqual(smtRenderSort(SFloat32), "Float32", "sort-float32")
 }
 
 func testSmtSortString(): Unit {
@@ -977,8 +977,18 @@ func provePkg(body: in String): ProofSummary {
 func assertDischarged(body: in String, label: in String): Unit {
   val s = provePkg(body)
   assertTrue(summaryTotalCount(s) > 0, label + ": goals generated")
-  assertTrue(not summaryHasErrorDiag(s), label + ": no error diagnostics")
+  assertTrue(not summaryHasErrorDiag(s), label + ": no error diagnostics" + diagnosticMessages(s))
   assertTrue(not summaryHasFailure(s), label + ": every goal discharged")
+}
+
+func diagnosticMessages(s: in ProofSummary): String {
+  var text = ""
+  var i = 0
+  while i < s.diagnostics.count {
+    text = text + " [" + s.diagnostics[i].code + ": " + s.diagnostics[i].message + "]"
+    i = i + 1
+  }
+  text
 }
 
 func assertRefuted(body: in String, label: in String): Unit {
@@ -1230,7 +1240,11 @@ test "smt renders signed / and % through the truncating definitions (#7870)" {
   assertEqual(smtRenderTerm(TBuiltin(op = BOpDiv, args = termList2(a, b))), "(lyric!tdiv a b)", "signed /")
   assertEqual(smtRenderTerm(TBuiltin(op = BOpMod, args = termList2(a, b))), "(lyric!trem a b)", "signed %")
   val r = TVar(name = "r", sort = SFloat64)
-  assertEqual(smtRenderTerm(TBuiltin(op = BOpRealDiv, args = termList2(r, r))), "(/ r r)", "real / is unchanged")
+  assertEqual(
+    smtRenderTerm(TBuiltin(op = BOpRealDiv, args = termList2(r, r))),
+    "(fp.div RNE r r)",
+    "float / rounds to nearest-even"
+  )
   val preamble = smtRenderPreamble()
   assertTrue(
     preamble.contains(
@@ -1548,7 +1562,7 @@ test "a named range subtype's result and a range-typed var carry their bound (#7
     "callee-result-range"
   )
   assertDischarged(
-    "func h(y: in UInt): UInt\n  ensures: result <= 10\n{\n  var x: UInt range 0 ..= 10\n  x = y\n  x\n}\n",
+    "func h(y: in UInt): UInt\n  requires: y <= 10\n  ensures: result <= 10\n{\n  var x: UInt range 0 ..= 10\n  x = y\n  x\n}\n",
     "uninitialised-var-assigned"
   )
 }
@@ -2090,7 +2104,7 @@ test "a statement-level match checks its arms' obligations (#8107)" {
 
 test "an unmodelled construct keeps its operands' obligations (#8107)" {
   val pos = "func pos(x: in Int): Int\n  requires: x > 0\n{\n  x\n}\n"
-  assertRefuted(pos + "func g(xs: in List[Int]): Int\n{\n  val v = xs[pos(0)]\n  1\n}\n", "index-operand")
+  assertRefuted(pos + "func g(xs: in slice[Int]): Int\n{\n  val v = xs[pos(0)]\n  1\n}\n", "index-operand")
   assertRefuted(pos + "func g(): Int\n{\n  val t = (pos(0), 1)\n  1\n}\n", "tuple-operand")
 }
 
@@ -3906,4 +3920,151 @@ test "a generic record nesting itself is left uninterpreted, without breaking ot
     "record Lyric[Unit] {\n  v: Unit\n  n: Int\n}\nfunc get(b: in Lyric[Int]): Int\n  ensures: result == b.n\n{\n  b.n\n}\n"
   )
   assertTrue(not summaryHasDiagCode(preamble, "V0007"), "parameter-named-like-a-preamble-sort: a well-formed query")
+}
+
+test "an index read is a bounds obligation (#8157)" {
+  assertRefuted("func at(xs: in slice[Int], i: in Int): Int\n  ensures: true\n{\n  xs[i]\n}\n", "index-no-bounds-facts")
+  assertDischarged(
+    "func at(xs: in slice[Int], i: in Int): Int\n  requires: i >= 0 and i < xs.length\n  ensures: true\n{\n  xs[i]\n}\n",
+    "index-under-bounds"
+  )
+  assertDischarged("func at(a: in array[3, Int]): Int\n  ensures: true\n{\n  a[2]\n}\n", "array-in-bounds")
+  assertRefuted("func at(a: in array[3, Int]): Int\n  ensures: true\n{\n  a[3]\n}\n", "array-out-of-bounds")
+  // A list changes under `add` and `clear`, which the verifier does not
+  // model, so its length cannot be named.
+  assertUntranslatable(
+    "func at(xs: in List[Int], i: in Int): Int\n  requires: i >= 0 and i < xs.count\n  ensures: true\n{\n  xs[i]\n}\n",
+    "list-index"
+  )
+}
+
+test "sortEq compares a datatype's type arguments (#8354)" {
+  val ints: List[Sort] = newList()
+  ints.add(SInt)
+  val bools: List[Sort] = newList()
+  bools.add(SBool)
+  val boxInt = SDatatype(name = "Box", args = ints)
+  val boxBool = SDatatype(name = "Box", args = bools)
+  assertTrue(sortEq(boxInt, boxInt), "same instantiation")
+  assertTrue(not sortEq(boxInt, boxBool), "different type arguments")
+  val noArgs: List[Sort] = newList()
+  val bare = SDatatype(name = "Box", args = noArgs)
+  assertTrue(not sortEq(boxInt, bare), "different arity")
+  assertTrue(
+    not termEq(TVar(name = "b", sort = boxInt), TVar(name = "b", sort = boxBool)),
+    "terms of different instantiations"
+  )
+  assertRefuted(
+    "record Box[T] {\n  v: T\n}\nfunc f(a: in Box[Int], b: in Box[Bool]): Bool\n  ensures: result == b.v\n{\n  a.v > 0\n}\n",
+    "two-instantiations-in-one-goal"
+  )
+}
+
+test "a record a sibling file of the package declares is modelled (#8306)" {
+  val siblings: List[String] = newList()
+  siblings.add("package U\nrecord Meter {\n  n: Int\n}\n")
+  val s = proveSourceInScope(
+    "@proof_required\npackage U\nfunc twice(m: in Meter): Int\n  requires: m.n >= 0 and m.n <= 1000\n  ensures: result == m.n * 2\n{\n  m.n * 2\n}\n",
+    false,
+    scopeOfSources(siblings, "")
+  )
+  assertTrue(summaryTotalCount(s) > 0, "sibling-record: goals generated")
+  assertTrue(not summaryHasErrorDiag(s), "sibling-record: no error diagnostics" + diagnosticMessages(s))
+  assertTrue(not summaryHasFailure(s), "sibling-record: every goal discharged")
+  val wrong = proveSourceInScope(
+    "@proof_required\npackage U\nfunc twice(m: in Meter): Int\n  ensures: result == m.n * 3\n{\n  m.n * 2\n}\n",
+    false,
+    scopeOfSources(siblings, "")
+  )
+  assertTrue(summaryHasCounterexample(wrong), "sibling-record: a wrong ensures is refuted")
+}
+
+test "a dot-named function of a primitive verifies and is callable (#8336)" {
+  val twice = "func Int.twice(self: in Int): Int\n  ensures: result == self + self\n{\n  self + self\n}\n"
+  assertDischarged(twice, "definition")
+  assertDischarged(twice + "func k(n: in Int): Int\n  ensures: result == n + n\n{\n  n.twice()\n}\n", "method-call")
+  assertDischarged(twice + "func k(n: in Int): Int\n  ensures: result == n + n\n{\n  Int.twice(n)\n}\n", "static-call")
+}
+
+test "an assignment to a variable of an inline range type carries the range obligation (#8143)" {
+  assertRefuted(
+    "func f(x: in Int): Int {\n  var p: Int range 0 ..= 100 = 50\n  p = p + x\n  p\n}\n",
+    "range-assignment"
+  )
+  assertDischarged(
+    "func f(x: in Int): Int\n  requires: x >= 0 and x <= 50\n{\n  var p: Int range 0 ..= 100 = 50\n  p = p + x\n  p\n}\n",
+    "range-assignment-within"
+  )
+}
+
+test "Double compound division and remainder are not ill-sorted (#7883)" {
+  assertDischarged(
+    "func half(x: in Double): Bool\n  ensures: result\n{\n  var y = x\n  y /= 2.0\n  y == x / 2.0 or x != x\n}\n",
+    "compound-div"
+  )
+}
+
+test "a match guard is part of its arm's condition (#8142)" {
+  assertRefuted(
+    "func f(x: in Int): Int\n  ensures: result == 1\n{\n  match x {\n    case n if n > 100 -> 1\n    case _ -> 0\n  }\n}\n",
+    "guard-not-ignored"
+  )
+  assertDischarged(
+    "func f(x: in Int): Int\n  requires: x > 100\n  ensures: result == 1\n{\n  match x {\n    case n if n > 100 -> 1\n    case _ -> 0\n  }\n}\n",
+    "guard-makes-it-hold"
+  )
+  val some = provePkg(
+    "func f(o: in Option[Int]): Int\n  ensures: result == 1\n{\n  match o {\n    case Some(_) -> 0\n    case _ -> 1\n  }\n}\n"
+  )
+  assertTrue(summaryHasFailure(some), "some-arm-not-skipped: not proved" + diagnosticMessages(some))
+}
+
+test "Double is IEEE 754, not a real number (#8141)" {
+  assertRefuted("func same(x: in Double): Bool\n  ensures: result\n{\n  x == x\n}\n", "reflexive-eq-fails-for-nan")
+  assertRefuted("func grows(x: in Double): Bool\n  ensures: result\n{\n  x + 1.0 > x\n}\n", "plus-one-not-greater")
+  assertDischarged("func total(x: in Double): Bool\n  ensures: result\n{\n  x <= x or x != x\n}\n", "ieee-totality")
+  assertDischarged("func lit(): Bool\n  ensures: result\n{\n  1.5 + 1.0 == 2.5\n}\n", "literal-arithmetic")
+}
+
+test "Double literals render as exact Float64 constants (#8141)" {
+  val one = TLit(value = VLFloat(f = 1.5), sort = SFloat64)
+  assertEqual(smtRenderTerm(one), "((_ to_fp 11 53) RNE 1.5)", "fraction")
+  val whole = TLit(value = VLFloat(f = 2.0), sort = SFloat64)
+  assertEqual(smtRenderTerm(whole), "((_ to_fp 11 53) RNE 2.0)", "whole number keeps its decimal point")
+  val small = TLit(value = VLFloat(f = 0.00001), sort = SFloat64)
+  assertTrue(smtRenderTerm(small).contains("0.00001"), "exponent expanded: " + smtRenderTerm(small))
+  val big = TLit(value = VLFloat(f = 1.0e20), sort = SFloat64)
+  assertEqual(smtRenderTerm(big), "((_ to_fp 11 53) RNE 100000000000000000000.0)", "large exponent expanded")
+  val negative = TLit(value = VLFloat(f = -2.5), sort = SFloat64)
+  assertEqual(smtRenderTerm(negative), "((_ to_fp 11 53) RNE (- 2.5))", "negative literal")
+  assertTrue(
+    smtRenderTerm(TLit(value = VLFloat(f = 1.0 / 0.0), sort = SFloat64)) == "(_ +oo 11 53)",
+    "positive infinity"
+  )
+  assertDischarged(
+    "func big(x: in Double): Bool\n  requires: x < 1.0e300 and x > 1.0e-300\n  ensures: result\n{\n  x < 1.0e301\n}\n",
+    "scientific-notation-literals"
+  )
+}
+
+test "slice == fails closed, array == compares elements (#8218)" {
+  assertUntranslatable(
+    "func same(a: in slice[Int], b: in slice[Int]): Bool\n  ensures: result == (a == b)\n{\n  a == b\n}\n",
+    "slice-equality"
+  )
+  assertDischarged(
+    "func same(a: in array[2, Int], b: in array[2, Int]): Bool\n  requires: a == b\n  ensures: true\n{\n  a == b\n}\n",
+    "array-equality"
+  )
+}
+
+test "a 32-bit Float goal fails closed, its width differing between targets (#8141)" {
+  assertUntranslatable("func same(x: in Float): Bool\n  ensures: result\n{\n  x <= x\n}\n", "float32")
+}
+
+test "Double % fails closed instead of rendering ill-sorted SMT (#7883)" {
+  assertUntranslatable(
+    "func rem(x: in Double, y: in Double): Double\n  ensures: result == x % y\n{\n  x % y\n}\n",
+    "double-mod"
+  )
 }

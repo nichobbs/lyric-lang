@@ -18,9 +18,11 @@ pub func smtRenderSort(s: in Sort): String {
     case SBool -> "Bool"
     case SInt -> "Int"
     case SBitVec(w) -> "(_ BitVec " + intToString(w) + ")"
-    // Float32/Float64 map to SMT Real (sound approximation).
-    case SFloat32 -> "Real"
-    case SFloat64 -> "Real"
+    // IEEE 754 binary floating point (#8141); a `Real` would prove NaN and
+    // infinity false.  A goal over the 32-bit sort never reaches the solver
+    // (`floatProblem`): its width differs between targets.
+    case SFloat32 -> "Float32"
+    case SFloat64 -> "Float64"
     case SString -> "String"
     case SDatatype(name, args) -> {
       if args.count == 0 {
@@ -39,6 +41,7 @@ pub func smtRenderSort(s: in Sort): String {
       }
     }
     case SSlice(e) -> "(Array Int " + smtRenderSort(e) + ")"
+    case SArray(e) -> "(Array Int " + smtRenderSort(e) + ")"
     case SUninterp(n) -> smtSanitize(n)
   }
 }
@@ -70,19 +73,23 @@ pub func smtSanitize(s: in String): String {
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. Literal and term rendering.
 // ─────────────────────────────────────────────────────────────────────────────
-// Render a Double as a valid SMT-LIB Real literal.
-// SMT-LIB requires a decimal point: "1.0", not "1".  F#'s `double.ToString()`
-// omits the decimal for whole-valued floats (e.g. 1.0 → "1"), which Z3 parses
-// as an Int and produces a sort error in the Real theory.  NaN and ±Infinity
-// are not representable in SMT Real and are replaced with "0.0" so the
-// solver returns a diagnostic rather than crashing.  Scientific notation
-// (e.g. "1E+20") is also invalid SMT-LIB Real; expand it to fixed-point.
+// Render a Double as an SMT-LIB `Float64` literal, rounded to nearest-even
+// from its exact decimal expansion.
+// The rounding argument is a Real, which needs a decimal point ("1.0", not
+// "1": a bare integer is an Int) and no exponent, so a whole-valued or
+// scientific-notation string is expanded to fixed-point.
 func smtRenderFloat(f: in Double): String {
   val s = doubleToString(f)
-  if s == "NaN" or s == "Infinity" or s == "-Infinity" {
-    "0.0"
+  if s == "NaN" {
+    "(_ NaN 11 53)"
+  } else if s == "Infinity" {
+    "(_ +oo 11 53)"
+  } else if s == "-Infinity" {
+    "(_ -oo 11 53)"
+  } else if s.startsWith("-") {
+    "((_ to_fp 11 53) RNE (- " + expandToDecimal(s.substring(1)) + "))"
   } else {
-    expandToDecimal(s)
+    "((_ to_fp 11 53) RNE " + expandToDecimal(s) + ")"
   }
 }
 
@@ -147,9 +154,9 @@ func expandToDecimal(s: in String): String {
     }
   } else {
     val mPart = s.substring(0, ePos)
-    val ePart = s.substring(ePos + 1, s.length)
+    val ePart = s.substring(ePos + 1)
     val negM = mPart.length > 0 and charIs(mPart, 0, '-')
-    val mAbs = if negM { mPart.substring(1, mPart.length) } else { mPart }
+    val mAbs = if negM { mPart.substring(1) } else { mPart }
     val prefix = if negM { "-" } else { "" }
     var dotAt = -1
     var k = 0
@@ -159,7 +166,7 @@ func expandToDecimal(s: in String): String {
       }
       k = k + 1
     }
-    val digits = if dotAt >= 0 { mAbs.substring(0, dotAt) + mAbs.substring(dotAt + 1, mAbs.length) } else { mAbs }
+    val digits = if dotAt >= 0 { mAbs.substring(0, dotAt) + mAbs.substring(dotAt + 1) } else { mAbs }
     val decFromLeft = if dotAt >= 0 { dotAt } else { mAbs.length }
     val eNeg = ePart.length > 0 and charIs(ePart, 0, '-')
     val eStart = if ePart.length > 0 and (charIs(ePart, 0, '+') or charIs(ePart, 0, '-')) { 1 } else { 0 }
@@ -198,7 +205,7 @@ func shiftDecimal(prefix: in String, digits: in String, decPos: in Int): String 
     }
     prefix + digits + zeros + ".0"
   } else {
-    prefix + digits.substring(0, decPos) + "." + digits.substring(decPos, digits.length)
+    prefix + digits.substring(0, decPos) + "." + digits.substring(decPos)
   }
 }
 
@@ -292,6 +299,63 @@ func smtOpName(op: in Builtin, args: in List[Term]): String {
   }
 }
 
+pub func sortIsFloat(s: in Sort): Bool {
+  match s {
+    case SFloat32 -> true
+    case SFloat64 -> true
+    case _ -> false
+  }
+}
+
+// The `FloatingPoint` operator for a builtin over floats, or "" when the
+// builtin has none (`%`: `fp.rem` is the IEEE remainder, not the truncating
+// one `%` computes).
+func fpOpName(op: in Builtin): String {
+  match op {
+    case BOpAdd -> "fp.add"
+    case BOpSub -> "fp.sub"
+    case BOpMul -> "fp.mul"
+    case BOpDiv -> "fp.div"
+    case BOpRealDiv -> "fp.div"
+    case BOpNeg -> "fp.neg"
+    case BOpLt -> "fp.lt"
+    case BOpLte -> "fp.leq"
+    case BOpGt -> "fp.gt"
+    case BOpGte -> "fp.geq"
+    case BOpEq -> "fp.eq"
+    case BOpNeq -> "fp.eq"
+    case _ -> ""
+  }
+}
+
+// Arithmetic rounds to nearest-even; `==` and `!=` are IEEE (`NaN != NaN`),
+// not the structural `=`.
+func smtRenderFloatOp(op: in Builtin, args: in List[Term]): String {
+  val name = fpOpName(op)
+  val rounds = match op {
+    case BOpAdd -> true
+    case BOpSub -> true
+    case BOpMul -> true
+    case BOpDiv -> true
+    case BOpRealDiv -> true
+    case _ -> false
+  }
+  var output = "(" + name
+  if rounds {
+    output = output + " RNE"
+  }
+  var i = 0
+  while i < args.count {
+    output = output + " " + smtRenderTerm(args[i])
+    i = i + 1
+  }
+  output = output + ")"
+  match op {
+    case BOpNeq -> "(not " + output + ")"
+    case _ -> output
+  }
+}
+
 pub func smtRenderTerm(t: in Term): String {
   match t {
     case TVar(name, _) -> smtSanitize(name)
@@ -304,7 +368,9 @@ pub func smtRenderTerm(t: in Term): String {
       }
     }
     case TBuiltin(op, args) -> {
-      if (builtinEq(op, BOpNot) or builtinEq(op, BOpNeg)) and args.count == 1 {
+      if args.count >= 1 and sortIsFloat(sortOf(args[0])) and fpOpName(op).length > 0 {
+        smtRenderFloatOp(op, args)
+      } else if (builtinEq(op, BOpNot) or builtinEq(op, BOpNeg)) and args.count == 1 {
         "(" + smtOpName(op, args) + " " + smtRenderTerm(args[0]) + ")"
       } else if builtinEq(op, BOpSliceLength) and args.count == 1 {
         "(slice.length " + smtRenderTerm(args[0]) + ")"
@@ -595,7 +661,9 @@ func smtRenderMonadApp(name: in String, args: in List[Term], retSort: in Sort): 
 // True for sort names that are already declared by the SMT-LIB theory or by
 // the verifier's preamble — never re-declare them.
 func isBuiltinSortName(name: in String): Bool {
-  name == "Bool" or name == "Int" or name == "Real" or name == "String" or name == unitSortName() or name == "Option" or
+  name == "Bool" or name == "Int" or name == "Real" or name == "Float32" or name == "Float64" or name == "String" or
+    name == unitSortName() or
+    name == "Option" or
     name == "Array"
 }
 
@@ -632,6 +700,7 @@ func collectSortNames(s: in Sort, seen: in Map[String, Bool], outList: in List[S
       }
     }
     case SSlice(e) -> collectSortNames(e, seen, outList)
+    case SArray(e) -> collectSortNames(e, seen, outList)
     case SUninterp(name) -> {
       val sanitized = smtSanitize(name)
       if not isBuiltinSortName(sanitized) and not seen.containsKey(sanitized) {
@@ -906,6 +975,7 @@ func datatypeNamesInSort(s: in Sort, names: in Map[String, Bool]): Unit {
       }
     }
     case SSlice(e) -> datatypeNamesInSort(e, names)
+    case SArray(e) -> datatypeNamesInSort(e, names)
     case _ -> ()
   }
 }
@@ -1219,6 +1289,7 @@ func collectMonadSortsInSort(srt: in Sort, seen: in Map[String, Bool], outSorts:
       }
     }
     case SSlice(e) -> collectMonadSortsInSort(e, seen, outSorts)
+    case SArray(e) -> collectMonadSortsInSort(e, seen, outSorts)
     case _ -> ()
   }
 }

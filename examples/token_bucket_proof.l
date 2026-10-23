@@ -14,7 +14,10 @@ package TokenBucketProof
 // Without a solver, arithmetic goals go Unknown; pass --allow-unverified
 // to suppress V0007 in that case.
 //
-// Invariant:  tokens >= 0.0  AND  tokens <= capacity
+// Invariant:  tokens >= 0.0  AND  tokens <= capacity  AND  capacity <= 1.0e300
+//
+// `Double` is IEEE 754 in the prover, so the capacity is bounded: with an
+// infinite capacity and count, `tokens - count` is NaN.
 //
 // Proof sketch:
 //   tryAcquire: the if-branch only executes when `tokens >= count`;
@@ -30,6 +33,7 @@ pub protected type Bucket {
   let capacity: Double
   invariant: tokens >= 0.0
   invariant: tokens <= capacity
+  invariant: capacity <= 1.0e300
   pub entry tryAcquire(count: in Double): Bool
 
     // Attempt to consume `count` tokens.  Returns true on success,
@@ -62,6 +66,7 @@ pub protected type Bucket {
 // token count equals the capacity, satisfying the invariant at construction.
 pub func make(capacity: in Double): Bucket
   requires: capacity > 0.0
+  requires: capacity <= 1.0e300
   ensures: result.tokens == capacity
   ensures: result.capacity == capacity
 {
