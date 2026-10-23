@@ -135,7 +135,7 @@ int32_t lyric_sock_close(int32_t fd) {
 int32_t lyric_sock_shutdown(int32_t fd, int32_t how) {
     SOCKET s = to_socket(fd);
     int rc = shutdown(s, how);
-    CancelIoEx((HANDLE)s, NULL);
+    if (how != 1) CancelIoEx((HANDLE)s, NULL); /* a write-only half-close leaves reads alone */
     return rc == 0 ? 0 : -1;
 }
 
