@@ -142,10 +142,11 @@ static HANDLE console_handle(int32_t fd) {
 
 /* Bytes of a UTF-8 sequence split across two console writes, held until the
  * rest arrives so the character is converted whole.  Index 0 is stdout,
- * 1 is stderr.  Console writes come from one thread at a time per line
- * (Std.Console's contract), so this is not locked. */
+ * 1 is stderr.  Each stream's lock guards its carry, and also keeps one
+ * write's text whole when several threads print at once. */
 static uint8_t console_carry[2][4];
 static int console_carry_len[2];
+static SRWLOCK console_lock[2] = {SRWLOCK_INIT, SRWLOCK_INIT};
 
 /* Length of the longest prefix of `p[0..n)` that ends on a UTF-8 sequence
  * boundary: a trailing lead byte whose continuation bytes have not all
@@ -211,7 +212,9 @@ static void console_write(HANDLE con, int slot, const uint8_t* data, int64_t len
 static void write_all(int32_t fd, const uint8_t* data, int64_t len) {
     HANDLE con = console_handle(fd);
     if (con) {
+        AcquireSRWLockExclusive(&console_lock[fd - 1]);
         console_write(con, fd - 1, data, len);
+        ReleaseSRWLockExclusive(&console_lock[fd - 1]);
         return;
     }
     int64_t off = 0;
@@ -500,7 +503,7 @@ int64_t lyric_read_fd(int32_t fd, void* buf, int64_t n) {
 int32_t lyric_open_fd(const char* path, int32_t flags, int32_t mode) {
     wchar_t* w = lyric_win32_wide(path);
     if (!w) {
-        errno = ENOENT;
+        errno = EINVAL; /* not valid UTF-8: no file can have that name */
         return -1;
     }
     int pmode = (mode & 0222) ? (_S_IREAD | _S_IWRITE) : _S_IREAD;
@@ -529,7 +532,7 @@ int32_t lyric_close_fd(int32_t fd) {
 int32_t lyric_unlink(const char* path) {
     wchar_t* w = lyric_win32_wide(path);
     if (!w) {
-        errno = ENOENT;
+        errno = EINVAL; /* not valid UTF-8: no file can have that name */
         return -1;
     }
     BOOL ok = DeleteFileW(w);
@@ -542,7 +545,7 @@ int32_t lyric_mkdir(const char* path, int32_t mode) {
     (void)mode;
     wchar_t* w = lyric_win32_wide(path);
     if (!w) {
-        errno = ENOENT;
+        errno = EINVAL; /* not valid UTF-8: no file can have that name */
         return -1;
     }
     BOOL ok = CreateDirectoryW(w, NULL);
@@ -554,7 +557,7 @@ int32_t lyric_mkdir(const char* path, int32_t mode) {
 int32_t lyric_rmdir(const char* path) {
     wchar_t* w = lyric_win32_wide(path);
     if (!w) {
-        errno = ENOENT;
+        errno = EINVAL; /* not valid UTF-8: no file can have that name */
         return -1;
     }
     BOOL ok = RemoveDirectoryW(w);
@@ -714,6 +717,7 @@ void lyric_sem_wait(void* s) {
     lyric_sem_t* sem = (lyric_sem_t*)s;
     AcquireSRWLockExclusive(&sem->lock);
     while (sem->count <= 0) {
+        /* An INFINITE wait cannot time out, so any failure is a broken lock. */
         if (!SleepConditionVariableSRW(&sem->cond, &sem->lock, INFINITE, 0)) {
             lyric_panic_msg("SleepConditionVariableSRW (sem) failed", "lyric_win32.c", __LINE__);
         }

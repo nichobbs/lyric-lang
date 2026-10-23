@@ -710,7 +710,7 @@ pub func synthesizeWithPropertiesConfig(
 // #6868) so `cli_test.l` can thread manifest-resolved features through
 // instead of going via one of the fixed-feature wrappers above.
 pub func synthesizeFor(
-  source: in String,
+  rawSource: in String,
   filter: in Option[String],
   nativeMode: in Bool,
   runProperties: in Bool,
@@ -718,7 +718,11 @@ pub func synthesizeFor(
   active: in List[String],
   declared: in List[String],
 ): Outcome {
-  val pf = parse(source)
+  val pf = parse(rawSource)
+  // Every span indexes the lexer's line-ending-normalised text, so the
+  // rewrite slices that, never the raw input: in a CRLF file (a Windows
+  // checkout) each line's `\r` would shift every later slice by one.
+  val source = pf.source
   val errs = parseErrors(pf.diagnostics)
   if errs.count > 0 {
     return ParseFailures(diagnostics = errs)

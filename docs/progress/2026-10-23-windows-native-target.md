@@ -18,6 +18,9 @@
   `lyric_win32_test.c`; `windows-build.yml` gains a `native-tests` job running
   `scripts/ci/windows-native-tests.sh` (lyric-rt C tests, the cross-target and stdlib `--target native` suites,
   `scripts/ci/windows-native-e2e.sh`).
+- CRLF sources (a Windows checkout): `ParseResult.source` is now the line-ending-normalised text its spans
+  index (as documented), so `lyric test`'s rewrite (`Lyric.TestSynth`) no longer drifts one character per line
+  and cuts string literals; `parser_self_test.l` and `test_synth_self_test.l` pin it.
 - Docs: D204, docs/01 (native target), docs/67, docs/12, book chapter 1 and appendix B (`N0025`), CLAUDE.md.
   Follow-ups: #8433 (processes), #8434 (sockets, TLS), #8435 (graphics prebuilts, G4-G7 examples), #8436
   (compiler-hosted self-tests, ASan, long paths).
