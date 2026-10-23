@@ -18,7 +18,10 @@ import Lyric.TypeChecker
 func parseOk(src: in String): SourceFile {
   val pr = parse(src)
   if pr.diagnostics.count > 0 {
-    panic("parseOk: parser produced diagnostics (" + pr.diagnostics[0].code + ": " + pr.diagnostics[0].message + "), refusing to test against ill-formed source")
+    panic(
+      "parseOk: parser produced diagnostics (" + pr.diagnostics[0].code + ": " + pr.diagnostics[0].message +
+        "), refusing to test against ill-formed source"
+    )
   }
   pr.file
 }
@@ -215,6 +218,28 @@ test "target predicate keeps and erases by active target" {
   assertEqualInt(dotnetActive.file.items.count, 2, "cfg_target: dotnet keeps onlyDotnet + always")
 }
 
+// `target_os = "X"` tests the `target_os.<os>` pseudo-feature a native build
+// injects from its triple (docs/67 G9); with none injected (dotnet, the JVM)
+// only the `not(...)` side holds.  Two same-named items with disjoint
+// predicates are a compile-time switch.
+test "target_os predicate selects one of two same-named items" {
+  val src = "package P\n" + "@cfg(target_os = \"windows\")\n" + "val width: Long = 4\n" +
+    "@cfg(not(target_os = \"windows\"))\n" +
+    "val width: Long = 8\n"
+  val sf = parseOk(src)
+  val declared = singletonList("realfeature")
+  val native = withTargetFeature(emptyFeatures(), "native")
+  val windows = applyCfgErasure(withTargetOsFeature(native, "windows"), declared, sf)
+  assertEqualInt(windows.diagnostics.count, 0, "cfg_target_os: no diagnostics")
+  assertEqualInt(windows.file.items.count, 1, "cfg_target_os: Windows keeps one width")
+  val linux = applyCfgErasure(withTargetOsFeature(native, "linux"), declared, sf)
+  assertEqualInt(linux.file.items.count, 1, "cfg_target_os: Linux keeps the other")
+  val dotnet = applyCfgErasure(withTargetFeature(emptyFeatures(), "dotnet"), declared, sf)
+  assertEqualInt(dotnet.diagnostics.count, 0, "cfg_target_os: a managed target reports nothing")
+  assertEqualInt(dotnet.file.items.count, 1, "cfg_target_os: a managed target keeps the not(...) side")
+  assertEqualInt(withTargetOsFeature(emptyFeatures(), "").count, 0, "an unknown OS injects nothing")
+}
+
 // `any(...)` keeps an item when one operand holds; `all(...)` needs every
 // operand; `not(...)` negates; they nest. One shared kernel file can thus be
 // compiled for dotnet and native but erased on jvm.
@@ -264,7 +289,11 @@ test "f0012 malformed composite" {
     "@cfg(not())\n" +
     "pub func e(): Int { 5 }\n"
   val res = applyCfgErasure(emptyFeatures(), emptyFeatures(), parseOk(src))
-  assertEqualInt(diagCount(res.diagnostics, "F0012"), 5, "cfg_any: five F0012 (not with two operands, unknown head, empty any/all/not)")
+  assertEqualInt(
+    diagCount(res.diagnostics, "F0012"),
+    5,
+    "cfg_any: five F0012 (not with two operands, unknown head, empty any/all/not)"
+  )
   assertEqualInt(res.file.items.count, 5, "cfg_any: malformed items are kept")
 }
 

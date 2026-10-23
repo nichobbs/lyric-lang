@@ -34,9 +34,11 @@ cc -fsyntax-only $(pkg-config --cflags freetype2 harfbuzz) lyric-text/native/tex
 # The kernel bindings are generated; they must match the headers and allow-lists.
 includes=$(pkg-config --cflags-only-I freetype2 harfbuzz | sed 's/-I/-I /g')
 (cd lyric-text && "$LYRIC_BIN" bindgen native/freetype_bindings.h --package Text.Kernel.Freetype \
-  --allow native/freetype.allow --library freetype -o src/_kernel/freetype.l --check $includes)
+  --allow native/freetype.allow --library freetype -o src/_kernel/freetype.l \
+  --cfg 'not(target_os = "windows")' --check $includes)
 (cd lyric-text && "$LYRIC_BIN" bindgen native/harfbuzz_bindings.h --package Text.Kernel.Harfbuzz \
-  --allow native/harfbuzz.allow --library harfbuzz -o src/_kernel/harfbuzz.l --check $includes)
+  --allow native/harfbuzz.allow --library harfbuzz -o src/_kernel/harfbuzz.l \
+  --cfg 'not(target_os = "windows")' --check $includes)
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT

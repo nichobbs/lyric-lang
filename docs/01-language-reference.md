@@ -819,9 +819,11 @@ dir        = "native"         # a directory, relative to this manifest, holding 
 link       = "cdep"           # optional: the -l name, default the table key
 ```
 
-A table names exactly one source, `pkg_config`, `dir`, or one or more
+A table names one source, `pkg_config`, `dir`, or one or more
 `[native.libs.<name>.prebuilt.<triple>]` tables (below), else the manifest is
-rejected. The build links each library (`-L<dir>` `-l<link>`, or the flags
+rejected; prebuilt tables may also sit beside `pkg_config`, which then serves
+the triples they do not cover (SDL3 is a system package on Linux and a pinned
+archive on Windows, D219). The build links each library (`-L<dir>` `-l<link>`, or the flags
 `pkg-config --libs` prints) and takes the declarations of its dependencies as
 well: a path or workspace dependency's `[native.libs]`, and those of its own
 dependencies, join the application's, so an application that depends on a
@@ -833,7 +835,11 @@ on macOS), so the program runs from that directory without the original one.
 On Windows (D205) a `dir` library is `<link>.lib`, a static library or the import
 library of `<link>.dll`, which must be present; the DLL is copied next to the
 `.exe`, where the Windows loader looks first, and there is no run path. A
-`pkg_config` library is a system library and is not copied. A missing
+`pkg_config` library is a system library and is not copied, except on Windows,
+which has no system library directory the loader searches: there the DLL of
+each `-l<name>` that pkg-config prints is copied when it sits beside an `-L`
+directory's import library or in the `bin` directory next to it (the vcpkg and
+CMake install layouts, D219). A missing
 directory or an unknown pkg-config package fails the build naming the library,
 and `[native.libs]` is an error with a `wasm32` triple. `@library("name")` on
 an `extern func` (what `lyric bindgen --library` emits) names the library that
@@ -848,6 +854,12 @@ url     = "https://github.com/gfx-rs/wgpu-native/releases/download/v25.0.2.1/wgp
 sha256  = "<64 hex digits>"
 members = ["lib/libwgpu_native.so"]     # zip members to extract; omit for a bare .so/.dylib URL
 ```
+
+A `members` entry written `"<path> -> <file name>"` extracts that member under
+another (bare) file name. A Windows import library may be given any name, since
+it records the DLL it loads, so an archive's `x.dll.lib` can be extracted as
+the library's `<link>.lib`; every `.dll` a Windows archive extracts is copied
+beside the executable, so the library keeps its upstream DLL name (D219).
 
 `lyric restore` downloads the file for the host triple and for `[native].triple`
 (using `curl`, which also reads `file://` URLs), refuses it unless its SHA-256
@@ -2671,7 +2683,13 @@ loader prefers it by basename, so the public `Std.*` surface is
 identical on every target.  `@cfg(target = "dotnet" | "jvm" | "native")`
 additionally gates individual items per target; the predicate resolves
 against a `target.<name>` pseudo-feature the CLI injects (D-N-013) and
-is exempt from the `F0013` declared-features check.  A predicate may also be composed with `any(...)`, `all(...)` and `not(...)`, nested to any depth (`@cfg(any(feature = "dotnet", feature = "native"))`, `docs/24-build-features.md` §4.1).
+is exempt from the `F0013` declared-features check.  `@cfg(target_os = "linux" | "macos" | "windows" | "wasi")`
+gates an item by the operating system of a native build, taken from its target triple (the host's when no
+`--triple` is given) as the `target_os.<os>` pseudo-feature (D219); it applies to the program's packages, its
+dependencies, each file of a multi-file package and the bundled stdlib.  No operating system is known when
+compiling for dotnet or the JVM, so there only the `not(...)` side of a `target_os` predicate holds.  Two items of
+one name with exclusive predicates (`@cfg(target_os = "windows")` and `@cfg(not(target_os = "windows"))`) select
+one of them per build.  A predicate may also be composed with `any(...)`, `all(...)` and `not(...)`, nested to any depth (`@cfg(any(feature = "dotnet", feature = "native"))`, `docs/24-build-features.md` §4.1).
 
 Where the managed kernels rely on host exceptions, the shared pure
 layer instead delegates to exception-free **Result/Option seams** that
@@ -3287,11 +3305,11 @@ A `@bench` function whose signature does not match `func name(): Unit` passes th
 
 ### 13.11a Bindgen
 
-`lyric bindgen <header.h> --package <Name> --allow <file> [-o <out.l>] [--library <name>] [-I <dir>]... [--clang-arg <arg>]... [--long-bits 32|64] [--check]` generates a `--target native` kernel binding file from a C header (docs/67 §5.3, D190). It runs `clang -Xclang -ast-dump=json -fsyntax-only` over the header (`clang` must be on `PATH`) and writes `-o <out.l>`, or standard output without `-o`.
+`lyric bindgen <header.h> --package <Name> --allow <file> [-o <out.l>] [--library <name>] [-I <dir>]... [--clang-arg <arg>]... [--triple <llvm-triple>] [--long-bits 32|64] [--cfg <predicate>] [--check]` generates a `--target native` kernel binding file from a C header (docs/67 §5.3, D190). It runs `clang -Xclang -ast-dump=json -fsyntax-only` over the header (`clang` must be on `PATH`) and writes `-o <out.l>`, or standard output without `-o`.
 
 The allow-list file selects what is bound: one name or `prefix*` pattern per line (`#` starts a comment), matched against function, record, typedef and enum-constant names, and `userdata <callback> <index>` lines naming a callback typedef's user-pointer parameter. The output has `pub extern func` declarations (each with `@library("<name>")` when `--library` is given, which is what links the library into a native build), `pub foreign record` declarations for the structs those functions use (transitively), and `pub val` constants for the selected enum constants. A callback parameter becomes a function type whose user-pointer parameter is `NativeUserdata`; the pointer is the callback's only `void *` parameter unless a `userdata` line says otherwise.
 
-Mapping: `int`/`unsigned int`/enums to `Int`, `long long` and `size_t` to `Long`, 8-bit integers and `bool` to `Byte`, `float` to `Float`, `double` to `Double`, a pointer to `NativePtr[T]` (`NativePtr[Byte]` for `void *`, `char *` and incomplete or unsupported struct types), an array field to `array[N, T]`. `long` follows `--long-bits` (default 64). Signedness is not tracked: an unsigned value is the signed type of the same width. A symbol that cannot be passed faithfully (a 16-bit integer, a bit-field, a union, a variadic function, a function-pointer field, an ambiguous callback) is skipped with a note on standard error; naming a skipped or undeclared symbol exactly, rather than by pattern, is an error.
+Mapping: `int`/`unsigned int`/enums to `Int`, `long long` and `size_t` to `Long`, 8-bit integers and `bool` to `Byte`, `float` to `Float`, `double` to `Double`, a pointer to `NativePtr[T]` (`NativePtr[Byte]` for `void *`, `char *` and incomplete or unsupported struct types), an array field to `array[N, T]`. `long` follows the data model: `--triple` parses the header as that target sees it (clang `--target`, so its `_WIN32` branches and `<stdint.h>` are the target's) and sets 32-bit `long` with 64-bit pointers for a Windows triple (LLP64), 32-bit both for `wasm32`/`i686` (ILP32), and 64-bit both otherwise (LP64); `--long-bits` overrides the `long` width (default 64). clang's `__attribute__((...))` parts of a type, such as a Windows header's calling convention (`SDLCALL` is `__cdecl`), are dropped: x86-64 has one convention. A binding whose output differs between data models is generated once per model, each file given `--cfg <predicate>` (written as its file-level `@cfg`, e.g. `--cfg 'target_os = "windows"'` and `--cfg 'not(target_os = "windows")'`), and the files form one package (`[project.packages]` lists both); every such variant also defines `toCLong(x: in Long)` and `fromCLong(x)`, returning and taking `Int` on LLP64 and `Long` otherwise, so code above the binding converts a C `long` the same way against each (D219). Signedness is not tracked: an unsigned value is the signed type of the same width. A symbol that cannot be passed faithfully (a 16-bit integer, a bit-field, a union, a variadic function, a function-pointer field, an ambiguous callback) is skipped with a note on standard error; naming a skipped or undeclared symbol exactly, rather than by pattern, is an error.
 
 `--check` regenerates in memory and fails when `-o` differs, so CI can keep generated files in sync with their headers.
 

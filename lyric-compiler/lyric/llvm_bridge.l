@@ -658,6 +658,24 @@ pub func normalizeNativeTriple(triple: in String): String {
   triple
 }
 
+/// The operating system `@cfg(target_os = "X")` tests for a build for
+/// `triple` (the host's when empty): `linux`, `macos`, `windows` or `wasi`,
+/// or "" for a triple naming none of them.
+pub func nativeTargetOs(triple: in String): String {
+  val t = if triple.length > 0 { triple } else { detectHostTriple() }
+  if isWasmTriple(t) or Str.contains(t, "wasi") {
+    "wasi"
+  } else if isWindowsTriple(t) {
+    "windows"
+  } else if Str.contains(t, "apple") or Str.contains(t, "darwin") or Str.contains(t, "macos") {
+    "macos"
+  } else if Str.contains(t, "linux") {
+    "linux"
+  } else {
+    ""
+  }
+}
+
 /// Whether `triple` is Windows x86-64 with the MSVC environment under any
 /// vendor or version spelling: `clang -print-effective-triple` on a Windows
 /// host prints the MSVC version (`x86_64-pc-windows-msvc19.40.33811`), and
@@ -737,9 +755,9 @@ record NativeStdlib {
   pathByPkg: Map[String, String]
 }
 
-func parseNativeStdlib(stdlibFiles: in List[NativeStdlibFile]): NativeStdlib {
+func parseNativeStdlib(stdlibFiles: in List[NativeStdlibFile], targetOs: in String): NativeStdlib {
   val noFeatures: List[String] = newList()
-  val nativeFeatures = Cfg.withTargetFeature(noFeatures, "native")
+  val nativeFeatures = Cfg.withTargetOsFeature(Cfg.withTargetFeature(noFeatures, "native"), targetOs)
   val importedPkgs: List[ImportedPackage] = newList()
   val byPkg: Map[String, SourceFile] = newMap()
   val pathByPkg: Map[String, String] = newMap()
@@ -1286,7 +1304,9 @@ pub func compileToNativeWithFeatures(
   // after parse, before anything indexes the items).
   val nativeDefines = BD.decodeDefines(defines)
   val noOrigins: List[DiagUtil.MergedLineOrigin] = newList()
-  val cfgFile = match pipeParseAndErase(source, "native", activeFeatures, declaredFeatures, nativeDefines, path, noOrigins) {
+  val targetOs = nativeTargetOs(triple)
+  val osActive = Cfg.withTargetOsFeature(activeFeatures, targetOs)
+  val cfgFile = match pipeParseAndErase(source, "native", osActive, declaredFeatures, nativeDefines, path, noOrigins) {
     case Some(f) -> f
     case None -> return false
   }
@@ -1320,7 +1340,7 @@ pub func compileToNativeWithFeatures(
 
   // Parse the stdlib once: type items for the typecheck,
   // whole files (cfg-erased, alias-rewritten) for bundling.
-  val stdlib = parseNativeStdlib(stdlibFiles)
+  val stdlib = parseNativeStdlib(stdlibFiles, targetOs)
   val importedPkgs = stdlib.importedPkgs
   val stdlibByPkg = stdlib.byPkg
 
@@ -1734,9 +1754,13 @@ pub func compileProjectToNativeWithShape(
   // merged-blob line numbers via `originsByPkg` — parity with the MSIL/JVM
   // project bridges (previously always the bare package name, no per-line
   // translation at all).
+  val targetOs = nativeTargetOs(triple)
   var ppi = 0
   while ppi < packages.count {
-    val pkgActive = match packages[ppi].features { case Some(pf) -> pf.active; case None -> activeFeatures }
+    val pkgActive = Cfg.withTargetOsFeature(
+      match packages[ppi].features { case Some(pf) -> pf.active; case None -> activeFeatures },
+      targetOs
+    )
     val pkgDeclared = match packages[ppi].features { case Some(pf) -> pf.declared; case None -> declaredFeatures }
     val cfgFile = match pipeParseAndErase(packages[ppi].source, "native", pkgActive, pkgDeclared, nativeDefines, nativePkgLabelAt(packages, ppi), nativePkgOriginsAt(originsByPkg, ppi)) {
       case Some(f) -> f
@@ -1807,7 +1831,7 @@ pub func compileProjectToNativeWithShape(
   }
 
   // Parse the stdlib once (identical to the single-source path).
-  val stdlib = parseNativeStdlib(stdlibFiles)
+  val stdlib = parseNativeStdlib(stdlibFiles, targetOs)
   val importedPkgs: List[ImportedPackage] = newList()
   for ip in stdlib.importedPkgs {
     importedPkgs.add(ip)

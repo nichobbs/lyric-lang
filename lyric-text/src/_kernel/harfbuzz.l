@@ -2,7 +2,14 @@
 @axiom("Text.Kernel.Harfbuzz bindings conform to the C header they were generated from")
 @io
 @unsafe_ffi
+@cfg(not(target_os = "windows"))
 package Text.Kernel.Harfbuzz
+
+/// A value for a C `long` or `unsigned long` parameter or field of this target.
+pub func toCLong(x: in Long): Long = x
+
+/// A C `long` or `unsigned long` of this target as a `Long`.
+pub func fromCLong(x: in Long): Long = x
 
 pub foreign record hb_feature_t {
   tag: Int

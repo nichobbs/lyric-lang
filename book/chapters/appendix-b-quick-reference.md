@@ -1292,6 +1292,8 @@ lyric clean <dir>                      # clean a specific directory
 # Generate native FFI bindings from a C header (needs clang on PATH)
 lyric bindgen sdl.h --package Sdl.Kernel --allow sdl.allow --library SDL3 -o sdl_kernel.l
 lyric bindgen sdl.h --package Sdl.Kernel --allow sdl.allow -o sdl_kernel.l --check   # CI: fail if out of date
+lyric bindgen ft.h --package Ft.Kernel --allow ft.allow -o ft_windows.l \
+  --triple x86_64-pc-windows-msvc --cfg 'target_os = "windows"'                       # a Windows (LLP64) variant
 
 # Plugins (chapter 33, D207)
 lyric plugin pack                      # build the plugin project for dotnet; write bin/plugin/<id>-<version>/

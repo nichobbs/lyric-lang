@@ -1101,6 +1101,20 @@ pub func createWaylandSurface(d: Device, display: Long, surface: Long): Result[S
   finishSurface(d, wgpuInstanceCreateSurface(longToPtr(d.instance), nativeAddrOf(desc)))
 }
 
+/// A surface for a Win32 window: `instance` is the `HINSTANCE` and `hwnd` the `HWND`, as
+/// `Window.nativeWindow` returns them.
+@unsafe_ffi
+pub func createWindowsSurface(d: Device, instance: Long, hwnd: Long): Result[Surface, String] {
+  var source = WGPUSurfaceSourceWindowsHWND(
+    chain = WGPUChainedStruct(next = nativeNullPtr(), sType = WGPUSType_SurfaceSourceWindowsHWND),
+    hinstance = longToPtr(instance),
+    hwnd = longToPtr(hwnd)
+  )
+  val head: NativePtr[Byte] = nativeAddrOf(source)
+  var desc = WGPUSurfaceDescriptor(nextInChain = head, label = noString())
+  finishSurface(d, wgpuInstanceCreateSurface(longToPtr(d.instance), nativeAddrOf(desc)))
+}
+
 /// Sets the surface's size in pixels (call it again when the window is resized) and picks its
 /// format: RGBA8 when the surface offers it, else BGRA8, else its first format.  The two unorm formats are preferred over their sRGB twins so that colours written by a shader appear as written, as they do in an offscreen `formatRgba8` target.  Presentation is vsynced.
 @unsafe_ffi

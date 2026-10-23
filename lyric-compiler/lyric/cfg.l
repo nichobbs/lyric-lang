@@ -62,7 +62,7 @@ func listContains(haystack: in List[String], needle: in String): Bool {
 }
 
 // Evaluate one predicate argument of an `@cfg(...)`: `feature = "X"`,
-// `target = "X"`, or the composites `any(p, ...)` (true if any operand is),
+// `target = "X"`, `target_os = "X"`, or the composites `any(p, ...)` (true if any operand is),
 // `all(p, ...)` (true if every operand is) and `not(p)`.  A malformed
 // predicate emits `F0012` and evaluates to true, so a typo keeps the item
 // rather than silently erasing it.
@@ -73,10 +73,10 @@ func evalCfgPredicate(
   arg: in AnnotationArg,
   diags: in List[Diagnostic],
 ): Bool {
-  val malformedMsg = "@cfg accepts 'feature = \"X\"', 'target = \"X\"', or any(...) / all(...) / not(...) of those"
+  val malformedMsg = "@cfg accepts 'feature = \"X\"', 'target = \"X\"', 'target_os = \"X\"', or any(...) / all(...) / not(...) of those"
   match arg {
     case AAName(argName, value, span) -> {
-      if argName != "feature" and argName != "target" {
+      if argName != "feature" and argName != "target" and argName != "target_os" {
         diags.add(errorDiagnostic("F0012", malformedMsg, span))
         return true
       }
@@ -84,7 +84,7 @@ func evalCfgPredicate(
         case AVString(rawName, _) -> {
           // A caller that only wants the predicate's diagnostics
           // (`fileCfgDiagnostics`) treats every `target = "X"` as active.
-          if argName == "target" and assumeTargets {
+          if (argName == "target" or argName == "target_os") and assumeTargets {
             return true
           }
           // `@cfg(target = "native")` resolves against the
@@ -92,7 +92,10 @@ func evalCfgPredicate(
           // the active set (D-N-013); targets are never declared
           // in [features], so the F0013 typo guard only applies
           // to real features.
-          val featName = if argName == "target" { "target." + rawName } else { rawName }
+          // `@cfg(target_os = "windows")` likewise resolves against
+          // `target_os.windows`, which only a native build injects (from
+          // its triple), so it is false on dotnet and the JVM.
+          val featName = if argName == "feature" { rawName } else { argName + "." + rawName }
           if argName == "feature" and declared.count > 0 and not listContains(declared, featName) {
             diags.add(
               warningDiagnostic("F0013", "feature '" + featName + "' is not declared in the manifest's [features] section", span)
@@ -237,6 +240,23 @@ pub func withTargetFeature(active: in List[String], targetName: in String): List
     i = i + 1
   }
   extended.add("target." + targetName)
+  extended
+}
+
+/// A copy of `active` with the pseudo-feature `target_os.<os>` appended
+/// (`linux`, `macos`, `windows` or `wasi`), which `@cfg(target_os = "X")`
+/// tests.  Only the native bridge calls this, from its target triple; an
+/// empty `os` (an unrecognised triple) appends nothing.
+pub func withTargetOsFeature(active: in List[String], os: in String): List[String] {
+  val extended: List[String] = newList()
+  var i = 0
+  while i < active.count {
+    extended.add(active[i])
+    i = i + 1
+  }
+  if os.length > 0 {
+    extended.add("target_os." + os)
+  }
   extended
 }
 

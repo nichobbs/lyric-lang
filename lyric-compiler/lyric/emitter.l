@@ -3251,6 +3251,7 @@ pub func emitNativeProjectWithShape(
   // `NativeSourcePackage.path`) and non-empty for a genuinely multi-file
   // package.
   val nativeOrigins: List[DiagUtil.PackageLineOrigins] = newList()
+  val targetOs = LlvmBridge.nativeTargetOs(triple)
   var mergeFailed = false
   var pi = 0
   while pi < pkgs.count {
@@ -3262,7 +3263,7 @@ pub func emitNativeProjectWithShape(
       pkg.name,
       pkg.sources,
       pkg.paths,
-      pkgActive,
+      Cfg.withTargetOsFeature(pkgActive, targetOs),
       pkgDeclared,
       "native",
       pkg.nameFromManifest

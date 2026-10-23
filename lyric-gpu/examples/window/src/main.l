@@ -52,6 +52,7 @@ func surfaceFor(d: Gpu.Device, w: Window.Window): Result[Gpu.Surface, String] {
   match Window.nativeWindow(w) {
     case X11(display, window) -> Gpu.createXlibSurface(d, display, window)
     case Wayland(display, surface) -> Gpu.createWaylandSurface(d, display, surface)
+    case Win32(hwnd, instance) -> Gpu.createWindowsSurface(d, instance, hwnd)
     case _ -> Err(error = "this window system has no surface support yet")
   }
 }

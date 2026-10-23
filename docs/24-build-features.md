@@ -243,11 +243,11 @@ Future atom kinds (target, debug-build, etc.) extend `atom` without
 breaking the grammar:
 
 ```
-@cfg(target_os = "linux")               # future
+@cfg(target_os = "linux")               # implemented (D219)
 @cfg(debug_assertions)                  # future
 ```
 
-`feature = "X"` is the only atom in v1, plus `target = "X"` (D-N-013). The composites `any(...)`, `all(...)` and `not(...)` are implemented (nested to any depth): a malformed composite (`not` with other than one operand, an empty `any`/`all`, an unknown head) is `F0012` and keeps the item. They are what lets one kernel file be compiled for `dotnet` and `native` and erased on `jvm`: `@cfg(any(feature = "dotnet", feature = "native"))`.
+`feature = "X"` is the only atom in v1, plus `target = "X"` (D-N-013) and `target_os = "X"` (D219: `linux`, `macos`, `windows` or `wasi`, from a native build's triple; never true on dotnet or the JVM). The composites `any(...)`, `all(...)` and `not(...)` are implemented (nested to any depth): a malformed composite (`not` with other than one operand, an empty `any`/`all`, an unknown head) is `F0012` and keeps the item. They are what lets one kernel file be compiled for `dotnet` and `native` and erased on `jvm`: `@cfg(any(feature = "dotnet", feature = "native"))`.
 
 ### 4.2 What can be gated
 

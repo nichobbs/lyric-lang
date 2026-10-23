@@ -138,8 +138,8 @@ Issue clusters, by `group:*` label.  Counts are open issues as of 2026-10-21.
   collision with no diagnostic (#8360); `nativeAddrOf(var: Int)` (#4845).
   Missing: arm64 and macOS native CI legs (#8419); Windows (docs/67 G9) runs the
   core suite (D205), child processes (D208), sockets and TLS over Winsock and
-  Schannel (D209), and the compiler-hosted self-tests with AddressSanitizer (D213);
-  the graphics examples on Windows remain (#8435).
+  Schannel (D209), the compiler-hosted self-tests with AddressSanitizer (D213), and
+  the graphics libraries and their examples (D219).
 - **Private helpers of a generic.**  A `pub` generic carries the private generics it
   reaches on every target (D215); a private non-generic helper is still T0123 on
   dotnet and the JVM (docs/01 §3.3, #8427).
@@ -166,7 +166,7 @@ left is verification and release work, tracked in `docs/36`:
 1. **Graphics (docs/67).**  G7 `lyric-game` (D201), `Std.Parallel` on a worker
    pool (D202) and the native `lyric-ui` host (D203, D204) are implemented on
    Linux.  Remaining: the multi-threaded coroutine scheduler (G8, #7947), G9
-   Windows (#7948; core target D205, processes D208, sockets and TLS D209, self-tests D213, remaining #8435), accessibility through AccessKit (G10, #8430) and pruning
+   Windows (#7948; core target D205, processes D208, sockets and TLS D209, self-tests D213, graphics D219), accessibility through AccessKit (G10, #8430) and pruning
    dependency kernels from the link (#8429); G4 macOS CI, G5 Cocoa/Win32
    surfaces and the macOS `.app` bundles (#8401, #8419); `lyric-text` bidi and
    UAX #14 (#8410); `buffer[T]` lazy copy (#8389) and the warn-on-copy lint

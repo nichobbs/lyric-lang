@@ -221,6 +221,21 @@ func resolvePrebuiltLib(
         baseDir = decl.baseDir
       )
       resolveDirLib(restored, os, args, bundle, errors)
+      // Every DLL a Windows archive extracts ships: the library's own DLL may
+      // keep its upstream name (an import library records the DLL it loads,
+      // whatever the `.lib` is called), and the DLLs it depends on come too.
+      if os == "windows" {
+        match File.listFiles(dir) {
+          case Ok(files) -> {
+            for f in files {
+              if Str.endsWith(Str.toLower(f), ".dll") and not stringListContains(bundle, f) {
+                bundle.add(f)
+              }
+            }
+          }
+          case Err(_) -> ()
+        }
+      }
     }
   }
 }
@@ -304,14 +319,16 @@ pub func restorePrebuilt(decl: in NativeLibDecl, p: in Mf.NativePrebuilt): List[
     }
   } else {
     val entries = Zip.readZipEntries(bytes)
-    for m in p.members {
+    for spec in p.members {
+      val m = Mf.prebuiltMemberPath(spec)
+      val name = Mf.prebuiltMemberFileName(spec)
       match Zip.extractByName(bytes, entries, m) {
         case None -> {
           errors.add(label + ": the archive has no member '" + m + "'")
           return errors
         }
-        case Some(ints) -> if not writeIntBytes(Path.join(dir, Path.basename(m)), ints) {
-          errors.add(label + ": cannot write " + Path.basename(m))
+        case Some(ints) -> if not writeIntBytes(Path.join(dir, name), ints) {
+          errors.add(label + ": cannot write " + name)
           return errors
         }
       }
@@ -361,7 +378,13 @@ pub func restoreTriples(manifest: in Mf.Manifest): List[String] {
   triples
 }
 
-func resolvePkgConfigLib(decl: in NativeLibDecl, args: in List[String], errors: in List[String]): Unit {
+func resolvePkgConfigLib(
+  decl: in NativeLibDecl,
+  os: in String,
+  args: in List[String],
+  bundle: in List[String],
+  errors: in List[String],
+): Unit {
   val spec = decl.spec
   if spec.version.length > 0 {
     val vArgs: List[String] = newList()
@@ -396,9 +419,42 @@ func resolvePkgConfigLib(decl: in NativeLibDecl, args: in List[String], errors: 
       // Every token `pkg-config --libs` prints is a link argument (`-L`, `-l`, `-pthread`,
       // `-Wl,...`, a static archive path); only blanks are dropped.
       val flat = Str.replace(Str.replace(Str.replace(res.stdout, "\n", " "), "\t", " "), "\r", " ")
+      val libDirs: List[String] = newList()
+      val names: List[String] = newList()
       for tok in Str.split(Str.trim(flat), " ") {
         if tok.length > 0 {
           args.add(tok)
+          if Str.startsWith(tok, "-L") and tok.length > 2 {
+            libDirs.add(Str.substring(tok, 2))
+          } else if Str.startsWith(tok, "-l") and tok.length > 2 {
+            names.add(Str.substring(tok, 2))
+          }
+        }
+      }
+      if os == "windows" {
+        bundlePkgConfigDlls(libDirs, names, bundle)
+      }
+    }
+  }
+}
+
+/// Windows has no system library directory the loader searches, so the DLLs a
+/// pkg-config library links are bundled like a `dir` library's: `<name>.dll`
+/// beside its import library, or in the `bin` directory next to that `lib`
+/// directory (the layout vcpkg and a CMake install use).  A name with no DLL
+/// (a static library, or a Windows system library) bundles nothing.
+func bundlePkgConfigDlls(libDirs: in List[String], names: in List[String], bundle: in List[String]): Unit {
+  for name in names {
+    var found = false
+    for d in libDirs {
+      if not found {
+        for candidate in [Path.join(d, name + ".dll"), Path.join(Path.join(Path.dirname(d), "bin"), name + ".dll")] {
+          if not found and File.fileExists(candidate) {
+            found = true
+            if not stringListContains(bundle, candidate) {
+              bundle.add(candidate)
+            }
+          }
         }
       }
     }
@@ -425,10 +481,12 @@ pub func resolveNativeLibs(decls: in List[NativeLibDecl], triple: in String): Na
   for d in decls {
     if not stringListContains(seen, d.spec.name) {
       seen.add(d.spec.name)
-      if d.spec.pkgConfig.length > 0 {
-        resolvePkgConfigLib(d, args, errors)
-      } else if d.spec.prebuilt.count > 0 {
+      // A triple with a prebuilt archive uses it; `pkg_config` serves the rest.
+      val hasArchive = match prebuiltFor(d.spec, effTriple) { case Some(_) -> true; case None -> false }
+      if d.spec.prebuilt.count > 0 and (hasArchive or d.spec.pkgConfig.length == 0) {
         resolvePrebuiltLib(d, effTriple, os, args, bundle, errors)
+      } else if d.spec.pkgConfig.length > 0 {
+        resolvePkgConfigLib(d, os, args, bundle, errors)
       } else {
         resolveDirLib(d, os, args, bundle, errors)
       }

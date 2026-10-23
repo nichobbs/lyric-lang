@@ -1,7 +1,12 @@
 # What lyric bindgen binds from HarfBuzz: buffers, shaping and the FreeType font bridge.  Regenerate
-# with (from lyric-text/):
+# both variants with (from lyric-text/):
 #   lyric bindgen native/harfbuzz_bindings.h --package Text.Kernel.Harfbuzz --allow native/harfbuzz.allow \
-#     --library harfbuzz -o src/_kernel/harfbuzz.l -I <harfbuzz include dir> -I <freetype2 include dir>
+#     --library harfbuzz -o src/_kernel/harfbuzz.l --cfg 'not(target_os = "windows")' \
+#     -I <harfbuzz include dir> -I <freetype2 include dir>
+#   lyric bindgen native/harfbuzz_bindings.h --package Text.Kernel.Harfbuzz --allow native/harfbuzz.allow \
+#     --library harfbuzz -o src/_kernel/harfbuzz_windows.l --cfg 'target_os = "windows"' \
+#     --triple x86_64-pc-windows-msvc -I <harfbuzz include dir> -I <freetype2 include dir>
+# (the Windows one needs the MSVC and Windows SDK headers: a Windows host, or INCLUDE naming them).
 hb_buffer_create
 hb_buffer_destroy
 hb_buffer_add_utf8
