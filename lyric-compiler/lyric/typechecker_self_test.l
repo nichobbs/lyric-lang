@@ -12223,3 +12223,51 @@ test "async Result operands, Unit operands and or-pattern duplicates (#8249, #79
   val orSrc = "package P\nunion U { case A; case B; case C }\nfunc f(u: in U): Int {\n  match u {\n    case A | B -> 1\n    case A -> 2\n    case C -> 3\n  }\n}\n"
   assertEqualInt(countDiagCode(parseCheck(orSrc), "T0196"), 1, "a case an earlier or-pattern already matched")
 }
+
+test "an unsuffixed integer literal adopts Byte/UInt/ULong but never Double (#7881)" {
+  val ok = parseCheck(
+    "package P\nfunc f(): Int {\n  val b: Byte = 200\n  val u: UInt = 7\n  val g: () -> Byte = { -> 5 }\n  0\n}\n"
+  )
+  assertEqualInt(diagCount(ok), 0, "Byte, UInt and a Byte lambda (" + diagCodesOf(ok) + ")")
+  val dbl = parseCheck("package P\nfunc f(): Int {\n  val d: Double = 2\n  0\n}\n")
+  assertEqualInt(countDiagCode(dbl, "T0060"), 1, "an Int literal for a Double is a mismatch (" + diagCodesOf(dbl) + ")")
+}
+
+func hostCheck(src: in String): CheckResult {
+  checkWithImportedPackages(parse(src).file, stdCollectionsHostPackages())
+}
+
+test "a bracket literal argument takes the shape its parameter gives it (#8277, #8293)" {
+  val lists = "import Std.CollectionsHost\n"
+  val slice = hostCheck(
+    "package P\n" + lists + "func s(xs: in slice[Long]): Long = xs[0]\nfunc f(): Long {\n  s([7, 8])\n}\n"
+  )
+  assertEqualInt(diagCount(slice), 0, "slice[Long] parameter (" + diagCodesOf(slice) + ")")
+  val tup = hostCheck(
+    "package P\n" + lists +
+      "func p(t: in (array[2, Int], Int)): Int {\n  match t { case (a, n) -> a[0] + n }\n}\nfunc f(): Int {\n  p(([7, 8], 9))\n}\n"
+  )
+  assertEqualInt(diagCount(tup), 0, "tuple holding an array (" + diagCodesOf(tup) + ")")
+  val bad = hostCheck(
+    "package P\n" + lists + "func s(xs: in slice[Long]): Long = xs[0]\nfunc f(): Long {\n  s([\"a\"])\n}\n"
+  )
+  assertEqualInt(
+    countDiagCode(bad, "T0043"),
+    1,
+    "a String literal for slice[Long] is rejected (" + diagCodesOf(bad) + ")"
+  )
+  val gen = hostCheck(
+    "package P\n" + lists +
+      "func g[T](xs: in List[T]): List[T] = xs\nfunc ga[T](x: in List[List[T]]): Int = x.count\n" +
+      "func f(): Int {\n  val r: List[Long] = g([1, 2])\n  ga([[1], [2, 3]]) + r.count\n}\n"
+  )
+  assertEqualInt(diagCount(gen), 0, "result binds T; nested List[List[T]] (" + diagCodesOf(gen) + ")")
+  val nested = hostCheck(
+    "package P\n" + lists + "func f(): Int {\n  val b: slice[List[Int]] = [[1], [5, 6]]\n  b.length\n}\n"
+  )
+  assertEqualInt(diagCount(nested), 0, "slice[List[Int]] (" + diagCodesOf(nested) + ")")
+  val lam = hostCheck(
+    "package P\n" + lists + "func f(): Int {\n  val g: () -> List[Long] = { -> [1, 2] }\n  g().count\n}\n"
+  )
+  assertEqualInt(diagCount(lam), 0, "a lambda returning a literal where a List is expected (" + diagCodesOf(lam) + ")")
+}

@@ -130,6 +130,7 @@ for t in \
   lyric-compiler/lyric/covariant_conversion_self_test.l \
   lyric-compiler/lyric/bench_alloc_self_test.l \
   lyric-compiler/lyric/tuple_expected_type_self_test.l \
+  lyric-compiler/lyric/expected_type_inference_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_test.l \
   lyric-compiler/lyric/generic_protected_self_test.l \
   lyric-compiler/lyric/generic_opaque_self_test.l \

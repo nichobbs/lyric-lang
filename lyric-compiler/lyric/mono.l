@@ -7000,6 +7000,79 @@ func flattenMemberChainToPath(e: in Expr): Option[ModulePath] {
 // at all, so trusting a qualified `TRef` here is consistent with that.
 // `EMember` chains (`Pkg.Type`) route through `flattenMemberChainToPath`
 // above.
+// The collection type an explicitly applied builtin collection constructor
+// builds, `newList[Int]()` -> `List[Int]`, when `recv` names the builtin
+// (not shadowed by a value or a same-file declaration) and every index is a
+// type this pass can spell.  Neither backend's call lowering sees the written
+// type arguments (the parser reads `newList[Int]` as an index), so
+// `explicitCollectionCtorMono` hands them over as an annotation.
+func builtinCollectionCtorTypeMono(
+  state: in MonoState,
+  env: in Map[String, TypeExpr],
+  recv: in Expr,
+  idxExprs: in List[Expr],
+): Option[TypeExpr] {
+  match recv.kind {
+    case EPath(p) -> {
+      if p.segments.count != 1 {
+        return None
+      }
+      val nm = p.segments[0]
+      val head = if nm == "newList" or nm == "newListWithCapacity" {
+        "List"
+      } else if nm == "newMap" {
+        "Map"
+      } else if nm == "newSet" {
+        "Set"
+      } else {
+        return None
+      }
+      val arity = if head == "Map" { 2 } else { 1 }
+      if idxExprs.count != arity or env.containsKey(nm) or state.moduleValTypes.containsKey(nm) or state.genDecls.containsKey(nm) {
+        return None
+      }
+      val targs: List[TypeArg] = newList()
+      var i = 0
+      while i < idxExprs.count {
+        match indexExprToTypeArgMono(state, idxExprs[i]) {
+          case Some(ta) -> match ta { case TAType(_) -> targs.add(ta); case _ -> return None }
+          case None -> return None
+        }
+        i = i + 1
+      }
+      val headPath = ModulePath(segments = [head], span = recv.span)
+      Some(value = TypeExpr(kind = TGenericApp(head = headPath, args = targs), span = recv.span))
+    }
+    case _ -> None
+  }
+}
+
+// `newList[Int]()` becomes
+//
+//   {
+//     val __lyric_nc_<n>: List[Int] = newList()
+//     __lyric_nc_<n>
+//   }
+//
+// so the construction is built at the written element type on every backend
+// (#7293).
+func explicitCollectionCtorMono(
+  state: in MonoState,
+  callee: in Expr,
+  collTe: in TypeExpr,
+  args: in List[CallArg],
+  sp: in Span,
+): Expr {
+  val id = state.copyTicker.count
+  state.copyTicker.add(0)
+  val name = "__lyric_nc_" + toString(id)
+  val call = Expr(kind = ECall(fn = callee, args = args), span = sp)
+  val stmts: List[Statement] = newList()
+  stmts.add(copyTypedValStmtMono(name, Some(value = collTe), call, sp))
+  stmts.add(Statement(kind = SExpr(expr = singleSegPathExpr(name, sp)), span = sp))
+  Expr(kind = EBlock(block = Block(statements = stmts, span = sp)), span = sp)
+}
+
 func indexExprToTypeArgMono(state: in MonoState, e: in Expr): Option[TypeArg] {
   match e.kind {
     case EPath(p) -> {
@@ -8021,6 +8094,10 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
               }
             }
             case _ -> ()
+          }
+          match builtinCollectionCtorTypeMono(state, env, idxRecv, idxExprs) {
+            case Some(collTe) -> return explicitCollectionCtorMono(state, idxRecv, collTe, newArgs, s)
+            case None -> ()
           }
           Expr(kind = ECall(fn = rewriteExpr(state, env, fn), args = newArgs), span = s)
         }

@@ -439,6 +439,22 @@ func widths(rows: in List[slice[Int]]): Int { rows[1].length }
 val w = widths([[1], [5, 6]])    // 2
 ```
 
+The position decides the literal's shape wherever the expected type is known, not only for a `List`. An integer literal passed to a `slice[Long]` or `List[Long]` parameter is widened element by element, as it would be under a `val` annotation, and a tuple argument gives its components the same treatment:
+
+```lyric
+func total(xs: in slice[Long]): Long { xs[0] + xs[1] }
+func first(p: in (array[2, Int], Int)): Int {
+  match p { case (a, n) -> a[0] + n }
+}
+
+val t = total([7, 8])            // 15: the literal is a slice[Long]
+val f = first(([7, 8], 9))       // 16: the first component is an array[2, Int]
+```
+
+The result a generic call is expected to give can bind its type parameter too, so `val r: List[Long] = identity([1, 2])` with `identity[T](xs: List[T]): List[T]` builds a `List[Long]`. A lambda whose expected type is `() -> List[Long]` may end in a literal, `{ -> [1, 2] }`. A value is never converted by being passed: a `slice[T]` variable is not a `List[T]`, and `xs.toList()` makes the copy explicitly. `[s].toList()` on a literal is that copy as well, wherever the call's result is used.
+
+A construction that fixes only part of its type takes the rest from where it sits. `None` or `Ok(1)` in a branch of an `if` or `match` is built at the type the branches join to, in a tuple that a `List` holds (`ys.add((None, 1))` for `ys: List[(Option[Int], Int)]`), or as an operand of `==` (`r == Ok(2)` compares two `Result[Long, Int]`s). The same goes for an argument of a call through a function value, which takes its type from the function's parameter, and for `newList()`, `newMap()` and their explicit forms `newList[Int]()` passed or stored as nested collections.
+
 **Bounds checking and range subtypes.** Array and slice indexing is bounds-checked at runtime; an index outside `0 ..< N` panics with `index <i> out of range for array[<N>]`. But if the index is a literal in range, or its type is a named range subtype whose range statically proves the access is in bounds, the compiler elides the check entirely, in every build and on every target (an inline `Int range 0 ..= 3` annotation is not a proof, since it is not enforced on every path):
 
 ```lyric

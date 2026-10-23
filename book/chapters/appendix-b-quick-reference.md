@@ -109,6 +109,10 @@ enum Color { case Red; case Green; case Blue }
 // Container types
 var fixed:   array[16, Byte]     // fixed-size, a value, zero filled; length is part of the type
 val dynamic: slice[Int]          // dynamic length
+val lit = [1, 2, 3]              // a slice, unless the position expects another shape:
+val xs: List[Long] = [1, 2]      //   a List[Long], elements widened
+val arr: array[2, Int] = [1, 2]  //   an array
+val copy = lit.toList()          // explicit slice -> List
 
 // Tuple
 val pair: (Int, String) = (1, "hello")

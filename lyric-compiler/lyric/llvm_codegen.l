@@ -11956,6 +11956,44 @@ func lambdaParamWantAt(
   typeToNEnvOpt(ctx, fd.params[pi].ty, boundNames, boundTys)
 }
 
+/// Bind every type parameter in `paramNames` that the lowered arguments and the
+/// seeds leave unbound to `Unit`, by appending to `seedNames` / `seedTys`.
+func seedUnboundWithUnit(
+  ctx: in Ctx,
+  fd: in FunctionDecl,
+  rawVals: in List[NVal],
+  paramNames: in List[String],
+  seedNames: in List[String],
+  seedTys: in List[NType],
+  sp: in Span,
+): Unit {
+  val boundNames: List[String] = copyStrings(seedNames)
+  val boundTys: List[NType] = copyNTypes(seedTys)
+  var j = 0
+  while j < rawVals.count {
+    match rawVals[j].ty {
+      case NVoid -> ()
+      case _ -> unifyTyArg(ctx, fd.params[j].ty, rawVals[j].ty, paramNames, boundNames, boundTys)
+    }
+    j = j + 1
+  }
+  val noNames: List[String] = newList()
+  val noTys: List[NType] = newList()
+  match typeToNEnvOpt(ctx, TypeExpr(kind = TUnit, span = sp), noNames, noTys) {
+    case Some(unitTy) -> {
+      var i = 0
+      while i < paramNames.count {
+        if envIndexOf(boundNames, paramNames[i]) < 0 {
+          seedNames.add(paramNames[i])
+          seedTys.add(unitTy)
+        }
+        i = i + 1
+      }
+    }
+    case None -> ()
+  }
+}
+
 /// Whether `te` names a type parameter from `paramNames` absent from `bound`.
 func teMentionsUnbound(te: in TypeExpr, paramNames: in List[String], bound: in List[String]): Bool {
   match te.kind {
@@ -12158,6 +12196,41 @@ func lowerGenericFnCallWith(
     while sk < still.count {
       pending.add(still[sk])
       sk = sk + 1
+    }
+  }
+  // A case construction whose type parameter nothing else fixes
+  // (`isNone(None)`) is instantiated at `Unit`, as the other targets erase
+  // it: no value of that type exists to be read (#8352).
+  if pending.count > 0 {
+    var onlyCtors = true
+    var oc = 0
+    while oc < pending.count {
+      if isLambdaExpr(deferredLambdaExprs[pending[oc]]) {
+        onlyCtors = false
+      }
+      oc = oc + 1
+    }
+    if onlyCtors {
+      seedUnboundWithUnit(ctx, fd, rawVals, fnTyParamNames, seedNames, seedTys, deferredLambdaExprs[pending[0]].span)
+      val unresolved: List[Int] = newList()
+      var uk = 0
+      while uk < pending.count {
+        val ui = pending[uk]
+        val upi = deferredLambdas[ui]
+        match lambdaParamWantAt(ctx, fd, upi, rawVals, fnTyParamNames, seedNames, seedTys) {
+          case Some(w) -> {
+            rawVals[upi] = lowerExprExpecting(ctx, insns, deferredLambdaExprs[ui], w)
+          }
+          case None -> unresolved.add(ui)
+        }
+        uk = uk + 1
+      }
+      pending.clear()
+      var rk = 0
+      while rk < unresolved.count {
+        pending.add(unresolved[rk])
+        rk = rk + 1
+      }
     }
   }
   if pending.count > 0 {
