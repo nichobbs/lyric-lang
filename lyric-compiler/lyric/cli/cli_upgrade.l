@@ -275,10 +275,7 @@ pub func installerInterpreter(isWindows: in Bool): String {
 }
 
 pub func installerArgs(
-  isWindows: in Bool,
-  scriptPath: in String,
-  installDir: in String,
-  version: in Option[String]
+  isWindows: in Bool, scriptPath: in String, installDir: in String, version: in Option[String]
 ): List[String] {
   val args: List[String] = newList()
   if isWindows {
@@ -460,7 +457,10 @@ func runGithubUpgrade(installDir: in String, versionArg: in Option[String], isDr
   }
 
   // Create temporary directory path with unique UUID suffix to prevent symlink/TOCTOU attacks
-  val tempDir = Environment.getVarOrDefault("TMPDIR", Environment.getVarOrDefault("TEMP", Environment.getVarOrDefault("TMP", "/tmp")))
+  val tempDir = Environment.getVarOrDefault(
+    "TMPDIR",
+    Environment.getVarOrDefault("TEMP", Environment.getVarOrDefault("TMP", "/tmp"))
+  )
   val uuid = Uuid.uuidToString(Uuid.newUuid())
   val tempFile = Path.join(tempDir, "lyric-install-" + uuid + (if isWindows then ".ps1" else ".sh"))
 
