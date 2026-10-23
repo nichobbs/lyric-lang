@@ -593,7 +593,8 @@ func httpsClient(port: in Int, caPem: in String): NativePtr[Byte] {
           case None -> ()
         }
       }
-      case Err(_) -> {
+      case Err(e) -> {
+        acc = acc + "[read failed after " + tries.toString() + " read(s): " + e.message() + "]"
         done = true
       }
     }
@@ -633,6 +634,9 @@ func httpsRoundTrip(port: in Int, caPem: in String, certPem: in String, keyPem: 
   val ctx = nextContext(listener)
   var code = 0
   if requestMethod(ctx) != "POST" or requestPath(ctx) != "/submit" or requestBody(ctx) != "abcd" {
+    Console.error(
+      "server: got " + requestMethod(ctx) + " " + requestPath(ctx) + " with body '" + requestBody(ctx) + "'"
+    )
     code = 13
   }
   respondJson(ctx, 201, "{\"ok\":true}")

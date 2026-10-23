@@ -576,8 +576,8 @@ void* lyric_tls_client_new_additive(const char* ca_pem, int32_t min_version, int
 int32_t lyric_tls_client_set_identity(void* raw, const char* cert_pem, const char* key_pem) {
     TlsCtx* c = (TlsCtx*)raw;
     if (!c || c->is_server) return -1;
-    // Connections made on this context hold its credential handle, so the
-    // identity is fixed once the first connection has acquired it.
+    /* Connections made on this context hold its credential handle, so the
+     * identity is fixed once the first connection has acquired it. */
     AcquireSRWLockShared(&c->lock);
     int in_use = c->have_cred;
     ReleaseSRWLockShared(&c->lock);
