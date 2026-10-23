@@ -320,7 +320,7 @@ extern func labs(x: Long): Long = "labs"
 extern func webviewCreate(debug: Int, window: NativePtr[Byte]): NativePtr[Byte] = "webview_create"
 ```
 
-The string after `=` is the C symbol. The `@library` argument is the library's base name: write `"webview"`, and each runtime looks for `libwebview.so`, `libwebview.dylib` or `webview.dll` on its own library path. `"c"` is the C library itself. For a system library whose unversioned name exists only in development packages, give the versioned file name instead (`@library("libm.so.6")`); a name containing `.` or `/` is passed to the loader as written.
+The string after `=` is the C symbol. The `@library` argument is the library's base name: write `"webview"`, and each runtime looks for `libwebview.so`, `libwebview.dylib` or `webview.dll` on its own library path. `"c"` is the C library itself. For a system library whose unversioned name exists only in development packages, give the versioned file name instead (`@library("libm.so.6")`); a name containing `.` or `/` is passed to the loader as written. On `--target native` a library is linked only if reachable code calls one of its externs: an extern in one of your dependencies that nothing you call reaches adds no `-l` flag, so depending on a binding library does not make the library a build requirement unless you use it.
 
 Each target calls the symbol its own way. On .NET the declaration becomes a P/Invoke method. On the JVM it becomes a call through the Foreign Function & Memory API, which needs **JDK 22 or later** to run; the handle is looked up on the first call, so a missing library fails at that call rather than when your program starts. On `--target native` the symbol is called directly and the library is linked in.
 

@@ -177,7 +177,15 @@ func collectCallKeys(e: in Expr, acc: in List[String]): Unit {
       collectCallKeys(receiver, acc)
       collectExprListKeys(indices, acc)
     }
-    case EMember(recv, _) -> collectCallKeys(recv, acc)
+    case EMember(recv, memberName) -> {
+      collectCallKeys(recv, acc)
+      acc.add("v:" + memberName)
+    }
+    case EPath(p) -> {
+      if p.segments.count > 0 {
+        acc.add("v:" + p.segments[p.segments.count - 1])
+      }
+    }
     case EPropagate(inner) -> collectCallKeys(inner, acc)
     case EPrefix(_, operand) -> collectCallKeys(operand, acc)
     case EBinop(_, lhs, rhs) -> {
@@ -301,6 +309,15 @@ func collectBlockKeys(b: in Block, acc: in List[String]): Unit {
 }
 
 func collectFnBodyKeys(decl: in FunctionDecl, acc: in List[String]): Unit {
+  // A default argument is evaluated at each call that omits it, so what it
+  // calls is reachable whenever the function is.
+  for p in decl.params {
+    match p.dflt {
+      case Some(d) -> collectCallKeys(d, acc)
+      case None -> {
+      }
+    }
+  }
   match decl.body {
     case Some(fb) -> {
       match fb {
@@ -1474,7 +1491,17 @@ pub func compileToNativeWithFeatures(
     indexBundledImpls(toBundle[bi4], implTypes)
     bi4 = bi4 + 1
   }
-  walkReachableFns(fnWorklist, canonical, bareTrailing, bodyIndex, pkgOfId, reachable, pkgImports, implTypes)
+  walkReachableFns(
+    fnWorklist,
+    canonical,
+    bareTrailing,
+    bodyIndex,
+    pkgOfId,
+    reachable,
+    pkgImports,
+    implTypes,
+    emptyPruneIndex()
+  )
 
   // Assemble the codegen units: the user package in full, then each
   // bundled package's reachable slice.
@@ -1517,6 +1544,15 @@ pub record NativeSourcePackage {
   /// manifest's (#7833).  None for the project's own packages, which use the
   /// build's features.
   features: Option[PackageFeatureSet] = None
+}
+
+/// True for a package that came from a dependency of the project (it has its
+/// own manifest's `@cfg` features), not one of the project's own packages.
+func isDependencyPackage(pkg: in NativeSourcePackage): Bool {
+  match pkg.features {
+    case Some(_) -> true
+    case None -> false
+  }
 }
 
 /// True when `file` declares a top-level `func main` — the project entry
@@ -1573,15 +1609,19 @@ func nativePkgOriginsAt(originsByPkg: in List[DiagUtil.PackageLineOrigins], i: i
 /// falls in `packages`) plus the bundled stdlib closure into one native
 /// binary.
 ///
-/// Every entry in `packages` is always fully lowered (`lowerAll = true` in
-/// `unitOf` terms) — exactly like the single-source path's own package —
-/// because a project's own packages are the "user code" whose declared
-/// functions must all be available to each other and to the entry point,
-/// not a stdlib dependency whose unreached functions can be pruned.
-/// Reachability gating still applies to the bundled STDLIB closure only, so
-/// an unreached stdlib construct the Phase N1+ codegen cannot yet lower
-/// never blocks a project build that never calls it — parity with the
-/// single-source path's own bundling model.
+/// A package of the project itself (`features` is `None`) is always fully
+/// lowered (`lowerAll = true` in `unitOf` terms), exactly like the
+/// single-source path's own package: the project's own packages are the
+/// "user code" whose declared functions must all be available to each other
+/// and to the entry point.  A DEPENDENCY package (`features` is `Some`, #8429)
+/// is lowered by reachability like the bundled stdlib closure, rooted at the
+/// project's own packages, so an extern it declares and nothing reachable
+/// calls never names its `@library`, and its unreached code is not compiled.
+/// Its record methods, protected types and impls follow `PruneIndex`.  A
+/// wasm32 `module` or `component` build exports every `pub` function of every
+/// package, so it lowers dependencies in full.  Reachability gating on the
+/// stdlib closure means an unreached stdlib construct the codegen cannot yet
+/// lower never blocks a project build that never calls it.
 ///
 /// Every own package sees every OTHER own package's `pub`-AND-`internal`
 /// surface as an `ImportedPackage` (`pipeIsCrossPackageItemProject`, #6580 —
@@ -1936,9 +1976,22 @@ pub func compileProjectToNativeWithShape(
     }
   }
 
-  // Function-granularity reachability, rooted at EVERY own package's own
-  // functions (every own package is fully lowered — see the doc comment
-  // above), walking into the bundled stdlib closure.
+  // A dependency package is lowered by reachability like the bundled stdlib
+  // (#8429), so an extern it declares but nothing reachable calls never names
+  // its `@library`.  The project's own packages stay fully lowered.  A wasm32
+  // `module` or `component` build exports every `pub` function of every
+  // package it links, so there a dependency's functions are all roots.
+  val shapeBase = parseShapeSpec(shape).base
+  val pruneDeps = shapeBase != "module" and shapeBase != "component"
+  val prunedPkg: List[Bool] = newList()
+  var ppki = 0
+  while ppki < ownFiles.count {
+    prunedPkg.add(pruneDeps and ppki < packages.count and isDependencyPackage(packages[ppki]))
+    ppki = ppki + 1
+  }
+
+  // Function-granularity reachability, rooted at every fully lowered own
+  // package's functions, walking into the bundled stdlib closure.
   val canonical: Map[String, String] = newMap()
   val bareTrailing: Map[String, List[String]] = newMap()
   var rfi = 0
@@ -1960,7 +2013,7 @@ pub func compileProjectToNativeWithShape(
   while sfi < ownFiles.count {
     val pkgName = dottedPath(ownFiles[sfi].packageDecl.path)
     var gi = 0
-    while gi < ownFiles[sfi].items.count {
+    while gi < ownFiles[sfi].items.count and not prunedPkg[sfi] {
       match ownFiles[sfi].items[gi].kind {
         case IFunc(decl) -> {
           val selfId = pkgName + "." + decl.name + "/" + decl.params.count.toString()
@@ -1980,10 +2033,15 @@ pub func compileProjectToNativeWithShape(
   // Bodies indexed by canonical id so the walk can chase callees.
   val bodyIndex: Map[String, FunctionDecl] = newMap()
   val pkgOfId: Map[String, String] = newMap()
+  val prune = emptyPruneIndex()
   var ifi = 0
   while ifi < ownFiles.count {
     indexFileFns(ownFiles[ifi], bodyIndex, pkgOfId)
-    seedImplMethods(ownFiles[ifi], bodyIndex, pkgOfId, reachable, fnWorklist)
+    if prunedPkg[ifi] {
+      indexPrunedFile(ownFiles[ifi], prune, bodyIndex, pkgOfId)
+    } else {
+      seedImplMethods(ownFiles[ifi], bodyIndex, pkgOfId, reachable, fnWorklist)
+    }
     ifi = ifi + 1
   }
   var bi2 = 0
@@ -2010,7 +2068,14 @@ pub func compileProjectToNativeWithShape(
     indexBundledImpls(toBundle[bi4], implTypes)
     bi4 = bi4 + 1
   }
-  walkReachableFns(fnWorklist, canonical, bareTrailing, bodyIndex, pkgOfId, reachable, pkgImports, implTypes)
+  var dpi = 0
+  while dpi < ownFiles.count {
+    if prunedPkg[dpi] {
+      indexBundledImpls(ownFiles[dpi], implTypes)
+    }
+    dpi = dpi + 1
+  }
+  walkReachableFns(fnWorklist, canonical, bareTrailing, bodyIndex, pkgOfId, reachable, pkgImports, implTypes, prune)
 
   // Assemble the codegen units: the package declaring a top-level `func
   // main` goes FIRST — `Lyric.LlvmCodegen`'s C-`main` synthesis only scans
@@ -2026,7 +2091,7 @@ pub func compileProjectToNativeWithShape(
   var mainOwnIdx = -1
   var moi = 0
   while moi < ownFiles.count and mainOwnIdx < 0 {
-    if fileHasTopLevelMain(ownFiles[moi]) {
+    if not prunedPkg[moi] and fileHasTopLevelMain(ownFiles[moi]) {
       mainOwnIdx = moi
     }
     moi = moi + 1
@@ -2038,7 +2103,7 @@ pub func compileProjectToNativeWithShape(
   var uoi = 0
   while uoi < ownFiles.count {
     if uoi != mainOwnIdx {
-      units.add(unitOf(ownFiles[uoi], reachable, true, ownCallArities[uoi]))
+      units.add(unitOf(ownFiles[uoi], reachable, not prunedPkg[uoi], ownCallArities[uoi], prunedPkg[uoi]))
     }
     uoi = uoi + 1
   }
@@ -2173,6 +2238,145 @@ pub func pkgTransitiveClosure(pkgImports: in Map[String, List[String]], root: in
 // #6625) — this is a real, sound narrowing in the meantime, not a
 // complete one.
 // ─────────────────────────────────────────────────────────────────────────────
+func reachKey(
+  raw: in String,
+  curPkg: in String,
+  fnWorklist: in List[String],
+  canonical: in Map[String, String],
+  bareTrailing: in Map[String, List[String]],
+  bodyIndex: in Map[String, FunctionDecl],
+  pkgOfId: in Map[String, String],
+  reachable: in Map[String, Bool],
+  pkgImports: in Map[String, List[String]],
+  implTypes: in Map[String, BundledImpl],
+  prune: in PruneIndex,
+  pkgClosureMemo: in Map[String, Map[String, Bool]],
+): Unit {
+  val closure: Map[String, Bool] = if curPkg.length == 0 {
+    val none: Map[String, Bool] = newMap()
+    none
+  } else {
+    match mapGet(pkgClosureMemo, curPkg) {
+      case Some(c) -> c
+      case None -> {
+        val c = pkgTransitiveClosure(pkgImports, curPkg)
+        pkgClosureMemo.add(curPkg, c)
+        c
+      }
+    }
+  }
+  if Str.startsWith(raw, "v:") {
+    touchPrunedVal(raw, prune, reachable, fnWorklist, pkgOfId, curPkg, closure)
+    return
+  }
+  var target = ""
+  if curPkg.length > 0 {
+    match mapGet(canonical, curPkg + "." + raw) {
+      case Some(t) -> {
+        target = t
+      }
+      case None -> {
+      }
+    }
+  }
+  if target.length == 0 {
+    match mapGet(canonical, raw) {
+      case Some(t) -> {
+        target = t
+      }
+      case None -> {
+      }
+    }
+    // The bare `name/arity` key is the first declaration of that name in any
+    // package; a dependency's declaration the caller cannot import is not
+    // what the call names.
+    if target.length > 0 {
+      val tPkg = match mapGet(pkgOfId, target) { case Some(p) -> p; case None -> "" }
+      if prune.depPkgs.containsKey(tPkg) and not inCallerScope(tPkg, curPkg, closure) {
+        target = ""
+      }
+    }
+  }
+  if target.length > 0 and not reachable.containsKey(target) {
+    reachable.add(target, true)
+    fnWorklist.add(target)
+  }
+  noteConstructedImplType(raw, curPkg, implTypes, bodyIndex, pkgOfId, reachable, fnWorklist, pkgImports)
+  touchPrunedTypeGroups(raw, prune, reachable, fnWorklist, curPkg, closure)
+  // `raw` may ALSO be a bare UFCS trailing-segment key
+  // (`collectCallKeys`'s "cfg.identity.rawHandle()" fallback):
+  // resolve it through the multi-valued `bareTrailing` map
+  // regardless of whether the ordinary single-valued `canonical`
+  // lookup above already matched something (a different type's
+  // same-named/arity method, per `registerBareTrailingSegment`'s
+  // header) — mark reachable every candidate whose OWN declaring
+  // package is within `curPkg`'s transitive import closure
+  // (#6625); an empty `curPkg` (should not occur in practice —
+  // every id in `pkgOfId` is registered with a real package name)
+  // falls back to the old bundle-wide behavior rather than risk
+  // silently under-including a genuine callee.
+  // The same plain name in several packages: codegen resolves it
+  // against the caller's DIRECT imports, so mark exactly those
+  // candidates (not the whole transitive closure, which would pull
+  // in unrelated packages' host seams).
+  match mapGet(bareTrailing, "=" + raw) {
+    case Some(sameName) -> {
+      val direct: List[String] = match mapGet(pkgImports, curPkg) { case Some(d) -> d; case None -> newList() }
+      for cand in sameName {
+        val candPkg = match mapGet(pkgOfId, cand) { case Some(p) -> p; case None -> "" }
+        var allowed = candPkg == curPkg
+        for dp in direct {
+          if dp == candPkg {
+            allowed = true
+          }
+        }
+        if allowed and not reachable.containsKey(cand) {
+          reachable.add(cand, true)
+          fnWorklist.add(cand)
+        }
+      }
+    }
+    case None -> {
+    }
+  }
+  match mapGet(bareTrailing, raw) {
+    case Some(targets) -> {
+      var ti = 0
+      while ti < targets.count {
+        val bt = targets[ti]
+        ti = ti + 1
+        val btPkg = match mapGet(pkgOfId, bt) { case Some(p) -> p; case None -> "" }
+        val inClosure = curPkg.length == 0 or btPkg == curPkg or closure.containsKey(btPkg)
+        if inClosure and not reachable.containsKey(bt) {
+          reachable.add(bt, true)
+          fnWorklist.add(bt)
+        }
+      }
+    }
+    case None -> {
+    }
+  }
+  // The async process leaf (D-N-023): the codegen intercept
+  // redirects in-coroutine `Std.Process.runCapture` /
+  // `runCaptureWithInput` calls to the kernel's async seam, a
+  // target no Lyric source names — keep the seam (and everything
+  // its body pulls in) reachable whenever either is.
+  // Arity-coupled to the intercept in llvm_codegen.l — change
+  // both together (#5108).
+  if target == "Std.Process.runCapture/3" or target == "Std.Process.runCaptureWithInput/4" {
+    match mapGet(canonical, "Std.ProcessCaptureHost.hostRunCaptureListAsync/4") {
+      case Some(seam) -> {
+        if not reachable.containsKey(seam) {
+          reachable.add(seam, true)
+          fnWorklist.add(seam)
+        }
+      }
+      case None -> {
+      }
+    }
+  }
+}
+
 func walkReachableFns(
   fnWorklist: in List[String],
   canonical: in Map[String, String],
@@ -2182,10 +2386,33 @@ func walkReachableFns(
   reachable: in Map[String, Bool],
   pkgImports: in Map[String, List[String]],
   implTypes: in Map[String, BundledImpl],
+  prune: in PruneIndex,
 ): Unit {
   val pkgClosureMemo: Map[String, Map[String, Bool]] = newMap()
+  var pri = 0
   var wfi = 0
-  while wfi < fnWorklist.count {
+  while wfi < fnWorklist.count or pri < prune.pending.count {
+    while pri < prune.pending.count {
+      val rk = prune.pending[pri]
+      pri = pri + 1
+      reachKey(
+        rk.key,
+        rk.pkg,
+        fnWorklist,
+        canonical,
+        bareTrailing,
+        bodyIndex,
+        pkgOfId,
+        reachable,
+        pkgImports,
+        implTypes,
+        prune,
+        pkgClosureMemo
+      )
+    }
+    if wfi >= fnWorklist.count {
+      continue
+    }
     val cur = fnWorklist[wfi]
     wfi = wfi + 1
     val curPkg = match mapGet(pkgOfId, cur) { case Some(p) -> p; case None -> "" }
@@ -2197,115 +2424,20 @@ func walkReachableFns(
         while ki < keys.count {
           val raw = keys[ki]
           ki = ki + 1
-          var target = ""
-          if curPkg.length > 0 {
-            match mapGet(canonical, curPkg + "." + raw) {
-              case Some(t) -> {
-                target = t
-              }
-              case None -> {
-              }
-            }
-          }
-          if target.length == 0 {
-            match mapGet(canonical, raw) {
-              case Some(t) -> {
-                target = t
-              }
-              case None -> {
-              }
-            }
-          }
-          if target.length > 0 and not reachable.containsKey(target) {
-            reachable.add(target, true)
-            fnWorklist.add(target)
-          }
-          noteConstructedImplType(raw, curPkg, implTypes, bodyIndex, pkgOfId, reachable, fnWorklist, pkgImports)
-          // `raw` may ALSO be a bare UFCS trailing-segment key
-          // (`collectCallKeys`'s "cfg.identity.rawHandle()" fallback):
-          // resolve it through the multi-valued `bareTrailing` map
-          // regardless of whether the ordinary single-valued `canonical`
-          // lookup above already matched something (a different type's
-          // same-named/arity method, per `registerBareTrailingSegment`'s
-          // header) — mark reachable every candidate whose OWN declaring
-          // package is within `curPkg`'s transitive import closure
-          // (#6625); an empty `curPkg` (should not occur in practice —
-          // every id in `pkgOfId` is registered with a real package name)
-          // falls back to the old bundle-wide behavior rather than risk
-          // silently under-including a genuine callee.
-          // The same plain name in several packages: codegen resolves it
-          // against the caller's DIRECT imports, so mark exactly those
-          // candidates (not the whole transitive closure, which would pull
-          // in unrelated packages' host seams).
-          match mapGet(bareTrailing, "=" + raw) {
-            case Some(sameName) -> {
-              val direct: List[String] = match mapGet(pkgImports, curPkg) { case Some(d) -> d; case None -> newList() }
-              for cand in sameName {
-                val candPkg = match mapGet(pkgOfId, cand) { case Some(p) -> p; case None -> "" }
-                var allowed = candPkg == curPkg
-                for dp in direct {
-                  if dp == candPkg {
-                    allowed = true
-                  }
-                }
-                if allowed and not reachable.containsKey(cand) {
-                  reachable.add(cand, true)
-                  fnWorklist.add(cand)
-                }
-              }
-            }
-            case None -> {
-            }
-          }
-          match mapGet(bareTrailing, raw) {
-            case Some(targets) -> {
-              val closure = if curPkg.length == 0 {
-                val none: Map[String, Bool] = newMap()
-                none
-              } else {
-                match mapGet(pkgClosureMemo, curPkg) {
-                  case Some(c) -> c
-                  case None -> {
-                    val c = pkgTransitiveClosure(pkgImports, curPkg)
-                    pkgClosureMemo.add(curPkg, c)
-                    c
-                  }
-                }
-              }
-              var ti = 0
-              while ti < targets.count {
-                val bt = targets[ti]
-                ti = ti + 1
-                val btPkg = match mapGet(pkgOfId, bt) { case Some(p) -> p; case None -> "" }
-                val inClosure = curPkg.length == 0 or btPkg == curPkg or closure.containsKey(btPkg)
-                if inClosure and not reachable.containsKey(bt) {
-                  reachable.add(bt, true)
-                  fnWorklist.add(bt)
-                }
-              }
-            }
-            case None -> {
-            }
-          }
-          // The async process leaf (D-N-023): the codegen intercept
-          // redirects in-coroutine `Std.Process.runCapture` /
-          // `runCaptureWithInput` calls to the kernel's async seam, a
-          // target no Lyric source names — keep the seam (and everything
-          // its body pulls in) reachable whenever either is.
-          // Arity-coupled to the intercept in llvm_codegen.l — change
-          // both together (#5108).
-          if target == "Std.Process.runCapture/3" or target == "Std.Process.runCaptureWithInput/4" {
-            match mapGet(canonical, "Std.ProcessCaptureHost.hostRunCaptureListAsync/4") {
-              case Some(seam) -> {
-                if not reachable.containsKey(seam) {
-                  reachable.add(seam, true)
-                  fnWorklist.add(seam)
-                }
-              }
-              case None -> {
-              }
-            }
-          }
+          reachKey(
+            raw,
+            curPkg,
+            fnWorklist,
+            canonical,
+            bareTrailing,
+            bodyIndex,
+            pkgOfId,
+            reachable,
+            pkgImports,
+            implTypes,
+            prune,
+            pkgClosureMemo
+          )
         }
       }
       case None -> {
@@ -2891,6 +3023,13 @@ func writeWasmGlue(outputPath: in String, set: in WasmExportSet): Bool {
   true
 }
 
+func paramHasDefault(p: in Param): Bool {
+  match p.dflt {
+    case Some(_) -> true
+    case None -> false
+  }
+}
+
 func registerFileFns(
   f: in SourceFile, canonical: in Map[String, String], bareTrailing: in Map[String, List[String]]
 ): Unit {
@@ -2909,6 +3048,19 @@ func registerFileFns(
         // resolution has the right one to pick.
         if lastDotIndex(decl.name) < 0 {
           registerBareName(bareTrailing, decl.name, decl.params.count, id)
+        }
+        // A call that leaves out trailing defaulted arguments names fewer
+        // arguments than the declaration has (the codegen fills the rest
+        // from the declaration), so the shorter arities reach it too.
+        var shorter = decl.params.count - 1
+        while shorter >= 0 and paramHasDefault(decl.params[shorter]) {
+          addKey(canonical, pkg + "." + decl.name + "/" + shorter.toString(), id)
+          addKey(canonical, decl.name + "/" + shorter.toString(), id)
+          registerBareTrailingSegment(bareTrailing, decl.name, shorter, id)
+          if lastDotIndex(decl.name) < 0 {
+            registerBareName(bareTrailing, decl.name, shorter, id)
+          }
+          shorter = shorter - 1
         }
       }
       case IExternFunc(decl) -> {
@@ -3135,6 +3287,440 @@ func seedImplMethods(
   }
 }
 
+/// Reachability of a dependency package's record and protected-type code
+/// (#8429).  A dependency package is lowered by reachability, not in full, so
+/// its record methods and protected types are pruned like its plain functions.
+/// A method call names its receiver's static type, which this syntax-only walk
+/// does not know, so a type's members are one group: the group is live as soon
+/// as any call key ends in the name of one of its methods (over-inclusive
+/// across same-named methods of other types, never under-inclusive) or, for a
+/// protected type, a call constructs it.  A live group lowers every member, so
+/// a sibling call inside a method body needs no resolution of its own.
+///
+/// Code that runs without a function around it is found lazily as well: a
+/// field default and an invariant run when the record is constructed, a module
+/// `val` initializer when the `val` is read, and the body of a generic member
+/// when the type is used.  Their call keys wait in `pending` until the walk
+/// reaches the construction or the read.
+record PruneIndex {
+  /// Method name to the groups declaring a method of that name.
+  methodGroups: Map[String, List[String]]
+  /// Record or protected-type name to its groups: a call that constructs it.
+  ctorGroups: Map[String, List[String]]
+  /// Protected-type name to its groups: constructing one needs its members.
+  protectedCtors: Map[String, List[String]]
+  /// Group id (`<Pkg>.<Type>`) to the lowered ids of the type's members.
+  members: Map[String, List[String]]
+  /// Group id to the call keys of its field defaults, invariants and generic
+  /// member bodies.
+  typeInits: Map[String, List[RootKey]]
+  /// Module `val` name to the call keys of its initializer.
+  valInits: Map[String, List[RootKey]]
+  /// Function name to the ids of the dependency functions of that name: a
+  /// function named as a value (`val cb = onEvent`) is not a call.
+  fnByName: Map[String, List[String]]
+  /// Group id to its declaring package.
+  groupPkgs: Map[String, String]
+  /// The dependency packages (the ones this index prunes).
+  depPkgs: Map[String, Bool]
+  /// Call keys that became live and the walk has yet to resolve.
+  pending: List[RootKey]
+}
+
+/// A call key found outside any function body and the package it was written in.
+record RootKey {
+  key: String
+  pkg: String
+}
+
+func emptyPruneIndex(): PruneIndex {
+  PruneIndex(
+    methodGroups = newMap(),
+    ctorGroups = newMap(),
+    protectedCtors = newMap(),
+    members = newMap(),
+    typeInits = newMap(),
+    valInits = newMap(),
+    fnByName = newMap(),
+    groupPkgs = newMap(),
+    depPkgs = newMap(),
+    pending = newList()
+  )
+}
+
+func addToGroupList(m: in Map[String, List[String]], name: in String, gid: in String): Unit {
+  match mapGet(m, name) {
+    case Some(existing) -> existing.add(gid)
+    case None -> {
+      val fresh: List[String] = newList()
+      fresh.add(gid)
+      m.add(name, fresh)
+    }
+  }
+}
+
+func addToKeyList(m: in Map[String, List[RootKey]], name: in String, keys: in List[RootKey]): Unit {
+  match mapGet(m, name) {
+    case Some(existing) -> {
+      for k in keys {
+        existing.add(k)
+      }
+    }
+    case None -> {
+      val fresh: List[RootKey] = newList()
+      for k in keys {
+        fresh.add(k)
+      }
+      m.add(name, fresh)
+    }
+  }
+}
+
+/// The text after the last `.` of a call key's path (the key is
+/// `<callee path>/<argument count>`).
+func callKeyLastSegment(callKey: in String): String {
+  val slash = Str.indexOfRaw(callKey, "/")
+  val path = if slash > 0 { Str.substring(callKey, 0, slash) } else { callKey }
+  val dot = lastDotIndex(path)
+  if dot >= 0 {
+    Str.substring(path, dot + 1, path.length - dot - 1)
+  } else {
+    path
+  }
+}
+
+/// Whether code in `curPkg` can name something declared in `pkg`: the type
+/// checker needs the import, so a candidate outside the caller's import
+/// closure is another package's same-named declaration.  An unknown caller
+/// (`curPkg` empty) matches everything.
+func inCallerScope(pkg: in String, curPkg: in String, closure: in Map[String, Bool]): Bool {
+  curPkg.length == 0 or pkg == curPkg or closure.containsKey(pkg)
+}
+
+func groupInScope(gid: in String, prune: in PruneIndex, curPkg: in String, closure: in Map[String, Bool]): Bool {
+  match mapGet(prune.groupPkgs, gid) {
+    case Some(p) -> inCallerScope(p, curPkg, closure)
+    case None -> true
+  }
+}
+
+/// A type is constructed or used: what runs with it becomes live, once.
+func liveTypeInits(gid: in String, prune: in PruneIndex, reachable: in Map[String, Bool]): Unit {
+  val marker = "init:" + gid
+  if reachable.containsKey(marker) {
+    return
+  }
+  reachable.add(marker, true)
+  match mapGet(prune.typeInits, gid) {
+    case Some(keys) -> {
+      for k in keys {
+        prune.pending.add(k)
+      }
+    }
+    case None -> {
+    }
+  }
+}
+
+func touchPrunedGroup(
+  gid: in String, prune: in PruneIndex, reachable: in Map[String, Bool], fnWorklist: in List[String]
+): Unit {
+  liveTypeInits(gid, prune, reachable)
+  val marker = "grp:" + gid
+  if reachable.containsKey(marker) {
+    return
+  }
+  reachable.add(marker, true)
+  match mapGet(prune.members, gid) {
+    case Some(ids) -> {
+      for id in ids {
+        if not reachable.containsKey(id) {
+          reachable.add(id, true)
+          fnWorklist.add(id)
+        }
+      }
+    }
+    case None -> {
+    }
+  }
+}
+
+func touchPrunedTypeGroups(
+  callKey: in String,
+  prune: in PruneIndex,
+  reachable: in Map[String, Bool],
+  fnWorklist: in List[String],
+  curPkg: in String,
+  closure: in Map[String, Bool],
+): Unit {
+  val last = callKeyLastSegment(callKey)
+  match mapGet(prune.methodGroups, last) {
+    case Some(gids) -> {
+      for gid in gids {
+        if groupInScope(gid, prune, curPkg, closure) {
+          touchPrunedGroup(gid, prune, reachable, fnWorklist)
+        }
+      }
+    }
+    case None -> {
+    }
+  }
+  match mapGet(prune.ctorGroups, last) {
+    case Some(gids) -> {
+      for gid in gids {
+        if groupInScope(gid, prune, curPkg, closure) {
+          liveTypeInits(gid, prune, reachable)
+        }
+      }
+    }
+    case None -> {
+    }
+  }
+  match mapGet(prune.protectedCtors, last) {
+    case Some(gids) -> {
+      for gid in gids {
+        if groupInScope(gid, prune, curPkg, closure) {
+          touchPrunedGroup(gid, prune, reachable, fnWorklist)
+        }
+      }
+    }
+    case None -> {
+    }
+  }
+}
+
+/// A body names a value (`v:<name>` from `collectCallKeys`): when a dependency
+/// module `val` has that name, its initializer runs, and a dependency function
+/// of that name may be the function value.
+func touchPrunedVal(
+  valKey: in String,
+  prune: in PruneIndex,
+  reachable: in Map[String, Bool],
+  fnWorklist: in List[String],
+  pkgOfId: in Map[String, String],
+  curPkg: in String,
+  closure: in Map[String, Bool],
+): Unit {
+  val name = Str.substring(valKey, 2, valKey.length - 2)
+  match mapGet(prune.fnByName, name) {
+    case Some(ids) -> {
+      for id in ids {
+        val idPkg = match mapGet(pkgOfId, id) { case Some(p) -> p; case None -> "" }
+        if inCallerScope(idPkg, curPkg, closure) and not reachable.containsKey(id) {
+          reachable.add(id, true)
+          fnWorklist.add(id)
+        }
+      }
+    }
+    case None -> {
+    }
+  }
+  match mapGet(prune.valInits, name) {
+    case Some(keys) -> {
+      for k in keys {
+        val marker = "val:" + k.pkg + "." + name
+        if inCallerScope(k.pkg, curPkg, closure) and not reachable.containsKey(marker) {
+          reachable.add(marker, true)
+          for vk in keys {
+            if vk.pkg == k.pkg {
+              prune.pending.add(vk)
+            }
+          }
+        }
+      }
+    }
+    case None -> {
+    }
+  }
+}
+
+func exprRootKeys(e: in Expr, pkg: in String, dest: in List[RootKey]): Unit {
+  val keys: List[String] = newList()
+  collectCallKeys(e, keys)
+  for k in keys {
+    dest.add(RootKey(key = k, pkg = pkg))
+  }
+}
+
+func optExprRootKeys(e: in Option[Expr], pkg: in String, dest: in List[RootKey]): Unit {
+  match e {
+    case Some(ex) -> exprRootKeys(ex, pkg, dest)
+    case None -> {
+    }
+  }
+}
+
+func fnRootKeys(fn: in FunctionDecl, pkg: in String, dest: in List[RootKey]): Unit {
+  val keys: List[String] = newList()
+  collectFnBodyKeys(fn, keys)
+  for k in keys {
+    dest.add(RootKey(key = k, pkg = pkg))
+  }
+}
+
+func bodyRootKeys(body: in FunctionBody, pkg: in String, dest: in List[RootKey]): Unit {
+  val keys: List[String] = newList()
+  match body {
+    case FBExpr(ex) -> collectCallKeys(ex, keys)
+    case FBBlock(b) -> collectBlockKeys(b, keys)
+  }
+  for k in keys {
+    dest.add(RootKey(key = k, pkg = pkg))
+  }
+}
+
+func registerPrunedGroup(
+  pkg: in String,
+  typeName: in String,
+  methods: in List[FunctionDecl],
+  idx: in PruneIndex,
+  bodyIndex: in Map[String, FunctionDecl],
+  pkgOfId: in Map[String, String],
+): String {
+  val gid = pkg + "." + typeName
+  val ids: List[String] = newList()
+  for fn in methods {
+    val id = pkg + "." + fn.name + "/" + fn.params.count.toString()
+    if not bodyIndex.containsKey(id) {
+      bodyIndex.add(id, fn)
+      pkgOfId.add(id, pkg)
+    }
+    ids.add(id)
+  }
+  idx.members.add(gid, ids)
+  idx.groupPkgs.add(gid, pkg)
+  addToGroupList(idx.ctorGroups, typeName, gid)
+  gid
+}
+
+/// Index a dependency file's code that is not a plain function: the member
+/// groups of its record and protected types and what runs without a function
+/// around it (see `PruneIndex`).
+func indexPrunedFile(
+  f: in SourceFile,
+  idx: in PruneIndex,
+  bodyIndex: in Map[String, FunctionDecl],
+  pkgOfId: in Map[String, String],
+): Unit {
+  val pkg = dottedPath(f.packageDecl.path)
+  idx.depPkgs.add(pkg, true)
+  for item in f.items {
+    match item.kind {
+      case IFunc(decl) -> addToGroupList(
+        idx.fnByName,
+        decl.name,
+        pkg + "." + decl.name + "/" + decl.params.count.toString()
+      )
+      case IExternFunc(decl) -> addToGroupList(
+        idx.fnByName,
+        decl.name,
+        pkg + "." + decl.name + "/" + decl.params.count.toString()
+      )
+      case IRecord(decl) -> indexPrunedRecord(pkg, decl, idx, bodyIndex, pkgOfId)
+      case IExposedRec(decl) -> indexPrunedRecord(pkg, decl, idx, bodyIndex, pkgOfId)
+      case IProtected(decl) -> {
+        val methods: List[FunctionDecl] = newList()
+        collectProtectedMethods(pkg, decl, methods)
+        val gid = registerPrunedGroup(pkg, decl.name, methods, idx, bodyIndex, pkgOfId)
+        addToGroupList(idx.protectedCtors, decl.name, gid)
+        // A generic type is instantiated by the codegen, which lowers its
+        // member bodies without a function id to find them by, so what they
+        // call waits with the type.
+        val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
+        val keys: List[RootKey] = newList()
+        for m in decl.members {
+          match m {
+            case PMEntry(ed) -> {
+              addToGroupList(idx.methodGroups, ed.name, gid)
+              if isGeneric {
+                bodyRootKeys(ed.body, pkg, keys)
+              }
+            }
+            case PMFunc(fn) -> {
+              addToGroupList(idx.methodGroups, fn.name, gid)
+              if isGeneric {
+                fnRootKeys(fn, pkg, keys)
+              }
+            }
+            case PMInvariant(inv) -> exprRootKeys(inv.expr, pkg, keys)
+            case PMField(pf) -> {
+              match pf {
+                case PFVar(_, _, init, _, _, _) -> optExprRootKeys(init, pkg, keys)
+                case PFLet(_, _, init, _, _, _) -> optExprRootKeys(init, pkg, keys)
+                case PFImmutable(field) -> optExprRootKeys(field.dflt, pkg, keys)
+              }
+            }
+          }
+        }
+        addToKeyList(idx.typeInits, gid, keys)
+      }
+      case IVal(decl) -> {
+        match decl.pattern.kind {
+          case PBinding(vn, _) -> {
+            val keys: List[RootKey] = newList()
+            exprRootKeys(decl.init, pkg, keys)
+            addToKeyList(idx.valInits, vn, keys)
+          }
+          case _ -> {
+          }
+        }
+      }
+      case IConst(decl) -> {
+        val keys: List[RootKey] = newList()
+        exprRootKeys(decl.init, pkg, keys)
+        addToKeyList(idx.valInits, decl.name, keys)
+      }
+      case IImpl(decl) -> {
+        // A generic impl is instantiated by the codegen, and a method with
+        // type parameters of its own is specialised per call, so neither is
+        // a member of the lowered impl: what they call stays live.
+        val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
+        for m in decl.members {
+          match m {
+            case IMplFunc(fn) -> {
+              val ownGeneric = match fn.generics { case Some(_) -> true; case None -> false }
+              if isGeneric or ownGeneric {
+                fnRootKeys(fn, pkg, idx.pending)
+              }
+            }
+            case IMplAssoc(_) -> {
+            }
+          }
+        }
+      }
+      case _ -> {
+      }
+    }
+  }
+}
+
+func indexPrunedRecord(
+  pkg: in String,
+  decl: in RecordDecl,
+  idx: in PruneIndex,
+  bodyIndex: in Map[String, FunctionDecl],
+  pkgOfId: in Map[String, String],
+): Unit {
+  val methods: List[FunctionDecl] = newList()
+  collectRecordMethods(pkg, decl, methods)
+  val gid = registerPrunedGroup(pkg, decl.name, methods, idx, bodyIndex, pkgOfId)
+  val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
+  val keys: List[RootKey] = newList()
+  for m in decl.members {
+    match m {
+      case RMFunc(fn) -> {
+        addToGroupList(idx.methodGroups, fn.name, gid)
+        if isGeneric {
+          fnRootKeys(fn, pkg, keys)
+        }
+      }
+      case RMInvariant(inv) -> exprRootKeys(inv.expr, pkg, keys)
+      case RMField(fd) -> optExprRootKeys(fd.dflt, pkg, keys)
+    }
+  }
+  addToKeyList(idx.typeInits, gid, keys)
+}
+
 func seedMethodList(
   pkg: in String,
   methods: in List[FunctionDecl],
@@ -3183,8 +3769,17 @@ func indexFileFns(f: in SourceFile, bodyIndex: in Map[String, FunctionDecl], pkg
 // them.  Record methods lower with the user package (D037 desugar);
 // bundled-package record methods are a Phase N5 follow-up (calling one
 // panics with a resolution message today).
+//
+// `isDep` marks a dependency package of the project (#8429): it is lowered by
+// reachability like a bundled package (`lowerAll` false), but unlike the
+// stdlib it has record methods, protected types and generic impls, which
+// follow the member groups `indexPrunedFile` registered (`grp:<Pkg>.<Type>`).
 func unitOf(
-  f0: in SourceFile, reachable: in Map[String, Bool], lowerAll: in Bool, arities: in Map[String, Int]
+  f0: in SourceFile,
+  reachable: in Map[String, Bool],
+  lowerAll: in Bool,
+  arities: in Map[String, Int],
+  isDep: in Bool = false,
 ): CodegenUnit {
   // A member body's bare field references as `self.<name>` (#8264), as
   // `unitOfFile` does; a no-op for a file the middle end processed.
@@ -3205,6 +3800,7 @@ func unitOf(
   val interfaces: List[InterfaceDecl] = newList()
   val impls: List[ImplDecl] = newList()
   val protecteds: List[ProtectedTypeDecl] = newList()
+  val deadProtecteds: List[String] = newList()
   // Module-level `val`/`const` bindings (#5977 part 2): collected regardless of
   // `lowerAll` (like type declarations) so a reference from the user package to
   // a bundled package's const resolves via use-site inlining.
@@ -3240,7 +3836,7 @@ func unitOf(
         if recordComparesByFieldsNative(decl, f.items[i].annotations) {
           eqByFields.add(decl.name)
         }
-        if lowerAll {
+        if lowerAll or (isDep and reachable.containsKey("grp:" + pkg + "." + decl.name)) {
           collectRecordMethods(pkg, decl, fns)
         }
       }
@@ -3248,7 +3844,7 @@ func unitOf(
       // single-package item walk).
       case IExposedRec(decl) -> {
         records.add(decl)
-        if lowerAll {
+        if lowerAll or (isDep and reachable.containsKey("grp:" + pkg + "." + decl.name)) {
           collectRecordMethods(pkg, decl, fns)
         }
       }
@@ -3284,7 +3880,7 @@ func unitOf(
             case Some(recordName) -> reachable.containsKey(implMarker(pkg, recordName))
             case None -> false
           }
-        if lowerAll or needed {
+        if lowerAll or needed or (isDep and isGeneric) {
           impls.add(decl)
           collectImplMethods(pkg, decl, fns)
         }
@@ -3292,9 +3888,12 @@ func unitOf(
       // Protected types (N3.4): gated on `lowerAll` like interfaces above —
       // native protected types are user-package only today.
       case IProtected(decl) -> {
-        if lowerAll {
+        if lowerAll or (isDep and reachable.containsKey("grp:" + pkg + "." + decl.name)) {
           protecteds.add(decl)
           collectProtectedMethods(pkg, decl, fns)
+        } else if isDep {
+          protecteds.add(decl)
+          deadProtecteds.add(decl.name)
         }
       }
       case _ -> {
@@ -3320,7 +3919,8 @@ func unitOf(
     moduleVals = moduleVals,
     importsStdString = fileImportsStdString(f),
     imports = fileImportPackages(f),
-    methodCallArities = arities
+    methodCallArities = arities,
+    deadProtecteds = deadProtecteds
   )
 }
 
