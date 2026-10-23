@@ -46,6 +46,7 @@ import Msil.MetadataReader as Mdr
 import Jvm.ZipReader as JvmZip
 import Lyric.CliShell as CliShell
 import Lyric.Fmt as Fmt
+import Lyric.ContractElaborator
 
 // ─────────────────────────────────────────────────────────────────────────────
 // §1. Subprocess helpers — thin wrappers over Lyric.CliShell.
@@ -1275,6 +1276,17 @@ func hasPureAnnotation(anns: in List[Annotation]): Bool {
   false
 }
 
+// A `pub` generic with its calls to private generic helpers redirected to the carried copies
+// (`Lyric.ContractElaborator.carryPrivateGenerics`); any other function as it is.
+func carriedPubFunc(carried: in CarriedGenerics, f: in FunctionDecl): FunctionDecl {
+  for c in carried.pubFuncs {
+    if c.name == f.name {
+      return c
+    }
+  }
+  f
+}
+
 // Build the `ContractDecl` for a `func` item.  A GENERIC function also
 // carries its real body (`funcBodyText`) so a restored consumer's
 // `Lyric.Mono.monoFileWithImports` can specialise a call site into a
@@ -1918,6 +1930,7 @@ pub func buildContractFromFile(file: in SourceFile, version: in String): Contrac
     pi = pi + 1
   }
 
+  val carried = carryPrivateGenerics(file.items, joinDots(file.packageDecl.path.segments))
   var i = 0
   while i < file.items.count {
     val it = file.items[i]
@@ -1929,7 +1942,7 @@ pub func buildContractFromFile(file: in SourceFile, version: in String): Contrac
         case IExposedRec(r) -> decls.add(
           basicDecl("record", r.name, reprForRecord(r, isExposed = true, dt = thunks), it.visibility)
         )
-        case IFunc(f) -> decls.add(funcDecl(f, it.visibility, thunks))
+        case IFunc(f) -> decls.add(funcDecl(carriedPubFunc(carried, f), it.visibility, thunks))
         case IUnion(u) -> decls.add(basicDecl("union", u.name, reprForUnion(u), it.visibility))
         case IEnum(e) -> decls.add(basicDecl("enum", e.name, reprForEnum(e), it.visibility))
         case IInterface(ix) -> decls.add(basicDecl("interface", ix.name, reprForInterface(ix, thunks), it.visibility))
@@ -2006,6 +2019,11 @@ pub func buildContractFromFile(file: in SourceFile, version: in String): Contrac
       case _ -> ()
     }
     i = i + 1
+  }
+  // The private generics a `pub` generic reaches, under package-unique names, so a consumer's
+  // monomorphiser can specialise the carried body (#8427).
+  for pc in carried.privateCopies {
+    decls.add(funcDecl(pc, Some(value = VisInternal(span = pc.span)), thunks))
   }
   Contract(
     packageName = joinDots(file.packageDecl.path.segments),

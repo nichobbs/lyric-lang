@@ -4300,18 +4300,29 @@ pub func pipeAddGenericFuncs(
   excludeIntrinsics: in Bool,
   dest: in List[FunctionDecl],
 ): Unit {
+  if requirePub {
+    // The private generics a `pub` generic reaches travel with it under package-unique names (#8427).
+    val carried = carryPrivateGenerics(items, pkgName)
+    for decl in carried.pubFuncs {
+      if not pipeAnnsBlockSpecialization(decl.annotations) {
+        dest.add(withOriginPkgMono(decl, pkgName))
+      }
+    }
+    for decl in carried.privateCopies {
+      if not pipeAnnsBlockSpecialization(decl.annotations) {
+        dest.add(withOriginPkgMono(decl, pkgName))
+      }
+    }
+    return
+  }
   var i = 0
   while i < items.count {
     match items[i].kind {
       case IFunc(decl) -> {
-        var pubOk = true
-        if requirePub {
-          pubOk = match decl.visibility { case Some(VisPub(_)) -> true; case _ -> false }
-        }
         val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
         val hasBody = match decl.body { case Some(_) -> true; case None -> false }
         val isIntrinsic = excludeIntrinsics and decl.name == "mapGet" and pkgName == "Std.Collections"
-        if not isIntrinsic and pubOk and isGeneric and hasBody and not pipeAnnsBlockSpecialization(decl.annotations) {
+        if not isIntrinsic and isGeneric and hasBody and not pipeAnnsBlockSpecialization(decl.annotations) {
           dest.add(withOriginPkgMono(decl, pkgName))
         }
       }
