@@ -1,4 +1,4 @@
-# Windows x86-64 native target (docs/67 G9, #7948, D204)
+# Windows x86-64 native target (docs/67 G9, #7948, D205)
 
 - `--triple x86_64-pc-windows-msvc` (the default on a Windows host): `lld-link` on every host, a Linux host
   cross-compiles with `INCLUDE`/`LIB` naming an MSVC CRT and Windows SDK; COFF datalayout; `bcrypt` and
@@ -21,6 +21,6 @@
 - CRLF sources (a Windows checkout): `ParseResult.source` is now the line-ending-normalised text its spans
   index (as documented), so `lyric test`'s rewrite (`Lyric.TestSynth`) no longer drifts one character per line
   and cuts string literals; `parser_self_test.l` and `test_synth_self_test.l` pin it.
-- Docs: D204, docs/01 (native target), docs/67, docs/12, book chapter 1 and appendix B (`N0025`), CLAUDE.md.
+- Docs: D205, docs/01 (native target), docs/67, docs/12, book chapter 1 and appendix B (`N0025`), CLAUDE.md.
   Follow-ups: #8433 (processes), #8434 (sockets, TLS), #8435 (graphics prebuilts, G4-G7 examples), #8436
   (compiler-hosted self-tests, ASan, long paths).

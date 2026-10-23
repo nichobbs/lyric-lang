@@ -1335,7 +1335,7 @@ pub func buildOneNativeShaped(
   // Also check the output path: if the emitter reported no diagnostics but
   // still failed (e.g. the --internal-build subprocess exited non-zero with
   // errors already printed to stderr), outputPath will be None.
-  // The file actually written: a Windows native build adds `.exe` (D204).
+  // The file actually written: a Windows native build adds `.exe` (D205).
   var builtPath = outPath
   match result.outputPath {
     case None -> {
@@ -3228,7 +3228,7 @@ pub func buildProjectFromManifest(
     printErr(mfPath + ": project build failed")
     return 1
   }
-  // The file actually written: a Windows native build adds `.exe` (D204).
+  // The file actually written: a Windows native build adds `.exe` (D205).
   val builtPath = match result.outputPath {
     case Some(p) -> if isNativeTarget { p } else { outPath }
     case None -> outPath

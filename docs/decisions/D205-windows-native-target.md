@@ -1,4 +1,4 @@
-# D204 - The Windows x86-64 native target
+# D205 - The Windows x86-64 native target
 
 **Status:** accepted, implemented for the core runtime and toolchain (docs/67 phase G9, #7948); processes (#8433),
 sockets and TLS (#8434), the graphics prebuilts and G4 to G7 examples (#8435), and the compiler-hosted self-tests,
