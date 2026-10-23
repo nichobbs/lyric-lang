@@ -26,9 +26,9 @@
 #   make windows        -> build-x86_64-pc-windows-msvc/lyric_rt.lib
 #   make test-windows   [WINE=wine when cross-compiling]
 #
-# lyric_posix.c, lyric_fs.c and lyric_process.c are replaced by their Win32
-# twins (lyric_win32.c, lyric_fs_win32.c, lyric_process_win32.c); sockets and
-# TLS use lyric_net_unsupported.c until their Win32 port lands (#8434).
+# lyric_posix.c, lyric_fs.c, lyric_process.c and lyric_tls.c are replaced by
+# their Win32 twins (lyric_win32.c, lyric_fs_win32.c, lyric_process_win32.c,
+# and lyric_sock_win32.c with lyric_tls_win32.c, which uses Schannel).
 
 CC      ?= clang
 AR      ?= ar
@@ -96,10 +96,11 @@ test-tsan: | $(BUILD)
 # lyric_string_len/lyric_list_len/lyric_release, so ASan needs those
 # allocations instrumented too, not just the seam's raw malloc'd handles
 # (lyric_release pulls in lyric_weak_release even though these values are
-# never weakly referenced).  Run under a compiler with ASan (gcc's libasan
-# is reliably present): `make test-asan CC=gcc`.
+# never weakly referenced).  src/lyric_posix.c supplies the test's threads,
+# sleeps and clock.  Run under a compiler with ASan (gcc's libasan is
+# reliably present): `make test-asan CC=gcc`.
 test-asan: | $(BUILD)
-	$(CC) $(CFLAGS) -fsanitize=address -Iinclude test/lyric_tls_test.c src/lyric_tls.c src/lyric_string.c src/lyric_rt.c src/lyric_weak.c src/lyric_collections.c $(TEST_LIBS) -o $(BUILD)/lyric_tls_test_asan
+	$(CC) $(CFLAGS) -fsanitize=address -Iinclude test/lyric_tls_test.c src/lyric_tls.c src/lyric_string.c src/lyric_rt.c src/lyric_weak.c src/lyric_collections.c src/lyric_posix.c $(TEST_LIBS) -o $(BUILD)/lyric_tls_test_asan
 	$(BUILD)/lyric_tls_test_asan
 
 # ── wasm32-wasi ──────────────────────────────────────────────────────────
@@ -159,14 +160,15 @@ WIN_CFLAGS  := --target=$(WIN_TRIPLE) -O2 -std=c11 -Wall -Wextra -Werror \
                -D_CRT_SECURE_NO_WARNINGS -D_CRT_NONSTDC_NO_WARNINGS
 WIN_LDFLAGS := --target=$(WIN_TRIPLE) -fuse-ld=lld
 # System import libraries the runtime calls into: CNG entropy (bcrypt), the
-# UTF-16 command-line parser (shell32), and the security descriptors of the
-# child-process pipes (advapi32).  The compiler's native link step passes the
-# same list.
-WIN_LIBS    := -lbcrypt -lshell32 -ladvapi32
+# UTF-16 command-line parser (shell32), the security descriptors of the
+# child-process pipes (advapi32), Winsock (ws2_32), and Schannel with the
+# certificate and key APIs (secur32, crypt32, ncrypt).  The compiler's native
+# link step passes the same list.
+WIN_LIBS    := -lbcrypt -lshell32 -ladvapi32 -lws2_32 -lsecur32 -lcrypt32 -lncrypt
 WIN_SRCS    := src/lyric_rt.c src/lyric_string.c src/lyric_weak.c \
                src/lyric_win32.c src/lyric_collections.c src/lyric_async.c \
-               src/lyric_fs_win32.c src/lyric_process_win32.c src/lyric_net_unsupported.c \
-               src/lyric_parallel.c
+               src/lyric_fs_win32.c src/lyric_process_win32.c src/lyric_sock_win32.c \
+               src/lyric_tls_win32.c src/lyric_parallel.c
 WIN_OBJS    := $(WIN_SRCS:src/%.c=$(WIN_BUILD)/%.obj)
 
 $(WIN_BUILD)/%.obj: src/%.c include/lyric_rt.h src/lyric_win32_internal.h | $(WIN_BUILD)
@@ -196,6 +198,8 @@ test-windows: $(WIN_BUILD)/lyric_rt.lib
 	$(WINE) $(WIN_BUILD)/lyric_win32_test.exe
 	$(WIN_CC) $(WIN_CFLAGS) $(WIN_LDFLAGS) -Iinclude test/lyric_process_win32_test.c $(WIN_BUILD)/lyric_rt.lib $(WIN_LIBS) -o $(WIN_BUILD)/lyric_process_win32_test.exe
 	$(WINE) $(WIN_BUILD)/lyric_process_win32_test.exe
+	$(WIN_CC) $(WIN_CFLAGS) $(WIN_LDFLAGS) -Iinclude test/lyric_tls_test.c $(WIN_BUILD)/lyric_rt.lib $(WIN_LIBS) -o $(WIN_BUILD)/lyric_tls_test.exe
+	$(WINE) $(WIN_BUILD)/lyric_tls_test.exe
 	$(WIN_CC) $(WIN_CFLAGS) $(WIN_LDFLAGS) -Iinclude test/lyric_parallel_test.c $(WIN_BUILD)/lyric_rt.lib $(WIN_LIBS) -o $(WIN_BUILD)/lyric_parallel_test.exe
 	$(WINE) $(WIN_BUILD)/lyric_parallel_test.exe
 	LYRIC_THREADS=1 $(WINE) $(WIN_BUILD)/lyric_parallel_test.exe --serial

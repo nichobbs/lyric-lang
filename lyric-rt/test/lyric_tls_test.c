@@ -1,5 +1,6 @@
-/* lyric_tls_test.c — real-OpenSSL loopback tests for the native TCP + TLS
- * transport seam (lyric_tls.c; epic #5874 phase 5, issue #5890).
+/* lyric_tls_test.c — loopback tests for the native TCP + TLS transport seam:
+ * lyric_tls.c over OpenSSL (epic #5874 phase 5, issue #5890), and on Windows
+ * lyric_sock_win32.c and lyric_tls_win32.c over Winsock and Schannel (D209).
  *
  * Run via `make -C lyric-rt test` (and, with -fsanitize=address, the
  * lyric_tls_test_asan variant, so a leaked SSL_CTX/SSL/fd fails the run).
@@ -13,6 +14,7 @@
  * If OpenSSL 3.x cannot be dlopen'd (a build environment without libssl),
  * the TLS scenarios are skipped with a printed notice and the process still
  * exits 0 — the honest boundary, never a silent pass of untested code.
+ * Schannel is always present on Windows.
  */
 #if defined(__linux__)
 #define _POSIX_C_SOURCE 200809L
@@ -21,20 +23,18 @@
 
 #include "lyric_rt.h"
 
-#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 
-#include <sys/socket.h>
-#include <sys/time.h>
-
+#if !defined(_WIN32)
 /* Internal seam helper (no public header decl); driven directly here to
- * exercise the CVE-2024-5535 empty-client-list guard (#6114). */
+ * exercise the CVE-2024-5535 empty-client-list guard (#6114).  Schannel
+ * negotiates ALPN itself, so the Windows seam has no such helper. */
 extern int lyric_tls_alpn_pick(const unsigned char* server_wire, unsigned int server_len,
                                const unsigned char* in, unsigned int inlen,
                                const unsigned char** out, unsigned char* outlen);
+#endif
 
 static int failures = 0;
 
@@ -183,9 +183,7 @@ static const char RESPONSE[] = "PONG from lyric server";
 
 /* Bound the loopback I/O so a mishandshake can never hang the test. */
 static void set_timeout(int fd) {
-    struct timeval tv = {5, 0};
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    lyric_sock_set_timeouts(fd, 5000);
 }
 
 /* ── Plain (non-TLS) socket round-trip ────────────────────────────────── */
@@ -208,8 +206,8 @@ static void test_plain_roundtrip(void) {
     int port = lyric_sock_local_port(listen_fd);
     CHECK(port > 0);
 
-    pthread_t th;
-    pthread_create(&th, NULL, plain_server, &listen_fd);
+    int64_t th = 0;
+    lyric_thread_create(&th, plain_server, &listen_fd);
 
     int fd = lyric_sock_connect("127.0.0.1", port);
     CHECK(fd >= 0);
@@ -222,7 +220,7 @@ static void test_plain_roundtrip(void) {
     CHECK(memcmp(buf, REQUEST, (size_t)n) == 0);
     lyric_sock_close(fd);
 
-    pthread_join(th, NULL);
+    lyric_thread_join(th, NULL);
     lyric_sock_close(listen_fd);
 }
 
@@ -267,13 +265,13 @@ static void test_accept_interruptible_normal(void) {
     CHECK(lyric_sock_wake_pipe_new(&wake_read, &wake_write) == 0);
     CHECK(wake_read >= 0 && wake_write >= 0);
 
-    pthread_t th;
-    pthread_create(&th, NULL, plain_server, &listen_fd); /* uses lyric_sock_accept, not this fn -- just needs a peer */
+    int64_t th = 0;
+    lyric_thread_create(&th, plain_server, &listen_fd); /* uses lyric_sock_accept, not this fn -- just needs a peer */
 
     int cfd = lyric_sock_connect("127.0.0.1", port);
     CHECK(cfd >= 0);
     lyric_sock_close(cfd);
-    pthread_join(th, NULL);
+    lyric_thread_join(th, NULL);
 
     /* Now exercise the interruptible variant directly against a second,
      * fresh connection so this test proves ITS accept path, not just
@@ -336,8 +334,8 @@ static void test_accept_interruptible_wakeup(void) {
     arg.result = -999;
     arg.done = 0;
 
-    pthread_t th;
-    pthread_create(&th, NULL, blocked_acceptor, &arg);
+    int64_t th = 0;
+    lyric_thread_create(&th, blocked_acceptor, &arg);
 
     /* No deterministic way to observe "the other thread is now parked in
      * poll()" from here; a short, generous sleep gives it every chance to
@@ -346,11 +344,10 @@ static void test_accept_interruptible_wakeup(void) {
      * this is a timing nicety, not a correctness requirement (unlike
      * plain_server's connect-lands-in-backlog trick above, which IS load
      * bearing). */
-    struct timespec ts = {0, 20 * 1000 * 1000}; /* 20ms */
-    nanosleep(&ts, NULL);
+    lyric_sleep_nanos(20 * 1000 * 1000); /* 20ms */
 
     CHECK(lyric_sock_wake_pipe_signal(wake_write) == 0);
-    pthread_join(th, NULL);
+    lyric_thread_join(th, NULL);
 
     CHECK(arg.done == 1);
     CHECK(arg.result == -2); /* the interrupt sentinel, not an error and not a real fd */
@@ -448,8 +445,8 @@ static int run_tls_scenario(void* server_ctx, void* client_ctx, const char* sni,
     sa.listen_fd = listen_fd;
     sa.server_ctx = server_ctx;
 
-    pthread_t th;
-    pthread_create(&th, NULL, tls_server, &sa);
+    int64_t th = 0;
+    lyric_thread_create(&th, tls_server, &sa);
 
     int fd = lyric_sock_connect("127.0.0.1", port);
     CHECK(fd >= 0);
@@ -469,7 +466,7 @@ static int run_tls_scenario(void* server_ctx, void* client_ctx, const char* sni,
         lyric_tls_free(conn);
     }
     lyric_sock_close(fd);
-    pthread_join(th, NULL);
+    lyric_thread_join(th, NULL);
     lyric_sock_close(listen_fd);
     if (srv_out) *srv_out = sa;
     return client_ok;
@@ -691,6 +688,7 @@ static void test_empty_host_refused(void) {
     lyric_tls_ctx_free(client);
 }
 
+#if !defined(_WIN32)
 /* #6114 (CVE-2024-5535): an empty client ALPN protocol list (inlen == 0)
  * must NOT be forwarded into SSL_select_next_proto — on unpatched OpenSSL
  * (incl. the 3.0.13 this suite runs against) that is an out-of-bounds read.
@@ -724,6 +722,7 @@ static void test_alpn_empty_client_list_guard(void) {
                                   other_wire, sizeof(other_wire), &out, &outlen) == 0);
     }
 }
+#endif
 
 /* End-to-end no-ALPN-overlap: a client offering only a protocol the server
  * does not advertise completes the handshake with NO protocol negotiated —
@@ -853,8 +852,8 @@ static void test_alpn_string(void) {
     CHECK(port > 0);
 
     alpn_string_server_saw_conn = 0;
-    pthread_t th;
-    pthread_create(&th, NULL, alpn_string_server, &listen_fd);
+    int64_t th = 0;
+    lyric_thread_create(&th, alpn_string_server, &listen_fd);
 
     void* client = lyric_tls_client_new(CA_CRT, 12, 0);
     CHECK(client != NULL);
@@ -872,7 +871,7 @@ static void test_alpn_string(void) {
         lyric_tls_free(conn);
     }
     lyric_sock_close(fd);
-    pthread_join(th, NULL);
+    lyric_thread_join(th, NULL);
     CHECK(alpn_string_server_saw_conn == 1); /* server side actually negotiated a conn */
     lyric_sock_close(listen_fd);
     lyric_tls_ctx_free(client);
@@ -912,8 +911,8 @@ static void test_sock_bytes_roundtrip(void) {
     int port = lyric_sock_local_port(listen_fd);
     CHECK(port > 0);
 
-    pthread_t th;
-    pthread_create(&th, NULL, plain_server, &listen_fd);
+    int64_t th = 0;
+    lyric_thread_create(&th, plain_server, &listen_fd);
 
     int fd = lyric_sock_connect("127.0.0.1", port);
     CHECK(fd >= 0);
@@ -929,7 +928,7 @@ static void test_sock_bytes_roundtrip(void) {
     lyric_release(in);
     lyric_sock_close(fd);
 
-    pthread_join(th, NULL);
+    lyric_thread_join(th, NULL);
     lyric_sock_close(listen_fd);
 }
 
@@ -974,8 +973,8 @@ static void test_tls_bytes_roundtrip(void) {
     CHECK(port > 0);
 
     tls_bytes_server_conn = NULL;
-    pthread_t th;
-    pthread_create(&th, NULL, tls_bytes_server, &listen_fd);
+    int64_t th = 0;
+    lyric_thread_create(&th, tls_bytes_server, &listen_fd);
 
     void* client = lyric_tls_client_new(CA_CRT, 12, 0);
     CHECK(client != NULL);
@@ -997,7 +996,7 @@ static void test_tls_bytes_roundtrip(void) {
         lyric_tls_free(conn);
     }
     lyric_sock_close(fd);
-    pthread_join(th, NULL);
+    lyric_thread_join(th, NULL);
     CHECK(tls_bytes_server_conn != NULL);
     lyric_sock_close(listen_fd);
     lyric_tls_ctx_free(client);
@@ -1006,9 +1005,7 @@ static void test_tls_bytes_roundtrip(void) {
 /* ── Socket timeouts (#7268) ──────────────────────────────────────────── */
 
 static int64_t mono_ms(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+    return lyric_monotonic_nanos() / 1000000;
 }
 
 static int last_error_contains(const char* needle) {
@@ -1112,14 +1109,14 @@ static void test_tls_read_timeout(void) {
     CHECK(a.listen_fd >= 0);
     a.server_ctx = server;
     int port = lyric_sock_local_port(a.listen_fd);
-    pthread_t th;
-    pthread_create(&th, NULL, tls_idle_server, &a);
+    int64_t th = 0;
+    lyric_thread_create(&th, tls_idle_server, &a);
     int fd = lyric_sock_connect("127.0.0.1", port);
     CHECK(fd >= 0);
     set_timeout(fd);
     void* conn = lyric_tls_client_connect(client, fd, "localhost", "http/1.1");
     CHECK(conn != NULL);
-    pthread_join(th, NULL);
+    lyric_thread_join(th, NULL);
     CHECK(a.read_result == -1);
     CHECK(a.elapsed_ms >= 150 && a.elapsed_ms < 3000);
     CHECK(a.timed_out == 1);
@@ -1162,7 +1159,9 @@ int main(void) {
     test_hostname_mismatch_rejected();
     test_empty_host_refused();
     test_insecure_skip_verify();
+#if !defined(_WIN32)
     test_alpn_empty_client_list_guard();
+#endif
     test_alpn_no_overlap_handshake();
     test_server_require_client_cert_without_ca();
     test_validate_cert_pem();

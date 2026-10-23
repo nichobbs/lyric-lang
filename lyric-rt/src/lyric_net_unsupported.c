@@ -1,6 +1,5 @@
 /* lyric_net_unsupported.c — the lyric_sock_* / lyric_tls_* surface for targets
- * with no BSD sockets or dynamic loading (wasm32-wasi, docs/35 §5.3), and for
- * Windows until its Winsock and TLS ports land (docs/67 G9; #8434).  It
+ * with no BSD sockets or dynamic loading (wasm32-wasi, docs/35 §5.3).  It
  * replaces lyric_tls.c in that build, which docs/61 §7 designs as a swappable
  * seam, so every `_kernel_native/tcp_host.l` / `tls_host.l` extern still
  * resolves and each call fails the way a real network failure does: -1 / NULL
@@ -12,13 +11,8 @@
 #include <stdio.h>
 #include <string.h>
 
-#if defined(_WIN32)
-#define LYRIC_NET_TARGET "Windows"
-#define LYRIC_TLS_REASON "Windows (the Winsock and TLS ports are not implemented yet)"
-#else
 #define LYRIC_NET_TARGET "wasm32-wasi"
 #define LYRIC_TLS_REASON "wasm32-wasi (no sockets or dynamic loading)"
-#endif
 
 static char last_err[128] = "";
 

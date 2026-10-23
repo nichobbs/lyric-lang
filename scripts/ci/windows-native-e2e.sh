@@ -14,6 +14,8 @@
 #     the parallel worker pool and threads work;
 #   - child processes: captured runs with stdin and a deadline, an
 #     inherited run, a piped child, quoted and non-ASCII arguments;
+#   - TCP sockets, and HTTPS through Schannel with a pinned CA (and refused
+#     under system trust);
 #   - a panic exits with status 3 and prints its message, with no dialog.
 #
 # On a Windows host the programs run directly.  On Linux the same build
@@ -454,6 +456,228 @@ run_exe "$work/procs.exe"
 rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "procs.exe exited $rc (the code names the first process check that failed)"
+
+# ── Sockets and TLS ─────────────────────────────────────────────────────
+# A plain TCP round trip, then an HTTPS request to a Std.HttpServer TLS
+# listener from a client thread trusting only the test CA (the PKI of
+# lyric-rt/test/lyric_tls_test.c), and the same server refused under system
+# trust, since the test CA is not a Windows root.  The server imports its key
+# for Schannel, so this needs a real Windows host, not wine.
+cat > "$work/ca.pem" <<'PEM'
+-----BEGIN CERTIFICATE-----
+MIIBiDCCAS2gAwIBAgIUa+UpO+C7R20rI5EBFHE/liAYeiswCgYIKoZIzj0EAwIw
+GDEWMBQGA1UEAwwNTHlyaWMgVGVzdCBDQTAgFw0yNjA3MTgxOTQ2MjRaGA8yMTI2
+MDYyNDE5NDYyNFowGDEWMBQGA1UEAwwNTHlyaWMgVGVzdCBDQTBZMBMGByqGSM49
+AgEGCCqGSM49AwEHA0IABOsG7U338C1RcPt/OL4O3ounT3ygztqag26oIgpLYCA5
+HVYYjOlEEKjUGJhBGcXzw0jpRQDMFCJGHtOMVcJ/enCjUzBRMB0GA1UdDgQWBBSU
+EMVcBV+x/jMMGEnxGJYtMHl6yTAfBgNVHSMEGDAWgBSUEMVcBV+x/jMMGEnxGJYt
+MHl6yTAPBgNVHRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA0kAMEYCIQCCOWeAOliu
+Xj1/18e9zSHEUq+gjgwtWl5N/aGfwUIsqAIhAJ50wTwnR+83mTgInxVGy7Jbua7a
+bc4iHgt6W2u9CR9k
+-----END CERTIFICATE-----
+PEM
+cat > "$work/server.pem" <<'PEM'
+-----BEGIN CERTIFICATE-----
+MIIBjjCCATSgAwIBAgIUdUB+lVYMzv9aImIC8blgtl9VikEwCgYIKoZIzj0EAwIw
+GDEWMBQGA1UEAwwNTHlyaWMgVGVzdCBDQTAgFw0yNjA3MTgxOTQ2MjRaGA8yMTI2
+MDYyNDE5NDYyNFowFDESMBAGA1UEAwwJbG9jYWxob3N0MFkwEwYHKoZIzj0CAQYI
+KoZIzj0DAQcDQgAEMo21Zj5ZUUrALT8gSA1nupzAxi9RYgD41XgYmknmSNxY5hpa
+02KW7RjFrZYho3FjQwjhf+QssXdneFf+uIJiY6NeMFwwGgYDVR0RBBMwEYIJbG9j
+YWxob3N0hwR/AAABMB0GA1UdDgQWBBTv8kqnlNk2k2rm+6j+DL471IR2/jAfBgNV
+HSMEGDAWgBSUEMVcBV+x/jMMGEnxGJYtMHl6yTAKBggqhkjOPQQDAgNIADBFAiEA
+wQM23cqOw7M0G8ThjJ8aDDzfAJmgHM2/T4mfv0c1c9MCIHUelTrjNTDDiDCXjI3F
+LXnijJTPgm/DrWzfDHoMzD2l
+-----END CERTIFICATE-----
+PEM
+cat > "$work/server-key.pem" <<'PEM'
+-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgiqxrZ6ywX4KddmSt
+rmk/qY9bMTRjkRmANXEUmf9UUiGhRANCAAQyjbVmPllRSsAtPyBIDWe6nMDGL1Fi
+APjVeBiaSeZI3FjmGlrTYpbtGMWtliGjcWNDCOF/5Cyxd2d4V/64gmJj
+-----END PRIVATE KEY-----
+PEM
+cat > "$work/net.l" <<'LYR'
+package Net
+
+import Std.Core
+import Std.Collections
+import Std.Console as Console
+import Std.Encoding
+import Std.File as File
+import Std.Tls
+import Std.TcpHost
+import Std.HttpServer
+
+extern func threadCreate(tid: NativePtr[Long], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = "lyric_thread_create"
+extern func threadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = "lyric_thread_join"
+extern func toC(s: String): NativePtr[Byte] = "lyric_string_to_cstring"
+extern func cStrlen(p: NativePtr[Byte]): Long = "lyric_cstr_len"
+extern func fromBytes(p: NativePtr[Byte], n: Long): String = "lyric_string_from_literal"
+extern func freeC(p: NativePtr[Byte]): Unit = "lyric_cstring_free"
+
+func readText(path: in String): String {
+  match File.readText(path) {
+    case Ok(t) -> t
+    case Err(_) -> ""
+  }
+}
+
+func plainRoundTrip(): Int {
+  val listener = match hostListen("127.0.0.1", 0) {
+    case Ok(l) -> l
+    case Err(_) -> return 1
+  }
+  val port = hostLocalPort(listener)
+  val client = match hostConnect("localhost", port) {
+    case Ok(c) -> c
+    case Err(_) -> return 2
+  }
+  val server = match hostAccept(listener) {
+    case Ok(c) -> c
+    case Err(_) -> return 3
+  }
+  match hostWrite(client, encodeUtf8("ping \u{e9}")) {
+    case Ok(_) -> ()
+    case Err(_) -> return 4
+  }
+  var got = ""
+  match hostRead(server, 64) {
+    case Ok(bytes) -> match tryDecodeUtf8(bytes) {
+      case Some(t) -> {
+        got = t
+      }
+      case None -> ()
+    }
+    case Err(_) -> ()
+  }
+  hostClose(client)
+  hostClose(server)
+  hostCloseListener(listener)
+  if got != "ping \u{e9}" {
+    return 5
+  }
+  0
+}
+
+@unsafe_ffi
+func httpsClient(port: in Int, caPem: in String): NativePtr[Byte] {
+  val conn = match hostConnectTls("localhost", port, TlsTrustExclusive(caPem = caPem), None, TlsVersion.Tls12, "http/1.1") {
+    case Ok(c) -> c
+    case Err(e) -> return toC("handshake: " + e.message())
+  }
+  if hostAlpn(conn) != "http/1.1" {
+    hostClose(conn)
+    return toC("alpn: " + hostAlpn(conn))
+  }
+  val req = "POST /submit HTTP/1.1\r\nHost: localhost\r\nContent-Length: 4\r\nConnection: close\r\n\r\nabcd"
+  match hostWrite(conn, encodeUtf8(req)) {
+    case Ok(_) -> ()
+    case Err(_) -> {
+      hostClose(conn)
+      return toC("write")
+    }
+  }
+  var acc = ""
+  var tries = 0
+  var done = false
+  while tries < 400 and not done {
+    match hostRead(conn, 4096) {
+      case Ok(b) -> {
+        if b.length == 0 {
+          done = true
+        }
+        match tryDecodeUtf8(b) {
+          case Some(s) -> {
+            acc = acc + s
+          }
+          case None -> ()
+        }
+      }
+      case Err(_) -> {
+        done = true
+      }
+    }
+    if acc.contains("true") {
+      done = true
+    }
+    tries = tries + 1
+  }
+  hostClose(conn)
+  if acc.startsWith("HTTP/1.1 201") and acc.contains("true") {
+    toC("PASS")
+  } else {
+    toC("response: " + acc)
+  }
+}
+
+@unsafe_ffi
+func httpsRoundTrip(port: in Int, caPem: in String, certPem: in String, keyPem: in String): Int {
+  val identity = match Identity.fromPem(certPem, keyPem) {
+    case Ok(id) -> id
+    case Err(_) -> return 10
+  }
+  val cfg = TlsServerConfig(identity = identity, minVersion = TlsVersion.Tls12)
+  val listener = match startListenerTls("127.0.0.1", port, cfg) {
+    case Ok(l) -> l
+    case Err(e) -> {
+      Console.error("listen: " + e.message())
+      return 11
+    }
+  }
+  var tid: Long = 0
+  val worker: () -> NativePtr[Byte] = { -> httpsClient(port, caPem) }
+  if threadCreate(nativeAddrOf(tid), worker, worker) != 0 {
+    stopListener(listener)
+    return 12
+  }
+  val ctx = nextContext(listener)
+  var code = 0
+  if requestMethod(ctx) != "POST" or requestPath(ctx) != "/submit" or requestBody(ctx) != "abcd" {
+    code = 13
+  }
+  respondJson(ctx, 201, "{\"ok\":true}")
+  var reply: NativePtr[Byte] = nativeNullPtr()
+  if threadJoin(tid, nativeAddrOf(reply)) != 0 {
+    return 14
+  }
+  val result = fromBytes(reply, cStrlen(reply))
+  freeC(reply)
+  // The same server, trusted only through the system store, is refused:
+  // its root is not one the system trusts.
+  match hostConnectTls("localhost", port, TlsTrustSystemDefault, None, TlsVersion.Tls12, "") {
+    case Ok(c) -> {
+      hostClose(c)
+      code = 16
+    }
+    case Err(_) -> ()
+  }
+  stopListener(listener)
+  if result != "PASS" {
+    Console.error("client: " + result)
+    return 15
+  }
+  code
+}
+
+func main(): Int {
+  val caPem = readText("ca.pem")
+  val certPem = readText("server.pem")
+  val keyPem = readText("server-key.pem")
+  val p = plainRoundTrip()
+  if p != 0 {
+    return p
+  }
+  httpsRoundTrip(19731, caPem, certPem, keyPem)
+}
+LYR
+echo "--- sockets and TLS"
+(cd "$work" && "$lyric_bin" build net.l --target native --triple "$triple")
+[ -f "$work/net.exe" ] || fail "the native build did not write net.exe"
+set +e
+(cd "$work" && run_exe ./net.exe)
+rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "net.exe exited $rc (1-5: plain TCP, 10-16: HTTPS)"
 
 # ── A panic exits with status 3 ─────────────────────────────────────────
 cat > "$work/boom.l" <<'LYR'
