@@ -5803,6 +5803,56 @@ pub func checkContractSurface(file: in SourceFile): CheckResult {
   checkWithImportedPackagesCore(file, empty, false, false)
 }
 
+// T0194: a string-literal template of `format1`-`format4` is checked against
+// the placeholder grammar `Std.String.formatArgs` enforces at run time (the
+// same scanner, `formatTemplateProblem`), so a malformed brace or a
+// placeholder beyond the call's arguments fails the build instead (#7983).
+func checkFormatTemplate(diag: in List[Diagnostic], calleeName: in String, args: in List[CallArg]): Unit {
+  if args.count == 0 {
+    return
+  }
+  match formatBuiltinArity(calleeName) {
+    case None -> ()
+    case Some(arity) -> {
+      if args.count != arity + 1 {
+        return
+      }
+      val first = callArgExpr(args[0])
+      match first.kind {
+        case ELiteral(lit) -> match lit {
+          case LString(text) -> {
+            val problem = formatTemplateProblem(text, arity)
+            if problem.length > 0 {
+              diag.add(errorDiagnostic("T0194", "invalid " + calleeName + " template: " + problem, first.span))
+            }
+          }
+          case _ -> ()
+        }
+        case _ -> ()
+      }
+    }
+  }
+}
+
+// Y0009: a package is either `@pure` or `@io` (docs/01 §9.4).  The layer
+// check reports this only when the project has a `[layers]` table, and the
+// package merge reports files of one package that disagree; a single file
+// carrying both is reported here, whatever the manifest says (#8244).
+func reportConflictingClassification(diag: in List[Diagnostic], file: in SourceFile): Unit {
+  var first = ""
+  for a in file.fileAnnotations {
+    val n = modulePathJoin(a.name.segments)
+    if n == "pure" or n == "io" {
+      if first == "" {
+        first = n
+      } else if first != n {
+        diag.add(errorDiagnostic("Y0009", "a package is either @pure or @io, not both", a.span))
+        return
+      }
+    }
+  }
+}
+
 func checkWithImportedPackagesCore(
   file0: in SourceFile,
   importedPackages: in List[ImportedPackage],
@@ -5827,6 +5877,7 @@ func checkWithImportedPackagesCore(
   val userPkg = dottedPackageName(file.packageDecl.path)
   tbl.arrayLenPkg.add(userPkg)
   val userImports = collectImportNames(file.imports)
+  reportConflictingClassification(diag, file)
 
   // T1: register imported items first (shadow without error), tagging each
   // symbol with its declaring package so scoped resolution can prefer it.
