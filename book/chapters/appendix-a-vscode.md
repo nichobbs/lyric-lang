@@ -74,8 +74,8 @@ The language server runs the full lex → parse → type-check pipeline on every
 | Feature | Details |
 |---------|---------|
 | Real-time diagnostics | Lex → parse → type-check on every keystroke; errors and warnings appear as underlines with full compiler messages |
-| Hover | Full resolved signature and doc comments for any top-level name, including type parameters resolved to their declared names |
-| Go-to-definition | Jump to the definition of any top-level name (`F12` or Ctrl+click / Cmd+click) |
+| Hover | Full resolved signature and doc comments for any top-level name, including type parameters resolved to their declared names; a method call such as `b.extra()` shows the dot-named function it binds to and its package |
+| Go-to-definition | Jump to the definition of any top-level name, or of the dot-named function a method call binds to (`F12` or Ctrl+click / Cmd+click) |
 | Completion | All top-level names visible at the cursor position, including names from imported packages; imports are suggested automatically |
 | Signature help | Parameter hints triggered by `(` and `,`; shows the full function signature with the active parameter highlighted |
 | Workspace support | Cross-file diagnostics across all `.l` files in the open workspace; go-to-definition resolves across package boundaries |
