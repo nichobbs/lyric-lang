@@ -1230,8 +1230,8 @@ test "emit(target = Native) contains a coerceTo type-mismatch Bug as an EmitResu
     Str.contains(diagText, "N0007"),
     "the contained refusal carries its N0007 code in EmitResult.diagnostics (got: " + diagText + ")"
   )
-  // The span points at the mismatched argument itself (`put`'s `x` on line
-  // 7, column 10), not a synthetic file-start point span —
+  // The span points at the mismatched argument itself (`put`'s `b.value` on
+  // line 11, column 10), not a synthetic file-start point span —
   // `coerceTo`'s `atSpan` threads the real `Expr.span` through
   // `lowerExprExpecting`/`coerceUnlessDiverged`.
   var n0007Idx = -1
@@ -1247,7 +1247,7 @@ test "emit(target = Native) contains a coerceTo type-mismatch Bug as an EmitResu
     val sp = result.diagnostics[n0007Idx].span
     assertEqualInt(
       sp.startPos.line,
-      7,
+      11,
       "N0007 span points at the real source line (got: " + toString(sp.startPos.line) + ")"
     )
     assertEqualInt(
