@@ -438,7 +438,47 @@ func isWhitelistedStdlibType(name: in String): Bool {
     name == "Clock" or
     name == "Uuid" or
     name == "JsonValue" or
-    name == "Diagnostic"
+    name == "Diagnostic" or
+    isPluginBoundaryStdlibType(name)
+}
+
+// The public types of `Std.Plugin`, `Std.JsonRpc` and `Std.JsonValue`.  A
+// plugin API package's generated items (D207 Decision 2: `<C>Client`,
+// `<P>Remote`, `pluginDispatch<P>`, the codecs) name them in public
+// signatures through imports `Lyric.PluginExpand` injects, so a consumer
+// of the built API package meets them in its contract.
+func isPluginBoundaryStdlibType(name: in String): Bool {
+  name == "BoundaryError" or name == "CallError" or name == "PluginPointInfo" or name == "CapabilityInfo" or
+    name == "CapabilityProvider" or
+    name == "GrantedCapability" or
+    name == "GrantDecision" or
+    name == "GrantPolicy" or
+    name == "GrantAllRequested" or
+    name == "PluginPointDecl" or
+    name == "CapabilityRequest" or
+    name == "PluginPayload" or
+    name == "PluginManifest" or
+    name == "PluginIssueKind" or
+    name == "PluginLoadIssue" or
+    name == "PluginPlatform" or
+    name == "PluginHostConfig" or
+    name == "PluginRevocations" or
+    name == "PluginProcessState" or
+    name == "PluginConnection" or
+    name == "PluginContributionJson" or
+    name == "PluginHost" or
+    name == "PluginPointMethods" or
+    name == "PluginServer" or
+    name == "RpcId" or
+    name == "RpcRequest" or
+    name == "RpcError" or
+    name == "RpcResponse" or
+    name == "RpcHandler" or
+    name == "ReceiveOutcome" or
+    name == "RpcTransport" or
+    name == "RpcPeer" or
+    name == "JsonField" or
+    name == "JsonParseError"
 }
 
 // Extract the name from a T0010 message of shape `unknown type name 'X'`.

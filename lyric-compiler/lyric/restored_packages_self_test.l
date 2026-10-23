@@ -483,6 +483,22 @@ func testSynthesiseArtifactWhitelistedT0010Filtered(): Unit {
   }
 }
 
+// A plugin API package's generated items (D207 Decision 2) name the
+// `Std.Plugin` / `Std.JsonRpc` types bare in public signatures, through
+// imports `Lyric.PluginExpand` injects; a consumer of the built package
+// must still restore it (the Lyric.GeneratorSdk case).
+func testSynthesiseArtifactPluginStdlibTypesFiltered(): Unit {
+  val decls: List[Meta.ContractDecl] = newList()
+  decls.add(mkDecl("func", "sourceGeneratorRemotes", "pub func sourceGeneratorRemotes(host: PluginHost): List[PluginConnection]"))
+  decls.add(mkDecl("func", "projectReadCapabilityInfo", "pub func projectReadCapabilityInfo(): CapabilityInfo"))
+  decls.add(mkDecl("func", "callFailed", "pub func callFailed(e: RpcError): CallError[String]"))
+  val art = mkArtifact("MyApp.PluginApi", decls)
+  match synthesiseArtifact(art, emptyDecls()) {
+    case Err(e) -> panic("synth_artifact_plugin_types: unexpected error: " + errorMessage(e))
+    case Ok(sa) -> assertEqual(sa.packageName, "MyApp.PluginApi", "synth_artifact_plugin_types: round-tripped")
+  }
+}
+
 // A signature that references a stdlib type by its FULL `Std.Module.Type`
 // path — the shape any non-`Std.Core` stdlib type (e.g. lyric-web's
 // `serveTls(tls: Std.Tls.TlsServerConfig)`) carries in its repr — produces a
@@ -760,6 +776,7 @@ test "synthesise trailing newline" {
 
 test "synthesise artifact happy path" {
   testSynthesiseArtifactHappyPath()
+  testSynthesiseArtifactPluginStdlibTypesFiltered()
 }
 
 test "synthesise artifact malformed repr" {
