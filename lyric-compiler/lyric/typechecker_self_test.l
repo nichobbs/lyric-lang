@@ -8529,7 +8529,7 @@ test "a clause calling a @pure interface method is accepted (#7410)" {
 
 test "an impl of a @pure interface method must be @pure (#7410)" {
   val bad = "package P\nrecord Box {\n  v: Int\n}\ninterface Signed {\n  @pure\n  func positive(): Bool\n}\nimpl Signed for Box {\n  func positive(): Bool { self.v > 0 }\n}\n"
-  assertEqualInt(countDiagCode(parseCheck(bad), "T0184"), 1, "an impure impl is T0184")
+  assertEqualInt(countDiagCode(parseCheck(bad), "T0192"), 1, "an impure impl is T0192")
   val good = "package P\nrecord Box {\n  v: Int\n}\ninterface Signed {\n  @pure\n  func positive(): Bool\n}\nimpl Signed for Box {\n  @pure\n  func positive(): Bool { self.v > 0 }\n}\n"
   assertEqualInt(diagCount(parseCheck(good)), 0, "a @pure impl is accepted")
   val plain = "package P\nrecord Box {\n  v: Int\n}\ninterface Signed {\n  func positive(): Bool\n}\nimpl Signed for Box {\n  func positive(): Bool { self.v > 0 }\n}\n"
@@ -10300,11 +10300,11 @@ test "a ULong has no Long or floating-point conversion (#7901)" {
 // #7900: a range bound must fit the base type.
 func assertBoundRejected(src: in String, label: in String): Unit {
   val cr = parseCheck(src)
-  assertEqualInt(countDiagCode(cr, "T0182"), 1, label + ": T0182 (" + diagCodesOf(cr) + ")")
+  assertEqualInt(countDiagCode(cr, "T0190"), 1, label + ": T0190 (" + diagCodesOf(cr) + ")")
   assertEqualInt(diagCount(cr), 1, label + ": no other diagnostic (" + diagCodesOf(cr) + ")")
 }
 
-test "a range bound outside the base type is T0182 (#7900)" {
+test "a range bound outside the base type is T0190 (#7900)" {
   assertBoundRejected(negSrc("type P = UInt range -1 ..= 5\n"), "negative UInt bound")
   assertBoundRejected(negSrc("type B = Byte range 0 ..= 300\n"), "Byte bound above 255")
   assertBoundRejected(negSrc("type B = Byte range -1 ..= 5\n"), "negative Byte bound")
@@ -10317,7 +10317,7 @@ test "a range bound outside the base type is T0182 (#7900)" {
   assertBoundRejected(negSrc("func f(x: in Byte range 0 ..= 300): Unit {\n}\n"), "inline parameter bound")
   assertBoundRejected(negSrc("func f(): Unit {\n  val n: UInt range -1 ..= 5 = 3u32\n}\n"), "inline local bound")
   assertBoundRejected(negSrc("val Big: Int = 300\ntype B = Byte range 0 ..= Big\n"), "constant bound above 255")
-  val msg = diagMessageFor(parseCheck(negSrc("type B = Byte range 0 ..= 300\n")), "T0182")
+  val msg = diagMessageFor(parseCheck(negSrc("type B = Byte range 0 ..= 300\n")), "T0190")
   assertTrue(
     Str.contains(msg, "300") and Str.contains(msg, "Byte") and Str.contains(msg, "0 ..= 255"),
     "names the bound, base and range: " + msg
@@ -10336,15 +10336,15 @@ test "range bounds that fit the base type stay clean (#7900)" {
 // before it is read.
 func assertUnassignedRead(body: in String, label: in String): Unit {
   val cr = parseCheck(negSrc(body))
-  assertEqualInt(countDiagCode(cr, "T0183"), 1, label + ": T0183 (" + diagCodesOf(cr) + ")")
+  assertEqualInt(countDiagCode(cr, "T0191"), 1, label + ": T0191 (" + diagCodesOf(cr) + ")")
 }
 
 func assertAssignedClean(body: in String, label: in String): Unit {
   val cr = parseCheck(negSrc(body))
-  assertEqualInt(countDiagCode(cr, "T0183"), 0, label + ": no T0183 (" + diagCodesOf(cr) + ")")
+  assertEqualInt(countDiagCode(cr, "T0191"), 0, label + ": no T0191 (" + diagCodesOf(cr) + ")")
 }
 
-test "an unassigned range-typed var that is read is T0183 (#8226)" {
+test "an unassigned range-typed var that is read is T0191 (#8226)" {
   assertUnassignedRead("func h(): Bool {\n  var y: Int range 5 ..= 10\n  y >= 5\n}\n", "inline range")
   assertUnassignedRead("type R = Int range 5 ..= 10\nfunc h(): Int {\n  var x: R\n  x.toInt()\n}\n", "named range")
   assertUnassignedRead(
@@ -10358,7 +10358,7 @@ test "an unassigned range-typed var that is read is T0183 (#8226)" {
   assertUnassignedRead("func h(): Int {\n  var y: Int range 5 ..= 10\n  y += 1\n  y\n}\n", "compound assignment reads")
   assertUnassignedRead("func h(): Double {\n  var p: Double range 0.5 ..= 1.0\n  p\n}\n", "float range excluding zero")
   val cr = parseCheck(negSrc("func h(): Bool {\n  var y: Int range 5 ..= 10\n  y >= 5\n}\n"))
-  assertTrue(Str.contains(diagMessageFor(cr, "T0183"), "'y'"), "the message names the variable")
+  assertTrue(Str.contains(diagMessageFor(cr, "T0191"), "'y'"), "the message names the variable")
 }
 
 test "a range-typed var assigned before every read stays clean (#8226)" {

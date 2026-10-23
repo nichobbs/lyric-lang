@@ -450,7 +450,7 @@ func checkOneBoundFits(
         val shown = if baseName == "ULong" { "negative bound " + toString(v) } else { "bound " + toString(v) }
         diag.add(
           errorDiagnostic(
-            "T0182",
+            "T0190",
             typeLabel + ": " + shown + " does not fit the base type " + baseName + " (" + baseRangeText(baseName) + ")",
             e.span
           )

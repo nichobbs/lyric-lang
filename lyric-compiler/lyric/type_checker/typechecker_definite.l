@@ -5,7 +5,7 @@
 //! it is assigned.  For a range type whose range excludes zero
 //! (`Int range 5 ..= 10`) or a named range type (`type R = Int range 5 ..= 10`)
 //! that value lies outside the type, so reading the variable before it has
-//! been assigned on every path is a compile error (T0183) instead of
+//! been assigned on every path is a compile error (T0191) instead of
 //! observing an out-of-range value (or a null on `--target dotnet`).
 //!
 //! The analysis is a forward walk in evaluation order.  `assigned` is true
@@ -315,7 +315,7 @@ func daReport(dc: in DaCtx, sp: in Span): Unit {
   dc.reported.add(true)
   dc.diag.add(
     errorDiagnostic(
-      "T0183",
+      "T0191",
       "variable '" + dc.name + "' of type " + dc.typeText +
         " may be read before it is assigned: the type has no valid default value, so assign it on every path first",
       sp

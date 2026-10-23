@@ -1,4 +1,4 @@
-# D206 — Contract and range soundness batch (#7900, #7901, #8145, #8226, #8331, #7410, #7529, #7436)
+# D207 — Contract and range soundness batch (#7900, #7901, #8145, #8226, #8331, #7410, #7529, #7436)
 
 **Status:** shipped
 
@@ -8,7 +8,7 @@ choices the specification left open are recorded here.
 
 ## Decisions
 
-1. **A range bound must fit the base type (T0182).**  `Byte range 0 ..= 300`,
+1. **A range bound must fit the base type (T0190).**  `Byte range 0 ..= 300`,
    `UInt range -1 ..= 5`, `Int range 0 ..= 2147483648` and a negative `Nat` or
    `ULong` bound are rejected at the bound, for named subtypes and inline
    refinements.  The exclusive end of `lo ..< hi` may be one past the base
@@ -25,7 +25,7 @@ choices the specification left open are recorded here.
    like `Long.toInt()`.  A checked `ULong`-to-`Long` conversion needs a new
    per-backend panic helper and is left to a follow-up.
 4. **A variable with no valid default must be assigned before it is read
-   (T0183).**  Rather than inventing a default inside a range (the lower bound,
+   (T0191).**  Rather than inventing a default inside a range (the lower bound,
    say), which would hide a missing assignment, the checker does a
    definite-assignment walk for a `var` declared without an initializer whose
    type is a range excluding zero or any named range subtype.  Ordinary types
@@ -37,7 +37,7 @@ choices the specification left open are recorded here.
 6. **`@pure` is accepted on an interface method signature.**  A call through
    the interface in a contract clause is then pure.  Because any
    implementation could otherwise have effects, an `impl` method of a `@pure`
-   interface method must itself be `@pure` (T0184).  `@pure` stays a trusted
+   interface method must itself be `@pure` (T0192).  `@pure` stays a trusted
    declaration, as for functions.
 7. **A protected `func` re-checks the type invariant on return**, as an `entry`
    does (docs/01 §7.5: "after every entry/func returns").

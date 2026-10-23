@@ -2128,7 +2128,7 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
                 if annotationsHaveName(sig.annotations, "pure") and not fnHasAnnotation(fn, "pure") {
                   diag.add(
                     errorDiagnostic(
-                      "T0184",
+                      "T0192",
                       "impl method '" + sig.name + "' implements '@pure' method '" + ifaceName + "." + sig.name +
                         "' and must itself be '@pure'",
                       fn.span
@@ -2202,7 +2202,7 @@ func checkImplConformance(tbl: in SymbolTable, diag: in List[Diagnostic], decl: 
               if fnHasAnnotation(ifn, "pure") and not fnHasAnnotation(fn, "pure") {
                 diag.add(
                   errorDiagnostic(
-                    "T0184",
+                    "T0192",
                     "impl method '" + ifn.name + "' overrides '@pure' method '" + ifaceName + "." + ifn.name +
                       "' and must itself be '@pure'",
                     fn.span
