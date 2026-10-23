@@ -2687,7 +2687,8 @@ is exempt from the `F0013` declared-features check.  `@cfg(target_os = "linux" |
 gates an item by the operating system of a native build, taken from its target triple (the host's when no
 `--triple` is given) as the `target_os.<os>` pseudo-feature (D219); it applies to the program's packages, its
 dependencies, each file of a multi-file package and the bundled stdlib.  No operating system is known when
-compiling for dotnet or the JVM, so there only the `not(...)` side of a `target_os` predicate holds.  Two items of
+compiling for dotnet or the JVM, so there only the `not(...)` side of a `target_os` predicate holds; the same is
+true of a native triple whose operating system is none of the four.  Two items of
 one name with exclusive predicates (`@cfg(target_os = "windows")` and `@cfg(not(target_os = "windows"))`) select
 one of them per build.  A predicate may also be composed with `any(...)`, `all(...)` and `not(...)`, nested to any depth (`@cfg(any(feature = "dotnet", feature = "native"))`, `docs/24-build-features.md` §4.1).
 

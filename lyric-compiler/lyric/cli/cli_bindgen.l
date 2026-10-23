@@ -188,10 +188,14 @@ func cmdBindgen(argv: in slice[String]): Int {
   if check {
     match File.readText(outPath) {
       case Ok(existing) -> {
-        if existing == source {
+        // A checkout may store the file with CRLF line endings (Git on
+        // Windows); the line endings are not part of the bindings.
+        val committed = Str.replace(existing, "\r\n", "\n")
+        if committed == source {
           return 0
         }
         printErr("bindgen: " + outPath + " is out of date; regenerate it with `lyric bindgen`")
+        printErr(firstDifference(committed, source))
         return 1
       }
       case Err(_) -> {
@@ -209,5 +213,24 @@ func cmdBindgen(argv: in slice[String]): Int {
       printErr("bindgen: cannot write " + outPath)
       1
     }
+  }
+}
+
+// Where `committed` and `generated` first differ, as a line number and the two
+// lines, so a `--check` failure says what changed.
+func firstDifference(committed: in String, generated: in String): String {
+  val a = Str.split(committed, "\n")
+  val b = Str.split(generated, "\n")
+  var i = 0
+  while i < a.length and i < b.length {
+    if a[i] != b[i] {
+      return "  line " + (i + 1).toString() + ":\n    committed: " + a[i] + "\n    generated: " + b[i]
+    }
+    i = i + 1
+  }
+  if a.length < b.length {
+    "  the generated file continues after line " + a.length.toString() + ": " + b[a.length]
+  } else {
+    "  the committed file continues after line " + b.length.toString() + ": " + a[b.length]
   }
 }
