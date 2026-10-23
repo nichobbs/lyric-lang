@@ -72,6 +72,16 @@ pub func typeOfLiteral(lit: in Literal): Type {
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. Codegen builtins.
 // ─────────────────────────────────────────────────────────────────────────────
+// A single-segment path that is no local: a type name in the type-qualified
+// call form (`Int.shl(k, 2)`), not a value to infer.
+func recvIsUnboundName(sc: in Scope, e: in Expr): Bool {
+  match e.kind {
+    case EPath(sp) -> sp.segments.count == 1 and
+      (match scopeTryFind(sc, sp.segments[0]) { case Some(_) -> false; case None -> true })
+    case _ -> false
+  }
+}
+
 // Keep in sync with `isCodegenBuiltinName` in `typechecker_checker.l` (shadow-prevention).
 func codegenBuiltinType(name: in String): Option[Type] {
   if name == "println" or name == "print" {
@@ -718,6 +728,144 @@ func checkMatchExhaustive(
     }
   }
   // not a finite-case type — skip
+}
+
+// A pattern that matches every value of whatever type it meets: `_`, or a
+// lowercase binding.  Unlike `patternIsCatchAll` this does not take a bare
+// capitalised name for a binding: below the scrutinee's own cases (whose names
+// are known) a bare name may be a case of the payload's type
+// (`Some(VInteger)`), and only the lowercase spelling is a binding by
+// convention.
+func patternSurelyIrrefutable(p: in Pattern, caseNames: in List[String]): Bool {
+  match p.kind {
+    case PWildcard -> true
+    case PBinding(name, inner) -> match inner {
+      case Some(ip) -> patternSurelyIrrefutable(ip, caseNames)
+      case None -> name.length > 0 and not listContainsStr(caseNames, name) and
+        isLowerAsciiStart(name)
+    }
+    case PParen(ip) -> patternSurelyIrrefutable(ip, caseNames)
+    case POr(ps) -> {
+      for q in ps {
+        if patternSurelyIrrefutable(q, caseNames) {
+          return true
+        }
+      }
+      false
+    }
+    case _ -> false
+  }
+}
+
+func isLowerAsciiStart(name: in String): Bool {
+  val c = name.substring(0, 1)
+  c.toUpper() != c or c == "_"
+}
+
+// The case a pattern fully covers on its own: a bare case name, or a
+// constructor/record pattern whose sub-patterns match every payload.  `None`
+// for a pattern that can fail on the payload (a literal sub-pattern), which
+// leaves the case reachable by a later arm.
+func caseFullyCoveredBy(p: in Pattern, caseNames: in List[String]): Option[String] {
+  match p.kind {
+    case PParen(ip) -> caseFullyCoveredBy(ip, caseNames)
+    case PBinding(name, inner) -> match inner {
+      case Some(ip) -> caseFullyCoveredBy(ip, caseNames)
+      case None -> if listContainsStr(caseNames, name) {
+        Some(value = name)
+      } else {
+        None
+      }
+    }
+    case PConstructor(head, args) -> {
+      if head.segments.count == 0 {
+        return None
+      }
+      val nm = head.segments[head.segments.count - 1]
+      if not listContainsStr(caseNames, nm) {
+        return None
+      }
+      for a in args {
+        if not patternSurelyIrrefutable(a, caseNames) {
+          return None
+        }
+      }
+      Some(value = nm)
+    }
+    case _ -> None
+  }
+}
+
+// T0196: a `match` arm that no value can reach — it follows an unguarded
+// catch-all arm (`case _`, a bare binding), or every case it names was already
+// matched whole by earlier unguarded arms.  The earlier arm wins at run time,
+// so the later arm is silently dead code (#7916).
+func checkUnreachableArms(tbl: in SymbolTable, diag: in List[Diagnostic], st0: in Type, arms: in List[MatchArm]): Unit {
+  val st = unrefine(st0)
+  match st {
+    case TyError -> {
+      return
+    }
+    case TyVar(_) -> {
+      return
+    }
+    case _ -> ()
+  }
+  val caseNames = match finiteCaseNames(tbl, st) { case Some(ns) -> ns; case None -> newList() }
+  val covered: List[String] = newList()
+  var catchAll = -1
+  var i = 0
+  while i < arms.count {
+    val arm = arms[i]
+    if catchAll >= 0 {
+      diag.add(
+        errorDiagnostic(
+          "T0196",
+          "unreachable match arm: the earlier catch-all arm at line " + toString(arms[catchAll].pattern.span.startPos.line) +
+            " matches every value first",
+          arm.pattern.span
+        )
+      )
+    } else {
+      val orAlts: List[Pattern] = match arm.pattern.kind { case POr(ps) -> ps; case _ -> newList() }
+      if orAlts.count == 0 {
+        match caseFullyCoveredBy(arm.pattern, caseNames) {
+          case Some(nm) -> if listContainsStr(covered, nm) {
+            diag.add(
+              errorDiagnostic(
+                "T0196",
+                "unreachable match arm: case '" + nm + "' is already matched by an earlier arm",
+                arm.pattern.span
+              )
+            )
+          }
+          case None -> ()
+        }
+      }
+      match arm.guard {
+        case Some(_) -> ()
+        case None -> {
+          if patternSurelyIrrefutable(arm.pattern, caseNames) {
+            catchAll = i
+          }
+          if orAlts.count > 0 {
+            for alt in orAlts {
+              match caseFullyCoveredBy(alt, caseNames) {
+                case Some(nm) -> if not listContainsStr(covered, nm) { covered.add(nm) }
+                case None -> ()
+              }
+            }
+          } else {
+            match caseFullyCoveredBy(arm.pattern, caseNames) {
+              case Some(nm) -> if not listContainsStr(covered, nm) { covered.add(nm) }
+              case None -> ()
+            }
+          }
+        }
+      }
+    }
+    i = i + 1
+  }
 }
 
 // True when `e` is an integer literal written WITHOUT a type suffix
@@ -2904,6 +3052,41 @@ func fieldsOfRecordInstantiated(tbl: in SymbolTable, tid: in TypeId, targs: in L
   result
 }
 
+// The type parameter of the enclosing generic that field `name` of the record
+// instance `recv` has, when the record declares the field as its own type
+// parameter and the instance is at one of `genericNames`; `TyError` otherwise.
+func rigidTypeParamField(tbl: in SymbolTable, recv: in Type, name: in String, genericNames: in List[String]): Type {
+  match unrefine(recv) {
+    case TyUser(tid, _, targs) -> {
+      val gnames = recordGenericNamesOf(tbl, tid)
+      val raw = fieldsOfRecord(tbl, tid)
+      var i = 0
+      while i < raw.count {
+        if raw[i].name == name {
+          match raw[i].ty {
+            case TyVar(g) -> {
+              var gi = 0
+              while gi < gnames.count and gi < targs.count {
+                if gnames[gi] == g {
+                  match targs[gi] {
+                    case TyVar(n) -> if genericNames.contains(n) { return TyVar(n) }
+                    case _ -> ()
+                  }
+                }
+                gi = gi + 1
+              }
+            }
+            case _ -> ()
+          }
+        }
+        i = i + 1
+      }
+      TyError
+    }
+    case _ -> TyError
+  }
+}
+
 // A field of an opaque type declared in this package, instantiated against
 // the receiver's arguments: its representation is visible here, so a read
 // is typed like a record field's, `array[N, Int]` at the instance's length
@@ -4224,14 +4407,10 @@ func minRequiredParams(sig: in ResolvedSignature): Int {
   minRequired
 }
 
-// Resolve `recv.name(<argc args>)` against the method-signature space
+// Resolve `recv.name(<args>)` against the method-signature space
 // (docs/59 A4): the type's own/interface methods first, then dot-named
-// type-associated functions.  Selection prefers an arity-fitting candidate
-// whose params accept the supplied argument types — one taking exactly
-// `argc` parameters over one that fills the rest from defaults, as a free
-// call does (#7828) — then any arity-fitting candidate, then the first
-// candidate at all (so T0042/T0043 report against a real signature instead
-// of silently degrading).
+// type-associated functions.  The call binds the declaration `pickByShape`
+// would choose for a free call (#7828, #8355).
 func resolveMethodCallPick(
   tbl: in SymbolTable,
   sigs: in Map[String, ResolvedSignature],
@@ -4239,6 +4418,7 @@ func resolveMethodCallPick(
   name: in String,
   args: in List[CallArg],
   argTypes: in List[Type],
+  ambiguous: in List[ResolvedSignature],
 ): Option[MethodCallPick] {
   val argc = args.count
   val recv = unrefine(recvRaw)
@@ -4258,56 +4438,70 @@ func resolveMethodCallPick(
     picks.add(MethodCallPick(sig = dropReceiverParam(dotted[d]), fullSig = Some(value = dotted[d])))
     d = d + 1
   }
-  var exact: Option[MethodCallPick] = None
-  var best: Option[MethodCallPick] = None
-  var arityFit: Option[MethodCallPick] = None
-  var anyPick: Option[MethodCallPick] = None
-  var k = 0
-  while k < picks.count {
-    val p = picks[k]
-    match anyPick {
-      case None -> {
-        anyPick = Some(value = p)
-      }
-      case Some(_) -> {
-      }
-    }
-    if argc >= minRequiredParams(p.sig) and argc <= p.sig.params.count {
-      match arityFit {
-        case None -> {
-          arityFit = Some(value = p)
-        }
-        case Some(_) -> {
-        }
-      }
+  // Which pick the call binds (#8355, D210), by the rule free calls follow
+  // (`pickByShape`): the declarations the call fits whose parameter types the
+  // arguments satisfy, the one supplied in full first, then the one that
+  // leaves the fewest parameters to their defaults.  A method of the type and
+  // a dot-named function of equal standing, with defaults filled, are
+  // ambiguous.  With no type match, the first of the fitting declarations
+  // that fills the fewest defaults answers, and with none fitting the first
+  // pick at all, so T0042/T0043 report against a real signature.
+  val fits: List[MethodCallPick] = newList()
+  val typed: List[MethodCallPick] = newList()
+  val seen: List[ResolvedSignature] = newList()
+  for p in picks {
+    // A declaration registered twice (as a method and as a dot-named
+    // function of its type) is one candidate.
+    if sigDefaultsFilled(p.sig, args) >= 0 and not sigListHas(seen, p.sig) {
+      seen.add(p.sig)
+      fits.add(p)
       if suppliedArgsMatch(tbl, p.sig.params, argTypesInSigOrder(p.sig, 0, args, argTypes)) {
-        match best {
-          case None -> {
-            best = Some(value = p)
-          }
-          case Some(_) -> {
-          }
-        }
-        if p.sig.params.count == argc {
-          match exact {
-            case None -> {
-              exact = Some(value = p)
-            }
-            case Some(_) -> {
-            }
-          }
-        }
+        typed.add(p)
       }
     }
-    k = k + 1
   }
-  match exact {
-    case Some(_) -> exact
-    case None -> match best {
-      case Some(_) -> best
-      case None -> match arityFit { case Some(_) -> arityFit; case None -> anyPick }
+  if fits.count == 0 {
+    return if picks.count > 0 { Some(value = picks[0]) } else { None }
+  }
+  val pool = if typed.count > 0 { typed } else { fits }
+  val fills: List[Int] = newList()
+  for p in pool {
+    fills.add(sigDefaultsFilled(p.sig, args))
+  }
+  val group: List[MethodCallPick] = newList()
+  for i in fewestDefaultsCandidates(fills) {
+    group.add(pool[i])
+  }
+  if group.count == 1 or typed.count == 0 or sigDefaultsFilled(group[0].sig, args) == 0 {
+    return Some(value = group[0])
+  }
+  // A method of the type answers a call before a dot-named function of the
+  // same shape does (D181, #8098); the tie is among declarations of one kind.
+  val methods: List[MethodCallPick] = newList()
+  for p in group {
+    match p.fullSig {
+      case None -> methods.add(p)
+      case Some(_) -> ()
     }
   }
+  val sameKind = if methods.count > 0 { methods } else { group }
+  val plain: List[MethodCallPick] = newList()
+  for p in sameKind {
+    if p.sig.generics.count == 0 {
+      plain.add(p)
+    }
+  }
+  if plain.count == 1 {
+    return Some(value = plain[0])
+  }
+  val tied = if plain.count > 1 { plain } else { sameKind }
+  if tied.count == 1 {
+    return Some(value = tied[0])
+  }
+  for p in tied {
+    ambiguous.add(p.sig)
+  }
+  Some(value = tied[0])
 }
 
 // The record type a `.copy(...)` call on `recvTy` copies: a record or
@@ -6073,29 +6267,132 @@ func visibleBareFuncSigs(
   acc
 }
 
-// The function a bare call `name(args)` of `arity` binds: the lowest
-// resolution tier (`symTableBareFuncTier`) that declares a visible function
-// of that name and arity decides, as for every other bare name; within it,
-// `primary` first, then non-generic overloads, then generic ones, the first
-// whose params match `argTypes`.  When none in that tier matches, its first
-// candidate is returned so the call reports the mismatch there: a matching
-// function of a higher tier never answers instead, which the backends'
-// name-and-arity lookups could not follow.  `None` when no visible function
-// of the name and arity exists.
+// The functions named `name` a call writing `args` may bind under the file's
+// import rule: those the call fits (`sigDefaultsFilled`), in registration
+// order.
+func visibleBareFuncSigsFor(
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  name: in String,
+  args: in List[CallArg],
+): List[ResolvedSignature] {
+  val acc: List[ResolvedSignature] = newList()
+  for cand in visibleBareFuncSigs(tbl, sigs, name, -1) {
+    if sigDefaultsFilled(cand, args) >= 0 {
+      acc.add(cand)
+    }
+  }
+  acc
+}
+
+// How many of `sig`'s parameters a call writing `args` leaves to their
+// defaults, or -1 when the call does not fit it (`callDefaultsFilled`).
+func sigDefaultsFilled(sig: in ResolvedSignature, args: in List[CallArg]): Int {
+  val names: List[String] = newList()
+  val defaults: List[Bool] = newList()
+  for p in sig.params {
+    names.add(p.name)
+    defaults.add(p.hasDefault)
+  }
+  callDefaultsFilled(names, defaults, 0, args)
+}
+
+// The declaration a call binds among `cands`, the declarations of one name
+// that the file's imports make equally visible (#8355, D210).  A declaration
+// is a candidate when the call fits it (`sigDefaultsFilled`: every parameter
+// the call leaves out has a default, a named argument names one of its
+// parameters) and the arguments' types satisfy its parameters.  Of those the
+// one the call supplies in full wins, then the one that leaves the fewest
+// parameters to their defaults (`fewestDefaultsCandidates`); a named argument
+// that only one declares has already narrowed them.  Among declarations that
+// still tie, a non-generic one beats a generic one; several left, with
+// defaults filled, are added to `ambiguous` (the caller reports T0200) and
+// the first is returned so that the call is checked.  A call supplying every
+// parameter of several keeps the first in registration order (the stdlib's
+// `toUpper(Char)` and `toUpper(String)`).  `primary` is the user's own
+// definition that shadows an imported one of the same shape.  When no
+// declaration's types match, the first of those the call fits with the
+// fewest defaults (or `primary`) is returned, so the call reports the
+// mismatch there.
+func pickByShape(
+  tbl: in SymbolTable,
+  cands: in List[ResolvedSignature],
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  primary: in Option[ResolvedSignature],
+  ambiguous: in List[ResolvedSignature],
+): Option[ResolvedSignature] {
+  val fitting: List[ResolvedSignature] = newList()
+  val typed: List[ResolvedSignature] = newList()
+  for c in cands {
+    if sigDefaultsFilled(c, args) >= 0 and not sigListHas(fitting, c) {
+      fitting.add(c)
+      if suppliedArgsMatch(tbl, c.params, argTypesInSigOrder(c, 0, args, argTypes)) {
+        typed.add(c)
+      }
+    }
+  }
+  if fitting.count == 0 {
+    return None
+  }
+  val typeMatched = typed.count > 0
+  val pool = if typeMatched { typed } else { fitting }
+  val fills: List[Int] = newList()
+  for c in pool {
+    fills.add(sigDefaultsFilled(c, args))
+  }
+  val group: List[ResolvedSignature] = newList()
+  for i in fewestDefaultsCandidates(fills) {
+    group.add(pool[i])
+  }
+  val fill = sigDefaultsFilled(group[0], args)
+  match primary {
+    case Some(p) -> if sigListHas(group, p) { return primary }
+    case None -> ()
+  }
+  if group.count == 1 or not typeMatched {
+    return Some(value = group[0])
+  }
+  val plain: List[ResolvedSignature] = newList()
+  for m in group {
+    if m.generics.count == 0 {
+      plain.add(m)
+    }
+  }
+  if fill == 0 {
+    return if plain.count > 0 { Some(value = plain[0]) } else { Some(value = group[0]) }
+  }
+  if plain.count == 1 {
+    return Some(value = plain[0])
+  }
+  val tied = if plain.count > 1 { plain } else { group }
+  for m in tied {
+    ambiguous.add(m)
+  }
+  Some(value = tied[0])
+}
+
+// The function a bare call `name(args)` binds: the lowest resolution tier
+// (`symTableBareFuncTier`) that declares a visible function of that name
+// that the call fits decides, as for every other bare name; within it
+// `pickByShape` chooses.  A matching function of a higher tier never answers
+// instead, which the backends' name-and-arity lookups could not follow.
+// `None` when no visible function of the name fits the call.
 func tieredBareSig(
   tbl: in SymbolTable,
   sigs: in Map[String, ResolvedSignature],
   name: in String,
-  arity: in Int,
+  args: in List[CallArg],
   argTypes: in List[Type],
   primary: in Option[ResolvedSignature],
+  ambiguous: in List[ResolvedSignature],
 ): Option[ResolvedSignature] {
-  val visible = visibleBareFuncSigs(tbl, sigs, name, arity)
+  val visible = visibleBareFuncSigsFor(tbl, sigs, name, args)
   if visible.count == 0 {
     return None
   }
-  val tiers: List[Int] = newList()
   var tier = 3
+  val tiers: List[Int] = newList()
   for v in visible {
     val t = symTableBareFuncTier(tbl, v.originPackage, name)
     tiers.add(t)
@@ -6103,39 +6400,15 @@ func tieredBareSig(
       tier = t
     }
   }
-  val primaryInTier = match primary {
-    case Some(p) -> p.params.count == arity and
-      symTableBareFuncTier(tbl, p.originPackage, name) == tier
-    case None -> false
-  }
-  match primary {
-    case Some(p) -> if primaryInTier and paramsMatchArgs(tbl, p.params, argTypes) { return primary }
-    case None -> ()
-  }
-  var pass = 0
-  while pass < 2 {
-    var i = 0
-    while i < visible.count {
-      val cand = visible[i]
-      val isGeneric = cand.generics.count > 0
-      if (pass == 0) != isGeneric and tiers[i] == tier and paramsMatchArgs(tbl, cand.params, argTypes) {
-        return Some(value = cand)
-      }
-      i = i + 1
+  val inTier: List[ResolvedSignature] = newList()
+  var i = 0
+  while i < visible.count {
+    if tiers[i] == tier {
+      inTier.add(visible[i])
     }
-    pass = pass + 1
+    i = i + 1
   }
-  if primaryInTier {
-    return primary
-  }
-  var j = 0
-  while j < visible.count {
-    if tiers[j] == tier {
-      return Some(value = visible[j])
-    }
-    j = j + 1
-  }
-  None
+  pickByShape(tbl, inTier, args, argTypes, primary, ambiguous)
 }
 
 // The signature a bare `name` denotes: the visible function of that name in
@@ -6231,6 +6504,7 @@ func inferPropagate(
   expected: in Type,
 ): Type {
   val own = inferExpr(sc, tbl, sigs, diag, inner)
+  checkPropagateOperandIsMonad(diag, own, inner.span)
   checkPropagateMonad(sc, tbl, diag, own, e, inner.span)
   val closed = joinOpenTypes(own, propagateOperandContext(own, sc.returnTy, unrefine(expected)))
   val ownOpen = not typeIsClosedOver(own, sc.genericNames)
@@ -6258,6 +6532,36 @@ func inferPropagate(
     }
   }
   propagateUnwrap(closed)
+}
+
+// T0195: the operand of `?` must be a `Result` or an `Option` (or a `T?`
+// nullable, which lowers to `Option`).  Any other operand type the checker
+// knows — a primitive, a function, a tuple, a record — has no `Ok`/`Err` or
+// `Some`/`None` shape for the lowering to match on, so a backend would fail
+// at run time on the cast (#8249).  An operand of unknown or generic type is
+// not judged here.
+func checkPropagateOperandIsMonad(diag: in List[Diagnostic], own: in Type, sp: in Span): Unit {
+  val shown = unrefine(own)
+  val bad = match shown {
+    case TyUser(_, name, _) -> name != "Result" and name != "Option"
+    case TyPrim(pt) -> match pt { case PtNever -> false; case _ -> true }
+    case TyFunction(_, _, _) -> true
+    case TyTuple(_) -> true
+    case TySlice(_) -> true
+    case TyArray(_, _, _) -> true
+    case _ -> false
+  }
+  if bad {
+    diag.add(
+      errorDiagnostic(
+        "T0195",
+        "the operand of `?` has type " + renderType(shown) +
+          ", which is neither a Result nor an Option; `?` unwraps the success value of a Result[T, E] or Option[T] " +
+          "and returns the failure from the enclosing function",
+        sp
+      )
+    )
+  }
 }
 
 // T0169: the operand of `?` must be of the enclosing function's monad, with an
@@ -6602,7 +6906,7 @@ func resolvePropagateCallArgs(
       for a in cargs {
         holes.add(TyError)
       }
-      match findDirectSig(sc, tbl, sigs, fn, cargs.count, holes) {
+      match findDirectSig(sc, tbl, sigs, fn, cargs, holes) {
         case Some(sig) -> {
           // The callee's type arguments, bound from the expected result, are
           // recorded for `Lyric.Mono` when the arguments left them open.
@@ -6928,11 +7232,11 @@ func ctorIsForeign(sym: in Symbol): Bool {
 // a C struct member, so it takes what an `extern func` parameter of that type
 // takes: a Lyric closure for a callback-typed field, and for a `void*` field
 // (`NativePtr[Byte]` or `NativeUserdata`) a closure as its own pointer (D193).
-func argSatisfiesCtorField(tbl: in SymbolTable, sym: in Symbol, fieldTy: in Type, argTy: in Type): Bool {
+func argSatisfiesCtorField(tbl: in SymbolTable, sym: in Symbol, fieldTy: in Type, argTy: in Type, argE: in Expr): Bool {
   if ctorIsForeign(sym) {
     return argSatisfiesExternParam(tbl, fieldTy, argTy)
   }
-  argSatisfiesParam(tbl, fieldTy, argTy)
+  argFlowSatisfies(tbl, fieldTy, argTy, argE)
 }
 
 func ctorIsOpaque(sym: in Symbol): Bool {
@@ -7385,6 +7689,7 @@ func reportRepeatedCallArgs(
               asp
             )
           )
+          repeated.add(nm)
           reported = true
         }
         seen.add(nm)
@@ -7393,6 +7698,27 @@ func reportRepeatedCallArgs(
     }
   }
   reported
+}
+
+// The first field at or after `from` that no named argument supplies: a
+// positional argument fills the declaration-order slots the named ones leave
+// free (the order `argTypesInFieldOrder` places them in), #8005.
+func nextUnnamedField(fields: in List[CtorField], args: in List[CallArg], from: in Int): Int {
+  var idx = from
+  while idx < fields.count and callArgsNameParam(args, fields[idx].name) {
+    idx = idx + 1
+  }
+  idx
+}
+
+func callArgsNameParam(args: in List[CallArg], name: in String): Bool {
+  for a in args {
+    match a {
+      case CANamed(nm, _, _) -> if nm == name { return true }
+      case CAPositional(_) -> ()
+    }
+  }
+  false
 }
 
 func fieldHasName(fields: in List[CtorField], name: in String): Bool {
@@ -7896,7 +8222,7 @@ func inferConstructionExpected(
             val fieldTy = instantiatedFieldType(fieldNames, fieldTypes, gnames, targs, nm, fieldTypeByName(fields, nm))
             recordUnsignedWidening(tbl, fieldTy, argTy, valE)
             noteRangeSlot(tbl, fieldTy, valE, sym.name + " field " + nm)
-            if not argSatisfiesParam(tbl, fieldTy, argTy) and not literalArgSatisfiesParam(tbl, fieldTy, argTy, valE) {
+            if not argFlowSatisfies(tbl, fieldTy, argTy, valE) and not literalArgSatisfiesParam(tbl, fieldTy, argTy, valE) {
               diag.add(
                 errorDiagnostic(
                   "T0104",
@@ -7910,6 +8236,7 @@ func inferConstructionExpected(
           }
         }
         case CAPositional(ae) -> {
+          posIdx = nextUnnamedField(fields, args, posIdx)
           if posIdx >= fields.count {
             diag.add(
               errorDiagnostic(
@@ -7923,7 +8250,7 @@ func inferConstructionExpected(
             val fieldTy = instantiatedFieldType(fieldNames, fieldTypes, gnames, targs, fields[posIdx].name, fields[posIdx].ty)
             recordUnsignedWidening(tbl, fieldTy, argTy, ae)
             noteRangeSlot(tbl, fieldTy, ae, sym.name + " field " + fields[posIdx].name)
-            if not argSatisfiesParam(tbl, fieldTy, argTy) and not literalArgSatisfiesParam(tbl, fieldTy, argTy, ae) {
+            if not argFlowSatisfies(tbl, fieldTy, argTy, ae) and not literalArgSatisfiesParam(tbl, fieldTy, argTy, ae) {
               diag.add(
                 errorDiagnostic(
                   "T0104",
@@ -7987,7 +8314,7 @@ func inferConstructionExpected(
           val fieldTy = fieldTypeByName(fields, nm)
           recordUnsignedWidening(tbl, fieldTy, argTy, valE)
           noteRangeSlot(tbl, fieldTy, valE, sym.name + " field " + nm)
-          if not argSatisfiesCtorField(tbl, sym, fieldTy, argTy) and not literalArgSatisfiesParam(tbl, fieldTy, argTy, valE) {
+          if not argSatisfiesCtorField(tbl, sym, fieldTy, argTy, valE) and not literalArgSatisfiesParam(tbl, fieldTy, argTy, valE) {
             diag.add(
               errorDiagnostic(
                 "T0104",
@@ -8001,6 +8328,7 @@ func inferConstructionExpected(
         }
       }
       case CAPositional(ae) -> {
+        posIdx = nextUnnamedField(fields, args, posIdx)
         if posIdx >= fields.count {
           diag.add(
             errorDiagnostic(
@@ -8014,7 +8342,7 @@ func inferConstructionExpected(
           val fieldTy = fields[posIdx].ty
           recordUnsignedWidening(tbl, fieldTy, argTy, ae)
           noteRangeSlot(tbl, fieldTy, ae, sym.name + " field " + fields[posIdx].name)
-          if not argSatisfiesCtorField(tbl, sym, fieldTy, argTy) and not literalArgSatisfiesParam(tbl, fieldTy, argTy, ae) {
+          if not argSatisfiesCtorField(tbl, sym, fieldTy, argTy, ae) and not literalArgSatisfiesParam(tbl, fieldTy, argTy, ae) {
             diag.add(
               errorDiagnostic(
                 "T0104",
@@ -8914,6 +9242,7 @@ func recordCaseFieldWidenings(
     val ai = srcIdx[k]
     if ai >= 0 and ai < argTypes.count {
       val fieldTy = substituteTyVars(ftypes[k], gnames, targs)
+      val _ = covariantFlow(tbl, fieldTy, argTypes[ai], callArgExpr(args[ai]))
       recordUnsignedWidening(tbl, fieldTy, argTypes[ai], callArgExpr(args[ai]))
       val fieldLabel = if names[k].length > 0 { "field " + names[k] } else { "field " + toString(k + 1) }
       noteRangeSlot(tbl, fieldTy, callArgExpr(args[ai]), uc.name + " " + fieldLabel)
@@ -9873,6 +10202,22 @@ func bindPatternTyped(
     }
     case PTuple(patterns) -> {
       val elems = match unrefine(ty) { case TyTuple(es) -> es; case _ -> newList() }
+      if not bindingOnly {
+        match unrefine(ty) {
+          case TyTuple(es) -> if es.count != patterns.count {
+            diag.add(
+              errorDiagnostic(
+                "T0198",
+                "a " + toString(patterns.count) + "-element tuple pattern cannot match a value of type " + renderType(ty) + ", a " +
+                  toString(es.count) +
+                  "-element tuple",
+                pat.span
+              )
+            )
+          }
+          case _ -> ()
+        }
+      }
       var i = 0
       while i < patterns.count {
         val et = if i < elems.count { elems[i] } else { TyError }
@@ -10145,6 +10490,7 @@ func inferMatchExpr(
 ): Type {
   val st = inferExpr(sc, tbl, sigs, diag, scrutinee)
   checkMatchExhaustive(tbl, diag, st, arms, e.span)
+  checkUnreachableArms(tbl, diag, st, arms)
   checkOpaquePatternHiding(tbl, diag, st, arms)
   // Branch-type unification (#2142): a `match` used as a value takes the
   // unified type of its arm bodies.  Each arm is checked in a fresh scope
@@ -11032,6 +11378,71 @@ func typeIsClosedOver(t: in Type, typeParams: in List[String]): Bool {
   }
 }
 
+// A type parameter of the enclosing generic is rigid inside its body: it is
+// the same type only as itself.  `typeEquiv` still treats every `TyVar` as a
+// wildcard, because the same variable stands for an instantiation variable
+// of a callee, so a mismatch against a type parameter is decided here, where
+// the enclosing generic's names are known (#7974).  True when `actual` has a
+// rigid type parameter of `names` where `expected` has a different type
+// that a `where` bound cannot make equal: anything but another type
+// variable, an interface (which a bound may satisfy) or an unknown type.
+func rigidVarClash(tbl: in SymbolTable, expected: in Type, actual: in Type, names: in List[String]): Bool {
+  if names.count == 0 {
+    return false
+  }
+  val e = unrefine(expected)
+  val a = unrefine(actual)
+  match a {
+    case TyVar(n) -> {
+      if not names.contains(n) {
+        return false
+      }
+      match e {
+        case TyVar(_) -> false
+        case TyError -> false
+        case TySelf -> false
+        case TyUser(eid, _, _) -> not typeIdIsInterface(tbl, eid) and not symTableIsExternTypeId(tbl, eid)
+        case TyPrim(ept) -> match ept { case PtNever -> false; case _ -> true }
+        case TyNullable(_) -> true
+        case TyTuple(_) -> true
+        case TySlice(_) -> true
+        case TyArray(_, _, _) -> true
+        case TyFunction(_, _, _) -> true
+        case _ -> false
+      }
+    }
+    case TyUser(aid, _, aargs) -> match e {
+      case TyUser(eid, _, eargs) -> {
+        if not typeIdEq(aid, eid) or aargs.count != eargs.count {
+          return false
+        }
+        var i = 0
+        while i < aargs.count {
+          if rigidVarClash(tbl, eargs[i], aargs[i], names) {
+            return true
+          }
+          i = i + 1
+        }
+        false
+      }
+      case _ -> false
+    }
+    case TySlice(ae) -> match e { case TySlice(ee) -> rigidVarClash(tbl, ee, ae, names); case _ -> false }
+    case TyNullable(ai) -> match e { case TyNullable(ei) -> rigidVarClash(tbl, ei, ai, names); case _ -> false }
+    case _ -> false
+  }
+}
+
+func typeIdIsInterface(tbl: in SymbolTable, tid: in TypeId): Bool {
+  for sym in tbl.symbols {
+    match sym.kind {
+      case DKInterface(iid, _) -> if typeIdEq(iid, tid) { return true }
+      case _ -> ()
+    }
+  }
+  false
+}
+
 func typesAreClosedOver(ts: in List[Type], typeParams: in List[String]): Bool {
   var i = 0
   while i < ts.count {
@@ -11402,14 +11813,82 @@ func stdCollectionMemberResult(tbl: in SymbolTable, recvTy: in Type, name: in St
       val unitResult = (isList and name == "add" and (argCount == 1 or argCount == 2)) or
         (isList and name == "removeAt" and argCount == 1) or
         (isMap and name == "add" and argCount == 2)
+      val isSet = targs.count == 1 and isStdCollectionsHostType(tbl, id, "Set")
+      // Membership tests are `Bool` and positions `Int` on every backend, so
+      // a mistyped use (`val s: String = xs.contains(x)`) is reported (#7978).
+      val boolResult = (argCount == 1) and
+        (
+          (isList and name == "contains") or (isMap and name == "containsKey") or
+            (isSet and name == "contains")
+        )
+      val intResult = isList and argCount == 1 and (name == "indexOf" or name == "lastIndexOf")
       if unitResult {
         TyPrim(pt = PtUnit)
+      } else if boolResult {
+        TyPrim(pt = PtBool)
+      } else if intResult {
+        TyPrim(pt = PtInt)
       } else {
         TyError
       }
     }
     case _ -> TyError
   }
+}
+
+// The argument counts the stdlib `List`/`Map`/`Set` member `name` accepts,
+// or an empty list for a member not listed here (an open BCL/JDK method the
+// backends resolve by name).
+func stdCollectionMemberArities(tbl: in SymbolTable, recvTy: in Type, name: in String): List[Int] {
+  val ns: List[Int] = newList()
+  match unrefine(recvTy) {
+    case TyUser(id, _, targs) -> {
+      if targs.count == 1 and isStdCollectionsHostType(tbl, id, "List") {
+        if name == "add" {
+          ns.add(1)
+          ns.add(2)
+        } else if name == "contains" or name == "indexOf" or name == "lastIndexOf" or name == "remove" or name == "removeAt" {
+          ns.add(1)
+        }
+      } else if targs.count == 2 and isStdCollectionsHostType(tbl, id, "Map") {
+        if name == "add" {
+          ns.add(2)
+        } else if name == "containsKey" or name == "remove" {
+          ns.add(1)
+        }
+      } else if targs.count == 1 and isStdCollectionsHostType(tbl, id, "Set") {
+        if name == "add" or name == "contains" or name == "remove" {
+          ns.add(1)
+        }
+      }
+    }
+    case _ -> ()
+  }
+  ns
+}
+
+// T0042 for a call of a listed stdlib collection member with an argument
+// count it does not take (#7978).
+func checkStdCollectionMemberArity(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  recvTy: in Type,
+  name: in String,
+  argCount: in Int,
+  span: in Span,
+): Unit {
+  val ns = stdCollectionMemberArities(tbl, recvTy, name)
+  if ns.count == 0 or ns.contains(argCount) {
+    return
+  }
+  val want = if ns.count == 1 { toString(ns[0]) } else { toString(ns[0]) + " or " + toString(ns[1]) }
+  diag.add(
+    errorDiagnostic(
+      "T0042",
+      "'." + name + "' on " + renderType(recvTy) + " takes " + want + " argument(s), got " + toString(argCount),
+      span
+    )
+  )
 }
 
 // The parameters of `recv.<name>(...)` with `argCount` arguments when `recv`
@@ -11481,12 +11960,13 @@ func checkStdCollectionMemberArgs(
   ps: in List[CollMemberParam],
   args: in List[CallArg],
   argTypes: in List[Type],
+  genericNames: in List[String],
   span: in Span,
 ): Unit {
   var k = 0
   while k < ps.count and k < args.count and k < argTypes.count {
     val p = ps[k]
-    if not argSatisfiesParam(tbl, p.ty, argTypes[k]) and not literalArgSatisfiesParam(tbl, p.ty, argTypes[k], callArgExpr(args[k])) {
+    if (not argSatisfiesParam(tbl, p.ty, argTypes[k]) and not literalArgSatisfiesParam(tbl, p.ty, argTypes[k], callArgExpr(args[k]))) or rigidVarClash(tbl, p.ty, argTypes[k], genericNames) {
       val slot = if p.role == "index" {
         "the index type " + renderType(p.ty)
       } else {
@@ -13330,7 +13810,7 @@ func recordTypeArgCallee(
   tbl: in SymbolTable,
   sigs: in Map[String, ResolvedSignature],
   fn: in Expr,
-  arity: in Int,
+  args: in List[CallArg],
   argTypes: in List[Type],
 ): Unit {
   val inner = match fn.kind { case EIndex(i, _) -> i; case _ -> return }
@@ -13347,7 +13827,7 @@ func recordTypeArgCallee(
     case Some(sym) -> if symbolIsValue(sym) { return }
     case None -> ()
   }
-  match findDirectSig(sc, tbl, sigs, inner, arity, argTypes) {
+  match findDirectSig(sc, tbl, sigs, inner, args, argTypes) {
     case Some(sig) -> if sig.generics.count == count {
       val key = recordCopySiteKey(fn.span)
       if not tbl.typeArgCalleeSites.containsKey(key) {
@@ -13408,15 +13888,16 @@ func recordExplicitTypeArgCall(
   argTypes: in List[Type],
 ): Unit {
   val hazard = callArgsHaveHoistHazard(args)
-  if not hazard and not callArgsHaveNamed(args) and not callArgsHaveElementPlace(args) {
-    return
-  }
   val inner = match fn.kind { case EIndex(i, _) -> i; case ETypeApp(i, _) -> i; case _ -> return }
   match inner.kind {
     case EPath(_) -> ()
     case _ -> return
   }
-  val sig = match findDirectSig(sc, tbl, sigs, inner, args.count, argTypes) { case Some(s) -> s; case None -> return }
+  val sig = match findDirectSig(sc, tbl, sigs, inner, args, argTypes) { case Some(s) -> s; case None -> return }
+  recordMethodCallArity(tbl, inner, args.count, sig.params.count, false)
+  if not hazard and not callArgsHaveNamed(args) and not callArgsHaveElementPlace(args) {
+    return
+  }
   val targs = match explicitCallTypeArgs(sc, tbl, fn, sig) { case Some(ts) -> ts; case None -> return }
   val noRecv: Option[Type] = None
   val expected: List[Type] = newList()
@@ -14200,10 +14681,7 @@ func checkExplicitValueGenericCall(
     case None -> return None
   }
   val inner = match fn.kind { case EIndex(i, _) -> i; case ETypeApp(i, _) -> i; case _ -> return None }
-  val sig = match findDirectSig(sc, tbl, sigs, inner, args.count, argTypes) {
-    case Some(s) -> s
-    case None -> return None
-  }
+  val sig = match findDirectSig(sc, tbl, sigs, inner, args, argTypes) { case Some(s) -> s; case None -> return None }
   checkCallArgsAgainstSig(sc, tbl, sigs, diag, sig, args, argTypes, sp)
   Some(value = bindValueGenericCall(tbl, diag, fn, args, argTypes, instantiateReturnType(sig, 0, args, argTypes)))
 }
@@ -14963,6 +15441,42 @@ func inferExprCore(
         }
         case _ -> ()
       }
+      // The bitwise methods `.and/.or/.xor/.shl/.shr` of an integer are
+      // lowered by every backend; here they are typed: the operand has the
+      // receiver's type (the shift count is an `Int`) and so does the result
+      // (#8334).
+      match fn.kind {
+        case EMember(bRecv, bName) -> if (bName == "and" or bName == "or" or bName == "xor" or bName == "shl" or bName == "shr") and not recvIsUnboundName(sc, bRecv) {
+          val bt = match cachedRecvType { case Some(t) -> t; case None -> inferExpr(sc, tbl, sigs, diag, bRecv) }
+          cachedRecvType = Some(value = bt)
+          if isConcreteIntType(bt) {
+            if args.count != 1 {
+              diag.add(errorDiagnostic("T0042", "'" + bName + "' expects 1 argument(s), got " + toString(args.count), e.span))
+              return TyError
+            }
+            val wantArg = if bName == "shl" or bName == "shr" { TyPrim(pt = PtInt) } else { unrefine(bt) }
+            val argE = callArgExpr(args[0])
+            val at = inferExprExpected(sc, tbl, sigs, diag, argE, wantArg)
+            val literalFits = literalArgSatisfiesParam(tbl, wantArg, at, argE) or
+              (isUnsuffixedIntLit(argE) and argSatisfiesParam(tbl, wantArg, at))
+            if not typeEquiv(unrefine(at), wantArg) and not literalFits {
+              diag.add(
+                errorDiagnostic(
+                  "T0043",
+                  "'" + bName + "' on " + renderType(bt) + " takes " +
+                    (if bName == "shl" or bName == "shr" { "an Int shift count" } else { "a " + renderType(bt) }) +
+                    " (got " +
+                    renderType(at) +
+                    ")",
+                  argE.span
+                )
+              )
+            }
+            return unrefine(bt)
+          }
+        }
+        case _ -> ()
+      }
       // Record `.copy(field = value, ...)` (docs/01 §2.4): a
       // non-destructive update of a record value, checked here and rewritten
       // into a full constructor call by `Lyric.Mono`.
@@ -15131,8 +15645,9 @@ func inferExprCore(
       // checked here and give the call its type.
       val explicitValueGenericTy = checkExplicitValueGenericCall(sc, tbl, sigs, diag, fn, args, argTypes, e.span)
       // Try direct-sig lookup first.
-      val directSig = findDirectSig(sc, tbl, sigs, fn, args.count, argTypes)
-      recordTypeArgCallee(sc, tbl, sigs, fn, args.count, argTypes)
+      val ambiguousPick: List[ResolvedSignature] = newList()
+      val directSig = findDirectSigPick(sc, tbl, sigs, fn, args, argTypes, ambiguousPick)
+      recordTypeArgCallee(sc, tbl, sigs, fn, args, argTypes)
       // A4: method-space resolution for a member callee — consulted only when
       // neither a direct signature nor a field/builtin member type resolved
       // (a function-typed FIELD keeps winning over a same-named method).
@@ -15144,7 +15659,7 @@ func inferExprCore(
           match fnT {
             case TyError -> match memberRecvTy {
               case Some(rt3) -> {
-                methodPick = resolveMethodCallPick(tbl, sigs, rt3, memberName, args, argTypes)
+                methodPick = resolveMethodCallPick(tbl, sigs, rt3, memberName, args, argTypes, ambiguousPick)
               }
               case None -> {
               }
@@ -15154,6 +15669,7 @@ func inferExprCore(
           }
         }
       }
+      reportAmbiguousDefaultCall(diag, fn, ambiguousPick, e.span)
       // An element-taking member of the stdlib `List`/`Map`/`Set` that no
       // signature or field resolved is checked against the receiver's type
       // arguments (#7969).
@@ -15171,6 +15687,21 @@ func inferExprCore(
               case None -> None
             }
             case _ -> None
+          }
+        }
+      }
+      match directSig {
+        case Some(_) -> ()
+        case None -> match methodPick {
+          case Some(_) -> ()
+          case None -> match fnT {
+            case TyError -> match memberRecvTy {
+              case Some(crt0) -> if isMemberCallee {
+                checkStdCollectionMemberArity(tbl, diag, crt0, memberName, args.count, e.span)
+              }
+              case None -> ()
+            }
+            case _ -> ()
           }
         }
       }
@@ -15333,6 +15864,10 @@ func inferExprCore(
           case _ -> ()
         }
       }
+      match fn.kind {
+        case EPath(fsp) -> if fsp.segments.count == 1 { checkFormatTemplate(diag, fsp.segments[0], args) }
+        case _ -> ()
+      }
       // A stringified unsigned value says it is unsigned (#7812).
       match fn.kind {
         case EPath(sp) -> if sp.segments.count == 1 and isStringifyingBuiltin(sp.segments[0]) {
@@ -15375,6 +15910,17 @@ func inferExprCore(
       }
       match directSig {
         case Some(sig) -> {
+          match fn.kind {
+            case EPath(_) -> recordMethodCallArity(tbl, fn, args.count, sig.params.count, false)
+            // `Type.f(x, ...)`: a dot-named function called through its type.
+            // The MSIL lowering rebuilds the callee as a path over the
+            // receiver's span, so it is recorded there too.
+            case EMember(callRecv, callMember) -> {
+              recordMethodCallArity(tbl, fn, args.count, sig.params.count, false)
+              recordCalleeArityAt(tbl, recordCopySiteKey(callRecv.span) + ":" + callMember, args.count, sig.params.count)
+            }
+            case _ -> ()
+          }
           recordGeneratorCallSite(tbl, e.span, sig.isGenerator)
           recordAsyncCallSite(tbl, e.span, sig.isAsync and not sig.isGenerator)
           recordEffectCallSite(tbl, e.span, sig, fn)
@@ -15665,6 +16211,7 @@ func inferExprCore(
                         cps,
                         args,
                         argTypes,
+                        sc.genericNames,
                         e.span
                       )
                       case None -> ()
@@ -15692,7 +16239,7 @@ func inferExprCore(
                           if k < args.count {
                             noteRangeSlot(tbl, paramTypes[k], callArgExpr(args[k]), "argument " + toString(k + 1))
                           }
-                          if not argSatisfiesParam(tbl, paramTypes[k], argTypes[k]) and not kLiteralOk {
+                          if not (if k < args.count { argFlowSatisfies(tbl, paramTypes[k], argTypes[k], callArgExpr(args[k])) } else { argSatisfiesParam(tbl, paramTypes[k], argTypes[k]) }) and not kLiteralOk {
                             diag.add(
                               errorDiagnostic(
                                 "T0043",
@@ -15871,6 +16418,49 @@ func inferExprCore(
       match distinctMemberType(tbl, diag, rt, name, e.span) {
         case Some(dt) -> return dt
         case None -> ()
+      }
+      match unrefine(rt) {
+        case TyVar(tvName) -> if sc.genericNames.contains(tvName) {
+          diag.add(
+            errorDiagnostic(
+              "T0197",
+              "no member '" + name + "' on type parameter '" + tvName +
+                "': a value of a type parameter has no fields; only the methods of its `where` bounds can be called on it",
+              e.span
+            )
+          )
+          return TyError
+        }
+        case _ -> ()
+      }
+      // A field declared as the record's own type parameter, read through an
+      // instance at the enclosing generic's type parameter, is that type
+      // parameter; a member read of it is as unknown as one of the parameter
+      // itself (#8018).  The field read alone keeps its erased type: typing
+      // it `T` would send closures over it down the strongly typed path.
+      match unrefine(rt) {
+        case TyError -> match recv.kind {
+          case EMember(innerRecv, innerName) -> {
+            val scratch: List[Diagnostic] = newList()
+            val innerRecvTy = inferExpr(sc, tbl, sigs, scratch, innerRecv)
+            match rigidTypeParamField(tbl, innerRecvTy, innerName, sc.genericNames) {
+              case TyVar(tvName) -> {
+                diag.add(
+                  errorDiagnostic(
+                    "T0197",
+                    "no member '" + name + "' on type parameter '" + tvName +
+                      "': a value of a type parameter has no fields; only the methods of its `where` bounds can be called on it",
+                    e.span
+                  )
+                )
+                return TyError
+              }
+              case _ -> ()
+            }
+          }
+          case _ -> ()
+        }
+        case _ -> ()
       }
       val memberTy = inferMember(tbl, sigs, diag, rt, name, e.span)
       recordResultTypeAt(tbl, memberTy, e.span)
@@ -16140,7 +16730,7 @@ func inferExprCore(
       recordHoistedAssignValue(sc, tbl, target, value, valueType, targetType)
       noteOpenBindingAssign(sc, tbl, sigs, target, valueType)
       val stringPlusAssign = isStringPlusVarAssign(target, op, targetType)
-      if not stringPlusAssign and not argSatisfiesParam(tbl, targetType, valueType) {
+      if not stringPlusAssign and not argFlowSatisfies(tbl, targetType, valueType, value) {
         diag.add(
           errorDiagnostic(
             "T0063",
@@ -17401,6 +17991,16 @@ func recordMethodCallArity(
   }
 }
 
+// `recordMethodCallArity` under an explicit site key.
+func recordCalleeArityAt(tbl: in SymbolTable, key: in String, written: in Int, resolved: in Int): Unit {
+  if tbl.methodCallArities.containsKey(key) {
+    tbl.methodCallArities.remove(key)
+  }
+  if resolved != written {
+    tbl.methodCallArities.add(key, resolved)
+  }
+}
+
 // A call's arguments pair with its parameters by name, then positionally
 // (`argIndicesInParamOrder`); the count check alone cannot see a named
 // argument naming no parameter (it would be dropped) or a parameter with no
@@ -17633,10 +18233,13 @@ func checkPairedCallArgs(
       }
       val satisfied = if sig.isExternFunc {
         argSatisfiesExternParam(tbl, p.ty, argTy)
+      } else if (match p.mode { case PMIn -> true; case _ -> false }) {
+        argFlowSatisfies(tbl, p.ty, argTy, callArgExpr(args[ai]))
       } else {
         argSatisfiesParam(tbl, p.ty, argTy)
       }
-      if not satisfied and not literalArgSatisfiesParam(tbl, p.ty, argTy, callArgExpr(args[ai])) {
+      val rigidClash = not sig.isExternFunc and rigidVarClash(tbl, p.ty, argTy, sc.genericNames)
+      if (not satisfied and not literalArgSatisfiesParam(tbl, p.ty, argTy, callArgExpr(args[ai]))) or rigidClash {
         diag.add(
           errorDiagnostic(
             "T0043",
@@ -18480,12 +19083,21 @@ pub func typeAssignable(tbl: in SymbolTable, expected: in Type, actual: in Type)
           if eargs.count != aargs.count {
             return false
           }
+          var differs = false
           var i = 0
           while i < eargs.count {
-            if not typeAssignable(tbl, eargs[i], aargs[i]) {
-              return false
+            if not typeEquiv(eargs[i], aargs[i]) {
+              if not typeAssignable(tbl, eargs[i], aargs[i]) {
+                return false
+              }
+              differs = true
             }
             i = i + 1
+          }
+          // Only a type a value can be converted to the other instantiation
+          // of is covariant (D211).
+          if differs and covariantHeadKind(tbl, eid) == 0 {
+            return false
           }
           return true
         }
@@ -18497,6 +19109,543 @@ pub func typeAssignable(tbl: in SymbolTable, expected: in Type, actual: in Type)
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Covariant generic values (#7774, D211).
+// ─────────────────────────────────────────────────────────────────────────────
+// A value of `Result[English, E]` may be used where a `Result[Greeter, E]` is
+// declared when `English` implements `Greeter`: the type arguments are
+// covariant (`typeAssignable`).  On a target whose instantiations are
+// distinct runtime types (dotnet, native) the two are different types with
+// no common case class, so the value is converted into the declared
+// instantiation where it flows into the place: `noteCovariantFlow` records
+// the site and synthesizes the conversion function (`covariantHelperName`),
+// which `Lyric.Pipeline` applies for such a target.  Only a union, a record
+// without `var` fields (a value, with no identity to keep) and the stdlib
+// `List` can be converted; a generic of any other kind stays invariant.
+// 1 for a union, 2 for a record that can be rebuilt, 3 for the stdlib `List`,
+// 0 for a type that cannot be converted.
+func covariantHeadKind(tbl: in SymbolTable, tid: in TypeId): Int {
+  if isStdCollectionsHostType(tbl, tid, "List") {
+    return 3
+  }
+  match symTableTypeSymbolOf(tbl, tid) {
+    case Some(sym) -> match sym.kind {
+      case DKUnion(_, _) -> 1
+      case DKRecord(_, rd) -> if rd.isForeign or recordDeclHasVarField(rd) { 0 } else { 2 }
+      case _ -> 0
+    }
+    case None -> 0
+  }
+}
+
+func recordDeclHasVarField(rd: in RecordDecl): Bool {
+  for m in rd.members {
+    match m {
+      case RMField(fd) -> if fd.isMutable { return true }
+      case _ -> ()
+    }
+  }
+  false
+}
+
+// True when `actual` and `expected` are one generic type over type arguments
+// that differ: the value must be converted to flow into the place.  An
+// interface-typed place taking a concrete type (`Greeter` from `English`) is
+// not a conversion: the object is the same.
+func covariantConversionNeeded(tbl: in SymbolTable, expected: in Type, actual: in Type): Bool {
+  if typeEquiv(expected, actual) {
+    return false
+  }
+  match unrefine(expected) {
+    case TyUser(eid, _, eargs) -> match unrefine(actual) {
+      case TyUser(aid, _, aargs) -> {
+        if not typeIdEq(eid, aid) or eargs.count != aargs.count or eargs.count == 0 {
+          return false
+        }
+        var i = 0
+        while i < eargs.count {
+          if not typeEquiv(eargs[i], aargs[i]) {
+            return true
+          }
+          i = i + 1
+        }
+        false
+      }
+      case _ -> false
+    }
+    case _ -> false
+  }
+}
+
+// The types of the fields of the converted value under `args`, per
+// constructor (a union case, or the record's one): the constructor's name,
+// then each field's name ("" for a positional field) and type.
+record CovCtor {
+  name: String
+  fieldNames: List[String]
+  fieldTypes: List[Type]
+}
+
+func covariantCtors(tbl: in SymbolTable, tid: in TypeId, args: in List[Type]): List[CovCtor] {
+  val acc: List[CovCtor] = newList()
+  match symTableTypeSymbolOf(tbl, tid) {
+    case Some(sym) -> match sym.kind {
+      case DKUnion(_, decl) -> {
+        val gnames = unionDeclGenericNames(decl)
+        val scratch: List[Diagnostic] = newList()
+        for uc in decl.cases {
+          val raw = unionCaseFieldTypes(tbl, scratch, uc, gnames, sym.originPackage)
+          val names: List[String] = newList()
+          val tys: List[Type] = newList()
+          var i = 0
+          while i < uc.fields.count {
+            val fname: String = match uc.fields[i] { case UFNamed(nm, _, _) -> nm; case UFPos(_, _) -> "" }
+            names.add(fname)
+            val fty: Type = if i < raw.count { substituteTyVars(raw[i], gnames, args) } else { TyError }
+            tys.add(fty)
+            i = i + 1
+          }
+          acc.add(CovCtor(name = uc.name, fieldNames = names, fieldTypes = tys))
+        }
+      }
+      case DKRecord(_, rd) -> {
+        val gnames = recordDeclGenericNames(rd)
+        val entries: List[FieldEntry] = newList()
+        extractRecordFields(tbl, rd, entries)
+        val names: List[String] = newList()
+        val tys: List[Type] = newList()
+        for fe in entries {
+          names.add(fe.name)
+          tys.add(substituteTyVars(fe.ty, gnames, args))
+        }
+        acc.add(CovCtor(name = rd.name, fieldNames = names, fieldTypes = tys))
+      }
+      case _ -> ()
+    }
+    case None -> ()
+  }
+  acc
+}
+
+// Whether `src` can be converted to `dst` by a synthesized function, every
+// nested conversion included.  `visiting` holds the pairs under way, so a
+// recursive type (`Tree[T]` holding `Tree[T]`) is taken as supported where it
+// recurs.
+func covariantSupported(tbl: in SymbolTable, src: in Type, dst: in Type, visiting: in Map[String, Bool]): Bool {
+  val key = renderType(src) + " => " + renderType(dst)
+  if visiting.containsKey(key) {
+    return true
+  }
+  visiting.add(key, true)
+  val s = unrefine(src)
+  val d = unrefine(dst)
+  match d {
+    case TyUser(did, _, dargs) -> match s {
+      case TyUser(sid, _, sargs) -> {
+        if not typeIdEq(did, sid) or dargs.count != sargs.count {
+          return false
+        }
+        val kind = covariantHeadKind(tbl, did)
+        if kind == 0 {
+          return false
+        }
+        val sp = noSourceSpan()
+        match typeExprForRef(tbl, s, sp) {
+          case None -> return false
+          case Some(_) -> ()
+        }
+        match typeExprForRef(tbl, d, sp) {
+          case None -> return false
+          case Some(_) -> ()
+        }
+        if kind == 3 {
+          return covariantSlotSupported(tbl, sargs[0], dargs[0], visiting)
+        }
+        val sctors = covariantCtors(tbl, sid, sargs)
+        val dctors = covariantCtors(tbl, did, dargs)
+        if sctors.count != dctors.count or sctors.count == 0 {
+          return false
+        }
+        var ci = 0
+        while ci < sctors.count {
+          var fi = 0
+          while fi < sctors[ci].fieldTypes.count {
+            if not covariantSlotSupported(tbl, sctors[ci].fieldTypes[fi], dctors[ci].fieldTypes[fi], visiting) {
+              return false
+            }
+            fi = fi + 1
+          }
+          ci = ci + 1
+        }
+        true
+      }
+      case _ -> false
+    }
+    case _ -> false
+  }
+}
+
+// A field or element of type `src` flowing into one of type `dst`: nothing to
+// do when they are the same type or the place is an interface; else a nested
+// conversion.
+func covariantSlotSupported(tbl: in SymbolTable, src: in Type, dst: in Type, visiting: in Map[String, Bool]): Bool {
+  if not covariantConversionNeeded(tbl, dst, src) {
+    return true
+  }
+  covariantSupported(tbl, src, dst, visiting)
+}
+
+// `covariantAssignable` also holds: the types differ in a generic argument
+// and `typeAssignable`'s covariance accepts the flow.
+func covariantAssignable(tbl: in SymbolTable, expected: in Type, actual: in Type): Bool {
+  covariantConversionNeeded(tbl, expected, actual) and typeAssignable(tbl, expected, actual)
+}
+
+// A value `e` of type `actual` flowing into a place of type `expected`
+// through covariance: true after recording the site, so the target applies
+// the conversion.  A flow between types mentioning a type parameter or an
+// error is accepted unrecorded (its instantiation is not known here).  False
+// when the flow is not covariant or no conversion can be synthesized, so the
+// caller reports the mismatch.
+func covariantFlow(tbl: in SymbolTable, expected: in Type, actual: in Type, e: in Expr): Bool {
+  if not covariantAssignable(tbl, expected, actual) {
+    return false
+  }
+  if isNoSourceSpan(e.span) {
+    return true
+  }
+  if not typeIsClosed(expected) or not typeIsClosed(actual) {
+    // A type parameter's instantiation is not known here; a slot nothing has
+    // fixed (`Ok(…)` whose error type is open) is built at an instantiation
+    // the conversion cannot name, so a covariant flow of one is not accepted
+    // (#7752).
+    return not typeHasOpenSlot(expected) and not typeHasOpenSlot(actual)
+  }
+  val visiting: Map[String, Bool] = newMap()
+  if not covariantSupported(tbl, actual, expected, visiting) {
+    return false
+  }
+  match covariantHelperName(tbl, actual, expected) {
+    case Some(name) -> {
+      val key = recordCopySiteKey(e.span)
+      if tbl.covariantSites.containsKey(key) {
+        tbl.covariantSites.remove(key)
+      }
+      tbl.covariantSites.add(key, name)
+      true
+    }
+    case None -> false
+  }
+}
+
+// True when `t` mentions a slot nothing has fixed (`TyError`) anywhere.
+func typeHasOpenSlot(t: in Type): Bool {
+  match t {
+    case TyError -> true
+    case TyUser(_, _, args) -> {
+      for a in args {
+        if typeHasOpenSlot(a) {
+          return true
+        }
+      }
+      false
+    }
+    case TySlice(e) -> typeHasOpenSlot(e)
+    case TyArray(_, e, _) -> typeHasOpenSlot(e)
+    case TyNullable(inner) -> typeHasOpenSlot(inner)
+    case TyTuple(elems) -> {
+      for a in elems {
+        if typeHasOpenSlot(a) {
+          return true
+        }
+      }
+      false
+    }
+    case TyFunction(ps, ret, _) -> {
+      for a in ps {
+        if typeHasOpenSlot(a) {
+          return true
+        }
+      }
+      typeHasOpenSlot(ret)
+    }
+    case TyRefined(u, _, _, _, _) -> typeHasOpenSlot(u)
+    case _ -> false
+  }
+}
+
+// `argSatisfiesParam`, also accepting a covariant generic value, which is
+// recorded for conversion.
+func argFlowSatisfies(tbl: in SymbolTable, expected: in Type, actual: in Type, e: in Expr): Bool {
+  argSatisfiesParam(tbl, expected, actual) or covariantFlow(tbl, expected, actual, e)
+}
+
+// The name of the synthesized function converting a `src` into a `dst`,
+// creating it (and the functions it calls) on first use.
+func covariantHelperName(tbl: in SymbolTable, src: in Type, dst: in Type): Option[String] {
+  val key = renderType(src) + " => " + renderType(dst)
+  match mapGet(tbl.covariantHelperNames, key) {
+    case Some(n) -> return Some(value = n)
+    case None -> ()
+  }
+  val name = "__lyric_cov_" + toString(tbl.covariantHelperNames.count)
+  tbl.covariantHelperNames.add(key, name)
+  match buildCovariantHelper(tbl, name, src, dst) {
+    case Some(decl) -> {
+      tbl.covariantHelpers.add(decl)
+      Some(value = name)
+    }
+    case None -> None
+  }
+}
+
+func covParam(name: in String, ty: in TypeExpr, sp: in Span): Param {
+  val noAnns: List[Annotation] = newList()
+  Param(mode = PMIn, modeExplicit = true, name = name, ty = ty, dflt = None, annotations = noAnns, span = sp)
+}
+
+func covPath(segs: in List[String], sp: in Span): ModulePath {
+  ModulePath(segments = segs, span = sp)
+}
+
+func covNameExpr(name: in String, sp: in Span): Expr {
+  val segs: List[String] = newList()
+  segs.add(name)
+  mkExpr(EPath(path = covPath(segs, sp)), sp)
+}
+
+func covStmt(kind: in StatementKind, sp: in Span): Statement {
+  Statement(kind = kind, span = sp)
+}
+
+// The path of a constructor `ctor` of the type `typeExpr` names: the type's
+// package qualifier, if it has one, then `ctor`.
+func covCtorPath(typeExpr: in TypeExpr, ctor: in String, sp: in Span): ModulePath {
+  val noSegs: List[String] = newList()
+  val head: ModulePath = match typeExpr.kind {
+    case TRef(p) -> p
+    case TGenericApp(h, _) -> h
+    case _ -> covPath(noSegs, sp)
+  }
+  val segs: List[String] = newList()
+  var i = 0
+  while i < head.segments.count - 1 {
+    segs.add(head.segments[i])
+    i = i + 1
+  }
+  segs.add(ctor)
+  covPath(segs, sp)
+}
+
+// The expression converting the value `v` of type `src` to `dst`: `v` itself
+// when the place takes it unchanged, else a call of the nested conversion.
+func covSlotExpr(tbl: in SymbolTable, v: in Expr, src: in Type, dst: in Type, sp: in Span): Expr {
+  if not covariantConversionNeeded(tbl, dst, src) {
+    return v
+  }
+  match covariantHelperName(tbl, src, dst) {
+    case Some(name) -> {
+      val args: List[CallArg] = newList()
+      args.add(CAPositional(expr = v))
+      mkExpr(ECall(fn = covNameExpr(name, sp), args = args), sp)
+    }
+    case None -> v
+  }
+}
+
+// `val r: dst = init` then `r`: the constructed value typed at the target
+// instantiation, which a backend with distinct instantiations builds at.
+func covTypedValue(prefix: in List[Statement], dstTe: in TypeExpr, init: in Expr, sp: in Span): ExprOrBlock {
+  val stmts: List[Statement] = newList()
+  for st in prefix {
+    stmts.add(st)
+  }
+  val pat = Pattern(kind = PBinding(name = "r", inner = None), span = sp)
+  stmts.add(covStmt(SLocal(binding = LBVal(pat = pat, ty = Some(value = dstTe), init = init)), sp))
+  stmts.add(covStmt(SExpr(expr = covNameExpr("r", sp)), sp))
+  EOBBlock(block = Block(statements = stmts, span = sp))
+}
+
+// A field of the value being rebuilt, bound to a local of the target field's
+// type before it is passed to the constructor: a backend that builds a generic
+// value at the instantiation its arguments have (a record) then builds it at
+// the target's, whatever the type the converted field is read as.  The
+// expression that stands for the field in the construction.
+func covBindField(
+  tbl: in SymbolTable,
+  stmts: in List[Statement],
+  index: in Int,
+  value: in Expr,
+  dstTy: in Type,
+  sp: in Span,
+): Expr {
+  match typeExprForRef(tbl, dstTy, sp) {
+    case Some(te) -> {
+      val name = "f" + toString(index)
+      val pat = Pattern(kind = PBinding(name = name, inner = None), span = sp)
+      stmts.add(covStmt(SLocal(binding = LBVal(pat = pat, ty = Some(value = te), init = value)), sp))
+      covNameExpr(name, sp)
+    }
+    case None -> value
+  }
+}
+
+func buildCovariantHelper(tbl: in SymbolTable, name: in String, src: in Type, dst: in Type): Option[FunctionDecl] {
+  val sp = noSourceSpan()
+  val s = unrefine(src)
+  val d = unrefine(dst)
+  val srcTe = match typeExprForRef(tbl, s, sp) { case Some(t) -> t; case None -> return None }
+  val dstTe = match typeExprForRef(tbl, d, sp) { case Some(t) -> t; case None -> return None }
+  val sid = match s { case TyUser(i, _, _) -> i; case _ -> return None }
+  val did = match d { case TyUser(i, _, _) -> i; case _ -> return None }
+  val sargs = match s { case TyUser(_, _, a) -> a; case _ -> return None }
+  val dargs = match d { case TyUser(_, _, a) -> a; case _ -> return None }
+  val kind = covariantHeadKind(tbl, did)
+  val x = covNameExpr("x", sp)
+  val stmts: List[Statement] = newList()
+  if kind == 3 {
+    // A new list of the converted elements.
+    val outPat = Pattern(kind = PBinding(name = "out", inner = None), span = sp)
+    val noCallArgs: List[CallArg] = newList()
+    val newListCall = mkExpr(ECall(fn = covNameExpr("newList", sp), args = noCallArgs), sp)
+    stmts.add(covStmt(SLocal(binding = LBVal(pat = outPat, ty = Some(value = dstTe), init = newListCall)), sp))
+    val elemPat = Pattern(kind = PBinding(name = "e", inner = None), span = sp)
+    val addArgs: List[CallArg] = newList()
+    addArgs.add(CAPositional(expr = covSlotExpr(tbl, covNameExpr("e", sp), sargs[0], dargs[0], sp)))
+    val addCall = mkExpr(
+      ECall(fn = mkExpr(EMember(receiver = covNameExpr("out", sp), memberName = "add"), sp), args = addArgs),
+      sp
+    )
+    val loopBody: List[Statement] = newList()
+    loopBody.add(covStmt(SExpr(expr = addCall), sp))
+    stmts.add(covStmt(SFor(label = None, pat = elemPat, iter = x, body = Block(statements = loopBody, span = sp)), sp))
+    stmts.add(covStmt(SExpr(expr = covNameExpr("out", sp)), sp))
+  } else if kind == 2 {
+    // A record rebuilt with the converted fields.
+    val ctors = covariantCtors(tbl, did, dargs)
+    val sctors = covariantCtors(tbl, sid, sargs)
+    if ctors.count != 1 or sctors.count != 1 {
+      return None
+    }
+    val callArgs: List[CallArg] = newList()
+    var fi = 0
+    while fi < ctors[0].fieldNames.count {
+      val fieldRead = mkExpr(EMember(receiver = covNameExpr("x", sp), memberName = ctors[0].fieldNames[fi]), sp)
+      val converted = covSlotExpr(tbl, fieldRead, sctors[0].fieldTypes[fi], ctors[0].fieldTypes[fi], sp)
+      callArgs.add(
+        CANamed(
+          name = ctors[0].fieldNames[fi],
+          value = covBindField(tbl, stmts, fi, converted, ctors[0].fieldTypes[fi], sp),
+          span = sp
+        )
+      )
+      fi = fi + 1
+    }
+    val ctorCall = mkExpr(
+      ECall(fn = mkExpr(EPath(path = covCtorPath(dstTe, ctors[0].name, sp)), sp), args = callArgs),
+      sp
+    )
+    for st in covTypedBlockStmts(dstTe, ctorCall, sp) {
+      stmts.add(st)
+    }
+  } else if kind == 1 {
+    // A match over the cases, each rebuilt at the target instantiation.
+    val dctors = covariantCtors(tbl, did, dargs)
+    val sctors = covariantCtors(tbl, sid, sargs)
+    if dctors.count != sctors.count or dctors.count == 0 {
+      return None
+    }
+    val arms: List[MatchArm] = newList()
+    var ci = 0
+    while ci < dctors.count {
+      val dc = dctors[ci]
+      val sc0 = sctors[ci]
+      val casePath = covCtorPath(dstTe, dc.name, sp)
+      val patArgs: List[Pattern] = newList()
+      val callArgs: List[CallArg] = newList()
+      val armStmts: List[Statement] = newList()
+      var fi = 0
+      while fi < dc.fieldNames.count {
+        val vn = "v" + toString(fi)
+        patArgs.add(Pattern(kind = PBinding(name = vn, inner = None), span = sp))
+        val converted0 = covSlotExpr(tbl, covNameExpr(vn, sp), sc0.fieldTypes[fi], dc.fieldTypes[fi], sp)
+        val converted = covBindField(tbl, armStmts, fi, converted0, dc.fieldTypes[fi], sp)
+        if dc.fieldNames[fi].length > 0 {
+          callArgs.add(CANamed(name = dc.fieldNames[fi], value = converted, span = sp))
+        } else {
+          callArgs.add(CAPositional(expr = converted))
+        }
+        fi = fi + 1
+      }
+      val pat: Pattern = if dc.fieldNames.count == 0 and casePath.segments.count == 1 {
+        Pattern(kind = PBinding(name = dc.name, inner = None), span = sp)
+      } else {
+        Pattern(kind = PConstructor(head = casePath, args = patArgs), span = sp)
+      }
+      val built: Expr = if dc.fieldNames.count == 0 {
+        mkExpr(EPath(path = casePath), sp)
+      } else {
+        mkExpr(ECall(fn = mkExpr(EPath(path = casePath), sp), args = callArgs), sp)
+      }
+      arms.add(MatchArm(pattern = pat, guard = None, body = covTypedValue(armStmts, dstTe, built, sp), span = sp))
+      ci = ci + 1
+    }
+    stmts.add(covStmt(SExpr(expr = mkExpr(EMatch(scrutinee = x, arms = arms), sp)), sp))
+  } else {
+    return None
+  }
+  val params: List[Param] = newList()
+  params.add(covParam("x", srcTe, sp))
+  val noDocs: List[DocComment] = newList()
+  val noAnns: List[Annotation] = newList()
+  val noContracts: List[ContractClause] = newList()
+  Some(
+    value = FunctionDecl(
+      docComments = noDocs,
+      annotations = noAnns,
+      visibility = None,
+      isAsync = false,
+      name = name,
+      generics = None,
+      params = params,
+      ret = Some(value = dstTe),
+      whereClause = None,
+      contracts = noContracts,
+      body = Some(value = FBBlock(block = Block(statements = stmts, span = sp))),
+      span = sp
+    )
+  )
+}
+
+func covTypedBlockStmts(dstTe: in TypeExpr, init: in Expr, sp: in Span): List[Statement] {
+  val stmts: List[Statement] = newList()
+  val pat = Pattern(kind = PBinding(name = "r", inner = None), span = sp)
+  stmts.add(covStmt(SLocal(binding = LBVal(pat = pat, ty = Some(value = dstTe), init = init)), sp))
+  stmts.add(covStmt(SExpr(expr = covNameExpr("r", sp)), sp))
+  stmts
+}
+
+// `typeAssignable`, recording the conversion of `e` when the flow is
+// covariant; false when it is covariant but cannot be converted.
+func typeAssignableByFlow(tbl: in SymbolTable, expected: in Type, actual: in Type, e: in Expr): Bool {
+  if not typeAssignable(tbl, expected, actual) {
+    return false
+  }
+  if covariantConversionNeeded(tbl, expected, actual) {
+    return covariantFlow(tbl, expected, actual, e)
+  }
+  true
+}
+
+// The trailing expression of `blk`, or an error expression with no source
+// span (which records no conversion) when it ends in another statement.
+func blockValueExprOr(blk: in Block): Expr {
+  match blockValueExpr(blk) {
+    case Some(e) -> e
+    case None -> Expr(kind = EError, span = noSourceSpan())
+  }
+}
+
 // True when `qualifier` (the dotted prefix of a qualified call) names
 // package `pkg`: the full path, or its trailing segment(s) as an
 // `import A.B` in scope allows (`B.f(...)`).
@@ -18504,25 +19653,25 @@ func pkgMatchesQualifier(pkg: in String, qualifier: in String): Bool {
   pkg.length > 0 and (pkg == qualifier or pkg.endsWith("." + qualifier))
 }
 
-// Every function named `name` with `arity` parameters, from every package:
-// the non-generic ones first, then the generic ones.  A qualified call picks
+// Every function named `name` that a call writing `args` fits, from every
+// package: the non-generic ones first, then the generic ones.  A qualified call picks
 // among them by package.  The indexed `arityKey@i` slots hold non-generic
 // signatures only (a generic's type variables match any argument, so there
 // it would shadow a concrete overload), which left a generic function of the
 // named package unreachable and bound `Pkg.f(...)` to another package's
 // same-named function.
 func qualifiedCallCandidates(
-  sigs: in Map[String, ResolvedSignature], name: in String, arity: in Int
+  sigs: in Map[String, ResolvedSignature], name: in String, args: in List[CallArg]
 ): List[ResolvedSignature] {
   val all = gatherOverloadCandidates(sigs, byNameSigKey(name))
   val acc: List[ResolvedSignature] = newList()
   for c in all {
-    if c.params.count == arity and c.generics.count == 0 {
+    if sigDefaultsFilled(c, args) >= 0 and c.generics.count == 0 {
       acc.add(c)
     }
   }
   for c in all {
-    if c.params.count == arity and c.generics.count > 0 {
+    if sigDefaultsFilled(c, args) >= 0 and c.generics.count > 0 {
       acc.add(c)
     }
   }
@@ -18605,10 +19754,16 @@ func packageDottedSig(
   }
   val pkg = modulePathJoin(pkgSegs)
   var other: Option[ResolvedSignature] = None
+  var fewest: Option[ResolvedSignature] = None
   for c in gatherOverloadCandidates(sigs, byNameSigKey(dotted)) {
     if sigPackage(tbl, c) == pkg {
       if arity <= c.params.count and arity >= minRequiredParams(c) {
-        return Some(value = c)
+        match fewest {
+          case Some(f) -> if c.params.count < f.params.count { fewest = Some(value = c) }
+          case None -> {
+            fewest = Some(value = c)
+          }
+        }
       }
       match other {
         case None -> {
@@ -18618,10 +19773,14 @@ func packageDottedSig(
       }
     }
   }
-  // None takes the arguments' count: the call still names that package's
-  // function, against which the count is reported (T0042), never another
-  // function of the type's (#8097).
-  other
+  // The function taking the arguments' count that leaves the fewest
+  // parameters to their defaults answers (#8355).  None taking it: the call
+  // still names that package's function, against which the count is
+  // reported (T0042), never another function of the type's (#8097).
+  match fewest {
+    case Some(_) -> fewest
+    case None -> other
+  }
 }
 
 // The function a call `T.m(x, args)` through its type binds when the first
@@ -18653,10 +19812,22 @@ func typeQualifiedDotSig(
       }
     }
     val cands = dotNamedCandidatesFor(tbl, sigs, recv, member, arity - 1, noArgs, rest)
+    // The applicable function that leaves the fewest parameters to their
+    // defaults, as a call through the receiver binds (#8355).
+    var fewest: Option[ResolvedSignature] = None
     for c in cands {
       if dotNamedApplicable(tbl, c, arity - 1, noArgs, rest) {
-        return Some(value = c)
+        match fewest {
+          case Some(f) -> if c.params.count < f.params.count { fewest = Some(value = c) }
+          case None -> {
+            fewest = Some(value = c)
+          }
+        }
       }
+    }
+    match fewest {
+      case Some(_) -> return fewest
+      case None -> ()
     }
     if cands.count > 0 {
       return Some(value = cands[0])
@@ -18872,14 +20043,72 @@ func memberOfDotted(fn: in Expr): String {
   segs[segs.count - 1]
 }
 
+// T0200 for a call that fills defaults and binds several declarations
+// equally well (`pickByShape`), once per call.
+func reportAmbiguousDefaultCall(
+  diag: in List[Diagnostic], fn: in Expr, tied: in List[ResolvedSignature], span: in Span
+): Unit {
+  if tied.count < 2 {
+    return
+  }
+  for d in diag {
+    if d.code == "T0200" and d.span.startPos.offset == span.startPos.offset {
+      return
+    }
+  }
+  val pkgs: List[String] = newList()
+  for t in tied {
+    val pn = if t.originPackage.length > 0 { t.originPackage } else { "this package" }
+    var seen = false
+    for q in pkgs {
+      if q == pn {
+        seen = true
+      }
+    }
+    if not seen {
+      pkgs.add(pn)
+    }
+  }
+  val segs: List[String] = newList()
+  val callee = if calleeSegments(fn, segs) { modulePathJoin(segs) } else { "this function" }
+  diag.add(
+    errorDiagnostic(
+      "T0200",
+      "this call to '" + callee + "' is ambiguous: it fits " + toString(tied.count) + " declarations of '" + callee +
+        "' (in " +
+        joinPackageNames(pkgs) +
+        ") that leave the same number of parameters to their defaults; name an argument only one of them " +
+        "declares, or supply the parameters of the one you mean",
+      span
+    )
+  )
+}
+
 func findDirectSig(
   sc: in Scope,
   tbl: in SymbolTable,
   sigs: in Map[String, ResolvedSignature],
   fn: in Expr,
-  arity: in Int,
+  args: in List[CallArg],
   argTypes: in List[Type],
 ): Option[ResolvedSignature] {
+  val ambiguous: List[ResolvedSignature] = newList()
+  findDirectSigPick(sc, tbl, sigs, fn, args, argTypes, ambiguous)
+}
+
+// `findDirectSig`, adding to `ambiguous` the declarations a call that fills
+// defaults binds equally well (`pickByShape`); the signature returned is then
+// the first of them.
+func findDirectSigPick(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  fn: in Expr,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+  ambiguous: in List[ResolvedSignature],
+): Option[ResolvedSignature] {
+  val arity = args.count
   match fn.kind {
     // `Box.get(b)`: a dot-named function called through its type name
     // (#8173).  The receiver names a type, not a value in scope.
@@ -18967,7 +20196,6 @@ func findDirectSig(
           pi = pi + 1
         }
         val wantPkg = modulePathJoin(prefix)
-        val qcands = qualifiedCallCandidates(sigs, name, arity)
         // A qualifier names a package by its full path or, for an
         // `import A.B` in scope, by its last segment (`B.f(...)`).  Once any
         // candidate comes from the named package the call binds to that
@@ -18975,33 +20203,14 @@ func findDirectSig(
         // rather than silently re-resolving to another package's same-named
         // function (D-progress-946: `Widgets.field(...)` resolved to
         // `Forms.field`).
-        var qualFirst: Option[ResolvedSignature] = None
-        var haveQualFirst = false
-        var qi = 0
-        while qi < qcands.count {
-          val qc = qcands[qi]
+        val pkgCands: List[ResolvedSignature] = newList()
+        for qc in qualifiedCallCandidates(sigs, name, args) {
           if pkgMatchesQualifier(qc.originPackage, wantPkg) {
-            if paramsMatchArgs(tbl, qc.params, argTypes) {
-              return Some(value = qc)
-            }
-            if not haveQualFirst {
-              qualFirst = Some(value = qc)
-              haveQualFirst = true
-            }
+            pkgCands.add(qc)
           }
-          qi = qi + 1
         }
-        match mapGet(sigs, arityKey) {
-          case Some(ps) -> if pkgMatchesQualifier(ps.originPackage, wantPkg) {
-            if paramsMatchArgs(tbl, ps.params, argTypes) or not haveQualFirst {
-              return Some(value = ps)
-            }
-          }
-          case None -> ()
-        }
-        match qualFirst {
-          case Some(qf) -> return Some(value = qf)
-          case None -> ()
+        if pkgCands.count > 0 {
+          return pickByShape(tbl, pkgCands, args, argTypes, None, ambiguous)
         }
       }
       // The arity-key "primary" is the historical lookup: a user definition
@@ -19028,7 +20237,7 @@ func findDirectSig(
       // lowest tier whose params match before the historical first-registered
       // order below, which knows no tiers.
       if bare {
-        match tieredBareSig(tbl, sigs, name, arity, argTypes, primary) {
+        match tieredBareSig(tbl, sigs, name, args, argTypes, primary, ambiguous) {
           case Some(s) -> return Some(value = s)
           case None -> ()
         }

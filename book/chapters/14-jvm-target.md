@@ -166,10 +166,10 @@ For `@proof_required` packages, `lyric prove` proves the contracts statically. T
 
 ## §14.4 Testing on the JVM
 
-`lyric test --jvm` compiles a `@test_module` file using the JVM backend and produces a JAR containing stub methods annotated with `@lyric.runtime.jvm.LyricTest`:
+`lyric test --target jvm` compiles a `@test_module` file using the JVM backend and produces a JAR containing stub methods annotated with `@lyric.runtime.jvm.LyricTest`:
 
 ```sh
-lyric test --jvm math_tests.l
+lyric test --target jvm math_tests.l
 ```
 
 Each `test "…" { … }` block becomes a `public static void __lyric_test_<i>()` method annotated with:
@@ -181,12 +181,12 @@ Each `test "…" { … }` block becomes a `public static void __lyric_test_<i>()
 The `@LyricTest` annotation carries `@Retention(RUNTIME)` and `@Target(METHOD)`, so it is visible to JVM tooling at runtime.
 
 ::: note
-**Pending: full JUnit 5 engine.** `lyric test --jvm` compiles the test JAR and annotates test methods with `@LyricTest` but does not yet invoke JUnit 5's `ConsoleLauncher` or the `LyricTestEngine`. A TAP-shaped runner handles `.NET`-target tests; the full JVM `TestEngine` that discovers `@LyricTest` methods and reports to the JUnit Platform is in progress. See `docs/32-junit-runner-sketch.md`.
+**Pending: full JUnit 5 engine.** `lyric test --target jvm` compiles the test JAR and annotates test methods with `@LyricTest` but does not yet invoke JUnit 5's `ConsoleLauncher` or the `LyricTestEngine`. A TAP-shaped runner handles `.NET`-target tests; the full JVM `TestEngine` that discovers `@LyricTest` methods and reports to the JUnit Platform is in progress. See `docs/32-junit-runner-sketch.md`.
 :::
 
 ### §14.4.1 JUnit 5 integration (in progress)
 
-Once the full `LyricTestEngine` ships, `lyric test --jvm` will invoke the JUnit 5 `ConsoleLauncher` against the compiled test JAR:
+Once the full `LyricTestEngine` ships, `lyric test --target jvm` will invoke the JUnit 5 `ConsoleLauncher` against the compiled test JAR:
 
 ```
 Test run finished after 42 ms
@@ -307,7 +307,7 @@ macOS). Linux and macOS are supported; Windows is tracked in
 
 3. **JVM test run**
 
-   Write a `@test_module` file with two `test` blocks: one that passes and one that deliberately fails with `assertTrue(false, "expected failure")`. Run `lyric test --jvm` and observe the output. Inspect the generated JAR with `jar -tf` to see the `@LyricTest`-annotated class.
+   Write a `@test_module` file with two `test` blocks: one that passes and one that deliberately fails with `assertTrue(false, "expected failure")`. Run `lyric test --target jvm` and observe the output. Inspect the generated JAR with `jar -tf` to see the `@LyricTest`-annotated class.
 
 4. **Type mapping exploration**
 

@@ -1167,24 +1167,29 @@ test "emit(target = Jvm) contains a codegen-refusal Bug as an EmitResult failure
 // unhandled `System.Exception` with a full host stack trace, not a
 // contained `EmitResult` failure.
 //
-// The type checker treats a type parameter inside a generic body as
-// satisfied by ANY argument type (`typeEquiv` on a bare `TyVar`), so `put`'s
-// `xs.add(x)` with `x: T` type-checks against the `List[Int]`, and
-// `put(xs, "hello")` instantiates it with a `String`.  `xs.add("hello")`
-// itself is a T0043 since #7969.  The monomorphized body is a genuinely
+// A field read through a record instance at the generic's own type parameter
+// stays an unknown type in a generic body (a bare `T` argument to a
+// `List[Int]` is T0043, #7974), so `put`'s `xs.add(b.value)` type-checks
+// against the `List[Int]`, and `put(xs, Box(value = "hello"))` instantiates it
+// with a `String`.  `xs.add("hello")` itself is a T0043 since #7969.  The
+// monomorphized body is a genuinely
 // incompatible (non-numeric) mismatch that `coerceTo`'s `#7452` narrowing
 // cannot rescue, so it is the constructible "genuinely mismatched call" this
 // pins: a real `N0007` codegen error, not a numeric-narrowing false positive.
 test "emit(target = Native) contains a coerceTo type-mismatch Bug as an EmitResult failure, not a thrown exception (#7452)" {
   val dir = freshTempDir("native-contain-n0007")
   val source = "package ContainN0007.App\n" + "\n" + "import Std.Core\n" + "import Std.Collections\n" + "\n" +
-    "func put[T](xs: in List[Int], x: in T): Unit {\n" +
-    "  xs.add(x)\n" +
+    "record Box[T] {\n" +
+    "  value: T\n" +
+    "}\n" +
+    "\n" +
+    "func put[T](xs: in List[Int], b: in Box[T]): Unit {\n" +
+    "  xs.add(b.value)\n" +
     "}\n" +
     "\n" +
     "func main(): Int {\n" +
     "  val xs: List[Int] = newList()\n" +
-    "  put(xs, \"hello\")\n" +
+    "  put(xs, Box(value = \"hello\"))\n" +
     "  0\n" +
     "}\n"
   val noDefines: List[String] = newList()
@@ -1225,8 +1230,8 @@ test "emit(target = Native) contains a coerceTo type-mismatch Bug as an EmitResu
     Str.contains(diagText, "N0007"),
     "the contained refusal carries its N0007 code in EmitResult.diagnostics (got: " + diagText + ")"
   )
-  // The span points at the mismatched argument itself (`put`'s `x` on line
-  // 7, column 10), not a synthetic file-start point span —
+  // The span points at the mismatched argument itself (`put`'s `b.value` on
+  // line 11, column 10), not a synthetic file-start point span —
   // `coerceTo`'s `atSpan` threads the real `Expr.span` through
   // `lowerExprExpecting`/`coerceUnlessDiverged`.
   var n0007Idx = -1
@@ -1242,7 +1247,7 @@ test "emit(target = Native) contains a coerceTo type-mismatch Bug as an EmitResu
     val sp = result.diagnostics[n0007Idx].span
     assertEqualInt(
       sp.startPos.line,
-      7,
+      11,
       "N0007 span points at the real source line (got: " + toString(sp.startPos.line) + ")"
     )
     assertEqualInt(
@@ -3436,4 +3441,24 @@ test "emitProject a transitive type resolves when the entry package registers fi
   val result = runEmitProject("emitproj-entrytype", entryFirstTypePkgs(), "EPEt")
   assertEqualInt(result.exitCode, 0, "entrytype MSIL: exit 0 (stderr=" + result.stderr + ")")
   assertEqual(Str.trim(result.stdout), "c", "entrytype MSIL: output")
+}
+
+test "importLinePackage names the package of a selective import (#7952)" {
+  assertEqual(
+    Emitter.importLinePackage("import Lyric.Pipeline.{pipeCBindingsToFuncs, CBinding}"),
+    "Lyric.Pipeline",
+    "selective import with a space in the item list"
+  )
+  assertEqual(Emitter.importLinePackage("import Lyric.Pipeline.{a}"), "Lyric.Pipeline", "single-item selective import")
+  assertEqual(Emitter.importLinePackage("import Lyric.Pipeline as Pipe"), "Lyric.Pipeline", "aliased import")
+  assertEqual(Emitter.importLinePackage("import Std.Core"), "Std.Core", "whole import")
+}
+
+test "collectImportLines keeps selective imports of one package with different item lists (#7952)" {
+  val acc: List[String] = newList()
+  Emitter.collectImportLines(
+    "package P\n\nimport Lyric.Pipeline.{a}\nimport Lyric.Pipeline.{b}\nimport Lyric.Pipeline.{a}\n\nfunc f(): Unit {\n}\n",
+    acc
+  )
+  assertEqualInt(acc.count, 2, "two distinct selective imports survive, the duplicate collapses")
 }

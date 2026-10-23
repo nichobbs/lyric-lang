@@ -21193,7 +21193,11 @@ func lowerBuiltinOrStaticCallMsil(
               // call's argument count; fall back to the bare FQN alias when no
               // arity-specific entry exists (non-overloaded funcs, or arities
               // that don't line up — e.g. default/named args, handled later).
-              val callArityKey = resolvedFqn + "/" + toString(args.count)
+              // A call that leaves out defaulted arguments binds the overload
+              // the type checker resolved it to (its parameter count), not the
+              // one whose count equals the arguments written (#8355).
+              val callArityKey = resolvedFqn + "/" +
+                toString(methodCallTargetMsil(cctx, fctx, methodCallPathKey(path), args.count).arity)
               val tokKey = if cctx.funcTokens.containsKey(callArityKey) { callArityKey } else { resolvedFqn }
               match mapGet(cctx.funcTokens, tokKey) {
                 case Some(tok) -> {

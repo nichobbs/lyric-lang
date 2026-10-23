@@ -1042,7 +1042,16 @@ pub func pipeCheckFront(
   // every default carries its conversions.  A native build emits no contract
   // metadata (and a `--shape module` build exports every public function to
   // JavaScript), so it gets none.
-  val withThunks = if opts.nativeIntrinsics { copyRes.file } else { synthesizeDefaultThunks(copyRes.file) }
+  // A target whose generic instantiations are distinct runtime types (MSIL,
+  // native) converts each value that flowed into a place of the same generic
+  // type over a supertype of its type argument (D211); the JVM erases the
+  // arguments and shares the value.
+  val covered = if opts.bindListLiteralTypes and tcRes.symbols.covariantSites.count > 0 {
+    applyCovariantSites(copyRes.file, tcRes.symbols)
+  } else {
+    copyRes.file
+  }
+  val withThunks = if opts.nativeIntrinsics { covered } else { synthesizeDefaultThunks(covered) }
   val invChecked = wrapInvariantConstructions(withThunks, tcRes.symbols.invariantCtorSites)
   // Operators on distinct types go through the underlying value (#7361),
   // which also re-checks a range subtype's derived arithmetic (#7226).
@@ -3755,6 +3764,54 @@ pub func pipeDesugarChecked(
     listLiteralSites,
     hoistOperandSites,
     tcRes.symbols.argOrderSites
+  )
+}
+
+/// `file` with each value the type check recorded as flowing into a place of
+/// the same generic type over a supertype of its type argument
+/// (`SymbolTable.covariantSites`, `Result[English, E]` into
+/// `Result[Greeter, E]`, D211) passed through the conversion function the
+/// checker synthesized for it, which is added to the file.
+func applyCovariantSites(file: in SourceFile, syms: in SymbolTable): SourceFile {
+  val pending: Map[String, String] = newMap()
+  for k in mapKeys(syms.covariantSites) {
+    match mapGet(syms.covariantSites, k) {
+      case Some(helper) -> pending.add(k, helper)
+      case None -> ()
+    }
+  }
+  val converted = mapExprsInFile(
+    file,
+    { e: Expr ->
+      val key = recordCopySiteKey(e.span)
+      match mapGet(pending, key) {
+        case Some(helper) -> {
+          pending.remove(key)
+          val segs: List[String] = newList()
+          segs.add(helper)
+          val callee = Expr(kind = EPath(path = ModulePath(segments = segs, span = e.span)), span = e.span)
+          val args: List[CallArg] = newList()
+          args.add(CAPositional(expr = e))
+          Expr(kind = ECall(fn = callee, args = args), span = e.span)
+        }
+        case None -> e
+      }
+    }
+  )
+  val items: List[Item] = newList()
+  for it in converted.items {
+    items.add(it)
+  }
+  for h in syms.covariantHelpers {
+    items.add(funcItem(h))
+  }
+  SourceFile(
+    moduleDoc = converted.moduleDoc,
+    fileAnnotations = converted.fileAnnotations,
+    packageDecl = converted.packageDecl,
+    imports = converted.imports,
+    items = items,
+    span = converted.span
   )
 }
 

@@ -500,7 +500,7 @@ If you find yourself adding a `None` or `null` field to a record, that is usuall
 
 1. Define a `union HttpStatus` with at least five cases: `case Ok(body: String)`, `case Created(location: String)`, `case NotFound`, `case BadRequest(message: String)`, and `case ServerError(message: String)`. Write a function `statusCode(s: in HttpStatus): Int` that returns the appropriate HTTP status integer for each case.
 
-2. Add a `@valueType` annotation to `record Point { x: Double; y: Double }`. Run `lyric build --verbose`. What does the output say about the .NET representation? If you have `ildasm` or `dotnet-ildasm` available, inspect the emitted type and confirm it is a struct.
+2. Add a `@valueType` annotation to `record Point { x: Double; y: Double }`. Build it with `lyric build`. If you have `ildasm` or `dotnet-ildasm` available, inspect the emitted type and confirm it is a struct.
 
 3. Write a function `divmod(a: in Int, b: in Int): (Int, Int)` that returns the quotient and remainder. Call it and destructure the result. Then refactor: define `record DivResult { quotient: Int; remainder: Int }` and return that instead. Which feels cleaner? Under what circumstances would you prefer one over the other?
 

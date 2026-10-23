@@ -124,6 +124,8 @@ for t in \
   lyric-compiler/lyric/structural_equality_self_test.l \
   lyric-compiler/lyric/func_default_args_self_test.l \
   lyric-compiler/lyric/method_default_args_self_test.l \
+  lyric-compiler/lyric/default_overload_self_test.l \
+  lyric-compiler/lyric/covariant_conversion_self_test.l \
   lyric-compiler/lyric/bench_alloc_self_test.l \
   lyric-compiler/lyric/tuple_expected_type_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_test.l \

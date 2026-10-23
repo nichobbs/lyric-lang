@@ -588,6 +588,99 @@ test "buildProject: the same workspace-dep fixture still builds on --target dotn
   )
 }
 
+// ─── #8248: a dependency's directory-form, multi-file package entry ────────
+func writeWs8248Fixture(root: in String): (String, String) {
+  writeFileOrPanic(Path.join(root, "lyric.toml"), "[workspace]\nexclude = []\n")
+  val producerDir = mkPackageDir(
+    root,
+    "DirProducer",
+    "[package]\nname = \"Fixture.DirProducer\"\nversion = \"0.1.0\"\n\n[project]\nname = \"Fixture.DirProducer\"\n" +
+      "output_assembly = \"DirProducer.dll\"\n\n[project.packages]\n\"Fixture.DirProducer\" = \"src\"\n"
+  )
+  match File.createDir(Path.join(producerDir, "src")) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create producer src dir: " + IOError.message(e))
+  }
+  writeFileOrPanic(
+    Path.join(producerDir, "src/a.l"),
+    "package Fixture.DirProducer\n\npub func partA(): String {\n  \"a\"\n}\n"
+  )
+  writeFileOrPanic(
+    Path.join(producerDir, "src/b.l"),
+    "package Fixture.DirProducer\n\npub func partB(): String {\n  partA() + \"b\"\n}\n"
+  )
+  val consumerDir = mkPackageDir(
+    root,
+    "DirConsumer",
+    "[package]\nname = \"Fixture.DirConsumer\"\nversion = \"0.1.0\"\n\n[project]\nname = \"Fixture.DirConsumer\"\n" +
+      "output_assembly = \"DirConsumer.dll\"\n\n[project.packages]\n\"Fixture.DirConsumer\" = \"src/consumer.l\"\n\n" +
+      "[dependencies]\n\"Fixture.DirProducer\" = { workspace = true }\n"
+  )
+  match File.createDir(Path.join(consumerDir, "src")) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("cannot create consumer src dir: " + IOError.message(e))
+  }
+  writeFileOrPanic(
+    Path.join(consumerDir, "src/consumer.l"),
+    "package Fixture.DirConsumer\n\nimport Fixture.DirProducer\n\npub func both(): String {\n  partB()\n}\n"
+  );
+  (producerDir, consumerDir)
+}
+
+test "resolveManifestDependencies: a dependency's directory-form package entry contributes every file (#8248)" {
+  val root = freshTempDir("ws8248-deps")
+  defer {
+    cleanup(root)
+  }
+  val (_, consumerDir) = writeWs8248Fixture(root)
+  val consumerMfPath = Path.join(consumerDir, "lyric.toml")
+  val consumerMfText = match File.readText(consumerMfPath) {
+    case Ok(t) -> t
+    case Err(e) -> panic("cannot read consumer manifest: " + IOError.message(e))
+  }
+  val consumerManifest = match Mf.parseManifest(consumerMfText, consumerMfPath) {
+    case Ok(m) -> m
+    case Err(e) -> panic("cannot parse consumer manifest: " + Mf.ManifestError.message(e))
+  }
+  val noFeatures: List[String] = newList()
+  val resolved = Cli.resolveManifestDependencies(consumerManifest, consumerMfPath, Emitter.Jvm, noFeatures, false)
+  assertFalse(resolved.hadWorkspaceError, "no workspace error resolving the directory-form dependency")
+  assertEqualInt(resolved.depTemplateSrcs.count, 1, "one dependency package")
+  assertEqualInt(resolved.depTemplateSrcs[0].sources.count, 2, "both files of the directory entry are collected")
+}
+
+func buildWs8248(target: in Emitter.CompileTarget, label: in String): Unit {
+  val root = freshTempDir("ws8248-" + label)
+  defer {
+    cleanup(root)
+  }
+  val (_, consumerDir) = writeWs8248Fixture(root)
+  val noFeatures: List[String] = newList()
+  val noDefines: List[String] = newList()
+  val noPre: Option[Cli.ResolvedManifestDeps] = None
+  val rc = Cli.buildProject(
+    Path.join(consumerDir, "lyric.toml"),
+    None,
+    target,
+    noFeatures,
+    false,
+    false,
+    true,
+    None,
+    noPre,
+    noDefines
+  )
+  assertEqualInt(rc, 0, label + ": a consumer of a directory-form multi-file dependency builds (#8248)")
+}
+
+test "buildProject: --target dotnet builds a consumer of a directory-form multi-file dependency (#8248)" {
+  buildWs8248(Emitter.Dotnet, "dotnet")
+}
+
+test "buildProject: --target jvm builds a consumer of a directory-form multi-file dependency (#8248)" {
+  buildWs8248(Emitter.Jvm, "jvm")
+}
+
 // ─── Regression for #6697 on the OTHER caller that feeds
 // `EmitProjectRequest.restoredDllPaths` — `emitSingleFileWithWorkspaceMembers`
 // (cli/cli_build.l, #6503), the single-file-inside-a-workspace leg

@@ -924,7 +924,7 @@ func extractPackageName(source: in String): String {
 // segment before any ` as <alias>` suffix).  Returns "" for anything that is
 // not an import.  E.g. `import Lyric.ContractMeta as Meta` ->
 // "Lyric.ContractMeta"; `import Std.Core` -> "Std.Core".
-func importLinePackage(line: in String): String {
+pub func importLinePackage(line: in String): String {
   val trimmed = Str.trim(line)
   val prefix = "import "
   if not Str.startsWith(trimmed, prefix) {
@@ -938,7 +938,13 @@ func importLinePackage(line: in String): String {
   if parts.length == 0 {
     return ""
   }
-  Str.trim(parts[0])
+  val token = Str.trim(parts[0])
+  // A selective import `P.{a, b}` names package `P`; the item list is not
+  // part of the package path (#7952).
+  match Str.indexOf(token, ".{") {
+    case Some(at) -> token.substring(0, at)
+    case None -> token
+  }
 }
 
 // The alias an `import ... as X` declaration binds, or "" for the bare form.
@@ -954,12 +960,27 @@ func importLineAlias(line: in String): String {
   Str.trim(parts[parts.length - 1])
 }
 
+// The item list of a selective import (`P.{a, b}` -> "{a, b}"), "" for the
+// whole-package forms.  Two selective imports of one package with different
+// item lists are distinct imports and must both survive the dedup (#7952).
+func importLineSelection(line: in String): String {
+  val trimmed = Str.trim(line)
+  val noAlias = match Str.indexOf(trimmed, " as ") {
+    case Some(at) -> Str.trim(trimmed.substring(0, at))
+    case None -> trimmed
+  }
+  match Str.indexOf(noAlias, ".{") {
+    case Some(at) -> noAlias.substring(at + 1, noAlias.length - at - 1)
+    case None -> ""
+  }
+}
+
 // Append every distinct import `source`'s header declares to `acc`,
 // deduplicating by the (module path, alias) pair: `import Std.Core` and
 // `import Std.Core as C` are distinct binding forms and both survive (#2699).
 // For computing a package's import closure from its files; the merge itself
 // unites the parsed imports (`Lyric.PackageMerge`).
-func collectImportLines(source: in String, acc: in List[String]) {
+pub func collectImportLines(source: in String, acc: in List[String]) {
   val decls = PM.scanHeader(source).imports
   var i = 0
   while i < decls.count {
@@ -967,10 +988,11 @@ func collectImportLines(source: in String, acc: in List[String]) {
     if Str.startsWith(decl, "import ") {
       val pkg = importLinePackage(decl)
       val aliasName = importLineAlias(decl)
+      val selection = importLineSelection(decl)
       var seen = false
       var j = 0
       while j < acc.count {
-        if importLinePackage(acc[j]) == pkg and importLineAlias(acc[j]) == aliasName {
+        if importLinePackage(acc[j]) == pkg and importLineAlias(acc[j]) == aliasName and importLineSelection(acc[j]) == selection {
           seen = true
         }
         j = j + 1

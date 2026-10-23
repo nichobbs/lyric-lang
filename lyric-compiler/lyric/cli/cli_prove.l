@@ -237,6 +237,13 @@ func cmdProve(argv: in slice[String]): Int {
       printErr("prove: no source files found in project")
       return 1
     }
+    match undeclaredFeaturesError("prove", projectMfPath, cliFeatures) {
+      case Some(msg) -> {
+        printErr(msg)
+        return 1
+      }
+      case None -> ()
+    }
     // A proof of a program the build rejects means nothing (#8227).
     val noTestEntries: List[String] = newList()
     val everyPackage: Option[List[String]] = None

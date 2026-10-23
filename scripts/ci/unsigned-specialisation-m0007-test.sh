@@ -35,15 +35,19 @@ package M0007Fixture
 
 import Std.Core
 
-// Generically `x` may be any type, but specialised with `T = UInt` the
-// binding is a `String` initialised with a `UInt`.
-func asText[T](x: in T): String {
-  val s: String = x
+record Box[T] {
+  value: T
+}
+
+// Generically the field read is an unknown type, but specialised with
+// `T = UInt` the binding is a `String` initialised with a `UInt`.
+func asText[T](b: in Box[T]): String {
+  val s: String = b.value
   s
 }
 
 func main(): Unit {
-  println(asText(4000000000u32))
+  println(asText(Box(value = 4000000000u32)))
 }
 LYR
 

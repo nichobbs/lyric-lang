@@ -131,6 +131,18 @@ func rejectUnknownOption(cmd: in String, arg: in String): Bool {
   }
 }
 
+/// True, after reporting it, when a command that takes one source path was
+/// given more than one, so surplus arguments are an error, not silently
+/// dropped (#8321).
+func rejectExtraPositional(cmd: in String, positional: in List[String]): Bool {
+  if positional.count > 1 {
+    printErr(cmd + ": expected one source file, got " + toString(positional.count) + ": " + Str.joinList(" ", positional))
+    true
+  } else {
+    false
+  }
+}
+
 func printDiag(d: in Diagnostic): Unit {
   val sev = match d.severity { case DiagError -> "error"; case DiagWarning -> "warning" }
   printErr(
@@ -648,6 +660,33 @@ pub func parseShapeName(s: in String): Option[BuildShape] {
   }
 }
 
+/// `F0050` — a `--features` name the manifest at `mfPath` does not declare.
+/// A typo would otherwise select nothing and build without the feature
+/// (#8362).  A manifest with no `[features]` table declares no features.
+/// None when every name is declared or the manifest cannot be read (the
+/// build reports that itself).
+pub func undeclaredFeaturesError(command: in String, mfPath: in String, cliFeatures: in List[String]): Option[String] {
+  if cliFeatures.count == 0 {
+    return None
+  }
+  val mfText = match File.readText(mfPath) { case Ok(t) -> t; case Err(_) -> return None }
+  val missing = Mf.undeclaredCliFeatures(mfText, mfPath, cliFeatures)
+  if missing.count == 0 {
+    return None
+  }
+  val declared = Mf.readFeatureDeclaredFromToml(mfText, mfPath)
+  val hint = if declared.count == 0 {
+    "the manifest has no [features] table"
+  } else {
+    "declared features: " + Str.joinList(", ", declared)
+  }
+  Some(
+    value = command + ": error[F0050]: --features " + Str.joinList(", ", missing) + " not declared in " + mfPath + " (" +
+      hint +
+      ")"
+  )
+}
+
 /// Why the manifest a single source file is compiled under cannot be used
 /// (D182), prefixed with `command`: an explicit `--manifest` that cannot be
 /// read or parsed is a hard error, never a build with no manifest; and
@@ -667,7 +706,7 @@ pub func singleFileManifestError(
     case Some(m) -> {
       match Disc.manifestLoadError(m) {
         case Some(msg) -> return Some(value = command + ": " + msg)
-        case None -> return None
+        case None -> return undeclaredFeaturesError(command, m, cliFeatures)
       }
     }
     case None -> ()
@@ -678,7 +717,7 @@ pub func singleFileManifestError(
   val head = "error[F0049]: --features " + Str.joinList(",", cliFeatures) +
     " selects features a manifest's [features] table declares, but "
   match Disc.singleFileManifestDetailed(sourcePath) {
-    case FoundManifest(_) -> None
+    case FoundManifest(path) -> undeclaredFeaturesError(command, path, cliFeatures)
     case FoundBrokenManifest(path, error) -> Some(
       value = head + "the manifest of " + sourcePath + " (" + path +
         ") cannot be read: " +

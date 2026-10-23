@@ -473,6 +473,8 @@ func cmdTest(argv: in slice[String]): Int {
     } else if arg == "--update-snapshots" {
       updateSnapshots = true
       i += 1
+    } else if rejectUnknownOption("test", arg) {
+      return 1
     } else {
       positional.add(arg)
       i += 1
@@ -606,6 +608,9 @@ func cmdTest(argv: in slice[String]): Int {
     }
   }
 
+  if rejectExtraPositional("test", positional) {
+    return 1
+  }
   val sourcePath = positional[0]
   // D182: `--features` on a test file no manifest applies to selects nothing
   // (an explicit `--manifest` went to `cmdTestManifest` above).
@@ -1074,6 +1079,13 @@ func cmdTestManifest(
       printErr("test: " + IOError.message(e))
       return 1
     }
+  }
+  match undeclaredFeaturesError("test", mfPath, cliFeatures) {
+    case Some(msg) -> {
+      printErr(msg)
+      return 1
+    }
+    case None -> ()
   }
   val manifest: Mf.Manifest = match Mf.parseManifest(mfText, mfPath) {
     case Ok(m) -> m

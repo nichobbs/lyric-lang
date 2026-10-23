@@ -92,6 +92,9 @@ for t in \
   lyric-compiler/lyric/async_for_loop_suspend_self_test.l \
   lyric-compiler/lyric/async_match_suspend_self_test.l \
   lyric-compiler/lyric/method_default_args_self_test.l \
+  lyric-compiler/lyric/default_overload_self_test.l \
+  lyric-compiler/lyric/covariant_conversion_self_test.l \
+  lyric-compiler/lyric/default_overload_diag_self_test.l \
   lyric-compiler/lyric/method_default_widening_self_test.l \
   lyric-compiler/lyric/erased_receiver_narrowing_self_test.l \
   lyric-compiler/lyric/erased_receiver_narrowing_dotnet_self_test.l \
@@ -372,6 +375,14 @@ if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
   echo "=== scripts/ci/single-file-features-e2e.sh ==="
   LYRIC_BIN="$lyric_bin" bash scripts/ci/single-file-features-e2e.sh
   ran="$ran single-file-features-e2e"
+fi
+# #8321 / #8362: unknown options and surplus positionals are errors, and a
+# `--features` name the manifest does not declare is F0050.
+idx=$((idx + 1))
+if (( (idx - 1) % SHARD_N == SHARD_K - 1 )); then
+  echo "=== scripts/ci/cli-args-e2e.sh ==="
+  LYRIC_BIN="$lyric_bin" bash scripts/ci/cli-args-e2e.sh
+  ran="$ran cli-args-e2e"
 fi
 if [[ -z "$ran" ]]; then
   echo "::error::shard ${SHARD_K}/${SHARD_N} selected no files" >&2

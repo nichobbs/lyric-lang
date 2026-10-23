@@ -22,6 +22,7 @@ import Std.String as Str
 import Std.Environment as Environment
 import Std.Errors
 import Lyric.Manifest as Mf
+import Lyric.Discovery as Disc
 import Lyric.Workspace as Ws
 import Lyric.Release as Release
 import Lyric.Emitter as Emitter
@@ -310,6 +311,37 @@ func collectDepNativeLibs(
   }
 }
 
+/// Read the source files of a dependency's `[project.packages]` entry (a
+/// single file, a `paths` list, or a directory of `.l` files, via
+/// `Lyric.Discovery.projectEntryFiles`) into `srcList`/`pathList`.  Returns one
+/// message per entry listing problem or unreadable file (#8248).
+func readDepEntrySources(
+  pkgEntry: in Mf.PackageEntry,
+  depDir: in String,
+  proj: in Mf.ProjectSection,
+  srcList: in List[String],
+  pathList: in List[String],
+): List[String] {
+  val errors: List[String] = newList()
+  val entryFiles = Disc.projectEntryFiles(pkgEntry, depDir, proj)
+  for problem in entryFiles.problems.toArray() {
+    errors.add("package '" + pkgEntry.name + "': " + problem)
+  }
+  if entryFiles.emptyDir.length > 0 {
+    errors.add("package '" + pkgEntry.name + "': no .l files found in " + entryFiles.emptyDir)
+  }
+  for srcPath in entryFiles.paths.toArray() {
+    match File.readText(srcPath) {
+      case Ok(srcText) -> {
+        srcList.add(srcText)
+        pathList.add(srcPath)
+      }
+      case Err(e) -> errors.add("cannot read source '" + srcPath + "': " + IOError.message(e))
+    }
+  }
+  errors
+}
+
 /// Read every `[project.packages]` source file under `depDir`'s manifest and
 /// append it to `depTemplatePkgsList` as a `ProjectPackage`, tagged with
 /// `depName`.  Shared by `resolveManifestDependencies`'s workspace-dep branch
@@ -340,38 +372,8 @@ func collectDepTemplateSources(
                 val pkgEntry = proj.packages[pki]
                 val srcList: List[String] = newList()
                 val pathList: List[String] = newList()
-                if pkgEntry.paths.count > 0 {
-                  var fi = 0
-                  while fi < pkgEntry.paths.count {
-                    val srcPath = if Path.isAbsolute(pkgEntry.paths[fi]) {
-                      pkgEntry.paths[fi]
-                    } else {
-                      Path.join(depDir, pkgEntry.paths[fi])
-                    }
-                    match File.readText(srcPath) {
-                      case Ok(srcText) -> {
-                        srcList.add(srcText)
-                        pathList.add(srcPath)
-                      }
-                      case Err(e) -> printErr(
-                        "build: workspace dep '" + depName + "': cannot read source '" + srcPath + "': " +
-                          IOError.message(e)
-                      )
-                    }
-                    fi += 1
-                  }
-                } else {
-                  val srcPath = if Path.isAbsolute(pkgEntry.path) { pkgEntry.path } else { Path.join(depDir, pkgEntry.path) }
-                  match File.readText(srcPath) {
-                    case Ok(srcText) -> {
-                      srcList.add(srcText)
-                      pathList.add(srcPath)
-                    }
-                    case Err(e) -> printErr(
-                      "build: workspace dep '" + depName + "': cannot read source '" + srcPath + "': " +
-                        IOError.message(e)
-                    )
-                  }
+                for problem in readDepEntrySources(pkgEntry, depDir, proj, srcList, pathList).toArray() {
+                  printErr("build: workspace dep '" + depName + "': " + problem)
                 }
                 if srcList.count > 0 {
                   depTemplatePkgsList.add(
@@ -1270,37 +1272,10 @@ pub func resolveManifestDependenciesAs(
                         val pkgEntry = proj.packages[pki]
                         val srcList: List[String] = newList()
                         val pathList: List[String] = newList()
-                        if pkgEntry.paths.count > 0 {
-                          var fi = 0
-                          while fi < pkgEntry.paths.count {
-                            val srcPath = Path.join(depDir, pkgEntry.paths[fi])
-                            match File.readText(srcPath) {
-                              case Ok(srcText) -> {
-                                srcList.add(srcText)
-                                pathList.add(srcPath)
-                              }
-                              case Err(e) -> {
-                                printErr(cmd + ": dep '" + dep.name + "': cannot read source '" + srcPath + "': " + IOError.message(e))
-                                if not dllMatters {
-                                  hadUnbuiltLocalDep = true
-                                }
-                              }
-                            }
-                            fi += 1
-                          }
-                        } else {
-                          val srcPath = Path.join(depDir, pkgEntry.path)
-                          match File.readText(srcPath) {
-                            case Ok(srcText) -> {
-                              srcList.add(srcText)
-                              pathList.add(srcPath)
-                            }
-                            case Err(e) -> {
-                              printErr(cmd + ": dep '" + dep.name + "': cannot read source '" + srcPath + "': " + IOError.message(e))
-                              if not dllMatters {
-                                hadUnbuiltLocalDep = true
-                              }
-                            }
+                        for problem in readDepEntrySources(pkgEntry, depDir, proj, srcList, pathList).toArray() {
+                          printErr(cmd + ": dep '" + dep.name + "': " + problem)
+                          if not dllMatters {
+                            hadUnbuiltLocalDep = true
                           }
                         }
                         if srcList.count > 0 {

@@ -3812,13 +3812,32 @@ test "overloads of different arity are each proved, and a call reaches the one o
   assertDischarged(ov + "func g(x: in Int): Int\n  ensures: result == 2 * x + 1\n{\n  f(x) + f(x, 1)\n}\n", "overloads")
   assertRefuted(ov + "func g(x: in Int): Int\n  ensures: result == x\n{\n  f(x, 1)\n}\n", "overload-refuted")
   assertDischarged(ov + "func g(x: in Int): Int\n  ensures: result == x + 2\n{\n  U.f(x, 2)\n}\n", "qualified-overload")
-  // A call no overload takes by its argument count — here through a
-  // default — is not resolved: it fails closed.
-  assertUntranslatable(
-    "func h(x: in Int): Int\n  ensures: result == x\n{\n  x\n}\n" +
-      "func h(x: in Int, y: in Int, z: in Int = 0): Int\n  ensures: result == x + y + z\n{\n  x + y + z\n}\n" +
-      "func g(x: in Int): Int\n  ensures: result == x + 1\n{\n  h(x, 1)\n}\n",
+  // A call that fits one declaration only, here by filling a default, reaches
+  // it (#8355).
+  val viaDflt = "func h(x: in Int): Int\n  ensures: result == x\n{\n  x\n}\n" +
+    "func h(x: in Int, y: in Int, z: in Int = 0): Int\n  ensures: result == x + y + z\n{\n  x + y + z\n}\n"
+  assertDischarged(
+    viaDflt + "func g(x: in Int): Int\n  ensures: result == x + 1\n{\n  h(x, 1)\n}\n",
     "overload-via-default"
+  )
+  assertRefuted(
+    viaDflt + "func g(x: in Int): Int\n  ensures: result == x + 2\n{\n  h(x, 1)\n}\n",
+    "overload-via-default-refuted"
+  )
+  // A call two declarations fit, which the argument types alone may decide
+  // between, fails closed.
+  assertUntranslatable(
+    "func q(x: in Int): Int\n  ensures: result == x\n{\n  x\n}\n" +
+      "func q(x: in Int, y: in Int = 1): Int\n  ensures: result == x + y\n{\n  x + y\n}\n" +
+      "func g(x: in Int): Int\n  ensures: result == x\n{\n  q(x)\n}\n",
+    "overload-two-fit"
+  )
+  // A name only one declaration has selects it.
+  assertDischarged(
+    "func n(x: in Int, y: in Int = 1): Int\n  ensures: result == x + y\n{\n  x + y\n}\n" +
+      "func n(x: in Int, z: in Int = 5, w: in Int = 6): Int\n  ensures: result == x + z + w\n{\n  x + z + w\n}\n" +
+      "func g(x: in Int): Int\n  ensures: result == x + 10\n{\n  n(x, z = 4)\n}\n",
+    "overload-by-name"
   )
   // A stable pub function calling an experimental overload is S0001; one
   // calling the stable overload is not.

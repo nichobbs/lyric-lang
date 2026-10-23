@@ -1396,3 +1396,23 @@ test "[layers] values of the wrong type are errors" {
     "async not a bool"
   )
 }
+
+test "undeclaredCliFeatures lists the --features names [features] does not declare (#8362)" {
+  val withTable = "[package]\nname = \"P\"\nversion = \"0.1.0\"\n\n[features]\ndefault = [\"wide\"]\nwide = []\n"
+  val both: List[String] = newList()
+  both.add("wide")
+  both.add("wdie")
+  both.add("wdie")
+  val missing = undeclaredCliFeatures(withTable, "lyric.toml", both)
+  assertEqualInt(missing.count, 1, "a misspelt name is reported once")
+  assertEqual(missing[0], "wdie", "the misspelt name")
+  val noTable = "[package]\nname = \"P\"\nversion = \"0.1.0\"\n"
+  val one: List[String] = newList()
+  one.add("wide")
+  assertEqualInt(
+    undeclaredCliFeatures(noTable, "lyric.toml", one).count,
+    1,
+    "a manifest with no [features] table declares nothing"
+  )
+  assertEqualInt(undeclaredCliFeatures(withTable, "lyric.toml", newList()).count, 0, "no --features names")
+}

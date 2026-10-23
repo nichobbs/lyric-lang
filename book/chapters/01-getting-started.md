@@ -619,7 +619,7 @@ See Appendix B §B.9 for the full module reference, and each library's `README.m
 
 1. **Different entry points**
 
-   Lyric's `main` function name is a convention, not a keyword. What happens if you rename it to `run`? Try it and see what error the compiler produces. Then look up how `lyric build --entrypoint` changes the convention.
+   Lyric's `main` function name is a convention, not a keyword. What happens if you rename it to `run`? Try it and see what error the compiler produces.
 
 2. **Named construction and `.copy()`**
 
