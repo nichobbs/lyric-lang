@@ -1325,6 +1325,79 @@ test "a function value is not an overload of a same-named function in an alias-i
   assertEqualInt(outcome.exitCode, 42, "the package's own run/1 as a value: 42 + L.run(0, 0) = 42")
 }
 
+// #8015 / #7643: two packages declare a union `Level` with a case `Lo` of a
+// different payload, and a same-named enum `Mode` with a different case
+// order.  Each package's own `Level.Lo` / `Mode.Fast`, and a third package's
+// package-qualified spelling of either, must resolve to the owning
+// declaration (the bare case-name key used to be first-wins bundle-wide).
+test "same-named unions and enums across packages resolve per owning package, qualified and bare (#8015, #7643)" {
+  val pkgs: List[NativeSourcePackage] = newList()
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Q.A",
+      path = "",
+      source = "package Q.A\n" + "pub union Level {\n  case Lo(a: Int)\n  case Hi\n}\n" +
+        "pub enum Mode {\n  case Slow\n  case Fast\n}\n" +
+        "pub func makeLo(): Level {\n  Level.Lo(a = 5)\n}\n" +
+        "pub func lvl(l: in Level): Int {\n  match l {\n    case Lo(a) -> a\n    case Hi -> 1000\n  }\n}\n" +
+        "pub func modeCode(): Int {\n  val m = Mode.Fast\n  match m {\n    case Slow -> 100\n    case Fast -> 7\n  }\n}\n"
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Q.B",
+      path = "",
+      source = "package Q.B\n" + "pub union Level {\n  case Hi\n  case Lo(a: Int, b: Int)\n}\n" +
+        "pub enum Mode {\n  case Fast\n  case Slow\n  case Off\n}\n" +
+        "pub func makeLo(): Level {\n  Level.Lo(a = 20, b = 30)\n}\n" +
+        "pub func lvl(l: in Level): Int {\n  match l {\n    case Lo(a, b) -> a + b\n    case Hi -> 2000\n  }\n}\n" +
+        "pub func modeCode(): Int {\n  val m = Mode.Fast\n  match m {\n    case Fast -> 3\n    case Slow -> 200\n    case Off -> 300\n  }\n}\n"
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Q.App",
+      path = "",
+      source = "package Q.App\n" + "import Q.A\n" + "import Q.B\n" + "func main(): Int {\n" +
+        "  val la = Q.A.Level.Lo(a = 1)\n" +
+        "  val lb = Q.B.Level.Lo(a = 2, b = 4)\n" +
+        "  Q.A.lvl(la) + Q.B.lvl(lb) + Q.A.lvl(Q.A.makeLo()) + Q.B.lvl(Q.B.makeLo()) + Q.A.modeCode() + Q.B.modeCode()\n" +
+        "}\n"
+    )
+  )
+  val outcome = compileAndRunProject(pkgs)
+  assertEqualInt(outcome.exitCode, 1 + 6 + 5 + 50 + 7 + 3, "each package's Level.Lo / Mode.Fast is its own")
+}
+
+// #7922: `NativeWeak.upgrade()` returns `Std.Core.Option`, whatever other
+// package in the bundle declares a union named `Option` (the bare name is
+// first-registered, and own packages register before the stdlib).
+test "NativeWeak.upgrade resolves Std.Core.Option, not another package's Option (#7922)" {
+  val pkgs: List[NativeSourcePackage] = newList()
+  pkgs.add(
+    NativeSourcePackage(
+      name = "W7.App",
+      path = "",
+      source = "package W7.App\n" + "import Std.Core\n" + "import W7.Decoy as D\n" +
+        "record Node {\n  name: String\n}\n" +
+        "func main(): Int {\n" +
+        "  val strong = Node(name = \"alive\")\n" +
+        "  val w = NativeWeak(strong)\n" +
+        "  match w.upgrade() {\n    case Some(n) -> n.name.length\n    case None -> 0\n  }\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "W7.Decoy",
+      path = "",
+      source = "package W7.Decoy\n" + "pub union Option[T] {\n  case Lone(v: T)\n  case Empty\n}\n"
+    )
+  )
+  val outcome = compileAndRunProject(pkgs)
+  assertEqualInt(outcome.exitCode, 5, "the weak target upgrades to Some, the name has 5 characters")
+}
+
 // docs/67 G9: the Windows target's triple spellings and output name.
 test "Windows triples normalise to x86_64-pc-windows-msvc and name a .exe" {
   assertEqual(

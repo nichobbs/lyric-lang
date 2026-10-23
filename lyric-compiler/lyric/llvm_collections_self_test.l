@@ -556,3 +556,114 @@ test "a tuple holding None as a return value, argument, binding and nested tuple
   val r = compileAndRunAsan(src)
   assertEqualInt(r.exitCode, 36, "4 + (3+1) + 2 + 5 + 6 + 7 + 8")
 }
+
+// `List.contains` / `List.indexOf` for any element type (#7429, #8167): a
+// scalar by value, a `String` by text, a union and a value record
+// structurally.  Before, the call fell through to the `String` overload.
+test "List contains and indexOf over Long, String, union and record elements (ASan)" {
+  val src = "package T\n" + "union Shape {\n  case Dot\n  case Ring(r: Int)\n}\n" +
+    "record Pt {\n  x: Int\n  y: Int\n}\n" +
+    "func flag(b: Bool): Int {\n  if b {\n    1\n  } else {\n    0\n  }\n}\n" +
+    "func main(): Int {\n" +
+    "  val ls: List[Long] = newList()\n" +
+    "  ls.add(10i64)\n" +
+    "  ls.add(20i64)\n" +
+    "  val ss: List[String] = newList()\n" +
+    "  ss.add(\"a\")\n" +
+    "  ss.add(\"bc\")\n" +
+    "  val sh: List[Shape] = newList()\n" +
+    "  sh.add(Ring(r = 3))\n" +
+    "  sh.add(Dot)\n" +
+    "  val ps: List[Pt] = newList()\n" +
+    "  ps.add(Pt(x = 1, y = 2))\n" +
+    "  ps.add(Pt(x = 3, y = 4))\n" +
+    "  var code = 0\n" +
+    "  code = code + flag(ls.contains(20i64)) * 1\n" +
+    "  code = code + flag(ls.contains(30i64)) * 2\n" +
+    "  code = code + flag(ss.contains(\"b\" + \"c\")) * 4\n" +
+    "  code = code + flag(ss.contains(\"z\")) * 8\n" +
+    "  code = code + flag(sh.contains(Ring(r = 3))) * 16\n" +
+    "  code = code + flag(sh.contains(Ring(r = 4))) * 32\n" +
+    "  code = code + flag(ps.contains(Pt(x = 3, y = 4))) * 64\n" +
+    "  code = code + flag(ps.contains(Pt(x = 3, y = 5))) * 128\n" +
+    "  code = code + ls.indexOf(20i64) * 256\n" +
+    "  code\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  // The exit status keeps only the low byte: 1 + 4 + 16 + 64 = 85; the
+  // indexOf term (1 * 256) vanishes there, so it is checked separately.
+  assertEqualInt(
+    r.exitCode,
+    85,
+    "contains: 20 yes, 30 no, bc yes, z no, Ring(3) yes, Ring(4) no, Pt(3,4) yes, Pt(3,5) no"
+  )
+  val idx = "package T\n" + "func main(): Int {\n" + "  val ss: List[String] = newList()\n" + "  ss.add(\"a\")\n" +
+    "  ss.add(\"bc\")\n" +
+    "  ss.indexOf(\"bc\") * 10 + ss.indexOf(\"q\") + 1\n" +
+    "}\n"
+  val ri = compileAndRunAsan(idx)
+  assertEqualInt(ri.exitCode, 10, "indexOf: 1 * 10 + (-1) + 1")
+}
+
+// #8330: a method called on a captured `List` inside a lambda.  The free
+// variable walk must see the receiver `log` of the dotted callee `log.add`.
+test "a lambda calling a method on a captured List and reading its count (#8330, ASan)" {
+  val src = "package T\n" + "func main(): Int {\n" + "  val log: List[String] = newList()\n" +
+    "  val f: () -> Unit = { -> log.add(\"x\") }\n" +
+    "  f()\n" +
+    "  f()\n" +
+    "  val n: () -> Int = { -> log.count }\n" +
+    "  n() + 10\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 12, "two adds through the closure, count read through a second closure, plus 10")
+}
+
+// #8348: a tuple pattern in a `for` loop over a list of tuples.
+test "for (k, v) in a list of tuples destructures each element (#8348, ASan)" {
+  val src = "package T\n" + "func main(): Int {\n" + "  val ps: List[(Int, String)] = newList()\n" +
+    "  ps.add((1, \"aa\"))\n" +
+    "  ps.add((2, \"bbb\"))\n" +
+    "  var t = 0\n" +
+    "  for (k, v) in ps {\n" +
+    "    t = t + k * 10 + v.length\n" +
+    "  }\n" +
+    "  t\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 35, "(1*10+2) + (2*10+3)")
+}
+
+// #8167: a `Map` key that is a union, a value record or an array hashes and
+// compares by D172's relation, so an equal key built separately finds the entry.
+test "Map with union, record and array keys finds an equal key built elsewhere (ASan)" {
+  val src = "package T\n" + "union Shape {\n  case Dot\n  case Ring(r: Int)\n  case Label(s: String)\n}\n" +
+    "record Pt {\n  x: Int\n  y: Int\n}\n" +
+    "func flag(b: Bool): Int {\n  if b {\n    1\n  } else {\n    0\n  }\n}\n" +
+    "func main(): Int {\n" +
+    "  val m: Map[Shape, Int] = newMap()\n" +
+    "  m.add(Ring(r = 3), 10)\n" +
+    "  m.add(Dot, 20)\n" +
+    "  m.add(Label(s = \"a\" + \"b\"), 30)\n" +
+    "  m.add(Ring(r = 3), 11)\n" +
+    "  val p: Map[Pt, Int] = newMap()\n" +
+    "  p.add(Pt(x = 1, y = 2), 5)\n" +
+    "  p.add(Pt(x = 1, y = 2), 6)\n" +
+    "  p.add(Pt(x = 2, y = 1), 7)\n" +
+    "  val a: Map[array[2, Int], Int] = newMap()\n" +
+    "  a.add([1, 2], 8)\n" +
+    "  a.add([1, 2], 9)\n" +
+    "  var code = 0\n" +
+    "  code = code + flag(m.count == 3) * 1\n" +
+    "  code = code + flag(m[Ring(r = 3)] == 11) * 2\n" +
+    "  code = code + flag(m.containsKey(Label(s = \"ab\"))) * 4\n" +
+    "  code = code + flag(not m.containsKey(Ring(r = 4))) * 8\n" +
+    "  code = code + flag(p.count == 2 and p[Pt(x = 1, y = 2)] == 6 and p[Pt(x = 2, y = 1)] == 7) * 16\n" +
+    "  code = code + flag(a.count == 1 and a[[1, 2]] == 9) * 32\n" +
+    "  val removed = m.remove(Dot)\n" +
+    "  code = code + flag(removed and m.count == 2 and not m.containsKey(Dot)) * 64\n" +
+    "  code\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 127, "every lookup, overwrite and removal agrees with structural equality")
+}

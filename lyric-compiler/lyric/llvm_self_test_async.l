@@ -613,13 +613,30 @@ test "async runCapture timeout kills the child and reports the managed-twin cont
   assertEqualInt(r.exitCode, 77, "the deadline kill preserves pre-timeout output and reports timedOut/-2")
 }
 
-// An execvp failure inside the child is exit 127 (shell convention),
-// not an Err — matching the sync seam and lyric_process_run.
-test "async runCapture of a missing binary reports exit 127 through the async seam" {
+// An executable that cannot be started is an Err through the async seam, as
+// through the sync one and on the managed targets (#7968); a child that really
+// exits 127 still reports 127.
+test "async runCapture of a missing binary is an Err through the async seam" {
   val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Process as Process\n" +
     "async func run(): Int {\n" +
     "  val args: List[String] = newList()\n" +
     "  match Process.runCapture(\"/nonexistent-lyric-async-binary\", args, 5000) {\n" +
+    "    case Ok(_) -> 2\n" +
+    "    case Err(_) -> 77\n" +
+    "  }\n" +
+    "}\n" +
+    "func main(): Int {\n  run()\n}\n"
+  val r = compileAndRunBundled(src)
+  assertEqualInt(r.exitCode, 77, "a spawn failure surfaces as Err, matching the sync seam")
+}
+
+test "async runCapture of a child that exits 127 reports exit 127" {
+  val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Process as Process\n" +
+    "async func run(): Int {\n" +
+    "  val args: List[String] = newList()\n" +
+    "  args.add(\"-c\")\n" +
+    "  args.add(\"exit 127\")\n" +
+    "  match Process.runCapture(\"/bin/sh\", args, 5000) {\n" +
     "    case Ok(r) -> {\n" +
     "      if r.exitCode == 127 and not r.timedOut {\n        77\n      } else {\n        2\n      }\n" +
     "    }\n" +
@@ -628,7 +645,7 @@ test "async runCapture of a missing binary reports exit 127 through the async se
     "}\n" +
     "func main(): Int {\n  run()\n}\n"
   val r = compileAndRunBundled(src)
-  assertEqualInt(r.exitCode, 77, "exec failure surfaces as exit 127 with Ok, matching the sync seam")
+  assertEqualInt(r.exitCode, 77, "a real exit 127 is an Ok result")
 }
 
 // timeoutMs == 0 kills at the first pump after the deadline check

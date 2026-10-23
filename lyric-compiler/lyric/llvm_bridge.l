@@ -1160,6 +1160,9 @@ pub func compileToNativeWithFeatures(
     case None -> return false
   }
   val userPkg = dottedPath(userFile.packageDecl.path)
+  if DiagUtil.diagReportAndAbort(nativeConfigBlockDiagnostics(userFile)) {
+    return false
+  }
 
   // Transitive stdlib import closure, in deterministic worklist order.
   val toBundle: List[SourceFile] = newList()
@@ -1169,6 +1172,11 @@ pub func compileToNativeWithFeatures(
   while ui < userFile.imports.count {
     worklist.add(dottedPath(userFile.imports[ui].path))
     ui = ui + 1
+  }
+  // `Std.Core` (`Option`/`Result`) is an implicit prelude (#8256): a program
+  // that never imports it still names its types, as on the managed targets.
+  if userPkg != "Std.Core" {
+    worklist.add("Std.Core")
   }
   // `format1`-`format4` lower to `Std.String.formatArgs` (#7840).
   if pipeUsesFormatBuiltin(userFile) {
@@ -1199,7 +1207,12 @@ pub func compileToNativeWithFeatures(
           if DiagUtil.diagReportAndAbortInPkg(stdlibDiagLabel(pkg, stdlib), stdProp.diagnostics) {
             return false
           }
-          toBundle.add(stdProp.file)
+          // `formatN` lowers here too (#7984), and links `Std.String` in.
+          val stdFormatted = pipeLowerFormatBuiltins(stdProp.file)
+          if pipeUsesFormatBuiltin(stdFormatted) {
+            worklist.add("Std.String")
+          }
+          toBundle.add(stdFormatted)
           var fi = 0
           while fi < f.imports.count {
             worklist.add(dottedPath(f.imports[fi].path))
@@ -1655,6 +1668,13 @@ pub func compileProjectToNativeWithShape(
     mei = mei + 1
   }
   withForeignValueRecords(ownFiles, foreignRecords)
+  var cfgFi = 0
+  while cfgFi < ownFiles.count {
+    if DiagUtil.diagReportAndAbort(nativeConfigBlockDiagnostics(ownFiles[cfgFi])) {
+      return false
+    }
+    cfgFi = cfgFi + 1
+  }
 
   // Transitive stdlib import closure across every own package's imports.
   val toBundle: List[SourceFile] = newList()
@@ -1670,6 +1690,10 @@ pub func compileProjectToNativeWithShape(
     // `format1`-`format4` lower to `Std.String.formatArgs` (#7840).
     if pipeUsesFormatBuiltin(ownFiles[ofi]) {
       worklist.add("Std.String")
+    }
+    // `Std.Core` is an implicit prelude (#8256).
+    if dottedPath(ownFiles[ofi].packageDecl.path) != "Std.Core" {
+      worklist.add("Std.Core")
     }
     ofi = ofi + 1
   }
@@ -1696,7 +1720,12 @@ pub func compileProjectToNativeWithShape(
           if DiagUtil.diagReportAndAbortInPkg(stdlibDiagLabel(pkg, stdlib), stdProp.diagnostics) {
             return false
           }
-          toBundle.add(stdProp.file)
+          // `formatN` lowers here too (#7984), and links `Std.String` in.
+          val stdFormatted = pipeLowerFormatBuiltins(stdProp.file)
+          if pipeUsesFormatBuiltin(stdFormatted) {
+            worklist.add("Std.String")
+          }
+          toBundle.add(stdFormatted)
           var fi = 0
           while fi < f.imports.count {
             worklist.add(dottedPath(f.imports[fi].path))
@@ -1818,6 +1847,29 @@ pub func compileProjectToNativeWithShape(
   appendBundledUnits(toBundle, reachable, units)
 
   linkAndEmitNative(units, ownFiles.count, outputPath, triple, optLevel, extraClangFlags, shape, componentPkgs)
+}
+
+/// `N0025`: a `config { }` block (D046, docs/25) has no lowering on native
+/// yet (#7435). Without this gate a program reading a config field reached
+/// codegen's "unknown name" panic as an unhandled exception; the build now
+/// stops with a normal diagnostic naming the block, as for the other
+/// unsupported-on-native shapes.
+func nativeConfigBlockDiagnostics(file: in SourceFile): List[Diagnostic] {
+  val diags: List[Diagnostic] = newList()
+  for it in file.items {
+    match it.kind {
+      case IConfig(decl) -> diags.add(
+        errorDiagnostic(
+          "N0025",
+          "config block '" + decl.name +
+            "' is not supported for --target native yet (docs/25; tracked in #7435); build for --target dotnet or --target jvm, or read the value from the environment with Std.Environment",
+          it.span
+        )
+      )
+      case _ -> ()
+    }
+  }
+  diags
 }
 
 // Appends one `CodegenUnit` per bundled (stdlib) package in `toBundle` whose

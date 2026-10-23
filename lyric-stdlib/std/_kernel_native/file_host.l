@@ -70,9 +70,9 @@ extern func rtDirCreateAll(path: NativePtr[Byte]): Int = "lyric_dir_create_all"
 // Return-plus-ok-flag kernels (a ref-container out-param would leak
 // its initialiser; these always return a fresh owned list, empty on
 // failure, and report success through the Int out-flag).
-extern func rtReadBytes(path: NativePtr[Byte], okOut: NativePtr[Int]): slice[Byte] = "lyric_file_read_bytes"
+extern func rtReadBytes(path: NativePtr[Byte], okOut: NativePtr[Long]): slice[Byte] = "lyric_file_read_bytes"
 
-extern func rtDirList(path: NativePtr[Byte], okOut: NativePtr[Int]): List[String] = "lyric_dir_list2"
+extern func rtDirList(path: NativePtr[Byte], okOut: NativePtr[Long]): List[String] = "lyric_dir_list2"
 
 // Single-sweep name+kind listing (#4856): one opendir/readdir pass
 // classifies every entry via `d_type` instead of a bare-name listing
@@ -82,7 +82,7 @@ extern func rtDirList(path: NativePtr[Byte], okOut: NativePtr[Int]): List[String
 // List[Int] out-param would leak its Lyric-side `newList()`
 // initialiser the moment the extern call overwrites the slot (the
 // return-plus-ok-flag protocol above exists precisely to avoid that).
-extern func rtDirListTyped(path: NativePtr[Byte], okOut: NativePtr[Int]): List[String] = "lyric_dir_list_typed"
+extern func rtDirListTyped(path: NativePtr[Byte], okOut: NativePtr[Long]): List[String] = "lyric_dir_list_typed"
 
 extern func rtWriteBytes(path: NativePtr[Byte], data: slice[Byte], append: Int): Int = "lyric_file_write_bytes"
 
@@ -228,11 +228,11 @@ pub func hostDeleteFileResult(path: in String): Result[Unit, IOError] {
 // slice): every failure reports IoError, matching the managed twin.
 @unsafe_ffi
 pub func hostReadBytesResult(path: in String): Result[slice[Byte], IOError] {
-  var ok: Int = 0
+  var ok: Long = 0i64
   val c = toC(path)
   val bytes = rtReadBytes(c, nativeAddrOf(ok))
   freeC(c)
-  if ok == 1 {
+  if ok == 1i64 {
     Ok(value = bytes)
   } else {
     Err(error = IoError(path = path, message = "the file could not be read"))
@@ -276,11 +276,11 @@ pub func hostWriteBytesResult(path: in String, bytes: in slice[Byte]): Result[Un
 // cannot share that single-sweep typed listing.
 @unsafe_ffi
 func listEntryNamesNative(dir: in String): Result[List[String], IOError] {
-  var ok: Int = 0
+  var ok: Long = 0i64
   val c = toC(dir)
   val names = rtDirList(c, nativeAddrOf(ok))
   freeC(c)
-  if ok != 1 {
+  if ok != 1i64 {
     return Err(error = IoError(path = dir, message = "the directory could not be listed"))
   }
   Ok(value = names)
@@ -297,11 +297,11 @@ func listEntryNamesNative(dir: in String): Result[List[String], IOError] {
 // not yet support referencing from a function body.
 @unsafe_ffi
 func listEntriesByKind(dir: in String, wantKindDigit: String): Result[List[String], IOError] {
-  var ok: Int = 0
+  var ok: Long = 0i64
   val c = toC(dir)
   val entries = rtDirListTyped(c, nativeAddrOf(ok))
   freeC(c)
-  if ok != 1 {
+  if ok != 1i64 {
     return Err(error = IoError(path = dir, message = "the directory could not be listed"))
   }
   val acc: List[String] = newList()

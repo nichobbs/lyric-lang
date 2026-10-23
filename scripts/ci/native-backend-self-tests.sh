@@ -160,6 +160,8 @@ LYRIC_BIN="$lyric_bin" bash scripts/ci/hoisted-callee-cross-package-e2e.sh nativ
 for t in \
   lyric-stdlib/tests/task_native_tests.l \
   lyric-stdlib/tests/secure_random_native_tests.l \
+  lyric-stdlib/tests/random_native_tests.l \
+  lyric-stdlib/tests/char_native_tests.l \
   lyric-stdlib/tests/json_native_tests.l \
   lyric-stdlib/tests/json_value_tests.l \
   lyric-stdlib/tests/linalg_tests.l ; do

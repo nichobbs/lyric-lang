@@ -96,3 +96,18 @@ test "FileHost directory entry points create, enumerate and delete" {
   hostDeleteDirectoryRecursive(root, true)
   assertFalse(hostDirectoryExists(root), "tree deleted")
 }
+
+// #7968: an executable that cannot be started is a spawn failure (exit code
+// -1, empty output), not the 127 a child's failed exec used to report; a child
+// that really exits 127 still reports 127.
+test "ProcessCapture reports a missing executable as exit code -1, a real exit 127 as 127" {
+  val none: List[String] = newList()
+  val missing = runCaptureWithDiagnostics("/definitely-missing-lyric-7968", none, "")
+  assertEqualInt(missing.exitCode, 0 - 1, "spawn failure")
+  assertEqual(missing.stdout, "", "no output")
+  val args: List[String] = newList()
+  args.add("-c")
+  args.add("exit 127")
+  val real = runCaptureWithDiagnostics("/bin/sh", args, "")
+  assertEqualInt(real.exitCode, 127, "a real exit 127")
+}

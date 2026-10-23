@@ -1267,7 +1267,7 @@ static void test_read_bytes(void) {
     CHECK(fd >= 0);
     CHECK(write(fd, "hi\x00z", 4) == 4);
     close(fd);
-    int32_t ok = 0;
+    int64_t ok = 0;
     LyricList* bytes = lyric_file_read_bytes(tmpl, &ok);
     CHECK(ok == 1);
     CHECK(lyric_list_len(bytes) == 4);
@@ -1277,7 +1277,7 @@ static void test_read_bytes(void) {
     CHECK(lyric_list_get(bytes, 3) == 'z');
     lyric_release(bytes);
     unlink(tmpl);
-    int32_t ok2 = 1;
+    int64_t ok2 = 1;
     LyricList* missing = lyric_file_read_bytes("/definitely/missing/lyric-rt", &ok2);
     CHECK(ok2 == 0);
     CHECK(lyric_list_len(missing) == 0);
@@ -1379,7 +1379,7 @@ static void test_write_bytes(void) {
     lyric_list_push(data, 'z');
     CHECK(lyric_file_write_bytes(tmpl, data, 0) == 0);
     lyric_release(data);
-    int32_t ok = 0;
+    int64_t ok = 0;
     LyricList* back = lyric_file_read_bytes(tmpl, &ok);
     CHECK(ok == 1);
     CHECK(lyric_list_len(back) == 3);
@@ -1420,7 +1420,7 @@ static void test_dir_list2(void) {
     /* Missing directory: the ok-flag protocol must report failure with a
      * fresh empty list, never ok=1 (the native listFiles/listDirs seams
      * classify IO failures solely from this flag). */
-    int32_t ok = 1;
+    int64_t ok = 1;
     LyricList* missing = lyric_dir_list2("/definitely/missing/lyric-rt-dir", &ok);
     CHECK(ok == 0);
     CHECK(lyric_list_len(missing) == 0);
@@ -1431,7 +1431,7 @@ static void test_dir_list2(void) {
 
     /* Existing but EMPTY directory: ok=1 with zero entries — existence
      * and content are reported independently. */
-    int32_t ok0 = 0;
+    int64_t ok0 = 0;
     LyricList* none = lyric_dir_list2(tmpl, &ok0);
     CHECK(ok0 == 1);
     CHECK(lyric_list_len(none) == 0);
@@ -1443,7 +1443,7 @@ static void test_dir_list2(void) {
     FILE* f = fopen(inner, "w");
     CHECK(f != NULL);
     fclose(f);
-    int32_t ok2 = 0;
+    int64_t ok2 = 0;
     LyricList* names = lyric_dir_list2(tmpl, &ok2);
     CHECK(ok2 == 1);
     CHECK(lyric_list_len(names) == 1);
@@ -1478,7 +1478,7 @@ static int32_t find_entry_kind(LyricList* entries, const char* target) {
 #if LYRIC_TEST_POSIX
 static void test_dir_list_typed(void) {
     /* Missing directory: same ok-flag protocol as lyric_dir_list2. */
-    int32_t ok = 1;
+    int64_t ok = 1;
     LyricList* missing = lyric_dir_list_typed("/definitely/missing/lyric-rt-dir-typed", &ok);
     CHECK(ok == 0);
     CHECK(lyric_list_len(missing) == 0);
@@ -1520,7 +1520,7 @@ static void test_dir_list_typed(void) {
     snprintf(linkBroken, sizeof linkBroken, "%s/link_broken", tmpl);
     CHECK(symlink("/definitely/missing/lyric-rt-typed-target", linkBroken) == 0);
 
-    int32_t ok2 = 0;
+    int64_t ok2 = 0;
     LyricList* entries = lyric_dir_list_typed(tmpl, &ok2);
     CHECK(ok2 == 1);
     CHECK(lyric_list_len(entries) == 5);
@@ -2340,16 +2340,27 @@ static void test_process(void) {
     lyric_release(out3);
     lyric_release(err3);
 
-    /* Spawn failure (path lookup handled by execvp inside the child, so
-     * a missing executable is exit code 127, not a spawn failure): */
+    /* A missing executable is a spawn failure (-1, with the errno of the
+     * failed exec), not exit code 127 (#7968); a program that really exits
+     * 127 still reports 127. */
     int32_t exit_code4 = -99;
     LyricString* out4 = NULL;
     LyricString* err4 = NULL;
     CHECK(lyric_process_run("/nonexistent-lyric-rt-test-exe", NULL, NULL, -1, &exit_code4, &out4, &err4, NULL) ==
-          0);
-    CHECK(exit_code4 == 127);
-    lyric_release(out4);
-    lyric_release(err4);
+          -1);
+    CHECK(lyric_process_last_spawn_errno() == ENOENT);
+    LyricList* sh127 = lyric_list_new(2);
+    LyricString* sh_c = lyric_string_from_literal((const uint8_t*)"-c", 2);
+    LyricString* sh_exit = lyric_string_from_literal((const uint8_t*)"exit 127", 8);
+    lyric_list_push(sh127, (int64_t)(intptr_t)sh_c);
+    lyric_list_push(sh127, (int64_t)(intptr_t)sh_exit);
+    int32_t exit_code5 = -99;
+    LyricString* out5 = NULL;
+    LyricString* err5 = NULL;
+    CHECK(lyric_process_run("/bin/sh", sh127, NULL, -1, &exit_code5, &out5, &err5, NULL) == 0);
+    CHECK(exit_code5 == 127);
+    lyric_release(out5);
+    lyric_release(err5);
 }
 #endif /* !__wasi__ */
 
@@ -2605,23 +2616,16 @@ static void test_process_op_kill_after_exit(void) {
 
 #if LYRIC_TEST_POSIX
 static void test_process_op_exec_failure(void) {
-    /* execvp failure inside the child: exit 127, empty output, no spawn
-     * failure (matching lyric_process_run and shell convention). */
+    /* execvp failure inside the child is a spawn failure, as for
+     * lyric_process_run (#7968): the op is born done, with the -1 exit
+     * code and empty output. */
     void* op = lyric_process_start("/nonexistent-lyric-op-binary", NULL, NULL);
-    CHECK(!lyric_process_spawn_failed(op));
-    int spins = 0;
-    while (!lyric_process_pump(op) && spins < 5000) {
-        struct timespec ts = {0, 1000000};
-        nanosleep(&ts, NULL);
-        spins++;
-    }
+    CHECK(lyric_process_spawn_failed(op));
     CHECK(lyric_process_pump(op) == 1);
-    CHECK(lyric_process_exit_code(op) == 127);
+    CHECK(lyric_process_exit_code(op) == -1);
     LyricString* out = lyric_process_stdout(op);
     CHECK(lyric_string_len(out) == 0);
     lyric_release(out);
-    /* The child _exits without writing anything: execvp itself is
-     * silent, so stderr must be empty too (#5116). */
     LyricString* errs = lyric_process_stderr(op);
     CHECK(lyric_string_len(errs) == 0);
     lyric_release(errs);
@@ -3739,7 +3743,73 @@ static void test_string_ascii_case_compare(void) {
     CHECK(lyric_string_ascii_case_compare(rt_str("ab"), rt_str("abc\xc3\xa9")) == -1);
 }
 
+/* Std.Char classification and case mapping by Unicode general category
+ * (#6858): ASCII, Latin-1, Greek, a Han ideograph, an astral letter, and the
+ * code points that are in no class. */
+static void test_char_classification(void) {
+    CHECK(lyric_char_is_letter('a') && lyric_char_is_letter('Z'));
+    CHECK(!lyric_char_is_letter('0') && !lyric_char_is_letter('_'));
+    CHECK(lyric_char_is_letter(0x00E9));  /* e acute (Ll) */
+    CHECK(lyric_char_is_letter(0x03A3));  /* Greek capital sigma (Lu) */
+    CHECK(lyric_char_is_letter(0x4E2D));  /* a Han ideograph (Lo) */
+    CHECK(lyric_char_is_letter(0x1D400)); /* mathematical bold A, outside the BMP (Lu) */
+    CHECK(lyric_char_is_letter(0x01C5));  /* Latin capital D with small z with caron (Lt) */
+    CHECK(lyric_char_is_letter(0x02B0));  /* modifier letter small h (Lm) */
+    CHECK(!lyric_char_is_letter(0x00D7)); /* multiplication sign (Sm) */
+    CHECK(!lyric_char_is_letter(0xD800)); /* a surrogate half (Cs) */
+    CHECK(!lyric_char_is_letter(0x0378)); /* unassigned */
+    CHECK(!lyric_char_is_letter(-1));
+    CHECK(!lyric_char_is_letter(0x110000));
+
+    CHECK(lyric_char_is_digit('7') && !lyric_char_is_digit('a'));
+    CHECK(lyric_char_is_digit(0x0663));   /* Arabic-Indic digit three (Nd) */
+    CHECK(!lyric_char_is_digit(0x00BD));  /* vulgar fraction one half (No) */
+
+    CHECK(lyric_char_is_upper('A') && !lyric_char_is_upper('a'));
+    CHECK(lyric_char_is_upper(0x00C9) && !lyric_char_is_upper(0x00E9));
+    CHECK(lyric_char_is_lower('a') && !lyric_char_is_lower('A'));
+    CHECK(lyric_char_is_lower(0x03C3) && !lyric_char_is_lower(0x03A3));
+    CHECK(!lyric_char_is_upper(0x01C5) && !lyric_char_is_lower(0x01C5)); /* titlecase is neither */
+
+    CHECK(lyric_char_is_punctuation('!') && lyric_char_is_punctuation('_'));
+    CHECK(!lyric_char_is_punctuation('$') && !lyric_char_is_punctuation('+') && !lyric_char_is_punctuation('|'));
+    CHECK(lyric_char_is_punctuation(0x00A1));  /* inverted exclamation mark (Po) */
+    CHECK(lyric_char_is_punctuation(0x2014));  /* em dash (Pd) */
+    CHECK(lyric_char_is_punctuation(0x00AB));  /* left guillemet (Pi) */
+
+    CHECK(lyric_char_is_control(0) && lyric_char_is_control(31) && lyric_char_is_control(127));
+    CHECK(lyric_char_is_control(0x0085) && lyric_char_is_control(0x009F)); /* C1 controls */
+    CHECK(!lyric_char_is_control(' ') && !lyric_char_is_control(0x00A0));
+
+    CHECK(lyric_char_to_upper('a') == 'A' && lyric_char_to_lower('Z') == 'z');
+    CHECK(lyric_char_to_upper(0x00E9) == 0x00C9 && lyric_char_to_lower(0x00C9) == 0x00E9);
+    CHECK(lyric_char_to_upper(0x03C3) == 0x03A3 && lyric_char_to_lower(0x03A3) == 0x03C3);
+    CHECK(lyric_char_to_upper('1') == '1' && lyric_char_to_lower(0x4E2D) == 0x4E2D);
+    CHECK(lyric_char_to_upper(-5) == -5 && lyric_char_to_lower(-5) == -5);
+}
+
+/* The structured-key hash helpers agree with D172's equality (#8167): both
+ * zeros hash alike, every NaN does, and equal strings hash alike. */
+static void test_key_hash_helpers(void) {
+    CHECK(lyric_hash_double(0.0) == lyric_hash_double(-0.0));
+    CHECK(lyric_hash_double(0.0 / 0.0) == lyric_hash_double(-(0.0 / 0.0)));
+    CHECK(lyric_hash_double(1.5) != lyric_hash_double(2.5));
+    CHECK(lyric_hash_float(0.0f) == lyric_hash_float(-0.0f));
+    CHECK(lyric_hash_float(0.0f / 0.0f) == lyric_hash_float(-(0.0f / 0.0f)));
+    LyricString* a = lyric_string_from_literal((const uint8_t*)"key", 3);
+    LyricString* b = lyric_string_from_literal((const uint8_t*)"key", 3);
+    LyricString* c = lyric_string_from_literal((const uint8_t*)"kez", 3);
+    CHECK(lyric_string_hash(a) == lyric_string_hash(b));
+    CHECK(lyric_string_hash(a) != lyric_string_hash(c));
+    CHECK(lyric_hash_mix(1, 2) != lyric_hash_mix(2, 1));
+    lyric_release(a);
+    lyric_release(b);
+    lyric_release(c);
+}
+
 int main(void) {
+    test_key_hash_helpers();
+    test_char_classification();
 #if LYRIC_TEST_THREADS
     test_thread_spawn_detached();
 #endif

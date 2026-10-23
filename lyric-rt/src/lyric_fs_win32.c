@@ -146,7 +146,7 @@ int32_t lyric_file_read_all_ok(const char* path, LyricString** out) {
     return 0;
 }
 
-LyricList* lyric_file_read_bytes(const char* path, int32_t* ok) {
+LyricList* lyric_file_read_bytes(const char* path, int64_t* ok) {
     int64_t len = 0;
     uint8_t* buf = read_file_to_buf(path, &len);
     if (!buf) {
@@ -376,7 +376,7 @@ LyricList* lyric_dir_list(const char* path) {
     return list;
 }
 
-LyricList* lyric_dir_list2(const char* path, int32_t* ok) {
+LyricList* lyric_dir_list2(const char* path, int64_t* ok) {
     LyricList* l = lyric_dir_list(path);
     if (!l) {
         *ok = 0;
@@ -428,7 +428,7 @@ static int push_typed(const char* name, int64_t name_len, const WIN32_FIND_DATAW
     return 0;
 }
 
-LyricList* lyric_dir_list_typed(const char* path, int32_t* ok) {
+LyricList* lyric_dir_list_typed(const char* path, int64_t* ok) {
     typed_ctx ctx;
     ctx.list = lyric_list_new(1);
     ctx.dir = path;

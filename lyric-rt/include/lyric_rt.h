@@ -152,6 +152,20 @@ LyricString* lyric_string_substring(LyricString* s, int64_t start, int64_t len);
 LyricString* lyric_string_trim(LyricString* s);
 LyricString* lyric_string_to_lower(LyricString* s);
 LyricString* lyric_string_to_upper(LyricString* s);
+/* Unicode classification and simple case mapping of one code point, for
+ * `Std.Char` on the native target (#6858). The predicates answer by general
+ * category (letter = Lu/Ll/Lt/Lm/Lo, digit = Nd, upper = Lu, lower = Ll,
+ * punctuation = Pc/Pd/Ps/Pe/Pi/Pf/Po, control = Cc), 1 or 0; an unassigned,
+ * surrogate or negative code point answers 0. The case mappings return the
+ * code point itself when it has none. */
+int32_t      lyric_char_is_letter(int32_t cp);
+int32_t      lyric_char_is_digit(int32_t cp);
+int32_t      lyric_char_is_upper(int32_t cp);
+int32_t      lyric_char_is_lower(int32_t cp);
+int32_t      lyric_char_is_punctuation(int32_t cp);
+int32_t      lyric_char_is_control(int32_t cp);
+int32_t      lyric_char_to_upper(int32_t cp);
+int32_t      lyric_char_to_lower(int32_t cp);
 int64_t      lyric_string_index_of(LyricString* haystack, LyricString* needle);
 int64_t      lyric_string_last_index_of(LyricString* haystack, LyricString* needle);
 /* Forward search starting at byte offset `from` (Std.String.indexOfFrom,
@@ -308,6 +322,18 @@ LyricString* lyric_string_concat_list(LyricList* parts);
 typedef struct LyricMap LyricMap;
 
 LyricMap* lyric_map_new(int32_t keys_are_strings, int32_t vals_are_refs);
+/* A map whose keys are ARC objects (a union, a record, a boxed value) hashed
+ * and compared by the given functions over the key's 64-bit slot (#8167): the
+ * compiler synthesises them per key type to implement D172's equality. The map
+ * holds a strong reference to every key. */
+LyricMap* lyric_map_new_custom(int32_t vals_are_refs, uint64_t (*key_hash)(int64_t), int32_t (*key_eq)(int64_t, int64_t));
+/* Hash helpers the synthesised key functions call: `lyric_hash_mix` folds
+ * `x` into `h`; the others hash a String by text and a Float/Double so that
+ * both zeros hash alike and every NaN does (D172). */
+uint64_t  lyric_hash_mix(uint64_t h, uint64_t x);
+uint64_t  lyric_string_hash(LyricString* s);
+uint64_t  lyric_hash_double(double v);
+uint64_t  lyric_hash_float(float v);
 void      lyric_map_set(LyricMap* map, int64_t key, int64_t val);
 /* Returns 1 and writes the value through out_val when present; 0 otherwise. */
 int32_t   lyric_map_get(LyricMap* map, int64_t key, int64_t* out_val);
@@ -578,14 +604,11 @@ int32_t lyric_file_read_all_ok(const char* path, LyricString** out);
  * ALWAYS returns a fresh rc=1 list (empty on failure); *ok reports
  * success (1/0).
  *
- * `ok` is int32_t*, not int64_t*, ON PURPOSE (#4844): the Lyric caller
- * passes `NativePtr[Int]` (a zero-initialised i64 slot via nativeAddrOf).
- * A 4-byte write lands the 0/1 flag in the low half; the high half stays
- * 0, so the i64 read is exact on every Phase-1 target (all little-endian
- * — D-N-008).  Widening to int64_t* is blocked on a codegen bug where an
- * 8-byte write through nativeAddrOf(var: Int) corrupts an adjacent stack
- * temp (#4845); revisit once that is fixed. */
-LyricList* lyric_file_read_bytes(const char* path, int32_t* ok);
+ * `ok` is int64_t*: the Lyric caller passes `NativePtr[Long]` (the address of
+ * a `var ok: Long`, an i64 slot). A Lyric `Int` is 32-bit on native, so a
+ * `NativePtr[Int]` here would be a 4-byte slot and an 8-byte write through it
+ * would clobber the neighbouring stack slot (#4845). */
+LyricList* lyric_file_read_bytes(const char* path, int64_t* ok);
 
 /* Write every byte (one per 64-bit slot) of `data` to `path`; append
  * != 0 appends, else truncate-or-create (0644).  0 on success, -1 on
@@ -650,8 +673,8 @@ LyricList* lyric_dir_list(const char* path);
 
 /* Entry-name listing with the return-plus-ok-flag protocol: always a
  * fresh rc=1 list (empty on failure); *ok reports success (1/0).  `ok`
- * is int32_t* by design — see lyric_file_read_bytes (#4844, #4845). */
-LyricList* lyric_dir_list2(const char* path, int32_t* ok);
+ * is int64_t*, as for lyric_file_read_bytes. */
+LyricList* lyric_dir_list2(const char* path, int64_t* ok);
 
 /* Per-entry classification codes lyric_dir_list_typed prepends to each
  * returned name, as a single ASCII digit ('0'/'1'/'2'). */
@@ -676,7 +699,7 @@ LyricList* lyric_dir_list2(const char* path, int32_t* ok);
  * only the two-probe-per-entry cost is removed, not the
  * symlink-following semantics.  *ok reports success (1/0), matching
  * lyric_dir_list2. */
-LyricList* lyric_dir_list_typed(const char* path, int32_t* ok);
+LyricList* lyric_dir_list_typed(const char* path, int64_t* ok);
 
 /* ── Environment (lyric_fs.c) ──────────────────────────────────────── */
 

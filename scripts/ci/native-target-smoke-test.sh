@@ -178,6 +178,8 @@ LYRIC_BIN="$lyric_bin" bash scripts/ci/native-stdlib-type-check-gate.sh
 echo "Native native_kernel_twins_tests.l (--target native) passed"
 bash scripts/ci/console-stdin-test.sh "$lyric_bin" --target native
 echo "Native console-stdin-test (--target native) passed"
-# lyric-stdlib/tests/hash_tests.l does not run here yet: Std.Hash has no
-# native kernel and sha512OfFile's try/catch cannot lower on native
-# (D-N-003). Tracked in #7684, which adds it to this script.
+# Std.Hash on native (#7684): the FIPS 180-4 / RFC 4231 vectors, and
+# sha512OfFile, whose unreadable-file path is a Result seam rather than a
+# catch (D-N-003).
+"$lyric_bin" run --target native lyric-stdlib/tests/hash_tests.l
+echo "Native hash_tests.l (--target native) passed"
