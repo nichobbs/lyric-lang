@@ -87,7 +87,7 @@ func smtRenderFloat(f: in Double): String {
   } else if s == "-Infinity" {
     "(_ -oo 11 53)"
   } else if s.startsWith("-") {
-    "((_ to_fp 11 53) RNE (- " + expandToDecimal(s.substring(1)) + "))"
+    "(fp.neg ((_ to_fp 11 53) RNE " + expandToDecimal(s.substring(1)) + "))"
   } else {
     "((_ to_fp 11 53) RNE " + expandToDecimal(s) + ")"
   }

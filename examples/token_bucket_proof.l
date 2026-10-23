@@ -3,7 +3,7 @@ package TokenBucketProof
 
 // Proof-focused token bucket demonstrating protected type invariant
 // reasoning.  The time-based refill from Example 2 is simplified:
-// `refill` takes `added: Double` as an explicit parameter so the
+// `refill` takes `added: Long` as an explicit parameter so the
 // verifier can reason about it without modelling Instant / Duration.
 //
 // Run with:
@@ -14,10 +14,11 @@ package TokenBucketProof
 // Without a solver, arithmetic goals go Unknown; pass --allow-unverified
 // to suppress V0007 in that case.
 //
-// Invariant:  tokens >= 0.0  AND  tokens <= capacity  AND  capacity <= 1.0e300
+// Invariant:  tokens >= 0  AND  tokens <= capacity
 //
-// `Double` is IEEE 754 in the prover, so the capacity is bounded: with an
-// infinite capacity and count, `tokens - count` is NaN.
+// Tokens are whole units (`Long`).  `Double` is IEEE 754 in the prover, and
+// z3's bit-blasting of floating-point subtraction against a capacity bound
+// takes longer than the prover's time limit; integers prove instantly.
 //
 // Proof sketch:
 //   tryAcquire: the if-branch only executes when `tokens >= count`;
@@ -29,44 +30,42 @@ package TokenBucketProof
 //   make:  initial tokens == capacity, so the invariant holds from
 //     construction.
 pub protected type Bucket {
-  var tokens: Double
-  let capacity: Double
-  invariant: tokens >= 0.0
+  var tokens: Long
+  let capacity: Long
+  invariant: tokens >= 0
   invariant: tokens <= capacity
-  invariant: capacity <= 1.0e300
-  pub entry tryAcquire(count: in Double): Bool
+  pub entry tryAcquire(count: in Long): Bool
 
     // Attempt to consume `count` tokens.  Returns true on success,
     // leaving the bucket with `count` fewer tokens; returns false
     // (no mutation) when insufficient tokens are available.
-    requires: count > 0.0
+    requires: count > 0
     requires: count <= capacity
   {
     if tokens >= count {
       tokens = tokens - count
-      assert(tokens >= 0.0)
+      assert(tokens >= 0)
       assert(tokens <= capacity)
       return true
     }
     return false
   }
-  pub entry refill(added: in Double): Unit
+  pub entry refill(added: in Long): Unit
 
     // Add `added` tokens, capped at capacity.
-    requires: added > 0.0
+    requires: added > 0
   {
     val newTokens = tokens + added
     tokens = if newTokens > capacity then capacity else newTokens
-    assert(tokens >= 0.0)
+    assert(tokens >= 0)
     assert(tokens <= capacity)
   }
 }
 
 // Construct a full bucket.  The postcondition records that the initial
 // token count equals the capacity, satisfying the invariant at construction.
-pub func make(capacity: in Double): Bucket
-  requires: capacity > 0.0
-  requires: capacity <= 1.0e300
+pub func make(capacity: in Long): Bucket
+  requires: capacity > 0
   ensures: result.tokens == capacity
   ensures: result.capacity == capacity
 {

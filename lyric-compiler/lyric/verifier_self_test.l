@@ -3930,6 +3930,10 @@ test "an index read is a bounds obligation (#8157)" {
   )
   assertDischarged("func at(a: in array[3, Int]): Int\n  ensures: true\n{\n  a[2]\n}\n", "array-in-bounds")
   assertRefuted("func at(a: in array[3, Int]): Int\n  ensures: true\n{\n  a[3]\n}\n", "array-out-of-bounds")
+  assertUntranslatable(
+    "func at(xs: in slice[Int], i: in UInt): Int\n  ensures: true\n{\n  xs[i]\n}\n",
+    "unsigned-index"
+  )
   // A list changes under `add` and `clear`, which the verifier does not
   // model, so its length cannot be named.
   assertUntranslatable(
@@ -4036,7 +4040,13 @@ test "Double literals render as exact Float64 constants (#8141)" {
   val big = TLit(value = VLFloat(f = 1.0e20), sort = SFloat64)
   assertEqual(smtRenderTerm(big), "((_ to_fp 11 53) RNE 100000000000000000000.0)", "large exponent expanded")
   val negative = TLit(value = VLFloat(f = -2.5), sort = SFloat64)
-  assertEqual(smtRenderTerm(negative), "((_ to_fp 11 53) RNE (- 2.5))", "negative literal")
+  assertEqual(smtRenderTerm(negative), "(fp.neg ((_ to_fp 11 53) RNE 2.5))", "negative literal")
+  val negZero = TLit(value = VLFloat(f = -0.0), sort = SFloat64)
+  assertEqual(
+    smtRenderTerm(negZero),
+    "(fp.neg ((_ to_fp 11 53) RNE 0.0))",
+    "negative zero keeps its sign: a real -0 is +0"
+  )
   assertTrue(
     smtRenderTerm(TLit(value = VLFloat(f = 1.0 / 0.0), sort = SFloat64)) == "(_ +oo 11 53)",
     "positive infinity"

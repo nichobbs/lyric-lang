@@ -2466,7 +2466,9 @@ func resolveMethodCallee(
   }
 }
 
-// The primitive types a value of sort `s` can be, by source name.
+// The primitive types a value of sort `s` can be, by source name.  A width
+// not listed (`Short`, `UShort`) has no entry on purpose: the call stays
+// unresolved and fails closed.
 func primitiveTypeNamesOfSort(s: in Sort): List[String] {
   val names: List[String] = newList()
   match s {
