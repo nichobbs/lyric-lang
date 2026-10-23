@@ -130,6 +130,15 @@ test "decodeInt32ConstantBlob: U2 (0x07) 2-byte blob stays unsigned (uses rdU16)
   }
 }
 
+test "scoreSigType: a method-generic T[] takes any array, a type-generic !0[] does not (#7807)" {
+  val strArr = mkSzArraySig(mkPrimSig(0x0E))
+  val mvarArr = mkSzArraySig(STMVar(index = 0))
+  val varArr = mkSzArraySig(STVar(index = 0))
+  assertEqualInt(scoreSigType(strArr, mvarArr), 1, "string[] for !!0[]: weak bare-VAR tier")
+  assertEqualInt(scoreSigType(strArr, varArr), -1, "string[] for !0[]: not matched")
+  assertEqualInt(scoreSigType(mkPrimSig(0x08), mvarArr), -1, "a non-array for !!0[]")
+}
+
 test "decodeInt32ConstantBlob: I1 (0x04) 1-byte blob is sign-extended, U1 (0x05) is not (#7889)" {
   val bytes: List[Byte] = newList()
   bytes.add(0x80u8)

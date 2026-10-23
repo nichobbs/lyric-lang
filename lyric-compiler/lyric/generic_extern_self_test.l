@@ -153,7 +153,8 @@ test "unannotated Int local key boxes into the Object-fallback wrapper (#6127)" 
 }
 
 // #7807: an `@externTarget` over a generic BCL method with a `T[]` parameter
-// binds `T` from the slice argument.
+// resolves; the scorer takes any array for the method's own `T` and the
+// instantiation binds it from the slice argument.
 @externTarget("System.Array.Reverse")
 @externStatic
 func arrReverse[T](a: in slice[T]): Unit = ()
