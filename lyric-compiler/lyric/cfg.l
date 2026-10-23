@@ -62,10 +62,10 @@ func listContains(haystack: in List[String], needle: in String): Bool {
 }
 
 // Evaluate one predicate argument of an `@cfg(...)`: `feature = "X"`,
-// `target = "X"`, `target_os = "X"`, or the composites `any(p, ...)` (true if any operand is),
-// `all(p, ...)` (true if every operand is) and `not(p)`.  A malformed
-// predicate emits `F0012` and evaluates to true, so a typo keeps the item
-// rather than silently erasing it.
+// `target = "X"`, `target_os = "X"`, or the composites `any(p, ...)` (true
+// if any operand is), `all(p, ...)` (true if every operand is) and `not(p)`.
+// A malformed predicate emits `F0012` and evaluates to true, so a typo keeps
+// the item rather than silently erasing it.
 func evalCfgPredicate(
   active: in List[String],
   declared: in List[String],

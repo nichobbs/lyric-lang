@@ -48,7 +48,7 @@ fetch "$HB_URL" "$HB_SHA256" "$work/harfbuzz.tar.xz"
 # FreeType alone: no zlib, bzip2, PNG, Brotli or HarfBuzz (the fonts lyric-text
 # opens need none of them, and HarfBuzz is built against it below).
 cmake -S "$work/freetype-$FT_VERSION" -B "$work/ft-build" -G Ninja \
-  -DCMAKE_C_COMPILER=clang -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+  -DCMAKE_C_COMPILER=clang -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
   -DCMAKE_INSTALL_PREFIX="$mprefix" \
   -DFT_DISABLE_ZLIB=ON -DFT_DISABLE_BZIP2=ON -DFT_DISABLE_PNG=ON -DFT_DISABLE_HARFBUZZ=ON -DFT_DISABLE_BROTLI=ON
 cmake --build "$work/ft-build"
@@ -56,6 +56,7 @@ cmake --install "$work/ft-build"
 
 cmake -S "$work/harfbuzz-$HB_VERSION" -B "$work/hb-build" -G Ninja \
   -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+  -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
   -DCMAKE_INSTALL_PREFIX="$mprefix" -DCMAKE_PREFIX_PATH="$mprefix" \
   -DHB_HAVE_FREETYPE=ON -DHB_BUILD_SUBSET=OFF -DHB_BUILD_UTILS=OFF
 cmake --build "$work/hb-build"
