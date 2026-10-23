@@ -17,7 +17,9 @@
 # D163; record_eq_self_test.l, D164; task_shadow_self_test.l, D166;
 # propagate_ctor_operand_self_test.l and propagate_ctor_operand_try_self_test.l,
 # #8181;
-# the structural_equality self-tests, D172),
+# the structural_equality self-tests, D172; slice_func_tolist_self_test.l,
+# slice_to_list_self_test.l and int_to_nat_self_test.l, #7661, #7662, #8323;
+# jvm_erased_types_self_test.l, #8281, #8237, #8132, #8162, #7298),
 # through one
 # `lyric test`
 # invocation per file.
@@ -85,6 +87,10 @@ for t in \
   lyric-compiler/lyric/bare_func_ref_self_test.l \
   lyric-compiler/lyric/unit_func_ref_action_self_test.l \
   lyric-compiler/lyric/inout_self_param_self_test.l \
+  lyric-compiler/lyric/union_named_arg_order_self_test.l \
+  lyric-compiler/lyric/local_as_pattern_self_test.l \
+  lyric-compiler/lyric/record_method_option_param_self_test.l \
+  lyric-compiler/lyric/string_split_intrinsic_self_test.l \
   lyric-compiler/lyric/protected_iface_impl_self_test.l \
   lyric-compiler/lyric/generic_protected_self_test.l \
   lyric-compiler/lyric/generic_opaque_self_test.l \
@@ -98,6 +104,7 @@ for t in \
   lyric-compiler/lyric/return_list_literal_self_test.l \
   lyric-compiler/lyric/compiler_bugs_3502_3505_3547_self_test.l \
   lyric-compiler/jvm/static_type_recovery_jvm_self_test.l \
+  lyric-compiler/jvm/curried_generic_union_jvm_self_test.l \
   lyric-compiler/jvm/propagate_dot_named_bind_jvm_self_test.l \
   lyric-compiler/lyric/inbundle_generic_method_typevar_default_self_test.l \
   lyric-compiler/lyric/generic_method_body_typevar_self_test.l \
@@ -155,6 +162,10 @@ for t in \
   lyric-compiler/lyric/byref_value_type_self_test.l \
   lyric-compiler/lyric/slice_func_elem_self_test.l \
   lyric-compiler/lyric/slice_func_unit_elem_self_test.l \
+  lyric-compiler/lyric/slice_func_tolist_self_test.l \
+  lyric-compiler/lyric/slice_to_list_self_test.l \
+  lyric-compiler/lyric/int_to_nat_self_test.l \
+  lyric-compiler/lyric/jvm_erased_types_self_test.l \
   lyric-compiler/lyric/println_stringify_self_test.l \
   lyric-compiler/lyric/println_extern_jvm_self_test.l ; do
   echo "=== $t ==="

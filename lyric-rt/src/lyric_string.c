@@ -96,6 +96,19 @@ static int round_trips(unsigned long long m, int e10, double v, int is_single) {
     return back == v;
 }
 
+/* Whether any digit after the first `from` significant digits of v's exact
+ * decimal expansion is non-zero. */
+static int exact_tail_nonzero(double v, int from) {
+    char exact[800];
+    snprintf(exact, sizeof exact, "%.766e", v);
+    int seen = 0;
+    for (const char* c = exact; *c && *c != 'e'; c++) {
+        if (*c < '0' || *c > '9') continue;
+        if (seen++ >= from && *c != '0') return 1;
+    }
+    return 0;
+}
+
 /* .NET's default floating-point rendering, shared by Double and Float so the
  * native target prints the same text as --target dotnet: the shortest
  * decimal that parses back to the value (the nearer of two at that length,
@@ -127,18 +140,40 @@ static LyricString* format_shortest(double v, int is_single) {
     char digits[24];
     int nd = 0;
     int e = 0;
+    /* The decimal digits of v, rounded below to each candidate length with
+     * an exact tie going to the even digit.  printf's own rounding cannot be
+     * used for that: glibc rounds a tie to even, the Windows CRT away from
+     * zero.  Forty significant digits decide every case but a tail that
+     * reads exactly "5000...": the tail f printed to the remaining digits is
+     * within half a unit of the true tail, so a printed tail above or below
+     * one half is one, and only an exact printed half needs the full
+     * expansion (a binary64 has at most 767 significant digits) to tell a
+     * true tie from a value just past it. */
+    char sci[48];
+    snprintf(sci, sizeof sci, "%.39e", v);
+    char all[40];
+    int na = 0;
+    const char* x = sci;
+    while (*x && *x != 'e') {
+        if (*x >= '0' && *x <= '9' && na < (int)sizeof all) all[na++] = *x;
+        x++;
+    }
+    int e_exact = atoi(x + 1);
     for (int p = 1; p <= max_digits; p++) {
-        /* r: the nearest p-digit decimal (printf rounds an exact tie to
-         * even), as m * 10^e10. */
-        char sci[40];
-        snprintf(sci, sizeof sci, "%.*e", p - 1, v);
+        /* r: the nearest p-digit decimal, as m * 10^e10. */
         unsigned long long m = 0;
-        const char* c = sci;
-        while (*c && *c != 'e') {
-            if (*c >= '0' && *c <= '9') m = m * 10 + (unsigned long long)(*c - '0');
-            c++;
+        for (int i = 0; i < p; i++) m = m * 10 + (unsigned long long)(all[i] - '0');
+        int up = 0;
+        if (all[p] > '5') {
+            up = 1;
+        } else if (all[p] == '5') {
+            int beyond = 0;
+            for (int i = p + 1; i < na && !beyond; i++) beyond = all[i] != '0';
+            if (!beyond) beyond = exact_tail_nonzero(v, p + 1);
+            up = beyond || (m & 1ULL);
         }
-        int e10 = atoi(c + 1) - (p - 1);
+        if (up) m++;
+        int e10 = e_exact - (p - 1);
         if (!round_trips(m, e10, v, is_single)) {
             /* Next to a power of two the rounding interval is lopsided, so r
              * can fall outside it while its neighbour on the far side of v

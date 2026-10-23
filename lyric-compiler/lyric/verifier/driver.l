@@ -333,6 +333,9 @@ pub record ScopeDecls {
   /// the proved file is never resolved to its own declaration where the
   /// type checker would pick another file's of the same name (#8341).
   pub functions: List[FunctionArity]
+  /// The records and distinct types, whose fields and underlying types a
+  /// proof of the file reads (#8306).
+  pub typeItems: List[Item]
 }
 
 /// A function's name and how many parameters it declares.
@@ -361,12 +364,14 @@ pub func emptyScopeDecls(): ScopeDecls {
   val none: List[String] = newList()
   val noImports: List[String] = newList()
   val noFunctions: List[FunctionArity] = newList()
+  val noTypeItems: List[Item] = newList()
   ScopeDecls(
     interfaces = noInterfaces,
     unions = noUnions,
     enumCases = none,
     imports = noImports,
-    functions = noFunctions
+    functions = noFunctions,
+    typeItems = noTypeItems
   )
 }
 
@@ -393,6 +398,8 @@ func appendScopeDecls(acc: in ScopeDecls, file: in SourceFile): Unit {
         }
       }
       case IFunc(fn) -> acc.functions.add(FunctionArity(name = fn.name, paramCount = fn.params.count))
+      case IRecord(_) -> acc.typeItems.add(it)
+      case IDistinctType(_) -> acc.typeItems.add(it)
       case _ -> ()
     }
   }
@@ -418,6 +425,9 @@ func mergeScopeDecls(acc: in ScopeDecls, more: in ScopeDecls): Unit {
   }
   for f in more.functions {
     acc.functions.add(f)
+  }
+  for t in more.typeItems {
+    acc.typeItems.add(t)
   }
   for n in more.imports {
     if not acc.imports.contains(n) {
@@ -1187,20 +1197,6 @@ pub func proveSourceForBuild(
   while i < goals.count {
     val skippedUnfold = goalHasSkippedUnfold(goals[i])
     val g = if skippedUnfold { withoutSkippedUnfoldMarkers(goals[i]) } else { goals[i] }
-    // Warn before discharging if the goal contains NaN or ±Infinity float
-    // literals.  smtRenderFloat silently substitutes 0.0 for non-finite values
-    // (no SMT-LIB representation exists for them), so the verification result
-    // may be incorrect.  Surface this as V0013 so users know to review it.
-    if goalHasNonFiniteFloat(g) {
-      resultDiags.add(
-        warningDiagnostic(
-          "V0013",
-          "goal '" + g.label + "' contains NaN or +/-Infinity float literal; " +
-            "replaced with 0.0 in SMT-LIB output — verification result may be incorrect",
-          g.origin
-        )
-      )
-    }
     // Bring every integer/bitvector operand to one sort before discharge
     // (#7848).  A goal that cannot be reconciled means something other than
     // the source, so it fails closed as V0033 — neither the trivial
@@ -1329,6 +1325,14 @@ pub func proveSourceForBuild(
 // conclusion of `g` (`reconcileTermSorts`).
 pub func reconcileGoalSorts(g: in Goal): Result[Goal, String] {
   val hyps: List[Term] = newList()
+  val fp = floatProblemInList(g.hypotheses)
+  if fp.length > 0 {
+    return Err(error = fp)
+  }
+  val cfp = floatProblem(g.conclusion)
+  if cfp.length > 0 {
+    return Err(error = cfp)
+  }
   var i = 0
   while i < g.hypotheses.count {
     match reconcileTermSorts(g.hypotheses[i]) {
@@ -1374,8 +1378,6 @@ pub func reconcileGoalSorts(g: in Goal): Result[Goal, String] {
 // wrong with it.
 func sortProblem(t: in Term, expected: in Sort): String {
   val own = sortOf(t)
-  // Sorts the solver sees as one (`Float` and `Double` are both `Real`)
-  // are the same here.
   if smtRenderSort(own) != smtRenderSort(expected) {
     return "a value the verifier does not model (sort " + sortDisplay(own) + ") is used where a " + sortDisplay(expected) +
       " is needed"
@@ -1468,72 +1470,106 @@ func appendDiags(dst: in List[Diagnostic], src: in List[Diagnostic]): Unit {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// §5. Non-finite float detection.
+// §5. Float goals (#8141, #7883).
 // ─────────────────────────────────────────────────────────────────────────────
-// True when a Lit is a NaN or ±Infinity float, which smtRenderFloat silently
-// replaces with "0.0" because SMT-LIB Real has no non-finite values.
-func litIsNonFiniteFloat(lit: in Lit): Bool {
-  match lit {
-    case VLFloat(f) -> {
-      val s = doubleToString(f)
-      s == "NaN" or s == "Infinity" or s == "-Infinity"
-    }
-    case _ -> false
-  }
-}
-
-// True when any subterm of `t` is a non-finite float literal.
-func termHasNonFiniteFloat(t: in Term): Bool {
+// `Double` is the SMT `Float64`.  Two things have no faithful translation and
+// fail closed: the 32-bit `Float`, whose width differs between targets (it is
+// 64-bit on dotnet and native, 32-bit on the JVM), and `%` on floats, whose
+// truncating remainder is not `fp.rem`.  "" when `t` has neither.
+func floatProblem(t: in Term): String {
   match t {
-    case TLit(value, _) -> litIsNonFiniteFloat(value)
-    case TVar(_, _) -> false
-    case TBuiltin(_, args) -> argsHaveNonFiniteFloat(args)
-    case TApp(_, args, _) -> argsHaveNonFiniteFloat(args)
+    case TVar(_, srt) -> floatSortProblem(srt)
+    case TLit(_, srt) -> floatSortProblem(srt)
+    case TBuiltin(op, args) -> {
+      if args.count > 0 and sortIsFloat(sortOf(args[0])) {
+        match op {
+          case BOpMod -> return "`%` on a floating-point value (its truncating remainder is not `fp.rem`)"
+          case _ -> ()
+        }
+      }
+      floatProblemInList(args)
+    }
+    case TApp(_, args, srt) -> {
+      val own = floatSortProblem(srt)
+      if own.length > 0 {
+        own
+      } else {
+        floatProblemInList(args)
+      }
+    }
     case TLet(bindings, body) -> {
       var i = 0
       while i < bindings.count {
-        if termHasNonFiniteFloat(bindings[i].term) {
-          return true
+        val p = floatProblem(bindings[i].term)
+        if p.length > 0 {
+          return p
         }
         i = i + 1
       }
-      termHasNonFiniteFloat(body)
+      floatProblem(body)
     }
-    case TIte(cond, thenT, elseT) -> termHasNonFiniteFloat(cond) or termHasNonFiniteFloat(thenT) or
-      termHasNonFiniteFloat(elseT)
-    case TForall(_, triggers, body) -> {
+    case TIte(c, a, b) -> floatProblemInList(termList3(c, a, b))
+    case TForall(binders, triggers, body) -> {
       var i = 0
-      while i < triggers.count {
-        if argsHaveNonFiniteFloat(triggers[i]) {
-          return true
+      while i < binders.count {
+        val p = floatSortProblem(binders[i].sort)
+        if p.length > 0 {
+          return p
         }
         i = i + 1
       }
-      termHasNonFiniteFloat(body)
+      var ti = 0
+      while ti < triggers.count {
+        val p = floatProblemInList(triggers[ti])
+        if p.length > 0 {
+          return p
+        }
+        ti = ti + 1
+      }
+      floatProblem(body)
     }
-    case TExists(_, body) -> termHasNonFiniteFloat(body)
+    case TExists(binders, body) -> {
+      var i = 0
+      while i < binders.count {
+        val p = floatSortProblem(binders[i].sort)
+        if p.length > 0 {
+          return p
+        }
+        i = i + 1
+      }
+      floatProblem(body)
+    }
   }
 }
 
-func argsHaveNonFiniteFloat(args: in List[Term]): Bool {
-  var i = 0
-  while i < args.count {
-    if termHasNonFiniteFloat(args[i]) {
-      return true
+func floatSortProblem(s: in Sort): String {
+  match s {
+    case SFloat32 -> "a 32-bit `Float` (its width differs between targets; use `Double`)"
+    case SSlice(e) -> floatSortProblem(e)
+    case SArray(e) -> floatSortProblem(e)
+    case SDatatype(_, args) -> {
+      var i = 0
+      while i < args.count {
+        val p = floatSortProblem(args[i])
+        if p.length > 0 {
+          return p
+        }
+        i = i + 1
+      }
+      ""
     }
-    i = i + 1
+    case _ -> ""
   }
-  false
 }
 
-// True when any hypothesis or the conclusion of `g` contains a non-finite float.
-func goalHasNonFiniteFloat(g: in Goal): Bool {
+func floatProblemInList(ts: in List[Term]): String {
   var i = 0
-  while i < g.hypotheses.count {
-    if termHasNonFiniteFloat(g.hypotheses[i]) {
-      return true
+  while i < ts.count {
+    val p = floatProblem(ts[i])
+    if p.length > 0 {
+      return p
     }
     i = i + 1
   }
-  termHasNonFiniteFloat(g.conclusion)
+  ""
 }

@@ -197,6 +197,16 @@ wire NestedApp {
   expose router
 }
 
+// A binding initialiser that branches (#8372): the JVM bootstrap needs a
+// StackMapTable frame at each branch target.
+wire BranchApp {
+  @provided flag: Bool
+  singleton picked: String = if flag { "yes" } else { "no" }
+  singleton twice: String = if flag { "y" + picked } else { "n" + picked }
+  expose picked
+  expose twice
+}
+
 test "included template boots; collection order spans template and consumer entries" {
   ProdApp.bootstrap("t1")
   val r = ProdApp.router()
@@ -255,4 +265,13 @@ test "nested include splices transitively and re-exposes" {
   // include first, then ExtendedModule's own contribution.
   assertEqual(r.labels, "cors:n1,log:n1,auth:n1", "entries from both include levels in order")
   assertEqual(r.tag, "note-n1", "provided value reaches the innermost template")
+}
+
+test "wire binding initialisers may branch" {
+  BranchApp.bootstrap(true)
+  assertEqual(BranchApp.picked(), "yes", "then branch")
+  assertEqual(BranchApp.twice(), "yyes", "second branching binding")
+  BranchApp.bootstrap(false)
+  assertEqual(BranchApp.picked(), "no", "else branch")
+  assertEqual(BranchApp.twice(), "nno", "second binding rebinds")
 }

@@ -1,5 +1,6 @@
 /* lyric_net_unsupported.c — the lyric_sock_* / lyric_tls_* surface for targets
- * with no BSD sockets or dynamic loading (wasm32-wasi, docs/35 §5.3).  It
+ * with no BSD sockets or dynamic loading (wasm32-wasi, docs/35 §5.3), and for
+ * Windows until its Winsock and TLS ports land (docs/67 G9; #8434).  It
  * replaces lyric_tls.c in that build, which docs/61 §7 designs as a swappable
  * seam, so every `_kernel_native/tcp_host.l` / `tls_host.l` extern still
  * resolves and each call fails the way a real network failure does: -1 / NULL
@@ -11,15 +12,23 @@
 #include <stdio.h>
 #include <string.h>
 
+#if defined(_WIN32)
+#define LYRIC_NET_TARGET "Windows"
+#define LYRIC_TLS_REASON "Windows (the Winsock and TLS ports are not implemented yet)"
+#else
+#define LYRIC_NET_TARGET "wasm32-wasi"
+#define LYRIC_TLS_REASON "wasm32-wasi (no sockets or dynamic loading)"
+#endif
+
 static char last_err[128] = "";
 
 static int32_t fail_sock(void) {
-    snprintf(last_err, sizeof last_err, "TCP sockets are unavailable on this target (wasm32-wasi)");
+    snprintf(last_err, sizeof last_err, "TCP sockets are unavailable on this target (" LYRIC_NET_TARGET ")");
     return -1;
 }
 
 static void* fail_tls(void) {
-    snprintf(last_err, sizeof last_err, "TLS is unavailable on this target (wasm32-wasi has no sockets or dynamic loading)");
+    snprintf(last_err, sizeof last_err, "TLS is unavailable on this target: " LYRIC_TLS_REASON);
     return NULL;
 }
 
@@ -91,6 +100,11 @@ int64_t lyric_sock_write(int32_t fd, const uint8_t* buf, int64_t n) {
  * documented no-op. */
 int32_t lyric_sock_close(int32_t fd) {
     return fd < 0 ? 0 : -1;
+}
+
+int32_t lyric_sock_shutdown(int32_t fd, int32_t how) {
+    (void)fd; (void)how;
+    return fail_sock();
 }
 
 LyricList* lyric_sock_read_bytes(int32_t fd, int64_t max_bytes, int32_t* ok) {

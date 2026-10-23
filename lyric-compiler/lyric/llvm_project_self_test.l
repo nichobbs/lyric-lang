@@ -1397,3 +1397,36 @@ test "NativeWeak.upgrade resolves Std.Core.Option, not another package's Option 
   val outcome = compileAndRunProject(pkgs)
   assertEqualInt(outcome.exitCode, 5, "the weak target upgrades to Some, the name has 5 characters")
 }
+
+// docs/67 G9: the Windows target's triple spellings and output name.
+test "Windows triples normalise to x86_64-pc-windows-msvc and name a .exe" {
+  assertEqual(
+    normalizeNativeTriple("x86_64-pc-windows-msvc19.40.33811"),
+    "x86_64-pc-windows-msvc",
+    "clang's host spelling"
+  )
+  assertEqual(normalizeNativeTriple("x86_64-unknown-windows-msvc"), "x86_64-pc-windows-msvc", "another vendor")
+  assertEqual(normalizeNativeTriple("x86_64-w64-windows-gnu"), "x86_64-w64-windows-gnu", "MinGW is left for N0025")
+  assertEqual(normalizeNativeTriple("x86_64-unknown-linux-gnu"), "x86_64-unknown-linux-gnu", "Linux is unchanged")
+  assertTrue(isWindowsTriple("aarch64-pc-windows-msvc"), "Windows on AArch64 is a Windows triple")
+  assertTrue(not isWindowsTriple("x86_64-unknown-linux-gnu"), "Linux is not")
+  assertEqual(nativeExecutablePath("out/app", "x86_64-pc-windows-msvc"), "out/app.exe", ".exe appended")
+  assertEqual(nativeExecutablePath("out/app.EXE", "x86_64-pc-windows-msvc"), "out/app.EXE", "an existing .exe kept")
+  assertEqual(nativeExecutablePath("out/app", "x86_64-unknown-linux-gnu"), "out/app", "no extension on Linux")
+  assertEqual(nativeExecutablePath("out/app", "wasm32-wasi"), "out/app", "wasm32 output names are the shape's")
+}
+
+test "a Windows triple other than x86_64-pc-windows-msvc stops the build (N0025)" {
+  val stdlib = findStdlibSourcesNative()
+  val stem = Path.join(
+    Path.join(tempBase(), "lyric-llvm-project-selftest"),
+    "n0025_" + Uuid.uuidToString(Uuid.newUuid())
+  )
+  val _ = File.createDir(Path.dirname(stem))
+  val src = "package T\nfunc main(): Int {\n  0\n}\n"
+  for t in ["x86_64-w64-windows-gnu", "aarch64-pc-windows-msvc"] {
+    val built = compileToNativeWithFlags(src, stem, stdlib, t, "0", newList(), newList(), "", true)
+    assertTrue(not built, t + " is refused")
+    assertTrue(not File.fileExists(stem + ".exe") and not File.fileExists(stem), "no binary is written for " + t)
+  }
+}

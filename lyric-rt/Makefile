@@ -17,6 +17,18 @@
 # lyric_process.c and lyric_tls.c are replaced by their *_unsupported.c
 # twins there (WASI has no child processes, BSD sockets or dlopen); the
 # twins keep every symbol resolvable and report the documented failure.
+#
+# x86_64-pc-windows-msvc (docs/67 G9) is a third build, with clang on Windows
+# or cross-compiled from Linux against an MSVC CRT and Windows SDK named by
+# the INCLUDE and LIB environment variables (for example a sysroot unpacked
+# by xwin):
+#
+#   make windows        -> build-x86_64-pc-windows-msvc/lyric_rt.lib
+#   make test-windows   [WINE=wine when cross-compiling]
+#
+# lyric_posix.c and lyric_fs.c are replaced by their Win32 twins
+# (lyric_win32.c, lyric_fs_win32.c); processes, sockets and TLS use the
+# *_unsupported.c twins until their Win32 ports land.
 
 CC      ?= clang
 AR      ?= ar
@@ -32,7 +44,7 @@ OBJS := $(SRCS:src/%.c=$(BUILD)/%.o)
 # it needs libdl (a no-op stub on glibc >= 2.34) and libpthread.
 TEST_LIBS := -lpthread -ldl
 
-.PHONY: all test test-asan test-tsan clean clean-wasm32-wasi wasm32-wasi wasm32-wasi-ir test-wasm32-wasi
+.PHONY: all test test-asan test-tsan clean clean-wasm32-wasi wasm32-wasi wasm32-wasi-ir test-wasm32-wasi windows test-windows clean-windows
 
 all: $(BUILD)/lyric_rt.a
 
@@ -134,8 +146,59 @@ test-wasm32-wasi: $(WASM_BUILD)/lyric_rt.a
 	$(WASM_CC) $(WASM_CFLAGS) -Iinclude test/lyric_rt_test.c $(WASM_BUILD)/lyric_rt.a -o $(WASM_BUILD)/lyric_rt_test.wasm
 	$(WASMTIME) run --dir=. $(WASM_BUILD)/lyric_rt_test.wasm
 
+# ── x86_64-pc-windows-msvc ───────────────────────────────────────────────────
+WIN_TRIPLE  := x86_64-pc-windows-msvc
+WIN_BUILD   := build-$(WIN_TRIPLE)
+WIN_CC      ?= clang
+WIN_AR      ?= llvm-ar
+WINE        ?=
+# The CRT marks standard C functions (getenv, strerror, ...) deprecated in
+# favour of its *_s variants; lyric-rt is portable C11 and uses the standard
+# names.
+WIN_CFLAGS  := --target=$(WIN_TRIPLE) -O2 -std=c11 -Wall -Wextra -Werror \
+               -D_CRT_SECURE_NO_WARNINGS -D_CRT_NONSTDC_NO_WARNINGS
+WIN_LDFLAGS := --target=$(WIN_TRIPLE) -fuse-ld=lld
+# System import libraries the runtime calls into: CNG entropy (bcrypt) and
+# the UTF-16 command-line parser (shell32).  The compiler's native link step
+# passes the same list.
+WIN_LIBS    := -lbcrypt -lshell32
+WIN_SRCS    := src/lyric_rt.c src/lyric_string.c src/lyric_weak.c \
+               src/lyric_win32.c src/lyric_collections.c src/lyric_async.c \
+               src/lyric_fs_win32.c src/lyric_process_unsupported.c src/lyric_net_unsupported.c \
+               src/lyric_parallel.c
+WIN_OBJS    := $(WIN_SRCS:src/%.c=$(WIN_BUILD)/%.obj)
+
+$(WIN_BUILD)/%.obj: src/%.c include/lyric_rt.h src/lyric_win32_internal.h | $(WIN_BUILD)
+	$(WIN_CC) $(WIN_CFLAGS) -Iinclude -c $< -o $@
+
+$(WIN_BUILD)/lyric_string.obj: src/lyric_unicode_case_tables.inc
+
+$(WIN_BUILD)/lyric_rt.lib: $(WIN_OBJS)
+	$(WIN_AR) rcs $@ $(WIN_OBJS)
+
+$(WIN_BUILD):
+	mkdir -p $(WIN_BUILD)
+
+windows: $(WIN_BUILD)/lyric_rt.lib
+
+# The unit tests that need fork, signals, POSIX file modes or child
+# processes are compiled out under _WIN32; test/lyric_win32_test.c covers
+# the Win32-only behaviour (UTF-16 paths, reparse points, console mode).
+test-windows: $(WIN_BUILD)/lyric_rt.lib
+	$(WIN_CC) $(WIN_CFLAGS) $(WIN_LDFLAGS) -Iinclude test/lyric_rt_test.c $(WIN_BUILD)/lyric_rt.lib $(WIN_LIBS) -o $(WIN_BUILD)/lyric_rt_test.exe
+	$(WINE) $(WIN_BUILD)/lyric_rt_test.exe
+	$(WIN_CC) $(WIN_CFLAGS) $(WIN_LDFLAGS) -Iinclude test/lyric_win32_test.c $(WIN_BUILD)/lyric_rt.lib $(WIN_LIBS) -o $(WIN_BUILD)/lyric_win32_test.exe
+	$(WINE) $(WIN_BUILD)/lyric_win32_test.exe
+	$(WIN_CC) $(WIN_CFLAGS) $(WIN_LDFLAGS) -Iinclude test/lyric_parallel_test.c $(WIN_BUILD)/lyric_rt.lib $(WIN_LIBS) -o $(WIN_BUILD)/lyric_parallel_test.exe
+	$(WINE) $(WIN_BUILD)/lyric_parallel_test.exe
+	LYRIC_THREADS=1 $(WINE) $(WIN_BUILD)/lyric_parallel_test.exe --serial
+	LYRIC_THREADS=3 $(WINE) $(WIN_BUILD)/lyric_parallel_test.exe
+
 clean:
 	rm -rf $(BUILD)
+
+clean-windows:
+	rm -rf $(WIN_BUILD)
 
 clean-wasm32-wasi:
 	rm -rf $(WASM_BUILD)

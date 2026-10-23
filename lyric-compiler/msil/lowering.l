@@ -1263,6 +1263,7 @@ pub union DictOp {
   case DoSetItem     // callvirt set_Item(!0, !1)
   case DoGetCount    // callvirt get_Count() -> int32
   case DoContainsKey // callvirt ContainsKey(!0) -> bool
+  case DoContainsValue // callvirt ContainsValue(!1) -> bool
   case DoRemove      // callvirt Remove(!0) -> bool
   case DoCastclass   // castclass Dictionary`2<k,v>
   case DoTryGetValue // callvirt TryGetValue(!0, !1&) -> bool  (#2474)
@@ -1296,6 +1297,7 @@ pub record DictTokens {
   setItem: Int
   getCount: Int
   containsKey: Int
+  containsValue: Int
   remove: Int
   tryGetValue: Int  // TryGetValue(!0, !1&) -> bool  (#2474)
   getKeys: Int      // get_Keys() -> KeyCollection<!0,!1>  (#3511)
@@ -2392,8 +2394,10 @@ func buildMethodSpec2ArgBlobWithCtx(ctx: in LoweringCtx, arg0: in MsilType, smFq
 // `baseName<typeArgs>`: a TypeSpec-parented MemberRef whose FieldSig is the
 // field's OPEN declared type, so it byte-matches the FieldDef (#4870/#6231).
 // Parented by the in-bundle TypeDef when there is one, else a restored
-// TypeRef.  `op` (`ldfld`, `stfld`, `ldflda`) keys the TypeSpec and
-// MemberRef rows and names the instruction in the error.
+// TypeRef.  The TypeSpec and MemberRef rows are keyed without the opcode
+// (a field MemberRef does not depend on the instruction that uses it), so a
+// field both read and written shares one row of each (#7676); `op` (`ldfld`,
+// `stfld`, `ldflda`) only names the instruction in the error.
 func genericFieldTokenMsil(
   ctx: in LoweringCtx,
   op: in String,
@@ -2414,20 +2418,20 @@ func genericFieldTokenMsil(
   if defRow > 0 {
     val tsRow = ctxAddTypeSpec(
       ctx,
-      "typespec_" + op + "_def_" + baseName + "_" + taKey,
+      "typespec_gfield_def_" + baseName + "_" + taKey,
       buildGenericInstBlobWithCtx(ctx, tdrTypeDef(defRow), typeArgs)
     )
-    val mrKey = "mr_" + op + "_def_" + baseName + "_" + taKey + "_" + fieldName
+    val mrKey = "mr_gfield_def_" + baseName + "_" + taKey + "_" + fieldName
     return 0x0A000000 + ctxAddMemberRefForTypeSpec(ctx, tsRow, fieldName, mrKey, fieldSig)
   }
   val refRow = findTypeRefRowByName(ctx, baseName)
   if refRow > 0 {
     val tsRow = ctxAddTypeSpec(
       ctx,
-      "typespec_" + op + "_ref_" + baseName + "_" + taKey,
+      "typespec_gfield_ref_" + baseName + "_" + taKey,
       buildGenericInstBlobWithCtx(ctx, tdrTypeRef(refRow), typeArgs)
     )
-    val mrKey = "mr_" + op + "_ref_" + baseName + "_" + taKey + "_" + fieldName
+    val mrKey = "mr_gfield_ref_" + baseName + "_" + taKey + "_" + fieldName
     return 0x0A000000 + ctxAddMemberRefForTypeSpec(ctx, tsRow, fieldName, mrKey, fieldSig)
   }
   // Emitting no instruction would leave the operands on the stack, a stack
@@ -2530,6 +2534,7 @@ pub func lowerMInsn(ctx: in LoweringCtx, insn: in MInsn, mb: in MethodBody): Uni
         case DoSetItem -> emitCallvirt(mb, dt.setItem)
         case DoGetCount -> emitCallvirt(mb, dt.getCount)
         case DoContainsKey -> emitCallvirt(mb, dt.containsKey)
+        case DoContainsValue -> emitCallvirt(mb, dt.containsValue)
         case DoRemove -> emitCallvirt(mb, dt.remove)
         case DoCastclass -> emitCastclass(mb, dt.typeSpec)
         case DoTryGetValue -> emitCallvirt(mb, dt.tryGetValue)
@@ -5235,6 +5240,16 @@ pub func dictTokensForLowering(ctx: in LoweringCtx, keyTy: in MsilType, valTy: i
       "dict_ck_" + key,
       buildInstanceMethodSig(ckP, MBool)
     )
+  val cvP: List[MsilType] = newList()
+  cvP.add(MTypeVar(1))
+  val cvTok = 0x0A000000 +
+    ctxAddMemberRefForTypeSpec(
+      ctx,
+      tsRow,
+      "ContainsValue",
+      "dict_cv_" + key,
+      buildInstanceMethodSig(cvP, MBool)
+    )
   val rmP: List[MsilType] = newList()
   rmP.add(MTypeVar(0))
   val rmTok = 0x0A000000 +
@@ -5291,6 +5306,7 @@ pub func dictTokensForLowering(ctx: in LoweringCtx, keyTy: in MsilType, valTy: i
     setItem = setTok,
     getCount = cntTok,
     containsKey = ckTok,
+    containsValue = cvTok,
     remove = rmTok,
     tryGetValue = tgvTok,
     getKeys = gkTok,

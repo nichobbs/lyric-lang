@@ -136,7 +136,9 @@ Issue clusters, by `group:*` label.  Counts are open issues as of 2026-10-21.
   Int`, `UInt`/`ULong` (#7891, umbrella epic #4607 is stale and should be
   rewritten or closed); reachability keyed by bare method name (#8413); clang
   collision with no diagnostic (#8360); `nativeAddrOf(var: Int)` (#4845).
-  Missing: arm64 and macOS native CI legs (#8419), Windows (docs/67 G9).
+  Missing: arm64 and macOS native CI legs (#8419); Windows (docs/67 G9) runs the
+  core suite (D205) but lacks processes (#8433), sockets and TLS (#8434) and the
+  compiler-hosted self-tests (#8436).
 - **Private helpers of a generic.**  A `pub` generic may call a private helper of
   its package on native (and a private generic one on the JVM), not on dotnet
   (T0123); docs/01 §3.3, D204, plan in #8427.
@@ -163,7 +165,7 @@ left is verification and release work, tracked in `docs/36`:
 1. **Graphics (docs/67).**  G7 `lyric-game` (D201), `Std.Parallel` on a worker
    pool (D202) and the native `lyric-ui` host (D203, D204) are implemented on
    Linux.  Remaining: the multi-threaded coroutine scheduler (G8, #7947), G9
-   Windows (#7948), accessibility through AccessKit (G10, #8430) and pruning
+   Windows (#7948; core target D205, remaining #8433, #8434, #8435, #8436), accessibility through AccessKit (G10, #8430) and pruning
    dependency kernels from the link (#8429); G4 macOS CI, G5 Cocoa/Win32
    surfaces and the macOS `.app` bundles (#8401, #8419); `lyric-text` bidi and
    UAX #14 (#8410); `buffer[T]` lazy copy (#8389) and the warn-on-copy lint

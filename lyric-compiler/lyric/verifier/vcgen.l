@@ -200,6 +200,7 @@ func unshadowMonadSort(distincts: in Map[String, TypeExpr], s: in Sort): Sort {
       SDatatype(name = if shadowed { name + "!user" } else { name }, args = newArgs)
     }
     case SSlice(e) -> SSlice(element = unshadowMonadSort(distincts, e))
+    case SArray(e) -> SArray(element = unshadowMonadSort(distincts, e))
     case _ -> s
   }
 }
@@ -834,6 +835,7 @@ func substSortParams(s: in Sort, params: in List[String], args: in List[Sort]): 
       }
     }
     case SSlice(e) -> SSlice(element = substSortParams(e, params, args))
+    case SArray(e) -> SArray(element = substSortParams(e, params, args))
     case _ -> s
   }
 }
@@ -901,6 +903,7 @@ func matchSortParams(pattern: in Sort, actual: in Sort, params: in List[String],
       }
     }
     case SSlice(pe) -> match actual { case SSlice(ae) -> matchSortParams(pe, ae, params, bound); case _ -> false }
+    case SArray(pe) -> match actual { case SArray(ae) -> matchSortParams(pe, ae, params, bound); case _ -> false }
     case _ -> smtRenderSort(pattern) == smtRenderSort(actual)
   }
 }
@@ -1529,7 +1532,9 @@ func translateResolvedCall(
   // @pure callee: translate body expr, emit equality as assumption.
   val pureUnfold: List[Term] = newList()
   var unfoldSkipped = false
-  if isPure(decl) and not cyclicCallee {
+  // A call whose arguments may differ between two calls with the same term
+  // (a list, a closure) is not unfolded: its result is its call site's own.
+  if isPure(decl) and not cyclicCallee and allValueDetermined(env, argTerms) {
     match decl.body {
       case Some(body) -> {
         val bodyExprOpt = match body {
@@ -2291,7 +2296,11 @@ func equalityModelledSort(
       }
       args.count == 0 and (valueTypes.containsKey(structuralEqualityKey(n)) or typeParams.contains(n))
     }
-    case SSlice(e) -> equalityModelledSort(valueTypes, typeParams, e, depth + 1)
+    // An array compares element by element; a slice compares by reference
+    // on dotnet and by value elsewhere, so `==` on one has no faithful
+    // translation (#8218).
+    case SSlice(_) -> false
+    case SArray(e) -> equalityModelledSort(valueTypes, typeParams, e, depth + 1)
     // A value the verifier does not model is a symbol of its own — one
     // evaluation's — or the result of a method it does not model (#8110);
     // only the symbols named after the source, which one name evaluated
@@ -2421,8 +2430,68 @@ func resolveMethodCallee(
         case None -> None
       }
     }
-    case _ -> None
+    // A primitive receiver: the one `func <Primitive>.m` of the file whose
+    // receiver parameter has the receiver's sort.  Types sharing a sort
+    // (`Int`, `Long`) that both declare `m` leave the call unresolved, since
+    // the sort does not say which was meant (#8336).
+    case _ -> {
+      var found: Option[ResolvedCallee] = None
+      var matches = 0
+      val withRecv: List[CallArg] = newList()
+      withRecv.add(CAPositional(expr = Expr(kind = ESelf, span = makeSpan(initialPosition(), initialPosition()))))
+      for a in args {
+        withRecv.add(a)
+      }
+      for tn in primitiveTypeNamesOfSort(recvSort) {
+        val key = tn + "." + methodName
+        if calleeIsOverloaded(env, key) {
+          matches = matches + 2
+        }
+        match fileCallee(env, key, withRecv) {
+          case Some(decl) -> {
+            if decl.params.count >= 1 and sortEq(calleeSortInfo(env, decl, decl.params[0].ty).sort, recvSort) {
+              matches = matches + 1
+              found = Some(value = ResolvedCallee(name = key, decl = decl))
+            }
+          }
+          case None -> ()
+        }
+      }
+      if matches == 1 {
+        found
+      } else {
+        None
+      }
+    }
   }
+}
+
+// The primitive types a value of sort `s` can be, by source name.  A width
+// not listed (`Short`, `UShort`) has no entry on purpose: the call stays
+// unresolved and fails closed.
+func primitiveTypeNamesOfSort(s: in Sort): List[String] {
+  val names: List[String] = newList()
+  match s {
+    case SBool -> names.add("Bool")
+    case SInt -> {
+      names.add("Int")
+      names.add("Long")
+    }
+    case SString -> names.add("String")
+    case SFloat64 -> names.add("Double")
+    case SFloat32 -> names.add("Float")
+    case SBitVec(w) -> {
+      if w == 8 {
+        names.add("Byte")
+      } else if w == 32 {
+        names.add("UInt")
+      } else if w == 64 {
+        names.add("ULong")
+      }
+    }
+    case _ -> ()
+  }
+  names
 }
 
 // `T.m(...)` where `T` names no binding but the file declares `func T.m`:
@@ -3881,7 +3950,9 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
       val t = match recordFieldHit {
         case Some(fSort) -> TApp(name = recvRecName + "__" + memberName, args = termList1(rR.term), retSort = fSort)
         case None -> {
-          if memberName == "value" and isPrimitiveSort(recvSort) {
+          if (memberName == "count" or memberName == "length") and isSequenceSort(recvSort) {
+            lengthTerm(rR.term)
+          } else if memberName == "value" and isPrimitiveSort(recvSort) {
             // `x.value` on a distinct value reads its underlying value, which
             // is how the verifier already represents `x` (#7872).
             rR.term
@@ -3970,6 +4041,60 @@ pub func translateExpr(env: in VEnv, e: in Expr): (TranslateResult, List[Diagnos
       )
       val pPair: (TranslateResult, List[Diagnostic]) = (pTR, pDiags)
       pPair
+    }
+
+    // `xs[i]` panics unless `0 <= i < xs.length`, so a read is an obligation
+    // (#8157).  Its value is not modelled: a fresh value of the element sort.
+    case EIndex(receiver, indices) -> {
+      val (rR, rDiags) = translateExpr(env, receiver)
+      val diags: List[Diagnostic] = newList()
+      appendTermList2(diags, rDiags)
+      val sc: List[Term] = newList()
+      appendTermList(sc, rR.sideConds)
+      val asList: List[Term] = newList()
+      appendTermList(asList, rR.assumed)
+      val afterRecv = havocOutArgs(env, receiver)
+      appendTermList(asList, afterRecv.hyps)
+      val subEnv = afterRecv.env
+      var idxTerm: Option[Term] = None
+      if indices.count == 1 {
+        val (iR, iDiags) = translateExpr(subEnv, indices[0])
+        appendTermList2(diags, iDiags)
+        appendTermList(sc, iR.sideConds)
+        appendTermList(asList, iR.assumed)
+        idxTerm = Some(value = iR.term)
+      }
+      val recvSort = sortOf(rR.term)
+      val elemSort: Sort = match recvSort {
+        case SSlice(el) -> el
+        case SArray(el) -> el
+        case SDatatype(dn, dargs) -> if dn == "List" and dargs.count == 1 {
+          dargs[0]
+        } else {
+          SUninterp(name = "element")
+        }
+        case SString -> SInt
+        case _ -> SUninterp(name = "element")
+      }
+      val indexOk = match idxTerm {
+        case Some(it) -> isSequenceSort(recvSort) and sortEq(sortOf(it), SInt)
+        case None -> false
+      }
+      if indexOk {
+        val it = match idxTerm { case Some(x) -> x; case None -> unitTerm() }
+        val inRange = termList2(
+          TBuiltin(op = BOpLte, args = termList2(TLit(value = VLInt(n = 0i64), sort = SInt), it)),
+          TBuiltin(op = BOpLt, args = termList2(it, lengthTerm(rR.term)))
+        )
+        sc.add(mkAnd(inRange))
+        val idxTR = TranslateResult(term = freshVar(env, "elem", elemSort), sideConds = sc, assumed = asList)
+        val idxPair: (TranslateResult, List[Diagnostic]) = (idxTR, diags)
+        return idxPair
+      }
+      diags.add(untranslatableDiag("an index into a value whose length or index the verifier does not model", e.span))
+      val badTR = TranslateResult(term = poisonTerm(freshVar(env, "elem", elemSort)), sideConds = sc, assumed = asList)
+      val badPair: (TranslateResult, List[Diagnostic]) = (badTR, diags)
+      badPair
     }
 
     case _ -> {
@@ -4700,6 +4825,7 @@ func bareNameBinds(env: in VEnv, scrutSort: in Sort, name: in String): Bool {
       }
     }
     case SSlice(_) -> return true
+    case SArray(_) -> return true
     case SUninterp(_) -> ()
     case _ -> return isPrimitiveSort(scrutSort)
   }
@@ -6286,6 +6412,12 @@ func wpAssign(
   val info = match envLookupSort(name, env) {
     case Some(si) -> si
     case None -> SortInfo(sort = sortOf(combined), range = RBKNone)
+  }
+  // The store is range-checked at run time, so a value outside the
+  // variable's range is a panic the proof must exclude (#8143).
+  match rangeObligationsForTerm(combined, info) {
+    case Ok(obligations) -> appendTermList(rhsSide, afterFacts(rhsR.assumed, obligations))
+    case Err(reason) -> rhsDiags.add(untranslatableDiag("the range of `" + name + "`: " + reason, sp))
   }
   // The right-hand side's `out`/`inout` arguments change before the store.
   val after = havocOutArgs(env, value)
@@ -8460,6 +8592,7 @@ func sortNamesDatatype(s: in Sort, name: in String): Bool {
       false
     }
     case SSlice(e) -> sortNamesDatatype(e, name)
+    case SArray(e) -> sortNamesDatatype(e, name)
     case _ -> false
   }
 }
@@ -8493,6 +8626,39 @@ func genericTypeParamNames(generics: in Option[GenericParams]): List[String] {
 // or `Option` may be declared there (#8108).
 pub func goalsForFile(file: in SourceFile, level: in VerificationLevel): (List[Goal], List[Diagnostic]) {
   goalsForFileInScope(file, level, unknownPackageScope())
+}
+
+// `file` with the records and distinct types of `typeItems` added that it
+// does not declare itself.
+func withSiblingTypes(file: in SourceFile, typeItems: in List[Item]): SourceFile {
+  if typeItems.count == 0 {
+    return file
+  }
+  val declared: List[String] = newList()
+  val items: List[Item] = newList()
+  for it in file.items {
+    items.add(it)
+    match it.kind {
+      case IRecord(d) -> declared.add(d.name)
+      case IDistinctType(d) -> declared.add(d.name)
+      case _ -> ()
+    }
+  }
+  for it in typeItems {
+    val name = match it.kind { case IRecord(d) -> d.name; case IDistinctType(d) -> d.name; case _ -> "" }
+    if name.length > 0 and not declared.contains(name) {
+      declared.add(name)
+      items.add(it)
+    }
+  }
+  SourceFile(
+    moduleDoc = file.moduleDoc,
+    fileAnnotations = file.fileAnnotations,
+    packageDecl = file.packageDecl,
+    imports = file.imports,
+    items = items,
+    span = file.span
+  )
 }
 
 // `scope.known` says `scope.typeNames` are all the top-level type names
@@ -8626,13 +8792,16 @@ pub func goalsForFileInScope(
   val checkedArith = match level { case VLProofRequiredChecked -> true; case _ -> false }
   val sharedSymbols: List[SymbolDecl] = newList()
 
+  // The records and distinct types the package's other files declare are in
+  // scope here as well as this file's own (#8306).
+  val modelFile = withSiblingTypes(file, pscope.siblings.typeItems)
   // Collect distinct-type aliases (`pub type Cents = Long`) so record /
   // protected field-sort lookups and the per-function `sortOfTypeExprE`
   // call sites resolve them to the underlying primitive (#3853).
   val distinctMap: Map[String, TypeExpr] = newMap()
   var dti0 = 0
-  while dti0 < file.items.count {
-    match file.items[dti0].kind {
+  while dti0 < modelFile.items.count {
+    match modelFile.items[dti0].kind {
       case IDistinctType(dtDecl) -> {
         if not distinctMap.containsKey(dtDecl.name) {
           distinctMap.add(dtDecl.name, distinctRepresentation(dtDecl))
@@ -8642,7 +8811,7 @@ pub func goalsForFileInScope(
     }
     dti0 = dti0 + 1
   }
-  registerScalarAliases(file, distinctMap)
+  registerScalarAliases(modelFile, distinctMap)
 
   var mi = 0
   while mi < 2 {
@@ -8667,8 +8836,8 @@ pub func goalsForFileInScope(
   // instances, and a field read on either has the field's sort at that
   // instance (#8340).
   var ri = 0
-  while ri < file.items.count {
-    match file.items[ri].kind {
+  while ri < modelFile.items.count {
+    match modelFile.items[ri].kind {
       // Datatype field names share z3's name space with free constants
       // and parameters, so a free param named `capacity` would clash with
       // the selector `capacity` from a Bucket datatype declaration even
@@ -8771,8 +8940,8 @@ pub func goalsForFileInScope(
   // dot-named `func R.m` (#8101).
   val recordMethodsMap: Map[String, Bool] = newMap()
   var rmi = 0
-  while rmi < file.items.count {
-    match file.items[rmi].kind {
+  while rmi < modelFile.items.count {
+    match modelFile.items[rmi].kind {
       case IRecord(rmDecl) -> {
         var rmj = 0
         while rmj < rmDecl.members.count {
@@ -8821,7 +8990,7 @@ pub func goalsForFileInScope(
     }
     gi = gi + 1
   }
-  val valueTypesMap = fileValueTypes(file, distinctMap)
+  val valueTypesMap = fileValueTypes(modelFile, distinctMap)
   addScopeCaseFacts(file, pscope, valueTypesMap)
   val env0 = VEnv(
     vars = env0Init.vars,

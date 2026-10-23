@@ -186,11 +186,16 @@ pub record NPackage {
 // ── Datalayout selection ─────────────────────────────────────────────────────
 /// The `target datalayout` string for a Phase 1 triple (D-N-008).
 /// macOS layouts use Mach-O mangling (`m:o`) — including x86-64, where
-/// the plan's "same as Linux" note would mis-mangle symbols.
+/// the plan's "same as Linux" note would mis-mangle symbols — and Windows
+/// layouts COFF mangling (`m:w`, docs/67 G9; clang 18's
+/// x86_64-pc-windows-msvc layout).
 pub func datalayoutForTriple(triple: in String): String {
   val isApple = Str.contains(triple, "apple")
+  val isWindows = Str.contains(triple, "windows")
   if Str.startsWith(triple, "x86_64") {
-    if isApple {
+    if isWindows {
+      "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
+    } else if isApple {
       "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
     } else {
       "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"

@@ -3142,7 +3142,7 @@ func emitNativeInProcess(
     false
   }
   if ok {
-    EmitResult(outputPath = Some(value = req.outputPath), diagnostics = diags)
+    EmitResult(outputPath = Some(value = nativeExecutableOutputPath(req.outputPath, triple)), diagnostics = diags)
   } else {
     failResultWith("native compilation failed (see stderr)", diags)
   }
@@ -3301,10 +3301,17 @@ pub func emitNativeProjectWithShape(
     false
   }
   if ok {
-    EmitResult(outputPath = Some(value = outputPath), diagnostics = projDiags)
+    EmitResult(outputPath = Some(value = nativeExecutableOutputPath(outputPath, triple)), diagnostics = projDiags)
   } else {
     failResultWith("native project compilation failed (see stderr)", projDiags)
   }
+}
+
+/// The file a native build for `triple` ("" = the host) writes when asked
+/// for `path`: `path` with `.exe` appended for a Windows target that lacks
+/// it (docs/67 G9), otherwise `path` itself.
+pub func nativeExecutableOutputPath(path: in String, triple: in String): String {
+  LlvmBridge.nativeExecutablePath(path, triple)
 }
 
 // In-process single-source JVM emit — direct call into the self-hosted

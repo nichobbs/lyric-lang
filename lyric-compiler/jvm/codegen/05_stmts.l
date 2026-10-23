@@ -2033,7 +2033,7 @@ func lowerLocalPatBind(
   tyOpt: in Option[TypeExpr],
 ): Unit {
   match pat.kind {
-    case PBinding(name, _) -> {
+    case PBinding(name, None) -> {
       // #6393: resolve through a same-file function-type alias
       // (`val f: Handler = ...`) too, not just a literal `(A,...) -> R`
       // annotation — see `FuncCtx.aliasTargets`.

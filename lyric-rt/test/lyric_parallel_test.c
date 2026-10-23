@@ -2,11 +2,41 @@
  * count, and with LYRIC_THREADS=1 and the `--serial` argument, which expects no pool. */
 #include "lyric_rt.h"
 
-#include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* Caller threads, created directly (not through lyric_thread_create) so the
+ * ThreadSanitizer build can link this test against lyric_parallel.c alone. */
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <process.h>
+typedef HANDLE test_thread_t;
+static void* (*caller_fn)(void*);
+static unsigned __stdcall caller_entry(void* arg) {
+    caller_fn(arg);
+    return 0;
+}
+static void test_thread_start(test_thread_t* t, void* (*fn)(void*), void* arg) {
+    caller_fn = fn;
+    *t = (HANDLE)_beginthreadex(NULL, 0, caller_entry, arg, 0, NULL);
+}
+static void test_thread_join(test_thread_t t) {
+    WaitForSingleObject(t, INFINITE);
+    CloseHandle(t);
+}
+#else
+#include <pthread.h>
+typedef pthread_t test_thread_t;
+static void test_thread_start(test_thread_t* t, void* (*fn)(void*), void* arg) {
+    pthread_create(t, NULL, fn, arg);
+}
+static void test_thread_join(test_thread_t t) {
+    pthread_join(t, NULL);
+}
+#endif
 
 static int failures = 0;
 static int serial_mode = 0;
@@ -102,11 +132,11 @@ static void* caller_thread(void* arg) {
 
 static void test_concurrent_callers(void) {
     enum { CALLERS = 4 };
-    pthread_t t[CALLERS];
+    test_thread_t t[CALLERS];
     _Atomic int64_t total;
     atomic_store(&total, 0);
-    for (int i = 0; i < CALLERS; i++) pthread_create(&t[i], NULL, caller_thread, &total);
-    for (int i = 0; i < CALLERS; i++) pthread_join(t[i], NULL);
+    for (int i = 0; i < CALLERS; i++) test_thread_start(&t[i], caller_thread, &total);
+    for (int i = 0; i < CALLERS; i++) test_thread_join(t[i]);
     CHECK(atomic_load(&total) == (int64_t)CALLERS * 20 * 500, "loops from several threads must not interleave");
 }
 

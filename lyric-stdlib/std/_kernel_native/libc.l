@@ -13,19 +13,21 @@ package Std.LibcHost
 
 // `write`/`read`/`open`/`strlen`/`malloc` go through fixed-width lyric-rt wrappers:
 // their C signatures use size_t/ssize_t (32-bit on wasm32) or are variadic.
+// `close`/`unlink`/`mkdir`/`rmdir` go through lyric-rt too: Windows has no
+// two-argument `mkdir`, and its narrow path functions are not UTF-8.
 extern func write(fd: Int, buf: NativePtr[Byte], n: Long): Long = "lyric_write_fd"
 
 extern func read(fd: Int, buf: NativePtr[Byte], n: Long): Long = "lyric_read_fd"
 
 extern func openFile(path: NativePtr[Byte], flags: Int, mode: Int): Int = "lyric_open_fd"
 
-extern func closeFd(fd: Int): Int = "close"
+extern func closeFd(fd: Int): Int = "lyric_close_fd"
 
-extern func unlink(path: NativePtr[Byte]): Int = "unlink"
+extern func unlink(path: NativePtr[Byte]): Int = "lyric_unlink"
 
-extern func mkdir(path: NativePtr[Byte], mode: Int): Int = "mkdir"
+extern func mkdir(path: NativePtr[Byte], mode: Int): Int = "lyric_mkdir"
 
-extern func rmdir(path: NativePtr[Byte]): Int = "rmdir"
+extern func rmdir(path: NativePtr[Byte]): Int = "lyric_rmdir"
 
 extern func strlen(s: NativePtr[Byte]): Long = "lyric_cstr_len"
 

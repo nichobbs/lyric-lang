@@ -152,7 +152,9 @@ test "generic fn: try/catch where every arm yields the type param still compiles
 // raw stack trace).
 //
 // The repro is a member read on an extern-typed value held in a generic
-// record (`b.item.capacityField` with `b: Box[JSb]`).  The type checker
+// record bound from a function value's result (`b.item.capacityField` with
+// `val b = mk()`, `mk: () -> Box[JSb]`); a parameter `b: Box[JSb]` is typed
+// since #8162 and reaches J009 instead.  The type checker
 // records a receiver's class only for Lyric records, unions, opaque,
 // protected and distinct types (`SymbolTable.memberRecvClasses`), and leaves
 // an extern type's members to codegen, so the JVM backend still sees
@@ -169,12 +171,10 @@ test "erased-receiver member access aborts codegen under error[J007] with a pack
     "  item: T\n" +
     "}\n" +
     "\n" +
-    "func get(b: in Box[JSb]): Int {\n" +
-    "  b.item.capacityField\n" +
-    "}\n" +
-    "\n" +
     "func main(): Unit {\n" +
-    "  println(get(Box(item = JSb.new())))\n" +
+    "  val mk: () -> Box[JSb] = { -> Box(item = JSb.new()) }\n" +
+    "  val b = mk()\n" +
+    "  println(b.item.capacityField)\n" +
     "}\n"
   val noStdlib: List[String] = newList()
   var panicked = false

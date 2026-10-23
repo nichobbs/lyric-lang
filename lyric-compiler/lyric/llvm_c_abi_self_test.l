@@ -2,15 +2,16 @@
 //! `--target native` (#8009).  A record with only by-value fields is an LLVM
 //! struct value; an `extern func` taking or returning one is declared and
 //! called the way clang lowers the matching C prototype for the target
-//! (System V AMD64, AAPCS64, the wasm32 basic C ABI).
+//! (System V AMD64, Microsoft x64, AAPCS64, the wasm32 basic C ABI).
 //!
 //! The runtime cases compile a C helper with clang, link it with the
 //! program, and check every value that crosses: a three-float vector, a
 //! `{double, int}`, a 32-byte record (memory class, `sret`), a four-float
 //! homogeneous aggregate, a padded `{byte, int, byte}`, and a call whose
 //! seventh record no longer fits the argument registers.  They run on the
-//! host's own triple (x86-64 in CI).  The AArch64 and wasm32 cases check the
-//! declarations against what clang 18 emits for the same prototypes.
+//! host's own triple (x86-64 in CI).  The Windows x64, AArch64 and wasm32
+//! cases check the declarations against what clang 18 emits for the same
+//! prototypes; scripts/ci/windows-native-e2e.sh runs the Windows lowering.
 //!
 //! Requires `clang` on PATH and a built runtime (`make -C lyric-rt`).
 //!   make -C lyric-rt && LYRIC_LOAD_COMPILER=1 lyric test lyric-compiler/lyric/llvm_c_abi_self_test.l
@@ -335,6 +336,40 @@ test "x86-64 declarations match clang's System V lowering" {
   )
 }
 
+// The Microsoft x64 convention (docs/67 G9): a record of 1, 2, 4 or 8 bytes in
+// one integer register whatever its fields, any other size by a pointer to a
+// caller-made copy, and a result of any other size through sret.  Checked
+// against clang 18 for x86_64-pc-windows-msvc; a 2-byte record crosses as
+// i32 where clang writes i16, which the convention makes equivalent (only
+// the low 16 bits of the register are read).
+test "Windows x64 declarations match clang's Microsoft x64 lowering" {
+  val extra = "record V2 {\n  x: Float\n  y: Float\n}\n" + "record B2 {\n  a: Byte\n  b: Byte\n}\n" +
+    "record B3 {\n  a: Byte\n  b: Byte\n  c: Byte\n}\n" +
+    "record I1 {\n  a: Int\n}\n" +
+    "extern func v2_add(a: V2, b: V2): V2 = \"v2_add\"\n" +
+    "extern func b2_swap(v: B2): B2 = \"b2_swap\"\n" +
+    "extern func b3_rot(v: B3): B3 = \"b3_rot\"\n" +
+    "extern func i1_neg(v: I1): I1 = \"i1_neg\"\n"
+  val ll = lowerFor(lyricDecls() + extra + mainStub(), "x86_64-pc-windows-msvc")
+  assertTrue(Str.contains(ll, "target datalayout = \"e-m:w-"), "COFF mangling")
+  assertTrue(
+    Str.contains(ll, "@vec3_scale(%T.Vec3* sret(%T.Vec3) align 4, %T.Vec3*, float)"),
+    "a 12-byte record by reference, returned through sret"
+  )
+  assertTrue(Str.contains(ll, "@di_make(%T.DI* sret(%T.DI) align 8, double, i32)"), "a 16-byte result through sret")
+  assertTrue(Str.contains(ll, "declare double @di_sum(%T.DI*)"), "a 16-byte record by reference, never byval")
+  assertTrue(Str.contains(ll, "@big_sum(%T.Big*)"), "a 32-byte record by reference")
+  assertTrue(Str.contains(ll, "@mixed_bump(%T.Mixed* sret(%T.Mixed) align 4, %T.Mixed*)"), "a padded 12-byte record")
+  assertTrue(Str.contains(ll, "declare i64 @v2_add(i64, i64)"), "an 8-byte float record in an integer register")
+  assertTrue(Str.contains(ll, "declare i32 @b2_swap(i32)"), "a 2-byte record in an integer register")
+  assertTrue(Str.contains(ll, "@b3_rot(%T.B3* sret(%T.B3) align 1, %T.B3*)"), "a 3-byte record by reference")
+  assertTrue(Str.contains(ll, "declare i32 @i1_neg(i32)"), "a 4-byte record in an integer register")
+  assertTrue(
+    Str.contains(ll, "@di_seven(%T.DI*, %T.DI*, %T.DI*, %T.DI*, %T.DI*, %T.DI*, %T.DI*)"),
+    "no register budget: every 16-byte record goes by reference"
+  )
+}
+
 test "N0010 keeps only what the C ABI lowering does not cover" {
   val callback = "package T\n" + "record Pt {\n  x: Int\n  y: Int\n}\n" +
     "extern func onEach(f: (Pt) -> Int): Int = \"on_each\"\n" +
@@ -370,6 +405,16 @@ test "N0010 keeps only what the C ABI lowering does not cover" {
     nativeByValueExternDiagnostics(units2, "riscv64-unknown-linux-gnu").count,
     1,
     "a target without the lowering"
+  )
+  assertEqualInt(
+    nativeByValueExternDiagnostics(units2, "x86_64-pc-windows-msvc").count,
+    0,
+    "Windows x64 has the lowering"
+  )
+  assertEqualInt(
+    nativeByValueExternDiagnostics(units2, "aarch64-pc-windows-msvc").count,
+    1,
+    "Windows on AArch64 does not"
   )
   assertEqualInt(nativeByValueExternDiagnostics(units2).count, 1, "no target named")
 }

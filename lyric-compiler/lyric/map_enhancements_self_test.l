@@ -26,7 +26,6 @@ import Std.Testing
 // ─────────────────────────────────────────────────────────────────────────────
 // mapSize / mapIsEmpty
 // ─────────────────────────────────────────────────────────────────────────────
-
 test "mapSize returns zero for empty map" {
   val m: Map[String, Int] = newMap()
   assertEqualInt(mapSize(m), 0, "empty map size is 0")
@@ -249,4 +248,20 @@ test "mapPutAll overwrites existing keys in dst" {
     case Some(v) -> assertEqualInt(v, 99, "dst.a overwritten to 99")
     case None -> assertTrue(false, "dst should still have key a")
   }
+}
+
+// containsValue (#7977)
+test "containsValue finds a present Int value and misses an absent one" {
+  val m: Map[String, Int] = newMap()
+  m.add("a", 10)
+  m.add("b", 20)
+  assertTrue(m.containsValue(20), "20 is a value")
+  assertFalse(m.containsValue(30), "30 is not a value")
+}
+
+test "containsValue works on a String-valued map" {
+  val m: Map[Int, String] = newMap()
+  m.add(1, "one")
+  assertTrue(m.containsValue("one"), "one is a value")
+  assertFalse(m.containsValue("two"), "two is not a value")
 }

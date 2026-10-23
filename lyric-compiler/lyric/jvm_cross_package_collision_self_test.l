@@ -648,6 +648,33 @@ test "same-package bare call to a package-private function still resolves (JVM, 
   )
 }
 
+// Issue #7206: a bare first-class reference to a function (`apply(helper, 41)`)
+// resolves to the REFERENCING package's own function, never to an unrelated
+// package's private one.  `XRef.Priv` (registered first) declares a
+// package-private two-parameter `helper`; `XRef.App` declares its own
+// one-parameter `helper` and passes it by name.  The "bareref:" registry key
+// is bundle-wide and first-wins, but the forwarding closure re-resolves the
+// call through the caller's own scope, so the private overload never leaks;
+// this test pins that.
+test "bare function reference resolves to the caller's own package, never another's private function (JVM, #7206)" {
+  val pkgSrcs: List[String] = newList()
+  pkgSrcs.add("package XRef.Priv\n" + "\n" + "func helper(a: in Int, b: in Int): Int {\n" + "  a - b\n" + "}\n")
+  pkgSrcs.add(
+    "package XRef.App\n" + "\n" + "func helper(x: in Int): Int {\n" + "  x + 1\n" + "}\n" + "\n" +
+      "func apply(f: in (Int) -> Int, v: in Int): Int {\n" +
+      "  f(v)\n" +
+      "}\n" +
+      "\n" +
+      "func main(): Int {\n" +
+      "  println(apply(helper, 41))\n" +
+      "  0\n" +
+      "}\n"
+  )
+  val result = compileAndRunJvm("bare-func-ref-private-7206", pkgSrcs, "XRef.App")
+  assertEqualInt(result.exitCode, 0, "bare_func_ref_private: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "42", "bare_func_ref_private: the caller's own one-parameter helper")
+}
+
 // Review follow-up (#7147): #6853's fix must never let the new package-scoped
 // key hijack an explicitly-QUALIFIED call. `XScoped.App` both declares its
 // OWN `helper` (returning -999) AND makes a fully-qualified call to

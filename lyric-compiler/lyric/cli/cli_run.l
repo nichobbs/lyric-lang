@@ -83,8 +83,8 @@ func runProjectOnceWithFeatures(
   match target {
     case Emitter.Native -> {
       // `buildProject` above already produced a real native executable at
-      // `outPath` (extensionless — `outputExt(Native, _)` — the binary IS
-      // the artifact); run it directly, mirroring `runOnce`'s single-file
+      // `outPath` (`outputExt(Native, _)`: no extension, `.exe` on Windows —
+      // the binary IS the artifact); run it directly, mirroring `runOnce`'s single-file
       // Native case (#6815 item 3a).
       val execArgs: List[String] = newList()
       for a in userArgs.toArray() {
@@ -230,7 +230,7 @@ func runOnce(
       outExt = ".dll"
     }
     case Emitter.Native -> {
-      outExt = ""
+      outExt = outputExt(Emitter.Native, "")
     }
   }
   val outPath = Path.join(Path.join(srcDir, ".lyric-run"), stem + outExt)

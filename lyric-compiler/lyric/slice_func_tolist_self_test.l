@@ -1,20 +1,19 @@
-//! slice_func_tolist_dotnet_self_test.l — dotnet runtime regression test for
+//! slice_func_tolist_self_test.l — dotnet and JVM runtime regression test for
 //! `slice.toList()` over function elements (#8299).
 //!
 //! `toList()` copies a slice into a concrete `List[T]`.  For a function
 //! element type it added each element, read through `IList.get_Item` as an
 //! `object`, to the `List<Action<...>>` / `List<Func<...>>` unnarrowed
 //! (ilverify: StackUnexpected).  Each element is now narrowed to its delegate
-//! type first.  dotnet-only: the JVM backend does not lower `slice.toList()`
-//! (J008, "method 'toList' cannot be called on a slice receiver"), and the
-//! native one does not accept a `Unit`-returning function type as a type
-//! argument (N0007).
+//! type first.  The native backend does not accept a `Unit`-returning
+//! function type as a type argument (N0007), so it is not run there.
 //!
-//!   lyric test --target dotnet lyric-compiler/lyric/slice_func_tolist_dotnet_self_test.l
+//!   lyric test --target dotnet lyric-compiler/lyric/slice_func_tolist_self_test.l
+//!   lyric test --target jvm lyric-compiler/lyric/slice_func_tolist_self_test.l
 //!
 //! `scripts/ilverify-selfhosted.sh` verifies the test DLL.
 @test_module
-package Lyric.SliceFuncToListDotnetSelfTest
+package Lyric.SliceFuncToListSelfTest
 
 import Std.Core
 import Std.Collections

@@ -18023,10 +18023,14 @@ record CAbiPlan {
   ret: CRetAbi
 }
 
-/// The C ABI family of `triple`: "x86_64", "aarch64", "wasm32", or "" for a
-/// target whose struct passing the backend does not lower (N0010 there).
+/// The C ABI family of `triple`: "x86_64" (System V), "win64" (the Microsoft
+/// x64 convention, docs/67 G9), "aarch64", "wasm32", or "" for a target
+/// whose struct passing the backend does not lower (N0010 there).
 pub func cAbiArch(triple: in String): String {
   if Str.contains(triple, "windows") or Str.contains(triple, "mingw") {
+    if Str.startsWith(triple, "x86_64") {
+      return "win64"
+    }
     return ""
   }
   if Str.startsWith(triple, "x86_64") {
@@ -18160,6 +18164,25 @@ func cSysvParts(ctx: in Ctx, t: in NType): List[NType] {
   parts
 }
 
+// Microsoft x64: a record of 1, 2, 4 or 8 bytes travels in one integer
+// register, whatever its fields (a float record too); any other size is
+// passed as a pointer to a copy the caller makes, and returned through a
+// hidden result pointer.  The register's type is the record's width, except
+// that a 2-byte record crosses as `i32`: a callee reads only the low 16 bits
+// of the register and a caller only the low 16 bits of the result, the
+// upper bits being unspecified, as for every narrower-than-register value.
+func cWin64Reg(size: in Int): Option[NType] {
+  if size == 1 {
+    Some(value = NI8)
+  } else if size == 2 or size == 4 {
+    Some(value = NI32)
+  } else if size == 8 {
+    Some(value = NI64)
+  } else {
+    None
+  }
+}
+
 func cRetAbiOf(ctx: in Ctx, arch: in String, ret: in NType): CRetAbi {
   if not isByValueStructNType(ret) {
     return CRPlain
@@ -18167,6 +18190,12 @@ func cRetAbiOf(ctx: in Ctx, arch: in String, ret: in NType): CRetAbi {
   val size = sizeOfN(ctx, ret)
   val scalars: List[CScalar] = newList()
   cFlatten(ctx, ret, 0, scalars)
+  if arch == "win64" {
+    match cWin64Reg(size) {
+      case Some(t) -> return CRParts(parts = listOfNType(t))
+      case None -> return CRSret
+    }
+  }
   if arch == "x86_64" {
     if size > 16 {
       return CRSret
@@ -18225,7 +18254,12 @@ func cAbiPlanOf(ctx: in Ctx, params: in List[NType], ret: in NType): CAbiPlan {
     val size = sizeOfN(ctx, p)
     val scalars: List[CScalar] = newList()
     cFlatten(ctx, p, 0, scalars)
-    if arch == "x86_64" {
+    if arch == "win64" {
+      match cWin64Reg(size) {
+        case Some(t) -> args.add(CAParts(parts = listOfNType(t)))
+        case None -> args.add(CAPtr)
+      }
+    } else if arch == "x86_64" {
       if size > 16 {
         args.add(CAByval)
       } else {
@@ -18693,7 +18727,7 @@ func byValueExternMessage(fnName: in String, recName: in String, isUnion: in Boo
       "give a case a reference payload so the union keeps its heap form"
   }
   "extern func '" + fnName + "' passes by-value record '" + recName +
-    "' across the C boundary, and this target's C struct ABI is not lowered (x86-64, AArch64 and wasm32 are; docs/67 §4.2); " +
+    "' across the C boundary, and this target's C struct ABI is not lowered (x86-64 System V and Windows, AArch64 and wasm32 are; docs/67 §4.2); " +
     "pass a NativePtr, or declare the record with a `var` field so it keeps its heap form"
 }
 

@@ -155,6 +155,11 @@ for t in \
   lyric-compiler/lyric/bare_func_ref_self_test.l \
   lyric-compiler/lyric/unit_func_ref_action_self_test.l \
   lyric-compiler/lyric/inout_self_param_self_test.l \
+  lyric-compiler/lyric/union_named_arg_order_self_test.l \
+  lyric-compiler/lyric/impl_self_spelling_self_test.l \
+  lyric-compiler/lyric/local_as_pattern_self_test.l \
+  lyric-compiler/lyric/record_method_option_param_self_test.l \
+  lyric-compiler/lyric/string_split_intrinsic_self_test.l \
   lyric-compiler/lyric/qualified_enum_case_self_test.l \
   lyric-compiler/lyric/qualified_union_case_self_test.l \
   lyric-compiler/lyric/slice_append_widening_self_test.l \
@@ -195,7 +200,8 @@ for t in \
   lyric-compiler/lyric/byref_extern_struct_dotnet_self_test.l \
   lyric-compiler/lyric/slice_func_elem_self_test.l \
   lyric-compiler/lyric/slice_func_unit_elem_self_test.l \
-  lyric-compiler/lyric/slice_func_tolist_dotnet_self_test.l \
+  lyric-compiler/lyric/slice_func_tolist_self_test.l \
+  lyric-compiler/lyric/jvm_erased_types_self_test.l \
   lyric-compiler/lyric/println_stringify_self_test.l \
   lyric-compiler/lyric/println_extern_struct_dotnet_self_test.l \
   lyric-compiler/lyric/pconstructor_typed_binding_self_test.l \

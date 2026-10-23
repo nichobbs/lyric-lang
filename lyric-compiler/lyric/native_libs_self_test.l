@@ -477,3 +477,41 @@ test "a prebuilt archive matches its platform under another vendor string" {
   val other = Cli.resolveNativeLibs(decls, "aarch64-apple-darwin")
   assertTrue(Str.contains(other.errors[0], "no prebuilt archive"), "another platform does not: " + other.errors[0])
 }
+
+// docs/67 G9: on Windows a `dir` library is `<link>.lib` (static, or the import
+// library of `<link>.dll`), the DLL is bundled beside the executable, where the
+// loader looks first, and there is no run path.
+test "a dir library on Windows links <link>.lib and bundles <link>.dll without a run path" {
+  val root = freshTempDir("windows")
+  val libDir = Path.join(root, "lib")
+  mkdirOrPanic(libDir)
+  writeFileOrPanic(Path.join(libDir, "demo.lib"), "!<arch>\n")
+  writeFileOrPanic(Path.join(libDir, "Demo.dll"), "MZ")
+  writeFileOrPanic(Path.join(libDir, "libdemo.so"), "ELF")
+  val spec = Mf.NativeLibSpec(name = "demo", link = "", version = "", pkgConfig = "", dir = "lib")
+  val decls: List[Cli.NativeLibDecl] = newList()
+  decls.add(Cli.NativeLibDecl(spec = spec, baseDir = root))
+  val plan = Cli.resolveNativeLibs(decls, "x86_64-pc-windows-msvc")
+  assertEqualInt(plan.errors.count, 0, "resolves: " + Str.joinList("; ", plan.errors))
+  assertTrue(
+    listHas(plan.args, "-L" + libDir) and listHas(plan.args, "-ldemo"),
+    "-L and -l, which clang maps to demo.lib"
+  )
+  assertEqualInt(plan.bundle.count, 1, "only the DLL is bundled")
+  assertTrue(Str.endsWith(plan.bundle[0], "Demo.dll"), "the DLL, matched without regard to case")
+  for a in plan.args {
+    assertTrue(not Str.contains(a, "rpath"), "no run path on Windows")
+  }
+  val linux = Cli.resolveNativeLibs(decls, "x86_64-unknown-linux-gnu")
+  assertTrue(Str.endsWith(linux.bundle[0], "libdemo.so"), "the same table on Linux bundles the .so")
+  match File.deleteFile(Path.join(libDir, "demo.lib")) {
+    case Ok(_) -> ()
+    case Err(_) -> ()
+  }
+  val noLib = Cli.resolveNativeLibs(decls, "x86_64-pc-windows-msvc")
+  assertTrue(
+    noLib.errors.count == 1 and Str.contains(noLib.errors[0], "demo.lib"),
+    "a DLL without its import library is reported"
+  )
+  cleanup(root)
+}
