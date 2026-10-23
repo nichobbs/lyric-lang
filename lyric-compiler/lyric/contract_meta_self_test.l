@@ -796,6 +796,44 @@ func testBuildGenericFuncCarriesBody(): Unit {
   }
 }
 
+// A `pub` generic that calls a private generic of its own package carries that helper in the
+// contract under a package-unique name (#8427): the `pub` body calls the carried copy, the carried
+// copy's own helper calls are renamed too, and the copy is not public API.
+func testBuildCarriesPrivateGenericHelpers(): Unit {
+  val src = "package Carry.Lib\n\n" + "func step[S](x: in S, f: in (S) -> Int): Int { f(x) + 1 }\n" +
+    "func twice[S](x: in S, f: in (S) -> Int): Int { step(x, f) + step(x, f) }\n" +
+    "func unused[S](x: in S): S { x }\n" +
+    "pub func run[S](x: in S, f: in (S) -> Int): Int { twice(x, f) }\n"
+  val pr = parse(src)
+  val c = buildContractFromFile(pr.file, "1.0.0")
+  val run = unwrapDeclOrFail(findDeclByKind(c.decls, "func", "run"), "carry: pub run missing")
+  match run.body {
+    case None -> panic("carry: run has no body")
+    case Some(b) -> {
+      assertTrue(Str.contains(b, "__priv_Carry_Lib_twice"), "carry: run calls the carried twice (got " + b + ")")
+      assertTrue(not Str.contains(b, " twice("), "carry: run no longer names the private twice (got " + b + ")")
+    }
+  }
+  val twice = unwrapDeclOrFail(findDeclByKind(c.decls, "func", "__priv_Carry_Lib_twice"), "carry: twice copy missing")
+  assertEqual(twice.visibility, "internal", "carry: the copy is not public API")
+  match twice.body {
+    case None -> panic("carry: twice copy has no body")
+    case Some(b) -> assertTrue(
+      Str.contains(b, "__priv_Carry_Lib_step"),
+      "carry: twice calls the carried step (got " + b + ")"
+    )
+  }
+  assertTrue(
+    unwrapDeclOrFail(findDeclByKind(c.decls, "func", "__priv_Carry_Lib_step"), "carry: step copy missing").name.length >
+      0,
+    "carry: the helper reached through another helper is carried"
+  )
+  assertTrue(
+    match findDeclByKind(c.decls, "func", "__priv_Carry_Lib_unused") { case Some(_) -> false; case None -> true },
+    "carry: a helper no pub generic reaches is not carried"
+  )
+}
+
 // An expression-bodied generic function (`= expr`) carries its body in
 // the `= expr` form, not the block form.
 func testBuildGenericFuncExprBodyCarriesBody(): Unit {
@@ -1203,6 +1241,7 @@ test "buildContractFromFile generic func carries body" {
 
 test "buildContractFromFile generic func expr body carries body" {
   testBuildGenericFuncExprBodyCarriesBody()
+  testBuildCarriesPrivateGenericHelpers()
 }
 
 test "buildContractFromFile non-generic func has no body" {

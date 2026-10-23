@@ -140,9 +140,9 @@ Issue clusters, by `group:*` label.  Counts are open issues as of 2026-10-21.
   core suite (D205), child processes (D208), sockets and TLS over Winsock and
   Schannel (D209), and the compiler-hosted self-tests with AddressSanitizer (D213);
   the graphics examples on Windows remain (#8435).
-- **Private helpers of a generic.**  A `pub` generic may call a private helper of
-  its package on native (and a private generic one on the JVM), not on dotnet
-  (T0123); docs/01 §3.3, D204, plan in #8427.
+- **Private helpers of a generic.**  A `pub` generic carries the private generics it
+  reaches on every target (D215); a private non-generic helper is still T0123 on
+  dotnet and the JVM (docs/01 §3.3, #8427).
 - **Cross-target stdlib divergence.**  `Std.Time.toIsoString` (#8314), `Map.add`,
   tuple key and `==` on `List` differ by target (#7301, #8169, #8170),
   JVM `Std.Set` unusable (#7312), JVM `format1..4` drop args (#7367).
