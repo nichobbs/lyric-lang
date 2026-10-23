@@ -387,6 +387,17 @@ test "launch commands resolve paths inside the plugin directory" {
   }
 }
 
+test "a payload command too short to launch is an error, not a panic" {
+  match pluginLaunchCommand(ManagedPayload(runtime = "dotnet", command = ["dotnet", "exec"]), "/plugins/p", None, 1024i64) {
+    case Ok(_) -> assertTrue(false, "a managed command without the payload file")
+    case Err(e) -> assertTrue(e.contains("managed payload"), e)
+  }
+  match pluginLaunchCommand(NativePayload(os = "linux", arch = "x86_64", command = []), "/plugins/p", None, 1024i64) {
+    case Ok(_) -> assertTrue(false, "an empty native command")
+    case Err(e) -> assertTrue(e.contains("native payload"), e)
+  }
+}
+
 test "the current platform uses the manifest vocabulary" {
   val p = currentPluginPlatform()
   assertTrue(p.os == "linux" or p.os == "macos" or p.os == "windows" or p.os == "other", "os: " + p.os)

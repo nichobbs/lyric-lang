@@ -1375,6 +1375,11 @@ pub func pluginLaunchCommand(
   val argv: List[String] = newList()
   match payload {
     case ManagedPayload(runtime, command) -> {
+      // readPluginManifest enforces this too, but a manifest built in memory
+      // and passed to registerPlugin does not go through it.
+      if command.count < 3 {
+        return Err(error = "a managed payload's command needs a launcher, a flag and the payload file")
+      }
       if runtime == "jvm" {
         val javaHome = Env.getVarOrDefault("JAVA_HOME", "")
         val javaExe = if Env.isWindows() { "java.exe" } else { "java" }
@@ -1399,6 +1404,9 @@ pub func pluginLaunchCommand(
       }
     }
     case NativePayload(_, _, command) -> {
+      if command.count == 0 {
+        return Err(error = "a native payload's command must not be empty")
+      }
       match plWithin(dir, command[0]) {
         case Ok(p) -> argv.add(p)
         case Err(e) -> return Err(error = e)
