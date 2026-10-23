@@ -112,6 +112,21 @@ void lyric_list_push(LyricList* list, int64_t val) {
     list->len++;
 }
 
+/* Insert `val` before position `idx` (0 ..= len), shifting later elements up
+ * by one: `xs.add(index, item)`.  Panics when `idx` is outside 0 ..= len,
+ * leaving the list unchanged. */
+void lyric_list_insert(LyricList* list, int64_t idx, int64_t val) {
+    if (idx < 0 || idx > list->len) {
+        lyric_panic_msg("list index out of bounds", "lyric_collections.c", __LINE__);
+    }
+    list_grow(list, list->len + 1);
+    elem_retain(list->elems_are_refs, val);
+    memmove(&list->data[idx + 1], &list->data[idx],
+            (size_t)(list->len - idx) * sizeof(int64_t));
+    list->data[idx] = val;
+    list->len++;
+}
+
 int64_t lyric_list_get(LyricList* list, int64_t idx) {
     if (idx < 0 || idx >= list->len) {
         lyric_panic_msg("list index out of bounds", "lyric_collections.c", __LINE__);

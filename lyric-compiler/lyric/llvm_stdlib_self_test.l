@@ -834,6 +834,18 @@ test "format1-format4 on native (ASan) (#7840)" {
   assertEqual(r.stdout, "a=42\nbab\n1-true-x\n4321\n{7} {0} }{\nused\ncafé ok\n", "formatted output")
 }
 
+test "print takes a String or a scalar and println() writes an empty line on native (#7893, #7912)" {
+  val src = "package T\n" + "func main(): Int {\n" + "  print(\"a\")\n" + "  print(42)\n" + "  print(true)\n" +
+    "  print(1.5)\n" +
+    "  println()\n" +
+    "  println(7)\n" +
+    "  0\n" +
+    "}\n"
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 0, "exit code")
+  assertEqual(r.stdout, "a42true1.5\n7\n", "print writes no newline, println() writes one")
+}
+
 test "format1 with a placeholder that has no argument panics on native (#7840)" {
   val src = "package T\n" + "func main(): Int {\n" + "  println(format1(\"{1}\", 5))\n" + "  42\n" + "}\n"
   val r = compileAndRunNative(src)

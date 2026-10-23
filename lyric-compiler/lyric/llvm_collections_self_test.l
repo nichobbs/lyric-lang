@@ -151,6 +151,44 @@ test "list indexing and set" {
   assertEqualInt(r.exitCode, 44, "list-index: 1+40+3")
 }
 
+test "list insert: add(index, item) prepends, inserts and appends (#7800)" {
+  val src = "package T\n" + "func main(): Int {\n" + "  val xs: List[Int] = newList()\n" + "  xs.add(20)\n" +
+    "  xs.add(0, 10)\n" +
+    "  xs.add(2, 40)\n" +
+    "  xs.add(2, 30)\n" +
+    "  if xs.count == 4 and xs[0] == 10 and xs[1] == 20 and xs[2] == 30 and xs[3] == 40 {\n" +
+    "    42\n" +
+    "  } else {\n" +
+    "    1\n" +
+    "  }\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 42, "list-insert: 10 20 30 40")
+}
+
+test "list insert of String elements is ARC-checked (#7800)" {
+  val src = "package T\n" + "func main(): Int {\n" + "  val xs: List[String] = newList()\n" + "  xs.add(\"b\")\n" +
+    "  xs.add(0, \"a\")\n" +
+    "  xs.add(1, \"xx\")\n" +
+    "  var total = 0\n" +
+    "  for s in xs {\n" +
+    "    total = total + s.length\n" +
+    "  }\n" +
+    "  total\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 4, "list-insert-string: 1+2+1")
+}
+
+test "list insert past the end panics (#7800)" {
+  val src = "package T\n" + "func main(): Int {\n" + "  val xs: List[Int] = newList()\n" + "  xs.add(1)\n" +
+    "  xs.add(5, 9)\n" +
+    "  0\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertTrue(r.exitCode != 0, "an index past the end terminates the program")
+}
+
 // ── list literals `[...]` (EList lowering, #5977) ─────────────────────────────
 test "list literal of Int (expected type from annotation)" {
   val src = "package T\n" + "func main(): Int {\n" + "  val xs: List[Int] = [7, 35]\n" + "  var sum = 0\n" +

@@ -121,6 +121,10 @@ pub record CodegenCtx {
   // (`emitSliceCopyLoopMsil`, #7259).
   tokArrayCopy: Int
   tokICollGetCount: Int  // ICollection.get_Count(): int32  callvirt
+  tokIDictContains: Int  // IDictionary.Contains(object): bool  callvirt (structural `==`, #8169)
+  tokIDictGetItem: Int  // IDictionary.get_Item(object): object  callvirt
+  tokIDictGetKeys: Int  // IDictionary.get_Keys(): ICollection  callvirt
+  tokIDictCast: Int  // TypeRef token of System.Collections.IDictionary  castclass
   // String intrinsic members (instance HASTHIS)
   tokStringGetChars: Int  // String.get_Chars(int32): char
   tokStringGetLength: Int  // String.get_Length(): int32
@@ -165,6 +169,8 @@ pub record CodegenCtx {
   // DateTimes, matching the F# bootstrap emitter's DateTime.ToString("o") path
   // in Codegen.fs so stage-0 and stage-1 render DateTime byte-identically.
   tokInvariantCulture: Int  // CultureInfo.get_InvariantCulture(): CultureInfo  static
+  tokSetCurrentCulture: Int  // CultureInfo.set_CurrentCulture(CultureInfo): void  static (#7911)
+  tokSetDefaultThreadCulture: Int  // CultureInfo.set_DefaultThreadCurrentCulture(CultureInfo): void  static (#7911)
   tokDateTimeToStringO: Int    // DateTime.ToString(string): string  instance HASTHIS
   usDateTimeFormatO: Int       // ldstr token (0x70000000 | US heap offset) for the "o" format specifier
   tokDoubleToStringInv: Int    // Double.ToString(IFormatProvider): string  instance HASTHIS (#2462)
@@ -1288,6 +1294,43 @@ pub func newCodegenCtx(
       "icoll_count",
       buildInstanceMethodSig(icollCntPs, MInt)
     )
+  // Non-generic IDictionary members: `==` on two maps (#8169) reads entries
+  // through them, so a `Dictionary<K, V>` of any instantiation binds.
+  val trIDictionary = ctxAddTypeRef(lctx, "System.Collections", "IDictionary", lctx.arRuntime)
+  val idictObjPs: List[MsilType] = newList()
+  idictObjPs.add(MObject)
+  val tokIDictContains = 0x0A000000 +
+    ctxAddMemberRef(
+      lctx,
+      trIDictionary,
+      "Contains",
+      "idict_contains",
+      buildInstanceMethodSig(idictObjPs, MBool)
+    )
+  val tokIDictGetItem = 0x0A000000 +
+    ctxAddMemberRef(
+      lctx,
+      trIDictionary,
+      "get_Item",
+      "idict_getitem",
+      buildInstanceMethodSig(idictObjPs, MObject)
+    )
+  val idictKeysPs: List[MsilType] = newList()
+  val tokIDictGetKeys = 0x0A000000 +
+    ctxAddMemberRef(
+      lctx,
+      trIDictionary,
+      "get_Keys",
+      "idict_keys",
+      buildInstanceMethodSig(
+        idictKeysPs,
+        MClassRef(
+          typeRefCode = tdrTypeRef(trICollection),
+          clrFqn = "System.Collections.ICollection"
+        )
+      )
+    )
+  val tokIDictCast = 0x01000000 + trIDictionary
   // IList.set_Item(int32, object): void — the write-side counterpart of
   // `tokIListGetItem`, used to store through a genuine `T[]` array (a
   // `slice[T]` value that is a real CLI array rather than a `List`-backed
@@ -1944,6 +1987,29 @@ pub func newCodegenCtx(
       buildStaticMethodSig(newList(), ciRet)
     )
 
+  // CultureInfo.set_CurrentCulture / set_DefaultThreadCurrentCulture: `main`
+  // pins the process to the invariant culture, so no stringification path
+  // (interpolation, `+`, `.toString()`, `println`, a generic `T`) depends on
+  // the host locale (#7911).
+  val ciSetPs: List[MsilType] = newList()
+  ciSetPs.add(ciRet)
+  val tokSetCurrentCulture = 0x0A000000 +
+    ctxAddMemberRef(
+      lctx,
+      trCultureInfo,
+      "set_CurrentCulture",
+      "ci_set_current",
+      buildStaticMethodSig(ciSetPs, MVoid)
+    )
+  val tokSetDefaultThreadCulture = 0x0A000000 +
+    ctxAddMemberRef(
+      lctx,
+      trCultureInfo,
+      "set_DefaultThreadCurrentCulture",
+      "ci_set_default_thread",
+      buildStaticMethodSig(ciSetPs, MVoid)
+    )
+
   // DateTime.ToString(string): string  — ISO-8601 "o" format specifier path.
   // Called with ldstr "o" + ldloca(dtSlot) + call DateTime.ToString(string).
   // Produces "1970-01-01T00:00:00.0000000Z" for UTC DateTimes, matching the
@@ -2259,6 +2325,8 @@ pub func newCodegenCtx(
     tokObjGetHashCode = tokObjGetHashCode,
     tokTypeGetName = tokTypeGetName,
     tokInvariantCulture = tokInvariantCulture,
+    tokSetCurrentCulture = tokSetCurrentCulture,
+    tokSetDefaultThreadCulture = tokSetDefaultThreadCulture,
     tokDateTimeToStringO = tokDateTimeToStringO,
     usDateTimeFormatO = usDateTimeFormatO,
     tokDoubleToStringInv = tokDoubleToStringInv,
@@ -2279,6 +2347,10 @@ pub func newCodegenCtx(
     tokIListSetItem = tokIListSetItem,
     tokArrayCopy = tokArrayCopy,
     tokICollGetCount = tokICollGetCount,
+    tokIDictContains = tokIDictContains,
+    tokIDictGetItem = tokIDictGetItem,
+    tokIDictGetKeys = tokIDictGetKeys,
+    tokIDictCast = tokIDictCast,
     tokDictObjCtor = tokDictObjCtor,
     tokDictObjAdd = tokDictObjAdd,
     tokDictObjGetItem = tokDictObjGetItem,
@@ -11067,10 +11139,12 @@ func emitDictCastRecv(cctx: in CodegenCtx, insns: in List[MInsn], recvTy: in Msi
   }
 }
 
+// `Map.add` is insert-or-replace on every target (docs/01, #7301): `Dictionary.Add`
+// would throw on an existing key, so this lowers to `set_Item`.
 func emitDictAdd(cctx: in CodegenCtx, insns: in List[MInsn], recvTy: in MsilType): Unit {
   match recvTy {
-    case MConcreteMap(k, v) -> insns.add(MDictOp(op = DoAdd, keyTy = k, valTy = v))
-    case _ -> insns.add(MCallvirt(methodToken = cctx.tokDictObjAdd))
+    case MConcreteMap(k, v) -> insns.add(MDictOp(op = DoSetItem, keyTy = k, valTy = v))
+    case _ -> insns.add(MCallvirt(methodToken = cctx.tokDictObjSetItem))
   }
 }
 
@@ -13903,7 +13977,10 @@ func lowerBinopMsil(
           // structurally via its synthesised `equals(self, other)` (#1480);
           // both operands are already on the stack in (self, other) order.
           val eqTok = derivedEqualsTokenMsil(cctx, beqLhsTy)
-          if eqTok > 0 {
+          if isStructuralCollMsil(beqLhsTy) {
+            emitStructuralCollEqMsil(cctx, fctx, insns, beqLhsTy)
+            MBool
+          } else if eqTok > 0 {
             insns.add(MCall(methodToken = eqTok))
             MBool
           } else {
@@ -13945,7 +14022,9 @@ func lowerBinopMsil(
         }
         case _ -> {
           val neqTok = derivedEqualsTokenMsil(cctx, bneqLhsTy)
-          if neqTok > 0 {
+          if isStructuralCollMsil(bneqLhsTy) {
+            emitStructuralCollEqMsil(cctx, fctx, insns, bneqLhsTy)
+          } else if neqTok > 0 {
             insns.add(MCall(methodToken = neqTok))
           } else {
             // See the BEq arm: a value-type LHS must be boxed under the rhs
@@ -34803,6 +34882,15 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
   fctx.originPkg = originPkgOf(decl.annotations)
   fctx.bareSelfFields = bareSelfFieldsMsil(decl.annotations)
   val insns: List[MInsn] = newList()
+  // Any function named `main` pins the culture, not only the bundle entry point: a
+  // second `main` in a library package is only ever reached through the entry
+  // point, so repeating the (idempotent) pin there is harmless.
+  if decl.name == "main" {
+    insns.add(MCall(methodToken = cctx.tokInvariantCulture))
+    insns.add(MCall(methodToken = cctx.tokSetCurrentCulture))
+    insns.add(MCall(methodToken = cctx.tokInvariantCulture))
+    insns.add(MCall(methodToken = cctx.tokSetDefaultThreadCulture))
+  }
 
   // Allocate slots for parameters.  These occupy slots 0..N-1 in the
   // combined slot space but are NOT added to fctx.locals.
@@ -37130,6 +37218,173 @@ func buildStructuralEqualityOverridesMsil(
   )
 
   methods
+}
+
+// `==` on two `List`-represented values (a `List` or a tuple) with both on the
+// stack: equal when they hold equal elements, in order, under D172's relation
+// (#8169).  Reuses `emitListKeyEqMsil`, whose locals and labels are numbered
+// from the end of the function's own so the emitted code stays valid in a
+// function body.  Leaves a `Bool`.
+func emitListStructuralEqMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], t: in MsilType): Unit {
+  val failL = freshLabelMsil(fctx)
+  val endL = freshLabelMsil(fctx)
+  val locals: List[MsilType] = newList()
+  var pad = 0
+  while pad < fctx.locals.count {
+    locals.add(MObject)
+    pad = pad + 1
+  }
+  val firstNew = locals.count
+  val labels: List[Int] = newList()
+  labels.add(fctx.labelTicker.count)
+  emitListKeyEqMsil(cctx, insns, locals, labels, t, failL)
+  while fctx.labelTicker.count < labels[0] {
+    fctx.labelTicker.add(0)
+  }
+  var k = firstNew
+  while k < locals.count {
+    val _ = allocSlotMsil(fctx, "__lseq_" + toString(fctx.slotTicker.count), locals[k])
+    k = k + 1
+  }
+  insns.add(MLdcI4(v = 1))
+  insns.add(MBr(label = endL))
+  insns.add(MLabel(id = failL))
+  insns.add(MLdcI4(v = 0))
+  insns.add(MLabel(id = endL))
+}
+
+// A tuple, `List`, `Set` or `Map` compared by structure under `==` (#8169).
+func isStructuralCollMsil(t: in MsilType): Bool {
+  match t {
+    case MSetOf(_) | MMapOf(_, _) | MConcreteMap(_, _) -> true
+    case _ -> isListFieldMsil(t)
+  }
+}
+
+// `==` on two collections with both on the stack, leaving a `Bool`: a `List` or
+// tuple element by element, a `Set` when it has the same members and a `Map`
+// when it has the same keys with equal values, under D172's relation.
+func emitStructuralCollEqMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], t: in MsilType): Unit {
+  match t {
+    case MSetOf(_) -> emitSetOrMapEqMsil(cctx, fctx, insns, t)
+    case MMapOf(_, _) -> emitSetOrMapEqMsil(cctx, fctx, insns, t)
+    case MConcreteMap(_, _) -> emitSetOrMapEqMsil(cctx, fctx, insns, t)
+    case _ -> emitListStructuralEqMsil(cctx, fctx, insns, t)
+  }
+}
+
+func emitSetOrMapEqMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], t: in MsilType): Unit {
+  val failL = freshLabelMsil(fctx)
+  val endL = freshLabelMsil(fctx)
+  val doneL = freshLabelMsil(fctx)
+  val loopL = freshLabelMsil(fctx)
+  val locals: List[MsilType] = newList()
+  var pad = 0
+  while pad < fctx.locals.count {
+    locals.add(MObject)
+    pad = pad + 1
+  }
+  val firstNew = locals.count
+  val labels: List[Int] = newList()
+  labels.add(fctx.labelTicker.count)
+  val enumTy = MClassRef(typeRefCode = tdrTypeRef(cctx.trIEnumerator), clrFqn = "System.Collections.IEnumerator")
+  val lb = newLocalIn(locals, MObject)
+  val la = newLocalIn(locals, MObject)
+  val le = newLocalIn(locals, enumTy)
+  insns.add(MStloc(slot = lb))
+  insns.add(MStloc(slot = la))
+  match t {
+    case MSetOf(_) -> {
+      insns.add(MLdloc(slot = la))
+      insns.add(MCastclass(typeToken = cctx.tokSetObjTypeSpec))
+      insns.add(MCallvirt(methodToken = cctx.tokSetObjGetCount))
+      insns.add(MLdloc(slot = lb))
+      insns.add(MCastclass(typeToken = cctx.tokSetObjTypeSpec))
+      insns.add(MCallvirt(methodToken = cctx.tokSetObjGetCount))
+      insns.add(MBrNe(label = failL))
+      insns.add(MLdloc(slot = la))
+      insns.add(MCastclass(typeToken = 0x01000000 + cctx.trIEnumerable))
+      insns.add(MCallvirt(methodToken = cctx.tokIEnumerableGetEnumerator))
+      insns.add(MStloc(slot = le))
+      insns.add(MLabel(id = loopL))
+      insns.add(MLdloc(slot = le))
+      insns.add(MCallvirt(methodToken = cctx.tokIEnumeratorMoveNext))
+      insns.add(MBrFalse(label = doneL))
+      insns.add(MLdloc(slot = lb))
+      insns.add(MCastclass(typeToken = cctx.tokSetObjTypeSpec))
+      insns.add(MLdloc(slot = le))
+      insns.add(MCallvirt(methodToken = cctx.tokIEnumeratorGetCurrent))
+      insns.add(MCallvirt(methodToken = cctx.tokSetObjContains))
+      insns.add(MBrFalse(label = failL))
+      insns.add(MBr(label = loopL))
+    }
+    case _ -> {
+      val valTy = match t { case MMapOf(_, v) -> v; case MConcreteMap(_, v) -> v; case _ -> MObject }
+      val lk = newLocalIn(locals, MObject)
+      insns.add(MLdloc(slot = la))
+      insns.add(MCastclass(typeToken = cctx.tokIDictCast))
+      insns.add(MCallvirt(methodToken = cctx.tokICollGetCount))
+      insns.add(MLdloc(slot = lb))
+      insns.add(MCastclass(typeToken = cctx.tokIDictCast))
+      insns.add(MCallvirt(methodToken = cctx.tokICollGetCount))
+      insns.add(MBrNe(label = failL))
+      insns.add(MLdloc(slot = la))
+      insns.add(MCastclass(typeToken = cctx.tokIDictCast))
+      insns.add(MCallvirt(methodToken = cctx.tokIDictGetKeys))
+      insns.add(MCallvirt(methodToken = cctx.tokIEnumerableGetEnumerator))
+      insns.add(MStloc(slot = le))
+      insns.add(MLabel(id = loopL))
+      insns.add(MLdloc(slot = le))
+      insns.add(MCallvirt(methodToken = cctx.tokIEnumeratorMoveNext))
+      insns.add(MBrFalse(label = doneL))
+      insns.add(MLdloc(slot = le))
+      insns.add(MCallvirt(methodToken = cctx.tokIEnumeratorGetCurrent))
+      insns.add(MStloc(slot = lk))
+      insns.add(MLdloc(slot = lb))
+      insns.add(MCastclass(typeToken = cctx.tokIDictCast))
+      insns.add(MLdloc(slot = lk))
+      insns.add(MCallvirt(methodToken = cctx.tokIDictContains))
+      insns.add(MBrFalse(label = failL))
+      if isListFieldMsil(valTy) {
+        insns.add(MLdloc(slot = la))
+        insns.add(MCastclass(typeToken = cctx.tokIDictCast))
+        insns.add(MLdloc(slot = lk))
+        insns.add(MCallvirt(methodToken = cctx.tokIDictGetItem))
+        insns.add(MLdloc(slot = lb))
+        insns.add(MCastclass(typeToken = cctx.tokIDictCast))
+        insns.add(MLdloc(slot = lk))
+        insns.add(MCallvirt(methodToken = cctx.tokIDictGetItem))
+        emitListKeyEqMsil(cctx, insns, locals, labels, valTy, failL)
+      } else {
+        insns.add(MCall(methodToken = cctx.tokStructEqComparer))
+        insns.add(MLdloc(slot = la))
+        insns.add(MCastclass(typeToken = cctx.tokIDictCast))
+        insns.add(MLdloc(slot = lk))
+        insns.add(MCallvirt(methodToken = cctx.tokIDictGetItem))
+        insns.add(MLdloc(slot = lb))
+        insns.add(MCastclass(typeToken = cctx.tokIDictCast))
+        insns.add(MLdloc(slot = lk))
+        insns.add(MCallvirt(methodToken = cctx.tokIDictGetItem))
+        insns.add(MCallvirt(methodToken = cctx.tokEqComparerEquals))
+        insns.add(MBrFalse(label = failL))
+      }
+      insns.add(MBr(label = loopL))
+    }
+  }
+  insns.add(MLabel(id = doneL))
+  insns.add(MLdcI4(v = 1))
+  insns.add(MBr(label = endL))
+  insns.add(MLabel(id = failL))
+  insns.add(MLdcI4(v = 0))
+  insns.add(MLabel(id = endL))
+  while fctx.labelTicker.count < labels[0] {
+    fctx.labelTicker.add(0)
+  }
+  var k = firstNew
+  while k < locals.count {
+    val _ = allocSlotMsil(fctx, "__lseq_" + toString(fctx.slotTicker.count), locals[k])
+    k = k + 1
+  }
 }
 
 // A `List`-represented field: a `List`, an `array[N, T]`, which dotnet
