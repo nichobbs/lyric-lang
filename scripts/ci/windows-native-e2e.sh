@@ -28,6 +28,16 @@ set -euo pipefail
 lyric_bin="${1:?usage: windows-native-e2e.sh <lyric> <workdir>}"
 work="${2:?usage: windows-native-e2e.sh <lyric> <workdir>}"
 runner="${WINE:-}"
+# The programs build in a scratch directory outside the checkout, so the
+# compiler's walk up from the working directory cannot find the stdlib
+# sources; name them (the documented override for installers and CI).
+if [ -z "${LYRIC_STD_PATH:-}" ]; then
+  LYRIC_STD_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/lyric-stdlib/std"
+  if command -v cygpath >/dev/null 2>&1; then
+    LYRIC_STD_PATH="$(cygpath -m "$LYRIC_STD_PATH")"
+  fi
+  export LYRIC_STD_PATH
+fi
 triple="x86_64-pc-windows-msvc"
 mkdir -p "$work"
 
