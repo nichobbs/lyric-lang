@@ -119,7 +119,7 @@ int32_t lyric_file_read_all_ok(const char* path, LyricString** out) {
  * failure) and reports success through *ok (1/0) — the Lyric kernel
  * binds the returned owned list directly, avoiding the out-param slot
  * protocol that would leak a ref-typed initialiser. */
-LyricList* lyric_file_read_bytes(const char* path, int32_t* ok) {
+LyricList* lyric_file_read_bytes(const char* path, int64_t* ok) {
     int64_t len = 0;
     uint8_t* buf = read_file_to_buf(path, &len);
     if (!buf) {
@@ -350,7 +350,7 @@ LyricList* lyric_dir_list(const char* path) {
 /* Entry-name listing with the return-plus-ok-flag protocol (see
  * lyric_file_read_bytes): always a fresh rc=1 list, empty on failure,
  * *ok reporting success. */
-LyricList* lyric_dir_list2(const char* path, int32_t* ok) {
+LyricList* lyric_dir_list2(const char* path, int64_t* ok) {
     LyricList* l = lyric_dir_list(path);
     if (!l) {
         *ok = 0;
@@ -390,7 +390,7 @@ static int32_t classify_dirent(const char* full_path, unsigned char d_type) {
  * string is a single LYRIC_DIRENT_* ASCII digit followed by the bare
  * entry name — see the header doc comment for why this avoids a second
  * ref-typed out-param. */
-LyricList* lyric_dir_list_typed(const char* path, int32_t* ok) {
+LyricList* lyric_dir_list_typed(const char* path, int64_t* ok) {
     DIR* d = opendir(path);
     if (!d) {
         *ok = 0;

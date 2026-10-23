@@ -52,7 +52,9 @@ func padMessage(bytes: in slice[Byte], block: in Int, lenBytes: in Int): List[By
 }
 
 func wordBE32(m: in List[Byte], at: in Int): Long {
-  m[at].toInt().and(255).toLong().shl(24).or(m[at + 1].toInt().and(255).toLong().shl(16)).or(m[at + 2].toInt().and(255).toLong().shl(8)).or(m[at + 3].toInt().and(255).toLong())
+  m[at].toInt().and(255).toLong().shl(24).or(m[at + 1].toInt().and(255).toLong().shl(16)).or(m[at + 2].toInt().and(255).toLong().shl(8)).or(
+    m[at + 3].toInt().and(255).toLong()
+  )
 }
 
 func rotl32(x: in Long, n: in Int): Long {

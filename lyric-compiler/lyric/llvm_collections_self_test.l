@@ -554,9 +554,15 @@ test "List contains and indexOf over Long, String, union and record elements (AS
   val r = compileAndRunAsan(src)
   // The exit status keeps only the low byte: 1 + 4 + 16 + 64 = 85; the
   // indexOf term (1 * 256) vanishes there, so it is checked separately.
-  assertEqualInt(r.exitCode, 85, "contains: 20 yes, 30 no, bc yes, z no, Ring(3) yes, Ring(4) no, Pt(3,4) yes, Pt(3,5) no")
+  assertEqualInt(
+    r.exitCode,
+    85,
+    "contains: 20 yes, 30 no, bc yes, z no, Ring(3) yes, Ring(4) no, Pt(3,4) yes, Pt(3,5) no"
+  )
   val idx = "package T\n" + "func main(): Int {\n" + "  val ss: List[String] = newList()\n" + "  ss.add(\"a\")\n" +
-    "  ss.add(\"bc\")\n" + "  ss.indexOf(\"bc\") * 10 + ss.indexOf(\"q\") + 1\n" + "}\n"
+    "  ss.add(\"bc\")\n" +
+    "  ss.indexOf(\"bc\") * 10 + ss.indexOf(\"q\") + 1\n" +
+    "}\n"
   val ri = compileAndRunAsan(idx)
   assertEqualInt(ri.exitCode, 10, "indexOf: 1 * 10 + (-1) + 1")
 }
@@ -577,8 +583,7 @@ test "a lambda calling a method on a captured List and reading its count (#8330,
 
 // #8348: a tuple pattern in a `for` loop over a list of tuples.
 test "for (k, v) in a list of tuples destructures each element (#8348, ASan)" {
-  val src = "package T\n" + "func main(): Int {\n" +
-    "  val ps: List[(Int, String)] = newList()\n" +
+  val src = "package T\n" + "func main(): Int {\n" + "  val ps: List[(Int, String)] = newList()\n" +
     "  ps.add((1, \"aa\"))\n" +
     "  ps.add((2, \"bbb\"))\n" +
     "  var t = 0\n" +

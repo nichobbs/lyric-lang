@@ -1170,7 +1170,7 @@ static void test_read_bytes(void) {
     CHECK(fd >= 0);
     CHECK(write(fd, "hi\x00z", 4) == 4);
     close(fd);
-    int32_t ok = 0;
+    int64_t ok = 0;
     LyricList* bytes = lyric_file_read_bytes(tmpl, &ok);
     CHECK(ok == 1);
     CHECK(lyric_list_len(bytes) == 4);
@@ -1180,7 +1180,7 @@ static void test_read_bytes(void) {
     CHECK(lyric_list_get(bytes, 3) == 'z');
     lyric_release(bytes);
     unlink(tmpl);
-    int32_t ok2 = 1;
+    int64_t ok2 = 1;
     LyricList* missing = lyric_file_read_bytes("/definitely/missing/lyric-rt", &ok2);
     CHECK(ok2 == 0);
     CHECK(lyric_list_len(missing) == 0);
@@ -1282,7 +1282,7 @@ static void test_write_bytes(void) {
     lyric_list_push(data, 'z');
     CHECK(lyric_file_write_bytes(tmpl, data, 0) == 0);
     lyric_release(data);
-    int32_t ok = 0;
+    int64_t ok = 0;
     LyricList* back = lyric_file_read_bytes(tmpl, &ok);
     CHECK(ok == 1);
     CHECK(lyric_list_len(back) == 3);
@@ -1323,7 +1323,7 @@ static void test_dir_list2(void) {
     /* Missing directory: the ok-flag protocol must report failure with a
      * fresh empty list, never ok=1 (the native listFiles/listDirs seams
      * classify IO failures solely from this flag). */
-    int32_t ok = 1;
+    int64_t ok = 1;
     LyricList* missing = lyric_dir_list2("/definitely/missing/lyric-rt-dir", &ok);
     CHECK(ok == 0);
     CHECK(lyric_list_len(missing) == 0);
@@ -1334,7 +1334,7 @@ static void test_dir_list2(void) {
 
     /* Existing but EMPTY directory: ok=1 with zero entries — existence
      * and content are reported independently. */
-    int32_t ok0 = 0;
+    int64_t ok0 = 0;
     LyricList* none = lyric_dir_list2(tmpl, &ok0);
     CHECK(ok0 == 1);
     CHECK(lyric_list_len(none) == 0);
@@ -1346,7 +1346,7 @@ static void test_dir_list2(void) {
     FILE* f = fopen(inner, "w");
     CHECK(f != NULL);
     fclose(f);
-    int32_t ok2 = 0;
+    int64_t ok2 = 0;
     LyricList* names = lyric_dir_list2(tmpl, &ok2);
     CHECK(ok2 == 1);
     CHECK(lyric_list_len(names) == 1);
@@ -1381,7 +1381,7 @@ static int32_t find_entry_kind(LyricList* entries, const char* target) {
 #ifndef __wasi__
 static void test_dir_list_typed(void) {
     /* Missing directory: same ok-flag protocol as lyric_dir_list2. */
-    int32_t ok = 1;
+    int64_t ok = 1;
     LyricList* missing = lyric_dir_list_typed("/definitely/missing/lyric-rt-dir-typed", &ok);
     CHECK(ok == 0);
     CHECK(lyric_list_len(missing) == 0);
@@ -1423,7 +1423,7 @@ static void test_dir_list_typed(void) {
     snprintf(linkBroken, sizeof linkBroken, "%s/link_broken", tmpl);
     CHECK(symlink("/definitely/missing/lyric-rt-typed-target", linkBroken) == 0);
 
-    int32_t ok2 = 0;
+    int64_t ok2 = 0;
     LyricList* entries = lyric_dir_list_typed(tmpl, &ok2);
     CHECK(ok2 == 1);
     CHECK(lyric_list_len(entries) == 5);

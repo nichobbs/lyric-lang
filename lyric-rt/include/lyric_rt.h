@@ -577,14 +577,11 @@ int32_t lyric_file_read_all_ok(const char* path, LyricString** out);
  * ALWAYS returns a fresh rc=1 list (empty on failure); *ok reports
  * success (1/0).
  *
- * `ok` is int32_t*, not int64_t*, ON PURPOSE (#4844): the Lyric caller
- * passes `NativePtr[Int]` (a zero-initialised i64 slot via nativeAddrOf).
- * A 4-byte write lands the 0/1 flag in the low half; the high half stays
- * 0, so the i64 read is exact on every Phase-1 target (all little-endian
- * — D-N-008).  Widening to int64_t* is blocked on a codegen bug where an
- * 8-byte write through nativeAddrOf(var: Int) corrupts an adjacent stack
- * temp (#4845); revisit once that is fixed. */
-LyricList* lyric_file_read_bytes(const char* path, int32_t* ok);
+ * `ok` is int64_t*: the Lyric caller passes `NativePtr[Long]` (the address of
+ * a `var ok: Long`, an i64 slot). A Lyric `Int` is 32-bit on native, so a
+ * `NativePtr[Int]` here would be a 4-byte slot and an 8-byte write through it
+ * would clobber the neighbouring stack slot (#4845). */
+LyricList* lyric_file_read_bytes(const char* path, int64_t* ok);
 
 /* Write every byte (one per 64-bit slot) of `data` to `path`; append
  * != 0 appends, else truncate-or-create (0644).  0 on success, -1 on
@@ -649,8 +646,8 @@ LyricList* lyric_dir_list(const char* path);
 
 /* Entry-name listing with the return-plus-ok-flag protocol: always a
  * fresh rc=1 list (empty on failure); *ok reports success (1/0).  `ok`
- * is int32_t* by design — see lyric_file_read_bytes (#4844, #4845). */
-LyricList* lyric_dir_list2(const char* path, int32_t* ok);
+ * is int64_t*, as for lyric_file_read_bytes. */
+LyricList* lyric_dir_list2(const char* path, int64_t* ok);
 
 /* Per-entry classification codes lyric_dir_list_typed prepends to each
  * returned name, as a single ASCII digit ('0'/'1'/'2'). */
@@ -675,7 +672,7 @@ LyricList* lyric_dir_list2(const char* path, int32_t* ok);
  * only the two-probe-per-entry cost is removed, not the
  * symlink-following semantics.  *ok reports success (1/0), matching
  * lyric_dir_list2. */
-LyricList* lyric_dir_list_typed(const char* path, int32_t* ok);
+LyricList* lyric_dir_list_typed(const char* path, int64_t* ok);
 
 /* ── Environment (lyric_fs.c) ──────────────────────────────────────── */
 

@@ -1154,3 +1154,19 @@ test "o == None, None == o and o != None on generic unions (#8014)" {
   val r = compileAndRunAsan(src)
   assertEqualInt(r.exitCode, 4 + 8 + 64 + 128, "only a != None, n == None, ns == None and None == ns hold")
 }
+
+// #8360 (D181): a record-body method and a top-level dot-named function of the
+// same name and arity are different functions; a method call binds the body
+// method and a call through the type names the dot-named one. They used to
+// share the symbol `T.Acc.trim.2`, which clang rejected as a redefinition.
+test "a body method and a dot-named function of the same name and arity bind separately (#8360)" {
+  val src = "package T\n" + "record Acc {\n" + "  n: Int\n" + "  func trim(self: in Acc, k: in Int): Int = self.n - k\n" +
+    "}\n" +
+    "func Acc.trim(self: in Acc, k: in Int): Int = self.n + k\n" +
+    "func main(): Int {\n" +
+    "  val a = Acc(n = 9)\n" +
+    "  a.trim(1) * 10 + Acc.trim(a, 1)\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 90, "a.trim(1) = 8 (body method), Acc.trim(a, 1) = 10 (dot-named)")
+}

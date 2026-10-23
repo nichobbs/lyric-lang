@@ -1358,8 +1358,7 @@ test "same-named unions and enums across packages resolve per owning package, qu
     NativeSourcePackage(
       name = "Q.App",
       path = "",
-      source = "package Q.App\n" + "import Q.A\n" + "import Q.B\n" +
-        "func main(): Int {\n" +
+      source = "package Q.App\n" + "import Q.A\n" + "import Q.B\n" + "func main(): Int {\n" +
         "  val la = Q.A.Level.Lo(a = 1)\n" +
         "  val lb = Q.B.Level.Lo(a = 2, b = 4)\n" +
         "  Q.A.lvl(la) + Q.B.lvl(lb) + Q.A.lvl(Q.A.makeLo()) + Q.B.lvl(Q.B.makeLo()) + Q.A.modeCode() + Q.B.modeCode()\n" +
@@ -1379,7 +1378,8 @@ test "NativeWeak.upgrade resolves Std.Core.Option, not another package's Option 
     NativeSourcePackage(
       name = "W7.App",
       path = "",
-      source = "package W7.App\n" + "import Std.Core\n" + "import W7.Decoy as D\n" + "record Node {\n  name: String\n}\n" +
+      source = "package W7.App\n" + "import Std.Core\n" + "import W7.Decoy as D\n" +
+        "record Node {\n  name: String\n}\n" +
         "func main(): Int {\n" +
         "  val strong = Node(name = \"alive\")\n" +
         "  val w = NativeWeak(strong)\n" +

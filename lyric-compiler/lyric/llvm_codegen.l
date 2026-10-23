@@ -670,7 +670,10 @@ func isCharElemCollectionTypeExpr(te: in TypeExpr): Bool {
     case TParen(inner) -> isCharElemCollectionTypeExpr(inner)
     case TGenericApp(head, args) -> {
       if head.segments.count == 1 and head.segments[0] == "List" and args.count == 1 {
-        match args[0] { case TAType(t) -> isCharTypeExpr(t); case _ -> false }
+        match args[0] {
+          case TAType(t) -> isCharTypeExpr(t)
+          case _ -> false
+        }
       } else {
         false
       }
