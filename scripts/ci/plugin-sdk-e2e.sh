@@ -13,7 +13,11 @@
 #      point) for dotnet, jvm and native, checks the artifact with
 #      `lyric plugin check`, runs every payload from the artifact, and checks
 #      that broken artifacts are reported.
-#   3. With --with-wasm, also packs a wasm32-wasi payload: the pinned wasi-sdk
+#   3. Reads the packed plugin.json with Std.Plugin's own parser, and packs
+#      lyric-stdlib/tests/plugin_fixtures/greeter_plugin.l for dotnet, jvm and
+#      native, then runs lyric-stdlib/tests/plugin_e2e_tests.l (the runtime's
+#      host tests) against each packed payload.
+#   4. With --with-wasm, also packs a wasm32-wasi payload: the pinned wasi-sdk
 #      and wasmtime are downloaded and sha256-checked (the versions
 #      scripts/ci/wasm32-wasi-rt-tests.sh uses) unless WASI_SDK_PATH and
 #      LYRIC_WASMTIME already name them.
@@ -111,7 +115,7 @@ tsc_bin="$(command -v tsc || echo "$ts/node_modules/.bin/tsc")"
 (cd "$ts" && "$tsc_bin" -p .)
 python3 "$host" demo.greeter-typescript node "$ts/dist/plugin.js"
 
-step "lyric plugin pack (dotnet, jvm, native)"
+step "lyric plugin pack"
 [ -f lyric-rt/build/lyric_rt.a ] || make -C lyric-rt >/dev/null
 targets="dotnet,jvm,native"
 wasmtime_bin=""
@@ -152,6 +156,35 @@ artifact="$work/packed/demo.pack-fixture-0.3.0"
 "$LYRIC" plugin check "$artifact"
 python3 "$fixtures/check_artifact.py" "$artifact" "$targets" ${wasmtime_bin:+"$wasmtime_bin"}
 [ ! -e "$work/packed/.lyric-pack-staging" ] || { echo "::error::pack left its staging directory behind" >&2; exit 1; }
+
+step "Std.Plugin reads the packed plugin.json"
+read_out="$("$LYRIC" run "$fixtures/read_manifest.l" -- "$artifact" | tail -1)"
+expected_count="$(echo "$targets" | tr ',' '\n' | wc -l | tr -d ' ')"
+[ "$read_out" = "demo.pack-fixture 0.3.0 $expected_count" ] || {
+  echo "::error::Std.Plugin read '$read_out', expected 'demo.pack-fixture 0.3.0 $expected_count'" >&2
+  exit 1
+}
+echo "ok: $read_out"
+
+step "pack the Std.Plugin greeter fixture and drive the packed payloads with the runtime's host tests"
+greeter="$work/greeter"
+mkdir -p "$greeter/src"
+cp lyric-stdlib/tests/plugin_fixtures/greeter_plugin.l "$greeter/src/greeter_plugin.l"
+printf '[package]\nname = "greeter"\nversion = "0.1.0"\n\n[project]\nname = "Greeter"\noutput = "single"\n\n[project.packages]\n"PluginFixture.Greeter" = "src/greeter_plugin.l"\n' >"$greeter/lyric.toml"
+"$LYRIC" plugin pack --manifest "$greeter/lyric.toml" --targets dotnet,jvm,native -o "$work/greeter-packed"
+greeter_artifact="$(find "$work/greeter-packed" -mindepth 1 -maxdepth 1 -type d)"
+"$LYRIC" plugin check "$greeter_artifact"
+"$LYRIC" run "$fixtures/read_manifest.l" -- "$greeter_artifact"
+for spec in dotnet:dotnet/Greeter.dll jvm:jvm/Greeter.jar native:native/Greeter; do
+  runtime="${spec%%:*}"
+  file="${spec#*:}"
+  # The suite rewrites plugin.json from its own probe, so it gets a copy.
+  copy="$work/greeter-$runtime/$(basename "$greeter_artifact")"
+  mkdir -p "$(dirname "$copy")"
+  cp -r "$greeter_artifact" "$copy"
+  LYRIC_PLUGIN_FIXTURE_DIR="$copy" LYRIC_PLUGIN_FIXTURE_RUNTIME="$runtime" LYRIC_PLUGIN_FIXTURE_FILE="$file" \
+    "$LYRIC" test --target dotnet lyric-stdlib/tests/plugin_e2e_tests.l
+done
 
 step "lyric plugin check reports broken artifacts"
 broken="$work/broken/demo.pack-fixture-0.3.0"
