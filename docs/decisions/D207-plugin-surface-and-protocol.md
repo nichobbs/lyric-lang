@@ -130,7 +130,7 @@ In a package with a `@plugin` record `R`:
 
 | Generated | Role |
 |---|---|
-| `record <R>Server` and `impl PluginServer for <R>Server` | `describe()` builds the manifest, `bind(...)` constructs `R` with a client per granted capability, `dispatch(...)` routes `<Pkg>.<P>/<method>` to `pluginDispatch<P>` |
+| `record <R>Server` and `impl PluginServer for <R>Server` | `describe()` builds the manifest, `attach(...)` constructs `R` with a client per granted capability, `dispatch(...)` routes `<Pkg>.<P>/<method>` to `pluginDispatch<P>` |
 | `func main(): Int = runPlugin(<R>Server(...))` | the plugin executable's entry point |
 
 ## Decision 3: wire protocol, version 1
@@ -274,13 +274,15 @@ On the plugin side:
 ```lyric
 pub interface PluginServer {
   func describe(): JsonValue
-  func bind(conn: in PluginConnection, grants: in List[GrantedCapability]): Result[Unit, BoundaryError]
+  func attach(conn: in PluginConnection, grants: in List[GrantedCapability]): Result[Unit, BoundaryError]
   func pointMethods(): List[PluginPointMethods]
   func dispatch(method: in String, params: in Option[JsonValue]): Result[JsonValue, RpcError]
 }
 pub func runPlugin(server: in PluginServer): Int
 pub func callHost(conn: in PluginConnection, method: in String, params: in JsonValue): Result[JsonValue, BoundaryError]
 ```
+
+The method is `attach`, not `bind`: `bind` is a keyword (wire blocks).
 
 Exact field lists of `PluginManifest`, `PluginConnection`,
 `PluginContributionJson`, `PluginLoadIssue` and `PluginPointMethods` are the
