@@ -279,6 +279,11 @@ SELF_TESTS=(
   lyric-compiler/lyric/conversion_name_resolution_self_test.l
   lyric-compiler/lyric/bare_func_ref_self_test.l
   lyric-compiler/lyric/inout_self_param_self_test.l
+  lyric-compiler/lyric/union_named_arg_order_self_test.l
+  lyric-compiler/lyric/impl_self_spelling_self_test.l
+  lyric-compiler/lyric/local_as_pattern_self_test.l
+  lyric-compiler/lyric/record_method_option_param_self_test.l
+  lyric-compiler/lyric/string_split_intrinsic_self_test.l
   lyric-compiler/lyric/impl_method_self_test.l
   lyric-compiler/lyric/byte_stringify_self_test.l
   lyric-compiler/lyric/format_builtin_self_test.l

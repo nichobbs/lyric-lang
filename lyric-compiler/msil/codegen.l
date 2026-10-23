@@ -132,6 +132,7 @@ pub record CodegenCtx {
   tokStringTrim: Int  // String.Trim(): string
   tokStringTrimStart: Int  // String.TrimStart(): string
   tokStringTrimEnd: Int  // String.TrimEnd(): string
+  tokStringSplit: Int  // String.Split(string, StringSplitOptions): string[]
   tokStringIndexOf: Int  // String.IndexOf(string, StringComparison): int32  (-1 if absent)
   tokStringLastIndexOf: Int  // String.LastIndexOf(string, StringComparison): int32  (-1 if absent)
   tokStringStartsWith: Int  // String.StartsWith(string, StringComparison): bool
@@ -207,6 +208,7 @@ pub record CodegenCtx {
   tokSetObjContains: Int  // HashSet<object>::Contains(object): bool  callvirt
   tokSetObjRemove: Int  // HashSet<object>::Remove(object): bool  callvirt
   tokSetObjTypeSpec: Int  // TypeSpec token for HashSet<object>  castclass
+  tokDictObjContainsValue: Int  // Dictionary<object,object>::ContainsValue(object): bool  callvirt
   tokDictObjContainsKey: Int  // Dictionary<object,object>::ContainsKey(object): bool  callvirt
   tokDictObjRemove: Int  // Dictionary<object,object>::Remove(object): bool  callvirt
   // Intra-package pre-computed tokens
@@ -981,6 +983,7 @@ pub func newCodegenCtx(
   // `System.StringComparison` for the ordinal `IndexOf`/`LastIndexOf`/
   // `StartsWith`/`EndsWith` overloads below (#7260).
   val trStringComparison = ctxAddTypeRef(lctx, "System", "StringComparison", lctx.arRuntime)
+  val trStringSplitOptions = ctxAddTypeRef(lctx, "System", "StringSplitOptions", lctx.arRuntime)
   val trInt32 = ctxAddTypeRef(lctx, "System", "Int32", lctx.arRuntime)
   val trInt64 = ctxAddTypeRef(lctx, "System", "Int64", lctx.arRuntime)
   val trDouble = ctxAddTypeRef(lctx, "System", "Double", lctx.arRuntime)
@@ -1526,6 +1529,18 @@ pub func newCodegenCtx(
       buildInstanceMethodSig(dictCkPs, MBool)
     )
 
+  // 22a. Dictionary<object,object>::ContainsValue(!1): bool — value param is type var !1.
+  val dictCvPs: List[MsilType] = newList()
+  dictCvPs.add(MTypeVar(1))
+  val tokDictObjContainsValue = 0x0A000000 +
+    ctxAddMemberRefForTypeSpec(
+      lctx,
+      tsDictObj,
+      "ContainsValue",
+      "dict_obj_cv",
+      buildInstanceMethodSig(dictCvPs, MBool)
+    )
+
   // 22b. Dictionary<object,object>::Remove(!0): bool  HASTHIS — key is type var !0.
   val dictRmPs: List[MsilType] = newList()
   dictRmPs.add(MTypeVar(0))
@@ -1742,6 +1757,20 @@ pub func newCodegenCtx(
       "IndexOf",
       "str_indexof",
       buildInstanceMethodSig(strIndexOfPs, MInt)
+    )
+
+  // `s.split(sep)` binds `String.Split(string, StringSplitOptions.None)` directly so
+  // it never depends on `Std.String` being linked into the bundle (#7191).
+  val strSplitPs: List[MsilType] = newList()
+  strSplitPs.add(MString)
+  strSplitPs.add(MValueTypeRef(typeRefCode = tdrTypeRef(trStringSplitOptions), clrFqn = "System.StringSplitOptions"))
+  val tokStringSplit = 0x0A000000 +
+    ctxAddMemberRef(
+      lctx,
+      trString,
+      "Split",
+      "str_split",
+      buildInstanceMethodSig(strSplitPs, MArray(elemTy = MString))
     )
 
   val strLastIndexOfPs: List[MsilType] = newList()
@@ -2263,6 +2292,7 @@ pub func newCodegenCtx(
     tokSetObjRemove = tokSetObjRemove,
     tokSetObjTypeSpec = 0x1B000000 + tsHashSetObj,
     tokDictObjContainsKey = tokDictObjContainsKey,
+    tokDictObjContainsValue = tokDictObjContainsValue,
     tokDictObjRemove = tokDictObjRemove,
     recordCtorTokens = recCtorToks,
     distinctFromTokens = newMap(),
@@ -2350,6 +2380,7 @@ pub func newCodegenCtx(
     tokStringTrim = tokStringTrim,
     tokStringTrimStart = tokStringTrimStart,
     tokStringTrimEnd = tokStringTrimEnd,
+    tokStringSplit = tokStringSplit,
     tokStringIndexOf = tokStringIndexOf,
     tokStringLastIndexOf = tokStringLastIndexOf,
     tokStringStartsWith = tokStringStartsWith,
@@ -3806,7 +3837,12 @@ pub func addPackageTokens(cctx: in CodegenCtx, file0: in SourceFile, pkgName: in
         var imi = 0
         while imi < idecl.members.count {
           match idecl.members[imi] {
-            case IMplFunc(fn) -> {
+            case IMplFunc(fn0) -> {
+              val fn = if implIfaceIsExternalClr(cctx, idecl, pkgName) {
+                fn0
+              } else {
+                implSelfSpellingMsil(cctx, file, pkgName, implIfaceNameMsil(cctx, idecl, pkgName), fn0)
+              }
               implImplTargets.add(targetName)
               implImplNames.add(fn.name)
               implImplRetTys.add(
@@ -10957,6 +10993,13 @@ func emitDictContainsKey(cctx: in CodegenCtx, insns: in List[MInsn], recvTy: in 
   }
 }
 
+func emitDictContainsValue(cctx: in CodegenCtx, insns: in List[MInsn], recvTy: in MsilType): Unit {
+  match recvTy {
+    case MConcreteMap(k, v) -> insns.add(MDictOp(op = DoContainsValue, keyTy = k, valTy = v))
+    case _ -> insns.add(MCallvirt(methodToken = cctx.tokDictObjContainsValue))
+  }
+}
+
 func emitDictGetKeys(cctx: in CodegenCtx, insns: in List[MInsn], recvTy: in MsilType): Unit {
   match recvTy {
     case MConcreteMap(k, v) -> insns.add(MDictOp(op = DoGetKeys, keyTy = k, valTy = v))
@@ -13538,6 +13581,32 @@ func normalizeIntCmpWidthMsil(
   }
 }
 
+// An arithmetic operator never guesses an operand's type: an operand lowered
+// to a bare `object` has no static numeric type, and `add`/`sub`/`mul`/`div`/
+// `rem` on object references is unverifiable IL that crashes or yields garbage
+// at run time.  Fail the build naming the expression instead (#8344).
+func requireTypedArithOperandsMsil(op: in String, lhs: in Expr, lhsTy: in MsilType, rhsTy: in MsilType): Unit {
+  val lhsErased = isErasedObjectMsil(lhsTy)
+  val rhsErased = isErasedObjectMsil(rhsTy)
+  if lhsErased or rhsErased {
+    panic(
+      "error[T0120] " + toString(lhs.span.startPos.line) + ":" + toString(lhs.span.startPos.column) + ": operator '" + op +
+        "' has " +
+        (if lhsErased { "a left" } else { "a right" }) +
+        " operand of unknown static type (`object`); the type checker recorded no type for it, so the " +
+        "operation cannot be lowered (compiler bug: please report this program)"
+    )
+  }
+}
+
+func isErasedObjectMsil(t: in MsilType): Bool {
+  match t {
+    case MObject -> true
+    case MClass(c) -> c == "System.Object" or c == "object"
+    case _ -> false
+  }
+}
+
 // Widen a mixed i4/i8 integer operand pair on the stack to i8 before an
 // arithmetic opcode (#7350), as the type checker's `widenArithmetic` types
 // the result (`Int + Long` is a `Long`).  `underTy` is the operand below the
@@ -14073,6 +14142,7 @@ func lowerBinopMsil(
             -1
           }
           val baddIRhsTy = lowerExprMsil(cctx, fctx, insns, rhs)
+          requireTypedArithOperandsMsil("+", lhs, lhsTy, baddIRhsTy)
           val baddILhsUn = spellsUnsigned(lhs)
           val baddIRhsUn = spellsUnsigned(rhs)
           val baddIWide = if baddISpillIdx >= 0 {
@@ -14097,6 +14167,7 @@ func lowerBinopMsil(
         -1
       }
       val bsubRhsTy = lowerExprMsil(cctx, fctx, insns, rhs)
+      requireTypedArithOperandsMsil("-", lhs, bsubLhsTy, bsubRhsTy)
       if bsubSpillIdx >= 0 {
         val rN = "__spill_r_" + toString(fctx.slotTicker.count)
         val rS = allocSlotMsil(fctx, rN, bsubRhsTy)
@@ -14140,6 +14211,7 @@ func lowerBinopMsil(
         -1
       }
       val bmulRhsTy = lowerExprMsil(cctx, fctx, insns, rhs)
+      requireTypedArithOperandsMsil("*", lhs, bmulLhsTy, bmulRhsTy)
       val bmulLhsUn = spellsUnsigned(lhs)
       val bmulRhsUn = spellsUnsigned(rhs)
       val bmulWide = if bmulSpillIdx >= 0 {
@@ -14182,6 +14254,7 @@ func lowerBinopMsil(
         -1
       }
       val bdivRhsTy = lowerExprMsil(cctx, fctx, insns, rhs)
+      requireTypedArithOperandsMsil("/", lhs, bdivLhsTy, bdivRhsTy)
       if bdivSpillIdx >= 0 {
         val rN = "__spill_r_" + toString(fctx.slotTicker.count)
         val rS = allocSlotMsil(fctx, rN, bdivRhsTy)
@@ -14242,6 +14315,7 @@ func lowerBinopMsil(
         -1
       }
       val bmodRhsTy = lowerExprMsil(cctx, fctx, insns, rhs)
+      requireTypedArithOperandsMsil("%", lhs, bmodLhsTy, bmodRhsTy)
       if bmodSpillIdx >= 0 {
         val rN = "__spill_r_" + toString(fctx.slotTicker.count)
         val rS = allocSlotMsil(fctx, rN, bmodRhsTy)
@@ -17018,11 +17092,12 @@ func matchArmPatternSlotsUpperBoundMsil(pat: in Pattern): Int {
 }
 
 // The most slots `lowerLocalPatBindMsil` allocates for a `val` pattern: a
-// name takes one slot (its inner pattern is not destructured), `_` none, and
-// any other shape an `__tmp_` slot plus its binds.
+// plain name takes one slot, `_` none, and any other shape (including an `@`
+// binding, whose inner pattern is destructured) an `__tmp_` slot plus its
+// binds.
 func localPatternSlotsUpperBoundMsil(pat: in Pattern): Int {
   match pat.kind {
-    case PBinding(_, _) -> 1
+    case PBinding(_, None) -> 1
     case PWildcard -> 0
     case _ -> 1 + patternBindSlotsUpperBoundMsil(pat)
   }
@@ -22415,9 +22490,16 @@ func lowerMethodCallMsil(
                   // heap shifts under load (#6369).  The free-function path in
                   // `lowerBuiltinOrStaticCallMsil` already does exactly this;
                   // the instance/interface dispatch path was the gap.
+                  //
+                  // A generic parameter (`Option[Int]`) likewise supplies its type
+                  // arguments as the construction hint, so a bare `None` builds the
+                  // closed `Option_None<int32>` the method's `match` tests for
+                  // rather than an erased `<object>` instance (#8273).
+                  val savedParamHint = pushRetHintTyArgs(fctx, paramTy)
                   pushCollExpect(fctx, paramTy)
                   val argTy = lowerCallArgMsil(cctx, fctx, insns, margs[i])
                   popCollExpect(fctx)
+                  restoreHintTyArgs(fctx, savedParamHint)
                   argTy
                 }
               }
@@ -22839,6 +22921,15 @@ func lowerMethodCallMsil(
     }
     emitDictContainsKey(cctx, insns, recvTy)
     MBool
+  } else if memberName == "containsValue" {
+    // Dictionary::ContainsValue(value): bool — concrete maps pass the value unboxed.
+    emitErasedCollRecvCastMsil(cctx, insns, recvTy, true)
+    if args.count > 0 {
+      val aTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
+      collSlotArgMsil(cctx, insns, aTy, collValueSlotTyMsil(recvTy), recvTy)
+    }
+    emitDictContainsValue(cctx, insns, recvTy)
+    MBool
   } else if memberName == "contains" {
     match recvTy {
       case MString -> {
@@ -23199,28 +23290,13 @@ func lowerMethodCallMsil(
     insns.add(MCallvirt(methodToken = cctx.tokStringEndsWith))
     MBool
   } else if memberName == "split" and args.count == 1 {
-    // `s.split(sep)` has no single clean BCL intrinsic (`String.Split` needs a
-    // `StringSplitOptions` operand), so route method syntax to the pure-Lyric
-    // `Std.String.split(s, sep)` free function — one implementation across both
-    // backends.  The receiver `s` is already on the stack and becomes the first
-    // argument; push the separator and emit a static call.
-    val splitTok = match mapGet(cctx.funcTokens, "Std.String.split/2") {
-      case Some(t) -> t
-      case None -> match mapGet(cctx.funcTokens, "Std.String.split") { case Some(t) -> t; case None -> 0 }
-    }
-    if splitTok > 0 {
-      lowerCallArgMsil(cctx, fctx, insns, args[0])
-      insns.add(MCall(methodToken = splitTok))
-      MArray(elemTy = MString)
-    } else {
-      // Std.String not in scope (shouldn't happen for a String receiver, but be
-      // explicit rather than silently mis-binding): throw at the call site.
-      val sm = "Std.String.split unavailable at this call site (Std.String not linked)"
-      insns.add(MLdStr(token = ctxInternUs(cctx.lctx, sm)))
-      insns.add(MNewobj(ctorToken = cctx.tokExceptionCtor))
-      insns.add(MThrow)
-      MArray(elemTy = MString)
-    }
+    // Bind `String.Split(sep, StringSplitOptions.None)` directly: an empty separator
+    // yields `[s]` and a trailing separator an empty last element, matching
+    // `Std.String.split`, and no `Std.String` link is needed (#7191).
+    lowerCallArgMsil(cctx, fctx, insns, args[0])
+    insns.add(MLdcI4(v = 0))
+    insns.add(MCallvirt(methodToken = cctx.tokStringSplit))
+    MArray(elemTy = MString)
   } else if memberName == "codeUnitAt" and args.count == 1 and isStringMsil(recvTy) {
     // `s.codeUnitAt(i)`: the raw UTF-16 code unit as an `Int`, surrogates
     // included (D-progress-1006).  `get_Chars` already yields an int32 on the
@@ -25379,7 +25455,7 @@ func lowerLocalPatBindMsil(
   tyOpt: in Option[TypeExpr],
 ): Unit {
   match pat.kind {
-    case PBinding(name, _) -> {
+    case PBinding(name, None) -> {
       val ty = match tyOpt { case Some(te) -> typeExprToMsilBodyCtx(cctx, fctx, te); case None -> initTy }
       match ty {
         case MVoid -> {
@@ -43940,6 +44016,91 @@ func buildExternIfaceMethodRowsMsil(
 // typo guard for "iface FQN not in metadata index" — which `assemblyForType`
 // already skips silently (the index is not exhaustive of every restored
 // dep), so the panic was unreachable.  The pass is gone.
+// An impl method that spells the target type where the interface slot says
+// `Self` (`func takeFrom(self: in Self, other: in Self)` implemented as
+// `func takeFrom(self: in Box, other: in Box)`) must still encode the slot's
+// erased signature, or the CLR finds no implementation for the slot
+// (TypeLoadException, #8313).  Rewrite each such parameter / return type to
+// `Self`; the type checker already proved the spelling is the target type, and
+// the prologue then narrows the parameter exactly as for a written `Self`.
+func implSelfSpellingMsil(
+  cctx: in CodegenCtx,
+  file: in SourceFile,
+  pkgName: in String,
+  ifaceName: in String,
+  fn: in FunctionDecl,
+): FunctionDecl {
+  val key = ifaceName + "/" + fn.name
+  // The interface's declaration is read from this file when it declares the
+  // interface (the token pre-scan reaches an `impl` before the interface's
+  // own registration), else from the registry a restored or earlier package
+  // filled.
+  var localParams: Option[List[Param]] = None
+  var localRetIsSelf = false
+  for item in file.items {
+    match item.kind {
+      case IInterface(idecl) -> if pkgName + "." + idecl.name == ifaceName and localParams.isNone {
+        for mem in idecl.members {
+          match mem {
+            case IMSig(sig) -> if sig.name == fn.name and localParams.isNone {
+              localParams = Some(value = sig.params)
+              localRetIsSelf = match sig.ret { case Some(te) -> isSelfTypeExprMsil(te); case None -> false }
+            }
+            case IMFunc(f) -> if f.name == fn.name and localParams.isNone {
+              localParams = Some(value = f.params)
+              localRetIsSelf = match f.ret { case Some(te) -> isSelfTypeExprMsil(te); case None -> false }
+            }
+            case IMAssoc(_) -> ()
+          }
+        }
+      }
+      case _ -> ()
+    }
+  }
+  val declaredParams: List[Param] = match localParams {
+    case Some(ps) -> stripExplicitSelfParamMsil(ps)
+    case None -> match mapGet(cctx.methodParamDecls, key) {
+      case Some(ps) -> ps
+      case None -> return fn
+    }
+  }
+  val ifaceParams = declaredParams
+  val real = stripExplicitSelfParamMsil(fn.params)
+  if real.count != ifaceParams.count {
+    return fn
+  }
+  val offset = fn.params.count - real.count
+  var changed = false
+  val newParams: List[Param] = newList()
+  var i = 0
+  while i < fn.params.count {
+    val p = fn.params[i]
+    val ri = i - offset
+    if ri >= 0 and isSelfTypeExprMsil(ifaceParams[ri].ty) and not isSelfTypeExprMsil(p.ty) {
+      newParams.add(p.copy(ty = p.ty.copy(kind = TSelf)))
+      changed = true
+    } else {
+      newParams.add(p)
+    }
+    i = i + 1
+  }
+  val retIsSelf = localRetIsSelf or (match mapGet(cctx.methodRetIsSelf, key) { case Some(b) -> b; case None -> false })
+  val newRet: Option[TypeExpr] = match fn.ret {
+    case Some(te) -> if retIsSelf and not isSelfTypeExprMsil(te) {
+      changed = true
+      Some(value = te.copy(kind = TSelf))
+    } else {
+      fn.ret
+    }
+    case None -> None
+  }
+  if changed {
+    fn.copy(params = newParams, ret = newRet)
+  } else {
+    fn
+  }
+}
+
 // Pre-pass: collect every IImpl block into `cctx.implEntries`.  Each impl
 // method is lowered through `lowerImplMethodMsil` so it carries virtual
 // instance-method flags and slot 0 = `this`; the methods are NOT added to
@@ -43975,7 +44136,8 @@ pub func collectImplEntriesMsil(
         var mi = 0
         while mi < decl.members.count {
           match decl.members[mi] {
-            case IMplFunc(fn) -> {
+            case IMplFunc(fn0) -> {
+              val fn = if isExternal { fn0 } else { implSelfSpellingMsil(cctx, file, pkgName, ifaceName, fn0) }
               methods.add(lowerImplMethodMsil(cctx, fn, pkgName, targetName, targetGenerics))
               implNames.add(fn.name)
             }
