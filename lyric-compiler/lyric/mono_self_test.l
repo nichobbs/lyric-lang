@@ -2825,6 +2825,17 @@ test "a generic call at a generic record's own type parameter becomes a method o
   assertTrue(recordHasMethodNamed(res.file, "Box", "__spec_Box_ident__T"), "the specialisation is a method of Box")
 }
 
+test "a record method written without a receiver still gets one, so its call is specialised (#8271)" {
+  val src = "package P\n" + "func ident[A](x: in A): A = x\n" + "record Box[T] {\n" + "  v: T\n" +
+    "  func plain(x: in T): T = ident(x)\n" +
+    "}\n"
+  val res = runMono(src)
+  assertTrue(
+    recordHasMethodNamed(res.file, "Box", "__spec_Box_ident__T"),
+    "the parser injects `self`, so the member specialisation is reachable"
+  )
+}
+
 test "a generic call in a generic protected type's member becomes a function of the type (#8271)" {
   val src = "package P\n" + "func ident[A](x: in A): A = x\n" + "protected type Cell[T] {\n" + "  var value: T\n" +
     "  entry set(v: in T): Unit { value = ident(v) }\n" +

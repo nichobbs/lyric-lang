@@ -65,6 +65,9 @@ for t in \
   lyric-compiler/lyric/closure_captured_var_byref_self_test.l \
   lyric-compiler/lyric/closure_shadow_self_test.l \
   lyric-compiler/lyric/generic_closure_self_test.l \
+  lyric-compiler/lyric/generic_member_calls_self_test.l \
+  lyric-compiler/lyric/generic_member_calls_std_self_test.l \
+  lyric-compiler/lyric/generic_protected_calls_self_test.l \
   lyric-compiler/lyric/inout_receiver_self_test.l \
   lyric-compiler/lyric/inout_receiver_closure_self_test.l \
   lyric-compiler/lyric/inout_array_element_self_test.l \

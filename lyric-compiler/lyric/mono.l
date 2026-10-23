@@ -7310,7 +7310,7 @@ func substMentionsEnclosingTypeParamMono(state: in MonoState, subst: in Map[Stri
   false
 }
 
-// A record's method reaches its specialisations through `self`; a protected
+// A record method always has `self` (the parser injects it); a protected
 // type's member calls a sibling function by name.
 func memberSpecAvailableMono(state: in MonoState, env: in Map[String, TypeExpr]): Bool {
   if state.enclosingProtected.count > 0 {
@@ -7343,6 +7343,7 @@ func memberSpecCallMono(
   val name = "__spec_" + ownerName + "_" + specName
   if not state.seenSpecs.containsKey(name) {
     state.seenSpecs.add(name, true)
+    // specializeFunc reads no enclosing-type state; it only substitutes types.
     val sd = specializeFunc(baseDecl, name, subst, valueSubst)
     val params: List[Param] = newList()
     if not inProtected {
