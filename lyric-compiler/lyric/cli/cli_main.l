@@ -403,6 +403,10 @@ pub func main(argv: in slice[String]): Int {
     return cmdDeps(argv)
   }
 
+  if cmd == "plugin" {
+    return cmdPlugin(argv)
+  }
+
   if cmd == "openapi" {
     return cmdOpenApi(argv)
   }

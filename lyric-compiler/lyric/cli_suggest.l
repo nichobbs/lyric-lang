@@ -36,6 +36,7 @@ pub func knownCommands(): List[String] {
   cmds.add("test")
   cmds.add("bench")
   cmds.add("openapi")
+  cmds.add("plugin")
   cmds.add("help")
   cmds
 }

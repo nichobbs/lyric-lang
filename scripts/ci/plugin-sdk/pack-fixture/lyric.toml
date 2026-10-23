@@ -1,0 +1,14 @@
+# A hand-written plugin entry point that `lyric plugin pack` packs in
+# scripts/ci/plugin-sdk-e2e.sh: its main prints a fixed manifest for
+# --lyric-plugin-manifest, as the `main` that Lyric.PluginExpand generates does
+# (D207 Decision 3).
+[package]
+name = "pack-fixture"
+version = "0.1.0"
+
+[project]
+name = "PackFixture"
+output = "single"
+
+[project.packages]
+"PackFixture" = "src/main.l"

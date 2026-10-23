@@ -1,0 +1,8 @@
+{
+  "name": "lyric-plugin-sdk-e2e-typescript",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "@types/node": "22.10.2"
+  }
+}

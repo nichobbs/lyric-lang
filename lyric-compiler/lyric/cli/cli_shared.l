@@ -26,6 +26,9 @@
 //!   test    [<source.l>] [--manifest <lyric.toml>] [--filter <prefix>] [--list]
 //!   bench   [<source.l>] [--manifest <lyric.toml>] [--target dotnet|jvm|native] [--triple <llvm-triple>] [--opt 0|1|2|3|s] [--runs N] [--warmup N] [--filter <prefix>]
 //!   openapi <spec.json> [-o <out.l>] [--client-name <Name>] [--package <Pkg>]
+//!   plugin  pack [--manifest <lyric.toml>] [--targets dotnet,jvm,native,wasm] [-o <dir>]
+//!   plugin  check <dir>
+//!   plugin  sdk --api <dir|file.l|lyric.toml> --lang csharp|java|typescript -o <dir>
 //!   --version / -v
 //!
 //! Future-package API contracts (packages not yet shipped; will exist
@@ -349,6 +352,14 @@ func usageText(): String {
     "\n" +
     "Codegen:\n" +
     "  lyric openapi <spec.json> [-o <out.l>] [--client-name <Name>] [--package <Pkg>]\n" +
+    "\n" +
+    "Plugins:\n" +
+    "  lyric plugin pack  [--manifest <lyric.toml>] [--targets dotnet,jvm,native,wasm] [-o <dir>]\n" +
+    "                     (build each payload and write <dir>/<id>-<version>/plugin.json, D207)\n" +
+    "  lyric plugin check <dir>\n" +
+    "                     (validate a plugin artifact directory)\n" +
+    "  lyric plugin sdk   --api <dir|file.l|lyric.toml> --lang csharp|java|typescript -o <dir>\n" +
+    "                     (generate a plugin SDK in another language from a plugin API package)\n" +
     "\n" +
     "  lyric --version | --help\n" +
     "\n" +
