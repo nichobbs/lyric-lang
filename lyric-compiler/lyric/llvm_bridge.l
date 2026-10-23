@@ -524,7 +524,8 @@ pub func nativeTempBase(): String {
 /// what `main` returned.  Windows passes the full 32-bit value through, so the
 /// native self-tests compare this to keep one expected value on every host.  A
 /// negative Windows code (an NTSTATUS failure such as an access violation) is
-/// returned unchanged, so a crash never reads as a small status.
+/// returned unchanged, so a crash never reads as a small status; a test whose
+/// `main` returns a negative value would therefore read differently by host.
 pub func nativeExitStatus(code: in Int): Int {
   if code < 0 {
     code

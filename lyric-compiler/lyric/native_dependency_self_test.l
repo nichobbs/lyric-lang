@@ -137,7 +137,8 @@ test "a native project build compiles path, transitive and workspace dependencie
   val appDir = writeWorkspace(root)
   val outPath = Path.join(appDir, "app-native")
   assertEqualInt(buildNative(Path.join(appDir, "lyric.toml"), outPath), 0, "the native build succeeds")
-  assertTrue(File.fileExists(outPath), "the native build produced a binary")
+  // The build adds `.exe` on Windows.
+  assertTrue(File.fileExists(Emitter.nativeExecutableOutputPath(outPath, "")), "the native build produced a binary")
   val noArgs: List[String] = newList()
   val run = Capture.runCaptureWithDiagnostics(outPath, noArgs, "")
   assertEqualInt(run.exitCode, 0, "the binary exits 0 (stderr=" + run.stderr + ")")
