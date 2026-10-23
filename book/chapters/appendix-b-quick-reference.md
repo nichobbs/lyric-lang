@@ -1656,7 +1656,6 @@ The first-party UI generators (D151) report their own codes under `X0005`:
 | `V0010` | error | Conflicting verification-level annotations on the same package |
 | `V0011` | error | Unknown verification-level modifier |
 | `V0012` | error | (mode checker) `await` inside a `try`/`catch`/`finally` block in an async function — a CLR IL constraint (not the verifier-side async rejection, which is `V0032`) |
-| `V0013` | warning | Proof goal contains NaN or ±Infinity float literal; substituted with `0.0` in SMT-LIB output — verification result may be incorrect |
 | `V0014` | error | (mode checker) A spawned task is discarded: a `spawn` used as a statement is fire-and-forget. Bind the handle and `await` it inside the `scope { }` (D119 §7.4) |
 | `V0027` | warning / error | A `match` arm whose pattern the verifier does not model (a constructor, record, tuple, range, type-test, or-, or const pattern, or a bare union/enum case such as `Some`, `None`, `Ok`, `Err`). Warning at the arm; error at each obligation that depends on the match's value (or on a `@pure` callee's value computed by such a match), which is not proved |
 | `V0032` | error | Contract clause (`requires:`/`ensures:`) on an `async func` or `yield`-bearing generator — the WP/SP calculus cannot model suspend/resume, so the verifier rejects the function rather than checking it against an unmodelled body. Move the contract to a synchronous core, or mark the package `@runtime_checked` |

@@ -105,7 +105,7 @@ ensures: forall (k: Byte) where k > 0u8 { 10u8 / k >= 0u8 }     // proved
 
 The `where` clause is the place to exclude the values the body cannot handle.
 
-The practical advice: write `forall` and `exists` freely in `@proof_required` mode for integer-typed collections and bounded ranges. Be cautious with string domains — check whether the goals discharge before relying on them. For floating-point (`Float`, `Double`) the prover maps values to mathematical reals, which is sound for inequality and arithmetic reasoning; see §19.8.
+The practical advice: write `forall` and `exists` freely in `@proof_required` mode for integer-typed collections and bounded ranges. Be cautious with string domains — check whether the goals discharge before relying on them. For floating-point, `Double` is IEEE 754 binary64 in the prover and `Float` is not provable; see §19.8.
 
 ## §19.3 The sorted set example
 
@@ -210,7 +210,7 @@ Knowing what discharges deterministically helps you write contracts that stay wi
 - Free quantifiers over `String` — `forall (s: String) implies ...` without the domain being a finite collection. String ordering (lexicographic `<`) is not in Z3's decidable LIA fragment.
 - Non-linear arithmetic where both operands are symbolic — `n * m` where both `n` and `m` are variables, not constants. This is outside LIA and into nonlinear arithmetic, where Z3 may time out or return `unknown`.
 - Recursive functions with complex invariants and deep nesting — `isBst` of depth 10 is fine; a mutually recursive function pair with a shared invariant and non-trivial base cases may exhaust Z3's resources.
-- Floating-point arithmetic with exact rounding semantics — if you need IEEE 754 bit-exact results (`NaN` propagation, subnormals, directed rounding) the prover cannot reason about those. The verifier maps `Float`/`Double` to mathematical reals, which covers the common case of inequality and arithmetic reasoning soundly; see §19.8 for details.
+- Floating-point `%`, and the 32-bit `Float`: the verifier models `Double` as IEEE 754 binary64 but has no faithful model of the truncating float remainder, and `Float`'s width differs between targets, so a goal over either fails closed with `V0033`; see §19.8.
 
 **When the prover says `unknown`:**
 
@@ -340,21 +340,15 @@ pub func make(capacity: in Double): Bucket
 
 This generates one goal — the structural postcondition — which Z3 closes trivially from the constructor arguments.
 
-## §19.8 Float and Double as mathematical reals
+## §19.8 Double is IEEE 754
 
-The Lyric verifier maps `Float` and `Double` values to the SMT `Real` sort (mathematical real numbers) rather than to the IEEE 754 bitvector theory. This is a deliberate, sound approximation.
+The Lyric verifier maps `Double` to the SMT `Float64` sort: IEEE 754 binary64, with round-to-nearest-even arithmetic (`fp.add`, `fp.sub`, `fp.mul`, `fp.div`) and IEEE comparisons (`fp.lt`, `fp.leq`, `fp.eq`, ...). A `Double` property is proved or refuted for every value a `Double` can hold, `NaN` and the infinities included.
 
-**What it means in practice.** Arithmetic over `Float`/`Double` in contracts is treated as exact real-number arithmetic. The inequality `tokens - count >= 0.0` is discharged by linear arithmetic over reals — the same decision procedure that handles integer arithmetic — and closes reliably without a time budget concern. The division operator `/` on float operands emits as real-valued `/` (not integer `div`), so rate computations like `refillRate / 60.0` reason correctly.
+**What it means in practice.** `x == x` is not provable, because it is false for `NaN`; `x + 1.0 > x` is not provable either, because it is false for `NaN`, for infinity and for large `x`. `x <= x or x != x` is provable. Put the finiteness a property needs in a `requires:` clause (`x > -1.0e300 and x < 1.0e300`), and expect inequality reasoning over bounded ranges to take the solver longer than it would over real numbers. Rounding is modelled, so `1.0 / 3.0 * 3.0 == 1.0` is decided by the actual arithmetic.
 
-**What it does not cover.** The Real approximation is sound but not complete for IEEE 754. If your contract depends on:
+**What fails closed.** A goal over a `Float` is reported as `V0033`: `Float` is 64-bit on dotnet and native and 32-bit on the JVM, so no single model is faithful on every target; use `Double` in a proved function. `%` on a floating-point value is `V0033` too, since its truncating remainder is not SMT-LIB's `fp.rem`.
 
-- Rounding behaviour (`1.0 / 3.0 * 3.0 == 1.0` is true in reals but not in IEEE 754 doubles)
-- `NaN` or infinity propagation
-- Overflow to `Inf` for very large values
-
-those obligations will not hold in real arithmetic and the prover will correctly report them as failing. For the common case of inequality reasoning, conservation properties, and monotonicity arguments over bounded ranges, the Real mapping is both sound and complete.
-
-**Guideline.** Use `Float`/`Double` in `@proof_required` contracts for rate limits, ratios, thresholds, and other situations where the values are well-bounded and you need inequality reasoning. Avoid relying on exact decimal representations or rounding properties; if you need those guarantees, use `Int` scaled by a factor (e.g., store amounts in integer cents rather than decimal dollars).
+**Guideline.** Use `Double` in `@proof_required` contracts for rate limits, ratios and thresholds, and state the range of the inputs. If you need exact decimal results, use `Int` scaled by a factor (e.g., store amounts in integer cents rather than decimal dollars).
 
 ## §19.9 Knowing when to stop
 

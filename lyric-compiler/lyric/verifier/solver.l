@@ -230,13 +230,19 @@ pub func trivialDischarge(g: in Goal): Option[SolverOutcome] {
   }
 }
 
+// `x == x` is false for a NaN, so a float is never closed by reflexivity
+// (#8141).
+func termIsFloat(t: in Term): Bool {
+  sortIsFloat(sortOf(t))
+}
+
 func isTautology(t: in Term): Bool {
   match t {
     case TLit(VLBool(true), _) -> true
-    case TBuiltin(BOpEq, args) -> args.count == 2 and termEq(args[0], args[1])
+    case TBuiltin(BOpEq, args) -> args.count == 2 and termEq(args[0], args[1]) and not termIsFloat(args[0])
     case TBuiltin(BOpIff, args) -> args.count == 2 and termEq(args[0], args[1])
-    case TBuiltin(BOpLte, args) -> args.count == 2 and termEq(args[0], args[1])
-    case TBuiltin(BOpGte, args) -> args.count == 2 and termEq(args[0], args[1])
+    case TBuiltin(BOpLte, args) -> args.count == 2 and termEq(args[0], args[1]) and not termIsFloat(args[0])
+    case TBuiltin(BOpGte, args) -> args.count == 2 and termEq(args[0], args[1]) and not termIsFloat(args[0])
     case TBuiltin(BOpImplies, args) -> args.count == 2 and termEq(args[0], args[1])
     case TBuiltin(BOpAnd, args) -> allTautologies(args)
     case TBuiltin(BOpOr, args) -> anyTautology(args)

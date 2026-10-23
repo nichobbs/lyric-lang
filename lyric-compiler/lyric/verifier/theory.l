@@ -34,6 +34,9 @@ pub record SortInfo {
   // `Int` sort: 32 for `Int`, 64 for `Long` and `Nat`, 0 for every other
   // sort or an integer whose width is not known (#7871).
   pub intBits: Int = 0
+  // The length of an `array[N, T]` whose `N` is an integer literal, or -1
+  // for every other sort (#8157).
+  pub fixedLen: Int = -1
 }
 
 pub func sortInfoNoRange(s: in Sort): SortInfo {
@@ -136,6 +139,43 @@ pub func intLitOfSort(n: in Long, s: in Sort): Term {
   }
 }
 
+// The length of an `array[N, T]` when `N` is an integer literal, else -1.
+func literalArrayLength(size: in TypeArg): Int {
+  match size {
+    case TAValue(x) -> match x.kind {
+      case ELiteral(lit) -> match lit {
+        case LInt(v, _, _) -> if v >= 0i64 and v <= 2147483647i64 {
+          v.toInt()
+        } else {
+          -1
+        }
+        case _ -> -1
+      }
+      case _ -> -1
+    }
+    case _ -> -1
+  }
+}
+
+// A sort whose values have a length that no operation changes: an array or
+// slice, a `String`.  A `List` is not one: `add` and `clear` change a list the
+// verifier models as one value, so its length cannot be named (#8110).
+pub func isSequenceSort(s: in Sort): Bool {
+  match s {
+    case SSlice(_) -> true
+    case SArray(_) -> true
+    case SString -> true
+    case _ -> false
+  }
+}
+
+// The length of a sequence value, one uninterpreted function of it (#8157).
+// Every `.count`/`.length` read and every index bound goes through it, so
+// they agree.
+pub func lengthTerm(v: in Term): Term {
+  TApp(name = "$len", args = termList1(v), retSort = SInt)
+}
+
 // Map a TypeExpr to a SortInfo.  Falls back to an uninterpreted sort for
 // unknown types (M4.1 limitation).
 pub func sortOfTypeExpr(t: in TypeExpr): SortInfo {
@@ -180,8 +220,12 @@ pub func sortOfTypeExprShadowed(t: in TypeExpr, typeParams: in List[String]): So
       val segs = head.segments
       sortInfoNoRange(SDatatype(name = qualifiedDatatypeName(segs), args = argSorts))
     }
-    case TArray(_, elt) -> {
-      sortInfoNoRange(SSlice(element = sortOfTypeExprShadowed(elt, typeParams).sort))
+    case TArray(size, elt) -> {
+      SortInfo(
+        sort = SArray(element = sortOfTypeExprShadowed(elt, typeParams).sort),
+        range = RBKNone,
+        fixedLen = literalArrayLength(size)
+      )
     }
     case TSlice(elt) -> {
       sortInfoNoRange(SSlice(element = sortOfTypeExprShadowed(elt, typeParams).sort))
@@ -521,6 +565,13 @@ pub func intWidthHypothesesForTerm(v: in Term, info: in SortInfo): List[Term] {
 // same type can hold (#8214).
 pub func valueFactsForTerm(v: in Term, info: in SortInfo): List[Term] {
   val facts = rangeHypothesesForTerm(v, info)
+  if isSequenceSort(info.sort) {
+    val len = lengthTerm(v)
+    facts.add(TBuiltin(op = BOpGte, args = termList2(len, TLit(value = VLInt(n = 0i64), sort = SInt))))
+    if info.fixedLen >= 0 {
+      facts.add(TBuiltin(op = BOpEq, args = termList2(len, TLit(value = VLInt(n = info.fixedLen.toLong()), sort = SInt))))
+    }
+  }
   val width = intWidthHypothesesForTerm(v, info)
   var i = 0
   while i < width.count {

@@ -270,7 +270,8 @@ Lyric.Verifier/
 | range subtype `T range a ..= b`, named or inline | the base type's sort with an implicit `a ≤ x ≤ b` hypothesis on every parameter, field, callee result, binding and assigned value, and on every `forall`/`exists` bound variable (below) | preserves identity loss is fine in proof; CLR identity matters only for emission. A named range subtype (`type Port = UInt range 1 ..= 65535`) is its refined underlying type; `Port.from(x)` is the value `x` with the obligation that it lies in the range, `.value` is the identity, and `tryFrom` is uninterpreted (#7872) |
 | `UInt`, `ULong`, `Byte`   | `(_ BitVec n)`                               | bitvector arithmetic, slow but decidable. A `u8`/`u16`/`u32`/`u64` literal is a `(_ bvN n)` constant of its width (a `u64` literal from 2^63 up is its unsigned value, #7839); an unsuffixed literal next to an unsigned operand takes that operand's width. Ordering, `/` and `%` use the unsigned `bvult`/`bvule`/`bvugt`/`bvuge`/`bvudiv`/`bvurem`; `+`, `-`, `*` are `bvadd`/`bvsub`/`bvmul`. A narrower unsigned operand zero-extends along `Byte < UInt < ULong`, and a `Byte` enters the signed chain through `bv2nat`. A range subtype over an unsigned base folds its bounds unsigned. Any other mix of the two sorts (a `UInt` beside an `Int` variable, a negative constant as an unsigned value, an unsigned negation, a bound that does not fit its base) fails closed with `V0033` (#7848) |
 | `Char`                    | `Int` (its code point)                       | a `Char` literal is its code point; every `Char` value carries `0 ≤ c ≤ 65535`, the UTF-16 code-unit range every target guarantees, wherever a range subtype carries its range, so `==` and ordering on `Char` are the integer ones. It is not assumed to lie outside the surrogate range: a `Char` an extern returns (`System.Convert.ToChar`, `Character.highSurrogate`) is not checked (#8214) |
-| `Float`, `Double`         | SMT `Real` (mathematical reals)              | sound approximation: avoids IEEE 754 FP theory and its rounding-mode complexity; linear arithmetic over reals is decidable and fast; division emits `/` (Real div) not `div` (integer) |
+| `Double`                  | SMT-LIB `Float64` (IEEE 754 binary64)        | literals are `((_ to_fp 11 53) RNE d)`, `NaN` and the infinities `(_ NaN 11 53)`, `(_ +oo 11 53)`, `(_ -oo 11 53)`; `+ - * /` are `fp.add`/`fp.sub`/`fp.mul`/`fp.div` rounding to nearest-even, `<`, `<=`, `>`, `>=`, `==` are `fp.lt`/`fp.leq`/`fp.gt`/`fp.geq`/`fp.eq` (`NaN != NaN`), so `x == x` and `x + 1.0 > x` are refuted; the trivial discharger never closes a float comparison by reflexivity. `%` has no faithful translation (`fp.rem` is the IEEE remainder, not the truncating one) and fails closed (`V0033`) (#8141, #7883) |
+| `Float`                   | none: the goal fails closed (`V0033`)        | `Float` is 64-bit on dotnet and native and 32-bit on the JVM, so no one sort is faithful on every target; use `Double` in a proved function (#8141) |
 | `String`                  | uninterpreted sort with `length: String -> Int`, `==` | content reasoning out of scope |
 | record                    | SMT-LIB datatype                             | one constructor, fields as selectors (`<Record>__<field>`); a generic record is a parametric datatype, `(declare-datatypes ((Box 1)) ((par (Lyric!sortparam!Box!T) ((Box (Box__n Int) (Box__v Lyric!sortparam!Box!T))))))`, its sort parameters named apart from every source sort and every name the verifier synthesizes, so `Box[Int]` is `(Box Int)` and a field read is instantiated at the receiver's type arguments; a constructor's type arguments are inferred from its arguments before they take their fields' sorts (a `Some(x)`/`Ok(x)` argument by its payload), and one they do not determine fails closed (V0033); a generic record whose fields name itself (nested through `Option`, which z3 rejects as not well-founded) stays an uninterpreted sort. A goal's query declares only the datatypes its claim reaches (#8340) |
 | union                     | SMT-LIB datatype                             | one constructor per variant |
@@ -823,8 +824,22 @@ first of two same-named fields or types; the build's mode check, which
 Known limitations, tracked separately: no heap model, and a method's
 contract not used at its calls (#8110); a callee's `ensures:` about an
 `out`/`inout` parameter not linked back to the argument (#8111);
-`Float`/`Double` as SMT reals (#8141); anonymous-range assignment (#8143);
 precision and range gaps (#8103).
+
+An index read `xs[i]` on an array, a slice or a `String` carries the
+obligation `0 <= i < length`, the runtime bounds check; the length is one
+uninterpreted function of the value, which `.length` reads too, and an
+`array[N, T]` parameter carries `length == N` when `N` is a literal. The
+element itself is a fresh value of the element sort. A `List` or `Map` index,
+and an index of any other receiver, fails closed (`V0033`): `add` and `clear`
+change a list the verifier models as one value. An assignment to a variable of
+a range type carries the range as an obligation, the store being range-checked
+at run time (#8157, #8143). A `@pure` callee is unfolded only at a call whose
+arguments are values (a list or a closure may change between two calls with the
+same term), and `==` on slices fails closed because dotnet compares slices by
+reference (#8218). `array[N, T]` and `slice[T]` are distinct sorts. A sibling
+file's records and distinct types are in scope for a proof, as its interfaces
+and unions are (#8306).
 
 Obligations raised inside an expression — a callee's `requires:`, an
 overflow obligation — are proved wherever the expression occurs: an

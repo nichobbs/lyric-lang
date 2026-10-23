@@ -24,6 +24,9 @@ pub union Sort {
   case SDatatype(name: String, args: List[Sort])
   // slice[T] — a finite array with a separate length.
   case SSlice(element: Sort)
+  // array[N, T] — a value compared element by element; its length is a fact
+  // about the value, not part of the sort.
+  case SArray(element: Sort)
   // Uninterpreted sort for opaque protected-type refs and unmodelled resources.
   case SUninterp(name: String)
 }
@@ -71,6 +74,7 @@ pub func sortDisplay(s: in Sort): String {
       }
     }
     case SSlice(e) -> "Slice[" + sortDisplay(e) + "]"
+    case SArray(e) -> "Array[" + sortDisplay(e) + "]"
     case SUninterp(n) -> n
   }
 }
@@ -334,6 +338,7 @@ func builtinResultSort(b: in Builtin, args: in List[Term]): Sort {
       if args.count > 0 {
         match sortOf(args[0]) {
           case SSlice(e) -> e
+          case SArray(e) -> e
           case _ -> SInt
         }
       } else {
@@ -387,7 +392,7 @@ pub func termEq(a: in Term, b: in Term): Bool {
   }
 }
 
-func sortEq(a: in Sort, b: in Sort): Bool {
+pub func sortEq(a: in Sort, b: in Sort): Bool {
   match a {
     case SBool -> {
       match b {
@@ -425,15 +430,33 @@ func sortEq(a: in Sort, b: in Sort): Bool {
         case _ -> false
       }
     }
-    case SDatatype(n1, _) -> {
+    case SDatatype(n1, args1) -> {
       match b {
-        case SDatatype(n2, _) -> n1 == n2
+        case SDatatype(n2, args2) -> {
+          if n1 != n2 or args1.count != args2.count {
+            return false
+          }
+          var i = 0
+          while i < args1.count {
+            if not sortEq(args1[i], args2[i]) {
+              return false
+            }
+            i = i + 1
+          }
+          true
+        }
         case _ -> false
       }
     }
     case SSlice(e1) -> {
       match b {
         case SSlice(e2) -> sortEq(e1, e2)
+        case _ -> false
+      }
+    }
+    case SArray(e1) -> {
+      match b {
+        case SArray(e2) -> sortEq(e1, e2)
         case _ -> false
       }
     }
