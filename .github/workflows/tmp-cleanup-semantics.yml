@@ -3,48 +3,96 @@ on:
   push:
     branches: [claude/tmp-cleanup-semantics]
 jobs:
-  create:
+  createGood:
     runs-on: ubuntu-latest
     steps:
       - run: echo ok
-  build:
-    needs: [create]
+  buildGood:
+    needs: [createGood]
     strategy:
       fail-fast: false
       matrix:
-        leg: [good, bad, slow]
+        leg: [a, b]
     runs-on: ubuntu-latest
-    timeout-minutes: 1
     steps:
       - run: |
-          case "${{ matrix.leg }}" in
-            bad) exit 1 ;;
-            slow) sleep 300 ;;
-          esac
-  win:
-    needs: [create]
+          if [ "0" = "1" ] && [ "${{ matrix.leg }}" = "b" ]; then exit 1; fi
+  winGood:
+    needs: [createGood]
     runs-on: ubuntu-latest
     steps:
       - run: echo ok
-  nuget:
-    needs: [build, win, create]
+  nugetGood:
+    needs: [buildGood, winGood, createGood]
     runs-on: ubuntu-latest
     steps:
       - run: echo nuget
-  cleanup:
+  cleanupGood:
     runs-on: ubuntu-latest
-    needs: [create, build, win, nuget]
+    needs: [createGood, buildGood, winGood, nugetGood]
     if: >-
       always() &&
-      needs.create.result == 'success' &&
-      (needs.build.result == 'failure' || needs.build.result == 'cancelled' ||
-       needs.nuget.result == 'failure' || needs.nuget.result == 'cancelled')
+      needs.createGood.result == 'success' &&
+      !(needs.buildGood.result == 'success' &&
+        needs.winGood.result == 'success' &&
+        needs.nugetGood.result == 'success')
     steps:
-      - run: echo "CLEANUP RAN"
-  report:
+      - run: echo "CLEANUP RAN Good"
+  finalizeGood:
     runs-on: ubuntu-latest
-    needs: [create, build, win, nuget, cleanup]
-    if: always()
+    needs: [createGood, buildGood, winGood, nugetGood, cleanupGood]
+    if: >-
+      always() &&
+      needs.createGood.result == 'success' &&
+      (needs.buildGood.result == 'success' || needs.buildGood.result == 'skipped') &&
+      (needs.nugetGood.result == 'success' || needs.nugetGood.result == 'skipped') &&
+      needs.cleanupGood.result == 'skipped'
+    steps:
+      - run: echo "FINALIZE RAN Good"
+
+  createBad:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ok
+  buildBad:
+    needs: [createBad]
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: [a, b]
+    runs-on: ubuntu-latest
     steps:
       - run: |
-          echo "build=${{ needs.build.result }} win=${{ needs.win.result }} nuget=${{ needs.nuget.result }} cleanup=${{ needs.cleanup.result }}"
+          if [ "1" = "1" ] && [ "${{ matrix.leg }}" = "b" ]; then exit 1; fi
+  winBad:
+    needs: [createBad]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ok
+  nugetBad:
+    needs: [buildBad, winBad, createBad]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo nuget
+  cleanupBad:
+    runs-on: ubuntu-latest
+    needs: [createBad, buildBad, winBad, nugetBad]
+    if: >-
+      always() &&
+      needs.createBad.result == 'success' &&
+      !(needs.buildBad.result == 'success' &&
+        needs.winBad.result == 'success' &&
+        needs.nugetBad.result == 'success')
+    steps:
+      - run: echo "CLEANUP RAN Bad"
+  finalizeBad:
+    runs-on: ubuntu-latest
+    needs: [createBad, buildBad, winBad, nugetBad, cleanupBad]
+    if: >-
+      always() &&
+      needs.createBad.result == 'success' &&
+      (needs.buildBad.result == 'success' || needs.buildBad.result == 'skipped') &&
+      (needs.nugetBad.result == 'success' || needs.nugetBad.result == 'skipped') &&
+      needs.cleanupBad.result == 'skipped'
+    steps:
+      - run: echo "FINALIZE RAN Bad"
