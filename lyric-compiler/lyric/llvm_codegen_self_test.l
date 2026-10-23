@@ -1074,3 +1074,83 @@ test "addPkgImports merges import lists across multiple files of the same packag
     "closure includes the second file's import, not shadowed by the first file"
   )
 }
+
+// #7339: indexing a `slice[Char]` / `List[Char]` / `array[N, Char]` binding
+// yields a `Char`, which `.toString()` must render as the character, not the
+// code point (`Char` and `Int` share the erased `NI32`).
+test "Char.toString() on an element of a slice/List of Char renders the character (#7339)" {
+  val shim = "package T\n" + "extern func consoleWriteFd(fd: Int, s: String): Unit = \"lyric_console_write\"\n" +
+    "extern func consoleNewlineFd(fd: Int): Unit = \"lyric_console_write_newline\"\n" +
+    "func println(s: in String): Unit {\n" +
+    "  consoleWriteFd(1, s)\n" +
+    "  consoleNewlineFd(1)\n" +
+    "}\n" +
+    "func second(cs: slice[Char]): String {\n" +
+    "  cs[1].toString()\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val cs: slice[Char] = ['a', 'z']\n" +
+    "  println(cs[1].toString())\n" +
+    "  println(second(cs))\n" +
+    "  println(\"<\" + cs[0] + \">\")\n" +
+    "  val n: slice[Int] = [7, 122]\n" +
+    "  println(n[1].toString())\n" +
+    "  0\n" +
+    "}\n"
+  val r = compileAndRun(shim)
+  assertEqualInt(r.exitCode, 0, "slice[Char] toString exit")
+  assertEqual(r.stdout, "z\nz\n<a>\n122\n", "Char elements print as characters, Int elements as numbers")
+}
+
+// #8335: the one-argument `String.substring(start)`.
+test "String.substring(start) lowers the one-argument form (#8335)" {
+  val shim = "package T\n" + "extern func consoleWriteFd(fd: Int, s: String): Unit = \"lyric_console_write\"\n" +
+    "extern func consoleNewlineFd(fd: Int): Unit = \"lyric_console_write_newline\"\n" +
+    "func println(s: in String): Unit {\n" +
+    "  consoleWriteFd(1, s)\n" +
+    "  consoleNewlineFd(1)\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  println(\"abc\".substring(1))\n" +
+    "  println(\"abc\".substring(3) + \"|\")\n" +
+    "  println(\"abc\".substring(0, 2))\n" +
+    "  0\n" +
+    "}\n"
+  val r = compileAndRun(shim)
+  assertEqualInt(r.exitCode, 0, "substring(start) exit")
+  assertEqual(r.stdout, "bc\n|\nab\n", "substring(start) returns the tail")
+  val bad = "package T\n" + "func main(): Int {\n" + "  val s = \"abc\".substring(4)\n" + "  0\n" + "}\n"
+  val rb = compileAndRun(bad)
+  assertTrue(rb.exitCode != 0, "substring start past the end must abort")
+}
+
+// #8014: a bare payload-free case of a generic union used as an `==`/`!=`
+// operand takes its instantiation from the other operand.
+test "o == None, None == o and o != None on generic unions (#8014)" {
+  val src = "package T\n" + "union Option[T] {\n" + "  case Some(value: T)\n" + "  case None\n" + "}\n" +
+    "func flag(b: Bool): Int {\n" +
+    "  if b {\n" +
+    "    1\n" +
+    "  } else {\n" +
+    "    0\n" +
+    "  }\n" +
+    "}\n" +
+    "func main(): Int {\n" +
+    "  val a: Option[Int] = Some(value = 1)\n" +
+    "  val n: Option[Int] = None\n" +
+    "  val s: Option[String] = Some(value = \"x\")\n" +
+    "  val ns: Option[String] = None\n" +
+    "  var code = 0\n" +
+    "  code = code + flag(a == None) * 1\n" +
+    "  code = code + flag(None == a) * 2\n" +
+    "  code = code + flag(a != None) * 4\n" +
+    "  code = code + flag(n == None) * 8\n" +
+    "  code = code + flag(None != n) * 16\n" +
+    "  code = code + flag(s == None) * 32\n" +
+    "  code = code + flag(ns == None) * 64\n" +
+    "  code = code + flag(None == ns) * 128\n" +
+    "  code\n" +
+    "}\n"
+  val r = compileAndRunAsan(src)
+  assertEqualInt(r.exitCode, 4 + 8 + 64 + 128, "only a != None, n == None, ns == None and None == ns hold")
+}

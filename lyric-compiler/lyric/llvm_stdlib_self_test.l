@@ -481,13 +481,10 @@ test "Std.Process capture: argv passthrough, exec failure, stdin round-trip (ASa
     "  }\n" +
     "  val noArgs: List[String] = newList()\n" +
     "  match runCapture(\"/definitely-missing-lyric-n59\", noArgs, 5000) {\n" +
-    "    case Ok(res2) -> {\n" +
-    "      if res2.exitCode != 127 {\n" +
-    "        return 6\n" +
-    "      }\n" +
+    "    case Ok(_) -> {\n" +
+    "      return 6\n" +
     "    }\n" +
     "    case Err(_) -> {\n" +
-    "      return 7\n" +
     "    }\n" +
     "  }\n" +
     "  match runCaptureWithInput(\"/bin/cat\", noArgs, \"some input\", 5000) {\n" +
@@ -1822,4 +1819,65 @@ func main(): Int {
 "#
   val r = compileAndRunNative(src)
   assertEqualInt(r.exitCode, 42, "every out-of-range conversion saturated")
+}
+
+// #8256: `Option` and `Result` are an implicit prelude; a single-file program
+// that never imports `Std.Core` still builds on native, as on the managed
+// targets.  #8014: `o == None` and `None == o` take the other operand's type.
+test "Native: Option and Result without import Std.Core, and o == None (ASan)" {
+  val src = r#"package T
+
+func half(n: Int): Result[Int, String] {
+  if n % 2 == 0 { Ok(value = n / 2) } else { Err(error = "odd") }
+}
+
+func main(): Int {
+  val o: Option[Int] = Some(value = 1)
+  val none: Option[String] = None
+  var code = 0
+  if o == None { code = code + 100 }
+  if None == none { code = code + 1 }
+  if o != None { code = code + 2 }
+  match half(8) {
+    case Ok(v) -> { code = code + v }
+    case Err(_) -> { code = code + 50 }
+  }
+  code
+}
+"#
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 7, "1 + 2 + 4: None == none, o != None, half(8) = 4")
+}
+
+// #7984: a bundled `Std.*` package that calls `format2` reaches native
+// codegen as `Std.String.formatArgs`, and links `Std.String` in even when no
+// other package imports it.  The probe package is added to the stdlib file
+// list, so it is bundled the way a real `Std.*` package is.
+test "Native: formatN inside a bundled Std package is lowered (ASan)" {
+  val stdlib = findStdlibSourcesNative()
+  stdlib.add(
+    NativeStdlibFile(
+      path = "std/fmtprobe.l",
+      source = "package Std.FmtProbe\n" + "pub func greet(n: in Int): String {\n" +
+        "  format2(\"{0} and {1}\", n, \"x\")\n" +
+        "}\n"
+    )
+  )
+  val dir = Path.join(tempBase(), "lyric-llvm-stdlib-selftest")
+  val _ = File.createDir(dir)
+  val stem = Path.join(dir, "t_" + Uuid.uuidToString(Uuid.newUuid()))
+  val flags: List[String] = newList()
+  flags.add("-fsanitize=address")
+  val src = "package T\n" + "import Std.FmtProbe\n" + "func main(): Int {\n" +
+    "  val s = greet(7)\n" +
+    "  if s == \"7 and x\" {\n    42\n  } else {\n    1\n  }\n" +
+    "}\n"
+  if not compileToNativeWithFlags(src, stem, stdlib, "", "0", flags, newList(), "", true) {
+    panic("native compilation failed for the formatN stdlib probe")
+  }
+  val noArgs: List[String] = newList()
+  match Process.runCapture(stem, noArgs, 60000) {
+    case Ok(res) -> assertEqualInt(res.exitCode, 42, "format2 in a Std package formats its arguments")
+    case Err(e) -> panic("binary could not be started: " + e)
+  }
 }

@@ -41,7 +41,7 @@ $(BUILD)/%.o: src/%.c include/lyric_rt.h | $(BUILD)
 
 # lyric_string.c #includes the generated Unicode case-folding tables
 # (#6779); list it explicitly so editing the .inc alone triggers a rebuild.
-$(BUILD)/lyric_string.o: src/lyric_unicode_case_tables.inc
+$(BUILD)/lyric_string.o: src/lyric_unicode_case_tables.inc src/lyric_unicode_category_tables.inc
 
 $(BUILD)/lyric_rt.a: $(OBJS)
 	$(AR) rcs $@ $(OBJS)
@@ -107,13 +107,13 @@ $(WASM_BUILD)/%.o: src/%.c include/lyric_rt.h | $(WASM_BUILD)
 	@test -n "$(WASI_SDK)" || { echo "set WASI_SDK to a wasi-sdk install (see docs/35 §5.1)"; exit 1; }
 	$(WASM_CC) $(WASM_CFLAGS) -Iinclude -c $< -o $@
 
-$(WASM_BUILD)/lyric_string.o: src/lyric_unicode_case_tables.inc
+$(WASM_BUILD)/lyric_string.o: src/lyric_unicode_case_tables.inc src/lyric_unicode_category_tables.inc
 
 # LLVM IR of the wasm32 runtime, for scripts/audit-native-extern-abi.sh: the
 # `define` lines are the exact C ABI each kernel extern must match.
 WASM_IR := $(WASM_SRCS:src/%.c=$(WASM_BUILD)/ir/%.ll)
 
-$(WASM_BUILD)/ir/%.ll: src/%.c include/lyric_rt.h src/lyric_unicode_case_tables.inc
+$(WASM_BUILD)/ir/%.ll: src/%.c include/lyric_rt.h src/lyric_unicode_case_tables.inc src/lyric_unicode_category_tables.inc
 	@test -n "$(WASI_SDK)" || { echo "set WASI_SDK to a wasi-sdk install (see docs/35 §5.1)"; exit 1; }
 	mkdir -p $(WASM_BUILD)/ir
 	$(WASM_CC) $(WASM_CFLAGS) -Iinclude -S -emit-llvm $< -o $@

@@ -3674,6 +3674,14 @@ func lowerFormatBuiltin(e: in Expr): Expr {
   }
 }
 
+/// The target-independent rewrite of `format1`-`format4` calls, for a backend
+/// that bundles stdlib packages without running them through `pipeWeave`
+/// (native, #7984): a `Std.*` package that calls `formatN` must reach codegen
+/// as the `Std.String.formatArgs` call every other build gives it.
+pub func pipeLowerFormatBuiltins(file: in SourceFile): SourceFile {
+  mapExprsInFile(file, lowerFormatBuiltin)
+}
+
 /// True when `file` calls a `format1`-`format4` builtin, before or after
 /// `lowerFormatBuiltin` rewrote it: its build needs `Std.String`, which a
 /// bundling backend (JVM, native) otherwise links only when some bundled

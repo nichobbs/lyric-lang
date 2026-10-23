@@ -292,7 +292,7 @@ record Customer {
 - The hash agrees with the relation: both zeros hash alike, all `NaN`s do, and an array (or any `List`-represented field, which shares the array's host representation) hashes element by element.
 - A mutable record that does not derive `Equals` keeps identity, as a key too.
 - `==` inside a generic body compares like the type `Lyric.Mono` binds its type parameter to: a value record field by field, a mutable record by identity.
-- On `--target native`, a `Map`/`Set` key must still be a `String` or a scalar (**N0007**), and `List.contains`/`indexOf` are not yet lowered (#8167).
+- On `--target native`, `List.contains`/`indexOf` compare under this relation for every element type (a scalar by value, a `String` by text, a union or value record structurally; #7429), but a `Map`/`Set` key must still be a `String` or a scalar (**N0007**, #8167).
 - A tuple used directly as a `Map`/`Set` key is #8170.
 
 **Values and mutable records (D157).** A record with no `var` field is a value: it cannot be mutated, so whether a backend copies or shares it is unobservable, and a changed value is derived with `.copy(...)`. A record with a `var` field (a *mutable record*) has identity: assigning it, passing it (including as an `in` argument, which prevents rebinding but does not freeze the record, §4.4), returning it, and storing it in a field, collection or closure all share one instance, so a write to a `var` field is seen through every binding that refers to it. `.copy()` on a mutable record makes a new, independent instance. Every backend behaves this way (pinned by `record_semantics_self_test.l`). A future declaration form will mark mutable records explicitly (D157, #7955).

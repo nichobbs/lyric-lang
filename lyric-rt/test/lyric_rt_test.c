@@ -2246,16 +2246,27 @@ static void test_process(void) {
     lyric_release(out3);
     lyric_release(err3);
 
-    /* Spawn failure (path lookup handled by execvp inside the child, so
-     * a missing executable is exit code 127, not a spawn failure): */
+    /* A missing executable is a spawn failure (-1, with the errno of the
+     * failed exec), not exit code 127 (#7968); a program that really exits
+     * 127 still reports 127. */
     int32_t exit_code4 = -99;
     LyricString* out4 = NULL;
     LyricString* err4 = NULL;
     CHECK(lyric_process_run("/nonexistent-lyric-rt-test-exe", NULL, NULL, -1, &exit_code4, &out4, &err4, NULL) ==
-          0);
-    CHECK(exit_code4 == 127);
-    lyric_release(out4);
-    lyric_release(err4);
+          -1);
+    CHECK(lyric_process_last_spawn_errno() == ENOENT);
+    LyricList* sh127 = lyric_list_new(2);
+    LyricString* sh_c = lyric_string_from_literal((const uint8_t*)"-c", 2);
+    LyricString* sh_exit = lyric_string_from_literal((const uint8_t*)"exit 127", 8);
+    lyric_list_push(sh127, (int64_t)(intptr_t)sh_c);
+    lyric_list_push(sh127, (int64_t)(intptr_t)sh_exit);
+    int32_t exit_code5 = -99;
+    LyricString* out5 = NULL;
+    LyricString* err5 = NULL;
+    CHECK(lyric_process_run("/bin/sh", sh127, NULL, -1, &exit_code5, &out5, &err5, NULL) == 0);
+    CHECK(exit_code5 == 127);
+    lyric_release(out5);
+    lyric_release(err5);
 }
 #endif /* !__wasi__ */
 
@@ -2511,23 +2522,16 @@ static void test_process_op_kill_after_exit(void) {
 
 #ifndef __wasi__
 static void test_process_op_exec_failure(void) {
-    /* execvp failure inside the child: exit 127, empty output, no spawn
-     * failure (matching lyric_process_run and shell convention). */
+    /* execvp failure inside the child is a spawn failure, as for
+     * lyric_process_run (#7968): the op is born done, with the -1 exit
+     * code and empty output. */
     void* op = lyric_process_start("/nonexistent-lyric-op-binary", NULL, NULL);
-    CHECK(!lyric_process_spawn_failed(op));
-    int spins = 0;
-    while (!lyric_process_pump(op) && spins < 5000) {
-        struct timespec ts = {0, 1000000};
-        nanosleep(&ts, NULL);
-        spins++;
-    }
+    CHECK(lyric_process_spawn_failed(op));
     CHECK(lyric_process_pump(op) == 1);
-    CHECK(lyric_process_exit_code(op) == 127);
+    CHECK(lyric_process_exit_code(op) == -1);
     LyricString* out = lyric_process_stdout(op);
     CHECK(lyric_string_len(out) == 0);
     lyric_release(out);
-    /* The child _exits without writing anything: execvp itself is
-     * silent, so stderr must be empty too (#5116). */
     LyricString* errs = lyric_process_stderr(op);
     CHECK(lyric_string_len(errs) == 0);
     lyric_release(errs);
@@ -3646,7 +3650,53 @@ static void test_string_ascii_case_compare(void) {
     CHECK(lyric_string_ascii_case_compare(rt_str("ab"), rt_str("abc\xc3\xa9")) == -1);
 }
 
+/* Std.Char classification and case mapping by Unicode general category
+ * (#6858): ASCII, Latin-1, Greek, a Han ideograph, an astral letter, and the
+ * code points that are in no class. */
+static void test_char_classification(void) {
+    CHECK(lyric_char_is_letter('a') && lyric_char_is_letter('Z'));
+    CHECK(!lyric_char_is_letter('0') && !lyric_char_is_letter('_'));
+    CHECK(lyric_char_is_letter(0x00E9));  /* e acute (Ll) */
+    CHECK(lyric_char_is_letter(0x03A3));  /* Greek capital sigma (Lu) */
+    CHECK(lyric_char_is_letter(0x4E2D));  /* a Han ideograph (Lo) */
+    CHECK(lyric_char_is_letter(0x1D400)); /* mathematical bold A, outside the BMP (Lu) */
+    CHECK(lyric_char_is_letter(0x01C5));  /* Latin capital D with small z with caron (Lt) */
+    CHECK(lyric_char_is_letter(0x02B0));  /* modifier letter small h (Lm) */
+    CHECK(!lyric_char_is_letter(0x00D7)); /* multiplication sign (Sm) */
+    CHECK(!lyric_char_is_letter(0xD800)); /* a surrogate half (Cs) */
+    CHECK(!lyric_char_is_letter(0x0378)); /* unassigned */
+    CHECK(!lyric_char_is_letter(-1));
+    CHECK(!lyric_char_is_letter(0x110000));
+
+    CHECK(lyric_char_is_digit('7') && !lyric_char_is_digit('a'));
+    CHECK(lyric_char_is_digit(0x0663));   /* Arabic-Indic digit three (Nd) */
+    CHECK(!lyric_char_is_digit(0x00BD));  /* vulgar fraction one half (No) */
+
+    CHECK(lyric_char_is_upper('A') && !lyric_char_is_upper('a'));
+    CHECK(lyric_char_is_upper(0x00C9) && !lyric_char_is_upper(0x00E9));
+    CHECK(lyric_char_is_lower('a') && !lyric_char_is_lower('A'));
+    CHECK(lyric_char_is_lower(0x03C3) && !lyric_char_is_lower(0x03A3));
+    CHECK(!lyric_char_is_upper(0x01C5) && !lyric_char_is_lower(0x01C5)); /* titlecase is neither */
+
+    CHECK(lyric_char_is_punctuation('!') && lyric_char_is_punctuation('_'));
+    CHECK(!lyric_char_is_punctuation('$') && !lyric_char_is_punctuation('+') && !lyric_char_is_punctuation('|'));
+    CHECK(lyric_char_is_punctuation(0x00A1));  /* inverted exclamation mark (Po) */
+    CHECK(lyric_char_is_punctuation(0x2014));  /* em dash (Pd) */
+    CHECK(lyric_char_is_punctuation(0x00AB));  /* left guillemet (Pi) */
+
+    CHECK(lyric_char_is_control(0) && lyric_char_is_control(31) && lyric_char_is_control(127));
+    CHECK(lyric_char_is_control(0x0085) && lyric_char_is_control(0x009F)); /* C1 controls */
+    CHECK(!lyric_char_is_control(' ') && !lyric_char_is_control(0x00A0));
+
+    CHECK(lyric_char_to_upper('a') == 'A' && lyric_char_to_lower('Z') == 'z');
+    CHECK(lyric_char_to_upper(0x00E9) == 0x00C9 && lyric_char_to_lower(0x00C9) == 0x00E9);
+    CHECK(lyric_char_to_upper(0x03C3) == 0x03A3 && lyric_char_to_lower(0x03A3) == 0x03C3);
+    CHECK(lyric_char_to_upper('1') == '1' && lyric_char_to_lower(0x4E2D) == 0x4E2D);
+    CHECK(lyric_char_to_upper(-5) == -5 && lyric_char_to_lower(-5) == -5);
+}
+
 int main(void) {
+    test_char_classification();
 #ifndef __wasi__
     test_thread_spawn_detached();
 #endif

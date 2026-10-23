@@ -17,6 +17,7 @@ package Std.HashHost
 
 import Std.Core
 import Std.Collections
+import Std.Errors
 import Std.FileHost
 
 func byteAt(bytes: in slice[Byte], i: in Int): Long {
@@ -474,6 +475,15 @@ pub func hostSha512Bytes(bytes: in slice[Byte]): slice[Byte] {
 /// streams it); an unreadable file panics, as the dotnet twin throws.
 pub func hostSha512File(path: in String): slice[Byte] {
   hostSha512Bytes(hostReadAllBytes(path))
+}
+
+/// As `hostSha512File`, but an unreadable file is an `Err` carrying the
+/// message of the I/O error rather than a panic (#7684).
+pub func hostSha512FileResult(path: in String): Result[slice[Byte], String] {
+  match hostReadBytesResult(path) {
+    case Ok(bytes) -> Ok(value = hostSha512Bytes(bytes))
+    case Err(e) -> Err(error = IOError.message(e))
+  }
 }
 
 /// Convert a byte slice to an uppercase hexadecimal string (one `[0-9A-F]`

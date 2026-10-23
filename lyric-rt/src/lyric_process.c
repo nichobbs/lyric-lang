@@ -72,13 +72,22 @@ static void procbuf_append(ProcBuf* b, const uint8_t* chunk, int64_t n) {
     b->len += n;
 }
 
+/* errno of the most recent failed start on this thread, for
+ * lyric_process_run_inherited and lyric_process_piped_spawn (0 when the
+ * cause is unknown). */
+static _Thread_local int32_t last_spawn_errno = 0;
+
 /* Shared fork/exec: spawn `path` with `args`, wiring fresh capture pipes
  * to the child's stdin/stdout/stderr.  stdin is ALWAYS piped — matching
  * the managed twin, which always redirects it: the parent writes the
  * (possibly empty) content and closes, so the child reads EOF instead
  * of inheriting the parent's terminal.  On success returns the child
  * pid and stores the parent-side ends (stdout/stderr READ, stdin
- * WRITE); on failure returns -1 with nothing open. */
+ * WRITE); on failure returns -1 with nothing open.  A failed exec (no such
+ * program, not executable) is a spawn failure, not exit code 127, as on
+ * the managed twins whose Process.Start throws: the child writes errno to a
+ * CLOEXEC pipe only if execvp returns, so the parent reads EOF on success
+ * and 4 bytes on failure. */
 static pid_t spawn_capture(const char* path, LyricList* args, int* out_rd, int* err_rd, int* in_wr) {
     int out_pipe[2];
     int err_pipe[2];
@@ -94,6 +103,16 @@ static pid_t spawn_capture(const char* path, LyricList* args, int* out_rd, int* 
         close(out_pipe[1]);
         close(err_pipe[0]);
         close(err_pipe[1]);
+        return -1;
+    }
+    int exec_pipe[2];
+    if (pipe_cloexec(exec_pipe) != 0) {
+        close(out_pipe[0]);
+        close(out_pipe[1]);
+        close(err_pipe[0]);
+        close(err_pipe[1]);
+        close(in_pipe[0]);
+        close(in_pipe[1]);
         return -1;
     }
 #if defined(__APPLE__)
@@ -117,6 +136,8 @@ static pid_t spawn_capture(const char* path, LyricList* args, int* out_rd, int* 
         close(err_pipe[1]);
         close(in_pipe[0]);
         close(in_pipe[1]);
+        close(exec_pipe[0]);
+        close(exec_pipe[1]);
         return -1;
     }
     argv[0] = (char*)path; /* borrowed: never freed below */
@@ -130,6 +151,8 @@ static pid_t spawn_capture(const char* path, LyricList* args, int* out_rd, int* 
     if (pid < 0) {
         for (int64_t i = 0; i < nargs; i++) lyric_cstring_free(argv[i + 1]);
         free(argv);
+        close(exec_pipe[0]);
+        close(exec_pipe[1]);
         close(out_pipe[0]);
         close(out_pipe[1]);
         close(err_pipe[0]);
@@ -193,6 +216,11 @@ static pid_t spawn_capture(const char* path, LyricList* args, int* out_rd, int* 
         close(out_src);
         close(err_src);
         execvp(path, argv);
+        int e = errno;
+        ssize_t wr;
+        do {
+            wr = write(exec_pipe[1], &e, sizeof e);
+        } while (wr < 0 && errno == EINTR);
         _exit(127); /* execvp failed (e.g. path not found) */
     }
 
@@ -206,8 +234,29 @@ static pid_t spawn_capture(const char* path, LyricList* args, int* out_rd, int* 
     close(out_pipe[1]);
     close(err_pipe[1]);
     close(in_pipe[0]);
+    close(exec_pipe[1]);
     for (int64_t i = 0; i < nargs; i++) lyric_cstring_free(argv[i + 1]);
     free(argv);
+    /* EOF here means the exec succeeded (the CLOEXEC write end closed);
+     * 4 bytes mean it failed with that errno. */
+    int child_errno = 0;
+    ssize_t got;
+    do {
+        got = read(exec_pipe[0], &child_errno, sizeof child_errno);
+    } while (got < 0 && errno == EINTR);
+    close(exec_pipe[0]);
+    if (got == (ssize_t)sizeof child_errno) {
+        int status = 0;
+        pid_t w;
+        do {
+            w = waitpid(pid, &status, 0);
+        } while (w < 0 && errno == EINTR);
+        close(out_pipe[0]);
+        close(err_pipe[0]);
+        close(in_pipe[1]);
+        last_spawn_errno = child_errno;
+        return -1;
+    }
     /* Success path ONLY: every failure path above returns -1 before
      * reaching these writes, so callers' -1 sentinels survive a failed
      * spawn and their close/free paths stay no-ops. */
@@ -450,11 +499,6 @@ int32_t lyric_process_run(const char* path, LyricList* args,
  * the executable cannot be started: the child writes errno to a CLOEXEC
  * pipe only if execvp returns, so the parent reads EOF on success and 4
  * bytes on failure. */
-/* errno of the most recent failed start on this thread, for
- * lyric_process_run_inherited and lyric_process_piped_spawn (0 when the
- * cause is unknown). */
-static _Thread_local int32_t last_spawn_errno = 0;
-
 int32_t lyric_process_last_spawn_errno(void) {
     return last_spawn_errno;
 }

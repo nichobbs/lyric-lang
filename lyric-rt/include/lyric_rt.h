@@ -152,6 +152,20 @@ LyricString* lyric_string_substring(LyricString* s, int64_t start, int64_t len);
 LyricString* lyric_string_trim(LyricString* s);
 LyricString* lyric_string_to_lower(LyricString* s);
 LyricString* lyric_string_to_upper(LyricString* s);
+/* Unicode classification and simple case mapping of one code point, for
+ * `Std.Char` on the native target (#6858). The predicates answer by general
+ * category (letter = Lu/Ll/Lt/Lm/Lo, digit = Nd, upper = Lu, lower = Ll,
+ * punctuation = Pc/Pd/Ps/Pe/Pi/Pf/Po, control = Cc), 1 or 0; an unassigned,
+ * surrogate or negative code point answers 0. The case mappings return the
+ * code point itself when it has none. */
+int32_t      lyric_char_is_letter(int32_t cp);
+int32_t      lyric_char_is_digit(int32_t cp);
+int32_t      lyric_char_is_upper(int32_t cp);
+int32_t      lyric_char_is_lower(int32_t cp);
+int32_t      lyric_char_is_punctuation(int32_t cp);
+int32_t      lyric_char_is_control(int32_t cp);
+int32_t      lyric_char_to_upper(int32_t cp);
+int32_t      lyric_char_to_lower(int32_t cp);
 int64_t      lyric_string_index_of(LyricString* haystack, LyricString* needle);
 int64_t      lyric_string_last_index_of(LyricString* haystack, LyricString* needle);
 /* Forward search starting at byte offset `from` (Std.String.indexOfFrom,

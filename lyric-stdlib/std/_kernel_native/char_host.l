@@ -15,30 +15,22 @@
 //! `Lyric.LlvmCodegen`'s `numericConvTarget`, #1901) already lower to.  No
 //! `extern func` is needed for it.
 //!
-//! Classification / case conversion: `lyric-rt` has no ICU or Unicode
-//! general-category table (docs/57 §"stdlib core-I/O test gaps" catalogues
-//! this class of gap; see also the self-hosted lexer's own
-//! `Std.UnicodeHost`, which is `.NET`-only and has no native use). Building
-//! one is a substantial undertaking on its own — full Unicode general
-//! categories span most of the Basic Multilingual Plane and several
-//! supplementary planes. Per this issue's own "suggested fix" and this
-//! repo's "smaller, fully-finished slice" standard, this file ships the
-//! ASCII-range slice (all `Std.HttpEngine.Hpack`'s Huffman codec and every
-//! other currently-shipping native consumer actually needs) as a
-//! genuinely complete, pure-Lyric implementation with NO extern/libc
-//! dependency (avoids locale/platform divergence entirely) — every
-//! predicate below matches `System.Char`'s Unicode-category-based verdict
-//! exactly for the U+0000..U+007F range. Code points above U+007F fall
-//! through to the conservative default appropriate to each predicate
-//! (`false` for the "is-X" predicates, `false` for `isControl` above the
-//! ASCII C0 set + DEL, identity for the case-conversion functions) —
-//! a real, tracked, dated cross-target parity gap: full non-ASCII Unicode
-//! classification on `--target native` is issue #6858.
+//! Classification / case conversion: lyric-rt's Unicode general-category
+//! table (generated from UnicodeData.txt by
+//! `scripts/gen_unicode_category_tables.py`, issue #6858) answers the
+//! predicates by category, as `System.Char` and `java.lang.Character` do
+//! (letter = Lu/Ll/Lt/Lm/Lo, digit = Nd, upper = Lu, lower = Ll,
+//! punctuation = P*, control = Cc), for every code point including the
+//! supplementary planes; case conversion is the simple one-to-one mapping
+//! `.toLower()`/`.toUpper()` on a `String` use, so a `Char` and a one-character
+//! `String` agree.  No locale rule applies (no Turkish dotless I), and a code
+//! point with no mapping is returned unchanged.  Unassigned and surrogate
+//! code points are in no class.
 //!
 //! Internal: only `Std.Char` should import this; per
 //! `compiler/lyric/std/_kernel/README.md` the kernel is the audited
 //! extern boundary, not a general-purpose API.
-@axiom("Char and Int share the i32 native representation, so the code-point bridge is a lossless identity; ASCII-range classification below matches System.Char's Unicode-category verdicts for U+0000..U+007F")
+@axiom("Char and Int share the i32 native representation, so the code-point bridge is a lossless identity; lyric_char_is_* and lyric_char_to_* answer from the Unicode general-category and simple case-mapping tables per their lyric_rt.h contract")
 @pure
 package Std.CharHost
 
@@ -60,18 +52,31 @@ pub func hostIntToChar(n: in Int): Char {
 }
 
 // =====================================================================
-// Classification — ASCII-range (U+0000..U+007F), matching System.Char's
-// Unicode-category verdict exactly in that range. See file header for the
-// non-ASCII gap (#6858).
+// Classification and case conversion by Unicode general category and
+// simple case mapping, over lyric-rt (see file header, #6858).
 // =====================================================================
+extern func rtIsLetter(cp: Int): Int = "lyric_char_is_letter"
+
+extern func rtIsDigit(cp: Int): Int = "lyric_char_is_digit"
+
+extern func rtIsUpper(cp: Int): Int = "lyric_char_is_upper"
+
+extern func rtIsLower(cp: Int): Int = "lyric_char_is_lower"
+
+extern func rtIsPunctuation(cp: Int): Int = "lyric_char_is_punctuation"
+
+extern func rtIsControl(cp: Int): Int = "lyric_char_is_control"
+
+extern func rtToUpper(cp: Int): Int = "lyric_char_to_upper"
+
+extern func rtToLower(cp: Int): Int = "lyric_char_to_lower"
+
 pub func hostIsLetter(c: in Char): Bool {
-  val cp = hostCharToInt(c);
-  (cp >= 65 and cp <= 90) or (cp >= 97 and cp <= 122)
+  rtIsLetter(hostCharToInt(c)) != 0
 }
 
 pub func hostIsDigit(c: in Char): Bool {
-  val cp = hostCharToInt(c)
-  cp >= 48 and cp <= 57
+  rtIsDigit(hostCharToInt(c)) != 0
 }
 
 pub func hostIsLetterOrDigit(c: in Char): Bool {
@@ -82,72 +87,25 @@ pub func hostIsLetterOrDigit(c: in Char): Bool {
 // char_host.l`'s note: `Std.Char.isWhiteSpace` is pure-Lyric cross-target
 // (#5501) and never calls into `Std.CharHost` on any target.
 pub func hostIsUpper(c: in Char): Bool {
-  val cp = hostCharToInt(c)
-  cp >= 65 and cp <= 90
+  rtIsUpper(hostCharToInt(c)) != 0
 }
 
 pub func hostIsLower(c: in Char): Bool {
-  val cp = hostCharToInt(c)
-  cp >= 97 and cp <= 122
+  rtIsLower(hostCharToInt(c)) != 0
 }
 
-// Unicode general categories Pc/Pd/Ps/Pe/Pi/Pf/Po within ASCII:
-// ! " # % & ' ( ) * , - . / : ; ? @ [ \ ] _ { }
-// (deliberately excludes the ASCII symbol categories Sm/Sc/Sk:
-// $ + < = > ^ ` | ~ are NOT punctuation, matching System.Char.IsPunctuation
-// / java.lang.Character's Unicode-category check.)
 pub func hostIsPunctuation(c: in Char): Bool {
-  val cp = hostCharToInt(c);
-  (cp >= 33 and cp <= 35) or
-    // ! " #
-    cp == 37 or
-    cp == 38 or
-    // % &
-    (cp >= 39 and cp <= 42) or
-    // ' ( ) *
-    (cp >= 44 and cp <= 47) or
-    // , - . /
-    (cp >= 58 and cp <= 59) or
-    // : ;
-    cp == 63 or
-    cp == 64 or
-    // ? @
-    (cp >= 91 and cp <= 93) or
-    // [ \ ]
-    cp == 95 or
-    // _
-    cp == 123 or
-    cp == 125         // { }  ( | at 124 is Sm, not punctuation)
+  rtIsPunctuation(hostCharToInt(c)) != 0
 }
 
-// ASCII C0 control codes (U+0000..U+001F) plus DEL (U+007F). The C1
-// control range (U+0080..U+009F) is non-ASCII and out of this slice's
-// scope (#6858).
 pub func hostIsControl(c: in Char): Bool {
-  val cp = hostCharToInt(c);
-  (cp >= 0 and cp <= 31) or cp == 127
+  rtIsControl(hostCharToInt(c)) != 0
 }
 
-// =====================================================================
-// Case conversion — ASCII-range; every other code point (including the
-// full non-ASCII Unicode general case, #6858) is returned unchanged,
-// matching `Char.ToUpper`/`ToLower`'s behavior for code points that have
-// no case mapping.
-// =====================================================================
 pub func hostToUpper(c: in Char): Char {
-  val cp = hostCharToInt(c)
-  if cp >= 97 and cp <= 122 {
-    hostIntToChar(cp - 32)
-  } else {
-    c
-  }
+  hostIntToChar(rtToUpper(hostCharToInt(c)))
 }
 
 pub func hostToLower(c: in Char): Char {
-  val cp = hostCharToInt(c)
-  if cp >= 65 and cp <= 90 {
-    hostIntToChar(cp + 32)
-  } else {
-    c
-  }
+  hostIntToChar(rtToLower(hostCharToInt(c)))
 }
