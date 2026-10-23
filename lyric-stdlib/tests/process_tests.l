@@ -194,6 +194,48 @@ func testPipedReadLineWithinKeepsPartialLine(): Unit {
   }
 }
 
+// #7515: repeated timeouts on one handle share a single outstanding reader.
+// A second reader per timeout would race for the next line and could deliver
+// lines out of order or lose one; the lines below must arrive in order, and
+// killing the child must let the outstanding reader end with end of stream.
+func testRepeatedTimeoutsShareOneReader(): Unit {
+  match spawnPiped("cat", newList()) {
+    case Err(e) -> assertTrue(false, "spawnPiped failed: " + IOError.message(e))
+    case Ok(p) -> {
+      var i = 0
+      while i < 25 {
+        match pipedReadLineWithin(p, 5) {
+          case Ok(PipedTimedOut) -> ()
+          case _ -> assertTrue(false, "a silent child must time out every time")
+        }
+        i = i + 1
+      }
+      pipedWriteLine(p, "first")
+      pipedWriteLine(p, "second")
+      match pipedReadLineWithin(p, 5000) {
+        case Ok(PipedLine(line)) -> assertEqual(line, "first", "the first line survives the timeouts")
+        case _ -> assertTrue(false, "expected 'first'")
+      }
+      match pipedReadLine(p) {
+        case Ok(Some(line)) -> assertEqual(line, "second", "lines stay in order")
+        case _ -> assertTrue(false, "expected 'second'")
+      }
+      match pipedReadLineWithin(p, 5) {
+        case Ok(PipedTimedOut) -> ()
+        case _ -> assertTrue(false, "nothing further is buffered")
+      }
+      pipedKill(p)
+      match pipedReadLineWithin(p, 10000) {
+        case Ok(PipedEndOfStream) -> ()
+        case Ok(_) -> assertTrue(false, "killing the child ends the outstanding read with end of stream")
+        case Err(_) -> assertTrue(true, "the outstanding read may surface the closed stream as an error")
+      }
+      pipedWaitExit(p, 3000)
+      pipedClose(p)
+    }
+  }
+}
+
 func main(): Int {
   if isWindows() {
     // Every test below uses `sh -c "..."`, which is not present on a
@@ -213,6 +255,7 @@ func main(): Int {
   testNegativeTimeoutRejected()
   testPipedReadLineWithinTimesOut()
   testPipedReadLineWithinKeepsPartialLine()
+  testRepeatedTimeoutsShareOneReader()
   println("process_tests: ok")
   return 0
 }

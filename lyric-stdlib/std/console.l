@@ -161,6 +161,12 @@ pub func readStdin(r: in StdinReader): Result[Option[slice[Byte]], IOError] {
 /// that times out loses nothing: bytes that arrive after the deadline are
 /// returned, in order, by the next `readStdin`/`readStdinWithin`.
 ///
+/// The blocking read behind a timed-out call is deliberately not cancelled:
+/// cancelling it would drop bytes that arrive while it is being torn down.
+/// At most one such read is outstanding per reader, however many calls time
+/// out, and the next read on the reader joins it. It ends when input arrives
+/// or stdin closes.
+///
 /// # Errors
 /// - `IoError("stdin", message)`: host read failure.
 @stable(since = "1.2")

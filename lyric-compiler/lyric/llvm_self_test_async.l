@@ -474,6 +474,15 @@ test "async func main returning Int: exit code read from the completed task" {
   assertEqualInt(r.exitCode, 52, "async main's task result (21 + 31) becomes the process exit code")
 }
 
+test "aspect-woven async function returns the awaited value on native (#8287)" {
+  val src = "package T\n" + "async func later(v: in Int): Int {\n  v\n}\n" +
+    "aspect PassThrough {\n  matches: name in { w3 }\n  around(call) -> ret {\n    ret = proceed()\n  }\n}\n" +
+    "async func w3(): Int {\n  await later(8)\n}\n" +
+    "func main(): Int {\n  await w3()\n}\n"
+  val r = compileAndRunBundled(src)
+  assertEqualInt(r.exitCode, 8, "the woven async wrapper awaits the target in place")
+}
+
 // The Unit-returning variant takes synthCMain's other async arm (no
 // result read; exit 0 after the task completes).
 test "async func main returning Unit: process exits 0 after the task completes" {
@@ -487,8 +496,9 @@ test "async func main returning Unit: process exits 0 after the task completes" 
 // safety-net guard (#7170 ff.), on `--target native`.  `Lyric.Propagate`'s
 // implicit-`EAwait` rewrite and `F0045` are target-agnostic pipeline code
 // shared by every backend; native genuinely lowers `async func` to a real
-// LLVM coroutine (a suspend point), so it keeps `awaitInTryIsHazard = true`
-// the same as MSIL (`llvm_bridge.l`'s `MiddleEndOptions` construction).
+// LLVM coroutine, but native has no try/catch to suspend inside (D-N-003:
+// no unwinding; codegen rejects `try`, #7201), so `awaitInTryIsHazard = true`
+// only decides which diagnostic the program gets: F0045 at the `?`.
 // These two cases are the native counterpart of the manual verification
 // done for `--target dotnet`/`--target jvm` on this same PR: proving the
 // base fix genuinely works end-to-end here too, not just compiling.

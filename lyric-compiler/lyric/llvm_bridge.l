@@ -1131,10 +1131,12 @@ pub func compileToNativeWithFeatures(
   val noDeriveImports: List[Item] = newList()
   val noTemplates: Map[String, Weaver.CollectedTemplate] = newMap()
   val noSingleFileOrigins: List[DiagUtil.MergedLineOrigin] = newList()
-  // #7198: native's `async func` lowering is a real LLVM coroutine with a
-  // genuine suspend point (docs/01 §"native" section), so F0045's guard
-  // stays conservatively enabled here, same as MSIL, pending a dedicated
-  // audit of native's own try/catch protected-region model (#7201).
+  // #7198, audited in #7201: native has no protected region for a suspend
+  // to sit inside.  `try`/`catch`/`throw` are not lowered at all (D-N-003: a
+  // panic aborts, nothing unwinds), so codegen rejects them with N0007
+  // before an `await` could ever be placed in one.  `true` keeps F0045 in
+  // front of that, reporting the `?` shape at its own position, and means
+  // F0045 accepts and rejects the same programs on every target.
   val optsCheckedOut: List[SourceFile] = newList()
   val optsRecvOut: Map[String, String] = newMap()
   val optsCallArities: Map[String, Int] = newMap()
@@ -1708,8 +1710,8 @@ pub func compileProjectToNativeWithShape(
           // `?`-propagation (#6954): see the matching comment in
           // `compileToNativeWithFlags` — bundled Std.* packages need the
           // same desugar pass the own-project packages above already get.
-          // `awaitInTryIsHazard = true`: native, like MSIL, keeps F0045's
-          // guard enabled (#7198; see the `MiddleEndOptions` sites above).
+          // `awaitInTryIsHazard = true`: F0045 stays on for native (#7198,
+          // #7201; see the `MiddleEndOptions` sites above).
           // Stdlib contracts are always enabled (#7748).
           val stdChecked = match checkBundledStdlibPackage(pkg, f, stdlib) {
             case Some(lowered) -> lowered

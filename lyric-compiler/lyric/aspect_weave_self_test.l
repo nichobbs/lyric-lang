@@ -468,3 +468,44 @@ test "a woven function's inout parameter is written back to the caller (#8368)" 
   assertEqualInt(got, 30, "the woven call returns the target's value")
   assertEqualInt(v, 15, "the inout write reaches the caller through the wrapper")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #8287: an aspect-woven `async` function.  The wrapper is itself async, so
+// `proceed()` has to await the inner layer's Task in place; before the fix the
+// dotnet backend stored the Task reference into the `Int` out-variable.
+// ─────────────────────────────────────────────────────────────────────────────
+aspect AsyncPassThrough {
+  matches: name in { asyncWovenInt, asyncWovenString, asyncWovenUnit }
+  around(call) -> ret {
+    ret = call.proceed()
+  }
+}
+
+async func asyncLater(v: in Int): Int {
+  v
+}
+
+async func asyncWovenInt(): Int {
+  await asyncLater(8)
+}
+
+async func asyncWovenString(s: in String): String {
+  s + "!"
+}
+
+async func asyncWovenUnit(): Unit {
+  ()
+}
+
+test "aspect-woven async function returning a value type yields the awaited value (#8287)" {
+  assertEqualInt(await asyncWovenInt(), 8, "woven async Int")
+}
+
+test "aspect-woven async function returning a reference type yields the awaited value (#8287)" {
+  assertEqual(await asyncWovenString("hi"), "hi!", "woven async String")
+}
+
+test "aspect-woven async Unit function completes (#8287)" {
+  await asyncWovenUnit()
+  assertEqualInt(1, 1, "woven async Unit awaited")
+}
