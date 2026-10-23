@@ -1918,3 +1918,39 @@ func main(): Int {
   val r = compileAndRunNative(src)
   assertEqualInt(r.exitCode, 42, "two adds through the closure")
 }
+
+// #8256: the implicit `Std.Core` prelude does not capture a name the program
+// declares itself. The program's own `Option` (cases `Just`/`Nothing`) wins
+// over the bundled `Std.Core.Option`, and `Result` still comes from the prelude.
+test "Native: a user-defined Option shadows the implicit Std.Core prelude (ASan)" {
+  val src = r#"package T
+
+union Option[T] {
+  case Just(value: T)
+  case Nothing
+}
+
+func pick(flag: Bool): Option[Int] {
+  if flag { Just(value = 5) } else { Nothing }
+}
+
+func half(n: Int): Result[Int, String] {
+  if n % 2 == 0 { Ok(value = n / 2) } else { Err(error = "odd") }
+}
+
+func main(): Int {
+  var code = 0
+  match pick(true) {
+    case Just(v) -> { code = code + v }
+    case Nothing -> { code = code + 100 }
+  }
+  match half(8) {
+    case Ok(v) -> { code = code + v }
+    case Err(_) -> { code = code + 50 }
+  }
+  code
+}
+"#
+  val r = compileAndRunNative(src)
+  assertEqualInt(r.exitCode, 9, "5 from the user's Option plus 4 from the prelude's Result")
+}
