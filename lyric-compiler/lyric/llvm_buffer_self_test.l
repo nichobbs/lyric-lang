@@ -79,7 +79,7 @@ func compileAndRunWith(source: in String, sanitize: in Bool): RunOutcome {
   val exe = match linkNativeIr(llPath, stem, sanitize, newList()) { case Ok(p) -> p; case Err(e) -> panic(e) }
   val noArgs: List[String] = newList()
   match Process.runCapture(exe, noArgs, 60000) {
-    case Ok(res) -> RunOutcome(exitCode = res.exitCode, stdout = res.stdout, stderr = res.stderr)
+    case Ok(res) -> RunOutcome(exitCode = nativeExitStatus(res.exitCode), stdout = res.stdout, stderr = res.stderr)
     case Err(e) -> panic("binary could not be started: " + e)
   }
 }
@@ -119,7 +119,7 @@ func runLl(ll: in String): RunOutcome {
   val exe = match linkNativeIr(llPath, stem, true, newList()) { case Ok(p) -> p; case Err(e) -> panic(e) }
   val noArgs: List[String] = newList()
   match Process.runCapture(exe, noArgs, 60000) {
-    case Ok(res) -> RunOutcome(exitCode = res.exitCode, stdout = res.stdout, stderr = res.stderr)
+    case Ok(res) -> RunOutcome(exitCode = nativeExitStatus(res.exitCode), stdout = res.stdout, stderr = res.stderr)
     case Err(e) -> panic("binary could not be started: " + e)
   }
 }
@@ -153,7 +153,7 @@ func compileFullAndRunAsan(source: in String): RunOutcome {
   }
   val noArgs: List[String] = newList()
   match Process.runCapture(stem, noArgs, 60000) {
-    case Ok(res) -> RunOutcome(exitCode = res.exitCode, stdout = res.stdout, stderr = res.stderr)
+    case Ok(res) -> RunOutcome(exitCode = nativeExitStatus(res.exitCode), stdout = res.stdout, stderr = res.stderr)
     case Err(e) -> panic("binary could not be started: " + e)
   }
 }

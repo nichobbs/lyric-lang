@@ -25,15 +25,13 @@
 //! stdlib_jvm_kernels_self_test.l).
 //!
 //! Internal: only Std.Path should import this.
-@axiom("java.io.File.separatorChar and java.io.File.getParent conform to their documented JVM contracts")
+@axiom("java.io.File.separatorChar conforms to its documented JVM contract")
 @pure
 package Std.PathHost
 
 import Std.String as Str
 
 extern type JFile = "java.io.File"
-
-extern type JString = "java.lang.String"
 
 // Platform primary separator ('/' on POSIX, '\' on Windows).
 func separatorChar(): Char {
@@ -52,20 +50,6 @@ func isSep(c: in Char): Bool {
     return true
   }
   isWindows() and c == '\\'
-}
-
-// Lyric has no null literal; the only way to produce a null String? from
-// pure Lyric is an extern call that returns null.  java.io.File("x") has
-// no parent component, so getParent() is documented to return null.
-func nullString(): String? {
-  val f = JFile.new("x")
-  f.getParent()
-}
-
-// A non-null `String` as the nullable the host-path API returns: the host
-// call hands back the same string object, typed at the boundary.
-func someString(s: in String): String? {
-  JString.valueOf(s)
 }
 
 // Length of the path's root prefix, mirroring System.IO.Path.GetPathRoot:
@@ -169,17 +153,15 @@ pub func hostPathGetFileName(path: in String): String {
   path
 }
 
-/// Containing directory (System.IO.Path.GetDirectoryName semantics):
-/// null for "" and for root paths ("/", "C:\"); "" for a bare filename;
-/// otherwise the text before the last separator, with trailing separators
-/// trimmed down to the root ("/a//b" → "/a", "/a/b/" → "/a/b", "/a" → "/").
-pub func hostPathGetDirectoryName(path: in String): String? {
-  if path.length == 0 {
-    return nullString()
-  }
+/// Containing directory (System.IO.Path.GetDirectoryName semantics), with
+/// "" where .NET returns null: for "" and for root paths ("/", "C:\"), and
+/// for a bare filename; otherwise the text before the last separator, with
+/// trailing separators trimmed down to the root ("/a//b" → "/a",
+/// "/a/b/" → "/a/b", "/a" → "/").
+pub func hostPathGetDirectoryNameOrEmpty(path: in String): String {
   val root = rootLength(path)
   if path.length <= root {
-    return nullString()
+    return ""
   }
   var i = path.length - 1
   while i >= root and not isSep(Str.charAtOrReplacement(path, i)) {
@@ -187,13 +169,13 @@ pub func hostPathGetDirectoryName(path: in String): String? {
   }
   if i < root {
     // No separator past the root: "a" → ""; "/a" → "/"; "C:a" → "C:".
-    return someString(path.substring(0, root))
+    return path.substring(0, root)
   }
   var cut = i
   while cut > root and isSep(Str.charAtOrReplacement(path, cut - 1)) {
     cut = cut - 1
   }
-  someString(path.substring(0, cut))
+  path.substring(0, cut)
 }
 
 /// Whether the path is absolute under this platform's rules (POSIX: leading

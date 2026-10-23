@@ -13,6 +13,7 @@ package Std.Path.Tests
 import Std.Core
 import Std.Path
 import Std.Errors
+import Std.Environment
 import Std.Testing
 
 func rejected(r: in Result[String, IOError]): Bool {
@@ -53,6 +54,32 @@ test "extension: absent" {
 test "basename" {
   assertTrue(basename("/home/user/file.txt") == "file.txt", "basename with dirs")
   assertTrue(basename("file.txt") == "file.txt", "bare filename")
+  assertTrue(basename("") == "", "empty path")
+}
+
+test "dirname: paths with no directory give ." {
+  assertTrue(dirname("file.txt") == ".", "bare filename")
+  assertTrue(dirname("") == ".", "empty path")
+}
+
+// System.IO.Path's results on a POSIX host; Windows normalizes separators.
+test "dirname, basename, extension and join: POSIX separator handling" {
+  if isWindows() {
+    return
+  }
+  assertTrue(dirname("/home/user/file.txt") == "/home/user", "dirname with dirs")
+  assertTrue(dirname("/a") == "/", "a file under the root")
+  assertTrue(dirname("/") == ".", "the root has no directory")
+  assertTrue(dirname("/a/b/") == "/a/b", "a trailing separator is not trimmed first")
+  assertTrue(dirname("/a//b") == "/a", "repeated separators before the name are trimmed")
+  assertTrue(dirname("a/b") == "a", "relative path")
+  assertTrue(basename("/a/b/") == "", "a trailing separator leaves an empty name")
+  assertTrue(extension("file.") == "", "a trailing dot is no extension")
+  assertTrue(extension("/dir.d/file") == "", "a dot in a directory is no extension")
+  assertTrue(join("/a/", "b") == "/a/b", "no doubled separator")
+  assertTrue(join("/a", "b") == "/a/b", "the separator is added")
+  assertTrue(join("a", "b\\c") == "a/b\\c", "a backslash is an ordinary character")
+  assertTrue(not isAbsolute("C:\\x"), "a drive prefix is not a root")
 }
 
 test "isAbsolute" {

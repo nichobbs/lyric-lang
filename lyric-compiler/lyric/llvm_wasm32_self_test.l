@@ -69,7 +69,12 @@ func compileAndRunWasm(source: in String, progArgs: in List[String]): WasmRun {
     }
   }
   match Process.runCapture(wasmtime, args, 120000) {
-    case Ok(res) -> WasmRun(exitCode = res.exitCode, stdout = res.stdout, stderr = res.stderr, dir = dir)
+    case Ok(res) -> WasmRun(
+      exitCode = nativeExitStatus(res.exitCode),
+      stdout = res.stdout,
+      stderr = res.stderr,
+      dir = dir
+    )
     case Err(e) -> panic("wasmtime could not be started (set WASMTIME): " + e)
   }
 }

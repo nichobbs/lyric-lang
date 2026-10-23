@@ -62,7 +62,7 @@ record Model {
 }
 
 // ─── Entry point ──────────────────────────────────────────────────────────────
-pub func generate(req: in GeneratorRequest): GeneratorResponse {
+pub func generateSource(req: in GeneratorRequest): GeneratorResponse {
   val diags: List[GeneratorDiagnostic] = newList()
   val model = buildModel(req, diags)
   if diags.count > 0 {
@@ -588,6 +588,13 @@ func emitUrl(m: in Model): String {
   s + "  }\n}\n"
 }
 
-func main(): Int {
-  runGenerator(generate)
+// ── The plugin ──────────────────────────────────────────────────────────────
+@plugin(id = "lyric.ui.routes", version = "0.1.0", publisher = "lyric", implements(SourceGenerator))
+pub record UiRoutesPlugin {
+}
+
+impl SourceGenerator for UiRoutesPlugin {
+  func generate(req: in GeneratorRequest): Result[GeneratorResponse, GeneratorError] {
+    Ok(value = generateSource(req))
+  }
 }

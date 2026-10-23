@@ -60,6 +60,19 @@ test "declaresEntryMain: main with parameters is not an entry" {
   )
 }
 
+test "declaresEntryMain: a @plugin record is an entry (its main is generated)" {
+  assertTrue(
+    Release.declaresEntryMain(
+      "package P\n@plugin(id = \"a.b\", version = \"1.0.0\", implements(Pt))\npub record R {\n}\n"
+    ),
+    "@plugin record"
+  )
+  assertTrue(
+    not Release.declaresEntryMain("package P\n@plugin_point(version = \"1.0\")\npub interface Pt {\n}\n"),
+    "@plugin_point is not an entry"
+  )
+}
+
 test "declaresEntryMain: no main → false" {
   assertTrue(not Release.declaresEntryMain("func helper(): Int { 0 }\n"), "no main")
 }

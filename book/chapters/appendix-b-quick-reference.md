@@ -735,6 +735,12 @@ Y0006 unknown layer/preset, Y0007 mutable module-level state, Y0008 protected
 | `@delete` / `@get` / `@patch` / `@post` / `@put` | handler function | HTTP method annotation (lyric-web code-first) |
 | `@generate(Json\|Sql\|Proto)` | `exposed record`, `record`, `union`, `interface` | Invoke built-in source generator for the named target |
 | `@generate(Pkg.Name)` | `exposed record`, `record`, `union`, `interface` | Invoke custom source generator from package `Pkg` |
+| `@capability` / `@capability(grant = G)` | `pub interface` | A plugin capability (the plugin calls the host); a `requires:` naming `grant` is checked host-side (chapter 33) |
+| `@plugin_point(version = "M.m", contributions = K, allows(C, ...))` | `pub interface` | A plugin point (the host calls the plugin) |
+| `@protocol_point(protocol = "name/ver", ...)` | `pub interface` with no members | A point whose plugins speak an existing protocol (LSP and similar) |
+| `@plugin_handle` | `pub type H = Long` | `H` crosses a plugin boundary as a number |
+| `@plugin(id = "...", version = "...", publisher = "...", implements(P, ...))` | `pub record` | The plugin record; its `main` is generated |
+| `@plugin_contributions(P)` / `@plugin_request(C)` | function | Supplies a point's contributions / a capability's requested grant |
 | `@experimental` | `pub` item | May change without SemVer major bump |
 | `@io` | package | The package performs I/O (layer class, lang-ref §9.4) |
 | `@io` | function in a `@pure` package | The function performs I/O; packages that may not do I/O may not call it (Y0003) |
@@ -793,6 +799,7 @@ Y0006 unknown layer/preset, Y0007 mutable module-level state, Y0008 protected
 | `Std.JsonValue` | Strict RFC 8259 JSON value model, dotnet and JVM (native: #7856) | `JsonValue` (`JNull`, `JBool`, `JInt`, `JFloat`, `JString`, `JArray`, `JObject`), `JsonField`, `parseValue`, `parseValueWithDepthLimit`, `writeValue`, `writeValueIndented`, `getField`, `getString`, `getInt`, `asArray`, `JsonParseError` |
 | `Std.JsonRpc` | JSON-RPC 2.0 peer, dotnet and JVM (D204) | `RpcPeer`, `newPeer`, `newPeerWithTimeout`, `runLoop`, `call`, `callWithin`, `notify`, `RpcHandler`, `RpcTransport`, `RpcRequest`, `RpcResponse`, `RpcError`, `applicationError`, `isTimeoutError`, `isLocalError`, `parseError`, `invalidRequest`, `methodNotFound`, `invalidParams`, `internalError`, `requestTimedOut` |
 | `Std.JsonRpc.Stdio` | JSON-RPC stdio framings, dotnet and JVM (D204) | `newNdjsonTransport`, `newContentLengthTransport`, `NdjsonTransport`, `ContentLengthTransport`, `newNdjsonTransportOver`, `newContentLengthTransportOver` |
+| `Std.Plugin` | Plugin runtime: hosts on dotnet, the JVM and native, plugins on every target including wasm32-wasi (D207, chapter 33; `@experimental`) | `PluginHost`, `newPluginHost`, `PluginHostConfig`, `discoverPlugins`, `registerPlugin`, `pluginManifests`, `connectionsFor`, `contributionsFor`, `callPlugin`, `stopPlugin`, `stopAllPlugins`, `revokeCapability`, `openProtocolPlugin`, `GrantPolicy`, `GrantDecision`, `GrantedCapability`, `GrantAllRequested`, `CapabilityProvider`, `CapabilityInfo`, `PluginPointInfo`, `BoundaryError`, `CallError`, `boundaryErrorMessage`, `PluginManifest`, `PluginPayload`, `parsePluginManifest`, `readPluginManifest`, `PluginLoadIssue`, `pluginLoadIssueMessage`, `findWasmtime`, `PluginServer`, `runPlugin`, `callHost` |
 | `Std.Http` | HTTP client/server primitives | `get`, `post`, `HttpRequest`, `HttpResponse`, `statusCode`, `HttpClientBuilder`, `withHttpVersion`, `HttpVersion`, `negotiatedVersion`, `withCaCertificate`, `withExclusiveCaCertificate`, `withClientIdentity`, `withMinTlsVersion`, `withInsecureSkipVerify`, `tlsConfigSupported`, `resolveInsecureVerifyPolicy` |
 | `Std.Tls` | PEM certificate/private-key loading | `Certificate`, `Identity`, `TlsVersion`, `TlsServerConfig`, `Certificate.fromPemFile`/`fromPem`, `Identity.fromPemFiles`/`fromPem` |
 | `Std.HttpServer` | Low-level HTTP(S) server (`lyric-web` builds on this); on `--target dotnet` a pure-Lyric sans-IO engine over `System.Net.Sockets`/`SslStream` (the `HttpListener` server was retired, docs/61 §6). Over TLS it advertises `h2` then `http/1.1` via ALPN and serves **HTTP/2** end-to-end through `Std.HttpEngine.H2Conn` when the client offers it, falling back to HTTP/1.1 otherwise — same handlers, no code change (docs/61 §6.4). On `--target native` (N9.3, #6104) the same sans-IO engine runs thread-per-connection over real `pthread_create`d OS threads (native `spawn`/`scope` is not yet real concurrency); HTTP/1.1 only — a negotiated-`h2` TLS connection is closed rather than mis-parsed (N9.5 tracks native h2) — with no `startListener{,Tls}WithLimits`/backpressure cap yet | `startListener`, `startListenerTls` (real TLS + h2 on `--target dotnet`, real TLS on `--target jvm`, real TLS (no h2) on `--target native`; dotnet/native return `InvalidConfig` for a `requireClientCert`-without-`clientCa` mTLS misconfig, docs/61 §6.3), `startListenerWithLimits`/`startListenerTlsWithLimits` (dotnet only — raise the engine's request-size caps, e.g. the default 10 MiB body limit; the JVM server applies the same fixed 10 MiB cap, answering `413`), `nextContext`, `respondText`/`respondJson`/`respondBytesWithHeaders`, `takeConnection` (dotnet and native only: hand an HTTP/1.1 connection to another protocol after an `Upgrade` request, as `Web.addWebSocket` does; the JDK server exposes no raw connection, so on `--target jvm` a WebSocket upgrade goes through Undertow in `lyric-ws` instead), `beginChunkedResponse`/`streamWriteChunk`/`endChunkedResponse` (every target); dotnet/native handshake off the accept loop with `LYRIC_HTTPS_HANDSHAKE_TIMEOUT_MS` / `LYRIC_HTTP_IDLE_TIMEOUT_MS` timeouts (`resolveTlsHandshakeTimeoutMs`/`resolveConnectionIdleTimeoutMs`) |
@@ -1282,6 +1289,14 @@ lyric clean <dir>                      # clean a specific directory
 lyric bindgen sdl.h --package Sdl.Kernel --allow sdl.allow --library SDL3 -o sdl_kernel.l
 lyric bindgen sdl.h --package Sdl.Kernel --allow sdl.allow -o sdl_kernel.l --check   # CI: fail if out of date
 
+# Plugins (chapter 33, D207)
+lyric plugin pack                      # build the plugin project for dotnet; write bin/plugin/<id>-<version>/
+lyric plugin pack --manifest <lyric.toml> --targets dotnet,jvm,native,wasm -o <dir>
+                                       # one payload per target; every payload's manifest must agree
+lyric plugin check <dir>               # validate a plugin artifact directory (exit 1 on any problem)
+lyric plugin sdk --api <dir|file.l|lyric.toml> --lang csharp|java|typescript -o <dir>
+                                       # generate a plugin SDK for an API package in another language
+
 # Package management
 lyric restore                          # download all dependencies declared in lyric.toml
                                        # ([maven] entries of workspace/path deps included, transitively)
@@ -1627,12 +1642,12 @@ annotations in a file are reported together.
 |---|---|
 | `X0001` | `@generate(Pkg.Name)` on something that is not a record, exposed record, opaque type, union, enum or interface. |
 | `X0002` | The named dependency's manifest does not declare `kind = "source-generator"`. |
-| `X0003` | The generator declares no `generate` entry point, or no `main` that calls `runGenerator(generate)`. |
+| `X0003` | The generator package declares no `@plugin` record implementing `Lyric.GeneratorSdk.SourceGenerator`. |
 | `X0004` | The generator returned code that does not parse; the message gives the line within the generated code. |
 | `X0005` | The generator reported a diagnostic, shown with its own code. An `Error` fails the build; a `Warning` or `Info` is printed as `warning[X0005]` or `note[X0005]`. |
 | `X0006` | A source-generator package is imported; it can only be used through `@generate`. |
 | `X0008` | The generator is not declared in `[dependencies]`. |
-| `X0009` | The generator could not be built or run: its build failed, it exited non-zero, wrote no or malformed JSON, ran longer than 60 seconds, or is a registry or git dependency (only `path` and `workspace = true` generators are supported). |
+| `X0009` | The generator could not be built or run: its build failed, its manifest probe failed or does not implement `SourceGenerator`, the call failed at the plugin boundary (a crash, malformed reply, or longer than 60 seconds), it refused the request with a `GeneratorError`, or it is a registry or git dependency (only `path` and `workspace = true` generators are supported). |
 
 The first-party UI generators (D151) report their own codes under `X0005`:
 
@@ -1650,6 +1665,28 @@ The first-party UI generators (D151) report their own codes under `X0005`:
 | `RT004` | A field type a path segment cannot hold; name the segment's type, as in `{id:Long}`. |
 | `RT005` | Two cases with the same path shape. |
 | `RT006` | A generic union. |
+
+### Plugins (K-series)
+
+Reported by `Lyric.PluginExpand` (docs/01 §15, D207).
+
+| Code | Meaning |
+|---|---|
+| `K0000` | Internal error: the plugin pass generated code that does not parse (please report it). |
+| `K0001` | A point, capability, grant, contributions or handle type mentions a type that cannot cross a plugin boundary, or a method has an `out`/`inout` parameter. |
+| `K0002` | `allows(...)` names an interface that is not a `@capability`. |
+| `K0003` | A plugin requests a capability that none of its points allows. |
+| `K0004` | A point or capability method does not return `Result[T, E]`, is generic, or the interface declares an associated type. |
+| `K0005` | A plugin annotation on the wrong item (`@plugin_point`/`@capability`/`@protocol_point` not on a `pub interface`, `@plugin_handle` not on `pub type H = Long`, `@plugin` not on a non-generic `pub record`). |
+| `K0006` | A malformed plugin annotation: a missing or badly formed `version` or `id`, an empty `protocol`, an unknown or misshapen argument, or a repeated annotation. |
+| `K0007` | A capability guard (`requires:` naming `grant`) uses something other than `grant`, the method's parameters and function calls, or the capability has no grant type. |
+| `K0008` | `implements(...)` names no plugin point, a listed point has no `impl`, or the record implements a point it does not list. |
+| `K0009` | A missing, duplicated or wrongly typed `@plugin_contributions` / `@plugin_request` function. |
+| `K0010` | A plugin record field without a default that is not a capability client. |
+| `K0011` | A `@protocol_point` interface with members. |
+| `K0012` | A package with a `@plugin` record declares `main`, or declares two `@plugin` records. |
+
+At load time a `PluginLoadIssue` carries `K0102` (a grant wider than the request) or `K0103` (a point major-version mismatch); `<p>ContributionIssues(host)` reports `K0101` (contributions that do not decode).
 
 ### Stability (S-series)
 

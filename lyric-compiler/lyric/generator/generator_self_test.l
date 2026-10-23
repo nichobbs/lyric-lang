@@ -10,6 +10,9 @@ package Lyric.GeneratorSelfTest
 import Std.Core
 import Std.Collections
 import Std.Testing
+import Std.JsonValue as Jv
+import Std.String as Str
+import Std.Errors
 import Lyric.Manifest
 import Lyric.Generator
 
@@ -179,12 +182,12 @@ test "generator imports: anything else is rejected" {
 
 test "generator response with a smuggled statement in additionalImports is Err" {
   val json = "{\"lyricSource\":\"\",\"additionalImports\":[\"pub func backdoor(): Unit {}\"],\"diagnostics\":[]}"
-  match parseResponseJson(json, "", 0, false) {
+  match parseResponseJson(json) {
     case Ok(_) -> assertTrue(false, "a non-import entry must fail the response")
     case Err(e) -> assertTrue(e.contains("not a single import statement"), "message names the problem")
   }
   val ok = "{\"lyricSource\":\"\",\"additionalImports\":[\"import Std.Json\"],\"diagnostics\":[]}"
-  match parseResponseJson(ok, "", 0, false) {
+  match parseResponseJson(ok) {
     case Ok(_) -> ()
     case Err(e) -> assertTrue(false, "a valid import must be accepted: " + e)
   }
@@ -256,7 +259,7 @@ test "a generator response reports every diagnostic with its severity and code" 
   val json = "{\"lyricSource\":\"pub func f(): Int { 1 }\\n\",\"additionalImports\":[],\"diagnostics\":[" +
     "{\"severity\":\"Warning\",\"message\":\"careful\",\"code\":\"AD1\"}," +
     "{\"severity\":\"Error\",\"message\":\"broken\",\"code\":null}]}"
-  match parseResponseJson(json, "", 0, false) {
+  match parseResponseJson(json) {
     case Err(e) -> assertTrue(false, "a well-formed response decodes: " + e)
     case Ok(r) -> {
       assertEqual(r.lyricSource, "pub func f(): Int { 1 }\n", "the generated source")
@@ -270,22 +273,45 @@ test "a generator response reports every diagnostic with its severity and code" 
 }
 
 test "a generator response that is not usable says why" {
-  match parseResponseJson("", "boom", 3, false) {
-    case Ok(_) -> assertTrue(false, "no output is an error")
-    case Err(e) -> assertTrue(e.contains("exited with code 3") and e.contains("boom"), "exit code and stderr: " + e)
-  }
-  match parseResponseJson("{not json", "", 0, false) {
+  match parseResponseJson("{not json") {
     case Ok(_) -> assertTrue(false, "invalid JSON is an error")
     case Err(e) -> assertTrue(e.contains("not valid JSON"), "invalid JSON: " + e)
   }
-  match parseResponseJson("{\"diagnostics\":[]}", "", 0, false) {
+  match parseResponseJson("{\"diagnostics\":[]}") {
     case Ok(_) -> assertTrue(false, "a response without lyricSource is an error")
     case Err(e) -> assertTrue(e.contains("lyricSource"), "names the missing field: " + e)
   }
-  match parseResponseJson("", "", 0, true) {
-    case Ok(_) -> assertTrue(false, "a timeout is an error")
-    case Err(e) -> assertTrue(e.contains("did not finish"), "timeout: " + e)
+}
+
+test "a generate reply is {ok} or {err}" {
+  val okReply = Jv.parseValue("{\"ok\":{\"lyricSource\":\"\",\"additionalImports\":[],\"diagnostics\":[]}}")
+  match okReply {
+    case Ok(v) -> match parseGenerateReply(v) {
+      case Ok(r) -> assertEqual(r.lyricSource, "", "the ok response decodes")
+      case Err(e) -> assertTrue(false, "an ok reply decodes: " + e)
+    }
+    case Err(_) -> assertTrue(false, "fixture JSON parses")
   }
+  match Jv.parseValue("{\"err\":{\"message\":\"no such type\"}}") {
+    case Ok(v) -> match parseGenerateReply(v) {
+      case Ok(_) -> assertTrue(false, "an err reply is an error")
+      case Err(e) -> assertTrue(e.contains("no such type"), "the generator's message: " + e)
+    }
+    case Err(_) -> assertTrue(false, "fixture JSON parses")
+  }
+}
+
+test "project paths stay under the granted roots" {
+  val roots: List[String] = newList()
+  roots.add("schemas")
+  assertTrue(projectPathWithin("schemas/a.proto", roots), "under a root")
+  assertFalse(projectPathWithin("src/a.l", roots), "outside every root")
+  assertFalse(projectPathWithin("schemas/../secret", roots), "a .. segment")
+  assertFalse(projectPathWithin("/etc/passwd", roots), "absolute")
+  val whole: List[String] = newList()
+  whole.add(".")
+  assertTrue(projectPathWithin("src/a.l", whole), "the whole project")
+  assertFalse(projectPathWithin("../x", whole), "but not above it")
 }
 
 test "scan directives keeps an annotation on a non-type, with its position" {
@@ -338,7 +364,7 @@ test "an opaque type's descriptor carries field annotations, defaults and invari
     "T? is an option: " + d
   )
   assertTrue(d.contains("\"isPublic\":false"), "an opaque field is not public")
-  assertTrue(d.contains("\"default\":\"None\""), "field default")
+  assertTrue(d.contains("\"defaultSource\":\"None\""), "field default")
   assertTrue(
     d.contains("{\"source\":\"id > 0\",\"message\":\"Id must be positive\",\"line\":7,\"column\":3}"),
     "invariant: " + d
@@ -359,13 +385,13 @@ test "the request carries the same-file enum and range declarations the type nam
   val d = dirs[0].declarationsJson
   assertTrue(
     d.contains(
-      "{\"name\":\"Tier\",\"kind\":\"Enum\",\"underlying\":null,\"range\":null,\"cases\":[{\"name\":\"Standard\",\"annotations\":[],\"fields\":[]},{\"name\":\"Key\",\"annotations\":[{\"name\":\"label\",\"args\":[\"\\\"Key account\\\"\"]}],\"fields\":[]}]}"
+      "{\"name\":\"Tier\",\"kind\":\"DeclaredEnum\",\"underlying\":null,\"range\":null,\"cases\":[{\"name\":\"Standard\",\"annotations\":[],\"fields\":[]},{\"name\":\"Key\",\"annotations\":[{\"name\":\"label\",\"args\":[\"\\\"Key account\\\"\"]}],\"fields\":[]}]}"
     ),
     "the enum and its case annotations: " + d
   )
   assertTrue(
     d.contains(
-      "{\"name\":\"Limit\",\"kind\":\"Distinct\",\"underlying\":\"Long\",\"range\":{\"min\":\"0\",\"max\":\"1_000\",\"maxInclusive\":true},\"cases\":[]}"
+      "{\"name\":\"Limit\",\"kind\":\"DeclaredDistinct\",\"underlying\":\"Long\",\"range\":{\"min\":\"0\",\"max\":\"1_000\",\"maxInclusive\":true},\"cases\":[]}"
     ),
     "a closed range: " + d
   )
@@ -397,4 +423,17 @@ test "a generic field type's source text includes its closing bracket" {
     "Option: " + d
   )
   assertTrue(d.contains("\"name\":\"Map[String, List[Int]]\""), "nested generic: " + d)
+}
+
+test "a failed project read names the failure, not the host path" {
+  val missing = projectReadError("schemas/a.json", FileNotFound(path = "/home/u/proj/schemas/a.json"))
+  assertEqual(missing, "'schemas/a.json' does not exist", "not found")
+  val denied = projectReadError("schemas/a.json", PermissionDenied(path = "/home/u/proj/schemas/a.json"))
+  assertEqual(denied, "'schemas/a.json' cannot be read (permission denied)", "permission denied")
+  val other = projectReadError(
+    "schemas/a.json",
+    IoError(path = "/home/u/proj/schemas/a.json", message = "disk on fire")
+  )
+  assertEqual(other, "'schemas/a.json' cannot be read", "other failures")
+  assertFalse(Str.contains(missing + denied + other, "/home/u"), "no host path")
 }

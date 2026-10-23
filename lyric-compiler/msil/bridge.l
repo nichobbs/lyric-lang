@@ -28,6 +28,7 @@ import Lyric.AnnotationMetaEmit as AnnotationMeta
 import Std.Encoding as Encoding
 import Lyric.Weaver as Weaver
 import Lyric.WireExpand as WireExpand
+import Lyric.PluginExpand as PluginExpand
 import Lyric.AliasRewriter as Aliases
 import Lyric.Pipeline
 import Msil.Lowering
@@ -233,7 +234,9 @@ pub func compileToMsilWithVersion(
     weWires,
     weConfigs
   )
-  val file0pre = match pipeExpandAndRewrite(cfgFile, weWires, weConfigs, true, true, false, path, noOrigins) {
+  val plugins: Map[String, PluginExpand.PluginPackage] = newMap()
+  PluginExpand.collectPluginPackage(cfgFile, plugins)
+  val file0pre = match pipeExpandAndRewrite(cfgFile, weWires, weConfigs, plugins, true, true, false, path, noOrigins) {
     case Some(f) -> f
     case None -> return false
   }
@@ -1347,7 +1350,9 @@ pub func checkSourceTypesForFeatures(
     weWires,
     weConfigs
   )
-  val rewritten = match frontEndExpand(true, cfgFile, weWires, weConfigs, path, noOrigins, located) {
+  val plugins: Map[String, PluginExpand.PluginPackage] = newMap()
+  PluginExpand.collectPluginPackage(cfgFile, plugins)
+  val rewritten = match frontEndExpand(true, cfgFile, weWires, weConfigs, plugins, path, noOrigins, located) {
     case Some(f) -> f
     case None -> return located
   }
@@ -1551,10 +1556,13 @@ func projectFrontEnd(
   // taken from the rewritten copies.
   val weWires: Map[String, WireExpand.CollectedWireTemplate] = newMap()
   val weConfigs: Map[String, WireExpand.CollectedConfigTemplate] = newMap()
+  // D207: every source package, for cross-package plugin references.
+  val plugins: Map[String, PluginExpand.PluginPackage] = newMap()
   var wti = 0
   while wti < parsedPkgs.count {
     val wpp: ParsedUserPkg = parsedPkgs[wti]
     WireExpand.collectWireTemplates(Aliases.rewriteFile(wpp.file).items, wpp.name, weWires, weConfigs)
+    PluginExpand.collectPluginPackage(wpp.file, plugins)
     wti = wti + 1
   }
   var wtd = 0
@@ -1562,12 +1570,13 @@ func projectFrontEnd(
     val wdtPkg = depTemplatePkgs[wtd]
     val wdtParseRes = parse(wdtPkg.source)
     WireExpand.collectWireTemplates(Aliases.rewriteFile(wdtParseRes.file).items, wdtPkg.name, weWires, weConfigs)
+    PluginExpand.collectPluginPackage(wdtParseRes.file, plugins)
     wtd = wtd + 1
   }
   var wei = 0
   while wei < parsedPkgs.count {
     val wep: ParsedUserPkg = parsedPkgs[wei]
-    val rewritten0 = match frontEndExpand(collect, wep.file, weWires, weConfigs, wep.label, wep.origins, located) {
+    val rewritten0 = match frontEndExpand(collect, wep.file, weWires, weConfigs, plugins, wep.label, wep.origins, located) {
       case Some(f) -> f
       case None -> return None
     }
@@ -1660,14 +1669,15 @@ func frontEndExpand(
   file: in SourceFile,
   weWires: in Map[String, WireExpand.CollectedWireTemplate],
   weConfigs: in Map[String, WireExpand.CollectedConfigTemplate],
+  plugins: in Map[String, PluginExpand.PluginPackage],
   label: in String,
   origins: in List[DiagUtil.MergedLineOrigin],
   located: in List[DiagUtil.LocatedDiagnostic],
 ): Option[SourceFile] {
   if not collect {
-    return pipeExpandAndRewrite(file, weWires, weConfigs, true, true, false, label, origins)
+    return pipeExpandAndRewrite(file, weWires, weConfigs, plugins, true, true, false, label, origins)
   }
-  val r = pipeExpandAndRewriteCollect(file, weWires, weConfigs, true, true, false)
+  val r = pipeExpandAndRewriteCollect(file, weWires, weConfigs, plugins, true, true, false)
   if DiagUtil.diagLocateAll(label, origins, r.diagnostics, located) {
     return None
   }

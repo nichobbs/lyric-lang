@@ -6476,13 +6476,13 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash scripts/ci/ui-jvm-suites.sh
 
-      # A custom source generator built from source and run while compiling
-      # its consumer, on dotnet and JVM (#7834, D150).
-      - name: Source generator end to end (#7834)
+      # Plugins on dotnet and JVM (docs/69, D207): the source generator
+      # example, Std.Plugin, generated plugins and `lyric plugin`.
+      - name: Plugins and source generators end to end
         if: ${{ !cancelled() }}
         background: true
         working-directory: ${{ github.workspace }}
-        run: bash scripts/ci/source-generator-e2e.sh
+        run: bash scripts/ci/plugin-suites.sh
 
       # lyric-ws Undertow smoke on JVM (#7243): the Origin policy (403 for a
       # cross-origin handshake, 101 for same-origin / no Origin / a listed

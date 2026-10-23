@@ -44,6 +44,7 @@ import Lyric.Cfg as Cfg
 import Lyric.AliasRewriter as Aliases
 import Lyric.Weaver as Weaver
 import Lyric.WireExpand as WireExpand
+import Lyric.PluginExpand as PluginExpand
 import Lyric.Mono
 import Lyric.Derives
 import Lyric.Pipeline
@@ -517,6 +518,19 @@ func bundleWindowsAsanDll(exePath: in String, triple: in String): Bool {
 /// `/tmp` (the same chain the self-tests use).
 pub func nativeTempBase(): String {
   Environment.getVarOrDefault("TMPDIR", Environment.getVarOrDefault("TEMP", Environment.getVarOrDefault("TMP", "/tmp")))
+}
+
+/// A test program's exit status as a POSIX host reports it: the low byte of
+/// what `main` returned.  Windows passes the full 32-bit value through, so the
+/// native self-tests compare this to keep one expected value on every host.  A
+/// negative Windows code (an NTSTATUS failure such as an access violation) is
+/// returned unchanged, so a crash never reads as a small status.
+pub func nativeExitStatus(code: in Int): Int {
+  if code < 0 {
+    code
+  } else {
+    code % 256
+  }
 }
 
 /// A scratch directory `name` under `nativeTempBase()`, created when
@@ -1279,7 +1293,9 @@ pub func compileToNativeWithFeatures(
     noWires,
     noConfigs
   )
-  val userFile0 = match pipeExpandAndRewrite(shimFile, noWires, noConfigs, true, false, false, path, noOrigins) {
+  val plugins: Map[String, PluginExpand.PluginPackage] = newMap()
+  PluginExpand.collectPluginPackage(shimFile, plugins)
+  val userFile0 = match pipeExpandAndRewrite(shimFile, noWires, noConfigs, plugins, true, false, false, path, noOrigins) {
     case Some(f) -> hoistModuleValInits(resolveTypeAliasesNative(f))
     case None -> return false
   }
@@ -1721,8 +1737,11 @@ pub func compileProjectToNativeWithShape(
   // alias-rewritten copies as on the managed targets.
   val noWires: Map[String, WireExpand.CollectedWireTemplate] = newMap()
   val noConfigs: Map[String, WireExpand.CollectedConfigTemplate] = newMap()
+  // D207: every source package, for cross-package plugin references.
+  val plugins: Map[String, PluginExpand.PluginPackage] = newMap()
   var wti = 0
   while wti < cfgFiles.count {
+    PluginExpand.collectPluginPackage(cfgFiles[wti], plugins)
     WireExpand.collectWireTemplates(
       Aliases.rewriteFile(cfgFiles[wti]).items,
       dottedPath(cfgFiles[wti].packageDecl.path),
@@ -1738,7 +1757,7 @@ pub func compileProjectToNativeWithShape(
     // for this package's wire/config-template and impl-default-inheritance
     // diagnostics (`packages`/`originsByPkg` are 1:1 by index with
     // `cfgFiles` — no filtering happens between the two loops).
-    val f0 = match pipeExpandAndRewrite(cfgFiles[owi], noWires, noConfigs, true, false, false, nativePkgLabelAt(packages, owi), nativePkgOriginsAt(originsByPkg, owi)) {
+    val f0 = match pipeExpandAndRewrite(cfgFiles[owi], noWires, noConfigs, plugins, true, false, false, nativePkgLabelAt(packages, owi), nativePkgOriginsAt(originsByPkg, owi)) {
       case Some(f) -> f
       case None -> return false
     }
@@ -2201,7 +2220,7 @@ func walkReachableFns(
             reachable.add(target, true)
             fnWorklist.add(target)
           }
-          noteConstructedImplType(raw, curPkg, implTypes, bodyIndex, pkgOfId, reachable, fnWorklist)
+          noteConstructedImplType(raw, curPkg, implTypes, bodyIndex, pkgOfId, reachable, fnWorklist, pkgImports)
           // `raw` may ALSO be a bare UFCS trailing-segment key
           // (`collectCallKeys`'s "cfg.identity.rawHandle()" fallback):
           // resolve it through the multi-valued `bareTrailing` map
@@ -3007,6 +3026,15 @@ func indexBundledImpls(f: in SourceFile, idx: in Map[String, BundledImpl]): Unit
 
 /// A call key names a bundled record with impls: mark its impl reachable and
 /// seed the impl's methods so the walk follows their callees.
+///
+/// The record is named as the caller wrote it: unqualified in its own
+/// package, fully qualified (`Std.Plugin.GrantAllRequested()`), or, from
+/// another package, unqualified or through an import alias
+/// (`GrantAllRequested()`, `P.GrantAllRequested()`).  The last two resolve
+/// against the caller's direct imports, as the type checker resolved them;
+/// aliases are not recorded here, so a qualified name also tries its last
+/// segment in every directly imported package (over-inclusion only lowers
+/// an impl no value reaches).
 func noteConstructedImplType(
   callKey: in String,
   curPkg: in String,
@@ -3015,17 +3043,48 @@ func noteConstructedImplType(
   pkgOfId: in Map[String, String],
   reachable: in Map[String, Bool],
   fnWorklist: in List[String],
+  pkgImports: in Map[String, List[String]],
 ): Unit {
   // A call key is `<callee path>/<argument count>`.
   val slash = Str.indexOfRaw(callKey, "/")
   val key = if slash > 0 { Str.substring(callKey, 0, slash) } else { callKey }
-  var implKey = ""
   if curPkg.length > 0 and implTypes.containsKey(curPkg + "." + key) {
-    implKey = curPkg + "." + key
-  } else if implTypes.containsKey(key) {
-    implKey = key
+    markBundledImpl(curPkg + "." + key, implTypes, bodyIndex, pkgOfId, reachable, fnWorklist)
+    return
   }
-  if implKey.length == 0 or reachable.containsKey("impl:" + implKey) {
+  if implTypes.containsKey(key) {
+    markBundledImpl(key, implTypes, bodyIndex, pkgOfId, reachable, fnWorklist)
+    return
+  }
+  val segs = Str.split(key, ".")
+  val bare = segs[segs.count - 1]
+  if bare.length == 0 {
+    return
+  }
+  match mapGet(pkgImports, curPkg) {
+    case Some(direct) -> {
+      for dp in direct {
+        if implTypes.containsKey(dp + "." + bare) {
+          markBundledImpl(dp + "." + bare, implTypes, bodyIndex, pkgOfId, reachable, fnWorklist)
+        }
+      }
+    }
+    case None -> {
+    }
+  }
+}
+
+/// Mark bundled impl `implKey` (`<pkg>.<Record>`) reachable, once, and seed
+/// its methods.
+func markBundledImpl(
+  implKey: in String,
+  implTypes: in Map[String, BundledImpl],
+  bodyIndex: in Map[String, FunctionDecl],
+  pkgOfId: in Map[String, String],
+  reachable: in Map[String, Bool],
+  fnWorklist: in List[String],
+): Unit {
+  if reachable.containsKey("impl:" + implKey) {
     return
   }
   reachable.add("impl:" + implKey, true)

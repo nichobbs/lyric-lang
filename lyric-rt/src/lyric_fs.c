@@ -475,6 +475,28 @@ int32_t lyric_env_is_windows(void) {
 #endif
 }
 
+int32_t lyric_env_os_kind(void) {
+#if defined(__linux__)
+    return 1;
+#elif defined(__APPLE__)
+    return 2;
+#elif defined(_WIN32)
+    return 3;
+#else
+    return 0;
+#endif
+}
+
+int32_t lyric_env_arch_kind(void) {
+#if defined(__x86_64__) || defined(_M_X64)
+    return 1;
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    return 2;
+#else
+    return 0;
+#endif
+}
+
 LyricString* lyric_env_cwd(void) {
     size_t cap = 256;
     char* buf = (char*)malloc(cap);

@@ -524,7 +524,7 @@ exposed record TransferRequest @generate(Json) {
 
 `exposed` types are flat, host-visible, and may be inspected by reflection. They compile to plain .NET `record class` types. They cannot have invariants beyond what the type system enforces structurally (no `invariant:` clause). They are intended for wire-level shapes — DTOs, log payloads, config records.
 
-`@generate(Json)`, `@generate(Sql)`, `@generate(Proto)` invoke built-in source generators that emit serializers at compile time — `@generate(Json)` synthesises `toJson(self): String`, `fromJson(json: String): Result[TypeName, String]`, and `fromJsonElement(elem: JsonElement): Result[TypeName, String]`. `fromJson` parses its argument once and decodes through `fromJsonElement`; nested `@generate(Json)` records and slice elements are decoded from their child elements, so one `fromJson` call parses the body exactly once. A hand-written `fromJson` or `fromJsonElement` replaces the synthesised one, and a hand-written `fromJson` alone gets a synthesised `fromJsonElement` that forwards to it. No runtime serialization library is needed. Third-party generators are invoked with dotted names (`@generate(Pkg.Name)`): the generator is a `path = "..."` or `{ workspace = true }` dependency whose manifest declares `kind = "source-generator"`, which the compiler builds for dotnet and runs (`dotnet exec`) over each annotated type while compiling, on every target; it is never linked or imported. Its diagnostics are the X-series (X0001–X0009, appendix B); see `docs/40-source-generators.md`, D075 and D150. The request a generator receives (schema 2, D151) describes the annotated type's fields, cases, annotations (with each argument's source text), invariants (as source text, with their `@message`) and the same-file enum, distinct and alias declarations it names. A generator's own imports are appended to the `package` line, so the file's own line numbers are unchanged.
+`@generate(Json)`, `@generate(Sql)`, `@generate(Proto)` invoke built-in source generators that emit serializers at compile time — `@generate(Json)` synthesises `toJson(self): String`, `fromJson(json: String): Result[TypeName, String]`, and `fromJsonElement(elem: JsonElement): Result[TypeName, String]`. `fromJson` parses its argument once and decodes through `fromJsonElement`; nested `@generate(Json)` records and slice elements are decoded from their child elements, so one `fromJson` call parses the body exactly once. A hand-written `fromJson` or `fromJsonElement` replaces the synthesised one, and a hand-written `fromJson` alone gets a synthesised `fromJsonElement` that forwards to it. No runtime serialization library is needed. Third-party generators are invoked with dotted names (`@generate(Pkg.Name)`): the generator is a `path = "..."` or `{ workspace = true }` dependency whose manifest declares `kind = "source-generator"`, which the compiler builds for dotnet and runs (`dotnet exec`) over each annotated type while compiling, on every target; it is never linked or imported. A generator is a plugin implementing the `Lyric.GeneratorSdk.SourceGenerator` point, with the compiler as its host (§15.9, D207). Its diagnostics are the X-series (X0001–X0009, appendix B); see `docs/40-source-generators.md`, D075 and D150. The request a generator receives (D151) describes the annotated type's fields, cases, annotations (with each argument's source text), invariants (as source text, with their `@message`) and the same-file enum, distinct and alias declarations it names. A generator's own imports are appended to the `package` line, so the file's own line numbers are unchanged.
 
 An `opaque` type cannot have an `exposed` field. An `exposed` type may hold an opaque field, but only as an opaque handle — the inner representation remains hidden.
 
@@ -3280,6 +3280,10 @@ Mapping: `int`/`unsigned int`/enums to `Int`, `long long` and `size_t` to `Long`
 
 **Exit codes:** 0 = generated (or up to date); 1 = bad arguments, clang failure, or an error in the allow-list or selection.
 
+### 13.11b Plugins
+
+`lyric plugin pack`, `lyric plugin check` and `lyric plugin sdk` build, validate and generate SDKs for plugins; see §15.8.
+
 ### 13.12 Package manager
 
 `lyric.toml` is the project manifest. Dependencies use SemVer 2.0.0. Registry: NuGet piggyback (D-progress-030); see `docs/21-nuget-linking.md`.
@@ -3462,6 +3466,417 @@ range of `Int`, `Long`, `Float` or `Double` (`port: Int range 1 ..= 65535 =
 range. A module-scope block's env value outside the range, including `NaN`,
 stops startup with exit code 78 (`G0004`) on dotnet and the JVM
 (`docs/25-config-blocks.md` §3, D-progress-995, #7229).
+
+---
+
+## 15. Plugins
+
+A plugin is separately built code that an application loads at run time
+without reflection (docs/69, D204, D207). The application declares typed
+**plugin points** (the host calls the plugin) and **capabilities** (the plugin
+calls the host); a plugin is a record that implements points and holds clients
+for the capabilities it needs. The compiler pass `Lyric.PluginExpand` turns
+the declarations into ordinary Lyric (codecs, clients, servers, the plugin's
+`main`) before type checking, on every target, so no backend knows about
+plugins. A plugin runs in its own process and talks to the host over JSON-RPC
+on its stdin and stdout; the runtime on both sides is `Std.Plugin`.
+
+There are no plugin keywords: every declaration is an existing item with an
+annotation.
+
+### 15.1 Declarations
+
+An **API package** declares the points, capabilities and the boundary types
+they carry. Host and plugin both depend on it.
+
+```lyric
+pub exposed record StoreGrant {
+  prefixes: List[String]
+}
+
+@capability(grant = StoreGrant)
+pub interface Store {
+  func load(title: in String): Result[Note, String]
+    requires: grantAllows(grant.prefixes, title)
+}
+
+@capability
+pub interface Log {
+  func log(level: in Level, line: in String): Result[Unit, String]
+}
+
+pub record NotesContributions {
+  commands: List[String]
+}
+
+@plugin_point(version = "1.0", contributions = NotesContributions, allows(Store, Log))
+pub interface NoteTool {
+  func summarize(note: in Note): Result[String, Level]
+  func fetch(title: in String): Result[Change, String]
+}
+```
+
+| Annotation | On | Arguments |
+|---|---|---|
+| `@capability` | `pub interface C` | `grant = G` (optional): the record the host grants, describing how much of the capability the plugin may use |
+| `@plugin_point` | `pub interface P` | `version = "major.minor"` (required), `contributions = K` (optional): static data each plugin declares for the point, `allows(C, ...)`: the capabilities a plugin of this point may request |
+| `@protocol_point` | `pub interface L {}` (no members) | `protocol = "<name>/<version>"` (required), `version = "major.minor"` (default `"1.0"`), `contributions`, `allows` |
+| `@plugin_handle` | `pub type H = Long` | none: `H` crosses the boundary as a number, an opaque reference into the host |
+| `@plugin` | `pub record R` | `id = "<publisher>.<name>"`, `version = "major.minor.patch"` with an optional `-` or `+` suffix, `publisher = "..."`, `implements(P, ...)` |
+| `@plugin_contributions(P)` | a function with no parameters | returns `P`'s contributions type |
+| `@plugin_request(C)` | a function with no parameters | returns `C`'s grant type: the grant the plugin asks for |
+
+`contributions =` and `grant =` take a bare type name.
+
+**Methods.** Every point and capability method returns `Result[T, E]`, takes
+only `in` parameters and is not generic (`K0004`). It may be `async` or not;
+the wire is asynchronous either way.
+
+**Grant guards.** A capability method's `requires:` clause that names `grant`
+is a guard. It may use `grant`, the method's parameters and function calls
+(`K0007`). The pass removes it from the interface and checks it in the
+generated host-side server before the host's implementation runs; a failed
+guard answers the plugin with `Denied` (`-32040`). A `requires:` clause that
+does not name `grant` stays an ordinary contract.
+
+**Protocol points.** A `@protocol_point` has no Lyric methods (`K0011`): the
+plugin speaks an existing protocol such as LSP over its stdin and stdout, and
+the host gets the raw process from `openProtocolPlugin` (§15.6).
+
+### 15.2 Plugins
+
+A plugin is a `pub record` with `@plugin` and an `impl` for each point it
+lists in `implements(...)`:
+
+```lyric
+@plugin(id = "lyric.test.notes", version = "1.2.0", publisher = "lyric", implements(NoteTool))
+pub record NotesPlugin {
+  store: StoreClient            // requests Store
+  log: Option[LogClient]        // requests Log optionally
+  var calls: Int = 0            // plugin state: needs a default
+}
+
+impl NoteTool for NotesPlugin {
+  func summarize(note: in Note): Result[String, Level] { ... }
+  func fetch(title: in String): Result[Change, String] {
+    match store.load(title) {
+      case Ok(n) -> Ok(value = Change.Added(note = n))
+      case Err(CallError.App(e)) -> Err(error = "app: " + e)
+      case Err(CallError.Boundary(b)) -> Err(error = "boundary: " + boundaryErrorMessage(b))
+    }
+  }
+}
+
+@plugin_contributions(NoteTool)
+func notesContributions(): NotesContributions { ... }
+
+@plugin_request(Store)
+func storeRequest(): StoreGrant { ... }
+```
+
+- A field of type `<C>Client` requests capability `C`; a field of type
+  `Option[<C>Client]` requests it optionally (`None` when the host does not
+  grant it). Every other field needs a default (`K0010`).
+- Each requested capability must be allowed by one of the plugin's points
+  (`K0003`).
+- A point that declares contributions needs exactly one
+  `@plugin_contributions(P)` function, and a requested capability with a
+  grant type needs exactly one `@plugin_request(C)` function (`K0009`).
+- The package must not declare `main`, and declares at most one `@plugin`
+  record (`K0012`): the plugin's entry point is generated.
+- Placeholders such as `"${workspace}"` in a requested grant are not
+  interpreted by the compiler; the host's grant policy gives them meaning.
+
+### 15.3 Boundary types
+
+A value crosses the boundary as JSON (D207 Decision 4):
+
+| Lyric | JSON |
+|---|---|
+| `Bool` | `true` / `false` |
+| `Byte`, `Int`, `Long`, `UInt`, `ULong` | number |
+| `Float`, `Double` | number |
+| `Char` | one-character string |
+| `String` | string |
+| `Unit` | `null` |
+| `Option[T]` | `null` or the `T` encoding |
+| `Result[T, E]` | `{"ok": T}` or `{"err": E}` |
+| `List[T]`, `slice[T]` (`T` not `Byte`) | array |
+| `List[Byte]`, `slice[Byte]` | base64 string |
+| `Map[String, T]` | object |
+| tuple | array |
+| record, exposed record | object keyed by field name |
+| union | `{"case": "<Case>", "<field>": ...}` |
+| enum | the case name |
+| `@plugin_handle` type | number |
+| `Std.JsonValue.JsonValue` | itself |
+
+Decoders reject a missing required member (an absent `Option` member decodes
+as `None`), an unknown union case or enum name, and a wrong JSON kind; they
+ignore unknown members, so a minor version may add optional fields.
+
+Anything else is `K0001`: `Option[Option[T]]`, `Option[Unit]` and
+`Option[JsonValue]` (`None` and `Some` would be indistinguishable), a `Map`
+with non-`String` keys, other generic types, generic records, unions and
+aliases, a union case with positional fields, a distinct type without
+`@plugin_handle`, range types, fixed-size arrays, functions, interfaces,
+opaque and protected types, `out`/`inout` parameters, and `Std` types other
+than `JsonValue`. A boundary type must be declared in a package compiled
+through this pass: the generated encoder for a type from another package calls
+that package's `pluginEncode<T>`, so the type must be used at a boundary in
+its own package.
+
+### 15.4 Generated items
+
+In an API package, for each record, exposed record, union, enum and handle a
+boundary declaration reaches:
+
+- `pub func pluginEncode<T>(v: in T): JsonValue` and
+  `pub func pluginDecode<T>(j: in JsonValue): Result[T, String]`.
+
+For each `@capability C` (`<c>` is the name with its first letter
+lower-cased):
+
+| Item | Side |
+|---|---|
+| `pub record <C>Client { conn: PluginConnection }`, one method per `C` method returning `Result[T, CallError[E]]` | plugin |
+| `pub record <C>Server { target: C }` with `impl CapabilityProvider` (decodes the grant, checks the guards, calls `target`) | host |
+| `pub func <c>Provider(target: in C): CapabilityProvider` | host |
+| `pub func <c>CapabilityInfo(): CapabilityInfo` | both |
+
+For each `@plugin_point P` (and `@protocol_point P` for the info and
+contributions items):
+
+| Item | Side |
+|---|---|
+| `pub record <P>Remote { conn: PluginConnection }`, one method per `P` method returning `Result[T, CallError[E]]` | host |
+| `pub func <p>Remotes(host: in PluginHost): List[<P>Remote]`: one per catalogued plugin implementing `P`, started on its first call | host |
+| `pub record <P>Contribution { pluginId: String, value: K }`, `pub func <p>Contributions(host: in PluginHost): List[<P>Contribution]` and `pub func <p>ContributionIssues(host: in PluginHost): List[PluginLoadIssue]` (K0101; when `P` declares contributions) | host |
+| `pub func <p>PointInfo(): PluginPointInfo` | host |
+| `pub func pluginDispatch<P>(target: in P, method: in String, params: in Option[JsonValue]): Result[JsonValue, RpcError]` | plugin |
+
+In a package with a `@plugin` record `R`: a `record <R>Server` with
+`impl PluginServer` (builds the manifest, constructs `R` with a client per
+granted capability, routes calls to `pluginDispatch<P>`) and
+`func main(): Int = runPlugin(<R>Server())`.
+
+The pass adds `import Std.Core`, `Std.Collections`, `Std.JsonValue`,
+`Std.JsonRpc` and `Std.Plugin` (deduplicated) to a file it generates code
+for. A plugin method that matches on `CallError` or calls
+`boundaryErrorMessage` must import `Std.Plugin` itself.
+
+`CallError[E]` is `App(error: E)`, the method's own error, or
+`Boundary(error: BoundaryError)`, a failure of the boundary itself:
+`Denied(reason)`, `NotGranted(capability)`, `Stale`, `Unsupported(method)`,
+`Revoked(capability)`, `ContractViolated(detail)`, `Timeout(timeoutMs)`,
+`Crashed(detail)` or `Protocol(detail)`.
+
+### 15.5 Wire protocol
+
+Version 1, JSON-RPC 2.0 with one message per line on the plugin's stdin and
+stdout; stderr is the plugin's log.
+
+- **Manifest probe.** Run with the single argument `--lyric-plugin-manifest`,
+  a plugin prints its manifest as one JSON document and exits 0.
+  `lyric plugin pack` uses this; a host reads `plugin.json` instead.
+- **Handshake.** The host's first request is `plugin/hello` with
+  `{"protocol": 1, "points": {"<Pkg>.<P>": "<major>.<minor>"}, "grants":
+  [{"capability": "<Pkg>.<C>", "grant": <grant or null>}]}`. The plugin
+  answers with its id and, per point, its version and the methods it
+  implements; a call to a method it does not list is `Unsupported`. A plugin
+  missing a required grant answers `NotGranted`.
+- **Calls.** Point calls are `<Pkg>.<P>/<method>` (host to plugin);
+  capability calls are `cap/<Pkg>.<C>/<method>` (plugin to host, served while
+  the host waits for the point call). Params are an object keyed by parameter
+  name; the result is `{"ok": ...}` or `{"err": ...}`.
+- **Boundary errors** are JSON-RPC errors:
+
+| Code | `BoundaryError` |
+|---|---|
+| `-32001` | `Timeout` (the call timeout passed) |
+| `-32040` | `Denied` (a guard failed, or the capability is not granted) |
+| `-32041` | `NotGranted` |
+| `-32042` | `Stale` (a stale handle) |
+| `-32043` | `Unsupported` (the method is not implemented) |
+| `-32044` | `Revoked` |
+| `-32045` | `ContractViolated` |
+| `-32046` | `Protocol` (malformed params or result) |
+
+- **Cancellation** is `$/cancelRequest` with `{"id": <request id>}`;
+  **shutdown** is the notification `plugin/shutdown`, after which the host
+  closes stdin and kills the process once the grace period passes.
+
+### 15.6 Hosting: `Std.Plugin`
+
+A host builds a `PluginHost` from the points it offers, a `CapabilityProvider`
+for each capability it serves and a `GrantPolicy`, then loads plugin
+directories:
+
+```lyric
+val host = newPluginHost(
+  PluginHostConfig(
+    points = [noteToolPointInfo()],
+    providers = providers,          // storeProvider(store), logProvider(log)
+    policy = NotesPolicy()          // or GrantAllRequested()
+  )
+)
+val issues = discoverPlugins(host, ["plugins"])
+for r in noteToolRemotes(host) {
+  match r.summarize(note) { ... }
+}
+stopAllPlugins(host)
+```
+
+`PluginHostConfig` also takes `callTimeoutMs` (60000), `startTimeoutMs`
+(10000), `maxRestarts` (3), `restartBackoffMs` (250), `maxRestartBackoffMs`
+(10000), `shutdownGraceMs` (2000), `preferWasm` (true) and
+`wasmMaxMemoryBytes` (256 MiB).
+
+Loading reads each `<dir>/<id>-<version>/plugin.json`, matches the plugin's
+points (a different major version is `K0103`), asks the policy for grants,
+and checks each grant against the request: a list-valued grant field must be a
+subset of the requested list and any other field must equal the request (a
+wider grant is `K0102`). A plugin that cannot be loaded is a
+`PluginLoadIssue`; `pluginLoadIssueMessage` renders it. Nothing starts until
+the first call: the host then spawns the chosen payload and sends
+`plugin/hello`. A crashed plugin is restarted on the next call after an
+exponential backoff, up to `maxRestarts` times; after that every call is
+`Crashed`. `stopPlugin`, `stopAllPlugins` and `revokeCapability` control
+running plugins. `openProtocolPlugin(host, pointId, pluginId)` starts a
+protocol-point plugin and returns its `PipedProcess`; the caller speaks the
+protocol and owns the process (there is no handshake or capability serving on
+that channel).
+
+The lower-level API (`connectionsFor`, `contributionsFor`, `callPlugin`,
+`registerPlugin`, `parsePluginManifest`, `readPluginManifest`,
+`pluginManifestToJson`, `addPluginPayload`, `selectPluginPayload`,
+`pluginLaunchCommand`, `findWasmtime`) is what the generated code and the
+compiler's own generator host use. A `PluginHost` is synchronous and not safe
+to use from several threads at once. On the plugin side, `runPlugin` and
+`callHost` are what the generated `main` and clients call. `Std.Plugin` is
+`@experimental`.
+
+### 15.7 Hosting modes and artifacts
+
+A plugin artifact is a directory, `<id>-<version>/`, holding `plugin.json`
+(`"schema": 1`, `id`, `version`, `publisher`, `points`, `capabilities`,
+`payloads`) and the payload files. A payload is one of:
+
+| Payload | Runs as |
+|---|---|
+| `{"mode": "process", "runtime": "dotnet", ...}` | `dotnet exec <dll>` |
+| `{"mode": "process", "runtime": "jvm", ...}` | `java -jar <jar>` (`$JAVA_HOME/bin/java` when set) |
+| `{"mode": "process", "os": ..., "arch": ..., ...}` | the native executable, on a matching host |
+| `{"mode": "wasm", "module": "<file>.wasm"}` | `wasmtime run -W max-memory-size=<bytes> <module>` |
+
+**Process mode** runs every target's payload, and a host on any target runs a
+plugin built for any other. **Wasm mode** runs a plugin built with
+`--target native --triple wasm32-wasi` under `wasmtime` (found at
+`$LYRIC_WASMTIME`, else on `PATH`) with no directories, environment or
+network, so its only way to reach anything is a capability call; it speaks the
+same protocol. A host with `preferWasm` chooses a wasm payload whenever the
+plugin has one and `wasmtime` is available. Process mode applies no operating
+system restrictions: a process payload is arbitrary code running with the
+host's user and privileges, and the grant policy and guards limit only what it
+does through capability calls, not what it does directly. Wasm mode is the
+isolation for untrusted code; it caps memory, and a call's CPU time is bounded
+only by the call timeout (a plugin that ignores the cancellation keeps running
+until the host stops it, #8465). A trusted in-process mode, signing and a plugin
+registry are not part of v1 (D207).
+
+### 15.8 `lyric plugin`
+
+```
+lyric plugin pack  [--manifest <lyric.toml>] [--targets dotnet,jvm,native,wasm] [-o <dir>]
+lyric plugin check <dir>
+lyric plugin sdk   --api <dir|file.l|lyric.toml> --lang csharp|java|typescript -o <dir>
+```
+
+- **`pack`** builds the plugin project (the nearest `lyric.toml`, or
+  `--manifest`) for each target in `--targets` (default `dotnet`), runs every
+  payload with `--lyric-plugin-manifest`, requires the manifests to agree, and
+  writes `<dir>/<id>-<version>/` with `plugin.json` and the payloads. `<dir>`
+  defaults to `bin/plugin` beside the manifest. Each target needs its
+  toolchain: the .NET SDK, a JDK 21 or later, `clang` for native, and the
+  wasi-sdk (`WASI_SDK_PATH`) plus `wasmtime` for wasm. A project with `[maven]`
+  dependencies cannot be packed for `jvm`, since a `java -jar` payload cannot
+  load them.
+- **`check`** validates an artifact directory (schema, required fields,
+  version spellings, payload forms, payload files present) and prints each
+  problem as `<path>: <location>: <message>`.
+- **`sdk`** generates a plugin SDK in C#, Java or TypeScript from an API
+  package: the boundary types and codecs, a process-mode server, capability
+  clients, a manifest builder and a JSON Schema of the boundary. The
+  TypeScript runtime parses integers exactly.
+
+**Exit codes:** 0 = success (or a valid artifact); 1 = bad arguments, a failed
+build or probe, or a problem found.
+
+### 15.9 Source generators
+
+Source generators (§2, `@generate(Pkg.Name)`; docs/40) are the first plugin
+point. `Lyric.GeneratorSdk` is its API package: the point
+`SourceGenerator` (version 3.0) with one method,
+`generate(req: in GeneratorRequest): Result[GeneratorResponse, GeneratorError]`,
+and the capability `ProjectRead` (`readText(path)`), granted as
+`ProjectReadGrant { roots }` and guarded by `projectPathWithin`. A generator is
+a `kind = "source-generator"` package with a `@plugin` record implementing
+`SourceGenerator`:
+
+```lyric
+@plugin(id = "acme.describe", version = "0.1.0", publisher = "acme", implements(SourceGenerator))
+pub record DescribePlugin {}
+
+impl SourceGenerator for DescribePlugin {
+  func generate(req: in GeneratorRequest): Result[GeneratorResponse, GeneratorError] {
+    Ok(value = generateSource(req))
+  }
+}
+```
+
+The compiler is the host: it builds the generator for dotnet, probes its
+manifest, runs it as a dotnet process payload and grants exactly the
+capabilities it requests. One generator process serves every annotated type of
+a build. `GeneratorError` refuses a request outright; problems with the
+annotated type are diagnostics in the response (X0005).
+
+### 15.10 Diagnostics
+
+Compile-time, reported by `Lyric.PluginExpand`:
+
+| Code | Meaning |
+|---|---|
+| `K0000` | Internal error: the pass generated code that does not parse (please report it) |
+| `K0001` | A point, capability, grant, contributions or handle type mentions a type that cannot cross a boundary (§15.3), or a method has an `out`/`inout` parameter |
+| `K0002` | `allows(...)` names an interface that is not a `@capability` |
+| `K0003` | A plugin requests a capability that none of its points allows |
+| `K0004` | A point or capability method does not return `Result[T, E]`, is generic, or the interface declares an associated type |
+| `K0005` | A plugin annotation on the wrong item: `@plugin_point`/`@capability`/`@protocol_point` not on a `pub interface` (or more than one of them), `@plugin_handle` not on a `pub type H = Long` without a range, `@plugin` not on a non-generic `pub record` |
+| `K0006` | A malformed annotation: a missing or badly formed `version` or `id`, an empty `protocol`, an unknown argument, an argument of the wrong form, or an annotation repeated on one item |
+| `K0007` | A capability guard names something other than `grant`, the method's parameters and function calls, or names `grant` on a capability without a grant type |
+| `K0008` | `implements(...)` names something that is not a plugin point, the record has no `impl` for a listed point, or it implements a point it does not list |
+| `K0009` | A missing, duplicated or wrongly typed `@plugin_contributions` / `@plugin_request` function, or one in a package with no `@plugin` record |
+| `K0010` | A plugin record field without a default that is not a capability client |
+| `K0011` | A `@protocol_point` interface with members |
+| `K0012` | A package with a `@plugin` record declares `main`, or declares two `@plugin` records |
+
+Load-time `PluginLoadIssue`s carry `K0102` (a grant wider than the request)
+and `K0103` (a point major-version mismatch); the generated
+`<p>ContributionIssues(host)` returns one carrying `K0101` for each loaded
+plugin whose contributions do not decode as the point's contributions type.
+
+### 15.11 Limits
+
+- A `ULong` above 2^63 crosses the boundary as a JSON floating-point number,
+  so values that a `Double` cannot represent exactly lose precision.
+- The LSP does not run `Lyric.PluginExpand`, so the generated items (clients,
+  `<P>Remote`, `pluginEncode<T>`) are unknown names in the editor although the
+  build accepts them.
+- The SDK runtimes (C#, Java, TypeScript) accept `$/cancelRequest` but do not
+  interrupt a call already running.
+- `--target native` has no unwinding: a panic in a native plugin's method ends
+  the plugin process (the host sees `Crashed` and may restart it), and a panic
+  in a native host's capability provider ends the host.
 
 ---
 
