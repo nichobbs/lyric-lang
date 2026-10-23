@@ -14,6 +14,7 @@
 #endif
 #include <windows.h>
 
+#include <stddef.h>
 #include <stdint.h>
 
 /* A freshly malloc'd NUL-terminated UTF-16 copy of the NUL-terminated UTF-8
@@ -28,6 +29,18 @@ char* lyric_win32_utf8(const wchar_t* w, int64_t n, int64_t* out_len);
 
 /* The errno value closest to the Win32 error code `err` (EIO when none is). */
 int lyric_win32_errno(DWORD err);
+
+/* The system message for Win32, Winsock or SSPI status `code`, as UTF-8
+ * followed by the code, in `out` (truncated to `cap`). */
+void lyric_win32_message(DWORD code, char* out, size_t cap);
+
+/* The socket and TLS seam's thread-local diagnostic (lyric_tls_last_error),
+ * set printf-style; defined in lyric_sock_win32.c. */
+void lyric_net_set_err(const char* fmt, ...);
+
+/* True when Winsock error `wsa_error` is a socket timeout
+ * (lyric_sock_set_timeouts). */
+int lyric_win32_sock_timed_out(int wsa_error);
 
 /* Nanoseconds since the Unix epoch of a FILETIME (100 ns ticks since
  * 1601-01-01). */

@@ -5,14 +5,14 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
 if(WIN32)
-    # docs/67 G9: the Win32 twins of lyric_posix.c, lyric_fs.c and
-    # lyric_process.c; sockets and TLS use lyric_net_unsupported.c until
-    # their port lands (#8434).
+    # docs/67 G9: the Win32 twins of lyric_posix.c, lyric_fs.c,
+    # lyric_process.c and lyric_tls.c (Winsock and Schannel).
     set(LYRIC_RT_PLATFORM_SRCS
         src/lyric_win32.c
         src/lyric_fs_win32.c
         src/lyric_process_win32.c
-        src/lyric_net_unsupported.c
+        src/lyric_sock_win32.c
+        src/lyric_tls_win32.c
     )
 else()
     set(LYRIC_RT_PLATFORM_SRCS
@@ -40,7 +40,7 @@ add_executable(lyric_rt_test test/lyric_rt_test.c)
 add_executable(lyric_parallel_test test/lyric_parallel_test.c)
 if(WIN32)
     target_compile_definitions(lyric_rt PRIVATE _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_WARNINGS)
-    target_link_libraries(lyric_rt PUBLIC bcrypt shell32 advapi32)
+    target_link_libraries(lyric_rt PUBLIC bcrypt shell32 advapi32 ws2_32 secur32 crypt32 ncrypt)
     target_link_libraries(lyric_rt_test lyric_rt)
     target_link_libraries(lyric_parallel_test lyric_rt)
     add_executable(lyric_win32_test test/lyric_win32_test.c)
@@ -49,6 +49,9 @@ if(WIN32)
     add_executable(lyric_process_win32_test test/lyric_process_win32_test.c)
     target_link_libraries(lyric_process_win32_test lyric_rt)
     add_test(NAME lyric_process_win32_test COMMAND lyric_process_win32_test)
+    add_executable(lyric_tls_test test/lyric_tls_test.c)
+    target_link_libraries(lyric_tls_test lyric_rt)
+    add_test(NAME lyric_tls_test COMMAND lyric_tls_test)
 else()
     # The TLS seam dlopen's OpenSSL at runtime, so it needs libdl (a no-op stub
     # on glibc >= 2.34) in addition to pthread; no link-time -lssl/-lcrypto.
