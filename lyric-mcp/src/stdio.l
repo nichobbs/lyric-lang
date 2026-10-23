@@ -1,13 +1,13 @@
 //! src/stdio.l — Mcp.Stdio: piped-child-process stdio transport (client side).
 //!
-//! `JsonRpc.Stdio`'s `NdjsonTransport` frames NDJSON over the *current*
+//! `Std.JsonRpc.Stdio`'s `NdjsonTransport` frames NDJSON over the *current*
 //! process's own stdin/stdout (`Std.Console`/`Std.ConsoleHost`) — the
 //! shape a server needs. A client instead needs to frame NDJSON over a
 //! *spawned child's* piped stdin/stdout (docs/62-jsonrpc-mcp.md §5.2), so
 //! this module supplies its own `RpcTransport`, `PipedNdjsonTransport`,
-//! built the same sans-IO way `JsonRpc.Stdio` is: it implements the
+//! built the same sans-IO way `Std.JsonRpc.Stdio` is: it implements the
 //! `LineReader`/`LineWriter` seams over `Std.Process.PipedProcess` and
-//! reuses `JsonRpc.Stdio.ndjsonReceiveVia`/`ndjsonSendVia` for the actual
+//! reuses `Std.JsonRpc.Stdio.ndjsonReceiveVia`/`ndjsonSendVia` for the actual
 //! framing rather than re-implementing it. `receiveWithin` (#7451) reads
 //! through `Std.Process.pipedReadLineWithin`, so a client call to a server
 //! that never answers ends at its deadline.
@@ -19,8 +19,8 @@ import Std.Core
 import Std.Collections
 import Std.Errors
 import Std.Process
-import JsonRpc
-import JsonRpc.Stdio
+import Std.JsonRpc
+import Std.JsonRpc.Stdio
 
 // ── Sans-IO seam over a piped child process ─────────────────────────────────
 record PipedLineReader {

@@ -1,15 +1,15 @@
-//! tests/stdio_tests.l — test suite for JsonRpc.Stdio.
+//! tests/json_rpc_stdio_tests.l — test suite for Std.JsonRpc.Stdio.
 //! Covers NDJSON and Content-Length round-trips (including multi-byte
 //! UTF-8 payloads) against the sans-IO core functions
 //! (`ndjsonReceiveVia`/`ndjsonSendVia`/`clReceiveVia`/`clSendVia`), fed
 //! from in-memory implementations of the `CharReader`/`LineReader`/
 //! `StringWriter`/`LineWriter` interfaces — no real pipes are needed (see
-//! stdio.l's module doc for why the framing logic is parameterized this
+//! json_rpc_stdio.l's module doc for why the framing logic is parameterized this
 //! way over interfaces rather than closures, and why
 //! `newNdjsonTransport`/`newContentLengthTransport` themselves — which
 //! bind to the real console — are not exercised here).
 @test_module
-package JsonRpc.Stdio.StdioTests
+package Std.JsonRpc.Stdio.Tests
 
 import Std.Core
 import Std.Collections
@@ -19,8 +19,8 @@ import Std.Errors
 import Std.Testing
 import Std.Time
 import Std.JsonValue
-import JsonRpc
-import JsonRpc.Stdio
+import Std.JsonRpc
+import Std.JsonRpc.Stdio
 
 // ── In-memory stand-ins ──────────────────────────────────────────────────────
 pub record CharSource {

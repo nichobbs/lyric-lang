@@ -3060,3 +3060,57 @@ test "another package's method defaults are spliced into a call (#7820)" {
   assertEqualInt(result.exitCode, 0, "cross_package_method_default: exit 0 expected (stderr=" + result.stderr + ")")
   assertEqual(Str.trim(result.stdout), "6\n4000000000\n12\n8", "each call takes the default it resolves through")
 }
+
+// ─── Regression: a bare constant read resolves through the reader's imports
+// (D204) ─────────────────────────────────────────────────────────────────────
+// Two packages declare `limit`; the reader imports only the second.  The bare
+// read used to take whichever package registered `limit` first.  A package's
+// own non-literal `val` shadows an imported constant of the same name.
+test "a bare constant read resolves through the reading package's imports" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(mkPkg("ConstImp.A", "package ConstImp.A\n" + "\n" + "pub val limit: Int = 5\n"))
+  packages.add(mkPkg("ConstImp.B", "package ConstImp.B\n" + "\n" + "pub val limit: Int = 7\n"))
+  packages.add(
+    mkPkg(
+      "ConstImp.Own",
+      "package ConstImp.Own\n" + "\n" + "import ConstImp.A\n" + "\n" + "func pick(): Int = 40 + 2\n" +
+        "val limit: Int = pick()\n" +
+        "pub func ownLimit(): Int = limit\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "ConstImp.App",
+      "package ConstImp.App\n" + "\n" + "import ConstImp.B\n" + "import ConstImp.Own\n" + "\n" + "func main(): Unit {\n" +
+        "  println(limit)\n" +
+        "  println(ownLimit())\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRun("constimp", packages, "ConstImp")
+  assertEqualInt(result.exitCode, 0, "const_import_resolution: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "7\n42", "const_import_resolution: values")
+}
+
+// ─── Regression: a stdlib package's constants and impls reach a consumer
+// (D204) ─────────────────────────────────────────────────────────────────────
+test "a stdlib constant and a stdlib impl are usable from a consumer package" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(
+    mkPkg(
+      "StdImpl.App",
+      "package StdImpl.App\n" + "\n" + "import Std.Core\n" + "import Std.JsonRpc\n" + "import Std.JsonRpc.Stdio\n" +
+        "\n" +
+        "func describe(t: in RpcTransport): String = \"transport\"\n" +
+        "\n" +
+        "func main(): Unit {\n" +
+        "  println(methodNotFound)\n" +
+        "  println(Std.JsonRpc.internalError)\n" +
+        "  println(describe(newNdjsonTransport()))\n" +
+        "}\n"
+    )
+  )
+  val result = compileAndRunWithStdlib("stdimpl", packages, "StdImpl")
+  assertEqualInt(result.exitCode, 0, "stdlib_const_impl: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "-32601\n-32603\ntransport", "stdlib_const_impl: values")
+}

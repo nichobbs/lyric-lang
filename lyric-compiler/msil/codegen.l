@@ -5539,6 +5539,115 @@ func registerLiteralConstMsil(cctx: in CodegenCtx, pkgName: in String, name: in 
   }
 }
 
+// The `constValues` key a bare read of `name` in the current function
+// resolves to.  The reading package's own constant wins; a module-level
+// value of that name the package declares as a field (a non-literal `val`)
+// shadows every other package's constant; otherwise the name resolves
+// through the package's imports as the type checker resolves it (docs/01
+// §9.2), directly imported packages first.  The first-wins bare key is the
+// last resort, for a reader whose imports are not recorded.  A specialised
+// copy of another package's generic reads through that package's imports.
+// "" when the read is a field read, not a constant.
+func constReadKeyMsil(cctx: in CodegenCtx, fctx: in FuncCtx, name: in String): String {
+  val own = fctx.pkgName + "/" + name
+  if cctx.constValues.containsKey(own) {
+    return own
+  }
+  if cctx.staticValTokens.containsKey(fctx.pkgName + "." + name) {
+    return ""
+  }
+  val reader = if fctx.originPkg.length > 0 { fctx.originPkg } else { fctx.pkgName }
+  if reader != fctx.pkgName {
+    val originOwn = reader + "/" + name
+    if cctx.constValues.containsKey(originOwn) {
+      return originOwn
+    }
+  }
+  for d in directBareImportsForNameMsil(cctx, reader, name) {
+    if cctx.constValues.containsKey(d + "." + name) {
+      return d + "." + name
+    }
+  }
+  for d in bareImportListForNameMsil(cctx, reader, name) {
+    if cctx.constValues.containsKey(d + "." + name) {
+      return d + "." + name
+    }
+  }
+  name
+}
+
+// A standard-library constant a consumer inlines.
+pub record StdlibConst {
+  name: String
+  value: Int
+}
+
+// The constant a stdlib item gives its consumers, if any: a `pub val` or
+// `pub const` declared `Int` (or untyped) whose initializer is an integer
+// literal in `Int` range, a negated one included.  The stdlib compiles to
+// another assembly, and a literal constant there has no initialised field to
+// read (its own package inlines it), so the consumer must inline it too.
+// This is the surface contract metadata carries for restored packages
+// (`Lyric.ContractMeta.reprForInlinableVal`); any other module-level value
+// is not reachable from another assembly.
+pub func stdlibInlinableConstMsil(it: in Item): Option[StdlibConst] {
+  val isPub = match it.visibility { case Some(VisPub(_)) -> true; case _ -> false }
+  if not isPub {
+    return None
+  }
+  match it.kind {
+    case IConst(decl) -> stdlibConstOfMsil(decl.name, Some(value = decl.ty), decl.init)
+    case IVal(decl) -> match decl.pattern.kind {
+      case PBinding(name, _) -> stdlibConstOfMsil(name, decl.ty, decl.init)
+      case _ -> None
+    }
+    case _ -> None
+  }
+}
+
+func stdlibConstOfMsil(name: in String, ty: in Option[TypeExpr], init: in Expr): Option[StdlibConst] {
+  val intTyped = match ty {
+    case None -> true
+    case Some(te) -> match te.kind {
+      case TRef(path) -> path.segments.count == 1 and path.segments[0] == "Int"
+      case _ -> false
+    }
+  }
+  if not intTyped {
+    return None
+  }
+  match intLiteralOfMsil(init) {
+    case Some(v) -> if v >= -2147483648i64 and v <= 2147483647i64 {
+      Some(value = StdlibConst(name = name, value = v.toInt()))
+    } else {
+      None
+    }
+    case None -> None
+  }
+}
+
+// The value of an unsuffixed (or `i32`) integer literal, negated or not.
+func intLiteralOfMsil(e: in Expr): Option[Long] {
+  match e.kind {
+    case ELiteral(lit) -> match lit {
+      case LInt(v, sfx, _) -> match sfx {
+        case NoIntSuffix | I32 -> Some(value = v)
+        case _ -> None
+      }
+      case _ -> None
+    }
+    case EParen(inner) -> intLiteralOfMsil(inner)
+    case EPrefix(op, operand) -> match op {
+      case PreNeg -> match intLiteralOfMsil(operand) {
+        case Some(v) -> Some(value = 0i64 - v)
+        case None -> None
+      }
+      case _ -> None
+    }
+    case _ -> None
+  }
+}
+
 // Register an inlined literal const under `key` (first wins), with the MSIL
 // type its `ldc.i4` stands for.
 func addConstValueMsil(cctx: in CodegenCtx, key: in String, v: in Int, ty: in MsilType): Unit {
@@ -11568,8 +11677,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           // constant always wins, so a same-named, different-valued const in
           // another package can never silently inline the wrong value here.
           // The bare-name key remains the cross-package fallback (first-wins).
-          val constQualKey = fctx.pkgName + "/" + name
-          val constHitKey = if cctx.constValues.containsKey(constQualKey) { constQualKey } else { name }
+          val constHitKey = constReadKeyMsil(cctx, fctx, name)
           match mapGet(cctx.constValues, constHitKey) {
             case Some(v) -> {
               insns.add(MLdcI4(v = v))
@@ -17284,11 +17392,7 @@ func lowerPatternTestMsil(
       emitLoadSlot(insns, scrutSlot, fctx.paramCount)
       val scrutBoxed = match scrutTy { case MObject -> true; case _ -> false }
       // Try integer const (inline ldc.i4 from constValues)
-      val qKey = fctx.pkgName + "/" + constName
-      val intValOpt = match mapGet(cctx.constValues, qKey) {
-        case Some(v) -> Some(value = v)
-        case None -> mapGet(cctx.constValues, constName)
-      }
+      val intValOpt = mapGet(cctx.constValues, constReadKeyMsil(cctx, fctx, constName))
       match intValOpt {
         case Some(v) -> {
           if scrutBoxed {
@@ -47500,6 +47604,44 @@ pub func registerStdlibArtifactTokens(cctx: in CodegenCtx, pkgs: in List[StdlibP
     }
     pi2 = pi2 + 1
   }
+  // Pass 2b: each `impl I for R` registers I's methods as R's instance
+  // methods, so a consumer can call them on an `R` it holds (the record class
+  // implements I in `Lyric.Stdlib.dll`; upcasting to I needs nothing more).
+  // Signatures come from I, which may live in another stdlib package.
+  var pi2b = 0
+  while pi2b < pkgs.count {
+    val pkg: StdlibPkg = pkgs[pi2b]
+    for it in pkg.items {
+      match it.kind {
+        case IImpl(idecl) -> registerStdlibImplMsil(cctx, pkgs, pkg, idecl)
+        case _ -> ()
+      }
+    }
+    pi2b = pi2b + 1
+  }
+  // Pass 2c: the stdlib's literal constants, inlined at every use (see
+  // `stdlibInlinableConstMsil`).  A qualified read (`Std.X.name`) uses the
+  // package-qualified key; a bare read resolves through the reader's
+  // imports (`constReadKeyMsil`).  The bare key is registered and claimed
+  // only when no package has it, as the last-resort fallback.
+  var pi2c = 0
+  while pi2c < pkgs.count {
+    val pkg: StdlibPkg = pkgs[pi2c]
+    for it in pkg.items {
+      match stdlibInlinableConstMsil(it) {
+        case Some(c) -> {
+          addConstValueMsil(cctx, pkg.name + "." + c.name, c.value, MInt)
+          addConstValueMsil(cctx, pkg.name + "/" + c.name, c.value, MInt)
+          if not cctx.constValues.containsKey(c.name) and not cctx.constBareClaimed.containsKey(c.name) {
+            cctx.constBareClaimed.add(c.name, pkg.name)
+            addConstValueMsil(cctx, c.name, c.value, MInt)
+          }
+        }
+        case None -> ()
+      }
+    }
+    pi2c = pi2c + 1
+  }
   // Pass 3: seed the bundle-stable pre-scan type registries from every
   // stdlib package (after type registration, so declared types resolve to
   // their real TypeRefs), letting the async-SM await pre-scan type
@@ -47511,6 +47653,88 @@ pub func registerStdlibArtifactTokens(cctx: in CodegenCtx, pkgs: in List[StdlibP
     pbSeedTypeInfoItemsMsil(cctx, pkgs[pi3].name, pkgs[pi3].items)
     pi3 = pi3 + 1
   }
+}
+
+// Register the methods a stdlib `impl I for R` gives `R`, as
+// `registerRestoredImpl` does for a restored package.  `I` resolves as the
+// impl's package resolves it: a qualified name names its package, a bare one
+// is the package's own interface or one from its imports.
+func registerStdlibImplMsil(cctx: in CodegenCtx, pkgs: in List[StdlibPkg], pkg: in StdlibPkg, idecl: in ImplDecl): Unit {
+  val targetName = implTargetNameMsil(idecl, pkg.name)
+  if endsWith(targetName, ".__impl_target") {
+    return
+  }
+  val recordTypeRefRow = match mapGet(cctx.ffiTypeRefs, pkg.name + "/" + targetName) {
+    case Some(r) -> r
+    case None -> return
+  }
+  val segs = idecl.iface.head.segments
+  val ifaceSimple = segs[segs.count - 1]
+  val candidates: List[String] = newList()
+  if segs.count > 1 {
+    candidates.add(segmentsToStringMsil(segs, segs.count - 1))
+  } else {
+    candidates.add(pkg.name)
+    for imp in pkg.imports {
+      candidates.add(imp)
+    }
+  }
+  val implGenerics = implTargetGenericsMsil(idecl)
+  for cand in candidates {
+    for owner in pkgs {
+      if owner.name == cand {
+        for it in owner.items {
+          match it.kind {
+            case IInterface(ix) -> if ix.name == ifaceSimple {
+              for member in ix.members {
+                match member {
+                  case IMSig(sig) -> registerRestoredRecordMethod(
+                    cctx,
+                    targetName,
+                    recordTypeRefRow,
+                    owner.name,
+                    sig.name,
+                    restoredImplMethodParams(idecl, sig.name, sig.params),
+                    sig.ret,
+                    implGenerics,
+                    genericNamesOf(sig.generics)
+                  )
+                  case IMFunc(fn) -> registerRestoredRecordMethod(
+                    cctx,
+                    targetName,
+                    recordTypeRefRow,
+                    owner.name,
+                    fn.name,
+                    restoredImplMethodParams(idecl, fn.name, fn.params),
+                    fn.ret,
+                    implGenerics,
+                    genericNamesOf(fn.generics)
+                  )
+                  case IMAssoc(_) -> ()
+                }
+              }
+              return
+            }
+            case _ -> ()
+          }
+        }
+      }
+    }
+  }
+}
+
+// The first `count` segments joined with dots.
+func segmentsToStringMsil(segs: in List[String], count: in Int): String {
+  var out = ""
+  var i = 0
+  while i < count {
+    if i > 0 {
+      out = out + "."
+    }
+    out = out + segs[i]
+    i = i + 1
+  }
+  out
 }
 
 // Build a TypeSpec-based newobj token for a stdlib generic union case

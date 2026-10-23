@@ -1,11 +1,14 @@
 # 69. Plugins: typed plugin points, parameterised capabilities, and isolated hosting
 
-_Status: **Unbacked sketch.** Proposes a general plugin architecture for
+_Status: **Accepted as the direction in D204**, which also resolved Q-PLG-003
+by moving the JSON-RPC peer into the stdlib. The language surface waits on
+Q-PLG-005 and is not implemented. Proposes a general plugin architecture for
 applications written in Lyric, with source generators (docs/40, D075, D150) as
 the first plugin point it is proved on. Extends docs/01 §10 (`wire`,
 `contributes[T]`) and §11.7 (`@library` C bindings), docs/35 (the `component`
-output shape and WIT generation), and docs/62 (`lyric-jsonrpc`). Open questions
-Q-PLG-001 to Q-PLG-010 are listed in §17. No decision-log entry yet._
+output shape and WIT generation), and docs/62 (the JSON-RPC peer, now the
+stdlib's `Std.JsonRpc`). Open questions Q-PLG-001 to Q-PLG-010 are listed in
+§17; Q-PLG-003 is resolved (D204)._
 
 ## 1. Why this exists
 
@@ -656,9 +659,9 @@ What changes relative to docs/40:
 
 | Phase | Deliverable |
 |---|---|
-| P0 | Decision-log entry codifying this design; resolve Q-PLG-003, Q-PLG-005 |
+| P0 | Decision-log entry (D204); Q-PLG-003 resolved and `Std.JsonRpc` in the stdlib (D204); Q-PLG-005 open |
 | P1 | Language: `plugin_point`, `capability` (with parameters and `guard:`), `plugin`, `handle`; boundary-type checks; `K0001`-`K0012`; manifest generation; `docs/01` section and book chapter |
-| P1 | `Std.Plugin` process mode on `dotnet`, `jvm` and `native` hosts; JSON-RPC moved into the stdlib (Q-PLG-003) |
+| P1 | `Std.Plugin` process mode on `dotnet`, `jvm` and `native` hosts, over `Std.JsonRpc` |
 | P2 | Generators migrated to `SourceGenerator` (§15); docs/40 updated; `examples/generators` and `scripts/ci/source-generator-e2e.sh` on the new path; one C# generator built with the generated SDK in CI |
 | P3 | Wasm mode through `lyric-wasm-host` (§9.3 route 3); generators default to wasm payloads |
 | P4 | `protocol_point`; an LSP example; `contributes[T] each` and keyed contributions |
@@ -683,12 +686,11 @@ AppContainer v1 applies, and whether a host may refuse process-mode payloads
 from untrusted publishers by default. Recommendation: Linux Landlock plus
 network namespace in P1, the rest tracked per platform.
 
-**Q-PLG-003: where JSON-RPC lives.** `Std.Plugin` needs a JSON-RPC peer, and
-`lyric-jsonrpc` is an ecosystem library the stdlib and the compiler cannot
-depend on. Options: move the core peer and NDJSON framing into the stdlib as
-`Std.JsonRpc` (as `Std.JsonValue` was moved in D145), or give `Std.Plugin` a
-private implementation. Recommendation: move it, and make `lyric-jsonrpc` a
-re-export plus its extras, so there is one implementation.
+**Q-PLG-003: where JSON-RPC lives.** _Resolved in D204._ `Std.Plugin` needs a
+JSON-RPC peer, and `lyric-jsonrpc` was an ecosystem library the stdlib and the
+compiler cannot depend on. The peer and both stdio framings moved unchanged
+into the stdlib as `Std.JsonRpc` and `Std.JsonRpc.Stdio`, and `lyric-jsonrpc`
+was removed (it had no extras to keep), as D145 did for `Std.JsonValue`.
 
 **Q-PLG-004: comparing a grant with a request.** "A grant may narrow a request
 but not widen it" needs a comparison per capability. Options: the capability

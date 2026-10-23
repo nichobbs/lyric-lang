@@ -8,7 +8,7 @@
 //! is expected to pass identically on both targets.
 //!
 //! NOTE: assertions compare `Option[T]` via `match`, never `==` — see
-//! lyric-jsonrpc/README.md "Known upstream issues" #4 (`Option[T] ==
+//! #6120 (`Option[T] ==
 //! Option[T]` does not compare structurally on the current backend).
 @test_module
 package Mcp.McpSerializationTests

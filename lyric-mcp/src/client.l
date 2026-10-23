@@ -5,14 +5,14 @@
 //! longer perform any handshake — wrapping a transport is a pure local
 //! operation. Call `discoverServer` afterward (recommended, not required)
 //! to fetch `serverInfo` via `server/discover`. Every other operation
-//! (`listTools`, `callTool`, ...) is a thin `JsonRpc.call` wrapper that
+//! (`listTools`, `callTool`, ...) is a thin `Std.JsonRpc.call` wrapper that
 //! encodes params with `Mcp`'s encoders and decodes the result with
 //! `Mcp`'s decoders. `callResumableTool`/`resumeToolCall` drive the
 //! `input_required` multi-round-trip pattern (docs/64 §3.1) against a
 //! resumable tool.
 //!
 //! **Deadlines (#7451).** Every operation waits for its response for at
-//! most the client's call timeout — `JsonRpc.defaultCallTimeoutMs` (60 s)
+//! most the client's call timeout — `Std.JsonRpc.defaultCallTimeoutMs` (60 s)
 //! unless changed with `setClientCallTimeout` — and fails with `McpTimeout`
 //! when the server does not answer in time. The
 //! tool-call operations, which a slow tool can legitimately stretch, also
@@ -34,13 +34,13 @@ package Mcp.Client
 import Std.Core
 import Std.Collections
 import Std.JsonValue
-import JsonRpc
+import Std.JsonRpc
 import Mcp
 import Mcp.Stdio
 
-// Literal, not `JsonRpc.methodNotFound` — see server.l's `invalidParamsCode`/
+// Literal, not `Std.JsonRpc.methodNotFound` — see server.l's `invalidParamsCode`/
 // `methodNotFoundCode` for why: a package-level `pub val Int` read from a
-// workspace-restored cross-DLL dependency (`JsonRpc`) silently evaluates to
+// workspace-restored cross-DLL dependency (`Std.JsonRpc`) silently evaluates to
 // `0` at runtime with no compile- or run-time error. JSON-RPC 2.0's
 // standard codes are fixed by spec, so hardcoding is safe.
 val clientMethodNotFoundCode: Int = 0 - 32601
@@ -155,13 +155,13 @@ func request(
 }
 
 // `callWithin` queues any server-sent request/notification it sees while
-// waiting for this call's own response (`JsonRpc`'s "Dispatch model" doc);
+// waiting for this call's own response (`Std.JsonRpc`'s "Dispatch model" doc);
 // `Mcp.Client` never runs `runLoop`, so every operation drains that queue
 // itself right after its `callWithin` returns (#7520 review) — otherwise queued
 // entries accumulate across calls toward `maxPendingMessages` and every
 // later call starts failing. `NullHandler` answers a queued request with
 // the standard `-32601 Method not found` and drops a queued notification
-// (see `NullHandler`'s own doc and `JsonRpc.drainPendingQueue`). The drain
+// (see `NullHandler`'s own doc and `Std.JsonRpc.drainPendingQueue`). The drain
 // result itself is best-effort here: a transport failure surfaces on this
 // or a later call's own `callWithin` regardless, so it must not shadow the
 // result this call already obtained.
@@ -177,7 +177,7 @@ func requestWithin(
 }
 
 // A local deadline, a local transport failure and a peer's own error response
-// are different things to a caller deciding whether to retry. `JsonRpc` marks
+// are different things to a caller deciding whether to retry. `Std.JsonRpc` marks
 // the errors it produces itself (`isLocalError`); everything else came off the
 // wire.
 func classifyRpcError(method: in String, timeoutMs: in Int, e: in RpcError): McpClientError {

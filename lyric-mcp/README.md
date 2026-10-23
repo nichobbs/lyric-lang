@@ -1,7 +1,7 @@
 # lyric-mcp
 
 Model Context Protocol (MCP) client and server for Lyric, built on
-[`lyric-jsonrpc`](../lyric-jsonrpc). Implements protocol revision
+the stdlib's `Std.JsonRpc` and `Std.JsonRpc.Stdio` (D204). Implements protocol revision
 `2026-07-28` (primary), accepting `2025-06-18` during version negotiation
 — the stateless-core revision (see "Migrating from 2025-06-18" below).
 See `docs/62-jsonrpc-mcp.md` §5 and
@@ -56,7 +56,7 @@ over an in-memory transport pair — no process or socket involved.
 ## Call deadlines
 
 Every `Mcp.Client` operation waits at most the client's call timeout for
-its response — 60 s by default (`JsonRpc.defaultCallTimeoutMs`), changed
+its response — 60 s by default (`Std.JsonRpc.defaultCallTimeoutMs`), changed
 with `setClientCallTimeout(client, ms)` (1 ms to 24 h). A server that
 never answers, and never exits, can no longer hang the client (#7451).
 The tool-call operations, which a slow tool can legitimately stretch,
@@ -101,9 +101,9 @@ answers with its own `-32001` error is an `McpRpcFailure`.
 connection is likely unusable. `McpProtocolError` means the server
 answered, but not with what MCP defines for that method.
 
-`McpClient` never runs `JsonRpc.runLoop` (every operation is a plain
+`McpClient` never runs `Std.JsonRpc.runLoop` (every operation is a plain
 `call`/`callWithin`), so it drains `RpcPeer.pendingQueue` itself
-(`JsonRpc.drainPendingQueue`) right after each operation's call returns
+(`Std.JsonRpc.drainPendingQueue`) right after each operation's call returns
 — otherwise a server-sent request/notification seen interleaved with a
 call's response would sit queued forever, and once enough of them
 accumulated across calls past `maxPendingMessages` every later call
@@ -138,9 +138,9 @@ delay a read enough to make `Task.Wait(ms)` report a spurious timeout
 
 ### 2. `lyric-jsonrpc`'s JVM gap: `JObject`/`JArray` results over `runLoop` — no longer reproduces
 
-`lyric-jsonrpc/README.md` documented `runLoop` failing on the JVM to
+`lyric-jsonrpc` (now `Std.JsonRpc`, D204) documented `runLoop` failing on the JVM to
 thread a container-shaped result back through dispatch (#6123). Every
-`lyric-jsonrpc` and `lyric-mcp` test now passes under `--target jvm`, and
+`Std.JsonRpc` and `lyric-mcp` test now passes under `--target jvm`, and
 CI runs both suites on the JVM.
 
 ### 3. The test suite failed to type-check under `--target jvm` — no longer reproduces
@@ -156,7 +156,7 @@ gaps #1 and #3, now runs on both targets.
 
 Two new, real, self-hosted-compiler bugs were found and root-caused while
 building `Mcp.Server` — both `--target dotnet`-specific, both distinct
-from anything `lyric-jsonrpc/README.md` already documents, and both
+from anything `lyric-jsonrpc` (now `Std.JsonRpc`) documented, and both
 worked around in this library's own source (not papered over with a test
 change). Filed upstream against the compiler, not against this library's
 logic.
@@ -206,49 +206,14 @@ resolution issue, but a *compile-time* failure there rather than this
 (workspace-restored-dependency constant resolution) being under-tested
 upstream, without a single shared root cause established.
 
-## Local dependency mechanism
+## Dependencies
 
-`lyric-mcp/lyric.toml` depends on the sibling `lyric-jsonrpc` package via
-the workspace form (docs/38-workspace.md §3.1), the same mechanism every
-other in-repo ecosystem library uses for a sibling dependency (e.g.
-`lyric-ws` -> `Lyric.Auth`, `lyric-jobs` -> `Lyric.Resilience`):
-
-```toml
-[dependencies]
-"Lyric.JsonRpc" = { workspace = true }
-```
-
-This repository's root `lyric.toml` declares `[workspace]` with an
-`exclude` list that does **not** mention `lyric-jsonrpc` or `lyric-mcp`,
-so both are auto-discovered workspace members by walking the directory
-tree for `lyric.toml` files (docs/38 §2.2) — no explicit member listing
-is needed. `lyric build`/`lyric test` resolve `Lyric.JsonRpc` to
-`../lyric-jsonrpc`'s compiled source directly; there is no `path = "..."`
-dependency anywhere in this manifest (the workspace form is preferred
-over `path` inside a workspace per docs/38 §3.1, and is what actually
-builds cleanly with `lyric build --manifest lyric-mcp/lyric.toml` —
-verified directly, not assumed).
-
-**A related, separate compile-time symptom of the same general area**
-(also found while building this library, distinct from the two runtime
-bugs in "Upstream compiler bugs found and worked around" above): an
-*unqualified* reference to a `pub val` from `Lyric.JsonRpc` (e.g. plain
-`invalidParams` instead of `JsonRpc.invalidParams`) sometimes fails to
-resolve at all (`T0020 unknown name`), even with the defining package
-correctly `import`ed, in a project that consumes `Lyric.JsonRpc` via
-`{ workspace = true }` — reproduced in a from-scratch minimal repro
-(a single-package project depending only on `Lyric.JsonRpc`) where
-*all five* of `JsonRpc`'s standard error-code constants failed to
-resolve unqualified, while the fully-qualified form (`JsonRpc.invalidParams`)
-resolved without error every time. Not fully root-caused (the same
-unqualified form resolves fine for *some* call sites and not others in
-ways that were not isolated to a single pattern), but qualifying every
-`JsonRpc`-defined constant reference with its package name
-(`JsonRpc.invalidParams`, `JsonRpc.methodNotFound`, ...) reliably avoids
-the compile error — used throughout `lyric-mcp/src/server.l` and
-`client.l` (outside `impl` bodies; see bug #1 above for why not inside
-them) wherever such a constant is still read via `JsonRpc.*` rather than
-hardcoded per bug #2.
+`lyric-mcp` has no Lyric package dependencies: the JSON-RPC peer and stdio
+framings it builds on are the stdlib's `Std.JsonRpc` and
+`Std.JsonRpc.Stdio`, and its JSON model is `Std.JsonValue`. Until D204 the
+peer was the separate `lyric-jsonrpc` workspace library; the two
+cross-DLL constant bugs above were found against that layout, and the
+hardcoded error codes stay because JSON-RPC 2.0 fixes them by spec.
 
 ## Packages
 
@@ -257,7 +222,7 @@ hardcoded per bug #2.
 | `Mcp` | Shared types: protocol version negotiation, content blocks (`McpContent`), tool/resource/prompt wire shapes, the `McpToolCallOutcome`/`McpResumableToolHandler` `input_required` shapes, and every JSON encode/decode helper both the server and client use |
 | `Mcp.Server` | `McpServer` builder (`newServer` / `addTool` / `addResumableTool` / `addResource` / `addPrompt`) + `serveStdio` |
 | `Mcp.Client` | `McpClient`, `connectStdio` (and the lower-level `connectTransport`), `discoverServer`, `listTools` / `callTool` / `callResumableTool` / `resumeToolCall` / `listResources` / `readResource` / `listPrompts` / `getPrompt` / `ping` / `disconnect`; deadlines: `setClientCallTimeout`, `callToolWithin` / `callResumableToolWithin` / `resumeToolCallWithin` |
-| `Mcp.Stdio` | Client-side piped-child-process NDJSON transport (`Std.Process.PipedProcess` wrapped as a `JsonRpc.RpcTransport`, reusing `JsonRpc.Stdio`'s framing helpers rather than re-implementing them) |
+| `Mcp.Stdio` | Client-side piped-child-process NDJSON transport (`Std.Process.PipedProcess` wrapped as a `Std.JsonRpc.RpcTransport`, reusing `Std.JsonRpc.Stdio`'s framing helpers rather than re-implementing them) |
 
 ## Installation
 
@@ -419,27 +384,26 @@ func main(): Unit {
 - **`McpToolDef`/`McpResourceDef`/`McpPromptDef` carry an interface-typed
   `handler` field**, not the function-typed field
   (`(Option[JsonValue]) -> Result[McpToolResult, String]`)
-  docs/62-jsonrpc-mcp.md §5.1 specs. `lyric-jsonrpc/README.md` "Known
-  upstream issues" #3 documents a real self-hosted-compiler bug: a
+  docs/62-jsonrpc-mcp.md §5.1 specs. #5329 (bug 3) documented a real self-hosted-compiler bug: a
   closure stored in a record field (or passed as a function-typed
   parameter) from a *different* package than the field's declaring
   package fails at runtime on the JVM backend. Every application
   registering a handler necessarily lives in a different package than
   `Mcp`, so the function-typed field is exactly the buggy shape.
   `McpToolHandler`/`McpResourceHandler`/`McpPromptHandler` interfaces
-  sidestep it — the same fix `JsonRpc`'s own `RpcHandler`/`RpcTransport`
+  sidestep it — the same fix `Std.JsonRpc`'s own `RpcHandler`/`RpcTransport`
   and `lyric-cache/src/cache.l`'s `Clock` already apply for the identical
   reason.
 - **Whole-batch rejection is not implemented as a distinct MCP-level
   error**, though docs/62-jsonrpc-mcp.md §5.1 specs "the MCP layer never
-  emits batches and rejects inbound ones." The shipped `lyric-jsonrpc`
+  emits batches and rejects inbound ones." The shipped `Std.JsonRpc`
   `RpcHandler`/`RpcTransport` boundary already implements JSON-RPC 2.0 §6
   batching *generically* inside `runLoop`, fanning a batch array out into
   independent `onRequest`/`onNotification` calls before `McpServer` ever
   sees anything — there is no hook in the current `RpcHandler` interface
   for a handler to detect "this call is part of an inbound batch" and
   reject the envelope as a whole. Adding one would be a new cross-cutting
-  feature in `lyric-jsonrpc`, out of scope for this track's "small,
+  feature in `Std.JsonRpc`, out of scope for this track's "small,
   test-proven fix only" boundary on that library.
 - **Resource contents are text-only** (`McpResourceContent` has no
   `BlobResourceContents`/base64 binary variant), and **prompt message
@@ -494,5 +458,5 @@ lyric-mcp/
 ## See also
 
 - `docs/62-jsonrpc-mcp.md` — the agreed build spec (§5 covers this library)
-- `lyric-jsonrpc/README.md` — the JSON-RPC 2.0 peer this library builds on, including call deadlines and its JVM history
+- `lyric-stdlib/std/json_rpc.l` — `Std.JsonRpc`, the JSON-RPC 2.0 peer this library builds on, including call deadlines
 - [Model Context Protocol specification](https://modelcontextprotocol.io/specification/2025-06-18) (external reference)

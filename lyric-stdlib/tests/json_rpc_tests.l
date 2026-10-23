@@ -1,4 +1,4 @@
-//! tests/jsonrpc_tests.l — test suite for JsonRpc (envelope + peer).
+//! tests/json_rpc_tests.l — test suite for Std.JsonRpc (envelope + peer).
 //! Covers: request/response/notification round-trips, id correlation, the
 //! five standard error-code paths (-32700/-32600/-32601/-32602/-32603),
 //! handler-panic-to-internal-error mapping, and batch handling (order
@@ -8,18 +8,18 @@
 //!
 //! NOTE: `impl` method bodies here deliberately avoid lambda literals — a
 //! lambda literal directly inside an `impl` method body crashes the
-//! self-hosted MSIL backend (see stdio.l's module doc for the isolated
+//! self-hosted MSIL backend (see json_rpc_stdio.l's module doc for the isolated
 //! repro and workaround). `InMemoryTransport`/`RecordingHandler` below use
 //! only `var`-field mutation and plain control flow, never closures.
 @test_module
-package JsonRpc.JsonRpcTests
+package Std.JsonRpc.Tests
 
 import Std.Core
 import Std.Collections
 import Std.Testing
 import Std.Time
 import Std.JsonValue
-import JsonRpc
+import Std.JsonRpc
 
 // ── In-memory RpcTransport test double ──────────────────────────────────────
 // `silent`: an empty inbox means the peer has said nothing yet, so

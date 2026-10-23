@@ -59,12 +59,12 @@ if head -c 2 "$lyric_bin" | grep -q '#!'; then
   echo "::error::$lyric_bin is still a shell wrapper after rebuild; #7514 regression guard would not exercise the real AOT apphost"
   exit 1
 fi
-for manifest in lyric-jsonrpc/lyric.toml lyric-mcp/lyric.toml; do
+for manifest in lyric-mcp/lyric.toml; do
   echo "=== real AOT apphost: lyric test --manifest $manifest ==="
   if ! "$lyric_bin" test --manifest "$manifest"; then
     echo "::error::#7514 regression: '$lyric_bin test --manifest $manifest' failed through the real AOT apphost entry point"
     exit 1
   fi
 done
-echo "OK: real AOT apphost (not the dotnet-lyric.dll wrapper) ran lyric-jsonrpc + lyric-mcp (path-dependency manifest) tests cleanly (#7514 regression guard)." >> "$GITHUB_STEP_SUMMARY"
+echo "OK: real AOT apphost (not the dotnet-lyric.dll wrapper) ran the lyric-mcp manifest tests cleanly (#7514 regression guard)." >> "$GITHUB_STEP_SUMMARY"
 

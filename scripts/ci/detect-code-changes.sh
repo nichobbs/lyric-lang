@@ -65,8 +65,7 @@ declare -A ECO_DEPS=(
   [storage]=""
   [proto]=""
   [otel]="proto"
-  [jsonrpc]=""
-  [mcp]="jsonrpc"
+  [mcp]=""
   [logging]=""
   [mq]="cache"
   [grpc]="auth resilience"
@@ -76,7 +75,7 @@ declare -A ECO_DEPS=(
   [web]="auth resilience ws"
   [ws]="auth"
   [forms]="generator-sdk"
-  [ui]="generator-sdk forms jsonrpc auth resilience web ws"
+  [ui]="generator-sdk forms auth resilience web ws"
   [testing]="cache mail storage feature-flags mq session"
 )
 

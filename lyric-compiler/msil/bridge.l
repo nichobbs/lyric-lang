@@ -1986,10 +1986,17 @@ pub func collectStdlibPackages(stdlibSources: in List[String]): List[StdlibPkg] 
         case IProtected(_) -> true
         case IExternType(_) -> true
         case IFunc(decl) -> match decl.visibility { case Some(VisPub(_)) -> true; case _ -> false }
+        // A literal constant: the consumer inlines it (`stdlibInlinableConstMsil`).
+        case IConst(_) -> isSome(stdlibInlinableConstMsil(it))
+        case IVal(_) -> isSome(stdlibInlinableConstMsil(it))
         case _ -> false
       }
       if include {
         items.add(it)
+      } else if isImplItem(it) {
+        // The type checker needs the conformance and the method heads, not
+        // the bodies, which call package-private helpers.
+        items.add(implHeadOnly(it))
       } else {
         // A private generic func with a body never gets a real MemberRef
         // (unlike the `include` case above): it is only ever copy-
@@ -2025,6 +2032,30 @@ pub func collectStdlibPackages(stdlibSources: in List[String]): List[StdlibPkg] 
     si = si + 1
   }
   pkgs
+}
+
+func isImplItem(it: in Item): Bool {
+  match it.kind {
+    case IImpl(_) -> true
+    case _ -> false
+  }
+}
+
+// An `impl` item with its method bodies removed.
+func implHeadOnly(it: in Item): Item {
+  match it.kind {
+    case IImpl(idecl) -> {
+      val members: List[ImplMember] = newList()
+      for m in idecl.members {
+        match m {
+          case IMplFunc(fn) -> members.add(IMplFunc(fn = fn.copy(body = None)))
+          case IMplAssoc(a) -> members.add(IMplAssoc(assoc = a))
+        }
+      }
+      it.copy(kind = IImpl(decl = idecl.copy(members = members)))
+    }
+    case _ -> it
+  }
 }
 
 // Collect every pure-Lyric generic `pub func` from the stdlib packages so the

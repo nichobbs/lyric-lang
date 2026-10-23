@@ -8,24 +8,24 @@
 //! cover it directly, for legacy-peer tolerance), but no request needs it
 //! to precede anything else anymore.
 //!
-//! Synchronization: `JsonRpc.RpcTransport.receive()` is documented as
+//! Synchronization: `Std.JsonRpc.RpcTransport.receive()` is documented as
 //! blocking ("block until the next complete message arrives"), and this
 //! suite runs single-threaded with no real concurrency and no transport
 //! that recurses into the server's own `runLoop` from inside its own
 //! `receive()` — an earlier version of this suite tried exactly that (a
 //! `ClientSideTransport.receive()` that called `runLoop` on the server's
-//! peer whenever its own inbound queue was empty, giving `JsonRpc.call()`
+//! peer whenever its own inbound queue was empty, giving `Std.JsonRpc.call()`
 //! a live server to talk to synchronously) and hit a real, reproducible
 //! `.NET` runtime crash: `System.NullReferenceException` deep inside
 //! `Std.JsonValue.writeValue`'s recursive object writer, isolated (in a
 //! from-scratch two-file minimal repro outside this library, mirroring
-//! `lyric-jsonrpc/README.md`'s own isolation method) to the *combination*
+//! the `lyric-jsonrpc` isolation method) to the *combination*
 //! of a nested nested-JSON-object result value (`McpServer`'s
 //! `InitializeResult`, which nests `capabilities` and `serverInfo`) with
 //! that specific recursive-transport shape — a plain scalar result (the
 //! isolated repro's own trivial `EchoHandler`) through the identical
 //! recursive-transport pattern does not crash. This is a new, narrower
-//! cousin of `lyric-jsonrpc/README.md`'s own documented (JVM-only)
+//! cousin of the JVM-only issue `lyric-jsonrpc` documented in #6123,
 //! "container-shaped `JsonValue` corrupted threading back through
 //! `runLoop`'s dispatch machinery" issue, now also reproduced on `.NET`
 //! given deep enough recursion through two independently-live `RpcPeer`s.
@@ -42,12 +42,12 @@
 //! exactly once at the test's own top level (never nested inside a
 //! transport method), then read the response back out and decode/assert
 //! it with `Mcp`'s decode functions — the same "feed, then dispatch, then
-//! read the outbox" shape `lyric-jsonrpc/tests/jsonrpc_tests.l` already
+//! read the outbox" shape `lyric-stdlib/tests/json_rpc_tests.l` already
 //! uses successfully. The one test that needs a genuine `Mcp.Client`
 //! (`"a real McpClient round-trips tools/list against a real McpServer,
 //! no handshake needed"` below) gets there by *pre-staging* each response
-//! the client's `JsonRpc.call()` will need — computed via the same safe
-//! non-recursive `stage()` helper, using `JsonRpc`'s own deterministic,
+//! the client's `Std.JsonRpc.call()` will need — computed via the same safe
+//! non-recursive `stage()` helper, using `Std.JsonRpc`'s own deterministic,
 //! auto-incrementing request ids (1, 2, 3, ...) to predict exactly which
 //! response `call()`'s inline read loop will be looking for — so `call()`
 //! never needs a transport that recurses to produce it. Redundant
@@ -58,18 +58,18 @@
 //!
 //! Spec deviation — whole-batch rejection (docs/62-jsonrpc-mcp.md §5.1,
 //! "the MCP layer never emits batches and rejects inbound ones"): the
-//! shipped `JsonRpc.RpcTransport`/`RpcHandler` boundary (`lyric-jsonrpc`)
+//! shipped `Std.JsonRpc.RpcTransport`/`RpcHandler` boundary (the stdlib's `Std.JsonRpc`)
 //! already implements JSON-RPC 2.0 §6 batching *generically* inside
 //! `runLoop`'s private dispatch, fanning a batch array out into
 //! independent `onRequest`/`onNotification` calls before an `RpcHandler`
 //! such as `McpServer` ever sees anything — there is no hook in the
 //! current `RpcHandler` interface for a handler to detect "this call is
 //! part of an inbound batch" and reject the envelope as a whole. Adding
-//! one would be a new cross-cutting feature in `lyric-jsonrpc`, out of
+//! one would be a new cross-cutting feature in the stdlib's `Std.JsonRpc`, out of
 //! scope for a "small, test-proven fix" to that library.
 //!
 //! NOTE: assertions compare `Option[T]` via `match`, never `==` — see
-//! lyric-jsonrpc/README.md "Known upstream issues" #4.
+//! #6120.
 @test_module
 package Mcp.McpTests
 
@@ -78,7 +78,7 @@ import Std.Collections
 import Std.Testing
 import Std.Time
 import Std.JsonValue
-import JsonRpc
+import Std.JsonRpc
 import Mcp
 import Mcp.Server
 import Mcp.Client
@@ -930,7 +930,7 @@ test "batch: every element is handled normally, with no prior handshake needed" 
 
 // ── A real Mcp.Client against a real Mcp.Server ─────────────────────────────
 // See the module doc's "Workaround used throughout this file": every
-// response `JsonRpc.call()` will look for is pre-staged (computed via the
+// response `Std.JsonRpc.call()` will look for is pre-staged (computed via the
 // same non-recursive `stage()` helper) before the real `Mcp.Client`
 // function that triggers the matching `call()` is invoked, so `call()`'s
 // own inline read loop finds it immediately without any transport ever
@@ -974,7 +974,7 @@ test "a real McpClient round-trips server/discover + tools/list against a real M
 
 // #7520 review: `Mcp.Client` never used to drain `RpcPeer.pendingQueue` — a
 // server-sent notification/request seen interleaved with a call's own
-// response is queued by `JsonRpc.callWithin` for whoever runs `runLoop` to
+// response is queued by `Std.JsonRpc.callWithin` for whoever runs `runLoop` to
 // pick up later, and `Mcp.Client` never runs `runLoop`. Without the fix
 // (draining after every call in `requestWithin`), one queued notification
 // per round accumulates forever, and once the count passes
