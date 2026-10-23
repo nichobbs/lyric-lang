@@ -13,6 +13,7 @@ import Std.Testing
 import Std.JsonValue
 import Std.JsonRpc
 import Std.Plugin
+import Std.Environment as Env
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
 val goodManifest: String = "{\"schema\":1,\"id\":\"acme.git-tools\",\"version\":\"0.4.1\",\"publisher\":\"acme\"," + "\"points\":[{\"point\":\"Editor.Api.EditorExtension\",\"version\":\"1.2\",\"contributions\":{\"commands\":[\"git.blame\"]}}]," + "\"capabilities\":{\"required\":[{\"name\":\"Editor.Api.WorkspaceRead\",\"grant\":{\"roots\":[\"/a\",\"/b\"],\"mode\":\"ro\"}}]," + "\"optional\":[{\"name\":\"Editor.Api.Notify\"}]}," + "\"payloads\":[{\"mode\":\"wasm\",\"module\":\"plugin.wasm\"}," + "{\"mode\":\"process\",\"os\":\"linux\",\"arch\":\"x86_64\",\"command\":[\"bin/git-tools\",\"--serve\"]}," + "{\"mode\":\"process\",\"runtime\":\"dotnet\",\"command\":[\"dotnet\",\"exec\",\"lib/GitTools.dll\"]}," + "{\"mode\":\"process\",\"runtime\":\"jvm\",\"command\":[\"java\",\"-jar\",\"lib/git-tools.jar\"]}]," + "\"future\":\"ignored\"}"
@@ -385,6 +386,16 @@ test "launch commands resolve paths inside the plugin directory" {
     case Ok(_) -> assertTrue(false, "a wasm payload needs wasmtime")
     case Err(_) -> ()
   }
+}
+
+test "a missing $LYRIC_WASMTIME override is named in the error" {
+  val before = Env.getVarOrDefault("LYRIC_WASMTIME", "")
+  Env.setVar("LYRIC_WASMTIME", "/nonexistent/wasmtime")
+  match pluginLaunchCommand(WasmPayload(wasmModule = "p.wasm"), "/plugins/p", findWasmtime(), 1024i64) {
+    case Ok(_) -> assertTrue(false, "a missing override is not used")
+    case Err(e) -> assertTrue(e.contains("/nonexistent/wasmtime"), e)
+  }
+  Env.setVar("LYRIC_WASMTIME", before)
 }
 
 test "a payload command too short to launch is an error, not a panic" {

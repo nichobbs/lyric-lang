@@ -1332,6 +1332,17 @@ pub func selectPluginPayload(
   None
 }
 
+/// Why no `wasmtime` was found: `$LYRIC_WASMTIME` names a file that does not
+/// exist (the override is not followed by a `PATH` search), or neither it nor
+/// `PATH` provides one.
+func plWasmtimeMissingMessage(): String {
+  val explicit = Env.getVarOrDefault("LYRIC_WASMTIME", "")
+  if explicit.length > 0 {
+    return "a wasm payload needs wasmtime, and $LYRIC_WASMTIME is set to '" + explicit + "', which does not exist"
+  }
+  "a wasm payload needs wasmtime on PATH or at $LYRIC_WASMTIME"
+}
+
 /// The `wasmtime` executable: `$LYRIC_WASMTIME` when it is set (and names an
 /// existing file), otherwise the first `wasmtime` on `PATH`.
 @experimental
@@ -1425,10 +1436,7 @@ pub func pluginLaunchCommand(
       }
     }
     case WasmPayload(file) -> {
-      val exe = match wasmtime {
-        case Some(w) -> w
-        case None -> return Err(error = "a wasm payload needs wasmtime on PATH or at $LYRIC_WASMTIME")
-      }
+      val exe = match wasmtime { case Some(w) -> w; case None -> return Err(error = plWasmtimeMissingMessage()) }
       argv.add(exe)
       argv.add("run")
       argv.add("-W")
