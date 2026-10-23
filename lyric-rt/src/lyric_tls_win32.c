@@ -257,6 +257,25 @@ static void identity_free(Identity* id) {
     memset(id, 0, sizeof *id);
 }
 
+/* Schannel builds the chain a peer is sent from the system certificate
+ * stores, not from the store a certificate context came from, so an
+ * identity's intermediates are added to the user's Intermediate Certification
+ * Authorities store (as .NET's SslStream does on Windows).  An intermediate
+ * confers no trust: a peer still verifies the chain against its own roots.
+ * Self-signed certificates (roots) are never added. */
+static void publish_intermediates(const Identity* id) {
+    HCERTSTORE ca = CertOpenStore(CERT_STORE_PROV_SYSTEM_W, 0, 0,
+                                  CERT_SYSTEM_STORE_CURRENT_USER | CERT_STORE_OPEN_EXISTING_FLAG, L"CA");
+    if (!ca) return;
+    PCCERT_CONTEXT c = NULL;
+    while ((c = CertEnumCertificatesInStore(id->chain, c)) != NULL) {
+        if (CertCompareCertificate(X509_ASN_ENCODING, c->pCertInfo, id->leaf->pCertInfo)) continue;
+        if (CertCompareCertificateName(X509_ASN_ENCODING, &c->pCertInfo->Subject, &c->pCertInfo->Issuer)) continue;
+        CertAddCertificateContextToStore(ca, c, CERT_STORE_ADD_USE_EXISTING, NULL);
+    }
+    CertCloseStore(ca, 0);
+}
+
 /* Loads `cert_pem` (leaf, then intermediates) and `key_pem`, checks they
  * match, and persists the key for Schannel.  0 on success. */
 static int identity_load(Identity* id, const char* cert_pem, const char* key_pem) {
@@ -312,6 +331,7 @@ static int identity_load(Identity* id, const char* cert_pem, const char* key_pem
         identity_free(id);
         return -1;
     }
+    publish_intermediates(id);
     return 0;
 }
 
