@@ -11781,7 +11781,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           // to its logical type on load (#1939).
           match mapGet(fctx.boxedParamTypes, slot) {
             case Some(logicalTy) -> {
-              castObjectToMsil(cctx, insns, logicalTy)
+              narrowBoxedParamMsil(cctx, fctx, insns, logicalTy)
               logicalTy
             }
             case None -> ty
@@ -13656,7 +13656,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                           // read of the parameter is (#8317).  An erased
                           // field takes the boxed value as it is.
                           case Some(logicalTy) -> if not erasedField and not nameListContains(capObjFields, capName) {
-                            castObjectToMsil(cctx, insns, logicalTy)
+                            narrowBoxedParamMsil(cctx, fctx, insns, logicalTy)
                           }
                           // Also a type that mentions one (#7704): a value-type
                           // instantiation needs the box; a reference type has
@@ -19069,7 +19069,51 @@ func methodArgsWithDefaultsMsil(cctx: in CodegenCtx, dispatchKey: in String, arg
   }
 }
 
-// Lower a function call expression.
+// Lower the `i`th argument of a call through a function value.  The value's
+// declared parameter type, when known, is the construction hint for a bare
+// generic case argument (`f(Left(3))` against `(Either[Int, String]) -> …`),
+// as it is for a call to a named function: without it the case is built with
+// erased type arguments and a `match` over the parameter inside the callee
+// never matches it (#8442).
+func lowerFuncValueArgMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  arg: in CallArg,
+  paramTys: in List[MsilType],
+  i: in Int,
+): MsilType {
+  val pTy = if i < paramTys.count { paramTys[i] } else { MObject }
+  val pArgs: List[MsilType] = match pTy {
+    case MGenericInst(_, _, a) -> a
+    case MGenericInstByName(_, a) -> a
+    case _ -> newList()
+  }
+  if pArgs.count == 0 {
+    return lowerCallArgMsil(cctx, fctx, insns, arg)
+  }
+  val savedHints: List[MsilType] = newList()
+  for h in fctx.contextHintTyArgs {
+    savedHints.add(h)
+  }
+  while fctx.contextHintTyArgs.count > 0 {
+    fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
+  }
+  for a in pArgs {
+    fctx.contextHintTyArgs.add(a)
+  }
+  pushCollExpect(fctx, pTy)
+  val argTy = lowerCallArgMsil(cctx, fctx, insns, arg)
+  popCollExpect(fctx)
+  while fctx.contextHintTyArgs.count > 0 {
+    fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
+  }
+  for h in savedHints {
+    fctx.contextHintTyArgs.add(h)
+  }
+  argTy
+}
+
 // Invoke a function value through the uniform boxed `Func`(N)` ABI (#1877),
 // ASSUMING the callee delegate is already pushed on top of the operand
 // stack (a named slot's `emitLoadSlot`, or an arbitrary expression's
@@ -19081,17 +19125,20 @@ func methodArgsWithDefaultsMsil(cctx: in CodegenCtx, dispatchKey: in String, arg
 // type wasn't resolvable at this call site) leaves the boxed `object`
 // placeholder untouched, matching the pre-existing untracked-return-type
 // fallback both call sites used.
+// `paramTys` are the value's declared parameter types, when known (see
+// `lowerFuncValueArgMsil`).
 func lowerFuncValueInvokeMsil(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
   insns: in List[MInsn],
   args: in List[CallArg],
   retType: in Option[MsilType],
+  paramTys: in List[MsilType],
 ): MsilType {
   insns.add(MCastclass(typeToken = 0x1B000000 + internFuncNTypeSpec(cctx, args.count)))
   var i = 0
   while i < args.count {
-    val argTy = lowerCallArgMsil(cctx, fctx, insns, args[i])
+    val argTy = lowerFuncValueArgMsil(cctx, fctx, insns, args[i], paramTys, i)
     boxIfNeededMsil(cctx, insns, argTy)
     i = i + 1
   }
@@ -19474,6 +19521,13 @@ func prefixSegsMsil(segs: in List[String]): List[String] {
   acc
 }
 
+func funcValParamTysMsil(fctx: in FuncCtx, name: in String): List[MsilType] {
+  match mapGet(fctx.funcValParamTypes, name) {
+    case Some(pts) -> pts
+    case None -> newList()
+  }
+}
+
 func invokeLoadedFuncValueMsil(
   cctx: in CodegenCtx,
   fctx: in FuncCtx,
@@ -19481,6 +19535,7 @@ func invokeLoadedFuncValueMsil(
   args: in List[CallArg],
   valueTy: in MsilType,
   retType: in Option[MsilType],
+  paramTys: in List[MsilType],
 ): MsilType {
   val realActionArity = match valueTy {
     case MClass(cn) -> if cn == "System.Action" { 0 } else { -1 }
@@ -19494,7 +19549,7 @@ func invokeLoadedFuncValueMsil(
   if realActionArity >= 0 and args.count == realActionArity {
     var argI = 0
     while argI < args.count {
-      val argTy = lowerCallArgMsil(cctx, fctx, insns, args[argI])
+      val argTy = lowerFuncValueArgMsil(cctx, fctx, insns, args[argI], paramTys, argI)
       boxIfNeededMsil(cctx, insns, argTy)
       argI = argI + 1
     }
@@ -19512,9 +19567,9 @@ func invokeLoadedFuncValueMsil(
     case _ -> false
   }
   if erasedValue {
-    return invokeErasedFuncValueMsil(cctx, fctx, insns, args, retType)
+    return invokeErasedFuncValueMsil(cctx, fctx, insns, args, retType, paramTys)
   }
-  lowerFuncValueInvokeMsil(cctx, fctx, insns, args, retType)
+  lowerFuncValueInvokeMsil(cctx, fctx, insns, args, retType, paramTys)
 }
 
 // The locals `invokeErasedFuncValueMsil` allocates for a call of `argCount`
@@ -19532,6 +19587,7 @@ func invokeErasedFuncValueMsil(
   insns: in List[MInsn],
   args: in List[CallArg],
   retType: in Option[MsilType],
+  paramTys: in List[MsilType],
 ): MsilType {
   val n = toString(fctx.slotTicker.count)
   val fnSlot = allocSlotMsil(fctx, "__erasedfn_" + n, MObject)
@@ -19539,7 +19595,7 @@ func invokeErasedFuncValueMsil(
   val argSlots: List[Int] = newList()
   var i = 0
   while i < args.count {
-    val argTy = lowerCallArgMsil(cctx, fctx, insns, args[i])
+    val argTy = lowerFuncValueArgMsil(cctx, fctx, insns, args[i], paramTys, i)
     boxIfNeededMsil(cctx, insns, argTy)
     val aSlot = allocSlotMsil(fctx, "__erasedfn_a" + toString(i) + "_" + n, MObject)
     emitStoreSlot(insns, aSlot, fctx.paramCount)
@@ -19677,7 +19733,7 @@ pub func lowerCallMsil(
       // `System.Action` (its returned lambda literal is built as one), so
       // dispatch on the callee value's static type like a slot invoke does
       // rather than always casting it to the uniform `Func`.
-      invokeLoadedFuncValueMsil(cctx, fctx, insns, args, calleeTy, retType)
+      invokeLoadedFuncValueMsil(cctx, fctx, insns, args, calleeTy, retType, newList())
     }
   }
 }
@@ -21062,7 +21118,15 @@ func lowerBuiltinOrStaticCallMsil(
             // untracked return type leaves the boxed `object` placeholder.
             emitLoadSlot(insns, slot, fctx.paramCount)
             val slotTy = match mapGet(fctx.types, funcName) { case Some(t) -> t; case None -> MObject }
-            invokeLoadedFuncValueMsil(cctx, fctx, insns, args, slotTy, mapGet(fctx.funcValRetTypes, funcName))
+            invokeLoadedFuncValueMsil(
+              cctx,
+              fctx,
+              insns,
+              args,
+              slotTy,
+              mapGet(fctx.funcValRetTypes, funcName),
+              funcValParamTysMsil(fctx, funcName)
+            )
           }
           case None -> if path.segments.count == 1 and (fctx.captureNameToIndex.containsKey(funcName) or fctx.hoistedCellSlot.containsKey(funcName)) {
             // A function value that is not a slot of THIS function: a
@@ -21074,7 +21138,15 @@ func lowerBuiltinOrStaticCallMsil(
             // with T0123 for any lambda that called a captured function
             // value.
             val valueTy = lowerExprMsil(cctx, fctx, insns, Expr(kind = EPath(path = path), span = path.span))
-            invokeLoadedFuncValueMsil(cctx, fctx, insns, args, valueTy, mapGet(fctx.funcValRetTypes, funcName))
+            invokeLoadedFuncValueMsil(
+              cctx,
+              fctx,
+              insns,
+              args,
+              valueTy,
+              mapGet(fctx.funcValRetTypes, funcName),
+              funcValParamTysMsil(fctx, funcName)
+            )
           } else if path.segments.count == 1 and isBareSelfFieldCallMsil(cctx, fctx, funcName) {
             // A bare call to a function-typed field of the enclosing record
             // or impl target means `self.<name>(args)`, ahead of a same-named
@@ -22175,7 +22247,17 @@ func recordFuncFieldCallMsil(
           insns.add(MCastclassByName(className = cls))
           insns.add(MLdfld(fieldToken = tok))
           val fty = match mapGet(cctx.fieldMsilTypes, key) { case Some(t) -> t; case None -> MObject }
-          Some(value = invokeLoadedFuncValueMsil(cctx, fctx, insns, args, fty, mapGet(cctx.fieldFuncRetTypes, key)))
+          Some(
+            value = invokeLoadedFuncValueMsil(
+              cctx,
+              fctx,
+              insns,
+              args,
+              fty,
+              mapGet(cctx.fieldFuncRetTypes, key),
+              match mapGet(cctx.fieldFuncParamTypes, key) { case Some(pts) -> pts; case None -> newList() }
+            )
+          )
         }
         case None -> None
       }
@@ -22199,7 +22281,8 @@ func recordFuncFieldCallMsil(
           match mapGet(cctx.fieldFuncRetTypesOpen, key) {
             case Some(openRet) -> Some(value = substituteTypeVarsMsil(openRet, typeArgs))
             case None -> mapGet(cctx.fieldFuncRetTypes, key)
-          }
+          },
+          newList()
         )
       )
     }
@@ -36803,7 +36886,28 @@ func boxedParamNarrowIsNoopMsil(ty: in MsilType): Bool {
     case MGenericInstByName(head, _) -> not (isFuncDelegateHeadMsil(head) or isActionDelegateHeadMsil(head))
     case MConcreteList(_) -> false
     case MConcreteMap(_, _) -> false
+    case MArray(e) -> not sliceElemHasArrayTokenMsil(e)
     case _ -> true
+  }
+}
+
+// Narrow a lambda parameter held as the `object` it arrived as to its logical
+// type.  A slice of an element type with an array token is converted, since a
+// `List`-backed one (built where no slice was expected, #2539) cannot be cast
+// to `e[]`; everything else is cast as `castObjectToMsil` casts it (#8349).
+func narrowBoxedParamMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], ty: in MsilType): Unit {
+  match ty {
+    case MArray(e) -> if sliceElemHasArrayTokenMsil(e) { emitObjectToSliceArrayMsil(cctx, fctx, insns, e) }
+    case _ -> castObjectToMsil(cctx, insns, ty)
+  }
+}
+
+// Whether `slice[e]` has the `e[]` representation `sliceArraySpecTokenOpt`
+// builds a type token for.
+func sliceElemHasArrayTokenMsil(e: in MsilType): Bool {
+  match e {
+    case MInt | MLong | MDouble | MFloat | MBool | MChar | MByte | MString -> true
+    case _ -> false
   }
 }
 
@@ -41014,70 +41118,6 @@ func collectBoundNamesPattern(p: in Pattern, acc: in List[String]): Unit {
   }
 }
 
-func collectBoundNamesBlock(b: in Block, acc: in List[String]): Unit {
-  var i = 0
-  while i < b.statements.count {
-    collectBoundNamesStmt(b.statements[i], acc)
-    i = i + 1
-  }
-}
-
-func collectBoundNamesStmt(s: in Statement, acc: in List[String]): Unit {
-  match s.kind {
-    case SLocal(binding) -> match binding {
-      case LBVal(pat, _, _) -> {
-        collectBoundNamesPattern(pat, acc)
-      }
-      case LBLet(name, _, _) -> {
-        addNameOnce(acc, name)
-      }
-      case LBVar(name, _, _) -> {
-        addNameOnce(acc, name)
-      }
-    }
-    case SWhile(_, _, body) -> {
-      collectBoundNamesBlock(body, acc)
-    }
-    case SFor(_, pat, _, body) -> {
-      collectBoundNamesPattern(pat, acc)
-      collectBoundNamesBlock(body, acc)
-    }
-    case SLoop(_, body) -> {
-      collectBoundNamesBlock(body, acc)
-    }
-    case SScope(_, body) -> {
-      collectBoundNamesBlock(body, acc)
-    }
-    case SDefer(body) -> {
-      collectBoundNamesBlock(body, acc)
-    }
-    case STry(body, catches, finally_) -> {
-      collectBoundNamesBlock(body, acc)
-      var ci = 0
-      while ci < catches.count {
-        match catches[ci].bindName {
-          case Some(nm) -> {
-            addNameOnce(acc, nm)
-          }
-          case None -> {
-          }
-        }
-        collectBoundNamesBlock(catches[ci].body, acc)
-        ci = ci + 1
-      }
-      match finally_ {
-        case Some(fb) -> {
-          collectBoundNamesBlock(fb, acc)
-        }
-        case None -> {
-        }
-      }
-    }
-    case _ -> {
-    }
-  }
-}
-
 // Return the enclosing-scope variable names captured by a lambda.
 pub func lambdaCaptureNamesMsil(fctx: in FuncCtx, lparams: in List[LambdaParam], body: in Block): List[String] {
   val refs: List[String] = newList()
@@ -41088,7 +41128,6 @@ pub func lambdaCaptureNamesMsil(fctx: in FuncCtx, lparams: in List[LambdaParam],
     addNameOnce(bound, lparams[p].name)
     p = p + 1
   }
-  collectBoundNamesBlock(body, bound)
   val caps: List[String] = newList()
   var i = 0
   while i < refs.count {

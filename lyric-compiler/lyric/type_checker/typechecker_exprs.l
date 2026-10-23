@@ -4706,7 +4706,11 @@ func maybeUnknownMemberDiag(
         unknownDistinctMethodDiag(tbl, sigs, diag, recv, tname, name, span)
         return
       }
-      if not symTableIsMemberComplete(tbl, tid) {
+      // A union's member surface is its methods, its `impl`s and the dot-named
+      // functions and UFCS functions that bind to it, so an unresolved *call*
+      // on one names nothing any backend can dispatch (#8319).
+      val unionCall = isCall and tbl.unionDeclIndex.containsKey(toString(tid.id))
+      if not symTableIsMemberComplete(tbl, tid) and not unionCall {
         return
       }
       if isUniversalMethodName(name) {
@@ -14571,6 +14575,43 @@ func bindValueGenericCall(
   }
 }
 
+// The result type of a call to a generic function under explicit type
+// arguments (`boxer[Int]()`, the parser's `ECall(EIndex(fn, targs), args)`):
+// the declared result with each type parameter replaced by the argument given
+// for it.  `None` unless every parameter is given a closed type here and the
+// callee is a plain generic function; the call then types as it always did
+// (#8347).
+func explicitTypeArgCallType(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  fn: in Expr,
+  args: in List[CallArg],
+  argTypes: in List[Type],
+): Option[Type] {
+  if explicitGenericArgs(fn).count == 0 {
+    return None
+  }
+  match valueGenericCallee(tbl, fn, args.count) {
+    case Some(_) -> return None
+    case None -> ()
+  }
+  val inner = match fn.kind { case EIndex(i, _) -> i; case ETypeApp(i, _) -> i; case _ -> return None }
+  match inner.kind {
+    case EPath(_) -> ()
+    case _ -> return None
+  }
+  val sig = match findDirectSig(sc, tbl, sigs, inner, args.count, argTypes) {
+    case Some(s) -> s
+    case None -> return None
+  }
+  if sig.isAsync or sig.isGenerator {
+    return None
+  }
+  val targs = match explicitCallTypeArgs(sc, tbl, fn, sig) { case Some(ts) -> ts; case None -> return None }
+  Some(value = substituteTyVars(sig.returnTy, sig.generics, targs))
+}
+
 func checkExplicitValueGenericCall(
   sc: in Scope,
   tbl: in SymbolTable,
@@ -16171,17 +16212,20 @@ func inferExprCore(
                     }
                     case TyError -> match explicitValueGenericTy {
                       case Some(vt) -> vt
-                      case None -> match collMemberParams {
-                        case Some(_) -> match memberRecvTy {
-                          case Some(crt3) -> stdCollectionMemberResult(
-                            tbl,
-                            crt3,
-                            memberName,
-                            args.count
-                          )
+                      case None -> match explicitTypeArgCallType(sc, tbl, sigs, fn, args, argTypes) {
+                        case Some(et) -> et
+                        case None -> match collMemberParams {
+                          case Some(_) -> match memberRecvTy {
+                            case Some(crt3) -> stdCollectionMemberResult(
+                              tbl,
+                              crt3,
+                              memberName,
+                              args.count
+                            )
+                            case None -> TyError
+                          }
                           case None -> TyError
                         }
-                        case None -> TyError
                       }
                     }
                     case _ -> {
