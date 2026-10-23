@@ -29,7 +29,7 @@ import Std.Testing
 import Std.String as Str
 
 // A template that is not a literal: a malformed literal template is rejected
-// at compile time (T0194, #7983), so the run-time panics are reached through
+// at compile time (T0199, #7983), so the run-time panics are reached through
 // this.
 func tpl(s: in String): String {
   s

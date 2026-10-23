@@ -796,7 +796,7 @@ func caseFullyCoveredBy(p: in Pattern, caseNames: in List[String]): Option[Strin
   }
 }
 
-// T0191: a `match` arm that no value can reach — it follows an unguarded
+// T0196: a `match` arm that no value can reach — it follows an unguarded
 // catch-all arm (`case _`, a bare binding), or every case it names was already
 // matched whole by earlier unguarded arms.  The earlier arm wins at run time,
 // so the later arm is silently dead code (#7916).
@@ -820,7 +820,7 @@ func checkUnreachableArms(tbl: in SymbolTable, diag: in List[Diagnostic], st0: i
     if catchAll >= 0 {
       diag.add(
         errorDiagnostic(
-          "T0191",
+          "T0196",
           "unreachable match arm: the earlier catch-all arm at line " + toString(arms[catchAll].pattern.span.startPos.line) +
             " matches every value first",
           arm.pattern.span
@@ -833,7 +833,7 @@ func checkUnreachableArms(tbl: in SymbolTable, diag: in List[Diagnostic], st0: i
           case Some(nm) -> if listContainsStr(covered, nm) {
             diag.add(
               errorDiagnostic(
-                "T0191",
+                "T0196",
                 "unreachable match arm: case '" + nm + "' is already matched by an earlier arm",
                 arm.pattern.span
               )
@@ -6444,7 +6444,7 @@ func inferPropagate(
   propagateUnwrap(closed)
 }
 
-// T0190: the operand of `?` must be a `Result` or an `Option` (or a `T?`
+// T0195: the operand of `?` must be a `Result` or an `Option` (or a `T?`
 // nullable, which lowers to `Option`).  Any other operand type the checker
 // knows — a primitive, a function, a tuple, a record — has no `Ok`/`Err` or
 // `Some`/`None` shape for the lowering to match on, so a backend would fail
@@ -6464,7 +6464,7 @@ func checkPropagateOperandIsMonad(diag: in List[Diagnostic], own: in Type, sp: i
   if bad {
     diag.add(
       errorDiagnostic(
-        "T0190",
+        "T0195",
         "the operand of `?` has type " + renderType(shown) +
           ", which is neither a Result nor an Option; `?` unwraps the success value of a Result[T, E] or Option[T] " +
           "and returns the failure from the enclosing function",
@@ -10116,7 +10116,7 @@ func bindPatternTyped(
           case TyTuple(es) -> if es.count != patterns.count {
             diag.add(
               errorDiagnostic(
-                "T0193",
+                "T0198",
                 "a " + toString(patterns.count) + "-element tuple pattern cannot match a value of type " + renderType(ty) + ", a " +
                   toString(es.count) +
                   "-element tuple",
@@ -16321,7 +16321,7 @@ func inferExprCore(
         case TyVar(tvName) -> if sc.genericNames.contains(tvName) {
           diag.add(
             errorDiagnostic(
-              "T0192",
+              "T0197",
               "no member '" + name + "' on type parameter '" + tvName +
                 "': a value of a type parameter has no fields; only the methods of its `where` bounds can be called on it",
               e.span
@@ -16345,7 +16345,7 @@ func inferExprCore(
               case TyVar(tvName) -> {
                 diag.add(
                   errorDiagnostic(
-                    "T0192",
+                    "T0197",
                     "no member '" + name + "' on type parameter '" + tvName +
                       "': a value of a type parameter has no fields; only the methods of its `where` bounds can be called on it",
                     e.span

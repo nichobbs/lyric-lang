@@ -6,19 +6,19 @@ test was run against the unfixed compiler first and failed there.
 
 New diagnostics (documented in `docs/01` and the book's appendix B):
 
-- **T0190**: the operand of `?` is neither a `Result` nor an `Option` (an
+- **T0195**: the operand of `?` is neither a `Result` nor an `Option` (an
   `Int`, a record, or a block `{ Ok(value = 1) }`, which is a lambda).
-- **T0191**: a `match` arm that no value reaches: it follows an unguarded
+- **T0196**: a `match` arm that no value reaches: it follows an unguarded
   catch-all, or names a case earlier unguarded arms already match whole. A
   bare capitalised name below the scrutinee's own cases is not taken for a
   binding, so `Some(VInteger)` is a constructor test.
-- **T0192**: a member read on a value of a type parameter of the enclosing
+- **T0197**: a member read on a value of a type parameter of the enclosing
   generic. A field declared as the record's own type parameter and read
   through an instance at the enclosing generic's `T` is now that `T`
   (`eraseTyVars` used to turn it into an unknown type), so `b.value.zork`
   is reported.
-- **T0193**: a tuple pattern in a `match` arm with the wrong element count.
-- **T0194**: a string-literal `format1`..`format4` template that
+- **T0198**: a tuple pattern in a `match` arm with the wrong element count.
+- **T0199**: a string-literal `format1`..`format4` template that
   `Std.String.formatArgs` would reject at run time. The checker and
   `formatArgs` share one scanner, the new public `Std.String.formatTemplateProblem`,
   so they cannot drift.

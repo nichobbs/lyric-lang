@@ -5914,7 +5914,7 @@ pub func checkContractSurface(file: in SourceFile): CheckResult {
   checkWithImportedPackagesCore(file, empty, false, false)
 }
 
-// T0194: a string-literal template of `format1`-`format4` is checked against
+// T0199: a string-literal template of `format1`-`format4` is checked against
 // the placeholder grammar `Std.String.formatArgs` enforces at run time (the
 // same scanner, `formatTemplateProblem`), so a malformed brace or a
 // placeholder beyond the call's arguments fails the build instead (#7983).
@@ -5934,7 +5934,7 @@ func checkFormatTemplate(diag: in List[Diagnostic], calleeName: in String, args:
           case LString(text) -> {
             val problem = formatTemplateProblem(text, arity)
             if problem.length > 0 {
-              diag.add(errorDiagnostic("T0194", "invalid " + calleeName + " template: " + problem, first.span))
+              diag.add(errorDiagnostic("T0199", "invalid " + calleeName + " template: " + problem, first.span))
             }
           }
           case _ -> ()
