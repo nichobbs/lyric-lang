@@ -93,45 +93,48 @@ plugin's source.
 
 ## 4. Language surface
 
+D207 settled the syntax (Q-PLG-005): every declaration is an existing item
+with an annotation, so there are no new keywords. `handle`, `plugin` and
+`capability` stay ordinary identifiers.
+
 ### 4.1 Capabilities
 
-A `capability` is a portable interface (§5) the host implements and the plugin
-calls. It may take parameters, which are fixed when the capability is granted.
+A capability is an interface the host implements and the plugin calls. It may
+take parameters, fixed when the capability is granted, declared as a grant
+record.
 
 ```lyric
 package Editor.Api
 
-pub capability WorkspaceRead(roots: List[PathPattern]) {
-  async func readFile(path: in DocPath): Result[String, IoError]
-    guard: Paths.matchesAny(path, roots)
-
-  async func findFiles(glob: in String): Result[List[DocPath], IoError]
+pub exposed record WorkspaceReadGrant {
+  roots: List[String]
 }
 
-pub capability Notify {
+@capability(grant = WorkspaceReadGrant)
+pub interface WorkspaceRead {
+  async func readFile(path: in String): Result[String, IoError]
+    requires: Paths.underAny(path, grant.roots)
+
+  async func findFiles(glob: in String): Result[List[String], IoError]
+}
+
+@capability
+pub interface Notify {
   async func showMessage(level: in Severity, text: in String): Result[Unit, NotifyError]
-}
-
-pub capability NetHttp(hosts: List[String]) {
-  async func send(req: in HttpRequestData): Result[HttpResponseData, HttpError]
-    guard: List.contains(hosts, req.host)
 }
 ```
 
 Rules:
 
-- Parameters have boundary types (§5). They are part of the request the plugin
-  makes and of the grant the host returns.
-- A method may carry a `guard:` clause: a boolean expression over the
-  capability's parameters and the method's `in` arguments. Only `@pure` code
-  may appear in it (docs/65 layering rules). The host evaluates it before
-  dispatching the call. A false guard fails the call with
-  `BoundaryError.Denied` and never reaches the implementation.
-- Guards are the declarative part of enforcement. The host's implementation can
-  apply further checks, but a guard is visible in the plugin point's published
-  surface, so a plugin author and a user approving a grant can read it.
-- A capability method's own `requires:` clauses are checked on the host side,
-  like a guard. They express the plugin's obligations and are also published.
+- The grant record's fields have boundary types (§5). Its value is part of the
+  request the plugin makes and of the grant the host returns.
+- A capability method's `requires:` clauses may name `grant` (the granted
+  record) besides the method's own parameters. They take the place of the
+  `guard:` clauses this sketch first proposed. The compiler moves them out of
+  the interface into the generated host-side server, which evaluates them
+  before dispatching; a false clause fails the call with `Denied` and never
+  reaches the implementation. They stay visible in the API package's source,
+  so a plugin author and a user approving a grant can read them.
 
 ### 4.2 Plugin points
 
@@ -141,32 +144,29 @@ package Editor.Api
 pub exposed record EditorContributions {
   commands: List[CommandDecl] = []
   keybindings: List[KeybindingDecl] = []
-  activation: List[ActivationEvent] = []
 }
 
-pub plugin_point EditorExtension version "1.2" {
-  allows: WorkspaceRead, WorkspaceEdit, Notify, NetHttp
-  contributions: EditorContributions
-
+@plugin_point(version = "1.2", contributions = EditorContributions, allows(WorkspaceRead, WorkspaceEdit, Notify))
+pub interface EditorExtension {
   async func activate(): Result[Unit, PluginError]
-  async func runCommand(id: in CommandId, args: in JsonValue): Result[Unit, PluginError]
-
-  @since("1.2")
+  async func runCommand(id: in String, args: in JsonValue): Result[Unit, PluginError]
   async func onSave(doc: in DocumentRef): Result[Unit, PluginError]
 }
 ```
 
 Rules:
 
-- `version` is a semantic version (`major.minor`). §11 says how it changes.
-- `allows:` lists every capability a plugin of this point may request.
-- `contributions:` names an `exposed record` type. A plugin supplies a value of
-  it, which is recorded in the plugin's manifest and readable by the host
-  without starting the plugin (§7).
-- Every method is `async` and returns `Result[T, E]` (`K0004` otherwise).
-  Calls cross a process or sandbox boundary and can fail in ways that are not
-  the plugin's error, so the result type has to carry failure.
-- A method added in a minor version carries `@since("major.minor")`.
+- `version` is `major.minor`. §11 says how it changes.
+- `allows(...)` lists every capability a plugin of this point may request.
+- `contributions` names an `exposed record`. A plugin supplies a value of it,
+  recorded in its manifest and readable without starting the plugin (§7).
+- Every method returns `Result[T, E]` (`K0004` otherwise); it may be `async`
+  or not. Calls cross a process or sandbox boundary and can fail in ways that
+  are not the plugin's error, so the host-side proxy widens the error to
+  `CallError[E]` (§8).
+- A minor version may add methods. The plugin lists the methods it implements
+  during the handshake (D207 Decision 3), and a call to one it lacks is
+  `Unsupported`; this replaces the `@since` marker sketched earlier.
 - `requires:` and `ensures:` on point methods are allowed. §6 says how they
   are checked.
 
@@ -184,23 +184,17 @@ pub exposed record LanguageContributions {
   fileGlobs: List[String]
 }
 
-pub protocol_point LanguageServer {
-  protocol: "lsp/3.17"
-  transport: stdio
-  allows: WorkspaceRead, NetHttp
-  contributions: LanguageContributions
-}
+@protocol_point(protocol = "lsp/3.17", contributions = LanguageContributions, allows(WorkspaceRead))
+pub interface LanguageServer {}
 ```
 
-`Std.Plugin` launches the process, applies the process-mode restrictions
-(§9.1), restarts it on failure and stops it. It hands the application a
-connected byte stream; the application's own protocol client (for LSP, the
-`Lyric.Lsp` code) does the rest. Capabilities on a protocol point are enforced
-only to the extent the host routes the protocol's own requests through them
-(for example the LSP `workspace/applyEdit` request through `WorkspaceEdit`),
-plus any operating-system restrictions §9.1 can apply. Process and wasm modes
-apply to protocol points; a wasm protocol plugin exports a single
-`handle(message: List[Byte])` stream interface (§9.2).
+`Std.Plugin` launches the process, restarts it on failure and stops it, and
+hands the application the connected process (`openProtocolPlugin`); the
+application's own protocol client (for LSP, the `Lyric.Lsp` code) does the
+rest. Capabilities on a protocol point are enforced only to the extent the
+host routes the protocol's own requests through them (for example the LSP
+`workspace/applyEdit` request through `WorkspaceEdit`). A protocol plugin's
+`plugin.json` is written by its author and checked with `lyric plugin check`.
 
 ### 4.4 Plugins
 
@@ -209,47 +203,49 @@ package Acme.GitTools
 
 import Editor.Api
 
-pub plugin GitTools {
-  implements: EditorExtension, MenuProvider
-  requires: WorkspaceRead(roots: [PathPattern.workspace()]), Notify
-  optional: WorkspaceEdit, NetHttp(hosts: ["api.github.com"])
+@plugin(id = "acme.git-tools", version = "0.4.1", publisher = "acme", implements(EditorExtension))
+pub record GitTools {
+  workspace: WorkspaceReadClient
+  edit: Option[WorkspaceEditClient]
+  notify: NotifyClient
+  var commandsRun: Int = 0
+}
 
-  contributes: EditorExtension = EditorContributions {
-    commands: [CommandDecl(id: "git.blame", title: "Git: Blame")],
-    activation: [ActivationEvent.OnCommand("git.blame")],
-  }
-
-  impl EditorExtension {
-    async func activate(): Result[Unit, PluginError] { ... }
-    async func runCommand(id: in CommandId, args: in JsonValue): Result[Unit, PluginError] {
-      val text = ctx.workspaceRead.readFile(...)?
-      match ctx.workspaceEdit { ... }
+impl EditorExtension for GitTools {
+  async func activate(): Result[Unit, PluginError] = Ok(value = ())
+  async func runCommand(id: in String, args: in JsonValue): Result[Unit, PluginError] {
+    match self.workspace.readFile("README.md") {
+      case Ok(text) -> ...
+      case Err(e) -> ...
     }
   }
-
-  impl MenuProvider { ... }
+  async func onSave(doc: in DocumentRef): Result[Unit, PluginError] = Ok(value = ())
 }
+
+@plugin_contributions(EditorExtension)
+func contributions(): EditorContributions =
+  EditorContributions(commands = [CommandDecl(id = "git.blame", title = "Git: Blame")])
+
+@plugin_request(WorkspaceRead)
+func workspaceRequest(): WorkspaceReadGrant = WorkspaceReadGrant(roots = ["${workspace}"])
 ```
 
-From a `plugin` declaration the compiler generates:
+- A field whose type is a generated `<C>Client` requests capability `C`; an
+  `Option[<C>Client]` field requests it optionally and is `None` when the
+  host did not grant it. Every other field needs a default. The host refuses
+  to load a plugin whose required capabilities it does not grant
+  (`NotGranted`), so a plugin never runs in a state its types do not
+  describe.
+- A client's methods return `Result[T, CallError[E]]`: the capability's own
+  error, or a boundary error such as `Denied` or `Revoked`.
+- From the record, the compiler generates the manifest (§7), derived from the
+  declaration so it cannot disagree with the code, the request dispatcher, and
+  the plugin's `main`.
 
-- **The manifest** (§7). It is derived from the declaration, so it cannot
-  disagree with the code.
-- **A typed context**, `ctx`, in scope inside the plugin's `impl` blocks. Each
-  capability in `requires:` is a non-optional field. Each capability in
-  `optional:` is an `Option` field, `None` when the host did not grant it. The
-  host refuses to load a plugin whose required capabilities it does not grant
-  (`PluginError.NotGranted`), so a plugin never runs in a state its types do
-  not describe.
-- **The plugin side of the boundary** for each hosting mode: the request
-  dispatcher in process mode, the component exports in wasm mode.
-
-A plugin that implements several points runs as one process or one wasm
-instance, with one set of grants.
-
-The context is a convenience and an early error, not the enforcement. Every
-capability call is checked on the host side (§8), because a non-Lyric plugin
-has no generated context at all.
+A plugin that implements several points runs as one process, with one set of
+grants. The typed fields are a convenience and an early error, not the
+enforcement: every capability call is checked on the host side (§8), because a
+non-Lyric plugin has no generated code at all.
 
 ### 4.5 Handles
 
@@ -257,19 +253,17 @@ A host often needs to give a plugin a reference to something it owns: a
 document, an editor, a tree node. Such a reference is declared as a handle:
 
 ```lyric
-pub handle DocumentRef
+@plugin_handle
+pub type DocumentRef = Long
 ```
 
-A handle is an opaque token. A plugin can store it, compare it, and pass it to
-capability methods and back to the host. It cannot see inside it. In process
-mode it is an integer issued by the host per plugin. In wasm mode it is a WIT
-`resource` the host owns.
-
-Handles are valid until the host invalidates them (the document closes, the
-plugin is stopped). A call with an invalidated handle fails with
-`BoundaryError.Stale`. Handles issued to one plugin are meaningless to another:
-the host keeps a separate table per plugin, so a plugin cannot forge or borrow
-another plugin's handles.
+A handle is a token. A plugin can store it, compare it, and pass it to
+capability methods and back to the host; it crosses the boundary as a number.
+The host issues handles per plugin and validates every one it receives: a
+handle the host did not issue to that plugin, or has invalidated (the document
+closed, the plugin stopped), fails the call with `Stale`. A plugin therefore
+cannot forge or borrow another plugin's handles even though it can see the
+number.
 
 ## 5. Boundary types
 
