@@ -6382,7 +6382,13 @@ func qualifiedEnumCaseType(sc: in Scope, tbl: in SymbolTable, recv: in Expr, nam
         case _ -> ()
       }
     }
-    if candidates.count == 1 {
+    var sameOrigin = candidates.count > 0
+    for cand in candidates {
+      if cand.originPackage != candidates[0].originPackage {
+        sameOrigin = false
+      }
+    }
+    if sameOrigin {
       found = Some(value = candidates[0])
     }
   } else {
