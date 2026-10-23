@@ -11736,3 +11736,69 @@ test "with two NativeUserdata slots the first is the userdata, and a callback ty
   val bad = checkWithImportedPackagesForNative(parse(none).file, stdCoreOptionPackages())
   assertTrue(hasDiagCode(bad, "T0181"), "a callback type with no userdata slot is T0181: " + diagCodesOf(bad))
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// By-reference parameter rules: defaults (T0182), async (T0183), function
+// values (T0128) and non-`var` field paths (T0166).  #8255, #8318, #8229,
+// #8369, #8215.
+// ─────────────────────────────────────────────────────────────────────────────
+test "a default on an out/inout parameter is T0182 (#8255)" {
+  val free = preparedCheck("package P\nfunc bump(x: inout Int = 5): Unit {\n  x = x + 1\n}\n")
+  assertEqualInt(countDiagCode(free, "T0182"), 1, "inout on a free function: " + diagCodesOf(free))
+  assertTrue(Str.contains(diagMessageFor(free, "T0182"), "'x'"), "the message names the parameter")
+  assertTrue(Str.contains(diagMessageFor(free, "T0182"), "`inout`"), "the message names the mode")
+  val outP = preparedCheck("package P\nfunc fill(x: out Int = 5): Unit {\n  x = 1\n}\n")
+  assertEqualInt(countDiagCode(outP, "T0182"), 1, "out on a free function: " + diagCodesOf(outP))
+  val rec = preparedCheck(
+    "package P\nrecord R {\n  x: Int\n\n  func put(self: in R, y: inout Int = 1): Unit {\n    y = x\n  }\n}\n"
+  )
+  assertEqualInt(countDiagCode(rec, "T0182"), 1, "record method: " + diagCodesOf(rec))
+  val dotted = preparedCheck(
+    "package P\nrecord R {\n  x: Int\n}\nfunc R.put(self: in R, y: inout Int = 1): Unit {\n  y = self.x\n}\n"
+  )
+  assertEqualInt(countDiagCode(dotted, "T0182"), 1, "dot-named function: " + diagCodesOf(dotted))
+  val iface = preparedCheck("package P\ninterface I {\n  func put(self: in Self, y: inout Int = 1): Unit\n}\n")
+  assertEqualInt(countDiagCode(iface, "T0182"), 1, "interface member: " + diagCodesOf(iface))
+  val ok = preparedCheck("package P\nfunc f(x: in Int = 5, y: inout Int): Unit {\n  y = x\n}\n")
+  assertEqualInt(countDiagCode(ok, "T0182"), 0, "an `in` default stays legal: " + diagCodesOf(ok))
+}
+
+test "an out/inout parameter on an async function is T0183 (#8318, #8229)" {
+  val free = preparedCheck("package P\nasync func bump(x: inout Int): Unit {\n  x = x + 1\n}\n")
+  assertEqualInt(countDiagCode(free, "T0183"), 1, "async free function: " + diagCodesOf(free))
+  assertTrue(Str.contains(diagMessageFor(free, "T0183"), "'x'"), "the message names the parameter")
+  val outP = preparedCheck("package P\nasync func fill(x: out Int): Unit {\n  x = 1\n}\n")
+  assertEqualInt(countDiagCode(outP, "T0183"), 1, "async out: " + diagCodesOf(outP))
+  val rec = preparedCheck(
+    "package P\nrecord R {\n  x: Int\n\n  async func put(self: in R, y: inout Int): Unit {\n    y = x\n  }\n}\n"
+  )
+  assertEqualInt(countDiagCode(rec, "T0183"), 1, "async record method: " + diagCodesOf(rec))
+  val iface = preparedCheck("package P\ninterface I {\n  async func put(self: in Self, y: inout Int): Unit\n}\n")
+  assertEqualInt(countDiagCode(iface, "T0183"), 1, "async interface member: " + diagCodesOf(iface))
+  val ok = preparedCheck("package P\nasync func ok(x: in Int): Int = x\nfunc sync(y: inout Int): Unit {\n  y = 1\n}\n")
+  assertEqualInt(countDiagCode(ok, "T0183"), 0, "async `in` and sync `inout` stay legal: " + diagCodesOf(ok))
+}
+
+test "a function with an out/inout parameter is not a function value (#8369)" {
+  val local = preparedCheck(
+    "package P\nfunc bump(x: inout Int): Unit {\n  x = x + 1\n}\nfunc f(): Unit {\n  val g = bump\n}\n"
+  )
+  assertEqualInt(countDiagCode(local, "T0128"), 1, "a bare reference: " + diagCodesOf(local))
+  assertTrue(Str.contains(diagMessageFor(local, "T0128"), "'x'"), "the message names the parameter")
+  val called = preparedCheck(
+    "package P\nfunc bump(x: inout Int): Unit {\n  x = x + 1\n}\nfunc f(): Unit {\n  var v = 1\n  bump(v)\n}\n"
+  )
+  assertEqualInt(countDiagCode(called, "T0128"), 0, "a call is not a reference: " + diagCodesOf(called))
+}
+
+test "a non-var field is not a place for an inout argument or receiver (#8215)" {
+  val direct = preparedCheck(
+    "package P\nrecord H {\n  k: Int\n}\nfunc bump(q: inout Int): Unit {\n  q = q + 1\n}\nfunc f(): Unit {\n  var h = H(k = 1)\n  bump(h.k)\n}\n"
+  )
+  assertEqualInt(countDiagCode(direct, "T0085"), 1, "a non-var field argument: " + diagCodesOf(direct))
+  val recv = preparedCheck(
+    inoutRecvSrc("record H {\n  r: R\n}\nfunc f(): Unit {\n  var h = H(r = R(x = 1))\n  h.r.reset()\n}\n")
+  )
+  assertEqualInt(countDiagCode(recv, "T0166"), 1, "a non-var field receiver: " + diagCodesOf(recv))
+  assertTrue(Str.contains(diagMessageFor(recv, "T0166"), "'r' is not `var`"), "the message names the field")
+}

@@ -428,6 +428,48 @@ test "an interface implemented by a protected type, called through the interface
   assertEqualInt(arr[1], 10, "element through the interface")
 }
 
+// A field reached through a generic record's generic-typed field (#8272): the
+// JVM erases the inner receiver to `Object`, so the field place has to be
+// built over the receiver's instantiated class.
+record GBox[T] {
+  var v: T
+  var k: Int
+}
+
+protected type GHolder[T] {
+  var b: GBox[T]
+  var n: Int
+  func bumpInner(d: in Int): Int {
+    addTo(b.k, d)
+    0
+  }
+  func bumpOwn(d: in Int): Int {
+    addTo(n, d)
+    n
+  }
+  func innerValue(): Int = b.k
+}
+
+test "an inout argument through a generic-typed field (#8272)" {
+  val nested: GBox[GBox[Int]] = GBox(v = GBox(v = 1, k = 2), k = 3)
+  addTo(nested.v.v, 100)
+  assertEqualInt(nested.v.v, 101, "Box[Box[Int]].v.v")
+  var s: GBox[GBox[String]] = GBox(v = GBox(v = "a", k = 0), k = 0)
+  appendTo(s.v.v, "b")
+  assertEqual(s.v.v, "ab", "a String through the same path")
+}
+
+func appendTo(x: inout String, t: in String): Unit {
+  x = x + t
+}
+
+test "an inout argument of a protected generic type's own field path (#8272)" {
+  val h: GHolder[Int] = GHolder(b = GBox(v = 5, k = 5), n = 1)
+  assertEqualInt(h.bumpInner(7), 0, "bumpInner")
+  assertEqualInt(h.innerValue(), 12, "the inner generic field")
+  assertEqualInt(h.bumpOwn(2), 3, "bumpOwn")
+}
+
 test "two threads call one entry with their own locals" {
   val c = Counter()
   val sc = makeScope()
