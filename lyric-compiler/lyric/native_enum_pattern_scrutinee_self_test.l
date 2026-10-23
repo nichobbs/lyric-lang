@@ -204,3 +204,22 @@ test "an or-pattern nested in a tuple pattern" {
   assertEqual(orInTuple(First.Alpha, Second.Other), "second shared or other", "nested second")
   assertEqual(orInTuple(First.Alpha, Second.Beta), "neither", "neither")
 }
+
+union Label {
+  case Short(text: String)
+  case Long(text: String)
+  case Blank
+}
+
+func labelText(l: in Label): String {
+  match l {
+    case Short(t) | Long(t) -> t + "!"
+    case Blank -> "blank"
+  }
+}
+
+test "alternatives binding a reference-typed name join it" {
+  assertEqual(labelText(Short(text = "a")), "a!", "Short")
+  assertEqual(labelText(Long(text = "b")), "b!", "Long")
+  assertEqual(labelText(Blank), "blank", "Blank")
+}
