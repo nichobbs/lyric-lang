@@ -20077,7 +20077,8 @@ func nonGenericVtableSigs(idecl: in InterfaceDecl): List[FunctionSig] {
                 ret = fn.ret,
                 whereClause = None,
                 contracts = fn.contracts,
-                span = fn.span
+                span = fn.span,
+                annotations = fn.annotations
               )
             )
           }

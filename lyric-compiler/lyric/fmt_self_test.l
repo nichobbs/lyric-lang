@@ -424,6 +424,17 @@ test "interface method doc and contract preserved" {
   assertTrue(Str.contains(acc, "requires: key.length > 0"), "interface method: contract preserved")
 }
 
+test "interface method annotation preserved" {
+  // `@pure` on a body-less interface method signature (#7410) is stored on
+  // the `FunctionSig` and must survive formatting.
+  val src = "package P\n\ninterface Store {\n  /// Fetch by key.\n  @pure\n  func get(key: in String): Int\n}\n"
+  val c = formatSourceChecked(src)
+  assertTrue(fmtCheckIsOk(c), "interface method annotation: round-trips")
+  val acc = format(parse(src))
+  assertTrue(Str.contains(acc, "@pure"), "interface method annotation: @pure preserved")
+  assertTrue(Str.contains(acc, "func get(key: in String): Int"), "interface method annotation: signature preserved")
+}
+
 test "comment inside function body" {
   // Phase 5 §M5.3 stage 4 (D-progress-136): comments INSIDE a function
   // body must survive.  The block's harvested comments are popped at

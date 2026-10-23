@@ -2408,8 +2408,8 @@ func inferBinop(
 }
 
 // T0147's text for a negated operand of `operand`'s type.  Only `Byte`
-// (or a range of it) has a conversion to a signed type, so only its hint can
-// name one; `UInt`/`ULong` have none yet (docs/01 §4.1).
+// (or a range of it) converts with `toInt`; `UInt`/`ULong` convert with
+// `toLong` (docs/01 §4.1).
 func unsignedNegationMessageFor(operand: in Type): String {
   unsignedNegationText(renderType(operand), isPrimOf(operand, PtByte))
 }
@@ -2424,7 +2424,7 @@ func unsignedNegationText(typeText: in String, isByte: in Bool): String {
   val hint = if isByte {
     "convert it to a signed type first, e.g. `-(x.toInt())`"
   } else {
-    "an unsigned type has no conversion to a signed type yet, so give a value that can be negative a signed type such as `Long`"
+    "convert it to a signed type first, e.g. `-(x.toLong())`"
   }
   "unary minus cannot be applied to an unsigned operand (got " + typeText +
     "): a non-zero unsigned value has no negation of its own type; " +
@@ -2438,6 +2438,16 @@ func inferPrefix(diag: in List[Diagnostic], op: in PrefixOp, inner: in Type, spa
         diag.add(errorDiagnostic("T0036", "unary minus requires a numeric operand (got " + renderType(inner) + ")", span))
       } else if isUnsignedConvReceiver(inner) {
         diag.add(errorDiagnostic("T0147", unsignedNegationMessageFor(inner), span))
+        return TyError
+      } else if isPrimOf(inner, PtNat) {
+        diag.add(
+          errorDiagnostic(
+            "T0147",
+            "unary minus cannot be applied to a Nat operand (got " + renderType(inner) +
+              "): a non-zero Nat has no negation of its own type; convert it first, e.g. `-(n.toLong())`",
+            span
+          )
+        )
         return TyError
       }
       inner
@@ -2827,6 +2837,42 @@ func isNumericPrimType(t: in Type): Bool {
 }
 
 // A receiver of `.toULong()`: a primitive of the unsigned widening chain.
+// `u.toLong()`, `u.toDouble()`, `u.toFloat()` and `u.toNat()` on a `UInt`
+// convert the unsigned VALUE (#7901).  A `UInt` shares its 32-bit
+// representation with `Int`, so the plain signed conversion would read the top
+// bit as a sign: the `UInt` is zero-extended to a `ULong` first (a lossless
+// widening, whose pattern is a non-negative `Long`).  A `ULong` shares the
+// 64-bit representation of `Long`, and there is no checked or floating-point
+// conversion for it on every target yet, so `toLong`, `toDouble` and `toFloat`
+// on one are T0103 rather than a silent reinterpretation.  Returns false when
+// it reported an error.
+func noteUnsignedSourceConversion(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  recvE: in Expr,
+  rt: in Type,
+  mname: in String,
+): Bool {
+  if isPrimOf(rt, PtUInt) {
+    if mname == "toLong" or mname == "toDouble" or mname == "toFloat" or mname == "toNat" {
+      recordWideningSite(tbl, TyPrim(pt = PtULong), rt, recvE, false)
+    }
+    return true
+  }
+  if isPrimOf(rt, PtULong) and (mname == "toLong" or mname == "toDouble" or mname == "toFloat") {
+    diag.add(
+      errorDiagnostic(
+        "T0103",
+        "conversion method '" + mname + "' is not applicable to " + renderType(rt) +
+          " (a ULong above 2^63 - 1 has no Long or floating-point value; use toInt() to truncate to 32 bits, or keep the value a ULong)",
+        recvE.span
+      )
+    )
+    return false
+  }
+  true
+}
+
 func isUnsignedConvReceiver(t: in Type): Bool {
   match unrefine(t) {
     case TyPrim(pt) -> match pt { case PtByte -> true; case PtUInt -> true; case PtULong -> true; case _ -> false }
@@ -5581,6 +5627,32 @@ func typeListsWidenOrEqual(targets: in List[Type], srcs: in List[Type]): Bool {
 // True when `src` differs from `target` only by lossless numeric widenings
 // of its scalar parts (`Option[UInt]` against `Option[ULong]`,
 // `(UInt, Int)` against `(ULong, Int)`).
+// True when `t` is, or has among its type arguments, tuple elements or
+// nullable payload, an inline range type.
+func typeHasRangeArg(t: in Type): Bool {
+  match t {
+    case TyRefined(_, _, _, _, _) -> true
+    case TyUser(_, _, args) -> {
+      for a in args {
+        if typeHasRangeArg(a) {
+          return true
+        }
+      }
+      false
+    }
+    case TyTuple(elems) -> {
+      for a in elems {
+        if typeHasRangeArg(a) {
+          return true
+        }
+      }
+      false
+    }
+    case TyNullable(inner) -> typeHasRangeArg(inner)
+    case _ -> false
+  }
+}
+
 func widensStructurally(target: in Type, src: in Type): Bool {
   not typeEquiv(target, src) and widensOrEquals(target, src)
 }
@@ -15215,7 +15287,10 @@ func inferExprCore(
         case EMember(recvE, mname) -> match numericConvTarget(mname) {
           case Some(target) -> if args.count == 0 {
             val rt = inferExpr(sc, tbl, sigs, diag, recvE)
-            if isNumericOrCharType(rt) {
+            if isNumericOrCharType(rt) or isPrimOf(rt, PtUInt) or isPrimOf(rt, PtULong) {
+              if not noteUnsignedSourceConversion(tbl, diag, recvE, rt, mname) {
+                return TyError
+              }
               return TyPrim(pt = target)
             }
             if isNonConvertiblePrimitive(rt) {
@@ -15645,6 +15720,13 @@ func inferExprCore(
               } else {
                 widened
               }
+            } else if typeHasRangeArg(argExp) {
+              // The value is built at its own type, so its range-typed
+              // slots are noted against the parameter's instantiation
+              // whether or not it widens (#8145).
+              val scratch: List[Diagnostic] = newList()
+              val _ = inferExprExpected(sc, tbl, sigs, scratch, dae, argExp)
+              adopted
             } else {
               adopted
             }

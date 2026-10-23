@@ -273,3 +273,24 @@ test "a construction that widens one slot checks the range of another (#7813, #8
     { -> val bad: Result[Long, Int range 0 ..= 3] = Result.Err(ten()); val _ = bad }
   )
 }
+
+func takeOpt(o: in Option[Int range 0 ..= 3]): Int = 1
+
+func takeDuo(d: in Duo[Int, Int range 0 ..= 3]): Int = 1
+
+func takePair(p: in (Int range 0 ..= 3, String)): Int = 1
+
+test "a case constructor passed straight as an argument is range-checked (#8145)" {
+  assertTrue(takeOpt(Some(two())) == 1, "2 is in range")
+  assertPanics("Some(10) for an Option[Int range 0 ..= 3] parameter", { -> val _ = takeOpt(Some(ten())) })
+}
+
+test "a generic record constructor passed straight as an argument is range-checked (#8145)" {
+  assertTrue(takeDuo(Duo(wide = two(), narrow = two())) == 1, "in range")
+  assertPanics("narrow = 10", { -> val _ = takeDuo(Duo(wide = two(), narrow = ten())) })
+}
+
+test "a tuple passed straight as an argument is range-checked (#8145)" {
+  assertTrue(takePair((two(), "a")) == 1, "in range")
+  assertPanics("a tuple element of 10", { -> val _ = takePair((ten(), "a")) })
+}

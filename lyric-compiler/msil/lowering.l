@@ -1070,6 +1070,15 @@ pub record ConfigTokens {
   tokDoubleParse: Int    // Double.Parse(string, IFormatProvider): float64  (static)
   tokSingleParse: Int    // Single.Parse(string, IFormatProvider): float32  (static)
   tokInvariantCulture: Int  // CultureInfo.get_InvariantCulture(): CultureInfo  (static)
+  // G0003 (#7436): a numeric parse that throws is caught and reported, and a
+  // `Bool` is read by hand so `1`/`0`/`true`/`false` (any case) are accepted.
+  catchExceptionTok: Int // TypeRef token of System.Exception (the catch type)
+  tokObjectEquals: Int   // Object.Equals(object, object): bool  (static)
+  tokToLowerInvariant: Int // String.ToLowerInvariant(): string  (instance)
+  tokStrOne: Int         // ldstr token for "1"
+  tokStrZero: Int        // ldstr token for "0"
+  tokStrTrue: Int        // ldstr token for "true"
+  tokStrFalse: Int       // ldstr token for "false"
 }
 
 // One field inside a config block.  `defaultInsns` is a one-instruction list
@@ -1084,6 +1093,8 @@ pub record MConfigField {
   defaultInsns: List[MInsn]
   // ldstr token for the stderr error message (0 when hasDefault = true).
   requiredMsgTok: Int
+  // ldstr token for the G0003 stderr message (value does not parse).
+  parseMsgTok: Int
   // Range refinement on the field (#7229): after the value is stored, the
   // .cctor re-reads it and exits 78 with `rangeMsgTok` (G0004) when it lies
   // outside [min, max] (or [min, max) when `upperExclusive`).  `hasMin` /
@@ -6339,6 +6350,112 @@ pub func lowerMPackage(pkg: in MPackage, entryMethodToken: in Int): List[Byte] {
 //    for Float/Double fields — omitted for String fields]
 //   stsfld fieldToken_i
 //   doneLabel_i:
+// G0003 (#7436): print the field's parse message to stderr and exit 78.
+func emitConfigParseFailMsil(insns: in List[MInsn], f: in MConfigField, configToks: in ConfigTokens): Unit {
+  insns.add(MCall(methodToken = configToks.tokConsoleError))
+  insns.add(MLdStr(token = f.parseMsgTok))
+  insns.add(MCallvirt(methodToken = configToks.tokTwWriteLine))
+  insns.add(MLdcI4(v = 78))
+  insns.add(MCall(methodToken = configToks.tokEnvExit))
+}
+
+// Parse an `Int`/`Long`/`Float`/`Double` env value inside a try region whose
+// catch reports G0003.  `Int32.Parse` and friends throw `FormatException` or
+// `OverflowException`; any exception from the parse call is the field's.
+func emitConfigNumericParseMsil(
+  insns: in List[MInsn],
+  f: in MConfigField,
+  fieldTok: in Int,
+  doneLabel: in Int,
+  configToks: in ConfigTokens,
+  tryStartL: in Int,
+  catchL: in Int,
+  catchEndL: in Int,
+): Unit {
+  insns.add(MLabel(id = tryStartL))
+  insns.add(MLdStr(token = f.envVarTok))
+  insns.add(MCall(methodToken = configToks.tokGetEnvVar))
+  match f.fieldType {
+    case MInt -> insns.add(MCall(methodToken = configToks.tokInt32Parse))
+    case MLong -> insns.add(MCall(methodToken = configToks.tokInt64Parse))
+    case MDouble -> {
+      // Pin InvariantCulture so the accepted numeric format does not vary
+      // with the host locale (the single-arg overload reads "1,5" as 15
+      // under e.g. de-DE).
+      insns.add(MLdcI4(v = 167))
+      insns.add(MCall(methodToken = configToks.tokInvariantCulture))
+      insns.add(MCall(methodToken = configToks.tokDoubleParse))
+    }
+    case _ -> {
+      insns.add(MLdcI4(v = 167))
+      insns.add(MCall(methodToken = configToks.tokInvariantCulture))
+      insns.add(MCall(methodToken = configToks.tokSingleParse))
+    }
+  }
+  insns.add(MStsfld(fieldToken = fieldTok))
+  insns.add(MLeave(label = doneLabel))
+  insns.add(MLabel(id = catchL))
+  insns.add(MPop)
+  emitConfigParseFailMsil(insns, f, configToks)
+  insns.add(MLeave(label = doneLabel))
+  insns.add(MLabel(id = catchEndL))
+  insns.add(
+    MEHClause(
+      flags = 0,
+      tryStart = tryStartL,
+      tryEnd = catchL,
+      handlerStart = catchL,
+      handlerEnd = catchEndL,
+      catchToken = configToks.catchExceptionTok
+    )
+  )
+}
+
+// A `Bool` env value is `1`/`0` or `true`/`false` in any case (docs/25 §3),
+// read by hand so both targets accept exactly the same spellings; anything
+// else is G0003.  `tryStartL`/`catchL` are used as the true/false store labels.
+func emitConfigBoolParseMsil(
+  insns: in List[MInsn],
+  f: in MConfigField,
+  fieldTok: in Int,
+  doneLabel: in Int,
+  configToks: in ConfigTokens,
+  trueL: in Int,
+  falseL: in Int,
+): Unit {
+  insns.add(MLdStr(token = f.envVarTok))
+  insns.add(MCall(methodToken = configToks.tokGetEnvVar))
+  insns.add(MLdStr(token = configToks.tokStrOne))
+  insns.add(MCall(methodToken = configToks.tokObjectEquals))
+  insns.add(MBrTrue(label = trueL))
+  insns.add(MLdStr(token = f.envVarTok))
+  insns.add(MCall(methodToken = configToks.tokGetEnvVar))
+  insns.add(MLdStr(token = configToks.tokStrZero))
+  insns.add(MCall(methodToken = configToks.tokObjectEquals))
+  insns.add(MBrTrue(label = falseL))
+  insns.add(MLdStr(token = f.envVarTok))
+  insns.add(MCall(methodToken = configToks.tokGetEnvVar))
+  insns.add(MCallvirt(methodToken = configToks.tokToLowerInvariant))
+  insns.add(MLdStr(token = configToks.tokStrTrue))
+  insns.add(MCall(methodToken = configToks.tokObjectEquals))
+  insns.add(MBrTrue(label = trueL))
+  insns.add(MLdStr(token = f.envVarTok))
+  insns.add(MCall(methodToken = configToks.tokGetEnvVar))
+  insns.add(MCallvirt(methodToken = configToks.tokToLowerInvariant))
+  insns.add(MLdStr(token = configToks.tokStrFalse))
+  insns.add(MCall(methodToken = configToks.tokObjectEquals))
+  insns.add(MBrTrue(label = falseL))
+  emitConfigParseFailMsil(insns, f, configToks)
+  insns.add(MBr(label = doneLabel))
+  insns.add(MLabel(id = trueL))
+  insns.add(MLdcI4(v = 1))
+  insns.add(MStsfld(fieldToken = fieldTok))
+  insns.add(MBr(label = doneLabel))
+  insns.add(MLabel(id = falseL))
+  insns.add(MLdcI4(v = 0))
+  insns.add(MStsfld(fieldToken = fieldTok))
+}
+
 // Range check for a refined config field (#7229), run after the field is
 // stored (stack empty at every label).  Loads the field, compares it with each
 // present bound, and on a violation prints `rangeMsgTok` to stderr and exits
@@ -6465,32 +6582,66 @@ func lowerMConfig(
       // fields outside Bool/Int/Long/Float/Double/String with G0009.  A
       // silent fall-through there would stsfld a raw string into a
       // non-string field — invalid IL at runtime (#2993).
+      //
+      // A value that does not parse is G0003: the parse runs in a try region
+      // whose catch prints the message and exits 78 (#7436).  The labels of
+      // the region follow the disjoint blocks the range check uses.
       cctorInsns.add(MLabel(id = parseLabel))
-      cctorInsns.add(MLdStr(token = f.envVarTok))
-      cctorInsns.add(MCall(methodToken = configToks.tokGetEnvVar))
+      val tryStartL = 4 * fields.count + 3 * ci
+      val catchL = tryStartL + 1
+      val catchEndL = tryStartL + 2
       match f.fieldType {
-        case MInt -> cctorInsns.add(MCall(methodToken = configToks.tokInt32Parse))
-        case MLong -> cctorInsns.add(MCall(methodToken = configToks.tokInt64Parse))
-        case MDouble -> {
-          // Pin InvariantCulture so the accepted numeric format does not vary
-          // with the host locale (the single-arg overload reads "1,5" as 15
-          // under e.g. de-DE).
-          cctorInsns.add(MCall(methodToken = configToks.tokInvariantCulture))
-          cctorInsns.add(MCall(methodToken = configToks.tokDoubleParse))
-        }
-        case MFloat -> {
-          cctorInsns.add(MCall(methodToken = configToks.tokInvariantCulture))
-          cctorInsns.add(MCall(methodToken = configToks.tokSingleParse))
-        }
-        case MBool -> cctorInsns.add(MCall(methodToken = configToks.tokBoolParse))
+        case MBool -> emitConfigBoolParseMsil(cctorInsns, f, fieldTok, doneLabel, configToks, tryStartL, catchL)
         case MString -> {
-        }  // raw env-var string is already on the stack
+          cctorInsns.add(MLdStr(token = f.envVarTok))
+          cctorInsns.add(MCall(methodToken = configToks.tokGetEnvVar))
+          cctorInsns.add(MStsfld(fieldToken = fieldTok))
+        }
+        case MInt -> emitConfigNumericParseMsil(
+          cctorInsns,
+          f,
+          fieldTok,
+          doneLabel,
+          configToks,
+          tryStartL,
+          catchL,
+          catchEndL
+        )
+        case MLong -> emitConfigNumericParseMsil(
+          cctorInsns,
+          f,
+          fieldTok,
+          doneLabel,
+          configToks,
+          tryStartL,
+          catchL,
+          catchEndL
+        )
+        case MDouble -> emitConfigNumericParseMsil(
+          cctorInsns,
+          f,
+          fieldTok,
+          doneLabel,
+          configToks,
+          tryStartL,
+          catchL,
+          catchEndL
+        )
+        case MFloat -> emitConfigNumericParseMsil(
+          cctorInsns,
+          f,
+          fieldTok,
+          doneLabel,
+          configToks,
+          tryStartL,
+          catchL,
+          catchEndL
+        )
         case _ -> panic(
           "Msil.Lowering ICE: config field '" + f.name +
             "' has an unsupported MsilType — the type checker (G0009) should have rejected this"
         )
       }
-      cctorInsns.add(MStsfld(fieldToken = fieldTok))
       cctorInsns.add(MLabel(id = doneLabel))
       if f.hasMin or f.hasMax {
         // Labels: 2ci / 2ci+1 are the field's parse/done labels, then one

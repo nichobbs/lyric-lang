@@ -7326,6 +7326,9 @@ pub record LConfigField {
   hasDefault: Bool
   defaultInsns: List[LInsn]
   requiredErrMsg: String
+  // G0003 (#7436): printed to stderr, then exit 78, when the value does not
+  // parse as the field's type.
+  parseErrMsg: String
   // Range refinement (#7229) — mirrors `Msil.Lowering.MConfigField`.  After
   // the value is stored, `<clinit>` re-reads it and exits 78 with
   // `rangeErrMsg` (G0004) when it lies outside the bounds.
@@ -7541,6 +7544,35 @@ func lowerFuncsToClass(
   }
 }
 
+// `if (<tmp>.<method>("<lit>")) goto label` for the by-hand `Bool` read.
+func emitConfigBoolTestJvm(
+  insns: in List[LInsn], tmpSlot: in Int, lit: in String, method: in String, label: in String
+): Unit {
+  val ps: List[JvmType] = newList()
+  if method == "equals" {
+    ps.add(JRef(className = "java/lang/Object"))
+  } else {
+    ps.add(JRef(className = "java/lang/String"))
+  }
+  insns.add(LAload(slot = tmpSlot))
+  insns.add(LPushString(s = lit))
+  insns.add(LInvokevirtual(owner = "java/lang/String", name = method, params = ps, ret = JBoolean))
+  insns.add(LIfne(label = label))
+}
+
+// G0003 (#7436): print the field's parse message to stderr and exit 78.
+func emitConfigParseFailJvm(insns: in List[LInsn], f: in LConfigField): Unit {
+  val printlnPs: List[JvmType] = newList()
+  printlnPs.add(JRef(className = "java/lang/String"))
+  insns.add(LGetstatic(owner = "java/lang/System", name = "err", t = JRef(className = "java/io/PrintStream")))
+  insns.add(LPushString(s = f.parseErrMsg))
+  insns.add(LInvokevirtual(owner = "java/io/PrintStream", name = "println", params = printlnPs, ret = JVoid))
+  insns.add(LIconst(v = 78))
+  val exitPs: List[JvmType] = newList()
+  exitPs.add(JInt)
+  insns.add(LInvokestatic(owner = "java/lang/System", name = "exit", params = exitPs, ret = JVoid))
+}
+
 // Lower a `config { }` block (D046 / docs/25-config-blocks.md, #3228) into a
 // JVM class whose fields are initialised from environment variables by a
 // synthesised `<clinit>`.  Mirrors `Msil.Lowering.lowerMConfig`'s per-field
@@ -7668,40 +7700,79 @@ pub func lowerConfigBlock(ns: in String, blockName: in String, fields: in List[L
     clinitInsns.add(LInvokevirtual(owner = "java/lang/String", name = "isEmpty", params = isEmptyPs, ret = JBoolean))
     clinitInsns.add(LIfne(label = absentLabel))
 
-    // Present path (fallthrough): re-use the already-loaded env value.
-    clinitInsns.add(LAload(slot = tmpSlot))
+    // Present path (fallthrough): re-use the already-loaded env value.  A value
+    // that does not parse is G0003 (#7436): numeric parses run in a try region
+    // whose handler prints the message and exits 78, and a `Bool` is read by
+    // hand so both targets accept exactly `1`/`0`/`true`/`false` in any case.
     val parsePs: List[JvmType] = newList()
     parsePs.add(strTy)
     match f.fieldType {
-      case JInt -> clinitInsns.add(
-        LInvokestatic(owner = "java/lang/Integer", name = "parseInt", params = parsePs, ret = JInt)
-      )
-      case JLong -> clinitInsns.add(
-        LInvokestatic(owner = "java/lang/Long", name = "parseLong", params = parsePs, ret = JLong)
-      )
-      case JFloat -> clinitInsns.add(
-        LInvokestatic(owner = "java/lang/Float", name = "parseFloat", params = parsePs, ret = JFloat)
-      )
-      case JDouble -> clinitInsns.add(
-        LInvokestatic(owner = "java/lang/Double", name = "parseDouble", params = parsePs, ret = JDouble)
-      )
-      case JBoolean -> clinitInsns.add(
-        LInvokestatic(
-          owner = "java/lang/Boolean",
-          name = "parseBoolean",
-          params = parsePs,
-          ret = JBoolean
-        )
-      )
       case JRef(_) -> {
-      }  // String field: the raw env-var value is already on the stack
-      case _ -> panic(
-        "Jvm.Lowering ICE: config field '" + f.name +
-          "' has an unsupported JvmType — the type checker (G0009) should have rejected this"
-      )
+        clinitInsns.add(LAload(slot = tmpSlot))
+        clinitInsns.add(LPutstatic(owner = className, name = f.name, t = f.fieldType))
+        clinitInsns.add(LGoto(label = doneLabel))
+      }
+      case JBoolean -> {
+        val trueLabel = "cfg_true_" + fi
+        val falseLabel = "cfg_false_" + fi
+        emitConfigBoolTestJvm(clinitInsns, tmpSlot, "1", "equals", trueLabel)
+        emitConfigBoolTestJvm(clinitInsns, tmpSlot, "0", "equals", falseLabel)
+        emitConfigBoolTestJvm(clinitInsns, tmpSlot, "true", "equalsIgnoreCase", trueLabel)
+        emitConfigBoolTestJvm(clinitInsns, tmpSlot, "false", "equalsIgnoreCase", falseLabel)
+        emitConfigParseFailJvm(clinitInsns, f)
+        clinitInsns.add(LGoto(label = doneLabel))
+        clinitInsns.add(LLabel(name = trueLabel))
+        clinitInsns.add(LIconst(v = 1))
+        clinitInsns.add(LPutstatic(owner = className, name = f.name, t = f.fieldType))
+        clinitInsns.add(LGoto(label = doneLabel))
+        clinitInsns.add(LLabel(name = falseLabel))
+        clinitInsns.add(LIconst(v = 0))
+        clinitInsns.add(LPutstatic(owner = className, name = f.name, t = f.fieldType))
+        clinitInsns.add(LGoto(label = doneLabel))
+      }
+      case _ -> {
+        val tryStartLabel = "cfg_try_" + fi
+        val tryEndLabel = "cfg_try_end_" + fi
+        val handlerLabel = "cfg_parse_fail_" + fi
+        clinitInsns.add(LLabel(name = tryStartLabel))
+        clinitInsns.add(LAload(slot = tmpSlot))
+        val trimPs: List[JvmType] = newList()
+        clinitInsns.add(LInvokevirtual(owner = "java/lang/String", name = "trim", params = trimPs, ret = strTy))
+        match f.fieldType {
+          case JInt -> clinitInsns.add(
+            LInvokestatic(owner = "java/lang/Integer", name = "parseInt", params = parsePs, ret = JInt)
+          )
+          case JLong -> clinitInsns.add(
+            LInvokestatic(owner = "java/lang/Long", name = "parseLong", params = parsePs, ret = JLong)
+          )
+          case JFloat -> clinitInsns.add(
+            LInvokestatic(owner = "java/lang/Float", name = "parseFloat", params = parsePs, ret = JFloat)
+          )
+          case JDouble -> clinitInsns.add(
+            LInvokestatic(owner = "java/lang/Double", name = "parseDouble", params = parsePs, ret = JDouble)
+          )
+          case _ -> panic(
+            "Jvm.Lowering ICE: config field '" + f.name +
+              "' has an unsupported JvmType — the type checker (G0009) should have rejected this"
+          )
+        }
+        clinitInsns.add(LPutstatic(owner = className, name = f.name, t = f.fieldType))
+        clinitInsns.add(LLabel(name = tryEndLabel))
+        clinitInsns.add(LGoto(label = doneLabel))
+        clinitInsns.add(LLabel(name = handlerLabel))
+        clinitInsns.add(LAstore(slot = 1))
+        emitConfigParseFailJvm(clinitInsns, f)
+        clinitInsns.add(LGoto(label = doneLabel))
+        clinitInsns.add(
+          LTryCatch(
+            startLabel = tryStartLabel,
+            endLabel = tryEndLabel,
+            handlerLabel = handlerLabel,
+            catchClass = "java/lang/NumberFormatException"
+          )
+        )
+      }
     }
-    clinitInsns.add(LPutstatic(owner = className, name = f.name, t = f.fieldType))
-    clinitInsns.add(LGoto(label = doneLabel))
 
     // Absent path.
     clinitInsns.add(LLabel(name = absentLabel))

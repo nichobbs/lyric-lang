@@ -767,6 +767,9 @@ pub record FunctionSig {
   whereClause: Option[WhereClause]
   contracts: List[ContractClause]
   span: Span
+  // `@pure` on an interface method signature (#7410); other annotations are
+  // carried through unchanged.
+  annotations: List[Annotation] = newList()
 }
 
 pub record AssociatedTypeDecl {

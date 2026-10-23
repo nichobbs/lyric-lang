@@ -2238,8 +2238,15 @@ pub func newCodegenCtx(
   // Double.Parse(string, IFormatProvider): the .cctor loads InvariantCulture
   // (via tokInvariantCulture) before this call so Float/Double config fields
   // parse identically regardless of host locale (#2993).
+  // `NumberStyles.Float` (167) is pushed between the string and the culture:
+  // unlike the two-argument overload's default (`Float | AllowThousands`) it
+  // does not read `1,5` as 15 (#7436).
+  val trNumberStyles = ctxAddTypeRef(lctx, "System.Globalization", "NumberStyles", lctx.arRuntime)
   val cfgDoubleParsePs: List[MsilType] = newList()
   cfgDoubleParsePs.add(MString)
+  cfgDoubleParsePs.add(
+    MValueTypeRef(typeRefCode = tdrTypeRef(trNumberStyles), clrFqn = "System.Globalization.NumberStyles")
+  )
   cfgDoubleParsePs.add(MClassRef(typeRefCode = tdrTypeRef(trIFormatProvider), clrFqn = "System.IFormatProvider"))
   val tokCfgDoubleParse = 0x0A000000 +
     ctxAddMemberRef(
@@ -45981,6 +45988,13 @@ pub func codegenMPackage(file0: in SourceFile, cctx: in CodegenCtx): MPackage {
               val msg = "error: required config field " + decl.name + "." + cf.name + " (env var " + envVarName + ") is not set"
               ctxInternUs(cctx.lctx, msg)
             }
+            val parseMsgTok = ctxInternUs(
+              cctx.lctx,
+              "error: config field " + decl.name + "." + cf.name + " (env var " + envVarName +
+                ") is not a valid " +
+                configFieldTypeLabel(cf.ty) +
+                " (G0003)"
+            )
             val cr = configFieldRange(cf.ty)
             val rangeMsgTok = if cr.hasMin or cr.hasMax {
               ctxInternUs(
@@ -45998,6 +46012,7 @@ pub func codegenMPackage(file0: in SourceFile, cctx: in CodegenCtx): MPackage {
                 hasDefault = hasDefault,
                 defaultInsns = defaultInsnsList,
                 requiredMsgTok = requiredMsgTok,
+                parseMsgTok = parseMsgTok,
                 hasMin = cr.hasMin,
                 hasMax = cr.hasMax,
                 upperExclusive = cr.upperExclusive,
@@ -46026,7 +46041,14 @@ pub func codegenMPackage(file0: in SourceFile, cctx: in CodegenCtx): MPackage {
                 tokInt64Parse = cctx.tokCfgInt64Parse,
                 tokDoubleParse = cctx.tokCfgDoubleParse,
                 tokSingleParse = cctx.tokCfgSingleParse,
-                tokInvariantCulture = cctx.tokInvariantCulture
+                tokInvariantCulture = cctx.tokInvariantCulture,
+                catchExceptionTok = 0x01000000 + cctx.trException,
+                tokObjectEquals = cctx.tokObjectStaticEquals,
+                tokToLowerInvariant = cctx.tokStringToLower,
+                tokStrOne = ctxInternUs(cctx.lctx, "1"),
+                tokStrZero = ctxInternUs(cctx.lctx, "0"),
+                tokStrTrue = ctxInternUs(cctx.lctx, "true"),
+                tokStrFalse = ctxInternUs(cctx.lctx, "false")
               )
             )
           )
@@ -47520,6 +47542,16 @@ func rangeBoundText(b: in RangeBoundVal): String {
     b.d.toString()
   } else {
     b.l.toString()
+  }
+}
+
+// The base type's name for a config field's G0003 message: `Int` for both
+// `Int` and `Int range 1 ..= 5`.
+func configFieldTypeLabel(te: in TypeExpr): String {
+  match te.kind {
+    case TRef(path) -> if path.segments.count > 0 { path.segments[path.segments.count - 1] } else { "value" }
+    case TRefined(path, _) -> if path.segments.count > 0 { path.segments[path.segments.count - 1] } else { "value" }
+    case _ -> "value"
   }
 }
 

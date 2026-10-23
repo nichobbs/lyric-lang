@@ -1767,7 +1767,8 @@ func rewriteFunctionSig(aliases: in List[String], sig: in FunctionSig): Function
     ret = rewriteOptType(aliases, sig.ret),
     whereClause = rewriteWhereClauseOpt(aliases, sig.whereClause),
     contracts = rewriteContracts(sigAliases, sig.contracts),
-    span = sig.span
+    span = sig.span,
+    annotations = sig.annotations
   )
 }
 

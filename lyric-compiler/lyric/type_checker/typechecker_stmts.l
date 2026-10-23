@@ -1813,6 +1813,7 @@ func checkFunctionBodyAt(
 
   checkLoopLabels(diag, fn)
   checkContractClauses(sc, tbl, sigs, diag, fn.contracts)
+  checkDefiniteAssignment(tbl, sigs, diag, sig.generics, fn.body)
 
   match fn.body {
     case None -> {
