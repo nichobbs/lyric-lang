@@ -355,6 +355,15 @@ where they disagree, these notes are the shipped behaviour.
   (K0006), in `Std.Plugin`'s manifest reader and in `lyric plugin check`, so
   a plugin that compiles always has a manifest that loads. Point and
   capability versions stay `major.minor`.
+- **Process payloads are trusted code.** A managed payload launches only as
+  `dotnet exec <dll> ...` or `java -jar <jar> ...` (checked when a manifest is
+  read and again at launch), and a native payload as its executable; the
+  payload file must lie inside the plugin directory. Arguments after the
+  payload file are the program's own, never runtime options. A process payload
+  runs with the host's user and privileges: grants and guards limit what it
+  obtains through capability calls, not what it does directly. Wasm mode is
+  the isolation for untrusted plugins; it caps memory, and CPU time is bounded
+  only by the call timeout (#8465).
 - **Artifact directories are checked strictly.** `lyric plugin check` (and the
   end of `lyric plugin pack`) requires the directory to be named
   `<id>-<version>`, `schema` to be `1`, a non-empty `publisher`, at least one
