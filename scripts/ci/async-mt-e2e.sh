@@ -34,11 +34,11 @@ for threads in 1 2 4 8; do
 done
 
 echo "=== driver program under ThreadSanitizer ==="
-make -C lyric-rt BUILD=build-tsan CFLAGS="-O1 -g -std=c11 -Wall -Wextra -Werror -fPIC -fsanitize=thread" CC=clang build-tsan/lyric_rt.a
+make -C lyric-rt BUILD=build-tsan-async CFLAGS="-O1 -g -std=c11 -Wall -Wextra -Werror -fPIC -fsanitize=thread" CC=clang build-tsan-async/lyric_rt.a
 [ -f "$work/mt_main.ll" ] || { echo "::error::LYRIC_KEEP_LL left no IR at $work/mt_main.ll"; exit 1; }
 sed -E 's/^(define .*\)) ?(#[0-9]+)? ?\{$/\1 \2 sanitize_thread {/' "$work/mt_main.ll" > "$work/mt_main.tsan.ll"
 grep -q sanitize_thread "$work/mt_main.tsan.ll" || { echo "::error::no function was marked sanitize_thread"; exit 1; }
-clang -O1 -g -fsanitize=thread -Wno-override-module "$work/mt_main.tsan.ll" lyric-rt/build-tsan/lyric_rt.a -lm -lpthread -ldl -o "$work/mt_main_tsan"
+clang -O1 -g -fsanitize=thread -Wno-override-module "$work/mt_main.tsan.ll" lyric-rt/build-tsan-async/lyric_rt.a -lm -lpthread -ldl -o "$work/mt_main_tsan"
 for threads in 2 4; do
   LYRIC_ASYNC_THREADS=$threads TSAN_OPTIONS="halt_on_error=1 exitcode=66" "$work/mt_main_tsan"
 done
