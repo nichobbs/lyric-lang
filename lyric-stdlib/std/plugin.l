@@ -93,6 +93,21 @@ pub val boundaryProtocolCode: Int = -32046
 // (D207 Decision 3).
 val manifestProbeArgument: String = "--lyric-plugin-manifest"
 
+// Std.JsonRpc's error codes, restated here: the compiler imports this
+// package, and the stage-0 seed that builds the compiler's stdlib bundle
+// does not resolve another package's `pub val` (D204 item 5 postdates it).
+val rpcParseError: Int = -32700
+
+val rpcInvalidRequest: Int = -32600
+
+val rpcMethodNotFound: Int = -32601
+
+val rpcInvalidParams: Int = -32602
+
+val rpcInternalError: Int = -32603
+
+val rpcRequestTimedOut: Int = -32001
+
 // ── Boundary errors ────────────────────────────────────────────────────────
 /// A failure caused by the plugin boundary rather than by the plugin's or the
 /// host's own code (D207 Decision 7).
@@ -149,7 +164,7 @@ func plDataString(e: in RpcError, key: in String): Option[String] {
 @experimental
 pub func boundaryErrorFromRpc(e: in RpcError, method: in String): BoundaryError {
   val code = e.code
-  if code == requestTimedOut {
+  if code == rpcRequestTimedOut {
     val ms = match e.data {
       case None -> 0
       case Some(d) -> match getInt(d, "timeoutMs") {
@@ -164,15 +179,15 @@ pub func boundaryErrorFromRpc(e: in RpcError, method: in String): BoundaryError 
     NotGranted(capability = unwrapOr(plDataString(e, "capability"), e.message))
   } else if code == boundaryStaleCode {
     Stale
-  } else if code == boundaryUnsupportedCode or code == methodNotFound {
+  } else if code == boundaryUnsupportedCode or code == rpcMethodNotFound {
     Unsupported(method = unwrapOr(plDataString(e, "method"), method))
   } else if code == boundaryRevokedCode {
     Revoked(capability = unwrapOr(plDataString(e, "capability"), e.message))
   } else if code == boundaryContractViolatedCode {
     ContractViolated(detail = e.message)
-  } else if code == internalError {
+  } else if code == rpcInternalError {
     ContractViolated(detail = "the callee failed while handling '" + method + "': " + e.message)
-  } else if code == boundaryProtocolCode or code == parseError or code == invalidRequest or code == invalidParams {
+  } else if code == boundaryProtocolCode or code == rpcParseError or code == rpcInvalidRequest or code == rpcInvalidParams {
     Protocol(detail = e.message)
   } else {
     Protocol(detail = "unexpected error " + code.toString() + " from '" + method + "': " + e.message)
@@ -210,11 +225,11 @@ pub func boundaryErrorToRpc(b: in BoundaryError): RpcError {
     )
     case ContractViolated(d) -> RpcError(code = boundaryContractViolatedCode, message = d, data = None)
     case Timeout(ms) -> RpcError(
-      code = requestTimedOut,
+      code = rpcRequestTimedOut,
       message = "timed out after " + ms.toString() + " ms",
       data = plDataObject("timeoutMs", JInt(value = ms.toLong()))
     )
-    case Crashed(d) -> RpcError(code = internalError, message = d, data = None)
+    case Crashed(d) -> RpcError(code = rpcInternalError, message = d, data = None)
     case Protocol(d) -> RpcError(code = boundaryProtocolCode, message = d, data = None)
   }
 }
@@ -1901,12 +1916,12 @@ func plServeCapability(
   caps: in PluginCapabilityServer, method: in String, params: in Option[JsonValue]
 ): Result[JsonValue, RpcError] {
   if not Str.startsWith(method, "cap/") {
-    return Err(error = RpcError(code = methodNotFound, message = "method not found: " + method, data = None))
+    return Err(error = RpcError(code = rpcMethodNotFound, message = "method not found: " + method, data = None))
   }
   val rest = Str.substring(method, 4)
   val slash = match Str.lastIndexOf(rest, "/") { case Some(s) -> s; case None -> -1 }
   if slash <= 0 or slash == rest.length - 1 {
-    return Err(error = RpcError(code = methodNotFound, message = "method not found: " + method, data = None))
+    return Err(error = RpcError(code = rpcMethodNotFound, message = "method not found: " + method, data = None))
   }
   val capability = Str.substring(rest, 0, slash)
   val name = Str.substring(rest, slash + 1)
@@ -1923,7 +1938,7 @@ func plServeCapability(
   }
   val failed: Result[JsonValue, RpcError] = Err(
     error = RpcError(
-      code = internalError,
+      code = rpcInternalError,
       message = "Internal error",
       data = None
     )
@@ -1971,7 +1986,7 @@ func plServeInbound(caps: in PluginCapabilityServer, proc: in PipedProcess, line
     case _ -> RpcFailure(
       id = rid,
       error = RpcError(
-        code = invalidRequest,
+        code = rpcInvalidRequest,
         message = "Invalid Request: \"method\" must be a string",
         data = None
       )
@@ -2087,7 +2102,7 @@ record PluginHostInbound {
 
 impl RpcHandler for PluginHostInbound {
   func onRequest(method: in String, params: in Option[JsonValue]): Result[JsonValue, RpcError] {
-    Err(error = RpcError(code = methodNotFound, message = "method not found: " + method, data = None))
+    Err(error = RpcError(code = rpcMethodNotFound, message = "method not found: " + method, data = None))
   }
 
   func onNotification(method: in String, params: in Option[JsonValue]): Unit {
@@ -2361,7 +2376,7 @@ func plHostCall(st: inout PluginProcessState, method: in String, params: in Json
     case Ok(v) -> Ok(value = v)
     case Err(e) -> {
       if isLocalError(e) {
-        if e.code == requestTimedOut {
+        if e.code == rpcRequestTimedOut {
           val cancel: List[JsonField] = newList()
           cancel.add(plField("id", JInt(value = requestId)))
           val _ = notify(peer, "$/cancelRequest", Some(value = JObject(fields = cancel)))
@@ -2619,6 +2634,59 @@ impl RpcHandler for PluginSideHandler {
   }
 }
 
+// The plugin's NDJSON transport over its own stdin and stdout. It is
+// `Std.JsonRpc.Stdio.NdjsonTransport` rebuilt from that package's sans-IO
+// framing functions, because the stage-0 seed that builds the compiler's
+// stdlib bundle does not see another package's `impl` blocks (D204 item 5
+// postdates it), so `NdjsonTransport` is no `RpcTransport` to it.
+record PluginStdinSource {
+  reader: StdinReader
+}
+
+impl ByteSource for PluginStdinSource {
+  func read(): Result[Option[slice[Byte]], String] {
+    match readStdin(self.reader) {
+      case Ok(bytes) -> Ok(value = bytes)
+      case Err(e) -> Err(error = IOError.message(e))
+    }
+  }
+
+  func readWithin(timeoutMs: in Int): Result[ByteRead, String] {
+    match readStdinWithin(self.reader, timeoutMs) {
+      case Err(e) -> Err(error = IOError.message(e))
+      case Ok(chunk) -> match chunk {
+        case StdinBytes(bytes) -> Ok(value = BytesRead(bytes = bytes))
+        case StdinEnd -> Ok(value = BytesEnd)
+        case StdinTimedOut -> Ok(value = BytesTimedOut)
+      }
+    }
+  }
+}
+
+record PluginStdioTransport {
+  source: PluginStdinSource
+  buffer: FrameBuffer
+}
+
+impl RpcTransport for PluginStdioTransport {
+  func receive(): Result[Option[String], String] {
+    ndjsonReceiveFrom(self.source, self.buffer)
+  }
+
+  func receiveWithin(timeoutMs: in Int): Result[ReceiveOutcome, String] {
+    ndjsonReceiveWithinFrom(self.source, self.buffer, timeoutMs)
+  }
+
+  // `writeValue` output is compact, so a message is exactly one line.
+  func send(payload: in String): Result[Unit, String] {
+    Console.println(payload)
+    Ok(value = ())
+  }
+
+  func close(): Unit {
+  }
+}
+
 func plIsManifestProbe(argv: in slice[String]): Bool {
   for a in argv {
     if a == manifestProbeArgument {
@@ -2643,7 +2711,10 @@ pub func runPlugin(server: in PluginServer): Int {
   val pluginId = unwrapOr(getString(description, "id"), "")
   var conn = PluginConnection(pluginId = pluginId, peer = None, host = None)
   val handler = PluginSideHandler(server = server, conn = conn, pluginId = pluginId, greeted = false)
-  var peer = newPeer(newNdjsonTransport(), handler)
+  var peer = newPeer(
+    PluginStdioTransport(source = PluginStdinSource(reader = openStdinReader()), buffer = newFrameBuffer()),
+    handler
+  )
   conn.peer = Some(value = peer)
   match runLoop(peer) {
     case Ok(_) -> 0
@@ -2672,7 +2743,7 @@ pub func callHost(conn: in PluginConnection, method: in String, params: in JsonV
       match callWithin(peer, wire, Some(value = wireParams), timeoutMs) {
         case Ok(v) -> Ok(value = v)
         case Err(e) -> if isLocalError(e) {
-          if e.code == requestTimedOut {
+          if e.code == rpcRequestTimedOut {
             Err(error = Timeout(timeoutMs = timeoutMs))
           } else {
             Err(error = Crashed(detail = "the connection to the host failed: " + e.message))

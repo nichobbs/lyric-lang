@@ -263,6 +263,38 @@ test "discovery reads the catalogue and contributions without starting anything"
   stopAllPlugins(host)
 }
 
+test "discovery reports a broken manifest, skips a directory without one, and loads the rest" {
+  writeManifest()
+  val root = dirname(fixtureDir())
+  val broken = join(root, "broken")
+  val empty = join(root, "empty")
+  match createDir(broken) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("createDir: " + IOError.message(e))
+  }
+  match createDir(empty) {
+    case Ok(_) -> ()
+    case Err(e) -> panic("createDir: " + IOError.message(e))
+  }
+  match writeText(join(broken, "plugin.json"), "{\"schema\":1,\"id\":\"x.broken\"}") {
+    case Ok(_) -> ()
+    case Err(e) -> panic("writeText: " + IOError.message(e))
+  }
+  val host = newHost(SecretsProvider(served = 0), 30000, 3)
+  val issues = discoverPlugins(host, [root])
+  val _ = deleteDirRecursive(broken)
+  val _ = deleteDirRecursive(empty)
+  assertEqualInt(issues.count, 1, "one issue, for the broken manifest")
+  match issues[0].kind {
+    case ManifestInvalid -> ()
+    case _ -> assertTrue(false, "a broken manifest is ManifestInvalid: " + pluginLoadIssueMessage(issues[0]))
+  }
+  assertEqual(issues[0].location, broken, "the issue names the directory")
+  assertEqual(issues[0].pluginId, "x.broken", "the issue names the plugin id it read")
+  assertEqualInt(pluginManifests(host).count, 1, "the greeter still loads")
+  stopAllPlugins(host)
+}
+
 test "handshake and a point call" {
   val host = discoveredHost(SecretsProvider(served = 0), 30000, 3)
   val c = conn(host)
