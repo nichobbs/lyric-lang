@@ -39,10 +39,18 @@ self-tests compile with `-fsanitize=address`).
   (`scripts/gen_unicode_category_tables.py`), replacing the ASCII-only twin
   (#6858). `char_native_tests.l` covers Latin-1, Greek, Han, titlecase,
   C1 controls and case mapping.
-- A missing executable under `Std.Process.runCapture`/`runCaptureWithInput`
-  and the async capture is a spawn failure (`-1`, with the errno), not exit
-  code 127, matching the managed targets and `CaptureResult`'s contract
-  (#7968). A program that really exits 127 still reports 127.
+- A missing executable under the captured runs (`Std.Process.runCapture`,
+  `runCaptureWithInput`, the async capture) is a spawn failure, not exit code
+  127: `runCapture` returns `Err`, `Std.ProcessCapture` reports exit code `-1`
+  with empty output, matching the managed targets and `CaptureResult`'s
+  contract (#7968). A program that really exits 127 still reports 127. The
+  fork child reports a failed `execvp` to the parent through a close-on-exec
+  pipe, as the inherited-stdio run already did.
+- The `ok` out-flags of `lyric_file_read_bytes`, `lyric_dir_list2` and
+  `lyric_dir_list_typed` are `int64_t*`, written through `NativePtr[Long]`
+  (#4845). The old report of a codegen bug in `nativeAddrOf` was a width
+  mismatch: a native `Int` is 32-bit, so an 8-byte kernel write through the
+  address of a `var ok: Int` ran into the next stack slot.
 - `Std.Random` has a native test (`random_native_tests.l`) beside the
   existing `Std.SecureRandom` and `Std.Task` ones (#7667, #7664).
 
