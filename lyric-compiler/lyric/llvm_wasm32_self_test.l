@@ -29,7 +29,7 @@ import Lyric.LlvmBridge
 // Harness.
 // ─────────────────────────────────────────────────────────────────────────────
 func tempBase(): String {
-  Environment.getVarOrDefault("TMPDIR", "/tmp")
+  Environment.getVarOrDefault("TMPDIR", Environment.getVarOrDefault("TEMP", Environment.getVarOrDefault("TMP", "/tmp")))
 }
 
 record WasmRun {

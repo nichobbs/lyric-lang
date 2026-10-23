@@ -379,6 +379,18 @@ pub func nativeTargetIsWindows(triple: in String): Bool {
   }
 }
 
+/// The triple a self-test that codegens and links for the host passes to
+/// `codegenNativePackage`: empty (the backend's default System V lowering,
+/// which matches every POSIX host the suites run on) except on a Windows host,
+/// whose Microsoft x64 ABI only `windowsTriple` selects.
+pub func nativeHostCodegenTriple(): String {
+  if Environment.isWindows() {
+    windowsTriple
+  } else {
+    ""
+  }
+}
+
 /// The path a native executable for `triple` is written to: `path` itself,
 /// or with `.exe` appended for a Windows target when it has no `.exe` already,
 /// since Windows starts a program only by its extension.
@@ -395,28 +407,186 @@ pub func nativeExecutablePath(path: in String, triple: in String): String {
 /// (`<bin>/lib/lyric_rt-x86_64-pc-windows-msvc.lib`), then the dev layout
 /// (`lyric-rt/build-x86_64-pc-windows-msvc/lyric_rt.lib`, from
 /// `make -C lyric-rt windows`).
-func findWindowsRtArchive(): String {
-  val winOverride = Environment.getVarOrDefault("LYRIC_RT_WINDOWS_PATH", "")
+///
+/// `dynamicCrt` selects the build against the DLL C runtime instead
+/// (`$LYRIC_RT_WINDOWS_MD_PATH`, `lyric_rt_md-<triple>.lib`,
+/// `lyric_rt_md.lib`), which AddressSanitizer needs: its Windows runtime
+/// works only with the DLL C runtime, while ordinary programs link the static
+/// one so they need no Visual C++ redistributable.
+func findWindowsRtArchive(dynamicCrt: in Bool): String {
+  val stem = if dynamicCrt { "lyric_rt_md" } else { "lyric_rt" }
+  val winOverride = Environment.getVarOrDefault(
+    if dynamicCrt { "LYRIC_RT_WINDOWS_MD_PATH" } else { "LYRIC_RT_WINDOWS_PATH" },
+    ""
+  )
   if winOverride.length > 0 and File.fileExists(winOverride) {
     return winOverride
   }
-  if Environment.isWindows() {
+  if Environment.isWindows() and not dynamicCrt {
     val hostOverride = Environment.getVarOrDefault("LYRIC_RT_PATH", "")
     if hostOverride.length > 0 and File.fileExists(hostOverride) {
       return hostOverride
     }
   }
   val appBase = Environment.appBaseDirectory()
-  val installed = Path.join(Path.join(appBase, "lib"), "lyric_rt-" + windowsTriple + ".lib")
+  val installed = Path.join(Path.join(appBase, "lib"), stem + "-" + windowsTriple + ".lib")
   if File.fileExists(installed) {
     return installed
   }
-  val devRel = Path.join(Path.join("lyric-rt", "build-" + windowsTriple), "lyric_rt.lib")
+  val devRel = Path.join(Path.join("lyric-rt", "build-" + windowsTriple), stem + ".lib")
   val hit = walkUpFor(appBase, devRel)
   if hit.length > 0 {
     return hit
   }
   walkUpFor(Environment.currentDirectory(), devRel)
+}
+
+/// Whether the extra clang flags ask for AddressSanitizer.
+func wantsAsan(flags: in List[String]): Bool {
+  for f in flags {
+    if f == "-fsanitize=address" {
+      return true
+    }
+  }
+  false
+}
+
+/// The AddressSanitizer runtime a Windows ASan build loads.
+val windowsAsanDll: String = "clang_rt.asan_dynamic-x86_64.dll"
+
+/// Where clang keeps `windowsAsanDll` for `triple`: what
+/// `-print-file-name` finds on its library path, else the resource
+/// directory's `lib/windows`; "" when neither has it.
+func findWindowsAsanDll(triple: in String): String {
+  val args: List[String] = newList()
+  args.add("--target=" + triple)
+  args.add("-print-file-name=" + windowsAsanDll)
+  match Process.runCapture("clang", args, 60000) {
+    case Ok(res) -> {
+      val p = Str.trim(res.stdout)
+      if res.exitCode == 0 and p != windowsAsanDll and File.fileExists(p) {
+        return p
+      }
+    }
+    case Err(_) -> ()
+  }
+  val rargs: List[String] = newList()
+  rargs.add("--target=" + triple)
+  rargs.add("-print-resource-dir")
+  match Process.runCapture("clang", rargs, 60000) {
+    case Ok(res) -> {
+      val candidate = Path.join(Path.join(Path.join(Str.trim(res.stdout), "lib"), "windows"), windowsAsanDll)
+      if res.exitCode == 0 and File.fileExists(candidate) {
+        return candidate
+      }
+    }
+    case Err(_) -> ()
+  }
+  ""
+}
+
+/// Copies `windowsAsanDll` beside the executable at `exePath`, where the
+/// loader looks first.  Reports N0026 and returns false when clang has no
+/// such runtime (an LLVM install without compiler-rt).
+func bundleWindowsAsanDll(exePath: in String, triple: in String): Bool {
+  val dll = findWindowsAsanDll(triple)
+  if dll.length == 0 {
+    Console.error(
+      "error[N0026]: an AddressSanitizer build for Windows needs " + windowsAsanDll +
+        ", which this clang does not have (install LLVM with compiler-rt, as the official Windows installer does)"
+    )
+    return false
+  }
+  val dest = Path.join(Path.dirname(exePath), windowsAsanDll)
+  match File.readBytes(dll) {
+    case Ok(bytes) -> match File.writeBytes(dest, bytes) {
+      case Ok(_) -> true
+      case Err(e) -> {
+        Console.error("error[N0026]: cannot copy " + dll + " to " + dest + ": " + IOError.message(e))
+        false
+      }
+    }
+    case Err(e) -> {
+      Console.error("error[N0026]: cannot read " + dll + ": " + IOError.message(e))
+      false
+    }
+  }
+}
+
+/// The system's temporary directory: `$TMPDIR`, `$TEMP`, `$TMP`, then
+/// `/tmp` (the same chain the self-tests use).
+pub func nativeTempBase(): String {
+  Environment.getVarOrDefault("TMPDIR", Environment.getVarOrDefault("TEMP", Environment.getVarOrDefault("TMP", "/tmp")))
+}
+
+/// A scratch directory `name` under `nativeTempBase()`, created when
+/// missing.  The native self-tests write their binaries here.
+pub func nativeScratchDir(name: in String): String {
+  val dir = Path.join(nativeTempBase(), name)
+  val _ = File.createDir(dir)
+  dir
+}
+
+/// Links the LLVM IR at `llPath` with lyric-rt into a host executable at
+/// `outputPath` (with `.exe` on Windows), exactly as a host `lyric build
+/// --target native` links: the host's runtime archive and system
+/// libraries, `-fsanitize=address` when `sanitize` (with the DLL C runtime
+/// and its ASan DLL beside the program on Windows), then `extraArgs` (extra
+/// objects or `-l` libraries).  Returns the executable's path, or clang's
+/// error output.
+pub func linkNativeIr(
+  llPath: in String, outputPath: in String, sanitize: in Bool, extraArgs: in List[String]
+): Result[String, String] {
+  val isWindows = Environment.isWindows()
+  val rt = if isWindows { findWindowsRtArchive(sanitize) } else { findLyricRtArchive() }
+  if rt.length == 0 {
+    return Err(
+      error = "the lyric_rt archive was not found (build it with `make -C lyric-rt`" +
+        (if isWindows { " windows" } else { "" }) +
+        ")"
+    )
+  }
+  val exe = nativeExecutablePath(outputPath, "")
+  val args: List[String] = newList()
+  args.add("-O0")
+  if sanitize {
+    args.add("-fsanitize=address")
+  }
+  if isWindows {
+    args.add("--target=" + windowsTriple)
+    args.add("-fuse-ld=lld")
+    if sanitize {
+      args.add("-fms-runtime-lib=dll")
+    }
+  }
+  args.add(llPath)
+  for a in extraArgs {
+    args.add(a)
+  }
+  args.add(rt)
+  if isWindows {
+    for lib in windowsSystemLibs() {
+      args.add(lib)
+    }
+  } else {
+    args.add("-lm")
+    args.add("-lpthread")
+    args.add("-ldl")
+  }
+  args.add("-o")
+  args.add(exe)
+  match Process.runCapture("clang", args, 300000) {
+    case Ok(res) -> {
+      if res.exitCode != 0 {
+        return Err(error = "clang failed on " + llPath + ": " + res.stderr)
+      }
+    }
+    case Err(e) -> return Err(error = "clang could not be started: " + e)
+  }
+  if isWindows and sanitize and not bundleWindowsAsanDll(exe, windowsTriple) {
+    return Err(error = "the AddressSanitizer runtime could not be bundled (see stderr)")
+  }
+  Ok(value = exe)
 }
 
 /// The system import libraries every Windows link names, all used by the
@@ -2231,15 +2401,20 @@ func linkAndEmitNative(
     }
   }
 
+  val windowsAsan = isWindows and wantsAsan(extraClangFlags)
   val rtPath = if isWasm {
     findWasmRtArchive()
   } else if isWindows {
-    findWindowsRtArchive()
+    findWindowsRtArchive(windowsAsan)
   } else {
     findLyricRtArchive()
   }
   if rtPath.length == 0 {
-    if isWindows {
+    if windowsAsan {
+      Console.error(
+        "error[N0003]: the Windows lyric_rt_md archive an AddressSanitizer build links was not found (set LYRIC_RT_WINDOWS_MD_PATH, or build it with `make -C lyric-rt windows`)"
+      )
+    } else if isWindows {
       Console.error(
         "error[N0003]: the Windows lyric_rt archive was not found (set LYRIC_RT_WINDOWS_PATH, or build it with `make -C lyric-rt windows`)"
       )
@@ -2291,6 +2466,10 @@ func linkAndEmitNative(
     // Visual Studio link.exe.
     clangArgs.add("--target=" + effTriple)
     clangArgs.add("-fuse-ld=lld")
+    if windowsAsan {
+      // Windows AddressSanitizer runs only with the DLL C runtime.
+      clangArgs.add("-fms-runtime-lib=dll")
+    }
   } else if triple.length > 0 {
     clangArgs.add("--target=" + triple)
   }
@@ -2313,7 +2492,7 @@ func linkAndEmitNative(
   clangArgs.add(rtPath)
   if isWindows {
     // The math functions are part of the UCRT, and there is no libpthread or
-    // libdl: threads and the (not yet ported) TLS seam use the Win32 API.
+    // libdl: threads, sockets and TLS use the Win32 API.
     for lib in windowsSystemLibs() {
       clangArgs.add(lib)
     }
@@ -2372,6 +2551,9 @@ func linkAndEmitNative(
       Console.error("  (" + e + ")")
       return false
     }
+  }
+  if windowsAsan and not bundleWindowsAsanDll(nativeExecutablePath(coreOut, effTriple), effTriple) {
+    return false
   }
   // Keep the workspace clean on success; the .ll is a build
   // intermediate (re-emit with a failing clang run or via LYRIC_RT_PATH

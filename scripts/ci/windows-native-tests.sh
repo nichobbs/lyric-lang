@@ -8,17 +8,22 @@
 #      lyric_tls_test, lyric_parallel_test).
 #   2. Runs the cross-target @test_module suites and the stdlib suites the
 #      Linux native lane runs (scripts/ci/native-backend-self-tests.sh) with
-#      `lyric test --target native`.  The network suites are compiler-hosted
-#      (`llvm_*_self_test.l`), which the Windows job does not run yet (#8436);
-#      sockets and TLS are covered by lyric_tls_test and step 3.
-#   3. Builds and runs programs that check what is Windows-specific end to
+#      `lyric test --target native`.
+#   3. Stages the compiler bundle beside lyric.exe and runs the
+#      compiler-hosted native suites (`llvm_*_self_test.l` and friends, as
+#      dotnet-target tests that codegen, link and run Windows executables),
+#      the AddressSanitizer cases against the DLL-CRT `lyric_rt_md.lib`.
+#      The suites that spawn `sh`, call pthreads directly or build `.so`
+#      libraries stay Linux-only.
+#   4. Builds and runs programs that check what is Windows-specific end to
 #      end: the `.exe` output name, by-value records crossing to C under the
 #      Microsoft x64 convention, UTF-8 console output and arguments, files
 #      with non-ASCII names, the environment, child processes, sockets and
 #      HTTPS over Schannel, and a panic's exit status.
 #
 # Needs clang and lld-link (an LLVM install) and the MSVC C runtime and
-# Windows SDK (Visual Studio Build Tools), CMake and Ninja on PATH.
+# Windows SDK (Visual Studio Build Tools), CMake and Ninja on PATH, and the
+# .NET SDK for the compiler-hosted suites.
 #
 # Usage: LYRIC_BIN=path/to/lyric.exe bash scripts/ci/windows-native-tests.sh
 # ---------------------------------------------------------------------------
@@ -37,7 +42,8 @@ cmake -S lyric-rt -B "$rt_build" -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_BUILD
 cmake --build "$rt_build"
 ctest --test-dir "$rt_build" --output-on-failure
 LYRIC_RT_WINDOWS_PATH="$(cygpath -m "$rt_build/lyric_rt.lib")"
-export LYRIC_RT_WINDOWS_PATH
+LYRIC_RT_WINDOWS_MD_PATH="$(cygpath -m "$rt_build/lyric_rt_md.lib")"
+export LYRIC_RT_WINDOWS_PATH LYRIC_RT_WINDOWS_MD_PATH
 
 echo "=== cross-target suites (--target native) ==="
 for t in \
@@ -105,6 +111,40 @@ for t in \
   "$lyric_bin" test --target native "$t"
 done
 "$lyric_bin" run --target native lyric-stdlib/tests/parse_tests.l
+
+echo "=== compiler-hosted native suites ==="
+bash scripts/stage-selfhosted-compiler.sh "$lyric_bin" "$(dirname "$lyric_bin")/lib"
+for t in \
+  lyric-compiler/lyric/llvm_ir_self_test.l \
+  lyric-compiler/lyric/llvm_codegen_self_test.l \
+  lyric-compiler/lyric/llvm_heap_self_test.l \
+  lyric-compiler/lyric/llvm_byvalue_record_self_test.l \
+  lyric-compiler/lyric/llvm_inline_union_self_test.l \
+  lyric-compiler/lyric/llvm_fixed_array_self_test.l \
+  lyric-compiler/lyric/llvm_buffer_self_test.l \
+  lyric-compiler/lyric/llvm_c_abi_self_test.l \
+  lyric-compiler/lyric/bindgen_self_test.l \
+  lyric-compiler/lyric/llvm_collections_self_test.l \
+  lyric-compiler/lyric/llvm_tls_self_test.l \
+  lyric-compiler/lyric/llvm_http_client_self_test.l \
+  lyric-compiler/lyric/llvm_http_server_self_test.l \
+  lyric-compiler/lyric/llvm_self_test_n3.l \
+  lyric-compiler/lyric/llvm_self_test_n34.l \
+  lyric-compiler/lyric/llvm_self_test_defer.l \
+  lyric-compiler/lyric/llvm_opaque_self_test.l \
+  lyric-compiler/lyric/llvm_enum_case_resolve_self_test.l \
+  lyric-compiler/lyric/llvm_inout_self_test.l \
+  lyric-compiler/lyric/llvm_project_self_test.l \
+  lyric-compiler/lyric/cli_run_native_project_self_test.l \
+  lyric-compiler/lyric/fixed_array_project_self_test.l \
+  lyric-compiler/lyric/fixed_array_restored_self_test.l \
+  lyric-compiler/lyric/native_dependency_self_test.l \
+  lyric-compiler/lyric/native_string_normalize_panic_self_test.l \
+  lyric-compiler/lyric/llvm_self_test_self_iface.l \
+  lyric-compiler/lyric/llvm_self_test_impl_direct.l ; do
+  echo "--- $t"
+  LYRIC_LOAD_COMPILER=1 "$lyric_bin" test "$t"
+done
 
 echo "=== Windows end-to-end programs ==="
 bash scripts/ci/windows-native-e2e.sh "$lyric_bin" "$work/e2e"

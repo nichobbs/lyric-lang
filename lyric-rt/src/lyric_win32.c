@@ -56,6 +56,42 @@ char* lyric_win32_utf8(const wchar_t* w, int64_t n, int64_t* out_len) {
     return s;
 }
 
+/* Paths of this many UTF-16 units or more get the extended-length prefix:
+ * CreateDirectoryW's limit (MAX_PATH less room for an 8.3 file name) is the
+ * lowest of the APIs the runtime calls. */
+#define LYRIC_LONG_PATH_THRESHOLD (MAX_PATH - 12)
+
+wchar_t* lyric_win32_path(const char* s) {
+    wchar_t* w = lyric_win32_wide(s);
+    if (!w || w[0] == L'\0') return w;
+    if (wcsncmp(w, L"\\\\?\\", 4) == 0) return w; /* already extended-length */
+    DWORD need = GetFullPathNameW(w, 0, NULL, NULL); /* units including the NUL */
+    if (need == 0 || need - 1 < LYRIC_LONG_PATH_THRESHOLD) return w;
+    wchar_t* full = (wchar_t*)malloc(((size_t)need + 8) * sizeof(wchar_t));
+    if (!full) return w;
+    DWORD got = GetFullPathNameW(w, need, full + 8, NULL);
+    if (got == 0 || got >= need) {
+        free(full);
+        return w;
+    }
+    wchar_t* body = full + 8;
+    wchar_t* out;
+    if (body[0] == L'\\' && body[1] == L'\\') {
+        /* \\server\share\... becomes \\?\UNC\server\share\... */
+        out = body - 6;
+        memcpy(out, L"\\\\?\\UNC", 7 * sizeof(wchar_t));
+        out[7] = L'\\';
+        memmove(out + 8, body + 2, ((size_t)got - 1) * sizeof(wchar_t));
+    } else {
+        out = body - 4;
+        memcpy(out, L"\\\\?\\", 4 * sizeof(wchar_t));
+    }
+    size_t len = wcslen(out);
+    memmove(full, out, (len + 1) * sizeof(wchar_t));
+    free(w);
+    return full;
+}
+
 /* 100 ns ticks between 1601-01-01 and 1970-01-01. */
 #define LYRIC_FILETIME_UNIX_EPOCH 116444736000000000LL
 
@@ -478,7 +514,7 @@ int32_t lyric_o_trunc(void)  { return _O_TRUNC; }
 int32_t lyric_o_append(void) { return _O_APPEND; }
 
 int64_t lyric_file_size(const char* path) {
-    wchar_t* w = lyric_win32_wide(path);
+    wchar_t* w = lyric_win32_path(path);
     if (!w) return -1;
     WIN32_FILE_ATTRIBUTE_DATA fa;
     BOOL ok = GetFileAttributesExW(w, GetFileExInfoStandard, &fa);
@@ -508,7 +544,7 @@ int64_t lyric_read_fd(int32_t fd, void* buf, int64_t n) {
 /* POSIX `mode` bits mapped to the one permission Windows files carry: a file
  * created without any write bit is read-only. */
 int32_t lyric_open_fd(const char* path, int32_t flags, int32_t mode) {
-    wchar_t* w = lyric_win32_wide(path);
+    wchar_t* w = lyric_win32_path(path);
     if (!w) {
         errno = EINVAL; /* not valid UTF-8: no file can have that name */
         return -1;
@@ -537,7 +573,7 @@ int32_t lyric_close_fd(int32_t fd) {
 }
 
 int32_t lyric_unlink(const char* path) {
-    wchar_t* w = lyric_win32_wide(path);
+    wchar_t* w = lyric_win32_path(path);
     if (!w) {
         errno = EINVAL; /* not valid UTF-8: no file can have that name */
         return -1;
@@ -550,7 +586,7 @@ int32_t lyric_unlink(const char* path) {
 
 int32_t lyric_mkdir(const char* path, int32_t mode) {
     (void)mode;
-    wchar_t* w = lyric_win32_wide(path);
+    wchar_t* w = lyric_win32_path(path);
     if (!w) {
         errno = EINVAL; /* not valid UTF-8: no file can have that name */
         return -1;
@@ -562,7 +598,7 @@ int32_t lyric_mkdir(const char* path, int32_t mode) {
 }
 
 int32_t lyric_rmdir(const char* path) {
-    wchar_t* w = lyric_win32_wide(path);
+    wchar_t* w = lyric_win32_path(path);
     if (!w) {
         errno = EINVAL; /* not valid UTF-8: no file can have that name */
         return -1;

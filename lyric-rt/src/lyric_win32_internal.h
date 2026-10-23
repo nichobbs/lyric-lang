@@ -21,6 +21,15 @@
  * string `s`, or NULL when `s` is not valid UTF-8 or memory runs out. */
 wchar_t* lyric_win32_wide(const char* s);
 
+/* lyric_win32_wide for a file-system path: a path whose full form is long
+ * enough to meet the MAX_PATH family of limits is returned normalised
+ * (GetFullPathNameW) with the extended-length prefix (\\?\, or \\?\UNC\
+ * for a share), so files and directories with long paths work whether or
+ * not the system enables long paths.  Shorter paths are returned as given,
+ * so device names (NUL, CON) and relative paths keep their usual meaning.
+ * NULL when `s` is not valid UTF-8 or memory runs out. */
+wchar_t* lyric_win32_path(const char* s);
+
 /* A freshly malloc'd NUL-terminated UTF-8 copy of the first `n` UTF-16 units
  * of `w` (n < 0: up to its NUL), writing the byte length (excluding the NUL)
  * through *out_len when it is non-NULL.  Unpaired surrogates become U+FFFD.

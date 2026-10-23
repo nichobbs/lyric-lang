@@ -59,7 +59,7 @@
 //! writes the request, AND blocks reading the full response in one call —
 //! there is no point to interleave a single-threaded server's `accept`
 //! between those steps. The server therefore runs on a genuine second
-//! `pthread_create`d OS thread (the same N4.5 callback-trampoline mechanism
+//! OS thread from `lyric_thread_create` (the same N4.5 callback-trampoline mechanism
 //! `llvm_ffi_self_test.l`'s pthread case verifies, and the same shape
 //! `D-progress-712`'s item-D writeup anticipated for exactly this file),
 //! driving `Std.TcpHost.hostAcceptTls`/`hostRead`/`hostWrite` directly per
@@ -102,7 +102,7 @@ import Lyric.LlvmBridge
 // Harness (mirrors llvm_tls_self_test.l).
 // ─────────────────────────────────────────────────────────────────────────────
 func tempBase(): String {
-  Environment.getVarOrDefault("TMPDIR", "/tmp")
+  Environment.getVarOrDefault("TMPDIR", Environment.getVarOrDefault("TEMP", Environment.getVarOrDefault("TMP", "/tmp")))
 }
 
 record RunOutcome {
@@ -170,8 +170,8 @@ test "Std.HttpHost native HTTPS round trip: TLS handshake + redirect + chunked b
   val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Tls\n" +
     "import Std.TcpHost\n" +
     "import Std.HttpHost\n" +
-    "extern func pthreadCreate(tid: NativePtr[Long], attr: NativePtr[Byte], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"pthread_create\"\n" +
-    "extern func pthreadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"pthread_join\"\n" +
+    "extern func threadCreate(tid: NativePtr[Long], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"lyric_thread_create\"\n" +
+    "extern func threadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"lyric_thread_join\"\n" +
     "extern func cStrlen(s: NativePtr[Byte]): Long = \"strlen\"\n" +
     "extern func toC(s: String): NativePtr[Byte] = \"lyric_string_to_cstring\"\n" +
     "extern func freeC(p: NativePtr[Byte]): Unit = \"lyric_cstring_free\"\n" +
@@ -251,7 +251,7 @@ test "Std.HttpHost native HTTPS round trip: TLS handshake + redirect + chunked b
     "    }\n" +
     "  }\n" +
     "  var tid: Long = 0\n" +
-    "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
+    "  val rc = threadCreate(nativeAddrOf(tid), worker, worker)\n" +
     "  if rc != 0 {\n" +
     "    hostCloseListener(listener)\n" +
     "    return 2\n" +
@@ -277,7 +277,7 @@ test "Std.HttpHost native HTTPS round trip: TLS handshake + redirect + chunked b
     "    case Err(_) -> ()\n" +
     "  }\n" +
     "  var outp: NativePtr[Byte] = nativeNullPtr()\n" +
-    "  val rj = pthreadJoin(tid, nativeAddrOf(outp))\n" +
+    "  val rj = threadJoin(tid, nativeAddrOf(outp))\n" +
     "  var serverOk = false\n" +
     "  if rj == 0 {\n" +
     "    val n = cStrlen(outp)\n" +
@@ -316,11 +316,11 @@ test "Std.HttpHost native redirect strips Authorization on a cross-authority hop
   // the plain-HTTP transport itself (item C's reasoning), but the full
   // client-request/server-response round trip still blocks on I/O both
   // sides must drive concurrently, so the server runs on a second
-  // `pthread_create`d thread exactly like item E.
+  // `lyric_thread_create`d thread exactly like item E.
   val src = "package T\n" + "import Std.Core\n" + "import Std.Encoding\n" + "import Std.TcpHost\n" +
     "import Std.HttpHost\n" +
-    "extern func pthreadCreate(tid: NativePtr[Long], attr: NativePtr[Byte], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"pthread_create\"\n" +
-    "extern func pthreadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"pthread_join\"\n" +
+    "extern func threadCreate(tid: NativePtr[Long], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"lyric_thread_create\"\n" +
+    "extern func threadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"lyric_thread_join\"\n" +
     "extern func cStrlen(s: NativePtr[Byte]): Long = \"strlen\"\n" +
     "extern func toC(s: String): NativePtr[Byte] = \"lyric_string_to_cstring\"\n" +
     "extern func freeC(p: NativePtr[Byte]): Unit = \"lyric_cstring_free\"\n" +
@@ -393,7 +393,7 @@ test "Std.HttpHost native redirect strips Authorization on a cross-authority hop
     "    }\n" +
     "  }\n" +
     "  var tid: Long = 0\n" +
-    "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
+    "  val rc = threadCreate(nativeAddrOf(tid), worker, worker)\n" +
     "  if rc != 0 {\n" +
     "    hostCloseListener(listener1)\n" +
     "    hostCloseListener(listener2)\n" +
@@ -420,7 +420,7 @@ test "Std.HttpHost native redirect strips Authorization on a cross-authority hop
     "    case Err(_) -> ()\n" +
     "  }\n" +
     "  var outp: NativePtr[Byte] = nativeNullPtr()\n" +
-    "  val rj = pthreadJoin(tid, nativeAddrOf(outp))\n" +
+    "  val rj = threadJoin(tid, nativeAddrOf(outp))\n" +
     "  var serverOk = false\n" +
     "  if rj == 0 {\n" +
     "    val n = cStrlen(outp)\n" +
@@ -495,8 +495,8 @@ test "Std.HttpHost native client rejects a response Content-Length beyond the si
   // Content-Length header value alone, before any body bytes are read).
   val src = "package T\n" + "import Std.Core\n" + "import Std.Encoding\n" + "import Std.TcpHost\n" +
     "import Std.HttpHost\n" +
-    "extern func pthreadCreate(tid: NativePtr[Long], attr: NativePtr[Byte], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"pthread_create\"\n" +
-    "extern func pthreadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"pthread_join\"\n" +
+    "extern func threadCreate(tid: NativePtr[Long], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"lyric_thread_create\"\n" +
+    "extern func threadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"lyric_thread_join\"\n" +
     "extern func cStrlen(s: NativePtr[Byte]): Long = \"strlen\"\n" +
     "extern func toC(s: String): NativePtr[Byte] = \"lyric_string_to_cstring\"\n" +
     "extern func freeC(p: NativePtr[Byte]): Unit = \"lyric_cstring_free\"\n" +
@@ -536,7 +536,7 @@ test "Std.HttpHost native client rejects a response Content-Length beyond the si
     "    }\n" +
     "  }\n" +
     "  var tid: Long = 0\n" +
-    "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
+    "  val rc = threadCreate(nativeAddrOf(tid), worker, worker)\n" +
     "  if rc != 0 {\n" +
     "    hostCloseListener(listener)\n" +
     "    return 2\n" +
@@ -557,7 +557,7 @@ test "Std.HttpHost native client rejects a response Content-Length beyond the si
     "    }\n" +
     "  }\n" +
     "  var outp: NativePtr[Byte] = nativeNullPtr()\n" +
-    "  val rj = pthreadJoin(tid, nativeAddrOf(outp))\n" +
+    "  val rj = threadJoin(tid, nativeAddrOf(outp))\n" +
     "  var serverOk = false\n" +
     "  if rj == 0 {\n" +
     "    val n = cStrlen(outp)\n" +
@@ -592,8 +592,8 @@ test "Std.HttpHost native redirect strips Authorization on an https-to-http down
   val src = "package T\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Tls\n" +
     "import Std.TcpHost\n" +
     "import Std.HttpHost\n" +
-    "extern func pthreadCreate(tid: NativePtr[Long], attr: NativePtr[Byte], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"pthread_create\"\n" +
-    "extern func pthreadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"pthread_join\"\n" +
+    "extern func threadCreate(tid: NativePtr[Long], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"lyric_thread_create\"\n" +
+    "extern func threadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"lyric_thread_join\"\n" +
     "extern func cStrlen(s: NativePtr[Byte]): Long = \"strlen\"\n" +
     "extern func toC(s: String): NativePtr[Byte] = \"lyric_string_to_cstring\"\n" +
     "extern func freeC(p: NativePtr[Byte]): Unit = \"lyric_cstring_free\"\n" +
@@ -669,7 +669,7 @@ test "Std.HttpHost native redirect strips Authorization on an https-to-http down
     "    }\n" +
     "  }\n" +
     "  var tid: Long = 0\n" +
-    "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
+    "  val rc = threadCreate(nativeAddrOf(tid), worker, worker)\n" +
     "  if rc != 0 {\n" +
     "    hostCloseListener(listener)\n" +
     "    return 2\n" +
@@ -707,7 +707,7 @@ test "Std.HttpHost native redirect strips Authorization on an https-to-http down
     "    case Err(_) -> ()\n" +
     "  }\n" +
     "  var outp: NativePtr[Byte] = nativeNullPtr()\n" +
-    "  val rj = pthreadJoin(tid, nativeAddrOf(outp))\n" +
+    "  val rj = threadJoin(tid, nativeAddrOf(outp))\n" +
     "  var serverOk = false\n" +
     "  if rj == 0 {\n" +
     "    val n = cStrlen(outp)\n" +
@@ -743,8 +743,8 @@ test "Std.HttpHost native client rejects an overflowing hex chunk-size line rath
   // NOT crash/hang — the real risk #6647 was about.
   val src = "package T\n" + "import Std.Core\n" + "import Std.Encoding\n" + "import Std.TcpHost\n" +
     "import Std.HttpHost\n" +
-    "extern func pthreadCreate(tid: NativePtr[Long], attr: NativePtr[Byte], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"pthread_create\"\n" +
-    "extern func pthreadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"pthread_join\"\n" +
+    "extern func threadCreate(tid: NativePtr[Long], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"lyric_thread_create\"\n" +
+    "extern func threadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"lyric_thread_join\"\n" +
     "extern func cStrlen(s: NativePtr[Byte]): Long = \"strlen\"\n" +
     "extern func toC(s: String): NativePtr[Byte] = \"lyric_string_to_cstring\"\n" +
     "extern func freeC(p: NativePtr[Byte]): Unit = \"lyric_cstring_free\"\n" +
@@ -772,7 +772,7 @@ test "Std.HttpHost native client rejects an overflowing hex chunk-size line rath
     "    }\n" +
     "  }\n" +
     "  var tid: Long = 0\n" +
-    "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
+    "  val rc = threadCreate(nativeAddrOf(tid), worker, worker)\n" +
     "  if rc != 0 {\n" +
     "    hostCloseListener(listener)\n" +
     "    return 2\n" +
@@ -787,7 +787,7 @@ test "Std.HttpHost native client rejects an overflowing hex chunk-size line rath
     "    }\n" +
     "  }\n" +
     "  var outp: NativePtr[Byte] = nativeNullPtr()\n" +
-    "  val rj = pthreadJoin(tid, nativeAddrOf(outp))\n" +
+    "  val rj = threadJoin(tid, nativeAddrOf(outp))\n" +
     "  var serverOk = false\n" +
     "  if rj == 0 {\n" +
     "    val n = cStrlen(outp)\n" +
@@ -819,8 +819,8 @@ test "Std.HttpHost native client rejects a chunked body whose cumulative size ov
   // DECLARED size, before any attempt to read chunk data.
   val src = "package T\n" + "import Std.Core\n" + "import Std.Encoding\n" + "import Std.TcpHost\n" +
     "import Std.HttpHost\n" +
-    "extern func pthreadCreate(tid: NativePtr[Long], attr: NativePtr[Byte], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"pthread_create\"\n" +
-    "extern func pthreadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"pthread_join\"\n" +
+    "extern func threadCreate(tid: NativePtr[Long], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"lyric_thread_create\"\n" +
+    "extern func threadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"lyric_thread_join\"\n" +
     "extern func cStrlen(s: NativePtr[Byte]): Long = \"strlen\"\n" +
     "extern func toC(s: String): NativePtr[Byte] = \"lyric_string_to_cstring\"\n" +
     "extern func freeC(p: NativePtr[Byte]): Unit = \"lyric_cstring_free\"\n" +
@@ -861,7 +861,7 @@ test "Std.HttpHost native client rejects a chunked body whose cumulative size ov
     "    }\n" +
     "  }\n" +
     "  var tid: Long = 0\n" +
-    "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
+    "  val rc = threadCreate(nativeAddrOf(tid), worker, worker)\n" +
     "  if rc != 0 {\n" +
     "    hostCloseListener(listener)\n" +
     "    return 2\n" +
@@ -876,7 +876,7 @@ test "Std.HttpHost native client rejects a chunked body whose cumulative size ov
     "    }\n" +
     "  }\n" +
     "  var outp: NativePtr[Byte] = nativeNullPtr()\n" +
-    "  val rj = pthreadJoin(tid, nativeAddrOf(outp))\n" +
+    "  val rj = threadJoin(tid, nativeAddrOf(outp))\n" +
     "  var serverOk = false\n" +
     "  if rj == 0 {\n" +
     "    val n = cStrlen(outp)\n" +
@@ -908,8 +908,8 @@ test "Std.HttpHost native client treats a HEAD response as bodyless despite Cont
   // body.
   val src = "package T\n" + "import Std.Core\n" + "import Std.Encoding\n" + "import Std.TcpHost\n" +
     "import Std.HttpHost\n" +
-    "extern func pthreadCreate(tid: NativePtr[Long], attr: NativePtr[Byte], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"pthread_create\"\n" +
-    "extern func pthreadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"pthread_join\"\n" +
+    "extern func threadCreate(tid: NativePtr[Long], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"lyric_thread_create\"\n" +
+    "extern func threadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"lyric_thread_join\"\n" +
     "extern func cStrlen(s: NativePtr[Byte]): Long = \"strlen\"\n" +
     "extern func toC(s: String): NativePtr[Byte] = \"lyric_string_to_cstring\"\n" +
     "extern func freeC(p: NativePtr[Byte]): Unit = \"lyric_cstring_free\"\n" +
@@ -937,7 +937,7 @@ test "Std.HttpHost native client treats a HEAD response as bodyless despite Cont
     "    }\n" +
     "  }\n" +
     "  var tid: Long = 0\n" +
-    "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
+    "  val rc = threadCreate(nativeAddrOf(tid), worker, worker)\n" +
     "  if rc != 0 {\n" +
     "    hostCloseListener(listener)\n" +
     "    return 2\n" +
@@ -959,7 +959,7 @@ test "Std.HttpHost native client treats a HEAD response as bodyless despite Cont
     "    case Err(_) -> ()\n" +
     "  }\n" +
     "  var outp: NativePtr[Byte] = nativeNullPtr()\n" +
-    "  val rj = pthreadJoin(tid, nativeAddrOf(outp))\n" +
+    "  val rj = threadJoin(tid, nativeAddrOf(outp))\n" +
     "  var serverOk = false\n" +
     "  if rj == 0 {\n" +
     "    val n = cStrlen(outp)\n" +
@@ -993,8 +993,8 @@ test "Std.HttpHost native client treats a 204 response as bodyless despite Conte
   // regardless of what Content-Length claims, even on a plain GET.
   val src = "package T\n" + "import Std.Core\n" + "import Std.Encoding\n" + "import Std.TcpHost\n" +
     "import Std.HttpHost\n" +
-    "extern func pthreadCreate(tid: NativePtr[Long], attr: NativePtr[Byte], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"pthread_create\"\n" +
-    "extern func pthreadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"pthread_join\"\n" +
+    "extern func threadCreate(tid: NativePtr[Long], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"lyric_thread_create\"\n" +
+    "extern func threadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"lyric_thread_join\"\n" +
     "extern func cStrlen(s: NativePtr[Byte]): Long = \"strlen\"\n" +
     "extern func toC(s: String): NativePtr[Byte] = \"lyric_string_to_cstring\"\n" +
     "extern func freeC(p: NativePtr[Byte]): Unit = \"lyric_cstring_free\"\n" +
@@ -1022,7 +1022,7 @@ test "Std.HttpHost native client treats a 204 response as bodyless despite Conte
     "    }\n" +
     "  }\n" +
     "  var tid: Long = 0\n" +
-    "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
+    "  val rc = threadCreate(nativeAddrOf(tid), worker, worker)\n" +
     "  if rc != 0 {\n" +
     "    hostCloseListener(listener)\n" +
     "    return 2\n" +
@@ -1044,7 +1044,7 @@ test "Std.HttpHost native client treats a 204 response as bodyless despite Conte
     "    case Err(_) -> ()\n" +
     "  }\n" +
     "  var outp: NativePtr[Byte] = nativeNullPtr()\n" +
-    "  val rj = pthreadJoin(tid, nativeAddrOf(outp))\n" +
+    "  val rj = threadJoin(tid, nativeAddrOf(outp))\n" +
     "  var serverOk = false\n" +
     "  if rj == 0 {\n" +
     "    val n = cStrlen(outp)\n" +
@@ -1083,8 +1083,8 @@ test "Std.HttpHost native client skips an interim 100-Continue response and read
   // status 100 with a garbled body instead of status 200 with "hello".
   val src = "package T\n" + "import Std.Core\n" + "import Std.Encoding\n" + "import Std.TcpHost\n" +
     "import Std.HttpHost\n" +
-    "extern func pthreadCreate(tid: NativePtr[Long], attr: NativePtr[Byte], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"pthread_create\"\n" +
-    "extern func pthreadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"pthread_join\"\n" +
+    "extern func threadCreate(tid: NativePtr[Long], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"lyric_thread_create\"\n" +
+    "extern func threadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"lyric_thread_join\"\n" +
     "extern func cStrlen(s: NativePtr[Byte]): Long = \"strlen\"\n" +
     "extern func toC(s: String): NativePtr[Byte] = \"lyric_string_to_cstring\"\n" +
     "extern func freeC(p: NativePtr[Byte]): Unit = \"lyric_cstring_free\"\n" +
@@ -1113,7 +1113,7 @@ test "Std.HttpHost native client skips an interim 100-Continue response and read
     "    }\n" +
     "  }\n" +
     "  var tid: Long = 0\n" +
-    "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
+    "  val rc = threadCreate(nativeAddrOf(tid), worker, worker)\n" +
     "  if rc != 0 {\n" +
     "    hostCloseListener(listener)\n" +
     "    return 2\n" +
@@ -1135,7 +1135,7 @@ test "Std.HttpHost native client skips an interim 100-Continue response and read
     "    case Err(_) -> ()\n" +
     "  }\n" +
     "  var outp: NativePtr[Byte] = nativeNullPtr()\n" +
-    "  val rj = pthreadJoin(tid, nativeAddrOf(outp))\n" +
+    "  val rj = threadJoin(tid, nativeAddrOf(outp))\n" +
     "  var serverOk = false\n" +
     "  if rj == 0 {\n" +
     "    val n = cStrlen(outp)\n" +
@@ -1180,8 +1180,8 @@ test "Std.HttpHost native client bounds the raw receive buffer against chunk-ext
   // arbitrarily more.
   val src = "package T\n" + "import Std.Core\n" + "import Std.Encoding\n" + "import Std.TcpHost\n" +
     "import Std.HttpHost\n" +
-    "extern func pthreadCreate(tid: NativePtr[Long], attr: NativePtr[Byte], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"pthread_create\"\n" +
-    "extern func pthreadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"pthread_join\"\n" +
+    "extern func threadCreate(tid: NativePtr[Long], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"lyric_thread_create\"\n" +
+    "extern func threadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"lyric_thread_join\"\n" +
     "extern func cStrlen(s: NativePtr[Byte]): Long = \"strlen\"\n" +
     "extern func toC(s: String): NativePtr[Byte] = \"lyric_string_to_cstring\"\n" +
     "extern func freeC(p: NativePtr[Byte]): Unit = \"lyric_cstring_free\"\n" +
@@ -1243,7 +1243,7 @@ test "Std.HttpHost native client bounds the raw receive buffer against chunk-ext
     "    }\n" +
     "  }\n" +
     "  var tid: Long = 0\n" +
-    "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
+    "  val rc = threadCreate(nativeAddrOf(tid), worker, worker)\n" +
     "  if rc != 0 {\n" +
     "    hostCloseListener(listener)\n" +
     "    return 2\n" +
@@ -1258,7 +1258,7 @@ test "Std.HttpHost native client bounds the raw receive buffer against chunk-ext
     "    }\n" +
     "  }\n" +
     "  var outp: NativePtr[Byte] = nativeNullPtr()\n" +
-    "  val rj = pthreadJoin(tid, nativeAddrOf(outp))\n" +
+    "  val rj = threadJoin(tid, nativeAddrOf(outp))\n" +
     "  var serverOk = false\n" +
     "  if rj == 0 {\n" +
     "    val n = cStrlen(outp)\n" +
@@ -1295,8 +1295,8 @@ test "Std.HttpHost native client bounds the number of interim 1xx responses it w
   // client rejects with a specific error rather than looping forever.
   val src = "package T\n" + "import Std.Core\n" + "import Std.Encoding\n" + "import Std.TcpHost\n" +
     "import Std.HttpHost\n" +
-    "extern func pthreadCreate(tid: NativePtr[Long], attr: NativePtr[Byte], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"pthread_create\"\n" +
-    "extern func pthreadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"pthread_join\"\n" +
+    "extern func threadCreate(tid: NativePtr[Long], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"lyric_thread_create\"\n" +
+    "extern func threadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"lyric_thread_join\"\n" +
     "extern func cStrlen(s: NativePtr[Byte]): Long = \"strlen\"\n" +
     "extern func toC(s: String): NativePtr[Byte] = \"lyric_string_to_cstring\"\n" +
     "extern func freeC(p: NativePtr[Byte]): Unit = \"lyric_cstring_free\"\n" +
@@ -1345,7 +1345,7 @@ test "Std.HttpHost native client bounds the number of interim 1xx responses it w
     "    }\n" +
     "  }\n" +
     "  var tid: Long = 0\n" +
-    "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
+    "  val rc = threadCreate(nativeAddrOf(tid), worker, worker)\n" +
     "  if rc != 0 {\n" +
     "    hostCloseListener(listener)\n" +
     "    return 2\n" +
@@ -1360,7 +1360,7 @@ test "Std.HttpHost native client bounds the number of interim 1xx responses it w
     "    }\n" +
     "  }\n" +
     "  var outp: NativePtr[Byte] = nativeNullPtr()\n" +
-    "  val rj = pthreadJoin(tid, nativeAddrOf(outp))\n" +
+    "  val rj = threadJoin(tid, nativeAddrOf(outp))\n" +
     "  var serverOk = false\n" +
     "  if rj == 0 {\n" +
     "    val n = cStrlen(outp)\n" +
@@ -1392,8 +1392,8 @@ test "Std.HttpHost native client bounds the number of response header fields, no
   // client rejects rather than accepting an unbounded number of headers.
   val src = "package T\n" + "import Std.Core\n" + "import Std.Encoding\n" + "import Std.TcpHost\n" +
     "import Std.HttpHost\n" +
-    "extern func pthreadCreate(tid: NativePtr[Long], attr: NativePtr[Byte], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"pthread_create\"\n" +
-    "extern func pthreadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"pthread_join\"\n" +
+    "extern func threadCreate(tid: NativePtr[Long], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"lyric_thread_create\"\n" +
+    "extern func threadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"lyric_thread_join\"\n" +
     "extern func cStrlen(s: NativePtr[Byte]): Long = \"strlen\"\n" +
     "extern func toC(s: String): NativePtr[Byte] = \"lyric_string_to_cstring\"\n" +
     "extern func freeC(p: NativePtr[Byte]): Unit = \"lyric_cstring_free\"\n" +
@@ -1442,7 +1442,7 @@ test "Std.HttpHost native client bounds the number of response header fields, no
     "    }\n" +
     "  }\n" +
     "  var tid: Long = 0\n" +
-    "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
+    "  val rc = threadCreate(nativeAddrOf(tid), worker, worker)\n" +
     "  if rc != 0 {\n" +
     "    hostCloseListener(listener)\n" +
     "    return 2\n" +
@@ -1457,7 +1457,7 @@ test "Std.HttpHost native client bounds the number of response header fields, no
     "    }\n" +
     "  }\n" +
     "  var outp: NativePtr[Byte] = nativeNullPtr()\n" +
-    "  val rj = pthreadJoin(tid, nativeAddrOf(outp))\n" +
+    "  val rj = threadJoin(tid, nativeAddrOf(outp))\n" +
     "  var serverOk = false\n" +
     "  if rj == 0 {\n" +
     "    val n = cStrlen(outp)\n" +
@@ -1491,8 +1491,8 @@ test "Std.HttpHost native client follows a protocol-relative redirect Location t
   // "accept2" rather than merely asserting the wrong status.
   val src = "package T\n" + "import Std.Core\n" + "import Std.Encoding\n" + "import Std.TcpHost\n" +
     "import Std.HttpHost\n" +
-    "extern func pthreadCreate(tid: NativePtr[Long], attr: NativePtr[Byte], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"pthread_create\"\n" +
-    "extern func pthreadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"pthread_join\"\n" +
+    "extern func threadCreate(tid: NativePtr[Long], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"lyric_thread_create\"\n" +
+    "extern func threadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"lyric_thread_join\"\n" +
     "extern func cStrlen(s: NativePtr[Byte]): Long = \"strlen\"\n" +
     "extern func toC(s: String): NativePtr[Byte] = \"lyric_string_to_cstring\"\n" +
     "extern func freeC(p: NativePtr[Byte]): Unit = \"lyric_cstring_free\"\n" +
@@ -1531,7 +1531,7 @@ test "Std.HttpHost native client follows a protocol-relative redirect Location t
     "    }\n" +
     "  }\n" +
     "  var tid: Long = 0\n" +
-    "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
+    "  val rc = threadCreate(nativeAddrOf(tid), worker, worker)\n" +
     "  if rc != 0 {\n" +
     "    hostStopListener(listener1)\n" +
     "    hostStopListener(listener2)\n" +
@@ -1550,7 +1550,7 @@ test "Std.HttpHost native client follows a protocol-relative redirect Location t
     "    case Err(_) -> ()\n" +
     "  }\n" +
     "  var outp: NativePtr[Byte] = nativeNullPtr()\n" +
-    "  val rj = pthreadJoin(tid, nativeAddrOf(outp))\n" +
+    "  val rj = threadJoin(tid, nativeAddrOf(outp))\n" +
     "  var serverOk = false\n" +
     "  if rj == 0 {\n" +
     "    val n = cStrlen(outp)\n" +

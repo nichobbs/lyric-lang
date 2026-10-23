@@ -27,7 +27,7 @@ import Lyric.Emitter as Emitter
 import Lyric.Manifest as Mf
 
 func tempBase(): String {
-  Environment.getVarOrDefault("TMPDIR", "/tmp")
+  Environment.getVarOrDefault("TMPDIR", Environment.getVarOrDefault("TEMP", Environment.getVarOrDefault("TMP", "/tmp")))
 }
 
 func freshTempDir(label: in String): String {

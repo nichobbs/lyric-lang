@@ -5,6 +5,14 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
 if(WIN32)
+    # Native programs link the static C runtime (clang's default for
+    # x86_64-pc-windows-msvc, so they need no Visual C++ redistributable);
+    # the runtime and its tests must use the same one.  lyric_rt_md below is
+    # the DLL-runtime build an AddressSanitizer program links.
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
+endif()
+
+if(WIN32)
     # docs/67 G9: the Win32 twins of lyric_posix.c, lyric_fs.c,
     # lyric_process.c and lyric_tls.c (Winsock and Schannel).
     set(LYRIC_RT_PLATFORM_SRCS
@@ -34,6 +42,27 @@ add_library(lyric_rt STATIC
 )
 target_include_directories(lyric_rt PUBLIC include)
 target_compile_options(lyric_rt PRIVATE -Wall -Wextra -Werror)
+
+if(WIN32)
+    add_library(lyric_rt_md STATIC
+        src/lyric_rt.c
+        src/lyric_string.c
+        src/lyric_weak.c
+        src/lyric_collections.c
+        src/lyric_async.c
+        src/lyric_parallel.c
+        ${LYRIC_RT_PLATFORM_SRCS}
+    )
+    set_property(TARGET lyric_rt_md PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
+    target_include_directories(lyric_rt_md PUBLIC include)
+    target_compile_options(lyric_rt_md PRIVATE -Wall -Wextra -Werror)
+    target_compile_definitions(lyric_rt_md PRIVATE _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_WARNINGS)
+    if(CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "GNU")
+        # The clang driver (not clang-cl) takes the runtime choice as a flag,
+        # which CMake versions before 3.27 do not pass for it.
+        target_compile_options(lyric_rt_md PRIVATE -fms-runtime-lib=dll)
+    endif()
+endif()
 
 enable_testing()
 add_executable(lyric_rt_test test/lyric_rt_test.c)
