@@ -359,7 +359,9 @@ where they disagree, these notes are the shipped behaviour.
   `dotnet exec <dll> ...` or `java -jar <jar> ...` (checked when a manifest is
   read and again at launch), and a native payload as its executable; the
   payload file must lie inside the plugin directory. Arguments after the
-  payload file are the program's own, never runtime options. A process payload
+  payload file are the program's own, never runtime options. The `dotnet`
+  launcher, and `java` when `$JAVA_HOME/bin` has none, are found on the host's
+  `PATH`, which the host therefore trusts as it trusts `wasmtime`. A process payload
   runs with the host's user and privileges: grants and guards limit what it
   obtains through capability calls, not what it does directly. Wasm mode is
   the isolation for untrusted plugins; it caps memory, and CPU time is bounded
