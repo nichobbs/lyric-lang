@@ -33,6 +33,8 @@ import Std.String as Str
 
 extern type JFile = "java.io.File"
 
+extern type JString = "java.lang.String"
+
 // Platform primary separator ('/' on POSIX, '\' on Windows).
 func separatorChar(): Char {
   JFile.separatorChar
@@ -58,6 +60,12 @@ func isSep(c: in Char): Bool {
 func nullString(): String? {
   val f = JFile.new("x")
   f.getParent()
+}
+
+// A non-null `String` as the nullable the host-path API returns: the host
+// call hands back the same string object, typed at the boundary.
+func someString(s: in String): String? {
+  JString.valueOf(s)
 }
 
 // Length of the path's root prefix, mirroring System.IO.Path.GetPathRoot:
@@ -179,13 +187,13 @@ pub func hostPathGetDirectoryName(path: in String): String? {
   }
   if i < root {
     // No separator past the root: "a" → ""; "/a" → "/"; "C:a" → "C:".
-    return path.substring(0, root)
+    return someString(path.substring(0, root))
   }
   var cut = i
   while cut > root and isSep(Str.charAtOrReplacement(path, cut - 1)) {
     cut = cut - 1
   }
-  path.substring(0, cut)
+  someString(path.substring(0, cut))
 }
 
 /// Whether the path is absolute under this platform's rules (POSIX: leading

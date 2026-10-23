@@ -1314,3 +1314,20 @@ test "n0101 foreign record outside a kernel package" {
   val result = parseCheck("package P\nforeign record Desc {\n  w: Int\n}\n")
   assertTrue(hasDiagCode(result, "N0101"), "foreign record: N0101 emitted")
 }
+
+// `externAsObject(x)` (D212, #7975) is an extern-boundary operation: allowed in
+// a file or a function annotated `@unsafe_ffi`, N0103 anywhere else, impl
+// methods included.
+test "n0103 externAsObject outside the extern boundary" {
+  val plain = "package P\nextern type Obj = \"System.Object\"\nfunc f(x: in Obj): Obj = externAsObject(x)\n"
+  assertTrue(hasDiagCode(parseCheck(plain), "N0103"), "plain function: N0103")
+  val implSrc = "package P\ninterface I {\n  func g(x: in Int): Int\n}\nrecord R {\n  n: Int\n}\nimpl I for R {\n  func g(x: in Int): Int {\n    val o = externAsObject(x)\n    1\n  }\n}\n"
+  assertTrue(hasDiagCode(parseCheck(implSrc), "N0103"), "impl method: N0103")
+}
+
+test "n0103 externAsObject is admitted at the extern boundary" {
+  val fileLevel = "@unsafe_ffi\npackage P\nextern type Obj = \"System.Object\"\nfunc f(x: in Obj): Obj = externAsObject(x)\n"
+  assertTrue(not hasDiagCode(parseCheck(fileLevel), "N0103"), "file-level @unsafe_ffi: no N0103")
+  val fnLevel = "package P\nextern type Obj = \"System.Object\"\n@unsafe_ffi\nfunc f(x: in Obj): Obj = externAsObject(x)\n"
+  assertTrue(not hasDiagCode(parseCheck(fnLevel), "N0103"), "function-level @unsafe_ffi: no N0103")
+}

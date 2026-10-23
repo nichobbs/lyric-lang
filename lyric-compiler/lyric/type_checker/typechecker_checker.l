@@ -1518,7 +1518,8 @@ func isReservedBuiltinFuncName(name: in String): Bool {
     name == "format4" or
     name == "hashCode" or
     name == "__lyric_protected_wait" or
-    name == "__lyric_protected_notify"
+    name == "__lyric_protected_notify" or
+    name == "externAsObject"
 }
 
 func isStdOriginPkg(pkg: in String): Bool {

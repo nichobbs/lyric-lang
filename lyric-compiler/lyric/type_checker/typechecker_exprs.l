@@ -1482,6 +1482,103 @@ func nativeIntrinsicCallType(
   nativeIntrinsicType(tbl, "NativeWeak", argTypes[0])
 }
 
+// The root extern type (`java.lang.Object` / `System.Object`) bound in this
+// compilation, as the type `externAsObject` produces; None when no
+// `extern type` / `import extern` names it.  Extern types share one id per CLR
+// target (#2394), so every spelling of the root is the same type.
+func rootExternObjectType(tbl: in SymbolTable): Option[Type] {
+  var i = 0
+  while i < tbl.symbols.count {
+    match tbl.symbols[i].kind {
+      case DKExternType(tid, d) -> if d.clrName == "java.lang.Object" or d.clrName == "System.Object" {
+        return Some(value = TyUser(id = tid, name = d.name, args = newList()))
+      }
+      case _ -> ()
+    }
+    i = i + 1
+  }
+  None
+}
+
+// `externAsObject(x)` is the explicit upcast from an extern type to the root
+// extern type (D212): extern types are unrelated to each other in Lyric's type
+// system, but the host's `Object` is a supertype of every one, so a kernel that
+// stores extern values in a `List[JObject]` or passes them to an `Object`
+// parameter says so here.  The operand must be an extern type; the result is
+// the root extern type.  Where it may appear is the mode checker's N0103.
+// None when `fn` is not a call of `externAsObject`.
+func externUpcastCallType(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  sigs: in Map[String, ResolvedSignature],
+  diag: in List[Diagnostic],
+  fn: in Expr,
+  args: in List[CallArg],
+  span: in Span,
+): Option[Type] {
+  val isUpcast = match fn.kind {
+    case EPath(path) -> path.segments.count == 1 and path.segments[0] == "externAsObject"
+    case _ -> false
+  }
+  if not isUpcast {
+    return None
+  }
+  val argTypes: List[Type] = newList()
+  for a in args {
+    argTypes.add(inferExpr(sc, tbl, sigs, diag, callArgExpr(a)))
+  }
+  if args.count != 1 {
+    diag.add(errorDiagnostic("T0042", "expected 1 argument(s), got " + toString(args.count), span))
+    return Some(value = TyError)
+  }
+  match argTypes[0] {
+    case TyError -> return Some(value = TyError)
+    case TyUser(id, name, _) -> if not symTableIsExternTypeId(tbl, id) {
+      diag.add(
+        errorDiagnostic(
+          "T0205",
+          "externAsObject upcasts an extern type to the host's root object type, but '" + name + "' is not an extern type",
+          span
+        )
+      )
+      return Some(value = TyError)
+    }
+    case other -> {
+      diag.add(
+        errorDiagnostic(
+          "T0205",
+          "externAsObject upcasts an extern type to the host's root object type, but the operand is a " + renderType(other),
+          span
+        )
+      )
+      return Some(value = TyError)
+    }
+  }
+  if checkingForNative(tbl) {
+    diag.add(
+      errorDiagnostic(
+        "T0206",
+        "externAsObject exists on --target dotnet and --target jvm only: native has no host object type, and its kernels bind C symbols with `extern func`",
+        span
+      )
+    )
+    return Some(value = TyError)
+  }
+  match rootExternObjectType(tbl) {
+    case Some(t) -> Some(value = t)
+    case None -> {
+      diag.add(
+        errorDiagnostic(
+          "T0206",
+          "externAsObject needs the root object type in scope: declare `extern type Object = \"java.lang.Object\"` (JVM) or `\"System.Object\"` (.NET)",
+          span
+        )
+      )
+      Some(value = TyError)
+    }
+  }
+}
+
 // Whether this check is for a `--target native` build: only then are the native
 // intrinsic types (`NativeWeak`) registered.
 func checkingForNative(tbl: in SymbolTable): Bool = tbl.nativeIntrinsicTypes.containsKey("NativeWeak")
@@ -15321,6 +15418,10 @@ func inferExprCore(
       }
       match nativeIntrinsicCallType(sc, tbl, sigs, diag, fn, args, e.span) {
         case Some(nt) -> return nt
+        case None -> ()
+      }
+      match externUpcastCallType(sc, tbl, sigs, diag, fn, args, e.span) {
+        case Some(ut) -> return ut
         case None -> ()
       }
       match bufferPointerCallType(sc, tbl, sigs, diag, fn, args, e.span) {
