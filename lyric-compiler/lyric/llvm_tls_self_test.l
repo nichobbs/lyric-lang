@@ -60,11 +60,12 @@
 //! pumping handshake I/O at the same time, so the client MUST run on its
 //! own thread while the server blocks in `hostAcceptTls`.
 //!
-//! The second thread is spawned with the exact `pthread_create`/
-//! `pthread_join` FFI pattern `llvm_ffi_self_test.l`'s "closure trampoline
-//! runs on a pthread" case already established (a zero-arg closure,
-//! `() -> NativePtr[Byte]`, rides the N4.5 callback trampoline; its result
-//! comes back through `pthread_join`'s retval out-param as a C string).
+//! The second thread is spawned with lyric-rt's portable
+//! `lyric_thread_create`/`lyric_thread_join` (pthreads on POSIX, Win32
+//! threads on Windows), the same FFI pattern `llvm_ffi_self_test.l`'s
+//! "closure trampoline runs on a pthread" case established (a zero-arg
+//! closure, `() -> NativePtr[Byte]`, rides the N4.5 callback trampoline; its
+//! result comes back through the join's retval out-param as a C string).
 //!
 //! ## Item D: why the client side is test-local FFI, not a new
 //! `Std.TcpHost`/`Std.TlsHost` public API
@@ -80,9 +81,9 @@
 //! `lyric_tls_write`, exercised end to end by `lyric_tls_test.c`'s own
 //! `run_tls_scenario` client role), so item D's client thread binds those
 //! `extern func`s directly in its own generated test source — no
-//! `_kernel_native/` file changes were needed. This mirrors the pthread
-//! externs immediately above it (`pthread_create`/`pthread_join` are also
-//! test-local, not part of any planned `Std` concurrency API): both are
+//! `_kernel_native/` file changes were needed. This mirrors the thread
+//! externs immediately above it (`lyric_thread_create`/`lyric_thread_join`
+//! are also test-local, not part of any planned `Std` concurrency API): both are
 //! genuinely-existing runtime-library C entry points a test drives
 //! directly because the corresponding *public* Lyric surface for that
 //! capability doesn't exist yet (concurrency primitives generally, for
@@ -171,7 +172,7 @@ import Lyric.LlvmBridge
 // Harness (mirrors llvm_stdlib_self_test.l).
 // ─────────────────────────────────────────────────────────────────────────────
 func tempBase(): String {
-  Environment.getVarOrDefault("TMPDIR", "/tmp")
+  Environment.getVarOrDefault("TMPDIR", Environment.getVarOrDefault("TEMP", Environment.getVarOrDefault("TMP", "/tmp")))
 }
 
 record RunOutcome {
@@ -505,8 +506,8 @@ test "Std.TcpHost native TLS handshake: real concurrent client/server loopback (
   // driven on the main thread — both block on handshake I/O concurrently,
   // the scenario item C's plain-TCP round trip could not exercise.
   val src = "package T\n" + "import Std.Core\n" + "import Std.Encoding\n" + "import Std.TcpHost\n" + "import Std.Tls\n" +
-    "extern func pthreadCreate(tid: NativePtr[Long], attr: NativePtr[Byte], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"pthread_create\"\n" +
-    "extern func pthreadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"pthread_join\"\n" +
+    "extern func threadCreate(tid: NativePtr[Long], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"lyric_thread_create\"\n" +
+    "extern func threadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"lyric_thread_join\"\n" +
     "extern func toC(s: String): NativePtr[Byte] = \"lyric_string_to_cstring\"\n" +
     "extern func freeC(p: NativePtr[Byte]): Unit = \"lyric_cstring_free\"\n" +
     "extern func cStrcmp(a: NativePtr[Byte], b: NativePtr[Byte]): Int = \"strcmp\"\n" +
@@ -605,7 +606,7 @@ test "Std.TcpHost native TLS handshake: real concurrent client/server loopback (
     "  val port = hostLocalPort(listener)\n" +
     "  var tid: Long = 0\n" +
     "  val worker: () -> NativePtr[Byte] = { -> clientHandshake(port, certPem) }\n" +
-    "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
+    "  val rc = threadCreate(nativeAddrOf(tid), worker, worker)\n" +
     "  if rc != 0 {\n" +
     "    hostCloseListener(listener)\n" +
     "    return 3\n" +
@@ -650,7 +651,7 @@ test "Std.TcpHost native TLS handshake: real concurrent client/server loopback (
     "  }\n" +
     "  hostCloseListener(listener)\n" +
     "  var outp: NativePtr[Byte] = nativeNullPtr()\n" +
-    "  val rj = pthreadJoin(tid, nativeAddrOf(outp))\n" +
+    "  val rj = threadJoin(tid, nativeAddrOf(outp))\n" +
     "  if rj != 0 {\n" +
     "    return 8\n" +
     "  }\n" +

@@ -20,6 +20,7 @@ import Lyric.Parser
 import Lyric.Bindgen
 import Lyric.LlvmCodegen
 import Lyric.LlvmLowering
+import Lyric.LlvmBridge
 
 func header(): String {
   "#include <stdint.h>\n" + "#include <stddef.h>\n" + "typedef struct Window Window;\n" +
@@ -40,10 +41,7 @@ func header(): String {
 }
 
 func tempDir(): String {
-  val base = Environment.getVarOrDefault("TMPDIR", "/tmp")
-  val dir = Path.join(base, "lyric-bindgen-selftest")
-  val _ = File.createDir(dir)
-  dir
+  nativeScratchDir("lyric-bindgen-selftest")
 }
 
 func astOf(src: in String): String {
@@ -208,24 +206,6 @@ test "the allow-list file format" {
   assertEqualInt(cfg.userdata["Cb"], 1, "userdata index")
 }
 
-func findLyricRt(): String {
-  var dir = Environment.currentDirectory()
-  var hop = 0
-  while hop < 32 {
-    val candidate = Path.join(Path.join(Path.join(dir, "lyric-rt"), "build"), "lyric_rt.a")
-    if File.fileExists(candidate) {
-      return candidate
-    }
-    val parent = Path.dirname(dir)
-    if parent.length == 0 or parent == dir {
-      return ""
-    }
-    dir = parent
-    hop = hop + 1
-  }
-  ""
-}
-
 func hostTriple(): String {
   val args: List[String] = newList()
   args.add("-print-effective-triple")
@@ -241,10 +221,6 @@ func runWithC(source: in String, cSource: in String): Int {
     panic("generated source has parse diagnostics: " + pr.diagnostics[0].code + " " + pr.diagnostics[0].message)
   }
   val ll = lowerNativePackage(codegenNativePackage(pr.file, hostTriple()))
-  val rt = findLyricRt()
-  if rt.length == 0 {
-    panic("lyric_rt.a not found; run `make -C lyric-rt` first")
-  }
   val stem = Path.join(tempDir(), "t_" + Uuid.uuidToString(Uuid.newUuid()))
   match File.writeText(stem + ".ll", ll) {
     case Ok(_) -> ()
@@ -254,22 +230,11 @@ func runWithC(source: in String, cSource: in String): Int {
     case Ok(_) -> ()
     case Err(_) -> panic("cannot write " + stem + ".c")
   }
-  val clangArgs: List[String] = newList()
-  clangArgs.add("-O0")
-  clangArgs.add("-fsanitize=address")
-  clangArgs.add(stem + ".ll")
-  clangArgs.add(stem + ".c")
-  clangArgs.add(rt)
-  clangArgs.add("-lm")
-  clangArgs.add("-lpthread")
-  clangArgs.add("-o")
-  clangArgs.add(stem)
-  match Process.runCapture("clang", clangArgs, 120000) {
-    case Ok(res) -> if res.exitCode != 0 { panic("clang failed on " + stem + ".ll: " + res.stderr) }
-    case Err(e) -> panic("clang could not be started: " + e)
-  }
+  val cFiles: List[String] = newList()
+  cFiles.add(stem + ".c")
+  val exe = match linkNativeIr(stem + ".ll", stem, true, cFiles) { case Ok(p) -> p; case Err(e) -> panic(e) }
   val noArgs: List[String] = newList()
-  match Process.runCapture(stem, noArgs, 60000) {
+  match Process.runCapture(exe, noArgs, 60000) {
     case Ok(res) -> res.exitCode
     case Err(e) -> panic("binary could not be started: " + e)
   }

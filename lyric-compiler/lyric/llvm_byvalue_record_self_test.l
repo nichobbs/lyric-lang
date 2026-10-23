@@ -41,25 +41,7 @@ import Lyric.LlvmBridge
 // Harness (mirrors llvm_heap_self_test.l).
 // ─────────────────────────────────────────────────────────────────────────────
 func tempBase(): String {
-  Environment.getVarOrDefault("TMPDIR", "/tmp")
-}
-
-func findLyricRt(): String {
-  var dir = Environment.currentDirectory()
-  var hop = 0
-  while hop < 32 {
-    val candidate = Path.join(Path.join(Path.join(dir, "lyric-rt"), "build"), "lyric_rt.a")
-    if File.fileExists(candidate) {
-      return candidate
-    }
-    val parent = Path.dirname(dir)
-    if parent.length == 0 or parent == dir {
-      return ""
-    }
-    dir = parent
-    hop = hop + 1
-  }
-  ""
+  Environment.getVarOrDefault("TMPDIR", Environment.getVarOrDefault("TEMP", Environment.getVarOrDefault("TMP", "/tmp")))
 }
 
 record RunOutcome {
@@ -89,12 +71,7 @@ func lowerToLl(source: in String): String {
 
 func compileAndRunWith(source: in String, sanitize: in Bool): RunOutcome {
   val ll = lowerToLl(source)
-  val rt = findLyricRt()
-  if rt.length == 0 {
-    panic("lyric_rt.a not found; run `make -C lyric-rt` first")
-  }
-  val dir = Path.join(tempBase(), "lyric-llvm-byvalue-selftest")
-  val _ = File.createDir(dir)
+  val dir = nativeScratchDir("lyric-llvm-byvalue-selftest")
   val stem = Path.join(dir, "t_" + Uuid.uuidToString(Uuid.newUuid()))
   val llPath = stem + ".ll"
   match File.writeText(llPath, ll) {
@@ -102,27 +79,9 @@ func compileAndRunWith(source: in String, sanitize: in Bool): RunOutcome {
     }
     case Err(_) -> panic("cannot write " + llPath)
   }
-  val clangArgs: List[String] = newList()
-  clangArgs.add("-O0")
-  if sanitize {
-    clangArgs.add("-fsanitize=address")
-  }
-  clangArgs.add(llPath)
-  clangArgs.add(rt)
-  clangArgs.add("-lm")
-  clangArgs.add("-lpthread")
-  clangArgs.add("-o")
-  clangArgs.add(stem)
-  match Process.runCapture("clang", clangArgs, 120000) {
-    case Ok(res) -> {
-      if res.exitCode != 0 {
-        panic("clang failed on " + llPath + ": " + res.stderr)
-      }
-    }
-    case Err(e) -> panic("clang could not be started: " + e)
-  }
+  val exe = match linkNativeIr(llPath, stem, sanitize, newList()) { case Ok(p) -> p; case Err(e) -> panic(e) }
   val noArgs: List[String] = newList()
-  match Process.runCapture(stem, noArgs, 60000) {
+  match Process.runCapture(exe, noArgs, 60000) {
     case Ok(res) -> RunOutcome(exitCode = res.exitCode, stdout = res.stdout)
     case Err(e) -> panic("binary could not be started: " + e)
   }
@@ -148,16 +107,11 @@ func lowerBundleToLl(sources: in List[String]): String {
     val file = parseOrPanic(src)
     units.add(unitOfFile(dottedPkgName(file), file))
   }
-  lowerNativePackage(codegenNativeBundle(units, ""))
+  lowerNativePackage(codegenNativeBundle(units, nativeHostCodegenTriple()))
 }
 
 func runLl(ll: in String): RunOutcome {
-  val rt = findLyricRt()
-  if rt.length == 0 {
-    panic("lyric_rt.a not found; run `make -C lyric-rt` first")
-  }
-  val dir = Path.join(tempBase(), "lyric-llvm-byvalue-selftest")
-  val _ = File.createDir(dir)
+  val dir = nativeScratchDir("lyric-llvm-byvalue-selftest")
   val stem = Path.join(dir, "b_" + Uuid.uuidToString(Uuid.newUuid()))
   val llPath = stem + ".ll"
   match File.writeText(llPath, ll) {
@@ -165,25 +119,9 @@ func runLl(ll: in String): RunOutcome {
     }
     case Err(_) -> panic("cannot write " + llPath)
   }
-  val clangArgs: List[String] = newList()
-  clangArgs.add("-O0")
-  clangArgs.add("-fsanitize=address")
-  clangArgs.add(llPath)
-  clangArgs.add(rt)
-  clangArgs.add("-lm")
-  clangArgs.add("-lpthread")
-  clangArgs.add("-o")
-  clangArgs.add(stem)
-  match Process.runCapture("clang", clangArgs, 120000) {
-    case Ok(res) -> {
-      if res.exitCode != 0 {
-        panic("clang failed on " + llPath + ": " + res.stderr)
-      }
-    }
-    case Err(e) -> panic("clang could not be started: " + e)
-  }
+  val exe = match linkNativeIr(llPath, stem, true, newList()) { case Ok(p) -> p; case Err(e) -> panic(e) }
   val noArgs: List[String] = newList()
-  match Process.runCapture(stem, noArgs, 60000) {
+  match Process.runCapture(exe, noArgs, 60000) {
     case Ok(res) -> RunOutcome(exitCode = res.exitCode, stdout = res.stdout)
     case Err(e) -> panic("binary could not be started: " + e)
   }
@@ -451,10 +389,11 @@ test "by-value records in a List: add, index, set, for, count (ASan)" {
     "    sum = sum + p.x + p.y\n" +
     "  }\n" +
     "  val last = xs[19]\n" +
-    "  sum - 570 + last.y + xs.count\n" +
+    "  sum - 870 + last.y + xs.count\n" +
     "}\n"
   val r = compileAndRunAsan(src)
-  assertEqualInt(r.exitCode, 349 % 256, "291 (the sum moves by 300 - 9) + 38 + 20")
+  // Kept under 256: a Windows exit code is not truncated to a byte.
+  assertEqualInt(r.exitCode, 49, "-9 (the sum moves by 300 - 9) + 38 + 20")
 }
 
 test "by-value records as Map values (ASan)" {
@@ -684,7 +623,7 @@ test "a module-level val holding a by-value record is rejected like any non-lite
   assertPanicsWith(
     "module val",
     "non-literal initializer",
-    { -> val pkg = codegenNativePackage(file, ""); val _ = lowerNativePackage(pkg) }
+    { -> val pkg = codegenNativePackage(file, nativeHostCodegenTriple()); val _ = lowerNativePackage(pkg) }
   )
 }
 
