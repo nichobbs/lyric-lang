@@ -34882,6 +34882,9 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
   fctx.originPkg = originPkgOf(decl.annotations)
   fctx.bareSelfFields = bareSelfFieldsMsil(decl.annotations)
   val insns: List[MInsn] = newList()
+  // Any function named `main` pins the culture, not only the bundle entry point: a
+  // second `main` in a library package is only ever reached through the entry
+  // point, so repeating the (idempotent) pin there is harmless.
   if decl.name == "main" {
     insns.add(MCall(methodToken = cctx.tokInvariantCulture))
     insns.add(MCall(methodToken = cctx.tokSetCurrentCulture))
