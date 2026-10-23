@@ -246,7 +246,7 @@ pub func basename(path: in String): String {
 /// with relative paths without handling null.
 @stable(since = "1.0")
 pub func dirname(path: in String): String {
-  val dir = hostPathGetDirectoryName(path) ?? ""
+  val dir = hostPathGetDirectoryNameOrEmpty(path)
   if dir == "" {
     "."
   } else {

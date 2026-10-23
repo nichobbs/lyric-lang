@@ -134,7 +134,9 @@ for t in \
   lyric-compiler/lyric/byte_native_self_test.l \
   lyric-compiler/lyric/nested_nullary_pattern_native_self_test.l \
   lyric-compiler/lyric/native_enum_pattern_scrutinee_self_test.l \
-  lyric-compiler/lyric/extern_cbinding_self_test.l ; do
+  lyric-compiler/lyric/extern_cbinding_self_test.l \
+  lyric-compiler/lyric/native_stdlib_impl_upcast_self_test.l \
+  lyric-compiler/lyric/generic_arg_collection_ctor_self_test.l ; do
   echo "=== $t (--target native) ==="
   "$lyric_bin" test --target native "$t"
 done
@@ -162,12 +164,17 @@ for t in \
   lyric-stdlib/tests/secure_random_native_tests.l \
   lyric-stdlib/tests/random_native_tests.l \
   lyric-stdlib/tests/char_native_tests.l \
+  lyric-stdlib/tests/path_tests.l \
+  lyric-stdlib/tests/plugin_manifest_tests.l \
   lyric-stdlib/tests/json_native_tests.l \
   lyric-stdlib/tests/json_value_tests.l \
   lyric-stdlib/tests/linalg_tests.l ; do
   echo "=== $t (--target native) ==="
   "$lyric_bin" test --target native "$t"
 done
+# D207: a native Std.Plugin host driving a native and a dotnet plugin process.
+bash scripts/ci/plugin-e2e.sh "$lyric_bin" native native
+bash scripts/ci/plugin-e2e.sh "$lyric_bin" native dotnet
 # Std.Parse is a plain program, not a test module.
 "$lyric_bin" run --target native lyric-stdlib/tests/parse_tests.l
 # docs/67 G6: lyric-text on FreeType and HarfBuzz (shaping, rasterising, fallback, layout, a golden scene).

@@ -21,8 +21,11 @@ pub func hostPathGetFileName(path: in String): String {
   NetPath.GetFileName(path)
 }
 
-pub func hostPathGetDirectoryName(path: in String): String? {
-  NetPath.GetDirectoryName(path)
+// System.IO.Path.GetDirectoryName, with "" for its null (an empty or root
+// path).  Std.Path treats null and "" alike, and the native twin has no
+// nullable String.
+pub func hostPathGetDirectoryNameOrEmpty(path: in String): String {
+  NetPath.GetDirectoryName(path) ?? ""
 }
 
 pub func hostPathIsRooted(path: in String): Bool {

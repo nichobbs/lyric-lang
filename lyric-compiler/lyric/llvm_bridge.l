@@ -2022,7 +2022,7 @@ func walkReachableFns(
             reachable.add(target, true)
             fnWorklist.add(target)
           }
-          noteConstructedImplType(raw, curPkg, implTypes, bodyIndex, pkgOfId, reachable, fnWorklist)
+          noteConstructedImplType(raw, curPkg, implTypes, bodyIndex, pkgOfId, reachable, fnWorklist, pkgImports)
           // `raw` may ALSO be a bare UFCS trailing-segment key
           // (`collectCallKeys`'s "cfg.identity.rawHandle()" fallback):
           // resolve it through the multi-valued `bareTrailing` map
@@ -2813,6 +2813,15 @@ func indexBundledImpls(f: in SourceFile, idx: in Map[String, BundledImpl]): Unit
 
 /// A call key names a bundled record with impls: mark its impl reachable and
 /// seed the impl's methods so the walk follows their callees.
+///
+/// The record is named as the caller wrote it: unqualified in its own
+/// package, fully qualified (`Std.Plugin.GrantAllRequested()`), or, from
+/// another package, unqualified or through an import alias
+/// (`GrantAllRequested()`, `P.GrantAllRequested()`).  The last two resolve
+/// against the caller's direct imports, as the type checker resolved them;
+/// aliases are not recorded here, so a qualified name also tries its last
+/// segment in every directly imported package (over-inclusion only lowers
+/// an impl no value reaches).
 func noteConstructedImplType(
   callKey: in String,
   curPkg: in String,
@@ -2821,17 +2830,48 @@ func noteConstructedImplType(
   pkgOfId: in Map[String, String],
   reachable: in Map[String, Bool],
   fnWorklist: in List[String],
+  pkgImports: in Map[String, List[String]],
 ): Unit {
   // A call key is `<callee path>/<argument count>`.
   val slash = Str.indexOfRaw(callKey, "/")
   val key = if slash > 0 { Str.substring(callKey, 0, slash) } else { callKey }
-  var implKey = ""
   if curPkg.length > 0 and implTypes.containsKey(curPkg + "." + key) {
-    implKey = curPkg + "." + key
-  } else if implTypes.containsKey(key) {
-    implKey = key
+    markBundledImpl(curPkg + "." + key, implTypes, bodyIndex, pkgOfId, reachable, fnWorklist)
+    return
   }
-  if implKey.length == 0 or reachable.containsKey("impl:" + implKey) {
+  if implTypes.containsKey(key) {
+    markBundledImpl(key, implTypes, bodyIndex, pkgOfId, reachable, fnWorklist)
+    return
+  }
+  val segs = Str.split(key, ".")
+  val bare = segs[segs.count - 1]
+  if bare.length == 0 {
+    return
+  }
+  match mapGet(pkgImports, curPkg) {
+    case Some(direct) -> {
+      for dp in direct {
+        if implTypes.containsKey(dp + "." + bare) {
+          markBundledImpl(dp + "." + bare, implTypes, bodyIndex, pkgOfId, reachable, fnWorklist)
+        }
+      }
+    }
+    case None -> {
+    }
+  }
+}
+
+/// Mark bundled impl `implKey` (`<pkg>.<Record>`) reachable, once, and seed
+/// its methods.
+func markBundledImpl(
+  implKey: in String,
+  implTypes: in Map[String, BundledImpl],
+  bodyIndex: in Map[String, FunctionDecl],
+  pkgOfId: in Map[String, String],
+  reachable: in Map[String, Bool],
+  fnWorklist: in List[String],
+): Unit {
+  if reachable.containsKey("impl:" + implKey) {
     return
   }
   reachable.add("impl:" + implKey, true)

@@ -11780,6 +11780,27 @@ func isGenericCaseCtorExpr(ctx: in Ctx, e: in Expr): Bool {
   }
 }
 
+/// A `newList()` / `newListWithCapacity(n)` / `newMap()` call without
+/// explicit type arguments: natively its element types come only from the
+/// type the position expects.
+func isUntypedCollectionCtorExpr(ctx: in Ctx, e: in Expr): Bool {
+  match e.kind {
+    case ECall(fn, args) -> match fn.kind {
+      case EPath(path) -> path.segments.count == 1 and
+        (
+          path.segments[0] == "newList" or
+            path.segments[0] == "newListWithCapacity" or
+            path.segments[0] == "newMap"
+        ) and
+        not ctx.varTypes.containsKey(path.segments[0]) and
+        not hasFuncOverrideNative(ctx, path.segments[0], args.count)
+      case _ -> false
+    }
+    case EParen(inner) -> isUntypedCollectionCtorExpr(ctx, inner)
+    case _ -> false
+  }
+}
+
 func copyStrings(xs: in List[String]): List[String] {
   val copy: List[String] = newList()
   for x in xs {
@@ -12075,11 +12096,13 @@ func lowerGenericFnCallWith(
         }
       }
       val ax = argExpr[found]
-      if isLambdaExpr(ax) or isGenericCaseCtorExpr(ctx, ax) {
+      if isLambdaExpr(ax) or isGenericCaseCtorExpr(ctx, ax) or isUntypedCollectionCtorExpr(ctx, ax) {
         // A lambda needs its function type before it can be lowered. Take
         // it from the parameter type under the type arguments the earlier
         // arguments bind (`mapForEach(m, { k, v -> ... })`); only when a
         // later argument is needed is the lambda deferred past it (#7282).
+        // A `newList()` / `newMap()` without type arguments is the same:
+        // its element types come from the parameter (`unwrapOr(o, newList())`).
         match lambdaParamWant(ctx, fd, pi, rawVals, fnTyParamNames, seedNames, seedTys) {
           case Some(w) -> rawVals.add(lowerExprExpecting(ctx, insns, ax, w))
           case None -> {
@@ -12147,11 +12170,11 @@ func lowerGenericFnCallWith(
   if pending.count > 0 {
     val dpi = deferredLambdas[pending[0]]
     panic(
-      "Lyric.LlvmCodegen: cannot infer the type of the lambda or case construction passed as parameter '" +
+      "Lyric.LlvmCodegen: cannot infer the type of the lambda, case construction or collection construction passed as parameter '" +
         fd.params[dpi].name +
         "' of generic function '" +
         fd.name +
-        "'; annotate the lambda's parameters or bind it to a typed val"
+        "'; annotate the lambda's parameters, pass explicit type arguments, or bind it to a typed val"
     )
   }
   // Infer type args.
