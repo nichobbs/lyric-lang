@@ -399,6 +399,10 @@ record Ctx {
   // untracked, exactly like every other unannotated binding in this
   // backend's varTypes/varSlots).
   varIsChar: Map[String, Bool]
+  // #7891 item 4: the non-generic record fields declared `Char`, keyed
+  // `<record irName>.<field>`, so `r.c.toString()` and `"${r.c}"` render the
+  // character. Module-wide (every function ctx shares it).
+  recFieldChars: Map[String, Bool]
   allocas: List[NInsn]
   loopBreak: List[String]
   loopCont: List[String]
@@ -719,9 +723,58 @@ func exprIsCharTyped(ctx: in Ctx, e: in Expr): Bool {
     // Char vs Int — this backend's ordinary `varTypes`/literal shape
     // already distinguishes (`exprIsStringTyped`).
     case EIndex(recv, _) -> exprIsStringTyped(ctx, recv) or exprIsCharCollection(ctx, recv)
+    case EMember(recv, field) -> memberIsChar(ctx, recv, field)
     // A call to a function declared to return `Char` (`charAtOrReplacement`).
     case ECall(fn, args) -> callReturnsChar(ctx, fn, args.count)
     case _ -> false
+  }
+}
+
+/// The IR type of a local, `self`, or a chain of record field reads off one
+/// (`a.b.c`), read from what the function already bound; `None` for any other
+/// expression.
+func staticNTypeOf(ctx: in Ctx, e: in Expr): Option[NType] {
+  match e.kind {
+    case EParen(inner) -> staticNTypeOf(ctx, inner)
+    case ESelf -> mapGet(ctx.varTypes, "self")
+    case EPath(path) -> {
+      if path.segments.count == 1 {
+        mapGet(ctx.varTypes, path.segments[0])
+      } else {
+        None
+      }
+    }
+    case EMember(recv, field) -> {
+      match staticNTypeOf(ctx, recv) {
+        case Some(t) -> match recInfoOfType(ctx, t) {
+          case Some(ri) -> {
+            val idx = recFieldIndex(ri, field)
+            if idx >= 0 {
+              Some(value = ri.fieldTys[idx])
+            } else {
+              None
+            }
+          }
+          case None -> None
+        }
+        case None -> None
+      }
+    }
+    case _ -> None
+  }
+}
+
+/// Whether `recv.field` is a field a record declares `Char` (#7891 item 4).
+func memberIsChar(ctx: in Ctx, recv: in Expr, field: in String): Bool {
+  match staticNTypeOf(ctx, recv) {
+    case Some(t) -> match recInfoOfType(ctx, t) {
+      case Some(ri) -> match mapGet(ctx.recFieldChars, ri.irName + "." + field) {
+        case Some(v) -> v
+        case None -> false
+      }
+      case None -> false
+    }
+    case None -> false
   }
 }
 
@@ -3263,19 +3316,33 @@ func lowerLiteral(ctx: in Ctx, insns: in List[NInsn], lit: in Literal): NVal {
   }
 }
 
+/// One `${expr}` of an interpolated string, rendered as `toString` renders it;
+/// a `Char` (an `i32` like an `Int`) is told apart by `exprIsCharTyped` and
+/// prints as the character, not its code point.
+func interpolatedPiece(ctx: in Ctx, insns: in List[NInsn], ex: in Expr): NVal {
+  val v = lowerExpr(ctx, insns, ex)
+  match v.ty {
+    case NI32 -> if exprIsCharTyped(ctx, ex) {
+      return callRuntime(ctx, insns, "lyric_string_from_char", lyricStringNType(), arg1(NI32, v.value))
+    }
+    case _ -> ()
+  }
+  emitToString(ctx, insns, v)
+}
+
 func lowerInterpolated(ctx: in Ctx, insns: in List[NInsn], segments: in List[InterpolatedSegment]): NVal {
   if segments.count == 0 {
     return emitStringLiteral(ctx, insns, "")
   }
   var acc = match segments[0] {
     case ISText(text, _) -> emitStringLiteral(ctx, insns, text)
-    case ISExpr(ex) -> emitToString(ctx, insns, lowerExpr(ctx, insns, ex))
+    case ISExpr(ex) -> interpolatedPiece(ctx, insns, ex)
   }
   var i = 1
   while i < segments.count {
     val piece = match segments[i] {
       case ISText(text, _) -> emitStringLiteral(ctx, insns, text)
-      case ISExpr(ex) -> emitToString(ctx, insns, lowerExpr(ctx, insns, ex))
+      case ISExpr(ex) -> interpolatedPiece(ctx, insns, ex)
     }
     acc = callRuntime(
       ctx,
@@ -7686,6 +7753,11 @@ func registerHeapTypes(
       match rd.generics {
         case Some(_) -> registerGenericRecord(ctx, u.pkgName, rd)
         case None -> {
+          for cf in recFieldsOf(rd) {
+            if isCharTypeExpr(cf.ty) {
+              ctx.recFieldChars[u.pkgName + "." + rd.name + "." + cf.name] = true
+            }
+          }
           val emptyNames: List[String] = newList()
           val emptyTys: List[NType] = newList()
           val emptyDflts: List[Option[Expr]] = newList()
@@ -9596,7 +9668,13 @@ func constructMap(ctx: in Ctx, insns: in List[NInsn], k: in NType, v: in NType):
     keyFlag = NLitInt(v = 1i64, ty = NI32)
   } else {
     if isRefNType(k) or isBoxedValueNType(k) {
-      panic("Lyric.LlvmCodegen: Map keys on --target native must be String or a scalar type; got " + nTypeToIrString(k))
+      if not isStructuredKeyNType(ctx, k) {
+        panic(
+          "Lyric.LlvmCodegen: Map keys on --target native must be a String, a scalar, a union, a record or an array; got " +
+            nTypeToIrString(k)
+        )
+      }
+      return constructStructuredKeyMap(ctx, insns, k, v)
     }
   }
   val mArgs: List[NArg] = newList()
@@ -9609,6 +9687,328 @@ func constructMap(ctx: in Ctx, insns: in List[NInsn], k: in NType, v: in NType):
   val outV = NVal(ty = ty, value = NLocal(name = dest))
   registerTemp(ctx, outV)
   outV
+}
+
+/// A key type whose D172 equality and hash this backend synthesises (#8167): a
+/// union, an array, or a record other than a tuple. A tuple key is #8170; a
+/// list, map or closure has no structural equality to hash by.
+func isStructuredKeyNType(ctx: in Ctx, k: in NType): Bool {
+  match k {
+    case NArray(_, _) -> return true
+    case _ -> ()
+  }
+  match unionInfoOfNType(ctx, k) {
+    case Some(_) -> return true
+    case None -> ()
+  }
+  match recInfoOfType(ctx, k) {
+    case Some(ri) -> not Str.startsWith(ri.irName, "__tuple<")
+    case None -> false
+  }
+}
+
+/// `lyric_map_new_custom` over the hash and equality functions for key type
+/// `k`, synthesised on first use.
+func constructStructuredKeyMap(ctx: in Ctx, insns: in List[NInsn], k: in NType, v: in NType): NVal {
+  val hashFn = ensureMapKeyHash(ctx, k)
+  val eqFn = ensureMapKeyEq(ctx, k)
+  val p8 = NPtr(pointee = NI8)
+  val hashParams: List[NType] = newList()
+  hashParams.add(NI64)
+  val eqParams: List[NType] = newList()
+  eqParams.add(NI64)
+  eqParams.add(NI64)
+  val hashTy = NFnPtr(params = hashParams, ret = NI64)
+  val eqTy = NFnPtr(params = eqParams, ret = NI32)
+  val hashPtr = freshTmp(ctx)
+  insns.add(NBitcast(dest = hashPtr, fromTy = hashTy, value = NGlobal(name = hashFn), toTy = p8))
+  val eqPtr = freshTmp(ctx)
+  insns.add(NBitcast(dest = eqPtr, fromTy = eqTy, value = NGlobal(name = eqFn), toTy = p8))
+  val mArgs: List[NArg] = newList()
+  mArgs.add(NArg(ty = NI32, value = refFlagOf(v)))
+  mArgs.add(NArg(ty = p8, value = NLocal(name = hashPtr)))
+  mArgs.add(NArg(ty = p8, value = NLocal(name = eqPtr)))
+  val raw = callRuntime(ctx, insns, "lyric_map_new_custom", p8, mArgs)
+  val ty = mapNType(ctx, k, v)
+  val dest = freshTmp(ctx)
+  insns.add(NBitcast(dest = dest, fromTy = p8, value = raw.value, toTy = ty))
+  val outV = NVal(ty = ty, value = NLocal(name = dest))
+  registerTemp(ctx, outV)
+  outV
+}
+
+/// `i64 hash(i64 slot)` / `i32 eq(i64 a, i64 b)` over a map's key slots, one
+/// pair per key type, named by the key type and synthesised once.
+func ensureMapKeyHash(ctx: in Ctx, k: in NType): String {
+  val fnName = "__map.hash." + mangleNTypeArg(k)
+  if not ctx.unionEqFns.containsKey(fnName) {
+    ctx.unionEqFns.add(fnName, true)
+    val fctx = freshFnCtx(ctx, ctx.mainPkg, NI64)
+    val body: List[NInsn] = newList()
+    body.add(NLabel(name = "entry"))
+    val key = valOfSlot(fctx, body, NLocal(name = "slot"), k)
+    val h = emitValueHashN(fctx, body, k, localNameOf(key))
+    body.add(NRet(ty = NI64, value = NLocal(name = h)))
+    val params: List[NParam] = newList()
+    params.add(NParam(name = "slot", ty = NI64))
+    ctx.moduleFns.add(finishSynthFn(fctx, fnName, params, NI64, body))
+  }
+  fnName
+}
+
+func ensureMapKeyEq(ctx: in Ctx, k: in NType): String {
+  val fnName = "__map.eq." + mangleNTypeArg(k)
+  if not ctx.unionEqFns.containsKey(fnName) {
+    ctx.unionEqFns.add(fnName, true)
+    val fctx = freshFnCtx(ctx, ctx.mainPkg, NI32)
+    val body: List[NInsn] = newList()
+    body.add(NLabel(name = "entry"))
+    val a = valOfSlot(fctx, body, NLocal(name = "a"), k)
+    val b = valOfSlot(fctx, body, NLocal(name = "b"), k)
+    val eq = emitValueEqN(fctx, body, k, localNameOf(a), localNameOf(b))
+    val wide = freshTmp(fctx)
+    body.add(NZExt(dest = wide, fromTy = NI1, value = NLocal(name = eq), toTy = NI32))
+    body.add(NRet(ty = NI32, value = NLocal(name = wide)))
+    val params: List[NParam] = newList()
+    params.add(NParam(name = "a", ty = NI64))
+    params.add(NParam(name = "b", ty = NI64))
+    ctx.moduleFns.add(finishSynthFn(fctx, fnName, params, NI32, body))
+  }
+  fnName
+}
+
+/// A synthesised function from its body: the entry block, then the stack slots
+/// the body asked for, then the rest of the body.
+func finishSynthFn(fctx: in Ctx, name: in String, params: in List[NParam], retTy: in NType, body: in List[NInsn]): NFunc {
+  val attrs: List[String] = newList()
+  val finalBody: List[NInsn] = newList()
+  finalBody.add(NLabel(name = "entry"))
+  appendInsns(finalBody, fctx.allocas)
+  var bi = 1
+  while bi < body.count {
+    finalBody.add(body[bi])
+    bi = bi + 1
+  }
+  NFunc(
+    name = name,
+    params = params,
+    retTy = retTy,
+    isPublic = false,
+    isExtern = false,
+    body = finalBody,
+    attributes = attrs
+  )
+}
+
+/// An `i64` local holding the hash of a value of IR type `t`, agreeing with
+/// `emitValueEqN`: values that compare equal hash alike (a `String` by its
+/// text, a float with both zeros and every `NaN` alike, a union or value record
+/// structurally, an array element by element, any other reference by address).
+func emitValueHashN(ctx: in Ctx, body: in List[NInsn], t: in NType, a: in String): String {
+  if isStringNType(t) {
+    return localOfValue(callRuntime(ctx, body, "lyric_string_hash", NI64, arg1(t, NLocal(name = a))).value)
+  }
+  match t {
+    case NDouble -> return localOfValue(callRuntime(ctx, body, "lyric_hash_double", NI64, arg1(NDouble, NLocal(name = a))).value)
+    case NFloat -> return localOfValue(callRuntime(ctx, body, "lyric_hash_float", NI64, arg1(NFloat, NLocal(name = a))).value)
+    case NArray(el, n) -> {
+      var acc = ""
+      var i = 0
+      while i < n {
+        val ea = freshTmp(ctx)
+        body.add(NExtractValue(dest = ea, aggTy = t, agg = NLocal(name = a), index = i))
+        acc = foldHash(ctx, body, acc, emitValueHashN(ctx, body, el, ea))
+        i = i + 1
+      }
+      return hashOrZero(ctx, body, acc)
+    }
+    case _ -> ()
+  }
+  match unionInfoOfNType(ctx, t) {
+    case Some(inner) -> {
+      val fnName = ensureUnionHash(ctx, inner)
+      val pa = if inner.inline {
+        inlineUnionAddr(ctx, body, NVal(ty = t, value = NLocal(name = a)))
+      } else {
+        NVal(ty = t, value = NLocal(name = a))
+      }
+      val ra = freshTmp(ctx)
+      body.add(NBitcast(dest = ra, fromTy = pa.ty, value = pa.value, toTy = NPtr(pointee = NI8)))
+      val dest = freshTmp(ctx)
+      body.add(
+        NCall(dest = dest, retTy = NI64, fn = NGlobal(name = fnName), args = arg1(NPtr(pointee = NI8), NLocal(name = ra)))
+      )
+      return dest
+    }
+    case None -> ()
+  }
+  if isByValueStructNType(t) {
+    val ri = match mapGet(ctx.recordDefs, byValueRecName(t)) {
+      case Some(r) -> r
+      case None -> panic("Lyric.LlvmCodegen: internal — hash of unregistered struct '" + byValueRecName(t) + "'")
+    }
+    var acc = ""
+    var fi = 0
+    while fi < ri.fieldTys.count {
+      if not isVoidNType(ri.fieldTys[fi]) {
+        val fa = freshTmp(ctx)
+        body.add(NExtractValue(dest = fa, aggTy = t, agg = NLocal(name = a), index = fi))
+        acc = foldHash(ctx, body, acc, emitValueHashN(ctx, body, ri.fieldTys[fi], fa))
+      }
+      fi = fi + 1
+    }
+    return hashOrZero(ctx, body, acc)
+  }
+  match recInfoOfType(ctx, t) {
+    case Some(ri) -> if not ri.byValue and ctx.heapValueRecords.containsKey(ri.irName) {
+      val fnName = ensureRecordHash(ctx, ri)
+      val ra = freshTmp(ctx)
+      body.add(NBitcast(dest = ra, fromTy = t, value = NLocal(name = a), toTy = NPtr(pointee = NI8)))
+      val dest = freshTmp(ctx)
+      body.add(
+        NCall(dest = dest, retTy = NI64, fn = NGlobal(name = fnName), args = arg1(NPtr(pointee = NI8), NLocal(name = ra)))
+      )
+      return dest
+    }
+    case None -> ()
+  }
+  // A scalar by value (widened to 64 bits) or a reference by address.
+  val dest = freshTmp(ctx)
+  match t {
+    case NI64 -> {
+      body.add(NAdd(dest = dest, ty = NI64, a = NLocal(name = a), b = NLitInt(v = 0i64, ty = NI64)))
+    }
+    case NI32 -> body.add(NSExt(dest = dest, fromTy = NI32, value = NLocal(name = a), toTy = NI64))
+    case NI8 | NI1 -> body.add(NZExt(dest = dest, fromTy = t, value = NLocal(name = a), toTy = NI64))
+    case _ -> body.add(NPtrToInt(dest = dest, fromTy = t, value = NLocal(name = a), toTy = NI64))
+  }
+  dest
+}
+
+func localOfValue(v: in NValue): String {
+  match v {
+    case NLocal(n) -> n
+    case _ -> panic("Lyric.LlvmCodegen: internal — a runtime hash call did not produce a local")
+  }
+}
+
+/// `acc` folded with `x` (`x` alone when `acc` is empty).
+func foldHash(ctx: in Ctx, body: in List[NInsn], acc: in String, x: in String): String {
+  if acc.length == 0 {
+    return x
+  }
+  localOfValue(
+    callRuntime(ctx, body, "lyric_hash_mix", NI64, arg2(NI64, NLocal(name = acc), NI64, NLocal(name = x))).value
+  )
+}
+
+func hashOrZero(ctx: in Ctx, body: in List[NInsn], acc: in String): String {
+  if acc.length > 0 {
+    return acc
+  }
+  val z = freshTmp(ctx)
+  body.add(NAdd(dest = z, ty = NI64, a = NLitInt(v = 0i64, ty = NI64), b = NLitInt(v = 0i64, ty = NI64)))
+  z
+}
+
+func unionHashName(ui: in NUnionInfo): String {
+  ui.irName + ".hash"
+}
+
+/// The name of union `ui`'s hash function, synthesised on first use.
+func ensureUnionHash(ctx: in Ctx, ui: in NUnionInfo): String {
+  val fnName = unionHashName(ui)
+  if not ctx.unionEqFns.containsKey(fnName) {
+    ctx.unionEqFns.add(fnName, true)
+    ctx.moduleFns.add(synthUnionHash(ctx, ui))
+  }
+  fnName
+}
+
+/// `i64 Union.hash(i8* p)`: the discriminant folded with each payload field
+/// of the case, as `synthUnionEq` compares them.
+func synthUnionHash(mctx: in Ctx, ui: in NUnionInfo): NFunc {
+  val ctx = freshFnCtx(mctx, mctx.mainPkg, NI64)
+  val body: List[NInsn] = newList()
+  body.add(NLabel(name = "entry"))
+  val structTy = if ui.inline {
+    unionPtrType(ui)
+  } else {
+    match unionPtrType(ui) {
+      case NPtr(pointee) -> pointee
+      case _ -> panic("unreachable")
+    }
+  }
+  val objTy = NPtr(pointee = structTy)
+  body.add(NBitcast(dest = "oa", fromTy = NPtr(pointee = NI8), value = NLocal(name = "ra"), toTy = objTy))
+  val disc = loadUnionDisc(ctx, body, ui, structTy, "oa")
+  val disc64 = freshTmp(ctx)
+  body.add(NSExt(dest = disc64, fromTy = NI32, value = NLocal(name = disc), toTy = NI64))
+  val switchCases: List[NSwitchCase] = newList()
+  var ci = 0
+  while ci < ui.cases.count {
+    switchCases.add(NSwitchCase(matchVal = ci.toLong(), label = "hash.case." + ci.toString()))
+    ci = ci + 1
+  }
+  body.add(NSwitch(ty = NI32, scrutinee = NLocal(name = disc), defaultLabel = "hash.done", cases = switchCases))
+  var cj = 0
+  while cj < ui.cases.count {
+    body.add(NLabel(name = "hash.case." + cj.toString()))
+    val caseTy = casePayloadStructType(ui, ui.cases[cj])
+    val hasFields = ui.cases[cj].fieldTys.count > 0
+    val pa = if hasFields { loadCasePayloadPtr(ctx, body, ui, structTy, caseTy, "oa") } else { "" }
+    var acc = disc64
+    var fi = 0
+    while fi < ui.cases[cj].fieldTys.count {
+      val fty = ui.cases[cj].fieldTys[fi]
+      if not isVoidNType(fty) {
+        val va = loadCaseField(ctx, body, caseTy, pa, fi, fty)
+        acc = foldHash(ctx, body, acc, emitValueHashN(ctx, body, fty, va))
+      }
+      fi = fi + 1
+    }
+    body.add(NRet(ty = NI64, value = NLocal(name = acc)))
+    cj = cj + 1
+  }
+  body.add(NLabel(name = "hash.done"))
+  body.add(NRet(ty = NI64, value = NLocal(name = disc64)))
+  val params: List[NParam] = newList()
+  params.add(NParam(name = "ra", ty = NPtr(pointee = NI8)))
+  finishSynthFn(ctx, unionHashName(ui), params, NI64, body)
+}
+
+/// The name of heap record `ri`'s hash function, synthesised on first use.
+func ensureRecordHash(ctx: in Ctx, ri: in NRecInfo): String {
+  val fnName = ri.irName + ".hash"
+  if not ctx.recordEqFns.containsKey(fnName) {
+    ctx.recordEqFns.add(fnName, true)
+    ctx.moduleFns.add(synthRecordHash(ctx, ri))
+  }
+  fnName
+}
+
+/// `i64 Record.hash(i8* p)` for a heap record that compares field by field.
+func synthRecordHash(mctx: in Ctx, ri: in NRecInfo): NFunc {
+  val ctx = freshFnCtx(mctx, mctx.mainPkg, NI64)
+  val body: List[NInsn] = newList()
+  body.add(NLabel(name = "entry"))
+  val objTy = recPtrType(ri)
+  body.add(NBitcast(dest = "oa", fromTy = NPtr(pointee = NI8), value = NLocal(name = "ra"), toTy = objTy))
+  var acc = ""
+  var fi = 0
+  while fi < ri.fieldTys.count {
+    val fty = ri.fieldTys[fi]
+    if not isVoidNType(fty) {
+      val va = lowerRecordFieldLoad(ctx, body, ri, NVal(ty = objTy, value = NLocal(name = "oa")), ri.fieldNames[fi])
+      acc = foldHash(ctx, body, acc, emitValueHashN(ctx, body, fty, localNameOf(va)))
+    }
+    fi = fi + 1
+  }
+  val result = hashOrZero(ctx, body, acc)
+  body.add(NRet(ty = NI64, value = NLocal(name = result)))
+  val params: List[NParam] = newList()
+  params.add(NParam(name = "ra", ty = NPtr(pointee = NI8)))
+  finishSynthFn(ctx, ri.irName + ".hash", params, NI64, body)
 }
 
 /// The capacity hint of `newListWithCapacity(n)` has no kernel
@@ -15721,6 +16121,7 @@ func freshFnCtx(mod: in Ctx, pkg: in String, retTy: in NType): Ctx {
     varTypes = types,
     varEnumTypes = enumTypes,
     varIsChar = isChar,
+    recFieldChars = mod.recFieldChars,
     allocas = newList(),
     loopBreak = newList(),
     loopCont = newList(),
@@ -16372,6 +16773,11 @@ func runtimeDecls(): List[NFunc] {
   decls.add(mkDecl1("lyric_buffer_unique", p8, p8))
   decls.add(mkDecl2("lyric_args_set", NVoid, NI32, NPtr(pointee = p8)))
   decls.add(mkDecl2("lyric_map_new", p8, NI32, NI32))
+  decls.add(mkDecl3("lyric_map_new_custom", p8, NI32, p8, p8))
+  decls.add(mkDecl2("lyric_hash_mix", NI64, NI64, NI64))
+  decls.add(mkDecl1("lyric_string_hash", NI64, lyricStringNType()))
+  decls.add(mkDecl1("lyric_hash_double", NI64, NDouble))
+  decls.add(mkDecl1("lyric_hash_float", NI64, NFloat))
   decls.add(mkDecl3("lyric_map_set", NVoid, p8, NI64, NI64))
   decls.add(mkDecl3("lyric_map_get", NI32, p8, NI64, NPtr(pointee = NI64)))
   decls.add(mkDecl2("lyric_map_contains", NI32, p8, NI64))
@@ -16695,6 +17101,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
   val emptyTypes: Map[String, NType] = newMap()
   val emptyEnumTypes: Map[String, String] = newMap()
   val emptyIsChar: Map[String, Bool] = newMap()
+  val emptyRecChars: Map[String, Bool] = newMap()
   val emptyRecs: Map[String, NRecInfo] = newMap()
   val emptyUnions: Map[String, NUnionInfo] = newMap()
   val emptyCases: Map[String, NCaseRef] = newMap()
@@ -16721,6 +17128,7 @@ pub func codegenNativeBundle(units: in List[CodegenUnit], triple: in String): NP
     varTypes = emptyTypes,
     varEnumTypes = emptyEnumTypes,
     varIsChar = emptyIsChar,
+    recFieldChars = emptyRecChars,
     allocas = newList(),
     loopBreak = newList(),
     loopCont = newList(),

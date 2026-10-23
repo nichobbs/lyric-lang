@@ -3695,7 +3695,27 @@ static void test_char_classification(void) {
     CHECK(lyric_char_to_upper(-5) == -5 && lyric_char_to_lower(-5) == -5);
 }
 
+/* The structured-key hash helpers agree with D172's equality (#8167): both
+ * zeros hash alike, every NaN does, and equal strings hash alike. */
+static void test_key_hash_helpers(void) {
+    CHECK(lyric_hash_double(0.0) == lyric_hash_double(-0.0));
+    CHECK(lyric_hash_double(0.0 / 0.0) == lyric_hash_double(-(0.0 / 0.0)));
+    CHECK(lyric_hash_double(1.5) != lyric_hash_double(2.5));
+    CHECK(lyric_hash_float(0.0f) == lyric_hash_float(-0.0f));
+    CHECK(lyric_hash_float(0.0f / 0.0f) == lyric_hash_float(-(0.0f / 0.0f)));
+    LyricString* a = lyric_string_from_literal((const uint8_t*)"key", 3);
+    LyricString* b = lyric_string_from_literal((const uint8_t*)"key", 3);
+    LyricString* c = lyric_string_from_literal((const uint8_t*)"kez", 3);
+    CHECK(lyric_string_hash(a) == lyric_string_hash(b));
+    CHECK(lyric_string_hash(a) != lyric_string_hash(c));
+    CHECK(lyric_hash_mix(1, 2) != lyric_hash_mix(2, 1));
+    lyric_release(a);
+    lyric_release(b);
+    lyric_release(c);
+}
+
 int main(void) {
+    test_key_hash_helpers();
     test_char_classification();
 #ifndef __wasi__
     test_thread_spawn_detached();

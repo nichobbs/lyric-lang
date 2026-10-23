@@ -321,6 +321,18 @@ LyricString* lyric_string_concat_list(LyricList* parts);
 typedef struct LyricMap LyricMap;
 
 LyricMap* lyric_map_new(int32_t keys_are_strings, int32_t vals_are_refs);
+/* A map whose keys are ARC objects (a union, a record, a boxed value) hashed
+ * and compared by the given functions over the key's 64-bit slot (#8167): the
+ * compiler synthesises them per key type to implement D172's equality. The map
+ * holds a strong reference to every key. */
+LyricMap* lyric_map_new_custom(int32_t vals_are_refs, uint64_t (*key_hash)(int64_t), int32_t (*key_eq)(int64_t, int64_t));
+/* Hash helpers the synthesised key functions call: `lyric_hash_mix` folds
+ * `x` into `h`; the others hash a String by text and a Float/Double so that
+ * both zeros hash alike and every NaN does (D172). */
+uint64_t  lyric_hash_mix(uint64_t h, uint64_t x);
+uint64_t  lyric_string_hash(LyricString* s);
+uint64_t  lyric_hash_double(double v);
+uint64_t  lyric_hash_float(float v);
 void      lyric_map_set(LyricMap* map, int64_t key, int64_t val);
 /* Returns 1 and writes the value through out_val when present; 0 otherwise. */
 int32_t   lyric_map_get(LyricMap* map, int64_t key, int64_t* out_val);

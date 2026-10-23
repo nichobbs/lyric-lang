@@ -1170,3 +1170,39 @@ test "a body method and a dot-named function of the same name and arity bind sep
   val r = compileAndRunAsan(src)
   assertEqualInt(r.exitCode, 90, "a.trim(1) = 8 (body method), Acc.trim(a, 1) = 10 (dot-named)")
 }
+
+// #7891 item 4: a `Char` read from a record field prints as the character,
+// through `.toString()` and string interpolation, for a field of the receiver,
+// of `self` and of a nested record.
+test "Char record fields render as characters in toString and interpolation (#7891)" {
+  val src = r#"package T
+extern func consoleWriteFd(fd: Int, s: String): Unit = "lyric_console_write"
+extern func consoleNewlineFd(fd: Int): Unit = "lyric_console_write_newline"
+func println(s: in String): Unit {
+  consoleWriteFd(1, s)
+  consoleNewlineFd(1)
+}
+record Inner {
+  c: Char
+}
+record R {
+  c: Char
+  n: Int
+  inner: Inner
+  func show(self: in R): String = self.c.toString()
+}
+func main(): Int {
+  val r = R(c = 'q', n = 5, inner = Inner(c = 'z'))
+  println(r.c.toString())
+  println("[${r.c}] ${r.n} ${r.inner.c}")
+  println(r.show())
+  println(r.n.toString())
+  val ch: Char = 'k'
+  println("<${ch}>")
+  0
+}
+"#
+  val r = compileAndRun(src)
+  assertEqualInt(r.exitCode, 0, "exit")
+  assertEqual(r.stdout, "q\n[q] 5 z\nq\n5\n<k>\n", "Char fields print as characters, Int fields as numbers")
+}
