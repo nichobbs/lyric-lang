@@ -282,13 +282,19 @@ static int identity_load(Identity* id, const char* cert_pem, const char* key_pem
         return -1;
     }
     KeyEntry* e = (KeyEntry*)calloc(1, sizeof(KeyEntry));
-    if (e) {
-        wcscpy(e->name, id->key_name);
-        AcquireSRWLockExclusive(&keys_lock);
-        e->next = keys_live;
-        keys_live = e;
-        ReleaseSRWLockExclusive(&keys_lock);
+    if (!e) {
+        /* Unregistered, the key would outlive the process: delete it now. */
+        NCryptDeleteKey(key, NCRYPT_SILENT_FLAG); /* also frees the handle */
+        id->key_name[0] = L'\0';
+        identity_free(id);
+        set_err("out of memory");
+        return -1;
     }
+    wcscpy(e->name, id->key_name);
+    AcquireSRWLockExclusive(&keys_lock);
+    e->next = keys_live;
+    keys_live = e;
+    ReleaseSRWLockExclusive(&keys_lock);
     int matches = key_matches_cert(key, id->leaf);
     NCryptFreeObject(key);
     if (!matches) {

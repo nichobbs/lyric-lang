@@ -286,6 +286,9 @@ int32_t lyric_sock_local_port(int32_t fd) {
  * are blocking (their reads and writes wait, bounded by
  * lyric_sock_set_timeouts). */
 static int32_t accepted(SOCKET c) {
+    /* A spawned child inherits only the handles it is given, but keep an
+     * accepted socket non-inheritable like every socket this file creates. */
+    SetHandleInformation((HANDLE)c, HANDLE_FLAG_INHERIT, 0);
     if (set_nonblocking(c, 0) != 0) {
         int e = WSAGetLastError();
         closesocket(c);

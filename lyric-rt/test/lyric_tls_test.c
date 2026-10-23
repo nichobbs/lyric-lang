@@ -616,6 +616,26 @@ static void test_mtls_accept(void) {
     lyric_tls_ctx_free(client);
 }
 
+/* A client CA without require_client_cert: a client may present no
+ * certificate and still connect. */
+static void test_mtls_optional_no_client_cert(void) {
+    void* server = lyric_tls_server_new(SERVER_CRT, SERVER_KEY, 12, CA_CRT, 0, "http/1.1");
+    CHECK(server != NULL);
+    void* client = lyric_tls_client_new(CA_CRT, 12, 0);
+    CHECK(client != NULL);
+    if (server && client) {
+        char calpn[32];
+        int rt = 0;
+        tls_server_arg srv;
+        int ok = run_tls_scenario(server, client, "localhost", "http/1.1", calpn, &rt, &srv);
+        CHECK(ok == 1);
+        CHECK(rt == 1);
+        CHECK(srv.accept_ok == 1);
+    }
+    lyric_tls_ctx_free(server);
+    lyric_tls_ctx_free(client);
+}
+
 static void test_mtls_reject_no_client_cert(void) {
     void* server = lyric_tls_server_new(SERVER_CRT, SERVER_KEY, 12, CA_CRT, 1, "http/1.1");
     CHECK(server != NULL);
@@ -1170,6 +1190,7 @@ int main(void) {
     test_tls_client_additive_requires_ca();
     test_tls_tls13_floor();
     test_mtls_accept();
+    test_mtls_optional_no_client_cert();
     test_mtls_reject_no_client_cert();
     test_hostname_mismatch_rejected();
     test_empty_host_refused();
