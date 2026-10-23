@@ -25,6 +25,7 @@ import Std.Core
 import Std.Collections
 import Std.String as Str
 import Std.File as File
+import Std.Errors
 import Std.Path as Path
 import Std.ProcessCapture as ProcessCapture
 import Std.JsonValue as Jv
@@ -844,9 +845,22 @@ func serveProjectRead(
   val fields: List[Jv.JsonField] = newList()
   match File.readText(Path.join(root, path)) {
     case Ok(text) -> fields.add(Jv.JsonField(name = "ok", value = Jv.JString(value = text)))
-    case Err(_) -> fields.add(Jv.JsonField(name = "err", value = Jv.JString(value = "cannot read '" + path + "'")))
+    case Err(e) -> fields.add(Jv.JsonField(name = "err", value = Jv.JString(value = projectReadError(path, e))))
   }
   Ok(value = Jv.JObject(fields = fields))
+}
+
+/// The `ProjectRead.readText` error for a failed read of the project path
+/// `path`: what kind of failure it was, naming only the project-relative
+/// path, never the host path the project lives at.
+pub func projectReadError(path: in String, e: in IOError): String {
+  match e {
+    case FileNotFound(_) -> "'" + path + "' does not exist"
+    case DirectoryNotFound(_) -> "'" + path + "' does not exist"
+    case PermissionDenied(_) -> "'" + path + "' cannot be read (permission denied)"
+    case InvalidPath(_, _) -> "'" + path + "' is not a valid path on this host"
+    case _ -> "'" + path + "' cannot be read"
+  }
 }
 
 /// True when `path` is a relative project path with no `.` or `..`

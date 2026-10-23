@@ -11,6 +11,8 @@ import Std.Core
 import Std.Collections
 import Std.Testing
 import Std.JsonValue as Jv
+import Std.String as Str
+import Std.Errors
 import Lyric.Manifest
 import Lyric.Generator
 
@@ -421,4 +423,14 @@ test "a generic field type's source text includes its closing bracket" {
     "Option: " + d
   )
   assertTrue(d.contains("\"name\":\"Map[String, List[Int]]\""), "nested generic: " + d)
+}
+
+test "a failed project read names the failure, not the host path" {
+  val missing = projectReadError("schemas/a.json", FileNotFound(path = "/home/u/proj/schemas/a.json"))
+  assertEqual(missing, "'schemas/a.json' does not exist", "not found")
+  val denied = projectReadError("schemas/a.json", PermissionDenied(path = "/home/u/proj/schemas/a.json"))
+  assertEqual(denied, "'schemas/a.json' cannot be read (permission denied)", "permission denied")
+  val other = projectReadError("schemas/a.json", IoError(path = "/home/u/proj/schemas/a.json", message = "disk on fire"))
+  assertEqual(other, "'schemas/a.json' cannot be read", "other failures")
+  assertFalse(Str.contains(missing + denied + other, "/home/u"), "no host path")
 }
