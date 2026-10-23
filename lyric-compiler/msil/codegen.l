@@ -47725,16 +47725,16 @@ func registerStdlibImplMsil(cctx: in CodegenCtx, pkgs: in List[StdlibPkg], pkg: 
 
 // The first `count` segments joined with dots.
 func segmentsToStringMsil(segs: in List[String], count: in Int): String {
-  var out = ""
+  var joined = ""
   var i = 0
   while i < count {
     if i > 0 {
-      out = out + "."
+      joined = joined + "."
     }
-    out = out + segs[i]
+    joined = joined + segs[i]
     i = i + 1
   }
-  out
+  joined
 }
 
 // Build a TypeSpec-based newobj token for a stdlib generic union case
