@@ -16,6 +16,7 @@ package PluginGen.Notes
 
 import Std.Core
 import Std.Collections
+import Std.String as Str
 import Std.Testing
 import Std.Environment
 import Std.File

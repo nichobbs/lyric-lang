@@ -12,6 +12,7 @@ package PluginGen.Notes
 
 import Std.Core
 import Std.Collections
+import Std.String as Str
 import Std.Plugin
 
 pub record Note {
