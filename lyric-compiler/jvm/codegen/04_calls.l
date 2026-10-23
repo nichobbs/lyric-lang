@@ -1073,8 +1073,8 @@ func callResolvedToDotNamedJvm(ctx: in FuncCtx, siteKey: in String): Bool {
 // Lower a single call argument.
 func lowerCallArg(ctx: in FuncCtx, insns: in List[LInsn], arg: in CallArg): JvmType {
   match arg {
-    case CAPositional(e) -> lowerExpr(ctx, insns, e)
-    case CANamed(_, e, _) -> lowerExpr(ctx, insns, e)
+    case CAPositional(e) -> lowerValueExpr(ctx, insns, e)
+    case CANamed(_, e, _) -> lowerValueExpr(ctx, insns, e)
   }
 }
 
@@ -3363,7 +3363,7 @@ func lowerConstruction(ctx: in FuncCtx, insns: in List[LInsn], className: in Str
         }
         match valueExpr {
           case Some(ve) -> {
-            val aTy = lowerExpr(ctx, insns, ve)
+            val aTy = lowerValueExpr(ctx, insns, ve)
             if fields[i].paramIdx >= 0 and isRefJvm(fty) and isJvmPrimitiveElemType(aTy) {
               val rawSlot = allocSlot(ctx, "__ctor_raw_" + freshLabel(ctx), aTy)
               emitStore(insns, rawSlot, aTy)

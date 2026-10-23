@@ -4045,13 +4045,13 @@ pub func addPackageTokens(cctx: in CodegenCtx, file0: in SourceFile, pkgName: in
               recCtorParams.add(ftyG)
               val fty = ftyG
               if not cctx.fieldMsilTypes.containsKey(className + "/" + f.name) {
-                cctx.fieldMsilTypes.add(className + "/" + f.name, fty)
+                cctx.fieldMsilTypes.add(className + "/" + f.name, unitStorageSlotType(fty))
               }
               // Also register under the short key used by the fieldTokensByName
               // lookup path so that field accesses on MObject (list elements)
               // return the correct MSIL type rather than falling back to MObject.
               if not cctx.fieldMsilTypes.containsKey(pkgName + "/" + f.name) {
-                cctx.fieldMsilTypes.add(pkgName + "/" + f.name, fty)
+                cctx.fieldMsilTypes.add(pkgName + "/" + f.name, unitStorageSlotType(fty))
               }
               // #5520: a field DECLARED `Byte` (not a generic type-param
               // substitution) needs its compound-store re-narrowing tracked —
@@ -4242,10 +4242,10 @@ pub func addPackageTokens(cctx: in CodegenCtx, file0: in SourceFile, pkgName: in
               recCtorParams.add(ftyG)
               val fty = ftyG
               if not cctx.fieldMsilTypes.containsKey(className + "/" + f.name) {
-                cctx.fieldMsilTypes.add(className + "/" + f.name, fty)
+                cctx.fieldMsilTypes.add(className + "/" + f.name, unitStorageSlotType(fty))
               }
               if not cctx.fieldMsilTypes.containsKey(pkgName + "/" + f.name) {
-                cctx.fieldMsilTypes.add(pkgName + "/" + f.name, fty)
+                cctx.fieldMsilTypes.add(pkgName + "/" + f.name, unitStorageSlotType(fty))
               }
               // #5520: see the IRecord field-registration site above.
               if isByteAnnotationMsil(Some(f.ty)) {
@@ -4421,10 +4421,10 @@ pub func addPackageTokens(cctx: in CodegenCtx, file0: in SourceFile, pkgName: in
                 caseCtorParams.add(ftyG)
                 val ufTyMsil = ftyG
                 if not cctx.fieldMsilTypes.containsKey(caseName + "/" + name) {
-                  cctx.fieldMsilTypes.add(caseName + "/" + name, ufTyMsil)
+                  cctx.fieldMsilTypes.add(caseName + "/" + name, unitStorageSlotType(ufTyMsil))
                 }
                 if not cctx.fieldMsilTypes.containsKey(caseName + "/field" + toString(fi)) {
-                  cctx.fieldMsilTypes.add(caseName + "/field" + toString(fi), ufTyMsil)
+                  cctx.fieldMsilTypes.add(caseName + "/field" + toString(fi), unitStorageSlotType(ufTyMsil))
                 }
                 registerCaseFieldFuncRetMsil(cctx, caseName + "/" + name, ufTy, pkgName, uGenerics)
                 registerCaseFieldFuncRetMsil(cctx, caseName + "/field" + toString(fi), ufTy, pkgName, uGenerics)
@@ -4453,7 +4453,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file0: in SourceFile, pkgName: in
                 caseCtorParams.add(ftyGp)
                 val ufPosTyMsil = ftyGp
                 if not cctx.fieldMsilTypes.containsKey(caseName + "/field" + toString(fi)) {
-                  cctx.fieldMsilTypes.add(caseName + "/field" + toString(fi), ufPosTyMsil)
+                  cctx.fieldMsilTypes.add(caseName + "/field" + toString(fi), unitStorageSlotType(ufPosTyMsil))
                 }
                 registerCaseFieldFuncRetMsil(cctx, caseName + "/field" + toString(fi), ufPosTy, pkgName, uGenerics)
                 if uArity > 0 {
@@ -4640,7 +4640,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file0: in SourceFile, pkgName: in
                       cctx.fieldTokens.add(vfKey, 0x04000000 + fieldDefRow)
                     }
                     if not cctx.fieldMsilTypes.containsKey(vfKey) {
-                      cctx.fieldMsilTypes.add(vfKey, viewFieldTy)
+                      cctx.fieldMsilTypes.add(vfKey, unitStorageSlotType(viewFieldTy))
                     }
                     fieldDefRow = fieldDefRow + 1
                   }
@@ -4694,7 +4694,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file0: in SourceFile, pkgName: in
                 }
                 val ofTy = typeExprToMsilCtx(cctx, f2.ty, pkgName)
                 if not cctx.fieldMsilTypes.containsKey(ofKey) {
-                  cctx.fieldMsilTypes.add(ofKey, ofTy)
+                  cctx.fieldMsilTypes.add(ofKey, unitStorageSlotType(ofTy))
                 }
                 // Also register under the package-level reverse-lookup key so that
                 // MObject-typed receivers (e.g. a match binding on `tryInto()`'s Ok
@@ -4705,7 +4705,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file0: in SourceFile, pkgName: in
                   cctx.fieldDeclaringClassByName.add(ofByNameKey, className)
                 }
                 if not cctx.fieldMsilTypes.containsKey(ofByNameKey) {
-                  cctx.fieldMsilTypes.add(ofByNameKey, ofTy)
+                  cctx.fieldMsilTypes.add(ofByNameKey, unitStorageSlotType(ofTy))
                 }
                 // Positional field-name registration, mirroring record
                 // (codegen.l:~2644) and protected type (~3186).  Without it the
@@ -4774,7 +4774,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file0: in SourceFile, pkgName: in
                   val fKey = className + "/" + fname
                   if not cctx.fieldTokens.containsKey(fKey) {
                     cctx.fieldTokens.add(fKey, fieldTok)
-                    cctx.fieldMsilTypes.add(fKey, typeExprToMsilG(cctx, fty, pkgName, protGenerics))
+                    cctx.fieldMsilTypes.add(fKey, unitStorageSlotType(typeExprToMsilG(cctx, fty, pkgName, protGenerics)))
                   }
                   // A lambda written for a function-typed field returns the
                   // field's declared result type (`seedLambdaLiteralFieldRetMsil`).
@@ -4799,7 +4799,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file0: in SourceFile, pkgName: in
                   val fKey = className + "/" + fname
                   if not cctx.fieldTokens.containsKey(fKey) {
                     cctx.fieldTokens.add(fKey, fieldTok)
-                    cctx.fieldMsilTypes.add(fKey, typeExprToMsilG(cctx, fty, pkgName, protGenerics))
+                    cctx.fieldMsilTypes.add(fKey, unitStorageSlotType(typeExprToMsilG(cctx, fty, pkgName, protGenerics)))
                   }
                   // A lambda written for a function-typed field returns the
                   // field's declared result type (`seedLambdaLiteralFieldRetMsil`).
@@ -4824,7 +4824,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file0: in SourceFile, pkgName: in
                   val fKey = className + "/" + f.name
                   if not cctx.fieldTokens.containsKey(fKey) {
                     cctx.fieldTokens.add(fKey, fieldTok)
-                    cctx.fieldMsilTypes.add(fKey, typeExprToMsilG(cctx, f.ty, pkgName, protGenerics))
+                    cctx.fieldMsilTypes.add(fKey, unitStorageSlotType(typeExprToMsilG(cctx, f.ty, pkgName, protGenerics)))
                   }
                   if not cctx.fieldTokensByName.containsKey(pkgName + "/" + f.name) {
                     cctx.fieldTokensByName.add(pkgName + "/" + f.name, fieldTok)
@@ -4925,7 +4925,7 @@ pub func addPackageTokens(cctx: in CodegenCtx, file0: in SourceFile, pkgName: in
         }
         val innerTy = typeExprToMsilCtx(cctx, decl.underlying, pkgName)
         if not cctx.fieldMsilTypes.containsKey(className + "/value") {
-          cctx.fieldMsilTypes.add(className + "/value", innerTy)
+          cctx.fieldMsilTypes.add(className + "/value", unitStorageSlotType(innerTy))
         }
         if isUnsignedTypeExprMsil(decl.underlying) and not cctx.unsignedDistincts.containsKey(className) {
           cctx.unsignedDistincts.add(className, true)
@@ -7459,6 +7459,15 @@ func coerceTrailingToRetMsil(
       case MTypeVar(_) -> boxIfNeededMsil(cctx, insns, valTy)
       case MMethodTypeVar(_) -> boxIfNeededMsil(cctx, insns, valTy)
       case _ -> if isValueType(valTy) { boxIfNeededMsil(cctx, insns, valTy) }
+    }
+    // A `Unit` result nothing observes: a tail that materialised the unit value
+    // (a `Unit` parameter read, a `Unit` field, `()`) is dropped before the
+    // void `ret`.
+    case MVoid -> {
+      match valTy {
+        case MVoid -> ()
+        case _ -> insns.add(MPop)
+      }
     }
     // An `object`-typed value returned from a function that declares a
     // reference type is narrowed to it (`narrowObjectToDeclaredTypeMsil`):
@@ -11449,7 +11458,7 @@ func lowerCaseFieldReadMsil(
       )
       if vi >= 0 {
         if vi < typeArgs.count {
-          typeArgs[vi]
+          unitStorageSlotType(typeArgs[vi])
         } else {
           MObject
         }
@@ -11481,7 +11490,7 @@ func lowerCaseFieldReadMsil(
       insns.add(MLdfldGeneric(baseClassName = btFqn, typeArgs = typeArgs, fieldName = fieldName, fieldMsilType = fMTy))
       if vi >= 0 {
         if vi < typeArgs.count {
-          typeArgs[vi]
+          unitStorageSlotType(typeArgs[vi])
         } else {
           MObject
         }
@@ -11775,7 +11784,9 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
       }
       match mapGet(fctx.slots, name) {
         case Some(slot) -> {
-          val ty = match mapGet(fctx.types, name) { case Some(t) -> t; case None -> MObject }
+          // A slot-backed `Unit` variable (a `Unit` parameter) holds the unit
+          // value as an `object` — only slot-less virtual bindings read as `MVoid`.
+          val ty = unitStorageSlotType(match mapGet(fctx.types, name) { case Some(t) -> t; case None -> MObject })
           emitLoadVarMsil(fctx, insns, slot)
           // A lifted lambda's parameter is stored boxed (`object`); unbox/cast it
           // to its logical type on load (#1939).
@@ -11806,7 +11817,9 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           match mapGet(fctx.captureNameToIndex, name) {
             case Some(capIdx) -> {
               emitCapsFieldLoadMsil(cctx, fctx, insns, capIdx, name)
-              val capTy = match mapGet(fctx.captureNameToType, name) { case Some(t) -> t; case None -> MObject }
+              val capTy = unitStorageSlotType(
+                match mapGet(fctx.captureNameToType, name) { case Some(t) -> t; case None -> MObject }
+              )
               if nameListContains(fctx.captureCellNames, name) {
                 insns.add(MLdcI4(v = 0))
                 emitCellElemLoadMsil(cctx, insns, capTy, cellObjMsil(fctx, name))
@@ -12361,7 +12374,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                 insns.add(MLdfldGeneric(baseClassName = headFqn, typeArgs = typeArgs, fieldName = memberName, fieldMsilType = fMTy))
                 if vi >= 0 {
                   if vi < typeArgs.count {
-                    typeArgs[vi]
+                    unitStorageSlotType(typeArgs[vi])
                   } else {
                     MObject
                   }
@@ -12411,7 +12424,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                 insns.add(MLdfldGeneric(baseClassName = fqn, typeArgs = typeArgs, fieldName = memberName, fieldMsilType = fMTy))
                 if vi >= 0 {
                   if vi < typeArgs.count {
-                    typeArgs[vi]
+                    unitStorageSlotType(typeArgs[vi])
                   } else {
                     MObject
                   }
@@ -13347,7 +13360,9 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           // Propagate the cell if the outer closure marked it as a cell capture;
           // otherwise propagate the value type from captureNameToType.
           // capTypes is added unconditionally; capCells only for cell captures (#2948).
-          capTypes.add(match mapGet(fctx.captureNameToType, cn) { case Some(t) -> t; case None -> MObject })
+          capTypes.add(
+            unitStorageSlotType(match mapGet(fctx.captureNameToType, cn) { case Some(t) -> t; case None -> MObject })
+          )
           if nameListContains(fctx.captureCellNames, cn) {
             capCells.add(cn)
           }
@@ -13387,7 +13402,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                   capTypes.add(MClass(className = fctx.className))
                 }
               } else {
-                capTypes.add(match mapGet(fctx.types, cn) { case Some(t) -> t; case None -> MObject })
+                capTypes.add(unitStorageSlotType(match mapGet(fctx.types, cn) { case Some(t) -> t; case None -> MObject }))
                 if boxedParamFieldIsObjectMsil(fctx, cn) {
                   capObjFields.add(cn)
                 }
@@ -13665,7 +13680,14 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                           case None -> if erasedField { boxIfNeededMsil(cctx, insns, capLocalTy) }
                         }
                       }
-                      case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.slots")
+                      case None -> {
+                        // A virtual `Unit` binding owns no slot: its capture
+                        // field takes the unit value (`null`).
+                        match mapGet(fctx.types, capName) {
+                          case Some(MVoid) -> insns.add(MLdNull)
+                          case _ -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.slots")
+                        }
+                      }
                     }
                   }
                   emitClosureFieldStoreMsil(insns, closureRecord, capStI)
@@ -14315,6 +14337,8 @@ func lowerBinopMsil(
               // Lowercase "true"/"false", not "True"/"False" (#5552).
               emitBoolToStringMsil(cctx, fctx, insns)
             }
+            case MVoid -> emitUnitStringMsil(cctx, insns)
+            case MObject -> emitNullSafeObjToStringMsil(cctx, fctx, insns)
             case _ -> {
               // Convert non-string rhs to string: box value types, then call
               // ToString(). #6913: an unsigned-flagged box target for a bare
@@ -15547,7 +15571,7 @@ func lowerAssignExprMsil(
             }
             val concreteTy: MsilType = if vi >= 0 {
               if vi < typeArgs.count {
-                typeArgs[vi]
+                unitStorageSlotType(typeArgs[vi])
               } else {
                 MObject
               }
@@ -15593,7 +15617,7 @@ func lowerAssignExprMsil(
           if cctx.fieldSigBytes.containsKey(key) {
             val concreteTy: MsilType = if vi >= 0 {
               if vi < typeArgs.count {
-                typeArgs[vi]
+                unitStorageSlotType(typeArgs[vi])
               } else {
                 MObject
               }
@@ -18086,11 +18110,11 @@ func resolveConcreteMsilFieldTy(cctx: in CodegenCtx, castTy: in MsilType, sigLoo
   if vi >= 0 {
     match castTy {
       case MGenericInst(_, _, typeArgs) -> {
-        fieldTy = typeArgs[vi]
+        fieldTy = unitStorageSlotType(typeArgs[vi])
       }
       case MGenericInstByName(_, typeArgs) -> {
         if vi < typeArgs.count {
-          fieldTy = typeArgs[vi]
+          fieldTy = unitStorageSlotType(typeArgs[vi])
         }
       }
       case _ -> ()
@@ -18132,7 +18156,7 @@ func resolveConcreteMsilFieldTy(cctx: in CodegenCtx, castTy: in MsilType, sigLoo
 // static codegen type — #6231.
 func substituteTypeVarsMsil(ty: in MsilType, typeArgs: in List[MsilType]): MsilType {
   match ty {
-    case MTypeVar(idx) -> if idx < typeArgs.count { typeArgs[idx] } else { ty }
+    case MTypeVar(idx) -> if idx < typeArgs.count { unitStorageSlotType(typeArgs[idx]) } else { ty }
     case MArray(elem) -> MArray(elemTy = substituteTypeVarsMsil(elem, typeArgs))
     case MByRef(inner) -> MByRef(inner = substituteTypeVarsMsil(inner, typeArgs))
     case MGenericInst(trc, fqn, tas) -> MGenericInst(
@@ -18915,10 +18939,8 @@ func lowerInterpolatedMsil(
               match eTy {
                 case MString -> {
                 }
-                case MVoid -> {
-                  val emptyTok2 = ctxInternUs(cctx.lctx, "")
-                  insns.add(MLdStr(token = emptyTok2))
-                }
+                case MVoid -> emitUnitStringMsil(cctx, insns)
+                case MObject -> emitNullSafeObjToStringMsil(cctx, fctx, insns)
                 case _ -> {
                   insns.add(MCallvirt(methodToken = cctx.tokObjToString))
                 }
@@ -18953,8 +18975,24 @@ func emitMsilPanicFromStack(cctx: in CodegenCtx, insns: in List[MInsn]): Unit {
 // Lower a single call argument (positional or named).
 func lowerCallArgMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], arg: in CallArg): MsilType {
   match arg {
-    case CAPositional(e) -> lowerExprMsil(cctx, fctx, insns, e)
-    case CANamed(_, e, _) -> lowerExprMsil(cctx, fctx, insns, e)
+    case CAPositional(e) -> lowerValueExprMsil(cctx, fctx, insns, e)
+    case CANamed(_, e, _) -> lowerValueExprMsil(cctx, fctx, insns, e)
+  }
+}
+
+// Lower an expression whose result is stored or passed on: a `Unit`-typed
+// expression that produced nothing (a void call, a virtual `Unit` binding)
+// is materialised as the unit value (`null`), so the consumer's `object` slot
+// has something to take.  `func f(): Unit` keeps its `void` return; only an
+// observed result pays for the `ldnull` (docs/09 "Unit").
+func lowerValueExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], e: in Expr): MsilType {
+  val t = lowerExprMsil(cctx, fctx, insns, e)
+  match t {
+    case MVoid -> {
+      insns.add(MLdNull)
+      MObject
+    }
+    case _ -> t
   }
 }
 
@@ -20198,10 +20236,7 @@ func emitStackValueToStringMsil(
   match argTy {
     case MString -> {
     }
-    case MVoid -> {
-      val emptyTok = ctxInternUs(cctx.lctx, "")
-      insns.add(MLdStr(token = emptyTok))
-    }
+    case MVoid -> emitUnitStringMsil(cctx, insns)
     case MDouble -> {
       // Locale-invariant: Double.ToString(CultureInfo.InvariantCulture) (#2462).
       // Object.ToString() is locale-sensitive; German/French locales render "3,14".
@@ -20229,7 +20264,7 @@ func emitStackValueToStringMsil(
     // is boxed through its VAR TypeSpec (`isValueType` cannot answer for it).
     case MTypeVar(_) -> {
       boxIfNeededMsil(cctx, insns, argTy)
-      insns.add(MCallvirt(methodToken = cctx.tokObjToString))
+      emitNullSafeObjToStringMsil(cctx, fctx, insns)
     }
     case _ -> {
       if isClrDateTimeMsil(argTy) {
@@ -20251,10 +20286,34 @@ func emitStackValueToStringMsil(
         // #6913: an unsigned-flagged box target for a bare `UInt`/
         // `ULong` operand — see `spellsUnsigned`.
         boxIfNeededUnsignedMsil(cctx, insns, argTy, isUnsigned)
-        insns.add(MCallvirt(methodToken = cctx.tokObjToString))
+        match argTy {
+          case MObject -> emitNullSafeObjToStringMsil(cctx, fctx, insns)
+          case _ -> insns.add(MCallvirt(methodToken = cctx.tokObjToString))
+        }
       }
     }
   }
+}
+
+// The one `Unit` value renders as `()` on every target (D209).
+func emitUnitStringMsil(cctx: in CodegenCtx, insns: in List[MInsn]): Unit {
+  insns.add(MLdStr(token = ctxInternUs(cctx.lctx, "()")))
+}
+
+// `Object.ToString()` on the object reference on the stack.  Lyric has no
+// null, so a null in an `object` slot is the `Unit` value (D209) and renders
+// as `()` instead of faulting.
+func emitNullSafeObjToStringMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn]): Unit {
+  val nonNullL = freshLabelMsil(fctx)
+  val afterL = freshLabelMsil(fctx)
+  insns.add(MDup)
+  insns.add(MBrTrue(label = nonNullL))
+  insns.add(MPop)
+  emitUnitStringMsil(cctx, insns)
+  insns.add(MBr(label = afterL))
+  insns.add(MLabel(id = nonNullL))
+  insns.add(MCallvirt(methodToken = cctx.tokObjToString))
+  insns.add(MLabel(id = afterL))
 }
 
 func isExternValueTypeMsil(t: in MsilType): Bool {
@@ -20341,8 +20400,7 @@ func lowerBuiltinOrStaticCallMsil(
         case MChar -> insns.add(MCall(methodToken = cctx.tokWriteLineChar))
         case MString -> insns.add(MCall(methodToken = cctx.tokWriteLineStr))
         case MVoid -> {
-          val emptyTok = ctxInternUs(cctx.lctx, "")
-          insns.add(MLdStr(token = emptyTok))
+          emitUnitStringMsil(cctx, insns)
           insns.add(MCall(methodToken = cctx.tokWriteLineStr))
         }
         // Every other value (a `Double`, an extern struct such as
@@ -20370,8 +20428,7 @@ func lowerBuiltinOrStaticCallMsil(
       match argTy {
         case MString -> insns.add(MCall(methodToken = cctx.tokWriteStr))
         case MVoid -> {
-          val emptyTok = ctxInternUs(cctx.lctx, "")
-          insns.add(MLdStr(token = emptyTok))
+          emitUnitStringMsil(cctx, insns)
           insns.add(MCall(methodToken = cctx.tokWriteStr))
         }
         case MBool -> {
@@ -22921,7 +22978,7 @@ func lowerMethodCallMsil(
         // substitutes recursively, mirroring the `MGenericInstByName`
         // field-read arm above.
         return match openRetTy {
-          case MTypeVar(idx) -> if idx < typeArgs.count { typeArgs[idx] } else { MObject }
+          case MTypeVar(idx) -> if idx < typeArgs.count { unitStorageSlotType(typeArgs[idx]) } else { MObject }
           case _ -> substituteTypeVarsMsil(openRetTy, typeArgs)
         }
       }
@@ -25184,7 +25241,9 @@ func lowerStmtKindMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
     case SLocal(binding) -> {
       match binding {
         case LBVal(pat, tyOpt, init) -> {
-          val annoTy = match tyOpt { case Some(te) -> typeExprToMsilBodyCtx(cctx, fctx, te); case None -> MObject }
+          val annoTy = unitStorageSlotType(
+            match tyOpt { case Some(te) -> typeExprToMsilBodyCtx(cctx, fctx, te); case None -> MObject }
+          )
           // #6877: seed lambdaParamTypes/lambdaRetTypes from this local's own
           // `() -> T` annotation before `init` (a lambda literal) is lowered.
           registerLocalLambdaLiteralFnTypesMsil(cctx, fctx, tyOpt, init)
@@ -25258,7 +25317,9 @@ func lowerStmtKindMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           }
         }
         case LBLet(name, tyOpt, init) -> {
-          val annoTy = match tyOpt { case Some(te) -> typeExprToMsilBodyCtx(cctx, fctx, te); case None -> MObject }
+          val annoTy = unitStorageSlotType(
+            match tyOpt { case Some(te) -> typeExprToMsilBodyCtx(cctx, fctx, te); case None -> MObject }
+          )
           // #6877: see the matching LBVal comment above.
           registerLocalLambdaLiteralFnTypesMsil(cctx, fctx, tyOpt, init)
           // #5995: see the matching LBVal comment above.
@@ -25369,7 +25430,9 @@ func lowerStmtKindMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
           }
           match initOpt {
             case Some(init) -> {
-              val annoTy = match tyOpt { case Some(te) -> typeExprToMsilBodyCtx(cctx, fctx, te); case None -> MObject }
+              val annoTy = unitStorageSlotType(
+                match tyOpt { case Some(te) -> typeExprToMsilBodyCtx(cctx, fctx, te); case None -> MObject }
+              )
               // #6877: see the matching LBVal comment above.
               registerLocalLambdaLiteralFnTypesMsil(cctx, fctx, tyOpt, init)
               // Fresh hint scope from the annotation (see LBVal above).
@@ -25695,7 +25758,15 @@ func lowerLocalPatBindMsil(
 ): Unit {
   match pat.kind {
     case PBinding(name, None) -> {
-      val ty = match tyOpt { case Some(te) -> typeExprToMsilBodyCtx(cctx, fctx, te); case None -> initTy }
+      val ty = match tyOpt {
+        case Some(te) -> match typeExprToMsilBodyCtx(cctx, fctx, te) {
+          // A `Unit` annotation keeps the initialiser's storage: virtual for a
+          // void call, an `object` slot holding the unit value otherwise.
+          case MVoid -> initTy
+          case t -> t
+        }
+        case None -> initTy
+      }
       match ty {
         case MVoid -> {
           // A Unit-typed named binding (`val u = <void-producing expr>`): there
@@ -35069,25 +35140,29 @@ func lowerFuncMsilScoped(cctx: in CodegenCtx, decl: in FunctionDecl, pkgName: in
     // type propagated from the call site (#1939); the signature stays `object`.
     // A generic-function `slice[T]` / bare-`T` param tracks as the erased
     // List-backed form (#2557) so the body uses the non-generic IList path.
-    val annotTy = if hosted {
-      typeExprToMsilBodyCtx(cctx, fctx, p.ty)
-    } else if fnGenerics.count > 0 {
-      typeExprToMsilGenBody(cctx, p.ty, pkgName, fnGenerics)
-    } else {
-      typeExprToMsilCtx(cctx, p.ty, pkgName)
-    }
+    // A `Unit` parameter is stored as an `object` holding the unit value, so
+    // its logical slot type is `object` too (never `MVoid`).
+    val annotTy = unitStorageSlotType(
+      if hosted {
+        typeExprToMsilBodyCtx(cctx, fctx, p.ty)
+      } else if fnGenerics.count > 0 {
+        typeExprToMsilGenBody(cctx, p.ty, pkgName, fnGenerics)
+      } else {
+        typeExprToMsilCtx(cctx, p.ty, pkgName)
+      }
+    )
     // For lambda bodies, the slot type must reflect the logical parameter type
     // (from annotation or propagation) so castObjectToMsil can emit the correct
     // unbox instruction. The method signature separately uses MObject parameters (#1939).
     val paramTy = if isLambdaFn and annotTy == MObject and pi < lambdaPropagated.count {
-      lambdaPropagated[pi]
+      unitStorageSlotType(lambdaPropagated[pi])
     } else if isLambdaFn and annotTy != MObject {
       annotTy
     } else if isLambdaFn {
       // Un-annotated lambda parameter with no propagation: use object
       MObject
     } else if annotTy == MObject and pi < lambdaPropagated.count {
-      lambdaPropagated[pi]
+      unitStorageSlotType(lambdaPropagated[pi])
     } else {
       annotTy
     }
@@ -35442,11 +35517,13 @@ func registerParamsMsil(
     // `v: T` on `func set(self: in Box[T], v: T): T`) to the VAR-form
     // `MTypeVar` rather than the erasing `typeExprToMsilCtx` fallback
     // (`MClass("<pkg>.T")`, a bogus reference to a non-existent type) — #6442.
-    val erasedParamTy = if generics.count > 0 {
-      typeExprToMsilG(cctx, p.ty, pkgName, generics)
-    } else {
-      typeExprToMsilCtx(cctx, p.ty, pkgName)
-    }
+    val erasedParamTy = unitStorageSlotType(
+      if generics.count > 0 {
+        typeExprToMsilG(cctx, p.ty, pkgName, generics)
+      } else {
+        typeExprToMsilCtx(cctx, p.ty, pkgName)
+      }
+    )
     val paramTy = if selfTypeName.length > 0 and isSelfTypeExprMsil(p.ty) {
       MClass(className = selfTypeName)
     } else {
@@ -46507,7 +46584,7 @@ func registerRestoredDistinct(cctx: in CodegenCtx, packageName: in String, decl:
     val fSig = buildFieldSigWithCtx(innerTy, cctx.lctx)
     val memberRow = ctxAddMemberRef(cctx.lctx, typeRefRow, "value", "restored_field_" + key, fSig)
     cctx.fieldTokens.add(key, 0x0A000000 + memberRow)
-    cctx.fieldMsilTypes.add(key, innerTy)
+    cctx.fieldMsilTypes.add(key, unitStorageSlotType(innerTy))
   }
   if isUnsignedTypeExprMsil(decl.underlying) and not cctx.unsignedDistincts.containsKey(className) {
     cctx.unsignedDistincts.add(className, true)
@@ -46554,7 +46631,7 @@ func registerRestoredRecordFields(cctx: in CodegenCtx, packageName: in String, r
           val memberRow = ctxAddMemberRef(cctx.lctx, typeRefRow, f.name, sigKey, fSig)
           cctx.fieldTokens.add(key, 0x0A000000 + memberRow)
           // Store MObject for type-variable fields so pushCollExpect doesn't treat the arg as a collection element; VAR index tracked separately in fieldVarIndices for the MLdfldGeneric path.
-          cctx.fieldMsilTypes.add(key, if gIdx >= 0 { MObject } else { fty })
+          cctx.fieldMsilTypes.add(key, unitStorageSlotType(if gIdx >= 0 { MObject } else { fty }))
           if not cctx.fieldSigBytes.containsKey(key) {
             cctx.fieldSigBytes.add(key, fSig)
           }
@@ -46924,7 +47001,7 @@ func registerRestoredUnionCase(
           cctx.fieldTokens.add(nameKey, tok)
           // Store MObject for type-variable fields so pushCollExpect doesn't treat arg as a collection element; VAR index tracked in fieldVarIndices for MLdfldGeneric path.
           val hintTy = if gIdx >= 0 { MObject } else { fty }
-          cctx.fieldMsilTypes.add(nameKey, hintTy)
+          cctx.fieldMsilTypes.add(nameKey, unitStorageSlotType(hintTy))
           if not cctx.fieldSigBytes.containsKey(nameKey) {
             cctx.fieldSigBytes.add(nameKey, fSig)
           }
@@ -46935,7 +47012,7 @@ func registerRestoredUnionCase(
           val posKey = caseFqn + "/field" + toString(fi)
           if not cctx.fieldTokens.containsKey(posKey) {
             cctx.fieldTokens.add(posKey, tok)
-            cctx.fieldMsilTypes.add(posKey, hintTy)
+            cctx.fieldMsilTypes.add(posKey, unitStorageSlotType(hintTy))
           }
           if not cctx.fieldSigBytes.containsKey(posKey) {
             cctx.fieldSigBytes.add(posKey, fSig)
@@ -46955,7 +47032,7 @@ func registerRestoredUnionCase(
           val posSigKey = "restored_ucfield_" + posKey
           val posFieldRow = ctxAddMemberRef(cctx.lctx, typeRefRow, "field" + toString(fi), posSigKey, fSig)
           cctx.fieldTokens.add(posKey, 0x0A000000 + posFieldRow)
-          cctx.fieldMsilTypes.add(posKey, if gIdx >= 0 { MObject } else { fty })
+          cctx.fieldMsilTypes.add(posKey, unitStorageSlotType(if gIdx >= 0 { MObject } else { fty }))
           if not cctx.fieldSigBytes.containsKey(posKey) {
             cctx.fieldSigBytes.add(posKey, fSig)
           }
@@ -48909,7 +48986,7 @@ func registerStdlibTypeItemMembers(cctx: in CodegenCtx, packageName: in String, 
               cctx.fieldVarIndices.add(byNameKey, fieldVarIdx)
             }
             if not cctx.fieldMsilTypes.containsKey(byNameKey) {
-              cctx.fieldMsilTypes.add(byNameKey, concreteFieldMsilTy)
+              cctx.fieldMsilTypes.add(byNameKey, unitStorageSlotType(concreteFieldMsilTy))
             }
             val byPosKey = ctorKey + "/field" + toString(fi)
             if not cctx.fieldTokens.containsKey(byPosKey) {
@@ -48922,7 +48999,7 @@ func registerStdlibTypeItemMembers(cctx: in CodegenCtx, packageName: in String, 
               cctx.fieldVarIndices.add(byPosKey, fieldVarIdx)
             }
             if not cctx.fieldMsilTypes.containsKey(byPosKey) {
-              cctx.fieldMsilTypes.add(byPosKey, concreteFieldMsilTy)
+              cctx.fieldMsilTypes.add(byPosKey, unitStorageSlotType(concreteFieldMsilTy))
             }
             if not cctx.fieldDeclaredNames.containsKey(byPosKey) {
               cctx.fieldDeclaredNames.add(byPosKey, declaredName)
@@ -49136,7 +49213,7 @@ func registerStdlibRecordLikeType(
             val memberRow = ctxAddMemberRef(cctx.lctx, typeRefRow, f.name, sigKey, fSig)
             cctx.fieldTokens.add(key, 0x0A000000 + memberRow)
             if not cctx.fieldMsilTypes.containsKey(key) {
-              cctx.fieldMsilTypes.add(key, fty)
+              cctx.fieldMsilTypes.add(key, unitStorageSlotType(fty))
             }
             if ftyVarIdx >= 0 and not cctx.fieldVarIndices.containsKey(key) {
               cctx.fieldVarIndices.add(key, ftyVarIdx)

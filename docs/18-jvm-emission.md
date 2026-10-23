@@ -240,19 +240,31 @@ matches the Java-side idiom for unsigned-byte handling.
 
 ### 4.5 `Unit` and `Void`
 
-The JVM has no zero-arity tuple type.  We use:
+`Unit` is an ordinary type with exactly one value (D209), and the JVM has no
+zero-arity tuple type.  We use:
 - `Unit`-typed *return*: emit `void` (no return value pushed).
-- `Unit`-typed *parameter or generic argument*: box to
-  `java.lang.Void` (always `null`-valued, immutable, unique).
-- `Unit`-typed *local*: never emitted; the back-end pretends the
-  binding does not exist after lowering.
+- `Unit`-typed *slot that holds a value* -- a parameter (any mode, free
+  function, method, protected entry, interface method, lambda), a field
+  (record, union case, protected type), a closure capture and a generic
+  argument: `Ljava/lang/Object;` holding `null`.  `Jvm.Lowering.unitStorageType`
+  maps `JVoid` to that type, `buildDescriptor` applies it to every parameter,
+  and the record/union/protected field and lambda-parameter lowering apply it
+  where they pick a slot type.
+- An expression of type `Unit` that left nothing on the operand stack (a void
+  call, `()`) is `JVoid`; a consumer that stores or passes the result
+  (`lowerValueExpr`: call arguments and constructor arguments) pushes
+  `aconst_null`, so only an observed result pays.
+- A `Unit`-typed *local* whose initialiser is a void call has no JVM slot (the
+  back-end treats the binding as virtual, and a closure that captures it
+  passes `aconst_null`); one initialised from a materialised unit value holds
+  it in an `Object` slot.
+- A `Unit` function whose tail or `return` expression still produced the unit
+  value (`func f(): Unit = u`) drops it (`pop`) before its void return.
 
-`java.lang.Void` is the canonical JVM marker for "no value"; its only
-field is `null`, which is exactly the semantics we want.  This is
-ECMA-equivalent to using `System.ValueTuple` on .NET, with the cost
-that `Void` is a reference type and `Unit` in generic position will
-be a heap reference.  We accept this — the cost is paid only at
-generic-instantiation boundaries, not in straight-line code.
+The value is `null`, not `java.lang.Void`, because it carries no information
+and the same bytes are what the erased generic payload of `Result[Unit, E]`
+and `Task[Unit]` already held.  The cost of a `Unit` in a generic position is
+one null reference, paid only where a value is stored or passed.
 
 ### 4.6 `String` interning and equality
 

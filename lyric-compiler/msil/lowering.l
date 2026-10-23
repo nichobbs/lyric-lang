@@ -389,6 +389,17 @@ func emitStindForType(ctx: in LoweringCtx, mb: in MethodBody, ty: in MsilType): 
   }
 }
 
+// A non-return signature slot (parameter, field) of type `Unit`.  `Unit` is an
+// ordinary one-valued type (docs/09 "Unit"), so a slot that must store it is an
+// `object` holding `null`; only a *return* slot encodes `void`
+// (`ELEMENT_TYPE_VOID` is illegal anywhere else).
+pub func unitStorageSlotType(t: in MsilType): MsilType {
+  match t {
+    case MVoid -> MObject
+    case _ -> t
+  }
+}
+
 // Normalise a type when it appears as a *generic type argument*.  `Unit`
 // lowers to `MVoid`, but `ELEMENT_TYPE_VOID` (0x01) is illegal inside a
 // GENERICINST signature (ECMA-335 §II.23.2.14) — emitting it produces a
@@ -512,7 +523,7 @@ pub func bufMsilType(w: in ByteWriter, t: in MsilType): Unit {
 pub func buildFieldSig(t: in MsilType): List[Byte] {
   val w = bufNew()
   bufU1(w, 0x06)          // FIELD
-  bufMsilTypeSigSlot(w, t)
+  bufMsilTypeSigSlot(w, unitStorageSlotType(t))
   bufToList(w)
 }
 
@@ -584,7 +595,7 @@ pub func buildStaticMethodSig(params: in List[MsilType], ret: in MsilType): List
   bufMsilTypeSigSlot(w, ret)          // return type
   var i = 0
   while i < params.count {
-    bufMsilTypeSigSlot(w, params[i])
+    bufMsilTypeSigSlot(w, unitStorageSlotType(params[i]))
     i = i + 1
   }
   bufToList(w)
@@ -601,7 +612,7 @@ pub func buildInstanceMethodSig(params: in List[MsilType], ret: in MsilType): Li
   bufMsilTypeSigSlot(w, ret)          // return type
   var i = 0
   while i < params.count {
-    bufMsilTypeSigSlot(w, params[i])
+    bufMsilTypeSigSlot(w, unitStorageSlotType(params[i]))
     i = i + 1
   }
   bufToList(w)
@@ -617,7 +628,7 @@ pub func buildInstanceMethodSig(params: in List[MsilType], ret: in MsilType): Li
 pub func buildFieldSigWithCtx(t: in MsilType, ctx: in LoweringCtx): List[Byte] {
   val w = bufNew()
   bufU1(w, 0x06)          // FIELD
-  bufMsilTypeWithCtxSigSlot(w, t, ctx)
+  bufMsilTypeWithCtxSigSlot(w, unitStorageSlotType(t), ctx)
   bufToList(w)
 }
 
@@ -632,7 +643,7 @@ pub func buildStaticMethodSigWithCtx(params: in List[MsilType], ret: in MsilType
   bufMsilTypeWithCtxSigSlot(w, ret, ctx)    // return type
   var i = 0
   while i < params.count {
-    bufMsilTypeWithCtxSigSlot(w, params[i], ctx)
+    bufMsilTypeWithCtxSigSlot(w, unitStorageSlotType(params[i]), ctx)
     i = i + 1
   }
   bufToList(w)
@@ -649,7 +660,7 @@ pub func buildInstanceMethodSigWithCtx(params: in List[MsilType], ret: in MsilTy
   bufMsilTypeWithCtxSigSlot(w, ret, ctx)    // return type
   var i = 0
   while i < params.count {
-    bufMsilTypeWithCtxSigSlot(w, params[i], ctx)
+    bufMsilTypeWithCtxSigSlot(w, unitStorageSlotType(params[i]), ctx)
     i = i + 1
   }
   bufToList(w)

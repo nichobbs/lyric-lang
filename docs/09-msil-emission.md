@@ -155,8 +155,25 @@ The Lyric primitives map directly to .NET BCL primitives:
 | `Double` | `System.Double`      |                                      |
 | `Char`   | `System.Text.Rune`   | Unicode scalar value, not UTF-16 surrogate |
 | `String` | `System.String`      | immutable, UTF-16 in memory; UTF-8 only at I/O boundaries |
-| `Unit`   | `System.ValueTuple`  | the zero-arity tuple `()`            |
+| `Unit`   | `void` (return) / `object` holding `null` (every other slot) | see "`Unit`" below (D209) |
 | `Never`  | (no CLR type)        | uninhabited; functions returning `Never` are emitted with return type `void` and a final `throw`/`unreachable` |
+
+**`Unit` (D209).** `Unit` is an ordinary one-valued type, so a slot that must
+hold it is not `void`. A *return* slot encodes `void` (`ELEMENT_TYPE_VOID`); a
+parameter, a field (record, union case, protected type), a closure-class
+capture field, a lambda parameter and a generic type argument all encode
+`object` and carry `null` as the unit value. The method-signature, field and
+local builders in `msil/lowering.l` apply this through `unitStorageSlotType`,
+and `codegen.l` applies it where it registers a parameter's, field's or
+capture's logical type. The lowering of an expression of type `Unit` that left
+nothing on the stack (a void call, `()` in statement position, a virtual
+binding) is unchanged, so `func f(): Unit` keeps its void calling convention;
+a consumer that stores or passes the result (`lowerValueExprMsil`: a call or
+constructor argument) follows the void call with `ldnull`. A `Unit` binding
+whose initialiser is a void call has no local slot at all (reads of it are
+`MVoid`, i.e. nothing), and a closure that captures one stores `ldnull` in the
+capture field. A `Unit`-typed tail of a `Unit` function (`func f(): Unit = u`)
+is dropped (`pop`) before the void `ret`.
 
 The self-hosted emitter stores `UInt` and `ULong` in the same `int32` and
 `int64` slots, fields and signatures as `Int` and `Long` (#6756).  Where a

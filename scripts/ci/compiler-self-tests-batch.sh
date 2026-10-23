@@ -198,6 +198,7 @@ for t in \
   lyric-compiler/lyric/task_shadow_self_test.l \
   lyric-compiler/lyric/task_kernel_record_self_test.l \
   lyric-compiler/lyric/byvalue_record_self_test.l \
+  lyric-compiler/lyric/unit_value_self_test.l \
   lyric-compiler/lyric/inline_union_self_test.l \
   lyric-compiler/lyric/byte_stringify_self_test.l \
   lyric-compiler/lyric/format_builtin_self_test.l \

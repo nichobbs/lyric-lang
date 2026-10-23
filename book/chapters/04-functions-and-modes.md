@@ -38,7 +38,7 @@ func logMessage(msg: String) {
 }
 ```
 
-`Unit` is not `void`. It is a real type with exactly one value, `()`. You can store it, pass it around, and return it explicitly with `return ()`. This matters for generic code where a type parameter might be instantiated as `Unit`.
+`Unit` is not `void`. It is a real type with exactly one value, `()`. You can store it, pass it around, and return it explicitly with `return ()`. This matters for generic code where a type parameter might be instantiated as `Unit`: `Result[Unit, E]`, `Option[Unit]`, `List[Unit]`, a record with a `Unit` field, a parameter `u: in Unit` and a function value of type `(Unit) -> Unit` all work, identically on .NET, the JVM and native. The value prints as `()`.
 
 ## Parameter modes: `in`, `out`, `inout`
 
