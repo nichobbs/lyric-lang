@@ -127,9 +127,16 @@ int32_t lyric_sock_close(int32_t fd) {
 }
 
 /* `how` uses the POSIX values (0 read, 1 write, 2 both), which equal
- * SD_RECEIVE, SD_SEND and SD_BOTH. */
+ * SD_RECEIVE, SD_SEND and SD_BOTH.  The seam's callers use shutdown to wake
+ * another thread blocked in a read or write on the socket, which POSIX
+ * shutdown does and Winsock's does not: a blocking call on an overlapped
+ * socket waits on its own I/O, so the shutdown also cancels that I/O, and the
+ * blocked call fails with WSA_OPERATION_ABORTED. */
 int32_t lyric_sock_shutdown(int32_t fd, int32_t how) {
-    return shutdown(to_socket(fd), how) == 0 ? 0 : -1;
+    SOCKET s = to_socket(fd);
+    int rc = shutdown(s, how);
+    CancelIoEx((HANDLE)s, NULL);
+    return rc == 0 ? 0 : -1;
 }
 
 LyricString* lyric_sock_peer_string(int32_t fd) {

@@ -114,6 +114,14 @@ func compileAndRunBundle(sources: in List[String]): RunOutcome {
 // ─────────────────────────────────────────────────────────────────────────────
 // Cases.
 // ─────────────────────────────────────────────────────────────────────────────
+test "nativeExitStatus keeps the POSIX low byte and leaves negative codes" {
+  assertEqualInt(nativeExitStatus(0), 0, "0")
+  assertEqualInt(nativeExitStatus(255), 255, "255")
+  assertEqualInt(nativeExitStatus(256), 0, "256")
+  assertEqualInt(nativeExitStatus(11011), 3, "11011")
+  assertEqualInt(nativeExitStatus(-1), -1, "a negative code is kept")
+}
+
 test "exit code from main" {
   val r = compileAndRun("package T\nfunc main(): Int {\n  42\n}\n")
   assertEqualInt(r.exitCode, 42, "main(): Int exit code")
