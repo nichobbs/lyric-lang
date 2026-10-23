@@ -718,6 +718,12 @@ int32_t lyric_env_set(const char* name, const char* value);
 /* 1 when this runtime was built for Windows, else 0 (compile-time). */
 int32_t lyric_env_is_windows(void);
 
+/* Compile-time platform of this runtime, for Std.Plugin payload selection:
+ * os 1 Linux, 2 macOS, 3 Windows, 0 other; arch 1 x86_64, 2 aarch64,
+ * 0 other (wasm32 included). */
+int32_t lyric_env_os_kind(void);
+int32_t lyric_env_arch_kind(void);
+
 /* getcwd(3) wrapper.  Returns a fresh rc=1 LyricString, or NULL on
  * failure. */
 LyricString* lyric_env_cwd(void);
