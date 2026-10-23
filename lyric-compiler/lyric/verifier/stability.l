@@ -105,6 +105,9 @@ pub record CallRef {
   pub name: String
   pub span: Span
   pub argCount: Int
+  // The call's arguments, which pair with a callee's parameters by name and
+  // position (`Lyric.Parser.callDefaultsFilled`).
+  pub args: List[CallArg]
   // ─────────────────────────────────────────────────────────────────────────────
   // §4. Expression walker — collect (callee-name, span) from call sites.
   // ─────────────────────────────────────────────────────────────────────────────
@@ -123,7 +126,7 @@ func visitExpr(e: in Expr, output: in List[CallRef]): Unit {
       match fn.kind {
         case EPath(path) -> {
           if path.segments.count == 1 {
-            output.add(CallRef(name = path.segments[0], span = e.span, argCount = args.count))
+            output.add(CallRef(name = path.segments[0], span = e.span, argCount = args.count, args = args))
           }
         }
         case _ -> {
@@ -373,6 +376,8 @@ record StabilityEntry {
   name: String
   paramCount: Int
   requiredCount: Int
+  paramNames: List[String]
+  hasDefault: List[Bool]
   experimental: Bool
 }
 
@@ -381,18 +386,31 @@ func checkCallGraph(file: in SourceFile, diag: in List[Diagnostic]): Unit {
   // overloads of different arity, or, in a file no type check has rejected
   // yet, a duplicate (#8341).
   val entries: List[StabilityEntry] = newList()
+  val noNames: List[String] = newList()
+  val noFlags: List[Bool] = newList()
   for item in file.items {
     val experimental = stabilityIsExperimental(stabilityOfItem(item))
     match item.kind {
       case IFunc(fn) -> {
         var required = 0
+        val names: List[String] = newList()
+        val defaults: List[Bool] = newList()
         for p in fn.params {
+          names.add(p.name)
+          defaults.add(isSome(p.dflt))
           if not isSome(p.dflt) {
             required = required + 1
           }
         }
         entries.add(
-          StabilityEntry(name = fn.name, paramCount = fn.params.count, requiredCount = required, experimental = experimental)
+          StabilityEntry(
+            name = fn.name,
+            paramCount = fn.params.count,
+            requiredCount = required,
+            paramNames = names,
+            hasDefault = defaults,
+            experimental = experimental
+          )
         )
       }
       case _ -> match itemKindName(item.kind) {
@@ -401,6 +419,8 @@ func checkCallGraph(file: in SourceFile, diag: in List[Diagnostic]): Unit {
             name = name,
             paramCount = -1,
             requiredCount = 0,
+            paramNames = noNames,
+            hasDefault = noFlags,
             experimental = experimental
           )
         )
@@ -441,27 +461,16 @@ func checkCallGraph(file: in SourceFile, diag: in List[Diagnostic]): Unit {
 }
 
 // Whether a declaration the call `cr` may reach is `@experimental`: among
-// the functions of its name, those taking exactly its arguments, else every
-// one that fills the rest from defaults (which of those the type checker
-// binds is not a rule the language states, so each counts); and any other
-// item of its name.  Declarations in the package's other files are not
-// seen here.
+// the functions of its name, every one the call fits (`callDefaultsFilled`),
+// and any other item of its name.  The type checker binds the call to one of
+// the functions it fits by the rule of D208 (a call supplying every
+// parameter first, then the fewest defaults filled), but only after the
+// argument types have ruled some out, which this check cannot see, so each
+// counts.  Declarations in the package's other files are not seen here.
 func callReachesExperimental(entries: in List[StabilityEntry], cr: in CallRef): Bool {
-  var anyExact = false
-  for e in entries {
-    if e.name == cr.name and e.paramCount == cr.argCount {
-      anyExact = true
-    }
-  }
   for e in entries {
     if e.name == cr.name {
-      val reached = if e.paramCount < 0 {
-        true
-      } else if anyExact {
-        e.paramCount == cr.argCount
-      } else {
-        e.requiredCount <= cr.argCount and cr.argCount <= e.paramCount
-      }
+      val reached = e.paramCount < 0 or callDefaultsFilled(e.paramNames, e.hasDefault, 0, cr.args) >= 0
       if reached and e.experimental {
         return true
       }

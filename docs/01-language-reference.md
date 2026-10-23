@@ -572,6 +572,8 @@ reported at type-check time — the mistake is caught early with a clear
 message rather than degrading to an unresolved-callee failure at code
 generation (D-progress-875).
 
+**Covariant type arguments (D209, #7774).** A value of a generic type whose type argument is a concrete type that implements an interface is accepted wherever the same generic type over that interface is declared: `Result[English, String]` for a `Result[Greeter, String]`, `List[Result[English, String]]` for a `List[Result[Greeter, String]]`, `Option[Tree[English]]` for an `Option[Tree[Greeter]]`. The places are a `return`, a function's tail expression, an argument (a parameter, a constructor or union-case field, a call through a function value), an annotated `val`/`var`/`let` binding, and an assignment. The value is *converted* into the declared instantiation where it flows in (`Result[English, E]` and `Result[Greeter, E]` are different types at run time on dotnet and native, so the caller's `match` would otherwise find none of the declared type's cases; the JVM, which erases type arguments, shares the value and converts nothing). The conversion rebuilds the value case by case and field by field, and a nested generic argument is converted the same way, so every generic type on the path must be one that can be rebuilt: a union (`Option`, `Result`, your own), a record with no `var` field, or the stdlib `List`. A `List` is copied, so a write through one is not seen through the other; a `Map`, a `Set`, a record with a `var` field, an opaque type or a protected type is invariant in its type arguments, and a value of one is not accepted where another instantiation is declared (**T0043**, **T0060**, **T0065**, **T0070**, **T0104** at the place). A value that already has the declared type is not converted. A flow inside a generic function between types that mention its type parameters is accepted but not converted (the instantiation is not known until the function is specialised).
+
 Value generics:
 
 ```
@@ -1401,12 +1403,10 @@ limit of this compiler's method dispatch, not of .NET or the JVM: its MSIL,
 JVM and native backends identify a method by its type, name and parameter
 count. When a type
 has several methods of one name, a method call binds to the
-overload the type checker selects: among the overloads whose parameters
-accept the arguments, one taking exactly the arguments written is preferred
-over one that fills omitted arguments from defaults, as for a free function;
-otherwise the first declared applies. Every backend dispatches the call to
+overload the type checker selects, by the rule below, which a free function
+of several overloads follows too.  Every backend dispatches the call to
 that overload, so with `m(x: String)` and `m(x: Int, y: Int = 2)`, `o.m(1)`
-calls the second on every target (#7828). The candidates include D037
+calls the second on every target (#7828, #8077). The candidates include D037
 dot-named functions of the receiver's type, and the backends dispatch to the
 declaration selected, not only to its parameter count: with a record method
 `m(self, x: Int, y: Int = 2)` and `func O.m(o: in O, x: Int)`, `o.m(1)` calls
@@ -1414,6 +1414,43 @@ the dot-named function and `o.m(1, 5)` the record method (#8098). The same
 holds inside a generic function of another package (in the same build or a
 restored dependency) once it is specialised for a call: its method calls
 bind as the type checker resolved them in the package that declares it.
+
+**Which overload a call binds (D208, #8355).**  A call that no declaration of
+the name takes exactly, because it leaves a parameter to its default, used to
+bind whichever overload was declared last (and dotnet emitted invalid IL for
+it).  It binds by these rules, in order, for free functions (bare and
+package-qualified), record, `impl` and interface methods, dot-named functions
+called as methods or through their type, and generic overloads:
+
+1. A declaration is a candidate when the call fits it (every parameter the
+   call leaves out has a default and each named argument names one of its
+   parameters) and the arguments' types satisfy its parameters.
+2. A candidate whose whole parameter list the call supplies, with no default
+   used, wins.
+3. A named argument narrows the candidates: a name only one of them declares
+   selects it.
+4. Among the rest, the candidate that fills the fewest defaults wins.
+5. If two or more still tie, the call is **T0200**, an ambiguity error: name
+   an argument only one of them declares, or supply the parameters of the one
+   meant.
+
+Between candidates that fill the same number of defaults a non-generic
+declaration is preferred to a generic one, and a call that supplies every
+parameter of several declarations keeps the first in declaration order (the
+stdlib's `toUpper(Char)` and `toUpper(String)`).  A method of the type answers
+a method call before a dot-named function of the same shape does (D181,
+#8098), so that pair is not a tie.  Two candidates fill the same number of
+defaults only when they declare the same number of parameters, which the
+language already rejects within a package (**T0001**, **T0162**) and across
+imports (**T0123**), so T0200 is reported for the cases those leave, such as
+the same-named methods of two `impl` blocks of one type (also **T0139**).  So with
+`func f(x: Int, y: Int = 1)` and `func f(x: Int, y: Int = 10, z: Int = 100)`
+the call `f(a)` is the first whichever is declared first, and `f(a, 2, 3)` is
+the second.  A bare name two imported packages both declare is **T0123**,
+before any of this (qualify the call).  `lyric prove`, the mode check and the
+stability check see no argument types: they take every declaration the call
+fits as reachable (V0002, S0001), and the verifier resolves a call only when
+exactly one declaration fits it and fails closed otherwise.
 
 A dot-named function may be generic, over type parameters and over value
 parameters (§2.11): `func Box.get[T](self: in Box[T]): T` and

@@ -20,6 +20,10 @@ pub record CalleeInfo {
   // least `paramCount` less the parameters with a default.
   paramCount: Int
   requiredCount: Int
+  // The parameters' names and which have a default, for pairing a call's
+  // arguments with them (`Lyric.Parser.callDefaultsFilled`).
+  paramNames: List[String]
+  hasDefault: List[Bool]
   // Simplified cross-package import metadata (replaces Imports.ImportedPackage
   // for the self-hosted pipeline; only the name and level string are needed).
 }
@@ -48,7 +52,11 @@ pub func calleeTableOfFile(fileLevel: in VerificationLevel, file: in SourceFile)
     match file.items[i].kind {
       case IFunc(fn) -> {
         var required = 0
+        val names: List[String] = newList()
+        val defaults: List[Bool] = newList()
         for p in fn.params {
+          names.add(p.name)
+          defaults.add(isSome(p.dflt))
           if not isSome(p.dflt) {
             required = required + 1
           }
@@ -58,7 +66,9 @@ pub func calleeTableOfFile(fileLevel: in VerificationLevel, file: in SourceFile)
           level = levelOfFunction(fileLevel, fn),
           isPure = isFuncPure(fn),
           paramCount = fn.params.count,
-          requiredCount = required
+          requiredCount = required,
+          paramNames = names,
+          hasDefault = defaults
         )
         match mapGet(m, fn.name) {
           case Some(infos) -> infos.add(info)
@@ -77,33 +87,26 @@ pub func calleeTableOfFile(fileLevel: in VerificationLevel, file: in SourceFile)
   m
 }
 
-/// The declarations of `infos` (one name's, in this file) a call passing
-/// `argCount` arguments may reach: those taking exactly `argCount`, else
-/// every one that fills the rest from defaults.  Which of several
-/// default-filling declarations the type checker binds is not a rule the
-/// language states, so each is taken as reachable (the conservative
-/// choice).  Two of the same arity — a duplicate the type checker rejects
-/// (T0001) — are both returned; none when no declaration takes `argCount`.
-/// A declaration in another file of the package is not seen here: the
-/// build's mode check, which `lyric prove` runs first, checks the merged
+/// The declarations of `infos` (one name's, in this file) a call writing
+/// `args` may reach: every one the call fits (`callDefaultsFilled`: each
+/// parameter it leaves out has a default, each named argument names one).
+/// The type checker binds the call to one of them by the rule of D208 (a
+/// call supplying every parameter first, then the fewest defaults filled),
+/// but only after the argument types have ruled declarations out, which this
+/// check cannot see; it takes each declaration the call fits as reachable
+/// (the conservative choice).  Two of the same arity (a duplicate the type
+/// checker rejects, T0001) are both returned; none when no declaration takes
+/// the call.  A declaration in another file of the package is not seen here:
+/// the build's mode check, which `lyric prove` runs first, checks the merged
 /// package.
-pub func calleeCandidates(infos: in List[CalleeInfo], argCount: in Int): List[CalleeInfo] {
-  val exact: List[CalleeInfo] = newList()
+pub func calleeCandidates(infos: in List[CalleeInfo], args: in List[CallArg]): List[CalleeInfo] {
+  val fitting: List[CalleeInfo] = newList()
   for info in infos {
-    if info.paramCount == argCount {
-      exact.add(info)
+    if callDefaultsFilled(info.paramNames, info.hasDefault, 0, args) >= 0 {
+      fitting.add(info)
     }
   }
-  if exact.count > 0 {
-    return exact
-  }
-  val viaDefaults: List[CalleeInfo] = newList()
-  for info in infos {
-    if info.requiredCount <= argCount and argCount <= info.paramCount {
-      viaDefaults.add(info)
-    }
-  }
-  viaDefaults
+  fitting
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -120,7 +123,7 @@ record WalkCtx {
   // Check a single resolved callee against the V0002 call-graph rule.
 }
 
-func checkCallee(ctx: in WalkCtx, calleeName: in String, argCount: in Int, span: in Span): Unit {
+func checkCallee(ctx: in WalkCtx, calleeName: in String, args: in List[CallArg], span: in Span): Unit {
   match mapGet(ctx.callees, calleeName) {
     case None -> {
     }
@@ -130,7 +133,7 @@ func checkCallee(ctx: in WalkCtx, calleeName: in String, argCount: in Int, span:
       // declaration takes is the type checker's to report.
       var admissible = true
       var shown = VLRuntimeChecked
-      for info in calleeCandidates(infos, argCount) {
+      for info in calleeCandidates(infos, args) {
         if not (vlDominates(info.level, ctx.fnLevel) or info.isPure) and admissible {
           admissible = false
           shown = info.level
@@ -225,7 +228,7 @@ func walkExprCalls(ctx: in WalkCtx, e: in Expr): Unit {
       match fn.kind {
         case EPath(path) -> {
           if path.segments.count == 1 {
-            checkCallee(ctx, path.segments[0], args.count, e.span)
+            checkCallee(ctx, path.segments[0], args, e.span)
           }
         }
         case EMember(recv, _) -> {

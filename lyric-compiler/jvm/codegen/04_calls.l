@@ -4275,7 +4275,15 @@ func lowerVirtualCallWithHolders(
 pub func resolveGeneralFuncSig(
   ctx: in FuncCtx, funcName: in String, path: in ModulePath, argc: in Int
 ): Option[JvmFuncSig] {
-  val argcSuffix = "@" + toString(argc)
+  // A call that leaves out defaulted arguments binds the overload the type
+  // checker resolved it to (its parameter count, the `~arity~` seed entry
+  // under the callee's site key), not the one whose count equals the
+  // arguments written (#8355).
+  val argcText = match mapGet(ctx.externTypes, "~arity~" + methodCallPathKey(path)) {
+    case Some(n) -> if n.startsWith("-") { toString(argc) } else { n }
+    case None -> toString(argc)
+  }
+  val argcSuffix = "@" + argcText
   if path.segments.count > 1 {
     val ownerSegs: List[String] = newList()
     var si = 0
@@ -5165,6 +5173,51 @@ func lowerDotNamedStaticCall(
   sig.ret
 }
 
+// The parameter count of the declaration a call at `siteKey` binds: the one
+// the type checker resolved it to (the `~arity~` seed entry), else the
+// `written` argument count.  A dot-named function resolved as such (a
+// negative entry) is not a count.
+func resolvedArityJvm(ctx: in FuncCtx, siteKey: in String, written: in Int): Int {
+  match mapGet(ctx.externTypes, "~arity~" + siteKey) {
+    case Some(text) -> {
+      if text.startsWith("-") {
+        return written
+      }
+      var n = 0
+      while n < 256 {
+        if toString(n) == text {
+          return n
+        }
+        n = n + 1
+      }
+      written
+    }
+    case None -> written
+  }
+}
+
+// The receiver-less parameter count of the dot-named function a method-style
+// call at `siteKey` resolved to (`Lyric.Parser.methodCallTargetCode` records a
+// dot-named callee as `-1 - count`), else the `written` argument count.
+func dotNamedArityJvm(ctx: in FuncCtx, siteKey: in String, written: in Int): Int {
+  match mapGet(ctx.externTypes, "~arity~" + siteKey) {
+    case Some(text) -> {
+      if not text.startsWith("-") {
+        return written
+      }
+      var n = 1
+      while n < 258 {
+        if "-" + toString(n) == text {
+          return n - 1
+        }
+        n = n + 1
+      }
+      written
+    }
+    case None -> written
+  }
+}
+
 func lowerMethodCall(
   ctx: in FuncCtx,
   insns: in List[LInsn],
@@ -5177,7 +5230,7 @@ func lowerMethodCall(
   // `Lyric.Docker.ContainerId.tryFrom(s)`) resolves through the declaring
   // package's own dot-named registration, before anything below can
   // evaluate the package prefix as a value (#7478).
-  match qualifiedDotNamedSigJvm(ctx, recv, memberName, args.count) {
+  match qualifiedDotNamedSigJvm(ctx, recv, memberName, resolvedArityJvm(ctx, siteKey, args.count)) {
     // `qsig.jvmMethodName` is the exact classfile name set at REGISTRATION
     // time (`JvmFuncSig.jvmMethodName`'s own doc comment) — `TypeName$member`
     // for a dot-named function sharing its package's host class (#7501), or
@@ -6141,7 +6194,15 @@ func lowerMethodCall(
       // §4.2.2 forbids dots in unqualified names, and the bare member name
       // alone would collide with another type's same-named derived method on
       // the same package host class) — never recomputed or guessed here.
-      match mapGet(ctx.funcSigs, cls + "." + memberName) {
+      // The dot-named function the type checker resolved the call to, by its
+      // parameter count (the receiver counted), before the first registered
+      // of its name (#8355).
+      val dotArityKey = cls + "." + memberName + "@" + toString(dotNamedArityJvm(ctx, siteKey, args.count) + 1)
+      val dotSigOpt = match mapGet(ctx.funcSigs, dotArityKey) {
+        case Some(sig) -> Some(value = sig)
+        case None -> mapGet(ctx.funcSigs, cls + "." + memberName)
+      }
+      match dotSigOpt {
         case Some(sig) -> {
           val dargs = jvmArgsWithDefaults(sig, 1, args)
           var ai = 0

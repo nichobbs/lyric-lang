@@ -1218,31 +1218,90 @@ test "overloads and a duplicate declaration are mode checked without throwing (#
   assertTrue(not hasDiagCode(dup, "V0002"), "duplicates: no V0002")
 }
 
-test "a call reaches the overload taking its argument count, else every one filling defaults (#8341)" {
+func calleeInfoOf(name: in String, level: in VerificationLevel, params: in List[String], defaulted: in Int): CalleeInfo {
+  // The last `defaulted` parameters have a default.
+  val flags: List[Bool] = newList()
+  var i = 0
+  while i < params.count {
+    flags.add(i >= params.count - defaulted)
+    i = i + 1
+  }
+  CalleeInfo(
+    name = name,
+    level = level,
+    isPure = false,
+    paramCount = params.count,
+    requiredCount = params.count - defaulted,
+    paramNames = params,
+    hasDefault = flags
+  )
+}
+
+func namesOf(a: in String, b: in String, c: in String): List[String] {
+  val ns: List[String] = newList()
+  if a != "" {
+    ns.add(a)
+  }
+  if b != "" {
+    ns.add(b)
+  }
+  if c != "" {
+    ns.add(c)
+  }
+  ns
+}
+
+func positionalArgs(n: in Int): List[CallArg] {
+  val args: List[CallArg] = newList()
+  var i = 0
+  while i < n {
+    args.add(CAPositional(expr = Expr(kind = ELiteral(lit = LBool(value = true)), span = noSourceSpan())))
+    i = i + 1
+  }
+  args
+}
+
+test "a call reaches every overload it fits, conservatively (#8341, #8355)" {
   val infos: List[CalleeInfo] = newList()
-  infos.add(CalleeInfo(name = "f", level = VLRuntimeChecked, isPure = false, paramCount = 1, requiredCount = 1))
-  infos.add(CalleeInfo(name = "f", level = VLProofRequired, isPure = false, paramCount = 3, requiredCount = 1))
-  infos.add(CalleeInfo(name = "f", level = VLAxiom, isPure = false, paramCount = 2, requiredCount = 2))
-  val one = calleeCandidates(infos, 1)
-  assertEqualInt(one.count, 1, "one argument: the exact overload")
-  assertEqualInt(one[0].paramCount, 1, "one argument: f/1")
-  val two = calleeCandidates(infos, 2)
-  assertEqualInt(two.count, 1, "two arguments: the exact overload, not the defaulted one")
-  assertEqualInt(two[0].paramCount, 2, "two arguments: f/2")
-  val three = calleeCandidates(infos, 3)
+  infos.add(calleeInfoOf("f", VLRuntimeChecked, namesOf("a", "", ""), 0))
+  infos.add(calleeInfoOf("f", VLProofRequired, namesOf("a", "b", "c"), 2))
+  infos.add(calleeInfoOf("f", VLAxiom, namesOf("a", "b", ""), 0))
+  // The type checker binds the call to the overload it supplies in full, or
+  // else the one filling the fewest defaults (D208), after the argument
+  // types have ruled some out; the check sees no types, so each declaration
+  // the call fits is reachable.
+  val one = calleeCandidates(infos, positionalArgs(1))
+  assertEqualInt(one.count, 2, "one argument: f/1, and f/3 filling two defaults")
+  val two = calleeCandidates(infos, positionalArgs(2))
+  assertEqualInt(two.count, 2, "two arguments: f/2, and f/3 filling one default")
+  val three = calleeCandidates(infos, positionalArgs(3))
+  assertEqualInt(three.count, 1, "three arguments: f/3")
   assertEqualInt(three[0].paramCount, 3, "three arguments: f/3")
-  assertEqualInt(calleeCandidates(infos, 4).count, 0, "four arguments: none")
+  assertEqualInt(calleeCandidates(infos, positionalArgs(4)).count, 0, "four arguments: none")
   val dup: List[CalleeInfo] = newList()
-  dup.add(CalleeInfo(name = "g", level = VLProofRequired, isPure = false, paramCount = 1, requiredCount = 1))
-  dup.add(CalleeInfo(name = "g", level = VLRuntimeChecked, isPure = false, paramCount = 1, requiredCount = 1))
-  assertEqualInt(calleeCandidates(dup, 1).count, 2, "a duplicate: both declarations")
+  dup.add(calleeInfoOf("g", VLProofRequired, namesOf("a", "", ""), 0))
+  dup.add(calleeInfoOf("g", VLRuntimeChecked, namesOf("a", "", ""), 0))
+  assertEqualInt(calleeCandidates(dup, positionalArgs(1)).count, 2, "a duplicate: both declarations")
   val dflt: List[CalleeInfo] = newList()
-  dflt.add(CalleeInfo(name = "h", level = VLProofRequired, isPure = false, paramCount = 2, requiredCount = 1))
-  dflt.add(CalleeInfo(name = "h", level = VLRuntimeChecked, isPure = false, paramCount = 3, requiredCount = 1))
-  // Which default-filling declaration the call binds is not a stated
-  // rule: every one is reachable.
-  val viaDefaults = calleeCandidates(dflt, 1)
-  assertEqualInt(viaDefaults.count, 2, "defaults: every declaration that takes the call")
+  dflt.add(calleeInfoOf("h", VLProofRequired, namesOf("a", "b", ""), 1))
+  dflt.add(calleeInfoOf("h", VLRuntimeChecked, namesOf("a", "b", "c"), 2))
+  assertEqualInt(calleeCandidates(dflt, positionalArgs(1)).count, 2, "defaults: every declaration that takes the call")
+  // A named argument that only one declaration has leaves only it.
+  val named: List[CalleeInfo] = newList()
+  named.add(calleeInfoOf("n", VLProofRequired, namesOf("a", "b", ""), 1))
+  named.add(calleeInfoOf("n", VLRuntimeChecked, namesOf("a", "c", ""), 1))
+  val withC: List[CallArg] = newList()
+  withC.add(CAPositional(expr = Expr(kind = ELiteral(lit = LBool(value = true)), span = noSourceSpan())))
+  withC.add(
+    CANamed(
+      name = "c",
+      value = Expr(kind = ELiteral(lit = LBool(value = true)), span = noSourceSpan()),
+      span = noSourceSpan()
+    )
+  )
+  val viaName = calleeCandidates(named, withC)
+  assertEqualInt(viaName.count, 1, "a name only one overload has selects it")
+  assertTrue(viaName[0].level == VLRuntimeChecked, "the overload naming c")
 }
 
 // N0101 — a `foreign record` is part of the FFI boundary, so a user file may not declare one.

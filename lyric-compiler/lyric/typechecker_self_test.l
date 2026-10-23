@@ -475,18 +475,29 @@ test "expected type: no closed expectation keeps the bottom-up join (#7752)" {
   assertTrue(hasDiagCode(parseCheck(unann), "T0067"), "unannotated val: no expectation, En vs Fr T0067")
 }
 
-test "expected type: adoption never widens a value or a nested generic argument (#7752)" {
+test "expected type: adoption never widens a value or a nested generic argument (#7752, #7774)" {
   // A `Res[En, String]` VALUE is a different runtime instantiation from
-  // `Res[Greeter, String]` (CLR generics are invariant) — only a
-  // construction is typed at the expected instantiation.
+  // `Res[Greeter, String]` on a target with reified generics, so it is not
+  // adopted as one: it is converted where it flows in (D209).  The flow is
+  // recorded for the conversion, and nothing is reported.
   val value = expectedBranchPrelude() +
     "func f(a: in Res[En, String]): Int {\n  val r: Res[Greeter, String] = a\n  useRes(r)\n}\n"
-  assertTrue(hasDiagCode(parseCheck(value), "T0060"), "value of Res[En, String] still not a Res[Greeter, String]")
+  val valueCr = parseCheck(value)
+  assertEqualInt(countDiagCode(valueCr, "T0060"), 0, "a covariant value is accepted: " + diagCodesOf(valueCr))
+  assertEqualInt(valueCr.symbols.covariantSites.count, 1, "and recorded for conversion")
+  assertEqualInt(valueCr.symbols.covariantHelpers.count, 1, "with one conversion function")
   // A generic type argument (`Box[Greeter]`) is built from the argument's own
-  // instantiation by codegen, so it is not adopted either.
+  // instantiation by codegen, so a construction is not adopted either, and
+  // one whose other type argument nothing fixes cannot be converted.
   val nested = expectedBranchPrelude() +
     "func f(): Int {\n  val r: Res[Box[Greeter], String] = Ok2(value = Box(v = En(n = 1)))\n  0\n}\n"
   assertTrue(hasDiagCode(parseCheck(nested), "T0060"), "Ok2(Box[En]) is not a Res[Box[Greeter], String]")
+  // A value of a closed nested type converts, the nested `Box` too.
+  val closed = expectedBranchPrelude() +
+    "func f(a: in Res[Box[En], String]): Int {\n  val r: Res[Box[Greeter], String] = a\n  0\n}\n"
+  val closedCr = parseCheck(closed)
+  assertEqualInt(countDiagCode(closedCr, "T0060"), 0, "a nested covariant value is accepted: " + diagCodesOf(closedCr))
+  assertEqualInt(closedCr.symbols.covariantHelpers.count, 2, "one conversion function for Res and one for Box")
 }
 
 test "union case with an unknown named field is rejected (#7752)" {

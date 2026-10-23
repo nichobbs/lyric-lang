@@ -8395,6 +8395,26 @@ func registerFileFunctions(
     bumpCount(byName, sf.name)
     bumpCount(byArity, overloadCalleeKey(sf.name, sf.paramCount))
   }
+  // Any declaration of the file stands for the siblings' in the callee table,
+  // whose parameters are not known, only their count.
+  var anyDecl: Option[FunctionDecl] = None
+  for item in file.items {
+    match item.kind {
+      case IFunc(fn) -> match anyDecl { case None -> { anyDecl = Some(value = fn) }; case Some(_) -> () }
+      case _ -> ()
+    }
+  }
+  match anyDecl {
+    case Some(stand) -> {
+      for sf in siblingFunctions {
+        if countOf(byName, sf.name) > 1 {
+          addCalleeIfAbsent(callees, siblingOverloadKey(sf.name, sf.paramCount), stand)
+          addCalleeIfAbsent(callees, siblingOverloadKey(packagePrefix + sf.name, sf.paramCount), stand)
+        }
+      }
+    }
+    case None -> ()
+  }
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
@@ -8406,6 +8426,8 @@ func registerFileFunctions(
           addCalleeIfAbsent(callees, overloadedMarkerKey(packagePrefix + fn.name), fn)
         }
         if countOf(byArity, arityKey) > 1 {
+          addCalleeIfAbsent(callees, siblingOverloadKey(fn.name, fn.params.count), fn)
+          addCalleeIfAbsent(callees, siblingOverloadKey(packagePrefix + fn.name, fn.params.count), fn)
           unproved.add(i)
           diags.add(
             untranslatableDiag(
@@ -8417,6 +8439,8 @@ func registerFileFunctions(
         } else if countOf(byName, fn.name) > 1 {
           addCalleeIfAbsent(callees, arityKey, fn)
           addCalleeIfAbsent(callees, overloadCalleeKey(packagePrefix + fn.name, fn.params.count), fn)
+          addOverloadDecl(callees, fn.name, fn)
+          addOverloadDecl(callees, packagePrefix + fn.name, fn)
         } else {
           addCalleeIfAbsent(callees, fn.name, fn)
           addCalleeIfAbsent(callees, packagePrefix + fn.name, fn)
@@ -8468,13 +8492,69 @@ pub func calleeIsOverloaded(env: in VEnv, name: in String): Bool {
   env.callees.containsKey(overloadedMarkerKey(name))
 }
 
-// The function a call of the overloaded `name` with `args` reaches: the
-// declaration of this file taking exactly that many arguments, when no
-// other file of the package declares one of that arity.  A call no
-// declaration takes exactly — one filling the rest from defaults, a
-// duplicate's, or another file's — is not resolved.
+// The callee-table key of the `index`th overload of `name` this file declares.
+func overloadDeclKey(name: in String, index: in Int): String {
+  "~overload/" + name + "/" + toString(index)
+}
+
+// The callee-table key present when the package declares a function of
+// `name` taking `arity` parameters that the verifier cannot read as a
+// candidate: another file's, or one of a duplicate (#8341).
+func siblingOverloadKey(name: in String, arity: in Int): String {
+  "~sibling/" + name + "/" + toString(arity)
+}
+
+func addOverloadDecl(callees: in Map[String, FunctionDecl], name: in String, fn: in FunctionDecl): Unit {
+  var k = 0
+  while callees.containsKey(overloadDeclKey(name, k)) {
+    k = k + 1
+  }
+  callees.add(overloadDeclKey(name, k), fn)
+}
+
+// The function a call of the overloaded `name` with `args` reaches: the one
+// declaration of this file that the call fits (`callDefaultsFilled`: each
+// parameter it leaves out has a default, each named argument names one).
+// The type checker binds a call to one of the declarations it fits by the
+// rule of D208 (a call supplying every parameter first, then the fewest
+// defaults filled), but only after the argument types have ruled some out,
+// which the verifier cannot see: a call that fits several, or that fits one
+// but may fit a declaration the verifier cannot read (another file's, a
+// duplicate's, of a parameter count the call fits), is not resolved.
 func resolveOverloadedCallee(env: in VEnv, name: in String, args: in List[CallArg]): Option[FunctionDecl] {
-  mapGet(env.callees, overloadCalleeKey(name, args.count))
+  var found: Option[FunctionDecl] = None
+  var fits = 0
+  var k = 0
+  while env.callees.containsKey(overloadDeclKey(name, k)) {
+    match mapGet(env.callees, overloadDeclKey(name, k)) {
+      case Some(decl) -> {
+        val names: List[String] = newList()
+        val defaults: List[Bool] = newList()
+        for p in decl.params {
+          names.add(p.name)
+          defaults.add(isSome(p.dflt))
+        }
+        if callDefaultsFilled(names, defaults, 0, args) >= 0 {
+          fits = fits + 1
+          found = Some(value = decl)
+        }
+      }
+      case None -> ()
+    }
+    k = k + 1
+  }
+  var n = args.count
+  while n <= args.count + 64 {
+    if env.callees.containsKey(siblingOverloadKey(name, n)) {
+      return None
+    }
+    n = n + 1
+  }
+  if fits == 1 {
+    found
+  } else {
+    None
+  }
 }
 
 // The function of this file a call of `name` with `args` reaches: the one
