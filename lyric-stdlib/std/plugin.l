@@ -1395,8 +1395,16 @@ pub func pluginLaunchCommand(
     case ManagedPayload(runtime, command) -> {
       // readPluginManifest enforces this too, but a manifest built in memory
       // and passed to registerPlugin does not go through it.
-      if command.count < 3 {
-        return Err(error = "a managed payload's command needs a launcher, a flag and the payload file")
+      if runtime == "dotnet" {
+        if command.count < 3 or command[0] != "dotnet" or command[1] != "exec" {
+          return Err(error = "a dotnet payload's command is [\"dotnet\", \"exec\", \"<dll>\", ...]")
+        }
+      } else if runtime == "jvm" {
+        if command.count < 3 or command[0] != "java" or command[1] != "-jar" {
+          return Err(error = "a jvm payload's command is [\"java\", \"-jar\", \"<jar>\", ...]")
+        }
+      } else {
+        return Err(error = "runtime '" + runtime + "' is not \"dotnet\" or \"jvm\"")
       }
       if runtime == "jvm" {
         val javaHome = Env.getVarOrDefault("JAVA_HOME", "")

@@ -401,7 +401,15 @@ test "a missing $LYRIC_WASMTIME override is named in the error" {
 test "a payload command too short to launch is an error, not a panic" {
   match pluginLaunchCommand(ManagedPayload(runtime = "dotnet", command = ["dotnet", "exec"]), "/plugins/p", None, 1024i64) {
     case Ok(_) -> assertTrue(false, "a managed command without the payload file")
-    case Err(e) -> assertTrue(e.contains("managed payload"), e)
+    case Err(e) -> assertTrue(e.contains("dotnet payload"), e)
+  }
+  match pluginLaunchCommand(ManagedPayload(runtime = "dotnet", command = ["/bin/sh", "-c", "evil"]), "/plugins/p", None, 1024i64) {
+    case Ok(_) -> assertTrue(false, "a dotnet payload must launch with dotnet exec")
+    case Err(e) -> assertTrue(e.contains("dotnet payload"), e)
+  }
+  match pluginLaunchCommand(ManagedPayload(runtime = "jvm", command = ["../java", "-jar", "p.jar"]), "/plugins/p", None, 1024i64) {
+    case Ok(_) -> assertTrue(false, "a jvm payload must launch with java -jar")
+    case Err(e) -> assertTrue(e.contains("jvm payload"), e)
   }
   match pluginLaunchCommand(NativePayload(os = "linux", arch = "x86_64", command = []), "/plugins/p", None, 1024i64) {
     case Ok(_) -> assertTrue(false, "an empty native command")

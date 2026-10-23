@@ -3778,7 +3778,9 @@ plugin has one and `wasmtime` is available. Process mode applies no operating
 system restrictions: a process payload is arbitrary code running with the
 host's user and privileges, and the grant policy and guards limit only what it
 does through capability calls, not what it does directly. Wasm mode is the
-isolation for untrusted code. A trusted in-process mode, signing and a plugin
+isolation for untrusted code; it caps memory, and a call's CPU time is bounded
+only by the call timeout (a plugin that ignores the cancellation keeps running
+until the host stops it, #8465). A trusted in-process mode, signing and a plugin
 registry are not part of v1 (D207).
 
 ### 15.8 `lyric plugin`
