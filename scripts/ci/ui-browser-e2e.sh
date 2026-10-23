@@ -42,6 +42,8 @@ PLAYWRIGHT_VERSION="1.56.1"
   fi
   # Images that ship Chromium set PLAYWRIGHT_BROWSERS_PATH; elsewhere fetch it.
   if [ -z "${PLAYWRIGHT_BROWSERS_PATH:-}" ]; then
+    # `--with-deps` runs apt-get, which other steps of the job run concurrently.
+    printf 'DPkg::Lock::Timeout "900";\n' | sudo tee /etc/apt/apt.conf.d/99lyric-ci-lock-timeout >/dev/null
     npx playwright install --with-deps chromium
   fi
 )

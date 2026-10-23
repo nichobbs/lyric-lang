@@ -30,7 +30,9 @@ done
 # smoke-test the endpoint, then SIGTERM the server.
 echo "=== smoke examples/rest_service.l ==="
 # Own process group: `lyric run` spawns the real server as a child, which
-# killing only the parent would leak, holding port 8080 (#7982).
+# killing only the parent would leak, holding port 8080 (#7982).  A backgrounded
+# job in a non-interactive script is not a group leader, so `setsid` execs in
+# place and `$!` is the new group id that `kill -- "-$pid"` below relies on.
 setsid "$lyric_bin" run examples/rest_service.l > /tmp/rest_service.run.log 2>&1 &
 srv_pid=$!
 for _ in $(seq 1 20); do
