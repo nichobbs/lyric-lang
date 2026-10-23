@@ -17,7 +17,10 @@
 #   (Lyric.Lyric.Cli.dll + deps) or ./bin/lyric.  After a `stage1-fast` build,
 #   ./bin/lyric still runs the OLD compiler for backend/codegen changes —
 #   verify with `make self-test NAME=...`, never with `./bin/lyric` directly,
-#   until you've run `make lyric`.
+#   until you've run `make lyric`.  The staged compiler bundle
+#   (<libdir>/selfhosted/Lyric.Compiler.dll, which `lyric test` links for
+#   compiler-package imports) is stale too: refresh it with
+#   `make selfhosted-compiler`.
 #
 #   END-TO-END LOOP (CLI behaviour, `lyric build/test/...`, ecosystem repros)
 #     make lyric              # stage1 + AOT entry-point -> ./bin/lyric symlink
@@ -91,8 +94,8 @@ stage1: ## Build the full self-hosted compiler + CLI bundle (.bootstrap/stage1)
 stage1-fast: ## Stage 1 without the CLI bundle -- fastest loop for one package; leaves ./bin/lyric on the OLD compiler (#6331, see WARNING above)
 	SKIP_CLI_BUNDLE=1 ./scripts/bootstrap.sh --stage 1
 	@echo "WARNING: stage1-fast skipped the CLI bundle -- ./bin/lyric (if built) still runs the OLD compiler,"
-	@echo "         and <libdir>/selfhosted/ compiler DLLs (used by 'lyric test' for compiler-package imports)"
-	@echo "         are stale too ('make selfhosted-compiler' refreshes just those)."
+	@echo "         and the <libdir>/selfhosted/ compiler bundle"
+	@echo "         (Lyric.Compiler.dll, used by 'lyric test' for compiler-package imports) is stale too ('make selfhosted-compiler' refreshes just that)."
 	@echo "         Verify with 'make self-test NAME=...'; run 'make lyric' before trusting ./bin/lyric directly."
 	@$(MAKE) check-lyric-stale
 	# Intentionally NOT touching stage1.stamp here: SKIP_CLI_BUNDLE=1 skips the
@@ -161,7 +164,7 @@ endif
 
 # Re-stage only the self-hosted compiler DLLs (after `make lyric
 # SKIP_SELFHOSTED_COMPILER=1`, or to refresh them without a full rebuild).
-selfhosted-compiler: ## Stage self-hosted compiler DLLs under <libdir>/selfhosted (#3086)
+selfhosted-compiler: ## Re-stage the self-hosted compiler bundle (Lyric.Compiler.dll) under <libdir>/selfhosted (#3086)
 	@bash scripts/stage-selfhosted-compiler.sh ./bin/lyric "$(dir $(AOT_BIN))" .bootstrap/stage1
 
 # ── Isolated self-hosted ship/test toolchain (stage 2) ──────────────────────
@@ -261,12 +264,6 @@ test-typechecker: ## Run the type-checker self-test
 #     in the list below along with its docs/58 siblings
 #     (config_templates_self_test.l, wire_expand_self_test.l,
 #     wire_templates_self_test.l).
-#   - pre-existing, CI-unwired, currently broken on this grammar/type-checker
-#     version (parse or type errors, unrelated to this Makefile fix, predate
-#     every change in this PR — confirmed via `git log` on each file):
-#     byte_arithmetic_self_test.l, option_match_self_test.l.
-#     (compiler_bugs_3502_3505_3547_self_test.l was listed here too until
-#     #7752 fixed the type checker's bottom-up branch join it tripped.)
 # Running any of the above through this loop produces a failure unrelated
 # to what you're actually testing.
 TEST_EMITTER_FILES := \
@@ -281,6 +278,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/auto_ffi_self_test.l \
 	lyric-compiler/lyric/bitwise_self_test.l \
 	lyric-compiler/lyric/block_shadow_self_test.l \
+	lyric-compiler/lyric/byte_arithmetic_self_test.l \
 	lyric-compiler/lyric/cfg_self_test.l \
 	lyric-compiler/lyric/cfg_single_file_self_test.l \
 	lyric-compiler/lyric/class_encoding_self_test.l \
@@ -363,6 +361,7 @@ TEST_EMITTER_FILES := \
 	lyric-compiler/lyric/nested_constructor_pattern_self_test.l \
 	lyric-compiler/lyric/nested_generic_self_test.l \
 	lyric-compiler/lyric/nested_slice_for_jvm_self_test.l \
+	lyric-compiler/lyric/option_match_self_test.l \
 	lyric-compiler/lyric/overflow_panic_self_test.l \
 	lyric-compiler/lyric/fixed_array_self_test.l \
 	lyric-compiler/lyric/fixed_array_panic_self_test.l \

@@ -49,3 +49,21 @@ echo "=== build examples/contracts-gating-test --target jvm ==="
 "$lyric_bin" build --manifest "examples/contracts-gating-test/lyric.toml" --target jvm > /tmp/contracts-gating-test-jvm.log 2>&1 \
   && { echo "PASS: contracts disabled (JVM), function with contract-violating behavior compiles"; java -jar "examples/contracts-gating-test/bin/contracts-gating-test.jar" > /tmp/contracts-gating-test-jvm.run.log 2>&1 && echo "PASS: function executes without assertion failure (JVM)"; } \
   || { echo "FAIL"; cat /tmp/contracts-gating-test-jvm.log; cat /tmp/contracts-gating-test-jvm.run.log 2>/dev/null; exit 1; }
+# #7508 cross-package case (#7675): an imported package's newList/mapGet
+# overrides the builtin intrinsic of the same name (native: native-target-smoke-test.sh).
+for target in dotnet jvm; do
+  bash scripts/ci/builtin-name-override-test.sh "$lyric_bin" "$target"
+done
+# examples/agent/basics.l is the canonical-idioms reference agents copy from
+# (#7606): it must keep compiling and printing the same output on both targets.
+expected_basics=$'double 5 = 10\norder total: 1500 cents\nactive: amy, zoe\nrange: 1 to 9'
+for target in dotnet jvm; do
+  echo "=== run examples/agent/basics.l --target $target ==="
+  got="$("$lyric_bin" run --target "$target" examples/agent/basics.l 2>&1 | grep -v '^Picked up JAVA_TOOL_OPTIONS' | grep -v '^built ')" || true
+  if [ "$got" != "$expected_basics" ]; then
+    echo "FAIL: unexpected output from examples/agent/basics.l --target $target:"
+    echo "$got"
+    exit 1
+  fi
+  echo "PASS"
+done

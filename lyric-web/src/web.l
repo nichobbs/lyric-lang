@@ -1855,7 +1855,9 @@ record PlainAcceptLoop {
 impl AcceptLoop for PlainAcceptLoop {
   func step(): Unit {
     val ctx = nextContext(self.listener)
-    HttpKernel.spawnRequestJob(PlainRequestJob(router = self.router, streaming = self.streaming, ctx = ctx, label = self.label))
+    HttpKernel.spawnRequestJob(
+      PlainRequestJob(router = self.router, streaming = self.streaming, ctx = ctx, label = self.label)
+    )
   }
 
   func fail(message: in String): Unit {
@@ -2160,24 +2162,6 @@ pub func serveTls(
   return Ok(value = ())
 }
 
-/// Run the accept loop for `router`/`streaming` on `host`:`port`, exactly
-/// like `serve`, except each request is first tried against `streaming`'s
-/// route table; a match runs the matched `StreamingHandler` against a
-/// fresh `ResponseWriter` instead of buffering a `Response`. A request
-/// that matches no streaming route falls through to the ordinary
-/// `dispatch`/`writeResponse` path unchanged — see the "Streaming
-/// (chunked) responses" section above for why this is a separate table
-/// rather than a change to `Router`/`dispatch`/`serve`.
-///
-/// A failure handling one request (a handler panic, a malformed request,
-/// a broken connection mid-response) is isolated to that request: it is
-/// logged and answered with a 500, and the accept loop keeps serving —
-/// a single bad request must not take the whole server down (#5261).
-/// Only `nextContext` itself failing — meaning the listener can no
-/// longer accept new connections at all — is treated as fatal: that is
-/// logged, the listener is stopped, and the process exits non-zero
-/// rather than looping forever unable to make progress.
-///
 /// Fire every registered worker once, in the background, on a real
 /// thread-pool task per worker (issue #5359) — each loops
 /// `sleepMillis(intervalMs); handler.tick()` forever. Fire-and-forget by
@@ -2198,6 +2182,25 @@ func startWorkers(router: in Router): Unit {
   }
 }
 
+/// Run the accept loop for `router`/`streaming` on `host`:`port`, exactly
+/// like `serve`, except each request is first tried against `streaming`'s
+/// route table; a match runs the matched `StreamingHandler` against a
+/// fresh `ResponseWriter` instead of buffering a `Response`. A request
+/// that matches no streaming route falls through to the ordinary
+/// `dispatch`/`writeResponse` path unchanged — see the "Streaming
+/// (chunked) responses" section above for why this is a separate table
+/// rather than a change to `Router`/`dispatch`/`serve`.
+///
+/// A failure handling one request (a handler panic, a malformed request,
+/// a broken connection mid-response) is isolated to that request: it is
+/// logged and answered with a 500, and the accept loop keeps serving —
+/// a single bad request must not take the whole server down (#5261).
+/// Only `nextContext` itself failing — meaning the listener can no
+/// longer accept new connections at all — is treated as fatal: that is
+/// logged, the listener is stopped, and the process exits non-zero
+/// rather than looping forever unable to make progress.
+///
+/// Every registered worker is started in the background before the accept loop (see `startWorkers`).
 /// dotnet-only (see `StreamingHandler`'s doc comment).
 @stable(since = "0.3")
 @cfg(any(feature = "dotnet", feature = "native"))

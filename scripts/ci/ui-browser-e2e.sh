@@ -47,11 +47,9 @@ PLAYWRIGHT_VERSION="1.56.1"
 )
 
 # The host serves the page and its session WebSocket on this one port (#7831).
-port=8080
-if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then
-  echo "::error::port $port is already in use; the example host needs it" >&2
-  exit 1
-fi
+# Ask the OS for a free one so a parallel job holding 8080 cannot collide (#8006).
+port="$(node -e 'const s=require("net").createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})')"
+export LYRIC_UI_PORT="$port"
 
 manifest="examples/ui-customers/lyric.toml"
 "$lyric_bin" build --manifest "$manifest" --target "$target"

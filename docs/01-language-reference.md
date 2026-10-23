@@ -2888,9 +2888,12 @@ hand-written table `.toLower()` originally shipped with. This is still
 not the complete `SpecialCasing.txt` rule set: no locale-conditional
 Turkish/Azeri dotless-I folding of plain ASCII "I", no German ß -> "SS"
 expansion, no final-sigma positional form — every mapping is
-unconditional and every output is a single scalar value, matching the
-other two targets' own simple-fold behavior when no locale is specified
-(`ToLowerInvariant`/`toLowerCase(Locale.ROOT)`-equivalent).
+unconditional and every output is a single scalar value. This matches
+`ToLowerInvariant`/`ToUpperInvariant` on dotnet, which also fold one
+scalar to one scalar. The JVM target (`toUpperCase(Locale.ROOT)`) is
+locale-invariant too but applies the unconditional `SpecialCasing.txt`
+expansions, so `"ß".toUpper()` is `"SS"` on the JVM and `"ß"` on dotnet
+and native (#7076).
 `s.replace(old, new)` on native treats an empty `old` as a no-op —
 dotnet's `String.Replace` throws `ArgumentException` on an empty old
 value and JVM's `String.replace` instead interleaves `new` between every
