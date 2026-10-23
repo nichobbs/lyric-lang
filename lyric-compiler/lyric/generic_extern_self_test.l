@@ -151,3 +151,28 @@ test "unannotated Int local key boxes into the Object-fallback wrapper (#6127)" 
   assertTrue(cdGet(registry, h2, got2), "second handle found")
   assertEqualInt(got2.n, 22, "second registered value round-trips")
 }
+
+// #7807: a generic BCL method whose parameter is `T[]` resolves; the scorer
+// takes any array for the method's own `T`, and the instantiation binds it
+// from the argument.
+@externTarget("System.Array.Reverse")
+@externStatic
+func arrReverse[T](a: in slice[T]): Unit = ()
+
+@externTarget("System.Array.IndexOf")
+@externStatic
+func arrIndexOf[T](a: in slice[T], x: in T): Int = 0
+
+test "a generic BCL method over T[] binds T from an Int slice (#7807)" {
+  val a = [1, 2, 3]
+  arrReverse(a)
+  assertEqualInt(a[0], 3, "Array.Reverse<int> reversed in place")
+  assertEqualInt(arrIndexOf(a, 1), 2, "Array.IndexOf<int>")
+}
+
+test "a generic BCL method over T[] binds T from a String slice (#7807)" {
+  val s = ["a", "b", "c"]
+  arrReverse(s)
+  assertEqual(s[0], "c", "Array.Reverse<string> reversed in place")
+  assertEqualInt(arrIndexOf(s, "a"), 2, "Array.IndexOf<string>")
+}

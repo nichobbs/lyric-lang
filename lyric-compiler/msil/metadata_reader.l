@@ -1285,7 +1285,9 @@ pub func decodeInt32ConstantBlob(typeVal: in Int, blobBytes: in slice[Byte]): Op
     val isSigned = typeVal == 0x04 or typeVal == 0x06 or typeVal == 0x08
     Some(value = if isSigned { rdI16(blobBytes, 0) } else { rdU16(blobBytes, 0) })
   } else if blobBytes.length == 1 {
-    Some(value = blobBytes[0].toInt())
+    // I1 (SByte) is the only signed one-byte type: 0x80 is -128, not 128.
+    val raw = blobBytes[0].toInt()
+    Some(value = if typeVal == 0x04 and raw >= 128 { raw - 256 } else { raw })
   } else {
     None
   }
@@ -2700,7 +2702,16 @@ pub func scoreSigType(arg: in SigType, param: in SigType): Int {
       // CLR arrays with value-type elements are invariant — `int[]` cannot be
       // passed where `long[]` is expected.  Only accept an exact element match
       // (score 3); a 2 (widening) on the element kind would mis-bind at the JIT.
-      case STSzArray(ae) -> if scoreSigType(ae, pe) == 3 { 3 } else { -1 }
+      // A generic parameter element (`!!0[]`, `Array.Reverse<T>(T[])`) takes
+      // any array: the method's own `T` is bound from it (#7807), the weak
+      // bare-VAR tier.
+      case STSzArray(ae) -> if scoreSigType(ae, pe) == 3 {
+        3
+      } else if (match pe { case STMVar(_) -> true; case STVar(_) -> true; case _ -> false }) {
+        1
+      } else {
+        -1
+      }
       case _ -> -1
     }
     // A by-ref / `out` / `ref` parameter matches a by-ref argument of the same

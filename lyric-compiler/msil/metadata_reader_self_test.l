@@ -130,6 +130,19 @@ test "decodeInt32ConstantBlob: U2 (0x07) 2-byte blob stays unsigned (uses rdU16)
   }
 }
 
+test "decodeInt32ConstantBlob: I1 (0x04) 1-byte blob is sign-extended, U1 (0x05) is not (#7889)" {
+  val bytes: List[Byte] = newList()
+  bytes.add(0x80u8)
+  match decodeInt32ConstantBlob(0x04, bytes.toArray()) {
+    case Some(v) -> assertEqualInt(v, -128, "decode_i1_min")
+    case None -> assertTrue(false, "decode_i1_min_expectedSome")
+  }
+  match decodeInt32ConstantBlob(0x05, bytes.toArray()) {
+    case Some(v) -> assertEqualInt(v, 128, "decode_u1_128")
+    case None -> assertTrue(false, "decode_u1_128_expectedSome")
+  }
+}
+
 test "decodeInt32ConstantBlob: CHAR (0x03) 2-byte blob also stays unsigned" {
   // isSigned only covers typeVal 0x04/0x06/0x08 (I1/I2/I4); CHAR (0x03) must
   // fall through to the unsigned (rdU16) branch even though it never
@@ -252,7 +265,11 @@ test "resolveExtern: trailing-default admission and exact-arity ranking (#5605)"
       ctorArgs.add(mkNamedSig("System.IO.MemoryStream", false))
       match resolveExtern(typeIndex, pathIndex, "System.IO.StreamReader", ".ctor", ctorArgs) {
         case None -> assertTrue(false, ".ctor(MemoryStream) must resolve via the Extends-chain upcast")
-        case Some(ctorRe) -> assertEqualInt(ctorRe.sig.paramTypes.count, 1, "the exact-arity .ctor(Stream) outranks the defaulted 5-param ctor")
+        case Some(ctorRe) -> assertEqualInt(
+          ctorRe.sig.paramTypes.count,
+          1,
+          "the exact-arity .ctor(Stream) outranks the defaulted 5-param ctor"
+        )
       }
     }
   }
@@ -318,23 +335,58 @@ test "resolveExtern: File.OpenHandle(string) synthesizes enum and Long numeric E
             "bound OpenHandle(String, FileMode, FileAccess, FileShare, FileOptions, Int64)"
           )
           match re.sig.paramDefaults[1] {
-            case EPDConst(v) -> match v { case ECVInt(iv) -> assertEqualInt(iv, 3, "FileMode default decodes as the enum-int constant Open (3)"); case _ -> assertTrue(false, "expected ECVInt for the FileMode default") }
+            case EPDConst(v) -> match v {
+              case ECVInt(iv) -> assertEqualInt(
+                iv,
+                3,
+                "FileMode default decodes as the enum-int constant Open (3)"
+              )
+              case _ -> assertTrue(false, "expected ECVInt for the FileMode default")
+            }
             case _ -> assertTrue(false, "expected EPDConst for the FileMode default")
           }
           match re.sig.paramDefaults[2] {
-            case EPDConst(v) -> match v { case ECVInt(iv) -> assertEqualInt(iv, 1, "FileAccess default decodes as the enum-int constant Read (1)"); case _ -> assertTrue(false, "expected ECVInt for the FileAccess default") }
+            case EPDConst(v) -> match v {
+              case ECVInt(iv) -> assertEqualInt(
+                iv,
+                1,
+                "FileAccess default decodes as the enum-int constant Read (1)"
+              )
+              case _ -> assertTrue(false, "expected ECVInt for the FileAccess default")
+            }
             case _ -> assertTrue(false, "expected EPDConst for the FileAccess default")
           }
           match re.sig.paramDefaults[3] {
-            case EPDConst(v) -> match v { case ECVInt(iv) -> assertEqualInt(iv, 1, "FileShare default decodes as the enum-int constant Read (1)"); case _ -> assertTrue(false, "expected ECVInt for the FileShare default") }
+            case EPDConst(v) -> match v {
+              case ECVInt(iv) -> assertEqualInt(
+                iv,
+                1,
+                "FileShare default decodes as the enum-int constant Read (1)"
+              )
+              case _ -> assertTrue(false, "expected ECVInt for the FileShare default")
+            }
             case _ -> assertTrue(false, "expected EPDConst for the FileShare default")
           }
           match re.sig.paramDefaults[4] {
-            case EPDConst(v) -> match v { case ECVInt(iv) -> assertEqualInt(iv, 0, "FileOptions default decodes as the enum-int constant None (0)"); case _ -> assertTrue(false, "expected ECVInt for the FileOptions default") }
+            case EPDConst(v) -> match v {
+              case ECVInt(iv) -> assertEqualInt(
+                iv,
+                0,
+                "FileOptions default decodes as the enum-int constant None (0)"
+              )
+              case _ -> assertTrue(false, "expected ECVInt for the FileOptions default")
+            }
             case _ -> assertTrue(false, "expected EPDConst for the FileOptions default")
           }
           match re.sig.paramDefaults[5] {
-            case EPDConst(v) -> match v { case ECVLong(lv) -> assertEqualLong(lv, 0i64, "preallocationSize default decodes as the Long numeric constant 0"); case _ -> assertTrue(false, "expected ECVLong for the preallocationSize default") }
+            case EPDConst(v) -> match v {
+              case ECVLong(lv) -> assertEqualLong(
+                lv,
+                0i64,
+                "preallocationSize default decodes as the Long numeric constant 0"
+              )
+              case _ -> assertTrue(false, "expected ECVLong for the preallocationSize default")
+            }
             case _ -> assertTrue(false, "expected EPDConst for the preallocationSize default")
           }
         }
