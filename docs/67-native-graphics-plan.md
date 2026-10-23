@@ -17,7 +17,7 @@ G4 is implemented for Linux (D195: `lyric-window` on SDL3 with a headless demo
 in CI; macOS is not yet in CI). G6 is implemented: `Std.Linalg` (D198: `Vec2`/`Vec3`/`Vec4`,
 `Quat`, `Mat3`, `Mat4`, `Rgba8`, on all three targets), `lyric-text` (D199: FreeType and HarfBuzz
 shaping, rasterising, glyph atlas, fallback and line layout, with a golden Latin/Arabic/CJK scene;
-bidirectional reordering and UAX #14 for text areas are in D214, for `layoutText` itself #8496) and `lyric-draw` (D200: instanced
+bidirectional reordering and UAX #14 for text areas are in D216, for `layoutText` itself #8496) and `lyric-draw` (D200: instanced
 signed-distance quads, shadows, images, clips and text, with a golden scene and a text-heavy
 frame budget on lavapipe; no run on real hardware yet). G7 is implemented on Linux (D201: `lyric-game`
 deterministic core with PNG and WAV decoding, a native frame loop with input recording and replay,
@@ -586,7 +586,7 @@ XL (a quarter or more of focused work).
 | **G9** | Windows x86-64 native target (§6). | G3 | Native test suite passes on Windows CI; G4 to G7 examples run there. | XL |
 | **G10** | Native `lyric-ui` host (§5.2): layout, widgets, focus, IME, clipboard, accessibility. | G6 | `examples/ui-customers/` runs natively with no application changes; screen-reader smoke test on macOS. | XL |
 
-**Status (2026-10-23):** G0-G6 done (G4 on Linux only, no macOS CI; G5 has no Cocoa or Win32 surfaces; G6 lacks a real-hardware frame-budget run and `layoutText` reordering by itself, #8496; text areas have bidi and UAX #14 in D214). G7 (#7946), G8 (#7947) and G10 (#7949) are implemented on Linux (D201, D202, D203, D204; their open parts are listed in the status paragraph at the top); G9's core target is implemented (D205: runtime, toolchain, C ABI, Windows CI running the native suite) with child processes (D208), sockets and TLS (D209) and the compiler-hosted self-tests with AddressSanitizer (D213), and its exit criterion of running the G4 to G7 examples on Windows waits on #8435. Follow-ups: #8389, #8391, #8394, #8395, #8401, #7955.
+**Status (2026-10-23):** G0-G6 done (G4 on Linux only, no macOS CI; G5 has no Cocoa or Win32 surfaces; G6 lacks a real-hardware frame-budget run and `layoutText` reordering by itself, #8496; text areas have bidi and UAX #14 in D216). G7 (#7946), G8 (#7947) and G10 (#7949) are implemented on Linux (D201, D202, D203, D204; their open parts are listed in the status paragraph at the top); G9's core target is implemented (D205: runtime, toolchain, C ABI, Windows CI running the native suite) with child processes (D208), sockets and TLS (D209) and the compiler-hosted self-tests with AddressSanitizer (D213), and its exit criterion of running the G4 to G7 examples on Windows waits on #8435. Follow-ups: #8389, #8391, #8394, #8395, #8401, #7955.
 
 **Critical path to a first native graphics program:** G0, G1, G2, G3, G4,
 G5. G8 and G9 can run in parallel once their dependencies land.

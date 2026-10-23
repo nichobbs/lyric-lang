@@ -1,4 +1,4 @@
-# D214 - Bidirectional text and UAX #14 line breaking in the native lyric-ui host
+# D216 - Bidirectional text and UAX #14 line breaking in the native lyric-ui host
 
 **Status:** accepted, implemented for text areas (docs/67 phase G10, #8410); extends D199 (`lyric-text`) and
 D204 item 3 (wrapped text areas)

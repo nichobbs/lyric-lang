@@ -136,9 +136,9 @@ entry point without a change to any screen). It supports mouse, keyboard with Ta
 editing with a caret and selection, the clipboard, input-method composition, scrolling and data grids.
 A `textArea` wraps its text to the box, grows with it up to a limit and scrolls beyond; Up, Down, PageUp
 and PageDown move by visual line keeping the column, Home and End go to the edges of the line, and a click
-or drag places the caret by row and column. Lines break at the opportunities of UAX #14, and text in Hebrew, Arabic and other right to left scripts is reordered with UAX #9 (a right to left paragraph is aligned to the right, Left and Right move by screen position, a selection is one band per run; D214). It is built from a host-free core (`Ui.Native.Layout`,
+or drag places the caret by row and column. Lines break at the opportunities of UAX #14, and text in Hebrew, Arabic and other right to left scripts is reordered with UAX #9 (a right to left paragraph is aligned to the right, Left and Right move by screen position, a selection is one band per run; D216). It is built from a host-free core (`Ui.Native.Layout`,
 `Ui.Native.Wrap` and friends, tested on every target) and a painter and window loop. Not done yet:
-accessibility, macOS, bidirectional text in single-line inputs (D203, D204, D214).
+accessibility, macOS, bidirectional text in single-line inputs (D203, D204, D216).
 
 ## A desktop window
 

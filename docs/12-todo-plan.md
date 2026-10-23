@@ -169,7 +169,7 @@ left is verification and release work, tracked in `docs/36`:
    Windows (#7948; core target D205, processes D208, sockets and TLS D209, self-tests D213, remaining #8435), accessibility through AccessKit (G10, #8430) and pruning
    dependency kernels from the link (#8429); G4 macOS CI, G5 Cocoa/Win32
    surfaces and the macOS `.app` bundles (#8401, #8419); `layoutText` reordering
-   mixed-direction paragraphs itself (#8496, D214 did text areas), bidi in single-line inputs (#8497); `buffer[T]` lazy copy (#8389) and the warn-on-copy lint
+   mixed-direction paragraphs itself (#8496, D216 did text areas), bidi in single-line inputs (#8497); `buffer[T]` lazy copy (#8389) and the warn-on-copy lint
    (#8395); explicit mutable-record marker (D157 follow-up, #7955).
 2. **Structured tasks (docs/68).**  `Std.Task` handle API (`waitFor`, `isDone`,
    `cancel`, `awaitAll` over handles, `awaitAny`), the handle-escape rule (new
