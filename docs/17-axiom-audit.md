@@ -1096,7 +1096,7 @@ spaces; consult the kernel file itself for the unfolded source.
 | `jvm` | `Std.HttpServer` | `http_server.l` | com.sun.net.httpserver.HttpServer / javax.net.ssl / java.security / java.lang.reflect operations conform to their documented JVM contracts |
 | `jvm` | `Std.MathHost` | `math_host.l` | java.lang.Math and java.lang.Double operations conform to their documented JVM / IEEE 754 contracts |
 | `jvm` | `Std.ParseHost` | `parse_host.l` | java.lang.Double.parseDouble conforms to its documented JVM contract |
-| `jvm` | `Std.PathHost` | `path_host.l` | java.io.File.separatorChar and java.io.File.getParent conform to their documented JVM contracts |
+| `jvm` | `Std.PathHost` | `path_host.l` | java.io.File.separatorChar conforms to its documented JVM contract |
 | `jvm` | `Std.PluginHost` | `plugin_host.l` | java.lang.System.getProperty conforms to its documented JVM contract |
 | `jvm` | `Std.ProcessCaptureHost` | `process_capture_host.l` | java.lang.ProcessBuilder + java.lang.Process + java.io stream contracts conform to documented JVM process/IO semantics |
 | `jvm` | `Std.ProcessHost` | `process_host.l` | java.lang.Process and java.lang.ProcessBuilder conform to their documented JVM contracts |
