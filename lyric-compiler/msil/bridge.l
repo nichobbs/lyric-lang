@@ -2419,9 +2419,11 @@ func withGenericFuncsForContract(preMono: in SourceFile, postMono0: in SourceFil
     val it = preMono.items[gi]
     match it.kind {
       case IFunc(decl) -> {
-        val isPub = match it.visibility { case Some(VisPub(_)) -> true; case _ -> false }
         val isGeneric = match decl.generics { case Some(_) -> true; case None -> false }
-        if isPub and isGeneric and not postFuncNames.containsKey(decl.name) {
+        // A private generic comes back too: `Lyric.ContractMeta.carryPrivateGenerics` copies the ones a
+        // `pub` generic reaches into the contract under package-unique names (#8427); it emits none
+        // of the others.
+        if isGeneric and not postFuncNames.containsKey(decl.name) {
           items.add(it)
         }
       }
