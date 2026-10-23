@@ -345,6 +345,22 @@ static void test_long_path_conversion(void) {
     w = lyric_win32_path("NUL");
     CHECK(w != NULL && wcscmp(w, L"NUL") == 0);
     free(w);
+    /* The threshold: a full path of 247 units is passed as given, 248 is prefixed. */
+    char edge[300] = "C:/";
+    while (strlen(edge) < 247) strcat(edge, "a");
+    w = lyric_win32_path(edge);
+    CHECK(w != NULL && wcsncmp(w, L"C:/", 3) == 0);
+    free(w);
+    strcat(edge, "a");
+    w = lyric_win32_path(edge);
+    CHECK(w != NULL && wcsncmp(w, L"\\\\?\\C:\\aaa", 9) == 0);
+    free(w);
+    /* A long device path is not a share. */
+    char dev[600] = "\\\\.\\GLOBALROOT\\";
+    while (strlen(dev) < 400) strcat(dev, "abcdefghij\\");
+    w = lyric_win32_path(dev);
+    CHECK(w != NULL && wcsncmp(w, L"\\\\.\\GLOBALROOT\\", 15) == 0);
+    free(w);
 }
 
 /* Paths past MAX_PATH work whether or not the system enables long paths:

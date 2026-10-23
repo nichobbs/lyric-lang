@@ -75,6 +75,11 @@ wchar_t* lyric_win32_path(const char* s) {
         return w;
     }
     wchar_t* body = full + 8;
+    if (wcsncmp(body, L"\\\\.\\", 4) == 0 || wcsncmp(body, L"\\\\?\\", 4) == 0) {
+        /* A device path (\\.\...) is not a share and is passed as given. */
+        free(full);
+        return w;
+    }
     wchar_t* out;
     if (body[0] == L'\\' && body[1] == L'\\') {
         /* \\server\share\... becomes \\?\UNC\server\share\... */
