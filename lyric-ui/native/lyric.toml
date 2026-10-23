@@ -24,6 +24,7 @@ output_assembly = "Lyric.Ui.Native.Core.dll"
 [project.packages]
 "Ui.Native.Theme"    = "src/theme.l"
 "Ui.Native.Client"   = "src/client.l"
+"Ui.Native.Wrap"     = "src/wrap.l"
 "Ui.Native.Layout"   = "src/layout.l"
 "Ui.Native.Interact" = "src/interact.l"
 
@@ -31,6 +32,7 @@ output_assembly = "Lyric.Ui.Native.Core.dll"
 "Ui.Native.ClientTests"   = "tests/client_tests.l"
 "Ui.Native.LayoutTests"   = "tests/layout_tests.l"
 "Ui.Native.InteractTests" = "tests/interact_tests.l"
+"Ui.Native.WrapTests"     = "tests/wrap_tests.l"
 
 [dependencies]
 "Lyric.Ui" = { path = ".." }

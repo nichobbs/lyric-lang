@@ -134,7 +134,11 @@ click on a row that has gone is dropped. Key the items of dynamic lists.
 `route` as the other hosts, so an application is written once (`examples/ui-customers` gets a native
 entry point without a change to any screen). It supports mouse, keyboard with Tab traversal, text
 editing with a caret and selection, the clipboard, input-method composition, scrolling and data grids.
-It is built from a host-free core (`Ui.Native.Layout` and friends, tested on every target) and a painter and window loop.
+A `textArea` wraps its text to the box, grows with it up to a limit and scrolls beyond; Up, Down, PageUp
+and PageDown move by visual line keeping the column, Home and End go to the edges of the line, and a click
+or drag places the caret by row and column. It is built from a host-free core (`Ui.Native.Layout`,
+`Ui.Native.Wrap` and friends, tested on every target) and a painter and window loop. Not done yet:
+accessibility, macOS, bidirectional carets (D203, D204).
 
 ## A desktop window
 

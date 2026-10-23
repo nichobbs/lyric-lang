@@ -157,11 +157,14 @@ pub record MiddleEndOptions {
   /// (`f[Int](...)`), which the `?` and `await` hoists leave in their calls
   /// (#8279).  The caller passes it to `pipeWeave` for the `await` hoist.
   typeArgCalleesOut: Map[String, Bool]
-  /// Receives every visible (`pub` or `internal`) generic function with a
-  /// body, as it stands just before monomorphisation, which erases them from
-  /// the file.  A backend that instantiates generics itself at the call (native)
-  /// appends them to the package's output so another package of the project
-  /// can call them.  Other backends pass a list and ignore it.
+  /// Receives every generic function with a body, as it stands just before
+  /// monomorphisation, which erases them from the file.  A backend that
+  /// instantiates generics itself at the call (native) appends them to the
+  /// package's output so another package of the project can call them.  The
+  /// private ones are included: instantiating a `pub` generic in another
+  /// package compiles its body there, and that body may call a private
+  /// generic of its own package (#8417).  Other backends pass a list and
+  /// ignore it.
   genericItemsOut: List[Item]
   /// Receives, on native, each specialisation of another package's
   /// value-generic record this package uses (D173 item 3), with the package
@@ -1108,6 +1111,96 @@ pub func lowerArraySites(file: in SourceFile, sym: in SymbolTable, primitiveArra
   )
 }
 
+/// Qualify each bare enum case-name pattern the type checker resolved against
+/// an enum scrutinee (`SymbolTable.enumCasePatternSites`, #8421): `case Select`
+/// becomes `case Ui.Core.WidgetKind.Select`, so a backend that reduces an enum
+/// to its ordinal compares against the scrutinee's own enum even when another
+/// enum in the program has a case of the same name.
+pub func qualifyEnumCasePatterns(file: in SourceFile, sites: in Map[String, String]): SourceFile {
+  if mapKeys(sites).count == 0 {
+    return file
+  }
+  mapExprsInFile(
+    file,
+    { e: Expr ->
+      match e.kind {
+        case EMatch(scrutinee, arms) -> {
+          val qualified: List[MatchArm] = newList()
+          for arm in arms {
+            qualified.add(
+              MatchArm(pattern = qualifyEnumCasePattern(arm.pattern, sites), guard = arm.guard, body = arm.body, span = arm.span)
+            )
+          }
+          Expr(kind = EMatch(scrutinee = scrutinee, arms = qualified), span = e.span)
+        }
+        case _ -> e
+      }
+    }
+  )
+}
+
+func qualifyEnumCasePattern(p: in Pattern, sites: in Map[String, String]): Pattern {
+  match p.kind {
+    case PBinding(name, inner) -> match inner {
+      case Some(ip) -> Pattern(
+        kind = PBinding(
+          name = name,
+          inner = Some(value = qualifyEnumCasePattern(ip, sites))
+        ),
+        span = p.span
+      )
+      case None -> match mapGet(sites, recordCopySiteKey(p.span)) {
+        case Some(enumPath) -> {
+          val segs = dottedSegments(enumPath)
+          segs.add(name)
+          val noArgs: List[Pattern] = newList()
+          Pattern(kind = PConstructor(head = ModulePath(segments = segs, span = p.span), args = noArgs), span = p.span)
+        }
+        case None -> p
+      }
+    }
+    case PConstructor(head, args) -> {
+      val inner: List[Pattern] = newList()
+      for a in args {
+        inner.add(qualifyEnumCasePattern(a, sites))
+      }
+      Pattern(kind = PConstructor(head = head, args = inner), span = p.span)
+    }
+    case PRecord(head, fields, ignoreRest) -> {
+      val fs: List[RecordPatternField] = newList()
+      for f in fields {
+        match f {
+          case RPFNamed(fname, fp, fsp) -> fs.add(
+            RPFNamed(name = fname, pattern = qualifyEnumCasePattern(fp, sites), span = fsp)
+          )
+          case other -> fs.add(other)
+        }
+      }
+      Pattern(kind = PRecord(head = head, fields = fs, ignoreRest = ignoreRest), span = p.span)
+    }
+    case PTuple(ps) -> {
+      val qualifiedTuple: List[Pattern] = newList()
+      for q in ps {
+        qualifiedTuple.add(qualifyEnumCasePattern(q, sites))
+      }
+      Pattern(kind = PTuple(patterns = qualifiedTuple), span = p.span)
+    }
+    case PParen(ip) -> Pattern(kind = PParen(inner = qualifyEnumCasePattern(ip, sites)), span = p.span)
+    case PTypeTest(ip, ty) -> Pattern(
+      kind = PTypeTest(inner = qualifyEnumCasePattern(ip, sites), ty = ty),
+      span = p.span
+    )
+    case POr(ps) -> {
+      val qualifiedAlts: List[Pattern] = newList()
+      for q in ps {
+        qualifiedAlts.add(qualifyEnumCasePattern(q, sites))
+      }
+      Pattern(kind = POr(patterns = qualifiedAlts), span = p.span)
+    }
+    case _ -> p
+  }
+}
+
 pub func pipeCheckAndMono(
   file0: in SourceFile,
   importedPkgs: in List[ImportedPackage],
@@ -1187,18 +1280,25 @@ pub func pipeCheckAndMono(
     ),
     if opts.arraysAsLists { noUnionSites } else { tcRes.symbols.valueUnionCtorSites }
   )
-  val derivedLens = if opts.nativeIntrinsics {
+  val derivedLens1 = if opts.nativeIntrinsics {
     spellLambdaGenericCallTypeArgs(derivedLens0, tcRes.symbols.genericCallTypeArgSites)
   } else {
     derivedLens0
   }
+  // Native erases an enum to its ordinal, so a bare case-name pattern would
+  // resolve bundle-wide (first enum wins); the checker knows the scrutinee's
+  // enum, so the pattern is qualified with it here (#8421).
+  val derivedLens = if opts.nativeIntrinsics {
+    qualifyEnumCasePatterns(derivedLens1, tcRes.symbols.enumCasePatternSites)
+  } else {
+    derivedLens1
+  }
   for gi in derivedLens.items {
     match gi.kind {
       case IFunc(gd) -> {
-        val visible = match gd.visibility { case Some(_) -> true; case None -> false }
         val isGen = match gd.generics { case Some(_) -> true; case None -> false }
         val hasBody = match gd.body { case Some(_) -> true; case None -> false }
-        if visible and isGen and hasBody {
+        if isGen and hasBody {
           opts.genericItemsOut.add(gi)
         }
       }

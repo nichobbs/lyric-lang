@@ -113,6 +113,84 @@ func frameOf(hl: Native.Headless): Result[buffer[Byte], String] {
   Native.snapshot(hl)
 }
 
+// Sixty short words: long enough to wrap onto several lines of the notes area.
+func longText(): String {
+  var s = ""
+  var i = 0
+  while i < 60 {
+    s = s + "word" + i.toString() + " "
+    i = i + 1
+  }
+  s
+}
+
+// The notes field is a text area: it wraps long text, grows with it, and the caret moves by visual
+// line with the keys and the mouse.
+func notesScenario(hl: Native.Headless, dir: String, update: Bool): Result[Unit, String] {
+  val area0 = match Native.firstOfKind(hl, "textArea") {
+    case Some(b) -> b
+    case None -> return Err(error = "no notes area")
+  }
+  click(hl, area0)
+  typed(hl, "First line")
+  key(hl, 13, 0)
+  typed(hl, longText())
+  val area1 = match Native.firstOfKind(hl, "textArea") {
+    case Some(b) -> b
+    case None -> return Err(error = "no notes area after typing")
+  }
+  val rows = Native.areaRows(hl, area1)
+  match verify(rows >= 4, "the long text wraps onto several lines (" + rows.toString() + ")") {
+    case Ok(_) -> ()
+    case Err(m) -> return Err(error = m)
+  }
+  match verify(area1.h > area0.h, "the notes area grew with its text (" + area0.h.toString() + " to " + area1.h.toString() + ")") {
+    case Ok(_) -> ()
+    case Err(m) -> return Err(error = m)
+  }
+  val total = Native.caretOf(hl)
+  match verify(Native.caretRow(hl) == rows - 1, "the caret is on the last line after typing") {
+    case Ok(_) -> ()
+    case Err(m) -> return Err(error = m)
+  }
+  key(hl, 1073741906, 0)
+  match verify(Native.caretRow(hl) == rows - 2 and Native.caretOf(hl) < total, "Up moves to the line above") {
+    case Ok(_) -> ()
+    case Err(m) -> return Err(error = m)
+  }
+  key(hl, 1073741905, 0)
+  match verify(Native.caretRow(hl) == rows - 1 and Native.caretOf(hl) == total, "Down comes back to the same column") {
+    case Ok(_) -> ()
+    case Err(m) -> return Err(error = m)
+  }
+  key(hl, 1073741898, 0)
+  match verify(Native.caretRow(hl) == rows - 1 and Native.caretOf(hl) < total, "Home goes to the start of the visual line") {
+    case Ok(_) -> ()
+    case Err(m) -> return Err(error = m)
+  }
+  key(hl, 1073741901, 0)
+  match verify(Native.caretOf(hl) == total, "End goes to the end of the line") {
+    case Ok(_) -> ()
+    case Err(m) -> return Err(error = m)
+  }
+  val events: List[Window.Event] = newList()
+  val x = area1.x + 60.0f32
+  val y = area1.y + 7.0f32 + 27.0f32
+  events.add(Window.MouseMotion(window = 0, x = x, y = y, dx = 0.0f32, dy = 0.0f32))
+  events.add(Window.MouseButtonDown(window = 0, button = 1, x = x, y = y, clicks = 1))
+  events.add(Window.MouseButtonUp(window = 0, button = 1, x = x, y = y, clicks = 1))
+  Native.script(hl, events)
+  match verify(Native.caretRow(hl) == 1, "a click places the caret on the line under it") {
+    case Ok(_) -> ()
+    case Err(m) -> return Err(error = m)
+  }
+  key(hl, 1073741901, 0)
+  key(hl, 1073741905, 1)
+  key(hl, 1073741905, 1)
+  val selectedFrame = match frameOf(hl) { case Ok(p) -> p; case Err(m) -> return Err(error = m) }
+  compare("notes", dir, update, selectedFrame)
+}
+
 func scenario(hl: Native.Headless, dir: String, update: Bool): Result[Unit, String] {
   Native.settle(hl, 150, 5000)
   val listFrame = match frameOf(hl) { case Ok(p) -> p; case Err(m) -> return Err(error = m) }
@@ -182,6 +260,11 @@ func scenario(hl: Native.Headless, dir: String, update: Bool): Result[Unit, Stri
   key(hl, 8, 0)
   val editedFrame = match frameOf(hl) { case Ok(p) -> p; case Err(m) -> return Err(error = m) }
   match compare("edited", dir, update, editedFrame) {
+    case Ok(_) -> ()
+    case Err(m) -> return Err(error = m)
+  }
+
+  match notesScenario(hl, dir, update) {
     case Ok(_) -> ()
     case Err(m) -> return Err(error = m)
   }

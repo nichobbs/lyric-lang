@@ -16,6 +16,7 @@ import Std.Encoding.{codepointToString}
 import Std.Parse.{parseOptInt}
 import Ui.Core.{Prop}
 import Ui.Native.Layout.{Box, Metrics, propOf, gridColumns}
+import Ui.Native.Wrap
 
 // ─── Focus ────────────────────────────────────────────────────────────────────
 /// The boxes Tab visits, in tree order.
@@ -176,11 +177,15 @@ func chainTo(b: Box, path: List[Int]): Option[List[Box]] {
 
 // ─── Text editing ─────────────────────────────────────────────────────────────
 /// A caret and the other stop of the selection (equal to the caret when nothing is selected), in
-/// code points, and the horizontal scroll of a single-line input.
+/// code points, the horizontal scroll of a single-line input and the vertical scroll of a text
+/// area, and the column (pixels from the left of its line) that Up and Down keep to across lines
+/// of different length, or negative when there is none.
 pub record TextEdit {
   caret: Int
   anchor: Int
   scrollX: Float
+  goalX: Float = -1.0f32
+  scrollY: Float = 0.0f32
 }
 
 pub func emptyEdit(): TextEdit {
@@ -259,7 +264,7 @@ pub func insertText(value: in String, e: in TextEdit, text: in String, maxLength
   val before = cpSlice(value, 0, lo(c))
   val after = cpSlice(value, hi(c), cpCount(value))
   val caret = lo(c) + cpCount(typed)
-  Edited(value = before + typed + after, edit = c.copy(caret = caret, anchor = caret), changed = true)
+  Edited(value = before + typed + after, edit = c.copy(caret = caret, anchor = caret, goalX = -1.0f32), changed = true)
 }
 
 /// Backspace: deletes the selection, or the code point before the caret.
@@ -290,7 +295,7 @@ pub func deleteForward(value: in String, e: in TextEdit): Edited {
 pub func moveCaret(value: in String, e: in TextEdit, position: in Int, select: in Bool): TextEdit {
   val n = cpCount(value)
   val p = if position < 0 { 0 } else if position > n { n } else { position }
-  e.copy(caret = p, anchor = if select { e.anchor } else { p })
+  e.copy(caret = p, anchor = if select { e.anchor } else { p }, goalX = -1.0f32)
 }
 
 /// Left or right by one code point; with a selection and no `select`, to its edge.
@@ -298,7 +303,7 @@ pub func stepCaret(value: in String, e: in TextEdit, delta: in Int, select: in B
   val c = clampEdit(value, e)
   if not select and hi(c) > lo(c) {
     val p = if delta < 0 { lo(c) } else { hi(c) }
-    return c.copy(caret = p, anchor = p)
+    return c.copy(caret = p, anchor = p, goalX = -1.0f32)
   }
   moveCaret(value, c, c.caret + delta, select)
 }
@@ -330,6 +335,61 @@ pub func wordAt(value: in String, position: in Int): TextEdit {
     to = to + 1
   }
   TextEdit(caret = to, anchor = from, scrollX = 0.0f32)
+}
+
+/// The selection a triple click at code point `position` makes in a text area: the line between
+/// the newlines around it, with the caret at its end.
+pub func paragraphAt(value: in String, position: in Int): TextEdit {
+  val cps = codePoints(value)
+  val n = cps.length
+  val at = if position > n { n } else if position < 0 { 0 } else { position }
+  var from = at
+  while from > 0 and cps[from - 1] != 10 {
+    from = from - 1
+  }
+  var to = at
+  while to < n and cps[to] != 10 {
+    to = to + 1
+  }
+  TextEdit(caret = to, anchor = from, scrollX = 0.0f32)
+}
+
+/// Up (`delta` -1) or Down (1) by a visual line of a text area, keeping to the column the caret
+/// started from; Up on the first line goes to the start and Down on the last to the end.
+/// `lines` are the area's wrapped lines (`Ui.Native.Wrap.wrapLines`).
+pub func moveVertical(
+  value: in String,
+  lines: in List[Wrap.VisualLine],
+  e: in TextEdit,
+  delta: in Int,
+  select: in Bool,
+  widthOf: in (String) -> Float,
+): TextEdit {
+  val c = clampEdit(value, e)
+  val row = Wrap.lineIndexOf(lines, c.caret)
+  val goal = if c.goalX >= 0.0f32 { c.goalX } else { Wrap.caretOffset(value, lines, c.caret, widthOf) }
+  val target = row + delta
+  val p = if target < 0 {
+    0
+  } else if target >= lines.count {
+    cpCount(value)
+  } else {
+    Wrap.positionAt(value, lines, target, goal, widthOf)
+  }
+  c.copy(caret = p, anchor = if select { c.anchor } else { p }, goalX = goal)
+}
+
+/// Home (`toEnd` false) or End on the visual line of a text area the caret is on.
+pub func moveToLineEdge(
+  value: in String,
+  lines: in List[Wrap.VisualLine],
+  e: in TextEdit,
+  toEnd: in Bool,
+  select: in Bool,
+): TextEdit {
+  val c = clampEdit(value, e)
+  val row = Wrap.lineIndexOf(lines, c.caret)
+  moveCaret(value, c, if toEnd { Wrap.lastCaret(lines, row) } else { Wrap.firstCaret(lines, row) }, select)
 }
 
 /// The caret position nearest to pixel `x` (relative to the text's left edge).

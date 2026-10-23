@@ -152,8 +152,7 @@ func topUpAudio(audio: Option[Window.Audio], mixer: Mixer): Unit {
 }
 
 // One rendered frame: acquire, draw, present.  An unavailable frame means reconfigure and retry.
-// pub only because a private generic helper cannot be called from another package (#8417).
-pub func drawFrame[S](
+func drawFrame[S](
   d: Gpu.Device,
   surface: Gpu.Surface,
   painter: Draw.Painter,
@@ -176,8 +175,7 @@ pub func drawFrame[S](
   }
 }
 
-// pub only because a private generic helper cannot be called from another package (#8417).
-pub func frameLoop[S](d: Gpu.Device, win: Window.Window, surface0: Gpu.Surface, config: Config, game: Game[S]): Int {
+func frameLoop[S](d: Gpu.Device, win: Window.Window, surface0: Gpu.Surface, config: Config, game: Game[S]): Int {
   var surface = surface0
   val painter = match Draw.newPainter(d, surface.format) { case Ok(p) -> p; case Err(m) -> return fail(m) }
   val mixer = newMixer(audioRate)

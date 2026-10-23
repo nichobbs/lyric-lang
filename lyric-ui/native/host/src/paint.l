@@ -19,8 +19,9 @@ import Draw
 import Text
 import Ui.Core.{Prop}
 import Ui.Native.Theme.{Theme, Rgba, withAlpha, toneColour, styleBody, styleBold, styleSmall, styleH1, styleH2, styleH3, styleCount}
-import Ui.Native.Layout.{Box, Metrics, Size, propOf}
+import Ui.Native.Layout.{Box, Metrics, Size, propOf, textAreaPadding}
 import Ui.Native.Interact.{TextEdit, cpSlice, cpCount}
+import Ui.Native.Wrap
 
 /// One font fallback chain per text style, indexed by the style numbers of `Ui.Native.Theme`.
 pub record Fonts {
@@ -56,6 +57,10 @@ pub record PaintCtx {
   composing: String
   /// The id of the select whose popup is open ("" for none).
   openSelect: String
+  /// Device pixels per logical pixel: the fonts are opened at this multiple of their logical size.
+  scale: Float
+  /// The wrapped lines of a text area showing a text (cached by the host, since shaping is not free).
+  areaLines: (Box, String) -> List[Wrap.VisualLine]
 }
 
 func col(c: Rgba): Draw.Color {
@@ -75,12 +80,21 @@ func say(ctx: PaintCtx, p: Draw.Painter, style: Int, text: String, x: Float, y: 
   }
 }
 
+// The fonts are opened at the display's scale, so their sizes are in device pixels; positions are
+// in logical pixels.
 func lineOf(ctx: PaintCtx, style: Int): Float {
-  ctx.fonts.chains[style][0].lineHeight
+  ctx.fonts.chains[style][0].lineHeight / ctx.scale
 }
 
+// The advance of `text`, trailing spaces included: a layout leaves them out of a line's width, but a
+// caret after a space is a space-width to the right of one before it.
 func widthOf(ctx: PaintCtx, style: Int, text: String): Float {
-  Text.measureText(ctx.fonts.chains[style], text)
+  val chain = ctx.fonts.chains[style]
+  if text.length > 0 and text.endsWith(" ") {
+    (Text.measureText(chain, text + "x") - Text.measureText(chain, "x")) / ctx.scale
+  } else {
+    Text.measureText(chain, text) / ctx.scale
+  }
 }
 
 func flag(props: List[Prop], name: String): Bool {
@@ -308,13 +322,17 @@ func paintButton(b: Box, p: Draw.Painter, ctx: PaintCtx, focused: Bool, hovered:
 }
 
 func paintInput(b: Box, p: Draw.Painter, ctx: PaintCtx, id: String, focused: Bool, invalid: Bool): Unit {
+  if b.kind == "textArea" {
+    paintTextArea(b, p, ctx, id, focused, invalid)
+    return
+  }
   val t = ctx.theme
   val pad = t.inputPadding
   val edge = if invalid { t.danger } else { t.border }
   Draw.fillRoundedRect(p, rect(b.x, b.y, b.w, b.h), t.radius, col(t.surface))
   Draw.strokeRoundedRect(p, rect(b.x, b.y, b.w, b.h), t.radius, 1.0f32, col(edge))
   val lh = lineOf(ctx, styleBody)
-  val ty = if b.kind == "textArea" { b.y + 7.0f32 } else { b.y + (b.h - lh) / 2.0f32 }
+  val ty = b.y + (b.h - lh) / 2.0f32
   Draw.pushClip(p, rect(b.x + 1.0f32, b.y + 1.0f32, b.w - 2.0f32, b.h - 2.0f32))
   val e = if focused { ctx.editOf(id) } else { Ui.Native.Interact.emptyEdit() }
   val value = b.text
@@ -323,33 +341,29 @@ func paintInput(b: Box, p: Draw.Painter, ctx: PaintCtx, id: String, focused: Boo
   if value.length == 0 and not (focused and ctx.composing.length > 0) {
     say(ctx, p, styleBody, placeholder, x0, ty, 0.0f32, t.muted)
   }
-  if b.kind == "textArea" {
-    paintLines(ctx, p, b, value, x0, ty, e, focused)
+  if focused and e.anchor != e.caret {
+    val a = if e.anchor < e.caret { e.anchor } else { e.caret }
+    val z = if e.anchor < e.caret { e.caret } else { e.anchor }
+    val sx = x0 + widthOf(ctx, styleBody, cpSlice(value, 0, a))
+    val ex = x0 + widthOf(ctx, styleBody, cpSlice(value, 0, z))
+    Draw.fillRect(p, rect(sx, ty, ex - sx, lh), col(withAlpha(t.accent, 0.3f32)))
+  }
+  if focused and ctx.composing.length > 0 {
+    val cx = x0 + widthOf(ctx, styleBody, cpSlice(value, 0, e.caret))
+    val before = cpSlice(value, 0, e.caret)
+    val after = cpSlice(value, e.caret, cpCount(value))
+    say(ctx, p, styleBody, before, x0, ty, 0.0f32, t.text)
+    val cw = widthOf(ctx, styleBody, ctx.composing)
+    say(ctx, p, styleBody, ctx.composing, cx, ty, 0.0f32, t.text)
+    Draw.fillRect(p, rect(cx, ty + lh - 1.0f32, cw, 1.0f32), col(t.text))
+    say(ctx, p, styleBody, after, cx + cw, ty, 0.0f32, t.text)
   } else {
-    if focused and e.anchor != e.caret {
-      val a = if e.anchor < e.caret { e.anchor } else { e.caret }
-      val z = if e.anchor < e.caret { e.caret } else { e.anchor }
-      val sx = x0 + widthOf(ctx, styleBody, cpSlice(value, 0, a))
-      val ex = x0 + widthOf(ctx, styleBody, cpSlice(value, 0, z))
-      Draw.fillRect(p, rect(sx, ty, ex - sx, lh), col(withAlpha(t.accent, 0.3f32)))
-    }
-    if focused and ctx.composing.length > 0 {
-      val cx = x0 + widthOf(ctx, styleBody, cpSlice(value, 0, e.caret))
-      val before = cpSlice(value, 0, e.caret)
-      val after = cpSlice(value, e.caret, cpCount(value))
-      say(ctx, p, styleBody, before, x0, ty, 0.0f32, t.text)
-      val cw = widthOf(ctx, styleBody, ctx.composing)
-      say(ctx, p, styleBody, ctx.composing, cx, ty, 0.0f32, t.text)
-      Draw.fillRect(p, rect(cx, ty + lh - 1.0f32, cw, 1.0f32), col(t.text))
-      say(ctx, p, styleBody, after, cx + cw, ty, 0.0f32, t.text)
-    } else {
-      say(ctx, p, styleBody, value, x0, ty, 0.0f32, t.text)
-    }
-    if focused and (ctx.time * 2.0f32).toInt() % 2 == 0 {
-      val cx = x0 + widthOf(ctx, styleBody, cpSlice(value, 0, e.caret)) +
-        (if ctx.composing.length > 0 { widthOf(ctx, styleBody, ctx.composing) } else { 0.0f32 })
-      Draw.fillRect(p, rect(cx, ty, 1.0f32, lh), col(t.text))
-    }
+    say(ctx, p, styleBody, value, x0, ty, 0.0f32, t.text)
+  }
+  if focused and (ctx.time * 2.0f32).toInt() % 2 == 0 {
+    val cx = x0 + widthOf(ctx, styleBody, cpSlice(value, 0, e.caret)) +
+      (if ctx.composing.length > 0 { widthOf(ctx, styleBody, ctx.composing) } else { 0.0f32 })
+    Draw.fillRect(p, rect(cx, ty, 1.0f32, lh), col(t.text))
   }
   Draw.popClip(p)
   if focused {
@@ -357,22 +371,62 @@ func paintInput(b: Box, p: Draw.Painter, ctx: PaintCtx, id: String, focused: Boo
   }
 }
 
-// A text area: lines split at newlines, the caret placed by line and column.
-func paintLines(
-  ctx: PaintCtx, p: Draw.Painter, b: Box, value: String, x0: Float, y0: Float, e: TextEdit, focused: Bool
-): Unit {
+// A text area: the wrapped lines of its text from the top, shifted up by its scroll, with the
+// selection as one band per line, the text being composed underlined, and the caret on its line.
+func paintTextArea(b: Box, p: Draw.Painter, ctx: PaintCtx, id: String, focused: Bool, invalid: Bool): Unit {
+  val t = ctx.theme
+  val edge = if invalid { t.danger } else { t.border }
+  Draw.fillRoundedRect(p, rect(b.x, b.y, b.w, b.h), t.radius, col(t.surface))
+  Draw.strokeRoundedRect(p, rect(b.x, b.y, b.w, b.h), t.radius, 1.0f32, col(edge))
   val lh = lineOf(ctx, styleBody)
-  var y = y0
-  var consumed = 0
-  for line in split(value, "\n") {
-    say(ctx, p, styleBody, line, x0, y, 0.0f32, ctx.theme.text)
-    val n = cpCount(line)
-    if focused and e.caret >= consumed and e.caret <= consumed + n and (ctx.time * 2.0f32).toInt() % 2 == 0 {
-      val cx = x0 + widthOf(ctx, styleBody, cpSlice(line, 0, e.caret - consumed))
-      Draw.fillRect(p, rect(cx, y, 1.0f32, lh), col(ctx.theme.text))
+  val e = ctx.editOf(id)
+  val value = b.text
+  val composing = if focused { ctx.composing } else { "" }
+  val n = cpCount(value)
+  val caret = if e.caret > n { n } else if e.caret < 0 { 0 } else { e.caret }
+  val shown = if composing.length > 0 { cpSlice(value, 0, caret) + composing + cpSlice(value, caret, n) } else { value }
+  val lines = ctx.areaLines(b, shown)
+  val left = b.x + t.inputPadding
+  val top = b.y + textAreaPadding - e.scrollY
+  val widthOfText = { s: String -> widthOf(ctx, styleBody, s) }
+  Draw.pushClip(p, rect(b.x + 1.0f32, b.y + 1.0f32, b.w - 2.0f32, b.h - 2.0f32))
+  if value.length == 0 and composing.length == 0 {
+    say(ctx, p, styleBody, propOf(b.props, "placeholder", ""), left, top, 0.0f32, t.muted)
+  }
+  if focused and e.anchor != e.caret and composing.length == 0 {
+    val a = if e.anchor < e.caret { e.anchor } else { e.caret }
+    val z = if e.anchor < e.caret { e.caret } else { e.anchor }
+    for span in Wrap.selectionRows(lines, a, z) {
+      val x0 = left + Wrap.offsetInRow(shown, lines, span.row, span.from, widthOfText)
+      val x1 = left + Wrap.offsetInRow(shown, lines, span.row, span.to, widthOfText) +
+        (if span.breakSelected { 6.0f32 } else { 0.0f32 })
+      Draw.fillRect(p, rect(x0, top + span.row.toFloat() * lh, x1 - x0, lh), col(withAlpha(t.accent, 0.3f32)))
     }
-    consumed = consumed + n + 1
-    y = y + lh
+  }
+  var row = 0
+  for l in lines {
+    val y = top + row.toFloat() * lh
+    if y + lh >= b.y and y <= b.y + b.h {
+      say(ctx, p, styleBody, cpSlice(shown, l.from, l.to), left, y, 0.0f32, t.text)
+    }
+    row = row + 1
+  }
+  if composing.length > 0 {
+    for span in Wrap.selectionRows(lines, caret, caret + cpCount(composing)) {
+      val x0 = left + Wrap.offsetInRow(shown, lines, span.row, span.from, widthOfText)
+      val x1 = left + Wrap.offsetInRow(shown, lines, span.row, span.to, widthOfText)
+      Draw.fillRect(p, rect(x0, top + span.row.toFloat() * lh + lh - 1.0f32, x1 - x0, 1.0f32), col(t.text))
+    }
+  }
+  if focused and (ctx.time * 2.0f32).toInt() % 2 == 0 {
+    val at = caret + cpCount(composing)
+    val caretRow = Wrap.lineIndexOf(lines, at)
+    val cx = left + Wrap.offsetInRow(shown, lines, caretRow, at, widthOfText)
+    Draw.fillRect(p, rect(cx, top + caretRow.toFloat() * lh, 1.0f32, lh), col(t.text))
+  }
+  Draw.popClip(p)
+  if focused {
+    focusRing(p, ctx, b, t.radius)
   }
 }
 

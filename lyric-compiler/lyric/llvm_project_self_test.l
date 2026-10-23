@@ -138,6 +138,99 @@ test "two-package project: entry package first, imports a sibling function (ASan
   assertTrue(Str.contains(outcome.stdout, "hi native"), "sibling package function output made it to stdout")
 }
 
+// #8417: instantiating a `pub` generic of another package compiles its body in the caller's
+// package, and that body may call a PRIVATE generic of its own package (here `twice`, reached
+// from `pub func run` both directly and through a lambda).  Before the fix the private generic
+// was not carried with the package, so codegen could not resolve `twice/2` (N0007).
+test "pub generic calls a private generic of its own package from another package (ASan)" {
+  val pkgs: List[NativeSourcePackage] = newList()
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Priv.App",
+      path = "",
+      source = "package Priv.App\n" + "import Priv.Lib\n" + "import Std.Console as Console\n" + "func main(): Int {\n" +
+        "  Console.println(\"run=\" + run(5, { v: Int -> v * 2 }).toString())\n" +
+        "  Console.println(\"viaLambda=\" + runViaLambda(7, { v: Int -> v + 1 }).toString())\n" +
+        "  0\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Priv.Lib",
+      path = "",
+      source = "package Priv.Lib\n" + "func twice[S](x: S, f: (S) -> Int): Int {\n" + "  f(x) + f(x)\n" + "}\n" +
+        "pub func run[S](x: S, f: (S) -> Int): Int {\n" +
+        "  twice(x, f)\n" +
+        "}\n" +
+        "pub func runViaLambda[S](x: S, f: (S) -> Int): Int {\n" +
+        "  val body: (Int) -> Int = { n: Int -> twice(x, f) + n }\n" +
+        "  body(1)\n" +
+        "}\n"
+    )
+  )
+  val outcome = compileAndRunProject(pkgs)
+  assertEqualInt(outcome.exitCode, 0, "private-generic project exit code")
+  assertTrue(Str.contains(outcome.stdout, "run=20"), "pub generic reached its private generic helper")
+  assertTrue(Str.contains(outcome.stdout, "viaLambda=17"), "a lambda inside the pub generic reached it too")
+}
+
+// #8421: two enums in two packages share the case names `Text` and `Select` at different
+// ordinals.  The match scrutinee is a field of a record from the other package, so the arms
+// resolve against the field's own enum, not the first enum with a case of that name.
+test "bare case names of two enums in different packages resolve per scrutinee (ASan)" {
+  val pkgs: List[NativeSourcePackage] = newList()
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Enum.App",
+      path = "",
+      source = "package Enum.App\n" + "import Enum.Widgets\n" + "import Enum.Forms\n" +
+        "import Std.Console as Console\n" +
+        "func main(): Int {\n" +
+        "  Console.println(\"widget=\" + widgetName(Widget(kind = WidgetKind.Select)))\n" +
+        "  Console.println(\"field=\" + fieldName(Field(kind = InputKind.Text)))\n" +
+        "  0\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Enum.Forms",
+      path = "",
+      source = "package Enum.Forms\n" + "pub enum InputKind {\n" + "  case Text\n" + "  case Select\n" + "}\n" +
+        "pub record Field {\n" +
+        "  kind: InputKind\n" +
+        "}\n" +
+        "pub func fieldName(f: in Field): String {\n" +
+        "  match f.kind {\n" +
+        "    case Text -> \"text\"\n" +
+        "    case Select -> \"select\"\n" +
+        "  }\n" +
+        "}\n"
+    )
+  )
+  pkgs.add(
+    NativeSourcePackage(
+      name = "Enum.Widgets",
+      path = "",
+      source = "package Enum.Widgets\n" + "pub enum WidgetKind {\n" + "  case Select\n" + "  case Text\n" + "}\n" +
+        "pub record Widget {\n" +
+        "  kind: WidgetKind\n" +
+        "}\n" +
+        "pub func widgetName(w: in Widget): String {\n" +
+        "  match w.kind {\n" +
+        "    case Select -> \"select\"\n" +
+        "    case Text -> \"text\"\n" +
+        "  }\n" +
+        "}\n"
+    )
+  )
+  val outcome = compileAndRunProject(pkgs)
+  assertEqualInt(outcome.exitCode, 0, "two-enum project exit code")
+  assertTrue(Str.contains(outcome.stdout, "widget=select"), "WidgetKind.Select matched its own Select arm")
+  assertTrue(Str.contains(outcome.stdout, "field=text"), "InputKind.Text matched its own Text arm")
+}
+
 // #6580 (native parity): a qualified call to an `internal` (not `pub`)
 // function declared in a sibling own-project package must resolve. Before
 // the fix, `pipeIsCrossPackageItemProject`'s pub-only predecessor

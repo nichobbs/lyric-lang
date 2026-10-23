@@ -9728,6 +9728,7 @@ func bindPatternTyped(
           recordCasePatternSite(tbl, pat.span)
           if scrutineeHasCaseNamed(tbl, ty, name) {
             recordCasePatternUnion(tbl, pat.span, ty)
+            recordEnumCasePattern(tbl, pat.span, ty)
           }
         } else {
           scopeAdd(sc, LocalBinding(name = name, ty = eraseTyVars(ty), isMutable = false))
@@ -14423,6 +14424,31 @@ func recordCasePatternSite(tbl: in SymbolTable, sp: in Span): Unit {
   val key = recordCopySiteKey(sp)
   if not tbl.casePatternSites.containsKey(key) {
     tbl.casePatternSites.add(key, true)
+  }
+}
+
+// Record the enum a bare case-name pattern at `sp` matches, when the
+// scrutinee `ty` is an enum (`SymbolTable.enumCasePatternSites`, #8421).
+func recordEnumCasePattern(tbl: in SymbolTable, sp: in Span, ty: in Type): Unit {
+  if isNoSourceSpan(sp) or sp.endPos.offset <= sp.startPos.offset {
+    return
+  }
+  match unrefine(ty) {
+    case TyUser(tid, _, _) -> match symTableTypeSymbolOf(tbl, tid) {
+      case Some(sym) -> match sym.kind {
+        case DKEnum(_, _) -> {
+          if sym.originPackage.length > 0 {
+            val key = recordCopySiteKey(sp)
+            if not tbl.enumCasePatternSites.containsKey(key) {
+              tbl.enumCasePatternSites.add(key, sym.originPackage + "." + sym.name)
+            }
+          }
+        }
+        case _ -> ()
+      }
+      case None -> ()
+    }
+    case _ -> ()
   }
 }
 

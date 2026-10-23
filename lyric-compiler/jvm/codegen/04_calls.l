@@ -4636,6 +4636,26 @@ func lowerGeneralStaticCall(
     i = i + 1
   }
   val posGsc = path.span.startPos
+  // A specialised copy of another package's generic is generated against that package's scope
+  // (`originScopedExternTypes` records it as `~ctor-own~`): only its `pub` functions can be
+  // called from the calling package's class, the rule `--target dotnet` reports as T0123.
+  val originOwn = match mapGet(ctx.externTypes, "~ctor-own~") { case Some(o) -> o; case None -> "" }
+  if originOwn.length > 0 and originOwn != ctx.className.replace(".", "/") {
+    panic(
+      "error[T0123] " + toString(posGsc.line) + ":" + toString(posGsc.column) + ": unresolved call to '" + funcName +
+        "' inside a generic function declared in package '" +
+        originOwn.replace("/", ".") +
+        "', specialised into package '" +
+        ctx.className +
+        "'. A generic function's body is compiled into each package that calls it, so every function it calls must be `pub` in '" +
+        originOwn.replace("/", ".") +
+        "' or in a package '" +
+        originOwn.replace("/", ".") +
+        "' imports; make '" +
+        funcName +
+        "' `pub`."
+    )
+  }
   panic(
     "Jvm.Codegen: " + toString(posGsc.line) + ":" + toString(posGsc.column) + ": unresolved call to '" + funcName +
       "' (arity " +

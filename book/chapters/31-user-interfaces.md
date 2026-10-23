@@ -726,7 +726,7 @@ the language reference §9.4.
 The library, the forms helpers and the example build and pass their tests
 on both `--target dotnet` and `--target jvm`. The web host serves browsers
 from either runtime, and the desktop host opens its window from either.
-The native target also has a host that draws the screens itself, with no webview (`Ui.Native.Run.run(cfg, route)` in `lyric-ui/native/`, taking the same `route` function): layout, text, focus, a caret and selection, the clipboard and input-method composition are the library's own, and `examples/ui-customers` runs on it unchanged (its composition below the host is `Customers.App`). Accessibility is not yet implemented.
+The native target also has a host that draws the screens itself, with no webview (`Ui.Native.Run.run(cfg, route)` in `lyric-ui/native/`, taking the same `route` function): layout, text, focus, a caret and selection, the clipboard and input-method composition are the library's own, and `examples/ui-customers` runs on it unchanged (its composition below the host is `Customers.App`). A multi-line field (`@multiline`, the `textArea` widget) wraps its text to the box, grows with it and scrolls past a limit, and Up and Down move by line. Accessibility is not yet implemented.
 
 The native target runs the rest of it too: `lyric build --target native` links the example
 and the desktop probe, and the desktop host needs the same `libwebview` as on the

@@ -26,6 +26,7 @@ import Std.JsonValue.{JsonValue, JArray, JObject, parseValue, getString, getArra
 import Ui.Core.{Prop}
 import Ui.Diff.{WireNode, WElement, WText, WEmpty}
 import Ui.Native.Theme.{Theme, styleBody, styleBold, styleSmall, styleH1, styleH2, styleH3}
+import Ui.Native.Wrap
 
 pub record Size {
   w: Float
@@ -237,6 +238,34 @@ func headingStyle(props: List[Prop]): Int {
   }
 }
 
+/// The least and the most a text area is tall: it grows with its wrapped lines between them and
+/// scrolls beyond the most.
+pub val textAreaMinHeight: Float = 88.0f32
+
+pub val textAreaMaxHeight: Float = 264.0f32
+
+/// The padding above and below a text area's lines.
+pub val textAreaPadding: Float = 7.0f32
+
+/// The wrapped lines of a text area `w` wide showing `value`.
+pub func textAreaLines(value: in String, w: in Float, env: in Env): List[Wrap.VisualLine] {
+  val m = env.metrics
+  Wrap.wrapLines(value, w - 2.0f32 * env.theme.inputPadding, { s: String -> m.measure(s, styleBody, 0.0f32).w })
+}
+
+/// The height of a text area `w` wide showing `value`.
+pub func textAreaHeight(value: in String, w: in Float, env: in Env): Float {
+  val lines = textAreaLines(value, w, env)
+  val content = Wrap.contentHeight(lines, env.metrics.lineHeight(styleBody)) + 2.0f32 * textAreaPadding
+  if content < textAreaMinHeight {
+    textAreaMinHeight
+  } else if content > textAreaMaxHeight {
+    textAreaMaxHeight
+  } else {
+    content
+  }
+}
+
 // ─── Natural widths (max-content), for rows and tables ────────────────────────
 /// The width `n` takes when nothing constrains it.
 pub func naturalWidth(n: in WireNode, env: in Env): Float {
@@ -353,18 +382,19 @@ pub func layoutNode(n: in WireNode, path: in List[Int], x: in Float, y: in Float
           not flag(props, "disabled")
         )
       } else if kind == "textArea" {
+        val value = propOf(props, "value", "")
         textBox(
           kind,
           path,
           key,
           props,
           events,
-          propOf(props, "value", ""),
+          value,
           styleBody,
           x,
           y,
           w,
-          88.0f32,
+          textAreaHeight(value, w, env),
           not flag(props, "disabled")
         )
       } else if kind == "checkbox" {
