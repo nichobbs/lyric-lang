@@ -749,7 +749,11 @@ func staticNTypeOf(ctx: in Ctx, e: in Expr): Option[NType] {
         case Some(t) -> match recInfoOfType(ctx, t) {
           case Some(ri) -> {
             val idx = recFieldIndex(ri, field)
-            if idx >= 0 { Some(value = ri.fieldTys[idx]) } else { None }
+            if idx >= 0 {
+              Some(value = ri.fieldTys[idx])
+            } else {
+              None
+            }
           }
           case None -> None
         }
@@ -9831,7 +9835,9 @@ func emitValueHashN(ctx: in Ctx, body: in List[NInsn], t: in NType, a: in String
       val ra = freshTmp(ctx)
       body.add(NBitcast(dest = ra, fromTy = pa.ty, value = pa.value, toTy = NPtr(pointee = NI8)))
       val dest = freshTmp(ctx)
-      body.add(NCall(dest = dest, retTy = NI64, fn = NGlobal(name = fnName), args = arg1(NPtr(pointee = NI8), NLocal(name = ra))))
+      body.add(
+        NCall(dest = dest, retTy = NI64, fn = NGlobal(name = fnName), args = arg1(NPtr(pointee = NI8), NLocal(name = ra)))
+      )
       return dest
     }
     case None -> ()
@@ -9859,7 +9865,9 @@ func emitValueHashN(ctx: in Ctx, body: in List[NInsn], t: in NType, a: in String
       val ra = freshTmp(ctx)
       body.add(NBitcast(dest = ra, fromTy = t, value = NLocal(name = a), toTy = NPtr(pointee = NI8)))
       val dest = freshTmp(ctx)
-      body.add(NCall(dest = dest, retTy = NI64, fn = NGlobal(name = fnName), args = arg1(NPtr(pointee = NI8), NLocal(name = ra))))
+      body.add(
+        NCall(dest = dest, retTy = NI64, fn = NGlobal(name = fnName), args = arg1(NPtr(pointee = NI8), NLocal(name = ra)))
+      )
       return dest
     }
     case None -> ()
@@ -9889,7 +9897,9 @@ func foldHash(ctx: in Ctx, body: in List[NInsn], acc: in String, x: in String): 
   if acc.length == 0 {
     return x
   }
-  localOfValue(callRuntime(ctx, body, "lyric_hash_mix", NI64, arg2(NI64, NLocal(name = acc), NI64, NLocal(name = x))).value)
+  localOfValue(
+    callRuntime(ctx, body, "lyric_hash_mix", NI64, arg2(NI64, NLocal(name = acc), NI64, NLocal(name = x))).value
+  )
 }
 
 func hashOrZero(ctx: in Ctx, body: in List[NInsn], acc: in String): String {
