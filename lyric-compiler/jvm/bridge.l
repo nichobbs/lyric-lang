@@ -1828,23 +1828,21 @@ func collectWovenSigsMatching(
     match file.items[i].kind {
       case IFunc(decl) -> {
         if matchName(decl.name) {
-          val params: List[JvmType] = newList()
+          // An `out`/`inout` parameter is a place reference with its mode
+          // recorded, as for any function (D183): a woven target keeps its
+          // original's modes, and the wrapper's call to it passes the place
+          // (#8368).  #7357: a QUALIFIED param type (`Lambda.LambdaContext`,
+          // the row-constrained B'-mode args-record field's declared type,
+          // `docs/56`) resolves through the extern-type maps first, falling
+          // back to the same-package guess.
+          val params: List[JvmType] = holderAwareParamTypes(decl.params, owner, false, newList(), externTypes)
           val paramNames: List[String] = newList()
+          val paramModes: List[ParamMode] = newList()
           val paramDefaults: List[Option[Expr]] = newList()
           var pi = 0
           while pi < decl.params.count {
-            // #7357: a QUALIFIED param type (`Lambda.LambdaContext`, the row-
-            // constrained B'-mode args-record field's declared type,
-            // `docs/56`) previously erased through the plain `typeExprToJvm`
-            // (no `externTypes` at all) straight to the "same package" guess
-            // — dropping the qualifier entirely, since that function's `TRef`
-            // arm resolves only by `lastSegment`. `typeExprToJvmExtern`
-            // checks the qualified/bare extern-type maps FIRST (falling back
-            // to the same `typeExprToJvm` guess when neither has an entry),
-            // fixing both a qualified reference and a bare cross-package one
-            // this file's `externSeedForFile` seed (now transitive) resolves.
-            params.add(typeExprToJvmExtern(decl.params[pi].ty, owner, externTypes))
             paramNames.add(decl.params[pi].name)
+            paramModes.add(decl.params[pi].mode)
             paramDefaults.add(decl.params[pi].dflt)
             pi = pi + 1
           }
@@ -1855,8 +1853,8 @@ func collectWovenSigsMatching(
             ret = ret,
             paramNames = paramNames,
             paramDefaults = paramDefaults,
-            paramModes = newList(),
-            refElems = newList(),
+            paramModes = paramModes,
+            refElems = holderAwareRefElems(decl.params, owner, false, newList(), externTypes),
             isIface = false,
             retGenericArgs = returnTypeGenericArgs(decl.ret),
             // A closure-returning woven function keeps the pre-fix

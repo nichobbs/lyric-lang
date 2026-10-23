@@ -5057,6 +5057,11 @@ func recordFuncRefSite(
   sp: in Span,
 ): Bool {
   if sig.originPackage.length == 0 or sig.originPackage == symTableScopePkg(tbl) {
+    val byRef = firstByRefParamName(sig)
+    if byRef.length > 0 {
+      diag.add(byRefFuncValueDiag(name, byRef, sp))
+      return false
+    }
     return true
   }
   val ptys: List[Type] = newList()
@@ -5643,6 +5648,26 @@ func pkgFuncSig(
   }
 }
 
+// The first `out`/`inout` parameter of `sig`, or "".  A function type has no
+// by-reference parameters, so such a function is not a function value.
+func firstByRefParamName(sig: in ResolvedSignature): String {
+  for p in sig.params {
+    if modeNeedsLValue(p.mode) {
+      return p.name
+    }
+  }
+  ""
+}
+
+func byRefFuncValueDiag(name: in String, paramName: in String, sp: in Span): Diagnostic {
+  errorDiagnostic(
+    "T0128",
+    "'" + name + "' cannot be used as a function value because parameter '" + paramName +
+      "' is an `out`/`inout` parameter: a function type has no by-reference parameters; wrap the call in a lambda over a `var` instead",
+    sp
+  )
+}
+
 func funcValueType(sig: in ResolvedSignature): Type {
   val pts: List[Type] = newList()
   var i = 0
@@ -5879,6 +5904,13 @@ func resolveExprPath(
             diag.add(errorDiagnostic("T0020", "unknown name '" + name + "'" + hint, span))
             return TyError
           }
+        }
+      }
+      if not tbl.funcRefCallees.containsKey(recordCopySiteKey(span)) {
+        val byRef = firstByRefParamName(sig)
+        if byRef.length > 0 {
+          diag.add(byRefFuncValueDiag(name, byRef, span))
+          return TyError
         }
       }
       val pts: List[Type] = newList()
@@ -13811,7 +13843,17 @@ func byRefReceiverProblem(
       }
       case None -> "this method's own receiver `self` is `in`; declare it `self: inout`"
     }
-    case EMember(base, _) -> fieldPathRootProblem(sc, base)
+    case EMember(base, fname) -> {
+      val scratch: List[Diagnostic] = newList()
+      val fieldVar = fieldIsVar(tbl, inferExpr(sc, tbl, sigs, scratch, base), fname)
+      val notVar = match fieldVar { case Some(isVar) -> not isVar; case None -> false }
+      if notVar {
+        "the field '" + fname +
+          "' is not `var`; declare it `var` on its type, or pass a `var` holding its value and store it back"
+      } else {
+        fieldPathRootProblem(sc, base)
+      }
+    }
     case EIndex(arr, _) -> {
       val problem = elementByRefProblem(sc, tbl, sigs, recv)
       if problem.length > 0 {

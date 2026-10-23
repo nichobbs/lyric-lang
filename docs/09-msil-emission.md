@@ -684,9 +684,9 @@ user-facing requirement.
 
 ### 11.4 `inout` and async
 
-Per Q005, `inout` parameters used after an `await` are rejected at
-compile time. The MSIL emitter does not need a special case here;
-the analysis is purely on the AST.
+An `async` function cannot declare an `out` or `inout` parameter: the type
+checker rejects it (T0183, D205) on every target, so the state-machine
+lowering never sees a by-reference parameter and needs no special case.
 
 ### 11.5 Closures and lambdas
 
