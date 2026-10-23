@@ -502,6 +502,20 @@ int32_t lyric_env_is_windows(void) {
     return 1;
 }
 
+int32_t lyric_env_os_kind(void) {
+    return 3;
+}
+
+int32_t lyric_env_arch_kind(void) {
+#if defined(__x86_64__) || defined(_M_X64)
+    return 1;
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    return 2;
+#else
+    return 0;
+#endif
+}
+
 LyricString* lyric_env_cwd(void) {
     DWORD need = GetCurrentDirectoryW(0, NULL);
     if (need == 0) return NULL;
