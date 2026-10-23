@@ -1,6 +1,6 @@
-# Cross-target parity batch: `Map.add`, `print`/`println`, `toIsoString`, culture, collection `==`, native list insert (D204)
+# Cross-target parity batch: `Map.add`, `print`/`println`, `toIsoString`, culture, collection `==`, native list insert (D206)
 
-Group `group:stdlib-cross-target-parity`. The rules are recorded in D204; this
+Group `group:stdlib-cross-target-parity`. The rules are recorded in D206; this
 entry lists what shipped and how it is pinned.
 
 - **`Map.add` replaces on dotnet (#7301).** `emitDictAdd` lowers to

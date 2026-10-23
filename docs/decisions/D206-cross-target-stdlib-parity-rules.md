@@ -1,4 +1,4 @@
-# D204 — Cross-target rules for `Map.add`, `print`/`println`, `toIsoString` and stringification
+# D206 — Cross-target rules for `Map.add`, `print`/`println`, `toIsoString` and stringification
 
 **Status:** accepted
 
