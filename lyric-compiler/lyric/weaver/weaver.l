@@ -267,6 +267,11 @@ record RewriteCtx {
   /// for the contract-clause-only rewrite (`rewriteContractClauseArgs`),
   /// neither of which has an out-variable to capture into.
   retVarOpt: Option[String]
+  /// True when the matched function (and therefore every wrapper layer
+  /// around it) is `async`.  The wrapper is itself async, so `proceed()`
+  /// must await the inner layer's Task in place, otherwise the Task
+  /// reference is stored into the (unwrapped) advice result (#8287).
+  targetIsAsync: Bool
 }
 
 /// Discriminator + payload for a weave-time diagnostic.  Three kinds
@@ -301,6 +306,7 @@ func newRewriteCtx(
   funcName: in String,
   weaveDiags: in List[WeaveDiagEntry],
   retVarOpt: in Option[String],
+  targetIsAsync: in Bool,
 ): RewriteCtx {
   RewriteCtx(
     targetName = targetName,
@@ -314,7 +320,8 @@ func newRewriteCtx(
     aspectName = aspectName,
     funcName = funcName,
     weaveDiags = weaveDiags,
-    retVarOpt = retVarOpt
+    retVarOpt = retVarOpt,
+    targetIsAsync = targetIsAsync
   )
 }
 
@@ -351,14 +358,19 @@ func isProceedCall(expr: in Expr): Bool {
   }
 }
 
-func proceedSubstitution(targetName: in String, paramNames: in List[String]): Expr {
+func proceedSubstitution(targetName: in String, paramNames: in List[String], targetIsAsync: in Bool): Expr {
   val argExprs: List[CallArg] = newList()
   var i = 0
   while i < paramNames.count {
     argExprs.add(CAPositional(expr = singleSegPathExpr(paramNames[i])))
     i = i + 1
   }
-  Expr(kind = ECall(fn = singleSegPathExpr(targetName), args = argExprs), span = synSpan())
+  val call = Expr(kind = ECall(fn = singleSegPathExpr(targetName), args = argExprs), span = synSpan())
+  if targetIsAsync {
+    Expr(kind = EAwait(inner = call), span = synSpan())
+  } else {
+    call
+  }
 }
 
 /// `<name>()` no-arg call at a zero span.
@@ -441,10 +453,15 @@ func mkElapsedAssignStmt(): Statement {
 /// trailing statement is the assignment, so the block stays
 /// `Unit`-typed).  Locals are block-scoped, so multiple `proceed`
 /// sites in one body each get their own `__lyric_call_start`.
-func proceedSubstitutionTimed(targetName: in String, paramNames: in List[String], targetReturnsUnit: in Bool): Expr {
+func proceedSubstitutionTimed(
+  targetName: in String,
+  paramNames: in List[String],
+  targetReturnsUnit: in Bool,
+  targetIsAsync: in Bool,
+): Expr {
   val stmts: List[Statement] = newList()
   stmts.add(mkValStmt("__lyric_call_start", None, mkCallNoArgs("monotonicNanos")))
-  val targetCall = proceedSubstitution(targetName, paramNames)
+  val targetCall = proceedSubstitution(targetName, paramNames, targetIsAsync)
   if targetReturnsUnit {
     stmts.add(Statement(kind = SExpr(expr = targetCall), span = synSpan()))
     stmts.add(mkElapsedAssignStmt())
@@ -670,9 +687,9 @@ func paramListContains(paramNames: in List[String], name: in String): Bool {
 func rewriteExpr(ctx: in RewriteCtx, expr: in Expr): Expr {
   if isProceedCall(expr) {
     if ctx.callFields.containsKey("elapsed") {
-      return proceedSubstitutionTimed(ctx.targetName, ctx.paramNames, ctx.targetReturnsUnit)
+      return proceedSubstitutionTimed(ctx.targetName, ctx.paramNames, ctx.targetReturnsUnit, ctx.targetIsAsync)
     }
-    return proceedSubstitution(ctx.targetName, ctx.paramNames)
+    return proceedSubstitution(ctx.targetName, ctx.paramNames, ctx.targetIsAsync)
   }
   match tryMemberRewrite(ctx, expr) {
     case Some(replaced) -> return replaced
@@ -899,7 +916,8 @@ func rewriteContractClauseArgs(
     aspectName,
     funcName,
     weaveDiags,
-    None
+    None,
+    false
   )
   match cc {
     case CCRequires(e, s) -> CCRequires(expr = rewriteExpr(ctx, e), span = s)
@@ -1941,7 +1959,8 @@ func buildWrapper(
     aspect.name,
     originalFn.name,
     site.weaveDiags,
-    around.retName
+    around.retName,
+    originalFn.isAsync
   )
 
   val rewiredBody = rewriteBlock(ctx, around.body)
@@ -4555,7 +4574,8 @@ func buildBModeSpecializedFunction(
     aspect.name,
     specName,
     emptyDiags,
-    around.retName
+    around.retName,
+    false
   )
 
   val rewiredBody = rewriteBlock(ctx, around.body)

@@ -171,6 +171,13 @@ pub union PipedReadOutcome {
 /// order, by the next `pipedReadLine` or `pipedReadLineWithin`. The child is
 /// not signalled; pair a timeout with `pipedKill` when the child should be
 /// abandoned.
+///
+/// The blocking read behind a timed-out call is deliberately not cancelled:
+/// cancelling it would drop the partial line the guarantee above preserves.
+/// At most one such read is outstanding per handle, however many calls time
+/// out, and the next read on the handle joins it. It ends when data arrives
+/// or when `pipedKill` or `pipedClose` closes the stream, so a long-lived
+/// process abandoning a silent child should `pipedKill` it.
 @stable(since = "1.2")
 pub func pipedReadLineWithin(p: in PipedProcess, timeoutMs: in Int): Result[PipedReadOutcome, String]
   requires: timeoutMs >= 0

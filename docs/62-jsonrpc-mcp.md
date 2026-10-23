@@ -250,6 +250,13 @@ kernel's deadline arithmetic runs on `System.nanoTime()` (monotonic), not
 including multi-byte UTF-8 payloads, split reads, and timeouts that fall
 mid-frame.
 
+A timed-out bounded read (`readStdinWithin`, `pipedReadLineWithin`) is not
+cancelled: the blocking read behind it stays outstanding, at most one per
+handle however many calls time out, and the next read on the handle joins it.
+Cancelling would drop the partial frame the no-loss guarantee above keeps.
+The reader ends when data arrives or the stream closes, so a client abandoning
+a silent child calls `pipedKill` (#7515).
+
 ## 5. `lyric-mcp` — protocol layer
 
 Protocol revision: `2026-07-28` primary, `2025-06-18` accepted from

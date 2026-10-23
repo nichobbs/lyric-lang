@@ -1466,7 +1466,7 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
             // `slice[T]` local's erased slot type (#5572).
             coerceValueTo(ctx, insns, initTy, ty)
             val slot = allocSlot(ctx, name, ty)
-            emitStore(insns, slot, ty)
+            emitStoreBindingSlot(insns, slot, ty)
             recordVarGenericArgs(ctx, name, init, tyOpt, ctx.typeParams)
             recordFuncValRetType(ctx, name, init)
             recordAnnotatedFuncValRetType(ctx, name, tyOpt)
@@ -2025,6 +2025,19 @@ pub func lowerStmt(ctx: in FuncCtx, insns: in List[LInsn], stmt: in Statement): 
 // ─────────────────────────────────────────────────────────────────────────────
 // §6a. Local pattern binding.
 // ─────────────────────────────────────────────────────────────────────────────
+// A `Unit`-typed binding leaves no value on the operand stack, yet its slot is
+// framed as an int: initialise it, or a later StackMapTable frame names a
+// local that no path has written and the verifier rejects the method (#8294).
+func emitStoreBindingSlot(insns: in List[LInsn], slot: in Int, ty: in JvmType): Unit {
+  match ty {
+    case JVoid -> {
+      insns.add(LIconst(v = 0))
+      insns.add(LIstore(slot = slot))
+    }
+    case _ -> emitStore(insns, slot, ty)
+  }
+}
+
 func lowerLocalPatBind(
   ctx: in FuncCtx,
   insns: in List[LInsn],
@@ -2042,7 +2055,7 @@ func lowerLocalPatBind(
       // val's erased slot type (#5572).
       coerceValueTo(ctx, insns, initTy, ty)
       val slot = allocSlot(ctx, name, ty)
-      emitStore(insns, slot, ty)
+      emitStoreBindingSlot(insns, slot, ty)
     }
     case PWildcard -> {
       // Discard the value (pop2 for category-2 long/double).
