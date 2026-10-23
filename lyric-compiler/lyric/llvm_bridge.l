@@ -421,11 +421,12 @@ func findWindowsRtArchive(): String {
 
 /// The system import libraries every Windows link names, all used by the
 /// runtime (lyric-rt's `WIN_LIBS`): CNG entropy (`bcrypt`), the UTF-16
-/// command-line parser (`shell32`), and the security descriptors of the
-/// child-process pipes (`advapi32`).
+/// command-line parser (`shell32`), the security descriptors of the
+/// child-process pipes (`advapi32`), Winsock (`ws2_32`), and Schannel with the
+/// certificate and key APIs (`secur32`, `crypt32`, `ncrypt`).
 func windowsSystemLibs(): List[String] {
   val libs: List[String] = newList()
-  for name in ["bcrypt", "shell32", "advapi32"] {
+  for name in ["bcrypt", "shell32", "advapi32", "ws2_32", "secur32", "crypt32", "ncrypt"] {
     libs.add("-l" + name)
   }
   libs

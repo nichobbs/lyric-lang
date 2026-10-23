@@ -434,6 +434,14 @@ core. Considerations codified now so phase 5 doesn't rediscover them:
 6. **Distribution**: dynamic libssl means negotiation behavior varies with
    the host's OpenSSL minor version — documented, not fought. Static
    binaries would switch the seam to mbedTLS (out of scope here).
+7. **Windows** (D209): the seam is swapped for Schannel and Winsock
+   (`lyric-rt/src/lyric_tls_win32.c`, `lyric_sock_win32.c`), since Windows
+   ships no OpenSSL and OpenSSL does not read the Windows certificate store.
+   The runtime verifies the chain itself against the Windows roots, the
+   pinned anchors, or either, and matches IP-literal hosts against the
+   certificate's iPAddress names; private keys are imported into the user's
+   CNG key store for the life of a context, because Schannel cannot use an
+   in-memory key. `lyric_tls_test.c` runs against both seams.
 
 **Status (D-progress-703, #5890):** the C seam is shipped as
 `lyric-rt/src/lyric_tls.c` — `lyric_sock_*` (POSIX socket transport) +

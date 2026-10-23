@@ -784,6 +784,7 @@ impl JInvocationHandler for AllTrustingHandler {
   }
 }
 
+@unsafe_ffi
 func buildAllTrustingTrustManager(): JTrustManager {
   val cl: JClassLoader = JClassLoader.getSystemClassLoader()
   val tmClass: JClass = JClass.forName("javax.net.ssl.X509TrustManager")
@@ -793,9 +794,9 @@ func buildAllTrustingTrustManager(): JTrustManager {
   val proxyClass: JClass = JClass.forName("java.lang.reflect.Proxy")
   val m = findMethodByNameAndArity(proxyClass, "newProxyInstance", 3)
   val argsList: List[JObject] = newList()
-  argsList.add(cl)
+  argsList.add(externAsObject(cl))
   argsList.add(ifacesArr)
-  argsList.add(asHandler)
+  argsList.add(externAsObject(asHandler))
   val tm: JTrustManager = m.invoke(nullOfClass("java.lang.Object"), argsList.toArray())
   tm
 }

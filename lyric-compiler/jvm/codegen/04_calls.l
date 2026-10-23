@@ -1273,6 +1273,11 @@ func lowerBuiltinOrStaticCall(
       insns.add(LInvokevirtual(owner = "java/io/PrintStream", name = "print", params = emptyPs2, ret = JVoid))
     }
     JVoid
+  } else if (not hasOverride) and funcName == "externAsObject" and args.count == 1 {
+    // D212: every JVM extern type is a reference type, so the upcast to the
+    // root object is the operand itself.
+    val _ = lowerCallArg(ctx, insns, args[0])
+    JRef(className = "java/lang/Object")
   } else if (not hasOverride) and funcName == "nativeNullPtr" and args.count == 0 {
     // A `NativePtr[T]` is a `long` address on the JVM (D158).
     insns.add(LLconst(v = 0i64))

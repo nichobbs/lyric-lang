@@ -1512,6 +1512,7 @@ record N0100Ctx {
   diag: List[Diagnostic]
   fnName: String
   unsafeFfi: Bool
+  boundaryFile: Bool
   varNames: Map[String, Bool]
 }
 
@@ -1578,6 +1579,21 @@ func isNativeAddrOfCall(e: in Expr): Bool {
       }
     }
     case EParen(inner) -> isNativeAddrOfCall(inner)
+    case _ -> false
+  }
+}
+
+// `externAsObject(x)` upcasts an extern value to the host's root object type
+// and is placement-gated to the extern boundary (N0103, D212).
+func isExternUpcastCall(e: in Expr): Bool {
+  match e.kind {
+    case ECall(fn, _) -> {
+      match fn.kind {
+        case EPath(path) -> path.segments.count == 1 and path.segments[0] == "externAsObject"
+        case _ -> false
+      }
+    }
+    case EParen(inner) -> isExternUpcastCall(inner)
     case _ -> false
   }
 }
@@ -1757,6 +1773,16 @@ func n0100CollectVarsEob(ctx: in N0100Ctx, eob: in ExprOrBlock): Unit {
 // Walk expressions for nativeAddrOf uses (placement + operand rules).
 func n0100Expr(ctx: in N0100Ctx, e: in Expr): Unit {
   n0100BufferPointerEscape(ctx, e)
+  if isExternUpcastCall(e) and not (ctx.unsafeFfi or ctx.boundaryFile) {
+    ctx.diag.add(
+      errorDiagnostic(
+        "N0103",
+        "externAsObject is only allowed in a file or a function annotated @unsafe_ffi (function '" + ctx.fnName +
+          "'): an extern type has no subtype relation to the host's root object in safe code",
+        e.span
+      )
+    )
+  }
   if isNativeNullPtrCall(e) {
     if not ctx.unsafeFfi {
       n0100Placement(ctx, e.span)
@@ -1964,7 +1990,13 @@ func n0100BlockMentions(b: in Block, name: in String): Bool {
 // `var` reaches the lambda as a by-value capture (a heap field of the
 // closure), whose address is not a stack slot (#4734).
 func n0100LambdaBody(outer: in N0100Ctx, body: in Block): Unit {
-  val inner = N0100Ctx(diag = outer.diag, fnName = outer.fnName, unsafeFfi = outer.unsafeFfi, varNames = newMap())
+  val inner = N0100Ctx(
+    diag = outer.diag,
+    fnName = outer.fnName,
+    unsafeFfi = outer.unsafeFfi,
+    boundaryFile = outer.boundaryFile,
+    varNames = newMap()
+  )
   n0100CollectVars(inner, body)
   n0100Block(inner, body)
 }
@@ -2083,7 +2115,7 @@ func n0100LocalTy(ctx: in N0100Ctx, tyOpt: in Option[TypeExpr], sp: in Span): Un
   }
 }
 
-func n0100CheckFn(diag: in List[Diagnostic], fn: in FunctionDecl): Unit {
+func n0100CheckFn(diag: in List[Diagnostic], boundaryFile: in Bool, fn: in FunctionDecl): Unit {
   var unsafeFfi = false
   match findAnnotation("unsafe_ffi", fn.annotations) {
     case Some(_) -> {
@@ -2092,7 +2124,13 @@ func n0100CheckFn(diag: in List[Diagnostic], fn: in FunctionDecl): Unit {
     case None -> {
     }
   }
-  val ctx = N0100Ctx(diag = diag, fnName = fn.name, unsafeFfi = unsafeFfi, varNames = newMap())
+  val ctx = N0100Ctx(
+    diag = diag,
+    fnName = fn.name,
+    unsafeFfi = unsafeFfi,
+    boundaryFile = boundaryFile,
+    varNames = newMap()
+  )
   if not unsafeFfi {
     var pi = 0
     while pi < fn.params.count {
@@ -2158,7 +2196,12 @@ func n0100CheckFn(diag: in List[Diagnostic], fn: in FunctionDecl): Unit {
   }
 }
 
-func n0100CheckRecordFields(diag: in List[Diagnostic], typeName: in String, members: in List[RecordMember]): Unit {
+func n0100CheckRecordFields(
+  diag: in List[Diagnostic],
+  boundaryFile: in Bool,
+  typeName: in String,
+  members: in List[RecordMember],
+): Unit {
   var i = 0
   while i < members.count {
     match members[i] {
@@ -2174,7 +2217,7 @@ func n0100CheckRecordFields(diag: in List[Diagnostic], typeName: in String, memb
           )
         }
       }
-      case RMFunc(fn) -> n0100CheckFn(diag, fn)
+      case RMFunc(fn) -> n0100CheckFn(diag, boundaryFile, fn)
       case RMInvariant(_) -> {
       }
     }
@@ -2183,20 +2226,31 @@ func n0100CheckRecordFields(diag: in List[Diagnostic], typeName: in String, memb
 }
 
 pub func checkNativeFfiBoundary(file: in SourceFile, diag: in List[Diagnostic]): Unit {
+  val boundaryFile = match findAnnotation("unsafe_ffi", file.fileAnnotations) {
+    case Some(_) -> true
+    case None -> false
+  }
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {
-      case IFunc(fn) -> n0100CheckFn(diag, fn)
+      case IFunc(fn) -> n0100CheckFn(diag, boundaryFile, fn)
+      case IImpl(decl) -> {
+        var mi = 0
+        while mi < decl.members.count {
+          match decl.members[mi] {
+            case IMplFunc(fn) -> n0100CheckFn(diag, boundaryFile, fn)
+            case _ -> {
+            }
+          }
+          mi = mi + 1
+        }
+      }
       case IRecord(decl) -> {
         // A foreign record is part of the audited FFI boundary: it belongs in a
         // file that declares itself one with a file-level `@unsafe_ffi`
         // (stdlib `_kernel_native/` files are not mode-checked at all).
         if decl.isForeign {
-          val isBoundaryFile = match findAnnotation("unsafe_ffi", file.fileAnnotations) {
-            case Some(_) -> true
-            case None -> false
-          }
-          if not isBoundaryFile {
+          if not boundaryFile {
             diag.add(
               errorDiagnostic(
                 "N0101",
@@ -2207,10 +2261,10 @@ pub func checkNativeFfiBoundary(file: in SourceFile, diag: in List[Diagnostic]):
             )
           }
         } else {
-          n0100CheckRecordFields(diag, decl.name, decl.members)
+          n0100CheckRecordFields(diag, boundaryFile, decl.name, decl.members)
         }
       }
-      case IExposedRec(decl) -> n0100CheckRecordFields(diag, decl.name, decl.members)
+      case IExposedRec(decl) -> n0100CheckRecordFields(diag, boundaryFile, decl.name, decl.members)
       case IUnion(decl) -> {
         var ci = 0
         while ci < decl.cases.count {

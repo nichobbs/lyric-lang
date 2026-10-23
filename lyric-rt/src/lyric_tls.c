@@ -803,6 +803,7 @@ typedef struct {
     int insecure;            /* client: verification disabled */
     unsigned char* alpn_wire; /* server: length-prefixed protocol list */
     unsigned int alpn_len;
+    int connected;           /* client: a connection has been made (atomic) */
 } lyric_tls_ctx_t;
 
 /* Convert "h2,http/1.1" into the ALPN wire format (each proto: 1 length
@@ -1092,12 +1093,17 @@ void* lyric_tls_client_new_additive(const char* ca_pem, int32_t min_version, int
 int32_t lyric_tls_client_set_identity(void* client_ctx, const char* cert_pem, const char* key_pem) {
     if (!tls_ready() || !client_ctx) return -1;
     lyric_tls_ctx_t* w = (lyric_tls_ctx_t*)client_ctx;
+    if (__atomic_load_n(&w->connected, __ATOMIC_ACQUIRE)) {
+        set_err("a client identity must be set before the context's first connection");
+        return -1;
+    }
     return use_identity(w->ctx, cert_pem ? cert_pem : "", key_pem ? key_pem : "") == 0 ? 0 : -1;
 }
 
 void* lyric_tls_client_connect(void* client_ctx, int32_t fd, const char* sni_host, const char* alpn_csv) {
     if (!tls_ready() || !client_ctx) return NULL;
     lyric_tls_ctx_t* w = (lyric_tls_ctx_t*)client_ctx;
+    __atomic_store_n(&w->connected, 1, __ATOMIC_RELEASE);
     ossl_ssl* ssl = O.SSL_new(w->ctx);
     if (!ssl) {
         set_ossl_err("create client TLS connection");
