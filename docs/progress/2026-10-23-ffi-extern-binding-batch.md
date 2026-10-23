@@ -14,4 +14,6 @@ Checker and native backend:
 - A regression test pins that a record argument for an `extern func` `NativePtr[Byte]` parameter is T0043 (#7624, fixed earlier by the extern-call checking work).
 - The dead List/Map-to-`NativePtr[Byte]` adaptation in native `externAdaptArg` is removed; the checker rejects those arguments (#7935).
 
+Narrow-integer parameters are not accepted yet (#8482).
+
 Tests: `generic_extern_self_test.l`, `auto_ffi_self_test.l`, `metadata_reader_self_test.l`, `typechecker_self_test.l`.
