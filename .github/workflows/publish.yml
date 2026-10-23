@@ -365,11 +365,9 @@ jobs:
   # ---------------------------------------------------------------------------
   # win-x64 standalone archive (unsigned).  Reuses the stage-2 managed DLLs
   # built on Linux and only NativeAOT-links on Windows, so no Windows seed is
-  # needed -- see .github/workflows/windows-build.yml.  Not yet a release gate:
-  # publish-checksums runs whether or not this succeeds, so a Windows failure
-  # ships the release without the zip instead of deleting it.  Make it a
-  # required need of finalize-release once a dry run (workflow_dispatch on
-  # windows-build.yml) and one real release have both been green.
+  # needed -- see .github/workflows/windows-build.yml.  A release gate: a
+  # failure here blocks publish-nuget, publish-checksums and finalize-release
+  # and triggers cleanup-on-failure, like any other platform leg.
   # ---------------------------------------------------------------------------
   build-windows:
     needs: [create-release]
@@ -410,7 +408,7 @@ jobs:
   # ---------------------------------------------------------------------------
   publish-nuget:
     runs-on: ubuntu-latest
-    needs: [build-standalone, create-release]
+    needs: [build-standalone, build-windows, create-release]
 
     # Hoist the optional signing secrets into `env` rather than interpolating
     # ${{ secrets.* }} into `run:` scripts: the `secrets` context is not
@@ -947,6 +945,7 @@ jobs:
       always() &&
       needs.create-release.result == 'success' &&
       needs.build-standalone.result == 'success' &&
+      needs.build-windows.result == 'success' &&
       needs.publish-vscode.result == 'success'
     steps:
       - name: Download release assets
@@ -996,15 +995,29 @@ jobs:
   # ---------------------------------------------------------------------------
   cleanup-on-failure:
     runs-on: ubuntu-latest
-    needs: [create-release, build-standalone, publish-nuget, publish-vscode, publish-checksums]
+    needs: [create-release, build-standalone, build-windows, publish-nuget, publish-vscode, publish-checksums]
+    # Runs unless every core job succeeded, rather than enumerating bad
+    # outcomes.  In run 1828 a leg that never got a runner (osx-arm64) was
+    # cancelled and the old failure/cancelled list skipped this job, leaving
+    # the draft release and tag behind; a leg that fails or is cancelled
+    # mid-run did trigger the old condition in a reproduction, so the exact
+    # cause was not pinned down.  Any non-success now cleans up, and
+    # finalize-release requires this job to have been skipped.
     if: >-
       always() &&
       needs.create-release.result == 'success' &&
-      (needs.build-standalone.result == 'failure' || needs.build-standalone.result == 'cancelled' ||
-       needs.publish-nuget.result == 'failure' || needs.publish-nuget.result == 'cancelled' ||
-       needs.publish-vscode.result == 'failure' || needs.publish-vscode.result == 'cancelled' ||
-       needs.publish-checksums.result == 'failure' || needs.publish-checksums.result == 'cancelled')
+      !(needs.build-standalone.result == 'success' &&
+        needs.build-windows.result == 'success' &&
+        needs.publish-vscode.result == 'success' &&
+        needs.publish-nuget.result == 'success' &&
+        needs.publish-checksums.result == 'success')
     steps:
+      - name: Log upstream results
+        shell: bash
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: echo "$NEEDS_JSON"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Delete git tag (dispatch only)
@@ -1047,15 +1060,16 @@ jobs:
   # ---------------------------------------------------------------------------
   finalize-release:
     runs-on: ubuntu-latest
-    needs: [create-release, build-standalone, publish-nuget, publish-vscode, publish-checksums, cleanup-on-failure]
+    needs: [create-release, build-standalone, build-windows, publish-nuget, publish-vscode, publish-checksums, cleanup-on-failure]
     if: >-
       always() &&
       needs.create-release.result == 'success' &&
       (needs.build-standalone.result == 'success' || needs.build-standalone.result == 'skipped') &&
+      (needs.build-windows.result == 'success' || needs.build-windows.result == 'skipped') &&
       (needs.publish-nuget.result == 'success' || needs.publish-nuget.result == 'skipped') &&
       (needs.publish-vscode.result == 'success' || needs.publish-vscode.result == 'skipped') &&
       (needs.publish-checksums.result == 'success' || needs.publish-checksums.result == 'skipped') &&
-      (needs.cleanup-on-failure.result == 'success' || needs.cleanup-on-failure.result == 'skipped')
+      needs.cleanup-on-failure.result == 'skipped'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 

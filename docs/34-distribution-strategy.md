@@ -281,9 +281,9 @@ The `.github/workflows/publish.yml` workflow then:
    Gatekeeper, or run `xattr -d com.apple.quarantine lyric` after download.
    Full notarization for `osx-x64` is tracked as a future workflow enhancement.
 4. **Packages** each binary into a `.tar.gz` (Linux / macOS) or `.zip` (Windows)
-   archive named `lyric-<version>-<rid>.<ext>`.  The Windows leg is not yet a
-   release gate: `publish-checksums` runs whether or not it succeeds, so a
-   Windows failure ships the release without the zip.
+   archive named `lyric-<version>-<rid>.<ext>`.  The Windows leg is a release
+   gate like the others: its failure blocks NuGet publishing, checksums and
+   finalization, and triggers `cleanup-on-failure`.
 5. **Uploads** all archives as GitHub Release assets.
 6. **Packs** the NuGet global-tool package (`lyric`) with `dotnet pack -p:PackAsTool=true`.
 7. **Signs** the `.nupkg` with `dotnet nuget sign` if `NUGET_SIGNING_CERT_BASE64`

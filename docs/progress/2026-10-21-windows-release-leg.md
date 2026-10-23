@@ -19,10 +19,10 @@ latest release, and no release has ever shipped a `win-x64` asset.
 - Unsigned: the Authenticode step was removed from `publish.yml` (it was dead
   code behind `matrix.authenticode`); re-add it to `windows-build.yml` once the
   Key Vault secrets exist.
-- Not yet a release gate. `publish-checksums` now runs with `always()` so a
-  Windows failure ships the release without the zip rather than deleting it via
-  `cleanup-on-failure`. Promote it to a required need of `finalize-release`
-  after a green dry run and one green release.
+- Release gate (promoted in a follow-up after v0.7.10 shipped the first
+  `win-x64` zip): `build-windows` is a need of `publish-nuget`,
+  `publish-checksums`, `cleanup-on-failure` and `finalize-release`, so a Windows
+  failure no longer ships a release without the zip.
 
 ## CLI runtime
 
