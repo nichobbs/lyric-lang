@@ -16673,11 +16673,15 @@ func unboxObjectArmsMsil(
 //   2. A candidate in one of the packages imported by the current package
 //      (first import wins, matching the type-checker's shadowing rule).
 //   3. First candidate (original first-wins fallback for unresolvable cases).
+//
+// "The current package" is the one the code was written in: for a generic
+// function specialised into a consumer it is `fctx.originPkg`, so a bare case
+// name resolves against the declaring package's scope, not the consumer's.
 func pickCaseFqnByScope(cctx: in CodegenCtx, fctx: in FuncCtx, candidates: in List[String]): String {
   if candidates.count == 1 {
     return candidates[0]
   }
-  val currentPkg = fctx.pkgName
+  val currentPkg = if fctx.originPkg.length > 0 { fctx.originPkg } else { fctx.pkgName }
   val prefix1 = currentPkg + "."
   var i = 0
   while i < candidates.count {
@@ -16886,9 +16890,10 @@ func pickCaseFqnByQualifier(
     // A bare union name (`Shape.Square`) names the union the file sees bare:
     // its own package's, then its imports' in the checker's order.
     val unionName = lastDottedSegmentMsil(qualifier)
+    val scopePkg = if fctx.originPkg.length > 0 { fctx.originPkg } else { fctx.pkgName }
     val scopeOrder: List[String] = newList()
-    scopeOrder.add(fctx.pkgName)
-    for imp in bareImportListForNameMsil(cctx, fctx.pkgName, unionName) {
+    scopeOrder.add(scopePkg)
+    for imp in bareImportListForNameMsil(cctx, scopePkg, unionName) {
       scopeOrder.add(imp)
     }
     var tier = 0

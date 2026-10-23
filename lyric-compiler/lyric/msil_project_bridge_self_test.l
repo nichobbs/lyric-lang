@@ -728,6 +728,36 @@ test "cross-package union construct and match" {
   )
 }
 
+// A generic function specialised into its caller is compiled into the
+// caller's package, but a bare case name in its body (here inside a lambda)
+// belongs to the declaring package's scope.  `ScopedCase.Clash` declares a
+// same-named `App` case and is registered first, so resolving against the
+// caller's scope picked it and the specialised copy built the wrong type
+// (InvalidCastException; first seen with Std.Plugin's CallError.App).
+test "a specialised generic resolves a bare case name in its declaring package" {
+  val packages: List[ProjectPackagePayload] = newList()
+  packages.add(mkPkg("ScopedCase.Clash", "package ScopedCase.Clash\n\npub union Clash {\n  case App(code: Int)\n}\n"))
+  packages.add(
+    mkPkg(
+      "ScopedCase.Lib",
+      "package ScopedCase.Lib\n\npub union Wrap[M] {\n  case App(msg: M)\n  case Other\n}\n\n" +
+        "pub func viaLambda[M](x: in M): Wrap[M] {\n  val f: (M) -> Wrap[M] = { m -> App(msg = m) }\n  f(x)\n}\n\n" +
+        "pub func direct[M](x: in M): Wrap[M] {\n  App(msg = x)\n}\n\n" +
+        "pub func describe[M](w: in Wrap[M]): String {\n  match w {\n    case App(_) -> \"app\"\n    case Other -> \"other\"\n  }\n}\n"
+    )
+  )
+  packages.add(
+    mkPkg(
+      "ScopedCase.App",
+      "package ScopedCase.App\nimport ScopedCase.Lib\n\nfunc main(): Unit {\n" +
+        "  println(describe(viaLambda(1)))\n  println(describe(direct(2)))\n}\n"
+    )
+  )
+  val result = compileAndRun("scoped-case", packages, "ScopedCase")
+  assertEqualInt(result.exitCode, 0, "scoped_case: exit 0 (stderr=" + result.stderr + ")")
+  assertEqual(Str.trim(result.stdout), "app\napp", "scoped_case: both specialised copies build Wrap.App")
+}
+
 // Parenless nullary case syntax (`case Active` without `()`) must resolve
 // to the known nullary union case and produce a correct match (#1223), and
 // bare nullary *construction* (`val a = On`, no `()`) must resolve to the
