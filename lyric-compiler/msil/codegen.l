@@ -13296,7 +13296,19 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
             case None -> MObject
           }
         }
-        case None -> {
+        case None -> if fctx.slots.containsKey("self") {
+          // A dot-named function's `self` is an ordinary parameter, read like
+          // one: in an async state machine it lives in a field, and slot 0 is
+          // the machine itself (#8253).
+          val selfSegs: List[String] = newList()
+          selfSegs.add("self")
+          lowerExprMsil(
+            cctx,
+            fctx,
+            insns,
+            Expr(kind = EPath(path = ModulePath(segments = selfSegs, span = expr.span)), span = expr.span)
+          )
+        } else {
           insns.add(MLdarg(slot = 0))
           // In a UFCS method (`func Outer.rd(self: in Outer)`) `self` is slot 0
           // and its type is registered in fctx.types["self"] by lowerFuncMsil's
@@ -13426,7 +13438,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
               // #6119: `self` is never in `fctx.types` (see `ESelf`'s own
               // fallback) — its captured field type is the receiver's
               // concrete class instead.
-              if cn == "self" {
+              if cn == "self" and not fctx.slots.containsKey("self") {
                 // A generic receiver (`Box[T]`'s `self`) is its open
                 // instantiation, which a hosted lambda's closure class names
                 // with its own parameters (#8284).
@@ -13684,7 +13696,7 @@ pub func lowerExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MIn
                       case Some(s) -> emitLoadVarMsil(fctx, insns, s)
                       case None -> panic("Msil.Codegen ICE: captured name '" + capName + "' not found in fctx.hoistedCellSlot")
                     }
-                  } else if capName == "self" {
+                  } else if capName == "self" and not fctx.slots.containsKey("self") {
                     // #6119: `self` has no `fctx.slots` entry (it's the
                     // implicit `this`) — load it exactly as `ESelf`'s own
                     // non-captured fallback does, since we are still lowering
@@ -31427,7 +31439,14 @@ func inferCallReturnTypePB(
     case EBlock(blkE) -> pbBlockTailTypePB(cctx, pkgName, blkE, spawnNms, spawnTys, localNms, localTys)
     case ECall(callee, args) -> {
       match callee.kind {
-        case EPath(path) -> resolveQualifiedFreeCallRetTypePB(cctx, pkgName, path.segments, args.count)
+        case EPath(path) -> {
+          val freeTy = resolveQualifiedFreeCallRetTypePB(cctx, pkgName, path.segments, args.count)
+          if freeTy == MObject and path.segments.count == 1 {
+            pbRecordCtorTypePB(cctx, pkgName, path.segments[0])
+          } else {
+            freeTy
+          }
+        }
         // `TypeName.method(recv, args)` parses as
         // ECall(EMember(EPath(["TypeName"]), "method"), args) — the parser
         // builds left-to-right postfix so the `.method` becomes an EMember
@@ -31451,6 +31470,10 @@ func inferCallReturnTypePB(
               val joinedPath = joinSegsMsil(recvPath.segments, ".") + "." + field
               val candidates: List[String] = newList()
               candidates.add(joinedPath)
+              // A dot-named function of this package called through its type
+              // (`Acc.aGet(a, 3)`) is registered under the package-qualified
+              // name, which emission resolves too (#8253).
+              candidates.add(pkgName + "." + joinedPath)
               // Alias resolution: `Alias.method(args)` where `import Pkg as Alias`.
               // Phase B uses pkgImportAliases to resolve the alias; Phase A must do
               // the same or await counts diverge and resumeLabels index faults.
@@ -31540,6 +31563,19 @@ func inferCallReturnTypePB(
       }
     }
     case _ -> MObject
+  }
+}
+
+// The class a non-generic record construction `Acc(n = 1)` produces, so
+// `await a.aGet(3)` on `val a = Acc(n = 1)` types its receiver (#8253).  Any
+// other callee (a function, a union case, a generic record) stays untyped.
+func pbRecordCtorTypePB(cctx: in CodegenCtx, pkgName: in String, name: in String): MsilType {
+  val localKey = pkgName + "." + name
+  val key = if cctx.recordCtorTokens.containsKey(localKey) { localKey } else { resolveTypeFqn(cctx, pkgName, name) }
+  if cctx.recordCtorTokens.containsKey(key) and not cctx.genericTypeArity.containsKey(key) and not cctx.caseParentUnion.containsKey(key) {
+    MClass(className = key)
+  } else {
+    MObject
   }
 }
 

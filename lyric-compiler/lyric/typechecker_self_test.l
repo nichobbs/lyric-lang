@@ -12357,3 +12357,13 @@ test "a non-Std package declaring 'externAsObject' is T0140" {
   val src = "package P\nfunc externAsObject(n: in Int): Int {\n  n\n}\n"
   assertTrue(hasDiagCode(parseCheck(src), "T0140"), "externAsObject is a reserved built-in name")
 }
+
+test "a qualified enum case is a value of its enum (#8254)" {
+  val head = "package P\nenum Color { case Red; case Green }\nfunc Color.num(self: in Color): Int { 1 }\n"
+  val wrong = head + "func f(): String {\n  val c = Color.Red\n  val s: String = c.num()\n  s\n}\n"
+  assertTrue(hasDiagCode(parseCheck(wrong), "T0060"), "the dot-named call on the case's value is typed")
+  val asString = head + "func f(): String {\n  val s: String = Color.Green\n  s\n}\n"
+  assertTrue(hasDiagCode(parseCheck(asString), "T0060"), "a case is not a String")
+  val ok = head + "func f(): Int {\n  val c = Color.Red\n  c.num()\n}\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "the call type-checks")
+}
