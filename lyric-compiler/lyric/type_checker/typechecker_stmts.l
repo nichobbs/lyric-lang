@@ -405,7 +405,7 @@ pub func checkStatement(
           val initType = inferExprExpected(sc, tbl, sigs, diag, init, declT)
 
           val literalOutOfRange = reportIntLiteralOutOfRange(declT, init, diag)
-          if not literalOutOfRange and not argSatisfiesParam(tbl, declT, initType) {
+          if not literalOutOfRange and (not argSatisfiesParam(tbl, declT, initType) or rigidVarClash(tbl, declT, initType, sc.genericNames)) {
             diag.add(
               errorDiagnostic(
                 "T0060",
@@ -448,7 +448,7 @@ pub func checkStatement(
               noteArrayStore(tbl, initE, initType)
 
               val literalOutOfRange = reportIntLiteralOutOfRange(declT, initE, diag)
-              if not literalOutOfRange and not argSatisfiesParam(tbl, declT, initType) {
+              if not literalOutOfRange and (not argSatisfiesParam(tbl, declT, initType) or rigidVarClash(tbl, declT, initType, sc.genericNames)) {
                 diag.add(
                   errorDiagnostic(
                     "T0061",
@@ -484,7 +484,7 @@ pub func checkStatement(
           val initType = inferExprExpected(sc, tbl, sigs, diag, init, declT)
 
           val literalOutOfRange = reportIntLiteralOutOfRange(declT, init, diag)
-          if not literalOutOfRange and not argSatisfiesParam(tbl, declT, initType) {
+          if not literalOutOfRange and (not argSatisfiesParam(tbl, declT, initType) or rigidVarClash(tbl, declT, initType, sc.genericNames)) {
             diag.add(
               errorDiagnostic(
                 "T0062",
@@ -559,7 +559,7 @@ pub func checkStatement(
       // A literal that does not fit the target (`x += -1` on a `UInt`) is
       // T0015, as for a binding, rather than a type mismatch (#7841).
       val literalOutOfRange = not stringPlusAssign and reportIntLiteralOutOfRange(targetType, value, diag)
-      if not stringPlusAssign and not literalOutOfRange and not argSatisfiesParam(tbl, targetType, valueType) {
+      if not stringPlusAssign and not literalOutOfRange and (not argSatisfiesParam(tbl, targetType, valueType) or rigidVarClash(tbl, targetType, valueType, sc.genericNames)) {
         diag.add(
           errorDiagnostic(
             "T0063",
@@ -633,7 +633,7 @@ pub func checkStatement(
         // A returned value initialises the result, so it widens like an
         // initialiser (docs/01 §4.1, #7805).
         recordWideningSite(tbl, returnTy, t, e, false)
-        if not isNever and not typeAssignable(tbl, returnTy, t) and not numericWidensTo(returnTy, t) {
+        if not isNever and ((not typeAssignable(tbl, returnTy, t) and not numericWidensTo(returnTy, t)) or rigidVarClash(tbl, returnTy, t, sc.genericNames)) {
           diag.add(
             errorDiagnostic(
               "T0065",
@@ -1813,6 +1813,7 @@ func checkFunctionBodyAt(
 
   checkLoopLabels(diag, fn)
   checkContractClauses(sc, tbl, sigs, diag, fn.contracts)
+  checkDefiniteAssignment(tbl, sigs, diag, sig.generics, fn.body)
 
   match fn.body {
     case None -> {
@@ -1950,11 +1951,17 @@ func localValPatternProblem(tbl: in SymbolTable, pat: in Pattern, ty: in Type): 
         case TyUser(tid, _, targs) -> {
           if localValRecordHeadNames(tbl, headName, tid) {
             localValRecordFieldsProblem(tbl, fields, fieldsOfRecordInstantiated(tbl, tid, targs), true, ty)
+          } else if not localValNamesAnyRecord(tbl, headName) {
+            "the record pattern's head `" + headName + "` is not a record type"
           } else {
             "a record pattern (`" + headName + " { ... }`) is bound to a value of type " + renderType(ty)
           }
         }
-        case _ -> "a record pattern (`" + headName + " { ... }`) is bound to a value of type " + renderType(ty)
+        case _ -> if not localValNamesAnyRecord(tbl, headName) {
+          "the record pattern's head `" + headName + "` is not a record type"
+        } else {
+          "a record pattern (`" + headName + " { ... }`) is bound to a value of type " + renderType(ty)
+        }
       }
     }
     case PConstructor(head, args) -> {
@@ -2006,6 +2013,17 @@ func localValElemsProblem(tbl: in SymbolTable, ps: in List[Pattern], tys: in Lis
     i = i + 1
   }
   ""
+}
+
+// True when `headName` names some record (declared or exposed) in scope.
+func localValNamesAnyRecord(tbl: in SymbolTable, headName: in String): Bool {
+  for cand in symTableTryFindAll(tbl, headName) {
+    val hit = match cand.kind { case DKRecord(_, _) -> true; case DKExposedRec(_, _) -> true; case _ -> false }
+    if hit {
+      return true
+    }
+  }
+  false
 }
 
 // True when a record pattern's head `headName` names the record `tid` itself
@@ -2100,7 +2118,7 @@ func checkLocalValRecordHeads(tbl: in SymbolTable, diag: in List[Diagnostic], pa
       val fieldTys: List[Type] = if localValShapeUnknown(t) {
         newList()
       } else {
-        match unionCaseSymbolForScrutinee(tbl, scratch, pat2fnExpr(head, pat.span), t) {
+        match unionCaseSymbolForScrutinee(tbl, diag, pat2fnExpr(head, pat.span), t) {
           case Some(caseSym) -> caseFieldTypesInstantiated(tbl, scratch, caseSym, t)
           case None -> newList()
         }

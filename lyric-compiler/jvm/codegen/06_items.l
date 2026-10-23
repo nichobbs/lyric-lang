@@ -5172,6 +5172,45 @@ func moduleValRegistryType(decl: in ValDecl, owner: in String, externTypes: in M
   }
 }
 
+// Register the record methods `Lyric.Mono` adds after the sigs of the
+// pre-middle-end sources are collected: a generic call at a generic record's
+// own type parameter is specialised into a `__spec_` method of the record
+// (`memberSpecCallMono`, #8271).  Without it the call resolves through the
+// `()Object` guess and fails to link.
+pub func registerMonoMemberSigsJvm(
+  file: in SourceFile,
+  owner: in String,
+  into: in Map[String, JvmFuncSig],
+  externTypes: in Map[String, String],
+): Unit {
+  for it in file.items {
+    match it.kind {
+      case IRecord(decl) -> {
+        val recClass = owner + "/" + decl.name
+        val recTps = genericParamNames(decl.generics)
+        for m in decl.members {
+          match m {
+            case RMFunc(fn) -> if fn.name.startsWith("__spec_") {
+              registerInstanceSigErased(
+                into,
+                recClass,
+                fn.name,
+                fn.params,
+                fn.ret,
+                owner,
+                withOwnGenericsJvm(recTps, fn.generics),
+                externTypes
+              )
+            }
+            case _ -> ()
+          }
+        }
+      }
+      case _ -> ()
+    }
+  }
+}
+
 // Register an instance method's signature under the `<class>#<method>` key used
 // by `lowerMethodCall` to emit a precisely-typed `invokevirtual` for in-package
 // receivers (records / protected types) instead of the `()Object` guess.
@@ -6573,6 +6612,16 @@ func jvmRangeBoundText(b: in JvmRangeBoundVal): String {
     b.d.toString()
   } else {
     b.l.toString()
+  }
+}
+
+// The base type's name for a config field's G0003 message: `Int` for both
+// `Int` and `Int range 1 ..= 5`.
+func configFieldTypeLabelJvm(te: in TypeExpr): String {
+  match te.kind {
+    case TRef(path) -> if path.segments.count > 0 { path.segments[path.segments.count - 1] } else { "value" }
+    case TRefined(path, _) -> if path.segments.count > 0 { path.segments[path.segments.count - 1] } else { "value" }
+    case _ -> "value"
   }
 }
 
@@ -9378,6 +9427,9 @@ pub func codegenPackageWithSigsSeeded(
             } else {
               "error: required config field " + decl.name + "." + cf.name + " (env var " + envVarName + ") is not set"
             }
+            val parseMsg = "error: config field " + decl.name + "." + cf.name + " (env var " + envVarName + ") is not a valid " +
+              configFieldTypeLabelJvm(cf.ty) +
+              " (G0003)"
             val cr = configFieldRangeJvm(cf.ty)
             cfgFields.add(
               LConfigField(
@@ -9387,6 +9439,7 @@ pub func codegenPackageWithSigsSeeded(
                 hasDefault = hasDefault,
                 defaultInsns = defaultInsnsList,
                 requiredErrMsg = requiredMsg,
+                parseErrMsg = parseMsg,
                 hasMin = cr.hasMin,
                 hasMax = cr.hasMax,
                 upperExclusive = cr.upperExclusive,

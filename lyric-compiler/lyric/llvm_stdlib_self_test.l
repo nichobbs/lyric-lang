@@ -844,7 +844,8 @@ test "print takes a String or a scalar and println() writes an empty line on nat
 }
 
 test "format1 with a placeholder that has no argument panics on native (#7840)" {
-  val src = "package T\n" + "func main(): Int {\n" + "  println(format1(\"{1}\", 5))\n" + "  42\n" + "}\n"
+  val src = "package T\n" + "func main(): Int {\n" + "  val t = \"{1}\"\n" + "  println(format1(t, 5))\n" + "  42\n" +
+    "}\n"
   val r = compileAndRunNative(src)
   assertTrue(r.exitCode != 42 and r.exitCode != 0, "a missing argument must panic, not format")
 }

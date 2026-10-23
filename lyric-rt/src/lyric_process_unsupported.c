@@ -1,7 +1,6 @@
 /* lyric_process_unsupported.c — the lyric_process_* surface for targets with
- * no child processes (wasm32-wasi, docs/35 §5.3) or no port of the POSIX
- * spawn layer yet (Windows, docs/67 G9; tracked in #8433).  It
- * replaces lyric_process.c in those builds so every `_kernel_native/process_*` extern
+ * no child processes (wasm32-wasi, docs/35 §5.3).  It replaces
+ * lyric_process.c in those builds so every `_kernel_native/process_*` extern
  * still resolves, and each entry point reports the same failure its real
  * counterpart reports when a child cannot be started (the documented
  * "spawn failed" contract), never an undefined symbol at link time.

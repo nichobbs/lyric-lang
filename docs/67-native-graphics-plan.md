@@ -34,8 +34,9 @@ backend gaps the host found: private generic helpers of a generic from another p
 enum-case patterns over two enums sharing a case name (#8421).
 G9 is implemented for the core target (D205: `x86_64-pc-windows-msvc` with the MSVC C runtime and the
 Microsoft x64 C ABI, lyric-rt's platform layer ported to Win32 with UTF-16 at the boundary, a Windows CI job
-running the native suite); child processes (#8433), sockets and TLS (#8434), the graphics prebuilts and the G4
-to G7 examples on Windows (#8435) remain.
+running the native suite) and for child processes (D208: `CreateProcessW` over overlapped pipes, a Job Object
+per child); sockets and TLS (#8434), the graphics prebuilts and the G4 to G7 examples on Windows (#8435)
+remain.
 D156 and D157 resolve Q-GFX-005 to Q-GFX-010 (§10).
 
 **Builds on:** `native/plan/` (the LLVM backend, D-N-001 onward),
@@ -535,8 +536,8 @@ them:
   Implemented in D205 for the runtime and toolchain: `lld-link` on every
   host (a Linux host cross-compiles with an MSVC CRT and Windows SDK named by
   `INCLUDE` and `LIB`), Win32 twins of `lyric_posix.c` and `lyric_fs.c`, and
-  the Microsoft x64 C ABI; processes (#8433) and sockets and TLS (#8434)
-  follow.
+  the Microsoft x64 C ABI. Child processes followed in D208
+  (`lyric_process_win32.c`); sockets and TLS (#8434) follow.
 
 ---
 
@@ -583,7 +584,7 @@ XL (a quarter or more of focused work).
 | **G9** | Windows x86-64 native target (§6). | G3 | Native test suite passes on Windows CI; G4 to G7 examples run there. | XL |
 | **G10** | Native `lyric-ui` host (§5.2): layout, widgets, focus, IME, clipboard, accessibility. | G6 | `examples/ui-customers/` runs natively with no application changes; screen-reader smoke test on macOS. | XL |
 
-**Status (2026-10-23):** G0-G6 done (G4 on Linux only, no macOS CI; G5 has no Cocoa or Win32 surfaces; G6 lacks a real-hardware frame-budget run and bidi/UAX #14, #8410). G7 (#7946), G8 (#7947) and G10 (#7949) are implemented on Linux (D201, D202, D203, D204; their open parts are listed in the status paragraph at the top); G9's core target is implemented (D205: runtime, toolchain, C ABI, Windows CI running the native suite), and its exit criterion of running the G4 to G7 examples on Windows waits on #8433, #8434 and #8435, with #8436 for the compiler-hosted self-tests. Follow-ups: #8389, #8391, #8394, #8395, #8401, #7955.
+**Status (2026-10-23):** G0-G6 done (G4 on Linux only, no macOS CI; G5 has no Cocoa or Win32 surfaces; G6 lacks a real-hardware frame-budget run and bidi/UAX #14, #8410). G7 (#7946), G8 (#7947) and G10 (#7949) are implemented on Linux (D201, D202, D203, D204; their open parts are listed in the status paragraph at the top); G9's core target is implemented (D205: runtime, toolchain, C ABI, Windows CI running the native suite) with child processes (D208), and its exit criterion of running the G4 to G7 examples on Windows waits on #8434 and #8435, with #8436 for the compiler-hosted self-tests. Follow-ups: #8389, #8391, #8394, #8395, #8401, #7955.
 
 **Critical path to a first native graphics program:** G0, G1, G2, G3, G4,
 G5. G8 and G9 can run in parallel once their dependencies land.

@@ -200,7 +200,8 @@ record MonoState {
   /// rather than through normal method resolution, so `recv` never
   /// resolves to a value the general inferer can see through (#5841).
   distinctDecls: Map[String, DistinctTypeDecl]
-  /// Simple names of same-package `union` decls (#6774). `indexExprToTypeArgMono`
+  /// Simple names of same-package `union`, `enum`, `opaque` and `protected`
+  /// type decls (#6774, #7162). `indexExprToTypeArgMono`
   /// consults this — alongside `recordDecls`/`ifaceDecls`/`distinctDecls` — to
   /// recognise an explicit type-application call site (`f[MyUnion](x)`) whose
   /// type argument names a union: without it, a union type argument failed the
@@ -377,6 +378,21 @@ record MonoState {
   unsignedSpecs: List[UnsignedSpecRequest]
   structSpecs: List[UnsignedSpecRequest]
   foreignSpecs: List[UnsignedSpecRequest]
+  /// The generic record whose in-body methods are being rewritten (empty
+  /// outside one).  A generic call whose type arguments name the record's own
+  /// type parameters cannot become a top-level specialisation, which has no
+  /// such parameter in scope; it is specialised as a method of the record
+  /// instead (`memberSpecCallMono`, #8271, #8370).
+  enclosingRec: List[RecordDecl]
+  /// Same-package protected types by simple name, for `inferMethodReturnTE`
+  /// to type a call of one of their entries or functions (#7531).
+  protectedDecls: Map[String, ProtectedTypeDecl]
+  /// Those methods, appended to the record once its own methods are rewritten.
+  memberSpecs: List[FunctionDecl]
+  /// The generic protected type whose members are being rewritten, and the
+  /// functions added to it for calls at its type parameters.
+  enclosingProtected: List[ProtectedTypeDecl]
+  protectedMemberSpecs: List[FunctionDecl]
   diags: List[Diagnostic]
 }
 
@@ -434,6 +450,11 @@ func newMonoState(
     unsignedSpecs = newList(),
     structSpecs = newList(),
     foreignSpecs = newList(),
+    enclosingRec = newList(),
+    protectedDecls = newMap(),
+    memberSpecs = newList(),
+    enclosingProtected = newList(),
+    protectedMemberSpecs = newList(),
     diags = newList()
   )
 }
@@ -2346,7 +2367,10 @@ func inferMethodReturnTE(
           case None -> {
             val recOpt: Option[RecordDecl] = mapGet(state.recordDecls, typeName)
             match recOpt {
-              case None -> None
+              case None -> match mapGet(state.protectedDecls, typeName) {
+                case Some(pdecl) -> lookupProtectedMethodRetTE(state, env, pdecl, methodName, recvArgs, args)
+                case None -> None
+              }
               case Some(rdecl) -> lookupRecordMethodRetTE(state, env, rdecl, methodName, recvArgs, args)
             }
           }
@@ -2384,6 +2408,31 @@ func lookupIfaceMethodRetTE(
       case IMAssoc(_) -> ()
     }
     i = i + 1
+  }
+  None
+}
+
+// Counterpart of `lookupRecordMethodRetTE` for a protected type's entries and
+// functions (#7531).
+func lookupProtectedMethodRetTE(
+  state: in MonoState,
+  env: in Map[String, TypeExpr],
+  pdecl: in ProtectedTypeDecl,
+  methodName: in String,
+  recvArgs: in List[TypeArg],
+  args: in List[CallArg],
+): Option[TypeExpr] {
+  val typeParams = extractTypeParamNames(pdecl.generics)
+  for m in pdecl.members {
+    match m {
+      case PMEntry(ed) -> if ed.name == methodName {
+        return substMethodRetTE(state, env, typeParams, recvArgs, None, ed.params, ed.ret, args)
+      }
+      case PMFunc(fn) -> if fn.name == methodName {
+        return substMethodRetTE(state, env, typeParams, recvArgs, fn.generics, fn.params, fn.ret, args)
+      }
+      case _ -> ()
+    }
   }
   None
 }
@@ -3693,6 +3742,71 @@ func substTypesEOB(subst: in Map[String, TypeExpr], valueSubst: in Map[String, E
   }
 }
 
+// `f[T](...)` inside a generic whose own parameter `T` is an explicit type
+// argument of the call: the parser spells the type application as an index,
+// whose `T` is a name, not a type, so specialising the enclosing generic
+// rewrites the call to a type application over the substituted types
+// (#8280).  Only when every index is a bare name and at least one is a
+// substituted parameter; any other index is a genuine value index.
+func explicitTypeArgsOverParamsMono(subst: in Map[String, TypeExpr], fn: in Expr): Option[Expr] {
+  match fn.kind {
+    case EIndex(recv, idxs) -> {
+      if idxs.count == 0 {
+        return None
+      }
+      val targs: List[TypeArg] = newList()
+      var any = false
+      for ix in idxs {
+        match ix.kind {
+          case EPath(p) -> {
+            if p.segments.count != 1 {
+              return None
+            }
+            match mapGet(subst, p.segments[0]) {
+              case Some(te) -> {
+                any = true
+                targs.add(TAType(ty = te))
+              }
+              case None -> targs.add(TAType(ty = TypeExpr(kind = TRef(path = p), span = ix.span)))
+            }
+          }
+          case _ -> return None
+        }
+      }
+      if any {
+        Some(value = Expr(kind = ETypeApp(fn = recv, args = targs), span = fn.span))
+      } else {
+        None
+      }
+    }
+    case _ -> None
+  }
+}
+
+func substQuantBinders(
+  subst: in Map[String, TypeExpr],
+  valueSubst: in Map[String, Expr],
+  binders: in List[PropertyBinder],
+): List[PropertyBinder] {
+  val res: List[PropertyBinder] = newList()
+  var i = 0
+  while i < binders.count {
+    val b = binders[i]
+    res.add(PropertyBinder(name = b.name, ty = substTypeExpr(subst, valueSubst, b.ty), span = b.span))
+    i = i + 1
+  }
+  return res
+}
+
+func substTypesOptExpr(
+  subst: in Map[String, TypeExpr], valueSubst: in Map[String, Expr], oe: in Option[Expr]
+): Option[Expr] {
+  match oe {
+    case Some(e) -> Some(value = substTypesExpr(subst, valueSubst, e))
+    case None -> None
+  }
+}
+
 func substTypesExpr(subst: in Map[String, TypeExpr], valueSubst: in Map[String, Expr], expr: in Expr): Expr {
   val s = expr.span
   val k = match expr.kind {
@@ -3747,6 +3861,18 @@ func substTypesExpr(subst: in Map[String, TypeExpr], valueSubst: in Map[String, 
     case ESpawn(inner) -> ESpawn(inner = substTypesExpr(subst, valueSubst, inner))
     case ETry(inner) -> ETry(inner = substTypesExpr(subst, valueSubst, inner))
     case EOld(inner) -> EOld(inner = substTypesExpr(subst, valueSubst, inner))
+    case EForall(binders, whereExpr, body, bf) -> EForall(
+      binders = substQuantBinders(subst, valueSubst, binders),
+      whereExpr = substTypesOptExpr(subst, valueSubst, whereExpr),
+      body = substTypesExpr(subst, valueSubst, body),
+      bodyForm = bf
+    )
+    case EExists(binders, whereExpr, body, bf) -> EExists(
+      binders = substQuantBinders(subst, valueSubst, binders),
+      whereExpr = substTypesOptExpr(subst, valueSubst, whereExpr),
+      body = substTypesExpr(subst, valueSubst, body),
+      bodyForm = bf
+    )
     case ELambda(lambdaParams, body) -> {
       val nps: List[LambdaParam] = newList()
       var i = 0
@@ -3767,7 +3893,10 @@ func substTypesExpr(subst: in Map[String, TypeExpr], valueSubst: in Map[String, 
         }
         i = i + 1
       }
-      ECall(fn = substTypesExpr(subst, valueSubst, fn), args = na)
+      match explicitTypeArgsOverParamsMono(subst, fn) {
+        case Some(typeApp) -> ECall(fn = typeApp, args = na)
+        case None -> ECall(fn = substTypesExpr(subst, valueSubst, fn), args = na)
+      }
     }
     case ETypeApp(fn, args) -> {
       val na: List[TypeArg] = newList()
@@ -4839,7 +4968,8 @@ func desugarFunctionSig(state: in MonoState, sig: in FunctionSig): FunctionSig {
     ret = sig.ret,
     whereClause = sig.whereClause,
     contracts = sig.contracts,
-    span = sig.span
+    span = sig.span,
+    annotations = sig.annotations
   )
 }
 
@@ -7152,6 +7282,126 @@ func intSuffixText(sfx: in IntSuffix): String {
   }
 }
 
+// True when a generic call inside a generic record's method is instantiated
+// at one of the record's own type parameters.
+func substMentionsEnclosingTypeParamMono(state: in MonoState, subst: in Map[String, TypeExpr]): Bool {
+  val tps: List[String] = newList()
+  if state.enclosingRec.count > 0 {
+    for tp in extractTypeParamNames(state.enclosingRec[state.enclosingRec.count - 1].generics) {
+      tps.add(tp)
+    }
+  }
+  if state.enclosingProtected.count > 0 {
+    for tp in extractTypeParamNames(state.enclosingProtected[state.enclosingProtected.count - 1].generics) {
+      tps.add(tp)
+    }
+  }
+  if tps.count == 0 {
+    return false
+  }
+  val keys = mapKeys(subst)
+  var i = 0
+  while i < keys.count {
+    match mapGet(subst, keys[i]) {
+      case Some(te) -> if teMentionsTypeParam(tps, te) { return true }
+      case None -> ()
+    }
+    i = i + 1
+  }
+  false
+}
+
+// A record method always has `self` (the parser injects it); a protected
+// type's member calls a sibling function by name.
+func memberSpecAvailableMono(state: in MonoState, env: in Map[String, TypeExpr]): Bool {
+  if state.enclosingProtected.count > 0 {
+    return true
+  }
+  state.enclosingRec.count > 0 and env.containsKey("self")
+}
+
+// A generic call whose type arguments name the enclosing generic record's
+// type parameters.  The specialisation cannot be a top-level function: the
+// record's `T` is only in scope in the record, where backends already reify
+// it.  It becomes a method of the record, taking the receiver, and the call
+// becomes `self.<method>(args)`.
+func memberSpecCallMono(
+  state: in MonoState,
+  baseDecl: in FunctionDecl,
+  specName: in String,
+  subst: in Map[String, TypeExpr],
+  valueSubst: in Map[String, Expr],
+  calleeSpan: in Span,
+  newArgs: in List[CallArg],
+  callSpan: in Span,
+): Expr {
+  val inProtected = state.enclosingProtected.count > 0
+  val ownerName = if inProtected {
+    state.enclosingProtected[state.enclosingProtected.count - 1].name
+  } else {
+    state.enclosingRec[state.enclosingRec.count - 1].name
+  }
+  val name = "__spec_" + ownerName + "_" + specName
+  if not state.seenSpecs.containsKey(name) {
+    state.seenSpecs.add(name, true)
+    // specializeFunc reads no enclosing-type state; it only substitutes types.
+    val sd = specializeFunc(baseDecl, name, subst, valueSubst)
+    val params: List[Param] = newList()
+    if not inProtected {
+      params.add(
+        Param(
+          mode = PMIn,
+          modeExplicit = true,
+          name = "self",
+          ty = recordSelfTEMono(state.enclosingRec[state.enclosingRec.count - 1], sd.span),
+          dflt = None,
+          annotations = newList(),
+          span = sd.span
+        )
+      )
+    }
+    for p in sd.params {
+      params.add(p)
+    }
+    val env = if inProtected {
+      protectedMemberEnvMono(state.enclosingProtected[state.enclosingProtected.count - 1], params)
+    } else {
+      seedEnvFromParams(params)
+    }
+    state.originScope.add(originPkgOf(sd.annotations))
+    val body = rewriteFuncBodyWithRet(state, env, substValueInBody(valueSubst, sd.body), sd.ret)
+    state.originScope.removeAt(state.originScope.count - 1)
+    val member = FunctionDecl(
+      docComments = sd.docComments,
+      annotations = sd.annotations,
+      visibility = None,
+      isAsync = sd.isAsync,
+      name = name,
+      generics = None,
+      params = params,
+      ret = sd.ret,
+      whereClause = None,
+      contracts = sd.contracts,
+      body = body,
+      span = sd.span
+    )
+    if inProtected {
+      state.protectedMemberSpecs.add(member)
+    } else {
+      state.memberSpecs.add(member)
+    }
+  }
+  if inProtected {
+    return Expr(kind = ECall(fn = singleSegPathExpr(name, calleeSpan), args = newArgs), span = callSpan)
+  }
+  val selfSpan = Span(startPos = calleeSpan.startPos, endPos = calleeSpan.startPos)
+  val callee = Expr(
+    kind = EMember(receiver = Expr(kind = ESelf, span = selfSpan), memberName = name),
+    span = calleeSpan
+  )
+  Expr(kind = ECall(fn = callee, args = newArgs), span = callSpan)
+}
+
 func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: in Expr): Expr {
   val s = expr.span
   val ownSites = checkerSitesApplyMono(state)
@@ -7342,6 +7592,9 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
                         if allParamsBound(allParams, subst, valueSubst) {
                           val name = specFuncName(fname, allParams, subst, valueSubst)
                           validateWhereBounds(baseDecl, subst, fn.span, state.diags)
+                          if substMentionsEnclosingTypeParamMono(state, subst) and memberSpecAvailableMono(state, env) {
+                            return memberSpecCallMono(state, baseDecl, name, subst, valueSubst, fn.span, newArgs, s)
+                          }
                           if not state.seenSpecs.containsKey(name) {
                             state.seenSpecs.add(name, true)
                             val specDecl = specializeFunc(baseDecl, name, subst, valueSubst)
@@ -7550,6 +7803,9 @@ func rewriteExprInner(state: in MonoState, env: in Map[String, TypeExpr], expr: 
                       val allParams = extractAllParamInfo(baseDecl.generics)
                       val name = specFuncName(fname, allParams, subst, checkedValues)
                       validateWhereBounds(baseDecl, subst, fn.span, state.diags)
+                      if substMentionsEnclosingTypeParamMono(state, subst) and memberSpecAvailableMono(state, env) {
+                        return memberSpecCallMono(state, baseDecl, name, subst, checkedValues, fn.span, newArgs, s)
+                      }
                       if not state.seenSpecs.containsKey(name) {
                         state.seenSpecs.add(name, true)
                         val specDecl = specializeFunc(baseDecl, name, subst, checkedValues)
@@ -8739,6 +8995,72 @@ func selfFieldKeyMono(name: in String): String {
   "self." + name
 }
 
+// A protected type's entries and functions with their generic calls
+// specialised.  In a generic protected type a call at the type's own
+// parameters is specialised into a function of the type
+// (`memberSpecCallMono`, #8271).
+func rewriteProtectedItemMono(state: in MonoState, item: in Item, decl: in ProtectedTypeDecl): Item {
+  val isGenericPt = match decl.generics { case Some(_) -> true; case None -> false }
+  if isGenericPt {
+    state.enclosingProtected.add(decl)
+  }
+  val newMembers: List[ProtectedMember] = newList()
+  var mi = 0
+  while mi < decl.members.count {
+    match decl.members[mi] {
+      case PMEntry(ed) -> {
+        val env = protectedMemberEnvMono(decl, ed.params)
+        val newBody = match rewriteFuncBodyWithRet(state, env, Some(value = ed.body), ed.ret) {
+          case Some(b) -> b
+          case None -> ed.body
+        }
+        newMembers.add(
+          PMEntry(
+            entryDecl = EntryDecl(
+              docComments = ed.docComments,
+              annotations = ed.annotations,
+              visibility = ed.visibility,
+              name = ed.name,
+              params = ed.params,
+              ret = ed.ret,
+              contracts = ed.contracts,
+              body = newBody,
+              span = ed.span
+            )
+          )
+        )
+      }
+      case PMFunc(fn) -> newMembers.add(
+        PMFunc(fn = rewriteMethodDecl(state, protectedMemberEnvMono(decl, fn.params), fn))
+      )
+      case _ -> newMembers.add(decl.members[mi])
+    }
+    mi = mi + 1
+  }
+  if isGenericPt {
+    state.enclosingProtected.removeAt(state.enclosingProtected.count - 1)
+    while state.protectedMemberSpecs.count > 0 {
+      newMembers.add(PMFunc(fn = state.protectedMemberSpecs[0]))
+      state.protectedMemberSpecs.removeAt(0)
+    }
+  }
+  Item(
+    docComments = item.docComments,
+    annotations = item.annotations,
+    visibility = item.visibility,
+    kind = IProtected(
+      decl = ProtectedTypeDecl(
+        name = decl.name,
+        generics = decl.generics,
+        whereClause = decl.whereClause,
+        members = newMembers,
+        span = decl.span
+      )
+    ),
+    span = item.span
+  )
+}
+
 // Reconstruct a method `FunctionDecl` with its body rewritten (generic call
 // sites specialised), preserving every other field.  Shared by the Phase-2
 // `IImpl` / `IInterface` arms so impl and interface default-method bodies get
@@ -8971,6 +9293,24 @@ pub func monoFileWithLambdaTypes(
           unionDecls.add(decl.name, true)
         }
       }
+      // #7162: enum, opaque and protected types are legitimate explicit type
+      // arguments too; they share the union whitelist because the lookup only
+      // asks "is this simple name a user-declared type".
+      case IEnum(decl) -> {
+        if not unionDecls.containsKey(decl.name) {
+          unionDecls.add(decl.name, true)
+        }
+      }
+      case IOpaque(decl) -> {
+        if not unionDecls.containsKey(decl.name) {
+          unionDecls.add(decl.name, true)
+        }
+      }
+      case IProtected(decl) -> {
+        if not unionDecls.containsKey(decl.name) {
+          unionDecls.add(decl.name, true)
+        }
+      }
       case IExternType(decl) -> {
         if not externTypeDecls.containsKey(decl.name) {
           externTypeDecls.add(decl.name, true)
@@ -9181,6 +9521,12 @@ pub func monoFileWithLambdaTypes(
     newMap()
   )
   seedRootImports(state, file)
+  for pit in file.items {
+    match pit.kind {
+      case IProtected(pd) -> if not state.protectedDecls.containsKey(pd.name) { state.protectedDecls.add(pd.name, pd) }
+      case _ -> ()
+    }
+  }
   val ltKeys = mapKeys(lambdaTypes)
   var lti = 0
   while lti < ltKeys.count {
@@ -9334,6 +9680,37 @@ pub func monoFileWithLambdaTypes(
           )
         )
       }
+      // #8271/#8370: a record's in-body methods are function bodies like an
+      // `impl`'s; their generic call sites need the same rewriting.
+      case IRecord(decl) -> {
+        val newMembers: List[RecordMember] = newList()
+        state.enclosingRec.add(decl)
+        for m in decl.members {
+          match m {
+            case RMFunc(fn) -> newMembers.add(RMFunc(fn = rewriteMethodDecl(state, seedEnvFromParams(fn.params), fn)))
+            case _ -> newMembers.add(m)
+          }
+        }
+        state.enclosingRec.removeAt(state.enclosingRec.count - 1)
+        while state.memberSpecs.count > 0 {
+          newMembers.add(RMFunc(fn = state.memberSpecs[0]))
+          state.memberSpecs.removeAt(0)
+        }
+        rewrittenItems.add(
+          item.copy(
+            kind = IRecord(
+              decl = RecordDecl(
+                name = decl.name,
+                generics = decl.generics,
+                whereClause = decl.whereClause,
+                members = newMembers,
+                span = decl.span,
+                isForeign = decl.isForeign
+              )
+            )
+          )
+        )
+      }
       case IInterface(decl) -> {
         val newMembers: List[InterfaceMember] = newList()
         var mi = 0
@@ -9371,63 +9748,7 @@ pub func monoFileWithLambdaTypes(
       // (`mapValues(rows)` in a `func values()`) (D-progress-965).  A generic
       // protected type's members mention its type parameters and are left
       // as they are.
-      case IProtected(decl) -> {
-        val isGenericPt = match decl.generics { case Some(_) -> true; case None -> false }
-        if isGenericPt {
-          rewrittenItems.add(item)
-        } else {
-          val newMembers: List[ProtectedMember] = newList()
-          var mi = 0
-          while mi < decl.members.count {
-            match decl.members[mi] {
-              case PMEntry(ed) -> {
-                val env = protectedMemberEnvMono(decl, ed.params)
-                val newBody = match rewriteFuncBodyWithRet(state, env, Some(value = ed.body), ed.ret) {
-                  case Some(b) -> b
-                  case None -> ed.body
-                }
-                newMembers.add(
-                  PMEntry(
-                    entryDecl = EntryDecl(
-                      docComments = ed.docComments,
-                      annotations = ed.annotations,
-                      visibility = ed.visibility,
-                      name = ed.name,
-                      params = ed.params,
-                      ret = ed.ret,
-                      contracts = ed.contracts,
-                      body = newBody,
-                      span = ed.span
-                    )
-                  )
-                )
-              }
-              case PMFunc(fn) -> newMembers.add(
-                PMFunc(fn = rewriteMethodDecl(state, protectedMemberEnvMono(decl, fn.params), fn))
-              )
-              case _ -> newMembers.add(decl.members[mi])
-            }
-            mi = mi + 1
-          }
-          rewrittenItems.add(
-            Item(
-              docComments = item.docComments,
-              annotations = item.annotations,
-              visibility = item.visibility,
-              kind = IProtected(
-                decl = ProtectedTypeDecl(
-                  name = decl.name,
-                  generics = decl.generics,
-                  whereClause = decl.whereClause,
-                  members = newMembers,
-                  span = decl.span
-                )
-              ),
-              span = item.span
-            )
-          )
-        }
-      }
+      case IProtected(decl) -> rewrittenItems.add(rewriteProtectedItemMono(state, item, decl))
       // Module-level `val` initializers are function-free bodies too: a
       // generic call in one (`val m: Dict[String, Entry] = newDict[String,
       // Entry]()`) must specialise exactly like a call inside a function

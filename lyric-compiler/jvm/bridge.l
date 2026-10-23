@@ -2104,6 +2104,7 @@ func collectMonoSpecializedSigs(
 ): Unit {
   val owner = pkgJvmOwner(file.packageDecl.path)
   val externTypes = ownAwareExternTypes(file, externSeed)
+  registerMonoMemberSigsJvm(file, owner, into, externTypes)
   var i = 0
   while i < file.items.count {
     match file.items[i].kind {

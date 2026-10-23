@@ -5354,7 +5354,7 @@ test "generic record field from annotated param" {
 
 // A non-generic record's fields are unaffected, and a generic receiver whose
 // instantiation could not be inferred (no targs) stays lenient — the erased
-// wildcard, never a new rejection.
+// wildcard.
 test "generic record field degrades without targs" {
   val ok = "package P\nrecord Box[T] { value: T }\nfunc f[T](b: in Box[T]): Int {\n  val n: Int = b.value\n  n\n}\n"
   assertEqualInt(diagCount(parseCheck(ok)), 0, "box-generic-ctx: uninstantiated T stays lenient")
@@ -8520,6 +8520,22 @@ test "a clause calling a @pure impl method is accepted (#7383)" {
   assertTrue(not hasDiagCode(parseCheck(src), "T0133"), "the impl method is @pure")
 }
 
+test "a clause calling a @pure interface method is accepted (#7410)" {
+  val pureSrc = "package P\ninterface Signed {\n  @pure\n  func positive(): Bool\n}\nfunc f(s: in Signed): Int\n  requires: s.positive()\n{\n  1\n}\n"
+  assertTrue(not hasDiagCode(parseCheck(pureSrc), "T0133"), "a @pure interface method is callable in a clause")
+  val impureSrc = "package P\ninterface Signed {\n  func positive(): Bool\n}\nfunc f(s: in Signed): Int\n  requires: s.positive()\n{\n  1\n}\n"
+  assertTrue(hasDiagCode(parseCheck(impureSrc), "T0133"), "an interface method without @pure is still T0133")
+}
+
+test "an impl of a @pure interface method must be @pure (#7410)" {
+  val bad = "package P\nrecord Box {\n  v: Int\n}\ninterface Signed {\n  @pure\n  func positive(): Bool\n}\nimpl Signed for Box {\n  func positive(): Bool { self.v > 0 }\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(bad), "T0192"), 1, "an impure impl is T0192")
+  val good = "package P\nrecord Box {\n  v: Int\n}\ninterface Signed {\n  @pure\n  func positive(): Bool\n}\nimpl Signed for Box {\n  @pure\n  func positive(): Bool { self.v > 0 }\n}\n"
+  assertEqualInt(diagCount(parseCheck(good)), 0, "a @pure impl is accepted")
+  val plain = "package P\nrecord Box {\n  v: Int\n}\ninterface Signed {\n  func positive(): Bool\n}\nimpl Signed for Box {\n  func positive(): Bool { self.v > 0 }\n}\n"
+  assertEqualInt(diagCount(parseCheck(plain)), 0, "an interface without @pure imposes nothing")
+}
+
 test "an async or method-generic protected func is T0135 (#7384)" {
   val asyncSrc = "package P\nprotected type C {\n  var n: Int = 0\n  async func get(): Int {\n    n\n  }\n}\n"
   assertTrue(hasDiagCode(parseCheck(asyncSrc), "T0135"), "async func")
@@ -10256,6 +10272,156 @@ test "unary minus on a signed operand stays clean (#7854)" {
   assertEqualInt(diagCount(cr), 0, "signed negation: clean (" + diagCodesOf(cr) + ")")
 }
 
+// #7901: a `Nat` is non-negative, so unary minus on one is T0147 as on the
+// unsigned types.
+test "unary minus on a Nat is T0147 (#7901)" {
+  assertNegRejected(negSrc("func f(n: in Nat): Nat {\n  -n\n}\n"), "-n")
+  assertNegRejected(negSrc("func f(n: in Nat range 0 ..= 9): Long {\n  val m = -n\n  0i64\n}\n"), "Nat range")
+  val msg = diagMessageFor(parseCheck(negSrc("func f(n: in Nat): Nat {\n  -n\n}\n")), "T0147")
+  assertTrue(Str.contains(msg, "Nat"), "the message names Nat: " + msg)
+  assertTrue(Str.contains(msg, "-(n.toLong())"), "the message suggests a signed conversion: " + msg)
+}
+
+test "a ULong has no Long or floating-point conversion (#7901)" {
+  for m in ["toLong", "toDouble", "toFloat"] {
+    val cr = parseCheck(negSrc("func f(w: in ULong): Unit {\n  val v = w." + m + "()\n}\n"))
+    assertEqualInt(countDiagCode(cr, "T0103"), 1, "ULong." + m + ": T0103 (" + diagCodesOf(cr) + ")")
+  }
+  val ok = parseCheck(
+    negSrc(
+      "func f(u: in UInt, w: in ULong, b: in Byte): Unit {\n  val a = u.toLong()\n  val c = u.toDouble()\n  val d = w.toInt()\n  val e = b.toLong()\n}\n"
+    )
+  )
+  assertEqualInt(diagCount(ok), 0, "UInt and Byte convert, ULong truncates: clean (" + diagCodesOf(ok) + ")")
+  val hint = diagMessageFor(parseCheck(negSrc("func f(u: in UInt): UInt {\n  -u\n}\n")), "T0147")
+  assertTrue(Str.contains(hint, "-(x.toLong())"), "the UInt negation hint names toLong: " + hint)
+}
+
+// #7900: a range bound must fit the base type.
+func assertBoundRejected(src: in String, label: in String): Unit {
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0190"), 1, label + ": T0190 (" + diagCodesOf(cr) + ")")
+  assertEqualInt(diagCount(cr), 1, label + ": no other diagnostic (" + diagCodesOf(cr) + ")")
+}
+
+test "a range bound outside the base type is T0190 (#7900)" {
+  assertBoundRejected(negSrc("type P = UInt range -1 ..= 5\n"), "negative UInt bound")
+  assertBoundRejected(negSrc("type B = Byte range 0 ..= 300\n"), "Byte bound above 255")
+  assertBoundRejected(negSrc("type B = Byte range -1 ..= 5\n"), "negative Byte bound")
+  assertBoundRejected(negSrc("type U = UInt range 0 ..= 4294967296\n"), "UInt bound above 2^32 - 1")
+  assertBoundRejected(negSrc("type I = Int range 0 ..= 2147483648\n"), "Int bound above 2^31 - 1")
+  assertBoundRejected(negSrc("type I = Int range -2147483649 ..= 0\n"), "Int bound below -2^31")
+  assertBoundRejected(negSrc("type N = Nat range -1 ..= 5\n"), "negative Nat bound")
+  assertBoundRejected(negSrc("type L = ULong range -1 ..= 18446744073709551615u64\n"), "negative ULong bound")
+  assertBoundRejected(negSrc("type B = Byte range 0 ..< 257\n"), "Byte exclusive bound two past the maximum")
+  assertBoundRejected(negSrc("func f(x: in Byte range 0 ..= 300): Unit {\n}\n"), "inline parameter bound")
+  assertBoundRejected(negSrc("func f(): Unit {\n  val n: UInt range -1 ..= 5 = 3u32\n}\n"), "inline local bound")
+  assertBoundRejected(negSrc("val Big: Int = 300\ntype B = Byte range 0 ..= Big\n"), "constant bound above 255")
+  val msg = diagMessageFor(parseCheck(negSrc("type B = Byte range 0 ..= 300\n")), "T0190")
+  assertTrue(
+    Str.contains(msg, "300") and Str.contains(msg, "Byte") and Str.contains(msg, "0 ..= 255"),
+    "names the bound, base and range: " + msg
+  )
+}
+
+test "range bounds that fit the base type stay clean (#7900)" {
+  val src = negSrc(
+    "type A = Byte range 0 ..= 255\ntype B = Byte range 0 ..< 256\ntype C = UInt range 0 ..= 4294967295\ntype D = Int range -2147483648 ..= 2147483647\ntype E = ULong range 0 ..= 18446744073709551615u64\ntype F = Long range -9223372036854775807 ..= 9223372036854775807\ntype G = Nat range 0 ..= 100\ntype H = Float range -1.0 ..= 1.0\nfunc f(x: in Byte range 1 ..= 9): Unit {\n}\n"
+  )
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "bounds within the base type: clean (" + diagCodesOf(cr) + ")")
+}
+
+// #8226: a variable whose type has no valid zero default must be assigned
+// before it is read.
+func assertUnassignedRead(body: in String, label: in String): Unit {
+  val cr = parseCheck(negSrc(body))
+  assertEqualInt(countDiagCode(cr, "T0191"), 1, label + ": T0191 (" + diagCodesOf(cr) + ")")
+}
+
+func assertAssignedClean(body: in String, label: in String): Unit {
+  val cr = parseCheck(negSrc(body))
+  assertEqualInt(countDiagCode(cr, "T0191"), 0, label + ": no T0191 (" + diagCodesOf(cr) + ")")
+}
+
+test "an unassigned range-typed var that is read is T0191 (#8226)" {
+  assertUnassignedRead("func h(): Bool {\n  var y: Int range 5 ..= 10\n  y >= 5\n}\n", "inline range")
+  assertUnassignedRead("type R = Int range 5 ..= 10\nfunc h(): Int {\n  var x: R\n  x.toInt()\n}\n", "named range")
+  assertUnassignedRead(
+    "func h(c: in Bool): Int {\n  var y: Int range 5 ..= 10\n  if c {\n    y = 6\n  }\n  y\n}\n",
+    "assigned on only one branch"
+  )
+  assertUnassignedRead(
+    "func h(n: in Int): Int {\n  var y: Int range 5 ..= 10\n  var i = 0\n  while i < n {\n    y = 7\n    i = i + 1\n  }\n  y\n}\n",
+    "assigned only inside a loop that may not run"
+  )
+  assertUnassignedRead("func h(): Int {\n  var y: Int range 5 ..= 10\n  y += 1\n  y\n}\n", "compound assignment reads")
+  assertUnassignedRead("func h(): Double {\n  var p: Double range 0.5 ..= 1.0\n  p\n}\n", "float range excluding zero")
+  val cr = parseCheck(negSrc("func h(): Bool {\n  var y: Int range 5 ..= 10\n  y >= 5\n}\n"))
+  assertTrue(Str.contains(diagMessageFor(cr, "T0191"), "'y'"), "the message names the variable")
+}
+
+test "a range-typed var assigned before every read stays clean (#8226)" {
+  assertAssignedClean("func h(): Int {\n  var y: Int range 5 ..= 10\n  y = 6\n  y\n}\n", "plain assignment")
+  assertAssignedClean(
+    "func h(c: in Bool): Int {\n  var y: Int range 5 ..= 10\n  if c {\n    y = 6\n  } else {\n    y = 7\n  }\n  y\n}\n",
+    "both branches assign"
+  )
+  assertAssignedClean(
+    "func h(c: in Bool): Int {\n  var y: Int range 5 ..= 10\n  if c {\n    return 0\n  } else {\n    y = 7\n  }\n  y\n}\n",
+    "the other branch returns"
+  )
+  assertAssignedClean(
+    "func h(c: in Bool): Int {\n  var y: Int range 5 ..= 10\n  match c {\n    case true -> { y = 6 }\n    case false -> { y = 8 }\n  }\n  y\n}\n",
+    "every match arm assigns"
+  )
+  assertAssignedClean(
+    "func h(): Int {\n  var y: Int range 5 ..= 10\n  do {\n    y = 9\n    break\n  }\n  y\n}\n",
+    "assigned before the break of a loop"
+  )
+  assertAssignedClean(
+    "func fill(v: out Int range 5 ..= 10): Unit {\n  v = 6\n}\nfunc h(): Int {\n  var y: Int range 5 ..= 10\n  fill(y)\n  y\n}\n",
+    "an out argument assigns"
+  )
+  assertAssignedClean(
+    "func h(): Int {\n  var y: Int range 0 ..= 10\n  y\n}\n",
+    "a range that includes zero has a valid default"
+  )
+  assertAssignedClean("func h(): Int {\n  var y: Int\n  y\n}\n", "an unconstrained Int")
+  assertAssignedClean("func h(): Int {\n  var y: Int range 5 ..= 10\n  0\n}\n", "never read")
+}
+
+// #8331: an interface method's `requires:`/`ensures:` clauses are
+// type-checked like a function's.
+func ifaceSrc(clauses: in String): String {
+  "package P\ninterface Store {\n  func get(k: in String): Int\n" + clauses + "}\n"
+}
+
+test "an interface method contract clause that is not Bool is T0132 (#8331)" {
+  val cr = parseCheck(ifaceSrc("    ensures: 7\n"))
+  assertEqualInt(countDiagCode(cr, "T0132"), 1, "ensures: 7 (" + diagCodesOf(cr) + ")")
+  val req = parseCheck(ifaceSrc("    requires: k.length\n"))
+  assertEqualInt(countDiagCode(req, "T0132"), 1, "requires: k.length (" + diagCodesOf(req) + ")")
+  val quant = parseCheck(ifaceSrc("    ensures: forall (i: Int) i\n"))
+  assertEqualInt(countDiagCode(quant, "T0132"), 1, "a non-Bool quantifier body (" + diagCodesOf(quant) + ")")
+}
+
+test "an interface method contract clause naming an unknown name is reported (#8331)" {
+  val cr = parseCheck(ifaceSrc("    requires: missing > 0\n"))
+  assertTrue(diagCount(cr) > 0, "an unknown name in a requires clause: (" + diagCodesOf(cr) + ")")
+}
+
+test "an interface method contract clause is checked with result bound (#8331)" {
+  val ok = parseCheck(ifaceSrc("    requires: k.length > 0\n    ensures: result >= 0\n"))
+  assertEqualInt(diagCount(ok), 0, "valid clauses: clean (" + diagCodesOf(ok) + ")")
+  val badResult = parseCheck(ifaceSrc("    ensures: result\n"))
+  assertEqualInt(
+    countDiagCode(badResult, "T0132"),
+    1,
+    "result is the declared Int, not Bool (" + diagCodesOf(badResult) + ")"
+  )
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Native FFI intrinsics (#7910): typed only by a `--target native` check.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -11737,6 +11903,18 @@ test "with two NativeUserdata slots the first is the userdata, and a callback ty
   assertTrue(hasDiagCode(bad, "T0181"), "a callback type with no userdata slot is T0181: " + diagCodesOf(bad))
 }
 
+// #8280: an enclosing function's type parameter is a type, not a value name,
+// when it is an index of an explicit type application.
+test "an enclosing type parameter as an explicit type argument is not an unknown name (#8280)" {
+  val src = "package P\n" + "func firstOf[T](xs: in array[2, T], k: in Int): T { xs[k] }\n" +
+    "func t3[T](x: in T, y: in T): T {\n" +
+    "  firstOf[T]([x, y], 0)\n" +
+    "}\n"
+  assertTrue(not hasDiagCode(parseCheck(src), "T0020"), "T is a type argument")
+  val shadowed = "package P\n" + "func g[T](xs: in List[Int], T: in Int): Int { xs[T] }\n"
+  assertTrue(not hasDiagCode(parseCheck(shadowed), "T0020"), "a local named like the parameter still indexes")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // By-reference parameter rules: defaults (T0182), async (T0183), function
 // values (T0128) and non-`var` field paths (T0166).  #8255, #8318, #8229,
@@ -11801,4 +11979,236 @@ test "a non-var field is not a place for an inout argument or receiver (#8215)" 
   )
   assertEqualInt(countDiagCode(recv, "T0166"), 1, "a non-var field receiver: " + diagCodesOf(recv))
   assertTrue(Str.contains(diagMessageFor(recv, "T0166"), "'r' is not `var`"), "the message names the field")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Type-checker diagnostics batch: #8249, #7916, #7978, #8334, #8039, #8005,
+// #8018, #7974.
+// ─────────────────────────────────────────────────────────────────────────────
+test "a `?` operand that is not a Result or Option is T0195 (#8249)" {
+  val monads = "union Result[T, E] { case Ok(value: T); case Err(error: E) }\n" +
+    "union Option[T] { case Some(value: T); case None }\n"
+  val intSrc = "package P\n" + monads + "func f(x: in Int): Result[Int, String] {\n  val y = x?\n  Ok(value = y)\n}\n"
+  val intCr = parseCheck(intSrc)
+  assertEqualInt(countDiagCode(intCr, "T0195"), 1, "an Int operand (" + diagCodesOf(intCr) + ")")
+  val lamSrc = "package P\n" + monads +
+    "func f(): Result[Int, String] {\n  val r = { Ok(value = 1) }\n  val z = r?\n  Ok(value = 1)\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(lamSrc), "T0195"), 1, "a lambda operand")
+  val recSrc = "package P\n" + monads + "record R { n: Int }\n" +
+    "func f(r: in R): Result[Int, String] {\n  val z = r?\n  Ok(value = 1)\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(recSrc), "T0195"), 1, "a record operand")
+  val okSrc = "package P\n" + monads + "func g(): Result[Int, String] { Ok(value = 1) }\n" +
+    "func f(): Result[Int, String] {\n  val a = g()?\n  Ok(value = a)\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(okSrc), "T0195"), 0, "a Result operand")
+  val optSrc = "package P\n" + monads + "func g(): Option[Int] { Some(value = 1) }\n" +
+    "func f(): Option[Int] {\n  val a = g()?\n  Some(value = a)\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(optSrc), "T0195"), 0, "an Option operand")
+}
+
+test "a match arm that no value reaches is T0196 (#7916)" {
+  val head = "package P\nunion U { case A; case B(x: Int) }\n"
+  val afterWild = head +
+    "func f(u: in U): Int {\n  match u {\n    case A -> 1\n    case _ -> 2\n    case B(x) -> x\n  }\n}\n"
+  val wildCr = parseCheck(afterWild)
+  assertEqualInt(countDiagCode(wildCr, "T0196"), 1, "an arm after `case _` (" + diagCodesOf(wildCr) + ")")
+  val dup = head + "func f(u: in U): Int {\n  match u {\n    case A -> 1\n    case A -> 3\n    case B(x) -> x\n  }\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(dup), "T0196"), 1, "a second `case A`")
+  val dupCtor = head +
+    "func f(u: in U): Int {\n  match u {\n    case A -> 1\n    case B(x) -> x\n    case B(y) -> y\n  }\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(dupCtor), "T0196"), 1, "a second whole `case B(_)`")
+  val bindAfter = "package P\nfunc f(n: in Int): Int {\n  match n {\n    case 1 -> 1\n    case m -> m\n    case 2 -> 2\n  }\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(bindAfter), "T0196"), 1, "an arm after a bare binding")
+  val fine = head +
+    "func f(u: in U): Int {\n  match u {\n    case B(1) -> 1\n    case B(x) -> x\n    case A -> 0\n  }\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(fine), "T0196"), 0, "a literal sub-pattern before the whole case")
+  val guarded = head +
+    "func f(u: in U): Int {\n  match u {\n    case A if false -> 1\n    case A -> 2\n    case _ -> 3\n  }\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(guarded), "T0196"), 0, "a guarded arm covers nothing")
+}
+
+test "a stdlib collection member checks its argument count and types its result (#7978)" {
+  val arity = checkCollectionCall(
+    "xs: in List[Int], m: in Map[String, Int]",
+    "xs.add(1, 2, 3)\n  m.add(\"a\")\n  val c = xs.contains()"
+  )
+  assertEqualInt(countDiagCode(arity, "T0042"), 3, "three wrong arities (" + diagCodesOf(arity) + ")")
+  assertCollectionCallClean(
+    "xs: in List[Int], m: in Map[String, Int]",
+    "xs.add(1)\n  xs.add(0, 1)\n  m.add(\"a\", 1)",
+    "right arities"
+  )
+  val res = checkCollectionCall(
+    "xs: in List[Int], m: in Map[String, Int]",
+    "val a: String = xs.contains(1)\n  val b: String = m.containsKey(\"k\")\n  val c: String = xs.indexOf(1)"
+  )
+  assertEqualInt(countDiagCode(res, "T0060"), 3, "contains / containsKey / indexOf results (" + diagCodesOf(res) + ")")
+  assertCollectionCallClean(
+    "xs: in List[Int], m: in Map[String, Int]",
+    "val a: Bool = xs.contains(1)\n  val b: Bool = m.containsKey(\"k\")\n  val c: Int = xs.indexOf(1)\n  if xs.contains(2) { xs.add(3) }",
+    "correct result types"
+  )
+}
+
+test "the bitwise methods of an integer are typed (#8334)" {
+  val bad = "package P\nfunc f(k: in Int): Unit {\n  val a: String = k.shl(2)\n  val b = k.shl(\"x\")\n  val c = k.and(1, 2)\n  val d: String = k.and(1)\n}\n"
+  val badCr = parseCheck(bad)
+  assertEqualInt(countDiagCode(badCr, "T0060"), 2, "results are Int (" + diagCodesOf(badCr) + ")")
+  assertEqualInt(countDiagCode(badCr, "T0043"), 1, "a String shift count")
+  assertEqualInt(countDiagCode(badCr, "T0042"), 1, "two operands")
+  val ok = "package P\nfunc f(k: in Long, u: in UInt): Unit {\n  val a: Long = k.shl(2).and(255)\n  val b: UInt = u.shr(1).or(1u32)\n  val c: Int = 1.xor(3)\n}\n"
+  val okCr = parseCheck(ok)
+  assertEqualInt(diagCount(okCr), 0, "typed bitwise chains are clean (" + diagCodesOf(okCr) + ")")
+}
+
+test "a name repeated after a positional argument is reported once (#8039)" {
+  val src = "package P\nfunc f(a: in Int, b: in Int): Int { a }\nfunc g(): Int { f(1, a = 1, a = 2) }\n"
+  val cr = parseCheck(src)
+  assertEqualInt(countDiagCode(cr, "T0042"), 1, "one T0042 (" + diagCodesOf(cr) + ")")
+}
+
+test "a positional constructor argument after a named one fills the next free field (#8005)" {
+  val bad = "package P\nrecord P2 { x: Int, y: String }\nfunc f(): P2 { P2(x = 1, 5) }\n"
+  val badCr = parseCheck(bad)
+  assertEqualInt(countDiagCode(badCr, "T0104"), 1, "5 is checked against y (" + diagCodesOf(badCr) + ")")
+  assertTrue(
+    Str.contains(diagMessageFor(badCr, "T0104"), "field 'y'"),
+    "names field y: " + diagMessageFor(badCr, "T0104")
+  )
+  val ok = "package P\nrecord P2 { x: Int, y: String }\nfunc f(): P2 { P2(x = 1, \"s\") }\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "the string fills y")
+}
+
+test "a member read on a type-parameter value is T0197 (#8018)" {
+  val bad = "package P\nrecord Box[T] { value: T }\nfunc g[T](b: in Box[T]): Int {\n  b.value.zork\n}\n"
+  val badCr = parseCheck(bad)
+  assertEqualInt(countDiagCode(badCr, "T0197"), 1, "b.value.zork (" + diagCodesOf(badCr) + ")")
+  val ok = "package P\nrecord Box[T] { value: T }\nfunc g[T](b: in Box[T]): T {\n  b.value\n}\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "reading a field of the record that holds the T is fine")
+}
+
+test "a type parameter is rigid inside its generic body (#7974)" {
+  val head = "package P\nimport Std.CollectionsHost\n"
+  val put = head + "func put[T](xs: in List[Int], x: in T): Unit {\n  xs.add(x)\n}\n"
+  val putCr = checkWithImportedPackages(parse(put).file, stdCollectionsHostPackages())
+  assertEqualInt(countDiagCode(putCr, "T0043"), 1, "T into List[Int].add (" + diagCodesOf(putCr) + ")")
+  val bindSrc = "package P\nfunc f[T](x: in T): Int {\n  val y: Int = x\n  y\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(bindSrc), "T0060"), 1, "T bound to an Int")
+  val ret = "package P\nfunc f[T](x: in T): String {\n  return x\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(ret), "T0065"), 1, "T returned as String")
+  val arg = "package P\nfunc take(s: in String): Unit {}\nfunc f[T](x: in T): Unit {\n  take(x)\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(arg), "T0043"), 1, "T passed as a String")
+  val same = "package P\nfunc id[T](x: in T): T { x }\nfunc f[T](x: in T): T {\n  val y: T = x\n  id(y)\n}\n"
+  assertEqualInt(diagCount(parseCheck(same)), 0, "T to T is clean")
+}
+
+test "a file that is both @pure and @io is Y0009 without a [layers] table (#8244)" {
+  val both = "@pure\n@io\npackage P\nfunc f(): Int { 1 }\n"
+  val cr = parseCheck(both)
+  assertEqualInt(countDiagCode(cr, "Y0009"), 1, "@pure and @io together (" + diagCodesOf(cr) + ")")
+  val one = "@pure\npackage P\nfunc f(): Int { 1 }\n"
+  assertEqualInt(countDiagCode(parseCheck(one), "Y0009"), 0, "@pure alone")
+  val twice = "@io\n@io\npackage P\nfunc f(): Int { 1 }\n"
+  assertEqualInt(countDiagCode(parseCheck(twice), "Y0009"), 0, "the same class twice is not a conflict")
+}
+
+test "a literal formatN template is checked against the placeholder grammar (#7983)" {
+  val head = "package P\nfunc f(): String {\n  "
+  val tail = "\n}\n"
+  val tooFar = parseCheck(head + "format1(\"{1}\", 5)" + tail)
+  assertEqualInt(countDiagCode(tooFar, "T0199"), 1, "an index past the arguments (" + diagCodesOf(tooFar) + ")")
+  assertTrue(
+    Str.contains(diagMessageFor(tooFar, "T0199"), "has no argument"),
+    "names the cause: " + diagMessageFor(tooFar, "T0199")
+  )
+  assertEqualInt(countDiagCode(parseCheck(head + "format2(\"{0}{2}\", 1, 2)" + tail), "T0199"), 1, "format2 {2}")
+  assertEqualInt(countDiagCode(parseCheck(head + "format1(\"{0\", 5)" + tail), "T0199"), 1, "an unclosed placeholder")
+  assertEqualInt(countDiagCode(parseCheck(head + "format1(\"{0,5}\", 5)" + tail), "T0199"), 1, "a .NET alignment spec")
+  assertEqualInt(countDiagCode(parseCheck(head + "format1(\"a}b\", 5)" + tail), "T0199"), 1, "a lone }")
+  assertEqualInt(
+    countDiagCode(parseCheck(head + "format2(\"{1}{{}}{0}\", 1, 2)" + tail), "T0199"),
+    0,
+    "a valid template"
+  )
+  assertEqualInt(
+    countDiagCode(parseCheck(head + "format3(\"{0}\", 1, 2, 3)" + tail), "T0199"),
+    0,
+    "an unused argument is legal"
+  )
+  val dyn = parseCheck("package P\nfunc f(t: in String): String {\n  format1(t, 5)\n}\n")
+  assertEqualInt(countDiagCode(dyn, "T0199"), 0, "a non-literal template is left to run time")
+}
+
+test "a tuple pattern in a match arm needs the scrutinee's arity (#7804)" {
+  val bad = "package P\nfunc f(p: in (Int, Int)): Int {\n  match p {\n    case (a, b, c) -> a\n  }\n}\n"
+  val badCr = parseCheck(bad)
+  assertEqualInt(countDiagCode(badCr, "T0198"), 1, "a 3-element pattern over a pair (" + diagCodesOf(badCr) + ")")
+  val ok = "package P\nfunc f(p: in (Int, Int)): Int {\n  match p {\n    case (a, b) -> a + b\n  }\n}\n"
+  assertEqualInt(diagCount(parseCheck(ok)), 0, "the right arity is clean")
+}
+
+test "a local val's constructor pattern gets a match arm's head checks, and a non-record head is named (#7810)" {
+  val bogus = "package P\nrecord R { n: Int }\nfunc f(r: in R): Int {\n  val Bogus { n } = r\n  n\n}\n"
+  val bogusCr = parseCheck(bogus)
+  assertEqualInt(countDiagCode(bogusCr, "T0146"), 1, "a head naming no record (" + diagCodesOf(bogusCr) + ")")
+  assertTrue(
+    Str.contains(diagMessageFor(bogusCr, "T0146"), "`Bogus` is not a record type"),
+    "T0146 says so: " + diagMessageFor(bogusCr, "T0146")
+  )
+  val other = "package P\nrecord R { n: Int }\nrecord S { n: Int }\nfunc f(r: in R): Int {\n  val S { n } = r\n  n\n}\n"
+  assertTrue(
+    Str.contains(diagMessageFor(parseCheck(other), "T0146"), "is bound to a value of type R"),
+    "a record head that is not the value's record keeps the shape message"
+  )
+}
+
+func onlyCasePackages(): List[ImportedPackage] {
+  val pkg = parse(
+    "package PkgOnly\nunion Wrapped {\n  case Only(v: Int)\n}\npub func mkWrapped(): Wrapped {\n  Wrapped.Only(v = 1)\n}\n"
+  )
+  val packages: List[ImportedPackage] = newList()
+  packages.add(
+    ImportedPackage(
+      name = "PkgOnly",
+      items = pkg.file.items,
+      imports = collectImportNames(pkg.file.imports),
+      wholeImports = collectWholeImportNames(pkg.file.imports)
+    )
+  )
+  packages
+}
+
+test "a local val's qualified constructor head to a package-private case is T0097 like a match arm's (#7810)" {
+  val src = "package App\nimport PkgOnly\nfunc f(): Int {\n  val PkgOnly.Wrapped.Only(v) = mkWrapped()\n  v\n}\n"
+  val cr = checkWithImportedPackages(parse(src).file, onlyCasePackages())
+  assertEqualInt(countDiagCode(cr, "T0097"), 1, "one T0097 (" + diagCodesOf(cr) + ")")
+}
+
+test "a type-qualified call T.m(x, args) is checked like x.m(args) (#8161, #8104)" {
+  val head = "package P\nrecord Acc { a: Int }\nfunc Acc.scaled(self: in Acc, j: in Int, k: in Int): Int { j }\nfunc f(acc: in Acc): "
+  val arity = parseCheck(head + "Int {\n  Acc.scaled(acc, 1)\n}\n")
+  assertEqualInt(countDiagCode(arity, "T0042"), 1, "a missing argument (" + diagCodesOf(arity) + ")")
+  val kind = parseCheck(head + "Int {\n  Acc.scaled(acc, \"x\", 2)\n}\n")
+  assertEqualInt(countDiagCode(kind, "T0043"), 1, "a wrong argument type (" + diagCodesOf(kind) + ")")
+  val result = parseCheck(head + "String {\n  Acc.scaled(acc, j = 1, k = 2)\n}\n")
+  assertEqualInt(countDiagCode(result, "T0070"), 1, "the result is the function's Int (" + diagCodesOf(result) + ")")
+  val named = parseCheck(head + "Int {\n  Acc.scaled(acc, k = 2, j = 1)\n}\n")
+  assertEqualInt(diagCount(named), 0, "named arguments in any order are clean (" + diagCodesOf(named) + ")")
+}
+
+test "the type-qualified form of a dot-named bitwise name is not typed as the intrinsic (#8334)" {
+  val src = "package P\nfunc Int.shl(self: in Int, n: in Int): Int = -1\nfunc f(k: in Int): Int {\n  k.shl(2) + Int.shl(k, 2)\n}\n"
+  val cr = parseCheck(src)
+  assertEqualInt(diagCount(cr), 0, "Int.shl(k, 2) beside k.shl(2) (" + diagCodesOf(cr) + ")")
+}
+
+test "async Result operands, Unit operands and or-pattern duplicates (#8249, #7916)" {
+  val monads = "union Result[T, E] { case Ok(value: T); case Err(error: E) }\n"
+  val asyncSrc = "package P\n" + monads + "async func g(): Result[Int, String] { Ok(value = 1) }\n" +
+    "async func f(): Result[Int, String] {\n  val a = g()?\n  Ok(value = a)\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(asyncSrc), "T0195"), 0, "an async call's Result operand")
+  val unitSrc = "package P\n" + monads + "func g(): Unit {}\n" +
+    "func f(): Result[Int, String] {\n  g()?\n  Ok(value = 1)\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(unitSrc), "T0195"), 1, "a Unit operand is not a Result")
+  val orSrc = "package P\nunion U { case A; case B; case C }\nfunc f(u: in U): Int {\n  match u {\n    case A | B -> 1\n    case A -> 2\n    case C -> 3\n  }\n}\n"
+  assertEqualInt(countDiagCode(parseCheck(orSrc), "T0196"), 1, "a case an earlier or-pattern already matched")
 }

@@ -36,7 +36,9 @@ toggles.  Independently useful for application-level configuration.
 > numeric-literal bounds (`G0009` otherwise, and for an empty range); its
 > default must lie inside the range (`G0010`); an env value outside it,
 > including `NaN` for a floating field, stops startup with exit 78
-> (`G0004`) on dotnet and the JVM.  Lists, enums, `via`, and `@sensitive`
+> (`G0004`) on dotnet and the JVM.  A value that does not parse as the
+> field's type (`PORT=80a`, `RATIO=1,5`, `VERBOSE=maybe`) stops startup the
+> same way with exit 78 and `G0003` (#7436), on dotnet and the JVM alike.  Lists, enums, `via`, and `@sensitive`
 > behaviour are deferred to v1.1; the design below describes the full
 > target.
 
@@ -150,6 +152,14 @@ cleanly from a single environment-variable string:
 | Range of a numeric type (e.g. `Int range 0 ..= 65535`, `Long range 1 ..`) | parsed as base type, then range-checked; `NaN` is outside every floating range | `PORT=8080` |
 | Simple enum (closed sum type, no payloads) | case name, exact match | `LEVEL=Info` |
 | `[T]` where `T` is one of the above | comma-separated, `\,` escapes a literal comma, empty string → `[]` | `EXCLUDE=foo,bar,baz` |
+
+A value that does not parse is `G0003`: the process prints
+`error: config field <Block>.<field> (env var <NAME>) is not a valid <Type> (G0003)`
+to stderr and exits 78 before `main` runs.  The message does not echo the
+value.  An `Int`/`Long` accepts an optional sign and surrounding whitespace;
+a `Float`/`Double` accepts the invariant-culture float format without
+thousands separators, so `1,5` is `G0003`, not 15.  A `Bool` is read by hand
+on both targets: exactly `1`, `0`, or `true`/`false` in any case.
 
 ### 3.1 Out of scope
 

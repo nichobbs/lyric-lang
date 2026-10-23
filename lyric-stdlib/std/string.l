@@ -317,6 +317,10 @@ pub func joinList(sep: in String, xs: in List[String]): String {
 @pure
 @stable(since = "1.2")
 pub func formatArgs(template: in String, args: in slice[String]): String {
+  val problem = formatTemplateProblem(template, args.length)
+  if problem.length > 0 {
+    panic("format: " + problem)
+  }
   val n = template.length
   val sb = StringBuilder.new()
   var segStart = 0
@@ -325,34 +329,15 @@ pub func formatArgs(template: in String, args: in slice[String]): String {
     val c = SH.hostCodeUnitAt(template, i)
     if c == 123 {
       sb.append(template.substring(segStart, i - segStart))
-      if i + 1 < n and SH.hostCodeUnitAt(template, i + 1) == 123 {
+      if SH.hostCodeUnitAt(template, i + 1) == 123 {
         sb.append("{")
         i += 2
       } else {
         var j = i + 1
         var index = 0
-        while j < n and isAsciiDigitUnit(SH.hostCodeUnitAt(template, j)) {
-          // Past `args.length` the index can only be out of range, so stop
-          // accumulating rather than overflow on a long digit run.
-          if index <= args.length {
-            index = index * 10 + (SH.hostCodeUnitAt(template, j) - 48)
-          }
+        while isAsciiDigitUnit(SH.hostCodeUnitAt(template, j)) {
+          index = index * 10 + (SH.hostCodeUnitAt(template, j) - 48)
           j += 1
-        }
-        if j == i + 1 or j >= n or SH.hostCodeUnitAt(template, j) != 125 {
-          panic(
-            "format: malformed placeholder at offset " + toString(i) + " of template \"" + template +
-              "\"; a placeholder is {n} with a decimal argument index, and a literal brace is written {{ or }}"
-          )
-        }
-        if index >= args.length {
-          panic(
-            "format: placeholder " + template.substring(i, j + 1 - i) + " at offset " + toString(i) + " of template \"" +
-              template +
-              "\" has no argument; " +
-              toString(args.length) +
-              " supplied"
-          )
         }
         sb.append(args[index])
         i = j + 1
@@ -360,22 +345,68 @@ pub func formatArgs(template: in String, args: in slice[String]): String {
       segStart = i
     } else if c == 125 {
       sb.append(template.substring(segStart, i - segStart))
-      if i + 1 < n and SH.hostCodeUnitAt(template, i + 1) == 125 {
-        sb.append("}")
-        i += 2
-        segStart = i
-      } else {
-        panic(
-          "format: unmatched '}' at offset " + toString(i) + " of template \"" + template +
-            "\"; a literal brace is written {{ or }}"
-        )
-      }
+      sb.append("}")
+      i += 2
+      segStart = i
     } else {
       i += 1
     }
   }
   sb.append(template.substring(segStart, n - segStart))
   sb.toString()
+}
+
+/// What is wrong with `template` as a `formatArgs` template given `argCount`
+/// arguments, or "" when it formats in full: a `{` not followed by `{` or by
+/// decimal digits and `}`, a `}` not doubled, or a placeholder naming an
+/// argument beyond `argCount`.  `formatArgs` panics with this text, and the
+/// type checker reports it at compile time for a literal `format1`-`format4`
+/// template, so the two cannot drift apart (#7983).
+@pure
+@stable(since = "1.2")
+pub func formatTemplateProblem(template: in String, argCount: in Int): String {
+  val n = template.length
+  var i = 0
+  while i < n {
+    val c = SH.hostCodeUnitAt(template, i)
+    if c == 123 {
+      if i + 1 < n and SH.hostCodeUnitAt(template, i + 1) == 123 {
+        i += 2
+      } else {
+        var j = i + 1
+        var index = 0
+        while j < n and isAsciiDigitUnit(SH.hostCodeUnitAt(template, j)) {
+          // Past `argCount` the index can only be out of range, so stop
+          // accumulating rather than overflow on a long digit run.
+          if index <= argCount {
+            index = index * 10 + (SH.hostCodeUnitAt(template, j) - 48)
+          }
+          j += 1
+        }
+        if j == i + 1 or j >= n or SH.hostCodeUnitAt(template, j) != 125 {
+          return "malformed placeholder at offset " + toString(i) + " of template \"" + template +
+            "\"; a placeholder is {n} with a decimal argument index, and a literal brace is written {{ or }}"
+        }
+        if index >= argCount {
+          return "placeholder " + template.substring(i, j + 1 - i) + " at offset " + toString(i) + " of template \"" + template +
+            "\" has no argument; " +
+            toString(argCount) +
+            " supplied"
+        }
+        i = j + 1
+      }
+    } else if c == 125 {
+      if i + 1 < n and SH.hostCodeUnitAt(template, i + 1) == 125 {
+        i += 2
+      } else {
+        return "unmatched '}' at offset " + toString(i) + " of template \"" + template +
+          "\"; a literal brace is written {{ or }}"
+      }
+    } else {
+      i += 1
+    }
+  }
+  ""
 }
 
 @pure

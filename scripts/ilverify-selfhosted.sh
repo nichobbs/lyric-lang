@@ -226,6 +226,8 @@ SELF_TESTS=(
   lyric-compiler/lyric/generator_dispose_self_test.l
   lyric-compiler/lyric/async_for_loop_suspend_self_test.l
   lyric-compiler/lyric/async_match_suspend_self_test.l
+  lyric-compiler/lyric/async_sm_self_test.l
+  lyric-compiler/lyric/aspect_weave_self_test.l
   lyric-compiler/lyric/method_default_args_self_test.l
   lyric-compiler/lyric/generator_closure_var_capture_self_test.l
   lyric-compiler/lyric/closure_captured_var_byref_self_test.l

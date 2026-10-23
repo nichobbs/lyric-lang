@@ -204,7 +204,7 @@ static void test_unicode_paths(const char* dir) {
     CHECK(string_is(back, "x\r\ny\n"));
     if (back) lyric_release(back);
 
-    int32_t ok = 0;
+    int64_t ok = 0;
     LyricList* names = lyric_dir_list_typed(sub, &ok);
     CHECK(ok == 1);
     CHECK(lyric_list_len(names) == 1);

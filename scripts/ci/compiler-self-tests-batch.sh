@@ -52,6 +52,9 @@ for t in \
   lyric-compiler/lyric/lexer_self_test.l \
   lyric-compiler/lyric/parser_self_test.l \
   lyric-compiler/lyric/typechecker_self_test.l \
+  lyric-compiler/lyric/generic_member_calls_self_test.l \
+  lyric-compiler/lyric/generic_member_calls_std_self_test.l \
+  lyric-compiler/lyric/generic_protected_calls_self_test.l \
   lyric-compiler/lyric/modechecker_self_test.l \
   lyric-compiler/lyric/contract_elaborator_self_test.l \
   lyric-compiler/lyric/contract_generic_call_self_test.l \

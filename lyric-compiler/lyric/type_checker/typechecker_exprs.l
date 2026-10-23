@@ -72,6 +72,16 @@ pub func typeOfLiteral(lit: in Literal): Type {
 // ─────────────────────────────────────────────────────────────────────────────
 // §2. Codegen builtins.
 // ─────────────────────────────────────────────────────────────────────────────
+// A single-segment path that is no local: a type name in the type-qualified
+// call form (`Int.shl(k, 2)`), not a value to infer.
+func recvIsUnboundName(sc: in Scope, e: in Expr): Bool {
+  match e.kind {
+    case EPath(sp) -> sp.segments.count == 1 and
+      (match scopeTryFind(sc, sp.segments[0]) { case Some(_) -> false; case None -> true })
+    case _ -> false
+  }
+}
+
 // Keep in sync with `isCodegenBuiltinName` in `typechecker_checker.l` (shadow-prevention).
 func codegenBuiltinType(name: in String): Option[Type] {
   if name == "println" or name == "print" {
@@ -718,6 +728,144 @@ func checkMatchExhaustive(
     }
   }
   // not a finite-case type — skip
+}
+
+// A pattern that matches every value of whatever type it meets: `_`, or a
+// lowercase binding.  Unlike `patternIsCatchAll` this does not take a bare
+// capitalised name for a binding: below the scrutinee's own cases (whose names
+// are known) a bare name may be a case of the payload's type
+// (`Some(VInteger)`), and only the lowercase spelling is a binding by
+// convention.
+func patternSurelyIrrefutable(p: in Pattern, caseNames: in List[String]): Bool {
+  match p.kind {
+    case PWildcard -> true
+    case PBinding(name, inner) -> match inner {
+      case Some(ip) -> patternSurelyIrrefutable(ip, caseNames)
+      case None -> name.length > 0 and not listContainsStr(caseNames, name) and
+        isLowerAsciiStart(name)
+    }
+    case PParen(ip) -> patternSurelyIrrefutable(ip, caseNames)
+    case POr(ps) -> {
+      for q in ps {
+        if patternSurelyIrrefutable(q, caseNames) {
+          return true
+        }
+      }
+      false
+    }
+    case _ -> false
+  }
+}
+
+func isLowerAsciiStart(name: in String): Bool {
+  val c = name.substring(0, 1)
+  c.toUpper() != c or c == "_"
+}
+
+// The case a pattern fully covers on its own: a bare case name, or a
+// constructor/record pattern whose sub-patterns match every payload.  `None`
+// for a pattern that can fail on the payload (a literal sub-pattern), which
+// leaves the case reachable by a later arm.
+func caseFullyCoveredBy(p: in Pattern, caseNames: in List[String]): Option[String] {
+  match p.kind {
+    case PParen(ip) -> caseFullyCoveredBy(ip, caseNames)
+    case PBinding(name, inner) -> match inner {
+      case Some(ip) -> caseFullyCoveredBy(ip, caseNames)
+      case None -> if listContainsStr(caseNames, name) {
+        Some(value = name)
+      } else {
+        None
+      }
+    }
+    case PConstructor(head, args) -> {
+      if head.segments.count == 0 {
+        return None
+      }
+      val nm = head.segments[head.segments.count - 1]
+      if not listContainsStr(caseNames, nm) {
+        return None
+      }
+      for a in args {
+        if not patternSurelyIrrefutable(a, caseNames) {
+          return None
+        }
+      }
+      Some(value = nm)
+    }
+    case _ -> None
+  }
+}
+
+// T0196: a `match` arm that no value can reach — it follows an unguarded
+// catch-all arm (`case _`, a bare binding), or every case it names was already
+// matched whole by earlier unguarded arms.  The earlier arm wins at run time,
+// so the later arm is silently dead code (#7916).
+func checkUnreachableArms(tbl: in SymbolTable, diag: in List[Diagnostic], st0: in Type, arms: in List[MatchArm]): Unit {
+  val st = unrefine(st0)
+  match st {
+    case TyError -> {
+      return
+    }
+    case TyVar(_) -> {
+      return
+    }
+    case _ -> ()
+  }
+  val caseNames = match finiteCaseNames(tbl, st) { case Some(ns) -> ns; case None -> newList() }
+  val covered: List[String] = newList()
+  var catchAll = -1
+  var i = 0
+  while i < arms.count {
+    val arm = arms[i]
+    if catchAll >= 0 {
+      diag.add(
+        errorDiagnostic(
+          "T0196",
+          "unreachable match arm: the earlier catch-all arm at line " + toString(arms[catchAll].pattern.span.startPos.line) +
+            " matches every value first",
+          arm.pattern.span
+        )
+      )
+    } else {
+      val orAlts: List[Pattern] = match arm.pattern.kind { case POr(ps) -> ps; case _ -> newList() }
+      if orAlts.count == 0 {
+        match caseFullyCoveredBy(arm.pattern, caseNames) {
+          case Some(nm) -> if listContainsStr(covered, nm) {
+            diag.add(
+              errorDiagnostic(
+                "T0196",
+                "unreachable match arm: case '" + nm + "' is already matched by an earlier arm",
+                arm.pattern.span
+              )
+            )
+          }
+          case None -> ()
+        }
+      }
+      match arm.guard {
+        case Some(_) -> ()
+        case None -> {
+          if patternSurelyIrrefutable(arm.pattern, caseNames) {
+            catchAll = i
+          }
+          if orAlts.count > 0 {
+            for alt in orAlts {
+              match caseFullyCoveredBy(alt, caseNames) {
+                case Some(nm) -> if not listContainsStr(covered, nm) { covered.add(nm) }
+                case None -> ()
+              }
+            }
+          } else {
+            match caseFullyCoveredBy(arm.pattern, caseNames) {
+              case Some(nm) -> if not listContainsStr(covered, nm) { covered.add(nm) }
+              case None -> ()
+            }
+          }
+        }
+      }
+    }
+    i = i + 1
+  }
 }
 
 // True when `e` is an integer literal written WITHOUT a type suffix
@@ -2260,8 +2408,8 @@ func inferBinop(
 }
 
 // T0147's text for a negated operand of `operand`'s type.  Only `Byte`
-// (or a range of it) has a conversion to a signed type, so only its hint can
-// name one; `UInt`/`ULong` have none yet (docs/01 §4.1).
+// (or a range of it) converts with `toInt`; `UInt`/`ULong` convert with
+// `toLong` (docs/01 §4.1).
 func unsignedNegationMessageFor(operand: in Type): String {
   unsignedNegationText(renderType(operand), isPrimOf(operand, PtByte))
 }
@@ -2276,7 +2424,7 @@ func unsignedNegationText(typeText: in String, isByte: in Bool): String {
   val hint = if isByte {
     "convert it to a signed type first, e.g. `-(x.toInt())`"
   } else {
-    "an unsigned type has no conversion to a signed type yet, so give a value that can be negative a signed type such as `Long`"
+    "convert it to a signed type first, e.g. `-(x.toLong())`"
   }
   "unary minus cannot be applied to an unsigned operand (got " + typeText +
     "): a non-zero unsigned value has no negation of its own type; " +
@@ -2290,6 +2438,16 @@ func inferPrefix(diag: in List[Diagnostic], op: in PrefixOp, inner: in Type, spa
         diag.add(errorDiagnostic("T0036", "unary minus requires a numeric operand (got " + renderType(inner) + ")", span))
       } else if isUnsignedConvReceiver(inner) {
         diag.add(errorDiagnostic("T0147", unsignedNegationMessageFor(inner), span))
+        return TyError
+      } else if isPrimOf(inner, PtNat) {
+        diag.add(
+          errorDiagnostic(
+            "T0147",
+            "unary minus cannot be applied to a Nat operand (got " + renderType(inner) +
+              "): a non-zero Nat has no negation of its own type; convert it first, e.g. `-(n.toLong())`",
+            span
+          )
+        )
         return TyError
       }
       inner
@@ -2679,6 +2837,42 @@ func isNumericPrimType(t: in Type): Bool {
 }
 
 // A receiver of `.toULong()`: a primitive of the unsigned widening chain.
+// `u.toLong()`, `u.toDouble()`, `u.toFloat()` and `u.toNat()` on a `UInt`
+// convert the unsigned VALUE (#7901).  A `UInt` shares its 32-bit
+// representation with `Int`, so the plain signed conversion would read the top
+// bit as a sign: the `UInt` is zero-extended to a `ULong` first (a lossless
+// widening, whose pattern is a non-negative `Long`).  A `ULong` shares the
+// 64-bit representation of `Long`, and there is no checked or floating-point
+// conversion for it on every target yet, so `toLong`, `toDouble` and `toFloat`
+// on one are T0103 rather than a silent reinterpretation.  Returns false when
+// it reported an error.
+func noteUnsignedSourceConversion(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  recvE: in Expr,
+  rt: in Type,
+  mname: in String,
+): Bool {
+  if isPrimOf(rt, PtUInt) {
+    if mname == "toLong" or mname == "toDouble" or mname == "toFloat" or mname == "toNat" {
+      recordWideningSite(tbl, TyPrim(pt = PtULong), rt, recvE, false)
+    }
+    return true
+  }
+  if isPrimOf(rt, PtULong) and (mname == "toLong" or mname == "toDouble" or mname == "toFloat") {
+    diag.add(
+      errorDiagnostic(
+        "T0103",
+        "conversion method '" + mname + "' is not applicable to " + renderType(rt) +
+          " (a ULong above 2^63 - 1 has no Long or floating-point value; use toInt() to truncate to 32 bits, or keep the value a ULong)",
+        recvE.span
+      )
+    )
+    return false
+  }
+  true
+}
+
 func isUnsignedConvReceiver(t: in Type): Bool {
   match unrefine(t) {
     case TyPrim(pt) -> match pt { case PtByte -> true; case PtUInt -> true; case PtULong -> true; case _ -> false }
@@ -2856,6 +3050,41 @@ func fieldsOfRecordInstantiated(tbl: in SymbolTable, tid: in TypeId, targs: in L
     i = i + 1
   }
   result
+}
+
+// The type parameter of the enclosing generic that field `name` of the record
+// instance `recv` has, when the record declares the field as its own type
+// parameter and the instance is at one of `genericNames`; `TyError` otherwise.
+func rigidTypeParamField(tbl: in SymbolTable, recv: in Type, name: in String, genericNames: in List[String]): Type {
+  match unrefine(recv) {
+    case TyUser(tid, _, targs) -> {
+      val gnames = recordGenericNamesOf(tbl, tid)
+      val raw = fieldsOfRecord(tbl, tid)
+      var i = 0
+      while i < raw.count {
+        if raw[i].name == name {
+          match raw[i].ty {
+            case TyVar(g) -> {
+              var gi = 0
+              while gi < gnames.count and gi < targs.count {
+                if gnames[gi] == g {
+                  match targs[gi] {
+                    case TyVar(n) -> if genericNames.contains(n) { return TyVar(n) }
+                    case _ -> ()
+                  }
+                }
+                gi = gi + 1
+              }
+            }
+            case _ -> ()
+          }
+        }
+        i = i + 1
+      }
+      TyError
+    }
+    case _ -> TyError
+  }
 }
 
 // A field of an opaque type declared in this package, instantiated against
@@ -5398,6 +5627,32 @@ func typeListsWidenOrEqual(targets: in List[Type], srcs: in List[Type]): Bool {
 // True when `src` differs from `target` only by lossless numeric widenings
 // of its scalar parts (`Option[UInt]` against `Option[ULong]`,
 // `(UInt, Int)` against `(ULong, Int)`).
+// True when `t` is, or has among its type arguments, tuple elements or
+// nullable payload, an inline range type.
+func typeHasRangeArg(t: in Type): Bool {
+  match t {
+    case TyRefined(_, _, _, _, _) -> true
+    case TyUser(_, _, args) -> {
+      for a in args {
+        if typeHasRangeArg(a) {
+          return true
+        }
+      }
+      false
+    }
+    case TyTuple(elems) -> {
+      for a in elems {
+        if typeHasRangeArg(a) {
+          return true
+        }
+      }
+      false
+    }
+    case TyNullable(inner) -> typeHasRangeArg(inner)
+    case _ -> false
+  }
+}
+
 func widensStructurally(target: in Type, src: in Type): Bool {
   not typeEquiv(target, src) and widensOrEquals(target, src)
 }
@@ -6159,6 +6414,7 @@ func inferPropagate(
   expected: in Type,
 ): Type {
   val own = inferExpr(sc, tbl, sigs, diag, inner)
+  checkPropagateOperandIsMonad(diag, own, inner.span)
   checkPropagateMonad(sc, tbl, diag, own, e, inner.span)
   val closed = joinOpenTypes(own, propagateOperandContext(own, sc.returnTy, unrefine(expected)))
   val ownOpen = not typeIsClosedOver(own, sc.genericNames)
@@ -6186,6 +6442,36 @@ func inferPropagate(
     }
   }
   propagateUnwrap(closed)
+}
+
+// T0195: the operand of `?` must be a `Result` or an `Option` (or a `T?`
+// nullable, which lowers to `Option`).  Any other operand type the checker
+// knows — a primitive, a function, a tuple, a record — has no `Ok`/`Err` or
+// `Some`/`None` shape for the lowering to match on, so a backend would fail
+// at run time on the cast (#8249).  An operand of unknown or generic type is
+// not judged here.
+func checkPropagateOperandIsMonad(diag: in List[Diagnostic], own: in Type, sp: in Span): Unit {
+  val shown = unrefine(own)
+  val bad = match shown {
+    case TyUser(_, name, _) -> name != "Result" and name != "Option"
+    case TyPrim(pt) -> match pt { case PtNever -> false; case _ -> true }
+    case TyFunction(_, _, _) -> true
+    case TyTuple(_) -> true
+    case TySlice(_) -> true
+    case TyArray(_, _, _) -> true
+    case _ -> false
+  }
+  if bad {
+    diag.add(
+      errorDiagnostic(
+        "T0195",
+        "the operand of `?` has type " + renderType(shown) +
+          ", which is neither a Result nor an Option; `?` unwraps the success value of a Result[T, E] or Option[T] " +
+          "and returns the failure from the enclosing function",
+        sp
+      )
+    )
+  }
 }
 
 // T0169: the operand of `?` must be of the enclosing function's monad, with an
@@ -7313,6 +7599,7 @@ func reportRepeatedCallArgs(
               asp
             )
           )
+          repeated.add(nm)
           reported = true
         }
         seen.add(nm)
@@ -7321,6 +7608,27 @@ func reportRepeatedCallArgs(
     }
   }
   reported
+}
+
+// The first field at or after `from` that no named argument supplies: a
+// positional argument fills the declaration-order slots the named ones leave
+// free (the order `argTypesInFieldOrder` places them in), #8005.
+func nextUnnamedField(fields: in List[CtorField], args: in List[CallArg], from: in Int): Int {
+  var idx = from
+  while idx < fields.count and callArgsNameParam(args, fields[idx].name) {
+    idx = idx + 1
+  }
+  idx
+}
+
+func callArgsNameParam(args: in List[CallArg], name: in String): Bool {
+  for a in args {
+    match a {
+      case CANamed(nm, _, _) -> if nm == name { return true }
+      case CAPositional(_) -> ()
+    }
+  }
+  false
 }
 
 func fieldHasName(fields: in List[CtorField], name: in String): Bool {
@@ -7838,6 +8146,7 @@ func inferConstructionExpected(
           }
         }
         case CAPositional(ae) -> {
+          posIdx = nextUnnamedField(fields, args, posIdx)
           if posIdx >= fields.count {
             diag.add(
               errorDiagnostic(
@@ -7929,6 +8238,7 @@ func inferConstructionExpected(
         }
       }
       case CAPositional(ae) -> {
+        posIdx = nextUnnamedField(fields, args, posIdx)
         if posIdx >= fields.count {
           diag.add(
             errorDiagnostic(
@@ -9801,6 +10111,22 @@ func bindPatternTyped(
     }
     case PTuple(patterns) -> {
       val elems = match unrefine(ty) { case TyTuple(es) -> es; case _ -> newList() }
+      if not bindingOnly {
+        match unrefine(ty) {
+          case TyTuple(es) -> if es.count != patterns.count {
+            diag.add(
+              errorDiagnostic(
+                "T0198",
+                "a " + toString(patterns.count) + "-element tuple pattern cannot match a value of type " + renderType(ty) + ", a " +
+                  toString(es.count) +
+                  "-element tuple",
+                pat.span
+              )
+            )
+          }
+          case _ -> ()
+        }
+      }
       var i = 0
       while i < patterns.count {
         val et = if i < elems.count { elems[i] } else { TyError }
@@ -10073,6 +10399,7 @@ func inferMatchExpr(
 ): Type {
   val st = inferExpr(sc, tbl, sigs, diag, scrutinee)
   checkMatchExhaustive(tbl, diag, st, arms, e.span)
+  checkUnreachableArms(tbl, diag, st, arms)
   checkOpaquePatternHiding(tbl, diag, st, arms)
   // Branch-type unification (#2142): a `match` used as a value takes the
   // unified type of its arm bodies.  Each arm is checked in a fresh scope
@@ -10960,6 +11287,71 @@ func typeIsClosedOver(t: in Type, typeParams: in List[String]): Bool {
   }
 }
 
+// A type parameter of the enclosing generic is rigid inside its body: it is
+// the same type only as itself.  `typeEquiv` still treats every `TyVar` as a
+// wildcard, because the same variable stands for an instantiation variable
+// of a callee, so a mismatch against a type parameter is decided here, where
+// the enclosing generic's names are known (#7974).  True when `actual` has a
+// rigid type parameter of `names` where `expected` has a different type
+// that a `where` bound cannot make equal: anything but another type
+// variable, an interface (which a bound may satisfy) or an unknown type.
+func rigidVarClash(tbl: in SymbolTable, expected: in Type, actual: in Type, names: in List[String]): Bool {
+  if names.count == 0 {
+    return false
+  }
+  val e = unrefine(expected)
+  val a = unrefine(actual)
+  match a {
+    case TyVar(n) -> {
+      if not names.contains(n) {
+        return false
+      }
+      match e {
+        case TyVar(_) -> false
+        case TyError -> false
+        case TySelf -> false
+        case TyUser(eid, _, _) -> not typeIdIsInterface(tbl, eid) and not symTableIsExternTypeId(tbl, eid)
+        case TyPrim(ept) -> match ept { case PtNever -> false; case _ -> true }
+        case TyNullable(_) -> true
+        case TyTuple(_) -> true
+        case TySlice(_) -> true
+        case TyArray(_, _, _) -> true
+        case TyFunction(_, _, _) -> true
+        case _ -> false
+      }
+    }
+    case TyUser(aid, _, aargs) -> match e {
+      case TyUser(eid, _, eargs) -> {
+        if not typeIdEq(aid, eid) or aargs.count != eargs.count {
+          return false
+        }
+        var i = 0
+        while i < aargs.count {
+          if rigidVarClash(tbl, eargs[i], aargs[i], names) {
+            return true
+          }
+          i = i + 1
+        }
+        false
+      }
+      case _ -> false
+    }
+    case TySlice(ae) -> match e { case TySlice(ee) -> rigidVarClash(tbl, ee, ae, names); case _ -> false }
+    case TyNullable(ai) -> match e { case TyNullable(ei) -> rigidVarClash(tbl, ei, ai, names); case _ -> false }
+    case _ -> false
+  }
+}
+
+func typeIdIsInterface(tbl: in SymbolTable, tid: in TypeId): Bool {
+  for sym in tbl.symbols {
+    match sym.kind {
+      case DKInterface(iid, _) -> if typeIdEq(iid, tid) { return true }
+      case _ -> ()
+    }
+  }
+  false
+}
+
 func typesAreClosedOver(ts: in List[Type], typeParams: in List[String]): Bool {
   var i = 0
   while i < ts.count {
@@ -11330,14 +11722,82 @@ func stdCollectionMemberResult(tbl: in SymbolTable, recvTy: in Type, name: in St
       val unitResult = (isList and name == "add" and (argCount == 1 or argCount == 2)) or
         (isList and name == "removeAt" and argCount == 1) or
         (isMap and name == "add" and argCount == 2)
+      val isSet = targs.count == 1 and isStdCollectionsHostType(tbl, id, "Set")
+      // Membership tests are `Bool` and positions `Int` on every backend, so
+      // a mistyped use (`val s: String = xs.contains(x)`) is reported (#7978).
+      val boolResult = (argCount == 1) and
+        (
+          (isList and name == "contains") or (isMap and name == "containsKey") or
+            (isSet and name == "contains")
+        )
+      val intResult = isList and argCount == 1 and (name == "indexOf" or name == "lastIndexOf")
       if unitResult {
         TyPrim(pt = PtUnit)
+      } else if boolResult {
+        TyPrim(pt = PtBool)
+      } else if intResult {
+        TyPrim(pt = PtInt)
       } else {
         TyError
       }
     }
     case _ -> TyError
   }
+}
+
+// The argument counts the stdlib `List`/`Map`/`Set` member `name` accepts,
+// or an empty list for a member not listed here (an open BCL/JDK method the
+// backends resolve by name).
+func stdCollectionMemberArities(tbl: in SymbolTable, recvTy: in Type, name: in String): List[Int] {
+  val ns: List[Int] = newList()
+  match unrefine(recvTy) {
+    case TyUser(id, _, targs) -> {
+      if targs.count == 1 and isStdCollectionsHostType(tbl, id, "List") {
+        if name == "add" {
+          ns.add(1)
+          ns.add(2)
+        } else if name == "contains" or name == "indexOf" or name == "lastIndexOf" or name == "remove" or name == "removeAt" {
+          ns.add(1)
+        }
+      } else if targs.count == 2 and isStdCollectionsHostType(tbl, id, "Map") {
+        if name == "add" {
+          ns.add(2)
+        } else if name == "containsKey" or name == "remove" {
+          ns.add(1)
+        }
+      } else if targs.count == 1 and isStdCollectionsHostType(tbl, id, "Set") {
+        if name == "add" or name == "contains" or name == "remove" {
+          ns.add(1)
+        }
+      }
+    }
+    case _ -> ()
+  }
+  ns
+}
+
+// T0042 for a call of a listed stdlib collection member with an argument
+// count it does not take (#7978).
+func checkStdCollectionMemberArity(
+  tbl: in SymbolTable,
+  diag: in List[Diagnostic],
+  recvTy: in Type,
+  name: in String,
+  argCount: in Int,
+  span: in Span,
+): Unit {
+  val ns = stdCollectionMemberArities(tbl, recvTy, name)
+  if ns.count == 0 or ns.contains(argCount) {
+    return
+  }
+  val want = if ns.count == 1 { toString(ns[0]) } else { toString(ns[0]) + " or " + toString(ns[1]) }
+  diag.add(
+    errorDiagnostic(
+      "T0042",
+      "'." + name + "' on " + renderType(recvTy) + " takes " + want + " argument(s), got " + toString(argCount),
+      span
+    )
+  )
 }
 
 // The parameters of `recv.<name>(...)` with `argCount` arguments when `recv`
@@ -11409,12 +11869,13 @@ func checkStdCollectionMemberArgs(
   ps: in List[CollMemberParam],
   args: in List[CallArg],
   argTypes: in List[Type],
+  genericNames: in List[String],
   span: in Span,
 ): Unit {
   var k = 0
   while k < ps.count and k < args.count and k < argTypes.count {
     val p = ps[k]
-    if not argSatisfiesParam(tbl, p.ty, argTypes[k]) and not literalArgSatisfiesParam(tbl, p.ty, argTypes[k], callArgExpr(args[k])) {
+    if (not argSatisfiesParam(tbl, p.ty, argTypes[k]) and not literalArgSatisfiesParam(tbl, p.ty, argTypes[k], callArgExpr(args[k]))) or rigidVarClash(tbl, p.ty, argTypes[k], genericNames) {
       val slot = if p.role == "index" {
         "the index type " + renderType(p.ty)
       } else {
@@ -14826,7 +15287,10 @@ func inferExprCore(
         case EMember(recvE, mname) -> match numericConvTarget(mname) {
           case Some(target) -> if args.count == 0 {
             val rt = inferExpr(sc, tbl, sigs, diag, recvE)
-            if isNumericOrCharType(rt) {
+            if isNumericOrCharType(rt) or isPrimOf(rt, PtUInt) or isPrimOf(rt, PtULong) {
+              if not noteUnsignedSourceConversion(tbl, diag, recvE, rt, mname) {
+                return TyError
+              }
               return TyPrim(pt = target)
             }
             if isNonConvertiblePrimitive(rt) {
@@ -14885,6 +15349,42 @@ func inferExprCore(
             return wt
           }
           cachedRecvType = Some(value = wt)
+        }
+        case _ -> ()
+      }
+      // The bitwise methods `.and/.or/.xor/.shl/.shr` of an integer are
+      // lowered by every backend; here they are typed: the operand has the
+      // receiver's type (the shift count is an `Int`) and so does the result
+      // (#8334).
+      match fn.kind {
+        case EMember(bRecv, bName) -> if (bName == "and" or bName == "or" or bName == "xor" or bName == "shl" or bName == "shr") and not recvIsUnboundName(sc, bRecv) {
+          val bt = match cachedRecvType { case Some(t) -> t; case None -> inferExpr(sc, tbl, sigs, diag, bRecv) }
+          cachedRecvType = Some(value = bt)
+          if isConcreteIntType(bt) {
+            if args.count != 1 {
+              diag.add(errorDiagnostic("T0042", "'" + bName + "' expects 1 argument(s), got " + toString(args.count), e.span))
+              return TyError
+            }
+            val wantArg = if bName == "shl" or bName == "shr" { TyPrim(pt = PtInt) } else { unrefine(bt) }
+            val argE = callArgExpr(args[0])
+            val at = inferExprExpected(sc, tbl, sigs, diag, argE, wantArg)
+            val literalFits = literalArgSatisfiesParam(tbl, wantArg, at, argE) or
+              (isUnsuffixedIntLit(argE) and argSatisfiesParam(tbl, wantArg, at))
+            if not typeEquiv(unrefine(at), wantArg) and not literalFits {
+              diag.add(
+                errorDiagnostic(
+                  "T0043",
+                  "'" + bName + "' on " + renderType(bt) + " takes " +
+                    (if bName == "shl" or bName == "shr" { "an Int shift count" } else { "a " + renderType(bt) }) +
+                    " (got " +
+                    renderType(at) +
+                    ")",
+                  argE.span
+                )
+              )
+            }
+            return unrefine(bt)
+          }
         }
         case _ -> ()
       }
@@ -15099,6 +15599,21 @@ func inferExprCore(
           }
         }
       }
+      match directSig {
+        case Some(_) -> ()
+        case None -> match methodPick {
+          case Some(_) -> ()
+          case None -> match fnT {
+            case TyError -> match memberRecvTy {
+              case Some(crt0) -> if isMemberCallee {
+                checkStdCollectionMemberArity(tbl, diag, crt0, memberName, args.count, e.span)
+              }
+              case None -> ()
+            }
+            case _ -> ()
+          }
+        }
+      }
       match memberRecvTy {
         case Some(arrRt) -> if isMemberCallee and isStorageType(arrRt) and memberName != "toSlice" {
           val resolved = match directSig {
@@ -15205,6 +15720,13 @@ func inferExprCore(
               } else {
                 widened
               }
+            } else if typeHasRangeArg(argExp) {
+              // The value is built at its own type, so its range-typed
+              // slots are noted against the parameter's instantiation
+              // whether or not it widens (#8145).
+              val scratch: List[Diagnostic] = newList()
+              val _ = inferExprExpected(sc, tbl, sigs, scratch, dae, argExp)
+              adopted
             } else {
               adopted
             }
@@ -15250,6 +15772,10 @@ func inferExprCore(
           }
           case _ -> ()
         }
+      }
+      match fn.kind {
+        case EPath(fsp) -> if fsp.segments.count == 1 { checkFormatTemplate(diag, fsp.segments[0], args) }
+        case _ -> ()
       }
       // A stringified unsigned value says it is unsigned (#7812).
       match fn.kind {
@@ -15583,6 +16109,7 @@ func inferExprCore(
                         cps,
                         args,
                         argTypes,
+                        sc.genericNames,
                         e.span
                       )
                       case None -> ()
@@ -15790,6 +16317,49 @@ func inferExprCore(
         case Some(dt) -> return dt
         case None -> ()
       }
+      match unrefine(rt) {
+        case TyVar(tvName) -> if sc.genericNames.contains(tvName) {
+          diag.add(
+            errorDiagnostic(
+              "T0197",
+              "no member '" + name + "' on type parameter '" + tvName +
+                "': a value of a type parameter has no fields; only the methods of its `where` bounds can be called on it",
+              e.span
+            )
+          )
+          return TyError
+        }
+        case _ -> ()
+      }
+      // A field declared as the record's own type parameter, read through an
+      // instance at the enclosing generic's type parameter, is that type
+      // parameter; a member read of it is as unknown as one of the parameter
+      // itself (#8018).  The field read alone keeps its erased type: typing
+      // it `T` would send closures over it down the strongly typed path.
+      match unrefine(rt) {
+        case TyError -> match recv.kind {
+          case EMember(innerRecv, innerName) -> {
+            val scratch: List[Diagnostic] = newList()
+            val innerRecvTy = inferExpr(sc, tbl, sigs, scratch, innerRecv)
+            match rigidTypeParamField(tbl, innerRecvTy, innerName, sc.genericNames) {
+              case TyVar(tvName) -> {
+                diag.add(
+                  errorDiagnostic(
+                    "T0197",
+                    "no member '" + name + "' on type parameter '" + tvName +
+                      "': a value of a type parameter has no fields; only the methods of its `where` bounds can be called on it",
+                    e.span
+                  )
+                )
+                return TyError
+              }
+              case _ -> ()
+            }
+          }
+          case _ -> ()
+        }
+        case _ -> ()
+      }
       val memberTy = inferMember(tbl, sigs, diag, rt, name, e.span)
       recordResultTypeAt(tbl, memberTy, e.span)
       memberTy
@@ -15871,9 +16441,17 @@ func inferExprCore(
         val isPrimTypeIndex = match indices[ii].kind {
           case EPath(ip) -> {
             if ip.segments.count == 1 {
-              match primFromString(ip.segments[0]) {
-                case Some(_) -> true
-                case None -> false
+              // An enclosing type parameter names a type here too
+              // (`firstOf[T](...)` inside `func g[T]`, #8280), unless a local
+              // of the same name shadows it.
+              val shadowedByLocal = match scopeTryFind(sc, ip.segments[0]) { case Some(_) -> true; case None -> false }
+              if not shadowedByLocal and listContainsStr(sc.genericNames, ip.segments[0]) {
+                true
+              } else {
+                match primFromString(ip.segments[0]) {
+                  case Some(_) -> true
+                  case None -> false
+                }
               }
             } else {
               false
@@ -17546,7 +18124,8 @@ func checkPairedCallArgs(
       } else {
         argSatisfiesParam(tbl, p.ty, argTy)
       }
-      if not satisfied and not literalArgSatisfiesParam(tbl, p.ty, argTy, callArgExpr(args[ai])) {
+      val rigidClash = not sig.isExternFunc and rigidVarClash(tbl, p.ty, argTy, sc.genericNames)
+      if (not satisfied and not literalArgSatisfiesParam(tbl, p.ty, argTy, callArgExpr(args[ai]))) or rigidClash {
         diag.add(
           errorDiagnostic(
             "T0043",

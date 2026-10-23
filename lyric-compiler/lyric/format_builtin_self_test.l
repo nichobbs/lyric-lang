@@ -26,6 +26,14 @@ package Lyric.FormatBuiltinSelfTest
 import Std.Core
 import Std.Collections
 import Std.Testing
+import Std.String as Str
+
+// A template that is not a literal: a malformed literal template is rejected
+// at compile time (T0199, #7983), so the run-time panics are reached through
+// this.
+func tpl(s: in String): String {
+  s
+}
 
 record Counts {
   small: UInt
@@ -93,21 +101,21 @@ test "an argument no placeholder names is ignored" {
 }
 
 test "a placeholder with no argument panics" {
-  assertPanicsWith("format1 {1}", "has no argument", { -> val _ = format1("{1}", 5) })
-  assertPanicsWith("format2 {2}", "has no argument", { -> val _ = format2("{0}{2}", 1, 2) })
-  assertPanicsWith("format3 {3}", "has no argument", { -> val _ = format3("{3}", 1, 2, 3) })
-  assertPanicsWith("format4 {4}", "has no argument", { -> val _ = format4("{4}", 1, 2, 3, 4) })
-  assertPanicsWith("long index", "has no argument", { -> val _ = format1("{99999999999999999999}", 5) })
+  assertPanicsWith("format1 {1}", "has no argument", { -> val _ = format1(tpl("{1}"), 5) })
+  assertPanicsWith("format2 {2}", "has no argument", { -> val _ = format2(tpl("{0}{2}"), 1, 2) })
+  assertPanicsWith("format3 {3}", "has no argument", { -> val _ = format3(tpl("{3}"), 1, 2, 3) })
+  assertPanicsWith("format4 {4}", "has no argument", { -> val _ = format4(tpl("{4}"), 1, 2, 3, 4) })
+  assertPanicsWith("long index", "has no argument", { -> val _ = format1(tpl("{99999999999999999999}"), 5) })
 }
 
 test "a malformed placeholder or a lone brace panics" {
-  assertPanicsWith("unclosed", "malformed placeholder", { -> val _ = format1("{0", 5) })
-  assertPanicsWith("empty", "malformed placeholder", { -> val _ = format1("{}", 5) })
-  assertPanicsWith("non-digit", "malformed placeholder", { -> val _ = format1("{x}", 5) })
-  assertPanicsWith("format spec", "malformed placeholder", { -> val _ = format1("{0:X}", 5) })
-  assertPanicsWith("alignment", "malformed placeholder", { -> val _ = format1("{0,5}", 5) })
-  assertPanicsWith("trailing {", "malformed placeholder", { -> val _ = format1("a{", 5) })
-  assertPanicsWith("lone }", "unmatched '}'", { -> val _ = format1("a}b", 5) })
+  assertPanicsWith("unclosed", "malformed placeholder", { -> val _ = format1(tpl("{0"), 5) })
+  assertPanicsWith("empty", "malformed placeholder", { -> val _ = format1(tpl("{}"), 5) })
+  assertPanicsWith("non-digit", "malformed placeholder", { -> val _ = format1(tpl("{x}"), 5) })
+  assertPanicsWith("format spec", "malformed placeholder", { -> val _ = format1(tpl("{0:X}"), 5) })
+  assertPanicsWith("alignment", "malformed placeholder", { -> val _ = format1(tpl("{0,5}"), 5) })
+  assertPanicsWith("trailing {", "malformed placeholder", { -> val _ = format1(tpl("a{"), 5) })
+  assertPanicsWith("lone }", "unmatched '}'", { -> val _ = format1(tpl("a}b"), 5) })
 }
 
 test "UInt and ULong arguments at and above the sign bit format unsigned" {
@@ -151,4 +159,20 @@ test "the template and arguments are evaluated once, left to right" {
   assertEqualInt(log[0], 1, "first")
   assertEqualInt(log[1], 2, "second")
   assertEqualInt(log[2], 3, "third")
+}
+
+test "formatTemplateProblem is the scanner formatArgs enforces (#7983)" {
+  assertEqual(Str.formatTemplateProblem("{0}-{1}", 2), "", "a valid template")
+  assertEqual(Str.formatTemplateProblem("{{}} {0}", 1), "", "escapes")
+  assertEqual(Str.formatTemplateProblem("unused", 3), "", "no placeholders")
+  assertTrue(Str.contains(Str.formatTemplateProblem("{1}", 1), "has no argument"), "an index past the arguments")
+  assertTrue(Str.contains(Str.formatTemplateProblem("{99999999999999999999}", 1), "has no argument"), "a long index")
+  assertTrue(Str.contains(Str.formatTemplateProblem("{0", 1), "malformed placeholder"), "unclosed")
+  assertTrue(Str.contains(Str.formatTemplateProblem("{0,5}", 1), "malformed placeholder"), "alignment")
+  assertTrue(Str.contains(Str.formatTemplateProblem("a}b", 1), "unmatched '}'"), "lone }")
+  assertPanicsWith(
+    "formatArgs panics with the scanner's text",
+    "has no argument",
+    { -> val _ = Str.formatArgs(tpl("{2}"), ["a"]) }
+  )
 }

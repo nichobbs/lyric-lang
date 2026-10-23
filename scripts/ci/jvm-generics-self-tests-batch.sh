@@ -16,7 +16,7 @@
 # self-tests, #7813; the overflow self-tests,
 # D163; record_eq_self_test.l, D164; task_shadow_self_test.l, D166;
 # propagate_ctor_operand_self_test.l and propagate_ctor_operand_try_self_test.l,
-# #8181;
+# #8181; async_sm_self_test.l, #8294;
 # the structural_equality self-tests, D172; slice_func_tolist_self_test.l,
 # slice_to_list_self_test.l and int_to_nat_self_test.l, #7661, #7662, #8323;
 # jvm_erased_types_self_test.l, #8281, #8237, #8132, #8162, #7298),
@@ -58,6 +58,7 @@ for t in \
   lyric-compiler/jvm/cross_package_type_resolution_jvm_self_test.l \
   lyric-compiler/jvm/derive_dot_name_mangle_jvm_self_test.l \
   lyric-compiler/jvm/dot_named_mangle_owner_match_jvm_self_test.l \
+  lyric-compiler/lyric/async_sm_self_test.l \
   lyric-compiler/lyric/tuple_nullary_case_self_test.l \
   lyric-compiler/lyric/closure_unannotated_result_self_test.l \
   lyric-compiler/lyric/lambda_field_ctor_arg_self_test.l \
@@ -65,6 +66,9 @@ for t in \
   lyric-compiler/lyric/closure_captured_var_byref_self_test.l \
   lyric-compiler/lyric/closure_shadow_self_test.l \
   lyric-compiler/lyric/generic_closure_self_test.l \
+  lyric-compiler/lyric/generic_member_calls_self_test.l \
+  lyric-compiler/lyric/generic_member_calls_std_self_test.l \
+  lyric-compiler/lyric/generic_protected_calls_self_test.l \
   lyric-compiler/lyric/inout_receiver_self_test.l \
   lyric-compiler/lyric/inout_receiver_closure_self_test.l \
   lyric-compiler/lyric/inout_array_element_self_test.l \

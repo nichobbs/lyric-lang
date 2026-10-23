@@ -2238,8 +2238,15 @@ pub func newCodegenCtx(
   // Double.Parse(string, IFormatProvider): the .cctor loads InvariantCulture
   // (via tokInvariantCulture) before this call so Float/Double config fields
   // parse identically regardless of host locale (#2993).
+  // `NumberStyles.Float` (167) is pushed between the string and the culture:
+  // unlike the two-argument overload's default (`Float | AllowThousands`) it
+  // does not read `1,5` as 15 (#7436).
+  val trNumberStyles = ctxAddTypeRef(lctx, "System.Globalization", "NumberStyles", lctx.arRuntime)
   val cfgDoubleParsePs: List[MsilType] = newList()
   cfgDoubleParsePs.add(MString)
+  cfgDoubleParsePs.add(
+    MValueTypeRef(typeRefCode = tdrTypeRef(trNumberStyles), clrFqn = "System.Globalization.NumberStyles")
+  )
   cfgDoubleParsePs.add(MClassRef(typeRefCode = tdrTypeRef(trIFormatProvider), clrFqn = "System.IFormatProvider"))
   val tokCfgDoubleParse = 0x0A000000 +
     ctxAddMemberRef(
@@ -6436,6 +6443,8 @@ pub record PhaseBCtx {
   promotedLocalNames: List[String]  // SM field name, `slotAwaitFieldKeyMsil(slot)` (#8201)
   promotedLocalSlots: List[Int]  // local-relative slot index (slot - paramCount)
   promotedLocalTypes: List[MsilType]
+  // parallel: true once the local's block has exited, so resumes skip it (#8295)
+  promotedLocalDead: List[Bool]
   // type of the promoted local (parallel)
   // Per await index: the label the state dispatch enclosing the await branches
   // to on resume — the resume label itself, or the entry of the outermost
@@ -6754,6 +6763,7 @@ pub record ScopeUndoMsil {
 pub record BlockScopeMsil {
   prevBase: Int
   undoMark: Int
+  slotMark: Int
 }
 
 // True when the binding annotation is literally `Byte` — see
@@ -6793,7 +6803,11 @@ func emitByteSlotNarrowMsil(fctx: in FuncCtx, insns: in List[MInsn], slot: in In
 
 // Enter a nested lexical scope.
 pub func enterBlockScopeMsil(fctx: in FuncCtx): BlockScopeMsil {
-  val bs = BlockScopeMsil(prevBase = fctx.scopeBaseMsil, undoMark = fctx.scopeUndoMsil.count)
+  val bs = BlockScopeMsil(
+    prevBase = fctx.scopeBaseMsil,
+    undoMark = fctx.scopeUndoMsil.count,
+    slotMark = fctx.slotTicker.count
+  )
   fctx.scopeBaseMsil = fctx.slotTicker.count
   bs
 }
@@ -6955,6 +6969,22 @@ pub func exitBlockScopeMsil(fctx: in FuncCtx, bs: in BlockScopeMsil): Unit {
     }
   }
   fctx.scopeBaseMsil = bs.prevBase
+  if fctx.phaseBCtx.count > 0 {
+    retirePromotedLocalsMsil(fctx.phaseBCtx[0], bs.slotMark - fctx.paramCount)
+  }
+}
+
+// Slots allocated inside a block that has just exited are out of scope for
+// every await emitted after it, so the resume path stops reloading them
+// (#8295).  Their SM fields stay: the field list is fixed per slot.
+func retirePromotedLocalsMsil(pbc: in PhaseBCtx, firstDeadLocalIdx: in Int): Unit {
+  var i = 0
+  while i < pbc.promotedLocalSlots.count {
+    if pbc.promotedLocalSlots[i] >= firstDeadLocalIdx {
+      pbc.promotedLocalDead[i] = true
+    }
+    i = i + 1
+  }
 }
 
 // Allocate a fresh label ID (0, 1, 2, …) for use with MLabel/MBr* instructions.
@@ -7216,6 +7246,7 @@ pub func rollbackFuncCtxSlotsSinceMsil(fctx: in FuncCtx, preSlotCount: in Int): 
         pbc.promotedLocalNames.removeAt(pi)
         pbc.promotedLocalSlots.removeAt(pi)
         pbc.promotedLocalTypes.removeAt(pi)
+        pbc.promotedLocalDead.removeAt(pi)
         var fi = pbc.smFields.count - 1
         while fi >= 0 {
           if pbc.smFields[fi].name == fld {
@@ -32818,11 +32849,24 @@ func phaseBRegisterAndSyncLocal(pbc: in PhaseBCtx, insns: in List[MInsn], ty: in
     pbc.promotedLocalNames.add(fldName)
     pbc.promotedLocalSlots.add(localIdx)
     pbc.promotedLocalTypes.add(ty)
+    pbc.promotedLocalDead.add(false)
     pbc.smFields.add(MField(flags = FDA_PUBLIC, name = fldName, fieldType = ty))
+  } else {
+    reviveRegisteredLocalMsil(pbc, localIdx)
   }
   insns.add(MLdarg(slot = 0))
   insns.add(MLdloc(slot = localIdx))
   insns.add(MStfldByName(ownerFqn = pbc.smFqn, fieldName = fldName))
+}
+
+func reviveRegisteredLocalMsil(pbc: in PhaseBCtx, localIdx: in Int): Unit {
+  var i = 0
+  while i < pbc.promotedLocalSlots.count {
+    if pbc.promotedLocalSlots[i] == localIdx {
+      pbc.promotedLocalDead[i] = false
+    }
+    i = i + 1
+  }
 }
 
 func intListContainsMsil(xs: in List[Int], x: in Int): Bool {
@@ -32841,6 +32885,7 @@ func intListContainsMsil(xs: in List[Int], x: in Int): Bool {
 // phaseBRegisterAndSyncLocal.
 func phaseBSyncLocalIfPromoted(pbc: in PhaseBCtx, insns: in List[MInsn], localIdx: in Int): Unit {
   if intListContainsMsil(pbc.promotedLocalSlots, localIdx) {
+    reviveRegisteredLocalMsil(pbc, localIdx)
     insns.add(MLdarg(slot = 0))
     insns.add(MLdloc(slot = localIdx))
     insns.add(MStfldByName(ownerFqn = pbc.smFqn, fieldName = slotAwaitFieldKeyMsil(localIdx)))
@@ -32958,9 +33003,11 @@ func emitPhaseBAwait(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn
   // at the start of each MoveNext invocation.
   var plReloadIdx = 0
   while plReloadIdx < pbc.promotedLocalNames.count {
-    insns.add(MLdarg(slot = 0))
-    insns.add(MLdfldByName(ownerFqn = pbc.smFqn, fieldName = pbc.promotedLocalNames[plReloadIdx]))
-    insns.add(MStloc(slot = pbc.promotedLocalSlots[plReloadIdx]))
+    if not pbc.promotedLocalDead[plReloadIdx] {
+      insns.add(MLdarg(slot = 0))
+      insns.add(MLdfldByName(ownerFqn = pbc.smFqn, fieldName = pbc.promotedLocalNames[plReloadIdx]))
+      insns.add(MStloc(slot = pbc.promotedLocalSlots[plReloadIdx]))
+    }
     plReloadIdx = plReloadIdx + 1
   }
 
@@ -33143,6 +33190,7 @@ func synthesizeAsyncSmPhaseBMsil(
     promotedLocalNames = newList(),
     promotedLocalSlots = newList(),
     promotedLocalTypes = newList(),
+    promotedLocalDead = newList(),
     dispatchTargets = newList()
   )
   mnFctx.phaseBCtx.add(pbCtx)
@@ -45981,6 +46029,13 @@ pub func codegenMPackage(file0: in SourceFile, cctx: in CodegenCtx): MPackage {
               val msg = "error: required config field " + decl.name + "." + cf.name + " (env var " + envVarName + ") is not set"
               ctxInternUs(cctx.lctx, msg)
             }
+            val parseMsgTok = ctxInternUs(
+              cctx.lctx,
+              "error: config field " + decl.name + "." + cf.name + " (env var " + envVarName +
+                ") is not a valid " +
+                configFieldTypeLabel(cf.ty) +
+                " (G0003)"
+            )
             val cr = configFieldRange(cf.ty)
             val rangeMsgTok = if cr.hasMin or cr.hasMax {
               ctxInternUs(
@@ -45998,6 +46053,7 @@ pub func codegenMPackage(file0: in SourceFile, cctx: in CodegenCtx): MPackage {
                 hasDefault = hasDefault,
                 defaultInsns = defaultInsnsList,
                 requiredMsgTok = requiredMsgTok,
+                parseMsgTok = parseMsgTok,
                 hasMin = cr.hasMin,
                 hasMax = cr.hasMax,
                 upperExclusive = cr.upperExclusive,
@@ -46026,7 +46082,14 @@ pub func codegenMPackage(file0: in SourceFile, cctx: in CodegenCtx): MPackage {
                 tokInt64Parse = cctx.tokCfgInt64Parse,
                 tokDoubleParse = cctx.tokCfgDoubleParse,
                 tokSingleParse = cctx.tokCfgSingleParse,
-                tokInvariantCulture = cctx.tokInvariantCulture
+                tokInvariantCulture = cctx.tokInvariantCulture,
+                catchExceptionTok = 0x01000000 + cctx.trException,
+                tokObjectEquals = cctx.tokObjectStaticEquals,
+                tokToLowerInvariant = cctx.tokStringToLower,
+                tokStrOne = ctxInternUs(cctx.lctx, "1"),
+                tokStrZero = ctxInternUs(cctx.lctx, "0"),
+                tokStrTrue = ctxInternUs(cctx.lctx, "true"),
+                tokStrFalse = ctxInternUs(cctx.lctx, "false")
               )
             )
           )
@@ -47520,6 +47583,16 @@ func rangeBoundText(b: in RangeBoundVal): String {
     b.d.toString()
   } else {
     b.l.toString()
+  }
+}
+
+// The base type's name for a config field's G0003 message: `Int` for both
+// `Int` and `Int range 1 ..= 5`.
+func configFieldTypeLabel(te: in TypeExpr): String {
+  match te.kind {
+    case TRef(path) -> if path.segments.count > 0 { path.segments[path.segments.count - 1] } else { "value" }
+    case TRefined(path, _) -> if path.segments.count > 0 { path.segments[path.segments.count - 1] } else { "value" }
+    case _ -> "value"
   }
 }
 

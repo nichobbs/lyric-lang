@@ -14689,10 +14689,82 @@ func emitPatternTest(
       }
       insns.add(NBr(label = okLabel))
     }
+    case POr(alts) -> emitOrPatternTest(ctx, insns, sv, alts, okLabel, failLabel, bindNames, bindVals, scrutEnumHint)
     case _ -> panic(
-      "Lyric.LlvmCodegen: this pattern form is not yet supported for --target native (Phase N2 lowers wildcard, binding, literal, range, and constructor patterns)"
+      "Lyric.LlvmCodegen: this pattern form is not yet supported for --target native (Phase N2 lowers wildcard, binding, literal, range, constructor, tuple and or-patterns)"
     )
   }
+}
+
+// Each alternative is tested in turn and jumps to its own success block, which branches to a shared
+// join.  Every alternative binds the same names (the type checker requires it), so a bound name
+// becomes a phi of the value each alternative produced.
+func emitOrPatternTest(
+  ctx: in Ctx,
+  insns: in List[NInsn],
+  sv: in NVal,
+  alts: in List[Pattern],
+  okLabel: in String,
+  failLabel: in String,
+  bindNames: in List[String],
+  bindVals: in List[NVal],
+  scrutEnumHint: in String,
+): Unit {
+  val joinL = freshLabel(ctx, "match.or.join")
+  val okLabels: List[String] = newList()
+  val altNames: List[List[String]] = newList()
+  val altVals: List[List[NVal]] = newList()
+  var ai = 0
+  while ai < alts.count {
+    val isLast = ai == alts.count - 1
+    val altOk = freshLabel(ctx, "match.or.ok")
+    val altFail = if isLast { failLabel } else { freshLabel(ctx, "match.or.next") }
+    val names: List[String] = newList()
+    val vals: List[NVal] = newList()
+    emitPatternTest(ctx, insns, sv, alts[ai], altOk, altFail, names, vals, scrutEnumHint)
+    insns.add(NLabel(name = altOk))
+    insns.add(NBr(label = joinL))
+    if not isLast {
+      insns.add(NLabel(name = altFail))
+    }
+    okLabels.add(altOk)
+    altNames.add(names)
+    altVals.add(vals)
+    ai = ai + 1
+  }
+  insns.add(NLabel(name = joinL))
+  val first = altNames[0]
+  var ni = 0
+  while ni < first.count {
+    val incoming: List[NPhiIncoming] = newList()
+    val ty = altVals[0][ni].ty
+    var ki = 0
+    while ki < alts.count {
+      val idx = indexOfName(altNames[ki], first[ni])
+      if idx < 0 {
+        panic("Lyric.LlvmCodegen: the alternatives of an or-pattern bind different names")
+      }
+      incoming.add(NPhiIncoming(value = altVals[ki][idx].value, label = okLabels[ki]))
+      ki = ki + 1
+    }
+    val dest = freshTmp(ctx)
+    insns.add(NPhi(dest = dest, ty = ty, incoming = incoming))
+    bindNames.add(first[ni])
+    bindVals.add(NVal(ty = ty, value = NLocal(name = dest)))
+    ni = ni + 1
+  }
+  insns.add(NBr(label = okLabel))
+}
+
+func indexOfName(names: in List[String], name: in String): Int {
+  var i = 0
+  while i < names.count {
+    if names[i] == name {
+      return i
+    }
+    i = i + 1
+  }
+  -1
 }
 
 func emitConstructorTest(
@@ -20100,7 +20172,8 @@ func nonGenericVtableSigs(idecl: in InterfaceDecl): List[FunctionSig] {
                 ret = fn.ret,
                 whereClause = None,
                 contracts = fn.contracts,
-                span = fn.span
+                span = fn.span,
+                annotations = fn.annotations
               )
             )
           }
