@@ -115,6 +115,25 @@ static pid_t spawn_capture(const char* path, LyricList* args, int* out_rd, int* 
         close(in_pipe[1]);
         return -1;
     }
+    /* If the parent had fds 0-2 closed, the write end could be one of them and
+     * the child's dup2 onto 0/1/2 would overwrite it, losing the exec report:
+     * lift it to >= 3 (still close-on-exec). */
+    if (exec_pipe[1] < 3) {
+        int lifted = fcntl(exec_pipe[1], F_DUPFD_CLOEXEC, 3);
+        if (lifted < 0) {
+            close(out_pipe[0]);
+            close(out_pipe[1]);
+            close(err_pipe[0]);
+            close(err_pipe[1]);
+            close(in_pipe[0]);
+            close(in_pipe[1]);
+            close(exec_pipe[0]);
+            close(exec_pipe[1]);
+            return -1;
+        }
+        close(exec_pipe[1]);
+        exec_pipe[1] = lifted;
+    }
 #if defined(__APPLE__)
     /* Writes to the stdin pipe after the child exits must not raise
      * SIGPIPE; macOS has a per-fd opt-out (Linux handles it around each
