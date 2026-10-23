@@ -336,6 +336,7 @@ func registerItem(
       val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKFunc(decl = decl), vis, span)
     }
     case IExternFunc(decl) -> {
+      checkReservedBuiltinFuncDecl(diag, isImported, originPkg, decl.name, span)
       val _ = addSym(tbl, diag, isImported, originPkg, decl.name, DKFunc(decl = externFuncAsFunctionDecl(decl)), vis, span)
     }
     case IConst(decl) -> {
@@ -1510,14 +1511,11 @@ func isCodegenBuiltinName(name: in String): Bool {
 // the intrinsic (`hasFuncOverrideMsil`/`hasFuncOverrideJvm`/
 // `hasFuncOverrideNative`).
 func isReservedBuiltinFuncName(name: in String): Bool {
-  name == "println" or name == "print" or name == "panic" or name == "assert" or name == "toString" or name == "default" or
-    name == "expect" or
-    name == "format1" or
-    name == "format2" or
-    name == "format3" or
-    name == "format4" or
-    name == "hashCode" or
-    name == "__lyric_protected_wait" or
+  // Every name `codegenBuiltinType` types polymorphically is also
+  // intercepted by the backends, so the one list lives in
+  // `isCodegenBuiltinName`; the names below are backend intrinsics with no
+  // polymorphic checker signature (#7682).
+  isCodegenBuiltinName(name) or name == "hashCode" or name == "__lyric_protected_wait" or
     name == "__lyric_protected_notify" or
     name == "externAsObject"
 }

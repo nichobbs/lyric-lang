@@ -24,7 +24,7 @@ typedef struct {
 /* The attributes and last-write time of what `path` names, following
  * symbolic links and junctions; 0 on success, -1 when it does not resolve. */
 static int stat_follow(const char* path, lyric_win32_stat* st) {
-    wchar_t* w = lyric_win32_wide(path);
+    wchar_t* w = lyric_win32_path(path);
     if (!w) return -1;
     /* FILE_FLAG_BACKUP_SEMANTICS lets CreateFileW open a directory; no
      * access rights are requested, so nothing is locked or denied. */
@@ -44,7 +44,7 @@ static int stat_follow(const char* path, lyric_win32_stat* st) {
 /* The link's own attributes, not its target's (INVALID_FILE_ATTRIBUTES when
  * the path does not exist). */
 static DWORD attrs_nofollow(const char* path) {
-    wchar_t* w = lyric_win32_wide(path);
+    wchar_t* w = lyric_win32_path(path);
     if (!w) return INVALID_FILE_ATTRIBUTES;
     DWORD a = GetFileAttributesW(w);
     free(w);
@@ -73,7 +73,7 @@ int32_t lyric_file_close(int32_t fd) {
 
 /* Opens `path` for one whole-file operation. */
 static HANDLE open_whole(const char* path, DWORD access, DWORD disposition) {
-    wchar_t* w = lyric_win32_wide(path);
+    wchar_t* w = lyric_win32_path(path);
     if (!w) return INVALID_HANDLE_VALUE;
     HANDLE h = CreateFileW(w, access, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, disposition,
                            FILE_ATTRIBUTE_NORMAL, NULL);
@@ -211,8 +211,8 @@ int32_t lyric_file_delete(const char* path) {
 /* POSIX rename replaces an existing destination file; MoveFileExW does so
  * only when asked. */
 int32_t lyric_file_rename(const char* old_path, const char* new_path) {
-    wchar_t* wo = lyric_win32_wide(old_path);
-    wchar_t* wn = lyric_win32_wide(new_path);
+    wchar_t* wo = lyric_win32_path(old_path);
+    wchar_t* wn = lyric_win32_path(new_path);
     BOOL ok = wo && wn && MoveFileExW(wo, wn, MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED);
     free(wo);
     free(wn);
@@ -255,7 +255,7 @@ static int32_t dir_is_existing(const char* path) {
  * and only a missing parent walks up to create it.  A drive root ("C:\") or
  * a UNC share is never created, only found to exist. */
 static int32_t dir_create_all_buf(char* buf, size_t len) {
-    wchar_t* w = lyric_win32_wide(buf);
+    wchar_t* w = lyric_win32_path(buf);
     if (!w) return -1;
     BOOL ok = CreateDirectoryW(w, NULL);
     DWORD err = ok ? 0 : GetLastError();
@@ -273,7 +273,7 @@ static int32_t dir_create_all_buf(char* buf, size_t len) {
     int32_t rc = dir_create_all_buf(buf, i);
     buf[i] = saved;
     if (rc != 0) return -1;
-    w = lyric_win32_wide(buf);
+    w = lyric_win32_path(buf);
     if (!w) return -1;
     ok = CreateDirectoryW(w, NULL);
     err = ok ? 0 : GetLastError();
@@ -327,7 +327,7 @@ static int32_t for_each_entry(const char* path, dir_entry_fn each, void* ctx) {
     if (m > 0 && !is_sep(pattern[m - 1])) pattern[m++] = '\\';
     pattern[m++] = '*';
     pattern[m] = '\0';
-    wchar_t* w = lyric_win32_wide(pattern);
+    wchar_t* w = lyric_win32_path(pattern);
     free(pattern);
     if (!w) return -1;
     WIN32_FIND_DATAW fd;

@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <wchar.h>
 
 static int failures = 0;
 
@@ -321,6 +322,97 @@ static void test_clocks(void) {
     CHECK(m1 >= m0);
 }
 
+/* Internal (lyric_win32_internal.h): the conversion behind every path. */
+wchar_t* lyric_win32_path(const char* s);
+
+/* The conversion itself, which a host with long paths enabled (or wine)
+ * would not otherwise exercise: a long path is normalised and prefixed,
+ * a long UNC path takes the UNC form, and a short one is left as given. */
+static void test_long_path_conversion(void) {
+    char longp[600] = "C:/base/./x/../";
+    while (strlen(longp) < 400) strcat(longp, "abcdefghij/");
+    strcat(longp, "file.txt");
+    wchar_t* w = lyric_win32_path(longp);
+    CHECK(w != NULL && wcsncmp(w, L"\\\\?\\C:\\base\\abcdefghij\\", wcslen(L"\\\\?\\C:\\base\\abcdefghij\\")) == 0);
+    CHECK(w != NULL && wcschr(w, L'/') == NULL && wcsstr(w, L"\\.\\") == NULL);
+    free(w);
+    char unc[600] = "//server/share/";
+    while (strlen(unc) < 400) strcat(unc, "abcdefghij/");
+    w = lyric_win32_path(unc);
+    CHECK(w != NULL && wcsncmp(w, L"\\\\?\\UNC\\server\\share\\abcdefghij", wcslen(L"\\\\?\\UNC\\server\\share\\abcdefghij")) == 0);
+    free(w);
+    w = lyric_win32_path("C:/short/name.txt");
+    CHECK(w != NULL && wcscmp(w, L"C:/short/name.txt") == 0);
+    free(w);
+    w = lyric_win32_path("NUL");
+    CHECK(w != NULL && wcscmp(w, L"NUL") == 0);
+    free(w);
+    /* The threshold: a full path of 247 units is passed as given, 248 is prefixed. */
+    char edge[300] = "C:/";
+    while (strlen(edge) < 247) strcat(edge, "a");
+    w = lyric_win32_path(edge);
+    CHECK(w != NULL && wcsncmp(w, L"C:/", 3) == 0);
+    free(w);
+    strcat(edge, "a");
+    w = lyric_win32_path(edge);
+    CHECK(w != NULL && wcsncmp(w, L"\\\\?\\C:\\aaa", 9) == 0);
+    free(w);
+    /* A long device path is not a share. */
+    char dev[600] = "\\\\.\\GLOBALROOT\\";
+    while (strlen(dev) < 400) strcat(dev, "abcdefghij\\");
+    w = lyric_win32_path(dev);
+    CHECK(w != NULL && wcsncmp(w, L"\\\\.\\GLOBALROOT\\", 15) == 0);
+    free(w);
+}
+
+/* Paths past MAX_PATH work whether or not the system enables long paths:
+ * the runtime gives them the extended-length prefix.  The tree is built with
+ * forward slashes and a relative step, which the prefix must normalise. */
+static void test_long_paths(const char* dir) {
+    char root[2048];
+    snprintf(root, sizeof root, "%s/long", dir);
+    char deep[2048];
+    snprintf(deep, sizeof deep, "%s", root);
+    for (int i = 0; i < 8; i++) {
+        size_t n = strlen(deep);
+        snprintf(deep + n, sizeof deep - n, "/segment-%d-\xc3\xa9-%s", i,
+                 "abcdefghijklmnopqrstuvwxyzabcdefghij");
+    }
+    CHECK(strlen(deep) > 300);
+    CHECK(lyric_dir_create_all(deep) == 0);
+    CHECK(lyric_dir_exists(deep) == 1);
+    char file[2200];
+    snprintf(file, sizeof file, "%s/../segment-7-\xc3\xa9-abcdefghijklmnopqrstuvwxyzabcdefghij/data.txt", deep);
+    LyricString* text = lyric_string_from_literal((const uint8_t*)"long", 4);
+    CHECK(lyric_file_write_all(file, text, 0) == 0);
+    lyric_release(text);
+    CHECK(lyric_file_exists(file) == 1);
+    LyricString* back = NULL;
+    CHECK(lyric_file_read_all_ok(file, &back) == 0);
+    CHECK(string_is(back, "long"));
+    if (back) lyric_release(back);
+    char moved[2200];
+    snprintf(moved, sizeof moved, "%s/moved.txt", deep);
+    CHECK(lyric_file_rename(file, moved) == 0);
+    int64_t ok = 0;
+    LyricList* names = lyric_dir_list2(deep, &ok);
+    CHECK(ok == 1);
+    CHECK(lyric_list_len(names) == 1);
+    lyric_release(names);
+    int32_t fd = lyric_file_open(moved, lyric_o_rdonly(), 0);
+    CHECK(fd >= 0);
+    if (fd >= 0) lyric_file_close(fd);
+    CHECK(lyric_file_delete(moved) == 0);
+    /* Remove the tree bottom-up. */
+    for (int i = 0; i < 8; i++) {
+        CHECK(lyric_dir_remove(deep) == 0);
+        char* slash = strrchr(deep, '/');
+        if (slash) *slash = '\0';
+    }
+    CHECK(lyric_dir_remove(root) == 0);
+    CHECK(lyric_dir_exists(root) == 0);
+}
+
 int main(int argc, char** argv) {
     setvbuf(stderr, NULL, _IONBF, 0);
     if (argc >= 3 && strcmp(argv[1], "--child") == 0) {
@@ -335,6 +427,8 @@ int main(int argc, char** argv) {
     test_unicode_paths(dir);
     test_rename_replaces(dir);
     test_open_flags(dir);
+    test_long_path_conversion();
+    test_long_paths(dir);
     test_environment();
     test_sleep_precision();
     test_clocks();

@@ -18,7 +18,7 @@
 //!     `respondText` + `urlDecode`) match.
 //!   - item B: a real loopback TLS round trip. Unlike item A, a TLS
 //!     handshake needs both peers actively exchanging handshake records at
-//!     once, so the client runs on a genuine second `pthread_create`d OS
+//!     once, so the client runs on a genuine second `lyric_thread_create`d OS
 //!     thread (the same N4.5 callback-trampoline mechanism
 //!     `llvm_ffi_self_test.l`'s pthread case and `llvm_tls_self_test.l`'s
 //!     item D already verify) driving `Std.TcpHost.hostConnectTls` — the
@@ -53,7 +53,7 @@
 //!     answered, no `Connection: close`, client sends nothing further and
 //!     does not close its own socket). Before the fix, the connection's
 //!     handler thread parks forever in `hostRead` waiting for a next
-//!     request that never comes, and `stopListener`'s `pthread_join` on
+//!     request that never comes, and `stopListener`'s thread join on
 //!     that thread never returns; this case's own pass/fail signal IS
 //!     `stopListener` returning at all — the harness's `Process.runCapture`
 //!     60-second timeout turns a reintroduced deadlock into a real,
@@ -89,7 +89,7 @@
 //!     snapshot and this loop's `hostShutdown` call for it, shutting down
 //!     an already-closed, potentially fd-reused descriptor. Also inherently
 //!     timing-dependent, so this case spawns twenty concurrent
-//!     `pthread_create`d clients, each a real connection sending a real
+//!     `lyric_thread_create`d clients, each a real connection sending a real
 //!     `Connection: close` request and disconnecting, serves every one of
 //!     their requests, then calls `stopListener` while several of those
 //!     twenty connections may still be mid-close — the fix (holding the
@@ -108,7 +108,7 @@
 //!     `nextContext` call on the SAME thread had already returned). No
 //!     deterministic single-shot repro exists without an injected
 //!     synchronization point this file has no access to (the exact
-//!     scheduling instant a freshly `pthread_create`d thread reaches its
+//!     scheduling instant a freshly `lyric_thread_create`d thread reaches its
 //!     own blocking wait is not observable from here), so — matching item
 //!     F/G's own stress-test approach — this case repeats fifteen times: a
 //!     fresh listener, a puller thread spawned to call `nextContext` on it
@@ -135,7 +135,7 @@
 //!     (which used `rtSemTryWait` as its sole "anything left to drain"
 //!     signal) ran, saw no available credit, and stopped — orphaning that
 //!     handler's already-`items.add`'d context, which then hung
-//!     `stopListener`'s later `pthreadJoin` on that thread forever. This
+//!     `stopListener`'s later `threadJoin` on that thread forever. This
 //!     case sends twenty real, fully-parseable requests over twenty
 //!     concurrent connections but never calls `nextContext` for any of
 //!     them at all, forcing every single one through the abandoned-queue
@@ -145,7 +145,7 @@
 //!     `enqueueContext` activity racing the drain the instant
 //!     `stopListener` runs. Every one of the twenty client threads is
 //!     joined, so this case's pass/fail signal is the same as item F/G's:
-//!     `stopListener` (and every client `pthreadJoin`) must still return
+//!     `stopListener` (and every client `threadJoin`) must still return
 //!     promptly and cleanly.
 //!   - item J: the headline regression case for #6806 — `stopListener`
 //!     must not hang on a listener that NEVER accepted a single
@@ -188,7 +188,7 @@
 //!
 //! Every scenario compiles with `-fsanitize=address`, so a leaked
 //! `malloc`'d mutex/semaphore buffer, a leaked fd, a double-release, or a
-//! `pthread_join` failure fails the run — the load-bearing check for
+//! a thread-join failure fails the run — the load-bearing check for
 //! `_kernel_native/http_server.l`'s "shutdown drains every spawned thread
 //! before freeing the queue" design (its own module header's "Shutdown"
 //! section). Item H's own deliberately-never-freed queue buffer (see that
@@ -229,7 +229,7 @@ import Lyric.LlvmBridge
 // Harness (mirrors llvm_tls_self_test.l / llvm_http_client_self_test.l).
 // ─────────────────────────────────────────────────────────────────────────────
 func tempBase(): String {
-  Environment.getVarOrDefault("TMPDIR", "/tmp")
+  Environment.getVarOrDefault("TMPDIR", Environment.getVarOrDefault("TEMP", Environment.getVarOrDefault("TMP", "/tmp")))
 }
 
 record RunOutcome {
@@ -382,8 +382,8 @@ test "native Std.HttpServer TLS round trip: request headers/body, JSON response 
     "import Std.Tls\n" +
     "import Std.HttpServer\n" +
     "import Std.TcpHost\n" +
-    "extern func pthreadCreate(tid: NativePtr[Long], attr: NativePtr[Byte], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"pthread_create\"\n" +
-    "extern func pthreadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"pthread_join\"\n" +
+    "extern func threadCreate(tid: NativePtr[Long], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"lyric_thread_create\"\n" +
+    "extern func threadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"lyric_thread_join\"\n" +
     "extern func toC(s: String): NativePtr[Byte] = \"lyric_string_to_cstring\"\n" +
     "extern func freeC(p: NativePtr[Byte]): Unit = \"lyric_cstring_free\"\n" +
     "extern func cStrcmp(a: NativePtr[Byte], b: NativePtr[Byte]): Int = \"strcmp\"\n" +
@@ -456,7 +456,7 @@ test "native Std.HttpServer TLS round trip: request headers/body, JSON response 
     "  }\n" +
     "  var tid: Long = 0\n" +
     "  val worker: () -> NativePtr[Byte] = { -> clientRoundtrip(certPem) }\n" +
-    "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
+    "  val rc = threadCreate(nativeAddrOf(tid), worker, worker)\n" +
     "  if rc != 0 {\n" +
     "    stopListener(listener)\n" +
     "    return 3\n" +
@@ -473,7 +473,7 @@ test "native Std.HttpServer TLS round trip: request headers/body, JSON response 
     "  respondJson(ctx, 201, \"{\\\"ok\\\":true}\")\n" +
     "  stopListener(listener)\n" +
     "  var outp: NativePtr[Byte] = nativeNullPtr()\n" +
-    "  val rj = pthreadJoin(tid, nativeAddrOf(outp))\n" +
+    "  val rj = threadJoin(tid, nativeAddrOf(outp))\n" +
     "  if rj != 0 {\n" +
     "    return 7\n" +
     "  }\n" +
@@ -498,8 +498,8 @@ test "native Std.HttpServer rejects a negotiated-h2 TLS connection rather than m
     "import Std.Tls\n" +
     "import Std.HttpServer\n" +
     "import Std.TcpHost\n" +
-    "extern func pthreadCreate(tid: NativePtr[Long], attr: NativePtr[Byte], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"pthread_create\"\n" +
-    "extern func pthreadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"pthread_join\"\n" +
+    "extern func threadCreate(tid: NativePtr[Long], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"lyric_thread_create\"\n" +
+    "extern func threadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"lyric_thread_join\"\n" +
     "extern func toC(s: String): NativePtr[Byte] = \"lyric_string_to_cstring\"\n" +
     "extern func freeC(p: NativePtr[Byte]): Unit = \"lyric_cstring_free\"\n" +
     "extern func cStrcmp(a: NativePtr[Byte], b: NativePtr[Byte]): Int = \"strcmp\"\n" +
@@ -549,13 +549,13 @@ test "native Std.HttpServer rejects a negotiated-h2 TLS connection rather than m
     "  }\n" +
     "  var tid: Long = 0\n" +
     "  val worker: () -> NativePtr[Byte] = { -> clientOfferH2(certPem) }\n" +
-    "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
+    "  val rc = threadCreate(nativeAddrOf(tid), worker, worker)\n" +
     "  if rc != 0 {\n" +
     "    stopListener(listener)\n" +
     "    return 3\n" +
     "  }\n" +
     "  var outp: NativePtr[Byte] = nativeNullPtr()\n" +
-    "  val rj = pthreadJoin(tid, nativeAddrOf(outp))\n" +
+    "  val rj = threadJoin(tid, nativeAddrOf(outp))\n" +
     "  if rj != 0 {\n" +
     "    stopListener(listener)\n" +
     "    return 4\n" +
@@ -853,8 +853,8 @@ test "native Std.HttpServer stopListener does not shutdown() a closed/reused fd 
   val src = "package G\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Encoding\n" +
     "import Std.HttpServer\n" +
     "import Std.TcpHost\n" +
-    "extern func pthreadCreate(tid: NativePtr[Long], attr: NativePtr[Byte], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"pthread_create\"\n" +
-    "extern func pthreadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"pthread_join\"\n" +
+    "extern func threadCreate(tid: NativePtr[Long], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"lyric_thread_create\"\n" +
+    "extern func threadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"lyric_thread_join\"\n" +
     "@unsafe_ffi\n" +
     "func clientRoundtrip(dummy: in Int): NativePtr[Byte] {\n" +
     "  match hostConnect(\"127.0.0.1\", 19726) {\n" +
@@ -896,7 +896,7 @@ test "native Std.HttpServer stopListener does not shutdown() a closed/reused fd 
     "  while s < 20 {\n" +
     "    var tid: Long = 0\n" +
     "    val worker: () -> NativePtr[Byte] = { -> clientRoundtrip(s) }\n" +
-    "    val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
+    "    val rc = threadCreate(nativeAddrOf(tid), worker, worker)\n" +
     "    if rc == 0 {\n" +
     "      tids.add(tid)\n" +
     "    }\n" +
@@ -916,7 +916,7 @@ test "native Std.HttpServer stopListener does not shutdown() a closed/reused fd 
     "  var i = 0\n" +
     "  while i < tids.count {\n" +
     "    var outp: NativePtr[Byte] = nativeNullPtr()\n" +
-    "    val _ = pthreadJoin(tids[i], nativeAddrOf(outp))\n" +
+    "    val _ = threadJoin(tids[i], nativeAddrOf(outp))\n" +
     "    i = i + 1\n" +
     "  }\n" +
     "  42\n" +
@@ -929,7 +929,7 @@ test "native Std.HttpServer stopListener does not free the queue while a puller 
   val src = "package H\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.HttpServer\n" +
     "import Std.TcpHost\n" +
     "import Std.Time\n" +
-    "extern func pthreadCreate(tid: NativePtr[Long], attr: NativePtr[Byte], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"pthread_create\"\n" +
+    "extern func threadCreate(tid: NativePtr[Long], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"lyric_thread_create\"\n" +
     "@unsafe_ffi\n" +
     "func main(): Int {\n" +
     "  // Every spawned worker closure is kept alive here for main's whole\n" +
@@ -945,7 +945,7 @@ test "native Std.HttpServer stopListener does not free the queue while a puller 
     "    var tid: Long = 0\n" +
     "    val worker: () -> NativePtr[Byte] = { -> val _ = nextContext(listener); nativeNullPtr() }\n" +
     "    keepAlive.add(worker)\n" +
-    "    val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
+    "    val rc = threadCreate(nativeAddrOf(tid), worker, worker)\n" +
     "    if rc != 0 {\n" +
     "      failCode = 1\n" +
     "    } else {\n" +
@@ -987,8 +987,8 @@ test "native Std.HttpServer stopListener drains concurrently-enqueued contexts w
   val src = "package I\n" + "import Std.Core\n" + "import Std.Collections\n" + "import Std.Encoding\n" +
     "import Std.HttpServer\n" +
     "import Std.TcpHost\n" +
-    "extern func pthreadCreate(tid: NativePtr[Long], attr: NativePtr[Byte], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"pthread_create\"\n" +
-    "extern func pthreadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"pthread_join\"\n" +
+    "extern func threadCreate(tid: NativePtr[Long], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"lyric_thread_create\"\n" +
+    "extern func threadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"lyric_thread_join\"\n" +
     "@unsafe_ffi\n" +
     "func clientRoundtrip(dummy: in Int): NativePtr[Byte] {\n" +
     "  match hostConnect(\"127.0.0.1\", 19728) {\n" +
@@ -1038,7 +1038,7 @@ test "native Std.HttpServer stopListener drains concurrently-enqueued contexts w
     "  while s < 20 {\n" +
     "    var tid: Long = 0\n" +
     "    val worker: () -> NativePtr[Byte] = { -> clientRoundtrip(s) }\n" +
-    "    val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
+    "    val rc = threadCreate(nativeAddrOf(tid), worker, worker)\n" +
     "    if rc == 0 {\n" +
     "      tids.add(tid)\n" +
     "    }\n" +
@@ -1047,13 +1047,13 @@ test "native Std.HttpServer stopListener drains concurrently-enqueued contexts w
     "  // The regression check (#6803): stopListener must force-complete\n" +
     "  // every one of these -- however many have actually reached\n" +
     "  // enqueueContext by now -- and still return promptly and cleanly,\n" +
-    "  // rather than hanging on a pthreadJoin for a handler thread whose\n" +
+    "  // rather than hanging on a threadJoin for a handler thread whose\n" +
     "  // context got orphaned by the drain.\n" +
     "  stopListener(listener)\n" +
     "  var i = 0\n" +
     "  while i < tids.count {\n" +
     "    var outp: NativePtr[Byte] = nativeNullPtr()\n" +
-    "    val _ = pthreadJoin(tids[i], nativeAddrOf(outp))\n" +
+    "    val _ = threadJoin(tids[i], nativeAddrOf(outp))\n" +
     "    i = i + 1\n" +
     "  }\n" +
     "  42\n" +
@@ -1068,7 +1068,7 @@ test "native Std.HttpServer stopListener wakes an accept loop that never receive
     "    // No client EVER connects here -- the accept-loop thread must be\n" +
     "    // genuinely blocked inside rtSockAcceptInterruptible's poll(2) with\n" +
     "    // only the listening socket and the wake pipe to watch, so the ONLY\n" +
-    "    // way stopListener's pthreadJoin below can return is the portable\n" +
+    "    // way stopListener's threadJoin below can return is the portable\n" +
     "    // wake-pipe interrupt (#6806) actually working -- there is no\n" +
     "    // socket-level shutdown()/close() side effect on the listening fd\n" +
     "    // to fall back on this time.\n" +
@@ -1088,8 +1088,8 @@ test "native Std.HttpServer runs the TLS handshake off the accept thread with a 
     "import Std.HttpServer\n" +
     "import Std.TcpHost\n" +
     "import Std.Environment as Env\n" +
-    "extern func pthreadCreate(tid: NativePtr[Long], attr: NativePtr[Byte], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"pthread_create\"\n" +
-    "extern func pthreadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"pthread_join\"\n" +
+    "extern func threadCreate(tid: NativePtr[Long], start: (NativePtr[Byte]) -> NativePtr[Byte], arg: NativePtr[Byte]): Int = \"lyric_thread_create\"\n" +
+    "extern func threadJoin(tid: Long, retval: NativePtr[NativePtr[Byte]]): Int = \"lyric_thread_join\"\n" +
     "extern func toC(s: String): NativePtr[Byte] = \"lyric_string_to_cstring\"\n" +
     "extern func freeC(p: NativePtr[Byte]): Unit = \"lyric_cstring_free\"\n" +
     "extern func cStrcmp(a: NativePtr[Byte], b: NativePtr[Byte]): Int = \"strcmp\"\n" +
@@ -1167,7 +1167,7 @@ test "native Std.HttpServer runs the TLS handshake off the accept thread with a 
     "  hostSetIoTimeout(silent, 10000)\n" +
     "  var tid: Long = 0\n" +
     "  val worker: () -> NativePtr[Byte] = { -> clientRoundtrip(certPem) }\n" +
-    "  val rc = pthreadCreate(nativeAddrOf(tid), nativeNullPtr(), worker, worker)\n" +
+    "  val rc = threadCreate(nativeAddrOf(tid), worker, worker)\n" +
     "  if rc != 0 {\n" +
     "    hostClose(silent)\n" +
     "    stopListener(listener)\n" +
@@ -1176,7 +1176,7 @@ test "native Std.HttpServer runs the TLS handshake off the accept thread with a 
     "  val ctx = nextContext(listener)\n" +
     "  respondText(ctx, 200, \"served\")\n" +
     "  var outp: NativePtr[Byte] = nativeNullPtr()\n" +
-    "  val rj = pthreadJoin(tid, nativeAddrOf(outp))\n" +
+    "  val rj = threadJoin(tid, nativeAddrOf(outp))\n" +
     "  var silentClosed = false\n" +
     "  match hostRead(silent, 64) {\n" +
     "    case Ok(b) -> {\n" +
@@ -1291,7 +1291,8 @@ test "native Std.HttpServer timeout overrides parse with the same fallback rules
 // Shared client helpers for the takeConnection / chunked cases below: a
 // same-thread plain-TCP client (as item A) that reads until `marker` shows up.
 func connHelpersSource(): String {
-  "func joined(parts: in List[String]): String {\n" + "  var s = \"\"\n" + "  var i = 0\n" + "  while i < parts.count {\n" +
+  "func joined(parts: in List[String]): String {\n" + "  var s = \"\"\n" + "  var i = 0\n" +
+    "  while i < parts.count {\n" +
     "    s = s + parts[i]\n" +
     "    i = i + 1\n" +
     "  }\n" +

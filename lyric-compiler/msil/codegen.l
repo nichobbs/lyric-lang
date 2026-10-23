@@ -42465,6 +42465,64 @@ func internClassRef(cctx: in CodegenCtx, fqn: in String): Option[MsilType] {
   }
 }
 
+// The CLR primitives Lyric has no type for, by ECMA element-type byte:
+// SByte (0x04), Int16 (0x06), UInt16 (0x07), UInt32 (0x09), UInt64 (0x0B).
+// A member signature must still name them exactly to bind, so they are carried
+// as value-type refs (the signature encoder writes the element byte back) and
+// widened to `Int`/`Long` where the result reaches Lyric code
+// (`widenNarrowPrimResult`).  "" for any other element byte.
+func narrowPrimFqn(pb: in Int): String {
+  if pb == 0x04 {
+    "System.SByte"
+  } else if pb == 0x06 {
+    "System.Int16"
+  } else if pb == 0x07 {
+    "System.UInt16"
+  } else if pb == 0x09 {
+    "System.UInt32"
+  } else if pb == 0x0B {
+    "System.UInt64"
+  } else {
+    ""
+  }
+}
+
+// The result type Lyric code sees for a call returning `t`, after widening a
+// narrow CLR primitive: SByte/Int16 are already sign-extended and UInt16
+// zero-extended in the int32 the call leaves on the stack, so they are `Int`;
+// UInt32 is zero-extended to `Long` (its value does not fit `Int`); UInt64
+// keeps its bit pattern as `Long`.
+func widenNarrowPrimResult(insns: in List[MInsn], t: in MsilType): MsilType {
+  val fqn = externRefFqn(t)
+  if fqn == "System.SByte" or fqn == "System.Int16" or fqn == "System.UInt16" {
+    MInt
+  } else if fqn == "System.UInt32" {
+    insns.add(MConvU8)
+    MLong
+  } else if fqn == "System.UInt64" {
+    MLong
+  } else {
+    t
+  }
+}
+
+// Inverse of `narrowPrimFqn`: the element-type byte, or -1.
+func narrowPrimElemByte(fqn: in String): Int {
+  if fqn == "System.SByte" {
+    0x04
+  } else if fqn == "System.Int16" {
+    0x06
+  } else if fqn == "System.UInt16" {
+    0x07
+  } else if fqn == "System.UInt32" {
+    0x09
+  } else if fqn == "System.UInt64" {
+    0x0B
+  } else {
+    -1
+  }
+}
+
 // Map a resolved parameter / return `SigType` to its MsilType: primitives via
 // the element byte, value types via an interned VALUETYPE TypeRef, class
 // (reference) types via an interned CLASS TypeRef.  None for anything else (or
@@ -42570,6 +42628,8 @@ func resolvedSigToMsil(cctx: in CodegenCtx, sig: in Mdr.SigType): Option[MsilTyp
   if pb >= 0 {
     if pb == 0x0C {
       internValueTypeRef(cctx, "System.Single")
+    } else if narrowPrimFqn(pb).length > 0 {
+      internValueTypeRef(cctx, narrowPrimFqn(pb))
     } else {
       elemByteToMsil(pb)
     }
@@ -42757,6 +42817,8 @@ func argTyToSig(t: in MsilType): Option[Mdr.SigType] {
     if fqn.length > 0 {
       if fqn == "System.Single" {
         Some(value = Mdr.mkPrimSig(0x0C))
+      } else if narrowPrimElemByte(fqn) >= 0 {
+        Some(value = Mdr.mkPrimSig(narrowPrimElemByte(fqn)))
       } else {
         Some(value = Mdr.mkNamedSig(fqn, msilIsValueTypeRef(t)))
       }
@@ -43353,7 +43415,7 @@ func emitResolvedAutoFfi(
       } else {
         insns.add(MCall(methodToken = tok))
       }
-      Some(value = retMsil)
+      Some(value = widenNarrowPrimResult(insns, retMsil))
     }
   }
 }
@@ -43421,7 +43483,7 @@ func emitResolvedInstanceAutoFfi(
       } else {
         insns.add(MCallvirt(methodToken = tok))
       }
-      Some(value = retMsil)
+      Some(value = widenNarrowPrimResult(insns, retMsil))
     }
   }
 }
@@ -43528,7 +43590,22 @@ func tryExternStaticMemberReadMsil(
     return None
   }
   match Mdr.getLiteralFieldConst(asmPathV, clrFqn, memberName) {
-    case Some(cv) -> return Some(value = emitExternConstMsil(cctx, insns, asmPathV, clrFqn, cv))
+    case Some(cv) -> {
+      // A `System.UInt32` constant (`UInt32.MaxValue`) has no Lyric type of
+      // its own; its 32-bit pattern read as `Int` would be negative, so it
+      // widens to `Long`, zero-extended, which holds the exact value.
+      match cv {
+        case Mdr.ECVInt(v) -> match Mdr.findFieldExtern(asmPathV, clrFqn, memberName) {
+          case Some(fi) -> if Mdr.sigPrimByte(fi.fieldType) == 0x09 {
+            insns.add(MLdcI8(v = if v < 0 { v.toLong() + 4294967296i64 } else { v.toLong() }))
+            return Some(value = MLong)
+          }
+          case None -> ()
+        }
+        case _ -> ()
+      }
+      return Some(value = emitExternConstMsil(cctx, insns, asmPathV, clrFqn, cv))
+    }
     case None -> ()
   }
   match Mdr.findFieldExtern(asmPathV, clrFqn, memberName) {
@@ -43545,7 +43622,7 @@ func tryExternStaticMemberReadMsil(
             val fldSig = buildFieldSigWithCtx(fty, cctx.lctx)
             val frRow = ctxAddMemberRef(cctx.lctx, tRefRow, memberName, "autoffi_fld_" + clrFqn + "." + memberName, fldSig)
             insns.add(MLdsfld(fieldToken = 0x0A000000 + frRow))
-            return Some(value = fty)
+            return Some(value = widenNarrowPrimResult(insns, fty))
           }
           case None -> ()
         }

@@ -53,28 +53,6 @@ import Lyric.LlvmBridge
 // Harness (mirrors llvm_self_test_n34.l): compile source to a native binary
 // (optionally under ASan) and run it.
 // ─────────────────────────────────────────────────────────────────────────────
-func tempBase(): String {
-  Environment.getVarOrDefault("TMPDIR", "/tmp")
-}
-
-func findLyricRt(): String {
-  var dir = Environment.currentDirectory()
-  var hop = 0
-  while hop < 32 {
-    val candidate = Path.join(Path.join(Path.join(dir, "lyric-rt"), "build"), "lyric_rt.a")
-    if File.fileExists(candidate) {
-      return candidate
-    }
-    val parent = Path.dirname(dir)
-    if parent.length == 0 or parent == dir {
-      return ""
-    }
-    dir = parent
-    hop = hop + 1
-  }
-  ""
-}
-
 record RunOutcome {
   exitCode: Int
   stdout: String
@@ -91,14 +69,9 @@ func compileAndRunWith(source: in String, sanitize: in Bool): RunOutcome {
     }
     panic(msg)
   }
-  val pkg = codegenNativePackage(pr.file, "")
+  val pkg = codegenNativePackage(pr.file, nativeHostCodegenTriple())
   val ll = lowerNativePackage(pkg)
-  val rt = findLyricRt()
-  if rt.length == 0 {
-    panic("lyric_rt.a not found; run `make -C lyric-rt` first")
-  }
-  val dir = Path.join(tempBase(), "lyric-llvm-async-selftest")
-  val _ = File.createDir(dir)
+  val dir = nativeScratchDir("lyric-llvm-async-selftest")
   val stem = Path.join(dir, "t_" + Uuid.uuidToString(Uuid.newUuid()))
   val llPath = stem + ".ll"
   match File.writeText(llPath, ll) {
@@ -106,27 +79,9 @@ func compileAndRunWith(source: in String, sanitize: in Bool): RunOutcome {
     }
     case Err(_) -> panic("cannot write " + llPath)
   }
-  val clangArgs: List[String] = newList()
-  clangArgs.add("-O0")
-  if sanitize {
-    clangArgs.add("-fsanitize=address")
-  }
-  clangArgs.add(llPath)
-  clangArgs.add(rt)
-  clangArgs.add("-lm")
-  clangArgs.add("-lpthread")
-  clangArgs.add("-o")
-  clangArgs.add(stem)
-  match Process.runCapture("clang", clangArgs, 120000) {
-    case Ok(res) -> {
-      if res.exitCode != 0 {
-        panic("clang failed on " + llPath + ": " + res.stderr)
-      }
-    }
-    case Err(e) -> panic("clang could not be started: " + e)
-  }
+  val exe = match linkNativeIr(llPath, stem, sanitize, newList()) { case Ok(p) -> p; case Err(e) -> panic(e) }
   val noArgs: List[String] = newList()
-  match Process.runCapture(stem, noArgs, 60000) {
+  match Process.runCapture(exe, noArgs, 60000) {
     case Ok(res) -> RunOutcome(exitCode = res.exitCode, stdout = res.stdout)
     case Err(e) -> panic("binary could not be started: " + e)
   }
@@ -149,8 +104,7 @@ func compileAndRunBundledWith(source: in String, sanitize: in Bool): RunOutcome 
   if stdlib.count == 0 {
     panic("native stdlib sources not found (run from the repo root or set LYRIC_STD_PATH)")
   }
-  val dir = Path.join(tempBase(), "lyric-llvm-async-selftest")
-  val _ = File.createDir(dir)
+  val dir = nativeScratchDir("lyric-llvm-async-selftest")
   val stem = Path.join(dir, "t_" + Uuid.uuidToString(Uuid.newUuid()))
   val flags: List[String] = newList()
   if sanitize {
@@ -188,7 +142,7 @@ func assertNativeCodegenPanics(source: in String, expectSubstring: in String, la
   assertPanicsWith(
     label,
     expectSubstring,
-    { -> val pkg = codegenNativePackage(pr.file, ""); val _ = lowerNativePackage(pkg) }
+    { -> val pkg = codegenNativePackage(pr.file, nativeHostCodegenTriple()); val _ = lowerNativePackage(pkg) }
   )
 }
 
@@ -521,8 +475,7 @@ test "F0045 (#7198): a direct async call's ? inside try/catch of an async func i
   if stdlib.count == 0 {
     panic("native stdlib sources not found (run from the repo root or set LYRIC_STD_PATH)")
   }
-  val dir = Path.join(tempBase(), "lyric-llvm-async-selftest")
-  val _ = File.createDir(dir)
+  val dir = nativeScratchDir("lyric-llvm-async-selftest")
   val stem = Path.join(dir, "t_" + Uuid.uuidToString(Uuid.newUuid()))
   val noFlags: List[String] = newList()
   val noDefines: List[String] = newList()

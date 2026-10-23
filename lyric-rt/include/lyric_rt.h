@@ -1165,7 +1165,10 @@ void* lyric_tls_server_new(const char* cert_pem, const char* key_pem,
  * `lyric_tls_free`. */
 void* lyric_tls_server_accept(void* server_ctx, int32_t fd);
 
-/* Read up to `n` decrypted bytes.  Returns the count, 0 on a clean TLS
+/* A connection has one owner: its reads, writes, shutdown and free come
+ * from one thread at a time, on both twins.
+ *
+ * Read up to `n` decrypted bytes.  Returns the count, 0 on a clean TLS
  * close (close_notify / EOF), or -1 on error, including a socket timeout
  * set with `lyric_sock_set_timeouts`.  Transparently drives any
  * renegotiation / WANT_READ retry loop. */

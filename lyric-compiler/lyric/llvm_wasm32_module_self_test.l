@@ -24,7 +24,7 @@ import Lyric.Emitter
 import Lyric.LlvmBridge
 
 func tempBase(): String {
-  Environment.getVarOrDefault("TMPDIR", "/tmp")
+  Environment.getVarOrDefault("TMPDIR", Environment.getVarOrDefault("TEMP", Environment.getVarOrDefault("TMP", "/tmp")))
 }
 
 record ModuleBuild {

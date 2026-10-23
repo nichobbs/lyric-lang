@@ -23,7 +23,8 @@
 # the INCLUDE and LIB environment variables (for example a sysroot unpacked
 # by xwin):
 #
-#   make windows        -> build-x86_64-pc-windows-msvc/lyric_rt.lib
+#   make windows        -> build-x86_64-pc-windows-msvc/lyric_rt.lib (and
+#                          lyric_rt_md.lib, for AddressSanitizer builds)
 #   make test-windows   [WINE=wine when cross-compiling]
 #
 # lyric_posix.c, lyric_fs.c, lyric_process.c and lyric_tls.c are replaced by
@@ -170,11 +171,19 @@ WIN_SRCS    := src/lyric_rt.c src/lyric_string.c src/lyric_weak.c \
                src/lyric_fs_win32.c src/lyric_process_win32.c src/lyric_sock_win32.c \
                src/lyric_tls_win32.c src/lyric_parallel.c
 WIN_OBJS    := $(WIN_SRCS:src/%.c=$(WIN_BUILD)/%.obj)
+# lyric_rt_md.lib is the same runtime against the DLL C runtime, which an
+# AddressSanitizer build links (Windows ASan works only with the DLL CRT);
+# ordinary programs link lyric_rt.lib and the static CRT.
+WIN_MD_OBJS := $(WIN_SRCS:src/%.c=$(WIN_BUILD)/md/%.obj)
 
 $(WIN_BUILD)/%.obj: src/%.c include/lyric_rt.h src/lyric_win32_internal.h | $(WIN_BUILD)
 	$(WIN_CC) $(WIN_CFLAGS) -Iinclude -c $< -o $@
 
-$(WIN_BUILD)/lyric_string.obj: src/lyric_unicode_case_tables.inc src/lyric_unicode_category_tables.inc
+$(WIN_BUILD)/md/%.obj: src/%.c include/lyric_rt.h src/lyric_win32_internal.h | $(WIN_BUILD)
+	mkdir -p $(WIN_BUILD)/md
+	$(WIN_CC) $(WIN_CFLAGS) -fms-runtime-lib=dll -Iinclude -c $< -o $@
+
+$(WIN_BUILD)/lyric_string.obj $(WIN_BUILD)/md/lyric_string.obj: src/lyric_unicode_case_tables.inc src/lyric_unicode_category_tables.inc
 
 # Recreated from scratch: `ar r` never drops a member, so an object removed
 # from WIN_SRCS would otherwise linger in the archive.
@@ -182,10 +191,14 @@ $(WIN_BUILD)/lyric_rt.lib: $(WIN_OBJS)
 	rm -f $@
 	$(WIN_AR) rcs $@ $(WIN_OBJS)
 
+$(WIN_BUILD)/lyric_rt_md.lib: $(WIN_MD_OBJS)
+	rm -f $@
+	$(WIN_AR) rcs $@ $(WIN_MD_OBJS)
+
 $(WIN_BUILD):
 	mkdir -p $(WIN_BUILD)
 
-windows: $(WIN_BUILD)/lyric_rt.lib
+windows: $(WIN_BUILD)/lyric_rt.lib $(WIN_BUILD)/lyric_rt_md.lib
 
 # The unit tests that need fork, signals, POSIX file modes or /bin/sh are
 # compiled out under _WIN32; test/lyric_win32_test.c covers the Win32-only

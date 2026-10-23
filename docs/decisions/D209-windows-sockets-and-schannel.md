@@ -44,7 +44,8 @@ change.
    Schannel sends a peer the chain it builds from the system certificate stores, never from the store the
    identity was loaded into, so an identity's intermediate certificates (not its leaf, and never a self-signed
    root) are added to the user's Intermediate Certification Authorities store, as .NET's `SslStream` does. An
-   intermediate confers no trust; the peer still verifies the chain against its own anchors.
+   intermediate confers no trust; the peer still verifies the chain against its own anchors. They stay in
+   the store when the context is freed, since another context or process may serve the same chain.
 6. **Versions and ALPN.** Contexts use `SCH_CREDENTIALS` with every protocol but TLS 1.2 and 1.3 (or 1.3 only)
    disabled; a Windows release that predates `SCH_CREDENTIALS` falls back to `SCHANNEL_CRED` with TLS 1.2. TLS 1.3
    needs a release whose Schannel offers it (Windows 11, Server 2022); a TLS 1.3-only context reports that when

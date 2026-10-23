@@ -42,28 +42,6 @@ import Lyric.LlvmBridge
 // ─────────────────────────────────────────────────────────────────────────────
 // Harness (mirrors llvm_heap_self_test.l).
 // ─────────────────────────────────────────────────────────────────────────────
-func tempBase(): String {
-  Environment.getVarOrDefault("TMPDIR", "/tmp")
-}
-
-func findLyricRt(): String {
-  var dir = Environment.currentDirectory()
-  var hop = 0
-  while hop < 32 {
-    val candidate = Path.join(Path.join(Path.join(dir, "lyric-rt"), "build"), "lyric_rt.a")
-    if File.fileExists(candidate) {
-      return candidate
-    }
-    val parent = Path.dirname(dir)
-    if parent.length == 0 or parent == dir {
-      return ""
-    }
-    dir = parent
-    hop = hop + 1
-  }
-  ""
-}
-
 record RunOutcome {
   exitCode: Int
   stdout: String
@@ -92,12 +70,7 @@ func lowerToLl(source: in String): String {
 
 func compileAndRunWith(source: in String, sanitize: in Bool): RunOutcome {
   val ll = lowerToLl(source)
-  val rt = findLyricRt()
-  if rt.length == 0 {
-    panic("lyric_rt.a not found; run `make -C lyric-rt` first")
-  }
-  val dir = Path.join(tempBase(), "lyric-llvm-fixedarray-selftest")
-  val _ = File.createDir(dir)
+  val dir = nativeScratchDir("lyric-llvm-fixedarray-selftest")
   val stem = Path.join(dir, "t_" + Uuid.uuidToString(Uuid.newUuid()))
   val llPath = stem + ".ll"
   match File.writeText(llPath, ll) {
@@ -105,27 +78,9 @@ func compileAndRunWith(source: in String, sanitize: in Bool): RunOutcome {
     }
     case Err(_) -> panic("cannot write " + llPath)
   }
-  val clangArgs: List[String] = newList()
-  clangArgs.add("-O0")
-  if sanitize {
-    clangArgs.add("-fsanitize=address")
-  }
-  clangArgs.add(llPath)
-  clangArgs.add(rt)
-  clangArgs.add("-lm")
-  clangArgs.add("-lpthread")
-  clangArgs.add("-o")
-  clangArgs.add(stem)
-  match Process.runCapture("clang", clangArgs, 120000) {
-    case Ok(res) -> {
-      if res.exitCode != 0 {
-        panic("clang failed on " + llPath + ": " + res.stderr)
-      }
-    }
-    case Err(e) -> panic("clang could not be started: " + e)
-  }
+  val exe = match linkNativeIr(llPath, stem, sanitize, newList()) { case Ok(p) -> p; case Err(e) -> panic(e) }
   val noArgs: List[String] = newList()
-  match Process.runCapture(stem, noArgs, 60000) {
+  match Process.runCapture(exe, noArgs, 60000) {
     case Ok(res) -> RunOutcome(exitCode = res.exitCode, stdout = res.stdout, stderr = res.stderr)
     case Err(e) -> panic("binary could not be started: " + e)
   }
@@ -151,16 +106,11 @@ func lowerBundleToLl(sources: in List[String]): String {
     val file = parseOrPanic(src)
     units.add(unitOfFile(dottedPkgName(file), file))
   }
-  lowerNativePackage(codegenNativeBundle(units, ""))
+  lowerNativePackage(codegenNativeBundle(units, nativeHostCodegenTriple()))
 }
 
 func runLl(ll: in String): RunOutcome {
-  val rt = findLyricRt()
-  if rt.length == 0 {
-    panic("lyric_rt.a not found; run `make -C lyric-rt` first")
-  }
-  val dir = Path.join(tempBase(), "lyric-llvm-fixedarray-selftest")
-  val _ = File.createDir(dir)
+  val dir = nativeScratchDir("lyric-llvm-fixedarray-selftest")
   val stem = Path.join(dir, "b_" + Uuid.uuidToString(Uuid.newUuid()))
   val llPath = stem + ".ll"
   match File.writeText(llPath, ll) {
@@ -168,25 +118,9 @@ func runLl(ll: in String): RunOutcome {
     }
     case Err(_) -> panic("cannot write " + llPath)
   }
-  val clangArgs: List[String] = newList()
-  clangArgs.add("-O0")
-  clangArgs.add("-fsanitize=address")
-  clangArgs.add(llPath)
-  clangArgs.add(rt)
-  clangArgs.add("-lm")
-  clangArgs.add("-lpthread")
-  clangArgs.add("-o")
-  clangArgs.add(stem)
-  match Process.runCapture("clang", clangArgs, 120000) {
-    case Ok(res) -> {
-      if res.exitCode != 0 {
-        panic("clang failed on " + llPath + ": " + res.stderr)
-      }
-    }
-    case Err(e) -> panic("clang could not be started: " + e)
-  }
+  val exe = match linkNativeIr(llPath, stem, true, newList()) { case Ok(p) -> p; case Err(e) -> panic(e) }
   val noArgs: List[String] = newList()
-  match Process.runCapture(stem, noArgs, 60000) {
+  match Process.runCapture(exe, noArgs, 60000) {
     case Ok(res) -> RunOutcome(exitCode = res.exitCode, stdout = res.stdout, stderr = res.stderr)
     case Err(e) -> panic("binary could not be started: " + e)
   }
@@ -211,8 +145,7 @@ func functionBody(ll: in String, name: in String): String {
 /// with AddressSanitizer and runs it.
 func compileFullAndRunAsan(source: in String): RunOutcome {
   val stdlib = findStdlibSourcesNative()
-  val dir = Path.join(tempBase(), "lyric-llvm-fixedarray-selftest")
-  val _ = File.createDir(dir)
+  val dir = nativeScratchDir("lyric-llvm-fixedarray-selftest")
   val stem = Path.join(dir, "f_" + Uuid.uuidToString(Uuid.newUuid()))
   val flags: List[String] = newList()
   flags.add("-fsanitize=address")
@@ -232,8 +165,7 @@ func compileFullAndRunAsan(source: in String): RunOutcome {
 /// is given a clang argument that cannot succeed.
 func fullPipelineLl(source: in String): String {
   val stdlib = findStdlibSourcesNative()
-  val dir = Path.join(tempBase(), "lyric-llvm-fixedarray-selftest")
-  val _ = File.createDir(dir)
+  val dir = nativeScratchDir("lyric-llvm-fixedarray-selftest")
   val stem = Path.join(dir, "ir_" + Uuid.uuidToString(Uuid.newUuid()))
   val flags: List[String] = newList()
   flags.add("/lyric-nonexistent-ir-capture.c")
