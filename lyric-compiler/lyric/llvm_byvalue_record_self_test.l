@@ -389,10 +389,11 @@ test "by-value records in a List: add, index, set, for, count (ASan)" {
     "    sum = sum + p.x + p.y\n" +
     "  }\n" +
     "  val last = xs[19]\n" +
-    "  sum - 570 + last.y + xs.count\n" +
+    "  sum - 870 + last.y + xs.count\n" +
     "}\n"
   val r = compileAndRunAsan(src)
-  assertEqualInt(r.exitCode, 349 % 256, "291 (the sum moves by 300 - 9) + 38 + 20")
+  // Kept under 256: a Windows exit code is not truncated to a byte.
+  assertEqualInt(r.exitCode, 49, "-9 (the sum moves by 300 - 9) + 38 + 20")
 }
 
 test "by-value records as Map values (ASan)" {
