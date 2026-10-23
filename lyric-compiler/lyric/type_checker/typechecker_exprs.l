@@ -10559,6 +10559,8 @@ func inferIfExpr(
       val joined = unifyBranchTypes(tt, et, e.span, diag, isValuePosition)
       closePropagateBranch(sc, tbl, thenBranch, joined, isValuePosition)
       closePropagateBranch(sc, tbl, eb, joined, isValuePosition)
+      recordBranchConstructionType(sc, tbl, thenBranch, tt, joined, isValuePosition)
+      recordBranchConstructionType(sc, tbl, eb, et, joined, isValuePosition)
       joined
     }
   }
@@ -10697,7 +10699,46 @@ func inferMatchExpr(
   for arm in arms {
     closePropagateBranch(sc, tbl, arm.body, acc, isValuePosition)
   }
+  var ri = 0
+  while ri < arms.count and ri < armTypes.count {
+    recordBranchConstructionType(sc, tbl, arms[ri].body, armTypes[ri], acc, isValuePosition)
+    ri = ri + 1
+  }
   acc
+}
+
+// A branch of a consumed `if`/`match` whose value is a construction leaving a
+// type argument open (`None`, `Ok(1)`, a tuple holding one) is built at the
+// type the branches join to, not at the arguments it can fix itself: a
+// backend with reified generics otherwise builds `Option<object>` beside a
+// sibling `Option<string>` (#7516, #8136).  Recorded in
+// `hoistOperandTypeSites`, which `Lyric.Mono` turns into a binding annotated
+// with that type.
+func recordBranchConstructionType(
+  sc: in Scope,
+  tbl: in SymbolTable,
+  b: in ExprOrBlock,
+  own: in Type,
+  joined: in Type,
+  consumed: in Bool,
+): Unit {
+  if not consumed or not typeIsClosedOver(joined, sc.genericNames) or renderType(unrefine(own)) == renderType(unrefine(joined)) {
+    return
+  }
+  match branchValueExpr(b) {
+    case Some(ve) -> {
+      val builds = match stripExprParens(ve).kind {
+        case ECall(_, _) -> true
+        case EPath(_) -> true
+        case ETuple(_) -> true
+        case _ -> false
+      }
+      if builds {
+        recordHoistOperandTypeOver(tbl, sc.genericNames, ve, own, joined)
+      }
+    }
+    case None -> ()
+  }
 }
 
 // A branch of a consumed `if`/`match` whose value is `e?` with an open
@@ -12854,6 +12895,26 @@ func shapedCollectionType(tbl: in SymbolTable, own: in Type, expected: in Type):
   }
 }
 
+func shapedElemTypeIn(tbl: in SymbolTable, ownElem: in Type, expectedElem: in Type): Type {
+  if typeIsClosed(expectedElem) {
+    return expectedElem
+  }
+  match unrefine(ownElem) {
+    case TySlice(oe) -> match unrefine(expectedElem) {
+      case TyUser(eid, ename, eargs) -> if eargs.count == 1 and isStdCollectionsHostType(tbl, eid, "List") {
+        val inner: List[Type] = newList()
+        inner.add(shapedElemTypeIn(tbl, oe, eargs[0]))
+        return TyUser(id = eid, name = ename, args = inner)
+      }
+      case TySlice(ee) -> return TySlice(element = shapedElemTypeIn(tbl, oe, ee))
+      case TyArray(sz, ee, sv) -> return TyArray(size = sz, element = shapedElemTypeIn(tbl, oe, ee), sizeVar = sv)
+      case _ -> ()
+    }
+    case _ -> ()
+  }
+  joinOpenTypes(ownElem, expectedElem)
+}
+
 func shapedElemType(ownElem: in Type, expectedElem: in Type): Type {
   if typeIsClosed(expectedElem) {
     expectedElem
@@ -12940,6 +13001,24 @@ func recordHoistOperandTypeOver(
     }
     case None -> ()
   }
+}
+
+// An operand of `==` / `!=` that builds a generic value leaving a type
+// argument open (`Ok(2)`, whose error type only the other operand fixes, or a
+// bare `None`) is built at the type the comparison gives it, the other
+// operand's, so it and the value it is compared with are one runtime type
+// (#8144).  Recorded in `hoistOperandTypeSites`, which `Lyric.Mono` turns into
+// a binding annotated with that type, as for an operand the hoist binds.
+func recordComparedConstructionType(sc: in Scope, tbl: in SymbolTable, e: in Expr, own: in Type, other: in Type): Unit {
+  val builds = match e.kind { case ECall(_, _) -> true; case EPath(_) -> true; case _ -> false }
+  if not builds {
+    return
+  }
+  val ownU = unrefine(own)
+  if renderType(joinOpenTypes(ownU, unrefine(other))) == renderType(ownU) {
+    return
+  }
+  recordHoistOperandTypeOver(tbl, sc.genericNames, e, own, other)
 }
 
 // Whether `op` evaluates its right operand only on some left values; the
@@ -13204,6 +13283,7 @@ func adoptListLiteralArgs(
   args: in List[CallArg],
   argTypes: in List[Type],
   sig: in ResolvedSignature,
+  resultExpected: in Type,
 ): Unit {
   if sig.isExternFunc {
     return
@@ -13214,7 +13294,21 @@ func adoptListLiteralArgs(
     names.add(p.name)
     paramTys.add(p.ty)
   }
-  adoptLiteralArgsOver(sc, tbl, sigs, diag, sig.generics, names, paramTys, args, argTypes, "T0043", "parameter")
+  adoptLiteralArgsOver(
+    sc,
+    tbl,
+    sigs,
+    diag,
+    sig.generics,
+    names,
+    paramTys,
+    args,
+    argTypes,
+    "T0043",
+    "parameter",
+    sig.returnTy,
+    resultExpected
+  )
 }
 
 // `adoptListLiteralArgs` over the parameters (or fields) `names` of types
@@ -13245,6 +13339,8 @@ func adoptLiteralArgsOver(
   argTypes: in List[Type],
   code: in String,
   slotWord: in String,
+  retTy: in Type,
+  resultExpected: in Type,
 ): Unit {
   if args.count > names.count or argTypes.count < args.count {
     return
@@ -13277,7 +13373,8 @@ func adoptLiteralArgsOver(
           slots.add(if aj >= 0 and aj < current.count { current[aj] } else { TyError })
           j = j + 1
         }
-        substituteTyVars(paramTys[k], generics, inferGenericArgsDeep(generics, paramTys, slots))
+        val fromArgs = inferGenericArgsDeep(generics, paramTys, slots)
+        substituteTyVars(paramTys[k], generics, bindOpenFromResult(generics, fromArgs, retTy, resultExpected))
       } else {
         paramTys[k]
       }
@@ -13339,12 +13436,16 @@ func adoptLiteralAt(
   val target = match unrefine(expected) {
     case TyUser(lid, lname, largs) -> if largs.count == 1 and isStdCollectionsHostType(tbl, lid, "List") {
       val elemArgs: List[Type] = newList()
-      elemArgs.add(shapedElemType(collectionElemType(tbl, unrefine(own)), largs[0]))
+      elemArgs.add(shapedElemTypeIn(tbl, collectionElemType(tbl, unrefine(own)), largs[0]))
       TyUser(id = lid, name = lname, args = elemArgs)
     } else {
       return none
     }
-    case TySlice(et) -> if isSliceType(et) { unrefine(expected) } else { return none }
+    case TySlice(et) -> if isSliceType(et) or isNumericPrimType(et) or isStdListType(tbl, et) {
+      unrefine(expected)
+    } else {
+      return none
+    }
     case _ -> return none
   }
   if not typeIsClosedOver(target, sc.genericNames) {
@@ -15387,10 +15488,14 @@ func inferExprCore(
         case BEq -> {
           exemptArrayCopy(tbl, l)
           exemptArrayCopy(tbl, r)
+          recordComparedConstructionType(sc, tbl, l, lt, rt)
+          recordComparedConstructionType(sc, tbl, r, rt, lt)
         }
         case BNeq -> {
           exemptArrayCopy(tbl, l)
           exemptArrayCopy(tbl, r)
+          recordComparedConstructionType(sc, tbl, l, lt, rt)
+          recordComparedConstructionType(sc, tbl, r, rt, lt)
         }
         case _ -> ()
       }
@@ -15789,7 +15894,7 @@ func inferExprCore(
         if argIsPropagateCall(tbl, ae) {
           anyPropagateArg = true
         }
-        if argIsLambdaLiteral(ae) or argIsAmbiguousUnionCaseCtor(tbl, ae) or argIsBranchingExpr(ae) or argIsListLiteral(ae) {
+        if argIsLambdaLiteral(ae) or argIsAmbiguousUnionCaseCtor(tbl, ae) or argIsBranchingExpr(ae) or argIsListLiteral(ae) or argIsListHoldingTuple(ae) {
           val scratch: List[Diagnostic] = newList()
           argTypes.add(inferExpr(sc, tbl, sigs, scratch, ae))
           anyDeferredLambda = true
@@ -15957,6 +16062,15 @@ func inferExprCore(
             } else {
               inferExpr(sc, tbl, sigs, diag, dae)
             }
+          } else if argIsListHoldingTuple(dae) {
+            // A tuple holding a bracket literal is typed against a tuple
+            // parameter, so the literal takes the shape (array, slice, `List`)
+            // its component gives it, as under a `val` annotation (#8277).
+            argTypes[di] = if isTupleType(expectedArgTys[di]) and typeIsClosedOver(expectedArgTys[di], sc.genericNames) {
+              inferExprExpected(sc, tbl, sigs, diag, dae, expectedArgTys[di])
+            } else {
+              inferExpr(sc, tbl, sigs, diag, dae)
+            }
           } else if argIsLambdaLiteral(dae) or argIsAmbiguousUnionCaseCtor(tbl, dae) or argIsBranchingExpr(dae) {
             argTypes[di] = inferExprExpected(sc, tbl, sigs, diag, dae, expectedArgTys[di])
           } else if argIsCaseCtorCall(tbl, dae) or argIsWideningBuiltValue(tbl, dae) {
@@ -15988,9 +16102,18 @@ func inferExprCore(
         }
       }
       match directSig {
-        case Some(lsig) -> adoptListLiteralArgs(sc, tbl, sigs, diag, args, argTypes, lsig)
+        case Some(lsig) -> adoptListLiteralArgs(sc, tbl, sigs, diag, args, argTypes, lsig, callResultExpected(tbl, e))
         case None -> match methodPick {
-          case Some(lmp) -> adoptListLiteralArgs(sc, tbl, sigs, diag, args, argTypes, lmp.sig)
+          case Some(lmp) -> adoptListLiteralArgs(
+            sc,
+            tbl,
+            sigs,
+            diag,
+            args,
+            argTypes,
+            lmp.sig,
+            callResultExpected(tbl, e)
+          )
           case None -> adoptCtorLiteralArgs(sc, tbl, sigs, diag, fn, args, argTypes)
         }
       }
@@ -17025,12 +17148,13 @@ func inferLambda(
   // chain widens to it (docs/01 §4.1), so `{ -> 5 }` is a `() -> Long` where
   // one is expected.  With no such expectation (bare inference, or a generic
   // callee's still-open `T`) the return type is inferred from the body and
-  // `TyError` keeps a literal inferring as `slice[T]` (#7696).  A `List`
-  // return type is not adopted either: a bracket literal checked against it
-  // is built as a `List` only where a backend sees that type from the
-  // literal's own position, which a lambda body's value is not.
+  // `TyError` keeps a literal inferring as `slice[T]` (#7696).  A bracket
+  // literal that is the body's value is built as the `List` the return type
+  // names through a binding annotated with it (`recordLambdaTailShape`), since
+  // a backend does not see a lambda's return type where it builds the
+  // literal (#7878).
   val declaredRet: Option[Type] = match expectedReturn {
-    case Some(rt) -> if bodyValuePos and typeIsClosed(unrefine(rt)) and not isStdListType(tbl, rt) {
+    case Some(rt) -> if bodyValuePos and typeIsClosed(unrefine(rt)) {
       Some(value = rt)
     } else {
       None
@@ -17056,6 +17180,7 @@ func inferLambda(
     case Some(rt) -> {
       val bodyTy = checkBlock(lsc, tbl, sigs, sc.genericNames, rt, noLambdaRte, diag, body, true, rt)
       scopePop(sc)
+      recordLambdaTailShape(tbl, sc.genericNames, body, bodyTy, rt)
       TyFunction(params = paramTypes, ret = lambdaReturnAgainst(tbl, rt, bodyTy, body), isAsync = false)
     }
     case None -> {
@@ -17073,6 +17198,27 @@ func inferLambda(
       val retTy = if bodyDiverges and returned.count > 0 { returned[0] } else { bodyTy }
       TyFunction(params = paramTypes, ret = retTy, isAsync = false)
     }
+  }
+}
+
+// A lambda body's value that is a bracket literal (or an `if` / `match` whose
+// branches hold one) checked against the lambda's declared return type `rt` is
+// recorded at the shape `rt` gives it, so `Lyric.Mono` binds it through a local
+// annotated with that type (`hoistOperandTypedMono`) and every backend builds a
+// `List[T]` of the right element width (#7878).
+func recordLambdaTailShape(
+  tbl: in SymbolTable,
+  typeParams: in List[String],
+  body: in Block,
+  bodyTy: in Type,
+  rt: in Type,
+): Unit {
+  match blockValueExpr(body) {
+    case Some(tailE) -> match shapedOperandType(tbl, tailE, bodyTy, rt) {
+      case Some(_) -> recordHoistOperandTypeOver(tbl, typeParams, tailE, bodyTy, rt)
+      case None -> ()
+    }
+    case None -> ()
   }
 }
 
@@ -17253,6 +17399,91 @@ func noteArrayStores(tbl: in SymbolTable, args: in List[CallArg], argTypes: in L
   }
 }
 
+// Whether the tuple component `el`, of type `t`, is a union-case construction
+// or a bare case name of a generic union (`Some(1)`, `None`).
+func tupleElemBuildsGeneric(sc: in Scope, tbl: in SymbolTable, el: in Expr, t: in Type): Bool {
+  if not typeMentionsGenericInst(t) {
+    return false
+  }
+  match stripExprParens(el).kind {
+    case ECall(_, _) -> argIsCaseCtorCall(tbl, el)
+    case EPath(p) -> p.segments.count == 1 and
+      (match scopeTryFind(sc, p.segments[0]) { case Some(_) -> false; case None -> true })
+    case _ -> false
+  }
+}
+
+func isTupleType(t: in Type): Bool {
+  match unrefine(t) {
+    case TyTuple(_) -> true
+    case _ -> false
+  }
+}
+
+// A tuple literal one of whose components is a bracket literal or a
+// construction (`None`, `Some(1)`), possibly inside a nested tuple: its shape
+// and the types its components are built at follow the tuple type expected of
+// it.
+func argIsListHoldingTuple(e: in Expr): Bool {
+  match e.kind {
+    case EParen(inner) -> argIsListHoldingTuple(inner)
+    case ETuple(elems) -> {
+      for el in elems {
+        if argIsListLiteral(el) or argIsListHoldingTuple(el) {
+          return true
+        }
+        match stripExprParens(el).kind {
+          case ECall(_, _) -> return true
+          case EPath(_) -> return true
+          case _ -> ()
+        }
+      }
+      false
+    }
+    case _ -> false
+  }
+}
+
+// The type expected of the result of the call `e`, `TyError` for none.
+func callResultExpected(tbl: in SymbolTable, e: in Expr): Type {
+  match mapGet(tbl.methodCallResultExpected, recordCopySiteKey(e.span)) {
+    case Some(rx) -> rx
+    case None -> TyError
+  }
+}
+
+// `bound`, the type arguments of `generics` the arguments fixed (`TyError`
+// for one they left open), with each open one taken from `retTy` unified
+// with the type `resultExpected` expected of the call's result.
+func bindOpenFromResult(
+  generics: in List[String], bound: in List[Type], retTy: in Type, resultExpected: in Type
+): List[Type] {
+  if typeIsHole(resultExpected) or not typeIsClosed(resultExpected) {
+    return bound
+  }
+  val retTys: List[Type] = newList()
+  retTys.add(retTy)
+  val expTys: List[Type] = newList()
+  expTys.add(resultExpected)
+  val fromRet = inferGenericArgsDeep(generics, retTys, expTys)
+  val merged: List[Type] = newList()
+  var i = 0
+  while i < bound.count {
+    merged.add(if typeIsHole(bound[i]) and i < fromRet.count { fromRet[i] } else { bound[i] })
+    i = i + 1
+  }
+  merged
+}
+
+func callHasListLiteralArg(args: in List[CallArg]): Bool {
+  for a in args {
+    if argIsListLiteral(callArgExpr(a)) {
+      return true
+    }
+  }
+  false
+}
+
 func argIsListLiteral(e: in Expr): Bool {
   match e.kind {
     case EParen(inner) -> argIsListLiteral(inner)
@@ -17413,7 +17644,7 @@ func adoptCtorLiteralArgs(
           tys.add(f.ty)
         }
       }
-      adoptLiteralArgsOver(sc, tbl, sigs, diag, generics, names, tys, args, argTypes, "T0104", "field")
+      adoptLiteralArgsOver(sc, tbl, sigs, diag, generics, names, tys, args, argTypes, "T0104", "field", TyError, TyError)
     }
     case None -> match unionCaseSymbolOf(tbl, fn) {
       case Some(caseSym) -> match caseSym.kind {
@@ -17422,7 +17653,21 @@ func adoptCtorLiteralArgs(
             val scratch: List[Diagnostic] = newList()
             val generics = unionDeclGenericNames(decl)
             val tys = unionCaseFieldTypes(tbl, scratch, uc, generics, caseSym.originPackage)
-            adoptLiteralArgsOver(sc, tbl, sigs, diag, generics, unionCaseSlotNames(uc), tys, args, argTypes, "T0104", "field")
+            adoptLiteralArgsOver(
+              sc,
+              tbl,
+              sigs,
+              diag,
+              generics,
+              unionCaseSlotNames(uc),
+              tys,
+              args,
+              argTypes,
+              "T0104",
+              "field",
+              TyError,
+              TyError
+            )
           }
           case None -> ()
         }
@@ -17849,6 +18094,11 @@ func inferExprExpectedCore(
             // A `?` argument that fixes no success type may take it from a
             // generic parameter the expected result binds (#8181).
             inferMethodCallExpected(sc, tbl, sigs, diag, e, expected)
+          } else if callHasListLiteralArg(cargs) {
+            // A bracket literal argument of a generic parameter takes the
+            // `List` the call's expected result binds its type parameter to
+            // (`val r: List[Long] = g([1, 2])`, #8293).
+            inferMethodCallExpected(sc, tbl, sigs, diag, e, expected)
           } else {
             inferExpr(sc, tbl, sigs, diag, e)
           }
@@ -17953,17 +18203,31 @@ func inferExprExpectedCore(
     case ETuple(elems) -> match unrefine(expected) {
       case TyTuple(ets) -> if ets.count == elems.count {
         val ts: List[Type] = newList()
+        val ownTs: List[Type] = newList()
         var ti = 0
+        var leavesOpen = false
         while ti < elems.count {
           // An element initialises its slot, so a scalar widens to the
           // element type (#7813).
           val own = inferExprExpected(sc, tbl, sigs, diag, elems[ti], ets[ti])
           val widened = if typeIsClosed(ets[ti]) { widenedSlotType(tbl, ets[ti], own, elems[ti]) } else { own }
-          ts.add(joinOpenTypes(widened, unrefine(ets[ti])))
+          val joinedElem = joinOpenTypes(widened, unrefine(ets[ti]))
+          if renderType(joinedElem) != renderType(widened) or tupleElemBuildsGeneric(sc, tbl, elems[ti], joinedElem) {
+            leavesOpen = true
+          }
+          ownTs.add(widened)
+          ts.add(joinedElem)
           noteRangeSlot(tbl, ets[ti], elems[ti], "tuple element " + toString(ti + 1))
           ti = ti + 1
         }
         recordHoistedOperands(sc, tbl, elems, ts, ets)
+        // A component that fixes nothing about its type (`None`, `Ok(2)`) is
+        // built at the type its position gives it; a backend that erases the
+        // tuple's element type (a `List` of tuples on dotnet) cannot recover
+        // it from the tuple (#8092).
+        if leavesOpen {
+          recordHoistOperandTypeOver(tbl, sc.genericNames, e, TyTuple(elems = ownTs), expected)
+        }
         TyTuple(elems = ts)
       } else {
         inferExpr(sc, tbl, sigs, diag, e)
@@ -18065,7 +18329,7 @@ func inferExprExpectedCore(
       // first element's own type.  A slice of slices checks each element
       // against the inner slice type too, so an element literal is built as
       // one (#8192).
-      case TySlice(elemTy) -> if (isNumericPrimType(elemTy) or isSliceType(elemTy)) and elems.count > 0 {
+      case TySlice(elemTy) -> if (isNumericPrimType(elemTy) or isSliceType(elemTy) or isStdListType(tbl, elemTy)) and elems.count > 0 {
         var si = 0
         while si < elems.count {
           val et = inferExprExpected(sc, tbl, sigs, diag, elems[si], elemTy)

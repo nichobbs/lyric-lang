@@ -11050,6 +11050,46 @@ func emitErasedCollRecvCastMsil(cctx: in CodegenCtx, insns: in List[MInsn], recv
   }
 }
 
+// `recv.add(a, b)` on a receiver already on the stack as `object`: `List`.Insert
+// when it is the erased `List<object>` (`a` the index), else the erased
+// `Dictionary<object, object>` entry.  Both arguments are evaluated once, in
+// order, and boxed, as both erased forms store them.
+func lowerErasedTwoArgAddMsil(
+  cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MInsn], args: in List[CallArg]
+): MsilType {
+  val n = toString(fctx.slotTicker.count)
+  val recvSlot = allocSlotMsil(fctx, "__eadd_r_" + n, MObject)
+  emitStoreSlot(insns, recvSlot, fctx.paramCount)
+  val firstTy = lowerCallArgMsil(cctx, fctx, insns, args[0])
+  boxIfNeededMsil(cctx, insns, firstTy)
+  val firstSlot = allocSlotMsil(fctx, "__eadd_a_" + n, MObject)
+  emitStoreSlot(insns, firstSlot, fctx.paramCount)
+  val secondTy = lowerCallArgMsil(cctx, fctx, insns, args[1])
+  boxIfNeededMsil(cctx, insns, secondTy)
+  val secondSlot = allocSlotMsil(fctx, "__eadd_b_" + n, MObject)
+  emitStoreSlot(insns, secondSlot, fctx.paramCount)
+  val dictL = freshLabelMsil(fctx)
+  val doneL = freshLabelMsil(fctx)
+  emitLoadSlot(insns, recvSlot, fctx.paramCount)
+  insns.add(MIsinst(typeToken = cctx.tokListObjTypeSpec))
+  insns.add(MBrFalse(label = dictL))
+  emitLoadSlot(insns, recvSlot, fctx.paramCount)
+  insns.add(MCastclass(typeToken = cctx.tokListObjTypeSpec))
+  emitLoadSlot(insns, firstSlot, fctx.paramCount)
+  insns.add(MUnboxAny(typeToken = boxTypeRef(cctx, MInt)))
+  emitLoadSlot(insns, secondSlot, fctx.paramCount)
+  insns.add(MListOp(op = LoInsert, elemTy = MObject))
+  insns.add(MBr(label = doneL))
+  insns.add(MLabel(id = dictL))
+  emitLoadSlot(insns, recvSlot, fctx.paramCount)
+  insns.add(MCastclass(typeToken = cctx.tokDictObjTypeSpec))
+  emitLoadSlot(insns, firstSlot, fctx.paramCount)
+  emitLoadSlot(insns, secondSlot, fctx.paramCount)
+  insns.add(MCallvirt(methodToken = cctx.tokDictObjSetItem))
+  insns.add(MLabel(id = doneL))
+  MVoid
+}
+
 func emitListAdd(cctx: in CodegenCtx, insns: in List[MInsn], recvTy: in MsilType): Unit {
   match recvTy {
     case MConcreteList(e) -> insns.add(MListOp(op = LoAdd, elemTy = e))
@@ -19001,6 +19041,48 @@ func lowerValueExprMsil(cctx: in CodegenCtx, fctx: in FuncCtx, insns: in List[MI
   }
 }
 
+// Lower one call argument for a parameter whose MSIL type is `pTy`, with the
+// parameter's type arguments as the construction context, so a bare `None`,
+// `Ok(..)` or `newMap()` argument is built at the parameter's instantiation
+// rather than erased to `object`.  The enclosing hint is replaced for the
+// argument and restored after it, so a context for a different type never
+// leaks in.  A non-generic parameter lowers the argument as written.
+func lowerCallArgForParamMsil(
+  cctx: in CodegenCtx,
+  fctx: in FuncCtx,
+  insns: in List[MInsn],
+  arg: in CallArg,
+  pTy: in MsilType,
+): MsilType {
+  val pArgs: List[MsilType] = match pTy {
+    case MGenericInst(_, _, a) -> a
+    case MGenericInstByName(_, a) -> a
+    case MConcreteMap(k, v) -> [k, v]
+    case _ -> newList()
+  }
+  if pArgs.count == 0 {
+    pushCollExpect(fctx, pTy)
+    val plainTy = lowerCallArgMsil(cctx, fctx, insns, arg)
+    popCollExpect(fctx)
+    return plainTy
+  }
+  val saved: List[MsilType] = newList()
+  for h in fctx.contextHintTyArgs {
+    saved.add(h)
+  }
+  while fctx.contextHintTyArgs.count > 0 {
+    fctx.contextHintTyArgs.removeAt(fctx.contextHintTyArgs.count - 1)
+  }
+  for a in pArgs {
+    fctx.contextHintTyArgs.add(a)
+  }
+  pushCollExpect(fctx, pTy)
+  val argTy = lowerCallArgMsil(cctx, fctx, insns, arg)
+  popCollExpect(fctx)
+  restoreHintTyArgs(fctx, saved)
+  argTy
+}
+
 // The underlying expression of a call argument (positional or named).  Used by
 // the `out`/`inout` call path, which needs the argument as an lvalue. #1761.
 func callArgExpr(arg: in CallArg): Expr {
@@ -22723,7 +22805,17 @@ func lowerMethodCallMsil(
       return lowerBuiltinOrStaticCallMsil(cctx, fctx, insns, memberName, recCtorPath, args)
     }
   }
+  // A bracket literal receiver is a slice whatever the call's own result is
+  // expected to be: `count([s].toList())` converts the slice, it does not
+  // build the `List` the parameter wants (#7908).
+  val recvIsListLiteral = match stripExprParens(recv).kind { case EList(_) -> true; case _ -> false }
+  if recvIsListLiteral {
+    pushCollExpect(fctx, MObject)
+  }
   val recvTy = lowerExprMsil(cctx, fctx, insns, recv)
+  if recvIsListLiteral {
+    popCollExpect(fctx)
+  }
   // `o.isNone()` is `isNone(o)`, a generic Std.Core function that is never
   // emitted as a method: lower it to the same case test as the field form
   // `o.isNone`.
@@ -22951,7 +23043,11 @@ func lowerMethodCallMsil(
               while i < dargs.count {
                 // Free-function param 0 is `self` (already on the stack); arg i maps to param i+1.
                 val paramIsValue = if (i + 1) < funcParamList.count { isValueType(funcParamList[i + 1]) } else { false }
-                val aTy = lowerCallArgMsil(cctx, fctx, insns, dargs[i])
+                val aTy = if (i + 1) < funcParamList.count {
+                  lowerCallArgForParamMsil(cctx, fctx, insns, dargs[i], funcParamList[i + 1])
+                } else {
+                  lowerCallArgMsil(cctx, fctx, insns, dargs[i])
+                }
                 if (i + 1) < funcParamList.count {
                   coerceObjectToSlotMsil(cctx, insns, aTy, funcParamList[i + 1])
                 }
@@ -23022,9 +23118,7 @@ func lowerMethodCallMsil(
               byrefPendingG
             )
           } else {
-            pushCollExpect(fctx, openParamTy)
-            val aTyG = lowerCallArgMsil(cctx, fctx, insns, gargs[gi])
-            popCollExpect(fctx)
+            val aTyG = lowerCallArgForParamMsil(cctx, fctx, insns, gargs[gi], substituteTypeVarsMsil(openParamTy, typeArgs))
             // An `object` argument (a closure result whose type the checker
             // left unknown, #7671) is converted to this instantiation's
             // parameter type.
@@ -23088,6 +23182,12 @@ func lowerMethodCallMsil(
     // two-argument form is told apart by the receiver, never by the arity:
     // only a receiver not known to be a list is a map.
     val isListInsert = args.count == 2 and isListRecvMsil(recvTy)
+    // A receiver known only as `object` (a `List` of tuples, whose element
+    // type is erased) is a list or a map, which the two-argument form cannot
+    // tell apart statically: test it at run time (#8092).
+    if args.count == 2 and (match recvTy { case MObject -> true; case _ -> false }) {
+      return lowerErasedTwoArgAddMsil(cctx, fctx, insns, args)
+    }
     //
     // Propagate the receiver's element generic-type args as a construction
     // hint so a bare `xs.add(None)` on a `List[Option[String]]` builds
@@ -23244,7 +23344,19 @@ func lowerMethodCallMsil(
         i = i + 1
         continue
       }
-      val elemAddTy = if i == elemArgIdx { addElemTy } else { None }
+      // The value of `Map[K, V].add(key, value)` is built at `V`, so a nested
+      // `newMap()` / `newList()` is the concrete collection the entry holds
+      // (#8274).
+      val elemAddTy = if i == elemArgIdx and not (args.count == 2 and not isListInsert) {
+        addElemTy
+      } else if args.count == 2 and not isListInsert and i == 1 {
+        match recvTy {
+          case MConcreteMap(_, v) -> Some(value = v)
+          case _ -> None
+        }
+      } else {
+        None
+      }
       match elemAddTy {
         case Some(e) -> pushCollExpect(fctx, e)
         case None -> ()

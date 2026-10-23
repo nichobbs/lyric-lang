@@ -6069,6 +6069,17 @@ func lowerMethodCall(
     }
   }
 
+  // `[a, b].toList()`: a bracket literal is built as an `ArrayList` here
+  // whichever type the call is expected to give, and it is fresh, so it already
+  // is the `List` the call converts a slice to (#7908).
+  if memberName == "toList" and args.count == 0 {
+    val recvIsLiteral = match stripExprParens(recv).kind { case EList(_) -> true; case _ -> false }
+    val recvIsArrayList = match recvTy { case JRef(c) -> c == "java/util/ArrayList"; case _ -> false }
+    if recvIsLiteral and recvIsArrayList {
+      return recvTy
+    }
+  }
+
   // `xs.toArray()` on a List receiver — including one erased to `Object`
   // (a generic `in List[T]` parameter): the Lyric runtime List is always
   // `java/util/ArrayList`, so checkcast + `toArray()[Ljava/lang/Object;`
